@@ -1494,13 +1494,75 @@ impl App {
 
     /// プッシュオーバー結果（性能曲線・ヒンジ・崩壊機構）の表示。
     pub(crate) fn pushover_panel(&mut self, ui: &mut egui::Ui) {
-        let Some(po) = self.results.as_ref().and_then(|r| r.pushover.as_ref()) else {
+        if self
+            .results
+            .as_ref()
+            .and_then(|r| r.pushover.as_ref())
+            .is_none()
+        {
             ui.colored_label(
                 crate::theme::GRAY_600,
                 "プッシュオーバー結果がありません。解析タブから実行してください。",
             );
             return;
-        };
+        }
+
+        // 必要保有水平耐力の総合判定（Qu ≥ Qun = Ds·Fes·Qud）を先に算定する。
+        // 実行ボタン→結果画面でそのまま OK/NG を確認できるよう、性能曲線より前に
+        // バナー表示する。`compute_holding_capacity` は &mut self を要するため、
+        // 以降の `po` 借用より前にここで所有権付きの結果へ落とす。
+        let hc_verdict = self.compute_holding_capacity().ok();
+
+        let po = self
+            .results
+            .as_ref()
+            .and_then(|r| r.pushover.as_ref())
+            .expect("checked above");
+
+        // ── 必要保有水平耐力 判定バナー ──────────────────────────────
+        match &hc_verdict {
+            Some((res, _)) if !res.stories.is_empty() => {
+                let ng = res.stories.iter().filter(|s| !s.ok).count();
+                if ng == 0 {
+                    ui.colored_label(
+                        crate::theme::GOOD_GREEN,
+                        format!(
+                            "✔ 必要保有水平耐力を満足: 全 {} 層で Qu ≥ Qun（Qun = Ds·Fes·Qud）",
+                            res.stories.len()
+                        ),
+                    );
+                } else {
+                    ui.colored_label(
+                        crate::theme::ERROR_RED,
+                        format!(
+                            "✘ 必要保有水平耐力が不足: {} / {} 層で Qu < Qun。設計タブ「保有水平耐力」で詳細を確認してください。",
+                            ng,
+                            res.stories.len()
+                        ),
+                    );
+                }
+            }
+            _ => {
+                ui.colored_label(
+                    crate::theme::GRAY_600,
+                    "必要保有水平耐力の判定には地震静的(Ai)の実行が必要です（解析タブ）。",
+                );
+            }
+        }
+        // 崩壊機構が未形成（部分崩壊形）の警告。崩壊機構が確定しない限り Ds・
+        // 必要保有水平耐力は暫定値であることを明示する（日本の慣行: 崩壊機構の確定が
+        // 必要保有水平耐力算定の前提）。
+        if matches!(
+            po.mechanism,
+            squid_n_solver::pushover::MechanismType::Partial
+        ) {
+            ui.colored_label(
+                crate::theme::SECONDARY_AMBER,
+                "⚠ 崩壊機構が未形成（部分崩壊形）です。目標変位を増やして再実行するか設計を\
+                 見直してください。崩壊機構が確定するまで Ds・必要保有水平耐力は暫定値です。",
+            );
+        }
+        ui.separator();
 
         ui.horizontal(|ui| {
             ui.label(format!("保有水平耐力 Qu = {:.1} kN", po.qu / 1000.0));

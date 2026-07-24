@@ -107,6 +107,18 @@ pub fn compute_story_metrics_with(
         SeismicDir::Y => 1,
     };
 
+    // 剛性率 Rs・層間変形角は「加力方向の地震時弾性層間変位」で算定すべき
+    // （令82条の2 の層間変形角・令82条の6 の剛性率はいずれも地震力による弾性変位が前提）。
+    // 偏心率 Re は既に `ctx` の地震ケースへ固定されているため、Rs・層間変形角も同じ
+    // 加力方向の地震静的結果へ揃える。当該方向の結果が `ctx` に無い場合のみ、呼び出し側が
+    // 渡した `disp`（＝表示中の任意ケース）へフォールバックする（後方互換）。
+    let metric_disp: &[[f64; 6]] = match dir {
+        SeismicDir::X => ctx.seismic_x,
+        SeismicDir::Y => ctx.seismic_y,
+    }
+    .map(|s| s.disp.as_slice())
+    .unwrap_or(disp);
+
     // 基部レベル: 全節点の最低標高
     let base_z = model
         .nodes
@@ -122,7 +134,7 @@ pub fn compute_story_metrics_with(
             let vals: Vec<f64> = s
                 .node_ids
                 .iter()
-                .filter_map(|n| disp.get(n.index()).map(|u| u[d]))
+                .filter_map(|n| metric_disp.get(n.index()).map(|u| u[d]))
                 .collect();
             if vals.is_empty() {
                 0.0
@@ -142,7 +154,7 @@ pub fn compute_story_metrics_with(
         };
         heights.push((s.elevation - below_elev).max(1e-9));
         // 層間変形角の確認用変位: 柱ごとの最大値（1/irs = max(δ)/iH）
-        let drift = match max_column_drift(model, disp, d, s.id) {
+        let drift = match max_column_drift(model, metric_disp, d, s.id) {
             Some(cd) => cd.drift,
             None => {
                 let below_disp = if i == 0 { 0.0 } else { avg_disp[i - 1] };
@@ -153,7 +165,7 @@ pub fn compute_story_metrics_with(
     }
 
     // 剛性率は重心位置の層間変位 δg で算定（1/irs = iδg/iH）
-    let cog_drifts = cog_story_drifts(model, disp, d);
+    let cog_drifts = cog_story_drifts(model, metric_disp, d);
     let rs_all = stiffness_ratios(&heights, &cog_drifts);
 
     // 層間変形角の制限値（令82条の2。原則 1/200、緩和時 1/120）。

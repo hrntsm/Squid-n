@@ -153,6 +153,8 @@ pub fn pushover_analysis_recording(
     let dlambda = 1.0 / n_steps as f64;
 
     for step in 0..n_steps {
+        // 前確定点の荷重係数（前ステップまでが満 λ で確定している前提の下限）。
+        let prev_lambda = step as f64 * dlambda;
         let mut current_lambda = (step + 1) as f64 * dlambda;
         let mut step_ok = false;
 
@@ -270,7 +272,11 @@ pub fn pushover_analysis_recording(
                 break;
             } else {
                 model.restore(&snap, &mut behaviors);
-                current_lambda *= 0.5;
+                // 収束失敗時は「前確定点 prev_lambda からの増分」を半減する。絶対 λ を
+                // 半減すると prev_lambda を下回り、前確定状態から除荷方向に解いて荷重−変位
+                // 経路が非物理的にジグザグする（ヒンジ／せん断降伏追跡も汚染される）。
+                // 増分のみを縮めることで単調載荷を保つ。
+                current_lambda = prev_lambda + (current_lambda - prev_lambda) * 0.5;
             }
         }
         if !step_ok {
@@ -284,6 +290,24 @@ pub fn pushover_analysis_recording(
             let initial_disp = total_disp[roof_active];
             let n_disp_steps = 10usize;
             let du_target = (max_disp - initial_disp) / n_disp_steps as f64;
+
+            // 変位制御のペナルティ剛性は「拘束する屋根 DOF 自身の対角剛性（＝加力方向の
+            // 水平剛性）」の 1e6 倍とする。固定 1e16 も、全体最大対角（軸剛性 ~1e9 に支配）
+            // 基準の過大な penalty も、残差 penalty·(target − u) の桁落ちで収束判定が
+            // 成立せず、変位制御が1点も確定しないまま即終了していた（→ Qu が荷重制御
+            // λ=1＝C0=0.2 級で頭打ちとなり崩壊機構へ到達しない致命的欠陥）。
+            // 屋根 DOF 対角に比例させると、拘束は常に相対 1e-6 精度で強制されつつ、
+            // 桁落ち残差は収束閾値に対し十分小さく保たれる（スケール不変）。
+            let penalty = {
+                let k0 = assemble_k(model, dofmap, &behaviors, use_kg, None);
+                let k_roof_diag = squid_n_math::sparse::sparse_to_triplets(&k0)
+                    .iter()
+                    .filter(|t| t.row == roof_active && t.col == roof_active)
+                    .map(|t| t.val.abs())
+                    .fold(0.0_f64, f64::max)
+                    .max(1.0);
+                k_roof_diag * 1e6
+            };
 
             for step in 0..n_disp_steps {
                 let target = initial_disp + du_target * (step + 1) as f64;
@@ -302,27 +326,29 @@ pub fn pushover_analysis_recording(
                             dofmap,
                             &behaviors,
                             use_kg,
-                            Some((roof_active, target)),
+                            Some((roof_active, penalty)),
                         );
                         let k_red = reducer.reduce_k(&k_free);
                         let f_int = compute_f_int(model, dofmap, &behaviors);
 
-                        let penalty = 1e16;
-                        let f_ext: Vec<f64> = (0..n_active)
-                            .map(|i| {
-                                if i == roof_active {
-                                    target * penalty
-                                } else {
-                                    0.0
-                                }
-                            })
-                            .collect();
-                        let r_free: Vec<f64> =
-                            f_ext.iter().zip(f_int.iter()).map(|(e, i)| e - i).collect();
+                        // ペナルティ法の残差: 自由 DOF は釣合い残差 −f_int、拘束 DOF（roof）
+                        // はペナルティばね反力 penalty·(target − u_roof) を加える。
+                        // u_roof = 確定変位 + ステップ内累積修正量。
+                        // 従来は f_ext[roof]=penalty·target を作って −f_int するのみで、
+                        // ペナルティばね内力 penalty·u_roof が残差から欠落していたため、
+                        // 拘束 DOF の残差が常に penalty·target で頭打ちとなり収束不能だった。
+                        // gap 形式 penalty·(target − u_roof) で桁落ちを避ける。
+                        let u_roof = total_disp[roof_active] + step_du_free[roof_active];
+                        let mut r_free: Vec<f64> = f_int.iter().map(|fi| -fi).collect();
+                        r_free[roof_active] += penalty * (target - u_roof);
                         let r_red = reducer.reduce_f(&r_free);
 
+                        // 収束は力の相対ノルム（内力ノルム基準＝ベースシア相当）で判定する。
                         let r_norm: f64 = r_red.iter().map(|x| x * x).sum::<f64>().sqrt();
-                        if r_norm < 1e-6 * target.abs().max(1.0) {
+                        let f_int_red = reducer.reduce_f(&f_int);
+                        let f_scale: f64 =
+                            f_int_red.iter().map(|x| x * x).sum::<f64>().sqrt().max(1.0);
+                        if r_norm < 1e-6 * f_scale {
                             converged = true;
                             break;
                         }
@@ -499,7 +525,7 @@ pub fn pushover_analysis_recording(
         }
     }
 
-    let mechanism = determine_mechanism(&hinges, model);
+    let mechanism = determine_mechanism(&hinges, model, dir);
     // 保有水平耐力 Qu = 性能曲線上の最大ベースシア（崩壊機構形成時の水平耐力）。
     // 単調載荷では機構形成後に頭打ちとなるため、ピーク値を採る。
     let qu = capacity_curve

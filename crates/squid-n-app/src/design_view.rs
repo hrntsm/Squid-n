@@ -725,12 +725,43 @@ pub fn design_table(ui: &mut egui::Ui, app: &mut App) {
                         });
                     });
                 });
+            // 崩壊機構（プッシュオーバー判定）を表示する。Ds は部材ランクに加えて
+            // この崩壊機構を層別に反映する（層崩壊形の層は1段階不利、部分崩壊形は
+            // 機構未確定として補正なし＝暫定値、全体崩壊形は標準）。
+            if let Some(po) = app.results.as_ref().and_then(|r| r.pushover.as_ref()) {
+                use squid_n_solver::pushover::MechanismType;
+                let (mech, warn) = match &po.mechanism {
+                    MechanismType::Overall => ("全体崩壊形".to_string(), false),
+                    MechanismType::StoryCollapse { story } => {
+                        (format!("層崩壊形 (Story {})", story.0), false)
+                    }
+                    MechanismType::Partial => ("部分崩壊形（機構未形成）".to_string(), true),
+                };
+                ui.colored_label(
+                    if warn {
+                        crate::theme::SECONDARY_AMBER
+                    } else {
+                        crate::theme::GRAY_600
+                    },
+                    format!(
+                        "崩壊機構: {}（Ds へ層別に反映{}）",
+                        mech,
+                        if warn {
+                            "。機構が確定するまで Ds・Qun は暫定値です"
+                        } else {
+                            ""
+                        }
+                    ),
+                );
+            }
             let note = if app.design_rank_auto {
-                "Qu はプッシュオーバー最終ステップの層せん断力。Ds は部材ランク自動判定\
-                 （鋼=幅厚比、RC矩形=せん断余裕度 Qsu/Qmu の略算）。形状未設定・RC円形・\
-                 Fc未設定材料は選択値フォールバック。"
+                "Qu はプッシュオーバー性能曲線上の層別ピーク層せん断力（崩壊機構形成時の耐力）。\
+                 Ds は部材ランク自動判定（鋼=幅厚比、RC矩形=せん断余裕度 Qsu/Qmu の略算。柱は\
+                 軸力考慮の曲げ終局から Qmu を算定）×崩壊機構。形状未設定・RC円形・Fc未設定材料は\
+                 選択値フォールバック。"
             } else {
-                "Qu はプッシュオーバー最終ステップの層せん断力。Ds は選択値（部材ランク自動判定OFF）。"
+                "Qu はプッシュオーバー性能曲線上の層別ピーク層せん断力。Ds は選択ランク×崩壊機構\
+                 （部材ランク自動判定OFF）。"
             };
             ui.colored_label(crate::theme::GRAY_600, note);
         }

@@ -4,6 +4,7 @@
 //! - [`determine_mechanism`] — 降伏ヒンジ分布から崩壊機構種別を分類
 
 use super::types::{HingeEvent, HingeLevel, MechanismType};
+use crate::analysis::SeismicDir;
 use squid_n_core::ids::StoryId;
 use squid_n_core::model::Model;
 
@@ -34,26 +35,28 @@ fn hinge_story(model: &Model, h: &HingeEvent) -> Option<StoryId> {
 ///
 /// 3D 6DOF モデルを pushover 方向の平面骨組と見なして次数を計算する。
 /// 機構成立条件は `形成降伏ヒンジ数 >= r + 1`（運動学的判定）。
-pub(crate) fn compute_static_indeterminacy(model: &Model) -> usize {
+///
+/// 加力方向で平面 DoF が異なる: X 加力は X–Z 面 `ux(0), uz(2), ry(4)`、Y 加力は
+/// Y–Z 面 `uy(1), uz(2), rx(3)`。従来は方向によらず X–Z 面固定で数えており、
+/// 非対称拘束（ピン・ローラー）を持つ Y 加力モデルで支点拘束数を誤っていた
+/// （基部が全 6 自由度拘束の一般的なモデルでは X/Y いずれも 3 で偶然一致し隠蔽）。
+pub(crate) fn compute_static_indeterminacy(model: &Model, dir: SeismicDir) -> usize {
     let m = model.elements.len();
     let n = model.nodes.len();
-    // 平面 DoF は ux(0), uz(2), ry(4)。各節点の Dof6Mask で拘束判定。
+    // 加力方向の平面内 DoF ビット（並進2＋面内回転1）。
+    let plane_bits: [u8; 3] = match dir {
+        SeismicDir::X => [0, 2, 4], // ux, uz, ry
+        SeismicDir::Y => [1, 2, 3], // uy, uz, rx
+    };
     let r_support: usize = model
         .nodes
         .iter()
         .map(|node| {
             let bits = node.restraint.0;
-            let mut count = 0;
-            if bits & (1u8 << 0) != 0 {
-                count += 1;
-            }
-            if bits & (1u8 << 2) != 0 {
-                count += 1;
-            }
-            if bits & (1u8 << 4) != 0 {
-                count += 1;
-            }
-            count
+            plane_bits
+                .iter()
+                .filter(|&&b| bits & (1u8 << b) != 0)
+                .count()
         })
         .sum();
     (3 * m + r_support).saturating_sub(3 * n)
@@ -66,7 +69,11 @@ pub(crate) fn compute_static_indeterminacy(model: &Model) -> usize {
 /// - 形成降伏ヒンジ数 < r + 1 → まだ機構未成立（Partial）
 /// - 複数階モデルで降伏ヒンジが単一階に集中 → 層崩壊（StoryCollapse）
 /// - それ以外（複数階に分布／単一階構造）→ 全体崩壊（Overall）
-pub(crate) fn determine_mechanism(hinges: &[HingeEvent], model: &Model) -> MechanismType {
+pub(crate) fn determine_mechanism(
+    hinges: &[HingeEvent],
+    model: &Model,
+    dir: SeismicDir,
+) -> MechanismType {
     use std::collections::{BTreeMap, BTreeSet};
 
     let yielded: Vec<&HingeEvent> = hinges
@@ -79,7 +86,7 @@ pub(crate) fn determine_mechanism(hinges: &[HingeEvent], model: &Model) -> Mecha
         .iter()
         .map(|h| (h.elem.index() as u32, if h.pos < 0.5 { 0u8 } else { 1u8 }))
         .collect();
-    let r = compute_static_indeterminacy(model);
+    let r = compute_static_indeterminacy(model, dir);
     if yielded.is_empty() || distinct_ends.len() < r + 1 {
         return MechanismType::Partial;
     }

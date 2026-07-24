@@ -474,7 +474,7 @@ fn test_determine_mechanism_partial_when_insufficient() {
     let model = two_story_model();
     // ひび割れのみ → 降伏ヒンジ0個 < r+1 → Partial
     assert!(matches!(
-        determine_mechanism(&[hinge(0, 0.0, HingeLevel::Crack)], &model),
+        determine_mechanism(&[hinge(0, 0.0, HingeLevel::Crack)], &model, SeismicDir::X),
         MechanismType::Partial
     ));
 }
@@ -485,7 +485,7 @@ fn test_determine_mechanism_partial_when_insufficient() {
 fn test_determine_mechanism_single_yield_establishes_mechanism() {
     let model = two_story_model();
     // elem0 端 j (pos=1.0) → node1 = 1F 単独階 → 層崩壊
-    match determine_mechanism(&[hinge(0, 1.0, HingeLevel::Yield)], &model) {
+    match determine_mechanism(&[hinge(0, 1.0, HingeLevel::Yield)], &model, SeismicDir::X) {
         MechanismType::StoryCollapse { story } => assert_eq!(story, StoryId(0)),
         other => panic!(
             "expected StoryCollapse{{0}}, got {:?}",
@@ -499,7 +499,7 @@ fn test_determine_mechanism_single_yield_establishes_mechanism() {
 fn test_compute_static_indeterminacy_two_story() {
     // 2層2柱: 部材2・節点3・基礎節点(node0)が平面3DOF拘束 → r = 6 - 9 + 3 = 0（静定）
     let model = two_story_model();
-    assert_eq!(compute_static_indeterminacy(&model), 0);
+    assert_eq!(compute_static_indeterminacy(&model, SeismicDir::X), 0);
 }
 
 #[test]
@@ -627,7 +627,7 @@ fn test_compute_static_indeterminacy_indeterminate_portal() {
         }],
         ..Default::default()
     };
-    assert_eq!(compute_static_indeterminacy(&portal), 3);
+    assert_eq!(compute_static_indeterminacy(&portal, SeismicDir::X), 3);
 }
 
 #[test]
@@ -639,7 +639,7 @@ fn test_determine_mechanism_story_collapse() {
         hinge(0, 1.0, HingeLevel::Yield),
         hinge(1, 0.0, HingeLevel::Yield),
     ];
-    match determine_mechanism(&hinges, &model) {
+    match determine_mechanism(&hinges, &model, SeismicDir::X) {
         MechanismType::StoryCollapse { story } => assert_eq!(story, StoryId(0)),
         other => panic!(
             "expected StoryCollapse{{0}}, got {:?}",
@@ -657,7 +657,7 @@ fn test_determine_mechanism_overall() {
         hinge(1, 1.0, HingeLevel::Yield), // node2 = 2F
     ];
     assert!(matches!(
-        determine_mechanism(&hinges, &model),
+        determine_mechanism(&hinges, &model, SeismicDir::X),
         MechanismType::Overall
     ));
 }
@@ -1822,4 +1822,84 @@ fn test_compute_shear_yield_thresholds_rc_rebar_scaled_but_shear_reinforcement_i
         }
         DirThreshold::Static(_) => panic!("expected RcArakawa for RcRect with rebar"),
     }
+}
+
+/// 変位制御フェーズが実際に目標変位まで押し切り、荷重制御（λ=1＝C0=0.2 級）を
+/// 超える耐力まで到達することを検証する回帰テスト。
+///
+/// 修正前は変位制御のペナルティ残差 `penalty·(target − u)` の桁落ちで収束判定が
+/// 原理的に成立せず、変位制御フェーズが1点も確定しなかった。その結果 Qu は荷重
+/// 制御の頭打ち（λ=1、参照荷重 C0=0.2・地震重量＝設計地震力レベル）に張り付き、
+/// 崩壊機構へ到達しないまま過小評価されていた（保有水平耐力計算として致命的）。
+#[test]
+fn test_pushover_displacement_control_reaches_target_and_exceeds_design_load() {
+    let seismic_weight = 80_000.0;
+    let mut model = single_column_model(235.0, seismic_weight);
+    let dofmap = DofMap::build(&model);
+    let reducer = Reducer::build(&model, &dofmap);
+    let max_disp = 200.0;
+    let n_steps = 50usize;
+
+    // 荷重制御のみ（max_disp=0）: Qu は参照荷重 C0=0.2・地震重量で頭打ち。
+    let mut load_only_model = single_column_model(235.0, seismic_weight);
+    let lo_dofmap = DofMap::build(&load_only_model);
+    let lo_reducer = Reducer::build(&load_only_model, &lo_dofmap);
+    let load_only = pushover_analysis(
+        &mut load_only_model,
+        &lo_dofmap,
+        &lo_reducer,
+        SeismicDir::X,
+        n_steps,
+        0.0,
+        false,
+        false,
+        0.0,
+    )
+    .expect("load control run");
+
+    let result = pushover_analysis(
+        &mut model,
+        &dofmap,
+        &reducer,
+        SeismicDir::X,
+        n_steps,
+        max_disp,
+        false,
+        false,
+        0.0,
+    )
+    .expect("displacement control run");
+
+    // 変位制御フェーズ（step >= n_steps+1）が点を確定していること。
+    let disp_phase_points = result
+        .capacity_curve
+        .iter()
+        .filter(|c| c.step as usize > n_steps)
+        .count();
+    assert!(
+        disp_phase_points >= 5,
+        "displacement-control phase should record points, got {}",
+        disp_phase_points
+    );
+
+    // 目標変位（200mm）まで到達していること。
+    let last_roof = result
+        .capacity_curve
+        .last()
+        .map(|c| c.roof_disp)
+        .unwrap_or(0.0);
+    assert!(
+        (last_roof - max_disp).abs() < 1.0,
+        "roof should reach target {}mm, got {:.3}mm",
+        max_disp,
+        last_roof
+    );
+
+    // 変位制御により荷重制御頭打ち（≈ 0.2·W）を有意に上回る耐力へ到達すること。
+    assert!(
+        result.qu > load_only.qu * 1.5,
+        "displacement control Qu={:.1} should exceed load-only Qu={:.1}",
+        result.qu,
+        load_only.qu
+    );
 }

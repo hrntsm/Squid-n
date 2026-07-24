@@ -10,6 +10,15 @@ use squid_n_core::dof::DofMap;
 use squid_n_core::model::Model;
 use squid_n_element::behavior::{Ctx, ElemState, ElementBehavior};
 
+/// 全体接線剛性行列を組み立てる。
+///
+/// `prescribed = Some((dof, penalty))` のとき、変位制御（`driver` の変位制御
+/// フェーズ）のために対角 `[dof, dof]` へペナルティ剛性 `penalty` を加算する。
+/// 従来は penalty を関数内で固定値 `1e16` としていたが、接線剛性のスケール（~1e5〜1e7）
+/// に対して過大で、変位制御の残差計算で桁落ち（catastrophic cancellation）を起こし
+/// 収束判定が原理的に成立しなかった。呼び出し側（`driver`）が接線剛性スケールに
+/// 比例した well-conditioned な penalty を算定して渡す。第2要素は penalty であって
+/// 目標変位ではない（目標変位は残差側で扱う）。
 pub(crate) fn assemble_k(
     model: &Model,
     dofmap: &DofMap,
@@ -37,8 +46,7 @@ pub(crate) fn assemble_k(
         }
         triplets.extend(k.to_triplets(&gdofs));
     }
-    if let Some((d, _u_val)) = prescribed {
-        let penalty = 1e16;
+    if let Some((d, penalty)) = prescribed {
         triplets.push(squid_n_math::sparse::Triplet {
             row: d,
             col: d,

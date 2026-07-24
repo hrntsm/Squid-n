@@ -719,14 +719,17 @@ impl App {
     > {
         use squid_n_core::section_shape::SectionShape;
         use squid_n_design_jp::secondary::holding_capacity::{
-            check_holding_capacity, ds_value, qud_by_story, MemberRank,
+            check_holding_capacity, qud_by_story, MemberRank,
         };
         use squid_n_design_jp::secondary::member_rank::{
-            rc_member_rank, s_member_rank_scaled, worst_rank, RankCriteria,
+            rc_member_rank, s_member_rank_scaled, story_ds, worst_rank, RankCriteria,
         };
-        use squid_n_design_jp::secondary::rc_capacity::{rc_qmu_simple, rc_qsu_simple};
+        use squid_n_design_jp::secondary::rc_capacity::{
+            rc_column_mu_simple, rc_qmu_simple, rc_qsu_simple,
+        };
         use squid_n_design_jp::secondary::width_thickness::max_width_thickness;
         use squid_n_design_jp::steel_f_value_prefix;
+        use squid_n_solver::pushover::MechanismType;
 
         // rigid_zone（剛域長・face_i/j）を読むため、算定前に自動剛域を反映する
         // （設計書 §6.2.1、冪等なので他の解析エントリと重複して呼んでも安全）。
@@ -892,7 +895,25 @@ impl App {
                             })
                             .unwrap_or(0.0);
                         input.sigma_0 = sigma_0;
-                        let qmu = rc_qmu_simple(&input);
+                        // 曲げ終局時せん断 Qmu: 柱は軸力を考慮した終局曲げ Mu
+                        // （`rc_column_mu_simple`）から算定する。せん断側 Qsu には既に σ0 を
+                        // 反映しているため、曲げ側にも同じ軸力を反映しないと、圧縮軸力を
+                        // 受ける柱で「Qmu を梁式（軸力無視）で過小評価しつつ Qsu を軸力で増大」
+                        // させ、せん断余裕度 Qsu/Qmu を過大評価→ランクを甘く（FA 寄りに）
+                        // 判定する危険側の誤りとなる。梁は従来どおり梁式 Qmu を用いる。
+                        let qmu = match member_kind_of(elem, &self.model) {
+                            squid_n_design_jp::MemberKind::Column => {
+                                let ag = squid_n_core::section_shape::bar_set_area(&rebar.main_x);
+                                let n_axial = sigma_0 * *b * *d; // 圧縮正 [N]
+                                let mu = rc_column_mu_simple(&input, ag, n_axial);
+                                if clear_span > 0.0 {
+                                    2.0 * mu / clear_span
+                                } else {
+                                    0.0
+                                }
+                            }
+                            _ => rc_qmu_simple(&input),
+                        };
                         let qsu = rc_qsu_simple(&input);
                         rc_member_rank(qsu, qmu, &RankCriteria::default())
                     };
@@ -924,9 +945,29 @@ impl App {
                 (vec![self.design_rank; n_stories], Vec::new())
             };
 
+        // Ds は「部材ランク × 崩壊機構」で決まる（告示1792・仕様 P7 §7）。崩壊機構は
+        // プッシュオーバー（P5）の判定結果 `po.mechanism` を層別に反映する:
+        //   - 全体崩壊形（Overall）: 標準 Ds 表をそのまま適用（機構補正なし）。
+        //   - 層崩壊形（StoryCollapse{story}）: **当該層のみ**代表ランクを1段階不利化。
+        //   - 部分崩壊形（Partial＝機構未形成/未確認）: 機構補正は行わず部材ランクのみで
+        //     算定し、UI 側で「崩壊機構が未形成」の警告を出す（崩壊機構が確定しない限り
+        //     必要保有水平耐力は暫定値である、という運用を明示する）。
+        // `ds_value` を直接呼ぶ旧実装は機構を一切反映しておらず（層崩壊でも Ds が
+        // 上がらない）、必要保有水平耐力 Qun を過小評価する危険側の欠落だった。
+        let mechanism = &po.mechanism;
         let ds_vec: Vec<f64> = story_ranks
             .iter()
-            .map(|r| ds_value(self.design_frame, *r))
+            .enumerate()
+            .map(|(i, r)| {
+                let story_mech = match mechanism {
+                    MechanismType::StoryCollapse { story } if story.index() == i => {
+                        MechanismType::StoryCollapse { story: *story }
+                    }
+                    // 他層の層崩壊・全体崩壊・部分崩壊は当該層の Ds を機構補正しない。
+                    _ => MechanismType::Overall,
+                };
+                story_ds(&[*r], self.design_frame, &story_mech)
+            })
             .collect();
         let heights: Vec<f64> = metrics.iter().map(|m| m.height).collect();
         let rs: Vec<f64> = metrics.iter().map(|m| m.rs).collect();
