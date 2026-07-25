@@ -11,13 +11,12 @@
 //! - **剛域**: 部材端の剛域長 `length_i/j` を、ハッチング入りのブロック（矩形の輪郭
 //!   ＋斜めハッチ）で示す。線材とは図形の種類が違うため弾性材の細い線と紛れない。
 //! - **材端集中塑性**: 材端（剛域フェイス）の塑性ヒンジ位置に塗り円（●）を置く。
-//! - **ファイバー／MS**: 解析上は材端（積分点 ξ=∓1、すなわち節点位置）にファイバー
-//!   断面を置き、その積分重み＝塑性化域長 Lp の区間だけが塑性化する。中央
-//!   \[Lp, L−Lp\] は弾性。よって端部 Lp 区間を太線で強調し、中央を弾性色の細線とし、
-//!   ファイバー断面の位置に断面記号を描く。Lp は要素生成と同じ既定
-//!   （[`squid_n_element::factory::plastic_zone_length`]）で解決する。
-//!   これらの要素は剛域を考慮しない（積分点は剛域フェイスではなく節点位置）ため、
-//!   剛域は「未考慮」を示す破線アウトラインで描く。
+//! - **ファイバー／MS**: 解析上は可撓部の材端（積分点 ξ=∓1、剛域があればその
+//!   フェイス）にファイバー断面を置き、その積分重み＝塑性化域長 Lp の区間だけが
+//!   塑性化する。中央 \[Lp, L'−Lp\] は弾性。よって端部 Lp 区間を太線で強調し、
+//!   中央を弾性色の細線とし、ファイバー断面の位置に断面記号を描く。Lp は要素生成と
+//!   同じ既定（[`squid_n_element::factory::plastic_zone_length`]）・同じクランプで
+//!   解決するため、表示は解析のモデル化と一致する。
 //! - **端部接合条件**: ピン（○）・半剛（□）を材端（剛域がある場合は剛域フェイス）に描く。
 //! - **壁エレメント**: 耐震壁は壁エレメント置換モデル（壁柱＋両端ピンの上下剛梁）の
 //!   「エ」状で描く。フレーム内雑壁（周辺部材へ剛性算入）は半透明ポリゴンで区別する。
@@ -275,33 +274,12 @@ fn draw_rigid_zone(painter: &egui::Painter, a: egui::Pos2, b: egui::Pos2) {
     }
 }
 
-/// 解析上考慮されない剛域（ファイバー／MS 要素）を淡い破線の輪郭だけで示す。
+/// ファイバー断面（可撓部端の積分点 ξ=∓1）の記号。材軸に直交する短いバーと、
+/// その上に並ぶ 3 点の塗り円で「断面をファイバーへ分割している位置」を表す。
 ///
-/// これらの要素（`FiberBeam::build_plastic_zone` ベース）は剛域変換を行わず、
-/// 積分点を節点位置に置くため、剛域長を入力しても解析には効かない。入力値を
-/// 黙って隠すとモデル化図が入力と食い違って見えるため、ハッチのない破線の
-/// 「空のブロック」として、考慮される剛域と区別して描く。
-fn draw_ignored_rigid_zone(painter: &egui::Painter, a: egui::Pos2, b: egui::Pos2) {
-    let n = perpendicular(a, b) * RIGID_HALF_W;
-    let stroke = egui::Stroke::new(1.0_f32, theme::translucent(theme::GRAY_900, 110));
-    for side in [-1.0_f32, 1.0] {
-        painter.extend(egui::Shape::dashed_line(
-            &[a + n * side, b + n * side],
-            stroke,
-            4.0,
-            3.0,
-        ));
-    }
-    painter.line_segment([a - n, a + n], stroke);
-    painter.line_segment([b - n, b + n], stroke);
-}
-
-/// ファイバー断面（端部積分点 ξ=∓1）の記号。材軸に直交する短いバーと、その上に
-/// 並ぶ 3 点の塗り円で「断面をファイバーへ分割している位置」を表す。
-///
-/// 位置は解析上の積分点（材端＝節点位置）だが、接合部では複数部材の記号が
-/// 同一点に重なって判読できないため、材軸方向へわずかに内側へ寄せて描く
-/// （他の材端記号と同じ描画上のオフセット規約）。
+/// 位置は解析上の積分点（可撓部の材端＝剛域があればそのフェイス）だが、記号が
+/// 剛域ブロックや他部材の記号と重なって判読できないため、材軸方向へわずかに
+/// 内側へ寄せて描く（他の材端記号と同じ描画上のオフセット規約）。
 fn draw_fiber_section_marker(
     painter: &egui::Painter,
     at: egui::Pos2,
@@ -320,15 +298,19 @@ fn draw_fiber_section_marker(
     }
 }
 
-/// 剛域を考慮した可とう区間の端点フラクション（材軸パラメータ s∈[0,1] の両端）。
-/// 剛域長が可とう長を食い尽くさないよう各端 0.45 で頭打ちにする。
-fn flexible_span(elem: &ElementData, l: f64) -> (f32, f32) {
+/// 可とう区間の端点フラクション（材軸パラメータ s∈[0,1] の両端）と可とう長 [mm]。
+/// 剛域長の解決は要素側（[`squid_n_element::rigid_arm::resolve_lengths`]）と共通で、
+/// 可撓長が残らない入力は剛域なしとして扱う。
+fn flexible_span(elem: &ElementData, l: f64) -> (f32, f32, f64) {
     if l <= 1e-9 {
-        return (0.0, 1.0);
+        return (0.0, 1.0, l);
     }
-    let fi = (elem.rigid_zone.length_i.max(0.0) / l).clamp(0.0, 0.45) as f32;
-    let fj = (elem.rigid_zone.length_j.max(0.0) / l).clamp(0.0, 0.45) as f32;
-    (fi, 1.0 - fj)
+    let (li, lj) = squid_n_element::rigid_arm::resolve_lengths(
+        elem.rigid_zone.length_i,
+        elem.rigid_zone.length_j,
+        l,
+    );
+    ((li / l) as f32, 1.0 - (lj / l) as f32, l - li - lj)
 }
 
 /// モデル化図を描く。`pts` は節点スクリーン座標、`coords3` は節点 3D 座標
@@ -375,9 +357,7 @@ struct Symbols {
     semi: bool,
     hinge: bool,
     rigid: bool,
-    /// 剛域の入力はあるが要素が考慮しない（ファイバー／MS 要素）ケースが現れた。
-    rigid_ignored: bool,
-    /// ファイバー断面（端部積分点）の記号を描いた。
+    /// ファイバー断面（可撓部端の積分点）の記号を描いた。
     fiber_section: bool,
 }
 
@@ -395,17 +375,16 @@ fn is_end_plastic_zone_model(elem: &ElementData, class: ModelClass) -> bool {
     }
 }
 
-/// 端部塑性化域モデルの有効な塑性化域長 Lp を材長比（s∈[0,1]）で返す。
+/// 端部塑性化域モデルの有効な塑性化域長 Lp [mm]（可撓長 `l_flex` 基準）。
 /// 要素生成と同じ既定・同じクランプを用いるため、表示は解析のモデル化と一致する。
-fn plastic_zone_frac(elem: &ElementData, model: &Model, l: f64) -> f32 {
-    if l <= 1e-9 {
+fn plastic_zone_len(elem: &ElementData, model: &Model, l_flex: f64) -> f64 {
+    if l_flex <= 1e-9 {
         return 0.0;
     }
-    let lp = squid_n_element::fiber::clamp_plastic_zone(
+    squid_n_element::fiber::clamp_plastic_zone(
         squid_n_element::factory::plastic_zone_length(elem, model),
-        l,
-    );
-    (lp / l) as f32
+        l_flex,
+    )
 }
 
 /// 線材（梁・柱・ファイバー・側柱）のモデル化を描く。
@@ -430,59 +409,52 @@ fn draw_line_member(
     let l = len3(coords3[n0], coords3[n1]);
     let color = class.color();
 
-    // 端部塑性化域モデル（ファイバー／MS）は剛域を考慮せず、材端＝節点位置を
-    // 積分点とするため、可とう区間ではなく全長を基準に描く。
+    // 可とう区間（剛域フェイス間）。すべての線材モデルが剛域を可撓長から控除し、
+    // 可撓端自由度を剛体アームで節点自由度へ写す（`squid_n_element::rigid_arm`）。
     let end_plastic = is_end_plastic_zone_model(elem, class);
-    let (s_i, s_j) = if end_plastic {
-        (0.0, 1.0)
-    } else {
-        flexible_span(elem, l)
-    };
+    let (s_i, s_j, l_flex) = flexible_span(elem, l);
 
-    // 材端の記号を置く位置（剛域を考慮する要素は剛域フェイス、端部塑性化域
-    // モデルは節点位置）。
+    // 材端の記号を置く位置（剛域があればそのフェイス）。
     let fa = lerp(p0, p1, s_i);
     let fb = lerp(p0, p1, s_j);
 
     if end_plastic {
         // 端部 Lp 区間 = ファイバー断面の積分重み（塑性化域）。中央は弾性。
-        let lp = plastic_zone_frac(elem, model, l).min(0.5);
-        let a = lerp(p0, p1, lp);
-        let b = lerp(p0, p1, 1.0 - lp);
+        // Lp は可撓長基準のため、可とう区間 [fa, fb] のパラメータで置く。
+        let lp = if l_flex > 1e-9 {
+            (plastic_zone_len(elem, model, l_flex) / l_flex) as f32
+        } else {
+            0.0
+        };
+        let a = lerp(fa, fb, lp);
+        let b = lerp(fa, fb, 1.0 - lp);
         painter.line_segment(
             [a, b],
             egui::Stroke::new(3.0_f32, ModelClass::Elastic.color()),
         );
         let zone_stroke = egui::Stroke::new(5.0_f32, color);
-        painter.line_segment([p0, a], zone_stroke);
-        painter.line_segment([b, p1], zone_stroke);
-        // 剛域の入力があっても要素は考慮しない旨を破線で示す。
-        let (r_i, r_j) = flexible_span(elem, l);
-        if r_i > 0.0 {
-            draw_ignored_rigid_zone(painter, p0, lerp(p0, p1, r_i));
-            sym.rigid_ignored = true;
-        }
-        if r_j < 1.0 {
-            draw_ignored_rigid_zone(painter, lerp(p0, p1, r_j), p1);
-            sym.rigid_ignored = true;
-        }
-        // ファイバー断面（積分点 ξ=∓1）の位置。
-        draw_fiber_section_marker(painter, p0, p1, color);
-        draw_fiber_section_marker(painter, p1, p0, color);
-        sym.fiber_section = true;
+        painter.line_segment([fa, a], zone_stroke);
+        painter.line_segment([b, fb], zone_stroke);
     } else {
         // 可とう区間の基準線。
         painter.line_segment([fa, fb], egui::Stroke::new(3.0_f32, color));
+    }
 
-        // 剛域バー（材端）。
-        if s_i > 0.0 {
-            draw_rigid_zone(painter, p0, fa);
-            sym.rigid = true;
-        }
-        if s_j < 1.0 {
-            draw_rigid_zone(painter, fb, p1);
-            sym.rigid = true;
-        }
+    // 剛域バー（材端）。
+    if s_i > 0.0 {
+        draw_rigid_zone(painter, p0, fa);
+        sym.rigid = true;
+    }
+    if s_j < 1.0 {
+        draw_rigid_zone(painter, fb, p1);
+        sym.rigid = true;
+    }
+
+    // ファイバー断面（積分点 ξ=∓1＝可撓部の材端）の位置。剛域バーの上に重ねる。
+    if end_plastic {
+        draw_fiber_section_marker(painter, fa, fb, color);
+        draw_fiber_section_marker(painter, fb, fa, color);
+        sym.fiber_section = true;
     }
 
     // 端部の接合条件・塑性ヒンジ。側柱は面内両端ピンのため両端に○。
@@ -703,15 +675,6 @@ fn draw_legend(
         text(painter, y, "剛域");
         y += LINE_H;
     }
-    if sym.rigid_ignored {
-        draw_ignored_rigid_zone(
-            painter,
-            egui::pos2(x0 + 2.0, y + FONT * 0.5),
-            egui::pos2(x0 + 18.0, y + FONT * 0.5),
-        );
-        text(painter, y, "剛域（この要素では未考慮）");
-        y += LINE_H;
-    }
     if sym.pin {
         let c = egui::pos2(x0 + 10.0, y + FONT * 0.5);
         painter.circle_filled(c, 4.0, theme::WHITE);
@@ -751,7 +714,7 @@ fn draw_legend(
             egui::pos2(x0 + 20.0, y + FONT * 0.5),
             ModelClass::Fiber.color(),
         );
-        text(painter, y, "ファイバー断面（積分点 ξ=∓1、材端）");
+        text(painter, y, "ファイバー断面（積分点 ξ=∓1、可撓部の材端）");
         y += LINE_H;
         painter.line_segment(
             [
@@ -800,15 +763,15 @@ pub(super) fn show_modeling_tooltip(ui: &egui::Ui, app: &App, elem_id: squid_n_c
                 ));
                 let rz = &elem.rigid_zone;
                 if rz.length_i > 0.0 || rz.length_j > 0.0 {
-                    let note = if end_plastic { "（未考慮）" } else { "" };
                     ui.label(format!(
-                        "剛域長: i={:.0} / j={:.0} mm{}",
-                        rz.length_i, rz.length_j, note
+                        "剛域長: i={:.0} / j={:.0} mm",
+                        rz.length_i, rz.length_j
                     ));
                 }
             }
-            // 端部塑性化域モデル（ファイバー／MS）は、材端（積分点 ξ=∓1）へ置いた
-            // ファイバー断面で塑性化域 Lp 区間を代表し、中央は弾性とする。
+            // 端部塑性化域モデル（ファイバー／MS）は、可撓部の材端（積分点 ξ=∓1、
+            // 剛域があればそのフェイス）へ置いたファイバー断面で塑性化域 Lp 区間を
+            // 代表し、中央は弾性とする。
             if end_plastic {
                 let l = elem
                     .nodes
@@ -820,18 +783,18 @@ pub(super) fn show_modeling_tooltip(ui: &egui::Ui, app: &App, elem_id: squid_n_c
                         Some(len3(a.coord, b.coord))
                     })
                     .unwrap_or(0.0);
-                let lp = squid_n_element::fiber::clamp_plastic_zone(
-                    squid_n_element::factory::plastic_zone_length(elem, &app.model),
-                    l,
-                );
+                let (_, _, l_flex) = flexible_span(elem, l);
+                let lp = plastic_zone_len(elem, &app.model, l_flex);
                 let src = if elem.plastic_zone.is_some() {
                     "指定値"
                 } else {
                     "既定 0.5D"
                 };
-                ui.label("ファイバー断面: 材端 2 箇所（積分点 ξ=∓1）");
+                ui.label("ファイバー断面: 可撓部の材端 2 箇所（積分点 ξ=∓1）");
                 ui.label(format!("塑性化域 Lp={:.0} mm（{}）／中央弾性", lp, src));
-                ui.label("※ 積分点は節点位置（剛域は考慮しない）");
+                if l_flex < l - 1e-9 {
+                    ui.label(format!("可撓長 L'={:.0} mm（Lp は L' 基準）", l_flex));
+                }
             }
         },
     );
@@ -1021,7 +984,7 @@ mod tests {
     /// （`plastic_zone` 指定時はその値、未指定なら断面せいの 0.5 倍）。
     #[test]
     fn 塑性化域長は要素生成の既定と一致する() {
-        // 断面せい 600mm → 既定 Lp = 300mm。部材長 3000mm なので比は 0.1。
+        // 断面せい 600mm → 既定 Lp = 300mm。
         let shape = SectionShape::SteelH {
             height: 600.0,
             width: 200.0,
@@ -1034,14 +997,42 @@ mod tests {
         };
         let mut e = elem(ElementKind::Fiber, ForceRegime::Auto);
         e.section = Some(SectionId(0));
-        assert!((plastic_zone_frac(&e, &model, 3000.0) - 0.1).abs() < 1e-6);
+        assert!((plastic_zone_len(&e, &model, 3000.0) - 300.0).abs() < 1e-6);
 
         // 指定値が優先される。
         e.plastic_zone = Some(600.0);
-        assert!((plastic_zone_frac(&e, &model, 3000.0) - 0.2).abs() < 1e-6);
+        assert!((plastic_zone_len(&e, &model, 3000.0) - 600.0).abs() < 1e-6);
 
-        // 部材長の 45% を超える指定はクランプされる（要素生成と同じ規則）。
+        // 可撓長の 45% を超える指定はクランプされる（要素生成と同じ規則）。
         e.plastic_zone = Some(3000.0);
-        assert!((plastic_zone_frac(&e, &model, 3000.0) - 0.45).abs() < 1e-6);
+        assert!((plastic_zone_len(&e, &model, 3000.0) - 1350.0).abs() < 1e-6);
+    }
+
+    /// 可とう区間・可撓長の算定は要素側（`rigid_arm::resolve_lengths`）と一致する。
+    /// 剛域長の合計が部材長以上の入力は剛域なしとして扱う。
+    #[test]
+    fn 可とう区間は要素側の剛域解決と一致する() {
+        let mut e = elem(ElementKind::Beam, ForceRegime::Auto);
+        e.rigid_zone = RigidZone {
+            length_i: 400.0,
+            length_j: 200.0,
+            face_i: 400.0,
+            face_j: 200.0,
+            ..Default::default()
+        };
+        let (s_i, s_j, l_flex) = flexible_span(&e, 3000.0);
+        assert!((s_i - 400.0 / 3000.0).abs() < 1e-6);
+        assert!((s_j - (1.0 - 200.0 / 3000.0)).abs() < 1e-6);
+        assert!((l_flex - 2400.0).abs() < 1e-9);
+
+        // 可撓長が残らない入力は剛域なし。
+        e.rigid_zone = RigidZone {
+            length_i: 2000.0,
+            length_j: 1500.0,
+            ..Default::default()
+        };
+        let (s_i, s_j, l_flex) = flexible_span(&e, 3000.0);
+        assert_eq!((s_i, s_j), (0.0, 1.0));
+        assert!((l_flex - 3000.0).abs() < 1e-9);
     }
 }

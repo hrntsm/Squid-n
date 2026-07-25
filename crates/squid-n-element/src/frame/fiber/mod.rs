@@ -225,8 +225,29 @@ impl GaussPoint {
 /// 公称値ベースの近似となる）。
 /// GAs ≤ 0（せん断有効断面積が未設定等）の場合は φ=0（せん断剛直 =
 /// Euler-Bernoulli）へフォールバックする。
+///
+/// # 剛域
+///
+/// 部材端に剛域（`ElementData::rigid_zone`）があるとき、断面積分・せん断・幾何剛性は
+/// **可撓長** `flex_length` = L − λi − λj で組み、可撓端自由度を剛体アームで節点
+/// 自由度へ写す（[`crate::rigid_arm`]。弾性梁 `BeamElement` と同じ変換）。
+/// 端部の積分点 ξ=∓1 は剛域フェイスに位置し、塑性化域 Lp も剛域フェイスから測る。
+///
+/// 軸方向の扱いは弾性梁と異なる。弾性梁は軸断面積を A·(L'/L) に補正して軸剛性を
+/// EA/L（節点間長基準）へ戻す（剛域は曲げのみを剛とする方針）が、ファイバー要素は
+/// 断面積分が軸力と曲げを連成させるため、軸だけを分離して補正すると断面が返す軸力
+/// （N-M 相関の基礎）が実断面のひずみ状態と食い違う。そのため本要素では剛域を
+/// **軸方向にも剛**として扱い、軸剛性は EA/L' となる（剛体オフセットの運動学に
+/// そのまま従う扱い）。ねじりは断面積分と連成しない独立項なので、弾性梁と同じく
+/// 節点間長基準 GJ/L とする。
 pub struct FiberBeam {
+    /// 節点間長 L [mm]（質量・ねじり剛性の基準）。
     pub length: f64,
+    /// 材端の剛域長 λi, λj [mm]（可撓長 = `length` − λi − λj）。
+    pub rigid_i: f64,
+    pub rigid_j: f64,
+    /// 可撓長 L' = `length` − λi − λj [mm]。断面積分・B 行列・せん断・幾何剛性の基準。
+    pub flex_length: f64,
     pub nodes: [NodeId; 2],
     pub gauss_points: Vec<GaussPoint>,
     pub density: f64,
@@ -274,6 +295,14 @@ impl FiberBeam {
         let dy = n1.coord[1] - n0.coord[1];
         let dz = n1.coord[2] - n0.coord[2];
         let length = (dx * dx + dy * dy + dz * dz).sqrt();
+        // 剛域長と可撓長。断面積分・B 行列・せん断・幾何剛性はすべて可撓長基準で
+        // 組み、可撓端自由度を剛体アームで節点自由度へ写す（弾性梁と同じ扱い）。
+        let (rigid_i, rigid_j) = crate::rigid_arm::resolve_lengths(
+            data.rigid_zone.length_i,
+            data.rigid_zone.length_j,
+            length,
+        );
+        let flex_length = length - rigid_i - rigid_j;
 
         let sec = data.section.and_then(|sid| model.sections.get(sid.index()));
         let mat_ref = data
@@ -296,9 +325,10 @@ impl FiberBeam {
         let sec_iz = sec.map(|s| s.iz).unwrap_or(0.0);
         let sec_as_y = sec.map(|s| s.as_y).unwrap_or(0.0);
         let sec_as_z = sec.map(|s| s.as_z).unwrap_or(0.0);
+        // φ は可撓長基準（弾性梁が可撓長で raw 剛性を組むのと同じ規約）。
         let phi_of = |ei: f64, gas: f64| {
-            if gas > 0.0 && ei > 0.0 && length > 0.0 {
-                12.0 * ei / (gas * length * length)
+            if gas > 0.0 && ei > 0.0 && flex_length > 0.0 {
+                12.0 * ei / (gas * flex_length * flex_length)
             } else {
                 0.0
             }
@@ -307,7 +337,7 @@ impl FiberBeam {
         let phi_y = phi_of(e * sec_iy, g * sec_as_z);
         let phi_z = phi_of(e * sec_iz, g * sec_as_y);
         let k_shear =
-            Self::compute_shear_stiffness(length, phi_y, phi_z, g * sec_as_z, g * sec_as_y);
+            Self::compute_shear_stiffness(flex_length, phi_y, phi_z, g * sec_as_z, g * sec_as_y);
 
         let nw = 12;
         let nd = 20;
@@ -356,6 +386,9 @@ impl FiberBeam {
 
         FiberBeam {
             length,
+            rigid_i,
+            rigid_j,
+            flex_length,
             nodes: [data.nodes[0], data.nodes[1]],
             gauss_points,
             density,
@@ -421,8 +454,9 @@ impl FiberBeam {
 
     /// 塑性化域考慮のファイバー要素（材端剛塑性ばねモデルと適合する
     /// ファイバーモデル化）。端部の塑性化領域（長さ `lp`）にファイバー断面を
-    /// 配置（積分点 ξ=∓1、重み Lp）し、中央 [Lp, L−Lp] は断面諸元
+    /// 配置（積分点 ξ=∓1、重み Lp）し、中央 [Lp, L'−Lp] は断面諸元
     /// （EA・EIy・EIz）による弾性剛性として厳密に B 積分する。
+    /// 剛域があるときの基準長 L' は可撓長（積分点は剛域フェイス）。
     /// 塑性化域考慮のファイバー要素の生成（材料強度の基準 `basis` を明示指定する版）。
     pub fn with_plastic_zone(
         data: &squid_n_core::model::ElementData,
@@ -447,11 +481,13 @@ impl FiberBeam {
         basis: crate::factory::StrengthBasis,
     ) -> Self {
         let mut fb = Self::new(data, model, basis);
-        let l = fb.length;
+        // 基準長は可撓長（剛域がなければ節点間長に等しい）。積分点 ξ=∓1 は
+        // 剛域フェイス、塑性化域 Lp も剛域フェイスから測る。
+        let l = fb.flex_length;
         if l <= 0.0 {
             return fb;
         }
-        // Lp は部材長の 45% までにクランプ（両端合計で全長を超えない）
+        // Lp は可撓長の 45% までにクランプ（両端合計で可撓長を超えない）
         let lp = clamp_plastic_zone(lp, l);
 
         let sec = data.section.and_then(|sid| model.sections.get(sid.index()));
@@ -506,8 +542,8 @@ impl FiberBeam {
             GaussPoint::new(1.0, w_end, sec_b, mats_b),
         ];
 
-        // 中央弾性部 [Lp, L−Lp] の剛性: B(ξ)ᵀ·diag(EA,EIy,EIz)·B(ξ) を
-        // 2点 Gauss（区間 [−h, h]、h = 1−2Lp/L）で厳密積分（被積分関数は ξ の2次）
+        // 中央弾性部 [Lp, L'−Lp] の剛性: B(ξ)ᵀ·diag(EA,EIy,EIz)·B(ξ) を
+        // 2点 Gauss（区間 [−h, h]、h = 1−2Lp/L'）で厳密積分（被積分関数は ξ の2次）
         let h = 1.0 - 2.0 * lp / l;
         let d_el = [e * area, e * iy, e * iz];
         let mut k_mid = LocalMat::zeros(12);
@@ -529,6 +565,15 @@ impl FiberBeam {
         }
         fb.k_mid = Some(k_mid);
         fb
+    }
+
+    /// 現在のトライアル変位（ローカル系・節点自由度）を可撓端自由度へ写した値。
+    ///
+    /// 断面ひずみ・中央弾性部・せん断ひずみ場はいずれも可撓部の変形で決まるため、
+    /// これらの評価には節点変位ではなく可撓端変位を用いる。剛域がなければ
+    /// `trial_disp` と一致する。
+    pub fn flex_disp(&self) -> [f64; 12] {
+        crate::rigid_arm::to_flex_disp(&self.trial_disp, self.rigid_i, self.rigid_j)
     }
 
     fn beam_global_dofs(&self, dof: &DofMap) -> SmallVec<[usize; 24]> {
@@ -607,7 +652,8 @@ impl ElementBehavior for FiberBeam {
 
     fn tangent_stiffness(&self, _state: &ElemState, _ctx: &Ctx) -> LocalMat {
         let mut k = LocalMat::zeros(12);
-        let l = self.length;
+        // 断面積分・せん断・中央弾性部は可撓長基準（剛域があれば節点間長より短い）。
+        let l = self.flex_length;
         if l <= 0.0 {
             return k;
         }
@@ -659,9 +705,14 @@ impl ElementBehavior for FiberBeam {
             }
         }
 
-        // ねじり剛性（Saint-Venant）を rx DOF (index 3, 9) に付加
-        if self.torsion_j > 0.0 && l > 0.0 {
-            let kt = self.g * self.torsion_j / l;
+        // 可撓端自由度 → 節点自由度（剛体アーム変換）。剛域なしでは恒等。
+        let mut k = crate::rigid_arm::transform_stiffness(&k, self.rigid_i, self.rigid_j);
+
+        // ねじり剛性（Saint-Venant）を rx DOF (index 3, 9) に付加。ねじりは断面積分と
+        // 連成しない独立項のため、弾性梁（4.1.4）と同じく節点間長基準 GJ/L とし、
+        // 剛域では増大させない（剛体アーム変換も rx 自由度には作用しない）。
+        if self.torsion_j > 0.0 && self.length > 0.0 {
+            let kt = self.g * self.torsion_j / self.length;
             k.set(3, 3, k.get(3, 3) + kt);
             k.set(9, 9, k.get(9, 9) + kt);
             k.set(3, 9, k.get(3, 9) - kt);
@@ -676,11 +727,13 @@ impl ElementBehavior for FiberBeam {
         let mut f = LocalVec {
             data: SmallVec::from_elem(0.0, 12),
         };
-        let l = self.length;
+        let l = self.flex_length;
         if l <= 0.0 {
             return f;
         }
         let half = l / 2.0;
+        // 可撓端の変位（剛体アームで節点変位から写す。剛域なしでは節点変位そのもの）。
+        let u_flex = self.flex_disp();
 
         for gp in &self.gauss_points {
             let (force, _) = Self::section_response_from_cache(gp);
@@ -696,38 +749,41 @@ impl ElementBehavior for FiberBeam {
             }
         }
 
-        // 塑性化域考慮モデル: 中央弾性部の内力（線形: K_mid·u）を加算
+        // 塑性化域考慮モデル: 中央弾性部の内力（線形: K_mid·u_flex）を加算
         if let Some(km) = &self.k_mid {
             for i in 0..12 {
                 let mut si = 0.0;
                 for j in 0..12 {
-                    si += km.get(i, j) * self.trial_disp[j];
+                    si += km.get(i, j) * u_flex[j];
                 }
                 f.data[i] += si;
             }
         }
 
-        // せん断ひずみ場の内力（線形弾性: K_shear·u。γ は剛体運動でゼロの
+        // せん断ひずみ場の内力（線形弾性: K_shear·u_flex。γ は剛体運動でゼロの
         // 客観的測度なので、trial 変位との積で偽内力は生じない）
         for i in 0..12 {
             let mut si = 0.0;
             for j in 0..12 {
-                si += self.k_shear.get(i, j) * self.trial_disp[j];
+                si += self.k_shear.get(i, j) * u_flex[j];
             }
             f.data[i] += si;
         }
 
-        // ねじり内力（Saint-Venant）
-        if self.torsion_j > 0.0 && l > 0.0 {
-            let kt = self.g * self.torsion_j / l;
+        // 可撓端の内力 → 節点自由度（剛体アームのモーメント寄与を含む）。
+        let f_flex: [f64; 12] = std::array::from_fn(|i| f.data[i]);
+        let mut f_node = crate::rigid_arm::to_node_force(&f_flex, self.rigid_i, self.rigid_j);
+
+        // ねじり内力（Saint-Venant。節点間長基準・剛域は作用しない）
+        if self.torsion_j > 0.0 && self.length > 0.0 {
+            let kt = self.g * self.torsion_j / self.length;
             let drx = self.trial_disp[3] - self.trial_disp[9];
-            f.data[3] += kt * drx;
-            f.data[9] -= kt * drx;
+            f_node[3] += kt * drx;
+            f_node[9] -= kt * drx;
         }
 
         // ローカル内力をグローバル系へ回転（committed/trial はローカル保持のため）
-        let f_local: [f64; 12] = std::array::from_fn(|i| f.data[i]);
-        let f_global = self.axis.rotate_to_global(&f_local);
+        let f_global = self.axis.rotate_to_global(&f_node);
         LocalVec {
             data: SmallVec::from_slice(&f_global),
         }
@@ -741,22 +797,18 @@ impl ElementBehavior for FiberBeam {
         for i in 0..12 {
             self.trial_disp[i] += du_local[i];
         }
-        let l = self.length;
+        let l = self.flex_length;
         if l <= 0.0 {
             return;
         }
+        // ひずみは可撓端の変位から評価する（剛域は剛体アームとして働く）。
+        let u = self.flex_disp();
 
         for gp in &mut self.gauss_points {
             let b = Self::compute_b_matrix(gp.xi, l, self.phi_y, self.phi_z);
-            let eps0 = b[0][0] * self.trial_disp[0] + b[0][6] * self.trial_disp[6];
-            let ky = b[1][2] * self.trial_disp[2]
-                + b[1][4] * self.trial_disp[4]
-                + b[1][8] * self.trial_disp[8]
-                + b[1][10] * self.trial_disp[10];
-            let kz = b[2][1] * self.trial_disp[1]
-                + b[2][5] * self.trial_disp[5]
-                + b[2][7] * self.trial_disp[7]
-                + b[2][11] * self.trial_disp[11];
+            let eps0 = b[0][0] * u[0] + b[0][6] * u[6];
+            let ky = b[1][2] * u[2] + b[1][4] * u[4] + b[1][8] * u[8] + b[1][10] * u[10];
+            let kz = b[2][1] * u[1] + b[2][5] * u[5] + b[2][7] * u[7] + b[2][11] * u[11];
             for (i, fiber) in gp.section.fibers.iter().enumerate() {
                 let eps = eps0 - kz * fiber.y + ky * fiber.z;
                 let (sigma, et) = gp.mats[i].trial(eps);
@@ -823,7 +875,12 @@ impl ElementBehavior for FiberBeam {
     }
 
     fn geometric_stiffness(&self, n: f64) -> LocalMat {
-        let l = self.length;
+        // 幾何剛性も弾性剛性と整合させる: 可撓長で組み、剛体アームで節点自由度へ写す
+        // （剛域があれば P-δ は可撓部でのみ生じる。弾性梁と同じ扱い）。
+        let l = self.flex_length;
+        if l < 1e-12 {
+            return LocalMat::zeros(12);
+        }
         let c = n / l;
         let mut kg = LocalMat::zeros(12);
         let mut s = |i: usize, j: usize, v: f64| {
@@ -852,8 +909,9 @@ impl ElementBehavior for FiberBeam {
         s(4, 4, c * 2.0 * l * l / 15.0);
         s(10, 10, c * 2.0 * l * l / 15.0);
         s(4, 10, -c * l * l / 30.0);
-        // 幾何剛性もグローバル系へ回転
-        self.axis.to_global(&kg)
+        // 剛体アーム変換 → グローバル系へ回転
+        let kg_node = crate::rigid_arm::transform_stiffness(&kg, self.rigid_i, self.rigid_j);
+        self.axis.to_global(&kg_node)
     }
 
     fn snapshot_state(&self) -> Box<dyn Any> {
@@ -948,11 +1006,12 @@ impl ElementBehavior for FiberBeam {
     /// 現在の `trial_disp`（ローカル系）から各ガウス点の曲率を復元し、曲率が
     /// 最大のガウス点（危険断面）についてファイバーひずみを集約する。
     fn ductility_probe(&self) -> Option<DuctilityProbe> {
-        let l = self.length;
+        let l = self.flex_length;
         if l <= 0.0 || self.gauss_points.is_empty() {
             return None;
         }
-        let td = &self.trial_disp;
+        // 曲率は可撓端変位から復元する（剛域は剛体アームとして働く）。
+        let td = self.flex_disp();
         // 曲率が最大のガウス点（危険断面）を選ぶ。
         let mut best: Option<(f64, usize, f64, f64, f64)> = None; // (|κ|, idx, eps0, ky, kz)
         for (gi, gp) in self.gauss_points.iter().enumerate() {

@@ -67,58 +67,15 @@ impl BeamElement {
         k
     }
 
+    /// 可撓端自由度の剛性を剛体アームで節点自由度へ写す
+    /// （運動学と符号規約は [`crate::rigid_arm`] を参照。ファイバー梁と共有する）。
     pub(crate) fn apply_rigid_zone_transform(
         &self,
         k_flex: &LocalMat,
         li: f64,
         lj: f64,
     ) -> LocalMat {
-        if li.abs() < 1e-12 && lj.abs() < 1e-12 {
-            return LocalMat {
-                n: k_flex.n,
-                data: k_flex.data.clone(),
-            };
-        }
-        // Tr: 12×12 — flex端自由度(i', j') → 節点自由度(i, j)
-        // 剛域腕の運動学 u_flex = u_node + θ_node × r。可撓端は i 端で節点から
-        // 内側へ +li·ex（j 端で −lj·ex）にあるため r_i=(+li,0,0), r_j=(−lj,0,0)。
-        // θ×r を成分展開すると（ex は局所 x）:
-        //   i端: ux_i'=ux_i, uy_i'=uy_i+li*rz_i, uz_i'=uz_i-li*ry_i, 回転は不変
-        //   j端: ux_j'=ux_j, uy_j'=uy_j-lj*rz_j, uz_j'=uz_j+lj*ry_j, 回転は不変
-        // （剛体回転で K·u≈0 となる符号。test_rigid_zone_preserves_rigid_body_rotation）
-        let mut tr = LocalMat::zeros(12);
-        for i in 0..12 {
-            tr.set(i, i, 1.0);
-        }
-        // i端 (index 0..5): uy(1)←rz(5), uz(2)←ry(4)
-        tr.set(1, 5, li);
-        tr.set(2, 4, -li);
-        // j端 (index 6..11): uy(7)←rz(11), uz(8)←ry(10)
-        tr.set(7, 11, -lj);
-        tr.set(8, 10, lj);
-
-        // K_node = Tr^T * K_flex * Tr
-        let mut tmp = LocalMat::zeros(12);
-        for i in 0..12 {
-            for j in 0..12 {
-                let mut s = 0.0;
-                for k in 0..12 {
-                    s += k_flex.get(i, k) * tr.get(k, j);
-                }
-                tmp.set(i, j, s);
-            }
-        }
-        let mut kn = LocalMat::zeros(12);
-        for i in 0..12 {
-            for j in 0..12 {
-                let mut s = 0.0;
-                for k in 0..12 {
-                    s += tr.get(k, i) * tmp.get(k, j);
-                }
-                kn.set(i, j, s);
-            }
-        }
-        kn
+        crate::rigid_arm::transform_stiffness(k_flex, li, lj)
     }
 
     /// 端部条件（剛接・ピン・半剛）を要素剛性へ反映し、12×12（節点自由度のみ）を返す。
@@ -245,7 +202,14 @@ impl BeamElement {
     }
 
     pub fn local_stiffness(&self) -> LocalMat {
-        let l_flex = self.length - self.rigid.length_i - self.rigid.length_j;
+        // 剛域長は可撓長が正に残る範囲へ解決する（合計が部材長以上の病的な入力は
+        // 剛域なしとして扱い、剛性ゼロの退化要素にしない。ファイバー梁と共通規則）。
+        let (li, lj) = crate::rigid_arm::resolve_lengths(
+            self.rigid.length_i,
+            self.rigid.length_j,
+            self.length,
+        );
+        let l_flex = self.length - li - lj;
         let k_raw = if l_flex > 1e-12 {
             let mut beam = self.clone();
             beam.length = l_flex;
@@ -265,8 +229,6 @@ impl BeamElement {
         let k_end = self.condense_end_springs(&k_raw);
 
         // 剛域変換で節点自由度へ
-        let li = self.rigid.length_i;
-        let lj = self.rigid.length_j;
         self.apply_rigid_zone_transform(&k_end, li, lj)
     }
 }
