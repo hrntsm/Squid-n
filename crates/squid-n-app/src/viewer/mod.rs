@@ -1150,7 +1150,7 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
         draw_cmq_diagram(&painter, app, &coords3, &proj);
     }
     if mode == ViewMode::Modeling {
-        modeling::draw_modeling(&painter, app, &pts);
+        modeling::draw_modeling(&painter, app, &pts, &coords3, &proj);
         // ホバー詳細（ViewCube ホバー中は除く。検定比図と同じ最近傍部材探索・
         // 8px 閾値で最寄り部材を求め、ヒットしたらモデル化の詳細を表示）。
         if cube_hover.is_none() {

@@ -22,7 +22,11 @@ use squid_n_core::section_shape::SectionShape;
 /// 壁厚が特定できない（断面未設定の暫定壁）場合は従来挙動を保つため
 /// 成立扱い（true）とする。式の原典実装は
 /// `squid-n-design-jp::wall_opening::is_seismic_wall`（検定側）と同一規定。
-pub(crate) fn wall_is_seismic(data: &ElementData, model: &Model) -> bool {
+///
+/// 3D モデル化ビュー（`squid-n-app`）でも、壁を独立した壁エレメント（耐震壁）として
+/// 描くか、周辺部材へ剛性算入されるフレーム内雑壁として描くかの判定に用いるため
+/// 公開する。
+pub fn wall_is_seismic(data: &ElementData, model: &Model) -> bool {
     let Some(t) = wall_thickness(data, model) else {
         return true;
     };

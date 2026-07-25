@@ -7,17 +7,29 @@
 //! 梁が材端集中塑性で、軸力変動する柱がファイバーになっているか）を視覚的に確認
 //! できるようにする。
 //!
+//! 形状だけでは分からないモデル化の要素も併せて描く。
+//! - **剛域**: 部材端の剛域長 `length_i/j` を材端の太い暗色バーで示す。
+//! - **材端集中塑性**: 材端の塑性ヒンジ位置に塗り円（●）を置く。
+//! - **ファイバー**: 塑性化域長 `plastic_zone`（Lp）が指定されていれば端部 Lp 区間を
+//!   ファイバー色で強調し中央を弾性で描く。未指定なら可とう長全体を分布塑性で描く。
+//! - **端部接合条件**: ピン（○）・半剛（□）を材端（剛域がある場合は剛域フェイス）に描く。
+//! - **壁エレメント**: 耐震壁は壁エレメント置換モデル（壁柱＋両端ピンの上下剛梁）の
+//!   「エ」状で描く。フレーム内雑壁（周辺部材へ剛性算入）は半透明ポリゴンで区別する。
+//! - **パネルゾーン**: モデル化されていれば接合部中心にマーカーを描く。
+//!
 //! 分類ロジックは要素生成（`squid_n_element::factory`）と同じ判定関数
-//! （[`resolve_force_regime`] / [`wall_side_column_release`]）を用いるため、
-//! 実際に解析へ渡る要素種別と一致する。
+//! （[`resolve_force_regime`] / [`wall_side_column_release`] / [`wall_is_seismic`]）を
+//! 用いるため、実際に解析へ渡る要素種別と一致する。
 
 use crate::app::App;
 use crate::theme;
 use squid_n_core::model::{ElementData, ElementKind, EndCondition, Model};
 use squid_n_element::factory::{resolve_force_regime, ResolvedRegime};
+use squid_n_element::misc_wall::wall_is_seismic;
 use squid_n_element::side_column::wall_side_column_release;
+use squid_n_element::wall_panel::wall_panel_geometry;
 
-use super::ModelingAnalysis;
+use super::{ModelingAnalysis, Projector};
 
 /// 部材の解析モデル分類。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -30,8 +42,12 @@ pub(super) enum ModelClass {
     Fiber,
     /// 耐震壁の側柱（面内両端ピン）。解析種別に依らない。
     SideColumnPin,
-    /// 壁エレメント（壁パネル置換モデル。増分解析ではせん断降伏を考慮）。
+    /// 壁エレメント（耐震壁。壁エレメント置換モデル）。増分解析ではせん断降伏を考慮。
     Wall,
+    /// フレーム内雑壁（耐震壁不成立。剛性を周辺の柱・梁へ算入する）。
+    WallMisc,
+    /// パネルゾーン（柱梁接合部パネル）。
+    Panel,
     /// トラス／軸材（ブレースなど軸剛性のみ）。
     Truss,
     /// バネ・免震・ダンパー等その他の要素。
@@ -53,6 +69,10 @@ impl ModelClass {
             ModelClass::SideColumnPin => theme::HILITE_PURPLE,
             // 壁エレメント＝青
             ModelClass::Wall => Color32::from_rgb(0x25, 0x63, 0xEB),
+            // 雑壁＝淡い暖色（周辺部材へ剛性算入。構造壁エレメントと区別）
+            ModelClass::WallMisc => theme::SECONDARY_AMBER,
+            // パネルゾーン＝藍
+            ModelClass::Panel => Color32::from_rgb(0x6D, 0x28, 0xD9),
             // トラス／軸材＝ティール
             ModelClass::Truss => Color32::from_rgb(0x0D, 0x94, 0x88),
             // その他＝淡いグレー
@@ -67,7 +87,9 @@ impl ModelClass {
             ModelClass::ConcentratedPlastic => "材端集中塑性",
             ModelClass::Fiber => "ファイバー(分布塑性)",
             ModelClass::SideColumnPin => "側柱(面内両端ピン)",
-            ModelClass::Wall => "壁エレメント",
+            ModelClass::Wall => "壁エレメント(エ型)",
+            ModelClass::WallMisc => "雑壁(周辺部材へ剛性算入)",
+            ModelClass::Panel => "パネルゾーン",
             ModelClass::Truss => "トラス/軸材",
             ModelClass::Other => "その他(バネ/免震/ダンパー)",
         }
@@ -114,56 +136,68 @@ pub(super) fn classify(
             ModelingAnalysis::Static => ModelClass::Elastic,
             ModelingAnalysis::Incremental => ModelClass::ConcentratedPlastic,
         },
-        ElementKind::Wall => ModelClass::Wall,
+        // 壁は耐震壁成立なら壁エレメント、不成立なら雑壁（周辺部材へ剛性算入）。
+        ElementKind::Wall => {
+            if wall_is_seismic(data, model) {
+                ModelClass::Wall
+            } else {
+                ModelClass::WallMisc
+            }
+        }
+        ElementKind::PanelZone => ModelClass::Panel,
         ElementKind::Brace { .. } => ModelClass::Truss,
-        // 面要素・接合部・バネ・免震・ダンパーなど。
+        // 面要素・バネ・免震・ダンパーなど。
         ElementKind::Shell
-        | ElementKind::PanelZone
         | ElementKind::NodalSpring
         | ElementKind::Isolator
         | ElementKind::Damper => ModelClass::Other,
     }
 }
 
-/// 端部ピンマーカー（節点から材軸方向へ少し内側に置いた白抜きの円）を描く。
-/// `node` は端部の節点スクリーン座標、`toward` は他端側の点（内側方向の決定に使う）。
-fn draw_pin_marker(
-    painter: &egui::Painter,
-    node: egui::Pos2,
-    toward: egui::Pos2,
-    color: egui::Color32,
-) {
-    const OFFSET: f32 = 9.0;
-    const RADIUS: f32 = 4.0;
-    let dir = toward - node;
-    let len = dir.length();
-    let center = if len > 1e-3 {
-        egui::pos2(node.x + dir.x / len * OFFSET, node.y + dir.y / len * OFFSET)
-    } else {
-        node
-    };
-    // 白抜きの円（内部は背景色で塗り、輪郭を色付き）＝ピン（回転自由）の慣用記号。
-    painter.circle_filled(center, RADIUS, theme::WHITE);
-    painter.circle_stroke(center, RADIUS, egui::Stroke::new(1.5_f32, color));
+// ===== 描画ヘルパ =====
+
+/// スクリーン座標の線形補間。
+fn lerp(a: egui::Pos2, b: egui::Pos2, t: f32) -> egui::Pos2 {
+    egui::pos2(a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t)
 }
 
-/// 端部半剛（`SemiRigid`）マーカー（節点内側に置いた小さな正方形）を描く。
-fn draw_semi_rigid_marker(
+/// 3D 2 点間の距離。
+fn len3(a: [f64; 3], b: [f64; 3]) -> f64 {
+    ((b[0] - a[0]).powi(2) + (b[1] - a[1]).powi(2) + (b[2] - a[2]).powi(2)).sqrt()
+}
+
+/// マーカー中心（節点/材端から材軸方向へ少し内側へ寄せた点）。
+fn inward(at: egui::Pos2, toward: egui::Pos2, off: f32) -> egui::Pos2 {
+    let d = toward - at;
+    let len = d.length();
+    if len > 1e-3 {
+        egui::pos2(at.x + d.x / len * off, at.y + d.y / len * off)
+    } else {
+        at
+    }
+}
+
+/// 端部ピンマーカー（白抜きの円）＝回転自由（ピン）の慣用記号。
+fn draw_pin_marker(
     painter: &egui::Painter,
-    node: egui::Pos2,
+    at: egui::Pos2,
     toward: egui::Pos2,
     color: egui::Color32,
 ) {
-    const OFFSET: f32 = 9.0;
-    const HALF: f32 = 3.5;
-    let dir = toward - node;
-    let len = dir.length();
-    let center = if len > 1e-3 {
-        egui::pos2(node.x + dir.x / len * OFFSET, node.y + dir.y / len * OFFSET)
-    } else {
-        node
-    };
-    let rect = egui::Rect::from_center_size(center, egui::vec2(HALF * 2.0, HALF * 2.0));
+    let c = inward(at, toward, 9.0);
+    painter.circle_filled(c, 4.0, theme::WHITE);
+    painter.circle_stroke(c, 4.0, egui::Stroke::new(1.5_f32, color));
+}
+
+/// 端部半剛（`SemiRigid`）マーカー（小さな正方形）。
+fn draw_semi_rigid_marker(
+    painter: &egui::Painter,
+    at: egui::Pos2,
+    toward: egui::Pos2,
+    color: egui::Color32,
+) {
+    let c = inward(at, toward, 9.0);
+    let rect = egui::Rect::from_center_size(c, egui::vec2(7.0, 7.0));
     painter.rect_filled(rect, 1.0, theme::WHITE);
     painter.rect_stroke(
         rect,
@@ -173,83 +207,297 @@ fn draw_semi_rigid_marker(
     );
 }
 
-/// モデル化図を描く。`pts` は `viewer_panel` で計算済みの節点スクリーン座標
-/// （`app.model.nodes` と同じ順序）。基本形状（節点・部材線）の上に、解析モデル
-/// 分類ごとの色で部材を塗り、端部の接合条件（ピン・半剛）を記号で重ねる。
-pub(super) fn draw_modeling(painter: &egui::Painter, app: &App, pts: &[egui::Pos2]) {
+/// 材端集中塑性の塑性ヒンジマーカー（塗り円 ●）。
+fn draw_hinge_marker(
+    painter: &egui::Painter,
+    at: egui::Pos2,
+    toward: egui::Pos2,
+    color: egui::Color32,
+) {
+    let c = inward(at, toward, 9.0);
+    painter.circle_filled(c, 4.0, color);
+}
+
+/// 剛域バー（材端の剛域長区間を太い暗色線で示す）。
+fn draw_rigid_zone(painter: &egui::Painter, a: egui::Pos2, b: egui::Pos2) {
+    painter.line_segment(
+        [a, b],
+        egui::Stroke::new(6.0_f32, theme::translucent(theme::GRAY_900, 150)),
+    );
+}
+
+/// 剛域を考慮した可とう区間の端点フラクション（材軸パラメータ s∈[0,1] の両端）。
+/// 剛域長が可とう長を食い尽くさないよう各端 0.45 で頭打ちにする。
+fn flexible_span(elem: &ElementData, l: f64) -> (f32, f32) {
+    if l <= 1e-9 {
+        return (0.0, 1.0);
+    }
+    let fi = (elem.rigid_zone.length_i.max(0.0) / l).clamp(0.0, 0.45) as f32;
+    let fj = (elem.rigid_zone.length_j.max(0.0) / l).clamp(0.0, 0.45) as f32;
+    (fi, 1.0 - fj)
+}
+
+/// モデル化図を描く。`pts` は節点スクリーン座標、`coords3` は節点 3D 座標
+/// （いずれも `app.model.nodes` と同じ順序）、`proj` は投影文脈。基本形状の上に、
+/// 解析モデル分類ごとの色で部材を塗り、剛域・塑性ヒンジ・ファイバー域・端部接合条件
+/// などモデル化の要素を記号で重ねる。
+pub(super) fn draw_modeling(
+    painter: &egui::Painter,
+    app: &App,
+    pts: &[egui::Pos2],
+    coords3: &[[f64; 3]],
+    proj: &Projector,
+) {
     let model = &app.model;
     let analysis = app.modeling_analysis;
 
-    // 凡例に載せるため、実際に現れた分類を出現順で集める。
+    // 凡例に載せる情報を収集する。
     let mut present: Vec<ModelClass> = Vec::new();
-    let mut any_pin = false;
-    let mut any_semi = false;
+    let mut sym = Symbols::default();
 
     for elem in &model.elements {
         let class = classify(elem, model, analysis);
-        let color = class.color();
         if !present.contains(&class) {
             present.push(class);
         }
 
-        // 壁（面要素）は半透明ポリゴン＋色付き輪郭で描く。
-        if elem.kind == ElementKind::Wall && elem.nodes.len() >= 3 {
-            let poly: Vec<egui::Pos2> = elem
-                .nodes
-                .iter()
-                .filter_map(|n| {
-                    let idx = n.index();
-                    (idx < pts.len()).then(|| pts[idx])
-                })
-                .collect();
-            if poly.len() == elem.nodes.len() {
-                painter.add(egui::Shape::convex_polygon(
-                    poly,
-                    theme::translucent(color, 45),
-                    egui::Stroke::new(2.0_f32, color),
-                ));
+        match class {
+            ModelClass::Wall => {
+                draw_wall_element(painter, model, pts, proj, elem, class.color(), &mut sym)
             }
-            continue;
+            ModelClass::WallMisc => draw_wall_polygon(painter, pts, elem, class.color(), true),
+            ModelClass::Panel => draw_panel_zone(painter, pts, elem, class.color()),
+            _ => draw_line_member(painter, pts, coords3, elem, class, &mut sym),
         }
+    }
 
-        if elem.nodes.len() < 2 {
-            continue;
-        }
-        let n0 = elem.nodes[0].index();
-        let n1 = elem.nodes[1].index();
-        if n0 >= pts.len() || n1 >= pts.len() {
-            continue;
-        }
-        let (p0, p1) = (pts[n0], pts[n1]);
+    draw_legend(painter, analysis, &present, &sym);
+}
 
-        // 線材: 両端を結ぶ線を分類色で描く。
-        painter.line_segment([p0, p1], egui::Stroke::new(3.0_f32, color));
+/// 記号凡例に載せるフラグ（描画中に実際に現れた記号のみ凡例へ出す）。
+#[derive(Default)]
+struct Symbols {
+    pin: bool,
+    semi: bool,
+    hinge: bool,
+    rigid: bool,
+    fiber_lp: bool,
+}
 
-        // 端部の接合条件を記号で重ねる。
-        // - 側柱は面内両端ピンのため、両端にピンマーカーを描く。
-        // - それ以外は入力された端条件（Pinned / SemiRigid）を端ごとに描く。
-        if class == ModelClass::SideColumnPin {
-            draw_pin_marker(painter, p0, p1, color);
-            draw_pin_marker(painter, p1, p0, color);
-            any_pin = true;
-        } else {
-            for (end_idx, near, far) in [(0usize, p0, p1), (1usize, p1, p0)] {
-                match elem.end_cond[end_idx] {
-                    EndCondition::Pinned => {
-                        draw_pin_marker(painter, near, far, color);
-                        any_pin = true;
-                    }
-                    EndCondition::SemiRigid { .. } => {
-                        draw_semi_rigid_marker(painter, near, far, color);
-                        any_semi = true;
-                    }
-                    EndCondition::Fixed => {}
+/// 線材（梁・柱・ファイバー・側柱）のモデル化を描く。
+fn draw_line_member(
+    painter: &egui::Painter,
+    pts: &[egui::Pos2],
+    coords3: &[[f64; 3]],
+    elem: &ElementData,
+    class: ModelClass,
+    sym: &mut Symbols,
+) {
+    if elem.nodes.len() < 2 {
+        return;
+    }
+    let n0 = elem.nodes[0].index();
+    let n1 = elem.nodes[1].index();
+    if n0 >= pts.len() || n1 >= pts.len() || n0 >= coords3.len() || n1 >= coords3.len() {
+        return;
+    }
+    let (p0, p1) = (pts[n0], pts[n1]);
+    let l = len3(coords3[n0], coords3[n1]);
+    let (s_i, s_j) = flexible_span(elem, l);
+    let color = class.color();
+
+    // 可とう区間の端点（剛域フェイス）。
+    let fa = lerp(p0, p1, s_i);
+    let fb = lerp(p0, p1, s_j);
+
+    // ファイバーで塑性化域 Lp 指定がある場合、可とう区間中央は弾性のため基準線を
+    // 中立色にし、端部 Lp 区間だけをファイバー色で強調する。
+    let lp_frac = match (class, elem.plastic_zone) {
+        (ModelClass::Fiber, Some(lp)) if l > 1e-9 => Some((lp / l).clamp(0.0, 0.45) as f32),
+        _ => None,
+    };
+    let base_color = if lp_frac.is_some() {
+        ModelClass::Elastic.color()
+    } else {
+        color
+    };
+
+    // 可とう区間の基準線。
+    painter.line_segment([fa, fb], egui::Stroke::new(3.0_f32, base_color));
+
+    // 剛域バー（材端）。
+    if s_i > 0.0 {
+        draw_rigid_zone(painter, p0, fa);
+        sym.rigid = true;
+    }
+    if s_j < 1.0 {
+        draw_rigid_zone(painter, fb, p1);
+        sym.rigid = true;
+    }
+
+    // ファイバーの塑性化域（端部 Lp 区間）を強調する。
+    if let Some(lp) = lp_frac {
+        let span = s_j - s_i;
+        let cap = (span * 0.5).max(0.0);
+        let lp = lp.min(cap);
+        let fiber_stroke = egui::Stroke::new(5.0_f32, color);
+        painter.line_segment([fa, lerp(p0, p1, s_i + lp)], fiber_stroke);
+        painter.line_segment([lerp(p0, p1, s_j - lp), fb], fiber_stroke);
+        sym.fiber_lp = true;
+    }
+
+    // 端部の接合条件・塑性ヒンジ。側柱は面内両端ピンのため両端に○。
+    if class == ModelClass::SideColumnPin {
+        draw_pin_marker(painter, fa, fb, color);
+        draw_pin_marker(painter, fb, fa, color);
+        sym.pin = true;
+        return;
+    }
+    for (end_idx, near, far) in [(0usize, fa, fb), (1usize, fb, fa)] {
+        match elem.end_cond[end_idx] {
+            EndCondition::Pinned => {
+                draw_pin_marker(painter, near, far, color);
+                sym.pin = true;
+            }
+            EndCondition::SemiRigid { .. } => {
+                draw_semi_rigid_marker(painter, near, far, color);
+                sym.semi = true;
+            }
+            // 剛接端: 材端集中塑性なら塑性ヒンジ位置に ● を置く。
+            EndCondition::Fixed => {
+                if class == ModelClass::ConcentratedPlastic {
+                    draw_hinge_marker(painter, near, far, color);
+                    sym.hinge = true;
                 }
             }
         }
     }
+}
 
-    draw_legend(painter, analysis, &present, any_pin, any_semi);
+/// 壁エレメント（耐震壁）を壁エレメント置換モデルの「エ」状で描く。
+///
+/// 壁柱（上下剛梁の中点を結ぶ仮想中央柱）を鉛直線で、上下の剛梁を暗色の太線で描き、
+/// 四隅（剛梁端＝ピン接合）に○を置く。幾何を取れない場合はポリゴンへフォールバックする。
+fn draw_wall_element(
+    painter: &egui::Painter,
+    model: &Model,
+    pts: &[egui::Pos2],
+    proj: &Projector,
+    elem: &ElementData,
+    color: egui::Color32,
+    sym: &mut Symbols,
+) {
+    let Some(g) = wall_panel_geometry(elem, model) else {
+        draw_wall_polygon(painter, pts, elem, color, false);
+        return;
+    };
+    let (b0, b1) = (g.bottom[0].index(), g.bottom[1].index());
+    let (t0, t1) = (g.top[0].index(), g.top[1].index());
+    if [b0, b1, t0, t1].iter().any(|&i| i >= pts.len()) {
+        draw_wall_polygon(painter, pts, elem, color, false);
+        return;
+    }
+    let (pb0, pb1, pt0, pt1) = (pts[b0], pts[b1], pts[t0], pts[t1]);
+    let bc = proj.project(g.bottom_center);
+    let tc = proj.project(g.top_center);
+
+    // 上下の剛梁（暗色の太線）。
+    let rigid_stroke = egui::Stroke::new(5.0_f32, theme::translucent(theme::GRAY_900, 150));
+    painter.line_segment([pb0, pb1], rigid_stroke);
+    painter.line_segment([pt0, pt1], rigid_stroke);
+    sym.rigid = true;
+
+    // 壁柱（中央鉛直材）。
+    painter.line_segment([bc, tc], egui::Stroke::new(3.0_f32, color));
+
+    // 四隅のピン（剛梁端＝ピン接合）。剛梁の他端側へ寄せて描く。
+    draw_pin_marker(painter, pb0, pb1, color);
+    draw_pin_marker(painter, pb1, pb0, color);
+    draw_pin_marker(painter, pt0, pt1, color);
+    draw_pin_marker(painter, pt1, pt0, color);
+    sym.pin = true;
+}
+
+/// 壁を半透明ポリゴンで描く（雑壁、または壁エレメント幾何を取れない壁のフォールバック）。
+/// `dashed` が真のとき輪郭を破線にして雑壁であることを示す。
+fn draw_wall_polygon(
+    painter: &egui::Painter,
+    pts: &[egui::Pos2],
+    elem: &ElementData,
+    color: egui::Color32,
+    dashed: bool,
+) {
+    if elem.nodes.len() < 3 {
+        return;
+    }
+    let poly: Vec<egui::Pos2> = elem
+        .nodes
+        .iter()
+        .filter_map(|n| {
+            let idx = n.index();
+            (idx < pts.len()).then(|| pts[idx])
+        })
+        .collect();
+    if poly.len() != elem.nodes.len() {
+        return;
+    }
+    let stroke = egui::Stroke::new(1.5_f32, color);
+    if dashed {
+        // 塗りのみ描き、輪郭は破線で重ねる（雑壁＝構造壁エレメントでないことを示す）。
+        painter.add(egui::Shape::convex_polygon(
+            poly.clone(),
+            theme::translucent(color, 35),
+            egui::Stroke::NONE,
+        ));
+        let mut ring = poly;
+        ring.push(ring[0]);
+        painter.extend(egui::Shape::dashed_line(&ring, stroke, 6.0, 4.0));
+    } else {
+        painter.add(egui::Shape::convex_polygon(
+            poly,
+            theme::translucent(color, 45),
+            stroke,
+        ));
+    }
+}
+
+/// パネルゾーン（柱梁接合部パネル）を接合部中心のマーカー（塗りひし形）で描く。
+fn draw_panel_zone(
+    painter: &egui::Painter,
+    pts: &[egui::Pos2],
+    elem: &ElementData,
+    color: egui::Color32,
+) {
+    let Some(center) = elem.nodes.first().map(|n| n.index()) else {
+        return;
+    };
+    if center >= pts.len() {
+        return;
+    }
+    let c = pts[center];
+    // 接続節点へ細線を引き、接合部パネルであることを示す。
+    for n in elem.nodes.iter().skip(1) {
+        let i = n.index();
+        if i < pts.len() {
+            painter.line_segment(
+                [c, lerp(c, pts[i], 0.35)],
+                egui::Stroke::new(1.5_f32, theme::translucent(color, 160)),
+            );
+        }
+    }
+    // 中心にひし形マーカー。
+    const R: f32 = 7.0;
+    let diamond = [
+        egui::pos2(c.x, c.y - R),
+        egui::pos2(c.x + R, c.y),
+        egui::pos2(c.x, c.y + R),
+        egui::pos2(c.x - R, c.y),
+    ];
+    painter.add(egui::Shape::convex_polygon(
+        diamond.to_vec(),
+        theme::translucent(color, 90),
+        egui::Stroke::new(1.5_f32, color),
+    ));
 }
 
 /// モデル化図の凡例をビュー左上に描く（支持条件凡例は左下のため衝突しない）。
@@ -257,8 +505,7 @@ fn draw_legend(
     painter: &egui::Painter,
     analysis: ModelingAnalysis,
     present: &[ModelClass],
-    any_pin: bool,
-    any_semi: bool,
+    sym: &Symbols,
 ) {
     let rect = painter.clip_rect();
     let x0 = rect.min.x + 10.0;
@@ -280,7 +527,6 @@ fn draw_legend(
     y += LINE_H + 2.0;
 
     for class in present {
-        // 色サンプル（短い線分）
         painter.line_segment(
             [
                 egui::pos2(x0, y + FONT * 0.5),
@@ -298,29 +544,39 @@ fn draw_legend(
         y += LINE_H;
     }
 
-    // 記号の凡例（現れた場合のみ）
-    if any_pin {
-        let cx = x0 + 10.0;
-        let cy = y + FONT * 0.5;
-        painter.circle_filled(egui::pos2(cx, cy), 4.0, theme::WHITE);
-        painter.circle_stroke(
-            egui::pos2(cx, cy),
-            4.0,
-            egui::Stroke::new(1.5_f32, theme::GRAY_600),
-        );
+    // 記号の凡例（実際に現れた記号のみ）。
+    let text = |painter: &egui::Painter, y: f32, s: &str| {
         painter.text(
             egui::pos2(x0 + 28.0, y),
             egui::Align2::LEFT_TOP,
-            "○ 端部ピン（回転自由）",
+            s,
             egui::FontId::proportional(FONT),
             theme::GRAY_600,
         );
+    };
+    if sym.rigid {
+        painter.line_segment(
+            [
+                egui::pos2(x0, y + FONT * 0.5),
+                egui::pos2(x0 + 20.0, y + FONT * 0.5),
+            ],
+            egui::Stroke::new(6.0_f32, theme::translucent(theme::GRAY_900, 150)),
+        );
+        text(painter, y, "剛域");
         y += LINE_H;
     }
-    if any_semi {
-        let cx = x0 + 10.0;
-        let cy = y + FONT * 0.5;
-        let r = egui::Rect::from_center_size(egui::pos2(cx, cy), egui::vec2(7.0, 7.0));
+    if sym.pin {
+        let c = egui::pos2(x0 + 10.0, y + FONT * 0.5);
+        painter.circle_filled(c, 4.0, theme::WHITE);
+        painter.circle_stroke(c, 4.0, egui::Stroke::new(1.5_f32, theme::GRAY_600));
+        text(painter, y, "○ 端部ピン（回転自由）");
+        y += LINE_H;
+    }
+    if sym.semi {
+        let r = egui::Rect::from_center_size(
+            egui::pos2(x0 + 10.0, y + FONT * 0.5),
+            egui::vec2(7.0, 7.0),
+        );
         painter.rect_filled(r, 1.0, theme::WHITE);
         painter.rect_stroke(
             r,
@@ -328,17 +584,32 @@ fn draw_legend(
             egui::Stroke::new(1.5_f32, theme::GRAY_600),
             egui::StrokeKind::Middle,
         );
-        painter.text(
-            egui::pos2(x0 + 28.0, y),
-            egui::Align2::LEFT_TOP,
-            "□ 端部半剛（回転ばね）",
-            egui::FontId::proportional(FONT),
-            theme::GRAY_600,
+        text(painter, y, "□ 端部半剛（回転ばね）");
+        y += LINE_H;
+    }
+    if sym.hinge {
+        painter.circle_filled(
+            egui::pos2(x0 + 10.0, y + FONT * 0.5),
+            4.0,
+            ModelClass::ConcentratedPlastic.color(),
         );
+        text(painter, y, "● 材端塑性ヒンジ");
+        y += LINE_H;
+    }
+    if sym.fiber_lp {
+        painter.line_segment(
+            [
+                egui::pos2(x0, y + FONT * 0.5),
+                egui::pos2(x0 + 20.0, y + FONT * 0.5),
+            ],
+            egui::Stroke::new(5.0_f32, ModelClass::Fiber.color()),
+        );
+        text(painter, y, "太線 = ファイバー塑性化域 Lp");
     }
 }
 
-/// モデル化図のホバー詳細ツールチップ。部材の解析モデル分類と端条件を表示する。
+/// モデル化図のホバー詳細ツールチップ。部材の解析モデル分類・端条件・剛域・
+/// 塑性化域などのモデル化情報を表示する。
 pub(super) fn show_modeling_tooltip(ui: &egui::Ui, app: &App, elem_id: squid_n_core::ids::ElemId) {
     let Some(elem) = app.model.elements.iter().find(|e| e.id == elem_id) else {
         return;
@@ -360,14 +631,27 @@ pub(super) fn show_modeling_tooltip(ui: &egui::Ui, app: &App, elem_id: squid_n_c
         |ui| {
             ui.label(format!("部材 #{}", elem_id.0));
             ui.colored_label(class.color(), class.label());
-            if matches!(elem.kind, ElementKind::Beam | ElementKind::Fiber)
-                && wall_side_column_release(elem, &app.model).is_none()
-            {
+            let is_frame_line = matches!(elem.kind, ElementKind::Beam | ElementKind::Fiber)
+                && wall_side_column_release(elem, &app.model).is_none();
+            if is_frame_line {
                 ui.label(format!(
                     "端条件: i={} / j={}",
                     end_label(elem.end_cond[0]),
                     end_label(elem.end_cond[1])
                 ));
+                let rz = &elem.rigid_zone;
+                if rz.length_i > 0.0 || rz.length_j > 0.0 {
+                    ui.label(format!(
+                        "剛域長: i={:.0} / j={:.0} mm",
+                        rz.length_i, rz.length_j
+                    ));
+                }
+                if class == ModelClass::Fiber {
+                    match elem.plastic_zone {
+                        Some(lp) => ui.label(format!("塑性化域 Lp={:.0} mm（端部）／中央弾性", lp)),
+                        None => ui.label("ファイバー分布塑性（可とう長全体）"),
+                    };
+                }
             }
         },
     );
@@ -377,8 +661,9 @@ pub(super) fn show_modeling_tooltip(ui: &egui::Ui, app: &App, elem_id: squid_n_c
 mod tests {
     use super::*;
     use smallvec::smallvec;
-    use squid_n_core::ids::{ElemId, NodeId};
+    use squid_n_core::ids::{ElemId, MaterialId, NodeId, SectionId};
     use squid_n_core::model::{ForceRegime, LocalAxis, RigidZone};
+    use squid_n_core::section_shape::SectionShape;
 
     /// 指定した種別・フォースレジームの 2 節点部材を作る（テスト用の最小構成）。
     fn elem(kind: ElementKind, regime: ForceRegime) -> ElementData {
@@ -432,19 +717,11 @@ mod tests {
         );
     }
 
-    /// 壁・ブレース・その他要素の分類は解析種別に依らず一定。
+    /// ブレース・パネルゾーン・その他要素の分類は解析種別に依らず一定。
     #[test]
-    fn test_wall_brace_other_classes() {
+    fn test_brace_panel_other_classes() {
         let model = Model::default();
         for analysis in [ModelingAnalysis::Static, ModelingAnalysis::Incremental] {
-            assert_eq!(
-                classify(
-                    &elem(ElementKind::Wall, ForceRegime::Auto),
-                    &model,
-                    analysis
-                ),
-                ModelClass::Wall
-            );
             assert_eq!(
                 classify(
                     &elem(
@@ -457,6 +734,14 @@ mod tests {
                     analysis
                 ),
                 ModelClass::Truss
+            );
+            assert_eq!(
+                classify(
+                    &elem(ElementKind::PanelZone, ForceRegime::Auto),
+                    &model,
+                    analysis
+                ),
+                ModelClass::Panel
             );
             assert_eq!(
                 classify(
@@ -481,6 +766,43 @@ mod tests {
         assert_eq!(
             classify(&e, &model, ModelingAnalysis::Incremental),
             ModelClass::ConcentratedPlastic
+        );
+    }
+
+    /// 壁は耐震壁成立で壁エレメント、板厚 120mm 未満（耐震壁不成立）で雑壁。
+    #[test]
+    fn test_wall_seismic_vs_misc() {
+        let mut wall = elem(ElementKind::Wall, ForceRegime::Auto);
+        wall.nodes = smallvec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)];
+        wall.section = Some(SectionId(0));
+        wall.material = Some(MaterialId(0));
+
+        // 板厚 150mm → 耐震壁成立 → 壁エレメント。
+        let seismic = SectionShape::RcWall {
+            thickness: 150.0,
+            ps: 0.0025,
+        };
+        let model_seismic = Model {
+            sections: vec![seismic.to_section(SectionId(0), "W150".into())],
+            ..Default::default()
+        };
+        assert_eq!(
+            classify(&wall, &model_seismic, ModelingAnalysis::Static),
+            ModelClass::Wall
+        );
+
+        // 板厚 100mm → 耐震壁不成立 → 雑壁。
+        let misc = SectionShape::RcWall {
+            thickness: 100.0,
+            ps: 0.0025,
+        };
+        let model_misc = Model {
+            sections: vec![misc.to_section(SectionId(0), "W100".into())],
+            ..Default::default()
+        };
+        assert_eq!(
+            classify(&wall, &model_misc, ModelingAnalysis::Static),
+            ModelClass::WallMisc
         );
     }
 }
