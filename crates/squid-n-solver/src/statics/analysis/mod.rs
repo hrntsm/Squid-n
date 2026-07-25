@@ -27,8 +27,10 @@ mod wind;
 pub use config::{AiMode, SeismicCfg, SeismicDir, WindStaticCfg};
 pub(crate) use seismic::distribute_pi_over_diaphragms;
 pub use seismic::{
-    build_seismic_load_case_from_model, building_height_mm, ground_elevation, steel_height_ratio,
+    build_seismic_load_case_from_model, building_height_mm, ground_elevation,
+    seismic_distribution_for_model, steel_height_ratio,
 };
+pub use wind::{wind_precalc_for_model, WindPrecalc};
 
 /// 部材荷重の強度を `factor` 倍した複製を返す（荷重組合せの線形結合用）。
 /// `dir`・作用区間はそのままに、集中荷重 `p` と分布強度 `w1,w2` のみを倍する。
