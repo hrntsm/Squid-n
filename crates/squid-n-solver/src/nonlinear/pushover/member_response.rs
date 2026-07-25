@@ -60,7 +60,12 @@ pub(crate) fn compute_member_response(
     dofmap: &DofMap,
     behaviors: &[Box<dyn ElementBehavior>],
     total_disp: &[f64],
+    dir: crate::analysis::SeismicDir,
 ) -> Vec<PushoverMemberResponse> {
+    let dir_idx = match dir {
+        crate::analysis::SeismicDir::X => 0usize,
+        crate::analysis::SeismicDir::Y => 1usize,
+    };
     let state = ElemState::default();
     let ctx = Ctx { model };
     let mut out = Vec::with_capacity(model.elements.len());
@@ -91,6 +96,9 @@ pub(crate) fn compute_member_response(
         let shear_weak = dot3(f_i, ez).abs().max(dot3(f_j, ez).abs());
         let axial = axial_compression(f_i, f_j, ex);
         let rp = member_rp_angle(model, dofmap, total_disp, elem);
+        // 加力方向の水平力（βu の分子集計用）。材端力の載荷方向成分は釣合いにより
+        // 両端で符号が反転するため、絶対値の大きい方を部材の代表値とする。
+        let horizontal_force = f_i[dir_idx].abs().max(f_j[dir_idx].abs());
 
         out.push(PushoverMemberResponse {
             elem: elem.id,
@@ -100,6 +108,7 @@ pub(crate) fn compute_member_response(
             shear_weak,
             axial,
             rp,
+            horizontal_force,
         });
     }
     out

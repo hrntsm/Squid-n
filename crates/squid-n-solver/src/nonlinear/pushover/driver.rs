@@ -537,7 +537,7 @@ pub fn pushover_analysis_recording(
     let member_response = if steps.is_empty() {
         Vec::new()
     } else {
-        compute_member_response(model, dofmap, &behaviors, &total_disp)
+        compute_member_response(model, dofmap, &behaviors, &total_disp, dir)
     };
     Ok(PushoverResult {
         steps,
