@@ -203,7 +203,7 @@ pub enum LoadTerm {
 /// - `Beam`: 梁（強軸曲げ＋せん断。鋼は横座屈を考慮した fb）
 /// - `Column`: 柱（軸力＋二軸曲げの複合検定＋せん断）
 /// - `Brace`: ブレース（軸力のみ。圧縮は座屈を考慮した fc）
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum MemberKind {
     Beam,
     Column,

@@ -1402,6 +1402,49 @@ fn steel_max_thickness(shape: &squid_n_core::section_shape::SectionShape) -> f64
     }
 }
 
+/// 幅厚比ランク表の行（柱／梁）を部材から選ぶ。柱以外（梁・ブレース）は梁の行を用いる。
+pub(crate) fn steel_member_use_of(
+    elem: &squid_n_core::model::ElementData,
+    model: &squid_n_core::model::Model,
+) -> squid_n_design_jp::secondary::width_thickness::SteelMemberUse {
+    use squid_n_design_jp::secondary::width_thickness::SteelMemberUse;
+    match member_kind_of(elem, model) {
+        squid_n_design_jp::MemberKind::Column => SteelMemberUse::Column,
+        _ => SteelMemberUse::Beam,
+    }
+}
+
+/// 鋼断面の幅厚比から部材ランク（FA〜FD）を判定する。
+///
+/// 構造規定の幅厚比表（部材種別×断面×部位×鋼種級。
+/// [`squid_n_design_jp::secondary::width_thickness::s_member_rank_by_kihon`]）を
+/// 優先し、表の対象外形状（溝形・T形・山形等）は単一幅厚比法
+/// （[`squid_n_design_jp::secondary::member_rank::s_member_rank_scaled`]）へ
+/// フォールバックする。F 値は材料名の前方一致で引き（例 "SN400B"→235）、
+/// 引けなければ 235 とする。幅厚比を算定できない形状（円形鋼管・RC 断面等）は
+/// `None`。
+///
+/// 保有水平耐力の Ds 算定（`compute_holding_capacity`）と準備計算の表示
+/// （`build_prep_width_thickness`）が同一の判定を用いるための共通関数。
+pub(crate) fn steel_width_thickness_rank(
+    shape: &squid_n_core::section_shape::SectionShape,
+    member_use: squid_n_design_jp::secondary::width_thickness::SteelMemberUse,
+    material_name: &str,
+) -> Option<squid_n_design_jp::secondary::holding_capacity::MemberRank> {
+    use squid_n_design_jp::secondary::member_rank::{s_member_rank_scaled, RankCriteria};
+    use squid_n_design_jp::secondary::width_thickness::{
+        max_width_thickness, s_member_rank_by_kihon,
+    };
+    use squid_n_design_jp::steel_f_value_prefix;
+
+    if let Some(rank) = s_member_rank_by_kihon(shape, member_use, material_name) {
+        return Some(rank);
+    }
+    let wt = max_width_thickness(shape)?;
+    let f_value = steel_f_value_prefix(material_name, steel_max_thickness(shape)).unwrap_or(235.0);
+    Some(s_member_rank_scaled(wt, f_value, &RankCriteria::default()))
+}
+
 /// 部材両端節点間の幾何長 \[mm\]（内法補正なしの簡易値。剛域等は考慮しない）。
 fn elem_geometric_length(
     elem: &squid_n_core::model::ElementData,

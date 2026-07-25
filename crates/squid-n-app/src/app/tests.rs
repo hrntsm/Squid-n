@@ -4897,3 +4897,146 @@ fn test_build_preparation_csv() {
     }
     assert!(csv.contains("階,Wi[kN],ΣWj[kN],αi,Ai,Ci,Qi[kN],Pi[kN],種別"));
 }
+
+/// 準備計算は断面性能（断面諸量・使用部材数・材料）を一覧化する。
+#[test]
+fn test_preparation_lists_section_properties() {
+    let mut app = App::default();
+    app.load_model(crate::sample::portal_frame());
+    app.run_preparation();
+
+    let prep = app.preparation.as_ref().unwrap();
+    assert_eq!(prep.sections.len(), app.model.sections.len());
+    for (row, sec) in prep.sections.iter().zip(app.model.sections.iter()) {
+        // 表示値はモデルが持つ解析入力そのもの（ここで再計算はしない）。
+        assert_eq!(row.section, sec.id);
+        assert_eq!(row.area, sec.area);
+        assert_eq!(row.iy, sec.iy);
+        assert_eq!(row.iz, sec.iz);
+        assert_eq!(row.j, sec.j);
+        assert!(row.shape_label.is_some(), "形状定義を持つ断面");
+        assert!(row.n_elements > 0, "サンプルは全断面が使われている");
+        // 断面二次半径 i = √(I/A)。
+        assert!((row.ry - (sec.iy / sec.area).sqrt()).abs() < 1e-9);
+        assert!((row.rz - (sec.iz / sec.area).sqrt()).abs() < 1e-9);
+        assert_eq!(row.material.as_deref(), Some("SN400B"));
+    }
+    // 柱 H-300x300 は 2 本、梁 H-400x200 は 1 本。
+    assert_eq!(prep.sections[0].n_elements, 2);
+    assert_eq!(prep.sections[1].n_elements, 1);
+}
+
+/// 準備計算は鋼断面の幅厚比・部材ランクを、断面 × 用途（柱／梁）× 材料で
+/// まとめて一覧化する。ランクは保有水平耐力の Ds 算定と同じ判定を用いる。
+#[test]
+fn test_preparation_lists_width_thickness() {
+    use squid_n_design_jp::secondary::width_thickness::SteelMemberUse;
+
+    let mut app = App::default();
+    app.load_model(crate::sample::portal_frame());
+    app.run_preparation();
+
+    let prep = app.preparation.as_ref().unwrap();
+    // 柱（H-300x300）2 本 + 梁（H-400x200）1 本 → 2 行にまとまる。
+    assert_eq!(prep.width_thickness.len(), 2, "{:?}", prep.width_thickness);
+
+    let col = prep
+        .width_thickness
+        .iter()
+        .find(|r| r.member_use == SteelMemberUse::Column)
+        .expect("柱の行");
+    assert_eq!(col.n_elements, 2);
+    assert_eq!(col.material, "SN400B");
+    // H-300x300x10x15: フランジ 300/(2·15)=10、ウェブ (300−30)/10=27 → max 27。
+    assert!((col.max_ratio.unwrap() - 27.0).abs() < 1e-9);
+    assert!(col.rank.is_some());
+
+    let beam = prep
+        .width_thickness
+        .iter()
+        .find(|r| r.member_use == SteelMemberUse::Beam)
+        .expect("梁の行");
+    assert_eq!(beam.n_elements, 1);
+    // ランク判定は保有水平耐力の Ds 算定と同じ共通関数を通っていること。
+    let shape = app.model.sections[1].shape.as_ref().unwrap();
+    assert_eq!(
+        beam.rank,
+        steel_width_thickness_rank(shape, SteelMemberUse::Beam, "SN400B")
+    );
+}
+
+/// 準備計算の結果はプロジェクトファイル（.scz）へ保存され、読込で復元される。
+/// 復元できた場合は実行済み扱い（stale でない）になる。
+#[test]
+fn test_preparation_persisted_in_project_file() {
+    let dir = std::env::temp_dir();
+    let path = dir.join("squid_n_prep_persist_test.scz");
+    let _ = std::fs::remove_file(&path);
+
+    let mut app = App::default();
+    app.load_model(crate::sample::portal_frame());
+    app.run_preparation();
+    let saved = app.preparation.as_ref().unwrap();
+    let saved_base_shear = saved.seismic.as_ref().unwrap().base_shear;
+    let saved_stories = saved.stories.len();
+    let saved_sections = saved.sections.len();
+    app.save_project_to(path.clone());
+    assert!(app.last_error.is_none(), "{:?}", app.last_error);
+
+    let mut reopened = App::default();
+    reopened.open_project_from(path.clone());
+    assert!(reopened.last_error.is_none(), "{:?}", reopened.last_error);
+
+    let restored = reopened
+        .preparation
+        .as_ref()
+        .expect("準備計算の結果が復元されるはず");
+    assert_eq!(restored.stories.len(), saved_stories);
+    assert_eq!(restored.sections.len(), saved_sections);
+    assert!(
+        (restored.seismic.as_ref().unwrap().base_shear - saved_base_shear).abs() < 1e-9,
+        "基部せん断力が一致しない"
+    );
+    assert!(
+        !reopened.staleness.preparation_stale,
+        "復元できたら実行済み扱いにする"
+    );
+
+    let _ = std::fs::remove_file(&path);
+}
+
+/// 準備計算が古い（モデル編集後に未再実行）状態で保存した場合は同梱せず、
+/// 読込側は未実行のままにする（古い結果を最新と誤認させない）。
+#[test]
+fn test_stale_preparation_not_persisted() {
+    let dir = std::env::temp_dir();
+    let path = dir.join("squid_n_prep_stale_test.scz");
+    let _ = std::fs::remove_file(&path);
+
+    let mut app = App::default();
+    app.load_model(crate::sample::portal_frame());
+    app.run_preparation();
+    app.staleness.mark_edited();
+    app.save_project_to(path.clone());
+    assert!(app.last_error.is_none(), "{:?}", app.last_error);
+
+    let mut reopened = App::default();
+    reopened.open_project_from(path.clone());
+    assert!(reopened.last_error.is_none(), "{:?}", reopened.last_error);
+    assert!(reopened.preparation.is_none());
+    assert!(reopened.staleness.preparation_stale);
+
+    let _ = std::fs::remove_file(&path);
+}
+
+/// 準備計算の CSV に断面性能・幅厚比のセクションが出る。
+#[test]
+fn test_build_preparation_csv_sections() {
+    let mut app = App::default();
+    app.load_model(crate::sample::portal_frame());
+    app.run_preparation();
+    let csv = crate::summary::build_preparation_csv(&app);
+    assert!(csv.contains("[断面性能]"), "{csv}");
+    assert!(csv.contains("[幅厚比・部材ランク]"), "{csv}");
+    assert!(csv.contains("H 形鋼"), "{csv}");
+}

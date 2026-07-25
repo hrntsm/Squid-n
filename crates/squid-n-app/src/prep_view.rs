@@ -7,9 +7,9 @@
 use egui_extras::{Column, TableBuilder};
 
 use crate::app::{
-    ai_mode_label, load_case_kind_label, member_kind_label, soil_class_label,
-    story_level_kind_label, story_structure_label, zone_source_label, App, PreparationResult,
-    RIGID_ZONE_RATIO_WARN,
+    ai_mode_label, load_case_kind_label, member_kind_label, member_rank_label, soil_class_label,
+    steel_member_use_label, story_level_kind_label, story_structure_label, zone_source_label, App,
+    PreparationResult, RIGID_ZONE_RATIO_WARN,
 };
 
 /// 準備計算ビュー内の表示切替。
@@ -24,6 +24,10 @@ pub enum PrepView {
     Wind,
     /// 剛域。
     RigidZone,
+    /// 断面性能（断面諸量）。
+    Sections,
+    /// 鋼断面の幅厚比・部材ランク。
+    WidthThickness,
     /// 荷重ケースの集計。
     Loads,
 }
@@ -110,6 +114,8 @@ pub fn preparation_panel(ui: &mut egui::Ui, app: &mut App) {
             (PrepView::Seismic, "地震力 (Ai 分布)"),
             (PrepView::Wind, "風圧力"),
             (PrepView::RigidZone, "剛域"),
+            (PrepView::Sections, "断面性能"),
+            (PrepView::WidthThickness, "幅厚比"),
             (PrepView::Loads, "荷重集計"),
         ] {
             if ui.selectable_label(*view == v, label).clicked() {
@@ -128,6 +134,8 @@ pub fn preparation_panel(ui: &mut egui::Ui, app: &mut App) {
             PrepView::Seismic => seismic_section(ui, prep),
             PrepView::Wind => wind_section(ui, prep),
             PrepView::RigidZone => rigid_zone_section(ui, prep),
+            PrepView::Sections => sections_section(ui, prep),
+            PrepView::WidthThickness => width_thickness_section(ui, prep),
             PrepView::Loads => loads_section(ui, prep),
         });
 }
@@ -597,6 +605,188 @@ fn rigid_zone_section(ui: &mut egui::Ui, prep: &PreparationResult) {
                 });
             });
         });
+}
+
+/// 断面性能（断面諸量）。
+fn sections_section(ui: &mut egui::Ui, prep: &PreparationResult) {
+    if prep.sections.is_empty() {
+        ui.colored_label(crate::theme::GRAY_600, "断面が定義されていません");
+        return;
+    }
+    let row_h = crate::theme::table_row_height(ui);
+    let rows = &prep.sections;
+    TableBuilder::new(ui)
+        .striped(true)
+        .id_salt("prep_sections")
+        .column(Column::initial(50.0))
+        .column(Column::initial(180.0))
+        .column(Column::initial(100.0))
+        .column(Column::initial(60.0))
+        .column(Column::initial(110.0))
+        .column(Column::initial(100.0))
+        .column(Column::initial(100.0))
+        .column(Column::initial(100.0))
+        .column(Column::initial(100.0))
+        .column(Column::initial(110.0))
+        .column(Column::initial(110.0))
+        .column(Column::initial(140.0))
+        .header(row_h, |mut h| {
+            for t in &[
+                "ID",
+                "断面",
+                "形状",
+                "部材数",
+                "D×B [mm]",
+                "A [cm²]",
+                "Iy [cm⁴]",
+                "Iz [cm⁴]",
+                "J [cm⁴]",
+                "Asy/Asz [cm²]",
+                "iy/iz [mm]",
+                "材料 (E [N/mm²])",
+            ] {
+                h.col(|ui| {
+                    ui.strong(*t);
+                });
+            }
+        })
+        .body(|body| {
+            body.rows(row_h, rows.len(), |mut row| {
+                let r = &rows[row.index()];
+                row.col(|ui| {
+                    ui.label(format!("{}", r.section.0));
+                });
+                row.col(|ui| {
+                    ui.label(&r.name);
+                });
+                row.col(|ui| {
+                    match r.shape_label.as_deref() {
+                        Some(l) => ui.label(l),
+                        // 形状定義を持たない断面は剛性増大率・幅厚比・終局耐力の
+                        // 算定対象外になるため、数値直入力であることを示す。
+                        None => ui.colored_label(crate::theme::GRAY_600, "数値直入力"),
+                    };
+                });
+                row.col(|ui| {
+                    // どの部材にも使われていない断面は入力漏れ・不要断面の目印。
+                    if r.n_elements == 0 {
+                        ui.colored_label(crate::theme::GRAY_600, "0");
+                    } else {
+                        ui.label(format!("{}", r.n_elements));
+                    }
+                });
+                row.col(|ui| {
+                    ui.label(format!("{:.0} × {:.0}", r.depth, r.width));
+                });
+                // cm 系へ換算して表示する（mm 系のままでは桁が大きく比較しづらい）。
+                row.col(|ui| {
+                    ui.label(format!("{:.1}", r.area * 1e-2));
+                });
+                row.col(|ui| {
+                    ui.label(format!("{:.0}", r.iy * 1e-4));
+                });
+                row.col(|ui| {
+                    ui.label(format!("{:.0}", r.iz * 1e-4));
+                });
+                row.col(|ui| {
+                    ui.label(format!("{:.0}", r.j * 1e-4));
+                });
+                row.col(|ui| {
+                    ui.label(format!("{:.1} / {:.1}", r.as_y * 1e-2, r.as_z * 1e-2));
+                });
+                row.col(|ui| {
+                    ui.label(format!("{:.1} / {:.1}", r.ry, r.rz));
+                });
+                row.col(|ui| {
+                    match (&r.material, r.young) {
+                        (Some(m), Some(e)) => ui.label(format!("{} ({:.0})", m, e)),
+                        (Some(m), None) => ui.label(m.clone()),
+                        _ => ui.colored_label(crate::theme::GRAY_600, "未割当"),
+                    };
+                });
+            });
+        });
+    ui.add_space(4.0);
+    ui.colored_label(
+        crate::theme::GRAY_600,
+        "A・I・J・As は弾性解析に用いる断面諸量です。断面二次半径 i = √(I/A) は\
+         座屈長さ比・細長比の確認用に併記しています。",
+    );
+}
+
+/// 鋼断面の幅厚比・部材ランク。
+fn width_thickness_section(ui: &mut egui::Ui, prep: &PreparationResult) {
+    if prep.width_thickness.is_empty() {
+        ui.colored_label(
+            crate::theme::GRAY_600,
+            "対象となる鋼部材がありません（形状定義を持つ断面が割り当てられた\
+             鋼材の部材が対象です）",
+        );
+        return;
+    }
+    let row_h = crate::theme::table_row_height(ui);
+    let rows = &prep.width_thickness;
+    TableBuilder::new(ui)
+        .striped(true)
+        .id_salt("prep_width_thickness")
+        .column(Column::initial(180.0))
+        .column(Column::initial(60.0))
+        .column(Column::initial(110.0))
+        .column(Column::initial(70.0))
+        .column(Column::initial(110.0))
+        .column(Column::initial(80.0))
+        .header(row_h, |mut h| {
+            for t in &["断面", "用途", "材料", "部材数", "最大幅厚比", "ランク"] {
+                h.col(|ui| {
+                    ui.strong(*t);
+                });
+            }
+        })
+        .body(|body| {
+            body.rows(row_h, rows.len(), |mut row| {
+                let r = &rows[row.index()];
+                row.col(|ui| {
+                    ui.label(&r.section_name);
+                });
+                row.col(|ui| {
+                    ui.label(steel_member_use_label(r.member_use));
+                });
+                row.col(|ui| {
+                    ui.label(&r.material);
+                });
+                row.col(|ui| {
+                    ui.label(format!("{}", r.n_elements));
+                });
+                row.col(|ui| {
+                    match r.max_ratio {
+                        Some(v) => ui.label(format!("{:.1}", v)),
+                        None => ui.colored_label(crate::theme::GRAY_600, "—"),
+                    };
+                });
+                row.col(|ui| {
+                    use squid_n_design_jp::secondary::holding_capacity::MemberRank;
+                    match r.rank {
+                        // FD は Ds を最も不利にする（幅厚比の入力確認を促す）。
+                        Some(rank @ MemberRank::FD) => {
+                            ui.colored_label(crate::theme::ERROR_RED, member_rank_label(rank))
+                        }
+                        Some(rank @ MemberRank::FC) => {
+                            ui.colored_label(crate::theme::BEST_YELLOW, member_rank_label(rank))
+                        }
+                        Some(rank) => ui.label(member_rank_label(rank)),
+                        None => ui.colored_label(crate::theme::GRAY_600, "判定不可"),
+                    };
+                });
+            });
+        });
+    ui.add_space(4.0);
+    ui.colored_label(
+        crate::theme::GRAY_600,
+        "断面・用途（柱／梁）・鋼種が同じ部材は 1 行にまとめています。ランクは\
+         保有水平耐力の Ds 算定に用いるものと同じ判定です（円形鋼管は径厚比の\
+         体系が異なるため「判定不可」）。筋かいは有効細長比で種別（BA〜BC）を\
+         定めるため本表の対象外です。",
+    );
 }
 
 /// 荷重ケースの集計。

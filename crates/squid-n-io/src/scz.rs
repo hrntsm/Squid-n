@@ -62,7 +62,25 @@ fn read_entry_capped(
     Ok(data)
 }
 
+/// 準備計算の結果を格納する zip エントリ名（任意エントリ）。
+/// 中身は呼び出し側（アプリ）が msgpack へ直列化したバイト列であり、
+/// io 層は内容を解釈しない（準備計算の型はアプリ層にあるため）。
+pub const PREPARATION_ENTRY: &str = "preparation.msgpack";
+
 pub fn save_scz(path: &Path, model: &Model) -> Result<(), IoError> {
+    save_scz_with_preparation(path, model, None)
+}
+
+/// モデルに加えて準備計算の結果（msgpack バイト列）を保存する。
+///
+/// `preparation` が `None` の場合は [`save_scz`] と同一のアーカイブになる
+/// （準備計算エントリは書かない）。エントリは manifest に列挙してハッシュ検証の
+/// 対象にする。
+pub fn save_scz_with_preparation(
+    path: &Path,
+    model: &Model,
+    preparation: Option<&[u8]>,
+) -> Result<(), IoError> {
     let tmp_path = path.with_extension("scz.tmp");
 
     let model_bytes = rmp_serde::to_vec(model).map_err(|e| IoError::Decode(e.to_string()))?;
@@ -75,20 +93,28 @@ pub fn save_scz(path: &Path, model: &Model) -> Result<(), IoError> {
     let model_hash = sha256_of(&model_bytes);
     let settings_hash = sha256_of(&settings_bytes);
 
+    let mut entries = vec![
+        crate::manifest::EntryHash {
+            name: "model.msgpack".to_string(),
+            sha256: model_hash,
+        },
+        crate::manifest::EntryHash {
+            name: "settings.json".to_string(),
+            sha256: settings_hash,
+        },
+    ];
+    if let Some(prep) = preparation {
+        entries.push(crate::manifest::EntryHash {
+            name: PREPARATION_ENTRY.to_string(),
+            sha256: sha256_of(prep),
+        });
+    }
+
     let manifest = Manifest {
         schema_version: CURRENT_SCHEMA_VERSION,
         units: "internal: N-mm-s".to_string(),
         created_by: "squid-n-io 0.0.1".to_string(),
-        entries: vec![
-            crate::manifest::EntryHash {
-                name: "model.msgpack".to_string(),
-                sha256: model_hash,
-            },
-            crate::manifest::EntryHash {
-                name: "settings.json".to_string(),
-                sha256: settings_hash,
-            },
-        ],
+        entries,
     };
 
     let manifest_bytes =
@@ -111,6 +137,12 @@ pub fn save_scz(path: &Path, model: &Model) -> Result<(), IoError> {
         zip.start_file("settings.json", opts)
             .map_err(|e| IoError::Zip(e.to_string()))?;
         zip.write_all(&settings_bytes)?;
+
+        if let Some(prep) = preparation {
+            zip.start_file(PREPARATION_ENTRY, opts)
+                .map_err(|e| IoError::Zip(e.to_string()))?;
+            zip.write_all(prep)?;
+        }
 
         // rename 前に内容をディスクへ永続化する。fsync を挟まないと rename が
         // 原子的でも電源断で新ファイルが空・破損になり得る。
@@ -140,6 +172,12 @@ fn sync_parent_dir(_path: &Path) -> std::io::Result<()> {
 }
 
 pub fn load_scz(path: &Path) -> Result<Model, IoError> {
+    load_scz_with_preparation(path).map(|(model, _)| model)
+}
+
+/// モデルと、保存されていれば準備計算の結果（msgpack バイト列）を読み込む。
+/// 準備計算エントリを持たないファイルでは `None` を返す。
+pub fn load_scz_with_preparation(path: &Path) -> Result<(Model, Option<Vec<u8>>), IoError> {
     let f = std::fs::File::open(path)?;
     let mut archive = zip::ZipArchive::new(f).map_err(|e| IoError::Zip(e.to_string()))?;
 
@@ -161,6 +199,7 @@ pub fn load_scz(path: &Path) -> Result<Model, IoError> {
     }
 
     let mut model_data = None;
+    let mut preparation_data = None;
     for entry in &manifest.entries {
         let data = read_entry_capped(&mut archive, &entry.name)?;
         let actual_hash = sha256_of(&data);
@@ -169,6 +208,8 @@ pub fn load_scz(path: &Path) -> Result<Model, IoError> {
         }
         if entry.name == "model.msgpack" {
             model_data = Some(data);
+        } else if entry.name == PREPARATION_ENTRY {
+            preparation_data = Some(data);
         }
     }
 
@@ -180,7 +221,7 @@ pub fn load_scz(path: &Path) -> Result<Model, IoError> {
     let model: Model =
         rmp_serde::from_slice(&model_data).map_err(|e| IoError::Decode(e.to_string()))?;
 
-    Ok(model)
+    Ok((model, preparation_data))
 }
 
 #[cfg(test)]
@@ -444,6 +485,56 @@ mod tests {
         assert_eq!(back.sections.len(), 1);
         assert_eq!(back.sections[0].shape, Some(shape));
         assert!(model.eq_ignoring_dofmap(&back));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// 準備計算の結果（アプリ層が直列化した任意バイト列）が保存→読込で往復し、
+    /// manifest のハッシュ検証対象になること。
+    #[test]
+    fn test_roundtrip_preserves_preparation_entry() {
+        let model = make_3node_model();
+        let dir = std::env::temp_dir();
+        let path = dir.join("p_prep_roundtrip.scz");
+        let prep = b"preparation payload".to_vec();
+        save_scz_with_preparation(&path, &model, Some(&prep)).unwrap();
+
+        let (back, back_prep) = load_scz_with_preparation(&path).unwrap();
+        assert!(model.eq_ignoring_dofmap(&back));
+        assert_eq!(back_prep.as_deref(), Some(prep.as_slice()));
+
+        // manifest に列挙され、ハッシュ検証の対象になっている。
+        let manifest: Manifest = {
+            let f = std::fs::File::open(&path).unwrap();
+            let mut ar = zip::ZipArchive::new(f).unwrap();
+            let mut mb = Vec::new();
+            ar.by_name("manifest.json")
+                .unwrap()
+                .read_to_end(&mut mb)
+                .unwrap();
+            serde_json::from_slice(&mb).unwrap()
+        };
+        let entry = manifest
+            .entries
+            .iter()
+            .find(|e| e.name == PREPARATION_ENTRY)
+            .expect("準備計算エントリが manifest にあるはず");
+        assert_eq!(entry.sha256, sha256_of(&prep));
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// 準備計算エントリを持たないファイル（`save_scz` で保存したもの）は
+    /// `None` として読める。
+    #[test]
+    fn test_load_without_preparation_entry() {
+        let model = make_3node_model();
+        let dir = std::env::temp_dir();
+        let path = dir.join("p_prep_absent.scz");
+        save_scz(&path, &model).unwrap();
+
+        let (back, back_prep) = load_scz_with_preparation(&path).unwrap();
+        assert!(model.eq_ignoring_dofmap(&back));
+        assert!(back_prep.is_none());
         let _ = std::fs::remove_file(&path);
     }
 

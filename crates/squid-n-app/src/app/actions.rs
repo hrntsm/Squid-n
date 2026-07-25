@@ -82,9 +82,32 @@ impl App {
     }
 
     /// プロジェクトを指定パスへ保存する。成功時は project_path と未保存フラグを更新。
+    ///
+    /// 準備計算の結果は、最新（モデル編集後に再実行済み）の場合のみ同梱する
+    /// （`preparation_stale` なら保存しない。読込側が「保存されている＝その
+    /// モデルに対して最新」と扱えるようにするため）。
     pub fn save_project_to(&mut self, path: std::path::PathBuf) {
         self.last_error = None;
-        match squid_n_io::scz::save_scz(&path, &self.model) {
+        let encoded = self
+            .preparation
+            .as_ref()
+            .filter(|_| !self.staleness.preparation_stale)
+            .map(rmp_serde::to_vec);
+        let prep_bytes = match encoded {
+            Some(Ok(bytes)) => Some(bytes),
+            // 準備計算は再計算できる派生データなので、直列化に失敗しても
+            // 保存自体は続行する（モデルは保存する）。
+            Some(Err(e)) => {
+                self.report_notice(format!(
+                    "準備計算の結果を保存できませんでした（モデルは保存します）: {}",
+                    e
+                ));
+                None
+            }
+            None => None,
+        };
+        match squid_n_io::scz::save_scz_with_preparation(&path, &self.model, prep_bytes.as_deref())
+        {
             Ok(()) => {
                 // ショートカット保存はダイアログも出ず無反応になるため、
                 // 成功をステータスバーとログで明示する。
@@ -101,15 +124,32 @@ impl App {
     }
 
     /// プロジェクトを指定パスから読み込む。成功時はモデルを差し替える。
+    ///
+    /// 準備計算の結果が同梱されていれば復元し、実行済み扱いにする（保存側が
+    /// 最新のときだけ書き出すため、同梱＝そのモデルに対して最新である）。
+    /// 同梱が無い・復号に失敗した場合は未実行のままとし、解析実行時または
+    /// 「準備計算 実行」で再計算する。
     pub fn open_project_from(&mut self, path: std::path::PathBuf) {
         self.last_error = None;
-        match squid_n_io::scz::load_scz(&path) {
-            Ok(model) => {
+        match squid_n_io::scz::load_scz_with_preparation(&path) {
+            Ok((model, prep_bytes)) => {
                 if let Err(e) = model.validate() {
                     self.report_error(format!("読込モデルの検証エラー: {:?}", e));
                     return;
                 }
                 self.load_model(model);
+                if let Some(bytes) = prep_bytes {
+                    match rmp_serde::from_slice::<PreparationResult>(&bytes) {
+                        Ok(prep) => {
+                            self.preparation = Some(prep);
+                            self.staleness.preparation_stale = false;
+                        }
+                        Err(e) => self.report_notice(format!(
+                            "保存された準備計算の結果を読み込めませんでした（再実行が必要です）: {}",
+                            e
+                        )),
+                    }
+                }
                 self.project_path = Some(path);
             }
             Err(e) => self.report_error(format!("読込エラー: {}", e)),
@@ -725,13 +765,10 @@ impl App {
         use squid_n_design_jp::secondary::holding_capacity::{
             check_holding_capacity, qud_by_story, MemberRank,
         };
-        use squid_n_design_jp::secondary::member_rank::{
-            s_member_rank_scaled, worst_rank, RankCriteria,
-        };
+        use squid_n_design_jp::secondary::member_rank::worst_rank;
         use squid_n_design_jp::secondary::rc_capacity::{
             rc_column_mu_simple, rc_qmu_simple, rc_qsu_simple,
         };
-        use squid_n_design_jp::secondary::width_thickness::max_width_thickness;
         use squid_n_design_jp::steel_f_value_prefix;
         use squid_n_solver::pushover::MechanismType;
 
@@ -883,32 +920,15 @@ impl App {
                     let Some(shape) = sec.shape.as_ref() else {
                         continue;
                     };
-                    // 構造規定の幅厚比表（部材種別×断面×部位×鋼種級）で判定
-                    // （鋼構造設計規準「幅厚比の検討」）。
-                    // 表の対象外形状（溝形・T形・山形等）は旧・単一幅厚比法へ
-                    // フォールバックする。
-                    let member_use = match member_kind_of(elem, &self.model) {
-                        squid_n_design_jp::MemberKind::Column => {
-                            squid_n_design_jp::secondary::width_thickness::SteelMemberUse::Column
-                        }
-                        _ => squid_n_design_jp::secondary::width_thickness::SteelMemberUse::Beam,
+                    // 幅厚比による部材ランク判定は準備計算の表示と共通
+                    // （`steel_width_thickness_rank`。構造規定の幅厚比表を優先し、
+                    // 表の対象外形状は単一幅厚比法へフォールバックする）。
+                    let member_use = steel_member_use_of(elem, &self.model);
+                    let Some(rank) = steel_width_thickness_rank(shape, member_use, &mat.name)
+                    else {
+                        continue;
                     };
-                    match squid_n_design_jp::secondary::width_thickness::s_member_rank_by_kihon(
-                        shape, member_use, &mat.name,
-                    ) {
-                        Some(rank) => rank,
-                        None => {
-                            let Some(wt) = max_width_thickness(shape) else {
-                                continue;
-                            };
-                            // F 値は材料名の前方一致で引く(例 "SN400B"→235)。
-                            // 引けなければ 235。板厚は形状の最大板厚。
-                            let f_value =
-                                steel_f_value_prefix(&mat.name, steel_max_thickness(shape))
-                                    .unwrap_or(235.0);
-                            s_member_rank_scaled(wt, f_value, &RankCriteria::default())
-                        }
-                    }
+                    rank
                 } else if let Some(SectionShape::RcWall { thickness, .. }) = sec.shape.as_ref() {
                     // RC 耐力壁: 告示「耐力壁の種別」表（τu/Fc により WA〜WD）。
                     // τu は Ds 算定時（プッシュオーバー終局時）に壁断面に生じる

@@ -21,12 +21,13 @@
 
 use super::*;
 
+use squid_n_core::ids::MaterialId;
 use squid_n_core::model::{
     LoadCaseKind, MemberLoadKind, StoryLevelKind, StoryStructure, ZoneSource,
 };
 
 /// 準備計算の結果（解析前の確認用）。GUI 非依存。
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct PreparationResult {
     /// 実行時刻。
     pub computed_at: SystemTime,
@@ -51,6 +52,10 @@ pub struct PreparationResult {
     /// 算定対象となった梁要素の総数（`rigid_zones` はそのうち λ・フェース距離の
     /// いずれかが 0 でないもの）。
     pub rigid_zone_candidates: usize,
+    /// 断面性能（`model.sections` と同順）。
+    pub sections: Vec<PrepSectionRow>,
+    /// 鋼断面の幅厚比・部材ランク（断面 × 部材用途 × 材料でまとめる）。
+    pub width_thickness: Vec<PrepWidthThicknessRow>,
     /// 荷重ケースの集計（`model.load_cases` と同順）。
     pub load_cases: Vec<PrepLoadCaseRow>,
     /// モデル整合性チェックのエラー件数。
@@ -67,7 +72,7 @@ impl PreparationResult {
 }
 
 /// 建物全体の諸元。
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct PrepSummary {
     pub n_nodes: usize,
     pub n_elements: usize,
@@ -90,7 +95,7 @@ pub struct PrepSummary {
 }
 
 /// 階の分布 1 行。
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct PrepStoryRow {
     pub name: String,
     /// 床レベル [mm]（モデル座標）。
@@ -110,7 +115,7 @@ pub struct PrepStoryRow {
 }
 
 /// 地震力（Ai 分布）の算定諸元と層ごとの結果。
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct PrepSeismic {
     /// 設計用一次固有周期 T [s]。
     pub t: f64,
@@ -132,7 +137,7 @@ pub struct PrepSeismic {
 }
 
 /// 地震力（Ai 分布）の 1 層分。
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct PrepSeismicRow {
     pub name: String,
     /// 当該階の地震用重量 Wi [N]。
@@ -153,7 +158,7 @@ pub struct PrepSeismicRow {
 }
 
 /// 風圧力の算定諸元と層ごとの結果。
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct PrepWind {
     /// 算定方向。
     pub dir: SeismicDir,
@@ -177,7 +182,7 @@ pub struct PrepWind {
 }
 
 /// 風圧力の 1 層分。
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct PrepWindRow {
     pub name: String,
     /// 負担高さ区間 [mm]（GL 基準）。
@@ -196,7 +201,7 @@ pub struct PrepWindRow {
 }
 
 /// 剛域の算定結果 1 部材分。
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct PrepRigidZoneRow {
     pub elem: ElemId,
     /// 部材種別（柱／梁／ブレース。部材軸の鉛直成分による幾何判定）。
@@ -219,8 +224,61 @@ pub struct PrepRigidZoneRow {
     pub ratio: f64,
 }
 
+/// 断面性能 1 行（弾性解析に用いる断面諸量）。
+///
+/// 値は `Section` が保持する解析入力そのもの（形状定義から `to_section` で
+/// 生成されたもの、またはカタログ数値の直入力）であり、ここで再計算はしない。
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct PrepSectionRow {
+    pub section: SectionId,
+    pub name: String,
+    /// 形状種別の表示名（形状定義を持たない断面は `None`）。
+    pub shape_label: Option<String>,
+    /// この断面を割り当てられた部材の数。
+    pub n_elements: usize,
+    /// 断面積 A [mm²]。
+    pub area: f64,
+    /// 断面二次モーメント Iy・Iz [mm⁴]（y=強軸まわり）。
+    pub iy: f64,
+    pub iz: f64,
+    /// ねじり定数 J [mm⁴]。
+    pub j: f64,
+    /// せん断有効断面積 Asy・Asz [mm²]。
+    pub as_y: f64,
+    pub as_z: f64,
+    /// せい D・幅 B [mm]。
+    pub depth: f64,
+    pub width: f64,
+    /// 断面二次半径 iy・iz [mm]（√(I/A)。座屈長さ比の確認用）。
+    pub ry: f64,
+    pub rz: f64,
+    /// この断面に割り当てられた材料名（複数あれば「〜 他N」）。未割当は `None`。
+    pub material: Option<String>,
+    /// 代表材料のヤング係数 E [N/mm²]。
+    pub young: Option<f64>,
+}
+
+/// 鋼断面の幅厚比・部材ランク 1 行。
+///
+/// ランクは断面形状・部材用途（柱／梁）・鋼種でのみ決まるため、同じ組合せの
+/// 部材は 1 行にまとめる（大規模モデルで行数が部材数に比例して増えるのを避ける）。
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct PrepWidthThicknessRow {
+    pub section: SectionId,
+    pub section_name: String,
+    /// 幅厚比表の行（柱／梁）。
+    pub member_use: squid_n_design_jp::secondary::width_thickness::SteelMemberUse,
+    pub material: String,
+    /// この組合せに該当する部材の数。
+    pub n_elements: usize,
+    /// 代表最大幅厚比（形状寸法からの簡易法）。算定できない形状は `None`。
+    pub max_ratio: Option<f64>,
+    /// 幅厚比による部材ランク（FA〜FD）。判定できない形状は `None`。
+    pub rank: Option<squid_n_design_jp::secondary::holding_capacity::MemberRank>,
+}
+
 /// 荷重ケースの集計 1 行。
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct PrepLoadCaseRow {
     pub name: String,
     pub kind: LoadCaseKind,
@@ -313,6 +371,8 @@ impl App {
             wind_note,
             rigid_zones,
             rigid_zone_candidates,
+            sections: self.build_prep_sections(),
+            width_thickness: self.build_prep_width_thickness(),
             load_cases: self.build_prep_load_cases(),
             diag_errors,
             diag_warnings,
@@ -564,6 +624,122 @@ impl App {
         (rows, candidates)
     }
 
+    /// 断面性能を一覧化する。断面ごとに使用部材数と、割り当てられた材料
+    /// （複数あれば代表 1 件＋件数）を添える。
+    fn build_prep_sections(&self) -> Vec<PrepSectionRow> {
+        let model = &self.model;
+        // 断面 → (使用部材数, 材料 id の出現順の重複なし列)
+        let mut usage: Vec<(usize, Vec<MaterialId>)> = vec![(0, Vec::new()); model.sections.len()];
+        for e in &model.elements {
+            let Some(sid) = e.section else { continue };
+            let Some(slot) = usage.get_mut(sid.index()) else {
+                continue;
+            };
+            slot.0 += 1;
+            if let Some(mid) = e.material {
+                if !slot.1.contains(&mid) {
+                    slot.1.push(mid);
+                }
+            }
+        }
+
+        model
+            .sections
+            .iter()
+            .enumerate()
+            .map(|(i, sec)| {
+                let (n_elements, mats) = usage.get(i).cloned().unwrap_or_else(|| (0, Vec::new()));
+                let first_mat = mats
+                    .first()
+                    .and_then(|mid| model.materials.get(mid.index()));
+                let material = first_mat.map(|m| {
+                    if mats.len() > 1 {
+                        format!("{} 他{}", m.name, mats.len() - 1)
+                    } else {
+                        m.name.clone()
+                    }
+                });
+                // 断面二次半径 i = √(I/A)。A が 0 の断面（未設定）は 0 とする。
+                let radius = |inertia: f64| {
+                    if sec.area > 0.0 && inertia > 0.0 {
+                        (inertia / sec.area).sqrt()
+                    } else {
+                        0.0
+                    }
+                };
+                PrepSectionRow {
+                    section: sec.id,
+                    name: sec.name.clone(),
+                    shape_label: sec
+                        .shape
+                        .as_ref()
+                        .map(|sh| section_shape_label(sh).to_string()),
+                    n_elements,
+                    area: sec.area,
+                    iy: sec.iy,
+                    iz: sec.iz,
+                    j: sec.j,
+                    as_y: sec.as_y,
+                    as_z: sec.as_z,
+                    depth: sec.depth,
+                    width: sec.width,
+                    ry: radius(sec.iy),
+                    rz: radius(sec.iz),
+                    material,
+                    young: first_mat.map(|m| m.young),
+                }
+            })
+            .collect()
+    }
+
+    /// 鋼部材の幅厚比・部材ランクを、断面 × 部材用途（柱／梁）× 材料でまとめる。
+    ///
+    /// ランクの判定は保有水平耐力の Ds 算定と同じ [`super::steel_width_thickness_rank`]
+    /// を用いる（表示と算定の乖離を避けるため）。形状定義を持たない断面
+    /// （カタログ数値の直入力等）と非鋼材は対象外。
+    fn build_prep_width_thickness(&self) -> Vec<PrepWidthThicknessRow> {
+        use squid_n_design_jp::secondary::width_thickness::{max_width_thickness, SteelMemberUse};
+        let model = &self.model;
+        let mut rows: Vec<PrepWidthThicknessRow> = Vec::new();
+        let mut index: std::collections::HashMap<(SectionId, SteelMemberUse, MaterialId), usize> =
+            std::collections::HashMap::new();
+
+        for e in &model.elements {
+            let (Some(sid), Some(mid)) = (e.section, e.material) else {
+                continue;
+            };
+            let (Some(sec), Some(mat)) = (
+                model.sections.get(sid.index()),
+                model.materials.get(mid.index()),
+            ) else {
+                continue;
+            };
+            if !super::is_steel(&mat.name) {
+                continue;
+            }
+            let Some(shape) = sec.shape.as_ref() else {
+                continue;
+            };
+            let member_use = super::steel_member_use_of(e, model);
+            let key = (sid, member_use, mid);
+            if let Some(&i) = index.get(&key) {
+                rows[i].n_elements += 1;
+                continue;
+            }
+            index.insert(key, rows.len());
+            rows.push(PrepWidthThicknessRow {
+                section: sid,
+                section_name: sec.name.clone(),
+                member_use,
+                material: mat.name.clone(),
+                n_elements: 1,
+                max_ratio: max_width_thickness(shape),
+                rank: super::steel_width_thickness_rank(shape, member_use, &mat.name),
+            });
+        }
+        rows
+    }
+
     fn build_prep_load_cases(&self) -> Vec<PrepLoadCaseRow> {
         self.model
             .load_cases
@@ -598,6 +774,53 @@ impl App {
                 }
             })
             .collect()
+    }
+}
+
+/// 断面形状の表示名。
+pub fn section_shape_label(shape: &squid_n_core::section_shape::SectionShape) -> &'static str {
+    use squid_n_core::section_shape::SectionShape;
+    match shape {
+        SectionShape::RcRect { .. } => "RC 矩形",
+        SectionShape::RcCircle { .. } => "RC 円形",
+        SectionShape::RcWall { .. } => "RC 壁",
+        SectionShape::SrcRect { .. } => "SRC 矩形",
+        SectionShape::SteelH { .. } => "H 形鋼",
+        SectionShape::SteelBuiltH { .. } => "組立 H 形鋼",
+        SectionShape::SteelBox { .. } => "角形鋼管",
+        SectionShape::SteelPipe { .. } => "円形鋼管",
+        SectionShape::SteelAngle { .. } => "山形鋼",
+        SectionShape::SteelChannel { .. } => "溝形鋼",
+        SectionShape::SteelLipChannel { .. } => "リップ溝形鋼",
+        SectionShape::SteelTee { .. } => "T 形鋼",
+        SectionShape::SteelFlatBar { .. } => "平鋼",
+        SectionShape::SteelRoundBar { .. } => "丸鋼",
+        SectionShape::CftBox { .. } => "CFT 角形",
+        SectionShape::CftPipe { .. } => "CFT 円形",
+    }
+}
+
+/// 幅厚比ランク表の行（柱／梁）の表示名。
+pub fn steel_member_use_label(
+    u: squid_n_design_jp::secondary::width_thickness::SteelMemberUse,
+) -> &'static str {
+    use squid_n_design_jp::secondary::width_thickness::SteelMemberUse;
+    match u {
+        SteelMemberUse::Column => "柱",
+        SteelMemberUse::Beam => "梁",
+    }
+}
+
+/// 部材ランクの表示名。
+pub fn member_rank_label(
+    r: squid_n_design_jp::secondary::holding_capacity::MemberRank,
+) -> &'static str {
+    use squid_n_design_jp::secondary::holding_capacity::MemberRank;
+    match r {
+        MemberRank::FA => "FA",
+        MemberRank::FB => "FB",
+        MemberRank::FC => "FC",
+        MemberRank::FD => "FD",
     }
 }
 

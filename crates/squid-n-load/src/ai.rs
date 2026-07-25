@@ -1,6 +1,6 @@
 use squid_n_core::model::StoryLevelKind;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum SoilClass {
     I,
     II,

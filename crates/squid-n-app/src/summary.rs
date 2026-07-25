@@ -409,12 +409,13 @@ pub fn build_report_csv(app: &App) -> String {
 }
 
 /// 準備計算の結果（[`crate::app::PreparationResult`]）を CSV 文字列に整形する
-/// （GUI 非依存）。建物概要・階の分布・地震力(Ai分布)・風圧力・剛域・荷重集計の
-/// 各セクションを出力する。準備計算が未実行なら空文字列を返す。
+/// （GUI 非依存）。建物概要・階の分布・地震力(Ai分布)・風圧力・剛域・断面性能・
+/// 幅厚比・荷重集計の各セクションを出力する。準備計算が未実行なら空文字列を返す。
 pub fn build_preparation_csv(app: &App) -> String {
     use crate::app::{
-        ai_mode_label, load_case_kind_label, member_kind_label, soil_class_label,
-        story_level_kind_label, story_structure_label, zone_source_label,
+        ai_mode_label, load_case_kind_label, member_kind_label, member_rank_label,
+        soil_class_label, steel_member_use_label, story_level_kind_label, story_structure_label,
+        zone_source_label,
     };
 
     let Some(p) = app.preparation.as_ref() else {
@@ -570,6 +571,49 @@ pub fn build_preparation_csv(app: &App) -> String {
                 r.face_i,
                 r.face_j,
                 r.ratio,
+            ));
+        }
+    }
+
+    if !p.sections.is_empty() {
+        out.push_str(
+            "\n[断面性能]\n断面ID,断面,形状,部材数,D[mm],B[mm],A[mm2],Iy[mm4],Iz[mm4],J[mm4],Asy[mm2],Asz[mm2],iy[mm],iz[mm],材料,E[N/mm2]\n",
+        );
+        for r in &p.sections {
+            out.push_str(&format!(
+                "{},{},{},{},{:.1},{:.1},{:.1},{:.4e},{:.4e},{:.4e},{:.1},{:.1},{:.2},{:.2},{},{}\n",
+                r.section.0,
+                r.name,
+                r.shape_label.as_deref().unwrap_or("数値直入力"),
+                r.n_elements,
+                r.depth,
+                r.width,
+                r.area,
+                r.iy,
+                r.iz,
+                r.j,
+                r.as_y,
+                r.as_z,
+                r.ry,
+                r.rz,
+                r.material.as_deref().unwrap_or(""),
+                r.young.map(|e| format!("{:.0}", e)).unwrap_or_default(),
+            ));
+        }
+    }
+
+    if !p.width_thickness.is_empty() {
+        out.push_str("\n[幅厚比・部材ランク]\n断面ID,断面,用途,材料,部材数,最大幅厚比,ランク\n");
+        for r in &p.width_thickness {
+            out.push_str(&format!(
+                "{},{},{},{},{},{},{}\n",
+                r.section.0,
+                r.section_name,
+                steel_member_use_label(r.member_use),
+                r.material,
+                r.n_elements,
+                r.max_ratio.map(|v| format!("{:.2}", v)).unwrap_or_default(),
+                r.rank.map(member_rank_label).unwrap_or("判定不可"),
             ));
         }
     }
