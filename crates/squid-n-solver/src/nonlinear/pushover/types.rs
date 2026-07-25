@@ -11,6 +11,7 @@
 use squid_n_core::ids::{ElemId, StoryId};
 
 /// 性能曲線の1点（P5 §7.4）
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct CapacityPoint {
     pub step: u32,
     pub roof_disp: f64,
@@ -20,6 +21,7 @@ pub struct CapacityPoint {
 }
 
 /// ヒンジ発生事象（P5 §7.4）
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct HingeEvent {
     pub step: u32,
     pub elem: ElemId,
@@ -29,6 +31,7 @@ pub struct HingeEvent {
 }
 
 /// ヒンジレベル（P5 §7.4）
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub enum HingeLevel {
     Crack,
     Yield,
@@ -53,6 +56,7 @@ pub enum DuctilityMethod {
 }
 
 /// 崩壊機構種別（P5 §7.4）
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub enum MechanismType {
     Overall,
     StoryCollapse { story: StoryId },
@@ -64,6 +68,7 @@ pub enum MechanismType {
 /// 部材端のせん断力（局所 Vy・Vz の材端最大値）がせん断降伏耐力 Qy
 /// （[`compute_shear_yield_qy`] 参照）を超えたステップを記録する。曲げヒンジ
 /// （[`HingeEvent`]）とは独立に判定され、曲げ降伏の有無に関わらず記録される。
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct ShearYieldEvent {
     pub step: u32,
     pub elem: ElemId,
@@ -73,7 +78,7 @@ pub struct ShearYieldEvent {
 /// 部材別 Rp の直接反映に用いる）。プッシュオーバー最終ステップの部材端内力を
 /// 局所座標へ射影し、強軸（局所 z まわり）・弱軸（局所 y まわり）の設計用曲げ・
 /// せん断と軸力（圧縮正）、および部材変形角 Rp を保持する。
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
 pub struct PushoverMemberResponse {
     pub elem: ElemId,
     /// 強軸（局所 z 軸まわり Mz）の設計用曲げモーメント [N·mm]（両端の最大絶対値）。
@@ -95,6 +100,7 @@ pub struct PushoverMemberResponse {
 }
 
 /// プッシュオーバー解析結果（P5 §7.4）
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct PushoverResult {
     pub steps: Vec<PushoverStep>,
     pub capacity_curve: Vec<CapacityPoint>,
@@ -108,6 +114,7 @@ pub struct PushoverResult {
     pub member_response: Vec<PushoverMemberResponse>,
 }
 
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct PushoverStep {
     pub load_factor: f64,
     pub top_disp: f64,

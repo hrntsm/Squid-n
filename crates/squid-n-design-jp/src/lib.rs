@@ -109,7 +109,7 @@ pub struct MemberForcesAt {
 }
 
 /// 検定式の種別（検定比の内訳表示用）。
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum CheckKind {
     /// 曲げ
     Bending,
@@ -140,7 +140,7 @@ impl CheckKind {
 }
 
 /// 1 検定式分の結果（検定比の内訳）。
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct CheckComponent {
     pub kind: CheckKind,
     pub ratio: f64,
@@ -155,6 +155,7 @@ pub struct CheckComponent {
 /// `components` は **必ず 1 件以上**（検定不能の退化ケースは
 /// [`CheckOutcome::Skipped`] で表現するため、`CheckResult` を返す時点で
 /// 検定式が確定している）。
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct CheckResult {
     pub basis: String,
     /// 全検定式に共通の数値根拠（断面諸元など）。式固有の情報は各
@@ -184,6 +185,7 @@ impl CheckResult {
 ///
 /// `Skipped` は「検定比 0・OK」という偽の安全側結果を排除するために導入した
 /// （表示側は未検定として扱い、検定比図・検定表のいずれでも NG 件数に含めない）。
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub enum CheckOutcome {
     Checked(CheckResult),
     /// 検定不能（理由の例: 「Fc 未設定」「配筋情報なし」「断面形状不一致」）。

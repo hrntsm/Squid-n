@@ -410,7 +410,8 @@ pub fn build_report_csv(app: &App) -> String {
 
 /// 準備計算の結果（[`crate::app::PreparationResult`]）を CSV 文字列に整形する
 /// （GUI 非依存）。建物概要・階の分布・地震力(Ai分布)・風圧力・剛域・断面性能・
-/// 幅厚比・荷重集計の各セクションを出力する。準備計算が未実行なら空文字列を返す。
+/// 幅厚比・部材剛性・荷重集計の各セクションを出力する。
+/// 準備計算が未実行なら空文字列を返す。
 pub fn build_preparation_csv(app: &App) -> String {
     use crate::app::{
         ai_mode_label, load_case_kind_label, member_kind_label, member_rank_label,
@@ -614,6 +615,45 @@ pub fn build_preparation_csv(app: &App) -> String {
                 r.n_elements,
                 r.max_ratio.map(|v| format!("{:.2}", v)).unwrap_or_default(),
                 r.rank.map(member_rank_label).unwrap_or("判定不可"),
+            ));
+        }
+    }
+
+    if !p.member_stiffness.is_empty() {
+        out.push_str(&format!(
+            "\n[部材剛性の割増し・等価換算]\n該当部材数,{}\n梁要素数,{}\n",
+            p.member_stiffness.len(),
+            p.member_stiffness_candidates
+        ));
+        out.push_str(
+            "部材ID,種別,断面,材料,スラブ増大率,壁上下梁倍率,元A[mm2],元Iy[mm4],実効A[mm2],実効Iy[mm4],総増大率,等価Aax[mm2],等価Iy[mm4],等価Iz[mm4],等価J[mm4],等価Asy[mm2],等価Asz[mm2]\n",
+        );
+        for r in &p.member_stiffness {
+            let c = r.composite;
+            let fmt = |v: Option<f64>| v.map(|x| format!("{:.4e}", x)).unwrap_or_default();
+            out.push_str(&format!(
+                "{},{},{},{},{:.4},{:.1},{:.1},{:.4e},{:.1},{:.4e},{},{},{},{},{},{},{}\n",
+                r.elem.0,
+                member_kind_label(r.kind),
+                r.section_name,
+                r.material,
+                r.slab_factor,
+                r.wall_girder_factor,
+                r.section_area,
+                r.section_iy,
+                r.effective_area,
+                r.effective_iy,
+                if r.section_iy > 0.0 {
+                    format!("{:.4}", r.effective_iy / r.section_iy)
+                } else {
+                    String::new()
+                },
+                fmt(c.map(|c| c.area_ax)),
+                fmt(c.map(|c| c.iy)),
+                fmt(c.map(|c| c.iz)),
+                fmt(c.map(|c| c.j)),
+                fmt(c.map(|c| c.as_y)),
+                fmt(c.map(|c| c.as_z)),
             ));
         }
     }

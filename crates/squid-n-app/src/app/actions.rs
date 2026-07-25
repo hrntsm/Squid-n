@@ -83,30 +83,36 @@ impl App {
 
     /// プロジェクトを指定パスへ保存する。成功時は project_path と未保存フラグを更新。
     ///
-    /// 準備計算の結果は、最新（モデル編集後に再実行済み）の場合のみ同梱する
-    /// （`preparation_stale` なら保存しない。読込側が「保存されている＝その
-    /// モデルに対して最新」と扱えるようにするため）。
+    /// 準備計算の結果・解析結果は、いずれも**最新（モデル編集後に再実行済み）の
+    /// 場合のみ**同梱する（`preparation_stale` / `results_stale` なら保存しない）。
+    /// 読込側が「保存されている＝そのモデルに対して最新」と扱えるようにするため。
     pub fn save_project_to(&mut self, path: std::path::PathBuf) {
         self.last_error = None;
-        let encoded = self
+        // self を可変借用する `encoded_or_notice` の前に、直列化まで済ませておく。
+        let prep = self
             .preparation
             .as_ref()
             .filter(|_| !self.staleness.preparation_stale)
             .map(rmp_serde::to_vec);
-        let prep_bytes = match encoded {
-            Some(Ok(bytes)) => Some(bytes),
-            // 準備計算は再計算できる派生データなので、直列化に失敗しても
-            // 保存自体は続行する（モデルは保存する）。
-            Some(Err(e)) => {
-                self.report_notice(format!(
-                    "準備計算の結果を保存できませんでした（モデルは保存します）: {}",
-                    e
-                ));
-                None
-            }
-            None => None,
+        let results = self
+            .results
+            .as_ref()
+            .filter(|_| !self.staleness.results_stale)
+            .map(|bundle| SavedResults {
+                bundle: bundle.clone(),
+                last_static: self.last_static,
+                last_run: self.staleness.last_run,
+            })
+            .as_ref()
+            .map(rmp_serde::to_vec);
+        let prep_bytes = self.encoded_or_notice(prep, "準備計算の結果");
+        let results_bytes = self.encoded_or_notice(results, "解析結果");
+
+        let extras = squid_n_io::scz::SczExtras {
+            preparation: prep_bytes.as_deref(),
+            results: results_bytes.as_deref(),
         };
-        match squid_n_io::scz::save_scz(&path, &self.model, prep_bytes.as_deref()) {
+        match squid_n_io::scz::save_scz(&path, &self.model, extras) {
             Ok(()) => {
                 // ショートカット保存はダイアログも出ず無反応になるため、
                 // 成功をステータスバーとログで明示する。
@@ -122,36 +128,83 @@ impl App {
         }
     }
 
+    /// 保存用の派生データの直列化結果を受け取り、失敗していれば注意を報告する。
+    ///
+    /// 準備計算・解析結果はいずれもモデルから再計算できる派生データなので、
+    /// 直列化に失敗しても保存自体は続行する（モデルは保存し、注意を報告する）。
+    fn encoded_or_notice(
+        &mut self,
+        encoded: Option<Result<Vec<u8>, rmp_serde::encode::Error>>,
+        label: &str,
+    ) -> Option<Vec<u8>> {
+        match encoded {
+            Some(Ok(bytes)) => Some(bytes),
+            Some(Err(e)) => {
+                self.report_notice(format!(
+                    "{}を保存できませんでした（モデルは保存します）: {}",
+                    label, e
+                ));
+                None
+            }
+            None => None,
+        }
+    }
+
     /// プロジェクトを指定パスから読み込む。成功時はモデルを差し替える。
     ///
-    /// 準備計算の結果が同梱されていれば復元し、実行済み扱いにする（保存側が
-    /// 最新のときだけ書き出すため、同梱＝そのモデルに対して最新である）。
+    /// 準備計算の結果・解析結果が同梱されていれば復元し、実行済み扱いにする
+    /// （保存側が最新のときだけ書き出すため、同梱＝そのモデルに対して最新である）。
     /// 同梱が無い・復号に失敗した場合は未実行のままとし、解析実行時または
     /// 「準備計算 実行」で再計算する。
     pub fn open_project_from(&mut self, path: std::path::PathBuf) {
         self.last_error = None;
         match squid_n_io::scz::load_scz(&path) {
-            Ok((model, prep_bytes)) => {
-                if let Err(e) = model.validate() {
+            Ok(contents) => {
+                if let Err(e) = contents.model.validate() {
                     self.report_error(format!("読込モデルの検証エラー: {:?}", e));
                     return;
                 }
-                self.load_model(model);
-                if let Some(bytes) = prep_bytes {
-                    match rmp_serde::from_slice::<PreparationResult>(&bytes) {
-                        Ok(prep) => {
-                            self.preparation = Some(prep);
-                            self.staleness.preparation_stale = false;
-                        }
-                        Err(e) => self.report_notice(format!(
-                            "保存された準備計算の結果を読み込めませんでした（再実行が必要です）: {}",
-                            e
-                        )),
-                    }
+                self.load_model(contents.model);
+                if let Some(prep) =
+                    self.decode_on_load::<PreparationResult>(contents.preparation, "準備計算の結果")
+                {
+                    self.preparation = Some(prep);
+                    self.staleness.preparation_stale = false;
+                }
+                if let Some(saved) =
+                    self.decode_on_load::<SavedResults>(contents.results, "解析結果")
+                {
+                    self.results = Some(saved.bundle);
+                    self.last_static = saved.last_static;
+                    self.staleness.last_run = saved.last_run;
+                    // 保存側が最新のときだけ書き出すため、復元できた結果は
+                    // モデルと整合している（断面検定の結果も同梱されている）。
+                    self.staleness.results_stale = false;
+                    self.staleness.design_stale = false;
                 }
                 self.project_path = Some(path);
             }
             Err(e) => self.report_error(format!("読込エラー: {}", e)),
+        }
+    }
+
+    /// 読み込んだ派生データを復号する。失敗しても読込自体は続行し、
+    /// 未復元（再計算が必要）である旨を注意として報告する。
+    fn decode_on_load<T: serde::de::DeserializeOwned>(
+        &mut self,
+        bytes: Option<Vec<u8>>,
+        label: &str,
+    ) -> Option<T> {
+        let bytes = bytes?;
+        match rmp_serde::from_slice::<T>(&bytes) {
+            Ok(value) => Some(value),
+            Err(e) => {
+                self.report_notice(format!(
+                    "保存された{}を読み込めませんでした（再実行が必要です）: {}",
+                    label, e
+                ));
+                None
+            }
         }
     }
 

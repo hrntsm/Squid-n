@@ -56,6 +56,11 @@ pub struct PreparationResult {
     pub sections: Vec<PrepSectionRow>,
     /// 鋼断面の幅厚比・部材ランク（断面 × 部材用途 × 材料でまとめる）。
     pub width_thickness: Vec<PrepWidthThicknessRow>,
+    /// 部材単位の剛性割増し（スラブ協力幅・合成梁・壁エレメント上下大梁）と
+    /// SRC/CFT 等価断面。割増しも等価換算も無い部材は含まない。
+    pub member_stiffness: Vec<PrepMemberStiffnessRow>,
+    /// 剛性割増し・等価換算の算定対象となった梁要素の総数。
+    pub member_stiffness_candidates: usize,
     /// 荷重ケースの集計（`model.load_cases` と同順）。
     pub load_cases: Vec<PrepLoadCaseRow>,
     /// モデル整合性チェックのエラー件数。
@@ -277,6 +282,51 @@ pub struct PrepWidthThicknessRow {
     pub rank: Option<squid_n_design_jp::secondary::holding_capacity::MemberRank>,
 }
 
+/// 部材単位の剛性割増し・SRC/CFT 等価断面 1 行。
+///
+/// 断面性能の表（断面単位）では表せない、**部材ごとに決まる**剛性の割増しを示す。
+/// 値は [`squid_n_element::beam::stiffness_breakdown`] ・
+/// [`squid_n_element::beam::composite_props_of`] を通した、要素構築が実際に
+/// 適用するものと同じ算定結果。
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct PrepMemberStiffnessRow {
+    pub elem: ElemId,
+    /// 部材種別（柱／梁／ブレース）。
+    pub kind: squid_n_design_jp::MemberKind,
+    pub section_name: String,
+    pub material: String,
+    /// スラブ協力幅（RC 矩形梁）・合成梁（H 形鋼梁）による強軸曲げ剛性の増大率。
+    pub slab_factor: f64,
+    /// 壁エレメントモデルの上下大梁の剛性倍率（軸・曲げ・ねじり・せん断に一律）。
+    pub wall_girder_factor: f64,
+    /// SRC/CFT 等価断面性能（対象外・算定不能なら `None`）。
+    pub composite: Option<PrepCompositeProps>,
+    /// 元断面の A・Iy（強軸）[mm²・mm⁴]。等価換算・割増しとの比較用。
+    pub section_area: f64,
+    pub section_iy: f64,
+    /// 割増し・等価換算をすべて適用した後の強軸曲げ剛性用 I [mm⁴]。
+    /// 元断面 Iy に対する比が「実際に効いている総増大率」になる。
+    pub effective_iy: f64,
+    /// 同じく軸剛性用の断面積 [mm²]。
+    pub effective_area: f64,
+}
+
+/// SRC/CFT の等価断面性能（[`squid_n_core::section_shape::CompositeProps`] の
+/// 保存・表示用の写し）。
+#[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
+pub struct PrepCompositeProps {
+    /// 軸剛性用断面積 [mm²]。
+    pub area_ax: f64,
+    /// 強軸・弱軸の断面二次モーメント [mm⁴]。
+    pub iy: f64,
+    pub iz: f64,
+    /// ねじり定数 [mm⁴]。
+    pub j: f64,
+    /// せん断有効断面積 [mm²]。
+    pub as_y: f64,
+    pub as_z: f64,
+}
+
 /// 荷重ケースの集計 1 行。
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct PrepLoadCaseRow {
@@ -361,6 +411,7 @@ impl App {
         let (seismic, seismic_note) = self.build_prep_seismic();
         let (wind, wind_note) = self.build_prep_wind();
         let (rigid_zones, rigid_zone_candidates) = self.build_prep_rigid_zones();
+        let (member_stiffness, member_stiffness_candidates) = self.build_prep_member_stiffness();
         PreparationResult {
             computed_at: SystemTime::now(),
             summary: self.build_prep_summary(),
@@ -373,6 +424,8 @@ impl App {
             rigid_zone_candidates,
             sections: self.build_prep_sections(),
             width_thickness: self.build_prep_width_thickness(),
+            member_stiffness,
+            member_stiffness_candidates,
             load_cases: self.build_prep_load_cases(),
             diag_errors,
             diag_warnings,
@@ -738,6 +791,99 @@ impl App {
             });
         }
         rows
+    }
+
+    /// 部材単位の剛性割増し（スラブ協力幅・合成梁・壁エレメント上下大梁）と
+    /// SRC/CFT 等価断面を一覧化する。返り値は `(該当部材の行, 梁要素の総数)`。
+    ///
+    /// 割増しも等価換算も生じ得ないモデル（スラブ剛性を考慮しない・壁が無い・
+    /// SRC/CFT 断面が無い）では、部材ごとの判定（`O(部材数)` の走査を含む）を
+    /// 行わずに空を返す。
+    fn build_prep_member_stiffness(&self) -> (Vec<PrepMemberStiffnessRow>, usize) {
+        use squid_n_core::model::ElementKind;
+        use squid_n_core::section_shape::SectionShape;
+
+        let model = &self.model;
+        let candidates = model
+            .elements
+            .iter()
+            .filter(|e| matches!(e.kind, ElementKind::Beam) && e.nodes.len() >= 2)
+            .count();
+
+        // 事前判定: どれか 1 つでも該当しうる場合のみ部材ごとの算定へ進む。
+        let slab_stiffness_enabled = model.slab_thickness > 0.0 && !model.slabs.is_empty();
+        let has_wall_element = model
+            .elements
+            .iter()
+            .any(|e| matches!(e.kind, ElementKind::Wall) && e.nodes.len() >= 4);
+        let has_composite_section = model.sections.iter().any(|s| {
+            matches!(
+                s.shape,
+                Some(
+                    SectionShape::SrcRect { .. }
+                        | SectionShape::CftBox { .. }
+                        | SectionShape::CftPipe { .. }
+                )
+            )
+        });
+        if !(slab_stiffness_enabled || has_wall_element || has_composite_section) {
+            return (Vec::new(), candidates);
+        }
+
+        let mut rows = Vec::new();
+        for e in &model.elements {
+            if !matches!(e.kind, ElementKind::Beam) || e.nodes.len() < 2 {
+                continue;
+            }
+            let (Some(sec), Some(mat)) = (
+                e.section.and_then(|sid| model.sections.get(sid.index())),
+                e.material.and_then(|mid| model.materials.get(mid.index())),
+            ) else {
+                continue;
+            };
+            let factors = squid_n_element::beam::stiffness_breakdown(model, e);
+            let composite = squid_n_element::beam::composite_props_of(model, e);
+            // 実効値: 等価換算 → スラブ／合成梁（強軸曲げのみ）→ 壁上下大梁（一律）。
+            // 要素構築（`BeamElement::new`）が適用するのと同じ順序・同じ規則。
+            // SRC で材料から等価換算できない（Fc 未設定等）場合も、軸剛性だけは
+            // 既定の累加（`calc_axial_stiffness_area`）が効く点まで一致させる。
+            let base_iy = composite.map(|p| p.iy).unwrap_or(sec.iy);
+            let base_area = match (composite, sec.shape.as_ref()) {
+                (Some(p), _) => p.area_ax,
+                (None, Some(shape @ SectionShape::SrcRect { .. })) => {
+                    shape.calc_axial_stiffness_area()
+                }
+                _ => sec.area,
+            };
+            if factors.slab == 1.0
+                && factors.wall_girder == 1.0
+                && composite.is_none()
+                && base_area == sec.area
+            {
+                continue;
+            }
+            rows.push(PrepMemberStiffnessRow {
+                elem: e.id,
+                kind: super::member_kind_of(e, model),
+                section_name: sec.name.clone(),
+                material: mat.name.clone(),
+                slab_factor: factors.slab,
+                wall_girder_factor: factors.wall_girder,
+                composite: composite.map(|p| PrepCompositeProps {
+                    area_ax: p.area_ax,
+                    iy: p.iy,
+                    iz: p.iz,
+                    j: p.j,
+                    as_y: p.as_y,
+                    as_z: p.as_z,
+                }),
+                section_area: sec.area,
+                section_iy: sec.iy,
+                effective_iy: base_iy * factors.slab * factors.wall_girder,
+                effective_area: base_area * factors.wall_girder,
+            });
+        }
+        (rows, candidates)
     }
 
     fn build_prep_load_cases(&self) -> Vec<PrepLoadCaseRow> {

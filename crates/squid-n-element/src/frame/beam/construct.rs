@@ -5,10 +5,7 @@
 //! を行う。
 
 use super::element::BeamElement;
-use super::stiffness_factors::{
-    composite_beam_stiffness_factor, is_wall_top_bottom_girder, slab_stiffness_factor,
-    WALL_GIRDER_STIFF_FACTOR,
-};
+use super::stiffness_factors::{breakdown_with, composite_props_with};
 use crate::transform::LocalFrame;
 use squid_n_core::ids::NodeId;
 use squid_n_core::model::{Material, Model, Section};
@@ -132,17 +129,10 @@ impl BeamElement {
         // 算定不能（fc 無し・Ec≤0 等）なら to_section の既定値
         // （SRC: N_S_EQ 固定、CFT: 鋼管のみ）のまま。質量用 a_mass は常に幾何断面。
         use squid_n_core::section_shape::SectionShape;
-        let composite = sec.shape.as_ref().and_then(|shape| match shape {
-            SectionShape::SrcRect { .. } => mat
-                .fc
-                .is_some()
-                .then(|| shape.src_equivalent_props(mat.young, mat.poisson))
-                .flatten(),
-            SectionShape::CftBox { .. } | SectionShape::CftPipe { .. } => mat
-                .fc
-                .and_then(|fc| shape.cft_equivalent_props(mat.young, mat.poisson, fc)),
-            _ => None,
-        });
+        let composite = sec
+            .shape
+            .as_ref()
+            .and_then(|shape| composite_props_with(shape, &mat));
 
         // SRC で材料から算定できない場合も、軸剛性だけは既定 N_S_EQ の累加を維持する。
         let a_stiff = match (&composite, &sec.shape) {
@@ -166,32 +156,22 @@ impl BeamElement {
         // 解かれてしまう（軸名の取り違え）。
         let (iy, iz, as_y, as_z) = (sec_iz, sec_iy, sec_as_z, sec_as_y);
 
-        // スラブ協力幅による強軸剛性増大（RC規準8条のスラブ協力幅・合成梁は
-        // 各種合成構造設計指針）。RC 矩形梁は T 形断面の Ie/I0、H 形鋼梁は合成梁の平均
-        // 剛性 (I+sI)/(2·sI)。Model::slab_thickness=0（既定）では 1.0 で無効。
-        // 強軸（鉛直曲げ）＝要素座標系では iz（Mz 面）へ乗じる。
-        let iz = match &sec.shape {
-            Some(SectionShape::RcRect { .. }) => {
-                iz * slab_stiffness_factor(model, data, sec.width, sec.depth)
-            }
-            Some(SectionShape::SteelH { .. }) => {
-                iz * composite_beam_stiffness_factor(model, data, &sec, mat.young)
-            }
-            _ => iz,
-        };
-
-        // 壁エレメントモデルの上下大梁の剛性倍率（壁エレメント置換モデルの上下大梁の断面性能）。
-        // 対象は水平材（協力幅判定と同様、勾配 5% までは水平とみなす）かつ、両端節点が
-        // 四隅を持つ Wall 要素の節点集合に含まれる（=壁の上辺・下辺の大梁）場合のみ。
-        // 倍率は剛性用の値（a, iy, iz, j, as_y, as_z）にのみ乗じ、質量用 a_mass は
-        // 幾何断面のまま変更しない。
+        // 断面性能の割増し（スラブ協力幅・合成梁・壁エレメント上下大梁）。
+        // 準備計算の確認表示（`stiffness_breakdown`）と同じ算定を通す。
+        //
+        // - スラブ協力幅／合成梁: RC 矩形梁は T 形断面の Ie/I0、H 形鋼梁は合成梁の
+        //   平均剛性 (I+sI)/(2·sI)。`Model::slab_thickness=0`（既定）では 1.0 で無効。
+        //   強軸（鉛直曲げ）＝要素座標系では iz（Mz 面）へ乗じる。
+        // - 壁エレメント上下大梁: 対象は水平材（協力幅判定と同様、勾配 5% までは
+        //   水平とみなす）かつ両端節点が四隅を持つ Wall 要素の節点集合に含まれる場合。
+        //   剛性用の値（a, iy, iz, j, as_y, as_z）にのみ乗じ、質量用 a_mass は
+        //   幾何断面のまま変更しない。
         let lp = (dx * dx + dy * dy).sqrt();
         let is_horizontal = lp > 1e-9 && dz.abs() <= 0.05 * lp;
-        let wall_girder_factor = if is_horizontal && is_wall_top_bottom_girder(model, n0, n1) {
-            WALL_GIRDER_STIFF_FACTOR
-        } else {
-            1.0
-        };
+        let factors = breakdown_with(model, data, &sec, mat.young, is_horizontal);
+        let iz = iz * factors.slab;
+
+        let wall_girder_factor = factors.wall_girder;
         let mut a_stiff = a_stiff * wall_girder_factor;
         let mut iy = iy * wall_girder_factor;
         let mut iz = iz * wall_girder_factor;

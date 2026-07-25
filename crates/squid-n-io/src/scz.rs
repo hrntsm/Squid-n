@@ -63,16 +63,37 @@ fn read_entry_capped(
 }
 
 /// 準備計算の結果を格納する zip エントリ名（任意エントリ）。
-/// 中身は呼び出し側（アプリ）が msgpack へ直列化したバイト列であり、
-/// io 層は内容を解釈しない（準備計算の型はアプリ層にあるため）。
 pub const PREPARATION_ENTRY: &str = "preparation.msgpack";
 
-/// モデルと準備計算の結果を .scz へ保存する。
+/// 解析結果を格納する zip エントリ名（任意エントリ）。
+pub const RESULTS_ENTRY: &str = "results.msgpack";
+
+/// モデル以外に .scz へ同梱する派生データ（いずれもモデルから再計算できるが、
+/// 再計算が高価なため保存して復元するもの）。
 ///
-/// `preparation` は準備計算の結果を直列化したバイト列。`None`（未実行、または
-/// モデル編集後に再実行していない）の場合は準備計算エントリを書かない。
-/// 書く場合は manifest に列挙してハッシュ検証の対象にする。
-pub fn save_scz(path: &Path, model: &Model, preparation: Option<&[u8]>) -> Result<(), IoError> {
+/// 中身は呼び出し側（アプリ）が msgpack へ直列化したバイト列であり、io 層は
+/// 内容を解釈しない（準備計算・解析結果の型はアプリ層にあるため）。`None` の
+/// 項目はエントリを書かない。書く項目は manifest に列挙してハッシュ検証の
+/// 対象にする。
+#[derive(Default, Clone, Copy)]
+pub struct SczExtras<'a> {
+    /// 準備計算の結果。
+    pub preparation: Option<&'a [u8]>,
+    /// 解析結果。
+    pub results: Option<&'a [u8]>,
+}
+
+/// [`load_scz`] の返り値。モデルと、同梱されていれば派生データ。
+pub struct SczContents {
+    pub model: Model,
+    /// 準備計算の結果（同梱が無ければ `None`）。
+    pub preparation: Option<Vec<u8>>,
+    /// 解析結果（同梱が無ければ `None`）。
+    pub results: Option<Vec<u8>>,
+}
+
+/// モデルと派生データを .scz へ保存する。
+pub fn save_scz(path: &Path, model: &Model, extras: SczExtras<'_>) -> Result<(), IoError> {
     let tmp_path = path.with_extension("scz.tmp");
 
     let model_bytes = rmp_serde::to_vec(model).map_err(|e| IoError::Decode(e.to_string()))?;
@@ -95,11 +116,16 @@ pub fn save_scz(path: &Path, model: &Model, preparation: Option<&[u8]>) -> Resul
             sha256: settings_hash,
         },
     ];
-    if let Some(prep) = preparation {
-        entries.push(crate::manifest::EntryHash {
-            name: PREPARATION_ENTRY.to_string(),
-            sha256: sha256_of(prep),
-        });
+    for (name, data) in [
+        (PREPARATION_ENTRY, extras.preparation),
+        (RESULTS_ENTRY, extras.results),
+    ] {
+        if let Some(data) = data {
+            entries.push(crate::manifest::EntryHash {
+                name: name.to_string(),
+                sha256: sha256_of(data),
+            });
+        }
     }
 
     let manifest = Manifest {
@@ -130,10 +156,15 @@ pub fn save_scz(path: &Path, model: &Model, preparation: Option<&[u8]>) -> Resul
             .map_err(|e| IoError::Zip(e.to_string()))?;
         zip.write_all(&settings_bytes)?;
 
-        if let Some(prep) = preparation {
-            zip.start_file(PREPARATION_ENTRY, opts)
-                .map_err(|e| IoError::Zip(e.to_string()))?;
-            zip.write_all(prep)?;
+        for (name, data) in [
+            (PREPARATION_ENTRY, extras.preparation),
+            (RESULTS_ENTRY, extras.results),
+        ] {
+            if let Some(data) = data {
+                zip.start_file(name, opts)
+                    .map_err(|e| IoError::Zip(e.to_string()))?;
+                zip.write_all(data)?;
+            }
         }
 
         // rename 前に内容をディスクへ永続化する。fsync を挟まないと rename が
@@ -163,10 +194,10 @@ fn sync_parent_dir(_path: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-/// モデルと、保存されていれば準備計算の結果（msgpack バイト列）を読み込む。
-/// 準備計算エントリを持たないファイル（準備計算が最新でない状態で保存した
-/// プロジェクト）では第 2 要素が `None` になる。
-pub fn load_scz(path: &Path) -> Result<(Model, Option<Vec<u8>>), IoError> {
+/// モデルと、同梱されていれば派生データ（準備計算の結果・解析結果）を読み込む。
+/// 該当エントリを持たないファイル（それらが最新でない状態で保存したプロジェクト）
+/// では [`SczContents`] の該当項目が `None` になる。
+pub fn load_scz(path: &Path) -> Result<SczContents, IoError> {
     let f = std::fs::File::open(path)?;
     let mut archive = zip::ZipArchive::new(f).map_err(|e| IoError::Zip(e.to_string()))?;
 
@@ -188,17 +219,19 @@ pub fn load_scz(path: &Path) -> Result<(Model, Option<Vec<u8>>), IoError> {
     }
 
     let mut model_data = None;
-    let mut preparation_data = None;
+    let mut preparation = None;
+    let mut results = None;
     for entry in &manifest.entries {
         let data = read_entry_capped(&mut archive, &entry.name)?;
         let actual_hash = sha256_of(&data);
         if actual_hash != entry.sha256 {
             return Err(IoError::HashMismatch(entry.name.clone()));
         }
-        if entry.name == "model.msgpack" {
-            model_data = Some(data);
-        } else if entry.name == PREPARATION_ENTRY {
-            preparation_data = Some(data);
+        match entry.name.as_str() {
+            "model.msgpack" => model_data = Some(data),
+            PREPARATION_ENTRY => preparation = Some(data),
+            RESULTS_ENTRY => results = Some(data),
+            _ => {}
         }
     }
 
@@ -210,7 +243,11 @@ pub fn load_scz(path: &Path) -> Result<(Model, Option<Vec<u8>>), IoError> {
     let model: Model =
         rmp_serde::from_slice(&model_data).map_err(|e| IoError::Decode(e.to_string()))?;
 
-    Ok((model, preparation_data))
+    Ok(SczContents {
+        model,
+        preparation,
+        results,
+    })
 }
 
 #[cfg(test)]
@@ -254,8 +291,8 @@ mod tests {
         let model = make_3node_model();
         let dir = std::env::temp_dir();
         let path = dir.join("p.scz");
-        save_scz(&path, &model, None).unwrap();
-        let (back, _) = load_scz(&path).unwrap();
+        save_scz(&path, &model, SczExtras::default()).unwrap();
+        let back = load_scz(&path).unwrap().model;
         assert_eq!(model.nodes.len(), back.nodes.len());
         assert!(model.eq_ignoring_dofmap(&back));
         let _ = std::fs::remove_file(&path);
@@ -266,7 +303,7 @@ mod tests {
         let model = make_3node_model();
         let dir = std::env::temp_dir();
         let path = dir.join("p_hash.scz");
-        save_scz(&path, &model, None).unwrap();
+        save_scz(&path, &model, SczExtras::default()).unwrap();
         let settings_bytes = {
             let f = std::fs::File::open(&path).unwrap();
             let mut ar = zip::ZipArchive::new(f).unwrap();
@@ -308,7 +345,7 @@ mod tests {
         let model = make_3node_model();
         let dir = std::env::temp_dir();
         let path = dir.join("p_ver.scz");
-        save_scz(&path, &model, None).unwrap();
+        save_scz(&path, &model, SczExtras::default()).unwrap();
 
         let bad_manifest = Manifest {
             schema_version: 999,
@@ -342,7 +379,7 @@ mod tests {
         let dir = std::env::temp_dir();
         let path = dir.join("p_old_ver.scz");
         // まず通常保存し、その model.msgpack / settings.json を取り出す。
-        save_scz(&path, &model, None).unwrap();
+        save_scz(&path, &model, SczExtras::default()).unwrap();
         let (model_bytes, settings_bytes) = {
             let f = std::fs::File::open(&path).unwrap();
             let mut ar = zip::ZipArchive::new(f).unwrap();
@@ -389,7 +426,7 @@ mod tests {
         let model = make_3node_model();
         let dir = std::env::temp_dir();
         let path = dir.join("p_missing_entry.scz");
-        save_scz(&path, &model, None).unwrap();
+        save_scz(&path, &model, SczExtras::default()).unwrap();
         let (model_bytes, settings_bytes) = {
             let f = std::fs::File::open(&path).unwrap();
             let mut ar = zip::ZipArchive::new(f).unwrap();
@@ -468,8 +505,8 @@ mod tests {
 
         let dir = std::env::temp_dir();
         let path = dir.join("p_shape_roundtrip.scz");
-        save_scz(&path, &model, None).unwrap();
-        let (back, _) = load_scz(&path).unwrap();
+        save_scz(&path, &model, SczExtras::default()).unwrap();
+        let back = load_scz(&path).unwrap().model;
 
         assert_eq!(back.sections.len(), 1);
         assert_eq!(back.sections[0].shape, Some(shape));
@@ -485,9 +522,18 @@ mod tests {
         let dir = std::env::temp_dir();
         let path = dir.join("p_prep_roundtrip.scz");
         let prep = b"preparation payload".to_vec();
-        save_scz(&path, &model, Some(&prep)).unwrap();
+        save_scz(
+            &path,
+            &model,
+            SczExtras {
+                preparation: Some(&prep),
+                ..Default::default()
+            },
+        )
+        .unwrap();
 
-        let (back, back_prep) = load_scz(&path).unwrap();
+        let loaded = load_scz(&path).unwrap();
+        let (back, back_prep) = (loaded.model, loaded.preparation);
         assert!(model.eq_ignoring_dofmap(&back));
         assert_eq!(back_prep.as_deref(), Some(prep.as_slice()));
 
@@ -518,9 +564,10 @@ mod tests {
         let model = make_3node_model();
         let dir = std::env::temp_dir();
         let path = dir.join("p_prep_absent.scz");
-        save_scz(&path, &model, None).unwrap();
+        save_scz(&path, &model, SczExtras::default()).unwrap();
 
-        let (back, back_prep) = load_scz(&path).unwrap();
+        let loaded = load_scz(&path).unwrap();
+        let (back, back_prep) = (loaded.model, loaded.preparation);
         assert!(model.eq_ignoring_dofmap(&back));
         assert!(back_prep.is_none());
         let _ = std::fs::remove_file(&path);
@@ -549,8 +596,8 @@ mod tests {
 
         let dir = std::env::temp_dir();
         let path = dir.join("p_brace_roundtrip.scz");
-        save_scz(&path, &model, None).unwrap();
-        let (back, _) = load_scz(&path).unwrap();
+        save_scz(&path, &model, SczExtras::default()).unwrap();
+        let back = load_scz(&path).unwrap().model;
 
         assert_eq!(back.elements.len(), 1);
         assert_eq!(
@@ -607,8 +654,8 @@ mod tests {
 
         let dir = std::env::temp_dir();
         let path = dir.join("p_member_detail_roundtrip.scz");
-        save_scz(&path, &model, None).unwrap();
-        let (back, _) = load_scz(&path).unwrap();
+        save_scz(&path, &model, SczExtras::default()).unwrap();
+        let back = load_scz(&path).unwrap().model;
 
         assert_eq!(back.member_detail_attrs, model.member_detail_attrs);
         assert!(model.eq_ignoring_dofmap(&back));

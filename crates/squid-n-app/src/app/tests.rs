@@ -5040,3 +5040,140 @@ fn test_build_preparation_csv_sections() {
     assert!(csv.contains("[幅厚比・部材ランク]"), "{csv}");
     assert!(csv.contains("H 形鋼"), "{csv}");
 }
+
+/// 剛性の割増しも等価換算も生じ得ないモデル（スラブ剛性なし・壁なし・
+/// SRC/CFT なし）では、部材剛性の表は空になる（部材ごとの判定を行わない）。
+#[test]
+fn test_preparation_member_stiffness_empty_for_plain_model() {
+    let mut app = App::default();
+    app.load_model(crate::sample::portal_frame());
+    app.run_preparation();
+
+    let prep = app.preparation.as_ref().unwrap();
+    assert!(
+        prep.member_stiffness.is_empty(),
+        "{:?}",
+        prep.member_stiffness
+    );
+    assert_eq!(
+        prep.member_stiffness_candidates,
+        app.model.elements.len(),
+        "候補数（梁要素数）は数える"
+    );
+}
+
+/// SRC/CFT 断面の部材は等価断面性能が算定され、部材剛性の表に現れる。
+/// 表示値は要素構築が実際に用いる等価換算と一致する。
+#[test]
+fn test_preparation_member_stiffness_reports_composite_props() {
+    use squid_n_core::ids::SectionId;
+    use squid_n_core::section_shape::SectionShape;
+
+    let mut model = crate::sample::portal_frame();
+    // 柱を CFT 角形に差し替え、充填コンクリート強度 Fc を持つ鋼管材料を割り当てる。
+    let cft = SectionShape::CftBox {
+        height: 400.0,
+        width: 400.0,
+        thick: 16.0,
+    };
+    model.sections[0] = cft.to_section(SectionId(0), "CFT-□400x400x16".into());
+    model.materials[0].fc = Some(36.0);
+
+    let mut app = App::default();
+    app.load_model(model);
+    app.run_preparation();
+
+    let prep = app.preparation.as_ref().unwrap();
+    let row = prep
+        .member_stiffness
+        .iter()
+        .find(|r| r.kind == squid_n_design_jp::MemberKind::Column)
+        .expect("CFT 柱の行があるはず");
+    let c = row.composite.expect("等価断面性能が算定されるはず");
+    // 充填コンクリート分だけ鋼管のみより剛性が大きくなる。
+    assert!(c.iy > row.section_iy, "{} vs {}", c.iy, row.section_iy);
+    assert!(c.area_ax > 0.0);
+    // 割増しは無いので実効値＝等価換算値。
+    assert_eq!(row.slab_factor, 1.0);
+    assert_eq!(row.wall_girder_factor, 1.0);
+    assert_eq!(row.effective_iy, c.iy);
+    assert_eq!(row.effective_area, c.area_ax);
+
+    // 要素構築が用いる等価換算と一致する（表示と解析入力の一致）。
+    let elem = app
+        .model
+        .elements
+        .iter()
+        .find(|e| e.id == row.elem)
+        .unwrap();
+    let props = squid_n_element::beam::composite_props_of(&app.model, elem)
+        .expect("要素側でも算定できるはず");
+    assert_eq!(props.iy, c.iy);
+    assert_eq!(props.area_ax, c.area_ax);
+}
+
+/// 解析結果はプロジェクトファイル（.scz）へ保存され、読込で復元される。
+/// 復元できた場合は再計算不要（stale でない）扱いになる。
+#[test]
+fn test_results_persisted_in_project_file() {
+    let dir = std::env::temp_dir();
+    let path = dir.join("squid_n_results_persist_test.scz");
+    let _ = std::fs::remove_file(&path);
+
+    let mut app = App::default();
+    app.load_model(crate::sample::portal_frame());
+    app.generate_stories_action();
+    app.run_linear_static(LoadCaseId(0));
+    app.run_eigen(3);
+    assert!(app.last_error.is_none(), "{:?}", app.last_error);
+
+    let saved = app.results.as_ref().unwrap();
+    let saved_disp = saved.statics[0].1.disp.clone();
+    let saved_period = saved.modal.as_ref().unwrap().period.clone();
+    let saved_checks = saved.member_checks.len();
+    let saved_key = app.last_static;
+    assert!(!app.staleness.results_stale);
+
+    app.save_project_to(path.clone());
+    assert!(app.last_error.is_none(), "{:?}", app.last_error);
+
+    let mut reopened = App::default();
+    reopened.open_project_from(path.clone());
+    assert!(reopened.last_error.is_none(), "{:?}", reopened.last_error);
+
+    let restored = reopened.results.as_ref().expect("解析結果が復元されるはず");
+    assert_eq!(restored.statics[0].1.disp, saved_disp);
+    assert_eq!(restored.modal.as_ref().unwrap().period, saved_period);
+    assert_eq!(restored.member_checks.len(), saved_checks);
+    assert_eq!(reopened.last_static, saved_key);
+    assert!(!reopened.staleness.results_stale);
+    assert!(!reopened.staleness.design_stale);
+    assert!(reopened.staleness.last_run.is_some());
+
+    let _ = std::fs::remove_file(&path);
+}
+
+/// 解析結果が古い（モデル編集後に未再解析）状態で保存した場合は同梱せず、
+/// 読込側は結果なし・要再計算のままにする。
+#[test]
+fn test_stale_results_not_persisted() {
+    let dir = std::env::temp_dir();
+    let path = dir.join("squid_n_results_stale_test.scz");
+    let _ = std::fs::remove_file(&path);
+
+    let mut app = App::default();
+    app.load_model(crate::sample::portal_frame());
+    app.run_linear_static(LoadCaseId(0));
+    app.staleness.mark_edited();
+    app.save_project_to(path.clone());
+    assert!(app.last_error.is_none(), "{:?}", app.last_error);
+
+    let mut reopened = App::default();
+    reopened.open_project_from(path.clone());
+    assert!(reopened.last_error.is_none(), "{:?}", reopened.last_error);
+    // 結果自体が復元されない（`results_stale` は結果が無い既定状態のまま）。
+    assert!(reopened.results.is_none());
+    assert_eq!(reopened.last_static, None);
+
+    let _ = std::fs::remove_file(&path);
+}

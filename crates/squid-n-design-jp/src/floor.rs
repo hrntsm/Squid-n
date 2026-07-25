@@ -7,7 +7,7 @@
 //! 単位は N-mm（面荷重 N/mm²、線荷重 N/mm）。
 
 /// 小梁（単純支持梁）の設計結果。
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct JoistDesignResult {
     /// スパン（支持間距離）[mm]。
     pub span: f64,
@@ -146,7 +146,7 @@ fn judge_joist(
 }
 
 /// スラブ（一方向）の設計結果。
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct SlabDesignResult {
     /// 設計スパン（短辺）[mm]。
     pub span: f64,

@@ -28,6 +28,8 @@ pub enum PrepView {
     Sections,
     /// 鋼断面の幅厚比・部材ランク。
     WidthThickness,
+    /// 部材単位の剛性割増し・SRC/CFT 等価断面。
+    MemberStiffness,
     /// 荷重ケースの集計。
     Loads,
 }
@@ -116,6 +118,7 @@ pub fn preparation_panel(ui: &mut egui::Ui, app: &mut App) {
             (PrepView::RigidZone, "剛域"),
             (PrepView::Sections, "断面性能"),
             (PrepView::WidthThickness, "幅厚比"),
+            (PrepView::MemberStiffness, "部材剛性"),
             (PrepView::Loads, "荷重集計"),
         ] {
             if ui.selectable_label(*view == v, label).clicked() {
@@ -136,6 +139,7 @@ pub fn preparation_panel(ui: &mut egui::Ui, app: &mut App) {
             PrepView::RigidZone => rigid_zone_section(ui, prep),
             PrepView::Sections => sections_section(ui, prep),
             PrepView::WidthThickness => width_thickness_section(ui, prep),
+            PrepView::MemberStiffness => member_stiffness_section(ui, prep),
             PrepView::Loads => loads_section(ui, prep),
         });
 }
@@ -787,6 +791,131 @@ fn width_thickness_section(ui: &mut egui::Ui, prep: &PreparationResult) {
          体系が異なるため「判定不可」）。筋かいは有効細長比で種別（BA〜BC）を\
          定めるため本表の対象外です。",
     );
+}
+
+/// 部材単位の剛性割増し・SRC/CFT 等価断面。
+fn member_stiffness_section(ui: &mut egui::Ui, prep: &PreparationResult) {
+    ui.label(format!(
+        "剛性の割増し・等価換算がある部材: {} / 梁要素 {}",
+        prep.member_stiffness.len(),
+        prep.member_stiffness_candidates
+    ));
+    ui.add_space(6.0);
+
+    if prep.member_stiffness.is_empty() {
+        ui.colored_label(
+            crate::theme::GRAY_600,
+            "該当する部材がありません（スラブ協力幅は「剛性計算用のスラブ厚」が\
+             0 のとき無効、壁エレメント上下大梁は耐震壁が成立した壁がある場合、\
+             等価換算は SRC/CFT 断面がある場合に生じます）",
+        );
+        return;
+    }
+
+    let row_h = crate::theme::table_row_height(ui);
+    let rows = &prep.member_stiffness;
+    TableBuilder::new(ui)
+        .striped(true)
+        .id_salt("prep_member_stiffness")
+        .column(Column::initial(70.0))
+        .column(Column::initial(70.0))
+        .column(Column::initial(160.0))
+        .column(Column::initial(100.0))
+        .column(Column::initial(100.0))
+        .column(Column::initial(100.0))
+        .column(Column::initial(120.0))
+        .column(Column::initial(120.0))
+        .column(Column::initial(100.0))
+        .header(row_h, |mut h| {
+            for t in &[
+                "部材",
+                "種別",
+                "断面",
+                "材料",
+                "スラブ",
+                "壁上下梁",
+                "元 Iy [cm⁴]",
+                "実効 Iy [cm⁴]",
+                "総増大率",
+            ] {
+                h.col(|ui| {
+                    ui.strong(*t);
+                });
+            }
+        })
+        .body(|body| {
+            body.rows(row_h, rows.len(), |mut row| {
+                let r = &rows[row.index()];
+                row.col(|ui| {
+                    ui.label(format!("#{}", r.elem.0));
+                });
+                row.col(|ui| {
+                    ui.label(member_kind_label(r.kind));
+                });
+                row.col(|ui| {
+                    // SRC/CFT は等価換算後の値を使うことが分かるよう印を付ける。
+                    let text = if r.composite.is_some() {
+                        format!("{}（等価換算）", r.section_name)
+                    } else {
+                        r.section_name.clone()
+                    };
+                    ui.label(text).on_hover_text(match &r.composite {
+                        Some(c) => format!(
+                            "SRC/CFT 等価断面: A={:.1} cm², Iy={:.0} cm⁴, Iz={:.0} cm⁴,\n\
+                             J={:.0} cm⁴, Asy={:.1} cm², Asz={:.1} cm²",
+                            c.area_ax * 1e-2,
+                            c.iy * 1e-4,
+                            c.iz * 1e-4,
+                            c.j * 1e-4,
+                            c.as_y * 1e-2,
+                            c.as_z * 1e-2
+                        ),
+                        None => "等価換算なし".to_string(),
+                    });
+                });
+                row.col(|ui| {
+                    ui.label(&r.material);
+                });
+                row.col(|ui| {
+                    label_factor(ui, r.slab_factor);
+                });
+                row.col(|ui| {
+                    label_factor(ui, r.wall_girder_factor);
+                });
+                row.col(|ui| {
+                    ui.label(format!("{:.0}", r.section_iy * 1e-4));
+                });
+                row.col(|ui| {
+                    ui.label(format!("{:.0}", r.effective_iy * 1e-4));
+                });
+                row.col(|ui| {
+                    if r.section_iy > 0.0 {
+                        ui.label(format!("{:.2} 倍", r.effective_iy / r.section_iy));
+                    } else {
+                        ui.colored_label(crate::theme::GRAY_600, "—");
+                    }
+                });
+            });
+        });
+    ui.add_space(4.0);
+    ui.colored_label(
+        crate::theme::GRAY_600,
+        "「スラブ」は RC 矩形梁のスラブ協力幅（T 形断面）・H 形鋼梁の合成梁による\
+         強軸曲げの増大率、「壁上下梁」は壁エレメント上下大梁の一律倍率です。\
+         「実効 Iy」は等価換算とこれらをすべて適用した強軸曲げ剛性用の値で、\
+         フレーム内雑壁（腰壁・垂壁・袖壁）の算入分は含みません。",
+    );
+}
+
+/// 増大率のセル。1.0（割増しなし）は淡色、大きい倍率は強調する。
+fn label_factor(ui: &mut egui::Ui, factor: f64) {
+    if factor <= 1.0 {
+        ui.colored_label(crate::theme::GRAY_600, "1.00");
+    } else if factor >= 10.0 {
+        ui.colored_label(crate::theme::BEST_YELLOW, format!("{:.0} 倍", factor));
+    } else {
+        ui.label(format!("{:.3}", factor));
+    }
 }
 
 /// 荷重ケースの集計。

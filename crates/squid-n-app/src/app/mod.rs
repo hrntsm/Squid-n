@@ -111,7 +111,7 @@ pub struct Navigator {
 
 /// 静的解析結果の格納キー。ユーザー荷重ケースと地震静的(Ai)を型で区別し、
 /// LoadCaseId(0) の二重使用(ユーザーケース0と地震結果の同居)を解消する。
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum StaticCaseKey {
     /// ユーザー定義の荷重ケース
     User(LoadCaseId),
@@ -132,7 +132,7 @@ pub enum StaticCaseKey {
 ///
 /// `Combo` のインデックスは **`ResultsBundle.combos` 上の位置**
 /// （`model.combinations` のインデックスではない）。
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum StaticKey {
     Case(StaticCaseKey),
     Combo(usize),
@@ -230,6 +230,7 @@ pub type SlabCheck = (
 );
 
 /// 1 検定位置の結果（部材内の位置 `xi` と検定結果/検定不能）。
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct PositionCheck {
     /// 部材軸方向の無次元位置 (0.0=始端, 1.0=終端)。
     pub xi: f64,
@@ -237,6 +238,7 @@ pub struct PositionCheck {
 }
 
 /// 1 部材分の断面検定結果（検定位置の列。`positions` は `xi` 昇順）。
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct MemberChecks {
     pub elem: ElemId,
     pub positions: Vec<PositionCheck>,
@@ -244,6 +246,7 @@ pub struct MemberChecks {
 
 /// 節点単位の検定（柱梁接合部・パネルゾーン・冷間成形耐力比・耐震壁など）。
 /// `label` は「接合部(RC)」等の種別表示用。
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct JointCheck {
     pub node: squid_n_core::ids::NodeId,
     pub label: String,
@@ -278,7 +281,20 @@ pub(crate) fn group_member_checks(
         .collect()
 }
 
-#[derive(Default)]
+/// プロジェクトファイル（.scz）へ保存する解析結果一式。
+///
+/// 結果本体（[`ResultsBundle`]）に加えて、復元後に結果タブ・設計タブが
+/// 保存時と同じ表示になるよう表示状態（`last_static`）と最終実行時刻も持つ。
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct SavedResults {
+    pub bundle: ResultsBundle,
+    /// 表示対象の静的解析結果。
+    pub last_static: Option<StaticKey>,
+    /// 解析の最終実行時刻。
+    pub last_run: Option<SystemTime>,
+}
+
+#[derive(Default, Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct ResultsBundle {
     pub statics: Vec<(StaticCaseKey, squid_n_solver::linear::StaticOnce)>,
     /// 荷重組合せの解析結果（組合せ名で保持）
