@@ -8,6 +8,7 @@
 /// 時系列の全量は結果I/O（§6）へストリーミングし、メモリに全保持しない。
 /// 例外として UI 描画用の代表応答（1 節点変位・ベースシア・最上階変形角）のみ
 /// `history` にステップごとの値を保持する。
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct ResponseResult {
     pub time: Vec<f64>,
     pub peak_disp: Vec<[f64; 6]>,
@@ -19,7 +20,7 @@ pub struct ResponseResult {
 /// UI 描画用の代表応答時刻歴（`time` と同じ長さ）。
 /// 記録方向は入力加速度の絶対値和（Σ|ẍg|）が大きい方向を解析開始時に自動選択する
 /// （`choose_record_dir_y` 参照）。X・Y いずれの加振でも代表応答がゼロにならない。
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct ResponseHistory {
     /// 記録節点（最も標高が高い、記録方向の自由度を持つ節点）。
     pub node: Option<squid_n_core::ids::NodeId>,

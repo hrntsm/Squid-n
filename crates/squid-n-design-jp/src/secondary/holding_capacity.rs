@@ -1,6 +1,6 @@
 use squid_n_core::ids::{ElemId, StoryId};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum MemberRank {
     FA,
     FB,

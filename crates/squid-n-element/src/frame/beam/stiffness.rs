@@ -201,14 +201,24 @@ impl BeamElement {
         kstar
     }
 
-    pub fn local_stiffness(&self) -> LocalMat {
-        // 剛域長は可撓長が正に残る範囲へ解決する（合計が部材長以上の病的な入力は
-        // 剛域なしとして扱い、剛性ゼロの退化要素にしない。ファイバー梁と共通規則）。
-        let (li, lj) = crate::rigid_arm::resolve_lengths(
-            self.rigid.length_i,
-            self.rigid.length_j,
-            self.length,
-        );
+    /// 剛域長を可撓長が正に残る範囲へ解決した値 (λi, λj)。
+    ///
+    /// 合計が部材長以上になる病的な入力（極端に短い部材など）は剛域なしとして扱う。
+    /// 可撓長がゼロ以下では要素が剛性ゼロに退化するためで、規則はファイバー梁と共通
+    /// （[`crate::rigid_arm::resolve_lengths`]）。
+    pub(crate) fn rigid_lengths(&self) -> (f64, f64) {
+        crate::rigid_arm::resolve_lengths(self.rigid.length_i, self.rigid.length_j, self.length)
+    }
+
+    /// 可撓部（剛域を除いた部分）の局所剛性 12×12。剛域変換の**手前**の状態で、
+    /// 端部条件（ピン・半剛）の静縮約まで済ませたもの。
+    ///
+    /// [`Self::local_stiffness`] はこれに剛域変換を掛けたものであり、材端集中ばね梁
+    /// （`concentrated::compute_kstar`）は「これ → 材端塑性ばねの静縮約 → 剛域変換」
+    /// の順で組む。両者が同じ土台を共有することで、剛域・端部条件の扱いが
+    /// 線形要素と非線形要素で食い違わないようにしている。
+    pub(crate) fn local_stiffness_flex(&self) -> LocalMat {
+        let (li, lj) = self.rigid_lengths();
         let l_flex = self.length - li - lj;
         let k_raw = if l_flex > 1e-12 {
             let mut beam = self.clone();
@@ -226,9 +236,12 @@ impl BeamElement {
         };
 
         // 剛域を持たない可とう部で端部ばね静縮約 → 12×12
-        let k_end = self.condense_end_springs(&k_raw);
+        self.condense_end_springs(&k_raw)
+    }
 
+    pub fn local_stiffness(&self) -> LocalMat {
         // 剛域変換で節点自由度へ
-        self.apply_rigid_zone_transform(&k_end, li, lj)
+        let (li, lj) = self.rigid_lengths();
+        self.apply_rigid_zone_transform(&self.local_stiffness_flex(), li, lj)
     }
 }

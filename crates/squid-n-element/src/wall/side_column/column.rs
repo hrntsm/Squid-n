@@ -103,29 +103,11 @@ impl InPlaneReleasedColumn {
             *fi = s;
         }
 
-        let length = self.inner.length;
-        let mut at = Vec::new();
-        for &xi in &self.inner.eval_sections {
-            let (n, qy, qz, mx, my, mz) = if xi < 0.5 {
-                let n = -f_local[0];
-                let qy = f_local[1];
-                let qz = f_local[2];
-                let mx = -f_local[3];
-                let my = -f_local[4] - f_local[2] * xi * length;
-                let mz = -f_local[5] + f_local[1] * xi * length;
-                (n, qy, qz, mx, my, mz)
-            } else {
-                let n = f_local[6];
-                let qy = -f_local[7];
-                let qz = -f_local[8];
-                let mx = f_local[9];
-                let my = f_local[10] - f_local[8] * (1.0 - xi) * length;
-                let mz = f_local[11] + f_local[7] * (1.0 - xi) * length;
-                (n, qy, qz, mx, my, mz)
-            };
-            at.push((xi, [n, qy, qz, mx, my, mz]));
-        }
-        crate::beam::MemberForces { at }
+        crate::beam::member_forces_from_end_forces(
+            &f_local,
+            self.inner.length,
+            &self.inner.eval_sections,
+        )
     }
 }
 
@@ -205,5 +187,14 @@ impl ElementBehavior for InPlaneReleasedColumn {
         let mut arr = [0.0; 12];
         arr.copy_from_slice(&u_elem[..12]);
         Some(self.recover_forces_released(&arr))
+    }
+
+    /// 側柱は面内解放を除けば弾性材のため、蓄積した trial 変位から復元する。
+    fn state_member_forces(
+        &self,
+        _state: &ElemState,
+        _ctx: &Ctx,
+    ) -> Option<crate::beam::MemberForces> {
+        Some(self.recover_forces_released(&self.inner.trial_disp))
     }
 }

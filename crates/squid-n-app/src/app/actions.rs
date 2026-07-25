@@ -59,6 +59,8 @@ impl App {
         self.last_error = None;
         self.last_notice = None;
         self.auto_load_sync_hash = None;
+        self.preparation = None;
+        self.diagnostics.clear();
         self.staleness = Staleness::default();
         #[cfg(feature = "gui")]
         self.reset_draw_modes();
@@ -80,9 +82,37 @@ impl App {
     }
 
     /// プロジェクトを指定パスへ保存する。成功時は project_path と未保存フラグを更新。
+    ///
+    /// 準備計算の結果・解析結果は、いずれも**最新（モデル編集後に再実行済み）の
+    /// 場合のみ**同梱する（`preparation_stale` / `results_stale` なら保存しない）。
+    /// 読込側が「保存されている＝そのモデルに対して最新」と扱えるようにするため。
     pub fn save_project_to(&mut self, path: std::path::PathBuf) {
         self.last_error = None;
-        match squid_n_io::scz::save_scz(&path, &self.model) {
+        // self を可変借用する `encoded_or_notice` の前に、直列化まで済ませておく。
+        let prep = self
+            .preparation
+            .as_ref()
+            .filter(|_| !self.staleness.preparation_stale)
+            .map(rmp_serde::to_vec);
+        let results = self
+            .results
+            .as_ref()
+            .filter(|_| !self.staleness.results_stale)
+            .map(|bundle| SavedResults {
+                bundle: bundle.clone(),
+                last_static: self.last_static,
+                last_run: self.staleness.last_run,
+            })
+            .as_ref()
+            .map(rmp_serde::to_vec);
+        let prep_bytes = self.encoded_or_notice(prep, "準備計算の結果");
+        let results_bytes = self.encoded_or_notice(results, "解析結果");
+
+        let extras = squid_n_io::scz::SczExtras {
+            preparation: prep_bytes.as_deref(),
+            results: results_bytes.as_deref(),
+        };
+        match squid_n_io::scz::save_scz(&path, &self.model, extras) {
             Ok(()) => {
                 // ショートカット保存はダイアログも出ず無反応になるため、
                 // 成功をステータスバーとログで明示する。
@@ -98,19 +128,83 @@ impl App {
         }
     }
 
+    /// 保存用の派生データの直列化結果を受け取り、失敗していれば注意を報告する。
+    ///
+    /// 準備計算・解析結果はいずれもモデルから再計算できる派生データなので、
+    /// 直列化に失敗しても保存自体は続行する（モデルは保存し、注意を報告する）。
+    fn encoded_or_notice(
+        &mut self,
+        encoded: Option<Result<Vec<u8>, rmp_serde::encode::Error>>,
+        label: &str,
+    ) -> Option<Vec<u8>> {
+        match encoded {
+            Some(Ok(bytes)) => Some(bytes),
+            Some(Err(e)) => {
+                self.report_notice(format!(
+                    "{}を保存できませんでした（モデルは保存します）: {}",
+                    label, e
+                ));
+                None
+            }
+            None => None,
+        }
+    }
+
     /// プロジェクトを指定パスから読み込む。成功時はモデルを差し替える。
+    ///
+    /// 準備計算の結果・解析結果が同梱されていれば復元し、実行済み扱いにする
+    /// （保存側が最新のときだけ書き出すため、同梱＝そのモデルに対して最新である）。
+    /// 同梱が無い・復号に失敗した場合は未実行のままとし、解析実行時または
+    /// 「準備計算 実行」で再計算する。
     pub fn open_project_from(&mut self, path: std::path::PathBuf) {
         self.last_error = None;
         match squid_n_io::scz::load_scz(&path) {
-            Ok(model) => {
-                if let Err(e) = model.validate() {
+            Ok(contents) => {
+                if let Err(e) = contents.model.validate() {
                     self.report_error(format!("読込モデルの検証エラー: {:?}", e));
                     return;
                 }
-                self.load_model(model);
+                self.load_model(contents.model);
+                if let Some(prep) =
+                    self.decode_on_load::<PreparationResult>(contents.preparation, "準備計算の結果")
+                {
+                    self.preparation = Some(prep);
+                    self.staleness.preparation_stale = false;
+                }
+                if let Some(saved) =
+                    self.decode_on_load::<SavedResults>(contents.results, "解析結果")
+                {
+                    self.results = Some(saved.bundle);
+                    self.last_static = saved.last_static;
+                    self.staleness.last_run = saved.last_run;
+                    // 保存側が最新のときだけ書き出すため、復元できた結果は
+                    // モデルと整合している（断面検定の結果も同梱されている）。
+                    self.staleness.results_stale = false;
+                    self.staleness.design_stale = false;
+                }
                 self.project_path = Some(path);
             }
             Err(e) => self.report_error(format!("読込エラー: {}", e)),
+        }
+    }
+
+    /// 読み込んだ派生データを復号する。失敗しても読込自体は続行し、
+    /// 未復元（再計算が必要）である旨を注意として報告する。
+    fn decode_on_load<T: serde::de::DeserializeOwned>(
+        &mut self,
+        bytes: Option<Vec<u8>>,
+        label: &str,
+    ) -> Option<T> {
+        let bytes = bytes?;
+        match rmp_serde::from_slice::<T>(&bytes) {
+            Ok(value) => Some(value),
+            Err(e) => {
+                self.report_notice(format!(
+                    "保存された{}を読み込めませんでした（再実行が必要です）: {}",
+                    label, e
+                ));
+                None
+            }
         }
     }
 
@@ -204,7 +298,7 @@ impl App {
     /// `analysis_cfg.threads` を並列度設定（プロセスグローバル）へ反映する。
     /// 各解析エントリの先頭で呼ぶ（バックグラウンドジョブは thread::spawn 前に
     /// 呼べばよい。設定はプロセスグローバルのためジョブ側での再設定は不要）。
-    fn apply_parallelism_setting(&self) {
+    pub(crate) fn apply_parallelism_setting(&self) {
         squid_n_math::parallelism::set_parallelism(
             squid_n_math::parallelism::Parallelism::from_threads(self.analysis_cfg.threads),
         );
@@ -213,23 +307,23 @@ impl App {
     /// T3: 線形静的解析を実行し、結果を `self.results` に格納する。
     /// 指定した荷重ケースが存在しない場合はエラーメッセージをセット。
     ///
-    /// 解析準備前にスラブ荷重・躯体自重を「DL」等の標準ケースへ（レビュー §1.1・
-    /// 照合レビュー：③梁自重・②壁荷重の CMoQ 経路を長期応力解析へ接続）、
-    /// 階が定義済みなら地震荷重を「EX」「EY」ケースへ同期する
-    /// （`sync_auto_load_cases_action`。モデル・関連設定が前回同期時から
-    /// 変わっていなければ丸ごとスキップする）。
+    /// 解析に先立って準備計算（`ensure_preparation`）を実行する。剛域を反映し、
+    /// スラブ荷重・躯体自重を「DL」等の標準ケースへ（レビュー §1.1・照合レビュー：
+    /// ③梁自重・②壁荷重の CMoQ 経路を長期応力解析へ接続）、階が定義済みなら
+    /// 地震荷重を「EX」「EY」ケースへ同期する（モデル・関連設定が前回同期時から
+    /// 変わっていなければ荷重の再計算は丸ごとスキップする）。
     pub fn run_linear_static(&mut self, lc: LoadCaseId) {
         self.apply_parallelism_setting();
         self.last_error = None;
         self.last_notice = None;
-        self.sync_auto_load_cases_action();
+        self.ensure_preparation();
         let res = Self::compute_linear_static(self.model.clone(), lc);
         self.apply_static_case_result(StaticCaseKey::User(lc), res);
     }
 
     /// 線形静的解析の純粋計算部分。所有権を取り `&self` を使わないため、
     /// バックグラウンドジョブ（`start_linear_static_job`）からも呼び出せる。
-    /// 剛域は呼び出し側（`sync_auto_load_cases_action`）で適用済みのモデルを
+    /// 剛域は呼び出し側（`ensure_preparation`）で適用済みのモデルを
     /// 渡す前提のため、ここでは再適用しない（二重適用を避ける）。
     fn compute_linear_static(
         model: squid_n_core::model::Model,
@@ -280,7 +374,7 @@ impl App {
         self.apply_parallelism_setting();
         self.last_error = None;
         self.last_notice = None;
-        self.sync_auto_load_cases_action();
+        self.ensure_preparation();
         let model = self.model.clone();
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
@@ -311,17 +405,16 @@ impl App {
     /// T7: 荷重組合せ解析を実行し、結果を `bundle.combos` に格納する。
     /// 指定インデックスの荷重組合せが存在しない場合はエラーメッセージをセット。
     ///
-    /// 解析準備前にスラブ荷重・躯体自重を「DL」等の標準ケースへ、階が定義済み
-    /// なら地震荷重を「EX」「EY」ケースへ同期する（レビュー §1.1・照合レビュー、
-    /// `sync_auto_load_cases_action`。モデル・関連設定が前回同期時から変わって
-    /// いなければ丸ごとスキップする）。
+    /// 解析に先立って準備計算（`ensure_preparation`）を実行し、スラブ荷重・躯体
+    /// 自重を「DL」等の標準ケースへ、階が定義済みなら地震荷重を「EX」「EY」
+    /// ケースへ同期する（レビュー §1.1・照合レビュー）。
     /// 組合せが空の地震荷重ケースを参照している場合は解かずにエラーで案内する
     /// （地震項が黙って 0 になるのを防ぐ）。
     pub fn run_combination(&mut self, index: usize) {
         self.apply_parallelism_setting();
         self.last_error = None;
         self.last_notice = None;
-        self.sync_auto_load_cases_action();
+        self.ensure_preparation();
         let Some(combo) = self.model.combinations.get(index).cloned() else {
             self.report_error(format!("荷重組合せ #{} が存在しません", index));
             return;
@@ -406,7 +499,7 @@ impl App {
         self.apply_parallelism_setting();
         self.last_error = None;
         self.last_notice = None;
-        self.sync_auto_load_cases_action();
+        self.ensure_preparation();
         let Some(combo) = self.model.combinations.get(index).cloned() else {
             self.report_error(format!("荷重組合せ #{} が存在しません", index));
             return;
@@ -460,10 +553,9 @@ impl App {
             self.report_error("荷重組合せがありません。荷重タブで作成してください。");
             return;
         }
-        // 解析準備前にスラブ荷重・躯体自重を「DL」等の標準ケースへ、階が定義済み
-        // なら地震荷重を「EX」「EY」ケースへ同期する（`sync_auto_load_cases_action`。
-        // モデル・関連設定が前回同期時から変わっていなければ丸ごとスキップする）。
-        self.sync_auto_load_cases_action();
+        // 解析に先立って準備計算を実行する（剛域の反映、スラブ荷重・躯体自重の
+        // 「DL」等への同期、階が定義済みなら地震荷重の「EX」「EY」への同期）。
+        self.ensure_preparation();
         // 空の地震荷重ケース（未生成の EX/EY 等）を参照する組合せは解かずに
         // エラーへ回す（地震項が黙って 0 になるのを防ぐ）。UI スレッド側の
         // `self.model` を参照するためバックグラウンドジョブでもここで行う。
@@ -614,7 +706,7 @@ impl App {
             self.report_error("荷重組合せがありません。荷重タブで作成してください。");
             return;
         }
-        self.sync_auto_load_cases_action();
+        self.ensure_preparation();
         let (combos, pre_errors) = self.filter_combos_for_all_combinations();
         let model = self.model.clone();
         let (tx, rx) = std::sync::mpsc::channel();
@@ -725,13 +817,10 @@ impl App {
         use squid_n_design_jp::secondary::holding_capacity::{
             check_holding_capacity, qud_by_story, MemberRank,
         };
-        use squid_n_design_jp::secondary::member_rank::{
-            s_member_rank_scaled, worst_rank, RankCriteria,
-        };
+        use squid_n_design_jp::secondary::member_rank::worst_rank;
         use squid_n_design_jp::secondary::rc_capacity::{
             rc_column_mu_simple, rc_qmu_simple, rc_qsu_simple,
         };
-        use squid_n_design_jp::secondary::width_thickness::max_width_thickness;
         use squid_n_design_jp::steel_f_value_prefix;
         use squid_n_solver::pushover::MechanismType;
 
@@ -883,32 +972,15 @@ impl App {
                     let Some(shape) = sec.shape.as_ref() else {
                         continue;
                     };
-                    // 構造規定の幅厚比表（部材種別×断面×部位×鋼種級）で判定
-                    // （鋼構造設計規準「幅厚比の検討」）。
-                    // 表の対象外形状（溝形・T形・山形等）は旧・単一幅厚比法へ
-                    // フォールバックする。
-                    let member_use = match member_kind_of(elem, &self.model) {
-                        squid_n_design_jp::MemberKind::Column => {
-                            squid_n_design_jp::secondary::width_thickness::SteelMemberUse::Column
-                        }
-                        _ => squid_n_design_jp::secondary::width_thickness::SteelMemberUse::Beam,
+                    // 幅厚比による部材ランク判定は準備計算の表示と共通
+                    // （`steel_width_thickness_rank`。構造規定の幅厚比表を優先し、
+                    // 表の対象外形状は単一幅厚比法へフォールバックする）。
+                    let member_use = steel_member_use_of(elem, &self.model);
+                    let Some(rank) = steel_width_thickness_rank(shape, member_use, &mat.name)
+                    else {
+                        continue;
                     };
-                    match squid_n_design_jp::secondary::width_thickness::s_member_rank_by_kihon(
-                        shape, member_use, &mat.name,
-                    ) {
-                        Some(rank) => rank,
-                        None => {
-                            let Some(wt) = max_width_thickness(shape) else {
-                                continue;
-                            };
-                            // F 値は材料名の前方一致で引く(例 "SN400B"→235)。
-                            // 引けなければ 235。板厚は形状の最大板厚。
-                            let f_value =
-                                steel_f_value_prefix(&mat.name, steel_max_thickness(shape))
-                                    .unwrap_or(235.0);
-                            s_member_rank_scaled(wt, f_value, &RankCriteria::default())
-                        }
-                    }
+                    rank
                 } else if let Some(SectionShape::RcWall { thickness, .. }) = sec.shape.as_ref() {
                     // RC 耐力壁: 告示「耐力壁の種別」表（τu/Fc により WA〜WD）。
                     // τu は Ds 算定時（プッシュオーバー終局時）に壁断面に生じる
@@ -1461,9 +1533,8 @@ impl App {
     /// 方向・Ai算定法・Z・地盤種別・C0 は `analysis_cfg` を用いる。
     /// 結果は `StaticCaseKey::Seismic(dir)` に格納するため、X/Y 双方の地震静的結果
     /// および任意のユーザー荷重ケースの結果と衝突せず共存できる。
-    /// あわせて同じ水平力を「EX」「EY」ケースへ同期する（荷重組合せ用、
-    /// `sync_auto_load_cases_action`。モデル・関連設定が前回同期時から変わって
-    /// いなければ丸ごとスキップする）。
+    /// あわせて同じ水平力を「EX」「EY」ケースへ同期する（荷重組合せ用。
+    /// 準備計算 `ensure_preparation` が行う）。
     ///
     /// 設計用固有周期 T は `design_seismic_period` で暗黙の解析なしに決定する
     /// （内部で固有値解析を実行しない `Analysis::seismic_static_with_period` を
@@ -1473,7 +1544,7 @@ impl App {
         self.apply_parallelism_setting();
         self.last_error = None;
         self.last_notice = None;
-        self.sync_auto_load_cases_action();
+        self.ensure_preparation();
         let t = match self.design_seismic_period() {
             Ok(t) => t,
             Err(msg) => {
@@ -1518,7 +1589,7 @@ impl App {
         self.apply_parallelism_setting();
         self.last_error = None;
         self.last_notice = None;
-        self.sync_auto_load_cases_action();
+        self.ensure_preparation();
         let t = match self.design_seismic_period() {
             Ok(t) => t,
             Err(msg) => {
@@ -1574,7 +1645,7 @@ impl App {
             cpi: 0.0,
             parapet_mm: self.analysis_cfg.parapet_mm,
         };
-        self.apply_rigid_zones_for_analysis();
+        self.ensure_preparation();
         let res = Self::compute_wind(self.model.clone(), cfg);
         self.apply_static_case_result(StaticCaseKey::Wind(dir), res);
     }
@@ -1611,7 +1682,7 @@ impl App {
             cpi: 0.0,
             parapet_mm: self.analysis_cfg.parapet_mm,
         };
-        self.apply_rigid_zones_for_analysis();
+        self.ensure_preparation();
         let model = self.model.clone();
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
@@ -3155,7 +3226,7 @@ impl App {
     ///
     /// `Analysis::prepare`（剛性行列組立+Cholesky分解）や固有値解析を新たに
     /// 実行することはない（暗黙の重い解析を避けるための入口）。
-    fn design_seismic_period(&self) -> Result<f64, String> {
+    pub(crate) fn design_seismic_period(&self) -> Result<f64, String> {
         match self.analysis_cfg.ai_mode {
             AiMode::Approx => {
                 let height_m = squid_n_solver::analysis::building_height_mm(&self.model) / 1000.0;
@@ -3257,10 +3328,10 @@ impl App {
         hasher.finish()
     }
 
-    /// 自重・積載・地震荷重の自動同期（`sync_gravity_load_cases_action` ・
-    /// `sync_seismic_load_cases_action`）をまとめて行う、解析実行系
-    /// （`run_linear_static`/`run_combination`/`run_all_combinations`/
-    /// `run_seismic`）共通の入口。
+    /// 剛域の反映と、自重・積載・地震荷重の自動同期
+    /// （`sync_gravity_load_cases_action`・`sync_seismic_load_cases_action`）を
+    /// まとめて行う、準備計算（`ensure_preparation`・`run_preparation`）の
+    /// モデル更新部分。
     ///
     /// モデルが交差小梁スラブを含む場合、床荷重分配（DL・LL(架構用)・
     /// LL(地震用)の3系統×床格子サブFEM解析）は重い処理になり得るため、

@@ -324,25 +324,18 @@ impl Analysis<'_> {
     }
 }
 
-/// 地震静的解析の水平力（Ai 分布）荷重ケースを、モデルと設計用固有周期 T から
-/// 構築する（[`Analysis`] を要しないモデル単独版）。
+/// 地震層せん断力の分布（Ai 分布）を、モデルと設計用固有周期 T から算定する
+/// （[`Analysis`] を要しないモデル単独版）。
 ///
-/// Ai 分布・階水平力の算定は剛性行列・自由度構成に依存しないため、
-/// `Analysis::prepare`（K 組立・拘束縮約・分解）なしで呼び出せる。UI 側の
-/// 「EX/EY ケースへの荷重同期」のように、解析準備前に荷重ケースだけを
-/// 構築したい場合に用いる（暗黙のフル解析準備を避ける）。
-pub fn build_seismic_load_case_from_model(
+/// [`build_seismic_load_case_from_model`] が水平力の荷重ケースを組み立てる前段の
+/// 算定部分であり、準備計算での確認表示（α・Ai・Ci・Qi・Pi の一覧）にも用いる。
+/// 返り値の各ベクタは `model.stories` と同順（下階→上階）。
+pub fn seismic_distribution_for_model(
     model: &Model,
     cfg: SeismicCfg,
     t: f64,
-) -> Result<squid_n_core::model::LoadCase, SolveError> {
-    let SeismicCfg {
-        dir,
-        mode,
-        z,
-        soil,
-        c0,
-    } = cfg;
+) -> Result<squid_n_load::ai::AiDistribution, SolveError> {
+    let SeismicCfg { z, soil, c0, .. } = cfg;
     let stories = &model.stories;
     if stories.is_empty() {
         return Err(SolveError::InvalidInput(
@@ -353,12 +346,10 @@ pub fn build_seismic_load_case_from_model(
     let tc = squid_n_load::ai::tc_of(soil);
     let rt_val = squid_n_load::ai::rt(t, tc);
 
-    let story_weights: Vec<f64> = stories
+    if stories
         .iter()
-        .map(|s| s.seismic_weight.unwrap_or(0.0))
-        .collect();
-
-    if story_weights.is_empty() || story_weights.iter().all(|&w| w == 0.0) {
+        .all(|s| s.seismic_weight.unwrap_or(0.0) == 0.0)
+    {
         return Err(SolveError::InvalidInput(
             "階の地震重量(seismic_weight)がすべて 0 です。各階の重量を設定してください。".into(),
         ));
@@ -378,7 +369,26 @@ pub fn build_seismic_load_case_from_model(
             level_kind: s.level_kind,
         })
         .collect();
-    let ai = squid_n_load::ai::seismic_shear_distribution(&specs, z, rt_val, c0, t);
+    Ok(squid_n_load::ai::seismic_shear_distribution(
+        &specs, z, rt_val, c0, t,
+    ))
+}
+
+/// 地震静的解析の水平力（Ai 分布）荷重ケースを、モデルと設計用固有周期 T から
+/// 構築する（[`Analysis`] を要しないモデル単独版）。
+///
+/// Ai 分布・階水平力の算定は剛性行列・自由度構成に依存しないため、
+/// `Analysis::prepare`（K 組立・拘束縮約・分解）なしで呼び出せる。UI 側の
+/// 「EX/EY ケースへの荷重同期」のように、解析準備前に荷重ケースだけを
+/// 構築したい場合に用いる（暗黙のフル解析準備を避ける）。
+pub fn build_seismic_load_case_from_model(
+    model: &Model,
+    cfg: SeismicCfg,
+    t: f64,
+) -> Result<squid_n_core::model::LoadCase, SolveError> {
+    let SeismicCfg { dir, mode, .. } = cfg;
+    let stories = &model.stories;
+    let ai = seismic_distribution_for_model(model, cfg, t)?;
 
     // Create a load case from the Ai distribution horizontal forces
     let lc_id = LoadCaseId(1001);

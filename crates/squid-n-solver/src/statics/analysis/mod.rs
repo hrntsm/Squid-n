@@ -27,8 +27,10 @@ mod wind;
 pub use config::{AiMode, SeismicCfg, SeismicDir, WindStaticCfg};
 pub(crate) use seismic::distribute_pi_over_diaphragms;
 pub use seismic::{
-    build_seismic_load_case_from_model, building_height_mm, ground_elevation, steel_height_ratio,
+    build_seismic_load_case_from_model, building_height_mm, ground_elevation,
+    seismic_distribution_for_model, steel_height_ratio,
 };
+pub use wind::{wind_precalc_for_model, WindPrecalc};
 
 /// 部材荷重の強度を `factor` 倍した複製を返す（荷重組合せの線形結合用）。
 /// `dir`・作用区間はそのままに、集中荷重 `p` と分布強度 `w1,w2` のみを倍する。
@@ -242,9 +244,11 @@ impl<'m> Analysis<'m> {
         let f_red = self.reducer.reduce_f(f_free);
         let u_indep = self.solver.solve(&f_red)?;
         let u_free = self.reducer.expand_u(&u_indep);
+        let member_forces = self.recover_member_forces(&u_free, member_loads);
+        crate::linear::ensure_line_member_forces(self.model, &member_forces)?;
         Ok(StaticOnce {
             disp: self.expand_disp(&u_free),
-            member_forces: self.recover_member_forces(&u_free, member_loads),
+            member_forces,
         })
     }
 

@@ -23,6 +23,24 @@ pub struct MnInteraction {
     pub n_allow: f64,
 }
 
+/// 材端集中ばね梁（one-component モデル）。
+///
+/// # 部材内力の取り出しについて（既知の制約）
+///
+/// 本要素は [`ElementBehavior::state_member_forces`] を実装しない（既定の `None`）。
+/// 現在の定式化では状態から断面内力を正しく取り出せないためで、理由は 2 つある。
+///
+/// 1. **復元力が接線剛性 × 全変位**: [`Self::internal_force`] は
+///    `K_tangent(trial) · u_total` を返す。弾性域では厳密だが、ばね降伏後は
+///    経路依存の復元力と一致しない。
+/// 2. **ばね変形量が節点回転そのもの**: `rot_i`/`rot_j` は局所節点回転の累積で、
+///    本来のばね相対回転（節点回転 − 可撓端回転）ではない。
+///
+/// いずれも内力回収の前に定式化側の是正が要る（可撓端回転を静縮約から復元して
+/// 状態変数に持たせ、弾性梁部の `K_flex · u_flex` で復元力を評価する）。
+/// `dev_docs/v_and_v/` の該当項目を参照。線形弾性解析はこの要素を用いない
+/// （`factory::build_behavior` は常に弾性 `BeamElement` を組む）ため、
+/// 一次設計の応力・検定には影響しない。
 pub struct ConcentratedSpringBeam {
     pub elastic: crate::beam::BeamElement,
     pub spring_i: Box<dyn UniaxialMaterial>,
@@ -97,19 +115,28 @@ impl ConcentratedSpringBeam {
     }
 }
 
+/// 材端曲げばねが作用する局所回転自由度（i 端, j 端）。
+///
+/// 要素局所系は「y 軸＝断面のせい方向」を規約とするため、強軸曲げ（せい方向の
+/// 曲げ。梁の鉛直曲げ）は **z 軸まわり＝`rz`（局所 DOF 5・11）** に対応する
+/// （`beam/construct.rs` の断面レイヤ→要素座標系クロス変換）。材端集中ばねは
+/// 一軸曲げ（`ForceRegime::UniaxialBendingShear`）のモデルであり、骨格の降伏
+/// モーメント（`flexural_yield_moment`＝強軸 Zp·σy）と初期剛性（6EI/l、
+/// I は強軸）も強軸で与えるため、ばねは `rz` へ入れる。
+const SPRING_ROT_DOFS: [usize; 2] = [5, 11];
+
 fn condense_springs(k_elem: &LocalMat, k_i: f64, k_j: f64) -> LocalMat {
     let n = 14;
     let mut k = vec![0.0; n * n];
 
+    // ばねを入れる回転自由度（i 端 → 内部 12、j 端 → 内部 13）だけを内部自由度へ移す。
     let map14 = |i: usize| -> usize {
-        match i {
-            0..=3 => i,
-            4 => 12,
-            5 => 5,
-            6..=9 => i,
-            10 => 13,
-            11 => 11,
-            _ => i,
+        if i == SPRING_ROT_DOFS[0] {
+            12
+        } else if i == SPRING_ROT_DOFS[1] {
+            13
+        } else {
+            i
         }
     };
     for i in 0..12 {
@@ -118,7 +145,7 @@ fn condense_springs(k_elem: &LocalMat, k_i: f64, k_j: f64) -> LocalMat {
         }
     }
 
-    let ext_rot = [4usize, 10];
+    let ext_rot = SPRING_ROT_DOFS;
     let int_rot = [12usize, 13];
     for (idx, &er) in ext_rot.iter().enumerate() {
         let ir = int_rot[idx];
@@ -177,16 +204,27 @@ fn condense_springs(k_elem: &LocalMat, k_i: f64, k_j: f64) -> LocalMat {
     kstar
 }
 
+/// 材端曲げばねを直列接続した局所剛性（節点自由度 12×12）。
+///
+/// 組み立ての順序は弾性梁 [`crate::beam::BeamElement::local_stiffness`] と同じ土台を
+/// 共有する:
+///
+/// 1. **可撓部**（剛域を除いた長さ `l − li − lj`）で生剛性を組み、端部条件
+///    （ピン・半剛）を静縮約する（`local_stiffness_flex`）。
+/// 2. 材端曲げばね（塑性ヒンジ）を強軸回転自由度へ直列に入れて静縮約する。
+/// 3. 剛域変換で節点自由度へ移す。
+///
+/// 従来は 1. を省いて節点間全長の生剛性へ直接 2.・3. を掛けており、
+/// (a) 剛域を持つ部材の可撓長が全長のままになる、(b) `end_cond` のピン・半剛が
+/// 反映されず両端剛接として解かれる（剛性の過大評価）という食い違いがあった。
+/// ばねは直列なので 1. の接合部ばねと 2. の塑性ばねの順序は結果に影響しない。
 fn compute_kstar(elastic: &crate::beam::BeamElement, kti: f64, ktj: f64) -> LocalMat {
-    let k_raw = elastic.local_stiffness_raw();
-    let k_end = condense_springs(&k_raw, kti, ktj);
-    let li = elastic.rigid.length_i;
-    let lj = elastic.rigid.length_j;
-    if li.abs() > 1e-12 || lj.abs() > 1e-12 {
-        elastic.apply_rigid_zone_transform(&k_end, li, lj)
-    } else {
-        k_end
-    }
+    let k_flex = elastic.local_stiffness_flex();
+    let k_end = condense_springs(&k_flex, kti, ktj);
+    // 剛域長は `local_stiffness_flex` と同じ規則で解決する（可撓長が残らない
+    // 病的な入力は剛域なし扱い。`BeamElement::rigid_lengths`）。
+    let (li, lj) = elastic.rigid_lengths();
+    elastic.apply_rigid_zone_transform(&k_end, li, lj)
 }
 
 impl ElementBehavior for ConcentratedSpringBeam {
@@ -265,8 +303,8 @@ impl ElementBehavior for ConcentratedSpringBeam {
     }
 
     fn update_state(&mut self, du: &LocalVec, commit: bool, _ctx: &Ctx) {
-        // 端ばねはローカル ry（DOF 4,10）に作用するため、グローバル du を
-        // ローカル系へ回転してから回転増分を取り出す。
+        // 端ばねは強軸曲げの局所回転 rz（[`SPRING_ROT_DOFS`]）に作用するため、
+        // グローバル du をローカル系へ回転してから回転増分を取り出す。
         // elastic.committed_disp 側はグローバル系で蓄積（internal_force と整合）。
         let du_global: [f64; 12] = std::array::from_fn(|i| du.data[i]);
         let du_local = self.elastic.axis.rotate_to_local(&du_global);
@@ -274,8 +312,8 @@ impl ElementBehavior for ConcentratedSpringBeam {
         self.apply_mn_interaction(Some(&du_local));
         if commit {
             self.elastic.update_state(du, true, _ctx);
-            self.rot_i += du_local[4];
-            self.rot_j += du_local[10];
+            self.rot_i += du_local[SPRING_ROT_DOFS[0]];
+            self.rot_j += du_local[SPRING_ROT_DOFS[1]];
             self.spring_i.trial(self.rot_i);
             self.spring_i.commit();
             self.spring_j.trial(self.rot_j);
@@ -284,8 +322,8 @@ impl ElementBehavior for ConcentratedSpringBeam {
             self.trial_rot_j = self.rot_j;
         } else {
             self.elastic.update_state(du, false, _ctx);
-            self.trial_rot_i = self.rot_i + du_local[4];
-            self.trial_rot_j = self.rot_j + du_local[10];
+            self.trial_rot_i = self.rot_i + du_local[SPRING_ROT_DOFS[0]];
+            self.trial_rot_j = self.rot_j + du_local[SPRING_ROT_DOFS[1]];
             self.spring_i.trial(self.trial_rot_i);
             self.spring_j.trial(self.trial_rot_j);
         }
