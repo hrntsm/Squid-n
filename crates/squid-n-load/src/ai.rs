@@ -7,6 +7,7 @@ pub enum SoilClass {
     III,
 }
 
+#[derive(Clone, Debug)]
 pub struct AiDistribution {
     pub alpha: Vec<f64>,
     pub ai: Vec<f64>,
