@@ -288,27 +288,34 @@ impl BeamElement {
                         // 壁下辺方向の水平単位ベクトルと柱の局所 ey・ez との内積で
                         // 面内たわみ方向（iz↔as_y か iy↔as_z か）を判定する。
                         let e_wall = [wdx / wl, wdy / wl, 0.0];
-                        let dot_ey = (axis.rot[1][0] * e_wall[0]
+                        // 符号付き内積。面内たわみ方向の選択には絶対値を、袖壁の
+                        // 偏心 e の符号には**符号付きの射影**を用いる。
+                        let dot_ey_signed = axis.rot[1][0] * e_wall[0]
                             + axis.rot[1][1] * e_wall[1]
-                            + axis.rot[1][2] * e_wall[2])
-                            .abs();
-                        let dot_ez = (axis.rot[2][0] * e_wall[0]
+                            + axis.rot[1][2] * e_wall[2];
+                        let dot_ez_signed = axis.rot[2][0] * e_wall[0]
                             + axis.rot[2][1] * e_wall[1]
-                            + axis.rot[2][2] * e_wall[2])
-                            .abs();
+                            + axis.rot[2][2] * e_wall[2];
+                        let dot_ey = dot_ey_signed.abs();
+                        let dot_ez = dot_ez_signed.abs();
 
                         let aw = wall.t * lww;
-                        let e_i = if s == 0 {
-                            -(d_col / 2.0 + lww / 2.0)
-                        } else {
-                            d_col / 2.0 + lww / 2.0
-                        };
+                        // 袖壁は柱節点（`bottom_pair[s]`）から壁のもう一方の節点へ
+                        // 向かって伸びる。s=0 なら +e_wall、s=1 なら −e_wall 方向。
+                        // 偏心 e は、その向きを柱の局所曲げ軸へ射影して**符号付き**で
+                        // 与える。従来は `s` だけで符号を決め、`e_wall` の向き
+                        // （＝壁の節点入力順で反転しうる）を `.abs()` で捨てていたため、
+                        // 柱の両側に壁があり 2 枚の向きが逆の場合に**左右の袖壁が柱の
+                        // 同じ側に載る**評価となり、図心・合成断面二次モーメントを
+                        // 誤っていた（同じモデルでも節点入力順で剛性が変わる非決定性）。
+                        let sign_s = if s == 0 { 1.0 } else { -1.0 };
+                        let arm = d_col / 2.0 + lww / 2.0;
                         let self_i = wall.t * lww.powi(3) / 12.0;
                         a_add += aw;
                         if dot_ey >= dot_ez {
-                            contrib_y.push((aw, e_i, self_i));
+                            contrib_y.push((aw, sign_s * arm * dot_ey_signed, self_i));
                         } else {
-                            contrib_z.push((aw, e_i, self_i));
+                            contrib_z.push((aw, sign_s * arm * dot_ez_signed, self_i));
                         }
                     }
                 }

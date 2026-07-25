@@ -28,5 +28,8 @@ use crate::ids::SectionId;
 
 pub use composite::CompositeProps;
 pub use constants::{E_STEEL, KAPPA_RC, N_S_EQ};
-pub use material::{concrete_young_modulus, concrete_young_modulus_gamma, wall_shear_shape_factor};
+pub use material::{
+    concrete_young_modulus, concrete_young_modulus_gamma, wall_shear_shape_factor,
+    wall_shear_shape_factor_isection,
+};
 pub use types::{bar_set_area, BarSet, RcRebar, SectionShape, ShearBar};

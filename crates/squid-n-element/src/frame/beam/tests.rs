@@ -2528,3 +2528,145 @@ fn test_recover_forces_pure_bending_constant_negative_moment() {
         assert!(f[1].abs() < 1e-6, "xi={xi} 純曲げで Qy={} が生じた", f[1]);
     }
 }
+
+/// 袖壁の偏心 e は壁の**節点入力順に依存してはならない**。
+///
+/// 柱の両側に袖壁が付く場合、壁の節点入力順によって壁ローカル +x の向きが反転する。
+/// 従来は `bottom_pair` のインデックスだけで符号を決め、向きを `.abs()` で捨てて
+/// いたため、2 枚の向きが逆だと**左右の袖壁が柱の同じ側に載る**評価となり、
+/// 図心・合成断面二次モーメントを誤っていた（同じモデルでも入力順で剛性が変わる）。
+#[test]
+fn test_misc_wall_wing_eccentricity_is_independent_of_wall_node_order() {
+    use squid_n_core::ids::{ElemId, MaterialId, SectionId};
+    use squid_n_core::model::{
+        ElementData, ElementKind, ForceRegime, LocalAxis, Model, WallAttr, WallOpening,
+    };
+    use squid_n_core::section_shape::SectionShape;
+
+    let make_node = |id: u32, coord: [f64; 3]| Node {
+        id: NodeId(id),
+        coord,
+        restraint: Default::default(),
+        mass: None,
+        story: None,
+    };
+    let col_sec = Section {
+        id: SectionId(0),
+        name: "col".into(),
+        area: 90_000.0,
+        iy: 3.0e9,
+        iz: 2.0e9,
+        j: 1.0e7,
+        depth: 300.0,
+        width: 300.0,
+        as_y: 50_000.0,
+        as_z: 60_000.0,
+        panel_thickness: None,
+        thickness: None,
+        shape: None,
+    };
+    let wall_shape = SectionShape::RcWall {
+        thickness: 150.0,
+        ps: 0.0025,
+    };
+    let mat = Material {
+        strength_factor: None,
+        concrete_class: Default::default(),
+        id: MaterialId(0),
+        name: "FC24".into(),
+        young: 23000.0,
+        poisson: 0.2,
+        density: 2.4e-9,
+        shear: None,
+        fc: Some(24.0),
+        fy: None,
+    };
+    // 中央の柱（節点1-5）の左右に壁 A(0..4000) と壁 B(4000..8000) が付く。
+    let nodes = vec![
+        make_node(0, [0.0, 0.0, 0.0]),
+        make_node(1, [4000.0, 0.0, 0.0]),
+        make_node(2, [8000.0, 0.0, 0.0]),
+        make_node(3, [0.0, 0.0, 3000.0]),
+        make_node(4, [4000.0, 0.0, 3000.0]),
+        make_node(5, [8000.0, 0.0, 3000.0]),
+    ];
+    let column_elem = ElementData {
+        id: ElemId(0),
+        kind: ElementKind::Beam,
+        nodes: smallvec::smallvec![NodeId(1), NodeId(4)],
+        section: Some(SectionId(0)),
+        material: Some(MaterialId(0)),
+        local_axis: LocalAxis {
+            ref_vector: [1.0, 0.0, 0.0],
+        },
+        end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+        force_regime: ForceRegime::Auto,
+        rigid_zone: Default::default(),
+        plastic_zone: None,
+        spring: None,
+    };
+    let wall = |id: u32, ns: [u32; 4]| ElementData {
+        id: ElemId(id),
+        kind: ElementKind::Wall,
+        nodes: ns.iter().map(|n| NodeId(*n)).collect(),
+        section: Some(SectionId(1)),
+        material: Some(MaterialId(0)),
+        local_axis: LocalAxis {
+            ref_vector: [0.0, 1.0, 0.0],
+        },
+        end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+        force_regime: ForceRegime::Auto,
+        rigid_zone: Default::default(),
+        plastic_zone: None,
+        spring: None,
+    };
+    // 開口を与えて耐震壁不成立（＝雑壁として柱へ袖壁算入される）にする。
+    let attr = |id: u32| WallAttr {
+        elem: ElemId(id),
+        opening_area: 0.0,
+        opening_weight: 0.0,
+        three_side_slit: false,
+        openings: vec![WallOpening {
+            width: 2400.0,
+            height: 1500.0,
+            offset: Some([800.0, 750.0]),
+        }],
+    };
+
+    let build = |wall_b_nodes: [u32; 4]| -> BeamElement {
+        let mut model = Model {
+            nodes: nodes.clone(),
+            elements: vec![
+                column_elem.clone(),
+                wall(1, [0, 1, 4, 3]),
+                wall(2, wall_b_nodes),
+            ],
+            sections: vec![
+                col_sec.clone(),
+                wall_shape.to_section(SectionId(1), "W150".into()),
+            ],
+            materials: vec![mat.clone()],
+            ..Default::default()
+        };
+        model.wall_attrs.push(attr(1));
+        model.wall_attrs.push(attr(2));
+        BeamElement::new(&column_elem, &model)
+    };
+
+    // 壁 B を通常順（4000→8000）と反転順（8000→4000）で構築する。
+    let normal = build([1, 2, 5, 4]);
+    let flipped = build([2, 1, 4, 5]);
+
+    assert!(
+        (normal.iz - flipped.iz).abs() < normal.iz.abs().max(1.0) * 1e-9,
+        "壁の節点入力順で iz が変わってはならない: {} vs {}",
+        normal.iz,
+        flipped.iz
+    );
+    assert!(
+        (normal.a - flipped.a).abs() < normal.a * 1e-9,
+        "断面積も入力順に依存しない: {} vs {}",
+        normal.a,
+        flipped.a
+    );
+}

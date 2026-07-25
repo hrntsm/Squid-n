@@ -21,28 +21,37 @@ pub(crate) fn wall_opening_reduction(data: &ElementData, model: &Model) -> f64 {
     if opening_area <= 0.0 {
         return 1.0;
     }
-    let coords: Vec<[f64; 3]> = data
-        .nodes
-        .iter()
-        .filter_map(|nid| model.nodes.get(nid.index()))
-        .map(|n| n.coord)
-        .collect();
-    if coords.len() < 3 {
-        return 1.0;
-    }
-    let mut l = 0.0_f64;
-    for i in 0..coords.len() {
-        for j in (i + 1)..coords.len() {
-            let dx = coords[i][0] - coords[j][0];
-            let dy = coords[i][1] - coords[j][1];
-            l = l.max((dx * dx + dy * dy).sqrt());
+    // 壁面積の分母は**壁エレメント要素と同じ幾何**（`wall_panel_geometry`）を用いる。
+    // 壁長 lw は上下辺長さの平均（台形壁対応）、高さ h は上下辺中点間距離。
+    // 従来は「全節点対の水平距離の最大（＝下辺長）」×「z の全幅」で近似しており、
+    // 台形壁で開口周比の分母とせん断断面の壁長が食い違っていた。
+    // 4 節点でない壁（フォールバック等価梁経路）は従来の包絡寸法で近似する。
+    let (l, h) = match crate::wall_panel::wall_panel_geometry(data, model) {
+        Some(g) => (g.lw, g.h),
+        None => {
+            let coords: Vec<[f64; 3]> = data
+                .nodes
+                .iter()
+                .filter_map(|nid| model.nodes.get(nid.index()))
+                .map(|n| n.coord)
+                .collect();
+            if coords.len() < 3 {
+                return 1.0;
+            }
+            let mut l = 0.0_f64;
+            for i in 0..coords.len() {
+                for j in (i + 1)..coords.len() {
+                    let dx = coords[i][0] - coords[j][0];
+                    let dy = coords[i][1] - coords[j][1];
+                    l = l.max((dx * dx + dy * dy).sqrt());
+                }
+            }
+            let zs = coords.iter().map(|c| c[2]);
+            let h = zs.clone().fold(f64::MIN, f64::max) - zs.fold(f64::MAX, f64::min);
+            (l, h)
         }
-    }
-    let zs = coords.iter().map(|c| c[2]);
-    let h = zs.clone().fold(f64::MIN, f64::max) - zs.fold(f64::MAX, f64::min);
-    if l <= 0.0 || h <= 0.0 {
-        return 1.0;
-    }
-    let ratio = (opening_area / (l * h)).clamp(0.0, 1.0);
-    (1.0 - 1.25 * ratio.sqrt()).max(0.0)
+    };
+    // r0 = √(開口面積/壁面積)、r1 = 1 − 1.25·r0（剛性用。式は core に集約）。
+    let r0 = (opening_area / (l * h)).clamp(0.0, 1.0).sqrt();
+    squid_n_core::rc_wall_capacity::wall_opening_reduction_stiffness(r0)
 }
