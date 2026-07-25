@@ -1919,3 +1919,215 @@ fn test_tension_only_iteration_flag_off_is_default_full_stiffness() {
         "OFF では従来どおり圧縮軸力を負担するはず: {off_brace}"
     );
 }
+
+/// 剛床に載る梁を持つ 1 層門型ラーメン（柱 ElemId 0,1／梁 ElemId 2）。
+/// 梁の全長に等分布荷重 w=10 N/mm（鉛直下向き）をかける。
+///
+/// `with_rigid_floor` が true のとき、階（`Story`）に剛床を定義する。
+/// 自由度の拘束（`constraints`）は付けないため解は変わらないはずで、
+/// 剛床の有無で応力解析の結果が変わってはいけないことの検証に使う
+/// （`ForceRegime::Auto` の剛床判定が線形解析の要素種別へ漏れない）。
+fn rigid_floor_portal(with_rigid_floor: bool) -> Model {
+    use squid_n_core::model::{DiaphragmDef, Story};
+    let l = 6000.0_f64;
+    let h = 3500.0_f64;
+    let mut model = Model {
+        nodes: vec![
+            Node {
+                id: NodeId(0),
+                coord: [0.0, 0.0, 0.0],
+                restraint: Dof6Mask::FIXED,
+                mass: None,
+                story: None,
+            },
+            Node {
+                id: NodeId(1),
+                coord: [l, 0.0, 0.0],
+                restraint: Dof6Mask::FIXED,
+                mass: None,
+                story: None,
+            },
+            Node {
+                id: NodeId(2),
+                coord: [0.0, 0.0, h],
+                restraint: Dof6Mask::FREE,
+                mass: None,
+                story: None,
+            },
+            Node {
+                id: NodeId(3),
+                coord: [l, 0.0, h],
+                restraint: Dof6Mask::FREE,
+                mass: None,
+                story: None,
+            },
+        ],
+        elements: vec![],
+        sections: vec![Section {
+            id: SectionId(0),
+            name: "s".into(),
+            area: 1.0e4,
+            iy: 1.0e8,
+            iz: 1.0e8,
+            j: 1.0e6,
+            depth: 400.0,
+            width: 200.0,
+            as_y: 4.0e3,
+            as_z: 4.0e3,
+            panel_thickness: None,
+            thickness: None,
+            shape: None,
+        }],
+        materials: vec![Material {
+            strength_factor: None,
+            concrete_class: Default::default(),
+            id: MaterialId(0),
+            name: "SN400B".into(),
+            young: 205000.0,
+            poisson: 0.3,
+            density: 0.0,
+            shear: None,
+            fc: None,
+            fy: Some(235.0),
+        }],
+        load_cases: vec![LoadCase {
+            kind: Default::default(),
+            id: LoadCaseId(1),
+            name: "udl".into(),
+            nodal: vec![],
+            member: vec![MemberLoad {
+                elem: ElemId(2),
+                dir: [0.0, 0.0, -1.0],
+                kind: MemberLoadKind::Distributed {
+                    a: 0.0,
+                    b: l,
+                    w1: 10.0,
+                    w2: 10.0,
+                },
+            }],
+        }],
+        ..Default::default()
+    };
+    let mut push = |id: u32, i: u32, j: u32, ref_vector: [f64; 3]| {
+        model.elements.push(ElementData {
+            id: ElemId(id),
+            kind: ElementKind::Beam,
+            nodes: smallvec::smallvec![NodeId(i), NodeId(j)],
+            section: Some(SectionId(0)),
+            material: Some(MaterialId(0)),
+            local_axis: LocalAxis { ref_vector },
+            end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+            force_regime: ForceRegime::Auto,
+            rigid_zone: Default::default(),
+            plastic_zone: None,
+            spring: None,
+        });
+    };
+    push(0, 0, 2, [1.0, 0.0, 0.0]); // 柱（鉛直材）
+    push(1, 1, 3, [1.0, 0.0, 0.0]); // 柱（鉛直材）
+    push(2, 2, 3, [0.0, 0.0, 1.0]); // 梁（水平材。Mz が鉛直曲げ）
+
+    if with_rigid_floor {
+        model.stories.push(Story {
+            level_kind: Default::default(),
+            structure: Default::default(),
+            id: StoryId(0),
+            name: "2F".into(),
+            elevation: h,
+            node_ids: vec![NodeId(2), NodeId(3)],
+            diaphragms: vec![DiaphragmDef {
+                ci_override: None,
+                weight: None,
+                master: NodeId(2),
+                slaves: vec![NodeId(3)],
+                rigid: true,
+            }],
+            seismic_weight: None,
+        });
+    }
+    model
+}
+
+/// 剛床に載る梁の部材内力が回収されること（回帰）。
+///
+/// `ForceRegime::Auto` は「剛床に載る水平材」を材端集中ばね（非線形要素）へ
+/// 振り分けるが、これは非線形解析だけの規則である。線形解析の要素生成が
+/// この振り分けに従うと、材端集中ばね梁が `recover_forces` を持たないため
+/// 当該梁が `member_forces` から丸ごと欠落し、応力図・検定比図に
+/// 何も表示されなくなる（RC 基礎梁など剛床に載らない梁だけが残る）。
+#[test]
+fn test_rigid_floor_beam_member_forces_are_recovered() {
+    let model = rigid_floor_portal(true);
+    let res = linear_static_once(&model, LoadCaseId(1)).unwrap();
+
+    for id in [ElemId(0), ElemId(1), ElemId(2)] {
+        assert!(
+            res.member_forces.iter().any(|(e, _)| *e == id),
+            "部材 {:?} の内力が回収されていない: 回収済み={:?}",
+            id,
+            res.member_forces
+                .iter()
+                .map(|(e, _)| e.0)
+                .collect::<Vec<_>>()
+        );
+    }
+
+    // 梁の曲げは両端固定に近い分布（中央 sagging・端部 hogging）で、
+    // 単純梁の中央曲げ wL²/8 を超えない有意な値になる。
+    let beam = res
+        .member_forces
+        .iter()
+        .find(|(e, _)| *e == ElemId(2))
+        .map(|(_, mf)| mf)
+        .expect("梁の内力");
+    let m_mid = beam
+        .at
+        .iter()
+        .find(|(xi, _)| (xi - 0.5).abs() < 1e-9)
+        .map(|(_, f)| f[5])
+        .expect("中央の内力");
+    let w = 10.0_f64;
+    let l = 6000.0_f64;
+    let m_simple = w * l * l / 8.0;
+    assert!(
+        m_mid.abs() > m_simple * 0.1 && m_mid.abs() < m_simple,
+        "梁中央の曲げが妥当な範囲にない: M={m_mid} (wL²/8={m_simple})"
+    );
+}
+
+/// 自由度を拘束しない剛床定義（階の `diaphragms` のみ）を加えても、線形解析の
+/// 結果が一切変わらないこと。要素種別が `ForceRegime` の剛床判定に依存すると、
+/// 材端ばねが直列に入って梁の曲げ剛性が落ち、応力・変形が変わってしまう。
+#[test]
+fn test_rigid_floor_definition_does_not_change_linear_result() {
+    let without = linear_static_once(&rigid_floor_portal(false), LoadCaseId(1)).unwrap();
+    let with = linear_static_once(&rigid_floor_portal(true), LoadCaseId(1)).unwrap();
+
+    assert_eq!(without.member_forces.len(), with.member_forces.len());
+    for ((id_a, mf_a), (id_b, mf_b)) in without.member_forces.iter().zip(&with.member_forces) {
+        assert_eq!(id_a, id_b);
+        assert_eq!(mf_a.at.len(), mf_b.at.len());
+        for ((xi_a, fa), (xi_b, fb)) in mf_a.at.iter().zip(&mf_b.at) {
+            assert!((xi_a - xi_b).abs() < 1e-12);
+            for k in 0..6 {
+                assert!(
+                    (fa[k] - fb[k]).abs() <= fa[k].abs() * 1e-12 + 1e-6,
+                    "部材 {:?} xi={xi_a} 成分{k} が剛床定義の有無で変化: {} vs {}",
+                    id_a,
+                    fa[k],
+                    fb[k]
+                );
+            }
+        }
+    }
+    for (ua, ub) in without.disp.iter().zip(&with.disp) {
+        for k in 0..6 {
+            assert!(
+                (ua[k] - ub[k]).abs() <= ua[k].abs() * 1e-12 + 1e-12,
+                "節点変位が剛床定義の有無で変化: {} vs {}",
+                ua[k],
+                ub[k]
+            );
+        }
+    }
+}

@@ -4643,3 +4643,64 @@ fn test_mark_edited_marks_diagnostics_stale() {
     app.staleness.mark_edited();
     assert!(app.staleness.diagnostics_stale);
 }
+
+/// 剛床（階の剛床定義）に載る梁でも、応力図・検定比図の元データ
+/// （`member_forces` と `member_checks`）が生成されること（回帰）。
+///
+/// `ForceRegime::Auto` の「剛床に載る水平材＝材端集中ばね」は非線形解析だけの
+/// 振り分けであり、線形解析の要素生成が従うと当該梁の内力が丸ごと欠落し、
+/// 3D ビューの応力図・検定比図に何も表示されなくなる
+/// （剛床に載らない基礎梁と柱だけが残る症状）。
+#[test]
+fn test_rigid_floor_beam_has_forces_and_checks() {
+    use squid_n_core::model::{DiaphragmDef, Story};
+
+    let mut model = aligned_portal_frame();
+    // 梁の両端（node1・node2）を剛床に載せる。自由度の拘束は付けない
+    // （`constraints` は空のまま）ので解析可能性は変わらない。
+    model.stories.push(Story {
+        level_kind: Default::default(),
+        structure: Default::default(),
+        id: squid_n_core::ids::StoryId(0),
+        name: "2F".into(),
+        elevation: 3000.0,
+        node_ids: vec![NodeId(1), NodeId(2)],
+        diaphragms: vec![DiaphragmDef {
+            ci_override: None,
+            weight: None,
+            master: NodeId(1),
+            slaves: vec![NodeId(2)],
+            rigid: true,
+        }],
+        seismic_weight: None,
+    });
+
+    let mut app = App::default();
+    app.load_model(model);
+    app.run_linear_static(LoadCaseId(0));
+    assert!(app.last_error.is_none(), "{:?}", app.last_error);
+
+    let results = app.results.as_ref().expect("解析結果");
+    let beam_forces = results
+        .member_forces
+        .iter()
+        .find(|(id, _)| *id == ElemId(1))
+        .map(|(_, mf)| mf)
+        .expect("剛床に載る梁の部材内力が回収されていない");
+    let m_max = beam_forces
+        .at
+        .iter()
+        .map(|(_, f)| f[5].abs())
+        .fold(0.0_f64, f64::max);
+    assert!(m_max > 1.0, "梁の曲げが 0 のまま: {m_max}");
+
+    let beam_checks = results
+        .member_checks
+        .iter()
+        .find(|m| m.elem == ElemId(1))
+        .expect("剛床に載る梁の検定結果が生成されていない");
+    assert!(
+        !beam_checks.positions.is_empty(),
+        "梁の検定位置が空（検定比図で無着色になる）"
+    );
+}
