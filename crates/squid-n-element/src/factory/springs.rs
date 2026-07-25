@@ -15,21 +15,32 @@ use squid_n_material::{HysteresisMaterial, HysteresisRule, SteelBuckling, TsujiY
 use super::regime::is_vertical_member;
 use super::StrengthBasis;
 
-/// ファイバー梁の生成。既定で塑性化域考慮モデル（端部 Lp 区間にファイバー断面、
-/// 中央弾性）とし、Lp は `plastic_zone` 指定値、未指定なら断面せいの 0.5 倍
-/// （MS 要素と同じ既定。0.5D は既往検討で標準的に用いられる値）。
-pub(super) fn build_fiber(
-    data: &ElementData,
-    model: &Model,
-    basis: StrengthBasis,
-) -> crate::fiber::FiberBeam {
+/// 端部塑性化域モデル（ファイバー要素・MS 要素）の塑性化域長 Lp [mm]。
+///
+/// `plastic_zone` の指定値、未指定なら断面せいの 0.5 倍（0.5D は既往検討で
+/// 標準的に用いられる値）。断面せいが取れない場合は 200mm を仮定する。
+/// 要素生成（[`build_fiber`] / [`crate::multi_spring::MultiSpringElement::new`]）と
+/// モデル化図の表示で同じ値を用いるため公開する。
+/// なお部材長に対する上下限クランプは
+/// [`crate::fiber::clamp_plastic_zone`] が担う。
+pub fn plastic_zone_length(data: &ElementData, model: &Model) -> f64 {
     let depth = data
         .section
         .and_then(|sid| model.sections.get(sid.index()))
         .map(|s| s.depth)
         .filter(|d| *d > 0.0)
         .unwrap_or(200.0);
-    let lp = data.plastic_zone.unwrap_or(0.5 * depth);
+    data.plastic_zone.unwrap_or(0.5 * depth)
+}
+
+/// ファイバー梁の生成。既定で塑性化域考慮モデル（端部 Lp 区間にファイバー断面、
+/// 中央弾性）とし、Lp は [`plastic_zone_length`]（MS 要素と同じ既定）。
+pub(super) fn build_fiber(
+    data: &ElementData,
+    model: &Model,
+    basis: StrengthBasis,
+) -> crate::fiber::FiberBeam {
+    let lp = plastic_zone_length(data, model);
     crate::fiber::FiberBeam::with_plastic_zone(data, model, lp, basis)
 }
 

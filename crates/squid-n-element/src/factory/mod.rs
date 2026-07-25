@@ -17,7 +17,7 @@ mod springs;
 mod wall_opening;
 
 pub use regime::{resolve_force_regime, ResolvedRegime};
-pub use springs::resolve_member_hysteresis;
+pub use springs::{plastic_zone_length, resolve_member_hysteresis};
 pub(crate) use wall_opening::wall_opening_reduction;
 
 use springs::{

@@ -9,6 +9,15 @@ use squid_n_material::uniaxial::{Bilinear, UniaxialMaterial};
 use squid_n_section::fiber::{Fiber, FiberSection};
 use std::any::Any;
 
+/// 塑性化域長 Lp [mm] を部材長 `l` [mm] に対して有効な範囲へクランプする。
+///
+/// 両端の塑性化域が全長を食い尽くさないよう各端 45% を上限、下限は数値上の
+/// ゼロ割回避のため 1e-6·L とする。要素生成（[`FiberBeam::build_plastic_zone`]）と
+/// モデル化図の表示で同じ値を用いるため公開する。
+pub fn clamp_plastic_zone(lp: f64, l: f64) -> f64 {
+    lp.clamp(1.0e-6 * l, 0.45 * l)
+}
+
 /// ガウス点のファイバー断面と材料を構築する（構造力学のファイバーモデル）。
 /// RC 断面（RcRect/RcCircle）はコンクリートファイバー格子に加え、主筋を点ファイバー
 /// （バイリニア鋼材）として**分離**して配置する（従来は均質コンクリート断面で
@@ -443,7 +452,7 @@ impl FiberBeam {
             return fb;
         }
         // Lp は部材長の 45% までにクランプ（両端合計で全長を超えない）
-        let lp = lp.clamp(1.0e-6 * l, 0.45 * l);
+        let lp = clamp_plastic_zone(lp, l);
 
         let sec = data.section.and_then(|sid| model.sections.get(sid.index()));
         let mat_ref = data
