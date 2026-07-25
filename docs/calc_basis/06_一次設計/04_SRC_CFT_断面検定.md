@@ -51,5 +51,5 @@ CFT 柱の地震時設計用せん断:
 
 \\[ Q_{D2} = Q_L + n \cdot Q_E \\]
 
-**実装**：`srrc::{beam, column, panel_zone}`、`cft::mod` が検定する。
+**実装**：`srrc::{beam, column, panel_zone}`、`cft::mod` が検定します。
 SRC パネルゾーンは \\( {}\_c V \cdot j\delta \cdot f_s \cdot (1+\beta) \ge (h'/h)({}\_B M_1 + {}\_B M_2) \\)。
