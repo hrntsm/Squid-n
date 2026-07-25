@@ -414,6 +414,7 @@ impl WallPanelElement {
         ps: f64,
         dc_each: f64,
         col_main_at: f64,
+        has_side_column: bool,
         opening: Option<(f64, f64)>,
     ) -> f64 {
         let Some(fc) = fc else {
@@ -428,8 +429,15 @@ impl WallPanelElement {
         if d_eff <= 0.0 {
             return 0.0;
         }
-        // 側柱主筋が取れない壁は、縦筋一様配筋とみなし pte = 100·ps 相当とする。
-        let at = if col_main_at > 0.0 {
+        // 等価引張鉄筋比 pte = 100·at/(te·d) の at。
+        // - 付帯柱（側柱）がある壁: 引張側最端の柱 1 本の主筋量を用いる。
+        //   側柱があるのに主筋を読み取れない場合は**断面設定の不備**であり、
+        //   代替値で埋めずに 0 を返す（呼び出し側が
+        //   [`wall_shear_capacity_issue`] で検出しエラーとする）。
+        // - 付帯柱が無い壁: 壁の縦筋が一様配筋であるとみなし at = ps·te·d
+        //   （＝ pte = 100·ps \[%\]）とする。壁のみで構成される耐震壁の
+        //   正規の扱いであり、データ不備の代替ではない。
+        let at = if has_side_column {
             col_main_at
         } else {
             ps.max(0.0) * te * d_eff
@@ -476,6 +484,7 @@ impl WallPanelElement {
         let edge_pairs = [[geom.bottom[0], geom.top[0]], [geom.bottom[1], geom.top[1]]];
         let mut col_depth_sum = 0.0;
         let mut col_main_at: f64 = 0.0;
+        let mut has_side_column = false;
         for e in &model.elements {
             if !matches!(e.kind, squid_n_core::model::ElementKind::Beam) || e.nodes.len() < 2 {
                 continue;
@@ -487,6 +496,7 @@ impl WallPanelElement {
             {
                 continue;
             }
+            has_side_column = true;
             if let Some(cs) = e.section.and_then(|sid| model.sections.get(sid.index())) {
                 col_depth_sum += cs.depth.max(cs.width);
                 if let Some(SectionShape::RcRect { rebar, .. }) = cs.shape.as_ref() {
@@ -517,8 +527,96 @@ impl WallPanelElement {
             ps,
             col_depth_sum / 2.0,
             col_main_at,
+            has_side_column,
             opening,
         )
+    }
+
+    /// 耐震壁のせん断終局強度 Qu を算定できない**設定不備**があれば、その内容を返す。
+    ///
+    /// 保有水平耐力計算では耐震壁を Qu で頭打ちにするため、Qu が算定できない壁は
+    /// 際限なく水平力を負担して保有水平耐力を過大評価する（危険側）。したがって
+    /// 代替値で埋めずに解析を止め、利用者へ是正を促す。
+    ///
+    /// 検出する不備:
+    /// - 付帯柱（側柱）はあるのに、その断面から主筋量を読み取れない
+    ///   （断面形状が RcRect でない／主筋本数・径が 0）。等価引張鉄筋比 pte を
+    ///   算定できない。
+    /// - 材料にコンクリート強度 Fc が設定されていない。
+    ///
+    /// 付帯柱が無い壁（壁のみの耐震壁）は不備ではなく、壁の縦筋比 ps から pte を
+    /// 算定する。`ps = 0` の場合は主筋・壁筋がいずれも無いことになるため不備とする。
+    pub fn wall_shear_capacity_issue(data: &ElementData, model: &Model) -> Option<String> {
+        if !matches!(data.kind, squid_n_core::model::ElementKind::Wall) {
+            return None;
+        }
+        // 耐震壁として成立しない壁（フレーム内雑壁）は Qu を要さない。
+        if !crate::misc_wall::wall_is_seismic(data, model) {
+            return None;
+        }
+        // 壁エレメントとして構築できない形状は本チェックの対象外
+        // （別途フォールバック等価梁として扱われる）。
+        let geom = wall_panel_geometry(data, model)?;
+        let sec = data
+            .section
+            .and_then(|sid| model.sections.get(sid.index()))?;
+        let (t, ps) = match &sec.shape {
+            Some(SectionShape::RcWall { thickness, ps }) => (*thickness, (*ps).max(0.0)),
+            _ => (sec.thickness.unwrap_or(sec.width), 0.0),
+        };
+        if t <= 0.0 {
+            return None;
+        }
+        let mat = data
+            .material
+            .and_then(|mid| model.materials.get(mid.index()))?;
+        if mat.fc.is_none() {
+            return Some(format!(
+                "耐震壁 ID {} の材料「{}」にコンクリート強度 Fc が設定されていません。\
+                 保有水平耐力計算では耐震壁の終局せん断強度が必要です。材料タブで Fc を設定してください。",
+                data.id.0, mat.name
+            ));
+        }
+
+        let edge_pairs = [[geom.bottom[0], geom.top[0]], [geom.bottom[1], geom.top[1]]];
+        let mut has_side_column = false;
+        let mut col_main_at: f64 = 0.0;
+        for e in &model.elements {
+            if !matches!(e.kind, squid_n_core::model::ElementKind::Beam) || e.nodes.len() < 2 {
+                continue;
+            }
+            let (n0, n1) = (e.nodes[0], e.nodes[1]);
+            if !edge_pairs
+                .iter()
+                .any(|p| (p[0] == n0 && p[1] == n1) || (p[0] == n1 && p[1] == n0))
+            {
+                continue;
+            }
+            has_side_column = true;
+            if let Some(cs) = e.section.and_then(|sid| model.sections.get(sid.index())) {
+                if let Some(SectionShape::RcRect { rebar, .. }) = cs.shape.as_ref() {
+                    col_main_at =
+                        col_main_at.max(squid_n_core::section_shape::bar_set_area(&rebar.main_x));
+                }
+            }
+        }
+        if has_side_column && col_main_at <= 0.0 {
+            return Some(format!(
+                "耐震壁 ID {} の側柱（付帯柱）から主筋量を取得できません。\
+                 断面の形状を RC 矩形（RcRect）とし、主筋の本数・径を設定してください。\
+                 保有水平耐力計算では側柱主筋から耐震壁の等価引張鉄筋比 pte を算定します。",
+                data.id.0
+            ));
+        }
+        if !has_side_column && ps <= 0.0 {
+            return Some(format!(
+                "耐震壁 ID {} は側柱（付帯柱）が無く、かつ壁筋比 ps が 0 です。\
+                 断面タブで壁筋比を設定してください。\
+                 保有水平耐力計算では壁筋比から耐震壁の等価引張鉄筋比 pte を算定します。",
+                data.id.0
+            ));
+        }
+        None
     }
 
     /// 面内せん断の終局強度 Qu [N] を与えて弾完全塑性化する（保有水平耐力用）。
@@ -1362,5 +1460,189 @@ mod shear_yield_tests {
             "弾性経路は線形であるべき: {:?}",
             q_at
         );
+    }
+}
+
+#[cfg(test)]
+mod capacity_issue_tests {
+    use super::*;
+    use squid_n_core::dof::Dof6Mask;
+    use squid_n_core::ids::{ElemId, MaterialId, SectionId};
+    use squid_n_core::model::{
+        ElementKind, EndCondition, ForceRegime, LocalAxis, Material, Node, Section,
+    };
+    use squid_n_core::section_shape::{BarSet, RcRebar, SectionShape, ShearBar};
+
+    /// 側柱あり／なし、側柱断面の指定を切り替えて壁モデルを作る。
+    fn model_with(side_col_sec: Option<Section>, ps: f64) -> (Model, ElementData) {
+        let shape = SectionShape::RcWall {
+            thickness: 200.0,
+            ps,
+        };
+        let mk = |id: u32, c: [f64; 3]| Node {
+            id: NodeId(id),
+            coord: c,
+            restraint: Dof6Mask::FREE,
+            mass: None,
+            story: None,
+        };
+        let mut sections = vec![shape.to_section(SectionId(0), "W200".into())];
+        let mut elements = vec![];
+        if let Some(mut cs) = side_col_sec {
+            cs.id = SectionId(1);
+            sections.push(cs);
+            // 壁の鉛直辺（節点0-3）に取り付く側柱。
+            elements.push(ElementData {
+                id: ElemId(1),
+                kind: ElementKind::Beam,
+                nodes: smallvec::smallvec![NodeId(0), NodeId(3)],
+                section: Some(SectionId(1)),
+                material: Some(MaterialId(0)),
+                local_axis: LocalAxis {
+                    ref_vector: [1.0, 0.0, 0.0],
+                },
+                end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+                force_regime: ForceRegime::Auto,
+                rigid_zone: Default::default(),
+                plastic_zone: None,
+                spring: None,
+            });
+        }
+        let wall = ElementData {
+            id: ElemId(0),
+            kind: ElementKind::Wall,
+            nodes: smallvec::smallvec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
+            section: Some(SectionId(0)),
+            material: Some(MaterialId(0)),
+            local_axis: LocalAxis {
+                ref_vector: [0.0, 1.0, 0.0],
+            },
+            end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+            force_regime: ForceRegime::Auto,
+            rigid_zone: Default::default(),
+            plastic_zone: None,
+            spring: None,
+        };
+        elements.insert(0, wall.clone());
+        let model = Model {
+            nodes: vec![
+                mk(0, [0.0, 0.0, 0.0]),
+                mk(1, [4000.0, 0.0, 0.0]),
+                mk(2, [4000.0, 0.0, 3000.0]),
+                mk(3, [0.0, 0.0, 3000.0]),
+            ],
+            elements,
+            sections,
+            materials: vec![Material {
+                strength_factor: None,
+                concrete_class: Default::default(),
+                id: MaterialId(0),
+                name: "FC24".into(),
+                young: 23000.0,
+                poisson: 0.2,
+                density: 2.4e-9,
+                shear: None,
+                fc: Some(24.0),
+                fy: None,
+            }],
+            ..Default::default()
+        };
+        (model, wall)
+    }
+
+    fn rc_col(with_rebar: bool) -> Section {
+        let shape = if with_rebar {
+            SectionShape::RcRect {
+                b: 600.0,
+                d: 600.0,
+                rebar: RcRebar {
+                    main_x: BarSet {
+                        count: 8,
+                        dia: 22.0,
+                        layers: 2,
+                    },
+                    main_y: BarSet {
+                        count: 4,
+                        dia: 22.0,
+                        layers: 1,
+                    },
+                    cover: 40.0,
+                    shear: ShearBar {
+                        dia: 10.0,
+                        pitch: 100.0,
+                        legs: 2,
+                        grade: None,
+                    },
+                },
+            }
+        } else {
+            // 主筋 0 本（断面設定の不備）。
+            SectionShape::RcRect {
+                b: 600.0,
+                d: 600.0,
+                rebar: RcRebar {
+                    main_x: BarSet {
+                        count: 0,
+                        dia: 0.0,
+                        layers: 1,
+                    },
+                    main_y: BarSet {
+                        count: 0,
+                        dia: 0.0,
+                        layers: 1,
+                    },
+                    cover: 40.0,
+                    shear: ShearBar {
+                        dia: 10.0,
+                        pitch: 100.0,
+                        legs: 2,
+                        grade: None,
+                    },
+                },
+            }
+        };
+        shape.to_section(SectionId(1), "C600".into())
+    }
+
+    /// 側柱があり主筋も設定されていれば不備なし・Qu が算定できる。
+    #[test]
+    fn test_no_issue_when_side_column_rebar_available() {
+        let (model, wall) = model_with(Some(rc_col(true)), 0.0025);
+        assert_eq!(
+            WallPanelElement::wall_shear_capacity_issue(&wall, &model),
+            None
+        );
+        assert!(WallPanelElement::shear_capacity_of(&wall, &model) > 0.0);
+    }
+
+    /// 側柱はあるのに主筋が取得できない＝断面設定の不備。壁筋比で代替せずエラーとする。
+    #[test]
+    fn test_issue_when_side_column_has_no_main_rebar() {
+        let (model, wall) = model_with(Some(rc_col(false)), 0.0025);
+        let issue = WallPanelElement::wall_shear_capacity_issue(&wall, &model)
+            .expect("側柱主筋が無ければ不備として検出されるべき");
+        assert!(issue.contains("側柱"), "{}", issue);
+        // 壁筋比 ps があっても代替しない（Qu=0 のまま）。
+        assert_eq!(WallPanelElement::shear_capacity_of(&wall, &model), 0.0);
+    }
+
+    /// 側柱が無い壁（壁のみの耐震壁）は不備ではなく、壁筋比から pte を算定する。
+    #[test]
+    fn test_no_side_column_uses_wall_rebar_ratio() {
+        let (model, wall) = model_with(None, 0.0025);
+        assert_eq!(
+            WallPanelElement::wall_shear_capacity_issue(&wall, &model),
+            None
+        );
+        assert!(WallPanelElement::shear_capacity_of(&wall, &model) > 0.0);
+    }
+
+    /// 側柱も壁筋比も無ければ pte を算定できないため不備とする。
+    #[test]
+    fn test_issue_when_no_side_column_and_no_wall_rebar() {
+        let (model, wall) = model_with(None, 0.0);
+        let issue = WallPanelElement::wall_shear_capacity_issue(&wall, &model)
+            .expect("側柱も壁筋も無ければ不備");
+        assert!(issue.contains("壁筋比"), "{}", issue);
     }
 }
