@@ -1946,3 +1946,181 @@ fn test_horizontal_force_sums_wall_bottom_nodes() {
         h2
     );
 }
+
+// ===== 系レベル V&V: 剛域が保有水平耐力・崩壊機構へ与える影響 =====
+
+/// 剛域検証用の門形フレーム（1層1スパン）。
+///
+/// 柱は 100×100 のファイバー要素で両端固定、はりは柱より十分強い断面
+/// （300×300）として弾性に留め、**柱の両端 4 ヒンジによる崩壊機構**に固定する。
+/// これにより崩壊荷重は手計算 Qu = 4·My/L'（L' = 柱の可撓長）で照合できる。
+/// `rigid` に剛域長 λ [mm] を与えると、柱の上下端に λ の剛域を設定する。
+fn portal_frame_rigid_zone_model(fy: f64, seismic_weight: f64, rigid: f64) -> Model {
+    let mut model = portal_frame_model(fy, seismic_weight);
+    // はり用の強い断面を追加し、はりへ割り当てる（はりを弾性に保つ）。
+    let strong = Section {
+        id: SectionId(1),
+        name: "girder".to_string(),
+        area: 90000.0,
+        iy: 6.75e8,
+        iz: 6.75e8,
+        j: 1.0e9,
+        depth: 300.0,
+        width: 300.0,
+        as_y: 0.0,
+        as_z: 0.0,
+        panel_thickness: None,
+        thickness: None,
+        shape: None,
+    };
+    model.sections.push(strong);
+    model.elements[1].section = Some(SectionId(1));
+    // 柱（要素 0・2）の上下端へ剛域を設定する。
+    if rigid > 0.0 {
+        for idx in [0usize, 2] {
+            model.elements[idx].rigid_zone = RigidZone {
+                length_i: rigid,
+                length_j: rigid,
+                face_i: rigid,
+                face_j: rigid,
+                ..Default::default()
+            };
+        }
+    }
+    model
+}
+
+/// 4 個目の降伏ヒンジ（柱両端×2 本で運動学的機構が成立する）が揃ったステップの
+/// ベースシアを「観測崩壊荷重」として返す。
+///
+/// ヒンジは (部材, 材端) で重複を除いて数える（`determine_mechanism` の
+/// 運動学的ゲートと同じ数え方）。
+fn observed_collapse_shear(result: &PushoverResult) -> Option<f64> {
+    let mut seen: std::collections::BTreeSet<(u32, u8)> = std::collections::BTreeSet::new();
+    let mut mech_step = None;
+    let mut events: Vec<&HingeEvent> = result
+        .hinges
+        .iter()
+        .filter(|h| !matches!(h.level, HingeLevel::Crack))
+        .collect();
+    events.sort_by_key(|h| h.step);
+    for h in events {
+        seen.insert((h.elem.index() as u32, if h.pos < 0.5 { 0 } else { 1 }));
+        if seen.len() >= 4 {
+            mech_step = Some(h.step);
+            break;
+        }
+    }
+    let mech_step = mech_step?;
+    result
+        .capacity_curve
+        .iter()
+        .find(|c| c.step == mech_step)
+        .map(|c| c.base_shear)
+}
+
+fn run_rigid_zone_pushover(rigid: f64) -> PushoverResult {
+    let mut model = portal_frame_rigid_zone_model(235.0, 600_000.0, rigid);
+    let dofmap = DofMap::build(&model);
+    let reducer = Reducer::build(&model, &dofmap);
+    pushover_analysis(
+        &mut model,
+        &dofmap,
+        &reducer,
+        SeismicDir::X,
+        400,
+        0.0,
+        false,
+        false,
+        0.0,
+    )
+    .expect("pushover should run end-to-end")
+}
+
+/// 系レベル V&V（1）: 剛域つき門形フレームの**崩壊荷重が可撓長基準の理論値**に
+/// 一致すること。
+///
+/// 柱両端 4 ヒンジの崩壊機構では Qu = 4·My/L'（L' = 柱の可撓長）であり、剛域を
+/// 与えると L' = H − 2λ に短くなるぶん崩壊荷重は H/L' 倍になる。断面のファイバー
+/// 離散化や荷重ステップの量子化による誤差を打ち消すため、**剛域なしとの比**で
+/// 照合する（絶対値は既存 `test_portal_frame_collapse_load` が別途照合済み）。
+#[test]
+fn vnv_剛域つき門形フレームの崩壊荷重が可撓長基準になる() {
+    let h: f64 = 3000.0;
+    let lam: f64 = 300.0;
+    let l_flex = h - 2.0 * lam;
+
+    let r0 = run_rigid_zone_pushover(0.0);
+    let r1 = run_rigid_zone_pushover(lam);
+    let q0 = observed_collapse_shear(&r0).expect("剛域なしで崩壊機構が成立しない");
+    let q1 = observed_collapse_shear(&r1).expect("剛域ありで崩壊機構が成立しない");
+
+    let ratio = q1 / q0;
+    let theory = h / l_flex;
+    // 荷重ステップの量子化（400 ステップ）で数 % のばらつきが出るため許容 5%。
+    assert!(
+        (ratio / theory - 1.0).abs() < 0.05,
+        "崩壊荷重比が可撓長基準の理論値から外れている: 実測 {ratio:.4}（Qu={q0:.0}→{q1:.0} N）, 理論 H/L'={theory:.4}"
+    );
+    // 剛域を無視していた頃は崩壊荷重が剛域に反応しなかった（比 = 1.0）。
+    assert!(
+        ratio > 1.1,
+        "剛域が崩壊荷重に反映されていない（比 {ratio:.4}）"
+    );
+}
+
+/// 系レベル V&V（2）: 剛域があっても崩壊機構が成立し、崩壊ヒンジが**柱に**
+/// 形成されること（はりを強くしているため柱の全体機構になる）。
+/// 崩壊機構種別は Ds の機構補正（`squid_n_design_jp::secondary::story_ds`）へ
+/// 直接効くため、剛域の導入で機構分類が崩れないことを確認する。
+#[test]
+fn vnv_剛域つきでも柱の崩壊機構が成立する() {
+    let result = run_rigid_zone_pushover(300.0);
+    let yielded: Vec<&HingeEvent> = result
+        .hinges
+        .iter()
+        .filter(|h| !matches!(h.level, HingeLevel::Crack))
+        .collect();
+    assert!(
+        yielded.len() >= 4,
+        "柱両端 4 ヒンジの機構に達していない: 降伏ヒンジ {} 個",
+        yielded.len()
+    );
+    // 降伏ヒンジはすべて柱（要素 0・2）に生じる（はりは弾性に留める設計）。
+    assert!(
+        yielded
+            .iter()
+            .all(|h| h.elem == ElemId(0) || h.elem == ElemId(2)),
+        "はりに降伏ヒンジが生じた（柱の崩壊機構になっていない）"
+    );
+    assert!(
+        !matches!(result.mechanism, MechanismType::Partial),
+        "崩壊機構が Partial のまま（機構が成立していない）"
+    );
+}
+
+/// 系レベル V&V（3）: 剛域が層の弾性剛性を理論どおり増大させること。
+/// 剛性率 Rs・層間変形角の検定（`squid_n_design_jp::secondary::holding_capacity`）は
+/// 層剛性に直接依存するため、要素レベルだけでなく層レベルでも確認する。
+///
+/// 両端固定柱の層せん断剛性は 12EI/L'³（節点変位基準。剛体アームは変形しない）で、
+/// 剛域を与えると (H/L')³ 倍になる。
+#[test]
+fn vnv_剛域は層の弾性剛性を可撓長の三乗で増大させる() {
+    let h: f64 = 3000.0;
+    let lam: f64 = 300.0;
+    let l_flex = h - 2.0 * lam;
+    let elastic_k = |r: &PushoverResult| -> f64 {
+        let p = &r.capacity_curve[0];
+        p.base_shear / p.roof_disp
+    };
+    let k0 = elastic_k(&run_rigid_zone_pushover(0.0));
+    let k1 = elastic_k(&run_rigid_zone_pushover(lam));
+    let ratio = k1 / k0;
+    let theory = (h / l_flex).powi(3);
+    // せん断変形・はりの弾性変形の寄与で理論値から数 % ずれる。
+    assert!(
+        (ratio / theory - 1.0).abs() < 0.05,
+        "層剛性比が (H/L')³ から外れている: 実測 {ratio:.4}, 理論 {theory:.4}"
+    );
+}

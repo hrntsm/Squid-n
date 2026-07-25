@@ -875,12 +875,25 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
         .collect();
     let pts: Vec<egui::Pos2> = coords3.iter().map(|&p| proj.project(p)).collect();
 
+    // 解析対象の節点（主架構要素が接続する節点・拘束のマスター節点）。判定規則は
+    // 解析（`DofMap::build`）と共通。
+    let structural = squid_n_core::dof::structural_nodes(&app.model);
+
+    // 節点の表示可否。解析対象外の節点（スラブ境界・小梁支持点・二次部材の節点）は
+    // 床・二次部材と一体の存在なので、「床・二次部材」トグル OFF では節点も描かない
+    // （部材が消えて節点だけが空中に浮いて見えるのを防ぐ）。非表示の節点は
+    // 作成モードのピック対象からも外し、見えない点が選ばれないようにする。
+    let node_visible: Vec<bool> = structural
+        .iter()
+        .map(|&s| s || app.show_floor_secondary)
+        .collect();
+
     // --- クリック処理（ViewCube 上のクリックはスナップ済みのため除外） ---
     if response.clicked() && !cube_clicked {
         if let Some(click_pos) = response.interact_pointer_pos() {
             if app.beam_draw_mode {
                 // 梁作成モード：クリック位置に最も近い節点を選ぶ
-                let best = pick_nearest_node(&pts, click_pos);
+                let best = pick_nearest_node(&pts, &node_visible, click_pos);
                 // 節点ピッキング許容距離（px）
                 const NODE_PICK_THRESHOLD: f32 = 10.0;
                 if let Some((i, d)) = best {
@@ -929,7 +942,7 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
                 }
             } else if app.wall_draw_mode {
                 // 壁作成モード：クリック位置に最も近い節点を選ぶ
-                let best = pick_nearest_node(&pts, click_pos);
+                let best = pick_nearest_node(&pts, &node_visible, click_pos);
                 // 節点ピッキング許容距離（px）
                 const NODE_PICK_THRESHOLD: f32 = 10.0;
                 if let Some((i, d)) = best {
@@ -971,7 +984,7 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
                 }
             } else if app.slab_draw_mode {
                 // スラブ作成モード：クリック位置に最も近い節点を外周順に追加する。
-                let best = pick_nearest_node(&pts, click_pos);
+                let best = pick_nearest_node(&pts, &node_visible, click_pos);
                 // 節点ピッキング許容距離（px）
                 const NODE_PICK_THRESHOLD: f32 = 10.0;
                 if let Some((i, d)) = best {
@@ -1017,8 +1030,12 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
         solids_skipped = solid::draw_section_solids(&painter, &app.model, &coords3, &proj);
     }
 
-    // 節点（梁/壁作成モードで選択中の節点は強調表示）
+    // 節点（梁/壁作成モードで選択中の節点は強調表示）。
+    // 解析対象外の節点は「床・二次部材」トグルに追従して表示・非表示を切り替える。
     for (i, &p) in pts.iter().enumerate() {
+        if !node_visible[i] {
+            continue;
+        }
         let node_id = app.model.nodes[i].id;
         let is_first = app.beam_draw_first == Some(node_id);
         let is_wall_pick = app.wall_draw_nodes.contains(&node_id);
@@ -1233,6 +1250,12 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
     // 関連付けられたスレーブ節点へ点線を引き、所属関係を可視化する。代表点・
     // スレーブとも変形後座標（`coords3` 由来の `pts`）で描くため変形へ追従する。
     // 点線は節点数が多いと他部材が見づらくなるため、トグルで表示を切り替える。
+    //
+    // 階の生成（`story_gen`）は当該レベルの全節点をスレーブに登録するため、
+    // スラブ境界・小梁支持点・二次部材の節点（解析自由度を持たない）も
+    // スレーブ一覧に含まれる。これらは剛床の縮約対象にならない（`DofMap` が
+    // 全自由度を不活性にし、拘束行列の生成も `dofmap.active` で素通りする）ので、
+    // 点線は解析対象の節点に限って描く。
     if app.show_diaphragm_master {
         const DASH: f32 = 5.0;
         const GAP: f32 = 4.0;
@@ -1247,7 +1270,7 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
             let mp = pts[mi];
             for sl in slaves {
                 let si = sl.index();
-                if si >= pts.len() {
+                if si >= pts.len() || !structural.get(si).copied().unwrap_or(false) {
                     continue;
                 }
                 painter.extend(egui::Shape::dashed_line(
@@ -1947,10 +1970,18 @@ fn dist_point_to_segment(p: egui::Pos2, a: egui::Pos2, b: egui::Pos2) -> f32 {
 }
 
 /// スクリーン座標 `pos` に最も近い節点の `(index, 距離px)` を返す（同距離は先勝ち）。
-/// ピッキング（節点選択・作成モード）で共有する。
-fn pick_nearest_node(pts: &[egui::Pos2], pos: egui::Pos2) -> Option<(usize, f32)> {
+/// ピッキング（節点選択・作成モード）で共有する。`visible` が偽の節点は
+/// ビューに描かれていないため対象外にする（見えない点が選ばれるのを防ぐ）。
+fn pick_nearest_node(
+    pts: &[egui::Pos2],
+    visible: &[bool],
+    pos: egui::Pos2,
+) -> Option<(usize, f32)> {
     let mut best: Option<(usize, f32)> = None;
     for (i, &p) in pts.iter().enumerate() {
+        if !visible.get(i).copied().unwrap_or(true) {
+            continue;
+        }
         let d = (pos - p).length();
         if best.is_none_or(|(_, bd)| d < bd) {
             best = Some((i, d));
@@ -2015,36 +2046,13 @@ fn interpolate_unreferenced_disp(
 ) -> Vec<[f64; 6]> {
     let n = model.nodes.len().min(disp.len());
 
-    // 解析自由度を持ち変位が直接求まる節点（`DofMap::build` の structural 判定と
-    // 同じ規則）: 主架構要素が接続する節点、または拘束（剛床・剛リンク・MPC）の
-    // マスター節点。剛床代表節点（階自動生成が重心に置く仮想節点）は要素に
-    // 接続しないが正しい解析変位を持つため、補間で上書きしてはいけない。
-    let mut referenced = vec![false; n];
-    for elem in &model.elements {
-        for nd in &elem.nodes {
-            if let Some(r) = referenced.get_mut(nd.index()) {
-                *r = true;
-            }
-        }
-    }
-    for c in &model.constraints {
-        use squid_n_core::model::Constraint;
-        match c {
-            Constraint::RigidDiaphragm { master, .. } | Constraint::RigidLink { master, .. } => {
-                if let Some(r) = referenced.get_mut(master.index()) {
-                    *r = true;
-                }
-            }
-            // MPC は `master` フィールドがスレーブ節点、`terms` がマスター側。
-            Constraint::Mpc { terms, .. } => {
-                for (nd, _, _) in terms {
-                    if let Some(r) = referenced.get_mut(nd.index()) {
-                        *r = true;
-                    }
-                }
-            }
-        }
-    }
+    // 解析自由度を持ち変位が直接求まる節点（構造節点。判定は解析
+    // （`DofMap::build`）と共通の `structural_nodes`）。剛床代表節点（階自動生成が
+    // 重心に置く仮想節点）は要素に接続しないが拘束のマスターとして正しい解析変位を
+    // 持つため、補間で上書きしてはいけない。
+    let mut referenced = squid_n_core::dof::structural_nodes(model);
+    referenced.truncate(n);
+    referenced.resize(n, false);
     if referenced.iter().all(|&r| r) {
         return disp;
     }

@@ -221,13 +221,10 @@ fn condense_springs(k_elem: &LocalMat, k_i: f64, k_j: f64) -> LocalMat {
 fn compute_kstar(elastic: &crate::beam::BeamElement, kti: f64, ktj: f64) -> LocalMat {
     let k_flex = elastic.local_stiffness_flex();
     let k_end = condense_springs(&k_flex, kti, ktj);
-    let li = elastic.rigid.length_i;
-    let lj = elastic.rigid.length_j;
-    if li.abs() > 1e-12 || lj.abs() > 1e-12 {
-        elastic.apply_rigid_zone_transform(&k_end, li, lj)
-    } else {
-        k_end
-    }
+    // 剛域長は `local_stiffness_flex` と同じ規則で解決する（可撓長が残らない
+    // 病的な入力は剛域なし扱い。`BeamElement::rigid_lengths`）。
+    let (li, lj) = elastic.rigid_lengths();
+    elastic.apply_rigid_zone_transform(&k_end, li, lj)
 }
 
 impl ElementBehavior for ConcentratedSpringBeam {

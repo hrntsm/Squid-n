@@ -4,6 +4,7 @@
 //! - [`compute_hinge_thresholds`] — 全部材の閾値を算定
 //! - [`track_hinges`] — 各ステップのヒンジ発生・レベルを判定し記録
 
+use super::geom::member_end_forces_at_face;
 use super::types::{HingeEvent, HingeLevel};
 use squid_n_core::material_grade::{
     material_strength_factor_rebar, material_strength_factor_steel,
@@ -137,8 +138,17 @@ pub(crate) fn track_hinges(
     let ctx = Ctx { model };
     for (i, (elem, b)) in model.elements.iter().zip(behaviors).enumerate() {
         let f = b.internal_force(&state, &ctx);
-        let m_i = f.data[4].abs().max(f.data[5].abs());
-        let m_j = f.data[10].abs().max(f.data[11].abs());
+        // 曲げ降伏は**危険断面＝剛域フェイス**で判定する。材端力を局所座標へ回して
+        // 剛体アームのモーメントを差し引いた成分（局所 My=4/10・Mz=5/11）を用いる
+        // （[`member_end_forces_at_face`]）。節点位置のモーメントはアーム分だけ
+        // 大きく、断面耐力 My と直接比較すると剛域を持つ部材のヒンジを過早に検出し、
+        // 崩壊荷重を過小評価する。局所成分を使うことで、材軸まわりのねじりを
+        // 曲げと取り違えることも無くなる。
+        let Some(fl) = member_end_forces_at_face(model, elem, &f.data) else {
+            continue;
+        };
+        let m_i = fl[4].abs().max(fl[5].abs());
+        let m_j = fl[10].abs().max(fl[11].abs());
         let m_max = m_i.max(m_j);
         let th = &thresholds[i];
         if th.mc <= 0.0 || m_max < th.mc {
@@ -153,22 +163,30 @@ pub(crate) fn track_hinges(
         } else {
             0.0
         };
-        let level = if m_max >= th.my {
-            if mu >= ULTIMATE_DUCTILITY {
-                HingeLevel::Ultimate
-            } else {
-                HingeLevel::Yield
+        // ヒンジは**材端ごとに**記録する。1 部材につき最大モーメント側の 1 端しか
+        // 記録しないと、両端が降伏した部材でも崩壊機構の運動学的ゲート
+        // （形成降伏ヒンジ数 ≧ r+1、`determine_mechanism`）で 1 個としか数えられず、
+        // 柱両端ヒンジによる機構が成立しても Partial と判定されてしまう。
+        for (end_idx, m_end) in [(0usize, m_i), (1usize, m_j)] {
+            if m_end < th.mc {
+                continue;
             }
-        } else {
-            HingeLevel::Crack
-        };
-        let pos = if m_i >= m_j { 0.0 } else { 1.0 };
-        hinges.push(HingeEvent {
-            step,
-            elem: elem.id,
-            pos,
-            level,
-            ductility: mu,
-        });
+            let level = if m_end >= th.my {
+                if mu >= ULTIMATE_DUCTILITY {
+                    HingeLevel::Ultimate
+                } else {
+                    HingeLevel::Yield
+                }
+            } else {
+                HingeLevel::Crack
+            };
+            hinges.push(HingeEvent {
+                step,
+                elem: elem.id,
+                pos: end_idx as f64,
+                level,
+                ductility: mu,
+            });
+        }
     }
 }

@@ -256,10 +256,15 @@ fn portal_frame_model(fy: f64, seismic_weight: f64) -> Model {
 }
 
 /// 耐力喪失変形角を極小に設定し、降伏後ただちに耐力喪失が検出されるようにした
-/// 上で、staged_strength_loss が複数パス実行され、喪失部材が記録され、
-/// 包絡線の頂部変位軸が単調であることを確認する（数値の厳密照合はしない）。
+/// 上で、staged_strength_loss が耐力喪失部材を検出・除去し、包絡線の頂部変位軸が
+/// 単調であることを確認する（数値の厳密照合はしない）。
+///
+/// 本モデル（左右対称の門形フレーム）では 2 本の柱が同時に耐力喪失変形角へ達する
+/// ため、1 回の除去で両柱が両端ピン＋断面実質ゼロとなり、残存構造が層崩壊機構に
+/// なる。再載荷パスは剛性行列を分解できず、そこで解析は正常終了する
+/// （`staged_strength_loss` は 2 パス目以降の分解失敗を解析終了として扱う）。
 #[test]
-fn test_staged_strength_loss_runs_multiple_passes() {
+fn test_staged_strength_loss_detects_and_removes_members() {
     let model = portal_frame_model(235.0, 600_000.0);
     let criterion = LossCriterion::DriftRange {
         start: 0.0,
@@ -280,13 +285,19 @@ fn test_staged_strength_loss_runs_multiple_passes() {
     .expect("staged strength loss should run end-to-end");
 
     assert!(
-        result.passes.len() >= 2,
-        "expected at least 2 reloading passes, got {}",
+        !result.passes.is_empty(),
+        "at least 1 pass should be recorded, got {}",
         result.passes.len()
     );
     assert!(
         !result.removed.is_empty(),
         "at least one member should be recorded as removed"
+    );
+    // 除去はすべて 1 パス目で起きる（対称フレームで両柱が同時に耐力喪失する）。
+    assert!(
+        result.removed.iter().all(|(pass, _)| *pass == 0),
+        "removals should occur in the first pass: {:?}",
+        result.removed
     );
     // 除去された部材はいずれか実在の部材であること。
     for (pass_idx, elem_id) in &result.removed {
