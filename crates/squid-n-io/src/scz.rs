@@ -67,20 +67,12 @@ fn read_entry_capped(
 /// io 層は内容を解釈しない（準備計算の型はアプリ層にあるため）。
 pub const PREPARATION_ENTRY: &str = "preparation.msgpack";
 
-pub fn save_scz(path: &Path, model: &Model) -> Result<(), IoError> {
-    save_scz_with_preparation(path, model, None)
-}
-
-/// モデルに加えて準備計算の結果（msgpack バイト列）を保存する。
+/// モデルと準備計算の結果を .scz へ保存する。
 ///
-/// `preparation` が `None` の場合は [`save_scz`] と同一のアーカイブになる
-/// （準備計算エントリは書かない）。エントリは manifest に列挙してハッシュ検証の
-/// 対象にする。
-pub fn save_scz_with_preparation(
-    path: &Path,
-    model: &Model,
-    preparation: Option<&[u8]>,
-) -> Result<(), IoError> {
+/// `preparation` は準備計算の結果を直列化したバイト列。`None`（未実行、または
+/// モデル編集後に再実行していない）の場合は準備計算エントリを書かない。
+/// 書く場合は manifest に列挙してハッシュ検証の対象にする。
+pub fn save_scz(path: &Path, model: &Model, preparation: Option<&[u8]>) -> Result<(), IoError> {
     let tmp_path = path.with_extension("scz.tmp");
 
     let model_bytes = rmp_serde::to_vec(model).map_err(|e| IoError::Decode(e.to_string()))?;
@@ -171,13 +163,10 @@ fn sync_parent_dir(_path: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-pub fn load_scz(path: &Path) -> Result<Model, IoError> {
-    load_scz_with_preparation(path).map(|(model, _)| model)
-}
-
 /// モデルと、保存されていれば準備計算の結果（msgpack バイト列）を読み込む。
-/// 準備計算エントリを持たないファイルでは `None` を返す。
-pub fn load_scz_with_preparation(path: &Path) -> Result<(Model, Option<Vec<u8>>), IoError> {
+/// 準備計算エントリを持たないファイル（準備計算が最新でない状態で保存した
+/// プロジェクト）では第 2 要素が `None` になる。
+pub fn load_scz(path: &Path) -> Result<(Model, Option<Vec<u8>>), IoError> {
     let f = std::fs::File::open(path)?;
     let mut archive = zip::ZipArchive::new(f).map_err(|e| IoError::Zip(e.to_string()))?;
 
@@ -265,8 +254,8 @@ mod tests {
         let model = make_3node_model();
         let dir = std::env::temp_dir();
         let path = dir.join("p.scz");
-        save_scz(&path, &model).unwrap();
-        let back = load_scz(&path).unwrap();
+        save_scz(&path, &model, None).unwrap();
+        let (back, _) = load_scz(&path).unwrap();
         assert_eq!(model.nodes.len(), back.nodes.len());
         assert!(model.eq_ignoring_dofmap(&back));
         let _ = std::fs::remove_file(&path);
@@ -277,7 +266,7 @@ mod tests {
         let model = make_3node_model();
         let dir = std::env::temp_dir();
         let path = dir.join("p_hash.scz");
-        save_scz(&path, &model).unwrap();
+        save_scz(&path, &model, None).unwrap();
         let settings_bytes = {
             let f = std::fs::File::open(&path).unwrap();
             let mut ar = zip::ZipArchive::new(f).unwrap();
@@ -319,7 +308,7 @@ mod tests {
         let model = make_3node_model();
         let dir = std::env::temp_dir();
         let path = dir.join("p_ver.scz");
-        save_scz(&path, &model).unwrap();
+        save_scz(&path, &model, None).unwrap();
 
         let bad_manifest = Manifest {
             schema_version: 999,
@@ -353,7 +342,7 @@ mod tests {
         let dir = std::env::temp_dir();
         let path = dir.join("p_old_ver.scz");
         // まず通常保存し、その model.msgpack / settings.json を取り出す。
-        save_scz(&path, &model).unwrap();
+        save_scz(&path, &model, None).unwrap();
         let (model_bytes, settings_bytes) = {
             let f = std::fs::File::open(&path).unwrap();
             let mut ar = zip::ZipArchive::new(f).unwrap();
@@ -400,7 +389,7 @@ mod tests {
         let model = make_3node_model();
         let dir = std::env::temp_dir();
         let path = dir.join("p_missing_entry.scz");
-        save_scz(&path, &model).unwrap();
+        save_scz(&path, &model, None).unwrap();
         let (model_bytes, settings_bytes) = {
             let f = std::fs::File::open(&path).unwrap();
             let mut ar = zip::ZipArchive::new(f).unwrap();
@@ -479,8 +468,8 @@ mod tests {
 
         let dir = std::env::temp_dir();
         let path = dir.join("p_shape_roundtrip.scz");
-        save_scz(&path, &model).unwrap();
-        let back = load_scz(&path).unwrap();
+        save_scz(&path, &model, None).unwrap();
+        let (back, _) = load_scz(&path).unwrap();
 
         assert_eq!(back.sections.len(), 1);
         assert_eq!(back.sections[0].shape, Some(shape));
@@ -496,9 +485,9 @@ mod tests {
         let dir = std::env::temp_dir();
         let path = dir.join("p_prep_roundtrip.scz");
         let prep = b"preparation payload".to_vec();
-        save_scz_with_preparation(&path, &model, Some(&prep)).unwrap();
+        save_scz(&path, &model, Some(&prep)).unwrap();
 
-        let (back, back_prep) = load_scz_with_preparation(&path).unwrap();
+        let (back, back_prep) = load_scz(&path).unwrap();
         assert!(model.eq_ignoring_dofmap(&back));
         assert_eq!(back_prep.as_deref(), Some(prep.as_slice()));
 
@@ -523,16 +512,15 @@ mod tests {
         let _ = std::fs::remove_file(&path);
     }
 
-    /// 準備計算エントリを持たないファイル（`save_scz` で保存したもの）は
-    /// `None` として読める。
+    /// 準備計算を同梱しないで保存したファイルは、準備計算が `None` として読める。
     #[test]
     fn test_load_without_preparation_entry() {
         let model = make_3node_model();
         let dir = std::env::temp_dir();
         let path = dir.join("p_prep_absent.scz");
-        save_scz(&path, &model).unwrap();
+        save_scz(&path, &model, None).unwrap();
 
-        let (back, back_prep) = load_scz_with_preparation(&path).unwrap();
+        let (back, back_prep) = load_scz(&path).unwrap();
         assert!(model.eq_ignoring_dofmap(&back));
         assert!(back_prep.is_none());
         let _ = std::fs::remove_file(&path);
@@ -561,8 +549,8 @@ mod tests {
 
         let dir = std::env::temp_dir();
         let path = dir.join("p_brace_roundtrip.scz");
-        save_scz(&path, &model).unwrap();
-        let back = load_scz(&path).unwrap();
+        save_scz(&path, &model, None).unwrap();
+        let (back, _) = load_scz(&path).unwrap();
 
         assert_eq!(back.elements.len(), 1);
         assert_eq!(
@@ -619,8 +607,8 @@ mod tests {
 
         let dir = std::env::temp_dir();
         let path = dir.join("p_member_detail_roundtrip.scz");
-        save_scz(&path, &model).unwrap();
-        let back = load_scz(&path).unwrap();
+        save_scz(&path, &model, None).unwrap();
+        let (back, _) = load_scz(&path).unwrap();
 
         assert_eq!(back.member_detail_attrs, model.member_detail_attrs);
         assert!(model.eq_ignoring_dofmap(&back));

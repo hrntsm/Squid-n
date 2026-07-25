@@ -106,8 +106,7 @@ impl App {
             }
             None => None,
         };
-        match squid_n_io::scz::save_scz_with_preparation(&path, &self.model, prep_bytes.as_deref())
-        {
+        match squid_n_io::scz::save_scz(&path, &self.model, prep_bytes.as_deref()) {
             Ok(()) => {
                 // ショートカット保存はダイアログも出ず無反応になるため、
                 // 成功をステータスバーとログで明示する。
@@ -131,7 +130,7 @@ impl App {
     /// 「準備計算 実行」で再計算する。
     pub fn open_project_from(&mut self, path: std::path::PathBuf) {
         self.last_error = None;
-        match squid_n_io::scz::load_scz_with_preparation(&path) {
+        match squid_n_io::scz::load_scz(&path) {
             Ok((model, prep_bytes)) => {
                 if let Err(e) = model.validate() {
                     self.report_error(format!("読込モデルの検証エラー: {:?}", e));
