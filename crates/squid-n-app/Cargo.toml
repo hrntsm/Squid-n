@@ -30,3 +30,5 @@ smallvec = { workspace = true }
 rfd = { version = "0.17", optional = true }
 squid-n-math = { version = "0.0.1", path = "../squid-n-math" }
 bincode = { workspace = true }
+serde = { workspace = true }
+rmp-serde = { workspace = true }

@@ -5323,6 +5323,8 @@ dependencies = [
  "egui_extras",
  "egui_plot",
  "rfd",
+ "rmp-serde",
+ "serde",
  "smallvec",
  "squid-n-core",
  "squid-n-design-jp",
@@ -5351,6 +5353,7 @@ name = "squid-n-design-jp"
 version = "0.0.1"
 dependencies = [
  "approx",
+ "serde",
  "smallvec",
  "squid-n-core",
  "squid-n-element",
@@ -5423,6 +5426,7 @@ name = "squid-n-load"
 version = "0.0.1"
 dependencies = [
  "approx",
+ "serde",
  "squid-n-core",
 ]
 

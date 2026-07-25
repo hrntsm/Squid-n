@@ -7,7 +7,7 @@ use crate::secondary::member_rank::worst_rank;
 use squid_n_core::section_shape::SectionShape;
 
 /// 部材の用途（幅厚比ランク表の行の選択）。
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum SteelMemberUse {
     /// 柱
     Column,

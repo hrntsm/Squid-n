@@ -49,6 +49,8 @@ pub enum BottomTab {
     Loads,
     /// モデル整合性チェック（診断）一覧
     Diagnostics,
+    /// 準備計算の結果（階の分布・剛域・Ai 分布・風圧力・荷重集計）
+    Preparation,
 }
 
 /// 左ドックのパネル。Zed のように下部バーのアイコンで切り替える。
@@ -109,7 +111,7 @@ pub struct Navigator {
 
 /// 静的解析結果の格納キー。ユーザー荷重ケースと地震静的(Ai)を型で区別し、
 /// LoadCaseId(0) の二重使用(ユーザーケース0と地震結果の同居)を解消する。
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum StaticCaseKey {
     /// ユーザー定義の荷重ケース
     User(LoadCaseId),
@@ -130,7 +132,7 @@ pub enum StaticCaseKey {
 ///
 /// `Combo` のインデックスは **`ResultsBundle.combos` 上の位置**
 /// （`model.combinations` のインデックスではない）。
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum StaticKey {
     Case(StaticCaseKey),
     Combo(usize),
@@ -150,6 +152,10 @@ pub struct Staleness {
     /// （他フィールドと異なり、モデル新規作成・読込直後にも診断タブを開いた
     /// 時点で必ず一度実行させたいため）。
     pub diagnostics_stale: bool,
+    /// 準備計算（剛域・荷重同期・Ai 分布の確定）が未実行または編集後で古いか。
+    /// `diagnostics_stale` と同じ理由で `Default` は true（未実行）とする。
+    /// 解析の実行前に `ensure_preparation` が参照する。
+    pub preparation_stale: bool,
 }
 
 impl Default for Staleness {
@@ -160,6 +166,7 @@ impl Default for Staleness {
             last_run: None,
             unsaved_changes: false,
             diagnostics_stale: true,
+            preparation_stale: true,
         }
     }
 }
@@ -171,6 +178,7 @@ impl Staleness {
         self.design_stale = true;
         self.unsaved_changes = true;
         self.diagnostics_stale = true;
+        self.preparation_stale = true;
     }
     /// 解析が完了 → 最新化する。
     pub fn mark_fresh(&mut self) {
@@ -222,6 +230,7 @@ pub type SlabCheck = (
 );
 
 /// 1 検定位置の結果（部材内の位置 `xi` と検定結果/検定不能）。
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct PositionCheck {
     /// 部材軸方向の無次元位置 (0.0=始端, 1.0=終端)。
     pub xi: f64,
@@ -229,6 +238,7 @@ pub struct PositionCheck {
 }
 
 /// 1 部材分の断面検定結果（検定位置の列。`positions` は `xi` 昇順）。
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct MemberChecks {
     pub elem: ElemId,
     pub positions: Vec<PositionCheck>,
@@ -236,6 +246,7 @@ pub struct MemberChecks {
 
 /// 節点単位の検定（柱梁接合部・パネルゾーン・冷間成形耐力比・耐震壁など）。
 /// `label` は「接合部(RC)」等の種別表示用。
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct JointCheck {
     pub node: squid_n_core::ids::NodeId,
     pub label: String,
@@ -270,7 +281,20 @@ pub(crate) fn group_member_checks(
         .collect()
 }
 
-#[derive(Default)]
+/// プロジェクトファイル（.scz）へ保存する解析結果一式。
+///
+/// 結果本体（[`ResultsBundle`]）に加えて、復元後に結果タブ・設計タブが
+/// 保存時と同じ表示になるよう表示状態（`last_static`）と最終実行時刻も持つ。
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct SavedResults {
+    pub bundle: ResultsBundle,
+    /// 表示対象の静的解析結果。
+    pub last_static: Option<StaticKey>,
+    /// 解析の最終実行時刻。
+    pub last_run: Option<SystemTime>,
+}
+
+#[derive(Default, Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct ResultsBundle {
     pub statics: Vec<(StaticCaseKey, squid_n_solver::linear::StaticOnce)>,
     /// 荷重組合せの解析結果（組合せ名で保持）
@@ -569,6 +593,10 @@ pub struct App {
     pub staleness: Staleness,
     /// モデル整合性チェック（診断）の結果一覧。`run_diagnostics` で再構築する。
     pub diagnostics: Vec<Diagnostic>,
+    /// 準備計算（解析前の前処理）の結果。解析前に階の分布・剛域・Ai 分布・
+    /// 風圧力・荷重集計を確認するために保持する。`run_preparation`／
+    /// 各解析実行時の `ensure_preparation` で再構築する。
+    pub preparation: Option<PreparationResult>,
     /// ナビゲータ（左ペイン）状態
     pub nav: Navigator,
     /// モデルタブ内のサブタブ
@@ -782,6 +810,9 @@ pub struct App {
     /// 設計タブ「数量積算」ビューの状態（集計単位の切替）
     #[cfg(feature = "gui")]
     pub quantity_view: crate::quantity_view::QuantityViewState,
+    /// 下ドック「準備計算」タブの状態（表示切替）
+    #[cfg(feature = "gui")]
+    pub prep_view: crate::prep_view::PrepViewState,
 }
 
 /// 荷重組合せ自動生成 UI のドラフト（GUI 専用）。DL/LL は必須、地震X/Y・積雪は任意。
@@ -814,6 +845,7 @@ impl Default for App {
             pending_duplicate_node_coord: None,
             staleness: Staleness::default(),
             diagnostics: Vec::new(),
+            preparation: None,
             nav: Navigator::default(),
             model_tab: ModelTab::default(),
             // サンプル(門型ラーメン)が鋼構造のため既定は S ラーメン
@@ -930,6 +962,8 @@ impl Default for App {
             steel_attr_draft: crate::tables::steel_attrs::SteelAttrDraft::default(),
             #[cfg(feature = "gui")]
             quantity_view: crate::quantity_view::QuantityViewState::default(),
+            #[cfg(feature = "gui")]
+            prep_view: crate::prep_view::PrepViewState::default(),
         }
     }
 }
@@ -1384,6 +1418,49 @@ fn steel_max_thickness(shape: &squid_n_core::section_shape::SectionShape) -> f64
     }
 }
 
+/// 幅厚比ランク表の行（柱／梁）を部材から選ぶ。柱以外（梁・ブレース）は梁の行を用いる。
+pub(crate) fn steel_member_use_of(
+    elem: &squid_n_core::model::ElementData,
+    model: &squid_n_core::model::Model,
+) -> squid_n_design_jp::secondary::width_thickness::SteelMemberUse {
+    use squid_n_design_jp::secondary::width_thickness::SteelMemberUse;
+    match member_kind_of(elem, model) {
+        squid_n_design_jp::MemberKind::Column => SteelMemberUse::Column,
+        _ => SteelMemberUse::Beam,
+    }
+}
+
+/// 鋼断面の幅厚比から部材ランク（FA〜FD）を判定する。
+///
+/// 構造規定の幅厚比表（部材種別×断面×部位×鋼種級。
+/// [`squid_n_design_jp::secondary::width_thickness::s_member_rank_by_kihon`]）を
+/// 優先し、表の対象外形状（溝形・T形・山形等）は単一幅厚比法
+/// （[`squid_n_design_jp::secondary::member_rank::s_member_rank_scaled`]）へ
+/// フォールバックする。F 値は材料名の前方一致で引き（例 "SN400B"→235）、
+/// 引けなければ 235 とする。幅厚比を算定できない形状（円形鋼管・RC 断面等）は
+/// `None`。
+///
+/// 保有水平耐力の Ds 算定（`compute_holding_capacity`）と準備計算の表示
+/// （`build_prep_width_thickness`）が同一の判定を用いるための共通関数。
+pub(crate) fn steel_width_thickness_rank(
+    shape: &squid_n_core::section_shape::SectionShape,
+    member_use: squid_n_design_jp::secondary::width_thickness::SteelMemberUse,
+    material_name: &str,
+) -> Option<squid_n_design_jp::secondary::holding_capacity::MemberRank> {
+    use squid_n_design_jp::secondary::member_rank::{s_member_rank_scaled, RankCriteria};
+    use squid_n_design_jp::secondary::width_thickness::{
+        max_width_thickness, s_member_rank_by_kihon,
+    };
+    use squid_n_design_jp::steel_f_value_prefix;
+
+    if let Some(rank) = s_member_rank_by_kihon(shape, member_use, material_name) {
+        return Some(rank);
+    }
+    let wt = max_width_thickness(shape)?;
+    let f_value = steel_f_value_prefix(material_name, steel_max_thickness(shape)).unwrap_or(235.0);
+    Some(s_member_rank_scaled(wt, f_value, &RankCriteria::default()))
+}
+
 /// 部材両端節点間の幾何長 \[mm\]（内法補正なしの簡易値。剛域等は考慮しない）。
 fn elem_geometric_length(
     elem: &squid_n_core::model::ElementData,
@@ -1589,6 +1666,9 @@ fn is_near_design_position(pos: f64, positions: &[f64]) -> bool {
 }
 
 mod actions;
+mod preparation;
+
+pub use preparation::*;
 
 #[cfg(feature = "gui")]
 mod panels;
@@ -1830,6 +1910,18 @@ impl eframe::App for App {
                         {
                             self.bottom_tab = BottomTab::Loads;
                         }
+                        // 準備計算タブ: 未実行・要再実行なら「*」を付けて再実行を促す。
+                        let prep_label = if self.staleness.preparation_stale {
+                            "準備計算 *"
+                        } else {
+                            "準備計算"
+                        };
+                        if ui
+                            .selectable_label(self.bottom_tab == BottomTab::Preparation, prep_label)
+                            .clicked()
+                        {
+                            self.bottom_tab = BottomTab::Preparation;
+                        }
                         // 診断タブのラベル: 実行済みで Error/Warning があれば件数を付す
                         // （未実行・0件なら「診断」のみでラベルを騒がしくしない）。
                         let (diag_errors, diag_warnings) = self.diagnostics_counts();
@@ -1917,6 +2009,9 @@ impl eframe::App for App {
                                 .id_salt("bottom_loads")
                                 .auto_shrink([false, false])
                                 .show(ui, |ui| crate::tables::loads::loads_table(ui, self));
+                        }
+                        BottomTab::Preparation => {
+                            crate::prep_view::preparation_panel(ui, self);
                         }
                         BottomTab::Diagnostics => {
                             if self.diagnostics.is_empty() {

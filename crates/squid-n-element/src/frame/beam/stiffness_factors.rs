@@ -216,6 +216,132 @@ pub(super) fn composite_beam_stiffness_factor(
 /// 近い扱いとする。剛性計算条件 UI からの倍率変更は将来対応（現状は既定値固定）。
 pub const WALL_GIRDER_STIFF_FACTOR: f64 = 100.0;
 
+/// 部材の剛性算定で断面性能へ乗じられる割増し率の内訳（準備計算の確認表示用）。
+///
+/// [`BeamElement::new`](super::BeamElement::new) が実際に適用する率と同じものを
+/// [`stiffness_breakdown`] で外部から取得できるようにするための型。
+/// フレーム内雑壁（腰壁・垂壁・袖壁）の断面性能算入は部材ごとの合成であり
+/// 単一の率で表せないためここには含めない。
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct StiffnessBreakdown {
+    /// スラブ協力幅（RC 矩形梁）または合成梁（H 形鋼梁）による強軸曲げ剛性の
+    /// 増大率。対象外の断面・適用不能時は 1.0。
+    pub slab: f64,
+    /// 壁エレメントモデルの上下大梁の剛性倍率（対象外は 1.0）。
+    /// 軸・曲げ・ねじり・せん断のすべてに乗じられる。
+    pub wall_girder: f64,
+}
+
+impl Default for StiffnessBreakdown {
+    fn default() -> Self {
+        Self {
+            slab: 1.0,
+            wall_girder: 1.0,
+        }
+    }
+}
+
+/// 断面・材料が確定した状態で割増し率を求める（[`super::construct`] 用）。
+///
+/// `is_horizontal` は部材が水平材か（勾配 5% までは水平とみなす）。
+pub(super) fn breakdown_with(
+    model: &Model,
+    data: &squid_n_core::model::ElementData,
+    sec: &squid_n_core::model::Section,
+    es: f64,
+    is_horizontal: bool,
+) -> StiffnessBreakdown {
+    use squid_n_core::section_shape::SectionShape;
+    let slab = match &sec.shape {
+        Some(SectionShape::RcRect { .. }) => {
+            slab_stiffness_factor(model, data, sec.width, sec.depth)
+        }
+        Some(SectionShape::SteelH { .. }) => composite_beam_stiffness_factor(model, data, sec, es),
+        _ => 1.0,
+    };
+    let wall_girder = if is_horizontal
+        && data.nodes.len() >= 2
+        && is_wall_top_bottom_girder(model, data.nodes[0], data.nodes[1])
+    {
+        WALL_GIRDER_STIFF_FACTOR
+    } else {
+        1.0
+    };
+    StiffnessBreakdown { slab, wall_girder }
+}
+
+/// 部材の剛性算定で適用される割増し率を、モデルと要素データから求める。
+///
+/// `BeamElement::new` が用いるのと同じ判定・算定を通るため、表示した率は
+/// 実際に解析へ入る剛性の割増しと一致する。断面・材料が引けない要素、
+/// 2 節点未満の要素は既定値（すべて 1.0）を返す。
+pub fn stiffness_breakdown(
+    model: &Model,
+    data: &squid_n_core::model::ElementData,
+) -> StiffnessBreakdown {
+    if data.nodes.len() < 2 {
+        return StiffnessBreakdown::default();
+    }
+    let (Some(sec), Some(mat)) = (
+        data.section.and_then(|sid| model.sections.get(sid.index())),
+        data.material
+            .and_then(|mid| model.materials.get(mid.index())),
+    ) else {
+        return StiffnessBreakdown::default();
+    };
+    let (Some(p0), Some(p1)) = (
+        model.nodes.get(data.nodes[0].index()),
+        model.nodes.get(data.nodes[1].index()),
+    ) else {
+        return StiffnessBreakdown::default();
+    };
+    let (dx, dy, dz) = (
+        p1.coord[0] - p0.coord[0],
+        p1.coord[1] - p0.coord[1],
+        p1.coord[2] - p0.coord[2],
+    );
+    let lp = (dx * dx + dy * dy).sqrt();
+    let is_horizontal = lp > 1e-9 && dz.abs() <= 0.05 * lp;
+    breakdown_with(model, data, sec, mat.young, is_horizontal)
+}
+
+/// 要素の SRC/CFT 等価断面性能を求める（[`BeamElement::new`] と同じ判定・算定）。
+///
+/// SRC は材料（コンクリート）の fc がある場合に ns=Es/Ec で、CFT は鋼管材料と
+/// 充填コンクリート強度 fc から 1/n 換算で累加する。対象外の断面・算定不能
+/// （fc 無し・Ec≤0 等）では `None`。
+pub fn composite_props_of(
+    model: &Model,
+    data: &squid_n_core::model::ElementData,
+) -> Option<squid_n_core::section_shape::CompositeProps> {
+    let sec = data
+        .section
+        .and_then(|sid| model.sections.get(sid.index()))?;
+    let mat = data
+        .material
+        .and_then(|mid| model.materials.get(mid.index()))?;
+    composite_props_with(sec.shape.as_ref()?, mat)
+}
+
+/// [`composite_props_of`] の中核（断面形状と材料が確定した状態）。
+pub(super) fn composite_props_with(
+    shape: &squid_n_core::section_shape::SectionShape,
+    mat: &squid_n_core::model::Material,
+) -> Option<squid_n_core::section_shape::CompositeProps> {
+    use squid_n_core::section_shape::SectionShape;
+    match shape {
+        SectionShape::SrcRect { .. } => mat
+            .fc
+            .is_some()
+            .then(|| shape.src_equivalent_props(mat.young, mat.poisson))
+            .flatten(),
+        SectionShape::CftBox { .. } | SectionShape::CftPipe { .. } => mat
+            .fc
+            .and_then(|fc| shape.cft_equivalent_props(mat.young, mat.poisson, fc)),
+        _ => None,
+    }
+}
+
 /// 自部材（両端節点 n0, n1）が壁エレメントモデルの上辺・下辺大梁かどうかを判定する。
 ///
 /// `model.elements` 中に節点数4以上（四隅を持つ）の `ElementKind::Wall` 要素があり、

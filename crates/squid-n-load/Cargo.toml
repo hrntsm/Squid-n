@@ -6,6 +6,7 @@ license = "MIT"
 
 [dependencies]
 squid-n-core = { path = "../squid-n-core" }
+serde = { workspace = true }
 
 [dev-dependencies]
 approx = { workspace = true }

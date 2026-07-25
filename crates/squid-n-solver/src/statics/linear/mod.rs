@@ -102,6 +102,7 @@ fn apply_long_axial_cut(model: &Model, lc_kind: LoadCaseKind) -> Cow<'_, Model> 
     Cow::Owned(m)
 }
 
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct StaticOnce {
     pub disp: Vec<[f64; 6]>,
     pub member_forces: Vec<(squid_n_core::ids::ElemId, MemberForces)>,

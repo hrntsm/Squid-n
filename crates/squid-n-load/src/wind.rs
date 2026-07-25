@@ -5,7 +5,7 @@
 //! 略算式を用いる。
 
 /// 地表面粗度区分（告示1454号別表）。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum TerrainRoughness {
     I,
     II,
