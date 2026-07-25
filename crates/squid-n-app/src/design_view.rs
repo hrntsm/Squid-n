@@ -754,6 +754,29 @@ pub fn design_table(ui: &mut egui::Ui, app: &mut App) {
                     ),
                 );
             }
+            // βu（耐力壁・筋かいの水平耐力比）の算定状況。Ds 表の行選択に直結するため
+            // 算定値、または算定できなかった旨を明示する。
+            if app.ds_beta_u_unavailable {
+                ui.colored_label(
+                    crate::theme::SECONDARY_AMBER,
+                    "⚠ 架構種別が耐力壁付き／筋かい付きですが、耐力壁・筋かい部材を検出\
+                     できなかったため βu を算定できません。架構種別別の Ds 表で代用して\
+                     います（告示の βu 別の表は適用されていません）。",
+                );
+            } else if !app.ds_beta_u_by_story.is_empty()
+                && app.ds_beta_u_by_story.iter().any(|b| *b > 0.0)
+            {
+                let list = app
+                    .ds_beta_u_by_story
+                    .iter()
+                    .map(|b| format!("{:.2}", b))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                ui.colored_label(
+                    crate::theme::GRAY_600,
+                    format!("βu（耐力壁・筋かいの水平耐力比、下階→上階）: {}", list),
+                );
+            }
             let note = if app.design_rank_auto {
                 "Qu はプッシュオーバー性能曲線上の層別ピーク層せん断力（崩壊機構形成時の耐力）。\
                  Ds は部材ランク自動判定（鋼=幅厚比、RC矩形=せん断余裕度 Qsu/Qmu の略算。柱は\

@@ -585,6 +585,12 @@ pub struct App {
     /// `s_member_rank` で算定し、
     /// 算定できなかった層のみ `design_rank`（選択値）にフォールバックする。
     pub design_rank_auto: bool,
+    /// 直近の保有水平耐力算定で用いた層別 βu（耐力壁・筋かいの水平耐力比）。
+    /// `compute_holding_capacity` が設定する（表示用）。
+    pub ds_beta_u_by_story: Vec<f64>,
+    /// 架構種別が耐力壁付き／筋かい付きなのに耐力壁・筋かいを検出できず、βu を
+    /// 算定できなかったため架構種別別 Ds 表へフォールバックしたか（表示用）。
+    pub ds_beta_u_unavailable: bool,
     /// 終局検定（靭性保証型耐震設計指針）のヒンジ回転角 Rp [rad]（ν・cotφ 用。既定 0）。
     pub ultimate_rp: f64,
     /// 終局検定で軽量コンクリートのせん断終局耐力 0.9 倍低減を適用するか。
@@ -806,6 +812,8 @@ impl Default for App {
             design_frame: squid_n_design_jp::secondary::holding_capacity::FrameType::SteelFrame,
             design_rank: squid_n_design_jp::secondary::holding_capacity::MemberRank::FA,
             design_rank_auto: false,
+            ds_beta_u_by_story: Vec::new(),
+            ds_beta_u_unavailable: false,
             ultimate_rp: 0.0,
             ultimate_lightweight: false,
             ultimate_include_bond: true,

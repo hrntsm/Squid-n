@@ -1681,6 +1681,41 @@ fn test_holding_capacity_flow() {
     assert!(result.member_ranks.is_empty());
 }
 
+/// 架構種別が「S ブレース」なのに筋かい部材を検出できない場合、βu を算定できないため
+/// βu=0（純ラーメン）の行を使ってはならない（Ds を過小評価する）。架構種別別の
+/// Ds 表へフォールバックし、その旨のフラグが立つことを確認する。
+#[test]
+fn test_holding_capacity_falls_back_when_brace_undetected() {
+    use squid_n_design_jp::secondary::holding_capacity::{ds_value, FrameType, MemberRank};
+
+    let mut app = App::default();
+    app.load_model(crate::sample::portal_frame()); // 筋かいの無いラーメン
+    app.generate_stories_action();
+    app.run_seismic(SeismicDir::X);
+    app.analysis_cfg.push_steps = 10;
+    app.run_pushover();
+    assert!(app.last_error.is_none(), "{:?}", app.last_error);
+
+    app.design_rank_auto = false;
+    app.design_rank = MemberRank::FA;
+    app.design_frame = FrameType::SteelBrace;
+    let (result, _) = app.compute_holding_capacity().expect("Ok のはず");
+
+    assert!(
+        app.ds_beta_u_unavailable,
+        "筋かい未検出なら βu 算定不可のフラグが立つはず"
+    );
+    // 純ラーメンの行（S造 FA=0.25）ではなく、S ブレースの行（FA=0.30）が使われる。
+    let expected = ds_value(FrameType::SteelBrace, MemberRank::FA);
+    assert!((expected - 0.30).abs() < 1e-9);
+    assert!(
+        (result.stories[0].ds - expected).abs() < 1e-9,
+        "Ds={} は架構種別別の値 {} であるべき（βu=0 行の 0.25 ではない）",
+        result.stories[0].ds,
+        expected
+    );
+}
+
 /// UI-13: `design_rank_auto = true` で鋼部材の幅厚比から部材ランクを自動判定する。
 /// portal_frame の柱(H-300x300x10x15)・梁(H-400x200x8x13)を、構造規定の
 /// 幅厚比表（鋼構造設計規準、`s_member_rank_by_kihon`）で
