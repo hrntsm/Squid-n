@@ -531,9 +531,16 @@ fn test_seismic_flow_requires_then_uses_stories() {
     app.nav.focus_result = Some(StaticKey::Case(StaticCaseKey::Seismic(SeismicDir::X)));
     assert_eq!(app.current_static().unwrap().disp, seismic_disp);
 
-    // undo で EY・EX の同期 → 階定義 → DL(自重)の同期の順に戻る
-    // （generate_stories_action が DL 同期 → 階適用 → EX/EY 同期の順に
-    // undo 履歴を積む。以降の解析実行時の同期は冪等で履歴を積まない）
+    // undo で WY・EY・EX の同期 → 階定義 → DL(自重)の同期の順に戻る
+    // （generate_stories_action が DL 同期 → 階適用 → EX/EY 同期 → WX/WY 同期の
+    // 順に undo 履歴を積む。平面架構のため X 方向の風は見付け幅 0 で構築されず、
+    // 風は WY の 1 件のみ。以降の解析実行時の同期は冪等で履歴を積まない）
+    app.undo.undo(&mut app.model); // WY
+    assert!(app
+        .model
+        .load_cases
+        .iter()
+        .all(|lc| lc.name != WY_CASE_NAME));
     app.undo.undo(&mut app.model); // EY
     app.undo.undo(&mut app.model); // EX
     assert!(app
@@ -671,6 +678,9 @@ fn test_sync_auto_load_cases_action_skips_when_hash_unchanged() {
         app.analysis_cfg.z.to_bits().hash(&mut hasher);
         (app.analysis_cfg.soil as u8).hash(&mut hasher);
         app.analysis_cfg.c0.to_bits().hash(&mut hasher);
+        app.analysis_cfg.v0.to_bits().hash(&mut hasher);
+        (app.analysis_cfg.roughness as u8).hash(&mut hasher);
+        app.analysis_cfg.parapet_mm.to_bits().hash(&mut hasher);
         hasher.finish()
     }
     app.auto_load_sync_hash = Some(fake_hash(&app));
@@ -3593,36 +3603,265 @@ fn test_column_live_load_factors_three_story() {
     );
 }
 
-/// Z表 CSV の読込と市町村名参照 → analysis_cfg.z への反映（ヘッドレス）。
+/// 準備計算は階の定義を含む: 階が未定義でも `run_preparation` 1 回で階が生成され、
+/// 主要構造種別が柱・梁の断面形状から自動判定される（門型ラーメンは全て鋼断面 → S）。
 #[test]
-fn test_z_table_load_and_apply() {
+fn test_run_preparation_generates_stories_and_infers_structure() {
+    use squid_n_core::model::StoryStructure;
     let mut app = App::default();
+    app.load_model(crate::sample::portal_frame());
+    assert!(app.model.stories.is_empty(), "前提: 階は未定義");
 
-    // 未読込での参照はエラー
-    assert!(!app.apply_z_from_municipality("那覇市"));
-    assert!(app.last_error.as_deref().unwrap().contains("Z表"));
-
-    // 不正な Z 値（0.85 は告示1793号の値でない）はエラー
-    app.load_z_table_from_csv("変な市,0.85\n");
-    assert!(app.last_error.is_some());
-    assert!(app.z_table.is_none());
-
-    // 正常読込 → 参照で z が反映される
-    app.load_z_table_from_csv("# 出典: 告示1793号 別表第2\n東京都千代田区,1.0\n沖縄県那覇市,0.7\n");
+    app.run_preparation();
     assert!(app.last_error.is_none(), "{:?}", app.last_error);
-    assert_eq!(app.z_table.as_ref().unwrap().len(), 2);
+    assert_eq!(app.model.stories.len(), 1, "準備計算が階を生成するはず");
+    assert_eq!(
+        app.model.stories[0].structure,
+        StoryStructure::S,
+        "鋼断面の柱梁だけの階は S と判定されるはず"
+    );
+    assert!(!app.staleness.preparation_stale);
+}
 
-    assert!(app.apply_z_from_municipality("沖縄県那覇市"));
-    assert_eq!(app.analysis_cfg.z, 0.7);
+/// 準備計算は冪等: モデルが変わっていなければ 2 回目以降の実行で undo 履歴を積まず、
+/// 解析結果を stale にもしない（毎回階を再生成する構成でも、実質的な差分が無ければ
+/// `ApplyStories` を発行しない）。
+#[test]
+fn test_run_preparation_is_idempotent() {
+    let mut app = App::default();
+    app.load_model(crate::sample::portal_frame());
+    app.run_preparation();
+    assert!(app.last_error.is_none(), "{:?}", app.last_error);
 
-    // 見つからない市町村はエラー、z は変わらない
-    assert!(!app.apply_z_from_municipality("存在しない市"));
-    assert!(app
-        .last_error
-        .as_deref()
-        .unwrap()
-        .contains("見つかりません"));
-    assert_eq!(app.analysis_cfg.z, 0.7);
+    // 解析まで済ませて結果を最新状態にする。
+    app.run_linear_static(LoadCaseId(0));
+    assert!(app.last_error.is_none(), "{:?}", app.last_error);
+    assert!(!app.staleness.results_stale);
+    let undo_label = app.undo.undo_label().map(|s| s.to_string());
+    let stories_before = app.model.stories.clone();
+    let nodes_before = app.model.nodes.len();
+
+    // 2 回目の準備計算ではモデルが変わらない。
+    app.run_preparation();
+    assert!(app.last_error.is_none(), "{:?}", app.last_error);
+    assert_eq!(app.model.stories, stories_before);
+    assert_eq!(app.model.nodes.len(), nodes_before);
+    assert_eq!(
+        app.undo.undo_label().map(|s| s.to_string()),
+        undo_label,
+        "差分が無ければ undo 履歴を積まないはず"
+    );
+    assert!(
+        !app.staleness.results_stale,
+        "差分が無ければ解析結果を stale にしないはず"
+    );
+}
+
+/// 階を生成できないモデル（節点なし）でも準備計算は中断せず、階の生成エラーを
+/// 提示したうえで階を前提としない項目の集計まで進む。
+#[test]
+fn test_run_preparation_continues_when_story_generation_fails() {
+    let mut app = App::default();
+    app.load_model(squid_n_core::model::Model::default());
+
+    app.run_preparation();
+    assert!(
+        app.last_error
+            .as_deref()
+            .unwrap()
+            .contains("階の生成エラー"),
+        "{:?}",
+        app.last_error
+    );
+    let prep = app
+        .preparation
+        .as_ref()
+        .expect("階が作れなくても準備計算の集計は行われるはず");
+    assert!(prep.stories.is_empty());
+    assert!(!app.staleness.preparation_stale);
+}
+
+/// 準備計算は実行のたびに階を再生成するが、利用者の手入力（地震用重量の手入力値・
+/// 階の種別）は引き継がれる。手入力を解除すれば次の準備計算で自動算定値へ戻る。
+#[test]
+fn test_run_preparation_regenerates_stories_keeping_manual_input() {
+    use squid_n_core::model::StoryLevelKind;
+    let mut app = App::default();
+    app.load_model(crate::sample::portal_frame());
+    app.run_preparation();
+    assert!(app.last_error.is_none(), "{:?}", app.last_error);
+    let auto_weight = app.model.stories[0].seismic_weight.unwrap();
+    assert!(auto_weight > 0.0);
+
+    // 地震用重量の手入力と階の種別（PH）を設定する。
+    let story = app.model.stories[0].id;
+    app.undo.run(
+        &mut app.model,
+        Box::new(squid_n_edit::SetStoryWeight {
+            story,
+            weight: Some(auto_weight * 2.0),
+        }),
+    );
+    app.undo.run(
+        &mut app.model,
+        Box::new(squid_n_edit::SetStoryLevelKind {
+            story,
+            level_kind: StoryLevelKind::Penthouse { k: 0.6 },
+        }),
+    );
+
+    // 再度の準備計算でも手入力は失われない。
+    app.run_preparation();
+    assert!(app.last_error.is_none(), "{:?}", app.last_error);
+    assert_eq!(
+        app.model.stories[0].weight_override,
+        Some(auto_weight * 2.0)
+    );
+    assert_eq!(app.model.stories[0].seismic_weight, Some(auto_weight * 2.0));
+    assert_eq!(
+        app.model.stories[0].level_kind,
+        StoryLevelKind::Penthouse { k: 0.6 }
+    );
+
+    // 手入力を解除すると次の準備計算で自動算定値へ戻る。
+    let story = app.model.stories[0].id;
+    app.undo.run(
+        &mut app.model,
+        Box::new(squid_n_edit::SetStoryWeight {
+            story,
+            weight: None,
+        }),
+    );
+    app.run_preparation();
+    assert!(app.last_error.is_none(), "{:?}", app.last_error);
+    assert_eq!(app.model.stories[0].weight_override, None);
+    // PH 階でも階自体の重量集計は変わらない（Ai 分布での扱いだけが変わる）。
+    assert!((app.model.stories[0].seismic_weight.unwrap() - auto_weight).abs() < 1e-6);
+}
+
+/// 準備計算は風圧力も荷重ケース（WX/WY）へ同期する。門型ラーメンは Y 方向の風
+/// （見付け幅 = X 方向の座標範囲）のみ算定できるため WY だけが生成される。
+/// 生成された WY は風荷重静的解析（`run_wind`）と同じ水平力を持つ。
+#[test]
+fn test_run_preparation_syncs_wind_load_cases() {
+    use squid_n_core::model::LoadCaseKind;
+    let mut app = App::default();
+    app.load_model(crate::sample::portal_frame());
+    app.run_preparation();
+    assert!(app.last_error.is_none(), "{:?}", app.last_error);
+
+    let wy = app
+        .model
+        .load_cases
+        .iter()
+        .find(|lc| lc.name == WY_CASE_NAME)
+        .expect("WYケースが生成されるはず");
+    assert_eq!(wy.kind, LoadCaseKind::Wind);
+    assert!(!wy.nodal.is_empty(), "WYに層水平力が入っているはず");
+    assert!(
+        app.model
+            .load_cases
+            .iter()
+            .all(|lc| lc.name != WX_CASE_NAME),
+        "見付け幅 0 の X 方向の風は生成されないはず"
+    );
+
+    // 風荷重静的解析が組み立てる水平力と一致する。
+    let cfg = squid_n_solver::analysis::WindStaticCfg {
+        dir: SeismicDir::Y,
+        v0: app.analysis_cfg.v0,
+        roughness: app.analysis_cfg.roughness,
+        cpi: 0.0,
+        parapet_mm: app.analysis_cfg.parapet_mm,
+    };
+    let built = squid_n_solver::analysis::build_wind_load_case_from_model(&app.model, cfg).unwrap();
+    assert_eq!(wy.nodal, built.nodal);
+}
+
+/// 荷重ケースの実行導線は、標準の水平力ケース（EX/EY・WX/WY）を方向別の結果キーへ
+/// 振り分ける（地震静的・風荷重静的の専用導線を廃し、荷重ケース解析へ統合した）。
+#[test]
+fn test_load_case_job_routes_standard_lateral_cases() {
+    let mut app = App::default();
+    app.load_model(crate::sample::portal_frame());
+    app.run_preparation();
+    assert!(app.last_error.is_none(), "{:?}", app.last_error);
+
+    let id_of = |app: &App, name: &str| {
+        app.model
+            .load_cases
+            .iter()
+            .find(|lc| lc.name == name)
+            .map(|lc| lc.id)
+            .unwrap()
+    };
+    let ex = id_of(&app, EX_CASE_NAME);
+    let wy = id_of(&app, WY_CASE_NAME);
+    let dl = id_of(&app, DL_CASE_NAME);
+    assert_eq!(
+        app.standard_lateral_case(ex),
+        Some(StaticCaseKey::Seismic(SeismicDir::X))
+    );
+    assert_eq!(
+        app.standard_lateral_case(wy),
+        Some(StaticCaseKey::Wind(SeismicDir::Y))
+    );
+    assert_eq!(app.standard_lateral_case(dl), None, "DL は通常の線形静的");
+
+    // EX の実行は地震静的ジョブとして走り、結果は Seismic(X) へ格納される。
+    app.start_load_case_job(ex);
+    assert_eq!(app.job.as_ref().unwrap().label, "地震静的解析");
+    wait_for_job(&mut app);
+    assert!(app.last_error.is_none(), "{:?}", app.last_error);
+    assert_eq!(
+        app.last_static,
+        Some(StaticKey::Case(StaticCaseKey::Seismic(SeismicDir::X)))
+    );
+
+    // DL の実行は線形静的ジョブとして走り、結果は User キーへ格納される。
+    app.start_load_case_job(dl);
+    assert_eq!(app.job.as_ref().unwrap().label, "線形静的解析");
+    wait_for_job(&mut app);
+    assert!(app.last_error.is_none(), "{:?}", app.last_error);
+    assert_eq!(
+        app.last_static,
+        Some(StaticKey::Case(StaticCaseKey::User(dl)))
+    );
+}
+
+/// 種別からの標準組合せ自動生成は、準備計算が生成する標準ケース名で方向を判別し、
+/// 地震（±EX/±EY）・暴風（±WX/±WY）の組合せまで含めて生成する。
+#[test]
+fn test_auto_generate_combinations_uses_standard_case_names() {
+    let mut app = App::default();
+    app.load_model(crate::sample::portal_frame());
+    app.run_preparation();
+    assert!(app.last_error.is_none(), "{:?}", app.last_error);
+    app.model.combinations.clear();
+    // 門型ラーメンのサンプルはスラブを持たず積載荷重ケースが自動生成されない
+    // （組合せ生成には固定・積載の両方が要る）ため、空の積載ケースを足す。
+    let next_id = LoadCaseId(app.model.load_cases.len() as u32);
+    app.model.load_cases.push(squid_n_core::model::LoadCase {
+        id: next_id,
+        name: LL_FRAME_CASE_NAME.into(),
+        kind: squid_n_core::model::LoadCaseKind::Live,
+        nodal: Vec::new(),
+        member: Vec::new(),
+    });
+
+    app.auto_generate_combinations_action();
+    assert!(app.last_error.is_none(), "{:?}", app.last_error);
+    let names: Vec<&str> = app
+        .model
+        .combinations
+        .iter()
+        .map(|c| c.name.as_str())
+        .collect();
+    assert!(names.contains(&"DL + LL + EX"), "{names:?}");
+    assert!(names.contains(&"DL + LL - EY"), "{names:?}");
+    // 門型ラーメンでは WY のみ生成されるため、暴風は Y 方向の組合せのみ。
+    assert!(names.contains(&"DL + LL + WY"), "{names:?}");
+    assert!(!names.iter().any(|n| n.contains("WX")), "{names:?}");
 }
 
 /// 風荷重静的解析（run_wind）: 階の定義後に実行でき、結果が
@@ -4673,6 +4912,7 @@ fn test_rigid_floor_beam_has_forces_and_checks() {
             rigid: true,
         }],
         seismic_weight: None,
+        weight_override: None,
     });
 
     let mut app = App::default();

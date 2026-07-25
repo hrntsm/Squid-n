@@ -23,7 +23,7 @@ fn live_load_reduction_section(ui: &mut egui::Ui, app: &App) {
             );
             let factors = crate::app::column_live_load_factors(&app.model);
             if factors.is_empty() {
-                ui.label("柱要素（鉛直材）がありません。階の自動生成後に所属階が設定されると床数を集計できます。");
+                ui.label("柱要素（鉛直材）がありません。準備計算で階が生成され所属階が設定されると床数を集計できます。");
                 return;
             }
             for (elem, floors, factor) in factors {
@@ -504,10 +504,22 @@ pub fn design_table(ui: &mut egui::Ui, app: &mut App) {
     // ── 二次設計: 層指標（層間変形角・剛性率・偏心率） ────────────
     ui.add_space(12.0);
     ui.strong("層指標（二次設計: 層間変形角・剛性率・偏心率）");
+    // 層間変形角・剛性率・偏心率と必要保有水平耐力の判定は、いずれも加力方向ごとに
+    // 評価する（令82条の2・平19国交告594号）。評価方向は解析の実行条件ではなく
+    // 判定の条件なので、設計タブのこの位置で選ぶ。
+    ui.horizontal(|ui| {
+        use squid_n_solver::analysis::SeismicDir;
+        ui.label("加力方向:").on_hover_text(
+            "層指標と必要保有水平耐力の判定を評価する方向。\
+             剛心の精算には対応する向きの EX／EY の解析結果を用いる",
+        );
+        ui.selectable_value(&mut app.analysis_cfg.seismic_dir, SeismicDir::X, "X");
+        ui.selectable_value(&mut app.analysis_cfg.seismic_dir, SeismicDir::Y, "Y");
+    });
     if app.model.stories.is_empty() {
         ui.colored_label(
             crate::theme::GRAY_600,
-            "階が未定義です。解析タブの「階の自動生成」を実行してください。",
+            "階が未定義です。解析タブの「準備計算 実行」を行ってください。",
         );
     } else if let Some(st) = app.current_static() {
         // 表示対象はナビゲータの結果ケース選択（→最後に実行した結果）に追従する。
@@ -598,7 +610,7 @@ pub fn design_table(ui: &mut egui::Ui, app: &mut App) {
     } else {
         ui.colored_label(
             crate::theme::GRAY_600,
-            "静的解析結果がありません。地震静的(Ai)を実行すると層指標を評価できます。",
+            "静的解析結果がありません。荷重ケース EX／EY（地震力）を実行すると層指標を評価できます。",
         );
     }
 

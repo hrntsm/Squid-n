@@ -214,6 +214,7 @@ mod tests {
             node_ids: vec![NodeId(3), NodeId(4), NodeId(5)],
             diaphragms: vec![],
             seismic_weight: None,
+            weight_override: None,
             structure: Default::default(),
             level_kind: Default::default(),
         };

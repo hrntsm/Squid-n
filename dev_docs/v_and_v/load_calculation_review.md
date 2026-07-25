@@ -268,6 +268,8 @@ test result: ok. 15 passed; 0 failed
 - **仕上げ・耐火被覆・鉄骨割増率**: `Model.load_cfg`(steel_weight_factor・extra_line_weight [N/mm])による簡易対応
 - **Fc 依存γ**: 1.9 と同一
 - **Z 表**: `z_table::ZTable`(CSV ローダ機構。告示別表の実データは外部ファイル方針)
+  — 2026-07-25 に撤去し、Z は解析設定パネルでの直接入力（0.7〜1.0、既定 1.0）に変更。
+  [解析設定パネルのフロー整理](../handoff/解析設定パネルのフロー整理_申し送り.md)を参照。
 
 ### 残課題（未対応・簡易化）
 

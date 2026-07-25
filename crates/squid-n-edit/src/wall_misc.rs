@@ -3,7 +3,10 @@
 use super::*;
 use squid_n_core::ids::*;
 
-/// 階の地震重量（`seismic_weight`）変更。逆操作は変更前の値への復元。
+/// 階の地震用重量の手入力（`weight_override`）変更。設定値は実効値
+/// （`seismic_weight`）へも反映するため、解析・設計側は `seismic_weight` だけを
+/// 読めばよい。`weight` に `None` を渡すと手入力を解除する（`seismic_weight` は
+/// 次の準備計算で自動算定値へ戻る）。逆操作は変更前の両値への復元。
 /// 存在しない `StoryId` は Noop。
 pub struct SetStoryWeight {
     pub story: StoryId,
@@ -16,15 +19,50 @@ impl EditCommand for SetStoryWeight {
         if idx >= model.stories.len() || model.stories[idx].id != self.story {
             return Box::new(Noop);
         }
-        let old = std::mem::replace(&mut model.stories[idx].seismic_weight, self.weight);
-        Box::new(SetStoryWeight {
+        let story = &mut model.stories[idx];
+        let old = RestoreStoryWeight {
             story: self.story,
-            weight: old,
-        })
+            weight_override: story.weight_override,
+            seismic_weight: story.seismic_weight,
+        };
+        story.weight_override = self.weight;
+        if let Some(w) = self.weight {
+            story.seismic_weight = Some(w);
+        }
+        Box::new(old)
     }
 
     fn label(&self) -> &str {
         "階地震重量変更"
+    }
+}
+
+/// [`SetStoryWeight`] の逆操作。手入力値と実効値の両方を変更前へ戻す。
+pub struct RestoreStoryWeight {
+    pub story: StoryId,
+    pub weight_override: Option<f64>,
+    pub seismic_weight: Option<f64>,
+}
+
+impl EditCommand for RestoreStoryWeight {
+    fn apply(&self, model: &mut Model) -> Box<dyn EditCommand> {
+        let idx = self.story.index();
+        if idx >= model.stories.len() || model.stories[idx].id != self.story {
+            return Box::new(Noop);
+        }
+        let story = &mut model.stories[idx];
+        let old = RestoreStoryWeight {
+            story: self.story,
+            weight_override: story.weight_override,
+            seismic_weight: story.seismic_weight,
+        };
+        story.weight_override = self.weight_override;
+        story.seismic_weight = self.seismic_weight;
+        Box::new(old)
+    }
+
+    fn label(&self) -> &str {
+        "階地震重量変更の取り消し"
     }
 }
 
@@ -302,32 +340,6 @@ impl EditCommand for SetMiscWall {
 
     fn label(&self) -> &str {
         "雑壁変更"
-    }
-}
-
-/// 階の主要構造種別（`StoryStructure`）変更。逆操作は変更前の値への復元。
-/// 存在しない `StoryId` は Noop。
-pub struct SetStoryStructure {
-    pub story: StoryId,
-    pub structure: squid_n_core::model::StoryStructure,
-}
-
-impl EditCommand for SetStoryStructure {
-    fn apply(&self, model: &mut Model) -> Box<dyn EditCommand> {
-        let idx = self.story.index();
-        if idx >= model.stories.len() || model.stories[idx].id != self.story {
-            return Box::new(Noop);
-        }
-        let old = model.stories[idx].structure;
-        model.stories[idx].structure = self.structure;
-        Box::new(SetStoryStructure {
-            story: self.story,
-            structure: old,
-        })
-    }
-
-    fn label(&self) -> &str {
-        "階構造種別変更"
     }
 }
 
