@@ -123,6 +123,7 @@ fn portal_frame(rigid: f64, seismic_weight: f64) -> Model {
                 rigid: true,
             }],
             seismic_weight: Some(seismic_weight),
+            weight_override: None,
         }],
         constraints: vec![Constraint::RigidDiaphragm {
             story: StoryId(0),
