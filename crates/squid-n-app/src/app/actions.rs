@@ -919,27 +919,25 @@ impl App {
                     let Some(resp) = resp_by_elem.get(&elem.id) else {
                         continue;
                     };
-                    // 壁長は要素の水平方向の広がり（節点座標の最大差）で近似する。
-                    let coords: Vec<[f64; 3]> = elem
-                        .nodes
-                        .iter()
-                        .filter_map(|nid| self.model.nodes.get(nid.index()))
-                        .map(|n| n.coord)
-                        .collect();
-                    let span = |k: usize| -> f64 {
-                        let mut lo = f64::INFINITY;
-                        let mut hi = f64::NEG_INFINITY;
-                        for c in &coords {
-                            lo = lo.min(c[k]);
-                            hi = hi.max(c[k]);
-                        }
-                        if hi >= lo {
-                            hi - lo
-                        } else {
-                            0.0
-                        }
+                    // 壁長 lw は壁エレメントモデルの節点配列
+                    // `[下辺a, 下辺b, 上辺a, 上辺b]` の下辺（剛梁）長さ
+                    // ＝ 節点0–節点1 間距離（`squid_n_element::wall` の定義）。
+                    let (Some(n0), Some(n1)) = (
+                        elem.nodes
+                            .first()
+                            .and_then(|nid| self.model.nodes.get(nid.index())),
+                        elem.nodes
+                            .get(1)
+                            .and_then(|nid| self.model.nodes.get(nid.index())),
+                    ) else {
+                        continue;
                     };
-                    let wall_len = span(0).max(span(1));
+                    let wall_len = {
+                        let dx = n1.coord[0] - n0.coord[0];
+                        let dy = n1.coord[1] - n0.coord[1];
+                        let dz = n1.coord[2] - n0.coord[2];
+                        (dx * dx + dy * dy + dz * dz).sqrt()
+                    };
                     let area = thickness * wall_len;
                     if area <= 0.0 || fc <= 0.0 {
                         continue;

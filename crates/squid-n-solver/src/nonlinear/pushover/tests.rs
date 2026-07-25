@@ -1903,3 +1903,41 @@ fn test_pushover_displacement_control_reaches_target_and_exceeds_design_load() {
         load_only.qu
     );
 }
+
+/// 4 節点の耐震壁（壁エレメントモデル、節点配列 `[下辺a, 下辺b, 上辺a, 上辺b]`）で、
+/// 加力方向の水平力が「下辺 2 節点の**合計**」になること。
+///
+/// 従来は data[0..3]（下辺a）と data[6..9]（下辺b）の最大値を取っており、下辺 2 節点の
+/// 一方だけを見る形で水平力を約 1/2 に過小評価していた（βu・壁の τu が過小＝
+/// 部材種別・Ds が甘くなる危険側）。2 節点の線材では従来と同じ値になること
+/// （リグレッションが無いこと）も併せて確認する。
+#[test]
+fn test_horizontal_force_sums_wall_bottom_nodes() {
+    use squid_n_element::behavior::LocalVec;
+
+    // 4 節点壁: 下辺 a=30kN, b=70kN（合計 100kN）、上辺 a=-40kN, b=-60kN（合計 -100kN）。
+    let mut data = smallvec::SmallVec::<[f64; 24]>::from_elem(0.0, 24);
+    data[0] = 30_000.0; // 下辺a Fx
+    data[6] = 70_000.0; // 下辺b Fx
+    data[12] = -40_000.0; // 上辺a Fx
+    data[18] = -60_000.0; // 上辺b Fx
+    let f = LocalVec { data };
+    let h = super::member_response::horizontal_force_in_dir(&f, 4, 0);
+    assert!(
+        (h - 100_000.0).abs() < 1e-6,
+        "4 節点壁の水平力は下辺の合計 100kN であるべき（旧実装は max=70kN）。got {}",
+        h
+    );
+
+    // 2 節点線材: i 端 +50kN / j 端 -50kN → 50kN（従来と同じ）。
+    let mut data2 = smallvec::SmallVec::<[f64; 24]>::from_elem(0.0, 12);
+    data2[0] = 50_000.0;
+    data2[6] = -50_000.0;
+    let f2 = LocalVec { data: data2 };
+    let h2 = super::member_response::horizontal_force_in_dir(&f2, 2, 0);
+    assert!(
+        (h2 - 50_000.0).abs() < 1e-6,
+        "2 節点は従来どおり。got {}",
+        h2
+    );
+}
