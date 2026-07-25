@@ -453,9 +453,9 @@ impl App {
             self.report_error(format!("荷重組合せ #{} が存在しません", index));
             return;
         };
-        if let Some(name) = self.empty_seismic_case_in_combo(&combo) {
+        if let Some(name) = self.empty_lateral_case_in_combo(&combo) {
             self.report_error(format!(
-                "荷重組合せ「{}」が参照する地震荷重ケース「{}」が空です。解析タブの「準備計算 実行」を行って地震荷重を生成してください。",
+                "荷重組合せ「{}」が参照する水平力の荷重ケース「{}」が空です。解析タブの「準備計算 実行」を行って地震力・風圧力を生成してください。",
                 combo.name, name
             ));
             return;
@@ -538,9 +538,9 @@ impl App {
             self.report_error(format!("荷重組合せ #{} が存在しません", index));
             return;
         };
-        if let Some(name) = self.empty_seismic_case_in_combo(&combo) {
+        if let Some(name) = self.empty_lateral_case_in_combo(&combo) {
             self.report_error(format!(
-                "荷重組合せ「{}」が参照する地震荷重ケース「{}」が空です。解析タブの「準備計算 実行」を行って地震荷重を生成してください。",
+                "荷重組合せ「{}」が参照する水平力の荷重ケース「{}」が空です。解析タブの「準備計算 実行」を行って地震力・風圧力を生成してください。",
                 combo.name, name
             ));
             return;
@@ -609,10 +609,10 @@ impl App {
             .model
             .combinations
             .iter()
-            .filter(|combo| match self.empty_seismic_case_in_combo(combo) {
+            .filter(|combo| match self.empty_lateral_case_in_combo(combo) {
                 Some(name) => {
                     errors.push(format!(
-                        "[{}] 地震荷重ケース「{}」が空です。解析タブの「準備計算 実行」を行ってください。",
+                        "[{}] 水平力の荷重ケース「{}」が空です。解析タブの「準備計算 実行」を行ってください。",
                         combo.name, name
                     ));
                     false
@@ -1531,6 +1531,11 @@ impl App {
     /// 階の適用後、地震荷重を「EX」「EY」、風荷重を「WX」「WY」ケースへ同期する
     /// （Ai 分布の水平力・速度圧による層水平力。これで荷重組合せ G+P±K・G+P±W が
     /// 実行可能になる）。
+    ///
+    /// 生成結果が現在のモデルと一致する場合は `ApplyStories` を発行しない
+    /// （冪等。準備計算は実行のたびに階を作り直すため、モデルが変わっていないのに
+    /// undo 履歴を積んだり `mark_edited` で解析結果を stale にしたりしないようにする。
+    /// `sync_one_auto_case` と同じ規約）。
     pub fn generate_stories_action(&mut self) {
         self.last_error = None;
         self.last_notice = None;
@@ -1549,6 +1554,14 @@ impl App {
                     &self.model.stories,
                     &mut gen.stories,
                 );
+                if !story_gen_changes_model(&self.model, &gen, mass_method) {
+                    // 階は既に最新。荷重の同期だけ冪等に確認して終える。
+                    self.apply_rigid_zones_for_analysis();
+                    self.sync_seismic_load_cases_action();
+                    self.sync_wind_load_cases_action();
+                    self.auto_load_sync_hash = Some(self.compute_auto_load_sync_hash());
+                    return;
+                }
                 self.undo.run(
                     &mut self.model,
                     Box::new(squid_n_edit::ApplyStories {
@@ -3459,20 +3472,23 @@ impl App {
         self.staleness.mark_edited();
     }
 
-    /// 組合せが参照する空の地震荷重ケース（kind=Seismic・内容なし）の名前を返す。
-    /// 空の地震ケースを含む組合せをそのまま解くと地震項が黙って 0 になるため、
-    /// 実行前のガードに使う（`run_combination`/`run_all_combinations`）。
-    fn empty_seismic_case_in_combo(
+    /// 組合せが参照する空の水平力ケース（kind=Seismic／Wind・内容なし）の名前を返す。
+    /// 空の地震・風ケースを含む組合せをそのまま解くと水平力の項が黙って 0 になり、
+    /// 長期と同じ結果を短期の検定に用いてしまうため、実行前のガードに使う
+    /// （`run_combination`/`run_all_combinations`）。いずれも準備計算が
+    /// EX/EY・WX/WY へ内容を生成するため、空のまま残っていることが異常の合図になる。
+    fn empty_lateral_case_in_combo(
         &self,
         combo: &squid_n_core::model::LoadCombination,
     ) -> Option<String> {
+        use squid_n_core::model::LoadCaseKind;
         combo.terms.iter().find_map(|(id, _)| {
             self.model
                 .load_cases
                 .iter()
                 .find(|lc| lc.id == *id)
                 .filter(|lc| {
-                    lc.kind == squid_n_core::model::LoadCaseKind::Seismic
+                    matches!(lc.kind, LoadCaseKind::Seismic | LoadCaseKind::Wind)
                         && lc.nodal.is_empty()
                         && lc.member.is_empty()
                 })
@@ -3537,15 +3553,15 @@ impl App {
             });
         }
 
-        // 空の地震荷重ケースを参照する荷重組合せ: そのまま解くと地震項が黙って
-        // 0 になるため（`empty_seismic_case_in_combo` と同じ判定を流用）。
+        // 空の水平力ケース（地震・風）を参照する荷重組合せ: そのまま解くと水平力の
+        // 項が黙って 0 になるため（`empty_lateral_case_in_combo` と同じ判定を流用）。
         for combo in &self.model.combinations {
-            if let Some(name) = self.empty_seismic_case_in_combo(combo) {
+            if let Some(name) = self.empty_lateral_case_in_combo(combo) {
                 diags.push(Diagnostic {
                     severity: DiagSeverity::Warning,
                     message: format!(
-                        "荷重組合せ「{}」が参照する地震荷重ケース「{}」が空です\
-                         （解析タブの階の自動生成で生成できます）",
+                        "荷重組合せ「{}」が参照する水平力の荷重ケース「{}」が空です\
+                         （解析タブの「準備計算 実行」で生成できます）",
                         combo.name, name
                     ),
                     target: None,

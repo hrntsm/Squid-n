@@ -456,8 +456,11 @@ pub fn generate_stories_with_opts(
 /// - 階の種別: 対象部材の種別ごとの本数の最多（[`StoryStructure::majority`]）。
 fn assign_story_structures(model: &Model, node_story: &[Option<StoryId>], stories: &mut [Story]) {
     use squid_n_core::model::StoryStructure;
-    // 階ごとの (RC, S, SRC) 本数。`stories` は StoryId(0) から連番。
-    let mut counts = vec![(0usize, 0usize, 0usize); stories.len()];
+    // 階ごとの (RC, S, SRC) 本数。`node_story` が持つのは `StoryId` であり、
+    // それが `stories` 内の位置と一致する保証（`Model::validate` の
+    // 「id == 添字」不変条件）に依存しないよう、`StoryId` をキーに集計する。
+    let mut counts: std::collections::HashMap<StoryId, (usize, usize, usize)> =
+        std::collections::HashMap::with_capacity(stories.len());
     for e in &model.elements {
         if !matches!(e.kind, ElementKind::Beam) || e.nodes.len() < 2 {
             continue;
@@ -478,16 +481,15 @@ fn assign_story_structures(model: &Model, node_story: &[Option<StoryId>], storie
         let Some(story) = top.and_then(|n| node_story.get(n.id.index()).copied().flatten()) else {
             continue;
         };
-        let Some(slot) = counts.get_mut(story.index()) else {
-            continue;
-        };
+        let slot = counts.entry(story).or_default();
         match StoryStructure::of_section_shape(shape) {
             StoryStructure::Rc => slot.0 += 1,
             StoryStructure::S => slot.1 += 1,
             StoryStructure::Src => slot.2 += 1,
         }
     }
-    for (story, (n_rc, n_s, n_src)) in stories.iter_mut().zip(counts) {
+    for story in stories.iter_mut() {
+        let (n_rc, n_s, n_src) = counts.get(&story.id).copied().unwrap_or_default();
         story.structure = StoryStructure::majority(n_rc, n_s, n_src);
     }
 }

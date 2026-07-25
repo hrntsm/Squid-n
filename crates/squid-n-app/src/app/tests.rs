@@ -3623,6 +3623,40 @@ fn test_run_preparation_generates_stories_and_infers_structure() {
     assert!(!app.staleness.preparation_stale);
 }
 
+/// 準備計算は冪等: モデルが変わっていなければ 2 回目以降の実行で undo 履歴を積まず、
+/// 解析結果を stale にもしない（毎回階を再生成する構成でも、実質的な差分が無ければ
+/// `ApplyStories` を発行しない）。
+#[test]
+fn test_run_preparation_is_idempotent() {
+    let mut app = App::default();
+    app.load_model(crate::sample::portal_frame());
+    app.run_preparation();
+    assert!(app.last_error.is_none(), "{:?}", app.last_error);
+
+    // 解析まで済ませて結果を最新状態にする。
+    app.run_linear_static(LoadCaseId(0));
+    assert!(app.last_error.is_none(), "{:?}", app.last_error);
+    assert!(!app.staleness.results_stale);
+    let undo_label = app.undo.undo_label().map(|s| s.to_string());
+    let stories_before = app.model.stories.clone();
+    let nodes_before = app.model.nodes.len();
+
+    // 2 回目の準備計算ではモデルが変わらない。
+    app.run_preparation();
+    assert!(app.last_error.is_none(), "{:?}", app.last_error);
+    assert_eq!(app.model.stories, stories_before);
+    assert_eq!(app.model.nodes.len(), nodes_before);
+    assert_eq!(
+        app.undo.undo_label().map(|s| s.to_string()),
+        undo_label,
+        "差分が無ければ undo 履歴を積まないはず"
+    );
+    assert!(
+        !app.staleness.results_stale,
+        "差分が無ければ解析結果を stale にしないはず"
+    );
+}
+
 /// 階を生成できないモデル（節点なし）でも準備計算は中断せず、階の生成エラーを
 /// 提示したうえで階を前提としない項目の集計まで進む。
 #[test]

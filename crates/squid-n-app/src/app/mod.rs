@@ -1151,6 +1151,60 @@ fn density_self_weight_for_stories(model: &squid_n_core::model::Model) -> bool {
         .any(|lc| lc.kind == squid_n_core::model::LoadCaseKind::Dead && lc.name == DL_CASE_NAME)
 }
 
+/// 階の生成結果を `ApplyStories` で適用したときにモデルが変化するか。
+///
+/// 準備計算は実行のたびに階を作り直すため、モデルが変わっていないのに毎回
+/// undo 履歴を積み、`mark_edited` で解析結果を stale にしてしまわないよう、
+/// 適用前に「差分があるか」を判定する（`generate_stories_action` の冪等化）。
+///
+/// [`squid_n_edit::ApplyStories`] が書き換える対象をすべて突き合わせる:
+/// 階・所属階・剛床拘束（非剛床の拘束を残したうえで剛床拘束を末尾へ置き換えるため、
+/// 適用後の並びを組み立てて比較する）・剛床代表節点（ID の位置に同じ内容の節点が
+/// 既にあること）・`generated_masters`・質量方式。
+fn story_gen_changes_model(
+    model: &squid_n_core::model::Model,
+    gen: &squid_n_load::story_gen::StoryGenResult,
+    mass_method: squid_n_core::model::MassMethod,
+) -> bool {
+    use squid_n_core::model::Constraint;
+    if model.mass_method != mass_method
+        || model.stories != gen.stories
+        || model.generated_masters != gen.generated_masters
+    {
+        return true;
+    }
+    // 剛床代表節点: 範囲外なら追加が必要＝変化あり。
+    if gen
+        .rep_nodes
+        .iter()
+        .any(|rn| model.nodes.get(rn.id.index()) != Some(rn))
+    {
+        return true;
+    }
+    // 所属階（`ApplyStories` は model.nodes と node_story を zip して設定する）。
+    // ただし剛床代表節点は node_story の適用後に `rep_nodes` で丸ごと置換されるため、
+    // その節点の所属階は rep_nodes 側が正（node_story 側は None のまま）。
+    // 上で rep_nodes の一致を確認済みなので、ここでは代表節点を除いて比較する。
+    let rep: std::collections::HashSet<NodeId> = gen.rep_nodes.iter().map(|n| n.id).collect();
+    if model
+        .nodes
+        .iter()
+        .zip(gen.node_story.iter())
+        .any(|(n, s)| !rep.contains(&n.id) && n.story != *s)
+    {
+        return true;
+    }
+    // 剛床拘束の並び替えも変化として扱う（適用後の並びをそのまま組み立てて比較）。
+    let mut applied: Vec<Constraint> = model
+        .constraints
+        .iter()
+        .filter(|c| !matches!(c, Constraint::RigidDiaphragm { .. }))
+        .cloned()
+        .collect();
+    applied.extend(gen.constraints.iter().cloned());
+    applied != model.constraints
+}
+
 /// 波形 CSV/テキストの内容を解析する（ヘッドレステスト可能な純粋関数）。
 ///
 /// - `ThDir::X` / `ThDir::Y`: 1 行 1 値（カンマ区切りなら最後の列）を加速度(gal)として
