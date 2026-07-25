@@ -6,6 +6,7 @@ use squid_n_core::dof::{Dof, Dof6Mask};
 
 mod check_ratio;
 mod diagram;
+mod modeling;
 mod solid;
 
 /// 3D ビュー上での支持条件の分類。`Dof6Mask` のビットパターンを意味的にまとめる。
@@ -63,6 +64,27 @@ pub enum ViewMode {
     Cmq,
     /// 検定比図（部材検定の最大検定比で着色）
     CheckRatio,
+    /// モデル化図（解析上どの要素モデルで扱っているかを着色・記号で可視化）
+    Modeling,
+}
+
+/// モデル化図で可視化する解析種別。
+///
+/// 同じモデルでも解析種別によって部材のモデル化（要素定式化）が変わるため、
+/// どちらを可視化するかを切り替える。
+/// - 静解析（線形）は断面の降伏を考えないため、部材は原則すべて弾性でモデル化される。
+/// - 増分解析（弾塑性）は降伏を考慮するため、軸力変動する部材はファイバー要素、
+///   剛床上で軸力変動が小さい梁は材端集中塑性（材端回転ばね）へ振り分けられる。
+///
+/// いずれの種別でも耐震壁の側柱は面内両端ピンとしてモデル化される（トポロジ由来の
+/// 解放のため解析種別に依らない）。
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
+pub enum ModelingAnalysis {
+    /// 静解析（線形）: 断面の降伏を考えず全部材を弾性でモデル化する。
+    #[default]
+    Static,
+    /// 増分解析（弾塑性）: 降伏を考慮し、ファイバー要素と材端集中塑性を使い分ける。
+    Incremental,
 }
 
 /// CMQ 図で表示する成分（C: 固定端モーメント／M: 単純梁中央モーメント／Q: せん断）。
@@ -510,6 +532,7 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
     let mut mode_idx = app.view_mode_idx;
     let mut cmq_component = app.cmq_component;
     let mut check_ratio_filter = app.check_ratio_filter;
+    let mut modeling_analysis = app.modeling_analysis;
 
     // --- コントロール ---
     // 中央パネルが狭い場合（左パネルを広げた時など）にボタン列が右パネルへ
@@ -524,6 +547,7 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
         ui.selectable_value(&mut mode, ViewMode::M, "M図");
         ui.selectable_value(&mut mode, ViewMode::Cmq, "CMQ図");
         ui.selectable_value(&mut mode, ViewMode::CheckRatio, "検定比");
+        ui.selectable_value(&mut mode, ViewMode::Modeling, "モデル化");
         ui.separator();
         // 断面表示: 部材を断面形状の押し出しソリッドで立体表示（全モードと併用可）
         ui.toggle_value(&mut app.show_sections, "断面表示");
@@ -556,6 +580,32 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
             ui.selectable_value(&mut cmq_component, CmqComponent::C, "C(モーメント)");
             ui.selectable_value(&mut cmq_component, CmqComponent::M, "M(中央)");
             ui.selectable_value(&mut cmq_component, CmqComponent::Q, "Q(せん断)");
+        });
+    }
+    // モデル化図: 可視化する解析種別（静解析＝弾性／増分解析＝弾塑性）を切り替える。
+    // 静解析は断面の降伏を考えないため全部材が弾性、増分解析は降伏を考慮するため
+    // ファイバー要素と材端集中塑性を使い分ける、という違いを見比べられる。
+    if mode == ViewMode::Modeling {
+        ui.horizontal_wrapped(|ui| {
+            ui.label("解析種別:");
+            ui.selectable_value(
+                &mut modeling_analysis,
+                ModelingAnalysis::Static,
+                "静解析(弾性)",
+            );
+            ui.selectable_value(
+                &mut modeling_analysis,
+                ModelingAnalysis::Incremental,
+                "増分解析(弾塑性)",
+            );
+            ui.separator();
+            ui.add_enabled(
+                false,
+                egui::Label::new(
+                    egui::RichText::new("部材の色＝解析上の要素モデル。○=端部ピン／□=半剛")
+                        .size(11.0),
+                ),
+            );
         });
     }
     // N/Q/M 図: 単色塗り／コンター（値に応じた色分け）を切替。
@@ -681,6 +731,7 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
     app.view_mode_idx = mode_idx;
     app.cmq_component = cmq_component;
     app.check_ratio_filter = check_ratio_filter;
+    app.modeling_analysis = modeling_analysis;
 
     // CMQ 図はモデル編集に常に追従させるため、表示中は毎フレーム再計算する
     // （スラブ数は小さい前提）。
@@ -1097,6 +1148,21 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
     }
     if mode == ViewMode::Cmq {
         draw_cmq_diagram(&painter, app, &coords3, &proj);
+    }
+    if mode == ViewMode::Modeling {
+        modeling::draw_modeling(&painter, app, &pts, &coords3, &proj);
+        // ホバー詳細（ViewCube ホバー中は除く。検定比図と同じ最近傍部材探索・
+        // 8px 閾値で最寄り部材を求め、ヒットしたらモデル化の詳細を表示）。
+        if cube_hover.is_none() {
+            if let Some(hover_pos) = response.hover_pos() {
+                const HOVER_PICK_THRESHOLD: f32 = 8.0;
+                if let Some((id, d)) = pick_nearest_member(&app.model, &pts, hover_pos) {
+                    if d <= HOVER_PICK_THRESHOLD {
+                        modeling::show_modeling_tooltip(ui, app, id);
+                    }
+                }
+            }
+        }
     }
     if mode == ViewMode::CheckRatio {
         check_ratio::draw_check_ratio(&painter, app, &pts);

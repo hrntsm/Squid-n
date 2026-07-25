@@ -686,6 +686,10 @@ pub struct App {
     /// 点線は節点数が多いと他部材が見づらくなるため、既定は非表示にしている。
     #[cfg(feature = "gui")]
     pub show_diaphragm_master: bool,
+    /// モデル化図で可視化する解析種別（静解析＝弾性／増分解析＝弾塑性）。
+    /// 解析種別によって部材のモデル化（要素定式化）が変わるため切り替える。
+    #[cfg(feature = "gui")]
+    pub modeling_analysis: crate::viewer::ModelingAnalysis,
     /// 変形図・応力図の変形重ねで、梁を内部たわみ（Hermite 3 次曲線）で描くか
     /// （既定 ON）。ON では梁の内部たわみと、それに載る床・二次部材の追従を
     /// 曲線で表示する。OFF では梁を節点間の直線（弦）で描き、床・二次部材の追従も
@@ -872,6 +876,8 @@ impl Default for App {
             deform_scale_factor: 1.0,
             #[cfg(feature = "gui")]
             show_diaphragm_master: false,
+            #[cfg(feature = "gui")]
+            modeling_analysis: crate::viewer::ModelingAnalysis::default(),
             #[cfg(feature = "gui")]
             show_beam_interpolation: true,
             beam_loads: Vec::new(),
