@@ -2,14 +2,14 @@
 
 ## 概要
 
-`squid-n-mcp` は Squid-N の構造モデルを [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) 経由で AI エージェントに公開するサーバである。標準入出力（stdio）をトランスポートとして動作し、接続したクライアント（Claude Code、Claude Desktop など）から次のことができる。
+`squid-n-mcp` は Squid-N の構造モデルを [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) 経由で AI エージェントに公開するサーバです。標準入出力（stdio）をトランスポートとして動作し、接続したクライアント（Claude Code、Claude Desktop など）から次のことができます。
 
 - 構造モデル（節点・部材・断面）の照会
 - 数量積算（コンクリート・型枠・鉄筋・鉄骨）の集計
 - 解析（線形静解析・固有値解析・プッシュオーバー・時刻歴応答解析・断面検定・終局検定）の非同期実行
 - ジョブ状態のポーリングと解析結果の取得
 
-MCP プロトコル層（`rmcp`/`tokio` に依存する部分）はすべて Cargo の機能フラグ `mcp` の配下にあり、**`mcp` は非デフォルト**（`default = []`）である。フラグを付けずにビルドした場合、MCP サーバ（起動バイナリ・ツール群）はビルド対象に含まれない。
+MCP プロトコル層（`rmcp`/`tokio` に依存する部分）はすべて Cargo の機能フラグ `mcp` の配下にあり、**`mcp` は非デフォルト**（`default = []`）です。フラグを付けずにビルドした場合、MCP サーバ（起動バイナリ・ツール群）はビルド対象に含まれません。
 
 ## ビルドと起動
 
@@ -25,21 +25,21 @@ cargo run -p squid-n-mcp --features mcp -- model.scz
 cargo run -p squid-n-mcp --features mcp
 ```
 
-- 起動時の第1引数（`.scz` パス）がモデルの読み込み元になる。省略時は空モデルで起動する。
-- 解析結果ストアのディレクトリは環境変数 `SQUID_N_RESULT_DIR` で指定できる。未設定の場合は OS 一時ディレクトリ配下の `squid-n-mcp-results` を使う。
+- 起動時の第 1 引数（`.scz` パス）がモデルの読み込み元になります。省略時は空モデルで起動します。
+- 解析結果ストアのディレクトリは環境変数 `SQUID_N_RESULT_DIR` で指定できます。未設定の場合は OS 一時ディレクトリ配下の `squid-n-mcp-results` を使います。
 
 ```bash
 SQUID_N_RESULT_DIR=/path/to/results cargo run -p squid-n-mcp --features mcp -- model.scz
 ```
 
-> **注意**: stdout は MCP の JSON-RPC トランスポートそのものである。ログや診断出力を stdout に書くと、クライアントは壊れたフレームとして接続を切断する。
+> **注意**: stdout は MCP の JSON-RPC トランスポートそのものです。ログや診断出力を stdout に書くと、クライアントは壊れたフレームとして接続を切断します。
 
 よくあるエラー:
 
 | 状況 | 結果 |
 |---|---|
-| `--features mcp` を `squid-n-mcp` 以外のクレート（例: `-p squid-n-app`）に付けて実行する | そのクレートに `mcp` という機能フラグが無いためビルドエラーになる |
-| `squid-n-mcp` を `--features mcp` なしでビルド/実行しようとする | 起動バイナリ自体が `required-features = ["mcp"]` でゲートされているため、バイナリが存在せず実行できない |
+| `--features mcp` を `squid-n-mcp` 以外のクレート（例: `-p squid-n-app`）に付けて実行する | そのクレートに `mcp` という機能フラグがないためビルドエラーになります |
+| `squid-n-mcp` を `--features mcp` なしでビルド/実行しようとする | 起動バイナリ自体が `required-features = ["mcp"]` でゲートされているため、バイナリが存在せず実行できません |
 
 ## クライアント設定例
 
@@ -49,7 +49,7 @@ SQUID_N_RESULT_DIR=/path/to/results cargo run -p squid-n-mcp --features mcp -- m
 claude mcp add squid-n -- /path/to/squid-n-mcp model.scz
 ```
 
-もしくはプロジェクトの `.mcp.json` に登録する。
+もしくはプロジェクトの `.mcp.json` に登録します。
 
 ```json
 {
@@ -64,7 +64,7 @@ claude mcp add squid-n -- /path/to/squid-n-mcp model.scz
 
 ### Claude Desktop
 
-`claude_desktop_config.json` に以下のエントリを追加する。
+`claude_desktop_config.json` に以下のエントリを追加します。
 
 ```json
 {
@@ -82,11 +82,11 @@ claude mcp add squid-n -- /path/to/squid-n-mcp model.scz
 
 ## ツール一覧
 
-公開されている MCP ツールは以下の5個。
+公開されている MCP ツールは以下の 5 個です。
 
 ### `model_query`
 
-節点・部材・断面を検索する。
+節点・部材・断面を検索します。
 
 | 引数 | 型 | 必須/任意 | 意味 |
 |---|---|---|---|
@@ -105,7 +105,7 @@ claude mcp add squid-n -- /path/to/squid-n-mcp model.scz
 
 ### `quantity_takeoff`
 
-数量積算（コンクリート体積・型枠面積・鉄筋/鉄骨重量の概算）を集計する。
+数量積算（コンクリート体積・型枠面積・鉄筋/鉄骨重量の概算）を集計します。
 
 | 引数 | 型 | 必須/任意 | 意味 | 既定値 |
 |---|---|---|---|---|
@@ -117,7 +117,7 @@ claude mcp add squid-n -- /path/to/squid-n-mcp model.scz
 { "rows": [ /* group_by に応じた行 */ ], "totals": { "concrete_m3": .., "formwork_m2": .., "rebar_t": .., "steel_t": .., "rebar_joints": .. }, "notes": [ /* 注記 */ ] }
 ```
 
-`rows` の形は `group_by` により異なる。
+`rows` の形は `group_by` により異なります。
 
 | `group_by` | 行の形 |
 |---|---|
@@ -127,11 +127,11 @@ claude mcp add squid-n -- /path/to/squid-n-mcp model.scz
 | `rebar` | `{ dia_mm, length_m, weight_t }` |
 | `detail` | `{ elem, slab, label, story, category, structure, concrete_m3, formwork_m2, rebar_t, steel_t, rebar_joints }` |
 
-数量の算定式は[計算根拠 11. 数量積算](./calc_basis/11_数量積算/README.md)を参照。
+数量の算定式は[計算根拠 11. 数量積算](./calc_basis/11_数量積算/README.md)を参照してください。
 
 ### `analysis_run`
 
-解析を非同期で実行する。ジョブを登録し `job_id` を即座に返す（計算完了は待たない）。
+解析を非同期で実行します。ジョブを登録し `job_id` を即座に返します（計算完了は待ちません）。
 
 | 引数 | 型 | 必須/任意 | 意味 | 既定値 |
 |---|---|---|---|---|
@@ -165,7 +165,7 @@ claude mcp add squid-n -- /path/to/squid-n-mcp model.scz
 
 ### `analysis_status`
 
-ジョブの状態を取得する。
+ジョブの状態を取得します。
 
 | 引数 | 型 | 必須/任意 | 意味 |
 |---|---|---|---|
@@ -177,7 +177,7 @@ claude mcp add squid-n -- /path/to/squid-n-mcp model.scz
 { "id": "job-0", "kind": "LinearStatic", "status": { /* Queued | Running{progress} | Done{result_ref} | Failed{error} */ } }
 ```
 
-- `status` は次のいずれかの形を取る。
+- `status` は次のいずれかの形を取ります。
   - `"Queued"`
   - `{ "Running": { "progress": 0.0 } }`
   - `{ "Done": { "result_ref": "<サマリ JSON 文字列>" } }`
@@ -186,7 +186,7 @@ claude mcp add squid-n -- /path/to/squid-n-mcp model.scz
 
 ### `result_get`
 
-解析結果ストアから結果を取得する。
+解析結果ストアから結果を取得します。
 
 | 引数 | 型 | 必須/任意 | 意味 |
 |---|---|---|---|
@@ -194,7 +194,7 @@ claude mcp add squid-n -- /path/to/squid-n-mcp model.scz
 | `kind` | `String` | 必須 | `"NodalDisp"`/`"MemberForce"`/`"Modal"`/`"TimeHistory"` のいずれか |
 | `node_ids` | `Option<Vec<u32>>` | 任意 | 節点 ID での絞り込み |
 | `member_ids` | `Option<Vec<u32>>` | 任意 | 部材 ID での絞り込み |
-| `step_range` | `Option<Vec<u64>>` | 任意 | `[start, end)` のちょうど2要素。それ以外はエラー |
+| `step_range` | `Option<Vec<u64>>` | 任意 | `[start, end)` のちょうど 2 要素。それ以外はエラー |
 
 返り値:
 
@@ -202,7 +202,7 @@ claude mcp add squid-n -- /path/to/squid-n-mcp model.scz
 { "case": 1, "kind": "NodalDisp", "rows": [ /* 明細行 */ ], "truncated": false }
 ```
 
-`(case, kind)` の組が結果ストアに無い場合はエラーになる（`analysis_run` を先に実行する必要がある）。
+`(case, kind)` の組が結果ストアにない場合はエラーになります（`analysis_run` を先に実行する必要があります）。
 
 ## 解析ジョブのフロー
 
@@ -229,11 +229,11 @@ claude mcp add squid-n -- /path/to/squid-n-mcp model.scz
 { "case": 1, "kind": "NodalDisp", "rows": [ { "node_id": 1, "ux": 0.0, "uy": 0.0, "uz": 1.23, "rx": 0.0, "ry": 0.0, "rz": 0.0 } ], "truncated": false }
 ```
 
-`Eigen` ジョブの結果は結果ストアに `case=0` として格納される（実荷重ケース番号との衝突を避けるための固定値）。`result_get(case=0, kind="Modal")` で取得する。
+`Eigen` ジョブの結果は結果ストアに `case=0` として格納されます（実荷重ケース番号との衝突を避けるための固定値）。`result_get(case=0, kind="Modal")` で取得します。
 
 ## 結果ストアのスキーマ
 
-`result_get` の `kind` に指定できる4種のスキーマは以下のとおり（すべて Arrow の `UInt32`/`UInt64`/`Float64` 列で構成される）。
+`result_get` の `kind` に指定できる 4 種のスキーマは以下のとおりです（すべて Arrow の `UInt32`/`UInt64`/`Float64` 列で構成されます）。
 
 ### NodalDisp
 
@@ -271,7 +271,7 @@ claude mcp add squid-n -- /path/to/squid-n-mcp model.scz
 | `ux`, `uy`, `uz` | Float64 |
 | `rx`, `ry`, `rz` | Float64 |
 
-`result_get` が1回に返す行数の上限は 10,000 行。超過分は切り詰められ、応答の `truncated` が `true` になる。
+`result_get` が 1 回に返す行数の上限は 10,000 行です。超過分は切り詰められ、応答の `truncated` が `true` になります。
 
 ## 制約・注意点
 

@@ -1,12 +1,12 @@
 # 3. 断面性能
 
-本章では、断面諸量（断面積 A、断面二次モーメント I、断面係数 Z、塑性断面係数 Zp、ねじり定数 J、せん断有効断面積 As）、せん断形状係数、コンクリートのヤング係数、SRC/CFT の等価断面性能、およびファイバー断面の算定方法を示す。
-断面公式は力学の閉形式、ヤング係数は RC規準の Ec 式、SRC/CFT の等価剛性はヤング係数比による累加（SRC規準の考え方）に基づく。
+本章では、断面諸量（断面積 A、断面二次モーメント I、断面係数 Z、塑性断面係数 Zp、ねじり定数 J、せん断有効断面積 As）、せん断形状係数、コンクリートのヤング係数、SRC/CFT の等価断面性能、およびファイバー断面の算定方法を示します。
+断面公式は力学の閉形式、ヤング係数は RC 規準の Ec 式、SRC/CFT の等価剛性はヤング係数比による累加（SRC 規準の考え方）に基づきます。
 
-> 各項目は「導入文（何を・どの基準で）、算定式、実装」の順で記す。
+> 各項目は「導入文（何を・どの基準で）、算定式、実装」の順で記します。
 
-実装本体は `squid_n_core::section_shape`（`crates/squid-n-core/src/section_shape/mod.rs`）にある。
-`squid_n_section::shape` はこの `section_shape` を再エクスポートしている。
+実装本体は `squid_n_core::section_shape`（`crates/squid-n-core/src/section_shape/mod.rs`）にあります。
+`squid_n_section::shape` はこの `section_shape` を再エクスポートしています。
 
 ## この章の内容
 
