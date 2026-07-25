@@ -4643,3 +4643,257 @@ fn test_mark_edited_marks_diagnostics_stale() {
     app.staleness.mark_edited();
     assert!(app.staleness.diagnostics_stale);
 }
+
+// ── 準備計算（解析前の前処理） ──────────────────────────────────────
+
+/// 準備計算は階が未定義なら自動生成し、階の分布・剛域・Ai 分布・荷重集計を
+/// 揃えて `preparation` へ格納する（解析前に内容を確認できるようにする）。
+#[test]
+fn test_run_preparation_populates_result() {
+    let mut app = App::default();
+    app.load_model(crate::sample::portal_frame());
+    assert!(app.preparation.is_none(), "読込直後は未実行");
+    assert!(app.staleness.preparation_stale);
+
+    app.run_preparation();
+    assert!(app.last_error.is_none(), "{:?}", app.last_error);
+    assert!(!app.staleness.preparation_stale, "実行後は最新化される");
+
+    let prep = app.preparation.as_ref().expect("準備計算の結果があるはず");
+    // 階が未定義だったので自動生成される。
+    assert_eq!(app.model.stories.len(), 1);
+    assert_eq!(prep.stories.len(), 1);
+    let story = &prep.stories[0];
+    assert!(story.weight > 0.0, "地震用重量が算定される");
+    assert_eq!(story.cumulative_weight, story.weight, "最上階の ΣWj = Wi");
+    // 階高は GL（柱脚レベル 0）から梁レベル 3500mm まで。
+    assert!((story.height - 3500.0).abs() < 1e-6, "{}", story.height);
+
+    // 建物概要。
+    assert_eq!(prep.summary.n_nodes, app.model.nodes.len());
+    // 剛床代表節点（面外拘束を持つ）は支点として数えない。
+    assert_eq!(prep.summary.n_supports, 2, "柱脚 2 点が固定");
+    assert!((prep.summary.height_mm - 3500.0).abs() < 1e-6);
+    assert!(prep.summary.total_seismic_weight > 0.0);
+
+    // Ai 分布（略算周期）。1 層なので α=Ai=1、Ci = Z·Rt·Ai·C0。
+    let sm = prep.seismic.as_ref().expect("Ai 分布が算定されるはず");
+    assert_eq!(sm.rows.len(), 1);
+    assert!((sm.rows[0].alpha - 1.0).abs() < 1e-9);
+    assert!((sm.rows[0].ai - 1.0).abs() < 1e-9);
+    assert!((sm.rows[0].ci - sm.z * sm.rt * sm.c0).abs() < 1e-9);
+    // Qi = Ci·Wi、最上層なので Pi = Qi、基部せん断力 Q1 = Qi。
+    assert!((sm.rows[0].qi - sm.rows[0].ci * sm.rows[0].weight).abs() < 1e-6);
+    assert!((sm.rows[0].pi - sm.rows[0].qi).abs() < 1e-9);
+    assert!((sm.base_shear - sm.rows[0].qi).abs() < 1e-9);
+    assert!(!sm.clamped_negative_pi);
+
+    // 風圧力は X・Y の両方向を算定する（見付幅が風向で変わるため）。
+    // サンプルは XZ 平面の平面架構なので、X 方向の風（見付幅は Y 方向の
+    // 座標範囲 = 0）は算定できず、理由が `wind_note` に入る。
+    assert_eq!(prep.wind.len(), 1, "{:?}", prep.wind_note);
+    assert_eq!(prep.wind[0].dir, SeismicDir::Y);
+    assert!(prep.wind[0].q > 0.0);
+    assert!(
+        prep.wind_note.as_ref().unwrap().contains("X 方向"),
+        "{:?}",
+        prep.wind_note
+    );
+
+    // 荷重集計（DL には自重・床荷重が同期されるので鉛直下向き = 負）。
+    let dl = prep
+        .load_cases
+        .iter()
+        .find(|r| r.name == squid_n_core::model::DL_CASE_NAME)
+        .expect("DL ケースが同期されるはず");
+    assert!(dl.sum_force[2] < 0.0, "{:?}", dl.sum_force);
+}
+
+/// 準備計算の Ai 分布は、実際に EX ケースへ同期される水平力の合計と一致する
+/// （確認表示と解析入力が同じ算定に基づくことの担保）。
+#[test]
+fn test_preparation_ai_matches_synced_seismic_case() {
+    let mut app = App::default();
+    app.load_model(crate::sample::portal_frame());
+    app.run_preparation();
+
+    let sm = app
+        .preparation
+        .as_ref()
+        .unwrap()
+        .seismic
+        .as_ref()
+        .expect("Ai 分布");
+    let sum_pi: f64 = sm.rows.iter().map(|r| r.pi).sum();
+
+    let ex = app
+        .model
+        .load_cases
+        .iter()
+        .find(|lc| lc.name == squid_n_core::model::EX_CASE_NAME)
+        .expect("EX ケースが同期されるはず");
+    let sum_fx: f64 = ex.nodal.iter().map(|n| n.values[0]).sum();
+    assert!(
+        (sum_pi - sum_fx).abs() < 1e-6 * sum_pi.abs().max(1.0),
+        "ΣPi={} vs ΣFx={}",
+        sum_pi,
+        sum_fx
+    );
+}
+
+/// 準備計算は剛域を算定してモデルへ反映し、その内容を一覧化する。
+/// 可とう長 L' = L − λi − λj・剛域比が表の値と整合すること。
+#[test]
+fn test_preparation_lists_rigid_zones() {
+    let mut app = App::default();
+    app.load_model(crate::sample::portal_frame());
+    app.run_preparation();
+
+    let prep = app.preparation.as_ref().unwrap();
+    assert_eq!(
+        prep.rigid_zone_candidates,
+        app.model.elements.len(),
+        "サンプルは全要素が梁要素"
+    );
+    // サンプルは S 造のため剛域長 λ は 0 だが、危険断面位置の基準となる
+    // 柱フェース距離は付く（λ とフェース距離は別概念。設計書 §6.2.1）。
+    assert!(
+        !prep.rigid_zones.is_empty(),
+        "柱梁が直交接続するのでフェース距離が付く"
+    );
+    assert!(
+        prep.rigid_zones
+            .iter()
+            .any(|r| r.face_i > 0.0 || r.face_j > 0.0),
+        "フェース距離が算定されるはず"
+    );
+    for r in &prep.rigid_zones {
+        assert!(r.length > 0.0);
+        assert!((r.clear_length - (r.length - r.zone_i - r.zone_j)).abs() < 1e-9);
+        assert!((r.ratio - (r.zone_i + r.zone_j) / r.length).abs() < 1e-12);
+        // モデル側の剛域長と一致する（表示が実際の解析入力と同じであること）。
+        let elem = app
+            .model
+            .elements
+            .iter()
+            .find(|e| e.id == r.elem)
+            .expect("部材");
+        assert_eq!(elem.rigid_zone.length_i, r.zone_i);
+        assert_eq!(elem.rigid_zone.length_j, r.zone_j);
+    }
+}
+
+/// 階が未定義のまま準備計算の集計だけを行うと、Ai 分布・風圧力は算定できず
+/// 理由（`*_note`）が入る。集計自体はエラーにならない。
+#[test]
+fn test_preparation_without_stories_reports_notes() {
+    let mut app = App::default();
+    // 階を作らずに解析だけ実行する経路（`ensure_preparation`）を通す。
+    app.load_model(crate::sample::portal_frame());
+    app.run_linear_static(LoadCaseId(0));
+
+    let prep = app.preparation.as_ref().expect("解析前に準備計算が走る");
+    assert!(prep.stories.is_empty());
+    assert!(prep.seismic.is_none());
+    assert!(prep.seismic_note.as_ref().unwrap().contains("階"));
+    assert!(prep.wind.is_empty());
+    assert!(prep.wind_note.is_some());
+    // 剛域・荷重集計は階に依存しないので算定される。
+    assert!(!prep.rigid_zones.is_empty());
+    assert!(!prep.load_cases.is_empty());
+}
+
+/// 解析の実行は準備計算を最新化するが、階の自動生成は行わない
+/// （解析実行が暗黙にモデルの階構成を書き換えないため）。
+#[test]
+fn test_analysis_ensures_preparation_without_generating_stories() {
+    let mut app = App::default();
+    app.load_model(crate::sample::portal_frame());
+    assert!(app.staleness.preparation_stale);
+
+    app.run_linear_static(LoadCaseId(0));
+    assert!(app.last_error.is_none(), "{:?}", app.last_error);
+    assert!(!app.staleness.preparation_stale, "解析前に準備計算が走る");
+    assert!(app.preparation.is_some());
+    assert!(app.model.stories.is_empty(), "階は自動生成しない");
+}
+
+/// モデル編集で準備計算は stale に戻り、再実行で最新化される。
+#[test]
+fn test_mark_edited_marks_preparation_stale() {
+    let mut app = App::default();
+    app.load_model(crate::sample::portal_frame());
+    app.run_preparation();
+    assert!(!app.staleness.preparation_stale);
+    app.staleness.mark_edited();
+    assert!(app.staleness.preparation_stale);
+    app.run_preparation();
+    assert!(!app.staleness.preparation_stale);
+}
+
+/// 精算周期（SemiPrecise）で固有値解析が未実行なら Ai 分布は算定せず、
+/// 固有値解析の実行を促す理由を返す（勝手に略算へフォールバックしない）。
+#[test]
+fn test_preparation_semiprecise_without_eigen_reports_note() {
+    let mut app = App::default();
+    app.load_model(crate::sample::portal_frame());
+    app.generate_stories_action();
+    app.analysis_cfg.ai_mode = AiMode::SemiPrecise;
+    app.staleness.mark_edited();
+    app.run_preparation();
+
+    let prep = app.preparation.as_ref().unwrap();
+    assert!(prep.seismic.is_none());
+    assert!(
+        prep.seismic_note.as_ref().unwrap().contains("固有値解析"),
+        "{:?}",
+        prep.seismic_note
+    );
+
+    // 固有値解析を実行すると、その1次周期で Ai 分布が算定できるようになる。
+    app.run_eigen(3);
+    app.run_preparation();
+    let prep = app.preparation.as_ref().unwrap();
+    let sm = prep.seismic.as_ref().expect("固有値実行後は算定できる");
+    assert_eq!(sm.t_mode, AiMode::SemiPrecise);
+    let t1 = app.results.as_ref().unwrap().modal.as_ref().unwrap().period[0];
+    assert!((sm.t - t1).abs() < 1e-12);
+}
+
+/// モデル読込は準備計算の結果・診断をリセットする（前モデルの結果が残らない）。
+#[test]
+fn test_load_model_resets_preparation() {
+    let mut app = App::default();
+    app.load_model(crate::sample::portal_frame());
+    app.run_preparation();
+    assert!(app.preparation.is_some());
+
+    app.load_model(crate::sample::portal_frame());
+    assert!(app.preparation.is_none());
+    assert!(app.diagnostics.is_empty());
+    assert!(app.staleness.preparation_stale);
+}
+
+/// 準備計算の CSV には階の分布・Ai 分布・剛域・荷重集計の各セクションが出る。
+#[test]
+fn test_build_preparation_csv() {
+    let mut app = App::default();
+    assert!(
+        crate::summary::build_preparation_csv(&app).is_empty(),
+        "未実行なら空"
+    );
+
+    app.load_model(crate::sample::portal_frame());
+    app.run_preparation();
+    let csv = crate::summary::build_preparation_csv(&app);
+    for section in [
+        "[建物概要]",
+        "[階の分布]",
+        "[地震力 (Ai分布)]",
+        "[剛域]",
+        "[荷重集計]",
+    ] {
+        assert!(csv.contains(section), "{section} が無い:\n{csv}");
+    }
+    assert!(csv.contains("階,Wi[kN],ΣWj[kN],αi,Ai,Ci,Qi[kN],Pi[kN],種別"));
+}

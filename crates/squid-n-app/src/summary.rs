@@ -408,6 +408,193 @@ pub fn build_report_csv(app: &App) -> String {
     out
 }
 
+/// 準備計算の結果（[`crate::app::PreparationResult`]）を CSV 文字列に整形する
+/// （GUI 非依存）。建物概要・階の分布・地震力(Ai分布)・風圧力・剛域・荷重集計の
+/// 各セクションを出力する。準備計算が未実行なら空文字列を返す。
+pub fn build_preparation_csv(app: &App) -> String {
+    use crate::app::{
+        ai_mode_label, load_case_kind_label, member_kind_label, soil_class_label,
+        story_level_kind_label, story_structure_label, zone_source_label,
+    };
+
+    let Some(p) = app.preparation.as_ref() else {
+        return String::new();
+    };
+    let kn = |n: f64| n / 1000.0;
+    let mut out = String::new();
+
+    out.push_str("# Squid-N 準備計算\n");
+    out.push_str("\n[建物概要]\n");
+    let s = &p.summary;
+    out.push_str(&format!(
+        "節点数,{}\n部材数,{}\n支点数,{}\n階数,{}\n剛床数,{}\n\
+         地盤面GL[mm],{:.0}\n建物高さh[m],{:.3}\n鉄骨造高さ比α,{:.4}\n\
+         地震用重量ΣW[kN],{:.2}\n",
+        s.n_nodes,
+        s.n_elements,
+        s.n_supports,
+        s.n_stories,
+        s.n_diaphragms,
+        s.ground_elevation,
+        s.height_mm / 1000.0,
+        s.steel_height_ratio,
+        kn(s.total_seismic_weight),
+    ));
+    out.push_str(&format!(
+        "整合性チェック エラー,{}\n整合性チェック 警告,{}\n",
+        p.diag_errors, p.diag_warnings
+    ));
+
+    if !p.stories.is_empty() {
+        out.push_str(
+            "\n[階の分布]\n階,床レベル[mm],階高[mm],節点数,剛床数,地震用重量Wi[kN],累積ΣWj[kN],構造,種別\n",
+        );
+        for r in p.stories.iter().rev() {
+            out.push_str(&format!(
+                "{},{:.0},{:.0},{},{},{:.2},{:.2},{},{}\n",
+                r.name,
+                r.elevation,
+                r.height,
+                r.n_nodes,
+                r.n_diaphragms,
+                kn(r.weight),
+                kn(r.cumulative_weight),
+                story_structure_label(r.structure),
+                story_level_kind_label(r.level_kind),
+            ));
+        }
+    }
+
+    match (&p.seismic, &p.seismic_note) {
+        (Some(sm), _) => {
+            out.push_str("\n[地震力 (Ai分布)]\n");
+            out.push_str(&format!(
+                "設計用固有周期T[s],{:.4}\nTの算定法,{}\n地盤種別,{}\nTc[s],{:.2}\n\
+                 振動特性係数Rt,{:.4}\n地域係数Z,{:.2}\n標準せん断力係数C0,{:.3}\n\
+                 基部せん断力Q1[kN],{:.2}\n",
+                sm.t,
+                ai_mode_label(sm.t_mode),
+                soil_class_label(sm.soil),
+                sm.tc,
+                sm.rt,
+                sm.z,
+                sm.c0,
+                kn(sm.base_shear),
+            ));
+            out.push_str("階,Wi[kN],ΣWj[kN],αi,Ai,Ci,Qi[kN],Pi[kN],種別\n");
+            for r in sm.rows.iter().rev() {
+                out.push_str(&format!(
+                    "{},{:.2},{:.2},{:.4},{:.4},{:.5},{:.2},{:.2},{}\n",
+                    r.name,
+                    kn(r.weight),
+                    kn(r.cumulative_weight),
+                    r.alpha,
+                    r.ai,
+                    r.ci,
+                    kn(r.qi),
+                    kn(r.pi),
+                    story_level_kind_label(r.level_kind),
+                ));
+            }
+        }
+        (None, Some(note)) => {
+            out.push_str(&format!("\n[地震力 (Ai分布)]\n算定不可,{}\n", note));
+        }
+        (None, None) => {}
+    }
+
+    // 速度圧など風向によらない諸元は 1 度だけ、見付面積・層水平力は風向ごとに出す。
+    if let Some(first) = p.wind.first() {
+        out.push_str("\n[風圧力]\n");
+        out.push_str(&format!(
+            "建物高さH[m],{:.3}\n基準風速V0[m/s],{:.1}\n地表面粗度区分,{:?}\n\
+             速度圧q[N/m2],{:.2}\nEr,{:.4}\nGf,{:.4}\nE,{:.4}\n",
+            first.h_mm / 1000.0,
+            first.v0,
+            first.roughness,
+            first.q,
+            first.er,
+            first.gf,
+            first.e,
+        ));
+        for w in &p.wind {
+            out.push_str(&format!(
+                "\n風向,{:?}\n基部せん断力[kN],{:.2}\n",
+                w.dir,
+                kn(w.base_shear)
+            ));
+            out.push_str("階,負担下端[mm],負担上端[mm],見付幅[mm],見付面積[m2],Kz,風圧力[N/m2],層水平力[kN]\n");
+            for r in w.rows.iter().rev() {
+                out.push_str(&format!(
+                    "{},{:.0},{:.0},{:.0},{:.3},{:.4},{:.2},{:.2}\n",
+                    r.name,
+                    r.z_bottom,
+                    r.z_top,
+                    r.width,
+                    r.area * 1e-6,
+                    r.kz,
+                    r.pressure,
+                    kn(r.force),
+                ));
+            }
+        }
+    } else {
+        out.push_str("\n[風圧力]\n");
+    }
+    if let Some(note) = &p.wind_note {
+        out.push_str(&format!("算定不可,{}\n", note));
+    }
+
+    out.push_str(&format!(
+        "\n[剛域]\n剛域・危険断面位置を持つ部材数,{}\n梁要素数,{}\n",
+        p.rigid_zones.len(),
+        p.rigid_zone_candidates
+    ));
+    if !p.rigid_zones.is_empty() {
+        out.push_str(
+            "部材ID,種別,節点i,節点j,材長L[mm],λi[mm],λi出所,λj[mm],λj出所,可とう長L'[mm],フェースi[mm],フェースj[mm],剛域比\n",
+        );
+        for r in &p.rigid_zones {
+            out.push_str(&format!(
+                "{},{},{},{},{:.1},{:.1},{},{:.1},{},{:.1},{:.1},{:.1},{:.4}\n",
+                r.elem.0,
+                member_kind_label(r.kind),
+                r.node_i.0,
+                r.node_j.0,
+                r.length,
+                r.zone_i,
+                zone_source_label(r.source_i),
+                r.zone_j,
+                zone_source_label(r.source_j),
+                r.clear_length,
+                r.face_i,
+                r.face_j,
+                r.ratio,
+            ));
+        }
+    }
+
+    if !p.load_cases.is_empty() {
+        out.push_str(
+            "\n[荷重集計]\n荷重ケース,種別,節点荷重数,部材荷重数,ΣFx[kN],ΣFy[kN],ΣFz[kN]\n",
+        );
+        for r in &p.load_cases {
+            out.push_str(&format!(
+                "{},{},{},{},{:.2},{:.2},{:.2}\n",
+                r.name,
+                load_case_kind_label(r.kind),
+                r.n_nodal,
+                r.n_member,
+                kn(r.sum_force[0]),
+                kn(r.sum_force[1]),
+                kn(r.sum_force[2]),
+            ));
+        }
+    }
+
+    out
+}
+
 /// 数量積算の CSV 文字列を生成する（GUI 非依存）。
 ///
 /// 部位別の概算数量

@@ -59,6 +59,8 @@ impl App {
         self.last_error = None;
         self.last_notice = None;
         self.auto_load_sync_hash = None;
+        self.preparation = None;
+        self.diagnostics.clear();
         self.staleness = Staleness::default();
         #[cfg(feature = "gui")]
         self.reset_draw_modes();
@@ -204,7 +206,7 @@ impl App {
     /// `analysis_cfg.threads` を並列度設定（プロセスグローバル）へ反映する。
     /// 各解析エントリの先頭で呼ぶ（バックグラウンドジョブは thread::spawn 前に
     /// 呼べばよい。設定はプロセスグローバルのためジョブ側での再設定は不要）。
-    fn apply_parallelism_setting(&self) {
+    pub(crate) fn apply_parallelism_setting(&self) {
         squid_n_math::parallelism::set_parallelism(
             squid_n_math::parallelism::Parallelism::from_threads(self.analysis_cfg.threads),
         );
@@ -213,23 +215,23 @@ impl App {
     /// T3: 線形静的解析を実行し、結果を `self.results` に格納する。
     /// 指定した荷重ケースが存在しない場合はエラーメッセージをセット。
     ///
-    /// 解析準備前にスラブ荷重・躯体自重を「DL」等の標準ケースへ（レビュー §1.1・
-    /// 照合レビュー：③梁自重・②壁荷重の CMoQ 経路を長期応力解析へ接続）、
-    /// 階が定義済みなら地震荷重を「EX」「EY」ケースへ同期する
-    /// （`sync_auto_load_cases_action`。モデル・関連設定が前回同期時から
-    /// 変わっていなければ丸ごとスキップする）。
+    /// 解析に先立って準備計算（`ensure_preparation`）を実行する。剛域を反映し、
+    /// スラブ荷重・躯体自重を「DL」等の標準ケースへ（レビュー §1.1・照合レビュー：
+    /// ③梁自重・②壁荷重の CMoQ 経路を長期応力解析へ接続）、階が定義済みなら
+    /// 地震荷重を「EX」「EY」ケースへ同期する（モデル・関連設定が前回同期時から
+    /// 変わっていなければ荷重の再計算は丸ごとスキップする）。
     pub fn run_linear_static(&mut self, lc: LoadCaseId) {
         self.apply_parallelism_setting();
         self.last_error = None;
         self.last_notice = None;
-        self.sync_auto_load_cases_action();
+        self.ensure_preparation();
         let res = Self::compute_linear_static(self.model.clone(), lc);
         self.apply_static_case_result(StaticCaseKey::User(lc), res);
     }
 
     /// 線形静的解析の純粋計算部分。所有権を取り `&self` を使わないため、
     /// バックグラウンドジョブ（`start_linear_static_job`）からも呼び出せる。
-    /// 剛域は呼び出し側（`sync_auto_load_cases_action`）で適用済みのモデルを
+    /// 剛域は呼び出し側（`ensure_preparation`）で適用済みのモデルを
     /// 渡す前提のため、ここでは再適用しない（二重適用を避ける）。
     fn compute_linear_static(
         model: squid_n_core::model::Model,
@@ -280,7 +282,7 @@ impl App {
         self.apply_parallelism_setting();
         self.last_error = None;
         self.last_notice = None;
-        self.sync_auto_load_cases_action();
+        self.ensure_preparation();
         let model = self.model.clone();
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
@@ -311,17 +313,16 @@ impl App {
     /// T7: 荷重組合せ解析を実行し、結果を `bundle.combos` に格納する。
     /// 指定インデックスの荷重組合せが存在しない場合はエラーメッセージをセット。
     ///
-    /// 解析準備前にスラブ荷重・躯体自重を「DL」等の標準ケースへ、階が定義済み
-    /// なら地震荷重を「EX」「EY」ケースへ同期する（レビュー §1.1・照合レビュー、
-    /// `sync_auto_load_cases_action`。モデル・関連設定が前回同期時から変わって
-    /// いなければ丸ごとスキップする）。
+    /// 解析に先立って準備計算（`ensure_preparation`）を実行し、スラブ荷重・躯体
+    /// 自重を「DL」等の標準ケースへ、階が定義済みなら地震荷重を「EX」「EY」
+    /// ケースへ同期する（レビュー §1.1・照合レビュー）。
     /// 組合せが空の地震荷重ケースを参照している場合は解かずにエラーで案内する
     /// （地震項が黙って 0 になるのを防ぐ）。
     pub fn run_combination(&mut self, index: usize) {
         self.apply_parallelism_setting();
         self.last_error = None;
         self.last_notice = None;
-        self.sync_auto_load_cases_action();
+        self.ensure_preparation();
         let Some(combo) = self.model.combinations.get(index).cloned() else {
             self.report_error(format!("荷重組合せ #{} が存在しません", index));
             return;
@@ -406,7 +407,7 @@ impl App {
         self.apply_parallelism_setting();
         self.last_error = None;
         self.last_notice = None;
-        self.sync_auto_load_cases_action();
+        self.ensure_preparation();
         let Some(combo) = self.model.combinations.get(index).cloned() else {
             self.report_error(format!("荷重組合せ #{} が存在しません", index));
             return;
@@ -460,10 +461,9 @@ impl App {
             self.report_error("荷重組合せがありません。荷重タブで作成してください。");
             return;
         }
-        // 解析準備前にスラブ荷重・躯体自重を「DL」等の標準ケースへ、階が定義済み
-        // なら地震荷重を「EX」「EY」ケースへ同期する（`sync_auto_load_cases_action`。
-        // モデル・関連設定が前回同期時から変わっていなければ丸ごとスキップする）。
-        self.sync_auto_load_cases_action();
+        // 解析に先立って準備計算を実行する（剛域の反映、スラブ荷重・躯体自重の
+        // 「DL」等への同期、階が定義済みなら地震荷重の「EX」「EY」への同期）。
+        self.ensure_preparation();
         // 空の地震荷重ケース（未生成の EX/EY 等）を参照する組合せは解かずに
         // エラーへ回す（地震項が黙って 0 になるのを防ぐ）。UI スレッド側の
         // `self.model` を参照するためバックグラウンドジョブでもここで行う。
@@ -614,7 +614,7 @@ impl App {
             self.report_error("荷重組合せがありません。荷重タブで作成してください。");
             return;
         }
-        self.sync_auto_load_cases_action();
+        self.ensure_preparation();
         let (combos, pre_errors) = self.filter_combos_for_all_combinations();
         let model = self.model.clone();
         let (tx, rx) = std::sync::mpsc::channel();
@@ -1461,9 +1461,8 @@ impl App {
     /// 方向・Ai算定法・Z・地盤種別・C0 は `analysis_cfg` を用いる。
     /// 結果は `StaticCaseKey::Seismic(dir)` に格納するため、X/Y 双方の地震静的結果
     /// および任意のユーザー荷重ケースの結果と衝突せず共存できる。
-    /// あわせて同じ水平力を「EX」「EY」ケースへ同期する（荷重組合せ用、
-    /// `sync_auto_load_cases_action`。モデル・関連設定が前回同期時から変わって
-    /// いなければ丸ごとスキップする）。
+    /// あわせて同じ水平力を「EX」「EY」ケースへ同期する（荷重組合せ用。
+    /// 準備計算 `ensure_preparation` が行う）。
     ///
     /// 設計用固有周期 T は `design_seismic_period` で暗黙の解析なしに決定する
     /// （内部で固有値解析を実行しない `Analysis::seismic_static_with_period` を
@@ -1473,7 +1472,7 @@ impl App {
         self.apply_parallelism_setting();
         self.last_error = None;
         self.last_notice = None;
-        self.sync_auto_load_cases_action();
+        self.ensure_preparation();
         let t = match self.design_seismic_period() {
             Ok(t) => t,
             Err(msg) => {
@@ -1518,7 +1517,7 @@ impl App {
         self.apply_parallelism_setting();
         self.last_error = None;
         self.last_notice = None;
-        self.sync_auto_load_cases_action();
+        self.ensure_preparation();
         let t = match self.design_seismic_period() {
             Ok(t) => t,
             Err(msg) => {
@@ -1574,7 +1573,7 @@ impl App {
             cpi: 0.0,
             parapet_mm: self.analysis_cfg.parapet_mm,
         };
-        self.apply_rigid_zones_for_analysis();
+        self.ensure_preparation();
         let res = Self::compute_wind(self.model.clone(), cfg);
         self.apply_static_case_result(StaticCaseKey::Wind(dir), res);
     }
@@ -1611,7 +1610,7 @@ impl App {
             cpi: 0.0,
             parapet_mm: self.analysis_cfg.parapet_mm,
         };
-        self.apply_rigid_zones_for_analysis();
+        self.ensure_preparation();
         let model = self.model.clone();
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
@@ -3155,7 +3154,7 @@ impl App {
     ///
     /// `Analysis::prepare`（剛性行列組立+Cholesky分解）や固有値解析を新たに
     /// 実行することはない（暗黙の重い解析を避けるための入口）。
-    fn design_seismic_period(&self) -> Result<f64, String> {
+    pub(crate) fn design_seismic_period(&self) -> Result<f64, String> {
         match self.analysis_cfg.ai_mode {
             AiMode::Approx => {
                 let height_m = squid_n_solver::analysis::building_height_mm(&self.model) / 1000.0;
@@ -3257,10 +3256,10 @@ impl App {
         hasher.finish()
     }
 
-    /// 自重・積載・地震荷重の自動同期（`sync_gravity_load_cases_action` ・
-    /// `sync_seismic_load_cases_action`）をまとめて行う、解析実行系
-    /// （`run_linear_static`/`run_combination`/`run_all_combinations`/
-    /// `run_seismic`）共通の入口。
+    /// 剛域の反映と、自重・積載・地震荷重の自動同期
+    /// （`sync_gravity_load_cases_action`・`sync_seismic_load_cases_action`）を
+    /// まとめて行う、準備計算（`ensure_preparation`・`run_preparation`）の
+    /// モデル更新部分。
     ///
     /// モデルが交差小梁スラブを含む場合、床荷重分配（DL・LL(架構用)・
     /// LL(地震用)の3系統×床格子サブFEM解析）は重い処理になり得るため、

@@ -49,6 +49,8 @@ pub enum BottomTab {
     Loads,
     /// モデル整合性チェック（診断）一覧
     Diagnostics,
+    /// 準備計算の結果（階の分布・剛域・Ai 分布・風圧力・荷重集計）
+    Preparation,
 }
 
 /// 左ドックのパネル。Zed のように下部バーのアイコンで切り替える。
@@ -150,6 +152,10 @@ pub struct Staleness {
     /// （他フィールドと異なり、モデル新規作成・読込直後にも診断タブを開いた
     /// 時点で必ず一度実行させたいため）。
     pub diagnostics_stale: bool,
+    /// 準備計算（剛域・荷重同期・Ai 分布の確定）が未実行または編集後で古いか。
+    /// `diagnostics_stale` と同じ理由で `Default` は true（未実行）とする。
+    /// 解析の実行前に `ensure_preparation` が参照する。
+    pub preparation_stale: bool,
 }
 
 impl Default for Staleness {
@@ -160,6 +166,7 @@ impl Default for Staleness {
             last_run: None,
             unsaved_changes: false,
             diagnostics_stale: true,
+            preparation_stale: true,
         }
     }
 }
@@ -171,6 +178,7 @@ impl Staleness {
         self.design_stale = true;
         self.unsaved_changes = true;
         self.diagnostics_stale = true;
+        self.preparation_stale = true;
     }
     /// 解析が完了 → 最新化する。
     pub fn mark_fresh(&mut self) {
@@ -569,6 +577,10 @@ pub struct App {
     pub staleness: Staleness,
     /// モデル整合性チェック（診断）の結果一覧。`run_diagnostics` で再構築する。
     pub diagnostics: Vec<Diagnostic>,
+    /// 準備計算（解析前の前処理）の結果。解析前に階の分布・剛域・Ai 分布・
+    /// 風圧力・荷重集計を確認するために保持する。`run_preparation`／
+    /// 各解析実行時の `ensure_preparation` で再構築する。
+    pub preparation: Option<PreparationResult>,
     /// ナビゲータ（左ペイン）状態
     pub nav: Navigator,
     /// モデルタブ内のサブタブ
@@ -782,6 +794,9 @@ pub struct App {
     /// 設計タブ「数量積算」ビューの状態（集計単位の切替）
     #[cfg(feature = "gui")]
     pub quantity_view: crate::quantity_view::QuantityViewState,
+    /// 下ドック「準備計算」タブの状態（表示切替）
+    #[cfg(feature = "gui")]
+    pub prep_view: crate::prep_view::PrepViewState,
 }
 
 /// 荷重組合せ自動生成 UI のドラフト（GUI 専用）。DL/LL は必須、地震X/Y・積雪は任意。
@@ -814,6 +829,7 @@ impl Default for App {
             pending_duplicate_node_coord: None,
             staleness: Staleness::default(),
             diagnostics: Vec::new(),
+            preparation: None,
             nav: Navigator::default(),
             model_tab: ModelTab::default(),
             // サンプル(門型ラーメン)が鋼構造のため既定は S ラーメン
@@ -930,6 +946,8 @@ impl Default for App {
             steel_attr_draft: crate::tables::steel_attrs::SteelAttrDraft::default(),
             #[cfg(feature = "gui")]
             quantity_view: crate::quantity_view::QuantityViewState::default(),
+            #[cfg(feature = "gui")]
+            prep_view: crate::prep_view::PrepViewState::default(),
         }
     }
 }
@@ -1589,6 +1607,9 @@ fn is_near_design_position(pos: f64, positions: &[f64]) -> bool {
 }
 
 mod actions;
+mod preparation;
+
+pub use preparation::*;
 
 #[cfg(feature = "gui")]
 mod panels;
@@ -1830,6 +1851,18 @@ impl eframe::App for App {
                         {
                             self.bottom_tab = BottomTab::Loads;
                         }
+                        // 準備計算タブ: 未実行・要再実行なら「*」を付けて再実行を促す。
+                        let prep_label = if self.staleness.preparation_stale {
+                            "準備計算 *"
+                        } else {
+                            "準備計算"
+                        };
+                        if ui
+                            .selectable_label(self.bottom_tab == BottomTab::Preparation, prep_label)
+                            .clicked()
+                        {
+                            self.bottom_tab = BottomTab::Preparation;
+                        }
                         // 診断タブのラベル: 実行済みで Error/Warning があれば件数を付す
                         // （未実行・0件なら「診断」のみでラベルを騒がしくしない）。
                         let (diag_errors, diag_warnings) = self.diagnostics_counts();
@@ -1917,6 +1950,9 @@ impl eframe::App for App {
                                 .id_salt("bottom_loads")
                                 .auto_shrink([false, false])
                                 .show(ui, |ui| crate::tables::loads::loads_table(ui, self));
+                        }
+                        BottomTab::Preparation => {
+                            crate::prep_view::preparation_panel(ui, self);
                         }
                         BottomTab::Diagnostics => {
                             if self.diagnostics.is_empty() {

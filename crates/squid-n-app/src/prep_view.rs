@@ -1,0 +1,668 @@
+//! 準備計算ビュー（下ドック「準備計算」タブ）。
+//!
+//! [`crate::app::PreparationResult`] を表として表示し、解析前に階の分布・剛域・
+//! Ai 分布・風圧力・荷重集計を確認できるようにする。CSV エクスポート
+//! （[`crate::summary::build_preparation_csv`]）にも対応する。
+
+use egui_extras::{Column, TableBuilder};
+
+use crate::app::{
+    ai_mode_label, load_case_kind_label, member_kind_label, soil_class_label,
+    story_level_kind_label, story_structure_label, zone_source_label, App, PreparationResult,
+    RIGID_ZONE_RATIO_WARN,
+};
+
+/// 準備計算ビュー内の表示切替。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum PrepView {
+    /// 建物概要と階の分布。
+    #[default]
+    Stories,
+    /// 地震力（Ai 分布）。
+    Seismic,
+    /// 風圧力。
+    Wind,
+    /// 剛域。
+    RigidZone,
+    /// 荷重ケースの集計。
+    Loads,
+}
+
+/// 準備計算ビューの状態。
+#[derive(Clone, Copy, Debug, Default)]
+pub struct PrepViewState {
+    pub view: PrepView,
+}
+
+/// N → kN。表は kN 表示に統一する（モデル内部の力の単位は N）。
+fn kn(n: f64) -> f64 {
+    n / 1000.0
+}
+
+/// 準備計算パネルの描画（下ドック）。
+pub fn preparation_panel(ui: &mut egui::Ui, app: &mut App) {
+    ui.horizontal(|ui| {
+        if ui
+            .button("▶ 準備計算 実行")
+            .on_hover_text(
+                "剛域の算定・床荷重/自重/積載の集計・地震力(Ai分布)の算定・\
+                 モデル整合性チェックをまとめて実行します（階が未定義なら自動生成します）",
+            )
+            .clicked()
+        {
+            app.run_preparation();
+        }
+        if app.staleness.preparation_stale {
+            ui.colored_label(
+                crate::theme::BEST_YELLOW,
+                "⚠ モデルが編集されました。準備計算は再実行が必要です。",
+            );
+        } else if let Some(elapsed) = app
+            .preparation
+            .as_ref()
+            .and_then(|p| p.computed_at.elapsed().ok())
+        {
+            ui.colored_label(
+                crate::theme::GRAY_600,
+                format!("最終実行: {:.0} 秒前", elapsed.as_secs_f64()),
+            );
+        }
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if app.preparation.is_some() && ui.button("📋 CSV をコピー").clicked() {
+                ui.ctx()
+                    .copy_text(crate::summary::build_preparation_csv(app));
+            }
+        });
+    });
+    ui.separator();
+
+    let Some(prep) = app.preparation.as_ref() else {
+        ui.colored_label(
+            crate::theme::GRAY_600,
+            "準備計算が未実行です。「▶ 準備計算 実行」を押すと、\
+             階の分布・剛域・Ai 分布・風圧力・荷重集計を確認できます。",
+        );
+        return;
+    };
+
+    // 整合性チェックの要約（エラーがあれば解析前に解消する必要がある）。
+    if !prep.is_ready() {
+        ui.colored_label(
+            crate::theme::ERROR_RED,
+            format!(
+                "⛔ 整合性チェック: エラー {} 件・警告 {} 件（下ドック「診断」タブで内容を確認できます）",
+                prep.diag_errors, prep.diag_warnings
+            ),
+        );
+    } else if prep.diag_warnings > 0 {
+        ui.colored_label(
+            crate::theme::BEST_YELLOW,
+            format!("⚠ 整合性チェック: 警告 {} 件", prep.diag_warnings),
+        );
+    } else {
+        ui.colored_label(crate::theme::GOOD_GREEN, "✅ 整合性チェック: 問題なし");
+    }
+
+    let view = &mut app.prep_view.view;
+    ui.horizontal(|ui| {
+        for (v, label) in [
+            (PrepView::Stories, "階の分布"),
+            (PrepView::Seismic, "地震力 (Ai 分布)"),
+            (PrepView::Wind, "風圧力"),
+            (PrepView::RigidZone, "剛域"),
+            (PrepView::Loads, "荷重集計"),
+        ] {
+            if ui.selectable_label(*view == v, label).clicked() {
+                *view = v;
+            }
+        }
+    });
+    ui.separator();
+
+    let view = app.prep_view.view;
+    egui::ScrollArea::both()
+        .id_salt("prep_view")
+        .auto_shrink([false, false])
+        .show(ui, |ui| match view {
+            PrepView::Stories => stories_section(ui, prep),
+            PrepView::Seismic => seismic_section(ui, prep),
+            PrepView::Wind => wind_section(ui, prep),
+            PrepView::RigidZone => rigid_zone_section(ui, prep),
+            PrepView::Loads => loads_section(ui, prep),
+        });
+}
+
+/// 建物概要と階の分布。
+fn stories_section(ui: &mut egui::Ui, prep: &PreparationResult) {
+    let s = &prep.summary;
+    egui::Grid::new("prep_summary")
+        .num_columns(4)
+        .spacing([16.0, 2.0])
+        .show(ui, |ui| {
+            ui.label("節点／部材");
+            ui.label(format!("{} / {}", s.n_nodes, s.n_elements));
+            ui.label("支点");
+            ui.label(format!("{}", s.n_supports));
+            ui.end_row();
+            ui.label("階数／剛床数");
+            ui.label(format!("{} / {}", s.n_stories, s.n_diaphragms));
+            ui.label("地盤面 GL [mm]");
+            ui.label(format!("{:.0}", s.ground_elevation));
+            ui.end_row();
+            ui.label("建物高さ h [m]");
+            ui.label(format!("{:.2}", s.height_mm / 1000.0));
+            ui.label("鉄骨造高さ比 α");
+            ui.label(format!("{:.3}", s.steel_height_ratio));
+            ui.end_row();
+            ui.label("地震用重量 ΣW [kN]");
+            ui.label(format!("{:.1}", kn(s.total_seismic_weight)));
+            ui.label("質量モデル");
+            ui.label(match s.mass_method {
+                squid_n_core::model::MassMethod::CorrectedLumped => "補正質点",
+                squid_n_core::model::MassMethod::LumpedOnly => "質点のみ",
+            });
+            ui.end_row();
+        });
+    ui.add_space(6.0);
+
+    if prep.stories.is_empty() {
+        ui.colored_label(
+            crate::theme::GRAY_600,
+            "階が定義されていません（地震静的・風荷重・プッシュオーバーには階の定義が必要です）",
+        );
+        return;
+    }
+
+    let row_h = crate::theme::table_row_height(ui);
+    // 上階→下階の順で並べる（伏図・軸組図と同じ見え方にする）。
+    let rows: Vec<_> = prep.stories.iter().rev().collect();
+    TableBuilder::new(ui)
+        .striped(true)
+        .column(Column::initial(90.0))
+        .column(Column::initial(90.0))
+        .column(Column::initial(90.0))
+        .column(Column::initial(70.0))
+        .column(Column::initial(70.0))
+        .column(Column::initial(110.0))
+        .column(Column::initial(110.0))
+        .column(Column::initial(60.0))
+        .column(Column::initial(110.0))
+        .header(row_h, |mut h| {
+            for t in &[
+                "階",
+                "床レベル [mm]",
+                "階高 [mm]",
+                "節点数",
+                "剛床数",
+                "地震用重量 Wi [kN]",
+                "累積 ΣWj [kN]",
+                "構造",
+                "種別",
+            ] {
+                h.col(|ui| {
+                    ui.strong(*t);
+                });
+            }
+        })
+        .body(|body| {
+            body.rows(row_h, rows.len(), |mut row| {
+                let r = rows[row.index()];
+                row.col(|ui| {
+                    ui.label(&r.name);
+                });
+                row.col(|ui| {
+                    ui.label(format!("{:.0}", r.elevation));
+                });
+                row.col(|ui| {
+                    ui.label(format!("{:.0}", r.height));
+                });
+                row.col(|ui| {
+                    ui.label(format!("{}", r.n_nodes));
+                });
+                row.col(|ui| {
+                    // 剛床が無い階には地震力・風荷重を載荷できない。
+                    if r.n_diaphragms == 0 {
+                        ui.colored_label(crate::theme::BEST_YELLOW, "0");
+                    } else {
+                        ui.label(format!("{}", r.n_diaphragms));
+                    }
+                });
+                row.col(|ui| {
+                    if r.weight <= 0.0 {
+                        ui.colored_label(crate::theme::BEST_YELLOW, "0.0");
+                    } else {
+                        ui.label(format!("{:.1}", kn(r.weight)));
+                    }
+                });
+                row.col(|ui| {
+                    ui.label(format!("{:.1}", kn(r.cumulative_weight)));
+                });
+                row.col(|ui| {
+                    ui.label(story_structure_label(r.structure));
+                });
+                row.col(|ui| {
+                    ui.label(story_level_kind_label(r.level_kind));
+                });
+            });
+        });
+}
+
+/// 地震力（Ai 分布）。
+fn seismic_section(ui: &mut egui::Ui, prep: &PreparationResult) {
+    let Some(sm) = prep.seismic.as_ref() else {
+        ui.colored_label(
+            crate::theme::BEST_YELLOW,
+            prep.seismic_note
+                .clone()
+                .unwrap_or_else(|| "地震力(Ai分布)を算定できませんでした".to_string()),
+        );
+        return;
+    };
+
+    egui::Grid::new("prep_seismic_cfg")
+        .num_columns(4)
+        .spacing([16.0, 2.0])
+        .show(ui, |ui| {
+            ui.label("設計用固有周期 T [s]");
+            ui.label(format!("{:.3}", sm.t));
+            ui.label("T の算定法");
+            ui.label(ai_mode_label(sm.t_mode));
+            ui.end_row();
+            ui.label("地盤種別 / Tc [s]");
+            ui.label(format!("{} / {:.1}", soil_class_label(sm.soil), sm.tc));
+            ui.label("振動特性係数 Rt");
+            ui.label(format!("{:.3}", sm.rt));
+            ui.end_row();
+            ui.label("地域係数 Z");
+            ui.label(format!("{:.2}", sm.z));
+            ui.label("標準せん断力係数 C0");
+            ui.label(format!("{:.2}", sm.c0));
+            ui.end_row();
+            ui.label("基部せん断力 Q1 [kN]");
+            ui.label(format!("{:.1}", kn(sm.base_shear)));
+            ui.label("ベースシア係数 Q1/ΣW");
+            let total = prep.summary.total_seismic_weight;
+            ui.label(if total > 0.0 {
+                format!("{:.4}", sm.base_shear / total)
+            } else {
+                "—".to_string()
+            });
+            ui.end_row();
+        });
+    if sm.clamped_negative_pi {
+        ui.colored_label(
+            crate::theme::ERROR_RED,
+            "⚠ 層の水平外力 Pi に負値が現れ 0 へクランプしました。\
+             階の地震用重量 Wi の並び（上階ほど軽くなっているか）を確認してください。",
+        );
+    }
+    ui.add_space(6.0);
+
+    let row_h = crate::theme::table_row_height(ui);
+    let rows: Vec<_> = sm.rows.iter().rev().collect();
+    TableBuilder::new(ui)
+        .striped(true)
+        .column(Column::initial(90.0))
+        .column(Column::initial(110.0))
+        .column(Column::initial(110.0))
+        .column(Column::initial(70.0))
+        .column(Column::initial(70.0))
+        .column(Column::initial(70.0))
+        .column(Column::initial(100.0))
+        .column(Column::initial(100.0))
+        .column(Column::initial(110.0))
+        .header(row_h, |mut h| {
+            for t in &[
+                "階",
+                "Wi [kN]",
+                "ΣWj [kN]",
+                "αi",
+                "Ai",
+                "Ci",
+                "Qi [kN]",
+                "Pi [kN]",
+                "種別",
+            ] {
+                h.col(|ui| {
+                    ui.strong(*t);
+                });
+            }
+        })
+        .body(|body| {
+            body.rows(row_h, rows.len(), |mut row| {
+                let r = rows[row.index()];
+                // αi・Ai は一般階のみ意味を持つ（PH 階・地下階は別式）。
+                let normal = matches!(r.level_kind, squid_n_core::model::StoryLevelKind::Normal);
+                row.col(|ui| {
+                    ui.label(&r.name);
+                });
+                row.col(|ui| {
+                    ui.label(format!("{:.1}", kn(r.weight)));
+                });
+                row.col(|ui| {
+                    ui.label(format!("{:.1}", kn(r.cumulative_weight)));
+                });
+                row.col(|ui| {
+                    ui.label(if normal {
+                        format!("{:.3}", r.alpha)
+                    } else {
+                        "—".to_string()
+                    });
+                });
+                row.col(|ui| {
+                    ui.label(if normal {
+                        format!("{:.3}", r.ai)
+                    } else {
+                        "—".to_string()
+                    });
+                });
+                row.col(|ui| {
+                    ui.label(format!("{:.4}", r.ci));
+                });
+                row.col(|ui| {
+                    ui.label(format!("{:.1}", kn(r.qi)));
+                });
+                row.col(|ui| {
+                    ui.label(format!("{:.1}", kn(r.pi)));
+                });
+                row.col(|ui| {
+                    ui.label(story_level_kind_label(r.level_kind));
+                });
+            });
+        });
+    ui.add_space(4.0);
+    ui.colored_label(
+        crate::theme::GRAY_600,
+        "Ci は一般階が層せん断力係数、PH 階は震度 k、地下階は水平震度 K を表します。\
+         αi・Ai は一般階のみ算定します（令88条・昭55建告1793号）。",
+    );
+}
+
+/// 風圧力（X・Y の両方向）。速度圧など方向によらない諸元は 1 度だけ表示し、
+/// 見付面積・層水平力は方向ごとに表を分ける。
+fn wind_section(ui: &mut egui::Ui, prep: &PreparationResult) {
+    let Some(first) = prep.wind.first() else {
+        ui.colored_label(
+            crate::theme::BEST_YELLOW,
+            prep.wind_note
+                .clone()
+                .unwrap_or_else(|| "風圧力を算定できませんでした".to_string()),
+        );
+        return;
+    };
+
+    egui::Grid::new("prep_wind_cfg")
+        .num_columns(4)
+        .spacing([16.0, 2.0])
+        .show(ui, |ui| {
+            ui.label("建物高さ H [m]");
+            ui.label(format!("{:.2}", first.h_mm / 1000.0));
+            ui.label("基準風速 V0 [m/s]");
+            ui.label(format!("{:.1}", first.v0));
+            ui.end_row();
+            ui.label("地表面粗度区分");
+            ui.label(format!("{:?}", first.roughness));
+            ui.label("速度圧 q [N/m²]");
+            ui.label(format!("{:.1}", first.q));
+            ui.end_row();
+            ui.label("Er / Gf / E");
+            ui.label(format!(
+                "{:.3} / {:.3} / {:.3}",
+                first.er, first.gf, first.e
+            ));
+            ui.label("");
+            ui.label("");
+            ui.end_row();
+        });
+    ui.add_space(6.0);
+
+    if let Some(note) = prep.wind_note.as_ref() {
+        ui.colored_label(crate::theme::BEST_YELLOW, note);
+    }
+
+    for w in &prep.wind {
+        ui.strong(format!(
+            "{:?} 方向（基部せん断力 {:.1} kN）",
+            w.dir,
+            kn(w.base_shear)
+        ));
+        wind_table(ui, w);
+        ui.add_space(6.0);
+    }
+}
+
+/// 風圧力の層別表（1 方向分）。
+fn wind_table(ui: &mut egui::Ui, w: &crate::app::PrepWind) {
+    let row_h = crate::theme::table_row_height(ui);
+    let rows: Vec<_> = w.rows.iter().rev().collect();
+    TableBuilder::new(ui)
+        .id_salt(("prep_wind_table", format!("{:?}", w.dir)))
+        .striped(true)
+        .column(Column::initial(90.0))
+        .column(Column::initial(140.0))
+        .column(Column::initial(100.0))
+        .column(Column::initial(110.0))
+        .column(Column::initial(70.0))
+        .column(Column::initial(110.0))
+        .column(Column::initial(100.0))
+        .header(row_h, |mut h| {
+            for t in &[
+                "階",
+                "負担高さ [mm]",
+                "見付幅 [mm]",
+                "見付面積 [m²]",
+                "Kz",
+                "風圧力 [N/m²]",
+                "層水平力 [kN]",
+            ] {
+                h.col(|ui| {
+                    ui.strong(*t);
+                });
+            }
+        })
+        .body(|body| {
+            body.rows(row_h, rows.len(), |mut row| {
+                let r = rows[row.index()];
+                row.col(|ui| {
+                    ui.label(&r.name);
+                });
+                row.col(|ui| {
+                    ui.label(format!("{:.0} 〜 {:.0}", r.z_bottom, r.z_top));
+                });
+                row.col(|ui| {
+                    ui.label(format!("{:.0}", r.width));
+                });
+                row.col(|ui| {
+                    ui.label(format!("{:.2}", r.area * 1e-6));
+                });
+                row.col(|ui| {
+                    ui.label(format!("{:.3}", r.kz));
+                });
+                row.col(|ui| {
+                    ui.label(format!("{:.1}", r.pressure));
+                });
+                row.col(|ui| {
+                    ui.label(format!("{:.1}", kn(r.force)));
+                });
+            });
+        });
+}
+
+/// 剛域。
+fn rigid_zone_section(ui: &mut egui::Ui, prep: &PreparationResult) {
+    ui.horizontal_wrapped(|ui| {
+        ui.label(format!(
+            "剛域・危険断面位置を持つ部材: {} / 梁要素 {}",
+            prep.rigid_zones.len(),
+            prep.rigid_zone_candidates
+        ));
+        ui.separator();
+        ui.colored_label(
+            crate::theme::GRAY_600,
+            "3D の形状はモデル化ビュー（結果タブ「モデル化」）でも確認できます",
+        );
+    });
+    ui.colored_label(
+        crate::theme::GRAY_600,
+        "剛域長 λ は剛性計算に、フェース距離は断面算定の危険断面位置に用います\
+         （S 造の仕口では λ = 0 でもフェース距離は付きます）。",
+    );
+    ui.add_space(6.0);
+
+    if prep.rigid_zones.is_empty() {
+        ui.colored_label(
+            crate::theme::GRAY_600,
+            "剛域・危険断面位置を持つ部材がありません（節点に直交部材が\
+             接続していない場合、剛域長 λ もフェース距離も 0 になります）",
+        );
+        return;
+    }
+
+    let row_h = crate::theme::table_row_height(ui);
+    let rows = &prep.rigid_zones;
+    TableBuilder::new(ui)
+        .striped(true)
+        .column(Column::initial(70.0))
+        .column(Column::initial(70.0))
+        .column(Column::initial(100.0))
+        .column(Column::initial(90.0))
+        .column(Column::initial(110.0))
+        .column(Column::initial(110.0))
+        .column(Column::initial(110.0))
+        .column(Column::initial(110.0))
+        .column(Column::initial(80.0))
+        .header(row_h, |mut h| {
+            for t in &[
+                "部材",
+                "種別",
+                "節点 i–j",
+                "材長 L [mm]",
+                "λi [mm]",
+                "λj [mm]",
+                "可とう長 L' [mm]",
+                "フェース i/j [mm]",
+                "剛域比",
+            ] {
+                h.col(|ui| {
+                    ui.strong(*t);
+                });
+            }
+        })
+        .body(|body| {
+            body.rows(row_h, rows.len(), |mut row| {
+                let r = &rows[row.index()];
+                row.col(|ui| {
+                    ui.label(format!("#{}", r.elem.0));
+                });
+                row.col(|ui| {
+                    ui.label(member_kind_label(r.kind));
+                });
+                row.col(|ui| {
+                    ui.label(format!("{}–{}", r.node_i.0, r.node_j.0));
+                });
+                row.col(|ui| {
+                    ui.label(format!("{:.0}", r.length));
+                });
+                row.col(|ui| {
+                    ui.label(format!(
+                        "{:.0} ({})",
+                        r.zone_i,
+                        zone_source_label(r.source_i)
+                    ));
+                });
+                row.col(|ui| {
+                    ui.label(format!(
+                        "{:.0} ({})",
+                        r.zone_j,
+                        zone_source_label(r.source_j)
+                    ));
+                });
+                row.col(|ui| {
+                    // 可とう長が 0 以下だと剛性・応力が算定できない（入力異常）。
+                    if r.clear_length <= 0.0 {
+                        ui.colored_label(crate::theme::ERROR_RED, format!("{:.0}", r.clear_length));
+                    } else {
+                        ui.label(format!("{:.0}", r.clear_length));
+                    }
+                });
+                row.col(|ui| {
+                    ui.label(format!("{:.0} / {:.0}", r.face_i, r.face_j));
+                });
+                row.col(|ui| {
+                    if r.ratio > RIGID_ZONE_RATIO_WARN {
+                        ui.colored_label(crate::theme::BEST_YELLOW, format!("{:.3}", r.ratio));
+                    } else {
+                        ui.label(format!("{:.3}", r.ratio));
+                    }
+                });
+            });
+        });
+}
+
+/// 荷重ケースの集計。
+fn loads_section(ui: &mut egui::Ui, prep: &PreparationResult) {
+    if prep.load_cases.is_empty() {
+        ui.colored_label(crate::theme::GRAY_600, "荷重ケースがありません");
+        return;
+    }
+    let row_h = crate::theme::table_row_height(ui);
+    let rows = &prep.load_cases;
+    TableBuilder::new(ui)
+        .striped(true)
+        .column(Column::initial(140.0))
+        .column(Column::initial(110.0))
+        .column(Column::initial(90.0))
+        .column(Column::initial(90.0))
+        .column(Column::initial(110.0))
+        .column(Column::initial(110.0))
+        .column(Column::initial(110.0))
+        .header(row_h, |mut h| {
+            for t in &[
+                "荷重ケース",
+                "種別",
+                "節点荷重数",
+                "部材荷重数",
+                "ΣFx [kN]",
+                "ΣFy [kN]",
+                "ΣFz [kN]",
+            ] {
+                h.col(|ui| {
+                    ui.strong(*t);
+                });
+            }
+        })
+        .body(|body| {
+            body.rows(row_h, rows.len(), |mut row| {
+                let r = &rows[row.index()];
+                let empty = r.n_nodal == 0 && r.n_member == 0;
+                row.col(|ui| {
+                    ui.label(&r.name);
+                });
+                row.col(|ui| {
+                    ui.label(load_case_kind_label(r.kind));
+                });
+                row.col(|ui| {
+                    ui.label(format!("{}", r.n_nodal));
+                });
+                row.col(|ui| {
+                    ui.label(format!("{}", r.n_member));
+                });
+                for k in 0..3 {
+                    row.col(|ui| {
+                        let text = format!("{:.1}", kn(r.sum_force[k]));
+                        if empty {
+                            ui.colored_label(crate::theme::GRAY_600, text);
+                        } else {
+                            ui.label(text);
+                        }
+                    });
+                }
+            });
+        });
+    ui.add_space(4.0);
+    ui.colored_label(
+        crate::theme::GRAY_600,
+        "ΣF は節点荷重と部材荷重（分布荷重は合力）を全体座標系で積算した外力の総和です。\
+         鉛直下向きが負のため、重力系のケースでは ΣFz が負値になります。",
+    );
+}

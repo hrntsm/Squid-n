@@ -522,6 +522,57 @@ impl App {
         }
         ui.separator();
 
+        // ── 準備計算（解析前の前処理） ────────────────────────────
+        // 各解析の実行時にも自動で最新化されるが、解析に先立って階の分布・剛域・
+        // Ai 分布・風圧力・荷重集計を確認できるよう、単独で実行する導線を置く。
+        ui.horizontal_wrapped(|ui| {
+            if ui
+                .add_enabled(!running, egui::Button::new("🛠 準備計算 実行"))
+                .on_hover_text(
+                    "解析前の前処理（階の定義・剛域の算定・床荷重/自重/積載の集計・\
+                     地震力(Ai分布)の算定・モデル整合性チェック）を実行し、\
+                     結果を下ドック「準備計算」タブに表示します",
+                )
+                .clicked()
+            {
+                self.run_preparation();
+                self.bottom_dock_open = true;
+                self.bottom_tab = BottomTab::Preparation;
+            }
+            if ui
+                .button("📋 結果を表示")
+                .on_hover_text("下ドックの「準備計算」タブを開きます")
+                .clicked()
+            {
+                self.bottom_dock_open = true;
+                self.bottom_tab = BottomTab::Preparation;
+            }
+        });
+        match self.preparation.as_ref() {
+            _ if self.staleness.preparation_stale => ui.colored_label(
+                crate::theme::BEST_YELLOW,
+                "⚠ 準備計算が未実行、またはモデル編集により古くなっています。",
+            ),
+            Some(p) if !p.is_ready() => ui.colored_label(
+                crate::theme::ERROR_RED,
+                format!(
+                    "⛔ 準備計算: 整合性チェックにエラー {} 件（解析前に解消してください）",
+                    p.diag_errors
+                ),
+            ),
+            Some(p) => ui.colored_label(
+                crate::theme::GOOD_GREEN,
+                format!(
+                    "✅ 準備計算 済（階 {} ・剛域 {} 部材・警告 {} 件）",
+                    p.stories.len(),
+                    p.rigid_zones.len(),
+                    p.diag_warnings
+                ),
+            ),
+            None => ui.colored_label(crate::theme::GRAY_600, "準備計算: 未実行"),
+        };
+        ui.separator();
+
         // ── 並列計算設定 ──────────────────────────────────────────
         egui::CollapsingHeader::new("並列計算")
             .default_open(false)
@@ -2126,6 +2177,16 @@ impl App {
                     && toggle_dock_icon(&mut self.bottom_dock_open, is_loads_active)
                 {
                     self.bottom_tab = BottomTab::Loads;
+                }
+                let is_prep_active =
+                    self.bottom_dock_open && self.bottom_tab == BottomTab::Preparation;
+                if ui
+                    .selectable_label(is_prep_active, "🛠")
+                    .on_hover_text("準備計算")
+                    .clicked()
+                    && toggle_dock_icon(&mut self.bottom_dock_open, is_prep_active)
+                {
+                    self.bottom_tab = BottomTab::Preparation;
                 }
                 let is_diag_active =
                     self.bottom_dock_open && self.bottom_tab == BottomTab::Diagnostics;
