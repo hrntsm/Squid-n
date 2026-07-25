@@ -244,6 +244,10 @@ pub struct FiberBeam {
     /// 塑性化域考慮モデルの中央弾性部剛性（ローカル系 12×12）。
     /// None = 従来の全長ファイバー積分モデル。
     pub k_mid: Option<LocalMat>,
+    /// 内力を評価する危険断面位置（正規化座標 \[0,1\]）。弾性梁
+    /// （`BeamElement::eval_sections`）と同じ規則で与え、非線形解析の部材内力
+    /// （`state_member_forces`）を線形解析と同じ断面で取り出せるようにする。
+    pub eval_sections: Vec<f64>,
     pub committed_disp: [f64; 12],
     pub trial_disp: [f64; 12],
 }
@@ -357,6 +361,7 @@ impl FiberBeam {
             k_shear,
             axis,
             k_mid: None,
+            eval_sections: crate::beam::eval_sections_of(data, model, length),
             committed_disp: [0.0; 12],
             trial_disp: [0.0; 12],
         }
@@ -722,6 +727,26 @@ impl ElementBehavior for FiberBeam {
         LocalVec {
             data: SmallVec::from_slice(&f_global),
         }
+    }
+
+    /// 現在のファイバー状態から部材内力分布を返す。
+    ///
+    /// 端部節点力は [`Self::internal_force`]（各積分点の断面応答＝ファイバーの
+    /// 履歴状態から算定した復元力）であり、接線剛性 × 全変位ではないため
+    /// 降伏後も正しい。これを釣合いで材軸方向へ分配する。
+    fn state_member_forces(
+        &self,
+        state: &ElemState,
+        ctx: &Ctx,
+    ) -> Option<crate::beam::MemberForces> {
+        let f_global = self.internal_force(state, ctx);
+        let arr: [f64; 12] = std::array::from_fn(|i| f_global.data[i]);
+        let f_local = self.axis.rotate_to_local(&arr);
+        Some(crate::beam::member_forces_from_end_forces(
+            &f_local,
+            self.length,
+            &self.eval_sections,
+        ))
     }
 
     fn update_state(&mut self, du: &LocalVec, commit: bool, _ctx: &Ctx) {

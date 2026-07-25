@@ -103,7 +103,32 @@ pub trait ElementBehavior {
     fn internal_force(&self, state: &ElemState, ctx: &Ctx) -> LocalVec;
     fn update_state(&mut self, _du: &LocalVec, _commit: bool, _ctx: &Ctx) {}
     fn mass_matrix(&self, opt: MassOption) -> LocalMat;
+    /// 節点変位から部材内力分布を復元する（線形解析の内力回収）。
+    ///
+    /// 引数は要素の全体系節点変位（線形解析の解 `u`）で、剛性と内力が線形関係に
+    /// ある要素だけが実装できる。弾塑性要素は履歴に依存するため、この経路ではなく
+    /// [`Self::state_member_forces`] を用いること。
+    ///
+    /// 線材（梁・柱・ブレース）は必ず実装する。ここで `None` を返すと線形解析の
+    /// `member_forces` から当該部材が丸ごと欠落し、応力図・断面検定・接合部検定の
+    /// 入力が空になる（線形静解析側で検出してエラーにしている）。
     fn recover_forces(&self, _u_elem: &[f64]) -> Option<crate::beam::MemberForces> {
+        None
+    }
+    /// 現在の要素状態（committed / trial）から部材内力分布を返す（非線形解析用）。
+    ///
+    /// 弾塑性要素の内力は「接線剛性 × 全変位」では**降伏後に誤る**ため、
+    /// 履歴状態から求めた復元力（[`Self::internal_force`]）や断面応答を材軸方向へ
+    /// 釣合いで分配して組み立てる（[`crate::beam::member_forces_from_end_forces`]）。
+    ///
+    /// 既定は `None`（内力分布を持たない要素、または状態から正しく内力を
+    /// 取り出せない要素）。プッシュオーバー・時刻歴の結果から部材応力を
+    /// 取り出す用途はこちらを使う。
+    fn state_member_forces(
+        &self,
+        _state: &ElemState,
+        _ctx: &Ctx,
+    ) -> Option<crate::beam::MemberForces> {
         None
     }
     /// T7: 線形化幾何剛性 Kg（P-Δ）。軸力 N（引張正）。デフォルトはゼロ。

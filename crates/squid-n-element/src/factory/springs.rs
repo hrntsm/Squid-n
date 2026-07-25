@@ -1,7 +1,6 @@
 //! バネ / 履歴則パラメータ算定。
 //!
 //! - [`build_fiber`] — ファイバー梁の生成
-//! - [`build_rotational_springs`] — 材端回転バネ（弾性解析用）
 //! - [`build_flexural_springs`] — 材端曲げバネ（履歴則別・非線形解析用）
 //! - [`yield_moment_and_axial`] — 集中バネの My0 と N許容（N-M 相関用）
 //! - [`resolve_member_hysteresis`] — 部材の履歴則を解決（UI 表示にも用いる）
@@ -139,17 +138,6 @@ fn rotational_spring_params(data: &ElementData, model: &Model, basis: StrengthBa
         1.0e12
     };
     (k_rot, my)
-}
-
-pub(super) fn build_rotational_springs(
-    data: &ElementData,
-    model: &Model,
-    basis: StrengthBasis,
-) -> (Box<dyn UniaxialMaterial>, Box<dyn UniaxialMaterial>) {
-    let (k_rot, my) = rotational_spring_params(data, model, basis);
-    let spring_i = Box::new(Bilinear::new(k_rot, my, 0.01));
-    let spring_j = Box::new(Bilinear::new(k_rot, my, 0.01));
-    (spring_i, spring_j)
 }
 
 /// 断面形状が RC/SRC/CFT（コンクリート系）か否か（既定履歴則の判定用）。

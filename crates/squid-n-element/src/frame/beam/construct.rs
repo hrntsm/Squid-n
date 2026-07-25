@@ -67,6 +67,35 @@ fn get_material(model: &Model, mid: Option<squid_n_core::ids::MaterialId>) -> Ma
     })
 }
 
+/// 危険断面位置（§6.2.3）を正規化座標 \[0,1\] で算定する。
+///
+/// 節点芯 0.0/1.0・部材中央 0.5 に加え、柱フェース位置
+/// （`rigid_zone.face_i` / `face_j` を部材長で正規化。xi_i は \[0,0.5)、
+/// xi_j は (0.5,1\] へクランプ）を含める。face=0（直交材が無い端）では
+/// 節点芯と一致するため \[0.0, 0.5, 1.0\] になる。
+/// 部材付帯情報（ハンチ端・継手位置。剛性には影響しない）があれば
+/// その追加検定位置も含める（§6.2.3「位置はユーザが追加・変更可能」）。
+///
+/// 弾性梁とファイバー梁（非線形）で内力の評価断面を揃えるため共有する。
+pub(crate) fn eval_sections_of(
+    data: &squid_n_core::model::ElementData,
+    model: &Model,
+    length: f64,
+) -> Vec<f64> {
+    if length <= 1e-12 {
+        return vec![0.0, 0.5, 1.0];
+    }
+    let xi_i = (data.rigid_zone.face_i / length).clamp(0.0, 0.5 - 1e-9);
+    let xi_j = (1.0 - data.rigid_zone.face_j / length).clamp(0.5 + 1e-9, 1.0);
+    let mut xs = vec![0.0, xi_i, 0.5, xi_j, 1.0];
+    if let Some(detail) = model.member_detail(data.id) {
+        xs.extend(detail.extra_check_positions(&data.rigid_zone, length));
+    }
+    xs.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    xs.dedup_by(|a, b| (*a - *b).abs() < 1e-9);
+    xs
+}
+
 impl BeamElement {
     pub fn new(data: &squid_n_core::model::ElementData, model: &Model) -> Self {
         let n0 = data.nodes[0];
@@ -91,25 +120,8 @@ impl BeamElement {
         let mat = get_material(model, data.material);
         let g = mat.shear_modulus();
 
-        // 危険断面位置（§6.2.3、既定は柱フェース＝節点から face_i/j）を正規化座標へ変換し、
-        // 節点芯 [0.0, 1.0] と部材中央 0.5 に加えて評価断面リストへ含める。
-        // face=0（直交材が無い端）では従来どおり [0.0, 0.5, 1.0] と完全一致する。
-        // 部材付帯情報（ハンチ・継手位置。剛性には影響しない）があれば、その
-        // 追加検定位置（ハンチ端・継手位置）も評価断面へ含める（§6.2.3 の
-        // 「位置はユーザが追加・変更可能」に対応。剛性は基準断面のまま）。
-        let eval_sections = if len > 1e-12 {
-            let xi_i = (data.rigid_zone.face_i / len).clamp(0.0, 0.5 - 1e-9);
-            let xi_j = (1.0 - data.rigid_zone.face_j / len).clamp(0.5 + 1e-9, 1.0);
-            let mut xs = vec![0.0, xi_i, 0.5, xi_j, 1.0];
-            if let Some(detail) = model.member_detail(data.id) {
-                xs.extend(detail.extra_check_positions(&data.rigid_zone, len));
-            }
-            xs.sort_by(|a, b| a.partial_cmp(b).unwrap());
-            xs.dedup_by(|a, b| (*a - *b).abs() < 1e-9);
-            xs
-        } else {
-            vec![0.0, 0.5, 1.0]
-        };
+        // 危険断面位置（§6.2.3、既定は柱フェース＋節点芯＋中央）。
+        let eval_sections = eval_sections_of(data, model, len);
 
         let as_y = if sec.as_y != 0.0 {
             sec.as_y
