@@ -88,16 +88,11 @@ pub struct RcWallInput {
 pub fn rc_wall_shear_check(inp: &RcWallInput) -> CheckResult {
     let fs = crate::rc::concrete_allowable_shear(inp.fc, inp.long_term);
 
-    // 開口低減係数 r。
-    let r = match inp.opening {
-        Some((l0, h0, h, l)) => {
-            let gamma1 = 1.0 - l0 / l;
-            let gamma2 = 1.0 - ((h0 * l0) / (h * l)).sqrt();
-            let gamma3 = 1.0 - h0 / h;
-            gamma1.min(gamma2).min(gamma3).max(0.0)
-        }
-        None => 1.0,
-    };
+    // 開口低減係数 r。RC規準18条の `min(1−l0/l, 1−√(h0l0/hl), 1−h0/h)` は
+    // 恒等的に `1 − max(l0/l, r0, h0/h)`（終局側と同一式）であるため、
+    // Layer 0 の `squid_n_core::rc_wall_capacity::wall_opening_reduction_strength`
+    // へ集約する（別実装のままだと片方だけ直したときに静かに乖離する）。
+    let r = squid_n_core::rc_wall_capacity::wall_opening_reduction_strength(inp.opening);
 
     let q1 = r * inp.t * inp.l * fs;
 

@@ -364,7 +364,21 @@ impl WallPanelElement {
             nodes: [ids_b0, ids_b1, ids_ta, ids_tb],
             column,
             a_mat,
-            mass_total: mat.density * t * lw * h,
+            // 質量は自重側の控除規約と揃える: **開口面積を控除し、開口部（サッシ等）の
+            // 重量を加算**する。従来は gross（t·lw·h、開口控除なし）で、節点質量からの
+            // 控除側（`squid_n_load::story_gen` は開口控除・サッシ重量加算済み）と
+            // 食い違い、地震用質量が恒常的に過大だった。
+            // 残差: 自重側は周辺柱梁の内法寸法補正（`wall_clear_area_factor`）も
+            // 行うが、その算定は squid-n-load 側にあり本クレートからは参照できない
+            // （V&V §2.4 の残課題）。
+            mass_total: {
+                let attr = model.wall_attrs.iter().find(|a| a.elem == data.id);
+                let opening_area = attr.map(|a| a.total_opening_area()).unwrap_or(0.0);
+                let opening_weight = attr.map(|a| a.opening_weight).unwrap_or(0.0);
+                let net_area = (lw * h - opening_area).max(0.0);
+                (mat.density * t * net_area + opening_weight / squid_n_core::units::GRAVITY_MM_S2)
+                    .max(0.0)
+            },
             committed_disp: [0.0; 24],
             trial_disp: [0.0; 24],
             // 既定は弾性（降伏なし）。非線形経路が `with_shear_capacity` で与える。
