@@ -275,11 +275,7 @@ fn test_build_nonlinear_behavior_fiber_uses_fiber_beam() {
     let (behavior, _state) = build_nonlinear_behavior(&col, &model, StrengthBasis::Nominal);
     let snap = behavior.snapshot_state();
     let is_fiber = snap
-        .downcast_ref::<(
-            [f64; 12],
-            [f64; 12],
-            Vec<Vec<Box<dyn squid_n_material::uniaxial::UniaxialMaterial>>>,
-        )>()
+        .downcast_ref::<crate::fiber::FiberBeamSnapshot>()
         .is_some();
     assert!(is_fiber, "nonlinear Fiber should be FiberBeam");
 }

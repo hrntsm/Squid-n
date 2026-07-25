@@ -4,7 +4,7 @@
 //!   設計用曲げ・せん断と軸圧縮力、部材変形角 Rp を [`PushoverMemberResponse`]
 //!   として求める
 
-use super::geom::{axial_compression, dot3};
+use super::geom::{axial_compression, dot3, member_end_forces_at_face};
 use super::types::PushoverMemberResponse;
 use squid_n_core::dof::DofMap;
 use squid_n_core::model::{ElementData, Model};
@@ -109,12 +109,23 @@ pub(crate) fn compute_member_response(
 
         let f = b.internal_force(&state, &ctx);
         let f_i = [f.data[0], f.data[1], f.data[2]];
-        let m_i = [f.data[3], f.data[4], f.data[5]];
         let f_j = [f.data[6], f.data[7], f.data[8]];
-        let m_j = [f.data[9], f.data[10], f.data[11]];
 
-        let m_strong = dot3(m_i, ez).abs().max(dot3(m_j, ez).abs());
-        let m_weak = dot3(m_i, ey).abs().max(dot3(m_j, ey).abs());
+        // 設計用曲げは**危険断面＝剛域フェイス**で評価する（局所座標への射影＋
+        // 剛体アームのモーメント控除。[`member_end_forces_at_face`]）。剛域が無い
+        // 部材では従来どおり局所成分への射影と一致する。せん断・軸力は剛体アームで
+        // 変化しないため従来の射影のままとする。
+        let (m_strong, m_weak) = match member_end_forces_at_face(model, elem, &f.data) {
+            Some(fl) => (fl[5].abs().max(fl[11].abs()), fl[4].abs().max(fl[10].abs())),
+            None => {
+                let m_i = [f.data[3], f.data[4], f.data[5]];
+                let m_j = [f.data[9], f.data[10], f.data[11]];
+                (
+                    dot3(m_i, ez).abs().max(dot3(m_j, ez).abs()),
+                    dot3(m_i, ey).abs().max(dot3(m_j, ey).abs()),
+                )
+            }
+        };
         let shear_strong = dot3(f_i, ey).abs().max(dot3(f_j, ey).abs());
         let shear_weak = dot3(f_i, ez).abs().max(dot3(f_j, ez).abs());
         let axial = axial_compression(f_i, f_j, ex);

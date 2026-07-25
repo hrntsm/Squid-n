@@ -2,6 +2,10 @@
 //!
 //! - [`dot3`] — 3 次元ベクトルの内積
 //! - [`axial_compression`] — 材端力から部材の軸方向圧縮力を算定
+//! - [`member_end_forces_at_face`] — 材端力を局所座標・剛域フェイス位置へ変換
+
+use squid_n_core::model::{ElementData, Model};
+use squid_n_element::transform::LocalFrame;
 
 pub(crate) fn dot3(v: [f64; 3], w: [f64; 3]) -> f64 {
     v[0] * w[0] + v[1] * w[1] + v[2] * w[2]
@@ -40,4 +44,46 @@ pub(crate) fn axial_compression(f_i: [f64; 3], f_j: [f64; 3], ex: [f64; 3]) -> f
     let from_i = dot3(f_i, ex).max(0.0);
     let from_j = (-dot3(f_j, ex)).max(0.0);
     from_i.max(from_j)
+}
+
+/// 部材の材端力（グローバル）を**局所座標・剛域フェイス位置**の 12 成分へ変換する。
+///
+/// `ElementBehavior::internal_force` はグローバル系・節点位置の材端力を返す。
+/// 断面の降伏判定（曲げヒンジ）や終局時の設計用応力は**危険断面＝剛域フェイス**で
+/// 評価するため、
+///
+/// 1. 局所座標系（`LocalFrame`）へ回転し、
+/// 2. 剛体アームのモーメント（アーム長 × 材端せん断）を差し引く
+///    （[`squid_n_element::rigid_arm::to_flex_force`]）
+///
+/// の 2 段で変換する。剛域が無い部材では 2. は恒等となり、局所成分への回転のみ。
+///
+/// 節点位置のモーメントは剛体アーム分だけ大きいため、これを断面耐力 My と直接
+/// 比較すると剛域を持つ部材のヒンジを過早に検出し、崩壊荷重を過小評価する。
+pub(crate) fn member_end_forces_at_face(
+    model: &Model,
+    elem: &ElementData,
+    f_global: &[f64],
+) -> Option<[f64; 12]> {
+    if elem.nodes.len() < 2 || f_global.len() < 12 {
+        return None;
+    }
+    let pi = model.nodes.get(elem.nodes[0].index())?;
+    let pj = model.nodes.get(elem.nodes[1].index())?;
+    let frame = LocalFrame::from_nodes(pi.coord, pj.coord, elem.local_axis.ref_vector);
+    let mut g = [0.0_f64; 12];
+    g.copy_from_slice(&f_global[..12]);
+    let local = frame.rotate_to_local(&g);
+    let d = [
+        pj.coord[0] - pi.coord[0],
+        pj.coord[1] - pi.coord[1],
+        pj.coord[2] - pi.coord[2],
+    ];
+    let length = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+    let (li, lj) = squid_n_element::rigid_arm::resolve_lengths(
+        elem.rigid_zone.length_i,
+        elem.rigid_zone.length_j,
+        length,
+    );
+    Some(squid_n_element::rigid_arm::to_flex_force(&local, li, lj))
 }
