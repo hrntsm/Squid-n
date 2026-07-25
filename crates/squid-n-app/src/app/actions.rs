@@ -933,8 +933,9 @@ impl App {
                     if area <= 0.0 || fc <= 0.0 {
                         continue;
                     }
-                    // 壁式構造か否かは階の構造種別から判定する。
-                    let wall_structure = false;
+                    // 壁式構造か否かは設計設定（設計タブのチェックボックス）による。
+                    // 告示「耐力壁の種別」表は壁式構造で限界値が厳しくなる。
+                    let wall_structure = self.wall_structure;
                     rc_wall_type((resp.horizontal_force / area) / fc, wall_structure, false)
                 } else {
                     // RC 部材: RcRect のみ対応。RcCircle・形状未設定・

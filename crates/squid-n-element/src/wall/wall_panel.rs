@@ -210,8 +210,33 @@ impl WallPanelElement {
         let mut col_depth_sum = 0.0; // 沿壁方向せい（両側の和）
         let mut col_width_max: f64 = 0.0;
         let mut col_main_at: f64 = 0.0;
+        // 側柱断面をせん断断面へ算入してよいのは、その側柱が面内両端ピン化される
+        // （＝面内せん断を負担しない）場合に限る。ピン化条件
+        // （`side_column::wall_side_column_release`）と同じ判定をここでも課さないと、
+        // ピン化されない柱の断面を壁が肩代わりして**面内せん断の二重計上**になる。
+        let side_columns_released = crate::side_column::is_rc_wall(data, model)
+            && crate::misc_wall::wall_is_seismic(data, model);
         for e in &model.elements {
+            if !side_columns_released {
+                break;
+            }
             if !matches!(e.kind, squid_n_core::model::ElementKind::Beam) || e.nodes.len() < 2 {
+                continue;
+            }
+            // 鉛直材のみ（ピン化条件と同じ規約）。
+            if let (Some(a), Some(b)) = (
+                model.nodes.get(e.nodes[0].index()),
+                model.nodes.get(e.nodes[1].index()),
+            ) {
+                let (dx, dy, dz) = (
+                    b.coord[0] - a.coord[0],
+                    b.coord[1] - a.coord[1],
+                    b.coord[2] - a.coord[2],
+                );
+                if dz.abs() <= (dx.abs() + dy.abs()) * 0.5 {
+                    continue;
+                }
+            } else {
                 continue;
             }
             let (n0, n1) = (e.nodes[0], e.nodes[1]);
@@ -267,7 +292,9 @@ impl WallPanelElement {
             j: lw * t.powi(3) / 3.0,
             // 面内せん断（局所 y 方向）: (壁板+側柱)/κ に開口低減 r を考慮
             as_y: r * as_gross / kappa,
-            as_z: area / KAPPA_RC,
+            // 面外せん断にも開口低減を適用する（開口は面外剛性も低下させる。
+            // 従来は面内のみに乗じており面外は取りこぼしていた）。
+            as_z: r * area / KAPPA_RC,
             length: h,
             density: mat.density,
             nodes: [ids_b0, ids_ta],

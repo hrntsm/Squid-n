@@ -640,6 +640,14 @@ pub fn design_table(ui: &mut egui::Ui, app: &mut App) {
         ui.selectable_value(&mut app.design_rank, MemberRank::FC, "FC");
         ui.selectable_value(&mut app.design_rank, MemberRank::FD, "FD");
     });
+    ui.horizontal(|ui| {
+        ui.checkbox(&mut app.wall_structure, "壁式構造")
+            .on_hover_text(
+                "耐力壁の種別（WA〜WD）判定に壁式構造の列を用います。告示「耐力壁の種別」表は\
+                 壁式構造で限界値が厳しく（τu/Fc: WA 0.1・WB 0.125・WC 0.15）、\
+                 壁式構造以外（WA 0.20・WB 0.25）とは別の列になります。",
+            );
+    });
     if !app.design_rank_auto {
         let ds = squid_n_design_jp::secondary::holding_capacity::ds_value(
             app.design_frame,

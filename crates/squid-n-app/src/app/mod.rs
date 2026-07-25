@@ -585,6 +585,10 @@ pub struct App {
     /// `s_member_rank` で算定し、
     /// 算定できなかった層のみ `design_rank`（選択値）にフォールバックする。
     pub design_rank_auto: bool,
+    /// 耐力壁の種別（WA〜WD）判定で**壁式構造**の列を用いるか。
+    /// 告示「耐力壁の種別」表は壁式構造で限界値が厳しい（τu/Fc: WA 0.1・WB 0.125・
+    /// WC 0.15）。既定は false（壁式構造以外: WA 0.20・WB 0.25）。
+    pub wall_structure: bool,
     /// 直近の保有水平耐力算定で用いた層別 βu（耐力壁・筋かいの水平耐力比）。
     /// `compute_holding_capacity` が設定する（表示用）。
     pub ds_beta_u_by_story: Vec<f64>,
@@ -812,6 +816,7 @@ impl Default for App {
             design_frame: squid_n_design_jp::secondary::holding_capacity::FrameType::SteelFrame,
             design_rank: squid_n_design_jp::secondary::holding_capacity::MemberRank::FA,
             design_rank_auto: false,
+            wall_structure: false,
             ds_beta_u_by_story: Vec::new(),
             ds_beta_u_unavailable: false,
             ultimate_rp: 0.0,

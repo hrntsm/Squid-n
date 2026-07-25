@@ -71,6 +71,23 @@ pub fn wall_opening_reduction_strength(opening: Option<(f64, f64, f64, f64)>) ->
     }
 }
 
+/// 開口周比 r0 = √(h0·l0/(h·l))。`h`・`l` が 0 以下なら 0。
+pub fn wall_opening_ratio_r0(h0: f64, l0: f64, h: f64, l: f64) -> f64 {
+    if h <= 0.0 || l <= 0.0 {
+        return 0.0;
+    }
+    ((h0 * l0) / (h * l)).max(0.0).sqrt()
+}
+
+/// 耐震壁の**剛性**用開口低減率 r1 = 1 − 1.25·r0（平19国交告第594号第1）。
+///
+/// **耐力**用の r2 = 1−max(r0, l0/lw, h0/h)（[`wall_opening_reduction_strength`]）
+/// とは別式。剛性側に r2 を、耐力側に r1 を使う取り違えをしないこと。
+/// 負になる場合は 0 にクランプする。
+pub fn wall_opening_reduction_stiffness(r0: f64) -> f64 {
+    (1.0 - 1.25 * r0.max(0.0)).max(0.0)
+}
+
 /// 耐震壁の終局せん断強度 Qu [N]（荒川mean式系。技術基準解説書 P.638-639）。
 ///
 /// ```text
