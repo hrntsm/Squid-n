@@ -2,6 +2,9 @@
 //!
 //! 建築基準法施行令の二次設計規定（令82条の2〜82条の6等）に準拠し、二次設計の各節を独立したモジュールに分割する。
 //!
+//! - [`ds_group`][]: 告示の部材群としての種別（耐力比 γA/γC）・RC 柱はり／耐力壁の
+//!   部材種別（多変数表）・鉄骨筋かいの種別、および各階 Ds の 3 軸表
+//!   （壁／筋かい群種別 × βu × 柱はり群種別）。
 //! - [`member_rank`][]: 部材ランク FA〜FD 判定（RC せん断余裕度・S 幅厚比の後方互換
 //!   簡易判定、層 Ds 自動分類）。
 //! - [`width_thickness`][]: 鋼構造規定の幅厚比表による S 部材ランク判定（構造規定の
@@ -16,6 +19,7 @@
 //! - [`principal_axis`][]: 主軸角度の算定。
 //! - [`rc_capacity`][]: RC 矩形断面の簡易終局耐力算定（`squid_n_core::rc_capacity`
 //!   の再エクスポート）。
+pub mod ds_group;
 pub mod eccentricity;
 pub mod eccentricity_analysis;
 pub mod holding_capacity;

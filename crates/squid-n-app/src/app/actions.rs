@@ -718,15 +718,22 @@ impl App {
         String,
     > {
         use squid_n_core::section_shape::SectionShape;
+        use squid_n_design_jp::secondary::ds_group::{
+            ds_rc, ds_steel, member_group, rank_index_for_group, rc_beam_type, rc_column_type,
+            rc_wall_type, steel_brace_type, GroupType,
+        };
         use squid_n_design_jp::secondary::holding_capacity::{
-            check_holding_capacity, ds_value, qud_by_story, MemberRank,
+            check_holding_capacity, qud_by_story, MemberRank,
         };
         use squid_n_design_jp::secondary::member_rank::{
-            rc_member_rank, s_member_rank_scaled, worst_rank, RankCriteria,
+            s_member_rank_scaled, worst_rank, RankCriteria,
         };
-        use squid_n_design_jp::secondary::rc_capacity::{rc_qmu_simple, rc_qsu_simple};
+        use squid_n_design_jp::secondary::rc_capacity::{
+            rc_column_mu_simple, rc_qmu_simple, rc_qsu_simple,
+        };
         use squid_n_design_jp::secondary::width_thickness::max_width_thickness;
         use squid_n_design_jp::steel_f_value_prefix;
+        use squid_n_solver::pushover::MechanismType;
 
         // rigid_zone（剛域長・face_i/j）を読むため、算定前に自動剛域を反映する
         // （設計書 §6.2.1、冪等なので他の解析エントリと重複して呼んでも安全）。
@@ -788,146 +795,379 @@ impl App {
         let qud = qud_by_story(&weights, self.analysis_cfg.z, rt, t);
 
         let n_stories = weights.len();
-        let (story_ranks, member_ranks): (Vec<MemberRank>, Vec<(ElemId, MemberRank)>) =
-            if self.design_rank_auto {
-                // 鋼部材は幅厚比、RC 矩形部材はせん断余裕度 Qsu/Qmu の略算から
-                // ランクを算定し、所属階ごとに集計する。
-                //
-                // 所属階の規則: 部材の節点のうち最も高い階(story index 最大)。
-                // story_gen::generate_stories は各節点をその節点自身の標高が属する
-                // レベルへ割り当てる（柱下端は下階または基部=None、柱上端は上階、
-                // 梁は両端とも同一階）ため、柱は自動的に上端側の階（＝各節点の
-                // story のうち最大値）に算入される。
-                let mut per_story: Vec<Vec<MemberRank>> = vec![Vec::new(); n_stories];
-                let mut computed: Vec<(ElemId, MemberRank)> = Vec::new();
-                // 長期軸力の簡易近似として使う荷重ケースの id
-                // （`generate_stories_action` の gravity_lcs と同じ規則。§1.7:
-                // kind による選択の先頭を採用。従来の「先頭ケース」規則は
-                // 種別が未設定のモデルに対する後方互換フォールバックとして残る）。
-                let gravity_lc = gravity_cases_for_seismic_weight(&self.model)
-                    .first()
-                    .copied();
-                for elem in &self.model.elements {
-                    let Some(sec) = elem
-                        .section
-                        .and_then(|sid| self.model.sections.get(sid.index()))
-                    else {
+
+        // 終局（崩壊機構形成）時の部材別応答。告示の RC 部材種別が要求する
+        // 「Ds 算定時に断面に生じる」平均せん断応力度 τu・軸方向応力度 σ0 と、
+        // βu（耐力壁・筋かいの水平耐力の和）の集計に用いる。
+        let resp_by_elem: std::collections::HashMap<
+            ElemId,
+            squid_n_solver::pushover::PushoverMemberResponse,
+        > = po.member_response.iter().map(|r| (r.elem, *r)).collect();
+        // 層別の保有水平耐力 Qu（性能曲線の層別ピーク層せん断）。βu の分母。
+        let story_qu: Vec<f64> = (0..n_stories)
+            .map(|i| {
+                po.capacity_curve
+                    .iter()
+                    .filter_map(|p| p.story_shear.get(i).copied())
+                    .fold(0.0_f64, f64::max)
+            })
+            .collect();
+        // 層ごとの「柱・はり」および「耐力壁・筋かい」の (種別インデックス, 水平耐力)。
+        // 部材群としての種別（耐力比 γA/γC）と βu の算定に用いる。
+        let mut cb_members: Vec<Vec<(u8, f64)>> = vec![Vec::new(); n_stories];
+        let mut wall_members: Vec<Vec<(u8, f64)>> = vec![Vec::new(); n_stories];
+        let mut wall_horizontal: Vec<f64> = vec![0.0; n_stories];
+
+        let (story_ranks, member_ranks): (Vec<MemberRank>, Vec<(ElemId, MemberRank)>) = if self
+            .design_rank_auto
+        {
+            // 鋼部材は幅厚比、RC 矩形部材はせん断余裕度 Qsu/Qmu の略算から
+            // ランクを算定し、所属階ごとに集計する。
+            //
+            // 所属階の規則: 部材の節点のうち最も高い階(story index 最大)。
+            // story_gen::generate_stories は各節点をその節点自身の標高が属する
+            // レベルへ割り当てる（柱下端は下階または基部=None、柱上端は上階、
+            // 梁は両端とも同一階）ため、柱は自動的に上端側の階（＝各節点の
+            // story のうち最大値）に算入される。
+            let mut per_story: Vec<Vec<MemberRank>> = vec![Vec::new(); n_stories];
+            let mut computed: Vec<(ElemId, MemberRank)> = Vec::new();
+            // 長期軸力の簡易近似として使う荷重ケースの id
+            // （`generate_stories_action` の gravity_lcs と同じ規則。§1.7:
+            // kind による選択の先頭を採用。従来の「先頭ケース」規則は
+            // 種別が未設定のモデルに対する後方互換フォールバックとして残る）。
+            let gravity_lc = gravity_cases_for_seismic_weight(&self.model)
+                .first()
+                .copied();
+            for elem in &self.model.elements {
+                let Some(sec) = elem
+                    .section
+                    .and_then(|sid| self.model.sections.get(sid.index()))
+                else {
+                    continue;
+                };
+                let Some(mat) = elem
+                    .material
+                    .and_then(|mid| self.model.materials.get(mid.index()))
+                else {
+                    continue;
+                };
+                // 筋かい（軸材）は幅厚比ではなく**有効細長比**で種別を定める
+                // （告示「筋かいの種別」表: BA/BB/BC）。要素種別が Brace のもの、
+                // または斜材として判定されたものを対象とする。従来は柱・梁と同じ
+                // 幅厚比表（梁の行）で判定しており、細長い筋かい（BC＝最も不利）を
+                // FA と甘く判定して Ds を過小評価する危険側の誤りだった。
+                let is_brace_elem =
+                    matches!(elem.kind, squid_n_core::model::ElementKind::Brace { .. })
+                        || member_kind_of(elem, &self.model)
+                            == squid_n_design_jp::MemberKind::Brace;
+                let rank = if is_brace_elem && is_steel(&mat.name) {
+                    // 有効細長比 λ = Lk/i（節点間長を座屈長さ、i=√(Imin/A) とする
+                    // ピン支持の軸材モデル）。断面性能が無い場合はスキップ。
+                    let len = elem_geometric_length(elem, &self.model);
+                    let i_min = sec.iy.min(sec.iz);
+                    if sec.area <= 0.0 || i_min <= 0.0 || len <= 0.0 {
+                        continue;
+                    }
+                    let radius = (i_min / sec.area).sqrt();
+                    if radius <= 0.0 {
+                        continue;
+                    }
+                    let f_value = steel_f_value_prefix(
+                        &mat.name,
+                        sec.shape.as_ref().map(steel_max_thickness).unwrap_or(0.0),
+                    )
+                    .unwrap_or(235.0);
+                    steel_brace_type(len / radius, f_value)
+                } else if is_steel(&mat.name) {
+                    // 鋼部材: 形状情報がない断面(カタログ数値直入力等)はスキップ。
+                    let Some(shape) = sec.shape.as_ref() else {
                         continue;
                     };
-                    let Some(mat) = elem
-                        .material
-                        .and_then(|mid| self.model.materials.get(mid.index()))
-                    else {
-                        continue;
-                    };
-                    let rank = if is_steel(&mat.name) {
-                        // 鋼部材: 形状情報がない断面(カタログ数値直入力等)はスキップ。
-                        let Some(shape) = sec.shape.as_ref() else {
-                            continue;
-                        };
-                        // 構造規定の幅厚比表（部材種別×断面×部位×鋼種級）で判定
-                        // （鋼構造設計規準「幅厚比の検討」）。
-                        // 表の対象外形状（溝形・T形・山形等）は旧・単一幅厚比法へ
-                        // フォールバックする。
-                        let member_use = match member_kind_of(elem, &self.model) {
+                    // 構造規定の幅厚比表（部材種別×断面×部位×鋼種級）で判定
+                    // （鋼構造設計規準「幅厚比の検討」）。
+                    // 表の対象外形状（溝形・T形・山形等）は旧・単一幅厚比法へ
+                    // フォールバックする。
+                    let member_use = match member_kind_of(elem, &self.model) {
                         squid_n_design_jp::MemberKind::Column => {
                             squid_n_design_jp::secondary::width_thickness::SteelMemberUse::Column
                         }
                         _ => squid_n_design_jp::secondary::width_thickness::SteelMemberUse::Beam,
                     };
-                        match squid_n_design_jp::secondary::width_thickness::s_member_rank_by_kihon(
-                            shape, member_use, &mat.name,
-                        ) {
-                            Some(rank) => rank,
-                            None => {
-                                let Some(wt) = max_width_thickness(shape) else {
-                                    continue;
-                                };
-                                // F 値は材料名の前方一致で引く(例 "SN400B"→235)。
-                                // 引けなければ 235。板厚は形状の最大板厚。
-                                let f_value =
-                                    steel_f_value_prefix(&mat.name, steel_max_thickness(shape))
-                                        .unwrap_or(235.0);
-                                s_member_rank_scaled(wt, f_value, &RankCriteria::default())
-                            }
+                    match squid_n_design_jp::secondary::width_thickness::s_member_rank_by_kihon(
+                        shape, member_use, &mat.name,
+                    ) {
+                        Some(rank) => rank,
+                        None => {
+                            let Some(wt) = max_width_thickness(shape) else {
+                                continue;
+                            };
+                            // F 値は材料名の前方一致で引く(例 "SN400B"→235)。
+                            // 引けなければ 235。板厚は形状の最大板厚。
+                            let f_value =
+                                steel_f_value_prefix(&mat.name, steel_max_thickness(shape))
+                                    .unwrap_or(235.0);
+                            s_member_rank_scaled(wt, f_value, &RankCriteria::default())
                         }
-                    } else {
-                        // RC 部材: RcRect のみ対応。RcCircle・形状未設定・
-                        // コンクリート強度(fc)未設定の材料はスキップ(選択値へフォールバック)。
-                        let Some(SectionShape::RcRect { b, d, rebar }) = sec.shape.as_ref() else {
-                            continue;
-                        };
-                        // 内法スパン = 幾何長 − 両端フェイス距離(直交材せい/2)。
-                        // 剛域長(D_orth/2 − D_self/4)を引いた可撓長さとは別物
-                        // （設計書 §6.2.1）。フェイス距離の合計が幾何長以上になる
-                        // (不整合な入力)場合は下限0を割り込むため、幾何長のままとする。
-                        let geom_len = elem_geometric_length(elem, &self.model);
-                        let face_sum = elem.rigid_zone.face_i + elem.rigid_zone.face_j;
-                        let clear_span = if geom_len - face_sum > 0.0 {
-                            geom_len - face_sum
-                        } else {
-                            geom_len
-                        };
-                        let Some(mut input) =
-                            rc_capacity_input_from_rect(*b, *d, rebar, mat, clear_span)
-                        else {
-                            continue;
-                        };
-                        // σ0: 長期軸力の簡易近似として先頭荷重ケース(gravity_lc)の
-                        // 静的解析結果を優先し、無ければ最後に実行した静的解析結果
-                        // (self.results.member_forces)から当該部材の軸力を引き、
-                        // 圧縮のときのみ設定する。
-                        let sigma_0 = self
-                            .results
-                            .as_ref()
-                            .map(|r| {
-                                rc_sigma_0_from_gravity_or_last_static(
-                                    &r.statics,
-                                    &r.member_forces,
-                                    gravity_lc,
-                                    elem.id,
-                                    *b,
-                                    *d,
-                                )
-                            })
-                            .unwrap_or(0.0);
-                        input.sigma_0 = sigma_0;
-                        let qmu = rc_qmu_simple(&input);
-                        let qsu = rc_qsu_simple(&input);
-                        rc_member_rank(qsu, qmu, &RankCriteria::default())
+                    }
+                } else if let Some(SectionShape::RcWall { thickness, .. }) = sec.shape.as_ref() {
+                    // RC 耐力壁: 告示「耐力壁の種別」表（τu/Fc により WA〜WD）。
+                    // τu は Ds 算定時（プッシュオーバー終局時）に壁断面に生じる
+                    // 平均せん断応力度 = 負担水平力 /(壁厚・壁長)。
+                    let Some(fc) = mat.fc else {
+                        continue;
                     };
-                    // 節点が階を持たない部材（両端とも基部）はスキップ。
-                    let Some(story_idx) = elem
-                        .nodes
-                        .iter()
-                        .filter_map(|nid| self.model.nodes.get(nid.index()))
-                        .filter_map(|n| n.story)
-                        .max()
+                    let Some(resp) = resp_by_elem.get(&elem.id) else {
+                        continue;
+                    };
+                    // 壁長 lw は壁エレメント要素と同じ幾何（`wall_panel_geometry`）を
+                    // 用いる。節点は標高 z で下辺・上辺に分けられ（`ElementData::nodes` の
+                    // 並び順には依存しない）、lw は**上下辺長さの平均**となる
+                    // （台形壁では上下辺長が異なるため一方の辺では代表長さにならない）。
+                    let Some(wgeom) =
+                        squid_n_element::wall_panel::wall_panel_geometry(elem, &self.model)
                     else {
                         continue;
                     };
-                    let idx = story_idx.index();
-                    if idx >= n_stories {
+                    let wall_len = wgeom.lw;
+                    let area = thickness * wall_len;
+                    if area <= 0.0 || fc <= 0.0 {
                         continue;
                     }
-                    per_story[idx].push(rank);
-                    computed.push((elem.id, rank));
-                }
-                // 階ごとの代表ランク = 算定できた部材ランクの最悪値。
-                // 1 本も算定できなかった層は手動選択ランクへフォールバック。
-                let ranks: Vec<MemberRank> = per_story
-                    .into_iter()
-                    .map(|rs| worst_rank(&rs).unwrap_or(self.design_rank))
-                    .collect();
-                (ranks, computed)
-            } else {
-                (vec![self.design_rank; n_stories], Vec::new())
-            };
+                    // 壁式構造か否かは階の構造種別から判定する。
+                    let wall_structure = false;
+                    rc_wall_type((resp.horizontal_force / area) / fc, wall_structure, false)
+                } else {
+                    // RC 部材: RcRect のみ対応。RcCircle・形状未設定・
+                    // コンクリート強度(fc)未設定の材料はスキップ(選択値へフォールバック)。
+                    let Some(SectionShape::RcRect { b, d, rebar }) = sec.shape.as_ref() else {
+                        continue;
+                    };
+                    // 内法スパン = 幾何長 − 両端フェイス距離(直交材せい/2)。
+                    // 剛域長(D_orth/2 − D_self/4)を引いた可撓長さとは別物
+                    // （設計書 §6.2.1）。フェイス距離の合計が幾何長以上になる
+                    // (不整合な入力)場合は下限0を割り込むため、幾何長のままとする。
+                    let geom_len = elem_geometric_length(elem, &self.model);
+                    let face_sum = elem.rigid_zone.face_i + elem.rigid_zone.face_j;
+                    let clear_span = if geom_len - face_sum > 0.0 {
+                        geom_len - face_sum
+                    } else {
+                        geom_len
+                    };
+                    let Some(mut input) =
+                        rc_capacity_input_from_rect(*b, *d, rebar, mat, clear_span)
+                    else {
+                        continue;
+                    };
+                    // σ0: 長期軸力の簡易近似として先頭荷重ケース(gravity_lc)の
+                    // 静的解析結果を優先し、無ければ最後に実行した静的解析結果
+                    // (self.results.member_forces)から当該部材の軸力を引き、
+                    // 圧縮のときのみ設定する。
+                    let sigma_0 = self
+                        .results
+                        .as_ref()
+                        .map(|r| {
+                            rc_sigma_0_from_gravity_or_last_static(
+                                &r.statics,
+                                &r.member_forces,
+                                gravity_lc,
+                                elem.id,
+                                *b,
+                                *d,
+                            )
+                        })
+                        .unwrap_or(0.0);
+                    let kind = member_kind_of(elem, &self.model);
+                    // 告示の部材種別が要求する σ0・τu は「Ds 算定時」＝崩壊機構形成時の
+                    // 応力度である。終局時応答が得られない部材は判定不能としてスキップ
+                    // し、層は選択ランクへフォールバックする（τu=0 とみなすと FA と
+                    // 甘く判定され危険側になるため）。
+                    let Some(resp) = resp_by_elem.get(&elem.id) else {
+                        continue;
+                    };
+                    let gross = *b * *d;
+                    if gross <= 0.0 || input.fc <= 0.0 {
+                        continue;
+                    }
+                    // せん断余裕度（脆性破壊判定）にも Ds 算定時の軸力を用いる。
+                    // 長期軸力（sigma_0）で Qsu/Qmu を評価しつつ表の σ0 には終局時
+                    // 軸力を使うと基準が食い違うため、終局時軸力で統一する。
+                    let sigma_0_ult = resp.axial / gross;
+                    let _ = sigma_0; // 長期軸力は Ds 算定時の評価には用いない
+                    input.sigma_0 = sigma_0_ult;
+                    // 曲げ終局時せん断 Qmu: 柱は軸力を考慮した終局曲げ Mu
+                    // （`rc_column_mu_simple`）から算定する。せん断側 Qsu には既に σ0 を
+                    // 反映しているため、曲げ側にも同じ軸力を反映しないと、圧縮軸力を
+                    // 受ける柱で「Qmu を梁式（軸力無視）で過小評価しつつ Qsu を軸力で増大」
+                    // させ、せん断余裕度 Qsu/Qmu を過大評価→ランクを甘く（FA 寄りに）
+                    // 判定する危険側の誤りとなる。梁は従来どおり梁式 Qmu を用いる。
+                    let qmu = match kind {
+                        squid_n_design_jp::MemberKind::Column => {
+                            let ag = squid_n_core::section_shape::bar_set_area(&rebar.main_x);
+                            let n_axial = resp.axial; // 終局時軸力（圧縮正 [N]）
+                            let mu = rc_column_mu_simple(&input, ag, n_axial);
+                            if clear_span > 0.0 {
+                                2.0 * mu / clear_span
+                            } else {
+                                0.0
+                            }
+                        }
+                        _ => rc_qmu_simple(&input),
+                    };
+                    let qsu = rc_qsu_simple(&input);
 
-        let ds_vec: Vec<f64> = story_ranks
-            .iter()
-            .map(|r| ds_value(self.design_frame, *r))
+                    // 平均せん断応力度 τu は強軸・弱軸の大きい方で評価する。
+                    // 強軸せん断のみを見ると、弱軸方向に加力される柱で τu を過小評価し
+                    // 部材種別を甘く判定する危険側になる。
+                    let shear_u = resp.shear_strong.max(resp.shear_weak);
+                    let tau_over_fc = (shear_u / gross) / input.fc;
+                    // 脆性破壊（せん断破壊・付着割裂等の急激な耐力低下）の判定:
+                    // 終局せん断強度が曲げ終局時せん断を下回る＝せん断先行。
+                    let brittle = qmu > 0.0 && qsu < qmu;
+                    match kind {
+                        squid_n_design_jp::MemberKind::Column => {
+                            let sigma0_over_fc = sigma_0_ult / input.fc;
+                            let pt_percent = if *b > 0.0 && input.d_eff > 0.0 {
+                                100.0 * input.at / (*b * input.d_eff)
+                            } else {
+                                0.0
+                            };
+                            let h0_over_d = if *d > 0.0 { clear_span / *d } else { 0.0 };
+                            rc_column_type(
+                                h0_over_d,
+                                sigma0_over_fc,
+                                pt_percent,
+                                tau_over_fc,
+                                brittle,
+                            )
+                        }
+                        _ => rc_beam_type(tau_over_fc, brittle),
+                    }
+                };
+                // 節点が階を持たない部材（両端とも基部）はスキップ。
+                let Some(story_idx) = elem
+                    .nodes
+                    .iter()
+                    .filter_map(|nid| self.model.nodes.get(nid.index()))
+                    .filter_map(|n| n.story)
+                    .max()
+                else {
+                    continue;
+                };
+                let idx = story_idx.index();
+                if idx >= n_stories {
+                    continue;
+                }
+                per_story[idx].push(rank);
+                computed.push((elem.id, rank));
+
+                // 部材群としての種別（耐力比 γA/γC）と βu の集計。
+                // 「部材の耐力」には終局時に当該部材が負担する加力方向の水平力を用いる。
+                let q_h = resp_by_elem
+                    .get(&elem.id)
+                    .map(|r| r.horizontal_force)
+                    .unwrap_or(0.0);
+                let gi = rank_index_for_group(rank);
+                if matches!(
+                    elem.kind,
+                    squid_n_core::model::ElementKind::Wall
+                        | squid_n_core::model::ElementKind::Brace { .. }
+                ) {
+                    wall_members[idx].push((gi, q_h));
+                    wall_horizontal[idx] += q_h;
+                } else {
+                    cb_members[idx].push((gi, q_h));
+                }
+            }
+            // 階ごとの代表ランク = 算定できた部材ランクの最悪値。
+            // 1 本も算定できなかった層は手動選択ランクへフォールバック。
+            let ranks: Vec<MemberRank> = per_story
+                .into_iter()
+                .map(|rs| worst_rank(&rs).unwrap_or(self.design_rank))
+                .collect();
+            (ranks, computed)
+        } else {
+            (vec![self.design_rank; n_stories], Vec::new())
+        };
+
+        // Ds は告示の「各階の Ds」表（耐力壁／筋かいの部材群としての種別 × βu ×
+        // 柱及びはりの部材群としての種別）で層ごとに定める。
+        //
+        // - 部材群としての種別は耐力比 γA/γC（[`member_group`]）で判定する。終局時の
+        //   部材水平力が得られず判定できない層は、代表ランク（最不利部材）を種別へ
+        //   読み替えるフォールバックとする。
+        // - βu = 耐力壁・筋かいが負担する水平力の和 / 保有水平耐力 Qu（層別）。
+        // - 崩壊機構補正: 層崩壊形の層は柱はり群種別を 1 段階不利側へ移す（告示表は
+        //   全体崩壊形の形成を前提とするため。部分崩壊形＝機構未形成は補正せず UI で
+        //   暫定値である旨を警告する）。
+        //
+        // 旧実装は架構種別 4 種 × ランク 4 段の 2 軸表（`ds_value`）で、βu と部材群
+        // 種別を反映していなかったため、βu の大きい架構や壁・筋かい種別が不利な架構で
+        // Ds を最大 0.10〜0.15 過小評価する危険側の誤りがあった。
+        let mechanism = &po.mechanism;
+        let is_rc_frame = matches!(
+            self.design_frame,
+            squid_n_design_jp::secondary::holding_capacity::FrameType::RcFrame
+                | squid_n_design_jp::secondary::holding_capacity::FrameType::RcWall
+        );
+        let mut beta_u_by_story: Vec<f64> = vec![0.0; n_stories];
+        let mut beta_u_unavailable = false;
+        let ds_vec: Vec<f64> = (0..n_stories)
+            .map(|i| {
+                let fallback_group = |rank: MemberRank| match rank {
+                    MemberRank::FA => GroupType::A,
+                    MemberRank::FB => GroupType::B,
+                    MemberRank::FC => GroupType::C,
+                    MemberRank::FD => GroupType::D,
+                };
+                let rep_rank = story_ranks.get(i).copied().unwrap_or(self.design_rank);
+                // 柱はり群種別（耐力比で判定。判定不能なら代表ランクから読み替え）。
+                let mut cb_group =
+                    member_group(&cb_members[i]).unwrap_or_else(|| fallback_group(rep_rank));
+                // 崩壊機構補正: 当該層が層崩壊形なら 1 段階不利側へ。
+                if let MechanismType::StoryCollapse { story } = mechanism {
+                    if story.index() == i {
+                        cb_group = match cb_group {
+                            GroupType::A => GroupType::B,
+                            GroupType::B => GroupType::C,
+                            GroupType::C | GroupType::D => GroupType::D,
+                        };
+                    }
+                }
+                // 耐力壁・筋かいの群種別と βu。壁・筋かいが無い層は βu=0（純ラーメン）。
+                let wall_group = member_group(&wall_members[i]).unwrap_or(GroupType::A);
+                let qu_i = story_qu.get(i).copied().unwrap_or(0.0);
+                let beta_u = if qu_i > 0.0 {
+                    (wall_horizontal[i] / qu_i).clamp(0.0, 1.0)
+                } else {
+                    0.0
+                };
+                // 架構種別として耐力壁付き／筋かい付きが選択されているのに、当該層で
+                // 耐力壁・筋かいが 1 枚も検出できなかった場合、βu=0（純ラーメン）の行を
+                // 使うと Ds を過小評価する（例: RC 壁付きで 0.35 → 0.30）。βu を算定
+                // できないことを明示し、従来の架構種別別 Ds 表へフォールバックする。
+                let declares_wall_or_brace = matches!(
+                    self.design_frame,
+                    squid_n_design_jp::secondary::holding_capacity::FrameType::RcWall
+                        | squid_n_design_jp::secondary::holding_capacity::FrameType::SteelBrace
+                );
+                if declares_wall_or_brace && wall_members[i].is_empty() {
+                    beta_u_unavailable = true;
+                    return squid_n_design_jp::secondary::holding_capacity::ds_value(
+                        self.design_frame,
+                        rep_rank,
+                    );
+                }
+                beta_u_by_story[i] = beta_u;
+                if is_rc_frame {
+                    ds_rc(wall_group, beta_u, cb_group)
+                } else {
+                    ds_steel(wall_group, beta_u, cb_group)
+                }
+            })
             .collect();
+        self.ds_beta_u_by_story = beta_u_by_story;
+        self.ds_beta_u_unavailable = beta_u_unavailable;
+
         let heights: Vec<f64> = metrics.iter().map(|m| m.height).collect();
         let rs: Vec<f64> = metrics.iter().map(|m| m.rs).collect();
         let re: Vec<f64> = metrics.iter().map(|m| m.re).collect();

@@ -8,7 +8,7 @@ use super::geom::{axial_compression, dot3};
 use super::types::PushoverMemberResponse;
 use squid_n_core::dof::DofMap;
 use squid_n_core::model::{ElementData, Model};
-use squid_n_element::behavior::{Ctx, ElemState, ElementBehavior};
+use squid_n_element::behavior::{Ctx, ElemState, ElementBehavior, LocalVec};
 use squid_n_element::transform::LocalFrame;
 
 /// 部材の変形角 R [rad]（弦回転角＝層間変形角相当）を最終確定変位から算定する。
@@ -49,6 +49,29 @@ fn member_rp_angle(model: &Model, dofmap: &DofMap, disp: &[f64], elem: &ElementD
     }
 }
 
+/// 部材が伝達する加力方向の水平力 [N] を材端力から求める。
+///
+/// 材端力の載荷方向成分は釣合いにより「i 側節点群」と「j 側節点群」で符号が反転し、
+/// 全節点の総和は 0 になる。2 節点の線材では各側 1 節点だが、**耐震壁（壁エレメント
+/// モデル [`squid_n_element::wall`]）は 4 節点 24 自由度**で、節点配列は
+/// `[下辺a, 下辺b, 上辺a, 上辺b]`。下辺の 2 節点は同じ向きにせん断を負担するため、
+/// 節点群ごとに**合計**してから絶対値を取る必要がある。
+///
+/// 従来は `data[0..3]`（下辺a）と `data[6..9]`（下辺b）の最大値を取っており、
+/// 4 節点壁では「下辺 2 節点の一方」だけを見る形になって水平力を約 1/2 に過小評価し、
+/// 上辺 2 節点は無視していた（βu・壁の τu が過小＝ランク／Ds が甘くなる危険側）。
+pub(crate) fn horizontal_force_in_dir(f: &LocalVec, n_nodes: usize, dir_idx: usize) -> f64 {
+    let n = n_nodes.min(f.data.len() / 6);
+    if n < 2 {
+        return 0.0;
+    }
+    let half = n / 2;
+    let sum = |range: std::ops::Range<usize>| -> f64 {
+        range.map(|k| f.data[k * 6 + dir_idx]).sum::<f64>()
+    };
+    sum(0..half).abs().max(sum(half..n).abs())
+}
+
 /// 最終確定ステップの部材別応答（[`PushoverMemberResponse`]）を算定する。
 ///
 /// 各部材の材端内力（`ElementBehavior::internal_force` のグローバル成分）を
@@ -60,7 +83,12 @@ pub(crate) fn compute_member_response(
     dofmap: &DofMap,
     behaviors: &[Box<dyn ElementBehavior>],
     total_disp: &[f64],
+    dir: crate::analysis::SeismicDir,
 ) -> Vec<PushoverMemberResponse> {
+    let dir_idx = match dir {
+        crate::analysis::SeismicDir::X => 0usize,
+        crate::analysis::SeismicDir::Y => 1usize,
+    };
     let state = ElemState::default();
     let ctx = Ctx { model };
     let mut out = Vec::with_capacity(model.elements.len());
@@ -91,6 +119,9 @@ pub(crate) fn compute_member_response(
         let shear_weak = dot3(f_i, ez).abs().max(dot3(f_j, ez).abs());
         let axial = axial_compression(f_i, f_j, ex);
         let rp = member_rp_angle(model, dofmap, total_disp, elem);
+        // 加力方向の水平力（βu の分子・耐力壁の τu 算定用）。4 節点の耐震壁を含め
+        // 正しく集計するため節点群ごとの合計で求める（[`horizontal_force_in_dir`]）。
+        let horizontal_force = horizontal_force_in_dir(&f, elem.nodes.len(), dir_idx);
 
         out.push(PushoverMemberResponse {
             elem: elem.id,
@@ -100,6 +131,7 @@ pub(crate) fn compute_member_response(
             shear_weak,
             axial,
             rp,
+            horizontal_force,
         });
     }
     out

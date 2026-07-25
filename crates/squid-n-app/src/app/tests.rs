@@ -1681,6 +1681,41 @@ fn test_holding_capacity_flow() {
     assert!(result.member_ranks.is_empty());
 }
 
+/// 架構種別が「S ブレース」なのに筋かい部材を検出できない場合、βu を算定できないため
+/// βu=0（純ラーメン）の行を使ってはならない（Ds を過小評価する）。架構種別別の
+/// Ds 表へフォールバックし、その旨のフラグが立つことを確認する。
+#[test]
+fn test_holding_capacity_falls_back_when_brace_undetected() {
+    use squid_n_design_jp::secondary::holding_capacity::{ds_value, FrameType, MemberRank};
+
+    let mut app = App::default();
+    app.load_model(crate::sample::portal_frame()); // 筋かいの無いラーメン
+    app.generate_stories_action();
+    app.run_seismic(SeismicDir::X);
+    app.analysis_cfg.push_steps = 10;
+    app.run_pushover();
+    assert!(app.last_error.is_none(), "{:?}", app.last_error);
+
+    app.design_rank_auto = false;
+    app.design_rank = MemberRank::FA;
+    app.design_frame = FrameType::SteelBrace;
+    let (result, _) = app.compute_holding_capacity().expect("Ok のはず");
+
+    assert!(
+        app.ds_beta_u_unavailable,
+        "筋かい未検出なら βu 算定不可のフラグが立つはず"
+    );
+    // 純ラーメンの行（S造 FA=0.25）ではなく、S ブレースの行（FA=0.30）が使われる。
+    let expected = ds_value(FrameType::SteelBrace, MemberRank::FA);
+    assert!((expected - 0.30).abs() < 1e-9);
+    assert!(
+        (result.stories[0].ds - expected).abs() < 1e-9,
+        "Ds={} は架構種別別の値 {} であるべき（βu=0 行の 0.25 ではない）",
+        result.stories[0].ds,
+        expected
+    );
+}
+
 /// UI-13: `design_rank_auto = true` で鋼部材の幅厚比から部材ランクを自動判定する。
 /// portal_frame の柱(H-300x300x10x15)・梁(H-400x200x8x13)を、構造規定の
 /// 幅厚比表（鋼構造設計規準、`s_member_rank_by_kihon`）で
@@ -1862,8 +1897,8 @@ fn test_holding_capacity_rank_auto_rc_rect_from_shape() {
         MemberLoad, MemberLoadKind, Model, NodalLoad, Node,
     };
     use squid_n_core::section_shape::{BarSet, RcRebar, SectionShape, ShearBar};
-    use squid_n_design_jp::secondary::member_rank::{rc_member_rank, RankCriteria};
-    use squid_n_design_jp::secondary::rc_capacity::{rc_qmu_simple, rc_qsu_simple};
+    use squid_n_design_jp::secondary::ds_group::{rc_beam_type, rc_column_type};
+    use squid_n_design_jp::secondary::holding_capacity::MemberRank;
 
     let rebar = RcRebar {
         main_x: BarSet {
@@ -2016,38 +2051,57 @@ fn test_holding_capacity_rank_auto_rc_rect_from_shape() {
         "RC 部材(RcRect+fc)のせん断余裕度からランクが算定されているはず"
     );
 
-    // 柱: 節点間距離 3000mm、梁: 節点間距離 4000mm。それぞれ手計算で
-    // rc_capacity_input_from_rect → rc_qsu/qmu_simple → rc_member_rank を再現する。
+    // 告示の RC 部材種別（多変数表）を、プッシュオーバー終局時の応答（τu・σ0）から
+    // 手計算で再現して照合する。
     //
-    // σ0 は実運用と同じ規則(rc_sigma_0_from_gravity_or_last_static)で個別に反映する。
-    // このテストでは run_linear_static(先頭ケース="長期")を実行していないため、
-    // gravity_lc=LoadCaseId(0) は statics 内の StaticCaseKey::User(LoadCaseId(0))
-    // として見つからず、フォールバック(bundle.member_forces = 直近実行した
-    // run_seismic の内力)が使われる(= 最後の静的解析結果と同じ)。地震水平力による
-    // 柱の転倒モーメント抵抗で柱0・柱1の軸力は一方が圧縮・他方が引張(または
-    // 大きさが異なる)になり得るため、部材ごとに算定する(柱を一括りにしない)。
+    // 断面 400x600、主筋 main_x=8-D22（at=総断面積の半分）、かぶり40、
+    // 柱の内法 h0=3000（節点間距離。剛域・フェイス無し）、梁は 4000。
+    // 目標変位 3mm の微小変位状態のため τu・σ0 はいずれも小さく、
+    //   柱: h0/D = 3000/600 = 5.0 ≧ 2.5、pt = 100·at/(b·d_eff) ≈ 0.69% ≦ 0.8、
+    //       σ0/Fc・τu/Fc ともに FA 限界以下 → FA
+    //   梁: τu/Fc ≦ 0.15 → FA
+    // となる。せん断先行（Qsu < Qmu）でもないため脆性 FD にも該当しない。
     let mat = &app.model.materials[0];
-    let statics = &app.results.as_ref().unwrap().statics;
-    let member_forces = &app.results.as_ref().unwrap().member_forces;
-    let gravity_lc = app.model.load_cases.first().map(|c| c.id);
-    let expected_rank_for = |elem_id: ElemId, clear_span: f64| {
-        let mut input = rc_capacity_input_from_rect(400.0, 600.0, &rebar, mat, clear_span)
+    let fc = mat.fc.expect("fc 設定済み");
+    let resp: std::collections::HashMap<ElemId, _> = app
+        .results
+        .as_ref()
+        .unwrap()
+        .pushover
+        .as_ref()
+        .unwrap()
+        .member_response
+        .iter()
+        .map(|r| (r.elem, *r))
+        .collect();
+    let gross = 400.0 * 600.0;
+
+    let expected_rank_for = |elem_id: ElemId, clear_span: f64, is_column: bool| {
+        let input = rc_capacity_input_from_rect(400.0, 600.0, &rebar, mat, clear_span)
             .expect("fc 設定済みなので Some");
-        input.sigma_0 = rc_sigma_0_from_gravity_or_last_static(
-            statics,
-            member_forces,
-            gravity_lc,
-            elem_id,
-            400.0,
-            600.0,
-        );
-        let qmu = rc_qmu_simple(&input);
-        let qsu = rc_qsu_simple(&input);
-        rc_member_rank(qsu, qmu, &RankCriteria::default())
+        let r = resp.get(&elem_id).expect("終局時応答があるはず");
+        let tau_over_fc = (r.shear_strong / gross) / fc;
+        if is_column {
+            let sigma0_over_fc = (r.axial / gross) / fc;
+            let pt_percent = 100.0 * input.at / (400.0 * input.d_eff);
+            rc_column_type(
+                clear_span / 600.0,
+                sigma0_over_fc,
+                pt_percent,
+                tau_over_fc,
+                false,
+            )
+        } else {
+            rc_beam_type(tau_over_fc, false)
+        }
     };
-    let col0_rank = expected_rank_for(ElemId(0), 3000.0);
-    let col1_rank = expected_rank_for(ElemId(1), 3000.0);
-    let beam_rank = expected_rank_for(ElemId(2), 4000.0);
+    let col0_rank = expected_rank_for(ElemId(0), 3000.0, true);
+    let col1_rank = expected_rank_for(ElemId(1), 3000.0, true);
+    let beam_rank = expected_rank_for(ElemId(2), 4000.0, false);
+
+    // 微小変位状態では全部材 FA になる（応力度がいずれも FA 限界以下）。
+    assert_eq!(col0_rank, MemberRank::FA);
+    assert_eq!(beam_rank, MemberRank::FA);
 
     for (elem_id, rank) in &result.member_ranks {
         let expected = match elem_id.0 {
@@ -2057,7 +2111,7 @@ fn test_holding_capacity_rank_auto_rc_rect_from_shape() {
         };
         assert_eq!(
             *rank, expected,
-            "ElemId({}) のランクが手計算値と一致しません",
+            "ElemId({}) のランクが告示表による手計算値と一致しません",
             elem_id.0
         );
     }

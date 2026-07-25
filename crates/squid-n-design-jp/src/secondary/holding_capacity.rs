@@ -162,8 +162,10 @@ use squid_n_solver::pushover::PushoverResult;
 /// 二次設計（保有水平耐力）の層チェックを統合する。
 ///
 /// **Qu（保有水平耐力）は P5 プッシュオーバーから取得する**（DoD §0.2-1）。
-/// `pushover.capacity_curve` の最終点（崩壊機構形成時）の層せん断 `story_shear[i]` を
-/// 層 i の Qu、`story_drift[i]` を層間変位とする。capacity_curve が空なら Qu=0。
+/// 層 i の Qu は `pushover.capacity_curve` 全体の**層別ピーク層せん断**
+/// `max_step story_shear[i]`（崩壊機構形成時の耐力。単調載荷では機構形成後に頭打ち／
+/// 劣化するため最終点ではなくピークを採る）とする。層間変位は終局状態＝最終点の
+/// `story_drift[i]`（層間変形角用）を用いる。capacity_curve が空なら Qu=0。
 ///
 /// 他の量は各タスクで算定した層別配列を渡す:
 /// - `qud_by_story`: 二次設計用の地震時層せん断（**Ai 分布・C0=1.0** で算定したもの。§2）。
@@ -192,11 +194,16 @@ pub fn check_holding_capacity(
     let stories: Vec<StoryCheck> = (0..n)
         .map(|i| {
             let story = StoryId(i as u32);
-            // Qu・層間変位は P5 プッシュオーバー最終点から。
-            let qu = last_point
-                .and_then(|p| p.story_shear.get(i))
-                .copied()
-                .unwrap_or(0.0);
+            // 保有水平耐力 Qu_i は「崩壊機構形成時＝性能曲線上でその層が保有した最大
+            // 層せん断」とする。単調載荷では機構形成後に頭打ち／劣化するため、最終点
+            // ではなく性能曲線全体のピーク（層別最大）を採る。変位制御が目標変位まで
+            // 押し切ると最終点が劣化域に入り得るため、最終点固定では Qu を過小評価する。
+            let qu = pushover
+                .capacity_curve
+                .iter()
+                .filter_map(|p| p.story_shear.get(i).copied())
+                .fold(0.0_f64, f64::max);
+            // 層間変位（層間変形角の算定用）は終局状態＝最終点（最大変位時）から採る。
             let drift = last_point
                 .and_then(|p| p.story_drift.get(i))
                 .copied()
@@ -378,9 +385,67 @@ mod tests {
         }
     }
 
+    /// 保有水平耐力 Qu は「性能曲線上の層別ピーク層せん断」を採る（最終点ではない）。
+    /// 変位制御が目標変位まで押し切ると最終点は劣化域に入り得るため、最終点固定では
+    /// Qu を過小評価する。ここでは最終点より前にピークがある曲線で検証する。
+    #[test]
+    fn test_check_holding_capacity_uses_peak_not_last_point() {
+        use squid_n_solver::pushover::{CapacityPoint, MechanismType};
+        // 1層。層せん断は 100 → 150(ピーク) → 120(劣化) と推移。
+        let pushover = PushoverResult {
+            steps: vec![],
+            capacity_curve: vec![
+                CapacityPoint {
+                    step: 0,
+                    roof_disp: 10.0,
+                    base_shear: 100.0,
+                    story_shear: vec![100.0],
+                    story_drift: vec![5.0],
+                },
+                CapacityPoint {
+                    step: 1,
+                    roof_disp: 20.0,
+                    base_shear: 150.0,
+                    story_shear: vec![150.0],
+                    story_drift: vec![8.0],
+                },
+                CapacityPoint {
+                    step: 2,
+                    roof_disp: 30.0,
+                    base_shear: 120.0,
+                    story_shear: vec![120.0],
+                    story_drift: vec![12.0],
+                },
+            ],
+            hinges: vec![],
+            shear_yields: vec![],
+            mechanism: MechanismType::Overall,
+            qu: 150.0,
+            member_response: vec![],
+        };
+        let result = check_holding_capacity(
+            &pushover,
+            &[100.0],
+            &[0.3],
+            &[1.0],
+            &[1.0],
+            &[0.0],
+            &[3000.0],
+            vec![],
+        );
+        // Qu はピーク 150（最終点 120 ではない）。
+        assert!(
+            (result.stories[0].qu - 150.0).abs() < 1e-9,
+            "Qu should be peak 150, got {}",
+            result.stories[0].qu
+        );
+        // 層間変形角は最終点（最大変位 12mm）から。
+        assert!((result.stories[0].drift_angle - 12.0 / 3000.0).abs() < 1e-9);
+    }
+
     #[test]
     fn test_check_holding_capacity_basic() {
-        // Qu は pushover 最終点から取得（[100,200]）。
+        // Qu は pushover 性能曲線の層別ピークから取得（単点なので [100,200] がそのまま）。
         let pushover = pushover_with_qu(vec![100.0, 200.0], vec![15.0, 12.0]);
         let qud = vec![80.0, 180.0];
         let ds = vec![0.30, 0.35];

@@ -725,12 +725,66 @@ pub fn design_table(ui: &mut egui::Ui, app: &mut App) {
                         });
                     });
                 });
+            // 崩壊機構（プッシュオーバー判定）を表示する。Ds は部材ランクに加えて
+            // この崩壊機構を層別に反映する（層崩壊形の層は1段階不利、部分崩壊形は
+            // 機構未確定として補正なし＝暫定値、全体崩壊形は標準）。
+            if let Some(po) = app.results.as_ref().and_then(|r| r.pushover.as_ref()) {
+                use squid_n_solver::pushover::MechanismType;
+                let (mech, warn) = match &po.mechanism {
+                    MechanismType::Overall => ("全体崩壊形".to_string(), false),
+                    MechanismType::StoryCollapse { story } => {
+                        (format!("層崩壊形 (Story {})", story.0), false)
+                    }
+                    MechanismType::Partial => ("部分崩壊形（機構未形成）".to_string(), true),
+                };
+                ui.colored_label(
+                    if warn {
+                        crate::theme::SECONDARY_AMBER
+                    } else {
+                        crate::theme::GRAY_600
+                    },
+                    format!(
+                        "崩壊機構: {}（Ds へ層別に反映{}）",
+                        mech,
+                        if warn {
+                            "。機構が確定するまで Ds・Qun は暫定値です"
+                        } else {
+                            ""
+                        }
+                    ),
+                );
+            }
+            // βu（耐力壁・筋かいの水平耐力比）の算定状況。Ds 表の行選択に直結するため
+            // 算定値、または算定できなかった旨を明示する。
+            if app.ds_beta_u_unavailable {
+                ui.colored_label(
+                    crate::theme::SECONDARY_AMBER,
+                    "⚠ 架構種別が耐力壁付き／筋かい付きですが、耐力壁・筋かい部材を検出\
+                     できなかったため βu を算定できません。架構種別別の Ds 表で代用して\
+                     います（告示の βu 別の表は適用されていません）。",
+                );
+            } else if !app.ds_beta_u_by_story.is_empty()
+                && app.ds_beta_u_by_story.iter().any(|b| *b > 0.0)
+            {
+                let list = app
+                    .ds_beta_u_by_story
+                    .iter()
+                    .map(|b| format!("{:.2}", b))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                ui.colored_label(
+                    crate::theme::GRAY_600,
+                    format!("βu（耐力壁・筋かいの水平耐力比、下階→上階）: {}", list),
+                );
+            }
             let note = if app.design_rank_auto {
-                "Qu はプッシュオーバー最終ステップの層せん断力。Ds は部材ランク自動判定\
-                 （鋼=幅厚比、RC矩形=せん断余裕度 Qsu/Qmu の略算）。形状未設定・RC円形・\
-                 Fc未設定材料は選択値フォールバック。"
+                "Qu はプッシュオーバー性能曲線上の層別ピーク層せん断力（崩壊機構形成時の耐力）。\
+                 Ds は部材ランク自動判定（鋼=幅厚比、RC矩形=せん断余裕度 Qsu/Qmu の略算。柱は\
+                 軸力考慮の曲げ終局から Qmu を算定）×崩壊機構。形状未設定・RC円形・Fc未設定材料は\
+                 選択値フォールバック。"
             } else {
-                "Qu はプッシュオーバー最終ステップの層せん断力。Ds は選択値（部材ランク自動判定OFF）。"
+                "Qu はプッシュオーバー性能曲線上の層別ピーク層せん断力。Ds は選択ランク×崩壊機構\
+                 （部材ランク自動判定OFF）。"
             };
             ui.colored_label(crate::theme::GRAY_600, note);
         }

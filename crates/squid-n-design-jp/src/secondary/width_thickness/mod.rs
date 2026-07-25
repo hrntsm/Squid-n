@@ -380,6 +380,30 @@ mod tests {
         assert_ne!(rank_unknown, rank_400);
     }
 
+    /// 高強度鋼（F>325）は幅厚比限界が √(235/F) 側へ厳しくなる（技術基準解説書 表 備考2）。
+    /// 柱H形フランジ (W/2)/tf = 79/10 = 7.9 は、F=325（SM490A）で FA限界 8.0 以下 → FA だが、
+    /// F=355（SM520）では FA限界 8.0×√(325/355)=7.65 を超えるため FB になる。従来は F>325 も
+    /// F=325 の限界値をそのまま使い FA と甘く（非保守側に）判定していた。
+    #[test]
+    fn test_s_member_rank_by_kihon_high_strength_over_325_tightens_limit() {
+        let shape = SectionShape::SteelH {
+            height: 220.0, // web_clear=200, web=200/60≈3.33 で常に FA
+            width: 158.0,  // (158/2)/10 = 7.9
+            web_thick: 60.0,
+            flange_thick: 10.0,
+        };
+        // F=325（490級）: 7.9 <= 8.0 → FA。
+        assert_eq!(
+            s_member_rank_by_kihon(&shape, SteelMemberUse::Column, "SM490A").expect("Some"),
+            MemberRank::FA
+        );
+        // F=355（SM520, t<=40）: 7.9 > 7.65 → FB（高強度で限界が厳しくなる）。
+        assert_eq!(
+            s_member_rank_by_kihon(&shape, SteelMemberUse::Column, "SM520").expect("Some"),
+            MemberRank::FB
+        );
+    }
+
     /// RC・角形以外の対象外形状は None。
     #[test]
     fn test_s_member_rank_by_kihon_unsupported_shape_is_none() {
