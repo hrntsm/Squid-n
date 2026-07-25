@@ -161,7 +161,7 @@ ST-Bridge の主要要素ごとの変換状況です。凡例: **✅ 対応** �
 
 #### 断面 — 鋼（形鋼ライブラリ `StbSecSteel`）
 
-`StbSecColumn_S` / `StbSecBeam_S` / `StbSecBrace_S` が形鋼図形を参照する。
+`StbSecColumn_S` / `StbSecBeam_S` / `StbSecBrace_S` が形鋼図形を参照します。
 
 | 形鋼要素 | 取り込み | 書き出し | 内部形状・備考 |
 |---|:--:|:--:|---|

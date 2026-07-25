@@ -1,7 +1,7 @@
 # 4.4 MITC4 シェル要素
 
-せん断ロッキングを回避する混合補間法 MITC4（Mixed Interpolation of Tensorial Components）で板要素を算定する。
-膜、曲げ、せん断、ドリリング安定化を含む。
+せん断ロッキングを回避する混合補間法 MITC4（Mixed Interpolation of Tensorial Components）で板要素を算定します。
+膜、曲げ、せん断、ドリリング安定化を含みます。
 
 **算定式**
 
@@ -16,5 +16,5 @@
   直交座標へ射影
 - 剛性は 2×2 Gauss 積分 \\( B^T \cdot D \cdot B \\)、ドリリング安定化 \\( \text{scale} = \gamma \cdot G \cdot t \cdot A \\)（既定 \\( \gamma = 10^{-3} \\)）
 
-**実装**：`shell::{local_stiffness, shear_b_mitc4, add_drilling}`（`shell/mod.rs`）が算定する。
-剛床時は面内成分（Ux/Uy/Rz）を無効化する。
+**実装**：`shell::{local_stiffness, shear_b_mitc4, add_drilling}`（`shell/mod.rs`）が算定します。
+剛床時は面内成分（Ux/Uy/Rz）を無効化します。
