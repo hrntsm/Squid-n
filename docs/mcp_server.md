@@ -159,7 +159,7 @@ claude mcp add squid-n -- /path/to/squid-n-mcp model.scz
 | `LinearStatic` | `load_case` | 指定/先頭の荷重ケースで線形静解析 |
 | `Eigen` | `n_modes` | 固有値解析（周期・刺激係数・有効質量） |
 | `Pushover` | `dir`, `steps`, `max_disp` | プッシュオーバー解析（漸増静的） |
-| `TimeHistory` | `dir`, `dt`, `duration`, `period`, `amp` | サンプル波（`amp * sin(ωt) * e^{-0.3t}`）による時刻歴応答解析。減衰は剛性比例減衰（h=0.02、1次固有振動数使用）固定 |
+| `TimeHistory` | `dir`, `dt`, `duration`, `period`, `amp` | サンプル波（`amp * sin(ωt) * e^{-0.3t}`）による時刻歴応答解析。減衰は剛性比例減衰（h=0.02、1 次固有振動数使用）固定 |
 | `DesignCheck` | `load_case` | 荷重ケースの線形静解析結果に対する断面検定（鋼/RC 許容応力度、危険断面位置基準）。検定条件は長期固定 |
 | `UltimateCheck` | `load_case` | RC 部材の終局せん断・付着・軸余裕度、CFT 柱の軸終局検定（靭性保証型耐震設計指針） |
 

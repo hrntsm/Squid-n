@@ -214,7 +214,7 @@ ST-Bridge の主要要素ごとの変換状況です。凡例: **✅ 対応** �
 
 | 内部形状 | 書き出し先 |
 |---|---|
-| H形鋼・角形鋼管・鋼管・山形鋼・溝形鋼・T形鋼 | 形鋼ライブラリ `StbSecSteel`（`StbSecRoll-H`/`-BOX`/`StbSecPipe`/`-L`/`-C`/`-T`）＋ `StbSecColumn_S` / `StbSecBeam_S` |
+| H 形鋼・角形鋼管・鋼管・山形鋼・溝形鋼・T 形鋼 | 形鋼ライブラリ `StbSecSteel`（`StbSecRoll-H`/`-BOX`/`StbSecPipe`/`-L`/`-C`/`-T`）＋ `StbSecColumn_S` / `StbSecBeam_S` |
 | 平鋼・中実丸鋼・リップ溝形鋼 | 形鋼ライブラリ（`StbSecRoll-FlatBar`/`-RoundBar`/`-LipC`）＋ `StbSecColumn_S` / `StbSecBeam_S` |
 | 非対称組立 H（上下フランジ相違） | `StbSecBuild-H` |
 | RC 矩形・円形 | `StbSecColumn_RC` / `StbSecBeam_RC`（断面の幾何 ＋ 配筋 `StbSecBarArrangement*`） |
