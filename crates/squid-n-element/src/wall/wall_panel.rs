@@ -45,6 +45,91 @@ pub struct WallPanelElement {
     trial_disp: [f64; 24],
 }
 
+/// 壁エレメント（4 節点）の幾何。
+///
+/// 節点は入力順に依らず**標高 z で下辺 2 節点・上辺 2 節点に分ける**（`ElementData::nodes`
+/// の並び順は任意であり、下辺が先頭に来る保証はない）。上辺は下辺 a に近い方を a として
+/// 対応付ける。
+///
+/// 壁長 `lw` は**上下辺長さの平均**とする（台形壁では上下辺長が異なるため、
+/// 一方の辺だけでは代表長さにならない）。耐力壁の平均せん断応力度
+/// τu = Q/(t·lw) など、壁の断面量を要する算定は本構造体を用いて要素実装と同じ
+/// 幾何を共有する。
+pub struct WallPanelGeometry {
+    /// 下辺の 2 節点（a→b）
+    pub bottom: [NodeId; 2],
+    /// 上辺の 2 節点（下辺 a に対応する側が先）
+    pub top: [NodeId; 2],
+    /// 下辺長さ
+    pub lw_bottom: f64,
+    /// 上辺長さ
+    pub lw_top: f64,
+    /// 壁長 lw = (下辺長 + 上辺長)/2（台形壁に対応）
+    pub lw: f64,
+    /// 壁高さ h（上下辺の中点間距離）
+    pub h: f64,
+    /// 下辺の軸方向単位ベクトル（a→b）
+    pub ex_bottom: [f64; 3],
+    /// 下辺中点
+    pub bottom_center: [f64; 3],
+    /// 上辺中点
+    pub top_center: [f64; 3],
+}
+
+/// 壁エレメント（4 節点）の幾何を算定する（[`WallPanelGeometry`]）。
+///
+/// 4 節点未満・節点参照が欠落・退化（辺長や高さが 0）の場合は `None`。
+pub fn wall_panel_geometry(data: &ElementData, model: &Model) -> Option<WallPanelGeometry> {
+    if data.nodes.len() < 4 {
+        return None;
+    }
+    let ids: Vec<NodeId> = data.nodes.iter().take(4).copied().collect();
+    let coords: Vec<[f64; 3]> = ids
+        .iter()
+        .map(|nid| model.nodes.get(nid.index()).map(|n| n.coord))
+        .collect::<Option<Vec<_>>>()?;
+
+    // z で下辺 2 節点・上辺 2 節点に分ける（入力順には依存しない）。
+    let mut order: Vec<usize> = (0..4).collect();
+    order.sort_by(|&a, &b| coords[a][2].partial_cmp(&coords[b][2]).unwrap());
+    let (b0, b1, t0, t1) = (order[0], order[1], order[2], order[3]);
+
+    // 下辺の軸方向 a→b
+    let (pa, pb) = (coords[b0], coords[b1]);
+    let ex_bot = unit(sub(pb, pa))?;
+    // 上辺は下辺の a に近い方を a とする（対応付け）
+    let (ta, tb) = {
+        let d0 = dot(sub(coords[t0], pa), ex_bot).abs();
+        let d1 = dot(sub(coords[t1], pa), ex_bot).abs();
+        if d0 <= d1 {
+            (t0, t1)
+        } else {
+            (t1, t0)
+        }
+    };
+
+    let lw_bot = norm(sub(pb, pa));
+    let lw_top = norm(sub(coords[tb], coords[ta]));
+    let bc = mid(pa, pb);
+    let tc = mid(coords[ta], coords[tb]);
+    let h = norm(sub(tc, bc));
+    if lw_bot <= 0.0 || lw_top <= 0.0 || h <= 0.0 {
+        return None;
+    }
+    Some(WallPanelGeometry {
+        bottom: [ids[b0], ids[b1]],
+        top: [ids[ta], ids[tb]],
+        lw_bottom: lw_bot,
+        lw_top,
+        // 台形壁に対応するため上下辺長さの平均を壁長とする。
+        lw: 0.5 * (lw_bot + lw_top),
+        h,
+        ex_bottom: ex_bot,
+        bottom_center: bc,
+        top_center: tc,
+    })
+}
+
 impl WallPanelElement {
     /// 生成。4 節点未満・寸法/断面が不定の場合は None
     /// （呼び出し側は従来の暫定等価梁へフォールバックする）。
@@ -61,44 +146,19 @@ impl WallPanelElement {
         model: &Model,
         stiffness_scale: f64,
     ) -> Option<Self> {
-        if data.nodes.len() < 4 {
-            return None;
-        }
-        let ids: Vec<NodeId> = data.nodes.iter().take(4).copied().collect();
-        let coords: Vec<[f64; 3]> = ids
-            .iter()
-            .map(|nid| model.nodes.get(nid.index()).map(|n| n.coord))
-            .collect::<Option<Vec<_>>>()?;
-
-        // z で下辺 2 節点・上辺 2 節点に分ける
-        let mut order: Vec<usize> = (0..4).collect();
-        order.sort_by(|&a, &b| coords[a][2].partial_cmp(&coords[b][2]).unwrap());
-        let (b0, b1, t0, t1) = (order[0], order[1], order[2], order[3]);
-
-        // 下辺の軸方向 a→b
-        let (pa, pb) = (coords[b0], coords[b1]);
-        let ex_bot = unit(sub(pb, pa))?;
-        // 上辺は下辺の a に近い方を a とする（対応付け）
-        let (ta, tb) = {
-            let d0 = dot(sub(coords[t0], pa), ex_bot).abs();
-            let d1 = dot(sub(coords[t1], pa), ex_bot).abs();
-            if d0 <= d1 {
-                (t0, t1)
-            } else {
-                (t1, t0)
-            }
-        };
-        let ex_top = unit(sub(coords[tb], coords[ta]))?;
-
-        let lw_bot = norm(sub(pb, pa));
-        let lw_top = norm(sub(coords[tb], coords[ta]));
-        let bc = mid(pa, pb);
-        let tc = mid(coords[ta], coords[tb]);
-        let h = norm(sub(tc, bc));
-        if lw_bot <= 0.0 || lw_top <= 0.0 || h <= 0.0 {
-            return None;
-        }
-        let lw = 0.5 * (lw_bot + lw_top);
+        // 幾何（下辺・上辺の対応付け、壁長 lw＝上下辺の平均、高さ h）は
+        // [`wall_panel_geometry`] に集約する（保有水平耐力の τu 算定など要素外の
+        // 利用と同一の幾何を共有し、定義が食い違わないようにする）。
+        let geom = wall_panel_geometry(data, model)?;
+        let (ids_b0, ids_b1) = (geom.bottom[0], geom.bottom[1]);
+        let (ids_ta, ids_tb) = (geom.top[0], geom.top[1]);
+        let coord_of =
+            |nid: NodeId| -> Option<[f64; 3]> { model.nodes.get(nid.index()).map(|n| n.coord) };
+        let ex_bot = geom.ex_bottom;
+        let ex_top = unit(sub(coord_of(ids_tb)?, coord_of(ids_ta)?))?;
+        let (bc, tc) = (geom.bottom_center, geom.top_center);
+        let h = geom.h;
+        let lw = geom.lw;
 
         // 壁板厚: RcWall 形状 → Section.thickness → Section.width の順で採用
         let sec = data
@@ -132,7 +192,7 @@ impl WallPanelElement {
 
         // 側柱（壁の鉛直辺の 2 節点を両端に持つ鉛直 Beam 部材）を収集し、
         // せん断断面への算入と I 形形状係数 κ の算定に用いる。
-        let edge_pairs = [[ids[b0], ids[ta]], [ids[b1], ids[tb]]];
+        let edge_pairs = [[ids_b0, ids_ta], [ids_b1, ids_tb]];
         let mut col_area_sum = 0.0;
         let mut col_depth_sum = 0.0; // 沿壁方向せい（両側の和）
         let mut col_width_max: f64 = 0.0;
@@ -180,7 +240,7 @@ impl WallPanelElement {
             as_z: area / KAPPA_RC,
             length: h,
             density: mat.density,
-            nodes: [ids[b0], ids[ta]],
+            nodes: [ids_b0, ids_ta],
             axis: LocalFrame::from_nodes(bc, tc, ex_bot),
             rigid: Default::default(),
             end_cond: [
@@ -203,14 +263,14 @@ impl WallPanelElement {
             // nodes 配列 [b_a, b_b, t_a, t_b] 中の位置 → 24 自由度中のオフセット
             idx * 6
         };
-        let node_order = [b0, b1, ta, tb];
-        let slot_of = |orig: usize| -> usize {
+        let node_order = [ids_b0, ids_b1, ids_ta, ids_tb];
+        let slot_of = |orig: NodeId| -> usize {
             node_order
                 .iter()
                 .position(|&x| x == orig)
                 .expect("node_order は 4 節点の並べ替え")
         };
-        let mut fill_end = |col_base: usize, ca: usize, cb: usize, ex: [f64; 3], lw_e: f64| {
+        let mut fill_end = |col_base: usize, ca: NodeId, cb: NodeId, ex: [f64; 3], lw_e: f64| {
             let (sa, sb) = (corner_slot(slot_of(ca)), corner_slot(slot_of(cb)));
             for tdof in 0..3 {
                 a_mat[(col_base + tdof) * 24 + sa + tdof] += 0.5;
@@ -231,11 +291,11 @@ impl WallPanelElement {
                 }
             }
         };
-        fill_end(0, b0, b1, ex_bot, lw_bot);
-        fill_end(6, ta, tb, ex_top, lw_top);
+        fill_end(0, ids_b0, ids_b1, ex_bot, geom.lw_bottom);
+        fill_end(6, ids_ta, ids_tb, ex_top, geom.lw_top);
 
         Some(Self {
-            nodes: [ids[b0], ids[b1], ids[ta], ids[tb]],
+            nodes: [ids_b0, ids_b1, ids_ta, ids_tb],
             column,
             a_mat,
             mass_total: mat.density * t * lw * h,
@@ -750,5 +810,97 @@ mod tests {
         wall.restore_state(&*snap);
         let f0 = wall.internal_force(&state, &ctx);
         assert!(f0.data.iter().all(|v| v.abs() < 1e-12));
+    }
+}
+
+#[cfg(test)]
+mod geometry_tests {
+    use super::*;
+    use squid_n_core::dof::Dof6Mask;
+    use squid_n_core::ids::{ElemId, MaterialId, SectionId};
+    use squid_n_core::model::{ElementKind, EndCondition, ForceRegime, LocalAxis, Node};
+    use squid_n_core::section_shape::SectionShape;
+
+    /// 任意の 4 隅座標・任意の節点並び順で壁要素データを作る。
+    fn wall_with(coords: [[f64; 3]; 4], order: [u32; 4]) -> (Model, ElementData) {
+        let shape = SectionShape::RcWall {
+            thickness: 150.0,
+            ps: 0.0025,
+        };
+        let model = Model {
+            nodes: coords
+                .iter()
+                .enumerate()
+                .map(|(i, c)| Node {
+                    id: NodeId(i as u32),
+                    coord: *c,
+                    restraint: Dof6Mask::FREE,
+                    mass: None,
+                    story: None,
+                })
+                .collect(),
+            sections: vec![shape.to_section(SectionId(0), "W150".into())],
+            ..Default::default()
+        };
+        let data = ElementData {
+            id: ElemId(0),
+            kind: ElementKind::Wall,
+            nodes: order.iter().map(|i| NodeId(*i)).collect(),
+            section: Some(SectionId(0)),
+            material: Some(MaterialId(0)),
+            local_axis: LocalAxis {
+                ref_vector: [0.0, 1.0, 0.0],
+            },
+            end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+            force_regime: ForceRegime::Auto,
+            rigid_zone: Default::default(),
+            plastic_zone: None,
+            spring: None,
+        };
+        (model, data)
+    }
+
+    /// 台形壁（下辺 4000・上辺 2000）の壁長は上下辺の平均 3000 になる。
+    /// 下辺だけ／上辺だけを採ると 4000／2000 となり代表長さにならない。
+    #[test]
+    fn test_wall_length_is_average_of_top_and_bottom_for_trapezoid() {
+        let coords = [
+            [0.0, 0.0, 0.0],
+            [4000.0, 0.0, 0.0],
+            [3000.0, 0.0, 3000.0],
+            [1000.0, 0.0, 3000.0],
+        ];
+        let (model, data) = wall_with(coords, [0, 1, 2, 3]);
+        let g = wall_panel_geometry(&data, &model).expect("Some");
+        assert!((g.lw_bottom - 4000.0).abs() < 1e-6, "{}", g.lw_bottom);
+        assert!((g.lw_top - 2000.0).abs() < 1e-6, "{}", g.lw_top);
+        assert!(
+            (g.lw - 3000.0).abs() < 1e-6,
+            "台形壁の壁長は上下辺の平均 3000 であるべき。got {}",
+            g.lw
+        );
+        assert!((g.h - 3000.0).abs() < 1e-6, "{}", g.h);
+    }
+
+    /// 節点の並び順に依存しない（z でソートして下辺・上辺を決める）。
+    /// 並び順を変えても壁長・高さは不変であること。特に「先頭 2 節点が鉛直辺」に
+    /// なる並びでも壁高さを壁長として拾わないこと。
+    #[test]
+    fn test_wall_geometry_is_independent_of_node_order() {
+        let coords = [
+            [0.0, 0.0, 0.0],
+            [4000.0, 0.0, 0.0],
+            [4000.0, 0.0, 3000.0],
+            [0.0, 0.0, 3000.0],
+        ];
+        // 先頭 2 節点が鉛直辺（節点0=下、節点3=上）になる並び。
+        let (model, data) = wall_with(coords, [0, 3, 1, 2]);
+        let g = wall_panel_geometry(&data, &model).expect("Some");
+        assert!(
+            (g.lw - 4000.0).abs() < 1e-6,
+            "節点順に依らず壁長 4000（壁高さ 3000 ではない）。got {}",
+            g.lw
+        );
+        assert!((g.h - 3000.0).abs() < 1e-6, "{}", g.h);
     }
 }

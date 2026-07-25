@@ -919,25 +919,16 @@ impl App {
                     let Some(resp) = resp_by_elem.get(&elem.id) else {
                         continue;
                     };
-                    // 壁長 lw は壁エレメントモデルの節点配列
-                    // `[下辺a, 下辺b, 上辺a, 上辺b]` の下辺（剛梁）長さ
-                    // ＝ 節点0–節点1 間距離（`squid_n_element::wall` の定義）。
-                    let (Some(n0), Some(n1)) = (
-                        elem.nodes
-                            .first()
-                            .and_then(|nid| self.model.nodes.get(nid.index())),
-                        elem.nodes
-                            .get(1)
-                            .and_then(|nid| self.model.nodes.get(nid.index())),
-                    ) else {
+                    // 壁長 lw は壁エレメント要素と同じ幾何（`wall_panel_geometry`）を
+                    // 用いる。節点は標高 z で下辺・上辺に分けられ（`ElementData::nodes` の
+                    // 並び順には依存しない）、lw は**上下辺長さの平均**となる
+                    // （台形壁では上下辺長が異なるため一方の辺では代表長さにならない）。
+                    let Some(wgeom) =
+                        squid_n_element::wall_panel::wall_panel_geometry(elem, &self.model)
+                    else {
                         continue;
                     };
-                    let wall_len = {
-                        let dx = n1.coord[0] - n0.coord[0];
-                        let dy = n1.coord[1] - n0.coord[1];
-                        let dz = n1.coord[2] - n0.coord[2];
-                        (dx * dx + dy * dy + dz * dz).sqrt()
-                    };
+                    let wall_len = wgeom.lw;
                     let area = thickness * wall_len;
                     if area <= 0.0 || fc <= 0.0 {
                         continue;
