@@ -280,7 +280,7 @@ impl Analysis<'_> {
     ) -> Result<squid_n_core::model::LoadCase, SolveError> {
         if self.model.stories.is_empty() {
             return Err(SolveError::InvalidInput(
-                "階(Story)が定義されていません。地震荷重(Ai分布)には階の定義・地震重量・剛床(ダイアフラム)が必要です。解析タブの「階の自動生成」を実行してください。".into(),
+                "階(Story)が定義されていません。地震荷重(Ai分布)には階の定義・地震重量・剛床(ダイアフラム)が必要です。解析タブの「準備計算 実行」を行ってください。".into(),
             ));
         }
         let t = self.seismic_period(cfg.mode)?;
@@ -339,7 +339,7 @@ pub fn seismic_distribution_for_model(
     let stories = &model.stories;
     if stories.is_empty() {
         return Err(SolveError::InvalidInput(
-                "階(Story)が定義されていません。地震荷重(Ai分布)には階の定義・地震重量・剛床(ダイアフラム)が必要です。解析タブの「階の自動生成」を実行してください。".into(),
+                "階(Story)が定義されていません。地震荷重(Ai分布)には階の定義・地震重量・剛床(ダイアフラム)が必要です。解析タブの「準備計算 実行」を行ってください。".into(),
             ));
     }
 
@@ -424,7 +424,7 @@ pub fn build_seismic_load_case_from_model(
 
     if lc.nodal.is_empty() {
         return Err(SolveError::InvalidInput(
-                "地震力を作用させる剛床(ダイアフラム)が階に定義されていません。解析タブの「階の自動生成」を実行してください。".into(),
+                "地震力を作用させる剛床(ダイアフラム)が階に定義されていません。解析タブの「準備計算 実行」を行ってください。".into(),
             ));
     }
 

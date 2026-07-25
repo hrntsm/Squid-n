@@ -88,6 +88,7 @@ fn single_column_model(fy: f64, seismic_weight: f64) -> Model {
                 rigid: true,
             }],
             seismic_weight: Some(seismic_weight),
+            weight_override: None,
         }],
         ..Default::default()
     }
@@ -443,6 +444,7 @@ fn two_story_model() -> Model {
                 node_ids: vec![NodeId(1)],
                 diaphragms: vec![],
                 seismic_weight: None,
+                weight_override: None,
             },
             Story {
                 level_kind: Default::default(),
@@ -453,6 +455,7 @@ fn two_story_model() -> Model {
                 node_ids: vec![NodeId(2)],
                 diaphragms: vec![],
                 seismic_weight: None,
+                weight_override: None,
             },
         ],
         ..Default::default()
@@ -624,6 +627,7 @@ fn test_compute_static_indeterminacy_indeterminate_portal() {
             node_ids: vec![NodeId(1), NodeId(2)],
             diaphragms: vec![],
             seismic_weight: None,
+            weight_override: None,
         }],
         ..Default::default()
     };
@@ -822,6 +826,7 @@ fn portal_frame_model(fy: f64, seismic_weight: f64) -> Model {
                 rigid: true,
             }],
             seismic_weight: Some(seismic_weight),
+            weight_override: None,
         }],
         constraints: vec![Constraint::RigidDiaphragm {
             story: StoryId(0),

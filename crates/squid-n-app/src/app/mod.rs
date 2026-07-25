@@ -786,12 +786,6 @@ pub struct App {
     /// true の間は model 値での上書きを止めて入力中の値を保つ。
     #[cfg(feature = "gui")]
     pub story_weight_active: Vec<bool>,
-    /// 地震地域係数 Z の市町村別ローダ（CSV読込結果）。ヘッドレスでも使うため
-    /// gui 限定にしない（`load_z_table_from_csv`/`apply_z_from_municipality` から参照）。
-    pub z_table: Option<squid_n_load::z_table::ZTable>,
-    /// Z表 CSV 読込 UI の市町村名入力バッファ。
-    #[cfg(feature = "gui")]
-    pub z_table_municipality: String,
     /// モデルタブ「壁属性」フォームのドラフト状態
     #[cfg(feature = "gui")]
     pub wall_attr_draft: crate::tables::wall_attrs::WallAttrDraft,
@@ -947,9 +941,6 @@ impl Default for App {
             story_weight_edit: Vec::new(),
             #[cfg(feature = "gui")]
             story_weight_active: Vec::new(),
-            z_table: None,
-            #[cfg(feature = "gui")]
-            z_table_municipality: String::new(),
             #[cfg(feature = "gui")]
             wall_attr_draft: crate::tables::wall_attrs::WallAttrDraft::default(),
             #[cfg(feature = "gui")]
@@ -1020,7 +1011,7 @@ pub fn install_japanese_fonts(ctx: &egui::Context) {
     eprintln!("[info] 日本語フォントを読み込みました: {path}");
 }
 
-/// 標準荷重ケース名（DL・LL(架構用)・LL(地震用)・EX・EY）。
+/// 標準荷重ケース名（DL・LL(架構用)・LL(地震用)・EX・EY・WX・WY）。
 /// `squid_n_core::model` の定数を単一ソースオブトゥルースとして再公開する。
 ///
 /// - `DL_CASE_NAME`: `sync_gravity_load_cases_action` がスラブの固定荷重
@@ -1034,8 +1025,11 @@ pub fn install_japanese_fonts(ctx: &egui::Context) {
 ///   用いる（令85条1項・令88条）。
 /// - `EX_CASE_NAME`/`EY_CASE_NAME`（kind=Seismic）:
 ///   `sync_seismic_load_cases_action` が階定義から Ai 分布の水平力を同期する。
+/// - `WX_CASE_NAME`/`WY_CASE_NAME`（kind=Wind）:
+///   `sync_wind_load_cases_action` が階定義から速度圧による層水平力を同期する。
 pub use squid_n_core::model::{
     DL_CASE_NAME, EX_CASE_NAME, EY_CASE_NAME, LL_FRAME_CASE_NAME, LL_SEISMIC_CASE_NAME,
+    WX_CASE_NAME, WY_CASE_NAME,
 };
 
 /// 旧スキーマの自重自動生成ケース名（読込時に DL へ移行される。

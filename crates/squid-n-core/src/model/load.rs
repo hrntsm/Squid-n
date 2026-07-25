@@ -98,6 +98,13 @@ pub const EX_CASE_NAME: &str = "EX";
 /// 地震荷重（Y 方向・Ai 分布）の標準荷重ケース名。[`EX_CASE_NAME`] の Y 方向版。
 pub const EY_CASE_NAME: &str = "EY";
 
+/// 風荷重（X 方向）の標準荷重ケース名。階の定義があるとき、準備計算で
+/// 速度圧から算定した層水平力が自動生成される（令87条・平12建告1454号）。
+pub const WX_CASE_NAME: &str = "WX";
+
+/// 風荷重（Y 方向）の標準荷重ケース名。[`WX_CASE_NAME`] の Y 方向版。
+pub const WY_CASE_NAME: &str = "WY";
+
 /// 新規モデルにデフォルトで用意する標準荷重ケース一式
 /// （DL・LL(架構用)・LL(地震用)・EX・EY。内容は空で、解析実行前の
 /// 同期アクションが自動計算値を書き込む）。ID は 0 起点の連番

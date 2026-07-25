@@ -1983,3 +1983,130 @@ fn test_k_brace_internal_nodes_default_is_half_half() {
         gen.rep_nodes[0].coord[0]
     );
 }
+
+/// 断面形状に応じて `SectionShape` を割り当てた [`two_story_model`]。
+/// `lower`・`upper` はそれぞれ 1F・2F の柱梁に与える形状。
+fn two_story_model_with_shapes(
+    lower: squid_n_core::section_shape::SectionShape,
+    upper: squid_n_core::section_shape::SectionShape,
+) -> Model {
+    let mut model = two_story_model();
+    model.sections = vec![
+        lower.to_section(SectionId(0), "1F".into()),
+        upper.to_section(SectionId(1), "2F".into()),
+    ];
+    // 部材の所属階は「材端節点のうち最も高い節点」で決まる。
+    // 節点 Z: 0/0/3500/3500/7000/7000 → 1F = 柱(0-2,1-3)・梁(2-3)、2F = 柱(2-4,3-5)・梁(4-5)。
+    for e in &mut model.elements {
+        let top_z = e
+            .nodes
+            .iter()
+            .map(|n| model.nodes[n.index()].coord[2])
+            .fold(f64::NEG_INFINITY, f64::max);
+        e.section = Some(if top_z <= 3500.0 {
+            SectionId(0)
+        } else {
+            SectionId(1)
+        });
+    }
+    model
+}
+
+fn rc_rect_shape() -> squid_n_core::section_shape::SectionShape {
+    use squid_n_core::section_shape::{BarSet, RcRebar, ShearBar};
+    let bars = BarSet {
+        count: 4,
+        dia: 22.0,
+        layers: 1,
+    };
+    squid_n_core::section_shape::SectionShape::RcRect {
+        b: 600.0,
+        d: 600.0,
+        rebar: RcRebar {
+            main_x: bars.clone(),
+            main_y: bars,
+            cover: 40.0,
+            shear: ShearBar {
+                dia: 10.0,
+                pitch: 100.0,
+                legs: 2,
+                grade: None,
+            },
+        },
+    }
+}
+
+fn steel_h_shape() -> squid_n_core::section_shape::SectionShape {
+    squid_n_core::section_shape::SectionShape::SteelH {
+        height: 400.0,
+        width: 200.0,
+        web_thick: 8.0,
+        flange_thick: 13.0,
+    }
+}
+
+/// 階の主要構造種別は、その階に属する柱・梁の断面形状から自動判定される
+/// （下階 RC・上階 S の混合構造で階ごとに別々に判定されること）。
+#[test]
+fn test_generate_infers_story_structure_from_sections() {
+    use squid_n_core::model::StoryStructure;
+    let model = two_story_model_with_shapes(rc_rect_shape(), steel_h_shape());
+    let gen = generate_stories(&model, Some(LoadCaseId(0))).unwrap();
+    assert_eq!(gen.stories.len(), 2);
+    assert_eq!(gen.stories[0].structure, StoryStructure::Rc);
+    assert_eq!(gen.stories[1].structure, StoryStructure::S);
+}
+
+/// 形状定義を持たない断面（カタログ数値の直入力）だけの階は種別を決められないため
+/// 既定の RC 扱いになる（略算周期 α で S を算入しない安全側）。
+#[test]
+fn test_generate_story_structure_defaults_to_rc_without_shapes() {
+    use squid_n_core::model::StoryStructure;
+    let model = two_story_model(); // shape: None の断面のみ
+    let gen = generate_stories(&model, Some(LoadCaseId(0))).unwrap();
+    assert!(gen
+        .stories
+        .iter()
+        .all(|s| s.structure == StoryStructure::Rc));
+}
+
+/// 種別が割れた場合の優先順（RC → SRC → S）。同数なら S を採らない安全側。
+#[test]
+fn test_story_structure_majority_tie_breaks_to_safe_side() {
+    use squid_n_core::model::StoryStructure;
+    assert_eq!(StoryStructure::majority(0, 0, 0), StoryStructure::Rc);
+    assert_eq!(StoryStructure::majority(2, 2, 0), StoryStructure::Rc);
+    assert_eq!(StoryStructure::majority(0, 2, 2), StoryStructure::Src);
+    assert_eq!(StoryStructure::majority(1, 3, 0), StoryStructure::S);
+}
+
+/// 階の再生成では、地震用重量の手入力値と階の種別を標高一致の旧階から引き継ぐ。
+/// 標高が一致しない階（新たに現れた階）は自動算定値のままになる。
+#[test]
+fn test_carry_over_manual_story_settings() {
+    use squid_n_core::model::StoryLevelKind;
+    let model = two_story_model();
+    let prev = {
+        let mut gen = generate_stories(&model, Some(LoadCaseId(0))).unwrap();
+        gen.stories[0].weight_override = Some(12345.0);
+        gen.stories[0].seismic_weight = Some(12345.0);
+        gen.stories[1].level_kind = StoryLevelKind::Penthouse { k: 0.7 };
+        gen.stories
+    };
+
+    let mut fresh = generate_stories(&model, Some(LoadCaseId(0)))
+        .unwrap()
+        .stories;
+    let auto_weight_1f = fresh[0].seismic_weight;
+    assert_ne!(auto_weight_1f, Some(12345.0), "前提: 自動算定値とは異なる");
+
+    carry_over_manual_story_settings(&prev, &mut fresh);
+    assert_eq!(fresh[0].weight_override, Some(12345.0));
+    assert_eq!(fresh[0].seismic_weight, Some(12345.0));
+    assert_eq!(
+        fresh[1].level_kind,
+        StoryLevelKind::Penthouse { k: 0.7 },
+        "階の種別も引き継ぐ"
+    );
+    assert_eq!(fresh[1].weight_override, None, "手入力の無い階はそのまま");
+}

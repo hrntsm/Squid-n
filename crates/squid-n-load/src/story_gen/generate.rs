@@ -405,6 +405,7 @@ pub fn generate_stories_with_opts(
                 weight: Some(weight),
             }],
             seismic_weight: Some(weight),
+            weight_override: None,
             structure: Default::default(),
             level_kind: Default::default(),
         });
@@ -413,6 +414,9 @@ pub fn generate_stories_with_opts(
     if stories.is_empty() {
         return Err("階を構成する節点が見つかりませんでした。".into());
     }
+
+    // 主要構造種別は断面形状から自動判定する（利用者の入力項目ではない）。
+    assign_story_structures(model, &node_story, &mut stories);
 
     // 階数が減って余った旧代表節点は不活性化する（拘束固定・所属階なし）が、
     // `generated_masters` には残して次回再生成時に再利用できるようにする。
@@ -434,6 +438,84 @@ pub fn generate_stories_with_opts(
         rep_nodes,
         generated_masters,
     })
+}
+
+/// 各階の主要構造種別（[`StoryStructure`]）を、その階に属する柱・梁の断面形状から
+/// 判定して `stories` へ書き込む。
+///
+/// 略算周期 T = h(0.02+0.01α) の α は「柱及び梁の大部分が鉄骨造である階の高さの
+/// 合計の比」（令88条・昭55建告1793号）であり、階ごとに柱・梁の構造種別が分かれば
+/// 決まる。したがって利用者の入力ではなく断面形状から判定する。
+///
+/// - 対象部材: 線材（柱・梁・ブレース相当の [`ElementKind::Beam`]）のうち断面形状を
+///   持つもの。形状定義の無い断面（カタログ数値の直入力）は種別を決められないため
+///   除外する。
+/// - 部材の所属階: 材端節点のうち標高が最も高い節点の所属階
+///   （階 i の階高は elevation_{i-1}〜elevation_i なので、その範囲の柱は上端が階 i に
+///   属し、階 i のレベルにある梁も階 i に属する）。
+/// - 階の種別: 対象部材の種別ごとの本数の最多（[`StoryStructure::majority`]）。
+fn assign_story_structures(model: &Model, node_story: &[Option<StoryId>], stories: &mut [Story]) {
+    use squid_n_core::model::StoryStructure;
+    // 階ごとの (RC, S, SRC) 本数。`stories` は StoryId(0) から連番。
+    let mut counts = vec![(0usize, 0usize, 0usize); stories.len()];
+    for e in &model.elements {
+        if !matches!(e.kind, ElementKind::Beam) || e.nodes.len() < 2 {
+            continue;
+        }
+        let Some(shape) = e
+            .section
+            .and_then(|sid| model.sections.get(sid.index()))
+            .and_then(|sec| sec.shape.as_ref())
+        else {
+            continue;
+        };
+        // 材端節点のうち最も高い節点の所属階へ計上する。
+        let top = e
+            .nodes
+            .iter()
+            .filter_map(|nid| model.nodes.get(nid.index()))
+            .max_by(|a, b| a.coord[2].total_cmp(&b.coord[2]));
+        let Some(story) = top.and_then(|n| node_story.get(n.id.index()).copied().flatten()) else {
+            continue;
+        };
+        let Some(slot) = counts.get_mut(story.index()) else {
+            continue;
+        };
+        match StoryStructure::of_section_shape(shape) {
+            StoryStructure::Rc => slot.0 += 1,
+            StoryStructure::S => slot.1 += 1,
+            StoryStructure::Src => slot.2 += 1,
+        }
+    }
+    for (story, (n_rc, n_s, n_src)) in stories.iter_mut().zip(counts) {
+        story.structure = StoryStructure::majority(n_rc, n_s, n_src);
+    }
+}
+
+/// 階の再生成で失われる利用者の手入力を、標高が一致する旧階から引き継ぐ。
+///
+/// 準備計算は毎回階を再生成する（節点・断面・荷重の変更を階の重量へ反映するため）
+/// が、地震用重量の手入力（[`Story::weight_override`]）と階の種別
+/// （[`squid_n_core::model::StoryLevelKind`]。PH・地下の指定は自動判定できない）は
+/// 利用者の入力であり、再生成で失ってはならない。標高差が [`LEVEL_TOL_MM`] 以内の
+/// 旧階を同じ階とみなして引き継ぐ（階数が変わっても残った階の入力は保たれる）。
+///
+/// 手入力の重量は `seismic_weight` へも反映するため、解析・設計側は
+/// `seismic_weight` だけを読めばよい。
+pub fn carry_over_manual_story_settings(prev: &[Story], stories: &mut [Story]) {
+    for story in stories.iter_mut() {
+        let Some(old) = prev
+            .iter()
+            .find(|o| (o.elevation - story.elevation).abs() <= LEVEL_TOL_MM)
+        else {
+            continue;
+        };
+        story.level_kind = old.level_kind;
+        story.weight_override = old.weight_override;
+        if let Some(w) = old.weight_override {
+            story.seismic_weight = Some(w);
+        }
+    }
 }
 
 /// 節点 Z 座標から階を自動生成する（重力荷重ケース単一指定・従来互換の薄いラッパー）。

@@ -944,6 +944,7 @@ fn test_shell_membrane_off_no_diaphragm() {
             rigid: true,
         }],
         seismic_weight: None,
+        weight_override: None,
     });
     let result = linear_static_once(&model, LoadCaseId(1));
     assert!(result.is_ok(), "solver failed: {:?}", result.err());
@@ -1043,6 +1044,7 @@ fn test_shell_rigid_floor_membrane_off() {
                 rigid: true,
             }],
             seismic_weight: None,
+            weight_override: None,
         }],
         constraints: vec![Constraint::RigidDiaphragm {
             story: StoryId(0),
@@ -2043,6 +2045,7 @@ fn rigid_floor_portal(with_rigid_floor: bool) -> Model {
                 rigid: true,
             }],
             seismic_weight: None,
+            weight_override: None,
         });
     }
     model

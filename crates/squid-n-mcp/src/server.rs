@@ -475,6 +475,7 @@ mod tests {
                     ci_override: None,
                 }],
                 seismic_weight: Some(80_000.0),
+                weight_override: None,
                 structure: Default::default(),
                 level_kind: Default::default(),
             }],

@@ -6,4 +6,3 @@ pub mod secondary;
 pub mod self_weight;
 pub mod story_gen;
 pub mod wind;
-pub mod z_table;

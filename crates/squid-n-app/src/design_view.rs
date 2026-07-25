@@ -23,7 +23,7 @@ fn live_load_reduction_section(ui: &mut egui::Ui, app: &App) {
             );
             let factors = crate::app::column_live_load_factors(&app.model);
             if factors.is_empty() {
-                ui.label("柱要素（鉛直材）がありません。階の自動生成後に所属階が設定されると床数を集計できます。");
+                ui.label("柱要素（鉛直材）がありません。準備計算で階が生成され所属階が設定されると床数を集計できます。");
                 return;
             }
             for (elem, floors, factor) in factors {
@@ -507,7 +507,7 @@ pub fn design_table(ui: &mut egui::Ui, app: &mut App) {
     if app.model.stories.is_empty() {
         ui.colored_label(
             crate::theme::GRAY_600,
-            "階が未定義です。解析タブの「階の自動生成」を実行してください。",
+            "階が未定義です。解析タブの「準備計算 実行」を行ってください。",
         );
     } else if let Some(st) = app.current_static() {
         // 表示対象はナビゲータの結果ケース選択（→最後に実行した結果）に追従する。
@@ -598,7 +598,7 @@ pub fn design_table(ui: &mut egui::Ui, app: &mut App) {
     } else {
         ui.colored_label(
             crate::theme::GRAY_600,
-            "静的解析結果がありません。地震静的(Ai)を実行すると層指標を評価できます。",
+            "静的解析結果がありません。荷重ケース EX／EY（地震力）を実行すると層指標を評価できます。",
         );
     }
 

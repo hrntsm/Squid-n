@@ -1035,6 +1035,7 @@ pub fn import_stbridge_with_report(xml: &str) -> Result<(Model, ImportReport), S
             node_ids,
             diaphragms: vec![],
             seismic_weight: None,
+            weight_override: None,
         });
     }
 

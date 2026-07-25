@@ -1265,6 +1265,7 @@ fn fiber_column_model(fy: f64) -> Model {
                 rigid: true,
             }],
             seismic_weight: Some(10000.0),
+            weight_override: None,
         }],
         ..Default::default()
     }
