@@ -1303,12 +1303,8 @@ fn test_fiber_beam_checkpoint_roundtrip() {
     restored.deserialize_checkpoint(&checkpoint).unwrap();
     let snap_after = restored.snapshot_state();
 
-    let before = snap_before
-        .downcast_ref::<([f64; 12], [f64; 12], Vec<Vec<Box<dyn UniaxialMaterial>>>)>()
-        .unwrap();
-    let after = snap_after
-        .downcast_ref::<([f64; 12], [f64; 12], Vec<Vec<Box<dyn UniaxialMaterial>>>)>()
-        .unwrap();
+    let before = snap_before.downcast_ref::<FiberBeamSnapshot>().unwrap();
+    let after = snap_after.downcast_ref::<FiberBeamSnapshot>().unwrap();
     for i in 0..12 {
         assert_relative_eq!(before.0[i], after.0[i], epsilon = 1e-12);
         assert_relative_eq!(before.1[i], after.1[i], epsilon = 1e-12);
@@ -1776,4 +1772,382 @@ fn 可撓長が残らない剛域は無視される() {
     assert_eq!(fb.rigid_i, 0.0);
     assert_eq!(fb.rigid_j, 0.0);
     assert_relative_eq!(fb.flex_length, fb.length, max_relative = 1e-12);
+}
+
+// ===== 材端解放（ピン・半剛）=====
+
+/// 指定した端条件のテストモデル（節点間長 3000mm、500 角・せん断断面付き）。
+fn build_release_model(end_cond: [EndCondition; 2]) -> Model {
+    let mut model = build_test_model(Some(78846.15));
+    set_square500_shear_section(&mut model);
+    model.elements[0].end_cond = end_cond;
+    model
+}
+
+/// 弾性状態で `FiberBeam` を組み、初期接線をキャッシュしたうえで返す。
+fn elastic_fiber(model: &Model) -> FiberBeam {
+    let ctx = Ctx { model };
+    let mut fb = FiberBeam::new(&model.elements[0], model, StrengthBasis::Nominal);
+    fb.update_state(
+        &LocalVec {
+            data: SmallVec::from_elem(0.0, 12),
+        },
+        false,
+        &ctx,
+    );
+    fb
+}
+
+/// 受け入れテスト: 材端ピンの弾性剛性が、同じ端条件の弾性 Timoshenko 梁
+/// `BeamElement` と（軸自由度を除いて）厳密一致すること。
+/// 材端解放の静縮約が弾性梁と同じ定式化で入っていることを担保する。
+#[test]
+fn 材端ピンの弾性剛性が弾性梁と一致する() {
+    let (b_w, d_h): (f64, f64) = (500.0, 500.0);
+    let (nw, nd) = (12.0, 20.0);
+    let area = b_w * d_h;
+    let iz_elem = b_w * d_h.powi(3) / 12.0 * (1.0 - 1.0 / (nd * nd));
+    let iy_elem = d_h * b_w.powi(3) / 12.0 * (1.0 - 1.0 / (nw * nw));
+    let as_y_elem = 208333.0;
+    let as_z_elem = 150000.0;
+    let j = 1.0e6;
+
+    // i 端ピン・j 端剛接
+    let mut model = build_release_model([EndCondition::Pinned, EndCondition::Fixed]);
+    model.sections[0].depth = d_h;
+    model.sections[0].width = b_w;
+    model.sections[0].area = area;
+    model.sections[0].iy = iz_elem;
+    model.sections[0].iz = iy_elem;
+    model.sections[0].as_z = as_y_elem;
+    model.sections[0].as_y = as_z_elem;
+    model.sections[0].j = j;
+
+    let ctx = Ctx { model: &model };
+    let fiber = elastic_fiber(&model);
+    let k_fb = fiber.tangent_stiffness(&ElemState::default(), &ctx);
+
+    let mut be = make_test_beam_element(as_y_elem);
+    be.a = area;
+    be.a_mass = area;
+    be.iy = iy_elem;
+    be.iz = iz_elem;
+    be.j = j;
+    be.as_y = as_y_elem;
+    be.as_z = as_z_elem;
+    be.end_cond = model.elements[0].end_cond;
+    let k_be = be.tangent_stiffness(&ElemState::default(), &ctx);
+
+    let kmax = (0..12)
+        .flat_map(|i| (0..12).map(move |j| (i, j)))
+        .map(|(i, j)| k_be.get(i, j).abs())
+        .fold(0.0_f64, f64::max);
+    for i in 0..12 {
+        for j in 0..12 {
+            if [0, 6].contains(&i) || [0, 6].contains(&j) {
+                continue; // 軸は 4.9.5 のとおり弾性梁と定義が異なる（剛域なしなら一致）
+            }
+            let diff = (k_fb.get(i, j) - k_be.get(i, j)).abs();
+            assert!(
+                diff <= 1e-9 * kmax,
+                "K({i},{j}) が材端ピンの弾性梁と不一致: fiber={}, beam={}, 差={diff:.3e}",
+                k_fb.get(i, j),
+                k_be.get(i, j)
+            );
+        }
+        // ピン端（i 端）の回転自由度は剛性を持たない
+        for r in [3usize, 4, 5] {
+            assert!(
+                k_fb.get(r, i).abs() < 1e-6 * kmax.max(1.0),
+                "ピン端の回転自由度 {r} に剛性が残っている: K({r},{i})={}",
+                k_fb.get(r, i)
+            );
+        }
+    }
+    // 剛接端（j 端）は曲げ剛性を持つ
+    assert!(k_fb.get(11, 11) > 0.0);
+}
+
+/// ピン端では、その端に曲げモーメント内力が生じないこと（厳密なモーメント解放）。
+/// 剛接端との比較で、解放が実際に効いていることを確認する。
+#[test]
+fn 材端ピンでは当該端の曲げモーメントがゼロになる() {
+    let pinned = build_release_model([EndCondition::Pinned, EndCondition::Fixed]);
+    let fixed = build_release_model([EndCondition::Fixed, EndCondition::Fixed]);
+    // j 端に並進 uy を与える（片持ち的な変形）。
+    let du = |uy: f64| LocalVec {
+        data: SmallVec::from_slice(&[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, uy, 0.0, 0.0, 0.0, 0.0]),
+    };
+
+    let ctx_p = Ctx { model: &pinned };
+    let mut fb_p = FiberBeam::new(&pinned.elements[0], &pinned, StrengthBasis::Nominal);
+    fb_p.update_state(&du(1.0), false, &ctx_p);
+    let f_p = fb_p.internal_force(&ElemState::default(), &ctx_p);
+
+    let ctx_f = Ctx { model: &fixed };
+    let mut fb_f = FiberBeam::new(&fixed.elements[0], &fixed, StrengthBasis::Nominal);
+    fb_f.update_state(&du(1.0), false, &ctx_f);
+    let f_f = fb_f.internal_force(&ElemState::default(), &ctx_f);
+
+    // 剛接端は i 端に大きなモーメントを持つ
+    assert!(
+        f_f.data[5].abs() > 1.0e6,
+        "剛接端の Mz が小さすぎる: {}",
+        f_f.data[5]
+    );
+    // ピン端は Mz ≈ 0（剛接端の値に対して 1e-9 未満）
+    assert!(
+        f_p.data[5].abs() < 1e-9 * f_f.data[5].abs(),
+        "ピン端に曲げモーメントが残っている: {}",
+        f_p.data[5]
+    );
+    // ピンにより横剛性は下がる（片持ち: 3EI/L³ vs 12EI/L³ のオーダー）
+    assert!(
+        f_p.data[7].abs() < f_f.data[7].abs(),
+        "ピン解放で横剛性が下がっていない"
+    );
+}
+
+/// 半剛（回転ばね）は、剛接とピンの中間の剛性になること。
+/// ばね剛性 →∞ で剛接、→0 でピンに漸近する。
+#[test]
+fn 半剛端は剛接とピンの中間になる() {
+    // j 端（剛接）の回転剛性 K(rz_j, rz_j) を指標にする。i 端の条件により
+    // 剛接なら 4EI/L'、ピンなら 3EI/L'（いずれもせん断補正を含む）へ変わる。
+    let rot_stiffness = |end_cond: [EndCondition; 2]| -> f64 {
+        let model = build_release_model(end_cond);
+        let ctx = Ctx { model: &model };
+        let fb = elastic_fiber(&model);
+        fb.tangent_stiffness(&ElemState::default(), &ctx)
+            .get(11, 11)
+    };
+    let k_fixed = rot_stiffness([EndCondition::Fixed, EndCondition::Fixed]);
+    let k_pin = rot_stiffness([EndCondition::Pinned, EndCondition::Fixed]);
+    // 6EI/L' 程度の中間的なばね剛性
+    let k_theta = 6.0 * 205000.0 * 5.2083333e9 / 3000.0;
+    let k_semi = rot_stiffness([EndCondition::SemiRigid { k_theta }, EndCondition::Fixed]);
+
+    assert!(
+        k_pin < k_semi && k_semi < k_fixed,
+        "半剛が剛接とピンの中間になっていない: pin={k_pin:.4e}, semi={k_semi:.4e}, fixed={k_fixed:.4e}"
+    );
+    // i 端ピンは剛接の 3/4 倍（3EI/L' vs 4EI/L'）へ近い値になる
+    assert!(
+        (k_pin / k_fixed - 0.75).abs() < 0.05,
+        "ピン端の回転剛性比が 3/4 から外れている: {:.4}",
+        k_pin / k_fixed
+    );
+    // ばね剛性を十分大きく／小さくすると剛接／ピンへ漸近する
+    let k_stiff = rot_stiffness([
+        EndCondition::SemiRigid {
+            k_theta: k_theta * 1.0e8,
+        },
+        EndCondition::Fixed,
+    ]);
+    assert_relative_eq!(k_stiff, k_fixed, max_relative = 1e-6);
+    let k_soft = rot_stiffness([
+        EndCondition::SemiRigid {
+            k_theta: k_theta * 1.0e-8,
+        },
+        EndCondition::Fixed,
+    ]);
+    assert_relative_eq!(k_soft, k_pin, max_relative = 1e-6);
+}
+
+/// 材端解放があっても接線剛性が内力の厳密な勾配（∂f/∂u）であること。
+/// 内部自由度の静縮約（剛性側）と内部釣合いの解（内力側）が整合していないと崩れる。
+#[test]
+fn 材端解放ありでも接線剛性が内力の勾配と一致する() {
+    for end_cond in [
+        [EndCondition::Pinned, EndCondition::Fixed],
+        [EndCondition::Fixed, EndCondition::Pinned],
+        [
+            EndCondition::SemiRigid { k_theta: 2.0e12 },
+            EndCondition::Pinned,
+        ],
+    ] {
+        let mut model = build_release_model(end_cond);
+        // 剛域も併用して、剛体アーム変換との整合も同時に検証する。
+        model.elements[0].rigid_zone = squid_n_core::model::RigidZone {
+            length_i: 400.0,
+            length_j: 250.0,
+            face_i: 400.0,
+            face_j: 250.0,
+            ..Default::default()
+        };
+        let ctx = Ctx { model: &model };
+        let state = ElemState::default();
+        let h = 1e-6;
+        let u0: [f64; 12] = [
+            0.1, 0.2, -0.1, 0.0005, 0.001, -0.0005, -0.05, 0.15, 0.1, -0.0005, 0.0008, 0.0002,
+        ];
+
+        let mut b0 = FiberBeam::new(&model.elements[0], &model, StrengthBasis::Nominal);
+        b0.update_state(
+            &LocalVec {
+                data: SmallVec::from_slice(&u0),
+            },
+            false,
+            &ctx,
+        );
+        let f0 = b0.internal_force(&state, &ctx);
+        let k = b0.tangent_stiffness(&state, &ctx);
+        let kmax = (0..12)
+            .flat_map(|i| (0..12).map(move |j| (i, j)))
+            .map(|(i, j)| k.get(i, j).abs())
+            .fold(0.0_f64, f64::max);
+
+        for j in 0..12 {
+            let mut up = u0;
+            up[j] += h;
+            let mut bp = FiberBeam::new(&model.elements[0], &model, StrengthBasis::Nominal);
+            bp.update_state(
+                &LocalVec {
+                    data: SmallVec::from_slice(&up),
+                },
+                false,
+                &ctx,
+            );
+            let fp = bp.internal_force(&state, &ctx);
+            for i in 0..12 {
+                let fd = (fp.data[i] - f0.data[i]) / h;
+                let err = (fd - k.get(i, j)).abs() / kmax;
+                assert!(
+                    err < 1e-6,
+                    "{end_cond:?}: K(i={i}, j={j}) が ∂f/∂u と不一致: K={}, FD={}, 相対誤差={err:.3e}",
+                    k.get(i, j),
+                    fd
+                );
+            }
+        }
+    }
+}
+
+/// 材端解放があっても剛体回転で内力が生じないこと（客観性）。
+#[test]
+fn 材端解放ありでも剛体回転で内力が生じない() {
+    let model = build_release_model([EndCondition::Pinned, EndCondition::Fixed]);
+    let ctx = Ctx { model: &model };
+    let mut fiber = FiberBeam::new(&model.elements[0], &model, StrengthBasis::Nominal);
+    let theta = 1.0e-4;
+    let l = 3000.0;
+    let du = LocalVec {
+        data: SmallVec::from_slice(&[
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            theta,
+            0.0,
+            theta * l,
+            0.0,
+            0.0,
+            0.0,
+            theta,
+        ]),
+    };
+    fiber.update_state(&du, false, &ctx);
+    let f = fiber.internal_force(&ElemState::default(), &ctx);
+    for (i, v) in f.data.iter().enumerate() {
+        assert!(
+            v.abs() < 1.0,
+            "材端解放つきの剛体回転で内力が発生した（客観性違反）: dof {i} = {v}"
+        );
+    }
+}
+
+/// 降伏後（非線形域）でもピン端のモーメント解放が保たれること。
+/// 内部自由度の内部釣合いを Newton で解いているため、材料が降伏しても
+/// 「ピン端の要素モーメント = 0」が維持される。
+#[test]
+fn 降伏後もピン端のモーメント解放が保たれる() {
+    let mut model = build_release_model([EndCondition::Pinned, EndCondition::Fixed]);
+    model.materials[0].fy = Some(235.0);
+    let ctx = Ctx { model: &model };
+    let mut fb = FiberBeam::new(&model.elements[0], &model, StrengthBasis::Nominal);
+
+    // 段階的に大変形を与えて降伏させる。
+    for _ in 0..40 {
+        let du = LocalVec {
+            data: SmallVec::from_slice(&[
+                0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 2.0, 0.0, 0.0, 0.0, 0.0,
+            ]),
+        };
+        fb.update_state(&du, true, &ctx);
+    }
+    let f = fb.internal_force(&ElemState::default(), &ctx);
+    // 剛接端（j 端）のモーメントを基準に、ピン端（i 端）は無視できる大きさ
+    let m_fixed = f.data[11].abs().max(1.0);
+    assert!(
+        f.data[5].abs() < 1e-8 * m_fixed,
+        "降伏後にピン端へモーメントが残った: Mz_i={}, Mz_j={}",
+        f.data[5],
+        f.data[11]
+    );
+    // 実際に降伏していること（弾性なら接線剛性が初期値のまま）
+    let k = fb.tangent_stiffness(&ElemState::default(), &ctx);
+    let k0 = elastic_fiber(&build_release_model([
+        EndCondition::Pinned,
+        EndCondition::Fixed,
+    ]))
+    .tangent_stiffness(&ElemState::default(), &ctx);
+    assert!(
+        k.get(7, 7) < 0.95 * k0.get(7, 7),
+        "降伏していない（接線剛性が低下していない）: {} vs {}",
+        k.get(7, 7),
+        k0.get(7, 7)
+    );
+}
+
+/// ねじり剛性を持たない部材（J=0）ではピン端でも rx を解放しない
+/// （解放しても縮約行列が特異化するだけで意味がないため）。
+#[test]
+fn ねじり剛性が無い部材はrxを解放しない() {
+    let mut model = build_release_model([EndCondition::Pinned, EndCondition::Pinned]);
+    model.sections[0].j = 0.0;
+    let fb = FiberBeam::new(&model.elements[0], &model, StrengthBasis::Nominal);
+    assert!(
+        fb.releases.iter().all(|r| r.dof != 3 && r.dof != 9),
+        "J=0 で rx が解放された: {:?}",
+        fb.releases
+    );
+    // 曲げ回転（ry, rz）は両端とも解放される
+    assert_eq!(fb.releases.len(), 4);
+
+    // J>0 なら rx も解放される
+    model.sections[0].j = 1.0e6;
+    let fb = FiberBeam::new(&model.elements[0], &model, StrengthBasis::Nominal);
+    assert_eq!(fb.releases.len(), 6);
+}
+
+/// 材端解放の内部自由度がチェックポイント／スナップショットで往復すること。
+#[test]
+fn 材端解放の内部自由度がチェックポイントで往復する() {
+    let model = build_release_model([EndCondition::Pinned, EndCondition::Fixed]);
+    let ctx = Ctx { model: &model };
+    let mut fb = FiberBeam::new(&model.elements[0], &model, StrengthBasis::Nominal);
+    fb.update_state(
+        &LocalVec {
+            data: SmallVec::from_slice(&[
+                0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 5.0, 0.0, 0.0, 0.0, 0.001,
+            ]),
+        },
+        true,
+        &ctx,
+    );
+    assert!(
+        fb.trial_int.iter().any(|v| v.abs() > 1e-12),
+        "内部自由度が動いていない"
+    );
+
+    let checkpoint = fb.serialize_checkpoint();
+    let mut restored = FiberBeam::new(&model.elements[0], &model, StrengthBasis::Nominal);
+    restored.deserialize_checkpoint(&checkpoint).unwrap();
+    for (a, b) in fb.trial_int.iter().zip(restored.trial_int.iter()) {
+        assert_relative_eq!(a, b, epsilon = 1e-12);
+    }
+    for (a, b) in fb.committed_int.iter().zip(restored.committed_int.iter()) {
+        assert_relative_eq!(a, b, epsilon = 1e-12);
+    }
 }

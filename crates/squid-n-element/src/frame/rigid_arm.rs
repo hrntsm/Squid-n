@@ -96,6 +96,25 @@ pub fn transform_stiffness(k_flex: &LocalMat, li: f64, lj: f64) -> LocalMat {
     kn
 }
 
+/// 節点自由度の材端力を可撓端（剛域フェイス）の材端力へ戻す
+/// （[`to_node_force`] の逆写像 `f_flex = (Trᵀ)⁻¹ f_node`）。
+///
+/// 並進成分は剛体アームで変わらない。回転成分からは剛体アームのモーメント
+/// （アーム長 × 材端せん断）を差し引くため、**剛域フェイスでの材端モーメント**が
+/// 得られる。断面の降伏判定・設計用応力は危険断面＝剛域フェイスで評価するため、
+/// 節点位置のモーメント（アーム分だけ大きい）ではなくこちらを用いる。
+pub fn to_flex_force(f_node: &[f64; 12], li: f64, lj: f64) -> [f64; 12] {
+    let mut f = *f_node;
+    if is_identity(li, lj) {
+        return f;
+    }
+    f[5] = f_node[5] - li * f_node[1];
+    f[4] = f_node[4] + li * f_node[2];
+    f[11] = f_node[11] + lj * f_node[7];
+    f[10] = f_node[10] - lj * f_node[8];
+    f
+}
+
 /// 剛域長 `li`・`lj` を可撓長が正になる範囲へ解決する。
 ///
 /// 剛域長の合計が節点間長 `length` 以上になる病的な入力（自動算定が想定しない
@@ -141,6 +160,18 @@ mod tests {
         // 可撓長ぶんの相対たわみは生じない（剛体回転）
         let chord = (uf[7] - uf[1]) / (l - li - lj);
         assert!((chord - theta).abs() < 1e-12);
+    }
+
+    /// 材端力の可撓端 ⇄ 節点の写像が互いに逆になる。
+    #[test]
+    fn 材端力の可撓端変換と節点変換は互いに逆() {
+        let (li, lj) = (300.0, 200.0);
+        let f_flex: [f64; 12] = std::array::from_fn(|i| (i as f64 + 1.0) * 1.5);
+        let f_node = to_node_force(&f_flex, li, lj);
+        let back = to_flex_force(&f_node, li, lj);
+        for i in 0..12 {
+            assert!((back[i] - f_flex[i]).abs() < 1e-9, "dof {i}");
+        }
     }
 
     /// 剛性変換は対称性を保ち、剛体アームのモーメント項を回転自由度へ加える。
