@@ -213,4 +213,14 @@ impl ElementBehavior for BeamElement {
         arr.copy_from_slice(&u_elem[..12]);
         Some(self.recover_forces(&arr))
     }
+
+    /// 弾性材は常に線形なので、蓄積した trial 変位からの復元でよい
+    /// （非線形解析中の弾性材＝`recover_forces` と同じ結果）。
+    fn state_member_forces(
+        &self,
+        _state: &ElemState,
+        _ctx: &Ctx,
+    ) -> Option<crate::beam::MemberForces> {
+        Some(self.recover_forces(&self.trial_disp))
+    }
 }

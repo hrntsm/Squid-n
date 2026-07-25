@@ -1523,3 +1523,114 @@ fn test_rc_fiber_section_includes_separated_rebar() {
         .fold(0.0_f64, f64::max);
     assert!(max_abs_z > 180.0, "主筋が最外縁近くにない: {max_abs_z}");
 }
+
+/// 降伏後の部材内力が「接線剛性 × 全変位」ではなく**ファイバー状態**から
+/// 取り出されること（`state_member_forces`）。
+///
+/// 降伏させた要素で、(a) 端部の断面内力が復元力（`internal_force`）と一致する
+/// （釣合いによる分配）、(b) 接線剛性 × 全変位で組んだ内力とは明確に異なる、
+/// ことを確認する。(a) が成り立たないと、非線形解析の応力が降伏後に誤る。
+#[test]
+fn test_state_member_forces_uses_fiber_state_not_tangent() {
+    let ctx = Ctx {
+        model: &Model::default(),
+    };
+    // 端部 rz（強軸曲げ面）に大きな逆対称回転を与えて降伏させる。
+    let big = 0.2;
+    let du = LocalVec {
+        data: smallvec::smallvec![0.0, 0.0, 0.0, 0.0, 0.0, big, 0.0, 0.0, 0.0, 0.0, 0.0, -big],
+    };
+    let mut elem = make_steel_fiber_with_fy(Some(235.0));
+    elem.update_state(&du, true, &ctx);
+    let state = ElemState::default();
+
+    let mf = elem
+        .state_member_forces(&state, &ctx)
+        .expect("ファイバー梁は状態から内力を返す");
+    // 評価断面は弾性梁と同じ規則（剛域なし → 節点芯・中央）。
+    assert!(mf.at.iter().any(|(xi, _)| xi.abs() < 1e-12));
+    assert!(mf.at.iter().any(|(xi, _)| (xi - 0.5).abs() < 1e-12));
+    assert!(mf.at.iter().any(|(xi, _)| (xi - 1.0).abs() < 1e-12));
+
+    // i 端（xi=0）の Mz は復元力の f[5] と符号反転で一致する（断面内力の規約）。
+    let f = elem.internal_force(&state, &ctx);
+    let mz_i = mf
+        .at
+        .iter()
+        .find(|(xi, _)| xi.abs() < 1e-12)
+        .map(|(_, v)| v[5])
+        .unwrap();
+    assert_relative_eq!(mz_i, -f.data[5], epsilon = 1e-6);
+    assert!(f.data[5].abs() > 1.0, "前提: 曲げが有意であること");
+
+    // 接線剛性 × 全変位で組んだ内力は降伏後に過小評価となり、状態由来の値と一致しない。
+    let k = elem.tangent_stiffness(&state, &ctx);
+    let mut f_tangent = 0.0;
+    for j in 0..12 {
+        f_tangent += k.get(5, j) * elem.axis.rotate_to_global(&elem.trial_disp)[j];
+    }
+    assert!(
+        (f_tangent - f.data[5]).abs() > f.data[5].abs() * 0.1,
+        "降伏後に接線剛性×全変位と状態由来の内力が一致してしまっている: {} vs {}",
+        f_tangent,
+        f.data[5]
+    );
+}
+
+/// `state_member_forces` の内力場が連続・整合であること
+/// （`BeamElement::recover_forces` と同じ規約: N/Qy/Qz/Mx は一定、
+/// Mz/My は dMz/dx = Qy・dMy/dx = −Qz の線形場）。
+///
+/// 端部内力を釣合いでスパン内へ分配しているため、降伏後もこの関係が成り立つ。
+#[test]
+fn test_state_member_forces_field_is_continuous() {
+    let ctx = Ctx {
+        model: &Model::default(),
+    };
+    // 曲げ・軸・弱軸曲げが同時に生じる一般的な変位を与えて降伏させる。
+    let du = LocalVec {
+        data: smallvec::smallvec![
+            0.5, 0.0, 0.0, 0.0, 0.05, 0.2, //
+            -0.5, 0.0, 0.0, 0.0, -0.03, -0.1
+        ],
+    };
+    let mut elem = make_steel_fiber_with_fy(Some(235.0));
+    elem.eval_sections = vec![0.0, 0.25, 0.5, 0.75, 1.0];
+    elem.update_state(&du, true, &ctx);
+
+    let mf = elem
+        .state_member_forces(&ElemState::default(), &ctx)
+        .unwrap();
+    let l = elem.length;
+    let at = |xi: f64| -> [f64; 6] {
+        mf.at
+            .iter()
+            .find(|(p, _)| (p - xi).abs() < 1e-12)
+            .map(|(_, v)| *v)
+            .unwrap()
+    };
+
+    let a = at(0.0);
+    assert!(a[5].abs() > 1.0, "前提: 強軸曲げが有意であること");
+    for &xi in &[0.25, 0.5, 0.75, 1.0] {
+        let v = at(xi);
+        // N・Qy・Qz・Mx は部材内で一定
+        assert_relative_eq!(v[0], a[0], max_relative = 1e-9, epsilon = 1e-6);
+        assert_relative_eq!(v[1], a[1], max_relative = 1e-9, epsilon = 1e-6);
+        assert_relative_eq!(v[2], a[2], max_relative = 1e-9, epsilon = 1e-6);
+        assert_relative_eq!(v[3], a[3], max_relative = 1e-9, epsilon = 1e-6);
+        // dMz/dx = Qy, dMy/dx = -Qz（スパン内荷重なし）
+        assert_relative_eq!(
+            v[5],
+            a[5] + a[1] * xi * l,
+            max_relative = 1e-9,
+            epsilon = 1e-6
+        );
+        assert_relative_eq!(
+            v[4],
+            a[4] - a[2] * xi * l,
+            max_relative = 1e-9,
+            epsilon = 1e-6
+        );
+    }
+}

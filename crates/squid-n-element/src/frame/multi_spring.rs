@@ -92,6 +92,15 @@ impl ElementBehavior for MultiSpringElement {
         self.inner.internal_force(state, ctx)
     }
 
+    /// 内力分布は実体（端部バネ断面＋中央弾性のファイバー要素）へ委譲する。
+    fn state_member_forces(
+        &self,
+        state: &ElemState,
+        ctx: &Ctx,
+    ) -> Option<crate::beam::MemberForces> {
+        self.inner.state_member_forces(state, ctx)
+    }
+
     fn update_state(&mut self, du: &LocalVec, commit: bool, ctx: &Ctx) {
         self.inner.update_state(du, commit, ctx);
     }

@@ -244,7 +244,14 @@ impl BeamElement {
         kstar
     }
 
-    pub fn local_stiffness(&self) -> LocalMat {
+    /// 可撓部（剛域を除いた部分）の局所剛性 12×12。剛域変換の**手前**の状態で、
+    /// 端部条件（ピン・半剛）の静縮約まで済ませたもの。
+    ///
+    /// [`Self::local_stiffness`] はこれに剛域変換を掛けたものであり、材端集中ばね梁
+    /// （`concentrated::compute_kstar`）は「これ → 材端塑性ばねの静縮約 → 剛域変換」
+    /// の順で組む。両者が同じ土台を共有することで、剛域・端部条件の扱いが
+    /// 線形要素と非線形要素で食い違わないようにしている。
+    pub(crate) fn local_stiffness_flex(&self) -> LocalMat {
         let l_flex = self.length - self.rigid.length_i - self.rigid.length_j;
         let k_raw = if l_flex > 1e-12 {
             let mut beam = self.clone();
@@ -262,11 +269,13 @@ impl BeamElement {
         };
 
         // 剛域を持たない可とう部で端部ばね静縮約 → 12×12
-        let k_end = self.condense_end_springs(&k_raw);
+        self.condense_end_springs(&k_raw)
+    }
 
+    pub fn local_stiffness(&self) -> LocalMat {
         // 剛域変換で節点自由度へ
         let li = self.rigid.length_i;
         let lj = self.rigid.length_j;
-        self.apply_rigid_zone_transform(&k_end, li, lj)
+        self.apply_rigid_zone_transform(&self.local_stiffness_flex(), li, lj)
     }
 }

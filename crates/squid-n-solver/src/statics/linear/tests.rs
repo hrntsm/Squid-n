@@ -2131,3 +2131,28 @@ fn test_rigid_floor_definition_does_not_change_linear_result() {
         }
     }
 }
+
+/// 線材の部材内力が回収できないモデルは、黙って結果から欠落させず解析エラーにする
+/// （[`ensure_line_member_forces`]）。要素実装が `recover_forces` を持たないと、
+/// 応力図・断面検定・接合部検定の入力から当該部材が無言で消えるため。
+#[test]
+fn test_ensure_line_member_forces_detects_missing() {
+    let model = rigid_floor_portal(true);
+    let res = linear_static_once(&model, LoadCaseId(1)).unwrap();
+
+    // 全線材が揃っていれば OK。
+    assert!(ensure_line_member_forces(&model, &res.member_forces).is_ok());
+
+    // 梁 ElemId(2) の内力が欠落した状態を模擬するとエラーになり、
+    // メッセージに欠落した部材 ID が含まれる。
+    let missing: Vec<_> = res
+        .member_forces
+        .iter()
+        .filter(|(id, _)| *id != ElemId(2))
+        .cloned()
+        .collect();
+    let err = ensure_line_member_forces(&model, &missing)
+        .expect_err("欠落を検出できていない")
+        .to_string();
+    assert!(err.contains('2'), "欠落した部材 ID が示されていない: {err}");
+}

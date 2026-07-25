@@ -242,9 +242,11 @@ impl<'m> Analysis<'m> {
         let f_red = self.reducer.reduce_f(f_free);
         let u_indep = self.solver.solve(&f_red)?;
         let u_free = self.reducer.expand_u(&u_indep);
+        let member_forces = self.recover_member_forces(&u_free, member_loads);
+        crate::linear::ensure_line_member_forces(self.model, &member_forces)?;
         Ok(StaticOnce {
             disp: self.expand_disp(&u_free),
-            member_forces: self.recover_member_forces(&u_free, member_loads),
+            member_forces,
         })
     }
 
