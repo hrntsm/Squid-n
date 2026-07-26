@@ -1,4 +1,4 @@
-//! Squid-n MCP サーバの起動バイナリ（stdio トランスポート）。
+//! Squid-N MCP サーバの起動バイナリ（stdio トランスポート）。
 //!
 //! `--features mcp` 付きでのみビルドされる（Cargo.toml の `required-features`）。
 //!

@@ -41,7 +41,7 @@ pub fn export_stbridge(model: &Model) -> Result<String, StbError> {
 
     // StbCommon（ルート必須。プロジェクト名・アプリ名は最小限の既定値）。
     s.push_str(
-        "  <StbCommon project_name=\"Squid-n\" app_name=\"Squid-n\" app_version=\"0.0.1\"/>\n",
+        "  <StbCommon project_name=\"Squid-N\" app_name=\"Squid-N\" app_version=\"0.0.1\"/>\n",
     );
 
     s.push_str("  <StbModel>\n");
