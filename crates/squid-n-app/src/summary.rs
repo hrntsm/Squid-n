@@ -217,7 +217,7 @@ pub fn build_report_csv(app: &App) -> String {
     let mut out = String::new();
     let model = &app.model;
 
-    out.push_str("# Squid-N レポート\n");
+    out.push_str("# Squid-n レポート\n");
     out.push_str("\n[モデル概要]\n");
     out.push_str(&format!(
         "節点数,{}\n部材数,{}\n断面数,{}\n材料数,{}\n荷重ケース数,{}\n階数,{}\n",
@@ -425,7 +425,7 @@ pub fn build_preparation_csv(app: &App) -> String {
     let kn = |n: f64| n / 1000.0;
     let mut out = String::new();
 
-    out.push_str("# Squid-N 準備計算\n");
+    out.push_str("# Squid-n 準備計算\n");
     out.push_str("\n[建物概要]\n");
     let s = &p.summary;
     out.push_str(&format!(

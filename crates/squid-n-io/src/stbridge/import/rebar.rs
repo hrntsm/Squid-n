@@ -39,7 +39,7 @@ fn parse_bar_dia(v: &str) -> Option<f64> {
 }
 
 /// `StbSecBarArrangement*` の子要素の属性から [`RcRebar`] を復元する。
-/// Squid-N の書き出し属性（`count_main_X`・`dia_main_X` 等）を優先しつつ、実 ST-Bridge で
+/// Squid-n の書き出し属性（`count_main_X`・`dia_main_X` 等）を優先しつつ、実 ST-Bridge で
 /// 使われる名前（`D_main`・`N_main_X_1st`・`D_band` 等）や呼び名径（`D22`）も best-effort で
 /// 拾う。欠落した属性は 0（無筋相当）を既定にする。弾性性能は b・d のみで決まるため、
 /// 配筋の欠落・近似は往復での剛性に影響しない。
