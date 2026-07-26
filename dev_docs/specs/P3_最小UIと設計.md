@@ -145,7 +145,7 @@ fn main() -> eframe::Result<()> {
     let options = eframe::NativeOptions::default();
     // 0.34.3: 第3引数のクロージャは Result<Box<dyn App>, DynError> を返す
     eframe::run_native(
-        "Squid-N",
+        "Squid-n",
         options,
         Box::new(|_cc| Ok(Box::new(squid_n_app::app::App::default()))),
     )
@@ -177,7 +177,7 @@ impl eframe::App for App {
 
 **DoD（T0）:** `cargo run -p squid-n-app --features gui` でウィンドウが開き、タブ切替できる。
 （feature `gui` は P0 §2.4 の opt-in。コア解析は GUI 無しでビルド可能を維持。）
-**バイナリ:** `[[bin]] name = "Squid-N" required-features = ["gui"]` を `squid-n-app/Cargo.toml` に設定。
+**バイナリ:** `[[bin]] name = "Squid-n" required-features = ["gui"]` を `squid-n-app/Cargo.toml` に設定。
 
 ---
 

@@ -1,7 +1,7 @@
 [book]
-title = "Squid-N ドキュメント"
-description = "日本の建築構造計算一貫プログラム Squid-N の利用者向けドキュメント（計算根拠・理論・出典）"
-authors = ["Squid-N contributors"]
+title = "Squid-n ドキュメント"
+description = "日本の建築構造計算一貫プログラム Squid-n の利用者向けドキュメント（計算根拠・理論・出典）"
+authors = ["Squid-n contributors"]
 language = "ja"
 src = "docs"
 

@@ -20,7 +20,7 @@ impl App {
     /// 「開く…」ダイアログを表示して読み込む。
     pub(crate) fn open_project_dialog(&mut self) {
         if let Some(path) = rfd::FileDialog::new()
-            .add_filter("Squid-N プロジェクト", &["scz"])
+            .add_filter("Squid-n プロジェクト", &["scz"])
             .pick_file()
         {
             self.open_project_from(path);
@@ -36,7 +36,7 @@ impl App {
         };
         let path = path.or_else(|| {
             rfd::FileDialog::new()
-                .add_filter("Squid-N プロジェクト", &["scz"])
+                .add_filter("Squid-n プロジェクト", &["scz"])
                 .set_file_name("model.scz")
                 .save_file()
         });
