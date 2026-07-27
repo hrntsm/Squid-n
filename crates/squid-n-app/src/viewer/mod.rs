@@ -6,6 +6,9 @@ use squid_n_core::dof::{Dof, Dof6Mask};
 
 mod check_ratio;
 mod diagram;
+// ヒンジ詳細ウィンドウのキャッシュ型（`MnCurveCache`）を App から参照できるよう
+// モジュール自体を crate 内に公開する（型自体は pub(crate)）。
+pub(crate) mod hinge;
 mod modeling;
 mod solid;
 
@@ -66,6 +69,8 @@ pub enum ViewMode {
     CheckRatio,
     /// モデル化図（解析上どの要素モデルで扱っているかを着色・記号で可視化）
     Modeling,
+    /// ヒンジ図（増分解析のヒンジ発生位置を可視化）
+    Hinge,
 }
 
 /// モデル化図で可視化する解析種別。
@@ -547,6 +552,7 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
         ui.selectable_value(&mut mode, ViewMode::M, "M図");
         ui.selectable_value(&mut mode, ViewMode::Cmq, "CMQ図");
         ui.selectable_value(&mut mode, ViewMode::CheckRatio, "検定比");
+        ui.selectable_value(&mut mode, ViewMode::Hinge, "ヒンジ");
         ui.selectable_value(&mut mode, ViewMode::Modeling, "モデル化");
         ui.separator();
         // 断面表示: 部材を断面形状の押し出しソリッドで立体表示（全モードと併用可）
@@ -1009,6 +1015,10 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
                     Some((id, d)) if d <= PICK_THRESHOLD => {
                         app.selection.members = vec![id];
                         app.nav.focus_member = Some(id);
+                        // ヒンジ図モードでは、クリックした部材のヒンジ詳細ウィンドウを開く。
+                        if mode == ViewMode::Hinge {
+                            app.hinge_detail_elem = Some(id);
+                        }
                     }
                     _ => {
                         app.selection.members.clear();
@@ -1201,6 +1211,21 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
             }
         }
     }
+    if mode == ViewMode::Hinge {
+        hinge::draw_hinge(&painter, app, &pts);
+        // ホバー詳細（ViewCube ホバー中は除く。検定比図と同じ最近傍部材探索・
+        // 8px 閾値で最寄り部材を求め、ヒットしたらヒンジ詳細を表示）。
+        if cube_hover.is_none() {
+            if let Some(hover_pos) = response.hover_pos() {
+                const HOVER_PICK_THRESHOLD: f32 = 8.0;
+                if let Some((id, d)) = pick_nearest_member(&app.model, &pts, hover_pos) {
+                    if d <= HOVER_PICK_THRESHOLD {
+                        hinge::show_hinge_tooltip(ui, app, id);
+                    }
+                }
+            }
+        }
+    }
 
     // 変形の実効倍率（自動倍率 × 手動係数）の注記。
     // 実変位を表示している時のみ描く（モード形は固有ベクトルの規模が任意のため
@@ -1367,6 +1392,10 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
 
     // カメラ状態を保存
     app.camera = cam;
+
+    // ヒンジ詳細ウィンドウ（ヒンジ図でクリックした部材があれば表示。表示中は
+    // 他の表示モードへ切り替えても閉じるまで残す）。
+    hinge::show_hinge_detail_window(ui, app);
 }
 
 /// 応力図・CMQ 図のオフセット方向（要素ローカル y 軸）をワールド座標で返す。

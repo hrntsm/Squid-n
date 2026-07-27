@@ -1942,6 +1942,58 @@ impl ElementBehavior for FiberBeam {
             }
         }
     }
+
+    /// ヒンジ詳細表示用: 各ガウス点断面のファイバー状態（位置・ひずみ・降伏比）。
+    /// 断面の一般化ひずみ（軸ひずみ・曲率）の復元規則は [`Self::ductility_probe`] と
+    /// 同じ（塑性増分ヒンジモデルは内部平衡の解 trial_kappa、通常のガウス点は
+    /// B マトリクス）で、こちらは危険断面 1 点ではなく全ガウス点・全ファイバーを返す。
+    fn fiber_section_states(&self) -> Option<Vec<crate::behavior::FiberSectionState>> {
+        use crate::behavior::{FiberSectionState, FiberStateSample};
+        let l = self.flex_length;
+        if l <= 0.0 || self.gauss_points.is_empty() {
+            return None;
+        }
+        let td = self.elem_disp(&self.flex_disp());
+        let eps0_hinge = (td[6] - td[0]) / l;
+        // 塑性増分ヒンジモデルは端部 2 断面のみ曲率を持つ。
+        let n_sections = if self.hinge.is_some() {
+            self.gauss_points.len().min(2)
+        } else {
+            self.gauss_points.len()
+        };
+        let mut out = Vec::with_capacity(n_sections);
+        for (gi, gp) in self.gauss_points.iter().take(n_sections).enumerate() {
+            let (eps0, ky, kz) = if let Some(h) = &self.hinge {
+                (eps0_hinge, h.trial_kappa[gi * 2], h.trial_kappa[gi * 2 + 1])
+            } else {
+                let b = Self::compute_b_matrix(gp.xi, l, self.phi_y, self.phi_z);
+                let eps0 = b[0][0] * td[0] + b[0][6] * td[6];
+                let ky = b[1][2] * td[2] + b[1][4] * td[4] + b[1][8] * td[8] + b[1][10] * td[10];
+                let kz = b[2][1] * td[1] + b[2][5] * td[5] + b[2][7] * td[7] + b[2][11] * td[11];
+                (eps0, ky, kz)
+            };
+            let fibers = gp
+                .section
+                .fibers
+                .iter()
+                .enumerate()
+                .map(|(i, fiber)| {
+                    let eps = eps0 - kz * fiber.y + ky * fiber.z;
+                    let eref = gp.mats[i].reference_strain();
+                    FiberStateSample {
+                        y: fiber.y,
+                        z: fiber.z,
+                        area: fiber.area,
+                        strain: eps,
+                        yield_ratio: if eref > 0.0 { eps.abs() / eref } else { 0.0 },
+                        material: fiber.material,
+                    }
+                })
+                .collect();
+            out.push(FiberSectionState { xi: gp.xi, fibers });
+        }
+        (!out.is_empty()).then_some(out)
+    }
 }
 
 #[cfg(test)]

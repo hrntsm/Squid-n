@@ -3,9 +3,11 @@
 //! - [`compute_member_response`] — 部材端内力を局所座標へ射影し、強軸・弱軸の
 //!   設計用曲げ・せん断と軸圧縮力、部材変形角 Rp を [`PushoverMemberResponse`]
 //!   として求める
+//! - [`record_member_step`] — ヒンジ詳細図用に 1 確定ステップ分の部材端応答
+//!   （軸力・剛域フェイスの局所曲げ・弦からの材端回転）を全部材について記録する
 
 use super::geom::{axial_compression, dot3, member_end_forces_at_face};
-use super::types::PushoverMemberResponse;
+use super::types::{MemberStepState, PushoverMemberResponse};
 use squid_n_core::dof::DofMap;
 use squid_n_core::model::{ElementData, Model};
 use squid_n_element::behavior::{Ctx, ElemState, ElementBehavior, LocalVec};
@@ -70,6 +72,98 @@ pub(crate) fn horizontal_force_in_dir(f: &LocalVec, n_nodes: usize, dir_idx: usi
         range.map(|k| f.data[k * 6 + dir_idx]).sum::<f64>()
     };
     sum(0..half).abs().max(sum(half..n).abs())
+}
+
+/// ヒンジ詳細図用: 1 確定ステップ分の部材端応答（[`MemberStepState`]）を全部材に
+/// ついて算定する（`model.elements` と同じ並び。2 節点の線材以外はゼロ埋め）。
+///
+/// 曲げは危険断面＝剛域フェイス位置の局所成分（[`member_end_forces_at_face`]）、
+/// 回転は弦（変形後の材端を結ぶ直線）からの材端回転とする。弦からの相対回転を
+/// 使うのは、材端ヒンジの M-θ 曲線では剛体回転（層間変形による部材全体の傾き）を
+/// 除いた「ヒンジ部の回転」が意味を持つため。
+pub(crate) fn record_member_step(
+    model: &Model,
+    dofmap: &DofMap,
+    behaviors: &[Box<dyn ElementBehavior>],
+    total_disp: &[f64],
+) -> Vec<MemberStepState> {
+    let state = ElemState::default();
+    let ctx = Ctx { model };
+    model
+        .elements
+        .iter()
+        .zip(behaviors)
+        .map(|(elem, b)| {
+            if elem.nodes.len() != 2 {
+                return MemberStepState::default();
+            }
+            let ni = elem.nodes[0].index();
+            let nj = elem.nodes[1].index();
+            let (Some(pi), Some(pj)) = (model.nodes.get(ni), model.nodes.get(nj)) else {
+                return MemberStepState::default();
+            };
+            let dx = [
+                pj.coord[0] - pi.coord[0],
+                pj.coord[1] - pi.coord[1],
+                pj.coord[2] - pi.coord[2],
+            ];
+            let length = (dx[0] * dx[0] + dx[1] * dx[1] + dx[2] * dx[2]).sqrt();
+            if length <= 0.0 {
+                return MemberStepState::default();
+            }
+            let frame = LocalFrame::from_nodes(pi.coord, pj.coord, elem.local_axis.ref_vector);
+            let ex = frame.rot[0];
+            let ey = frame.rot[1];
+            let ez = frame.rot[2];
+
+            // 剛域フェイス位置の局所曲げ（My=4/10・Mz=5/11）と軸力。
+            let f = b.internal_force(&state, &ctx);
+            let (my_i, mz_i, my_j, mz_j) = match member_end_forces_at_face(model, elem, &f.data) {
+                Some(fl) => (fl[4], fl[5], fl[10], fl[11]),
+                None => {
+                    let m_i = [f.data[3], f.data[4], f.data[5]];
+                    let m_j = [f.data[9], f.data[10], f.data[11]];
+                    (dot3(m_i, ey), dot3(m_i, ez), dot3(m_j, ey), dot3(m_j, ez))
+                }
+            };
+            let f_i = [f.data[0], f.data[1], f.data[2]];
+            let f_j = [f.data[6], f.data[7], f.data[8]];
+            let n = axial_compression(f_i, f_j, ex);
+
+            // 弦からの材端回転。局所たわみ v（ey 方向）・w（ez 方向）の弦回転を
+            // 節点回転の局所成分から差し引く（x-y 面: θz−(v_j−v_i)/L、
+            // x-z 面: θy+(w_j−w_i)/L。符号は Euler 梁の右手系規約）。
+            let get = |node_index: usize, dof: usize| -> f64 {
+                let g = node_index * 6 + dof;
+                dofmap
+                    .active(g)
+                    .and_then(|a| total_disp.get(a as usize).copied())
+                    .unwrap_or(0.0)
+            };
+            let u_i = [get(ni, 0), get(ni, 1), get(ni, 2)];
+            let u_j = [get(nj, 0), get(nj, 1), get(nj, 2)];
+            let r_i = [get(ni, 3), get(ni, 4), get(ni, 5)];
+            let r_j = [get(nj, 3), get(nj, 4), get(nj, 5)];
+            let chord_v = (dot3(u_j, ey) - dot3(u_i, ey)) / length;
+            let chord_w = (dot3(u_j, ez) - dot3(u_i, ez)) / length;
+            let ry_i = dot3(r_i, ey) + chord_w;
+            let rz_i = dot3(r_i, ez) - chord_v;
+            let ry_j = dot3(r_j, ey) + chord_w;
+            let rz_j = dot3(r_j, ez) - chord_v;
+
+            MemberStepState {
+                n: n as f32,
+                my_i: my_i as f32,
+                mz_i: mz_i as f32,
+                my_j: my_j as f32,
+                mz_j: mz_j as f32,
+                ry_i: ry_i as f32,
+                rz_i: rz_i as f32,
+                ry_j: ry_j as f32,
+                rz_j: rz_j as f32,
+            }
+        })
+        .collect()
 }
 
 /// 最終確定ステップの部材別応答（[`PushoverMemberResponse`]）を算定する。

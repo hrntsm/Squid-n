@@ -37,6 +37,35 @@ pub enum MassOption {
     Consistent,
 }
 
+/// ヒンジ詳細表示用: 1 ガウス点断面のファイバー状態スナップショット。
+/// プッシュオーバー終局時に「断面のどこが塑性化しているか」を可視化するため、
+/// 解析終了時点の要素状態から断面内全ファイバーの位置・ひずみ・降伏比を取り出す
+/// （[`ElementBehavior::fiber_section_states`]）。
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct FiberSectionState {
+    /// ガウス点の材軸位置 ξ ∈ [-1, 1]（-1 側が i 端、+1 側が j 端）。
+    pub xi: f64,
+    /// 断面内の全ファイバーの状態。
+    pub fibers: Vec<FiberStateSample>,
+}
+
+/// ファイバー 1 本の状態（断面内位置・ひずみ・降伏比。[`FiberSectionState`] の要素）。
+#[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
+pub struct FiberStateSample {
+    /// 断面内位置（要素局所 y）[mm]。
+    pub y: f64,
+    /// 断面内位置（要素局所 z）[mm]。
+    pub z: f64,
+    /// ファイバー断面積 [mm²]。
+    pub area: f64,
+    /// 軸ひずみ（引張正）。
+    pub strain: f64,
+    /// 降伏比 |ε|/εref（≧1 で降伏。基準ひずみを持たない材料は 0）。
+    pub yield_ratio: f64,
+    /// 材料区分（0=母材格子、1=主筋点ファイバー）。
+    pub material: usize,
+}
+
 /// 塑性率（ductility）評価用の危険断面プローブ（ファイバーモデルの塑性率、
 /// 構造力学）。ファイバー要素が最大曲率のガウス点（危険断面）
 /// について現在のひずみ状態を集約して返す。プッシュオーバー解析
@@ -158,6 +187,12 @@ pub trait ElementBehavior {
     /// 塑性率評価用の危険断面プローブ（ファイバー要素のみ実装。既定は None）。
     /// ファイバーモデルの塑性率算定（構造力学）に用いる。
     fn ductility_probe(&self) -> Option<DuctilityProbe> {
+        None
+    }
+    /// ヒンジ詳細表示用: 各ガウス点断面のファイバー状態（位置・ひずみ・降伏比）を
+    /// 現在の要素状態から返す（ファイバー要素のみ実装。既定は None）。
+    /// プッシュオーバー終局時の断面塑性化状況の可視化に用いる。
+    fn fiber_section_states(&self) -> Option<Vec<FiberSectionState>> {
         None
     }
     /// コンクリート履歴の除荷則を解析種別で切替える（構造動力学の復元力特性モデル。

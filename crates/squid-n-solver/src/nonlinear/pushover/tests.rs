@@ -1877,11 +1877,12 @@ fn test_pushover_displacement_control_reaches_target_and_exceeds_design_load() {
     )
     .expect("displacement control run");
 
-    // 変位制御フェーズ（step >= n_steps+1）が点を確定していること。
+    // 変位制御フェーズが点を確定していること。ステップ番号は確定順の通し番号のため、
+    // フェーズは荷重係数で識別する（変位制御は設計地震力レベル λ=1 を超えて押し込む）。
     let disp_phase_points = result
-        .capacity_curve
+        .steps
         .iter()
-        .filter(|c| c.step as usize > n_steps)
+        .filter(|s| s.load_factor > 1.0 + 1e-9)
         .count();
     assert!(
         disp_phase_points >= 5,
@@ -1956,12 +1957,11 @@ fn test_pushover_elastic_curve_monotonic_across_phase_switch() {
     .expect("pushover should run");
 
     // 前提: 弾性のまま（ヒンジ無し）で変位制御フェーズまで進んでいること。
+    // ステップ番号は確定順の通し番号のため、フェーズは荷重係数で識別する
+    // （変位制御は設計地震力レベル λ=1 を超えて押し込む）。
     assert!(result.hinges.is_empty(), "弾性のままであること");
     assert!(
-        result
-            .capacity_curve
-            .iter()
-            .any(|c| c.step as usize > n_steps),
+        result.steps.iter().any(|s| s.load_factor > 1.0 + 1e-9),
         "変位制御フェーズの点が確定していること"
     );
 
@@ -1994,6 +1994,61 @@ fn test_pushover_elastic_curve_monotonic_across_phase_switch() {
     assert!(
         last_lambda > 1.0,
         "変位制御で λ が 1 を超えること: {last_lambda:.3}"
+    );
+}
+
+/// 均等変位刻み制御: 性能曲線の頂部変位刻みが全域で概ね目標刻み
+/// du = 押込み上限 / ステップ数 に揃うことを検証する。
+///
+/// 固定 λ 刻み＋変位制御固定 10 分割の旧制御では、弾性域（荷重制御 λ≦1）に点が
+/// 密集し、塑性化が進む変位制御域が数倍〜数十倍粗くなる偏りがあった（グラフの
+/// 序盤だけ点が細かく後半が荒い、の回帰テスト）。
+#[test]
+fn test_pushover_uniform_displacement_spacing() {
+    let seismic_weight = 80_000.0;
+    let max_disp = 200.0;
+    let n_steps = 50usize;
+    let mut model = single_column_model(235.0, seismic_weight);
+    let dofmap = DofMap::build(&model);
+    let reducer = Reducer::build(&model, &dofmap);
+    let result = pushover_analysis(
+        &mut model,
+        &dofmap,
+        &reducer,
+        SeismicDir::X,
+        n_steps,
+        max_disp,
+        false,
+        false,
+        0.0,
+    )
+    .expect("pushover should run");
+
+    let du = max_disp / n_steps as f64;
+    let disps: Vec<f64> = result.capacity_curve.iter().map(|c| c.roof_disp).collect();
+    // 全域を概ね du 刻みでカバーする（λ=1 到達の端数ステップ等での多少の増減は許容）。
+    assert!(
+        disps.len() >= 40,
+        "均等刻みなら 200/4=50 点程度が確定するはず: {} 点",
+        disps.len()
+    );
+    for w in disps.windows(2) {
+        let d = w[1] - w[0];
+        assert!(d > 0.0, "頂部変位は単調増加であること: {:.4}", d);
+        assert!(
+            d <= du * 2.0 + 1e-6,
+            "頂部変位刻みが目標刻み du={:.2} の 2 倍を超えないこと: {:.3}",
+            du,
+            d
+        );
+    }
+    // 平均刻みも du と同程度であること（弾性域の点密集＝過小刻みの回帰）。
+    let avg = (disps.last().unwrap() - disps.first().unwrap()) / (disps.len() - 1) as f64;
+    assert!(
+        avg >= du * 0.4,
+        "平均刻み {:.3} が目標刻み du={:.2} と同程度であること",
+        avg,
+        du
     );
 }
 
