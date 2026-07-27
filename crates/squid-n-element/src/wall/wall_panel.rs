@@ -56,6 +56,16 @@ pub struct WallPanelElement {
     committed_slip: f64,
     /// トライアル塑性せん断すべり γp [mm]。
     trial_slip: f64,
+    /// 壁柱の軸・曲げの弾塑性評価（ファイバー断面＋塑性増分ヒンジ）。
+    /// `Some` のとき軸・曲げの応答（剛性・内力）はこのファイバー壁柱から得て、
+    /// 面内せん断の Qu 頭打ちは従来どおり塑性すべりで扱う。
+    /// 非線形解析（保有水平耐力）の既定で有効化される
+    /// （[`Self::with_fiber_flexure`]。線形解析は従来どおり弾性壁柱）。
+    fiber_column: Option<crate::fiber::FiberBeam>,
+    /// ファイバー壁柱へ与え済みの壁柱端変位（グローバル系 12）。トライアル/確定。
+    /// 四隅変位から求めた目標値との差分を増分としてファイバー要素へ渡すためのミラー。
+    fiber_u12_trial: [f64; 12],
+    fiber_u12_committed: [f64; 12],
 }
 
 /// 壁エレメント（4 節点）の幾何。
@@ -386,7 +396,112 @@ impl WallPanelElement {
             shear_mode,
             committed_slip: 0.0,
             trial_slip: 0.0,
+            fiber_column: None,
+            fiber_u12_trial: [0.0; 12],
+            fiber_u12_committed: [0.0; 12],
         })
+    }
+
+    /// 壁柱の軸・曲げをファイバー断面（コンクリート格子＋縦筋の等価分散配置）の
+    /// 弾塑性評価に切り替える（保有水平耐力・非線形解析の既定）。
+    /// コンクリート強度 Fc が無い等でファイバー断面を組めない場合は弾性のまま返す。
+    ///
+    /// ファイバー壁柱は「全長弾性梁＋端部塑性増分ヒンジ」
+    /// （[`crate::fiber::FiberBeam::from_raw_parts`]）で、弾性剛性は従来の弾性壁柱
+    /// と同じ諸元（軸・面内曲げは鉄筋剛性係数込み、せん断は κ・開口低減込み）を
+    /// 用いる。塑性化域長は 0.5·lw（可撓長の 45% までにクランプ）。
+    /// 縦筋は壁筋比 ps を各層へ等価分散した鋼材ファイバー
+    /// （既定 SD345、材料強度の基準 `basis` の主筋割増を適用）とする。
+    pub(crate) fn with_fiber_flexure(
+        mut self,
+        data: &ElementData,
+        model: &Model,
+        basis: crate::factory::StrengthBasis,
+    ) -> Self {
+        let Some(geom) = wall_panel_geometry(data, model) else {
+            return self;
+        };
+        let Some(mat) = data
+            .material
+            .and_then(|mid| model.materials.get(mid.index()))
+        else {
+            return self;
+        };
+        let Some(fc) = mat.fc.filter(|v| *v > 0.0) else {
+            return self;
+        };
+        let sec = data.section.and_then(|sid| model.sections.get(sid.index()));
+        let (t, ps) = match sec.and_then(|s| s.shape.as_ref()) {
+            Some(SectionShape::RcWall { thickness, ps }) => (*thickness, *ps),
+            _ => match sec.map(|s| s.thickness.unwrap_or(s.width)) {
+                Some(t) if t > 0.0 => (t, 0.0025),
+                _ => return self,
+            },
+        };
+        let lw = 0.5 * (geom.lw_bottom + geom.lw_top);
+        let h = self.column.length;
+        if t <= 0.0 || lw <= 0.0 || h <= 0.0 {
+            return self;
+        }
+
+        // ファイバー断面: コンクリート格子（幅 t × せい lw、面内曲げが κz 面）
+        // ＋縦筋の等価分散配置（各せい方向層の中心へ ps·t·lw/nd ずつ）。
+        let nw = 4;
+        let nd = 20;
+        let rebar_fy = 345.0 * basis.rebar_factor(Some(mat));
+        let make_section = || {
+            let (mut section, mut mats) = crate::fiber::build_gauss_fibers(
+                t,
+                lw,
+                nw,
+                nd,
+                None,
+                Some(fc),
+                mat.young,
+                None,
+                1.0,
+                1.0,
+            );
+            if ps > 0.0 {
+                let a_each = ps * t * lw / nd as f64;
+                for i in 0..nd {
+                    // build_gauss_fibers の回転後座標系: y=せい（lw）方向、z=幅（t）方向。
+                    let y = ((i as f64 + 0.5) / nd as f64 - 0.5) * lw;
+                    section.fibers.push(squid_n_section::fiber::Fiber {
+                        y,
+                        z: 0.0,
+                        area: a_each,
+                        material: 1,
+                    });
+                    mats.push(Box::new(squid_n_material::uniaxial::Bilinear::new(
+                        E_STEEL, rebar_fy, 0.01,
+                    ))
+                        as Box<dyn squid_n_material::uniaxial::UniaxialMaterial>);
+                }
+            }
+            (section, mats)
+        };
+
+        // 弾性剛性の諸元は従来の弾性壁柱（`try_new_scaled` の column）と同一。
+        let col = &self.column;
+        let fiber = crate::fiber::FiberBeam::from_raw_parts(
+            col.nodes,
+            col.length,
+            col.axis,
+            col.density,
+            col.e,
+            col.g,
+            col.a,
+            col.iy,
+            col.iz,
+            col.as_y,
+            col.as_z,
+            col.j,
+            0.5 * lw,
+            [make_section(), make_section()],
+        );
+        self.fiber_column = Some(fiber);
+        self
     }
 
     /// 耐震壁の面内せん断終局強度 Qu [N]（保有水平耐力用）。
@@ -684,9 +799,46 @@ impl WallPanelElement {
         out
     }
 
+    /// 壁柱の全体系 12×12 接線剛性（ファイバー壁柱があればその整合接線、
+    /// なければ弾性壁柱）。
+    fn k12_global(&self, ctx: &Ctx) -> LocalMat {
+        match &self.fiber_column {
+            Some(f) => f.tangent_stiffness(&ElemState::default(), ctx),
+            None => self.column.axis.to_global(&self.column.local_stiffness()),
+        }
+    }
+
+    /// 壁柱の現在トライアル状態の全体系内力（24 自由度）。ファイバー壁柱専用
+    /// （履歴に整合した復元力 f24 = Aᵀ·f12）。
+    fn f24_fiber(&self, ctx: &Ctx) -> Option<[f64; 24]> {
+        let f = self.fiber_column.as_ref()?;
+        let f12 = f.internal_force(&ElemState::default(), ctx);
+        let mut f24 = [0.0_f64; 24];
+        for (p, fp) in f24.iter_mut().enumerate() {
+            let mut s = 0.0;
+            for i in 0..12 {
+                s += self.a_mat[i * 24 + p] * f12.data[i];
+            }
+            *fp = s;
+        }
+        Some(f24)
+    }
+
+    /// ファイバー壁柱が現在伝達している面内水平力 Q = pᵀ·f24。
+    fn inplane_shear_fiber(&self, ctx: &Ctx) -> Option<f64> {
+        let f24 = self.f24_fiber(ctx)?;
+        Some(
+            self.shear_mode
+                .iter()
+                .zip(f24.iter())
+                .map(|(p, v)| p * v)
+                .sum(),
+        )
+    }
+
     /// 全体系 24×24 剛性 K = Aᵀ·K_col·A。
-    fn stiffness_24(&self) -> LocalMat {
-        let k12 = self.column.axis.to_global(&self.column.local_stiffness());
+    fn stiffness_24(&self, ctx: &Ctx) -> LocalMat {
+        let k12 = self.k12_global(ctx);
         let mut k = LocalMat::zeros(24);
         // K = Aᵀ K12 A
         for p in 0..24 {
@@ -743,9 +895,14 @@ impl ElementBehavior for WallPanelElement {
         gdofs
     }
 
-    fn tangent_stiffness(&self, _state: &ElemState, _ctx: &Ctx) -> LocalMat {
-        let k = self.stiffness_24();
-        let (_, yielded) = self.shear_return_map(&k, &self.trial_disp);
+    fn tangent_stiffness(&self, _state: &ElemState, ctx: &Ctx) -> LocalMat {
+        let k = self.stiffness_24(ctx);
+        let yielded = match self.inplane_shear_fiber(ctx) {
+            // ファイバー壁柱: すべり γp は update_state で確定済み。伝達中の面内
+            // 水平力が Qu 近傍なら降伏中（せん断方向の剛性を除去する）。
+            Some(q) => self.qu_shear > 0.0 && q.abs() >= self.qu_shear * (1.0 - 1e-9),
+            None => self.shear_return_map(&k, &self.trial_disp).1,
+        };
         if !yielded {
             return k;
         }
@@ -773,12 +930,19 @@ impl ElementBehavior for WallPanelElement {
         kt
     }
 
-    fn internal_force(&self, _state: &ElemState, _ctx: &Ctx) -> LocalVec {
-        // f = K24 · (u − γp·p)（トライアル追従。beam/behavior.rs と同じ規約）。
+    fn internal_force(&self, _state: &ElemState, ctx: &Ctx) -> LocalVec {
+        // ファイバー壁柱: 復元力は履歴に整合したファイバー内力 f24 = Aᵀ·f12
+        // （すべり γp は update_state で反映済み）。
+        if let Some(f24) = self.f24_fiber(ctx) {
+            return LocalVec {
+                data: smallvec::SmallVec::from_slice(&f24),
+            };
+        }
+        // 弾性壁柱: f = K24 · (u − γp·p)（トライアル追従。beam/behavior.rs と同じ規約）。
         // γp は面内せん断の塑性すべりで、終局せん断強度 Qu を超える水平力を
         // 負担しないよう [`Self::shear_return_map`] が求める。Qu 未設定
         // （弾性解析経路）では γp=0 で従来どおりの線形弾性。
-        let k = self.stiffness_24();
+        let k = self.stiffness_24(ctx);
         let (slip, _) = self.shear_return_map(&k, &self.trial_disp);
         let mut u_eff = self.trial_disp;
         for (ue, p) in u_eff.iter_mut().zip(self.shear_mode.iter()) {
@@ -790,29 +954,83 @@ impl ElementBehavior for WallPanelElement {
         }
     }
 
-    fn update_state(&mut self, du: &LocalVec, commit: bool, _ctx: &Ctx) {
+    fn update_state(&mut self, du: &LocalVec, commit: bool, ctx: &Ctx) {
         for i in 0..24.min(du.data.len()) {
             self.trial_disp[i] += du.data[i];
         }
-        // 塑性すべりはトライアル変位から都度求め直す（経路依存の単調載荷を前提。
-        // commit 時に確定値へ移す）。
-        let k = self.stiffness_24();
-        let (slip, _) = self.shear_return_map(&k, &self.trial_disp);
-        self.trial_slip = slip;
+        if self.fiber_column.is_some() {
+            // ファイバー壁柱: すべり γp とファイバー状態を固定点反復で整合させる。
+            // 確定すべりから出発し、有効変位 u−γp·p を壁柱端変位へ写して
+            // ファイバー要素を更新 → 伝達水平力 Q が Qu を超えていれば
+            // Δγp = (|Q|−Qu)/k_s（k_s = pᵀ·K_t·p）だけすべりを進める。
+            // ファイバー応答は局所的に線形なため数回で収束する。
+            let mut slip = self.committed_slip;
+            for _ in 0..8 {
+                let mut u_eff = self.trial_disp;
+                for (ue, p) in u_eff.iter_mut().zip(self.shear_mode.iter()) {
+                    *ue -= slip * p;
+                }
+                let u12 = self.to_column_disp(&u_eff);
+                let du12: [f64; 12] = std::array::from_fn(|i| u12[i] - self.fiber_u12_trial[i]);
+                let dv = LocalVec {
+                    data: smallvec::SmallVec::from_slice(&du12),
+                };
+                let Some(fiber) = self.fiber_column.as_mut() else {
+                    break;
+                };
+                fiber.update_state(&dv, false, ctx);
+                self.fiber_u12_trial = u12;
+                if self.qu_shear <= 0.0 {
+                    break;
+                }
+                let Some(q) = self.inplane_shear_fiber(ctx) else {
+                    break;
+                };
+                if q.abs() <= self.qu_shear * (1.0 + 1e-9) {
+                    break;
+                }
+                let k = self.stiffness_24(ctx);
+                let kp = Self::mat_vec(&k, &self.shear_mode);
+                let k_s: f64 = self
+                    .shear_mode
+                    .iter()
+                    .zip(kp.iter())
+                    .map(|(p, v)| p * v)
+                    .sum();
+                if k_s <= 0.0 {
+                    break;
+                }
+                slip += (q.abs() - self.qu_shear) * q.signum() / k_s;
+            }
+            self.trial_slip = slip;
+        } else {
+            // 弾性壁柱: 塑性すべりはトライアル変位から都度求め直す
+            // （経路依存の単調載荷を前提。commit 時に確定値へ移す）。
+            let k = self.stiffness_24(ctx);
+            let (slip, _) = self.shear_return_map(&k, &self.trial_disp);
+            self.trial_slip = slip;
+        }
         if commit {
-            self.committed_disp = self.trial_disp;
-            self.committed_slip = self.trial_slip;
+            self.commit_state();
         }
     }
 
     fn commit_state(&mut self) {
         self.committed_disp = self.trial_disp;
         self.committed_slip = self.trial_slip;
+        if let Some(f) = &mut self.fiber_column {
+            f.commit_state();
+        }
+        self.fiber_u12_committed = self.fiber_u12_trial;
     }
 
     fn revert_state(&mut self) {
         self.trial_disp = self.committed_disp;
         self.trial_slip = self.committed_slip;
+        if let Some(f) = &mut self.fiber_column {
+            f.revert_state();
+        }
+        self.fiber_u12_trial = self.fiber_u12_committed;
     }
 
     fn snapshot_state(&self) -> Box<dyn std::any::Any> {
@@ -821,11 +1039,35 @@ impl ElementBehavior for WallPanelElement {
             self.trial_disp,
             self.committed_slip,
             self.trial_slip,
+            self.fiber_column.as_ref().map(|f| f.snapshot_state()),
+            self.fiber_u12_trial,
+            self.fiber_u12_committed,
         ))
     }
 
     fn restore_state(&mut self, state: &dyn std::any::Any) {
-        if let Some((committed, trial, cslip, tslip)) =
+        type Snapshot = (
+            [f64; 24],
+            [f64; 24],
+            f64,
+            f64,
+            Option<Box<dyn std::any::Any>>,
+            [f64; 12],
+            [f64; 12],
+        );
+        if let Some((committed, trial, cslip, tslip, fsnap, u12t, u12c)) =
+            state.downcast_ref::<Snapshot>()
+        {
+            self.committed_disp = *committed;
+            self.trial_disp = *trial;
+            self.committed_slip = *cslip;
+            self.trial_slip = *tslip;
+            if let (Some(f), Some(snap)) = (&mut self.fiber_column, fsnap.as_ref()) {
+                f.restore_state(snap.as_ref());
+            }
+            self.fiber_u12_trial = *u12t;
+            self.fiber_u12_committed = *u12c;
+        } else if let Some((committed, trial, cslip, tslip)) =
             state.downcast_ref::<([f64; 24], [f64; 24], f64, f64)>()
         {
             self.committed_disp = *committed;
@@ -836,7 +1078,16 @@ impl ElementBehavior for WallPanelElement {
     }
 
     fn serialize_checkpoint(&self) -> Vec<u8> {
-        bincode::serialize(&(self.committed_disp, self.trial_disp)).expect("serialize checkpoint")
+        let cp = WallPanelCheckpoint {
+            committed_disp: self.committed_disp,
+            trial_disp: self.trial_disp,
+            committed_slip: self.committed_slip,
+            trial_slip: self.trial_slip,
+            fiber: self.fiber_column.as_ref().map(|f| f.serialize_checkpoint()),
+            fiber_u12_trial: self.fiber_u12_trial,
+            fiber_u12_committed: self.fiber_u12_committed,
+        };
+        bincode::serialize(&cp).expect("serialize checkpoint")
     }
 
     fn deserialize_checkpoint(
@@ -847,11 +1098,35 @@ impl ElementBehavior for WallPanelElement {
         if data.is_empty() {
             return Ok(());
         }
+        if let Ok(cp) = bincode::deserialize::<WallPanelCheckpoint>(data) {
+            self.committed_disp = cp.committed_disp;
+            self.trial_disp = cp.trial_disp;
+            self.committed_slip = cp.committed_slip;
+            self.trial_slip = cp.trial_slip;
+            if let (Some(f), Some(bytes)) = (&mut self.fiber_column, cp.fiber.as_ref()) {
+                f.deserialize_checkpoint(bytes)?;
+            }
+            self.fiber_u12_trial = cp.fiber_u12_trial;
+            self.fiber_u12_committed = cp.fiber_u12_committed;
+            return Ok(());
+        }
+        // 旧形式（変位のみ）。
         let (committed, trial): ([f64; 24], [f64; 24]) = bincode::deserialize(data)
             .map_err(|e| crate::behavior::CheckpointError::Decode(e.to_string()))?;
         self.committed_disp = committed;
         self.trial_disp = trial;
         Ok(())
+    }
+
+    /// 塑性率評価はファイバー壁柱の危険断面プローブへ委譲する（弾性壁柱は None）。
+    fn ductility_probe(&self) -> Option<crate::behavior::DuctilityProbe> {
+        self.fiber_column.as_ref().and_then(|f| f.ductility_probe())
+    }
+
+    fn set_concrete_hysteresis(&mut self, dynamic: bool) {
+        if let Some(f) = &mut self.fiber_column {
+            f.set_concrete_hysteresis(dynamic);
+        }
     }
 
     fn mass_matrix(&self, _opt: MassOption) -> LocalMat {
@@ -879,6 +1154,20 @@ impl ElementBehavior for WallPanelElement {
         let u12 = self.to_column_disp(&u_elem[..24]);
         Some(self.column.recover_forces(&u12))
     }
+}
+
+/// [`WallPanelElement`] のチェックポイント形式（現行）。
+/// 旧形式（`(committed_disp, trial_disp)` のみ）は読み込み時にフォールバックする。
+#[derive(serde::Serialize, serde::Deserialize)]
+struct WallPanelCheckpoint {
+    committed_disp: [f64; 24],
+    trial_disp: [f64; 24],
+    committed_slip: f64,
+    trial_slip: f64,
+    /// ファイバー壁柱のチェックポイント（弾性壁柱は None）。
+    fiber: Option<Vec<u8>>,
+    fiber_u12_trial: [f64; 12],
+    fiber_u12_committed: [f64; 12],
 }
 
 fn sub(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
@@ -993,7 +1282,8 @@ mod tests {
     fn test_wall_panel_rigid_translation_zero_force() {
         let (model, data) = make_wall_model();
         let wall = WallPanelElement::try_new(&data, &model).unwrap();
-        let k = wall.stiffness_24();
+        let ctx = Ctx { model: &model };
+        let k = wall.stiffness_24(&ctx);
         // 全節点に同一並進（剛体移動）→ 力ゼロ
         for dir in 0..3 {
             let mut u = [0.0; 24];
@@ -1014,7 +1304,8 @@ mod tests {
     fn test_wall_panel_inplane_shear_matches_column() {
         let (model, data) = make_wall_model();
         let wall = WallPanelElement::try_new(&data, &model).unwrap();
-        let k = wall.stiffness_24();
+        let ctx = Ctx { model: &model };
+        let k = wall.stiffness_24(&ctx);
         // 上辺 2 節点を面内水平(X)に単位変位（下辺固定・上辺回転 0 = 両端固定柱の
         // せん断変形モード）→ ひずみエネルギ uᵀKu が壁柱の両端固定水平剛性
         // 12EI/((1+φ)h³) と一致する
@@ -1036,7 +1327,8 @@ mod tests {
     fn test_wall_panel_vertical_matches_axial() {
         let (model, data) = make_wall_model();
         let wall = WallPanelElement::try_new(&data, &model).unwrap();
-        let k = wall.stiffness_24();
+        let ctx = Ctx { model: &model };
+        let k = wall.stiffness_24(&ctx);
         // 上辺 2 節点を鉛直に単位変位 → EA/h
         let mut u = [0.0; 24];
         u[2 * 6 + 2] = 1.0;
@@ -1054,7 +1346,8 @@ mod tests {
     fn test_wall_panel_corner_rotations_are_pinned() {
         let (model, data) = make_wall_model();
         let wall = WallPanelElement::try_new(&data, &model).unwrap();
-        let k = wall.stiffness_24();
+        let ctx = Ctx { model: &model };
+        let k = wall.stiffness_24(&ctx);
         // 四隅の回転自由度は剛性を持たない（剛梁両端ピン）
         for n in 0..4 {
             for d in 3..6 {
@@ -1073,7 +1366,10 @@ mod tests {
     fn test_wall_panel_opening_reduces_inplane_shear() {
         let (mut model, data) = make_wall_model();
         let wall = WallPanelElement::try_new(&data, &model).unwrap();
-        let k_no = wall.stiffness_24();
+        let k_no = {
+            let ctx = Ctx { model: &model };
+            wall.stiffness_24(&ctx)
+        };
         model.wall_attrs.push(squid_n_core::model::WallAttr {
             elem: ElemId(0),
             opening_area: 3.0e6, // 25%
@@ -1082,7 +1378,8 @@ mod tests {
             openings: vec![],
         });
         let wall_o = WallPanelElement::try_new(&data, &model).unwrap();
-        let k_o = wall_o.stiffness_24();
+        let ctx = Ctx { model: &model };
+        let k_o = wall_o.stiffness_24(&ctx);
         let mut u = [0.0; 24];
         u[2 * 6] = 1.0;
         u[3 * 6] = 1.0;
@@ -1207,7 +1504,7 @@ mod tests {
 
         // commit 前でも内力へ反映され、K24·u と厳密に一致する
         let f = wall.internal_force(&state, &ctx);
-        let k = wall.stiffness_24();
+        let k = wall.stiffness_24(&ctx);
         for i in 0..24 {
             let expected: f64 = (0..24).map(|j| k.get(i, j) * du.data[j]).sum();
             assert!(

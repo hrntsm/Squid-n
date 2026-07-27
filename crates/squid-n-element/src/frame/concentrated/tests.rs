@@ -170,8 +170,11 @@ fn test_commit_revert() {
         data: smallvec::smallvec![0.0, 0.0, 0.0, 0.0, 0.0, 0.001, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
     };
 
+    // ばね変形は相対回転 γ = θn − θb（節点回転 0.001 がばねと可撓部に分配される）。
     elem.update_state(&du, false, &ctx);
-    assert_relative_eq!(elem.trial_rot_i, 0.001, epsilon = 1e-12);
+    let g1 = elem.trial_rot_i;
+    assert!(g1 > 0.0 && g1 < 0.001, "γ は節点回転の一部: {g1}");
+    assert_relative_eq!(elem.trial_rot_i + elem.trial_thb_i, 0.001, epsilon = 1e-9);
     assert_relative_eq!(elem.rot_i, 0.0, epsilon = 1e-12);
     elem.revert_state();
     assert_relative_eq!(elem.trial_rot_i, 0.0, epsilon = 1e-12);
@@ -179,17 +182,18 @@ fn test_commit_revert() {
 
     elem.update_state(&du, false, &ctx);
     elem.commit_state();
-    assert_relative_eq!(elem.trial_rot_i, 0.001, epsilon = 1e-12);
-    assert_relative_eq!(elem.rot_i, 0.001, epsilon = 1e-12);
+    assert_relative_eq!(elem.trial_rot_i, g1, epsilon = 1e-12);
+    assert_relative_eq!(elem.rot_i, g1, epsilon = 1e-12);
 
     let du2 = LocalVec {
         data: smallvec::smallvec![0.0, 0.0, 0.0, 0.0, 0.0, 0.002, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
     };
     elem.update_state(&du2, false, &ctx);
-    assert_relative_eq!(elem.trial_rot_i, 0.003, epsilon = 1e-12);
+    assert_relative_eq!(elem.trial_rot_i + elem.trial_thb_i, 0.003, epsilon = 1e-9);
+    assert!(elem.trial_rot_i > g1, "節点回転の増加でばね変形も増える");
     elem.revert_state();
-    assert_relative_eq!(elem.trial_rot_i, 0.001, epsilon = 1e-12);
-    assert_relative_eq!(elem.rot_i, 0.001, epsilon = 1e-12);
+    assert_relative_eq!(elem.trial_rot_i, g1, epsilon = 1e-12);
+    assert_relative_eq!(elem.rot_i, g1, epsilon = 1e-12);
 }
 
 #[test]
@@ -203,17 +207,19 @@ fn test_snapshot_restore() {
     };
 
     elem.update_state(&du, true, &ctx);
+    let g1 = elem.rot_i;
+    assert!(g1 > 0.0, "コミット済みばね変形が非零");
     let snap = elem.snapshot_state();
 
     let du2 = LocalVec {
         data: smallvec::smallvec![0.0, 0.0, 0.0, 0.0, 0.0, 0.002, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
     };
     elem.update_state(&du2, false, &ctx);
-    assert_relative_eq!(elem.trial_rot_i, 0.003, epsilon = 1e-12);
+    assert!(elem.trial_rot_i > g1, "トライアルばね変形が進む");
 
     elem.restore_state(&*snap);
-    assert_relative_eq!(elem.rot_i, 0.001, epsilon = 1e-12);
-    assert_relative_eq!(elem.trial_rot_i, 0.001, epsilon = 1e-12);
+    assert_relative_eq!(elem.rot_i, g1, epsilon = 1e-12);
+    assert_relative_eq!(elem.trial_rot_i, g1, epsilon = 1e-12);
 }
 
 #[test]
@@ -303,35 +309,33 @@ fn test_concentrated_spring_checkpoint_roundtrip() {
     restored.deserialize_checkpoint(&checkpoint).unwrap();
     let snap_after = restored.snapshot_state();
 
-    // スナップショットの型で比較（回転状態 + 弾性梁の committed/trial 変位）
+    // スナップショットの型で比較（ばね変形・可撓端回転 + 弾性梁の committed/trial 変位）
     type Snap = (
         Vec<Box<dyn UniaxialMaterial>>,
-        f64,
-        f64,
-        f64,
-        f64,
+        [f64; 4],
+        [f64; 4],
         [f64; 12],
         [f64; 12],
     );
     let before = snap_before.downcast_ref::<Snap>().unwrap();
     let after = snap_after.downcast_ref::<Snap>().unwrap();
-    assert_relative_eq!(before.1, after.1, epsilon = 1e-12);
-    assert_relative_eq!(before.2, after.2, epsilon = 1e-12);
-    assert_relative_eq!(before.3, after.3, epsilon = 1e-12);
-    assert_relative_eq!(before.4, after.4, epsilon = 1e-12);
+    for k in 0..4 {
+        assert_relative_eq!(before.1[k], after.1[k], epsilon = 1e-12);
+        assert_relative_eq!(before.2[k], after.2[k], epsilon = 1e-12);
+    }
     // 弾性梁部分の変位もチェックポイントを往復して保存されること
     // （update_state で非零になっているため、欠落していればここで検出される）。
     assert!(
-        before.5.iter().any(|v| v.abs() > 1e-15),
+        before.3.iter().any(|v| v.abs() > 1e-15),
         "前提: committed が非零"
     );
     assert!(
-        before.6.iter().any(|v| v.abs() > 1e-15),
+        before.4.iter().any(|v| v.abs() > 1e-15),
         "前提: trial が非零"
     );
     for i in 0..12 {
-        assert_relative_eq!(before.5[i], after.5[i], epsilon = 1e-12);
-        assert_relative_eq!(before.6[i], after.6[i], epsilon = 1e-12);
+        assert_relative_eq!(before.3[i], after.3[i], epsilon = 1e-12);
+        assert_relative_eq!(before.4[i], after.4[i], epsilon = 1e-12);
     }
 }
 #[test]

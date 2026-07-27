@@ -286,10 +286,18 @@ pub fn build_nonlinear_behavior(
             };
             match crate::wall_panel::WallPanelElement::try_new_scaled(data, model, stiffness_scale)
             {
-                Some(panel) => (
-                    Box::new(panel.with_shear_capacity(qu)),
-                    ElemState::default(),
-                ),
+                Some(panel) => {
+                    let panel = panel.with_shear_capacity(qu);
+                    // 耐震壁の軸・曲げは既定でファイバー断面の弾塑性評価とする
+                    // （柱の Fiber 既定と同様）。フレーム内雑壁（stiffness_scale が
+                    // 実質 0）は弾性のままでよい。
+                    let panel = if stiffness_scale >= 1.0 {
+                        panel.with_fiber_flexure(data, model, basis)
+                    } else {
+                        panel
+                    };
+                    (Box::new(panel), ElemState::default())
+                }
                 None => (b, st),
             }
         }

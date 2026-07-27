@@ -1135,7 +1135,7 @@ fn test_start_job_while_running_is_rejected() {
     // 実行中に再度 start しても2つ目は無視され、job は上書きされない。
     app.start_time_history_job(App::sample_wave(&app.analysis_cfg));
     assert!(app.job.is_some());
-    assert_eq!(app.job.as_ref().unwrap().label, "プッシュオーバー");
+    assert_eq!(app.job.as_ref().unwrap().label, "増分解析");
 
     wait_for_job(&mut app);
 
@@ -2047,7 +2047,9 @@ fn test_holding_capacity_rank_auto_rc_rect_from_shape() {
     // 微小変位のみを対象とする(ここではランク判定経路の配線確認が目的で、
     // 崩壊形の精算は対象外)。
     app.analysis_cfg.push_steps = 3;
+    app.analysis_cfg.push_use_max_disp = true;
     app.analysis_cfg.push_max_disp = 3.0;
+    app.analysis_cfg.push_use_drift_angle = false;
     app.run_pushover();
     assert!(app.last_error.is_none(), "{:?}", app.last_error);
 

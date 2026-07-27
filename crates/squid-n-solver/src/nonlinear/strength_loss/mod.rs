@@ -419,7 +419,7 @@ pub fn staged_strength_loss(
             &reducer,
             dir,
             max_steps,
-            max_disp,
+            crate::pushover::PushoverTarget::from_max_disp(max_disp),
             use_kg,
             use_arc_length,
             arc_length_dl,

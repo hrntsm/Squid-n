@@ -872,8 +872,7 @@ impl App {
             .as_ref()
             .and_then(|r| r.pushover.as_ref())
             .ok_or_else(|| {
-                "プッシュオーバー未実行です。解析タブからプッシュオーバーを実行してください。"
-                    .to_string()
+                "増分解析未実行です。解析タブから増分解析を実行してください。".to_string()
             })?;
         let st = self.current_static().ok_or_else(|| {
             "静的解析結果がありません。地震静的(Ai)を実行してください。".to_string()
@@ -1017,7 +1016,7 @@ impl App {
                     rank
                 } else if let Some(SectionShape::RcWall { thickness, .. }) = sec.shape.as_ref() {
                     // RC 耐力壁: 告示「耐力壁の種別」表（τu/Fc により WA〜WD）。
-                    // τu は Ds 算定時（プッシュオーバー終局時）に壁断面に生じる
+                    // τu は Ds 算定時（増分解析＝プッシュオーバー終局時）に壁断面に生じる
                     // 平均せん断応力度 = 負担水平力 /(壁厚・壁長)。
                     let Some(fc) = mat.fc else {
                         continue;
@@ -1351,7 +1350,7 @@ impl App {
 
     /// 終局検定用の部材需要（軸力 [N]圧縮正・強軸/弱軸の設計用曲げ [N·mm]）。
     ///
-    /// `ultimate_use_pushover` が真でプッシュオーバー応答（部材別応答）が得られる場合は、
+    /// `ultimate_use_pushover` が真で増分解析応答（部材別応答）が得られる場合は、
     /// 終局時の部材別 Qmu（設計用せん断）・需要曲げ・軸力・Rp を直接反映する
     /// （[`Self::ultimate_demand_from_pushover`]）。それ以外は先頭重力ケース（G+P 相当）の
     /// 静的解析結果を優先し、無ければ最後に実行した静的解析結果を用いる（軸力は始端値、
@@ -1359,7 +1358,7 @@ impl App {
     /// いずれの応答も無ければ空（＝需要 0）。
     fn ultimate_demand_by_elem(&self) -> Vec<(ElemId, squid_n_design_jp::ultimate::MemberDemand)> {
         use squid_n_design_jp::ultimate::MemberDemand;
-        // プッシュオーバー応答からの直接反映（優先、指定時かつ応答があれば）。
+        // 増分解析応答からの直接反映（優先、指定時かつ応答があれば）。
         if self.ultimate_use_pushover {
             if let Some(demand) = self.ultimate_demand_from_pushover() {
                 return demand;
@@ -1409,11 +1408,11 @@ impl App {
             .unwrap_or_default()
     }
 
-    /// プッシュオーバー応答（部材別応答）から終局検定用の部材需要を組み立てる。
+    /// 増分解析応答（部材別応答）から終局検定用の部材需要を組み立てる。
     ///
-    /// プッシュオーバー最終ステップの部材別応答（[`squid_n_solver::pushover::PushoverMemberResponse`]）
+    /// 増分解析最終ステップの部材別応答（[`squid_n_solver::pushover::PushoverMemberResponse`]）
     /// から、軸力（圧縮正）・強軸/弱軸の設計用曲げ・強軸設計用せん断・部材別 Rp を
-    /// 反映する。プッシュオーバー未実行、または部材別応答が空（ステップ未確定）の場合は
+    /// 反映する。増分解析未実行、または部材別応答が空（ステップ未確定）の場合は
     /// `None`（呼び出し側が静的応答へフォールバック）。
     fn ultimate_demand_from_pushover(
         &self,
@@ -1841,7 +1840,7 @@ impl App {
         self.staleness.mark_edited();
     }
 
-    /// プッシュオーバー解析の純粋計算部分。所有権を取り `&self` を使わないため、
+    /// 増分解析（プッシュオーバー）の純粋計算部分。所有権を取り `&self` を使わないため、
     /// バックグラウンドジョブ（`start_pushover_job`）からも呼び出せる。
     /// モデルは呼び出し側で複製したものを渡す
     /// （非線形状態の副作用を GUI 上のモデルへ残さないため）。
@@ -1858,20 +1857,27 @@ impl App {
         Analysis::prepare(&work).map_err(|e| format!("解析準備エラー: {}", e))?;
         let dofmap = squid_n_core::dof::DofMap::build(&work);
         let reducer = squid_n_solver::constraint::Reducer::build(&work, &dofmap);
+        // 終了目標（目標変位・目標最大層間変形角）。両方無効なら荷重制御 λ=1 まで解析する。
+        let target = squid_n_solver::pushover::PushoverTarget {
+            max_disp: cfg.push_use_max_disp.then_some(cfg.push_max_disp),
+            max_drift_angle: cfg
+                .push_use_drift_angle
+                .then_some(1.0 / cfg.push_drift_denom.max(1.0)),
+        };
         squid_n_solver::pushover::pushover_analysis_recording(
             &mut work,
             &dofmap,
             &reducer,
             cfg.push_dir,
             cfg.push_steps,
-            cfg.push_max_disp,
+            target,
             false,
             false,
             0.0,
             false,
             cfg.ductility_method,
         )
-        .map_err(|e| format!("プッシュオーバー解析エラー: {}", e))
+        .map_err(|e| format!("増分解析エラー: {}", e))
     }
 
     /// `compute_pushover` の結果を適用する（bundle 格納・最終実行時刻更新・エラー設定）。
@@ -1891,7 +1897,7 @@ impl App {
         }
     }
 
-    /// プッシュオーバー解析を実行する。モデルは複製の上で解析する
+    /// 増分解析（プッシュオーバー）を実行する。モデルは複製の上で解析する
     /// （非線形状態の副作用を GUI 上のモデルへ残さないため）。
     pub fn run_pushover(&mut self) {
         self.apply_parallelism_setting();
@@ -1900,7 +1906,7 @@ impl App {
         self.apply_pushover_result(res);
     }
 
-    /// プッシュオーバー解析をバックグラウンドスレッドで実行する（P8 §5、残課題1）。
+    /// 増分解析（プッシュオーバー）をバックグラウンドスレッドで実行する（P8 §5、残課題1）。
     /// UI スレッドをブロックしないよう重い解析を逃がす。
     /// 既にジョブが実行中の場合は何もしない（last_error に案内文を設定）。
     pub fn start_pushover_job(&mut self) {
@@ -1926,7 +1932,7 @@ impl App {
             let _ = tx.send(JobResult::Pushover(result));
         });
         self.job = Some(AnalysisJob {
-            label: "プッシュオーバー",
+            label: "増分解析",
             started: std::time::SystemTime::now(),
             rx,
             #[cfg(feature = "gui")]

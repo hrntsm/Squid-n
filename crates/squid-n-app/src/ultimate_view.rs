@@ -90,16 +90,16 @@ pub fn ultimate_table(ui: &mut egui::Ui, app: &mut App) {
         ui.checkbox(&mut app.ultimate_biaxial_bending, "柱を2軸曲げで検定")
             .on_hover_text(
                 "RC 柱の曲げ余裕度を 2 軸曲げ 1/((Mmx/Mux)²+(Mmy/Muy)²)^(1/2) として検定します\
-                 （採用応力）。需要曲げは応答（プッシュオーバー／静的）の値を用います。",
+                 （採用応力）。需要曲げは応答（増分解析／静的）の値を用います。",
             );
     });
     ui.horizontal(|ui| {
         ui.checkbox(
             &mut app.ultimate_use_pushover,
-            "設計用応力・Rp をプッシュオーバー応答から反映",
+            "設計用応力・Rp を増分解析応答から反映",
         )
         .on_hover_text(
-            "終局時の設計用せん断 Qmu・需要曲げ・軸力・部材別 Rp をプッシュオーバー\
+            "終局時の設計用せん断 Qmu・需要曲げ・軸力・部材別 Rp を増分解析\
              最終ステップの部材別応答から直接反映します。未実行時は静的応答＋UI 一律 Rp \
              にフォールバックします。",
         );
@@ -115,7 +115,7 @@ pub fn ultimate_table(ui: &mut egui::Ui, app: &mut App) {
             } else {
                 ui.colored_label(
                     crate::theme::GRAY_600,
-                    "（プッシュオーバー未実行 → 静的応答で代替）",
+                    "（増分解析未実行 → 静的応答で代替）",
                 );
             }
         }
@@ -247,7 +247,7 @@ pub fn ultimate_table(ui: &mut egui::Ui, app: &mut App) {
                     .map(|p| !p.member_response.is_empty())
                     .unwrap_or(false);
             let demand_note = if using_po {
-                "Qmu・需要曲げ・軸力・Rp はプッシュオーバー終局応答（部材別）を直接反映"
+                "Qmu・需要曲げ・軸力・Rp は増分解析終局応答（部材別）を直接反映"
             } else {
                 "Qmu=上限強度倍率·2·Mu/内法（両端ヒンジ）、需要曲げ・軸力は静的応答、Rp は一律指定"
             };

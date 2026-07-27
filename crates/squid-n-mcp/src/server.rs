@@ -210,8 +210,10 @@ pub struct AnalysisRunArgs {
     pub dir: Option<String>,
     /// Pushover: 最大ステップ数（既定 50）。
     pub steps: Option<usize>,
-    /// Pushover: 目標変位 [mm]（既定 500）。
+    /// Pushover: 目標変位 [mm]。未指定なら目標層間変形角 1/150 のみで終了判定。
     pub max_disp: Option<f64>,
+    /// Pushover: 目標最大層間変形角の分母 n（角度 1/n）。例 150 → 1/150。既定 150。
+    pub max_drift_denom: Option<f64>,
     /// TimeHistory: サンプル波の時間刻み [s]（既定 0.01）。
     pub dt: Option<f64>,
     /// TimeHistory: サンプル波の継続時間 [s]（既定 2.0）。
@@ -241,7 +243,8 @@ impl AnalysisRunArgs {
             n_modes: self.n_modes.unwrap_or(d.n_modes),
             dir,
             steps: self.steps.unwrap_or(d.steps),
-            max_disp: self.max_disp.unwrap_or(d.max_disp),
+            max_disp: self.max_disp,
+            max_drift_denom: self.max_drift_denom,
             dt: self.dt.unwrap_or(d.dt),
             duration: self.duration.unwrap_or(d.duration),
             period: self.period.unwrap_or(d.period),
@@ -493,6 +496,7 @@ mod tests {
             dir: None,
             steps: None,
             max_disp: None,
+            max_drift_denom: None,
             dt: None,
             duration: None,
             period: None,
@@ -667,8 +671,8 @@ mod tests {
         let dir = test_store_dir("pushover_basic");
         let server = SquidNServer::new(make_state(pushover_model(), &dir));
         let mut args = run_args(JobKind::Pushover);
-        // 既定(steps=50, max_disp=500mm)だと機構形成後に特異行列となり得るため
-        // (squid-n-solver 側の同種テストと同じ配慮)、小さめの値にする。
+        // 既定(steps=50, 目標層間変形角1/150)だと機構形成後に特異行列となり得るため
+        // (squid-n-solver 側の同種テストと同じ配慮)、目標変位を明示して小さめの値にする。
         args.steps = Some(10);
         args.max_disp = Some(30.0);
         let result = server.analysis_run(Parameters(args)).await.unwrap();

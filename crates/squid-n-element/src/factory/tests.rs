@@ -240,10 +240,8 @@ fn test_build_nonlinear_behavior_concentrated_spring_uses_spring_beam() {
     let is_spring = snap
         .downcast_ref::<(
             Vec<Box<dyn squid_n_material::uniaxial::UniaxialMaterial>>,
-            f64,
-            f64,
-            f64,
-            f64,
+            [f64; 4],
+            [f64; 4],
             [f64; 12],
             [f64; 12],
         )>()

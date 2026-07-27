@@ -20,7 +20,7 @@ use crate::linear::StaticOnce;
 /// 最小 Z 座標を基部とする（レビュー §1.5・§1.7 が参照する「基部レベル」の
 /// 共通定義。剛床代表節点は慣性力重心に置かれる仮想節点であり、実際の
 /// 構造高さには寄与しないため除外する）。
-pub(super) fn base_elevation(model: &Model) -> f64 {
+pub fn base_elevation(model: &Model) -> f64 {
     let excluded: HashSet<NodeId> = model.generated_masters.iter().copied().collect();
     let base = model
         .nodes

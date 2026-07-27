@@ -27,7 +27,7 @@ mod wind;
 pub use config::{AiMode, SeismicCfg, SeismicDir, WindStaticCfg};
 pub(crate) use seismic::distribute_pi_over_diaphragms;
 pub use seismic::{
-    build_seismic_load_case_from_model, building_height_mm, ground_elevation,
+    base_elevation, build_seismic_load_case_from_model, building_height_mm, ground_elevation,
     seismic_distribution_for_model, steel_height_ratio,
 };
 pub use wind::{build_wind_load_case_from_model, wind_precalc_for_model, WindPrecalc};
