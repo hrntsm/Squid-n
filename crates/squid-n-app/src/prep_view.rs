@@ -180,7 +180,7 @@ fn stories_section(ui: &mut egui::Ui, prep: &PreparationResult) {
     if prep.stories.is_empty() {
         ui.colored_label(
             crate::theme::GRAY_600,
-            "階が定義されていません（地震力・風圧力・プッシュオーバーには階の定義が必要です）",
+            "階が定義されていません（地震力・風圧力・増分解析には階の定義が必要です）",
         );
         return;
     }

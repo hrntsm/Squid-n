@@ -169,7 +169,7 @@ pub fn materials_table(ui: &mut egui::Ui, app: &mut App) {
         ui.label("割増");
         ui.add(egui::TextEdit::singleline(&mut draft[6]).desired_width(50.0))
             .on_hover_text(
-                "保有水平耐力計算（プッシュオーバー）の材料強度割増係数。\
+                "保有水平耐力計算（増分解析）の材料強度割増係数。\
                  空欄=自動（鋼材1.1、590N級1.05、RC主筋1.1）",
             );
         let parsed_e = draft[1].parse::<f64>();
@@ -245,7 +245,7 @@ pub fn materials_table(ui: &mut egui::Ui, app: &mut App) {
                     let resp = ui.strong(*t);
                     if *t == "割増" {
                         resp.on_hover_text(
-                            "保有水平耐力計算（プッシュオーバー）の材料強度割増係数。\
+                            "保有水平耐力計算（増分解析）の材料強度割増係数。\
                              空欄=自動（鋼材1.1、590N級1.05、RC主筋1.1）",
                         );
                     }

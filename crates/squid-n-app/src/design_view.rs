@@ -672,7 +672,7 @@ pub fn design_table(ui: &mut egui::Ui, app: &mut App) {
         Err(msg) => {
             ui.colored_label(crate::theme::GRAY_600, &msg);
             let needs_analysis =
-                msg.contains("プッシュオーバー") || msg.contains("地震静的") || msg.contains("階");
+                msg.contains("増分解析") || msg.contains("地震静的") || msg.contains("階");
             if needs_analysis && ui.button("▶ 解析タブへ").clicked() {
                 app.active_tab = crate::app::Tab::Analysis;
             }
@@ -745,7 +745,7 @@ pub fn design_table(ui: &mut egui::Ui, app: &mut App) {
                         });
                     });
                 });
-            // 崩壊機構（プッシュオーバー判定）を表示する。Ds は部材ランクに加えて
+            // 崩壊機構（増分解析判定）を表示する。Ds は部材ランクに加えて
             // この崩壊機構を層別に反映する（層崩壊形の層は1段階不利、部分崩壊形は
             // 機構未確定として補正なし＝暫定値、全体崩壊形は標準）。
             if let Some(po) = app.results.as_ref().and_then(|r| r.pushover.as_ref()) {
@@ -798,12 +798,12 @@ pub fn design_table(ui: &mut egui::Ui, app: &mut App) {
                 );
             }
             let note = if app.design_rank_auto {
-                "Qu はプッシュオーバー性能曲線上の層別ピーク層せん断力（崩壊機構形成時の耐力）。\
+                "Qu は増分解析性能曲線上の層別ピーク層せん断力（崩壊機構形成時の耐力）。\
                  Ds は部材ランク自動判定（鋼=幅厚比、RC矩形=せん断余裕度 Qsu/Qmu の略算。柱は\
                  軸力考慮の曲げ終局から Qmu を算定）×崩壊機構。形状未設定・RC円形・Fc未設定材料は\
                  選択値フォールバック。"
             } else {
-                "Qu はプッシュオーバー性能曲線上の層別ピーク層せん断力。Ds は選択ランク×崩壊機構\
+                "Qu は増分解析性能曲線上の層別ピーク層せん断力。Ds は選択ランク×崩壊機構\
                  （部材ランク自動判定OFF）。"
             };
             ui.colored_label(crate::theme::GRAY_600, note);

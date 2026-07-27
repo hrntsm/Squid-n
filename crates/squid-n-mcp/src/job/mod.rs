@@ -1,4 +1,4 @@
-//! ジョブ実行（線形静的・固有値・プッシュオーバー・時刻歴・断面算定）関数。
+//! ジョブ実行（線形静的・固有値・増分解析・時刻歴・断面算定）関数。
 //!
 //! # モジュール構成（1 ファイル 1 責務）
 //! - [`linear_static`] — LinearStatic ジョブの純粋計算部分。
@@ -38,8 +38,10 @@ pub struct JobParams {
     pub dir: JobDir,
     /// Pushover: 最大ステップ数。
     pub steps: usize,
-    /// Pushover: 目標変位 [mm]。
-    pub max_disp: f64,
+    /// Pushover: 目標変位 [mm]。未指定なら層間変形角のみで判定。
+    pub max_disp: Option<f64>,
+    /// Pushover: 目標最大層間変形角の分母 n（角度 1/n rad）。既定 150。
+    pub max_drift_denom: Option<f64>,
     /// TimeHistory: サンプル波の時間刻み [s]。
     pub dt: f64,
     /// TimeHistory: サンプル波の継続時間 [s]。
@@ -57,11 +59,38 @@ impl Default for JobParams {
             n_modes: 3,
             dir: JobDir::X,
             steps: 50,
-            max_disp: 500.0,
+            max_disp: None,
+            max_drift_denom: None,
             dt: 0.01,
             duration: 2.0,
             period: 0.5,
             amp: 1000.0,
+        }
+    }
+}
+
+impl JobParams {
+    /// `max_disp`/`max_drift_denom` から `squid_n_solver::pushover::PushoverTarget` を
+    /// 組み立てる。
+    ///
+    /// - 両方未指定 → `PushoverTarget::default()`（層間変形角 1/150 のみ。GUI 既定と同じ）。
+    /// - `max_disp` のみ指定 → 目標変位のみ有効。
+    /// - `max_drift_denom` のみ指定 → 目標層間変形角 1/n のみ有効。
+    /// - 両方指定 → 両方有効（早く達した方で終了）。
+    pub(crate) fn pushover_target(&self) -> squid_n_solver::pushover::PushoverTarget {
+        match (self.max_disp, self.max_drift_denom) {
+            (None, None) => squid_n_solver::pushover::PushoverTarget::default(),
+            (Some(max_disp), None) => {
+                squid_n_solver::pushover::PushoverTarget::from_max_disp(max_disp)
+            }
+            (None, Some(denom)) => squid_n_solver::pushover::PushoverTarget {
+                max_disp: None,
+                max_drift_angle: Some(1.0 / denom.max(1.0)),
+            },
+            (Some(max_disp), Some(denom)) => squid_n_solver::pushover::PushoverTarget {
+                max_disp: Some(max_disp),
+                max_drift_angle: Some(1.0 / denom.max(1.0)),
+            },
         }
     }
 }
@@ -114,9 +143,12 @@ pub fn compute_job(model: &Model, kind: JobKind, params: &JobParams) -> Result<J
     match kind {
         JobKind::LinearStatic => compute_linear_static_job(model, params.load_case),
         JobKind::Eigen => compute_eigen_job(model, params.n_modes),
-        JobKind::Pushover => {
-            compute_pushover_job(model.clone(), params.dir, params.steps, params.max_disp)
-        }
+        JobKind::Pushover => compute_pushover_job(
+            model.clone(),
+            params.dir,
+            params.steps,
+            params.pushover_target(),
+        ),
         JobKind::TimeHistory => compute_time_history_job(
             model,
             params.dir,

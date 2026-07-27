@@ -10,6 +10,52 @@
 
 use squid_n_core::ids::{ElemId, StoryId};
 
+/// 増分解析の終了目標（P5 §7）。有効化した判定のうち**いずれか**に達した時点で
+/// 変位増分を打ち切る。両方 `None` の場合は荷重制御（λ=1）までで終了する。
+#[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
+pub struct PushoverTarget {
+    /// 目標最大変位 [mm]（頂部＝最上階マスター節点の加力方向変位）。`None` は判定しない。
+    pub max_disp: Option<f64>,
+    /// 目標最大層間変形角 [rad]（全層の最大値、例: 1/150）。`None` は判定しない。
+    pub max_drift_angle: Option<f64>,
+}
+
+impl Default for PushoverTarget {
+    /// 既定は層間変形角 1/150 のみを有効とする。
+    fn default() -> Self {
+        Self {
+            max_disp: None,
+            max_drift_angle: Some(1.0 / 150.0),
+        }
+    }
+}
+
+impl PushoverTarget {
+    /// 目標変位のみを指定する（旧 API 互換。0 以下は判定なし＝荷重制御のみで終了）。
+    pub fn from_max_disp(max_disp: f64) -> Self {
+        Self {
+            max_disp: (max_disp > 0.0).then_some(max_disp),
+            max_drift_angle: None,
+        }
+    }
+
+    /// いずれかの判定が有効か。
+    pub fn is_enabled(&self) -> bool {
+        self.max_disp.is_some() || self.max_drift_angle.is_some()
+    }
+
+    /// 現在の応答が目標に達したか（有効な判定の OR）。
+    /// `max_drift_angle_now` は全層の最大層間変形角 [rad]
+    /// （[`super::response::max_story_drift_angle`] で算定した値）。
+    pub(crate) fn reached(&self, roof_disp: f64, max_drift_angle_now: f64) -> bool {
+        if self.max_disp.is_some_and(|d| roof_disp >= d) {
+            return true;
+        }
+        self.max_drift_angle
+            .is_some_and(|a| max_drift_angle_now >= a)
+    }
+}
+
 /// 性能曲線の1点（P5 §7.4）
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct CapacityPoint {

@@ -377,7 +377,7 @@ pub fn build_report_csv(app: &App) -> String {
 
     if let Some(po) = &results.pushover {
         out.push_str(&format!(
-            "\n[プッシュオーバー]\n保有水平耐力Qu[kN],{:.2}\nヒンジ数,{}\n",
+            "\n[増分解析]\n保有水平耐力Qu[kN],{:.2}\nヒンジ数,{}\n",
             po.qu / 1000.0,
             po.hinges.len()
         ));

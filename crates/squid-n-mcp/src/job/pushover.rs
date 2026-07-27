@@ -1,20 +1,21 @@
-//! プッシュオーバー解析ジョブの純粋計算。
+//! 増分解析（プッシュオーバー解析）ジョブの純粋計算。
 //!
 //! - [`compute_pushover_job`] — Pushover ジョブの純粋計算部分。
 
 use super::{JobDir, JobOutcome};
 use squid_n_core::model::Model;
+use squid_n_solver::pushover::PushoverTarget;
 
 /// Pushover ジョブの純粋計算部分。
 /// squid-n-app の `App::compute_pushover`（app.rs）と同じ流れ
 /// （squid-n-mcp は squid-n-app に依存しないため複製している）。
 /// モデルは所有権を取って複製したものを渡す前提
-/// （プッシュオーバーは非線形状態を模型に書き戻すため）。
+/// （増分解析は非線形状態を模型に書き戻すため）。
 pub(crate) fn compute_pushover_job(
     model: Model,
     dir: JobDir,
     steps: usize,
-    max_disp: f64,
+    target: PushoverTarget,
 ) -> Result<JobOutcome, String> {
     let mut work = model;
     // 解析前に剛域を自動算定してモデルへ反映する（設計書 §6.2.1、標準実装）。
@@ -30,18 +31,20 @@ pub(crate) fn compute_pushover_job(
         JobDir::X => squid_n_solver::analysis::SeismicDir::X,
         JobDir::Y => squid_n_solver::analysis::SeismicDir::Y,
     };
-    let result = squid_n_solver::pushover::pushover_analysis(
+    let result = squid_n_solver::pushover::pushover_analysis_recording(
         &mut work,
         &dofmap,
         &reducer,
         seismic_dir,
         steps,
-        max_disp,
+        target,
         false,
         false,
         0.0,
+        false,
+        squid_n_solver::pushover::DuctilityMethod::default(),
     )
-    .map_err(|e| format!("プッシュオーバー解析エラー: {e}"))?;
+    .map_err(|e| format!("増分解析エラー: {e}"))?;
 
     let mechanism = match result.mechanism {
         squid_n_solver::pushover::MechanismType::Overall => "Overall".to_string(),

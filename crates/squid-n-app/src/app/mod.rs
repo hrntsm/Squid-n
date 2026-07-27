@@ -71,14 +71,14 @@ pub enum RightPanel {
     AnalysisSettings,
 }
 
-/// 結果タブ内の切替（3D 各種図・時刻歴グラフ・プッシュオーバー曲線）。
+/// 結果タブ内の切替（3D 各種図・時刻歴グラフ・増分解析曲線）。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum ResultsView {
     #[default]
     Spatial,
     TimeHistory,
     Pushover,
-    /// 質点系（串団子）モデル（プッシュオーバーから生成）。
+    /// 質点系（串団子）モデル（増分解析から生成）。
     LumpedMass,
 }
 
@@ -325,11 +325,17 @@ pub struct AnalysisSettings {
     pub z: f64,
     pub soil: squid_n_load::ai::SoilClass,
     pub c0: f64,
-    /// プッシュオーバー: 方向・最大ステップ・目標変位 [mm]
+    /// 増分解析（プッシュオーバー）: 方向・最大ステップ・目標変位 [mm]
     pub push_dir: SeismicDir,
     pub push_steps: usize,
     pub push_max_disp: f64,
-    /// プッシュオーバー: 塑性率（ductility）の算定方式（構造力学）。
+    /// 増分解析: 目標変位[mm]による終了判定を使うか。
+    pub push_use_max_disp: bool,
+    /// 増分解析: 目標最大層間変形角による終了判定を使うか。
+    pub push_use_drift_angle: bool,
+    /// 増分解析: 目標最大層間変形角の分母 n（角度は 1/n [rad]）。
+    pub push_drift_denom: f64,
+    /// 増分解析: 塑性率（ductility）の算定方式（構造力学）。
     pub ductility_method: squid_n_solver::pushover::DuctilityMethod,
     /// 質点系モデル生成: モデル化タイプ（等価せん断型など）。
     pub lumped_mass_type: squid_n_solver::lumped_mass::LumpedMassType,
@@ -387,7 +393,7 @@ pub struct AnalysisSettings {
 }
 
 /// 時刻歴の入力方向選択（UI 用）。X・Y に加え、同一波形を両方向へ同時入力する
-/// 「X+Y」を持つ（`SeismicDir` は静的地震荷重・プッシュオーバー共用のため
+/// 「X+Y」を持つ（`SeismicDir` は静的地震荷重・増分解析共用のため
 /// 拡張せず、時刻歴専用にこの型を新設する）。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ThDir {
@@ -434,6 +440,9 @@ impl Default for AnalysisSettings {
             push_dir: SeismicDir::X,
             push_steps: 50,
             push_max_disp: 500.0,
+            push_use_max_disp: false,
+            push_use_drift_angle: true,
+            push_drift_denom: 150.0,
             ductility_method: squid_n_solver::pushover::DuctilityMethod::default(),
             lumped_mass_type: squid_n_solver::lumped_mass::LumpedMassType::default(),
             lumped_secant_ratio: 0.75,
@@ -466,7 +475,7 @@ impl Default for AnalysisSettings {
     }
 }
 
-/// バックグラウンド解析ジョブ（プッシュオーバー／時刻歴／線形静的・荷重組合せ・
+/// バックグラウンド解析ジョブ（増分解析／時刻歴／線形静的・荷重組合せ・
 /// 全組合せ一括・地震静的・風荷重）が送る結果。
 pub enum JobResult {
     Pushover(Result<squid_n_solver::pushover::PushoverResult, String>),
@@ -491,7 +500,7 @@ pub enum JobResult {
     },
 }
 
-/// バックグラウンド解析ジョブ。重い解析(プッシュオーバー・時刻歴・線形静的・
+/// バックグラウンド解析ジョブ。重い解析(増分解析・時刻歴・線形静的・
 /// 荷重組合せ・全組合せ一括・地震静的・風荷重)を UI スレッドから逃がす(P8 §5)。
 /// 結果は poll_job で受け取り適用する。
 pub struct AnalysisJob {
@@ -578,7 +587,7 @@ pub struct App {
     pub last_notice: Option<String>,
     /// セッション内イベントログ（下ドックのログパネルに表示）。
     pub log: EventLog,
-    /// 実行中のバックグラウンド解析ジョブ（プッシュオーバー・時刻歴・線形静的・
+    /// 実行中のバックグラウンド解析ジョブ（増分解析・時刻歴・線形静的・
     /// 荷重組合せ・全組合せ一括・地震静的・風荷重、P8 §5）。
     /// 完了は `poll_job` で検知して結果を適用する。
     pub job: Option<AnalysisJob>,
@@ -639,8 +648,8 @@ pub struct App {
     pub ultimate_biaxial_shear: bool,
     /// 終局検定で柱の曲げを 2 軸曲げとして検定するか（RC 柱の 2 軸曲げ余裕度）。
     pub ultimate_biaxial_bending: bool,
-    /// 終局検定の設計用応力（Qmu・需要曲げ）と部材別 Rp をプッシュオーバー応答から
-    /// 直接反映するか（false は静的解析応答＋UI 一律 Rp）。プッシュオーバー未実行時は
+    /// 終局検定の設計用応力（Qmu・需要曲げ）と部材別 Rp を増分解析応答から
+    /// 直接反映するか（false は静的解析応答＋UI 一律 Rp）。増分解析未実行時は
     /// 自動的に静的応答へフォールバックする。
     pub ultimate_use_pushover: bool,
     /// 左ドック（ナビゲータ／編集パネル）の表示状態

@@ -3,9 +3,11 @@
 //! - [`compute_base_shear`] — ベースシア（内力の釣合いから）
 //! - [`compute_story_shear`] — 層せん断力
 //! - [`compute_story_drift`] — 層間変位
+//! - [`story_heights`] — 階高（elevation の隣接差分）
+//! - [`max_story_drift_angle`] — 全層の最大層間変形角
 //! - [`get_roof_disp`] / [`get_roof_dof`] — 屋根（最上階マスター）の変位・DOF
 
-use crate::analysis::SeismicDir;
+use crate::analysis::{base_elevation, SeismicDir};
 use squid_n_core::dof::DofMap;
 use squid_n_core::model::Model;
 
@@ -104,6 +106,34 @@ pub(crate) fn compute_story_drift(
             drift
         })
         .collect()
+}
+
+/// 各階の階高 [mm] を階の標高（`Story::elevation`）の隣接差分から求める。
+/// 最下層は最下端節点標高（[`base_elevation`]、生成マスター節点を除く最小 z）との差。
+/// 逆転・重複入力による非正値は 0 とする（層間変形角の算定では 0 除算を避けるため
+/// [`max_story_drift_angle`] 側で高さ 0 の層を判定対象外にする）。
+pub(crate) fn story_heights(model: &Model) -> Vec<f64> {
+    let mut prev = base_elevation(model);
+    model
+        .stories
+        .iter()
+        .map(|s| {
+            let h = (s.elevation - prev).max(0.0);
+            prev = s.elevation;
+            h
+        })
+        .collect()
+}
+
+/// 全層の最大層間変形角 [rad]（|層間変位| / 階高 の最大値）。
+/// 階高 0 以下の層（標高の逆転・重複入力）は判定対象外とする。
+pub(crate) fn max_story_drift_angle(drifts: &[f64], heights: &[f64]) -> f64 {
+    drifts
+        .iter()
+        .zip(heights.iter())
+        .filter(|(_, &h)| h > 0.0)
+        .map(|(&d, &h)| d.abs() / h)
+        .fold(0.0_f64, f64::max)
 }
 
 pub(crate) fn get_roof_disp(

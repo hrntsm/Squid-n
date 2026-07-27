@@ -11,9 +11,10 @@ use super::mechanism::determine_mechanism;
 use super::member_response::compute_member_response;
 use super::response::{
     compute_base_shear, compute_story_drift, compute_story_shear, get_roof_disp, get_roof_dof,
+    max_story_drift_angle, story_heights,
 };
 use super::shear_yield::{compute_shear_yield_thresholds, track_shear_yield};
-use super::types::{CapacityPoint, DuctilityMethod, PushoverResult, PushoverStep};
+use super::types::{CapacityPoint, DuctilityMethod, PushoverResult, PushoverStep, PushoverTarget};
 use crate::analysis::{
     building_height_mm, distribute_pi_over_diaphragms, steel_height_ratio, SeismicDir,
 };
@@ -27,7 +28,10 @@ use squid_n_element::behavior::{Ctx, ElementBehavior, LocalVec};
 use squid_n_element::factory::{build_nonlinear_behavior, StrengthBasis};
 use squid_n_math::solver::{make_solver, SolverBackend};
 
-/// プッシュオーバー解析（P5 §7）
+/// 増分解析（プッシュオーバー解析、P5 §7）。
+/// `max_disp` は目標変位 [mm] のみの終了判定（[`PushoverTarget::from_max_disp`]）に
+/// 変換して本体へ渡す旧 API 互換のラッパー。層間変形角による終了判定を使う場合は
+/// [`pushover_analysis_recording`] に [`PushoverTarget`] を渡す。
 #[allow(clippy::too_many_arguments)]
 pub fn pushover_analysis(
     model: &mut Model,
@@ -46,7 +50,7 @@ pub fn pushover_analysis(
         reducer,
         dir,
         max_steps,
-        max_disp,
+        PushoverTarget::from_max_disp(max_disp),
         use_kg,
         use_arc_length,
         arc_length_dl,
@@ -55,7 +59,9 @@ pub fn pushover_analysis(
     )
 }
 
-/// プッシュオーバー解析（P5 §7）。`record_node_disp` が真の場合、各ステップの
+/// 増分解析（プッシュオーバー解析、P5 §7）。終了目標は [`PushoverTarget`] で
+/// 指定する（目標変位・目標最大層間変形角のいずれか早い方に達した時点で打ち切り。
+/// 両方無効なら荷重制御 λ=1 までで終了）。`record_node_disp` が真の場合、各ステップの
 /// `PushoverStep::node_disp` に全自由節点変位を記録する（段階的耐力喪失解析の
 /// 部材変形角算定用、`strength_loss` モジュール参照）。既存 API を壊さないよう
 /// `pushover_analysis` は本関数に `record_node_disp = false` で委譲する薄いラッパー。
@@ -66,7 +72,7 @@ pub fn pushover_analysis_recording(
     reducer: &Reducer,
     dir: SeismicDir,
     max_steps: usize,
-    max_disp: f64,
+    target: PushoverTarget,
     use_kg: bool,
     use_arc_length: bool,
     arc_length_dl: f64,
@@ -164,6 +170,8 @@ pub fn pushover_analysis_recording(
 
     let thresholds = compute_hinge_thresholds(model);
     let shear_thresholds = compute_shear_yield_thresholds(model);
+    // 目標最大層間変形角の判定に使う階高（elevation の隣接差分、最下層は最下端節点まで）。
+    let heights = story_heights(model);
     let mut hinges = Vec::new();
     let mut shear_yields = Vec::new();
     let mut capacity_curve = Vec::new();
@@ -171,6 +179,9 @@ pub fn pushover_analysis_recording(
     let mut total_disp = vec![0.0; n_active];
     let n_steps = max_steps.clamp(1, 100);
     let dlambda = 1.0 / n_steps as f64;
+    // 終了目標（頂部変位・最大層間変形角のいずれか）に達したかのフラグ。
+    // 荷重制御の途中で達した場合は以降の載荷・変位制御を打ち切る。
+    let mut target_reached = false;
 
     for step in 0..n_steps {
         // 前確定点の荷重係数（前ステップまでが満 λ で確定している前提の下限）。
@@ -248,6 +259,7 @@ pub fn pushover_analysis_recording(
                 let f_int_now = compute_f_int(model, dofmap, &behaviors);
                 let base_shear = compute_base_shear(model, dofmap, &f_int_now, dir);
                 let story_drift = compute_story_drift(model, dofmap, &total_disp, dir);
+                let drift_angle_now = max_story_drift_angle(&story_drift, &heights);
                 capacity_curve.push(CapacityPoint {
                     step: step as u32,
                     roof_disp: roof,
@@ -286,8 +298,11 @@ pub fn pushover_analysis_recording(
                     &mut shear_yields,
                 );
                 step_ok = true;
-                if max_disp > 0.0 && roof >= max_disp {
-                    break;
+                // 目標（頂部変位・最大層間変形角）到達で以降の載荷を打ち切る。
+                // 従来の `roof >= max_disp` 判定は attempt ループしか抜けず、外側の
+                // ステップループを止めていなかった（早期終了として機能していない）。
+                if target.reached(roof, drift_angle_now) {
+                    target_reached = true;
                 }
                 break;
             } else {
@@ -302,14 +317,37 @@ pub fn pushover_analysis_recording(
         if !step_ok {
             // 収束に至らなかった step はスキップ
         }
+        if target_reached {
+            break;
+        }
     }
 
-    // 変位制御フェーズ（P5 §7.1）
-    if max_disp > 0.0 {
-        if let Some(roof_active) = get_roof_dof(model, dofmap, dir) {
-            let initial_disp = total_disp[roof_active];
+    // 変位制御フェーズ（P5 §7.1）。荷重制御で目標に達しなかった場合のみ実行し、
+    // 目標（頂部変位・最大層間変形角）に達するまで頂部変位を強制する。
+    let disp_control_roof = if target.is_enabled() && !target_reached {
+        get_roof_dof(model, dofmap, dir)
+    } else {
+        None
+    };
+    if let Some(roof_active) = disp_control_roof {
+        let initial_disp = total_disp[roof_active];
+        // 頂部変位の刻み上限: 目標変位はその値を、目標最大層間変形角は「全層が一様に
+        // 目標角へ達した場合の頂部変位」＝角×Σ階高を用いる。最大層間変形角は平均
+        // 層間変形角（＝頂部変位/Σ階高）以上のため、上限到達までに必ず判定が成立する。
+        // 両方有効な場合は先に成立し得る小さい方まで刻めば足りる。
+        let sum_h: f64 = heights.iter().sum();
+        let mut roof_bound = f64::INFINITY;
+        if let Some(d) = target.max_disp {
+            roof_bound = roof_bound.min(d);
+        }
+        if let Some(a) = target.max_drift_angle {
+            if sum_h > 0.0 {
+                roof_bound = roof_bound.min(a * sum_h);
+            }
+        }
+        if roof_bound.is_finite() && roof_bound > initial_disp {
             let n_disp_steps = 10usize;
-            let du_target = (max_disp - initial_disp) / n_disp_steps as f64;
+            let du_target = (roof_bound - initial_disp) / n_disp_steps as f64;
 
             // 変位制御のペナルティ剛性は「拘束する屋根 DOF 自身の対角剛性（＝加力方向の
             // 水平剛性）」の 1e6 倍とする。固定 1e16 も、全体最大対角（軸剛性 ~1e9 に支配）
@@ -330,7 +368,7 @@ pub fn pushover_analysis_recording(
             };
 
             for step in 0..n_disp_steps {
-                let target = initial_disp + du_target * (step + 1) as f64;
+                let roof_target = initial_disp + du_target * (step + 1) as f64;
                 let mut step_ok = false;
 
                 for _attempt in 0..5 {
@@ -360,7 +398,7 @@ pub fn pushover_analysis_recording(
                         // gap 形式 penalty·(target − u_roof) で桁落ちを避ける。
                         let u_roof = total_disp[roof_active] + step_du_free[roof_active];
                         let mut r_free: Vec<f64> = f_int.iter().map(|fi| -fi).collect();
-                        r_free[roof_active] += penalty * (target - u_roof);
+                        r_free[roof_active] += penalty * (roof_target - u_roof);
                         let r_red = reducer.reduce_f(&r_free);
 
                         // 収束は力の相対ノルム（内力ノルム基準＝ベースシア相当）で判定する。
@@ -408,6 +446,7 @@ pub fn pushover_analysis_recording(
                         let f_int_now = compute_f_int(model, dofmap, &behaviors);
                         let base_shear = compute_base_shear(model, dofmap, &f_int_now, dir);
                         let story_drift = compute_story_drift(model, dofmap, &total_disp, dir);
+                        let drift_angle_now = max_story_drift_angle(&story_drift, &heights);
                         let cstep = (n_steps + 1 + step) as u32;
                         capacity_curve.push(CapacityPoint {
                             step: cstep,
@@ -441,12 +480,16 @@ pub fn pushover_analysis_recording(
                             &mut shear_yields,
                         );
                         step_ok = true;
+                        // 目標（頂部変位・最大層間変形角）到達で以降の押込みを打ち切る。
+                        if target.reached(roof, drift_angle_now) {
+                            target_reached = true;
+                        }
                         break;
                     } else {
                         model.restore(&snap, &mut behaviors);
                     }
                 }
-                if !step_ok {
+                if !step_ok || target_reached {
                     break;
                 }
             }

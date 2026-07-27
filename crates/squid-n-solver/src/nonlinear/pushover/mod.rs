@@ -25,7 +25,7 @@ mod types;
 pub use driver::{pushover_analysis, pushover_analysis_recording};
 pub use types::{
     CapacityPoint, DuctilityMethod, HingeEvent, HingeLevel, MechanismType, PushoverMemberResponse,
-    PushoverResult, PushoverStep, ShearYieldEvent,
+    PushoverResult, PushoverStep, PushoverTarget, ShearYieldEvent,
 };
 
 // dynamic/timehistory が `crate::pushover::{assemble_k, compute_f_int}` で参照する。

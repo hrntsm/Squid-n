@@ -938,7 +938,7 @@ impl App {
     }
 
     /// 解析（② 実行）のセクション一式。荷重ケース・荷重組合せ・固有値・
-    /// プッシュオーバー・時刻歴応答。
+    /// 増分解析・時刻歴応答。
     fn analysis_run_sections(&mut self, ui: &mut egui::Ui, running: bool) {
         self.load_case_section(ui, running);
         ui.add_space(6.0);
@@ -1109,9 +1109,9 @@ impl App {
             });
     }
 
-    /// プッシュオーバー解析。
+    /// 増分解析（プッシュオーバー）。
     fn pushover_section(&mut self, ui: &mut egui::Ui, running: bool) {
-        egui::CollapsingHeader::new("プッシュオーバー")
+        egui::CollapsingHeader::new("増分解析")
             .default_open(false)
             .id_salt("as_pushover")
             .show(ui, |ui| {
@@ -1121,13 +1121,38 @@ impl App {
                     ui.selectable_value(&mut self.analysis_cfg.push_dir, SeismicDir::Y, "Y");
                     ui.label("ステップ:");
                     ui.add(egui::DragValue::new(&mut self.analysis_cfg.push_steps).range(1..=100));
-                    ui.label("目標変位[mm]:");
-                    ui.add(
+                });
+                // 終了目標（いずれかへの到達で解析を打ち切る）。両方とも無効なら
+                // 荷重制御 λ=1 まで解析する（solver 側 PushoverTarget の既定挙動）。
+                ui.horizontal_wrapped(|ui| {
+                    ui.checkbox(
+                        &mut self.analysis_cfg.push_use_drift_angle,
+                        "目標層間変形角:",
+                    )
+                    .on_hover_text("全層の層間変形角がこの値に達した時点で解析を打ち切ります");
+                    ui.label("1/");
+                    ui.add_enabled(
+                        self.analysis_cfg.push_use_drift_angle,
+                        egui::DragValue::new(&mut self.analysis_cfg.push_drift_denom)
+                            .speed(10.0)
+                            .range(50.0..=1000.0),
+                    );
+                    ui.separator();
+                    ui.checkbox(&mut self.analysis_cfg.push_use_max_disp, "目標変位[mm]:")
+                        .on_hover_text("頂部変位がこの値に達した時点で解析を打ち切ります");
+                    ui.add_enabled(
+                        self.analysis_cfg.push_use_max_disp,
                         egui::DragValue::new(&mut self.analysis_cfg.push_max_disp)
                             .speed(10.0)
                             .range(1.0..=10000.0),
                     );
                 });
+                if !self.analysis_cfg.push_use_max_disp && !self.analysis_cfg.push_use_drift_angle {
+                    ui.colored_label(
+                        crate::theme::GRAY_600,
+                        "目標未設定: 荷重制御(λ=1)までで終了します。",
+                    );
+                }
                 ui.horizontal_wrapped(|ui| {
                     use squid_n_solver::pushover::DuctilityMethod;
                     ui.label("塑性率方式:")
@@ -1163,11 +1188,7 @@ impl App {
                     {
                         self.start_pushover_job();
                     }
-                    if self
-                        .job
-                        .as_ref()
-                        .is_some_and(|j| j.label == "プッシュオーバー")
-                    {
+                    if self.job.as_ref().is_some_and(|j| j.label == "増分解析") {
                         ui.spinner();
                     }
                 });
@@ -1431,7 +1452,7 @@ impl App {
             if ui.selectable_label(sel_th, "時刻歴").clicked() {
                 self.results_view = ResultsView::TimeHistory;
             }
-            if ui.selectable_label(sel_po, "プッシュオーバー").clicked() {
+            if ui.selectable_label(sel_po, "増分解析").clicked() {
                 self.results_view = ResultsView::Pushover;
             }
             if ui.selectable_label(sel_lm, "質点系モデル").clicked() {
@@ -1543,7 +1564,7 @@ impl App {
         }
     }
 
-    /// プッシュオーバー結果（性能曲線・ヒンジ・崩壊機構）の表示。
+    /// 増分解析結果（性能曲線・ヒンジ・崩壊機構）の表示。
     pub(crate) fn pushover_panel(&mut self, ui: &mut egui::Ui) {
         if self
             .results
@@ -1553,7 +1574,7 @@ impl App {
         {
             ui.colored_label(
                 crate::theme::GRAY_600,
-                "プッシュオーバー結果がありません。解析タブから実行してください。",
+                "増分解析結果がありません。解析タブから実行してください。",
             );
             return;
         }
@@ -1686,7 +1707,7 @@ impl App {
         });
     }
 
-    /// 質点系（串団子）モデルの表示。プッシュオーバー結果から層 Q-δ を
+    /// 質点系（串団子）モデルの表示。増分解析結果から層 Q-δ を
     /// トリリニア縮約し、層ごとの質量・階高・復元力特性を一覧する
     /// （構造動力学の質点系解析モデル）。
     pub(crate) fn lumped_mass_panel(&mut self, ui: &mut egui::Ui) {
@@ -1695,8 +1716,8 @@ impl App {
         let Some(po) = self.results.as_ref().and_then(|r| r.pushover.as_ref()) else {
             ui.colored_label(
                 crate::theme::GRAY_600,
-                "プッシュオーバー結果がありません。質点系モデルは\
-                 プッシュオーバー結果から生成します。解析タブから実行してください。",
+                "増分解析結果がありません。質点系モデルは\
+                 増分解析結果から生成します。解析タブから実行してください。",
             );
             return;
         };
@@ -1726,7 +1747,7 @@ impl App {
         });
         ui.separator();
 
-        // プッシュオーバーから串団子モデルを生成（軽量なので毎フレーム再構成）。
+        // 増分解析から串団子モデルを生成（軽量なので毎フレーム再構成）。
         let lm = build_lumped_mass_model(
             &self.model,
             po,
@@ -1786,7 +1807,7 @@ impl App {
             ui.add_space(6.0);
             ui.colored_label(
                 crate::theme::GRAY_600,
-                "K は [kN/mm]、Q は [kN]、δ は [mm]。骨格はプッシュオーバー層 Q-δ を\
+                "K は [kN/mm]、Q は [kN]、δ は [mm]。骨格は増分解析の層 Q-δ を\
                  等包絡面積則でトリリニア縮約したもの。",
             );
         });
