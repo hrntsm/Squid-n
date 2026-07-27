@@ -102,6 +102,40 @@ pub fn status_color(ratio: f64) -> Color32 {
     }
 }
 
+/// 検定比のグラデーション配色（[`check_ratio_color`]）のアンカー点。
+///
+/// t は検定比そのもの（0.0–1.0）。0.8 に同じ t のアンカーを2つ置くことで、
+/// 良好域（緑）と注意域（黄）の境界を連続補間せず不連続に切り替える
+/// （判定基準 0.8 をまたいだことを色相の変化で明示するため）。
+/// t=0.0 の淡緑は `lighten(GOOD_GREEN, 0.6)` の値（const 文脈では関数を
+/// 呼べないため展開した定数）。
+const CHECK_RATIO_LUT: [(f32, Color32); 4] = [
+    (0.0, Color32::from_rgb(0xAE, 0xDC, 0xBA)),
+    (0.8, GOOD_GREEN),
+    (0.8, BEST_YELLOW),
+    (1.0, SECONDARY_AMBER),
+];
+
+/// 検定比を連続グラデーション（コンター）へ写像する（3D ビューの検定比図用）。
+///
+/// [`status_color`] と同じ判定境界（0.8／1.0）を色相の切り替わりとして保ちつつ、
+/// 各帯域の内部を連続的に濃くすることで、数値ラベルを出さなくても余裕度の
+/// 大小を色から読み取れるようにしたもの。
+///
+/// - ≤0.8: 淡緑→緑（余裕が小さいほど濃い緑）
+/// - ≤1.0: 黄→アンバー（注意域。0.8 の境界で緑から明確に色相が変わる）
+/// - >1.0: 赤（NG。連続値ではなく単色）
+///
+/// 検定表（`design_view.rs`）のセル着色は従来どおり [`status_color`] の3色規約を
+/// 使う（表では文字と背景色の対比が要るため、淡い連続色は適さない）。
+pub fn check_ratio_color(ratio: f64) -> Color32 {
+    if ratio > 1.0 {
+        PARETO_RED
+    } else {
+        lut_sample(&CHECK_RATIO_LUT, ratio as f32)
+    }
+}
+
 /// LUT（`(t, Color32)` のアンカー点列。t 昇順・[0,1] を覆う）を区間線形補間する
 /// 共通ヘルパ。各カラーマップ（[`ColorMap::sample`]）はこれを呼ぶだけの薄い実装にする。
 /// `t` は 0.0–1.0 にクランプしてから探索する。
@@ -381,6 +415,36 @@ mod tests {
             ColorMap::Viridis.sample(0.0)
         );
         assert_eq!(ColorMap::Viridis.sample(5.0), ColorMap::Viridis.sample(1.0));
+    }
+
+    /// 検定比のグラデーションは、判定境界で `status_color` と同じ色になる
+    /// （良好域の上端＝緑、注意域の下端＝黄、NG＝赤）。
+    #[test]
+    fn check_ratio_color_matches_status_color_at_boundaries() {
+        assert_eq!(check_ratio_color(0.8), GOOD_GREEN);
+        assert_eq!(check_ratio_color(0.80001), BEST_YELLOW);
+        assert_eq!(check_ratio_color(1.0), SECONDARY_AMBER);
+        assert_eq!(check_ratio_color(1.0001), PARETO_RED);
+        assert_eq!(check_ratio_color(5.0), PARETO_RED);
+    }
+
+    /// 良好域（≤0.8）は淡緑から緑へ連続的に変化する（同じ緑一色にはならない）。
+    #[test]
+    fn check_ratio_color_is_gradient_below_caution() {
+        let c0 = check_ratio_color(0.0);
+        let c4 = check_ratio_color(0.4);
+        let c8 = check_ratio_color(0.8);
+        assert_ne!(c0, c4);
+        assert_ne!(c4, c8);
+        // 検定比が大きいほど濃い（緑成分が減る）方向へ変化する
+        assert!(c0.g() > c4.g());
+        assert!(c4.g() > c8.g());
+    }
+
+    /// 負値は 0 側へクランプされる（下限の淡緑）。
+    #[test]
+    fn check_ratio_color_clamps_negative() {
+        assert_eq!(check_ratio_color(-1.0), check_ratio_color(0.0));
     }
 
     /// 表示ラベルが想定どおり。

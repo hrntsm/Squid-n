@@ -1,9 +1,13 @@
 //! 検定比図（部材検定・節点検定の検定比による着色）の描画。
 //!
-//! 検定表（`design_view.rs`）と同じ [`theme::status_color`] の3色規約
-//! （≤0.8 緑=OK／≤1.0 黄=注意／>1.0 赤=NG）で部材・節点を着色し、
-//! 検定表と3Dビューの見え方を一貫させる。連続的なコンター配色は採らない
-//! （判定基準 0.8/1.0 との対応を優先するため。詳細は dev_docs の申し送りを参照）。
+//! 部材・節点は [`theme::check_ratio_color`] の連続グラデーション
+//! （≤0.8 淡緑→緑／≤1.0 黄→アンバー／>1.0 赤=NG）で着色する。判定境界
+//! （0.8／1.0）では検定表（`design_view.rs`）の3色規約と同じ色相へ切り替わる
+//! ため、表と3Dビューの見え方は判定レベルの粒度で一貫する。
+//!
+//! 数値ラベルは全部材に出すと過密で読めなくなるため、既定では注意域以上
+//! （検定比 ≥ [`LABEL_MIN_RATIO`]）の部材にのみ表示し、それ未満は色の濃淡
+//! だけで余裕度を示す（`app.check_ratio_label_all` で全表示に切り替え可能）。
 //!
 //! 着色対象は [`CheckRatioFilter`]（最大＝全式の max、または特定の検定式のみ）で
 //! 切り替えられ、部材内の検定位置ごとに正方形マーカーを重ねる「位置別マーカー」、
@@ -21,6 +25,11 @@ use squid_n_core::ids::{ElemId, NodeId};
 use squid_n_design_jp::{CheckComponent, CheckKind, CheckOutcome, CheckResult};
 
 use super::CheckRatioFilter;
+
+/// 部材中点の数値ラベルを表示する下限の検定比（注意域の境界）。
+/// これ未満の部材はラベルを描かず、色のグラデーション
+/// （[`theme::check_ratio_color`]）だけで余裕度を示す。
+pub(super) const LABEL_MIN_RATIO: f64 = 0.8;
 
 /// `CheckKind` の定義順（Bending→Shear→Bond→AxialBending→Axial→Deflection）で
 /// 固定した全種一覧。フィルタ選択肢・ツールチップの列順を安定させるために使う。
@@ -143,6 +152,16 @@ fn max_ratio_by_node<I: IntoIterator<Item = (NodeId, Option<(f64, bool)>)>>(
     max_ratio_by_key(items)
 }
 
+/// 部材中点に数値ラベルを描くかを判定する（純粋関数）。
+///
+/// 既定（`label_all == false`）では注意域以上（検定比 ≥ [`LABEL_MIN_RATIO`]）
+/// の部材のみ描き、それ未満は色のグラデーションだけで表す（全部材に数値を
+/// 出すと3Dビュー上で文字が重なり読めなくなるため）。`label_all == true`
+/// なら検定比によらず常に描く。
+pub(super) fn should_label(ratio: f64, label_all: bool) -> bool {
+    label_all || ratio >= LABEL_MIN_RATIO
+}
+
 /// 部材中点ラベルの文字列を組み立てる（純粋関数）。支配式が分かる場合
 /// （フィルタ=最大かつ components が非空）は「1.13 せん断」のように併記し、
 /// それ以外（フィルタ=特定式、または components が空の部材）は数値のみ。
@@ -248,6 +267,7 @@ pub(super) fn draw_check_ratio(painter: &egui::Painter, app: &App, pts: &[egui::
 
     let filter = app.check_ratio_filter;
     let markers = app.check_ratio_markers;
+    let label_all = app.check_ratio_label_all;
 
     let elem_ratios = max_ratio_by_elem(results.member_checks.iter().flat_map(|m| {
         m.positions
@@ -272,7 +292,7 @@ pub(super) fn draw_check_ratio(painter: &egui::Painter, app: &App, pts: &[egui::
         let Some(&(ratio, ok)) = elem_ratios.get(&elem.id) else {
             continue;
         };
-        let color = theme::status_color(ratio);
+        let color = theme::check_ratio_color(ratio);
 
         // 壁（面要素）: 半透明ポリゴンで塗り、輪郭を検定比の色で強調する
         if elem.kind == squid_n_core::model::ElementKind::Wall && elem.nodes.len() >= 3 {
@@ -324,7 +344,7 @@ pub(super) fn draw_check_ratio(painter: &egui::Painter, app: &App, pts: &[egui::
                 let xi = p.xi;
                 let mx = p0.x + (p1.x - p0.x) * xi as f32;
                 let my = p0.y + (p1.y - p0.y) * xi as f32;
-                let mcolor = theme::status_color(r);
+                let mcolor = theme::check_ratio_color(r);
                 const MARK: f32 = 7.0;
                 let mrect =
                     egui::Rect::from_center_size(egui::pos2(mx, my), egui::vec2(MARK, MARK));
@@ -348,7 +368,13 @@ pub(super) fn draw_check_ratio(painter: &egui::Painter, app: &App, pts: &[egui::
             }
         }
 
-        // B-4: 中点ラベル（部材内最大＝ratio）。フィルタ=最大のときは支配式を併記する
+        // B-4: 中点ラベル（部材内最大＝ratio）。過密を避けるため注意域以上
+        // （既定。`should_label` を参照）の部材にのみ描く。
+        if !should_label(ratio, label_all) {
+            continue;
+        }
+
+        // フィルタ=最大のときは支配式を併記する
         // （検定不能の位置は対象外。Checked の中から最大を選ぶ）。
         let dominant = if filter == CheckRatioFilter::Max {
             positions
@@ -394,12 +420,20 @@ pub(super) fn draw_check_ratio(painter: &egui::Painter, app: &App, pts: &[egui::
             continue;
         }
         let p = pts[idx];
-        let color = theme::status_color(ratio);
+        let color = theme::check_ratio_color(ratio);
         painter.circle_filled(p, 5.0, color);
         painter.circle_stroke(p, 5.0, egui::Stroke::new(1.0_f32, theme::VIEW_BG));
     }
 
-    draw_legend(painter, app, &elem_ratios, &node_ratios, filter, markers);
+    draw_legend(
+        painter,
+        app,
+        &elem_ratios,
+        &node_ratios,
+        filter,
+        markers,
+        label_all,
+    );
 }
 
 /// B-3: 部材 `elem_id` の検定詳細（位置×式）をポインタ位置にツールチップ表示する。
@@ -492,7 +526,78 @@ fn filter_label(filter: CheckRatioFilter) -> &'static str {
     }
 }
 
-/// ビュー左上に検定比図の凡例（対象・最大値・NG件数・色見本・陳腐化注記）を描く。
+/// 凡例のカラーバー（検定比 0.0〜1.0 の連続グラデーション＋NG の単色見本）を
+/// 左上 `(x0, y0)` に描き、描いた領域の下端 y 座標を返す。
+///
+/// NG（>1.0）は連続値ではなく単色（赤）のため、グラデーションのバーには含めず
+/// 右隣に独立した色見本として並べる。
+fn draw_ratio_color_bar(painter: &egui::Painter, x0: f32, y0: f32) -> f32 {
+    const BAR_W: f32 = 160.0;
+    const BAR_H: f32 = 10.0;
+    const STRIPS: usize = 32;
+    const SWATCH: f32 = 12.0;
+
+    for i in 0..STRIPS {
+        // 短冊の中央に相当する検定比（0〜1.0 を等分）
+        let ratio = (i as f64 + 0.5) / STRIPS as f64;
+        let sx0 = x0 + (i as f32 / STRIPS as f32) * BAR_W;
+        let sx1 = x0 + ((i + 1) as f32 / STRIPS as f32) * BAR_W;
+        painter.rect_filled(
+            egui::Rect::from_min_max(egui::pos2(sx0, y0), egui::pos2(sx1, y0 + BAR_H)),
+            0.0,
+            theme::check_ratio_color(ratio),
+        );
+    }
+
+    let ng_x = x0 + BAR_W + 10.0;
+    painter.rect_filled(
+        egui::Rect::from_min_size(egui::pos2(ng_x, y0), egui::vec2(SWATCH, BAR_H)),
+        0.0,
+        theme::PARETO_RED,
+    );
+    let font = egui::FontId::proportional(11.0);
+    painter.text(
+        egui::pos2(ng_x + SWATCH + 4.0, y0),
+        egui::Align2::LEFT_TOP,
+        ">1.0 NG",
+        font.clone(),
+        theme::GRAY_600,
+    );
+
+    // 目盛り（0 / 0.8 / 1.0）をバーの下端に添える。0.8 は良好域と注意域の境界。
+    let ty = y0 + BAR_H + 1.0;
+    let tick = painter.text(
+        egui::pos2(x0, ty),
+        egui::Align2::LEFT_TOP,
+        "0",
+        font.clone(),
+        theme::GRAY_600,
+    );
+    painter.text(
+        egui::pos2(x0 + BAR_W * 0.8, ty),
+        egui::Align2::CENTER_TOP,
+        "0.8",
+        font.clone(),
+        theme::GRAY_600,
+    );
+    painter.text(
+        egui::pos2(x0 + BAR_W, ty),
+        egui::Align2::RIGHT_TOP,
+        "1.0",
+        font.clone(),
+        theme::GRAY_600,
+    );
+    let untested = painter.text(
+        egui::pos2(ng_x, ty),
+        egui::Align2::LEFT_TOP,
+        "未検定・検定不能: グレー",
+        font,
+        theme::GRAY_600,
+    );
+    tick.max.y.max(untested.max.y)
+}
+
+/// ビュー左上に検定比図の凡例（対象・最大値・NG件数・カラーバー・陳腐化注記）を描く。
 #[allow(clippy::too_many_arguments)]
 fn draw_legend(
     painter: &egui::Painter,
@@ -501,6 +606,7 @@ fn draw_legend(
     node_ratios: &HashMap<NodeId, (f64, bool)>,
     filter: CheckRatioFilter,
     markers: bool,
+    label_all: bool,
 ) {
     let rect = painter.clip_rect();
     let x0 = rect.min.x + 10.0;
@@ -531,47 +637,26 @@ fn draw_legend(
     );
     y = title_rect.max.y + 4.0;
 
-    // 色見本: ≤0.8=緑／≤1.0=黄／>1.0 NG=赤 の順に横並びで描き、末尾に未検定の注記
-    const SWATCH: f32 = 12.0;
-    let mut x = x0;
-    for (color, label) in [
-        (theme::GOOD_GREEN, "≤0.8"),
-        (theme::BEST_YELLOW, "≤1.0"),
-        (theme::PARETO_RED, ">1.0 NG"),
-    ] {
-        painter.rect_filled(
-            egui::Rect::from_min_size(egui::pos2(x, y), egui::vec2(SWATCH, SWATCH)),
-            0.0,
-            color,
-        );
-        let text_rect = painter.text(
-            egui::pos2(x + SWATCH + 4.0, y),
-            egui::Align2::LEFT_TOP,
-            label,
-            egui::FontId::proportional(11.0),
-            theme::GRAY_600,
-        );
-        x = text_rect.max.x + 12.0;
+    // 色の凡例: 0〜1.0 の連続グラデーションのカラーバー＋NG（赤）の単色見本
+    y = draw_ratio_color_bar(painter, x0, y) + 4.0;
+
+    // 数値ラベルの表示条件（既定は注意域以上のみ）と位置別マーカーの説明
+    let mut note = if label_all {
+        "数値ラベル: 全部材".to_string()
+    } else {
+        format!("数値ラベル: 検定比 {:.1} 以上のみ", LABEL_MIN_RATIO)
+    };
+    if markers {
+        note.push_str("　■ 検定位置（NG は数値付き）");
     }
-    let untested_rect = painter.text(
-        egui::pos2(x, y),
+    let note_rect = painter.text(
+        egui::pos2(x0, y),
         egui::Align2::LEFT_TOP,
-        "未検定・検定不能: グレー",
+        note,
         egui::FontId::proportional(11.0),
         theme::GRAY_600,
     );
-    y = untested_rect.max.y.max(y + SWATCH) + 4.0;
-
-    if markers {
-        let marker_rect = painter.text(
-            egui::pos2(x0, y),
-            egui::Align2::LEFT_TOP,
-            "■ 検定位置（NG は数値付き）",
-            egui::FontId::proportional(11.0),
-            theme::GRAY_600,
-        );
-        y = marker_rect.max.y + 4.0;
-    }
+    y = note_rect.max.y + 4.0;
 
     if app.staleness.design_stale {
         painter.text(
@@ -872,6 +957,26 @@ mod tests {
     fn available_check_kinds_empty_input() {
         let kinds = available_check_kinds(std::iter::empty::<&[CheckComponent]>());
         assert!(kinds.is_empty());
+    }
+
+    // ── should_label ────────────────────────────────────────────────────
+
+    /// 既定では注意域の境界（0.8）以上の部材にのみ数値ラベルを描く。
+    #[test]
+    fn should_label_only_at_or_above_threshold_by_default() {
+        assert!(!should_label(0.0, false));
+        assert!(!should_label(0.79, false));
+        assert!(should_label(LABEL_MIN_RATIO, false));
+        assert!(should_label(0.81, false));
+        assert!(should_label(1.5, false));
+    }
+
+    /// 全表示（label_all）では検定比によらず常に描く。
+    #[test]
+    fn should_label_all_shows_every_ratio() {
+        assert!(should_label(0.0, true));
+        assert!(should_label(0.79, true));
+        assert!(should_label(1.5, true));
     }
 
     // ── mid_label_text ──────────────────────────────────────────────────

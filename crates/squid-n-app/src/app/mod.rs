@@ -695,6 +695,9 @@ pub struct App {
     /// 検定比図で検定位置ごとの正方形マーカーを表示するか
     #[cfg(feature = "gui")]
     pub check_ratio_markers: bool,
+    /// 検定比図の数値ラベルを全部材に表示するか（false=注意域以上のみ。既定）
+    #[cfg(feature = "gui")]
+    pub check_ratio_label_all: bool,
     /// N/Q/M 図の表示切替（false=単色塗り／true=値に応じたコンター色分け）
     #[cfg(feature = "gui")]
     pub diagram_contour: bool,
@@ -898,6 +901,8 @@ impl Default for App {
             check_ratio_filter: crate::viewer::CheckRatioFilter::default(),
             #[cfg(feature = "gui")]
             check_ratio_markers: true,
+            #[cfg(feature = "gui")]
+            check_ratio_label_all: false,
             #[cfg(feature = "gui")]
             diagram_contour: false,
             #[cfg(feature = "gui")]

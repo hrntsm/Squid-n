@@ -675,6 +675,11 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
             }
             ui.separator();
             ui.checkbox(&mut app.check_ratio_markers, "位置別マーカー");
+            ui.checkbox(&mut app.check_ratio_label_all, "全部材に数値ラベル")
+                .on_hover_text(
+                    "既定では検定比 0.8 以上の部材にのみ数値ラベルを表示し、\
+                     それ未満は色の濃淡（グラデーション）で余裕度を示します。",
+                );
         });
     }
     if mode == ViewMode::Mode {
