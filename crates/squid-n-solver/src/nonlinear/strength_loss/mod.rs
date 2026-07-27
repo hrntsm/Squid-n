@@ -268,8 +268,13 @@ fn truncate_result(mut result: PushoverResult, cutoff_step: u32) -> PushoverResu
     result.hinges.retain(|h| h.step <= cutoff_step);
     result.shear_yields.retain(|s| s.step <= cutoff_step);
     // steps は capacity_curve と同数・同順で積まれる（pushover.rs の実装契約）。
+    // 部材応答履歴（member_history）の records も steps と同数・同順のため揃えて
+    // 切り詰める。
     let n = result.capacity_curve.len();
     result.steps.truncate(n);
+    for mh in &mut result.member_history {
+        mh.records.truncate(n);
+    }
     result
 }
 

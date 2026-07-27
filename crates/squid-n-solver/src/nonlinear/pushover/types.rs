@@ -162,6 +162,40 @@ pub struct PushoverMemberResponse {
     pub horizontal_force: f64,
 }
 
+/// ヒンジ詳細図用の部材応答履歴（1 部材分）。結果サイズを抑えるため、ヒンジまたは
+/// せん断降伏が記録された部材についてのみ [`PushoverResult::member_history`] に保持する。
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct MemberHistory {
+    pub elem: ElemId,
+    /// 確定ステップごとの端応答（[`PushoverResult::steps`] と同じ並び・同じ長さ）。
+    pub records: Vec<MemberStepState>,
+}
+
+/// 1 確定ステップの部材端応答（ヒンジ詳細図の応答経路の 1 点。格納量を抑えるため
+/// f32）。曲げは危険断面＝剛域フェイス位置の局所成分、回転は弦（変形後の材端を
+/// 結ぶ直線）からの材端回転で、M-θ 曲線・N-M 相関図の応答経路の描画に用いる。
+#[derive(Clone, Copy, Debug, Default, serde::Serialize, serde::Deserialize)]
+pub struct MemberStepState {
+    /// 軸力 [N]（圧縮正）。
+    pub n: f32,
+    /// i 端の局所曲げモーメント My（弱軸まわり）[N·mm]。
+    pub my_i: f32,
+    /// i 端の局所曲げモーメント Mz（強軸まわり）[N·mm]。
+    pub mz_i: f32,
+    /// j 端の局所曲げモーメント My [N·mm]。
+    pub my_j: f32,
+    /// j 端の局所曲げモーメント Mz [N·mm]。
+    pub mz_j: f32,
+    /// i 端の弦からの材端回転（局所 y まわり）[rad]。
+    pub ry_i: f32,
+    /// i 端の弦からの材端回転（局所 z まわり）[rad]。
+    pub rz_i: f32,
+    /// j 端の弦からの材端回転（局所 y まわり）[rad]。
+    pub ry_j: f32,
+    /// j 端の弦からの材端回転（局所 z まわり）[rad]。
+    pub rz_j: f32,
+}
+
 /// プッシュオーバー解析結果（P5 §7.4）
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct PushoverResult {
@@ -180,6 +214,15 @@ pub struct PushoverResult {
     /// 無いフィールドのため、読込時は既定値（段階制御）で補う。
     #[serde(default)]
     pub control: PushoverControl,
+    /// ヒンジ詳細図用の部材応答履歴（ヒンジ・せん断降伏が記録された部材のみ）。
+    /// 旧プロジェクトファイルには無いフィールドのため、読込時は空で補う。
+    #[serde(default)]
+    pub member_history: Vec<MemberHistory>,
+    /// 終局（最終確定ステップ）時のファイバー断面状態（ヒンジ・せん断降伏が記録
+    /// されたファイバー要素のみ。断面塑性化状況の可視化用）。旧プロジェクト
+    /// ファイルには無いフィールドのため、読込時は空で補う。
+    #[serde(default)]
+    pub fiber_states: Vec<(ElemId, Vec<squid_n_element::behavior::FiberSectionState>)>,
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]

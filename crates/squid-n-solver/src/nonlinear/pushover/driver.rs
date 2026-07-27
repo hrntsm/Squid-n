@@ -8,14 +8,15 @@ use super::assembly::{assemble_k, compute_f_int};
 use super::ductility::{compute_ductility_refs, update_ductility, DuctilityTracker};
 use super::hinge::{compute_hinge_thresholds, track_hinges};
 use super::mechanism::determine_mechanism;
-use super::member_response::compute_member_response;
+use super::member_response::{compute_member_response, record_member_step};
 use super::response::{
     compute_base_shear, compute_story_drift, compute_story_shear, get_roof_disp, get_roof_dof,
     max_story_drift_angle, story_heights,
 };
 use super::shear_yield::{compute_shear_yield_thresholds, track_shear_yield};
 use super::types::{
-    CapacityPoint, DuctilityMethod, PushoverControl, PushoverResult, PushoverStep, PushoverTarget,
+    CapacityPoint, DuctilityMethod, MemberHistory, MemberStepState, PushoverControl,
+    PushoverResult, PushoverStep, PushoverTarget,
 };
 use crate::analysis::{
     building_height_mm, distribute_pi_over_diaphragms, steel_height_ratio, SeismicDir,
@@ -194,19 +195,75 @@ pub fn pushover_analysis_recording(
     // 引き継ぐための状態変数。
     let mut lambda = 0.0;
 
+    // 変位増分の押込み上限（頂部変位換算）。目標変位はその値を、目標最大層間変形角は
+    // 「全層が一様に目標角へ達した場合の頂部変位」＝角×Σ階高を用いる。最大層間
+    // 変形角は平均層間変形角（＝頂部変位/Σ階高）以上のため、上限到達までに必ず
+    // 判定が成立する。両方有効な場合は先に成立し得る小さい方まで刻めば足りる。
+    let sum_h: f64 = heights.iter().sum();
+    let mut roof_bound = f64::INFINITY;
+    if let Some(d) = target.max_disp {
+        roof_bound = roof_bound.min(d);
+    }
+    if let Some(a) = target.max_drift_angle {
+        if sum_h > 0.0 {
+            roof_bound = roof_bound.min(a * sum_h);
+        }
+    }
+
+    // 均等変位刻み制御（段階制御＋押込み上限が有限の場合の既定動作）。性能曲線の
+    // 点間隔（頂部変位軸）が全域で概ね目標刻み du_uniform（＝押込み上限/ステップ数）
+    // となるよう、荷重制御の λ 増分を直近の荷重−変位勾配から適応的に決め、変位制御の
+    // 押込み刻みにも同じ du_uniform を用いる。剛性が変化しない弾性域は粗い λ 刻みで
+    // 足り、降伏が進み勾配が増すほど刻みは自動的に細かくなる（固定 λ 刻みでは弾性域
+    // λ≦1 に点が密集し、塑性化が進む変位制御域が荒くなる偏りが生じる）。
+    let du_uniform = (matches!(control, PushoverControl::Phased) && roof_bound.is_finite())
+        .then(|| roof_bound / n_steps as f64)
+        .filter(|du| *du > 0.0);
+    // 均等刻みの初期 λ 増分に用いる弾性勾配（頂部変位/λ）。初期接線剛性で
+    // K·δu = q を 1 回解いて推定し、推定できない場合（頂部 DOF 不明・特異など）は
+    // 従来の固定 λ 刻みへフォールバックする。
+    let mut roof_slope = du_uniform
+        .and_then(|_| elastic_roof_slope(model, dofmap, reducer, &behaviors, use_kg, dir, &q));
+    let adaptive = du_uniform.is_some() && roof_slope.is_some();
+
     // 荷重制御の総ステップ数。段階制御では λ=1（設計地震力レベル）で変位制御へ
     // 引き継ぐ。荷重増分のみ（LoadOnly）で終了目標が有効な場合は、同じ刻み dλ の
     // まま λ=1 を超えて継続する（上限 λ=10。必要保有水平耐力 Qun の λ 換算
     // 5·Ds·Fes ≦ 5 を十分に覆う安全上限で、通常は目標到達か収束不能で先に止まる）。
+    // 均等刻みは λ=1 到達（または目標到達）で終了するため、この上限は勾配の推定誤りで
+    // 刻みが縮み過ぎた場合の安全弁。
     let max_load_steps = match control {
         PushoverControl::LoadOnly if target.is_enabled() => n_steps * 10,
+        PushoverControl::Phased if adaptive => n_steps * 10,
         _ => n_steps,
     };
 
+    // 記録用の通し番号（荷重制御→変位制御→弧長法で連番）。capacity_curve・steps の
+    // 並びとヒンジ・せん断降伏イベントの step を対応付ける単調キーで、確定した
+    // ステップにのみ採番する。
+    let mut step_no: u32 = 0;
+    // ヒンジ詳細図用の部材応答履歴（[確定ステップ][部材] の全部材記録）。結果へは
+    // ヒンジ・せん断降伏部材のみ絞って格納する（関数末尾）。
+    let mut member_history_steps: Vec<Vec<MemberStepState>> = Vec::new();
+    // 均等刻みの勾配更新に用いる直前確定点の頂部変位。
+    let mut last_roof = 0.0_f64;
+
     for step in 0..max_load_steps {
-        // 前確定点の荷重係数（前ステップまでが満 λ で確定している前提の下限）。
-        let prev_lambda = step as f64 * dlambda;
-        let mut current_lambda = (step + 1) as f64 * dlambda;
+        let (prev_lambda, mut current_lambda) = if adaptive {
+            // 均等刻み: 確定済み λ から「頂部変位が du_uniform 進む見込みの λ 増分」
+            // だけ進める（変位制御へ引き継ぐため λ=1 で打ち止め）。
+            if lambda >= 1.0 - 1e-12 {
+                break;
+            }
+            let du = du_uniform.unwrap_or(0.0);
+            let slope = roof_slope.unwrap_or(f64::INFINITY);
+            let dl = (du / slope).max(dlambda * 1e-3);
+            (lambda, (lambda + dl).min(1.0))
+        } else {
+            // 固定 λ 刻み: 前確定点の荷重係数は「前ステップまでが満 λ で確定している
+            // 前提の下限」のスケジュール値。
+            (step as f64 * dlambda, (step + 1) as f64 * dlambda)
+        };
         let mut step_ok = false;
 
         for _attempt in 0..5 {
@@ -281,7 +338,7 @@ pub fn pushover_analysis_recording(
                 let story_drift = compute_story_drift(model, dofmap, &total_disp, dir);
                 let drift_angle_now = max_story_drift_angle(&story_drift, &heights);
                 capacity_curve.push(CapacityPoint {
-                    step: step as u32,
+                    step: step_no,
                     roof_disp: roof,
                     base_shear,
                     story_shear: compute_story_shear(model, dofmap, &f_int_now, dir),
@@ -302,21 +359,31 @@ pub fn pushover_analysis_recording(
                     &ductility_refs,
                     ductility_method,
                 );
-                track_hinges(
-                    model,
-                    &behaviors,
-                    &thresholds,
-                    &mu,
-                    step as u32,
-                    &mut hinges,
-                );
+                track_hinges(model, &behaviors, &thresholds, &mu, step_no, &mut hinges);
                 track_shear_yield(
                     model,
                     &behaviors,
                     &shear_thresholds,
-                    step as u32,
+                    step_no,
                     &mut shear_yields,
                 );
+                member_history_steps.push(record_member_step(
+                    model,
+                    dofmap,
+                    &behaviors,
+                    &total_disp,
+                ));
+                step_no += 1;
+                // 均等刻みの勾配更新（確定増分ベース）。降伏で勾配が増すほど次の
+                // λ 刻みが自動的に縮み、変位軸の点間隔が保たれる。
+                if adaptive {
+                    let d_roof = (roof - last_roof).abs();
+                    let d_lambda = current_lambda - prev_lambda;
+                    if d_lambda > 1e-12 && d_roof > 1e-12 {
+                        roof_slope = Some(d_roof / d_lambda);
+                    }
+                }
+                last_roof = roof;
                 lambda = current_lambda;
                 step_ok = true;
                 // 目標（頂部変位・最大層間変形角）到達で以降の載荷を打ち切る。
@@ -335,10 +402,13 @@ pub fn pushover_analysis_recording(
                 current_lambda = prev_lambda + (current_lambda - prev_lambda) * 0.5;
             }
         }
-        if !step_ok && step >= n_steps {
-            // 荷重増分のみの延長領域（λ>1）で増分半減でも収束しない場合は、
-            // これ以上の荷重に釣合う解が無い（耐力ピーク近傍）ため打ち切る。
-            // λ≦1 の通常領域では従来どおりスキップして次の刻みを試す。
+        if !step_ok && (adaptive || step >= n_steps) {
+            // 増分半減でも収束しない場合の扱い:
+            // - 均等刻み: 前確定 λ からの増分を既に半減済みのため打ち切り、以降は
+            //   変位制御フェーズが引き継ぐ（極限点近傍は変位制御の方が安定に追える）。
+            // - 荷重増分のみの延長領域（λ>1）: これ以上の荷重に釣合う解が無い
+            //   （耐力ピーク近傍）ため打ち切る。
+            // - 固定刻みの λ≦1 の通常領域: 従来どおりスキップして次の刻みを試す。
             break;
         }
         if target_reached {
@@ -357,22 +427,16 @@ pub fn pushover_analysis_recording(
         };
     if let Some(roof_active) = disp_control_roof {
         let initial_disp = total_disp[roof_active];
-        // 頂部変位の刻み上限: 目標変位はその値を、目標最大層間変形角は「全層が一様に
-        // 目標角へ達した場合の頂部変位」＝角×Σ階高を用いる。最大層間変形角は平均
-        // 層間変形角（＝頂部変位/Σ階高）以上のため、上限到達までに必ず判定が成立する。
-        // 両方有効な場合は先に成立し得る小さい方まで刻めば足りる。
-        let sum_h: f64 = heights.iter().sum();
-        let mut roof_bound = f64::INFINITY;
-        if let Some(d) = target.max_disp {
-            roof_bound = roof_bound.min(d);
-        }
-        if let Some(a) = target.max_drift_angle {
-            if sum_h > 0.0 {
-                roof_bound = roof_bound.min(a * sum_h);
-            }
-        }
+        // 押込み上限 roof_bound は荷重制御と共通の値（関数冒頭で算定済み）。
         if roof_bound.is_finite() && roof_bound > initial_disp {
-            let n_disp_steps = 10usize;
+            // 押込み刻み: 均等刻み制御では荷重制御と同じ目標刻み du_uniform を用い、
+            // 性能曲線全域で点間隔（変位軸）を揃える。均等刻みが使えない場合
+            // （弾性勾配の推定失敗時のフォールバック）は従来の 10 分割。
+            let n_disp_steps = match du_uniform {
+                Some(du) if adaptive => (((roof_bound - initial_disp) / du).ceil() as usize)
+                    .clamp(1, n_steps.saturating_mul(2)),
+                _ => 10usize,
+            };
             let du_target = (roof_bound - initial_disp) / n_disp_steps as f64;
 
             // 変位制御は比例荷重パターン λ·q を**保持したまま**、荷重係数 λ を未知数
@@ -494,7 +558,7 @@ pub fn pushover_analysis_recording(
                         let base_shear = compute_base_shear(model, dofmap, &f_int_now, dir);
                         let story_drift = compute_story_drift(model, dofmap, &total_disp, dir);
                         let drift_angle_now = max_story_drift_angle(&story_drift, &heights);
-                        let cstep = (n_steps + 1 + step) as u32;
+                        let cstep = step_no;
                         capacity_curve.push(CapacityPoint {
                             step: cstep,
                             roof_disp: roof,
@@ -526,6 +590,13 @@ pub fn pushover_analysis_recording(
                             cstep,
                             &mut shear_yields,
                         );
+                        member_history_steps.push(record_member_step(
+                            model,
+                            dofmap,
+                            &behaviors,
+                            &total_disp,
+                        ));
+                        step_no += 1;
                         step_ok = true;
                         // 目標（頂部変位・最大層間変形角）到達で以降の押込みを打ち切る。
                         if target.reached(roof, drift_angle_now) {
@@ -617,7 +688,7 @@ pub fn pushover_analysis_recording(
                     let base_shear = compute_base_shear(model, dofmap, &f_int_now, dir);
                     let story_drift = compute_story_drift(model, dofmap, &total_disp, dir);
                     capacity_curve.push(CapacityPoint {
-                        step: (n_steps + 1 + _step) as u32,
+                        step: step_no,
                         roof_disp: roof,
                         base_shear,
                         story_shear: compute_story_shear(model, dofmap, &f_int_now, dir),
@@ -631,6 +702,13 @@ pub fn pushover_analysis_recording(
                         story_drifts: story_drift,
                         node_disp: record_node_disp.then(|| total_disp.clone()),
                     });
+                    member_history_steps.push(record_member_step(
+                        model,
+                        dofmap,
+                        &behaviors,
+                        &total_disp,
+                    ));
+                    step_no += 1;
                 }
                 _ => {
                     model.restore(&snap, &mut behaviors);
@@ -654,6 +732,36 @@ pub fn pushover_analysis_recording(
     } else {
         compute_member_response(model, dofmap, &behaviors, &total_disp, dir)
     };
+    // ヒンジ詳細図用の記録は、ヒンジ・せん断降伏が記録された部材に絞って格納する
+    // （全部材×全ステップの履歴は結果サイズが過大になるため）。
+    let detail_elems: std::collections::HashSet<squid_n_core::ids::ElemId> = hinges
+        .iter()
+        .map(|h| h.elem)
+        .chain(shear_yields.iter().map(|s| s.elem))
+        .collect();
+    let member_history: Vec<MemberHistory> = model
+        .elements
+        .iter()
+        .enumerate()
+        .filter(|(_, e)| detail_elems.contains(&e.id))
+        .map(|(i, e)| MemberHistory {
+            elem: e.id,
+            records: member_history_steps
+                .iter()
+                .filter_map(|s| s.get(i).copied())
+                .collect(),
+        })
+        .collect();
+    let fiber_states: Vec<(
+        squid_n_core::ids::ElemId,
+        Vec<squid_n_element::behavior::FiberSectionState>,
+    )> = model
+        .elements
+        .iter()
+        .zip(&behaviors)
+        .filter(|(e, _)| detail_elems.contains(&e.id))
+        .filter_map(|(e, b)| b.fiber_section_states().map(|s| (e.id, s)))
+        .collect();
     Ok(PushoverResult {
         steps,
         capacity_curve,
@@ -663,5 +771,31 @@ pub fn pushover_analysis_recording(
         qu,
         member_response,
         control,
+        member_history,
+        fiber_states,
     })
+}
+
+/// 初期接線剛性で K·δu = q を 1 回解き、荷重係数 λ あたりの頂部変位の弾性勾配
+/// [mm/λ] を推定する（均等変位刻み制御の初期 λ 増分の算定用）。頂部 DOF が特定
+/// できない・分解や求解に失敗する・勾配が退化している場合は `None` を返し、
+/// 呼び出し側は従来の固定 λ 刻みへフォールバックする。
+fn elastic_roof_slope(
+    model: &Model,
+    dofmap: &DofMap,
+    reducer: &Reducer,
+    behaviors: &[Box<dyn ElementBehavior>],
+    use_kg: bool,
+    dir: SeismicDir,
+    q: &[f64],
+) -> Option<f64> {
+    let roof_active = get_roof_dof(model, dofmap, dir)?;
+    let k_free = assemble_k(model, dofmap, behaviors, use_kg);
+    let k_red = reducer.reduce_k(&k_free);
+    let mut solver = make_solver(SolverBackend::Auto);
+    solver.factorize(&k_red).ok()?;
+    let du_red = solver.solve(&reducer.reduce_f(q)).ok()?;
+    let du = reducer.expand_u(&du_red);
+    let slope = du.get(roof_active).copied().unwrap_or(0.0).abs();
+    (slope > 1e-12).then_some(slope)
 }
