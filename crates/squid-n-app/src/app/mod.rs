@@ -2046,22 +2046,20 @@ impl eframe::App for App {
                                                 LogLevel::Notice => crate::theme::BEST_YELLOW,
                                                 LogLevel::Info => crate::theme::GRAY_700,
                                             };
-                                            // 改行を含むメッセージ（複数行の警告など）は1行に畳んで
-                                            // truncate し、全文はホバーで表示する
-                                            // （ステータスバーの last_error 表示と同じ流儀）。
-                                            let one_line = entry.message.replace('\n', " ");
+                                            // 長いメッセージはパネル幅で折り返して全文を表示する
+                                            // （見切れるとホバーしないと内容が分からないため）。
+                                            // メッセージ自身が含む改行もそのまま活かす。
                                             ui.add(
                                                 egui::Label::new(
                                                     egui::RichText::new(format!(
                                                         "[{}] {}",
                                                         entry.timestamp_label(),
-                                                        one_line
+                                                        entry.message
                                                     ))
                                                     .color(color),
                                                 )
-                                                .truncate(),
-                                            )
-                                            .on_hover_text(&entry.message);
+                                                .wrap(),
+                                            );
                                         }
                                     });
                             }
