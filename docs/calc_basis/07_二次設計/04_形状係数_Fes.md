@@ -12,13 +12,12 @@
 
 \\[ F_s = \begin{cases} 1.0 & (R_s \ge 0.6) \\\\ 2.0 - R_s/0.6 & (R_s < 0.6) \end{cases} \\]
 
-**実装**：`holding_capacity::{stiffness_ratios, fs}` が算定します。剛性率用の層間変位には重心変位 δg
+**実装**：`holding_capacity::{stiffness_ratios, fs}` が算定し、剛性率用の層間変位には重心変位 δg
 （`secondary::stiffness_ratio::cog_story_drifts`）を用います。
 
 ## 7.4.2 偏心率 Re・Fe
 
-建築基準法施行令 第82条の6 と告示第1792号に基づき、偏心率 Re（規定は \\( R_e \le 0.15 \\)）から Fe を算定します。
-剛心と弾力半径は武藤 D 値法で求めます。
+剛心と弾力半径を武藤 D 値法で求めることで、建築基準法施行令 第82条の6 と告示第1792号に基づき、偏心率 Re（規定は \\( R_e \le 0.15 \\)）から Fe を算定します。
 
 **算定式**
 

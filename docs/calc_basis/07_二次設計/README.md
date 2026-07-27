@@ -1,12 +1,10 @@
 # 7. 二次設計（保有水平耐力計算）
 
-本章では、保有水平耐力 Qu と必要保有水平耐力 Qun の比較、構造特性係数 Ds、形状係数 Fes（剛性率 Fs と偏心率 Fe）、部材ランクと幅厚比、層間変形角について、その算定根拠を示します。
-これらの項目はいずれも建築基準法施行令 第82条の2〜6 と昭和55年建設省告示第1792号を根拠とします。
+本章では、建築基準法施行令 第82条の2〜6 と昭和55年建設省告示第1792号を根拠として、保有水平耐力 Qu と必要保有水平耐力 Qun の比較、構造特性係数 Ds、形状係数 Fes（剛性率 Fs と偏心率 Fe）、部材ランクと幅厚比、層間変形角について、その算定根拠を示します。
 
 > 各項目は「導入文（何を・どの基準で）、算定式、実装」の順で記します。
 
-実装は `squid_n_design_jp::secondary` に置きます。
-監査結果は[P7 監査](https://github.com/hrntsm/squid-n/blob/main/dev_docs/v_and_v/p7_review.md)と[終局検定_参照実装照合](https://github.com/hrntsm/squid-n/blob/main/dev_docs/v_and_v/終局検定_参照実装照合.md)を参照してください。
+実装は `squid_n_design_jp::secondary` に置いており、監査結果は[P7 監査](https://github.com/hrntsm/squid-n/blob/main/dev_docs/v_and_v/p7_review.md)と[終局検定_参照実装照合](https://github.com/hrntsm/squid-n/blob/main/dev_docs/v_and_v/終局検定_参照実装照合.md)を参照してください。
 
 ## この章の内容
 
