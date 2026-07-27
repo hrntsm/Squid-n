@@ -701,6 +701,14 @@ pub struct App {
     /// 検定比図の数値ラベルを全部材に表示するか（false=注意域以上のみ。既定）
     #[cfg(feature = "gui")]
     pub check_ratio_label_all: bool,
+    /// ヒンジ図でクリック選択された部材（ヒンジ詳細ウィンドウの表示対象。
+    /// `None` はウィンドウ非表示）。
+    #[cfg(feature = "gui")]
+    pub hinge_detail_elem: Option<squid_n_core::ids::ElemId>,
+    /// ヒンジ詳細ウィンドウの N-M 相関曲線キャッシュ（断面のファイバー分割・
+    /// 曲面構築は数十msかかりうるため、選択部材が変わらない限り再計算しない）。
+    #[cfg(feature = "gui")]
+    pub hinge_mn_cache: Option<crate::viewer::hinge::MnCurveCache>,
     /// N/Q/M 図の表示切替（false=単色塗り／true=値に応じたコンター色分け）
     #[cfg(feature = "gui")]
     pub diagram_contour: bool,
@@ -906,6 +914,10 @@ impl Default for App {
             check_ratio_markers: true,
             #[cfg(feature = "gui")]
             check_ratio_label_all: false,
+            #[cfg(feature = "gui")]
+            hinge_detail_elem: None,
+            #[cfg(feature = "gui")]
+            hinge_mn_cache: None,
             #[cfg(feature = "gui")]
             diagram_contour: false,
             #[cfg(feature = "gui")]

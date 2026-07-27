@@ -6,7 +6,9 @@ use squid_n_core::dof::{Dof, Dof6Mask};
 
 mod check_ratio;
 mod diagram;
-mod hinge;
+// ヒンジ詳細ウィンドウのキャッシュ型（`MnCurveCache`）を App から参照できるよう
+// モジュール自体を crate 内に公開する（型自体は pub(crate)）。
+pub(crate) mod hinge;
 mod modeling;
 mod solid;
 
@@ -1013,6 +1015,10 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
                     Some((id, d)) if d <= PICK_THRESHOLD => {
                         app.selection.members = vec![id];
                         app.nav.focus_member = Some(id);
+                        // ヒンジ図モードでは、クリックした部材のヒンジ詳細ウィンドウを開く。
+                        if mode == ViewMode::Hinge {
+                            app.hinge_detail_elem = Some(id);
+                        }
                     }
                     _ => {
                         app.selection.members.clear();
@@ -1386,6 +1392,10 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
 
     // カメラ状態を保存
     app.camera = cam;
+
+    // ヒンジ詳細ウィンドウ（ヒンジ図でクリックした部材があれば表示。表示中は
+    // 他の表示モードへ切り替えても閉じるまで残す）。
+    hinge::show_hinge_detail_window(ui, app);
 }
 
 /// 応力図・CMQ 図のオフセット方向（要素ローカル y 軸）をワールド座標で返す。
