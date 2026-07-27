@@ -44,7 +44,7 @@ GPU や ML を無効化しても解析機能は CPU で動作する。
 cargo build -p squid-n-mcp --features mcp
 cargo test  -p squid-n-mcp --features mcp
 
-# MCP サーバの起動（stdio。使い方は docs/mcp_server.md を参照）
+# MCP サーバの起動（stdio。使い方は docs/mcp_server/ を参照）
 cargo run -p squid-n-mcp --features mcp
 ```
 
@@ -97,8 +97,12 @@ mdbook build
 - ソース: `docs/`（利用者向けコンテンツのみを置く）
 - 目次: `docs/SUMMARY.md`（ページを追加・削除したらここも更新する）
 - 設定: `book.toml`（数式は `mathjax-support` により `\\(...\\)`／`\\[...\\]` で記述）
-- 計算根拠（`docs/calc_basis/`）は章ディレクトリ＋小項目ページの構成です。
+- 各章は**章ディレクトリ＋小項目ページ**の構成です（`docs/calc_basis/` のほか、
+  `docs/model_io/`・`docs/mcp_server/`・`docs/preparation/`・`docs/result_view/`）。
   小項目を追加したら章の `README.md` の一覧と `docs/SUMMARY.md` に追記してください
+- 章トップの `README.md` は `index.html` として出力される一方、リンクは `README.html` の
+  まま解決されるため、章ディレクトリを追加したら `book.toml` の
+  `[output.html.redirect]` にも 1 行追加してください
 
 `main` への push で GitHub Pages に自動デプロイされます
 （`.github/workflows/docs.yml`）。API リファレンス（rustdoc）も同時に生成され、
