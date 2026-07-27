@@ -1182,6 +1182,36 @@ impl App {
                         });
                 });
                 ui.horizontal_wrapped(|ui| {
+                    use squid_n_solver::pushover::PushoverControl;
+                    ui.label("増分方式:").on_hover_text(
+                        "荷重増分のみは比較検証用。変位制御へ移行せず、終了目標が有効な場合は\
+                         λ=1 を超えて荷重を増分し、収束しなくなった時点（耐力ピーク近傍）で\
+                         打ち切ります。耐力低下域は追跡できません。",
+                    );
+                    egui::ComboBox::from_id_salt("push_control")
+                        .selected_text(match self.analysis_cfg.push_control {
+                            PushoverControl::Phased => "段階制御（荷重→変位）",
+                            PushoverControl::LoadOnly => "荷重増分のみ",
+                        })
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(
+                                &mut self.analysis_cfg.push_control,
+                                PushoverControl::Phased,
+                                "段階制御（荷重→変位）",
+                            );
+                            ui.selectable_value(
+                                &mut self.analysis_cfg.push_control,
+                                PushoverControl::LoadOnly,
+                                "荷重増分のみ",
+                            )
+                            .on_hover_text(
+                                "比較検証用。変位制御へ移行せず、終了目標が有効な場合は\
+                                 λ=1 を超えて荷重を増分し、収束しなくなった時点（耐力ピーク近傍）\
+                                 で打ち切ります。耐力低下域は追跡できません。",
+                            );
+                        });
+                });
+                ui.horizontal_wrapped(|ui| {
                     if ui
                         .add_enabled(!running, egui::Button::new("▶ 実行"))
                         .clicked()
@@ -1649,6 +1679,12 @@ impl App {
             ui.label(format!("崩壊機構: {}", mech));
             ui.separator();
             ui.label(format!("ヒンジ発生 {} 件", po.hinges.len()));
+            ui.separator();
+            let control = match po.control {
+                squid_n_solver::pushover::PushoverControl::Phased => "段階制御",
+                squid_n_solver::pushover::PushoverControl::LoadOnly => "荷重増分のみ",
+            };
+            ui.label(format!("増分方式: {}", control));
         });
         // 塑性率（構造力学）の方式と最大値。
         ui.horizontal(|ui| {

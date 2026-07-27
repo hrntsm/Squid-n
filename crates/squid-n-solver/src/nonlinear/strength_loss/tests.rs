@@ -405,6 +405,7 @@ fn test_detect_strength_loss_uses_shear_yield_when_present() {
         mechanism: MechanismType::Partial,
         qu: 100.0,
         member_response: vec![],
+        control: Default::default(),
     };
 
     let criterion = LossCriterion::DriftRange {
@@ -485,6 +486,7 @@ fn test_detect_strength_loss_falls_back_to_bending_yield_without_shear_events() 
         mechanism: MechanismType::Partial,
         qu: 100.0,
         member_response: vec![],
+        control: Default::default(),
     };
 
     let criterion = LossCriterion::DriftRange {

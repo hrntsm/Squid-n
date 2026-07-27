@@ -14,7 +14,9 @@ use super::response::{
     max_story_drift_angle, story_heights,
 };
 use super::shear_yield::{compute_shear_yield_thresholds, track_shear_yield};
-use super::types::{CapacityPoint, DuctilityMethod, PushoverResult, PushoverStep, PushoverTarget};
+use super::types::{
+    CapacityPoint, DuctilityMethod, PushoverControl, PushoverResult, PushoverStep, PushoverTarget,
+};
 use crate::analysis::{
     building_height_mm, distribute_pi_over_diaphragms, steel_height_ratio, SeismicDir,
 };
@@ -51,6 +53,7 @@ pub fn pushover_analysis(
         dir,
         max_steps,
         PushoverTarget::from_max_disp(max_disp),
+        PushoverControl::default(),
         use_kg,
         use_arc_length,
         arc_length_dl,
@@ -61,7 +64,10 @@ pub fn pushover_analysis(
 
 /// 増分解析（プッシュオーバー解析、P5 §7）。終了目標は [`PushoverTarget`] で
 /// 指定する（目標変位・目標最大層間変形角のいずれか早い方に達した時点で打ち切り。
-/// 両方無効なら荷重制御 λ=1 までで終了）。`record_node_disp` が真の場合、各ステップの
+/// 両方無効なら荷重制御 λ=1 までで終了）。制御方式は [`PushoverControl`] で指定し、
+/// 既定の段階制御（荷重→変位→弧長）のほか、比較検証用に荷重増分のみ
+/// （`LoadOnly`。変位制御・弧長法へ移行せず、終了目標が有効なら λ=1 を超えて
+/// 荷重増分を継続する）を選択できる。`record_node_disp` が真の場合、各ステップの
 /// `PushoverStep::node_disp` に全自由節点変位を記録する（段階的耐力喪失解析の
 /// 部材変形角算定用、`strength_loss` モジュール参照）。既存 API を壊さないよう
 /// `pushover_analysis` は本関数に `record_node_disp = false` で委譲する薄いラッパー。
@@ -73,6 +79,7 @@ pub fn pushover_analysis_recording(
     dir: SeismicDir,
     max_steps: usize,
     target: PushoverTarget,
+    control: PushoverControl,
     use_kg: bool,
     use_arc_length: bool,
     arc_length_dl: f64,
@@ -187,7 +194,16 @@ pub fn pushover_analysis_recording(
     // 引き継ぐための状態変数。
     let mut lambda = 0.0;
 
-    for step in 0..n_steps {
+    // 荷重制御の総ステップ数。段階制御では λ=1（設計地震力レベル）で変位制御へ
+    // 引き継ぐ。荷重増分のみ（LoadOnly）で終了目標が有効な場合は、同じ刻み dλ の
+    // まま λ=1 を超えて継続する（上限 λ=10。必要保有水平耐力 Qun の λ 換算
+    // 5·Ds·Fes ≦ 5 を十分に覆う安全上限で、通常は目標到達か収束不能で先に止まる）。
+    let max_load_steps = match control {
+        PushoverControl::LoadOnly if target.is_enabled() => n_steps * 10,
+        _ => n_steps,
+    };
+
+    for step in 0..max_load_steps {
         // 前確定点の荷重係数（前ステップまでが満 λ で確定している前提の下限）。
         let prev_lambda = step as f64 * dlambda;
         let mut current_lambda = (step + 1) as f64 * dlambda;
@@ -319,21 +335,26 @@ pub fn pushover_analysis_recording(
                 current_lambda = prev_lambda + (current_lambda - prev_lambda) * 0.5;
             }
         }
-        if !step_ok {
-            // 収束に至らなかった step はスキップ
+        if !step_ok && step >= n_steps {
+            // 荷重増分のみの延長領域（λ>1）で増分半減でも収束しない場合は、
+            // これ以上の荷重に釣合う解が無い（耐力ピーク近傍）ため打ち切る。
+            // λ≦1 の通常領域では従来どおりスキップして次の刻みを試す。
+            break;
         }
         if target_reached {
             break;
         }
     }
 
-    // 変位制御フェーズ（P5 §7.1）。荷重制御で目標に達しなかった場合のみ実行し、
-    // 目標（頂部変位・最大層間変形角）に達するまで頂部変位を強制する。
-    let disp_control_roof = if target.is_enabled() && !target_reached {
-        get_roof_dof(model, dofmap, dir)
-    } else {
-        None
-    };
+    // 変位制御フェーズ（P5 §7.1）。段階制御で、荷重制御が目標に達しなかった場合のみ
+    // 実行し、目標（頂部変位・最大層間変形角）に達するまで頂部変位を強制する。
+    // 荷重増分のみ（LoadOnly）では実行しない。
+    let disp_control_roof =
+        if matches!(control, PushoverControl::Phased) && target.is_enabled() && !target_reached {
+            get_roof_dof(model, dofmap, dir)
+        } else {
+            None
+        };
     if let Some(roof_active) = disp_control_roof {
         let initial_disp = total_disp[roof_active];
         // 頂部変位の刻み上限: 目標変位はその値を、目標最大層間変形角は「全層が一様に
@@ -524,7 +545,8 @@ pub fn pushover_analysis_recording(
         }
     }
 
-    if use_arc_length {
+    // 弧長法は段階制御のみ（荷重増分のみの比較モードでは荷重制御以外を使わない）。
+    if use_arc_length && matches!(control, PushoverControl::Phased) {
         let arc_solver = ArcLengthSolver::new(arc_length_dl);
         let mut prev_du: Vec<f64> = Vec::new();
         // 弧長法は直前フェーズ（荷重制御・変位制御）で確定した荷重係数 λ から継続する
@@ -640,5 +662,6 @@ pub fn pushover_analysis_recording(
         mechanism,
         qu,
         member_response,
+        control,
     })
 }

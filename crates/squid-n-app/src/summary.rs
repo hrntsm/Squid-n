@@ -376,8 +376,13 @@ pub fn build_report_csv(app: &App) -> String {
     }
 
     if let Some(po) = &results.pushover {
+        let control = match po.control {
+            squid_n_solver::pushover::PushoverControl::Phased => "段階制御",
+            squid_n_solver::pushover::PushoverControl::LoadOnly => "荷重増分のみ",
+        };
         out.push_str(&format!(
-            "\n[増分解析]\n保有水平耐力Qu[kN],{:.2}\nヒンジ数,{}\n",
+            "\n[増分解析]\n増分方式,{}\n保有水平耐力Qu[kN],{:.2}\nヒンジ数,{}\n",
+            control,
             po.qu / 1000.0,
             po.hinges.len()
         ));

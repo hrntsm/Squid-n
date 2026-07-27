@@ -56,6 +56,23 @@ impl PushoverTarget {
     }
 }
 
+/// 増分解析の制御方式（P5 §7）。
+///
+/// 既定の段階制御と、比較検証用の荷重増分のみの 2 方式。いずれも外力は
+/// Ai 分布の比例荷重パターン λ·q で共通し、λ の決め方だけが異なる。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum PushoverControl {
+    /// 荷重制御（λ=1 まで）→変位制御→弧長法（オプション）の段階切替（既定）。
+    /// 耐力ピーク（崩壊機構形成）を変位制御で通過し、頭打ち・低下も追跡できる。
+    #[default]
+    Phased,
+    /// 荷重増分のみ。変位制御・弧長法へは移行せず（`use_arc_length` は無視）、
+    /// 終了目標が有効な場合は λ=1 を超えて同じ刻みで荷重増分を継続する。
+    /// 増分半減でも収束しない（＝これ以上の荷重に釣合う解が無い、耐力ピーク近傍）
+    /// 時点で打ち切る。段階制御との結果比較（変位制御の要否確認）用。
+    LoadOnly,
+}
+
 /// 性能曲線の1点（P5 §7.4）
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct CapacityPoint {
@@ -158,6 +175,11 @@ pub struct PushoverResult {
     /// 最終確定ステップ時の部材別応答（設計用応力・部材別 Rp の直接反映用、
     /// [`PushoverMemberResponse`]）。ステップが 1 つも確定しなかった場合は空。
     pub member_response: Vec<PushoverMemberResponse>,
+    /// この結果を生成した制御方式（[`PushoverControl`]）。結果画面・CSV で
+    /// どの方式の結果かを識別するために保持する。旧プロジェクトファイルには
+    /// 無いフィールドのため、読込時は既定値（段階制御）で補う。
+    #[serde(default)]
+    pub control: PushoverControl,
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]

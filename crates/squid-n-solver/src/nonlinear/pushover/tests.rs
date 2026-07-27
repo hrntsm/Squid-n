@@ -282,6 +282,7 @@ fn test_pushover_computes_member_ductility() {
         SeismicDir::X,
         20,
         PushoverTarget::from_max_disp(300.0), // 目標変位300mm（大変形で確実に降伏させる）
+        PushoverControl::default(),
         false,
         false,
         0.0,
@@ -318,6 +319,7 @@ fn test_pushover_ductility_method_selection_changes_reference() {
             SeismicDir::X,
             20,
             PushoverTarget::from_max_disp(0.0),
+            PushoverControl::default(),
             false,
             false,
             0.0,
@@ -1995,6 +1997,99 @@ fn test_pushover_elastic_curve_monotonic_across_phase_switch() {
     );
 }
 
+/// 荷重増分のみ（`PushoverControl::LoadOnly`）の比較モードで、終了目標が有効なら
+/// λ=1（設計地震力レベル）を超えて荷重増分が継続し、目標変位へ到達することを
+/// 検証する。単柱（fy=235）はバイリニア硬化（b=0.01）のため、降伏後も荷重増分の
+/// まま硬化勾配に沿って目標まで載荷できる。
+#[test]
+fn test_pushover_load_only_extends_beyond_design_level() {
+    let seismic_weight = 80_000.0;
+    let mut model = single_column_model(235.0, seismic_weight);
+    let dofmap = DofMap::build(&model);
+    let reducer = Reducer::build(&model, &dofmap);
+    let result = pushover_analysis_recording(
+        &mut model,
+        &dofmap,
+        &reducer,
+        SeismicDir::X,
+        50,
+        PushoverTarget::from_max_disp(200.0),
+        PushoverControl::LoadOnly,
+        false,
+        false,
+        0.0,
+        false,
+        DuctilityMethod::default(),
+    )
+    .expect("pushover should run");
+
+    // 結果にどの制御方式で解析したかが記録されること（結果画面・CSV の識別用）。
+    assert_eq!(result.control, PushoverControl::LoadOnly);
+
+    let last = result.steps.last().expect("収束ステップがあること");
+    assert!(
+        last.load_factor > 1.0,
+        "荷重増分が λ=1 を超えて継続すること: {:.3}",
+        last.load_factor
+    );
+    assert!(
+        last.top_disp >= 200.0 * 0.99,
+        "目標変位 200mm へ到達すること: {:.1}mm",
+        last.top_disp
+    );
+    // 荷重増分のみでは λ は単調非減少（変位制御の λ 減少域は存在しない）。
+    for w in result.steps.windows(2) {
+        assert!(
+            w[1].load_factor >= w[0].load_factor - 1e-12,
+            "λ が減少しないこと: {:.4} -> {:.4}",
+            w[0].load_factor,
+            w[1].load_factor
+        );
+    }
+    assert!(
+        !result.hinges.is_empty(),
+        "降伏（ヒンジ発生）後の硬化域まで載荷されていること"
+    );
+    // 設計地震力レベル 0.2W を上回る耐力へ到達すること。
+    assert!(
+        result.qu > 0.2 * seismic_weight * 1.05,
+        "Qu={:.1} が設計地震力レベル 0.2W={:.1} を上回ること",
+        result.qu,
+        0.2 * seismic_weight
+    );
+}
+
+/// 荷重増分のみで終了目標が両方無効の場合は、従来の荷重制御と同じく λ=1
+/// （設計地震力レベル）で終了することを検証する（λ=1 超の延長は終了目標が
+/// 有効な場合に限る）。
+#[test]
+fn test_pushover_load_only_without_target_stops_at_lambda_1() {
+    let mut model = single_column_model(235.0, 80_000.0);
+    let dofmap = DofMap::build(&model);
+    let reducer = Reducer::build(&model, &dofmap);
+    let result = pushover_analysis_recording(
+        &mut model,
+        &dofmap,
+        &reducer,
+        SeismicDir::X,
+        20,
+        PushoverTarget::from_max_disp(0.0),
+        PushoverControl::LoadOnly,
+        false,
+        false,
+        0.0,
+        false,
+        DuctilityMethod::default(),
+    )
+    .expect("pushover should run");
+    let last = result.steps.last().expect("収束ステップがあること");
+    assert!(
+        (last.load_factor - 1.0).abs() < 1e-9,
+        "終了目標が無効なら λ=1 で終了すること: {:.4}",
+        last.load_factor
+    );
+}
+
 /// 4 節点の耐震壁（壁エレメントモデル、節点配列 `[下辺a, 下辺b, 上辺a, 上辺b]`）で、
 /// 加力方向の水平力が「下辺 2 節点の**合計**」になること。
 ///
@@ -2258,6 +2353,7 @@ fn test_pushover_drift_angle_target_forms_hinge_with_stiffness_reduction() {
         SeismicDir::X,
         80,
         target,
+        PushoverControl::default(),
         false,
         false,
         0.0,
@@ -2328,6 +2424,7 @@ fn test_pushover_both_targets_stop_at_earlier_one() {
             max_disp: Some(100.0),
             max_drift_angle: Some(1.0 / 150.0),
         },
+        PushoverControl::default(),
         false,
         false,
         0.0,
@@ -2362,6 +2459,7 @@ fn test_pushover_drift_angle_target_runs_with_multi_spring() {
         SeismicDir::X,
         20,
         PushoverTarget::default(),
+        PushoverControl::default(),
         false,
         false,
         0.0,
@@ -2477,6 +2575,7 @@ fn test_pushover_drift_angle_target_runs_with_wall_panel() {
         SeismicDir::X,
         20,
         PushoverTarget::default(),
+        PushoverControl::default(),
         false,
         false,
         0.0,
@@ -2530,6 +2629,7 @@ fn test_pushover_fiber_hinge_softens_at_drift_target() {
         SeismicDir::X,
         40,
         PushoverTarget::default(),
+        PushoverControl::default(),
         false,
         false,
         0.0,
@@ -2591,6 +2691,7 @@ fn test_pushover_wall_flexural_yield_softens() {
         SeismicDir::X,
         40,
         PushoverTarget::default(),
+        PushoverControl::default(),
         false,
         false,
         0.0,

@@ -337,6 +337,8 @@ pub struct AnalysisSettings {
     pub push_drift_denom: f64,
     /// 増分解析: 塑性率（ductility）の算定方式（構造力学）。
     pub ductility_method: squid_n_solver::pushover::DuctilityMethod,
+    /// 増分解析: 制御方式（段階制御／荷重増分のみ）。
+    pub push_control: squid_n_solver::pushover::PushoverControl,
     /// 質点系モデル生成: モデル化タイプ（等価せん断型など）。
     pub lumped_mass_type: squid_n_solver::lumped_mass::LumpedMassType,
     /// 質点系モデル生成: 第1折点判定の割線剛性比（0..1、既定 0.75）。
@@ -444,6 +446,7 @@ impl Default for AnalysisSettings {
             push_use_drift_angle: true,
             push_drift_denom: 150.0,
             ductility_method: squid_n_solver::pushover::DuctilityMethod::default(),
+            push_control: squid_n_solver::pushover::PushoverControl::default(),
             lumped_mass_type: squid_n_solver::lumped_mass::LumpedMassType::default(),
             lumped_secant_ratio: 0.75,
             th_damping: 0.02,
