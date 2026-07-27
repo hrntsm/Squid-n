@@ -1347,29 +1347,33 @@ fn test_plastic_zone_elastic_stiffness_close_to_full_fiber() {
     }
 }
 
-/// 塑性化域考慮モデルの中央弾性部 `k_mid` にも断面→要素座標系のクロス変換
+/// 塑性増分ヒンジモデルの弾性剛性 `k_el` にも断面→要素座標系のクロス変換
 /// （elem EIz←sec.iy）が効いていることの回帰テスト。
 /// B マトリクスの (uy,rz)=Mz 面と (uz,ry)=My 面の係数は大きさが同一のため、
-/// 積分方式に依らず k_mid(1,1)/k_mid(2,2) = EIz_elem/EIy_elem = sec.iy/sec.iz
-/// （強軸/弱軸）が厳密に成り立つ。全長ファイバー積分との相対比較
-/// （上のテスト）と異なり、断面値から独立に期待比を定めるため、
+/// せん断剛性なし（G=0、φ=0）のモデルでは
+/// k_el(1,1)/k_el(2,2) = EIz_elem/EIy_elem = sec.iy/sec.iz（強軸/弱軸）が
+/// 厳密に成り立つ。断面値から独立に期待比を定めるため、
 /// グリッド回転とクロス変換が同時に欠落しても検出できる。
 #[test]
-fn test_plastic_zone_k_mid_strong_axis_in_mz_plane() {
+fn test_plastic_zone_k_el_strong_axis_in_mz_plane() {
     let model = build_test_model(Some(0.0));
     let pz = make_plastic_zone_fiber(300.0, None);
-    let k_mid = pz.k_mid.as_ref().expect("plastic zone model has k_mid");
+    let k_el = &pz
+        .hinge
+        .as_ref()
+        .expect("plastic zone model has hinge")
+        .k_el;
     let sec = &model.sections[0];
-    let ratio = k_mid.get(1, 1) / k_mid.get(2, 2);
+    let ratio = k_el.get(1, 1) / k_el.get(2, 2);
     let expected = sec.iy / sec.iz; // 強軸（Mz 面）/ 弱軸（My 面）
     assert!(
         (ratio - expected).abs() / expected < 1e-12,
-        "k_mid(1,1)/k_mid(2,2)={} expected sec.iy/sec.iz={}",
+        "k_el(1,1)/k_el(2,2)={} expected sec.iy/sec.iz={}",
         ratio,
         expected
     );
     // 鉛直曲げ（Mz 面）の方が剛であること（せい 200 > 幅 100 の断面）
-    assert!(k_mid.get(1, 1) > k_mid.get(2, 2));
+    assert!(k_el.get(1, 1) > k_el.get(2, 2));
 }
 
 #[test]
@@ -1760,7 +1764,7 @@ fn 剛域ありの塑性化域は可撓長基準になる() {
         // 重み w·(L'/2) = Lp → w = 2Lp/L'
         assert_relative_eq!(gp.weight, 2.0 * lp / l_flex, max_relative = 1e-12);
     }
-    assert!(fb.k_mid.is_some(), "中央弾性部が構築されていない");
+    assert!(fb.hinge.is_some(), "塑性増分ヒンジが構築されていない");
 }
 
 /// 剛域長の合計が節点間長以上になる病的な入力は、剛域なしとして扱う

@@ -14,6 +14,7 @@ pub enum CheckpointError {
     MaterialState(#[from] squid_n_material::MaterialStateError),
 }
 
+#[derive(Clone)]
 pub struct LocalMat {
     pub n: usize,
     pub data: Vec<f64>,

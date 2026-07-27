@@ -1900,12 +1900,24 @@ fn test_pushover_displacement_control_reaches_target_and_exceeds_design_load() {
         last_roof
     );
 
-    // 変位制御により荷重制御頭打ち（≈ 0.2·W）を有意に上回る耐力へ到達すること。
+    // 変位制御により荷重制御頭打ち（≈ 0.2·W = 16kN）を上回る耐力へ到達すること。
     assert!(
-        result.qu > load_only.qu * 1.5,
+        result.qu > load_only.qu * 1.05,
         "displacement control Qu={:.1} should exceed load-only Qu={:.1}",
         result.qu,
         load_only.qu
+    );
+    // 塑性増分ヒンジモデルでは、押し切った耐力が柱脚の全塑性崩壊荷重
+    // Vp = Mp/L = 1.1·σy·Zp/L（Zp = b·d²/4、材料強度割増 1.1）で頭打ちになる
+    // （旧定式化は降伏後もほぼ弾性勾配で伸び続け Qu を過大評価していた）。
+    // バイリニア硬化（b=0.01）の分だけ Vp をやや上回る。
+    let zp = 100.0 * 100.0 * 100.0 / 4.0;
+    let vp = 1.1 * 235.0 * zp / 3000.0;
+    assert!(
+        result.qu > vp * 0.95 && result.qu < vp * 1.3,
+        "Qu={:.1} should cap near plastic collapse Vp={:.1} (0.95..1.3)",
+        result.qu,
+        vp
     );
 }
 
@@ -2295,6 +2307,11 @@ fn test_pushover_drift_angle_target_runs_with_multi_spring() {
 /// 上辺 2 節点を剛床（マスター NodeId(3)）で束ねる。面外・回転自由度は
 /// 壁エレメントが剛性を持たないため拘束する。
 fn wall_story_model(seismic_weight: f64) -> Model {
+    wall_story_model_with(4000.0, seismic_weight)
+}
+
+/// 壁長 lw を指定できる版（曲げ支配の細長壁の検証用）。
+fn wall_story_model_with(lw: f64, seismic_weight: f64) -> Model {
     use squid_n_core::section_shape::SectionShape;
     let make_node = |id: u32, coord: [f64; 3], restraint: Dof6Mask, story: Option<StoryId>| Node {
         id: NodeId(id),
@@ -2312,8 +2329,8 @@ fn wall_story_model(seismic_weight: f64) -> Model {
     Model {
         nodes: vec![
             make_node(0, [0.0, 0.0, 0.0], Dof6Mask::FIXED, None),
-            make_node(1, [4000.0, 0.0, 0.0], Dof6Mask::FIXED, None),
-            make_node(2, [4000.0, 0.0, 3000.0], top_mask, Some(StoryId(0))),
+            make_node(1, [lw, 0.0, 0.0], Dof6Mask::FIXED, None),
+            make_node(2, [lw, 0.0, 3000.0], top_mask, Some(StoryId(0))),
             make_node(3, [0.0, 0.0, 3000.0], top_mask, Some(StoryId(0))),
         ],
         elements: vec![ElementData {
@@ -2414,5 +2431,124 @@ fn test_pushover_drift_angle_target_runs_with_wall_panel() {
     assert!(
         kt < 0.5 * k0,
         "壁の Qu 頭打ちで接線剛性が低下すること: k0={k0:.2}, kt={kt:.2}"
+    );
+}
+
+/// 塑性増分ヒンジ化したファイバー柱の増分解析で、既定目標（層間変形角 1/150）
+/// までに (1) ヒンジが発生し、(2) 降伏後の接線剛性が実際に低下し、
+/// (3) 目標の初回到達で打ち切られることを確認する。
+/// 旧定式化（端部ガウス点の B 積分、重み 2Lp/L'）では端部断面が全塑性化しても
+/// 要素剛性が数 % しか低下しなかった（`dev_docs/v_and_v/増分解析_ヒンジ形成と
+/// 剛性低下_検証_2026-07.md` §2.2）。
+///
+/// fy=30 では初降伏 V_y = My/L ≒ 1.8kN（変位 ≒9mm・1/330）、全塑性
+/// Vp = 1.1·σy·Zp/L ≒ 2.75kN。地震重量 10kN（λ=1 で 2.0kN）は初降伏と
+/// 全塑性の間にあり、荷重制御中に降伏が始まり変位制御で目標まで押し込む。
+#[test]
+fn test_pushover_fiber_hinge_softens_at_drift_target() {
+    let mut model = single_column_model(30.0, 10_000.0);
+    let dofmap = DofMap::build(&model);
+    let reducer = Reducer::build(&model, &dofmap);
+    let result = pushover_analysis_recording(
+        &mut model,
+        &dofmap,
+        &reducer,
+        SeismicDir::X,
+        40,
+        PushoverTarget::default(),
+        false,
+        false,
+        0.0,
+        false,
+        DuctilityMethod::default(),
+    )
+    .expect("fiber pushover should run");
+
+    let last = result.steps.last().expect("収束ステップがあること");
+    let angle = last.story_drifts[0].abs() / 3000.0;
+    assert!(
+        angle >= (1.0 / 150.0) * 0.999,
+        "層間変形角 1/150 に到達して打ち切られること: {angle:.6}"
+    );
+    assert!(
+        !result.hinges.is_empty(),
+        "目標到達までにヒンジが発生すること"
+    );
+
+    // 剛性低下: 初期割線剛性に対し最終区間の接線剛性が有意に低下すること。
+    let curve = &result.capacity_curve;
+    let first = curve
+        .iter()
+        .find(|p| p.roof_disp > 1e-9)
+        .expect("変位が生じた点");
+    let k0 = first.base_shear / first.roof_disp;
+    let (p1, p2) = (&curve[curve.len() - 2], &curve[curve.len() - 1]);
+    let ddisp = p2.roof_disp - p1.roof_disp;
+    assert!(ddisp > 1e-9, "最終区間で変位が進んでいること");
+    let kt = (p2.base_shear - p1.base_shear) / ddisp;
+    assert!(
+        kt < 0.5 * k0,
+        "ファイバー柱でも降伏後の接線剛性が初期剛性の 1/2 未満へ低下すること: k0={k0:.2}, kt={kt:.2}"
+    );
+    // 耐力は全塑性崩壊荷重 Vp = 1.1·σy·Zp/L 近傍で頭打ちになる（過大評価しない）。
+    let vp = 1.1 * 30.0 * (100.0 * 100.0 * 100.0 / 4.0) / 3000.0;
+    assert!(
+        result.qu < vp * 1.3,
+        "Qu={:.1} が全塑性崩壊荷重 Vp={:.1} を大きく超えないこと",
+        result.qu,
+        vp
+    );
+}
+
+/// 耐震壁の**曲げ降伏**の検証: 細長壁（lw=1000・h=3000、曲げ支配。せん断終局
+/// Qu は曲げ耐力より十分大きい）では、既定でファイバー化された壁柱の端部断面が
+/// 曲げ降伏し、目標層間変形角 1/150 到達までに接線剛性が実際に低下すること。
+/// 従来の壁柱（弾性梁＋せん断 Qu 頭打ちのみ）では曲げ降伏は表現されず、
+/// 細長壁の耐力を危険側に過大評価していた。
+#[test]
+fn test_pushover_wall_flexural_yield_softens() {
+    let mut model = wall_story_model_with(1000.0, 30_000.0);
+    let dofmap = DofMap::build(&model);
+    let reducer = Reducer::build(&model, &dofmap);
+    let result = pushover_analysis_recording(
+        &mut model,
+        &dofmap,
+        &reducer,
+        SeismicDir::X,
+        40,
+        PushoverTarget::default(),
+        false,
+        false,
+        0.0,
+        false,
+        DuctilityMethod::default(),
+    )
+    .expect("細長壁の増分解析が完走すること");
+    let last = result.steps.last().expect("収束ステップがあること");
+    assert!(
+        last.story_drifts[0].abs() / 3000.0 >= (1.0 / 150.0) * 0.999,
+        "層間変形角 1/150 まで到達して打ち切られること: {:.6}",
+        last.story_drifts[0].abs() / 3000.0
+    );
+    let curve = &result.capacity_curve;
+    let first = curve
+        .iter()
+        .find(|p| p.roof_disp > 1e-9)
+        .expect("変位が生じた点");
+    let k0 = first.base_shear / first.roof_disp;
+    let (p1, p2) = (&curve[curve.len() - 2], &curve[curve.len() - 1]);
+    let ddisp = p2.roof_disp - p1.roof_disp;
+    assert!(ddisp > 1e-9, "最終区間で変位が進んでいること");
+    let kt = (p2.base_shear - p1.base_shear) / ddisp;
+    assert!(
+        kt < 0.5 * k0,
+        "細長壁の曲げ降伏で接線剛性が低下すること: k0={k0:.2}, kt={kt:.2}"
+    );
+    // 耐力が弾性外挿（k0×最終変位）に対して有意に頭打ちしていること。
+    assert!(
+        result.qu < 0.7 * k0 * p2.roof_disp,
+        "Qu={:.1} が弾性外挿 {:.1} より有意に小さいこと",
+        result.qu,
+        k0 * p2.roof_disp
     );
 }

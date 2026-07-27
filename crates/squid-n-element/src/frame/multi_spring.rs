@@ -349,7 +349,9 @@ mod tests {
         let f1 = elem1.internal_force(&ElemState::default(), &ctx);
         let m1 = f1.data[4].abs();
 
-        // ケース2: 同じ回転 + 軸ひずみ −5εy（中立軸シフト → N/Npl ≈ 0.5 相当）。
+        // ケース2: 同じ回転 + 軸ひずみ −15εy。塑性増分ヒンジモデルでは端部断面の
+        // 平衡曲率が旧 B 行列運動学より深く（外縁ひずみ ≈ 27εy）まで進むため、
+        // 中立軸シフト比 n ≈ 15/27 ≈ 0.55（N/Npl 相当）となる軸ひずみを与える。
         // 軸バネと曲げが非連成のモデルなら軸変位は DOF4 のモーメントに一切影響しない
         // ため、m2 < m1 が N-M 連成の直接の証拠になる。
         let mut elem2 = MultiSpringElement::new(
@@ -357,7 +359,7 @@ mod tests {
             &model,
             crate::factory::StrengthBasis::Nominal,
         );
-        let u_axial = -5.0 * eps_y * 3000.0;
+        let u_axial = -15.0 * eps_y * 3000.0;
         let du2 = LocalVec {
             data: smallvec::smallvec![
                 0.0, 0.0, 0.0, 0.0, theta, 0.0, u_axial, 0.0, 0.0, 0.0, 0.0, 0.0

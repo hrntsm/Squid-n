@@ -24,7 +24,7 @@ pub fn clamp_plastic_zone(lp: f64, l: f64) -> f64 {
 /// 引張側鉄筋を無視していた）。それ以外（鋼材・複合断面）は均質格子とする。
 /// `fc≤60` はコンクリートに NewRC、超過は放物線モデルを用いる。
 #[allow(clippy::too_many_arguments)]
-fn build_gauss_fibers(
+pub(crate) fn build_gauss_fibers(
     width: f64,
     depth: f64,
     nw: usize,
@@ -216,11 +216,14 @@ fn resolve_end_releases(
 }
 
 /// [`FiberBeam::snapshot_state`] が返すスナップショットの型。
-/// （トライアル変位・確定変位・各ガウス点の材料・内部自由度のトライアル/確定値）
+/// （トライアル変位・確定変位・各ガウス点の材料・内部自由度のトライアル/確定値・
+/// 塑性増分ヒンジ状態のトライアル/確定値。ヒンジ無しモデルは空 Vec）
 pub type FiberBeamSnapshot = (
     [f64; 12],
     [f64; 12],
     Vec<Vec<Box<dyn UniaxialMaterial>>>,
+    Vec<f64>,
+    Vec<f64>,
     Vec<f64>,
     Vec<f64>,
 );
@@ -234,6 +237,19 @@ struct FiberBeamCheckpoint {
     /// 材端解放の内部自由度（要素端回転）。
     trial_int: Vec<f64>,
     committed_int: Vec<f64>,
+    /// 塑性増分ヒンジ状態（κ4 + θb4 = 8 値。ヒンジ無しモデルは空）。
+    trial_hinge: Vec<f64>,
+    committed_hinge: Vec<f64>,
+}
+
+/// 塑性増分ヒンジ状態を持たない一つ前の形式のチェックポイント（読み込み互換用）。
+#[derive(serde::Deserialize)]
+struct FiberBeamCheckpointV2 {
+    trial_disp: [f64; 12],
+    committed_disp: [f64; 12],
+    gauss_points: Vec<Vec<Vec<u8>>>,
+    trial_int: Vec<f64>,
+    committed_int: Vec<f64>,
 }
 
 /// 材端解放の内部自由度を持たない旧形式のチェックポイント（読み込み互換用）。
@@ -243,6 +259,50 @@ struct FiberBeamCheckpointLegacy {
     committed_disp: [f64; 12],
     gauss_points: Vec<Vec<Vec<u8>>>,
 }
+
+/// 塑性増分ヒンジ（端部塑性化域の直列モデル）の定義と状態。
+///
+/// 塑性化域考慮モデルを「**全可撓長の弾性梁** + **端部の塑性増分ヒンジ**」の
+/// 直列として解くための構成。ヒンジは端部ファイバー断面（`gauss_points` の
+/// ξ=∓1 断面）の曲率 κ を内部未知数とし、各トライアルで両端 2 軸の内部平衡
+///
+/// \\[ m_B = D_{nom} \cdot B(\xi_{end}) \cdot \hat u = m_{sec}(\varepsilon_0, \kappa) \\]
+///
+/// （弾性梁の端部モーメント＝断面モーメント）を要素内 Newton で解く。
+/// ヒンジ回転（節点回転と可撓端回転の差）は断面の弾性線を**超える塑性超過分**
+///
+/// \\[ \gamma = s \cdot L_p \cdot (\kappa - m_{sec}(\kappa)/EI_{sec}) \\]
+///
+/// のみを持つ（s は端の向き: i 端 +1・j 端 −1。B 行列の自端回転係数の符号に一致）。
+/// 弾性状態では γ=0 となり要素は弾性梁 `k_el` に厳密一致し、降伏後は塑性回転が
+/// Lp に局所化して要素剛性が実際に低下する。従来の「端部ガウス点の B 積分
+/// （重み 2Lp/L'）＋中央弾性剛性の加算」は、端部断面が全塑性化しても要素剛性が
+/// 積分重み分（数 %）しか低下しない変位法の限界があった。
+#[derive(Clone)]
+pub struct HingeState {
+    /// 塑性化域長 Lp [mm]。
+    pub lp: f64,
+    /// 全可撓長の弾性剛性（曲げ＋軸＋せん断＋ねじり、可撓端系 12×12）。
+    pub k_el: LocalMat,
+    /// 公称弾性 D 対角 [EA, E·Iy_elem, E·Iz_elem]（`m_B = D·B·û` の評価用）。
+    d_nom: [f64; 3],
+    /// 端部ファイバー断面の弾性曲げ剛性 [端][軸]（軸 0=κy=EIy_sec, 1=κz=EIz_sec、
+    /// ファイバー離散化後の値。γ=0 の弾性整合はこの値で成立する）。
+    sec_ei: [[f64; 2]; 2],
+    /// ヒンジが有効な端（端条件 Fixed のみ。ピン・半剛端は材端解放側で扱う）。
+    active: [bool; 2],
+    /// ヒンジ断面曲率 [i_κy, i_κz, j_κy, j_κz]（トライアル/確定）。
+    pub trial_kappa: [f64; 4],
+    pub committed_kappa: [f64; 4],
+    /// 可撓端回転（梁側）[slot4, slot5, slot10, slot11]（トライアル/確定）。
+    trial_thb: [f64; 4],
+    committed_thb: [f64; 4],
+}
+
+/// ヒンジ自由度のスロット表 [端][軸]（軸 0=κy→ry、1=κz→rz）。
+const HINGE_SLOTS: [[usize; 2]; 2] = [[4, 5], [10, 11]];
+/// ヒンジ回転の向き（i 端 +1・j 端 −1。B 行列の自端回転係数の符号）。
+const HINGE_SIGN: [f64; 2] = [1.0, -1.0];
 
 pub struct GaussPoint {
     pub xi: f64,
@@ -340,9 +400,9 @@ pub struct FiberBeam {
     /// 要素ローカル系→グローバル系の回転（柱・斜材で必須）。
     /// 内部状態（trial_disp 等）はローカル系で保持し、トレイト境界で回転する。
     pub axis: crate::transform::LocalFrame,
-    /// 塑性化域考慮モデルの中央弾性部剛性（ローカル系 12×12）。
-    /// None = 従来の全長ファイバー積分モデル。
-    pub k_mid: Option<LocalMat>,
+    /// 塑性増分ヒンジ（端部塑性化域の直列モデル）。
+    /// None = 全長ファイバー積分モデル（B 積分のみ）。
+    pub hinge: Option<HingeState>,
     /// 材端解放（ピン・半剛）で分離した要素端回転（内部自由度）。空なら全端剛接。
     pub releases: SmallVec<[EndRelease; 6]>,
     /// 内部自由度の現在値（`releases` と同順。可撓端系ローカルの要素端回転）。
@@ -483,7 +543,7 @@ impl FiberBeam {
             phi_z,
             k_shear,
             axis,
-            k_mid: None,
+            hinge: None,
             eval_sections: crate::beam::eval_sections_of(data, model, length),
             committed_disp: [0.0; 12],
             trial_disp: [0.0; 12],
@@ -538,10 +598,125 @@ impl FiberBeam {
         k
     }
 
+    /// 断面・軸などを直接指定して塑性増分ヒンジ付きファイバー要素を組み立てる
+    /// （`ElementData` を持たない合成部材用。耐震壁の壁柱など）。
+    /// 諸元は**要素座標系**で与える（クロス変換済み: `iy_elem` は κy=(uz,ry) 面、
+    /// `iz_elem` は κz=(uy,rz) 面。`as_z_elem` は (uy,rz) 面のせん断有効断面積）。
+    /// 両端剛接としてヒンジを両端有効にする。剛域なし。
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn from_raw_parts(
+        nodes: [NodeId; 2],
+        length: f64,
+        axis: crate::transform::LocalFrame,
+        density: f64,
+        e: f64,
+        g: f64,
+        area: f64,
+        iy_elem: f64,
+        iz_elem: f64,
+        as_y_elem: f64,
+        as_z_elem: f64,
+        torsion_j: f64,
+        lp: f64,
+        sections: [(FiberSection, Vec<Box<dyn UniaxialMaterial>>); 2],
+    ) -> Self {
+        let flex_length = length;
+        let phi_of = |ei: f64, gas: f64| {
+            if gas > 0.0 && ei > 0.0 && flex_length > 0.0 {
+                12.0 * ei / (gas * flex_length * flex_length)
+            } else {
+                0.0
+            }
+        };
+        // 要素 (uy,rz) 面 = κz = iz_elem・as_y_elem / (uz,ry) 面 = κy = iy_elem・as_z_elem
+        let phi_y = phi_of(e * iz_elem, g * as_y_elem);
+        let phi_z = phi_of(e * iy_elem, g * as_z_elem);
+        let k_shear =
+            Self::compute_shear_stiffness(flex_length, phi_y, phi_z, g * as_y_elem, g * as_z_elem);
+        let lp = clamp_plastic_zone(lp, flex_length);
+        let [(sec_a, mats_a), (sec_b, mats_b)] = sections;
+        let w_end = 2.0 * lp / flex_length;
+        let gauss_points = vec![
+            GaussPoint::new(-1.0, w_end, sec_a, mats_a),
+            GaussPoint::new(1.0, w_end, sec_b, mats_b),
+        ];
+        let mut fb = FiberBeam {
+            length,
+            rigid_i: 0.0,
+            rigid_j: 0.0,
+            flex_length,
+            releases: SmallVec::new(),
+            committed_int: SmallVec::new(),
+            trial_int: SmallVec::new(),
+            nodes,
+            gauss_points,
+            density,
+            torsion_j,
+            g,
+            phi_y,
+            phi_z,
+            k_shear,
+            axis,
+            hinge: None,
+            eval_sections: vec![0.0, 0.5, 1.0],
+            committed_disp: [0.0; 12],
+            trial_disp: [0.0; 12],
+        };
+        // K_el（全可撓長の弾性剛性）とヒンジの構築（`build_plastic_zone` と同一手順）。
+        let d_nom = [e * area, e * iy_elem, e * iz_elem];
+        let mut k_el = LocalMat::zeros(12);
+        for sgn in [-1.0_f64, 1.0] {
+            let xi = sgn / 3.0_f64.sqrt();
+            let w_phys = flex_length / 2.0;
+            let b = Self::compute_b_matrix(xi, flex_length, fb.phi_y, fb.phi_z);
+            for i in 0..12 {
+                for j in 0..12 {
+                    let mut val = 0.0;
+                    for (p, dp) in d_nom.iter().enumerate() {
+                        val += b[p][i] * dp * b[p][j];
+                    }
+                    if val != 0.0 {
+                        k_el.set(i, j, k_el.get(i, j) + val * w_phys);
+                    }
+                }
+            }
+        }
+        for i in 0..12 {
+            for j in 0..12 {
+                let v = fb.k_shear.get(i, j);
+                if v != 0.0 {
+                    k_el.set(i, j, k_el.get(i, j) + v);
+                }
+            }
+        }
+        if let Some(kt) = fb.torsion_stiffness() {
+            k_el.set(3, 3, k_el.get(3, 3) + kt);
+            k_el.set(9, 9, k_el.get(9, 9) + kt);
+            k_el.set(3, 9, k_el.get(3, 9) - kt);
+            k_el.set(9, 3, k_el.get(9, 3) - kt);
+        }
+        let sec_ei = std::array::from_fn(|end| {
+            let (_, d) = Self::section_response_from_cache(&fb.gauss_points[end]);
+            [d[1][1], d[2][2]]
+        });
+        fb.hinge = Some(HingeState {
+            lp,
+            k_el,
+            d_nom,
+            sec_ei,
+            active: [true, true],
+            trial_kappa: [0.0; 4],
+            committed_kappa: [0.0; 4],
+            trial_thb: [0.0; 4],
+            committed_thb: [0.0; 4],
+        });
+        fb
+    }
+
     /// 塑性化域考慮のファイバー要素（材端剛塑性ばねモデルと適合する
     /// ファイバーモデル化）。端部の塑性化領域（長さ `lp`）にファイバー断面を
-    /// 配置（積分点 ξ=∓1、重み Lp）し、中央 [Lp, L'−Lp] は断面諸元
-    /// （EA・EIy・EIz）による弾性剛性として厳密に B 積分する。
+    /// 配置（積分点 ξ=∓1）し、要素は「全可撓長の弾性梁＋端部塑性増分ヒンジ」の
+    /// 直列モデル（[`HingeState`]）として解く。
     /// 剛域があるときの基準長 L' は可撓長（積分点は剛域フェイス）。
     /// 塑性化域考慮のファイバー要素の生成（材料強度の基準 `basis` を明示指定する版）。
     pub fn with_plastic_zone(
@@ -628,28 +803,66 @@ impl FiberBeam {
             GaussPoint::new(1.0, w_end, sec_b, mats_b),
         ];
 
-        // 中央弾性部 [Lp, L'−Lp] の剛性: B(ξ)ᵀ·diag(EA,EIy,EIz)·B(ξ) を
-        // 2点 Gauss（区間 [−h, h]、h = 1−2Lp/L'）で厳密積分（被積分関数は ξ の2次）
-        let h = 1.0 - 2.0 * lp / l;
-        let d_el = [e * area, e * iy, e * iz];
-        let mut k_mid = LocalMat::zeros(12);
-        for sgn in [-1.0, 1.0] {
-            let xi = sgn * h / 3.0_f64.sqrt();
-            let w_phys = h * l / 2.0;
+        // 全可撓長の弾性剛性 K_el: B(ξ)ᵀ·diag(EA,EIy,EIz)·B(ξ) を 2 点 Gauss
+        // （区間 [−1,1]、被積分関数は ξ の 2 次のため厳密）で積分し、
+        // 一定せん断ひずみ場・ねじりを加算する。弾性状態の要素剛性は
+        // （ヒンジ回転 γ=0 のため）この K_el に厳密一致する。
+        let d_nom = [e * area, e * iy, e * iz];
+        let mut k_el = LocalMat::zeros(12);
+        for sgn in [-1.0_f64, 1.0] {
+            let xi = sgn / 3.0_f64.sqrt();
+            let w_phys = l / 2.0;
             let b = Self::compute_b_matrix(xi, l, fb.phi_y, fb.phi_z);
             for i in 0..12 {
                 for j in 0..12 {
                     let mut val = 0.0;
-                    for (p, dp) in d_el.iter().enumerate() {
+                    for (p, dp) in d_nom.iter().enumerate() {
                         val += b[p][i] * dp * b[p][j];
                     }
                     if val != 0.0 {
-                        k_mid.set(i, j, k_mid.get(i, j) + val * w_phys);
+                        k_el.set(i, j, k_el.get(i, j) + val * w_phys);
                     }
                 }
             }
         }
-        fb.k_mid = Some(k_mid);
+        for i in 0..12 {
+            for j in 0..12 {
+                let v = fb.k_shear.get(i, j);
+                if v != 0.0 {
+                    k_el.set(i, j, k_el.get(i, j) + v);
+                }
+            }
+        }
+        if let Some(kt) = fb.torsion_stiffness() {
+            k_el.set(3, 3, k_el.get(3, 3) + kt);
+            k_el.set(9, 9, k_el.get(9, 9) + kt);
+            k_el.set(3, 9, k_el.get(3, 9) - kt);
+            k_el.set(9, 3, k_el.get(9, 3) - kt);
+        }
+
+        // 端部ファイバー断面の弾性曲げ剛性（離散化後）。ヒンジ回転 γ の
+        // 「弾性線を超える塑性超過分」の基準線に用いる（γ=0 の弾性整合は
+        // 公称値でなく断面自身の弾性剛性で成立させる）。
+        let sec_ei = std::array::from_fn(|end| {
+            let (_, d) = Self::section_response_from_cache(&fb.gauss_points[end]);
+            [d[1][1], d[2][2]]
+        });
+        // ヒンジは剛接端のみ有効（ピン・半剛端は材端解放の内部自由度側で扱い、
+        // モーメントが伝わらない/接合部ばね経由のため塑性ヒンジは形成させない）。
+        let active = std::array::from_fn(|end| {
+            matches!(data.end_cond[end], squid_n_core::model::EndCondition::Fixed)
+        });
+        fb.hinge = Some(HingeState {
+            lp,
+            k_el,
+            d_nom,
+            sec_ei,
+            active,
+            trial_kappa: [0.0; 4],
+            committed_kappa: [0.0; 4],
+            trial_thb: [0.0; 4],
+            committed_thb: [0.0; 4],
+        });
         fb
     }
 
@@ -699,12 +912,16 @@ impl FiberBeam {
     }
 
     /// 可撓端系 12×12 の接線剛性（剛体アーム変換・材端解放の縮約より前）。
-    /// 断面積分＋中央弾性部＋一定せん断ひずみ場＋ねじりを含む。
+    /// 全長ファイバー積分モデルは断面積分＋一定せん断ひずみ場＋ねじり、
+    /// 塑性増分ヒンジモデルは弾性梁＋ヒンジの整合接線を返す。
     fn elem_tangent(&self) -> LocalMat {
         let mut k = LocalMat::zeros(12);
         let l = self.flex_length;
         if l <= 0.0 {
             return k;
+        }
+        if let Some(h) = &self.hinge {
+            return self.hinge_tangent(h);
         }
         let half = l / 2.0;
 
@@ -729,16 +946,6 @@ impl FiberBeam {
                             k.set(i, j, old + bpi * val * w);
                         }
                     }
-                }
-            }
-        }
-
-        // 塑性化域考慮モデル: 中央弾性部の剛性を加算
-        if let Some(km) = &self.k_mid {
-            for i in 0..12 {
-                for j in 0..12 {
-                    let old = k.get(i, j);
-                    k.set(i, j, old + km.get(i, j));
                 }
             }
         }
@@ -781,6 +988,9 @@ impl FiberBeam {
         if l <= 0.0 {
             return f;
         }
+        if let Some(h) = &self.hinge {
+            return Self::hinge_internal_force(h, u_elem);
+        }
         let half = l / 2.0;
 
         for gp in &self.gauss_points {
@@ -792,14 +1002,11 @@ impl FiberBeam {
             }
         }
 
-        // 中央弾性部（線形: K_mid·u）とせん断ひずみ場（線形弾性: K_shear·u）。
+        // せん断ひずみ場（線形弾性: K_shear·u）。
         // γ は剛体運動でゼロの客観的測度なので偽内力は生じない。
         for i in 0..12 {
             let mut si = 0.0;
             for j in 0..12 {
-                if let Some(km) = &self.k_mid {
-                    si += km.get(i, j) * u_elem[j];
-                }
                 si += self.k_shear.get(i, j) * u_elem[j];
             }
             f[i] += si;
@@ -826,13 +1033,13 @@ impl FiberBeam {
         let u_flex = self.flex_disp();
         if self.releases.is_empty() {
             let u_elem = self.elem_disp(&u_flex);
-            self.update_section_trial(&u_elem);
+            self.update_trial_state(&u_elem);
             return;
         }
         let n = self.releases.len();
         for _ in 0..MAX_ITER {
             let u_elem = self.elem_disp(&u_flex);
-            self.update_section_trial(&u_elem);
+            self.update_trial_state(&u_elem);
             let f_elem = self.elem_internal_force(&u_elem);
 
             let mut r = vec![0.0_f64; n];
@@ -875,7 +1082,18 @@ impl FiberBeam {
         }
         // 収束打ち切り時も断面状態を最終 u_elem と整合させる。
         let u_elem = self.elem_disp(&u_flex);
-        self.update_section_trial(&u_elem);
+        self.update_trial_state(&u_elem);
+    }
+
+    /// 要素変形 `u_elem` に対するトライアル状態の更新。
+    /// 塑性増分ヒンジモデルはヒンジの内部平衡を解き、
+    /// 全長ファイバー積分モデルは B 行列由来の断面ひずみで更新する。
+    fn update_trial_state(&mut self, u_elem: &[f64; 12]) {
+        if self.hinge.is_some() {
+            self.solve_hinges(u_elem);
+        } else {
+            self.update_section_trial(u_elem);
+        }
     }
 
     /// 材端解放した要素端回転を静縮約し、可撓端系 12×12 へ戻す
@@ -998,6 +1216,291 @@ impl FiberBeam {
         b[2][11] = -(1.0 + 3.0 * xi + phi_y) * inv_l * cy;
         b
     }
+
+    // ===== 塑性増分ヒンジ（端部塑性化域の直列モデル）=====
+
+    /// ヒンジの有効自由度 (端, 軸) の一覧（軸 0=κy, 1=κz）。
+    fn hinge_dofs(h: &HingeState) -> SmallVec<[(usize, usize); 4]> {
+        let mut dofs = SmallVec::new();
+        for end in 0..2 {
+            if !h.active[end] {
+                continue;
+            }
+            for axis in 0..2 {
+                if h.sec_ei[end][axis] > 0.0 && h.d_nom[1 + axis] > 0.0 {
+                    dofs.push((end, axis));
+                }
+            }
+        }
+        dofs
+    }
+
+    /// 有効ヒンジ自由度の回転スロットを可撓端回転 θb で置き換えた変位ベクトル û。
+    fn hinge_uhat_from(dofs: &[(usize, usize)], thb: &[f64; 4], u_elem: &[f64; 12]) -> [f64; 12] {
+        let mut u = *u_elem;
+        for &(end, axis) in dofs {
+            u[HINGE_SLOTS[end][axis]] = thb[end * 2 + axis];
+        }
+        u
+    }
+
+    /// 端部断面のトライアル状態を (ε0, κy, κz) で直接更新する（ヒンジモデル用。
+    /// B 行列による曲率復元は行わない）。
+    fn update_hinge_section_trial(&mut self, end: usize, eps0: f64, ky: f64, kz: f64) {
+        let gp = &mut self.gauss_points[end];
+        for (i, fiber) in gp.section.fibers.iter().enumerate() {
+            let eps = eps0 - kz * fiber.y + ky * fiber.z;
+            let (sigma, et) = gp.mats[i].trial(eps);
+            gp.trial_stress[i] = sigma;
+            gp.trial_et[i] = et;
+        }
+    }
+
+    /// ヒンジの内部平衡を解く。未知数は有効端の断面曲率 κ（最大 4）で、
+    /// 各端・各軸について「弾性梁の端部モーメント m_B = D_nom·B(ξ_end)·û」と
+    /// 「断面モーメント m_sec(ε0, κ)」の釣合いを Newton 反復で満たす。
+    /// 収束後、`trial_kappa`・`trial_thb` と端部断面のトライアル状態が
+    /// 最終の û と整合した状態になる。
+    fn solve_hinges(&mut self, u_elem: &[f64; 12]) {
+        const MAX_ITER: usize = 40;
+        let l = self.flex_length;
+        let (lp, d_nom, sec_ei, dofs, mut kappa, mut thb) = {
+            let Some(h) = self.hinge.as_ref() else {
+                return;
+            };
+            (
+                h.lp,
+                h.d_nom,
+                h.sec_ei,
+                Self::hinge_dofs(h),
+                h.trial_kappa,
+                h.trial_thb,
+            )
+        };
+        let n = dofs.len();
+        // 軸ひずみは弾性（B 行 0）。両端共通で、断面の N-M 相関にのみ使う。
+        let eps0 = (u_elem[6] - u_elem[0]) / l;
+        if n == 0 {
+            // ヒンジ無効端のみ: 断面状態を現在の κ（=0 のまま）で整合させる。
+            for end in 0..2 {
+                let (ky, kz) = (kappa[end * 2], kappa[end * 2 + 1]);
+                self.update_hinge_section_trial(end, eps0, ky, kz);
+            }
+            return;
+        }
+        let b_end = [
+            Self::compute_b_matrix(-1.0, l, self.phi_y, self.phi_z),
+            Self::compute_b_matrix(1.0, l, self.phi_y, self.phi_z),
+        ];
+
+        for _ in 0..MAX_ITER {
+            // 1) 断面応答（両端）とヒンジ回転 γ → θb
+            let mut m = [[0.0_f64; 2]; 2]; // [端][軸] 断面モーメント
+            let mut dm = [[[0.0_f64; 2]; 2]; 2]; // [端][軸][軸] 断面接線
+            for end in 0..2 {
+                let (ky, kz) = (kappa[end * 2], kappa[end * 2 + 1]);
+                self.update_hinge_section_trial(end, eps0, ky, kz);
+                let (force, d) = Self::section_response_from_cache(&self.gauss_points[end]);
+                m[end] = [force[1], force[2]];
+                dm[end] = [[d[1][1], d[1][2]], [d[2][1], d[2][2]]];
+            }
+            for &(end, axis) in dofs.iter() {
+                let gamma = HINGE_SIGN[end]
+                    * lp
+                    * (kappa[end * 2 + axis] - m[end][axis] / sec_ei[end][axis]);
+                thb[end * 2 + axis] = u_elem[HINGE_SLOTS[end][axis]] - gamma;
+            }
+            let uh = Self::hinge_uhat_from(&dofs, &thb, u_elem);
+
+            // 2) 弾性梁側の端部モーメント m_B と残差 R
+            let mut r = [0.0_f64; 4];
+            let mut scale = 1.0_f64;
+            for (p, &(end, axis)) in dofs.iter().enumerate() {
+                let brow = &b_end[end][1 + axis];
+                let kb: f64 = brow.iter().zip(uh.iter()).map(|(b, u)| b * u).sum();
+                let m_b = d_nom[1 + axis] * kb;
+                r[p] = m_b - m[end][axis];
+                scale = scale.max(m_b.abs()).max(m[end][axis].abs());
+            }
+            if r[..n].iter().all(|v| v.abs() <= 1e-9 * scale) {
+                break;
+            }
+
+            // 3) Jacobian: J[p][q] = Σ_{p'} D·B[slot_{p'}]·G[p'][q] − δ_end·dm
+            //    G[p'][q] = ∂θb_{p'}/∂κ_q = −s·Lp·(δ − dm/EI_sec)（同一端のみ非零）
+            let mut jac = [0.0_f64; 16];
+            for (p, &(ep, ap)) in dofs.iter().enumerate() {
+                let brow = &b_end[ep][1 + ap];
+                for (q, &(eq, aq)) in dofs.iter().enumerate() {
+                    let mut v = 0.0;
+                    for &(epp, app) in dofs.iter() {
+                        if epp != eq {
+                            continue;
+                        }
+                        let g = -HINGE_SIGN[epp]
+                            * lp
+                            * ((if app == aq { 1.0 } else { 0.0 })
+                                - dm[epp][app][aq] / sec_ei[epp][app]);
+                        v += d_nom[1 + ap] * brow[HINGE_SLOTS[epp][app]] * g;
+                    }
+                    if ep == eq {
+                        v -= dm[ep][ap][aq];
+                    }
+                    jac[p * n + q] = v;
+                }
+            }
+            let jinv = super::beam::invert_small(&jac[..n * n], n);
+            let mut dk = [0.0_f64; 4];
+            for (p, dkp) in dk.iter_mut().take(n).enumerate() {
+                let mut s = 0.0;
+                for q in 0..n {
+                    s += jinv[p * n + q] * r[q];
+                }
+                *dkp = -s;
+            }
+            if dk[..n].iter().any(|v| !v.is_finite()) {
+                break;
+            }
+            for (p, &(end, axis)) in dofs.iter().enumerate() {
+                kappa[end * 2 + axis] += dk[p];
+            }
+        }
+
+        // 最終 κ で断面状態・θb を整合させて書き戻す。
+        for end in 0..2 {
+            let (ky, kz) = (kappa[end * 2], kappa[end * 2 + 1]);
+            self.update_hinge_section_trial(end, eps0, ky, kz);
+        }
+        for &(end, axis) in dofs.iter() {
+            let (force, _) = Self::section_response_from_cache(&self.gauss_points[end]);
+            let gamma = HINGE_SIGN[end]
+                * lp
+                * (kappa[end * 2 + axis] - force[1 + axis] / sec_ei[end][axis]);
+            thb[end * 2 + axis] = u_elem[HINGE_SLOTS[end][axis]] - gamma;
+        }
+        let h = self.hinge.as_mut().unwrap();
+        h.trial_kappa = kappa;
+        h.trial_thb = thb;
+    }
+
+    /// ヒンジモデルの内力: f = K_el·û（û は有効端の回転スロットを可撓端回転 θb で
+    /// 置き換えた変位）。内部平衡の解では回転スロットの f が断面モーメントと
+    /// 一致するため、履歴に整合した復元力になる。
+    fn hinge_internal_force(h: &HingeState, u_elem: &[f64; 12]) -> [f64; 12] {
+        let dofs = Self::hinge_dofs(h);
+        let uh = Self::hinge_uhat_from(&dofs, &h.trial_thb, u_elem);
+        let mut f = [0.0_f64; 12];
+        for (i, fi) in f.iter_mut().enumerate() {
+            let mut s = 0.0;
+            for (j, &u) in uh.iter().enumerate() {
+                s += h.k_el.get(i, j) * u;
+            }
+            *fi = s;
+        }
+        f
+    }
+
+    /// ヒンジモデルの整合接線 K* = K_el − (K_el[:,slots]·G)·J⁻¹·(D·B 行)。
+    /// 弾性（G=0）では K_el に厳密一致する。内部変数消去の整合接線は一般に
+    /// 非対称になり得るため、対称ソルバ（Cholesky）前提の全体組立に合わせて
+    /// 対称化して返す（内力は厳密なので収束解は変わらない）。
+    fn hinge_tangent(&self, h: &HingeState) -> LocalMat {
+        let l = self.flex_length;
+        let dofs = Self::hinge_dofs(h);
+        let n = dofs.len();
+        if n == 0 {
+            return LocalMat {
+                n: 12,
+                data: h.k_el.data.clone(),
+            };
+        }
+        let b_end = [
+            Self::compute_b_matrix(-1.0, l, self.phi_y, self.phi_z),
+            Self::compute_b_matrix(1.0, l, self.phi_y, self.phi_z),
+        ];
+        // 現在のトライアル状態の断面接線。
+        let mut dm = [[[0.0_f64; 2]; 2]; 2];
+        for end in 0..2 {
+            let (_, d) = Self::section_response_from_cache(&self.gauss_points[end]);
+            dm[end] = [[d[1][1], d[1][2]], [d[2][1], d[2][2]]];
+        }
+        // G[p][q] = ∂θb_p/∂κ_q（同一端のみ非零）
+        let mut g = [0.0_f64; 16];
+        for (p, &(ep, ap)) in dofs.iter().enumerate() {
+            for (q, &(eq, aq)) in dofs.iter().enumerate() {
+                if ep != eq {
+                    continue;
+                }
+                g[p * n + q] = -HINGE_SIGN[ep]
+                    * h.lp
+                    * ((if ap == aq { 1.0 } else { 0.0 }) - dm[ep][ap][aq] / h.sec_ei[ep][ap]);
+            }
+        }
+        // J[p][q] = Σ_{p'} D·B[slot_{p'}]·G[p'][q] − δ_end·dm
+        let mut jac = [0.0_f64; 16];
+        for (p, &(ep, ap)) in dofs.iter().enumerate() {
+            let brow = &b_end[ep][1 + ap];
+            for q in 0..n {
+                let mut v = 0.0;
+                for (pp, &(epp, app)) in dofs.iter().enumerate() {
+                    v += h.d_nom[1 + ap] * brow[HINGE_SLOTS[epp][app]] * g[pp * n + q];
+                }
+                let (eq, aq) = dofs[q];
+                if ep == eq {
+                    v -= dm[ep][ap][aq];
+                }
+                jac[p * n + q] = v;
+            }
+        }
+        let jinv = super::beam::invert_small(&jac[..n * n], n);
+        // ∂f/∂x[q] = Σ_{p'} K_el[:, slot_{p'}]·G[p'][q]（12×n）
+        let mut fx = vec![0.0_f64; 12 * n];
+        for q in 0..n {
+            for (pp, &(epp, app)) in dofs.iter().enumerate() {
+                let gv = g[pp * n + q];
+                if gv == 0.0 {
+                    continue;
+                }
+                let slot = HINGE_SLOTS[epp][app];
+                for i in 0..12 {
+                    fx[i * n + q] += h.k_el.get(i, slot) * gv;
+                }
+            }
+        }
+        // ∂R/∂u[p] = D·B 行（12）
+        // K* = K_el − fx·J⁻¹·(D·B 行)
+        let mut k = LocalMat {
+            n: 12,
+            data: h.k_el.data.clone(),
+        };
+        for (p, &(ep, ap)) in dofs.iter().enumerate() {
+            let brow = &b_end[ep][1 + ap];
+            for i in 0..12 {
+                let mut c = 0.0;
+                for q in 0..n {
+                    c += fx[i * n + q] * jinv[q * n + p];
+                }
+                if c == 0.0 {
+                    continue;
+                }
+                for j in 0..12 {
+                    let v = c * h.d_nom[1 + ap] * brow[j];
+                    if v != 0.0 {
+                        k.set(i, j, k.get(i, j) - v);
+                    }
+                }
+            }
+        }
+        // 対称化（doc コメント参照）。
+        for i in 0..12 {
+            for j in (i + 1)..12 {
+                let avg = 0.5 * (k.get(i, j) + k.get(j, i));
+                k.set(i, j, avg);
+                k.set(j, i, avg);
+            }
+        }
+        k
+    }
 }
 
 impl ElementBehavior for FiberBeam {
@@ -1090,6 +1593,10 @@ impl ElementBehavior for FiberBeam {
             }
             self.committed_disp = self.trial_disp;
             self.committed_int = self.trial_int.clone();
+            if let Some(h) = &mut self.hinge {
+                h.committed_kappa = h.trial_kappa;
+                h.committed_thb = h.trial_thb;
+            }
         }
     }
 
@@ -1187,17 +1694,34 @@ impl ElementBehavior for FiberBeam {
             .iter()
             .map(|gp| gp.mats.iter().map(|m| m.clone_box()).collect())
             .collect();
+        let (trial_hinge, committed_hinge) = match &self.hinge {
+            Some(h) => (
+                h.trial_kappa
+                    .iter()
+                    .chain(h.trial_thb.iter())
+                    .copied()
+                    .collect(),
+                h.committed_kappa
+                    .iter()
+                    .chain(h.committed_thb.iter())
+                    .copied()
+                    .collect(),
+            ),
+            None => (Vec::new(), Vec::new()),
+        };
         Box::new((
             self.trial_disp,
             self.committed_disp,
             gauss_data,
             self.trial_int.to_vec(),
             self.committed_int.to_vec(),
+            trial_hinge,
+            committed_hinge,
         ))
     }
 
     fn restore_state(&mut self, state: &dyn Any) {
-        if let Some((trial, committed, mats_data, trial_int, committed_int)) =
+        if let Some((trial, committed, mats_data, trial_int, committed_int, th, ch)) =
             state.downcast_ref::<FiberBeamSnapshot>()
         {
             self.trial_disp = *trial;
@@ -1209,6 +1733,14 @@ impl ElementBehavior for FiberBeam {
             }
             self.trial_int = SmallVec::from_slice(trial_int);
             self.committed_int = SmallVec::from_slice(committed_int);
+            if let Some(h) = &mut self.hinge {
+                if th.len() == 8 && ch.len() == 8 {
+                    h.trial_kappa.copy_from_slice(&th[..4]);
+                    h.trial_thb.copy_from_slice(&th[4..]);
+                    h.committed_kappa.copy_from_slice(&ch[..4]);
+                    h.committed_thb.copy_from_slice(&ch[4..]);
+                }
+            }
         }
     }
 
@@ -1220,6 +1752,10 @@ impl ElementBehavior for FiberBeam {
         }
         self.committed_disp = self.trial_disp;
         self.committed_int = self.trial_int.clone();
+        if let Some(h) = &mut self.hinge {
+            h.committed_kappa = h.trial_kappa;
+            h.committed_thb = h.trial_thb;
+        }
     }
 
     fn revert_state(&mut self) {
@@ -1230,6 +1766,10 @@ impl ElementBehavior for FiberBeam {
         }
         self.trial_disp = self.committed_disp;
         self.trial_int = self.committed_int.clone();
+        if let Some(h) = &mut self.hinge {
+            h.trial_kappa = h.committed_kappa;
+            h.trial_thb = h.committed_thb;
+        }
     }
 
     fn serialize_checkpoint(&self) -> Vec<u8> {
@@ -1243,12 +1783,29 @@ impl ElementBehavior for FiberBeam {
                     .collect::<Vec<_>>()
             })
             .collect();
+        let (trial_hinge, committed_hinge) = match &self.hinge {
+            Some(h) => (
+                h.trial_kappa
+                    .iter()
+                    .chain(h.trial_thb.iter())
+                    .copied()
+                    .collect(),
+                h.committed_kappa
+                    .iter()
+                    .chain(h.committed_thb.iter())
+                    .copied()
+                    .collect(),
+            ),
+            None => (Vec::new(), Vec::new()),
+        };
         let cp = FiberBeamCheckpoint {
             trial_disp: self.trial_disp,
             committed_disp: self.committed_disp,
             gauss_points,
             trial_int: self.trial_int.to_vec(),
             committed_int: self.committed_int.to_vec(),
+            trial_hinge,
+            committed_hinge,
         };
         bincode::serialize(&cp).expect("serialize checkpoint")
     }
@@ -1257,22 +1814,34 @@ impl ElementBehavior for FiberBeam {
         &mut self,
         data: &[u8],
     ) -> Result<(), crate::behavior::CheckpointError> {
-        // 材端解放の内部自由度を含まない旧形式のチェックポイントも読めるようにする
-        // （内部自由度はゼロ＝解放なしの状態として復元する）。現行形式は末尾に
-        // 2 つの Vec<f64> を持つため、旧形式のバイト列は現行形式としては読めない。
+        // 旧形式のチェックポイントも読めるようにする（V2: 塑性増分ヒンジ状態なし、
+        // Legacy: 材端解放の内部自由度もなし。いずれも欠落分はゼロ初期化で復元する）。
         let cp = match bincode::deserialize::<FiberBeamCheckpoint>(data) {
             Ok(cp) => cp,
-            Err(_) => {
-                let legacy: FiberBeamCheckpointLegacy = bincode::deserialize(data)
-                    .map_err(|e| crate::behavior::CheckpointError::Decode(e.to_string()))?;
-                FiberBeamCheckpoint {
-                    trial_disp: legacy.trial_disp,
-                    committed_disp: legacy.committed_disp,
-                    gauss_points: legacy.gauss_points,
-                    trial_int: vec![0.0; self.releases.len()],
-                    committed_int: vec![0.0; self.releases.len()],
+            Err(_) => match bincode::deserialize::<FiberBeamCheckpointV2>(data) {
+                Ok(v2) => FiberBeamCheckpoint {
+                    trial_disp: v2.trial_disp,
+                    committed_disp: v2.committed_disp,
+                    gauss_points: v2.gauss_points,
+                    trial_int: v2.trial_int,
+                    committed_int: v2.committed_int,
+                    trial_hinge: Vec::new(),
+                    committed_hinge: Vec::new(),
+                },
+                Err(_) => {
+                    let legacy: FiberBeamCheckpointLegacy = bincode::deserialize(data)
+                        .map_err(|e| crate::behavior::CheckpointError::Decode(e.to_string()))?;
+                    FiberBeamCheckpoint {
+                        trial_disp: legacy.trial_disp,
+                        committed_disp: legacy.committed_disp,
+                        gauss_points: legacy.gauss_points,
+                        trial_int: vec![0.0; self.releases.len()],
+                        committed_int: vec![0.0; self.releases.len()],
+                        trial_hinge: Vec::new(),
+                        committed_hinge: Vec::new(),
+                    }
                 }
-            }
+            },
         };
         self.trial_disp = cp.trial_disp;
         self.committed_disp = cp.committed_disp;
@@ -1284,6 +1853,19 @@ impl ElementBehavior for FiberBeam {
         if cp.trial_int.len() == self.releases.len() {
             self.trial_int = SmallVec::from_slice(&cp.trial_int);
             self.committed_int = SmallVec::from_slice(&cp.committed_int);
+        }
+        if let Some(h) = &mut self.hinge {
+            if cp.trial_hinge.len() == 8 && cp.committed_hinge.len() == 8 {
+                h.trial_kappa.copy_from_slice(&cp.trial_hinge[..4]);
+                h.trial_thb.copy_from_slice(&cp.trial_hinge[4..]);
+                h.committed_kappa.copy_from_slice(&cp.committed_hinge[..4]);
+                h.committed_thb.copy_from_slice(&cp.committed_hinge[4..]);
+            } else {
+                h.trial_kappa = [0.0; 4];
+                h.trial_thb = [0.0; 4];
+                h.committed_kappa = [0.0; 4];
+                h.committed_thb = [0.0; 4];
+            }
         }
         Ok(())
     }
@@ -1300,14 +1882,26 @@ impl ElementBehavior for FiberBeam {
         let td = self.elem_disp(&self.flex_disp());
         // 曲率が最大のガウス点（危険断面）を選ぶ。
         let mut best: Option<(f64, usize, f64, f64, f64)> = None; // (|κ|, idx, eps0, ky, kz)
-        for (gi, gp) in self.gauss_points.iter().enumerate() {
-            let b = Self::compute_b_matrix(gp.xi, l, self.phi_y, self.phi_z);
-            let eps0 = b[0][0] * td[0] + b[0][6] * td[6];
-            let ky = b[1][2] * td[2] + b[1][4] * td[4] + b[1][8] * td[8] + b[1][10] * td[10];
-            let kz = b[2][1] * td[1] + b[2][5] * td[5] + b[2][7] * td[7] + b[2][11] * td[11];
-            let kappa = (ky * ky + kz * kz).sqrt();
-            if best.is_none_or(|(bk, ..)| kappa > bk) {
-                best = Some((kappa, gi, eps0, ky, kz));
+        if let Some(h) = &self.hinge {
+            // 塑性増分ヒンジモデル: 断面曲率は内部平衡の解（trial_kappa）そのもの。
+            let eps0 = (td[6] - td[0]) / l;
+            for gi in 0..self.gauss_points.len().min(2) {
+                let (ky, kz) = (h.trial_kappa[gi * 2], h.trial_kappa[gi * 2 + 1]);
+                let kappa = (ky * ky + kz * kz).sqrt();
+                if best.is_none_or(|(bk, ..)| kappa > bk) {
+                    best = Some((kappa, gi, eps0, ky, kz));
+                }
+            }
+        } else {
+            for (gi, gp) in self.gauss_points.iter().enumerate() {
+                let b = Self::compute_b_matrix(gp.xi, l, self.phi_y, self.phi_z);
+                let eps0 = b[0][0] * td[0] + b[0][6] * td[6];
+                let ky = b[1][2] * td[2] + b[1][4] * td[4] + b[1][8] * td[8] + b[1][10] * td[10];
+                let kz = b[2][1] * td[1] + b[2][5] * td[5] + b[2][7] * td[7] + b[2][11] * td[11];
+                let kappa = (ky * ky + kz * kz).sqrt();
+                if best.is_none_or(|(bk, ..)| kappa > bk) {
+                    best = Some((kappa, gi, eps0, ky, kz));
+                }
             }
         }
         let (kappa, gi, eps0, ky, kz) = best?;
