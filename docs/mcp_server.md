@@ -25,8 +25,8 @@ cargo run -p squid-n-mcp --features mcp -- model.scz
 cargo run -p squid-n-mcp --features mcp
 ```
 
-- 起動時の第 1 引数（`.scz` パス）がモデルの読み込み元になります。省略時は空モデルで起動します。
-- 解析結果ストアのディレクトリは環境変数 `SQUID_N_RESULT_DIR` で指定できます。未設定の場合は OS 一時ディレクトリ配下の `squid-n-mcp-results` を使います。
+- 起動時の第 1 引数（`.scz` パス）がモデルの読み込み元になり、省略時は空モデルで起動します。
+- 解析結果ストアのディレクトリは環境変数 `SQUID_N_RESULT_DIR` で指定でき、未設定の場合は OS 一時ディレクトリ配下の `squid-n-mcp-results` を使います。
 
 ```bash
 SQUID_N_RESULT_DIR=/path/to/results cargo run -p squid-n-mcp --features mcp -- model.scz
@@ -131,7 +131,7 @@ claude mcp add squid-n -- /path/to/squid-n-mcp model.scz
 
 ### `analysis_run`
 
-解析を非同期で実行します。ジョブを登録し `job_id` を即座に返します（計算完了は待ちません）。
+解析を非同期で実行し、ジョブを登録して `job_id` を即座に返します（計算完了は待ちません）。
 
 | 引数 | 型 | 必須/任意 | 意味 | 既定値 |
 |---|---|---|---|---|
@@ -278,4 +278,4 @@ claude mcp add squid-n -- /path/to/squid-n-mcp model.scz
 - **モデルの読み込みは起動時引数のみ**。`.scz` ファイルパスをコマンドライン引数として渡す方法しかなく、実行中にモデルを差し替えたり読み込んだりする `model_open` のような MCP ツールは存在しません。
 - **編集・保存系ツールは公開されていません**。サーバ内部状態は `UndoStack`（`squid-n-edit`）を保持していますが、現状どの MCP ツールからも参照されておらず、モデルの変更・保存を行う手段はありません。
 - `Pushover`・`TimeHistory`・`UltimateCheck` ジョブは結果ストアへ書き込みません。対応する結果スキーマがない、あるいはスキーマが要求する粒度（全節点×全ステップ）のデータを持たないため、結果は `analysis_status` の `result_ref`（サマリ JSON）としてのみ得られます。
-- `DesignCheck` ジョブの検定結果（OK/NG・検定比）自体もサマリにのみ含まれます。結果ストアに書き込まれるのは検定の元データである `MemberForce` のみです。
+- `DesignCheck` ジョブの検定結果（OK/NG・検定比）自体もサマリにのみ含まれており、結果ストアに書き込まれるのは検定の元データである `MemberForce` のみです。
