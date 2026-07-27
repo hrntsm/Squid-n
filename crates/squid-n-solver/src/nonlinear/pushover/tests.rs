@@ -1921,6 +1921,80 @@ fn test_pushover_displacement_control_reaches_target_and_exceeds_design_load() {
     );
 }
 
+/// ヒンジが 1 つも発生しない弾性範囲では、荷重制御→変位制御のフェーズ切替を
+/// またいでも性能曲線のベースシアが単調非減少であることを検証する回帰テスト。
+///
+/// 旧実装の変位制御は Ai 分布の比例荷重を残差から外し、頂部 1 自由度を
+/// ペナルティばねで押し込んでいた。載荷パターンが「Ai 分布」→「頂部 1 点載荷」へ
+/// 不連続に変わるため、ヒンジが無い弾性のままでもフェーズ切替点でベースシアが
+/// 落ち込み、その後頂部 1 点載荷の剛性勾配で伸び直す非物理的な V 字曲線を描いて
+/// いた。現行実装は比例荷重パターン λ·q を保持し、荷重係数 λ を頂部変位拘束から
+/// 決定するため、弾性域では曲線が単調増加し λ も 1 を超えて滑らかに増加する。
+#[test]
+fn test_pushover_elastic_curve_monotonic_across_phase_switch() {
+    // 降伏応力を非現実的に高くし、曲げヒンジ・ファイバー降伏を発生させない。
+    let seismic_weight = 80_000.0;
+    let n_steps = 20usize;
+    let mut model = single_column_model(100_000.0, seismic_weight);
+    let dofmap = DofMap::build(&model);
+    let reducer = Reducer::build(&model, &dofmap);
+    let result = pushover_analysis(
+        &mut model,
+        &dofmap,
+        &reducer,
+        SeismicDir::X,
+        n_steps,
+        // 荷重制御 λ=1 の頂部変位（≈ 0.2W / (3EI/L³) ≈ 84mm）より十分大きい
+        // 目標変位とし、変位制御フェーズが必ず実行されるようにする。
+        300.0,
+        false,
+        false,
+        0.0,
+    )
+    .expect("pushover should run");
+
+    // 前提: 弾性のまま（ヒンジ無し）で変位制御フェーズまで進んでいること。
+    assert!(result.hinges.is_empty(), "弾性のままであること");
+    assert!(
+        result
+            .capacity_curve
+            .iter()
+            .any(|c| c.step as usize > n_steps),
+        "変位制御フェーズの点が確定していること"
+    );
+
+    // ベースシアが全区間で単調非減少であること（旧実装はフェーズ切替点で低下）。
+    for w in result.capacity_curve.windows(2) {
+        assert!(
+            w[1].base_shear >= w[0].base_shear * (1.0 - 1e-6),
+            "弾性域でベースシアが低下してはならない: {:.1} -> {:.1} (step {} -> {})",
+            w[0].base_shear,
+            w[1].base_shear,
+            w[0].step,
+            w[1].step
+        );
+    }
+
+    // 弾性の比例載荷では base_shear = λ·C0·W（C0=0.2）が全フェーズで成り立つこと
+    // （変位制御でも載荷パターン λ·q が保持されている検証）。
+    for s in &result.steps {
+        let expected = s.load_factor * 0.2 * seismic_weight;
+        assert!(
+            (s.base_shear - expected).abs() <= expected.abs().max(1.0) * 1e-3,
+            "base_shear={:.1} が λ·0.2W={:.1} と一致すること",
+            s.base_shear,
+            expected
+        );
+    }
+
+    // 設計地震力レベル（λ=1）を超えて押し込めていること。
+    let last_lambda = result.steps.last().map(|s| s.load_factor).unwrap_or(0.0);
+    assert!(
+        last_lambda > 1.0,
+        "変位制御で λ が 1 を超えること: {last_lambda:.3}"
+    );
+}
+
 /// 4 節点の耐震壁（壁エレメントモデル、節点配列 `[下辺a, 下辺b, 上辺a, 上辺b]`）で、
 /// 加力方向の水平力が「下辺 2 節点の**合計**」になること。
 ///

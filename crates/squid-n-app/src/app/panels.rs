@@ -1668,22 +1668,72 @@ impl App {
             ui.label(format!("最大部材塑性率 μmax = {:.2}", max_mu));
         });
 
-        // 性能曲線（頂部変位 - ベースシア）
-        let points: Vec<[f64; 2]> = po
-            .capacity_curve
-            .iter()
-            .map(|p| [p.roof_disp, p.base_shear / 1000.0])
+        // 層別の保有水平耐力（性能曲線・層別ピーク層せん断力）。加力方向により
+        // 符号を持ちうるため絶対値を取ってから最大値を求める
+        // （crates/squid-n-app/src/app/actions.rs の `story_qu` 算定と同じ着眼＝
+        // capacity_curve 全点にわたる層せん断力の最大値／βu の分母）。
+        let n_stories = self.model.stories.len();
+        let story_name = |i: usize| -> String {
+            self.model
+                .stories
+                .get(i)
+                .map(|s| s.name.clone())
+                .unwrap_or_else(|| format!("{}F", i + 1))
+        };
+        let story_qu_kn: Vec<f64> = (0..n_stories)
+            .map(|i| {
+                po.capacity_curve
+                    .iter()
+                    .filter_map(|p| p.story_shear.get(i).copied())
+                    .map(f64::abs)
+                    .fold(0.0_f64, f64::max)
+                    / 1000.0
+            })
             .collect();
+        if !story_qu_kn.is_empty() {
+            let line = story_qu_kn
+                .iter()
+                .enumerate()
+                .map(|(i, q)| format!("{} {:.1} kN", story_name(i), q))
+                .collect::<Vec<_>>()
+                .join(" / ");
+            ui.label(format!("層別 Qu: {line}"));
+        }
+
+        // 性能曲線（層別: 層間変位 - 層せん断力）。層ごとに 1 本の折れ線を描く
+        // （既存の色（`crate::theme` のデータ系色）を層番号で巡回して使用）。
+        const STORY_COLORS: [egui::Color32; 8] = [
+            crate::theme::DATA_BLUE,
+            crate::theme::GOOD_GREEN,
+            crate::theme::PARETO_RED,
+            crate::theme::BEST_YELLOW,
+            crate::theme::HILITE_PURPLE,
+            crate::theme::SECONDARY_AMBER,
+            crate::theme::BLUE_600,
+            crate::theme::GREEN_600,
+        ];
         egui_plot::Plot::new("pushover_curve")
-            .x_axis_label("頂部変位 [mm]")
-            .y_axis_label("ベースシア [kN]")
+            .x_axis_label("層間変位 [mm]")
+            .y_axis_label("層せん断力 [kN]")
+            .legend(egui_plot::Legend::default())
             .height(ui.available_height() * 0.6)
             .show(ui, |plot_ui| {
-                plot_ui.line(
-                    egui_plot::Line::new("capacity", egui_plot::PlotPoints::from(points))
-                        .color(crate::theme::DATA_BLUE)
-                        .width(2.0_f32),
-                );
+                for i in 0..n_stories {
+                    let points: Vec<[f64; 2]> = po
+                        .capacity_curve
+                        .iter()
+                        .map(|p| {
+                            let drift = p.story_drift.get(i).copied().unwrap_or(0.0).abs();
+                            let shear = p.story_shear.get(i).copied().unwrap_or(0.0).abs() / 1000.0;
+                            [drift, shear]
+                        })
+                        .collect();
+                    plot_ui.line(
+                        egui_plot::Line::new(story_name(i), egui_plot::PlotPoints::from(points))
+                            .color(STORY_COLORS[i % STORY_COLORS.len()])
+                            .width(2.0_f32),
+                    );
+                }
             });
 
         // ヒンジ発生履歴（先頭 20 件）
