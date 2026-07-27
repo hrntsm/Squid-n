@@ -1764,13 +1764,28 @@ impl App {
                             [drift, shear]
                         })
                         .collect();
+                    let color = STORY_COLORS[i % STORY_COLORS.len()];
                     plot_ui.line(
-                        egui_plot::Line::new(story_name(i), egui_plot::PlotPoints::from(points))
-                            .color(STORY_COLORS[i % STORY_COLORS.len()])
-                            .width(2.0_f32),
+                        egui_plot::Line::new(
+                            story_name(i),
+                            egui_plot::PlotPoints::from(points.clone()),
+                        )
+                        .color(color)
+                        .width(2.0_f32),
+                    );
+                    // 実際に釣合いを解いて確定した増分ステップの点をマーカーで示す。
+                    // 点間を結ぶ折れ線は単なる補間であり計算結果ではないため、
+                    // どこが計算点かをマーカーで判別できるようにする（同名で登録し
+                    // 凡例のエントリは折れ線と共有する）。
+                    plot_ui.points(
+                        egui_plot::Points::new(story_name(i), egui_plot::PlotPoints::from(points))
+                            .color(color)
+                            .radius(3.0_f32)
+                            .shape(egui_plot::MarkerShape::Circle),
                     );
                 }
             });
+        ui.small("● は計算で釣合いを求めた増分ステップの点、点間の線は補間です。");
 
         // ヒンジ発生履歴（先頭 20 件）
         ui.separator();
