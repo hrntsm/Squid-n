@@ -1871,6 +1871,7 @@ impl App {
             cfg.push_dir,
             cfg.push_steps,
             target,
+            cfg.push_control,
             false,
             false,
             0.0,

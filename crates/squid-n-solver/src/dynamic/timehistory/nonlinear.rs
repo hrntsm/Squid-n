@@ -274,7 +274,7 @@ pub fn nonlinear_time_history_analysis(
 
         for _iter in 0..max_iter {
             // 接線剛性
-            let k_t_free = assemble_k(model, dofmap, &behaviors, use_kg, None);
+            let k_t_free = assemble_k(model, dofmap, &behaviors, use_kg);
             let k_t_red = reducer.reduce_k(&k_t_free);
 
             // 接線比例減衰（α1 一定 / h1 一定）は瞬間剛性から C を毎ステップ再構成する

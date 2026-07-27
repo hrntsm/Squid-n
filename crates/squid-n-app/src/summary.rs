@@ -376,19 +376,47 @@ pub fn build_report_csv(app: &App) -> String {
     }
 
     if let Some(po) = &results.pushover {
+        let control = match po.control {
+            squid_n_solver::pushover::PushoverControl::Phased => "段階制御",
+            squid_n_solver::pushover::PushoverControl::LoadOnly => "荷重増分のみ",
+        };
         out.push_str(&format!(
-            "\n[増分解析]\n保有水平耐力Qu[kN],{:.2}\nヒンジ数,{}\n",
+            "\n[増分解析]\n増分方式,{}\n保有水平耐力Qu[kN],{:.2}\nヒンジ数,{}\n",
+            control,
             po.qu / 1000.0,
             po.hinges.len()
         ));
-        out.push_str("step,頂部変位[mm],ベースシア[kN]\n");
+        // 層別データ列（層間変位・層せん断力）を層数分だけヘッダに追加する。
+        // 列名はモデルの階名（`Story::name`）を用い、無ければ「1F」形式で補う。
+        let n_stories = model.stories.len();
+        let story_name = |i: usize| -> String {
+            model
+                .stories
+                .get(i)
+                .map(|s| s.name.clone())
+                .unwrap_or_else(|| format!("{}F", i + 1))
+        };
+        out.push_str("step,頂部変位[mm],ベースシア[kN]");
+        for i in 0..n_stories {
+            out.push_str(&format!(
+                ",{0} 層間変位[mm],{0} 層せん断力[kN]",
+                story_name(i)
+            ));
+        }
+        out.push('\n');
         for p in &po.capacity_curve {
             out.push_str(&format!(
-                "{},{:.3},{:.2}\n",
+                "{},{:.3},{:.2}",
                 p.step,
                 p.roof_disp,
                 p.base_shear / 1000.0
             ));
+            for i in 0..n_stories {
+                let drift = p.story_drift.get(i).copied().unwrap_or(0.0);
+                let shear = p.story_shear.get(i).copied().unwrap_or(0.0) / 1000.0;
+                out.push_str(&format!(",{:.3},{:.2}", drift, shear));
+            }
+            out.push('\n');
         }
     }
 

@@ -38,6 +38,7 @@ pub(crate) fn compute_pushover_job(
         seismic_dir,
         steps,
         target,
+        squid_n_solver::pushover::PushoverControl::default(),
         false,
         false,
         0.0,

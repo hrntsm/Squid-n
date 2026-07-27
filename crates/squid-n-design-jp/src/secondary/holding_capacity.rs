@@ -382,6 +382,7 @@ mod tests {
             mechanism: MechanismType::Overall,
             qu: 0.0,
             member_response: vec![],
+            control: Default::default(),
         }
     }
 
@@ -422,6 +423,7 @@ mod tests {
             mechanism: MechanismType::Overall,
             qu: 150.0,
             member_response: vec![],
+            control: Default::default(),
         };
         let result = check_holding_capacity(
             &pushover,

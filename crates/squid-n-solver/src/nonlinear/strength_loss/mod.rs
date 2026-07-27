@@ -420,6 +420,9 @@ pub fn staged_strength_loss(
             dir,
             max_steps,
             crate::pushover::PushoverTarget::from_max_disp(max_disp),
+            // 段階的耐力喪失解析は崩壊機構形成域まで押し切る必要があるため、
+            // 制御方式は常に段階制御（既定）を用いる。
+            crate::pushover::PushoverControl::default(),
             use_kg,
             use_arc_length,
             arc_length_dl,

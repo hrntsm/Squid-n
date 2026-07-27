@@ -1182,6 +1182,36 @@ impl App {
                         });
                 });
                 ui.horizontal_wrapped(|ui| {
+                    use squid_n_solver::pushover::PushoverControl;
+                    ui.label("増分方式:").on_hover_text(
+                        "荷重増分のみは比較検証用。変位制御へ移行せず、終了目標が有効な場合は\
+                         λ=1 を超えて荷重を増分し、収束しなくなった時点（耐力ピーク近傍）で\
+                         打ち切ります。耐力低下域は追跡できません。",
+                    );
+                    egui::ComboBox::from_id_salt("push_control")
+                        .selected_text(match self.analysis_cfg.push_control {
+                            PushoverControl::Phased => "段階制御（荷重→変位）",
+                            PushoverControl::LoadOnly => "荷重増分のみ",
+                        })
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(
+                                &mut self.analysis_cfg.push_control,
+                                PushoverControl::Phased,
+                                "段階制御（荷重→変位）",
+                            );
+                            ui.selectable_value(
+                                &mut self.analysis_cfg.push_control,
+                                PushoverControl::LoadOnly,
+                                "荷重増分のみ",
+                            )
+                            .on_hover_text(
+                                "比較検証用。変位制御へ移行せず、終了目標が有効な場合は\
+                                 λ=1 を超えて荷重を増分し、収束しなくなった時点（耐力ピーク近傍）\
+                                 で打ち切ります。耐力低下域は追跡できません。",
+                            );
+                        });
+                });
+                ui.horizontal_wrapped(|ui| {
                     if ui
                         .add_enabled(!running, egui::Button::new("▶ 実行"))
                         .clicked()
@@ -1649,6 +1679,12 @@ impl App {
             ui.label(format!("崩壊機構: {}", mech));
             ui.separator();
             ui.label(format!("ヒンジ発生 {} 件", po.hinges.len()));
+            ui.separator();
+            let control = match po.control {
+                squid_n_solver::pushover::PushoverControl::Phased => "段階制御",
+                squid_n_solver::pushover::PushoverControl::LoadOnly => "荷重増分のみ",
+            };
+            ui.label(format!("増分方式: {}", control));
         });
         // 塑性率（構造力学）の方式と最大値。
         ui.horizontal(|ui| {
@@ -1668,23 +1704,88 @@ impl App {
             ui.label(format!("最大部材塑性率 μmax = {:.2}", max_mu));
         });
 
-        // 性能曲線（頂部変位 - ベースシア）
-        let points: Vec<[f64; 2]> = po
-            .capacity_curve
-            .iter()
-            .map(|p| [p.roof_disp, p.base_shear / 1000.0])
+        // 層別の保有水平耐力（性能曲線・層別ピーク層せん断力）。加力方向により
+        // 符号を持ちうるため絶対値を取ってから最大値を求める
+        // （crates/squid-n-app/src/app/actions.rs の `story_qu` 算定と同じ着眼＝
+        // capacity_curve 全点にわたる層せん断力の最大値／βu の分母）。
+        let n_stories = self.model.stories.len();
+        let story_name = |i: usize| -> String {
+            self.model
+                .stories
+                .get(i)
+                .map(|s| s.name.clone())
+                .unwrap_or_else(|| format!("{}F", i + 1))
+        };
+        let story_qu_kn: Vec<f64> = (0..n_stories)
+            .map(|i| {
+                po.capacity_curve
+                    .iter()
+                    .filter_map(|p| p.story_shear.get(i).copied())
+                    .map(f64::abs)
+                    .fold(0.0_f64, f64::max)
+                    / 1000.0
+            })
             .collect();
+        if !story_qu_kn.is_empty() {
+            let line = story_qu_kn
+                .iter()
+                .enumerate()
+                .map(|(i, q)| format!("{} {:.1} kN", story_name(i), q))
+                .collect::<Vec<_>>()
+                .join(" / ");
+            ui.label(format!("層別 Qu: {line}"));
+        }
+
+        // 性能曲線（層別: 層間変位 - 層せん断力）。層ごとに 1 本の折れ線を描く
+        // （既存の色（`crate::theme` のデータ系色）を層番号で巡回して使用）。
+        const STORY_COLORS: [egui::Color32; 8] = [
+            crate::theme::DATA_BLUE,
+            crate::theme::GOOD_GREEN,
+            crate::theme::PARETO_RED,
+            crate::theme::BEST_YELLOW,
+            crate::theme::HILITE_PURPLE,
+            crate::theme::SECONDARY_AMBER,
+            crate::theme::BLUE_600,
+            crate::theme::GREEN_600,
+        ];
         egui_plot::Plot::new("pushover_curve")
-            .x_axis_label("頂部変位 [mm]")
-            .y_axis_label("ベースシア [kN]")
+            .x_axis_label("層間変位 [mm]")
+            .y_axis_label("層せん断力 [kN]")
+            .legend(egui_plot::Legend::default())
             .height(ui.available_height() * 0.6)
             .show(ui, |plot_ui| {
-                plot_ui.line(
-                    egui_plot::Line::new("capacity", egui_plot::PlotPoints::from(points))
-                        .color(crate::theme::DATA_BLUE)
+                for i in 0..n_stories {
+                    let points: Vec<[f64; 2]> = po
+                        .capacity_curve
+                        .iter()
+                        .map(|p| {
+                            let drift = p.story_drift.get(i).copied().unwrap_or(0.0).abs();
+                            let shear = p.story_shear.get(i).copied().unwrap_or(0.0).abs() / 1000.0;
+                            [drift, shear]
+                        })
+                        .collect();
+                    let color = STORY_COLORS[i % STORY_COLORS.len()];
+                    plot_ui.line(
+                        egui_plot::Line::new(
+                            story_name(i),
+                            egui_plot::PlotPoints::from(points.clone()),
+                        )
+                        .color(color)
                         .width(2.0_f32),
-                );
+                    );
+                    // 実際に釣合いを解いて確定した増分ステップの点をマーカーで示す。
+                    // 点間を結ぶ折れ線は単なる補間であり計算結果ではないため、
+                    // どこが計算点かをマーカーで判別できるようにする（同名で登録し
+                    // 凡例のエントリは折れ線と共有する）。
+                    plot_ui.points(
+                        egui_plot::Points::new(story_name(i), egui_plot::PlotPoints::from(points))
+                            .color(color)
+                            .radius(3.0_f32)
+                            .shape(egui_plot::MarkerShape::Circle),
+                    );
+                }
             });
+        ui.small("● は計算で釣合いを求めた増分ステップの点、点間の線は補間です。");
 
         // ヒンジ発生履歴（先頭 20 件）
         ui.separator();

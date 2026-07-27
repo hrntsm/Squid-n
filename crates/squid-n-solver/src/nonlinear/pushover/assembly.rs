@@ -1,6 +1,6 @@
 //! 剛性行列の組立と内力ベクトルの算定。
 //!
-//! - [`assemble_k`] — 全体接線剛性行列（幾何剛性・変位制御ペナルティ対応）
+//! - [`assemble_k`] — 全体接線剛性行列（幾何剛性対応）
 //! - [`compute_f_int`] — 全自由節点の内力ベクトル
 //!
 //! いずれも `dynamic`/`timehistory` モジュールが `crate::pushover::{assemble_k,
@@ -12,19 +12,14 @@ use squid_n_element::behavior::{Ctx, ElemState, ElementBehavior};
 
 /// 全体接線剛性行列を組み立てる。
 ///
-/// `prescribed = Some((dof, penalty))` のとき、変位制御（`driver` の変位制御
-/// フェーズ）のために対角 `[dof, dof]` へペナルティ剛性 `penalty` を加算する。
-/// 従来は penalty を関数内で固定値 `1e16` としていたが、接線剛性のスケール（~1e5〜1e7）
-/// に対して過大で、変位制御の残差計算で桁落ち（catastrophic cancellation）を起こし
-/// 収束判定が原理的に成立しなかった。呼び出し側（`driver`）が接線剛性スケールに
-/// 比例した well-conditioned な penalty を算定して渡す。第2要素は penalty であって
-/// 目標変位ではない（目標変位は残差側で扱う）。
+/// かつて変位制御ペナルティ用の対角加算引数を持っていたが、変位制御が
+/// 「比例荷重パターンを保持した荷重係数決定方式」（`driver` の変位制御フェーズ）へ
+/// 移行しペナルティ剛性が不要となったため撤去した。
 pub(crate) fn assemble_k(
     model: &Model,
     dofmap: &DofMap,
     behaviors: &[Box<dyn ElementBehavior>],
     use_kg: bool,
-    prescribed: Option<(usize, f64)>,
 ) -> faer::sparse::SparseColMat<usize, f64> {
     use squid_n_math::sparse::assemble_csc;
     let ctx = Ctx { model };
@@ -51,13 +46,6 @@ pub(crate) fn assemble_k(
             }
         }
         triplets.extend(k.to_triplets(&gdofs));
-    }
-    if let Some((d, penalty)) = prescribed {
-        triplets.push(squid_n_math::sparse::Triplet {
-            row: d,
-            col: d,
-            val: penalty,
-        });
     }
     assemble_csc(dofmap.n_active(), triplets)
 }

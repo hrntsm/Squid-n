@@ -14,7 +14,9 @@ use super::response::{
     max_story_drift_angle, story_heights,
 };
 use super::shear_yield::{compute_shear_yield_thresholds, track_shear_yield};
-use super::types::{CapacityPoint, DuctilityMethod, PushoverResult, PushoverStep, PushoverTarget};
+use super::types::{
+    CapacityPoint, DuctilityMethod, PushoverControl, PushoverResult, PushoverStep, PushoverTarget,
+};
 use crate::analysis::{
     building_height_mm, distribute_pi_over_diaphragms, steel_height_ratio, SeismicDir,
 };
@@ -51,6 +53,7 @@ pub fn pushover_analysis(
         dir,
         max_steps,
         PushoverTarget::from_max_disp(max_disp),
+        PushoverControl::default(),
         use_kg,
         use_arc_length,
         arc_length_dl,
@@ -61,7 +64,10 @@ pub fn pushover_analysis(
 
 /// 増分解析（プッシュオーバー解析、P5 §7）。終了目標は [`PushoverTarget`] で
 /// 指定する（目標変位・目標最大層間変形角のいずれか早い方に達した時点で打ち切り。
-/// 両方無効なら荷重制御 λ=1 までで終了）。`record_node_disp` が真の場合、各ステップの
+/// 両方無効なら荷重制御 λ=1 までで終了）。制御方式は [`PushoverControl`] で指定し、
+/// 既定の段階制御（荷重→変位→弧長）のほか、比較検証用に荷重増分のみ
+/// （`LoadOnly`。変位制御・弧長法へ移行せず、終了目標が有効なら λ=1 を超えて
+/// 荷重増分を継続する）を選択できる。`record_node_disp` が真の場合、各ステップの
 /// `PushoverStep::node_disp` に全自由節点変位を記録する（段階的耐力喪失解析の
 /// 部材変形角算定用、`strength_loss` モジュール参照）。既存 API を壊さないよう
 /// `pushover_analysis` は本関数に `record_node_disp = false` で委譲する薄いラッパー。
@@ -73,6 +79,7 @@ pub fn pushover_analysis_recording(
     dir: SeismicDir,
     max_steps: usize,
     target: PushoverTarget,
+    control: PushoverControl,
     use_kg: bool,
     use_arc_length: bool,
     arc_length_dl: f64,
@@ -182,8 +189,21 @@ pub fn pushover_analysis_recording(
     // 終了目標（頂部変位・最大層間変形角のいずれか）に達したかのフラグ。
     // 荷重制御の途中で達した場合は以降の載荷・変位制御を打ち切る。
     let mut target_reached = false;
+    // 確定済みの荷重係数 λ（参照外力 q に対する倍率）。荷重制御で確定するたびに
+    // 更新し、変位制御・弧長法の各フェーズが「同じ比例荷重パターン λ·q」を
+    // 引き継ぐための状態変数。
+    let mut lambda = 0.0;
 
-    for step in 0..n_steps {
+    // 荷重制御の総ステップ数。段階制御では λ=1（設計地震力レベル）で変位制御へ
+    // 引き継ぐ。荷重増分のみ（LoadOnly）で終了目標が有効な場合は、同じ刻み dλ の
+    // まま λ=1 を超えて継続する（上限 λ=10。必要保有水平耐力 Qun の λ 換算
+    // 5·Ds·Fes ≦ 5 を十分に覆う安全上限で、通常は目標到達か収束不能で先に止まる）。
+    let max_load_steps = match control {
+        PushoverControl::LoadOnly if target.is_enabled() => n_steps * 10,
+        _ => n_steps,
+    };
+
+    for step in 0..max_load_steps {
         // 前確定点の荷重係数（前ステップまでが満 λ で確定している前提の下限）。
         let prev_lambda = step as f64 * dlambda;
         let mut current_lambda = (step + 1) as f64 * dlambda;
@@ -204,7 +224,7 @@ pub fn pushover_analysis_recording(
             // 未確定変位を反映する）となったため、弾性支配の状態ではほぼ 1〜2 回で
             // 収束する。上限 50 は塑性進行時（接線更新を要する反復）の余裕。
             for _iter in 0..50 {
-                let k_free = assemble_k(model, dofmap, &behaviors, use_kg, None);
+                let k_free = assemble_k(model, dofmap, &behaviors, use_kg);
                 let k_red = reducer.reduce_k(&k_free);
                 let f_int = compute_f_int(model, dofmap, &behaviors);
                 let r_free: Vec<f64> = f_ext.iter().zip(f_int.iter()).map(|(e, i)| e - i).collect();
@@ -297,6 +317,7 @@ pub fn pushover_analysis_recording(
                     step as u32,
                     &mut shear_yields,
                 );
+                lambda = current_lambda;
                 step_ok = true;
                 // 目標（頂部変位・最大層間変形角）到達で以降の載荷を打ち切る。
                 // 従来の `roof >= max_disp` 判定は attempt ループしか抜けず、外側の
@@ -314,21 +335,26 @@ pub fn pushover_analysis_recording(
                 current_lambda = prev_lambda + (current_lambda - prev_lambda) * 0.5;
             }
         }
-        if !step_ok {
-            // 収束に至らなかった step はスキップ
+        if !step_ok && step >= n_steps {
+            // 荷重増分のみの延長領域（λ>1）で増分半減でも収束しない場合は、
+            // これ以上の荷重に釣合う解が無い（耐力ピーク近傍）ため打ち切る。
+            // λ≦1 の通常領域では従来どおりスキップして次の刻みを試す。
+            break;
         }
         if target_reached {
             break;
         }
     }
 
-    // 変位制御フェーズ（P5 §7.1）。荷重制御で目標に達しなかった場合のみ実行し、
-    // 目標（頂部変位・最大層間変形角）に達するまで頂部変位を強制する。
-    let disp_control_roof = if target.is_enabled() && !target_reached {
-        get_roof_dof(model, dofmap, dir)
-    } else {
-        None
-    };
+    // 変位制御フェーズ（P5 §7.1）。段階制御で、荷重制御が目標に達しなかった場合のみ
+    // 実行し、目標（頂部変位・最大層間変形角）に達するまで頂部変位を強制する。
+    // 荷重増分のみ（LoadOnly）では実行しない。
+    let disp_control_roof =
+        if matches!(control, PushoverControl::Phased) && target.is_enabled() && !target_reached {
+            get_roof_dof(model, dofmap, dir)
+        } else {
+            None
+        };
     if let Some(roof_active) = disp_control_roof {
         let initial_disp = total_disp[roof_active];
         // 頂部変位の刻み上限: 目標変位はその値を、目標最大層間変形角は「全層が一様に
@@ -349,72 +375,93 @@ pub fn pushover_analysis_recording(
             let n_disp_steps = 10usize;
             let du_target = (roof_bound - initial_disp) / n_disp_steps as f64;
 
-            // 変位制御のペナルティ剛性は「拘束する屋根 DOF 自身の対角剛性（＝加力方向の
-            // 水平剛性）」の 1e6 倍とする。固定 1e16 も、全体最大対角（軸剛性 ~1e9 に支配）
-            // 基準の過大な penalty も、残差 penalty·(target − u) の桁落ちで収束判定が
-            // 成立せず、変位制御が1点も確定しないまま即終了していた（→ Qu が荷重制御
-            // λ=1＝C0=0.2 級で頭打ちとなり崩壊機構へ到達しない致命的欠陥）。
-            // 屋根 DOF 対角に比例させると、拘束は常に相対 1e-6 精度で強制されつつ、
-            // 桁落ち残差は収束閾値に対し十分小さく保たれる（スケール不変）。
-            let penalty = {
-                let k0 = assemble_k(model, dofmap, &behaviors, use_kg, None);
-                let k_roof_diag = squid_n_math::sparse::sparse_to_triplets(&k0)
-                    .iter()
-                    .filter(|t| t.row == roof_active && t.col == roof_active)
-                    .map(|t| t.val.abs())
-                    .fold(0.0_f64, f64::max)
-                    .max(1.0);
-                k_roof_diag * 1e6
-            };
-
+            // 変位制御は比例荷重パターン λ·q を**保持したまま**、荷重係数 λ を未知数
+            // として「頂部変位 = 目標値」の拘束条件から決定する（Batoz–Dhatt の
+            // 変位制御法）。各反復で釣合い残差解 δu_r = K⁻¹(λ·q − f_int) と
+            // 荷重パターン解 δu_q = K⁻¹·q を解き、
+            //   δλ = (目標変位 − 現在の頂部変位 − δu_r[roof]) / δu_q[roof]
+            //   δu = δu_r + δλ·δu_q
+            // とすることで、頂部変位拘束と釣合いを同時に満たす λ が定まる。
+            // 旧実装は Ai 分布の外力を残差から外し、頂部 1 自由度をペナルティばねで
+            // 押し込んでいた。これはフェーズ切替時に載荷パターンが「Ai 分布」から
+            // 「頂部 1 点載荷」へ不連続に変わることを意味し、ヒンジが 1 つも無い
+            // 弾性状態でもベースシアが落ち込んでから伸び直す非物理的な V 字曲線を
+            // 生んでいた（荷重制御 λ=1＝設計地震力レベルが見かけのピークとなり、
+            // Qu を C0=0.2 級で誤認する致命的欠陥）。
             for step in 0..n_disp_steps {
                 let roof_target = initial_disp + du_target * (step + 1) as f64;
                 let mut step_ok = false;
 
-                for _attempt in 0..5 {
+                for attempt in 0..5 {
+                    // 収束失敗時は「確定済み頂部変位からの押込み増分」を半減して
+                    // 再試行する（荷重制御フェーズの λ 増分半減と同じ考え方。
+                    // 同一目標のまま再試行しても同じ経路を辿るだけで意味が無い）。
+                    let committed_roof = total_disp[roof_active];
+                    let sub_target =
+                        committed_roof + (roof_target - committed_roof) * 0.5_f64.powi(attempt);
                     let snap = StateSnapshot::capture(&behaviors);
+                    let lambda_snap = lambda;
                     let mut converged = false;
                     // 荷重制御フェーズと同じく、ステップ内の全 Newton 修正量を累積する。
                     let mut step_du_free = vec![0.0; n_active];
 
                     // 反復上限は荷重制御フェーズと同じ理由（準ニュートン形式）で 50 回。
                     for _iter in 0..50 {
-                        let k_free = assemble_k(
-                            model,
-                            dofmap,
-                            &behaviors,
-                            use_kg,
-                            Some((roof_active, penalty)),
-                        );
+                        let k_free = assemble_k(model, dofmap, &behaviors, use_kg);
                         let k_red = reducer.reduce_k(&k_free);
                         let f_int = compute_f_int(model, dofmap, &behaviors);
 
-                        // ペナルティ法の残差: 自由 DOF は釣合い残差 −f_int、拘束 DOF（roof）
-                        // はペナルティばね反力 penalty·(target − u_roof) を加える。
-                        // u_roof = 確定変位 + ステップ内累積修正量。
-                        // 従来は f_ext[roof]=penalty·target を作って −f_int するのみで、
-                        // ペナルティばね内力 penalty·u_roof が残差から欠落していたため、
-                        // 拘束 DOF の残差が常に penalty·target で頭打ちとなり収束不能だった。
-                        // gap 形式 penalty·(target − u_roof) で桁落ちを避ける。
-                        let u_roof = total_disp[roof_active] + step_du_free[roof_active];
-                        let mut r_free: Vec<f64> = f_int.iter().map(|fi| -fi).collect();
-                        r_free[roof_active] += penalty * (roof_target - u_roof);
+                        // 残差 r = λ·q − f_int（荷重制御フェーズと同じ釣合い形式）。
+                        let f_ext: Vec<f64> = q.iter().map(|&qi| qi * lambda).collect();
+                        let r_free: Vec<f64> =
+                            f_ext.iter().zip(f_int.iter()).map(|(e, i)| e - i).collect();
                         let r_red = reducer.reduce_f(&r_free);
 
-                        // 収束は力の相対ノルム（内力ノルム基準＝ベースシア相当）で判定する。
+                        // 収束判定: 力の相対ノルム（外力ノルム基準、荷重制御と同形式）
+                        // に加え、頂部変位が目標に一致していること。
+                        let u_roof = total_disp[roof_active] + step_du_free[roof_active];
+                        let gap = sub_target - u_roof;
                         let r_norm: f64 = r_red.iter().map(|x| x * x).sum::<f64>().sqrt();
-                        let f_int_red = reducer.reduce_f(&f_int);
+                        let f_ext_red = reducer.reduce_f(&f_ext);
                         let f_scale: f64 =
-                            f_int_red.iter().map(|x| x * x).sum::<f64>().sqrt().max(1.0);
-                        if r_norm < 1e-6 * f_scale {
+                            f_ext_red.iter().map(|x| x * x).sum::<f64>().sqrt().max(1.0);
+                        if r_norm < 1e-6 * f_scale
+                            && gap.abs() < (sub_target.abs() * 1e-6).max(1e-9)
+                        {
                             converged = true;
                             break;
                         }
 
+                        // 崩壊機構の形成で接線剛性が正定値性を失った場合は factorize が
+                        // 失敗する。エラーで解析全体を落とさず、attempt 側の増分半減へ
+                        // 回す（半減しても解けなければこのフェーズを打ち切る）。
                         let mut solver = make_solver(SolverBackend::Auto);
-                        solver.factorize(&k_red).map_err(|e| format!("{:?}", e))?;
-                        let du_red = solver.solve(&r_red).map_err(|e| format!("{:?}", e))?;
-                        let du_free = reducer.expand_u(&du_red);
+                        if solver.factorize(&k_red).is_err() {
+                            break;
+                        }
+                        let Ok(du_r_red) = solver.solve(&r_red) else {
+                            break;
+                        };
+                        let q_red = reducer.reduce_f(&q);
+                        let Ok(du_q_red) = solver.solve(&q_red) else {
+                            break;
+                        };
+                        let du_r = reducer.expand_u(&du_r_red);
+                        let du_q = reducer.expand_u(&du_q_red);
+                        // 荷重パターンが頂部を動かせない（δu_q[roof]≈0）場合は λ を
+                        // 決定できない（拘束と載荷が直交）。増分半減しても解決しないが、
+                        // モデル設定異常の防御として反復を打ち切る。
+                        let denom = du_q[roof_active];
+                        if denom.abs() < 1e-30 {
+                            break;
+                        }
+                        let dlambda_ctrl = (gap - du_r[roof_active]) / denom;
+                        lambda += dlambda_ctrl;
+                        let du_free: Vec<f64> = du_r
+                            .iter()
+                            .zip(du_q.iter())
+                            .map(|(&r, &qv)| r + dlambda_ctrl * qv)
+                            .collect();
                         for (acc, &d) in step_du_free.iter_mut().zip(du_free.iter()) {
                             *acc += d;
                         }
@@ -456,10 +503,10 @@ pub fn pushover_analysis_recording(
                             story_drift: story_drift.clone(),
                         });
                         steps.push(PushoverStep {
-                            // 変位制御フェーズ: 荷重制御フェーズで λ=1 まで到達した後の継続で、
-                            // 目標頂部変位をペナルティ法で強制するため比例載荷の λ という概念が
-                            // 存在しない。荷重制御完了時点の値(1.0)をそのまま保持して記録する。
-                            load_factor: 1.0,
+                            // 変位制御フェーズ: 頂部変位拘束から決定した比例荷重係数 λ を
+                            // そのまま記録する（外力は常に λ·q。設計地震力レベル λ=1 を
+                            // 超えて崩壊機構形成まで増加し、機構形成後は減少に転じる）。
+                            load_factor: lambda,
                             top_disp: roof,
                             base_shear,
                             story_drifts: story_drift,
@@ -487,6 +534,8 @@ pub fn pushover_analysis_recording(
                         break;
                     } else {
                         model.restore(&snap, &mut behaviors);
+                        // λ は反復中に更新しているため、要素状態と同時に巻き戻す。
+                        lambda = lambda_snap;
                     }
                 }
                 if !step_ok || target_reached {
@@ -496,14 +545,17 @@ pub fn pushover_analysis_recording(
         }
     }
 
-    if use_arc_length {
+    // 弧長法は段階制御のみ（荷重増分のみの比較モードでは荷重制御以外を使わない）。
+    if use_arc_length && matches!(control, PushoverControl::Phased) {
         let arc_solver = ArcLengthSolver::new(arc_length_dl);
         let mut prev_du: Vec<f64> = Vec::new();
-        let mut arc_lambda = 1.0;
+        // 弧長法は直前フェーズ（荷重制御・変位制御）で確定した荷重係数 λ から継続する
+        // （従来は変位制御後も 1.0 固定で、λ·q の載荷レベルが不連続だった）。
+        let mut arc_lambda = if lambda > 0.0 { lambda } else { 1.0 };
 
         for _step in 0..20 {
             let snap = StateSnapshot::capture(&behaviors);
-            let k_free = assemble_k(model, dofmap, &behaviors, use_kg, None);
+            let k_free = assemble_k(model, dofmap, &behaviors, use_kg);
             let k_red = reducer.reduce_k(&k_free);
 
             // ここは分解の失敗（正定値でない＝不安定化）を耐力喪失の終了判定に
@@ -610,5 +662,6 @@ pub fn pushover_analysis_recording(
         mechanism,
         qu,
         member_response,
+        control,
     })
 }
