@@ -5,10 +5,7 @@
 //! を行う。
 
 use super::element::BeamElement;
-use super::stiffness_factors::{
-    composite_beam_stiffness_factor, is_wall_top_bottom_girder, slab_stiffness_factor,
-    WALL_GIRDER_STIFF_FACTOR,
-};
+use super::stiffness_factors::{breakdown_with, composite_props_with};
 use crate::transform::LocalFrame;
 use squid_n_core::ids::NodeId;
 use squid_n_core::model::{Material, Model, Section};
@@ -70,6 +67,35 @@ fn get_material(model: &Model, mid: Option<squid_n_core::ids::MaterialId>) -> Ma
     })
 }
 
+/// 危険断面位置（§6.2.3）を正規化座標 \[0,1\] で算定する。
+///
+/// 節点芯 0.0/1.0・部材中央 0.5 に加え、柱フェース位置
+/// （`rigid_zone.face_i` / `face_j` を部材長で正規化。xi_i は \[0,0.5)、
+/// xi_j は (0.5,1\] へクランプ）を含める。face=0（直交材が無い端）では
+/// 節点芯と一致するため \[0.0, 0.5, 1.0\] になる。
+/// 部材付帯情報（ハンチ端・継手位置。剛性には影響しない）があれば
+/// その追加検定位置も含める（§6.2.3「位置はユーザが追加・変更可能」）。
+///
+/// 弾性梁とファイバー梁（非線形）で内力の評価断面を揃えるため共有する。
+pub(crate) fn eval_sections_of(
+    data: &squid_n_core::model::ElementData,
+    model: &Model,
+    length: f64,
+) -> Vec<f64> {
+    if length <= 1e-12 {
+        return vec![0.0, 0.5, 1.0];
+    }
+    let xi_i = (data.rigid_zone.face_i / length).clamp(0.0, 0.5 - 1e-9);
+    let xi_j = (1.0 - data.rigid_zone.face_j / length).clamp(0.5 + 1e-9, 1.0);
+    let mut xs = vec![0.0, xi_i, 0.5, xi_j, 1.0];
+    if let Some(detail) = model.member_detail(data.id) {
+        xs.extend(detail.extra_check_positions(&data.rigid_zone, length));
+    }
+    xs.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    xs.dedup_by(|a, b| (*a - *b).abs() < 1e-9);
+    xs
+}
+
 impl BeamElement {
     pub fn new(data: &squid_n_core::model::ElementData, model: &Model) -> Self {
         let n0 = data.nodes[0];
@@ -94,25 +120,8 @@ impl BeamElement {
         let mat = get_material(model, data.material);
         let g = mat.shear_modulus();
 
-        // 危険断面位置（§6.2.3、既定は柱フェース＝節点から face_i/j）を正規化座標へ変換し、
-        // 節点芯 [0.0, 1.0] と部材中央 0.5 に加えて評価断面リストへ含める。
-        // face=0（直交材が無い端）では従来どおり [0.0, 0.5, 1.0] と完全一致する。
-        // 部材付帯情報（ハンチ・継手位置。剛性には影響しない）があれば、その
-        // 追加検定位置（ハンチ端・継手位置）も評価断面へ含める（§6.2.3 の
-        // 「位置はユーザが追加・変更可能」に対応。剛性は基準断面のまま）。
-        let eval_sections = if len > 1e-12 {
-            let xi_i = (data.rigid_zone.face_i / len).clamp(0.0, 0.5 - 1e-9);
-            let xi_j = (1.0 - data.rigid_zone.face_j / len).clamp(0.5 + 1e-9, 1.0);
-            let mut xs = vec![0.0, xi_i, 0.5, xi_j, 1.0];
-            if let Some(detail) = model.member_detail(data.id) {
-                xs.extend(detail.extra_check_positions(&data.rigid_zone, len));
-            }
-            xs.sort_by(|a, b| a.partial_cmp(b).unwrap());
-            xs.dedup_by(|a, b| (*a - *b).abs() < 1e-9);
-            xs
-        } else {
-            vec![0.0, 0.5, 1.0]
-        };
+        // 危険断面位置（§6.2.3、既定は柱フェース＋節点芯＋中央）。
+        let eval_sections = eval_sections_of(data, model, len);
 
         let as_y = if sec.as_y != 0.0 {
             sec.as_y
@@ -132,17 +141,10 @@ impl BeamElement {
         // 算定不能（fc 無し・Ec≤0 等）なら to_section の既定値
         // （SRC: N_S_EQ 固定、CFT: 鋼管のみ）のまま。質量用 a_mass は常に幾何断面。
         use squid_n_core::section_shape::SectionShape;
-        let composite = sec.shape.as_ref().and_then(|shape| match shape {
-            SectionShape::SrcRect { .. } => mat
-                .fc
-                .is_some()
-                .then(|| shape.src_equivalent_props(mat.young, mat.poisson))
-                .flatten(),
-            SectionShape::CftBox { .. } | SectionShape::CftPipe { .. } => mat
-                .fc
-                .and_then(|fc| shape.cft_equivalent_props(mat.young, mat.poisson, fc)),
-            _ => None,
-        });
+        let composite = sec
+            .shape
+            .as_ref()
+            .and_then(|shape| composite_props_with(shape, &mat));
 
         // SRC で材料から算定できない場合も、軸剛性だけは既定 N_S_EQ の累加を維持する。
         let a_stiff = match (&composite, &sec.shape) {
@@ -166,32 +168,22 @@ impl BeamElement {
         // 解かれてしまう（軸名の取り違え）。
         let (iy, iz, as_y, as_z) = (sec_iz, sec_iy, sec_as_z, sec_as_y);
 
-        // スラブ協力幅による強軸剛性増大（RC規準8条のスラブ協力幅・合成梁は
-        // 各種合成構造設計指針）。RC 矩形梁は T 形断面の Ie/I0、H 形鋼梁は合成梁の平均
-        // 剛性 (I+sI)/(2·sI)。Model::slab_thickness=0（既定）では 1.0 で無効。
-        // 強軸（鉛直曲げ）＝要素座標系では iz（Mz 面）へ乗じる。
-        let iz = match &sec.shape {
-            Some(SectionShape::RcRect { .. }) => {
-                iz * slab_stiffness_factor(model, data, sec.width, sec.depth)
-            }
-            Some(SectionShape::SteelH { .. }) => {
-                iz * composite_beam_stiffness_factor(model, data, &sec, mat.young)
-            }
-            _ => iz,
-        };
-
-        // 壁エレメントモデルの上下大梁の剛性倍率（壁エレメント置換モデルの上下大梁の断面性能）。
-        // 対象は水平材（協力幅判定と同様、勾配 5% までは水平とみなす）かつ、両端節点が
-        // 四隅を持つ Wall 要素の節点集合に含まれる（=壁の上辺・下辺の大梁）場合のみ。
-        // 倍率は剛性用の値（a, iy, iz, j, as_y, as_z）にのみ乗じ、質量用 a_mass は
-        // 幾何断面のまま変更しない。
+        // 断面性能の割増し（スラブ協力幅・合成梁・壁エレメント上下大梁）。
+        // 準備計算の確認表示（`stiffness_breakdown`）と同じ算定を通す。
+        //
+        // - スラブ協力幅／合成梁: RC 矩形梁は T 形断面の Ie/I0、H 形鋼梁は合成梁の
+        //   平均剛性 (I+sI)/(2·sI)。`Model::slab_thickness=0`（既定）では 1.0 で無効。
+        //   強軸（鉛直曲げ）＝要素座標系では iz（Mz 面）へ乗じる。
+        // - 壁エレメント上下大梁: 対象は水平材（協力幅判定と同様、勾配 5% までは
+        //   水平とみなす）かつ両端節点が四隅を持つ Wall 要素の節点集合に含まれる場合。
+        //   剛性用の値（a, iy, iz, j, as_y, as_z）にのみ乗じ、質量用 a_mass は
+        //   幾何断面のまま変更しない。
         let lp = (dx * dx + dy * dy).sqrt();
         let is_horizontal = lp > 1e-9 && dz.abs() <= 0.05 * lp;
-        let wall_girder_factor = if is_horizontal && is_wall_top_bottom_girder(model, n0, n1) {
-            WALL_GIRDER_STIFF_FACTOR
-        } else {
-            1.0
-        };
+        let factors = breakdown_with(model, data, &sec, mat.young, is_horizontal);
+        let iz = iz * factors.slab;
+
+        let wall_girder_factor = factors.wall_girder;
         let mut a_stiff = a_stiff * wall_girder_factor;
         let mut iy = iy * wall_girder_factor;
         let mut iz = iz * wall_girder_factor;
@@ -288,27 +280,34 @@ impl BeamElement {
                         // 壁下辺方向の水平単位ベクトルと柱の局所 ey・ez との内積で
                         // 面内たわみ方向（iz↔as_y か iy↔as_z か）を判定する。
                         let e_wall = [wdx / wl, wdy / wl, 0.0];
-                        let dot_ey = (axis.rot[1][0] * e_wall[0]
+                        // 符号付き内積。面内たわみ方向の選択には絶対値を、袖壁の
+                        // 偏心 e の符号には**符号付きの射影**を用いる。
+                        let dot_ey_signed = axis.rot[1][0] * e_wall[0]
                             + axis.rot[1][1] * e_wall[1]
-                            + axis.rot[1][2] * e_wall[2])
-                            .abs();
-                        let dot_ez = (axis.rot[2][0] * e_wall[0]
+                            + axis.rot[1][2] * e_wall[2];
+                        let dot_ez_signed = axis.rot[2][0] * e_wall[0]
                             + axis.rot[2][1] * e_wall[1]
-                            + axis.rot[2][2] * e_wall[2])
-                            .abs();
+                            + axis.rot[2][2] * e_wall[2];
+                        let dot_ey = dot_ey_signed.abs();
+                        let dot_ez = dot_ez_signed.abs();
 
                         let aw = wall.t * lww;
-                        let e_i = if s == 0 {
-                            -(d_col / 2.0 + lww / 2.0)
-                        } else {
-                            d_col / 2.0 + lww / 2.0
-                        };
+                        // 袖壁は柱節点（`bottom_pair[s]`）から壁のもう一方の節点へ
+                        // 向かって伸びる。s=0 なら +e_wall、s=1 なら −e_wall 方向。
+                        // 偏心 e は、その向きを柱の局所曲げ軸へ射影して**符号付き**で
+                        // 与える。従来は `s` だけで符号を決め、`e_wall` の向き
+                        // （＝壁の節点入力順で反転しうる）を `.abs()` で捨てていたため、
+                        // 柱の両側に壁があり 2 枚の向きが逆の場合に**左右の袖壁が柱の
+                        // 同じ側に載る**評価となり、図心・合成断面二次モーメントを
+                        // 誤っていた（同じモデルでも節点入力順で剛性が変わる非決定性）。
+                        let sign_s = if s == 0 { 1.0 } else { -1.0 };
+                        let arm = d_col / 2.0 + lww / 2.0;
                         let self_i = wall.t * lww.powi(3) / 12.0;
                         a_add += aw;
                         if dot_ey >= dot_ez {
-                            contrib_y.push((aw, e_i, self_i));
+                            contrib_y.push((aw, sign_s * arm * dot_ey_signed, self_i));
                         } else {
-                            contrib_z.push((aw, e_i, self_i));
+                            contrib_z.push((aw, sign_s * arm * dot_ez_signed, self_i));
                         }
                     }
                 }

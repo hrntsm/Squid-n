@@ -143,14 +143,8 @@ pub fn wall_shear_beta_u(inp: &WallShearTrilinearInput) -> f64 {
 /// `r = 1 − max(r0, l0/lw, h0/h)`、`r0 = √(h0·l0/(h·lw))`。
 /// 無開口（`opening == None`）は 1.0。極端な開口で負になる場合は 0 にクランプする。
 pub fn wall_shear_opening_reduction(opening: Option<(f64, f64, f64, f64)>) -> f64 {
-    match opening {
-        Some((l0, h0, h, lw)) if h > 0.0 && lw > 0.0 => {
-            let r0 = (h0 * l0 / (h * lw)).max(0.0).sqrt();
-            let reduce = r0.max(l0 / lw).max(h0 / h);
-            (1.0 - reduce).clamp(0.0, 1.0)
-        }
-        _ => 1.0,
-    }
+    // 本体は Layer 0 の squid_n_core へ移設（壁要素の非線形化から参照するため）。
+    squid_n_core::rc_wall_capacity::wall_opening_reduction_strength(opening)
 }
 
 /// 終局せん断強度 Qu [N]（荒川mean式系・耐震壁、技術基準解説書 P.638-639）。
@@ -171,41 +165,23 @@ pub fn wall_shear_opening_reduction(opening: Option<(f64, f64, f64, f64)>) -> f6
 /// 開口低減 r を乗じた値を返す。不正入力（Fc・te・D・at のいずれかが 0 以下、
 /// または d ≤ 0）は 0.0 を返す。
 pub fn wall_shear_ultimate(inp: &WallShearTrilinearInput) -> f64 {
-    let d = inp.d_wall - inp.dc_compression / 2.0;
-    if inp.fc <= 0.0
-        || inp.te <= 0.0
-        || inp.d_wall <= 0.0
-        || inp.tension_column_at <= 0.0
-        || d <= 0.0
-    {
-        return 0.0;
-    }
-    let pte = 100.0 * inp.tension_column_at / (inp.te * d);
-    let j = 7.0 / 8.0 * d;
-    let shear_span_ratio = inp.shear_span_ratio.clamp(1.0, 3.0);
-    let k = if inp.high_strength_shear_rebar {
-        0.068
-    } else {
-        0.053
-    };
-    // pwh = Pwh·t/te、1.2% 上限。
-    let pwh = if inp.te > 0.0 {
-        (inp.pwh_ratio.max(0.0) * inp.t / inp.te).min(0.012)
-    } else {
-        0.0
-    };
-    // 0.053 式は分母 1 乗、0.068 式（高強度せん断補強筋）は分母 √(M/(Q·D)+0.12)。
-    let denom = if inp.high_strength_shear_rebar {
-        (shear_span_ratio + 0.12).sqrt()
-    } else {
-        shear_span_ratio + 0.12
-    };
-    let concrete_term = k * pte.powf(0.23) * (inp.fc + 18.0) / denom;
-    let hoop_term = 0.85 * (pwh * inp.sigma_wh).max(0.0).sqrt();
-    let sigma_0 = inp.sigma_0.clamp(0.0, 0.4 * inp.fc);
-    let axial_term = 0.1 * sigma_0;
-    let r = wall_shear_opening_reduction(inp.opening);
-    (concrete_term + hoop_term + axial_term) * inp.te * j * r
+    // 本体は Layer 0 の squid_n_core へ移設（壁要素の非線形化から参照するため）。
+    squid_n_core::rc_wall_capacity::wall_shear_ultimate(
+        &squid_n_core::rc_wall_capacity::RcWallShearInput {
+            fc: inp.fc,
+            te: inp.te,
+            t: inp.t,
+            d_wall: inp.d_wall,
+            dc_compression: inp.dc_compression,
+            tension_column_at: inp.tension_column_at,
+            sigma_wh: inp.sigma_wh,
+            pwh_ratio: inp.pwh_ratio,
+            sigma_0: inp.sigma_0,
+            shear_span_ratio: inp.shear_span_ratio,
+            high_strength_shear_rebar: inp.high_strength_shear_rebar,
+            opening: inp.opening,
+        },
+    )
 }
 
 /// RC 造耐震壁のせん断トリリニア骨格（Qc・βu・Qu・r）を一括算定する。

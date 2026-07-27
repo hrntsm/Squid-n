@@ -134,8 +134,14 @@ fn test_resolve_force_regime_auto() {
     ));
 }
 
+/// 線形弾性解析の要素生成は `ForceRegime` に依らず弾性 `BeamElement`（計算根拠 4.9.4）。
+///
+/// 剛床に載る梁は `resolve_force_regime` では `ConcentratedSpring` に判定されるが、
+/// これは非線形解析だけの振り分けである。線形側がこれに従うと
+/// (1) 材端ばねが直列に入って弾性剛性が落ち、(2) 材端集中ばね梁は
+/// `recover_forces` を持たないため部材内力が丸ごと欠落する。
 #[test]
-fn test_build_behavior_concentrated_spring_uses_spring_beam() {
+fn test_build_behavior_concentrated_spring_regime_is_elastic_beam() {
     let model = make_diaphragm_model();
     let beam = ElementData {
         id: ElemId(0),
@@ -152,29 +158,36 @@ fn test_build_behavior_concentrated_spring_uses_spring_beam() {
         plastic_zone: None,
         spring: None,
     };
+    // 前提: この梁の regime は ConcentratedSpring（剛床に載る水平材）。
+    assert!(matches!(
+        resolve_force_regime(&beam, &model),
+        ResolvedRegime::ConcentratedSpring
+    ));
+
     let (behavior, _state) = build_behavior(&beam, &model);
-    // ConcentratedSpringBeam は recover_forces を override していないので None
+    // 弾性 BeamElement なので部材内力を回収できる。
     assert!(
-        behavior.recover_forces(&[0.0; 12]).is_none(),
-        "ConcentratedSpringBeam should return None for recover_forces"
+        behavior.recover_forces(&[0.0; 12]).is_some(),
+        "線形解析の梁は内力を回収できる弾性 BeamElement であること"
     );
-    // snapshot_state で ConcentratedSpringBeam 固有型を確認
-    let snap = behavior.snapshot_state();
-    let is_spring = snap
-        .downcast_ref::<(
-            Vec<Box<dyn squid_n_material::uniaxial::UniaxialMaterial>>,
-            f64,
-            f64,
-            f64,
-            f64,
-            [f64; 12],
-            [f64; 12],
-        )>()
-        .is_some();
-    assert!(
-        is_spring,
-        "should be ConcentratedSpringBeam by snapshot type"
+    // 剛性も素の弾性 BeamElement と厳密一致（材端ばねが直列に入っていない）。
+    let elastic = crate::beam::BeamElement::new(&beam, &model);
+    let k_ref = elastic.local_stiffness();
+    let k_ref = elastic.axis.to_global(&k_ref);
+    let k = behavior.tangent_stiffness(
+        &ElemState::default(),
+        &crate::behavior::Ctx { model: &model },
     );
+    for i in 0..12 {
+        for j in 0..12 {
+            assert!(
+                (k.get(i, j) - k_ref.get(i, j)).abs() <= k_ref.get(i, j).abs() * 1e-12 + 1e-9,
+                "K[{i}][{j}] が弾性梁と一致しない: {} vs {}",
+                k.get(i, j),
+                k_ref.get(i, j)
+            );
+        }
+    }
 }
 
 #[test]
@@ -262,11 +275,7 @@ fn test_build_nonlinear_behavior_fiber_uses_fiber_beam() {
     let (behavior, _state) = build_nonlinear_behavior(&col, &model, StrengthBasis::Nominal);
     let snap = behavior.snapshot_state();
     let is_fiber = snap
-        .downcast_ref::<(
-            [f64; 12],
-            [f64; 12],
-            Vec<Vec<Box<dyn squid_n_material::uniaxial::UniaxialMaterial>>>,
-        )>()
+        .downcast_ref::<crate::fiber::FiberBeamSnapshot>()
         .is_some();
     assert!(is_fiber, "nonlinear Fiber should be FiberBeam");
 }

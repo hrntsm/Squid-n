@@ -39,7 +39,7 @@ fn unit(a: [f64; 3]) -> Option<[f64; 3]> {
 
 /// 壁（Section.shape=RcWall、または材料に fc がある）かどうか
 /// （ＲＣ耐震壁面内方向に限り側柱を両端ピンとする規定の判定用）。
-fn is_rc_wall(wall: &ElementData, model: &Model) -> bool {
+pub(crate) fn is_rc_wall(wall: &ElementData, model: &Model) -> bool {
     let sec_is_rc_wall = wall
         .section
         .and_then(|sid| model.sections.get(sid.index()))

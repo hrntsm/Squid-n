@@ -38,7 +38,8 @@ impl ElementBehavior for BeamElement {
         // 幾何剛性も弾性剛性と整合させる: 可撓長で組み、剛域変換で節点自由度へ写す。
         // 剛域があれば P-δ は可撓部でのみ生じ、剛域は剛体アームとして働く。
         // 剛域なし（li=lj=0）では従来どおり全長 L の幾何剛性に一致する。
-        let l = self.length - self.rigid.length_i - self.rigid.length_j;
+        let (li, lj) = self.rigid_lengths();
+        let l = self.length - li - lj;
         if l < 1e-12 {
             return LocalMat::zeros(12);
         }
@@ -73,8 +74,7 @@ impl ElementBehavior for BeamElement {
         s(10, 10, c * 2.0 * l * l / 15.0);
         s(4, 10, -c * l * l / 30.0);
         // 剛域変換 → 全体系（P-Δ を組立系で正しく加算するため）
-        let kg_node =
-            self.apply_rigid_zone_transform(&kg, self.rigid.length_i, self.rigid.length_j);
+        let kg_node = self.apply_rigid_zone_transform(&kg, li, lj);
         self.axis.to_global(&kg_node)
     }
 
@@ -212,5 +212,15 @@ impl ElementBehavior for BeamElement {
         let mut arr = [0.0; 12];
         arr.copy_from_slice(&u_elem[..12]);
         Some(self.recover_forces(&arr))
+    }
+
+    /// 弾性材は常に線形なので、蓄積した trial 変位からの復元でよい
+    /// （非線形解析中の弾性材＝`recover_forces` と同じ結果）。
+    fn state_member_forces(
+        &self,
+        _state: &ElemState,
+        _ctx: &Ctx,
+    ) -> Option<crate::beam::MemberForces> {
+        Some(self.recover_forces(&self.trial_disp))
     }
 }

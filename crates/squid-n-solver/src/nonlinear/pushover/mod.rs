@@ -17,7 +17,7 @@ mod ductility;
 mod geom;
 mod hinge;
 mod mechanism;
-mod member_response;
+pub(crate) mod member_response;
 mod response;
 mod shear_yield;
 mod types;

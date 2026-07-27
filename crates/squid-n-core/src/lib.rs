@@ -4,6 +4,7 @@ pub mod ids;
 pub mod material_grade;
 pub mod model;
 pub mod rc_capacity;
+pub mod rc_wall_capacity;
 pub mod section_shape;
 pub mod units;
 

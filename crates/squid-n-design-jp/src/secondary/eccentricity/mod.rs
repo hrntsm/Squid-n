@@ -115,6 +115,7 @@ pub(crate) mod test_support {
             node_ids: vec![],
             diaphragms: vec![],
             seismic_weight: None,
+            weight_override: None,
         };
 
         // 節点配置:

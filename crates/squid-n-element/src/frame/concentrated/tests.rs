@@ -66,7 +66,7 @@ fn test_internal_force_no_double_count() {
     };
     let state = ElemState::default();
     let du = LocalVec {
-        data: smallvec::smallvec![0.0, 0.0, 0.0, 0.0, 0.001, 0.0, 0.0, 0.0, 0.0, 0.0, -0.001, 0.0],
+        data: smallvec::smallvec![0.0, 0.0, 0.0, 0.0, 0.0, 0.001, 0.0, 0.0, 0.0, 0.0, 0.0, -0.001],
     };
     elem.update_state(&du, true, &ctx);
     let k = elem.tangent_stiffness(&state, &ctx);
@@ -84,22 +84,25 @@ fn test_internal_force_no_double_count() {
     }
 }
 
+/// 材端ばねは強軸曲げ（局所 rz。DOF 5・11）にのみ作用し、軸・ねじり・弱軸曲げ
+/// （rx・ry）には現れないこと。要素局所系は「y 軸＝断面のせい方向」規約のため、
+/// 梁の鉛直曲げ（強軸）は rz まわりであり、塑性ヒンジもこの面に生じる。
 #[test]
-fn test_dof_only_ry() {
+fn test_dof_only_rz() {
     let mut elem = make_test_element();
     let ctx = Ctx {
         model: &squid_n_core::model::Model::default(),
     };
     let state = ElemState::default();
     let du = LocalVec {
-        data: smallvec::smallvec![0.0, 0.0, 0.0, 0.0, 0.001, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+        data: smallvec::smallvec![0.0, 0.0, 0.0, 0.0, 0.0, 0.001, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
     };
     elem.update_state(&du, true, &ctx);
     let f = elem.internal_force(&state, &ctx);
     assert!(f.data[3].abs() < 1.0, "rx_i should not have spring moment");
-    assert!(f.data[5].abs() < 1.0, "rz_i should not have spring moment");
+    assert!(f.data[4].abs() < 1.0, "ry_i should not have spring moment");
     assert!(f.data[9].abs() < 1.0, "rx_j should not have spring moment");
-    assert!(f.data[11].abs() < 1.0, "rz_j should not have spring moment");
+    assert!(f.data[10].abs() < 1.0, "ry_j should not have spring moment");
 
     let k = elem.tangent_stiffness(&state, &ctx);
     let k_sym = |i: usize, j: usize| {
@@ -131,8 +134,8 @@ fn test_spring_yield() {
             0.0,
             0.0,
             0.0,
-            rot_yield * 10.0,
             0.0,
+            rot_yield * 10.0,
             0.0,
             0.0,
             0.0,
@@ -147,13 +150,13 @@ fn test_spring_yield() {
     elem.update_state(&du_large, true, &ctx);
     let k_yielded = elem.tangent_stiffness(&state, &ctx);
 
-    let k44_elastic = k_elastic.get(4, 4);
-    let k44_yielded = k_yielded.get(4, 4);
+    let k55_elastic = k_elastic.get(5, 5);
+    let k55_yielded = k_yielded.get(5, 5);
     assert!(
-        k44_yielded < k44_elastic * 0.99,
+        k55_yielded < k55_elastic * 0.99,
         "yielded tangent should drop: elastic={} yielded={}",
-        k44_elastic,
-        k44_yielded
+        k55_elastic,
+        k55_yielded
     );
 }
 
@@ -164,7 +167,7 @@ fn test_commit_revert() {
         model: &squid_n_core::model::Model::default(),
     };
     let du = LocalVec {
-        data: smallvec::smallvec![0.0, 0.0, 0.0, 0.0, 0.001, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+        data: smallvec::smallvec![0.0, 0.0, 0.0, 0.0, 0.0, 0.001, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
     };
 
     elem.update_state(&du, false, &ctx);
@@ -180,7 +183,7 @@ fn test_commit_revert() {
     assert_relative_eq!(elem.rot_i, 0.001, epsilon = 1e-12);
 
     let du2 = LocalVec {
-        data: smallvec::smallvec![0.0, 0.0, 0.0, 0.0, 0.002, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+        data: smallvec::smallvec![0.0, 0.0, 0.0, 0.0, 0.0, 0.002, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
     };
     elem.update_state(&du2, false, &ctx);
     assert_relative_eq!(elem.trial_rot_i, 0.003, epsilon = 1e-12);
@@ -196,14 +199,14 @@ fn test_snapshot_restore() {
         model: &squid_n_core::model::Model::default(),
     };
     let du = LocalVec {
-        data: smallvec::smallvec![0.0, 0.0, 0.0, 0.0, 0.001, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+        data: smallvec::smallvec![0.0, 0.0, 0.0, 0.0, 0.0, 0.001, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
     };
 
     elem.update_state(&du, true, &ctx);
     let snap = elem.snapshot_state();
 
     let du2 = LocalVec {
-        data: smallvec::smallvec![0.0, 0.0, 0.0, 0.0, 0.002, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+        data: smallvec::smallvec![0.0, 0.0, 0.0, 0.0, 0.0, 0.002, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
     };
     elem.update_state(&du2, false, &ctx);
     assert_relative_eq!(elem.trial_rot_i, 0.003, epsilon = 1e-12);
@@ -222,7 +225,7 @@ fn test_tangent_stiffness_symmetric() {
     let state = ElemState::default();
 
     let du = LocalVec {
-        data: smallvec::smallvec![0.0, 0.0, 0.0, 0.0, 0.001, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+        data: smallvec::smallvec![0.0, 0.0, 0.0, 0.0, 0.0, 0.001, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
     };
     elem.update_state(&du, true, &ctx);
     let k = elem.tangent_stiffness(&state, &ctx);
@@ -265,18 +268,19 @@ fn test_condense_springs_zero_stiffness() {
     let k_pinned = condense_springs(&k_raw, 0.0, 0.0);
     let k_fixed = condense_springs(&k_raw, 1e30, 1e30);
     assert!(
-        k_pinned.get(4, 4) < k_fixed.get(4, 4) * 0.5,
-        "pinned ry_i should be much softer than fixed"
+        k_pinned.get(5, 5) < k_fixed.get(5, 5) * 0.5,
+        "pinned rz_i should be much softer than fixed"
     );
 }
 
+/// 材端ばねが作用しない自由度（rx・ry）はばね剛性に依らないこと。
 #[test]
-fn test_rx_rz_unaffected_by_spring() {
+fn test_rx_ry_unaffected_by_spring() {
     let beam = make_test_beam();
     let k_raw = beam.local_stiffness_raw();
     let k_soft = condense_springs(&k_raw, 1.0, 1.0);
     let k_stiff = condense_springs(&k_raw, 1e30, 1e30);
-    for &dof in &[3, 5, 9, 11] {
+    for &dof in &[3, 4, 9, 10] {
         assert_relative_eq!(k_soft.get(dof, dof), k_stiff.get(dof, dof), epsilon = 1.0);
     }
 }
@@ -288,7 +292,7 @@ fn test_concentrated_spring_checkpoint_roundtrip() {
         model: &squid_n_core::model::Model::default(),
     };
     let du = LocalVec {
-        data: smallvec::smallvec![0.0, 0.0, 0.0, 0.0, 0.001, 0.0, 0.0, 0.0, 0.0, 0.0, -0.0005, 0.0],
+        data: smallvec::smallvec![0.0, 0.0, 0.0, 0.0, 0.0, 0.001, 0.0, 0.0, 0.0, 0.0, 0.0, -0.0005],
     };
     elem.update_state(&du, true, &ctx);
 
@@ -432,4 +436,120 @@ fn test_mn_interaction_yield_moment_in_response() {
     // バネ i の trial 応力（モーメント）は M_lim = 0.5·my0 で飽和
     let (m, _) = elem.spring_i.clone_box().trial(0.1);
     assert_relative_eq!(m, 0.5 * my0, max_relative = 1e-6);
+}
+
+/// 材端ばねは**強軸**（要素局所 rz。断面のせい方向の曲げ）に作用すること。
+///
+/// 要素局所系は「y 軸＝断面のせい方向」規約のため、強軸曲げは (uy, rz) ブロック
+/// （`beam/construct.rs` のクロス変換で断面 iy＝強軸が要素 iz に入る）。
+/// 骨格の降伏モーメント（強軸 Zp·σy）と初期剛性（6EI/l、I は強軸）も強軸で与える
+/// ため、ばねを弱軸（ry）に入れると強軸曲げが永久に降伏せず保有水平耐力を
+/// 過大評価する（危険側）。強軸/弱軸で剛性が大きく異なる断面で確認する。
+#[test]
+fn test_spring_acts_on_strong_axis_rz() {
+    let mut beam = make_test_beam();
+    // 要素 iz（Mz 面＝強軸）を iy（My 面＝弱軸）の 10 倍にする。
+    beam.iz = 1.0e9;
+    beam.iy = 1.0e8;
+    let k_raw = beam.local_stiffness_raw();
+    let k_stiff = condense_springs(&k_raw, 1e30, 1e30);
+    let k_soft = condense_springs(&k_raw, 1.0, 1.0);
+
+    // 強軸（rz: DOF 5・11）はばねが柔らかいと大きく低下する。
+    for &dof in &[5usize, 11] {
+        assert!(
+            k_soft.get(dof, dof) < k_stiff.get(dof, dof) * 0.5,
+            "強軸 DOF {dof} にばねが効いていない: soft={} stiff={}",
+            k_soft.get(dof, dof),
+            k_stiff.get(dof, dof)
+        );
+    }
+    // 弱軸（ry: DOF 4・10）はばねの影響を受けない。
+    for &dof in &[4usize, 10] {
+        assert_relative_eq!(k_soft.get(dof, dof), k_stiff.get(dof, dof), epsilon = 1.0);
+    }
+}
+
+/// 材端ばねが十分に剛なら、`compute_kstar` は弾性梁の `local_stiffness()` と一致する。
+/// 剛域・端部条件（ピン）を持つ部材でも一致すること＝可撓長と端部条件が
+/// 弾性梁と同じ土台で組まれていることの検証。
+#[test]
+fn test_compute_kstar_matches_elastic_beam_with_rigid_zone_and_pin() {
+    use squid_n_core::model::EndCondition;
+
+    let cases: [(RigidZone, [EndCondition; 2], &str); 4] = [
+        (
+            RigidZone::default(),
+            [EndCondition::Fixed; 2],
+            "剛域なし・剛接",
+        ),
+        (
+            RigidZone {
+                length_i: 300.0,
+                length_j: 200.0,
+                ..Default::default()
+            },
+            [EndCondition::Fixed; 2],
+            "剛域あり・剛接",
+        ),
+        (
+            RigidZone::default(),
+            [EndCondition::Pinned, EndCondition::Fixed],
+            "剛域なし・i端ピン",
+        ),
+        (
+            RigidZone {
+                length_i: 300.0,
+                length_j: 200.0,
+                ..Default::default()
+            },
+            [EndCondition::Pinned, EndCondition::Fixed],
+            "剛域あり・i端ピン",
+        ),
+    ];
+
+    for (rigid, end_cond, label) in cases {
+        let mut beam = make_test_beam();
+        beam.rigid = rigid;
+        beam.end_cond = end_cond;
+
+        let k_ref = beam.local_stiffness();
+        // ばね剛性を十分大きく取れば材端ばねは剛接と同等になる。ばね剛性を
+        // 梁の回転剛性（≒3e11）より極端に大きくすると静縮約 Kaa−Kab·Kbb⁻¹·Kba が
+        // 桁落ちするため、比 1e6〜1e7 程度に留める（直列剛性の誤差は 1e-7 以下）。
+        let k = compute_kstar(&beam, 1e18, 1e18);
+        for i in 0..12 {
+            for j in 0..12 {
+                let scale = k_ref.get(i, j).abs().max(1.0);
+                assert!(
+                    (k.get(i, j) - k_ref.get(i, j)).abs() <= scale * 1e-6,
+                    "{label}: K[{i}][{j}] が弾性梁と不一致: {} vs {}",
+                    k.get(i, j),
+                    k_ref.get(i, j)
+                );
+            }
+        }
+    }
+}
+
+/// i 端ピンの部材では、材端ばねの有無に依らず i 端の強軸モーメント剛性が 0 に
+/// なること（`end_cond` が材端集中ばね梁でも反映されている）。
+/// 従来は `local_stiffness_raw()`（端部条件未反映）から組んでいたため、
+/// ピン端が両端剛接として解かれていた。
+#[test]
+fn test_compute_kstar_respects_pinned_end() {
+    use squid_n_core::model::EndCondition;
+    let mut beam = make_test_beam();
+    beam.end_cond = [EndCondition::Pinned, EndCondition::Fixed];
+    let k = compute_kstar(&beam, 1e12, 1e12);
+    assert!(
+        k.get(5, 5).abs() < 1.0,
+        "i 端ピンなのに強軸モーメント剛性が残っている: {}",
+        k.get(5, 5)
+    );
+    assert!(
+        k.get(11, 11).abs() > 1.0,
+        "j 端（剛接）の強軸モーメント剛性は残るはず: {}",
+        k.get(11, 11)
+    );
 }

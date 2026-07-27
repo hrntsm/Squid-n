@@ -41,6 +41,45 @@ impl Dof6Mask {
 
 pub type GlobalDof = usize;
 
+/// 解析自由度を持つ節点（**構造節点**）の判定を節点 index ごとの真偽で返す。
+///
+/// 構造節点 = 要素（部材）が接続する節点、または拘束（剛床・剛リンク・MPC）の
+/// マスター節点。どちらでもない節点（二次部材（小梁・間柱）の支持点・床境界専用の
+/// 幾何節点など）は剛性が一切組み上がらず零剛性の自由度＝特異行列の原因になるため、
+/// [`DofMap::build`] が全自由度を不活性にする（解析上は存在しない扱い）。
+///
+/// 解析（[`DofMap::build`]）と表示（解析対象外の節点を描かない・剛床スレーブから
+/// 除く）で同じ規則を使うため、判定をここへ一元化する。
+pub fn structural_nodes(model: &Model) -> Vec<bool> {
+    let mut structural = vec![false; model.nodes.len()];
+    for e in &model.elements {
+        for n in &e.nodes {
+            if let Some(slot) = structural.get_mut(n.index()) {
+                *slot = true;
+            }
+        }
+    }
+    for c in &model.constraints {
+        use crate::model::Constraint;
+        match c {
+            Constraint::RigidDiaphragm { master, .. } | Constraint::RigidLink { master, .. } => {
+                if let Some(slot) = structural.get_mut(master.index()) {
+                    *slot = true;
+                }
+            }
+            // MPC は `master` フィールドがスレーブ節点、`terms` がマスター側。
+            Constraint::Mpc { terms, .. } => {
+                for (n, _, _) in terms {
+                    if let Some(slot) = structural.get_mut(n.index()) {
+                        *slot = true;
+                    }
+                }
+            }
+        }
+    }
+    structural
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct DofMap {
     active_of: Vec<Option<u32>>,
@@ -50,39 +89,11 @@ pub struct DofMap {
 
 impl DofMap {
     pub fn build(model: &Model) -> Self {
-        // 解析自由度を持つ節点 = 要素（部材）が接続する節点、または拘束
-        // （剛床・剛リンク・MPC）のマスター節点。どちらでもない節点
-        // （二次部材（小梁・間柱）の支持点・床境界専用の幾何節点など）は
-        // 剛性が一切組み上がらず零剛性の自由度＝特異行列の原因になるため、
-        // 全自由度を不活性にする（解析上は存在しない扱い。変位は 0 で出力され、
-        // そこへの節点荷重は無視される。荷重は同期側で主架構へ変換する規約）。
-        let mut structural = vec![false; model.nodes.len()];
-        for e in &model.elements {
-            for n in &e.nodes {
-                if let Some(slot) = structural.get_mut(n.index()) {
-                    *slot = true;
-                }
-            }
-        }
-        for c in &model.constraints {
-            use crate::model::Constraint;
-            match c {
-                Constraint::RigidDiaphragm { master, .. }
-                | Constraint::RigidLink { master, .. } => {
-                    if let Some(slot) = structural.get_mut(master.index()) {
-                        *slot = true;
-                    }
-                }
-                // MPC は `master` フィールドがスレーブ節点、`terms` がマスター側。
-                Constraint::Mpc { terms, .. } => {
-                    for (n, _, _) in terms {
-                        if let Some(slot) = structural.get_mut(n.index()) {
-                            *slot = true;
-                        }
-                    }
-                }
-            }
-        }
+        // 構造節点（解析自由度を持つ節点）以外は全自由度を不活性にする
+        // （解析上は存在しない扱い。変位は 0 で出力され、そこへの節点荷重は
+        // 無視される。荷重は同期側で主架構へ変換する規約）。判定規則は
+        // [`structural_nodes`] を参照。
+        let structural = structural_nodes(model);
 
         let n_global = model.nodes.len() * DOF_PER_NODE;
         let mut active_of = vec![None; n_global];

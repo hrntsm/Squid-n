@@ -24,10 +24,8 @@
 /// `h`,`l` のいずれかが 0 以下（壁寸法が未設定など）の場合は 0 除算を避ける
 /// ため 0.0 を返す。
 pub fn opening_ratio_r0(h0: f64, l0: f64, h: f64, l: f64) -> f64 {
-    if h <= 0.0 || l <= 0.0 {
-        return 0.0;
-    }
-    ((h0 * l0) / (h * l)).max(0.0).sqrt()
+    // 本体は Layer 0 の squid_n_core へ集約（壁要素の剛性低減と同一定義にする）。
+    squid_n_core::rc_wall_capacity::wall_opening_ratio_r0(h0, l0, h, l)
 }
 
 /// 開口による剛性低減率 r = 1 − 1.25・r0（RC規準）。
@@ -35,8 +33,8 @@ pub fn opening_ratio_r0(h0: f64, l0: f64, h: f64, l: f64) -> f64 {
 /// `r0`（[`opening_ratio_r0`]）が大きい場合、計算上 r が負になり得るため
 /// 安全側として 0 に下限クランプする。開口が無い場合（h0=l0=0）は r=1。
 pub fn opening_reduction_r(h0: f64, l0: f64, h: f64, l: f64) -> f64 {
-    let r0 = opening_ratio_r0(h0, l0, h, l);
-    (1.0 - 1.25 * r0).max(0.0)
+    // 本体は Layer 0 の squid_n_core へ集約（壁要素の剛性低減と同一定義にする）。
+    squid_n_core::rc_wall_capacity::wall_opening_reduction_stiffness(opening_ratio_r0(h0, l0, h, l))
 }
 
 /// 複数開口の等価開口置換（RC規準）。

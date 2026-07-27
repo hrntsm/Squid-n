@@ -48,12 +48,54 @@ pub enum MassMethod {
 
 /// 階の主要構造種別。設計用一次固有周期の略算式 T=h(0.02+0.01α) の
 /// α（柱梁の大部分が鉄骨造である階の高さ比）の算定に用いる（令88条・告示1793号）。
+///
+/// 値は階に属する柱・梁の断面形状から自動判定する（準備計算の階生成。
+/// [`StoryStructure::of_section_shape`]）ため、利用者は入力しない。
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum StoryStructure {
     #[default]
     Rc,
     S,
     Src,
+}
+
+impl StoryStructure {
+    /// 断面形状 1 つの構造種別。鋼断面は S、RC 断面は RC、鉄骨とコンクリートが
+    /// 一体で働く断面（SRC・CFT）は SRC とする。
+    pub fn of_section_shape(shape: &crate::section_shape::SectionShape) -> Self {
+        use crate::section_shape::SectionShape as S;
+        match shape {
+            S::RcRect { .. } | S::RcCircle { .. } | S::RcWall { .. } => StoryStructure::Rc,
+            S::SrcRect { .. } | S::CftBox { .. } | S::CftPipe { .. } => StoryStructure::Src,
+            S::SteelH { .. }
+            | S::SteelBuiltH { .. }
+            | S::SteelBox { .. }
+            | S::SteelPipe { .. }
+            | S::SteelAngle { .. }
+            | S::SteelChannel { .. }
+            | S::SteelLipChannel { .. }
+            | S::SteelTee { .. }
+            | S::SteelFlatBar { .. }
+            | S::SteelRoundBar { .. } => StoryStructure::S,
+        }
+    }
+
+    /// 種別ごとの部材本数から階の主要構造種別を決める。最多の種別を採用し、
+    /// 同数の場合は RC → SRC → S の順で優先する。
+    ///
+    /// 略算周期 T = h(0.02 + 0.01α) は S の階が増えるほど T が長く、Rt が
+    /// 小さくなって地震力が下がるため、判定が割れた場合は S を採らないのが
+    /// 安全側になる（同数時の優先順の根拠）。対象部材が 1 本も無い階は RC。
+    pub fn majority(n_rc: usize, n_s: usize, n_src: usize) -> Self {
+        let max = n_rc.max(n_s).max(n_src);
+        if max == 0 || n_rc == max {
+            StoryStructure::Rc
+        } else if n_src == max {
+            StoryStructure::Src
+        } else {
+            StoryStructure::S
+        }
+    }
 }
 
 /// 階の種別。地震層せん断力の算定方法を切り替える
@@ -75,8 +117,17 @@ pub struct Story {
     pub elevation: f64,
     pub node_ids: Vec<NodeId>,
     pub diaphragms: Vec<DiaphragmDef>,
+    /// 設計に用いる地震用重量 [N]。準備計算の階生成が自動算定値を書き込むが、
+    /// [`Self::weight_override`] が `Some` の場合はその手入力値が入る
+    /// （解析・設計側はこのフィールドだけを読めばよい）。
     pub seismic_weight: Option<f64>,
-    /// 主要構造種別（略算周期の鉄骨造比 α 算定用）。旧スキーマは RC 扱い。
+    /// 地震用重量の手入力値 [N]。`Some` のときは準備計算で階を再生成しても
+    /// 保持され、[`Self::seismic_weight`] へ優先して反映される。`None` は
+    /// 自動算定値をそのまま用いる。旧スキーマは手入力なし扱い。
+    #[serde(default)]
+    pub weight_override: Option<f64>,
+    /// 主要構造種別（略算周期の鉄骨造比 α 算定用）。断面形状からの自動判定値。
+    /// 旧スキーマは RC 扱い。
     #[serde(default)]
     pub structure: StoryStructure,
     /// 階の種別（一般/PH/地下）。旧スキーマは一般階扱い。

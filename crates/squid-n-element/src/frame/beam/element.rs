@@ -4,7 +4,7 @@ use crate::transform::LocalFrame;
 use squid_n_core::ids::{ElemId, NodeId};
 use squid_n_core::model::{EndCondition, RigidZone};
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct MemberForces {
     pub at: Vec<(f64, [f64; 6])>,
 }

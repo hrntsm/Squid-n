@@ -12,6 +12,7 @@ const EIGEN_MAX_ITER: usize = 200;
 /// （質量ランク判定の相対許容誤差。[`gevd_jacobi`] 参照）。
 const MASS_RANK_REL_TOL: f64 = 1e-9;
 
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct ModalResult {
     pub omega2: Vec<f64>,
     pub period: Vec<f64>,

@@ -6,7 +6,7 @@ fn main() -> eframe::Result<()> {
         ..Default::default()
     };
     eframe::run_native(
-        "Squid-N",
+        "Squid-n",
         options,
         Box::new(|cc| {
             squid_n_app::app::install_japanese_fonts(&cc.egui_ctx);

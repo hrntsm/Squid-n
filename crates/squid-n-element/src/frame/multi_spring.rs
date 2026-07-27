@@ -44,13 +44,8 @@ impl MultiSpringElement {
         basis: crate::factory::StrengthBasis,
     ) -> Self {
         // 塑性化領域長さ: 入力があればそれを、なければ断面せいの 0.5 倍
-        let depth = data
-            .section
-            .and_then(|sid| model.sections.get(sid.index()))
-            .map(|s| s.depth)
-            .filter(|d| *d > 0.0)
-            .unwrap_or(200.0);
-        let lp = data.plastic_zone.unwrap_or(0.5 * depth);
+        // （ファイバー要素と共通の既定。[`crate::factory::plastic_zone_length`]）
+        let lp = crate::factory::plastic_zone_length(data, model);
 
         let inner = FiberBeam::build_plastic_zone(data, model, lp, MS_NW, MS_ND, basis);
 
@@ -90,6 +85,15 @@ impl ElementBehavior for MultiSpringElement {
 
     fn internal_force(&self, state: &ElemState, ctx: &Ctx) -> LocalVec {
         self.inner.internal_force(state, ctx)
+    }
+
+    /// 内力分布は実体（端部バネ断面＋中央弾性のファイバー要素）へ委譲する。
+    fn state_member_forces(
+        &self,
+        state: &ElemState,
+        ctx: &Ctx,
+    ) -> Option<crate::beam::MemberForces> {
+        self.inner.state_member_forces(state, ctx)
     }
 
     fn update_state(&mut self, du: &LocalVec, commit: bool, ctx: &Ctx) {

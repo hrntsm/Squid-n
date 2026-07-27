@@ -17,18 +17,31 @@ mod springs;
 mod wall_opening;
 
 pub use regime::{resolve_force_regime, ResolvedRegime};
-pub use springs::resolve_member_hysteresis;
+pub use springs::{plastic_zone_length, resolve_member_hysteresis};
 pub(crate) use wall_opening::wall_opening_reduction;
 
-use springs::{
-    build_fiber, build_flexural_springs, build_rotational_springs, yield_moment_and_axial,
-};
+use springs::{build_fiber, build_flexural_springs, yield_moment_and_axial};
 
 #[cfg(test)]
 use springs::{flexural_alpha_y, is_rc_like_section};
 #[cfg(test)]
 use squid_n_core::model::ForceRegime;
 
+/// 線形弾性解析用の要素生成。
+///
+/// 線材（`Beam` / `Fiber` / `MultiSpring`）は `ForceRegime` に依らず常に弾性
+/// [`crate::beam::BeamElement`] を組む（計算根拠 4.9.4）。材端集中ばね・ファイバー
+/// といった非線形要素の振り分けは [`build_nonlinear_behavior`] だけが行う。
+///
+/// 線形解析でこれらの非線形要素を組んではならない理由は 2 つある。
+/// 1. 材端ばね（初期剛性 6EI/l は塑性ヒンジ骨格の値）が弾性梁の端部回転剛性に
+///    直列に入り、一次設計の応力・変形が実際より柔らかく評価される。
+/// 2. 非線形要素は `recover_forces`（節点変位からの部材内力復元）を持たないため、
+///    その部材が `member_forces` から丸ごと欠落する（応力図・検定・接合部検定の
+///    入力が空になる）。
+///
+/// 唯一の例外は耐震壁の側柱（[`crate::side_column::InPlaneReleasedColumn`]）で、
+/// これは降伏ではなくトポロジ由来の面内端部解放のため線形・非線形の双方で用いる。
 pub fn build_behavior(data: &ElementData, model: &Model) -> (Box<dyn ElementBehavior>, ElemState) {
     match data.kind {
         ElementKind::Beam => {
@@ -42,29 +55,13 @@ pub fn build_behavior(data: &ElementData, model: &Model) -> (Box<dyn ElementBeha
                     ElemState::default(),
                 );
             }
-            // ForceRegime に基づいて要素種別を選択（P5 §5）
-            let regime = resolve_force_regime(data, model);
-            match regime {
-                ResolvedRegime::ConcentratedSpring => {
-                    let elem = crate::beam::BeamElement::new(data, model);
-                    // 弾性解析（線形）は常に公称値（fy をそのまま用いる）。
-                    let (spring_i, spring_j) =
-                        build_rotational_springs(data, model, StrengthBasis::Nominal);
-                    (
-                        Box::new(
-                            crate::concentrated::ConcentratedSpringBeam::new_one_component(
-                                elem, spring_i, spring_j,
-                            ),
-                        ),
-                        ElemState::default(),
-                    )
-                }
-                ResolvedRegime::Fiber => {
-                    // T2: FiberBeam が実装されるまでの暫定 BeamElement
-                    let elem = crate::beam::BeamElement::new(data, model);
-                    (Box::new(elem), ElemState::default())
-                }
-            }
+            // 線形弾性解析は `ForceRegime` に依らず弾性 `BeamElement` を用いる
+            // （計算根拠 4.9.4「モデルの自動選択」）。材端集中ばね／ファイバーへの
+            // 振り分けは非線形解析の [`build_nonlinear_behavior`] のみが行う。
+            (
+                Box::new(crate::beam::BeamElement::new(data, model)),
+                ElemState::default(),
+            )
         }
         ElementKind::PanelZone => (
             Box::new(crate::panel::PanelZone::new(data, model)),
@@ -74,16 +71,12 @@ pub fn build_behavior(data: &ElementData, model: &Model) -> (Box<dyn ElementBeha
             Box::new(crate::shell::ShellElement::new(data, model)),
             ElemState::default(),
         ),
+        // MS 要素も線形弾性解析では弾性 `BeamElement`（端部ばね群は非線形解析のみ）。
         ElementKind::MultiSpring => (
-            // 弾性解析（線形）は常に公称値。
-            Box::new(crate::multi_spring::MultiSpringElement::new(
-                data,
-                model,
-                StrengthBasis::Nominal,
-            )),
+            Box::new(crate::beam::BeamElement::new(data, model)),
             ElemState::default(),
         ),
-        // Fiber 要素：将来 FiberBeam が実装されるまでの暫定 BeamElement
+        // Fiber 要素：線形弾性解析では弾性 BeamElement
         ElementKind::Fiber => (
             Box::new(crate::beam::BeamElement::new(data, model)),
             ElemState::default(),
@@ -216,6 +209,23 @@ pub fn build_nonlinear_behavior(
     basis: StrengthBasis,
 ) -> (Box<dyn ElementBehavior>, ElemState) {
     match data.kind {
+        // 耐震壁の側柱は面内曲げ面の端部回転を静的縮約する（線形パスと同じ扱い）。
+        // これが無いと、一次設計は「側柱＝面内両端ピン」、保有水平耐力は
+        // 「側柱＝両端剛接」という別モデルになり、さらに壁パネルが
+        // `as_gross = 壁板 + 側柱断面` で側柱分を既に負担しているため、
+        // 非線形解析で側柱の面内せん断が二重計上され保有水平耐力を過大評価する
+        // （危険側）。
+        ElementKind::Beam
+            if crate::side_column::wall_side_column_release(data, model).is_some() =>
+        {
+            let axis = crate::side_column::wall_side_column_release(data, model)
+                .expect("guard で Some を確認済み");
+            let elem = crate::beam::BeamElement::new(data, model);
+            (
+                Box::new(crate::side_column::InPlaneReleasedColumn::new(elem, axis)),
+                ElemState::default(),
+            )
+        }
         ElementKind::Beam => match resolve_force_regime(data, model) {
             ResolvedRegime::ConcentratedSpring => {
                 let elem = crate::beam::BeamElement::new(data, model);
@@ -259,7 +269,31 @@ pub fn build_nonlinear_behavior(
             Box::new(crate::truss::TrussElement::new(data, model)),
             ElemState::default(),
         ),
-        // PanelZone / Shell / Wall / NodalSpring は現状の挙動（弾性ベース）を踏襲。
+        // 耐震壁: 面内せん断を終局せん断強度 Qu で頭打ちにする（弾完全塑性）。
+        // 従来は弾性のままで、押し込むほど際限なく水平力を負担し崩壊機構が
+        // 形成されず、保有水平耐力 Qu を著しく過大評価していた（危険側）。
+        // Qu を算定できない壁（Fc 未設定等）は従来どおり弾性とする。
+        ElementKind::Wall => {
+            let (b, st) = build_behavior(data, model);
+            let qu = crate::wall_panel::WallPanelElement::shear_capacity_of(data, model);
+            if qu <= 0.0 {
+                return (b, st);
+            }
+            let stiffness_scale = if crate::misc_wall::wall_is_seismic(data, model) {
+                1.0
+            } else {
+                1e-9
+            };
+            match crate::wall_panel::WallPanelElement::try_new_scaled(data, model, stiffness_scale)
+            {
+                Some(panel) => (
+                    Box::new(panel.with_shear_capacity(qu)),
+                    ElemState::default(),
+                ),
+                None => (b, st),
+            }
+        }
+        // PanelZone / Shell / NodalSpring は現状の挙動（弾性ベース）を踏襲。
         // 節点バネは非線形解析でも常に弾性のまま（スケルトン未対応）。
         _ => build_behavior(data, model),
     }

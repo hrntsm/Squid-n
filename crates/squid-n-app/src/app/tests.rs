@@ -531,9 +531,16 @@ fn test_seismic_flow_requires_then_uses_stories() {
     app.nav.focus_result = Some(StaticKey::Case(StaticCaseKey::Seismic(SeismicDir::X)));
     assert_eq!(app.current_static().unwrap().disp, seismic_disp);
 
-    // undo で EY・EX の同期 → 階定義 → DL(自重)の同期の順に戻る
-    // （generate_stories_action が DL 同期 → 階適用 → EX/EY 同期の順に
-    // undo 履歴を積む。以降の解析実行時の同期は冪等で履歴を積まない）
+    // undo で WY・EY・EX の同期 → 階定義 → DL(自重)の同期の順に戻る
+    // （generate_stories_action が DL 同期 → 階適用 → EX/EY 同期 → WX/WY 同期の
+    // 順に undo 履歴を積む。平面架構のため X 方向の風は見付け幅 0 で構築されず、
+    // 風は WY の 1 件のみ。以降の解析実行時の同期は冪等で履歴を積まない）
+    app.undo.undo(&mut app.model); // WY
+    assert!(app
+        .model
+        .load_cases
+        .iter()
+        .all(|lc| lc.name != WY_CASE_NAME));
     app.undo.undo(&mut app.model); // EY
     app.undo.undo(&mut app.model); // EX
     assert!(app
@@ -671,6 +678,9 @@ fn test_sync_auto_load_cases_action_skips_when_hash_unchanged() {
         app.analysis_cfg.z.to_bits().hash(&mut hasher);
         (app.analysis_cfg.soil as u8).hash(&mut hasher);
         app.analysis_cfg.c0.to_bits().hash(&mut hasher);
+        app.analysis_cfg.v0.to_bits().hash(&mut hasher);
+        (app.analysis_cfg.roughness as u8).hash(&mut hasher);
+        app.analysis_cfg.parapet_mm.to_bits().hash(&mut hasher);
         hasher.finish()
     }
     app.auto_load_sync_hash = Some(fake_hash(&app));
@@ -1495,6 +1505,70 @@ fn test_combination_flow() {
     assert_eq!(app.last_static, Some(StaticKey::Combo(0)));
 }
 
+/// 結果表示の切替 `select_displayed_result`（結果タブのドロップダウン・ナビゲータ共通）:
+/// 選んだ組合せへ member_forces（応力図・断面検定が参照）を差し替え、長期/短期区分を
+/// 組合せ名から再判定し、断面検定を再実行することを確認する。
+#[test]
+fn test_select_displayed_result_switches_forces_and_term() {
+    use squid_n_design_jp::LoadTerm;
+
+    let mut app = App::default();
+    app.load_model(crate::sample::portal_frame());
+    app.analysis_cfg.threads = 1;
+    // 長期 DL+LL（重力 LC0 のみ）と短期 DL+LL+EX（地震 LC1 入り）の 2 組合せ。
+    for combo in [
+        squid_n_core::model::LoadCombination {
+            name: "DL + LL".into(),
+            terms: vec![(LoadCaseId(0), 1.0)],
+        },
+        squid_n_core::model::LoadCombination {
+            name: "DL + LL + EX".into(),
+            terms: vec![(LoadCaseId(0), 1.0), (LoadCaseId(1), 1.0)],
+        },
+    ] {
+        app.undo.run(
+            &mut app.model,
+            Box::new(squid_n_edit::AddCombination { combo }),
+        );
+    }
+    app.run_all_combinations();
+    assert!(app.last_error.is_none(), "{:?}", app.last_error);
+    // 一括解析後は最後の組合せ（短期 DL+LL+EX）が表示対象。
+    assert_eq!(app.last_static, Some(StaticKey::Combo(1)));
+    assert_eq!(app.design_term, LoadTerm::Short);
+    // 長期・短期で部材内力が異なる（表示切替が実質的に効く前提）。
+    {
+        let b = app.results.as_ref().unwrap();
+        assert!(!b.member_forces.is_empty());
+        assert_ne!(
+            b.combos[0].1.member_forces[0].1.at,
+            b.combos[1].1.member_forces[0].1.at
+        );
+    }
+
+    // 長期組合せ（Combo(0)）へ表示切替 → focus/last/member_forces/design_term が長期へ。
+    app.select_displayed_result(StaticKey::Combo(0));
+    assert_eq!(app.nav.focus_result, Some(StaticKey::Combo(0)));
+    assert_eq!(app.last_static, Some(StaticKey::Combo(0)));
+    assert_eq!(app.design_term, LoadTerm::Long);
+    {
+        let b = app.results.as_ref().unwrap();
+        assert_eq!(b.member_forces[0].1.at, b.combos[0].1.member_forces[0].1.at);
+    }
+
+    // 短期組合せ（Combo(1)）へ戻す → design_term が短期へ、member_forces も一致。
+    app.select_displayed_result(StaticKey::Combo(1));
+    assert_eq!(app.design_term, LoadTerm::Short);
+    {
+        let b = app.results.as_ref().unwrap();
+        assert_eq!(b.member_forces[0].1.at, b.combos[1].1.member_forces[0].1.at);
+    }
+
+    // 存在しないキーは no-op（表示対象は変わらない）。
+    app.select_displayed_result(StaticKey::Combo(99));
+    assert_eq!(app.last_static, Some(StaticKey::Combo(1)));
+}
+
 /// `run_all_combinations` は個別に `run_combination` を実行した場合と
 /// 同じ結果（combos の名前・変位）を与える（並列/一括経路と単発経路の一致確認）。
 /// 決定性のため `threads=1`（Deterministic）を明示する。
@@ -1615,6 +1689,41 @@ fn test_holding_capacity_flow() {
     // design_rank_auto=false（既定）→ 全層フォールバック（選択値 design_rank）。
     assert_eq!(story_ranks, vec![app.design_rank]);
     assert!(result.member_ranks.is_empty());
+}
+
+/// 架構種別が「S ブレース」なのに筋かい部材を検出できない場合、βu を算定できないため
+/// βu=0（純ラーメン）の行を使ってはならない（Ds を過小評価する）。架構種別別の
+/// Ds 表へフォールバックし、その旨のフラグが立つことを確認する。
+#[test]
+fn test_holding_capacity_falls_back_when_brace_undetected() {
+    use squid_n_design_jp::secondary::holding_capacity::{ds_value, FrameType, MemberRank};
+
+    let mut app = App::default();
+    app.load_model(crate::sample::portal_frame()); // 筋かいの無いラーメン
+    app.generate_stories_action();
+    app.run_seismic(SeismicDir::X);
+    app.analysis_cfg.push_steps = 10;
+    app.run_pushover();
+    assert!(app.last_error.is_none(), "{:?}", app.last_error);
+
+    app.design_rank_auto = false;
+    app.design_rank = MemberRank::FA;
+    app.design_frame = FrameType::SteelBrace;
+    let (result, _) = app.compute_holding_capacity().expect("Ok のはず");
+
+    assert!(
+        app.ds_beta_u_unavailable,
+        "筋かい未検出なら βu 算定不可のフラグが立つはず"
+    );
+    // 純ラーメンの行（S造 FA=0.25）ではなく、S ブレースの行（FA=0.30）が使われる。
+    let expected = ds_value(FrameType::SteelBrace, MemberRank::FA);
+    assert!((expected - 0.30).abs() < 1e-9);
+    assert!(
+        (result.stories[0].ds - expected).abs() < 1e-9,
+        "Ds={} は架構種別別の値 {} であるべき（βu=0 行の 0.25 ではない）",
+        result.stories[0].ds,
+        expected
+    );
 }
 
 /// UI-13: `design_rank_auto = true` で鋼部材の幅厚比から部材ランクを自動判定する。
@@ -1798,8 +1907,8 @@ fn test_holding_capacity_rank_auto_rc_rect_from_shape() {
         MemberLoad, MemberLoadKind, Model, NodalLoad, Node,
     };
     use squid_n_core::section_shape::{BarSet, RcRebar, SectionShape, ShearBar};
-    use squid_n_design_jp::secondary::member_rank::{rc_member_rank, RankCriteria};
-    use squid_n_design_jp::secondary::rc_capacity::{rc_qmu_simple, rc_qsu_simple};
+    use squid_n_design_jp::secondary::ds_group::{rc_beam_type, rc_column_type};
+    use squid_n_design_jp::secondary::holding_capacity::MemberRank;
 
     let rebar = RcRebar {
         main_x: BarSet {
@@ -1952,38 +2061,57 @@ fn test_holding_capacity_rank_auto_rc_rect_from_shape() {
         "RC 部材(RcRect+fc)のせん断余裕度からランクが算定されているはず"
     );
 
-    // 柱: 節点間距離 3000mm、梁: 節点間距離 4000mm。それぞれ手計算で
-    // rc_capacity_input_from_rect → rc_qsu/qmu_simple → rc_member_rank を再現する。
+    // 告示の RC 部材種別（多変数表）を、プッシュオーバー終局時の応答（τu・σ0）から
+    // 手計算で再現して照合する。
     //
-    // σ0 は実運用と同じ規則(rc_sigma_0_from_gravity_or_last_static)で個別に反映する。
-    // このテストでは run_linear_static(先頭ケース="長期")を実行していないため、
-    // gravity_lc=LoadCaseId(0) は statics 内の StaticCaseKey::User(LoadCaseId(0))
-    // として見つからず、フォールバック(bundle.member_forces = 直近実行した
-    // run_seismic の内力)が使われる(= 最後の静的解析結果と同じ)。地震水平力による
-    // 柱の転倒モーメント抵抗で柱0・柱1の軸力は一方が圧縮・他方が引張(または
-    // 大きさが異なる)になり得るため、部材ごとに算定する(柱を一括りにしない)。
+    // 断面 400x600、主筋 main_x=8-D22（at=総断面積の半分）、かぶり40、
+    // 柱の内法 h0=3000（節点間距離。剛域・フェイス無し）、梁は 4000。
+    // 目標変位 3mm の微小変位状態のため τu・σ0 はいずれも小さく、
+    //   柱: h0/D = 3000/600 = 5.0 ≧ 2.5、pt = 100·at/(b·d_eff) ≈ 0.69% ≦ 0.8、
+    //       σ0/Fc・τu/Fc ともに FA 限界以下 → FA
+    //   梁: τu/Fc ≦ 0.15 → FA
+    // となる。せん断先行（Qsu < Qmu）でもないため脆性 FD にも該当しない。
     let mat = &app.model.materials[0];
-    let statics = &app.results.as_ref().unwrap().statics;
-    let member_forces = &app.results.as_ref().unwrap().member_forces;
-    let gravity_lc = app.model.load_cases.first().map(|c| c.id);
-    let expected_rank_for = |elem_id: ElemId, clear_span: f64| {
-        let mut input = rc_capacity_input_from_rect(400.0, 600.0, &rebar, mat, clear_span)
+    let fc = mat.fc.expect("fc 設定済み");
+    let resp: std::collections::HashMap<ElemId, _> = app
+        .results
+        .as_ref()
+        .unwrap()
+        .pushover
+        .as_ref()
+        .unwrap()
+        .member_response
+        .iter()
+        .map(|r| (r.elem, *r))
+        .collect();
+    let gross = 400.0 * 600.0;
+
+    let expected_rank_for = |elem_id: ElemId, clear_span: f64, is_column: bool| {
+        let input = rc_capacity_input_from_rect(400.0, 600.0, &rebar, mat, clear_span)
             .expect("fc 設定済みなので Some");
-        input.sigma_0 = rc_sigma_0_from_gravity_or_last_static(
-            statics,
-            member_forces,
-            gravity_lc,
-            elem_id,
-            400.0,
-            600.0,
-        );
-        let qmu = rc_qmu_simple(&input);
-        let qsu = rc_qsu_simple(&input);
-        rc_member_rank(qsu, qmu, &RankCriteria::default())
+        let r = resp.get(&elem_id).expect("終局時応答があるはず");
+        let tau_over_fc = (r.shear_strong / gross) / fc;
+        if is_column {
+            let sigma0_over_fc = (r.axial / gross) / fc;
+            let pt_percent = 100.0 * input.at / (400.0 * input.d_eff);
+            rc_column_type(
+                clear_span / 600.0,
+                sigma0_over_fc,
+                pt_percent,
+                tau_over_fc,
+                false,
+            )
+        } else {
+            rc_beam_type(tau_over_fc, false)
+        }
     };
-    let col0_rank = expected_rank_for(ElemId(0), 3000.0);
-    let col1_rank = expected_rank_for(ElemId(1), 3000.0);
-    let beam_rank = expected_rank_for(ElemId(2), 4000.0);
+    let col0_rank = expected_rank_for(ElemId(0), 3000.0, true);
+    let col1_rank = expected_rank_for(ElemId(1), 3000.0, true);
+    let beam_rank = expected_rank_for(ElemId(2), 4000.0, false);
+
+    // 微小変位状態では全部材 FA になる（応力度がいずれも FA 限界以下）。
+    assert_eq!(col0_rank, MemberRank::FA);
+    assert_eq!(beam_rank, MemberRank::FA);
 
     for (elem_id, rank) in &result.member_ranks {
         let expected = match elem_id.0 {
@@ -1993,7 +2121,7 @@ fn test_holding_capacity_rank_auto_rc_rect_from_shape() {
         };
         assert_eq!(
             *rank, expected,
-            "ElemId({}) のランクが手計算値と一致しません",
+            "ElemId({}) のランクが告示表による手計算値と一致しません",
             elem_id.0
         );
     }
@@ -3287,8 +3415,8 @@ fn test_auto_generate_combinations_from_kinds() {
     app.auto_generate_combinations_action();
     assert!(app.last_error.is_none(), "{:?}", app.last_error);
 
-    // 多雪区域=false: G+P(1) + G+P+S(1) + 風±(2) = 4 ケース
-    // （地震(Kx/Ky)は kind だけでは方向を判別できないため対象外の仕様）。
+    // 多雪区域=false: DL+LL(1) + DL+LL+SL(1) + 風±(2) = 4 ケース
+    // （地震(EX/EY)は kind だけでは方向を判別できないため対象外の仕様）。
     let names: Vec<&str> = app
         .model
         .combinations
@@ -3297,10 +3425,10 @@ fn test_auto_generate_combinations_from_kinds() {
         .collect();
     assert_eq!(
         names,
-        vec!["G + P", "G + P + S", "G + P + Wx", "G + P - Wx"]
+        vec!["DL + LL", "DL + LL + SL", "DL + LL + WX", "DL + LL - WX"]
     );
 
-    // G+P の中身は Dead(0)+Live(1) を各1.0で参照する。
+    // DL+LL の中身は Dead(0)+Live(1) を各1.0で参照する。
     assert_eq!(
         app.model.combinations[0].terms,
         vec![(LoadCaseId(0), 1.0), (LoadCaseId(1), 1.0)]
@@ -3337,9 +3465,9 @@ fn test_auto_generate_combinations_heavy_snow() {
         .iter()
         .map(|c| c.name.as_str())
         .collect();
-    assert!(names.contains(&"G + P + 0.7S"), "{names:?}");
-    assert!(names.contains(&"G + P + 0.35S + Wx"), "{names:?}");
-    assert!(names.contains(&"G + P + 0.35S - Wx"), "{names:?}");
+    assert!(names.contains(&"DL + LL + 0.7SL"), "{names:?}");
+    assert!(names.contains(&"DL + LL + 0.35SL + WX"), "{names:?}");
+    assert!(names.contains(&"DL + LL + 0.35SL - WX"), "{names:?}");
 }
 
 /// Dead ケースが無い場合はエラーメッセージが設定され、組合せは生成されないこと。
@@ -3475,36 +3603,265 @@ fn test_column_live_load_factors_three_story() {
     );
 }
 
-/// Z表 CSV の読込と市町村名参照 → analysis_cfg.z への反映（ヘッドレス）。
+/// 準備計算は階の定義を含む: 階が未定義でも `run_preparation` 1 回で階が生成され、
+/// 主要構造種別が柱・梁の断面形状から自動判定される（門型ラーメンは全て鋼断面 → S）。
 #[test]
-fn test_z_table_load_and_apply() {
+fn test_run_preparation_generates_stories_and_infers_structure() {
+    use squid_n_core::model::StoryStructure;
     let mut app = App::default();
+    app.load_model(crate::sample::portal_frame());
+    assert!(app.model.stories.is_empty(), "前提: 階は未定義");
 
-    // 未読込での参照はエラー
-    assert!(!app.apply_z_from_municipality("那覇市"));
-    assert!(app.last_error.as_deref().unwrap().contains("Z表"));
-
-    // 不正な Z 値（0.85 は告示1793号の値でない）はエラー
-    app.load_z_table_from_csv("変な市,0.85\n");
-    assert!(app.last_error.is_some());
-    assert!(app.z_table.is_none());
-
-    // 正常読込 → 参照で z が反映される
-    app.load_z_table_from_csv("# 出典: 告示1793号 別表第2\n東京都千代田区,1.0\n沖縄県那覇市,0.7\n");
+    app.run_preparation();
     assert!(app.last_error.is_none(), "{:?}", app.last_error);
-    assert_eq!(app.z_table.as_ref().unwrap().len(), 2);
+    assert_eq!(app.model.stories.len(), 1, "準備計算が階を生成するはず");
+    assert_eq!(
+        app.model.stories[0].structure,
+        StoryStructure::S,
+        "鋼断面の柱梁だけの階は S と判定されるはず"
+    );
+    assert!(!app.staleness.preparation_stale);
+}
 
-    assert!(app.apply_z_from_municipality("沖縄県那覇市"));
-    assert_eq!(app.analysis_cfg.z, 0.7);
+/// 準備計算は冪等: モデルが変わっていなければ 2 回目以降の実行で undo 履歴を積まず、
+/// 解析結果を stale にもしない（毎回階を再生成する構成でも、実質的な差分が無ければ
+/// `ApplyStories` を発行しない）。
+#[test]
+fn test_run_preparation_is_idempotent() {
+    let mut app = App::default();
+    app.load_model(crate::sample::portal_frame());
+    app.run_preparation();
+    assert!(app.last_error.is_none(), "{:?}", app.last_error);
 
-    // 見つからない市町村はエラー、z は変わらない
-    assert!(!app.apply_z_from_municipality("存在しない市"));
-    assert!(app
-        .last_error
-        .as_deref()
-        .unwrap()
-        .contains("見つかりません"));
-    assert_eq!(app.analysis_cfg.z, 0.7);
+    // 解析まで済ませて結果を最新状態にする。
+    app.run_linear_static(LoadCaseId(0));
+    assert!(app.last_error.is_none(), "{:?}", app.last_error);
+    assert!(!app.staleness.results_stale);
+    let undo_label = app.undo.undo_label().map(|s| s.to_string());
+    let stories_before = app.model.stories.clone();
+    let nodes_before = app.model.nodes.len();
+
+    // 2 回目の準備計算ではモデルが変わらない。
+    app.run_preparation();
+    assert!(app.last_error.is_none(), "{:?}", app.last_error);
+    assert_eq!(app.model.stories, stories_before);
+    assert_eq!(app.model.nodes.len(), nodes_before);
+    assert_eq!(
+        app.undo.undo_label().map(|s| s.to_string()),
+        undo_label,
+        "差分が無ければ undo 履歴を積まないはず"
+    );
+    assert!(
+        !app.staleness.results_stale,
+        "差分が無ければ解析結果を stale にしないはず"
+    );
+}
+
+/// 階を生成できないモデル（節点なし）でも準備計算は中断せず、階の生成エラーを
+/// 提示したうえで階を前提としない項目の集計まで進む。
+#[test]
+fn test_run_preparation_continues_when_story_generation_fails() {
+    let mut app = App::default();
+    app.load_model(squid_n_core::model::Model::default());
+
+    app.run_preparation();
+    assert!(
+        app.last_error
+            .as_deref()
+            .unwrap()
+            .contains("階の生成エラー"),
+        "{:?}",
+        app.last_error
+    );
+    let prep = app
+        .preparation
+        .as_ref()
+        .expect("階が作れなくても準備計算の集計は行われるはず");
+    assert!(prep.stories.is_empty());
+    assert!(!app.staleness.preparation_stale);
+}
+
+/// 準備計算は実行のたびに階を再生成するが、利用者の手入力（地震用重量の手入力値・
+/// 階の種別）は引き継がれる。手入力を解除すれば次の準備計算で自動算定値へ戻る。
+#[test]
+fn test_run_preparation_regenerates_stories_keeping_manual_input() {
+    use squid_n_core::model::StoryLevelKind;
+    let mut app = App::default();
+    app.load_model(crate::sample::portal_frame());
+    app.run_preparation();
+    assert!(app.last_error.is_none(), "{:?}", app.last_error);
+    let auto_weight = app.model.stories[0].seismic_weight.unwrap();
+    assert!(auto_weight > 0.0);
+
+    // 地震用重量の手入力と階の種別（PH）を設定する。
+    let story = app.model.stories[0].id;
+    app.undo.run(
+        &mut app.model,
+        Box::new(squid_n_edit::SetStoryWeight {
+            story,
+            weight: Some(auto_weight * 2.0),
+        }),
+    );
+    app.undo.run(
+        &mut app.model,
+        Box::new(squid_n_edit::SetStoryLevelKind {
+            story,
+            level_kind: StoryLevelKind::Penthouse { k: 0.6 },
+        }),
+    );
+
+    // 再度の準備計算でも手入力は失われない。
+    app.run_preparation();
+    assert!(app.last_error.is_none(), "{:?}", app.last_error);
+    assert_eq!(
+        app.model.stories[0].weight_override,
+        Some(auto_weight * 2.0)
+    );
+    assert_eq!(app.model.stories[0].seismic_weight, Some(auto_weight * 2.0));
+    assert_eq!(
+        app.model.stories[0].level_kind,
+        StoryLevelKind::Penthouse { k: 0.6 }
+    );
+
+    // 手入力を解除すると次の準備計算で自動算定値へ戻る。
+    let story = app.model.stories[0].id;
+    app.undo.run(
+        &mut app.model,
+        Box::new(squid_n_edit::SetStoryWeight {
+            story,
+            weight: None,
+        }),
+    );
+    app.run_preparation();
+    assert!(app.last_error.is_none(), "{:?}", app.last_error);
+    assert_eq!(app.model.stories[0].weight_override, None);
+    // PH 階でも階自体の重量集計は変わらない（Ai 分布での扱いだけが変わる）。
+    assert!((app.model.stories[0].seismic_weight.unwrap() - auto_weight).abs() < 1e-6);
+}
+
+/// 準備計算は風圧力も荷重ケース（WX/WY）へ同期する。門型ラーメンは Y 方向の風
+/// （見付け幅 = X 方向の座標範囲）のみ算定できるため WY だけが生成される。
+/// 生成された WY は風荷重静的解析（`run_wind`）と同じ水平力を持つ。
+#[test]
+fn test_run_preparation_syncs_wind_load_cases() {
+    use squid_n_core::model::LoadCaseKind;
+    let mut app = App::default();
+    app.load_model(crate::sample::portal_frame());
+    app.run_preparation();
+    assert!(app.last_error.is_none(), "{:?}", app.last_error);
+
+    let wy = app
+        .model
+        .load_cases
+        .iter()
+        .find(|lc| lc.name == WY_CASE_NAME)
+        .expect("WYケースが生成されるはず");
+    assert_eq!(wy.kind, LoadCaseKind::Wind);
+    assert!(!wy.nodal.is_empty(), "WYに層水平力が入っているはず");
+    assert!(
+        app.model
+            .load_cases
+            .iter()
+            .all(|lc| lc.name != WX_CASE_NAME),
+        "見付け幅 0 の X 方向の風は生成されないはず"
+    );
+
+    // 風荷重静的解析が組み立てる水平力と一致する。
+    let cfg = squid_n_solver::analysis::WindStaticCfg {
+        dir: SeismicDir::Y,
+        v0: app.analysis_cfg.v0,
+        roughness: app.analysis_cfg.roughness,
+        cpi: 0.0,
+        parapet_mm: app.analysis_cfg.parapet_mm,
+    };
+    let built = squid_n_solver::analysis::build_wind_load_case_from_model(&app.model, cfg).unwrap();
+    assert_eq!(wy.nodal, built.nodal);
+}
+
+/// 荷重ケースの実行導線は、標準の水平力ケース（EX/EY・WX/WY）を方向別の結果キーへ
+/// 振り分ける（地震静的・風荷重静的の専用導線を廃し、荷重ケース解析へ統合した）。
+#[test]
+fn test_load_case_job_routes_standard_lateral_cases() {
+    let mut app = App::default();
+    app.load_model(crate::sample::portal_frame());
+    app.run_preparation();
+    assert!(app.last_error.is_none(), "{:?}", app.last_error);
+
+    let id_of = |app: &App, name: &str| {
+        app.model
+            .load_cases
+            .iter()
+            .find(|lc| lc.name == name)
+            .map(|lc| lc.id)
+            .unwrap()
+    };
+    let ex = id_of(&app, EX_CASE_NAME);
+    let wy = id_of(&app, WY_CASE_NAME);
+    let dl = id_of(&app, DL_CASE_NAME);
+    assert_eq!(
+        app.standard_lateral_case(ex),
+        Some(StaticCaseKey::Seismic(SeismicDir::X))
+    );
+    assert_eq!(
+        app.standard_lateral_case(wy),
+        Some(StaticCaseKey::Wind(SeismicDir::Y))
+    );
+    assert_eq!(app.standard_lateral_case(dl), None, "DL は通常の線形静的");
+
+    // EX の実行は地震静的ジョブとして走り、結果は Seismic(X) へ格納される。
+    app.start_load_case_job(ex);
+    assert_eq!(app.job.as_ref().unwrap().label, "地震静的解析");
+    wait_for_job(&mut app);
+    assert!(app.last_error.is_none(), "{:?}", app.last_error);
+    assert_eq!(
+        app.last_static,
+        Some(StaticKey::Case(StaticCaseKey::Seismic(SeismicDir::X)))
+    );
+
+    // DL の実行は線形静的ジョブとして走り、結果は User キーへ格納される。
+    app.start_load_case_job(dl);
+    assert_eq!(app.job.as_ref().unwrap().label, "線形静的解析");
+    wait_for_job(&mut app);
+    assert!(app.last_error.is_none(), "{:?}", app.last_error);
+    assert_eq!(
+        app.last_static,
+        Some(StaticKey::Case(StaticCaseKey::User(dl)))
+    );
+}
+
+/// 種別からの標準組合せ自動生成は、準備計算が生成する標準ケース名で方向を判別し、
+/// 地震（±EX/±EY）・暴風（±WX/±WY）の組合せまで含めて生成する。
+#[test]
+fn test_auto_generate_combinations_uses_standard_case_names() {
+    let mut app = App::default();
+    app.load_model(crate::sample::portal_frame());
+    app.run_preparation();
+    assert!(app.last_error.is_none(), "{:?}", app.last_error);
+    app.model.combinations.clear();
+    // 門型ラーメンのサンプルはスラブを持たず積載荷重ケースが自動生成されない
+    // （組合せ生成には固定・積載の両方が要る）ため、空の積載ケースを足す。
+    let next_id = LoadCaseId(app.model.load_cases.len() as u32);
+    app.model.load_cases.push(squid_n_core::model::LoadCase {
+        id: next_id,
+        name: LL_FRAME_CASE_NAME.into(),
+        kind: squid_n_core::model::LoadCaseKind::Live,
+        nodal: Vec::new(),
+        member: Vec::new(),
+    });
+
+    app.auto_generate_combinations_action();
+    assert!(app.last_error.is_none(), "{:?}", app.last_error);
+    let names: Vec<&str> = app
+        .model
+        .combinations
+        .iter()
+        .map(|c| c.name.as_str())
+        .collect();
+    assert!(names.contains(&"DL + LL + EX"), "{names:?}");
+    assert!(names.contains(&"DL + LL - EY"), "{names:?}");
+    // 門型ラーメンでは WY のみ生成されるため、暴風は Y 方向の組合せのみ。
+    assert!(names.contains(&"DL + LL + WY"), "{names:?}");
+    assert!(!names.iter().any(|n| n.contains("WX")), "{names:?}");
 }
 
 /// 風荷重静的解析（run_wind）: 階の定義後に実行でき、結果が
@@ -3753,7 +4110,7 @@ fn test_compute_cft_ultimate_checks() {
 // 標準荷重ケース（DL・LL(架構用)・LL(地震用)・EX・EY）
 // ------------------------------------------------------------------
 
-/// 新規モデル（`Model::with_default_load_cases`）は標準5ケースを持ち、
+/// 新規モデル（`Model::with_default_load_cases`）は標準5ケースと標準荷重組合せを持ち、
 /// `load_model` を通しても保持されることを確認する。
 #[test]
 fn test_new_model_has_default_load_cases() {
@@ -3773,6 +4130,23 @@ fn test_new_model_has_default_load_cases() {
             LL_SEISMIC_CASE_NAME,
             EX_CASE_NAME,
             EY_CASE_NAME
+        ]
+    );
+    // 標準荷重組合せ（長期 DL+LL、短期地震 DL+LL±EX・DL+LL±EY）も既定で用意される。
+    let combo_names: Vec<&str> = app
+        .model
+        .combinations
+        .iter()
+        .map(|c| c.name.as_str())
+        .collect();
+    assert_eq!(
+        combo_names,
+        vec![
+            "DL + LL",
+            "DL + LL + EX",
+            "DL + LL - EX",
+            "DL + LL + EY",
+            "DL + LL - EY"
         ]
     );
 }
@@ -4776,4 +5150,599 @@ mod grid_headless {
         assert!(app.model.eq_ignoring_dofmap(&before));
         assert!(!app.undo.can_undo());
     }
+}
+/// 剛床（階の剛床定義）に載る梁でも、応力図・検定比図の元データ
+/// （`member_forces` と `member_checks`）が生成されること（回帰）。
+///
+/// `ForceRegime::Auto` の「剛床に載る水平材＝材端集中ばね」は非線形解析だけの
+/// 振り分けであり、線形解析の要素生成が従うと当該梁の内力が丸ごと欠落し、
+/// 3D ビューの応力図・検定比図に何も表示されなくなる
+/// （剛床に載らない基礎梁と柱だけが残る症状）。
+#[test]
+fn test_rigid_floor_beam_has_forces_and_checks() {
+    use squid_n_core::model::{DiaphragmDef, Story};
+
+    let mut model = aligned_portal_frame();
+    // 梁の両端（node1・node2）を剛床に載せる。自由度の拘束は付けない
+    // （`constraints` は空のまま）ので解析可能性は変わらない。
+    model.stories.push(Story {
+        level_kind: Default::default(),
+        structure: Default::default(),
+        id: squid_n_core::ids::StoryId(0),
+        name: "2F".into(),
+        elevation: 3000.0,
+        node_ids: vec![NodeId(1), NodeId(2)],
+        diaphragms: vec![DiaphragmDef {
+            ci_override: None,
+            weight: None,
+            master: NodeId(1),
+            slaves: vec![NodeId(2)],
+            rigid: true,
+        }],
+        seismic_weight: None,
+        weight_override: None,
+    });
+
+    let mut app = App::default();
+    app.load_model(model);
+    app.run_linear_static(LoadCaseId(0));
+    assert!(app.last_error.is_none(), "{:?}", app.last_error);
+
+    let results = app.results.as_ref().expect("解析結果");
+    let beam_forces = results
+        .member_forces
+        .iter()
+        .find(|(id, _)| *id == ElemId(1))
+        .map(|(_, mf)| mf)
+        .expect("剛床に載る梁の部材内力が回収されていない");
+    let m_max = beam_forces
+        .at
+        .iter()
+        .map(|(_, f)| f[5].abs())
+        .fold(0.0_f64, f64::max);
+    assert!(m_max > 1.0, "梁の曲げが 0 のまま: {m_max}");
+
+    let beam_checks = results
+        .member_checks
+        .iter()
+        .find(|m| m.elem == ElemId(1))
+        .expect("剛床に載る梁の検定結果が生成されていない");
+    assert!(
+        !beam_checks.positions.is_empty(),
+        "梁の検定位置が空（検定比図で無着色になる）"
+    );
+}
+
+// ── 準備計算（解析前の前処理） ──────────────────────────────────────
+
+/// 準備計算は階が未定義なら自動生成し、階の分布・剛域・Ai 分布・荷重集計を
+/// 揃えて `preparation` へ格納する（解析前に内容を確認できるようにする）。
+#[test]
+fn test_run_preparation_populates_result() {
+    let mut app = App::default();
+    app.load_model(crate::sample::portal_frame());
+    assert!(app.preparation.is_none(), "読込直後は未実行");
+    assert!(app.staleness.preparation_stale);
+
+    app.run_preparation();
+    assert!(app.last_error.is_none(), "{:?}", app.last_error);
+    assert!(!app.staleness.preparation_stale, "実行後は最新化される");
+
+    let prep = app.preparation.as_ref().expect("準備計算の結果があるはず");
+    // 階が未定義だったので自動生成される。
+    assert_eq!(app.model.stories.len(), 1);
+    assert_eq!(prep.stories.len(), 1);
+    let story = &prep.stories[0];
+    assert!(story.weight > 0.0, "地震用重量が算定される");
+    assert_eq!(story.cumulative_weight, story.weight, "最上階の ΣWj = Wi");
+    // 階高は GL（柱脚レベル 0）から梁レベル 3500mm まで。
+    assert!((story.height - 3500.0).abs() < 1e-6, "{}", story.height);
+
+    // 建物概要。
+    assert_eq!(prep.summary.n_nodes, app.model.nodes.len());
+    // 剛床代表節点（面外拘束を持つ）は支点として数えない。
+    assert_eq!(prep.summary.n_supports, 2, "柱脚 2 点が固定");
+    assert!((prep.summary.height_mm - 3500.0).abs() < 1e-6);
+    assert!(prep.summary.total_seismic_weight > 0.0);
+
+    // Ai 分布（略算周期）。1 層なので α=Ai=1、Ci = Z·Rt·Ai·C0。
+    let sm = prep.seismic.as_ref().expect("Ai 分布が算定されるはず");
+    assert_eq!(sm.rows.len(), 1);
+    assert!((sm.rows[0].alpha - 1.0).abs() < 1e-9);
+    assert!((sm.rows[0].ai - 1.0).abs() < 1e-9);
+    assert!((sm.rows[0].ci - sm.z * sm.rt * sm.c0).abs() < 1e-9);
+    // Qi = Ci·Wi、最上層なので Pi = Qi、基部せん断力 Q1 = Qi。
+    assert!((sm.rows[0].qi - sm.rows[0].ci * sm.rows[0].weight).abs() < 1e-6);
+    assert!((sm.rows[0].pi - sm.rows[0].qi).abs() < 1e-9);
+    assert!((sm.base_shear - sm.rows[0].qi).abs() < 1e-9);
+    assert!(!sm.clamped_negative_pi);
+
+    // 風圧力は X・Y の両方向を算定する（見付幅が風向で変わるため）。
+    // サンプルは XZ 平面の平面架構なので、X 方向の風（見付幅は Y 方向の
+    // 座標範囲 = 0）は算定できず、理由が `wind_note` に入る。
+    assert_eq!(prep.wind.len(), 1, "{:?}", prep.wind_note);
+    assert_eq!(prep.wind[0].dir, SeismicDir::Y);
+    assert!(prep.wind[0].q > 0.0);
+    assert!(
+        prep.wind_note.as_ref().unwrap().contains("X 方向"),
+        "{:?}",
+        prep.wind_note
+    );
+
+    // 荷重集計（DL には自重・床荷重が同期されるので鉛直下向き = 負）。
+    let dl = prep
+        .load_cases
+        .iter()
+        .find(|r| r.name == squid_n_core::model::DL_CASE_NAME)
+        .expect("DL ケースが同期されるはず");
+    assert!(dl.sum_force[2] < 0.0, "{:?}", dl.sum_force);
+}
+
+/// 準備計算の Ai 分布は、実際に EX ケースへ同期される水平力の合計と一致する
+/// （確認表示と解析入力が同じ算定に基づくことの担保）。
+#[test]
+fn test_preparation_ai_matches_synced_seismic_case() {
+    let mut app = App::default();
+    app.load_model(crate::sample::portal_frame());
+    app.run_preparation();
+
+    let sm = app
+        .preparation
+        .as_ref()
+        .unwrap()
+        .seismic
+        .as_ref()
+        .expect("Ai 分布");
+    let sum_pi: f64 = sm.rows.iter().map(|r| r.pi).sum();
+
+    let ex = app
+        .model
+        .load_cases
+        .iter()
+        .find(|lc| lc.name == squid_n_core::model::EX_CASE_NAME)
+        .expect("EX ケースが同期されるはず");
+    let sum_fx: f64 = ex.nodal.iter().map(|n| n.values[0]).sum();
+    assert!(
+        (sum_pi - sum_fx).abs() < 1e-6 * sum_pi.abs().max(1.0),
+        "ΣPi={} vs ΣFx={}",
+        sum_pi,
+        sum_fx
+    );
+}
+
+/// 準備計算は剛域を算定してモデルへ反映し、その内容を一覧化する。
+/// 可とう長 L' = L − λi − λj・剛域比が表の値と整合すること。
+#[test]
+fn test_preparation_lists_rigid_zones() {
+    let mut app = App::default();
+    app.load_model(crate::sample::portal_frame());
+    app.run_preparation();
+
+    let prep = app.preparation.as_ref().unwrap();
+    assert_eq!(
+        prep.rigid_zone_candidates,
+        app.model.elements.len(),
+        "サンプルは全要素が梁要素"
+    );
+    // サンプルは S 造のため剛域長 λ は 0 だが、危険断面位置の基準となる
+    // 柱フェース距離は付く（λ とフェース距離は別概念。設計書 §6.2.1）。
+    assert!(
+        !prep.rigid_zones.is_empty(),
+        "柱梁が直交接続するのでフェース距離が付く"
+    );
+    assert!(
+        prep.rigid_zones
+            .iter()
+            .any(|r| r.face_i > 0.0 || r.face_j > 0.0),
+        "フェース距離が算定されるはず"
+    );
+    for r in &prep.rigid_zones {
+        assert!(r.length > 0.0);
+        assert!((r.clear_length - (r.length - r.zone_i - r.zone_j)).abs() < 1e-9);
+        assert!((r.ratio - (r.zone_i + r.zone_j) / r.length).abs() < 1e-12);
+        // モデル側の剛域長と一致する（表示が実際の解析入力と同じであること）。
+        let elem = app
+            .model
+            .elements
+            .iter()
+            .find(|e| e.id == r.elem)
+            .expect("部材");
+        assert_eq!(elem.rigid_zone.length_i, r.zone_i);
+        assert_eq!(elem.rigid_zone.length_j, r.zone_j);
+    }
+}
+
+/// 階が未定義のまま準備計算の集計だけを行うと、Ai 分布・風圧力は算定できず
+/// 理由（`*_note`）が入る。集計自体はエラーにならない。
+#[test]
+fn test_preparation_without_stories_reports_notes() {
+    let mut app = App::default();
+    // 階を作らずに解析だけ実行する経路（`ensure_preparation`）を通す。
+    app.load_model(crate::sample::portal_frame());
+    app.run_linear_static(LoadCaseId(0));
+
+    let prep = app.preparation.as_ref().expect("解析前に準備計算が走る");
+    assert!(prep.stories.is_empty());
+    assert!(prep.seismic.is_none());
+    assert!(prep.seismic_note.as_ref().unwrap().contains("階"));
+    assert!(prep.wind.is_empty());
+    assert!(prep.wind_note.is_some());
+    // 剛域・荷重集計は階に依存しないので算定される。
+    assert!(!prep.rigid_zones.is_empty());
+    assert!(!prep.load_cases.is_empty());
+}
+
+/// 解析の実行は準備計算を最新化するが、階の自動生成は行わない
+/// （解析実行が暗黙にモデルの階構成を書き換えないため）。
+#[test]
+fn test_analysis_ensures_preparation_without_generating_stories() {
+    let mut app = App::default();
+    app.load_model(crate::sample::portal_frame());
+    assert!(app.staleness.preparation_stale);
+
+    app.run_linear_static(LoadCaseId(0));
+    assert!(app.last_error.is_none(), "{:?}", app.last_error);
+    assert!(!app.staleness.preparation_stale, "解析前に準備計算が走る");
+    assert!(app.preparation.is_some());
+    assert!(app.model.stories.is_empty(), "階は自動生成しない");
+}
+
+/// モデル編集で準備計算は stale に戻り、再実行で最新化される。
+#[test]
+fn test_mark_edited_marks_preparation_stale() {
+    let mut app = App::default();
+    app.load_model(crate::sample::portal_frame());
+    app.run_preparation();
+    assert!(!app.staleness.preparation_stale);
+    app.staleness.mark_edited();
+    assert!(app.staleness.preparation_stale);
+    app.run_preparation();
+    assert!(!app.staleness.preparation_stale);
+}
+
+/// 精算周期（SemiPrecise）で固有値解析が未実行なら Ai 分布は算定せず、
+/// 固有値解析の実行を促す理由を返す（勝手に略算へフォールバックしない）。
+#[test]
+fn test_preparation_semiprecise_without_eigen_reports_note() {
+    let mut app = App::default();
+    app.load_model(crate::sample::portal_frame());
+    app.generate_stories_action();
+    app.analysis_cfg.ai_mode = AiMode::SemiPrecise;
+    app.staleness.mark_edited();
+    app.run_preparation();
+
+    let prep = app.preparation.as_ref().unwrap();
+    assert!(prep.seismic.is_none());
+    assert!(
+        prep.seismic_note.as_ref().unwrap().contains("固有値解析"),
+        "{:?}",
+        prep.seismic_note
+    );
+
+    // 固有値解析を実行すると、その1次周期で Ai 分布が算定できるようになる。
+    app.run_eigen(3);
+    app.run_preparation();
+    let prep = app.preparation.as_ref().unwrap();
+    let sm = prep.seismic.as_ref().expect("固有値実行後は算定できる");
+    assert_eq!(sm.t_mode, AiMode::SemiPrecise);
+    let t1 = app.results.as_ref().unwrap().modal.as_ref().unwrap().period[0];
+    assert!((sm.t - t1).abs() < 1e-12);
+}
+
+/// モデル読込は準備計算の結果・診断をリセットする（前モデルの結果が残らない）。
+#[test]
+fn test_load_model_resets_preparation() {
+    let mut app = App::default();
+    app.load_model(crate::sample::portal_frame());
+    app.run_preparation();
+    assert!(app.preparation.is_some());
+
+    app.load_model(crate::sample::portal_frame());
+    assert!(app.preparation.is_none());
+    assert!(app.diagnostics.is_empty());
+    assert!(app.staleness.preparation_stale);
+}
+
+/// 準備計算の CSV には階の分布・Ai 分布・剛域・荷重集計の各セクションが出る。
+#[test]
+fn test_build_preparation_csv() {
+    let mut app = App::default();
+    assert!(
+        crate::summary::build_preparation_csv(&app).is_empty(),
+        "未実行なら空"
+    );
+
+    app.load_model(crate::sample::portal_frame());
+    app.run_preparation();
+    let csv = crate::summary::build_preparation_csv(&app);
+    for section in [
+        "[建物概要]",
+        "[階の分布]",
+        "[地震力 (Ai分布)]",
+        "[剛域]",
+        "[荷重集計]",
+    ] {
+        assert!(csv.contains(section), "{section} が無い:\n{csv}");
+    }
+    assert!(csv.contains("階,Wi[kN],ΣWj[kN],αi,Ai,Ci,Qi[kN],Pi[kN],種別"));
+}
+
+/// 準備計算は断面性能（断面諸量・使用部材数・材料）を一覧化する。
+#[test]
+fn test_preparation_lists_section_properties() {
+    let mut app = App::default();
+    app.load_model(crate::sample::portal_frame());
+    app.run_preparation();
+
+    let prep = app.preparation.as_ref().unwrap();
+    assert_eq!(prep.sections.len(), app.model.sections.len());
+    for (row, sec) in prep.sections.iter().zip(app.model.sections.iter()) {
+        // 表示値はモデルが持つ解析入力そのもの（ここで再計算はしない）。
+        assert_eq!(row.section, sec.id);
+        assert_eq!(row.area, sec.area);
+        assert_eq!(row.iy, sec.iy);
+        assert_eq!(row.iz, sec.iz);
+        assert_eq!(row.j, sec.j);
+        assert!(row.shape_label.is_some(), "形状定義を持つ断面");
+        assert!(row.n_elements > 0, "サンプルは全断面が使われている");
+        // 断面二次半径 i = √(I/A)。
+        assert!((row.ry - (sec.iy / sec.area).sqrt()).abs() < 1e-9);
+        assert!((row.rz - (sec.iz / sec.area).sqrt()).abs() < 1e-9);
+        assert_eq!(row.material.as_deref(), Some("SN400B"));
+    }
+    // 柱 H-300x300 は 2 本、梁 H-400x200 は 1 本。
+    assert_eq!(prep.sections[0].n_elements, 2);
+    assert_eq!(prep.sections[1].n_elements, 1);
+}
+
+/// 準備計算は鋼断面の幅厚比・部材ランクを、断面 × 用途（柱／梁）× 材料で
+/// まとめて一覧化する。ランクは保有水平耐力の Ds 算定と同じ判定を用いる。
+#[test]
+fn test_preparation_lists_width_thickness() {
+    use squid_n_design_jp::secondary::width_thickness::SteelMemberUse;
+
+    let mut app = App::default();
+    app.load_model(crate::sample::portal_frame());
+    app.run_preparation();
+
+    let prep = app.preparation.as_ref().unwrap();
+    // 柱（H-300x300）2 本 + 梁（H-400x200）1 本 → 2 行にまとまる。
+    assert_eq!(prep.width_thickness.len(), 2, "{:?}", prep.width_thickness);
+
+    let col = prep
+        .width_thickness
+        .iter()
+        .find(|r| r.member_use == SteelMemberUse::Column)
+        .expect("柱の行");
+    assert_eq!(col.n_elements, 2);
+    assert_eq!(col.material, "SN400B");
+    // H-300x300x10x15: フランジ 300/(2·15)=10、ウェブ (300−30)/10=27 → max 27。
+    assert!((col.max_ratio.unwrap() - 27.0).abs() < 1e-9);
+    assert!(col.rank.is_some());
+
+    let beam = prep
+        .width_thickness
+        .iter()
+        .find(|r| r.member_use == SteelMemberUse::Beam)
+        .expect("梁の行");
+    assert_eq!(beam.n_elements, 1);
+    // ランク判定は保有水平耐力の Ds 算定と同じ共通関数を通っていること。
+    let shape = app.model.sections[1].shape.as_ref().unwrap();
+    assert_eq!(
+        beam.rank,
+        steel_width_thickness_rank(shape, SteelMemberUse::Beam, "SN400B")
+    );
+}
+
+/// 準備計算の結果はプロジェクトファイル（.scz）へ保存され、読込で復元される。
+/// 復元できた場合は実行済み扱い（stale でない）になる。
+#[test]
+fn test_preparation_persisted_in_project_file() {
+    let dir = std::env::temp_dir();
+    let path = dir.join("squid_n_prep_persist_test.scz");
+    let _ = std::fs::remove_file(&path);
+
+    let mut app = App::default();
+    app.load_model(crate::sample::portal_frame());
+    app.run_preparation();
+    let saved = app.preparation.as_ref().unwrap();
+    let saved_base_shear = saved.seismic.as_ref().unwrap().base_shear;
+    let saved_stories = saved.stories.len();
+    let saved_sections = saved.sections.len();
+    app.save_project_to(path.clone());
+    assert!(app.last_error.is_none(), "{:?}", app.last_error);
+
+    let mut reopened = App::default();
+    reopened.open_project_from(path.clone());
+    assert!(reopened.last_error.is_none(), "{:?}", reopened.last_error);
+
+    let restored = reopened
+        .preparation
+        .as_ref()
+        .expect("準備計算の結果が復元されるはず");
+    assert_eq!(restored.stories.len(), saved_stories);
+    assert_eq!(restored.sections.len(), saved_sections);
+    assert!(
+        (restored.seismic.as_ref().unwrap().base_shear - saved_base_shear).abs() < 1e-9,
+        "基部せん断力が一致しない"
+    );
+    assert!(
+        !reopened.staleness.preparation_stale,
+        "復元できたら実行済み扱いにする"
+    );
+
+    let _ = std::fs::remove_file(&path);
+}
+
+/// 準備計算が古い（モデル編集後に未再実行）状態で保存した場合は同梱せず、
+/// 読込側は未実行のままにする（古い結果を最新と誤認させない）。
+#[test]
+fn test_stale_preparation_not_persisted() {
+    let dir = std::env::temp_dir();
+    let path = dir.join("squid_n_prep_stale_test.scz");
+    let _ = std::fs::remove_file(&path);
+
+    let mut app = App::default();
+    app.load_model(crate::sample::portal_frame());
+    app.run_preparation();
+    app.staleness.mark_edited();
+    app.save_project_to(path.clone());
+    assert!(app.last_error.is_none(), "{:?}", app.last_error);
+
+    let mut reopened = App::default();
+    reopened.open_project_from(path.clone());
+    assert!(reopened.last_error.is_none(), "{:?}", reopened.last_error);
+    assert!(reopened.preparation.is_none());
+    assert!(reopened.staleness.preparation_stale);
+
+    let _ = std::fs::remove_file(&path);
+}
+
+/// 準備計算の CSV に断面性能・幅厚比のセクションが出る。
+#[test]
+fn test_build_preparation_csv_sections() {
+    let mut app = App::default();
+    app.load_model(crate::sample::portal_frame());
+    app.run_preparation();
+    let csv = crate::summary::build_preparation_csv(&app);
+    assert!(csv.contains("[断面性能]"), "{csv}");
+    assert!(csv.contains("[幅厚比・部材ランク]"), "{csv}");
+    assert!(csv.contains("H 形鋼"), "{csv}");
+}
+
+/// 剛性の割増しも等価換算も生じ得ないモデル（スラブ剛性なし・壁なし・
+/// SRC/CFT なし）では、部材剛性の表は空になる（部材ごとの判定を行わない）。
+#[test]
+fn test_preparation_member_stiffness_empty_for_plain_model() {
+    let mut app = App::default();
+    app.load_model(crate::sample::portal_frame());
+    app.run_preparation();
+
+    let prep = app.preparation.as_ref().unwrap();
+    assert!(
+        prep.member_stiffness.is_empty(),
+        "{:?}",
+        prep.member_stiffness
+    );
+    assert_eq!(
+        prep.member_stiffness_candidates,
+        app.model.elements.len(),
+        "候補数（梁要素数）は数える"
+    );
+}
+
+/// SRC/CFT 断面の部材は等価断面性能が算定され、部材剛性の表に現れる。
+/// 表示値は要素構築が実際に用いる等価換算と一致する。
+#[test]
+fn test_preparation_member_stiffness_reports_composite_props() {
+    use squid_n_core::ids::SectionId;
+    use squid_n_core::section_shape::SectionShape;
+
+    let mut model = crate::sample::portal_frame();
+    // 柱を CFT 角形に差し替え、充填コンクリート強度 Fc を持つ鋼管材料を割り当てる。
+    let cft = SectionShape::CftBox {
+        height: 400.0,
+        width: 400.0,
+        thick: 16.0,
+    };
+    model.sections[0] = cft.to_section(SectionId(0), "CFT-□400x400x16".into());
+    model.materials[0].fc = Some(36.0);
+
+    let mut app = App::default();
+    app.load_model(model);
+    app.run_preparation();
+
+    let prep = app.preparation.as_ref().unwrap();
+    let row = prep
+        .member_stiffness
+        .iter()
+        .find(|r| r.kind == squid_n_design_jp::MemberKind::Column)
+        .expect("CFT 柱の行があるはず");
+    let c = row.composite.expect("等価断面性能が算定されるはず");
+    // 充填コンクリート分だけ鋼管のみより剛性が大きくなる。
+    assert!(c.iy > row.section_iy, "{} vs {}", c.iy, row.section_iy);
+    assert!(c.area_ax > 0.0);
+    // 割増しは無いので実効値＝等価換算値。
+    assert_eq!(row.slab_factor, 1.0);
+    assert_eq!(row.wall_girder_factor, 1.0);
+    assert_eq!(row.effective_iy, c.iy);
+    assert_eq!(row.effective_area, c.area_ax);
+
+    // 要素構築が用いる等価換算と一致する（表示と解析入力の一致）。
+    let elem = app
+        .model
+        .elements
+        .iter()
+        .find(|e| e.id == row.elem)
+        .unwrap();
+    let props = squid_n_element::beam::composite_props_of(&app.model, elem)
+        .expect("要素側でも算定できるはず");
+    assert_eq!(props.iy, c.iy);
+    assert_eq!(props.area_ax, c.area_ax);
+}
+
+/// 解析結果はプロジェクトファイル（.scz）へ保存され、読込で復元される。
+/// 復元できた場合は再計算不要（stale でない）扱いになる。
+#[test]
+fn test_results_persisted_in_project_file() {
+    let dir = std::env::temp_dir();
+    let path = dir.join("squid_n_results_persist_test.scz");
+    let _ = std::fs::remove_file(&path);
+
+    let mut app = App::default();
+    app.load_model(crate::sample::portal_frame());
+    app.generate_stories_action();
+    app.run_linear_static(LoadCaseId(0));
+    app.run_eigen(3);
+    assert!(app.last_error.is_none(), "{:?}", app.last_error);
+
+    let saved = app.results.as_ref().unwrap();
+    let saved_disp = saved.statics[0].1.disp.clone();
+    let saved_period = saved.modal.as_ref().unwrap().period.clone();
+    let saved_checks = saved.member_checks.len();
+    let saved_key = app.last_static;
+    assert!(!app.staleness.results_stale);
+
+    app.save_project_to(path.clone());
+    assert!(app.last_error.is_none(), "{:?}", app.last_error);
+
+    let mut reopened = App::default();
+    reopened.open_project_from(path.clone());
+    assert!(reopened.last_error.is_none(), "{:?}", reopened.last_error);
+
+    let restored = reopened.results.as_ref().expect("解析結果が復元されるはず");
+    assert_eq!(restored.statics[0].1.disp, saved_disp);
+    assert_eq!(restored.modal.as_ref().unwrap().period, saved_period);
+    assert_eq!(restored.member_checks.len(), saved_checks);
+    assert_eq!(reopened.last_static, saved_key);
+    assert!(!reopened.staleness.results_stale);
+    assert!(!reopened.staleness.design_stale);
+    assert!(reopened.staleness.last_run.is_some());
+
+    let _ = std::fs::remove_file(&path);
+}
+
+/// 解析結果が古い（モデル編集後に未再解析）状態で保存した場合は同梱せず、
+/// 読込側は結果なし・要再計算のままにする。
+#[test]
+fn test_stale_results_not_persisted() {
+    let dir = std::env::temp_dir();
+    let path = dir.join("squid_n_results_stale_test.scz");
+    let _ = std::fs::remove_file(&path);
+
+    let mut app = App::default();
+    app.load_model(crate::sample::portal_frame());
+    app.run_linear_static(LoadCaseId(0));
+    app.staleness.mark_edited();
+    app.save_project_to(path.clone());
+    assert!(app.last_error.is_none(), "{:?}", app.last_error);
+
+    let mut reopened = App::default();
+    reopened.open_project_from(path.clone());
+    assert!(reopened.last_error.is_none(), "{:?}", reopened.last_error);
+    // 結果自体が復元されない（`results_stale` は結果が無い既定状態のまま）。
+    assert!(reopened.results.is_none());
+    assert_eq!(reopened.last_static, None);
+
+    let _ = std::fs::remove_file(&path);
 }

@@ -287,6 +287,16 @@ impl ElementBehavior for TrussElement {
             ],
         })
     }
+
+    /// トラス（ブレース）は非線形解析でも弾性軸材のため、蓄積した trial 変位から
+    /// 復元する（`recover_forces` と同じ結果）。
+    fn state_member_forces(
+        &self,
+        _state: &ElemState,
+        _ctx: &Ctx,
+    ) -> Option<crate::beam::MemberForces> {
+        self.recover_forces(&self.trial_disp)
+    }
 }
 
 #[cfg(test)]

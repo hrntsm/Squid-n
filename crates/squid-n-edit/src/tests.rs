@@ -1148,6 +1148,7 @@ fn make_story(id: u32, weight: Option<f64>) -> squid_n_core::model::Story {
         node_ids: vec![],
         diaphragms: vec![],
         seismic_weight: weight,
+        weight_override: None,
     }
 }
 
@@ -1164,13 +1165,46 @@ fn test_set_story_weight_roundtrip() {
             weight: Some(1234.5),
         }),
     );
+    // 手入力値は実効値（seismic_weight）へも反映される。
+    assert_eq!(model.stories[0].weight_override, Some(1234.5));
     assert_eq!(model.stories[0].seismic_weight, Some(1234.5));
 
     stack.undo(&mut model);
+    assert_eq!(model.stories[0].weight_override, None);
     assert_eq!(model.stories[0].seismic_weight, None);
 
     stack.redo(&mut model);
+    assert_eq!(model.stories[0].weight_override, Some(1234.5));
     assert_eq!(model.stories[0].seismic_weight, Some(1234.5));
+}
+
+/// 手入力の解除（`weight: None`）では実効値の自動算定値は据え置き、
+/// 手入力フラグのみ落ちる（次の準備計算で再算定される）。
+#[test]
+fn test_clear_story_weight_override_keeps_auto_value() {
+    let mut model = empty_model();
+    model.stories.push(make_story(0, Some(500.0)));
+    let mut stack = UndoStack::new();
+
+    stack.run(
+        &mut model,
+        Box::new(SetStoryWeight {
+            story: StoryId(0),
+            weight: Some(800.0),
+        }),
+    );
+    stack.run(
+        &mut model,
+        Box::new(SetStoryWeight {
+            story: StoryId(0),
+            weight: None,
+        }),
+    );
+    assert_eq!(model.stories[0].weight_override, None);
+    assert_eq!(model.stories[0].seismic_weight, Some(800.0));
+
+    stack.undo(&mut model);
+    assert_eq!(model.stories[0].weight_override, Some(800.0));
 }
 
 #[test]
@@ -1240,6 +1274,7 @@ fn test_apply_stories_roundtrip_with_generated_masters() {
                 rigid: true,
             }],
             seismic_weight: Some(1000.0),
+            weight_override: None,
         }],
         node_story: vec![Some(StoryId(0)), Some(StoryId(0))],
         constraints: vec![Constraint::RigidDiaphragm {
@@ -1699,30 +1734,6 @@ fn test_set_misc_wall_out_of_range_is_noop() {
 }
 
 #[test]
-fn test_set_story_structure_roundtrip() {
-    use squid_n_core::model::StoryStructure;
-    let mut model = empty_model();
-    model.stories.push(make_story(0, None));
-    assert_eq!(model.stories[0].structure, StoryStructure::Rc);
-    let mut stack = UndoStack::new();
-
-    stack.run(
-        &mut model,
-        Box::new(SetStoryStructure {
-            story: StoryId(0),
-            structure: StoryStructure::S,
-        }),
-    );
-    assert_eq!(model.stories[0].structure, StoryStructure::S);
-
-    stack.undo(&mut model);
-    assert_eq!(model.stories[0].structure, StoryStructure::Rc);
-
-    stack.redo(&mut model);
-    assert_eq!(model.stories[0].structure, StoryStructure::S);
-}
-
-#[test]
 fn test_set_story_level_kind_roundtrip() {
     use squid_n_core::model::StoryLevelKind;
     let mut model = empty_model();
@@ -1743,22 +1754,6 @@ fn test_set_story_level_kind_roundtrip() {
 
     stack.undo(&mut model);
     assert_eq!(model.stories[0].level_kind, StoryLevelKind::Normal);
-}
-
-#[test]
-fn test_set_story_structure_invalid_id_is_noop() {
-    use squid_n_core::model::StoryStructure;
-    let mut model = empty_model();
-    model.stories.push(make_story(0, None));
-    let mut stack = UndoStack::new();
-    stack.run(
-        &mut model,
-        Box::new(SetStoryStructure {
-            story: StoryId(99),
-            structure: StoryStructure::S,
-        }),
-    );
-    assert_eq!(model.stories[0].structure, StoryStructure::Rc);
 }
 
 #[test]

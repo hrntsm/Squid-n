@@ -413,7 +413,7 @@ pub fn staged_strength_loss(
     let n_passes = max_passes.max(1);
     for pass_idx in 0..n_passes {
         let mut m = current_model.clone();
-        let result = pushover_analysis_recording(
+        let result = match pushover_analysis_recording(
             &mut m,
             &dofmap,
             &reducer,
@@ -425,7 +425,16 @@ pub fn staged_strength_loss(
             arc_length_dl,
             true,
             crate::pushover::DuctilityMethod::default(),
-        )?;
+        ) {
+            Ok(r) => r,
+            // 耐力喪失部材は両端ピン＋断面の実質ゼロ化で除去するため、除去が進むと
+            // 残存構造が機構になり剛性行列を分解できなくなる（＝これ以上の再載荷は
+            // 物理的に意味を持たない）。2 パス目以降の失敗は解析の正常終了として
+            // それまでのパスを返す。1 パス目の失敗は元モデル自体の問題なので
+            // エラーをそのまま返す。
+            Err(_) if pass_idx > 0 => break,
+            Err(e) => return Err(e),
+        };
 
         match detect_strength_loss(&current_model, &dofmap, &result, criterion, &removed_set) {
             Some((cutoff_step, to_remove)) if !to_remove.is_empty() => {

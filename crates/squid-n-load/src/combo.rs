@@ -3,9 +3,9 @@ use squid_n_core::model::LoadCombination;
 
 /// 多雪区域の積雪荷重低減係数（令86条 多雪区域の荷重組合せ）。
 ///
-/// - `delta1`: 長期積雪 `G+P+δ1・S` の低減係数（既定 0.7）
-/// - `delta2`: 暴風時 `G+P+δ2・S±W` の低減係数（既定 0.35）
-/// - `delta3`: 地震時 `G+P+δ3・S±K` の低減係数（既定 0.35）
+/// - `delta1`: 長期積雪 `DL+LL+δ1・SL` の低減係数（既定 0.7）
+/// - `delta2`: 暴風時 `DL+LL+δ2・SL±WX/WY` の低減係数（既定 0.35）
+/// - `delta3`: 地震時 `DL+LL+δ3・SL±EX/EY` の低減係数（既定 0.35）
 ///
 /// 本実装では直接入力が可能（デフォルト δ1=0.7、δ2=δ3=0.35）。
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -44,19 +44,23 @@ pub struct ComboInput {
 
 fn push_gp(combos: &mut Vec<LoadCombination>, dl: LoadCaseId, ll: LoadCaseId) {
     combos.push(LoadCombination {
-        name: "G + P".into(),
+        name: "DL + LL".into(),
         terms: vec![(dl, 1.0), (ll, 1.0)],
     });
 }
 
 /// 建築基準法施行令82条の標準荷重組合せを生成する。
 ///
-/// - 長期: `G+P`。多雪区域はさらに `G+P+0.7S`。
-/// - 短期積雪: `G+P+S`（`snow` が指定されている場合）。
-/// - 短期地震: `G+P±Kx`・`G+P±Ky`（±両方向）。多雪区域はさらに
-///   `G+P+0.35S±K`（X・Y 各方向）。
-/// - 短期暴風: `G+P±Wx`・`G+P±Wy`（±両方向）。多雪区域はさらに
-///   `G+P+0.35S±W`（X・Y 各方向）。
+/// 組合せ名は荷重ケースの直接的な名前（DL：固定・LL：積載・EX/EY：地震 X/Y・
+/// WX/WY：風 X/Y・SL：積雪）で表す。算定式との対応は
+/// G→DL・P→LL・K→EX/EY・W→WX/WY・S→SL（積雪は単一ケースのため方向なし）。
+///
+/// - 長期: `DL+LL`。多雪区域はさらに `DL+LL+0.7SL`。
+/// - 短期積雪: `DL+LL+SL`（`snow` が指定されている場合）。
+/// - 短期地震: `DL+LL±EX`・`DL+LL±EY`（±両方向）。多雪区域はさらに
+///   `DL+LL+0.35SL±EX`（X・Y 各方向）。
+/// - 短期暴風: `DL+LL±WX`・`DL+LL±WY`（±両方向）。多雪区域はさらに
+///   `DL+LL+0.35SL±WX`（X・Y 各方向）。
 ///
 /// 各ケースは `seismic_x`/`seismic_y`/`wind_x`/`wind_y`/`snow` が
 /// `Some` の場合のみ生成される（レビュー §1.10）。
@@ -66,34 +70,34 @@ pub fn standard_combinations(input: &ComboInput) -> Vec<LoadCombination> {
     let ll = input.ll;
     let sf = input.snow_factors.unwrap_or_default();
 
-    // 長期: G+P
+    // 長期: DL+LL
     push_gp(&mut combos, dl, ll);
 
-    // 多雪区域の長期: G+P+δ1・S
+    // 多雪区域の長期: DL+LL+δ1・SL
     if input.heavy_snow_zone {
         if let Some(snow) = input.snow {
             combos.push(LoadCombination {
-                name: format!("G + P + {}S", trim_f64(sf.delta1)),
+                name: format!("DL + LL + {}SL", trim_f64(sf.delta1)),
                 terms: vec![(dl, 1.0), (ll, 1.0), (snow, sf.delta1)],
             });
         }
     }
 
-    // 短期積雪: G+P+S
+    // 短期積雪: DL+LL+SL
     if let Some(snow) = input.snow {
         combos.push(LoadCombination {
-            name: "G + P + S".into(),
+            name: "DL + LL + SL".into(),
             terms: vec![(dl, 1.0), (ll, 1.0), (snow, 1.0)],
         });
     }
 
-    // 短期地震（±両方向、多雪区域は δ3・S 付きも追加）。
+    // 短期地震（±両方向、多雪区域は δ3・SL 付きも追加）。
     push_directional(
         &mut combos,
         dl,
         ll,
         input.seismic_x,
-        "Kx",
+        "EX",
         input.snow,
         input.heavy_snow_zone,
         sf.delta3,
@@ -103,19 +107,19 @@ pub fn standard_combinations(input: &ComboInput) -> Vec<LoadCombination> {
         dl,
         ll,
         input.seismic_y,
-        "Ky",
+        "EY",
         input.snow,
         input.heavy_snow_zone,
         sf.delta3,
     );
 
-    // 短期暴風（±両方向、多雪区域は δ2・S 付きも追加）。
+    // 短期暴風（±両方向、多雪区域は δ2・SL 付きも追加）。
     push_directional(
         &mut combos,
         dl,
         ll,
         input.wind_x,
-        "Wx",
+        "WX",
         input.snow,
         input.heavy_snow_zone,
         sf.delta2,
@@ -125,7 +129,7 @@ pub fn standard_combinations(input: &ComboInput) -> Vec<LoadCombination> {
         dl,
         ll,
         input.wind_y,
-        "Wy",
+        "WY",
         input.snow,
         input.heavy_snow_zone,
         sf.delta2,
@@ -140,8 +144,8 @@ fn trim_f64(v: f64) -> String {
     s.trim_end_matches('0').trim_end_matches('.').to_string()
 }
 
-/// 地震・暴風いずれかの片方向（Kx/Ky/Wx/Wy）について、`G+P±X` と
-/// 多雪区域なら `G+P+δ・S±X`（δ: 暴風時 δ2／地震時 δ3）を追加する共通ヘルパー。
+/// 地震・暴風いずれかの片方向（EX/EY/WX/WY）について、`DL+LL±X` と
+/// 多雪区域なら `DL+LL+δ・SL±X`（δ: 暴風時 δ2／地震時 δ3）を追加する共通ヘルパー。
 #[allow(clippy::too_many_arguments)]
 fn push_directional(
     combos: &mut Vec<LoadCombination>,
@@ -157,22 +161,22 @@ fn push_directional(
         return;
     };
     combos.push(LoadCombination {
-        name: format!("G + P + {label}"),
+        name: format!("DL + LL + {label}"),
         terms: vec![(dl, 1.0), (ll, 1.0), (case, 1.0)],
     });
     combos.push(LoadCombination {
-        name: format!("G + P - {label}"),
+        name: format!("DL + LL - {label}"),
         terms: vec![(dl, 1.0), (ll, 1.0), (case, -1.0)],
     });
     if heavy_snow_zone {
         if let Some(snow) = snow {
             let d = trim_f64(delta);
             combos.push(LoadCombination {
-                name: format!("G + P + {d}S + {label}"),
+                name: format!("DL + LL + {d}SL + {label}"),
                 terms: vec![(dl, 1.0), (ll, 1.0), (snow, delta), (case, 1.0)],
             });
             combos.push(LoadCombination {
-                name: format!("G + P + {d}S - {label}"),
+                name: format!("DL + LL + {d}SL - {label}"),
                 terms: vec![(dl, 1.0), (ll, 1.0), (snow, delta), (case, -1.0)],
             });
         }
@@ -180,8 +184,8 @@ fn push_directional(
 }
 
 /// 旧API（後方互換）。断面検定などから使う単純版
-/// （長期 G+P / 短期積雪 G+P+S / 短期地震 G+P±K の正負両加力）。
-/// 内部では [`standard_combinations`] に委譲する。暴風（W）・多雪区域の
+/// （長期 DL+LL / 短期積雪 DL+LL+SL / 短期地震 DL+LL±EX/EY の正負両加力）。
+/// 内部では [`standard_combinations`] に委譲する。暴風（WX/WY）・多雪区域の
 /// 係数付き組合せが必要な場合は [`standard_combinations`] を直接使う。
 pub fn auto_combinations(
     dl_case: LoadCaseId,
@@ -206,19 +210,20 @@ pub fn auto_combinations(
 
 /// 荷重組合せ名から断面検定の荷重継続性区分（長期/短期）を判定する。
 ///
-/// 令82条（標準組合せ）・令86条（多雪区域）: G+P（多雪区域では
-/// G+P+0.7S も）が長期（常時・積雪時の長期）、地震（K/E）・風（W）を含む
-/// 組合せおよび短期積雪（G+P+S）は短期（令82条）。
-/// [`standard_combinations`] の命名規約（"G + P ± Kx"・"G + P + 0.7S" 等）に
-/// 基づき、追加項の記号で判定する。
+/// 令82条（標準組合せ）・令86条（多雪区域）: DL+LL（多雪区域では
+/// DL+LL+0.7SL も）が長期（常時・積雪時の長期）、地震（EX/EY）・風（WX/WY）を含む
+/// 組合せおよび短期積雪（DL+LL+SL）は短期（令82条）。
+/// [`standard_combinations`] の命名規約（"DL + LL ± EX"・"DL + LL + 0.7SL" 等）に
+/// 基づき、追加項の記号で判定する。旧名（"G + P ± Kx" 等）の保存データも、
+/// 地震記号 K/E・風記号 W・積雪 S を含むかで同様に判定できる（後方互換）。
 pub fn is_short_term_combo(name: &str) -> bool {
     let upper = name.to_uppercase();
-    // 地震（K/E）・風（W）を含めば短期。
+    // 地震（記号 E。旧名の K も含む）・風（W）を含めば短期。
     if upper.contains('K') || upper.contains('E') || upper.contains('W') {
         return true;
     }
-    // 多雪区域の長期積雪 δ1・S（係数 <1.0 の S 項。例 "0.7S"・"0.65S"）は
-    // 長期（令82条一号）。係数なしの S（G+P+S）は短期積雪。
+    // 多雪区域の長期積雪 δ1・S（係数 <1.0 の S 項。例 "0.7SL"・"0.65SL"）は
+    // 長期（令82条一号）。係数なしの S（DL+LL+SL）は短期積雪。
     if let Some(pos) = upper.find('S') {
         let coef: String = upper[..pos]
             .chars()
@@ -249,13 +254,13 @@ mod tests {
             Some(LoadCaseId(4)),
             None,
         );
-        // G+P, G+P±Kx, G+P±Ky の 5 組合せ
+        // DL+LL, DL+LL±EX, DL+LL±EY の 5 組合せ
         assert_eq!(combos.len(), 5);
-        assert_eq!(combos[0].name, "G + P");
-        assert_eq!(combos[1].name, "G + P + Kx");
-        assert_eq!(combos[2].name, "G + P - Kx");
-        assert_eq!(combos[3].name, "G + P + Ky");
-        assert_eq!(combos[4].name, "G + P - Ky");
+        assert_eq!(combos[0].name, "DL + LL");
+        assert_eq!(combos[1].name, "DL + LL + EX");
+        assert_eq!(combos[2].name, "DL + LL - EX");
+        assert_eq!(combos[3].name, "DL + LL + EY");
+        assert_eq!(combos[4].name, "DL + LL - EY");
         // 負側加力は係数 -1.0
         assert_eq!(combos[2].terms[2].1, -1.0);
         assert_eq!(combos[4].terms[2].1, -1.0);
@@ -263,23 +268,28 @@ mod tests {
 
     #[test]
     fn test_is_short_term_combo() {
+        assert!(!is_short_term_combo("DL + LL"));
+        assert!(is_short_term_combo("DL + LL + EX"));
+        assert!(is_short_term_combo("DL + LL - EX"));
+        assert!(is_short_term_combo("DL + LL + EY"));
+        assert!(is_short_term_combo("DL + LL + SL"));
+        assert!(is_short_term_combo("DL + LL + WX"));
+        assert!(is_short_term_combo("DL + LL - WY"));
+        // 多雪区域: 長期 0.7SL は長期、0.35SL 付き短期は短期。
+        assert!(!is_short_term_combo("DL + LL + 0.7SL"));
+        assert!(is_short_term_combo("DL + LL + 0.35SL + EX"));
+        assert!(is_short_term_combo("DL + LL + 0.35SL - WY"));
+        // 旧名（G+P・Kx/Wx 等）の保存データも従来どおり判定できる（後方互換）。
         assert!(!is_short_term_combo("G + P"));
         assert!(is_short_term_combo("G + P + Kx"));
-        assert!(is_short_term_combo("G + P - Kx"));
-        assert!(is_short_term_combo("G + P + Ky"));
-        assert!(is_short_term_combo("G + P + S"));
-        assert!(is_short_term_combo("G + P + W"));
-        assert!(is_short_term_combo("G + P + E"));
-        // 多雪区域: 長期 0.7S は長期、0.35S 付き短期は短期。
+        assert!(is_short_term_combo("G + P + Wx"));
         assert!(!is_short_term_combo("G + P + 0.7S"));
-        assert!(is_short_term_combo("G + P + 0.35S + Kx"));
-        assert!(is_short_term_combo("G + P + 0.35S - Wy"));
     }
 
     #[test]
     fn test_auto_combos_no_snow_matches_legacy_shape() {
         // 多雪区域=false・風=None の従来相当構成では、長期1 + 短期積雪0
-        // + 地震(±Kx,±Ky)=4 の計 5 ケース。
+        // + 地震(±EX,±EY)=4 の計 5 ケース。
         let combos = auto_combinations(
             LoadCaseId(1),
             LoadCaseId(2),
@@ -292,11 +302,11 @@ mod tests {
         assert_eq!(
             names,
             vec![
-                "G + P",
-                "G + P + Kx",
-                "G + P - Kx",
-                "G + P + Ky",
-                "G + P - Ky"
+                "DL + LL",
+                "DL + LL + EX",
+                "DL + LL - EX",
+                "DL + LL + EY",
+                "DL + LL - EY"
             ]
         );
     }
@@ -315,8 +325,8 @@ mod tests {
             snow_factors: None,
         };
         let combos = standard_combinations(&input);
-        // G+P(1) + G+P+0.7S(1) + G+P+S(1)
-        // + Kx系4 + Ky系4 + Wx系4 + Wy系4 = 3 + 16 = 19
+        // DL+LL(1) + DL+LL+0.7SL(1) + DL+LL+SL(1)
+        // + EX系4 + EY系4 + WX系4 + WY系4 = 3 + 16 = 19
         assert_eq!(combos.len(), 19);
 
         let by_name = |n: &str| {
@@ -327,11 +337,11 @@ mod tests {
         };
 
         assert_eq!(
-            by_name("G + P").terms,
+            by_name("DL + LL").terms,
             vec![(LoadCaseId(1), 1.0), (LoadCaseId(2), 1.0)]
         );
         assert_eq!(
-            by_name("G + P + 0.7S").terms,
+            by_name("DL + LL + 0.7SL").terms,
             vec![
                 (LoadCaseId(1), 1.0),
                 (LoadCaseId(2), 1.0),
@@ -339,7 +349,7 @@ mod tests {
             ]
         );
         assert_eq!(
-            by_name("G + P + S").terms,
+            by_name("DL + LL + SL").terms,
             vec![
                 (LoadCaseId(1), 1.0),
                 (LoadCaseId(2), 1.0),
@@ -347,7 +357,7 @@ mod tests {
             ]
         );
         assert_eq!(
-            by_name("G + P + Kx").terms,
+            by_name("DL + LL + EX").terms,
             vec![
                 (LoadCaseId(1), 1.0),
                 (LoadCaseId(2), 1.0),
@@ -355,7 +365,7 @@ mod tests {
             ]
         );
         assert_eq!(
-            by_name("G + P - Kx").terms,
+            by_name("DL + LL - EX").terms,
             vec![
                 (LoadCaseId(1), 1.0),
                 (LoadCaseId(2), 1.0),
@@ -363,7 +373,7 @@ mod tests {
             ]
         );
         assert_eq!(
-            by_name("G + P + 0.35S + Kx").terms,
+            by_name("DL + LL + 0.35SL + EX").terms,
             vec![
                 (LoadCaseId(1), 1.0),
                 (LoadCaseId(2), 1.0),
@@ -372,7 +382,7 @@ mod tests {
             ]
         );
         assert_eq!(
-            by_name("G + P + 0.35S - Ky").terms,
+            by_name("DL + LL + 0.35SL - EY").terms,
             vec![
                 (LoadCaseId(1), 1.0),
                 (LoadCaseId(2), 1.0),
@@ -381,7 +391,7 @@ mod tests {
             ]
         );
         assert_eq!(
-            by_name("G + P + Wx").terms,
+            by_name("DL + LL + WX").terms,
             vec![
                 (LoadCaseId(1), 1.0),
                 (LoadCaseId(2), 1.0),
@@ -389,7 +399,7 @@ mod tests {
             ]
         );
         assert_eq!(
-            by_name("G + P - Wy").terms,
+            by_name("DL + LL - WY").terms,
             vec![
                 (LoadCaseId(1), 1.0),
                 (LoadCaseId(2), 1.0),
@@ -397,7 +407,7 @@ mod tests {
             ]
         );
         assert_eq!(
-            by_name("G + P + 0.35S + Wy").terms,
+            by_name("DL + LL + 0.35SL + WY").terms,
             vec![
                 (LoadCaseId(1), 1.0),
                 (LoadCaseId(2), 1.0),
@@ -434,14 +444,20 @@ mod tests {
                 .unwrap_or_else(|| panic!("missing combo {n}"))
         };
         // 長期積雪: δ1=0.65
-        assert_eq!(by_name("G + P + 0.65S").terms[2], (LoadCaseId(7), 0.65));
+        assert_eq!(by_name("DL + LL + 0.65SL").terms[2], (LoadCaseId(7), 0.65));
         // 地震時: δ3=0.4、暴風時: δ2=0.3
-        assert_eq!(by_name("G + P + 0.4S + Kx").terms[2], (LoadCaseId(7), 0.4));
-        assert_eq!(by_name("G + P + 0.3S + Wx").terms[2], (LoadCaseId(7), 0.3));
+        assert_eq!(
+            by_name("DL + LL + 0.4SL + EX").terms[2],
+            (LoadCaseId(7), 0.4)
+        );
+        assert_eq!(
+            by_name("DL + LL + 0.3SL + WX").terms[2],
+            (LoadCaseId(7), 0.3)
+        );
         // 長短期判定: δ1 付きは長期、δ3 付き地震は短期。
-        assert!(!is_short_term_combo("G + P + 0.65S"));
-        assert!(is_short_term_combo("G + P + 0.4S + Kx"));
-        assert!(is_short_term_combo("G + P + S"));
+        assert!(!is_short_term_combo("DL + LL + 0.65SL"));
+        assert!(is_short_term_combo("DL + LL + 0.4SL + EX"));
+        assert!(is_short_term_combo("DL + LL + SL"));
     }
 
     #[test]
@@ -458,11 +474,35 @@ mod tests {
             snow_factors: None,
         };
         let combos = standard_combinations(&input);
-        // G+P(1) + G+P+S(1) + Kx系2 + Ky系2 = 6（多雪でないので 0.7S・0.35S 系は無し）
+        // DL+LL(1) + DL+LL+SL(1) + EX系2 + EY系2 = 6（多雪でないので 0.7SL・0.35SL 系は無し）
         assert_eq!(combos.len(), 6);
-        assert!(combos.iter().all(|c| !c.name.contains("0.35S")));
-        assert!(combos.iter().all(|c| !c.name.contains("0.7S")));
+        assert!(combos.iter().all(|c| !c.name.contains("0.35SL")));
+        assert!(combos.iter().all(|c| !c.name.contains("0.7SL")));
         assert!(combos.iter().all(|c| !c.name.contains('W')));
+    }
+
+    #[test]
+    fn test_default_combinations_matches_auto_combinations() {
+        // squid-n-core の default_combinations（新規モデルの既定）は、標準ケースの
+        // 並び（0:DL, 1:LL(架構用), 3:EX, 4:EY）に対する auto_combinations と
+        // 完全一致する（名前・係数構成とも）。両者の命名規約がずれていないことを保証する。
+        let expected = auto_combinations(
+            LoadCaseId(0),
+            LoadCaseId(1),
+            Some(LoadCaseId(3)),
+            Some(LoadCaseId(4)),
+            None,
+        );
+        let actual = squid_n_core::model::default_combinations();
+        assert_eq!(
+            actual, expected,
+            "default_combinations が auto_combinations（DL/LL/EX/EY）と一致していない"
+        );
+        // 表示名で長短期の判別が正しく機能する（DL+LL は長期、地震4件は短期）。
+        assert!(!is_short_term_combo(&actual[0].name));
+        for c in &actual[1..] {
+            assert!(is_short_term_combo(&c.name), "{} は短期のはず", c.name);
+        }
     }
 
     #[test]
@@ -480,6 +520,6 @@ mod tests {
         };
         let combos = standard_combinations(&input);
         assert_eq!(combos.len(), 1);
-        assert_eq!(combos[0].name, "G + P");
+        assert_eq!(combos[0].name, "DL + LL");
     }
 }

@@ -271,6 +271,7 @@ fn make_story_ratio_model(structures: &[StoryStructure]) -> Model {
             node_ids: vec![nid],
             diaphragms: Vec::new(),
             seismic_weight: Some(1000.0),
+            weight_override: None,
             structure: *s,
             level_kind: StoryLevelKind::Normal,
         });
@@ -319,6 +320,7 @@ fn make_diaphragm_story(diaphragms: Vec<DiaphragmDef>) -> Story {
         node_ids: Vec::new(),
         diaphragms,
         seismic_weight: Some(400.0),
+        weight_override: None,
         structure: StoryStructure::Rc,
         level_kind: StoryLevelKind::Normal,
     }

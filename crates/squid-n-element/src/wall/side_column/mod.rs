@@ -20,6 +20,7 @@ mod column;
 mod detect;
 
 pub use column::{InPlaneReleasedColumn, ReleaseAxis};
+pub(crate) use detect::is_rc_wall;
 pub use detect::wall_side_column_release;
 
 #[cfg(test)]

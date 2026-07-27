@@ -20,7 +20,7 @@ impl App {
     /// 「開く…」ダイアログを表示して読み込む。
     pub(crate) fn open_project_dialog(&mut self) {
         if let Some(path) = rfd::FileDialog::new()
-            .add_filter("Squid-N プロジェクト", &["scz"])
+            .add_filter("Squid-n プロジェクト", &["scz"])
             .pick_file()
         {
             self.open_project_from(path);
@@ -36,7 +36,7 @@ impl App {
         };
         let path = path.or_else(|| {
             rfd::FileDialog::new()
-                .add_filter("Squid-N プロジェクト", &["scz"])
+                .add_filter("Squid-n プロジェクト", &["scz"])
                 .set_file_name("model.scz")
                 .save_file()
         });
@@ -186,6 +186,10 @@ impl App {
             });
 
             // 結果ケース：静的解析結果／荷重組合せ結果をクリックで表示対象に選択できる。
+            // 選択は変位図だけでなく応力図・断面検定（長期/短期）まで切り替える
+            // （`select_displayed_result`）。クロージャ内では self を可変借用できないため、
+            // クリックされたキーを一旦退避し、クロージャの外で適用する。
+            let mut nav_selected: Option<StaticKey> = None;
             let header = egui::CollapsingHeader::new("結果ケース")
                 .default_open(true)
                 .id_salt("nav_result_cases");
@@ -217,7 +221,7 @@ impl App {
                             };
                             let is_sel = self.nav.focus_result == Some(StaticKey::Case(*key));
                             if ui.selectable_label(is_sel, label).clicked() {
-                                self.nav.focus_result = Some(StaticKey::Case(*key));
+                                nav_selected = Some(StaticKey::Case(*key));
                             }
                         }
                         for (i, (name, _)) in r.combos.iter().enumerate() {
@@ -226,7 +230,7 @@ impl App {
                                 .selectable_label(is_sel, format!("組合せ {}", name))
                                 .clicked()
                             {
-                                self.nav.focus_result = Some(StaticKey::Combo(i));
+                                nav_selected = Some(StaticKey::Combo(i));
                             }
                         }
                         if r.modal.is_some() {
@@ -237,8 +241,11 @@ impl App {
                     ui.label("（未実行）");
                 }
             });
+            if let Some(key) = nav_selected {
+                self.select_displayed_result(key);
+            }
 
-            // 階/レベル（階の自動生成結果を上階→下階順に表示）
+            // 階/レベル（準備計算が生成した階を上階→下階順に表示）
             let _ = ui.collapsing("階/レベル", |ui| {
                 if self.model.stories.is_empty() {
                     ui.colored_label(crate::theme::GRAY_600, "未定義");
@@ -490,7 +497,13 @@ impl App {
         }
     }
 
-    /// 解析タブ：種別選択＋実行＋進捗表示。
+    /// 解析タブ：準備計算（解析条件の入力・階の定義）と解析の実行を、
+    /// 一貫計算の手順どおり上から順に並べる。
+    ///
+    /// 1. **準備計算** — 地震力・風圧力の算定諸元と計算条件を入力し、実行すると
+    ///    階の定義・剛域・荷重ケース（DL/LL/EX/EY/WX/WY）が確定する。
+    /// 2. **解析** — 確定した荷重ケース・荷重組合せを解く。地震力・風圧力も
+    ///    EX/EY・WX/WY の荷重ケースとして扱うため、専用の実行導線は設けない。
     pub(crate) fn analysis_settings_panel(&mut self, ui: &mut egui::Ui) {
         ui.heading("解析設定");
         ui.separator();
@@ -515,11 +528,200 @@ impl App {
         }
         ui.separator();
 
-        // ── 並列計算設定 ──────────────────────────────────────────
-        egui::CollapsingHeader::new("並列計算")
-            .default_open(false)
-            .id_salt("as_parallel")
+        self.preparation_section(ui, running);
+        ui.add_space(10.0);
+        ui.separator();
+        ui.strong("② 解析");
+        ui.add_space(4.0);
+        self.analysis_run_sections(ui, running);
+    }
+
+    /// 準備計算（① 解析前の前処理）のセクション一式。
+    ///
+    /// 実行ボタン・結果ステータスに続けて、準備計算が使う入力
+    /// （地震力の算定諸元・風圧力の算定諸元・計算条件）と、その成果である
+    /// 階の定義を並べる。地震力・風圧力の諸元をここへ置くのは、これらが
+    /// EX/EY・WX/WY の荷重ケースを決める準備計算の入力だからである。
+    fn preparation_section(&mut self, ui: &mut egui::Ui, running: bool) {
+        ui.strong("① 準備計算");
+        ui.add_space(4.0);
+        ui.horizontal_wrapped(|ui| {
+            if ui
+                .add_enabled(!running, egui::Button::new("🛠 準備計算 実行"))
+                .on_hover_text(
+                    "解析前の前処理（階の定義・剛域の算定・床荷重/自重/積載の集計・\
+                     地震力(Ai分布)と風圧力の算定・荷重ケース DL/LL/EX/EY/WX/WY の生成・\
+                     モデル整合性チェック）を実行し、結果を下ドック「準備計算」タブに表示します",
+                )
+                .clicked()
+            {
+                self.run_preparation();
+                self.bottom_dock_open = true;
+                self.bottom_tab = BottomTab::Preparation;
+            }
+            if ui
+                .button("📋 結果を表示")
+                .on_hover_text("下ドックの「準備計算」タブを開きます")
+                .clicked()
+            {
+                self.bottom_dock_open = true;
+                self.bottom_tab = BottomTab::Preparation;
+            }
+        });
+        match self.preparation.as_ref() {
+            _ if self.staleness.preparation_stale => ui.colored_label(
+                crate::theme::BEST_YELLOW,
+                "⚠ 準備計算が未実行、またはモデル編集により古くなっています。",
+            ),
+            Some(p) if !p.is_ready() => ui.colored_label(
+                crate::theme::ERROR_RED,
+                format!(
+                    "⛔ 準備計算: 整合性チェックにエラー {} 件（解析前に解消してください）",
+                    p.diag_errors
+                ),
+            ),
+            Some(p) => ui.colored_label(
+                crate::theme::GOOD_GREEN,
+                format!(
+                    "✅ 準備計算 済（階 {} ・剛域 {} 部材・警告 {} 件）",
+                    p.stories.len(),
+                    p.rigid_zones.len(),
+                    p.diag_warnings
+                ),
+            ),
+            None => ui.colored_label(crate::theme::GRAY_600, "準備計算: 未実行"),
+        };
+        ui.add_space(6.0);
+
+        self.seismic_condition_section(ui);
+        ui.add_space(6.0);
+        self.wind_condition_section(ui);
+        ui.add_space(6.0);
+        self.calc_condition_section(ui);
+        ui.add_space(6.0);
+        self.stories_section(ui);
+    }
+
+    /// 地震力（Ai 分布）の算定諸元。準備計算が EX/EY 荷重ケースを組み立てる入力。
+    fn seismic_condition_section(&mut self, ui: &mut egui::Ui) {
+        egui::CollapsingHeader::new("地震力の条件 (Ai 分布)")
+            .default_open(true)
+            .id_salt("as_seismic_cfg")
             .show(ui, |ui| {
+                ui.colored_label(
+                    crate::theme::GRAY_600,
+                    "準備計算で水平力を算定し、荷重ケース EX・EY へ反映します。",
+                );
+                ui.horizontal_wrapped(|ui| {
+                    ui.label("T算定:");
+                    ui.selectable_value(
+                        &mut self.analysis_cfg.ai_mode,
+                        AiMode::SemiPrecise,
+                        "固有値",
+                    )
+                    .on_hover_text("固有値解析による 1 次周期（先に固有値解析の実行が必要）");
+                    ui.selectable_value(&mut self.analysis_cfg.ai_mode, AiMode::Approx, "略算")
+                        .on_hover_text("T = h(0.02 + 0.01α) の略算式");
+                });
+                ui.horizontal_wrapped(|ui| {
+                    ui.label("Z:");
+                    ui.add(
+                        egui::DragValue::new(&mut self.analysis_cfg.z)
+                            .speed(0.05)
+                            .range(0.7..=1.0),
+                    )
+                    .on_hover_text(
+                        "地震地域係数 Z（昭55建告1793号 別表第2）。建設地の値を入力します",
+                    );
+                    ui.label("地盤:");
+                    use squid_n_load::ai::SoilClass;
+                    for (label, soil) in [
+                        ("第一種", SoilClass::I),
+                        ("第二種", SoilClass::II),
+                        ("第三種", SoilClass::III),
+                    ] {
+                        ui.selectable_value(&mut self.analysis_cfg.soil, soil, label);
+                    }
+                    ui.label("C0:");
+                    ui.add(
+                        egui::DragValue::new(&mut self.analysis_cfg.c0)
+                            .speed(0.05)
+                            .range(0.05..=1.0),
+                    );
+                });
+            });
+    }
+
+    /// 風圧力の算定諸元。準備計算が WX/WY 荷重ケースを組み立てる入力。
+    fn wind_condition_section(&mut self, ui: &mut egui::Ui) {
+        egui::CollapsingHeader::new("風圧力の条件")
+            .default_open(false)
+            .id_salt("as_wind_cfg")
+            .show(ui, |ui| {
+                ui.colored_label(
+                    crate::theme::GRAY_600,
+                    "準備計算で層水平力を算定し、荷重ケース WX・WY へ反映します。",
+                );
+                ui.horizontal_wrapped(|ui| {
+                    ui.label("V0[m/s]:");
+                    ui.add(
+                        egui::DragValue::new(&mut self.analysis_cfg.v0)
+                            .speed(0.5)
+                            .range(30.0..=46.0),
+                    );
+                    ui.label("粗度区分:");
+                    use squid_n_load::wind::TerrainRoughness;
+                    for (label, r) in [
+                        ("I", TerrainRoughness::I),
+                        ("II", TerrainRoughness::II),
+                        ("III", TerrainRoughness::III),
+                        ("IV", TerrainRoughness::IV),
+                    ] {
+                        ui.selectable_value(&mut self.analysis_cfg.roughness, r, label);
+                    }
+                    ui.label("パラペット[mm]:");
+                    ui.add(
+                        egui::DragValue::new(&mut self.analysis_cfg.parapet_mm)
+                            .speed(10.0)
+                            .range(0.0..=5000.0),
+                    );
+                });
+            });
+    }
+
+    /// 計算条件（質量方式・並列スレッド数）。いずれも準備計算の実行時に
+    /// モデルへ反映される、または解析全体に共通で効く設定。
+    fn calc_condition_section(&mut self, ui: &mut egui::Ui) {
+        egui::CollapsingHeader::new("計算条件")
+            .default_open(false)
+            .id_salt("as_calc_cfg")
+            .show(ui, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    use squid_n_core::model::MassMethod;
+                    ui.label("質量方式:");
+                    egui::ComboBox::from_id_salt("mass_method")
+                        .selected_text(match self.analysis_cfg.mass_method {
+                            MassMethod::CorrectedLumped => "補正質点（既定）",
+                            MassMethod::LumpedOnly => "質点のみ",
+                        })
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(
+                                &mut self.analysis_cfg.mass_method,
+                                MassMethod::CorrectedLumped,
+                                "補正質点（既定）",
+                            );
+                            ui.selectable_value(
+                                &mut self.analysis_cfg.mass_method,
+                                MassMethod::LumpedOnly,
+                                "質点のみ",
+                            );
+                        })
+                        .response
+                        .on_hover_text(
+                            "準備計算の実行時にモデルへ反映される。\
+                             固有値・時刻歴・精算周期の質量に共通で効く。",
+                        );
+                });
                 ui.horizontal_wrapped(|ui| {
                     ui.label("並列スレッド数:");
                     ui.add(egui::DragValue::new(&mut self.analysis_cfg.threads).range(0..=256));
@@ -529,9 +731,12 @@ impl App {
                     "0=自動(全コア) / 1=単一スレッド(結果の完全再現) / n=固定",
                 );
             });
-        ui.add_space(6.0);
+    }
 
-        // ── 階の定義（地震系解析の前提） ──────────────────────────
+    /// 階の定義（準備計算の成果）。標高・節点数・主要構造種別は自動算定のため
+    /// 表示のみとし、自動判定できない地震用重量の手入力と階の種別（一般／PH／
+    /// 地下）だけを編集できる。
+    fn stories_section(&mut self, ui: &mut egui::Ui) {
         egui::CollapsingHeader::new("階の定義")
             .default_open(false)
             .id_salt("as_stories")
@@ -539,199 +744,218 @@ impl App {
             if self.model.stories.is_empty() {
                 ui.colored_label(
                     crate::theme::GRAY_600,
-                    "未定義（地震静的・プッシュオーバーには階が必要です）",
+                    "未定義です。準備計算を実行すると節点の標高から生成されます。",
                 );
-            } else {
-                use squid_n_core::model::{StoryLevelKind, StoryStructure};
-                // model.stories を借用したまま undo.run（model の可変借用）はできないため、
-                // 行データを先に複製してから描画・編集確定を行う。
-                #[allow(clippy::type_complexity)]
-                let story_rows: Vec<(
-                    squid_n_core::ids::StoryId,
-                    String,
-                    f64,
-                    usize,
-                    Option<f64>,
-                    StoryStructure,
-                    StoryLevelKind,
-                )> = self
-                    .model
-                    .stories
-                    .iter()
-                    .map(|s| {
-                        (
-                            s.id,
-                            s.name.clone(),
-                            s.elevation,
-                            s.node_ids.len(),
-                            s.seismic_weight,
-                            s.structure,
-                            s.level_kind,
+                return;
+            }
+            ui.colored_label(
+                crate::theme::GRAY_600,
+                "標高・節点・構造種別は準備計算が自動算定します（構造種別は柱・梁の断面から判定）。",
+            );
+            use squid_n_core::model::StoryLevelKind;
+            // model.stories を借用したまま undo.run（model の可変借用）はできないため、
+            // 行データを先に複製してから描画・編集確定を行う。
+            #[allow(clippy::type_complexity)]
+            let story_rows: Vec<(
+                squid_n_core::ids::StoryId,
+                String,
+                f64,
+                usize,
+                Option<f64>,
+                Option<f64>,
+                squid_n_core::model::StoryStructure,
+                StoryLevelKind,
+            )> = self
+                .model
+                .stories
+                .iter()
+                .map(|s| {
+                    (
+                        s.id,
+                        s.name.clone(),
+                        s.elevation,
+                        s.node_ids.len(),
+                        s.seismic_weight,
+                        s.weight_override,
+                        s.structure,
+                        s.level_kind,
+                    )
+                })
+                .collect();
+            self.story_weight_edit.resize(story_rows.len(), 0.0);
+            self.story_weight_active.resize(story_rows.len(), false);
+            for (
+                i,
+                (story, name, elevation, n_nodes, weight, weight_override, structure, level_kind),
+            ) in story_rows.into_iter().enumerate()
+            {
+                if !self.story_weight_active[i] {
+                    self.story_weight_edit[i] = weight.unwrap_or(0.0) / 1000.0;
+                }
+                ui.strong(format!(
+                    "{}: 標高 {:.0} mm, 節点 {}, 構造 {}",
+                    name,
+                    elevation,
+                    n_nodes,
+                    crate::app::preparation::story_structure_label(structure)
+                ));
+                ui.horizontal_wrapped(|ui| {
+                    ui.label("W[kN]:");
+                    let resp = ui
+                        .add(
+                            egui::DragValue::new(&mut self.story_weight_edit[i])
+                                .speed(1.0)
+                                .range(0.0..=1.0e9),
                         )
-                    })
-                    .collect();
-                self.story_weight_edit.resize(story_rows.len(), 0.0);
-                self.story_weight_active.resize(story_rows.len(), false);
-                for (i, (story, name, elevation, n_nodes, weight, structure, level_kind)) in
-                    story_rows.into_iter().enumerate()
-                {
-                    if !self.story_weight_active[i] {
-                        self.story_weight_edit[i] = weight.unwrap_or(0.0) / 1000.0;
-                    }
-                    ui.strong(format!(
-                        "{}: 標高 {:.0} mm, 節点 {}",
-                        name, elevation, n_nodes
-                    ));
-                    ui.horizontal_wrapped(|ui| {
-                        ui.label("W[kN]:");
-                        let resp = ui
-                            .add(
-                                egui::DragValue::new(&mut self.story_weight_edit[i])
-                                    .speed(1.0)
-                                    .range(0.0..=1.0e9),
-                            )
-                            .on_hover_text("地震重量を手動調整します(自動生成値を上書き、undo可)");
-                        self.story_weight_active[i] = resp.dragged() || resp.has_focus();
-                        if resp.drag_stopped() || resp.lost_focus() {
-                            let new_weight = self.story_weight_edit[i] * 1000.0;
-                            if (new_weight - weight.unwrap_or(0.0)).abs() > 1e-6 {
-                                self.undo.run(
-                                    &mut self.model,
-                                    Box::new(squid_n_edit::SetStoryWeight {
-                                        story,
-                                        weight: Some(new_weight),
-                                    }),
-                                );
-                                self.staleness.mark_edited();
-                            }
-                        }
-
-                        ui.separator();
-                        ui.label("構造:");
-                        for (label, st) in [
-                            ("RC", StoryStructure::Rc),
-                            ("S", StoryStructure::S),
-                            ("SRC", StoryStructure::Src),
-                        ] {
-                            if ui.selectable_label(structure == st, label).clicked()
-                                && structure != st
-                            {
-                                self.undo.run(
-                                    &mut self.model,
-                                    Box::new(squid_n_edit::SetStoryStructure {
-                                        story,
-                                        structure: st,
-                                    }),
-                                );
-                                self.staleness.mark_edited();
-                            }
-                        }
-
-                        ui.separator();
-                        ui.label("種別:");
-                        let level_label = match level_kind {
-                            StoryLevelKind::Normal => "一般".to_string(),
-                            StoryLevelKind::Penthouse { k } => format!("PH k={:.2}", k),
-                            StoryLevelKind::Basement { depth_m } => {
-                                format!("地下 depth={:.1}m", depth_m)
-                            }
-                        };
-                        let mut new_level_kind: Option<StoryLevelKind> = None;
-                        egui::ComboBox::from_id_salt(("story_level_kind", story.0))
-                            .selected_text(level_label)
-                            .show_ui(ui, |ui| {
-                                if ui
-                                    .selectable_label(
-                                        matches!(level_kind, StoryLevelKind::Normal),
-                                        "一般",
-                                    )
-                                    .clicked()
-                                {
-                                    new_level_kind = Some(StoryLevelKind::Normal);
-                                }
-                                if ui
-                                    .selectable_label(
-                                        matches!(level_kind, StoryLevelKind::Penthouse { .. }),
-                                        "PH(塔屋)",
-                                    )
-                                    .clicked()
-                                {
-                                    let k = if let StoryLevelKind::Penthouse { k } = level_kind {
-                                        k
-                                    } else {
-                                        0.5
-                                    };
-                                    new_level_kind = Some(StoryLevelKind::Penthouse { k });
-                                }
-                                if ui
-                                    .selectable_label(
-                                        matches!(level_kind, StoryLevelKind::Basement { .. }),
-                                        "地下",
-                                    )
-                                    .clicked()
-                                {
-                                    let depth_m =
-                                        if let StoryLevelKind::Basement { depth_m } = level_kind {
-                                            depth_m
-                                        } else {
-                                            3.0
-                                        };
-                                    new_level_kind = Some(StoryLevelKind::Basement { depth_m });
-                                }
-                            });
-                        if let StoryLevelKind::Penthouse { k } = level_kind {
-                            let mut kv = k;
-                            let resp = ui.add(
-                                egui::DragValue::new(&mut kv)
-                                    .speed(0.05)
-                                    .range(0.0..=2.0)
-                                    .prefix("k="),
-                            );
-                            if (resp.drag_stopped() || resp.lost_focus()) && (kv - k).abs() > 1e-9 {
-                                new_level_kind = Some(StoryLevelKind::Penthouse { k: kv });
-                            }
-                        }
-                        if let StoryLevelKind::Basement { depth_m } = level_kind {
-                            let mut dv = depth_m;
-                            let resp = ui.add(
-                                egui::DragValue::new(&mut dv)
-                                    .speed(0.1)
-                                    .range(0.0..=100.0)
-                                    .suffix("m"),
-                            );
-                            if (resp.drag_stopped() || resp.lost_focus())
-                                && (dv - depth_m).abs() > 1e-9
-                            {
-                                new_level_kind = Some(StoryLevelKind::Basement { depth_m: dv });
-                            }
-                        }
-                        if let Some(lk) = new_level_kind {
+                        .on_hover_text(
+                            "地震用重量。編集すると手入力値として保持され、\
+                             準備計算で再生成しても上書きされません（undo 可）",
+                        );
+                    self.story_weight_active[i] = resp.dragged() || resp.has_focus();
+                    if resp.drag_stopped() || resp.lost_focus() {
+                        let new_weight = self.story_weight_edit[i] * 1000.0;
+                        if (new_weight - weight.unwrap_or(0.0)).abs() > 1e-6 {
                             self.undo.run(
                                 &mut self.model,
-                                Box::new(squid_n_edit::SetStoryLevelKind {
+                                Box::new(squid_n_edit::SetStoryWeight {
                                     story,
-                                    level_kind: lk,
+                                    weight: Some(new_weight),
                                 }),
                             );
                             self.staleness.mark_edited();
                         }
-                    });
-                }
-            }
-            if ui
-                .button("🏢 階の自動生成")
-                .on_hover_text(
-                    "節点の標高(Z)から階を推定し、剛床と地震重量(DL+地震用積載)を設定し、地震荷重をEX/EYケースへ生成します",
-                )
-                .clicked()
-            {
-                self.generate_stories_action();
+                    }
+                    if weight_override.is_some() {
+                        if ui
+                            .small_button("手入力を解除")
+                            .on_hover_text("次の準備計算で自動算定値へ戻ります")
+                            .clicked()
+                        {
+                            self.undo.run(
+                                &mut self.model,
+                                Box::new(squid_n_edit::SetStoryWeight {
+                                    story,
+                                    weight: None,
+                                }),
+                            );
+                            self.staleness.mark_edited();
+                        }
+                    } else {
+                        ui.colored_label(crate::theme::GRAY_600, "（自動）");
+                    }
+
+                    ui.separator();
+                    ui.label("種別:");
+                    let level_label = match level_kind {
+                        StoryLevelKind::Normal => "一般".to_string(),
+                        StoryLevelKind::Penthouse { k } => format!("PH k={:.2}", k),
+                        StoryLevelKind::Basement { depth_m } => {
+                            format!("地下 depth={:.1}m", depth_m)
+                        }
+                    };
+                    let mut new_level_kind: Option<StoryLevelKind> = None;
+                    egui::ComboBox::from_id_salt(("story_level_kind", story.0))
+                        .selected_text(level_label)
+                        .show_ui(ui, |ui| {
+                            if ui
+                                .selectable_label(
+                                    matches!(level_kind, StoryLevelKind::Normal),
+                                    "一般",
+                                )
+                                .clicked()
+                            {
+                                new_level_kind = Some(StoryLevelKind::Normal);
+                            }
+                            if ui
+                                .selectable_label(
+                                    matches!(level_kind, StoryLevelKind::Penthouse { .. }),
+                                    "PH(塔屋)",
+                                )
+                                .clicked()
+                            {
+                                let k = if let StoryLevelKind::Penthouse { k } = level_kind {
+                                    k
+                                } else {
+                                    0.5
+                                };
+                                new_level_kind = Some(StoryLevelKind::Penthouse { k });
+                            }
+                            if ui
+                                .selectable_label(
+                                    matches!(level_kind, StoryLevelKind::Basement { .. }),
+                                    "地下",
+                                )
+                                .clicked()
+                            {
+                                let depth_m =
+                                    if let StoryLevelKind::Basement { depth_m } = level_kind {
+                                        depth_m
+                                    } else {
+                                        3.0
+                                    };
+                                new_level_kind = Some(StoryLevelKind::Basement { depth_m });
+                            }
+                        });
+                    if let StoryLevelKind::Penthouse { k } = level_kind {
+                        let mut kv = k;
+                        let resp = ui.add(
+                            egui::DragValue::new(&mut kv)
+                                .speed(0.05)
+                                .range(0.0..=2.0)
+                                .prefix("k="),
+                        );
+                        if (resp.drag_stopped() || resp.lost_focus()) && (kv - k).abs() > 1e-9 {
+                            new_level_kind = Some(StoryLevelKind::Penthouse { k: kv });
+                        }
+                    }
+                    if let StoryLevelKind::Basement { depth_m } = level_kind {
+                        let mut dv = depth_m;
+                        let resp = ui.add(
+                            egui::DragValue::new(&mut dv)
+                                .speed(0.1)
+                                .range(0.0..=100.0)
+                                .suffix("m"),
+                        );
+                        if (resp.drag_stopped() || resp.lost_focus())
+                            && (dv - depth_m).abs() > 1e-9
+                        {
+                            new_level_kind = Some(StoryLevelKind::Basement { depth_m: dv });
+                        }
+                    }
+                    if let Some(lk) = new_level_kind {
+                        self.undo.run(
+                            &mut self.model,
+                            Box::new(squid_n_edit::SetStoryLevelKind {
+                                story,
+                                level_kind: lk,
+                            }),
+                        );
+                        self.staleness.mark_edited();
+                    }
+                });
             }
         });
-        ui.add_space(6.0);
+    }
 
-        // ── 線形静的 ──────────────────────────────────────────────
-        egui::CollapsingHeader::new("線形静的")
+    /// 解析（② 実行）のセクション一式。荷重ケース・荷重組合せ・固有値・
+    /// プッシュオーバー・時刻歴応答。
+    fn analysis_run_sections(&mut self, ui: &mut egui::Ui, running: bool) {
+        self.load_case_section(ui, running);
+        ui.add_space(6.0);
+        self.combination_section(ui, running);
+        ui.add_space(6.0);
+        self.eigen_section(ui, running);
+        ui.add_space(6.0);
+        self.pushover_section(ui, running);
+        ui.add_space(6.0);
+        self.time_history_section(ui, running);
+    }
+
+    /// 荷重ケース 1 つの静的解析。地震力（EX/EY）・風圧力（WX/WY）も準備計算が
+    /// 生成する荷重ケースなので、ここから同じ導線で実行する
+    /// （[`App::start_load_case_job`] が方向別の結果キーへ振り分ける）。
+    fn load_case_section(&mut self, ui: &mut egui::Ui, running: bool) {
+        egui::CollapsingHeader::new("荷重ケース（静的）")
             .default_open(true)
             .id_salt("as_linear")
             .show(ui, |ui| {
@@ -774,7 +998,7 @@ impl App {
                         .clicked()
                     {
                         if let Some(lc) = selected_lc {
-                            self.start_linear_static_job(lc);
+                            self.start_load_case_job(lc);
                             if self.last_error.is_none() {
                                 self.active_tab = Tab::Results;
                                 self.results_view = ResultsView::Spatial;
@@ -787,11 +1011,17 @@ impl App {
                         crate::theme::GRAY_600,
                         "荷重ケースがありません。荷重タブで作成してください。",
                     );
+                } else {
+                    ui.colored_label(
+                        crate::theme::GRAY_600,
+                        "EX/EY（地震力）・WX/WY（風圧力）は準備計算が自動生成します。",
+                    );
                 }
             });
-        ui.add_space(6.0);
+    }
 
-        // ── 荷重組合せ ────────────────────────────────────────────
+    /// 荷重組合せの解析（単独・全組合せ一括）。
+    fn combination_section(&mut self, ui: &mut egui::Ui, running: bool) {
         egui::CollapsingHeader::new("荷重組合せ")
             .default_open(true)
             .id_salt("as_combo")
@@ -852,9 +1082,10 @@ impl App {
                     });
                 }
             });
-        ui.add_space(6.0);
+    }
 
-        // ── 固有値 ────────────────────────────────────────────────
+    /// 固有値解析。
+    fn eigen_section(&mut self, ui: &mut egui::Ui, running: bool) {
         egui::CollapsingHeader::new("固有値")
             .default_open(false)
             .id_salt("as_eigen")
@@ -871,189 +1102,15 @@ impl App {
                         self.run_eigen(self.analysis_cfg.n_modes);
                     }
                 });
-                ui.horizontal_wrapped(|ui| {
-                    use squid_n_core::model::MassMethod;
-                    ui.label("質量方式:");
-                    egui::ComboBox::from_id_salt("mass_method")
-                        .selected_text(match self.analysis_cfg.mass_method {
-                            MassMethod::CorrectedLumped => "補正質点（既定）",
-                            MassMethod::LumpedOnly => "質点のみ",
-                        })
-                        .show_ui(ui, |ui| {
-                            ui.selectable_value(
-                                &mut self.analysis_cfg.mass_method,
-                                MassMethod::CorrectedLumped,
-                                "補正質点（既定）",
-                            );
-                            ui.selectable_value(
-                                &mut self.analysis_cfg.mass_method,
-                                MassMethod::LumpedOnly,
-                                "質点のみ",
-                            );
-                        })
-                        .response
-                        .on_hover_text(
-                            "階の自動生成の実行時にモデルへ反映される。\
-                             固有値・時刻歴・精算周期の質量に共通で効く。",
-                        );
-                });
+                ui.colored_label(
+                    crate::theme::GRAY_600,
+                    "質量方式は準備計算の「計算条件」で設定します。",
+                );
             });
-        ui.add_space(6.0);
+    }
 
-        // ── 地震静的（Ai 分布） ───────────────────────────────────
-        egui::CollapsingHeader::new("地震静的 (Ai 分布)")
-            .default_open(false)
-            .id_salt("as_seismic")
-            .show(ui, |ui| {
-                ui.horizontal_wrapped(|ui| {
-                    ui.label("方向:");
-                    ui.selectable_value(&mut self.analysis_cfg.seismic_dir, SeismicDir::X, "X");
-                    ui.selectable_value(&mut self.analysis_cfg.seismic_dir, SeismicDir::Y, "Y");
-                    ui.separator();
-                    ui.label("T算定:");
-                    ui.selectable_value(
-                        &mut self.analysis_cfg.ai_mode,
-                        AiMode::SemiPrecise,
-                        "固有値",
-                    )
-                    .on_hover_text("固有値解析による 1 次周期");
-                    ui.selectable_value(&mut self.analysis_cfg.ai_mode, AiMode::Approx, "略算")
-                        .on_hover_text("T = h(0.02 + 0.01α) の略算式");
-                });
-                ui.horizontal_wrapped(|ui| {
-                    ui.label("Z:");
-                    ui.add(
-                        egui::DragValue::new(&mut self.analysis_cfg.z)
-                            .speed(0.05)
-                            .range(0.7..=1.0),
-                    );
-                    ui.label("地盤:");
-                    use squid_n_load::ai::SoilClass;
-                    for (label, soil) in [
-                        ("第一種", SoilClass::I),
-                        ("第二種", SoilClass::II),
-                        ("第三種", SoilClass::III),
-                    ] {
-                        ui.selectable_value(&mut self.analysis_cfg.soil, soil, label);
-                    }
-                    ui.label("C0:");
-                    ui.add(
-                        egui::DragValue::new(&mut self.analysis_cfg.c0)
-                            .speed(0.05)
-                            .range(0.05..=1.0),
-                    );
-                });
-                // Z表（告示1793号別表第2、市町村名→Z のCSV）からの参照
-                ui.horizontal_wrapped(|ui| {
-                    if ui
-                        .button("📂 Z表CSV読込…")
-                        .on_hover_text(
-                            "「市町村名,Z値」形式のCSVを読み込みます（#始まりはコメント行）",
-                        )
-                        .clicked()
-                    {
-                        if let Some(path) = rfd::FileDialog::new()
-                            .add_filter("Z表 (CSV)", &["csv", "txt"])
-                            .pick_file()
-                        {
-                            match std::fs::read_to_string(&path) {
-                                Ok(csv) => self.load_z_table_from_csv(&csv),
-                                Err(e) => self.report_error(format!("Z表読込エラー: {}", e)),
-                            }
-                        }
-                    }
-                    match &self.z_table {
-                        Some(t) => {
-                            ui.label(format!("{} 市町村", t.len()));
-                        }
-                        None => {
-                            ui.colored_label(crate::theme::GRAY_600, "（未読込）");
-                        }
-                    }
-                    ui.label("市町村:");
-                    ui.add(
-                        egui::TextEdit::singleline(&mut self.z_table_municipality)
-                            .desired_width(130.0),
-                    );
-                    let can_lookup =
-                        self.z_table.is_some() && !self.z_table_municipality.trim().is_empty();
-                    if ui
-                        .add_enabled(can_lookup, egui::Button::new("Z参照"))
-                        .on_hover_text("市町村名（完全一致）でZ表を引き、Zへ反映します")
-                        .clicked()
-                    {
-                        let name = self.z_table_municipality.trim().to_string();
-                        self.apply_z_from_municipality(&name);
-                    }
-                });
-                if ui
-                    .add_enabled(!running, egui::Button::new("▶ 実行"))
-                    .clicked()
-                {
-                    self.start_seismic_job(self.analysis_cfg.seismic_dir);
-                    if self.last_error.is_none() {
-                        self.active_tab = Tab::Results;
-                        self.results_view = ResultsView::Spatial;
-                    }
-                }
-            });
-        ui.add_space(6.0);
-
-        // ── 風荷重静的 ─────────────────────────────────────────
-        egui::CollapsingHeader::new("風荷重静的")
-            .default_open(false)
-            .id_salt("as_wind")
-            .show(ui, |ui| {
-                ui.horizontal_wrapped(|ui| {
-                    ui.label("V0[m/s]:");
-                    ui.add(
-                        egui::DragValue::new(&mut self.analysis_cfg.v0)
-                            .speed(0.5)
-                            .range(30.0..=46.0),
-                    );
-                    ui.label("粗度区分:");
-                    use squid_n_load::wind::TerrainRoughness;
-                    for (label, r) in [
-                        ("I", TerrainRoughness::I),
-                        ("II", TerrainRoughness::II),
-                        ("III", TerrainRoughness::III),
-                        ("IV", TerrainRoughness::IV),
-                    ] {
-                        ui.selectable_value(&mut self.analysis_cfg.roughness, r, label);
-                    }
-                    ui.label("パラペット[mm]:");
-                    ui.add(
-                        egui::DragValue::new(&mut self.analysis_cfg.parapet_mm)
-                            .speed(10.0)
-                            .range(0.0..=5000.0),
-                    );
-                });
-                ui.horizontal_wrapped(|ui| {
-                    if ui
-                        .add_enabled(!running, egui::Button::new("▶ 風荷重解析 (X)"))
-                        .clicked()
-                    {
-                        self.start_wind_job(SeismicDir::X);
-                        if self.last_error.is_none() {
-                            self.active_tab = Tab::Results;
-                            self.results_view = ResultsView::Spatial;
-                        }
-                    }
-                    if ui
-                        .add_enabled(!running, egui::Button::new("▶ 風荷重解析 (Y)"))
-                        .clicked()
-                    {
-                        self.start_wind_job(SeismicDir::Y);
-                        if self.last_error.is_none() {
-                            self.active_tab = Tab::Results;
-                            self.results_view = ResultsView::Spatial;
-                        }
-                    }
-                });
-            });
-        ui.add_space(6.0);
-
-        // ── プッシュオーバー ──────────────────────────────────────
+    /// プッシュオーバー解析。
+    fn pushover_section(&mut self, ui: &mut egui::Ui, running: bool) {
         egui::CollapsingHeader::new("プッシュオーバー")
             .default_open(false)
             .id_salt("as_pushover")
@@ -1115,9 +1172,10 @@ impl App {
                     }
                 });
             });
-        ui.add_space(6.0);
+    }
 
-        // ── 時刻歴応答 ────────────────────────────────────────────
+    /// 時刻歴応答解析（線形）。
+    fn time_history_section(&mut self, ui: &mut egui::Ui, running: bool) {
         egui::CollapsingHeader::new("時刻歴応答（線形）")
             .default_open(false)
             .id_salt("as_time_history")
@@ -1324,8 +1382,44 @@ impl App {
         self.start_time_history_job(wave);
     }
 
+    /// 結果タブの「表示対象」ドロップダウン用の選択肢（キーと表示名）を収集する。
+    /// 静的ケース（ユーザー荷重・地震静的・風静的）に続けて荷重組合せを並べる。
+    fn result_display_options(&self) -> Vec<(StaticKey, String)> {
+        let mut opts = Vec::new();
+        if let Some(r) = &self.results {
+            for (key, _) in r.statics.iter() {
+                let label = match key {
+                    StaticCaseKey::User(id) => {
+                        let nm = self
+                            .model
+                            .load_cases
+                            .iter()
+                            .find(|lc| lc.id == *id)
+                            .map(|lc| lc.name.as_str())
+                            .unwrap_or("");
+                        format!("LC {} {}", id.0, nm)
+                    }
+                    StaticCaseKey::Seismic(SeismicDir::X) => "地震静的 (X方向)".to_string(),
+                    StaticCaseKey::Seismic(SeismicDir::Y) => "地震静的 (Y方向)".to_string(),
+                    StaticCaseKey::Wind(SeismicDir::X) => "風静的 (X方向)".to_string(),
+                    StaticCaseKey::Wind(SeismicDir::Y) => "風静的 (Y方向)".to_string(),
+                };
+                opts.push((StaticKey::Case(*key), label));
+            }
+            for (i, (name, _)) in r.combos.iter().enumerate() {
+                opts.push((StaticKey::Combo(i), name.clone()));
+            }
+        }
+        opts
+    }
+
     /// 結果タブ：3Dビューア と 時刻歴グラフを切替。
     pub(crate) fn results_tab_panel(&mut self, ui: &mut egui::Ui) {
+        // 表示対象（荷重ケース／組合せ）の選択肢を先に収集する
+        // （クロージャ内で self を可変借用しないため）。current_key は現在の表示対象。
+        let result_options = self.result_display_options();
+        let current_key = self.nav.focus_result.or(self.last_static);
+        let mut selected_result: Option<StaticKey> = None;
         ui.horizontal(|ui| {
             let sel_spatial = self.results_view == ResultsView::Spatial;
             let sel_th = self.results_view == ResultsView::TimeHistory;
@@ -1356,7 +1450,32 @@ impl App {
             } else {
                 ui.colored_label(crate::theme::GRAY_600, "▷ 未実行");
             }
+            // 表示対象（荷重ケース／組合せ）の選択。変位図に加え、応力図・断面検定
+            // （その組合せの長期/短期）まで切り替える。
+            if !result_options.is_empty() {
+                ui.separator();
+                ui.label("表示対象:");
+                let cur_label = current_key
+                    .and_then(|k| result_options.iter().find(|(o, _)| *o == k))
+                    .map(|(_, l)| l.clone())
+                    .unwrap_or_else(|| "（選択）".to_string());
+                egui::ComboBox::from_id_salt("results_display_selector")
+                    .selected_text(cur_label)
+                    .show_ui(ui, |ui| {
+                        for (opt_key, label) in &result_options {
+                            if ui
+                                .selectable_label(current_key == Some(*opt_key), label)
+                                .clicked()
+                            {
+                                selected_result = Some(*opt_key);
+                            }
+                        }
+                    });
+            }
         });
+        if let Some(key) = selected_result {
+            self.select_displayed_result(key);
+        }
         ui.separator();
         match self.results_view {
             ResultsView::Spatial => crate::viewer::viewer_panel(ui, self),
@@ -1368,6 +1487,11 @@ impl App {
 
     /// 設計タブ：検定表（許容応力度・保有水平耐力）と MN 相関曲面ビューを切り替える。
     pub(crate) fn design_tab_panel(&mut self, ui: &mut egui::Ui) {
+        // 断面算定の対象荷重（ケース／組合せ）を選ぶドロップダウン用の選択肢。
+        // 長期/短期区分は上部ツールバーの「荷重: 長期/短期」に表示される。
+        let result_options = self.result_display_options();
+        let current_key = self.nav.focus_result.or(self.last_static);
+        let mut selected_result: Option<StaticKey> = None;
         ui.horizontal(|ui| {
             let sel_table = self.design_view == DesignView::Table;
             let sel_ult = self.design_view == DesignView::Ultimate;
@@ -1385,7 +1509,31 @@ impl App {
             if ui.selectable_label(sel_qty, "数量積算").clicked() {
                 self.design_view = DesignView::Quantities;
             }
+            // 対象荷重の選択。選ぶとその組合せの内力・長期/短期で断面算定が再実行される。
+            if !result_options.is_empty() {
+                ui.separator();
+                ui.label("対象荷重:");
+                let cur_label = current_key
+                    .and_then(|k| result_options.iter().find(|(o, _)| *o == k))
+                    .map(|(_, l)| l.clone())
+                    .unwrap_or_else(|| "（選択）".to_string());
+                egui::ComboBox::from_id_salt("design_display_selector")
+                    .selected_text(cur_label)
+                    .show_ui(ui, |ui| {
+                        for (opt_key, label) in &result_options {
+                            if ui
+                                .selectable_label(current_key == Some(*opt_key), label)
+                                .clicked()
+                            {
+                                selected_result = Some(*opt_key);
+                            }
+                        }
+                    });
+            }
         });
+        if let Some(key) = selected_result {
+            self.select_displayed_result(key);
+        }
         ui.separator();
         match self.design_view {
             DesignView::Table => crate::design_view::design_table(ui, self),
@@ -1397,13 +1545,75 @@ impl App {
 
     /// プッシュオーバー結果（性能曲線・ヒンジ・崩壊機構）の表示。
     pub(crate) fn pushover_panel(&mut self, ui: &mut egui::Ui) {
-        let Some(po) = self.results.as_ref().and_then(|r| r.pushover.as_ref()) else {
+        if self
+            .results
+            .as_ref()
+            .and_then(|r| r.pushover.as_ref())
+            .is_none()
+        {
             ui.colored_label(
                 crate::theme::GRAY_600,
                 "プッシュオーバー結果がありません。解析タブから実行してください。",
             );
             return;
-        };
+        }
+
+        // 必要保有水平耐力の総合判定（Qu ≥ Qun = Ds·Fes·Qud）を先に算定する。
+        // 実行ボタン→結果画面でそのまま OK/NG を確認できるよう、性能曲線より前に
+        // バナー表示する。`compute_holding_capacity` は &mut self を要するため、
+        // 以降の `po` 借用より前にここで所有権付きの結果へ落とす。
+        let hc_verdict = self.compute_holding_capacity().ok();
+
+        let po = self
+            .results
+            .as_ref()
+            .and_then(|r| r.pushover.as_ref())
+            .expect("checked above");
+
+        // ── 必要保有水平耐力 判定バナー ──────────────────────────────
+        match &hc_verdict {
+            Some((res, _)) if !res.stories.is_empty() => {
+                let ng = res.stories.iter().filter(|s| !s.ok).count();
+                if ng == 0 {
+                    ui.colored_label(
+                        crate::theme::GOOD_GREEN,
+                        format!(
+                            "✔ 必要保有水平耐力を満足: 全 {} 層で Qu ≥ Qun（Qun = Ds·Fes·Qud）",
+                            res.stories.len()
+                        ),
+                    );
+                } else {
+                    ui.colored_label(
+                        crate::theme::ERROR_RED,
+                        format!(
+                            "✘ 必要保有水平耐力が不足: {} / {} 層で Qu < Qun。設計タブ「保有水平耐力」で詳細を確認してください。",
+                            ng,
+                            res.stories.len()
+                        ),
+                    );
+                }
+            }
+            _ => {
+                ui.colored_label(
+                    crate::theme::GRAY_600,
+                    "必要保有水平耐力の判定には荷重ケース EX／EY（地震力）の実行が必要です（解析タブ）。",
+                );
+            }
+        }
+        // 崩壊機構が未形成（部分崩壊形）の警告。崩壊機構が確定しない限り Ds・
+        // 必要保有水平耐力は暫定値であることを明示する（日本の慣行: 崩壊機構の確定が
+        // 必要保有水平耐力算定の前提）。
+        if matches!(
+            po.mechanism,
+            squid_n_solver::pushover::MechanismType::Partial
+        ) {
+            ui.colored_label(
+                crate::theme::SECONDARY_AMBER,
+                "⚠ 崩壊機構が未形成（部分崩壊形）です。目標変位を増やして再実行するか設計を\
+                 見直してください。崩壊機構が確定するまで Ds・必要保有水平耐力は暫定値です。",
+            );
+        }
+        ui.separator();
 
         ui.horizontal(|ui| {
             ui.label(format!("保有水平耐力 Qu = {:.1} kN", po.qu / 1000.0));
@@ -1967,6 +2177,16 @@ impl App {
                     && toggle_dock_icon(&mut self.bottom_dock_open, is_loads_active)
                 {
                     self.bottom_tab = BottomTab::Loads;
+                }
+                let is_prep_active =
+                    self.bottom_dock_open && self.bottom_tab == BottomTab::Preparation;
+                if ui
+                    .selectable_label(is_prep_active, "🛠")
+                    .on_hover_text("準備計算")
+                    .clicked()
+                    && toggle_dock_icon(&mut self.bottom_dock_open, is_prep_active)
+                {
+                    self.bottom_tab = BottomTab::Preparation;
                 }
                 let is_diag_active =
                     self.bottom_dock_open && self.bottom_tab == BottomTab::Diagnostics;

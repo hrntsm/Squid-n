@@ -6,7 +6,7 @@
 //! 形鋼ライブラリ（`StbSecSteel`）を解釈する。形鋼名から内部の [`SectionShape`] を復元し、
 //! 断面性能を再算定する。材料は断面のグレード名（鋼 `strength_main`、RC/SRC/CFT の
 //! `strength_concrete`）から標準材料表（[`material_std`]）で物性へ解決する。
-//! 後方互換のため、Squid-N が過去に書き出した物性直持ち `StbSecRaw` も読み取れる。
+//! 後方互換のため、Squid-n が過去に書き出した物性直持ち `StbSecRaw` も読み取れる。
 //!
 //! 標準断面は柱用（`StbSecColumn_*`）と梁用（`StbSecBeam_*`）に型分けされ、柱・梁共有断面の
 //! 分割などで断面 id が文書順に整列しないことがある。取り込み後に断面 id を整列・再採番し、
@@ -237,7 +237,7 @@ impl ImportReport {
     }
 }
 
-/// ST-Bridge の要素のうち Squid-N が未対応で、取り込み時に必ず警告対象とするもの。
+/// ST-Bridge の要素のうち Squid-n が未対応で、取り込み時に必ず警告対象とするもの。
 /// これに加え、部材（`StbMembers`）・断面（`StbSections`）・荷重（`StbLoadCase`）の直属子で
 /// 未対応のものは、このリストに無い未知要素であっても警告する（fail-loud。詳細は取り込み
 /// ループの `other` 分岐を参照）。本リストは、直属の親からは判別しづらい要素（通り芯など
@@ -1035,6 +1035,7 @@ pub fn import_stbridge_with_report(xml: &str) -> Result<(Model, ImportReport), S
             node_ids,
             diaphragms: vec![],
             seismic_weight: None,
+            weight_override: None,
         });
     }
 

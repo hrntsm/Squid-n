@@ -23,8 +23,12 @@ pub use element::{BeamElement, MemberForces};
 pub use rigid_zone::{
     apply_auto_rigid_zones, auto_rigid_zones, recompute_auto_zones, RigidZoneRule,
 };
-pub use stiffness_factors::WALL_GIRDER_STIFF_FACTOR;
+pub use stiffness_factors::{
+    composite_props_of, stiffness_breakdown, StiffnessBreakdown, WALL_GIRDER_STIFF_FACTOR,
+};
 
+pub(crate) use construct::eval_sections_of;
+pub(crate) use forces::member_forces_from_end_forces;
 pub(crate) use linalg::invert_small;
 
 #[cfg(test)]

@@ -7,7 +7,7 @@ use crate::secondary::member_rank::worst_rank;
 use squid_n_core::section_shape::SectionShape;
 
 /// 部材の用途（幅厚比ランク表の行の選択）。
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum SteelMemberUse {
     /// 柱
     Column,
@@ -21,6 +21,43 @@ struct WtLimits {
     fa: f64,
     fb: f64,
     fc: f64,
+}
+
+impl WtLimits {
+    /// 全限界値に係数を乗じる（基準強度 F による幅厚比限界の低減に用いる）。
+    fn scaled(self, k: f64) -> WtLimits {
+        WtLimits {
+            fa: self.fa * k,
+            fb: self.fb * k,
+            fc: self.fc * k,
+        }
+    }
+}
+
+/// 基準強度 F が 325N/mm²（490N級・F=325）を超える鋼材に対する幅厚比限界の低減係数。
+///
+/// 技術基準解説書 表 備考2 により、幅厚比限界は 400N級（F=235）の値に、H形・角形断面は
+/// \\( \sqrt{235/F} \\) を、円形断面は \\( 235/F \\) を乗じた値とする。本実装は 400N級・490N級
+/// （F=325）の限界値を離散表として持つため、F=325 を基準（係数 1.0）に F>325 側の連続低減を
+/// `√(325/F)`（H形・角形）・`325/F`（円形）で与える（F=235・F=325 の表値は不変）。
+/// これがないと SM520（F=355）・TMCP355/385・SA440（F=440）等の高強度鋼が F=325 の限界値を
+/// そのまま使い、限界幅厚比を過大に見積もってランクを甘く（非保守側に）判定してしまう。
+/// F≦325 では 1.0（低減なし。F=235〜325 の離散表値をそのまま用いる）。
+fn high_strength_scale(f: f64, circular: bool) -> f64 {
+    if f > 325.0 {
+        if circular {
+            325.0 / f
+        } else {
+            (325.0 / f).sqrt()
+        }
+    } else {
+        1.0
+    }
+}
+
+/// 部材の基準強度 F [N/mm²]（板厚区分対応）を鋼種名から引く。解決できなければ 235。
+fn f_value_of(grade_name: &str, thickness: f64) -> f64 {
+    crate::steel::steel_f_value_prefix(grade_name, thickness).unwrap_or(235.0)
 }
 
 /// 幅厚比 `wt` を [`WtLimits`] と比較してランクを返す。
@@ -261,9 +298,16 @@ pub fn s_member_rank_by_kihon(
 
             let flange_is_490 = is_490_class(grade_name, flange_thick);
             let web_is_490 = is_490_class(grade_name, web_thick);
-            let flange_rank =
-                rank_from_limits(flange_wt, &h_flange_limits(member_use, flange_is_490));
-            let web_rank = rank_from_limits(web_wt, &h_web_limits(member_use, web_is_490));
+            // F>325 の高強度鋼は √(235/F) 低減（≒ 490級表 × √(325/F)）を適用する。
+            let flange_limits = h_flange_limits(member_use, flange_is_490).scaled(
+                high_strength_scale(f_value_of(grade_name, flange_thick), false),
+            );
+            let web_limits = h_web_limits(member_use, web_is_490).scaled(high_strength_scale(
+                f_value_of(grade_name, web_thick),
+                false,
+            ));
+            let flange_rank = rank_from_limits(flange_wt, &flange_limits);
+            let web_rank = rank_from_limits(web_wt, &web_limits);
             worst_rank(&[flange_rank, web_rank])
         }
         // 非対称組立 H: 上下フランジ（幅・厚が異なる）とウェブの各幅厚比ランクの最悪値。
@@ -284,15 +328,21 @@ pub fn s_member_rank_by_kihon(
             }
             let uf_rank = rank_from_limits(
                 (upper_width / 2.0) / upper_thick,
-                &h_flange_limits(member_use, is_490_class(grade_name, upper_thick)),
+                &h_flange_limits(member_use, is_490_class(grade_name, upper_thick)).scaled(
+                    high_strength_scale(f_value_of(grade_name, upper_thick), false),
+                ),
             );
             let lf_rank = rank_from_limits(
                 (lower_width / 2.0) / lower_thick,
-                &h_flange_limits(member_use, is_490_class(grade_name, lower_thick)),
+                &h_flange_limits(member_use, is_490_class(grade_name, lower_thick)).scaled(
+                    high_strength_scale(f_value_of(grade_name, lower_thick), false),
+                ),
             );
             let web_rank = rank_from_limits(
                 web_clear / web_thick,
-                &h_web_limits(member_use, is_490_class(grade_name, web_thick)),
+                &h_web_limits(member_use, is_490_class(grade_name, web_thick)).scaled(
+                    high_strength_scale(f_value_of(grade_name, web_thick), false),
+                ),
             );
             worst_rank(&[uf_rank, lf_rank, web_rank])
         }
@@ -302,7 +352,10 @@ pub fn s_member_rank_by_kihon(
                 return None;
             }
             let wt = height / thick;
-            Some(rank_from_limits(wt, &box_limits_for(grade_name, thick)))
+            // 角形は BCR/BCP/STKR の専用行を優先し、F>325 の高強度側は √(325/F) 低減。
+            let limits = box_limits_for(grade_name, thick)
+                .scaled(high_strength_scale(f_value_of(grade_name, thick), false));
+            Some(rank_from_limits(wt, &limits))
         }
         SectionShape::SteelPipe { outer_dia, thick }
         | SectionShape::CftPipe { outer_dia, thick } => {
@@ -311,7 +364,10 @@ pub fn s_member_rank_by_kihon(
             }
             let wt = outer_dia / thick;
             let is_490 = is_490_class(grade_name, thick);
-            Some(rank_from_limits(wt, &pipe_limits(is_490)))
+            // 円形は F>325 側を 235/F（=490級表 × 325/F）で低減する。
+            let limits = pipe_limits(is_490)
+                .scaled(high_strength_scale(f_value_of(grade_name, thick), true));
+            Some(rank_from_limits(wt, &limits))
         }
         // 平鋼・中実丸鋼は板要素でない中実断面、リップ溝形は冷間成形材（有効幅で別途検討）
         // のため、いずれも本表（熱間圧延材の幅厚比ランク）の対象外。

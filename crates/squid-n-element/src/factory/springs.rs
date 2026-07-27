@@ -1,7 +1,6 @@
 //! バネ / 履歴則パラメータ算定。
 //!
 //! - [`build_fiber`] — ファイバー梁の生成
-//! - [`build_rotational_springs`] — 材端回転バネ（弾性解析用）
 //! - [`build_flexural_springs`] — 材端曲げバネ（履歴則別・非線形解析用）
 //! - [`yield_moment_and_axial`] — 集中バネの My0 と N許容（N-M 相関用）
 //! - [`resolve_member_hysteresis`] — 部材の履歴則を解決（UI 表示にも用いる）
@@ -15,21 +14,32 @@ use squid_n_material::{HysteresisMaterial, HysteresisRule, SteelBuckling, TsujiY
 use super::regime::is_vertical_member;
 use super::StrengthBasis;
 
-/// ファイバー梁の生成。既定で塑性化域考慮モデル（端部 Lp 区間にファイバー断面、
-/// 中央弾性）とし、Lp は `plastic_zone` 指定値、未指定なら断面せいの 0.5 倍
-/// （MS 要素と同じ既定。0.5D は既往検討で標準的に用いられる値）。
-pub(super) fn build_fiber(
-    data: &ElementData,
-    model: &Model,
-    basis: StrengthBasis,
-) -> crate::fiber::FiberBeam {
+/// 端部塑性化域モデル（ファイバー要素・MS 要素）の塑性化域長 Lp [mm]。
+///
+/// `plastic_zone` の指定値、未指定なら断面せいの 0.5 倍（0.5D は既往検討で
+/// 標準的に用いられる値）。断面せいが取れない場合は 200mm を仮定する。
+/// 要素生成（[`build_fiber`] / [`crate::multi_spring::MultiSpringElement::new`]）と
+/// モデル化図の表示で同じ値を用いるため公開する。
+/// なお部材長に対する上下限クランプは
+/// [`crate::fiber::clamp_plastic_zone`] が担う。
+pub fn plastic_zone_length(data: &ElementData, model: &Model) -> f64 {
     let depth = data
         .section
         .and_then(|sid| model.sections.get(sid.index()))
         .map(|s| s.depth)
         .filter(|d| *d > 0.0)
         .unwrap_or(200.0);
-    let lp = data.plastic_zone.unwrap_or(0.5 * depth);
+    data.plastic_zone.unwrap_or(0.5 * depth)
+}
+
+/// ファイバー梁の生成。既定で塑性化域考慮モデル（端部 Lp 区間にファイバー断面、
+/// 中央弾性）とし、Lp は [`plastic_zone_length`]（MS 要素と同じ既定）。
+pub(super) fn build_fiber(
+    data: &ElementData,
+    model: &Model,
+    basis: StrengthBasis,
+) -> crate::fiber::FiberBeam {
+    let lp = plastic_zone_length(data, model);
     crate::fiber::FiberBeam::with_plastic_zone(data, model, lp, basis)
 }
 
@@ -139,17 +149,6 @@ fn rotational_spring_params(data: &ElementData, model: &Model, basis: StrengthBa
         1.0e12
     };
     (k_rot, my)
-}
-
-pub(super) fn build_rotational_springs(
-    data: &ElementData,
-    model: &Model,
-    basis: StrengthBasis,
-) -> (Box<dyn UniaxialMaterial>, Box<dyn UniaxialMaterial>) {
-    let (k_rot, my) = rotational_spring_params(data, model, basis);
-    let spring_i = Box::new(Bilinear::new(k_rot, my, 0.01));
-    let spring_j = Box::new(Bilinear::new(k_rot, my, 0.01));
-    (spring_i, spring_j)
 }
 
 /// 断面形状が RC/SRC/CFT（コンクリート系）か否か（既定履歴則の判定用）。

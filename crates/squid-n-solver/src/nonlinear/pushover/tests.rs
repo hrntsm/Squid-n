@@ -88,6 +88,7 @@ fn single_column_model(fy: f64, seismic_weight: f64) -> Model {
                 rigid: true,
             }],
             seismic_weight: Some(seismic_weight),
+            weight_override: None,
         }],
         ..Default::default()
     }
@@ -443,6 +444,7 @@ fn two_story_model() -> Model {
                 node_ids: vec![NodeId(1)],
                 diaphragms: vec![],
                 seismic_weight: None,
+                weight_override: None,
             },
             Story {
                 level_kind: Default::default(),
@@ -453,6 +455,7 @@ fn two_story_model() -> Model {
                 node_ids: vec![NodeId(2)],
                 diaphragms: vec![],
                 seismic_weight: None,
+                weight_override: None,
             },
         ],
         ..Default::default()
@@ -474,7 +477,7 @@ fn test_determine_mechanism_partial_when_insufficient() {
     let model = two_story_model();
     // ひび割れのみ → 降伏ヒンジ0個 < r+1 → Partial
     assert!(matches!(
-        determine_mechanism(&[hinge(0, 0.0, HingeLevel::Crack)], &model),
+        determine_mechanism(&[hinge(0, 0.0, HingeLevel::Crack)], &model, SeismicDir::X),
         MechanismType::Partial
     ));
 }
@@ -485,7 +488,7 @@ fn test_determine_mechanism_partial_when_insufficient() {
 fn test_determine_mechanism_single_yield_establishes_mechanism() {
     let model = two_story_model();
     // elem0 端 j (pos=1.0) → node1 = 1F 単独階 → 層崩壊
-    match determine_mechanism(&[hinge(0, 1.0, HingeLevel::Yield)], &model) {
+    match determine_mechanism(&[hinge(0, 1.0, HingeLevel::Yield)], &model, SeismicDir::X) {
         MechanismType::StoryCollapse { story } => assert_eq!(story, StoryId(0)),
         other => panic!(
             "expected StoryCollapse{{0}}, got {:?}",
@@ -499,7 +502,7 @@ fn test_determine_mechanism_single_yield_establishes_mechanism() {
 fn test_compute_static_indeterminacy_two_story() {
     // 2層2柱: 部材2・節点3・基礎節点(node0)が平面3DOF拘束 → r = 6 - 9 + 3 = 0（静定）
     let model = two_story_model();
-    assert_eq!(compute_static_indeterminacy(&model), 0);
+    assert_eq!(compute_static_indeterminacy(&model, SeismicDir::X), 0);
 }
 
 #[test]
@@ -624,10 +627,11 @@ fn test_compute_static_indeterminacy_indeterminate_portal() {
             node_ids: vec![NodeId(1), NodeId(2)],
             diaphragms: vec![],
             seismic_weight: None,
+            weight_override: None,
         }],
         ..Default::default()
     };
-    assert_eq!(compute_static_indeterminacy(&portal), 3);
+    assert_eq!(compute_static_indeterminacy(&portal, SeismicDir::X), 3);
 }
 
 #[test]
@@ -639,7 +643,7 @@ fn test_determine_mechanism_story_collapse() {
         hinge(0, 1.0, HingeLevel::Yield),
         hinge(1, 0.0, HingeLevel::Yield),
     ];
-    match determine_mechanism(&hinges, &model) {
+    match determine_mechanism(&hinges, &model, SeismicDir::X) {
         MechanismType::StoryCollapse { story } => assert_eq!(story, StoryId(0)),
         other => panic!(
             "expected StoryCollapse{{0}}, got {:?}",
@@ -657,7 +661,7 @@ fn test_determine_mechanism_overall() {
         hinge(1, 1.0, HingeLevel::Yield), // node2 = 2F
     ];
     assert!(matches!(
-        determine_mechanism(&hinges, &model),
+        determine_mechanism(&hinges, &model, SeismicDir::X),
         MechanismType::Overall
     ));
 }
@@ -822,6 +826,7 @@ fn portal_frame_model(fy: f64, seismic_weight: f64) -> Model {
                 rigid: true,
             }],
             seismic_weight: Some(seismic_weight),
+            weight_override: None,
         }],
         constraints: vec![Constraint::RigidDiaphragm {
             story: StoryId(0),
@@ -1822,4 +1827,300 @@ fn test_compute_shear_yield_thresholds_rc_rebar_scaled_but_shear_reinforcement_i
         }
         DirThreshold::Static(_) => panic!("expected RcArakawa for RcRect with rebar"),
     }
+}
+
+/// 変位制御フェーズが実際に目標変位まで押し切り、荷重制御（λ=1＝C0=0.2 級）を
+/// 超える耐力まで到達することを検証する回帰テスト。
+///
+/// 修正前は変位制御のペナルティ残差 `penalty·(target − u)` の桁落ちで収束判定が
+/// 原理的に成立せず、変位制御フェーズが1点も確定しなかった。その結果 Qu は荷重
+/// 制御の頭打ち（λ=1、参照荷重 C0=0.2・地震重量＝設計地震力レベル）に張り付き、
+/// 崩壊機構へ到達しないまま過小評価されていた（保有水平耐力計算として致命的）。
+#[test]
+fn test_pushover_displacement_control_reaches_target_and_exceeds_design_load() {
+    let seismic_weight = 80_000.0;
+    let mut model = single_column_model(235.0, seismic_weight);
+    let dofmap = DofMap::build(&model);
+    let reducer = Reducer::build(&model, &dofmap);
+    let max_disp = 200.0;
+    let n_steps = 50usize;
+
+    // 荷重制御のみ（max_disp=0）: Qu は参照荷重 C0=0.2・地震重量で頭打ち。
+    let mut load_only_model = single_column_model(235.0, seismic_weight);
+    let lo_dofmap = DofMap::build(&load_only_model);
+    let lo_reducer = Reducer::build(&load_only_model, &lo_dofmap);
+    let load_only = pushover_analysis(
+        &mut load_only_model,
+        &lo_dofmap,
+        &lo_reducer,
+        SeismicDir::X,
+        n_steps,
+        0.0,
+        false,
+        false,
+        0.0,
+    )
+    .expect("load control run");
+
+    let result = pushover_analysis(
+        &mut model,
+        &dofmap,
+        &reducer,
+        SeismicDir::X,
+        n_steps,
+        max_disp,
+        false,
+        false,
+        0.0,
+    )
+    .expect("displacement control run");
+
+    // 変位制御フェーズ（step >= n_steps+1）が点を確定していること。
+    let disp_phase_points = result
+        .capacity_curve
+        .iter()
+        .filter(|c| c.step as usize > n_steps)
+        .count();
+    assert!(
+        disp_phase_points >= 5,
+        "displacement-control phase should record points, got {}",
+        disp_phase_points
+    );
+
+    // 目標変位（200mm）まで到達していること。
+    let last_roof = result
+        .capacity_curve
+        .last()
+        .map(|c| c.roof_disp)
+        .unwrap_or(0.0);
+    assert!(
+        (last_roof - max_disp).abs() < 1.0,
+        "roof should reach target {}mm, got {:.3}mm",
+        max_disp,
+        last_roof
+    );
+
+    // 変位制御により荷重制御頭打ち（≈ 0.2·W）を有意に上回る耐力へ到達すること。
+    assert!(
+        result.qu > load_only.qu * 1.5,
+        "displacement control Qu={:.1} should exceed load-only Qu={:.1}",
+        result.qu,
+        load_only.qu
+    );
+}
+
+/// 4 節点の耐震壁（壁エレメントモデル、節点配列 `[下辺a, 下辺b, 上辺a, 上辺b]`）で、
+/// 加力方向の水平力が「下辺 2 節点の**合計**」になること。
+///
+/// 従来は data[0..3]（下辺a）と data[6..9]（下辺b）の最大値を取っており、下辺 2 節点の
+/// 一方だけを見る形で水平力を約 1/2 に過小評価していた（βu・壁の τu が過小＝
+/// 部材種別・Ds が甘くなる危険側）。2 節点の線材では従来と同じ値になること
+/// （リグレッションが無いこと）も併せて確認する。
+#[test]
+fn test_horizontal_force_sums_wall_bottom_nodes() {
+    use squid_n_element::behavior::LocalVec;
+
+    // 4 節点壁: 下辺 a=30kN, b=70kN（合計 100kN）、上辺 a=-40kN, b=-60kN（合計 -100kN）。
+    let mut data = smallvec::SmallVec::<[f64; 24]>::from_elem(0.0, 24);
+    data[0] = 30_000.0; // 下辺a Fx
+    data[6] = 70_000.0; // 下辺b Fx
+    data[12] = -40_000.0; // 上辺a Fx
+    data[18] = -60_000.0; // 上辺b Fx
+    let f = LocalVec { data };
+    let h = super::member_response::horizontal_force_in_dir(&f, 4, 0);
+    assert!(
+        (h - 100_000.0).abs() < 1e-6,
+        "4 節点壁の水平力は下辺の合計 100kN であるべき（旧実装は max=70kN）。got {}",
+        h
+    );
+
+    // 2 節点線材: i 端 +50kN / j 端 -50kN → 50kN（従来と同じ）。
+    let mut data2 = smallvec::SmallVec::<[f64; 24]>::from_elem(0.0, 12);
+    data2[0] = 50_000.0;
+    data2[6] = -50_000.0;
+    let f2 = LocalVec { data: data2 };
+    let h2 = super::member_response::horizontal_force_in_dir(&f2, 2, 0);
+    assert!(
+        (h2 - 50_000.0).abs() < 1e-6,
+        "2 節点は従来どおり。got {}",
+        h2
+    );
+}
+
+// ===== 系レベル V&V: 剛域が保有水平耐力・崩壊機構へ与える影響 =====
+
+/// 剛域検証用の門形フレーム（1層1スパン）。
+///
+/// 柱は 100×100 のファイバー要素で両端固定、はりは柱より十分強い断面
+/// （300×300）として弾性に留め、**柱の両端 4 ヒンジによる崩壊機構**に固定する。
+/// これにより崩壊荷重は手計算 Qu = 4·My/L'（L' = 柱の可撓長）で照合できる。
+/// `rigid` に剛域長 λ [mm] を与えると、柱の上下端に λ の剛域を設定する。
+fn portal_frame_rigid_zone_model(fy: f64, seismic_weight: f64, rigid: f64) -> Model {
+    let mut model = portal_frame_model(fy, seismic_weight);
+    // はり用の強い断面を追加し、はりへ割り当てる（はりを弾性に保つ）。
+    let strong = Section {
+        id: SectionId(1),
+        name: "girder".to_string(),
+        area: 90000.0,
+        iy: 6.75e8,
+        iz: 6.75e8,
+        j: 1.0e9,
+        depth: 300.0,
+        width: 300.0,
+        as_y: 0.0,
+        as_z: 0.0,
+        panel_thickness: None,
+        thickness: None,
+        shape: None,
+    };
+    model.sections.push(strong);
+    model.elements[1].section = Some(SectionId(1));
+    // 柱（要素 0・2）の上下端へ剛域を設定する。
+    if rigid > 0.0 {
+        for idx in [0usize, 2] {
+            model.elements[idx].rigid_zone = RigidZone {
+                length_i: rigid,
+                length_j: rigid,
+                face_i: rigid,
+                face_j: rigid,
+                ..Default::default()
+            };
+        }
+    }
+    model
+}
+
+/// 4 個目の降伏ヒンジ（柱両端×2 本で運動学的機構が成立する）が揃ったステップの
+/// ベースシアを「観測崩壊荷重」として返す。
+///
+/// ヒンジは (部材, 材端) で重複を除いて数える（`determine_mechanism` の
+/// 運動学的ゲートと同じ数え方）。
+fn observed_collapse_shear(result: &PushoverResult) -> Option<f64> {
+    let mut seen: std::collections::BTreeSet<(u32, u8)> = std::collections::BTreeSet::new();
+    let mut mech_step = None;
+    let mut events: Vec<&HingeEvent> = result
+        .hinges
+        .iter()
+        .filter(|h| !matches!(h.level, HingeLevel::Crack))
+        .collect();
+    events.sort_by_key(|h| h.step);
+    for h in events {
+        seen.insert((h.elem.index() as u32, if h.pos < 0.5 { 0 } else { 1 }));
+        if seen.len() >= 4 {
+            mech_step = Some(h.step);
+            break;
+        }
+    }
+    let mech_step = mech_step?;
+    result
+        .capacity_curve
+        .iter()
+        .find(|c| c.step == mech_step)
+        .map(|c| c.base_shear)
+}
+
+fn run_rigid_zone_pushover(rigid: f64) -> PushoverResult {
+    let mut model = portal_frame_rigid_zone_model(235.0, 600_000.0, rigid);
+    let dofmap = DofMap::build(&model);
+    let reducer = Reducer::build(&model, &dofmap);
+    pushover_analysis(
+        &mut model,
+        &dofmap,
+        &reducer,
+        SeismicDir::X,
+        400,
+        0.0,
+        false,
+        false,
+        0.0,
+    )
+    .expect("pushover should run end-to-end")
+}
+
+/// 系レベル V&V（1）: 剛域つき門形フレームの**崩壊荷重が可撓長基準の理論値**に
+/// 一致すること。
+///
+/// 柱両端 4 ヒンジの崩壊機構では Qu = 4·My/L'（L' = 柱の可撓長）であり、剛域を
+/// 与えると L' = H − 2λ に短くなるぶん崩壊荷重は H/L' 倍になる。断面のファイバー
+/// 離散化や荷重ステップの量子化による誤差を打ち消すため、**剛域なしとの比**で
+/// 照合する（絶対値は既存 `test_portal_frame_collapse_load` が別途照合済み）。
+#[test]
+fn vnv_剛域つき門形フレームの崩壊荷重が可撓長基準になる() {
+    let h: f64 = 3000.0;
+    let lam: f64 = 300.0;
+    let l_flex = h - 2.0 * lam;
+
+    let r0 = run_rigid_zone_pushover(0.0);
+    let r1 = run_rigid_zone_pushover(lam);
+    let q0 = observed_collapse_shear(&r0).expect("剛域なしで崩壊機構が成立しない");
+    let q1 = observed_collapse_shear(&r1).expect("剛域ありで崩壊機構が成立しない");
+
+    let ratio = q1 / q0;
+    let theory = h / l_flex;
+    // 荷重ステップの量子化（400 ステップ）で数 % のばらつきが出るため許容 5%。
+    assert!(
+        (ratio / theory - 1.0).abs() < 0.05,
+        "崩壊荷重比が可撓長基準の理論値から外れている: 実測 {ratio:.4}（Qu={q0:.0}→{q1:.0} N）, 理論 H/L'={theory:.4}"
+    );
+    // 剛域を無視していた頃は崩壊荷重が剛域に反応しなかった（比 = 1.0）。
+    assert!(
+        ratio > 1.1,
+        "剛域が崩壊荷重に反映されていない（比 {ratio:.4}）"
+    );
+}
+
+/// 系レベル V&V（2）: 剛域があっても崩壊機構が成立し、崩壊ヒンジが**柱に**
+/// 形成されること（はりを強くしているため柱の全体機構になる）。
+/// 崩壊機構種別は Ds の機構補正（`squid_n_design_jp::secondary::story_ds`）へ
+/// 直接効くため、剛域の導入で機構分類が崩れないことを確認する。
+#[test]
+fn vnv_剛域つきでも柱の崩壊機構が成立する() {
+    let result = run_rigid_zone_pushover(300.0);
+    let yielded: Vec<&HingeEvent> = result
+        .hinges
+        .iter()
+        .filter(|h| !matches!(h.level, HingeLevel::Crack))
+        .collect();
+    assert!(
+        yielded.len() >= 4,
+        "柱両端 4 ヒンジの機構に達していない: 降伏ヒンジ {} 個",
+        yielded.len()
+    );
+    // 降伏ヒンジはすべて柱（要素 0・2）に生じる（はりは弾性に留める設計）。
+    assert!(
+        yielded
+            .iter()
+            .all(|h| h.elem == ElemId(0) || h.elem == ElemId(2)),
+        "はりに降伏ヒンジが生じた（柱の崩壊機構になっていない）"
+    );
+    assert!(
+        !matches!(result.mechanism, MechanismType::Partial),
+        "崩壊機構が Partial のまま（機構が成立していない）"
+    );
+}
+
+/// 系レベル V&V（3）: 剛域が層の弾性剛性を理論どおり増大させること。
+/// 剛性率 Rs・層間変形角の検定（`squid_n_design_jp::secondary::holding_capacity`）は
+/// 層剛性に直接依存するため、要素レベルだけでなく層レベルでも確認する。
+///
+/// 両端固定柱の層せん断剛性は 12EI/L'³（節点変位基準。剛体アームは変形しない）で、
+/// 剛域を与えると (H/L')³ 倍になる。
+#[test]
+fn vnv_剛域は層の弾性剛性を可撓長の三乗で増大させる() {
+    let h: f64 = 3000.0;
+    let lam: f64 = 300.0;
+    let l_flex = h - 2.0 * lam;
+    let elastic_k = |r: &PushoverResult| -> f64 {
+        let p = &r.capacity_curve[0];
+        p.base_shear / p.roof_disp
+    };
+    let k0 = elastic_k(&run_rigid_zone_pushover(0.0));
+    let k1 = elastic_k(&run_rigid_zone_pushover(lam));
+    let ratio = k1 / k0;
+    let theory = (h / l_flex).powi(3);
+    // せん断変形・はりの弾性変形の寄与で理論値から数 % ずれる。
+    assert!(
+        (ratio / theory - 1.0).abs() < 0.05,
+        "層剛性比が (H/L')³ から外れている: 実測 {ratio:.4}, 理論 {theory:.4}"
+    );
 }

@@ -137,91 +137,137 @@ pub(super) fn wind_story_geometry(
     Ok((h_mm, wind_stories))
 }
 
+/// 風荷重の算定諸元（載荷前の中間結果）。[`wind_precalc_for_model`] の返り値。
+pub struct WindPrecalc<'m> {
+    /// 建物高さ H [mm]（GL 基準。パラペットの半分を含む）。
+    pub h_mm: f64,
+    /// 風荷重の対象となる地上一般階（下→上）。`geometry`・`distribution` と同順。
+    pub stories: Vec<&'m Story>,
+    /// 各層の負担高さ区間・見付け幅。
+    pub geometry: Vec<squid_n_load::wind::WindStory>,
+    /// 速度圧・Er・Gf・Kz・層水平力。
+    pub distribution: squid_n_load::wind::WindDistribution,
+}
+
+/// 風荷重の諸元（建物高さ H・層の負担区間・見付け幅・速度圧 q・層水平力）を
+/// モデルと設定から算定する（[`Analysis`] を要しないモデル単独版）。
+///
+/// [`Analysis::wind_static`] が水平力を剛床へ載荷する前段の算定部分であり、
+/// 準備計算での確認表示（速度圧・Kz・見付面積・層水平力の一覧）にも用いる。
+pub fn wind_precalc_for_model(
+    model: &Model,
+    cfg: WindStaticCfg,
+) -> Result<WindPrecalc<'_>, SolveError> {
+    if model.stories.is_empty() {
+        return Err(SolveError::InvalidInput(
+            "階(Story)が定義されていません。風荷重には階の定義・剛床(ダイアフラム)が必要です。解析タブの「準備計算 実行」を行ってください。".into(),
+        ));
+    }
+
+    let stories: Vec<&Story> = model
+        .stories
+        .iter()
+        .filter(|s| matches!(s.level_kind, StoryLevelKind::Normal))
+        .collect();
+    if stories.is_empty() {
+        return Err(SolveError::InvalidInput(
+            "風荷重の対象となる階(PH階・地下階を除く地上一般階)が定義されていません。".into(),
+        ));
+    }
+
+    let base = ground_elevation(model);
+    let axis = match cfg.dir {
+        SeismicDir::X => 1, // X方向の風 → 見付け幅はY方向の座標範囲
+        SeismicDir::Y => 0,
+    };
+    let excluded: HashSet<NodeId> = model.generated_masters.iter().copied().collect();
+    let (h_mm, geometry) =
+        wind_story_geometry(model, &stories, base, axis, &excluded, cfg.parapet_mm)?;
+
+    let wcfg = squid_n_load::wind::WindCfg {
+        v0: cfg.v0,
+        roughness: cfg.roughness,
+        cpe_windward: 0.8,
+        cpe_leeward: -0.4,
+        cpi: cfg.cpi,
+    };
+    let distribution = squid_n_load::wind::wind_forces(h_mm, &geometry, &wcfg);
+
+    Ok(WindPrecalc {
+        h_mm,
+        stories,
+        geometry,
+        distribution,
+    })
+}
+
+/// 風荷重の層水平力を荷重ケースとして構築する（[`Analysis`] を要しないモデル単独版）。
+///
+/// - 建物高さ H・各層の負担区間・見付け幅は [`wind_story_geometry`] を
+///   参照（パラペット割増し・階別見付け幅の詳細はそちらのドキュメント）。
+/// - PH階は建物高さの算定・風荷重の負担層のいずれからも除外する
+///   （PH階への風荷重接続は未対応。残課題）。
+/// - 地下階は地盤内にあり受風面を持たないため負担層から除外し、
+///   高さ z は GL（地盤面）基準で測る。
+/// - 層の水平力は §1.6 と同じ規則で階内の剛床へ重量比按分する。
+///
+/// 速度圧の算定は剛性行列・自由度構成に依存しないため `Analysis::prepare` なしで
+/// 呼び出せる。UI 側の「WX/WY ケースへの荷重同期」のように、解析準備前に
+/// 荷重ケースだけを構築したい場合に用いる（[`build_seismic_load_case_from_model`]
+/// と同じ役割）。
+pub fn build_wind_load_case_from_model(
+    model: &Model,
+    cfg: WindStaticCfg,
+) -> Result<squid_n_core::model::LoadCase, SolveError> {
+    let precalc = wind_precalc_for_model(model, cfg)?;
+    let dist = &precalc.distribution;
+
+    let dir_vec = match cfg.dir {
+        SeismicDir::X => [1.0, 0.0, 0.0],
+        SeismicDir::Y => [0.0, 1.0, 0.0],
+    };
+
+    // 各層の水平力を剛床へ重量比按分して作用させる（§1.6 と同じ規則）。
+    let mut nodal: Vec<squid_n_core::model::NodalLoad> = Vec::new();
+    for (story, &force) in precalc.stories.iter().zip(dist.force.iter()) {
+        if force == 0.0 {
+            continue;
+        }
+        for (master, share) in distribute_pi_over_diaphragms(story, force) {
+            let f = [dir_vec[0] * share, dir_vec[1] * share, 0.0, 0.0, 0.0, 0.0];
+            nodal.push(squid_n_core::model::NodalLoad {
+                node: master,
+                values: f,
+            });
+        }
+    }
+
+    if nodal.is_empty() {
+        return Err(SolveError::InvalidInput(
+            "風荷重を作用させる剛床(ダイアフラム)が階に定義されていません。準備計算を実行してください。".into(),
+        ));
+    }
+
+    Ok(squid_n_core::model::LoadCase {
+        id: squid_n_core::ids::LoadCaseId(1002),
+        name: format!("wind_{:?}", cfg.dir),
+        kind: squid_n_core::model::LoadCaseKind::Wind,
+        nodal,
+        member: Vec::new(),
+    })
+}
+
 impl Analysis<'_> {
     /// 風荷重の静的解析（令87条・平成12年建設省告示第1454号の運用）。
-    ///
-    /// - 建物高さ H・各層の負担区間・見付け幅は [`wind_story_geometry`] を
-    ///   参照（パラペット割増し・階別見付け幅の詳細はそちらのドキュメント）。
-    /// - PH階は建物高さの算定・風荷重の負担層のいずれからも除外する
-    ///   （PH階への風荷重接続は未対応。残課題）。
-    /// - 地下階は地盤内にあり受風面を持たないため負担層から除外し、
-    ///   高さ z は GL（地盤面）基準で測る（従来は最下節点レベル基準で
-    ///   地下階の壁面まで見付面積へ算入していた）。
-    /// - 層の水平力は §1.6 と同じ規則で階内の剛床へ重量比按分する。
+    /// 載荷部分は [`build_wind_load_case_from_model`] と共通。
     pub fn wind_static(&self, cfg: WindStaticCfg) -> Result<StaticOnce, SolveError> {
-        let model = self.model;
-        if model.stories.is_empty() {
-            return Err(SolveError::InvalidInput(
-                "階(Story)が定義されていません。風荷重には階の定義・剛床(ダイアフラム)が必要です。解析タブの「階の自動生成」を実行してください。".into(),
-            ));
-        }
-
-        let normal_stories: Vec<&Story> = model
-            .stories
-            .iter()
-            .filter(|s| matches!(s.level_kind, StoryLevelKind::Normal))
-            .collect();
-        if normal_stories.is_empty() {
-            return Err(SolveError::InvalidInput(
-                "風荷重の対象となる階(PH階・地下階を除く地上一般階)が定義されていません。".into(),
-            ));
-        }
-
-        let base = ground_elevation(model);
-        let axis = match cfg.dir {
-            SeismicDir::X => 1, // X方向の風 → 見付け幅はY方向の座標範囲
-            SeismicDir::Y => 0,
-        };
-        let excluded: HashSet<NodeId> = model.generated_masters.iter().copied().collect();
-        let (h_mm, wind_stories) = wind_story_geometry(
-            model,
-            &normal_stories,
-            base,
-            axis,
-            &excluded,
-            cfg.parapet_mm,
-        )?;
-
-        let wcfg = squid_n_load::wind::WindCfg {
-            v0: cfg.v0,
-            roughness: cfg.roughness,
-            cpe_windward: 0.8,
-            cpe_leeward: -0.4,
-            cpi: cfg.cpi,
-        };
-        let dist = squid_n_load::wind::wind_forces(h_mm, &wind_stories, &wcfg);
-
-        let dir_vec = match cfg.dir {
-            SeismicDir::X => [1.0, 0.0, 0.0],
-            SeismicDir::Y => [0.0, 1.0, 0.0],
-        };
-
-        // 各層の水平力を剛床へ重量比按分して作用させる（§1.6 と同じ規則）。
-        let mut nodal: Vec<squid_n_core::model::NodalLoad> = Vec::new();
-        for (story, &force) in normal_stories.iter().zip(dist.force.iter()) {
-            if force == 0.0 {
-                continue;
-            }
-            for (master, share) in distribute_pi_over_diaphragms(story, force) {
-                let f = [dir_vec[0] * share, dir_vec[1] * share, 0.0, 0.0, 0.0, 0.0];
-                nodal.push(squid_n_core::model::NodalLoad {
-                    node: master,
-                    values: f,
-                });
-            }
-        }
-
-        if nodal.is_empty() {
-            return Err(SolveError::InvalidInput(
-                "風荷重を作用させる剛床(ダイアフラム)が階に定義されていません。解析タブの「階の自動生成」を実行してください。".into(),
-            ));
-        }
+        let lc = build_wind_load_case_from_model(self.model, cfg)?;
 
         if self.n_indep == 0 {
             return Ok(self.zero_result());
         }
 
-        let f_free = self.assemble_f_free_from_nodal(&nodal);
+        let f_free = self.assemble_f_free_from_nodal(&lc.nodal);
         // 風荷重は節点荷重のみ（部材中間荷重なし）のため重ね合わせは空。
         self.solve_and_recover(&f_free, &[])
     }

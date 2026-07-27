@@ -102,6 +102,7 @@ fn apply_long_axial_cut(model: &Model, lc_kind: LoadCaseKind) -> Cow<'_, Model> 
     Cow::Owned(m)
 }
 
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct StaticOnce {
     pub disp: Vec<[f64; 6]>,
     pub member_forces: Vec<(squid_n_core::ids::ElemId, MemberForces)>,
@@ -327,6 +328,7 @@ fn solve_once_inner(model: &Model, lc: LoadCaseId) -> Result<StaticOnce, SolveEr
                 member_forces.push((elem.id, forces));
             }
         }
+        ensure_line_member_forces(model, &member_forces)?;
 
         Ok(StaticOnce {
             disp,
@@ -339,6 +341,59 @@ fn solve_once_inner(model: &Model, lc: LoadCaseId) -> Result<StaticOnce, SolveEr
             member_forces: Vec::new(),
         })
     }
+}
+
+/// 内力回収の欠落検出（線材）。
+///
+/// 線材（梁・柱＝`Beam`、`Fiber`、`MultiSpring`、ブレース）は必ず
+/// `ElementBehavior::recover_forces` を実装している必要がある。実装されていない
+/// 要素は `recover_forces` が `None` を返し、線形静解析のループで**黙って
+/// 読み飛ばされて** `member_forces` から丸ごと欠落する。欠落した部材は応力図・
+/// 断面検定・柱梁接合部検定・設計用せん断力 QD のいずれにも現れず、
+/// 「結果が空である」ことがユーザーからは正常な計算結果と区別できない。
+///
+/// 実際に、剛床に載る梁が材端集中ばね梁（`recover_forces` 未実装）で組まれて
+/// 全階の梁が無言で欠落する不具合があったため、要素実装の不備を解析エラーとして
+/// 顕在化させる（`dev_docs/handoff/剛床上の梁の応力欠落_申し送り.md`）。
+pub(crate) fn ensure_line_member_forces(
+    model: &Model,
+    member_forces: &[(squid_n_core::ids::ElemId, MemberForces)],
+) -> Result<(), SolveError> {
+    use std::collections::HashSet;
+
+    let recovered: HashSet<squid_n_core::ids::ElemId> =
+        member_forces.iter().map(|(id, _)| *id).collect();
+    let missing: Vec<u32> = model
+        .elements
+        .iter()
+        .filter(|e| {
+            matches!(
+                e.kind,
+                ElementKind::Beam
+                    | ElementKind::Fiber
+                    | ElementKind::MultiSpring
+                    | ElementKind::Brace { .. }
+            )
+        })
+        .filter(|e| !recovered.contains(&e.id))
+        .map(|e| e.id.0)
+        .collect();
+    if missing.is_empty() {
+        return Ok(());
+    }
+    let head: Vec<String> = missing.iter().take(5).map(|id| id.to_string()).collect();
+    let more = if missing.len() > 5 {
+        format!(" 他{}件", missing.len() - 5)
+    } else {
+        String::new()
+    };
+    Err(SolveError::InvalidInput(format!(
+        "線材の部材内力を回収できませんでした: 部材 ID {}{}。\
+         要素実装の不具合です（このまま続けると応力図・断面検定から当該部材が\
+         無言で欠落します）。",
+        head.join(", "),
+        more
+    )))
 }
 
 /// 部材荷重の固定端内力を、`K·u` 由来の回復内力へ各断面で重ね合わせる。

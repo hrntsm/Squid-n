@@ -59,6 +59,8 @@ impl App {
         self.last_error = None;
         self.last_notice = None;
         self.auto_load_sync_hash = None;
+        self.preparation = None;
+        self.diagnostics.clear();
         self.staleness = Staleness::default();
         #[cfg(feature = "gui")]
         self.reset_draw_modes();
@@ -80,9 +82,37 @@ impl App {
     }
 
     /// プロジェクトを指定パスへ保存する。成功時は project_path と未保存フラグを更新。
+    ///
+    /// 準備計算の結果・解析結果は、いずれも**最新（モデル編集後に再実行済み）の
+    /// 場合のみ**同梱する（`preparation_stale` / `results_stale` なら保存しない）。
+    /// 読込側が「保存されている＝そのモデルに対して最新」と扱えるようにするため。
     pub fn save_project_to(&mut self, path: std::path::PathBuf) {
         self.last_error = None;
-        match squid_n_io::scz::save_scz(&path, &self.model) {
+        // self を可変借用する `encoded_or_notice` の前に、直列化まで済ませておく。
+        let prep = self
+            .preparation
+            .as_ref()
+            .filter(|_| !self.staleness.preparation_stale)
+            .map(rmp_serde::to_vec);
+        let results = self
+            .results
+            .as_ref()
+            .filter(|_| !self.staleness.results_stale)
+            .map(|bundle| SavedResults {
+                bundle: bundle.clone(),
+                last_static: self.last_static,
+                last_run: self.staleness.last_run,
+            })
+            .as_ref()
+            .map(rmp_serde::to_vec);
+        let prep_bytes = self.encoded_or_notice(prep, "準備計算の結果");
+        let results_bytes = self.encoded_or_notice(results, "解析結果");
+
+        let extras = squid_n_io::scz::SczExtras {
+            preparation: prep_bytes.as_deref(),
+            results: results_bytes.as_deref(),
+        };
+        match squid_n_io::scz::save_scz(&path, &self.model, extras) {
             Ok(()) => {
                 // ショートカット保存はダイアログも出ず無反応になるため、
                 // 成功をステータスバーとログで明示する。
@@ -98,27 +128,92 @@ impl App {
         }
     }
 
+    /// 保存用の派生データの直列化結果を受け取り、失敗していれば注意を報告する。
+    ///
+    /// 準備計算・解析結果はいずれもモデルから再計算できる派生データなので、
+    /// 直列化に失敗しても保存自体は続行する（モデルは保存し、注意を報告する）。
+    fn encoded_or_notice(
+        &mut self,
+        encoded: Option<Result<Vec<u8>, rmp_serde::encode::Error>>,
+        label: &str,
+    ) -> Option<Vec<u8>> {
+        match encoded {
+            Some(Ok(bytes)) => Some(bytes),
+            Some(Err(e)) => {
+                self.report_notice(format!(
+                    "{}を保存できませんでした（モデルは保存します）: {}",
+                    label, e
+                ));
+                None
+            }
+            None => None,
+        }
+    }
+
     /// プロジェクトを指定パスから読み込む。成功時はモデルを差し替える。
+    ///
+    /// 準備計算の結果・解析結果が同梱されていれば復元し、実行済み扱いにする
+    /// （保存側が最新のときだけ書き出すため、同梱＝そのモデルに対して最新である）。
+    /// 同梱が無い・復号に失敗した場合は未実行のままとし、解析実行時または
+    /// 「準備計算 実行」で再計算する。
     pub fn open_project_from(&mut self, path: std::path::PathBuf) {
         self.last_error = None;
         match squid_n_io::scz::load_scz(&path) {
-            Ok(model) => {
-                if let Err(e) = model.validate() {
+            Ok(contents) => {
+                if let Err(e) = contents.model.validate() {
                     self.report_error(format!("読込モデルの検証エラー: {:?}", e));
                     return;
                 }
-                self.load_model(model);
+                self.load_model(contents.model);
+                if let Some(prep) =
+                    self.decode_on_load::<PreparationResult>(contents.preparation, "準備計算の結果")
+                {
+                    self.preparation = Some(prep);
+                    self.staleness.preparation_stale = false;
+                }
+                if let Some(saved) =
+                    self.decode_on_load::<SavedResults>(contents.results, "解析結果")
+                {
+                    self.results = Some(saved.bundle);
+                    self.last_static = saved.last_static;
+                    self.staleness.last_run = saved.last_run;
+                    // 保存側が最新のときだけ書き出すため、復元できた結果は
+                    // モデルと整合している（断面検定の結果も同梱されている）。
+                    self.staleness.results_stale = false;
+                    self.staleness.design_stale = false;
+                }
                 self.project_path = Some(path);
             }
             Err(e) => self.report_error(format!("読込エラー: {}", e)),
         }
     }
 
+    /// 読み込んだ派生データを復号する。失敗しても読込自体は続行し、
+    /// 未復元（再計算が必要）である旨を注意として報告する。
+    fn decode_on_load<T: serde::de::DeserializeOwned>(
+        &mut self,
+        bytes: Option<Vec<u8>>,
+        label: &str,
+    ) -> Option<T> {
+        let bytes = bytes?;
+        match rmp_serde::from_slice::<T>(&bytes) {
+            Ok(value) => Some(value),
+            Err(e) => {
+                self.report_notice(format!(
+                    "保存された{}を読み込めませんでした（再実行が必要です）: {}",
+                    label, e
+                ));
+                None
+            }
+        }
+    }
+
     /// ST-Bridge（XML, サブセット）ファイルを読み込む。
-    /// Squid-N プロジェクト（.scz）とは別物なので project_path はクリアする。
+    /// Squid-n プロジェクト（.scz）とは別物なので project_path はクリアする。
     /// ファイルが荷重情報（`StbLoadCase`）を持たない場合は、標準荷重ケース
-    /// （DL・LL(架構用)・LL(地震用)・EX・EY）を自動作成する（新規モデルと同じ
-    /// 出発点。DL の自重・スラブ荷重は解析実行前の同期アクションが自動計算する）。
+    /// （DL・LL(架構用)・LL(地震用)・EX・EY）と標準荷重組合せ（長期 DL+LL、
+    /// 短期地震 DL+LL±EX・DL+LL±EY）を自動作成する（新規モデルと同じ出発点。
+    /// DL の自重・スラブ荷重は解析実行前の同期アクションが自動計算する）。
     pub fn import_stbridge_from(&mut self, path: std::path::PathBuf) {
         self.last_error = None;
         let xml = match squid_n_io::stbridge::read_stbridge_file(&path) {
@@ -136,6 +231,10 @@ impl App {
                 }
                 if model.load_cases.is_empty() {
                     model.load_cases = squid_n_core::model::default_load_cases();
+                    // 荷重ケースを補完した場合は標準荷重組合せも用意する（新規モデルと同じ出発点）。
+                    if model.combinations.is_empty() {
+                        model.combinations = squid_n_core::model::default_combinations();
+                    }
                 }
                 self.load_model(model);
                 self.project_path = None;
@@ -199,7 +298,7 @@ impl App {
     /// `analysis_cfg.threads` を並列度設定（プロセスグローバル）へ反映する。
     /// 各解析エントリの先頭で呼ぶ（バックグラウンドジョブは thread::spawn 前に
     /// 呼べばよい。設定はプロセスグローバルのためジョブ側での再設定は不要）。
-    fn apply_parallelism_setting(&self) {
+    pub(crate) fn apply_parallelism_setting(&self) {
         squid_n_math::parallelism::set_parallelism(
             squid_n_math::parallelism::Parallelism::from_threads(self.analysis_cfg.threads),
         );
@@ -208,23 +307,23 @@ impl App {
     /// T3: 線形静的解析を実行し、結果を `self.results` に格納する。
     /// 指定した荷重ケースが存在しない場合はエラーメッセージをセット。
     ///
-    /// 解析準備前にスラブ荷重・躯体自重を「DL」等の標準ケースへ（レビュー §1.1・
-    /// 照合レビュー：③梁自重・②壁荷重の CMoQ 経路を長期応力解析へ接続）、
-    /// 階が定義済みなら地震荷重を「EX」「EY」ケースへ同期する
-    /// （`sync_auto_load_cases_action`。モデル・関連設定が前回同期時から
-    /// 変わっていなければ丸ごとスキップする）。
+    /// 解析に先立って準備計算（`ensure_preparation`）を実行する。剛域を反映し、
+    /// スラブ荷重・躯体自重を「DL」等の標準ケースへ（レビュー §1.1・照合レビュー：
+    /// ③梁自重・②壁荷重の CMoQ 経路を長期応力解析へ接続）、階が定義済みなら
+    /// 地震荷重を「EX」「EY」ケースへ同期する（モデル・関連設定が前回同期時から
+    /// 変わっていなければ荷重の再計算は丸ごとスキップする）。
     pub fn run_linear_static(&mut self, lc: LoadCaseId) {
         self.apply_parallelism_setting();
         self.last_error = None;
         self.last_notice = None;
-        self.sync_auto_load_cases_action();
+        self.ensure_preparation();
         let res = Self::compute_linear_static(self.model.clone(), lc);
         self.apply_static_case_result(StaticCaseKey::User(lc), res);
     }
 
     /// 線形静的解析の純粋計算部分。所有権を取り `&self` を使わないため、
     /// バックグラウンドジョブ（`start_linear_static_job`）からも呼び出せる。
-    /// 剛域は呼び出し側（`sync_auto_load_cases_action`）で適用済みのモデルを
+    /// 剛域は呼び出し側（`ensure_preparation`）で適用済みのモデルを
     /// 渡す前提のため、ここでは再適用しない（二重適用を避ける）。
     fn compute_linear_static(
         model: squid_n_core::model::Model,
@@ -264,6 +363,40 @@ impl App {
         }
     }
 
+    /// 準備計算が自動生成する標準ケース（EX/EY・WX/WY）のうち、どれに当たるかを
+    /// 荷重ケース名と種別から判別する。専用の結果キー
+    /// （[`StaticCaseKey::Seismic`]・[`StaticCaseKey::Wind`]）を持つケースであり、
+    /// 剛心の精算・保有水平耐力の判定などがその結果を参照する。
+    pub(crate) fn standard_lateral_case(&self, lc: LoadCaseId) -> Option<StaticCaseKey> {
+        use squid_n_core::model::{
+            LoadCaseKind, EX_CASE_NAME, EY_CASE_NAME, WX_CASE_NAME, WY_CASE_NAME,
+        };
+        let case = self.model.load_cases.iter().find(|c| c.id == lc)?;
+        match (case.name.as_str(), case.kind) {
+            (EX_CASE_NAME, LoadCaseKind::Seismic) => Some(StaticCaseKey::Seismic(SeismicDir::X)),
+            (EY_CASE_NAME, LoadCaseKind::Seismic) => Some(StaticCaseKey::Seismic(SeismicDir::Y)),
+            (WX_CASE_NAME, LoadCaseKind::Wind) => Some(StaticCaseKey::Wind(SeismicDir::X)),
+            (WY_CASE_NAME, LoadCaseKind::Wind) => Some(StaticCaseKey::Wind(SeismicDir::Y)),
+            _ => None,
+        }
+    }
+
+    /// 荷重ケース 1 つの静的解析をバックグラウンドで実行する（解析パネルの
+    /// 「荷重ケース」実行ボタンの入口）。
+    ///
+    /// 標準の水平力ケース（EX/EY・WX/WY）は、Ai 分布・速度圧の算定諸元
+    /// （`analysis_cfg`）から水平力を組み立て直して解き、結果を方向別の
+    /// `StaticCaseKey::Seismic`/`Wind` へ格納する（剛心の精算・保有水平耐力の
+    /// 判定がこのキーを参照するため）。それ以外は線形静的解析として
+    /// `StaticCaseKey::User` へ格納する。
+    pub fn start_load_case_job(&mut self, lc: LoadCaseId) {
+        match self.standard_lateral_case(lc) {
+            Some(StaticCaseKey::Seismic(dir)) => self.start_seismic_job(dir),
+            Some(StaticCaseKey::Wind(dir)) => self.start_wind_job(dir),
+            _ => self.start_linear_static_job(lc),
+        }
+    }
+
     /// 線形静的解析をバックグラウンドスレッドで実行する（P8 §5）。
     /// UI スレッドをブロックしないよう重い解析を逃がす。
     /// 既にジョブが実行中の場合は何もしない（last_error に案内文を設定）。
@@ -275,7 +408,7 @@ impl App {
         self.apply_parallelism_setting();
         self.last_error = None;
         self.last_notice = None;
-        self.sync_auto_load_cases_action();
+        self.ensure_preparation();
         let model = self.model.clone();
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
@@ -306,24 +439,23 @@ impl App {
     /// T7: 荷重組合せ解析を実行し、結果を `bundle.combos` に格納する。
     /// 指定インデックスの荷重組合せが存在しない場合はエラーメッセージをセット。
     ///
-    /// 解析準備前にスラブ荷重・躯体自重を「DL」等の標準ケースへ、階が定義済み
-    /// なら地震荷重を「EX」「EY」ケースへ同期する（レビュー §1.1・照合レビュー、
-    /// `sync_auto_load_cases_action`。モデル・関連設定が前回同期時から変わって
-    /// いなければ丸ごとスキップする）。
+    /// 解析に先立って準備計算（`ensure_preparation`）を実行し、スラブ荷重・躯体
+    /// 自重を「DL」等の標準ケースへ、階が定義済みなら地震荷重を「EX」「EY」
+    /// ケースへ同期する（レビュー §1.1・照合レビュー）。
     /// 組合せが空の地震荷重ケースを参照している場合は解かずにエラーで案内する
     /// （地震項が黙って 0 になるのを防ぐ）。
     pub fn run_combination(&mut self, index: usize) {
         self.apply_parallelism_setting();
         self.last_error = None;
         self.last_notice = None;
-        self.sync_auto_load_cases_action();
+        self.ensure_preparation();
         let Some(combo) = self.model.combinations.get(index).cloned() else {
             self.report_error(format!("荷重組合せ #{} が存在しません", index));
             return;
         };
-        if let Some(name) = self.empty_seismic_case_in_combo(&combo) {
+        if let Some(name) = self.empty_lateral_case_in_combo(&combo) {
             self.report_error(format!(
-                "荷重組合せ「{}」が参照する地震荷重ケース「{}」が空です。解析タブの「階の自動生成」を実行して地震荷重を生成してください。",
+                "荷重組合せ「{}」が参照する水平力の荷重ケース「{}」が空です。解析タブの「準備計算 実行」を行って地震力・風圧力を生成してください。",
                 combo.name, name
             ));
             return;
@@ -401,14 +533,14 @@ impl App {
         self.apply_parallelism_setting();
         self.last_error = None;
         self.last_notice = None;
-        self.sync_auto_load_cases_action();
+        self.ensure_preparation();
         let Some(combo) = self.model.combinations.get(index).cloned() else {
             self.report_error(format!("荷重組合せ #{} が存在しません", index));
             return;
         };
-        if let Some(name) = self.empty_seismic_case_in_combo(&combo) {
+        if let Some(name) = self.empty_lateral_case_in_combo(&combo) {
             self.report_error(format!(
-                "荷重組合せ「{}」が参照する地震荷重ケース「{}」が空です。解析タブの「階の自動生成」を実行して地震荷重を生成してください。",
+                "荷重組合せ「{}」が参照する水平力の荷重ケース「{}」が空です。解析タブの「準備計算 実行」を行って地震力・風圧力を生成してください。",
                 combo.name, name
             ));
             return;
@@ -455,10 +587,9 @@ impl App {
             self.report_error("荷重組合せがありません。荷重タブで作成してください。");
             return;
         }
-        // 解析準備前にスラブ荷重・躯体自重を「DL」等の標準ケースへ、階が定義済み
-        // なら地震荷重を「EX」「EY」ケースへ同期する（`sync_auto_load_cases_action`。
-        // モデル・関連設定が前回同期時から変わっていなければ丸ごとスキップする）。
-        self.sync_auto_load_cases_action();
+        // 解析に先立って準備計算を実行する（剛域の反映、スラブ荷重・躯体自重の
+        // 「DL」等への同期、階が定義済みなら地震荷重の「EX」「EY」への同期）。
+        self.ensure_preparation();
         // 空の地震荷重ケース（未生成の EX/EY 等）を参照する組合せは解かずに
         // エラーへ回す（地震項が黙って 0 になるのを防ぐ）。UI スレッド側の
         // `self.model` を参照するためバックグラウンドジョブでもここで行う。
@@ -478,10 +609,10 @@ impl App {
             .model
             .combinations
             .iter()
-            .filter(|combo| match self.empty_seismic_case_in_combo(combo) {
+            .filter(|combo| match self.empty_lateral_case_in_combo(combo) {
                 Some(name) => {
                     errors.push(format!(
-                        "[{}] 地震荷重ケース「{}」が空です。解析タブの「階の自動生成」を実行してください。",
+                        "[{}] 水平力の荷重ケース「{}」が空です。解析タブの「準備計算 実行」を行ってください。",
                         combo.name, name
                     ));
                     false
@@ -609,7 +740,7 @@ impl App {
             self.report_error("荷重組合せがありません。荷重タブで作成してください。");
             return;
         }
-        self.sync_auto_load_cases_action();
+        self.ensure_preparation();
         let (combos, pre_errors) = self.filter_combos_for_all_combinations();
         let model = self.model.clone();
         let (tx, rx) = std::sync::mpsc::channel();
@@ -657,6 +788,46 @@ impl App {
             .or_else(|| self.last_static.and_then(resolve))
     }
 
+    /// 結果表示の対象を切り替える（ナビゲータ・結果タブの選択ドロップダウン共通）。
+    ///
+    /// 変位図・層指標だけでなく、応力図（N/Q/M）・断面検定が参照する
+    /// [`ResultsBundle::member_forces`] も選択結果へ差し替える。荷重組合せを選んだ
+    /// 場合は荷重継続性区分（長期/短期）を組合せ名から `is_short_term_combo` で
+    /// 再判定し、断面検定を再実行する。これにより、選んだ荷重（組合せ）の長期/短期に
+    /// 応じた断面算定結果が表示される。単一荷重ケースを選んだ場合は現在の区分を維持する
+    /// （`apply_static_case_result` と同じ扱い）。該当キーの解析結果が無い場合は何もしない。
+    pub fn select_displayed_result(&mut self, key: StaticKey) {
+        // 選択キーに対応する解析結果（内力と、組合せなら名前）を取り出す。
+        let resolved = self.results.as_ref().and_then(|bundle| match key {
+            StaticKey::Case(case_key) => bundle
+                .statics
+                .iter()
+                .find(|(k, _)| *k == case_key)
+                .map(|(_, s)| (s.member_forces.clone(), None)),
+            StaticKey::Combo(idx) => bundle
+                .combos
+                .get(idx)
+                .map(|(name, s)| (s.member_forces.clone(), Some(name.clone()))),
+        });
+        let Some((member_forces, combo_name)) = resolved else {
+            return;
+        };
+        self.nav.focus_result = Some(key);
+        self.last_static = Some(key);
+        if let Some(bundle) = self.results.as_mut() {
+            bundle.member_forces = member_forces;
+        }
+        // 組合せは名前から長期/短期を再判定する（単一ケースは現在の区分を維持）。
+        if let Some(name) = combo_name {
+            self.design_term = if squid_n_load::combo::is_short_term_combo(&name) {
+                LoadTerm::Short
+            } else {
+                LoadTerm::Long
+            };
+        }
+        self.run_design_check();
+    }
+
     /// 保有水平耐力の層別判定を行う。前提データが不足していれば Err(案内文)。
     ///
     /// 戻り値の第 2 要素は層ごとに採用された部材ランク（`design_rank_auto` が
@@ -673,15 +844,19 @@ impl App {
         String,
     > {
         use squid_n_core::section_shape::SectionShape;
+        use squid_n_design_jp::secondary::ds_group::{
+            ds_rc, ds_steel, member_group, rank_index_for_group, rc_beam_type, rc_column_type,
+            rc_wall_type, steel_brace_type, GroupType,
+        };
         use squid_n_design_jp::secondary::holding_capacity::{
-            check_holding_capacity, ds_value, qud_by_story, MemberRank,
+            check_holding_capacity, qud_by_story, MemberRank,
         };
-        use squid_n_design_jp::secondary::member_rank::{
-            rc_member_rank, s_member_rank_scaled, worst_rank, RankCriteria,
+        use squid_n_design_jp::secondary::member_rank::worst_rank;
+        use squid_n_design_jp::secondary::rc_capacity::{
+            rc_column_mu_simple, rc_qmu_simple, rc_qsu_simple,
         };
-        use squid_n_design_jp::secondary::rc_capacity::{rc_qmu_simple, rc_qsu_simple};
-        use squid_n_design_jp::secondary::width_thickness::max_width_thickness;
         use squid_n_design_jp::steel_f_value_prefix;
+        use squid_n_solver::pushover::MechanismType;
 
         // rigid_zone（剛域長・face_i/j）を読むため、算定前に自動剛域を反映する
         // （設計書 §6.2.1、冪等なので他の解析エントリと重複して呼んでも安全）。
@@ -689,7 +864,7 @@ impl App {
 
         if self.model.stories.is_empty() {
             return Err(
-                "階が未定義です。解析タブの「階の自動生成」を実行してください。".to_string(),
+                "階が未定義です。解析タブの「準備計算 実行」を行ってください。".to_string(),
             );
         }
         let po = self
@@ -721,7 +896,7 @@ impl App {
             .collect();
         if weights.iter().any(|w| *w <= 0.0) {
             return Err(
-                "地震重量が未設定です。解析タブの「階の自動生成」を実行してください。".to_string(),
+                "地震重量が未設定です。解析タブの「準備計算 実行」を行ってください。".to_string(),
             );
         }
 
@@ -743,146 +918,363 @@ impl App {
         let qud = qud_by_story(&weights, self.analysis_cfg.z, rt, t);
 
         let n_stories = weights.len();
-        let (story_ranks, member_ranks): (Vec<MemberRank>, Vec<(ElemId, MemberRank)>) =
-            if self.design_rank_auto {
-                // 鋼部材は幅厚比、RC 矩形部材はせん断余裕度 Qsu/Qmu の略算から
-                // ランクを算定し、所属階ごとに集計する。
-                //
-                // 所属階の規則: 部材の節点のうち最も高い階(story index 最大)。
-                // story_gen::generate_stories は各節点をその節点自身の標高が属する
-                // レベルへ割り当てる（柱下端は下階または基部=None、柱上端は上階、
-                // 梁は両端とも同一階）ため、柱は自動的に上端側の階（＝各節点の
-                // story のうち最大値）に算入される。
-                let mut per_story: Vec<Vec<MemberRank>> = vec![Vec::new(); n_stories];
-                let mut computed: Vec<(ElemId, MemberRank)> = Vec::new();
-                // 長期軸力の簡易近似として使う荷重ケースの id
-                // （`generate_stories_action` の gravity_lcs と同じ規則。§1.7:
-                // kind による選択の先頭を採用。従来の「先頭ケース」規則は
-                // 種別が未設定のモデルに対する後方互換フォールバックとして残る）。
-                let gravity_lc = gravity_cases_for_seismic_weight(&self.model)
-                    .first()
-                    .copied();
-                for elem in &self.model.elements {
-                    let Some(sec) = elem
-                        .section
-                        .and_then(|sid| self.model.sections.get(sid.index()))
-                    else {
-                        continue;
-                    };
-                    let Some(mat) = elem
-                        .material
-                        .and_then(|mid| self.model.materials.get(mid.index()))
-                    else {
-                        continue;
-                    };
-                    let rank = if is_steel(&mat.name) {
-                        // 鋼部材: 形状情報がない断面(カタログ数値直入力等)はスキップ。
-                        let Some(shape) = sec.shape.as_ref() else {
-                            continue;
-                        };
-                        // 構造規定の幅厚比表（部材種別×断面×部位×鋼種級）で判定
-                        // （鋼構造設計規準「幅厚比の検討」）。
-                        // 表の対象外形状（溝形・T形・山形等）は旧・単一幅厚比法へ
-                        // フォールバックする。
-                        let member_use = match member_kind_of(elem, &self.model) {
-                        squid_n_design_jp::MemberKind::Column => {
-                            squid_n_design_jp::secondary::width_thickness::SteelMemberUse::Column
-                        }
-                        _ => squid_n_design_jp::secondary::width_thickness::SteelMemberUse::Beam,
-                    };
-                        match squid_n_design_jp::secondary::width_thickness::s_member_rank_by_kihon(
-                            shape, member_use, &mat.name,
-                        ) {
-                            Some(rank) => rank,
-                            None => {
-                                let Some(wt) = max_width_thickness(shape) else {
-                                    continue;
-                                };
-                                // F 値は材料名の前方一致で引く(例 "SN400B"→235)。
-                                // 引けなければ 235。板厚は形状の最大板厚。
-                                let f_value =
-                                    steel_f_value_prefix(&mat.name, steel_max_thickness(shape))
-                                        .unwrap_or(235.0);
-                                s_member_rank_scaled(wt, f_value, &RankCriteria::default())
-                            }
-                        }
-                    } else {
-                        // RC 部材: RcRect のみ対応。RcCircle・形状未設定・
-                        // コンクリート強度(fc)未設定の材料はスキップ(選択値へフォールバック)。
-                        let Some(SectionShape::RcRect { b, d, rebar }) = sec.shape.as_ref() else {
-                            continue;
-                        };
-                        // 内法スパン = 幾何長 − 両端フェイス距離(直交材せい/2)。
-                        // 剛域長(D_orth/2 − D_self/4)を引いた可撓長さとは別物
-                        // （設計書 §6.2.1）。フェイス距離の合計が幾何長以上になる
-                        // (不整合な入力)場合は下限0を割り込むため、幾何長のままとする。
-                        let geom_len = elem_geometric_length(elem, &self.model);
-                        let face_sum = elem.rigid_zone.face_i + elem.rigid_zone.face_j;
-                        let clear_span = if geom_len - face_sum > 0.0 {
-                            geom_len - face_sum
-                        } else {
-                            geom_len
-                        };
-                        let Some(mut input) =
-                            rc_capacity_input_from_rect(*b, *d, rebar, mat, clear_span)
-                        else {
-                            continue;
-                        };
-                        // σ0: 長期軸力の簡易近似として先頭荷重ケース(gravity_lc)の
-                        // 静的解析結果を優先し、無ければ最後に実行した静的解析結果
-                        // (self.results.member_forces)から当該部材の軸力を引き、
-                        // 圧縮のときのみ設定する。
-                        let sigma_0 = self
-                            .results
-                            .as_ref()
-                            .map(|r| {
-                                rc_sigma_0_from_gravity_or_last_static(
-                                    &r.statics,
-                                    &r.member_forces,
-                                    gravity_lc,
-                                    elem.id,
-                                    *b,
-                                    *d,
-                                )
-                            })
-                            .unwrap_or(0.0);
-                        input.sigma_0 = sigma_0;
-                        let qmu = rc_qmu_simple(&input);
-                        let qsu = rc_qsu_simple(&input);
-                        rc_member_rank(qsu, qmu, &RankCriteria::default())
-                    };
-                    // 節点が階を持たない部材（両端とも基部）はスキップ。
-                    let Some(story_idx) = elem
-                        .nodes
-                        .iter()
-                        .filter_map(|nid| self.model.nodes.get(nid.index()))
-                        .filter_map(|n| n.story)
-                        .max()
-                    else {
-                        continue;
-                    };
-                    let idx = story_idx.index();
-                    if idx >= n_stories {
+
+        // 終局（崩壊機構形成）時の部材別応答。告示の RC 部材種別が要求する
+        // 「Ds 算定時に断面に生じる」平均せん断応力度 τu・軸方向応力度 σ0 と、
+        // βu（耐力壁・筋かいの水平耐力の和）の集計に用いる。
+        let resp_by_elem: std::collections::HashMap<
+            ElemId,
+            squid_n_solver::pushover::PushoverMemberResponse,
+        > = po.member_response.iter().map(|r| (r.elem, *r)).collect();
+        // 層別の保有水平耐力 Qu（性能曲線の層別ピーク層せん断）。βu の分母。
+        let story_qu: Vec<f64> = (0..n_stories)
+            .map(|i| {
+                po.capacity_curve
+                    .iter()
+                    .filter_map(|p| p.story_shear.get(i).copied())
+                    .fold(0.0_f64, f64::max)
+            })
+            .collect();
+        // 層ごとの「柱・はり」および「耐力壁・筋かい」の (種別インデックス, 水平耐力)。
+        // 部材群としての種別（耐力比 γA/γC）と βu の算定に用いる。
+        let mut cb_members: Vec<Vec<(u8, f64)>> = vec![Vec::new(); n_stories];
+        let mut wall_members: Vec<Vec<(u8, f64)>> = vec![Vec::new(); n_stories];
+        let mut wall_horizontal: Vec<f64> = vec![0.0; n_stories];
+
+        let (story_ranks, member_ranks): (Vec<MemberRank>, Vec<(ElemId, MemberRank)>) = if self
+            .design_rank_auto
+        {
+            // 鋼部材は幅厚比、RC 矩形部材はせん断余裕度 Qsu/Qmu の略算から
+            // ランクを算定し、所属階ごとに集計する。
+            //
+            // 所属階の規則: 部材の節点のうち最も高い階(story index 最大)。
+            // story_gen::generate_stories は各節点をその節点自身の標高が属する
+            // レベルへ割り当てる（柱下端は下階または基部=None、柱上端は上階、
+            // 梁は両端とも同一階）ため、柱は自動的に上端側の階（＝各節点の
+            // story のうち最大値）に算入される。
+            let mut per_story: Vec<Vec<MemberRank>> = vec![Vec::new(); n_stories];
+            let mut computed: Vec<(ElemId, MemberRank)> = Vec::new();
+            // 長期軸力の簡易近似として使う荷重ケースの id
+            // （`generate_stories_action` の gravity_lcs と同じ規則。§1.7:
+            // kind による選択の先頭を採用。従来の「先頭ケース」規則は
+            // 種別が未設定のモデルに対する後方互換フォールバックとして残る）。
+            let gravity_lc = gravity_cases_for_seismic_weight(&self.model)
+                .first()
+                .copied();
+            for elem in &self.model.elements {
+                let Some(sec) = elem
+                    .section
+                    .and_then(|sid| self.model.sections.get(sid.index()))
+                else {
+                    continue;
+                };
+                let Some(mat) = elem
+                    .material
+                    .and_then(|mid| self.model.materials.get(mid.index()))
+                else {
+                    continue;
+                };
+                // 筋かい（軸材）は幅厚比ではなく**有効細長比**で種別を定める
+                // （告示「筋かいの種別」表: BA/BB/BC）。要素種別が Brace のもの、
+                // または斜材として判定されたものを対象とする。従来は柱・梁と同じ
+                // 幅厚比表（梁の行）で判定しており、細長い筋かい（BC＝最も不利）を
+                // FA と甘く判定して Ds を過小評価する危険側の誤りだった。
+                let is_brace_elem =
+                    matches!(elem.kind, squid_n_core::model::ElementKind::Brace { .. })
+                        || member_kind_of(elem, &self.model)
+                            == squid_n_design_jp::MemberKind::Brace;
+                let rank = if is_brace_elem && is_steel(&mat.name) {
+                    // 有効細長比 λ = Lk/i（節点間長を座屈長さ、i=√(Imin/A) とする
+                    // ピン支持の軸材モデル）。断面性能が無い場合はスキップ。
+                    let len = elem_geometric_length(elem, &self.model);
+                    let i_min = sec.iy.min(sec.iz);
+                    if sec.area <= 0.0 || i_min <= 0.0 || len <= 0.0 {
                         continue;
                     }
-                    per_story[idx].push(rank);
-                    computed.push((elem.id, rank));
-                }
-                // 階ごとの代表ランク = 算定できた部材ランクの最悪値。
-                // 1 本も算定できなかった層は手動選択ランクへフォールバック。
-                let ranks: Vec<MemberRank> = per_story
-                    .into_iter()
-                    .map(|rs| worst_rank(&rs).unwrap_or(self.design_rank))
-                    .collect();
-                (ranks, computed)
-            } else {
-                (vec![self.design_rank; n_stories], Vec::new())
-            };
+                    let radius = (i_min / sec.area).sqrt();
+                    if radius <= 0.0 {
+                        continue;
+                    }
+                    let f_value = steel_f_value_prefix(
+                        &mat.name,
+                        sec.shape.as_ref().map(steel_max_thickness).unwrap_or(0.0),
+                    )
+                    .unwrap_or(235.0);
+                    steel_brace_type(len / radius, f_value)
+                } else if is_steel(&mat.name) {
+                    // 鋼部材: 形状情報がない断面(カタログ数値直入力等)はスキップ。
+                    let Some(shape) = sec.shape.as_ref() else {
+                        continue;
+                    };
+                    // 幅厚比による部材ランク判定は準備計算の表示と共通
+                    // （`steel_width_thickness_rank`。構造規定の幅厚比表を優先し、
+                    // 表の対象外形状は単一幅厚比法へフォールバックする）。
+                    let member_use = steel_member_use_of(elem, &self.model);
+                    let Some(rank) = steel_width_thickness_rank(shape, member_use, &mat.name)
+                    else {
+                        continue;
+                    };
+                    rank
+                } else if let Some(SectionShape::RcWall { thickness, .. }) = sec.shape.as_ref() {
+                    // RC 耐力壁: 告示「耐力壁の種別」表（τu/Fc により WA〜WD）。
+                    // τu は Ds 算定時（プッシュオーバー終局時）に壁断面に生じる
+                    // 平均せん断応力度 = 負担水平力 /(壁厚・壁長)。
+                    let Some(fc) = mat.fc else {
+                        continue;
+                    };
+                    let Some(resp) = resp_by_elem.get(&elem.id) else {
+                        continue;
+                    };
+                    // 壁長 lw は壁エレメント要素と同じ幾何（`wall_panel_geometry`）を
+                    // 用いる。節点は標高 z で下辺・上辺に分けられ（`ElementData::nodes` の
+                    // 並び順には依存しない）、lw は**上下辺長さの平均**となる
+                    // （台形壁では上下辺長が異なるため一方の辺では代表長さにならない）。
+                    let Some(wgeom) =
+                        squid_n_element::wall_panel::wall_panel_geometry(elem, &self.model)
+                    else {
+                        continue;
+                    };
+                    let wall_len = wgeom.lw;
+                    let area = thickness * wall_len;
+                    if area <= 0.0 || fc <= 0.0 {
+                        continue;
+                    }
+                    // 壁式構造か否かは設計設定（設計タブのチェックボックス）による。
+                    // 告示「耐力壁の種別」表は壁式構造で限界値が厳しくなる。
+                    let wall_structure = self.wall_structure;
+                    rc_wall_type((resp.horizontal_force / area) / fc, wall_structure, false)
+                } else {
+                    // RC 部材: RcRect のみ対応。RcCircle・形状未設定・
+                    // コンクリート強度(fc)未設定の材料はスキップ(選択値へフォールバック)。
+                    let Some(SectionShape::RcRect { b, d, rebar }) = sec.shape.as_ref() else {
+                        continue;
+                    };
+                    // 内法スパン = 幾何長 − 両端フェイス距離(直交材せい/2)。
+                    // 剛域長(D_orth/2 − D_self/4)を引いた可撓長さとは別物
+                    // （設計書 §6.2.1）。フェイス距離の合計が幾何長以上になる
+                    // (不整合な入力)場合は下限0を割り込むため、幾何長のままとする。
+                    let geom_len = elem_geometric_length(elem, &self.model);
+                    let face_sum = elem.rigid_zone.face_i + elem.rigid_zone.face_j;
+                    let clear_span = if geom_len - face_sum > 0.0 {
+                        geom_len - face_sum
+                    } else {
+                        geom_len
+                    };
+                    let Some(mut input) =
+                        rc_capacity_input_from_rect(*b, *d, rebar, mat, clear_span)
+                    else {
+                        continue;
+                    };
+                    // σ0: 長期軸力の簡易近似として先頭荷重ケース(gravity_lc)の
+                    // 静的解析結果を優先し、無ければ最後に実行した静的解析結果
+                    // (self.results.member_forces)から当該部材の軸力を引き、
+                    // 圧縮のときのみ設定する。
+                    let sigma_0 = self
+                        .results
+                        .as_ref()
+                        .map(|r| {
+                            rc_sigma_0_from_gravity_or_last_static(
+                                &r.statics,
+                                &r.member_forces,
+                                gravity_lc,
+                                elem.id,
+                                *b,
+                                *d,
+                            )
+                        })
+                        .unwrap_or(0.0);
+                    let kind = member_kind_of(elem, &self.model);
+                    // 告示の部材種別が要求する σ0・τu は「Ds 算定時」＝崩壊機構形成時の
+                    // 応力度である。終局時応答が得られない部材は判定不能としてスキップ
+                    // し、層は選択ランクへフォールバックする（τu=0 とみなすと FA と
+                    // 甘く判定され危険側になるため）。
+                    let Some(resp) = resp_by_elem.get(&elem.id) else {
+                        continue;
+                    };
+                    let gross = *b * *d;
+                    if gross <= 0.0 || input.fc <= 0.0 {
+                        continue;
+                    }
+                    // せん断余裕度（脆性破壊判定）にも Ds 算定時の軸力を用いる。
+                    // 長期軸力（sigma_0）で Qsu/Qmu を評価しつつ表の σ0 には終局時
+                    // 軸力を使うと基準が食い違うため、終局時軸力で統一する。
+                    let sigma_0_ult = resp.axial / gross;
+                    let _ = sigma_0; // 長期軸力は Ds 算定時の評価には用いない
+                    input.sigma_0 = sigma_0_ult;
+                    // 曲げ終局時せん断 Qmu: 柱は軸力を考慮した終局曲げ Mu
+                    // （`rc_column_mu_simple`）から算定する。せん断側 Qsu には既に σ0 を
+                    // 反映しているため、曲げ側にも同じ軸力を反映しないと、圧縮軸力を
+                    // 受ける柱で「Qmu を梁式（軸力無視）で過小評価しつつ Qsu を軸力で増大」
+                    // させ、せん断余裕度 Qsu/Qmu を過大評価→ランクを甘く（FA 寄りに）
+                    // 判定する危険側の誤りとなる。梁は従来どおり梁式 Qmu を用いる。
+                    let qmu = match kind {
+                        squid_n_design_jp::MemberKind::Column => {
+                            let ag = squid_n_core::section_shape::bar_set_area(&rebar.main_x);
+                            let n_axial = resp.axial; // 終局時軸力（圧縮正 [N]）
+                            let mu = rc_column_mu_simple(&input, ag, n_axial);
+                            if clear_span > 0.0 {
+                                2.0 * mu / clear_span
+                            } else {
+                                0.0
+                            }
+                        }
+                        _ => rc_qmu_simple(&input),
+                    };
+                    let qsu = rc_qsu_simple(&input);
 
-        let ds_vec: Vec<f64> = story_ranks
-            .iter()
-            .map(|r| ds_value(self.design_frame, *r))
+                    // 平均せん断応力度 τu は強軸・弱軸の大きい方で評価する。
+                    // 強軸せん断のみを見ると、弱軸方向に加力される柱で τu を過小評価し
+                    // 部材種別を甘く判定する危険側になる。
+                    let shear_u = resp.shear_strong.max(resp.shear_weak);
+                    let tau_over_fc = (shear_u / gross) / input.fc;
+                    // 脆性破壊（せん断破壊・付着割裂等の急激な耐力低下）の判定:
+                    // 終局せん断強度が曲げ終局時せん断を下回る＝せん断先行。
+                    let brittle = qmu > 0.0 && qsu < qmu;
+                    match kind {
+                        squid_n_design_jp::MemberKind::Column => {
+                            let sigma0_over_fc = sigma_0_ult / input.fc;
+                            let pt_percent = if *b > 0.0 && input.d_eff > 0.0 {
+                                100.0 * input.at / (*b * input.d_eff)
+                            } else {
+                                0.0
+                            };
+                            let h0_over_d = if *d > 0.0 { clear_span / *d } else { 0.0 };
+                            rc_column_type(
+                                h0_over_d,
+                                sigma0_over_fc,
+                                pt_percent,
+                                tau_over_fc,
+                                brittle,
+                            )
+                        }
+                        _ => rc_beam_type(tau_over_fc, brittle),
+                    }
+                };
+                // 節点が階を持たない部材（両端とも基部）はスキップ。
+                let Some(story_idx) = elem
+                    .nodes
+                    .iter()
+                    .filter_map(|nid| self.model.nodes.get(nid.index()))
+                    .filter_map(|n| n.story)
+                    .max()
+                else {
+                    continue;
+                };
+                let idx = story_idx.index();
+                if idx >= n_stories {
+                    continue;
+                }
+                per_story[idx].push(rank);
+                computed.push((elem.id, rank));
+
+                // 部材群としての種別（耐力比 γA/γC）と βu の集計。
+                // 「部材の耐力」には終局時に当該部材が負担する加力方向の水平力を用いる。
+                let q_h = resp_by_elem
+                    .get(&elem.id)
+                    .map(|r| r.horizontal_force)
+                    .unwrap_or(0.0);
+                let gi = rank_index_for_group(rank);
+                if matches!(
+                    elem.kind,
+                    squid_n_core::model::ElementKind::Wall
+                        | squid_n_core::model::ElementKind::Brace { .. }
+                ) {
+                    wall_members[idx].push((gi, q_h));
+                    wall_horizontal[idx] += q_h;
+                } else {
+                    cb_members[idx].push((gi, q_h));
+                }
+            }
+            // 階ごとの代表ランク = 算定できた部材ランクの最悪値。
+            // 1 本も算定できなかった層は手動選択ランクへフォールバック。
+            let ranks: Vec<MemberRank> = per_story
+                .into_iter()
+                .map(|rs| worst_rank(&rs).unwrap_or(self.design_rank))
+                .collect();
+            (ranks, computed)
+        } else {
+            (vec![self.design_rank; n_stories], Vec::new())
+        };
+
+        // Ds は告示の「各階の Ds」表（耐力壁／筋かいの部材群としての種別 × βu ×
+        // 柱及びはりの部材群としての種別）で層ごとに定める。
+        //
+        // - 部材群としての種別は耐力比 γA/γC（[`member_group`]）で判定する。終局時の
+        //   部材水平力が得られず判定できない層は、代表ランク（最不利部材）を種別へ
+        //   読み替えるフォールバックとする。
+        // - βu = 耐力壁・筋かいが負担する水平力の和 / 保有水平耐力 Qu（層別）。
+        // - 崩壊機構補正: 層崩壊形の層は柱はり群種別を 1 段階不利側へ移す（告示表は
+        //   全体崩壊形の形成を前提とするため。部分崩壊形＝機構未形成は補正せず UI で
+        //   暫定値である旨を警告する）。
+        //
+        // 旧実装は架構種別 4 種 × ランク 4 段の 2 軸表（`ds_value`）で、βu と部材群
+        // 種別を反映していなかったため、βu の大きい架構や壁・筋かい種別が不利な架構で
+        // Ds を最大 0.10〜0.15 過小評価する危険側の誤りがあった。
+        let mechanism = &po.mechanism;
+        let is_rc_frame = matches!(
+            self.design_frame,
+            squid_n_design_jp::secondary::holding_capacity::FrameType::RcFrame
+                | squid_n_design_jp::secondary::holding_capacity::FrameType::RcWall
+        );
+        let mut beta_u_by_story: Vec<f64> = vec![0.0; n_stories];
+        let mut beta_u_unavailable = false;
+        let ds_vec: Vec<f64> = (0..n_stories)
+            .map(|i| {
+                let fallback_group = |rank: MemberRank| match rank {
+                    MemberRank::FA => GroupType::A,
+                    MemberRank::FB => GroupType::B,
+                    MemberRank::FC => GroupType::C,
+                    MemberRank::FD => GroupType::D,
+                };
+                let rep_rank = story_ranks.get(i).copied().unwrap_or(self.design_rank);
+                // 柱はり群種別（耐力比で判定。判定不能なら代表ランクから読み替え）。
+                let mut cb_group =
+                    member_group(&cb_members[i]).unwrap_or_else(|| fallback_group(rep_rank));
+                // 崩壊機構補正: 当該層が層崩壊形なら 1 段階不利側へ。
+                if let MechanismType::StoryCollapse { story } = mechanism {
+                    if story.index() == i {
+                        cb_group = match cb_group {
+                            GroupType::A => GroupType::B,
+                            GroupType::B => GroupType::C,
+                            GroupType::C | GroupType::D => GroupType::D,
+                        };
+                    }
+                }
+                // 耐力壁・筋かいの群種別と βu。壁・筋かいが無い層は βu=0（純ラーメン）。
+                let wall_group = member_group(&wall_members[i]).unwrap_or(GroupType::A);
+                let qu_i = story_qu.get(i).copied().unwrap_or(0.0);
+                let beta_u = if qu_i > 0.0 {
+                    (wall_horizontal[i] / qu_i).clamp(0.0, 1.0)
+                } else {
+                    0.0
+                };
+                // 架構種別として耐力壁付き／筋かい付きが選択されているのに、当該層で
+                // 耐力壁・筋かいが 1 枚も検出できなかった場合、βu=0（純ラーメン）の行を
+                // 使うと Ds を過小評価する（例: RC 壁付きで 0.35 → 0.30）。βu を算定
+                // できないことを明示し、従来の架構種別別 Ds 表へフォールバックする。
+                let declares_wall_or_brace = matches!(
+                    self.design_frame,
+                    squid_n_design_jp::secondary::holding_capacity::FrameType::RcWall
+                        | squid_n_design_jp::secondary::holding_capacity::FrameType::SteelBrace
+                );
+                if declares_wall_or_brace && wall_members[i].is_empty() {
+                    beta_u_unavailable = true;
+                    return squid_n_design_jp::secondary::holding_capacity::ds_value(
+                        self.design_frame,
+                        rep_rank,
+                    );
+                }
+                beta_u_by_story[i] = beta_u;
+                if is_rc_frame {
+                    ds_rc(wall_group, beta_u, cb_group)
+                } else {
+                    ds_steel(wall_group, beta_u, cb_group)
+                }
+            })
             .collect();
+        self.ds_beta_u_by_story = beta_u_by_story;
+        self.ds_beta_u_unavailable = beta_u_unavailable;
+
         let heights: Vec<f64> = metrics.iter().map(|m| m.height).collect();
         let rs: Vec<f64> = metrics.iter().map(|m| m.rs).collect();
         let re: Vec<f64> = metrics.iter().map(|m| m.re).collect();
@@ -1122,16 +1514,28 @@ impl App {
         }
     }
 
-    /// 階(Story)を節点標高から自動生成して適用する（undo 可能）。
+    /// 階(Story)を節点標高から自動生成して適用する（undo 可能）。準備計算
+    /// （[`Self::run_preparation`]）の一工程であり、単独の UI 操作ではない。
+    ///
     /// 地震重量には kind=Dead/LiveSeismic（無ければ Dead+Live、種別未設定なら
     /// 先頭ケース）の荷重ケースの鉛直下向き荷重を用いる（レビュー §1.7）。
     /// 先立ってスラブ荷重・躯体自重を「DL」等の標準ケースへ同期する
     /// （レビュー §1.1）ため、面荷重・自重も地震用重量に反映される
     /// （DL に自重が含まれるため、密度からの自重直接算入は DL が無い場合のみ。
-    /// `density_self_weight_for_stories`）。
+    /// `density_self_weight_for_stories`）。主要構造種別は各階の柱・梁の断面形状
+    /// から自動判定される（`story_gen`）。
     ///
-    /// 階の適用後、地震荷重を「EX」「EY」ケースへ同期する（Ai 分布の水平力。
-    /// これで荷重組合せ G+P±K が実行可能になる）。
+    /// 再生成にあたり、利用者の手入力（地震用重量の手入力値・階の種別）は
+    /// 標高が一致する旧階から引き継ぐ（`carry_over_manual_story_settings`）。
+    ///
+    /// 階の適用後、地震荷重を「EX」「EY」、風荷重を「WX」「WY」ケースへ同期する
+    /// （Ai 分布の水平力・速度圧による層水平力。これで荷重組合せ G+P±K・G+P±W が
+    /// 実行可能になる）。
+    ///
+    /// 生成結果が現在のモデルと一致する場合は `ApplyStories` を発行しない
+    /// （冪等。準備計算は実行のたびに階を作り直すため、モデルが変わっていないのに
+    /// undo 履歴を積んだり `mark_edited` で解析結果を stale にしたりしないようにする。
+    /// `sync_one_auto_case` と同じ規約）。
     pub fn generate_stories_action(&mut self) {
         self.last_error = None;
         self.last_notice = None;
@@ -1145,7 +1549,19 @@ impl App {
             include_density,
             mass_method,
         ) {
-            Ok(gen) => {
+            Ok(mut gen) => {
+                squid_n_load::story_gen::carry_over_manual_story_settings(
+                    &self.model.stories,
+                    &mut gen.stories,
+                );
+                if !story_gen_changes_model(&self.model, &gen, mass_method) {
+                    // 階は既に最新。荷重の同期だけ冪等に確認して終える。
+                    self.apply_rigid_zones_for_analysis();
+                    self.sync_seismic_load_cases_action();
+                    self.sync_wind_load_cases_action();
+                    self.auto_load_sync_hash = Some(self.compute_auto_load_sync_hash());
+                    return;
+                }
                 self.undo.run(
                     &mut self.model,
                     Box::new(squid_n_edit::ApplyStories {
@@ -1162,12 +1578,13 @@ impl App {
                 // 剛域込みの剛性を用いるようにするため）。
                 self.apply_rigid_zones_for_analysis();
                 self.sync_seismic_load_cases_action();
+                self.sync_wind_load_cases_action();
                 // 直後に run_linear_static 等（`sync_auto_load_cases_action`）が
-                // 呼ばれても、いま行った DL/LL/EX/EY の同期を無駄に繰り返さない
+                // 呼ばれても、いま行った DL/LL/EX/EY/WX/WY の同期を無駄に繰り返さない
                 // よう、同期後の状態のハッシュを記録しておく。
                 self.auto_load_sync_hash = Some(self.compute_auto_load_sync_hash());
             }
-            Err(e) => self.report_error(format!("階の自動生成エラー: {}", e)),
+            Err(e) => self.report_error(format!("階の生成エラー: {}", e)),
         }
     }
 
@@ -1175,9 +1592,8 @@ impl App {
     /// 方向・Ai算定法・Z・地盤種別・C0 は `analysis_cfg` を用いる。
     /// 結果は `StaticCaseKey::Seismic(dir)` に格納するため、X/Y 双方の地震静的結果
     /// および任意のユーザー荷重ケースの結果と衝突せず共存できる。
-    /// あわせて同じ水平力を「EX」「EY」ケースへ同期する（荷重組合せ用、
-    /// `sync_auto_load_cases_action`。モデル・関連設定が前回同期時から変わって
-    /// いなければ丸ごとスキップする）。
+    /// あわせて同じ水平力を「EX」「EY」ケースへ同期する（荷重組合せ用。
+    /// 準備計算 `ensure_preparation` が行う）。
     ///
     /// 設計用固有周期 T は `design_seismic_period` で暗黙の解析なしに決定する
     /// （内部で固有値解析を実行しない `Analysis::seismic_static_with_period` を
@@ -1187,7 +1603,7 @@ impl App {
         self.apply_parallelism_setting();
         self.last_error = None;
         self.last_notice = None;
-        self.sync_auto_load_cases_action();
+        self.ensure_preparation();
         let t = match self.design_seismic_period() {
             Ok(t) => t,
             Err(msg) => {
@@ -1232,7 +1648,7 @@ impl App {
         self.apply_parallelism_setting();
         self.last_error = None;
         self.last_notice = None;
-        self.sync_auto_load_cases_action();
+        self.ensure_preparation();
         let t = match self.design_seismic_period() {
             Ok(t) => t,
             Err(msg) => {
@@ -1288,7 +1704,7 @@ impl App {
             cpi: 0.0,
             parapet_mm: self.analysis_cfg.parapet_mm,
         };
-        self.apply_rigid_zones_for_analysis();
+        self.ensure_preparation();
         let res = Self::compute_wind(self.model.clone(), cfg);
         self.apply_static_case_result(StaticCaseKey::Wind(dir), res);
     }
@@ -1325,7 +1741,7 @@ impl App {
             cpi: 0.0,
             parapet_mm: self.analysis_cfg.parapet_mm,
         };
-        self.apply_rigid_zones_for_analysis();
+        self.ensure_preparation();
         let model = self.model.clone();
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
@@ -1353,53 +1769,20 @@ impl App {
         self.report_info(format!("⏳ {} を開始", self.job.as_ref().unwrap().label));
     }
 
-    /// Z表 CSV（`squid_n_load::z_table::ZTable::from_csv`）を読み込み `self.z_table`
-    /// に格納する（ヘッドレス可、UI 側のファイル選択とは独立にテストできる）。
-    pub fn load_z_table_from_csv(&mut self, csv: &str) {
-        match squid_n_load::z_table::ZTable::from_csv(csv) {
-            Ok(table) => {
-                self.z_table = Some(table);
-                self.last_error = None;
-            }
-            Err(e) => self.report_error(format!("Z表読込エラー: {}", e)),
-        }
-    }
-
-    /// 読み込み済みの Z表（`self.z_table`）から市町村名を引き、`analysis_cfg.z`
-    /// へ反映する。Z表が未読込／該当市町村が無い場合は `last_error` を設定して
-    /// `false` を返す。
-    pub fn apply_z_from_municipality(&mut self, municipality: &str) -> bool {
-        let Some(table) = &self.z_table else {
-            self.report_error("Z表が読み込まれていません");
-            return false;
-        };
-        match table.lookup(municipality) {
-            Some(z) => {
-                self.analysis_cfg.z = z;
-                self.last_error = None;
-                true
-            }
-            None => {
-                self.report_error(format!("Z表に「{}」が見つかりません", municipality));
-                false
-            }
-        }
-    }
-
-    /// 荷重ケースの種別（`LoadCaseKind`）から Dead（必須）/Live（必須）/Snow（任意）/
-    /// Wind（任意）を各先頭1件選び、`squid_n_load::combo::standard_combinations` で
-    /// 標準組合せを生成し、undo 可能に一括追加する（`AddCombination` を使用）。
+    /// 荷重ケースから標準組合せを生成し、undo 可能に一括追加する
+    /// （`squid_n_load::combo::standard_combinations`・`AddCombination` を使用）。
     ///
-    /// 地震（Seismic 種別）は対象外とする: Kx/Ky の正確な組合せは方向別の地震静的
-    /// 解析（`run_seismic`）が別途扱うため、`kind` だけでは方向を判別できない
-    /// 単一の LoadCase から機械的に Kx/Ky を割り当てることは行わない
-    /// （既存の手動選択 UI [`combinations_section`] が方向を明示して生成する経路を持つ）。
-    /// 同じ理由により、Wind も見つかった先頭1件は `wind_x` にのみ割り当てる
-    /// （`wind_y` は常に `None`）。
+    /// 固定（Dead）・積載（Live）・積雪（Snow）は種別の先頭 1 件を用いる。
+    /// 方向を持つ地震・風は、準備計算が自動生成する標準ケース名
+    /// （`EX`/`EY`/`WX`/`WY`）で方向を判別する（種別だけでは X・Y を区別できない）。
+    /// 標準名のケースが無い場合、風は種別 Wind の先頭 1 件を X 方向として扱い、
+    /// 地震は割り当てない（方向不明の地震ケースを機械的に EX とみなさない）。
     ///
     /// Dead/Live のいずれかが見つからない場合は組合せを生成せず `last_error` を設定する。
     pub fn auto_generate_combinations_action(&mut self) {
-        use squid_n_core::model::LoadCaseKind;
+        use squid_n_core::model::{
+            LoadCaseKind, EX_CASE_NAME, EY_CASE_NAME, WX_CASE_NAME, WY_CASE_NAME,
+        };
 
         self.last_error = None;
         let find_first = |kind: LoadCaseKind| {
@@ -1407,6 +1790,13 @@ impl App {
                 .load_cases
                 .iter()
                 .find(|lc| lc.kind == kind)
+                .map(|lc| lc.id)
+        };
+        let find_named = |name: &str, kind: LoadCaseKind| {
+            self.model
+                .load_cases
+                .iter()
+                .find(|lc| lc.name == name && lc.kind == kind)
                 .map(|lc| lc.id)
         };
         let Some(dl) = find_first(LoadCaseKind::Dead) else {
@@ -1418,15 +1808,21 @@ impl App {
             return;
         };
         let snow = find_first(LoadCaseKind::Snow);
-        let wind = find_first(LoadCaseKind::Wind);
+        // 標準名の風ケースが 1 つも無いモデルに限り、種別 Wind の先頭 1 件を
+        // X 方向として扱う（WY だけがあるモデルでそれを WX と誤って扱わない）。
+        let mut wind_x = find_named(WX_CASE_NAME, LoadCaseKind::Wind);
+        let wind_y = find_named(WY_CASE_NAME, LoadCaseKind::Wind);
+        if wind_x.is_none() && wind_y.is_none() {
+            wind_x = find_first(LoadCaseKind::Wind);
+        }
 
         let input = squid_n_load::combo::ComboInput {
             dl,
             ll,
-            seismic_x: None,
-            seismic_y: None,
-            wind_x: wind,
-            wind_y: None,
+            seismic_x: find_named(EX_CASE_NAME, LoadCaseKind::Seismic),
+            seismic_y: find_named(EY_CASE_NAME, LoadCaseKind::Seismic),
+            wind_x,
+            wind_y,
             snow,
             heavy_snow_zone: self.analysis_cfg.heavy_snow_zone,
             snow_factors: Some(squid_n_load::combo::SnowFactors {
@@ -1933,9 +2329,9 @@ impl App {
         let Some(results) = &self.results else {
             return;
         };
-        // 地震時短期の設計用せん断力 QD = min(QD1, QD2) 用の長期(G+P)内力。
+        // 地震時短期の設計用せん断力 QD = min(QD1, QD2) 用の長期(DL+LL)内力。
         // 現在の結果が地震時組合せ（名前に K/E を含む）かつ短期のときのみ、
-        // 解析済みの長期組合せ（"G + P" 優先、無ければ長期判定の組合せ）を引く。
+        // 解析済みの長期組合せ（"DL + LL" 優先、無ければ長期判定の組合せ）を引く。
         // 長期が未解析なら None（QD 割増なし＝従来動作）。
         let is_seismic_combo = match self.last_static {
             Some(StaticKey::Combo(idx)) => results
@@ -1953,7 +2349,7 @@ impl App {
                 results
                     .combos
                     .iter()
-                    .find(|(n, _)| n == "G + P")
+                    .find(|(n, _)| n == "DL + LL")
                     .or_else(|| {
                         results
                             .combos
@@ -2869,7 +3265,7 @@ impl App {
     ///
     /// `Analysis::prepare`（剛性行列組立+Cholesky分解）や固有値解析を新たに
     /// 実行することはない（暗黙の重い解析を避けるための入口）。
-    fn design_seismic_period(&self) -> Result<f64, String> {
+    pub(crate) fn design_seismic_period(&self) -> Result<f64, String> {
         match self.analysis_cfg.ai_mode {
             AiMode::Approx => {
                 let height_m = squid_n_solver::analysis::building_height_mm(&self.model) / 1000.0;
@@ -2945,11 +3341,48 @@ impl App {
         }
     }
 
+    /// 風荷重の標準ケース（WX・WY、kind=Wind）へ層水平力を同期する。
+    ///
+    /// 地震荷重（`sync_seismic_load_cases_action`）と同じ規約で、階が定義されて
+    /// いる場合に風荷重静的解析と同じ載荷（`build_wind_load_case_from_model`。
+    /// 基準風速・粗度区分・パラペット高さは `analysis_cfg`）を WX/WY ケースへ
+    /// 書き込む。これにより荷重組合せ（G+P±W など）が WX/WY を参照して解析できる。
+    ///
+    /// 見付け幅が 0 になる方向（平面的に広がりが無いモデル）では、その方向の
+    /// 荷重ケースは構築できないため何もしない（既存ケースは変更しない）。
+    /// 冪等な同期アクション（`sync_gravity_load_cases_action` と同じ規約）。
+    pub fn sync_wind_load_cases_action(&mut self) {
+        use squid_n_core::model::LoadCaseKind;
+        if self.model.stories.is_empty() {
+            return;
+        }
+        let built: Vec<(&'static str, squid_n_core::model::LoadCase)> =
+            [(SeismicDir::X, WX_CASE_NAME), (SeismicDir::Y, WY_CASE_NAME)]
+                .into_iter()
+                .filter_map(|(dir, name)| {
+                    let cfg = squid_n_solver::analysis::WindStaticCfg {
+                        dir,
+                        v0: self.analysis_cfg.v0,
+                        roughness: self.analysis_cfg.roughness,
+                        cpi: 0.0,
+                        parapet_mm: self.analysis_cfg.parapet_mm,
+                    };
+                    squid_n_solver::analysis::build_wind_load_case_from_model(&self.model, cfg)
+                        .ok()
+                        .map(|lc| (name, lc))
+                })
+                .collect();
+        for (name, lc) in built {
+            self.sync_one_auto_case(name, LoadCaseKind::Wind, lc.nodal, lc.member);
+        }
+    }
+
     /// `sync_auto_load_cases_action` が同期の要否判定に使うハッシュを計算する。
     ///
-    /// 荷重同期（DL/LL/EX/EY）の結果に影響し得る入力をすべて含める:
+    /// 荷重同期（DL/LL/EX/EY/WX/WY）の結果に影響し得る入力をすべて含める:
     /// モデル本体（`bincode` でシリアライズしてハッシュ）、地震荷重の
     /// Ai算定法（`ai_mode`）・地域係数 Z・地盤種別・標準せん断力係数 C0、
+    /// 風荷重の基準風速 V0・粗度区分・パラペット高さ、
     /// および SemiPrecise 時は `design_seismic_period` の値（算定できた場合のみ。
     /// `to_bits()` でビット列化してハッシュ。固有値解析が未実行で `Err` の場合は
     /// 含めない＝モデル・設定が同じなら「未実行」状態も同一ハッシュに畳み込む）。
@@ -2963,6 +3396,9 @@ impl App {
         self.analysis_cfg.z.to_bits().hash(&mut hasher);
         (self.analysis_cfg.soil as u8).hash(&mut hasher);
         self.analysis_cfg.c0.to_bits().hash(&mut hasher);
+        self.analysis_cfg.v0.to_bits().hash(&mut hasher);
+        (self.analysis_cfg.roughness as u8).hash(&mut hasher);
+        self.analysis_cfg.parapet_mm.to_bits().hash(&mut hasher);
         if matches!(self.analysis_cfg.ai_mode, AiMode::SemiPrecise) {
             if let Ok(t) = self.design_seismic_period() {
                 t.to_bits().hash(&mut hasher);
@@ -2971,10 +3407,10 @@ impl App {
         hasher.finish()
     }
 
-    /// 自重・積載・地震荷重の自動同期（`sync_gravity_load_cases_action` ・
-    /// `sync_seismic_load_cases_action`）をまとめて行う、解析実行系
-    /// （`run_linear_static`/`run_combination`/`run_all_combinations`/
-    /// `run_seismic`）共通の入口。
+    /// 剛域の反映と、自重・積載・地震荷重・風荷重の自動同期
+    /// （`sync_gravity_load_cases_action`・`sync_seismic_load_cases_action`・
+    /// `sync_wind_load_cases_action`）をまとめて行う、準備計算
+    /// （`ensure_preparation`・`run_preparation`）のモデル更新部分。
     ///
     /// モデルが交差小梁スラブを含む場合、床荷重分配（DL・LL(架構用)・
     /// LL(地震用)の3系統×床格子サブFEM解析）は重い処理になり得るため、
@@ -2986,7 +3422,8 @@ impl App {
     ///    剛域の反映は地震荷重の同期より先に行う。SemiPrecise の固有周期算定が
     ///    剛域込みの剛性を用いるようにするため）。
     /// 2. 現在のハッシュを計算し、前回保存したハッシュと一致すればスキップ。
-    /// 3. 不一致なら `sync_gravity_load_cases_action` → `sync_seismic_load_cases_action`
+    /// 3. 不一致なら `sync_gravity_load_cases_action` →
+    ///    `sync_seismic_load_cases_action` → `sync_wind_load_cases_action`
     ///    の順で実行する。
     /// 4. 同期後（荷重ケースの内容が書き換わった後）のモデルで再度ハッシュを
     ///    計算して保存する（同期前のハッシュを保存すると、次回呼び出しで
@@ -2999,12 +3436,14 @@ impl App {
         }
         self.sync_gravity_load_cases_action();
         self.sync_seismic_load_cases_action();
+        self.sync_wind_load_cases_action();
         self.auto_load_sync_hash = Some(self.compute_auto_load_sync_hash());
     }
 
     /// 名前付き荷重ケースを指定の `kind`・内容へ冪等に同期する
-    /// （`sync_gravity_load_cases_action`／`sync_seismic_load_cases_action` の
-    /// 各ケース同期の共通処理）。既存ケースの内容と一致すれば何もしない。
+    /// （`sync_gravity_load_cases_action`／`sync_seismic_load_cases_action`／
+    /// `sync_wind_load_cases_action` の各ケース同期の共通処理）。
+    /// 既存ケースの内容と一致すれば何もしない。
     fn sync_one_auto_case(
         &mut self,
         name: &str,
@@ -3033,20 +3472,23 @@ impl App {
         self.staleness.mark_edited();
     }
 
-    /// 組合せが参照する空の地震荷重ケース（kind=Seismic・内容なし）の名前を返す。
-    /// 空の地震ケースを含む組合せをそのまま解くと地震項が黙って 0 になるため、
-    /// 実行前のガードに使う（`run_combination`/`run_all_combinations`）。
-    fn empty_seismic_case_in_combo(
+    /// 組合せが参照する空の水平力ケース（kind=Seismic／Wind・内容なし）の名前を返す。
+    /// 空の地震・風ケースを含む組合せをそのまま解くと水平力の項が黙って 0 になり、
+    /// 長期と同じ結果を短期の検定に用いてしまうため、実行前のガードに使う
+    /// （`run_combination`/`run_all_combinations`）。いずれも準備計算が
+    /// EX/EY・WX/WY へ内容を生成するため、空のまま残っていることが異常の合図になる。
+    fn empty_lateral_case_in_combo(
         &self,
         combo: &squid_n_core::model::LoadCombination,
     ) -> Option<String> {
+        use squid_n_core::model::LoadCaseKind;
         combo.terms.iter().find_map(|(id, _)| {
             self.model
                 .load_cases
                 .iter()
                 .find(|lc| lc.id == *id)
                 .filter(|lc| {
-                    lc.kind == squid_n_core::model::LoadCaseKind::Seismic
+                    matches!(lc.kind, LoadCaseKind::Seismic | LoadCaseKind::Wind)
                         && lc.nodal.is_empty()
                         && lc.member.is_empty()
                 })
@@ -3111,15 +3553,15 @@ impl App {
             });
         }
 
-        // 空の地震荷重ケースを参照する荷重組合せ: そのまま解くと地震項が黙って
-        // 0 になるため（`empty_seismic_case_in_combo` と同じ判定を流用）。
+        // 空の水平力ケース（地震・風）を参照する荷重組合せ: そのまま解くと水平力の
+        // 項が黙って 0 になるため（`empty_lateral_case_in_combo` と同じ判定を流用）。
         for combo in &self.model.combinations {
-            if let Some(name) = self.empty_seismic_case_in_combo(combo) {
+            if let Some(name) = self.empty_lateral_case_in_combo(combo) {
                 diags.push(Diagnostic {
                     severity: DiagSeverity::Warning,
                     message: format!(
-                        "荷重組合せ「{}」が参照する地震荷重ケース「{}」が空です\
-                         （解析タブの階の自動生成で生成できます）",
+                        "荷重組合せ「{}」が参照する水平力の荷重ケース「{}」が空です\
+                         （解析タブの「準備計算 実行」で生成できます）",
                         combo.name, name
                     ),
                     target: None,
