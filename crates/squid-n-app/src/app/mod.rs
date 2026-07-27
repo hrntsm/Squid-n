@@ -584,6 +584,9 @@ pub struct App {
     pub job: Option<AnalysisJob>,
     /// 節点座標の編集バッファ（model.nodes に同期）
     pub node_edit: Vec<[String; 3]>,
+    /// 節点テーブルのグリッド操作ウィジェット状態（選択・編集モード・フラッシュ等）
+    #[cfg(feature = "gui")]
+    pub node_grid: crate::grid::GridWidget,
     /// 節点追加フォームの入力中座標（境界条件の編集とは別の独立 UI）
     pub node_draft: [String; 3],
     /// 節点追加時に既存節点と同一座標だった場合の追加保留座標。
@@ -835,6 +838,8 @@ impl Default for App {
             log: EventLog::default(),
             job: None,
             node_edit: Vec::new(),
+            #[cfg(feature = "gui")]
+            node_grid: crate::grid::GridWidget::new(),
             node_draft: ["0".to_string(), "0".to_string(), "0".to_string()],
             pending_duplicate_node_coord: None,
             staleness: Staleness::default(),
@@ -1714,6 +1719,7 @@ fn is_near_design_position(pos: f64, positions: &[f64]) -> bool {
 }
 
 mod actions;
+pub mod node_grid;
 mod preparation;
 
 pub use preparation::*;

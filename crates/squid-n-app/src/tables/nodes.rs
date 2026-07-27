@@ -1,14 +1,10 @@
-use crate::app::App;
+use crate::app::node_grid::NodeGridAdapter;
+use crate::app::{App, LogLevel};
 use squid_n_core::dof::Dof6Mask;
 use squid_n_core::ids::NodeId;
-use squid_n_edit::{AddNode, DeleteNode, SetNodeCoord, SetNodeRestraint};
+use squid_n_edit::{AddNode, SetNodeRestraint};
 
 pub fn nodes_table(ui: &mut egui::Ui, app: &mut App) {
-    use egui_extras::{Column, TableBuilder};
-
-    // バッファを model に同期（長さ合わせ + 未編集セルの更新）
-    app.sync_node_edit();
-
     // 節点追加フォーム（座標のみを扱う。境界条件は別パネルで編集する）。
     // 座標を入力してから「追加」を押すことで、その座標を持つ節点を作成する。
     ui.group(|ui| {
@@ -64,115 +60,43 @@ pub fn nodes_table(ui: &mut egui::Ui, app: &mut App) {
     });
     ui.separator();
 
-    let n = app.model.nodes.len();
-    // node_edit を一時的に取り出し、クロージャ内で app.model/undo と共存させる
-    let mut node_edit = std::mem::take(&mut app.node_edit);
-    // 確定待ちの編集（行、列、パース結果）
-    let mut pending: Vec<(usize, usize, f64)> = Vec::new();
-    // 削除対象（末尾の節点のみ許可。DeleteNode の制約に合わせる）
-    let mut pending_delete: Option<NodeId> = None;
-
-    TableBuilder::new(ui)
-        .striped(true)
-        .column(Column::auto())
-        .columns(Column::initial(80.0), 3)
-        .column(Column::auto())
-        .header(20.0, |mut h| {
-            for t in &["ID", "X", "Y", "Z", ""] {
-                h.col(|ui| {
-                    ui.strong(*t);
-                });
-            }
-        })
-        .body(|body| {
-            body.rows(22.0, n, |mut row| {
-                let i = row.index();
-                let node = &app.model.nodes[i];
-                let is_focus = app.nav.focus_node == Some(node.id);
-                row.col(|ui| {
-                    let text = node.id.0.to_string();
-                    // 選択行は blue-500 背景になるため文字は白、非選択は既定色
-                    let rich = egui::RichText::new(text).color(if is_focus {
-                        crate::theme::WHITE
-                    } else {
-                        egui::Color32::PLACEHOLDER
-                    });
-                    if ui.selectable_label(is_focus, rich).clicked() {
-                        app.nav.focus_node = Some(node.id);
-                    }
-                });
-                for (k, slot) in node_edit[i].iter_mut().enumerate().take(3) {
-                    row.col(|ui| {
-                        let resp = ui.add(
-                            egui::TextEdit::singleline(slot)
-                                .desired_width(70.0)
-                                .clip_text(false),
-                        );
-                        if resp.lost_focus() && resp.changed() {
-                            if let Ok(val) = slot.trim().parse::<f64>() {
-                                if (val - node.coord[k]).abs() > 1e-9 {
-                                    pending.push((i, k, val));
-                                }
-                            }
-                        }
-                        // 数値以外は赤背景
-                        if slot.trim().parse::<f64>().is_err() {
-                            ui.painter().rect_filled(
-                                resp.rect,
-                                0.0,
-                                crate::theme::translucent(crate::theme::ERROR_RED, 60),
-                            );
-                        }
-                    });
-                }
-                row.col(|ui| {
-                    // 部材・節点荷重などから参照中の節点は削除すると参照が壊れるため、
-                    // 先に参照を解消するまで無効化する（DeleteNode 側でも安全のため再確認する）。
-                    let in_use = app.model.node_in_use(node.id);
-                    let resp = ui.add_enabled(!in_use, egui::Button::new("🗑"));
-                    if in_use {
-                        resp.on_hover_text(
-                            "この節点は部材などに使用されているため削除できません（先に参照を解消してください）",
-                        );
-                    } else if resp.on_hover_text("この節点を削除").clicked() {
-                        pending_delete = Some(node.id);
-                    }
-                });
-            });
-        });
-
-    // 確定処理（クロージャ外で app.model と app.undo にアクセス）
-    let had_pending = !pending.is_empty();
-    for (i, k, val) in pending {
-        let node_id = NodeId(app.model.nodes[i].id.0);
-        let mut new_coord = app.model.nodes[i].coord;
-        new_coord[k] = val;
-        app.undo.run(
-            &mut app.model,
-            Box::new(SetNodeCoord {
-                node: node_id,
-                coord: new_coord,
-            }),
+    // 座標 3 列はグリッド操作レイヤ（スプレッドシート的編集。T4 パイロット）。
+    // 矩形選択・Excel 相互 TSV コピペ・新規行プレースホルダ・行削除に対応し、
+    // モデル編集はアダプタが squid-n-edit の複合コマンドへ落とす（undo 1 回で復元）。
+    let edited = {
+        let mut adapter = NodeGridAdapter {
+            model: &mut app.model,
+            undo: &mut app.undo,
+            edited: false,
+        };
+        // 既存の 🗑 ボタン（1 行削除）はグリッドの末尾列として維持する
+        app.node_grid.delete_buttons = true;
+        app.node_grid.show(ui, &mut adapter, &["X", "Y", "Z"]);
+        adapter.edited
+    };
+    for (msg, is_err) in app.node_grid.take_log() {
+        app.log.push(
+            if is_err {
+                LogLevel::Error
+            } else {
+                LogLevel::Info
+            },
+            msg,
         );
     }
-
-    let had_delete = pending_delete.is_some();
-    if let Some(node_id) = pending_delete {
-        app.undo
-            .run(&mut app.model, Box::new(DeleteNode { id: node_id }));
+    if edited {
+        // 編集があった場合は下流（結果・設計）を stale にする（UI設計 §5）
+        app.staleness.mark_edited();
         app.sync_node_edit();
-        if app.nav.focus_node == Some(node_id) {
-            app.nav.focus_node = None;
+    }
+    // 行選択に合わせてナビゲータのフォーカス節点を同期する
+    // （境界条件タブ・3D ビューの強調表示が選択行を追う）
+    if app.node_grid.grid.active {
+        let r = app.node_grid.grid.anchor.row;
+        if let Some(node) = app.model.nodes.get(r) {
+            app.nav.focus_node = Some(node.id);
         }
     }
-
-    // 編集があった場合は下流（結果・設計）を stale にする（UI設計 §5）
-    if had_pending || had_delete {
-        app.staleness.mark_edited();
-    }
-
-    // バッファを戻す
-    app.node_edit = node_edit;
 
     // 重複座標の節点追加確認ダイアログ
     // （追加ボタン押下時に同一座標の既存節点が見つかった場合、ここで確認を取る）

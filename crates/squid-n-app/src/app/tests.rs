@@ -4883,6 +4883,274 @@ fn test_mark_edited_marks_diagnostics_stale() {
     assert!(app.staleness.diagnostics_stale);
 }
 
+// ---- グリッド操作（§9.2 ヘッドレス UI テスト。T5） ----
+// widget（egui）を介さず、grid_core の純ロジックと NodeGridAdapter を
+// widget と同じ順序で呼び、モデル・undo の挙動を検証する。
+
+mod grid_headless {
+    use super::super::node_grid::NodeGridAdapter;
+    use super::*;
+    use crate::grid::{
+        commit_cell_text, plan_paste, CellRef, CommitOutcome, GridAdapter, PastePlan,
+    };
+    use squid_n_core::dof::Dof6Mask;
+    use squid_n_core::ids::{ElemId, NodeId};
+    use squid_n_core::model::Node;
+
+    /// 節点を n 個持つ App を作る（座標は X=1000*i で識別できるようにする）
+    fn app_with_nodes(n: usize) -> App {
+        let mut app = App::default();
+        for i in 0..n {
+            app.model.nodes.push(Node {
+                id: NodeId(i as u32),
+                coord: [i as f64 * 1000.0, 0.0, 0.0],
+                restraint: Dof6Mask::FREE,
+                mass: None,
+                story: None,
+            });
+        }
+        app
+    }
+
+    /// 節点 a-b を結ぶ梁を追加する（参照中の節点を作るため）
+    fn push_beam(app: &mut App, a: u32, b: u32) {
+        use squid_n_core::model::{ElementData, ElementKind, EndCondition, ForceRegime, LocalAxis};
+        app.model.elements.push(ElementData {
+            id: ElemId(app.model.elements.len() as u32),
+            kind: ElementKind::Beam,
+            nodes: [NodeId(a), NodeId(b)].into_iter().collect(),
+            section: None,
+            material: None,
+            local_axis: LocalAxis {
+                ref_vector: [1.0, 0.0, 0.0],
+            },
+            end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+            force_regime: ForceRegime::Auto,
+            rigid_zone: Default::default(),
+            plastic_zone: None,
+            spring: None,
+        });
+    }
+
+    fn block(rows: &[&[&str]]) -> Vec<Vec<String>> {
+        rows.iter()
+            .map(|r| r.iter().map(|s| s.to_string()).collect())
+            .collect()
+    }
+
+    /// widget の do_paste と同じ順序で plan_paste → apply_block を行う
+    fn paste(
+        app: &mut App,
+        block: &[Vec<String>],
+        anchor: CellRef,
+    ) -> Result<PastePlan, Vec<String>> {
+        let mut adapter = NodeGridAdapter {
+            model: &mut app.model,
+            undo: &mut app.undo,
+            edited: false,
+        };
+        let plan = plan_paste(block, anchor, adapter.rows(), adapter.cols(), |r, c, t| {
+            adapter.validate_cell(r, c, t)
+        })?;
+        adapter.apply_block(&plan.set, plan.extra_rows);
+        Ok(plan)
+    }
+
+    /// §9.2: ペースト適用が複合コマンド 1 個になり、undo 1 回で行追加ごと戻る。
+    /// はみ出し行の自動追加（extra_rows）も検証する
+    #[test]
+    fn test_grid_paste_composite_single_undo_restores_appended_rows() {
+        let mut app = app_with_nodes(2);
+        let before = app.model.clone();
+        // 2 行の表に 3 行 ×2 列を貼る → 1 行はみ出し（自動追加）
+        let plan = paste(
+            &mut app,
+            &block(&[&["10", "20"], &["30", "40"], &["50", "60"]]),
+            CellRef { row: 0, col: 0 },
+        )
+        .expect("正常ペーストは成功する");
+        assert_eq!(plan.extra_rows, 1, "はみ出し行数の算定");
+        assert_eq!(app.model.nodes.len(), 3, "確認なしで行が自動追加される");
+        assert_eq!(app.model.nodes[0].coord, [10.0, 20.0, 0.0]);
+        assert_eq!(app.model.nodes[2].coord, [50.0, 60.0, 0.0]);
+        assert_eq!(app.undo.undo_label(), Some("節点座標の貼り付け"));
+        // undo 1 回で行追加ごと元に戻る
+        app.undo.undo(&mut app.model);
+        assert!(app.model.eq_ignoring_dofmap(&before));
+    }
+
+    /// §9.2: 全体拒否時にモデルが一切変化しない（undo スタックにも積まれない）
+    #[test]
+    fn test_grid_paste_reject_leaves_model_untouched() {
+        let mut app = app_with_nodes(2);
+        let before = app.model.clone();
+        let err = paste(
+            &mut app,
+            &block(&[&["1", "abc"]]),
+            CellRef { row: 0, col: 0 },
+        )
+        .expect_err("不正セルを含むペーストは全体拒否");
+        assert_eq!(err.len(), 1);
+        assert!(app.model.eq_ignoring_dofmap(&before));
+        assert!(!app.undo.can_undo(), "拒否時は undo 履歴にも積まれない");
+    }
+
+    /// §9.2: 空モデル（節点 0）への貼り付けがプレースホルダ経由で成立し、
+    /// 自動で N 行追加 → undo 1 回で空に戻る
+    #[test]
+    fn test_grid_paste_into_empty_model() {
+        let mut app = app_with_nodes(0);
+        let plan = paste(
+            &mut app,
+            &block(&[&["1", "2", "3"], &["4", "5", "6"]]),
+            CellRef { row: 0, col: 0 },
+        )
+        .expect("空モデルへの貼り付けが成立する");
+        assert_eq!(plan.extra_rows, 2);
+        assert_eq!(app.model.nodes.len(), 2);
+        assert_eq!(app.model.nodes[0].coord, [1.0, 2.0, 3.0]);
+        assert_eq!(app.model.nodes[1].coord, [4.0, 5.0, 6.0]);
+        app.undo.undo(&mut app.model);
+        assert!(app.model.nodes.is_empty(), "undo 1 回で空に戻る");
+    }
+
+    /// §9.2: Delete クリアの適用と undo（節点テーブルのクリア = 0 埋め）
+    #[test]
+    fn test_grid_clear_cells_and_undo() {
+        let mut app = app_with_nodes(3);
+        let before = app.model.clone();
+        let n = {
+            let mut adapter = NodeGridAdapter {
+                model: &mut app.model,
+                undo: &mut app.undo,
+                edited: false,
+            };
+            adapter.clear_cells(&[(1, 0), (1, 1), (2, 0)])
+        };
+        assert_eq!(n, 3);
+        assert_eq!(app.model.nodes[1].coord, [0.0, 0.0, 0.0]);
+        assert_eq!(app.model.nodes[2].coord, [0.0, 0.0, 0.0]);
+        app.undo.undo(&mut app.model);
+        assert!(app.model.eq_ignoring_dofmap(&before), "undo 1 回で復元");
+    }
+
+    /// §9.2: プレースホルダでの編集確定が行追加＋値設定の 1 コマンドになり、
+    /// undo 1 回で行ごと戻る
+    #[test]
+    fn test_grid_placeholder_commit_appends_row() {
+        let mut app = app_with_nodes(1);
+        let outcome = {
+            let mut adapter = NodeGridAdapter {
+                model: &mut app.model,
+                undo: &mut app.undo,
+                edited: false,
+            };
+            // プレースホルダ行（row == rows()）の Y 列に確定
+            commit_cell_text(&mut adapter, CellRef { row: 1, col: 1 }, "6000")
+        };
+        assert_eq!(outcome, CommitOutcome::Applied { appended: true });
+        assert_eq!(app.model.nodes.len(), 2);
+        assert_eq!(
+            app.model.nodes[1].coord,
+            [0.0, 6000.0, 0.0],
+            "他列は既定値 0"
+        );
+        app.undo.undo(&mut app.model);
+        assert_eq!(app.model.nodes.len(), 1, "undo 1 回で行追加ごと戻る");
+    }
+
+    /// §9.2: Backspace（空バッファでの編集開始）→ Enter の空確定は「変更なし」
+    /// であり、範囲クリアもモデル変更も undo 履歴も発生しない
+    #[test]
+    fn test_grid_empty_commit_is_no_change() {
+        let mut app = app_with_nodes(2);
+        let before = app.model.clone();
+        let outcome = {
+            let mut adapter = NodeGridAdapter {
+                model: &mut app.model,
+                undo: &mut app.undo,
+                edited: false,
+            };
+            commit_cell_text(&mut adapter, CellRef { row: 0, col: 0 }, "  ")
+        };
+        assert_eq!(outcome, CommitOutcome::NoChange);
+        assert!(app.model.eq_ignoring_dofmap(&before));
+        assert!(!app.undo.can_undo());
+    }
+
+    /// §9.2: 不正値の編集確定は Rejected でモデル無変化
+    #[test]
+    fn test_grid_invalid_commit_is_rejected() {
+        let mut app = app_with_nodes(2);
+        let before = app.model.clone();
+        let outcome = {
+            let mut adapter = NodeGridAdapter {
+                model: &mut app.model,
+                undo: &mut app.undo,
+                edited: false,
+            };
+            commit_cell_text(&mut adapter, CellRef { row: 0, col: 0 }, "abc")
+        };
+        assert!(matches!(outcome, CommitOutcome::Rejected(_)));
+        assert!(app.model.eq_ignoring_dofmap(&before));
+        assert!(!app.undo.can_undo());
+    }
+
+    /// §9.2: 行削除が複合コマンド 1 個になり、undo 1 回で ID 繰り上げごと復元される
+    #[test]
+    fn test_grid_delete_rows_single_undo_restores_ids() {
+        let mut app = app_with_nodes(5);
+        push_beam(&mut app, 0, 4); // 削除対象外の節点を結ぶ梁（ID 繰り上げの検証用）
+        let before = app.model.clone();
+        {
+            let mut adapter = NodeGridAdapter {
+                model: &mut app.model,
+                undo: &mut app.undo,
+                edited: false,
+            };
+            // widget は昇順で渡す（降順化はアダプタの責務）
+            adapter.delete_rows(&[1, 3]);
+        }
+        assert_eq!(app.model.nodes.len(), 3);
+        assert_eq!(
+            app.model.elements[0].nodes[1],
+            NodeId(2),
+            "参照 ID が繰り上がる"
+        );
+        assert_eq!(app.undo.undo_label(), Some("節点 2 行の削除"));
+        app.undo.undo(&mut app.model);
+        assert!(
+            app.model.eq_ignoring_dofmap(&before),
+            "undo 1 回で ID・参照ごと復元"
+        );
+    }
+
+    /// §9.2: 参照中の節点を含む行削除は validate_row_deletion が拒否し、
+    /// （widget が delete_rows を呼ばないため）モデルは一切変化しない
+    #[test]
+    fn test_grid_delete_referenced_row_is_rejected() {
+        let mut app = app_with_nodes(3);
+        push_beam(&mut app, 0, 1);
+        let before = app.model.clone();
+        let (blocked, free) = {
+            let adapter = NodeGridAdapter {
+                model: &mut app.model,
+                undo: &mut app.undo,
+                edited: false,
+            };
+            (
+                adapter.validate_row_deletion(1),
+                adapter.validate_row_deletion(2),
+            )
+        };
+        assert!(blocked.is_err(), "参照中の節点は削除不可");
+        assert!(blocked.unwrap_err().contains("参照"), "参照元を理由に示す");
+        assert!(free.is_ok());
+        // widget は 1 行でも拒否があれば delete_rows を呼ばない（all-or-nothing）
+        assert!(app.model.eq_ignoring_dofmap(&before));
+        assert!(!app.undo.can_undo());
+    }
+}
 /// 剛床（階の剛床定義）に載る梁でも、応力図・検定比図の元データ
 /// （`member_forces` と `member_checks`）が生成されること（回帰）。
 ///

@@ -2353,3 +2353,124 @@ fn test_delete_member_restores_member_detail_attr() {
     stack.redo(&mut model);
     assert!(model.member_detail(ElemId(0)).is_none());
 }
+
+/// `CompositeCommand`: ペースト相当（既存セルの `SetNodeCoord` ×2 ＋行追加の
+/// `AddNode` ＋追加行への `SetNodeCoord`）を 1 undo で丸ごと復元すること。
+#[test]
+fn test_composite_paste_roundtrip() {
+    let mut model = empty_model();
+    for (i, x) in [0.0, 1000.0].iter().enumerate() {
+        model.nodes.push(Node {
+            id: NodeId(i as u32),
+            coord: [*x, 0.0, 0.0],
+            restraint: Dof6Mask::FREE,
+            mass: None,
+            story: None,
+        });
+    }
+    let before = model.clone();
+    let mut stack = UndoStack::new();
+
+    // 3 行 ×1 列のペースト相当: 既存 2 行の座標変更＋不足 1 行の追加＋追加行の座標設定。
+    stack.run(
+        &mut model,
+        Box::new(CompositeCommand {
+            label: "節点座標の貼り付け".to_string(),
+            children: vec![
+                Box::new(SetNodeCoord {
+                    node: NodeId(0),
+                    coord: [10.0, 20.0, 30.0],
+                }),
+                Box::new(SetNodeCoord {
+                    node: NodeId(1),
+                    coord: [40.0, 50.0, 60.0],
+                }),
+                Box::new(AddNode {
+                    coord: [0.0, 0.0, 0.0],
+                    restraint: Dof6Mask::FREE,
+                }),
+                // 直前の AddNode が作った節点を同一複合内で参照できること（逐次適用）。
+                Box::new(SetNodeCoord {
+                    node: NodeId(2),
+                    coord: [70.0, 80.0, 90.0],
+                }),
+            ],
+        }),
+    );
+    assert_eq!(model.nodes.len(), 3);
+    assert_eq!(model.nodes[0].coord, [10.0, 20.0, 30.0]);
+    assert_eq!(model.nodes[1].coord, [40.0, 50.0, 60.0]);
+    assert_eq!(model.nodes[2].coord, [70.0, 80.0, 90.0]);
+    assert_eq!(stack.undo_label(), Some("節点座標の貼り付け"));
+
+    // undo 1 回で追加行の除去も含めて元通り。
+    stack.undo(&mut model);
+    assert!(model.eq_ignoring_dofmap(&before));
+
+    // redo 1 回で再適用。
+    stack.redo(&mut model);
+    assert_eq!(model.nodes.len(), 3);
+    assert_eq!(model.nodes[2].coord, [70.0, 80.0, 90.0]);
+}
+
+/// `CompositeCommand`: 行削除相当（`DeleteNode` を行番号の降順に並べた複合）の
+/// undo 1 回で、ID の繰り上げ・部材参照の付け替えごと復元すること（§4.6 の前提）。
+#[test]
+fn test_composite_delete_nodes_descending_roundtrip() {
+    let mut model = empty_model();
+    for i in 0..5u32 {
+        model.nodes.push(Node {
+            id: NodeId(i),
+            coord: [i as f64 * 1000.0, 0.0, 0.0],
+            restraint: Dof6Mask::FREE,
+            mass: None,
+            story: None,
+        });
+    }
+    // 削除対象外の節点 0-4 を結ぶ部材（削除で節点 4 の ID が繰り上がる）。
+    model.elements.push(ElementData {
+        id: ElemId(0),
+        kind: ElementKind::Beam,
+        nodes: smallvec![NodeId(0), NodeId(4)],
+        section: None,
+        material: None,
+        local_axis: LocalAxis {
+            ref_vector: [1.0, 0.0, 0.0],
+        },
+        end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+        force_regime: ForceRegime::Auto,
+        rigid_zone: Default::default(),
+        plastic_zone: None,
+        spring: None,
+    });
+    let before = model.clone();
+    let mut stack = UndoStack::new();
+
+    // 節点 1・3 の行削除。降順に並べ、先行する削除で後続の ID がずれないようにする。
+    stack.run(
+        &mut model,
+        Box::new(CompositeCommand {
+            label: "選択した 2 行を削除".to_string(),
+            children: vec![
+                Box::new(DeleteNode { id: NodeId(3) }),
+                Box::new(DeleteNode { id: NodeId(1) }),
+            ],
+        }),
+    );
+    assert_eq!(model.nodes.len(), 3);
+    // 残った節点は旧 0・2・4 で、ID は 0・1・2 に詰められている。
+    assert_eq!(model.nodes[1].coord, [2000.0, 0.0, 0.0]);
+    assert_eq!(model.nodes[2].coord, [4000.0, 0.0, 0.0]);
+    // 部材の参照も旧 4 → 新 2 へ繰り上がっている。
+    assert_eq!(model.elements[0].nodes[1], NodeId(2));
+    assert!(model.validate().is_ok());
+
+    // undo 1 回で 5 節点・ID・部材参照ごと元通り。
+    stack.undo(&mut model);
+    assert!(model.eq_ignoring_dofmap(&before));
+
+    // redo 1 回で再削除。
+    stack.redo(&mut model);
+    assert_eq!(model.nodes.len(), 3);
+    assert_eq!(model.elements[0].nodes[1], NodeId(2));
+}
