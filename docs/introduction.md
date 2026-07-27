@@ -23,11 +23,6 @@
 - [dev_docs/v_and_v/](https://github.com/hrntsm/squid-n/tree/main/dev_docs/v_and_v)：各要素・各設計式の Verification & Validation レポート
 - [dev_docs/ROADMAP.md](https://github.com/hrntsm/squid-n/blob/main/dev_docs/ROADMAP.md)・[dev_docs/handoff/](https://github.com/hrntsm/squid-n/tree/main/dev_docs/handoff)：ロードマップ、申し送り、UI 関連ドキュメント
 
-## 画面から見つけられないショートカット
-
-- 節点テーブル: **Ctrl+Delete** で選択中の行を削除します（行ヘッダ・セルの
-  右クリックメニューと同じ操作）。**Delete** はセル値のクリアで、行は消えません。
-
 ## リポジトリ
 
 ソースコードは [github.com/hrntsm/squid-n](https://github.com/hrntsm/squid-n) にあります。
