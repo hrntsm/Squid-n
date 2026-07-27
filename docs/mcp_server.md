@@ -2,7 +2,7 @@
 
 ## 概要
 
-`squid-n-mcp` は Squid-N の構造モデルを [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) 経由で AI エージェントに公開するサーバです。標準入出力（stdio）をトランスポートとして動作し、接続したクライアント（Claude Code、Claude Desktop など）から次のことができます。
+`squid-n-mcp` は Squid-n の構造モデルを [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) 経由で AI エージェントに公開するサーバです。標準入出力（stdio）をトランスポートとして動作し、接続したクライアント（Claude Code、Claude Desktop など）から次のことができます。
 
 - 構造モデル（節点・部材・断面）の照会
 - 数量積算（コンクリート・型枠・鉄筋・鉄骨）の集計
