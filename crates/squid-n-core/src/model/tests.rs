@@ -454,8 +454,10 @@ fn test_model_damper_defs_default_missing_field() {
 }
 
 /// msgpack（.scz の実際の直列化形式）でも同様に後方互換が効くこと
-/// （JSON だけでなくバイナリ形式での確認。rmp-serde は self-describing 形式のため
-/// serde の `#[serde(default)]` 補完が同様に機能する）。
+/// （JSON だけでなくバイナリ形式での確認。rmp-serde は位置ベース配列として
+/// 直列化するため、`#[serde(default)]` による補完は**末尾のフィールドが
+/// 欠けている場合のみ**有効。新フィールドを構造体の途中に追加すると、
+/// 旧データの後続フィールドの値がずれて読み込まれてしまう）。
 #[test]
 fn test_node_support_spring_msgpack_backward_compat() {
     // 旧版 Node 相当（末尾 support_spring 抜き）を模した最小構造体で msgpack 化し、

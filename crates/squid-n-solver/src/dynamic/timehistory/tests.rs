@@ -1904,6 +1904,189 @@ fn test_nonlinear_apply_long_term_matches_static_solution() {
     }
 }
 
+/// 支点ばね（`Node::support_spring`）のみで水平剛性を与えられる SDOF。
+/// 高-1: 非線形時刻歴の残差計算に支点ばね内力が入らない不具合の回帰テスト用。
+///
+/// 剛性そのものは節点1 の `support_spring` のみが担う（要素自身の剛性は 0）。
+/// ただし `DofMap` は要素に参加しない節点の自由度を活性化しないため
+/// （`common::assemble::tests::test_isolated_node_with_support_spring_stays_inactive`
+/// 参照）、剛性ゼロの `NodalSpring` 要素で節点0（固定）・節点1（支点ばね）を
+/// つなぎ、節点1 の Ux を活性化する。
+fn support_spring_sdof_model(k: f64, m: f64) -> Model {
+    Model {
+        nodes: vec![
+            Node {
+                id: NodeId(0),
+                coord: [0.0, 0.0, 0.0],
+                restraint: Dof6Mask::FIXED,
+                mass: None,
+                story: None,
+                support_spring: None,
+            },
+            Node {
+                id: NodeId(1),
+                coord: [1000.0, 0.0, 0.0],
+                restraint: FREE_UX,
+                mass: Some([m, 0.0, 0.0, 0.0, 0.0, 0.0]),
+                story: None,
+                support_spring: Some([k, 0.0, 0.0, 0.0, 0.0, 0.0]),
+            },
+        ],
+        elements: vec![ElementData {
+            id: ElemId(0),
+            kind: ElementKind::NodalSpring,
+            nodes: smallvec::smallvec![NodeId(0), NodeId(1)],
+            section: None,
+            material: None,
+            local_axis: LocalAxis {
+                ref_vector: [0.0, 1.0, 0.0],
+            },
+            end_cond: [EndCondition::Pinned, EndCondition::Pinned],
+            force_regime: ForceRegime::Auto,
+            rigid_zone: Default::default(),
+            plastic_zone: None,
+            spring: Some([0.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
+        }],
+        ..Default::default()
+    }
+}
+
+/// 高-1: 支点ばねのみで支持される SDOF で、非線形時刻歴の長期荷重初期化
+/// （`apply_long_term_static`）が収束し、静的解析解 `u=F/k` と一致すること。
+/// 修正前は `compute_f_int` が常に 0（要素が無いため）で、支点ばねの内力寄与が
+/// 残差へ入らず、載荷率 0% 超で Newton 反復が収束せずエラーになっていた。
+#[test]
+fn test_support_spring_long_term_static_matches_analytical() {
+    let k = 500.0_f64;
+    let m = 2.0_f64;
+    let f_load = 300.0_f64;
+    let mut model = support_spring_sdof_model(k, m);
+    model.load_cases.push(squid_n_core::model::LoadCase {
+        id: squid_n_core::ids::LoadCaseId(0),
+        name: "DL".to_string(),
+        nodal: vec![squid_n_core::model::NodalLoad {
+            node: NodeId(1),
+            values: [f_load, 0.0, 0.0, 0.0, 0.0, 0.0],
+        }],
+        member: vec![],
+        kind: squid_n_core::model::LoadCaseKind::Dead,
+    });
+    let dofmap = DofMap::build(&model);
+    let reducer = Reducer::build(&model, &dofmap);
+
+    let damping = Damping::StiffnessProportional {
+        h: 0.02,
+        omega: (k / m).sqrt(),
+        basis: StiffnessKind::Initial,
+    };
+    let dt = 0.001;
+    let n_steps = 5;
+    let wave = zero_wave(dt, n_steps);
+    let newmark = NewmarkCfg {
+        beta: 0.25,
+        gamma: 0.5,
+        dt,
+    };
+
+    let mut cfg = NonlinearThCfg::new(20, 1e-9);
+    cfg.apply_long_term = true;
+    let result = nonlinear_time_history_analysis(
+        &mut model,
+        &dofmap,
+        &reducer,
+        &wave,
+        &newmark,
+        &damping,
+        DampingAccumulation::NonCumulative,
+        &[0.0],
+        &[0.0],
+        cfg,
+    )
+    .expect("支点ばねのみのモデルでも長期荷重の静的載荷が収束するはず（高-1）");
+
+    let expected_u = f_load / k;
+    assert!(
+        (result.peak_disp[1][0] - expected_u).abs() / expected_u.abs() < 1e-6,
+        "long-term disp {} should match analytical F/k={}",
+        result.peak_disp[1][0],
+        expected_u
+    );
+}
+
+/// 高-1: 支点ばねのみで支持される SDOF の自由振動応答が、同一モデルの線形時刻歴
+/// （既に支点ばねを正しく扱っている参照経路）と一致すること。要素が無いため
+/// 弾性範囲を超える降伏は起こらず、非線形・線形の両経路は理論上完全に一致する。
+#[test]
+fn test_support_spring_free_vibration_matches_linear() {
+    let k = 800.0_f64;
+    let m = 1.0_f64;
+    let mut model_nl = support_spring_sdof_model(k, m);
+    let model_lin = support_spring_sdof_model(k, m);
+    let dofmap = DofMap::build(&model_nl);
+    let reducer = Reducer::build(&model_nl, &dofmap);
+
+    let omega = (k / m).sqrt();
+    let damping = Damping::StiffnessProportional {
+        h: 0.03,
+        omega,
+        basis: StiffnessKind::Initial,
+    };
+    let dt = 0.001;
+    let n_steps = 200;
+    let wave = zero_wave(dt, n_steps);
+    let newmark = NewmarkCfg {
+        beta: 0.25,
+        gamma: 0.5,
+        dt,
+    };
+
+    let mut cfg = NonlinearThCfg::new(20, 1e-10);
+    cfg.apply_long_term = false;
+    let result_nl = nonlinear_time_history_analysis(
+        &mut model_nl,
+        &dofmap,
+        &reducer,
+        &wave,
+        &newmark,
+        &damping,
+        DampingAccumulation::NonCumulative,
+        &[5.0],
+        &[0.0],
+        cfg,
+    )
+    .expect("支点ばねのみのモデルで自由振動が解けるはず（高-1）");
+
+    let result_lin = linear_time_history_analysis(
+        &model_lin,
+        &dofmap,
+        &reducer,
+        &wave,
+        &newmark,
+        &damping,
+        &[5.0],
+        &[0.0],
+        false,
+        None,
+    )
+    .expect("linear reference");
+
+    assert_eq!(
+        result_nl.history.node_disp.len(),
+        result_lin.history.node_disp.len()
+    );
+    for (u_nl, u_lin) in result_nl
+        .history
+        .node_disp
+        .iter()
+        .zip(result_lin.history.node_disp.iter())
+    {
+        assert!(
+            (u_nl - u_lin).abs() < 1e-4 * u_lin.abs().max(1.0),
+            "nonlinear {u_nl} should match linear {u_lin}"
+        );
+    }
+}
+
 /// (d) `NonlinearThCfg::record_every` による明示的な間引きが機能すること。
 /// `n_steps=50, record_every=5` なら、ステップ 0,5,...,50 の 11 フレームが記録される。
 #[test]
@@ -2049,6 +2232,194 @@ fn test_hht_record_every_thinning() {
     let recording = result.recording.expect("recording");
     assert_eq!(recording.record_every, 5);
     assert_eq!(recording.frame_time.len(), 11, "0,5,..,50 の 11 フレーム");
+}
+
+/// 中-3: `StoryResponse` の `peak_*`（層せん断力・階絶対加速度・階速度・階変位の
+/// 絶対値最大）は、フレーム記録の間引き（`record_every`）に関係なく毎ステップ
+/// 更新される。`record_every=7`（間引きあり）と `record_every=1`（全ステップ
+/// 記録）で同一条件を解析し、間引きありのピークが、間引きなし側の全フレームから
+/// 独立に求めた絶対値最大と一致することを確認する。
+#[test]
+fn test_story_response_peaks_match_full_resolution_regardless_of_thinning() {
+    let model = fiber_column_model(1e10);
+    let dofmap = DofMap::build(&model);
+    let reducer = Reducer::build(&model, &dofmap);
+
+    let damping = Damping::StiffnessProportional {
+        h: 0.02,
+        omega: 10.0,
+        basis: StiffnessKind::Initial,
+    };
+    let dt = 0.001;
+    let n_steps = 60;
+    let wave = zero_wave(dt, n_steps);
+    let newmark = NewmarkCfg {
+        beta: 0.25,
+        gamma: 0.5,
+        dt,
+    };
+
+    let result_thin = linear_time_history_analysis(
+        &model,
+        &dofmap,
+        &reducer,
+        &wave,
+        &newmark,
+        &damping,
+        &[10.0],
+        &[0.0],
+        false,
+        Some(7),
+    )
+    .expect("thin run should converge");
+    let result_full = linear_time_history_analysis(
+        &model,
+        &dofmap,
+        &reducer,
+        &wave,
+        &newmark,
+        &damping,
+        &[10.0],
+        &[0.0],
+        false,
+        Some(1),
+    )
+    .expect("full-resolution run should converge");
+
+    let rec_thin = result_thin.recording.expect("recording");
+    let rec_full = result_full.recording.expect("recording");
+    assert_eq!(rec_thin.record_every, 7);
+    assert_eq!(rec_full.record_every, 1);
+    assert!(
+        rec_thin.frame_time.len() < rec_full.frame_time.len(),
+        "間引きありの方がフレーム数は少ないはず"
+    );
+
+    let n_story = rec_full.story_x.stories.len();
+    assert!(n_story > 0);
+
+    // フル解像度（間引きなし）の全フレームから、各量の絶対値最大を独立に計算する。
+    let mut expected_peak_shear = vec![0.0f64; n_story];
+    let mut expected_peak_accel = vec![0.0f64; n_story];
+    let mut expected_peak_vel = vec![0.0f64; n_story];
+    let mut expected_peak_disp = vec![0.0f64; n_story];
+    for frame in &rec_full.story_x.story_shear {
+        for (p, &v) in expected_peak_shear.iter_mut().zip(frame) {
+            *p = p.max(v.abs());
+        }
+    }
+    for frame in &rec_full.story_x.floor_accel {
+        for (p, &v) in expected_peak_accel.iter_mut().zip(frame) {
+            *p = p.max(v.abs());
+        }
+    }
+    for frame in &rec_full.story_x.floor_vel {
+        for (p, &v) in expected_peak_vel.iter_mut().zip(frame) {
+            *p = p.max(v.abs());
+        }
+    }
+    for frame in &rec_full.story_x.floor_disp {
+        for (p, &v) in expected_peak_disp.iter_mut().zip(frame) {
+            *p = p.max(v.abs());
+        }
+    }
+
+    for i in 0..n_story {
+        assert!(
+            (rec_thin.story_x.peak_story_shear[i] - expected_peak_shear[i]).abs()
+                < expected_peak_shear[i].abs().max(1.0) * 1e-9,
+            "story{i} peak shear: thin={} full-derived={}",
+            rec_thin.story_x.peak_story_shear[i],
+            expected_peak_shear[i]
+        );
+        assert!(
+            (rec_thin.story_x.peak_floor_accel[i] - expected_peak_accel[i]).abs()
+                < expected_peak_accel[i].abs().max(1.0) * 1e-9
+        );
+        assert!(
+            (rec_thin.story_x.peak_floor_vel[i] - expected_peak_vel[i]).abs()
+                < expected_peak_vel[i].abs().max(1.0) * 1e-9
+        );
+        assert!(
+            (rec_thin.story_x.peak_floor_disp[i] - expected_peak_disp[i]).abs()
+                < expected_peak_disp[i].abs().max(1.0) * 1e-9
+        );
+    }
+    // 念のため、間引きあり・なし自身のピーク同士も一致するはず
+    // （どちらも全ステップ更新のため間引き係数に依存しない）。
+    assert_eq!(
+        rec_thin.story_x.peak_story_shear,
+        rec_full.story_x.peak_story_shear
+    );
+    assert_eq!(
+        rec_thin.story_x.peak_floor_accel,
+        rec_full.story_x.peak_floor_accel
+    );
+}
+
+/// 中-4: フレームごとの `member_forces` は各要素の評価断面を両端 2 点
+/// （最小ξ・最大ξ）のみに間引く。包絡 `peak_member_forces` は全評価断面
+/// （既定 `eval_sections=[0.0, 0.5, 1.0]` の 3 点）を保持する。
+#[test]
+fn test_frame_member_forces_trimmed_to_endpoints_envelope_keeps_all_sections() {
+    let model = fiber_column_model(1e10);
+    let dofmap = DofMap::build(&model);
+    let reducer = Reducer::build(&model, &dofmap);
+
+    let damping = Damping::StiffnessProportional {
+        h: 0.02,
+        omega: 10.0,
+        basis: StiffnessKind::Initial,
+    };
+    let dt = 0.001;
+    let n_steps = 20;
+    let wave = zero_wave(dt, n_steps);
+    let newmark = NewmarkCfg {
+        beta: 0.25,
+        gamma: 0.5,
+        dt,
+    };
+
+    let result = linear_time_history_analysis(
+        &model,
+        &dofmap,
+        &reducer,
+        &wave,
+        &newmark,
+        &damping,
+        &[10.0],
+        &[0.0],
+        false,
+        Some(1),
+    )
+    .expect("should converge");
+
+    let recording = result.recording.expect("recording");
+    assert!(!recording.member_forces.is_empty());
+
+    // 包絡は全評価断面を保持する（既定 3 点以上）。
+    let peak_mf = recording.peak_member_forces[0]
+        .as_ref()
+        .expect("peak member forces for element 0");
+    assert!(
+        peak_mf.at.len() >= 3,
+        "envelope should keep all evaluation sections, got {}",
+        peak_mf.at.len()
+    );
+
+    // フレームごとの記録は両端 2 点のみ（最小ξ・最大ξ）。
+    for frame in &recording.member_forces {
+        let mf = frame[0]
+            .as_ref()
+            .expect("frame member forces for element 0");
+        assert_eq!(
+            mf.at.len(),
+            2,
+            "frame member_forces should be trimmed to endpoints only"
+        );
+        assert!((mf.at[0].0 - 0.0).abs() < 1e-9, "min xi should be 0.0");
+        assert!((mf.at[1].0 - 1.0).abs() < 1e-9, "max xi should be 1.0");
+    }
 }
 
 /// 線形・HHT-α の時刻歴結果は `nonlinear=false, applied_long_term=false` を

@@ -2,12 +2,12 @@ use crate::app::App;
 use crate::tables::nodes::{isolator_kind_label, isolator_kind_selector, isolator_props_fields};
 use squid_n_core::ids::{ElemId, MaterialId, NodeId, SectionId};
 use squid_n_core::model::{
-    DamperKind, DamperProps, ElementData, ElementKind, EndCondition, ForceRegime, HysteresisModel,
-    IsolatorProps, LocalAxis,
+    DamperDef, DamperKind, DamperProps, ElementData, ElementKind, EndCondition, ForceRegime,
+    HysteresisModel, IsolatorProps, LocalAxis,
 };
 use squid_n_edit::{
-    AddDamper, AddIsolator, AddMember, DeleteMember, EditCommand, SetDamperProps,
-    SetElementMaterial, SetElementSection, SetMemberHysteresis,
+    AddDamper, AddIsolator, AddMember, DeleteMember, EditCommand, RemoveSupportIsolator,
+    SetDamperProps, SetElementMaterial, SetElementSection, SetMemberHysteresis,
 };
 
 /// 「+ 免震支承材追加」フォームのドラフト状態（`AddIsolator` の諸元）。
@@ -16,6 +16,22 @@ use squid_n_edit::{
 #[derive(Clone, Debug, Default)]
 pub struct IsolatorMemberDraft {
     pub props: IsolatorProps,
+}
+
+/// 「制振ダンパーの定義から選択」の選択中インデックスを、定義削除後も選択中の
+/// 定義名で追従させる（純関数。テスト容易）。`stored` は前回選択していた
+/// `(インデックス, その時点の定義名)`。そのインデックスの位置にある定義の名前が
+/// 変わっていなければそのまま、変わっていれば同名の定義を探して追従し、
+/// 見つからなければ選択解除（`None`）する。
+fn resolve_damper_def_selection(
+    defs: &[DamperDef],
+    stored: Option<(usize, String)>,
+) -> Option<(usize, String)> {
+    let (i, name) = stored?;
+    if defs.get(i).map(|d| d.name.as_str()) == Some(name.as_str()) {
+        return Some((i, name));
+    }
+    defs.iter().position(|d| d.name == name).map(|i| (i, name))
 }
 
 pub fn members_table(ui: &mut egui::Ui, app: &mut App) {
@@ -38,13 +54,16 @@ pub fn members_table(ui: &mut egui::Ui, app: &mut App) {
             .flatten()
             .or_else(|| app.model.nodes.get(1).map(|n| n.id));
 
-        // 制振ダンパー追加時に使う「定義から選択」の選択中インデックス
-        // （damper_defs 内のインデックス。egui 一時メモリに保持し、App フィールドは増やさない）。
+        // 制振ダンパー追加時に使う「定義から選択」の選択中インデックス。
+        // （インデックス, 選択時点の定義名）を egui 一時メモリに保持し（App
+        // フィールドは増やさない）、定義削除で他の定義がずれても選択中の定義名で
+        // 追従できるようにする（`resolve_damper_def_selection` 参照）。
         let id_damper_def_sel = egui::Id::new("add_member_damper_def_sel");
-        let mut damper_def_sel: Option<usize> = ui
-            .data(|d| d.get_temp::<Option<usize>>(id_damper_def_sel))
-            .flatten()
-            .filter(|i| *i < app.model.damper_defs.len());
+        let stored_damper_def_sel =
+            ui.data(|d| d.get_temp::<Option<(usize, String)>>(id_damper_def_sel));
+        let mut damper_def_sel: Option<usize> =
+            resolve_damper_def_selection(&app.model.damper_defs, stored_damper_def_sel.flatten())
+                .map(|(i, _)| i);
 
         let mut do_add = false;
         // 免震支承材の作成（2節点＋種別＋諸元。下の折りたたみフォームで諸元を編集）。
@@ -160,7 +179,9 @@ pub fn members_table(ui: &mut egui::Ui, app: &mut App) {
                 );
             }
         });
-        ui.data_mut(|d| d.insert_temp(id_damper_def_sel, damper_def_sel));
+        let to_store =
+            damper_def_sel.and_then(|i| app.model.damper_defs.get(i).map(|d| (i, d.name.clone())));
+        ui.data_mut(|d| d.insert_temp(id_damper_def_sel, to_store));
 
         // ── 免震支承材を追加（諸元フォーム） ─────────────────────
         ui.separator();
@@ -840,17 +861,19 @@ fn isolators_table(ui: &mut egui::Ui, app: &mut App) {
                             });
                     });
                     // K1（両種別で使用。kN/mm 単位で編集）。
+                    // ドラッグ中は毎フレーム changed() が真になるため、コマンド発行は
+                    // ドラッグ終了（またはフォーカス喪失）まで遅らせる（undo スタックの
+                    // 大量消費防止）。表示用の変換自体は毎フレーム行い、ドラッグ中の
+                    // ライブ表示は維持する。
                     row.col(|ui| {
                         let mut k1_kn = props.k1 / 1000.0;
-                        if ui
-                            .add(
-                                egui::DragValue::new(&mut k1_kn)
-                                    .speed(1.0)
-                                    .range(0.0..=1.0e6),
-                            )
-                            .changed()
-                        {
-                            props.k1 = k1_kn * 1000.0;
+                        let resp = ui.add(
+                            egui::DragValue::new(&mut k1_kn)
+                                .speed(1.0)
+                                .range(0.0..=1.0e6),
+                        );
+                        props.k1 = k1_kn * 1000.0;
+                        if resp.drag_stopped() || resp.lost_focus() {
                             pending_props.push((elem_id, props));
                         }
                     });
@@ -863,8 +886,8 @@ fn isolators_table(ui: &mut egui::Ui, app: &mut App) {
                                 .speed(1.0)
                                 .range(0.0..=1.0e6),
                         );
-                        if resp.changed() {
-                            props.k2 = k2_kn * 1000.0;
+                        props.k2 = k2_kn * 1000.0;
+                        if resp.drag_stopped() || resp.lost_focus() {
                             pending_props.push((elem_id, props));
                         }
                     });
@@ -877,23 +900,21 @@ fn isolators_table(ui: &mut egui::Ui, app: &mut App) {
                                 .speed(1.0)
                                 .range(0.0..=1.0e6),
                         );
-                        if resp.changed() {
-                            props.qd = qd_kn * 1000.0;
+                        props.qd = qd_kn * 1000.0;
+                        if resp.drag_stopped() || resp.lost_focus() {
                             pending_props.push((elem_id, props));
                         }
                     });
                     // Kv（両種別で使用。kN/mm 単位）。
                     row.col(|ui| {
                         let mut kv_kn = props.kv / 1000.0;
-                        if ui
-                            .add(
-                                egui::DragValue::new(&mut kv_kn)
-                                    .speed(10.0)
-                                    .range(0.0..=1.0e9),
-                            )
-                            .changed()
-                        {
-                            props.kv = kv_kn * 1000.0;
+                        let resp = ui.add(
+                            egui::DragValue::new(&mut kv_kn)
+                                .speed(10.0)
+                                .range(0.0..=1.0e9),
+                        );
+                        props.kv = kv_kn * 1000.0;
+                        if resp.drag_stopped() || resp.lost_focus() {
                             pending_props.push((elem_id, props));
                         }
                     });
@@ -905,7 +926,7 @@ fn isolators_table(ui: &mut egui::Ui, app: &mut App) {
                                 .speed(0.005)
                                 .range(0.0..=2.0),
                         );
-                        if resp.changed() {
+                        if resp.drag_stopped() || resp.lost_focus() {
                             pending_props.push((elem_id, props));
                         }
                     });
@@ -930,8 +951,21 @@ fn isolators_table(ui: &mut egui::Ui, app: &mut App) {
         changed = true;
     }
     if let Some(elem_id) = pending_del {
-        app.undo
-            .run(&mut app.model, Box::new(DeleteMember { id: elem_id }));
+        // 対象が支点免震（零長＋接地節点）であれば RemoveSupportIsolator で
+        // 接地節点まで含めて撤去する（通常の DeleteMember だと接地節点だけが
+        // ゴミとして残ってしまうため）。通常の免震要素は従来どおり DeleteMember。
+        match app.model.support_isolator_ends(elem_id) {
+            Some((upper, _ground)) => {
+                app.undo.run(
+                    &mut app.model,
+                    Box::new(RemoveSupportIsolator { node: upper }),
+                );
+            }
+            None => {
+                app.undo
+                    .run(&mut app.model, Box::new(DeleteMember { id: elem_id }));
+            }
+        }
         if app.nav.focus_member == Some(elem_id) {
             app.nav.focus_member = None;
         }
@@ -948,6 +982,11 @@ fn isolators_table(ui: &mut egui::Ui, app: &mut App) {
 /// コマンドが無いため（今回の作業範囲は `squid-n-edit` を読み取り専用とする方針）、
 /// `Model::isolator_attrs` が公開フィールドであることを利用してこの UI 層で
 /// `EditCommand` を実装する。`SetDamperProps` と同様、`props=None` で指定解除。
+///
+/// `props=Some` の場合は既存エントリを `iter_mut().find()` でインプレース書換え
+/// する（retain+push だと undo 後に再適用した際、当該エントリが `isolator_attrs`
+/// の末尾へ移動してしまい並び順が変わる）。`props=None`（解除）の場合のみ
+/// `retain` で取り除く。
 struct SetIsolatorPropsLocal {
     elem: ElemId,
     props: Option<IsolatorProps>,
@@ -960,14 +999,26 @@ impl EditCommand for SetIsolatorPropsLocal {
             .iter()
             .find(|a| a.elem == self.elem)
             .map(|a| a.props);
-        model.isolator_attrs.retain(|a| a.elem != self.elem);
-        if let Some(p) = self.props {
-            model
-                .isolator_attrs
-                .push(squid_n_core::model::IsolatorAttr {
-                    elem: self.elem,
-                    props: p,
-                });
+        match self.props {
+            Some(p) => {
+                if let Some(a) = model
+                    .isolator_attrs
+                    .iter_mut()
+                    .find(|a| a.elem == self.elem)
+                {
+                    a.props = p;
+                } else {
+                    model
+                        .isolator_attrs
+                        .push(squid_n_core::model::IsolatorAttr {
+                            elem: self.elem,
+                            props: p,
+                        });
+                }
+            }
+            None => {
+                model.isolator_attrs.retain(|a| a.elem != self.elem);
+            }
         }
         Box::new(SetIsolatorPropsLocal {
             elem: self.elem,
@@ -977,5 +1028,49 @@ impl EditCommand for SetIsolatorPropsLocal {
 
     fn label(&self) -> &str {
         "免震支承材特性変更"
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn def(name: &str) -> DamperDef {
+        DamperDef {
+            name: name.to_string(),
+            props: DamperProps::default(),
+        }
+    }
+
+    /// 選択中の定義がまだ同じ位置にあれば、そのまま維持する。
+    #[test]
+    fn test_resolve_damper_def_selection_unchanged_when_still_valid() {
+        let defs = vec![def("A"), def("B")];
+        let got = resolve_damper_def_selection(&defs, Some((1, "B".to_string())));
+        assert_eq!(got, Some((1, "B".to_string())));
+    }
+
+    /// 選択中の定義より前の定義が削除され、位置がずれた場合は名前で追従する。
+    #[test]
+    fn test_resolve_damper_def_selection_follows_by_name_after_earlier_delete() {
+        // 元は [A, B]（選択中は index=1 の B）。A が削除されて [B] になった。
+        let defs = vec![def("B")];
+        let got = resolve_damper_def_selection(&defs, Some((1, "B".to_string())));
+        assert_eq!(got, Some((0, "B".to_string())));
+    }
+
+    /// 選択中だった定義自体が削除された場合は選択解除する。
+    #[test]
+    fn test_resolve_damper_def_selection_clears_when_deleted() {
+        let defs = vec![def("A")];
+        let got = resolve_damper_def_selection(&defs, Some((1, "B".to_string())));
+        assert_eq!(got, None);
+    }
+
+    /// 未選択（既定諸元）はそのまま未選択を維持する。
+    #[test]
+    fn test_resolve_damper_def_selection_none_stays_none() {
+        let defs = vec![def("A")];
+        assert_eq!(resolve_damper_def_selection(&defs, None), None);
     }
 }

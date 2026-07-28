@@ -8,7 +8,6 @@
 
 use super::config::GroundMotion;
 use super::result::ResponseHistory;
-use crate::constraint::Reducer;
 use squid_n_core::dof::{DofMap, DOF_PER_NODE};
 use squid_n_core::model::Model;
 
@@ -76,20 +75,23 @@ fn current_top_drift(model: &Model, dofmap: &DofMap, u_free: &[f64], dir_idx: us
 }
 
 /// 1 ステップ分の代表応答を記録する。
-/// `dir_idx` は記録方向（0=X, 1=Y）、`m_r` は当該方向の M·r、`rmr` は当該方向の
-/// rᵀ·M·r（合計質量）、`a_red` は縮約空間の相対加速度、`xg` は当該時刻の
-/// 記録方向の地動加速度。
+/// `dir_idx` は記録方向（0=X, 1=Y）、`rmr` は当該方向の rᵀ·M·r（合計質量、
+/// [`total_mass`] 参照）、`ma_free` は自由 DOF 空間の `M·a_free`
+/// （[`super::common::mass_accel_free`] で 1 ステップに 1 回だけ算定したものを
+/// 呼び出し側から共有する）、`xg` は当該時刻の記録方向の地動加速度。
+///
+/// ベースシアは「当該方向の並進 DOF の節点慣性力 `f_abs = M·a_free + ẍg・M·r` の総和」
+/// の符号反転として定義する（[`super::recording::ThRecorder`] の層せん断力と同じ
+/// 定義。1 層目の層せん断力＝ベースシアという恒等関係を保つ）。
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn record_history_step(
     history: &mut ResponseHistory,
     model: &Model,
     dofmap: &DofMap,
-    reducer: &Reducer,
     dir_idx: usize,
-    m_r: &[f64],
     rmr: f64,
     u_free: &[f64],
-    a_red: &[f64],
+    ma_free: &[f64],
     xg: f64,
 ) {
     let disp = history
@@ -97,9 +99,13 @@ pub(crate) fn record_history_step(
         .map(|n| node_disp(u_free, dofmap, n, dir_idx))
         .unwrap_or(0.0);
     history.node_disp.push(disp);
-    let a_free = reducer.expand_u(a_red);
-    let ma: f64 = m_r.iter().zip(a_free.iter()).map(|(m, a)| m * a).sum();
-    history.base_shear.push(-(ma + xg * rmr));
+    let mut sum_ma = 0.0;
+    for ni in 0..model.nodes.len() {
+        if let Some(a) = dofmap.active(ni * DOF_PER_NODE + dir_idx) {
+            sum_ma += ma_free.get(a as usize).copied().unwrap_or(0.0);
+        }
+    }
+    history.base_shear.push(-(sum_ma + xg * rmr));
     history
         .top_drift_angle
         .push(current_top_drift(model, dofmap, u_free, dir_idx));

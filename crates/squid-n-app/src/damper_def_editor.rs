@@ -20,6 +20,12 @@ pub struct DamperDefDraft {
     pub props: DamperProps,
     /// 編集対象の定義インデックス（`model.damper_defs`）。`None` は新規追加。
     pub edit_index: Option<usize>,
+    /// `edit_index` を設定した時点での読み込み元定義の名前。定義削除時の index
+    /// ずれ補正（削除位置より後ろなら 1 減算）だけでは、undo/redo 等で
+    /// `damper_defs` の並びが編集開始時と変わってしまうケースを検知できないため、
+    /// 「選択定義へ適用」の直前にこの名前と現在の対象定義の名前が一致するかを
+    /// 確認する（不一致ならエラー表示にフォールバックし、誤った定義の上書きを防ぐ）。
+    pub edit_target_name: Option<String>,
 }
 
 impl Default for DamperDefDraft {
@@ -28,8 +34,30 @@ impl Default for DamperDefDraft {
             name: "ダンパー定義1".to_string(),
             props: DamperProps::default(),
             edit_index: None,
+            edit_target_name: None,
         }
     }
+}
+
+/// 定義削除（`RemoveDamperDef { index: deleted }`）に伴う編集中インデックスの
+/// 補正（純関数。テスト容易）。削除位置そのものを編集中だった場合は `None`
+/// （新規作成扱いへ戻す）、削除位置より後ろを編集中だった場合は詰まった分
+/// 1 減算、前方はそのまま。
+fn remap_edit_index_after_delete(edit_index: Option<usize>, deleted: usize) -> Option<usize> {
+    match edit_index {
+        Some(i) if i == deleted => None,
+        Some(i) if i > deleted => Some(i - 1),
+        other => other,
+    }
+}
+
+/// 「選択定義へ適用」の直前に行う、編集元の定義の同一性確認（純関数）。
+/// `edit_index` 設定時に記録した定義名 `target_name` と、現在その位置にある
+/// 定義の名前 `current_name` が一致するかどうかを返す。undo/redo 等で
+/// `damper_defs` の並びが変わり、index は範囲内でも別の定義を指してしまって
+/// いるケースを検知する。
+fn edit_target_still_matches(current_name: Option<&str>, target_name: Option<&str>) -> bool {
+    current_name.is_some() && current_name == target_name
 }
 
 /// `DamperKind` の日本語表示名。
@@ -81,6 +109,20 @@ pub fn damper_def_panel(ui: &mut egui::Ui, app: &mut App) {
         );
         ui.separator();
 
+        // 描画のたびに、undo/redo 等で damper_defs の長さが変わり編集対象が
+        // 範囲外になっていないか確認する（既に選ばれていた定義が消えた場合の
+        // 取りこぼし防止。以前から「選択定義へ適用」ボタンの `can_update` で
+        // 無効化はしていたが、edit_index 自体は残り続けていたため、ここで
+        // 明示的にクリアする）。
+        if app
+            .damper_def_draft
+            .edit_index
+            .is_some_and(|i| i >= app.model.damper_defs.len())
+        {
+            app.damper_def_draft.edit_index = None;
+            app.damper_def_draft.edit_target_name = None;
+        }
+
         // ── 一覧 ──────────────────────────────────────────
         let mut pending_edit: Option<usize> = None;
         let mut pending_delete: Option<usize> = None;
@@ -120,14 +162,20 @@ pub fn damper_def_panel(ui: &mut egui::Ui, app: &mut App) {
                 app.damper_def_draft.name = def.name.clone();
                 app.damper_def_draft.props = def.props;
                 app.damper_def_draft.edit_index = Some(i);
+                app.damper_def_draft.edit_target_name = Some(def.name.clone());
             }
         }
         if let Some(i) = pending_delete {
             app.undo
                 .run(&mut app.model, Box::new(RemoveDamperDef { index: i }));
             app.staleness.mark_edited();
-            if app.damper_def_draft.edit_index == Some(i) {
-                app.damper_def_draft.edit_index = None;
+            // 削除位置に応じて編集中インデックスを補正する（index ずれ対策）。
+            let old_index = app.damper_def_draft.edit_index;
+            app.damper_def_draft.edit_index = remap_edit_index_after_delete(old_index, i);
+            if old_index.is_some() && app.damper_def_draft.edit_index.is_none() {
+                // 削除対象そのものを編集中だった場合は edit_target_name もクリアする
+                // （後方が繰り上がった場合は同じ定義を指し続けるため変更不要）。
+                app.damper_def_draft.edit_target_name = None;
             }
         }
 
@@ -174,35 +222,56 @@ pub fn damper_def_panel(ui: &mut egui::Ui, app: &mut App) {
                 );
                 app.staleness.mark_edited();
                 app.damper_def_draft.edit_index = None;
+                app.damper_def_draft.edit_target_name = None;
             }
 
             let can_update = app
                 .damper_def_draft
                 .edit_index
                 .is_some_and(|i| i < app.model.damper_defs.len());
+            let mut apply_error: Option<&'static str> = None;
             if ui
                 .add_enabled(can_update, egui::Button::new("✏ 選択定義へ適用"))
                 .on_hover_text("フォームの内容で読み込み元の定義を上書きします")
                 .clicked()
             {
                 if let Some(i) = app.damper_def_draft.edit_index {
-                    app.undo.run(
-                        &mut app.model,
-                        Box::new(UpdateDamperDef {
-                            index: i,
-                            def: DamperDef {
-                                name: app.damper_def_draft.name.clone(),
-                                props: app.damper_def_draft.props,
-                            },
-                        }),
-                    );
-                    app.staleness.mark_edited();
+                    // 読み込み時点の定義名と現在その位置にある定義名が一致するかを
+                    // 確認してから上書きする（undo/redo 等で並びが変わり、index は
+                    // 有効範囲内でも別の定義を指してしまっているケースの誤上書き防止）。
+                    let current_name = app.model.damper_defs.get(i).map(|d| d.name.as_str());
+                    if edit_target_still_matches(
+                        current_name,
+                        app.damper_def_draft.edit_target_name.as_deref(),
+                    ) {
+                        app.undo.run(
+                            &mut app.model,
+                            Box::new(UpdateDamperDef {
+                                index: i,
+                                def: DamperDef {
+                                    name: app.damper_def_draft.name.clone(),
+                                    props: app.damper_def_draft.props,
+                                },
+                            }),
+                        );
+                        app.staleness.mark_edited();
+                    } else {
+                        apply_error = Some(
+                            "編集元の定義が変わっているため適用できません。一覧から選び直してください。",
+                        );
+                        app.damper_def_draft.edit_index = None;
+                        app.damper_def_draft.edit_target_name = None;
+                    }
                 }
+            }
+            if let Some(msg) = apply_error {
+                ui.colored_label(crate::theme::ERROR_RED, msg);
             }
 
             if app.damper_def_draft.edit_index.is_some() && ui.button("新規作成に戻す").clicked()
             {
                 app.damper_def_draft.edit_index = None;
+                app.damper_def_draft.edit_target_name = None;
             }
         });
     });
@@ -321,6 +390,43 @@ fn hysteretic_fields(ui: &mut egui::Ui, props: &mut DamperProps) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_remap_edit_index_after_delete_clears_when_target_deleted() {
+        assert_eq!(remap_edit_index_after_delete(Some(2), 2), None);
+    }
+
+    #[test]
+    fn test_remap_edit_index_after_delete_shifts_when_after_deleted() {
+        assert_eq!(remap_edit_index_after_delete(Some(3), 1), Some(2));
+    }
+
+    #[test]
+    fn test_remap_edit_index_after_delete_unaffected_when_before_deleted() {
+        assert_eq!(remap_edit_index_after_delete(Some(0), 1), Some(0));
+    }
+
+    #[test]
+    fn test_remap_edit_index_after_delete_none_stays_none() {
+        assert_eq!(remap_edit_index_after_delete(None, 0), None);
+    }
+
+    #[test]
+    fn test_edit_target_still_matches_true_when_names_equal() {
+        assert!(edit_target_still_matches(Some("A"), Some("A")));
+    }
+
+    #[test]
+    fn test_edit_target_still_matches_false_when_names_differ() {
+        // undo/redo 等で並びが変わり、index は有効範囲内でも別の定義を
+        // 指してしまっているケース。
+        assert!(!edit_target_still_matches(Some("B"), Some("A")));
+    }
+
+    #[test]
+    fn test_edit_target_still_matches_false_when_current_missing() {
+        assert!(!edit_target_still_matches(None, Some("A")));
+    }
 
     #[test]
     fn test_damper_summary_maxwell_without_relief() {

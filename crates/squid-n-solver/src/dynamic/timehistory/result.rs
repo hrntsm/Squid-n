@@ -65,7 +65,9 @@ pub struct TimeStepState {
 ///
 /// メモリ対策として `record_every` ステップごとに 1 フレームだけ間引いて記録する
 /// （既定は記録フレーム数が概ね 1000 になるよう自動決定、[`super::recording`] 参照）。
-/// ただし `peak_disp`（`ResponseResult` 側）と [`Self::peak_member_forces`] は
+/// ただし `peak_disp`（`ResponseResult` 側）・[`Self::peak_member_forces`]・
+/// [`StoryResponse`] の `peak_*` 各フィールド（`peak_shear_coeff`・
+/// `peak_story_shear`・`peak_floor_accel`・`peak_floor_vel`・`peak_floor_disp`）は
 /// 全ステップで更新し、間引かない。
 ///
 /// 節点順・要素順は、それぞれ解析時の `model.nodes` / `model.elements` の
@@ -86,6 +88,10 @@ pub struct ThRecording {
     /// フレームごとの部材端力分布（`model.elements` 順。線形解析は
     /// `recover_forces`、非線形解析は `state_member_forces` により算定。
     /// 内力分布を持たない要素は `None`）。`[frame][elem_idx]`。
+    /// メモリ削減のため、各要素の `MemberForces.at` は両端 2 点（最小 ξ・最大 ξ）
+    /// のみに間引いて保持する（UI の履歴ループは端部値のみ使用するため。
+    /// 中間の評価断面は保持しない。全評価断面の包絡値は
+    /// [`Self::peak_member_forces`] を参照）。
     pub member_forces: Vec<Vec<Option<squid_n_element::beam::MemberForces>>>,
     /// 全ステップ（間引きなし）での部材端力の包絡（各成分の絶対値最大値。
     /// 符号は極値そのものの符号を保持する）。`[elem_idx]`。
@@ -117,4 +123,18 @@ pub struct StoryResponse {
     /// 層せん断力係数の最大値 `Ci = max|Qi| / Σ(j≧i) Wj`（全ステップの最大値、
     /// 間引きなし）。`[story]`。
     pub peak_shear_coeff: Vec<f64>,
+    /// 層せん断力の絶対値最大（全ステップ、間引きなし）。`[story]`。
+    /// `story_shear`（フレーム記録、間引きあり）とは異なりピークを取り逃さない。
+    /// 旧プロジェクトファイル（.scz）には無いフィールドのため、読込時は 0 埋め。
+    #[serde(default)]
+    pub peak_story_shear: Vec<f64>,
+    /// 階絶対加速度の絶対値最大（全ステップ、間引きなし）。`[story]`。
+    #[serde(default)]
+    pub peak_floor_accel: Vec<f64>,
+    /// 階速度（相対）の絶対値最大（全ステップ、間引きなし）。`[story]`。
+    #[serde(default)]
+    pub peak_floor_vel: Vec<f64>,
+    /// 階変位（相対）の絶対値最大（全ステップ、間引きなし）。`[story]`。
+    #[serde(default)]
+    pub peak_floor_disp: Vec<f64>,
 }

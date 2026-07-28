@@ -4,7 +4,7 @@
 //! - [`linear_time_history_with_state`] — 最終状態付き（チェックポイント保存用）
 //! - [`linear_time_history_from_state`] — チェックポイントからの再開
 
-use super::common::{solve_initial_accel, theta_accel_at, theta_influence_m};
+use super::common::{mass_accel_free, solve_initial_accel, theta_accel_at, theta_influence_m};
 use super::config::{GroundMotion, NewmarkCfg};
 use super::history::{
     choose_record_dir_y, pick_record_node, record_history_step, total_mass, update_story_drift,
@@ -209,6 +209,7 @@ pub fn linear_time_history_with_state(
         &m_r_x,
         &m_r_y,
         &m_r_theta,
+        &m_free,
         &m_red,
         &c_red,
         &mut solver,
@@ -230,6 +231,12 @@ pub fn linear_time_history_with_state(
 /// チェックポイントから線形時刻歴を再開する。
 /// `state.step` の次のステップから `wave` の終端まで進める。
 /// `wave` は全ステップ分の地震波（先頭から）。`state.step` 以降を使用する。
+///
+/// 戻り値の `ResponseResult` は**再開区間のみ**の部分記録である
+/// （`time`・`history`・`recording`・`peak_disp`・`story_drift_angle` いずれも
+/// `state.step` 以降のステップのみを対象に集計される。それ以前のステップの
+/// 応答・ピークは含まれないため、チェックポイント再開前後の全区間を通じた
+/// ピークが必要な場合は、区間ごとの `ResponseResult` を呼び出し側で合成すること）。
 #[allow(clippy::too_many_arguments)]
 pub fn linear_time_history_from_state(
     model: &Model,
@@ -326,6 +333,7 @@ pub fn linear_time_history_from_state(
         &m_r_x,
         &m_r_y,
         &m_r_theta,
+        &m_free,
         &m_red,
         &c_red,
         &mut solver,
@@ -358,6 +366,7 @@ fn run_steps(
     m_r_x: &[f64],
     m_r_y: &[f64],
     m_r_theta: &[f64],
+    m_free: &faer::sparse::SparseColMat<usize, f64>,
     m_red: &faer::sparse::SparseColMat<usize, f64>,
     c_red: &faer::sparse::SparseColMat<usize, f64>,
     solver: &mut Box<dyn squid_n_math::solver::LinearSolver>,
@@ -388,6 +397,10 @@ fn run_steps(
     let mut time = Vec::with_capacity(wave.accel_x.len() - start_step as usize + 1);
     time.push(start_step as f64 * dt);
 
+    // 節点慣性力ベクトル算定用の M·a_free（自由 DOF 空間）。ベースシア・層せん断力の
+    // 双方で共有する（1 ステップに 1 回だけ疎行列ベクトル積を計算する）。
+    let ma_free_init = mass_accel_free(m_free, reducer, &a);
+
     // 詳細記録（3D アニメーション・層応答グラフ・部材履歴用。record_every は
     // 呼び出し元（UI 等）が指定できる。None は自動決定）。
     let mut recorder = ThRecorder::new(
@@ -416,6 +429,7 @@ fn run_steps(
         reducer,
         m_r_x,
         m_r_y,
+        &ma_free_init,
         &u,
         &v,
         &a,
@@ -449,12 +463,10 @@ fn run_steps(
         &mut history,
         model,
         dofmap,
-        reducer,
         dir_idx,
-        m_r_record,
         rmr_record,
         &u_free_init,
-        &a,
+        &ma_free_init,
         xg_init,
     );
 
@@ -511,6 +523,9 @@ fn run_steps(
             peak_disp_free[i] = peak_disp_free[i].max(u_free[i].abs());
         }
         update_story_drift(model, dofmap, &u_free, &mut story_drift_angle);
+        // 節点慣性力ベクトル算定用の M·a_free（自由 DOF 空間）。ベースシア・
+        // 層せん断力の双方で共有する（1 ステップに 1 回だけ算定）。
+        let ma_free = mass_accel_free(m_free, reducer, &a);
         let xg_next = if record_dir_y {
             wave.accel_y
                 .as_ref()
@@ -523,12 +538,10 @@ fn run_steps(
             &mut history,
             model,
             dofmap,
-            reducer,
             dir_idx,
-            m_r_record,
             rmr_record,
             &u_free,
-            &a,
+            &ma_free,
             xg_next,
         );
 
@@ -547,6 +560,7 @@ fn run_steps(
             reducer,
             m_r_x,
             m_r_y,
+            &ma_free,
             &u,
             &v,
             &a,

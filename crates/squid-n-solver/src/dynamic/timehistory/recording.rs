@@ -77,6 +77,35 @@ fn merge_peak_member_forces(peak: &mut [Option<MemberForces>], current: &[Option
     }
 }
 
+/// 部材内力分布を両端 2 点（最小 ξ・最大 ξ）のみへ間引く。
+///
+/// `ThRecording::member_forces`（フレームごとの記録）は 3D アニメーション等の
+/// UI 側履歴ループが端部値のみ使うため、両端に絞ってメモリを削減する
+/// （中間の評価断面は保持しない）。包絡 `peak_member_forces` は従来どおり
+/// [`merge_peak_member_forces`] で全評価断面を保持する（本関数は適用しない）。
+/// `at` が 2 点以下の要素はそのまま返す。
+fn trim_member_forces_to_endpoints(forces: &[Option<MemberForces>]) -> Vec<Option<MemberForces>> {
+    forces
+        .iter()
+        .map(|mf| {
+            mf.as_ref().map(|f| {
+                if f.at.len() <= 2 {
+                    return f.clone();
+                }
+                let min =
+                    f.at.iter()
+                        .cloned()
+                        .fold(f.at[0], |acc, x| if x.0 < acc.0 { x } else { acc });
+                let max =
+                    f.at.iter()
+                        .cloned()
+                        .fold(f.at[0], |acc, x| if x.0 > acc.0 { x } else { acc });
+                MemberForces { at: vec![min, max] }
+            })
+        })
+        .collect()
+}
+
 /// 節点順の全自由度変位（拘束・従属自由度を含む）を組み立てる。`u_free` は
 /// 自由 DOF 空間（`dofmap` のアクティブ添字順）の展開済みベクトル。
 fn expand_node_disp(model: &Model, dofmap: &DofMap, u_free: &[f64]) -> Vec<[f64; 6]> {
@@ -97,10 +126,11 @@ fn expand_node_disp(model: &Model, dofmap: &DofMap, u_free: &[f64]) -> Vec<[f64;
 /// - `avg`: 階応答（加速度・速度・変位）の代表値算定に使う当該方向並進 DOF と
 ///   質量重みの組。質量重みは `Node::mass` の当該方向成分
 ///   （無ければ 0。質量加重平均、全て 0 なら単純平均にフォールバック）。
-/// - `force`: 層せん断力の慣性力集計に使う DOF。節点の全 6 自由度を含める。
-///   一貫質量行列では `M·r` が回転 DOF にも分配されるため、並進 DOF だけを
-///   集計すると 1 層目の層せん断力がベースシア（`rᵀM(a+r·ẍg)` を対称性で
-///   `Σ_dof (Mr)_dof·(a_dof+ẍg)` に展開したもの）と一致しなくなる。
+/// - `force`: 層せん断力の慣性力集計に使う DOF。**当該方向の並進 DOF のみ**を
+///   含める（節点慣性力ベクトル `f_abs = M·a_free + ẍg・M・r` を並進成分だけ
+///   集計する。`f_abs` は疎行列ベクトル積 `M·a_free` を経ているため、回転 DOF
+///   との連成（一貫質量行列の非対角項）は既にこの並進成分に反映済みで、
+///   回転 DOF 自体を集計へ含める必要はない）。
 #[derive(Default)]
 struct StoryDofGroup {
     avg: Vec<(usize, f64)>,
@@ -141,6 +171,17 @@ pub(crate) struct ThRecorder {
     floor_disp_y: Vec<Vec<f64>>,
     peak_shear_coeff_x: Vec<f64>,
     peak_shear_coeff_y: Vec<f64>,
+    // 層応答ピーク（全ステップ更新、間引きなし）。フレーム記録（*_x/*_y の
+    // Vec<Vec<f64>>）は record_every で間引くため、間引きフレームに現れない
+    // 極大値を取り逃さないよう別途保持する。
+    peak_story_shear_x: Vec<f64>,
+    peak_story_shear_y: Vec<f64>,
+    peak_floor_accel_x: Vec<f64>,
+    peak_floor_accel_y: Vec<f64>,
+    peak_floor_vel_x: Vec<f64>,
+    peak_floor_vel_y: Vec<f64>,
+    peak_floor_disp_x: Vec<f64>,
+    peak_floor_disp_y: Vec<f64>,
 }
 
 impl ThRecorder {
@@ -159,6 +200,28 @@ impl ThRecorder {
             .max(1);
         let n_story = model.stories.len();
 
+        // 階の代表 Z 座標（所属節点の平均 Z）。どの階にも属さない節点の慣性力を
+        // 最も近い階へ計上する際に使う。
+        let story_repr_z: Vec<f64> = model
+            .stories
+            .iter()
+            .map(|story| {
+                let mut sum_z = 0.0;
+                let mut cnt = 0.0f64;
+                for &nid in &story.node_ids {
+                    if let Some(node) = model.nodes.get(nid.index()) {
+                        sum_z += node.coord[2];
+                        cnt += 1.0;
+                    }
+                }
+                if cnt > 0.0 {
+                    sum_z / cnt
+                } else {
+                    0.0
+                }
+            })
+            .collect();
+
         let build_groups = |dir_idx: usize| -> Vec<StoryDofGroup> {
             let mut groups: Vec<StoryDofGroup> = model
                 .stories
@@ -173,19 +236,16 @@ impl ThRecorder {
                         if let Some(a) = dofmap.active(ni * DOF_PER_NODE + dir_idx) {
                             let w = node.mass.map(|m| m[dir_idx]).unwrap_or(0.0).max(0.0);
                             g.avg.push((a as usize, w));
-                        }
-                        for d in 0..DOF_PER_NODE {
-                            if let Some(a) = dofmap.active(ni * DOF_PER_NODE + d) {
-                                g.force.push(a as usize);
-                            }
+                            g.force.push(a as usize);
                         }
                     }
                     g
                 })
                 .collect();
-            // どの階にも属さない節点（基礎レベルの自由節点など）の慣性力は
-            // 最下層の層せん断力に計上する（1 層目＝全慣性力の総和＝ベースシア
-            // という恒等関係を保つため）。階応答の代表値には含めない。
+            // どの階にも属さない節点（基礎レベルの自由節点など）の当該方向並進 DOF は、
+            // Z 座標が最も近い階の層せん断力に計上する（1 層目〜最上層の慣性力の総和＝
+            // ベースシアという恒等関係を、全並進 DOF を漏れなくいずれかの階へ
+            // 割り当てることで保つ）。階応答の代表値（avg）には含めない。
             if !groups.is_empty() {
                 let mut assigned = vec![false; model.nodes.len()];
                 for story in &model.stories {
@@ -199,9 +259,22 @@ impl ThRecorder {
                     if *done {
                         continue;
                     }
-                    for d in 0..DOF_PER_NODE {
-                        if let Some(a) = dofmap.active(ni * DOF_PER_NODE + d) {
-                            groups[0].force.push(a as usize);
+                    let Some(node) = model.nodes.get(ni) else {
+                        continue;
+                    };
+                    if let Some(a) = dofmap.active(ni * DOF_PER_NODE + dir_idx) {
+                        let nearest = story_repr_z
+                            .iter()
+                            .enumerate()
+                            .min_by(|(_, za), (_, zb)| {
+                                (node.coord[2] - *za)
+                                    .abs()
+                                    .partial_cmp(&(node.coord[2] - *zb).abs())
+                                    .unwrap_or(std::cmp::Ordering::Equal)
+                            })
+                            .map(|(i, _)| i);
+                        if let Some(i) = nearest {
+                            groups[i].force.push(a as usize);
                         }
                     }
                 }
@@ -234,14 +307,25 @@ impl ThRecorder {
             floor_disp_y: Vec::new(),
             peak_shear_coeff_x: vec![0.0; n_story],
             peak_shear_coeff_y: vec![0.0; n_story],
+            peak_story_shear_x: vec![0.0; n_story],
+            peak_story_shear_y: vec![0.0; n_story],
+            peak_floor_accel_x: vec![0.0; n_story],
+            peak_floor_accel_y: vec![0.0; n_story],
+            peak_floor_vel_x: vec![0.0; n_story],
+            peak_floor_vel_y: vec![0.0; n_story],
+            peak_floor_disp_x: vec![0.0; n_story],
+            peak_floor_disp_y: vec![0.0; n_story],
         }
     }
 
     /// 階ごとの層せん断力・階絶対加速度・階速度・階変位を求める（1 方向分）。
-    /// `m_r` は当該方向の `M·r`（自由 DOF 空間）、`xg` は当該時刻・当該方向の
-    /// 地動加速度。層せん断力は「当該層以上に属する節点の慣性力」の累積
-    /// （`Σ m_r[dof]·(a_free[dof]+xg)` の符号反転、`history::record_history_step`
-    /// のベースシアと同じ符号規約）。
+    /// `m_r` は当該方向の `M·r`（自由 DOF 空間）、`ma_free` は自由 DOF 空間の
+    /// `M·a_free`（[`super::common::mass_accel_free`] で 1 ステップに 1 回だけ
+    /// 算定したものを共有する）、`xg` は当該時刻・当該方向の地動加速度。
+    ///
+    /// 層せん断力は「当該層以上に属する節点の並進 DOF の慣性力」の累積の符号反転
+    /// （節点慣性力ベクトル `f_abs = M·a_free + ẍg・M・r` の当該方向並進成分のみを
+    /// 集計、`history::record_history_step` のベースシアと同じ定義）。
     #[allow(clippy::too_many_arguments)]
     fn compute_story_dir(
         groups: &[StoryDofGroup],
@@ -249,6 +333,7 @@ impl ThRecorder {
         u_free: &[f64],
         v_free: &[f64],
         a_free: &[f64],
+        ma_free: &[f64],
         xg: f64,
     ) -> (Vec<f64>, Vec<f64>, Vec<f64>, Vec<f64>) {
         let n = groups.len();
@@ -284,13 +369,13 @@ impl ThRecorder {
                 vel[i] = simple_v / cnt;
                 disp[i] = simple_u / cnt;
             }
-            // 層せん断力: `M·r` は一貫質量により回転 DOF にも成分を持つため、
-            // 節点の全自由度について `m_r·(a+ẍg)` を集計する（対称性より
-            // `rᵀM(a+r·ẍg)` と厳密に一致する）。
+            // 層せん断力: 節点慣性力ベクトル f_abs = M·a_free + ẍg・M・r の
+            // 当該方向並進 DOF（g.force）のみを集計する。
             let mut lf = 0.0;
             for &dof in &g.force {
-                let a_abs = a_free.get(dof).copied().unwrap_or(0.0) + xg;
-                lf += m_r.get(dof).copied().unwrap_or(0.0) * a_abs;
+                let f_abs = ma_free.get(dof).copied().unwrap_or(0.0)
+                    + xg * m_r.get(dof).copied().unwrap_or(0.0);
+                lf += f_abs;
             }
             level_force[i] = lf;
         }
@@ -307,8 +392,10 @@ impl ThRecorder {
     /// （0 が初期状態、`n_steps` が最終ステップ）。`u_red`/`v_red`/`a_red` は
     /// 縮約空間の変位・速度・加速度、`m_r_x`/`m_r_y` は自由 DOF 空間の `M·r`
     /// （時刻歴解析の呼び出し側で 1 回だけ組み立てたものを共有する）。
-    /// `member_forces_now` は当該ステップの全要素の部材内力分布
-    /// （[`member_forces_linear`] / [`member_forces_nonlinear`]）。
+    /// `ma_free` は自由 DOF 空間の `M·a_free`（[`super::common::mass_accel_free`]
+    /// で呼び出し側が 1 ステップに 1 回だけ算定したものを共有する。層せん断力の
+    /// 節点慣性力ベクトル算定に使う）。`member_forces_now` は当該ステップの
+    /// 全要素の部材内力分布（[`member_forces_linear`] / [`member_forces_nonlinear`]）。
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn record_step(
         &mut self,
@@ -319,6 +406,7 @@ impl ThRecorder {
         reducer: &Reducer,
         m_r_x: &[f64],
         m_r_y: &[f64],
+        ma_free: &[f64],
         u_red: &[f64],
         v_red: &[f64],
         a_red: &[f64],
@@ -333,10 +421,24 @@ impl ThRecorder {
         let v_free = reducer.expand_u(v_red);
         let a_free = reducer.expand_u(a_red);
 
-        let (shear_x, accel_x, vel_x, disp_x) =
-            Self::compute_story_dir(&self.groups_x, m_r_x, &u_free, &v_free, &a_free, xg_x);
-        let (shear_y, accel_y, vel_y, disp_y) =
-            Self::compute_story_dir(&self.groups_y, m_r_y, &u_free, &v_free, &a_free, xg_y);
+        let (shear_x, accel_x, vel_x, disp_x) = Self::compute_story_dir(
+            &self.groups_x,
+            m_r_x,
+            &u_free,
+            &v_free,
+            &a_free,
+            ma_free,
+            xg_x,
+        );
+        let (shear_y, accel_y, vel_y, disp_y) = Self::compute_story_dir(
+            &self.groups_y,
+            m_r_y,
+            &u_free,
+            &v_free,
+            &a_free,
+            ma_free,
+            xg_y,
+        );
 
         // 層せん断力係数のピークは全ステップ更新（間引かない）。
         for i in 0..self.weights.len() {
@@ -353,12 +455,25 @@ impl ThRecorder {
             }
         }
 
+        // 層応答ピーク（層せん断力・階絶対加速度・階速度・階変位の絶対値最大）は
+        // フレーム間引きに関係なく全ステップで更新する（中-3: 間引きフレームの
+        // 合間に生じるピークを取り逃さないため）。
+        Self::update_peak_abs(&mut self.peak_story_shear_x, &shear_x);
+        Self::update_peak_abs(&mut self.peak_story_shear_y, &shear_y);
+        Self::update_peak_abs(&mut self.peak_floor_accel_x, &accel_x);
+        Self::update_peak_abs(&mut self.peak_floor_accel_y, &accel_y);
+        Self::update_peak_abs(&mut self.peak_floor_vel_x, &vel_x);
+        Self::update_peak_abs(&mut self.peak_floor_vel_y, &vel_y);
+        Self::update_peak_abs(&mut self.peak_floor_disp_x, &disp_x);
+        Self::update_peak_abs(&mut self.peak_floor_disp_y, &disp_y);
+
         // フレーム記録は間引く（record_every ごと。最終ステップは必ず含める）。
         if step.is_multiple_of(self.record_every as u64) || step == self.n_steps {
             self.frame_time.push(time);
             self.node_disp
                 .push(expand_node_disp(model, dofmap, &u_free));
-            self.member_forces.push(member_forces_now.to_vec());
+            self.member_forces
+                .push(trim_member_forces_to_endpoints(member_forces_now));
             self.story_shear_x.push(shear_x);
             self.story_shear_y.push(shear_y);
             self.floor_accel_x.push(accel_x);
@@ -367,6 +482,17 @@ impl ThRecorder {
             self.floor_vel_y.push(vel_y);
             self.floor_disp_x.push(disp_x);
             self.floor_disp_y.push(disp_y);
+        }
+    }
+
+    /// 絶対値最大の更新（`peak[i] = max(peak[i], |current[i]|)`）。長さが異なる場合は
+    /// 短い方まで（要素構成・階構成は解析中不変のため通常は一致する）。
+    fn update_peak_abs(peak: &mut [f64], current: &[f64]) {
+        for (p, &c) in peak.iter_mut().zip(current.iter()) {
+            let c_abs = c.abs();
+            if c_abs > *p {
+                *p = c_abs;
+            }
         }
     }
 
@@ -384,6 +510,10 @@ impl ThRecorder {
                 floor_vel: self.floor_vel_x,
                 floor_disp: self.floor_disp_x,
                 peak_shear_coeff: self.peak_shear_coeff_x,
+                peak_story_shear: self.peak_story_shear_x,
+                peak_floor_accel: self.peak_floor_accel_x,
+                peak_floor_vel: self.peak_floor_vel_x,
+                peak_floor_disp: self.peak_floor_disp_x,
             },
             story_y: StoryResponse {
                 stories: self.story_ids,
@@ -393,9 +523,238 @@ impl ThRecorder {
                 floor_vel: self.floor_vel_y,
                 floor_disp: self.floor_disp_y,
                 peak_shear_coeff: self.peak_shear_coeff_y,
+                peak_story_shear: self.peak_story_shear_y,
+                peak_floor_accel: self.peak_floor_accel_y,
+                peak_floor_vel: self.peak_floor_vel_y,
+                peak_floor_disp: self.peak_floor_disp_y,
             },
             member_forces: self.member_forces,
             peak_member_forces: self.peak_member_forces,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use squid_n_core::dof::Dof6Mask;
+    use squid_n_core::ids::{ElemId, MaterialId, NodeId, SectionId, StoryId};
+    use squid_n_core::model::{
+        ElementData, ElementKind, EndCondition, ForceRegime, LocalAxis, Material, Node, Section,
+        Story,
+    };
+
+    /// 高-2 検証用: 密度による一貫質量を持つ 2 層（3 節点）の柱列。曲げ回転
+    /// （Ry）を解放し、一貫質量行列の並進-回転連成（M_ux_ry 等）を意図的に
+    /// 有効にする（`Dof6Mask(0b101110)` = Ux・Ry のみ自由。他の並進・回転は拘束）。
+    fn two_story_density_mass_model(density: f64) -> Model {
+        let free_ux_ry = Dof6Mask(0b101110);
+        Model {
+            nodes: vec![
+                Node {
+                    id: NodeId(0),
+                    coord: [0.0, 0.0, 0.0],
+                    restraint: Dof6Mask::FIXED,
+                    mass: None,
+                    story: None,
+                    support_spring: None,
+                },
+                Node {
+                    id: NodeId(1),
+                    coord: [0.0, 0.0, 3000.0],
+                    restraint: free_ux_ry,
+                    mass: None,
+                    story: Some(StoryId(0)),
+                    support_spring: None,
+                },
+                Node {
+                    id: NodeId(2),
+                    coord: [0.0, 0.0, 6000.0],
+                    restraint: free_ux_ry,
+                    mass: None,
+                    story: Some(StoryId(1)),
+                    support_spring: None,
+                },
+            ],
+            elements: vec![
+                ElementData {
+                    id: ElemId(0),
+                    kind: ElementKind::Beam,
+                    nodes: smallvec::smallvec![NodeId(0), NodeId(1)],
+                    section: Some(SectionId(0)),
+                    material: Some(MaterialId(0)),
+                    local_axis: LocalAxis {
+                        ref_vector: [1.0, 0.0, 0.0],
+                    },
+                    end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+                    force_regime: ForceRegime::Auto,
+                    rigid_zone: Default::default(),
+                    plastic_zone: None,
+                    spring: None,
+                },
+                ElementData {
+                    id: ElemId(1),
+                    kind: ElementKind::Beam,
+                    nodes: smallvec::smallvec![NodeId(1), NodeId(2)],
+                    section: Some(SectionId(0)),
+                    material: Some(MaterialId(0)),
+                    local_axis: LocalAxis {
+                        ref_vector: [1.0, 0.0, 0.0],
+                    },
+                    end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+                    force_regime: ForceRegime::Auto,
+                    rigid_zone: Default::default(),
+                    plastic_zone: None,
+                    spring: None,
+                },
+            ],
+            sections: vec![Section {
+                id: SectionId(0),
+                name: "col".into(),
+                area: 10000.0,
+                iy: 8.333e6,
+                iz: 8.333e6,
+                j: 1.0e6,
+                depth: 100.0,
+                width: 100.0,
+                as_y: 0.0,
+                as_z: 0.0,
+                panel_thickness: None,
+                thickness: None,
+                shape: None,
+            }],
+            materials: vec![Material {
+                strength_factor: None,
+                concrete_class: Default::default(),
+                id: MaterialId(0),
+                name: "steel".into(),
+                young: 205000.0,
+                poisson: 0.3,
+                density,
+                shear: None,
+                fc: None,
+                fy: None,
+            }],
+            stories: vec![
+                Story {
+                    level_kind: Default::default(),
+                    structure: Default::default(),
+                    id: StoryId(0),
+                    name: "1F".into(),
+                    elevation: 3000.0,
+                    node_ids: vec![NodeId(1)],
+                    diaphragms: vec![],
+                    seismic_weight: Some(1000.0),
+                    weight_override: None,
+                },
+                Story {
+                    level_kind: Default::default(),
+                    structure: Default::default(),
+                    id: StoryId(1),
+                    name: "2F".into(),
+                    elevation: 6000.0,
+                    node_ids: vec![NodeId(2)],
+                    diaphragms: vec![],
+                    seismic_weight: Some(1000.0),
+                    weight_override: None,
+                },
+            ],
+            ..Default::default()
+        }
+    }
+
+    /// 高-2: `StoryDofGroup::force`（層せん断力の慣性力集計対象）は当該方向の
+    /// 並進 DOF のみを含み、回転 DOF を含まないこと。節点ごとに並進 DOF は
+    /// 高々 1 つのため、各階の `force.len()` は「当該方向へ割り当てられた
+    /// 節点数（=1）」と一致するはず（修正前は、同じ節点で活性な回転 DOF
+    /// （本モデルでは Ry）も無条件に含んでいたため 2 になっていた）。
+    #[test]
+    fn test_story_force_dof_group_excludes_rotational_dof() {
+        let model = two_story_density_mass_model(7.85e-9);
+        let dofmap = DofMap::build(&model);
+        let recorder = ThRecorder::new(&model, &dofmap, 1, model.elements.len(), None);
+
+        assert_eq!(recorder.groups_x.len(), 2);
+        for (i, g) in recorder.groups_x.iter().enumerate() {
+            assert_eq!(
+                g.force.len(),
+                1,
+                "story[{i}].force は当該方向の並進 DOF（節点1つ分）のみを含むはず: {:?}",
+                g.force
+            );
+            // avg（階代表値）と force（せん断力集計）の DOF は一致するはず。
+            assert_eq!(g.avg.len(), g.force.len());
+            assert_eq!(g.force[0], g.avg[0].0);
+        }
+    }
+
+    /// 高-2 (a): 2 層・一貫質量（密度）モデルで、1 層目（最下層）の層せん断力
+    /// （＝全層の慣性力の累積）がベースシア（全体慣性力の合計）と一致すること。
+    /// 回転 DOF を解放し並進-回転連成が実際に生じる状態で検証する
+    /// （`story_shear[i]` は「当該層以上の慣性力の累積」であり、1 層目が
+    /// 全体合計＝ベースシアと一致する。全層の `story_shear` を単純合計した値
+    /// ではない点に注意）。
+    #[test]
+    fn test_story_shear_sum_matches_base_shear_with_consistent_mass() {
+        let model = two_story_density_mass_model(7.85e-9);
+        let dofmap = DofMap::build(&model);
+        let reducer = crate::constraint::Reducer::build(&model, &dofmap);
+
+        let damping = crate::damping::Damping::StiffnessProportional {
+            h: 0.02,
+            omega: 10.0,
+            basis: crate::damping::StiffnessKind::Initial,
+        };
+        let dt = 0.001;
+        let n_steps = 30;
+        let wave = super::super::GroundMotion {
+            dt,
+            accel_x: {
+                let mut a = vec![0.0; n_steps];
+                a[0] = 2000.0;
+                a[1] = -1000.0;
+                a
+            },
+            accel_y: None,
+            accel_theta: None,
+        };
+        let newmark = super::super::NewmarkCfg {
+            beta: 0.25,
+            gamma: 0.5,
+            dt,
+        };
+
+        let result = super::super::linear_time_history_analysis(
+            &model,
+            &dofmap,
+            &reducer,
+            &wave,
+            &newmark,
+            &damping,
+            &[0.0],
+            &[0.0],
+            false,
+            None,
+        )
+        .expect("should run");
+
+        let recording = result.recording.expect("recording");
+        assert!(!recording.story_x.story_shear.is_empty());
+        let mut checked = 0;
+        for (k, &t) in recording.frame_time.iter().enumerate() {
+            // frame_time はいずれかの time と一致するはず（浮動小数点の丸めに
+            // 依存しないよう、記録済みの時刻刻みそのものと突き合わせる）。
+            let Some(step) = result.time.iter().position(|&tt| tt == t) else {
+                continue;
+            };
+            let layer0_shear = recording.story_x.story_shear[k][0];
+            let expected = result.history.base_shear[step];
+            assert!(
+                (layer0_shear - expected).abs() < expected.abs().max(1.0) * 1e-6,
+                "frame {k} (t={t}): layer0 shear {layer0_shear} should match base shear {expected}"
+            );
+            checked += 1;
+        }
+        assert!(checked > 0, "比較できたフレームが1件もありません");
     }
 }

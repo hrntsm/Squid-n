@@ -2,7 +2,7 @@
 //!
 //! - [`linear_hht_alpha_analysis`] — HHT-α 法による線形時刻歴応答解析
 
-use super::common::{solve_initial_accel, theta_accel_at, theta_influence_m};
+use super::common::{mass_accel_free, solve_initial_accel, theta_accel_at, theta_influence_m};
 use super::config::{GroundMotion, HhtCfg};
 use super::history::{
     choose_record_dir_y, pick_record_node, record_history_step, total_mass, update_story_drift,
@@ -171,6 +171,7 @@ pub fn linear_hht_alpha_analysis(
         &m_r_x,
         &m_r_y,
         &m_r_theta,
+        &m_free,
         &m_red,
         &c_red,
         &k_red,
@@ -204,6 +205,7 @@ fn run_steps_hht(
     m_r_x: &[f64],
     m_r_y: &[f64],
     m_r_theta: &[f64],
+    m_free: &faer::sparse::SparseColMat<usize, f64>,
     m_red: &faer::sparse::SparseColMat<usize, f64>,
     c_red: &faer::sparse::SparseColMat<usize, f64>,
     k_red: &faer::sparse::SparseColMat<usize, f64>,
@@ -237,6 +239,10 @@ fn run_steps_hht(
     let mut time = Vec::with_capacity(wave.accel_x.len() - start_step as usize + 1);
     time.push(start_step as f64 * dt);
 
+    // 節点慣性力ベクトル算定用の M·a_free（自由 DOF 空間）。ベースシア・層せん断力の
+    // 双方で共有する（1 ステップに 1 回だけ疎行列ベクトル積を計算する）。
+    let ma_free_init = mass_accel_free(m_free, reducer, &a);
+
     // 詳細記録（3D アニメーション・層応答グラフ・部材履歴用。record_every は
     // 呼び出し元（UI 等）が指定できる。None は自動決定）。
     let mut recorder = ThRecorder::new(
@@ -265,6 +271,7 @@ fn run_steps_hht(
         reducer,
         m_r_x,
         m_r_y,
+        &ma_free_init,
         &u,
         &v,
         &a,
@@ -298,12 +305,10 @@ fn run_steps_hht(
         &mut history,
         model,
         dofmap,
-        reducer,
         dir_idx,
-        m_r_record,
         rmr_record,
         &u_free_init,
-        &a,
+        &ma_free_init,
         xg_init,
     );
 
@@ -366,6 +371,9 @@ fn run_steps_hht(
             peak_disp_free[i] = peak_disp_free[i].max(u_free[i].abs());
         }
         update_story_drift(model, dofmap, &u_free, &mut story_drift_angle);
+        // 節点慣性力ベクトル算定用の M·a_free（自由 DOF 空間）。ベースシア・
+        // 層せん断力の双方で共有する（1 ステップに 1 回だけ算定）。
+        let ma_free = mass_accel_free(m_free, reducer, &a);
         let xg_next = if record_dir_y {
             wave.accel_y
                 .as_ref()
@@ -378,12 +386,10 @@ fn run_steps_hht(
             &mut history,
             model,
             dofmap,
-            reducer,
             dir_idx,
-            m_r_record,
             rmr_record,
             &u_free,
-            &a,
+            &ma_free,
             xg_next,
         );
 
@@ -402,6 +408,7 @@ fn run_steps_hht(
             reducer,
             m_r_x,
             m_r_y,
+            &ma_free,
             &u,
             &v,
             &a,

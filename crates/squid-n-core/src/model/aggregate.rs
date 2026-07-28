@@ -82,12 +82,6 @@ pub struct Model {
     /// 制振ダンパー要素（`ElementKind::Damper`）の特性（各制振部材の力学モデル）。
     #[serde(default)]
     pub damper_attrs: Vec<DamperAttr>,
-    /// 名前付き制振ダンパー定義（プリセットライブラリ）。`ElemId` への参照を
-    /// 持たないため、要素の追加・削除に伴う ID 繰上げ／繰下げ（`shift_elem_attr_refs`・
-    /// `take_elem_attrs`・`restore_elem_attrs`）の対象外。部材への割当は
-    /// `DamperDef::props` の値コピー（`Model::damper_attrs` へ追加）で行う。
-    #[serde(default)]
-    pub damper_defs: Vec<DamperDef>,
     /// 部材の付帯情報（端部ハンチ・継手位置）。剛性・応力解析には影響しない
     /// （設計書 §6.2。剛性は基準断面のまま）。断面算定の検定位置の追加
     /// （ハンチ端・継手位置、§6.2.3）と数量拾いに用いる。
@@ -104,6 +98,17 @@ pub struct Model {
     /// 分割部材のまま行い、検定の文脈だけを合成する。
     #[serde(default)]
     pub beam_groups: Vec<Vec<ElemId>>,
+    /// 名前付き制振ダンパー定義（プリセットライブラリ）。`ElemId` への参照を
+    /// 持たないため、要素の追加・削除に伴う ID 繰上げ／繰下げ（`shift_elem_attr_refs`・
+    /// `take_elem_attrs`・`restore_elem_attrs`）の対象外。部材への割当は
+    /// `DamperDef::props` の値コピー（`Model::damper_attrs` へ追加）で行う。
+    ///
+    /// **msgpack（.scz）は位置ベース配列で直列化されるため、新しいフィールドは
+    /// 必ずこの構造体の末尾（`dof_map` の手前）へ追加すること**。中間に挿入すると
+    /// 旧バージョンで保存された .scz の後続フィールドの値がずれて読み込まれ、
+    /// `#[serde(default)]` があっても救済されない（default 補完は末尾欠損のみ有効）。
+    #[serde(default)]
+    pub damper_defs: Vec<DamperDef>,
     #[serde(skip)]
     pub dof_map: crate::dof::DofMap,
 }
@@ -280,10 +285,25 @@ impl Model {
     /// 参照中の節点を削除すると参照が壊れる（ダングリング）ため、削除前にこれで確認する。
     pub fn node_in_use(&self, id: NodeId) -> bool {
         self.elements.iter().any(|e| e.nodes.contains(&id))
-            || self
-                .load_cases
-                .iter()
-                .any(|lc| lc.nodal.iter().any(|nl| nl.node == id))
+            || self.node_referenced_outside_elements(id)
+    }
+
+    /// [`Model::node_in_use`] と同様だが、要素からの参照は `excl` を除いて判定する
+    /// （支点免震要素の接地節点が「この要素以外から孤立しているか」の判定に使う。
+    /// `excl` 要素自身が `id` を参照していても、それだけでは「使用中」とみなさない）。
+    pub fn node_in_use_excluding_elem(&self, id: NodeId, excl: ElemId) -> bool {
+        self.elements
+            .iter()
+            .any(|e| e.id != excl && e.nodes.contains(&id))
+            || self.node_referenced_outside_elements(id)
+    }
+
+    /// 要素以外（節点荷重・階・床・二次部材・拘束）からの参照有無。
+    /// [`Model::node_in_use`]・[`Model::node_in_use_excluding_elem`] の共通部分。
+    fn node_referenced_outside_elements(&self, id: NodeId) -> bool {
+        self.load_cases
+            .iter()
+            .any(|lc| lc.nodal.iter().any(|nl| nl.node == id))
             || self.stories.iter().any(|s| {
                 s.node_ids.contains(&id)
                     || s.diaphragms
@@ -308,6 +328,37 @@ impl Model {
                     *master == id || slaves.contains(&id)
                 }
             })
+    }
+
+    /// 要素が「支点免震要素」（squid-n-edit の `PlaceSupportIsolator` が生成する配置形。
+    /// 対象節点と同一座標の接地節点との間に設置する零長 Isolator 要素）であるかを判定する。
+    /// 該当すれば `(上部節点, 接地節点)` を返す（上部節点＝支点として振る舞う対象節点、
+    /// 接地節点＝自動生成された `restraint=FIXED` の孤立節点）。
+    ///
+    /// 条件: `ElementKind::Isolator` の2節点要素で、両端が同一座標（零長）かつ、
+    /// 一方の節点が `restraint=FIXED` でこの要素以外から参照されていない（孤立）こと。
+    /// 通常の（支点ではない）免震要素はこの条件を満たさず `None` を返す。
+    pub fn support_isolator_ends(&self, elem: ElemId) -> Option<(NodeId, NodeId)> {
+        let e = self.elements.get(elem.index()).filter(|e| e.id == elem)?;
+        if e.kind != ElementKind::Isolator || e.nodes.len() != 2 {
+            return None;
+        }
+        let (n0, n1) = (e.nodes[0], e.nodes[1]);
+        let node0 = self.nodes.iter().find(|n| n.id == n0)?;
+        let node1 = self.nodes.iter().find(|n| n.id == n1)?;
+        if node0.coord != node1.coord {
+            return None;
+        }
+        let is_isolated_ground = |id: NodeId, restraint: crate::dof::Dof6Mask| {
+            restraint == crate::dof::Dof6Mask::FIXED && !self.node_in_use_excluding_elem(id, elem)
+        };
+        if is_isolated_ground(n0, node0.restraint) {
+            Some((n1, n0))
+        } else if is_isolated_ground(n1, node1.restraint) {
+            Some((n0, n1))
+        } else {
+            None
+        }
     }
 
     pub fn eq_ignoring_dofmap(&self, other: &Self) -> bool {

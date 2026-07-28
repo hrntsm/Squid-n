@@ -2,8 +2,10 @@ use crate::app::node_grid::NodeGridAdapter;
 use crate::app::{App, LogLevel};
 use squid_n_core::dof::Dof6Mask;
 use squid_n_core::ids::NodeId;
-use squid_n_core::model::{ElementKind, IsolatorKind, IsolatorProps};
-use squid_n_edit::{AddNode, PlaceSupportIsolator, SetNodeRestraint, SetNodeSupportSpring};
+use squid_n_core::model::{IsolatorKind, IsolatorProps};
+use squid_n_edit::{
+    AddNode, PlaceSupportIsolator, RemoveSupportIsolator, SetNodeRestraint, SetNodeSupportSpring,
+};
 
 /// 免震支承の配置フォーム（境界条件パネル）のドラフト状態。
 /// `PlaceSupportIsolator` へ渡す諸元をフォーム上で保持する（節点非依存。
@@ -48,24 +50,40 @@ pub fn isolator_kind_selector(ui: &mut egui::Ui, kind: &mut IsolatorKind) {
 /// ゴム総厚＋任意の歪依存係数）。`id_source` は CollapsingHeader の id 衝突回避用
 /// （同じ関数が複数箇所〔境界条件パネル・部材タブの免震支承追加フォーム〕から
 /// 呼ばれるため）。
+///
+/// 入力表示は K1/K2/Kv=kN/mm・Qd=kN（免震一覧 `tables::members::isolators_table`
+/// と統一）。`IsolatorProps` 自体は N/mm・N 単位で保持するため、表示のたびに
+/// 1000 で除算・確定時に 1000 を乗算して変換する。
 pub fn isolator_props_fields(ui: &mut egui::Ui, id_source: &str, props: &mut IsolatorProps) {
     ui.horizontal_wrapped(|ui| {
-        ui.label("Kv 鉛直剛性[N/mm]:");
-        ui.add(
-            egui::DragValue::new(&mut props.kv)
-                .speed(1000.0)
-                .range(0.0..=1.0e12),
-        );
+        ui.label("Kv 鉛直剛性[kN/mm]:");
+        let mut kv_kn = props.kv / 1000.0;
+        if ui
+            .add(
+                egui::DragValue::new(&mut kv_kn)
+                    .speed(1.0)
+                    .range(0.0..=1.0e9),
+            )
+            .changed()
+        {
+            props.kv = kv_kn * 1000.0;
+        }
     });
     match props.kind {
         IsolatorKind::ElasticSliding => {
             ui.horizontal_wrapped(|ui| {
-                ui.label("K1 すべり前剛性[N/mm]:");
-                ui.add(
-                    egui::DragValue::new(&mut props.k1)
-                        .speed(10.0)
-                        .range(0.0..=1.0e9),
-                );
+                ui.label("K1 すべり前剛性[kN/mm]:");
+                let mut k1_kn = props.k1 / 1000.0;
+                if ui
+                    .add(
+                        egui::DragValue::new(&mut k1_kn)
+                            .speed(1.0)
+                            .range(0.0..=1.0e6),
+                    )
+                    .changed()
+                {
+                    props.k1 = k1_kn * 1000.0;
+                }
                 ui.label("μ 摩擦係数:");
                 ui.add(
                     egui::DragValue::new(&mut props.mu)
@@ -90,18 +108,30 @@ pub fn isolator_props_fields(ui: &mut egui::Ui, id_source: &str, props: &mut Iso
         | IsolatorKind::LeadRubber
         | IsolatorKind::HighDampingRubber => {
             ui.horizontal_wrapped(|ui| {
-                ui.label("K1 初期(弾性)剛性[N/mm]:");
-                ui.add(
-                    egui::DragValue::new(&mut props.k1)
-                        .speed(10.0)
-                        .range(0.0..=1.0e9),
-                );
-                ui.label("K2 二次剛性[N/mm]:");
-                ui.add(
-                    egui::DragValue::new(&mut props.k2)
-                        .speed(1.0)
-                        .range(0.0..=1.0e9),
-                );
+                ui.label("K1 初期(弾性)剛性[kN/mm]:");
+                let mut k1_kn = props.k1 / 1000.0;
+                if ui
+                    .add(
+                        egui::DragValue::new(&mut k1_kn)
+                            .speed(1.0)
+                            .range(0.0..=1.0e6),
+                    )
+                    .changed()
+                {
+                    props.k1 = k1_kn * 1000.0;
+                }
+                ui.label("K2 二次剛性[kN/mm]:");
+                let mut k2_kn = props.k2 / 1000.0;
+                if ui
+                    .add(
+                        egui::DragValue::new(&mut k2_kn)
+                            .speed(0.1)
+                            .range(0.0..=1.0e6),
+                    )
+                    .changed()
+                {
+                    props.k2 = k2_kn * 1000.0;
+                }
                 ui.label("Qd 特性耐力[kN]:");
                 let mut qd_kn = props.qd / 1000.0;
                 if ui
@@ -437,7 +467,10 @@ fn support_spring_section(ui: &mut egui::Ui, app: &mut App, node_id: NodeId) {
             }
 
             use squid_n_core::dof::Dof;
-            let mut changed = false;
+            // ドラッグ中は毎フレーム `changed()` が真になるため、フレームごとに
+            // コマンドを発行すると undo スタックを大量消費する。ドラッグ終了
+            // （またはテキスト入力後のフォーカス喪失）で確定する。
+            let mut commit = false;
             ui.horizontal_wrapped(|ui| {
                 for (i, (d, label)) in [
                     (Dof::Ux, "Kx[N/mm]"),
@@ -461,12 +494,12 @@ fn support_spring_section(ui: &mut egui::Ui, app: &mut App, node_id: NodeId) {
                     if fixed {
                         ui.colored_label(crate::theme::GRAY_600, "(固定)");
                     }
-                    if resp.changed() {
-                        changed = true;
+                    if resp.drag_stopped() || resp.lost_focus() {
+                        commit = true;
                     }
                 }
             });
-            if changed {
+            if commit {
                 app.undo.run(
                     &mut app.model,
                     Box::new(SetNodeSupportSpring {
@@ -502,21 +535,33 @@ fn isolator_support_section(ui: &mut egui::Ui, app: &mut App, node_id: NodeId) {
                         ui.colored_label(
                             crate::theme::GOOD_GREEN,
                             format!(
-                                "配置済み（要素#{}）: {} K1={:.0}N/mm K2={:.0}N/mm \
-                                 Qd={:.1}kN Kv={:.0}N/mm μ={:.3}",
+                                "配置済み（要素#{}）: {} K1={:.0}kN/mm K2={:.0}kN/mm \
+                                 Qd={:.1}kN Kv={:.0}kN/mm μ={:.3}",
                                 elem_id.0,
                                 isolator_kind_label(p.kind),
-                                p.k1,
-                                p.k2,
+                                p.k1 / 1000.0,
+                                p.k2 / 1000.0,
                                 p.qd / 1000.0,
-                                p.kv,
+                                p.kv / 1000.0,
                                 p.mu
                             ),
                         );
                         ui.label(
-                            "取り消しは Ctrl+Z（undo）で行えます。諸元の変更は「部材」タブの\
-                             免震支承一覧から行ってください。",
+                            "諸元の変更は「部材」タブの免震支承一覧から行ってください。",
                         );
+                        if ui
+                            .button("撤去")
+                            .on_hover_text(
+                                "接地節点・免震支承要素を削除し、対象節点を直接支点（拘束固定）へ戻します（undo可）",
+                            )
+                            .clicked()
+                        {
+                            app.undo.run(
+                                &mut app.model,
+                                Box::new(RemoveSupportIsolator { node: node_id }),
+                            );
+                            app.staleness.mark_edited();
+                        }
                     }
                     None => {
                         ui.colored_label(crate::theme::ERROR_RED, "免震支承の諸元が見つかりません");
@@ -556,7 +601,11 @@ fn isolator_support_section(ui: &mut egui::Ui, app: &mut App, node_id: NodeId) {
 
 /// 対象節点 `node_id` に設置済みの支点免震支承（零長 Isolator 要素）を探す。
 /// `PlaceSupportIsolator` が生成する要素の形（対象節点と同一座標の接地節点との
-/// 2節点、零長）を満たす `Isolator` 要素があればその `ElemId` を返す（純関数）。
+/// 2節点、零長、接地節点は `restraint=FIXED` かつ孤立）を満たす `Isolator` 要素が
+/// あればその `ElemId` を返す（純関数。`Model::support_isolator_ends` に委譲）。
+///
+/// `node_id` が接地節点（FIXED側）自身の場合は `None` を返す（接地節点を選んでも
+/// 「配置済み」とは表示しない。上部節点＝対象節点側を選んだ場合のみヒットする）。
 pub fn find_support_isolator(
     model: &squid_n_core::model::Model,
     node_id: NodeId,
@@ -565,11 +614,9 @@ pub fn find_support_isolator(
         .elements
         .iter()
         .find(|e| {
-            e.kind == ElementKind::Isolator && e.nodes.len() == 2 && e.nodes.contains(&node_id) && {
-                let a = model.nodes.iter().find(|n| n.id == e.nodes[0]);
-                let b = model.nodes.iter().find(|n| n.id == e.nodes[1]);
-                matches!((a, b), (Some(a), Some(b)) if a.coord == b.coord)
-            }
+            model
+                .support_isolator_ends(e.id)
+                .is_some_and(|(upper, _ground)| upper == node_id)
         })
         .map(|e| e.id)
 }
@@ -637,6 +684,69 @@ mod tests {
         undo.undo(&mut model);
         assert_eq!(model.nodes.len(), 1);
         assert_eq!(model.elements.len(), 0);
+        assert_eq!(model.nodes[0].restraint, Dof6Mask::FIXED);
+    }
+
+    /// `find_support_isolator`: 接地節点（FIXED側）を選んだ場合は「配置済み」と
+    /// 誤表示しないよう `None` を返す（対象節点＝上部節点側を選んだ場合のみ
+    /// `Some` を返す）。
+    #[test]
+    fn test_find_support_isolator_none_when_ground_node_selected() {
+        let mut model = Model::default();
+        model.nodes.push(squid_n_core::model::Node {
+            id: NodeId(0),
+            coord: [0.0, 0.0, 0.0],
+            restraint: Dof6Mask::FIXED,
+            mass: None,
+            story: None,
+            support_spring: None,
+        });
+        let mut undo = UndoStack::new();
+        undo.run(
+            &mut model,
+            Box::new(PlaceSupportIsolator {
+                node: NodeId(0),
+                props: IsolatorProps::default(),
+            }),
+        );
+        let ground_id = NodeId(1);
+        assert_eq!(model.nodes[ground_id.index()].restraint, Dof6Mask::FIXED);
+        // 上部節点（対象節点）側では見つかる。
+        assert!(find_support_isolator(&model, NodeId(0)).is_some());
+        // 接地節点側では見つからない。
+        assert_eq!(find_support_isolator(&model, ground_id), None);
+    }
+
+    /// 境界条件パネルの「撤去」ボタン相当（`RemoveSupportIsolator`）: 配置→撤去で
+    /// 接地節点・要素が消え、対象節点の拘束が FIXED へ戻ること。
+    #[test]
+    fn test_isolator_support_section_remove_button_command() {
+        let mut model = Model::default();
+        model.nodes.push(squid_n_core::model::Node {
+            id: NodeId(0),
+            coord: [0.0, 0.0, 0.0],
+            restraint: Dof6Mask::FIXED,
+            mass: None,
+            story: None,
+            support_spring: None,
+        });
+        let before = model.clone();
+        let mut undo = UndoStack::new();
+        undo.run(
+            &mut model,
+            Box::new(PlaceSupportIsolator {
+                node: NodeId(0),
+                props: IsolatorProps::default(),
+            }),
+        );
+        assert!(find_support_isolator(&model, NodeId(0)).is_some());
+
+        undo.run(
+            &mut model,
+            Box::new(RemoveSupportIsolator { node: NodeId(0) }),
+        );
+        assert!(find_support_isolator(&model, NodeId(0)).is_none());
+        assert!(model.eq_ignoring_dofmap(&before));
         assert_eq!(model.nodes[0].restraint, Dof6Mask::FIXED);
     }
 

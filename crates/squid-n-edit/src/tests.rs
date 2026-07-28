@@ -139,6 +139,32 @@ fn test_set_node_support_spring_roundtrip() {
     assert_eq!(model.nodes[0].support_spring, Some(spring));
 }
 
+/// 負のばね剛性は物理的に無意味なため 0 にクランプされること。
+#[test]
+fn test_set_node_support_spring_clamps_negative_to_zero() {
+    let mut model = empty_model();
+    model.nodes.push(Node {
+        id: NodeId(0),
+        coord: [0.0, 0.0, 0.0],
+        restraint: Dof6Mask::FREE,
+        mass: None,
+        story: None,
+        support_spring: None,
+    });
+    let mut stack = UndoStack::new();
+    stack.run(
+        &mut model,
+        Box::new(SetNodeSupportSpring {
+            node: NodeId(0),
+            spring: Some([-1000.0, 500.0, -0.001, 0.0, -1.0, 1.0]),
+        }),
+    );
+    assert_eq!(
+        model.nodes[0].support_spring,
+        Some([0.0, 500.0, 0.0, 0.0, 0.0, 1.0])
+    );
+}
+
 #[test]
 fn test_set_node_support_spring_invalid_id_is_noop() {
     let mut model = empty_model();
@@ -2256,6 +2282,41 @@ fn test_add_isolator_creates_element_and_attr_roundtrip() {
     );
 }
 
+/// `AddIsolator`: `elem.id` が `model.elements.len()`（末尾の次）と一致しない場合は
+/// ID＝配列インデックスの不変条件を壊すため Noop になること。
+#[test]
+fn test_add_isolator_id_mismatch_is_noop() {
+    use squid_n_core::model::{IsolatorKind, IsolatorProps};
+    let mut model = two_member_model();
+    let before = model.clone();
+    let props = IsolatorProps {
+        kind: IsolatorKind::LeadRubber,
+        ..Default::default()
+    };
+    // 末尾の次（あるべき ID）ではなく、既存の 0 番を指定してしまったケース。
+    let elem = ElementData {
+        id: ElemId(0),
+        kind: ElementKind::Isolator,
+        nodes: smallvec![NodeId(0), NodeId(2)],
+        section: None,
+        material: None,
+        local_axis: LocalAxis {
+            ref_vector: [1.0, 0.0, 0.0],
+        },
+        end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+        force_regime: ForceRegime::Auto,
+        rigid_zone: Default::default(),
+        plastic_zone: None,
+        spring: None,
+    };
+    let mut stack = UndoStack::new();
+    stack.run(&mut model, Box::new(AddIsolator { elem, props }));
+    assert!(
+        model.eq_ignoring_dofmap(&before),
+        "elem.id が末尾でない AddIsolator は Noop のはず"
+    );
+}
+
 #[test]
 fn test_place_support_isolator_roundtrip() {
     use squid_n_core::model::{ElementKind, IsolatorKind, IsolatorProps};
@@ -2320,6 +2381,135 @@ fn test_place_support_isolator_roundtrip() {
     assert_eq!(model.nodes.len(), 2);
     assert_eq!(model.nodes[0].restraint, Dof6Mask::FREE);
     assert_eq!(model.elements.len(), 1);
+}
+
+/// 配置（`PlaceSupportIsolator`）→撤去（`RemoveSupportIsolator`）で、接地節点・
+/// 要素・特性が完全に消え、対象節点の拘束が FIXED（撤去仕様。配置前拘束は
+/// 記録しないため常に FIXED）へ戻り、配置前と `eq_ignoring_dofmap` で一致すること。
+#[test]
+fn test_remove_support_isolator_roundtrip() {
+    use squid_n_core::model::{ElementKind, IsolatorKind, IsolatorProps};
+    let mut model = empty_model();
+    model.nodes.push(Node {
+        id: NodeId(0),
+        coord: [1000.0, 2000.0, 0.0],
+        restraint: Dof6Mask::FIXED,
+        mass: None,
+        story: None,
+        support_spring: None,
+    });
+    let before = model.clone();
+
+    let props = IsolatorProps {
+        kind: IsolatorKind::LaminatedRubber,
+        k1: 1500.0,
+        k2: 150.0,
+        qd: 80_000.0,
+        kv: 3_000_000.0,
+        ..Default::default()
+    };
+    let mut stack = UndoStack::new();
+    stack.run(
+        &mut model,
+        Box::new(PlaceSupportIsolator {
+            node: NodeId(0),
+            props,
+        }),
+    );
+    let placed = model.clone();
+    assert_eq!(model.nodes.len(), 2);
+    assert_eq!(model.elements.len(), 1);
+
+    // 撤去: 接地節点・要素・特性が消え、対象節点の拘束は FIXED（撤去仕様）へ戻る。
+    stack.run(
+        &mut model,
+        Box::new(RemoveSupportIsolator { node: NodeId(0) }),
+    );
+    assert!(
+        model.eq_ignoring_dofmap(&before),
+        "撤去後は配置前と一致するはず（接地節点・要素・特性が完全に消えること）"
+    );
+    assert_eq!(model.nodes[0].restraint, Dof6Mask::FIXED);
+
+    // 撤去→undo で配置状態に戻ること（拘束も FREE に戻る＝配置直後の状態と一致）。
+    stack.undo(&mut model);
+    assert!(
+        model.eq_ignoring_dofmap(&placed),
+        "撤去の undo は配置直後の状態に完全復元するはず"
+    );
+    assert_eq!(model.nodes[0].restraint, Dof6Mask::FREE);
+    assert_eq!(model.elements[0].kind, ElementKind::Isolator);
+
+    // 撤去→undo→redo で再度撤去された状態に戻ること。
+    stack.redo(&mut model);
+    assert!(model.eq_ignoring_dofmap(&before));
+    assert_eq!(model.nodes[0].restraint, Dof6Mask::FIXED);
+}
+
+/// 通常の（支点ではない）免震要素・存在しない節点では `RemoveSupportIsolator` は
+/// Noop になること（`DeleteMember` を使うべきケースを誤って壊さない）。
+#[test]
+fn test_remove_support_isolator_noop_when_not_support_isolator() {
+    use squid_n_core::model::{
+        ElementData, ElementKind, EndCondition, ForceRegime, IsolatorProps, LocalAxis,
+    };
+    let mut model = empty_model();
+    model.nodes.push(Node {
+        id: NodeId(0),
+        coord: [0.0, 0.0, 0.0],
+        restraint: Dof6Mask::FREE,
+        mass: None,
+        story: None,
+        support_spring: None,
+    });
+    model.nodes.push(Node {
+        id: NodeId(1),
+        coord: [1000.0, 0.0, 0.0],
+        restraint: Dof6Mask::FREE,
+        mass: None,
+        story: None,
+        support_spring: None,
+    });
+    // 通常の（2つの構造節点間の）免震要素。零長ではないため支点免震要素の形を満たさない。
+    model.elements.push(ElementData {
+        id: ElemId(0),
+        kind: ElementKind::Isolator,
+        nodes: smallvec![NodeId(0), NodeId(1)],
+        section: None,
+        material: None,
+        local_axis: LocalAxis {
+            ref_vector: [1.0, 0.0, 0.0],
+        },
+        end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+        force_regime: ForceRegime::Auto,
+        rigid_zone: Default::default(),
+        plastic_zone: None,
+        spring: None,
+    });
+    model
+        .isolator_attrs
+        .push(squid_n_core::model::IsolatorAttr {
+            elem: ElemId(0),
+            props: IsolatorProps::default(),
+        });
+    let before = model.clone();
+
+    let mut stack = UndoStack::new();
+    stack.run(
+        &mut model,
+        Box::new(RemoveSupportIsolator { node: NodeId(0) }),
+    );
+    assert!(
+        model.eq_ignoring_dofmap(&before),
+        "通常の免震要素は Noop のはず"
+    );
+
+    // 存在しない節点も Noop。
+    stack.run(
+        &mut model,
+        Box::new(RemoveSupportIsolator { node: NodeId(99) }),
+    );
+    assert!(model.eq_ignoring_dofmap(&before));
 }
 
 #[test]

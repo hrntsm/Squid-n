@@ -58,6 +58,7 @@ impl EditCommand for SetNodeRestraint {
 /// `restraint` で固定されている自由度のばね値は解析側（ソルバー）で無視される
 /// （`Node::support_spring` の仕様）。本コマンドは restraint との整合チェックは
 /// 行わない（先に固定を解除してからばねを設定する、または逆でもよい）。
+/// 負のばね剛性は物理的に無意味なため 0 にクランプする。
 pub struct SetNodeSupportSpring {
     pub node: NodeId,
     pub spring: Option<[f64; 6]>,
@@ -70,7 +71,8 @@ impl EditCommand for SetNodeSupportSpring {
             return Box::new(Noop);
         }
         let old = model.nodes[idx].support_spring;
-        model.nodes[idx].support_spring = self.spring;
+        let clamped = self.spring.map(|s| s.map(|v| v.max(0.0)));
+        model.nodes[idx].support_spring = clamped;
         Box::new(SetNodeSupportSpring {
             node: self.node,
             spring: old,
@@ -417,6 +419,10 @@ impl EditCommand for AddDamper {
 /// 免震支承材要素の追加（各免震部材指針）。
 /// 要素（`ElementKind::Isolator`）と特性（`Model::isolator_attrs`）を原子的に追加する。
 /// 逆操作は部材削除（`DeleteMember` が側テーブル属性も退避・復元する）。
+///
+/// `elem.id` は `model.elements.len()`（＝末尾の次のインデックス）と一致していること
+/// （ID＝配列インデックスの不変条件。呼び出し側が `ElemId(model.elements.len())` で
+/// 生成する前提）。一致しない場合は ID の不変条件を壊すため Noop とする。
 pub struct AddIsolator {
     pub elem: squid_n_core::model::ElementData,
     pub props: squid_n_core::model::IsolatorProps,
@@ -424,6 +430,9 @@ pub struct AddIsolator {
 
 impl EditCommand for AddIsolator {
     fn apply(&self, model: &mut Model) -> Box<dyn EditCommand> {
+        if self.elem.id.index() != model.elements.len() {
+            return Box::new(Noop);
+        }
         let id = self.elem.id;
         model.elements.push(self.elem.clone());
         model
@@ -558,6 +567,100 @@ impl EditCommand for UndoPlaceSupportIsolator {
 
     fn label(&self) -> &str {
         "支点免震装置の設置の取り消し"
+    }
+}
+
+/// [`PlaceSupportIsolator`] で配置した支点免震要素の撤去（単体削除）。
+///
+/// [`Model::support_isolator_ends`] で対象節点 `node` に接続する支点免震要素
+/// （零長 `Isolator` 要素・他端が孤立した `restraint=FIXED` の接地節点）を特定し、
+/// その要素（＋免震特性）と接地節点を削除した上で、対象節点の `restraint` を
+/// `FIXED` へ戻す複合コマンド。対象が支点免震要素の形を満たさない場合は Noop
+/// （通常の〔支点ではない〕免震要素は [`DeleteMember`] を使うこと）。
+///
+/// **配置前の拘束は復元しない仕様**: `PlaceSupportIsolator` は設置前の `restraint`
+/// を記録していないため（対象節点の元の拘束を覚えていない）、本コマンドは
+/// 撤去後の拘束を常に `FIXED` に統一する。設置前がピン支点等だった場合でも
+/// `FIXED` に戻る点に注意（必要なら撤去後に境界条件パネルで再設定する）。
+///
+/// 逆操作（undo）は接地節点・要素を元の位置・ID・特性で完全に復元し、対象節点の
+/// 拘束も本コマンド実行直前の値（＝撤去前の値。通常は `PlaceSupportIsolator` が
+/// 解放した `FREE`）へ戻す。
+pub struct RemoveSupportIsolator {
+    pub node: NodeId,
+}
+
+impl EditCommand for RemoveSupportIsolator {
+    fn apply(&self, model: &mut Model) -> Box<dyn EditCommand> {
+        // 対象節点が「上部節点」側になっている支点免震要素を探す
+        // （接地節点＝FIXED側を選んだ場合はヒットしない。support_isolator_ends 参照）。
+        let found = model.elements.iter().find_map(|e| {
+            model
+                .support_isolator_ends(e.id)
+                .filter(|(upper, _)| *upper == self.node)
+                .map(|(_, ground)| (e.id, ground))
+        });
+        let Some((elem_id, ground)) = found else {
+            return Box::new(Noop);
+        };
+        let idx = self.node.index();
+        if idx >= model.nodes.len() || model.nodes[idx].id != self.node {
+            return Box::new(Noop);
+        }
+        let old_restraint = model.nodes[idx].restraint;
+
+        // 要素（Isolator＋属性）を先に削除してから接地節点を削除する
+        // （node_in_use は要素が参照している間、節点の削除を拒否するため。
+        // PlaceSupportIsolator の逆操作 UndoPlaceSupportIsolator と同じ順序）。
+        let undo_member = DeleteMember { id: elem_id }.apply(model);
+        let undo_node = DeleteNode { id: ground }.apply(model);
+
+        // 対象節点は撤去後、免震装置を介さない直接支点になる。
+        let idx = self.node.index();
+        if idx < model.nodes.len() && model.nodes[idx].id == self.node {
+            model.nodes[idx].restraint = squid_n_core::dof::Dof6Mask::FIXED;
+        }
+
+        Box::new(UndoRemoveSupportIsolator {
+            node: self.node,
+            old_restraint,
+            undo_node,
+            undo_member,
+        })
+    }
+
+    fn label(&self) -> &str {
+        "支点免震装置の撤去"
+    }
+}
+
+/// [`RemoveSupportIsolator`] の逆操作。
+struct UndoRemoveSupportIsolator {
+    node: NodeId,
+    old_restraint: squid_n_core::dof::Dof6Mask,
+    /// 接地節点の再挿入（[`DeleteNode`] が返した `InsertNode`）。
+    undo_node: Box<dyn EditCommand>,
+    /// 免震要素（＋属性）の再挿入（[`DeleteMember`] が返した `InsertMember`）。
+    undo_member: Box<dyn EditCommand>,
+}
+
+impl EditCommand for UndoRemoveSupportIsolator {
+    fn apply(&self, model: &mut Model) -> Box<dyn EditCommand> {
+        // 復元は削除と逆順: 先に接地節点を再挿入し、次に免震要素を再挿入する
+        // （PlaceSupportIsolator と同じ生成順）。再挿入は元の位置・ID を復元するため、
+        // 再挿入後は本コマンド実行前と同一の状態に戻る＝RemoveSupportIsolator を
+        // 再実行すれば同じ結果になる（redo はそれをそのまま使う）。
+        self.undo_node.apply(model);
+        self.undo_member.apply(model);
+        let idx = self.node.index();
+        if idx < model.nodes.len() && model.nodes[idx].id == self.node {
+            model.nodes[idx].restraint = self.old_restraint;
+        }
+        Box::new(RemoveSupportIsolator { node: self.node })
+    }
+
+    fn label(&self) -> &str {
+        "支点免震装置の撤去の取り消し"
     }
 }
 

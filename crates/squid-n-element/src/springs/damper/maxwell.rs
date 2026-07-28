@@ -58,6 +58,13 @@ pub struct MaxwellDamperElement {
     trial_elong: f64,
     /// 確定連結点変位 Ud [mm]。
     committed_ud: f64,
+    /// commit 直前（`committed_ud` 更新前）に評価した軸力 N [N]（引張正）の
+    /// キャッシュ。`state_member_forces` が commit 直後（Newton 反復に入る前、
+    /// `trial_elong == committed_elong`）に呼ばれた場合はこの値を返す
+    /// （中-2: commit 後に `axial_force` を再評価すると、`solve_ud` が
+    /// 既に更新済みの `committed_ud` を初期値に使うため、後退 Euler の
+    /// ダッシュポットが追加で緩和し軸力が過小評価される）。
+    committed_force: f64,
 }
 
 impl MaxwellDamperElement {
@@ -88,6 +95,7 @@ impl MaxwellDamperElement {
             committed_elong: 0.0,
             trial_elong: 0.0,
             committed_ud: 0.0,
+            committed_force: 0.0,
         }
     }
 
@@ -229,6 +237,10 @@ impl ElementBehavior for MaxwellDamperElement {
         let delong = du_local[6] - du_local[0];
         if commit {
             let elong = self.committed_elong + delong;
+            // committed_ud を更新する前（＝現在の後退 Euler 履歴に基づく）軸力を
+            // キャッシュする（中-2: 更新後に axial_force を再評価すると
+            // ダッシュポットが余分に緩和し過小評価になるため）。
+            self.committed_force = self.axial_force(elong);
             self.committed_ud = self.solve_ud(elong);
             self.committed_elong = elong;
             self.trial_elong = elong;
@@ -249,7 +261,19 @@ impl ElementBehavior for MaxwellDamperElement {
     ) -> Option<crate::beam::MemberForces> {
         // 現在状態の軸力（引張正）を両評価点一定で返す。時刻歴・増分解析の
         // 部材内力記録（N-δ 履歴ループ表示など）に用いる。
-        let n = self.axial_force(self.trial_elong);
+        //
+        // commit 直後（trial_elong == committed_elong）は、`commit_state`/
+        // `update_state(commit=true)` が更新前の履歴で評価しキャッシュした
+        // `committed_force` を返す（中-2）。`axial_force(trial_elong)` を
+        // 再評価すると、`solve_ud` の初期値 `committed_ud` が既にこの elong に
+        // 対する解へ更新済みのため V≈0 となり、ダッシュポット力が過小評価される。
+        // Newton 反復中（trial_elong != committed_elong）は従来どおり
+        // 現在の試行伸びで再評価する。
+        let n = if self.trial_elong == self.committed_elong {
+            self.committed_force
+        } else {
+            self.axial_force(self.trial_elong)
+        };
         let v = [n, 0.0, 0.0, 0.0, 0.0, 0.0];
         Some(crate::beam::MemberForces {
             at: vec![(0.0, v), (1.0, v)],
@@ -257,6 +281,9 @@ impl ElementBehavior for MaxwellDamperElement {
     }
 
     fn commit_state(&mut self) {
+        // committed_ud を更新する前（＝現在の後退 Euler 履歴に基づく）軸力を
+        // キャッシュする（中-2、`update_state(commit=true)` と同じ理由）。
+        self.committed_force = self.axial_force(self.trial_elong);
         self.committed_ud = self.solve_ud(self.trial_elong);
         self.committed_elong = self.trial_elong;
     }
@@ -270,15 +297,52 @@ impl ElementBehavior for MaxwellDamperElement {
     }
 
     fn snapshot_state(&self) -> Box<dyn Any> {
-        Box::new((self.committed_elong, self.committed_ud, self.trial_elong))
+        Box::new((
+            self.committed_elong,
+            self.committed_ud,
+            self.trial_elong,
+            self.committed_force,
+        ))
     }
 
     fn restore_state(&mut self, state: &dyn Any) {
-        if let Some(&(ce, cud, te)) = state.downcast_ref::<(f64, f64, f64)>() {
+        if let Some(&(ce, cud, te, cf)) = state.downcast_ref::<(f64, f64, f64, f64)>() {
             self.committed_elong = ce;
             self.committed_ud = cud;
             self.trial_elong = te;
+            self.committed_force = cf;
         }
+    }
+
+    fn serialize_checkpoint(&self) -> Vec<u8> {
+        // 後退 Euler の履歴状態（committed_elong・committed_ud）と、
+        // commit 直後の軸力キャッシュ（committed_force、中-2）をチェックポイントへ
+        // 含める。これらを欠くとレジューム時にダッシュポットの緩和状態が失われ、
+        // 直後の軸力が不整合になる（`springs/spring.rs` と同じ考え方）。
+        bincode::serialize(&(
+            self.committed_elong,
+            self.committed_ud,
+            self.trial_elong,
+            self.committed_force,
+        ))
+        .expect("serialize checkpoint")
+    }
+
+    fn deserialize_checkpoint(
+        &mut self,
+        data: &[u8],
+    ) -> Result<(), crate::behavior::CheckpointError> {
+        // 旧チェックポイント（本状態未収録・空バイト列）は「状態なし」として許容する。
+        if data.is_empty() {
+            return Ok(());
+        }
+        let (ce, cud, te, cf): (f64, f64, f64, f64) = bincode::deserialize(data)
+            .map_err(|e| crate::behavior::CheckpointError::Decode(e.to_string()))?;
+        self.committed_elong = ce;
+        self.committed_ud = cud;
+        self.trial_elong = te;
+        self.committed_force = cf;
+        Ok(())
     }
 }
 
@@ -299,6 +363,7 @@ mod tests {
             committed_elong: 0.0,
             trial_elong: 0.0,
             committed_ud: 0.0,
+            committed_force: 0.0,
         }
     }
 
@@ -330,6 +395,56 @@ mod tests {
         for (_, v) in &mf.at {
             assert!((v[0] - n).abs() < 1e-12);
             assert_eq!(v[5], 0.0);
+        }
+    }
+
+    /// 中-2: commit 直後（`trial_elong == committed_elong`）の `state_member_forces`
+    /// が「commit 直前（committed_ud 更新前）の `axial_force`」と一致すること。
+    /// 過渡状態（ダッシュポットが定常に達していない各ステップ）では、
+    /// commit 後に素朴に `axial_force` を再評価した値（`solve_ud` の初期値
+    /// `committed_ud` が既に今回の解へ更新済み）とは明確に異なることも確認する。
+    #[test]
+    fn test_maxwell_state_member_forces_after_commit_matches_pre_commit_axial_force() {
+        let mut d = damper(100.0, 1000.0, 1.0, 0.01);
+        let mut du = LocalVec {
+            data: SmallVec::from_elem(0.0, 12),
+        };
+        du.data[6] = 0.3; // 各ステップ 0.3mm ずつ伸ばす（過渡状態を維持）。
+        let model = Model::default();
+        let ctx = Ctx { model: &model };
+
+        for _ in 0..4 {
+            let pre = d.clone(); // commit 直前（committed_ud 更新前）の状態。
+            d.update_state(&du, true, &ctx);
+            let elong = d.committed_elong;
+            // 「commit 直前の axial_force」＝更新前の committed_ud を初期値に
+            // 評価した軸力（committed_force はこれをキャッシュしているはず）。
+            let expected = pre.axial_force(elong);
+            assert!(
+                (d.committed_force - expected).abs() < 1e-9 * expected.abs().max(1.0),
+                "committed_force should match pre-commit axial_force: {} vs {}",
+                d.committed_force,
+                expected
+            );
+
+            // state_member_forces（commit 直後、trial_elong==committed_elong）は
+            // キャッシュ値 committed_force を返す。
+            let mf = d
+                .state_member_forces(&ElemState::default(), &ctx)
+                .expect("マクスウェルダンパーは状態から内力を返す");
+            assert!((mf.at[0].1[0] - d.committed_force).abs() < 1e-12);
+
+            // 修正前の（バグのある）計算方法＝ commit 後に committed_ud 更新済みの
+            // 状態で axial_force を再評価した値とは、（この過渡状態では）明確に
+            // 異なる値になる（浮動小数点誤差では説明できない差）。
+            let naive_post_commit = d.axial_force(elong);
+            assert!(
+                (d.committed_force - naive_post_commit).abs() > 1e-6 * expected.abs().max(1.0),
+                "過渡状態では commit 直後の素朴な再評価はキャッシュ値と異なるはず: \
+                 cached={}, naive={}",
+                d.committed_force,
+                naive_post_commit
+            );
         }
     }
 
