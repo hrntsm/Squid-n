@@ -1,5 +1,9 @@
 # Squid-n
 
+<div align="center">
+<img src="./crates/squid-n-app/assets/squid.png" width="25%">
+</div>
+
 日本の建築構造計算一貫プログラム。
 Rust で実装。
 
