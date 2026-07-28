@@ -41,11 +41,21 @@ fn rc_section() -> Section {
                 dia: 10.0,
                 pitch: 200.0,
                 legs: 2,
-                grade: None,
+                grade: Some("SD295A".into()),
             },
+            main_grade: Some("SD345".into()),
         },
     }
     .to_section(SectionId(0), "G1".into())
+}
+
+/// `rc_section` の主筋材質を取り除いた断面（材質未設定の入力不備を模擬）。
+fn rc_section_without_main_grade() -> Section {
+    let mut sec = rc_section();
+    if let Some(SectionShape::RcRect { rebar, .. }) = sec.shape.as_mut() {
+        rebar.main_grade = None;
+    }
+    sec
 }
 
 /// 1 部材（2 節点の梁）だけのモデル。断面形状・材料は引数で差し替える。
@@ -99,6 +109,31 @@ fn test_no_issue_for_rc_member_with_fc() {
     mat.fc = Some(24.0);
     let model = beam_model(rc_section(), mat);
     assert!(nonlinear_input_issues(&model).is_empty());
+}
+
+/// 主筋の材質が未設定でも、部材材料に fy があれば解決できるため不備ではない。
+#[test]
+fn test_no_issue_when_main_grade_unset_but_material_has_fy() {
+    let mut mat = steel_material();
+    mat.name = "FC24".into();
+    mat.fc = Some(24.0);
+    mat.fy = Some(345.0);
+    let model = beam_model(rc_section_without_main_grade(), mat);
+    assert!(nonlinear_input_issues(&model).is_empty());
+}
+
+/// 主筋の材質も材料の fy も無い RC 部材はエラーとする。
+/// 既定 345 N/mm² で埋めると SD295 の部材で曲げ降伏耐力を過大評価する（危険側）。
+#[test]
+fn test_issue_when_main_rebar_grade_unset() {
+    let mut mat = steel_material();
+    mat.name = "FC24".into();
+    mat.fy = None;
+    mat.fc = Some(24.0);
+    let model = beam_model(rc_section_without_main_grade(), mat);
+    let issues = nonlinear_input_issues(&model);
+    assert_eq!(issues.len(), 1, "{:?}", issues);
+    assert!(issues[0].contains("主筋の材質"), "{}", issues[0]);
 }
 
 /// RC 断面なのに Fc が未設定の部材はエラーとする。

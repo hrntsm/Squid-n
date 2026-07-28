@@ -87,21 +87,45 @@ fn member_strength_issue(data: &ElementData, model: &Model) -> Option<String> {
         .and_then(|s| s.shape.as_ref())
         .is_some_and(|s| s.is_concrete_like());
     if is_concrete {
-        return match mat.fc {
-            None => Some(format!(
-                "部材 ID {} はコンクリート系断面ですが、材料「{}」にコンクリート強度 Fc が\
-                 設定されていません。材料タブで Fc を設定してください。\
-                 非線形解析では Fc から曲げひび割れ・曲げ降伏・せん断終局の各耐力を算定します。",
-                data.id.0, mat.name
-            )),
-            Some(fc) if fc <= 0.0 => Some(format!(
-                "部材 ID {} の材料「{}」のコンクリート強度 Fc が {} で 0 以下です。\
-                 材料タブで Fc を設定してください。\
-                 非線形解析では Fc から曲げひび割れ・曲げ降伏・せん断終局の各耐力を算定します。",
-                data.id.0, mat.name, fc
-            )),
-            Some(_) => None,
-        };
+        match mat.fc {
+            None => {
+                return Some(format!(
+                    "部材 ID {} はコンクリート系断面ですが、材料「{}」にコンクリート強度 Fc が\
+                     設定されていません。材料タブで Fc を設定してください。\
+                     非線形解析では Fc から曲げひび割れ・曲げ降伏・せん断終局の各耐力を算定します。",
+                    data.id.0, mat.name
+                ));
+            }
+            Some(fc) if fc <= 0.0 => {
+                return Some(format!(
+                    "部材 ID {} の材料「{}」のコンクリート強度 Fc が {} で 0 以下です。\
+                     材料タブで Fc を設定してください。\
+                     非線形解析では Fc から曲げひび割れ・曲げ降伏・せん断終局の各耐力を算定します。",
+                    data.id.0, mat.name, fc
+                ));
+            }
+            Some(_) => {}
+        }
+        // 配筋を持つ断面（RC 矩形・RC 円形・SRC 矩形）は主筋の降伏強度 σy が要る。
+        // 未設定のまま既定 345 N/mm²（SD345 相当）で埋めると、SD295 の部材で曲げ降伏
+        // 耐力を約 17% 過大評価する（危険側）。
+        let rebar = sec.and_then(|s| s.shape.as_ref()).and_then(|s| s.rebar());
+        if let Some(rebar) = rebar {
+            if squid_n_core::material_grade::rebar_yield_strength(
+                rebar.main_grade.as_deref(),
+                Some(mat),
+            )
+            .is_none()
+            {
+                return Some(format!(
+                    "部材 ID {} の断面に主筋の材質が設定されていません。\
+                     断面タブで主筋の材質（SD295A・SD345 等）を設定してください。\
+                     非線形解析では主筋の降伏強度 σy から曲げ降伏耐力を算定します。",
+                    data.id.0
+                ));
+            }
+        }
+        return None;
     }
     if mat.fy.is_none() && mat.fc.is_none() {
         return Some(format!(

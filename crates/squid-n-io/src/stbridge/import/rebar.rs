@@ -13,6 +13,7 @@ pub(super) fn default_rebar() -> RcRebar {
         layers: 0,
     };
     RcRebar {
+        main_grade: None,
         main_x: zero.clone(),
         main_y: zero,
         cover: 0.0,
@@ -166,5 +167,12 @@ pub(super) fn parse_rebar(a: &HashMap<String, String>) -> RcRebar {
                 .or_else(|| a.get("strength_main_band"))
                 .cloned(),
         },
+        // 主筋の材質（`strength_main`。梁は上端/下端別に持つ実装もあるため代表 1 つを拾う）。
+        main_grade: a
+            .get("strength_main")
+            .or_else(|| a.get("strength_main_X"))
+            .or_else(|| a.get("strength_main_top"))
+            .or_else(|| a.get("strength_bar_main"))
+            .cloned(),
     }
 }

@@ -252,8 +252,9 @@ fn test_pushover_stops_when_concrete_strength_unset() {
                 dia: 10.0,
                 pitch: 100.0,
                 legs: 2,
-                grade: None,
+                grade: Some("SD295A".into()),
             },
+            main_grade: Some("SD345".into()),
         },
     });
     model.materials[0].fy = None;
@@ -1146,6 +1147,7 @@ fn test_compute_shear_yield_qy_zero_as_is_infinite() {
 #[test]
 fn test_compute_shear_yield_qy_rc_rect_matches_arakawa_handcalc() {
     let rebar = RcRebar {
+        main_grade: None,
         main_x: BarSet {
             count: 6,
             dia: 25.0,
@@ -1229,6 +1231,90 @@ fn test_compute_shear_yield_qy_rc_rect_matches_arakawa_handcalc() {
     );
     // 断面が非正方形（b≠d、主筋も非対称）なので y・z の Qy は異なるはず。
     assert!((qy_y - qy_z).abs() > 1.0, "qy_y={qy_y} qy_z={qy_z}");
+}
+
+/// 断面（配筋）に指定した材質が耐力へ反映されること。
+///
+/// - せん断補強筋の材質は荒川式の σwy を通じて Qy を変える（高強度品ほど大きい）。
+/// - 主筋の材質は曲げ降伏 My = 0.9·at·σy·d を通じて曲げヒンジ閾値を変える
+///   （SD295A は既定 345 相当より小さい）。荒川式のせん断終局強度は主筋量 pt に
+///   依存し σy には依らないため、主筋材質は Qy を変えない。
+#[test]
+fn test_section_rebar_grades_are_reflected_in_capacities() {
+    let make_section = |main_grade: Option<&str>, shear_grade: Option<&str>| {
+        let rebar = RcRebar {
+            main_grade: main_grade.map(str::to_string),
+            main_x: BarSet {
+                count: 6,
+                dia: 25.0,
+                layers: 1,
+            },
+            main_y: BarSet {
+                count: 4,
+                dia: 19.0,
+                layers: 1,
+            },
+            cover: 40.0,
+            shear: ShearBar {
+                dia: 10.0,
+                pitch: 100.0,
+                legs: 2,
+                grade: shear_grade.map(str::to_string),
+            },
+        };
+        SectionShape::RcRect {
+            b: 400.0,
+            d: 600.0,
+            rebar,
+        }
+        .to_section(SectionId(0), "RC-400x600".into())
+    };
+    // RC 材料（fy は持たない）。fy を持つ材料は鋼系として扱われ荒川式へ入らない。
+    let mat = Material {
+        strength_factor: None,
+        concrete_class: Default::default(),
+        id: MaterialId(0),
+        name: "Fc24".to_string(),
+        young: 23000.0,
+        poisson: 0.2,
+        density: 0.0,
+        shear: None,
+        fc: Some(24.0),
+        fy: None,
+    };
+
+    // --- せん断: σwy が Qy に効く ---
+    let qy = |sec: &squid_n_core::model::Section| {
+        compute_shear_yield_qy(sec.as_z, Some(&mat), Some(sec), ShearDir::Y, 3000.0)
+    };
+    let sec_normal = make_section(Some("SD345"), Some("SD295A"));
+    let sec_high = make_section(Some("SD345"), Some("KH785"));
+    assert!(
+        qy(&sec_high) > qy(&sec_normal),
+        "高強度せん断補強筋は Qy を上げるはず: {} vs {}",
+        qy(&sec_high),
+        qy(&sec_normal)
+    );
+
+    // --- 曲げ: 主筋 σy が My に効く ---
+    let my_of = |sec: squid_n_core::model::Section| {
+        let mut model = single_column_model(235.0, 80_000.0);
+        model.sections[0] = sec;
+        model.materials[0] = mat.clone();
+        compute_hinge_thresholds(&model)[0].my
+    };
+    let my_sd345 = my_of(make_section(Some("SD345"), Some("SD295A")));
+    let my_sd295 = my_of(make_section(Some("SD295A"), Some("SD295A")));
+    assert!(
+        my_sd295 < my_sd345,
+        "SD295A の主筋は My を下げるはず: {my_sd295} vs {my_sd345}"
+    );
+    // 比は σy の比（295/345）に一致する（My = 0.9·at·σy·d の σy 比例）。
+    let ratio = my_sd295 / my_sd345;
+    assert!(
+        (ratio - 295.0 / 345.0).abs() < 1e-9,
+        "My は σy に比例するはず: ratio={ratio}"
+    );
 }
 
 /// as_y/as_z を明示的に与えた片持ち柱モデル（`single_column_model` のせん断有効
@@ -1358,6 +1444,7 @@ fn test_effective_clear_span_falls_back_when_non_positive() {
 /// 節点間距離3000mm、`rigid_zone` は呼び出し側で差し替える。
 fn rc_column_model_with_rigid_zone(rigid_zone: RigidZone) -> (Model, RcRebar, f64, f64) {
     let rebar = RcRebar {
+        main_grade: None,
         main_x: BarSet {
             count: 6,
             dia: 25.0,
@@ -1816,6 +1903,7 @@ fn test_compute_hinge_thresholds_direct_strength_factor_overrides_name_lookup() 
 /// RC 矩形断面 + 配筋情報を持つ片持ち柱モデル（fy 未設定＝既定345）を作る。
 fn rc_hinge_model() -> (Model, RcRebar, f64, f64) {
     let rebar = RcRebar {
+        main_grade: None,
         main_x: BarSet {
             count: 6,
             dia: 25.0,

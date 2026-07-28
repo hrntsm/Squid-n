@@ -57,6 +57,7 @@ pub(crate) fn src_rect_shape(
         b,
         d,
         rebar: RcRebar {
+            main_grade: None,
             main_x: BarSet {
                 count: main_count,
                 dia: main_dia,

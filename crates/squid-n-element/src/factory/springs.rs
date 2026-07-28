@@ -59,9 +59,15 @@ fn flexural_yield_moment(data: &ElementData, model: &Model, basis: StrengthBasis
     let fy = mat.and_then(|m| m.fy);
     match sec.and_then(|s| s.shape.as_ref()) {
         Some(SectionShape::RcRect { rebar, d, .. }) | Some(SectionShape::RcCircle { rebar, d }) => {
-            // RC 主筋: 保有水平耐力計算では σy に主筋の材料強度係数を乗じる
+            // RC 主筋: σy は断面（配筋）の主筋材質 → 部材材料の fy の順で解決する。
+            // 保有水平耐力計算では σy に主筋の材料強度係数を乗じる
             // （せん断補強筋は対象外。本分岐は曲げ主筋のみを扱う）。
-            let sy = fy.unwrap_or(345.0) * basis.rebar_factor(mat);
+            let sy = squid_n_core::material_grade::rebar_yield_strength(
+                rebar.main_grade.as_deref(),
+                mat,
+            )
+            .unwrap_or(345.0)
+                * basis.rebar_factor(mat);
             // Fc 未設定は [`super::ensure_nonlinear_input`] が解析前に停止するため、
             // 非線形解析ではこのフォールバック（0）に到達しない。
             let fc = mat.and_then(|m| m.fc).unwrap_or(0.0);

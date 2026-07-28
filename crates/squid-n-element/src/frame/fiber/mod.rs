@@ -91,7 +91,8 @@ pub(crate) fn build_gauss_fibers(
 /// 各ファイバの材料領域区分（[`FiberRegion`]）から非線形材料を割り当てる:
 /// - コンクリート領域: NewRC（fc≤60）／放物線モデル。fc 未設定の設定不備は
 ///   弾性フォールバック（降伏しないバイリニア）で防御する。
-/// - 主筋: バイリニア鋼材（E=205000、fy 既定 SD345=345、`rebar_factor` 割増）。
+/// - 主筋: バイリニア鋼材（E=205000、σy は断面の主筋材質 → 部材材料の fy の順で
+///   解決、`rebar_factor` 割増）。
 /// - 鋼材領域（形鋼・鋼管・内蔵鉄骨）: バイリニア鋼材（部材材料の E・fy、
 ///   `steel_factor` 割増。fy 未設定は降伏しない弾性＝従来の既定と同じ）。
 ///
@@ -109,14 +110,20 @@ fn build_shape_fibers(
         max_dimension, plastic_fibers_at, AnnulusRes, FiberRegion, StrengthParams,
     };
 
-    // 強度パラメータは配置生成では領域区分の決定に使われないため名目値でよいが、
-    // 実値を渡しておく（将来 plastic_fibers_at が配置へ強度を反映しても破綻しない）。
-    // 既定値（Fc=24 等）へのフォールバックは、非線形解析では
+    // 主筋の降伏点は**断面（配筋）の主筋材質**から解決し、無ければ部材材料の fy を
+    // 用いる（`rebar_yield_strength`）。
+    // 既定値（σy=345・Fc=24 等）へのフォールバックは、非線形解析では
     // [`crate::factory::ensure_nonlinear_input`] が材料強度未入力のモデルを
     // 事前に停止するため到達しない（未入力を既定値で無音に埋めない規約）。
+    let rebar_fy = shape
+        .rebar()
+        .and_then(|r| r.main_grade.as_deref())
+        .and_then(squid_n_core::material_grade::rebar_grade_f_value)
+        .or(fy)
+        .unwrap_or(345.0);
     let strength = StrengthParams {
         steel_fy: fy.unwrap_or(235.0) * steel_factor,
-        rebar_fy: fy.unwrap_or(345.0) * rebar_factor,
+        rebar_fy: rebar_fy * rebar_factor,
         concrete_fc: fc.unwrap_or(24.0),
         steel_e: e,
     };
@@ -136,11 +143,8 @@ fn build_shape_fibers(
     };
     let steel: Box<dyn UniaxialMaterial> =
         Box::new(Bilinear::new(e, fy.unwrap_or(1e20) * steel_factor, 0.01));
-    let rebar: Box<dyn UniaxialMaterial> = Box::new(Bilinear::new(
-        205000.0,
-        fy.unwrap_or(345.0) * rebar_factor,
-        0.01,
-    ));
+    let rebar: Box<dyn UniaxialMaterial> =
+        Box::new(Bilinear::new(205000.0, rebar_fy * rebar_factor, 0.01));
 
     let mut fibers = Vec::with_capacity(placed.len());
     let mut mats: Vec<Box<dyn UniaxialMaterial>> = Vec::with_capacity(placed.len());

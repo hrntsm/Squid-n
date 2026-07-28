@@ -134,6 +134,7 @@ fn rc_column_model() -> Model {
     use squid_n_core::section_shape::{BarSet, RcRebar, SectionShape, ShearBar};
 
     let rebar = RcRebar {
+        main_grade: None,
         main_x: BarSet {
             count: 8,
             dia: 25.0,

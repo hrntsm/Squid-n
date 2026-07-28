@@ -1372,9 +1372,10 @@ fn member_kind_of(
 ///   仮定し、`main_x`（せい方向主筋）の総断面積の半分とする（非対称配筋の場合は別途検討）。
 /// - `d_eff` = d - かぶり - 主筋径/2。
 /// - `pw` = せん断補強筋 1 組の断面積(π/4・dia²)×組数 / (b・ピッチ)。ピッチが 0 以下なら 0。
-/// - `sigma_y`: 材料の `fy` があればそれを使用し、なければ 345 N/mm²（SD345 相当、要・原典照合）。
-/// - `sigma_wy`: 295 N/mm² 固定（SD295 相当、要・原典照合。せん断補強筋の材質はモデル上
-///   部材材料と区別されないため代表値を用いる）。
+/// - `sigma_y`: 断面（配筋）の主筋材質 → 部材材料の `fy` の順で解決し、どちらも
+///   未設定なら 345 N/mm²（SD345 相当、要・原典照合）。
+/// - `sigma_wy`: 断面（配筋）のせん断補強筋材質から解決し、未設定は 295 N/mm²
+///   （SD295 相当＝規格上の最小グレードで、耐力を過小評価する安全側）。
 /// - `fc`: 材料の `fc`（コンクリート設計基準強度）が未設定の場合は `None` を返し、
 ///   ランク算定の対象外（呼び出し側で選択値へフォールバック）とする。
 fn rc_capacity_input_from_rect(
@@ -1403,10 +1404,17 @@ fn rc_capacity_input_from_rect(
         d,
         at,
         d_eff,
-        sigma_y: mat.fy.unwrap_or(345.0), // SD345 相当、要・原典照合
+        sigma_y: squid_n_core::material_grade::rebar_yield_strength(
+            rebar.main_grade.as_deref(),
+            Some(mat),
+        )
+        .unwrap_or(345.0), // SD345 相当、要・原典照合
         fc,
         pw,
-        sigma_wy: 295.0, // SD295 相当、要・原典照合
+        sigma_wy: squid_n_core::material_grade::shear_rebar_yield_strength(
+            rebar.shear.grade.as_deref(),
+        )
+        .unwrap_or(squid_n_core::material_grade::SHEAR_REBAR_DEFAULT_FY),
         clear_span,
         // 軸方向圧縮応力度は呼び出し側(compute_holding_capacity)が既知の場合に上書きする。
         // ここでは既定値 0(軸力なし・安全側)とする。

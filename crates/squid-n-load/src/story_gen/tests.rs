@@ -2023,6 +2023,7 @@ fn rc_rect_shape() -> squid_n_core::section_shape::SectionShape {
         b: 600.0,
         d: 600.0,
         rebar: RcRebar {
+            main_grade: None,
             main_x: bars.clone(),
             main_y: bars,
             cover: 40.0,

@@ -1466,6 +1466,7 @@ mod tests {
             b: 600.0,
             d: 600.0,
             rebar: squid_n_core::section_shape::RcRebar {
+                main_grade: None,
                 main_x: squid_n_core::section_shape::BarSet {
                     count: 8,
                     dia: 22.0,
@@ -1907,6 +1908,7 @@ mod capacity_issue_tests {
                 b: 600.0,
                 d: 600.0,
                 rebar: RcRebar {
+                    main_grade: None,
                     main_x: BarSet {
                         count: 8,
                         dia: 22.0,
@@ -1932,6 +1934,7 @@ mod capacity_issue_tests {
                 b: 600.0,
                 d: 600.0,
                 rebar: RcRebar {
+                    main_grade: None,
                     main_x: BarSet {
                         count: 0,
                         dia: 0.0,

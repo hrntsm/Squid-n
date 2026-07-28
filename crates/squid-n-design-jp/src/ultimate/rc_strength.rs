@@ -197,8 +197,15 @@ fn resolve_hoop_ultimate(
         ultimate_hoop_nu0, ultimate_hoop_pw_cap, ultimate_hoop_sigma_wy,
     };
     let grade = rebar.shear.grade.as_deref();
+    // 高強度品は製品表（Fc 依存の頭打ち込み）、普通強度（SD*/SR*）は規格の基準強度、
+    // 材質未設定のみ既定値へ落とす。
     let sigma_wy = grade
         .and_then(|g| ultimate_hoop_sigma_wy(g, fc))
+        .or_else(|| {
+            grade
+                .filter(|g| !crate::material_strength::is_high_strength_shear_grade(g))
+                .and_then(squid_n_core::material_grade::rebar_grade_f_value)
+        })
         .unwrap_or(opts.sigma_wy);
     let nu0_override = grade.and_then(|g| ultimate_hoop_nu0(g, fc));
     let pw_capped = match grade.and_then(|g| ultimate_hoop_pw_cap(g, fc, is_column)) {

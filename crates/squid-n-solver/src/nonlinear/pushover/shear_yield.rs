@@ -90,8 +90,8 @@ pub(crate) enum ShearDir {
 /// 動的に上書きする（精緻化2。旧実装は σ0=0 固定の安全側簡略化だった）。
 ///
 /// 変換規則は `squid-n-app::app::rc_capacity_input_from_rect` と同一の規約
-/// （上下対称配筋を仮定・at=引張側総断面積の半分、σy=fy or 345、σwy=295 固定、
-/// せん断補強筋は legs 組数を考慮）に合わせる:
+/// （上下対称配筋を仮定・at=引張側総断面積の半分、σy は主筋材質 or 材料 fy、
+/// σwy はせん断補強筋材質 or SD295 相当、せん断補強筋は legs 組数を考慮）に合わせる:
 /// - 強軸（局所 y 方向せん断、`dir=Y`）: b=幅, d=せい、引張鉄筋は `rebar.main_x`。
 /// - 弱軸（局所 z 方向せん断、`dir=Z`）: b と d を入れ替え、引張鉄筋は `rebar.main_y`。
 ///
@@ -123,14 +123,25 @@ fn rc_rect_capacity_input(
         d,
         at,
         d_eff,
-        // SD345 相当、要・原典照合。本モジュールは保有水平耐力計算専用のため、
-        // 主筋の材料強度割増（直接入力係数優先、無ければ一律1.1）を無条件で乗じる。
-        sigma_y: mat.fy.unwrap_or(345.0) * material_strength_factor_rebar(mat),
+        // σy は断面（配筋）の主筋材質 → 部材材料の fy の順で解決する。どちらも
+        // 未設定のモデルは `ensure_nonlinear_input` が解析前に停止するため、既定値
+        // 345 へのフォールバックには到達しない。本モジュールは保有水平耐力計算専用の
+        // ため、主筋の材料強度割増（直接入力係数優先、無ければ一律1.1）を無条件で乗じる。
+        sigma_y: squid_n_core::material_grade::rebar_yield_strength(
+            rebar.main_grade.as_deref(),
+            Some(mat),
+        )
+        .unwrap_or(345.0)
+            * material_strength_factor_rebar(mat),
         fc,
         pw,
-        // せん断補強筋は材料強度割増の対象外（規定上、主筋のみが割増対象）のため、
-        // sigma_wy は割増を適用せず SD295 相当のまま据え置く。
-        sigma_wy: 295.0, // SD295 相当、要・原典照合
+        // σwy は断面（配筋）のせん断補強筋材質から解決し、未設定は SD295 相当
+        // （規格上の最小グレード＝耐力を過小評価する安全側）を既定とする。
+        // せん断補強筋は材料強度割増の対象外（規定上、主筋のみが割増対象）。
+        sigma_wy: squid_n_core::material_grade::shear_rebar_yield_strength(
+            rebar.shear.grade.as_deref(),
+        )
+        .unwrap_or(squid_n_core::material_grade::SHEAR_REBAR_DEFAULT_FY),
         clear_span,
         sigma_0: 0.0, // プレースホルダ。DirThreshold::qy が軸力から都度上書きする。
     })

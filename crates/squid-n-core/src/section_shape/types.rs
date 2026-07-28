@@ -34,13 +34,24 @@ pub struct ShearBar {
 /// RC 配筋情報。
 ///
 /// `main_x`: せい方向（X）主筋, `main_y`: 幅方向（Y）主筋,
-/// `cover`: かぶり [mm], `shear`: せん断補強筋。
+/// `cover`: かぶり [mm], `shear`: せん断補強筋,
+/// `main_grade`: 主筋の材質（グレード名。X/Y 主筋で共通）。
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct RcRebar {
     pub main_x: BarSet,
     pub main_y: BarSet,
     pub cover: f64,
     pub shear: ShearBar,
+    /// 主筋の材質（グレード名。例: "SD295A"・"SD345"・"SD390"・"SD490"・"USD685"）。
+    ///
+    /// 主筋の強度は**断面（配筋）の属性**として保持する。部材材料はコンクリート
+    /// （`Material::fc`）を表すため、主筋強度を持つ場所が他に無い。X 主筋と Y 主筋で
+    /// 材質を変える実務上の必要が無いため、断面あたり 1 つとする。
+    ///
+    /// `None` は未設定。耐力算定は部材材料の `fy` へフォールバックし、それも無い場合は
+    /// 非線形解析を停止する（`squid_n_element::factory::ensure_nonlinear_input`）。
+    #[serde(default)]
+    pub main_grade: Option<String>,
 }
 
 /// Parametric section shape definition.
@@ -161,6 +172,17 @@ pub enum SectionShape {
 }
 
 impl SectionShape {
+    /// 配筋情報（主筋・せん断補強筋）を持つ形状はその参照を返す。
+    /// 配筋を持たない形状（鋼断面・CFT・壁）は `None`。
+    pub fn rebar(&self) -> Option<&RcRebar> {
+        match self {
+            SectionShape::RcRect { rebar, .. }
+            | SectionShape::RcCircle { rebar, .. }
+            | SectionShape::SrcRect { rebar, .. } => Some(rebar),
+            _ => None,
+        }
+    }
+
     /// コンクリート系（RC / SRC / CFT）の断面形状か。
     ///
     /// 断面耐力（曲げひび割れ \\(M_c\\)・曲げ降伏 \\(M_y\\)・せん断終局 \\(Q_{su}\\)）の

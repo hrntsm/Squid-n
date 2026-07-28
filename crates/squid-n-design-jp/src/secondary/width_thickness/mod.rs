@@ -28,6 +28,7 @@ mod tests {
 
     fn dummy_rebar() -> RcRebar {
         RcRebar {
+            main_grade: None,
             main_x: BarSet {
                 count: 4,
                 dia: 16.0,

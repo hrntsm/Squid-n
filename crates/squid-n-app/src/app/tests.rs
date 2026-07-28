@@ -208,6 +208,7 @@ fn aligned_portal_frame() -> squid_n_core::model::Model {
     // RC 造ラーメン（S 造は剛域長 0 となるため、
     // 剛域自動算定の配管検証には RC 断面を用いる）。
     let rebar = squid_n_core::section_shape::RcRebar {
+        main_grade: None,
         main_x: squid_n_core::section_shape::BarSet {
             count: 4,
             dia: 22.0,
@@ -1805,6 +1806,7 @@ fn test_rc_capacity_input_from_rect_matches_handcalc() {
     let b = 400.0;
     let d = 600.0;
     let rebar = RcRebar {
+        main_grade: None,
         main_x: BarSet {
             count: 8,
             dia: 22.0,
@@ -1820,7 +1822,7 @@ fn test_rc_capacity_input_from_rect_matches_handcalc() {
             dia: 10.0,
             pitch: 150.0,
             legs: 2,
-            grade: None,
+            grade: Some("SD295A".into()),
         },
     };
     // 材料名は "FC24"（is_steel が false になる、かつ fc 設定あり）を想定。
@@ -1911,6 +1913,7 @@ fn test_holding_capacity_rank_auto_rc_rect_from_shape() {
     use squid_n_design_jp::secondary::holding_capacity::MemberRank;
 
     let rebar = RcRebar {
+        main_grade: Some("SD345".into()),
         main_x: BarSet {
             count: 8,
             dia: 22.0,
@@ -2153,6 +2156,7 @@ fn test_rc_sigma_0_from_compression_axial_force() {
     let b = 400.0;
     let d = 600.0;
     let rebar = RcRebar {
+        main_grade: None,
         main_x: BarSet {
             count: 8,
             dia: 22.0,
@@ -2292,6 +2296,7 @@ fn test_rc_sigma_0_prefers_gravity_load_case_over_last_static() {
     let b = 400.0;
     let d = 600.0;
     let rebar = RcRebar {
+        main_grade: None,
         main_x: BarSet {
             count: 8,
             dia: 22.0,
@@ -3918,6 +3923,7 @@ fn test_compute_ultimate_checks_rc_frame() {
     use squid_n_design_jp::MemberKind;
 
     let rebar = RcRebar {
+        main_grade: None,
         main_x: BarSet {
             count: 8,
             dia: 25.0,
@@ -3942,6 +3948,7 @@ fn test_compute_ultimate_checks_rc_frame() {
         rebar: rebar.clone(),
     };
     let beam_rebar = RcRebar {
+        main_grade: None,
         main_x: BarSet {
             count: 6,
             dia: 25.0,
@@ -4720,8 +4727,10 @@ fn test_secondary_joist_panel_slab_dl_cmq_and_solve() {
             j: 1.0e9,
             depth: 600.0,
             width: 400.0,
-            as_y: 0.0,
-            as_z: 0.0,
+            // RC の有効せん断断面積 As = A/κ（κ=1.2）。解析前チェックが As=0 を
+            // 入力不足として弾くため、直接入力断面でも実値を与える。
+            as_y: 400.0 * 600.0 / 1.2,
+            as_z: 400.0 * 600.0 / 1.2,
             panel_thickness: None,
             thickness: None,
             shape: None,

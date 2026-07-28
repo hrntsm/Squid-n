@@ -251,6 +251,7 @@ mod tests {
             layers: 1,
         };
         let rebar = RcRebar {
+            main_grade: None,
             main_x: main.clone(),
             main_y: main.clone(),
             cover: 40.0,
@@ -413,6 +414,7 @@ mod tests {
             layers: 1,
         };
         let rebar = RcRebar {
+            main_grade: None,
             main_x: main.clone(),
             main_y: main.clone(),
             cover: 100.0,
@@ -453,6 +455,7 @@ mod tests {
             ..main1.clone()
         };
         let rebar2 = RcRebar {
+            main_grade: None,
             main_x: main2.clone(),
             ..rebar1.clone()
         };

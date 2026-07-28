@@ -9,6 +9,8 @@
 //! - [`steel_f_value`] — 鋼材の基準強度 F（完全一致、板厚区分対応）
 //! - [`steel_f_value_prefix`] — 同（前方一致。`SN490B` → `SN490` 等）
 //! - [`rebar_f_value`] — 鉄筋の基準強度（`SD345` → 345 等）
+//! - [`rebar_grade_f_value`] — 同（高強度鉄筋の製品名を含む。`KH785` → 785 等）
+//! - [`rebar_yield_strength`] / [`shear_rebar_yield_strength`] — 配筋の材質からの σy・σwy 解決
 //! - [`parse_concrete_fc`] — コンクリート `FcXX` 名称の解釈
 //! - [`material_presets`] — UI に提示する標準材料プリセット一覧
 
@@ -167,6 +169,77 @@ pub fn rebar_f_value(name: &str) -> Option<f64> {
     let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
     digits.parse::<f64>().ok().filter(|v| *v > 0.0)
 }
+
+/// 鉄筋のグレード名から降伏点（基準強度）[N/mm²] を解決する。
+///
+/// [`rebar_f_value`]（異形鉄筋 `SD`・丸鋼 `SR` の接頭辞規則）で解けない名称は、
+/// 大臣認定品の高強度鉄筋として**名称末尾の数値**を強度とみなす
+/// （`USD685` → 685、`KH785`（スーパーフープ）→ 785、`SBPD1275` → 1275 等。
+/// いずれも製品名の数値が降伏点 [N/mm²] を表す命名規則）。
+/// 数値を含まない名称は `None`。
+pub fn rebar_grade_f_value(name: &str) -> Option<f64> {
+    let name = name.trim();
+    if let Some(v) = rebar_f_value(name) {
+        return Some(v);
+    }
+    let digits: String = name
+        .chars()
+        .rev()
+        .take_while(|c| c.is_ascii_digit())
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect();
+    digits.parse::<f64>().ok().filter(|v| *v > 0.0)
+}
+
+/// RC 主筋の降伏点 σy [N/mm²] を解決する。
+///
+/// 断面（配筋）の主筋材質 [`crate::section_shape::RcRebar::main_grade`] を第一に、
+/// 無ければ部材材料の `fy` を用いる。どちらも無い場合は `None` を返し、**既定値で
+/// 埋めない**（未入力のまま既定 345 N/mm² を用いると、SD295 の部材で耐力を過大評価
+/// する＝危険側になるため。非線形解析は `None` を入力不備として停止する）。
+pub fn rebar_yield_strength(
+    main_grade: Option<&str>,
+    mat: Option<&crate::model::Material>,
+) -> Option<f64> {
+    if let Some(v) = main_grade.and_then(rebar_grade_f_value) {
+        return Some(v);
+    }
+    mat.and_then(|m| m.fy).filter(|v| *v > 0.0)
+}
+
+/// せん断補強筋の降伏点 σwy [N/mm²] を解決する。
+///
+/// 断面（配筋）のせん断補強筋材質 [`crate::section_shape::ShearBar::grade`] から
+/// 解決する。未設定は `None` を返し、呼び出し側は普通強度せん断補強筋の
+/// SD295 相当（295）を既定とする（規格上の最小グレードであり、実際がより高強度でも
+/// 耐力を過小評価する側＝安全側に外れる）。
+pub fn shear_rebar_yield_strength(grade: Option<&str>) -> Option<f64> {
+    grade.and_then(rebar_grade_f_value)
+}
+
+/// せん断補強筋の材質が未設定の場合に用いる降伏点 σwy [N/mm²]（SD295 相当）。
+pub const SHEAR_REBAR_DEFAULT_FY: f64 = 295.0;
+
+/// UI で選択できる主筋のグレード（表示順。JIS G 3112 の異形棒鋼と高強度異形棒鋼）。
+pub const MAIN_REBAR_GRADES: &[&str] = &["SD295A", "SD295B", "SD345", "SD390", "SD490", "USD685"];
+
+/// UI で選択できる鉄筋の呼び名サイズ（`D10`〜`D41`。表示順）。
+///
+/// 数値は**呼び名の数値**であり、`BarSet::dia` / `ShearBar::dia` はこの値で保持する
+/// （許容応力度の径依存判定（`dia >= 29.0` ＝ D29 以上）と単位を揃えるため。
+/// 公称直径 [mm] ではない）。
+pub const REBAR_NOMINAL_SIZES: &[f64] = &[
+    10.0, 13.0, 16.0, 19.0, 22.0, 25.0, 29.0, 32.0, 35.0, 38.0, 41.0,
+];
+
+/// UI で選択できるせん断補強筋のグレード（表示順）。
+/// 普通強度（`SD*`）に加え、大臣認定の高強度せん断補強筋を含む。
+pub const SHEAR_REBAR_GRADES: &[&str] = &[
+    "SD295A", "SD295B", "SD345", "SD390", "KH785", "UB785", "KSS785", "SHD685", "SPR785", "MK785",
+    "SBPD1275",
+];
 
 /// コンクリートのグレード名 `FcXX` から設計基準強度 Fc [N/mm²] を取り出す。
 /// 大文字小文字を問わず `Fc` で始まり、続く数値を Fc とする（`Fc21`→21）。
@@ -403,6 +476,55 @@ mod tests {
         assert_eq!(rebar_f_value("SD390"), Some(390.0));
         assert_eq!(rebar_f_value("SR235"), Some(235.0));
         assert_eq!(rebar_f_value("SS400"), None);
+    }
+
+    /// 高強度鉄筋の製品名は末尾の数値を降伏点とみなす。
+    #[test]
+    fn test_rebar_grade_f_value_high_strength() {
+        assert_eq!(rebar_grade_f_value("SD345"), Some(345.0));
+        assert_eq!(rebar_grade_f_value("USD685"), Some(685.0));
+        assert_eq!(rebar_grade_f_value("KH785"), Some(785.0));
+        assert_eq!(rebar_grade_f_value("UB785"), Some(785.0));
+        assert_eq!(rebar_grade_f_value("SBPD1275"), Some(1275.0));
+        assert_eq!(rebar_grade_f_value("不明"), None);
+    }
+
+    /// 主筋 σy は「断面の主筋材質 → 部材材料の fy」の順で解決し、
+    /// どちらも無ければ None（既定値で埋めない）。
+    #[test]
+    fn test_rebar_yield_strength_resolution_order() {
+        let mut mat = crate::model::Material {
+            strength_factor: None,
+            concrete_class: Default::default(),
+            id: crate::ids::MaterialId(0),
+            name: "Fc24".into(),
+            young: 23000.0,
+            poisson: 0.2,
+            density: 0.0,
+            shear: None,
+            fc: Some(24.0),
+            fy: None,
+        };
+        // 断面の主筋材質が最優先。
+        assert_eq!(
+            rebar_yield_strength(Some("SD295A"), Some(&mat)),
+            Some(295.0)
+        );
+        // 材質未設定なら材料の fy。
+        mat.fy = Some(390.0);
+        assert_eq!(rebar_yield_strength(None, Some(&mat)), Some(390.0));
+        // 両方無ければ None（呼び出し側が入力不備として扱う）。
+        mat.fy = None;
+        assert_eq!(rebar_yield_strength(None, Some(&mat)), None);
+    }
+
+    /// せん断補強筋 σwy は材質から解決し、未設定は None（既定 295 は呼び出し側）。
+    #[test]
+    fn test_shear_rebar_yield_strength() {
+        assert_eq!(shear_rebar_yield_strength(Some("SD295A")), Some(295.0));
+        assert_eq!(shear_rebar_yield_strength(Some("KH785")), Some(785.0));
+        assert_eq!(shear_rebar_yield_strength(None), None);
+        assert_eq!(SHEAR_REBAR_DEFAULT_FY, 295.0);
     }
 
     #[test]

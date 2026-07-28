@@ -447,6 +447,7 @@ fn wall_with_side_columns_emits_nonlinear_shear_trilinear() {
         b: 600.0,
         d: 600.0,
         rebar: RcRebar {
+            main_grade: None,
             main_x: BarSet {
                 count: 8,
                 dia: 22.0,
@@ -533,6 +534,7 @@ fn rc_cross_joint_emits_ultimate_check() {
     use squid_n_core::section_shape::{BarSet, RcRebar, ShearBar};
 
     let rebar = |count: u32, dia: f64| RcRebar {
+        main_grade: None,
         main_x: BarSet {
             count,
             dia,

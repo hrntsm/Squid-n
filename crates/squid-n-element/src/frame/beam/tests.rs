@@ -45,6 +45,7 @@ fn test_beam_new_src_cft_composite_props() {
         b: 600.0,
         d: 600.0,
         rebar: RcRebar {
+            main_grade: None,
             main_x: BarSet {
                 count: 8,
                 dia: 22.0,
@@ -189,6 +190,7 @@ fn test_beam_new_slab_cooperation_width_amplifies_iy() {
         b: 300.0,
         d: 600.0,
         rebar: RcRebar {
+            main_grade: None,
             main_x: BarSet {
                 count: 4,
                 dia: 22.0,
@@ -1022,6 +1024,7 @@ fn test_eval_sections_from_face_distance() {
 fn simple_rc_rebar() -> squid_n_core::section_shape::RcRebar {
     use squid_n_core::section_shape::{BarSet, RcRebar, ShearBar};
     RcRebar {
+        main_grade: None,
         main_x: BarSet {
             count: 4,
             dia: 16.0,

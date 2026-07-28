@@ -151,24 +151,6 @@ fn tension_steel_area(main_x: &squid_n_core::section_shape::BarSet) -> f64 {
     main_x.count as f64 * one_bar / 2.0
 }
 
-/// 補強筋の降伏強度 σy [N/mm²]。`Material.fy` があればそれを、無ければ
-/// 材料名（鉄筋グレード名）の数値部（例 "SD345"→345）を、どちらも無ければ
-/// 345（SD345 相当）を用いる（`crate::rc::rebar_sigma_y` と同じ近似だが
-/// private のためここで再計算する）。強度倍率は未考慮。
-fn rebar_sigma_y(mat: &squid_n_core::model::Material) -> f64 {
-    if let Some(fy) = mat.fy {
-        if fy > 0.0 {
-            return fy;
-        }
-    }
-    let digits: String = mat.name.chars().filter(|c| c.is_ascii_digit()).collect();
-    digits
-        .parse::<f64>()
-        .ok()
-        .filter(|v| *v > 0.0)
-        .unwrap_or(345.0)
-}
-
 /// 内力リストのうち、評価位置 `pos` に最も近い行を返す。
 fn closest_forces(forces: crate::joint_wiring::ForcesAt<'_>, pos: f64) -> Option<&(f64, [f64; 6])> {
     forces.iter().min_by(|a, b| {
@@ -267,7 +249,8 @@ pub fn collect_pca_checks(
         let delta_l =
             moment_zero_distance(-m1.abs(), -m2.abs(), m0_simple, length).unwrap_or(length / 2.0);
 
-        let sigma_y_steel = rebar_sigma_y(mat);
+        // 補強筋の降伏強度 σy: 断面（配筋）の主筋材質 → 材料の fy → 材料名の順。
+        let sigma_y_steel = crate::material_strength::rebar_sigma_y_of(rebar, mat);
 
         for (pos, f_end) in [f_end0, f_end1] {
             let q = f_end[1];
@@ -472,6 +455,7 @@ mod tests {
             b: 400.0,
             d: 700.0,
             rebar: RcRebar {
+                main_grade: None,
                 main_x: BarSet {
                     count: 6,
                     dia: 22.0,

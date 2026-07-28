@@ -7,7 +7,7 @@
 //! に委譲）。
 
 use super::{ratio_or_large, src_rect_axis_props, src_shear_check, steel_h_props, SrcSeismicCtx};
-use crate::material_strength::rebar_sigma_y;
+use crate::material_strength::{main_rebar_grade, rebar_sigma_y_of};
 use crate::rc::{concrete_allowable_shear_class, rebar_allowable_shear, rebar_allowable_tension};
 use crate::steel::{steel_f_value_prefix, steel_fs, steel_ft};
 use crate::{CheckComponent, CheckKind, CheckResult, DesignCtx, LoadTerm, MemberForcesAt};
@@ -33,7 +33,8 @@ pub(crate) fn src_beam_check(
     fc_raw: f64,
 ) -> CheckResult {
     let long_term = ctx.term == LoadTerm::Long;
-    let grade = mat.name.as_str();
+    // 主筋の材質は断面（配筋）の属性を第一とし、未設定のときのみ部材材料名を用いる。
+    let grade = main_rebar_grade(rebar, mat);
 
     // 軽量コンクリート1種・2種は許容応力度を 0.9 倍に低減（SRC規準1987。
     // `mat.concrete_class` を考慮した class 対応版を使用）。
@@ -80,7 +81,7 @@ pub(crate) fn src_beam_check(
         d: props.d_full,
         at: props.at,
         d_eff: props.d,
-        sigma_y: rebar_sigma_y(mat),
+        sigma_y: rebar_sigma_y_of(rebar, mat),
         fc: fc_raw,
         pw: props.pw,
         sigma_wy: 0.0,

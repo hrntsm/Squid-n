@@ -11,6 +11,7 @@ use squid_n_core::section_shape::{BarSet, RcRebar, SectionShape, ShearBar};
 /// テスト用の矩形 RC 断面（b×d, main_x=main_y, 帯筋 D10@pitch）。
 fn rc_rect_section(id: u32, b: f64, d: f64, main_dia: f64, main_count: u32, pitch: f64) -> Section {
     let rebar = RcRebar {
+        main_grade: None,
         main_x: BarSet {
             count: main_count,
             dia: main_dia,

@@ -1436,6 +1436,7 @@ fn test_rc_fiber_section_includes_separated_rebar() {
         b: 500.0,
         d: 500.0,
         rebar: RcRebar {
+            main_grade: None,
             main_x: BarSet {
                 count: 4,
                 dia: 25.0,
@@ -2319,6 +2320,7 @@ fn test_steel_box_fibers_are_hollow() {
 #[test]
 fn test_rc_circle_fibers_match_circle_area() {
     let rebar = squid_n_core::section_shape::RcRebar {
+        main_grade: None,
         main_x: squid_n_core::section_shape::BarSet {
             count: 4,
             dia: 22.0,

@@ -60,8 +60,9 @@ pub use wall_nonlinear::{
 pub use crate::material_strength::{
     concrete_allowable_bond, concrete_allowable_compression, concrete_allowable_compression_class,
     concrete_allowable_shear, concrete_allowable_shear_class, concrete_young_modulus,
-    high_strength_group, high_strength_pw_cap, high_strength_w_ft, rebar_allowable_shear,
-    rebar_allowable_tension, rebar_sigma_y, young_ratio_n, HighStrengthGroup,
+    high_strength_group, high_strength_pw_cap, high_strength_w_ft, is_high_strength_shear_grade,
+    main_rebar_grade, rebar_allowable_shear, rebar_allowable_tension, rebar_sigma_y,
+    rebar_sigma_y_of, shear_rebar_grade, young_ratio_n, HighStrengthGroup,
 };
 
 // 分割した共有ヘルパを従来の `crate::rc::X`（他モジュール）・`super::X`
