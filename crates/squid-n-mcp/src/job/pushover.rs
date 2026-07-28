@@ -39,6 +39,7 @@ pub(crate) fn compute_pushover_job(
         steps,
         target,
         squid_n_solver::pushover::PushoverControl::default(),
+        true,
         false,
         false,
         0.0,

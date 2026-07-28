@@ -283,6 +283,7 @@ fn test_pushover_computes_member_ductility() {
         20,
         PushoverTarget::from_max_disp(300.0), // 目標変位300mm（大変形で確実に降伏させる）
         PushoverControl::default(),
+        true,
         false,
         false,
         0.0,
@@ -320,6 +321,7 @@ fn test_pushover_ductility_method_selection_changes_reference() {
             20,
             PushoverTarget::from_max_disp(0.0),
             PushoverControl::default(),
+            true,
             false,
             false,
             0.0,
@@ -2070,6 +2072,7 @@ fn test_pushover_load_only_extends_beyond_design_level() {
         50,
         PushoverTarget::from_max_disp(200.0),
         PushoverControl::LoadOnly,
+        true,
         false,
         false,
         0.0,
@@ -2114,6 +2117,100 @@ fn test_pushover_load_only_extends_beyond_design_level() {
     );
 }
 
+/// 長期荷重の初期載荷（apply_long_term）で、水平力増分の前に長期系荷重ケースが
+/// 載荷されることを検証する。(1) 最初の記録ステップが λ=0 の長期載荷時点になる、
+/// (2) その時点のベースシア（水平）はほぼ 0、(3) 柱軸力に長期軸力が保持された
+/// まま水平増分が進む（N-M 応答経路が長期点から始まる）、の 3 点。
+#[test]
+fn test_pushover_long_term_preload_sets_initial_axial_state() {
+    use squid_n_core::ids::LoadCaseId;
+    use squid_n_core::model::{LoadCase, LoadCaseKind, NodalLoad};
+
+    let mut model = single_column_model(235.0, 80_000.0);
+    let p = 50_000.0;
+    model.load_cases.push(LoadCase {
+        id: LoadCaseId(0),
+        name: "DL".into(),
+        nodal: vec![NodalLoad {
+            node: NodeId(1),
+            values: [0.0, 0.0, -p, 0.0, 0.0, 0.0],
+        }],
+        member: vec![],
+        kind: LoadCaseKind::Dead,
+    });
+    let dofmap = DofMap::build(&model);
+    let reducer = Reducer::build(&model, &dofmap);
+    let result = pushover_analysis_recording(
+        &mut model,
+        &dofmap,
+        &reducer,
+        SeismicDir::X,
+        20,
+        PushoverTarget::from_max_disp(50.0),
+        PushoverControl::default(),
+        true,
+        false,
+        false,
+        0.0,
+        false,
+        DuctilityMethod::default(),
+    )
+    .expect("pushover should run");
+
+    let first = result.steps.first().expect("長期載荷ステップがあること");
+    assert_eq!(
+        first.load_factor, 0.0,
+        "最初の記録ステップは長期載荷時点（λ=0）であること"
+    );
+    assert!(
+        first.base_shear.abs() < 1.0,
+        "長期載荷時点の水平ベースシアはほぼ 0: {:.3}",
+        first.base_shear
+    );
+    assert!(
+        result.steps.len() > 1,
+        "長期載荷後に水平増分ステップが続くこと"
+    );
+    // 終局時の柱軸力（圧縮正）に長期軸力 P が保持されていること
+    // （単柱の水平載荷は軸力を生まないため、軸力 ≒ P のまま）。
+    let axial = result
+        .member_response
+        .first()
+        .map(|m| m.axial)
+        .unwrap_or(0.0);
+    assert!(
+        (axial - p).abs() < 0.05 * p,
+        "柱軸力に長期軸力が保持されること: axial={:.0}, P={:.0}",
+        axial,
+        p
+    );
+
+    // 長期荷重を無効にした場合は従来どおり λ=0 の記録は無い。
+    let mut model2 = single_column_model(235.0, 80_000.0);
+    let dofmap2 = DofMap::build(&model2);
+    let reducer2 = Reducer::build(&model2, &dofmap2);
+    let result2 = pushover_analysis_recording(
+        &mut model2,
+        &dofmap2,
+        &reducer2,
+        SeismicDir::X,
+        20,
+        PushoverTarget::from_max_disp(50.0),
+        PushoverControl::default(),
+        false,
+        false,
+        false,
+        0.0,
+        false,
+        DuctilityMethod::default(),
+    )
+    .expect("pushover should run");
+    assert!(
+        result2.steps.first().is_some_and(|s| s.load_factor > 0.0),
+        "長期載荷無効時は最初から水平増分であること"
+    );
+}
+
 /// 荷重増分のみで終了目標が両方無効の場合は、従来の荷重制御と同じく λ=1
 /// （設計地震力レベル）で終了することを検証する（λ=1 超の延長は終了目標が
 /// 有効な場合に限る）。
@@ -2130,6 +2227,7 @@ fn test_pushover_load_only_without_target_stops_at_lambda_1() {
         20,
         PushoverTarget::from_max_disp(0.0),
         PushoverControl::LoadOnly,
+        true,
         false,
         false,
         0.0,
@@ -2409,6 +2507,7 @@ fn test_pushover_drift_angle_target_forms_hinge_with_stiffness_reduction() {
         80,
         target,
         PushoverControl::default(),
+        true,
         false,
         false,
         0.0,
@@ -2480,6 +2579,7 @@ fn test_pushover_both_targets_stop_at_earlier_one() {
             max_drift_angle: Some(1.0 / 150.0),
         },
         PushoverControl::default(),
+        true,
         false,
         false,
         0.0,
@@ -2515,6 +2615,7 @@ fn test_pushover_drift_angle_target_runs_with_multi_spring() {
         20,
         PushoverTarget::default(),
         PushoverControl::default(),
+        true,
         false,
         false,
         0.0,
@@ -2631,6 +2732,7 @@ fn test_pushover_drift_angle_target_runs_with_wall_panel() {
         20,
         PushoverTarget::default(),
         PushoverControl::default(),
+        true,
         false,
         false,
         0.0,
@@ -2685,6 +2787,7 @@ fn test_pushover_fiber_hinge_softens_at_drift_target() {
         40,
         PushoverTarget::default(),
         PushoverControl::default(),
+        true,
         false,
         false,
         0.0,
@@ -2747,6 +2850,7 @@ fn test_pushover_wall_flexural_yield_softens() {
         40,
         PushoverTarget::default(),
         PushoverControl::default(),
+        true,
         false,
         false,
         0.0,

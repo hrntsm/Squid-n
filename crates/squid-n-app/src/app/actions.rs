@@ -1872,6 +1872,7 @@ impl App {
             cfg.push_steps,
             target,
             cfg.push_control,
+            cfg.push_apply_long_term,
             false,
             false,
             0.0,

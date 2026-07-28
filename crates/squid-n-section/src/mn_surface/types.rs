@@ -17,6 +17,20 @@ pub struct PlasticFiber {
     pub sigma_c: f64,
     /// 弾性係数 [N/mm²]（M-φ 曲線の弾完全塑性評価に使用。剛塑性の曲面算定では不使用）
     pub young: f64,
+    /// 材料領域区分（[`FiberRegion`]）。要素ファイバの材料割当・可視化の色分けに使用。
+    pub region: FiberRegion,
+}
+
+/// ファイバの材料領域区分。断面形状のどの領域に属するかを示し、
+/// 要素ファイバ生成での材料割当と塑性化マップの色分けに用いる。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FiberRegion {
+    /// コンクリート（RC・SRC の躯体、CFT の充填部）
+    Concrete,
+    /// 主筋（点ファイバ）
+    Rebar,
+    /// 鋼材（形鋼・鋼管・内蔵鉄骨）
+    Steel,
 }
 
 /// 降伏判定のモデル化手法。
