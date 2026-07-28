@@ -24,6 +24,7 @@ fn make_1dof_spring_model() -> Model {
                 restraint: Dof6Mask::FIXED,
                 mass: None,
                 story: None,
+                support_spring: None,
             },
             Node {
                 id: NodeId(1),
@@ -31,6 +32,7 @@ fn make_1dof_spring_model() -> Model {
                 restraint: FREE_UX,
                 mass: Some([m, 0.0, 0.0, 0.0, 0.0, 0.0]),
                 story: None,
+                support_spring: None,
             },
         ],
         elements: vec![ElementData {
@@ -92,6 +94,7 @@ fn make_shear_2dof_model() -> Model {
         restraint,
         mass,
         story: None,
+        support_spring: None,
     };
     let beam = |id: u32, a: u32, b: u32| ElementData {
         id: ElemId(id),
@@ -176,6 +179,7 @@ fn make_portal_frame_like_model(top_mass: f64) -> Model {
                 None
             },
             story: None,
+            support_spring: None,
         })
         .collect();
     let col_section = Section {
@@ -478,6 +482,7 @@ fn make_portal_frame_density_mass_model() -> Model {
             },
             mass: None,
             story: None,
+            support_spring: None,
         })
         .collect();
     let col_section = Section {
@@ -685,6 +690,7 @@ fn make_diaphragm_columns_model(top_mass: f64, rot_mass: f64) -> Model {
                 restraint: Dof6Mask::FIXED,
                 mass: None,
                 story: None,
+                support_spring: None,
             },
             // 柱頭(スレーブ1): X方向にオフセット
             Node {
@@ -693,6 +699,7 @@ fn make_diaphragm_columns_model(top_mass: f64, rot_mass: f64) -> Model {
                 restraint: Dof6Mask::FREE,
                 mass: None,
                 story: None,
+                support_spring: None,
             },
             // マスター(剛床代表節点): 面内(Ux,Uy,Rz)のみ自由
             Node {
@@ -701,6 +708,7 @@ fn make_diaphragm_columns_model(top_mass: f64, rot_mass: f64) -> Model {
                 restraint: master_restraint,
                 mass: Some([top_mass, top_mass, 0.0, 0.0, 0.0, rot_mass]),
                 story: None,
+                support_spring: None,
             },
             // 柱頭(スレーブ2): Y方向にオフセット（マスターから見て非対称な配置）
             Node {
@@ -709,6 +717,7 @@ fn make_diaphragm_columns_model(top_mass: f64, rot_mass: f64) -> Model {
                 restraint: Dof6Mask::FREE,
                 mass: None,
                 story: None,
+                support_spring: None,
             },
         ],
         elements: vec![
@@ -898,6 +907,7 @@ fn make_four_column_diaphragm_model(top_mass: f64, rot_mass: f64) -> Model {
             restraint: Dof6Mask::FIXED,
             mass: None,
             story: None,
+            support_spring: None,
         });
         nodes.push(Node {
             id: top_id,
@@ -905,6 +915,7 @@ fn make_four_column_diaphragm_model(top_mass: f64, rot_mass: f64) -> Model {
             restraint: Dof6Mask::FREE,
             mass: None,
             story: None,
+            support_spring: None,
         });
         elements.push(ElementData {
             id: ElemId(i as u32),
@@ -930,6 +941,7 @@ fn make_four_column_diaphragm_model(top_mass: f64, rot_mass: f64) -> Model {
         restraint: master_restraint,
         mass: Some([top_mass, top_mass, 0.0, 0.0, 0.0, rot_mass]),
         story: None,
+        support_spring: None,
     });
 
     Model {
@@ -1015,6 +1027,7 @@ fn test_2dof_shear_unequal_mass_matches_analytic() {
         restraint,
         mass,
         story: None,
+        support_spring: None,
     };
     let beam = |id: u32, a: u32, b: u32| ElementData {
         id: ElemId(id),
@@ -1105,6 +1118,7 @@ fn test_eigen_subspace_matches_dense_ground_truth_q_lt_n() {
         restraint: Dof6Mask::FIXED,
         mass: None,
         story: None,
+        support_spring: None,
     }];
     for i in 1..=n_masses {
         let m = if i % 2 == 1 { 1.0 } else { 50.0 };
@@ -1114,6 +1128,7 @@ fn test_eigen_subspace_matches_dense_ground_truth_q_lt_n() {
             restraint: FREE_UX,
             mass: Some([m, 0.0, 0.0, 0.0, 0.0, 0.0]),
             story: None,
+            support_spring: None,
         });
     }
     let elements = (0..n_masses)

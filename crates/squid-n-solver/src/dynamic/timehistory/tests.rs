@@ -87,6 +87,7 @@ fn sdof_model() -> Model {
                 restraint: Dof6Mask::FIXED,
                 mass: None,
                 story: None,
+                support_spring: None,
             },
             Node {
                 id: NodeId(1),
@@ -94,6 +95,7 @@ fn sdof_model() -> Model {
                 restraint: FREE_UX,
                 mass: Some([m, 0.0, 0.0, 0.0, 0.0, 0.0]),
                 story: None,
+                support_spring: None,
             },
         ],
         elements: vec![ElementData {
@@ -156,6 +158,7 @@ fn sdof_model_y() -> Model {
                 restraint: Dof6Mask::FIXED,
                 mass: None,
                 story: None,
+                support_spring: None,
             },
             Node {
                 id: NodeId(1),
@@ -163,6 +166,7 @@ fn sdof_model_y() -> Model {
                 restraint: FREE_UY,
                 mass: Some([0.0, m, 0.0, 0.0, 0.0, 0.0]),
                 story: None,
+                support_spring: None,
             },
         ],
         elements: vec![ElementData {
@@ -382,6 +386,7 @@ fn test_2dof_free_vibration_runs() {
         restraint,
         mass,
         story: None,
+        support_spring: None,
     };
     let beam = |id: u32, a: u32, b: u32| ElementData {
         id: ElemId(id),
@@ -494,6 +499,7 @@ fn test_2dof_mode_superposition_consistency() {
         restraint,
         mass,
         story: None,
+        support_spring: None,
     };
     let beam = |id: u32, a: u32, b: u32| ElementData {
         id: ElemId(id),
@@ -1204,6 +1210,7 @@ fn fiber_column_model(fy: f64) -> Model {
                 restraint: Dof6Mask::FIXED,
                 mass: None,
                 story: None,
+                support_spring: None,
             },
             Node {
                 id: NodeId(1),
@@ -1211,6 +1218,7 @@ fn fiber_column_model(fy: f64) -> Model {
                 restraint: Dof6Mask(0b111110),
                 mass: Some([1.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
                 story: Some(StoryId(0)),
+                support_spring: None,
             },
         ],
         elements: vec![ElementData {
@@ -1321,9 +1329,7 @@ fn test_nonlinear_time_history_sdof_elastic() {
         DampingAccumulation::NonCumulative,
         &[1.0],
         &[0.0],
-        false,
-        20,
-        1e-6,
+        NonlinearThCfg::new(20, 1e-6),
     )
     .expect("nonlinear elastic should converge");
 
@@ -1399,9 +1405,7 @@ fn test_nonlinear_time_history_sdof_plastic() {
         DampingAccumulation::NonCumulative,
         &[50.0],
         &[0.0],
-        false,
-        20,
-        1e-6,
+        NonlinearThCfg::new(20, 1e-6),
     )
     .expect("nonlinear plastic should converge");
 
@@ -1471,9 +1475,7 @@ fn test_nonlinear_time_history_extended_damping_models_run() {
             DampingAccumulation::NonCumulative,
             &[50.0],
             &[0.0],
-            false,
-            20,
-            1e-6,
+            NonlinearThCfg::new(20, 1e-6),
         )
         .expect("extended damping nonlinear TH should converge");
         assert!(
@@ -1517,9 +1519,7 @@ fn test_nonlinear_time_history_cumulative_vs_noncumulative() {
             acc,
             &[50.0],
             &[0.0],
-            false,
-            20,
-            1e-6,
+            NonlinearThCfg::new(20, 1e-6),
         )
         .expect("should converge")
         .peak_disp[1][0]
@@ -1593,9 +1593,7 @@ fn test_nonlinear_time_history_convergence() {
         DampingAccumulation::NonCumulative,
         &[50.0],
         &[0.0],
-        false,
-        20,
-        1e-6,
+        NonlinearThCfg::new(20, 1e-6),
     )
     .expect("should converge with enough iterations");
 
@@ -1614,9 +1612,7 @@ fn test_nonlinear_time_history_convergence() {
         DampingAccumulation::NonCumulative,
         &[50.0],
         &[0.0],
-        false,
-        1,
-        1e-6,
+        NonlinearThCfg::new(1, 1e-6),
     );
 
     // 収束せずエラーになること（restore が動作していることの間接的証拠）
@@ -1687,9 +1683,7 @@ fn test_maxwell_damper_reduces_free_vibration() {
             DampingAccumulation::NonCumulative,
             &[10.0],
             &[0.0],
-            false,
-            30,
-            1e-8,
+            NonlinearThCfg::new(30, 1e-8),
         )
         .expect("should converge");
         // 後半区間の応答振幅（自由振動の減衰を測る）。
@@ -1708,4 +1702,229 @@ fn test_maxwell_damper_reduces_free_vibration() {
         with_damp < no_damp * 0.8,
         "Maxwell damper should reduce late response: no_damp={no_damp}, with_damp={with_damp}"
     );
+}
+
+// ===== ThRecording（詳細記録）テスト =====
+
+/// (a) 線形時刻歴で詳細記録（`ThRecording`）が生成され、フレーム数・節点数・階数が
+/// 期待どおりであること。`n_steps=50` では自動決定される `record_every` が
+/// `(50/1000).max(1)=1` となり、全ステップが記録される。
+#[test]
+fn test_linear_recording_frames_and_stories() {
+    let model = fiber_column_model(1e10);
+    let dofmap = DofMap::build(&model);
+    let reducer = Reducer::build(&model, &dofmap);
+
+    let damping = Damping::StiffnessProportional {
+        h: 0.02,
+        omega: 10.0,
+        basis: StiffnessKind::Initial,
+    };
+    let dt = 0.001;
+    let n_steps = 50;
+    let wave = zero_wave(dt, n_steps);
+    let newmark = NewmarkCfg {
+        beta: 0.25,
+        gamma: 0.5,
+        dt,
+    };
+
+    let result = linear_time_history_analysis(
+        &model,
+        &dofmap,
+        &reducer,
+        &wave,
+        &newmark,
+        &damping,
+        &[1.0],
+        &[0.0],
+        false,
+    )
+    .expect("linear recording should run");
+
+    let recording = result.recording.expect("recording should be present");
+    assert_eq!(recording.record_every, 1, "n_steps=50 なら間引きなし");
+    assert_eq!(recording.frame_time.len(), n_steps + 1);
+    assert_eq!(recording.node_disp.len(), n_steps + 1);
+    assert_eq!(recording.node_disp[0].len(), model.nodes.len());
+    assert_eq!(recording.member_forces.len(), n_steps + 1);
+    assert_eq!(recording.peak_member_forces.len(), model.elements.len());
+    // 階は下→上 1 層（fiber_column_model の Story 定義と同じ並び）。
+    assert_eq!(recording.story_x.stories.len(), model.stories.len());
+    assert_eq!(recording.story_y.stories.len(), model.stories.len());
+    assert_eq!(recording.story_x.story_shear.len(), n_steps + 1);
+    assert_eq!(recording.story_x.story_weight[0], 10000.0);
+}
+
+/// (b) 単純モデル（自由節点 1 個・1 層）で、層せん断力（慣性力ベース）の合計が
+/// 代表応答のベースシア（`history.base_shear`、既存の全体慣性力合計）と一致すること。
+/// 自由節点が 1 つの階にしか属さないため、層別集計の合計は全体合計と厳密に等しい。
+#[test]
+fn test_story_shear_matches_base_shear() {
+    let model = fiber_column_model(1e10);
+    let dofmap = DofMap::build(&model);
+    let reducer = Reducer::build(&model, &dofmap);
+
+    let damping = Damping::StiffnessProportional {
+        h: 0.02,
+        omega: 10.0,
+        basis: StiffnessKind::Initial,
+    };
+    let dt = 0.001;
+    let n_steps = 50;
+    let wave = zero_wave(dt, n_steps);
+    let newmark = NewmarkCfg {
+        beta: 0.25,
+        gamma: 0.5,
+        dt,
+    };
+
+    // 初期変位を与えた自由振動（record_dir_y は accel_x のみのため false=X 方向）。
+    let result = linear_time_history_analysis(
+        &model,
+        &dofmap,
+        &reducer,
+        &wave,
+        &newmark,
+        &damping,
+        &[10.0],
+        &[0.0],
+        false,
+    )
+    .expect("should run");
+    assert!(
+        !result.history.record_dir_y,
+        "accel_x のみの入力なので記録方向は X"
+    );
+
+    let recording = result.recording.expect("recording");
+    let last = recording.story_x.story_shear.len() - 1;
+    let total_shear: f64 = recording.story_x.story_shear[last].iter().sum();
+    let expected = *result.history.base_shear.last().unwrap();
+    assert!(
+        (total_shear - expected).abs() < expected.abs().max(1.0) * 1e-6,
+        "story shear sum {total_shear} should match base shear {expected}"
+    );
+}
+
+/// (c) 非線形時刻歴 + `apply_long_term` で、長期荷重（Dead）載荷後の初期変位が
+/// 独立に求めた静的線形解と一致すること（fy=1e10 の弾性モデルなので線形解に近い）。
+/// 動的加振・初期変位ともにゼロのため、応答は長期解のまま静止するはず。
+#[test]
+fn test_nonlinear_apply_long_term_matches_static_solution() {
+    let mut model = fiber_column_model(1e10);
+    model.load_cases.push(squid_n_core::model::LoadCase {
+        id: squid_n_core::ids::LoadCaseId(0),
+        name: "DL".to_string(),
+        nodal: vec![squid_n_core::model::NodalLoad {
+            node: NodeId(1),
+            values: [1000.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+        }],
+        member: vec![],
+        kind: squid_n_core::model::LoadCaseKind::Dead,
+    });
+    let dofmap = DofMap::build(&model);
+    let reducer = Reducer::build(&model, &dofmap);
+
+    // 独立に静的線形解を求める（弾性なので長期荷重の非線形解とほぼ一致するはず）。
+    let k_free = assemble_global_k(&model, &dofmap);
+    let k_red = reducer.reduce_k(&k_free);
+    let f_free =
+        crate::assemble::assemble_global_f(&model, &dofmap, squid_n_core::ids::LoadCaseId(0));
+    let f_red = reducer.reduce_f(&f_free);
+    let k_val = *k_red.get(0, 0).unwrap_or(&0.0);
+    let expected_u = f_red[0] / k_val;
+
+    let damping = Damping::StiffnessProportional {
+        h: 0.02,
+        omega: 10.0,
+        basis: StiffnessKind::Initial,
+    };
+    let dt = 0.001;
+    let n_steps = 20;
+    let wave = zero_wave(dt, n_steps);
+    let newmark = NewmarkCfg {
+        beta: 0.25,
+        gamma: 0.5,
+        dt,
+    };
+
+    let mut cfg = NonlinearThCfg::new(20, 1e-9);
+    cfg.apply_long_term = true;
+    let result = nonlinear_time_history_analysis(
+        &mut model,
+        &dofmap,
+        &reducer,
+        &wave,
+        &newmark,
+        &damping,
+        DampingAccumulation::NonCumulative,
+        &[0.0],
+        &[0.0],
+        cfg,
+    )
+    .expect("apply_long_term should converge");
+
+    assert!(
+        (result.peak_disp[1][0] - expected_u).abs() / expected_u.abs() < 0.05,
+        "long-term peak {} should match static solution {}",
+        result.peak_disp[1][0],
+        expected_u
+    );
+    // 動的加振も初期変位もゼロなので、時刻歴を通じて長期解のまま静止する。
+    let recording = result.recording.expect("recording");
+    for frame in &recording.node_disp {
+        assert!(
+            (frame[1][0] - expected_u).abs() / expected_u.abs() < 0.05,
+            "should stay at long-term equilibrium: {} vs {}",
+            frame[1][0],
+            expected_u
+        );
+    }
+}
+
+/// (d) `NonlinearThCfg::record_every` による明示的な間引きが機能すること。
+/// `n_steps=50, record_every=5` なら、ステップ 0,5,...,50 の 11 フレームが記録される。
+#[test]
+fn test_nonlinear_record_every_thinning() {
+    let mut model = fiber_column_model(1e10);
+    let dofmap = DofMap::build(&model);
+    let reducer = Reducer::build(&model, &dofmap);
+
+    let damping = Damping::StiffnessProportional {
+        h: 0.02,
+        omega: 10.0,
+        basis: StiffnessKind::Initial,
+    };
+    let dt = 0.001;
+    let n_steps = 50;
+    let wave = zero_wave(dt, n_steps);
+    let newmark = NewmarkCfg {
+        beta: 0.25,
+        gamma: 0.5,
+        dt,
+    };
+
+    let mut cfg = NonlinearThCfg::new(20, 1e-6);
+    cfg.record_every = Some(5);
+    let result = nonlinear_time_history_analysis(
+        &mut model,
+        &dofmap,
+        &reducer,
+        &wave,
+        &newmark,
+        &damping,
+        DampingAccumulation::NonCumulative,
+        &[10.0],
+        &[0.0],
+        cfg,
+    )
+    .expect("should converge");
+
+    let recording = result.recording.expect("recording");
+    assert_eq!(recording.record_every, 5);
+    assert_eq!(recording.frame_time.len(), 11, "0,5,..,50 の 11 フレーム");
+    // peak 系は全ステップ更新（間引かない）。
+    assert!(result.peak_disp[1][0] > 0.0);
+    assert!(recording.peak_member_forces.iter().any(|f| f.is_some()));
 }

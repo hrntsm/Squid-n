@@ -1,5 +1,6 @@
 //! 非線形時刻歴応答解析（Newmark-β + Newton 反復 + commit/rollback）。
 //!
+//! - [`NonlinearThCfg`] — 解析設定（Newton 収束条件・幾何剛性・長期荷重初期化・記録間引き）
 //! - [`nonlinear_time_history_analysis`] — 非線形時刻歴応答解析
 
 use super::common::{solve_initial_accel, theta_accel_at, theta_influence_m};
@@ -7,8 +8,9 @@ use super::config::{GroundMotion, NewmarkCfg};
 use super::history::{
     choose_record_dir_y, pick_record_node, record_history_step, total_mass, update_story_drift,
 };
+use super::recording::{member_forces_nonlinear, ThRecorder};
 use super::result::{ResponseHistory, ResponseResult};
-use crate::assemble::{assemble_global_k, assemble_global_m};
+use crate::assemble::assemble_global_m;
 use crate::constraint::Reducer;
 use crate::damping::{Damping, DampingAccumulation};
 use crate::pushover::{assemble_k, compute_f_int};
@@ -16,16 +18,65 @@ use crate::transaction::{StateSnapshot, StatefulModel};
 use smallvec::SmallVec;
 use squid_n_core::dof::{DofMap, DOF_PER_NODE};
 use squid_n_core::model::Model;
-use squid_n_element::behavior::{Ctx, LocalVec, MassOption};
+use squid_n_element::behavior::{Ctx, ElementBehavior, LocalVec, MassOption};
 use squid_n_element::factory::{build_nonlinear_behavior, StrengthBasis};
 use squid_n_math::solver::{make_solver, SolveError, SolverBackend};
 use squid_n_math::sparse::{sparse_matvec, weighted_sum_csc};
+
+/// 非線形時刻歴応答解析の設定（Newton 収束条件・幾何剛性・長期荷重初期化・記録間引き）。
+///
+/// 引数が多くなるため、`use_kg`・`max_iter`・`tol` に加えて長期荷重初期化・記録間引きの
+/// 設定を 1 つの構造体へまとめている（呼び出し元は本モジュールの `tests` のみのため、
+/// 破壊的変更として導入した）。
+#[derive(Clone, Copy, Debug)]
+pub struct NonlinearThCfg {
+    /// 各時刻ステップの Newton 反復の最大回数。
+    pub max_iter: usize,
+    /// Newton 収束判定の相対許容誤差（残差ノルム / 外力ノルムの最大値基準）。
+    pub tol: f64,
+    /// 幾何剛性（P-Δ、Kg）を接線剛性に含めるか。
+    pub use_kg: bool,
+    /// 時刻歴開始前に長期荷重（固定・積載等、`LoadCaseKind::is_long_term`）を
+    /// 静的 Newton 反復で載荷し、その変位・応力状態を時刻歴の初期条件とするか
+    /// （プッシュオーバーの長期載荷フェーズと同じ考え方）。長期系荷重ケースが
+    /// 無いモデルでは何もしない。
+    pub apply_long_term: bool,
+    /// 詳細記録（[`super::ThRecording`]）の間引き係数。`None` は自動決定
+    /// （記録フレーム数が概ね 1000 になるよう [`super::recording::auto_record_every`] で調整）。
+    pub record_every: Option<usize>,
+}
+
+impl NonlinearThCfg {
+    /// 既定値: 長期荷重初期化あり・幾何剛性なし・記録間引きは自動決定。
+    /// `max_iter`・`tol` のみ呼び出し側で指定する。
+    pub fn new(max_iter: usize, tol: f64) -> Self {
+        Self {
+            max_iter,
+            tol,
+            use_kg: false,
+            apply_long_term: true,
+            record_every: None,
+        }
+    }
+}
+
+impl Default for NonlinearThCfg {
+    /// Newton 反復 20 回・相対許容誤差 1e-6・長期荷重初期化あり・幾何剛性なし・
+    /// 記録間引きは自動決定。
+    fn default() -> Self {
+        Self::new(20, 1e-6)
+    }
+}
 
 /// 非線形時刻歴応答解析（Newmark-β + Newton反復 + commit/rollback）。
 ///
 /// 各時刻ステップで Newton 反復により内力（非線形復元力）と慣性力・減衰力・
 /// 地震外力の動的釣合いを満たす解を求める。収束時は要素状態を commit、
 /// 不収束時は Step 開始時の状態へ rollback する。
+/// `cfg.apply_long_term` が真の場合、時刻歴開始前に長期荷重を静的載荷し
+/// （プッシュオーバーの長期載荷フェーズと同じ経路）、その変位・応力状態を初期条件とする。
+/// `initial_disp`/`initial_vel` は「長期解からの増分」としての動的初期条件で、
+/// 記録される変位は長期変位を含む全変位である。
 #[allow(clippy::too_many_arguments)]
 pub fn nonlinear_time_history_analysis(
     model: &mut Model,
@@ -37,9 +88,7 @@ pub fn nonlinear_time_history_analysis(
     accumulation: DampingAccumulation,
     initial_disp: &[f64],
     initial_vel: &[f64],
-    use_kg: bool,
-    max_iter: usize,
-    tol: f64,
+    cfg: NonlinearThCfg,
 ) -> Result<ResponseResult, SolveError> {
     squid_n_math::parallelism::apply_to_faer();
 
@@ -67,6 +116,7 @@ pub fn nonlinear_time_history_analysis(
             story_drift_angle: vec![0.0; model.stories.len()],
             cumulative_ductility: vec![0.0; model.elements.len()],
             history: ResponseHistory::default(),
+            recording: None,
         });
     }
 
@@ -81,13 +131,9 @@ pub fn nonlinear_time_history_analysis(
     // レインフロー法（ASTM E1049-85）・Miner 則による鉄骨梁端部の累積損傷度計算。
     let mut mu_hist: Vec<Vec<f64>> = vec![Vec::new(); model.elements.len()];
 
-    // 行列組立（縮約空間）
+    // 質量行列（縮約空間）。
     let m_free = assemble_global_m(model, dofmap, MassOption::Consistent);
-    let k_free = assemble_global_k(model, dofmap);
-    let _ = use_kg;
     let m_red = reducer.reduce_k(&m_free);
-    let k_red = reducer.reduce_k(&k_free);
-    let c_red = damping.assemble_c(&m_red, &k_red);
 
     // 影響ベクトルと M·r
     let n_free = dofmap.n_active();
@@ -118,11 +164,76 @@ pub fn nonlinear_time_history_analysis(
     let c5 = gamma / beta - 1.0;
     let c6 = dt * (gamma / (2.0 * beta) - 1.0);
 
-    // 初期条件
+    // ── 長期荷重ベクトル（apply_long_term） ─────────────────────────────
+    // 長期系荷重ケース（固定・積載等、`LoadCaseKind::is_long_term`）の外力を、
+    // プッシュオーバーの長期載荷フェーズ（driver.rs）と同じ経路で組み立てる。
+    // `cfg.apply_long_term` が偽、または該当荷重ケースが無い場合はゼロベクトル。
+    let f0_free: Vec<f64> = if cfg.apply_long_term {
+        let mut f = vec![0.0; n_free];
+        for lc in model.load_cases.iter().filter(|l| l.kind.is_long_term()) {
+            let flc = crate::assemble::assemble_global_f(model, dofmap, lc.id);
+            for (acc, v) in f.iter_mut().zip(flc) {
+                *acc += v;
+            }
+        }
+        f
+    } else {
+        vec![0.0; n_free]
+    };
+    let f0_red = reducer.reduce_f(&f0_free);
+    let has_long_term = f0_red.iter().any(|&v| v.abs() > 0.0);
+
+    // 長期荷重を静的 Newton 反復で載荷する（収束時は要素状態を commit）。
+    // 時刻歴の初期変位 u0 はこの長期解（縮約空間）から始める。
     let mut u = vec![0.0; n_indep];
+    if has_long_term {
+        apply_long_term_static(
+            model,
+            dofmap,
+            reducer,
+            &mut behaviors,
+            &f0_red,
+            cfg.use_kg,
+            &mut u,
+        )?;
+    }
+
+    // 初期剛性の参照（長期荷重載荷後の状態、`use_kg` を反映）から減衰行列を組み立てる。
+    // 従来は幾何剛性を持たない `assemble_global_k`（線形弾性 behavior）を用いており、
+    // Newton 反復内の接線剛性（`pushover::assemble_k`、`use_kg` 反映）と不整合だった。
+    let k_free = assemble_k(model, dofmap, &behaviors, cfg.use_kg);
+    let k_red = reducer.reduce_k(&k_free);
+    let c_red = damping.assemble_c(&m_red, &k_red);
+
+    // 動的初期条件（initial_disp）は「長期解からの増分」として要素状態へ反映する。
+    {
+        let n_init_d = n_indep.min(initial_disp.len());
+        let mut du_dyn = vec![0.0; n_indep];
+        du_dyn[..n_init_d].copy_from_slice(&initial_disp[..n_init_d]);
+        for i in 0..n_indep {
+            u[i] += du_dyn[i];
+        }
+        let du_free = reducer.expand_u(&du_dyn);
+        let model_ref: &Model = model;
+        for (_elem, b) in model_ref.elements.iter().zip(behaviors.iter_mut()) {
+            let gdofs = b.global_dofs(dofmap);
+            let mut du_elem = LocalVec {
+                data: SmallVec::from_elem(0.0, gdofs.len()),
+            };
+            for (i, &g) in gdofs.iter().enumerate() {
+                if g != usize::MAX && g < du_free.len() {
+                    du_elem.data[i] = du_free[g];
+                }
+            }
+            let ctx = Ctx { model: model_ref };
+            b.update_state(&du_elem, false, &ctx);
+        }
+        for b in behaviors.iter_mut() {
+            b.commit_state();
+        }
+    }
+
     let mut v = vec![0.0; n_indep];
-    let n_init_d = n_indep.min(initial_disp.len());
-    u[..n_init_d].copy_from_slice(&initial_disp[..n_init_d]);
     let n_init_v = n_indep.min(initial_vel.len());
     v[..n_init_v].copy_from_slice(&initial_vel[..n_init_v]);
 
@@ -144,29 +255,10 @@ pub fn nonlinear_time_history_analysis(
         vec![0.0; n_indep]
     };
 
-    // 初期変位を要素状態に反映
-    {
-        let u_free_init = reducer.expand_u(&u);
-        let model_ref: &Model = model;
-        for (_elem, b) in model_ref.elements.iter().zip(behaviors.iter_mut()) {
-            let gdofs = b.global_dofs(dofmap);
-            let mut du_elem = LocalVec {
-                data: SmallVec::from_elem(0.0, gdofs.len()),
-            };
-            for (i, &g) in gdofs.iter().enumerate() {
-                if g != usize::MAX && g < u_free_init.len() {
-                    du_elem.data[i] = u_free_init[g];
-                }
-            }
-            let ctx = Ctx { model: model_ref };
-            b.update_state(&du_elem, false, &ctx);
-        }
-        for b in behaviors.iter_mut() {
-            b.commit_state();
-        }
-    }
-
-    // 初期加速度: M·a_0 = -C·v_0 - f_int(u_0) - p_red(0)
+    // 初期加速度: M·a_0 = p(0) + f0 − C·v_0 − f_int(u_0)
+    // p(0) は地震外力（符号込み −M·r·ẍg）、f0 は長期荷重（時刻歴を通じて一定、
+    // プッシュオーバーの f0+λ·q と同じ扱い）。f_int(u_0) は長期荷重＋動的初期変位を
+    // 反映した現在の要素状態から求まる（既に commit 済み）。
     let xg0_x = wave.accel_x.first().copied().unwrap_or(0.0);
     let xg0_y = wave
         .accel_y
@@ -188,8 +280,7 @@ pub fn nonlinear_time_history_analysis(
     let cv0 = sparse_matvec(&c_red, &v);
     let mut rhs_a0 = vec![0.0; n_indep];
     for i in 0..n_indep {
-        // p(0) は符号込み（−M·r·ẍg）。線形版と同じく加算が正しい。
-        rhs_a0[i] = p_red_0[i] - cv0[i] - f_int0_red[i];
+        rhs_a0[i] = p_red_0[i] + f0_red[i] - cv0[i] - f_int0_red[i];
     }
     let mut a = solve_initial_accel(&m_red, &rhs_a0, n_indep)?;
 
@@ -244,13 +335,35 @@ pub fn nonlinear_time_history_analysis(
     let mut time = Vec::with_capacity(n_steps + 1);
     time.push(0.0);
 
+    // 詳細記録（3D アニメーション・層応答グラフ・部材履歴用、record_every は cfg 経由）。
+    let mut recorder = ThRecorder::new(
+        model,
+        dofmap,
+        n_steps,
+        model.elements.len(),
+        cfg.record_every,
+    );
+    {
+        let xg_x_init = wave.accel_x.first().copied().unwrap_or(0.0);
+        let xg_y_init = wave
+            .accel_y
+            .as_ref()
+            .and_then(|a| a.first().copied())
+            .unwrap_or(0.0);
+        let mf_init = member_forces_nonlinear(model, &behaviors);
+        recorder.record_step(
+            0, 0.0, model, dofmap, reducer, &m_r_x, &m_r_y, &u, &v, &a, xg_x_init, xg_y_init,
+            &mf_init,
+        );
+    }
+
     for n in 0..n_steps {
         let t_next = (n + 1) as f64 * dt;
 
         // スナップショット
         let snap = StateSnapshot::capture(&behaviors);
 
-        // 地震荷重
+        // 地震荷重（動的分）＋長期荷重（f0、時刻歴を通じて一定）。
         let xg_x = wave.accel_x[n];
         let xg_y = wave
             .accel_y
@@ -264,7 +377,10 @@ pub fn nonlinear_time_history_analysis(
             .zip(m_r_theta.iter())
             .map(|((mx, my), mt)| -(mx * xg_x + my * xg_y + mt * xg_theta))
             .collect();
-        let p_red = reducer.reduce_f(&p_free);
+        let mut p_red = reducer.reduce_f(&p_free);
+        for i in 0..n_indep {
+            p_red[i] += f0_red[i];
+        }
 
         // 予測子: Δu = 0 での a, v
         let mut a_trial = vec![0.0; n_indep];
@@ -277,9 +393,9 @@ pub fn nonlinear_time_history_analysis(
         let mut du_total = vec![0.0; n_indep];
         let mut converged = false;
 
-        for _iter in 0..max_iter {
+        for _iter in 0..cfg.max_iter {
             // 接線剛性
-            let k_t_free = assemble_k(model, dofmap, &behaviors, use_kg);
+            let k_t_free = assemble_k(model, dofmap, &behaviors, cfg.use_kg);
             let k_t_red = reducer.reduce_k(&k_t_free);
 
             // 接線比例減衰（α1 一定 / h1 一定）は瞬間剛性から C を毎ステップ再構成する
@@ -328,7 +444,7 @@ pub fn nonlinear_time_history_analysis(
             // 収束判定
             let r_norm: f64 = r_red.iter().map(|x| x * x).sum::<f64>().sqrt();
             let p_norm: f64 = p_red.iter().map(|x| x * x).sum::<f64>().sqrt();
-            if r_norm < tol * p_norm.max(1.0) {
+            if r_norm < cfg.tol * p_norm.max(1.0) {
                 converged = true;
                 break;
             }
@@ -410,6 +526,29 @@ pub fn nonlinear_time_history_analysis(
                 &a,
                 xg_next,
             );
+
+            let xg_x_next = wave.accel_x.get(n + 1).copied().unwrap_or(0.0);
+            let xg_y_next = wave
+                .accel_y
+                .as_ref()
+                .and_then(|acc| acc.get(n + 1).copied())
+                .unwrap_or(0.0);
+            let mf_now = member_forces_nonlinear(model, &behaviors);
+            recorder.record_step(
+                (n + 1) as u64,
+                t_next,
+                model,
+                dofmap,
+                reducer,
+                &m_r_x,
+                &m_r_y,
+                &u,
+                &v,
+                &a,
+                xg_x_next,
+                xg_y_next,
+                &mf_now,
+            );
         } else {
             // 不収束: rollback
             model.restore(&snap, &mut behaviors);
@@ -445,7 +584,115 @@ pub fn nonlinear_time_history_analysis(
         story_drift_angle,
         cumulative_ductility,
         history,
+        recording: Some(recorder.finish()),
     })
+}
+
+/// 長期荷重（`f0_red`、縮約空間）を静的 Newton 反復で載荷する
+/// （プッシュオーバーの長期載荷フェーズ、`driver.rs` と同じ考え方: 弾性域で収まらない
+/// 場合に備えて 5 分割で漸増し、収束失敗時は増分半減で再試行する）。
+/// 収束したステップごとに要素状態を commit し、載荷完了時の変位（縮約空間）を
+/// `u_out` に加算する。
+fn apply_long_term_static(
+    model: &mut Model,
+    dofmap: &DofMap,
+    reducer: &Reducer,
+    behaviors: &mut [Box<dyn ElementBehavior>],
+    f0_red: &[f64],
+    use_kg: bool,
+    u_out: &mut [f64],
+) -> Result<(), SolveError> {
+    let n_indep = reducer.n_indep;
+    let n_grav = 5usize;
+    let mut applied = 0.0_f64;
+    for gstep in 0..n_grav {
+        let mut mu_target = (gstep + 1) as f64 / n_grav as f64;
+        let mut step_ok = false;
+        for _attempt in 0..5 {
+            let snap = StateSnapshot::capture(behaviors);
+            let f_target: Vec<f64> = f0_red.iter().map(|&v| v * mu_target).collect();
+            match newton_static_converge(
+                model, dofmap, reducer, behaviors, &f_target, use_kg, n_indep,
+            )? {
+                Some(du) => {
+                    for b in behaviors.iter_mut() {
+                        b.commit_state();
+                    }
+                    for i in 0..n_indep {
+                        u_out[i] += du[i];
+                    }
+                    applied = mu_target;
+                    step_ok = true;
+                    break;
+                }
+                None => {
+                    model.restore(&snap, behaviors);
+                    mu_target = applied + (mu_target - applied) * 0.5;
+                }
+            }
+        }
+        if !step_ok {
+            return Err(SolveError::InvalidInput(
+                "長期荷重の初期載荷が収束しません（長期荷重に対して構造が不安定な可能性）".into(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// 固定外力 `f_target_red`（縮約空間）に対する静的 Newton 反復
+/// （長期荷重の各漸増ステップの共通経路）。収束時はステップ内の全修正量の累積
+/// （縮約空間の変位増分）を `Some` で返し、要素状態はトライアル反映済み・未確定の
+/// まま戻す（確定・巻き戻しは呼び出し側の責務）。収束しなければ `Ok(None)`。
+fn newton_static_converge(
+    model: &Model,
+    dofmap: &DofMap,
+    reducer: &Reducer,
+    behaviors: &mut [Box<dyn ElementBehavior>],
+    f_target_red: &[f64],
+    use_kg: bool,
+    n_indep: usize,
+) -> Result<Option<Vec<f64>>, SolveError> {
+    let mut du_total = vec![0.0; n_indep];
+    for _iter in 0..50 {
+        let k_free = assemble_k(model, dofmap, behaviors, use_kg);
+        let k_red = reducer.reduce_k(&k_free);
+        let f_int_free = compute_f_int(model, dofmap, behaviors);
+        let f_int_red = reducer.reduce_f(&f_int_free);
+        let mut r_red = vec![0.0; n_indep];
+        for i in 0..n_indep {
+            r_red[i] = f_target_red[i] - f_int_red[i];
+        }
+        let r_norm: f64 = r_red.iter().map(|x| x * x).sum::<f64>().sqrt();
+        let f_norm: f64 = f_target_red.iter().map(|x| x * x).sum::<f64>().sqrt();
+        if r_norm < 1e-6 * f_norm.max(1.0) {
+            return Ok(Some(du_total));
+        }
+        let mut solver = make_solver(SolverBackend::Auto);
+        solver
+            .factorize(&k_red)
+            .map_err(|e| SolveError::Backend(format!("factor: {:?}", e)))?;
+        let du_red = solver.solve(&r_red)?;
+        let du_free = reducer.expand_u(&du_red);
+        for i in 0..n_indep {
+            du_total[i] += du_red[i];
+        }
+        let model_ref: &Model = model;
+        for (_elem, b) in model_ref.elements.iter().zip(behaviors.iter_mut()) {
+            let gdofs = b.global_dofs(dofmap);
+            let mut du_elem = LocalVec {
+                data: SmallVec::from_elem(0.0, gdofs.len()),
+            };
+            for (i, &g) in gdofs.iter().enumerate() {
+                if g != usize::MAX && g < du_free.len() {
+                    du_elem.data[i] = du_free[g];
+                }
+            }
+            let ctx = Ctx { model: model_ref };
+            b.update_state(&du_elem, false, &ctx);
+        }
+    }
+    Ok(None)
 }
 
 fn build_behaviors(model: &Model) -> Vec<Box<dyn squid_n_element::behavior::ElementBehavior>> {
