@@ -242,6 +242,20 @@ impl ElementBehavior for MaxwellDamperElement {
         LocalMat::zeros(12)
     }
 
+    fn state_member_forces(
+        &self,
+        _state: &ElemState,
+        _ctx: &Ctx,
+    ) -> Option<crate::beam::MemberForces> {
+        // 現在状態の軸力（引張正）を両評価点一定で返す。時刻歴・増分解析の
+        // 部材内力記録（N-δ 履歴ループ表示など）に用いる。
+        let n = self.axial_force(self.trial_elong);
+        let v = [n, 0.0, 0.0, 0.0, 0.0, 0.0];
+        Some(crate::beam::MemberForces {
+            at: vec![(0.0, v), (1.0, v)],
+        })
+    }
+
     fn commit_state(&mut self) {
         self.committed_ud = self.solve_ud(self.trial_elong);
         self.committed_elong = self.trial_elong;
@@ -294,6 +308,29 @@ mod tests {
         let d = damper(100.0, 1000.0, 1.0, 0.0);
         assert_eq!(d.axial_force(5.0), 0.0);
         assert_eq!(d.axial_tangent(), 0.0);
+    }
+
+    #[test]
+    fn test_maxwell_state_member_forces_matches_axial_force() {
+        // 部材内力記録（state_member_forces）は現在状態の軸力（引張正）を
+        // 両評価点一定で返す。
+        let mut d = damper(100.0, 1000.0, 1.0, 0.01);
+        d.trial_elong = 1.0;
+        let n = d.axial_force(1.0);
+        assert!(n > 0.0);
+        let mf = d
+            .state_member_forces(
+                &ElemState::default(),
+                &Ctx {
+                    model: &squid_n_core::model::Model::default(),
+                },
+            )
+            .expect("マクスウェルダンパーは状態から内力を返す");
+        assert_eq!(mf.at.len(), 2);
+        for (_, v) in &mf.at {
+            assert!((v[0] - n).abs() < 1e-12);
+            assert_eq!(v[5], 0.0);
+        }
     }
 
     #[test]

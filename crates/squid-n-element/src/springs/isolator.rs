@@ -333,6 +333,28 @@ impl ElementBehavior for IsolatorElement {
         }
     }
 
+    fn state_member_forces(
+        &self,
+        _state: &ElemState,
+        _ctx: &Ctx,
+    ) -> Option<crate::beam::MemberForces> {
+        // 現在状態の断面力を両評価点一定で返す（時刻歴・増分解析の記録用）。
+        // 符号規約は節点バネ（`spring.rs::recover_forces`）と同じ:
+        // N は引張正、せん断は i 端節点力そのまま、モーメントは i 端の符号反転。
+        let kv = self.props.kv.max(0.0);
+        let ((fy, fz), _) = self.shear_forces();
+        let rel = |d: usize| self.trial_disp[d + 6] - self.trial_disp[d];
+        let fx = kv * rel(0);
+        let mrx = RIGID_ROT * rel(3);
+        let mry = RIGID_ROT * rel(4);
+        let mrz = RIGID_ROT * rel(5);
+        // i 端局所節点力は [-fx, -fy, -fz, -mrx, -mry, -mrz]。
+        let v = [fx, -fy, -fz, mrx, mry, mrz];
+        Some(crate::beam::MemberForces {
+            at: vec![(0.0, v), (1.0, v)],
+        })
+    }
+
     fn update_state(&mut self, du: &LocalVec, commit: bool, _ctx: &Ctx) {
         let du_global: [f64; 12] = std::array::from_fn(|i| du.data[i]);
         let du_local = self.axis.rotate_to_local(&du_global);
