@@ -43,6 +43,11 @@ pub fn nonlinear_time_history_analysis(
 ) -> Result<ResponseResult, SolveError> {
     squid_n_math::parallelism::apply_to_faer();
 
+    // 部材の終局耐力を算定できない設定不備（耐震壁の Qu、線材の材料強度未入力）は、
+    // 代替値で埋めず解析を止める（プッシュオーバーと同じ規約）。耐力が定まらない
+    // 部材は弾性のまま際限なく応力を負担し、応答を過小評価する（危険側）。
+    squid_n_element::factory::ensure_nonlinear_input(model).map_err(SolveError::InvalidInput)?;
+
     let dt = if newmark.dt > 0.0 {
         newmark.dt
     } else {

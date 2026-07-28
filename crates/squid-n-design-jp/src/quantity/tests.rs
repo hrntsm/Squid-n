@@ -47,6 +47,7 @@ fn line_elem(id: u32, n0: u32, n1: u32, sec: u32, mat: u32) -> ElementData {
 
 fn rc_rebar() -> RcRebar {
     RcRebar {
+        main_grade: None,
         main_x: BarSet {
             count: 8,
             dia: 25.0,
@@ -78,6 +79,7 @@ fn rc_girder_section(id: u32) -> Section {
 
 fn rc_column_section(id: u32) -> Section {
     let rebar = RcRebar {
+        main_grade: None,
         main_x: BarSet {
             count: 6,
             dia: 25.0,

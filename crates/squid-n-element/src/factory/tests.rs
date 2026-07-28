@@ -552,6 +552,7 @@ fn test_resolve_member_hysteresis_and_flexural_springs() {
 
     fn rebar() -> RcRebar {
         RcRebar {
+            main_grade: None,
             main_x: BarSet {
                 count: 4,
                 dia: 22.0,
@@ -687,6 +688,7 @@ fn test_flexural_alpha_y_sugano_for_rc_beam() {
         b: 400.0,
         d: 700.0,
         rebar: RcRebar {
+            main_grade: None,
             main_x: BarSet {
                 count: 4,
                 dia: 22.0,
@@ -762,6 +764,7 @@ fn test_rc_beam_flexural_spring_exhibits_takeda_degradation() {
         b: 400.0,
         d: 700.0,
         rebar: RcRebar {
+            main_grade: None,
             main_x: BarSet {
                 count: 4,
                 dia: 22.0,

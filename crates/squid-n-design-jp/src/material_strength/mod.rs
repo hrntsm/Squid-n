@@ -24,10 +24,13 @@ pub use concrete::{
     young_ratio_n,
 };
 pub use high_strength_hoop::{
-    high_strength_group, high_strength_pw_cap, high_strength_w_ft, ultimate_hoop_nu0,
-    ultimate_hoop_pw_cap, ultimate_hoop_sigma_wy, HighStrengthGroup,
+    high_strength_group, high_strength_pw_cap, high_strength_w_ft, is_high_strength_shear_grade,
+    ultimate_hoop_nu0, ultimate_hoop_pw_cap, ultimate_hoop_sigma_wy, HighStrengthGroup,
 };
-pub use rebar::{rebar_allowable_shear, rebar_allowable_tension, rebar_sigma_y};
+pub use rebar::{
+    main_rebar_grade, rebar_allowable_shear, rebar_allowable_tension, rebar_sigma_y,
+    rebar_sigma_y_of, shear_rebar_grade,
+};
 pub use steel::{
     big_lambda, plate_thickness, steel_f_value, steel_f_value_prefix, steel_fc, steel_fs, steel_ft,
 };

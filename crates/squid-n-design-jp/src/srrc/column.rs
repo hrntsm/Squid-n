@@ -10,7 +10,7 @@ use super::{
     bar_set_area, ratio_or_large, src_rect_axis_props, src_shear_check, steel_h_props,
     SrcAxisProps, SrcSeismicCtx,
 };
-use crate::material_strength::rebar_sigma_y;
+use crate::material_strength::{main_rebar_grade, rebar_sigma_y_of};
 use crate::rc::{
     concrete_allowable_compression_class, concrete_allowable_shear_class, rebar_allowable_shear,
     rebar_allowable_tension, young_ratio_n,
@@ -206,7 +206,8 @@ pub(crate) fn src_column_check(
     fc_raw: f64,
 ) -> CheckResult {
     let long_term = ctx.term == LoadTerm::Long;
-    let grade = mat.name.as_str();
+    // 主筋の材質は断面（配筋）の属性を第一とし、未設定のときのみ部材材料名を用いる。
+    let grade = main_rebar_grade(rebar, mat);
 
     // 軽量コンクリート1種・2種は許容応力度（圧縮・せん断）を 0.9 倍に低減
     // （SRC規準1987。class 対応版を使用）。
@@ -297,7 +298,7 @@ pub(crate) fn src_column_check(
     // `rc_column_mu_simple`（柱頭・柱脚同一断面・同一設計軸力の仮定）で
     // 算定する。sft は常に短期値を用いる。
     let s_ft_short = steel_ft(f_value, LoadTerm::Short);
-    let sigma_y = rebar_sigma_y(mat);
+    let sigma_y = rebar_sigma_y_of(rebar, mat);
     let r_mu_z = rc_column_mu_simple(
         &RcCapacityInput {
             b: props_z.b,
@@ -666,7 +667,7 @@ mod tests {
         let props_z = src_rect_axis_props(500.0, 500.0, &rebar.main_x, &rebar);
         let as_total = bar_set_area(&rebar.main_x) + bar_set_area(&rebar.main_y);
         let mat = make_material(24.0, "SD345");
-        let sigma_y = rebar_sigma_y(&mat);
+        let sigma_y = rebar_sigma_y_of(&rebar, &mat);
         let fc_raw = 24.0;
 
         let mu_at = |n_design: f64| {

@@ -98,25 +98,11 @@ pub fn pushover_analysis_recording(
         return Err("no active DOF".into());
     }
 
-    // 耐震壁のせん断終局強度 Qu を算定できない設定不備は、代替値で埋めず解析を止める。
-    // Qu が無い壁は際限なく水平力を負担し、崩壊機構が形成されないまま保有水平耐力を
-    // 過大評価する（危険側）ため、無音のフォールバックを許さない。
-    let wall_issues: Vec<String> = model
-        .elements
-        .iter()
-        .filter_map(|e| {
-            squid_n_element::wall_panel::WallPanelElement::wall_shear_capacity_issue(e, model)
-        })
-        .collect();
-    if !wall_issues.is_empty() {
-        let head: Vec<String> = wall_issues.iter().take(5).cloned().collect();
-        let more = if wall_issues.len() > 5 {
-            format!("\n他 {} 件", wall_issues.len() - 5)
-        } else {
-            String::new()
-        };
-        return Err(format!("{}{}", head.join("\n"), more));
-    }
+    // 部材の終局耐力を算定できない設定不備（耐震壁の Qu、線材の材料強度未入力）は、
+    // 代替値で埋めず解析を止める。耐力が定まらない部材は際限なく応力を負担し、
+    // 崩壊機構が形成されないまま保有水平耐力を過大評価する（危険側）ため、
+    // 無音のフォールバックを許さない。
+    squid_n_element::factory::ensure_nonlinear_input(model)?;
 
     // 保有水平耐力計算の材料強度: 部材組み立て時に鋼材 fy・RC 主筋 σy へ
     // 材料強度係数（鋼材1.1倍/590N級1.05倍/RC主筋1.1倍、直接入力係数優先）を

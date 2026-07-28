@@ -240,6 +240,7 @@ use squid_n_core::section_shape::{BarSet, RcRebar, ShearBar};
 
 fn rebar() -> RcRebar {
     RcRebar {
+        main_grade: None,
         main_x: BarSet {
             count: 3,
             dia: 22.0,
@@ -486,6 +487,7 @@ fn test_standard_import_roundtrip_steel_and_rc() {
 /// したりは標準では往復しない（[`super`] モジュールドキュメント参照）。
 fn rebar_distinct() -> RcRebar {
     RcRebar {
+        main_grade: None,
         main_x: BarSet {
             count: 4,
             dia: 25.0,
@@ -696,6 +698,7 @@ fn test_standard_roundtrip_rc_rebar_non_integer() {
     let mut m = frame_nodes();
     // 主筋径は単一 `D_main`・1 段のみ標準往復する（X/Y で径・段数は変えない）。
     let r = RcRebar {
+        main_grade: None,
         main_x: BarSet {
             count: 6,
             dia: 12.7,

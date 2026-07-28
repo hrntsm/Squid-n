@@ -468,6 +468,9 @@ fn rebar_attrs(r: &RcRebar, is_beam: bool) -> String {
         if let Some(g) = &r.shear.grade {
             s.push_str(&format!(" strength_stirrup=\"{}\"", esc(g)));
         }
+        if let Some(g) = &r.main_grade {
+            s.push_str(&format!(" strength_main=\"{}\"", esc(g)));
+        }
         s
     } else {
         let mut s = format!(
@@ -482,6 +485,9 @@ fn rebar_attrs(r: &RcRebar, is_beam: bool) -> String {
         );
         if let Some(g) = &r.shear.grade {
             s.push_str(&format!(" strength_band=\"{}\"", esc(g)));
+        }
+        if let Some(g) = &r.main_grade {
+            s.push_str(&format!(" strength_main=\"{}\"", esc(g)));
         }
         s
     }

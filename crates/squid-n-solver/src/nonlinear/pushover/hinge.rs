@@ -72,12 +72,22 @@ fn member_moment_thresholds(elem: &ElementData, model: &Model) -> HingeThreshold
 
     match &sec.shape {
         Some(SectionShape::RcRect { rebar, d, .. }) | Some(SectionShape::RcCircle { rebar, d }) => {
+            // Fc 未設定（fc=0 → Mc=0 でヒンジが一切検出されない）のモデルは
+            // `squid_n_element::factory::ensure_nonlinear_input` が解析前に停止する
+            // ため、非線形解析ではこのフォールバックに到達しない。
             let fc = mat.and_then(|m| m.fc).unwrap_or(0.0);
             // 曲げひび割れ Mc = κ·√Fc·Ze（κ=0.56、技術基準解説書 P.621-623）。
             let mc = 0.56 * fc.max(0.0).sqrt() * ze;
             // 曲げ降伏 My = 0.9·at·σy·d（rc_mu_simple）。at は片側引張筋（対称配筋仮定）。
+            // σy は**断面（配筋）の主筋材質** → 部材材料の fy の順で解決する。
+            // どちらも未設定のモデルは `ensure_nonlinear_input` が解析前に停止するため、
+            // 既定値 345 へのフォールバックには到達しない。
             // 保有水平耐力計算のため主筋の材料強度割増を乗じる（せん断補強筋は対象外）。
-            let sigma_y_rebar = mat.and_then(|m| m.fy).unwrap_or(345.0)
+            let sigma_y_rebar = squid_n_core::material_grade::rebar_yield_strength(
+                rebar.main_grade.as_deref(),
+                mat,
+            )
+            .unwrap_or(345.0)
                 * mat.map(material_strength_factor_rebar).unwrap_or(1.0);
             let at = bar_set_area(&rebar.main_x) / 2.0;
             let d_eff = (d - rebar.cover - rebar.main_x.dia / 2.0).max(0.0);

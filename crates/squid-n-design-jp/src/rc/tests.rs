@@ -33,6 +33,7 @@ pub(crate) fn rc_rect_shape(
         b,
         d,
         rebar: RcRebar {
+            main_grade: None,
             main_x: BarSet {
                 count: main_count,
                 dia: main_dia,
@@ -656,6 +657,7 @@ fn test_rc_circle_beam_and_column_smoke() {
     let shape = SectionShape::RcCircle {
         d: 600.0,
         rebar: RcRebar {
+            main_grade: None,
             main_x: BarSet {
                 count: 12,
                 dia: 22.0,

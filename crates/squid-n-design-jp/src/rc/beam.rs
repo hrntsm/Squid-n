@@ -4,9 +4,10 @@
 //! 梁断面検定の対象と一致）。付着の検定は [`super::bond`] へ委譲する。
 
 use super::{
-    circle_axis_props, effective_damage_control, high_strength_w_ft, rc_allow, rc_beam_bond_check,
-    rebar_allowable_tension, rebar_sigma_y, rect_axis_props_strong, seismic_design_shear,
-    shear_alpha, shear_capacity_for, AxisProps,
+    circle_axis_props, effective_damage_control, high_strength_w_ft, is_high_strength_shear_grade,
+    main_rebar_grade, rc_allow, rc_beam_bond_check, rebar_allowable_tension, rebar_sigma_y_of,
+    rect_axis_props_strong, seismic_design_shear, shear_alpha, shear_capacity_for,
+    shear_rebar_grade, AxisProps,
 };
 use crate::{CheckComponent, CheckKind, CheckResult, DesignCtx, LoadTerm, MemberForcesAt};
 use squid_n_core::model::{Material, Section};
@@ -102,9 +103,22 @@ pub(crate) fn beam_check(
         _ => unreachable!(),
     };
     let long_term = ctx.term == LoadTerm::Long;
-    let grade = mat.name.as_str();
-    let mut allow = rc_allow(fc_raw, mat.concrete_class, grade, long_term);
-    let shear_grade = rebar.shear.grade.as_deref();
+    // 主筋・せん断補強筋の材質は**断面（配筋）の属性**を第一とし、未設定のときのみ
+    // 部材材料名へフォールバックする（従来挙動）。
+    let grade = main_rebar_grade(rebar, mat);
+    let mut allow = rc_allow(
+        fc_raw,
+        mat.concrete_class,
+        shear_rebar_grade(rebar, mat),
+        long_term,
+    );
+    // 以降 `shear_grade` は**高強度せん断補強筋のときだけ** Some とする。普通強度
+    // （SD*/SR*）を高強度品の表で評価すると w_ft を大幅に過大評価し危険側になる。
+    let shear_grade = rebar
+        .shear
+        .grade
+        .as_deref()
+        .filter(|g| is_high_strength_shear_grade(g));
     if let Some(g) = shear_grade {
         // 高強度せん断補強筋: w_ft は製品表から求め直す（主筋グレードとは独立）。
         allow.w_ft = high_strength_w_ft(g, long_term);
@@ -148,7 +162,7 @@ pub(crate) fn beam_check(
             d: props.d_full,
             at: props.at,
             d_eff: props.d,
-            sigma_y: rebar_sigma_y(mat),
+            sigma_y: rebar_sigma_y_of(rebar, mat),
             fc: fc_raw,
             pw: props.pw,
             sigma_wy: 0.0,

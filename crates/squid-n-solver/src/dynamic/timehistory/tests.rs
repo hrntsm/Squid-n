@@ -71,6 +71,11 @@ const FREE_UY: Dof6Mask = Dof6Mask(0b111101);
 
 /// SDOF: m=1.0 N·s²/mm, k=1000 N/mm（§8.1）。
 /// ω = √(k/m) = 31.6228 rad/s, T = 0.198692 s。
+///
+/// 弾性ばねを模擬する検証モデルのため、降伏強度は塑性化しない十分大きな値
+/// （`fy = 1e10`。`fiber_column_model(1e10)` と同じ扱い）とする。非線形解析は
+/// 材料強度が未入力の部材（＝耐力を算定できず降伏しない部材）を
+/// `factory::ensure_nonlinear_input` で拒否するため、`fy`・`Fc` のいずれかが要る。
 fn sdof_model() -> Model {
     let k = 1000.0_f64;
     let m = 1.0_f64;
@@ -131,7 +136,7 @@ fn sdof_model() -> Model {
             density: 0.0,
             shear: None,
             fc: None,
-            fy: None,
+            fy: Some(1e10),
         }],
         ..Default::default()
     }
@@ -200,7 +205,7 @@ fn sdof_model_y() -> Model {
             density: 0.0,
             shear: None,
             fc: None,
-            fy: None,
+            fy: Some(1e10),
         }],
         ..Default::default()
     }

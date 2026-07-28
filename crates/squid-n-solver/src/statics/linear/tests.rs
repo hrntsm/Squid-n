@@ -1668,6 +1668,7 @@ fn test_axial_cut_applies_to_composite_src_column() {
         b: 600.0,
         d: 600.0,
         rebar: RcRebar {
+            main_grade: None,
             main_x: BarSet {
                 count: 8,
                 dia: 22.0,

@@ -217,6 +217,27 @@ fn test_prepare_dangling_constraint_reference_gives_diagnostic() {
     assert!(msg.contains("存在しない節点"), "{}", msg);
 }
 
+/// 有効せん断断面積 As=0 の断面を使う線材は入力エラーとする。
+///
+/// As=0 はせん断変形が生じず（φ=0）、せん断降伏の判定閾値も Qy=+∞ となるため、
+/// 入力不足が「せん断について無限に強い部材」として黙って通ってしまう（危険側）。
+/// せん断変形を無視したい場合は部材のモデル化として指定する（十分大きな As を
+/// 与える `test_bernoulli_strict_1e9` の扱い）。
+#[test]
+fn test_prepare_zero_shear_area_is_error() {
+    let mut model = make_cantilever_model();
+    model.sections[0].as_y = 0.0;
+    let err = Analysis::prepare(&model).err().unwrap();
+    let msg = format!("{}", err);
+    assert!(msg.contains("有効せん断断面積"), "{}", msg);
+
+    // as_z 側だけが 0 でも同様に検出する。
+    model.sections[0].as_y = 83.33;
+    model.sections[0].as_z = 0.0;
+    let err = Analysis::prepare(&model).err().unwrap();
+    assert!(format!("{}", err).contains("有効せん断断面積"));
+}
+
 #[test]
 fn test_linear_static_unknown_load_case_is_error() {
     let model = make_cantilever_model();

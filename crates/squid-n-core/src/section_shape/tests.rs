@@ -199,6 +199,7 @@ fn test_rc_rect() {
         b: 500.0,
         d: 500.0,
         rebar: RcRebar {
+            main_grade: None,
             main_x: BarSet {
                 count: 8,
                 dia: 16.0,
@@ -229,6 +230,7 @@ fn test_rc_circle() {
     let shape = SectionShape::RcCircle {
         d: 600.0,
         rebar: RcRebar {
+            main_grade: None,
             main_x: BarSet {
                 count: 12,
                 dia: 22.0,
@@ -313,6 +315,7 @@ fn test_rc_rebar_serde_roundtrip() {
         b: 500.0,
         d: 600.0,
         rebar: RcRebar {
+            main_grade: None,
             main_x: BarSet {
                 count: 6,
                 dia: 22.0,
@@ -343,6 +346,7 @@ fn test_rc_rect_area() {
         b: 400.0,
         d: 600.0,
         rebar: RcRebar {
+            main_grade: None,
             main_x: BarSet {
                 count: 6,
                 dia: 19.0,
@@ -376,6 +380,7 @@ fn test_rc_rect_shear_area_is_gross_over_kappa() {
         b: 500.0,
         d: 500.0,
         rebar: RcRebar {
+            main_grade: None,
             main_x: BarSet {
                 count: 8,
                 dia: 22.0,
@@ -419,6 +424,7 @@ fn test_steel_h_shear_area_is_web_and_flange() {
 fn test_rc_rect_torsion_matches_manual_formula() {
     // J = (b³h/16)[16/3 − 3.36(b/h)(1 − (1/12)(b/h)⁴)]。細長比によらず同一式。
     let rebar = RcRebar {
+        main_grade: None,
         main_x: BarSet {
             count: 4,
             dia: 19.0,
@@ -465,6 +471,7 @@ fn test_src_axial_stiffness_area_accumulates_steel() {
         b: 600.0,
         d: 600.0,
         rebar: RcRebar {
+            main_grade: None,
             main_x: BarSet {
                 count: 8,
                 dia: 22.0,
@@ -505,6 +512,7 @@ fn make_src_600() -> SectionShape {
         b: 600.0,
         d: 600.0,
         rebar: RcRebar {
+            main_grade: None,
             main_x: BarSet {
                 count: 8,
                 dia: 22.0,
@@ -610,6 +618,7 @@ fn test_rc_circle_area() {
     let shape = SectionShape::RcCircle {
         d: 800.0,
         rebar: RcRebar {
+            main_grade: None,
             main_x: BarSet {
                 count: 16,
                 dia: 25.0,

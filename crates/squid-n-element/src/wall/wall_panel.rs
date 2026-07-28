@@ -654,13 +654,22 @@ impl WallPanelElement {
     /// 代替値で埋めずに解析を止め、利用者へ是正を促す。
     ///
     /// 検出する不備:
+    /// - 壁エレメントとして構築できない（4 節点未満／節点座標が退化）。この壁は
+    ///   暫定等価梁（弾性梁）へフォールバックするため Qu の頭打ちが効かない。
+    /// - 断面が設定されていない／壁厚が 0 以下。
+    /// - 材料が設定されていない。
+    /// - 材料にコンクリート強度 Fc が設定されていない、または Fc が 0 以下。
     /// - 付帯柱（側柱）はあるのに、その断面から主筋量を読み取れない
     ///   （断面形状が RcRect でない／主筋本数・径が 0）。等価引張鉄筋比 pte を
     ///   算定できない。
-    /// - 材料にコンクリート強度 Fc が設定されていない。
+    /// - 上記のいずれにも当てはまらないが Qu が 0 以下になる（適用範囲外の寸法など）。
     ///
     /// 付帯柱が無い壁（壁のみの耐震壁）は不備ではなく、壁の縦筋比 ps から pte を
     /// 算定する。`ps = 0` の場合は主筋・壁筋がいずれも無いことになるため不備とする。
+    ///
+    /// 耐震壁として成立する壁について、[`Self::shear_capacity_of`] が 0 を返す
+    /// （＝弾性のまま扱われる）ケースを**必ず**いずれかの不備として拾う。個別診断を
+    /// 追加し忘れても無音で弾性へ落ちないよう、最後に Qu>0 を確認する総括判定を置く。
     pub fn wall_shear_capacity_issue(data: &ElementData, model: &Model) -> Option<String> {
         if !matches!(data.kind, squid_n_core::model::ElementKind::Wall) {
             return None;
@@ -669,28 +678,63 @@ impl WallPanelElement {
         if !crate::misc_wall::wall_is_seismic(data, model) {
             return None;
         }
-        // 壁エレメントとして構築できない形状は本チェックの対象外
-        // （別途フォールバック等価梁として扱われる）。
-        let geom = wall_panel_geometry(data, model)?;
-        let sec = data
-            .section
-            .and_then(|sid| model.sections.get(sid.index()))?;
+        // 壁エレメントとして構築できない壁は暫定等価梁（弾性）へフォールバックし、
+        // 面内せん断が頭打ちにならない。耐震壁として成立する以上は不備として扱う。
+        let Some(geom) = wall_panel_geometry(data, model) else {
+            return Some(format!(
+                "耐震壁 ID {} を壁エレメントとして構築できません（4 節点の指定と節点座標を確認してください）。\
+                 壁エレメントを構築できない壁は弾性の等価梁として扱われ、\
+                 保有水平耐力計算で面内せん断が終局せん断強度で頭打ちになりません。",
+                data.id.0
+            ));
+        };
+        let Some(sec) = data.section.and_then(|sid| model.sections.get(sid.index())) else {
+            return Some(format!(
+                "耐震壁 ID {} に断面が設定されていません。\
+                 断面タブで壁厚・壁筋比を設定してください。\
+                 保有水平耐力計算では耐震壁の終局せん断強度が必要です。",
+                data.id.0
+            ));
+        };
         let (t, ps) = match &sec.shape {
             Some(SectionShape::RcWall { thickness, ps }) => (*thickness, (*ps).max(0.0)),
             _ => (sec.thickness.unwrap_or(sec.width), 0.0),
         };
         if t <= 0.0 {
-            return None;
-        }
-        let mat = data
-            .material
-            .and_then(|mid| model.materials.get(mid.index()))?;
-        if mat.fc.is_none() {
             return Some(format!(
-                "耐震壁 ID {} の材料「{}」にコンクリート強度 Fc が設定されていません。\
-                 保有水平耐力計算では耐震壁の終局せん断強度が必要です。材料タブで Fc を設定してください。",
-                data.id.0, mat.name
+                "耐震壁 ID {} の断面「{}」の壁厚が 0 以下です。\
+                 断面タブで壁厚を設定してください。\
+                 保有水平耐力計算では耐震壁の終局せん断強度が必要です。",
+                data.id.0, sec.name
             ));
+        }
+        let Some(mat) = data
+            .material
+            .and_then(|mid| model.materials.get(mid.index()))
+        else {
+            return Some(format!(
+                "耐震壁 ID {} に材料が設定されていません。\
+                 材料タブでコンクリート強度 Fc を持つ材料を割り当ててください。\
+                 保有水平耐力計算では耐震壁の終局せん断強度が必要です。",
+                data.id.0
+            ));
+        };
+        match mat.fc {
+            None => {
+                return Some(format!(
+                    "耐震壁 ID {} の材料「{}」にコンクリート強度 Fc が設定されていません。\
+                     保有水平耐力計算では耐震壁の終局せん断強度が必要です。材料タブで Fc を設定してください。",
+                    data.id.0, mat.name
+                ));
+            }
+            Some(fc) if fc <= 0.0 => {
+                return Some(format!(
+                    "耐震壁 ID {} の材料「{}」のコンクリート強度 Fc が {} で 0 以下です。\
+                     保有水平耐力計算では耐震壁の終局せん断強度が必要です。材料タブで Fc を設定してください。",
+                    data.id.0, mat.name, fc
+                ));
+            }
+            Some(_) => {}
         }
 
         let edge_pairs = [[geom.bottom[0], geom.top[0]], [geom.bottom[1], geom.top[1]]];
@@ -728,6 +772,16 @@ impl WallPanelElement {
                 "耐震壁 ID {} は側柱（付帯柱）が無く、かつ壁筋比 ps が 0 です。\
                  断面タブで壁筋比を設定してください。\
                  保有水平耐力計算では壁筋比から耐震壁の等価引張鉄筋比 pte を算定します。",
+                data.id.0
+            ));
+        }
+        // 総括判定: 個別診断に当てはまらない理由（適用範囲外の寸法・開口など）で
+        // Qu が 0 になる場合も、無音で弾性へ落とさずここで捕捉する。
+        if Self::shear_capacity_of(data, model) <= 0.0 {
+            return Some(format!(
+                "耐震壁 ID {} の終局せん断強度 Qu を算定できません（算定結果が 0 以下）。\
+                 壁の寸法・壁筋比・側柱の配筋・開口寸法の入力を確認してください。\
+                 保有水平耐力計算では Qu が定まらない壁を弾性として扱えません。",
                 data.id.0
             ));
         }
@@ -1412,6 +1466,7 @@ mod tests {
             b: 600.0,
             d: 600.0,
             rebar: squid_n_core::section_shape::RcRebar {
+                main_grade: None,
                 main_x: squid_n_core::section_shape::BarSet {
                     count: 8,
                     dia: 22.0,
@@ -1853,6 +1908,7 @@ mod capacity_issue_tests {
                 b: 600.0,
                 d: 600.0,
                 rebar: RcRebar {
+                    main_grade: None,
                     main_x: BarSet {
                         count: 8,
                         dia: 22.0,
@@ -1878,6 +1934,7 @@ mod capacity_issue_tests {
                 b: 600.0,
                 d: 600.0,
                 rebar: RcRebar {
+                    main_grade: None,
                     main_x: BarSet {
                         count: 0,
                         dia: 0.0,
@@ -1941,5 +1998,65 @@ mod capacity_issue_tests {
         let issue = WallPanelElement::wall_shear_capacity_issue(&wall, &model)
             .expect("側柱も壁筋も無ければ不備");
         assert!(issue.contains("壁筋比"), "{}", issue);
+    }
+
+    /// コンクリート強度 Fc が未設定の壁は不備として検出する。
+    /// Qu を算定できず弾性のまま解析すると保有水平耐力を過大評価する（危険側）。
+    #[test]
+    fn test_issue_when_fc_unset() {
+        let (mut model, wall) = model_with(None, 0.0025);
+        model.materials[0].fc = None;
+        let issue =
+            WallPanelElement::wall_shear_capacity_issue(&wall, &model).expect("Fc 未設定は不備");
+        assert!(issue.contains("Fc"), "{}", issue);
+        assert_eq!(WallPanelElement::shear_capacity_of(&wall, &model), 0.0);
+    }
+
+    /// Fc が 0 以下でも Qu を算定できないため不備とする（未設定と同じ扱い）。
+    #[test]
+    fn test_issue_when_fc_not_positive() {
+        let (mut model, wall) = model_with(None, 0.0025);
+        model.materials[0].fc = Some(0.0);
+        let issue =
+            WallPanelElement::wall_shear_capacity_issue(&wall, &model).expect("Fc<=0 は不備");
+        assert!(issue.contains("Fc"), "{}", issue);
+        assert_eq!(WallPanelElement::shear_capacity_of(&wall, &model), 0.0);
+    }
+
+    /// 材料が割り当てられていない壁も不備とする（Fc を参照できない）。
+    #[test]
+    fn test_issue_when_material_missing() {
+        let (model, mut wall) = model_with(None, 0.0025);
+        wall.material = None;
+        let issue =
+            WallPanelElement::wall_shear_capacity_issue(&wall, &model).expect("材料未設定は不備");
+        assert!(issue.contains("材料が設定されていません"), "{}", issue);
+        assert_eq!(WallPanelElement::shear_capacity_of(&wall, &model), 0.0);
+    }
+
+    /// 断面が割り当てられていない壁も不備とする（壁厚・壁筋比を参照できない）。
+    #[test]
+    fn test_issue_when_section_missing() {
+        let (model, mut wall) = model_with(None, 0.0025);
+        wall.section = None;
+        let issue =
+            WallPanelElement::wall_shear_capacity_issue(&wall, &model).expect("断面未設定は不備");
+        assert!(issue.contains("断面が設定されていません"), "{}", issue);
+        assert_eq!(WallPanelElement::shear_capacity_of(&wall, &model), 0.0);
+    }
+
+    /// 壁エレメントとして構築できない壁（4 節点未満）は暫定等価梁（弾性）へ
+    /// フォールバックし面内せん断が頭打ちにならないため、不備として検出する。
+    #[test]
+    fn test_issue_when_wall_panel_cannot_be_built() {
+        let (model, mut wall) = model_with(None, 0.0025);
+        wall.nodes.truncate(3);
+        let issue = WallPanelElement::wall_shear_capacity_issue(&wall, &model)
+            .expect("壁エレメントを構築できない壁は不備");
+        assert!(
+            issue.contains("壁エレメントとして構築できません"),
+            "{}",
+            issue
+        );
     }
 }

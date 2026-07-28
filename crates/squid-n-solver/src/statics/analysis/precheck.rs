@@ -50,6 +50,45 @@ pub(super) fn precheck_model(model: &Model) -> Result<(), SolveError> {
         )));
     }
 
+    // 線材の有効せん断断面積 As が 0（未入力）
+    //
+    // As=0 はティモシェンコ梁の φ=0（＝せん断変形なし）となるうえ、せん断降伏の
+    // 判定閾値も Qy=+∞（＝せん断では決して降伏しない）となり、入力不足が黙って
+    // 「せん断について無限に強い部材」として通ってしまう（危険側）。
+    // せん断変形を無視するモデル化は部材（梁）のモデル化として指定すべきことであり、
+    // 断面の As を 0 とする形で表現してはならないため、入力エラーとする。
+    let zero_shear: Vec<u32> = model
+        .elements
+        .iter()
+        .filter(|e| {
+            matches!(
+                e.kind,
+                ElementKind::Beam | ElementKind::Fiber | ElementKind::MultiSpring
+            )
+        })
+        .filter(|e| {
+            e.section
+                .and_then(|sid| model.sections.get(sid.index()))
+                .is_some_and(|s| s.as_y <= 0.0 || s.as_z <= 0.0)
+        })
+        .map(|e| e.id.0)
+        .collect();
+    if !zero_shear.is_empty() {
+        let head: Vec<String> = zero_shear.iter().take(5).map(|id| id.to_string()).collect();
+        let more = if zero_shear.len() > 5 {
+            format!(" 他{}件", zero_shear.len() - 5)
+        } else {
+            String::new()
+        };
+        return Err(SolveError::InvalidInput(format!(
+            "有効せん断断面積 As が 0 の断面を使う部材があります: ID {}{}。\
+             断面タブで As（Asy・Asz）を設定してください。\
+             As=0 はせん断変形が生じず、せん断降伏も判定されない部材となります。",
+            head.join(", "),
+            more
+        )));
+    }
+
     // 孤立節点（要素・拘束・剛床から参照されず、完全固定でもない）
     // → 剛性ゼロの自由 DOF となり特異行列の典型原因
     //
