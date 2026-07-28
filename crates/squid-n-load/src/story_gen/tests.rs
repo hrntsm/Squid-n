@@ -29,6 +29,7 @@ fn two_story_model() -> Model {
             },
             mass: None,
             story: None,
+            support_spring: None,
         });
     }
     model.sections.push(Section {
@@ -168,6 +169,7 @@ fn test_generate_single_level_is_error() {
         restraint: Dof6Mask::FIXED,
         mass: None,
         story: None,
+        support_spring: None,
     });
     assert!(generate_stories(&model, None).is_err());
 }
@@ -192,6 +194,7 @@ fn asymmetric_weight_model() -> Model {
             },
             mass: None,
             story: None,
+            support_spring: None,
         });
     }
     model.load_cases.push(LoadCase {
@@ -288,6 +291,7 @@ fn test_generate_zero_weight_falls_back_to_geometric_centroid() {
             },
             mass: None,
             story: None,
+            support_spring: None,
         });
     }
     let gen = generate_stories(&model, None).unwrap();
@@ -323,6 +327,7 @@ fn two_columns_with_dl_model() -> Model {
             },
             mass: None,
             story: None,
+            support_spring: None,
         });
     }
     model.sections.push(Section {
@@ -480,6 +485,7 @@ fn secondary_joist_model() -> Model {
         restraint: Dof6Mask::FIXED,
         mass: None,
         story: None,
+        support_spring: None,
     });
     model.nodes.push(Node {
         id: NodeId(1),
@@ -487,6 +493,7 @@ fn secondary_joist_model() -> Model {
         restraint: Dof6Mask::FREE,
         mass: None,
         story: None,
+        support_spring: None,
     });
     model.nodes.push(Node {
         id: NodeId(2),
@@ -494,6 +501,7 @@ fn secondary_joist_model() -> Model {
         restraint: Dof6Mask::FREE,
         mass: None,
         story: None,
+        support_spring: None,
     });
     model.sections.push(Section {
         id: SectionId(0),
@@ -571,6 +579,7 @@ fn single_beam_model(
         restraint: Dof6Mask::FIXED,
         mass: None,
         story: None,
+        support_spring: None,
     });
     model.nodes.push(Node {
         id: NodeId(1),
@@ -578,6 +587,7 @@ fn single_beam_model(
         restraint: Dof6Mask::FREE,
         mass: None,
         story: None,
+        support_spring: None,
     });
     model.sections.push(Section {
         id: SectionId(0),
@@ -697,6 +707,7 @@ fn test_member_load_reaction_distribution_end_to_end() {
             },
             mass: None,
             story: None,
+            support_spring: None,
         });
     }
     model.elements.push(ElementData {
@@ -799,6 +810,7 @@ fn test_face_reduction_applies_to_horizontal_concrete_beam() {
             },
             mass: None,
             story: None,
+            support_spring: None,
         });
     }
     model.sections.push(Section {
@@ -950,6 +962,7 @@ fn wall_model() -> Model {
             },
             mass: None,
             story: None,
+            support_spring: None,
         });
     }
     model.sections.push(Section {
@@ -1240,6 +1253,7 @@ fn test_misc_wall_beam_transfer_conserves_total_weight() {
         restraint: Dof6Mask::FIXED,
         mass: None,
         story: None,
+        support_spring: None,
     });
     model.nodes.push(Node {
         id: NodeId(1),
@@ -1247,6 +1261,7 @@ fn test_misc_wall_beam_transfer_conserves_total_weight() {
         restraint: Dof6Mask::FREE,
         mass: None,
         story: None,
+        support_spring: None,
     });
     model.misc_walls.push(MiscWall {
         start: [-600.0, 0.0, 2900.0],
@@ -1276,6 +1291,7 @@ fn test_misc_wall_column_transfer_splits_to_column_ends() {
         restraint: Dof6Mask::FIXED,
         mass: None,
         story: None,
+        support_spring: None,
     });
     model.nodes.push(Node {
         id: NodeId(1),
@@ -1283,6 +1299,7 @@ fn test_misc_wall_column_transfer_splits_to_column_ends() {
         restraint: Dof6Mask::FREE,
         mass: None,
         story: None,
+        support_spring: None,
     });
     model.sections.push(Section {
         id: SectionId(0),
@@ -1440,6 +1457,7 @@ fn test_finish_area_weight_beam_perimeter_three_side() {
         restraint: Dof6Mask::FIXED,
         mass: None,
         story: None,
+        support_spring: None,
     });
     model.nodes.push(Node {
         id: NodeId(1),
@@ -1447,6 +1465,7 @@ fn test_finish_area_weight_beam_perimeter_three_side() {
         restraint: Dof6Mask::FREE,
         mass: None,
         story: None,
+        support_spring: None,
     });
     model.nodes.push(Node {
         id: NodeId(2),
@@ -1454,6 +1473,7 @@ fn test_finish_area_weight_beam_perimeter_three_side() {
         restraint: Dof6Mask::FREE,
         mass: None,
         story: None,
+        support_spring: None,
     });
     model.sections.push(Section {
         id: SectionId(0),
@@ -1527,6 +1547,7 @@ fn test_base_column_without_lower_column_adds_max_beam_depth() {
         restraint: Dof6Mask::FIXED,
         mass: None,
         story: None,
+        support_spring: None,
     }); // 柱脚(下階柱なし) & 梁の一端
     model.nodes.push(Node {
         id: NodeId(1),
@@ -1534,6 +1555,7 @@ fn test_base_column_without_lower_column_adds_max_beam_depth() {
         restraint: Dof6Mask::FREE,
         mass: None,
         story: None,
+        support_spring: None,
     }); // 柱頭
     model.nodes.push(Node {
         id: NodeId(2),
@@ -1541,6 +1563,7 @@ fn test_base_column_without_lower_column_adds_max_beam_depth() {
         restraint: Dof6Mask::FIXED,
         mass: None,
         story: None,
+        support_spring: None,
     }); // 梁の他端(基部)
     model.sections.push(Section {
         id: SectionId(0),
@@ -1634,6 +1657,7 @@ fn test_base_column_with_lower_column_does_not_add_beam_depth() {
         restraint: Dof6Mask::FIXED,
         mass: None,
         story: None,
+        support_spring: None,
     }); // 最下層(基部)
     model.nodes.push(Node {
         id: NodeId(1),
@@ -1641,6 +1665,7 @@ fn test_base_column_with_lower_column_does_not_add_beam_depth() {
         restraint: Dof6Mask::FREE,
         mass: None,
         story: None,
+        support_spring: None,
     }); // 1F: 下階に柱(node0-node1)があるので梁せい付加なし
     model.nodes.push(Node {
         id: NodeId(2),
@@ -1648,6 +1673,7 @@ fn test_base_column_with_lower_column_does_not_add_beam_depth() {
         restraint: Dof6Mask::FREE,
         mass: None,
         story: None,
+        support_spring: None,
     }); // 2F
     model.nodes.push(Node {
         id: NodeId(3),
@@ -1655,6 +1681,7 @@ fn test_base_column_with_lower_column_does_not_add_beam_depth() {
         restraint: Dof6Mask::FIXED,
         mass: None,
         story: None,
+        support_spring: None,
     }); // 1F 位置に取付く梁の他端
     model.sections.push(Section {
         id: SectionId(0),
@@ -1799,6 +1826,7 @@ fn k_brace_model(rule: KBraceWeightRule) -> Model {
             },
             mass: None,
             story: None,
+            support_spring: None,
         });
     }
     // 柱(自重ゼロ、node2/node3 を「基準節点」化するために存在)

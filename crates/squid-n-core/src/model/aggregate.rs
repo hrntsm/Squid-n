@@ -82,6 +82,12 @@ pub struct Model {
     /// 制振ダンパー要素（`ElementKind::Damper`）の特性（各制振部材の力学モデル）。
     #[serde(default)]
     pub damper_attrs: Vec<DamperAttr>,
+    /// 名前付き制振ダンパー定義（プリセットライブラリ）。`ElemId` への参照を
+    /// 持たないため、要素の追加・削除に伴う ID 繰上げ／繰下げ（`shift_elem_attr_refs`・
+    /// `take_elem_attrs`・`restore_elem_attrs`）の対象外。部材への割当は
+    /// `DamperDef::props` の値コピー（`Model::damper_attrs` へ追加）で行う。
+    #[serde(default)]
+    pub damper_defs: Vec<DamperDef>,
     /// 部材の付帯情報（端部ハンチ・継手位置）。剛性・応力解析には影響しない
     /// （設計書 §6.2。剛性は基準断面のまま）。断面算定の検定位置の追加
     /// （ハンチ端・継手位置、§6.2.3）と数量拾いに用いる。
@@ -327,6 +333,7 @@ impl Model {
             && self.isolator_attrs == other.isolator_attrs
             && self.member_hysteresis_attrs == other.member_hysteresis_attrs
             && self.damper_attrs == other.damper_attrs
+            && self.damper_defs == other.damper_defs
             && self.member_detail_attrs == other.member_detail_attrs
     }
 

@@ -51,6 +51,7 @@ fn build_test_model(shear_mod: Option<f64>) -> Model {
                 restraint: Default::default(),
                 mass: None,
                 story: None,
+                support_spring: None,
             },
             Node {
                 id: NodeId(1),
@@ -58,6 +59,7 @@ fn build_test_model(shear_mod: Option<f64>) -> Model {
                 restraint: Default::default(),
                 mass: None,
                 story: None,
+                support_spring: None,
             },
         ],
         elements: vec![ElementData {
@@ -116,6 +118,7 @@ fn make_oriented_fiber(p0: [f64; 3], p1: [f64; 3], ref_vec: [f64; 3]) -> FiberBe
                 restraint: Default::default(),
                 mass: None,
                 story: None,
+                support_spring: None,
             },
             Node {
                 id: NodeId(1),
@@ -123,6 +126,7 @@ fn make_oriented_fiber(p0: [f64; 3], p1: [f64; 3], ref_vec: [f64; 3]) -> FiberBe
                 restraint: Default::default(),
                 mass: None,
                 story: None,
+                support_spring: None,
             },
         ],
         elements: vec![ElementData {
@@ -182,6 +186,7 @@ fn make_steel_fiber_with_fy(fy: Option<f64>) -> FiberBeam {
                 restraint: Default::default(),
                 mass: None,
                 story: None,
+                support_spring: None,
             },
             Node {
                 id: NodeId(1),
@@ -189,6 +194,7 @@ fn make_steel_fiber_with_fy(fy: Option<f64>) -> FiberBeam {
                 restraint: Default::default(),
                 mass: None,
                 story: None,
+                support_spring: None,
             },
         ],
         elements: vec![ElementData {
@@ -519,6 +525,7 @@ fn test_yield_progression() {
                     restraint: Default::default(),
                     mass: None,
                     story: None,
+                    support_spring: None,
                 },
                 Node {
                     id: NodeId(1),
@@ -526,6 +533,7 @@ fn test_yield_progression() {
                     restraint: Default::default(),
                     mass: None,
                     story: None,
+                    support_spring: None,
                 },
             ],
             elements: vec![ElementData {
@@ -859,6 +867,7 @@ fn test_vertical_column_rz_nonsingular() {
                 restraint: Default::default(),
                 mass: None,
                 story: None,
+                support_spring: None,
             },
             Node {
                 id: NodeId(1),
@@ -866,6 +875,7 @@ fn test_vertical_column_rz_nonsingular() {
                 restraint: Default::default(),
                 mass: None,
                 story: None,
+                support_spring: None,
             },
         ],
         elements: vec![ElementData {
@@ -1465,6 +1475,7 @@ fn test_rc_fiber_section_includes_separated_rebar() {
                 restraint: Default::default(),
                 mass: None,
                 story: None,
+                support_spring: None,
             },
             Node {
                 id: NodeId(1),
@@ -1472,6 +1483,7 @@ fn test_rc_fiber_section_includes_separated_rebar() {
                 restraint: Default::default(),
                 mass: None,
                 story: None,
+                support_spring: None,
             },
         ],
         elements: vec![ElementData {

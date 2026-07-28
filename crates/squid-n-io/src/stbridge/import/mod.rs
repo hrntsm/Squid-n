@@ -1051,6 +1051,7 @@ pub fn import_stbridge_with_report(xml: &str) -> Result<(Model, ImportReport), S
                 .get(&n.file_id)
                 .and_then(|sfid| story_index.get(sfid).copied())
                 .map(StoryId),
+            support_spring: None,
         });
     }
 

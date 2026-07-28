@@ -12,3 +12,4 @@ thiserror = { workspace = true }
 [dev-dependencies]
 approx      = { workspace = true }
 serde_json  = { workspace = true }
+rmp-serde   = { workspace = true }

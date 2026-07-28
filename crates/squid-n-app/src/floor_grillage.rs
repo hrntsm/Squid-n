@@ -342,6 +342,7 @@ pub fn build_slab_grillage(model: &Model, slab: &Slab, w: f64) -> Option<SlabGri
                 restraint: r,
                 mass: None,
                 story: None,
+                support_spring: None,
             }
         })
         .collect();
@@ -642,6 +643,7 @@ mod tests {
                     restraint: Dof6Mask::FIXED,
                     mass: None,
                     story: None,
+                    support_spring: None,
                 },
                 Node {
                     id: NodeId(1),
@@ -649,6 +651,7 @@ mod tests {
                     restraint: Dof6Mask::FIXED,
                     mass: None,
                     story: None,
+                    support_spring: None,
                 },
             ],
             elements: vec![ElementData {
@@ -718,6 +721,7 @@ mod tests {
             restraint: Dof6Mask::FREE,
             mass: None,
             story: None,
+            support_spring: None,
         };
         let model = Model {
             nodes: vec![
@@ -806,6 +810,7 @@ mod tests {
             restraint: Dof6Mask::FREE,
             mass: None,
             story: None,
+            support_spring: None,
         };
         // 受け梁を y=1000 に置き、架け梁（x=2000, y=0..4000）を 1000/3000 に非対称分割
         // する。非対称だと交点回転が非ゼロになり、剛接（回転拘束）とピン（回転自由）で
@@ -912,6 +917,7 @@ mod tests {
             restraint: Dof6Mask::FREE,
             mass: None,
             story: None,
+            support_spring: None,
         };
         let model = Model {
             nodes: vec![
@@ -970,6 +976,7 @@ mod tests {
             restraint: Dof6Mask::FREE,
             mass: None,
             story: None,
+            support_spring: None,
         };
         let model = Model {
             nodes: vec![

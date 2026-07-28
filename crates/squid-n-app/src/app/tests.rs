@@ -93,6 +93,7 @@ fn test_beam_group_overrides_combines_members() {
         restraint: Dof6Mask::FREE,
         mass: None,
         story: None,
+        support_spring: None,
     };
     let beam = |id: u32, n0: u32, n1: u32| ElementData {
         id: ElemId(id),
@@ -202,6 +203,7 @@ fn aligned_portal_frame() -> squid_n_core::model::Model {
             },
             mass: None,
             story: None,
+            support_spring: None,
         });
     }
 
@@ -876,6 +878,7 @@ fn shear_2dof_model() -> squid_n_core::model::Model {
         restraint,
         mass,
         story: None,
+        support_spring: None,
     };
     let beam = |id: u32, a: u32, b: u32| ElementData {
         id: ElemId(id),
@@ -1946,6 +1949,7 @@ fn test_holding_capacity_rank_auto_rc_rect_from_shape() {
                 restraint: Dof6Mask::FIXED,
                 mass: None,
                 story: None,
+                support_spring: None,
             },
             Node {
                 id: NodeId(1),
@@ -1953,6 +1957,7 @@ fn test_holding_capacity_rank_auto_rc_rect_from_shape() {
                 restraint: Dof6Mask::FIXED,
                 mass: None,
                 story: None,
+                support_spring: None,
             },
             Node {
                 id: NodeId(2),
@@ -1960,6 +1965,7 @@ fn test_holding_capacity_rank_auto_rc_rect_from_shape() {
                 restraint: Dof6Mask::FREE,
                 mass: None,
                 story: None,
+                support_spring: None,
             },
             Node {
                 id: NodeId(3),
@@ -1967,6 +1973,7 @@ fn test_holding_capacity_rank_auto_rc_rect_from_shape() {
                 restraint: Dof6Mask::FREE,
                 mass: None,
                 story: None,
+                support_spring: None,
             },
         ],
         sections: vec![rc_shape.to_section(SectionId(0), "RC-400x600".into())],
@@ -2190,6 +2197,7 @@ fn test_rc_sigma_0_from_compression_axial_force() {
                 restraint: Dof6Mask::FIXED,
                 mass: None,
                 story: None,
+                support_spring: None,
             },
             Node {
                 id: NodeId(1),
@@ -2197,6 +2205,7 @@ fn test_rc_sigma_0_from_compression_axial_force() {
                 restraint: Dof6Mask::FREE,
                 mass: None,
                 story: None,
+                support_spring: None,
             },
         ],
         sections: vec![rc_shape.to_section(SectionId(0), "RC-400x600".into())],
@@ -2331,6 +2340,7 @@ fn test_rc_sigma_0_prefers_gravity_load_case_over_last_static() {
                 restraint: Dof6Mask::FIXED,
                 mass: None,
                 story: None,
+                support_spring: None,
             },
             Node {
                 id: NodeId(1),
@@ -2338,6 +2348,7 @@ fn test_rc_sigma_0_prefers_gravity_load_case_over_last_static() {
                 restraint: Dof6Mask::FREE,
                 mass: None,
                 story: None,
+                support_spring: None,
             },
         ],
         sections: vec![rc_shape.to_section(SectionId(0), "RC-400x600".into())],
@@ -2445,6 +2456,7 @@ fn make_slab_test_model() -> squid_n_core::model::Model {
         restraint: Default::default(),
         mass: None,
         story: None,
+        support_spring: None,
     };
     let nodes = vec![
         mk_node(0, 0.0, 0.0),
@@ -2564,6 +2576,7 @@ fn make_square_slab_test_model() -> squid_n_core::model::Model {
         restraint: Default::default(),
         mass: None,
         story: None,
+        support_spring: None,
     };
     let nodes = vec![
         mk_node(0, 0.0, 0.0),
@@ -2779,6 +2792,7 @@ fn test_slab_grillage_node_reactions_total_and_gate() {
         restraint: Default::default(),
         mass: None,
         story: None,
+        support_spring: None,
     };
     let mk_beam = |id: u32, i: u32, j: u32| ElementData {
         id: ElemId(id),
@@ -3063,6 +3077,7 @@ fn test_floor_design_checks_joist_and_slab() {
         restraint: Default::default(),
         mass: None,
         story: None,
+        support_spring: None,
     };
     model.nodes.push(mk_mid(4, 2000.0, 0.0));
     model.nodes.push(mk_mid(5, 2000.0, 4000.0));
@@ -3126,6 +3141,7 @@ fn test_floor_design_skips_materialized_joist() {
         restraint: Default::default(),
         mass: None,
         story: None,
+        support_spring: None,
     };
     model.nodes.push(mk_mid(4, 2000.0, 0.0));
     model.nodes.push(mk_mid(5, 2000.0, 4000.0));
@@ -3198,6 +3214,7 @@ fn test_floor_design_uses_grillage_for_crossing_joists() {
         restraint: Default::default(),
         mass: None,
         story: None,
+        support_spring: None,
     };
     model.nodes.push(mk(4, 2000.0, 0.0));
     model.nodes.push(mk(5, 2000.0, 4000.0));
@@ -3253,6 +3270,7 @@ fn test_slab_design_span_respects_one_way() {
         restraint: Default::default(),
         mass: None,
         story: None,
+        support_spring: None,
     };
     let base_slab = |one_way: Option<OneWayDir>| Slab {
         id: SlabId(0),
@@ -3551,6 +3569,7 @@ fn test_column_live_load_factors_three_story() {
             } else {
                 Some(StoryId(i as u32 - 1))
             },
+            support_spring: None,
         });
     }
     // 柱3本（各階1本）＋ 水平の梁1本（柱でないため集計対象外の確認用）
@@ -3581,6 +3600,7 @@ fn test_column_live_load_factors_three_story() {
         restraint: squid_n_core::dof::Dof6Mask::FREE,
         mass: None,
         story: Some(StoryId(2)),
+        support_spring: None,
     });
     model.elements.push(ElementData {
         id: ElemId(3),
@@ -3970,6 +3990,7 @@ fn test_compute_ultimate_checks_rc_frame() {
                 restraint: Dof6Mask::FIXED,
                 mass: None,
                 story: None,
+                support_spring: None,
             },
             Node {
                 id: NodeId(1),
@@ -3977,6 +3998,7 @@ fn test_compute_ultimate_checks_rc_frame() {
                 restraint: Dof6Mask::FREE,
                 mass: None,
                 story: None,
+                support_spring: None,
             },
             Node {
                 id: NodeId(2),
@@ -3984,6 +4006,7 @@ fn test_compute_ultimate_checks_rc_frame() {
                 restraint: Dof6Mask::FREE,
                 mass: None,
                 story: None,
+                support_spring: None,
             },
         ],
         sections: vec![
@@ -4066,6 +4089,7 @@ fn test_compute_cft_ultimate_checks() {
                 restraint: Dof6Mask::FIXED,
                 mass: None,
                 story: None,
+                support_spring: None,
             },
             Node {
                 id: NodeId(1),
@@ -4073,6 +4097,7 @@ fn test_compute_cft_ultimate_checks() {
                 restraint: Dof6Mask::FREE,
                 mass: None,
                 story: None,
+                support_spring: None,
             },
         ],
         sections: vec![cft_shape.to_section(SectionId(0), "CFT400".into())],
@@ -4528,6 +4553,7 @@ fn test_import_stbridge_then_run_dl_succeeds() {
                 restraint: squid_n_core::dof::Dof6Mask::FREE,
                 mass: None,
                 story: None,
+                support_spring: None,
             });
         }
     }
@@ -4657,6 +4683,7 @@ fn test_secondary_joist_panel_slab_dl_cmq_and_solve() {
         },
         mass: None,
         story: None,
+        support_spring: None,
     };
     // 柱脚 0-3（固定）、柱頭 4-7、小梁支持点 8-9（大梁スパン中間・要素非接続）。
     let plan = [(0.0, 0.0), (8000.0, 0.0), (8000.0, 6000.0), (0.0, 6000.0)];
@@ -4918,6 +4945,7 @@ mod grid_headless {
                 restraint: Dof6Mask::FREE,
                 mass: None,
                 story: None,
+                support_spring: None,
             });
         }
         app

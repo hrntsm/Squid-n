@@ -44,6 +44,7 @@ fn representative_model() -> Model {
             restraint: squid_n_core::dof::Dof6Mask::FREE,
             mass: None,
             story: if i >= 2 { Some(StoryId(0)) } else { None },
+            support_spring: None,
         });
     }
     m.stories.push(Story {
@@ -303,6 +304,7 @@ fn frame_nodes() -> Model {
             restraint: squid_n_core::dof::Dof6Mask::FREE,
             mass: None,
             story: None,
+            support_spring: None,
         });
     }
     m.materials.push(Material {
@@ -1802,6 +1804,7 @@ fn test_wall_roundtrip_export_import() {
             restraint: Default::default(),
             mass: None,
             story: None,
+            support_spring: None,
         });
     }
     // 厚さ 250 の壁断面と、それを参照する壁要素。
@@ -1871,6 +1874,7 @@ fn test_slab_roundtrip_export_import() {
             restraint: Default::default(),
             mass: None,
             story: None,
+            support_spring: None,
         });
     }
     model.slabs.push(Slab {

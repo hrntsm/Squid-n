@@ -316,6 +316,7 @@ mod tests {
                     restraint: Default::default(),
                     mass: None,
                     story: None,
+                    support_spring: None,
                 },
                 Node {
                     id: NodeId(1),
@@ -323,6 +324,7 @@ mod tests {
                     restraint: Default::default(),
                     mass: None,
                     story: None,
+                    support_spring: None,
                 },
             ],
             sections: vec![Section {

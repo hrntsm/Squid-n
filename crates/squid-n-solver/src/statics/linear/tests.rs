@@ -21,6 +21,7 @@ fn simply_supported_udl_midspan_moment() {
                 restraint: Dof6Mask(0b001111),
                 mass: None,
                 story: None,
+                support_spring: None,
             },
             Node {
                 id: NodeId(1),
@@ -29,6 +30,7 @@ fn simply_supported_udl_midspan_moment() {
                 restraint: Dof6Mask(0b000110),
                 mass: None,
                 story: None,
+                support_spring: None,
             },
         ],
         elements: vec![ElementData {
@@ -135,6 +137,7 @@ fn ss_beam(l: f64, member: Vec<MemberLoad>) -> Model {
                 restraint: Dof6Mask(0b001111),
                 mass: None,
                 story: None,
+                support_spring: None,
             },
             Node {
                 id: NodeId(1),
@@ -142,6 +145,7 @@ fn ss_beam(l: f64, member: Vec<MemberLoad>) -> Model {
                 restraint: Dof6Mask(0b000110),
                 mass: None,
                 story: None,
+                support_spring: None,
             },
         ],
         elements: vec![ElementData {
@@ -279,6 +283,7 @@ fn make_axial_cantilever() -> Model {
                 restraint: Dof6Mask::FIXED,
                 mass: None,
                 story: None,
+                support_spring: None,
             },
             Node {
                 id: NodeId(1),
@@ -286,6 +291,7 @@ fn make_axial_cantilever() -> Model {
                 restraint: Dof6Mask::FREE,
                 mass: None,
                 story: None,
+                support_spring: None,
             },
         ],
         elements: vec![ElementData {
@@ -446,6 +452,7 @@ fn test_linear_static_vertical_cantilever_bending() {
                 restraint: Dof6Mask::FIXED,
                 mass: None,
                 story: None,
+                support_spring: None,
             },
             Node {
                 id: NodeId(1),
@@ -453,6 +460,7 @@ fn test_linear_static_vertical_cantilever_bending() {
                 restraint: Dof6Mask::FREE,
                 mass: None,
                 story: None,
+                support_spring: None,
             },
         ],
         elements: vec![ElementData {
@@ -529,6 +537,7 @@ fn test_linear_static_shell_element() {
                 restraint: Dof6Mask::FIXED,
                 mass: None,
                 story: None,
+                support_spring: None,
             },
             Node {
                 id: NodeId(1),
@@ -536,6 +545,7 @@ fn test_linear_static_shell_element() {
                 restraint: Dof6Mask::FIXED,
                 mass: None,
                 story: None,
+                support_spring: None,
             },
             Node {
                 id: NodeId(2),
@@ -543,6 +553,7 @@ fn test_linear_static_shell_element() {
                 restraint: Dof6Mask::FREE,
                 mass: None,
                 story: None,
+                support_spring: None,
             },
             Node {
                 id: NodeId(3),
@@ -550,6 +561,7 @@ fn test_linear_static_shell_element() {
                 restraint: Dof6Mask::FREE,
                 mass: None,
                 story: None,
+                support_spring: None,
             },
         ],
         elements: vec![ElementData {
@@ -654,6 +666,7 @@ fn test_shell_membrane_patch_test() {
             restraint: Dof6Mask::FIXED,
             mass: None,
             story: None,
+            support_spring: None,
         },
         Node {
             id: NodeId(1),
@@ -661,6 +674,7 @@ fn test_shell_membrane_patch_test() {
             restraint: Dof6Mask::FIXED,
             mass: None,
             story: None,
+            support_spring: None,
         },
         Node {
             id: NodeId(2),
@@ -668,6 +682,7 @@ fn test_shell_membrane_patch_test() {
             restraint: Dof6Mask::FIXED,
             mass: None,
             story: None,
+            support_spring: None,
         },
         Node {
             id: NodeId(3),
@@ -675,6 +690,7 @@ fn test_shell_membrane_patch_test() {
             restraint: Dof6Mask::FIXED,
             mass: None,
             story: None,
+            support_spring: None,
         },
         Node {
             id: NodeId(4),
@@ -682,6 +698,7 @@ fn test_shell_membrane_patch_test() {
             restraint: Dof6Mask::FREE,
             mass: None,
             story: None,
+            support_spring: None,
         },
         Node {
             id: NodeId(5),
@@ -689,6 +706,7 @@ fn test_shell_membrane_patch_test() {
             restraint: Dof6Mask::FREE,
             mass: None,
             story: None,
+            support_spring: None,
         },
         Node {
             id: NodeId(6),
@@ -696,6 +714,7 @@ fn test_shell_membrane_patch_test() {
             restraint: Dof6Mask::FREE,
             mass: None,
             story: None,
+            support_spring: None,
         },
         Node {
             id: NodeId(7),
@@ -703,6 +722,7 @@ fn test_shell_membrane_patch_test() {
             restraint: Dof6Mask::FREE,
             mass: None,
             story: None,
+            support_spring: None,
         },
         Node {
             id: NodeId(8),
@@ -710,6 +730,7 @@ fn test_shell_membrane_patch_test() {
             restraint: Dof6Mask::FREE,
             mass: None,
             story: None,
+            support_spring: None,
         },
     ];
 
@@ -849,6 +870,7 @@ fn test_shell_membrane_off_no_diaphragm() {
                 restraint: Dof6Mask::FIXED,
                 mass: None,
                 story: None,
+                support_spring: None,
             },
             Node {
                 id: NodeId(1),
@@ -856,6 +878,7 @@ fn test_shell_membrane_off_no_diaphragm() {
                 restraint: Dof6Mask::FIXED,
                 mass: None,
                 story: None,
+                support_spring: None,
             },
             Node {
                 id: NodeId(2),
@@ -863,6 +886,7 @@ fn test_shell_membrane_off_no_diaphragm() {
                 restraint: Dof6Mask::FREE,
                 mass: None,
                 story: None,
+                support_spring: None,
             },
             Node {
                 id: NodeId(3),
@@ -870,6 +894,7 @@ fn test_shell_membrane_off_no_diaphragm() {
                 restraint: Dof6Mask::FREE,
                 mass: None,
                 story: None,
+                support_spring: None,
             },
         ],
         elements: vec![ElementData {
@@ -964,6 +989,7 @@ fn test_shell_rigid_floor_membrane_off() {
                 restraint: Dof6Mask::FIXED,
                 mass: None,
                 story: Some(StoryId(0)),
+                support_spring: None,
             },
             Node {
                 id: NodeId(1),
@@ -971,6 +997,7 @@ fn test_shell_rigid_floor_membrane_off() {
                 restraint: Dof6Mask::FREE,
                 mass: None,
                 story: Some(StoryId(0)),
+                support_spring: None,
             },
             Node {
                 id: NodeId(2),
@@ -978,6 +1005,7 @@ fn test_shell_rigid_floor_membrane_off() {
                 restraint: Dof6Mask::FREE,
                 mass: None,
                 story: Some(StoryId(0)),
+                support_spring: None,
             },
             Node {
                 id: NodeId(3),
@@ -985,6 +1013,7 @@ fn test_shell_rigid_floor_membrane_off() {
                 restraint: Dof6Mask::FREE,
                 mass: None,
                 story: Some(StoryId(0)),
+                support_spring: None,
             },
         ],
         elements: vec![ElementData {
@@ -1104,6 +1133,7 @@ fn make_ss_plate(n: usize, a: f64, t: f64, e: f64, nu: f64, q: f64, clamped: boo
                 restraint: Dof6Mask(mask),
                 mass: None,
                 story: None,
+                support_spring: None,
             });
         }
     }
@@ -1278,6 +1308,7 @@ fn braced_frame(kind: squid_n_core::model::LoadCaseKind) -> Model {
         restraint: Dof6Mask::FREE,
         mass: None,
         story: None,
+        support_spring: None,
     };
     let sec = Section {
         id: SectionId(0),
@@ -1454,6 +1485,7 @@ fn column_with_parallel_vertical_brace() -> Model {
                     restraint: Dof6Mask::FIXED,
                     mass: None,
                     story: None,
+                    support_spring: None,
                 };
                 n.restraint = Dof6Mask::FIXED;
                 n
@@ -1464,6 +1496,7 @@ fn column_with_parallel_vertical_brace() -> Model {
                 restraint: Dof6Mask::FREE,
                 mass: None,
                 story: None,
+                support_spring: None,
             },
         ],
         elements: vec![
@@ -1745,6 +1778,7 @@ fn tension_only_portal(fx: f64, tension_only: bool) -> Model {
         },
         mass: None,
         story: None,
+        support_spring: None,
     };
     let sec = Section {
         id: SectionId(0),
@@ -1942,6 +1976,7 @@ fn rigid_floor_portal(with_rigid_floor: bool) -> Model {
                 restraint: Dof6Mask::FIXED,
                 mass: None,
                 story: None,
+                support_spring: None,
             },
             Node {
                 id: NodeId(1),
@@ -1949,6 +1984,7 @@ fn rigid_floor_portal(with_rigid_floor: bool) -> Model {
                 restraint: Dof6Mask::FIXED,
                 mass: None,
                 story: None,
+                support_spring: None,
             },
             Node {
                 id: NodeId(2),
@@ -1956,6 +1992,7 @@ fn rigid_floor_portal(with_rigid_floor: bool) -> Model {
                 restraint: Dof6Mask::FREE,
                 mass: None,
                 story: None,
+                support_spring: None,
             },
             Node {
                 id: NodeId(3),
@@ -1963,6 +2000,7 @@ fn rigid_floor_portal(with_rigid_floor: bool) -> Model {
                 restraint: Dof6Mask::FREE,
                 mass: None,
                 story: None,
+                support_spring: None,
             },
         ],
         elements: vec![],

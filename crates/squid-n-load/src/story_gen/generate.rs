@@ -378,6 +378,7 @@ pub fn generate_stories_with_opts(
             restraint: rep_restraint,
             mass,
             story: Some(story_id),
+            support_spring: None,
         });
         generated_masters.push(master);
 
@@ -427,6 +428,7 @@ pub fn generate_stories_with_opts(
             restraint: Dof6Mask::FIXED,
             mass: None,
             story: None,
+            support_spring: None,
         });
         generated_masters.push(id);
     }

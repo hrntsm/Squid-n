@@ -18,6 +18,7 @@ fn test_set_node_coord_roundtrip() {
         restraint: Dof6Mask::FREE,
         mass: None,
         story: None,
+        support_spring: None,
     });
     let mut stack = UndoStack::new();
 
@@ -60,6 +61,7 @@ fn test_set_node_restraint_roundtrip() {
         restraint: Dof6Mask::FREE,
         mass: None,
         story: None,
+        support_spring: None,
     });
     let mut stack = UndoStack::new();
 
@@ -88,6 +90,64 @@ fn test_set_node_restraint_invalid_id_is_noop() {
         Box::new(SetNodeRestraint {
             node: NodeId(99),
             restraint: Dof6Mask::FIXED,
+        }),
+    );
+    assert!(stack.can_undo());
+    stack.undo(&mut model);
+    assert!(model.nodes.is_empty());
+}
+
+#[test]
+fn test_set_node_support_spring_roundtrip() {
+    let mut model = empty_model();
+    model.nodes.push(Node {
+        id: NodeId(0),
+        coord: [0.0, 0.0, 0.0],
+        restraint: Dof6Mask(0b111110), // Ux のみ自由
+        mass: None,
+        story: None,
+        support_spring: None,
+    });
+    let mut stack = UndoStack::new();
+
+    let spring = [1000.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+    stack.run(
+        &mut model,
+        Box::new(SetNodeSupportSpring {
+            node: NodeId(0),
+            spring: Some(spring),
+        }),
+    );
+    assert_eq!(model.nodes[0].support_spring, Some(spring));
+
+    stack.undo(&mut model);
+    assert_eq!(model.nodes[0].support_spring, None);
+
+    stack.redo(&mut model);
+    assert_eq!(model.nodes[0].support_spring, Some(spring));
+
+    // 解除（None へ）も同様に往復できる。
+    stack.run(
+        &mut model,
+        Box::new(SetNodeSupportSpring {
+            node: NodeId(0),
+            spring: None,
+        }),
+    );
+    assert_eq!(model.nodes[0].support_spring, None);
+    stack.undo(&mut model);
+    assert_eq!(model.nodes[0].support_spring, Some(spring));
+}
+
+#[test]
+fn test_set_node_support_spring_invalid_id_is_noop() {
+    let mut model = empty_model();
+    let mut stack = UndoStack::new();
+    stack.run(
+        &mut model,
+        Box::new(SetNodeSupportSpring {
+            node: NodeId(99),
+            spring: Some([1.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
         }),
     );
     assert!(stack.can_undo());
@@ -148,6 +208,7 @@ fn test_delete_node_middle_renumbers_and_roundtrips() {
             restraint: Dof6Mask::FREE,
             mass: None,
             story: None,
+            support_spring: None,
         });
     }
     // 末尾の節点（N2）を使う部材を用意し、中間節点（N1）削除後に
@@ -202,6 +263,7 @@ fn test_delete_node_in_use_is_noop() {
         restraint: Dof6Mask::FREE,
         mass: None,
         story: None,
+        support_spring: None,
     });
     model.nodes.push(Node {
         id: NodeId(1),
@@ -209,6 +271,7 @@ fn test_delete_node_in_use_is_noop() {
         restraint: Dof6Mask::FREE,
         mass: None,
         story: None,
+        support_spring: None,
     });
     model.elements.push(ElementData {
         id: squid_n_core::ids::ElemId(0),
@@ -461,6 +524,7 @@ fn test_duplicate_section_for_member_roundtrip() {
         restraint: Dof6Mask::FREE,
         mass: None,
         story: None,
+        support_spring: None,
     });
     model.nodes.push(Node {
         id: NodeId(1),
@@ -468,6 +532,7 @@ fn test_duplicate_section_for_member_roundtrip() {
         restraint: Dof6Mask::FREE,
         mass: None,
         story: None,
+        support_spring: None,
     });
     model.elements.push(ElementData {
         id: ElemId(0),
@@ -557,6 +622,7 @@ fn test_duplicate_section_no_section_noop() {
         restraint: Dof6Mask::FREE,
         mass: None,
         story: None,
+        support_spring: None,
     });
     model.nodes.push(Node {
         id: NodeId(1),
@@ -564,6 +630,7 @@ fn test_duplicate_section_no_section_noop() {
         restraint: Dof6Mask::FREE,
         mass: None,
         story: None,
+        support_spring: None,
     });
     model.elements.push(ElementData {
         id: ElemId(0),
@@ -597,6 +664,7 @@ fn two_member_model() -> Model {
             restraint: Dof6Mask::FREE,
             mass: None,
             story: None,
+            support_spring: None,
         });
     }
     for i in 0..2u32 {
@@ -715,6 +783,7 @@ fn test_delete_section_referenced_by_joist() {
             restraint: Dof6Mask::FREE,
             mass: None,
             story: None,
+            support_spring: None,
         });
     }
     for i in 0..2u32 {
@@ -1036,6 +1105,7 @@ fn test_add_delete_slab_roundtrip() {
             restraint: Dof6Mask::FREE,
             mass: None,
             story: None,
+            support_spring: None,
         });
     }
     let mut stack = UndoStack::new();
@@ -1087,6 +1157,7 @@ fn test_delete_slab_middle_renumbers_and_roundtrips() {
             restraint: Dof6Mask::FREE,
             mass: None,
             story: None,
+            support_spring: None,
         });
     }
     let mut stack = UndoStack::new();
@@ -1242,6 +1313,7 @@ fn test_apply_stories_roundtrip_with_generated_masters() {
             restraint: Dof6Mask::FREE,
             mass: None,
             story: None,
+            support_spring: None,
         });
     }
     let before = model.clone();
@@ -1257,6 +1329,7 @@ fn test_apply_stories_roundtrip_with_generated_masters() {
         restraint: rep_restraint,
         mass: None,
         story: Some(StoryId(0)),
+        support_spring: None,
     };
     let cmd = ApplyStories {
         stories: vec![Story {
@@ -1320,6 +1393,7 @@ fn test_apply_stories_sets_and_restores_mass_method() {
             restraint: Dof6Mask::FREE,
             mass: None,
             story: None,
+            support_spring: None,
         });
     }
     // 変更前は既定（CorrectedLumped）。
@@ -1357,6 +1431,7 @@ fn test_delete_leftover_generated_master_roundtrip() {
         restraint: Dof6Mask::FIXED,
         mass: None,
         story: None,
+        support_spring: None,
     });
     // 不活性化された旧代表節点(story_gen.rs の仕様どおり restraint=FIXED, story=None)。
     model.nodes.push(Node {
@@ -1365,6 +1440,7 @@ fn test_delete_leftover_generated_master_roundtrip() {
         restraint: Dof6Mask::FIXED,
         mass: None,
         story: None,
+        support_spring: None,
     });
     model.nodes.push(Node {
         id: NodeId(2),
@@ -1372,6 +1448,7 @@ fn test_delete_leftover_generated_master_roundtrip() {
         restraint: Dof6Mask::FREE,
         mass: None,
         story: None,
+        support_spring: None,
     });
     model.generated_masters = vec![NodeId(1)];
     model.elements.push(ElementData {
@@ -1971,6 +2048,7 @@ fn test_set_member_hysteresis_roundtrip() {
         restraint: Dof6Mask::FREE,
         mass: None,
         story: None,
+        support_spring: None,
     });
     model.nodes.push(Node {
         id: NodeId(1),
@@ -1978,6 +2056,7 @@ fn test_set_member_hysteresis_roundtrip() {
         restraint: Dof6Mask::FREE,
         mass: None,
         story: None,
+        support_spring: None,
     });
     model.elements.push(ElementData {
         id: ElemId(0),
@@ -2115,6 +2194,248 @@ fn test_set_damper_props_roundtrip() {
         }),
     );
     assert_eq!(model.damper_props(ElemId(99)), None);
+}
+
+#[test]
+fn test_add_isolator_creates_element_and_attr_roundtrip() {
+    use squid_n_core::model::{IsolatorKind, IsolatorProps};
+    let mut model = two_member_model();
+    let before = model.clone();
+    let new_id = ElemId(model.elements.len() as u32);
+    let props = IsolatorProps {
+        kind: IsolatorKind::LeadRubber,
+        k1: 2000.0,
+        k2: 200.0,
+        qd: 100_000.0,
+        kv: 5_000_000.0,
+        ..Default::default()
+    };
+    let elem = ElementData {
+        id: new_id,
+        kind: ElementKind::Isolator,
+        nodes: smallvec![NodeId(0), NodeId(2)],
+        section: None,
+        material: None,
+        local_axis: LocalAxis {
+            ref_vector: [1.0, 0.0, 0.0],
+        },
+        end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+        force_regime: ForceRegime::Auto,
+        rigid_zone: Default::default(),
+        plastic_zone: None,
+        spring: None,
+    };
+    let mut stack = UndoStack::new();
+    stack.run(&mut model, Box::new(AddIsolator { elem, props }));
+    // 要素と特性が原子的に追加される。
+    assert_eq!(model.elements.len(), 3);
+    assert_eq!(model.elements[2].kind, ElementKind::Isolator);
+    assert_eq!(
+        model
+            .isolator_attrs
+            .iter()
+            .find(|a| a.elem == new_id)
+            .map(|a| a.props),
+        Some(props)
+    );
+
+    // undo で要素・特性ともに消える（完全復元）。
+    stack.undo(&mut model);
+    assert!(model.eq_ignoring_dofmap(&before));
+    assert!(!model.isolator_attrs.iter().any(|a| a.elem == new_id));
+
+    // redo で再生成。
+    stack.redo(&mut model);
+    assert_eq!(
+        model
+            .isolator_attrs
+            .iter()
+            .find(|a| a.elem == new_id)
+            .map(|a| a.props),
+        Some(props)
+    );
+}
+
+#[test]
+fn test_place_support_isolator_roundtrip() {
+    use squid_n_core::model::{ElementKind, IsolatorKind, IsolatorProps};
+    let mut model = empty_model();
+    model.nodes.push(Node {
+        id: NodeId(0),
+        coord: [1000.0, 2000.0, 0.0],
+        restraint: Dof6Mask::FIXED,
+        mass: None,
+        story: None,
+        support_spring: None,
+    });
+    let before = model.clone();
+
+    let props = IsolatorProps {
+        kind: IsolatorKind::LaminatedRubber,
+        k1: 1500.0,
+        k2: 150.0,
+        qd: 80_000.0,
+        kv: 3_000_000.0,
+        ..Default::default()
+    };
+    let mut stack = UndoStack::new();
+    stack.run(
+        &mut model,
+        Box::new(PlaceSupportIsolator {
+            node: NodeId(0),
+            props,
+        }),
+    );
+
+    // 接地節点（FIXED、対象節点と同一座標）が新規作成される。
+    assert_eq!(model.nodes.len(), 2);
+    let ground = &model.nodes[1];
+    assert_eq!(ground.restraint, Dof6Mask::FIXED);
+    assert_eq!(ground.coord, [1000.0, 2000.0, 0.0]);
+    // 対象節点の restraint は FREE に解放される。
+    assert_eq!(model.nodes[0].restraint, Dof6Mask::FREE);
+    // 零長 Isolator 要素が i端=接地節点・j端=対象節点で追加される。
+    assert_eq!(model.elements.len(), 1);
+    assert_eq!(model.elements[0].kind, ElementKind::Isolator);
+    assert_eq!(model.elements[0].nodes[0], NodeId(1));
+    assert_eq!(model.elements[0].nodes[1], NodeId(0));
+    assert_eq!(
+        model
+            .isolator_attrs
+            .iter()
+            .find(|a| a.elem == ElemId(0))
+            .map(|a| a.props),
+        Some(props)
+    );
+
+    // undo で節点削除まで含めて完全に元へ戻ること。
+    stack.undo(&mut model);
+    assert!(
+        model.eq_ignoring_dofmap(&before),
+        "undo should fully restore the original model (including the ground node)"
+    );
+
+    // redo で再度設置される。
+    stack.redo(&mut model);
+    assert_eq!(model.nodes.len(), 2);
+    assert_eq!(model.nodes[0].restraint, Dof6Mask::FREE);
+    assert_eq!(model.elements.len(), 1);
+}
+
+#[test]
+fn test_place_support_isolator_invalid_node_is_noop() {
+    use squid_n_core::model::IsolatorProps;
+    let mut model = empty_model();
+    let mut stack = UndoStack::new();
+    stack.run(
+        &mut model,
+        Box::new(PlaceSupportIsolator {
+            node: NodeId(99),
+            props: IsolatorProps::default(),
+        }),
+    );
+    assert!(model.nodes.is_empty());
+    assert!(model.elements.is_empty());
+    stack.undo(&mut model);
+    assert!(model.nodes.is_empty());
+}
+
+#[test]
+fn test_damper_def_add_update_remove_roundtrip() {
+    use squid_n_core::model::{DamperDef, DamperKind, DamperProps};
+    let mut model = empty_model();
+    let mut stack = UndoStack::new();
+
+    let def1 = DamperDef {
+        name: "オイルダンパー A".to_string(),
+        props: DamperProps {
+            kind: DamperKind::Maxwell,
+            kd: 100_000.0,
+            c0: 1_000.0,
+            alpha: 1.0,
+            ..Default::default()
+        },
+    };
+    stack.run(&mut model, Box::new(AddDamperDef { def: def1.clone() }));
+    assert_eq!(model.damper_defs.len(), 1);
+    assert_eq!(model.damper_defs[0], def1);
+
+    let def1_updated = DamperDef {
+        name: "オイルダンパー A（改）".to_string(),
+        props: DamperProps {
+            kd: 120_000.0,
+            ..def1.props
+        },
+    };
+    stack.run(
+        &mut model,
+        Box::new(UpdateDamperDef {
+            index: 0,
+            def: def1_updated.clone(),
+        }),
+    );
+    assert_eq!(model.damper_defs[0], def1_updated);
+
+    stack.undo(&mut model);
+    assert_eq!(model.damper_defs[0], def1);
+
+    stack.redo(&mut model);
+    assert_eq!(model.damper_defs[0], def1_updated);
+
+    // 削除→undo で同じ位置へ復元。
+    let before_remove = model.clone();
+    stack.run(&mut model, Box::new(RemoveDamperDef { index: 0 }));
+    assert!(model.damper_defs.is_empty());
+    stack.undo(&mut model);
+    assert!(model.eq_ignoring_dofmap(&before_remove));
+    assert_eq!(model.damper_defs[0], def1_updated);
+
+    // 範囲外の index は Noop。
+    let mut stack2 = UndoStack::new();
+    stack2.run(
+        &mut model,
+        Box::new(UpdateDamperDef {
+            index: 99,
+            def: def1,
+        }),
+    );
+    assert_eq!(model.damper_defs.len(), 1);
+    stack2.run(&mut model, Box::new(RemoveDamperDef { index: 99 }));
+    assert_eq!(model.damper_defs.len(), 1);
+}
+
+#[test]
+fn test_damper_def_removal_does_not_affect_assigned_member() {
+    // DamperDef は値コピーで割り当てるため、定義の削除は既存の割当済み部材
+    // （Model::damper_attrs）に影響しない。
+    use squid_n_core::model::{DamperDef, DamperKind, DamperProps};
+    let mut model = two_member_model();
+    let def = DamperDef {
+        name: "テスト用".to_string(),
+        props: DamperProps {
+            kind: DamperKind::Maxwell,
+            kd: 50_000.0,
+            c0: 500.0,
+            alpha: 1.0,
+            ..Default::default()
+        },
+    };
+    let mut stack = UndoStack::new();
+    stack.run(&mut model, Box::new(AddDamperDef { def: def.clone() }));
+    // 部材へは props の値コピーで割り当てる（参照は持たない）。
+    stack.run(
+        &mut model,
+        Box::new(SetDamperProps {
+            elem: ElemId(0),
+            props: Some(def.props),
+        }),
+    );
+    assert_eq!(model.damper_props(ElemId(0)), Some(def.props));
+
+    stack.run(&mut model, Box::new(RemoveDamperDef { index: 0 }));
+    assert!(model.damper_defs.is_empty());
+    // 定義を削除しても、既に割り当て済みの部材の特性は壊れない。
+    assert_eq!(model.damper_props(ElemId(0)), Some(def.props));
 }
 
 #[test]
@@ -2366,6 +2687,7 @@ fn test_composite_paste_roundtrip() {
             restraint: Dof6Mask::FREE,
             mass: None,
             story: None,
+            support_spring: None,
         });
     }
     let before = model.clone();
@@ -2425,6 +2747,7 @@ fn test_composite_delete_nodes_descending_roundtrip() {
             restraint: Dof6Mask::FREE,
             mass: None,
             story: None,
+            support_spring: None,
         });
     }
     // 削除対象外の節点 0-4 を結ぶ部材（削除で節点 4 の ID が繰り上がる）。

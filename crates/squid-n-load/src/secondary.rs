@@ -179,6 +179,7 @@ mod tests {
             restraint: Dof6Mask::FREE,
             mass: None,
             story: None,
+            support_spring: None,
         }
     }
 

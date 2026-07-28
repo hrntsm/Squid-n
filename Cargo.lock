@@ -5342,6 +5342,7 @@ name = "squid-n-core"
 version = "0.0.1"
 dependencies = [
  "approx",
+ "rmp-serde",
  "serde",
  "serde_json",
  "smallvec",

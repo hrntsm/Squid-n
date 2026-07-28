@@ -20,6 +20,7 @@ fn single_column_model(fy: f64, seismic_weight: f64) -> Model {
                 restraint: Dof6Mask::FIXED,
                 mass: None,
                 story: None,
+                support_spring: None,
             },
             Node {
                 id: NodeId(1),
@@ -29,6 +30,7 @@ fn single_column_model(fy: f64, seismic_weight: f64) -> Model {
                 restraint: Dof6Mask(0b100000),
                 mass: None,
                 story: Some(StoryId(0)),
+                support_spring: None,
             },
         ],
         elements: vec![ElementData {
@@ -318,6 +320,142 @@ fn test_pushover_requires_seismic_weight() {
     );
 }
 
+/// 支点ばね（`Node::support_spring`）検証用モデル: 零長節点バネ（軸剛性 `kx`）で
+/// 節点0(全固定)-節点1(水平のみ自由)を結ぶ 1 自由度系。節点1 に `support_kx`
+/// （`Some` なら水平支点ばね剛性 [N/mm]）を与える。2 節点を同一座標（零長）に
+/// 置くことで、`NodalSpringElement` の局所軸＝全体座標系（`spring.rs` の
+/// 零長特例）となり、軸バネ `kx` がそのまま水平（全体 X）成分に一致する
+/// （局所軸の回転を気にせず手計算と直接比較できる）。
+fn spring_column_model(kx: f64, support_kx: Option<f64>, seismic_weight: f64) -> Model {
+    Model {
+        nodes: vec![
+            Node {
+                id: NodeId(0),
+                coord: [0.0, 0.0, 0.0],
+                restraint: Dof6Mask::FIXED,
+                mass: None,
+                story: None,
+                support_spring: None,
+            },
+            Node {
+                id: NodeId(1),
+                coord: [0.0, 0.0, 0.0],
+                // 水平（Ux）のみ自由（他の 5 自由度は固定）。合成剛性
+                // kx+support_kx の検証を Ux 1 自由度に限定するため。
+                restraint: Dof6Mask(0b111110),
+                mass: None,
+                story: Some(StoryId(0)),
+                support_spring: support_kx.map(|k| [k, 0.0, 0.0, 0.0, 0.0, 0.0]),
+            },
+        ],
+        elements: vec![ElementData {
+            id: ElemId(0),
+            kind: ElementKind::NodalSpring,
+            nodes: smallvec::smallvec![NodeId(0), NodeId(1)],
+            section: None,
+            material: None,
+            local_axis: LocalAxis {
+                ref_vector: [0.0, 1.0, 0.0],
+            },
+            end_cond: [EndCondition::Pinned, EndCondition::Pinned],
+            force_regime: ForceRegime::Auto,
+            rigid_zone: Default::default(),
+            plastic_zone: None,
+            spring: Some([kx, 0.0, 0.0, 0.0, 0.0, 0.0]),
+        }],
+        stories: vec![Story {
+            level_kind: Default::default(),
+            structure: Default::default(),
+            id: StoryId(0),
+            name: "1F".to_string(),
+            elevation: 3000.0,
+            node_ids: vec![NodeId(1)],
+            diaphragms: vec![DiaphragmDef {
+                ci_override: None,
+                weight: None,
+                master: NodeId(1),
+                slaves: vec![],
+                rigid: true,
+            }],
+            seismic_weight: Some(seismic_weight),
+            weight_override: None,
+        }],
+        ..Default::default()
+    }
+}
+
+/// 支点ばね（`Node::support_spring`）が非線形経路（プッシュオーバー）の
+/// 全体剛性 K・内力 f_int の両方に反映され、静的 Newton 法が正しい
+/// 合成剛性 `kx+ks` の変位へ収束することを検証する（本文書の要求 (b)）。
+///
+/// K だけに支点ばねを加算し f_int 側の `k・u` 計上を忘れると（本テストが
+/// 検出したい典型的なバグ）、Newton は「要素ばね kx のみ」の残差方程式の
+/// 根へ収束し、支点ばねが変位に一切効かなくなる（support_kx の有無で
+/// 終点変位が変化しない）。固定 λ 刻み（`max_disp=0.0` で目標判定を無効化）
+/// を用いるため、荷重パターン q・λ=1 到達時の外力は両ケースで完全に同一
+/// （モデル剛性に依存しない）であり、終点変位の比較がそのまま合成剛性の
+/// 検証になる。
+#[test]
+fn test_pushover_support_spring_affects_k_and_f_int() {
+    let kx = 1000.0; // 要素（節点バネ）側の水平剛性 [N/mm]
+    let ks = 1000.0; // 支点ばねの水平剛性 [N/mm]
+    let weight = 80_000.0;
+
+    let run = |support_kx: Option<f64>| -> (f64, f64) {
+        let mut model = spring_column_model(kx, support_kx, weight);
+        let dofmap = DofMap::build(&model);
+        let reducer = Reducer::build(&model, &dofmap);
+        let result = pushover_analysis(
+            &mut model,
+            &dofmap,
+            &reducer,
+            SeismicDir::X,
+            4,     // max_steps（線形弾性なので刻みは収束結果に影響しない）
+            0.0,   // max_disp=0（目標判定なし＝固定 λ 刻みで λ=1 まで荷重制御）
+            false, // use_kg
+            false, // use_arc_length
+            0.0,
+        )
+        .expect("linear spring pushover should converge every step");
+        let last = result.capacity_curve.last().expect("at least one step");
+        (last.roof_disp, last.base_shear)
+    };
+
+    let (roof_baseline, base_baseline) = run(None);
+    let (roof_spring, base_spring) = run(Some(ks));
+
+    // 前提: 両ケースで到達する外力（λ=1 時点の base_shear）は等しい
+    // （q・λ 刻みはモデル剛性に依存しないため）。
+    assert!(
+        (base_baseline - base_spring).abs() < 1e-6 * base_baseline.abs().max(1.0),
+        "base_shear should be identical regardless of support spring: \
+         baseline={base_baseline}, spring={base_spring}"
+    );
+
+    // 本題: 支点ばね有りの終点変位は、要素ばねと支点ばねの合成剛性
+    // kx+ks に対応する理論比 kx/(kx+ks) だけ小さくなること。
+    let expected_ratio = kx / (kx + ks);
+    let actual_ratio = roof_spring / roof_baseline;
+    assert!(
+        (actual_ratio - expected_ratio).abs() < 1e-6,
+        "roof disp ratio should match combined stiffness kx/(kx+ks)={expected_ratio}, \
+         got {actual_ratio} (roof_baseline={roof_baseline}, roof_spring={roof_spring})"
+    );
+
+    // restraint で固定した自由度に support_spring を与えても無視されること
+    // （固定支持を優先する仕様。dof.rs の判定に影響しないことの確認を兼ねる）。
+    let mut model_fixed_with_spring = spring_column_model(kx, None, weight);
+    model_fixed_with_spring.nodes[0].support_spring = Some([1.0e9, 0.0, 0.0, 0.0, 0.0, 0.0]);
+    let dofmap_fixed = DofMap::build(&model_fixed_with_spring);
+    // 節点0 は全固定のため、support_spring を与えても活性自由度は増えない
+    // （固定支持を優先しばね値を無視する。孤立節点の扱いは dof.rs 側の現状仕様）。
+    assert_eq!(
+        dofmap_fixed.n_active(),
+        1,
+        "restraint で固定した節点の support_spring は活性 DOF に影響しない"
+    );
+}
+
 #[test]
 fn test_pushover_arc_length_path_runs() {
     // 弧長法フェーズ（f_int 反復再評価版）がエンドツーエンドで動作すること。
@@ -460,6 +598,7 @@ fn two_story_model() -> Model {
                 restraint: Dof6Mask::FIXED,
                 mass: None,
                 story: None,
+                support_spring: None,
             },
             Node {
                 id: NodeId(1),
@@ -467,6 +606,7 @@ fn two_story_model() -> Model {
                 restraint: Dof6Mask::FREE,
                 mass: None,
                 story: Some(StoryId(0)),
+                support_spring: None,
             },
             Node {
                 id: NodeId(2),
@@ -474,6 +614,7 @@ fn two_story_model() -> Model {
                 restraint: Dof6Mask::FREE,
                 mass: None,
                 story: Some(StoryId(1)),
+                support_spring: None,
             },
         ],
         elements: vec![
@@ -594,6 +735,7 @@ fn test_compute_static_indeterminacy_indeterminate_portal() {
             restraint: Dof6Mask::FIXED,
             mass: None,
             story: None,
+            support_spring: None,
         },
         Node {
             id: NodeId(1),
@@ -601,6 +743,7 @@ fn test_compute_static_indeterminacy_indeterminate_portal() {
             restraint: Dof6Mask::FREE,
             mass: None,
             story: Some(StoryId(0)),
+            support_spring: None,
         },
         Node {
             id: NodeId(2),
@@ -608,6 +751,7 @@ fn test_compute_static_indeterminacy_indeterminate_portal() {
             restraint: Dof6Mask::FREE,
             mass: None,
             story: Some(StoryId(0)),
+            support_spring: None,
         },
         Node {
             id: NodeId(3),
@@ -615,6 +759,7 @@ fn test_compute_static_indeterminacy_indeterminate_portal() {
             restraint: Dof6Mask::FIXED,
             mass: None,
             story: None,
+            support_spring: None,
         },
     ];
     let elems = vec![
@@ -831,6 +976,7 @@ fn portal_frame_model(fy: f64, seismic_weight: f64) -> Model {
                 restraint: Dof6Mask::FIXED,
                 mass: None,
                 story: None,
+                support_spring: None,
             },
             Node {
                 id: NodeId(1),
@@ -839,6 +985,7 @@ fn portal_frame_model(fy: f64, seismic_weight: f64) -> Model {
                 restraint: Dof6Mask(0b100000),
                 mass: None,
                 story: Some(StoryId(0)),
+                support_spring: None,
             },
             Node {
                 id: NodeId(2),
@@ -846,6 +993,7 @@ fn portal_frame_model(fy: f64, seismic_weight: f64) -> Model {
                 restraint: Dof6Mask(0b100000),
                 mass: None,
                 story: Some(StoryId(0)),
+                support_spring: None,
             },
             Node {
                 id: NodeId(3),
@@ -853,6 +1001,7 @@ fn portal_frame_model(fy: f64, seismic_weight: f64) -> Model {
                 restraint: Dof6Mask::FIXED,
                 mass: None,
                 story: None,
+                support_spring: None,
             },
         ],
         elements: vec![
@@ -1490,6 +1639,7 @@ fn rc_column_model_with_rigid_zone(rigid_zone: RigidZone) -> (Model, RcRebar, f6
                 restraint: Dof6Mask::FIXED,
                 mass: None,
                 story: None,
+                support_spring: None,
             },
             Node {
                 id: NodeId(1),
@@ -1497,6 +1647,7 @@ fn rc_column_model_with_rigid_zone(rigid_zone: RigidZone) -> (Model, RcRebar, f6
                 restraint: Dof6Mask::FREE,
                 mass: None,
                 story: Some(StoryId(0)),
+                support_spring: None,
             },
         ],
         elements: vec![ElementData {
@@ -1807,6 +1958,7 @@ fn steel_hinge_model(name: &str, fy: f64, strength_factor: Option<f64>) -> Model
                 restraint: Dof6Mask::FIXED,
                 mass: None,
                 story: None,
+                support_spring: None,
             },
             Node {
                 id: NodeId(1),
@@ -1814,6 +1966,7 @@ fn steel_hinge_model(name: &str, fy: f64, strength_factor: Option<f64>) -> Model
                 restraint: Dof6Mask::FREE,
                 mass: None,
                 story: None,
+                support_spring: None,
             },
         ],
         elements: vec![ElementData {
@@ -1949,6 +2102,7 @@ fn rc_hinge_model() -> (Model, RcRebar, f64, f64) {
                 restraint: Dof6Mask::FIXED,
                 mass: None,
                 story: None,
+                support_spring: None,
             },
             Node {
                 id: NodeId(1),
@@ -1956,6 +2110,7 @@ fn rc_hinge_model() -> (Model, RcRebar, f64, f64) {
                 restraint: Dof6Mask::FREE,
                 mass: None,
                 story: None,
+                support_spring: None,
             },
         ],
         elements: vec![ElementData {
@@ -2848,6 +3003,7 @@ fn wall_story_model_with(lw: f64, seismic_weight: f64) -> Model {
         restraint,
         mass: None,
         story,
+        support_spring: None,
     };
     // 上辺節点: 面内並進 (ux, uz) のみ自由。
     let top_mask = Dof6Mask(0b111010);

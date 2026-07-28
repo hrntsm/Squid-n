@@ -323,6 +323,7 @@ fn make_rect_slab_model(lx: f64, ly: f64, method: DistributionMethod, w: f64) ->
         restraint: Default::default(),
         mass: None,
         story: None,
+        support_spring: None,
     };
     let model = Model {
         nodes: vec![
@@ -455,6 +456,7 @@ fn mk_node(id: u32, x: f64, y: f64) -> squid_n_core::model::Node {
         restraint: Default::default(),
         mass: None,
         story: None,
+        support_spring: None,
     }
 }
 

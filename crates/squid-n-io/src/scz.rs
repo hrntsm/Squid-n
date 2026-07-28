@@ -266,6 +266,7 @@ mod tests {
                     restraint: Dof6Mask::FREE,
                     mass: None,
                     story: None,
+                    support_spring: None,
                 },
                 Node {
                     id: NodeId(1),
@@ -273,6 +274,7 @@ mod tests {
                     restraint: Dof6Mask::FIXED,
                     mass: None,
                     story: None,
+                    support_spring: None,
                 },
                 Node {
                     id: NodeId(2),
@@ -280,6 +282,7 @@ mod tests {
                     restraint: Dof6Mask::PINNED,
                     mass: None,
                     story: None,
+                    support_spring: None,
                 },
             ],
             ..Default::default()

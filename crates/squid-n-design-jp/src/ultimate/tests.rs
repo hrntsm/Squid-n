@@ -69,6 +69,7 @@ fn node(id: u32, c: [f64; 3]) -> Node {
         restraint: Dof6Mask::FREE,
         mass: None,
         story: None,
+        support_spring: None,
     }
 }
 

@@ -29,6 +29,7 @@ fn node(id: u32, coord: [f64; 3], restraint: Dof6Mask, story: Option<StoryId>) -
         restraint,
         mass: None,
         story,
+        support_spring: None,
     }
 }
 

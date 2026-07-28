@@ -117,6 +117,7 @@ mod tests {
                 },
                 mass: None,
                 story: None,
+                support_spring: None,
             });
         }
         model.sections.push(Section {

@@ -42,6 +42,7 @@ fn make_model(n_cases: usize) -> Model {
                 restraint: Dof6Mask::FIXED,
                 mass: None,
                 story: None,
+                support_spring: None,
             },
             Node {
                 id: NodeId(1),
@@ -49,6 +50,7 @@ fn make_model(n_cases: usize) -> Model {
                 restraint: Dof6Mask::FREE,
                 mass: None,
                 story: None,
+                support_spring: None,
             },
         ],
         elements: vec![ElementData {

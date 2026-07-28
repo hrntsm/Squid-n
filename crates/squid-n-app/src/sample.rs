@@ -35,6 +35,7 @@ pub fn portal_frame() -> Model {
             },
             mass: None,
             story: None,
+            support_spring: None,
         });
     }
 

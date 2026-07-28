@@ -19,6 +19,7 @@ fn make_cantilever_model() -> Model {
                 restraint: Dof6Mask::FIXED,
                 mass: None,
                 story: None,
+                support_spring: None,
             },
             Node {
                 id: NodeId(1),
@@ -26,6 +27,7 @@ fn make_cantilever_model() -> Model {
                 restraint: Dof6Mask::FREE,
                 mass: None,
                 story: None,
+                support_spring: None,
             },
         ],
         elements: vec![ElementData {
@@ -193,6 +195,7 @@ fn test_prepare_isolated_node_gives_diagnostic() {
         restraint: Dof6Mask::FREE,
         mass: None,
         story: None,
+        support_spring: None,
     });
     let err = Analysis::prepare(&model).err().unwrap();
     let msg = format!("{}", err);
@@ -291,6 +294,7 @@ fn make_story_ratio_model(structures: &[StoryStructure]) -> Model {
         restraint: Dof6Mask::FIXED,
         mass: None,
         story: None,
+        support_spring: None,
     }];
     let mut stories = Vec::new();
     for (i, s) in structures.iter().enumerate() {
@@ -302,6 +306,7 @@ fn make_story_ratio_model(structures: &[StoryStructure]) -> Model {
             restraint: Dof6Mask::FREE,
             mass: None,
             story: Some(StoryId(i as u32)),
+            support_spring: None,
         });
         stories.push(Story {
             id: StoryId(i as u32),
@@ -459,6 +464,7 @@ fn two_story_wind_model() -> Model {
             },
             mass: None,
             story: None,
+            support_spring: None,
         });
     }
     model.sections.push(Section {
@@ -727,6 +733,7 @@ fn make_node_only_model(coords: &[[f64; 3]]) -> Model {
             restraint: Dof6Mask::FREE,
             mass: None,
             story: None,
+            support_spring: None,
         })
         .collect();
     Model {
@@ -824,6 +831,7 @@ fn test_wind_story_geometry_setback_gives_narrower_upper_story_width() {
             },
             mass: None,
             story: None,
+            support_spring: None,
         });
     }
     model.sections.push(Section {
@@ -1029,6 +1037,7 @@ fn ss_beam_udl(l: f64, w: f64) -> Model {
                 restraint: Dof6Mask(0b001111),
                 mass: None,
                 story: None,
+                support_spring: None,
             },
             Node {
                 id: NodeId(1),
@@ -1036,6 +1045,7 @@ fn ss_beam_udl(l: f64, w: f64) -> Model {
                 restraint: Dof6Mask(0b000110),
                 mass: None,
                 story: None,
+                support_spring: None,
             },
         ],
         elements: vec![ElementData {
