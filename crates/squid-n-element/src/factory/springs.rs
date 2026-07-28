@@ -62,6 +62,8 @@ fn flexural_yield_moment(data: &ElementData, model: &Model, basis: StrengthBasis
             // RC 主筋: 保有水平耐力計算では σy に主筋の材料強度係数を乗じる
             // （せん断補強筋は対象外。本分岐は曲げ主筋のみを扱う）。
             let sy = fy.unwrap_or(345.0) * basis.rebar_factor(mat);
+            // Fc 未設定は [`super::ensure_nonlinear_input`] が解析前に停止するため、
+            // 非線形解析ではこのフォールバック（0）に到達しない。
             let fc = mat.and_then(|m| m.fc).unwrap_or(0.0);
             let at = squid_n_core::section_shape::bar_set_area(&rebar.main_x) / 2.0;
             let d_eff = (d - rebar.cover - rebar.main_x.dia / 2.0).max(0.0);
@@ -153,20 +155,10 @@ fn rotational_spring_params(data: &ElementData, model: &Model, basis: StrengthBa
 
 /// 断面形状が RC/SRC/CFT（コンクリート系）か否か（既定履歴則の判定用）。
 pub(super) fn is_rc_like_section(data: &ElementData, model: &Model) -> bool {
-    use squid_n_core::section_shape::SectionShape;
-    matches!(
-        data.section
-            .and_then(|sid| model.sections.get(sid.index()))
-            .and_then(|s| s.shape.as_ref()),
-        Some(
-            SectionShape::RcRect { .. }
-                | SectionShape::RcCircle { .. }
-                | SectionShape::SrcRect { .. }
-                | SectionShape::CftBox { .. }
-                | SectionShape::CftPipe { .. }
-                | SectionShape::RcWall { .. }
-        )
-    )
+    data.section
+        .and_then(|sid| model.sections.get(sid.index()))
+        .and_then(|s| s.shape.as_ref())
+        .is_some_and(|s| s.is_concrete_like())
 }
 
 /// 部材の履歴則を解決する（属性 override → 構造種別ごとの既定表。本実装の既定の

@@ -223,6 +223,77 @@ fn test_pushover_load_control_endpoint_is_mesh_independent() {
     );
 }
 
+/// コンクリート強度 Fc が未設定の RC 部材があるモデルは、弾性のまま解析せず
+/// エラーで停止する。Fc が無いと曲げひび割れ Mc=0 でヒンジが一切検出されず、
+/// ファイバー断面も Fc を勝手に仮定するため、崩壊機構が形成されないまま
+/// 保有水平耐力を過大評価する（危険側）。
+#[test]
+fn test_pushover_stops_when_concrete_strength_unset() {
+    use squid_n_core::section_shape::{BarSet, RcRebar, SectionShape};
+
+    let mut model = single_column_model(235.0, 80_000.0);
+    // 断面を RC 矩形にし、材料からコンクリート強度・降伏強度を落とす（未入力を模擬）。
+    model.sections[0].shape = Some(SectionShape::RcRect {
+        b: 100.0,
+        d: 100.0,
+        rebar: RcRebar {
+            main_x: BarSet {
+                count: 4,
+                dia: 13.0,
+                layers: 1,
+            },
+            main_y: BarSet {
+                count: 4,
+                dia: 13.0,
+                layers: 1,
+            },
+            cover: 20.0,
+            shear: ShearBar {
+                dia: 10.0,
+                pitch: 100.0,
+                legs: 2,
+                grade: None,
+            },
+        },
+    });
+    model.materials[0].fy = None;
+    model.materials[0].fc = None;
+
+    let dofmap = DofMap::build(&model);
+    let reducer = Reducer::build(&model, &dofmap);
+    let err = pushover_analysis(
+        &mut model,
+        &dofmap,
+        &reducer,
+        SeismicDir::X,
+        10,
+        0.0,
+        false,
+        false,
+        0.0,
+    )
+    .expect_err("Fc 未設定の RC 部材があれば解析を停止すべき");
+    assert!(err.contains("Fc"), "{}", err);
+
+    // Fc を設定すれば解析は通る（チェックが恒常的に解析を妨げないこと）。
+    model.materials[0].fc = Some(24.0);
+    assert!(
+        pushover_analysis(
+            &mut model,
+            &dofmap,
+            &reducer,
+            SeismicDir::X,
+            10,
+            0.0,
+            false,
+            false,
+            0.0,
+        )
+        .is_ok(),
+        "Fc を設定すれば解析できるべき"
+    );
+}
+
 #[test]
 fn test_pushover_requires_seismic_weight() {
     // 地震重量未定義ではエラーを返す（入力検証）。

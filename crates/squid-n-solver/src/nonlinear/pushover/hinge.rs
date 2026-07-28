@@ -72,6 +72,9 @@ fn member_moment_thresholds(elem: &ElementData, model: &Model) -> HingeThreshold
 
     match &sec.shape {
         Some(SectionShape::RcRect { rebar, d, .. }) | Some(SectionShape::RcCircle { rebar, d }) => {
+            // Fc 未設定（fc=0 → Mc=0 でヒンジが一切検出されない）のモデルは
+            // `squid_n_element::factory::ensure_nonlinear_input` が解析前に停止する
+            // ため、非線形解析ではこのフォールバックに到達しない。
             let fc = mat.and_then(|m| m.fc).unwrap_or(0.0);
             // 曲げひび割れ Mc = κ·√Fc·Ze（κ=0.56、技術基準解説書 P.621-623）。
             let mc = 0.56 * fc.max(0.0).sqrt() * ze;

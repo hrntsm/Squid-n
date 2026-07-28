@@ -159,6 +159,10 @@ fn build_dir_threshold(
     if as_area <= 0.0 {
         return DirThreshold::Static(f64::INFINITY);
     }
+    // 材料未設定・材料強度（fy・Fc）未設定は Qy=∞（＝せん断降伏しない）となり
+    // 危険側のため、`squid_n_element::factory::ensure_nonlinear_input` が解析前に
+    // 停止する。ここへ到達するのは有効せん断断面積 as が未設定（0）の方向に限られる
+    // （as=0 はせん断変形を考慮しない直接入力断面のモデル化であり、判定対象外とする）。
     let Some(mat) = material else {
         return DirThreshold::Static(f64::INFINITY);
     };

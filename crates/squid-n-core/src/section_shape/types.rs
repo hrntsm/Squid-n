@@ -160,6 +160,26 @@ pub enum SectionShape {
     RcWall { thickness: f64, ps: f64 },
 }
 
+impl SectionShape {
+    /// コンクリート系（RC / SRC / CFT）の断面形状か。
+    ///
+    /// 断面耐力（曲げひび割れ \\(M_c\\)・曲げ降伏 \\(M_y\\)・せん断終局 \\(Q_{su}\\)）の
+    /// 算定にコンクリート強度 \\(F_c\\) を要する形状を真とする。既定履歴則の判定
+    /// （`squid_n_element::factory::resolve_member_hysteresis`）と、非線形解析の
+    /// 入力チェック（`squid_n_element::factory::nonlinear_input_issues`）が共有する。
+    pub fn is_concrete_like(&self) -> bool {
+        matches!(
+            self,
+            SectionShape::RcRect { .. }
+                | SectionShape::RcCircle { .. }
+                | SectionShape::SrcRect { .. }
+                | SectionShape::CftBox { .. }
+                | SectionShape::CftPipe { .. }
+                | SectionShape::RcWall { .. }
+        )
+    }
+}
+
 /// 主筋セットの総断面積 [mm²]（本数×πr²。配筋検定・ファイバー生成用）。
 pub fn bar_set_area(bs: &BarSet) -> f64 {
     let r = bs.dia / 2.0;

@@ -5,6 +5,7 @@
 //! - [`regime`] —       フォースレジーム判定
 //! - [`wall_opening`] — 壁開口低減率
 //! - [`springs`] —      バネ / 履歴則パラメータ算定
+//! - [`input_check`] —  非線形解析の入力チェック（耐力を算定できない設定不備の検出）
 //!
 //! 本モジュールは要素種別ごとのディスパッチ（[`build_behavior`] /
 //! [`build_nonlinear_behavior`]）と、従来のパスを維持する再エクスポートを担う。
@@ -12,10 +13,12 @@
 use crate::behavior::{ElemState, ElementBehavior};
 use squid_n_core::model::{ElementData, ElementKind, Model};
 
+mod input_check;
 mod regime;
 mod springs;
 mod wall_opening;
 
+pub use input_check::{ensure_nonlinear_input, nonlinear_input_issues};
 pub use regime::{resolve_force_regime, ResolvedRegime};
 pub use springs::{plastic_zone_length, resolve_member_hysteresis};
 pub(crate) use wall_opening::wall_opening_reduction;
@@ -270,9 +273,13 @@ pub fn build_nonlinear_behavior(
             ElemState::default(),
         ),
         // 耐震壁: 面内せん断を終局せん断強度 Qu で頭打ちにする（弾完全塑性）。
-        // 従来は弾性のままで、押し込むほど際限なく水平力を負担し崩壊機構が
-        // 形成されず、保有水平耐力 Qu を著しく過大評価していた（危険側）。
-        // Qu を算定できない壁（Fc 未設定等）は従来どおり弾性とする。
+        // 弾性のままだと、押し込むほど際限なく水平力を負担し崩壊機構が形成されず、
+        // 保有水平耐力を著しく過大評価する（危険側）。
+        //
+        // Qu を算定できない耐震壁（Fc 未設定等）は解析前の入力チェック
+        // （[`ensure_nonlinear_input`]）がエラーで止めるため、ここで qu<=0 に
+        // なるのは耐震壁不成立のフレーム内雑壁（剛性が実質 0）に限られる。
+        // 本関数は要素を返す契約でエラーを返せないため、その場合のみ弾性とする。
         ElementKind::Wall => {
             let (b, st) = build_behavior(data, model);
             let qu = crate::wall_panel::WallPanelElement::shear_capacity_of(data, model);

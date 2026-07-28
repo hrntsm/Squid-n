@@ -111,6 +111,9 @@ fn build_shape_fibers(
 
     // 強度パラメータは配置生成では領域区分の決定に使われないため名目値でよいが、
     // 実値を渡しておく（将来 plastic_fibers_at が配置へ強度を反映しても破綻しない）。
+    // 既定値（Fc=24 等）へのフォールバックは、非線形解析では
+    // [`crate::factory::ensure_nonlinear_input`] が材料強度未入力のモデルを
+    // 事前に停止するため到達しない（未入力を既定値で無音に埋めない規約）。
     let strength = StrengthParams {
         steel_fy: fy.unwrap_or(235.0) * steel_factor,
         rebar_fy: fy.unwrap_or(345.0) * rebar_factor,
