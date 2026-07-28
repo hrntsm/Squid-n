@@ -12,7 +12,7 @@ pub(crate) mod hinge;
 mod modeling;
 mod solid;
 mod support_symbols;
-mod th_detail;
+pub(crate) mod th_detail;
 
 /// 3D ビュー上での支持条件の分類。`Dof6Mask` のビットパターンを意味的にまとめる。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -796,7 +796,16 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
     // 現在フレームは `app.th_frame`、再生経過時刻は `app.th_play_time`
     // （`frame_time` に基づき現在フレームへ写像。末尾でループ）で管理する。
     if mode == ViewMode::TimeHistory {
-        if let Some(recording) = app
+        if app.staleness.results_stale {
+            // 中-1(a): モデル編集後は添字ずれ（部材削除・並び替え）で別部材のデータを
+            // 表示する恐れがあるため、再解析するまで変形アニメーション・部材クリックを
+            // 無効化する（フレームスライダー自体も表示しない）。
+            ui.colored_label(
+                theme::BEST_YELLOW,
+                "⚠ モデルが編集されています。解析を再実行してください\
+                 （変形アニメーション・部材クリックは無効化しています）。",
+            );
+        } else if let Some(recording) = app
             .results
             .as_ref()
             .and_then(|r| r.time_history.as_ref())
@@ -992,7 +1001,9 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
         // 時刻歴アニメーション: 現在フレーム（`app.th_frame`）の全節点変位（node 順、
         // 展開済み。`ThRecording::node_disp` は既に `Deformed` と同じ形の
         // `Vec<[f64;6]>` のため、以降の変形描画経路をそのまま流用できる）。
-        ViewMode::TimeHistory => app
+        // モデル編集後（中-1）は再解析するまでアニメーションを無効化し、無変形の
+        // ままにする（`disp=None` で以降の変位加算・N/Q/M 重ねも行われない）。
+        ViewMode::TimeHistory if !app.staleness.results_stale => app
             .results
             .as_ref()
             .and_then(|r| r.time_history.as_ref())
@@ -1012,14 +1023,24 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
     // 代表節点の鉛直変位をスレーブ平均で補い、代表点も床の変形へ追従させる。
     let disp = disp.map(|d| display_disp(&app.model, d, app.show_beam_interpolation));
 
-    // 実効表示倍率（自動倍率 × 手動係数）。詳細は [`deform_display_scale`]。
-    let deform_scale_actual = deform_display_scale(
-        &app.model,
-        disp.as_deref(),
-        model_size,
-        app.show_beam_interpolation,
-        app.deform_scale_factor,
-    );
+    // 実効表示倍率（自動倍率 × 手動係数）。時刻歴アニメーションは記録全体の
+    // ピーク変位から 1 回だけ算定した固定倍率を使う（高-2、[`time_history_deform_scale`]）。
+    // それ以外は現在フレームの変位から都度算定する（[`deform_display_scale`]）。
+    let deform_scale_actual = if mode == ViewMode::TimeHistory {
+        if app.staleness.results_stale {
+            0.0
+        } else {
+            time_history_deform_scale(app, model_size)
+        }
+    } else {
+        deform_display_scale(
+            &app.model,
+            disp.as_deref(),
+            model_size,
+            app.show_beam_interpolation,
+            app.deform_scale_factor,
+        )
+    };
 
     // 表示用の節点 3D 座標（変形図・モード形では変位を加味）。
     // 断面ソリッド描画でも 3D 座標が要るため、投影前の座標を保持する。
@@ -1173,8 +1194,9 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
                         if mode == ViewMode::Hinge {
                             app.hinge_detail_elem = Some(id);
                         }
-                        // 時刻歴モードでは、クリックした部材の履歴・検定ウィンドウを開く。
-                        if mode == ViewMode::TimeHistory {
+                        // 時刻歴モードでは、クリックした部材の履歴・検定ウィンドウを開く
+                        // （中-1(a): モデル編集後は添字ずれの恐れがあるため無効化）。
+                        if mode == ViewMode::TimeHistory && !app.staleness.results_stale {
                             app.th_detail_elem = Some(id);
                         }
                     }
@@ -2648,6 +2670,80 @@ fn deform_display_scale(
         bbox_scale
     };
     auto * factor as f64
+}
+
+/// 時刻歴アニメーションの変形倍率キャッシュ（高-2）。
+///
+/// 通常の変形図（[`deform_display_scale`]）は現在フレームの変位から自動倍率を
+/// 算定するため、時刻歴アニメーションへそのまま適用すると振幅の小さいフレームで
+/// 倍率が発散し、逆に無変形（初期状態）フレームでは 0 になって表示が消える。
+/// 記録全体のピーク変位から 1 回だけ算定した固定倍率を使うことでこれを避ける。
+///
+/// `auto_scale` は手動係数（`App::deform_scale_factor`）を掛ける前の自動倍率。
+/// 記録の同一性は「フレーム数＋ピーク変位」で判定する（解析をやり直すと
+/// フレーム数かピーク値のいずれかが変わるため、それで十分にキャッシュを無効化できる）。
+/// モデルサイズ・内部たわみ表示 ON/OFF が変わった場合も再計算する。
+#[derive(Clone, Copy, Debug, Default)]
+pub struct TimeHistoryScaleCache {
+    n_frames: usize,
+    peak_max_disp: f64,
+    model_size: f64,
+    use_beam_interpolation: bool,
+    auto_scale: f64,
+}
+
+/// `ResponseResult::peak_disp`（全ステップ間引きなしのピーク変位、節点×6成分）から、
+/// 並進成分（ux/uy/uz）の絶対値最大を求める（純粋関数）。
+fn th_peak_translation_disp(result: &squid_n_solver::timehistory::ResponseResult) -> f64 {
+    result
+        .peak_disp
+        .iter()
+        .map(|d| d[0].abs().max(d[1].abs()).max(d[2].abs()))
+        .fold(0.0_f64, f64::max)
+}
+
+/// 時刻歴アニメーションの実効表示倍率（自動倍率 × 手動係数）。
+/// `app.th_scale_cache` を記録の同一性で使い回し、フレーム切替のたびに
+/// 自動倍率を再計算しない（高-2）。時刻歴の詳細記録・結果が無ければ 0。
+fn time_history_deform_scale(app: &mut App, model_size: f64) -> f64 {
+    let Some(result) = app.results.as_ref().and_then(|r| r.time_history.as_ref()) else {
+        app.th_scale_cache = None;
+        return 0.0;
+    };
+    let n_frames = result.recording.as_ref().map_or(0, |r| r.frame_time.len());
+    let peak_max_disp = th_peak_translation_disp(result);
+    let use_beam_interpolation = app.show_beam_interpolation;
+
+    let reuse = app.th_scale_cache.is_some_and(|c| {
+        c.n_frames == n_frames
+            && c.peak_max_disp == peak_max_disp
+            && c.model_size == model_size
+            && c.use_beam_interpolation == use_beam_interpolation
+    });
+    let auto_scale = if reuse {
+        app.th_scale_cache.expect("reuse implies Some").auto_scale
+    } else {
+        // ピーク変位（全ノード・全ステップの並進絶対値最大）を仮想的な変位配列とし、
+        // 既存の `deform_display_scale`（バウンディングボックス基準＋梁スパン基準）を
+        // 手動係数 1.0 でそのまま流用する（倍率算定ロジックの重複を避ける）。
+        let peak_disp_field: Vec<[f64; 6]> = result.peak_disp.clone();
+        let auto = deform_display_scale(
+            &app.model,
+            Some(&peak_disp_field),
+            model_size,
+            use_beam_interpolation,
+            1.0,
+        );
+        app.th_scale_cache = Some(TimeHistoryScaleCache {
+            n_frames,
+            peak_max_disp,
+            model_size,
+            use_beam_interpolation,
+            auto_scale: auto,
+        });
+        auto
+    };
+    auto_scale * app.deform_scale_factor as f64
 }
 
 /// 梁のスパンに対する内部たわみが過大にならないよう、表示倍率の上限を算定する。

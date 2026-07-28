@@ -632,6 +632,10 @@ pub struct App {
     /// 節点追加時に既存節点と同一座標だった場合の追加保留座標。
     /// セットされている間は確認ダイアログを表示し、ユーザの判断を待つ。
     pub pending_duplicate_node_coord: Option<[f64; 3]>,
+    /// 保存サイズ超過時の保存保留（保存先パス, 解析結果の直列化サイズ [MB]）。
+    /// セットされている間は「時刻歴の詳細記録を保存に含めますか？」の確認
+    /// ダイアログを表示し、選択に応じて含めて保存／除外して保存／キャンセル。
+    pub pending_save_recording: Option<(std::path::PathBuf, u64)>,
     /// stale（要再計算）状態と最終実行時刻
     pub staleness: Staleness,
     /// モデル整合性チェック（診断）の結果一覧。`run_diagnostics` で再構築する。
@@ -804,6 +808,19 @@ pub struct App {
     /// 時刻歴詳細ウィンドウの梁・柱ループで表示する曲げ軸（true=強軸Mz／false=弱軸My）。
     #[cfg(feature = "gui")]
     pub th_detail_axis_z: bool,
+    /// 時刻歴詳細ウィンドウの零長要素（免震・節点ばね）N-δ ループで選択中の成分
+    /// （中-2）。`(部材, 成分)` を保持し、`th_detail_elem` と部材が一致しない場合は
+    /// 要素種別ごとの既定（免震＝せん断、それ以外＝軸）へ戻す。`None` は未選択。
+    #[cfg(feature = "gui")]
+    pub th_detail_axial_component: Option<(
+        squid_n_core::ids::ElemId,
+        crate::viewer::th_detail::AxialComponent,
+    )>,
+    /// 時刻歴アニメーション（[`crate::viewer::ViewMode::TimeHistory`]）の変形倍率
+    /// キャッシュ（高-2）。フレームごとに再正規化せず、記録全体のピーク変位から
+    /// 1 回だけ算定した自動倍率（手動係数を掛ける前の値）を保持する。
+    #[cfg(feature = "gui")]
+    pub th_scale_cache: Option<crate::viewer::TimeHistoryScaleCache>,
     /// 床荷重分配の CMQ 結果（P2 §5.1）。描画用。
     pub beam_loads: Vec<squid_n_load::floor::BeamLoad>,
     /// 時刻歴応答データ（描画用）
@@ -936,6 +953,7 @@ impl Default for App {
             node_grid: crate::grid::GridWidget::new(),
             node_draft: ["0".to_string(), "0".to_string(), "0".to_string()],
             pending_duplicate_node_coord: None,
+            pending_save_recording: None,
             staleness: Staleness::default(),
             diagnostics: Vec::new(),
             preparation: None,
@@ -1025,6 +1043,10 @@ impl Default for App {
             th_detail_elem: None,
             #[cfg(feature = "gui")]
             th_detail_axis_z: true,
+            #[cfg(feature = "gui")]
+            th_detail_axial_component: None,
+            #[cfg(feature = "gui")]
+            th_scale_cache: None,
             beam_loads: Vec::new(),
             #[cfg(feature = "gui")]
             time_history_data: crate::time_history_view::TimeHistoryData::default(),
@@ -1906,6 +1928,49 @@ impl eframe::App for App {
             self.save_project_dialog(true);
         } else if ui.ctx().input_mut(|i| i.consume_shortcut(&SHORTCUT_SAVE)) {
             self.save_project_dialog(false);
+        }
+
+        // 保存サイズ超過の確認ダイアログ（時刻歴の詳細記録を含めるかの選択）。
+        // どのタブからの保存でも表示できるよう、ここで描画する。
+        if self.pending_save_recording.is_some() {
+            let mut choice: Option<bool> = None;
+            let mut do_cancel = false;
+            let mut open = true;
+            egui::Window::new("保存サイズの確認")
+                .title_bar(true)
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .open(&mut open)
+                .show(ui.ctx(), |ui| {
+                    if let Some((_, size_mb)) = &self.pending_save_recording {
+                        ui.label(format!(
+                            "解析結果のサイズが約 {} MB あります（時刻歴の詳細記録を含む）。",
+                            size_mb
+                        ));
+                    }
+                    ui.label("時刻歴の詳細記録（3D アニメーション・部材履歴ループ用）を保存に含めますか？");
+                    ui.label("除外しても層応答・ピーク値等の集計結果は保存され、詳細記録は再解析で復元できます。");
+                    ui.horizontal(|ui| {
+                        if ui.button("含めて保存").clicked() {
+                            choice = Some(true);
+                        }
+                        if ui.button("除外して保存").clicked() {
+                            choice = Some(false);
+                        }
+                        if ui.button("キャンセル").clicked() {
+                            do_cancel = true;
+                        }
+                    });
+                });
+            if !open || do_cancel {
+                self.pending_save_recording = None;
+            }
+            if let Some(include) = choice {
+                if let Some((path, _)) = self.pending_save_recording.take() {
+                    self.save_project_to_opts(path, Some(include));
+                }
+            }
         }
 
         // 上部ツールバー: ファイルメニュー + 工程タブ（自由遷移）+ Undo/Redo

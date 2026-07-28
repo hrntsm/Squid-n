@@ -5,6 +5,17 @@ use super::*;
 /// 節点対の順不同キー（`(min,max)`）。`beam_elem_map`（節点対→実 `Beam` 要素索引）と
 /// `slab_grillage_node_reactions`（実部材化判定）で、ノード順に依存しない同じキーを
 /// 使うための共通ヘルパー。
+/// 保存確認を出す解析結果サイズの閾値 [byte]。直列化した解析結果（時刻歴の
+/// 詳細記録を含む）がこれを超える場合、詳細記録を保存に含めるかを確認する。
+/// 読込側の上限（`squid_n_io::scz`、4 GiB）より十分小さい値とする。
+pub(crate) const SAVE_RECORDING_CONFIRM_BYTES: usize = 512 * 1024 * 1024;
+
+/// 保存前の確認ダイアログが必要か（解析結果の直列化サイズが閾値超過、かつ
+/// 時刻歴の詳細記録を含む場合のみ）。
+pub(crate) fn needs_recording_confirm(results_bytes: usize, has_recording: bool) -> bool {
+    has_recording && results_bytes > SAVE_RECORDING_CONFIRM_BYTES
+}
+
 fn beam_key(a: NodeId, b: NodeId) -> (NodeId, NodeId) {
     if a.0 <= b.0 {
         (a, b)
@@ -86,7 +97,24 @@ impl App {
     /// 準備計算の結果・解析結果は、いずれも**最新（モデル編集後に再実行済み）の
     /// 場合のみ**同梱する（`preparation_stale` / `results_stale` なら保存しない）。
     /// 読込側が「保存されている＝そのモデルに対して最新」と扱えるようにするため。
+    ///
+    /// 解析結果の直列化サイズが [`SAVE_RECORDING_CONFIRM_BYTES`] を超え、かつ
+    /// 時刻歴の詳細記録（`ThRecording`）を含む場合は、保存せずに確認保留
+    /// （`pending_save_recording`）をセットして戻る。確認ダイアログの選択に
+    /// 応じて [`Self::save_project_to_opts`] が `Some(true)`（含めて保存）／
+    /// `Some(false)`（除外して保存）で再入する。
     pub fn save_project_to(&mut self, path: std::path::PathBuf) {
+        self.save_project_to_opts(path, None);
+    }
+
+    /// [`Self::save_project_to`] の本体。`include_recording` が `None` のとき、
+    /// サイズ超過なら確認保留をセットして保存を中断する。`Some(false)` なら
+    /// 時刻歴の詳細記録を除外して保存する（メモリ上の記録は保持したまま）。
+    pub fn save_project_to_opts(
+        &mut self,
+        path: std::path::PathBuf,
+        include_recording: Option<bool>,
+    ) {
         self.last_error = None;
         // self を可変借用する `encoded_or_notice` の前に、直列化まで済ませておく。
         let prep = self
@@ -94,6 +122,20 @@ impl App {
             .as_ref()
             .filter(|_| !self.staleness.preparation_stale)
             .map(rmp_serde::to_vec);
+        // 時刻歴の詳細記録（`ThRecording`）も解析結果の一部として保存する。
+        // 実建物規模では数百MB級になり得るため、既定の閾値を超える場合のみ
+        // 確認ダイアログで含める/除外するをユーザーが選ぶ。`Some(false)` の
+        // ときは `take()` で一時的に取り除いて直列化し、直後に戻す
+        // （記録本体の複製コストを避ける。保存はメモリ上の結果に対し非破壊）。
+        let exclude_recording = include_recording == Some(false);
+        let taken_recording = if exclude_recording {
+            self.results
+                .as_mut()
+                .and_then(|bundle| bundle.time_history.as_mut())
+                .and_then(|th| th.recording.take())
+        } else {
+            None
+        };
         let results = self
             .results
             .as_ref()
@@ -105,8 +147,33 @@ impl App {
             })
             .as_ref()
             .map(rmp_serde::to_vec);
+        if let Some(recording) = taken_recording {
+            if let Some(th) = self
+                .results
+                .as_mut()
+                .and_then(|bundle| bundle.time_history.as_mut())
+            {
+                th.recording = Some(recording);
+            }
+        }
         let prep_bytes = self.encoded_or_notice(prep, "準備計算の結果");
         let results_bytes = self.encoded_or_notice(results, "解析結果");
+
+        // サイズ超過の確認（未確認の初回のみ）。詳細記録を含む結果が閾値を
+        // 超える場合は保存せず、確認ダイアログの表示を要求して戻る。
+        if include_recording.is_none() {
+            let has_recording = self
+                .results
+                .as_ref()
+                .filter(|_| !self.staleness.results_stale)
+                .and_then(|b| b.time_history.as_ref())
+                .is_some_and(|th| th.recording.is_some());
+            let size = results_bytes.as_ref().map(|b| b.len()).unwrap_or(0);
+            if needs_recording_confirm(size, has_recording) {
+                self.pending_save_recording = Some((path, size as u64 / (1024 * 1024)));
+                return;
+            }
+        }
 
         let extras = squid_n_io::scz::SczExtras {
             preparation: prep_bytes.as_deref(),
@@ -126,6 +193,12 @@ impl App {
             }
             Err(e) => self.report_error(format!("保存エラー: {}", e)),
         }
+    }
+
+    /// 時刻歴の詳細記録を除いた解析結果のみで保存する（確認ダイアログの
+    /// 「除外して保存」）。
+    pub fn save_project_without_recording(&mut self, path: std::path::PathBuf) {
+        self.save_project_to_opts(path, Some(false));
     }
 
     /// 保存用の派生データの直列化結果を受け取り、失敗していれば注意を報告する。

@@ -1263,12 +1263,15 @@ impl App {
                 });
                 ui.horizontal_wrapped(|ui| {
                     ui.label("積分法:");
+                    // 低: 非線形 ON でも Newmark-β は選択状態のまま有効表示にする
+                    // （非線形時刻歴は常に Newmark-β 相当で解くため、選択自体は無効化する
+                    // 理由が無い）。HHT-α のみ無効化し、hover で理由を示す。
+                    ui.selectable_value(
+                        &mut self.analysis_cfg.th_integrator,
+                        ThIntegrator::NewmarkBeta,
+                        "Newmark-β",
+                    );
                     ui.add_enabled_ui(!self.analysis_cfg.th_nonlinear, |ui| {
-                        ui.selectable_value(
-                            &mut self.analysis_cfg.th_integrator,
-                            ThIntegrator::NewmarkBeta,
-                            "Newmark-β",
-                        );
                         ui.selectable_value(
                             &mut self.analysis_cfg.th_integrator,
                             ThIntegrator::HhtAlpha,

@@ -1,7 +1,7 @@
 use crate::app::App;
 use crate::story_response::{
-    floor_points, hover_story_index, story_absmax, story_axis_label, story_step_points,
-    StoryRespDir, StoryResponseKind,
+    floor_points, hover_story_index, story_axis_label, story_step_points, StoryRespDir,
+    StoryResponseKind,
 };
 
 /// 時刻歴グラフの描画データ。`App::run_time_history` が
@@ -250,63 +250,63 @@ fn story_response_panel(ui: &mut egui::Ui, app: &mut App) {
         return;
     }
 
-    // 階名（`model.stories` の並びは `recording` の階と同じ。取得できなければ「NF」で補う）。
-    let story_names: Vec<String> = (0..n_story)
-        .map(|i| {
-            app.model
-                .stories
-                .get(i)
-                .map(|s| s.name.clone())
-                .unwrap_or_else(|| format!("{}F", i + 1))
-        })
+    // 階名（低: 添字ではなく `StoryId` で現モデルと突き合わせる。解析後にモデルの
+    // 階が編集されても別の階の名前を誤って表示しない。見つからなければ「(削除済み階)」）。
+    let model_story_names: Vec<(squid_n_core::ids::StoryId, String)> = app
+        .model
+        .stories
+        .iter()
+        .map(|s| (s.id, s.name.clone()))
         .collect();
+    let story_names =
+        crate::story_response::story_display_names(&model_story_names, &story.stories);
 
     /// 層応答分布の1系列分の表示仕様（値列・軸ラベル・単位・値の書式）。
+    ///
+    /// いずれも `StoryResponse::peak_*`（全ステップ更新・間引きなしのピーク）を使う
+    /// （中-4）。フレーム記録（`story_shear`等、`record_every` で間引き）から
+    /// `story_absmax` で求めると、間引きの合間に生じたピークを取りこぼすため。
     type SeriesSpec<'a> = (Vec<f64>, &'a str, &'a str, fn(f64) -> String);
     let (values, xlabel, unit_suffix, value_fmt): SeriesSpec<'_> = match kind {
-        StoryResponseKind::Shear => {
-            let raw = story_absmax(&story.story_shear, n_story);
-            (
-                raw.iter()
-                    .map(|&v| crate::story_response::n_to_kn(v))
-                    .collect(),
-                "層せん断力 [kN]",
-                "kN",
-                |v| format!("{:.2}", v),
-            )
-        }
+        StoryResponseKind::Shear => (
+            story
+                .peak_story_shear
+                .iter()
+                .map(|&v| crate::story_response::n_to_kn(v))
+                .collect(),
+            "層せん断力 [kN]",
+            "kN",
+            |v| format!("{:.2}", v),
+        ),
         StoryResponseKind::ShearCoeff => (
             story.peak_shear_coeff.clone(),
             "層せん断力係数 Ci [-]",
             "",
             |v| format!("{:.4}", v),
         ),
-        StoryResponseKind::Accel => {
-            let raw = story_absmax(&story.floor_accel, n_story);
-            (
-                raw.iter()
-                    .map(|&v| crate::story_response::mm_s2_to_gal(v))
-                    .collect(),
-                "階加速度 [gal]",
-                "gal",
-                |v| format!("{:.1}", v),
-            )
-        }
-        StoryResponseKind::Vel => {
-            let raw = story_absmax(&story.floor_vel, n_story);
-            (
-                raw.iter()
-                    .map(|&v| crate::story_response::mm_s_to_m_s(v))
-                    .collect(),
-                "階速度 [m/s]",
-                "m/s",
-                |v| format!("{:.4}", v),
-            )
-        }
-        StoryResponseKind::Disp => {
-            let raw = story_absmax(&story.floor_disp, n_story);
-            (raw, "階変位 [mm]", "mm", |v| format!("{:.2}", v))
-        }
+        StoryResponseKind::Accel => (
+            story
+                .peak_floor_accel
+                .iter()
+                .map(|&v| crate::story_response::mm_s2_to_gal(v))
+                .collect(),
+            "階加速度 [gal]",
+            "gal",
+            |v| format!("{:.1}", v),
+        ),
+        StoryResponseKind::Vel => (
+            story
+                .peak_floor_vel
+                .iter()
+                .map(|&v| crate::story_response::mm_s_to_m_s(v))
+                .collect(),
+            "階速度 [m/s]",
+            "m/s",
+            |v| format!("{:.4}", v),
+        ),
+        StoryResponseKind::Disp => (story.peak_floor_disp.clone(), "階変位 [mm]", "mm", |v| {
+            format!("{:.2}", v)
+        }),
     };
 
     let is_story_quantity = kind.is_story_quantity();

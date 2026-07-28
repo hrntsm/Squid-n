@@ -23,6 +23,31 @@ pub fn story_absmax(series: &[Vec<f64>], n_story: usize) -> Vec<f64> {
     out
 }
 
+/// 記録済みの階 ID 列（`ThRecording`/`StoryResponse::stories`）と現在の
+/// `model.stories` を `StoryId` で突き合わせ、階の表示名を求める（低）。
+/// 解析後にモデルの階が編集（追加・削除・並び替え）されても、添字ではなく
+/// `StoryId` で対応する階を探すため、別の階の名前を誤って表示しない。
+/// 該当する階が見つからない場合（記録後に当該階が削除された等）は
+/// 「(削除済み階)」を返す。
+///
+/// `model_stories` は `app.model.stories.iter().map(|s| (s.id, s.name.clone()))`
+/// を渡すことを想定する（本関数は GUI 非依存に保つため `Model` 型に依存しない）。
+pub fn story_display_names(
+    model_stories: &[(squid_n_core::ids::StoryId, String)],
+    recorded: &[squid_n_core::ids::StoryId],
+) -> Vec<String> {
+    recorded
+        .iter()
+        .map(|id| {
+            model_stories
+                .iter()
+                .find(|(sid, _)| sid == id)
+                .map(|(_, name)| name.clone())
+                .unwrap_or_else(|| "(削除済み階)".to_string())
+        })
+        .collect()
+}
+
 /// N → kN
 pub fn n_to_kn(n: f64) -> f64 {
     n / 1000.0
@@ -128,6 +153,34 @@ pub fn hover_story_index(y: f64, n_story: usize, is_story_quantity: bool) -> usi
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use squid_n_core::ids::StoryId;
+
+    #[test]
+    fn test_story_display_names_matches_by_story_id_not_index() {
+        // モデル側は StoryId(1),StoryId(0) の順（記録時と並びが入れ替わっている想定）。
+        let model_stories = vec![
+            (StoryId(1), "2F".to_string()),
+            (StoryId(0), "1F".to_string()),
+        ];
+        let recorded = vec![StoryId(0), StoryId(1)];
+        assert_eq!(
+            story_display_names(&model_stories, &recorded),
+            vec!["1F".to_string(), "2F".to_string()],
+            "添字ではなく StoryId で対応する階名を引くはず"
+        );
+    }
+
+    #[test]
+    fn test_story_display_names_missing_story_falls_back() {
+        let model_stories = vec![(StoryId(0), "1F".to_string())];
+        let recorded = vec![StoryId(0), StoryId(1)];
+        assert_eq!(
+            story_display_names(&model_stories, &recorded),
+            vec!["1F".to_string(), "(削除済み階)".to_string()],
+            "記録後に削除された階は「(削除済み階)」になるはず"
+        );
+    }
 
     #[test]
     fn test_story_absmax_takes_abs_value_max_over_frames() {

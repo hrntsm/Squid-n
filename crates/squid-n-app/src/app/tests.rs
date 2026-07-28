@@ -5905,6 +5905,120 @@ fn test_stale_results_not_persisted() {
     let _ = std::fs::remove_file(&path);
 }
 
+/// 時刻歴の詳細記録（`ThRecording`）は既定でプロジェクト保存（.scz）に含まれ、
+/// 復元後も 3D アニメーション・層応答分布が利用できる。保存操作はメモリ上の
+/// `app.results` を破壊しない。閾値超過時の確認（`needs_recording_confirm`）と
+/// 「除外して保存」（`save_project_without_recording`）の分岐も併せて検証する。
+#[test]
+fn test_time_history_recording_saved_and_optional_exclusion() {
+    let dir = std::env::temp_dir();
+    let path = dir.join("squid_n_th_recording_saved_test.scz");
+    let path_excl = dir.join("squid_n_th_recording_excluded_test.scz");
+    let _ = std::fs::remove_file(&path);
+    let _ = std::fs::remove_file(&path_excl);
+
+    let mut app = App::default();
+    app.load_model(crate::sample::portal_frame());
+    app.generate_stories_action();
+    app.analysis_cfg.th_duration = 1.0;
+    app.run_time_history_sample();
+    assert!(app.last_error.is_none(), "{:?}", app.last_error);
+    assert!(
+        app.results
+            .as_ref()
+            .and_then(|r| r.time_history.as_ref())
+            .and_then(|t| t.recording.as_ref())
+            .is_some(),
+        "前提: 解析直後は recording を持つはず"
+    );
+    // `apply_time_history_result` は `staleness.mark_fresh` を呼ばない（静的解析・
+    // 荷重組合せのみが呼ぶ）ため、時刻歴だけでは `results_stale` が解消しない。
+    // 保存条件（`!results_stale`）を満たす実利用の流れ（静的解析も実行）に揃える。
+    app.run_linear_static(LoadCaseId(0));
+    assert!(app.last_error.is_none(), "{:?}", app.last_error);
+    assert!(!app.staleness.results_stale);
+
+    // 既定保存: 小規模モデルは閾値未満なので確認なしで保存され、recording を含む。
+    app.save_project_to(path.clone());
+    assert!(app.last_error.is_none(), "{:?}", app.last_error);
+    assert!(
+        app.pending_save_recording.is_none(),
+        "閾値未満では確認保留にならないはず"
+    );
+    assert!(
+        app.results
+            .as_ref()
+            .and_then(|r| r.time_history.as_ref())
+            .and_then(|t| t.recording.as_ref())
+            .is_some(),
+        "保存後もメモリ上の recording は保持されるはず（保存は非破壊）"
+    );
+
+    let mut reopened = App::default();
+    reopened.open_project_from(path.clone());
+    assert!(reopened.last_error.is_none(), "{:?}", reopened.last_error);
+    let restored_th = reopened
+        .results
+        .as_ref()
+        .and_then(|r| r.time_history.as_ref())
+        .expect("time_history 本体は復元されるはず");
+    assert!(
+        restored_th.recording.is_some(),
+        "recording は既定で保存・復元されるはず"
+    );
+    assert!(!restored_th.peak_disp.is_empty());
+
+    // 「除外して保存」: recording を含めずに保存し、メモリ上は保持される。
+    app.save_project_without_recording(path_excl.clone());
+    assert!(app.last_error.is_none(), "{:?}", app.last_error);
+    assert!(
+        app.results
+            .as_ref()
+            .and_then(|r| r.time_history.as_ref())
+            .and_then(|t| t.recording.as_ref())
+            .is_some(),
+        "除外保存後もメモリ上の recording は保持されるはず"
+    );
+    let mut reopened_excl = App::default();
+    reopened_excl.open_project_from(path_excl.clone());
+    assert!(
+        reopened_excl.last_error.is_none(),
+        "{:?}",
+        reopened_excl.last_error
+    );
+    let excl_th = reopened_excl
+        .results
+        .as_ref()
+        .and_then(|r| r.time_history.as_ref())
+        .expect("time_history 本体（ピーク値等）は復元されるはず");
+    assert!(
+        excl_th.recording.is_none(),
+        "除外して保存した場合は recording を含まないはず"
+    );
+    assert!(!excl_th.peak_disp.is_empty());
+
+    let _ = std::fs::remove_file(&path);
+    let _ = std::fs::remove_file(&path_excl);
+}
+
+/// 保存確認の判定（`needs_recording_confirm`）: 閾値超過かつ詳細記録ありの
+/// 場合のみ確認が必要になる。
+#[test]
+fn test_needs_recording_confirm_threshold() {
+    use super::actions::{needs_recording_confirm, SAVE_RECORDING_CONFIRM_BYTES};
+    let th = SAVE_RECORDING_CONFIRM_BYTES;
+    assert!(!needs_recording_confirm(th, true), "閾値ちょうどは確認不要");
+    assert!(
+        needs_recording_confirm(th + 1, true),
+        "閾値超過+記録ありは確認"
+    );
+    assert!(
+        !needs_recording_confirm(th + 1, false),
+        "記録なしはサイズ超過でも確認不要(そのまま保存)"
+    );
+    assert!(!needs_recording_confirm(0, true));
+}
+
 /// 制振要素定義（`Model::damper_defs`）を「断面のように選ぶ」UX の土台。
 /// `AddDamperDef`/`UpdateDamperDef`/`RemoveDamperDef` を undo 経由で実行し、
 /// 追加・更新・削除・undo が期待どおりに model へ反映されることを確認する
