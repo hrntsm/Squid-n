@@ -60,12 +60,18 @@ pub(crate) fn axial_compression(f_i: [f64; 3], f_j: [f64; 3], ex: [f64; 3]) -> f
 ///
 /// 節点位置のモーメントは剛体アーム分だけ大きいため、これを断面耐力 My と直接
 /// 比較すると剛域を持つ部材のヒンジを過早に検出し、崩壊荷重を過小評価する。
+///
+/// **2 節点の線材専用。** 4 節点の耐震壁（壁エレメントモデル。節点配列は
+/// `[下辺a, 下辺b, 上辺a, 上辺b]`）に適用すると、nodes[0]→nodes[1] は壁脚の
+/// 幅方向（水平）を向き、壁要素本体の等価柱軸（壁脚中心→壁頭中心、鉛直）と
+/// ほぼ直交した無意味な局所座標系になるため `None` を返して対象外とする
+/// （壁のせん断終局・曲げは壁専用の経路で扱う）。
 pub(crate) fn member_end_forces_at_face(
     model: &Model,
     elem: &ElementData,
     f_global: &[f64],
 ) -> Option<[f64; 12]> {
-    if elem.nodes.len() < 2 || f_global.len() < 12 {
+    if elem.nodes.len() != 2 || f_global.len() < 12 {
         return None;
     }
     let pi = model.nodes.get(elem.nodes[0].index())?;

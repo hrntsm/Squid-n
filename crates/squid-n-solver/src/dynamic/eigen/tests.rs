@@ -318,6 +318,28 @@ fn test_eigen_mass_rank_deficient_returns_explicit_error() {
     );
 }
 
+/// 負の節点質量（符号誤りなどの入力不備）は、M の半正定値性が崩れて一般化
+/// Jacobi の前提が破れ誤った固有値が「正常終了」で返るため、明示エラーになること。
+#[test]
+fn test_eigen_negative_mass_returns_explicit_error() {
+    let mut model = make_portal_frame_like_model(1.0e-3);
+    // 合計質量（トレース）は正のまま、対角に負が混じる状態を作る
+    // （トレースまで非正だと既存の「質量ゼロ」検出が先に発火する）。
+    model.nodes[2].mass = Some([-0.5e-3, 0.0, 0.0, 0.0, 0.0, 0.0]);
+    let dofmap = DofMap::build(&model);
+    let reducer = Reducer::build(&model, &dofmap);
+    let result = solve_eigen(&model, &dofmap, &reducer, 1);
+    let err = match result {
+        Err(e) => e,
+        Ok(r) => panic!(
+            "負質量はエラーになるべきだが omega2={:?} が返った",
+            r.omega2
+        ),
+    };
+    let msg = err.to_string();
+    assert!(msg.contains("負"), "エラーは負質量を説明すべき: {}", msg);
+}
+
 /// `gevd_jacobi` は M=I（単位行列）を渡すと標準固有値問題 K z = θ z に一致する。
 #[test]
 fn test_gevd_jacobi_2x2_identity_mass() {

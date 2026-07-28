@@ -84,8 +84,16 @@ pub fn construction_stage_analysis(
     let n_nodes = model.nodes.len();
 
     // 層を elevation 昇順に並べ替える（原典: 下層から順に生成）。
+    // NaN が混入した標高は入力不備として明示エラーにする（`partial_cmp().unwrap()`
+    // で panic させない）。
+    if model.stories.iter().any(|s| !s.elevation.is_finite()) {
+        return Err(SolveError::InvalidInput(
+            "階の標高(elevation)に数値でない値が含まれています。階の設定を確認してください。"
+                .into(),
+        ));
+    }
     let mut elevations: Vec<f64> = model.stories.iter().map(|s| s.elevation).collect();
-    elevations.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    elevations.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     let n_stages = elevations.len().max(1);
 
     // z 座標から帰属ステージ（0 始まり）を決める規則。

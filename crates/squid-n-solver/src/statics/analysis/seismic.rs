@@ -103,12 +103,23 @@ pub fn steel_height_ratio(model: &Model) -> f64 {
     if total_h <= 0.0 {
         return 0.0;
     }
+    // 階高は標高の隣接差分で求めるため、`model.stories` の並び順に依存しない
+    // よう標高昇順に並べ替えてから走査する（同一クレート内の施工時解析
+    // `construction.rs` と同じ防御。並びが乱れた入力では h が負になり
+    // 鉄骨階の高さが無言で欠落していた）。
+    let mut normals: Vec<&Story> = model
+        .stories
+        .iter()
+        .filter(|s| matches!(s.level_kind, StoryLevelKind::Normal))
+        .collect();
+    normals.sort_by(|a, b| {
+        a.elevation
+            .partial_cmp(&b.elevation)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     let mut prev_elev = gl;
     let mut steel_h = 0.0;
-    for story in &model.stories {
-        if !matches!(story.level_kind, StoryLevelKind::Normal) {
-            continue;
-        }
+    for story in normals {
         let h = story.elevation - prev_elev;
         prev_elev = story.elevation;
         if h <= 0.0 {
@@ -172,7 +183,10 @@ pub(super) fn main_system_weight(story: &Story) -> f64 {
         .filter(|d| d.ci_override.is_some())
         .map(|d| d.weight.unwrap_or(0.0))
         .sum();
-    total - ci_override_weight
+    // 副剛床の重量合計が階の地震重量を超える入力不整合（重量の二重計上・
+    // 桁誤り等）では負値になり得るため 0 で頭打ちにする（負の重量が
+    // Ai 分布式へ渡ることを防ぐ）。
+    (total - ci_override_weight).max(0.0)
 }
 
 /// 階の水平力 Pi を剛床へ分配する（地震荷重版。副剛床の Ci 直接入力に対応）。
@@ -411,7 +425,9 @@ pub fn build_seismic_load_case_from_model(
     for (i, story) in stories.iter().enumerate() {
         let pi = ai.pi.get(i).copied().unwrap_or(0.0);
         for (master, share) in distribute_seismic_forces(story, pi) {
-            if share == 0.0 {
+            // NaN は `== 0.0` をすり抜けて荷重ケースへ混入し「解析は成功したが
+            // 結果が NaN」という壊れ方をするため、非有限値もここで除外する。
+            if share == 0.0 || !share.is_finite() {
                 continue;
             }
             let f = [dir_vec[0] * share, dir_vec[1] * share, 0.0, 0.0, 0.0, 0.0];

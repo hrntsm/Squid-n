@@ -636,6 +636,48 @@ fn test_compute_static_indeterminacy_indeterminate_portal() {
         ..Default::default()
     };
     assert_eq!(compute_static_indeterminacy(&portal, SeismicDir::X), 3);
+
+    // 直交フレーム込みの 3D モデル: 同じ門型を Y=5000 にもう 1 構面複製し、
+    // 柱頭同士を Y 方向大梁 2 本でつなぐ。X 加力の静的不静定次数は
+    // 「X-Z 構面 2 面ぶん」の 3+3=6 であるべきで、Y 方向大梁を部材数へ
+    // 算入してはならない（従来はモデル全体の要素数・節点数を使っており、
+    // 直交大梁 1 本につき r が 3 水増しされ、機構成立ゲート（≧r+1）が過大に
+    // なって層崩壊機構が Partial と誤判定されていた）。
+    let mut model3d = portal.clone();
+    let n_nodes = model3d.nodes.len() as u32;
+    for i in 0..n_nodes {
+        let mut n = model3d.nodes[i as usize].clone();
+        n.id = NodeId(n_nodes + i);
+        n.coord[1] += 5000.0;
+        model3d.nodes.push(n);
+    }
+    let n_elems = model3d.elements.len() as u32;
+    for i in 0..n_elems {
+        let mut e = model3d.elements[i as usize].clone();
+        e.id = ElemId(n_elems + i);
+        e.nodes = e.nodes.iter().map(|nid| NodeId(nid.0 + n_nodes)).collect();
+        model3d.elements.push(e);
+    }
+    // 柱頭 (node1,node2) と複製構面の柱頭 (node1+4,node2+4) をつなぐ Y 方向大梁。
+    for (k, (a, b)) in [(1u32, 5u32), (2, 6)].iter().enumerate() {
+        let mut e = model3d.elements[1].clone(); // 元の X 方向梁を雛形に
+        e.id = ElemId(2 * n_elems + k as u32);
+        e.nodes = smallvec::smallvec![NodeId(*a), NodeId(*b)];
+        model3d.elements.push(e);
+    }
+    assert_eq!(
+        compute_static_indeterminacy(&model3d, SeismicDir::X),
+        6,
+        "X加力の不静定次数はX-Z構面2面ぶん(3+3)であり、直交Y大梁で水増しされない"
+    );
+    // Y 加力では逆に、Y 方向大梁 2 本と柱 4 本が Y-Z 構面を構成する。
+    // 構面あたり 柱2+梁1=3部材・節点4（基部2固定）→ r=3、2 構面で 6。
+    // X 方向梁は算入しない。
+    assert_eq!(
+        compute_static_indeterminacy(&model3d, SeismicDir::Y),
+        6,
+        "Y加力の不静定次数はY-Z構面2面ぶんであり、直交X大梁で水増しされない"
+    );
 }
 
 #[test]

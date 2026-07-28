@@ -190,6 +190,24 @@ pub(crate) fn compute_member_response(
         if elem.nodes.len() < 2 {
             continue;
         }
+        // 4 節点の耐震壁等（非 2 節点）: nodes[0]→nodes[1] を材軸とする線材向けの
+        // 局所座標系は幾何的に無意味（壁脚の幅方向を向く）ため、曲げ・せん断・
+        // 軸力・Rp は算定せず、βu の分子となる加力方向水平力のみ集計する
+        // （[`horizontal_force_in_dir`] は節点群合計で 4 節点壁を正しく扱う）。
+        if elem.nodes.len() != 2 {
+            let f = b.internal_force(&state, &ctx);
+            out.push(PushoverMemberResponse {
+                elem: elem.id,
+                m_strong: 0.0,
+                m_weak: 0.0,
+                shear_strong: 0.0,
+                shear_weak: 0.0,
+                axial: 0.0,
+                rp: 0.0,
+                horizontal_force: horizontal_force_in_dir(&f, elem.nodes.len(), dir_idx),
+            });
+            continue;
+        }
         let (Some(pi), Some(pj)) = (
             model.nodes.get(elem.nodes[0].index()),
             model.nodes.get(elem.nodes[1].index()),

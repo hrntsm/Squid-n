@@ -1,8 +1,9 @@
 use faer::sparse::SparseColMat;
 use squid_n_core::dof::{DofMap, DOF_PER_NODE};
 use squid_n_core::ids::LoadCaseId;
-use squid_n_core::model::Model;
+use squid_n_core::model::{ElementData, ElementKind, Model};
 use squid_n_element::factory::build_behavior;
+use squid_n_element::transform::LocalFrame;
 use squid_n_math::sparse::{assemble_csc, Triplet};
 
 pub fn assemble_global_k(model: &Model, dofmap: &DofMap) -> SparseColMat<usize, f64> {
@@ -94,6 +95,44 @@ pub fn assemble_global_f(model: &Model, dofmap: &DofMap, lc: LoadCaseId) -> Vec<
     f
 }
 
+/// 部材荷重（等価節点力・固定端内力）を扱える線材要素か。
+///
+/// 対象は 2 節点の線材（梁・ファイバー梁・マルチスプリング梁・ブレース。
+/// [`crate::linear::ensure_line_member_forces`] の対象と同じ集合）。壁・シェル等の
+/// 非線材（4 節点）に `MemberLoad` が誤って紐付いた場合、従来は先頭 2 節点だけを
+/// 材端とみなして荷重を配ってしまい、エラーも出ずに荷重が誤適用されていた。
+pub(crate) fn is_member_load_target(elem: &ElementData) -> bool {
+    matches!(
+        elem.kind,
+        ElementKind::Beam
+            | ElementKind::Fiber
+            | ElementKind::MultiSpring
+            | ElementKind::Brace { .. }
+    ) && elem.nodes.len() == 2
+}
+
+/// 線材の局所座標系と部材長を返す（部材荷重の等価節点力・固定端内力の共通前処理）。
+/// 非対象要素（[`is_member_load_target`] 参照）・節点参照の欠落・退化長さ（<1e-9mm）
+/// は `None`。
+pub(crate) fn member_load_frame(model: &Model, elem: &ElementData) -> Option<(LocalFrame, f64)> {
+    if !is_member_load_target(elem) {
+        return None;
+    }
+    let p_i = model.nodes.get(elem.nodes[0].index())?.coord;
+    let p_j = model.nodes.get(elem.nodes[1].index())?.coord;
+    let dx = p_j[0] - p_i[0];
+    let dy = p_j[1] - p_i[1];
+    let dz = p_j[2] - p_i[2];
+    let length = (dx * dx + dy * dy + dz * dz).sqrt();
+    if length < 1e-9 {
+        return None;
+    }
+    Some((
+        LocalFrame::from_nodes(p_i, p_j, elem.local_axis.ref_vector),
+        length,
+    ))
+}
+
 /// 部材荷重の等価節点力を local で計算し、全体系へ回して荷重ベクトルへ散布する。
 fn add_member_loads(
     model: &Model,
@@ -101,36 +140,29 @@ fn add_member_loads(
     member_loads: &[squid_n_core::model::MemberLoad],
     f: &mut [f64],
 ) {
-    use squid_n_element::transform::LocalFrame;
+    use std::collections::HashMap;
+
+    // 要素 ID → 荷重リストへ事前にグルーピングする（従来の全要素×全荷重の
+    // 総当り filter は O(要素数×荷重数) で大規模モデルに不利）。
+    let mut by_elem: HashMap<squid_n_core::ids::ElemId, Vec<squid_n_core::model::MemberLoad>> =
+        HashMap::new();
+    for ml in member_loads {
+        by_elem.entry(ml.elem).or_default().push(ml.clone());
+    }
+    if by_elem.is_empty() {
+        return;
+    }
 
     for elem in &model.elements {
-        // この部材に作用する荷重だけ収集
-        let loads: Vec<squid_n_core::model::MemberLoad> = member_loads
-            .iter()
-            .filter(|ml| ml.elem == elem.id)
-            .cloned()
-            .collect();
-        if loads.is_empty() || elem.nodes.len() < 2 {
+        let Some(loads) = by_elem.get(&elem.id) else {
             continue;
-        }
+        };
+        let Some((frame, length)) = member_load_frame(model, elem) else {
+            continue;
+        };
         let ni = elem.nodes[0].index();
         let nj = elem.nodes[1].index();
-        if ni >= model.nodes.len() || nj >= model.nodes.len() {
-            continue;
-        }
-        let p_i = model.nodes[ni].coord;
-        let p_j = model.nodes[nj].coord;
-        let length = {
-            let dx = p_j[0] - p_i[0];
-            let dy = p_j[1] - p_i[1];
-            let dz = p_j[2] - p_i[2];
-            (dx * dx + dy * dy + dz * dz).sqrt()
-        };
-        if length < 1e-9 {
-            continue;
-        }
-        let frame = LocalFrame::from_nodes(p_i, p_j, elem.local_axis.ref_vector);
-        let q_local = squid_n_element::member_load::consistent_load_local(&loads, &frame, length);
+        let q_local = squid_n_element::member_load::consistent_load_local(loads, &frame, length);
         let q_global = frame.rotate_to_global(&q_local);
         // q_global: [i:0..6, j:6..12] を各節点 DOF へ散布
         for (local_node, &node_idx) in [ni, nj].iter().enumerate() {

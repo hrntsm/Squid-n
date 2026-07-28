@@ -83,7 +83,14 @@ pub struct CapacityPoint {
     pub story_drift: Vec<f64>,
 }
 
-/// ヒンジ発生事象（P5 §7.4）
+/// ヒンジ発生事象（P5 §7.4）。
+///
+/// **記録粒度に注意**: `track_hinges` は確定ステップごとに「その時点で閾値を
+/// 超えている材端」をすべて記録するため、一度降伏した材端は以降のステップでも
+/// 毎回記録される（発生の初回のみのイベント列ではなく、ステップごとの状態
+/// スナップショットの連なり）。消費者は (elem, 端) で集約して最高レベル・
+/// 最大塑性率・初回ステップを取り出すこと（`squid-n-app` の `aggregate_hinges`
+/// 参照。塑性率の最大値はこの毎ステップ記録に依存している）。
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct HingeEvent {
     pub step: u32,
@@ -201,6 +208,8 @@ pub struct MemberStepState {
 pub struct PushoverResult {
     pub steps: Vec<PushoverStep>,
     pub capacity_curve: Vec<CapacityPoint>,
+    /// ヒンジ記録（確定ステップごとの閾値超過スナップショットの連なり。
+    /// 同一材端が複数ステップで重複して並ぶ。[`HingeEvent`] の記録粒度参照）。
     pub hinges: Vec<HingeEvent>,
     /// せん断降伏イベント履歴（段階的耐力喪失解析の判定に使用、`strength_loss` モジュール参照）。
     pub shear_yields: Vec<ShearYieldEvent>,
