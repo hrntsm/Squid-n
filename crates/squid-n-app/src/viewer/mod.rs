@@ -11,6 +11,8 @@ mod diagram;
 pub(crate) mod hinge;
 mod modeling;
 mod solid;
+mod support_symbols;
+pub(crate) mod th_detail;
 
 /// 3D ビュー上での支持条件の分類。`Dof6Mask` のビットパターンを意味的にまとめる。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -71,6 +73,8 @@ pub enum ViewMode {
     Modeling,
     /// ヒンジ図（増分解析のヒンジ発生位置を可視化）
     Hinge,
+    /// 時刻歴アニメーション（時刻歴応答解析の詳細記録 `ThRecording` を再生表示）
+    TimeHistory,
 }
 
 /// モデル化図で可視化する解析種別。
@@ -371,6 +375,30 @@ fn draw_arrow(painter: &egui::Painter, from: egui::Pos2, to: egui::Pos2, color: 
     painter.line_segment([to, right], stroke);
 }
 
+/// 回転軸 `axis`（非零ベクトル想定）に直交する面内の正規直交基底 `(u, v)` を返す。
+/// 円弧・渦巻（[`support_symbols::draw_rotational_spring`]）など、軸まわりの円周上に
+/// 点を生成する描画で共有する。軸が退化している（ゼロベクトル）場合は `None`。
+pub(super) fn axis_basis(axis: [f64; 3]) -> Option<([f64; 3], [f64; 3])> {
+    let n = (axis[0] * axis[0] + axis[1] * axis[1] + axis[2] * axis[2]).sqrt();
+    if n < 1e-12 {
+        return None;
+    }
+    let axis = [axis[0] / n, axis[1] / n, axis[2] / n];
+    let ref_vec = if axis[0].abs() < 0.9 {
+        [1.0, 0.0, 0.0]
+    } else {
+        [0.0, 1.0, 0.0]
+    };
+    let u_raw = cross3(axis, ref_vec);
+    let un = (u_raw[0] * u_raw[0] + u_raw[1] * u_raw[1] + u_raw[2] * u_raw[2]).sqrt();
+    if un < 1e-12 {
+        return None;
+    }
+    let u = [u_raw[0] / un, u_raw[1] / un, u_raw[2] / un];
+    let v = cross3(axis, u);
+    Some((u, v))
+}
+
 /// 節点を中心に `axis` まわりの回転を示す円弧（全周）を描く。
 fn draw_rotation_arc(
     painter: &egui::Painter,
@@ -380,24 +408,9 @@ fn draw_rotation_arc(
     radius_world: f64,
     color: egui::Color32,
 ) {
-    let n = (axis[0] * axis[0] + axis[1] * axis[1] + axis[2] * axis[2]).sqrt();
-    if n < 1e-12 {
+    let Some((u, v)) = axis_basis(axis) else {
         return;
-    }
-    let axis = [axis[0] / n, axis[1] / n, axis[2] / n];
-    // 軸に直交する面内の直交基底 u, v を作る
-    let ref_vec = if axis[0].abs() < 0.9 {
-        [1.0, 0.0, 0.0]
-    } else {
-        [0.0, 1.0, 0.0]
     };
-    let u_raw = cross3(axis, ref_vec);
-    let un = (u_raw[0] * u_raw[0] + u_raw[1] * u_raw[1] + u_raw[2] * u_raw[2]).sqrt();
-    if un < 1e-12 {
-        return;
-    }
-    let u = [u_raw[0] / un, u_raw[1] / un, u_raw[2] / un];
-    let v = cross3(axis, u);
 
     let stroke = egui::Stroke::new(1.5_f32, color);
     const N: usize = 32;
@@ -474,8 +487,15 @@ fn draw_support_symbol(
 }
 
 /// 支持条件シンボルの凡例をビュー左下に描く。
-/// `has_diaphragm` が真のとき、剛床マーク（面内拘束）の説明行を追加する。
-fn draw_support_legend(painter: &egui::Painter, has_diaphragm: bool) {
+/// `has_diaphragm` が真のとき剛床マーク、`has_spring` が真のとき支点ばね、
+/// `has_isolator` が真のとき免震支承の説明行を追加する（実際にモデル内に
+/// 存在する種別のみ表示。既存の支持記号凡例と同じ方針）。
+fn draw_support_legend(
+    painter: &egui::Painter,
+    has_diaphragm: bool,
+    has_spring: bool,
+    has_isolator: bool,
+) {
     let rect = painter.clip_rect();
     let x0 = rect.min.x + 10.0;
     let mut y0 = rect.max.y - 10.0;
@@ -490,6 +510,56 @@ fn draw_support_legend(painter: &egui::Painter, has_diaphragm: bool) {
             theme::GRAY_600,
         );
         // 以降の支持条件凡例を 1 行分上へずらす。
+        y0 -= 16.0;
+    }
+
+    // 免震支承マーカーの説明（実際に配置されている場合のみ）。
+    if has_isolator {
+        support_symbols::draw_isolator_marker(
+            painter,
+            egui::pos2(x0 + 10.0, y0 - 8.0),
+            theme::ISOLATOR_TEAL,
+        );
+        painter.text(
+            egui::pos2(x0 + 28.0, y0),
+            egui::Align2::LEFT_BOTTOM,
+            "免震支承",
+            egui::FontId::proportional(11.0),
+            theme::GRAY_600,
+        );
+        y0 -= 16.0;
+    }
+
+    // 支点ばねの説明（実際に設定されている場合のみ。回転→並進の順で 2 行）。
+    if has_spring {
+        support_symbols::draw_spiral_icon_2d(
+            painter,
+            egui::pos2(x0 + 10.0, y0 - 7.0),
+            6.0,
+            theme::AXIS_X,
+        );
+        painter.text(
+            egui::pos2(x0 + 28.0, y0),
+            egui::Align2::LEFT_BOTTOM,
+            "回転ばね支持 (渦巻線、X赤/Y緑/Z青)",
+            egui::FontId::proportional(11.0),
+            theme::GRAY_600,
+        );
+        y0 -= 16.0;
+
+        support_symbols::draw_translational_spring(
+            painter,
+            egui::pos2(x0, y0 - 6.0),
+            egui::pos2(x0 + 20.0, y0 - 6.0),
+            theme::AXIS_X,
+        );
+        painter.text(
+            egui::pos2(x0 + 28.0, y0),
+            egui::Align2::LEFT_BOTTOM,
+            "並進ばね支持 (コイル線、X赤/Y緑/Z青)",
+            egui::FontId::proportional(11.0),
+            theme::GRAY_600,
+        );
         y0 -= 16.0;
     }
 
@@ -538,6 +608,13 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
     let mut cmq_component = app.cmq_component;
     let mut check_ratio_filter = app.check_ratio_filter;
     let mut modeling_analysis = app.modeling_analysis;
+    // 時刻歴の詳細記録（`ThRecording`）がある場合のみ「時刻歴」モードを選択肢に出す。
+    let has_th_recording = app
+        .results
+        .as_ref()
+        .and_then(|r| r.time_history.as_ref())
+        .and_then(|t| t.recording.as_ref())
+        .is_some();
 
     // --- コントロール ---
     // 中央パネルが狭い場合（左パネルを広げた時など）にボタン列が右パネルへ
@@ -554,6 +631,9 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
         ui.selectable_value(&mut mode, ViewMode::CheckRatio, "検定比");
         ui.selectable_value(&mut mode, ViewMode::Hinge, "ヒンジ");
         ui.selectable_value(&mut mode, ViewMode::Modeling, "モデル化");
+        if has_th_recording {
+            ui.selectable_value(&mut mode, ViewMode::TimeHistory, "時刻歴");
+        }
         ui.separator();
         // 断面表示: 部材を断面形状の押し出しソリッドで立体表示（全モードと併用可）
         ui.toggle_value(&mut app.show_sections, "断面表示");
@@ -712,12 +792,77 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
             });
         }
     }
+    // 時刻歴モード: フレームスライダー・再生制御（§実装内容1）。
+    // 現在フレームは `app.th_frame`、再生経過時刻は `app.th_play_time`
+    // （`frame_time` に基づき現在フレームへ写像。末尾でループ）で管理する。
+    if mode == ViewMode::TimeHistory {
+        if app.staleness.results_stale {
+            // 中-1(a): モデル編集後は添字ずれ（部材削除・並び替え）で別部材のデータを
+            // 表示する恐れがあるため、再解析するまで変形アニメーション・部材クリックを
+            // 無効化する（フレームスライダー自体も表示しない）。
+            ui.colored_label(
+                theme::BEST_YELLOW,
+                "⚠ モデルが編集されています。解析を再実行してください\
+                 （変形アニメーション・部材クリックは無効化しています）。",
+            );
+        } else if let Some(recording) = app
+            .results
+            .as_ref()
+            .and_then(|r| r.time_history.as_ref())
+            .and_then(|t| t.recording.as_ref())
+        {
+            let n_frames = recording.frame_time.len();
+            if n_frames > 0 {
+                let duration = recording.frame_time.last().copied().unwrap_or(0.0);
+                app.th_frame = app.th_frame.min(n_frames - 1);
+                ui.horizontal_wrapped(|ui| {
+                    if ui
+                        .button(if app.th_playing { "⏸" } else { "▶" })
+                        .on_hover_text("再生 / 一時停止")
+                        .clicked()
+                    {
+                        app.th_playing = !app.th_playing;
+                    }
+                    ui.label("速度:");
+                    for s in [0.25_f32, 0.5, 1.0, 2.0] {
+                        ui.selectable_value(&mut app.th_speed, s, format!("×{s}"));
+                    }
+                    ui.separator();
+                    let mut frame = app.th_frame;
+                    if ui
+                        .add(egui::Slider::new(&mut frame, 0..=n_frames - 1).text(""))
+                        .changed()
+                    {
+                        app.th_frame = frame;
+                        app.th_play_time = recording.frame_time[frame];
+                    }
+                    let t = recording.frame_time[app.th_frame];
+                    ui.label(format!("t={:.2}s / {:.2}s", t, duration));
+                });
+                // 再生中は実時間×速度でフレームを進め、連続描画のため毎フレーム再描画を要求する。
+                if app.th_playing {
+                    let dt = ui.input(|i| i.stable_dt);
+                    app.th_play_time =
+                        advance_play_time(app.th_play_time, dt, app.th_speed, duration);
+                    app.th_frame = frame_at_time(&recording.frame_time, app.th_play_time);
+                    ui.ctx().request_repaint();
+                }
+            } else {
+                ui.label("時刻歴の記録フレームがありません。");
+            }
+        } else {
+            ui.label("時刻歴の詳細記録がありません（再解析すると記録されます）。");
+        }
+    }
     // 変形表示オプション行: 変形を表示するモード（変形・モード・応力図の変形重ね）で
     // 表示する。「内部たわみ」トグルで梁の Hermite 曲線表示（＋床・二次部材の曲線
     // 追従）と直線表示（全体の変形）を切り替え、変形倍率スライダーで自動算定倍率への
     // 手動係数を対数調整（「リセット」で 1.0）する。
-    let show_deform_options = matches!(mode, ViewMode::Deformed | ViewMode::Mode)
-        || (matches!(mode, ViewMode::N | ViewMode::Q | ViewMode::M) && app.overlay_deform);
+    let show_deform_options = matches!(
+        mode,
+        ViewMode::Deformed | ViewMode::Mode | ViewMode::TimeHistory
+    ) || (matches!(mode, ViewMode::N | ViewMode::Q | ViewMode::M)
+        && app.overlay_deform);
     if show_deform_options {
         ui.horizontal(|ui| {
             ui.toggle_value(&mut app.show_beam_interpolation, "内部たわみ")
@@ -853,6 +998,21 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
             .and_then(|r| r.modal.as_ref())
             .and_then(|m| m.node_shapes.get(mode_idx))
             .cloned(),
+        // 時刻歴アニメーション: 現在フレーム（`app.th_frame`）の全節点変位（node 順、
+        // 展開済み。`ThRecording::node_disp` は既に `Deformed` と同じ形の
+        // `Vec<[f64;6]>` のため、以降の変形描画経路をそのまま流用できる）。
+        // モデル編集後（中-1）は再解析するまでアニメーションを無効化し、無変形の
+        // ままにする（`disp=None` で以降の変位加算・N/Q/M 重ねも行われない）。
+        ViewMode::TimeHistory if !app.staleness.results_stale => app
+            .results
+            .as_ref()
+            .and_then(|r| r.time_history.as_ref())
+            .and_then(|t| t.recording.as_ref())
+            .and_then(|rec| {
+                rec.node_disp
+                    .get(app.th_frame.min(rec.node_disp.len().saturating_sub(1)))
+            })
+            .cloned(),
         _ => None,
     };
 
@@ -863,14 +1023,24 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
     // 代表節点の鉛直変位をスレーブ平均で補い、代表点も床の変形へ追従させる。
     let disp = disp.map(|d| display_disp(&app.model, d, app.show_beam_interpolation));
 
-    // 実効表示倍率（自動倍率 × 手動係数）。詳細は [`deform_display_scale`]。
-    let deform_scale_actual = deform_display_scale(
-        &app.model,
-        disp.as_deref(),
-        model_size,
-        app.show_beam_interpolation,
-        app.deform_scale_factor,
-    );
+    // 実効表示倍率（自動倍率 × 手動係数）。時刻歴アニメーションは記録全体の
+    // ピーク変位から 1 回だけ算定した固定倍率を使う（高-2、[`time_history_deform_scale`]）。
+    // それ以外は現在フレームの変位から都度算定する（[`deform_display_scale`]）。
+    let deform_scale_actual = if mode == ViewMode::TimeHistory {
+        if app.staleness.results_stale {
+            0.0
+        } else {
+            time_history_deform_scale(app, model_size)
+        }
+    } else {
+        deform_display_scale(
+            &app.model,
+            disp.as_deref(),
+            model_size,
+            app.show_beam_interpolation,
+            app.deform_scale_factor,
+        )
+    };
 
     // 表示用の節点 3D 座標（変形図・モード形では変位を加味）。
     // 断面ソリッド描画でも 3D 座標が要るため、投影前の座標を保持する。
@@ -1023,6 +1193,11 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
                         // ヒンジ図モードでは、クリックした部材のヒンジ詳細ウィンドウを開く。
                         if mode == ViewMode::Hinge {
                             app.hinge_detail_elem = Some(id);
+                        }
+                        // 時刻歴モードでは、クリックした部材の履歴・検定ウィンドウを開く
+                        // （中-1(a): モデル編集後は添字ずれの恐れがあるため無効化）。
+                        if mode == ViewMode::TimeHistory && !app.staleness.results_stale {
+                            app.th_detail_elem = Some(id);
                         }
                     }
                     _ => {
@@ -1386,8 +1561,64 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
             SUPPORT_ARC_PX,
         );
     }
-    if has_support || has_diaphragm {
-        draw_support_legend(&painter, has_diaphragm);
+
+    // --- 支点ばね記号 ---
+    // 拘束で固定済みの成分は上のループで従来の矢印・円弧を描画済みのため、
+    // ここでは非固定かつばね値が非ゼロの成分にのみジグザグ（並進）・渦巻（回転）を描く。
+    // 剛床マスター節点はダミー拘束の仮想節点でありばね支持を持たないため対象外。
+    let mut has_spring = false;
+    for (i, node) in app.model.nodes.iter().enumerate() {
+        if diaphragm_masters.contains(&i) {
+            continue;
+        }
+        let Some(spring) = node.support_spring else {
+            continue;
+        };
+        let coord = coords3.get(i).copied().unwrap_or(node.coord);
+        has_spring = true;
+        support_symbols::draw_spring_symbol(
+            &painter,
+            &proj,
+            coord,
+            node.restraint,
+            &spring,
+            SUPPORT_ARROW_PX,
+            SUPPORT_ARC_PX,
+        );
+    }
+
+    // --- 免震支承マーカー ---
+    // 支点配置は「接地節点（restraint=FIXED）と対象節点の間の零長 Isolator 要素」
+    // （`support_symbols::support_isolators` が判定）。対象節点側にマーカーを描く。
+    let support_isolators = support_symbols::support_isolators(&app.model);
+    let has_isolator = !support_isolators.is_empty();
+    for &(idx, _elem_id, _props) in &support_isolators {
+        let coord = coords3
+            .get(idx)
+            .copied()
+            .unwrap_or_else(|| app.model.nodes[idx].coord);
+        support_symbols::draw_isolator_marker(&painter, proj.project(coord), theme::ISOLATOR_TEAL);
+    }
+    // 免震支承マーカーのホバー詳細（ViewCube ホバー中は除く。節点近傍・8px 閾値）。
+    if cube_hover.is_none() {
+        if let Some(hover_pos) = response.hover_pos() {
+            const HOVER_PICK_THRESHOLD: f32 = 8.0;
+            let nearest = support_isolators
+                .iter()
+                .filter_map(|&(idx, elem_id, props)| {
+                    pts.get(idx)
+                        .map(|&p| (elem_id, props, (hover_pos - p).length()))
+                })
+                .filter(|&(_, _, d)| d <= HOVER_PICK_THRESHOLD)
+                .min_by(|a, b| a.2.partial_cmp(&b.2).unwrap());
+            if let Some((elem_id, props, _)) = nearest {
+                support_symbols::show_isolator_tooltip(ui, elem_id, &props);
+            }
+        }
+    }
+
+    if has_support || has_diaphragm || has_spring || has_isolator {
+        draw_support_legend(&painter, has_diaphragm, has_spring, has_isolator);
     }
 
     // 右上に ViewCube、右下にカメラ追従の座標系アイコン（常に手前に表示。
@@ -1401,6 +1632,8 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
     // ヒンジ詳細ウィンドウ（ヒンジ図でクリックした部材があれば表示。表示中は
     // 他の表示モードへ切り替えても閉じるまで残す）。
     hinge::show_hinge_detail_window(ui, app);
+    // 時刻歴詳細ウィンドウ（時刻歴モードでクリックした部材があれば表示）。
+    th_detail::show_th_detail_window(ui, app);
 }
 
 /// 応力図・CMQ 図のオフセット方向（要素ローカル y 軸）をワールド座標で返す。
@@ -1415,6 +1648,88 @@ fn diagram_offset_dir(p_i: [f64; 3], p_j: [f64; 3], ref_vector: [f64; 3]) -> [f6
 /// 部材両端間のワールド距離。ゼロ長部材（材軸が定まらない）の除外判定に使う。
 fn member_len3(p_i: [f64; 3], p_j: [f64; 3]) -> f64 {
     ((p_j[0] - p_i[0]).powi(2) + (p_j[1] - p_i[1]).powi(2) + (p_j[2] - p_i[2]).powi(2)).sqrt()
+}
+
+/// 時刻歴アニメーションの再生経過時刻を実時間 `dt_real`[s]×速度 `speed` だけ進める。
+/// `duration`（最終フレーム時刻）を超えたら先頭へループする（`rem_euclid` で周回）。
+/// `duration` が 0 以下（フレームが実質無い）なら常に 0 を返す。
+fn advance_play_time(current: f64, dt_real: f32, speed: f32, duration: f64) -> f64 {
+    if duration <= 0.0 {
+        return 0.0;
+    }
+    let next = current + dt_real as f64 * speed as f64;
+    next.rem_euclid(duration)
+}
+
+/// 再生経過時刻 `t` に対応するフレーム番号を返す（`frame_time` は昇順を仮定）。
+/// `t` 以下で最大の時刻を持つフレームを選ぶ（`t` が全フレームの時刻より小さければ 0）。
+fn frame_at_time(frame_time: &[f64], t: f64) -> usize {
+    if frame_time.is_empty() {
+        return 0;
+    }
+    match frame_time
+        .binary_search_by(|probe| probe.partial_cmp(&t).unwrap_or(std::cmp::Ordering::Equal))
+    {
+        Ok(i) => i,
+        Err(0) => 0,
+        Err(i) => (i - 1).min(frame_time.len() - 1),
+    }
+}
+
+#[cfg(test)]
+mod th_playback_tests {
+    use super::*;
+
+    /// 再生時刻は dt×速度だけ単調に進む（周回しない範囲）。
+    #[test]
+    fn advance_play_time_accumulates() {
+        let t = advance_play_time(1.0, 0.1, 2.0, 10.0);
+        // dt_real は f32 のため f64 変換で微小誤差が入る（許容差は f32 精度基準）。
+        assert!((t - 1.2).abs() < 1e-6, "t={t}");
+    }
+
+    /// 総時間を超えたら先頭へ周回する。
+    #[test]
+    fn advance_play_time_wraps_at_duration() {
+        let t = advance_play_time(9.5, 1.0, 1.0, 10.0);
+        assert!((t - 0.5).abs() < 1e-9, "got {t}");
+    }
+
+    /// duration が 0 以下なら常に 0。
+    #[test]
+    fn advance_play_time_zero_duration() {
+        assert_eq!(advance_play_time(5.0, 1.0, 1.0, 0.0), 0.0);
+    }
+
+    /// 各フレーム時刻ちょうどではそのフレーム番号を返す。
+    #[test]
+    fn frame_at_time_exact_hits() {
+        let ft = [0.0, 0.5, 1.0, 1.5];
+        assert_eq!(frame_at_time(&ft, 0.0), 0);
+        assert_eq!(frame_at_time(&ft, 0.5), 1);
+        assert_eq!(frame_at_time(&ft, 1.5), 3);
+    }
+
+    /// 中間の時刻は「その時刻以下で最大」のフレームになる。
+    #[test]
+    fn frame_at_time_between_frames() {
+        let ft = [0.0, 0.5, 1.0, 1.5];
+        assert_eq!(frame_at_time(&ft, 0.9), 1);
+        assert_eq!(frame_at_time(&ft, 1.49), 2);
+    }
+
+    /// 範囲外（負の時刻）は 0 にクランプする。
+    #[test]
+    fn frame_at_time_before_start() {
+        let ft = [0.2, 0.5];
+        assert_eq!(frame_at_time(&ft, -1.0), 0);
+    }
+
+    /// 空配列は 0 を返す。
+    #[test]
+    fn frame_at_time_empty() {
+        assert_eq!(frame_at_time(&[], 1.0), 0);
+    }
 }
 
 /// 変形図・モード形で梁の曲げ変形曲線を描く際の要素分割数（点数は +1）。
@@ -2357,6 +2672,80 @@ fn deform_display_scale(
     auto * factor as f64
 }
 
+/// 時刻歴アニメーションの変形倍率キャッシュ（高-2）。
+///
+/// 通常の変形図（[`deform_display_scale`]）は現在フレームの変位から自動倍率を
+/// 算定するため、時刻歴アニメーションへそのまま適用すると振幅の小さいフレームで
+/// 倍率が発散し、逆に無変形（初期状態）フレームでは 0 になって表示が消える。
+/// 記録全体のピーク変位から 1 回だけ算定した固定倍率を使うことでこれを避ける。
+///
+/// `auto_scale` は手動係数（`App::deform_scale_factor`）を掛ける前の自動倍率。
+/// 記録の同一性は「フレーム数＋ピーク変位」で判定する（解析をやり直すと
+/// フレーム数かピーク値のいずれかが変わるため、それで十分にキャッシュを無効化できる）。
+/// モデルサイズ・内部たわみ表示 ON/OFF が変わった場合も再計算する。
+#[derive(Clone, Copy, Debug, Default)]
+pub struct TimeHistoryScaleCache {
+    n_frames: usize,
+    peak_max_disp: f64,
+    model_size: f64,
+    use_beam_interpolation: bool,
+    auto_scale: f64,
+}
+
+/// `ResponseResult::peak_disp`（全ステップ間引きなしのピーク変位、節点×6成分）から、
+/// 並進成分（ux/uy/uz）の絶対値最大を求める（純粋関数）。
+fn th_peak_translation_disp(result: &squid_n_solver::timehistory::ResponseResult) -> f64 {
+    result
+        .peak_disp
+        .iter()
+        .map(|d| d[0].abs().max(d[1].abs()).max(d[2].abs()))
+        .fold(0.0_f64, f64::max)
+}
+
+/// 時刻歴アニメーションの実効表示倍率（自動倍率 × 手動係数）。
+/// `app.th_scale_cache` を記録の同一性で使い回し、フレーム切替のたびに
+/// 自動倍率を再計算しない（高-2）。時刻歴の詳細記録・結果が無ければ 0。
+fn time_history_deform_scale(app: &mut App, model_size: f64) -> f64 {
+    let Some(result) = app.results.as_ref().and_then(|r| r.time_history.as_ref()) else {
+        app.th_scale_cache = None;
+        return 0.0;
+    };
+    let n_frames = result.recording.as_ref().map_or(0, |r| r.frame_time.len());
+    let peak_max_disp = th_peak_translation_disp(result);
+    let use_beam_interpolation = app.show_beam_interpolation;
+
+    let reuse = app.th_scale_cache.is_some_and(|c| {
+        c.n_frames == n_frames
+            && c.peak_max_disp == peak_max_disp
+            && c.model_size == model_size
+            && c.use_beam_interpolation == use_beam_interpolation
+    });
+    let auto_scale = if reuse {
+        app.th_scale_cache.expect("reuse implies Some").auto_scale
+    } else {
+        // ピーク変位（全ノード・全ステップの並進絶対値最大）を仮想的な変位配列とし、
+        // 既存の `deform_display_scale`（バウンディングボックス基準＋梁スパン基準）を
+        // 手動係数 1.0 でそのまま流用する（倍率算定ロジックの重複を避ける）。
+        let peak_disp_field: Vec<[f64; 6]> = result.peak_disp.clone();
+        let auto = deform_display_scale(
+            &app.model,
+            Some(&peak_disp_field),
+            model_size,
+            use_beam_interpolation,
+            1.0,
+        );
+        app.th_scale_cache = Some(TimeHistoryScaleCache {
+            n_frames,
+            peak_max_disp,
+            model_size,
+            use_beam_interpolation,
+            auto_scale: auto,
+        });
+        auto
+    };
+    auto_scale * app.deform_scale_factor as f64
+}
+
 /// 梁のスパンに対する内部たわみが過大にならないよう、表示倍率の上限を算定する。
 /// 制約する梁が無ければ `None`。
 ///
@@ -2653,6 +3042,7 @@ mod tests {
             restraint: Dof6Mask::FREE,
             mass: None,
             story: None,
+            support_spring: None,
         }
     }
 

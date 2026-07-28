@@ -93,6 +93,7 @@ fn test_beam_group_overrides_combines_members() {
         restraint: Dof6Mask::FREE,
         mass: None,
         story: None,
+        support_spring: None,
     };
     let beam = |id: u32, n0: u32, n1: u32| ElementData {
         id: ElemId(id),
@@ -202,6 +203,7 @@ fn aligned_portal_frame() -> squid_n_core::model::Model {
             },
             mass: None,
             story: None,
+            support_spring: None,
         });
     }
 
@@ -876,6 +878,7 @@ fn shear_2dof_model() -> squid_n_core::model::Model {
         restraint,
         mass,
         story: None,
+        support_spring: None,
     };
     let beam = |id: u32, a: u32, b: u32| ElementData {
         id: ElemId(id),
@@ -945,6 +948,125 @@ fn test_time_history_rayleigh_and_hht() {
         th.history.node_disp.iter().any(|v| v.abs() > 1e-6),
         "応答がゼロのままです"
     );
+}
+
+/// 非線形時刻歴 UI 配線の end-to-end 確認: `analysis_cfg.th_nonlinear` を ON にすると
+/// `nonlinear_time_history_analysis` 経路が呼ばれ、層応答の詳細記録（`ThRecording`）が
+/// `results.time_history.recording` へ入ることを確認する。
+#[test]
+fn test_nonlinear_time_history_flow_records_story_response() {
+    let mut app = App::default();
+    app.load_model(crate::sample::portal_frame());
+    app.generate_stories_action();
+    assert!(app.last_error.is_none(), "{:?}", app.last_error);
+    app.analysis_cfg.th_nonlinear = true;
+    app.analysis_cfg.th_duration = 1.0;
+    app.run_time_history_sample();
+    assert!(app.last_error.is_none(), "{:?}", app.last_error);
+    let th = app.results.as_ref().unwrap().time_history.as_ref().unwrap();
+    let recording = th
+        .recording
+        .as_ref()
+        .expect("非線形時刻歴でも recording が入るはず");
+    assert_eq!(recording.story_x.stories.len(), app.model.stories.len());
+    assert_eq!(recording.story_y.stories.len(), app.model.stories.len());
+    assert_eq!(
+        recording.story_x.story_shear.len(),
+        recording.frame_time.len()
+    );
+}
+
+/// `TimeHistorySource::StoryShear`（表示名「ベースシア」）の実体である
+/// `history.base_shear` は、`recording`（詳細記録）の記録方向の 1 層目
+/// （最下層、`stories` は下→上の並び）の層せん断力と整合することを確認する
+/// （1層目の層せん断力＝当該層以上＝全層の慣性力の総和＝ベースシア）。
+#[test]
+fn test_story_shear_layer0_matches_history_base_shear() {
+    let mut app = App::default();
+    app.load_model(crate::sample::portal_frame());
+    app.generate_stories_action();
+    assert!(app.last_error.is_none(), "{:?}", app.last_error);
+    app.analysis_cfg.th_duration = 2.0;
+    app.run_time_history_sample();
+    assert!(app.last_error.is_none(), "{:?}", app.last_error);
+    let th = app.results.as_ref().unwrap().time_history.as_ref().unwrap();
+    let recording = th.recording.as_ref().expect("recording should be present");
+    let story = if th.history.record_dir_y {
+        &recording.story_y
+    } else {
+        &recording.story_x
+    };
+    assert!(!story.story_shear.is_empty());
+    let mut checked = 0;
+    for (k, &t) in recording.frame_time.iter().enumerate() {
+        let Some(step) = th.time.iter().position(|&tt| tt == t) else {
+            continue;
+        };
+        let from_recording = story.story_shear[k][0];
+        let from_history = th.history.base_shear[step];
+        assert!(
+            (from_recording - from_history).abs() < 1e-6 * from_history.abs().max(1.0),
+            "t={t}: recording 1層目せん断力={from_recording} / history ベースシア={from_history}"
+        );
+        checked += 1;
+    }
+    assert!(checked > 0, "比較できたフレームが1件もありません");
+}
+
+/// 非線形時刻歴で `th_apply_long_term` を ON にしても解析が正常に完了すること
+/// （長期荷重の静的載荷フェーズを経てから時刻歴を開始する経路）を確認する。
+#[test]
+fn test_nonlinear_time_history_with_long_term_flow() {
+    let mut app = App::default();
+    app.load_model(crate::sample::portal_frame());
+    app.generate_stories_action();
+    assert!(app.last_error.is_none(), "{:?}", app.last_error);
+    app.analysis_cfg.th_nonlinear = true;
+    app.analysis_cfg.th_apply_long_term = true;
+    app.analysis_cfg.th_duration = 1.0;
+    app.run_time_history_sample();
+    assert!(app.last_error.is_none(), "{:?}", app.last_error);
+    let th = app.results.as_ref().unwrap().time_history.as_ref().unwrap();
+    assert!(th.recording.is_some());
+}
+
+/// 非線形時刻歴の積分法は Newmark-β 固定（`th_integrator` に HHT-α が選ばれていても
+/// 非線形時は無視される）ことを確認する。
+#[test]
+fn test_nonlinear_time_history_ignores_hht_selection() {
+    let mut app = App::default();
+    app.load_model(crate::sample::portal_frame());
+    app.generate_stories_action();
+    app.analysis_cfg.th_nonlinear = true;
+    app.analysis_cfg.th_integrator = ThIntegrator::HhtAlpha;
+    app.analysis_cfg.th_duration = 1.0;
+    app.run_time_history_sample();
+    assert!(app.last_error.is_none(), "{:?}", app.last_error);
+}
+
+/// ジョブラベルが線形／非線形で切り替わることを確認する
+/// （完了ログ・実行中スピナー判別の両方に使われる）。
+#[test]
+fn test_time_history_job_label_reflects_nonlinear_setting() {
+    let mut app = App::default();
+    app.load_model(crate::sample::portal_frame());
+    app.generate_stories_action();
+    app.analysis_cfg.th_duration = 1.0;
+    app.analysis_cfg.th_nonlinear = false;
+    app.start_time_history_job(App::sample_wave(&app.analysis_cfg));
+    assert_eq!(app.job.as_ref().unwrap().label, "時刻歴応答(線形)");
+    while !app.poll_job() {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert!(app.last_error.is_none(), "{:?}", app.last_error);
+
+    app.analysis_cfg.th_nonlinear = true;
+    app.start_time_history_job(App::sample_wave(&app.analysis_cfg));
+    assert_eq!(app.job.as_ref().unwrap().label, "時刻歴応答(非線形)");
+    while !app.poll_job() {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert!(app.last_error.is_none(), "{:?}", app.last_error);
 }
 
 #[test]
@@ -1946,6 +2068,7 @@ fn test_holding_capacity_rank_auto_rc_rect_from_shape() {
                 restraint: Dof6Mask::FIXED,
                 mass: None,
                 story: None,
+                support_spring: None,
             },
             Node {
                 id: NodeId(1),
@@ -1953,6 +2076,7 @@ fn test_holding_capacity_rank_auto_rc_rect_from_shape() {
                 restraint: Dof6Mask::FIXED,
                 mass: None,
                 story: None,
+                support_spring: None,
             },
             Node {
                 id: NodeId(2),
@@ -1960,6 +2084,7 @@ fn test_holding_capacity_rank_auto_rc_rect_from_shape() {
                 restraint: Dof6Mask::FREE,
                 mass: None,
                 story: None,
+                support_spring: None,
             },
             Node {
                 id: NodeId(3),
@@ -1967,6 +2092,7 @@ fn test_holding_capacity_rank_auto_rc_rect_from_shape() {
                 restraint: Dof6Mask::FREE,
                 mass: None,
                 story: None,
+                support_spring: None,
             },
         ],
         sections: vec![rc_shape.to_section(SectionId(0), "RC-400x600".into())],
@@ -2190,6 +2316,7 @@ fn test_rc_sigma_0_from_compression_axial_force() {
                 restraint: Dof6Mask::FIXED,
                 mass: None,
                 story: None,
+                support_spring: None,
             },
             Node {
                 id: NodeId(1),
@@ -2197,6 +2324,7 @@ fn test_rc_sigma_0_from_compression_axial_force() {
                 restraint: Dof6Mask::FREE,
                 mass: None,
                 story: None,
+                support_spring: None,
             },
         ],
         sections: vec![rc_shape.to_section(SectionId(0), "RC-400x600".into())],
@@ -2331,6 +2459,7 @@ fn test_rc_sigma_0_prefers_gravity_load_case_over_last_static() {
                 restraint: Dof6Mask::FIXED,
                 mass: None,
                 story: None,
+                support_spring: None,
             },
             Node {
                 id: NodeId(1),
@@ -2338,6 +2467,7 @@ fn test_rc_sigma_0_prefers_gravity_load_case_over_last_static() {
                 restraint: Dof6Mask::FREE,
                 mass: None,
                 story: None,
+                support_spring: None,
             },
         ],
         sections: vec![rc_shape.to_section(SectionId(0), "RC-400x600".into())],
@@ -2445,6 +2575,7 @@ fn make_slab_test_model() -> squid_n_core::model::Model {
         restraint: Default::default(),
         mass: None,
         story: None,
+        support_spring: None,
     };
     let nodes = vec![
         mk_node(0, 0.0, 0.0),
@@ -2564,6 +2695,7 @@ fn make_square_slab_test_model() -> squid_n_core::model::Model {
         restraint: Default::default(),
         mass: None,
         story: None,
+        support_spring: None,
     };
     let nodes = vec![
         mk_node(0, 0.0, 0.0),
@@ -2779,6 +2911,7 @@ fn test_slab_grillage_node_reactions_total_and_gate() {
         restraint: Default::default(),
         mass: None,
         story: None,
+        support_spring: None,
     };
     let mk_beam = |id: u32, i: u32, j: u32| ElementData {
         id: ElemId(id),
@@ -3063,6 +3196,7 @@ fn test_floor_design_checks_joist_and_slab() {
         restraint: Default::default(),
         mass: None,
         story: None,
+        support_spring: None,
     };
     model.nodes.push(mk_mid(4, 2000.0, 0.0));
     model.nodes.push(mk_mid(5, 2000.0, 4000.0));
@@ -3126,6 +3260,7 @@ fn test_floor_design_skips_materialized_joist() {
         restraint: Default::default(),
         mass: None,
         story: None,
+        support_spring: None,
     };
     model.nodes.push(mk_mid(4, 2000.0, 0.0));
     model.nodes.push(mk_mid(5, 2000.0, 4000.0));
@@ -3198,6 +3333,7 @@ fn test_floor_design_uses_grillage_for_crossing_joists() {
         restraint: Default::default(),
         mass: None,
         story: None,
+        support_spring: None,
     };
     model.nodes.push(mk(4, 2000.0, 0.0));
     model.nodes.push(mk(5, 2000.0, 4000.0));
@@ -3253,6 +3389,7 @@ fn test_slab_design_span_respects_one_way() {
         restraint: Default::default(),
         mass: None,
         story: None,
+        support_spring: None,
     };
     let base_slab = |one_way: Option<OneWayDir>| Slab {
         id: SlabId(0),
@@ -3551,6 +3688,7 @@ fn test_column_live_load_factors_three_story() {
             } else {
                 Some(StoryId(i as u32 - 1))
             },
+            support_spring: None,
         });
     }
     // 柱3本（各階1本）＋ 水平の梁1本（柱でないため集計対象外の確認用）
@@ -3581,6 +3719,7 @@ fn test_column_live_load_factors_three_story() {
         restraint: squid_n_core::dof::Dof6Mask::FREE,
         mass: None,
         story: Some(StoryId(2)),
+        support_spring: None,
     });
     model.elements.push(ElementData {
         id: ElemId(3),
@@ -3970,6 +4109,7 @@ fn test_compute_ultimate_checks_rc_frame() {
                 restraint: Dof6Mask::FIXED,
                 mass: None,
                 story: None,
+                support_spring: None,
             },
             Node {
                 id: NodeId(1),
@@ -3977,6 +4117,7 @@ fn test_compute_ultimate_checks_rc_frame() {
                 restraint: Dof6Mask::FREE,
                 mass: None,
                 story: None,
+                support_spring: None,
             },
             Node {
                 id: NodeId(2),
@@ -3984,6 +4125,7 @@ fn test_compute_ultimate_checks_rc_frame() {
                 restraint: Dof6Mask::FREE,
                 mass: None,
                 story: None,
+                support_spring: None,
             },
         ],
         sections: vec![
@@ -4066,6 +4208,7 @@ fn test_compute_cft_ultimate_checks() {
                 restraint: Dof6Mask::FIXED,
                 mass: None,
                 story: None,
+                support_spring: None,
             },
             Node {
                 id: NodeId(1),
@@ -4073,6 +4216,7 @@ fn test_compute_cft_ultimate_checks() {
                 restraint: Dof6Mask::FREE,
                 mass: None,
                 story: None,
+                support_spring: None,
             },
         ],
         sections: vec![cft_shape.to_section(SectionId(0), "CFT400".into())],
@@ -4528,6 +4672,7 @@ fn test_import_stbridge_then_run_dl_succeeds() {
                 restraint: squid_n_core::dof::Dof6Mask::FREE,
                 mass: None,
                 story: None,
+                support_spring: None,
             });
         }
     }
@@ -4657,6 +4802,7 @@ fn test_secondary_joist_panel_slab_dl_cmq_and_solve() {
         },
         mass: None,
         story: None,
+        support_spring: None,
     };
     // 柱脚 0-3（固定）、柱頭 4-7、小梁支持点 8-9（大梁スパン中間・要素非接続）。
     let plan = [(0.0, 0.0), (8000.0, 0.0), (8000.0, 6000.0), (0.0, 6000.0)];
@@ -4918,6 +5064,7 @@ mod grid_headless {
                 restraint: Dof6Mask::FREE,
                 mass: None,
                 story: None,
+                support_spring: None,
             });
         }
         app
@@ -5756,4 +5903,237 @@ fn test_stale_results_not_persisted() {
     assert_eq!(reopened.last_static, None);
 
     let _ = std::fs::remove_file(&path);
+}
+
+/// 時刻歴の詳細記録（`ThRecording`）は既定でプロジェクト保存（.scz）に含まれ、
+/// 復元後も 3D アニメーション・層応答分布が利用できる。保存操作はメモリ上の
+/// `app.results` を破壊しない。閾値超過時の確認（`needs_recording_confirm`）と
+/// 「除外して保存」（`save_project_without_recording`）の分岐も併せて検証する。
+#[test]
+fn test_time_history_recording_saved_and_optional_exclusion() {
+    let dir = std::env::temp_dir();
+    let path = dir.join("squid_n_th_recording_saved_test.scz");
+    let path_excl = dir.join("squid_n_th_recording_excluded_test.scz");
+    let _ = std::fs::remove_file(&path);
+    let _ = std::fs::remove_file(&path_excl);
+
+    let mut app = App::default();
+    app.load_model(crate::sample::portal_frame());
+    app.generate_stories_action();
+    app.analysis_cfg.th_duration = 1.0;
+    app.run_time_history_sample();
+    assert!(app.last_error.is_none(), "{:?}", app.last_error);
+    assert!(
+        app.results
+            .as_ref()
+            .and_then(|r| r.time_history.as_ref())
+            .and_then(|t| t.recording.as_ref())
+            .is_some(),
+        "前提: 解析直後は recording を持つはず"
+    );
+    // `apply_time_history_result` は `staleness.mark_fresh` を呼ばない（静的解析・
+    // 荷重組合せのみが呼ぶ）ため、時刻歴だけでは `results_stale` が解消しない。
+    // 保存条件（`!results_stale`）を満たす実利用の流れ（静的解析も実行）に揃える。
+    app.run_linear_static(LoadCaseId(0));
+    assert!(app.last_error.is_none(), "{:?}", app.last_error);
+    assert!(!app.staleness.results_stale);
+
+    // 既定保存: 小規模モデルは閾値未満なので確認なしで保存され、recording を含む。
+    app.save_project_to(path.clone());
+    assert!(app.last_error.is_none(), "{:?}", app.last_error);
+    assert!(
+        app.pending_save_recording.is_none(),
+        "閾値未満では確認保留にならないはず"
+    );
+    assert!(
+        app.results
+            .as_ref()
+            .and_then(|r| r.time_history.as_ref())
+            .and_then(|t| t.recording.as_ref())
+            .is_some(),
+        "保存後もメモリ上の recording は保持されるはず（保存は非破壊）"
+    );
+
+    let mut reopened = App::default();
+    reopened.open_project_from(path.clone());
+    assert!(reopened.last_error.is_none(), "{:?}", reopened.last_error);
+    let restored_th = reopened
+        .results
+        .as_ref()
+        .and_then(|r| r.time_history.as_ref())
+        .expect("time_history 本体は復元されるはず");
+    assert!(
+        restored_th.recording.is_some(),
+        "recording は既定で保存・復元されるはず"
+    );
+    assert!(!restored_th.peak_disp.is_empty());
+
+    // 「除外して保存」: recording を含めずに保存し、メモリ上は保持される。
+    app.save_project_without_recording(path_excl.clone());
+    assert!(app.last_error.is_none(), "{:?}", app.last_error);
+    assert!(
+        app.results
+            .as_ref()
+            .and_then(|r| r.time_history.as_ref())
+            .and_then(|t| t.recording.as_ref())
+            .is_some(),
+        "除外保存後もメモリ上の recording は保持されるはず"
+    );
+    let mut reopened_excl = App::default();
+    reopened_excl.open_project_from(path_excl.clone());
+    assert!(
+        reopened_excl.last_error.is_none(),
+        "{:?}",
+        reopened_excl.last_error
+    );
+    let excl_th = reopened_excl
+        .results
+        .as_ref()
+        .and_then(|r| r.time_history.as_ref())
+        .expect("time_history 本体（ピーク値等）は復元されるはず");
+    assert!(
+        excl_th.recording.is_none(),
+        "除外して保存した場合は recording を含まないはず"
+    );
+    assert!(!excl_th.peak_disp.is_empty());
+
+    let _ = std::fs::remove_file(&path);
+    let _ = std::fs::remove_file(&path_excl);
+}
+
+/// 保存確認の判定（`needs_recording_confirm`）: 閾値超過かつ詳細記録ありの
+/// 場合のみ確認が必要になる。
+#[test]
+fn test_needs_recording_confirm_threshold() {
+    use super::actions::{needs_recording_confirm, SAVE_RECORDING_CONFIRM_BYTES};
+    let th = SAVE_RECORDING_CONFIRM_BYTES;
+    assert!(!needs_recording_confirm(th, true), "閾値ちょうどは確認不要");
+    assert!(
+        needs_recording_confirm(th + 1, true),
+        "閾値超過+記録ありは確認"
+    );
+    assert!(
+        !needs_recording_confirm(th + 1, false),
+        "記録なしはサイズ超過でも確認不要(そのまま保存)"
+    );
+    assert!(!needs_recording_confirm(0, true));
+}
+
+/// 制振要素定義（`Model::damper_defs`）を「断面のように選ぶ」UX の土台。
+/// `AddDamperDef`/`UpdateDamperDef`/`RemoveDamperDef` を undo 経由で実行し、
+/// 追加・更新・削除・undo が期待どおりに model へ反映されることを確認する
+/// （damper_def_editor.rs の各パネル操作が発行するコマンドと同じ経路）。
+#[test]
+fn test_damper_def_add_update_remove_via_undo() {
+    use squid_n_core::model::{DamperDef, DamperKind, DamperProps};
+
+    let mut app = App::default();
+    assert!(app.model.damper_defs.is_empty());
+
+    let def = DamperDef {
+        name: "オイルダンパーA".to_string(),
+        props: DamperProps {
+            kind: DamperKind::Maxwell,
+            kd: 120_000.0,
+            c0: 2_500.0,
+            alpha: 1.0,
+            ..DamperProps::default()
+        },
+    };
+    app.undo.run(
+        &mut app.model,
+        Box::new(squid_n_edit::AddDamperDef { def: def.clone() }),
+    );
+    assert_eq!(app.model.damper_defs.len(), 1);
+    assert_eq!(app.model.damper_defs[0].name, "オイルダンパーA");
+
+    // 更新（名称・諸元の書き換え）。
+    let updated = DamperDef {
+        name: "オイルダンパーA改".to_string(),
+        props: DamperProps {
+            kd: 200_000.0,
+            ..def.props
+        },
+    };
+    app.undo.run(
+        &mut app.model,
+        Box::new(squid_n_edit::UpdateDamperDef {
+            index: 0,
+            def: updated.clone(),
+        }),
+    );
+    assert_eq!(app.model.damper_defs[0].name, "オイルダンパーA改");
+    assert_eq!(app.model.damper_defs[0].props.kd, 200_000.0);
+
+    // 削除。
+    app.undo.run(
+        &mut app.model,
+        Box::new(squid_n_edit::RemoveDamperDef { index: 0 }),
+    );
+    assert!(app.model.damper_defs.is_empty());
+
+    // undo を 3 回巻き戻すと、更新前→追加前の順に復元される。
+    app.undo.undo(&mut app.model);
+    assert_eq!(app.model.damper_defs.len(), 1, "削除の取り消し");
+    assert_eq!(app.model.damper_defs[0].name, "オイルダンパーA改");
+    app.undo.undo(&mut app.model);
+    assert_eq!(
+        app.model.damper_defs[0].name, "オイルダンパーA",
+        "更新の取り消し"
+    );
+    app.undo.undo(&mut app.model);
+    assert!(app.model.damper_defs.is_empty(), "追加の取り消し");
+}
+
+/// 免震支承材の作成（`AddIsolator`）: 2節点間へ免震支承材要素＋諸元を追加し、
+/// undo で復元されることを確認する（部材タブ「免震支承材を追加」フォームの
+/// ボタン押下相当の操作）。
+#[test]
+fn test_add_isolator_between_two_nodes_via_undo() {
+    use squid_n_core::model::{
+        ElementData, ElementKind, EndCondition, ForceRegime, IsolatorKind, IsolatorProps, LocalAxis,
+    };
+
+    let mut app = App::default();
+    app.load_model(crate::sample::portal_frame());
+    let n = app.model.nodes.len();
+    assert!(n >= 2);
+    let (i_node, j_node) = (app.model.nodes[0].id, app.model.nodes[1].id);
+    let new_id = squid_n_core::ids::ElemId(app.model.elements.len() as u32);
+    let elem = ElementData {
+        id: new_id,
+        kind: ElementKind::Isolator,
+        nodes: [i_node, j_node].into_iter().collect(),
+        section: None,
+        material: None,
+        local_axis: LocalAxis {
+            ref_vector: [1.0, 0.0, 0.0],
+        },
+        end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+        force_regime: ForceRegime::Auto,
+        rigid_zone: Default::default(),
+        plastic_zone: None,
+        spring: None,
+    };
+    let props = IsolatorProps {
+        kind: IsolatorKind::HighDampingRubber,
+        ..IsolatorProps::default()
+    };
+    app.undo.run(
+        &mut app.model,
+        Box::new(squid_n_edit::AddIsolator { elem, props }),
+    );
+    assert!(app.model.elements.iter().any(|e| e.id == new_id));
+    assert_eq!(
+        app.model
+            .isolator_attrs
+            .iter()
+            .find(|a| a.elem == new_id)
+            .map(|a| a.props),
+        Some(props)
+    );
+
+    app.undo.undo(&mut app.model);
+    assert!(!app.model.elements.iter().any(|e| e.id == new_id));
+    assert!(!app.model.isolator_attrs.iter().any(|a| a.elem == new_id));
 }

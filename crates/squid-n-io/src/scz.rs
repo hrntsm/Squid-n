@@ -13,8 +13,14 @@ pub const CURRENT_SCHEMA_VERSION: u32 = 1;
 const REQUIRED_ENTRIES: [&str; 2] = ["model.msgpack", "settings.json"];
 
 /// zip エントリ 1 個あたりの最大展開サイズ [byte]（zip 爆弾／DoS 対策）。
-/// 構造モデルの msgpack は通常数十 MiB 未満。512 MiB を超える展開は攻撃とみなし拒否する。
-const MAX_ENTRY_UNCOMPRESSED: u64 = 512 * 1024 * 1024;
+///
+/// .scz は単層 zip（deflate）であり、deflate の展開率は理論上約 1032 倍が
+/// 上限のため、絶対サイズ上限が実効的なメモリ保護になる（展開率ベースの
+/// 判定は、ゼロ成分の多い正当な解析結果でも高圧縮になり誤検知しうるため
+/// 採用しない）。時刻歴の詳細記録など正当に数百 MB 級となる結果エントリを
+/// 拒否しないよう、上限は 4 GiB とする（保存側はこれより十分小さい閾値で
+/// ユーザーに確認を取る。`squid-n-app` の保存確認ダイアログ参照）。
+const MAX_ENTRY_UNCOMPRESSED: u64 = 4 * 1024 * 1024 * 1024;
 
 #[derive(Debug, thiserror::Error)]
 pub enum IoError {
@@ -41,7 +47,8 @@ fn sha256_of(data: &[u8]) -> String {
 }
 
 /// zip エントリを展開サイズ上限付きで読み込む（zip 爆弾対策）。
-/// ヘッダ申告サイズで早期に弾き、申告が嘘でも `take` で実バイトを上限に縛る。
+/// ヘッダ申告サイズで早期に弾き、申告が嘘でも `take` で実バイトを上限に縛る
+/// （メモリを使い切る前に止まる）。
 fn read_entry_capped(
     archive: &mut zip::ZipArchive<std::fs::File>,
     name: &str,
@@ -266,6 +273,7 @@ mod tests {
                     restraint: Dof6Mask::FREE,
                     mass: None,
                     story: None,
+                    support_spring: None,
                 },
                 Node {
                     id: NodeId(1),
@@ -273,6 +281,7 @@ mod tests {
                     restraint: Dof6Mask::FIXED,
                     mass: None,
                     story: None,
+                    support_spring: None,
                 },
                 Node {
                     id: NodeId(2),
@@ -280,6 +289,7 @@ mod tests {
                     restraint: Dof6Mask::PINNED,
                     mass: None,
                     story: None,
+                    support_spring: None,
                 },
             ],
             ..Default::default()

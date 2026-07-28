@@ -29,8 +29,9 @@ pub use types::{
     PushoverTarget, ShearYieldEvent,
 };
 
-// dynamic/timehistory が `crate::pushover::{assemble_k, compute_f_int}` で参照する。
-pub(crate) use assembly::{assemble_k, compute_f_int};
+// dynamic/timehistory が `crate::pushover::{add_support_spring_f_int, assemble_k,
+// compute_f_int}` で参照する。
+pub(crate) use assembly::{add_support_spring_f_int, assemble_k, compute_f_int};
 
 // tests（`use super::*`）が参照する非公開項目・外部名を供給する
 // （非テストビルドでは持ち込まない）。

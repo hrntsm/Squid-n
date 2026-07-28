@@ -349,6 +349,7 @@ mod tests {
                     restraint: Dof6Mask::FIXED,
                     mass: None,
                     story: None,
+                    support_spring: None,
                 },
                 Node {
                     id: NodeId(1),
@@ -356,6 +357,7 @@ mod tests {
                     restraint: Dof6Mask::FREE,
                     mass: None,
                     story: None,
+                    support_spring: None,
                 },
                 Node {
                     id: NodeId(2),
@@ -363,6 +365,7 @@ mod tests {
                     restraint: Dof6Mask::FREE,
                     mass: None,
                     story: None,
+                    support_spring: None,
                 },
             ],
             // 全節点に要素を接続する（要素が接続しない節点は DofMap が解析自由度
@@ -474,6 +477,7 @@ mod tests {
             restraint: rep_restraint,
             mass: None,
             story: None,
+            support_spring: None,
         });
         model.constraints.push(Constraint::RigidDiaphragm {
             story: StoryId(0),

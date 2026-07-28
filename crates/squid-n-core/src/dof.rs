@@ -155,6 +155,7 @@ mod tests {
                 restraint: r,
                 mass: None,
                 story: None,
+                support_spring: None,
             })
             .collect();
         // 要素が接続しない節点は解析自由度から除外されるため、拘束マスキングの
@@ -254,6 +255,7 @@ mod tests {
             restraint: Dof6Mask::FREE,
             mass: None,
             story: None,
+            support_spring: None,
         });
         let map = DofMap::build(&model);
         assert_eq!(map.n_active(), 12, "孤立自由節点は自由度を持たない");

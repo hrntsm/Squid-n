@@ -1483,6 +1483,7 @@ mod tests {
             restraint: Dof6Mask::FREE,
             mass: None,
             story: None,
+            support_spring: None,
         };
         let n1 = Node {
             id: NodeId(1),
@@ -1490,6 +1491,7 @@ mod tests {
             restraint: Dof6Mask::FREE,
             mass: None,
             story: None,
+            support_spring: None,
         };
         let model = Model {
             nodes: vec![n0, n1],

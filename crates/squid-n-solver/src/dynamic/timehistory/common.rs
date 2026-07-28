@@ -3,8 +3,10 @@
 //! - [`theta_influence_m`] — 位相差入力（ねじれ加振）の回転影響ベクトル `M·r_θ`
 //! - [`theta_accel_at`] — ステップ `n` のねじれ地動加速度取得
 //! - [`solve_initial_accel`] — 初期加速度 `M·a₀ = rhs` の求解
+//! - [`mass_accel_free`] — 節点慣性力ベクトル算定用の `M·a_free`（自由 DOF 空間）
 
 use super::config::GroundMotion;
+use crate::constraint::Reducer;
 use squid_n_core::dof::{DofMap, DOF_PER_NODE};
 use squid_n_core::model::Model;
 use squid_n_math::solver::{make_solver, SolveError, SolverBackend};
@@ -86,4 +88,18 @@ pub(crate) fn solve_initial_accel(
     Err(SolveError::InvalidInput(
         "質量行列が特異で初期加速度を計算できません。地震波の先頭を 0 から始めるか、全自由度に質量を与えてください。".into(),
     ))
+}
+
+/// 節点慣性力ベクトルの算定に使う `M·a_free`（自由 DOF 空間、`dofmap` の
+/// アクティブ添字順）を求める。層せん断力・ベースシアの算定（[`super::recording`]・
+/// [`super::history::record_history_step`]）で共有するため、各積分ループで
+/// 1 ステップに 1 回だけ呼び出す（疎行列ベクトル積は方向 X・Y で共通、
+/// 地動加速度 `ẍg` に応じた項は呼び出し側で別途加算する）。
+pub(crate) fn mass_accel_free(
+    m_free: &faer::sparse::SparseColMat<usize, f64>,
+    reducer: &Reducer,
+    a_red: &[f64],
+) -> Vec<f64> {
+    let a_free = reducer.expand_u(a_red);
+    sparse_matvec(m_free, &a_free)
 }

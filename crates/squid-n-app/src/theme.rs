@@ -66,6 +66,9 @@ pub const AXIS_X: Color32 = Color32::from_rgb(0xD2, 0x64, 0x64);
 pub const AXIS_Y: Color32 = Color32::from_rgb(0x50, 0xAA, 0x50);
 /// Z 軸（青系）
 pub const AXIS_Z: Color32 = Color32::from_rgb(0x64, 0x64, 0xC8);
+/// 免震支承マーカー（軸方向を持たない支持装置の記号。矢印・円弧・ばねのジグザグ／
+/// 渦巻（軸色）とも、剛床マーク・ハイライト（紫）とも弁別できる専用色）
+pub const ISOLATOR_TEAL: Color32 = Color32::from_rgb(0x0F, 0x76, 0x6E);
 
 /// パレット色を指定アルファで半透明化する（面要素・応力図の塗りつぶし用）。
 pub fn translucent(c: Color32, alpha: u8) -> Color32 {

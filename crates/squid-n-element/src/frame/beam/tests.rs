@@ -84,6 +84,7 @@ fn test_beam_new_src_cft_composite_props() {
                 restraint: Dof6Mask::FIXED,
                 mass: None,
                 story: None,
+                support_spring: None,
             },
             Node {
                 id: NodeId(1),
@@ -91,6 +92,7 @@ fn test_beam_new_src_cft_composite_props() {
                 restraint: Dof6Mask::FREE,
                 mass: None,
                 story: None,
+                support_spring: None,
             },
         ],
         sections: vec![
@@ -185,6 +187,7 @@ fn test_beam_new_slab_cooperation_width_amplifies_iy() {
         restraint: Dof6Mask::FREE,
         mass: None,
         story: None,
+        support_spring: None,
     };
     let shape = SectionShape::RcRect {
         b: 300.0,
@@ -313,6 +316,7 @@ fn test_beam_new_composite_steel_beam_averages_stiffness() {
         restraint: Dof6Mask::FREE,
         mass: None,
         story: None,
+        support_spring: None,
     };
     let shape = SectionShape::SteelH {
         height: 400.0,
@@ -734,6 +738,7 @@ fn test_auto_rigid_zone_standard_formula() {
                 restraint: Default::default(),
                 mass: None,
                 story: None,
+                support_spring: None,
             },
             Node {
                 id: NodeId(1),
@@ -741,6 +746,7 @@ fn test_auto_rigid_zone_standard_formula() {
                 restraint: Default::default(),
                 mass: None,
                 story: None,
+                support_spring: None,
             },
             Node {
                 id: NodeId(2),
@@ -748,6 +754,7 @@ fn test_auto_rigid_zone_standard_formula() {
                 restraint: Default::default(),
                 mass: None,
                 story: None,
+                support_spring: None,
             },
         ],
         elements: vec![
@@ -821,6 +828,7 @@ fn test_apply_auto_rigid_zones_and_manual_protection() {
         restraint: Default::default(),
         mass: None,
         story: None,
+        support_spring: None,
     };
     let mk_beam = |id: u32, a: u32, b: u32, sec: u32| ElementData {
         id: ElemId(id),
@@ -932,6 +940,7 @@ fn test_eval_sections_from_face_distance() {
                 restraint: Default::default(),
                 mass: None,
                 story: None,
+                support_spring: None,
             },
             Node {
                 id: NodeId(1),
@@ -939,6 +948,7 @@ fn test_eval_sections_from_face_distance() {
                 restraint: Default::default(),
                 mass: None,
                 story: None,
+                support_spring: None,
             },
         ],
         elements: vec![ElementData {
@@ -1088,6 +1098,7 @@ fn test_auto_rigid_zone_steel_joint_is_zero() {
                 restraint: Default::default(),
                 mass: None,
                 story: None,
+                support_spring: None,
             },
             Node {
                 id: NodeId(1),
@@ -1095,6 +1106,7 @@ fn test_auto_rigid_zone_steel_joint_is_zero() {
                 restraint: Default::default(),
                 mass: None,
                 story: None,
+                support_spring: None,
             },
             Node {
                 id: NodeId(2),
@@ -1102,6 +1114,7 @@ fn test_auto_rigid_zone_steel_joint_is_zero() {
                 restraint: Default::default(),
                 mass: None,
                 story: None,
+                support_spring: None,
             },
         ],
         elements: vec![
@@ -1203,6 +1216,7 @@ fn test_auto_rigid_zone_steel_beam_rc_column() {
                 restraint: Default::default(),
                 mass: None,
                 story: None,
+                support_spring: None,
             },
             Node {
                 id: NodeId(1),
@@ -1210,6 +1224,7 @@ fn test_auto_rigid_zone_steel_beam_rc_column() {
                 restraint: Default::default(),
                 mass: None,
                 story: None,
+                support_spring: None,
             },
             Node {
                 id: NodeId(2),
@@ -1217,6 +1232,7 @@ fn test_auto_rigid_zone_steel_beam_rc_column() {
                 restraint: Default::default(),
                 mass: None,
                 story: None,
+                support_spring: None,
             },
         ],
         elements: vec![
@@ -1318,6 +1334,7 @@ fn test_auto_rigid_zone_rc_beam_steel_column_only_is_zero() {
                 restraint: Default::default(),
                 mass: None,
                 story: None,
+                support_spring: None,
             },
             Node {
                 id: NodeId(1),
@@ -1325,6 +1342,7 @@ fn test_auto_rigid_zone_rc_beam_steel_column_only_is_zero() {
                 restraint: Default::default(),
                 mass: None,
                 story: None,
+                support_spring: None,
             },
             Node {
                 id: NodeId(2),
@@ -1332,6 +1350,7 @@ fn test_auto_rigid_zone_rc_beam_steel_column_only_is_zero() {
                 restraint: Default::default(),
                 mass: None,
                 story: None,
+                support_spring: None,
             },
         ],
         elements: vec![
@@ -1452,6 +1471,7 @@ fn test_auto_rigid_zone_wall_does_not_affect_orthogonal_search() {
                 restraint: Default::default(),
                 mass: None,
                 story: None,
+                support_spring: None,
             },
             Node {
                 id: NodeId(1),
@@ -1459,6 +1479,7 @@ fn test_auto_rigid_zone_wall_does_not_affect_orthogonal_search() {
                 restraint: Default::default(),
                 mass: None,
                 story: None,
+                support_spring: None,
             },
             Node {
                 id: NodeId(2),
@@ -1466,6 +1487,7 @@ fn test_auto_rigid_zone_wall_does_not_affect_orthogonal_search() {
                 restraint: Default::default(),
                 mass: None,
                 story: None,
+                support_spring: None,
             },
             Node {
                 id: NodeId(3),
@@ -1473,6 +1495,7 @@ fn test_auto_rigid_zone_wall_does_not_affect_orthogonal_search() {
                 restraint: Default::default(),
                 mass: None,
                 story: None,
+                support_spring: None,
             },
         ],
         elements: vec![
@@ -1581,6 +1604,7 @@ fn test_beam_new_wall_girder_bottom_edge_scales_stiffness() {
         restraint: Default::default(),
         mass: None,
         story: None,
+        support_spring: None,
     };
     let nodes = vec![
         make_node(0, [0.0, 0.0, 0.0]),
@@ -1697,6 +1721,7 @@ fn test_beam_new_wall_girder_requires_both_nodes_shared() {
         restraint: Default::default(),
         mass: None,
         story: None,
+        support_spring: None,
     };
     // 節点1は壁の隅、節点4は壁に属さない別節点（梁は壁の外へ伸びる）
     let nodes = vec![
@@ -1790,6 +1815,7 @@ fn test_beam_new_wall_girder_vertical_member_not_scaled() {
         restraint: Default::default(),
         mass: None,
         story: None,
+        support_spring: None,
     };
     let nodes = vec![
         make_node(0, [0.0, 0.0, 0.0]),
@@ -1861,6 +1887,7 @@ fn test_beam_new_misc_wall_wing_augments_column_inplane_stiffness() {
         restraint: Default::default(),
         mass: None,
         story: None,
+        support_spring: None,
     };
     let col_sec = Section {
         id: SectionId(0),
@@ -2008,6 +2035,7 @@ fn test_beam_new_misc_wall_strip_augments_girder_iy_without_100x() {
         restraint: Default::default(),
         mass: None,
         story: None,
+        support_spring: None,
     };
     let beam_sec = Section {
         id: SectionId(0),
@@ -2161,6 +2189,7 @@ fn test_beam_new_seismic_wall_no_misc_wall_augmentation() {
         restraint: Default::default(),
         mass: None,
         story: None,
+        support_spring: None,
     };
     let col_sec = Section {
         id: SectionId(0),
@@ -2317,6 +2346,7 @@ fn test_vertical_bending_stiffness_uses_section_strong_axis() {
         restraint: Default::default(),
         mass: None,
         story: None,
+        support_spring: None,
     };
     // H-400x200 相当の非対称断面（iy=強軸 ≫ iz=弱軸、as_z=ウェブ、as_y=フランジ）
     let sec = Section {
@@ -2552,6 +2582,7 @@ fn test_misc_wall_wing_eccentricity_is_independent_of_wall_node_order() {
         restraint: Default::default(),
         mass: None,
         story: None,
+        support_spring: None,
     };
     let col_sec = Section {
         id: SectionId(0),

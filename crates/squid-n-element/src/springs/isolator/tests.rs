@@ -14,6 +14,7 @@ fn iso_model(props: IsolatorProps) -> Model {
                 restraint: Default::default(),
                 mass: None,
                 story: None,
+                support_spring: None,
             },
             Node {
                 id: NodeId(1),
@@ -21,6 +22,7 @@ fn iso_model(props: IsolatorProps) -> Model {
                 restraint: Default::default(),
                 mass: None,
                 story: None,
+                support_spring: None,
             },
         ],
         elements: vec![ElementData {

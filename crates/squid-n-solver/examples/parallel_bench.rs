@@ -41,6 +41,7 @@ fn make_frame(nx: usize, ny: usize, nz: usize, n_cases: usize) -> Model {
                     },
                     mass: None,
                     story: None,
+                    support_spring: None,
                 });
             }
         }

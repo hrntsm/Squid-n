@@ -139,6 +139,7 @@ pub(crate) mod test_support {
                 restraint: restraint_fixed,
                 mass: None,
                 story: None,
+                support_spring: None,
             });
         }
         for (i, &[x, y]) in xy.iter().enumerate() {
@@ -148,6 +149,7 @@ pub(crate) mod test_support {
                 restraint: restraint_free,
                 mass: mass_val,
                 story: Some(s0),
+                support_spring: None,
             });
         }
 

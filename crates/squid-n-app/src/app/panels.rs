@@ -485,6 +485,8 @@ impl App {
                 crate::section_editor::catalog_section_panel(ui, self);
                 ui.add_space(8.0);
                 crate::section_editor::section_editor_panel(ui, self);
+                ui.add_space(8.0);
+                crate::damper_def_editor::damper_def_panel(ui, self);
             }
             ModelTab::Materials => crate::tables::materials::materials_table(ui, self),
             ModelTab::Slabs => crate::tables::slabs::slabs_table(ui, self),
@@ -1236,9 +1238,9 @@ impl App {
             });
     }
 
-    /// 時刻歴応答解析（線形）。
+    /// 時刻歴応答解析（線形／非線形）。
     fn time_history_section(&mut self, ui: &mut egui::Ui, running: bool) {
-        egui::CollapsingHeader::new("時刻歴応答（線形）")
+        egui::CollapsingHeader::new("時刻歴応答")
             .default_open(false)
             .id_salt("as_time_history")
             .show(ui, |ui| {
@@ -1249,16 +1251,83 @@ impl App {
                     ui.selectable_value(&mut self.analysis_cfg.th_dir, ThDir::Xy, "X+Y")
                         .on_hover_text("同一波形を両方向へ同時入力(CSV は2列)");
                     ui.separator();
+                    ui.checkbox(
+                        &mut self.analysis_cfg.th_nonlinear,
+                        "非線形(復元力特性を考慮)",
+                    )
+                    .on_hover_text(
+                        "各部材の復元力特性（ひび割れ・降伏等）を考慮し、\
+                         各時刻ステップを Newton 反復で解く時刻歴応答解析。\
+                         積分法は Newmark-β 固定になります。",
+                    );
+                });
+                ui.horizontal_wrapped(|ui| {
                     ui.label("積分法:");
+                    // 低: 非線形 ON でも Newmark-β は選択状態のまま有効表示にする
+                    // （非線形時刻歴は常に Newmark-β 相当で解くため、選択自体は無効化する
+                    // 理由が無い）。HHT-α のみ無効化し、hover で理由を示す。
                     ui.selectable_value(
                         &mut self.analysis_cfg.th_integrator,
                         ThIntegrator::NewmarkBeta,
                         "Newmark-β",
                     );
-                    ui.selectable_value(
-                        &mut self.analysis_cfg.th_integrator,
-                        ThIntegrator::HhtAlpha,
-                        "HHT-α(α=-0.1)",
+                    ui.add_enabled_ui(!self.analysis_cfg.th_nonlinear, |ui| {
+                        ui.selectable_value(
+                            &mut self.analysis_cfg.th_integrator,
+                            ThIntegrator::HhtAlpha,
+                            "HHT-α(α=-0.1)",
+                        )
+                        .on_disabled_hover_text(
+                            "非線形時刻歴は Newmark-β 固定です（HHT-α は線形専用）。",
+                        );
+                    });
+                });
+                if self.analysis_cfg.th_nonlinear {
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label("Newton反復: 最大回数");
+                        ui.add(
+                            egui::DragValue::new(&mut self.analysis_cfg.th_max_iter).range(1..=500),
+                        );
+                        ui.label("収束許容誤差(相対):");
+                        ui.add(
+                            egui::DragValue::new(&mut self.analysis_cfg.th_tol)
+                                .speed(1e-7)
+                                .range(1e-9..=1e-2),
+                        );
+                    });
+                }
+                ui.horizontal_wrapped(|ui| {
+                    ui.label("記録間引き(0=自動):");
+                    ui.add(
+                        egui::DragValue::new(&mut self.analysis_cfg.th_record_every)
+                            .range(0..=100000),
+                    )
+                    .on_hover_text(
+                        "3D アニメーション・層応答グラフ・部材履歴用の詳細記録\
+                         （ThRecording）を N ステップごとに 1 フレーム記録します。\
+                         0 なら記録フレーム数が概ね 1000 になるよう自動決定します\
+                         （線形・HHT-α・非線形の 3 経路とも共通）。\
+                         ピーク値（最大変位・最大内力・層せん断力係数の最大値）は\
+                         間引かず全ステップで更新するため、この値は精度ではなく\
+                         アニメーション・履歴グラフの解像度とメモリ使用量に影響します。",
+                    );
+                });
+                ui.horizontal_wrapped(|ui| {
+                    ui.add_enabled(
+                        self.analysis_cfg.th_nonlinear,
+                        egui::Checkbox::new(
+                            &mut self.analysis_cfg.th_apply_long_term,
+                            "長期荷重を初期状態として考慮",
+                        ),
+                    )
+                    .on_hover_text(
+                        "長期系荷重ケース（固定・積載等）を時刻歴開始前に静的載荷し、\
+                         その応力状態を初期条件とします。長期荷重ケースが無い場合は\
+                         無視されます。",
+                    )
+                    .on_disabled_hover_text(
+                        "線形時刻歴は重ね合わせ運用のため対象外です\
+                         （「非線形」をONにすると使用できます）。",
                     );
                 });
                 ui.horizontal_wrapped(|ui| {
@@ -1392,7 +1461,11 @@ impl App {
                     {
                         self.run_time_history_from_csv();
                     }
-                    if self.job.as_ref().is_some_and(|j| j.label == "時刻歴応答") {
+                    if self
+                        .job
+                        .as_ref()
+                        .is_some_and(|j| j.label.starts_with("時刻歴応答"))
+                    {
                         ui.spinner();
                     }
                 });

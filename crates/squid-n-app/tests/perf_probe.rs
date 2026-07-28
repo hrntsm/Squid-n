@@ -66,6 +66,7 @@ fn build_grid_model(nx: usize, ny: usize, n_stories: usize, with_slabs: bool) ->
                     },
                     mass: None,
                     story: None,
+                    support_spring: None,
                 });
             }
         }

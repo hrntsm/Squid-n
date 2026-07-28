@@ -31,6 +31,7 @@ fn wall_model_sized(l: f64, h: f64, thickness: f64, wall_attr: Option<WallAttr>)
             },
             mass: None,
             story: None,
+            support_spring: None,
         });
     }
     let sections = vec![Section {
@@ -584,6 +585,7 @@ fn rc_cross_joint_emits_ultimate_check() {
             },
             mass: None,
             story: None,
+            support_spring: None,
         });
     }
     let sections = vec![

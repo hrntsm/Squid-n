@@ -171,6 +171,7 @@ mod tests {
                 restraint: Dof6Mask::FIXED,
                 mass: None,
                 story: None,
+                support_spring: None,
             });
         }
         // 柱頭（z=3000, story=S0）。斜め柱の頭は x を 1500 ずらす。
@@ -183,6 +184,7 @@ mod tests {
                 restraint: Dof6Mask::FREE,
                 mass: Some([masses[i], masses[i], masses[i], 0.0, 0.0, 0.0]),
                 story: Some(s0),
+                support_spring: None,
             });
         }
         let elements: Vec<ElementData> = (0..3)

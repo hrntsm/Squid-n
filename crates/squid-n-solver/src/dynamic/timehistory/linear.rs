@@ -4,18 +4,20 @@
 //! - [`linear_time_history_with_state`] — 最終状態付き（チェックポイント保存用）
 //! - [`linear_time_history_from_state`] — チェックポイントからの再開
 
-use super::common::{solve_initial_accel, theta_accel_at, theta_influence_m};
+use super::common::{mass_accel_free, solve_initial_accel, theta_accel_at, theta_influence_m};
 use super::config::{GroundMotion, NewmarkCfg};
 use super::history::{
     choose_record_dir_y, pick_record_node, record_history_step, total_mass, update_story_drift,
 };
+use super::recording::{member_forces_linear, ThRecorder};
 use super::result::{ResponseHistory, ResponseResult, TimeStepState};
 use crate::assemble::{assemble_global_k, assemble_global_m};
 use crate::constraint::Reducer;
 use crate::damping::Damping;
 use squid_n_core::dof::{DofMap, DOF_PER_NODE};
 use squid_n_core::model::Model;
-use squid_n_element::behavior::MassOption;
+use squid_n_element::behavior::{ElementBehavior, MassOption};
+use squid_n_element::factory::build_behavior;
 use squid_n_math::solver::{make_solver, SolveError, SolverBackend};
 use squid_n_math::sparse::sparse_matvec;
 
@@ -24,6 +26,8 @@ use squid_n_math::sparse::sparse_matvec;
 /// `initial_disp`/`initial_vel` は縮約空間（n_indep 長）の初期値。
 /// 自由振動（地震波なし）の場合は `wave.accel_x` をゼロ埋めして呼ぶ。
 /// `newmark.dt == 0.0` のときは `wave.dt` を採用する。
+/// `record_every` は詳細記録（[`super::ThRecording`]）の間引き係数。`None` は
+/// 自動決定（[`super::recording::auto_record_every`]）。
 #[allow(clippy::too_many_arguments)]
 pub fn linear_time_history_analysis(
     model: &Model,
@@ -35,6 +39,7 @@ pub fn linear_time_history_analysis(
     initial_disp: &[f64],
     initial_vel: &[f64],
     use_kg: bool,
+    record_every: Option<usize>,
 ) -> Result<ResponseResult, SolveError> {
     let (result, _state) = linear_time_history_with_state(
         model,
@@ -46,6 +51,7 @@ pub fn linear_time_history_analysis(
         initial_disp,
         initial_vel,
         use_kg,
+        record_every,
     )?;
     Ok(result)
 }
@@ -62,6 +68,7 @@ pub fn linear_time_history_with_state(
     initial_disp: &[f64],
     initial_vel: &[f64],
     use_kg: bool,
+    record_every: Option<usize>,
 ) -> Result<(ResponseResult, TimeStepState), SolveError> {
     squid_n_math::parallelism::apply_to_faer();
 
@@ -85,6 +92,9 @@ pub fn linear_time_history_with_state(
                 story_drift_angle: vec![0.0; model.stories.len()],
                 cumulative_ductility: vec![0.0; model.elements.len()],
                 history: ResponseHistory::default(),
+                recording: None,
+                nonlinear: false,
+                applied_long_term: false,
             },
             TimeStepState {
                 step: 0,
@@ -95,6 +105,14 @@ pub fn linear_time_history_with_state(
             },
         ));
     }
+
+    // 部材内力記録（`ThRecording::member_forces`）用: 要素の弾性 behavior は
+    // 時刻歴を通じて不変（線形解析）のため、ループ前に 1 回だけ構築して共有する。
+    let behaviors: Vec<Box<dyn ElementBehavior>> = model
+        .elements
+        .iter()
+        .map(|e| build_behavior(e, model).0)
+        .collect();
 
     // --- 行列組立（縮約空間） ---
     let m_free = assemble_global_m(model, dofmap, MassOption::Consistent);
@@ -191,9 +209,11 @@ pub fn linear_time_history_with_state(
         &m_r_x,
         &m_r_y,
         &m_r_theta,
+        &m_free,
         &m_red,
         &c_red,
         &mut solver,
+        &behaviors,
         c1,
         c2,
         c3,
@@ -204,12 +224,19 @@ pub fn linear_time_history_with_state(
         u,
         v,
         a,
+        record_every,
     )
 }
 
 /// チェックポイントから線形時刻歴を再開する。
 /// `state.step` の次のステップから `wave` の終端まで進める。
 /// `wave` は全ステップ分の地震波（先頭から）。`state.step` 以降を使用する。
+///
+/// 戻り値の `ResponseResult` は**再開区間のみ**の部分記録である
+/// （`time`・`history`・`recording`・`peak_disp`・`story_drift_angle` いずれも
+/// `state.step` 以降のステップのみを対象に集計される。それ以前のステップの
+/// 応答・ピークは含まれないため、チェックポイント再開前後の全区間を通じた
+/// ピークが必要な場合は、区間ごとの `ResponseResult` を呼び出し側で合成すること）。
 #[allow(clippy::too_many_arguments)]
 pub fn linear_time_history_from_state(
     model: &Model,
@@ -220,6 +247,7 @@ pub fn linear_time_history_from_state(
     damping: &Damping,
     state: &TimeStepState,
     use_kg: bool,
+    record_every: Option<usize>,
 ) -> Result<(ResponseResult, TimeStepState), SolveError> {
     squid_n_math::parallelism::apply_to_faer();
 
@@ -240,6 +268,13 @@ pub fn linear_time_history_from_state(
             "time history restart: state dimension mismatch".into(),
         ));
     }
+
+    // 部材内力記録用の弾性 behavior（線形解析なので時刻歴を通じて不変）。
+    let behaviors: Vec<Box<dyn ElementBehavior>> = model
+        .elements
+        .iter()
+        .map(|e| build_behavior(e, model).0)
+        .collect();
 
     // 行列・係数の再計算（線形なので同一）
     let m_free = assemble_global_m(model, dofmap, MassOption::Consistent);
@@ -298,9 +333,11 @@ pub fn linear_time_history_from_state(
         &m_r_x,
         &m_r_y,
         &m_r_theta,
+        &m_free,
         &m_red,
         &c_red,
         &mut solver,
+        &behaviors,
         c1,
         c2,
         c3,
@@ -311,6 +348,7 @@ pub fn linear_time_history_from_state(
         u,
         v,
         a,
+        record_every,
     )
 }
 
@@ -328,9 +366,11 @@ fn run_steps(
     m_r_x: &[f64],
     m_r_y: &[f64],
     m_r_theta: &[f64],
+    m_free: &faer::sparse::SparseColMat<usize, f64>,
     m_red: &faer::sparse::SparseColMat<usize, f64>,
     c_red: &faer::sparse::SparseColMat<usize, f64>,
     solver: &mut Box<dyn squid_n_math::solver::LinearSolver>,
+    behaviors: &[Box<dyn ElementBehavior>],
     c1: f64,
     c2: f64,
     c3: f64,
@@ -341,6 +381,7 @@ fn run_steps(
     mut u: Vec<f64>,
     mut v: Vec<f64>,
     mut a: Vec<f64>,
+    record_every: Option<usize>,
 ) -> Result<(ResponseResult, TimeStepState), SolveError> {
     let n_indep = reducer.n_indep;
     let n_free = dofmap.n_active();
@@ -355,6 +396,47 @@ fn run_steps(
 
     let mut time = Vec::with_capacity(wave.accel_x.len() - start_step as usize + 1);
     time.push(start_step as f64 * dt);
+
+    // 節点慣性力ベクトル算定用の M·a_free（自由 DOF 空間）。ベースシア・層せん断力の
+    // 双方で共有する（1 ステップに 1 回だけ疎行列ベクトル積を計算する）。
+    let ma_free_init = mass_accel_free(m_free, reducer, &a);
+
+    // 詳細記録（3D アニメーション・層応答グラフ・部材履歴用。record_every は
+    // 呼び出し元（UI 等）が指定できる。None は自動決定）。
+    let mut recorder = ThRecorder::new(
+        model,
+        dofmap,
+        wave.accel_x.len(),
+        model.elements.len(),
+        record_every,
+    );
+    let xg_x_init = wave
+        .accel_x
+        .get(start_step as usize)
+        .copied()
+        .unwrap_or(0.0);
+    let xg_y_init = wave
+        .accel_y
+        .as_ref()
+        .and_then(|acc| acc.get(start_step as usize).copied())
+        .unwrap_or(0.0);
+    let mf_init = member_forces_linear(dofmap, behaviors, &u_free_init);
+    recorder.record_step(
+        start_step,
+        start_step as f64 * dt,
+        model,
+        dofmap,
+        reducer,
+        m_r_x,
+        m_r_y,
+        &ma_free_init,
+        &u,
+        &v,
+        &a,
+        xg_x_init,
+        xg_y_init,
+        &mf_init,
+    );
 
     // UI 用の代表応答記録（記録方向は入力加速度の絶対値和が大きい方を自動選択）
     let record_dir_y = choose_record_dir_y(wave);
@@ -381,12 +463,10 @@ fn run_steps(
         &mut history,
         model,
         dofmap,
-        reducer,
         dir_idx,
-        m_r_record,
         rmr_record,
         &u_free_init,
-        &a,
+        &ma_free_init,
         xg_init,
     );
 
@@ -443,6 +523,9 @@ fn run_steps(
             peak_disp_free[i] = peak_disp_free[i].max(u_free[i].abs());
         }
         update_story_drift(model, dofmap, &u_free, &mut story_drift_angle);
+        // 節点慣性力ベクトル算定用の M·a_free（自由 DOF 空間）。ベースシア・
+        // 層せん断力の双方で共有する（1 ステップに 1 回だけ算定）。
+        let ma_free = mass_accel_free(m_free, reducer, &a);
         let xg_next = if record_dir_y {
             wave.accel_y
                 .as_ref()
@@ -455,13 +538,35 @@ fn run_steps(
             &mut history,
             model,
             dofmap,
-            reducer,
             dir_idx,
-            m_r_record,
             rmr_record,
             &u_free,
-            &a,
+            &ma_free,
             xg_next,
+        );
+
+        let xg_x_next = wave.accel_x.get(n + 1).copied().unwrap_or(0.0);
+        let xg_y_next = wave
+            .accel_y
+            .as_ref()
+            .and_then(|acc| acc.get(n + 1).copied())
+            .unwrap_or(0.0);
+        let mf_now = member_forces_linear(dofmap, behaviors, &u_free);
+        recorder.record_step(
+            (n + 1) as u64,
+            t_next,
+            model,
+            dofmap,
+            reducer,
+            m_r_x,
+            m_r_y,
+            &ma_free,
+            &u,
+            &v,
+            &a,
+            xg_x_next,
+            xg_y_next,
+            &mf_now,
         );
     }
 
@@ -492,6 +597,9 @@ fn run_steps(
             story_drift_angle,
             cumulative_ductility: vec![0.0; model.elements.len()],
             history,
+            recording: Some(recorder.finish()),
+            nonlinear: false,
+            applied_long_term: false,
         },
         final_state,
     ))

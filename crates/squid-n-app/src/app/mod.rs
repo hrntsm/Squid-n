@@ -360,6 +360,24 @@ pub struct AnalysisSettings {
     pub th_h2: f64,
     /// 時刻歴の積分法
     pub th_integrator: ThIntegrator,
+    /// 時刻歴を非線形（各部材の復元力特性を考慮した Newton 反復）で解析するか。
+    /// ON のとき積分法は Newmark-β 固定（HHT-α は選択不可）。
+    pub th_nonlinear: bool,
+    /// 非線形時刻歴: 長期系荷重ケース（固定・積載等）を時刻歴開始前に静的載荷し、
+    /// その応力状態を初期条件とするか。線形時刻歴は重ね合わせ運用のため対象外
+    /// （`th_nonlinear` が true のときのみ意味を持つ）。
+    pub th_apply_long_term: bool,
+    /// 非線形時刻歴: 各時刻ステップの Newton 反復の最大回数
+    /// （既定は増分解析＝プッシュオーバーの内部反復回数と同じ 50）。
+    pub th_max_iter: usize,
+    /// 非線形時刻歴: Newton 収束判定の相対許容誤差。
+    pub th_tol: f64,
+    /// 時刻歴の詳細記録（3D アニメーション・層応答グラフ・部材履歴用）の
+    /// フレーム間引き係数（線形・HHT-α・非線形の 3 経路共通）。
+    /// 0 は自動決定（記録フレーム数が概ね 1000 になるよう調整）。
+    /// ピーク値（`peak_disp`・`peak_member_forces`・`peak_shear_coeff`）は
+    /// 間引きの影響を受けず全ステップで更新される。
+    pub th_record_every: usize,
     /// 位相差入力（ねじれ加振）を考慮する（構造動力学）。
     pub phase_diff_enabled: bool,
     /// せん断波速度 Vs [m/s]。
@@ -462,6 +480,11 @@ impl Default for AnalysisSettings {
             th_damping_model: ThDampingModel::StiffnessProportional,
             th_h2: 0.02,
             th_integrator: ThIntegrator::NewmarkBeta,
+            th_nonlinear: false,
+            th_apply_long_term: false,
+            th_max_iter: 50,
+            th_tol: 1e-6,
+            th_record_every: 0,
             phase_diff_enabled: false,
             phase_diff_vs: 200.0,
             phase_diff_length_m: 20.0,
@@ -486,7 +509,8 @@ impl Default for AnalysisSettings {
 /// 全組合せ一括・地震静的・風荷重）が送る結果。
 pub enum JobResult {
     Pushover(Result<squid_n_solver::pushover::PushoverResult, String>),
-    TimeHistory(Result<squid_n_solver::timehistory::ResponseResult, String>),
+    /// 時刻歴応答解析。`ResponseResult` は詳細記録を含み大きいため Box で運ぶ。
+    TimeHistory(Box<Result<squid_n_solver::timehistory::ResponseResult, String>>),
     /// 線形静的・地震静的(Ai)・風荷重静的解析（`StaticCaseKey` で結果格納先を区別）。
     StaticCase {
         key: StaticCaseKey,
@@ -608,6 +632,10 @@ pub struct App {
     /// 節点追加時に既存節点と同一座標だった場合の追加保留座標。
     /// セットされている間は確認ダイアログを表示し、ユーザの判断を待つ。
     pub pending_duplicate_node_coord: Option<[f64; 3]>,
+    /// 保存サイズ超過時の保存保留（保存先パス, 解析結果の直列化サイズ [MB]）。
+    /// セットされている間は「時刻歴の詳細記録を保存に含めますか？」の確認
+    /// ダイアログを表示し、選択に応じて含めて保存／除外して保存／キャンセル。
+    pub pending_save_recording: Option<(std::path::PathBuf, u64)>,
     /// stale（要再計算）状態と最終実行時刻
     pub staleness: Staleness,
     /// モデル整合性チェック（診断）の結果一覧。`run_diagnostics` で再構築する。
@@ -759,6 +787,40 @@ pub struct App {
     /// 変形重ねにも適用する。
     #[cfg(feature = "gui")]
     pub show_beam_interpolation: bool,
+    /// 時刻歴モード（[`crate::viewer::ViewMode::TimeHistory`]）の現在フレーム番号
+    /// （`ThRecording::frame_time` の添字）。
+    #[cfg(feature = "gui")]
+    pub th_frame: usize,
+    /// 時刻歴モードの再生中フラグ（ON でフレームを自動で進める）。
+    #[cfg(feature = "gui")]
+    pub th_playing: bool,
+    /// 時刻歴モードの再生速度倍率（×0.25〜×2 等）。
+    #[cfg(feature = "gui")]
+    pub th_speed: f32,
+    /// 時刻歴モードの再生経過時刻 [s]（`ThRecording::frame_time` に基づき現在
+    /// フレームを決定する。スライダー操作時は選択フレームの時刻に同期する）。
+    #[cfg(feature = "gui")]
+    pub th_play_time: f64,
+    /// 時刻歴モードでクリック選択された部材（履歴・検定ウィンドウの表示対象。
+    /// `None` はウィンドウ非表示）。
+    #[cfg(feature = "gui")]
+    pub th_detail_elem: Option<squid_n_core::ids::ElemId>,
+    /// 時刻歴詳細ウィンドウの梁・柱ループで表示する曲げ軸（true=強軸Mz／false=弱軸My）。
+    #[cfg(feature = "gui")]
+    pub th_detail_axis_z: bool,
+    /// 時刻歴詳細ウィンドウの零長要素（免震・節点ばね）N-δ ループで選択中の成分
+    /// （中-2）。`(部材, 成分)` を保持し、`th_detail_elem` と部材が一致しない場合は
+    /// 要素種別ごとの既定（免震＝せん断、それ以外＝軸）へ戻す。`None` は未選択。
+    #[cfg(feature = "gui")]
+    pub th_detail_axial_component: Option<(
+        squid_n_core::ids::ElemId,
+        crate::viewer::th_detail::AxialComponent,
+    )>,
+    /// 時刻歴アニメーション（[`crate::viewer::ViewMode::TimeHistory`]）の変形倍率
+    /// キャッシュ（高-2）。フレームごとに再正規化せず、記録全体のピーク変位から
+    /// 1 回だけ算定した自動倍率（手動係数を掛ける前の値）を保持する。
+    #[cfg(feature = "gui")]
+    pub th_scale_cache: Option<crate::viewer::TimeHistoryScaleCache>,
     /// 床荷重分配の CMQ 結果（P2 §5.1）。描画用。
     pub beam_loads: Vec<squid_n_load::floor::BeamLoad>,
     /// 時刻歴応答データ（描画用）
@@ -767,6 +829,15 @@ pub struct App {
     /// 時刻歴グラフの表示項目選択
     #[cfg(feature = "gui")]
     pub time_history_source: crate::time_history_view::TimeHistorySource,
+    /// 時刻歴結果タブの表示モード（時刻歴波形／層応答分布）
+    #[cfg(feature = "gui")]
+    pub time_history_view_mode: crate::time_history_view::TimeHistoryViewMode,
+    /// 層応答分布グラフの表示項目選択
+    #[cfg(feature = "gui")]
+    pub story_response_kind: crate::story_response::StoryResponseKind,
+    /// 層応答分布グラフの方向選択（記録済みの X・Y いずれか）
+    #[cfg(feature = "gui")]
+    pub story_response_dir: crate::story_response::StoryRespDir,
     /// 質点系（串団子）時刻歴応答の結果（結果タブ「質点系モデル」で実行・表示）。
     pub stick_response: Option<squid_n_solver::lumped_mass::StickResponse>,
     /// 断面作成UI のドラフト（UI-3）
@@ -775,6 +846,15 @@ pub struct App {
     /// 断面カタログ選択UI のドラフト（Shape→Family→Name）
     #[cfg(feature = "gui")]
     pub catalog_draft: crate::section_editor::CatalogDraft,
+    /// 境界条件タブ「免震支承の配置」フォームのドラフト状態（`PlaceSupportIsolator` 用）
+    #[cfg(feature = "gui")]
+    pub isolator_support_draft: crate::tables::nodes::IsolatorSupportDraft,
+    /// 部材タブ「免震支承材を追加」フォームのドラフト状態（`AddIsolator` 用）
+    #[cfg(feature = "gui")]
+    pub isolator_member_draft: crate::tables::members::IsolatorMemberDraft,
+    /// 断面タブ「制振要素」パネルのドラフト状態（`AddDamperDef`/`UpdateDamperDef` 用）
+    #[cfg(feature = "gui")]
+    pub damper_def_draft: crate::damper_def_editor::DamperDefDraft,
     /// ビューアの梁作成モード（ON 中はクリックで節点を選び 2 点で梁を作る）
     #[cfg(feature = "gui")]
     pub beam_draw_mode: bool,
@@ -873,6 +953,7 @@ impl Default for App {
             node_grid: crate::grid::GridWidget::new(),
             node_draft: ["0".to_string(), "0".to_string(), "0".to_string()],
             pending_duplicate_node_coord: None,
+            pending_save_recording: None,
             staleness: Staleness::default(),
             diagnostics: Vec::new(),
             preparation: None,
@@ -950,16 +1031,44 @@ impl Default for App {
             modeling_analysis: crate::viewer::ModelingAnalysis::default(),
             #[cfg(feature = "gui")]
             show_beam_interpolation: true,
+            #[cfg(feature = "gui")]
+            th_frame: 0,
+            #[cfg(feature = "gui")]
+            th_playing: false,
+            #[cfg(feature = "gui")]
+            th_speed: 1.0,
+            #[cfg(feature = "gui")]
+            th_play_time: 0.0,
+            #[cfg(feature = "gui")]
+            th_detail_elem: None,
+            #[cfg(feature = "gui")]
+            th_detail_axis_z: true,
+            #[cfg(feature = "gui")]
+            th_detail_axial_component: None,
+            #[cfg(feature = "gui")]
+            th_scale_cache: None,
             beam_loads: Vec::new(),
             #[cfg(feature = "gui")]
             time_history_data: crate::time_history_view::TimeHistoryData::default(),
             #[cfg(feature = "gui")]
             time_history_source: crate::time_history_view::TimeHistorySource::default(),
+            #[cfg(feature = "gui")]
+            time_history_view_mode: crate::time_history_view::TimeHistoryViewMode::default(),
+            #[cfg(feature = "gui")]
+            story_response_kind: crate::story_response::StoryResponseKind::default(),
+            #[cfg(feature = "gui")]
+            story_response_dir: crate::story_response::StoryRespDir::default(),
             stick_response: None,
             #[cfg(feature = "gui")]
             section_draft: crate::section_editor::SectionEditorDraft::default(),
             #[cfg(feature = "gui")]
             catalog_draft: crate::section_editor::CatalogDraft::default(),
+            #[cfg(feature = "gui")]
+            isolator_support_draft: crate::tables::nodes::IsolatorSupportDraft::default(),
+            #[cfg(feature = "gui")]
+            isolator_member_draft: crate::tables::members::IsolatorMemberDraft::default(),
+            #[cfg(feature = "gui")]
+            damper_def_draft: crate::damper_def_editor::DamperDefDraft::default(),
             #[cfg(feature = "gui")]
             beam_draw_mode: false,
             #[cfg(feature = "gui")]
@@ -1819,6 +1928,49 @@ impl eframe::App for App {
             self.save_project_dialog(true);
         } else if ui.ctx().input_mut(|i| i.consume_shortcut(&SHORTCUT_SAVE)) {
             self.save_project_dialog(false);
+        }
+
+        // 保存サイズ超過の確認ダイアログ（時刻歴の詳細記録を含めるかの選択）。
+        // どのタブからの保存でも表示できるよう、ここで描画する。
+        if self.pending_save_recording.is_some() {
+            let mut choice: Option<bool> = None;
+            let mut do_cancel = false;
+            let mut open = true;
+            egui::Window::new("保存サイズの確認")
+                .title_bar(true)
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .open(&mut open)
+                .show(ui.ctx(), |ui| {
+                    if let Some((_, size_mb)) = &self.pending_save_recording {
+                        ui.label(format!(
+                            "解析結果のサイズが約 {} MB あります（時刻歴の詳細記録を含む）。",
+                            size_mb
+                        ));
+                    }
+                    ui.label("時刻歴の詳細記録（3D アニメーション・部材履歴ループ用）を保存に含めますか？");
+                    ui.label("除外しても層応答・ピーク値等の集計結果は保存され、詳細記録は再解析で復元できます。");
+                    ui.horizontal(|ui| {
+                        if ui.button("含めて保存").clicked() {
+                            choice = Some(true);
+                        }
+                        if ui.button("除外して保存").clicked() {
+                            choice = Some(false);
+                        }
+                        if ui.button("キャンセル").clicked() {
+                            do_cancel = true;
+                        }
+                    });
+                });
+            if !open || do_cancel {
+                self.pending_save_recording = None;
+            }
+            if let Some(include) = choice {
+                if let Some((path, _)) = self.pending_save_recording.take() {
+                    self.save_project_to_opts(path, Some(include));
+                }
+            }
         }
 
         // 上部ツールバー: ファイルメニュー + 工程タブ（自由遷移）+ Undo/Redo

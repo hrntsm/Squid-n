@@ -4,7 +4,7 @@
 //! - [`pushover_analysis_recording`] — 荷重制御・変位制御・弧長法の各フェーズを
 //!   実行し、ヒンジ・せん断降伏・崩壊機構・部材別応答を集約する本体
 
-use super::assembly::{assemble_k, compute_f_int};
+use super::assembly::{add_support_spring_f_int, assemble_k, compute_f_int};
 use super::ductility::{compute_ductility_refs, update_ductility, DuctilityTracker};
 use super::hinge::{compute_hinge_thresholds, track_hinges};
 use super::mechanism::determine_mechanism;
@@ -282,6 +282,7 @@ pub fn pushover_analysis_recording(
                     &f_ext,
                     use_kg,
                     n_active,
+                    &total_disp,
                 )? {
                     Some(step_du_free) => {
                         for b in behaviors.iter_mut() {
@@ -309,7 +310,8 @@ pub fn pushover_analysis_recording(
         }
         // 長期載荷完了状態を 1 ステップとして記録する（λ=0、性能曲線の始点）。
         let roof = get_roof_disp(&total_disp, model, dofmap, dir);
-        let f_int_now = compute_f_int(model, dofmap, &behaviors);
+        let mut f_int_now = compute_f_int(model, dofmap, &behaviors);
+        add_support_spring_f_int(model, dofmap, &total_disp, &mut f_int_now);
         let base_shear = compute_base_shear(model, dofmap, &f_int_now, dir);
         let story_drift = compute_story_drift(model, dofmap, &total_disp, dir);
         capacity_curve.push(CapacityPoint {
@@ -387,6 +389,7 @@ pub fn pushover_analysis_recording(
                 &f_ext,
                 use_kg,
                 n_active,
+                &total_disp,
             )?;
 
             if let Some(step_du_free) = converged {
@@ -399,7 +402,8 @@ pub fn pushover_analysis_recording(
                 let roof = get_roof_disp(&total_disp, model, dofmap, dir);
                 // ベースシアは内力の釣合いから算定（載荷ベクトル総和でも一致するが、
                 // 変位制御フェーズと統一し反力ベースで求める）。
-                let f_int_now = compute_f_int(model, dofmap, &behaviors);
+                let mut f_int_now = compute_f_int(model, dofmap, &behaviors);
+                add_support_spring_f_int(model, dofmap, &total_disp, &mut f_int_now);
                 let base_shear = compute_base_shear(model, dofmap, &f_int_now, dir);
                 let story_drift = compute_story_drift(model, dofmap, &total_disp, dir);
                 let drift_angle_now = max_story_drift_angle(&story_drift, &heights);
@@ -540,7 +544,17 @@ pub fn pushover_analysis_recording(
                     for _iter in 0..50 {
                         let k_free = assemble_k(model, dofmap, &behaviors, use_kg);
                         let k_red = reducer.reduce_k(&k_free);
-                        let f_int = compute_f_int(model, dofmap, &behaviors);
+                        let mut f_int = compute_f_int(model, dofmap, &behaviors);
+                        // 支点ばね（`Node::support_spring`）の内力寄与。トライアル変位は
+                        // ステップ開始時の確定変位 `total_disp` ＋このステップの
+                        // Newton 累積 `step_du_free`（要素と異なり自身でトライアル状態を
+                        // 保持しないため、ここで都度合成して渡す）。
+                        let u_trial: Vec<f64> = total_disp
+                            .iter()
+                            .zip(step_du_free.iter())
+                            .map(|(&t, &s)| t + s)
+                            .collect();
+                        add_support_spring_f_int(model, dofmap, &u_trial, &mut f_int);
 
                         // 残差 r = λ·q − f_int（荷重制御フェーズと同じ釣合い形式）。
                         // 外力は長期荷重 f0 ＋比例水平荷重 λ·q（荷重制御フェーズと同形式）。
@@ -612,7 +626,8 @@ pub fn pushover_analysis_recording(
                             *td += du;
                         }
                         let roof = get_roof_disp(&total_disp, model, dofmap, dir);
-                        let f_int_now = compute_f_int(model, dofmap, &behaviors);
+                        let mut f_int_now = compute_f_int(model, dofmap, &behaviors);
+                        add_support_spring_f_int(model, dofmap, &total_disp, &mut f_int_now);
                         let base_shear = compute_base_shear(model, dofmap, &f_int_now, dir);
                         let story_drift = compute_story_drift(model, dofmap, &total_disp, dir);
                         let drift_angle_now = max_story_drift_angle(&story_drift, &heights);
@@ -698,9 +713,15 @@ pub fn pushover_analysis_recording(
 
             // 弧長修正子の各反復で内力を再評価するため、変位増分 δu を要素状態へ
             // 反映して更新後 f_int を返すクロージャを渡す（接線 K はステップ開始時で固定＝修正 Newton）。
+            // 支点ばね（`Node::support_spring`）は要素のように自身のトライアル状態を
+            // 持たないため、クロージャ内で「このステップ開始時からの累積変位増分」を
+            // `cum_du` に自前で積算し、`total_disp（確定済み）+ cum_du` をトライアル
+            // 変位として内力へ加算する。
+            let mut cum_du = vec![0.0; n_active];
             let result = {
                 let model_ref: &Model = &*model;
                 let behaviors_ref = &mut behaviors;
+                let total_disp_ref: &Vec<f64> = &total_disp;
                 arc_solver.step(
                     &q,
                     &mut |r: &[f64]| -> Result<Vec<f64>, String> {
@@ -710,10 +731,19 @@ pub fn pushover_analysis_recording(
                     },
                     &mut |delta_u: &[f64]| -> Result<Vec<f64>, String> {
                         apply_du_to_behaviors(model_ref, dofmap, behaviors_ref, delta_u);
+                        for (acc, &d) in cum_du.iter_mut().zip(delta_u.iter()) {
+                            *acc += d;
+                        }
                         // 弧長法の釣合いは λ·q = f_int の形で解かれるため、長期荷重
                         // f0 を保持する場合は f_int から f0 を差し引いた値を返す
                         // （f0 + λ·q = f_int と等価）。
-                        let f_int = compute_f_int(model_ref, dofmap, behaviors_ref);
+                        let mut f_int = compute_f_int(model_ref, dofmap, behaviors_ref);
+                        let u_trial: Vec<f64> = total_disp_ref
+                            .iter()
+                            .zip(cum_du.iter())
+                            .map(|(&t, &c)| t + c)
+                            .collect();
+                        add_support_spring_f_int(model_ref, dofmap, &u_trial, &mut f_int);
                         Ok(f_int
                             .iter()
                             .zip(f0.iter())
@@ -738,7 +768,8 @@ pub fn pushover_analysis_recording(
                     prev_du = step_result.du;
 
                     let roof = get_roof_disp(&total_disp, model, dofmap, dir);
-                    let f_int_now = compute_f_int(model, dofmap, &behaviors);
+                    let mut f_int_now = compute_f_int(model, dofmap, &behaviors);
+                    add_support_spring_f_int(model, dofmap, &total_disp, &mut f_int_now);
                     let base_shear = compute_base_shear(model, dofmap, &f_int_now, dir);
                     let story_drift = compute_story_drift(model, dofmap, &total_disp, dir);
                     capacity_curve.push(CapacityPoint {
@@ -880,6 +911,13 @@ fn apply_du_to_behaviors(
 /// 塑性ステップで変位軸が過小評価される）を `Some` で返し、要素状態は
 /// トライアル反映済み・未確定のまま戻す（確定・巻き戻しは呼び出し側の責務）。
 /// 収束しなければ `Ok(None)`、分解・求解の失敗は `Err`。
+///
+/// `total_disp_base` はステップ開始時点（直前確定状態）の全自由 DOF 変位。
+/// 支点ばね（`Node::support_spring`）の内力 `k・u` はトライアル変位
+/// `total_disp_base + step_du_free`（この関数のローカル累積）に対して都度
+/// 評価する必要があり（要素のように自身でトライアル状態を保持しないため）、
+/// 呼び出し側から基準変位を明示的に受け取る。
+#[allow(clippy::too_many_arguments)]
 fn newton_converge(
     model: &Model,
     dofmap: &DofMap,
@@ -888,12 +926,19 @@ fn newton_converge(
     f_ext: &[f64],
     use_kg: bool,
     n_active: usize,
+    total_disp_base: &[f64],
 ) -> Result<Option<Vec<f64>>, String> {
     let mut step_du_free = vec![0.0; n_active];
     for _iter in 0..50 {
         let k_free = assemble_k(model, dofmap, behaviors, use_kg);
         let k_red = reducer.reduce_k(&k_free);
-        let f_int = compute_f_int(model, dofmap, behaviors);
+        let mut f_int = compute_f_int(model, dofmap, behaviors);
+        let u_trial: Vec<f64> = total_disp_base
+            .iter()
+            .zip(step_du_free.iter())
+            .map(|(&t, &s)| t + s)
+            .collect();
+        add_support_spring_f_int(model, dofmap, &u_trial, &mut f_int);
         let r_free: Vec<f64> = f_ext.iter().zip(f_int.iter()).map(|(e, i)| e - i).collect();
         let r_red = reducer.reduce_f(&r_free);
         let f_ext_red = reducer.reduce_f(f_ext);

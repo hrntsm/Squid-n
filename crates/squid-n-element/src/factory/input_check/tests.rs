@@ -66,6 +66,7 @@ fn beam_model(section: Section, material: Material) -> Model {
         restraint: Dof6Mask::FREE,
         mass: None,
         story: None,
+        support_spring: None,
     };
     Model {
         nodes: vec![mk(0, [0.0, 0.0, 0.0]), mk(1, [6000.0, 0.0, 0.0])],

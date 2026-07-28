@@ -414,11 +414,13 @@ impl<'m> Analysis<'m> {
     /// 時刻歴応答解析（Newmark-β / HHT-α、減衰込み）。
     /// 線形専用ラッパ。非線形時刻歴は `timehistory::linear_time_history_analysis`
     /// と同じパターンのフリー関数で実装予定（§4、現在は線形のみ）。
+    /// `record_every` は詳細記録（`ThRecording`）の間引き係数。`None` は自動決定。
     pub fn time_history(
         &self,
         wave: &GroundMotion,
         newmark: NewmarkCfg,
         damping: Damping,
+        record_every: Option<usize>,
     ) -> Result<ResponseResult, squid_n_math::solver::SolveError> {
         let n_indep = self.n_indep;
         let init = vec![0.0; n_indep];
@@ -432,15 +434,18 @@ impl<'m> Analysis<'m> {
             &init,
             &init,
             false,
+            record_every,
         )
     }
 
     /// 時刻歴応答解析（HHT-α 法、線形）。α=0 で Newmark-β（平均加速度法）に一致。
+    /// `record_every` は詳細記録（`ThRecording`）の間引き係数。`None` は自動決定。
     pub fn time_history_hht(
         &self,
         wave: &GroundMotion,
         hht: crate::timehistory::HhtCfg,
         damping: Damping,
+        record_every: Option<usize>,
     ) -> Result<ResponseResult, squid_n_math::solver::SolveError> {
         let n_indep = self.n_indep;
         let init = vec![0.0; n_indep];
@@ -454,6 +459,7 @@ impl<'m> Analysis<'m> {
             &init,
             &init,
             false,
+            record_every,
         )
     }
 

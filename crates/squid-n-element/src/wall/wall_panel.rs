@@ -1277,6 +1277,7 @@ mod tests {
             restraint: Dof6Mask::FREE,
             mass: None,
             story: None,
+            support_spring: None,
         };
         let shape = SectionShape::RcWall {
             thickness: 150.0,
@@ -1611,6 +1612,7 @@ mod geometry_tests {
                     restraint: Dof6Mask::FREE,
                     mass: None,
                     story: None,
+                    support_spring: None,
                 })
                 .collect(),
             sections: vec![shape.to_section(SectionId(0), "W150".into())],
@@ -1699,6 +1701,7 @@ mod shear_yield_tests {
             restraint: Dof6Mask::FREE,
             mass: None,
             story: None,
+            support_spring: None,
         };
         let model = Model {
             nodes: vec![
@@ -1837,6 +1840,7 @@ mod capacity_issue_tests {
             restraint: Dof6Mask::FREE,
             mass: None,
             story: None,
+            support_spring: None,
         };
         let mut sections = vec![shape.to_section(SectionId(0), "W200".into())];
         let mut elements = vec![];

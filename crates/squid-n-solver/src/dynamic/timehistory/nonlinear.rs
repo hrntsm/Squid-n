@@ -1,31 +1,82 @@
 //! 非線形時刻歴応答解析（Newmark-β + Newton 反復 + commit/rollback）。
 //!
+//! - [`NonlinearThCfg`] — 解析設定（Newton 収束条件・幾何剛性・長期荷重初期化・記録間引き）
 //! - [`nonlinear_time_history_analysis`] — 非線形時刻歴応答解析
 
-use super::common::{solve_initial_accel, theta_accel_at, theta_influence_m};
+use super::common::{mass_accel_free, solve_initial_accel, theta_accel_at, theta_influence_m};
 use super::config::{GroundMotion, NewmarkCfg};
 use super::history::{
     choose_record_dir_y, pick_record_node, record_history_step, total_mass, update_story_drift,
 };
+use super::recording::{member_forces_nonlinear, ThRecorder};
 use super::result::{ResponseHistory, ResponseResult};
-use crate::assemble::{assemble_global_k, assemble_global_m};
+use crate::assemble::assemble_global_m;
 use crate::constraint::Reducer;
 use crate::damping::{Damping, DampingAccumulation};
-use crate::pushover::{assemble_k, compute_f_int};
+use crate::pushover::{add_support_spring_f_int, assemble_k, compute_f_int};
 use crate::transaction::{StateSnapshot, StatefulModel};
 use smallvec::SmallVec;
 use squid_n_core::dof::{DofMap, DOF_PER_NODE};
 use squid_n_core::model::Model;
-use squid_n_element::behavior::{Ctx, LocalVec, MassOption};
+use squid_n_element::behavior::{Ctx, ElementBehavior, LocalVec, MassOption};
 use squid_n_element::factory::{build_nonlinear_behavior, StrengthBasis};
 use squid_n_math::solver::{make_solver, SolveError, SolverBackend};
 use squid_n_math::sparse::{sparse_matvec, weighted_sum_csc};
+
+/// 非線形時刻歴応答解析の設定（Newton 収束条件・幾何剛性・長期荷重初期化・記録間引き）。
+///
+/// 引数が多くなるため、`use_kg`・`max_iter`・`tol` に加えて長期荷重初期化・記録間引きの
+/// 設定を 1 つの構造体へまとめている（呼び出し元は本モジュールの `tests` のみのため、
+/// 破壊的変更として導入した）。
+#[derive(Clone, Copy, Debug)]
+pub struct NonlinearThCfg {
+    /// 各時刻ステップの Newton 反復の最大回数。
+    pub max_iter: usize,
+    /// Newton 収束判定の相対許容誤差（残差ノルム / 外力ノルムの最大値基準）。
+    pub tol: f64,
+    /// 幾何剛性（P-Δ、Kg）を接線剛性に含めるか。
+    pub use_kg: bool,
+    /// 時刻歴開始前に長期荷重（固定・積載等、`LoadCaseKind::is_long_term`）を
+    /// 静的 Newton 反復で載荷し、その変位・応力状態を時刻歴の初期条件とするか
+    /// （プッシュオーバーの長期載荷フェーズと同じ考え方）。長期系荷重ケースが
+    /// 無いモデルでは何もしない。
+    pub apply_long_term: bool,
+    /// 詳細記録（[`super::ThRecording`]）の間引き係数。`None` は自動決定
+    /// （記録フレーム数が概ね 1000 になるよう [`super::recording::auto_record_every`] で調整）。
+    pub record_every: Option<usize>,
+}
+
+impl NonlinearThCfg {
+    /// 既定値: 長期荷重初期化あり・幾何剛性なし・記録間引きは自動決定。
+    /// `max_iter`・`tol` のみ呼び出し側で指定する。
+    pub fn new(max_iter: usize, tol: f64) -> Self {
+        Self {
+            max_iter,
+            tol,
+            use_kg: false,
+            apply_long_term: true,
+            record_every: None,
+        }
+    }
+}
+
+impl Default for NonlinearThCfg {
+    /// Newton 反復 20 回・相対許容誤差 1e-6・長期荷重初期化あり・幾何剛性なし・
+    /// 記録間引きは自動決定。
+    fn default() -> Self {
+        Self::new(20, 1e-6)
+    }
+}
 
 /// 非線形時刻歴応答解析（Newmark-β + Newton反復 + commit/rollback）。
 ///
 /// 各時刻ステップで Newton 反復により内力（非線形復元力）と慣性力・減衰力・
 /// 地震外力の動的釣合いを満たす解を求める。収束時は要素状態を commit、
 /// 不収束時は Step 開始時の状態へ rollback する。
+/// `cfg.apply_long_term` が真の場合、時刻歴開始前に長期荷重を静的載荷し
+/// （プッシュオーバーの長期載荷フェーズと同じ経路）、その変位・応力状態を初期条件とする。
+/// `initial_disp`/`initial_vel` は「長期解からの増分」としての動的初期条件で、
+/// 記録される変位は長期変位を含む全変位である。
 #[allow(clippy::too_many_arguments)]
 pub fn nonlinear_time_history_analysis(
     model: &mut Model,
@@ -37,9 +88,7 @@ pub fn nonlinear_time_history_analysis(
     accumulation: DampingAccumulation,
     initial_disp: &[f64],
     initial_vel: &[f64],
-    use_kg: bool,
-    max_iter: usize,
-    tol: f64,
+    cfg: NonlinearThCfg,
 ) -> Result<ResponseResult, SolveError> {
     squid_n_math::parallelism::apply_to_faer();
 
@@ -67,6 +116,9 @@ pub fn nonlinear_time_history_analysis(
             story_drift_angle: vec![0.0; model.stories.len()],
             cumulative_ductility: vec![0.0; model.elements.len()],
             history: ResponseHistory::default(),
+            recording: None,
+            nonlinear: true,
+            applied_long_term: cfg.apply_long_term,
         });
     }
 
@@ -81,13 +133,9 @@ pub fn nonlinear_time_history_analysis(
     // レインフロー法（ASTM E1049-85）・Miner 則による鉄骨梁端部の累積損傷度計算。
     let mut mu_hist: Vec<Vec<f64>> = vec![Vec::new(); model.elements.len()];
 
-    // 行列組立（縮約空間）
+    // 質量行列（縮約空間）。
     let m_free = assemble_global_m(model, dofmap, MassOption::Consistent);
-    let k_free = assemble_global_k(model, dofmap);
-    let _ = use_kg;
     let m_red = reducer.reduce_k(&m_free);
-    let k_red = reducer.reduce_k(&k_free);
-    let c_red = damping.assemble_c(&m_red, &k_red);
 
     // 影響ベクトルと M·r
     let n_free = dofmap.n_active();
@@ -118,11 +166,76 @@ pub fn nonlinear_time_history_analysis(
     let c5 = gamma / beta - 1.0;
     let c6 = dt * (gamma / (2.0 * beta) - 1.0);
 
-    // 初期条件
+    // ── 長期荷重ベクトル（apply_long_term） ─────────────────────────────
+    // 長期系荷重ケース（固定・積載等、`LoadCaseKind::is_long_term`）の外力を、
+    // プッシュオーバーの長期載荷フェーズ（driver.rs）と同じ経路で組み立てる。
+    // `cfg.apply_long_term` が偽、または該当荷重ケースが無い場合はゼロベクトル。
+    let f0_free: Vec<f64> = if cfg.apply_long_term {
+        let mut f = vec![0.0; n_free];
+        for lc in model.load_cases.iter().filter(|l| l.kind.is_long_term()) {
+            let flc = crate::assemble::assemble_global_f(model, dofmap, lc.id);
+            for (acc, v) in f.iter_mut().zip(flc) {
+                *acc += v;
+            }
+        }
+        f
+    } else {
+        vec![0.0; n_free]
+    };
+    let f0_red = reducer.reduce_f(&f0_free);
+    let has_long_term = f0_red.iter().any(|&v| v.abs() > 0.0);
+
+    // 長期荷重を静的 Newton 反復で載荷する（収束時は要素状態を commit）。
+    // 時刻歴の初期変位 u0 はこの長期解（縮約空間）から始める。
     let mut u = vec![0.0; n_indep];
+    if has_long_term {
+        apply_long_term_static(
+            model,
+            dofmap,
+            reducer,
+            &mut behaviors,
+            &f0_red,
+            cfg.use_kg,
+            &mut u,
+        )?;
+    }
+
+    // 初期剛性の参照（長期荷重載荷後の状態、`use_kg` を反映）から減衰行列を組み立てる。
+    // 従来は幾何剛性を持たない `assemble_global_k`（線形弾性 behavior）を用いており、
+    // Newton 反復内の接線剛性（`pushover::assemble_k`、`use_kg` 反映）と不整合だった。
+    let k_free = assemble_k(model, dofmap, &behaviors, cfg.use_kg);
+    let k_red = reducer.reduce_k(&k_free);
+    let c_red = damping.assemble_c(&m_red, &k_red);
+
+    // 動的初期条件（initial_disp）は「長期解からの増分」として要素状態へ反映する。
+    {
+        let n_init_d = n_indep.min(initial_disp.len());
+        let mut du_dyn = vec![0.0; n_indep];
+        du_dyn[..n_init_d].copy_from_slice(&initial_disp[..n_init_d]);
+        for i in 0..n_indep {
+            u[i] += du_dyn[i];
+        }
+        let du_free = reducer.expand_u(&du_dyn);
+        let model_ref: &Model = model;
+        for (_elem, b) in model_ref.elements.iter().zip(behaviors.iter_mut()) {
+            let gdofs = b.global_dofs(dofmap);
+            let mut du_elem = LocalVec {
+                data: SmallVec::from_elem(0.0, gdofs.len()),
+            };
+            for (i, &g) in gdofs.iter().enumerate() {
+                if g != usize::MAX && g < du_free.len() {
+                    du_elem.data[i] = du_free[g];
+                }
+            }
+            let ctx = Ctx { model: model_ref };
+            b.update_state(&du_elem, false, &ctx);
+        }
+        for b in behaviors.iter_mut() {
+            b.commit_state();
+        }
+    }
+
     let mut v = vec![0.0; n_indep];
-    let n_init_d = n_indep.min(initial_disp.len());
-    u[..n_init_d].copy_from_slice(&initial_disp[..n_init_d]);
     let n_init_v = n_indep.min(initial_vel.len());
     v[..n_init_v].copy_from_slice(&initial_vel[..n_init_v]);
 
@@ -144,29 +257,10 @@ pub fn nonlinear_time_history_analysis(
         vec![0.0; n_indep]
     };
 
-    // 初期変位を要素状態に反映
-    {
-        let u_free_init = reducer.expand_u(&u);
-        let model_ref: &Model = model;
-        for (_elem, b) in model_ref.elements.iter().zip(behaviors.iter_mut()) {
-            let gdofs = b.global_dofs(dofmap);
-            let mut du_elem = LocalVec {
-                data: SmallVec::from_elem(0.0, gdofs.len()),
-            };
-            for (i, &g) in gdofs.iter().enumerate() {
-                if g != usize::MAX && g < u_free_init.len() {
-                    du_elem.data[i] = u_free_init[g];
-                }
-            }
-            let ctx = Ctx { model: model_ref };
-            b.update_state(&du_elem, false, &ctx);
-        }
-        for b in behaviors.iter_mut() {
-            b.commit_state();
-        }
-    }
-
-    // 初期加速度: M·a_0 = -C·v_0 - f_int(u_0) - p_red(0)
+    // 初期加速度: M·a_0 = p(0) + f0 − C·v_0 − f_int(u_0)
+    // p(0) は地震外力（符号込み −M·r·ẍg）、f0 は長期荷重（時刻歴を通じて一定、
+    // プッシュオーバーの f0+λ·q と同じ扱い）。f_int(u_0) は長期荷重＋動的初期変位を
+    // 反映した現在の要素状態から求まる（既に commit 済み）。
     let xg0_x = wave.accel_x.first().copied().unwrap_or(0.0);
     let xg0_y = wave
         .accel_y
@@ -183,13 +277,18 @@ pub fn nonlinear_time_history_analysis(
         .collect();
     let p_red_0 = reducer.reduce_f(&p_free_0);
 
-    let f_int0_free = compute_f_int(model, dofmap, &behaviors);
+    // 内力（支点ばねの寄与を含む。u_trial は縮約前の全体変位、プッシュオーバーの
+    // Newton 反復（`driver.rs`）と同じ経路）。
+    let mut f_int0_free = compute_f_int(model, dofmap, &behaviors);
+    {
+        let u0_free = reducer.expand_u(&u);
+        add_support_spring_f_int(model, dofmap, &u0_free, &mut f_int0_free);
+    }
     let f_int0_red = reducer.reduce_f(&f_int0_free);
     let cv0 = sparse_matvec(&c_red, &v);
     let mut rhs_a0 = vec![0.0; n_indep];
     for i in 0..n_indep {
-        // p(0) は符号込み（−M·r·ẍg）。線形版と同じく加算が正しい。
-        rhs_a0[i] = p_red_0[i] - cv0[i] - f_int0_red[i];
+        rhs_a0[i] = p_red_0[i] + f0_red[i] - cv0[i] - f_int0_red[i];
     }
     let mut a = solve_initial_accel(&m_red, &rhs_a0, n_indep)?;
 
@@ -218,6 +317,9 @@ pub fn nonlinear_time_history_analysis(
         ..Default::default()
     };
     let rmr_record = total_mass(m_r_record, dofmap, model.nodes.len(), dir_idx);
+    // 節点慣性力ベクトル算定用の M·a_free（自由 DOF 空間）。ベースシア・層せん断力の
+    // 双方で共有する（1 ステップに 1 回だけ疎行列ベクトル積を計算する）。
+    let ma_free_init = mass_accel_free(&m_free, reducer, &a);
     {
         let u_free_init = reducer.expand_u(&u);
         let xg_init = if record_dir_y {
@@ -232,17 +334,49 @@ pub fn nonlinear_time_history_analysis(
             &mut history,
             model,
             dofmap,
-            reducer,
             dir_idx,
-            m_r_record,
             rmr_record,
             &u_free_init,
-            &a,
+            &ma_free_init,
             xg_init,
         );
     }
     let mut time = Vec::with_capacity(n_steps + 1);
     time.push(0.0);
+
+    // 詳細記録（3D アニメーション・層応答グラフ・部材履歴用、record_every は cfg 経由）。
+    let mut recorder = ThRecorder::new(
+        model,
+        dofmap,
+        n_steps,
+        model.elements.len(),
+        cfg.record_every,
+    );
+    {
+        let xg_x_init = wave.accel_x.first().copied().unwrap_or(0.0);
+        let xg_y_init = wave
+            .accel_y
+            .as_ref()
+            .and_then(|a| a.first().copied())
+            .unwrap_or(0.0);
+        let mf_init = member_forces_nonlinear(model, &behaviors);
+        recorder.record_step(
+            0,
+            0.0,
+            model,
+            dofmap,
+            reducer,
+            &m_r_x,
+            &m_r_y,
+            &ma_free_init,
+            &u,
+            &v,
+            &a,
+            xg_x_init,
+            xg_y_init,
+            &mf_init,
+        );
+    }
 
     for n in 0..n_steps {
         let t_next = (n + 1) as f64 * dt;
@@ -250,7 +384,7 @@ pub fn nonlinear_time_history_analysis(
         // スナップショット
         let snap = StateSnapshot::capture(&behaviors);
 
-        // 地震荷重
+        // 地震荷重（動的分）＋長期荷重（f0、時刻歴を通じて一定）。
         let xg_x = wave.accel_x[n];
         let xg_y = wave
             .accel_y
@@ -264,7 +398,14 @@ pub fn nonlinear_time_history_analysis(
             .zip(m_r_theta.iter())
             .map(|((mx, my), mt)| -(mx * xg_x + my * xg_y + mt * xg_theta))
             .collect();
-        let p_red = reducer.reduce_f(&p_free);
+        // 収束判定の分母に使う「動的外力のみ」のノルム基準（長期荷重 f0 を含まない）。
+        // 長期荷重が卓越するモデルでは f0 を含めると分母が過大になり、動的外力に
+        // 対する収束判定が実質的に緩んでしまう。
+        let p_dyn_red = reducer.reduce_f(&p_free);
+        let mut p_red = p_dyn_red.clone();
+        for i in 0..n_indep {
+            p_red[i] += f0_red[i];
+        }
 
         // 予測子: Δu = 0 での a, v
         let mut a_trial = vec![0.0; n_indep];
@@ -277,9 +418,9 @@ pub fn nonlinear_time_history_analysis(
         let mut du_total = vec![0.0; n_indep];
         let mut converged = false;
 
-        for _iter in 0..max_iter {
+        for _iter in 0..cfg.max_iter {
             // 接線剛性
-            let k_t_free = assemble_k(model, dofmap, &behaviors, use_kg);
+            let k_t_free = assemble_k(model, dofmap, &behaviors, cfg.use_kg);
             let k_t_red = reducer.reduce_k(&k_t_free);
 
             // 接線比例減衰（α1 一定 / h1 一定）は瞬間剛性から C を毎ステップ再構成する
@@ -302,8 +443,15 @@ pub fn nonlinear_time_history_analysis(
                 .factorize(&k_eff)
                 .map_err(|e| SolveError::Backend(format!("factor: {:?}", e)))?;
 
-            // 内力
-            let f_int_free = compute_f_int(model, dofmap, &behaviors);
+            // 内力（支点ばねの寄与を含む。u_trial は縮約前の全体変位＝
+            // 収束済み u ＋ステップ内累積修正量 du_total、プッシュオーバーの
+            // Newton 反復（`driver.rs`）と同じ経路）。
+            let mut f_int_free = compute_f_int(model, dofmap, &behaviors);
+            {
+                let u_trial_red: Vec<f64> = (0..n_indep).map(|i| u[i] + du_total[i]).collect();
+                let u_trial_free = reducer.expand_u(&u_trial_red);
+                add_support_spring_f_int(model, dofmap, &u_trial_free, &mut f_int_free);
+            }
             let f_int_red = reducer.reduce_f(&f_int_free);
 
             // 減衰力（縮約空間）。非累積型は瞬間 C×速度、累積型は増分減衰力の積分
@@ -325,10 +473,11 @@ pub fn nonlinear_time_history_analysis(
                 r_red[i] = p_red[i] - f_int_red[i] - c_v_red[i] - m_a_red[i];
             }
 
-            // 収束判定
+            // 収束判定（分母は長期荷重 f0 を除いた動的外力ノルムと 1.0 の大きい方。
+            // f0 を含めると長期荷重が大きいモデルで判定が過度に緩む）。
             let r_norm: f64 = r_red.iter().map(|x| x * x).sum::<f64>().sqrt();
-            let p_norm: f64 = p_red.iter().map(|x| x * x).sum::<f64>().sqrt();
-            if r_norm < tol * p_norm.max(1.0) {
+            let p_norm: f64 = p_dyn_red.iter().map(|x| x * x).sum::<f64>().sqrt();
+            if r_norm < cfg.tol * p_norm.max(1.0) {
                 converged = true;
                 break;
             }
@@ -390,6 +539,9 @@ pub fn nonlinear_time_history_analysis(
                 peak_disp_free[i] = peak_disp_free[i].max(u_free[i].abs());
             }
             update_story_drift(model, dofmap, &u_free, &mut story_drift_angle);
+            // 節点慣性力ベクトル算定用の M·a_free（自由 DOF 空間）。ベースシア・
+            // 層せん断力の双方で共有する（1 ステップに 1 回だけ算定）。
+            let ma_free = mass_accel_free(&m_free, reducer, &a);
             let xg_next = if record_dir_y {
                 wave.accel_y
                     .as_ref()
@@ -402,13 +554,35 @@ pub fn nonlinear_time_history_analysis(
                 &mut history,
                 model,
                 dofmap,
-                reducer,
                 dir_idx,
-                m_r_record,
                 rmr_record,
                 &u_free,
-                &a,
+                &ma_free,
                 xg_next,
+            );
+
+            let xg_x_next = wave.accel_x.get(n + 1).copied().unwrap_or(0.0);
+            let xg_y_next = wave
+                .accel_y
+                .as_ref()
+                .and_then(|acc| acc.get(n + 1).copied())
+                .unwrap_or(0.0);
+            let mf_now = member_forces_nonlinear(model, &behaviors);
+            recorder.record_step(
+                (n + 1) as u64,
+                t_next,
+                model,
+                dofmap,
+                reducer,
+                &m_r_x,
+                &m_r_y,
+                &ma_free,
+                &u,
+                &v,
+                &a,
+                xg_x_next,
+                xg_y_next,
+                &mf_now,
             );
         } else {
             // 不収束: rollback
@@ -445,7 +619,187 @@ pub fn nonlinear_time_history_analysis(
         story_drift_angle,
         cumulative_ductility,
         history,
+        recording: Some(recorder.finish()),
+        nonlinear: true,
+        applied_long_term: cfg.apply_long_term,
     })
+}
+
+/// 長期漸増載荷の載荷率（0〜1）を追跡する状態機械。
+///
+/// 基準増分（`1/n_grav`）ごとに漸増し、収束失敗時は増分半減で再試行する
+/// （最大 `max_attempts` 回、超えたら [`Self::record_failure`] が `false` を返す）。
+/// **半減リトライで成功した場合も、次回は基準増分から再開し、載荷率が 100% に
+/// 達するまで残増分を継続する**（while ループ、[`Self::next_target`] が `None` を
+/// 返すまで）。呼び出し側（`apply_long_term_static`）は FEM の Newton 収束判定
+/// （snapshot/restore/commit）を挟むため、この構造体自体は FEM に依存せず、
+/// 載荷率の遷移ロジックのみを単体テストできるよう切り出している。
+#[derive(Debug, Clone, Copy)]
+struct LoadFractionState {
+    /// 収束が確定した載荷率。
+    applied: f64,
+    /// 失敗時に半減する前の基準増分（`1/n_grav`）。成功のたびにこれへ戻す。
+    base_increment: f64,
+    /// 次回試行する増分（半減リトライ中は `base_increment` より小さい）。
+    increment: f64,
+    /// 現在の載荷率に対する連続失敗回数。
+    attempts: usize,
+    /// 連続失敗の許容回数（これを超えたら `record_failure` が `false` を返す）。
+    max_attempts: usize,
+}
+
+impl LoadFractionState {
+    fn new(n_grav: usize) -> Self {
+        let base_increment = 1.0 / n_grav.max(1) as f64;
+        Self {
+            applied: 0.0,
+            base_increment,
+            increment: base_increment,
+            attempts: 0,
+            max_attempts: 5,
+        }
+    }
+
+    /// 次に試行すべき載荷率。100% に達していれば `None`。
+    fn next_target(&self) -> Option<f64> {
+        if self.applied >= 1.0 - 1e-9 {
+            None
+        } else {
+            Some((self.applied + self.increment).min(1.0))
+        }
+    }
+
+    /// 直前の [`Self::next_target`] の載荷率が収束した。載荷率を確定し、
+    /// 次回の増分を基準増分へ戻す（半減リトライ後も残増分を基準ペースで継続する）。
+    fn record_success(&mut self, mu_target: f64) {
+        self.applied = mu_target;
+        self.increment = self.base_increment;
+        self.attempts = 0;
+    }
+
+    /// 直前の載荷率が収束しなかった。増分を半減して再試行する。
+    /// 連続失敗が `max_attempts` に達したら `false`（呼び出し側は Err とする）。
+    fn record_failure(&mut self) -> bool {
+        self.attempts += 1;
+        if self.attempts >= self.max_attempts {
+            return false;
+        }
+        self.increment *= 0.5;
+        true
+    }
+}
+
+/// 長期荷重（`f0_red`、縮約空間）を静的 Newton 反復で載荷する
+/// （プッシュオーバーの長期載荷フェーズ、`driver.rs` と同じ考え方: 弾性域で収まらない
+/// 場合に備えて基準 5 分割で漸増し、収束失敗時は増分半減で再試行する。半減リトライで
+/// 成功した場合も、載荷率が 100% に達するまで残増分を基準ペースで継続する。
+/// [`LoadFractionState`] 参照）。収束したステップごとに要素状態を commit し、
+/// 載荷完了時の変位（縮約空間）を `u_out` に加算する。
+fn apply_long_term_static(
+    model: &mut Model,
+    dofmap: &DofMap,
+    reducer: &Reducer,
+    behaviors: &mut [Box<dyn ElementBehavior>],
+    f0_red: &[f64],
+    use_kg: bool,
+    u_out: &mut [f64],
+) -> Result<(), SolveError> {
+    let n_indep = reducer.n_indep;
+    let mut state = LoadFractionState::new(5);
+    while let Some(mu_target) = state.next_target() {
+        let snap = StateSnapshot::capture(behaviors);
+        let f_target: Vec<f64> = f0_red.iter().map(|&v| v * mu_target).collect();
+        match newton_static_converge(
+            model, dofmap, reducer, behaviors, &f_target, use_kg, n_indep, &*u_out,
+        )? {
+            Some(du) => {
+                for b in behaviors.iter_mut() {
+                    b.commit_state();
+                }
+                for i in 0..n_indep {
+                    u_out[i] += du[i];
+                }
+                state.record_success(mu_target);
+            }
+            None => {
+                model.restore(&snap, behaviors);
+                if !state.record_failure() {
+                    return Err(SolveError::InvalidInput(
+                        "長期荷重の初期載荷が収束しません（長期荷重に対して構造が不安定な可能性）"
+                            .into(),
+                    ));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// 固定外力 `f_target_red`（縮約空間）に対する静的 Newton 反復
+/// （長期荷重の各漸増ステップの共通経路）。収束時はステップ内の全修正量の累積
+/// （縮約空間の変位増分）を `Some` で返し、要素状態はトライアル反映済み・未確定の
+/// まま戻す（確定・巻き戻しは呼び出し側の責務）。収束しなければ `Ok(None)`。
+/// `u_base_red` はこの呼び出し開始時点の全体変位（縮約空間、これまでの漸増ステップの
+/// 確定累積）。支点ばね内力 `add_support_spring_f_int` に渡す縮約前の全体変位
+/// `u_base_red + du_total` の算定に使う。
+#[allow(clippy::too_many_arguments)]
+fn newton_static_converge(
+    model: &Model,
+    dofmap: &DofMap,
+    reducer: &Reducer,
+    behaviors: &mut [Box<dyn ElementBehavior>],
+    f_target_red: &[f64],
+    use_kg: bool,
+    n_indep: usize,
+    u_base_red: &[f64],
+) -> Result<Option<Vec<f64>>, SolveError> {
+    let mut du_total = vec![0.0; n_indep];
+    for _iter in 0..50 {
+        let k_free = assemble_k(model, dofmap, behaviors, use_kg);
+        let k_red = reducer.reduce_k(&k_free);
+        // 内力（支点ばねの寄与を含む。u_trial は縮約前の全体変位、プッシュオーバーの
+        // 長期載荷フェーズ（`driver.rs`）と同じ経路）。
+        let mut f_int_free = compute_f_int(model, dofmap, behaviors);
+        {
+            let u_trial_red: Vec<f64> = (0..n_indep).map(|i| u_base_red[i] + du_total[i]).collect();
+            let u_trial_free = reducer.expand_u(&u_trial_red);
+            add_support_spring_f_int(model, dofmap, &u_trial_free, &mut f_int_free);
+        }
+        let f_int_red = reducer.reduce_f(&f_int_free);
+        let mut r_red = vec![0.0; n_indep];
+        for i in 0..n_indep {
+            r_red[i] = f_target_red[i] - f_int_red[i];
+        }
+        let r_norm: f64 = r_red.iter().map(|x| x * x).sum::<f64>().sqrt();
+        let f_norm: f64 = f_target_red.iter().map(|x| x * x).sum::<f64>().sqrt();
+        if r_norm < 1e-6 * f_norm.max(1.0) {
+            return Ok(Some(du_total));
+        }
+        let mut solver = make_solver(SolverBackend::Auto);
+        solver
+            .factorize(&k_red)
+            .map_err(|e| SolveError::Backend(format!("factor: {:?}", e)))?;
+        let du_red = solver.solve(&r_red)?;
+        let du_free = reducer.expand_u(&du_red);
+        for i in 0..n_indep {
+            du_total[i] += du_red[i];
+        }
+        let model_ref: &Model = model;
+        for (_elem, b) in model_ref.elements.iter().zip(behaviors.iter_mut()) {
+            let gdofs = b.global_dofs(dofmap);
+            let mut du_elem = LocalVec {
+                data: SmallVec::from_elem(0.0, gdofs.len()),
+            };
+            for (i, &g) in gdofs.iter().enumerate() {
+                if g != usize::MAX && g < du_free.len() {
+                    du_elem.data[i] = du_free[g];
+                }
+            }
+            let ctx = Ctx { model: model_ref };
+            b.update_state(&du_elem, false, &ctx);
+        }
+    }
+    Ok(None)
 }
 
 fn build_behaviors(model: &Model) -> Vec<Box<dyn squid_n_element::behavior::ElementBehavior>> {
@@ -458,4 +812,62 @@ fn build_behaviors(model: &Model) -> Vec<Box<dyn squid_n_element::behavior::Elem
         behaviors.push(b);
     }
     behaviors
+}
+
+#[cfg(test)]
+mod load_fraction_tests {
+    use super::LoadFractionState;
+
+    /// 全ステップ成功する場合、基準増分（1/5=0.2）刻みで 5 回で 100% へ到達する。
+    #[test]
+    fn all_success_reaches_full_load_in_five_steps() {
+        let mut state = LoadFractionState::new(5);
+        let mut targets = Vec::new();
+        while let Some(mu) = state.next_target() {
+            targets.push(mu);
+            state.record_success(mu);
+        }
+        assert_eq!(targets.len(), 5);
+        assert!((targets.last().copied().unwrap() - 1.0).abs() < 1e-12);
+        assert!((state.applied - 1.0).abs() < 1e-12);
+    }
+
+    /// 途中で失敗→増分半減で成功するパスでも、最終的に載荷率は 100% に到達する
+    /// （半減成功後に打ち切らず残増分を継続する、高-1 の回帰防止）。
+    #[test]
+    fn half_step_success_still_reaches_full_load() {
+        let mut state = LoadFractionState::new(5);
+        let mut n_targets = 0usize;
+        while let Some(mu) = state.next_target() {
+            n_targets += 1;
+            assert!(n_targets < 1000, "無限ループの疑い");
+            // 最初の載荷率（1回目の目標=0.2）だけ 1 回失敗させ、以降は毎回成功させる。
+            if n_targets == 1 {
+                assert!(state.record_failure());
+                continue;
+            }
+            state.record_success(mu);
+        }
+        assert!((state.applied - 1.0).abs() < 1e-9);
+        // 100% に到達するまで、半減で増えた分の目標を含め複数回試行しているはず。
+        assert!(n_targets > 5);
+    }
+
+    /// 最大試行回数を超えて失敗し続けると `record_failure` が false を返す
+    /// （呼び出し側はこれを Err に変換する）。
+    #[test]
+    fn repeated_failure_exceeds_max_attempts() {
+        let mut state = LoadFractionState::new(5);
+        let mut ok = true;
+        for _ in 0..10 {
+            if state.next_target().is_none() {
+                break;
+            }
+            ok = state.record_failure();
+            if !ok {
+                break;
+            }
+        }
+        assert!(!ok);
+    }
 }

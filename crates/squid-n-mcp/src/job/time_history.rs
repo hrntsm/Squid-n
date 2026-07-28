@@ -62,8 +62,10 @@ pub(crate) fn compute_time_history_job(
         basis: squid_n_solver::damping::StiffnessKind::Initial,
     };
     let newmark = squid_n_solver::timehistory::NewmarkCfg::average_accel();
+    // record_every は squid-n-mcp からは未指定（None=自動決定）。UI（squid-n-app）側の
+    // 設定は本ジョブでは扱っていない。
     let result = analysis
-        .time_history(&wave, newmark, damping)
+        .time_history(&wave, newmark, damping, None)
         .map_err(|e| format!("時刻歴解析エラー: {e}"))?;
 
     let peak_disp = result

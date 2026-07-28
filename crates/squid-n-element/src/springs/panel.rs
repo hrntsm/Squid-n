@@ -344,6 +344,7 @@ mod tests {
             restraint: Dof6Mask::FREE,
             mass: None,
             story: None,
+            support_spring: None,
         };
         let make_sec = |id: u32, depth: f64| squid_n_core::model::Section {
             id: SectionId(id),

@@ -376,7 +376,10 @@ fn default_damper_k2_ratio() -> f64 {
 /// 制振ダンパー要素（`ElementKind::Damper`）の特性（各制振部材の力学モデル）。
 ///
 /// - **マクスウェル（速度依存型）:** バネ剛性 `Kd` と粘性ダッシュポット
-///   （力 `Fc=C0·sign(V)·|V|^α`）の直列。α=1 で線形粘性。
+///   （力 `Fc=C0·sign(V)·|V|^α`）の直列。α=1 で線形粘性。`relief_velocity`
+///   （リリーフ速度 Vr）を指定すると、Vr 超過域で減衰係数比 `c2_ratio` による
+///   リリーフ特性（オイルダンパーのバイパス弁による頭打ち特性）を折れ線で
+///   近似する（`element/src/springs/damper/maxwell.rs` 参照）。
 /// - **履歴型バイリニア:** 初期軸剛性 `Kd`（=k1）、降伏軸力 `qy`、第2剛性比 `k2_ratio`
 ///   （k2=k2_ratio·k1）の弾塑性軸ばね（変位依存。静的・動的いずれでも作用）。
 #[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -395,6 +398,19 @@ pub struct DamperProps {
     /// 第2剛性比 k2/k1（履歴型のみ）。
     #[serde(default = "default_damper_k2_ratio")]
     pub k2_ratio: f64,
+    /// リリーフ速度 Vr [mm/s]（マクスウェルのみ。オイルダンパーのリリーフ機構）。
+    /// `None`（既定）はリリーフ特性なし（従来どおり `Fc=C0·sign(V)·|V|^α` を
+    /// 全域に適用）。`Some(vr)`（vr>0）の場合、|V|≤vr は従来どおり、|V|>vr は
+    /// `c2_ratio` による減衰係数比で頭打ちにした折れ線特性となる
+    /// （式は `c2_ratio` の docs、および `maxwell.rs` 参照）。
+    #[serde(default)]
+    pub relief_velocity: Option<f64>,
+    /// リリーフ後の減衰係数比 C2/C1（C1 はリリーフ速度 Vr における接線減衰係数
+    /// `C1=C0·α·Vr^(α−1)`）。`relief_velocity` が `Some` の場合のみ意味を持つ
+    /// （`None`＝リリーフなし）。既定 `None`（リリーフ無効時は未使用のため
+    /// 0 でも同義だが、意図を明確にするため未指定を表す）。
+    #[serde(default)]
+    pub c2_ratio: Option<f64>,
 }
 
 impl Default for DamperProps {
@@ -406,6 +422,8 @@ impl Default for DamperProps {
             alpha: 1.0,
             qy: default_damper_qy(),
             k2_ratio: default_damper_k2_ratio(),
+            relief_velocity: None,
+            c2_ratio: None,
         }
     }
 }
@@ -414,6 +432,22 @@ impl Default for DamperProps {
 #[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct DamperAttr {
     pub elem: ElemId,
+    pub props: DamperProps,
+}
+
+/// 名前付き制振ダンパー定義（`Model::damper_defs`）。
+///
+/// 「断面を選ぶように制振要素を選んで部材に割当てる」UX の土台となる、
+/// 再利用可能なダンパー諸元のプリセット。`ElemId` への参照は持たず、
+/// 部材への割当時は `props` の値をコピーして `Model::damper_attrs` へ入れる
+/// 設計とする（`DamperAttr` 同様、割当は値のコピーであり参照ではない）。
+/// そのため本定義を更新・削除しても、既に割り当て済みの部材（`damper_attrs`）は
+/// 影響を受けない。
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct DamperDef {
+    /// 定義名（製品名・型式等、利用者が識別するための表示名）。
+    pub name: String,
+    /// ダンパー特性。
     pub props: DamperProps,
 }
 

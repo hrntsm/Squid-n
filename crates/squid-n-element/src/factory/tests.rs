@@ -12,6 +12,7 @@ fn make_diaphragm_model() -> Model {
                 restraint: Dof6Mask::FIXED,
                 mass: None,
                 story: None,
+                support_spring: None,
             },
             Node {
                 id: NodeId(1),
@@ -19,6 +20,7 @@ fn make_diaphragm_model() -> Model {
                 restraint: Dof6Mask::FREE,
                 mass: None,
                 story: None,
+                support_spring: None,
             },
             Node {
                 id: NodeId(2),
@@ -26,6 +28,7 @@ fn make_diaphragm_model() -> Model {
                 restraint: Dof6Mask::FREE,
                 mass: None,
                 story: None,
+                support_spring: None,
             },
         ],
         constraints: vec![squid_n_core::model::Constraint::RigidDiaphragm {
@@ -288,6 +291,7 @@ fn make_brace_model(tension_only: bool) -> (Model, ElementData) {
                 restraint: Dof6Mask::FIXED,
                 mass: None,
                 story: None,
+                support_spring: None,
             },
             Node {
                 id: NodeId(1),
@@ -295,6 +299,7 @@ fn make_brace_model(tension_only: bool) -> (Model, ElementData) {
                 restraint: Dof6Mask::FREE,
                 mass: None,
                 story: None,
+                support_spring: None,
             },
         ],
         sections: vec![Section {
@@ -392,6 +397,7 @@ fn test_build_behavior_wall_opening_reduces_shear_stiffness() {
         restraint: Dof6Mask::FREE,
         mass: None,
         story: None,
+        support_spring: None,
     };
     let mut model = Model {
         nodes: vec![

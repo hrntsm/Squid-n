@@ -398,6 +398,7 @@ mod tests {
                 restraint: Dof6Mask::FIXED,
                 mass: None,
                 story: None,
+                support_spring: None,
             },
             Node {
                 id: NodeId(1),
@@ -405,6 +406,7 @@ mod tests {
                 restraint: Dof6Mask::FIXED,
                 mass: None,
                 story: None,
+                support_spring: None,
             },
         ];
         let sections = vec![shape.to_section(SectionId(0), "beam".to_string())];

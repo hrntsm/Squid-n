@@ -157,6 +157,7 @@ fn portal_frame_model(fy: f64, seismic_weight: f64) -> Model {
                 restraint: Dof6Mask::FIXED,
                 mass: None,
                 story: None,
+                support_spring: None,
             },
             Node {
                 id: NodeId(1),
@@ -164,6 +165,7 @@ fn portal_frame_model(fy: f64, seismic_weight: f64) -> Model {
                 restraint: Dof6Mask(0b100000),
                 mass: None,
                 story: Some(StoryId(0)),
+                support_spring: None,
             },
             Node {
                 id: NodeId(2),
@@ -171,6 +173,7 @@ fn portal_frame_model(fy: f64, seismic_weight: f64) -> Model {
                 restraint: Dof6Mask(0b100000),
                 mass: None,
                 story: Some(StoryId(0)),
+                support_spring: None,
             },
             Node {
                 id: NodeId(3),
@@ -178,6 +181,7 @@ fn portal_frame_model(fy: f64, seismic_weight: f64) -> Model {
                 restraint: Dof6Mask::FIXED,
                 mass: None,
                 story: None,
+                support_spring: None,
             },
         ],
         elements: vec![

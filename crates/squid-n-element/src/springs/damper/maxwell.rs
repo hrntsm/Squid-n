@@ -4,8 +4,24 @@
 //! ダッシュポット力と釣り合う（`Fk = Fc`）。時刻歴では後退 Euler で `Ud` を毎ステップ
 //! 更新し、`V = (Ud − Ud_前) / Δt` として釣合いを解く。
 //!
-//! - 線形（α=1）: `Ud = (C0·Ud_前 + Δt·Kd·Uij) / (C0 + Δt·Kd)`（閉形式）。
-//! - 非線形（α≠1）: 上式を初期値としてスカラー Newton 法で `Ud` を求める。
+//! - 線形（α=1、リリーフなし）: `Ud = (C0·Ud_前 + Δt·Kd·Uij) / (C0 + Δt·Kd)`（閉形式）。
+//! - それ以外（α≠1、またはリリーフ有効）: 上式を初期値としてスカラー Newton 法で
+//!   `Ud` を求める。
+//!
+//! ## リリーフ特性（オイルダンパー、`relief_velocity`/`c2_ratio`）
+//! `DamperProps::relief_velocity`（リリーフ速度 Vr）が指定されると、実オイル
+//! ダンパーのバイパス弁による頭打ち特性を、ダッシュポット力則の折れ線近似で
+//! 表現する:
+//!
+//! - `|V| ≤ Vr`: 従来どおり `Fc = C0·sign(V)·|V|^α`。
+//! - `|V| > Vr`: `Fc = sign(V)·(C0·Vr^α + C2·(|V|−Vr))`。
+//!   `C2 = c2_ratio·C1`、`C1 = C0·α·Vr^(α−1)`（リリーフ点 Vr における
+//!   リリーフ前の接線減衰係数）。`c2_ratio`（既定なら 0 扱い＝完全頭打ち、
+//!   1 に近いほどリリーフによる頭打ちが弱い）が「リリーフ後の減衰係数比 C2/C1」
+//!   を表す。この定義により、リリーフ点 Vr で力・勾配ともに連続な折れ線
+//!   （力は C1 一致で連続、勾配は C1→C2 に不連続に低下）となる。
+//!
+//! `relief_velocity` が `None` の場合は従来どおり全域で `Fc = C0·sign(V)·|V|^α`。
 //!
 //! 減衰要素の要素力は節点力として運動方程式へ与えられる（構造動力学）。本実装は
 //! 収束用に整合接線 `∂Fk/∂Uij` を接線剛性へ与えるが、収束解は要素力の釣合いに
@@ -30,6 +46,10 @@ pub struct MaxwellDamperElement {
     pub c0: f64,
     /// 速度指数 α。
     pub alpha: f64,
+    /// リリーフ速度 Vr [mm/s]（`None` はリリーフなし）。
+    pub relief_velocity: Option<f64>,
+    /// リリーフ後の減衰係数比 C2/C1（`relief_velocity` が `None` の場合は未使用）。
+    pub c2_ratio: Option<f64>,
     /// 時間刻み Δt [s]（0 以下で不活性）。
     dt: f64,
     /// 確定軸伸び Uij [mm]（引張正）。
@@ -38,6 +58,13 @@ pub struct MaxwellDamperElement {
     trial_elong: f64,
     /// 確定連結点変位 Ud [mm]。
     committed_ud: f64,
+    /// commit 直前（`committed_ud` 更新前）に評価した軸力 N [N]（引張正）の
+    /// キャッシュ。`state_member_forces` が commit 直後（Newton 反復に入る前、
+    /// `trial_elong == committed_elong`）に呼ばれた場合はこの値を返す
+    /// （中-2: commit 後に `axial_force` を再評価すると、`solve_ud` が
+    /// 既に更新済みの `committed_ud` を初期値に使うため、後退 Euler の
+    /// ダッシュポットが追加で緩和し軸力が過小評価される）。
+    committed_force: f64,
 }
 
 impl MaxwellDamperElement {
@@ -62,10 +89,40 @@ impl MaxwellDamperElement {
             kd: props.kd.max(0.0),
             c0: props.c0.max(0.0),
             alpha: if props.alpha > 0.0 { props.alpha } else { 1.0 },
+            relief_velocity: props.relief_velocity.filter(|&vr| vr > 0.0),
+            c2_ratio: props.c2_ratio,
             dt: 0.0,
             committed_elong: 0.0,
             trial_elong: 0.0,
             committed_ud: 0.0,
+            committed_force: 0.0,
+        }
+    }
+
+    /// ダッシュポット力則 `Fc(V)` と、その速度に関する接線 `dFc/dV` を返す。
+    ///
+    /// `relief_velocity=None`（またはリリーフ速度以下）では従来どおり
+    /// `Fc=C0·sign(V)·|V|^α`、`dFc/dV=C0·α·|V|^(α−1)`。リリーフ有効時に
+    /// `|V|` がリリーフ速度 Vr を超えると、モジュール docs の折れ線式
+    /// （`Fc=sign(V)·(C0·Vr^α+C2·(|V|−Vr))`、`dFc/dV=C2`）に切り替わる。
+    /// `|V|` が 0 近傍かつ α<1 のときの特異点回避のため `|V|` は `1e-12` を下限に
+    /// クランプする（既存の `axial_tangent` と同じ安全策）。
+    fn dashpot(&self, v: f64) -> (f64, f64) {
+        let av = v.abs().max(1e-12);
+        match self.relief_velocity {
+            Some(vr) if av > vr => {
+                // リリーフ点 Vr における「リリーフ前」の接線減衰係数 C1。
+                let c1 = self.c0 * self.alpha * vr.powf(self.alpha - 1.0);
+                let c2 = self.c2_ratio.unwrap_or(0.0).max(0.0) * c1;
+                let fc_at_vr = self.c0 * vr.powf(self.alpha);
+                let fc = v.signum() * (fc_at_vr + c2 * (av - vr));
+                (fc, c2)
+            }
+            _ => {
+                let fc = self.c0 * v.signum() * av.powf(self.alpha);
+                let dfc = self.c0 * self.alpha * av.powf(self.alpha - 1.0);
+                (fc, dfc)
+            }
         }
     }
 
@@ -76,19 +133,21 @@ impl MaxwellDamperElement {
             return elong;
         }
         let ud0 = self.committed_ud;
-        // 線形（α=1）閉形式を初期値に。
+        // 線形（α=1）閉形式を初期値に（リリーフ有効時も Newton 反復の初期値としては
+        // そのまま使える。反復自体はリリーフの折れ線を正しく解く）。
         let mut ud = (self.c0 * ud0 + self.dt * self.kd * elong) / (self.c0 + self.dt * self.kd);
-        if (self.alpha - 1.0).abs() < 1e-9 || self.c0 <= 0.0 {
+        // リリーフなし・α=1（線形）は閉形式が厳密解のため反復不要。
+        let linear_exact = self.relief_velocity.is_none() && (self.alpha - 1.0).abs() < 1e-9;
+        if linear_exact || self.c0 <= 0.0 {
             return ud;
         }
-        // 非線形（α≠1）: g(Ud) = Kd(elong−Ud) − C0·sign(V)·|V|^α = 0、V=(Ud−ud0)/Δt。
+        // Newton 法: g(Ud) = Kd(elong−Ud) − Fc(V) = 0、V=(Ud−ud0)/Δt。
         for _ in 0..30 {
             let v = (ud - ud0) / self.dt;
-            let fc = self.c0 * v.signum() * v.abs().powf(self.alpha);
+            let (fc, dfc_dv) = self.dashpot(v);
             let g = self.kd * (elong - ud) - fc;
-            // g'(Ud) = −Kd − C0·α·|V|^(α−1)/Δt
-            let dfc = self.c0 * self.alpha * v.abs().powf(self.alpha - 1.0) / self.dt;
-            let gp = -self.kd - dfc;
+            // g'(Ud) = −Kd − (dFc/dV)/Δt
+            let gp = -self.kd - dfc_dv / self.dt;
             if gp.abs() < 1e-30 {
                 break;
             }
@@ -109,7 +168,8 @@ impl MaxwellDamperElement {
         self.kd * (elong - self.solve_ud(elong))
     }
 
-    /// 整合接線軸剛性 K_eff = Kd·C'/(Δt·Kd + C')、C'=C0·α·|V|^(α−1)（現在速度で評価）。
+    /// 整合接線軸剛性 K_eff = Kd·C'/(Δt·Kd + C')、C'=dFc/dV（現在速度で評価。
+    /// リリーフ無効時は `C0·α·|V|^(α−1)`、リリーフ有効かつ |V|>Vr のときは `C2`）。
     /// `Δt<=0` は 0（不活性）。
     fn axial_tangent(&self) -> f64 {
         if self.dt <= 0.0 || self.kd <= 0.0 {
@@ -117,11 +177,7 @@ impl MaxwellDamperElement {
         }
         let ud = self.solve_ud(self.trial_elong);
         let v = (ud - self.committed_ud) / self.dt;
-        let c_prime = if (self.alpha - 1.0).abs() < 1e-9 {
-            self.c0
-        } else {
-            self.c0 * self.alpha * v.abs().max(1e-12).powf(self.alpha - 1.0)
-        };
+        let (_, c_prime) = self.dashpot(v);
         let denom = self.dt * self.kd + c_prime;
         if denom <= 0.0 {
             0.0
@@ -181,6 +237,10 @@ impl ElementBehavior for MaxwellDamperElement {
         let delong = du_local[6] - du_local[0];
         if commit {
             let elong = self.committed_elong + delong;
+            // committed_ud を更新する前（＝現在の後退 Euler 履歴に基づく）軸力を
+            // キャッシュする（中-2: 更新後に axial_force を再評価すると
+            // ダッシュポットが余分に緩和し過小評価になるため）。
+            self.committed_force = self.axial_force(elong);
             self.committed_ud = self.solve_ud(elong);
             self.committed_elong = elong;
             self.trial_elong = elong;
@@ -194,7 +254,36 @@ impl ElementBehavior for MaxwellDamperElement {
         LocalMat::zeros(12)
     }
 
+    fn state_member_forces(
+        &self,
+        _state: &ElemState,
+        _ctx: &Ctx,
+    ) -> Option<crate::beam::MemberForces> {
+        // 現在状態の軸力（引張正）を両評価点一定で返す。時刻歴・増分解析の
+        // 部材内力記録（N-δ 履歴ループ表示など）に用いる。
+        //
+        // commit 直後（trial_elong == committed_elong）は、`commit_state`/
+        // `update_state(commit=true)` が更新前の履歴で評価しキャッシュした
+        // `committed_force` を返す（中-2）。`axial_force(trial_elong)` を
+        // 再評価すると、`solve_ud` の初期値 `committed_ud` が既にこの elong に
+        // 対する解へ更新済みのため V≈0 となり、ダッシュポット力が過小評価される。
+        // Newton 反復中（trial_elong != committed_elong）は従来どおり
+        // 現在の試行伸びで再評価する。
+        let n = if self.trial_elong == self.committed_elong {
+            self.committed_force
+        } else {
+            self.axial_force(self.trial_elong)
+        };
+        let v = [n, 0.0, 0.0, 0.0, 0.0, 0.0];
+        Some(crate::beam::MemberForces {
+            at: vec![(0.0, v), (1.0, v)],
+        })
+    }
+
     fn commit_state(&mut self) {
+        // committed_ud を更新する前（＝現在の後退 Euler 履歴に基づく）軸力を
+        // キャッシュする（中-2、`update_state(commit=true)` と同じ理由）。
+        self.committed_force = self.axial_force(self.trial_elong);
         self.committed_ud = self.solve_ud(self.trial_elong);
         self.committed_elong = self.trial_elong;
     }
@@ -208,15 +297,52 @@ impl ElementBehavior for MaxwellDamperElement {
     }
 
     fn snapshot_state(&self) -> Box<dyn Any> {
-        Box::new((self.committed_elong, self.committed_ud, self.trial_elong))
+        Box::new((
+            self.committed_elong,
+            self.committed_ud,
+            self.trial_elong,
+            self.committed_force,
+        ))
     }
 
     fn restore_state(&mut self, state: &dyn Any) {
-        if let Some(&(ce, cud, te)) = state.downcast_ref::<(f64, f64, f64)>() {
+        if let Some(&(ce, cud, te, cf)) = state.downcast_ref::<(f64, f64, f64, f64)>() {
             self.committed_elong = ce;
             self.committed_ud = cud;
             self.trial_elong = te;
+            self.committed_force = cf;
         }
+    }
+
+    fn serialize_checkpoint(&self) -> Vec<u8> {
+        // 後退 Euler の履歴状態（committed_elong・committed_ud）と、
+        // commit 直後の軸力キャッシュ（committed_force、中-2）をチェックポイントへ
+        // 含める。これらを欠くとレジューム時にダッシュポットの緩和状態が失われ、
+        // 直後の軸力が不整合になる（`springs/spring.rs` と同じ考え方）。
+        bincode::serialize(&(
+            self.committed_elong,
+            self.committed_ud,
+            self.trial_elong,
+            self.committed_force,
+        ))
+        .expect("serialize checkpoint")
+    }
+
+    fn deserialize_checkpoint(
+        &mut self,
+        data: &[u8],
+    ) -> Result<(), crate::behavior::CheckpointError> {
+        // 旧チェックポイント（本状態未収録・空バイト列）は「状態なし」として許容する。
+        if data.is_empty() {
+            return Ok(());
+        }
+        let (ce, cud, te, cf): (f64, f64, f64, f64) = bincode::deserialize(data)
+            .map_err(|e| crate::behavior::CheckpointError::Decode(e.to_string()))?;
+        self.committed_elong = ce;
+        self.committed_ud = cud;
+        self.trial_elong = te;
+        self.committed_force = cf;
+        Ok(())
     }
 }
 
@@ -231,10 +357,13 @@ mod tests {
             kd,
             c0,
             alpha,
+            relief_velocity: None,
+            c2_ratio: None,
             dt,
             committed_elong: 0.0,
             trial_elong: 0.0,
             committed_ud: 0.0,
+            committed_force: 0.0,
         }
     }
 
@@ -244,6 +373,79 @@ mod tests {
         let d = damper(100.0, 1000.0, 1.0, 0.0);
         assert_eq!(d.axial_force(5.0), 0.0);
         assert_eq!(d.axial_tangent(), 0.0);
+    }
+
+    #[test]
+    fn test_maxwell_state_member_forces_matches_axial_force() {
+        // 部材内力記録（state_member_forces）は現在状態の軸力（引張正）を
+        // 両評価点一定で返す。
+        let mut d = damper(100.0, 1000.0, 1.0, 0.01);
+        d.trial_elong = 1.0;
+        let n = d.axial_force(1.0);
+        assert!(n > 0.0);
+        let mf = d
+            .state_member_forces(
+                &ElemState::default(),
+                &Ctx {
+                    model: &squid_n_core::model::Model::default(),
+                },
+            )
+            .expect("マクスウェルダンパーは状態から内力を返す");
+        assert_eq!(mf.at.len(), 2);
+        for (_, v) in &mf.at {
+            assert!((v[0] - n).abs() < 1e-12);
+            assert_eq!(v[5], 0.0);
+        }
+    }
+
+    /// 中-2: commit 直後（`trial_elong == committed_elong`）の `state_member_forces`
+    /// が「commit 直前（committed_ud 更新前）の `axial_force`」と一致すること。
+    /// 過渡状態（ダッシュポットが定常に達していない各ステップ）では、
+    /// commit 後に素朴に `axial_force` を再評価した値（`solve_ud` の初期値
+    /// `committed_ud` が既に今回の解へ更新済み）とは明確に異なることも確認する。
+    #[test]
+    fn test_maxwell_state_member_forces_after_commit_matches_pre_commit_axial_force() {
+        let mut d = damper(100.0, 1000.0, 1.0, 0.01);
+        let mut du = LocalVec {
+            data: SmallVec::from_elem(0.0, 12),
+        };
+        du.data[6] = 0.3; // 各ステップ 0.3mm ずつ伸ばす（過渡状態を維持）。
+        let model = Model::default();
+        let ctx = Ctx { model: &model };
+
+        for _ in 0..4 {
+            let pre = d.clone(); // commit 直前（committed_ud 更新前）の状態。
+            d.update_state(&du, true, &ctx);
+            let elong = d.committed_elong;
+            // 「commit 直前の axial_force」＝更新前の committed_ud を初期値に
+            // 評価した軸力（committed_force はこれをキャッシュしているはず）。
+            let expected = pre.axial_force(elong);
+            assert!(
+                (d.committed_force - expected).abs() < 1e-9 * expected.abs().max(1.0),
+                "committed_force should match pre-commit axial_force: {} vs {}",
+                d.committed_force,
+                expected
+            );
+
+            // state_member_forces（commit 直後、trial_elong==committed_elong）は
+            // キャッシュ値 committed_force を返す。
+            let mf = d
+                .state_member_forces(&ElemState::default(), &ctx)
+                .expect("マクスウェルダンパーは状態から内力を返す");
+            assert!((mf.at[0].1[0] - d.committed_force).abs() < 1e-12);
+
+            // 修正前の（バグのある）計算方法＝ commit 後に committed_ud 更新済みの
+            // 状態で axial_force を再評価した値とは、（この過渡状態では）明確に
+            // 異なる値になる（浮動小数点誤差では説明できない差）。
+            let naive_post_commit = d.axial_force(elong);
+            assert!(
+                (d.committed_force - naive_post_commit).abs() > 1e-6 * expected.abs().max(1.0),
+                "過渡状態では commit 直後の素朴な再評価はキャッシュ値と異なるはず: \
+                 cached={}, naive={}",
+                d.committed_force,
+                naive_post_commit
+            );
+        }
     }
 
     #[test]
@@ -317,5 +519,114 @@ mod tests {
         assert!(n > 0.0);
         assert!((f.data[0] + n).abs() < 1e-9); // 節点0 ux = −N
         assert!((f.data[6] - n).abs() < 1e-9); // 節点1 ux = +N
+    }
+
+    /// リリーフ特性: リリーフ速度 Vr の前後でダッシュポット力則が連続であり、
+    /// リリーフ後の勾配が `C2 = c2_ratio・C1`（`C1=C0・α・Vr^(α-1)`）に一致すること。
+    #[test]
+    fn test_relief_dashpot_continuous_and_slope_matches_c2() {
+        let c0 = 1000.0;
+        let alpha = 1.0;
+        let vr = 50.0;
+        let c2_ratio = 0.1;
+        let mut d = damper(500.0, c0, alpha, 0.01);
+        d.relief_velocity = Some(vr);
+        d.c2_ratio = Some(c2_ratio);
+
+        // リリーフ点の直前・直後で力が連続（跳びがない）こと。
+        // （±eps の評価点そのものにも C0・eps オーダーの傾き分の差が乗るため、
+        // 許容値は eps=1e-6・(C0+C2) 程度を見込んだ 1e-2 とする。）
+        let (fc_before, _) = d.dashpot(vr - 1e-6);
+        let (fc_after, _) = d.dashpot(vr + 1e-6);
+        assert!(
+            (fc_before - fc_after).abs() < 1e-2,
+            "force should be continuous at Vr: before={fc_before}, after={fc_after}"
+        );
+        // リリーフ点そのものでの値（sign(v)・C0・Vr^α）とも一致すること。
+        let (fc_at, _) = d.dashpot(vr);
+        let expected_at_vr = c0 * vr.powf(alpha);
+        assert!(
+            (fc_at - expected_at_vr).abs() < 1e-6,
+            "fc_at={fc_at}, expected={expected_at_vr}"
+        );
+
+        // リリーフ前（|V|<Vr）の勾配は従来どおり C1=C0・α・Vr^(α-1)（α=1 なら C0）。
+        let c1 = c0 * alpha * vr.powf(alpha - 1.0);
+        let (_, dfc_pre) = d.dashpot(vr * 0.5);
+        assert!((dfc_pre - c1).abs() < 1e-9, "dfc_pre={dfc_pre}, C1={c1}");
+
+        // リリーフ後（|V|>Vr）の勾配は C2=c2_ratio・C1 に一致すること。
+        let expected_c2 = c2_ratio * c1;
+        let (_, dfc_post) = d.dashpot(vr * 10.0);
+        assert!(
+            (dfc_post - expected_c2).abs() < 1e-9,
+            "dfc_post={dfc_post}, expected C2={expected_c2}"
+        );
+
+        // 負方向（V<0）でも符号反転した同じ折れ線であること。
+        let (fc_neg, dfc_neg) = d.dashpot(-vr * 10.0);
+        assert!(fc_neg < 0.0, "fc_neg should be negative: {fc_neg}");
+        assert!(
+            (dfc_neg - expected_c2).abs() < 1e-9,
+            "勾配の大きさは符号によらず C2: dfc_neg={dfc_neg}"
+        );
+    }
+
+    /// リリーフ有効時、Vr 以下の速度域では従来（リリーフなし）と完全に一致すること
+    /// （既存挙動を壊さない回帰確認）。
+    #[test]
+    fn test_relief_matches_baseline_below_relief_velocity() {
+        let mut base = damper(500.0, 1000.0, 1.0, 0.01);
+        let mut relief = damper(500.0, 1000.0, 1.0, 0.01);
+        relief.relief_velocity = Some(1000.0); // 本試験の速度域では届かない大きめの Vr
+        relief.c2_ratio = Some(0.1);
+
+        let elong = 0.05; // 小変位（低速度、Vr 未満）
+        let f_base = base.axial_force(elong);
+        let f_relief = relief.axial_force(elong);
+        assert!(
+            (f_base - f_relief).abs() < 1e-9 * f_base.abs().max(1.0),
+            "below Vr, relief should not change the force: base={f_base}, relief={f_relief}"
+        );
+        let kt_base = {
+            base.trial_elong = elong;
+            base.axial_tangent()
+        };
+        let kt_relief = {
+            relief.trial_elong = elong;
+            relief.axial_tangent()
+        };
+        assert!(
+            (kt_base - kt_relief).abs() < 1e-9 * kt_base.abs().max(1.0),
+            "below Vr, tangent should match: base={kt_base}, relief={kt_relief}"
+        );
+    }
+
+    /// リリーフ有効時、高速域（|V|≫Vr）ではリリーフなしより力の伸びが緩やかになる
+    /// （c2_ratio<1 のため、頭打ち特性が効いていることの端到端（要素レベル）確認）。
+    #[test]
+    fn test_relief_caps_force_growth_at_high_velocity() {
+        let kd = 1.0e7; // 十分剛なバネ（Ud がほぼ elong に追従し、V が明確に Vr を超える）
+        let c0 = 1000.0;
+        let alpha = 1.0;
+        let dt = 0.001;
+        let vr = 10.0;
+        let c2_ratio = 0.05;
+
+        let no_relief = damper(kd, c0, alpha, dt);
+        let mut with_relief = damper(kd, c0, alpha, dt);
+        with_relief.relief_velocity = Some(vr);
+        with_relief.c2_ratio = Some(c2_ratio);
+
+        // 1 ステップで大変位を与え、V≈elong/dt≫vr となる高速載荷を作る。
+        let elong = 1.0;
+        let f_no_relief = no_relief.axial_force(elong);
+        let f_with_relief = with_relief.axial_force(elong);
+
+        assert!(
+            f_with_relief > 0.0 && f_with_relief < f_no_relief,
+            "relief should cap force growth at high velocity: \
+             no_relief={f_no_relief}, with_relief={f_with_relief}"
+        );
     }
 }

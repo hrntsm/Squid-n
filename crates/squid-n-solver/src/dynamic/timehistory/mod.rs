@@ -10,6 +10,7 @@
 //! - [`result`] — 結果型（ResponseResult / ResponseHistory / TimeStepState）
 //! - [`common`] — 積分スキーム共通の下位ルーチン
 //! - [`history`] — 代表応答記録・層間変形角集計
+//! - [`recording`] — 詳細記録（[`ThRecording`]）の組立（層別集計・部材内力包絡・間引き）
 //! - [`linear`] — 線形時刻歴（Newmark-β 法）
 //! - [`hht`] — 線形時刻歴（HHT-α 法）
 //! - [`nonlinear`] — 非線形時刻歴（Newton 反復 + commit/rollback）
@@ -20,6 +21,7 @@ mod hht;
 mod history;
 mod linear;
 mod nonlinear;
+mod recording;
 mod result;
 
 pub use config::{GroundMotion, HhtCfg, NewmarkCfg};
@@ -27,8 +29,8 @@ pub use hht::linear_hht_alpha_analysis;
 pub use linear::{
     linear_time_history_analysis, linear_time_history_from_state, linear_time_history_with_state,
 };
-pub use nonlinear::nonlinear_time_history_analysis;
-pub use result::{ResponseHistory, ResponseResult, TimeStepState};
+pub use nonlinear::{nonlinear_time_history_analysis, NonlinearThCfg};
+pub use result::{ResponseHistory, ResponseResult, StoryResponse, ThRecording, TimeStepState};
 
 // `#[cfg(test)] mod tests` は `use super::*` 経由でこれらのシンボルを取得するため、
 // テスト用に再エクスポートしてスコープに残す。

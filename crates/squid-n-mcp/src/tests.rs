@@ -14,6 +14,7 @@ fn sample_model() -> Model {
                 restraint: squid_n_core::dof::Dof6Mask::FIXED,
                 mass: None,
                 story: None,
+                support_spring: None,
             },
             Node {
                 id: NodeId(1),
@@ -21,6 +22,7 @@ fn sample_model() -> Model {
                 restraint: squid_n_core::dof::Dof6Mask::FREE,
                 mass: None,
                 story: Some(squid_n_core::ids::StoryId(0)),
+                support_spring: None,
             },
         ],
         sections: vec![Section {
@@ -166,6 +168,7 @@ fn rc_column_model() -> Model {
                 restraint: squid_n_core::dof::Dof6Mask::FIXED,
                 mass: None,
                 story: None,
+                support_spring: None,
             },
             Node {
                 id: NodeId(1),
@@ -173,6 +176,7 @@ fn rc_column_model() -> Model {
                 restraint: squid_n_core::dof::Dof6Mask::FREE,
                 mass: None,
                 story: Some(squid_n_core::ids::StoryId(0)),
+                support_spring: None,
             },
         ],
         sections: vec![shape.to_section(SectionId(0), "C600".into())],

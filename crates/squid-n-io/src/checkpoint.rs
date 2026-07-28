@@ -216,6 +216,7 @@ mod tests {
                     restraint: Dof6Mask::FIXED,
                     mass: None,
                     story: None,
+                    support_spring: None,
                 },
                 Node {
                     id: NodeId(1),
@@ -223,6 +224,7 @@ mod tests {
                     restraint: Dof6Mask(0b111110),
                     mass: Some([1.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
                     story: None,
+                    support_spring: None,
                 },
             ],
             elements: vec![ElementData {
@@ -330,6 +332,7 @@ mod tests {
                         restraint: Dof6Mask::FIXED,
                         mass: None,
                         story: None,
+                        support_spring: None,
                     },
                     Node {
                         id: NodeId(1),
@@ -337,6 +340,7 @@ mod tests {
                         restraint: Dof6Mask(0b111110),
                         mass: Some([1.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
                         story: None,
+                        support_spring: None,
                     },
                 ],
                 elements: vec![ElementData {

@@ -9,6 +9,7 @@ fn make_grid_model(n: usize) -> Model {
             restraint: Dof6Mask::FREE,
             mass: None,
             story: None,
+            support_spring: None,
         })
         .collect();
     Model {
@@ -46,6 +47,7 @@ fn test_validate_duplicate_node() {
                 restraint: Dof6Mask::FREE,
                 mass: None,
                 story: None,
+                support_spring: None,
             },
             Node {
                 id: NodeId(0),
@@ -53,6 +55,7 @@ fn test_validate_duplicate_node() {
                 restraint: Dof6Mask::FREE,
                 mass: None,
                 story: None,
+                support_spring: None,
             },
         ],
         ..Default::default()
@@ -69,6 +72,7 @@ fn test_validate_dangling_elem_node() {
             restraint: Dof6Mask::FREE,
             mass: None,
             story: None,
+            support_spring: None,
         }],
         elements: vec![ElementData {
             id: ElemId(0),
@@ -100,6 +104,7 @@ fn test_validate_dangling_slab_boundary() {
             restraint: Dof6Mask::FREE,
             mass: None,
             story: None,
+            support_spring: None,
         }],
         slabs: vec![Slab {
             id: crate::ids::SlabId(0),
@@ -401,6 +406,85 @@ fn test_model_stress_cfg_default_missing_field() {
     assert_eq!(model.stress_cfg, StressAnalysisCfg::default());
 }
 
+/// 旧スキーマ（support_spring フィールドが無い JSON）の Node が読み込めること
+/// （serde 後方互換。既定は None＝ばね支持なし）。
+#[test]
+fn test_node_support_spring_default_missing_field() {
+    let json = r#"{
+            "id": 0,
+            "coord": [0.0, 0.0, 0.0],
+            "restraint": 0,
+            "mass": null,
+            "story": null
+        }"#;
+    let node: Node = serde_json::from_str(json).unwrap();
+    assert_eq!(node.support_spring, None);
+}
+
+/// 旧スキーマ（relief_velocity/c2_ratio フィールドが無い JSON）の DamperProps が
+/// 読み込めること（serde 後方互換。既定は両方とも None＝リリーフなし。
+/// 既存前例の qy/k2_ratio と同じ扱い）。
+#[test]
+fn test_damper_props_relief_default_missing_field() {
+    let json = r#"{
+            "kind": "Maxwell",
+            "kd": 100000.0,
+            "c0": 1000.0,
+            "alpha": 1.0
+        }"#;
+    let props: DamperProps = serde_json::from_str(json).unwrap();
+    assert_eq!(props.relief_velocity, None);
+    assert_eq!(props.c2_ratio, None);
+    // qy/k2_ratio も既存前例どおり既定値で補完される（DamperProps::default() と同じ値）。
+    assert_eq!(props.qy, DamperProps::default().qy);
+    assert_eq!(props.k2_ratio, DamperProps::default().k2_ratio);
+}
+
+/// 旧スキーマ（damper_defs フィールドが無い JSON）の Model が読み込めること
+/// （serde 後方互換。既定は空の Vec）。
+#[test]
+fn test_model_damper_defs_default_missing_field() {
+    let json = r#"{
+            "nodes": [], "elements": [], "sections": [], "materials": [],
+            "stories": [], "slabs": [], "constraints": [], "load_cases": [],
+            "combinations": []
+        }"#;
+    let model: Model = serde_json::from_str(json).unwrap();
+    assert!(model.damper_defs.is_empty());
+}
+
+/// msgpack（.scz の実際の直列化形式）でも同様に後方互換が効くこと
+/// （JSON だけでなくバイナリ形式での確認。rmp-serde は位置ベース配列として
+/// 直列化するため、`#[serde(default)]` による補完は**末尾のフィールドが
+/// 欠けている場合のみ**有効。新フィールドを構造体の途中に追加すると、
+/// 旧データの後続フィールドの値がずれて読み込まれてしまう）。
+#[test]
+fn test_node_support_spring_msgpack_backward_compat() {
+    // 旧版 Node 相当（末尾 support_spring 抜き）を模した最小構造体で msgpack 化し、
+    // 現行の Node へデシリアライズできることを確認する。
+    #[derive(serde::Serialize)]
+    struct LegacyNode {
+        id: NodeId,
+        coord: [f64; 3],
+        restraint: Dof6Mask,
+        mass: Option<[f64; 6]>,
+        story: Option<StoryId>,
+    }
+    let legacy = LegacyNode {
+        id: NodeId(0),
+        coord: [1.0, 2.0, 3.0],
+        restraint: Dof6Mask::FIXED,
+        mass: None,
+        story: None,
+    };
+    let bytes = rmp_serde::to_vec(&legacy).expect("legacy msgpack serialize");
+    let node: Node = rmp_serde::from_slice(&bytes).expect("legacy msgpack deserialize as Node");
+    assert_eq!(node.id, NodeId(0));
+    assert_eq!(node.coord, [1.0, 2.0, 3.0]);
+    assert_eq!(node.restraint, Dof6Mask::FIXED);
+    assert_eq!(node.support_spring, None);
+}
+
 #[test]
 fn test_validate_index_mismatch() {
     let model = Model {
@@ -411,6 +495,7 @@ fn test_validate_index_mismatch() {
                 restraint: Dof6Mask::FREE,
                 mass: None,
                 story: None,
+                support_spring: None,
             },
             Node {
                 id: NodeId(5),
@@ -418,6 +503,7 @@ fn test_validate_index_mismatch() {
                 restraint: Dof6Mask::FREE,
                 mass: None,
                 story: None,
+                support_spring: None,
             },
         ],
         ..Default::default()
