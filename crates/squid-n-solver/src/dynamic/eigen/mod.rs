@@ -29,6 +29,11 @@ pub struct ModalResult {
     pub effective_mass: Vec<[f64; 3]>,
 }
 
+/// 固有値解析（部分空間反復）。
+///
+/// 要求モード数 `n_modes` が縮約後の自由度数を超える場合、返る結果のモード数は
+/// 自由度数まで切り詰められる（`ModalResult::omega2.len()` は `n_modes` 以下に
+/// なり得る）。呼び出し側は返り値の長さを確認すること。
 pub fn solve_eigen(
     model: &Model,
     dofmap: &DofMap,
@@ -53,7 +58,16 @@ pub fn solve_eigen(
     // 部分空間反復では 1 回の分解を（部分空間サイズ×反復回数）回の求解で
     // 再利用するため、直接法を明示する（反復法では再利用が効かない）。
     let mut solver = make_solver(SolverBackend::DirectSparseCholesky);
-    solver.factorize(&k_red)?;
+    solver.factorize(&k_red).map_err(|e| match e {
+        // 剛性側の特異（拘束不足・機構）はソルバの英語メッセージのまま返さず、
+        // 質量ゼロ検出と対になる日本語診断へ包み直す。
+        SolveError::NotPositiveDefinite => SolveError::InvalidInput(
+            "固有値解析: 剛性行列が特異(非正定値)です。拘束が不足しているか、\
+             構造が機構(不安定)になっている可能性があります。支持条件を確認してください。"
+                .into(),
+        ),
+        other => other,
+    })?;
 
     solve_eigen_with_solver(model, dofmap, reducer, n_modes, solver.as_ref())
 }
@@ -98,6 +112,16 @@ pub fn solve_eigen_with_solver(
     if mass_trace <= 0.0 {
         return Err(SolveError::InvalidInput(
             "質量がゼロです。材料の密度(ρ)を設定するか、節点質量を与えてください。".into(),
+        ));
+    }
+    // 負の質量（節点質量の符号誤りなどの入力不備）の検出。M が半正定値でなくなると
+    // 一般化 Jacobi（`gevd_jacobi`）の前提が崩れ、判別式の負値丸めにより誤った
+    // 固有値が「正常終了」として返るため、ここで明示エラーにする。
+    if (0..n).any(|i| m_red.get(i, i).copied().unwrap_or(0.0) < 0.0) {
+        return Err(SolveError::InvalidInput(
+            "質量行列の対角に負値があります。節点質量(node.mass)や材料の密度(ρ)に\
+             負の値が入力されていないか確認してください。"
+                .into(),
         ));
     }
 
@@ -227,7 +251,7 @@ node.mass や材料の密度(ρ)で並進質量を追加するか、要求モー
     }
 
     let (participation, effective_mass) =
-        compute_participation(&shapes, &m_free, &m_red, reducer, dofmap, model);
+        compute_participation(&shapes, &m_free, reducer, dofmap, model);
 
     let node_shapes = shapes
         .iter()
@@ -294,7 +318,9 @@ fn init_subspace(n: usize, q: usize, k_diag: &[f64], m_diag: &[f64]) -> Vec<f64>
             (i, r)
         })
         .collect();
-    ratios.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
+    // 剛性・質量対角に NaN が混入した病的入力でも panic せず全順序で並べる
+    // （NaN 同士は同順位扱い。上流の負質量検出等で通常は先にエラーになる）。
+    ratios.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
     for col in 1..q {
         let dof = ratios[col - 1].0;
         x[dof * q + col] = 1.0;
@@ -548,7 +574,13 @@ fn gevd_jacobi(k_in: &[f64], m_in: &[f64], n: usize) -> (Vec<f64>, Vec<f64>) {
     }
 
     let mut idx: Vec<usize> = (0..n).collect();
-    idx.sort_by(|&a, &b| vals[a].partial_cmp(&vals[b]).unwrap());
+    // vals は +∞（質量ゼロ方向）を含み得るが NaN は通常混入しない。数値破綻時にも
+    // panic ではなく全順序で継続する（NaN 同士は同順位扱い）。
+    idx.sort_by(|&a, &b| {
+        vals[a]
+            .partial_cmp(&vals[b])
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
 
     let mut sorted_vals = vec![0.0; n];
     let mut sorted_vecs = vec![0.0; n * n];
@@ -565,7 +597,6 @@ fn gevd_jacobi(k_in: &[f64], m_in: &[f64], n: usize) -> (Vec<f64>, Vec<f64>) {
 fn compute_participation(
     shapes: &[Vec<f64>],
     m_free: &faer::sparse::SparseColMat<usize, f64>,
-    m_red: &faer::sparse::SparseColMat<usize, f64>,
     reducer: &Reducer,
     dofmap: &DofMap,
     model: &Model,
@@ -610,7 +641,6 @@ fn compute_participation(
         }
     }
 
-    let _ = m_red;
     (participation, effective_mass)
 }
 

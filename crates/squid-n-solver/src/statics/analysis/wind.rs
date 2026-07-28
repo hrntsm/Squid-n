@@ -164,11 +164,19 @@ pub fn wind_precalc_for_model(
         ));
     }
 
-    let stories: Vec<&Story> = model
+    // 負担区間（隣接階との中間高さ）の算定は下→上の並びを前提とするため、
+    // `model.stories` の並び順に依存しないよう標高昇順に並べ替える
+    // （`steel_height_ratio`・`construction.rs` と同じ防御）。
+    let mut stories: Vec<&Story> = model
         .stories
         .iter()
         .filter(|s| matches!(s.level_kind, StoryLevelKind::Normal))
         .collect();
+    stories.sort_by(|a, b| {
+        a.elevation
+            .partial_cmp(&b.elevation)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     if stories.is_empty() {
         return Err(SolveError::InvalidInput(
             "風荷重の対象となる階(PH階・地下階を除く地上一般階)が定義されていません。".into(),

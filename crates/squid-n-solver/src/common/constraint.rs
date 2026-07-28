@@ -12,28 +12,49 @@ pub struct Reducer {
 impl Reducer {
     pub fn build(model: &Model, dofmap: &DofMap) -> Self {
         let n_free = dofmap.n_active();
+        let n_nodes = model.nodes.len();
         let mut t_rows: Vec<Vec<(usize, f64)>> = (0..n_free).map(|i| vec![(i, 1.0)]).collect();
         let node_coords: Vec<[f64; 3]> = model.nodes.iter().map(|n| n.coord).collect();
+
+        // ダングリング参照（存在しない節点を指す拘束）は panic せず読み飛ばす。
+        // ユーザー向けの診断は解析入口の precheck（`statics::analysis::precheck`）が
+        // 「拘束が存在しない節点を参照」エラーとして行い、ここは防御のみ担う
+        // （`linear_static_once` のように precheck を通らない経路でも落ちないため）。
 
         // MPC: master フィールドはスレーブ節点、terms は (マスター節点, マスター DOF, 係数)
         for constraint in &model.constraints {
             if let Constraint::Mpc { master, terms } = constraint {
                 let slave_node = master.index();
+                if slave_node >= n_nodes {
+                    continue;
+                }
                 // スレーブ DOF d を、同じ d のマスター寄与の和で表す
                 for d in 0..DOF_PER_NODE {
                     let sg = slave_node * DOF_PER_NODE + d;
                     if let Some(sa) = dofmap.active(sg) {
                         let s_idx = sa as usize;
+                        // マスター側の対象 DOF が拘束済み（非 active）の項は変位 0 で
+                        // 寄与しないため row から落とす。全項が拘束済みなら空行＝
+                        // スレーブも 0 に縮約する（従来は空行のとき恒等写像のまま
+                        // 残してスレーブが独立自由度になり、拘束が無言で破れていた。
+                        // RigidDiaphragm の扱いと同じ規則に統一）。
+                        // ただし当該 DOF にマスター項が 1 つも無い場合は MPC の対象外
+                        // なので恒等のまま残す。
+                        let mut has_term = false;
                         let mut row = Vec::new();
                         for &(m_node, m_dof, coef) in terms {
                             if m_dof as usize == d {
+                                has_term = true;
+                                if m_node.index() >= n_nodes {
+                                    continue;
+                                }
                                 let mg = m_node.index() * DOF_PER_NODE + d;
                                 if let Some(ma) = dofmap.active(mg) {
                                     row.push((ma as usize, coef));
                                 }
                             }
                         }
-                        if s_idx < t_rows.len() && !row.is_empty() {
+                        if s_idx < t_rows.len() && has_term {
                             t_rows[s_idx] = row;
                         }
                     }
@@ -50,8 +71,14 @@ impl Reducer {
             } = constraint
             {
                 let mi = master.index();
+                if mi >= n_nodes {
+                    continue;
+                }
                 for &slave in slaves {
                     let si = slave.index();
+                    if si >= n_nodes {
+                        continue;
+                    }
                     for d in 0..DOF_PER_NODE {
                         let dof = match d {
                             0 => Dof::Ux,
@@ -65,11 +92,17 @@ impl Reducer {
                             let sg = si * DOF_PER_NODE + d;
                             let mg = mi * DOF_PER_NODE + d;
                             if let Some(sa) = dofmap.active(sg) {
-                                if let Some(ma) = dofmap.active(mg) {
-                                    let s_idx = sa as usize;
-                                    if s_idx < t_rows.len() {
-                                        t_rows[s_idx] = vec![(ma as usize, 1.0)];
-                                    }
+                                let s_idx = sa as usize;
+                                // マスター DOF が拘束済み（非 active）なら空行＝
+                                // スレーブも 0 に縮約する（MPC・RigidDiaphragm と
+                                // 同じ規則。従来はスレーブが独立自由度のまま残り、
+                                // 剛リンクが無言で破れていた）。
+                                let row = match dofmap.active(mg) {
+                                    Some(ma) => vec![(ma as usize, 1.0)],
+                                    None => Vec::new(),
+                                };
+                                if s_idx < t_rows.len() {
+                                    t_rows[s_idx] = row;
                                 }
                             }
                         }
@@ -87,12 +120,14 @@ impl Reducer {
             } = constraint
             {
                 let mi = master.index();
-                let mx = node_coords[mi][0];
-                let my = node_coords[mi][1];
+                let Some(&[mx, my, _]) = node_coords.get(mi) else {
+                    continue;
+                };
                 for &slave in slaves {
                     let si = slave.index();
-                    let sx = node_coords[si][0];
-                    let sy = node_coords[si][1];
+                    let Some(&[sx, sy, _]) = node_coords.get(si) else {
+                        continue;
+                    };
                     let dx = sx - mx;
                     let dy = sy - my;
                     // Ux
@@ -488,6 +523,88 @@ mod tests {
                 expected_uy
             );
         }
+    }
+
+    /// マスター節点の対象 DOF が拘束済み（非 active）の剛リンクでは、スレーブ DOF も
+    /// 0 に縮約される（空行）こと。従来はスレーブが独立自由度のまま残り、拘束が
+    /// 無言で破れていた（RigidDiaphragm だけが正しく空行へ縮約していた不整合）。
+    #[test]
+    fn test_rigid_link_fixed_master_forces_slave_to_zero() {
+        let mut model = make_3node_model();
+        // node1 を完全拘束し、node2 を剛リンクで node1 へ従属させる。
+        model.nodes[1].restraint = Dof6Mask::FIXED;
+        model.constraints.push(Constraint::RigidLink {
+            master: NodeId(1),
+            slaves: vec![NodeId(2)],
+            dofs: Dof6Mask::FIXED,
+        });
+        let dofmap = DofMap::build(&model);
+        let reducer = Reducer::build(&model, &dofmap);
+        // node2 の全 DOF はマスター（=0）へ従属し、独立自由度を持たない（空行）。
+        for d in 0..DOF_PER_NODE {
+            let g = 2 * DOF_PER_NODE + d;
+            if let Some(sa) = dofmap.active(g) {
+                assert!(
+                    reducer.t_rows[sa as usize].is_empty(),
+                    "slave dof {} should reduce to zero (empty row), got {:?}",
+                    d,
+                    reducer.t_rows[sa as usize]
+                );
+            }
+        }
+        // 展開結果も常に 0。
+        let u_free = reducer.expand_u(&vec![1.0; reducer.n_indep]);
+        for d in 0..DOF_PER_NODE {
+            let g = 2 * DOF_PER_NODE + d;
+            if let Some(sa) = dofmap.active(g) {
+                assert_eq!(u_free[sa as usize], 0.0, "slave dof {} must be zero", d);
+            }
+        }
+    }
+
+    /// マスター側の対象 DOF がすべて拘束済みの MPC でも、スレーブ DOF は 0 に
+    /// 縮約される（従来はスレーブが独立自由度のまま残っていた）。
+    #[test]
+    fn test_mpc_fixed_master_forces_slave_to_zero() {
+        let mut model = make_3node_model();
+        // node0 は FIXED のまま。node2.Ux = 0.5 * node0.Ux（node0.Ux は拘束済み）。
+        model.constraints.push(Constraint::Mpc {
+            master: NodeId(2),
+            terms: vec![(NodeId(0), squid_n_core::dof::Dof::Ux, 0.5)],
+        });
+        let dofmap = DofMap::build(&model);
+        let reducer = Reducer::build(&model, &dofmap);
+        let sa = dofmap.active(2 * DOF_PER_NODE).unwrap() as usize;
+        assert!(
+            reducer.t_rows[sa].is_empty(),
+            "slave Ux should reduce to zero, got {:?}",
+            reducer.t_rows[sa]
+        );
+    }
+
+    /// 存在しない節点を参照する拘束（ダングリング NodeId）があっても panic せず、
+    /// 当該拘束を読み飛ばして構築できること（ユーザー向け診断は precheck が担う）。
+    #[test]
+    fn test_dangling_constraint_reference_does_not_panic() {
+        let mut model = make_3node_model();
+        model.constraints.push(Constraint::RigidDiaphragm {
+            story: StoryId(0),
+            master: NodeId(99),
+            slaves: vec![NodeId(1)],
+        });
+        model.constraints.push(Constraint::RigidLink {
+            master: NodeId(1),
+            slaves: vec![NodeId(98)],
+            dofs: Dof6Mask::FIXED,
+        });
+        model.constraints.push(Constraint::Mpc {
+            master: NodeId(97),
+            terms: vec![(NodeId(1), squid_n_core::dof::Dof::Ux, 1.0)],
+        });
+        let dofmap = DofMap::build(&model);
+        let reducer = Reducer::build(&model, &dofmap);
+        // ダングリング拘束は無効化され、独立自由度は全自由度のまま。
+        assert_eq!(reducer.n_indep, reducer.n_free);
     }
 
     #[test]

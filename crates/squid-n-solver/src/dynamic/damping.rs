@@ -72,7 +72,9 @@ impl Damping {
                 weighted_sum_csc(n, &[(a0, m)])
             }
             Damping::StiffnessProportional { h, omega, .. } => {
-                let a1 = 2.0 * h / omega;
+                // ω≦0 のガードは接線系（`assemble_c_tangent`・TangentStiffnessConstantH）
+                // と同じ規則（減衰なし C=0 へフォールバック）で統一する。
+                let a1 = if *omega > 0.0 { 2.0 * h / omega } else { 0.0 };
                 weighted_sum_csc(n, &[(a1, k)])
             }
             Damping::Rayleigh { h1, w1, h2, w2 } => {
@@ -158,8 +160,22 @@ impl Damping {
     /// Rayleigh 減衰の係数 (α_m, β_k) を、2つの振動数と目標減衰比から計算する。
     /// モード i の減衰比: h_i = α_m/(2ω_i) + β_k·ω_i/2。
     /// ω1 で h1、ω2 で h2 を満たす (α_m, β_k) を連立方程式から解く。
+    ///
+    /// ω1 と ω2 が一致・近接する場合（対称建物で X・Y 並進の 1 次・2 次モードが
+    /// 縮退するのは珍しくない）、連立方程式は特異になり除算で係数が発散する
+    /// （NaN/∞ が減衰行列 C に混入し時刻歴解析全体が無警告で破綻する）。
+    /// この場合は単一振動数 ω1 で h1 を満たす質量・剛性の対称分配
+    /// α_m = h1·ω1、β_k = h1/ω1（h(ω1) = h1/2 + h1/2 = h1）へフォールバックする。
     pub fn rayleigh_coeffs(omega1: f64, omega2: f64, h1: f64, h2: f64) -> (f64, f64) {
         let d = omega2 * omega2 - omega1 * omega1;
+        // 相対判定: ω² の差が代表値の 1e-9 倍未満なら実質同一振動数とみなす。
+        let scale = (omega1 * omega1).max(omega2 * omega2);
+        if d.abs() <= scale * 1e-9 || !d.is_finite() {
+            if omega1 > 0.0 {
+                return (h1 * omega1, h1 / omega1);
+            }
+            return (0.0, 0.0);
+        }
         let beta_k = 2.0 * (h2 * omega2 - h1 * omega1) / d;
         let alpha_m = 2.0 * omega1 * omega2 * (h1 * omega2 - h2 * omega1) / d;
         (alpha_m, beta_k)
@@ -240,6 +256,26 @@ mod tests {
         let omega2 = 100.0;
         let h2_actual = (alpha_m / omega2 + beta_k * omega2) / 2.0;
         assert!((h2_actual - 0.05).abs() < 1e-6);
+    }
+
+    /// 重根・近接固有値（対称建物で X・Y 並進モードが縮退するのは珍しくない）では
+    /// 連立方程式が特異になるため、単一振動数フォールバックで有限な係数を返し、
+    /// ω1 で目標減衰比 h1 を満たすこと（従来はゼロ除算で NaN/∞ が C 行列に混入し
+    /// 時刻歴解析が無警告で破綻した）。
+    #[test]
+    fn test_damping_rayleigh_coeffs_degenerate_frequencies_finite() {
+        // 完全一致
+        let (a0, a1) = Damping::rayleigh_coeffs(10.0, 10.0, 0.05, 0.05);
+        assert!(a0.is_finite() && a1.is_finite(), "a0={a0}, a1={a1}");
+        let h = (a0 / 10.0 + a1 * 10.0) / 2.0;
+        assert!((h - 0.05).abs() < 1e-12, "h={h}");
+        // 相対 1e-9 未満の近接
+        let w2 = 10.0 * (1.0 + 1e-12);
+        let (a0, a1) = Damping::rayleigh_coeffs(10.0, w2, 0.05, 0.05);
+        assert!(a0.is_finite() && a1.is_finite(), "a0={a0}, a1={a1}");
+        // ω1=0 の退化入力は減衰なしへフォールバック（panic・発散しない）
+        let (a0, a1) = Damping::rayleigh_coeffs(0.0, 0.0, 0.05, 0.05);
+        assert_eq!((a0, a1), (0.0, 0.0));
     }
 
     #[test]

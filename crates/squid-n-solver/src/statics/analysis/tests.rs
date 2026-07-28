@@ -199,6 +199,24 @@ fn test_prepare_isolated_node_gives_diagnostic() {
     assert!(msg.contains("接続されていない節点"), "{}", msg);
 }
 
+/// 存在しない節点を参照する拘束（節点削除後の不整合など）は、panic ではなく
+/// ダングリング参照の診断エラーになること（従来は precheck 内の直接添字で
+/// panic していた）。
+#[test]
+fn test_prepare_dangling_constraint_reference_gives_diagnostic() {
+    let mut model = make_cantilever_model();
+    model
+        .constraints
+        .push(squid_n_core::model::Constraint::RigidLink {
+            master: NodeId(99),
+            slaves: vec![NodeId(1)],
+            dofs: Dof6Mask::FIXED,
+        });
+    let err = Analysis::prepare(&model).err().unwrap();
+    let msg = format!("{}", err);
+    assert!(msg.contains("存在しない節点"), "{}", msg);
+}
+
 #[test]
 fn test_linear_static_unknown_load_case_is_error() {
     let model = make_cantilever_model();

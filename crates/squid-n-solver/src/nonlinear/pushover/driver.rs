@@ -191,6 +191,8 @@ pub fn pushover_analysis_recording(
     let mut capacity_curve = Vec::new();
     let mut steps: Vec<PushoverStep> = Vec::new();
     let mut total_disp = vec![0.0; n_active];
+    // ステップ数はソルバ側の安全範囲 [1,100] へ丸める（範囲外の指定は黙って
+    // クランプされる。100 超の分解能が必要な場合は呼び出し側の対応が必要）。
     let n_steps = max_steps.clamp(1, 100);
     let dlambda = 1.0 / n_steps as f64;
     // 終了目標（頂部変位・最大層間変形角のいずれか）に達したかのフラグ。
@@ -232,17 +234,18 @@ pub fn pushover_analysis_recording(
         .and_then(|_| elastic_roof_slope(model, dofmap, reducer, &behaviors, use_kg, dir, &q));
     let adaptive = du_uniform.is_some() && roof_slope.is_some();
 
-    // 荷重制御の総ステップ数。段階制御では λ=1（設計地震力レベル）で変位制御へ
-    // 引き継ぐ。荷重増分のみ（LoadOnly）で終了目標が有効な場合は、同じ刻み dλ の
-    // まま λ=1 を超えて継続する（上限 λ=10。必要保有水平耐力 Qun の λ 換算
-    // 5·Ds·Fes ≦ 5 を十分に覆う安全上限で、通常は目標到達か収束不能で先に止まる）。
-    // 均等刻みは λ=1 到達（または目標到達）で終了するため、この上限は勾配の推定誤りで
-    // 刻みが縮み過ぎた場合の安全弁。
-    let max_load_steps = match control {
-        PushoverControl::LoadOnly if target.is_enabled() => n_steps * 10,
-        PushoverControl::Phased if adaptive => n_steps * 10,
-        _ => n_steps,
+    // 荷重制御の λ 上限。段階制御では λ=1（設計地震力レベル）で変位制御へ
+    // 引き継ぐ。荷重増分のみ（LoadOnly）で終了目標が有効な場合は λ=1 を超えて
+    // 継続する（上限 λ=10。必要保有水平耐力 Qun の λ 換算 5·Ds·Fes ≦ 5 を
+    // 十分に覆う安全上限で、通常は目標到達か収束不能で先に止まる）。
+    let lambda_cap = match control {
+        PushoverControl::LoadOnly if target.is_enabled() => 10.0,
+        _ => 1.0,
     };
+    // 荷重制御の反復回数上限。λ の進みは確定済み λ 基点の増分制御（下記ループ）で
+    // 決まり、収束失敗時の増分半減があっても λ_cap へ到達できるよう名目ステップ数の
+    // 10 倍の余裕を持たせる（通常は λ_cap 到達・目標到達・収束不能で先に止まる）。
+    let max_load_steps = n_steps * 10;
 
     // 記録用の通し番号（荷重制御→変位制御→弧長法で連番）。capacity_curve・steps の
     // 並びとヒンジ・せん断降伏イベントの step を対応付ける単調キーで、確定した
@@ -285,61 +288,30 @@ pub fn pushover_analysis_recording(
             for _attempt in 0..5 {
                 let snap = StateSnapshot::capture(&behaviors);
                 let f_ext: Vec<f64> = f0.iter().map(|&v| v * mu_target).collect();
-                let mut converged = false;
-                let mut step_du_free = vec![0.0; n_active];
-                for _iter in 0..50 {
-                    let k_free = assemble_k(model, dofmap, &behaviors, use_kg);
-                    let k_red = reducer.reduce_k(&k_free);
-                    let f_int = compute_f_int(model, dofmap, &behaviors);
-                    let r_free: Vec<f64> =
-                        f_ext.iter().zip(f_int.iter()).map(|(e, i)| e - i).collect();
-                    let r_red = reducer.reduce_f(&r_free);
-                    let f_ext_red = reducer.reduce_f(&f_ext);
-                    let r_norm: f64 = r_red.iter().map(|x| x * x).sum::<f64>().sqrt();
-                    let f_norm: f64 = f_ext_red.iter().map(|x| x * x).sum::<f64>().sqrt();
-                    if r_norm < 1e-6 * f_norm.max(1.0) {
-                        converged = true;
+                match newton_converge(
+                    model,
+                    dofmap,
+                    reducer,
+                    &mut behaviors,
+                    &f_ext,
+                    use_kg,
+                    n_active,
+                )? {
+                    Some(step_du_free) => {
+                        for b in behaviors.iter_mut() {
+                            b.commit_state();
+                        }
+                        for (&du, td) in step_du_free.iter().zip(total_disp.iter_mut()) {
+                            *td += du;
+                        }
+                        applied = mu_target;
+                        step_ok = true;
                         break;
                     }
-                    let mut solver = make_solver(SolverBackend::Auto);
-                    solver
-                        .factorize(&k_red)
-                        .map_err(|e| format!("factor: {:?}", e))?;
-                    let du_red = solver
-                        .solve(&r_red)
-                        .map_err(|e| format!("solve: {:?}", e))?;
-                    let du_free = reducer.expand_u(&du_red);
-                    for (acc, &d) in step_du_free.iter_mut().zip(du_free.iter()) {
-                        *acc += d;
+                    None => {
+                        model.restore(&snap, &mut behaviors);
+                        mu_target = applied + (mu_target - applied) * 0.5;
                     }
-                    let model_ref: &Model = model;
-                    for (_elem, b) in model_ref.elements.iter().zip(behaviors.iter_mut()) {
-                        let gdofs = b.global_dofs(dofmap);
-                        let mut du_elem = LocalVec {
-                            data: SmallVec::from_elem(0.0, gdofs.len()),
-                        };
-                        for (i, &g) in gdofs.iter().enumerate() {
-                            if g != usize::MAX {
-                                du_elem.data[i] = du_free[g];
-                            }
-                        }
-                        let ctx = Ctx { model: model_ref };
-                        b.update_state(&du_elem, false, &ctx);
-                    }
-                }
-                if converged {
-                    for b in behaviors.iter_mut() {
-                        b.commit_state();
-                    }
-                    for (&du, td) in step_du_free.iter().zip(total_disp.iter_mut()) {
-                        *td += du;
-                    }
-                    applied = mu_target;
-                    step_ok = true;
-                    break;
-                } else {
-                    model.restore(&snap, &mut behaviors);
-                    mu_target = applied + (mu_target - applied) * 0.5;
                 }
             }
             if !step_ok {
@@ -388,21 +360,26 @@ pub fn pushover_analysis_recording(
         last_roof = roof;
     }
 
-    for step in 0..max_load_steps {
-        let (prev_lambda, mut current_lambda) = if adaptive {
+    for _step in 0..max_load_steps {
+        // λ_cap（段階制御=1、LoadOnly+目標有効=10）に達したら荷重制御を終える。
+        if lambda >= lambda_cap - 1e-12 {
+            break;
+        }
+        let prev_lambda = lambda;
+        let mut current_lambda = if adaptive {
             // 均等刻み: 確定済み λ から「頂部変位が du_uniform 進む見込みの λ 増分」
-            // だけ進める（変位制御へ引き継ぐため λ=1 で打ち止め）。
-            if lambda >= 1.0 - 1e-12 {
-                break;
-            }
+            // だけ進める。
             let du = du_uniform.unwrap_or(0.0);
             let slope = roof_slope.unwrap_or(f64::INFINITY);
             let dl = (du / slope).max(dlambda * 1e-3);
-            (lambda, (lambda + dl).min(1.0))
+            (lambda + dl).min(lambda_cap)
         } else {
-            // 固定 λ 刻み: 前確定点の荷重係数は「前ステップまでが満 λ で確定している
-            // 前提の下限」のスケジュール値。
-            (step as f64 * dlambda, (step + 1) as f64 * dlambda)
+            // 固定 λ 刻み: **確定済み λ を基点に** dλ だけ進める。従来はループ添字の
+            // スケジュール値 (step·dλ, (step+1)·dλ) を基点にしており、収束失敗した
+            // ステップを読み飛ばすと確定状態とスケジュールが乖離して、次ステップの
+            // 実効増分が 2dλ・3dλ…と無言で拡大していた（増分が大きいほど収束は
+            // さらに難しくなり、ヒンジ追跡・性能曲線の粗大な欠落を招く）。
+            (lambda + dlambda).min(lambda_cap)
         };
         let mut step_ok = false;
 
@@ -414,61 +391,19 @@ pub fn pushover_analysis_recording(
                 .zip(q.iter())
                 .map(|(&f0i, &qi)| f0i + qi * current_lambda)
                 .collect();
-            let mut converged = false;
-            // このステップ内の全 Newton 修正量の累積（＝ステップ変位増分）。
-            // 従来は last_du_free に「最後の修正量」だけを保持しており、
-            // 収束に 2 反復以上要する塑性ステップで途中の修正量が total_disp から
-            // 脱落し、荷重−変位曲線の変位軸が過小評価されていた（要素内部状態は
-            // 全修正量を累積しているため base_shear は正しく、変位のみ不整合）。
-            let mut step_du_free = vec![0.0; n_active];
+            // Newton 反復（共通経路 [`newton_converge`]。ステップ変位増分＝全修正量の
+            // 累積を返す。「最後の修正量」だけでは塑性ステップで変位軸が過小評価される）。
+            let converged = newton_converge(
+                model,
+                dofmap,
+                reducer,
+                &mut behaviors,
+                &f_ext,
+                use_kg,
+                n_active,
+            )?;
 
-            // Newton 反復上限。全要素がトライアル追従（internal_force が反復中の
-            // 未確定変位を反映する）となったため、弾性支配の状態ではほぼ 1〜2 回で
-            // 収束する。上限 50 は塑性進行時（接線更新を要する反復）の余裕。
-            for _iter in 0..50 {
-                let k_free = assemble_k(model, dofmap, &behaviors, use_kg);
-                let k_red = reducer.reduce_k(&k_free);
-                let f_int = compute_f_int(model, dofmap, &behaviors);
-                let r_free: Vec<f64> = f_ext.iter().zip(f_int.iter()).map(|(e, i)| e - i).collect();
-                let r_red = reducer.reduce_f(&r_free);
-
-                let f_ext_red = reducer.reduce_f(&f_ext);
-                let r_norm: f64 = r_red.iter().map(|x| x * x).sum::<f64>().sqrt();
-                let f_norm: f64 = f_ext_red.iter().map(|x| x * x).sum::<f64>().sqrt();
-                if r_norm < 1e-6 * f_norm.max(1.0) {
-                    converged = true;
-                    break;
-                }
-
-                let mut solver = make_solver(SolverBackend::Auto);
-                solver
-                    .factorize(&k_red)
-                    .map_err(|e| format!("factor: {:?}", e))?;
-                let du_red = solver
-                    .solve(&r_red)
-                    .map_err(|e| format!("solve: {:?}", e))?;
-                let du_free = reducer.expand_u(&du_red);
-                for (acc, &d) in step_du_free.iter_mut().zip(du_free.iter()) {
-                    *acc += d;
-                }
-
-                let model_ref: &Model = model;
-                for (_elem, b) in model_ref.elements.iter().zip(behaviors.iter_mut()) {
-                    let gdofs = b.global_dofs(dofmap);
-                    let mut du_elem = LocalVec {
-                        data: SmallVec::from_elem(0.0, gdofs.len()),
-                    };
-                    for (i, &g) in gdofs.iter().enumerate() {
-                        if g != usize::MAX {
-                            du_elem.data[i] = du_free[g];
-                        }
-                    }
-                    let ctx = Ctx { model: model_ref };
-                    b.update_state(&du_elem, false, &ctx);
-                }
-            }
-
-            if converged {
+            if let Some(step_du_free) = converged {
                 for b in behaviors.iter_mut() {
                     b.commit_state();
                 }
@@ -547,13 +482,14 @@ pub fn pushover_analysis_recording(
                 current_lambda = prev_lambda + (current_lambda - prev_lambda) * 0.5;
             }
         }
-        if !step_ok && (adaptive || step >= n_steps) {
-            // 増分半減でも収束しない場合の扱い:
-            // - 均等刻み: 前確定 λ からの増分を既に半減済みのため打ち切り、以降は
-            //   変位制御フェーズが引き継ぐ（極限点近傍は変位制御の方が安定に追える）。
-            // - 荷重増分のみの延長領域（λ>1）: これ以上の荷重に釣合う解が無い
-            //   （耐力ピーク近傍）ため打ち切る。
-            // - 固定刻みの λ≦1 の通常領域: 従来どおりスキップして次の刻みを試す。
+        if !step_ok {
+            // 増分半減（5 回）でも収束しない場合は制御方式によらず荷重制御を打ち切る。
+            // 確定 λ からの増分を既に 1/16 まで縮めており、これより大きい増分が
+            // 収束する見込みは無い（段階制御では以降を変位制御フェーズが引き継ぐ。
+            // 極限点近傍は変位制御の方が安定に追える。LoadOnly の延長領域では
+            // これ以上の荷重に釣合う解が無い＝耐力ピーク近傍）。従来の固定刻みは
+            // 失敗ステップを読み飛ばして次のスケジュール値を試しており、確定状態
+            // との乖離で実効増分が拡大する欠陥だった（ループ冒頭のコメント参照）。
             break;
         }
         if target_reached {
@@ -679,21 +615,7 @@ pub fn pushover_analysis_recording(
                         for (acc, &d) in step_du_free.iter_mut().zip(du_free.iter()) {
                             *acc += d;
                         }
-
-                        let model_ref: &Model = model;
-                        for (_elem, b) in model_ref.elements.iter().zip(behaviors.iter_mut()) {
-                            let gdofs = b.global_dofs(dofmap);
-                            let mut du_elem = LocalVec {
-                                data: SmallVec::from_elem(0.0, gdofs.len()),
-                            };
-                            for (i, &g) in gdofs.iter().enumerate() {
-                                if g != usize::MAX {
-                                    du_elem.data[i] = du_free[g];
-                                }
-                            }
-                            let ctx = Ctx { model: model_ref };
-                            b.update_state(&du_elem, false, &ctx);
-                        }
+                        apply_du_to_behaviors(model, dofmap, &mut behaviors, &du_free);
                     }
 
                     if converged {
@@ -801,19 +723,7 @@ pub fn pushover_analysis_recording(
                         Ok(reducer.expand_u(&du_red))
                     },
                     &mut |delta_u: &[f64]| -> Result<Vec<f64>, String> {
-                        let ctx = Ctx { model: model_ref };
-                        for b in behaviors_ref.iter_mut() {
-                            let gdofs = b.global_dofs(dofmap);
-                            let mut du_elem = LocalVec {
-                                data: SmallVec::from_elem(0.0, gdofs.len()),
-                            };
-                            for (i, &g) in gdofs.iter().enumerate() {
-                                if g != usize::MAX && g < delta_u.len() {
-                                    du_elem.data[i] = delta_u[g];
-                                }
-                            }
-                            b.update_state(&du_elem, false, &ctx);
-                        }
+                        apply_du_to_behaviors(model_ref, dofmap, behaviors_ref, delta_u);
                         // 弧長法の釣合いは λ·q = f_int の形で解かれるため、長期荷重
                         // f0 を保持する場合は f_int から f0 を差し引いた値を返す
                         // （f0 + λ·q = f_int と等価）。
@@ -860,6 +770,23 @@ pub fn pushover_analysis_recording(
                         story_drifts: story_drift,
                         node_disp: record_node_disp.then(|| total_disp.clone()),
                     });
+                    // ヒンジ・せん断降伏の追跡は荷重制御・変位制御と同じ扱いで継続する
+                    // （従来は弧長法フェーズだけ追跡が抜けており、耐力ピーク以降に
+                    // 形成されるヒンジが機構判定・詳細図から欠落していた）。
+                    let mu = update_ductility(
+                        &behaviors,
+                        &mut ductility_trackers,
+                        &ductility_refs,
+                        ductility_method,
+                    );
+                    track_hinges(model, &behaviors, &thresholds, &mu, step_no, &mut hinges);
+                    track_shear_yield(
+                        model,
+                        &behaviors,
+                        &shear_thresholds,
+                        step_no,
+                        &mut shear_yields,
+                    );
                     member_history_steps.push(record_member_step(
                         model,
                         dofmap,
@@ -932,6 +859,77 @@ pub fn pushover_analysis_recording(
         member_history,
         fiber_states,
     })
+}
+
+/// ステップ変位増分 `du_free`（全自由 DOF 順）を各要素の局所自由度へ写像し、
+/// トライアル状態として反映する（確定は呼び出し側の `commit_state`）。
+/// 長期載荷・荷重制御・変位制御・弧長法の全フェーズで共有する。
+fn apply_du_to_behaviors(
+    model: &Model,
+    dofmap: &DofMap,
+    behaviors: &mut [Box<dyn ElementBehavior>],
+    du_free: &[f64],
+) {
+    let ctx = Ctx { model };
+    for b in behaviors.iter_mut() {
+        let gdofs = b.global_dofs(dofmap);
+        let mut du_elem = LocalVec {
+            data: SmallVec::from_elem(0.0, gdofs.len()),
+        };
+        for (i, &g) in gdofs.iter().enumerate() {
+            if g != usize::MAX && g < du_free.len() {
+                du_elem.data[i] = du_free[g];
+            }
+        }
+        b.update_state(&du_elem, false, &ctx);
+    }
+}
+
+/// 固定外力 `f_ext` に対する Newton 反復（長期載荷・荷重制御フェーズの共通経路）。
+///
+/// 収束判定は力の相対ノルム r < 1e-6·max(|f_ext|, 1)。全要素がトライアル追従
+/// （`internal_force` が反復中の未確定変位を反映する）のため弾性支配ではほぼ
+/// 1〜2 回で収束し、上限 50 回は塑性進行時の余裕。収束したらステップ内の
+/// 全 Newton 修正量の累積（＝ステップ変位増分。「最後の修正量」だけを返すと
+/// 塑性ステップで変位軸が過小評価される）を `Some` で返し、要素状態は
+/// トライアル反映済み・未確定のまま戻す（確定・巻き戻しは呼び出し側の責務）。
+/// 収束しなければ `Ok(None)`、分解・求解の失敗は `Err`。
+fn newton_converge(
+    model: &Model,
+    dofmap: &DofMap,
+    reducer: &Reducer,
+    behaviors: &mut [Box<dyn ElementBehavior>],
+    f_ext: &[f64],
+    use_kg: bool,
+    n_active: usize,
+) -> Result<Option<Vec<f64>>, String> {
+    let mut step_du_free = vec![0.0; n_active];
+    for _iter in 0..50 {
+        let k_free = assemble_k(model, dofmap, behaviors, use_kg);
+        let k_red = reducer.reduce_k(&k_free);
+        let f_int = compute_f_int(model, dofmap, behaviors);
+        let r_free: Vec<f64> = f_ext.iter().zip(f_int.iter()).map(|(e, i)| e - i).collect();
+        let r_red = reducer.reduce_f(&r_free);
+        let f_ext_red = reducer.reduce_f(f_ext);
+        let r_norm: f64 = r_red.iter().map(|x| x * x).sum::<f64>().sqrt();
+        let f_norm: f64 = f_ext_red.iter().map(|x| x * x).sum::<f64>().sqrt();
+        if r_norm < 1e-6 * f_norm.max(1.0) {
+            return Ok(Some(step_du_free));
+        }
+        let mut solver = make_solver(SolverBackend::Auto);
+        solver
+            .factorize(&k_red)
+            .map_err(|e| format!("factor: {:?}", e))?;
+        let du_red = solver
+            .solve(&r_red)
+            .map_err(|e| format!("solve: {:?}", e))?;
+        let du_free = reducer.expand_u(&du_red);
+        for (acc, &d) in step_du_free.iter_mut().zip(du_free.iter()) {
+            *acc += d;
+        }
+        apply_du_to_behaviors(model, dofmap, behaviors, &du_free);
+    }
+    Ok(None)
 }
 
 /// 初期接線剛性で K·δu = q を 1 回解き、荷重係数 λ あたりの頂部変位の弾性勾配

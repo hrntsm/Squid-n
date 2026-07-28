@@ -407,11 +407,6 @@ pub(crate) fn superpose_member_loads(
     member_loads: &[squid_n_core::model::MemberLoad],
     forces: &mut squid_n_element::beam::MemberForces,
 ) {
-    use squid_n_element::transform::LocalFrame;
-
-    if elem.nodes.len() < 2 {
-        return;
-    }
     let loads: Vec<squid_n_core::model::MemberLoad> = member_loads
         .iter()
         .filter(|ml| ml.elem == elem.id)
@@ -420,21 +415,12 @@ pub(crate) fn superpose_member_loads(
     if loads.is_empty() {
         return;
     }
-    let ni = elem.nodes[0].index();
-    let nj = elem.nodes[1].index();
-    if ni >= model.nodes.len() || nj >= model.nodes.len() {
+    // 対象の線材判定・局所座標系・部材長は等価節点力側（`assemble_global_f`）と
+    // 同じ規則を共有する（[`crate::assemble::member_load_frame`]）。荷重ベクトル側で
+    // 載らなかった荷重が内力回復側だけに重なる（またはその逆）不整合を防ぐ。
+    let Some((frame, length)) = crate::assemble::member_load_frame(model, elem) else {
         return;
-    }
-    let p_i = model.nodes[ni].coord;
-    let p_j = model.nodes[nj].coord;
-    let dx = p_j[0] - p_i[0];
-    let dy = p_j[1] - p_i[1];
-    let dz = p_j[2] - p_i[2];
-    let length = (dx * dx + dy * dy + dz * dz).sqrt();
-    if length < 1e-9 {
-        return;
-    }
-    let frame = LocalFrame::from_nodes(p_i, p_j, elem.local_axis.ref_vector);
+    };
     for (xi, vals) in forces.at.iter_mut() {
         let fixed = squid_n_element::member_load::fixed_internal_local(&loads, &frame, length, *xi);
         for k in 0..6 {

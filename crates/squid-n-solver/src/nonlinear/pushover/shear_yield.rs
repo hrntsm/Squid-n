@@ -296,7 +296,11 @@ pub(crate) fn track_shear_yield(
     let state = ElemState::default();
     let ctx = Ctx { model };
     for (i, (elem, b)) in model.elements.iter().zip(behaviors).enumerate() {
-        if elem.nodes.len() < 2 {
+        // 2 節点の線材のみ対象。4 節点の耐震壁は nodes[0]→nodes[1] が壁脚の幅方向
+        // （水平）を向き、線材向けの局所 Vy/Vz 射影が幾何的に無意味になるため
+        // 対象外とする（壁のせん断終局は壁専用の Qu 経路で扱う。
+        // `member_end_forces_at_face` と同じ規則）。
+        if elem.nodes.len() != 2 {
             continue;
         }
         let (Some(pi), Some(pj)) = (
