@@ -55,6 +55,8 @@ pub fn pushover_analysis(
         max_steps,
         PushoverTarget::from_max_disp(max_disp),
         PushoverControl::default(),
+        // 長期荷重の初期載荷は既定で有効（長期系荷重ケースが無いモデルでは何もしない）。
+        true,
         use_kg,
         use_arc_length,
         arc_length_dl,
@@ -68,7 +70,10 @@ pub fn pushover_analysis(
 /// 両方無効なら荷重制御 λ=1 までで終了）。制御方式は [`PushoverControl`] で指定し、
 /// 既定の段階制御（荷重→変位→弧長）のほか、比較検証用に荷重増分のみ
 /// （`LoadOnly`。変位制御・弧長法へ移行せず、終了目標が有効なら λ=1 を超えて
-/// 荷重増分を継続する）を選択できる。`record_node_disp` が真の場合、各ステップの
+/// 荷重増分を継続する）を選択できる。`apply_long_term` が真の場合、長期系荷重
+/// ケース（`LoadCaseKind::is_long_term`）の外力を水平力増分の前に載荷して初期
+/// 応力状態とし、全フェーズで保持する（長期荷重ケースが無いモデルでは何もしない）。
+/// `record_node_disp` が真の場合、各ステップの
 /// `PushoverStep::node_disp` に全自由節点変位を記録する（段階的耐力喪失解析の
 /// 部材変形角算定用、`strength_loss` モジュール参照）。既存 API を壊さないよう
 /// `pushover_analysis` は本関数に `record_node_disp = false` で委譲する薄いラッパー。
@@ -81,6 +86,7 @@ pub fn pushover_analysis_recording(
     max_steps: usize,
     target: PushoverTarget,
     control: PushoverControl,
+    apply_long_term: bool,
     use_kg: bool,
     use_arc_length: bool,
     arc_length_dl: f64,
@@ -248,6 +254,140 @@ pub fn pushover_analysis_recording(
     // 均等刻みの勾配更新に用いる直前確定点の頂部変位。
     let mut last_roof = 0.0_f64;
 
+    // ── 長期荷重の初期載荷（apply_long_term） ─────────────────────────────
+    // 長期系荷重ケース（固定・積載等、`LoadCaseKind::is_long_term`）の外力を水平力
+    // 増分に先立って載荷し、その応力状態（柱軸力・梁端モーメント）を初期条件とする。
+    // 保有水平耐力計算は長期応力を初期状態として水平力を漸増するのが標準的な扱いで、
+    // これが無いと N-M 相関上の応答経路が N=0 から始まり、軸力に依存する部材耐力
+    // （柱の曲げ降伏 My・せん断降伏 Qy の軸力項）を誤る。
+    // 載荷後は f0 を全フェーズの外力 f_ext = f0 + λ·q に保持し、載荷完了状態を
+    // 1 ステップ（load_factor=0.0）として記録する（N-M 応答経路の始点になる）。
+    let f0: Vec<f64> = if apply_long_term {
+        let mut f = vec![0.0; n_active];
+        for lc in model.load_cases.iter().filter(|l| l.kind.is_long_term()) {
+            let flc = crate::assemble::assemble_global_f(model, dofmap, lc.id);
+            for (acc, v) in f.iter_mut().zip(flc) {
+                *acc += v;
+            }
+        }
+        f
+    } else {
+        vec![0.0; n_active]
+    };
+    if f0.iter().any(|v| v.abs() > 0.0) {
+        // 通常は弾性域で収まるが、非線形（コンクリートの引張ひび割れ等）に備えて
+        // 5 分割で漸増し、収束失敗時は増分半減で再試行する。
+        let n_grav = 5usize;
+        let mut applied = 0.0_f64;
+        for gstep in 0..n_grav {
+            let mut mu_target = (gstep + 1) as f64 / n_grav as f64;
+            let mut step_ok = false;
+            for _attempt in 0..5 {
+                let snap = StateSnapshot::capture(&behaviors);
+                let f_ext: Vec<f64> = f0.iter().map(|&v| v * mu_target).collect();
+                let mut converged = false;
+                let mut step_du_free = vec![0.0; n_active];
+                for _iter in 0..50 {
+                    let k_free = assemble_k(model, dofmap, &behaviors, use_kg);
+                    let k_red = reducer.reduce_k(&k_free);
+                    let f_int = compute_f_int(model, dofmap, &behaviors);
+                    let r_free: Vec<f64> =
+                        f_ext.iter().zip(f_int.iter()).map(|(e, i)| e - i).collect();
+                    let r_red = reducer.reduce_f(&r_free);
+                    let f_ext_red = reducer.reduce_f(&f_ext);
+                    let r_norm: f64 = r_red.iter().map(|x| x * x).sum::<f64>().sqrt();
+                    let f_norm: f64 = f_ext_red.iter().map(|x| x * x).sum::<f64>().sqrt();
+                    if r_norm < 1e-6 * f_norm.max(1.0) {
+                        converged = true;
+                        break;
+                    }
+                    let mut solver = make_solver(SolverBackend::Auto);
+                    solver
+                        .factorize(&k_red)
+                        .map_err(|e| format!("factor: {:?}", e))?;
+                    let du_red = solver
+                        .solve(&r_red)
+                        .map_err(|e| format!("solve: {:?}", e))?;
+                    let du_free = reducer.expand_u(&du_red);
+                    for (acc, &d) in step_du_free.iter_mut().zip(du_free.iter()) {
+                        *acc += d;
+                    }
+                    let model_ref: &Model = model;
+                    for (_elem, b) in model_ref.elements.iter().zip(behaviors.iter_mut()) {
+                        let gdofs = b.global_dofs(dofmap);
+                        let mut du_elem = LocalVec {
+                            data: SmallVec::from_elem(0.0, gdofs.len()),
+                        };
+                        for (i, &g) in gdofs.iter().enumerate() {
+                            if g != usize::MAX {
+                                du_elem.data[i] = du_free[g];
+                            }
+                        }
+                        let ctx = Ctx { model: model_ref };
+                        b.update_state(&du_elem, false, &ctx);
+                    }
+                }
+                if converged {
+                    for b in behaviors.iter_mut() {
+                        b.commit_state();
+                    }
+                    for (&du, td) in step_du_free.iter().zip(total_disp.iter_mut()) {
+                        *td += du;
+                    }
+                    applied = mu_target;
+                    step_ok = true;
+                    break;
+                } else {
+                    model.restore(&snap, &mut behaviors);
+                    mu_target = applied + (mu_target - applied) * 0.5;
+                }
+            }
+            if !step_ok {
+                return Err(
+                    "長期荷重の初期載荷が収束しません（長期荷重に対して構造が不安定な可能性）"
+                        .into(),
+                );
+            }
+        }
+        // 長期載荷完了状態を 1 ステップとして記録する（λ=0、性能曲線の始点）。
+        let roof = get_roof_disp(&total_disp, model, dofmap, dir);
+        let f_int_now = compute_f_int(model, dofmap, &behaviors);
+        let base_shear = compute_base_shear(model, dofmap, &f_int_now, dir);
+        let story_drift = compute_story_drift(model, dofmap, &total_disp, dir);
+        capacity_curve.push(CapacityPoint {
+            step: step_no,
+            roof_disp: roof,
+            base_shear,
+            story_shear: compute_story_shear(model, dofmap, &f_int_now, dir),
+            story_drift: story_drift.clone(),
+        });
+        steps.push(PushoverStep {
+            // 長期載荷フェーズ: 水平参照外力 q に対する倍率は 0（長期のみ載荷）。
+            load_factor: 0.0,
+            top_disp: roof,
+            base_shear,
+            story_drifts: story_drift,
+            node_disp: record_node_disp.then(|| total_disp.clone()),
+        });
+        let mu = update_ductility(
+            &behaviors,
+            &mut ductility_trackers,
+            &ductility_refs,
+            ductility_method,
+        );
+        track_hinges(model, &behaviors, &thresholds, &mu, step_no, &mut hinges);
+        track_shear_yield(
+            model,
+            &behaviors,
+            &shear_thresholds,
+            step_no,
+            &mut shear_yields,
+        );
+        member_history_steps.push(record_member_step(model, dofmap, &behaviors, &total_disp));
+        step_no += 1;
+        last_roof = roof;
+    }
+
     for step in 0..max_load_steps {
         let (prev_lambda, mut current_lambda) = if adaptive {
             // 均等刻み: 確定済み λ から「頂部変位が du_uniform 進む見込みの λ 増分」
@@ -268,7 +408,12 @@ pub fn pushover_analysis_recording(
 
         for _attempt in 0..5 {
             let snap = StateSnapshot::capture(&behaviors);
-            let f_ext: Vec<f64> = q.iter().map(|&qi| qi * current_lambda).collect();
+            // 外力は長期荷重（f0、無効時はゼロベクトル）＋比例水平荷重 λ·q。
+            let f_ext: Vec<f64> = f0
+                .iter()
+                .zip(q.iter())
+                .map(|(&f0i, &qi)| f0i + qi * current_lambda)
+                .collect();
             let mut converged = false;
             // このステップ内の全 Newton 修正量の累積（＝ステップ変位増分）。
             // 従来は last_du_free に「最後の修正量」だけを保持しており、
@@ -476,7 +621,12 @@ pub fn pushover_analysis_recording(
                         let f_int = compute_f_int(model, dofmap, &behaviors);
 
                         // 残差 r = λ·q − f_int（荷重制御フェーズと同じ釣合い形式）。
-                        let f_ext: Vec<f64> = q.iter().map(|&qi| qi * lambda).collect();
+                        // 外力は長期荷重 f0 ＋比例水平荷重 λ·q（荷重制御フェーズと同形式）。
+                        let f_ext: Vec<f64> = f0
+                            .iter()
+                            .zip(q.iter())
+                            .map(|(&f0i, &qi)| f0i + qi * lambda)
+                            .collect();
                         let r_free: Vec<f64> =
                             f_ext.iter().zip(f_int.iter()).map(|(e, i)| e - i).collect();
                         let r_red = reducer.reduce_f(&r_free);
@@ -664,7 +814,15 @@ pub fn pushover_analysis_recording(
                             }
                             b.update_state(&du_elem, false, &ctx);
                         }
-                        Ok(compute_f_int(model_ref, dofmap, behaviors_ref))
+                        // 弧長法の釣合いは λ·q = f_int の形で解かれるため、長期荷重
+                        // f0 を保持する場合は f_int から f0 を差し引いた値を返す
+                        // （f0 + λ·q = f_int と等価）。
+                        let f_int = compute_f_int(model_ref, dofmap, behaviors_ref);
+                        Ok(f_int
+                            .iter()
+                            .zip(f0.iter())
+                            .map(|(&fi, &f0i)| fi - f0i)
+                            .collect())
                     },
                     &prev_du,
                     arc_lambda,

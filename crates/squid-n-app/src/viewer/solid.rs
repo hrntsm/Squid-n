@@ -106,7 +106,11 @@ fn circle_outline(dia: f64) -> Vec<[f64; 2]> {
 /// 断面輪郭を局所 (y, z) 座標 [mm] の閉多角形として返す（末尾は先頭に接続）。
 /// y=せい方向（局所 ey）、z=幅方向（局所 ez）。形状定義が無い場合は
 /// `depth`×`width` の矩形にフォールバックし、それも無ければ None。
-fn section_outline(sec: &Section) -> Option<Vec<[f64; 2]>> {
+///
+/// ヒンジ詳細ウィンドウのファイバー塑性化マップへの断面外形線の重ね描き
+/// （`viewer::hinge`）でも再利用するため `pub(super)`（[`section_inner_outline`]
+/// と合わせて本ファイル外からの唯一の公開窓口）。
+pub(super) fn section_outline(sec: &Section) -> Option<Vec<[f64; 2]>> {
     let Some(shape) = &sec.shape else {
         // 形状なし: 断面表の depth/width が入っていれば矩形で近似
         return (sec.depth > 0.0 && sec.width > 0.0).then(|| rect_outline(sec.depth, sec.width));
@@ -254,6 +258,38 @@ fn section_outline(sec: &Section) -> Option<Vec<[f64; 2]>> {
         SectionShape::RcWall { .. } => return None,
     };
     Some(outline)
+}
+
+/// 中空断面（SteelBox・SteelPipe・CftBox・CftPipe）の内側輪郭（局所 (y, z)
+/// 座標 [mm] の閉多角形。中心は外形と共通）。断面押し出しソリッド（本ファイル
+/// の他の描画）は外形の面のみで十分なため未使用だが、ヒンジ詳細ウィンドウの
+/// ファイバー塑性化マップでは外形だけでは中空判定ができないため
+/// `viewer::hinge` から利用する。中空でない断面・板厚が全せい／全幅以上で
+/// 内側が潰れる不正値は None。
+pub(super) fn section_inner_outline(sec: &Section) -> Option<Vec<[f64; 2]>> {
+    let shape = sec.shape.as_ref()?;
+    match shape {
+        SectionShape::SteelBox {
+            height,
+            width,
+            thick,
+            ..
+        }
+        | SectionShape::CftBox {
+            height,
+            width,
+            thick,
+        } => {
+            let (hi, wi) = (height - 2.0 * thick, width - 2.0 * thick);
+            (hi > 0.0 && wi > 0.0).then(|| rect_outline(hi, wi))
+        }
+        SectionShape::SteelPipe { outer_dia, thick }
+        | SectionShape::CftPipe { outer_dia, thick } => {
+            let di = outer_dia - 2.0 * thick;
+            (di > 0.0).then(|| circle_outline(di))
+        }
+        _ => None,
+    }
 }
 
 /// 部材の断面押し出しソリッドを描画する。

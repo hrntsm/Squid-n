@@ -2265,3 +2265,102 @@ fn test_state_member_forces_field_is_continuous() {
         );
     }
 }
+
+/// 角形鋼管（SteelBox、中空断面）のファイバ配置が管壁のみで、断面積・断面二次
+/// モーメントが理論値と一致することを検証する回帰テスト。
+///
+/// 従来は形状によらず width×depth の中実矩形格子でファイバを生成しており、
+/// □-400×400×12 では断面積を約 8.6 倍（160000/18624 mm²）に過大評価し、
+/// 剛性・全塑性耐力も同様に過大だった（保有水平耐力の過大評価＝危険側）。
+#[test]
+fn test_steel_box_fibers_are_hollow() {
+    let shape = squid_n_core::section_shape::SectionShape::SteelBox {
+        height: 400.0,
+        width: 400.0,
+        thick: 12.0,
+        corner_r: 0.0,
+    };
+    let (sec, mats) = build_gauss_fibers(
+        400.0,
+        400.0,
+        12,
+        20,
+        Some(&shape),
+        None,
+        205000.0,
+        Some(295.0),
+        1.0,
+        1.0,
+    );
+    assert_eq!(sec.fibers.len(), mats.len());
+
+    // 断面積: A = 400² − 376²（角部直角）。板分割は端数なく厳密一致する。
+    let a_sum: f64 = sec.fibers.iter().map(|f| f.area).sum();
+    let a_exact = 400.0_f64 * 400.0 - 376.0 * 376.0;
+    assert_relative_eq!(a_sum, a_exact, max_relative = 1e-9);
+
+    // 断面二次モーメント（回転後座標: せい方向=y）: I = (400⁴ − 376⁴)/12。
+    // ファイバ離散化（板厚 2 分割・板長 16 分割程度）の打切り誤差 2% 以内。
+    let i_sum: f64 = sec.fibers.iter().map(|f| f.area * f.y * f.y).sum();
+    let i_exact = (400.0_f64.powi(4) - 376.0_f64.powi(4)) / 12.0;
+    assert_relative_eq!(i_sum, i_exact, max_relative = 0.02);
+
+    // 材料区分はすべて鋼材（2）で、管内側（|y|,|z| < 376/2 の中央部）にファイバが無い。
+    assert!(sec.fibers.iter().all(|f| f.material == 2));
+    assert!(sec
+        .fibers
+        .iter()
+        .all(|f| f.y.abs() > 376.0 / 2.0 - 1e-9 || f.z.abs() > 376.0 / 2.0 - 1e-9));
+}
+
+/// RC 円形断面のファイバ配置が円形（極座標リング）で、コンクリート断面積が
+/// π·d²/4 と一致し、主筋が材料区分 1 で分離配置されることを検証する。
+/// 従来は d×d の中実矩形格子で断面積を 4/π ≒ 1.27 倍に過大評価していた。
+#[test]
+fn test_rc_circle_fibers_match_circle_area() {
+    let rebar = squid_n_core::section_shape::RcRebar {
+        main_x: squid_n_core::section_shape::BarSet {
+            count: 4,
+            dia: 22.0,
+            layers: 1,
+        },
+        main_y: squid_n_core::section_shape::BarSet {
+            count: 4,
+            dia: 22.0,
+            layers: 1,
+        },
+        cover: 40.0,
+        shear: squid_n_core::section_shape::ShearBar {
+            dia: 10.0,
+            pitch: 100.0,
+            legs: 2,
+            grade: None,
+        },
+    };
+    let shape = squid_n_core::section_shape::SectionShape::RcCircle { d: 600.0, rebar };
+    let (sec, _mats) = build_gauss_fibers(
+        600.0,
+        600.0,
+        12,
+        20,
+        Some(&shape),
+        Some(24.0),
+        22000.0,
+        Some(345.0),
+        1.0,
+        1.0,
+    );
+
+    let conc_area: f64 = sec
+        .fibers
+        .iter()
+        .filter(|f| f.material == 0)
+        .map(|f| f.area)
+        .sum();
+    let circle = std::f64::consts::PI * 600.0_f64 * 600.0 / 4.0;
+    assert_relative_eq!(conc_area, circle, max_relative = 1e-9);
+
+    // 主筋 8 本が材料区分 1 の点ファイバとして分離されていること。
+    let n_rebar = sec.fibers.iter().filter(|f| f.material == 1).count();
+    assert_eq!(n_rebar, 8);
+}

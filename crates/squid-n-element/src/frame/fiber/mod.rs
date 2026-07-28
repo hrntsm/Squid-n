@@ -4,7 +4,7 @@ use crate::behavior::{
 use smallvec::SmallVec;
 use squid_n_core::dof::DofMap;
 use squid_n_core::ids::NodeId;
-use squid_n_core::section_shape::{BarSet, RcRebar, SectionShape};
+use squid_n_core::section_shape::SectionShape;
 use squid_n_material::uniaxial::{Bilinear, UniaxialMaterial};
 use squid_n_section::fiber::{Fiber, FiberSection};
 use std::any::Any;
@@ -19,10 +19,19 @@ pub fn clamp_plastic_zone(lp: f64, l: f64) -> f64 {
 }
 
 /// ガウス点のファイバー断面と材料を構築する（構造力学のファイバーモデル）。
-/// RC 断面（RcRect/RcCircle）はコンクリートファイバー格子に加え、主筋を点ファイバー
-/// （バイリニア鋼材）として**分離**して配置する（従来は均質コンクリート断面で
-/// 引張側鉄筋を無視していた）。それ以外（鋼材・複合断面）は均質格子とする。
+///
+/// 断面形状（[`SectionShape`]）がある場合は、MN 相関曲面と同じ配置規則
+/// （`squid_n_section::mn_surface::plastic_fibers_at`）で**形状どおりの領域**へ
+/// ファイバを配置する。H 形はフランジ＋ウェブ、角形鋼管・鋼管は管壁のみ、
+/// CFT は管壁＋充填コンクリート、RC はコンクリート領域＋主筋点ファイバ、
+/// SRC はさらに内蔵鉄骨、のように中空・薄肉断面が正しく表現される
+/// （従来は形状によらず width×depth の中実矩形格子で、角形鋼管等の面積・剛性・
+/// 耐力を大幅に過大評価していた）。形状が無い場合（壁エレメントの壁柱など）は
+/// 従来どおり width×depth の中実格子とする。
 /// `fc≤60` はコンクリートに NewRC、超過は放物線モデルを用いる。
+///
+/// ファイバの材料区分タグ（`Fiber::material`、塑性化マップの色分けに使用）:
+/// 0=コンクリート、1=主筋、2=鋼材（形鋼・鋼管・内蔵鉄骨）。
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn build_gauss_fibers(
     width: f64,
@@ -36,39 +45,34 @@ pub(crate) fn build_gauss_fibers(
     steel_factor: f64,
     rebar_factor: f64,
 ) -> (FiberSection, Vec<Box<dyn UniaxialMaterial>>) {
-    // 基本格子（コンクリート or 鋼材）。保有水平耐力計算時は鋼材文脈の材料強度
-    // 割増（steel_factor）を fy に乗じる（時刻歴応答解析等は steel_factor=1.0）。
-    let base: Box<dyn UniaxialMaterial> = match fc {
-        Some(fc) if fc <= 60.0 => Box::new(squid_n_material::ConcreteNewRc::new(fc, 2.0)),
-        Some(fc) => Box::new(squid_n_material::uniaxial::Concrete::new(fc, 2.0)),
-        None => Box::new(Bilinear::new(e, fy.unwrap_or(1e20) * steel_factor, 0.01)),
-    };
-    let grid = squid_n_section::fiber::rect_fiber_section(width, depth, nw, nd, 0);
-    let mut fibers = grid.fibers;
-    let mut mats: Vec<Box<dyn UniaxialMaterial>> =
-        (0..fibers.len()).map(|_| base.clone_box()).collect();
+    let mut result = shape
+        .filter(|s| !matches!(s, SectionShape::RcWall { .. }))
+        .map(|s| build_shape_fibers(s, fc, e, fy, steel_factor, rebar_factor));
 
-    // RC 断面: 主筋を点ファイバー（バイリニア鋼材、fy 既定 SD345=345）として追加。
-    // 保有水平耐力計算時は主筋の材料強度割増（rebar_factor）を乗じる
-    // （時刻歴応答解析等は rebar_factor=1.0）。
-    if fc.is_some() {
-        let rebar_fy = fy.unwrap_or(345.0) * rebar_factor;
-        let rebar_e = 205000.0;
-        match shape {
-            Some(SectionShape::RcRect { rebar, b, d }) => {
-                add_rebar_fibers_rect(&mut fibers, &mut mats, rebar, *b, *d, rebar_e, rebar_fy);
-            }
-            Some(SectionShape::RcCircle { rebar, d }) => {
-                add_rebar_fibers_circle(&mut fibers, &mut mats, rebar, *d, rebar_e, rebar_fy);
-            }
-            _ => {}
+    let (mut fibers, mats) = match result.take() {
+        Some(r) => r,
+        None => {
+            // 形状なし（壁エレメントの壁柱など）: 従来どおりの中実矩形格子。
+            // 基本格子（コンクリート or 鋼材）。保有水平耐力計算時は鋼材文脈の
+            // 材料強度割増（steel_factor）を fy に乗じる（時刻歴応答解析等は 1.0）。
+            let base: Box<dyn UniaxialMaterial> = match fc {
+                Some(fc) if fc <= 60.0 => Box::new(squid_n_material::ConcreteNewRc::new(fc, 2.0)),
+                Some(fc) => Box::new(squid_n_material::uniaxial::Concrete::new(fc, 2.0)),
+                None => Box::new(Bilinear::new(e, fy.unwrap_or(1e20) * steel_factor, 0.01)),
+            };
+            let tag = if fc.is_some() { 0 } else { 2 };
+            let grid = squid_n_section::fiber::rect_fiber_section(width, depth, nw, nd, tag);
+            let fibers = grid.fibers;
+            let mats: Vec<Box<dyn UniaxialMaterial>> =
+                (0..fibers.len()).map(|_| base.clone_box()).collect();
+            (fibers, mats)
         }
-    }
+    };
 
-    // `rect_fiber_section`（および主筋配置）の座標規約は y=幅方向・z=せい方向だが、
-    // 要素座標系はせい方向＝ローカル y（LocalFrame: ey=ref_vector 直交化）のため、
-    // x 軸まわりの 90° 回転 (y,z)←(z,−y) で並べ替え、強軸曲げ（せい方向の応力勾配）が
-    // Mz 面（κz・∫y²dA、(uy,rz) ブロック）に対応するようにする。
+    // 配置の座標規約は y=幅方向・z=せい方向だが、要素座標系はせい方向＝ローカル y
+    // （LocalFrame: ey=ref_vector 直交化）のため、x 軸まわりの 90° 回転
+    // (y,z)←(z,−y) で並べ替え、強軸曲げ（せい方向の応力勾配）が Mz 面
+    // （κz・∫y²dA、(uy,rz) ブロック）に対応するようにする。
     // 純回転（行列式 +1）のため鏡像化はしない。現行の `RcRebar` は上下・左右対称
     // 配置しか表現できないため回転の向き（±90°）は結果に影響しないが、将来
     // 非対称配筋（上端筋≠下端筋等）を導入する場合は「せいの上端が +ey 側」となる
@@ -81,98 +85,77 @@ pub(crate) fn build_gauss_fibers(
     (FiberSection { fibers }, mats)
 }
 
-/// 矩形 RC 断面の主筋点ファイバーを追加する（`mn_surface::rebar_fibers_rect` と同じ
-/// 配置規則: せい方向主筋 main_x を上下面へ、幅方向主筋 main_y を側面内分点へ）。
-/// 座標系は `rect_fiber_section` と同じ（y=幅方向、z=せい方向。強軸曲げは z）。
-fn add_rebar_fibers_rect(
-    fibers: &mut Vec<Fiber>,
-    mats: &mut Vec<Box<dyn UniaxialMaterial>>,
-    rebar: &RcRebar,
-    b: f64,
-    d: f64,
+/// 断面形状に応じたファイバ配置と材料の構築（[`build_gauss_fibers`] の形状あり経路）。
+///
+/// 配置は MN 相関曲面（`mn_surface::plastic_fibers_at`）と同一規則を共用し、
+/// 各ファイバの材料領域区分（[`FiberRegion`]）から非線形材料を割り当てる:
+/// - コンクリート領域: NewRC（fc≤60）／放物線モデル。fc 未設定の設定不備は
+///   弾性フォールバック（降伏しないバイリニア）で防御する。
+/// - 主筋: バイリニア鋼材（E=205000、fy 既定 SD345=345、`rebar_factor` 割増）。
+/// - 鋼材領域（形鋼・鋼管・内蔵鉄骨）: バイリニア鋼材（部材材料の E・fy、
+///   `steel_factor` 割増。fy 未設定は降伏しない弾性＝従来の既定と同じ）。
+///
+/// 解像度は最大寸法/16（従来の 12×20 中実格子と同程度のファイバ数）、円環は
+/// 周 24 分割とし、MN 曲面の細分割（/40・周 48）より粗く増分解析の計算量を抑える。
+fn build_shape_fibers(
+    shape: &SectionShape,
+    fc: Option<f64>,
     e: f64,
-    fy: f64,
-) {
-    let bar_area = |set: &BarSet| std::f64::consts::PI * set.dia * set.dia / 4.0;
-    let push = |y: f64,
-                z: f64,
-                a: f64,
-                mats: &mut Vec<Box<dyn UniaxialMaterial>>,
-                fibers: &mut Vec<Fiber>| {
-        fibers.push(Fiber {
-            y,
-            z,
-            area: a,
-            material: 1,
-        });
-        mats.push(Box::new(Bilinear::new(e, fy, 0.01)));
+    fy: Option<f64>,
+    steel_factor: f64,
+    rebar_factor: f64,
+) -> (Vec<Fiber>, Vec<Box<dyn UniaxialMaterial>>) {
+    use squid_n_section::mn_surface::{
+        max_dimension, plastic_fibers_at, AnnulusRes, FiberRegion, StrengthParams,
     };
-    // せい方向主筋（上下面）。
-    let set = &rebar.main_x;
-    if set.count > 0 {
-        let a = bar_area(set);
-        for layer in 0..set.layers.max(1) {
-            let z0 = d / 2.0 - rebar.cover - layer as f64 * 2.5 * set.dia;
-            let span = b - 2.0 * rebar.cover;
-            for i in 0..set.count {
-                let y = if set.count == 1 {
-                    0.0
-                } else {
-                    -span / 2.0 + span * i as f64 / (set.count - 1) as f64
-                };
-                for zsign in [1.0, -1.0] {
-                    push(y, zsign * z0, a, mats, fibers);
-                }
-            }
-        }
-    }
-    // 幅方向主筋（側面内分点）。
-    let set = &rebar.main_y;
-    if set.count > 0 {
-        let a = bar_area(set);
-        for layer in 0..set.layers.max(1) {
-            let y0 = b / 2.0 - rebar.cover - layer as f64 * 2.5 * set.dia;
-            let span = d - 2.0 * rebar.cover;
-            for i in 0..set.count {
-                let z = -span / 2.0 + span * (i as f64 + 1.0) / (set.count + 1) as f64;
-                for ysign in [1.0, -1.0] {
-                    push(ysign * y0, z, a, mats, fibers);
-                }
-            }
-        }
-    }
-}
 
-/// 円形 RC 断面の主筋点ファイバーを追加する（main_x+main_y の合計本数を円周へ等配）。
-fn add_rebar_fibers_circle(
-    fibers: &mut Vec<Fiber>,
-    mats: &mut Vec<Box<dyn UniaxialMaterial>>,
-    rebar: &RcRebar,
-    d: f64,
-    e: f64,
-    fy: f64,
-) {
-    let total = (rebar.main_x.count + rebar.main_y.count) as usize;
-    if total == 0 {
-        return;
-    }
-    let dia = if rebar.main_x.count > 0 {
-        rebar.main_x.dia
-    } else {
-        rebar.main_y.dia
+    // 強度パラメータは配置生成では領域区分の決定に使われないため名目値でよいが、
+    // 実値を渡しておく（将来 plastic_fibers_at が配置へ強度を反映しても破綻しない）。
+    let strength = StrengthParams {
+        steel_fy: fy.unwrap_or(235.0) * steel_factor,
+        rebar_fy: fy.unwrap_or(345.0) * rebar_factor,
+        concrete_fc: fc.unwrap_or(24.0),
+        steel_e: e,
     };
-    let a = std::f64::consts::PI * dia * dia / 4.0;
-    let r = d / 2.0 - rebar.cover;
-    for i in 0..total {
-        let th = 2.0 * std::f64::consts::PI * i as f64 / total as f64;
+    let target = (max_dimension(shape) / 16.0).max(1.0);
+    let ring = AnnulusRes {
+        n_theta: 24,
+        n_r_thin: 2,
+        n_r_solid: 8,
+    };
+    let placed = plastic_fibers_at(shape, &strength, target, ring);
+
+    let concrete: Box<dyn UniaxialMaterial> = match fc {
+        Some(fc) if fc <= 60.0 => Box::new(squid_n_material::ConcreteNewRc::new(fc, 2.0)),
+        Some(fc) => Box::new(squid_n_material::uniaxial::Concrete::new(fc, 2.0)),
+        // コンクリート領域があるのに fc 未設定（設定不備）: 弾性で防御。
+        None => Box::new(Bilinear::new(e, 1e20, 0.01)),
+    };
+    let steel: Box<dyn UniaxialMaterial> =
+        Box::new(Bilinear::new(e, fy.unwrap_or(1e20) * steel_factor, 0.01));
+    let rebar: Box<dyn UniaxialMaterial> = Box::new(Bilinear::new(
+        205000.0,
+        fy.unwrap_or(345.0) * rebar_factor,
+        0.01,
+    ));
+
+    let mut fibers = Vec::with_capacity(placed.len());
+    let mut mats: Vec<Box<dyn UniaxialMaterial>> = Vec::with_capacity(placed.len());
+    for f in &placed {
+        let (tag, mat) = match f.region {
+            FiberRegion::Concrete => (0usize, concrete.clone_box()),
+            FiberRegion::Rebar => (1usize, rebar.clone_box()),
+            FiberRegion::Steel => (2usize, steel.clone_box()),
+        };
         fibers.push(Fiber {
-            y: r * th.cos(),
-            z: r * th.sin(),
-            area: a,
-            material: 1,
+            y: f.y,
+            z: f.z,
+            area: f.area,
+            material: tag,
         });
-        mats.push(Box::new(Bilinear::new(e, fy, 0.01)));
+        mats.push(mat);
     }
+    (fibers, mats)
 }
 
 /// 材端解放（ピン・半剛）で内部自由度へ分離した要素端回転。

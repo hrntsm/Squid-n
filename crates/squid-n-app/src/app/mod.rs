@@ -339,6 +339,9 @@ pub struct AnalysisSettings {
     pub ductility_method: squid_n_solver::pushover::DuctilityMethod,
     /// 増分解析: 制御方式（段階制御／荷重増分のみ）。
     pub push_control: squid_n_solver::pushover::PushoverControl,
+    /// 増分解析: 長期系荷重ケース（固定・積載等）を水平力増分の前に初期載荷するか。
+    /// 長期荷重ケースが無いモデルでは無視される（ソルバ側の対応実装に依存）。
+    pub push_apply_long_term: bool,
     /// 質点系モデル生成: モデル化タイプ（等価せん断型など）。
     pub lumped_mass_type: squid_n_solver::lumped_mass::LumpedMassType,
     /// 質点系モデル生成: 第1折点判定の割線剛性比（0..1、既定 0.75）。
@@ -447,6 +450,7 @@ impl Default for AnalysisSettings {
             push_drift_denom: 150.0,
             ductility_method: squid_n_solver::pushover::DuctilityMethod::default(),
             push_control: squid_n_solver::pushover::PushoverControl::default(),
+            push_apply_long_term: true,
             lumped_mass_type: squid_n_solver::lumped_mass::LumpedMassType::default(),
             lumped_secant_ratio: 0.75,
             th_damping: 0.02,
@@ -709,6 +713,10 @@ pub struct App {
     /// 曲面構築は数十msかかりうるため、選択部材が変わらない限り再計算しない）。
     #[cfg(feature = "gui")]
     pub hinge_mn_cache: Option<crate::viewer::hinge::MnCurveCache>,
+    /// ヒンジ詳細ウィンドウの N-M 相関図（3D ワイヤーフレーム）用カメラ状態
+    /// （`viewer::CameraState` を再利用し、断面詳細ビューと同じ操作感にする）。
+    #[cfg(feature = "gui")]
+    pub hinge_mn_camera: crate::viewer::CameraState,
     /// N/Q/M 図の表示切替（false=単色塗り／true=値に応じたコンター色分け）
     #[cfg(feature = "gui")]
     pub diagram_contour: bool,
@@ -918,6 +926,8 @@ impl Default for App {
             hinge_detail_elem: None,
             #[cfg(feature = "gui")]
             hinge_mn_cache: None,
+            #[cfg(feature = "gui")]
+            hinge_mn_camera: crate::viewer::CameraState::default(),
             #[cfg(feature = "gui")]
             diagram_contour: false,
             #[cfg(feature = "gui")]

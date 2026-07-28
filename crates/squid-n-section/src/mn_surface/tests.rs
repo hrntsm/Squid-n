@@ -15,6 +15,7 @@ fn steel_rect_fibers(b: f64, d: f64, fy: f64, n: usize) -> Vec<PlasticFiber> {
             sigma_t: fy,
             sigma_c: -fy,
             young: 205000.0,
+            region: super::types::FiberRegion::Steel,
         },
     );
     fibers

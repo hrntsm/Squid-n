@@ -5,14 +5,28 @@
 
 use squid_n_core::section_shape::{BarSet, RcRebar, SectionShape};
 
-use super::types::{concrete_young, PlasticFiber, StrengthParams, YieldModelKind};
+use super::types::{concrete_young, FiberRegion, PlasticFiber, StrengthParams, YieldModelKind};
 
-/// ファイバ材料（限界応力と弾性係数）。
+/// ファイバ材料（限界応力と弾性係数、材料領域区分）。
 #[derive(Clone, Copy)]
 pub(crate) struct FiberMat {
     pub sigma_t: f64,
     pub sigma_c: f64,
     pub young: f64,
+    pub region: FiberRegion,
+}
+
+/// 円環（管・中実円）領域の分割解像度。
+/// [`plastic_fibers`] は従来どおり `YieldModelKind` から選び、要素ファイバ生成
+/// （`squid-n-element` の `build_gauss_fibers`）は計算コストに応じた中間解像度を渡す。
+#[derive(Clone, Copy, Debug)]
+pub struct AnnulusRes {
+    /// 周方向分割数。
+    pub n_theta: usize,
+    /// 薄肉円環（鋼管壁）の径方向分割数。
+    pub n_r_thin: usize,
+    /// 中実円（丸鋼・RC 円形・CFT 充填部）の径方向分割数。
+    pub n_r_solid: usize,
 }
 
 /// 矩形領域（中心 `center = [cy, cz]`、幅 w × 高さ h）を目標寸法 `target` 以下の
@@ -30,6 +44,7 @@ pub(crate) fn mesh_rect(
         sigma_t,
         sigma_c,
         young,
+        region,
     } = mat;
     let ny = (w / target).ceil().max(1.0) as usize;
     let nz = (h / target).ceil().max(1.0) as usize;
@@ -44,6 +59,7 @@ pub(crate) fn mesh_rect(
                 sigma_t,
                 sigma_c,
                 young,
+                region,
             });
         }
     }
@@ -62,6 +78,7 @@ fn mesh_annulus(
         sigma_t,
         sigma_c,
         young,
+        region,
     } = mat;
     let ro = outer_dia / 2.0;
     let ri = (ro - thick).max(0.0);
@@ -81,6 +98,7 @@ fn mesh_annulus(
                 sigma_t,
                 sigma_c,
                 young,
+                region,
             });
         }
     }
@@ -193,6 +211,7 @@ fn rebar_fibers_rect(
                         sigma_t: fy,
                         sigma_c: -fy,
                         young,
+                        region: FiberRegion::Rebar,
                     });
                 }
             }
@@ -217,6 +236,7 @@ fn rebar_fibers_rect(
                         sigma_t: fy,
                         sigma_c: -fy,
                         young,
+                        region: FiberRegion::Rebar,
                     });
                 }
             }
@@ -252,6 +272,7 @@ fn rebar_fibers_circle(
             sigma_t: fy,
             sigma_c: -fy,
             young,
+            region: FiberRegion::Rebar,
         });
     }
 }
@@ -271,22 +292,30 @@ pub fn plastic_fibers(
     kind: YieldModelKind,
 ) -> Vec<PlasticFiber> {
     let fine = !matches!(kind, YieldModelKind::MultiSpring);
-    let fy = strength.steel_fy;
-    let fc = strength.concrete_fc;
-    let steel = FiberMat {
-        sigma_t: fy,
-        sigma_c: -fy,
-        young: strength.steel_e,
+    let target = if fine {
+        max_dimension(shape) / 40.0
+    } else {
+        max_dimension(shape) / 4.0
     };
-    let conc = FiberMat {
-        sigma_t: 0.0,
-        sigma_c: -fc,
-        young: concrete_young(fc),
+    let ring = if fine {
+        AnnulusRes {
+            n_theta: 48,
+            n_r_thin: 4,
+            n_r_solid: 12,
+        }
+    } else {
+        AnnulusRes {
+            n_theta: 8,
+            n_r_thin: 1,
+            n_r_solid: 2,
+        }
     };
-    let mut fibers = Vec::new();
+    plastic_fibers_at(shape, strength, target, ring)
+}
 
-    // 最大寸法に対する目標ファイバ寸法
-    let max_dim = match *shape {
+/// 断面外形の最大寸法 [mm]（目標ファイバ寸法の基準）。
+pub fn max_dimension(shape: &SectionShape) -> f64 {
+    match *shape {
         SectionShape::SteelH { height, width, .. }
         | SectionShape::SteelBox { height, width, .. }
         | SectionShape::SteelChannel { height, width, .. }
@@ -308,8 +337,33 @@ pub fn plastic_fibers(
         SectionShape::CftBox { height, width, .. } => height.max(width),
         SectionShape::CftPipe { outer_dia, .. } => outer_dia,
         SectionShape::RcWall { thickness, .. } => thickness.max(1000.0),
+    }
+}
+
+/// 目標ファイバ寸法 `target` [mm] と円環解像度 `ring` を明示して配置を生成する。
+/// [`plastic_fibers`]（MN 曲面・M-φ 用）と要素ファイバ生成
+/// （`squid-n-element` の `build_gauss_fibers`）が同じ配置規則を共用するための実体。
+pub fn plastic_fibers_at(
+    shape: &SectionShape,
+    strength: &StrengthParams,
+    target: f64,
+    ring: AnnulusRes,
+) -> Vec<PlasticFiber> {
+    let fy = strength.steel_fy;
+    let fc = strength.concrete_fc;
+    let steel = FiberMat {
+        sigma_t: fy,
+        sigma_c: -fy,
+        young: strength.steel_e,
+        region: FiberRegion::Steel,
     };
-    let target = if fine { max_dim / 40.0 } else { max_dim / 4.0 };
+    let conc = FiberMat {
+        sigma_t: 0.0,
+        sigma_c: -fc,
+        young: concrete_young(fc),
+        region: FiberRegion::Concrete,
+    };
+    let mut fibers = Vec::new();
 
     match *shape {
         SectionShape::SteelH {
@@ -414,9 +468,14 @@ pub fn plastic_fibers(
             );
         }
         SectionShape::SteelPipe { outer_dia, thick } => {
-            let n_theta = if fine { 48 } else { 8 };
-            let n_r = if fine { 4 } else { 1 };
-            mesh_annulus(&mut fibers, outer_dia, thick, n_theta, n_r, steel);
+            mesh_annulus(
+                &mut fibers,
+                outer_dia,
+                thick,
+                ring.n_theta,
+                ring.n_r_thin,
+                steel,
+            );
         }
         SectionShape::SteelFlatBar { width, thick } => {
             // 中実矩形（幅 width×せい thick）を鋼ファイバで充填。
@@ -424,9 +483,14 @@ pub fn plastic_fibers(
         }
         SectionShape::SteelRoundBar { dia } => {
             // 中実円 = 厚 dia/2 の円環を鋼ファイバで充填。
-            let n_theta = if fine { 48 } else { 8 };
-            let n_r = if fine { 12 } else { 2 };
-            mesh_annulus(&mut fibers, dia, dia / 2.0, n_theta, n_r, steel);
+            mesh_annulus(
+                &mut fibers,
+                dia,
+                dia / 2.0,
+                ring.n_theta,
+                ring.n_r_solid,
+                steel,
+            );
         }
         SectionShape::SteelLipChannel {
             height,
@@ -516,9 +580,7 @@ pub fn plastic_fibers(
         }
         SectionShape::RcCircle { d, ref rebar } => {
             // 中実円 = 厚 d/2 の円環
-            let n_theta = if fine { 48 } else { 8 };
-            let n_r = if fine { 12 } else { 2 };
-            mesh_annulus(&mut fibers, d, d / 2.0, n_theta, n_r, conc);
+            mesh_annulus(&mut fibers, d, d / 2.0, ring.n_theta, ring.n_r_solid, conc);
             rebar_fibers_circle(&mut fibers, rebar, d, strength.rebar_fy, strength.steel_e);
         }
         SectionShape::SrcRect {
@@ -571,15 +633,26 @@ pub fn plastic_fibers(
             );
         }
         SectionShape::CftPipe { outer_dia, thick } => {
-            let n_theta = if fine { 48 } else { 8 };
-            let n_r_s = if fine { 4 } else { 1 };
-            let n_r_c = if fine { 12 } else { 2 };
             // 鋼管
-            mesh_annulus(&mut fibers, outer_dia, thick, n_theta, n_r_s, steel);
+            mesh_annulus(
+                &mut fibers,
+                outer_dia,
+                thick,
+                ring.n_theta,
+                ring.n_r_thin,
+                steel,
+            );
             // 充填コンクリート（中実円 = 厚 di/2 の円環）
             let di = outer_dia - 2.0 * thick;
             if di > 0.0 {
-                mesh_annulus(&mut fibers, di, di / 2.0, n_theta, n_r_c, conc);
+                mesh_annulus(
+                    &mut fibers,
+                    di,
+                    di / 2.0,
+                    ring.n_theta,
+                    ring.n_r_solid,
+                    conc,
+                );
             }
         }
         SectionShape::RcWall { thickness, .. } => {

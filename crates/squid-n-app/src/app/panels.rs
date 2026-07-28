@@ -1182,6 +1182,17 @@ impl App {
                         });
                 });
                 ui.horizontal_wrapped(|ui| {
+                    ui.checkbox(
+                        &mut self.analysis_cfg.push_apply_long_term,
+                        "長期荷重を初期載荷",
+                    )
+                    .on_hover_text(
+                        "長期系荷重ケース（固定・積載等）を水平力増分の前に載荷し、\
+                         その応力状態を初期条件とします。長期荷重ケースが無い場合は\
+                         無視されます。",
+                    );
+                });
+                ui.horizontal_wrapped(|ui| {
                     use squid_n_solver::pushover::PushoverControl;
                     ui.label("増分方式:").on_hover_text(
                         "荷重増分のみは比較検証用。変位制御へ移行せず、終了目標が有効な場合は\

@@ -22,7 +22,7 @@ use squid_n_core::ids::ElemId;
 use squid_n_core::material_grade::{
     material_strength_factor_rebar, material_strength_factor_steel,
 };
-use squid_n_core::model::{ElementData, ElementKind, Model};
+use squid_n_core::model::{ElementData, ElementKind, Model, Section};
 use squid_n_element::behavior::{FiberSectionState, FiberStateSample};
 use squid_n_section::mn_surface::{build_surface, plastic_fibers, StrengthParams, YieldModelKind};
 use squid_n_solver::pushover::{HingeEvent, HingeLevel, MemberStepState};
@@ -264,6 +264,9 @@ pub struct MnCurveCache {
     pos: Vec<[f64; 2]>,
     /// 負曲げ側（β+π 方向）の N-M 曲線。
     neg: Vec<[f64; 2]>,
+    /// N-My-Mz 相関曲面（3D ワイヤーフレーム表示用。単位は N・N・mm、引張正の
+    /// `MnSurface` 既定規約のまま保持し、描画時に正規化する）。
+    surface: squid_n_section::mn_surface::MnSurface,
 }
 
 /// N-M 相関曲面の格子解像度（経線方向・周方向）。`mn_view.rs` と同じ値を使い、
@@ -315,19 +318,46 @@ pub(super) fn m_theta_series(
 /// 応答経路 [M(kN・m), N(kN、圧縮正)] を全ステップ抽出する（純粋関数）。
 /// `member_history` の軸力は既に圧縮正のため、N-M 曲線側の符号変換のみで
 /// 済む（[`extract_mn_meridian`] 参照）。
+///
+/// 先頭に原点 [0.0, 0.0]（無載荷状態）を前置する。`member_history` の記録は
+/// 最初の記録ステップから始まるため、これが無いと経路の始点が分からない。
+/// 長期荷重の初期載荷が実装されれば最初の記録ステップは長期荷重時点になるが、
+/// その場合も「無載荷→長期荷重→水平力」の経路として原点前置のままで正しい。
 pub(super) fn n_m_response_path(records: &[MemberStepState], bend_dir_z: bool) -> Vec<[f64; 2]> {
-    records
-        .iter()
-        .map(|r| {
-            let (mi, mj) = if bend_dir_z {
-                (r.mz_i, r.mz_j)
-            } else {
-                (r.my_i, r.my_j)
-            };
-            let m = if mi.abs() >= mj.abs() { mi } else { mj };
-            [m as f64 / 1e6, r.n as f64 / 1e3]
-        })
-        .collect()
+    let mut path = vec![[0.0, 0.0]];
+    path.extend(records.iter().map(|r| {
+        let (mi, mj) = if bend_dir_z {
+            (r.mz_i, r.mz_j)
+        } else {
+            (r.my_i, r.my_j)
+        };
+        let m = if mi.abs() >= mj.abs() { mi } else { mj };
+        [m as f64 / 1e6, r.n as f64 / 1e3]
+    }));
+    path
+}
+
+/// 3D 表示用の応答経路 [My(N・mm,符号付き), Mz(N・mm,符号付き), N(N,引張正)] を
+/// 全ステップ抽出する（純粋関数）。各ステップで i端・j端のうち合成曲げ
+/// （√(My²+Mz²)）が大きい方の端を採用する（[`n_m_response_path`] は採用軸
+/// 1 成分のみを追うのに対し、3D 表示は My・Mz の両成分をそのまま使える）。
+///
+/// `MnSurface`（[`build_mn_curve_cache`]）は引張正の N 規約のため、圧縮正の
+/// `member_history` の軸力符号を反転して揃える。先頭に原点
+/// [0.0, 0.0, 0.0]（無載荷状態）を前置する（[`n_m_response_path`] と同じ理由）。
+pub(super) fn n_my_mz_response_path_3d(records: &[MemberStepState]) -> Vec<[f64; 3]> {
+    let mut path = vec![[0.0, 0.0, 0.0]];
+    path.extend(records.iter().map(|r| {
+        let mag_i = ((r.my_i as f64).powi(2) + (r.mz_i as f64).powi(2)).sqrt();
+        let mag_j = ((r.my_j as f64).powi(2) + (r.mz_j as f64).powi(2)).sqrt();
+        let (my, mz) = if mag_i >= mag_j {
+            (r.my_i, r.mz_i)
+        } else {
+            (r.my_j, r.mz_j)
+        };
+        [my as f64, mz as f64, -(r.n as f64)]
+    }));
+    path
 }
 
 /// 曲げ方向 `bend_dir_z` に対応する N-M 相関曲面の周方向格子列（正曲げ側・
@@ -436,12 +466,15 @@ fn build_mn_curve_cache(
     }
     let surface = build_surface(&fibers, YieldModelKind::MultiFiber, MN_N_ALPHA, MN_N_BETA);
     let (j_pos, j_neg) = mn_beta_columns(MN_N_BETA, bend_dir_z);
+    let pos = extract_mn_meridian(&surface.grid, j_pos, bend_dir_z);
+    let neg = extract_mn_meridian(&surface.grid, j_neg, bend_dir_z);
 
     Some(MnCurveCache {
         elem: elem_id,
         step_count,
-        pos: extract_mn_meridian(&surface.grid, j_pos, bend_dir_z),
-        neg: extract_mn_meridian(&surface.grid, j_neg, bend_dir_z),
+        pos,
+        neg,
+        surface,
     })
 }
 
@@ -547,7 +580,7 @@ fn draw_hinge_detail_content(ui: &mut egui::Ui, app: &mut App, elem_id: ElemId) 
 
     // 1. M-θ カーブ（荷重変形カーブ）: 応答履歴があれば常に表示。
     ui.strong("M-θ カーブ（荷重変形カーブ）");
-    draw_m_theta_plot(ui, &records, bend_dir_z, &mine);
+    draw_m_theta_plot(ui, elem_id, &records, bend_dir_z, &mine);
     ui.separator();
 
     // 2. N-M 相関図: 軸力を受ける部材（柱、またはファイバー系要素）のみ。
@@ -560,8 +593,11 @@ fn draw_hinge_detail_content(ui: &mut egui::Ui, app: &mut App, elem_id: ElemId) 
     if is_axial {
         ui.strong("N-M 相関図");
         ensure_mn_cache(app, elem_id, bend_dir_z, records.len());
+        // カメラ状態は `app` からローカルへ複製して使う（`app.hinge_mn_cache`
+        // の借用と同時に `app` を可変借用しないため）。描画後に書き戻す。
+        let mut cam = app.hinge_mn_camera.clone();
         match app.hinge_mn_cache.as_ref().filter(|c| c.elem == elem_id) {
-            Some(cache) => draw_mn_plot(ui, cache, &records, bend_dir_z),
+            Some(cache) => draw_mn_plot(ui, cache, elem_id, &records, bend_dir_z, &mut cam),
             None => {
                 ui.colored_label(
                     theme::GRAY_600,
@@ -569,19 +605,38 @@ fn draw_hinge_detail_content(ui: &mut egui::Ui, app: &mut App, elem_id: ElemId) 
                 );
             }
         }
+        app.hinge_mn_camera = cam;
         ui.separator();
     }
 
     // 3. ファイバー断面の塑性化マップ: ファイバー要素のみ（fiber_states に記録あり）。
     if let Some(sections) = fiber_sections {
+        // 断面外形線の重ね描き用（断面が引けなければ輪郭なしでファイバーのみ描く）。
+        let sec = app
+            .model
+            .elements
+            .iter()
+            .find(|e| e.id == elem_id)
+            .and_then(|e| e.section)
+            .and_then(|sid| app.model.sections.get(sid.index()));
         ui.strong("ファイバー断面の塑性化マップ（終局時）");
-        draw_fiber_maps(ui, &sections, &mine);
+        draw_fiber_maps(ui, elem_id, &sections, &mine, sec);
     }
 }
 
 /// M-θ カーブ（i端・j端の (|θ|,|M|) 骨格）を egui_plot で描く。
+///
+/// `Plot` の ID に `elem_id` を含める。egui_plot はズーム／パン状態
+/// （`PlotMemory`）を ID だけで永続化するため、固定 ID のままだと、ある部材の
+/// グラフを操作（ドラッグ／スクロールでのズーム）した後に別の部材のヒンジ詳細を
+/// 開くと、その操作で確定した表示範囲を新しい部材のデータにそのまま流用してしまい
+/// 「カーブが描画領域の一部にしか収まらない／余白が過大」に見える。部材ごとに ID を
+/// 分ければ、選択部材の切替時は必ず新規の `PlotMemory`（既定=自動フィット）から
+/// 始まるため、デフォルト表示は常に 5%（`egui_plot` 既定の `margin_fraction`）の
+/// 余白付きでカーブ全体を収める。
 fn draw_m_theta_plot(
     ui: &mut egui::Ui,
+    elem_id: ElemId,
     records: &[MemberStepState],
     bend_dir_z: bool,
     mine: &[HingeMarker],
@@ -589,7 +644,7 @@ fn draw_m_theta_plot(
     let (i_pts, j_pts) = m_theta_series(records, bend_dir_z);
     let has_i = mine.iter().any(|m| !m.end_j);
     let has_j = mine.iter().any(|m| m.end_j);
-    egui_plot::Plot::new("hinge_m_theta")
+    egui_plot::Plot::new(format!("hinge_m_theta_{}", elem_id.0))
         .x_axis_label("|θ| [rad]")
         .y_axis_label("|M| [kN・m]")
         .legend(egui_plot::Legend::default())
@@ -631,15 +686,205 @@ fn plot_m_theta_end(
     }
 }
 
-/// N-M 相関図（正曲げ側・負曲げ側の曲線＋応答経路）を egui_plot で描く。
+/// N-M 相関図: N-My-Mz 曲面の 3D ワイヤーフレーム（上段）＋従来の 2D スライス
+/// （採用曲げ面での正曲げ側・負曲げ側の曲線＋応答経路、下段）を続けて描く。
 fn draw_mn_plot(
     ui: &mut egui::Ui,
     cache: &MnCurveCache,
+    elem_id: ElemId,
+    records: &[MemberStepState],
+    bend_dir_z: bool,
+    cam: &mut crate::viewer::CameraState,
+) {
+    draw_mn_plot_3d(ui, cache, records, cam);
+    ui.add_space(4.0);
+    ui.separator();
+    draw_mn_plot_2d(ui, cache, elem_id, records, bend_dir_z);
+}
+
+/// N-M 相関図の 3D ワイヤーフレーム（N-My-Mz 曲面）＋ 3D 応答経路。
+/// カメラ操作は `mn_view.rs` の断面詳細ビューと同じ（左ドラッグ:回転／
+/// 右ドラッグ:移動／スクロール・ピンチ:ズーム、`viewer::CameraState` 共通）。
+/// `mn_view.rs` は既存の断面詳細ビュー用のため変更せず、ここでは同じ考え方を
+/// 自己完結で再実装する（3D ワイヤーフレーム描画・投影は用途ごとにデータの
+/// 正規化基準が異なるため共通化しにくく、重複させた方が安全なため）。
+fn draw_mn_plot_3d(
+    ui: &mut egui::Ui,
+    cache: &MnCurveCache,
+    records: &[MemberStepState],
+    cam: &mut crate::viewer::CameraState,
+) {
+    let (rect, response) = ui.allocate_exact_size(
+        egui::vec2(ui.available_width(), 260.0),
+        egui::Sense::click_and_drag(),
+    );
+    if response.dragged_by(egui::PointerButton::Primary) {
+        let d = response.drag_delta();
+        cam.turntable_drag(d.x, d.y);
+    }
+    if response.dragged_by(egui::PointerButton::Secondary) {
+        let d = response.drag_delta();
+        cam.pan[0] += d.x;
+        cam.pan[1] += d.y;
+    }
+    if response.hovered() {
+        let scroll_y = ui.input(|i| i.smooth_scroll_delta.y);
+        if scroll_y != 0.0 {
+            cam.zoom *= 1.0 + scroll_y * 0.01;
+        }
+        let pinch = ui.input(|i| i.zoom_delta());
+        if pinch != 1.0 {
+            cam.zoom *= pinch;
+        }
+    }
+    cam.zoom = cam.zoom.clamp(0.5, 10.0);
+
+    let painter = ui.painter_at(rect);
+    painter.rect_filled(rect, 0.0, theme::VIEW_BG);
+    let screen_center = [rect.center().x, rect.center().y];
+
+    // 正規化基準（曲面自身の耐力基準、ゼロ割防止。`mn_view.rs::draw_3d` と同じ考え方）。
+    let n_ref = cache
+        .surface
+        .n_comp
+        .abs()
+        .max(cache.surface.n_tens)
+        .max(1.0);
+    let my_ref = cache.surface.mp_y.abs().max(1.0);
+    let mz_ref = cache.surface.mp_z.abs().max(1.0);
+    let refs = [my_ref, mz_ref, n_ref];
+
+    let min_dim = rect.width().min(rect.height());
+    let scale = 0.32 * min_dim * (cam.zoom / 3.0);
+
+    draw_mn_axes(&painter, cam, scale, screen_center);
+    draw_mn_wireframe(&painter, &cache.surface, refs, cam, scale, screen_center);
+    draw_mn_response_path_3d(&painter, records, refs, cam, scale, screen_center);
+
+    ui.add(egui::Label::new(
+        egui::RichText::new("左ドラッグ:回転 / 右ドラッグ:移動 / スクロール:ズーム").size(11.0),
+    ));
+}
+
+/// N-My-Mz 曲面をワイヤーフレーム（周方向・経線方向の格子線）で描画する
+/// （`mn_view.rs::draw_wireframe` と同じ考え方の自己完結版）。
+fn draw_mn_wireframe(
+    painter: &egui::Painter,
+    surf: &squid_n_section::mn_surface::MnSurface,
+    refs: [f64; 3],
+    cam: &crate::viewer::CameraState,
+    scale: f32,
+    screen_center: [f32; 2],
+) {
+    let center3 = [0.0; 3];
+    // 曲面格子点 [N, My, Mz] を正規化ワールド座標 [My_n, Mz_n, N_n] へ変換して投影する。
+    let proj = |g: &[f64; 3]| {
+        let world = [g[1] / refs[0], g[2] / refs[1], g[0] / refs[2]];
+        let p = crate::viewer::project(world, center3, cam, scale, screen_center);
+        egui::pos2(p[0], p[1])
+    };
+    let stroke = egui::Stroke::new(1.0_f32, theme::translucent(theme::DATA_BLUE, 160));
+
+    let n_beta = match surf.grid.first() {
+        Some(row) if !row.is_empty() => row.len(),
+        _ => return,
+    };
+    // 周方向（各経線上、j=n_beta-1 と j=0 が接続する閉曲線）
+    for row in &surf.grid {
+        for j in 0..n_beta {
+            let a = proj(&row[j]);
+            let b = proj(&row[(j + 1) % n_beta]);
+            painter.line_segment([a, b], stroke);
+        }
+    }
+    // 経線方向（引張極→圧縮極）
+    for j in 0..n_beta {
+        for i in 0..surf.grid.len().saturating_sub(1) {
+            let a = proj(&surf.grid[i][j]);
+            let b = proj(&surf.grid[i + 1][j]);
+            painter.line_segment([a, b], stroke);
+        }
+    }
+}
+
+/// 原点から ±1.3 の座標軸線とラベル「My」「Mz」「N」を描く
+/// （`mn_view.rs::draw_axes` と同じ考え方の自己完結版）。
+fn draw_mn_axes(
+    painter: &egui::Painter,
+    cam: &crate::viewer::CameraState,
+    scale: f32,
+    screen_center: [f32; 2],
+) {
+    let center3 = [0.0; 3];
+    let proj = |p: [f64; 3]| {
+        let s = crate::viewer::project(p, center3, cam, scale, screen_center);
+        egui::pos2(s[0], s[1])
+    };
+    const EXT: f64 = 1.3;
+    let axes: [([f64; 3], egui::Color32, &str); 3] = [
+        ([EXT, 0.0, 0.0], theme::AXIS_X, "My"),
+        ([0.0, EXT, 0.0], theme::AXIS_Y, "Mz"),
+        ([0.0, 0.0, EXT], theme::AXIS_Z, "N"),
+    ];
+    for (dir, color, label) in axes {
+        let neg = [-dir[0], -dir[1], -dir[2]];
+        painter.line_segment([proj(neg), proj(dir)], egui::Stroke::new(1.5_f32, color));
+        painter.text(
+            proj(dir),
+            egui::Align2::LEFT_BOTTOM,
+            label,
+            egui::FontId::proportional(13.0),
+            color,
+        );
+    }
+}
+
+/// 3D 応答経路（原点前置済み）を折れ線＋終点マーカーで描く。
+fn draw_mn_response_path_3d(
+    painter: &egui::Painter,
+    records: &[MemberStepState],
+    refs: [f64; 3],
+    cam: &crate::viewer::CameraState,
+    scale: f32,
+    screen_center: [f32; 2],
+) {
+    let path = n_my_mz_response_path_3d(records);
+    // 原点のみ（記録なし）なら描く経路が無い。
+    if path.len() < 2 {
+        return;
+    }
+    let center3 = [0.0; 3];
+    let proj = |p: &[f64; 3]| {
+        let world = [p[0] / refs[0], p[1] / refs[1], p[2] / refs[2]];
+        let s = crate::viewer::project(world, center3, cam, scale, screen_center);
+        egui::pos2(s[0], s[1])
+    };
+    let pts: Vec<egui::Pos2> = path.iter().map(proj).collect();
+    let stroke = egui::Stroke::new(2.5_f32, theme::PARETO_RED);
+    for w in pts.windows(2) {
+        painter.line_segment([w[0], w[1]], stroke);
+    }
+    // 始点(原点=無載荷状態)を明示する。
+    painter.circle_stroke(pts[0], 4.0, egui::Stroke::new(1.5_f32, theme::GRAY_600));
+    if let Some(&last) = pts.last() {
+        painter.circle_filled(last, 5.0, theme::PARETO_RED);
+    }
+}
+
+/// N-M 相関図の 2D スライス（採用曲げ面での正曲げ側・負曲げ側の曲線＋応答経路）
+/// を egui_plot で描く（3D ワイヤーフレームの下段）。
+///
+/// `Plot` の ID に `elem_id` を含める理由は [`draw_m_theta_plot`] のドキュメント
+/// コメントを参照（固定 ID だと部材切替時に前の部材の表示範囲を引き継いでしまう）。
+fn draw_mn_plot_2d(
+    ui: &mut egui::Ui,
+    cache: &MnCurveCache,
+    elem_id: ElemId,
     records: &[MemberStepState],
     bend_dir_z: bool,
 ) {
     let response_path = n_m_response_path(records, bend_dir_z);
-    egui_plot::Plot::new("hinge_mn")
+    egui_plot::Plot::new(format!("hinge_mn_{}", elem_id.0))
         .x_axis_label("M [kN・m]")
         .y_axis_label("N [kN]（圧縮正）")
         .legend(egui_plot::Legend::default())
@@ -661,52 +906,69 @@ fn draw_mn_plot(
                 .color(theme::GRAY_300)
                 .width(1.5_f32),
             );
-            if !response_path.is_empty() {
-                plot_ui.line(
-                    egui_plot::Line::new(
-                        "応答経路",
-                        egui_plot::PlotPoints::from(response_path.clone()),
-                    )
-                    .color(theme::DATA_BLUE)
-                    .width(2.0_f32),
+            // 応答経路は原点 [0,0]（無載荷状態）を前置済み（`n_m_response_path`）
+            // のため、記録が 1 件も無い場合でも要素数は必ず 1 以上になる。
+            plot_ui.line(
+                egui_plot::Line::new(
+                    "応答経路",
+                    egui_plot::PlotPoints::from(response_path.clone()),
+                )
+                .color(theme::DATA_BLUE)
+                .width(2.0_f32),
+            );
+            if let Some(&last) = response_path.last() {
+                plot_ui.points(
+                    egui_plot::Points::new("応答経路", egui_plot::PlotPoints::from(vec![last]))
+                        .color(theme::PARETO_RED)
+                        .radius(5.0_f32)
+                        .shape(egui_plot::MarkerShape::Circle),
                 );
-                if let Some(&last) = response_path.last() {
-                    plot_ui.points(
-                        egui_plot::Points::new("応答経路", egui_plot::PlotPoints::from(vec![last]))
-                            .color(theme::PARETO_RED)
-                            .radius(5.0_f32)
-                            .shape(egui_plot::MarkerShape::Circle),
-                    );
-                }
             }
         });
 }
 
+/// ファイバー座標系へ変換済みの断面外形線（外形, 内形（中空断面のみ））。
+type SectionOutline = (Vec<[f64; 2]>, Option<Vec<[f64; 2]>>);
+
 /// ヒンジのある端（i端・j端）についてファイバー断面の塑性化マップを横に並べる。
-fn draw_fiber_maps(ui: &mut egui::Ui, sections: &[FiberSectionState], mine: &[HingeMarker]) {
+/// `sec` は断面外形線の重ね描き用（`None` ならファイバーのみ描く）。
+fn draw_fiber_maps(
+    ui: &mut egui::Ui,
+    elem_id: ElemId,
+    sections: &[FiberSectionState],
+    mine: &[HingeMarker],
+    sec: Option<&Section>,
+) {
+    // 外形線は i端・j端で共通（同一断面）のため 1 回だけ算定する。
+    let outline = sec.and_then(fiber_frame_outline);
     let want_i = mine.iter().any(|m| !m.end_j);
     let want_j = mine.iter().any(|m| m.end_j);
     ui.horizontal(|ui| {
         if want_i {
-            if let Some(sec) = pick_fiber_section(sections, false) {
-                ui.vertical(|ui| draw_one_fiber_map(ui, "i端", "i", sec));
+            if let Some(s) = pick_fiber_section(sections, false) {
+                ui.vertical(|ui| draw_one_fiber_map(ui, elem_id, "i端", "i", s, outline.as_ref()));
             }
         }
         if want_j {
-            if let Some(sec) = pick_fiber_section(sections, true) {
-                ui.vertical(|ui| draw_one_fiber_map(ui, "j端", "j", sec));
+            if let Some(s) = pick_fiber_section(sections, true) {
+                ui.vertical(|ui| draw_one_fiber_map(ui, elem_id, "j端", "j", s, outline.as_ref()));
             }
         }
     });
 }
 
 /// ファイバー断面 1 断面分の塑性化マップ（散布図）を描く。`id_suffix` は
-/// `egui_plot::Plot` の ID 重複を避けるための識別子（"i"/"j"）。
+/// `egui_plot::Plot` の ID 重複を避けるための識別子（"i"/"j"）。`elem_id` も
+/// ID に含める理由は [`draw_m_theta_plot`] のドキュメントコメントを参照
+/// （固定 ID だと部材切替時に前の部材のズーム状態を引き継いでしまう）。
+/// `outline` は断面外形線（外形, 内形（中空断面のみ）。[`fiber_frame_outline`]）。
 fn draw_one_fiber_map(
     ui: &mut egui::Ui,
+    elem_id: ElemId,
     end_label: &str,
     id_suffix: &str,
     sec: &FiberSectionState,
+    outline: Option<&SectionOutline>,
 ) {
     let yielded = sec.fibers.iter().filter(|f| f.yield_ratio >= 1.0).count();
     ui.label(format!(
@@ -716,19 +978,106 @@ fn draw_one_fiber_map(
         yielded,
         sec.fibers.len()
     ));
-    egui_plot::Plot::new(format!("hinge_fiber_{id_suffix}"))
+    // 材料色の凡例（材料区分ごとに 1 行、色見本＋名称）。
+    for &(material, label, _) in FIBER_MATERIALS {
+        ui.horizontal(|ui| {
+            ui.colored_label(fiber_material_color(material), "■");
+            ui.label(label);
+        });
+    }
+    ui.add(egui::Label::new(
+        egui::RichText::new("淡色=未降伏／濃色+輪郭=降伏（○:引張降伏 ◇:圧縮降伏）")
+            .size(11.0)
+            .color(theme::GRAY_600),
+    ));
+    egui_plot::Plot::new(format!("hinge_fiber_{id_suffix}_{}", elem_id.0))
         .data_aspect(1.0)
         .x_axis_label("y [mm]")
         .y_axis_label("z [mm]")
         .height(220.0)
         .width(220.0)
         .show(ui, |plot_ui| {
+            if let Some((outer, inner)) = outline {
+                draw_section_outline(plot_ui, outer);
+                if let Some(inner) = inner {
+                    draw_section_outline(plot_ui, inner);
+                }
+            }
             draw_fiber_scatter(plot_ui, &sec.fibers);
         });
 }
 
-/// ファイバーの降伏状態（灰=未降伏／赤=引張降伏／青=圧縮降伏）による分類
-/// （純粋関数）。0=未降伏、1=引張降伏、2=圧縮降伏。
+/// 断面外形線（閉多角形）を、ファイバー点より目立たない中間色の細線で描く
+/// （凡例には出さない）。ファイバー配置ミス（例: 角形鋼管なのに中実配置）を
+/// 外形線との対比で判別できるようにするための背景ガイド。
+fn draw_section_outline(plot_ui: &mut egui_plot::PlotUi<'_>, pts: &[[f64; 2]]) {
+    if pts.is_empty() {
+        return;
+    }
+    // 閉多角形にするため先頭点を末尾に再掲する。
+    let mut closed: Vec<[f64; 2]> = pts.to_vec();
+    closed.push(pts[0]);
+    plot_ui.line(
+        egui_plot::Line::new("outline", egui_plot::PlotPoints::from(closed))
+            .color(theme::GRAY_300)
+            .width(1.2_f32)
+            .allow_hover(false),
+    );
+}
+
+/// 断面 `sec` の外形線を、ファイバー座標系（[`FiberStateSample`] の y/z。
+/// `build_gauss_fibers` の 90°回転後: y=せい方向、z=−幅方向）へ変換して返す
+/// （外形, 内形（中空断面のみ）。断面を描けなければ None）。
+///
+/// [`super::solid::section_outline`]／[`super::solid::section_inner_outline`]
+/// が返す輪郭は「局所 y=せい, z=幅」の生の形状座標（重心補正なし）であり、
+/// ファイバー側とは 2 点で異なる:
+/// - 山形・溝形・T形・リップ溝形鋼・上下非対称ビルトH は、ファイバー生成時に
+///   断面積重心が原点に来るよう平行移動されている
+///   （`squid_n_section::mn_surface::fibers::plastic_fibers_at` 末尾の補正）。
+/// - `build_gauss_fibers` の 90°回転 `(y,z)←(z,−y)` により、幅方向の符号が
+///   反転している（輪郭の z=+幅方向、ファイバーの z=−幅方向）。
+///
+/// 生の輪郭多角形自身の面積重心を求めて原点へ平行移動する処理は、上記の
+/// 断面積重心補正と数学的に同値（同一形状の連続体面積重心は求め方によらず
+/// 一致する。多角形の場合はシューレース法の重心公式で厳密に求まる）ため、
+/// 山形等の個別実装をせずに済む。対称断面（矩形・H・箱・円）は多角形重心が
+/// 元々 (0,0) 付近になるため実質的に補正は効かない（下記のテストで検証）。
+fn fiber_frame_outline(sec: &Section) -> Option<SectionOutline> {
+    let outer_raw = super::solid::section_outline(sec)?;
+    let inner_raw = super::solid::section_inner_outline(sec);
+    let [cy, cz] = polygon_centroid(&outer_raw);
+    let xform = |pts: &[[f64; 2]]| -> Vec<[f64; 2]> {
+        pts.iter().map(|&[y, z]| [y - cy, cz - z]).collect()
+    };
+    Some((xform(&outer_raw), inner_raw.as_deref().map(xform)))
+}
+
+/// 単純多角形（凹型可・自己交差なし）の面積重心をシューレース法で求める
+/// （純粋関数）。退化形状（面積 0）は頂点の単純平均へフォールバックする。
+fn polygon_centroid(pts: &[[f64; 2]]) -> [f64; 2] {
+    let n = pts.len();
+    let (mut a, mut cx, mut cy) = (0.0_f64, 0.0_f64, 0.0_f64);
+    for i in 0..n {
+        let [x0, y0] = pts[i];
+        let [x1, y1] = pts[(i + 1) % n];
+        let cross = x0 * y1 - x1 * y0;
+        a += cross;
+        cx += (x0 + x1) * cross;
+        cy += (y0 + y1) * cross;
+    }
+    a *= 0.5;
+    if a.abs() < 1e-9 {
+        let m = n as f64;
+        return [
+            pts.iter().map(|p| p[0]).sum::<f64>() / m,
+            pts.iter().map(|p| p[1]).sum::<f64>() / m,
+        ];
+    }
+    [cx / (6.0 * a), cy / (6.0 * a)]
+}
+
+/// ファイバーの降伏状態による分類（純粋関数）。0=未降伏、1=引張降伏、2=圧縮降伏。
 fn fiber_category(f: &FiberStateSample) -> usize {
     if f.yield_ratio < 1.0 {
         0
@@ -739,55 +1088,104 @@ fn fiber_category(f: &FiberStateSample) -> usize {
     }
 }
 
-/// ファイバー断面の散布図を描く。母材格子（`material==0`）は小さい塗り円、
-/// 主筋（`material==1`）はやや大きめの塗り円＋外周リングで強調する。
-fn draw_fiber_scatter(plot_ui: &mut egui_plot::PlotUi<'_>, fibers: &[FiberStateSample]) {
-    const CATEGORIES: [(&str, egui::Color32); 3] = [
-        ("未降伏", theme::GRAY_600),
-        ("引張降伏", theme::PARETO_RED),
-        ("圧縮降伏", theme::DATA_BLUE),
-    ];
+/// ファイバー材料区分（(material 値, 表示名, 塗り円半径)）。
+/// `squid_n_element::behavior::FiberStateSample::material` の規約
+/// （0=コンクリート／1=主筋（鉄筋）／2=鋼材（形鋼・鋼管・内蔵鉄骨））に対応する。
+const FIBER_MATERIALS: &[(usize, &str, f32)] =
+    &[(0, "コンクリート", 2.5), (1, "主筋", 4.5), (2, "鋼材", 4.5)];
 
-    for (idx, (label, color)) in CATEGORIES.into_iter().enumerate() {
-        let pts: Vec<[f64; 2]> = fibers
+/// 材料区分から表示色を返す（視認性の良い 3 色: コンクリート=グレー系／
+/// 主筋=赤系／鋼材=青系）。未知の区分値はコンクリート（母材）として扱う。
+fn fiber_material_color(material: usize) -> egui::Color32 {
+    match material {
+        1 => theme::PARETO_RED,
+        2 => theme::DATA_BLUE,
+        _ => theme::GRAY_600,
+    }
+}
+
+/// ファイバー断面の散布図を材料別・降伏状態別に描く。
+///
+/// 色は材料区分（コンクリート=グレー系／主筋=赤系／鋼材=青系）で分け、
+/// 降伏状態は明度と形状で重ねて表現する: 未降伏=材料色の淡色（小さい円）、
+/// 降伏(引張)=材料色そのまま＋外周リング（円）、降伏(圧縮)=材料色そのまま＋
+/// 外周リング（ひし形）。主筋・鋼材はコンクリートより大きい円で強調する
+/// （点ファイバーであり本数が少ないため、視認性を優先）。
+fn draw_fiber_scatter(plot_ui: &mut egui_plot::PlotUi<'_>, fibers: &[FiberStateSample]) {
+    for &(material, mat_label, radius) in FIBER_MATERIALS {
+        let color = fiber_material_color(material);
+        let of_material: Vec<&FiberStateSample> =
+            fibers.iter().filter(|f| f.material == material).collect();
+        if of_material.is_empty() {
+            continue;
+        }
+
+        // 未降伏: 材料色の淡色。
+        let elastic: Vec<[f64; 2]> = of_material
             .iter()
-            .filter(|f| f.material == 0 && fiber_category(f) == idx)
+            .filter(|f| fiber_category(f) == 0)
             .map(|f| [f.y, f.z])
             .collect();
-        if !pts.is_empty() {
+        if !elastic.is_empty() {
             plot_ui.points(
-                egui_plot::Points::new(label, egui_plot::PlotPoints::from(pts))
+                egui_plot::Points::new(
+                    format!("{mat_label}(未降伏)"),
+                    egui_plot::PlotPoints::from(elastic),
+                )
+                .color(theme::lighten(color, 0.55))
+                .radius(radius)
+                .shape(egui_plot::MarkerShape::Circle),
+            );
+        }
+
+        // 降伏(引張): 材料色＋外周リング（円）。
+        let tension: Vec<[f64; 2]> = of_material
+            .iter()
+            .filter(|f| fiber_category(f) == 1)
+            .map(|f| [f.y, f.z])
+            .collect();
+        if !tension.is_empty() {
+            let name = format!("{mat_label}(降伏・引張)");
+            plot_ui.points(
+                egui_plot::Points::new(name.clone(), egui_plot::PlotPoints::from(tension.clone()))
                     .color(color)
-                    .radius(2.5_f32)
+                    .radius(radius)
+                    .shape(egui_plot::MarkerShape::Circle),
+            );
+            plot_ui.points(
+                egui_plot::Points::new(name, egui_plot::PlotPoints::from(tension))
+                    .color(theme::GRAY_900)
+                    .filled(false)
+                    .radius(radius)
                     .shape(egui_plot::MarkerShape::Circle),
             );
         }
-    }
 
-    // 主筋: 同じ色分けをやや大きめの円＋外周リングで重ねて強調する。
-    for (idx, (label, color)) in CATEGORIES.into_iter().enumerate() {
-        let pts: Vec<[f64; 2]> = fibers
+        // 降伏(圧縮): 材料色＋外周リング（ひし形。引張降伏と形状で区別）。
+        let compression: Vec<[f64; 2]> = of_material
             .iter()
-            .filter(|f| f.material == 1 && fiber_category(f) == idx)
+            .filter(|f| fiber_category(f) == 2)
             .map(|f| [f.y, f.z])
             .collect();
-        if pts.is_empty() {
-            continue;
-        }
-        let name = format!("{label}(主筋)");
-        plot_ui.points(
-            egui_plot::Points::new(name.clone(), egui_plot::PlotPoints::from(pts.clone()))
+        if !compression.is_empty() {
+            let name = format!("{mat_label}(降伏・圧縮)");
+            plot_ui.points(
+                egui_plot::Points::new(
+                    name.clone(),
+                    egui_plot::PlotPoints::from(compression.clone()),
+                )
                 .color(color)
-                .radius(4.5_f32)
-                .shape(egui_plot::MarkerShape::Circle),
-        );
-        plot_ui.points(
-            egui_plot::Points::new(name, egui_plot::PlotPoints::from(pts))
-                .color(theme::GRAY_900)
-                .filled(false)
-                .radius(4.5_f32)
-                .shape(egui_plot::MarkerShape::Circle),
-        );
+                .radius(radius)
+                .shape(egui_plot::MarkerShape::Diamond),
+            );
+            plot_ui.points(
+                egui_plot::Points::new(name, egui_plot::PlotPoints::from(compression))
+                    .color(theme::GRAY_900)
+                    .filled(false)
+                    .radius(radius)
+                    .shape(egui_plot::MarkerShape::Diamond),
+            );
+        }
     }
 }
 
@@ -971,15 +1369,24 @@ mod tests {
 
     // ── n_m_response_path ───────────────────────────────────────────────
 
+    /// 先頭に原点 [0,0]（無載荷状態）が前置される。
+    #[test]
+    fn n_m_response_path_prepends_origin() {
+        let records = vec![step(-80.0, 30.0, 0.0, 0.0, 1000.0)];
+        let path = n_m_response_path(&records, true);
+        assert_eq!(path.len(), 2);
+        assert_eq!(path[0], [0.0, 0.0]);
+    }
+
     /// 強軸採用時、i端・j端のうち絶対値が大きい方の符号付き Mz を採用する。
     #[test]
     fn n_m_response_path_picks_larger_end_signed() {
         let records = vec![step(-80.0, 30.0, 0.0, 0.0, 1000.0)];
         let path = n_m_response_path(&records, true);
-        assert_eq!(path.len(), 1);
-        // -80 N·mm -> -80/1e6 kN·m、n=1000N -> 1kN。
-        assert!((path[0][0] - (-80.0 / 1e6)).abs() < 1e-12);
-        assert!((path[0][1] - 1.0).abs() < 1e-9);
+        assert_eq!(path.len(), 2);
+        // -80 N·mm -> -80/1e6 kN·m、n=1000N -> 1kN。原点の次（[1]）が実データ点。
+        assert!((path[1][0] - (-80.0 / 1e6)).abs() < 1e-12);
+        assert!((path[1][1] - 1.0).abs() < 1e-9);
     }
 
     /// 弱軸採用時は my_i/my_j を対象にする。
@@ -987,7 +1394,29 @@ mod tests {
     fn n_m_response_path_uses_weak_axis_when_selected() {
         let records = vec![step(0.0, 0.0, 40.0, -90.0, 0.0)];
         let path = n_m_response_path(&records, false);
-        assert!((path[0][0] - (-90.0 / 1e6)).abs() < 1e-12);
+        assert!((path[1][0] - (-90.0 / 1e6)).abs() < 1e-12);
+    }
+
+    /// 空入力でも原点 1 点だけは返る。
+    #[test]
+    fn n_m_response_path_empty_input_returns_origin_only() {
+        let path = n_m_response_path(&[], true);
+        assert_eq!(path, vec![[0.0, 0.0]]);
+    }
+
+    // ── n_my_mz_response_path_3d ────────────────────────────────────────
+
+    /// 先頭に原点 [0,0,0] が前置され、各ステップは合成曲げの大きい方の端を採用する。
+    /// N は member_history の圧縮正から引張正（曲面の規約）へ符号反転する。
+    #[test]
+    fn n_my_mz_response_path_3d_prepends_origin_and_picks_larger_end() {
+        // i端の合成曲げ = sqrt(50^2+0^2)=50、j端 = sqrt(0^2+80^2)=80 → j端を採用。
+        let records = vec![step(0.0, 0.0, 50.0, 80.0, 1000.0)];
+        let path = n_my_mz_response_path_3d(&records);
+        assert_eq!(path.len(), 2);
+        assert_eq!(path[0], [0.0, 0.0, 0.0]);
+        assert!((path[1][0] - 80.0).abs() < 1e-9);
+        assert!((path[1][2] - (-1000.0)).abs() < 1e-9);
     }
 
     // ── mn_beta_columns ─────────────────────────────────────────────────
@@ -1176,5 +1605,192 @@ mod tests {
     #[test]
     fn fiber_category_compression_yield() {
         assert_eq!(fiber_category(&fiber_sample(-0.01, 1.2, 0)), 2);
+    }
+
+    // --- 断面外形線（ファイバー塑性化マップへの重ね描き）関連のテスト ---
+
+    use squid_n_core::ids::SectionId;
+    use squid_n_core::section_shape::SectionShape;
+    use squid_n_section::mn_surface::plastic_fibers;
+
+    /// 中心 (0,0) の正方形（原点対称）の面積重心は原点。
+    #[test]
+    fn polygon_centroid_of_centered_square_is_origin() {
+        let sq = vec![[10.0, -5.0], [10.0, 5.0], [-10.0, 5.0], [-10.0, -5.0]];
+        let [cy, cz] = polygon_centroid(&sq);
+        assert!(cy.abs() < 1e-9, "cy={cy}");
+        assert!(cz.abs() < 1e-9, "cz={cz}");
+    }
+
+    /// 平行移動した矩形の面積重心は、移動先の幾何中心と一致する。
+    #[test]
+    fn polygon_centroid_of_offset_rect_matches_geometric_center() {
+        // 元は中心 (0,0)・10×4 の矩形を (100, -50) へ平行移動。
+        let rect = vec![[105.0, -52.0], [105.0, -48.0], [95.0, -48.0], [95.0, -52.0]];
+        let [cy, cz] = polygon_centroid(&rect);
+        assert!((cy - 100.0).abs() < 1e-9, "cy={cy}");
+        assert!((cz - (-50.0)).abs() < 1e-9, "cz={cz}");
+    }
+
+    /// テスト用の角形鋼管（SteelBox）断面。
+    fn steel_box_section() -> Section {
+        Section {
+            id: SectionId(1),
+            name: "BOX-300x200x9".into(),
+            area: 1.0,
+            iy: 1.0,
+            iz: 1.0,
+            j: 1.0,
+            depth: 300.0,
+            width: 200.0,
+            as_y: 0.0,
+            as_z: 0.0,
+            panel_thickness: None,
+            thickness: None,
+            shape: Some(SectionShape::SteelBox {
+                height: 300.0,
+                width: 200.0,
+                thick: 9.0,
+                corner_r: 0.0,
+            }),
+        }
+    }
+
+    /// 点列の [y,z] 各軸のバウンディングボックス（min, max）。
+    fn bbox(pts: &[[f64; 2]]) -> ([f64; 2], [f64; 2]) {
+        let min = [
+            pts.iter().map(|p| p[0]).fold(f64::INFINITY, f64::min),
+            pts.iter().map(|p| p[1]).fold(f64::INFINITY, f64::min),
+        ];
+        let max = [
+            pts.iter().map(|p| p[0]).fold(f64::NEG_INFINITY, f64::max),
+            pts.iter().map(|p| p[1]).fold(f64::NEG_INFINITY, f64::max),
+        ];
+        (min, max)
+    }
+
+    /// SteelBox（角形鋼管）は外形線・内側輪郭（中空）の両方が生成され、
+    /// それぞれのバウンディングボックスが height×width／(height−2t)×(width−2t)
+    /// と一致する。
+    #[test]
+    fn fiber_frame_outline_steel_box_has_outer_and_inner() {
+        let sec = steel_box_section();
+        let (outer, inner) = fiber_frame_outline(&sec).expect("箱形は外形線を持つ");
+        let inner = inner.expect("箱形は中空断面のため内側輪郭を持つ");
+
+        let (omin, omax) = bbox(&outer);
+        assert!((omax[0] - omin[0] - 300.0).abs() < 1e-6);
+        assert!((omax[1] - omin[1] - 200.0).abs() < 1e-6);
+
+        let (imin, imax) = bbox(&inner);
+        assert!((imax[0] - imin[0] - (300.0 - 18.0)).abs() < 1e-6);
+        assert!((imax[1] - imin[1] - (200.0 - 18.0)).abs() < 1e-6);
+    }
+
+    /// SteelBox のファイバー（`squid_n_section::mn_surface::plastic_fibers` に
+    /// `build_gauss_fibers` と同じ 90°回転を適用したもの＝要素座標系）は、
+    /// すべて外形線のバウンディングボックス内に収まり、かつ内側輪郭（中空部）の
+    /// 内側には 1 本も存在しない（配置ミス＝中実配置であればこの条件が崩れる）。
+    #[test]
+    fn fiber_frame_outline_steel_box_fibers_lie_between_outer_and_inner() {
+        let sec = steel_box_section();
+        let (outer, inner) = fiber_frame_outline(&sec).unwrap();
+        let inner = inner.unwrap();
+        let (_, outer_max) = bbox(&outer);
+        let (_, inner_max) = bbox(&inner);
+        let (outer_half_y, outer_half_z) = (outer_max[0], outer_max[1]);
+        let (inner_half_y, inner_half_z) = (inner_max[0], inner_max[1]);
+
+        let shape = sec.shape.clone().unwrap();
+        let strength = StrengthParams {
+            steel_fy: 235.0,
+            rebar_fy: 345.0,
+            concrete_fc: 24.0,
+            steel_e: 205_000.0,
+        };
+        let raw = plastic_fibers(&shape, &strength, YieldModelKind::MultiFiber);
+        assert!(!raw.is_empty());
+        // build_gauss_fibers と同じ 90°回転 (y,z)←(z,−y) を適用し要素座標系へ。
+        let rotated: Vec<[f64; 2]> = raw.iter().map(|f| [f.z, -f.y]).collect();
+
+        const EPS: f64 = 1e-6;
+        for [y, z] in &rotated {
+            assert!(
+                y.abs() <= outer_half_y + EPS && z.abs() <= outer_half_z + EPS,
+                "ファイバーが外形線の外側にある: y={y}, z={z}"
+            );
+            assert!(
+                !(y.abs() < inner_half_y - EPS && z.abs() < inner_half_z - EPS),
+                "ファイバーが内側輪郭（中空部）の内側にある: y={y}, z={z}"
+            );
+        }
+    }
+
+    /// 溝形鋼（SteelChannel、非対称断面）でも、外形線をファイバー座標系へ変換
+    /// する際に断面積重心補正が輪郭側へ正しく効いており、ファイバー群
+    /// （`plastic_fibers` に要素側と同じ 90°回転を適用したもの）が
+    /// 外形線のバウンディングボックス内に収まる（ウェブ位置がずれて外形線と
+    /// ファイバー群の左右が逆転する等の座標系不整合が無い）ことを確認する。
+    #[test]
+    fn fiber_frame_outline_asymmetric_channel_aligns_with_fibers() {
+        let sec = Section {
+            id: SectionId(2),
+            name: "C-200x80x7.5x11".into(),
+            area: 1.0,
+            iy: 1.0,
+            iz: 1.0,
+            j: 1.0,
+            depth: 200.0,
+            width: 80.0,
+            as_y: 0.0,
+            as_z: 0.0,
+            panel_thickness: None,
+            thickness: None,
+            shape: Some(SectionShape::SteelChannel {
+                height: 200.0,
+                width: 80.0,
+                web_thick: 7.5,
+                flange_thick: 11.0,
+            }),
+        };
+        let (outer, inner) = fiber_frame_outline(&sec).unwrap();
+        assert!(inner.is_none(), "溝形鋼は中実断面のため内側輪郭は無い");
+        let (omin, omax) = bbox(&outer);
+
+        let shape = sec.shape.clone().unwrap();
+        let strength = StrengthParams {
+            steel_fy: 235.0,
+            rebar_fy: 345.0,
+            concrete_fc: 24.0,
+            steel_e: 205_000.0,
+        };
+        let raw = plastic_fibers(&shape, &strength, YieldModelKind::MultiFiber);
+        assert!(!raw.is_empty());
+        let rotated: Vec<[f64; 2]> = raw.iter().map(|f| [f.z, -f.y]).collect();
+
+        // メッシュ分割の格子中心座標のため、境界セル半分弱の余裕を見込む
+        // （目標寸法は最大寸法/40 = 200/40 = 5mm 程度）。
+        const MARGIN: f64 = 6.0;
+        for [y, z] in &rotated {
+            assert!(
+                *y >= omin[0] - MARGIN && *y <= omax[0] + MARGIN,
+                "ファイバー y={y} が外形線 y 範囲 [{}, {}] から外れている",
+                omin[0],
+                omax[0]
+            );
+            assert!(
+                *z >= omin[1] - MARGIN && *z <= omax[1] + MARGIN,
+                "ファイバー z={z} が外形線 z 範囲 [{}, {}] から外れている",
+                omin[1],
+                omax[1]
+            );
+        }
+
+        // ウェブ（面積の大部分）は z が負側に寄る配置のため、外形線の z 範囲も
+        // 原点対称ではなく負側へ偏っている（重心補正が効いている証拠）。
+        assert!(
+            (omax[1] + omin[1]) < -1.0,
+            "非対称断面なのに外形線が z=0 対称のまま（重心補正が効いていない）: omin={omin:?}, omax={omax:?}"
+        );
     }
 }

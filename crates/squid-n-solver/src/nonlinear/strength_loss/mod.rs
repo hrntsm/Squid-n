@@ -428,6 +428,8 @@ pub fn staged_strength_loss(
             // 段階的耐力喪失解析は崩壊機構形成域まで押し切る必要があるため、
             // 制御方式は常に段階制御（既定）を用いる。
             crate::pushover::PushoverControl::default(),
+            // 長期荷重の初期載荷は本体の増分解析と同じ扱い（既定で有効）。
+            true,
             use_kg,
             use_arc_length,
             arc_length_dl,
