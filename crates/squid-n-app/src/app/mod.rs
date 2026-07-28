@@ -360,6 +360,18 @@ pub struct AnalysisSettings {
     pub th_h2: f64,
     /// 時刻歴の積分法
     pub th_integrator: ThIntegrator,
+    /// 時刻歴を非線形（各部材の復元力特性を考慮した Newton 反復）で解析するか。
+    /// ON のとき積分法は Newmark-β 固定（HHT-α は選択不可）。
+    pub th_nonlinear: bool,
+    /// 非線形時刻歴: 長期系荷重ケース（固定・積載等）を時刻歴開始前に静的載荷し、
+    /// その応力状態を初期条件とするか。線形時刻歴は重ね合わせ運用のため対象外
+    /// （`th_nonlinear` が true のときのみ意味を持つ）。
+    pub th_apply_long_term: bool,
+    /// 非線形時刻歴: 各時刻ステップの Newton 反復の最大回数
+    /// （既定は増分解析＝プッシュオーバーの内部反復回数と同じ 50）。
+    pub th_max_iter: usize,
+    /// 非線形時刻歴: Newton 収束判定の相対許容誤差。
+    pub th_tol: f64,
     /// 位相差入力（ねじれ加振）を考慮する（構造動力学）。
     pub phase_diff_enabled: bool,
     /// せん断波速度 Vs [m/s]。
@@ -462,6 +474,10 @@ impl Default for AnalysisSettings {
             th_damping_model: ThDampingModel::StiffnessProportional,
             th_h2: 0.02,
             th_integrator: ThIntegrator::NewmarkBeta,
+            th_nonlinear: false,
+            th_apply_long_term: false,
+            th_max_iter: 50,
+            th_tol: 1e-6,
             phase_diff_enabled: false,
             phase_diff_vs: 200.0,
             phase_diff_length_m: 20.0,
@@ -486,7 +502,8 @@ impl Default for AnalysisSettings {
 /// 全組合せ一括・地震静的・風荷重）が送る結果。
 pub enum JobResult {
     Pushover(Result<squid_n_solver::pushover::PushoverResult, String>),
-    TimeHistory(Result<squid_n_solver::timehistory::ResponseResult, String>),
+    /// 時刻歴応答解析。`ResponseResult` は詳細記録を含み大きいため Box で運ぶ。
+    TimeHistory(Box<Result<squid_n_solver::timehistory::ResponseResult, String>>),
     /// 線形静的・地震静的(Ai)・風荷重静的解析（`StaticCaseKey` で結果格納先を区別）。
     StaticCase {
         key: StaticCaseKey,
@@ -767,6 +784,15 @@ pub struct App {
     /// 時刻歴グラフの表示項目選択
     #[cfg(feature = "gui")]
     pub time_history_source: crate::time_history_view::TimeHistorySource,
+    /// 時刻歴結果タブの表示モード（時刻歴波形／層応答分布）
+    #[cfg(feature = "gui")]
+    pub time_history_view_mode: crate::time_history_view::TimeHistoryViewMode,
+    /// 層応答分布グラフの表示項目選択
+    #[cfg(feature = "gui")]
+    pub story_response_kind: crate::story_response::StoryResponseKind,
+    /// 層応答分布グラフの方向選択（記録済みの X・Y いずれか）
+    #[cfg(feature = "gui")]
+    pub story_response_dir: crate::story_response::StoryRespDir,
     /// 質点系（串団子）時刻歴応答の結果（結果タブ「質点系モデル」で実行・表示）。
     pub stick_response: Option<squid_n_solver::lumped_mass::StickResponse>,
     /// 断面作成UI のドラフト（UI-3）
@@ -955,6 +981,12 @@ impl Default for App {
             time_history_data: crate::time_history_view::TimeHistoryData::default(),
             #[cfg(feature = "gui")]
             time_history_source: crate::time_history_view::TimeHistorySource::default(),
+            #[cfg(feature = "gui")]
+            time_history_view_mode: crate::time_history_view::TimeHistoryViewMode::default(),
+            #[cfg(feature = "gui")]
+            story_response_kind: crate::story_response::StoryResponseKind::default(),
+            #[cfg(feature = "gui")]
+            story_response_dir: crate::story_response::StoryRespDir::default(),
             stick_response: None,
             #[cfg(feature = "gui")]
             section_draft: crate::section_editor::SectionEditorDraft::default(),

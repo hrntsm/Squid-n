@@ -431,9 +431,56 @@ pub fn build_report_csv(app: &App) -> String {
             th.time.len(),
             peak
         ));
+        if let Some(recording) = &th.recording {
+            push_story_response_table(&mut out, model, "X", &recording.story_x);
+            push_story_response_table(&mut out, model, "Y", &recording.story_y);
+        }
     }
 
     out
+}
+
+/// 時刻歴応答の層応答分布（層せん断力・層せん断力係数・階加速度・階速度・階変位の
+/// 各層最大値）を CSV へ追記する（1 方向分）。値の絶対値最大（各層の absmax）は
+/// `story_response::story_absmax` で集計し、表示単位（kN・gal・m/s）へ換算する。
+fn push_story_response_table(
+    out: &mut String,
+    model: &Model,
+    dir_label: &str,
+    story: &squid_n_solver::timehistory::StoryResponse,
+) {
+    use crate::story_response::{mm_s2_to_gal, mm_s_to_m_s, n_to_kn, story_absmax};
+
+    let n = story.stories.len();
+    if n == 0 {
+        return;
+    }
+    let shear = story_absmax(&story.story_shear, n);
+    let accel = story_absmax(&story.floor_accel, n);
+    let vel = story_absmax(&story.floor_vel, n);
+    let disp = story_absmax(&story.floor_disp, n);
+
+    out.push_str(&format!(
+        "\n[時刻歴応答 層応答分布({}方向)]\n階,層せん断力[kN],層せん断力係数,階加速度[gal],階速度[m/s],階変位[mm]\n",
+        dir_label
+    ));
+    for i in 0..n {
+        let name = model
+            .stories
+            .get(i)
+            .map(|s| s.name.clone())
+            .unwrap_or_else(|| format!("{}F", i + 1));
+        let coeff = story.peak_shear_coeff.get(i).copied().unwrap_or(0.0);
+        out.push_str(&format!(
+            "{},{:.2},{:.4},{:.1},{:.4},{:.2}\n",
+            name,
+            n_to_kn(shear[i]),
+            coeff,
+            mm_s2_to_gal(accel[i]),
+            mm_s_to_m_s(vel[i]),
+            disp[i]
+        ));
+    }
 }
 
 /// 準備計算の結果（[`crate::app::PreparationResult`]）を CSV 文字列に整形する

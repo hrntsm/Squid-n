@@ -1,4 +1,8 @@
 use crate::app::App;
+use crate::story_response::{
+    floor_points, hover_story_index, story_absmax, story_axis_label, story_step_points,
+    StoryRespDir, StoryResponseKind,
+};
 
 /// 時刻歴グラフの描画データ。`App::run_time_history` が
 /// ソルバーの `ResponseResult.history` から充填する。
@@ -23,7 +27,37 @@ pub enum TimeHistorySource {
     StoryDriftAngle,
 }
 
+/// 結果タブ「時刻歴」の表示モード（波形／層応答分布を排他切替）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum TimeHistoryViewMode {
+    #[default]
+    Waveform,
+    StoryResponse,
+}
+
 pub fn time_history_panel(ui: &mut egui::Ui, app: &mut App) {
+    ui.horizontal(|ui| {
+        ui.selectable_value(
+            &mut app.time_history_view_mode,
+            TimeHistoryViewMode::Waveform,
+            "時刻歴波形",
+        );
+        ui.selectable_value(
+            &mut app.time_history_view_mode,
+            TimeHistoryViewMode::StoryResponse,
+            "層応答分布",
+        );
+    });
+    ui.separator();
+    match app.time_history_view_mode {
+        TimeHistoryViewMode::Waveform => waveform_panel(ui, app),
+        TimeHistoryViewMode::StoryResponse => story_response_panel(ui, app),
+    }
+}
+
+/// 時刻歴波形（代表応答: 節点変位／ベースシア／層間変形角）。従来の
+/// `time_history_panel` の本体（表示モード追加に伴い切り出し）。
+fn waveform_panel(ui: &mut egui::Ui, app: &mut App) {
     if app.time_history_data.time.is_empty() {
         ui.colored_label(
             crate::theme::GRAY_600,
@@ -163,5 +197,164 @@ pub fn time_history_panel(ui: &mut egui::Ui, app: &mut App) {
                 });
             });
         }
+    }
+}
+
+/// 層応答分布（縦軸=階、横軸=層せん断力／層せん断力係数／階加速度／階速度／階変位）。
+/// データは `App.results.time_history.recording`（`ThRecording`）から直接参照する
+/// （コピー保持しない）。`recording` が無い（旧い結果、または非線形以前の解析結果でも
+/// 無いことは無いが念のため）場合は再解析を案内する。
+fn story_response_panel(ui: &mut egui::Ui, app: &mut App) {
+    let Some(recording) = app
+        .results
+        .as_ref()
+        .and_then(|r| r.time_history.as_ref())
+        .and_then(|th| th.recording.as_ref())
+    else {
+        ui.colored_label(
+            crate::theme::GRAY_600,
+            "層応答の詳細記録がありません。時刻歴応答を再実行してください\
+             （この記録を持たない旧い結果、または未実行）。",
+        );
+        return;
+    };
+
+    let mut dir = app.story_response_dir;
+    let mut kind = app.story_response_kind;
+
+    ui.horizontal_wrapped(|ui| {
+        ui.label("方向:");
+        ui.selectable_value(&mut dir, StoryRespDir::X, "X");
+        ui.selectable_value(&mut dir, StoryRespDir::Y, "Y");
+        ui.separator();
+        ui.label("項目:");
+        ui.selectable_value(&mut kind, StoryResponseKind::Shear, "層せん断力");
+        ui.selectable_value(&mut kind, StoryResponseKind::ShearCoeff, "層せん断力係数");
+        ui.selectable_value(&mut kind, StoryResponseKind::Accel, "階加速度");
+        ui.selectable_value(&mut kind, StoryResponseKind::Vel, "階速度");
+        ui.selectable_value(&mut kind, StoryResponseKind::Disp, "階変位");
+    });
+    app.story_response_dir = dir;
+    app.story_response_kind = kind;
+
+    let story = match dir {
+        StoryRespDir::X => &recording.story_x,
+        StoryRespDir::Y => &recording.story_y,
+    };
+    let n_story = story.stories.len();
+    if n_story == 0 {
+        ui.colored_label(
+            crate::theme::GRAY_600,
+            "階情報がありません（階の自動生成が未実行の可能性があります）。",
+        );
+        return;
+    }
+
+    // 階名（`model.stories` の並びは `recording` の階と同じ。取得できなければ「NF」で補う）。
+    let story_names: Vec<String> = (0..n_story)
+        .map(|i| {
+            app.model
+                .stories
+                .get(i)
+                .map(|s| s.name.clone())
+                .unwrap_or_else(|| format!("{}F", i + 1))
+        })
+        .collect();
+
+    let (values, xlabel, unit_suffix, value_fmt): (Vec<f64>, &str, &str, fn(f64) -> String) =
+        match kind {
+            StoryResponseKind::Shear => {
+                let raw = story_absmax(&story.story_shear, n_story);
+                (
+                    raw.iter()
+                        .map(|&v| crate::story_response::n_to_kn(v))
+                        .collect(),
+                    "層せん断力 [kN]",
+                    "kN",
+                    |v| format!("{:.2}", v),
+                )
+            }
+            StoryResponseKind::ShearCoeff => (
+                story.peak_shear_coeff.clone(),
+                "層せん断力係数 Ci [-]",
+                "",
+                |v| format!("{:.4}", v),
+            ),
+            StoryResponseKind::Accel => {
+                let raw = story_absmax(&story.floor_accel, n_story);
+                (
+                    raw.iter()
+                        .map(|&v| crate::story_response::mm_s2_to_gal(v))
+                        .collect(),
+                    "階加速度 [gal]",
+                    "gal",
+                    |v| format!("{:.1}", v),
+                )
+            }
+            StoryResponseKind::Vel => {
+                let raw = story_absmax(&story.floor_vel, n_story);
+                (
+                    raw.iter()
+                        .map(|&v| crate::story_response::mm_s_to_m_s(v))
+                        .collect(),
+                    "階速度 [m/s]",
+                    "m/s",
+                    |v| format!("{:.4}", v),
+                )
+            }
+            StoryResponseKind::Disp => {
+                let raw = story_absmax(&story.floor_disp, n_story);
+                (raw, "階変位 [mm]", "mm", |v| format!("{:.2}", v))
+            }
+        };
+
+    let is_story_quantity = kind.is_story_quantity();
+    let color = crate::theme::DATA_BLUE;
+    let names_for_axis = story_names.clone();
+
+    let plot = egui_plot::Plot::new("story_response_plot")
+        .x_axis_label(xlabel)
+        .y_axis_label("階")
+        .y_axis_formatter(move |mark, _range| story_axis_label(&names_for_axis, mark.value))
+        .show(ui, |plot_ui| {
+            if is_story_quantity {
+                let pts = story_step_points(&values);
+                plot_ui.line(
+                    egui_plot::Line::new("層応答", egui_plot::PlotPoints::from(pts))
+                        .color(color)
+                        .width(2.0_f32),
+                );
+            } else {
+                let pts = floor_points(&values);
+                plot_ui.line(
+                    egui_plot::Line::new("階応答", egui_plot::PlotPoints::from(pts.clone()))
+                        .color(color)
+                        .width(1.5_f32),
+                );
+                plot_ui.points(
+                    egui_plot::Points::new("階応答", egui_plot::PlotPoints::from(pts))
+                        .color(color)
+                        .radius(3.0_f32)
+                        .shape(egui_plot::MarkerShape::Circle),
+                );
+            }
+        });
+
+    // カーソル位置の値を表示（既存の時刻歴波形グラフと同じ方式）。
+    if let Some(pointer) = plot.response.hover_pos() {
+        let pointer_value = plot.transform.value_from_position(pointer);
+        let idx = hover_story_index(pointer_value.y, n_story, is_story_quantity);
+        let name = story_names.get(idx).cloned().unwrap_or_default();
+        let val = values.get(idx).copied().unwrap_or(0.0);
+        let suffix = if unit_suffix.is_empty() {
+            String::new()
+        } else {
+            format!(" {}", unit_suffix)
+        };
+        ui.horizontal(|ui| {
+            ui.label(format!("階: {}", name));
+            ui.separator();
+            ui.label(format!("値 = {}{}", value_fmt(val), suffix));
+        });
     }
 }

@@ -1236,9 +1236,9 @@ impl App {
             });
     }
 
-    /// 時刻歴応答解析（線形）。
+    /// 時刻歴応答解析（線形／非線形）。
     fn time_history_section(&mut self, ui: &mut egui::Ui, running: bool) {
-        egui::CollapsingHeader::new("時刻歴応答（線形）")
+        egui::CollapsingHeader::new("時刻歴応答")
             .default_open(false)
             .id_salt("as_time_history")
             .show(ui, |ui| {
@@ -1249,16 +1249,64 @@ impl App {
                     ui.selectable_value(&mut self.analysis_cfg.th_dir, ThDir::Xy, "X+Y")
                         .on_hover_text("同一波形を両方向へ同時入力(CSV は2列)");
                     ui.separator();
-                    ui.label("積分法:");
-                    ui.selectable_value(
-                        &mut self.analysis_cfg.th_integrator,
-                        ThIntegrator::NewmarkBeta,
-                        "Newmark-β",
+                    ui.checkbox(
+                        &mut self.analysis_cfg.th_nonlinear,
+                        "非線形(復元力特性を考慮)",
+                    )
+                    .on_hover_text(
+                        "各部材の復元力特性（ひび割れ・降伏等）を考慮し、\
+                         各時刻ステップを Newton 反復で解く時刻歴応答解析。\
+                         積分法は Newmark-β 固定になります。",
                     );
-                    ui.selectable_value(
-                        &mut self.analysis_cfg.th_integrator,
-                        ThIntegrator::HhtAlpha,
-                        "HHT-α(α=-0.1)",
+                });
+                ui.horizontal_wrapped(|ui| {
+                    ui.label("積分法:");
+                    ui.add_enabled_ui(!self.analysis_cfg.th_nonlinear, |ui| {
+                        ui.selectable_value(
+                            &mut self.analysis_cfg.th_integrator,
+                            ThIntegrator::NewmarkBeta,
+                            "Newmark-β",
+                        );
+                        ui.selectable_value(
+                            &mut self.analysis_cfg.th_integrator,
+                            ThIntegrator::HhtAlpha,
+                            "HHT-α(α=-0.1)",
+                        )
+                        .on_disabled_hover_text(
+                            "非線形時刻歴は Newmark-β 固定です（HHT-α は線形専用）。",
+                        );
+                    });
+                });
+                if self.analysis_cfg.th_nonlinear {
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label("Newton反復: 最大回数");
+                        ui.add(
+                            egui::DragValue::new(&mut self.analysis_cfg.th_max_iter).range(1..=500),
+                        );
+                        ui.label("収束許容誤差(相対):");
+                        ui.add(
+                            egui::DragValue::new(&mut self.analysis_cfg.th_tol)
+                                .speed(1e-7)
+                                .range(1e-9..=1e-2),
+                        );
+                    });
+                }
+                ui.horizontal_wrapped(|ui| {
+                    ui.add_enabled(
+                        self.analysis_cfg.th_nonlinear,
+                        egui::Checkbox::new(
+                            &mut self.analysis_cfg.th_apply_long_term,
+                            "長期荷重を初期状態として考慮",
+                        ),
+                    )
+                    .on_hover_text(
+                        "長期系荷重ケース（固定・積載等）を時刻歴開始前に静的載荷し、\
+                         その応力状態を初期条件とします。長期荷重ケースが無い場合は\
+                         無視されます。",
+                    )
+                    .on_disabled_hover_text(
+                        "線形時刻歴は重ね合わせ運用のため対象外です\
+                         （「非線形」をONにすると使用できます）。",
                     );
                 });
                 ui.horizontal_wrapped(|ui| {
@@ -1392,7 +1440,11 @@ impl App {
                     {
                         self.run_time_history_from_csv();
                     }
-                    if self.job.as_ref().is_some_and(|j| j.label == "時刻歴応答") {
+                    if self
+                        .job
+                        .as_ref()
+                        .is_some_and(|j| j.label.starts_with("時刻歴応答"))
+                    {
                         ui.spinner();
                     }
                 });

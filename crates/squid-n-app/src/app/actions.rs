@@ -2070,6 +2070,12 @@ impl App {
                 }
             }
         };
+        // 非線形時刻歴は `model` への可変借用が要る（Newton 反復で要素状態を
+        // commit/rollback するため）。`analysis` はここまでで最後の利用（damping の
+        // 固有値算定）なので、以降は使わず `model` への不変借用を終わらせる。
+        if cfg.th_nonlinear {
+            return Self::compute_nonlinear_time_history(model, cfg, wave, damping);
+        }
         let result = match cfg.th_integrator {
             ThIntegrator::NewmarkBeta => {
                 let newmark = squid_n_solver::timehistory::NewmarkCfg::average_accel();
@@ -2081,6 +2087,53 @@ impl App {
             }
         };
         result.map_err(|e| format!("時刻歴解析エラー: {}", e))
+    }
+
+    /// 非線形時刻歴応答解析の純粋計算部分（`compute_time_history` の非線形分岐）。
+    /// dofmap/reducer の組み立ては `compute_pushover` と同じ経路
+    /// （`Analysis::prepare` は damping 算定用の固有値解析のみに使い、解の本体は
+    /// `DofMap::build` / `Reducer::build` を直接呼んで組み立てる）。
+    /// `use_kg`（幾何剛性）は増分解析 UI に対応する設定が無いため、増分解析の
+    /// 既定と同じ `false` を用いる。減衰の累積方式（`DampingAccumulation`）も
+    /// UI 設定が無いため既定（非累積型）を用いる。
+    fn compute_nonlinear_time_history(
+        model: squid_n_core::model::Model,
+        cfg: AnalysisSettings,
+        wave: squid_n_solver::timehistory::GroundMotion,
+        damping: squid_n_solver::damping::Damping,
+    ) -> Result<squid_n_solver::timehistory::ResponseResult, String> {
+        let mut model = model;
+        squid_n_element::factory::ensure_nonlinear_input(&model).map_err(|e| {
+            format!(
+                "非線形時刻歴の入力エラー（部材耐力を算定できません）:\n{}",
+                e
+            )
+        })?;
+        let dofmap = squid_n_core::dof::DofMap::build(&model);
+        let reducer = squid_n_solver::constraint::Reducer::build(&model, &dofmap);
+        let n_indep = reducer.n_indep;
+        let init = vec![0.0; n_indep];
+        let newmark = squid_n_solver::timehistory::NewmarkCfg::average_accel();
+        let nl_cfg = squid_n_solver::timehistory::NonlinearThCfg {
+            max_iter: cfg.th_max_iter,
+            tol: cfg.th_tol,
+            use_kg: false,
+            apply_long_term: cfg.th_apply_long_term,
+            record_every: None,
+        };
+        squid_n_solver::timehistory::nonlinear_time_history_analysis(
+            &mut model,
+            &dofmap,
+            &reducer,
+            &wave,
+            &newmark,
+            &damping,
+            squid_n_solver::damping::DampingAccumulation::default(),
+            &init,
+            &init,
+            nl_cfg,
+        )
+        .map_err(|e| format!("非線形時刻歴解析エラー: {}", e))
     }
 
     /// `compute_time_history` の結果を適用する
@@ -2143,10 +2196,16 @@ impl App {
                         .to_string(),
                 )
             });
-            let _ = tx.send(JobResult::TimeHistory(result));
+            let _ = tx.send(JobResult::TimeHistory(Box::new(result)));
         });
+        // 非線形／線形の別をジョブラベル・完了ログへ出す（実行中の判別・履歴の両方で有用）。
+        let label = if cfg.th_nonlinear {
+            "時刻歴応答(非線形)"
+        } else {
+            "時刻歴応答(線形)"
+        };
         self.job = Some(AnalysisJob {
-            label: "時刻歴応答",
+            label,
             started: std::time::SystemTime::now(),
             rx,
             #[cfg(feature = "gui")]
@@ -2190,7 +2249,7 @@ impl App {
                 self.last_error = None;
                 match result {
                     JobResult::Pushover(res) => self.apply_pushover_result(res),
-                    JobResult::TimeHistory(res) => self.apply_time_history_result(res),
+                    JobResult::TimeHistory(res) => self.apply_time_history_result(*res),
                     JobResult::StaticCase { key, res } => self.apply_static_case_result(key, res),
                     JobResult::Combo { name, res } => self.apply_combo_result(name, res),
                     JobResult::AllCombos {

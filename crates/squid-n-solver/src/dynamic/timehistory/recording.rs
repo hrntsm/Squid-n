@@ -92,9 +92,26 @@ fn expand_node_disp(model: &Model, dofmap: &DofMap, u_free: &[f64]) -> Vec<[f64;
     out
 }
 
-/// 階に属する節点の (自由 DOF 添字, 質量重み) の一覧。質量重みは `Node::mass` の
-/// 当該方向成分（無ければ 0。フロア応答の質量加重平均、無ければ単純平均にフォールバック）。
-type StoryDofGroup = Vec<(usize, f64)>;
+/// 階に属する節点の自由 DOF の一覧。
+///
+/// - `avg`: 階応答（加速度・速度・変位）の代表値算定に使う当該方向並進 DOF と
+///   質量重みの組。質量重みは `Node::mass` の当該方向成分
+///   （無ければ 0。質量加重平均、全て 0 なら単純平均にフォールバック）。
+/// - `force`: 層せん断力の慣性力集計に使う DOF。節点の全 6 自由度を含める。
+///   一貫質量行列では `M·r` が回転 DOF にも分配されるため、並進 DOF だけを
+///   集計すると 1 層目の層せん断力がベースシア（`rᵀM(a+r·ẍg)` を対称性で
+///   `Σ_dof (Mr)_dof·(a_dof+ẍg)` に展開したもの）と一致しなくなる。
+#[derive(Default)]
+struct StoryDofGroup {
+    avg: Vec<(usize, f64)>,
+    force: Vec<usize>,
+}
+
+impl StoryDofGroup {
+    fn is_empty(&self) -> bool {
+        self.avg.is_empty() && self.force.is_empty()
+    }
+}
 
 /// 時刻歴応答の詳細記録（[`ThRecording`]）を組み立てる状態機械。
 ///
@@ -143,24 +160,53 @@ impl ThRecorder {
         let n_story = model.stories.len();
 
         let build_groups = |dir_idx: usize| -> Vec<StoryDofGroup> {
-            model
+            let mut groups: Vec<StoryDofGroup> = model
                 .stories
                 .iter()
                 .map(|story| {
-                    story
-                        .node_ids
-                        .iter()
-                        .filter_map(|&nid| {
-                            let ni = nid.index();
-                            let node = model.nodes.get(ni)?;
-                            let g = ni * DOF_PER_NODE + dir_idx;
-                            let a = dofmap.active(g)?;
+                    let mut g = StoryDofGroup::default();
+                    for &nid in &story.node_ids {
+                        let ni = nid.index();
+                        let Some(node) = model.nodes.get(ni) else {
+                            continue;
+                        };
+                        if let Some(a) = dofmap.active(ni * DOF_PER_NODE + dir_idx) {
                             let w = node.mass.map(|m| m[dir_idx]).unwrap_or(0.0).max(0.0);
-                            Some((a as usize, w))
-                        })
-                        .collect()
+                            g.avg.push((a as usize, w));
+                        }
+                        for d in 0..DOF_PER_NODE {
+                            if let Some(a) = dofmap.active(ni * DOF_PER_NODE + d) {
+                                g.force.push(a as usize);
+                            }
+                        }
+                    }
+                    g
                 })
-                .collect()
+                .collect();
+            // どの階にも属さない節点（基礎レベルの自由節点など）の慣性力は
+            // 最下層の層せん断力に計上する（1 層目＝全慣性力の総和＝ベースシア
+            // という恒等関係を保つため）。階応答の代表値には含めない。
+            if !groups.is_empty() {
+                let mut assigned = vec![false; model.nodes.len()];
+                for story in &model.stories {
+                    for &nid in &story.node_ids {
+                        if let Some(f) = assigned.get_mut(nid.index()) {
+                            *f = true;
+                        }
+                    }
+                }
+                for (ni, done) in assigned.iter().enumerate() {
+                    if *done {
+                        continue;
+                    }
+                    for d in 0..DOF_PER_NODE {
+                        if let Some(a) = dofmap.active(ni * DOF_PER_NODE + d) {
+                            groups[0].force.push(a as usize);
+                        }
+                    }
+                }
+            }
+            groups
         };
 
         Self {
@@ -216,8 +262,7 @@ impl ThRecorder {
             }
             let (mut total_w, mut sum_a, mut sum_v, mut sum_u) = (0.0, 0.0, 0.0, 0.0);
             let (mut simple_a, mut simple_v, mut simple_u) = (0.0, 0.0, 0.0);
-            let mut lf = 0.0;
-            for &(dof, w) in g {
+            for &(dof, w) in &g.avg {
                 let a_abs = a_free.get(dof).copied().unwrap_or(0.0) + xg;
                 let v_val = v_free.get(dof).copied().unwrap_or(0.0);
                 let u_val = u_free.get(dof).copied().unwrap_or(0.0);
@@ -228,17 +273,24 @@ impl ThRecorder {
                 sum_v += w * v_val;
                 sum_u += w * u_val;
                 total_w += w;
-                lf += m_r.get(dof).copied().unwrap_or(0.0) * a_abs;
             }
-            let cnt = g.len() as f64;
             if total_w > 0.0 {
                 accel[i] = sum_a / total_w;
                 vel[i] = sum_v / total_w;
                 disp[i] = sum_u / total_w;
-            } else {
+            } else if !g.avg.is_empty() {
+                let cnt = g.avg.len() as f64;
                 accel[i] = simple_a / cnt;
                 vel[i] = simple_v / cnt;
                 disp[i] = simple_u / cnt;
+            }
+            // 層せん断力: `M·r` は一貫質量により回転 DOF にも成分を持つため、
+            // 節点の全自由度について `m_r·(a+ẍg)` を集計する（対称性より
+            // `rᵀM(a+r·ẍg)` と厳密に一致する）。
+            let mut lf = 0.0;
+            for &dof in &g.force {
+                let a_abs = a_free.get(dof).copied().unwrap_or(0.0) + xg;
+                lf += m_r.get(dof).copied().unwrap_or(0.0) * a_abs;
             }
             level_force[i] = lf;
         }

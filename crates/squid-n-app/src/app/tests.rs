@@ -950,6 +950,125 @@ fn test_time_history_rayleigh_and_hht() {
     );
 }
 
+/// 非線形時刻歴 UI 配線の end-to-end 確認: `analysis_cfg.th_nonlinear` を ON にすると
+/// `nonlinear_time_history_analysis` 経路が呼ばれ、層応答の詳細記録（`ThRecording`）が
+/// `results.time_history.recording` へ入ることを確認する。
+#[test]
+fn test_nonlinear_time_history_flow_records_story_response() {
+    let mut app = App::default();
+    app.load_model(crate::sample::portal_frame());
+    app.generate_stories_action();
+    assert!(app.last_error.is_none(), "{:?}", app.last_error);
+    app.analysis_cfg.th_nonlinear = true;
+    app.analysis_cfg.th_duration = 1.0;
+    app.run_time_history_sample();
+    assert!(app.last_error.is_none(), "{:?}", app.last_error);
+    let th = app.results.as_ref().unwrap().time_history.as_ref().unwrap();
+    let recording = th
+        .recording
+        .as_ref()
+        .expect("非線形時刻歴でも recording が入るはず");
+    assert_eq!(recording.story_x.stories.len(), app.model.stories.len());
+    assert_eq!(recording.story_y.stories.len(), app.model.stories.len());
+    assert_eq!(
+        recording.story_x.story_shear.len(),
+        recording.frame_time.len()
+    );
+}
+
+/// `TimeHistorySource::StoryShear`（表示名「ベースシア」）の実体である
+/// `history.base_shear` は、`recording`（詳細記録）の記録方向の 1 層目
+/// （最下層、`stories` は下→上の並び）の層せん断力と整合することを確認する
+/// （1層目の層せん断力＝当該層以上＝全層の慣性力の総和＝ベースシア）。
+#[test]
+fn test_story_shear_layer0_matches_history_base_shear() {
+    let mut app = App::default();
+    app.load_model(crate::sample::portal_frame());
+    app.generate_stories_action();
+    assert!(app.last_error.is_none(), "{:?}", app.last_error);
+    app.analysis_cfg.th_duration = 2.0;
+    app.run_time_history_sample();
+    assert!(app.last_error.is_none(), "{:?}", app.last_error);
+    let th = app.results.as_ref().unwrap().time_history.as_ref().unwrap();
+    let recording = th.recording.as_ref().expect("recording should be present");
+    let story = if th.history.record_dir_y {
+        &recording.story_y
+    } else {
+        &recording.story_x
+    };
+    assert!(!story.story_shear.is_empty());
+    let mut checked = 0;
+    for (k, &t) in recording.frame_time.iter().enumerate() {
+        let Some(step) = th.time.iter().position(|&tt| tt == t) else {
+            continue;
+        };
+        let from_recording = story.story_shear[k][0];
+        let from_history = th.history.base_shear[step];
+        assert!(
+            (from_recording - from_history).abs() < 1e-6 * from_history.abs().max(1.0),
+            "t={t}: recording 1層目せん断力={from_recording} / history ベースシア={from_history}"
+        );
+        checked += 1;
+    }
+    assert!(checked > 0, "比較できたフレームが1件もありません");
+}
+
+/// 非線形時刻歴で `th_apply_long_term` を ON にしても解析が正常に完了すること
+/// （長期荷重の静的載荷フェーズを経てから時刻歴を開始する経路）を確認する。
+#[test]
+fn test_nonlinear_time_history_with_long_term_flow() {
+    let mut app = App::default();
+    app.load_model(crate::sample::portal_frame());
+    app.generate_stories_action();
+    assert!(app.last_error.is_none(), "{:?}", app.last_error);
+    app.analysis_cfg.th_nonlinear = true;
+    app.analysis_cfg.th_apply_long_term = true;
+    app.analysis_cfg.th_duration = 1.0;
+    app.run_time_history_sample();
+    assert!(app.last_error.is_none(), "{:?}", app.last_error);
+    let th = app.results.as_ref().unwrap().time_history.as_ref().unwrap();
+    assert!(th.recording.is_some());
+}
+
+/// 非線形時刻歴の積分法は Newmark-β 固定（`th_integrator` に HHT-α が選ばれていても
+/// 非線形時は無視される）ことを確認する。
+#[test]
+fn test_nonlinear_time_history_ignores_hht_selection() {
+    let mut app = App::default();
+    app.load_model(crate::sample::portal_frame());
+    app.generate_stories_action();
+    app.analysis_cfg.th_nonlinear = true;
+    app.analysis_cfg.th_integrator = ThIntegrator::HhtAlpha;
+    app.analysis_cfg.th_duration = 1.0;
+    app.run_time_history_sample();
+    assert!(app.last_error.is_none(), "{:?}", app.last_error);
+}
+
+/// ジョブラベルが線形／非線形で切り替わることを確認する
+/// （完了ログ・実行中スピナー判別の両方に使われる）。
+#[test]
+fn test_time_history_job_label_reflects_nonlinear_setting() {
+    let mut app = App::default();
+    app.load_model(crate::sample::portal_frame());
+    app.generate_stories_action();
+    app.analysis_cfg.th_duration = 1.0;
+    app.analysis_cfg.th_nonlinear = false;
+    app.start_time_history_job(App::sample_wave(&app.analysis_cfg));
+    assert_eq!(app.job.as_ref().unwrap().label, "時刻歴応答(線形)");
+    while !app.poll_job() {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert!(app.last_error.is_none(), "{:?}", app.last_error);
+
+    app.analysis_cfg.th_nonlinear = true;
+    app.start_time_history_job(App::sample_wave(&app.analysis_cfg));
+    assert_eq!(app.job.as_ref().unwrap().label, "時刻歴応答(非線形)");
+    while !app.poll_job() {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert!(app.last_error.is_none(), "{:?}", app.last_error);
+}
+
 #[test]
 fn test_set_story_weight_via_ui_flow() {
     let mut app = App::default();
