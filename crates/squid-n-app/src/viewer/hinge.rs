@@ -22,7 +22,7 @@ use squid_n_core::ids::ElemId;
 use squid_n_core::material_grade::{
     material_strength_factor_rebar, material_strength_factor_steel,
 };
-use squid_n_core::model::{ElementData, ElementKind, Model};
+use squid_n_core::model::{ElementData, ElementKind, Model, Section};
 use squid_n_element::behavior::{FiberSectionState, FiberStateSample};
 use squid_n_section::mn_surface::{build_surface, plastic_fibers, StrengthParams, YieldModelKind};
 use squid_n_solver::pushover::{HingeEvent, HingeLevel, MemberStepState};
@@ -611,8 +611,16 @@ fn draw_hinge_detail_content(ui: &mut egui::Ui, app: &mut App, elem_id: ElemId) 
 
     // 3. ファイバー断面の塑性化マップ: ファイバー要素のみ（fiber_states に記録あり）。
     if let Some(sections) = fiber_sections {
+        // 断面外形線の重ね描き用（断面が引けなければ輪郭なしでファイバーのみ描く）。
+        let sec = app
+            .model
+            .elements
+            .iter()
+            .find(|e| e.id == elem_id)
+            .and_then(|e| e.section)
+            .and_then(|sid| app.model.sections.get(sid.index()));
         ui.strong("ファイバー断面の塑性化マップ（終局時）");
-        draw_fiber_maps(ui, elem_id, &sections, &mine);
+        draw_fiber_maps(ui, elem_id, &sections, &mine, sec);
     }
 }
 
@@ -919,24 +927,31 @@ fn draw_mn_plot_2d(
         });
 }
 
+/// ファイバー座標系へ変換済みの断面外形線（外形, 内形（中空断面のみ））。
+type SectionOutline = (Vec<[f64; 2]>, Option<Vec<[f64; 2]>>);
+
 /// ヒンジのある端（i端・j端）についてファイバー断面の塑性化マップを横に並べる。
+/// `sec` は断面外形線の重ね描き用（`None` ならファイバーのみ描く）。
 fn draw_fiber_maps(
     ui: &mut egui::Ui,
     elem_id: ElemId,
     sections: &[FiberSectionState],
     mine: &[HingeMarker],
+    sec: Option<&Section>,
 ) {
+    // 外形線は i端・j端で共通（同一断面）のため 1 回だけ算定する。
+    let outline = sec.and_then(fiber_frame_outline);
     let want_i = mine.iter().any(|m| !m.end_j);
     let want_j = mine.iter().any(|m| m.end_j);
     ui.horizontal(|ui| {
         if want_i {
-            if let Some(sec) = pick_fiber_section(sections, false) {
-                ui.vertical(|ui| draw_one_fiber_map(ui, elem_id, "i端", "i", sec));
+            if let Some(s) = pick_fiber_section(sections, false) {
+                ui.vertical(|ui| draw_one_fiber_map(ui, elem_id, "i端", "i", s, outline.as_ref()));
             }
         }
         if want_j {
-            if let Some(sec) = pick_fiber_section(sections, true) {
-                ui.vertical(|ui| draw_one_fiber_map(ui, elem_id, "j端", "j", sec));
+            if let Some(s) = pick_fiber_section(sections, true) {
+                ui.vertical(|ui| draw_one_fiber_map(ui, elem_id, "j端", "j", s, outline.as_ref()));
             }
         }
     });
@@ -946,12 +961,14 @@ fn draw_fiber_maps(
 /// `egui_plot::Plot` の ID 重複を避けるための識別子（"i"/"j"）。`elem_id` も
 /// ID に含める理由は [`draw_m_theta_plot`] のドキュメントコメントを参照
 /// （固定 ID だと部材切替時に前の部材のズーム状態を引き継いでしまう）。
+/// `outline` は断面外形線（外形, 内形（中空断面のみ）。[`fiber_frame_outline`]）。
 fn draw_one_fiber_map(
     ui: &mut egui::Ui,
     elem_id: ElemId,
     end_label: &str,
     id_suffix: &str,
     sec: &FiberSectionState,
+    outline: Option<&SectionOutline>,
 ) {
     let yielded = sec.fibers.iter().filter(|f| f.yield_ratio >= 1.0).count();
     ui.label(format!(
@@ -980,8 +997,84 @@ fn draw_one_fiber_map(
         .height(220.0)
         .width(220.0)
         .show(ui, |plot_ui| {
+            if let Some((outer, inner)) = outline {
+                draw_section_outline(plot_ui, outer);
+                if let Some(inner) = inner {
+                    draw_section_outline(plot_ui, inner);
+                }
+            }
             draw_fiber_scatter(plot_ui, &sec.fibers);
         });
+}
+
+/// 断面外形線（閉多角形）を、ファイバー点より目立たない中間色の細線で描く
+/// （凡例には出さない）。ファイバー配置ミス（例: 角形鋼管なのに中実配置）を
+/// 外形線との対比で判別できるようにするための背景ガイド。
+fn draw_section_outline(plot_ui: &mut egui_plot::PlotUi<'_>, pts: &[[f64; 2]]) {
+    if pts.is_empty() {
+        return;
+    }
+    // 閉多角形にするため先頭点を末尾に再掲する。
+    let mut closed: Vec<[f64; 2]> = pts.to_vec();
+    closed.push(pts[0]);
+    plot_ui.line(
+        egui_plot::Line::new("outline", egui_plot::PlotPoints::from(closed))
+            .color(theme::GRAY_300)
+            .width(1.2_f32)
+            .allow_hover(false),
+    );
+}
+
+/// 断面 `sec` の外形線を、ファイバー座標系（[`FiberStateSample`] の y/z。
+/// `build_gauss_fibers` の 90°回転後: y=せい方向、z=−幅方向）へ変換して返す
+/// （外形, 内形（中空断面のみ）。断面を描けなければ None）。
+///
+/// [`super::solid::section_outline`]／[`super::solid::section_inner_outline`]
+/// が返す輪郭は「局所 y=せい, z=幅」の生の形状座標（重心補正なし）であり、
+/// ファイバー側とは 2 点で異なる:
+/// - 山形・溝形・T形・リップ溝形鋼・上下非対称ビルトH は、ファイバー生成時に
+///   断面積重心が原点に来るよう平行移動されている
+///   （`squid_n_section::mn_surface::fibers::plastic_fibers_at` 末尾の補正）。
+/// - `build_gauss_fibers` の 90°回転 `(y,z)←(z,−y)` により、幅方向の符号が
+///   反転している（輪郭の z=+幅方向、ファイバーの z=−幅方向）。
+///
+/// 生の輪郭多角形自身の面積重心を求めて原点へ平行移動する処理は、上記の
+/// 断面積重心補正と数学的に同値（同一形状の連続体面積重心は求め方によらず
+/// 一致する。多角形の場合はシューレース法の重心公式で厳密に求まる）ため、
+/// 山形等の個別実装をせずに済む。対称断面（矩形・H・箱・円）は多角形重心が
+/// 元々 (0,0) 付近になるため実質的に補正は効かない（下記のテストで検証）。
+fn fiber_frame_outline(sec: &Section) -> Option<SectionOutline> {
+    let outer_raw = super::solid::section_outline(sec)?;
+    let inner_raw = super::solid::section_inner_outline(sec);
+    let [cy, cz] = polygon_centroid(&outer_raw);
+    let xform = |pts: &[[f64; 2]]| -> Vec<[f64; 2]> {
+        pts.iter().map(|&[y, z]| [y - cy, cz - z]).collect()
+    };
+    Some((xform(&outer_raw), inner_raw.as_deref().map(xform)))
+}
+
+/// 単純多角形（凹型可・自己交差なし）の面積重心をシューレース法で求める
+/// （純粋関数）。退化形状（面積 0）は頂点の単純平均へフォールバックする。
+fn polygon_centroid(pts: &[[f64; 2]]) -> [f64; 2] {
+    let n = pts.len();
+    let (mut a, mut cx, mut cy) = (0.0_f64, 0.0_f64, 0.0_f64);
+    for i in 0..n {
+        let [x0, y0] = pts[i];
+        let [x1, y1] = pts[(i + 1) % n];
+        let cross = x0 * y1 - x1 * y0;
+        a += cross;
+        cx += (x0 + x1) * cross;
+        cy += (y0 + y1) * cross;
+    }
+    a *= 0.5;
+    if a.abs() < 1e-9 {
+        let m = n as f64;
+        return [
+            pts.iter().map(|p| p[0]).sum::<f64>() / m,
+            pts.iter().map(|p| p[1]).sum::<f64>() / m,
+        ];
+    }
+    [cx / (6.0 * a), cy / (6.0 * a)]
 }
 
 /// ファイバーの降伏状態による分類（純粋関数）。0=未降伏、1=引張降伏、2=圧縮降伏。
@@ -1512,5 +1605,192 @@ mod tests {
     #[test]
     fn fiber_category_compression_yield() {
         assert_eq!(fiber_category(&fiber_sample(-0.01, 1.2, 0)), 2);
+    }
+
+    // --- 断面外形線（ファイバー塑性化マップへの重ね描き）関連のテスト ---
+
+    use squid_n_core::ids::SectionId;
+    use squid_n_core::section_shape::SectionShape;
+    use squid_n_section::mn_surface::plastic_fibers;
+
+    /// 中心 (0,0) の正方形（原点対称）の面積重心は原点。
+    #[test]
+    fn polygon_centroid_of_centered_square_is_origin() {
+        let sq = vec![[10.0, -5.0], [10.0, 5.0], [-10.0, 5.0], [-10.0, -5.0]];
+        let [cy, cz] = polygon_centroid(&sq);
+        assert!(cy.abs() < 1e-9, "cy={cy}");
+        assert!(cz.abs() < 1e-9, "cz={cz}");
+    }
+
+    /// 平行移動した矩形の面積重心は、移動先の幾何中心と一致する。
+    #[test]
+    fn polygon_centroid_of_offset_rect_matches_geometric_center() {
+        // 元は中心 (0,0)・10×4 の矩形を (100, -50) へ平行移動。
+        let rect = vec![[105.0, -52.0], [105.0, -48.0], [95.0, -48.0], [95.0, -52.0]];
+        let [cy, cz] = polygon_centroid(&rect);
+        assert!((cy - 100.0).abs() < 1e-9, "cy={cy}");
+        assert!((cz - (-50.0)).abs() < 1e-9, "cz={cz}");
+    }
+
+    /// テスト用の角形鋼管（SteelBox）断面。
+    fn steel_box_section() -> Section {
+        Section {
+            id: SectionId(1),
+            name: "BOX-300x200x9".into(),
+            area: 1.0,
+            iy: 1.0,
+            iz: 1.0,
+            j: 1.0,
+            depth: 300.0,
+            width: 200.0,
+            as_y: 0.0,
+            as_z: 0.0,
+            panel_thickness: None,
+            thickness: None,
+            shape: Some(SectionShape::SteelBox {
+                height: 300.0,
+                width: 200.0,
+                thick: 9.0,
+                corner_r: 0.0,
+            }),
+        }
+    }
+
+    /// 点列の [y,z] 各軸のバウンディングボックス（min, max）。
+    fn bbox(pts: &[[f64; 2]]) -> ([f64; 2], [f64; 2]) {
+        let min = [
+            pts.iter().map(|p| p[0]).fold(f64::INFINITY, f64::min),
+            pts.iter().map(|p| p[1]).fold(f64::INFINITY, f64::min),
+        ];
+        let max = [
+            pts.iter().map(|p| p[0]).fold(f64::NEG_INFINITY, f64::max),
+            pts.iter().map(|p| p[1]).fold(f64::NEG_INFINITY, f64::max),
+        ];
+        (min, max)
+    }
+
+    /// SteelBox（角形鋼管）は外形線・内側輪郭（中空）の両方が生成され、
+    /// それぞれのバウンディングボックスが height×width／(height−2t)×(width−2t)
+    /// と一致する。
+    #[test]
+    fn fiber_frame_outline_steel_box_has_outer_and_inner() {
+        let sec = steel_box_section();
+        let (outer, inner) = fiber_frame_outline(&sec).expect("箱形は外形線を持つ");
+        let inner = inner.expect("箱形は中空断面のため内側輪郭を持つ");
+
+        let (omin, omax) = bbox(&outer);
+        assert!((omax[0] - omin[0] - 300.0).abs() < 1e-6);
+        assert!((omax[1] - omin[1] - 200.0).abs() < 1e-6);
+
+        let (imin, imax) = bbox(&inner);
+        assert!((imax[0] - imin[0] - (300.0 - 18.0)).abs() < 1e-6);
+        assert!((imax[1] - imin[1] - (200.0 - 18.0)).abs() < 1e-6);
+    }
+
+    /// SteelBox のファイバー（`squid_n_section::mn_surface::plastic_fibers` に
+    /// `build_gauss_fibers` と同じ 90°回転を適用したもの＝要素座標系）は、
+    /// すべて外形線のバウンディングボックス内に収まり、かつ内側輪郭（中空部）の
+    /// 内側には 1 本も存在しない（配置ミス＝中実配置であればこの条件が崩れる）。
+    #[test]
+    fn fiber_frame_outline_steel_box_fibers_lie_between_outer_and_inner() {
+        let sec = steel_box_section();
+        let (outer, inner) = fiber_frame_outline(&sec).unwrap();
+        let inner = inner.unwrap();
+        let (_, outer_max) = bbox(&outer);
+        let (_, inner_max) = bbox(&inner);
+        let (outer_half_y, outer_half_z) = (outer_max[0], outer_max[1]);
+        let (inner_half_y, inner_half_z) = (inner_max[0], inner_max[1]);
+
+        let shape = sec.shape.clone().unwrap();
+        let strength = StrengthParams {
+            steel_fy: 235.0,
+            rebar_fy: 345.0,
+            concrete_fc: 24.0,
+            steel_e: 205_000.0,
+        };
+        let raw = plastic_fibers(&shape, &strength, YieldModelKind::MultiFiber);
+        assert!(!raw.is_empty());
+        // build_gauss_fibers と同じ 90°回転 (y,z)←(z,−y) を適用し要素座標系へ。
+        let rotated: Vec<[f64; 2]> = raw.iter().map(|f| [f.z, -f.y]).collect();
+
+        const EPS: f64 = 1e-6;
+        for [y, z] in &rotated {
+            assert!(
+                y.abs() <= outer_half_y + EPS && z.abs() <= outer_half_z + EPS,
+                "ファイバーが外形線の外側にある: y={y}, z={z}"
+            );
+            assert!(
+                !(y.abs() < inner_half_y - EPS && z.abs() < inner_half_z - EPS),
+                "ファイバーが内側輪郭（中空部）の内側にある: y={y}, z={z}"
+            );
+        }
+    }
+
+    /// 溝形鋼（SteelChannel、非対称断面）でも、外形線をファイバー座標系へ変換
+    /// する際に断面積重心補正が輪郭側へ正しく効いており、ファイバー群
+    /// （`plastic_fibers` に要素側と同じ 90°回転を適用したもの）が
+    /// 外形線のバウンディングボックス内に収まる（ウェブ位置がずれて外形線と
+    /// ファイバー群の左右が逆転する等の座標系不整合が無い）ことを確認する。
+    #[test]
+    fn fiber_frame_outline_asymmetric_channel_aligns_with_fibers() {
+        let sec = Section {
+            id: SectionId(2),
+            name: "C-200x80x7.5x11".into(),
+            area: 1.0,
+            iy: 1.0,
+            iz: 1.0,
+            j: 1.0,
+            depth: 200.0,
+            width: 80.0,
+            as_y: 0.0,
+            as_z: 0.0,
+            panel_thickness: None,
+            thickness: None,
+            shape: Some(SectionShape::SteelChannel {
+                height: 200.0,
+                width: 80.0,
+                web_thick: 7.5,
+                flange_thick: 11.0,
+            }),
+        };
+        let (outer, inner) = fiber_frame_outline(&sec).unwrap();
+        assert!(inner.is_none(), "溝形鋼は中実断面のため内側輪郭は無い");
+        let (omin, omax) = bbox(&outer);
+
+        let shape = sec.shape.clone().unwrap();
+        let strength = StrengthParams {
+            steel_fy: 235.0,
+            rebar_fy: 345.0,
+            concrete_fc: 24.0,
+            steel_e: 205_000.0,
+        };
+        let raw = plastic_fibers(&shape, &strength, YieldModelKind::MultiFiber);
+        assert!(!raw.is_empty());
+        let rotated: Vec<[f64; 2]> = raw.iter().map(|f| [f.z, -f.y]).collect();
+
+        // メッシュ分割の格子中心座標のため、境界セル半分弱の余裕を見込む
+        // （目標寸法は最大寸法/40 = 200/40 = 5mm 程度）。
+        const MARGIN: f64 = 6.0;
+        for [y, z] in &rotated {
+            assert!(
+                *y >= omin[0] - MARGIN && *y <= omax[0] + MARGIN,
+                "ファイバー y={y} が外形線 y 範囲 [{}, {}] から外れている",
+                omin[0],
+                omax[0]
+            );
+            assert!(
+                *z >= omin[1] - MARGIN && *z <= omax[1] + MARGIN,
+                "ファイバー z={z} が外形線 z 範囲 [{}, {}] から外れている",
+                omin[1],
+                omax[1]
+            );
+        }
+
+        // ウェブ（面積の大部分）は z が負側に寄る配置のため、外形線の z 範囲も
+        // 原点対称ではなく負側へ偏っている（重心補正が効いている証拠）。
+        assert!(
+            (omax[1] + omin[1]) < -1.0,
+            "非対称断面なのに外形線が z=0 対称のまま（重心補正が効いていない）: omin={omin:?}, omax={omax:?}"
+        );
     }
 }
