@@ -11,6 +11,7 @@ mod diagram;
 pub(crate) mod hinge;
 mod modeling;
 mod solid;
+mod th_detail;
 
 /// 3D ビュー上での支持条件の分類。`Dof6Mask` のビットパターンを意味的にまとめる。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -71,6 +72,8 @@ pub enum ViewMode {
     Modeling,
     /// ヒンジ図（増分解析のヒンジ発生位置を可視化）
     Hinge,
+    /// 時刻歴アニメーション（時刻歴応答解析の詳細記録 `ThRecording` を再生表示）
+    TimeHistory,
 }
 
 /// モデル化図で可視化する解析種別。
@@ -538,6 +541,13 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
     let mut cmq_component = app.cmq_component;
     let mut check_ratio_filter = app.check_ratio_filter;
     let mut modeling_analysis = app.modeling_analysis;
+    // 時刻歴の詳細記録（`ThRecording`）がある場合のみ「時刻歴」モードを選択肢に出す。
+    let has_th_recording = app
+        .results
+        .as_ref()
+        .and_then(|r| r.time_history.as_ref())
+        .and_then(|t| t.recording.as_ref())
+        .is_some();
 
     // --- コントロール ---
     // 中央パネルが狭い場合（左パネルを広げた時など）にボタン列が右パネルへ
@@ -554,6 +564,9 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
         ui.selectable_value(&mut mode, ViewMode::CheckRatio, "検定比");
         ui.selectable_value(&mut mode, ViewMode::Hinge, "ヒンジ");
         ui.selectable_value(&mut mode, ViewMode::Modeling, "モデル化");
+        if has_th_recording {
+            ui.selectable_value(&mut mode, ViewMode::TimeHistory, "時刻歴");
+        }
         ui.separator();
         // 断面表示: 部材を断面形状の押し出しソリッドで立体表示（全モードと併用可）
         ui.toggle_value(&mut app.show_sections, "断面表示");
@@ -712,12 +725,68 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
             });
         }
     }
+    // 時刻歴モード: フレームスライダー・再生制御（§実装内容1）。
+    // 現在フレームは `app.th_frame`、再生経過時刻は `app.th_play_time`
+    // （`frame_time` に基づき現在フレームへ写像。末尾でループ）で管理する。
+    if mode == ViewMode::TimeHistory {
+        if let Some(recording) = app
+            .results
+            .as_ref()
+            .and_then(|r| r.time_history.as_ref())
+            .and_then(|t| t.recording.as_ref())
+        {
+            let n_frames = recording.frame_time.len();
+            if n_frames > 0 {
+                let duration = recording.frame_time.last().copied().unwrap_or(0.0);
+                app.th_frame = app.th_frame.min(n_frames - 1);
+                ui.horizontal_wrapped(|ui| {
+                    if ui
+                        .button(if app.th_playing { "⏸" } else { "▶" })
+                        .on_hover_text("再生 / 一時停止")
+                        .clicked()
+                    {
+                        app.th_playing = !app.th_playing;
+                    }
+                    ui.label("速度:");
+                    for s in [0.25_f32, 0.5, 1.0, 2.0] {
+                        ui.selectable_value(&mut app.th_speed, s, format!("×{s}"));
+                    }
+                    ui.separator();
+                    let mut frame = app.th_frame;
+                    if ui
+                        .add(egui::Slider::new(&mut frame, 0..=n_frames - 1).text(""))
+                        .changed()
+                    {
+                        app.th_frame = frame;
+                        app.th_play_time = recording.frame_time[frame];
+                    }
+                    let t = recording.frame_time[app.th_frame];
+                    ui.label(format!("t={:.2}s / {:.2}s", t, duration));
+                });
+                // 再生中は実時間×速度でフレームを進め、連続描画のため毎フレーム再描画を要求する。
+                if app.th_playing {
+                    let dt = ui.input(|i| i.stable_dt);
+                    app.th_play_time =
+                        advance_play_time(app.th_play_time, dt, app.th_speed, duration);
+                    app.th_frame = frame_at_time(&recording.frame_time, app.th_play_time);
+                    ui.ctx().request_repaint();
+                }
+            } else {
+                ui.label("時刻歴の記録フレームがありません。");
+            }
+        } else {
+            ui.label("時刻歴の詳細記録がありません（再解析すると記録されます）。");
+        }
+    }
     // 変形表示オプション行: 変形を表示するモード（変形・モード・応力図の変形重ね）で
     // 表示する。「内部たわみ」トグルで梁の Hermite 曲線表示（＋床・二次部材の曲線
     // 追従）と直線表示（全体の変形）を切り替え、変形倍率スライダーで自動算定倍率への
     // 手動係数を対数調整（「リセット」で 1.0）する。
-    let show_deform_options = matches!(mode, ViewMode::Deformed | ViewMode::Mode)
-        || (matches!(mode, ViewMode::N | ViewMode::Q | ViewMode::M) && app.overlay_deform);
+    let show_deform_options = matches!(
+        mode,
+        ViewMode::Deformed | ViewMode::Mode | ViewMode::TimeHistory
+    ) || (matches!(mode, ViewMode::N | ViewMode::Q | ViewMode::M)
+        && app.overlay_deform);
     if show_deform_options {
         ui.horizontal(|ui| {
             ui.toggle_value(&mut app.show_beam_interpolation, "内部たわみ")
@@ -852,6 +921,19 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
             .as_ref()
             .and_then(|r| r.modal.as_ref())
             .and_then(|m| m.node_shapes.get(mode_idx))
+            .cloned(),
+        // 時刻歴アニメーション: 現在フレーム（`app.th_frame`）の全節点変位（node 順、
+        // 展開済み。`ThRecording::node_disp` は既に `Deformed` と同じ形の
+        // `Vec<[f64;6]>` のため、以降の変形描画経路をそのまま流用できる）。
+        ViewMode::TimeHistory => app
+            .results
+            .as_ref()
+            .and_then(|r| r.time_history.as_ref())
+            .and_then(|t| t.recording.as_ref())
+            .and_then(|rec| {
+                rec.node_disp
+                    .get(app.th_frame.min(rec.node_disp.len().saturating_sub(1)))
+            })
             .cloned(),
         _ => None,
     };
@@ -1023,6 +1105,10 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
                         // ヒンジ図モードでは、クリックした部材のヒンジ詳細ウィンドウを開く。
                         if mode == ViewMode::Hinge {
                             app.hinge_detail_elem = Some(id);
+                        }
+                        // 時刻歴モードでは、クリックした部材の履歴・検定ウィンドウを開く。
+                        if mode == ViewMode::TimeHistory {
+                            app.th_detail_elem = Some(id);
                         }
                     }
                     _ => {
@@ -1401,6 +1487,8 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
     // ヒンジ詳細ウィンドウ（ヒンジ図でクリックした部材があれば表示。表示中は
     // 他の表示モードへ切り替えても閉じるまで残す）。
     hinge::show_hinge_detail_window(ui, app);
+    // 時刻歴詳細ウィンドウ（時刻歴モードでクリックした部材があれば表示）。
+    th_detail::show_th_detail_window(ui, app);
 }
 
 /// 応力図・CMQ 図のオフセット方向（要素ローカル y 軸）をワールド座標で返す。
@@ -1415,6 +1503,88 @@ fn diagram_offset_dir(p_i: [f64; 3], p_j: [f64; 3], ref_vector: [f64; 3]) -> [f6
 /// 部材両端間のワールド距離。ゼロ長部材（材軸が定まらない）の除外判定に使う。
 fn member_len3(p_i: [f64; 3], p_j: [f64; 3]) -> f64 {
     ((p_j[0] - p_i[0]).powi(2) + (p_j[1] - p_i[1]).powi(2) + (p_j[2] - p_i[2]).powi(2)).sqrt()
+}
+
+/// 時刻歴アニメーションの再生経過時刻を実時間 `dt_real`[s]×速度 `speed` だけ進める。
+/// `duration`（最終フレーム時刻）を超えたら先頭へループする（`rem_euclid` で周回）。
+/// `duration` が 0 以下（フレームが実質無い）なら常に 0 を返す。
+fn advance_play_time(current: f64, dt_real: f32, speed: f32, duration: f64) -> f64 {
+    if duration <= 0.0 {
+        return 0.0;
+    }
+    let next = current + dt_real as f64 * speed as f64;
+    next.rem_euclid(duration)
+}
+
+/// 再生経過時刻 `t` に対応するフレーム番号を返す（`frame_time` は昇順を仮定）。
+/// `t` 以下で最大の時刻を持つフレームを選ぶ（`t` が全フレームの時刻より小さければ 0）。
+fn frame_at_time(frame_time: &[f64], t: f64) -> usize {
+    if frame_time.is_empty() {
+        return 0;
+    }
+    match frame_time
+        .binary_search_by(|probe| probe.partial_cmp(&t).unwrap_or(std::cmp::Ordering::Equal))
+    {
+        Ok(i) => i,
+        Err(0) => 0,
+        Err(i) => (i - 1).min(frame_time.len() - 1),
+    }
+}
+
+#[cfg(test)]
+mod th_playback_tests {
+    use super::*;
+
+    /// 再生時刻は dt×速度だけ単調に進む（周回しない範囲）。
+    #[test]
+    fn advance_play_time_accumulates() {
+        let t = advance_play_time(1.0, 0.1, 2.0, 10.0);
+        // dt_real は f32 のため f64 変換で微小誤差が入る（許容差は f32 精度基準）。
+        assert!((t - 1.2).abs() < 1e-6, "t={t}");
+    }
+
+    /// 総時間を超えたら先頭へ周回する。
+    #[test]
+    fn advance_play_time_wraps_at_duration() {
+        let t = advance_play_time(9.5, 1.0, 1.0, 10.0);
+        assert!((t - 0.5).abs() < 1e-9, "got {t}");
+    }
+
+    /// duration が 0 以下なら常に 0。
+    #[test]
+    fn advance_play_time_zero_duration() {
+        assert_eq!(advance_play_time(5.0, 1.0, 1.0, 0.0), 0.0);
+    }
+
+    /// 各フレーム時刻ちょうどではそのフレーム番号を返す。
+    #[test]
+    fn frame_at_time_exact_hits() {
+        let ft = [0.0, 0.5, 1.0, 1.5];
+        assert_eq!(frame_at_time(&ft, 0.0), 0);
+        assert_eq!(frame_at_time(&ft, 0.5), 1);
+        assert_eq!(frame_at_time(&ft, 1.5), 3);
+    }
+
+    /// 中間の時刻は「その時刻以下で最大」のフレームになる。
+    #[test]
+    fn frame_at_time_between_frames() {
+        let ft = [0.0, 0.5, 1.0, 1.5];
+        assert_eq!(frame_at_time(&ft, 0.9), 1);
+        assert_eq!(frame_at_time(&ft, 1.49), 2);
+    }
+
+    /// 範囲外（負の時刻）は 0 にクランプする。
+    #[test]
+    fn frame_at_time_before_start() {
+        let ft = [0.2, 0.5];
+        assert_eq!(frame_at_time(&ft, -1.0), 0);
+    }
+
+    /// 空配列は 0 を返す。
+    #[test]
+    fn frame_at_time_empty() {
+        assert_eq!(frame_at_time(&[], 1.0), 0);
+    }
 }
 
 /// 変形図・モード形で梁の曲げ変形曲線を描く際の要素分割数（点数は +1）。

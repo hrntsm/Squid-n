@@ -776,6 +776,27 @@ pub struct App {
     /// 変形重ねにも適用する。
     #[cfg(feature = "gui")]
     pub show_beam_interpolation: bool,
+    /// 時刻歴モード（[`crate::viewer::ViewMode::TimeHistory`]）の現在フレーム番号
+    /// （`ThRecording::frame_time` の添字）。
+    #[cfg(feature = "gui")]
+    pub th_frame: usize,
+    /// 時刻歴モードの再生中フラグ（ON でフレームを自動で進める）。
+    #[cfg(feature = "gui")]
+    pub th_playing: bool,
+    /// 時刻歴モードの再生速度倍率（×0.25〜×2 等）。
+    #[cfg(feature = "gui")]
+    pub th_speed: f32,
+    /// 時刻歴モードの再生経過時刻 [s]（`ThRecording::frame_time` に基づき現在
+    /// フレームを決定する。スライダー操作時は選択フレームの時刻に同期する）。
+    #[cfg(feature = "gui")]
+    pub th_play_time: f64,
+    /// 時刻歴モードでクリック選択された部材（履歴・検定ウィンドウの表示対象。
+    /// `None` はウィンドウ非表示）。
+    #[cfg(feature = "gui")]
+    pub th_detail_elem: Option<squid_n_core::ids::ElemId>,
+    /// 時刻歴詳細ウィンドウの梁・柱ループで表示する曲げ軸（true=強軸Mz／false=弱軸My）。
+    #[cfg(feature = "gui")]
+    pub th_detail_axis_z: bool,
     /// 床荷重分配の CMQ 結果（P2 §5.1）。描画用。
     pub beam_loads: Vec<squid_n_load::floor::BeamLoad>,
     /// 時刻歴応答データ（描画用）
@@ -801,6 +822,15 @@ pub struct App {
     /// 断面カタログ選択UI のドラフト（Shape→Family→Name）
     #[cfg(feature = "gui")]
     pub catalog_draft: crate::section_editor::CatalogDraft,
+    /// 境界条件タブ「免震支承の配置」フォームのドラフト状態（`PlaceSupportIsolator` 用）
+    #[cfg(feature = "gui")]
+    pub isolator_support_draft: crate::tables::nodes::IsolatorSupportDraft,
+    /// 部材タブ「免震支承材を追加」フォームのドラフト状態（`AddIsolator` 用）
+    #[cfg(feature = "gui")]
+    pub isolator_member_draft: crate::tables::members::IsolatorMemberDraft,
+    /// 断面タブ「制振要素」パネルのドラフト状態（`AddDamperDef`/`UpdateDamperDef` 用）
+    #[cfg(feature = "gui")]
+    pub damper_def_draft: crate::damper_def_editor::DamperDefDraft,
     /// ビューアの梁作成モード（ON 中はクリックで節点を選び 2 点で梁を作る）
     #[cfg(feature = "gui")]
     pub beam_draw_mode: bool,
@@ -976,6 +1006,18 @@ impl Default for App {
             modeling_analysis: crate::viewer::ModelingAnalysis::default(),
             #[cfg(feature = "gui")]
             show_beam_interpolation: true,
+            #[cfg(feature = "gui")]
+            th_frame: 0,
+            #[cfg(feature = "gui")]
+            th_playing: false,
+            #[cfg(feature = "gui")]
+            th_speed: 1.0,
+            #[cfg(feature = "gui")]
+            th_play_time: 0.0,
+            #[cfg(feature = "gui")]
+            th_detail_elem: None,
+            #[cfg(feature = "gui")]
+            th_detail_axis_z: true,
             beam_loads: Vec::new(),
             #[cfg(feature = "gui")]
             time_history_data: crate::time_history_view::TimeHistoryData::default(),
@@ -992,6 +1034,12 @@ impl Default for App {
             section_draft: crate::section_editor::SectionEditorDraft::default(),
             #[cfg(feature = "gui")]
             catalog_draft: crate::section_editor::CatalogDraft::default(),
+            #[cfg(feature = "gui")]
+            isolator_support_draft: crate::tables::nodes::IsolatorSupportDraft::default(),
+            #[cfg(feature = "gui")]
+            isolator_member_draft: crate::tables::members::IsolatorMemberDraft::default(),
+            #[cfg(feature = "gui")]
+            damper_def_draft: crate::damper_def_editor::DamperDefDraft::default(),
             #[cfg(feature = "gui")]
             beam_draw_mode: false,
             #[cfg(feature = "gui")]

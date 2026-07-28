@@ -5904,3 +5904,122 @@ fn test_stale_results_not_persisted() {
 
     let _ = std::fs::remove_file(&path);
 }
+
+/// 制振要素定義（`Model::damper_defs`）を「断面のように選ぶ」UX の土台。
+/// `AddDamperDef`/`UpdateDamperDef`/`RemoveDamperDef` を undo 経由で実行し、
+/// 追加・更新・削除・undo が期待どおりに model へ反映されることを確認する
+/// （damper_def_editor.rs の各パネル操作が発行するコマンドと同じ経路）。
+#[test]
+fn test_damper_def_add_update_remove_via_undo() {
+    use squid_n_core::model::{DamperDef, DamperKind, DamperProps};
+
+    let mut app = App::default();
+    assert!(app.model.damper_defs.is_empty());
+
+    let def = DamperDef {
+        name: "オイルダンパーA".to_string(),
+        props: DamperProps {
+            kind: DamperKind::Maxwell,
+            kd: 120_000.0,
+            c0: 2_500.0,
+            alpha: 1.0,
+            ..DamperProps::default()
+        },
+    };
+    app.undo.run(
+        &mut app.model,
+        Box::new(squid_n_edit::AddDamperDef { def: def.clone() }),
+    );
+    assert_eq!(app.model.damper_defs.len(), 1);
+    assert_eq!(app.model.damper_defs[0].name, "オイルダンパーA");
+
+    // 更新（名称・諸元の書き換え）。
+    let updated = DamperDef {
+        name: "オイルダンパーA改".to_string(),
+        props: DamperProps {
+            kd: 200_000.0,
+            ..def.props
+        },
+    };
+    app.undo.run(
+        &mut app.model,
+        Box::new(squid_n_edit::UpdateDamperDef {
+            index: 0,
+            def: updated.clone(),
+        }),
+    );
+    assert_eq!(app.model.damper_defs[0].name, "オイルダンパーA改");
+    assert_eq!(app.model.damper_defs[0].props.kd, 200_000.0);
+
+    // 削除。
+    app.undo.run(
+        &mut app.model,
+        Box::new(squid_n_edit::RemoveDamperDef { index: 0 }),
+    );
+    assert!(app.model.damper_defs.is_empty());
+
+    // undo を 3 回巻き戻すと、更新前→追加前の順に復元される。
+    app.undo.undo(&mut app.model);
+    assert_eq!(app.model.damper_defs.len(), 1, "削除の取り消し");
+    assert_eq!(app.model.damper_defs[0].name, "オイルダンパーA改");
+    app.undo.undo(&mut app.model);
+    assert_eq!(
+        app.model.damper_defs[0].name, "オイルダンパーA",
+        "更新の取り消し"
+    );
+    app.undo.undo(&mut app.model);
+    assert!(app.model.damper_defs.is_empty(), "追加の取り消し");
+}
+
+/// 免震支承材の作成（`AddIsolator`）: 2節点間へ免震支承材要素＋諸元を追加し、
+/// undo で復元されることを確認する（部材タブ「免震支承材を追加」フォームの
+/// ボタン押下相当の操作）。
+#[test]
+fn test_add_isolator_between_two_nodes_via_undo() {
+    use squid_n_core::model::{
+        ElementData, ElementKind, EndCondition, ForceRegime, IsolatorKind, IsolatorProps, LocalAxis,
+    };
+
+    let mut app = App::default();
+    app.load_model(crate::sample::portal_frame());
+    let n = app.model.nodes.len();
+    assert!(n >= 2);
+    let (i_node, j_node) = (app.model.nodes[0].id, app.model.nodes[1].id);
+    let new_id = squid_n_core::ids::ElemId(app.model.elements.len() as u32);
+    let elem = ElementData {
+        id: new_id,
+        kind: ElementKind::Isolator,
+        nodes: [i_node, j_node].into_iter().collect(),
+        section: None,
+        material: None,
+        local_axis: LocalAxis {
+            ref_vector: [1.0, 0.0, 0.0],
+        },
+        end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+        force_regime: ForceRegime::Auto,
+        rigid_zone: Default::default(),
+        plastic_zone: None,
+        spring: None,
+    };
+    let props = IsolatorProps {
+        kind: IsolatorKind::HighDampingRubber,
+        ..IsolatorProps::default()
+    };
+    app.undo.run(
+        &mut app.model,
+        Box::new(squid_n_edit::AddIsolator { elem, props }),
+    );
+    assert!(app.model.elements.iter().any(|e| e.id == new_id));
+    assert_eq!(
+        app.model
+            .isolator_attrs
+            .iter()
+            .find(|a| a.elem == new_id)
+            .map(|a| a.props),
+        Some(props)
+    );
+
+    app.undo.undo(&mut app.model);
+    assert!(!app.model.elements.iter().any(|e| e.id == new_id));
+    assert!(!app.model.isolator_attrs.iter().any(|a| a.elem == new_id));
+}

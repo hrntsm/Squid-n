@@ -261,52 +261,53 @@ fn story_response_panel(ui: &mut egui::Ui, app: &mut App) {
         })
         .collect();
 
-    let (values, xlabel, unit_suffix, value_fmt): (Vec<f64>, &str, &str, fn(f64) -> String) =
-        match kind {
-            StoryResponseKind::Shear => {
-                let raw = story_absmax(&story.story_shear, n_story);
-                (
-                    raw.iter()
-                        .map(|&v| crate::story_response::n_to_kn(v))
-                        .collect(),
-                    "層せん断力 [kN]",
-                    "kN",
-                    |v| format!("{:.2}", v),
-                )
-            }
-            StoryResponseKind::ShearCoeff => (
-                story.peak_shear_coeff.clone(),
-                "層せん断力係数 Ci [-]",
-                "",
+    /// 層応答分布の1系列分の表示仕様（値列・軸ラベル・単位・値の書式）。
+    type SeriesSpec<'a> = (Vec<f64>, &'a str, &'a str, fn(f64) -> String);
+    let (values, xlabel, unit_suffix, value_fmt): SeriesSpec<'_> = match kind {
+        StoryResponseKind::Shear => {
+            let raw = story_absmax(&story.story_shear, n_story);
+            (
+                raw.iter()
+                    .map(|&v| crate::story_response::n_to_kn(v))
+                    .collect(),
+                "層せん断力 [kN]",
+                "kN",
+                |v| format!("{:.2}", v),
+            )
+        }
+        StoryResponseKind::ShearCoeff => (
+            story.peak_shear_coeff.clone(),
+            "層せん断力係数 Ci [-]",
+            "",
+            |v| format!("{:.4}", v),
+        ),
+        StoryResponseKind::Accel => {
+            let raw = story_absmax(&story.floor_accel, n_story);
+            (
+                raw.iter()
+                    .map(|&v| crate::story_response::mm_s2_to_gal(v))
+                    .collect(),
+                "階加速度 [gal]",
+                "gal",
+                |v| format!("{:.1}", v),
+            )
+        }
+        StoryResponseKind::Vel => {
+            let raw = story_absmax(&story.floor_vel, n_story);
+            (
+                raw.iter()
+                    .map(|&v| crate::story_response::mm_s_to_m_s(v))
+                    .collect(),
+                "階速度 [m/s]",
+                "m/s",
                 |v| format!("{:.4}", v),
-            ),
-            StoryResponseKind::Accel => {
-                let raw = story_absmax(&story.floor_accel, n_story);
-                (
-                    raw.iter()
-                        .map(|&v| crate::story_response::mm_s2_to_gal(v))
-                        .collect(),
-                    "階加速度 [gal]",
-                    "gal",
-                    |v| format!("{:.1}", v),
-                )
-            }
-            StoryResponseKind::Vel => {
-                let raw = story_absmax(&story.floor_vel, n_story);
-                (
-                    raw.iter()
-                        .map(|&v| crate::story_response::mm_s_to_m_s(v))
-                        .collect(),
-                    "階速度 [m/s]",
-                    "m/s",
-                    |v| format!("{:.4}", v),
-                )
-            }
-            StoryResponseKind::Disp => {
-                let raw = story_absmax(&story.floor_disp, n_story);
-                (raw, "階変位 [mm]", "mm", |v| format!("{:.2}", v))
-            }
-        };
+            )
+        }
+        StoryResponseKind::Disp => {
+            let raw = story_absmax(&story.floor_disp, n_story);
+            (raw, "階変位 [mm]", "mm", |v| format!("{:.2}", v))
+        }
+    };
 
     let is_story_quantity = kind.is_story_quantity();
     let color = crate::theme::DATA_BLUE;

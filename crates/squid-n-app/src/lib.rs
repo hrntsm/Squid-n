@@ -6,6 +6,8 @@ pub mod story_response;
 pub mod summary;
 
 #[cfg(feature = "gui")]
+pub mod damper_def_editor;
+#[cfg(feature = "gui")]
 pub mod design_view;
 #[cfg(feature = "gui")]
 pub mod mn_view;

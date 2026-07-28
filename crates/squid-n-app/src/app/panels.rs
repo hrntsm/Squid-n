@@ -485,6 +485,8 @@ impl App {
                 crate::section_editor::catalog_section_panel(ui, self);
                 ui.add_space(8.0);
                 crate::section_editor::section_editor_panel(ui, self);
+                ui.add_space(8.0);
+                crate::damper_def_editor::damper_def_panel(ui, self);
             }
             ModelTab::Materials => crate::tables::materials::materials_table(ui, self),
             ModelTab::Slabs => crate::tables::slabs::slabs_table(ui, self),
