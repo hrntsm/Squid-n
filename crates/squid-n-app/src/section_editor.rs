@@ -662,7 +662,6 @@ fn int_field(ui: &mut egui::Ui, val: &mut u32) {
 
 fn build_rebar(d: &SectionEditorDraft) -> RcRebar {
     RcRebar {
-        main_grade: None,
         main_x: BarSet {
             count: d.main_x_count,
             dia: d.main_x_dia,

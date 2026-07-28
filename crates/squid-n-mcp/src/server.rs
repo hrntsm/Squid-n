@@ -443,8 +443,9 @@ mod tests {
                 j: 1.0e6,
                 depth: 100.0,
                 width: 100.0,
-                as_y: 0.0,
-                as_z: 0.0,
+                // 有効せん断断面積 As = A·5/6（矩形。0 は解析前チェックで入力エラー）。
+                as_y: 10000.0 * 5.0 / 6.0,
+                as_z: 10000.0 * 5.0 / 6.0,
                 panel_thickness: None,
                 thickness: None,
                 shape: None,
