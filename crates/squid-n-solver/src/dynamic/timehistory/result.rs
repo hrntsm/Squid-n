@@ -21,6 +21,17 @@ pub struct ResponseResult {
     /// 旧プロジェクトファイル（.scz）には無いフィールドのため、読込時は `None` で補う。
     #[serde(default)]
     pub recording: Option<ThRecording>,
+    /// 非線形時刻歴（各部材の復元力特性を考慮した Newton 反復）で解析したか。
+    /// 線形（Newmark-β・HHT-α）は false。旧プロジェクトファイル（.scz）には
+    /// 無いフィールドのため、読込時は false（線形扱い）で補う。
+    #[serde(default)]
+    pub nonlinear: bool,
+    /// 長期系荷重ケース（固定・積載等）を時刻歴開始前に静的載荷し、その応力状態を
+    /// 初期条件としたか（非線形時刻歴の `NonlinearThCfg::apply_long_term` に対応。
+    /// 線形時刻歴は重ね合わせ運用のため常に false）。旧プロジェクトファイル
+    /// （.scz）には無いフィールドのため、読込時は false で補う。
+    #[serde(default)]
+    pub applied_long_term: bool,
 }
 
 /// UI 描画用の代表応答時刻歴（`time` と同じ長さ）。

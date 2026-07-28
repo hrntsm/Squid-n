@@ -216,15 +216,20 @@ pub(crate) fn show_th_detail_window(ui: &egui::Ui, app: &mut App) {
 /// `app: &mut App` の同時使用を避け、最後にまとめて書き戻す
 /// （§実装内容2 のループ本体は `app.model`／`app.results` の共有参照のみで完結する）。
 fn draw_th_detail_content(ui: &mut egui::Ui, app: &mut App, elem_id: ElemId) {
-    let Some(recording) = app
-        .results
-        .as_ref()
-        .and_then(|r| r.time_history.as_ref())
-        .and_then(|t| t.recording.as_ref())
-    else {
+    let Some(th_result) = app.results.as_ref().and_then(|r| r.time_history.as_ref()) else {
         ui.colored_label(theme::GRAY_600, "時刻歴の詳細記録がありません。");
         return;
     };
+    let Some(recording) = th_result.recording.as_ref() else {
+        ui.colored_label(theme::GRAY_600, "時刻歴の詳細記録がありません。");
+        return;
+    };
+    // 解析時のフラグ（`ResponseResult::nonlinear`/`applied_long_term`）を、後段の
+    // `draw_peak_check`/`draw_long_term_note` へ渡すために先に取り出しておく
+    // （借用の都合上、`app: &mut App` の可変借用と `recording` の共有借用を
+    // 同時に保持できないため、値だけコピーする）。
+    let th_nonlinear = th_result.nonlinear;
+    let th_applied_long_term = th_result.applied_long_term;
     let Some(elem_idx) = app.model.elements.iter().position(|e| e.id == elem_id) else {
         ui.colored_label(theme::GRAY_600, "この部材はモデルから削除されています。");
         return;
@@ -285,7 +290,15 @@ fn draw_th_detail_content(ui: &mut egui::Ui, app: &mut App, elem_id: ElemId) {
     ui.add_space(6.0);
     ui.separator();
     let elem = &app.model.elements[elem_idx];
-    draw_peak_check(ui, app, elem, elem_idx, recording);
+    draw_peak_check(
+        ui,
+        app,
+        elem,
+        elem_idx,
+        recording,
+        th_nonlinear,
+        th_applied_long_term,
+    );
 }
 
 /// 軸力系要素（ブレース・ダンパー・免震・節点ばね）の N-δ ループ。
@@ -466,15 +479,18 @@ fn end_moments(mf: &MemberForces, axis_z: bool) -> Option<(f64, f64)> {
 }
 
 /// 最大応力（内力包絡）に対する短期検定。
+#[allow(clippy::too_many_arguments)]
 fn draw_peak_check(
     ui: &mut egui::Ui,
     app: &App,
     elem: &ElementData,
     elem_idx: usize,
     rec: &ThRecording,
+    th_nonlinear: bool,
+    th_applied_long_term: bool,
 ) {
     ui.strong("最大応力に対する検定（全ステップの内力包絡・短期）");
-    draw_long_term_note(ui, app);
+    draw_long_term_note(ui, th_nonlinear, th_applied_long_term);
     ui.label(
         egui::RichText::new(
             "簡易検定です（座屈長さ＝部材長として評価。継手欠損・一本部材合成・地震時QDの長期割増は考慮しません）。",
@@ -575,11 +591,16 @@ fn draw_peak_check(
 }
 
 /// 長期重ね合わせの有無に関する注記（線形時刻歴は重ね合わせ運用のため対象外、
-/// 非線形時刻歴は `th_apply_long_term` の有無で注記を変える）。
-fn draw_long_term_note(ui: &mut egui::Ui, app: &App) {
-    let note = if !app.analysis_cfg.th_nonlinear {
+/// 非線形時刻歴は長期荷重初期載荷の有無で注記を変える）。
+///
+/// `nonlinear`/`applied_long_term` は `ResponseResult` に記録された**解析時**の
+/// フラグを渡す（解析タブの現在の設定値ではない）。解析後に設定を変更しても
+/// 注記が実際の解析条件と食い違わないようにするための判断
+/// （`dev_docs/handoff/時刻歴アニメーション表示_申し送り.md` 参照）。
+fn draw_long_term_note(ui: &mut egui::Ui, nonlinear: bool, applied_long_term: bool) {
+    let note = if !nonlinear {
         "線形時刻歴のため、この応答は地震動による応答成分のみです（長期荷重との重ね合わせは含みません）。"
-    } else if app.analysis_cfg.th_apply_long_term {
+    } else if applied_long_term {
         "長期荷重を初期状態として含む結果です。"
     } else {
         "長期荷重を含まない（水平力のみの）結果です。"

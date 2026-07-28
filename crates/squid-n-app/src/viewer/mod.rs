@@ -11,6 +11,7 @@ mod diagram;
 pub(crate) mod hinge;
 mod modeling;
 mod solid;
+mod support_symbols;
 mod th_detail;
 
 /// 3D ビュー上での支持条件の分類。`Dof6Mask` のビットパターンを意味的にまとめる。
@@ -374,6 +375,30 @@ fn draw_arrow(painter: &egui::Painter, from: egui::Pos2, to: egui::Pos2, color: 
     painter.line_segment([to, right], stroke);
 }
 
+/// 回転軸 `axis`（非零ベクトル想定）に直交する面内の正規直交基底 `(u, v)` を返す。
+/// 円弧・渦巻（[`support_symbols::draw_rotational_spring`]）など、軸まわりの円周上に
+/// 点を生成する描画で共有する。軸が退化している（ゼロベクトル）場合は `None`。
+pub(super) fn axis_basis(axis: [f64; 3]) -> Option<([f64; 3], [f64; 3])> {
+    let n = (axis[0] * axis[0] + axis[1] * axis[1] + axis[2] * axis[2]).sqrt();
+    if n < 1e-12 {
+        return None;
+    }
+    let axis = [axis[0] / n, axis[1] / n, axis[2] / n];
+    let ref_vec = if axis[0].abs() < 0.9 {
+        [1.0, 0.0, 0.0]
+    } else {
+        [0.0, 1.0, 0.0]
+    };
+    let u_raw = cross3(axis, ref_vec);
+    let un = (u_raw[0] * u_raw[0] + u_raw[1] * u_raw[1] + u_raw[2] * u_raw[2]).sqrt();
+    if un < 1e-12 {
+        return None;
+    }
+    let u = [u_raw[0] / un, u_raw[1] / un, u_raw[2] / un];
+    let v = cross3(axis, u);
+    Some((u, v))
+}
+
 /// 節点を中心に `axis` まわりの回転を示す円弧（全周）を描く。
 fn draw_rotation_arc(
     painter: &egui::Painter,
@@ -383,24 +408,9 @@ fn draw_rotation_arc(
     radius_world: f64,
     color: egui::Color32,
 ) {
-    let n = (axis[0] * axis[0] + axis[1] * axis[1] + axis[2] * axis[2]).sqrt();
-    if n < 1e-12 {
+    let Some((u, v)) = axis_basis(axis) else {
         return;
-    }
-    let axis = [axis[0] / n, axis[1] / n, axis[2] / n];
-    // 軸に直交する面内の直交基底 u, v を作る
-    let ref_vec = if axis[0].abs() < 0.9 {
-        [1.0, 0.0, 0.0]
-    } else {
-        [0.0, 1.0, 0.0]
     };
-    let u_raw = cross3(axis, ref_vec);
-    let un = (u_raw[0] * u_raw[0] + u_raw[1] * u_raw[1] + u_raw[2] * u_raw[2]).sqrt();
-    if un < 1e-12 {
-        return;
-    }
-    let u = [u_raw[0] / un, u_raw[1] / un, u_raw[2] / un];
-    let v = cross3(axis, u);
 
     let stroke = egui::Stroke::new(1.5_f32, color);
     const N: usize = 32;
@@ -477,8 +487,15 @@ fn draw_support_symbol(
 }
 
 /// 支持条件シンボルの凡例をビュー左下に描く。
-/// `has_diaphragm` が真のとき、剛床マーク（面内拘束）の説明行を追加する。
-fn draw_support_legend(painter: &egui::Painter, has_diaphragm: bool) {
+/// `has_diaphragm` が真のとき剛床マーク、`has_spring` が真のとき支点ばね、
+/// `has_isolator` が真のとき免震支承の説明行を追加する（実際にモデル内に
+/// 存在する種別のみ表示。既存の支持記号凡例と同じ方針）。
+fn draw_support_legend(
+    painter: &egui::Painter,
+    has_diaphragm: bool,
+    has_spring: bool,
+    has_isolator: bool,
+) {
     let rect = painter.clip_rect();
     let x0 = rect.min.x + 10.0;
     let mut y0 = rect.max.y - 10.0;
@@ -493,6 +510,56 @@ fn draw_support_legend(painter: &egui::Painter, has_diaphragm: bool) {
             theme::GRAY_600,
         );
         // 以降の支持条件凡例を 1 行分上へずらす。
+        y0 -= 16.0;
+    }
+
+    // 免震支承マーカーの説明（実際に配置されている場合のみ）。
+    if has_isolator {
+        support_symbols::draw_isolator_marker(
+            painter,
+            egui::pos2(x0 + 10.0, y0 - 8.0),
+            theme::ISOLATOR_TEAL,
+        );
+        painter.text(
+            egui::pos2(x0 + 28.0, y0),
+            egui::Align2::LEFT_BOTTOM,
+            "免震支承",
+            egui::FontId::proportional(11.0),
+            theme::GRAY_600,
+        );
+        y0 -= 16.0;
+    }
+
+    // 支点ばねの説明（実際に設定されている場合のみ。回転→並進の順で 2 行）。
+    if has_spring {
+        support_symbols::draw_spiral_icon_2d(
+            painter,
+            egui::pos2(x0 + 10.0, y0 - 7.0),
+            6.0,
+            theme::AXIS_X,
+        );
+        painter.text(
+            egui::pos2(x0 + 28.0, y0),
+            egui::Align2::LEFT_BOTTOM,
+            "回転ばね支持 (渦巻線、X赤/Y緑/Z青)",
+            egui::FontId::proportional(11.0),
+            theme::GRAY_600,
+        );
+        y0 -= 16.0;
+
+        support_symbols::draw_translational_spring(
+            painter,
+            egui::pos2(x0, y0 - 6.0),
+            egui::pos2(x0 + 20.0, y0 - 6.0),
+            theme::AXIS_X,
+        );
+        painter.text(
+            egui::pos2(x0 + 28.0, y0),
+            egui::Align2::LEFT_BOTTOM,
+            "並進ばね支持 (コイル線、X赤/Y緑/Z青)",
+            egui::FontId::proportional(11.0),
+            theme::GRAY_600,
+        );
         y0 -= 16.0;
     }
 
@@ -1472,8 +1539,64 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
             SUPPORT_ARC_PX,
         );
     }
-    if has_support || has_diaphragm {
-        draw_support_legend(&painter, has_diaphragm);
+
+    // --- 支点ばね記号 ---
+    // 拘束で固定済みの成分は上のループで従来の矢印・円弧を描画済みのため、
+    // ここでは非固定かつばね値が非ゼロの成分にのみジグザグ（並進）・渦巻（回転）を描く。
+    // 剛床マスター節点はダミー拘束の仮想節点でありばね支持を持たないため対象外。
+    let mut has_spring = false;
+    for (i, node) in app.model.nodes.iter().enumerate() {
+        if diaphragm_masters.contains(&i) {
+            continue;
+        }
+        let Some(spring) = node.support_spring else {
+            continue;
+        };
+        let coord = coords3.get(i).copied().unwrap_or(node.coord);
+        has_spring = true;
+        support_symbols::draw_spring_symbol(
+            &painter,
+            &proj,
+            coord,
+            node.restraint,
+            &spring,
+            SUPPORT_ARROW_PX,
+            SUPPORT_ARC_PX,
+        );
+    }
+
+    // --- 免震支承マーカー ---
+    // 支点配置は「接地節点（restraint=FIXED）と対象節点の間の零長 Isolator 要素」
+    // （`support_symbols::support_isolators` が判定）。対象節点側にマーカーを描く。
+    let support_isolators = support_symbols::support_isolators(&app.model);
+    let has_isolator = !support_isolators.is_empty();
+    for &(idx, _elem_id, _props) in &support_isolators {
+        let coord = coords3
+            .get(idx)
+            .copied()
+            .unwrap_or_else(|| app.model.nodes[idx].coord);
+        support_symbols::draw_isolator_marker(&painter, proj.project(coord), theme::ISOLATOR_TEAL);
+    }
+    // 免震支承マーカーのホバー詳細（ViewCube ホバー中は除く。節点近傍・8px 閾値）。
+    if cube_hover.is_none() {
+        if let Some(hover_pos) = response.hover_pos() {
+            const HOVER_PICK_THRESHOLD: f32 = 8.0;
+            let nearest = support_isolators
+                .iter()
+                .filter_map(|&(idx, elem_id, props)| {
+                    pts.get(idx)
+                        .map(|&p| (elem_id, props, (hover_pos - p).length()))
+                })
+                .filter(|&(_, _, d)| d <= HOVER_PICK_THRESHOLD)
+                .min_by(|a, b| a.2.partial_cmp(&b.2).unwrap());
+            if let Some((elem_id, props, _)) = nearest {
+                support_symbols::show_isolator_tooltip(ui, elem_id, &props);
+            }
+        }
+    }
+
+    if has_support || has_diaphragm || has_spring || has_isolator {
+        draw_support_legend(&painter, has_diaphragm, has_spring, has_isolator);
     }
 
     // 右上に ViewCube、右下にカメラ追従の座標系アイコン（常に手前に表示。

@@ -5505,6 +5505,7 @@ dependencies = [
  "faer",
  "rayon",
  "serde",
+ "serde_json",
  "smallvec",
  "squid-n-core",
  "squid-n-element",

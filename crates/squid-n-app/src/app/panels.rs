@@ -1294,6 +1294,22 @@ impl App {
                     });
                 }
                 ui.horizontal_wrapped(|ui| {
+                    ui.label("記録間引き(0=自動):");
+                    ui.add(
+                        egui::DragValue::new(&mut self.analysis_cfg.th_record_every)
+                            .range(0..=100000),
+                    )
+                    .on_hover_text(
+                        "3D アニメーション・層応答グラフ・部材履歴用の詳細記録\
+                         （ThRecording）を N ステップごとに 1 フレーム記録します。\
+                         0 なら記録フレーム数が概ね 1000 になるよう自動決定します\
+                         （線形・HHT-α・非線形の 3 経路とも共通）。\
+                         ピーク値（最大変位・最大内力・層せん断力係数の最大値）は\
+                         間引かず全ステップで更新するため、この値は精度ではなく\
+                         アニメーション・履歴グラフの解像度とメモリ使用量に影響します。",
+                    );
+                });
+                ui.horizontal_wrapped(|ui| {
                     ui.add_enabled(
                         self.analysis_cfg.th_nonlinear,
                         egui::Checkbox::new(

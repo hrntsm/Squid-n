@@ -25,6 +25,8 @@ use squid_n_math::sparse::sparse_matvec;
 /// `initial_disp`/`initial_vel` は縮約空間（n_indep 長）の初期値。
 /// `hht.dt == 0.0` のときは `wave.dt` を採用する。
 /// α=0 で標準 Newmark-β（平均加速度法）に一致。
+/// `record_every` は詳細記録（[`super::ThRecording`]）の間引き係数。`None` は
+/// 自動決定（[`super::recording::auto_record_every`]）。
 #[allow(clippy::too_many_arguments)]
 pub fn linear_hht_alpha_analysis(
     model: &Model,
@@ -36,6 +38,7 @@ pub fn linear_hht_alpha_analysis(
     initial_disp: &[f64],
     initial_vel: &[f64],
     use_kg: bool,
+    record_every: Option<usize>,
 ) -> Result<ResponseResult, SolveError> {
     squid_n_math::parallelism::apply_to_faer();
 
@@ -56,6 +59,8 @@ pub fn linear_hht_alpha_analysis(
             cumulative_ductility: vec![0.0; model.elements.len()],
             history: ResponseHistory::default(),
             recording: None,
+            nonlinear: false,
+            applied_long_term: false,
         });
     }
 
@@ -183,6 +188,7 @@ pub fn linear_hht_alpha_analysis(
         u,
         v,
         a,
+        record_every,
     )?;
     Ok(result)
 }
@@ -215,6 +221,7 @@ fn run_steps_hht(
     mut u: Vec<f64>,
     mut v: Vec<f64>,
     mut a: Vec<f64>,
+    record_every: Option<usize>,
 ) -> Result<(ResponseResult, TimeStepState), SolveError> {
     let n_indep = reducer.n_indep;
     let n_free = dofmap.n_active();
@@ -230,13 +237,14 @@ fn run_steps_hht(
     let mut time = Vec::with_capacity(wave.accel_x.len() - start_step as usize + 1);
     time.push(start_step as f64 * dt);
 
-    // 詳細記録（3D アニメーション・層応答グラフ・部材履歴用、record_every は自動決定）。
+    // 詳細記録（3D アニメーション・層応答グラフ・部材履歴用。record_every は
+    // 呼び出し元（UI 等）が指定できる。None は自動決定）。
     let mut recorder = ThRecorder::new(
         model,
         dofmap,
         wave.accel_x.len(),
         model.elements.len(),
-        None,
+        record_every,
     );
     let xg_x_init = wave
         .accel_x
@@ -431,6 +439,8 @@ fn run_steps_hht(
             cumulative_ductility: vec![0.0; model.elements.len()],
             history,
             recording: Some(recorder.finish()),
+            nonlinear: false,
+            applied_long_term: false,
         },
         final_state,
     ))

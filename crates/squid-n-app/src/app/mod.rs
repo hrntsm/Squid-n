@@ -372,6 +372,12 @@ pub struct AnalysisSettings {
     pub th_max_iter: usize,
     /// 非線形時刻歴: Newton 収束判定の相対許容誤差。
     pub th_tol: f64,
+    /// 時刻歴の詳細記録（3D アニメーション・層応答グラフ・部材履歴用）の
+    /// フレーム間引き係数（線形・HHT-α・非線形の 3 経路共通）。
+    /// 0 は自動決定（記録フレーム数が概ね 1000 になるよう調整）。
+    /// ピーク値（`peak_disp`・`peak_member_forces`・`peak_shear_coeff`）は
+    /// 間引きの影響を受けず全ステップで更新される。
+    pub th_record_every: usize,
     /// 位相差入力（ねじれ加振）を考慮する（構造動力学）。
     pub phase_diff_enabled: bool,
     /// せん断波速度 Vs [m/s]。
@@ -478,6 +484,7 @@ impl Default for AnalysisSettings {
             th_apply_long_term: false,
             th_max_iter: 50,
             th_tol: 1e-6,
+            th_record_every: 0,
             phase_diff_enabled: false,
             phase_diff_vs: 200.0,
             phase_diff_length_m: 20.0,

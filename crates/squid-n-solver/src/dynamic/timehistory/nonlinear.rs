@@ -117,6 +117,8 @@ pub fn nonlinear_time_history_analysis(
             cumulative_ductility: vec![0.0; model.elements.len()],
             history: ResponseHistory::default(),
             recording: None,
+            nonlinear: true,
+            applied_long_term: cfg.apply_long_term,
         });
     }
 
@@ -585,6 +587,8 @@ pub fn nonlinear_time_history_analysis(
         cumulative_ductility,
         history,
         recording: Some(recorder.finish()),
+        nonlinear: true,
+        applied_long_term: cfg.apply_long_term,
     })
 }
 

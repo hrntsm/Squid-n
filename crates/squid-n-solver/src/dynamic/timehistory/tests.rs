@@ -268,6 +268,7 @@ fn test_sdof_free_vibration_matches_analytical() {
             &[1.0],
             &[0.0],
             false,
+            None,
         )
         .expect("time history should converge");
 
@@ -332,6 +333,7 @@ fn test_sdof_damping_envelope_matches_analytical() {
         &[1.0],
         &[0.0],
         false,
+        None,
     )
     .expect("converge");
 
@@ -468,6 +470,7 @@ fn test_2dof_free_vibration_runs() {
         &[1.0, 1.618], // 1次モード形 [1, 1.618] で純1次モード励振
         &[0.0, 0.0],
         false,
+        None,
     )
     .expect("2DOF should converge");
 
@@ -586,6 +589,7 @@ fn test_2dof_mode_superposition_consistency() {
         &[1.0, phi_ratio],
         &[0.0, 0.0],
         false,
+        None,
     )
     .expect("mode superposition test");
 
@@ -642,6 +646,7 @@ fn test_average_accel_unconditional_stability() {
         &[1.0],
         &[0.0],
         false,
+        None,
     )
     .expect("should not diverge with average accel");
 
@@ -689,6 +694,7 @@ fn test_linear_accel_stable_range() {
         &[1.0],
         &[0.0],
         false,
+        None,
     )
     .expect("linear accel should be stable at dt=0.01");
 
@@ -739,6 +745,7 @@ fn test_checkpoint_restart_bit_exact() {
         &[1.0],
         &[0.0],
         false,
+        None,
     )
     .expect("continuous run");
 
@@ -754,6 +761,7 @@ fn test_checkpoint_restart_bit_exact() {
         &[1.0],
         &[0.0],
         false,
+        None,
     )
     .expect("first half");
     assert_eq!(state_half.step, m as u64);
@@ -773,6 +781,7 @@ fn test_checkpoint_restart_bit_exact() {
         &damping,
         &state_loaded,
         false,
+        None,
     )
     .expect("restart");
 
@@ -842,6 +851,7 @@ fn test_hht_alpha_alpha_zero_matches_newmark() {
         &[1.0],
         &[0.0],
         false,
+        None,
     )
     .expect("newmark");
 
@@ -855,6 +865,7 @@ fn test_hht_alpha_alpha_zero_matches_newmark() {
         &[1.0],
         &[0.0],
         false,
+        None,
     )
     .expect("hht alpha=0");
 
@@ -910,6 +921,7 @@ fn test_hht_alpha_stability() {
         &[1.0],
         &[0.0],
         false,
+        None,
     )
     .expect("HHT-α should not diverge");
 
@@ -957,6 +969,7 @@ fn test_hht_alpha_sdof_free_vibration() {
         &[1.0],
         &[0.0],
         false,
+        None,
     )
     .expect("newmark");
 
@@ -970,6 +983,7 @@ fn test_hht_alpha_sdof_free_vibration() {
         &[1.0],
         &[0.0],
         false,
+        None,
     )
     .expect("hht");
 
@@ -1024,6 +1038,7 @@ fn test_hht_alpha_adds_numerical_dissipation() {
             &[1.0],
             &[0.0],
             false,
+            None,
         )
         .expect("hht");
         let nd = &r.history.node_disp;
@@ -1095,6 +1110,7 @@ fn test_y_direction_wave_selects_y_record_dir() {
         &[0.0],
         &[0.0],
         false,
+        None,
     )
     .expect("Y-direction time history should converge");
 
@@ -1163,6 +1179,7 @@ fn test_phase_diff_torsion_excites_eccentric_node() {
         &[0.0],
         &[0.0],
         false,
+        None,
     )
     .expect("torsion time history should converge");
 
@@ -1183,6 +1200,7 @@ fn test_phase_diff_torsion_excites_eccentric_node() {
         &[0.0],
         &[0.0],
         false,
+        None,
     )
     .expect("zero input should converge");
 
@@ -1348,6 +1366,7 @@ fn test_nonlinear_time_history_sdof_elastic() {
         &[1.0],
         &[0.0],
         false,
+        None,
     )
     .expect("linear should run");
 
@@ -1739,6 +1758,7 @@ fn test_linear_recording_frames_and_stories() {
         &[1.0],
         &[0.0],
         false,
+        None,
     )
     .expect("linear recording should run");
 
@@ -1790,6 +1810,7 @@ fn test_story_shear_matches_base_shear() {
         &[10.0],
         &[0.0],
         false,
+        None,
     )
     .expect("should run");
     assert!(
@@ -1927,4 +1948,251 @@ fn test_nonlinear_record_every_thinning() {
     // peak 系は全ステップ更新（間引かない）。
     assert!(result.peak_disp[1][0] > 0.0);
     assert!(recording.peak_member_forces.iter().any(|f| f.is_some()));
+}
+
+/// UI からの `record_every` 指定が線形（Newmark-β）経路にも効くこと
+/// （`n_steps=50, record_every=5` なら 0,5,..,50 の 11 フレーム）。
+/// 線形（Newmark-β）・HHT-α には、非線形 `NonlinearThCfg::record_every` に相当する
+/// 明示指定手段が無かった（申し送り「時刻歴応答_詳細記録と長期荷重初期化」参照）ため、
+/// `linear_time_history_analysis` の末尾引数追加で解消したことを確認する。
+#[test]
+fn test_linear_record_every_thinning() {
+    let model = sdof_model();
+    let dofmap = DofMap::build(&model);
+    let reducer = Reducer::build(&model, &dofmap);
+
+    let omega = (1000.0_f64 / 1.0).sqrt();
+    let damping = Damping::StiffnessProportional {
+        h: 0.02,
+        omega,
+        basis: StiffnessKind::Initial,
+    };
+    let dt = 0.001;
+    let n_steps = 50;
+    let wave = zero_wave(dt, n_steps);
+    let newmark = NewmarkCfg {
+        beta: 0.25,
+        gamma: 0.5,
+        dt,
+    };
+
+    let result = linear_time_history_analysis(
+        &model,
+        &dofmap,
+        &reducer,
+        &wave,
+        &newmark,
+        &damping,
+        &[1.0],
+        &[0.0],
+        false,
+        Some(5),
+    )
+    .expect("should converge");
+
+    let recording = result.recording.expect("recording");
+    assert_eq!(recording.record_every, 5);
+    assert_eq!(recording.frame_time.len(), 11, "0,5,..,50 の 11 フレーム");
+    // record_every を渡さない（自動決定）場合は従来どおり動くことも確認する。
+    let result_auto = linear_time_history_analysis(
+        &model,
+        &dofmap,
+        &reducer,
+        &wave,
+        &newmark,
+        &damping,
+        &[1.0],
+        &[0.0],
+        false,
+        None,
+    )
+    .expect("should converge");
+    let recording_auto = result_auto.recording.expect("recording");
+    assert_eq!(
+        recording_auto.record_every, 1,
+        "n_steps=50 では auto_record_every が 1 になる"
+    );
+}
+
+/// UI からの `record_every` 指定が HHT-α 経路にも効くこと（線形と同じ検証）。
+#[test]
+fn test_hht_record_every_thinning() {
+    let model = sdof_model();
+    let dofmap = DofMap::build(&model);
+    let reducer = Reducer::build(&model, &dofmap);
+
+    let omega = (1000.0_f64 / 1.0).sqrt();
+    let damping = Damping::StiffnessProportional {
+        h: 0.02,
+        omega,
+        basis: StiffnessKind::Initial,
+    };
+    let dt = 0.001;
+    let n_steps = 50;
+    let wave = zero_wave(dt, n_steps);
+    let hht = HhtCfg { alpha: -0.1, dt };
+
+    let result = linear_hht_alpha_analysis(
+        &model,
+        &dofmap,
+        &reducer,
+        &wave,
+        &hht,
+        &damping,
+        &[1.0],
+        &[0.0],
+        false,
+        Some(5),
+    )
+    .expect("should converge");
+
+    let recording = result.recording.expect("recording");
+    assert_eq!(recording.record_every, 5);
+    assert_eq!(recording.frame_time.len(), 11, "0,5,..,50 の 11 フレーム");
+}
+
+/// 線形・HHT-α の時刻歴結果は `nonlinear=false, applied_long_term=false` を
+/// 常に記録すること（`ResponseResult` に解析条件フラグを持たせた目的の確認。
+/// `viewer/th_detail.rs` の長期重ね合わせ注記がこのフラグを直接参照する）。
+#[test]
+fn test_linear_and_hht_result_flags_are_linear() {
+    let model = sdof_model();
+    let dofmap = DofMap::build(&model);
+    let reducer = Reducer::build(&model, &dofmap);
+
+    let omega = (1000.0_f64 / 1.0).sqrt();
+    let damping = Damping::StiffnessProportional {
+        h: 0.02,
+        omega,
+        basis: StiffnessKind::Initial,
+    };
+    let dt = 0.01;
+    let n_steps = 10;
+    let wave = zero_wave(dt, n_steps);
+    let newmark = NewmarkCfg {
+        beta: 0.25,
+        gamma: 0.5,
+        dt,
+    };
+    let hht = HhtCfg { alpha: -0.1, dt };
+
+    let result_nm = linear_time_history_analysis(
+        &model,
+        &dofmap,
+        &reducer,
+        &wave,
+        &newmark,
+        &damping,
+        &[1.0],
+        &[0.0],
+        false,
+        None,
+    )
+    .expect("newmark");
+    assert!(!result_nm.nonlinear);
+    assert!(!result_nm.applied_long_term);
+
+    let result_hht = linear_hht_alpha_analysis(
+        &model,
+        &dofmap,
+        &reducer,
+        &wave,
+        &hht,
+        &damping,
+        &[1.0],
+        &[0.0],
+        false,
+        None,
+    )
+    .expect("hht");
+    assert!(!result_hht.nonlinear);
+    assert!(!result_hht.applied_long_term);
+}
+
+/// 非線形時刻歴の結果は `nonlinear=true` を記録し、`applied_long_term` は
+/// `NonlinearThCfg::apply_long_term` の値をそのまま反映すること。
+#[test]
+fn test_nonlinear_result_flags_reflect_cfg() {
+    let mut model = fiber_column_model(1e10);
+    let dofmap = DofMap::build(&model);
+    let reducer = Reducer::build(&model, &dofmap);
+
+    let damping = Damping::StiffnessProportional {
+        h: 0.02,
+        omega: 10.0,
+        basis: StiffnessKind::Initial,
+    };
+    let dt = 0.001;
+    let n_steps = 10;
+    let wave = zero_wave(dt, n_steps);
+    let newmark = NewmarkCfg {
+        beta: 0.25,
+        gamma: 0.5,
+        dt,
+    };
+
+    let mut cfg = NonlinearThCfg::new(20, 1e-6);
+    cfg.apply_long_term = false;
+    let result = nonlinear_time_history_analysis(
+        &mut model,
+        &dofmap,
+        &reducer,
+        &wave,
+        &newmark,
+        &damping,
+        DampingAccumulation::NonCumulative,
+        &[0.0],
+        &[0.0],
+        cfg,
+    )
+    .expect("should converge");
+    assert!(result.nonlinear);
+    assert!(!result.applied_long_term, "apply_long_term=false を反映");
+
+    let mut cfg2 = NonlinearThCfg::new(20, 1e-6);
+    cfg2.apply_long_term = true;
+    let result2 = nonlinear_time_history_analysis(
+        &mut model,
+        &dofmap,
+        &reducer,
+        &wave,
+        &newmark,
+        &damping,
+        DampingAccumulation::NonCumulative,
+        &[0.0],
+        &[0.0],
+        cfg2,
+    )
+    .expect("should converge");
+    assert!(result2.nonlinear);
+    assert!(
+        result2.applied_long_term,
+        "長期系荷重ケースが無くても apply_long_term=true を反映（載荷有無ではなく設定値）"
+    );
+}
+
+/// 旧プロジェクトファイル（.scz）相当の JSON（`recording`/`nonlinear`/
+/// `applied_long_term` フィールドが無い）を読み込んだ場合、いずれも既定値
+/// （`recording=None`・`nonlinear=false`・`applied_long_term=false`）に
+/// フォールバックすること（`#[serde(default)]` の後方互換確認）。
+#[test]
+fn test_response_result_serde_backward_compat_missing_flags() {
+    let json = r#"{
+        "time": [0.0, 0.1],
+        "peak_disp": [[0.0, 0.0, 0.0, 0.0, 0.0, 0.0]],
+        "story_drift_angle": [],
+        "cumulative_ductility": [],
+        "history": {
+            "node": null,
+            "record_dir_y": false,
+            "node_disp": [0.0, 0.0],
+            "base_shear": [0.0, 0.0],
+            "top_drift_angle": [0.0, 0.0]
+        }
+    }"#;
+    let result: ResponseResult =
+        serde_json::from_str(json).expect("旧形式（フィールド無し）の JSON を読み込めること");
+    assert!(result.recording.is_none());
+    assert!(!result.nonlinear);
+    assert!(!result.applied_long_term);
 }

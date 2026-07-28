@@ -2076,14 +2076,16 @@ impl App {
         if cfg.th_nonlinear {
             return Self::compute_nonlinear_time_history(model, cfg, wave, damping);
         }
+        // 0 は「自動決定」の意（`ThRecorder`/`recording.rs::auto_record_every` に委ねる）。
+        let record_every = (cfg.th_record_every > 0).then_some(cfg.th_record_every);
         let result = match cfg.th_integrator {
             ThIntegrator::NewmarkBeta => {
                 let newmark = squid_n_solver::timehistory::NewmarkCfg::average_accel();
-                analysis.time_history(&wave, newmark, damping)
+                analysis.time_history(&wave, newmark, damping, record_every)
             }
             ThIntegrator::HhtAlpha => {
                 let hht = squid_n_solver::timehistory::HhtCfg::new(wave.dt);
-                analysis.time_history_hht(&wave, hht, damping)
+                analysis.time_history_hht(&wave, hht, damping, record_every)
             }
         };
         result.map_err(|e| format!("時刻歴解析エラー: {}", e))
@@ -2114,12 +2116,14 @@ impl App {
         let n_indep = reducer.n_indep;
         let init = vec![0.0; n_indep];
         let newmark = squid_n_solver::timehistory::NewmarkCfg::average_accel();
+        // 0 は「自動決定」の意（`ThRecorder`/`recording.rs::auto_record_every` に委ねる）。
+        let record_every = (cfg.th_record_every > 0).then_some(cfg.th_record_every);
         let nl_cfg = squid_n_solver::timehistory::NonlinearThCfg {
             max_iter: cfg.th_max_iter,
             tol: cfg.th_tol,
             use_kg: false,
             apply_long_term: cfg.th_apply_long_term,
-            record_every: None,
+            record_every,
         };
         squid_n_solver::timehistory::nonlinear_time_history_analysis(
             &mut model,
