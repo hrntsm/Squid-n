@@ -772,13 +772,18 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
         cam.pan[1] += d.y;
     }
     // スクロールズーム（係数 0.01、0.5–10.0 にクランプ）。トラックパッドのピンチも反映。
-    let scroll_y = ui.input(|i| i.smooth_scroll_delta.y);
-    if scroll_y != 0.0 {
-        cam.zoom *= 1.0 + scroll_y * 0.01;
-    }
-    let pinch = ui.input(|i| i.zoom_delta());
-    if pinch != 1.0 {
-        cam.zoom *= pinch;
+    // ポインタが描画領域上にあるときのみ反応させる。`hovered()` は手前のレイヤー
+    // （ヒンジ詳細などの egui::Window）による遮蔽も考慮するため、ポップアップが
+    // 重なっている間は手前のビューだけが反応する。
+    if response.hovered() {
+        let scroll_y = ui.input(|i| i.smooth_scroll_delta.y);
+        if scroll_y != 0.0 {
+            cam.zoom *= 1.0 + scroll_y * 0.01;
+        }
+        let pinch = ui.input(|i| i.zoom_delta());
+        if pinch != 1.0 {
+            cam.zoom *= pinch;
+        }
     }
     cam.zoom = cam.zoom.clamp(0.5, 10.0);
 
