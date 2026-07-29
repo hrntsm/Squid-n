@@ -807,6 +807,59 @@ fn test_resolve_fiber_concrete_hysteresis_defaults_and_overrides() {
     );
 }
 
+/// 耐震壁の面内せん断ばねの履歴則解決を検証する。
+/// - 既定（Auto・コンクリート用指定）: 最大点指向型（増分・時刻歴共通）
+/// - Q–δ 系の個別指定（標準型・武田型等）は尊重される
+#[test]
+fn test_resolve_wall_shear_hysteresis_defaults_and_overrides() {
+    use squid_n_core::model::HysteresisModel;
+
+    let mut model = make_diaphragm_model();
+    let wall = ElementData {
+        id: ElemId(0),
+        kind: ElementKind::Wall,
+        nodes: smallvec::smallvec![NodeId(0), NodeId(1), NodeId(2)],
+        section: Some(SectionId(0)),
+        material: Some(MaterialId(0)),
+        local_axis: LocalAxis {
+            ref_vector: [0.0, 1.0, 0.0],
+        },
+        end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+        force_regime: ForceRegime::Auto,
+        rigid_zone: Default::default(),
+        plastic_zone: None,
+        spring: None,
+    };
+    model.elements.push(wall.clone());
+
+    // 既定は最大点指向型（増分・時刻歴共通）。
+    for kind in [AnalysisKind::Incremental, AnalysisKind::TimeHistory] {
+        assert_eq!(
+            resolve_wall_shear_hysteresis(&wall, &model, kind),
+            HysteresisModel::MaxPointOriented
+        );
+    }
+
+    // コンクリート用指定（Karsan–Jirsa）はせん断ばねとしては解釈不能 → 既定のまま。
+    model.set_member_hysteresis(ElemId(0), HysteresisModel::KarsanJirsa);
+    assert_eq!(
+        resolve_wall_shear_hysteresis(&wall, &model, AnalysisKind::Incremental),
+        HysteresisModel::MaxPointOriented
+    );
+    // 同じ指定は壁柱コンクリート除荷則としては有効。
+    assert_eq!(
+        resolve_wall_concrete_hysteresis(&wall, &model, AnalysisKind::Incremental),
+        HysteresisModel::KarsanJirsa
+    );
+
+    // Q–δ 系の個別指定（標準型=従来の移動硬化）は尊重される。
+    model.set_member_hysteresis(ElemId(0), HysteresisModel::Standard);
+    assert_eq!(
+        resolve_wall_shear_hysteresis(&wall, &model, AnalysisKind::Incremental),
+        HysteresisModel::Standard
+    );
+}
+
 #[test]
 fn test_flexural_alpha_y_sugano_for_rc_beam() {
     use squid_n_core::section_shape::{BarSet, RcRebar, SectionShape, ShearBar};

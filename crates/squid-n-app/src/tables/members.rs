@@ -46,8 +46,11 @@ fn resolve_member_hysteresis_for_kind(
         ElementKind::Fiber | ElementKind::MultiSpring => {
             squid_n_element::factory::resolve_fiber_concrete_hysteresis(elem, model, kind)
         }
+        // 耐震壁は面内せん断ばね（支配的挙動）の解決結果を表示する。
+        // 壁柱ファイバのコンクリート除荷則は resolve_wall_concrete_hysteresis で
+        // 別途解決される（同じ指定をそれぞれ解釈可能な範囲で適用）。
         ElementKind::Wall => {
-            squid_n_element::factory::resolve_wall_concrete_hysteresis(elem, model, kind)
+            squid_n_element::factory::resolve_wall_shear_hysteresis(elem, model, kind)
         }
         _ => squid_n_element::factory::resolve_member_hysteresis(elem, model, kind),
     }

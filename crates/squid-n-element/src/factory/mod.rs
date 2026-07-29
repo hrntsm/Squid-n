@@ -22,7 +22,7 @@ pub use input_check::{ensure_nonlinear_input, nonlinear_input_issues};
 pub use regime::{resolve_force_regime, ResolvedRegime};
 pub use springs::{
     plastic_zone_length, resolve_fiber_concrete_hysteresis, resolve_member_hysteresis,
-    resolve_wall_concrete_hysteresis,
+    resolve_wall_concrete_hysteresis, resolve_wall_shear_hysteresis,
 };
 pub use squid_n_core::model::AnalysisKind;
 pub(crate) use wall_opening::wall_opening_reduction;
@@ -299,7 +299,15 @@ pub fn build_nonlinear_behavior(
             match crate::wall_panel::WallPanelElement::try_new_scaled(data, model, stiffness_scale)
             {
                 Some(panel) => {
-                    let panel = panel.with_shear_capacity(qu);
+                    // 面内せん断は Qu 頭打ちの弾完全塑性骨格＋履歴則設定による
+                    // 除荷・再載荷則（既定: 最大点指向型）。
+                    // 面内せん断は Qu 頭打ちの弾完全塑性骨格＋履歴則設定による
+                    // 除荷・再載荷則（既定: 最大点指向型）。
+                    // 面内せん断は Qu 頭打ちの弾完全塑性骨格＋履歴則設定による
+                    // 除荷・再載荷則（既定: 最大点指向型）。
+                    let panel = panel
+                        .with_shear_capacity(qu)
+                        .with_shear_hysteresis(resolve_wall_shear_hysteresis(data, model, kind));
                     // 耐震壁の軸・曲げは既定でファイバー断面の弾塑性評価とする
                     // （柱の Fiber 既定と同様）。フレーム内雑壁（stiffness_scale が
                     // 実質 0）は弾性のままでよい。

@@ -248,6 +248,31 @@ pub fn resolve_wall_concrete_hysteresis(
     }
 }
 
+/// 耐震壁の面内せん断ばねの履歴則を解決する。
+///
+/// Q–δ 履歴として解釈できる指定（逆行型・標準型・原点指向型・最大点指向型・
+/// 武田型）を採用し、その他（`Auto`、Karsan–Jirsa 型等のコンクリート用指定）は
+/// 既定の**最大点指向型**（増分・時刻歴共通）へフォールバックする。
+/// 壁の面内せん断はひび割れのスリップ性状が強く、除荷開始剛性が初期剛性のまま
+/// の移動硬化型（Masing）ではループの吸収エネルギーを過大評価するため、
+/// ピーク指向の復元力特性を既定とする。UI 表示にも用いる。
+pub fn resolve_wall_shear_hysteresis(
+    data: &ElementData,
+    model: &Model,
+    kind: AnalysisKind,
+) -> HysteresisModel {
+    match specified_hysteresis(data, model, kind) {
+        Some(
+            r @ (HysteresisModel::Retrograde
+            | HysteresisModel::Standard
+            | HysteresisModel::OriginOriented
+            | HysteresisModel::MaxPointOriented
+            | HysteresisModel::Takeda),
+        ) => r,
+        _ => HysteresisModel::MaxPointOriented,
+    }
+}
+
 /// 材端曲げバネのひび割れモーメント Mc [N·mm]。RC 系は Mc=0.56·√Fc·Ze
 /// （Fc [N/mm²]、Ze=断面係数。技術基準解説書 P.621-623）、それ以外は My/3 で
 /// 近似する。
