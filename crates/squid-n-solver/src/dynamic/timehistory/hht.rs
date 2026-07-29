@@ -338,6 +338,8 @@ fn run_steps_hht(
     let mut c_vn_buf = vec![0.0f64; n_indep];
     let mut k_un_buf = vec![0.0f64; n_indep];
     let mut p_eff_buf = vec![0.0f64; n_indep];
+    // `LinearSolver::solve_into`（時刻歴応答解析高速化・第2波で追加）の出力先。
+    let mut u_next_buf = vec![0.0f64; n_indep];
 
     for n in start_step as usize..wave.accel_x.len() {
         let t_next = (n + 1) as f64 * dt;
@@ -370,9 +372,8 @@ fn run_steps_hht(
                 + alpha * (c_vn_buf[i] + k_un_buf[i]);
         }
 
-        // `LinearSolver::solve` は既存 API のため `Vec<f64>` を新規に返す
-        // （P9 の対象外。squid-n-math 側 API 拡張は後続作業）。
-        let u_next = solver.solve(&p_eff_buf)?;
+        solver.solve_into(&p_eff_buf, &mut u_next_buf)?;
+        let u_next = &u_next_buf;
 
         // a・v・u を単一パスでその場更新する（linear.rs と同じ理由でビット
         // 完全一致。各 i の計算は他の i に依存しない）。

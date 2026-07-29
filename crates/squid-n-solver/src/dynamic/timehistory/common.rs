@@ -5,14 +5,21 @@
 //! - [`solve_initial_accel`] — 初期加速度 `M·a₀ = rhs` の求解
 //! - [`mass_accel_free_into`] — 節点慣性力ベクトル算定用の `M·a_free`
 //!   （自由 DOF 空間）
-//! - [`sparse_matvec_into`] — `squid_n_math::sparse::sparse_matvec` の出力バッファ
-//!   再利用版（squid-n-math に同等 API が入るまでのローカル実装、P9）
+//! - [`sparse_matvec_into`] — `squid_n_math::sparse::sparse_matvec_into` の再エクスポート
+//!   （時刻歴応答解析高速化・第1波で暫定実装したローカル版を、squid-n-math に同等
+//!   API が追加された第2波で置き換えた）
 
 use super::config::GroundMotion;
 use squid_n_core::dof::{DofMap, DOF_PER_NODE};
 use squid_n_core::model::Model;
 use squid_n_math::solver::{make_solver, SolveError, SolverBackend};
 use squid_n_math::sparse::sparse_matvec;
+
+/// [`squid_n_math::sparse::sparse_matvec_into`] の再エクスポート。時刻歴応答解析
+/// 各所（`linear.rs`・`hht.rs`・`nonlinear.rs`）は本モジュール経由でこの名前を使う
+/// （第1波はここにローカル実装を置いていたが、第2波で squid-n-math 側の実装へ寄せた。
+/// 呼び出し側の変更は不要）。
+pub(crate) use squid_n_math::sparse::sparse_matvec_into;
 
 /// 位相差入力（ねじれ加振）用の回転影響ベクトル × 質量 `M·r_θ` を構築する
 /// （多点位相差入力、構造力学）。鉛直（Z）軸まわりの単位角加速度に対し、各節点は
@@ -108,31 +115,4 @@ pub(crate) fn mass_accel_free_into(
     out: &mut [f64],
 ) {
     sparse_matvec_into(m_free, a_free, out);
-}
-
-/// 疎行列ベクトル積 `y = A·x` を呼び出し側の既存バッファへ書き込む
-/// （`squid_n_math::sparse::sparse_matvec` と同一の走査順・演算順で、結果はビット
-/// 完全一致。squid-n-math に `sparse_matvec_into` が追加されるまでの間、
-/// 時刻歴応答解析側でローカルに実装する。P9）。
-pub(crate) fn sparse_matvec_into(
-    mat: &faer::sparse::SparseColMat<usize, f64>,
-    x: &[f64],
-    y: &mut [f64],
-) {
-    for v in y.iter_mut() {
-        *v = 0.0;
-    }
-    let (sym, vals) = mat.parts();
-    let ncols = sym.ncols();
-    for j in 0..ncols {
-        let range = sym.col_range(j);
-        let rows = sym.row_idx_of_col_raw(j);
-        let xj = x[j];
-        if xj == 0.0 {
-            continue;
-        }
-        for (k, &row) in rows.iter().enumerate() {
-            y[row] += vals[range.start + k] * xj;
-        }
-    }
 }

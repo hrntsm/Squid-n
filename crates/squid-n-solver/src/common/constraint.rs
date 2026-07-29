@@ -1,3 +1,4 @@
+use crate::common::csc_cache::CscCache;
 use faer::sparse::SparseColMat;
 use squid_n_core::dof::{Dof, DofMap, DOF_PER_NODE};
 use squid_n_core::model::{Constraint, Model};
@@ -274,6 +275,12 @@ impl Reducer {
     /// 従来の n_free² 全ペア走査＋要素ごとの二分探索 (`get`) を廃し、非ゼロ数に
     /// 比例するコストに落とす（結果は同一）。K[i][j] が列 j・行 i の格納値。
     pub fn reduce_k(&self, k_free: &SparseColMat<usize, f64>) -> SparseColMat<usize, f64> {
+        assemble_csc(self.n_indep, self.reduce_k_triplets(k_free))
+    }
+
+    /// [`Self::reduce_k`] と同じ triplet 列（Tᵀ·K·T の非ゼロ要素、加算前）を返す。
+    /// [`Self::reduce_k`]・[`Self::reduce_k_cached`] が共有する。
+    fn reduce_k_triplets(&self, k_free: &SparseColMat<usize, f64>) -> Vec<Triplet> {
         let col_ptr = k_free.col_ptr();
         let row_idx = k_free.row_idx();
         let values = k_free.val();
@@ -305,7 +312,21 @@ impl Reducer {
                 }
             }
         }
-        assemble_csc(self.n_indep, triplets)
+        triplets
+    }
+
+    /// [`Self::reduce_k`] のキャッシュ版。時刻歴応答解析の Newton 反復のように、
+    /// 同一 `Reducer`（＝同一拘束構成）で毎回 `k_free` を縮約する場面向け
+    /// （[`crate::common::csc_cache::CscCache`] 参照）。K の非ゼロパターンが不変なら
+    /// 縮約後の triplet 列の座標・並び順も不変なため（`t_rows` はここでは変わらない
+    /// 定数）、高速パスが有効に働く。結果は常に [`Self::reduce_k`] とビット一致する。
+    pub fn reduce_k_cached(
+        &self,
+        k_free: &SparseColMat<usize, f64>,
+        cache: &mut CscCache,
+    ) -> SparseColMat<usize, f64> {
+        let triplets = self.reduce_k_triplets(k_free);
+        cache.assemble(self.n_indep, &triplets)
     }
 
     /// [`Self::reduce_f`] の結果を呼び出し側の既存バッファへ書き込む版（毎ステップの

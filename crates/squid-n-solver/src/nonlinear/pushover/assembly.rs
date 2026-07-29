@@ -10,6 +10,7 @@
 //! [`add_support_spring_f_int`] として呼び出し側 [`super::driver`] が加算する）。
 
 use crate::common::assemble::support_spring_terms;
+use crate::common::csc_cache::CscCache;
 use squid_n_core::dof::DofMap;
 use squid_n_core::model::Model;
 use squid_n_element::behavior::{Ctx, ElemState, ElementBehavior};
@@ -26,6 +27,34 @@ pub(crate) fn assemble_k(
     use_kg: bool,
 ) -> faer::sparse::SparseColMat<usize, f64> {
     use squid_n_math::sparse::assemble_csc;
+    let triplets = assemble_k_triplets(model, dofmap, behaviors, use_kg);
+    assemble_csc(dofmap.n_active(), triplets)
+}
+
+/// [`assemble_k`] のキャッシュ版。時刻歴応答解析の Newton 反復のように、同一要素・
+/// 同一 `behaviors` の並びで毎反復 `assemble_k` を呼ぶ場面向け
+/// （[`crate::common::csc_cache::CscCache`] 参照）。要素接続（＝グローバル DOF の
+/// 並び）は反復を通じて不変なので、triplet 列の座標・並び順も（接線剛性の成分が
+/// 厳密 0.0 を跨がない限り）不変で、高速パスが有効に働く。結果は常に [`assemble_k`]
+/// とビット一致する。
+pub(crate) fn assemble_k_cached(
+    model: &Model,
+    dofmap: &DofMap,
+    behaviors: &[Box<dyn ElementBehavior>],
+    use_kg: bool,
+    cache: &mut CscCache,
+) -> faer::sparse::SparseColMat<usize, f64> {
+    let triplets = assemble_k_triplets(model, dofmap, behaviors, use_kg);
+    cache.assemble(dofmap.n_active(), &triplets)
+}
+
+/// [`assemble_k`]・[`assemble_k_cached`] が共有する triplet 列の組立て。
+fn assemble_k_triplets(
+    model: &Model,
+    dofmap: &DofMap,
+    behaviors: &[Box<dyn ElementBehavior>],
+    use_kg: bool,
+) -> Vec<squid_n_math::sparse::Triplet> {
     let ctx = Ctx { model };
     let state = ElemState::default();
     let mut triplets = Vec::new();
@@ -60,7 +89,7 @@ pub(crate) fn assemble_k(
             val: k,
         });
     }
-    assemble_csc(dofmap.n_active(), triplets)
+    triplets
 }
 
 /// 材端力（グローバル成分）から部材軸力 N [N]（**引張正**）を求める。

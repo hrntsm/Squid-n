@@ -1,5 +1,5 @@
 use faer::sparse::SparseColMat;
-use squid_n_math::sparse::{assemble_csc, sparse_matvec, weighted_sum_csc, Triplet};
+use squid_n_math::sparse::{assemble_csc, scale_csc, sparse_matvec, weighted_sum_csc, Triplet};
 
 type SparseMat = SparseColMat<usize, f64>;
 
@@ -114,16 +114,19 @@ impl Damping {
         k_e: &SparseMat,
         u: &[f64],
     ) -> SparseMat {
-        let n = m.ncols();
         match self {
             // α1 一定: C = (2h/ω)·K_t（α1=2h/ω は初期振動数から定める一定値）。
+            // `weighted_sum_csc(n, &[(a1, k_t)])`（単一行列の重み付き和）はスカラ倍と
+            // 同義なので、triplet 化・ソートを経ない `scale_csc` に置換する
+            // （ビット一致は squid-n-math 側のテスト `test_scale_csc_matches_
+            // weighted_sum_csc_bit_exact` で担保済み）。
             Damping::StiffnessProportional {
                 h,
                 omega,
                 basis: StiffnessKind::Tangent,
             } => {
                 let a1 = if *omega > 0.0 { 2.0 * h / omega } else { 0.0 };
-                weighted_sum_csc(n, &[(a1, k_t)])
+                scale_csc(k_t, a1)
             }
             // h1 一定: ω1 = ω1e·√(uᵀK_t u / uᵀK_e u)、C = (2h1/ω1)·K_t。
             Damping::TangentStiffnessConstantH { h1, omega1e } => {
@@ -135,7 +138,7 @@ impl Damping {
                     *omega1e
                 };
                 let a1 = if omega1 > 0.0 { 2.0 * h1 / omega1 } else { 0.0 };
-                weighted_sum_csc(n, &[(a1, k_t)])
+                scale_csc(k_t, a1)
             }
             // 接線比例でない場合は初期 C を返す（毎ステップ不変）。
             _ => self.assemble_c(m, k_e),

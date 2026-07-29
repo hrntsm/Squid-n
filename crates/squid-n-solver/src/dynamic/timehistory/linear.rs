@@ -485,9 +485,9 @@ fn run_steps(
 
     // P8/P9: ループ内で毎ステップ確保していた作業バッファをループ外で 1 回だけ
     // 確保し、以後は書き込みのみで再利用する（p_free・p_red・mw・cw・m_mw・
-    // c_cw・p_eff）。`solver.solve` の戻り値（u_next）のみは
-    // `LinearSolver::solve` が `Vec<f64>` を新規に返す既存 API のため確保を
-    // 避けられない（squid-n-math 側 API 変更は後続作業）。
+    // c_cw・p_eff）。`u_next_buf` は時刻歴応答解析高速化・第2波で追加された
+    // `LinearSolver::solve_into`（squid-n-math）を使い、`solver.solve` の
+    // 戻り値確保（P9 当時は避けられなかった）も無くしている。
     let mut p_free_buf = vec![0.0f64; n_free];
     let mut p_red_buf = vec![0.0f64; n_indep];
     let mut mw_buf = vec![0.0f64; n_indep];
@@ -495,6 +495,7 @@ fn run_steps(
     let mut m_mw_buf = vec![0.0f64; n_indep];
     let mut c_cw_buf = vec![0.0f64; n_indep];
     let mut p_eff_buf = vec![0.0f64; n_indep];
+    let mut u_next_buf = vec![0.0f64; n_indep];
 
     for n in start_step as usize..wave.accel_x.len() {
         let t_next = (n + 1) as f64 * dt;
@@ -522,9 +523,8 @@ fn run_steps(
             p_eff_buf[i] = p_red_buf[i] + m_mw_buf[i] + c_cw_buf[i];
         }
 
-        // `LinearSolver::solve` は既存 API のため `Vec<f64>` を新規に返す
-        // （P9 の対象外。squid-n-math 側 API 拡張は後続作業）。
-        let u_next = solver.solve(&p_eff_buf)?;
+        solver.solve_into(&p_eff_buf, &mut u_next_buf)?;
+        let u_next = &u_next_buf;
 
         // a・v・u を単一パスでその場更新する（P9: 従来は a_next・v_next を別の
         // Vec に確保する 2 パスだったのを統合。各 i の計算はいずれも他の i に
