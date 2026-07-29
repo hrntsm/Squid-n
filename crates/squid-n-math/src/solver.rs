@@ -6,6 +6,17 @@ use faer::sparse::SparseColMat;
 pub trait LinearSolver: Send + Sync {
     fn factorize(&mut self, k: &SparseColMat<usize, f64>) -> Result<(), SolveError>;
     fn solve(&self, rhs: &[f64]) -> Result<Vec<f64>, SolveError>;
+
+    /// [`Self::solve`] のバッファ再利用版。解を `out` に書き込む（`out` の長さが
+    /// 解の次元と異なる場合のみ `resize` するため、時刻歴のようにステップ毎に同じ
+    /// `out` を渡す使い方ではベクタ確保が起きない）。
+    ///
+    /// 既定実装は `solve` を呼んで結果をコピーするだけで、確保は削減されない。
+    /// `CholeskySolver`／`LuSolver` は内部スクラッチを再利用する実装を持つ。
+    fn solve_into(&self, rhs: &[f64], out: &mut Vec<f64>) -> Result<(), SolveError> {
+        *out = self.solve(rhs)?;
+        Ok(())
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -56,6 +67,56 @@ pub(crate) fn solve_dense_column<S: faer::linalg::solvers::Solve<f64>>(
     let b = faer::Mat::from_fn(n, 1, |i, _| rhs[i]);
     let x = factor.solve(b.as_ref());
     Ok((0..n).map(|i| x[(i, 0)]).collect())
+}
+
+/// [`solve_dense_column`] のバッファ再利用版。RHS/解の保持に使う `n×1` の `Mat`
+/// スクラッチ（`scratch`）と出力 `Vec`（`out`）を呼び出し側から受け取り、サイズが
+/// 変わらない限り再確保しない。`CholeskySolver`／`LuSolver` の `solve_into` が使う。
+pub(crate) fn solve_dense_column_into<S: faer::linalg::solvers::Solve<f64>>(
+    factor: &S,
+    rhs: &[f64],
+    n: usize,
+    scratch: &mut faer::Mat<f64>,
+    out: &mut Vec<f64>,
+) -> Result<(), SolveError> {
+    if rhs.len() != n {
+        return Err(SolveError::DimMismatch {
+            k: n,
+            rhs: rhs.len(),
+        });
+    }
+    if scratch.nrows() != n || scratch.ncols() != 1 {
+        *scratch = faer::Mat::zeros(n, 1);
+    }
+    for i in 0..n {
+        scratch[(i, 0)] = rhs[i];
+    }
+    factor.solve_in_place(scratch.as_mut());
+    if out.len() != n {
+        out.resize(n, 0.0);
+    }
+    for i in 0..n {
+        out[i] = scratch[(i, 0)];
+    }
+    Ok(())
+}
+
+/// スパースパターン（列ポインタ・行添字）の不変シグネチャ。値は含めない。
+/// symbolic 分解のキャッシュ有効性判定（`CholeskySolver`／`LuSolver`）に使う。
+#[derive(Clone, PartialEq, Eq)]
+pub(crate) struct SparsityPattern {
+    col_ptr: Vec<usize>,
+    row_idx: Vec<usize>,
+}
+
+impl SparsityPattern {
+    pub(crate) fn of(k: &SparseColMat<usize, f64>) -> Self {
+        let sym = k.symbolic();
+        Self {
+            col_ptr: sym.col_ptr().to_vec(),
+            row_idx: sym.row_idx().to_vec(),
+        }
+    }
 }
 
 pub fn make_solver(backend: SolverBackend) -> Box<dyn LinearSolver> {

@@ -30,6 +30,7 @@ fn make_test_beam() -> BeamElement {
         material: None,
         committed_disp: [0.0; 12],
         trial_disp: [0.0; 12],
+        local_stiffness_cache: std::sync::OnceLock::new(),
     }
 }
 
@@ -658,6 +659,30 @@ fn test_fixed_ends_exact_equals_raw() {
             );
         }
     }
+}
+
+/// `local_stiffness` のキャッシュ（`local_stiffness_cache`）が数値結果を変えないこと。
+/// 同一インスタンスへの複数回呼び出し・クローン後の呼び出しがいずれも、
+/// キャッシュを持たない新規インスタンスの結果とビット一致すること。
+#[test]
+fn test_local_stiffness_cache_is_bit_exact() {
+    let beam = make_test_beam();
+
+    // 同一インスタンスへの2回目の呼び出し（キャッシュ利用）が1回目とビット一致。
+    let k1 = beam.local_stiffness();
+    let k2 = beam.local_stiffness();
+    assert_eq!(k1.data, k2.data);
+
+    // キャッシュ済みインスタンスをクローンしても、同じ値が得られる
+    // （クローン時にキャッシュを引き継いでも新規に計算しても正しさは不変）。
+    let cloned = beam.clone();
+    let k_cloned = cloned.local_stiffness();
+    assert_eq!(k1.data, k_cloned.data);
+
+    // キャッシュを一度も呼び出していない新規インスタンスの結果ともビット一致。
+    let fresh = make_test_beam();
+    let k_fresh = fresh.local_stiffness();
+    assert_eq!(k1.data, k_fresh.data);
 }
 
 #[test]

@@ -3,7 +3,10 @@
 //! - [`NonlinearThCfg`] — 解析設定（Newton 収束条件・幾何剛性・長期荷重初期化・記録間引き）
 //! - [`nonlinear_time_history_analysis`] — 非線形時刻歴応答解析
 
-use super::common::{mass_accel_free, solve_initial_accel, theta_accel_at, theta_influence_m};
+use super::common::{
+    mass_accel_free_into, solve_initial_accel, sparse_matvec_into, theta_accel_at,
+    theta_influence_m,
+};
 use super::config::{GroundMotion, NewmarkCfg};
 use super::history::{
     choose_record_dir_y, pick_record_node, record_history_step, total_mass, update_story_drift,
@@ -11,17 +14,18 @@ use super::history::{
 use super::recording::{member_forces_nonlinear, ThRecorder};
 use super::result::{ResponseHistory, ResponseResult};
 use crate::assemble::assemble_global_m;
+use crate::common::csc_cache::{CscCache, WeightedSumGuard};
 use crate::constraint::Reducer;
 use crate::damping::{Damping, DampingAccumulation};
-use crate::pushover::{add_support_spring_f_int, assemble_k, compute_f_int};
+use crate::pushover::{add_support_spring_f_int, assemble_k, assemble_k_cached, compute_f_int};
 use crate::transaction::{StateSnapshot, StatefulModel};
 use smallvec::SmallVec;
 use squid_n_core::dof::{DofMap, DOF_PER_NODE};
 use squid_n_core::model::Model;
 use squid_n_element::behavior::{Ctx, ElementBehavior, LocalVec, MassOption};
 use squid_n_element::factory::{build_nonlinear_behavior, StrengthBasis};
-use squid_n_math::solver::{make_solver, SolveError, SolverBackend};
-use squid_n_math::sparse::{sparse_matvec, weighted_sum_csc};
+use squid_n_math::solver::{make_solver, LinearSolver, SolveError, SolverBackend};
+use squid_n_math::sparse::sparse_matvec;
 
 /// 非線形時刻歴応答解析の設定（Newton 収束条件・幾何剛性・長期荷重初期化・記録間引き）。
 ///
@@ -294,18 +298,24 @@ pub fn nonlinear_time_history_analysis(
 
     // --- 時刻歴ループ ---
     let n_steps = wave.accel_x.len();
+    // P9: u_free/v_free/a_free（自由 DOF 空間への展開）は 1 ステップに 1 回だけ
+    // 展開し、以後（ピーク変位・層間変形角・record_history_step・
+    // recorder.record_step）で使い回す（linear.rs/hht.rs と同じ方針。従来は
+    // ここだけでも同じ `reducer.expand_u(&u)` を 2 回呼んでいた上、
+    // `record_step` 内部でももう一度展開していた）。
+    let mut u_free = vec![0.0f64; n_free];
+    let mut v_free = vec![0.0f64; n_free];
+    let mut a_free = vec![0.0f64; n_free];
+    reducer.expand_u_into(&u, &mut u_free);
+    reducer.expand_u_into(&v, &mut v_free);
+    reducer.expand_u_into(&a, &mut a_free);
+
     let mut peak_disp_free = vec![0.0f64; n_free];
-    {
-        let u_free_init = reducer.expand_u(&u);
-        for i in 0..n_free {
-            peak_disp_free[i] = peak_disp_free[i].max(u_free_init[i].abs());
-        }
+    for i in 0..n_free {
+        peak_disp_free[i] = peak_disp_free[i].max(u_free[i].abs());
     }
     let mut story_drift_angle = vec![0.0f64; model.stories.len()];
-    {
-        let u_free_init = reducer.expand_u(&u);
-        update_story_drift(model, dofmap, &u_free_init, &mut story_drift_angle);
-    }
+    update_story_drift(model, dofmap, &u_free, &mut story_drift_angle);
 
     // UI 用の代表応答記録（記録方向は入力加速度の絶対値和が大きい方を自動選択）
     let record_dir_y = choose_record_dir_y(wave);
@@ -319,9 +329,9 @@ pub fn nonlinear_time_history_analysis(
     let rmr_record = total_mass(m_r_record, dofmap, model.nodes.len(), dir_idx);
     // 節点慣性力ベクトル算定用の M·a_free（自由 DOF 空間）。ベースシア・層せん断力の
     // 双方で共有する（1 ステップに 1 回だけ疎行列ベクトル積を計算する）。
-    let ma_free_init = mass_accel_free(&m_free, reducer, &a);
+    let mut ma_free = vec![0.0f64; n_free];
+    mass_accel_free_into(&m_free, &a_free, &mut ma_free);
     {
-        let u_free_init = reducer.expand_u(&u);
         let xg_init = if record_dir_y {
             wave.accel_y
                 .as_ref()
@@ -336,8 +346,8 @@ pub fn nonlinear_time_history_analysis(
             dofmap,
             dir_idx,
             rmr_record,
-            &u_free_init,
-            &ma_free_init,
+            &u_free,
+            &ma_free,
             xg_init,
         );
     }
@@ -361,28 +371,67 @@ pub fn nonlinear_time_history_analysis(
             .unwrap_or(0.0);
         let mf_init = member_forces_nonlinear(model, &behaviors);
         recorder.record_step(
-            0,
-            0.0,
-            model,
-            dofmap,
-            reducer,
-            &m_r_x,
-            &m_r_y,
-            &ma_free_init,
-            &u,
-            &v,
-            &a,
-            xg_x_init,
-            xg_y_init,
-            &mf_init,
+            0, 0.0, model, dofmap, &m_r_x, &m_r_y, &ma_free, &u_free, &v_free, &a_free, xg_x_init,
+            xg_y_init, &mf_init,
         );
     }
+
+    // P8/P9: Newton 反復内・ステップ末で毎回確保していた作業バッファを
+    // ループ外で 1 回だけ確保し、以後は書き込みのみで再利用する。
+    let mut p_free_buf = vec![0.0f64; n_free];
+    let mut p_dyn_red_buf = vec![0.0f64; n_indep];
+    let mut p_red_buf = vec![0.0f64; n_indep];
+    let mut u_trial_red_buf = vec![0.0f64; n_indep];
+    let mut u_trial_free_buf = vec![0.0f64; n_free];
+    let mut f_int_red_buf = vec![0.0f64; n_indep];
+    let mut du_free_buf = vec![0.0f64; n_free];
+    let mut dv_buf = vec![0.0f64; n_indep];
+    let mut c_dv_buf = vec![0.0f64; n_indep];
+    let mut c_v_red_buf = vec![0.0f64; n_indep];
+    let mut m_a_red_buf = vec![0.0f64; n_indep];
+    let mut r_red_buf = vec![0.0f64; n_indep];
+    let mut du_red_buf = vec![0.0f64; n_indep];
+
+    // ── ソルバインスタンス・CSC 組立てキャッシュの持ち回り（時刻歴応答解析高速化・
+    // 第2波） ──────────────────────────────────────────────────
+    // Newton 反復・ステップループを跨いで同一インスタンスを保持する。K_eff は毎反復
+    // 組み立て直すが、以下はいずれも「同一箇所から呼ばれる限り非ゼロパターンは
+    // ほぼ不変」という前提が成り立つため、キャッシュ・symbolic 分解の再利用が効く:
+    //
+    // - `k_eff_solver`（`CholeskySolver`）: `factorize` を同一インスタンスへ繰り返し
+    //   呼ぶと、直前と同じスパースパターンなら symbolic 分解（AMD順序付け）を
+    //   再利用し数値分解のみ行う（`squid_n_math::cholesky::CholeskySolver` 参照）。
+    //   K_eff は対称正定値を前提とする（旧 `SolverBackend::Auto` も本解析の
+    //   自由度規模では常に疎 Cholesky 直接法を選ぶため、`DirectSparseCholesky` を
+    //   明示しても既存挙動と同一。`Auto`（`AutoSolver`）は `factorize` のたびに
+    //   内部ソルバを新規生成するため、これを持ち回っても symbolic キャッシュは
+    //   効かない＝ここでは明示的に直接法ソルバを使う必要がある）。
+    // - `k_t_free_cache`／`k_t_red_cache`（`CscCache`）: 接線剛性 K_t（全体・縮約後）
+    //   の CSC 組立て。要素接続・拘束構成は不変なので、triplet の座標・並び順も
+    //   （弾塑性要素の接線剛性が厳密 0.0 を跨がない限り）不変。
+    // - `k_eff_cache`（`WeightedSumGuard`）: K_eff = K_t + c2·C + c1·M の重み付き和。
+    //
+    // 各キャッシュはパターン変化（弾塑性要素の完全塑性化等で非ゼロ数が変わる場合）を
+    // 自動検知し、その回のみ安全側（パターンの作り直し）へフォールバックする
+    // （[`crate::common::csc_cache`] 参照）。結果は常に非キャッシュ版とビット一致する。
+    let mut k_eff_solver: Box<dyn LinearSolver> = make_solver(SolverBackend::DirectSparseCholesky);
+    let mut k_t_free_cache = CscCache::new();
+    let mut k_t_red_cache = CscCache::new();
+    let mut k_eff_cache = WeightedSumGuard::new();
 
     for n in 0..n_steps {
         let t_next = (n + 1) as f64 * dt;
 
-        // スナップショット
-        let snap = StateSnapshot::capture(&behaviors);
+        // P3: 全要素の commit 済み状態のスナップショット（`StateSnapshot::capture`）は
+        // 取らない。各ステップ開始時点では、直前ステップが収束していれば
+        // trial==committed（収束時のみ commit_state を呼ぶため）であり、不収束時は
+        // 本ループ自体が Err を返して打ち切るため、次ステップへは進まない。
+        // したがって「あるステップ開始時に trial!=committed のまま次ステップへ
+        // 入る」ことは起こらず、不収束時の rollback は
+        // `model.revert_all(&mut behaviors)`（各要素の trial←committed）で
+        // スナップショット捕捉・復元と厳密に等価になる。ファイバーモデルでは
+        // `snapshot_state` が全要素・全ゲージ点の状態を Box 確保して複製するため
+        // （毎ステップ数万 Box）、この等価性を利用して捕捉自体を省く。
 
         // 地震荷重（動的分）＋長期荷重（f0、時刻歴を通じて一定）。
         let xg_x = wave.accel_x[n];
@@ -392,20 +441,20 @@ pub fn nonlinear_time_history_analysis(
             .map(|a| a.get(n).copied().unwrap_or(0.0))
             .unwrap_or(0.0);
         let xg_theta = theta_accel_at(wave, n);
-        let p_free: Vec<f64> = m_r_x
-            .iter()
-            .zip(m_r_y.iter())
-            .zip(m_r_theta.iter())
-            .map(|((mx, my), mt)| -(mx * xg_x + my * xg_y + mt * xg_theta))
-            .collect();
+        for i in 0..n_free {
+            p_free_buf[i] = -(m_r_x[i] * xg_x + m_r_y[i] * xg_y + m_r_theta[i] * xg_theta);
+        }
         // 収束判定の分母に使う「動的外力のみ」のノルム基準（長期荷重 f0 を含まない）。
         // 長期荷重が卓越するモデルでは f0 を含めると分母が過大になり、動的外力に
         // 対する収束判定が実質的に緩んでしまう。
-        let p_dyn_red = reducer.reduce_f(&p_free);
-        let mut p_red = p_dyn_red.clone();
+        reducer.reduce_f_into(&p_free_buf, &mut p_dyn_red_buf);
+        let p_dyn_red = &p_dyn_red_buf;
+        // P9: p_dyn_red の複製（.clone()）を避け、要素ごとに f0_red を加算した
+        // 値を直接書き込む。
         for i in 0..n_indep {
-            p_red[i] += f0_red[i];
+            p_red_buf[i] = p_dyn_red[i] + f0_red[i];
         }
+        let p_red = &p_red_buf;
 
         // 予測子: Δu = 0 での a, v
         let mut a_trial = vec![0.0; n_indep];
@@ -419,59 +468,75 @@ pub fn nonlinear_time_history_analysis(
         let mut converged = false;
 
         for _iter in 0..cfg.max_iter {
-            // 接線剛性
-            let k_t_free = assemble_k(model, dofmap, &behaviors, cfg.use_kg);
-            let k_t_red = reducer.reduce_k(&k_t_free);
-
-            // 接線比例減衰（α1 一定 / h1 一定）は瞬間剛性から C を毎ステップ再構成する
-            // （剛性変更に伴う減衰項の変更、構造動力学）。それ以外は
-            // 初期減衰 c_red を用いる。
+            // P1: 残差（f_int・C·v・M·a のみで計算可能、K は不要）を先に評価し、
+            // 収束していれば接線剛性の組立・有効剛性の組立・分解（このループ内で
+            // 最もコストが大きい）を一切行わずに break する。反復が収束するまで
+            // K を必要としない点は変えず、単に「K を使う手前で判定する」よう
+            // 計算順序を並べ替えただけで、残差自体の計算式・使用値は元のままの
+            // ため数値結果は完全不変（決定性ガードテスト参照）。
+            //
+            // ただし接線比例減衰（α1 一定・h1 一定）は瞬間剛性 k_t_red から C を
+            // 毎反復再構成するため、この場合に限り残差の減衰力項 c_v_red の計算に
+            // k_t_red が要る。そのため接線減衰のときだけ、ここで k_t_red・c_tan を
+            // 先に組み立てて使い回す（後段で二重に組み立てない）。
+            let mut k_t_red_precomputed: Option<faer::sparse::SparseColMat<usize, f64>> = None;
             let c_tan = if damping.is_tangent_based() {
+                let k_t_free =
+                    assemble_k_cached(model, dofmap, &behaviors, cfg.use_kg, &mut k_t_free_cache);
+                let k_t_red = reducer.reduce_k_cached(&k_t_free, &mut k_t_red_cache);
                 // h1 一定の {u} は初期剛性の1次固有ベクトル（u_mode1、固定）。
                 // α1 一定は u を参照しない。
-                Some(damping.assemble_c_tangent(&m_red, &k_t_red, &k_red, &u_mode1))
+                let c = damping.assemble_c_tangent(&m_red, &k_t_red, &k_red, &u_mode1);
+                k_t_red_precomputed = Some(k_t_red);
+                Some(c)
             } else {
                 None
             };
             let c_cur = c_tan.as_ref().unwrap_or(&c_red);
-
-            // 有効剛性
-            let k_eff = weighted_sum_csc(n_indep, &[(1.0, &k_t_red), (c2, c_cur), (c1, &m_red)]);
-
-            let mut solver = make_solver(SolverBackend::Auto);
-            solver
-                .factorize(&k_eff)
-                .map_err(|e| SolveError::Backend(format!("factor: {:?}", e)))?;
 
             // 内力（支点ばねの寄与を含む。u_trial は縮約前の全体変位＝
             // 収束済み u ＋ステップ内累積修正量 du_total、プッシュオーバーの
             // Newton 反復（`driver.rs`）と同じ経路）。
             let mut f_int_free = compute_f_int(model, dofmap, &behaviors);
             {
-                let u_trial_red: Vec<f64> = (0..n_indep).map(|i| u[i] + du_total[i]).collect();
-                let u_trial_free = reducer.expand_u(&u_trial_red);
-                add_support_spring_f_int(model, dofmap, &u_trial_free, &mut f_int_free);
+                // P9: u_trial_red/u_trial_free をループ外バッファへ書き込む
+                // （毎反復の Vec 確保を避ける）。
+                for i in 0..n_indep {
+                    u_trial_red_buf[i] = u[i] + du_total[i];
+                }
+                reducer.expand_u_into(&u_trial_red_buf, &mut u_trial_free_buf);
+                add_support_spring_f_int(model, dofmap, &u_trial_free_buf, &mut f_int_free);
             }
-            let f_int_red = reducer.reduce_f(&f_int_free);
+            reducer.reduce_f_into(&f_int_free, &mut f_int_red_buf);
+            let f_int_red = &f_int_red_buf;
 
             // 減衰力（縮約空間）。非累積型は瞬間 C×速度、累積型は増分減衰力の積分
-            // （{Cn}={Cn−1}+[Cn]{Δẋn}、Δẋn=v_trial−v_前ステップ）。
-            let c_v_red = match accumulation {
-                DampingAccumulation::NonCumulative => sparse_matvec(c_cur, &v_trial),
+            // （{Cn}={Cn−1}+[Cn]{Δẋn}、Δẋn=v_trial−v_前ステップ）。P9: いずれも
+            // ループ外バッファへ書き込む（毎反復の Vec 確保を避ける）。
+            match accumulation {
+                DampingAccumulation::NonCumulative => {
+                    sparse_matvec_into(c_cur, &v_trial, &mut c_v_red_buf)
+                }
                 DampingAccumulation::Cumulative => {
-                    let dv: Vec<f64> = (0..n_indep).map(|i| v_trial[i] - v[i]).collect();
-                    let c_dv = sparse_matvec(c_cur, &dv);
-                    (0..n_indep).map(|i| f_damp[i] + c_dv[i]).collect()
+                    for i in 0..n_indep {
+                        dv_buf[i] = v_trial[i] - v[i];
+                    }
+                    sparse_matvec_into(c_cur, &dv_buf, &mut c_dv_buf);
+                    for i in 0..n_indep {
+                        c_v_red_buf[i] = f_damp[i] + c_dv_buf[i];
+                    }
                 }
             };
-            c_v_last.clone_from(&c_v_red);
-            let m_a_red = sparse_matvec(&m_red, &a_trial);
+            let c_v_red = &c_v_red_buf;
+            c_v_last.clone_from(c_v_red);
+            sparse_matvec_into(&m_red, &a_trial, &mut m_a_red_buf);
+            let m_a_red = &m_a_red_buf;
 
             // 残差
-            let mut r_red = vec![0.0; n_indep];
             for i in 0..n_indep {
-                r_red[i] = p_red[i] - f_int_red[i] - c_v_red[i] - m_a_red[i];
+                r_red_buf[i] = p_red[i] - f_int_red[i] - c_v_red[i] - m_a_red[i];
             }
+            let r_red = &r_red_buf;
 
             // 収束判定（分母は長期荷重 f0 を除いた動的外力ノルムと 1.0 の大きい方。
             // f0 を含めると長期荷重が大きいモデルで判定が過度に緩む）。
@@ -482,9 +547,29 @@ pub fn nonlinear_time_history_analysis(
                 break;
             }
 
-            // δu を解く
-            let du_red = solver.solve(&r_red)?;
-            let du_free = reducer.expand_u(&du_red);
+            // 未収束のときのみ、接線剛性（未組立なら今組み立てる。接線減衰で既に
+            // 組み立て済みなら再利用）・有効剛性・分解を行い、δu を解く。
+            let k_t_red = match k_t_red_precomputed {
+                Some(k) => k,
+                None => {
+                    let k_t_free = assemble_k_cached(
+                        model,
+                        dofmap,
+                        &behaviors,
+                        cfg.use_kg,
+                        &mut k_t_free_cache,
+                    );
+                    reducer.reduce_k_cached(&k_t_free, &mut k_t_red_cache)
+                }
+            };
+            let k_eff = k_eff_cache.combine(n_indep, &[(1.0, &k_t_red), (c2, c_cur), (c1, &m_red)]);
+            k_eff_solver
+                .factorize(&k_eff)
+                .map_err(|e| SolveError::Backend(format!("factor: {:?}", e)))?;
+            k_eff_solver.solve_into(r_red, &mut du_red_buf)?;
+            let du_red = &du_red_buf;
+            reducer.expand_u_into(du_red, &mut du_free_buf);
+            let du_free = &du_free_buf;
 
             // a, v を更新
             for i in 0..n_indep {
@@ -534,14 +619,18 @@ pub fn nonlinear_time_history_analysis(
 
             time.push(t_next);
 
-            let u_free = reducer.expand_u(&u);
+            // P9: u_free/v_free/a_free をループ外バッファへ書き込んで使い回す
+            // （record_history_step・recorder.record_step と共有）。
+            reducer.expand_u_into(&u, &mut u_free);
             for i in 0..n_free {
                 peak_disp_free[i] = peak_disp_free[i].max(u_free[i].abs());
             }
             update_story_drift(model, dofmap, &u_free, &mut story_drift_angle);
+            reducer.expand_u_into(&v, &mut v_free);
+            reducer.expand_u_into(&a, &mut a_free);
             // 節点慣性力ベクトル算定用の M·a_free（自由 DOF 空間）。ベースシア・
             // 層せん断力の双方で共有する（1 ステップに 1 回だけ算定）。
-            let ma_free = mass_accel_free(&m_free, reducer, &a);
+            mass_accel_free_into(&m_free, &a_free, &mut ma_free);
             let xg_next = if record_dir_y {
                 wave.accel_y
                     .as_ref()
@@ -573,20 +662,21 @@ pub fn nonlinear_time_history_analysis(
                 t_next,
                 model,
                 dofmap,
-                reducer,
                 &m_r_x,
                 &m_r_y,
                 &ma_free,
-                &u,
-                &v,
-                &a,
+                &u_free,
+                &v_free,
+                &a_free,
                 xg_x_next,
                 xg_y_next,
                 &mf_now,
             );
         } else {
-            // 不収束: rollback
-            model.restore(&snap, &mut behaviors);
+            // 不収束: rollback（P3: ステップ開始時点は trial==committed のため、
+            // 全要素 revert_state（trial←committed）はスナップショット復元と等価。
+            // 上のコメント参照）。
+            model.revert_all(&mut behaviors);
             return Err(SolveError::Backend(format!(
                 "nonlinear time history: step {} did not converge",
                 n
@@ -706,11 +796,30 @@ fn apply_long_term_static(
 ) -> Result<(), SolveError> {
     let n_indep = reducer.n_indep;
     let mut state = LoadFractionState::new(5);
+    // 長期荷重の漸増ステップ全体（複数の載荷率試行・各試行内の Newton 反復）で
+    // ソルバインスタンス・CSC 組立てキャッシュを保持する（時刻歴応答解析高速化・
+    // 第2波、`nonlinear_time_history_analysis` 本体の Newton ループと同じ方針。
+    // 理由は呼び出し先 [`newton_static_converge`] のコメント参照）。
+    let mut solver: Box<dyn LinearSolver> = make_solver(SolverBackend::DirectSparseCholesky);
+    let mut k_free_cache = CscCache::new();
+    let mut k_red_cache = CscCache::new();
+    let mut du_red_buf = vec![0.0f64; n_indep];
     while let Some(mu_target) = state.next_target() {
         let snap = StateSnapshot::capture(behaviors);
         let f_target: Vec<f64> = f0_red.iter().map(|&v| v * mu_target).collect();
         match newton_static_converge(
-            model, dofmap, reducer, behaviors, &f_target, use_kg, n_indep, &*u_out,
+            model,
+            dofmap,
+            reducer,
+            behaviors,
+            &f_target,
+            use_kg,
+            n_indep,
+            &*u_out,
+            &mut solver,
+            &mut k_free_cache,
+            &mut k_red_cache,
+            &mut du_red_buf,
         )? {
             Some(du) => {
                 for b in behaviors.iter_mut() {
@@ -742,6 +851,12 @@ fn apply_long_term_static(
 /// `u_base_red` はこの呼び出し開始時点の全体変位（縮約空間、これまでの漸増ステップの
 /// 確定累積）。支点ばね内力 `add_support_spring_f_int` に渡す縮約前の全体変位
 /// `u_base_red + du_total` の算定に使う。
+///
+/// `solver`・`k_free_cache`・`k_red_cache`・`du_red_buf` は呼び出し元
+/// [`apply_long_term_static`] が漸増ステップ全体を通じて保持するソルバインスタンス・
+/// CSC 組立てキャッシュ・作業バッファ（時刻歴応答解析高速化・第2波）。K は対称正定値を
+/// 前提とする（旧 `SolverBackend::Auto` も本解析の自由度規模では常に疎 Cholesky
+/// 直接法を選ぶため、`DirectSparseCholesky` を明示しても既存挙動と同一）。
 #[allow(clippy::too_many_arguments)]
 fn newton_static_converge(
     model: &Model,
@@ -752,11 +867,15 @@ fn newton_static_converge(
     use_kg: bool,
     n_indep: usize,
     u_base_red: &[f64],
+    solver: &mut Box<dyn LinearSolver>,
+    k_free_cache: &mut CscCache,
+    k_red_cache: &mut CscCache,
+    du_red_buf: &mut Vec<f64>,
 ) -> Result<Option<Vec<f64>>, SolveError> {
     let mut du_total = vec![0.0; n_indep];
     for _iter in 0..50 {
-        let k_free = assemble_k(model, dofmap, behaviors, use_kg);
-        let k_red = reducer.reduce_k(&k_free);
+        let k_free = assemble_k_cached(model, dofmap, behaviors, use_kg, k_free_cache);
+        let k_red = reducer.reduce_k_cached(&k_free, k_red_cache);
         // 内力（支点ばねの寄与を含む。u_trial は縮約前の全体変位、プッシュオーバーの
         // 長期載荷フェーズ（`driver.rs`）と同じ経路）。
         let mut f_int_free = compute_f_int(model, dofmap, behaviors);
@@ -775,14 +894,13 @@ fn newton_static_converge(
         if r_norm < 1e-6 * f_norm.max(1.0) {
             return Ok(Some(du_total));
         }
-        let mut solver = make_solver(SolverBackend::Auto);
         solver
             .factorize(&k_red)
             .map_err(|e| SolveError::Backend(format!("factor: {:?}", e)))?;
-        let du_red = solver.solve(&r_red)?;
-        let du_free = reducer.expand_u(&du_red);
+        solver.solve_into(&r_red, du_red_buf)?;
+        let du_free = reducer.expand_u(du_red_buf.as_slice());
         for i in 0..n_indep {
-            du_total[i] += du_red[i];
+            du_total[i] += du_red_buf[i];
         }
         let model_ref: &Model = model;
         for (_elem, b) in model_ref.elements.iter().zip(behaviors.iter_mut()) {

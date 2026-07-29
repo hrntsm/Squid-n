@@ -3,14 +3,23 @@
 //! - [`theta_influence_m`] — 位相差入力（ねじれ加振）の回転影響ベクトル `M·r_θ`
 //! - [`theta_accel_at`] — ステップ `n` のねじれ地動加速度取得
 //! - [`solve_initial_accel`] — 初期加速度 `M·a₀ = rhs` の求解
-//! - [`mass_accel_free`] — 節点慣性力ベクトル算定用の `M·a_free`（自由 DOF 空間）
+//! - [`mass_accel_free_into`] — 節点慣性力ベクトル算定用の `M·a_free`
+//!   （自由 DOF 空間）
+//! - [`sparse_matvec_into`] — `squid_n_math::sparse::sparse_matvec_into` の再エクスポート
+//!   （時刻歴応答解析高速化・第1波で暫定実装したローカル版を、squid-n-math に同等
+//!   API が追加された第2波で置き換えた）
 
 use super::config::GroundMotion;
-use crate::constraint::Reducer;
 use squid_n_core::dof::{DofMap, DOF_PER_NODE};
 use squid_n_core::model::Model;
 use squid_n_math::solver::{make_solver, SolveError, SolverBackend};
 use squid_n_math::sparse::sparse_matvec;
+
+/// [`squid_n_math::sparse::sparse_matvec_into`] の再エクスポート。時刻歴応答解析
+/// 各所（`linear.rs`・`hht.rs`・`nonlinear.rs`）は本モジュール経由でこの名前を使う
+/// （第1波はここにローカル実装を置いていたが、第2波で squid-n-math 側の実装へ寄せた。
+/// 呼び出し側の変更は不要）。
+pub(crate) use squid_n_math::sparse::sparse_matvec_into;
 
 /// 位相差入力（ねじれ加振）用の回転影響ベクトル × 質量 `M·r_θ` を構築する
 /// （多点位相差入力、構造力学）。鉛直（Z）軸まわりの単位角加速度に対し、各節点は
@@ -91,15 +100,19 @@ pub(crate) fn solve_initial_accel(
 }
 
 /// 節点慣性力ベクトルの算定に使う `M·a_free`（自由 DOF 空間、`dofmap` の
-/// アクティブ添字順）を求める。層せん断力・ベースシアの算定（[`super::recording`]・
+/// アクティブ添字順）を、呼び出し側の既存バッファへ書き込む（毎ステップの
+/// Vec 確保を避ける、P9）。層せん断力・ベースシアの算定（[`super::recording`]・
 /// [`super::history::record_history_step`]）で共有するため、各積分ループで
-/// 1 ステップに 1 回だけ呼び出す（疎行列ベクトル積は方向 X・Y で共通、
-/// 地動加速度 `ẍg` に応じた項は呼び出し側で別途加算する）。
-pub(crate) fn mass_accel_free(
+/// 1 ステップに 1 回だけ呼び出す。
+///
+/// `a_free` は呼び出し側で展開済みの自由 DOF 空間の加速度（`Reducer::expand_u`/
+/// [`Reducer::expand_u_into`](crate::constraint::Reducer::expand_u_into)）を渡す
+/// （`ThRecorder::record_step` 等でも同じ展開済み `a_free` を使い回すため、
+/// 展開そのものは呼び出し側で 1 ステップに 1 回だけ行う）。
+pub(crate) fn mass_accel_free_into(
     m_free: &faer::sparse::SparseColMat<usize, f64>,
-    reducer: &Reducer,
-    a_red: &[f64],
-) -> Vec<f64> {
-    let a_free = reducer.expand_u(a_red);
-    sparse_matvec(m_free, &a_free)
+    a_free: &[f64],
+    out: &mut [f64],
+) {
+    sparse_matvec_into(m_free, a_free, out);
 }

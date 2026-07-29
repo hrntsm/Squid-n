@@ -4,7 +4,10 @@
 //! - [`linear_time_history_with_state`] — 最終状態付き（チェックポイント保存用）
 //! - [`linear_time_history_from_state`] — チェックポイントからの再開
 
-use super::common::{mass_accel_free, solve_initial_accel, theta_accel_at, theta_influence_m};
+use super::common::{
+    mass_accel_free_into, solve_initial_accel, sparse_matvec_into, theta_accel_at,
+    theta_influence_m,
+};
 use super::config::{GroundMotion, NewmarkCfg};
 use super::history::{
     choose_record_dir_y, pick_record_node, record_history_step, total_mass, update_story_drift,
@@ -386,20 +389,31 @@ fn run_steps(
     let n_indep = reducer.n_indep;
     let n_free = dofmap.n_active();
 
+    // P9: u_free/v_free/a_free（自由 DOF 空間への展開）は 1 ステップに 1 回だけ
+    // 展開し、以後（ピーク変位・層間変形角・部材内力復元・record_history_step・
+    // recorder.record_step）で使い回す（従来は `record_step` 内部でも同じ展開を
+    // やり直しており、u_free が 1 ステップに 2 回展開されていた）。
+    let mut u_free = vec![0.0f64; n_free];
+    let mut v_free = vec![0.0f64; n_free];
+    let mut a_free = vec![0.0f64; n_free];
+    reducer.expand_u_into(&u, &mut u_free);
+    reducer.expand_u_into(&v, &mut v_free);
+    reducer.expand_u_into(&a, &mut a_free);
+
     let mut peak_disp_free = vec![0.0f64; n_free];
-    let u_free_init = reducer.expand_u(&u);
     for i in 0..n_free {
-        peak_disp_free[i] = peak_disp_free[i].max(u_free_init[i].abs());
+        peak_disp_free[i] = peak_disp_free[i].max(u_free[i].abs());
     }
     let mut story_drift_angle = vec![0.0f64; model.stories.len()];
-    update_story_drift(model, dofmap, &u_free_init, &mut story_drift_angle);
+    update_story_drift(model, dofmap, &u_free, &mut story_drift_angle);
 
     let mut time = Vec::with_capacity(wave.accel_x.len() - start_step as usize + 1);
     time.push(start_step as f64 * dt);
 
     // 節点慣性力ベクトル算定用の M·a_free（自由 DOF 空間）。ベースシア・層せん断力の
     // 双方で共有する（1 ステップに 1 回だけ疎行列ベクトル積を計算する）。
-    let ma_free_init = mass_accel_free(m_free, reducer, &a);
+    let mut ma_free = vec![0.0f64; n_free];
+    mass_accel_free_into(m_free, &a_free, &mut ma_free);
 
     // 詳細記録（3D アニメーション・層応答グラフ・部材履歴用。record_every は
     // 呼び出し元（UI 等）が指定できる。None は自動決定）。
@@ -420,19 +434,18 @@ fn run_steps(
         .as_ref()
         .and_then(|acc| acc.get(start_step as usize).copied())
         .unwrap_or(0.0);
-    let mf_init = member_forces_linear(dofmap, behaviors, &u_free_init);
+    let mf_init = member_forces_linear(dofmap, behaviors, &u_free);
     recorder.record_step(
         start_step,
         start_step as f64 * dt,
         model,
         dofmap,
-        reducer,
         m_r_x,
         m_r_y,
-        &ma_free_init,
-        &u,
-        &v,
-        &a,
+        &ma_free,
+        &u_free,
+        &v_free,
+        &a_free,
         xg_x_init,
         xg_y_init,
         &mf_init,
@@ -465,10 +478,24 @@ fn run_steps(
         dofmap,
         dir_idx,
         rmr_record,
-        &u_free_init,
-        &ma_free_init,
+        &u_free,
+        &ma_free,
         xg_init,
     );
+
+    // P8/P9: ループ内で毎ステップ確保していた作業バッファをループ外で 1 回だけ
+    // 確保し、以後は書き込みのみで再利用する（p_free・p_red・mw・cw・m_mw・
+    // c_cw・p_eff）。`u_next_buf` は時刻歴応答解析高速化・第2波で追加された
+    // `LinearSolver::solve_into`（squid-n-math）を使い、`solver.solve` の
+    // 戻り値確保（P9 当時は避けられなかった）も無くしている。
+    let mut p_free_buf = vec![0.0f64; n_free];
+    let mut p_red_buf = vec![0.0f64; n_indep];
+    let mut mw_buf = vec![0.0f64; n_indep];
+    let mut cw_buf = vec![0.0f64; n_indep];
+    let mut m_mw_buf = vec![0.0f64; n_indep];
+    let mut c_cw_buf = vec![0.0f64; n_indep];
+    let mut p_eff_buf = vec![0.0f64; n_indep];
+    let mut u_next_buf = vec![0.0f64; n_indep];
 
     for n in start_step as usize..wave.accel_x.len() {
         let t_next = (n + 1) as f64 * dt;
@@ -480,52 +507,48 @@ fn run_steps(
             .unwrap_or(0.0);
 
         let xg_theta = theta_accel_at(wave, n);
-        let p_free: Vec<f64> = m_r_x
-            .iter()
-            .zip(m_r_y.iter())
-            .zip(m_r_theta.iter())
-            .map(|((mx, my), mt)| -(mx * xg_x + my * xg_y + mt * xg_theta))
-            .collect();
-        let p_red = reducer.reduce_f(&p_free);
-
-        let mut mw = vec![0.0; n_indep];
-        let mut cw = vec![0.0; n_indep];
-        for i in 0..n_indep {
-            mw[i] = c1 * u[i] + c3 * v[i] + c4 * a[i];
-            cw[i] = c2 * u[i] + c5 * v[i] + c6 * a[i];
+        for i in 0..n_free {
+            p_free_buf[i] = -(m_r_x[i] * xg_x + m_r_y[i] * xg_y + m_r_theta[i] * xg_theta);
         }
-        let m_mw = sparse_matvec(m_red, &mw);
-        let c_cw = sparse_matvec(c_red, &cw);
+        reducer.reduce_f_into(&p_free_buf, &mut p_red_buf);
 
-        let mut p_eff = vec![0.0; n_indep];
         for i in 0..n_indep {
-            p_eff[i] = p_red[i] + m_mw[i] + c_cw[i];
+            mw_buf[i] = c1 * u[i] + c3 * v[i] + c4 * a[i];
+            cw_buf[i] = c2 * u[i] + c5 * v[i] + c6 * a[i];
+        }
+        sparse_matvec_into(m_red, &mw_buf, &mut m_mw_buf);
+        sparse_matvec_into(c_red, &cw_buf, &mut c_cw_buf);
+
+        for i in 0..n_indep {
+            p_eff_buf[i] = p_red_buf[i] + m_mw_buf[i] + c_cw_buf[i];
         }
 
-        let u_next = solver.solve(&p_eff)?;
+        solver.solve_into(&p_eff_buf, &mut u_next_buf)?;
+        let u_next = &u_next_buf;
 
-        let mut a_next = vec![0.0; n_indep];
+        // a・v・u を単一パスでその場更新する（P9: 従来は a_next・v_next を別の
+        // Vec に確保する 2 パスだったのを統合。各 i の計算はいずれも他の i に
+        // 依存しないため、1 パスへ統合しても各成分の演算順序・使用値は元の
+        // 2 パス版と完全に同じで、結果はビット完全一致する）。
         for i in 0..n_indep {
-            a_next[i] = c1 * (u_next[i] - u[i]) - c3 * v[i] - c4 * a[i];
+            let a_new = c1 * (u_next[i] - u[i]) - c3 * v[i] - c4 * a[i];
+            let v_new = v[i] + dt * ((1.0 - gamma) * a[i] + gamma * a_new);
+            v[i] = v_new;
+            a[i] = a_new;
+            u[i] = u_next[i];
         }
-        let mut v_next = vec![0.0; n_indep];
-        for i in 0..n_indep {
-            v_next[i] = v[i] + dt * ((1.0 - gamma) * a[i] + gamma * a_next[i]);
-        }
-
-        u = u_next;
-        v = v_next;
-        a = a_next;
         time.push(t_next);
 
-        let u_free = reducer.expand_u(&u);
+        reducer.expand_u_into(&u, &mut u_free);
         for i in 0..n_free {
             peak_disp_free[i] = peak_disp_free[i].max(u_free[i].abs());
         }
         update_story_drift(model, dofmap, &u_free, &mut story_drift_angle);
         // 節点慣性力ベクトル算定用の M·a_free（自由 DOF 空間）。ベースシア・
         // 層せん断力の双方で共有する（1 ステップに 1 回だけ算定）。
-        let ma_free = mass_accel_free(m_free, reducer, &a);
+        reducer.expand_u_into(&v, &mut v_free);
+        reducer.expand_u_into(&a, &mut a_free);
+        mass_accel_free_into(m_free, &a_free, &mut ma_free);
         let xg_next = if record_dir_y {
             wave.accel_y
                 .as_ref()
@@ -557,13 +580,12 @@ fn run_steps(
             t_next,
             model,
             dofmap,
-            reducer,
             m_r_x,
             m_r_y,
             &ma_free,
-            &u,
-            &v,
-            &a,
+            &u_free,
+            &v_free,
+            &a_free,
             xg_x_next,
             xg_y_next,
             &mf_now,

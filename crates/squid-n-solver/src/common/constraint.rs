@@ -1,3 +1,4 @@
+use crate::common::csc_cache::CscCache;
 use faer::sparse::SparseColMat;
 use squid_n_core::dof::{Dof, DofMap, DOF_PER_NODE};
 use squid_n_core::model::{Constraint, Model};
@@ -274,6 +275,12 @@ impl Reducer {
     /// 従来の n_free² 全ペア走査＋要素ごとの二分探索 (`get`) を廃し、非ゼロ数に
     /// 比例するコストに落とす（結果は同一）。K[i][j] が列 j・行 i の格納値。
     pub fn reduce_k(&self, k_free: &SparseColMat<usize, f64>) -> SparseColMat<usize, f64> {
+        assemble_csc(self.n_indep, self.reduce_k_triplets(k_free))
+    }
+
+    /// [`Self::reduce_k`] と同じ triplet 列（Tᵀ·K·T の非ゼロ要素、加算前）を返す。
+    /// [`Self::reduce_k`]・[`Self::reduce_k_cached`] が共有する。
+    fn reduce_k_triplets(&self, k_free: &SparseColMat<usize, f64>) -> Vec<Triplet> {
         let col_ptr = k_free.col_ptr();
         let row_idx = k_free.row_idx();
         let values = k_free.val();
@@ -305,11 +312,30 @@ impl Reducer {
                 }
             }
         }
-        assemble_csc(self.n_indep, triplets)
+        triplets
     }
 
-    pub fn reduce_f(&self, f_free: &[f64]) -> Vec<f64> {
-        let mut f_red = vec![0.0; self.n_indep];
+    /// [`Self::reduce_k`] のキャッシュ版。時刻歴応答解析の Newton 反復のように、
+    /// 同一 `Reducer`（＝同一拘束構成）で毎回 `k_free` を縮約する場面向け
+    /// （[`crate::common::csc_cache::CscCache`] 参照）。K の非ゼロパターンが不変なら
+    /// 縮約後の triplet 列の座標・並び順も不変なため（`t_rows` はここでは変わらない
+    /// 定数）、高速パスが有効に働く。結果は常に [`Self::reduce_k`] とビット一致する。
+    pub fn reduce_k_cached(
+        &self,
+        k_free: &SparseColMat<usize, f64>,
+        cache: &mut CscCache,
+    ) -> SparseColMat<usize, f64> {
+        let triplets = self.reduce_k_triplets(k_free);
+        cache.assemble(self.n_indep, &triplets)
+    }
+
+    /// [`Self::reduce_f`] の結果を呼び出し側の既存バッファへ書き込む版（毎ステップの
+    /// Vec 確保を避ける）。`f_red` の長さは `self.n_indep` でなければならない。
+    /// 計算順序は [`Self::reduce_f`] と同一（ビット完全一致）。
+    pub fn reduce_f_into(&self, f_free: &[f64], f_red: &mut [f64]) {
+        for v in f_red.iter_mut() {
+            *v = 0.0;
+        }
         for i in 0..self.n_free {
             if f_free[i] != 0.0 {
                 for &(a, ta) in &self.t_rows[i] {
@@ -317,16 +343,29 @@ impl Reducer {
                 }
             }
         }
+    }
+
+    pub fn reduce_f(&self, f_free: &[f64]) -> Vec<f64> {
+        let mut f_red = vec![0.0; self.n_indep];
+        self.reduce_f_into(f_free, &mut f_red);
         f_red
     }
 
-    pub fn expand_u(&self, u_indep: &[f64]) -> Vec<f64> {
-        let mut u_free = vec![0.0; self.n_free];
+    /// [`Self::expand_u`] の結果を呼び出し側の既存バッファへ書き込む版（毎ステップの
+    /// Vec 確保を避ける）。`u_free` の長さは `self.n_free` でなければならない。
+    /// 計算順序は [`Self::expand_u`] と同一（ビット完全一致）。
+    pub fn expand_u_into(&self, u_indep: &[f64], u_free: &mut [f64]) {
         for i in 0..self.n_free {
+            u_free[i] = 0.0;
             for &(a, ta) in &self.t_rows[i] {
                 u_free[i] += ta * u_indep[a];
             }
         }
+    }
+
+    pub fn expand_u(&self, u_indep: &[f64]) -> Vec<f64> {
+        let mut u_free = vec![0.0; self.n_free];
+        self.expand_u_into(u_indep, &mut u_free);
         u_free
     }
 }

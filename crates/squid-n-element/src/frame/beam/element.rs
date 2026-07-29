@@ -1,8 +1,10 @@
 //! 梁要素とその内力のデータ型定義（ロジックを持たない純粋なデータ層）。
 
+use crate::behavior::LocalMat;
 use crate::transform::LocalFrame;
 use squid_n_core::ids::{ElemId, NodeId};
 use squid_n_core::model::{EndCondition, RigidZone};
+use std::sync::OnceLock;
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct MemberForces {
@@ -49,4 +51,17 @@ pub struct BeamElement {
     /// 線形（準ニュートン）に劣化するうえ、弾性要素が復元力を負担しない
     /// 誤った釣合いに収束する。
     pub trial_disp: [f64; 12],
+    /// [`Self::local_stiffness`] の結果キャッシュ（剛域変換・端部条件適用後の
+    /// 12×12、節点自由度ベース）。剛性を決めるフィールド（断面・材料・剛域・
+    /// 端部条件など。`committed_disp`／`trial_disp` を除く全フィールド）は
+    /// 構築後に変更されない前提のため、初回呼び出しの結果を使い回してよい
+    /// （時刻歴解析の Newton 反復で毎回再構築されるコストを避ける）。
+    ///
+    /// `Clone` 時は `OnceLock<LocalMat>: Clone`（`LocalMat: Clone` 経由）の
+    /// 既定動作により、計算済みならキャッシュ値ごと複製される（未計算なら空の
+    /// まま複製される）。どちらも正しさに影響しない。
+    ///
+    /// 他のフィールドと同様 `pub`（構造体リテラルで直接構築する既存コードとの
+    /// 互換を保つため）。構築直後は必ず未計算（`OnceLock::new()`）で渡すこと。
+    pub local_stiffness_cache: OnceLock<LocalMat>,
 }

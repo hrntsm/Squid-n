@@ -2567,3 +2567,205 @@ fn test_response_result_serde_backward_compat_missing_flags() {
     assert!(!result.nonlinear);
     assert!(!result.applied_long_term);
 }
+
+// ===== 決定性ガード（時刻歴応答解析高速化・第1波: ソルバ層） =====
+//
+// P1（Newton 反復の収束判定前倒し）・P3（StateSnapshot 廃止→revert_all）・
+// P8/P9（バッファ再利用・record_step シグネチャ変更）・P11（層重量累積和の
+// 事前計算）は、いずれも計算の並べ替え・メモリ確保方法の変更のみで、数値結果
+// （`ResponseResult` の全フィールド）は完全不変のはずである。このガードテストを
+// 最適化に着手する前に一度通してから作業し、以後の各段階で常に通し続けることで
+// 非退行を保証する。bincode によるバイト列比較を用いる（固定長エンコーディング
+// のため、内容が同じなら f64 の全ビットを含めてバイト列も完全一致する。
+// 既存の `test_checkpoint_restart_bit_exact` と同じ手法）。
+
+/// 線形時刻歴（Newmark-β）を同一入力で2回実行し、`ResponseResult`
+/// （time・peak_disp・history(node_disp・base_shear 等)・recording(story_shear 等)
+/// を含む全フィールド）がビット完全一致すること。
+#[test]
+fn test_linear_time_history_deterministic_guard() {
+    let model = fiber_column_model(1e10);
+    let dofmap = DofMap::build(&model);
+    let reducer = Reducer::build(&model, &dofmap);
+    let damping = Damping::StiffnessProportional {
+        h: 0.02,
+        omega: 10.0,
+        basis: StiffnessKind::Initial,
+    };
+    let dt = 0.001;
+    let n_steps = 40;
+    let wave = zero_wave(dt, n_steps);
+    let newmark = NewmarkCfg {
+        beta: 0.25,
+        gamma: 0.5,
+        dt,
+    };
+
+    let run = || {
+        linear_time_history_analysis(
+            &model,
+            &dofmap,
+            &reducer,
+            &wave,
+            &newmark,
+            &damping,
+            &[10.0],
+            &[0.0],
+            false,
+            None,
+        )
+        .expect("should converge")
+    };
+    let r1 = run();
+    let r2 = run();
+    assert_eq!(
+        bincode::serialize(&r1).expect("serialize r1"),
+        bincode::serialize(&r2).expect("serialize r2"),
+        "linear time history should be bit-identical across repeated runs"
+    );
+}
+
+/// HHT-α 版も同様（線形と積分ループの記録経路を共有するため回帰防止に加える）。
+#[test]
+fn test_hht_time_history_deterministic_guard() {
+    let model = fiber_column_model(1e10);
+    let dofmap = DofMap::build(&model);
+    let reducer = Reducer::build(&model, &dofmap);
+    let damping = Damping::StiffnessProportional {
+        h: 0.02,
+        omega: 10.0,
+        basis: StiffnessKind::Initial,
+    };
+    let dt = 0.001;
+    let n_steps = 40;
+    let wave = zero_wave(dt, n_steps);
+    let hht = HhtCfg { alpha: -0.1, dt };
+
+    let run = || {
+        linear_hht_alpha_analysis(
+            &model,
+            &dofmap,
+            &reducer,
+            &wave,
+            &hht,
+            &damping,
+            &[10.0],
+            &[0.0],
+            false,
+            None,
+        )
+        .expect("should converge")
+    };
+    let r1 = run();
+    let r2 = run();
+    assert_eq!(
+        bincode::serialize(&r1).expect("serialize r1"),
+        bincode::serialize(&r2).expect("serialize r2"),
+        "HHT-alpha time history should be bit-identical across repeated runs"
+    );
+}
+
+/// 非線形時刻歴（Newton 反復・commit/rollback）を同一入力で2回実行し、
+/// `ResponseResult` がビット完全一致すること。塑性化して複数回の Newton 反復・
+/// 複数ステップの commit を経る小モデル・少ステップで検証する（P1 の反復内
+/// 並べ替え・P3 の snapshot→revert_all 置換の回帰防止に直結する）。
+#[test]
+fn test_nonlinear_time_history_deterministic_guard() {
+    let base = fiber_column_model(100.0);
+    let dof0 = DofMap::build(&base);
+    let red0 = Reducer::build(&base, &dof0);
+    let m_red = red0.reduce_k(&assemble_global_m(&base, &dof0, MassOption::Consistent));
+    let k_red = red0.reduce_k(&assemble_global_k(&base, &dof0));
+    let omega = (*k_red.get(0, 0).unwrap_or(&0.0) / *m_red.get(0, 0).unwrap_or(&1.0)).sqrt();
+    let damping = Damping::StiffnessProportional {
+        h: 0.05,
+        omega,
+        basis: StiffnessKind::Initial,
+    };
+    let dt = 0.001;
+    let n_steps = 30;
+    let wave = zero_wave(dt, n_steps);
+    let newmark = NewmarkCfg {
+        beta: 0.25,
+        gamma: 0.5,
+        dt,
+    };
+
+    let run = || {
+        let mut model = fiber_column_model(100.0);
+        let dofmap = DofMap::build(&model);
+        let reducer = Reducer::build(&model, &dofmap);
+        nonlinear_time_history_analysis(
+            &mut model,
+            &dofmap,
+            &reducer,
+            &wave,
+            &newmark,
+            &damping,
+            DampingAccumulation::NonCumulative,
+            &[50.0],
+            &[0.0],
+            NonlinearThCfg::new(20, 1e-6),
+        )
+        .expect("should converge")
+    };
+    let r1 = run();
+    let r2 = run();
+    assert_eq!(
+        bincode::serialize(&r1).expect("serialize r1"),
+        bincode::serialize(&r2).expect("serialize r2"),
+        "nonlinear time history should be bit-identical across repeated runs"
+    );
+}
+
+/// 非線形時刻歴・接線比例減衰＋累積型減衰力（毎反復 C を再構成し、Kg=false でも
+/// 接線剛性の組立が残差評価に絡む経路。P1 の並べ替えで最も影響を受けやすい）でも
+/// 同様にビット完全一致すること。
+#[test]
+fn test_nonlinear_time_history_tangent_damping_deterministic_guard() {
+    let base = fiber_column_model(100.0);
+    let dof0 = DofMap::build(&base);
+    let red0 = Reducer::build(&base, &dof0);
+    let m_red = red0.reduce_k(&assemble_global_m(&base, &dof0, MassOption::Consistent));
+    let k_red = red0.reduce_k(&assemble_global_k(&base, &dof0));
+    let omega = (*k_red.get(0, 0).unwrap_or(&0.0) / *m_red.get(0, 0).unwrap_or(&1.0)).sqrt();
+    let damping = Damping::StiffnessProportional {
+        h: 0.05,
+        omega,
+        basis: StiffnessKind::Tangent,
+    };
+    let dt = 0.001;
+    let n_steps = 30;
+    let wave = zero_wave(dt, n_steps);
+    let newmark = NewmarkCfg {
+        beta: 0.25,
+        gamma: 0.5,
+        dt,
+    };
+
+    let run = || {
+        let mut model = fiber_column_model(100.0);
+        let dofmap = DofMap::build(&model);
+        let reducer = Reducer::build(&model, &dofmap);
+        nonlinear_time_history_analysis(
+            &mut model,
+            &dofmap,
+            &reducer,
+            &wave,
+            &newmark,
+            &damping,
+            DampingAccumulation::Cumulative,
+            &[50.0],
+            &[0.0],
+            NonlinearThCfg::new(20, 1e-6),
+        )
+        .expect("should converge")
+    };
+    let r1 = run();
+    let r2 = run();
+    assert_eq!(
+        bincode::serialize(&r1).expect("serialize r1"),
+        bincode::serialize(&r2).expect("serialize r2"),
+        "nonlinear time history (tangent damping) should be bit-identical across repeated runs"
+    );
+}
