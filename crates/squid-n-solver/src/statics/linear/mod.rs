@@ -1,4 +1,4 @@
-use crate::assemble::{assemble_global_f, assemble_global_k, support_spring_terms};
+use crate::assemble::{add_support_spring_diag, assemble_global_f, support_spring_terms};
 use crate::common::csc_cache::CscCache;
 use crate::constraint::Reducer;
 use squid_n_core::dof::DofMap;
@@ -8,7 +8,7 @@ use squid_n_element::beam::MemberForces;
 use squid_n_element::behavior::{Ctx, ElementBehavior};
 use squid_n_element::factory::build_behavior;
 use squid_n_math::solver::{make_solver, SolveError, SolverBackend};
-use squid_n_math::sparse::Triplet;
+use squid_n_math::sparse::{assemble_csc, Triplet};
 use std::borrow::Cow;
 use std::collections::HashMap;
 
@@ -507,7 +507,24 @@ fn solve_once_inner(model: &Model, lc: LoadCaseId) -> Result<StaticOnce, SolveEr
         });
     }
 
-    let k_free = assemble_global_k(model, &dofmap);
+    // 要素ごとの behavior・global_dofs・局所剛性を1回だけ構築し、K 組立（本関数内）と
+    // 内力回収（下の回収ループ）の両方で使い回す（従来は `assemble_global_k` 内部と
+    // 回収ループの計2回 `build_behavior` していた）。構築順・演算順は
+    // 従来の `assemble_global_k` と完全に同じ（要素 ID 順→支点ばね対角）で、
+    // 結果はビット一致する。
+    let ctx = Ctx { model };
+    let mut behaviors: Vec<crate::statics::BehaviorEntry> =
+        Vec::with_capacity(model.elements.len());
+    let mut k_triplets = Vec::new();
+    for elem in &model.elements {
+        let (behavior, state) = build_behavior(elem, model);
+        let gdofs = behavior.global_dofs(&dofmap);
+        let k_local = behavior.tangent_stiffness(&state, &ctx);
+        k_triplets.extend(k_local.to_triplets(&gdofs));
+        behaviors.push((behavior, gdofs));
+    }
+    add_support_spring_diag(model, &dofmap, &mut k_triplets);
+    let k_free = assemble_csc(n_active, k_triplets);
     let f_free = assemble_global_f(model, &dofmap, lc);
 
     let reducer = Reducer::build(model, &dofmap);
@@ -540,7 +557,6 @@ fn solve_once_inner(model: &Model, lc: LoadCaseId) -> Result<StaticOnce, SolveEr
         }
 
         let mut member_forces = Vec::new();
-        let _ctx = squid_n_element::behavior::Ctx { model };
         // 解析対象荷重ケースの部材荷重（内力回復の重ね合わせ用）。要素 ID で
         // 事前にグルーピングし、要素ごとの全部材荷重総当りスキャンを避ける。
         let member_loads: &[squid_n_core::model::MemberLoad] = model
@@ -550,11 +566,8 @@ fn solve_once_inner(model: &Model, lc: LoadCaseId) -> Result<StaticOnce, SolveEr
             .map(|l| l.member.as_slice())
             .unwrap_or(&[]);
         let member_loads_by_elem = group_member_loads_by_elem(member_loads);
-        for elem in &model.elements {
-            let (behavior, _state) = build_behavior(elem, model);
-            let gdofs = behavior.global_dofs(&dofmap);
-            let n_gdofs = gdofs.len();
-            let mut u_elem = vec![0.0; n_gdofs];
+        for (elem, (behavior, gdofs)) in model.elements.iter().zip(behaviors.iter()) {
+            let mut u_elem = vec![0.0; gdofs.len()];
 
             for (k, &g) in gdofs.iter().enumerate() {
                 if g != usize::MAX && g < u_free.len() {

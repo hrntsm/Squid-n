@@ -63,6 +63,26 @@ fn build_f_free_cache(model: &Model, dofmap: &DofMap) -> HashMap<LoadCaseId, Vec
         .collect()
 }
 
+/// `model.elements` 全件の `(ElementBehavior, global_dofs)` を1回だけ構築する
+/// （[`Analysis::behavior_cache`] の構築。`prepare`・`from_parts` で共有する）。
+///
+/// `build_behavior` は局所座標変換・断面/材料 clone・SRC/CFT 合成断面換算など
+/// 荷重ケースに依存しない処理のため、荷重ケース・組合せごとに毎回呼び直す
+/// 必要はない。静解析経路（[`build_behavior`]）は常に弾性要素を返す
+/// （履歴状態を持たない）ため、`&self` から複数回・複数スレッドで参照しても
+/// 安全（[`ElementBehavior`] の `Send + Sync` supertrait 経由）。
+fn build_behavior_cache(model: &Model, dofmap: &DofMap) -> Vec<crate::statics::BehaviorEntry> {
+    model
+        .elements
+        .iter()
+        .map(|elem| {
+            let (behavior, _state) = build_behavior(elem, model);
+            let gdofs = behavior.global_dofs(dofmap);
+            (behavior, gdofs)
+        })
+        .collect()
+}
+
 pub struct Analysis<'m> {
     model: &'m Model,
     dofmap: DofMap,
@@ -80,6 +100,13 @@ pub struct Analysis<'m> {
     /// （書き込みは `prepare`/`from_parts` 構築時のみ）ため、`run_batch` の rayon
     /// 並列からも安全に共有できる。
     f_free_cache: HashMap<LoadCaseId, Vec<f64>>,
+    /// `model.elements` 各要素の `(ElementBehavior, global_dofs)` のメモ化
+    /// （[`build_behavior_cache`]）。`recover_member_forces` が荷重ケース・組合せ
+    /// ごとに `build_behavior` を再構築していたのを避ける（局所座標変換・
+    /// 断面/材料 clone・SRC/CFT 合成断面換算は荷重ケースに依存しないため）。
+    /// `f_free_cache` と同様、書き込みは構築時のみで `run_batch` の rayon 並列
+    /// からも安全に共有できる（`ElementBehavior: Send + Sync`）。
+    behavior_cache: Vec<crate::statics::BehaviorEntry>,
 }
 
 /// [`Analysis::prepare`] が構築した DofMap・拘束縮約・分解済みソルバを、
@@ -128,6 +155,7 @@ impl<'m> Analysis<'m> {
                 n_indep: 0,
                 semi_precise_t: std::sync::OnceLock::new(),
                 f_free_cache: HashMap::new(),
+                behavior_cache: Vec::new(),
             });
         }
 
@@ -147,6 +175,7 @@ impl<'m> Analysis<'m> {
         }
 
         let f_free_cache = build_f_free_cache(model, &dofmap);
+        let behavior_cache = build_behavior_cache(model, &dofmap);
 
         Ok(Self {
             model,
@@ -156,6 +185,7 @@ impl<'m> Analysis<'m> {
             n_indep,
             semi_precise_t: std::sync::OnceLock::new(),
             f_free_cache,
+            behavior_cache,
         })
     }
 
@@ -191,6 +221,7 @@ impl<'m> Analysis<'m> {
                 n_indep: 0,
                 semi_precise_t: std::sync::OnceLock::new(),
                 f_free_cache: HashMap::new(),
+                behavior_cache: Vec::new(),
             });
         }
 
@@ -204,8 +235,9 @@ impl<'m> Analysis<'m> {
             n_indep,
             semi_precise_t: std::sync::OnceLock::new(),
             // 荷重ケース生成専用の軽量準備（求解を行わない契約）のため、
-            // K の組立・分解と同様に f_free のメモ化も省く。
+            // K の組立・分解と同様に f_free・behavior のメモ化も省く。
             f_free_cache: HashMap::new(),
+            behavior_cache: Vec::new(),
         })
     }
 
@@ -240,6 +272,10 @@ impl<'m> Analysis<'m> {
         // 変えた」新しいモデルに対して呼ばれる想定であり、古いキャッシュのまま
         // 使うと差し替え後の荷重が反映されない（新モデル・新 dofmap で作り直す）。
         let f_free_cache = build_f_free_cache(model, &parts.dofmap);
+        // behavior キャッシュも同様に新モデルで作り直す。`from_parts` の契約上
+        // 要素・断面/材料の割当は不変のはずだが、f_free_cache と同じ方針
+        // （新モデル参照に対して安全側で再構築する）に揃える。
+        let behavior_cache = build_behavior_cache(model, &parts.dofmap);
         Analysis {
             model,
             dofmap: parts.dofmap,
@@ -250,6 +286,7 @@ impl<'m> Analysis<'m> {
             // 変わっても周期は不変だが、安全側で再算定させる）。
             semi_precise_t: std::sync::OnceLock::new(),
             f_free_cache,
+            behavior_cache,
         }
     }
 
@@ -316,9 +353,11 @@ impl<'m> Analysis<'m> {
         // （`crate::linear::solve_once_inner` と同じ最適化）。
         let member_loads_by_elem = group_member_loads_by_elem(member_loads);
         let mut member_forces = Vec::new();
-        for elem in &self.model.elements {
-            let (behavior, _state) = build_behavior(elem, self.model);
-            let gdofs = behavior.global_dofs(&self.dofmap);
+        // `behavior_cache`（`prepare`/`from_parts` で1回だけ構築済み）を参照する。
+        // ケースごとの `build_behavior` 再構築（局所座標変換・断面/材料 clone 等）を
+        // 排除する（要素順は `self.model.elements` と `behavior_cache` で一致する）。
+        for (elem, (behavior, gdofs)) in self.model.elements.iter().zip(self.behavior_cache.iter())
+        {
             let mut u_elem = vec![0.0; gdofs.len()];
             for (k, &g) in gdofs.iter().enumerate() {
                 if g != usize::MAX && g < u_free.len() {
