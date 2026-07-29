@@ -48,6 +48,24 @@ pub(crate) fn assemble_k_cached(
     cache.assemble(dofmap.n_active(), &triplets)
 }
 
+/// [`assemble_k_cached`] の参照返し版。呼び出し側の triplet バッファ `buf`
+/// （[`assemble_k_triplets_into`] 経由で `clear()` して再利用、容量は呼び出し間で
+/// 維持される）を使い、`cache` が内部保持する行列への参照を返す（`.clone()` を
+/// 伴わない）。非線形時刻歴の Newton 反復のように、結果をすぐ読むだけで所有権が
+/// 要らない呼び出し元向け（[`CscCache::assemble_ref`] 参照）。結果は常に
+/// [`assemble_k`] とビット一致する。
+pub(crate) fn assemble_k_cached_ref<'a>(
+    model: &Model,
+    dofmap: &DofMap,
+    behaviors: &[Box<dyn ElementBehavior>],
+    use_kg: bool,
+    cache: &'a mut CscCache,
+    buf: &mut Vec<squid_n_math::sparse::Triplet>,
+) -> &'a faer::sparse::SparseColMat<usize, f64> {
+    assemble_k_triplets_into(model, dofmap, behaviors, use_kg, buf);
+    cache.assemble_ref(dofmap.n_active(), buf)
+}
+
 /// [`assemble_k`]・[`assemble_k_cached`] が共有する triplet 列の組立て。
 fn assemble_k_triplets(
     model: &Model,
@@ -55,9 +73,25 @@ fn assemble_k_triplets(
     behaviors: &[Box<dyn ElementBehavior>],
     use_kg: bool,
 ) -> Vec<squid_n_math::sparse::Triplet> {
+    let mut triplets = Vec::new();
+    assemble_k_triplets_into(model, dofmap, behaviors, use_kg, &mut triplets);
+    triplets
+}
+
+/// [`assemble_k_triplets`] の結果を呼び出し側の既存バッファへ書き込む版
+/// （`out` は先頭で `clear()` してから書き込むため、確保済みの容量は保持され、
+/// Newton 反復のように毎回呼ぶ場面で再確保が発生しない）。計算内容・順序は
+/// [`assemble_k_triplets`] と同一（ビット完全一致）。
+fn assemble_k_triplets_into(
+    model: &Model,
+    dofmap: &DofMap,
+    behaviors: &[Box<dyn ElementBehavior>],
+    use_kg: bool,
+    out: &mut Vec<squid_n_math::sparse::Triplet>,
+) {
+    out.clear();
     let ctx = Ctx { model };
     let state = ElemState::default();
-    let mut triplets = Vec::new();
     for (_elem, b) in model.elements.iter().zip(behaviors) {
         let gdofs = b.global_dofs(dofmap);
         let mut k = b.tangent_stiffness(&state, &ctx);
@@ -78,18 +112,17 @@ fn assemble_k_triplets(
                 }
             }
         }
-        triplets.extend(k.to_triplets(&gdofs));
+        out.extend(k.to_triplets(&gdofs));
     }
     // 支点ばね（`Node::support_spring`）の対角加算。線形経路の
     // `assemble_global_k`（`common::assemble`）と同じ [`support_spring_terms`] を使う。
     for (active, k) in support_spring_terms(model, dofmap) {
-        triplets.push(squid_n_math::sparse::Triplet {
+        out.push(squid_n_math::sparse::Triplet {
             row: active,
             col: active,
             val: k,
         });
     }
-    triplets
 }
 
 /// 材端力（グローバル成分）から部材軸力 N [N]（**引張正**）を求める。
