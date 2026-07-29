@@ -6,7 +6,6 @@
 //!   （線形は `recover_forces`、非線形は `state_member_forces`）
 
 use super::result::{StoryResponse, ThRecording};
-use crate::constraint::Reducer;
 use squid_n_core::dof::{DofMap, DOF_PER_NODE};
 use squid_n_core::model::Model;
 use squid_n_element::beam::MemberForces;
@@ -153,6 +152,12 @@ pub(crate) struct ThRecorder {
     n_steps: u64,
     story_ids: Vec<squid_n_core::ids::StoryId>,
     weights: Vec<f64>,
+    /// `weight_above[i]` = 当該層以上（i 番目〜最上層）の地震用重量の累積和
+    /// （P11: 層せん断力係数 Ci の分母 ΣWj を `record_step` 呼び出しごとに
+    /// O(n_story) で再計算していたのを、階構成が解析中不変なことを利用して
+    /// `new` で 1 回だけ O(n_story) で事前計算する。これにより `record_step`
+    /// 側は O(1) 参照になり、全体で O(n_story²) → O(n_story) に落ちる）。
+    weight_above: Vec<f64>,
     groups_x: Vec<StoryDofGroup>,
     groups_y: Vec<StoryDofGroup>,
 
@@ -282,15 +287,29 @@ impl ThRecorder {
             groups
         };
 
+        let weights: Vec<f64> = model
+            .stories
+            .iter()
+            .map(|s| s.seismic_weight.unwrap_or(0.0))
+            .collect();
+        // P11: weight_above[i] = Σ_{j=i}^{n-1} weights[j] を末尾から1回の走査で
+        // 前計算する（階構成・重量は解析中不変。record_step 側は毎回この結果を
+        // 参照するだけになる）。
+        let mut weight_above = vec![0.0; weights.len()];
+        {
+            let mut acc = 0.0;
+            for i in (0..weights.len()).rev() {
+                acc += weights[i];
+                weight_above[i] = acc;
+            }
+        }
+
         Self {
             record_every,
             n_steps: n_steps as u64,
             story_ids: model.stories.iter().map(|s| s.id).collect(),
-            weights: model
-                .stories
-                .iter()
-                .map(|s| s.seismic_weight.unwrap_or(0.0))
-                .collect(),
+            weights,
+            weight_above,
             groups_x: build_groups(0),
             groups_y: build_groups(1),
             frame_time: Vec::new(),
@@ -389,13 +408,17 @@ impl ThRecorder {
     }
 
     /// 1 ステップ分の記録を追加する。`step` は確定した時刻ステップ番号
-    /// （0 が初期状態、`n_steps` が最終ステップ）。`u_red`/`v_red`/`a_red` は
-    /// 縮約空間の変位・速度・加速度、`m_r_x`/`m_r_y` は自由 DOF 空間の `M·r`
-    /// （時刻歴解析の呼び出し側で 1 回だけ組み立てたものを共有する）。
-    /// `ma_free` は自由 DOF 空間の `M·a_free`（[`super::common::mass_accel_free`]
-    /// で呼び出し側が 1 ステップに 1 回だけ算定したものを共有する。層せん断力の
-    /// 節点慣性力ベクトル算定に使う）。`member_forces_now` は当該ステップの
-    /// 全要素の部材内力分布（[`member_forces_linear`] / [`member_forces_nonlinear`]）。
+    /// （0 が初期状態、`n_steps` が最終ステップ）。`u_free`/`v_free`/`a_free` は
+    /// 呼び出し側で展開済みの自由 DOF 空間の変位・速度・加速度（`dofmap` の
+    /// アクティブ添字順）で、`m_r_x`/`m_r_y` は自由 DOF 空間の `M·r`
+    /// （いずれも時刻歴解析の呼び出し側で 1 ステップに 1 回だけ展開・組み立てた
+    /// ものを共有する。P9: 従来は本関数の内部で `Reducer::expand_u` を毎回
+    /// 呼び直しており、呼び出し側の展開と合わせて `u_free` が 1 ステップに
+    /// 2 回展開されていた）。`ma_free` は自由 DOF 空間の `M·a_free`
+    /// （[`super::common::mass_accel_free`] で呼び出し側が 1 ステップに 1 回だけ
+    /// 算定したものを共有する。層せん断力の節点慣性力ベクトル算定に使う）。
+    /// `member_forces_now` は当該ステップの全要素の部材内力分布
+    /// （[`member_forces_linear`] / [`member_forces_nonlinear`]）。
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn record_step(
         &mut self,
@@ -403,13 +426,12 @@ impl ThRecorder {
         time: f64,
         model: &Model,
         dofmap: &DofMap,
-        reducer: &Reducer,
         m_r_x: &[f64],
         m_r_y: &[f64],
         ma_free: &[f64],
-        u_red: &[f64],
-        v_red: &[f64],
-        a_red: &[f64],
+        u_free: &[f64],
+        v_free: &[f64],
+        a_free: &[f64],
         xg_x: f64,
         xg_y: f64,
         member_forces_now: &[Option<MemberForces>],
@@ -417,32 +439,17 @@ impl ThRecorder {
         // 部材内力包絡は全ステップ更新（間引かない）。
         merge_peak_member_forces(&mut self.peak_member_forces, member_forces_now);
 
-        let u_free = reducer.expand_u(u_red);
-        let v_free = reducer.expand_u(v_red);
-        let a_free = reducer.expand_u(a_red);
+        let (shear_x, accel_x, vel_x, disp_x) =
+            Self::compute_story_dir(&self.groups_x, m_r_x, u_free, v_free, a_free, ma_free, xg_x);
+        let (shear_y, accel_y, vel_y, disp_y) =
+            Self::compute_story_dir(&self.groups_y, m_r_y, u_free, v_free, a_free, ma_free, xg_y);
 
-        let (shear_x, accel_x, vel_x, disp_x) = Self::compute_story_dir(
-            &self.groups_x,
-            m_r_x,
-            &u_free,
-            &v_free,
-            &a_free,
-            ma_free,
-            xg_x,
-        );
-        let (shear_y, accel_y, vel_y, disp_y) = Self::compute_story_dir(
-            &self.groups_y,
-            m_r_y,
-            &u_free,
-            &v_free,
-            &a_free,
-            ma_free,
-            xg_y,
-        );
-
-        // 層せん断力係数のピークは全ステップ更新（間引かない）。
+        // 層せん断力係数のピークは全ステップ更新（間引かない）。P11: 分母
+        // ΣWj（当該層以上の重量累積和）は `new` で事前計算済みの
+        // `weight_above` を参照するだけにし、`record_step` 呼び出しごとの
+        // O(n_story) 再計算（全体で O(n_story²)）を避ける。
         for i in 0..self.weights.len() {
-            let above: f64 = self.weights[i..].iter().sum();
+            let above = self.weight_above[i];
             if above > 0.0 {
                 let ci_x = shear_x[i].abs() / above;
                 if ci_x > self.peak_shear_coeff_x[i] {
@@ -470,8 +477,7 @@ impl ThRecorder {
         // フレーム記録は間引く（record_every ごと。最終ステップは必ず含める）。
         if step.is_multiple_of(self.record_every as u64) || step == self.n_steps {
             self.frame_time.push(time);
-            self.node_disp
-                .push(expand_node_disp(model, dofmap, &u_free));
+            self.node_disp.push(expand_node_disp(model, dofmap, u_free));
             self.member_forces
                 .push(trim_member_forces_to_endpoints(member_forces_now));
             self.story_shear_x.push(shear_x);

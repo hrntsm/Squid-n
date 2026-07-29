@@ -239,9 +239,19 @@ impl BeamElement {
         self.condense_end_springs(&k_raw)
     }
 
+    /// 節点自由度ベースの局所剛性 12×12（剛域変換・端部条件を適用済み）。
+    ///
+    /// 剛性を決めるフィールドは構築後不変のため、初回呼び出しの結果を
+    /// [`BeamElement::local_stiffness_cache`] にキャッシュして使い回す
+    /// （`recover_forces`／`tangent_stiffness`／`internal_force` から毎ステップ
+    /// 呼ばれるため、時刻歴解析での再構築コストを避ける）。
     pub fn local_stiffness(&self) -> LocalMat {
-        // 剛域変換で節点自由度へ
-        let (li, lj) = self.rigid_lengths();
-        self.apply_rigid_zone_transform(&self.local_stiffness_flex(), li, lj)
+        self.local_stiffness_cache
+            .get_or_init(|| {
+                // 剛域変換で節点自由度へ
+                let (li, lj) = self.rigid_lengths();
+                self.apply_rigid_zone_transform(&self.local_stiffness_flex(), li, lj)
+            })
+            .clone()
     }
 }

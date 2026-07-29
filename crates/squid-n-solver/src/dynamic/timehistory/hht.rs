@@ -2,7 +2,10 @@
 //!
 //! - [`linear_hht_alpha_analysis`] — HHT-α 法による線形時刻歴応答解析
 
-use super::common::{mass_accel_free, solve_initial_accel, theta_accel_at, theta_influence_m};
+use super::common::{
+    mass_accel_free_into, solve_initial_accel, sparse_matvec_into, theta_accel_at,
+    theta_influence_m,
+};
 use super::config::{GroundMotion, HhtCfg};
 use super::history::{
     choose_record_dir_y, pick_record_node, record_history_step, total_mass, update_story_drift,
@@ -228,20 +231,31 @@ fn run_steps_hht(
     let n_indep = reducer.n_indep;
     let n_free = dofmap.n_active();
 
+    // P9: u_free/v_free/a_free は 1 ステップに 1 回だけ展開し、以後
+    // （ピーク変位・層間変形角・部材内力復元・record_history_step・
+    // recorder.record_step）で使い回す（linear.rs と同じ方針。従来は
+    // `record_step` 内部でも同じ展開をやり直していた）。
+    let mut u_free = vec![0.0f64; n_free];
+    let mut v_free = vec![0.0f64; n_free];
+    let mut a_free = vec![0.0f64; n_free];
+    reducer.expand_u_into(&u, &mut u_free);
+    reducer.expand_u_into(&v, &mut v_free);
+    reducer.expand_u_into(&a, &mut a_free);
+
     let mut peak_disp_free = vec![0.0f64; n_free];
-    let u_free_init = reducer.expand_u(&u);
     for i in 0..n_free {
-        peak_disp_free[i] = peak_disp_free[i].max(u_free_init[i].abs());
+        peak_disp_free[i] = peak_disp_free[i].max(u_free[i].abs());
     }
     let mut story_drift_angle = vec![0.0f64; model.stories.len()];
-    update_story_drift(model, dofmap, &u_free_init, &mut story_drift_angle);
+    update_story_drift(model, dofmap, &u_free, &mut story_drift_angle);
 
     let mut time = Vec::with_capacity(wave.accel_x.len() - start_step as usize + 1);
     time.push(start_step as f64 * dt);
 
     // 節点慣性力ベクトル算定用の M·a_free（自由 DOF 空間）。ベースシア・層せん断力の
     // 双方で共有する（1 ステップに 1 回だけ疎行列ベクトル積を計算する）。
-    let ma_free_init = mass_accel_free(m_free, reducer, &a);
+    let mut ma_free = vec![0.0f64; n_free];
+    mass_accel_free_into(m_free, &a_free, &mut ma_free);
 
     // 詳細記録（3D アニメーション・層応答グラフ・部材履歴用。record_every は
     // 呼び出し元（UI 等）が指定できる。None は自動決定）。
@@ -262,19 +276,18 @@ fn run_steps_hht(
         .as_ref()
         .and_then(|acc| acc.get(start_step as usize).copied())
         .unwrap_or(0.0);
-    let mf_init = member_forces_linear(dofmap, behaviors, &u_free_init);
+    let mf_init = member_forces_linear(dofmap, behaviors, &u_free);
     recorder.record_step(
         start_step,
         start_step as f64 * dt,
         model,
         dofmap,
-        reducer,
         m_r_x,
         m_r_y,
-        &ma_free_init,
-        &u,
-        &v,
-        &a,
+        &ma_free,
+        &u_free,
+        &v_free,
+        &a_free,
         xg_x_init,
         xg_y_init,
         &mf_init,
@@ -307,10 +320,24 @@ fn run_steps_hht(
         dofmap,
         dir_idx,
         rmr_record,
-        &u_free_init,
-        &ma_free_init,
+        &u_free,
+        &ma_free,
         xg_init,
     );
+
+    // P8/P9: ループ内で毎ステップ確保していた作業バッファをループ外で 1 回だけ
+    // 確保し、以後は書き込みのみで再利用する。`p_prev`/`p_red_buf` は
+    // 前ステップ・当ステップの動的外力ベクトルを両方同時に必要とするため、
+    // 2 本のバッファを毎ステップ末尾で入れ替える（mem::swap、複製を避ける）。
+    let mut p_free_buf = vec![0.0f64; n_free];
+    let mut p_red_buf = vec![0.0f64; n_indep];
+    let mut mw_buf = vec![0.0f64; n_indep];
+    let mut cw_buf = vec![0.0f64; n_indep];
+    let mut m_mw_buf = vec![0.0f64; n_indep];
+    let mut c_cw_buf = vec![0.0f64; n_indep];
+    let mut c_vn_buf = vec![0.0f64; n_indep];
+    let mut k_un_buf = vec![0.0f64; n_indep];
+    let mut p_eff_buf = vec![0.0f64; n_indep];
 
     for n in start_step as usize..wave.accel_x.len() {
         let t_next = (n + 1) as f64 * dt;
@@ -322,58 +349,56 @@ fn run_steps_hht(
             .unwrap_or(0.0);
 
         let xg_theta = theta_accel_at(wave, n);
-        let p_free: Vec<f64> = m_r_x
-            .iter()
-            .zip(m_r_y.iter())
-            .zip(m_r_theta.iter())
-            .map(|((mx, my), mt)| -(mx * xg_x + my * xg_y + mt * xg_theta))
-            .collect();
-        let p_red = reducer.reduce_f(&p_free);
-
-        let mut mw = vec![0.0; n_indep];
-        let mut cw = vec![0.0; n_indep];
-        for i in 0..n_indep {
-            mw[i] = c1 * u[i] + c3 * v[i] + c4 * a[i];
-            cw[i] = c2 * u[i] + c5 * v[i] + c6 * a[i];
+        for i in 0..n_free {
+            p_free_buf[i] = -(m_r_x[i] * xg_x + m_r_y[i] * xg_y + m_r_theta[i] * xg_theta);
         }
-        let m_mw = sparse_matvec(m_red, &mw);
-        let c_cw = sparse_matvec(c_red, &cw);
-        let c_vn = sparse_matvec(c_red, &v);
-        let k_un = sparse_matvec(k_red, &u);
+        reducer.reduce_f_into(&p_free_buf, &mut p_red_buf);
 
-        let mut p_eff = vec![0.0; n_indep];
         for i in 0..n_indep {
-            p_eff[i] = (1.0 + alpha) * p_red[i] - alpha * p_prev[i]
-                + m_mw[i]
-                + (1.0 + alpha) * c_cw[i]
-                + alpha * (c_vn[i] + k_un[i]);
+            mw_buf[i] = c1 * u[i] + c3 * v[i] + c4 * a[i];
+            cw_buf[i] = c2 * u[i] + c5 * v[i] + c6 * a[i];
+        }
+        sparse_matvec_into(m_red, &mw_buf, &mut m_mw_buf);
+        sparse_matvec_into(c_red, &cw_buf, &mut c_cw_buf);
+        sparse_matvec_into(c_red, &v, &mut c_vn_buf);
+        sparse_matvec_into(k_red, &u, &mut k_un_buf);
+
+        for i in 0..n_indep {
+            p_eff_buf[i] = (1.0 + alpha) * p_red_buf[i] - alpha * p_prev[i]
+                + m_mw_buf[i]
+                + (1.0 + alpha) * c_cw_buf[i]
+                + alpha * (c_vn_buf[i] + k_un_buf[i]);
         }
 
-        let u_next = solver.solve(&p_eff)?;
+        // `LinearSolver::solve` は既存 API のため `Vec<f64>` を新規に返す
+        // （P9 の対象外。squid-n-math 側 API 拡張は後続作業）。
+        let u_next = solver.solve(&p_eff_buf)?;
 
-        let mut a_next = vec![0.0; n_indep];
+        // a・v・u を単一パスでその場更新する（linear.rs と同じ理由でビット
+        // 完全一致。各 i の計算は他の i に依存しない）。
         for i in 0..n_indep {
-            a_next[i] = c1 * (u_next[i] - u[i]) - c3 * v[i] - c4 * a[i];
+            let a_new = c1 * (u_next[i] - u[i]) - c3 * v[i] - c4 * a[i];
+            let v_new = v[i] + dt * ((1.0 - gamma) * a[i] + gamma * a_new);
+            v[i] = v_new;
+            a[i] = a_new;
+            u[i] = u_next[i];
         }
-        let mut v_next = vec![0.0; n_indep];
-        for i in 0..n_indep {
-            v_next[i] = v[i] + dt * ((1.0 - gamma) * a[i] + gamma * a_next[i]);
-        }
-
-        u = u_next;
-        v = v_next;
-        a = a_next;
-        p_prev = p_red;
+        // 前ステップの動的外力ベクトルとして次ステップで使うため、バッファを
+        // 入れ替える（コピーせず所有権だけ交換。次の反復で p_red_buf は
+        // 新しい値で上書きされる）。
+        std::mem::swap(&mut p_prev, &mut p_red_buf);
         time.push(t_next);
 
-        let u_free = reducer.expand_u(&u);
+        reducer.expand_u_into(&u, &mut u_free);
         for i in 0..n_free {
             peak_disp_free[i] = peak_disp_free[i].max(u_free[i].abs());
         }
         update_story_drift(model, dofmap, &u_free, &mut story_drift_angle);
         // 節点慣性力ベクトル算定用の M·a_free（自由 DOF 空間）。ベースシア・
         // 層せん断力の双方で共有する（1 ステップに 1 回だけ算定）。
-        let ma_free = mass_accel_free(m_free, reducer, &a);
+        reducer.expand_u_into(&v, &mut v_free);
+        reducer.expand_u_into(&a, &mut a_free);
+        mass_accel_free_into(m_free, &a_free, &mut ma_free);
         let xg_next = if record_dir_y {
             wave.accel_y
                 .as_ref()
@@ -405,13 +430,12 @@ fn run_steps_hht(
             t_next,
             model,
             dofmap,
-            reducer,
             m_r_x,
             m_r_y,
             &ma_free,
-            &u,
-            &v,
-            &a,
+            &u_free,
+            &v_free,
+            &a_free,
             xg_x_next,
             xg_y_next,
             &mf_now,

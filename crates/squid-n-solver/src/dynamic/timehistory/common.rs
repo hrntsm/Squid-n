@@ -3,10 +3,12 @@
 //! - [`theta_influence_m`] — 位相差入力（ねじれ加振）の回転影響ベクトル `M·r_θ`
 //! - [`theta_accel_at`] — ステップ `n` のねじれ地動加速度取得
 //! - [`solve_initial_accel`] — 初期加速度 `M·a₀ = rhs` の求解
-//! - [`mass_accel_free`] — 節点慣性力ベクトル算定用の `M·a_free`（自由 DOF 空間）
+//! - [`mass_accel_free_into`] — 節点慣性力ベクトル算定用の `M·a_free`
+//!   （自由 DOF 空間）
+//! - [`sparse_matvec_into`] — `squid_n_math::sparse::sparse_matvec` の出力バッファ
+//!   再利用版（squid-n-math に同等 API が入るまでのローカル実装、P9）
 
 use super::config::GroundMotion;
-use crate::constraint::Reducer;
 use squid_n_core::dof::{DofMap, DOF_PER_NODE};
 use squid_n_core::model::Model;
 use squid_n_math::solver::{make_solver, SolveError, SolverBackend};
@@ -91,15 +93,46 @@ pub(crate) fn solve_initial_accel(
 }
 
 /// 節点慣性力ベクトルの算定に使う `M·a_free`（自由 DOF 空間、`dofmap` の
-/// アクティブ添字順）を求める。層せん断力・ベースシアの算定（[`super::recording`]・
+/// アクティブ添字順）を、呼び出し側の既存バッファへ書き込む（毎ステップの
+/// Vec 確保を避ける、P9）。層せん断力・ベースシアの算定（[`super::recording`]・
 /// [`super::history::record_history_step`]）で共有するため、各積分ループで
-/// 1 ステップに 1 回だけ呼び出す（疎行列ベクトル積は方向 X・Y で共通、
-/// 地動加速度 `ẍg` に応じた項は呼び出し側で別途加算する）。
-pub(crate) fn mass_accel_free(
+/// 1 ステップに 1 回だけ呼び出す。
+///
+/// `a_free` は呼び出し側で展開済みの自由 DOF 空間の加速度（`Reducer::expand_u`/
+/// [`Reducer::expand_u_into`](crate::constraint::Reducer::expand_u_into)）を渡す
+/// （`ThRecorder::record_step` 等でも同じ展開済み `a_free` を使い回すため、
+/// 展開そのものは呼び出し側で 1 ステップに 1 回だけ行う）。
+pub(crate) fn mass_accel_free_into(
     m_free: &faer::sparse::SparseColMat<usize, f64>,
-    reducer: &Reducer,
-    a_red: &[f64],
-) -> Vec<f64> {
-    let a_free = reducer.expand_u(a_red);
-    sparse_matvec(m_free, &a_free)
+    a_free: &[f64],
+    out: &mut [f64],
+) {
+    sparse_matvec_into(m_free, a_free, out);
+}
+
+/// 疎行列ベクトル積 `y = A·x` を呼び出し側の既存バッファへ書き込む
+/// （`squid_n_math::sparse::sparse_matvec` と同一の走査順・演算順で、結果はビット
+/// 完全一致。squid-n-math に `sparse_matvec_into` が追加されるまでの間、
+/// 時刻歴応答解析側でローカルに実装する。P9）。
+pub(crate) fn sparse_matvec_into(
+    mat: &faer::sparse::SparseColMat<usize, f64>,
+    x: &[f64],
+    y: &mut [f64],
+) {
+    for v in y.iter_mut() {
+        *v = 0.0;
+    }
+    let (sym, vals) = mat.parts();
+    let ncols = sym.ncols();
+    for j in 0..ncols {
+        let range = sym.col_range(j);
+        let rows = sym.row_idx_of_col_raw(j);
+        let xj = x[j];
+        if xj == 0.0 {
+            continue;
+        }
+        for (k, &row) in rows.iter().enumerate() {
+            y[row] += vals[range.start + k] * xj;
+        }
+    }
 }

@@ -308,8 +308,13 @@ impl Reducer {
         assemble_csc(self.n_indep, triplets)
     }
 
-    pub fn reduce_f(&self, f_free: &[f64]) -> Vec<f64> {
-        let mut f_red = vec![0.0; self.n_indep];
+    /// [`Self::reduce_f`] の結果を呼び出し側の既存バッファへ書き込む版（毎ステップの
+    /// Vec 確保を避ける）。`f_red` の長さは `self.n_indep` でなければならない。
+    /// 計算順序は [`Self::reduce_f`] と同一（ビット完全一致）。
+    pub fn reduce_f_into(&self, f_free: &[f64], f_red: &mut [f64]) {
+        for v in f_red.iter_mut() {
+            *v = 0.0;
+        }
         for i in 0..self.n_free {
             if f_free[i] != 0.0 {
                 for &(a, ta) in &self.t_rows[i] {
@@ -317,16 +322,29 @@ impl Reducer {
                 }
             }
         }
+    }
+
+    pub fn reduce_f(&self, f_free: &[f64]) -> Vec<f64> {
+        let mut f_red = vec![0.0; self.n_indep];
+        self.reduce_f_into(f_free, &mut f_red);
         f_red
     }
 
-    pub fn expand_u(&self, u_indep: &[f64]) -> Vec<f64> {
-        let mut u_free = vec![0.0; self.n_free];
+    /// [`Self::expand_u`] の結果を呼び出し側の既存バッファへ書き込む版（毎ステップの
+    /// Vec 確保を避ける）。`u_free` の長さは `self.n_free` でなければならない。
+    /// 計算順序は [`Self::expand_u`] と同一（ビット完全一致）。
+    pub fn expand_u_into(&self, u_indep: &[f64], u_free: &mut [f64]) {
         for i in 0..self.n_free {
+            u_free[i] = 0.0;
             for &(a, ta) in &self.t_rows[i] {
                 u_free[i] += ta * u_indep[a];
             }
         }
+    }
+
+    pub fn expand_u(&self, u_indep: &[f64]) -> Vec<f64> {
+        let mut u_free = vec![0.0; self.n_free];
+        self.expand_u_into(u_indep, &mut u_free);
         u_free
     }
 }
