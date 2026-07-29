@@ -78,6 +78,30 @@ impl EditCommand for SetMemberHysteresis {
     }
 }
 
+/// 部材の履歴則(時刻歴応答解析用スロット)変更。`None` は「増分と同じ」へ戻す。
+pub struct SetMemberHysteresisTh {
+    pub elem: ElemId,
+    pub rule_th: Option<squid_n_core::model::HysteresisModel>,
+}
+
+impl EditCommand for SetMemberHysteresisTh {
+    fn apply(&self, model: &mut Model) -> Box<dyn EditCommand> {
+        let idx = self.elem.index();
+        if idx >= model.elements.len() || model.elements[idx].id != self.elem {
+            return Box::new(Noop);
+        }
+        let old = model.set_member_hysteresis_th(self.elem, self.rule_th);
+        Box::new(SetMemberHysteresisTh {
+            elem: self.elem,
+            rule_th: old,
+        })
+    }
+
+    fn label(&self) -> &str {
+        "部材履歴則変更(時刻歴)"
+    }
+}
+
 /// 制振ダンパーの特性（Kd・C0・α）変更（制振部材の力学モデル: Maxwell モデル等）。
 /// `props=None` で指定を解除する。
 pub struct SetDamperProps {

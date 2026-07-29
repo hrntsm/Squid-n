@@ -2132,6 +2132,65 @@ fn test_set_member_hysteresis_roundtrip() {
 }
 
 #[test]
+fn test_set_member_hysteresis_th_roundtrip() {
+    use squid_n_core::model::HysteresisModel;
+    let mut model = two_member_model();
+    let mut stack = UndoStack::new();
+
+    // 増分用スロットを Takeda に設定しておき、時刻歴用スロットの操作で
+    // 影響を受けないことを確認する。
+    stack.run(
+        &mut model,
+        Box::new(SetMemberHysteresis {
+            elem: ElemId(0),
+            rule: HysteresisModel::Takeda,
+        }),
+    );
+    assert_eq!(model.member_hysteresis_th_raw(ElemId(0)), None);
+
+    stack.run(
+        &mut model,
+        Box::new(SetMemberHysteresisTh {
+            elem: ElemId(0),
+            rule_th: Some(HysteresisModel::KarsanJirsa),
+        }),
+    );
+    assert_eq!(
+        model.member_hysteresis_th_raw(ElemId(0)),
+        Some(HysteresisModel::KarsanJirsa)
+    );
+    // 増分用スロットは影響を受けない。
+    assert_eq!(
+        model.member_hysteresis(ElemId(0)),
+        Some(HysteresisModel::Takeda)
+    );
+
+    stack.undo(&mut model);
+    assert_eq!(model.member_hysteresis_th_raw(ElemId(0)), None);
+    assert_eq!(
+        model.member_hysteresis(ElemId(0)),
+        Some(HysteresisModel::Takeda)
+    );
+
+    stack.redo(&mut model);
+    assert_eq!(
+        model.member_hysteresis_th_raw(ElemId(0)),
+        Some(HysteresisModel::KarsanJirsa)
+    );
+
+    // 存在しない部材は Noop。
+    let mut stack2 = UndoStack::new();
+    stack2.run(
+        &mut model,
+        Box::new(SetMemberHysteresisTh {
+            elem: ElemId(99),
+            rule_th: Some(HysteresisModel::OriginOriented),
+        }),
+    );
+    assert_eq!(model.member_hysteresis_th_raw(ElemId(99)), None);
+}
+
+#[test]
 fn test_add_damper_creates_element_and_attr_roundtrip() {
     use squid_n_core::model::{DamperKind, DamperProps};
     let mut model = two_member_model();

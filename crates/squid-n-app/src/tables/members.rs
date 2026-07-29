@@ -8,6 +8,7 @@ use squid_n_core::model::{
 use squid_n_edit::{
     AddDamper, AddIsolator, AddMember, DeleteMember, EditCommand, RemoveSupportIsolator,
     SetDamperProps, SetElementMaterial, SetElementSection, SetMemberHysteresis,
+    SetMemberHysteresisTh,
 };
 
 /// 「+ 免震支承材追加」フォームのドラフト状態（`AddIsolator` の諸元）。
@@ -32,6 +33,24 @@ fn resolve_damper_def_selection(
         return Some((i, name));
     }
     defs.iter().position(|d| d.name == name).map(|i| (i, name))
+}
+
+/// 「自動」解決表示用に、要素種別に応じた履歴則解決関数を使い分ける。
+/// 梁=材端曲げバネの履歴則、ファイバー柱・MS・壁=コンクリート除荷則。
+fn resolve_member_hysteresis_for_kind(
+    elem: &ElementData,
+    model: &squid_n_core::model::Model,
+    kind: squid_n_core::model::AnalysisKind,
+) -> HysteresisModel {
+    match elem.kind {
+        ElementKind::Fiber | ElementKind::MultiSpring => {
+            squid_n_element::factory::resolve_fiber_concrete_hysteresis(elem, model, kind)
+        }
+        ElementKind::Wall => {
+            squid_n_element::factory::resolve_wall_concrete_hysteresis(elem, model, kind)
+        }
+        _ => squid_n_element::factory::resolve_member_hysteresis(elem, model, kind),
+    }
 }
 
 pub fn members_table(ui: &mut egui::Ui, app: &mut App) {
@@ -298,6 +317,7 @@ pub fn members_table(ui: &mut egui::Ui, app: &mut App) {
     let mut pending_section: Vec<(usize, u32)> = Vec::new();
     let mut pending_material: Vec<(usize, u32)> = Vec::new();
     let mut pending_hysteresis: Vec<(usize, HysteresisModel)> = Vec::new();
+    let mut pending_hysteresis_th: Vec<(usize, Option<HysteresisModel>)> = Vec::new();
     let mut pending_delete: Option<ElemId> = None;
 
     TableBuilder::new(ui)
@@ -308,9 +328,19 @@ pub fn members_table(ui: &mut egui::Ui, app: &mut App) {
         .column(Column::initial(80.0))
         .column(Column::initial(90.0))
         .column(Column::initial(120.0))
+        .column(Column::initial(120.0))
         .column(Column::auto())
         .header(20.0, |mut h| {
-            for t in &["ID", "種別", "節点", "断面", "材料", "履歴則", ""] {
+            for t in &[
+                "ID",
+                "種別",
+                "節点",
+                "断面",
+                "材料",
+                "履歴則(増分)",
+                "履歴則(時刻歴)",
+                "",
+            ] {
                 h.col(|ui| {
                     ui.strong(*t);
                 });
@@ -389,19 +419,27 @@ pub fn members_table(ui: &mut egui::Ui, app: &mut App) {
                     });
                 });
                 row.col(|ui| {
-                    // 履歴則（復元力特性）。非線形解析の材端履歴則。
-                    // 梁のみ材端曲げバネへ反映（柱=ファイバー、ブレース=軸バイリニア）。
+                    // 履歴則（復元力特性、増分解析用）。非線形解析の材端履歴則。
+                    // 梁=材端曲げバネ、柱（ファイバー）・MS・壁=コンクリート除荷則へ反映。
                     let current = app.model.member_hysteresis(elem.id);
                     let selected_text = match current {
                         Some(r) => r.label().to_string(),
                         None => {
-                            let eff = squid_n_element::factory::resolve_member_hysteresis(
-                                elem, &app.model,
+                            let eff = resolve_member_hysteresis_for_kind(
+                                elem,
+                                &app.model,
+                                squid_n_core::model::AnalysisKind::Incremental,
                             );
                             format!("自動（{}）", eff.label())
                         }
                     };
-                    let enabled = elem.kind == ElementKind::Beam;
+                    let enabled = matches!(
+                        elem.kind,
+                        ElementKind::Beam
+                            | ElementKind::Fiber
+                            | ElementKind::MultiSpring
+                            | ElementKind::Wall
+                    );
                     ui.add_enabled_ui(enabled, |ui| {
                         egui::ComboBox::from_id_salt(format!("elem_hyst_{}", i))
                             .selected_text(selected_text)
@@ -418,7 +456,58 @@ pub fn members_table(ui: &mut egui::Ui, app: &mut App) {
                             })
                             .response
                             .on_hover_text(
-                                "材端曲げの復元力履歴則（自動: RC/SRC/CFT=武田型、S=標準型）",
+                                "増分解析（保有水平耐力計算）の履歴則。\
+                                 梁=材端曲げバネ（自動: RC/SRC/CFT=武田型、S=標準型）。\
+                                 柱（ファイバー）・MS・壁=コンクリート除荷則\
+                                 （逆行型／原点指向型／Karsan-Jirsa型のみ有効。\
+                                 自動: 柱・MS=逆行型、壁=原点指向型）",
+                            );
+                    });
+                });
+                row.col(|ui| {
+                    // 履歴則（時刻歴応答解析用スロット）。`None`＝増分用の指定に従う。
+                    let current_th_raw = app.model.member_hysteresis_th_raw(elem.id);
+                    let selected_text = match current_th_raw {
+                        None => "増分と同じ".to_string(),
+                        Some(HysteresisModel::Auto) => {
+                            let eff = resolve_member_hysteresis_for_kind(
+                                elem,
+                                &app.model,
+                                squid_n_core::model::AnalysisKind::TimeHistory,
+                            );
+                            format!("自動（{}）", eff.label())
+                        }
+                        Some(r) => r.label().to_string(),
+                    };
+                    let enabled = matches!(
+                        elem.kind,
+                        ElementKind::Beam
+                            | ElementKind::Fiber
+                            | ElementKind::MultiSpring
+                            | ElementKind::Wall
+                    );
+                    ui.add_enabled_ui(enabled, |ui| {
+                        egui::ComboBox::from_id_salt(format!("elem_hyst_th_{}", i))
+                            .selected_text(selected_text)
+                            .show_ui(ui, |ui| {
+                                if ui
+                                    .selectable_label(current_th_raw.is_none(), "増分と同じ")
+                                    .clicked()
+                                {
+                                    pending_hysteresis_th.push((i, None));
+                                }
+                                for m in HysteresisModel::ALL {
+                                    let is_sel = current_th_raw == Some(m);
+                                    if ui.selectable_label(is_sel, m.label()).clicked() {
+                                        pending_hysteresis_th.push((i, Some(m)));
+                                    }
+                                }
+                            })
+                            .response
+                            .on_hover_text(
+                                "時刻歴応答解析の履歴則。「増分と同じ」で増分用の指定に従う。\
+                                 自動: 梁=増分と同じ既定、柱（ファイバー）・MS・壁の\
+                                 コンクリートは Karsan-Jirsa型",
                             );
                     });
                 });
@@ -438,6 +527,7 @@ pub fn members_table(ui: &mut egui::Ui, app: &mut App) {
     let had_pending = !pending_section.is_empty()
         || !pending_material.is_empty()
         || !pending_hysteresis.is_empty()
+        || !pending_hysteresis_th.is_empty()
         || pending_delete.is_some();
     for (i, sec_id) in pending_section {
         let elem_id = app.model.elements[i].id;
@@ -487,6 +577,16 @@ pub fn members_table(ui: &mut egui::Ui, app: &mut App) {
             Box::new(SetMemberHysteresis {
                 elem: elem_id,
                 rule,
+            }),
+        );
+    }
+    for (i, rule_th) in pending_hysteresis_th {
+        let elem_id = app.model.elements[i].id;
+        app.undo.run(
+            &mut app.model,
+            Box::new(SetMemberHysteresisTh {
+                elem: elem_id,
+                rule_th,
             }),
         );
     }
