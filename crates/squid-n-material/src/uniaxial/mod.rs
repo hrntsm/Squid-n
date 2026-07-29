@@ -2,17 +2,24 @@
 //!
 //! [`UniaxialMaterial`] トレイトを中核に、材料モデルごとにサブモジュールへ分割する:
 //! - [`bilinear`] — バイリニア鋼材（弾性＋線形硬化＝kinematic hardening）
-//! - [`menegotto_pinto`] — Menegotto–Pinto 鉄筋（バウシンガー効果を滑らかに表現）
+//! - [`menegotto_pinto`] — Menegotto–Pinto 鉄筋・鋼材（Filippou 1983 の履歴則・
+//!   等方硬化を含む完全形。バウシンガー効果を滑らかに表現）
 //! - [`concrete`] — コンクリート一軸履歴（放物線＋軟化＋テンションスティフニング）
+//! - [`concrete_cyclic`] — コンクリート繰返し履歴（Yassin 1994 / Concrete02 系。
+//!   Karsan–Jirsa 除荷・ひび割れ閉鎖・引張軟化）
+//! - [`mander`] — Mander (1988) 拘束コンクリートの包絡線パラメータ算定
 
 use std::fmt::Debug;
 
 pub mod bilinear;
 pub mod concrete;
+pub mod concrete_cyclic;
+pub mod mander;
 pub mod menegotto_pinto;
 
 pub use bilinear::Bilinear;
 pub use concrete::Concrete;
+pub use concrete_cyclic::{ConcreteCyclic, ConcreteEnvelope};
 pub use menegotto_pinto::MenegottoPinto;
 
 /// 材料状態の直列化・復元に関するエラー。

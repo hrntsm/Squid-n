@@ -1,7 +1,7 @@
 //! 単軸履歴則（Concrete/Bilinear/MP）のスナップショットテスト（仕様書 §8.1）。
 //! 規定の繰り返しひずみ履歴に対する (ε, σ) ループを insta で固定し、回帰を検出する。
 
-use squid_n_material::{Bilinear, Concrete, MenegottoPinto, UniaxialMaterial};
+use squid_n_material::{Bilinear, Concrete, ConcreteCyclic, MenegottoPinto, UniaxialMaterial};
 
 /// 規定の繰り返しひずみ履歴: 段階的に振幅を増やす正負交番。
 fn cyclic_strain_history(eps_y: f64) -> Vec<f64> {
@@ -38,6 +38,30 @@ fn snapshot_menegotto_pinto_loop() {
     let hist = cyclic_strain_history(eps_y);
     let csv = run_uniaxial_loop(&mut mat, &hist);
     insta::assert_snapshot!("menegotto_pinto_loop", csv);
+}
+
+#[test]
+fn snapshot_concrete_cyclic_loop() {
+    // Yassin (1994)/Concrete02 系: 引張ひび割れ → 圧縮包絡線 → Karsan–Jirsa 除荷 →
+    // ひび割れ閉鎖を含む再圧縮、の順で全分岐を通す履歴。
+    let mut mat = ConcreteCyclic::kent_park(30.0, 0.002, 6.0, 0.008, 2.0, 1000.0);
+    let e0 = 2.0 * 30.0 / 0.002;
+    let eps_cr = 2.0 / e0;
+    let hist = vec![
+        0.0,
+        eps_cr,
+        eps_cr * 3.0,
+        0.0,
+        -0.002,
+        -0.004,
+        -0.001,
+        0.0005,
+        -0.004,
+        -0.006,
+        0.0,
+    ];
+    let csv = run_uniaxial_loop(&mut mat, &hist);
+    insta::assert_snapshot!("concrete_cyclic_loop", csv);
 }
 
 #[test]
