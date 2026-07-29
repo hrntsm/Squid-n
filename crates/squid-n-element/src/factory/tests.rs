@@ -1,6 +1,7 @@
 use super::*;
 use squid_n_core::dof::Dof6Mask;
 use squid_n_core::ids::{ElemId, MaterialId, NodeId, SectionId};
+use squid_n_core::model::AnalysisKind;
 use squid_n_core::model::{EndCondition, LocalAxis, Material, Node, Section};
 
 fn make_diaphragm_model() -> Model {
@@ -240,7 +241,12 @@ fn test_build_nonlinear_behavior_concentrated_spring_uses_spring_beam() {
         plastic_zone: None,
         spring: None,
     };
-    let (behavior, _state) = build_nonlinear_behavior(&beam, &model, StrengthBasis::Nominal);
+    let (behavior, _state) = build_nonlinear_behavior(
+        &beam,
+        &model,
+        StrengthBasis::Nominal,
+        AnalysisKind::Incremental,
+    );
     let snap = behavior.snapshot_state();
     let is_spring = snap
         .downcast_ref::<(
@@ -275,7 +281,12 @@ fn test_build_nonlinear_behavior_fiber_uses_fiber_beam() {
         plastic_zone: None,
         spring: None,
     };
-    let (behavior, _state) = build_nonlinear_behavior(&col, &model, StrengthBasis::Nominal);
+    let (behavior, _state) = build_nonlinear_behavior(
+        &col,
+        &model,
+        StrengthBasis::Nominal,
+        AnalysisKind::Incremental,
+    );
     let snap = behavior.snapshot_state();
     let is_fiber = snap
         .downcast_ref::<crate::fiber::FiberBeamSnapshot>()
@@ -380,7 +391,12 @@ fn test_build_behavior_brace_tension_only_full_stiffness() {
 #[test]
 fn test_build_nonlinear_behavior_brace_tension_only_full_stiffness() {
     let (model, elem) = make_brace_model(true);
-    let (behavior, state) = build_nonlinear_behavior(&elem, &model, StrengthBasis::Nominal);
+    let (behavior, state) = build_nonlinear_behavior(
+        &elem,
+        &model,
+        StrengthBasis::Nominal,
+        AnalysisKind::Incremental,
+    );
     let ctx = crate::behavior::Ctx { model: &model };
     let k = behavior.tangent_stiffness(&state, &ctx);
     let ea_l = 205000.0 * 2000.0 / 4000.0;
@@ -602,7 +618,7 @@ fn test_resolve_member_hysteresis_and_flexural_springs() {
     // 断面形状なし → 非 RC → 標準型（バイリニア、N-M 相関対象）。
     assert!(!is_rc_like_section(&beam, &model));
     assert_eq!(
-        resolve_member_hysteresis(&beam, &model),
+        resolve_member_hysteresis(&beam, &model, AnalysisKind::Incremental),
         HysteresisModel::Standard
     );
     let (_i, _j, use_mn) = build_flexural_springs(
@@ -626,7 +642,7 @@ fn test_resolve_member_hysteresis_and_flexural_springs() {
     model.materials[0].fy = Some(345.0);
     assert!(is_rc_like_section(&beam, &model));
     assert_eq!(
-        resolve_member_hysteresis(&beam, &model),
+        resolve_member_hysteresis(&beam, &model, AnalysisKind::Incremental),
         HysteresisModel::Takeda
     );
     let (_i, _j, use_mn) = build_flexural_springs(
@@ -646,14 +662,14 @@ fn test_resolve_member_hysteresis_and_flexural_springs() {
     });
     assert!(!is_rc_like_section(&beam, &model));
     assert_eq!(
-        resolve_member_hysteresis(&beam, &model),
+        resolve_member_hysteresis(&beam, &model, AnalysisKind::Incremental),
         HysteresisModel::Standard
     );
 
     // 個別指定は既定表に優先する。
     model.set_member_hysteresis(ElemId(0), HysteresisModel::MaxPointOriented);
     assert_eq!(
-        resolve_member_hysteresis(&beam, &model),
+        resolve_member_hysteresis(&beam, &model, AnalysisKind::Incremental),
         HysteresisModel::MaxPointOriented
     );
     let (_i, _j, use_mn) = build_flexural_springs(
@@ -663,6 +679,132 @@ fn test_resolve_member_hysteresis_and_flexural_springs() {
         StrengthBasis::Nominal,
     );
     assert!(!use_mn);
+}
+
+/// 履歴則の 2 スロット（増分用／時刻歴用）の解決を検証する。
+/// - 時刻歴用スロット未指定は増分用の指定に従う（旧形式ファイルの互換挙動）
+/// - 時刻歴用スロット指定は時刻歴解決のみに効く
+#[test]
+fn test_resolve_member_hysteresis_two_slots() {
+    use squid_n_core::model::HysteresisModel;
+
+    let mut model = make_diaphragm_model();
+    let beam = ElementData {
+        id: ElemId(0),
+        kind: ElementKind::Beam,
+        nodes: smallvec::smallvec![NodeId(0), NodeId(1)],
+        section: Some(SectionId(0)),
+        material: Some(MaterialId(0)),
+        local_axis: LocalAxis {
+            ref_vector: [0.0, 1.0, 0.0],
+        },
+        end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+        force_regime: ForceRegime::Auto,
+        rigid_zone: Default::default(),
+        plastic_zone: None,
+        spring: None,
+    };
+    model.elements.push(beam.clone());
+
+    // 未指定: 増分・時刻歴とも構造種別既定（非 RC=標準型）。
+    for kind in [AnalysisKind::Incremental, AnalysisKind::TimeHistory] {
+        assert_eq!(
+            resolve_member_hysteresis(&beam, &model, kind),
+            HysteresisModel::Standard
+        );
+    }
+
+    // 増分用のみ指定: 時刻歴も増分用に従う（旧形式互換）。
+    model.set_member_hysteresis(ElemId(0), HysteresisModel::OriginOriented);
+    assert_eq!(
+        resolve_member_hysteresis(&beam, &model, AnalysisKind::TimeHistory),
+        HysteresisModel::OriginOriented
+    );
+
+    // 時刻歴用スロットを指定: 時刻歴のみ変わり、増分は据え置き。
+    model.set_member_hysteresis_th(ElemId(0), Some(HysteresisModel::MaxPointOriented));
+    assert_eq!(
+        resolve_member_hysteresis(&beam, &model, AnalysisKind::Incremental),
+        HysteresisModel::OriginOriented
+    );
+    assert_eq!(
+        resolve_member_hysteresis(&beam, &model, AnalysisKind::TimeHistory),
+        HysteresisModel::MaxPointOriented
+    );
+}
+
+/// ファイバー・MS のコンクリート除荷則の解決を検証する。
+/// - 既定: 増分=逆行型、時刻歴=Karsan–Jirsa 型（壁は増分=原点指向型）
+/// - コンクリート履歴として解釈できない指定（武田型等）は既定へフォールバック
+#[test]
+fn test_resolve_fiber_concrete_hysteresis_defaults_and_overrides() {
+    use squid_n_core::model::HysteresisModel;
+
+    let mut model = make_diaphragm_model();
+    let col = ElementData {
+        id: ElemId(0),
+        kind: ElementKind::Fiber,
+        nodes: smallvec::smallvec![NodeId(0), NodeId(2)],
+        section: Some(SectionId(0)),
+        material: Some(MaterialId(0)),
+        local_axis: LocalAxis {
+            ref_vector: [0.0, 1.0, 0.0],
+        },
+        end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+        force_regime: ForceRegime::Auto,
+        rigid_zone: Default::default(),
+        plastic_zone: None,
+        spring: None,
+    };
+    model.elements.push(col.clone());
+
+    // 既定。
+    assert_eq!(
+        resolve_fiber_concrete_hysteresis(&col, &model, AnalysisKind::Incremental),
+        HysteresisModel::Retrograde
+    );
+    assert_eq!(
+        resolve_fiber_concrete_hysteresis(&col, &model, AnalysisKind::TimeHistory),
+        HysteresisModel::KarsanJirsa
+    );
+    assert_eq!(
+        resolve_wall_concrete_hysteresis(&col, &model, AnalysisKind::Incremental),
+        HysteresisModel::OriginOriented
+    );
+    assert_eq!(
+        resolve_wall_concrete_hysteresis(&col, &model, AnalysisKind::TimeHistory),
+        HysteresisModel::KarsanJirsa
+    );
+
+    // コンクリート履歴として解釈できない指定（武田型）は既定へフォールバック。
+    model.set_member_hysteresis(ElemId(0), HysteresisModel::Takeda);
+    assert_eq!(
+        resolve_fiber_concrete_hysteresis(&col, &model, AnalysisKind::Incremental),
+        HysteresisModel::Retrograde
+    );
+
+    // 有効な個別指定（原点指向型）は増分・時刻歴とも尊重される（時刻歴スロット
+    // 未指定は増分用に従うため）。
+    model.set_member_hysteresis(ElemId(0), HysteresisModel::OriginOriented);
+    assert_eq!(
+        resolve_fiber_concrete_hysteresis(&col, &model, AnalysisKind::Incremental),
+        HysteresisModel::OriginOriented
+    );
+    assert_eq!(
+        resolve_fiber_concrete_hysteresis(&col, &model, AnalysisKind::TimeHistory),
+        HysteresisModel::OriginOriented
+    );
+
+    // 時刻歴のみ Karsan–Jirsa へ切替。
+    model.set_member_hysteresis_th(ElemId(0), Some(HysteresisModel::KarsanJirsa));
+    assert_eq!(
+        resolve_fiber_concrete_hysteresis(&col, &model, AnalysisKind::Incremental),
+        HysteresisModel::OriginOriented
+    );
+    assert_eq!(
+        resolve_fiber_concrete_hysteresis(&col, &model, AnalysisKind::TimeHistory),
+        HysteresisModel::KarsanJirsa
+    );
 }
 
 #[test]
@@ -799,7 +941,7 @@ fn test_rc_beam_flexural_spring_exhibits_takeda_degradation() {
     model.materials[0].fc = Some(24.0);
     model.materials[0].fy = Some(345.0);
 
-    let rule = resolve_member_hysteresis(&beam, &model);
+    let rule = resolve_member_hysteresis(&beam, &model, AnalysisKind::Incremental);
     assert_eq!(rule, HysteresisModel::Takeda);
     let (mut si, _sj, use_mn) = build_flexural_springs(&beam, &model, rule, StrengthBasis::Nominal);
     assert!(!use_mn);
@@ -862,7 +1004,7 @@ fn test_steel_beam_flexural_spring_buckling_degrades() {
     model.materials[0].fy = Some(325.0);
     model.set_member_hysteresis(ElemId(0), HysteresisModel::SteelBuckling);
 
-    let rule = resolve_member_hysteresis(&beam, &model);
+    let rule = resolve_member_hysteresis(&beam, &model, AnalysisKind::Incremental);
     assert_eq!(rule, HysteresisModel::SteelBuckling);
     let (mut si, _sj, use_mn) = build_flexural_springs(&beam, &model, rule, StrengthBasis::Nominal);
     assert!(use_mn, "座屈考慮型は set_yield 対応で N-M 相関適用可");

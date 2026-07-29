@@ -20,7 +20,11 @@ mod wall_opening;
 
 pub use input_check::{ensure_nonlinear_input, nonlinear_input_issues};
 pub use regime::{resolve_force_regime, ResolvedRegime};
-pub use springs::{plastic_zone_length, resolve_member_hysteresis};
+pub use springs::{
+    plastic_zone_length, resolve_fiber_concrete_hysteresis, resolve_member_hysteresis,
+    resolve_wall_concrete_hysteresis,
+};
+pub use squid_n_core::model::AnalysisKind;
 pub(crate) use wall_opening::wall_opening_reduction;
 
 use springs::{build_fiber, build_flexural_springs, yield_moment_and_axial};
@@ -210,6 +214,7 @@ pub fn build_nonlinear_behavior(
     data: &ElementData,
     model: &Model,
     basis: StrengthBasis,
+    kind: AnalysisKind,
 ) -> (Box<dyn ElementBehavior>, ElemState) {
     match data.kind {
         // 耐震壁の側柱は面内曲げ面の端部回転を静的縮約する（線形パスと同じ扱い）。
@@ -235,7 +240,7 @@ pub fn build_nonlinear_behavior(
                 // 履歴則を解決（部材個別指定 → 構造種別ごとの既定表。本実装の既定の
                 // 非線形特性は各履歴則の原典に基づく）。RC/SRC/CFT 梁は
                 // 武田型トリリニア、S 梁は標準型（kinematic バイリニア）を材端バネに用いる。
-                let rule = resolve_member_hysteresis(data, model);
+                let rule = resolve_member_hysteresis(data, model, kind);
                 let (spring_i, spring_j, use_mn) = build_flexural_springs(data, model, rule, basis);
                 let beam = crate::concentrated::ConcentratedSpringBeam::new_one_component(
                     elem, spring_i, spring_j,
@@ -251,18 +256,18 @@ pub fn build_nonlinear_behavior(
                 (Box::new(beam), ElemState::default())
             }
             ResolvedRegime::Fiber => (
-                Box::new(build_fiber(data, model, basis)),
+                Box::new(build_fiber(data, model, basis, kind)),
                 ElemState::default(),
             ),
         },
         ElementKind::Fiber => (
-            Box::new(build_fiber(data, model, basis)),
+            Box::new(build_fiber(data, model, basis, kind)),
             ElemState::default(),
         ),
         // MS 要素: 端部バネ断面 + 中央弾性の非線形要素（P5.5 §3）
         ElementKind::MultiSpring => (
             Box::new(crate::multi_spring::MultiSpringElement::new(
-                data, model, basis,
+                data, model, basis, kind,
             )),
             ElemState::default(),
         ),
@@ -299,7 +304,7 @@ pub fn build_nonlinear_behavior(
                     // （柱の Fiber 既定と同様）。フレーム内雑壁（stiffness_scale が
                     // 実質 0）は弾性のままでよい。
                     let panel = if stiffness_scale >= 1.0 {
-                        panel.with_fiber_flexure(data, model, basis)
+                        panel.with_fiber_flexure(data, model, basis, kind)
                     } else {
                         panel
                     };

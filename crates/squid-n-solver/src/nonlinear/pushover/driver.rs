@@ -172,14 +172,17 @@ pub fn pushover_analysis_recording(
     // 保有水平耐力計算の材料強度: 部材組み立て時に鋼材 fy・RC 主筋 σy へ
     // 材料強度係数（鋼材1.1倍/590N級1.05倍/RC主筋1.1倍、直接入力係数優先）を
     // 都度乗じる（`StrengthBasis::MaterialStrength`）。モデル自体は複製しない。
+    // 増分解析の履歴則は AnalysisKind::Incremental で解決する（部材個別指定の
+    // 増分用スロット → 既定表。コンクリート除荷則の既定は逆行型）。
     let mut behaviors: Vec<Box<dyn ElementBehavior>> = Vec::new();
     for elem in &model.elements {
-        let (b, _) = build_nonlinear_behavior(elem, model, StrengthBasis::MaterialStrength);
+        let (b, _) = build_nonlinear_behavior(
+            elem,
+            model,
+            StrengthBasis::MaterialStrength,
+            squid_n_element::factory::AnalysisKind::Incremental,
+        );
         behaviors.push(b);
-    }
-    // 静的解析: コンクリート履歴は逆行型（本実装の既定）。
-    for b in behaviors.iter_mut() {
-        b.set_concrete_hysteresis(false);
     }
 
     // 塑性率（ductility）トラッカー: 各部材の塑性率基点曲率・最大応答曲率を追跡する。

@@ -418,6 +418,7 @@ impl WallPanelElement {
         data: &ElementData,
         model: &Model,
         basis: crate::factory::StrengthBasis,
+        kind: squid_n_core::model::AnalysisKind,
     ) -> Self {
         let Some(geom) = wall_panel_geometry(data, model) else {
             return self;
@@ -450,6 +451,9 @@ impl WallPanelElement {
         let nw = 4;
         let nd = 20;
         let rebar_fy = 345.0 * basis.rebar_factor(Some(mat));
+        // コンクリート除荷則は解析種別と部材個別指定から解決する。壁柱の増分既定は
+        // 原点指向型（[`crate::factory::resolve_wall_concrete_hysteresis`] 参照）。
+        let concrete_rule = crate::factory::resolve_wall_concrete_hysteresis(data, model, kind);
         let make_section = || {
             let (mut section, mut mats) = crate::fiber::build_gauss_fibers(
                 t,
@@ -462,6 +466,7 @@ impl WallPanelElement {
                 None,
                 1.0,
                 1.0,
+                concrete_rule,
             );
             if ps > 0.0 {
                 let a_each = ps * t * lw / nd as f64;
@@ -1175,12 +1180,6 @@ impl ElementBehavior for WallPanelElement {
         self.fiber_column.as_ref().and_then(|f| f.ductility_probe())
     }
 
-    fn set_concrete_hysteresis(&mut self, dynamic: bool) {
-        if let Some(f) = &mut self.fiber_column {
-            f.set_concrete_hysteresis(dynamic);
-        }
-    }
-
     fn mass_matrix(&self, _opt: MassOption) -> LocalMat {
         // 壁板質量を四隅の並進へ 1/4 ずつ集中（Consistent 指定も同じ扱い）
         let mut mm = LocalMat::zeros(24);
@@ -1755,6 +1754,7 @@ mod shear_yield_tests {
             &data,
             &model,
             crate::factory::StrengthBasis::MaterialStrength,
+            crate::factory::AnalysisKind::Incremental,
         );
         let ctx = Ctx { model: &model };
         let st = ElemState::default();

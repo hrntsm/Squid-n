@@ -42,12 +42,13 @@ impl MultiSpringElement {
         data: &squid_n_core::model::ElementData,
         model: &Model,
         basis: crate::factory::StrengthBasis,
+        kind: squid_n_core::model::AnalysisKind,
     ) -> Self {
         // 塑性化領域長さ: 入力があればそれを、なければ断面せいの 0.5 倍
         // （ファイバー要素と共通の既定。[`crate::factory::plastic_zone_length`]）
         let lp = crate::factory::plastic_zone_length(data, model);
 
-        let inner = FiberBeam::build_plastic_zone(data, model, lp, MS_NW, MS_ND, basis);
+        let inner = FiberBeam::build_plastic_zone(data, model, lp, MS_NW, MS_ND, basis, kind);
 
         // 互換用のバネ配置情報（端部断面のファイバ位置と同一）
         let springs = inner
@@ -138,16 +139,13 @@ impl ElementBehavior for MultiSpringElement {
     fn ductility_probe(&self) -> Option<crate::behavior::DuctilityProbe> {
         self.inner.ductility_probe()
     }
-
-    fn set_concrete_hysteresis(&mut self, dynamic: bool) {
-        self.inner.set_concrete_hysteresis(dynamic);
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use squid_n_core::ids::{ElemId, MaterialId, NodeId, SectionId};
+    use squid_n_core::model::AnalysisKind;
     use squid_n_core::model::{
         ElementData, ElementKind, EndCondition, ForceRegime, LocalAxis, Material, Node, Section,
     };
@@ -226,6 +224,7 @@ mod tests {
             &model.elements[0],
             &model,
             crate::factory::StrengthBasis::Nominal,
+            AnalysisKind::Incremental,
         );
         assert_eq!(elem.springs.len(), 10);
         // 2次元配置: y も z も複数の異なる座標を持つ（一軸曲げ専用でない）
@@ -255,6 +254,7 @@ mod tests {
                 &model.elements[0],
                 &model,
                 crate::factory::StrengthBasis::Nominal,
+                AnalysisKind::Incremental,
             )
         };
 
@@ -343,6 +343,7 @@ mod tests {
             &model.elements[0],
             &model,
             crate::factory::StrengthBasis::Nominal,
+            AnalysisKind::Incremental,
         );
         let du1 = LocalVec {
             data: smallvec::smallvec![0.0, 0.0, 0.0, 0.0, theta, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
@@ -360,6 +361,7 @@ mod tests {
             &model.elements[0],
             &model,
             crate::factory::StrengthBasis::Nominal,
+            AnalysisKind::Incremental,
         );
         let u_axial = -15.0 * eps_y * 3000.0;
         let du2 = LocalVec {
@@ -387,6 +389,7 @@ mod tests {
             &model.elements[0],
             &model,
             crate::factory::StrengthBasis::Nominal,
+            AnalysisKind::Incremental,
         );
 
         // 降伏させてコミット
@@ -427,6 +430,7 @@ mod tests {
             &model.elements[0],
             &model,
             crate::factory::StrengthBasis::Nominal,
+            AnalysisKind::Incremental,
         );
         let du = LocalVec {
             data: smallvec::smallvec![0.0, 0.0, 0.0, 0.0, 0.02, 0.0, -0.5, 0.0, 0.0, 0.0, 0.0, 0.0],
@@ -438,6 +442,7 @@ mod tests {
             &model.elements[0],
             &model,
             crate::factory::StrengthBasis::Nominal,
+            AnalysisKind::Incremental,
         );
         elem2.deserialize_checkpoint(&cp).unwrap();
         // 復元後、同じ増分に対する応答が一致する

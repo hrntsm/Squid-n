@@ -503,7 +503,7 @@ impl Model {
         self.member_detail_attrs.iter().find(|a| a.elem == elem)
     }
 
-    /// 部材に指定された履歴則を返す（未指定は `None`＝既定に従う）。
+    /// 部材に指定された履歴則（増分解析用）を返す（未指定は `None`＝既定に従う）。
     pub fn member_hysteresis(&self, elem: ElemId) -> Option<HysteresisModel> {
         self.member_hysteresis_attrs
             .iter()
@@ -511,19 +511,82 @@ impl Model {
             .map(|a| a.rule)
     }
 
-    /// 部材の履歴則を設定する。`HysteresisModel::Auto` を指定した場合は指定を解除
-    /// （既定に従う）。戻り値は変更前の指定（undo 用）。
+    /// 部材に指定された履歴則（時刻歴応答解析用）を返す。
+    /// 時刻歴用スロットが未指定（`None`）の部材は増分用の指定に従う。
+    /// どちらも未指定は `None`＝既定に従う。
+    pub fn member_hysteresis_th(&self, elem: ElemId) -> Option<HysteresisModel> {
+        self.member_hysteresis_attrs
+            .iter()
+            .find(|a| a.elem == elem)
+            .map(|a| a.rule_th.unwrap_or(a.rule))
+    }
+
+    /// 部材に指定された時刻歴用スロットの生値を返す（`None`=増分用と同じ）。
+    /// UI の「増分と同じ」表示の判定に用いる（[`Self::member_hysteresis_th`] は
+    /// 増分用へフォールバックした解決後の値を返す）。
+    pub fn member_hysteresis_th_raw(&self, elem: ElemId) -> Option<HysteresisModel> {
+        self.member_hysteresis_attrs
+            .iter()
+            .find(|a| a.elem == elem)
+            .and_then(|a| a.rule_th)
+    }
+
+    /// 属性が既定（増分=Auto・時刻歴=増分と同じ）と等価なら側テーブルから除去する。
+    fn prune_default_hysteresis(&mut self, elem: ElemId) {
+        self.member_hysteresis_attrs.retain(|a| {
+            !(a.elem == elem && a.rule == HysteresisModel::Auto && a.rule_th.is_none())
+        });
+    }
+
+    /// 部材の履歴則（増分解析用）を設定する。`HysteresisModel::Auto` を指定した
+    /// 場合は増分用の指定を解除（既定に従う）。時刻歴用スロットは変更しない。
+    /// 戻り値は変更前の指定（undo 用）。
     pub fn set_member_hysteresis(
         &mut self,
         elem: ElemId,
         rule: HysteresisModel,
     ) -> Option<HysteresisModel> {
         let old = self.member_hysteresis(elem);
-        self.member_hysteresis_attrs.retain(|a| a.elem != elem);
-        if rule != HysteresisModel::Auto {
-            self.member_hysteresis_attrs
-                .push(MemberHysteresisAttr { elem, rule });
+        if let Some(a) = self
+            .member_hysteresis_attrs
+            .iter_mut()
+            .find(|a| a.elem == elem)
+        {
+            a.rule = rule;
+        } else if rule != HysteresisModel::Auto {
+            self.member_hysteresis_attrs.push(MemberHysteresisAttr {
+                elem,
+                rule,
+                rule_th: None,
+            });
         }
+        self.prune_default_hysteresis(elem);
+        old
+    }
+
+    /// 部材の履歴則（時刻歴応答解析用スロット）を設定する。`None` は
+    /// 「増分用と同じ」に戻す。増分用の指定は変更しない。
+    /// 戻り値は変更前のスロット生値（undo 用）。
+    pub fn set_member_hysteresis_th(
+        &mut self,
+        elem: ElemId,
+        rule_th: Option<HysteresisModel>,
+    ) -> Option<HysteresisModel> {
+        let old = self.member_hysteresis_th_raw(elem);
+        if let Some(a) = self
+            .member_hysteresis_attrs
+            .iter_mut()
+            .find(|a| a.elem == elem)
+        {
+            a.rule_th = rule_th;
+        } else if rule_th.is_some() {
+            self.member_hysteresis_attrs.push(MemberHysteresisAttr {
+                elem,
+                rule: HysteresisModel::Auto,
+                rule_th,
+            });
+        }
+        self.prune_default_hysteresis(elem);
         old
     }
 

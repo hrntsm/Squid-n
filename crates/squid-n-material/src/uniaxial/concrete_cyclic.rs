@@ -42,6 +42,13 @@ pub enum ConcreteEnvelope {
         /// 終局ひずみ εcu（正）。
         eps_cu: f64,
     },
+    /// NewRC 式（2.1.4 と同一の骨格）。εcu 超過は εcu の曲線値を残留として保持する。
+    NewRc {
+        /// NewRC 式の圧縮包絡線（有理式）。
+        envelope: crate::newrc::NewRcEnvelope,
+        /// 終局ひずみ εcu（正）。これを超えると応力を εcu の値で保持する。
+        eps_cu: f64,
+    },
 }
 
 impl ConcreteEnvelope {
@@ -50,6 +57,7 @@ impl ConcreteEnvelope {
         match *self {
             ConcreteEnvelope::KentPark { fc, eps_c0, .. } => 2.0 * fc / eps_c0,
             ConcreteEnvelope::Mander { ec, .. } => ec,
+            ConcreteEnvelope::NewRc { envelope, .. } => envelope.ec,
         }
     }
 
@@ -58,6 +66,7 @@ impl ConcreteEnvelope {
         match *self {
             ConcreteEnvelope::KentPark { fc, .. } => fc,
             ConcreteEnvelope::Mander { fcc, .. } => fcc,
+            ConcreteEnvelope::NewRc { envelope, .. } => envelope.fc,
         }
     }
 
@@ -66,6 +75,7 @@ impl ConcreteEnvelope {
         match *self {
             ConcreteEnvelope::KentPark { eps_c0, .. } => eps_c0,
             ConcreteEnvelope::Mander { eps_cc, .. } => eps_cc,
+            ConcreteEnvelope::NewRc { envelope, .. } => envelope.eps_c0,
         }
     }
 
@@ -103,6 +113,15 @@ impl ConcreteEnvelope {
                 } else {
                     // εcu 超過は εcu の曲線値を残留として保持（不連続落下を避ける）。
                     let (s, _) = mander::popovics_envelope(fcc, eps_cc, ec, eps_cu);
+                    (s, 0.0)
+                }
+            }
+            ConcreteEnvelope::NewRc { envelope, eps_cu } => {
+                if x <= eps_cu {
+                    envelope.compression(x)
+                } else {
+                    // εcu 超過は εcu の曲線値を残留として保持（不連続落下を避ける）。
+                    let (s, _) = envelope.compression(eps_cu);
                     (s, 0.0)
                 }
             }
@@ -161,6 +180,12 @@ impl ConcreteCyclic {
             ft,
             ets,
         )
+    }
+
+    /// NewRC 骨格 + Yassin 履歴。`eps_cu` は終局ひずみ（正）、`ft`/`ets` は引張強度・軟化勾配。
+    pub fn newrc(fc: f64, eps_cu: f64, ft: f64, ets: f64) -> Self {
+        let envelope = crate::newrc::NewRcEnvelope::new(fc);
+        Self::with_envelope(ConcreteEnvelope::NewRc { envelope, eps_cu }, ft, ets)
     }
 
     /// Mander 骨格（非拘束強度と有効拘束圧から拘束後パラメータを算定）。
@@ -451,6 +476,47 @@ mod tests {
             s_co < s_un,
             "拘束ありの方が高応力（負に大きい）: un={s_un}, co={s_co}"
         );
+    }
+
+    #[test]
+    fn test_newrc_envelope_peak_stress() {
+        // NewRC 骨格: ピークひずみで σ = −fc。
+        let mut c = ConcreteCyclic::newrc(30.0, 0.01, 2.0, 1000.0);
+        let eps_c0 = c.envelope.peak_strain();
+        let (s_peak, _) = c.trial(-eps_c0);
+        assert_relative_eq!(s_peak, -30.0, max_relative = 1e-6);
+    }
+
+    #[test]
+    fn test_newrc_karsan_jirsa_unloading_reaches_zero_at_plastic_strain() {
+        // η = 2（εmin = −2·εc0）まで圧縮 → εp/εc0 = 0.834（Yassin 1994）。
+        let mut c = ConcreteCyclic::newrc(30.0, 0.01, 2.0, 1000.0);
+        let eps_c0 = c.envelope.peak_strain();
+        c.trial(-2.0 * eps_c0);
+        c.commit();
+        let eps_p = -0.834 * eps_c0;
+        let (s_at_p, _) = c.trial(eps_p);
+        assert_relative_eq!(s_at_p, 0.0, epsilon = 1e-9);
+    }
+
+    #[test]
+    fn test_newrc_probe_matches_trial_without_mutating_state() {
+        // probe は trial と数学的に同一の結果を返し、状態を書き換えない
+        // （NewRC 骨格 + Yassin 履歴でも Kent–Park と同様に成立すること）。
+        let mut c = ConcreteCyclic::newrc(30.0, 0.01, 2.0, 1000.0);
+        let eps_c0 = c.envelope.peak_strain();
+        c.trial(-2.0 * eps_c0);
+        c.commit();
+        c.trial(eps_c0 * 0.5);
+        c.commit();
+
+        for &probe_strain in &[-eps_c0, -eps_c0 * 0.5, eps_c0 * 0.2] {
+            let before = c.probe(probe_strain);
+            assert_eq!(before, c.probe(probe_strain));
+            let mut clone_for_trial = c.clone();
+            let via_trial = clone_for_trial.trial(probe_strain);
+            assert_eq!(before, via_trial, "probe は trial と完全一致すること");
+        }
     }
 
     #[test]
