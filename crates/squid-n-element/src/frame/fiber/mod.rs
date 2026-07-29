@@ -5,7 +5,7 @@ use smallvec::SmallVec;
 use squid_n_core::dof::DofMap;
 use squid_n_core::ids::NodeId;
 use squid_n_core::section_shape::SectionShape;
-use squid_n_material::uniaxial::{Bilinear, MenegottoPinto, UniaxialMaterial};
+use squid_n_material::uniaxial::{MenegottoPinto, UniaxialMaterial};
 use squid_n_section::fiber::{Fiber, FiberSection};
 use std::any::Any;
 
@@ -39,6 +39,28 @@ pub(crate) fn steel_fiber_material(e: f64, fy: Option<f64>) -> Box<dyn UniaxialM
         );
     };
     Box::new(MenegottoPinto::new(e, fy))
+}
+
+/// コンクリートのファイバ材料を生成する。
+///
+/// `fc ≤ 60` は NewRC 構成則、超過は放物線＋線形軟化モデルを用いる。
+///
+/// # Panics
+///
+/// ファイバー断面は材料非線形（ひび割れ・圧壊）を追うことが目的のため、
+/// Fc 未設定は入力不備であり、解析前の入力チェック
+/// （[`crate::factory::ensure_nonlinear_input`]）がエラーで停止する。
+/// Fc 無しでここへ到達するのは呼び出し側の契約違反（プログラムエラー）のため
+/// panic する（弾性で無音に代替しない。耐力の過大評価＝危険側になるため）。
+pub(crate) fn concrete_fiber_material(fc: Option<f64>) -> Box<dyn UniaxialMaterial> {
+    match fc {
+        Some(fc) if fc <= 60.0 => Box::new(squid_n_material::ConcreteNewRc::new(fc, 2.0)),
+        Some(fc) => Box::new(squid_n_material::uniaxial::Concrete::new(fc, 2.0)),
+        None => panic!(
+            "ファイバー断面のコンクリート領域に Fc が未設定です。\
+             解析前に factory::ensure_nonlinear_input で入力チェックを行ってください"
+        ),
+    }
 }
 
 /// 鋼材領域（形鋼・鋼管・内蔵鉄骨）のファイバ降伏点を解決する。
@@ -99,10 +121,10 @@ pub(crate) fn build_gauss_fibers(
             // 形状なし（壁エレメントの壁柱など）: 従来どおりの中実矩形格子。
             // 基本格子（コンクリート or 鋼材）。保有水平耐力計算時は鋼材文脈の
             // 材料強度割増（steel_factor）を fy に乗じる（時刻歴応答解析等は 1.0）。
-            let base: Box<dyn UniaxialMaterial> = match fc {
-                Some(fc) if fc <= 60.0 => Box::new(squid_n_material::ConcreteNewRc::new(fc, 2.0)),
-                Some(fc) => Box::new(squid_n_material::uniaxial::Concrete::new(fc, 2.0)),
-                None => steel_fiber_material(e, fy.map(|fy| fy * steel_factor)),
+            let base: Box<dyn UniaxialMaterial> = if fc.is_some() {
+                concrete_fiber_material(fc)
+            } else {
+                steel_fiber_material(e, fy.map(|fy| fy * steel_factor))
             };
             let tag = if fc.is_some() { 0 } else { 2 };
             let grid = squid_n_section::fiber::rect_fiber_section(width, depth, nw, nd, tag);
@@ -133,8 +155,9 @@ pub(crate) fn build_gauss_fibers(
 ///
 /// 配置は MN 相関曲面（`mn_surface::plastic_fibers_at`）と同一規則を共用し、
 /// 各ファイバの材料領域区分（[`FiberRegion`]）から非線形材料を割り当てる:
-/// - コンクリート領域: NewRC（fc≤60）／放物線モデル。fc 未設定の設定不備は
-///   弾性フォールバック（降伏しないバイリニア）で防御する。
+/// - コンクリート領域: NewRC（fc≤60）／放物線モデル。fc 未設定は
+///   [`concrete_fiber_material`] が panic する（該当モデルは入力チェックが
+///   解析前に停止する）。
 /// - 主筋: Menegotto–Pinto 鉄筋（E=205000、σy は断面の主筋材質 → 部材材料の fy の
 ///   順で解決、`rebar_factor` 割増）。
 /// - 鋼材領域（形鋼・鋼管・内蔵鉄骨）: Menegotto–Pinto 鋼材（部材材料の E・fy、
@@ -184,8 +207,9 @@ fn build_shape_fibers(
     let placed = plastic_fibers_at(shape, &strength, target, ring);
 
     // 各領域の材料テンプレートは**その領域のファイバが実在するときのみ**構築する
-    // （遅延構築）。純 RC 断面など鋼材領域を持たない断面で、材料の fy 未設定を
-    // 理由に panic しないため。
+    // （遅延構築）。純 RC 断面など鋼材領域を持たない断面で fy 未設定を理由に、
+    // 純鋼材断面などコンクリート領域を持たない断面で Fc 未設定を理由に、
+    // それぞれ panic しないため。
     let mut concrete: Option<Box<dyn UniaxialMaterial>> = None;
     let mut steel: Option<Box<dyn UniaxialMaterial>> = None;
     let mut rebar: Option<Box<dyn UniaxialMaterial>> = None;
@@ -195,14 +219,7 @@ fn build_shape_fibers(
     for f in &placed {
         let (tag, mat) = match f.region {
             FiberRegion::Concrete => {
-                let template = concrete.get_or_insert_with(|| match fc {
-                    Some(fc) if fc <= 60.0 => {
-                        Box::new(squid_n_material::ConcreteNewRc::new(fc, 2.0))
-                    }
-                    Some(fc) => Box::new(squid_n_material::uniaxial::Concrete::new(fc, 2.0)),
-                    // コンクリート領域があるのに fc 未設定（設定不備）: 弾性で防御。
-                    None => Box::new(Bilinear::new(e, 1e20, 0.01)),
-                });
+                let template = concrete.get_or_insert_with(|| concrete_fiber_material(fc));
                 (0usize, template.clone_box())
             }
             FiberRegion::Rebar => {
