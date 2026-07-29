@@ -72,6 +72,44 @@ impl Default for NonlinearThCfg {
     }
 }
 
+/// 要素状態を trial 更新する（`du_free`＝全自由 DOF 空間の変位増分を各要素の
+/// 局所自由度へ写像し `update_state` を呼ぶ）。メイン Newton ループ・
+/// `newton_static_converge` の両方で共有する（要素状態更新ループの並列化、
+/// 時刻歴応答解析高速化・第3波）。
+///
+/// 要素間にデータ依存が無く、各要素は自身の `&mut` のみを更新するため、並列度設定
+/// （`squid_n_math::parallelism`）が `Auto`/`Threads` のときは rayon
+/// （`par_iter_mut()`）で並列化する。書き込み先は要素番号順のスロットのため、結果は
+/// スレッドスケジューリングに依存せず逐次実行と完全にビット一致する
+/// （第2波申し送り `dev_docs/handoff/時刻歴応答解析高速化_第2波_申し送り.md` 4.1 の
+/// 設計方針）。`Deterministic`（既定）では従来どおり逐次実行する。
+fn update_behaviors_trial(
+    model: &Model,
+    dofmap: &DofMap,
+    behaviors: &mut [Box<dyn ElementBehavior>],
+    du_free: &[f64],
+) {
+    let update_one = |b: &mut Box<dyn ElementBehavior>| {
+        let gdofs = b.global_dofs(dofmap);
+        let mut du_elem = LocalVec {
+            data: SmallVec::from_elem(0.0, gdofs.len()),
+        };
+        for (i, &g) in gdofs.iter().enumerate() {
+            if g != usize::MAX && g < du_free.len() {
+                du_elem.data[i] = du_free[g];
+            }
+        }
+        let ctx = Ctx { model };
+        b.update_state(&du_elem, false, &ctx);
+    };
+    if squid_n_math::parallelism::is_parallel() {
+        use rayon::prelude::*;
+        behaviors.par_iter_mut().for_each(update_one);
+    } else {
+        behaviors.iter_mut().for_each(update_one);
+    }
+}
+
 /// 非線形時刻歴応答解析（Newmark-β + Newton反復 + commit/rollback）。
 ///
 /// 各時刻ステップで Newton 反復により内力（非線形復元力）と慣性力・減衰力・
@@ -602,21 +640,9 @@ pub fn nonlinear_time_history_analysis(
                 du_total[i] += du_red[i];
             }
 
-            // 要素状態を trial 更新
-            let model_ref: &Model = model;
-            for (_elem, b) in model_ref.elements.iter().zip(behaviors.iter_mut()) {
-                let gdofs = b.global_dofs(dofmap);
-                let mut du_elem = LocalVec {
-                    data: SmallVec::from_elem(0.0, gdofs.len()),
-                };
-                for (i, &g) in gdofs.iter().enumerate() {
-                    if g != usize::MAX && g < du_free.len() {
-                        du_elem.data[i] = du_free[g];
-                    }
-                }
-                let ctx = Ctx { model: model_ref };
-                b.update_state(&du_elem, false, &ctx);
-            }
+            // 要素状態を trial 更新（要素間にデータ依存が無いため、並列度設定が
+            // Auto/Threads のときは rayon で並列化する。update_behaviors_trial 参照）。
+            update_behaviors_trial(model, dofmap, &mut behaviors, du_free);
         }
 
         if converged {
@@ -944,20 +970,9 @@ fn newton_static_converge(
         for i in 0..n_indep {
             du_total[i] += du_red_buf[i];
         }
-        let model_ref: &Model = model;
-        for (_elem, b) in model_ref.elements.iter().zip(behaviors.iter_mut()) {
-            let gdofs = b.global_dofs(dofmap);
-            let mut du_elem = LocalVec {
-                data: SmallVec::from_elem(0.0, gdofs.len()),
-            };
-            for (i, &g) in gdofs.iter().enumerate() {
-                if g != usize::MAX && g < du_free.len() {
-                    du_elem.data[i] = du_free[g];
-                }
-            }
-            let ctx = Ctx { model: model_ref };
-            b.update_state(&du_elem, false, &ctx);
-        }
+        // 要素状態を trial 更新（要素間にデータ依存が無いため、並列度設定が
+        // Auto/Threads のときは rayon で並列化する。update_behaviors_trial 参照）。
+        update_behaviors_trial(model, dofmap, behaviors, &du_free);
     }
     Ok(None)
 }

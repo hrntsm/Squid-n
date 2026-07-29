@@ -974,7 +974,7 @@ fn apply_du_to_behaviors(
     du_free: &[f64],
 ) {
     let ctx = Ctx { model };
-    for b in behaviors.iter_mut() {
+    let update_one = |b: &mut Box<dyn ElementBehavior>| {
         let gdofs = b.global_dofs(dofmap);
         let mut du_elem = LocalVec {
             data: SmallVec::from_elem(0.0, gdofs.len()),
@@ -985,6 +985,18 @@ fn apply_du_to_behaviors(
             }
         }
         b.update_state(&du_elem, false, &ctx);
+    };
+    // 要素間にデータ依存が無く、各要素は自身の `&mut` のみを更新するため、並列度設定
+    // （`squid_n_math::parallelism`）が Auto/Threads のときは rayon で並列化する。
+    // `par_iter_mut()` は要素番号順のスロットへ書き込むだけでスレッドスケジューリング
+    // の影響を受けないため、結果は逐次実行と完全にビット一致する（時刻歴応答解析
+    // 高速化・第2波申し送り 4.1 の設計方針）。Deterministic（既定）では従来どおり
+    // 逐次実行する。
+    if squid_n_math::parallelism::is_parallel() {
+        use rayon::prelude::*;
+        behaviors.par_iter_mut().for_each(update_one);
+    } else {
+        behaviors.iter_mut().for_each(update_one);
     }
 }
 

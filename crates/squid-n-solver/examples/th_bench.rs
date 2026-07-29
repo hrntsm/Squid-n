@@ -25,6 +25,7 @@ use squid_n_core::model::{
     ElementData, ElementKind, EndCondition, ForceRegime, LoadCase, LoadCaseKind, LocalAxis,
     Material, MemberLoad, MemberLoadKind, Model, Node, Section, Story,
 };
+use squid_n_math::parallelism::{set_parallelism, Parallelism};
 use squid_n_math::solver::SolveError;
 use squid_n_solver::constraint::Reducer;
 use squid_n_solver::damping::{Damping, DampingAccumulation, StiffnessKind};
@@ -293,8 +294,20 @@ fn validate(label: &str, result: &ResponseResult) {
     );
 }
 
-/// `f` を 3 回実行し最小の所要時間を採用する。最終回の結果で妥当性チェックを行う。
-fn bench_min3<F>(label: &str, steps: usize, ndof: usize, mut f: F) -> f64
+/// ピーク変位（全節点最大、`validate` と同じ算定式）。並列/逐次ケース間の
+/// ビット一致検証（(c2) vs (c)）に使う。
+fn peak_disp_max(result: &ResponseResult) -> f64 {
+    result
+        .peak_disp
+        .iter()
+        .flat_map(|p| p.iter())
+        .cloned()
+        .fold(0.0_f64, f64::max)
+}
+
+/// `f` を 3 回実行し最小の所要時間を採用する。最終回の結果で妥当性チェックを行い、
+/// 所要時間と最終回の結果を返す（結果は並列/逐次ケース間のビット一致検証に使う）。
+fn bench_min3<F>(label: &str, steps: usize, ndof: usize, mut f: F) -> (f64, ResponseResult)
 where
     F: FnMut() -> Result<ResponseResult, SolveError>,
 {
@@ -308,8 +321,9 @@ where
         last = Some(r);
     }
     println!("{label}: {best:.3} s (steps={steps}, ndof={ndof})");
-    validate(label, &last.expect("3回実行したため必ず Some"));
-    best
+    let result = last.expect("3回実行したため必ず Some");
+    validate(label, &result);
+    (best, result)
 }
 
 fn main() {
@@ -358,7 +372,7 @@ fn main() {
         gamma: 0.5,
         dt,
     };
-    let t_newmark = bench_min3(
+    let (t_newmark, _) = bench_min3(
         "(a) 線形時刻歴 Newmark-β",
         n_steps_linear,
         ndof,
@@ -380,7 +394,7 @@ fn main() {
 
     // (b) 線形時刻歴（HHT-α 法）
     let hht = HhtCfg::new(dt);
-    let t_hht = bench_min3("(b) 線形時刻歴 HHT-α", n_steps_linear, ndof, || {
+    let (t_hht, _) = bench_min3("(b) 線形時刻歴 HHT-α", n_steps_linear, ndof, || {
         linear_hht_alpha_analysis(
             &model,
             &dofmap,
@@ -396,7 +410,7 @@ fn main() {
     });
 
     // (c) 非線形時刻歴（NonlinearThCfg 既定、集中ばね系・ForceRegime::Auto）
-    let t_nonlinear = bench_min3(
+    let (t_nonlinear, result_c) = bench_min3(
         "(c) 非線形時刻歴 既定Cfg",
         n_steps_nonlinear,
         ndof,
@@ -416,11 +430,50 @@ fn main() {
         },
     );
 
+    // (c2) 非線形時刻歴（並列、Parallelism::Auto）。要素ループの並列化
+    // （nonlinear.rs の Newton 反復・driver.rs・assembly.rs）が
+    // Deterministic 経路とビット一致することを、逐次ケース (c) との
+    // ピーク変位完全一致で検証する（並列化のビット一致検証を兼ねる）。
+    set_parallelism(Parallelism::Auto);
+    let (t_nonlinear_parallel, result_c2) = bench_min3(
+        "(c2) 非線形時刻歴 並列(Auto)",
+        n_steps_nonlinear,
+        ndof,
+        || {
+            nonlinear_time_history_analysis(
+                &mut model,
+                &dofmap,
+                &reducer,
+                &wave_nonlinear,
+                &newmark,
+                &damping,
+                DampingAccumulation::NonCumulative,
+                &[],
+                &[],
+                NonlinearThCfg::new(20, 1e-6),
+            )
+        },
+    );
+    // 終了後は既定（Deterministic）へ戻す（以降のケースは従来どおり逐次で計測する）。
+    set_parallelism(Parallelism::Deterministic);
+
+    let peak_c = peak_disp_max(&result_c);
+    let peak_c2 = peak_disp_max(&result_c2);
+    assert_eq!(
+        peak_c.to_bits(),
+        peak_c2.to_bits(),
+        "(c2) 並列のピーク変位が逐次(c)と完全一致しません: (c)={peak_c:.10} mm, (c2)={peak_c2:.10} mm"
+    );
+    println!(
+        "  [検証] (c2) 並列のピーク変位が逐次(c)と完全一致: {peak_c2:.4} mm \
+         （並列化のビット一致検証OK、逐次 {t_nonlinear:.3} s → 並列 {t_nonlinear_parallel:.3} s）"
+    );
+
     // --- 記録コストの内訳（record_every を極端に大きくして詳細記録をほぼ無効化） ---
     println!();
     println!("--- 記録コストの内訳（record_every=大 との差分で概算） ---");
 
-    let t_newmark_norecord = bench_min3(
+    let (t_newmark_norecord, _) = bench_min3(
         "(a') Newmark-β record_every=大",
         n_steps_linear,
         ndof,
@@ -445,20 +498,21 @@ fn main() {
         100.0 * (t_newmark - t_newmark_norecord) / t_newmark
     );
 
-    let t_hht_norecord = bench_min3("(b') HHT-α record_every=大", n_steps_linear, ndof, || {
-        linear_hht_alpha_analysis(
-            &model,
-            &dofmap,
-            &reducer,
-            &wave_linear,
-            &hht,
-            &damping,
-            &[],
-            &[],
-            false,
-            Some(RECORD_EVERY_DISABLED),
-        )
-    });
+    let (t_hht_norecord, _) =
+        bench_min3("(b') HHT-α record_every=大", n_steps_linear, ndof, || {
+            linear_hht_alpha_analysis(
+                &model,
+                &dofmap,
+                &reducer,
+                &wave_linear,
+                &hht,
+                &damping,
+                &[],
+                &[],
+                false,
+                Some(RECORD_EVERY_DISABLED),
+            )
+        });
     println!(
         "  記録コスト概算(b): {:.3} s ({:.1}% of 総時間)",
         t_hht - t_hht_norecord,
@@ -467,7 +521,7 @@ fn main() {
 
     let mut cfg_norecord = NonlinearThCfg::new(20, 1e-6);
     cfg_norecord.record_every = Some(RECORD_EVERY_DISABLED);
-    let t_nonlinear_norecord = bench_min3(
+    let (t_nonlinear_norecord, _) = bench_min3(
         "(c') 非線形 record_every=大",
         n_steps_nonlinear,
         ndof,

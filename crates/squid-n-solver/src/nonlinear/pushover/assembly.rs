@@ -92,7 +92,10 @@ fn assemble_k_triplets_into(
     out.clear();
     let ctx = Ctx { model };
     let state = ElemState::default();
-    for (_elem, b) in model.elements.iter().zip(behaviors) {
+    // 要素ごとの接線剛性 triplet 化（要素間にデータ依存が無い）。
+    let elem_triplets = |elem: &squid_n_core::model::ElementData,
+                         b: &dyn ElementBehavior|
+     -> Vec<squid_n_math::sparse::Triplet> {
         let gdofs = b.global_dofs(dofmap);
         let mut k = b.tangent_stiffness(&state, &ctx);
         if use_kg {
@@ -103,7 +106,7 @@ fn assemble_k_triplets_into(
             // 従来は `f.data[0]`（＝節点 i のグローバル Fx）をそのまま渡しており、
             // 鉛直柱・斜材・任意方向材で軸力とは無関係な成分を用いていた
             // （P-Δ を有効化すると誤った幾何剛性になる潜在バグ）。
-            let n = axial_force_tension_positive(model, _elem, &f);
+            let n = axial_force_tension_positive(model, elem, &f);
             let kg = b.geometric_stiffness(n);
             for i in 0..12 {
                 for j in 0..12 {
@@ -112,7 +115,29 @@ fn assemble_k_triplets_into(
                 }
             }
         }
-        out.extend(k.to_triplets(&gdofs));
+        k.to_triplets(&gdofs)
+    };
+    // 並列度設定（`squid_n_math::parallelism`）が Auto/Threads のときは要素ループを
+    // rayon で並列化する。要素番号順を保った IndexedParallelIterator::collect で
+    // `Vec<Vec<Triplet>>` として集約してから要素順に extend するため、triplet の
+    // 並び順は逐次実行と完全に一致する（結果は常にビット一致する。時刻歴応答解析
+    // 高速化・第2波申し送り 4.1 の設計方針）。Deterministic（既定）では従来どおり
+    // 逐次実行する。
+    if squid_n_math::parallelism::is_parallel() {
+        use rayon::prelude::*;
+        let per_elem: Vec<Vec<squid_n_math::sparse::Triplet>> = model
+            .elements
+            .par_iter()
+            .zip(behaviors.par_iter())
+            .map(|(elem, b)| elem_triplets(elem, b.as_ref()))
+            .collect();
+        for triplets in per_elem {
+            out.extend(triplets);
+        }
+    } else {
+        for (elem, b) in model.elements.iter().zip(behaviors) {
+            out.extend(elem_triplets(elem, b.as_ref()));
+        }
     }
     // 支点ばね（`Node::support_spring`）の対角加算。線形経路の
     // `assemble_global_k`（`common::assemble`）と同じ [`support_spring_terms`] を使う。
@@ -163,12 +188,37 @@ pub(crate) fn compute_f_int(
     let ctx = Ctx { model };
     let state = ElemState::default();
     let mut f = vec![0.0; dofmap.n_active()];
-    for (_elem, b) in model.elements.iter().zip(behaviors) {
-        let gdofs = b.global_dofs(dofmap);
-        let f_local = b.internal_force(&state, &ctx);
-        for (&g, &v) in gdofs.iter().zip(f_local.data.iter()) {
-            if g != usize::MAX {
-                f[g] += v;
+    // 要素ごとの (gdofs, f_local) の算定は要素間にデータ依存が無いため、並列度設定
+    // （`squid_n_math::parallelism`）が Auto/Threads のときは rayon で並列化する。
+    // ただし共有ベクトル f への `f[g] += v` 累積は加算順序が結果に影響し得るため、
+    // 並列化するのは要素ごとの計算のみとし、累積自体は常に要素番号順に逐次行う
+    // （時刻歴応答解析高速化・第2波申し送り 4.1 の設計方針）。Deterministic（既定）
+    // では従来どおり全体を逐次実行する。
+    if squid_n_math::parallelism::is_parallel() {
+        use rayon::prelude::*;
+        let per_elem: Vec<_> = behaviors
+            .par_iter()
+            .map(|b| {
+                let gdofs = b.global_dofs(dofmap);
+                let f_local = b.internal_force(&state, &ctx);
+                (gdofs, f_local)
+            })
+            .collect();
+        for (gdofs, f_local) in &per_elem {
+            for (&g, &v) in gdofs.iter().zip(f_local.data.iter()) {
+                if g != usize::MAX {
+                    f[g] += v;
+                }
+            }
+        }
+    } else {
+        for b in behaviors {
+            let gdofs = b.global_dofs(dofmap);
+            let f_local = b.internal_force(&state, &ctx);
+            for (&g, &v) in gdofs.iter().zip(f_local.data.iter()) {
+                if g != usize::MAX {
+                    f[g] += v;
+                }
             }
         }
     }
