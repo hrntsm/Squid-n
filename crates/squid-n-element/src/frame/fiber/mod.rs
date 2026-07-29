@@ -301,28 +301,79 @@ pub struct GaussPoint {
     pub mats: Vec<Box<dyn UniaxialMaterial>>,
     pub trial_stress: Vec<f64>,
     pub trial_et: Vec<f64>,
+    /// B 行列（ひずみ－変位行列）のキャッシュ。`xi`（ガウス点固定）・`l`
+    /// （可撓長）・`phi_y`/`phi_z`（要素生成後は不変）のみに依存するため、
+    /// 要素生成時に 1 回だけ計算して保持する（`compute_b_matrix` と同一値）。
+    b: [[f64; 12]; 3],
+    /// 断面応答（軸力・両軸曲げモーメント、および対応する接線）のキャッシュ。
+    /// `trial_stress`/`trial_et` を書き換える全経路（`update_section_trial`・
+    /// `update_hinge_section_trial`）で、書き換え直後に `refresh_response` を
+    /// 呼んで更新するため、読み出し側は常に trial 状態と整合した値を参照できる。
+    cached_force: [f64; 3],
+    cached_stiff: [[f64; 3]; 3],
 }
 
 impl GaussPoint {
+    /// ガウス点を生成する。`l`（可撓長）・`phi_y`・`phi_z` は要素生成後に不変
+    /// なので、B 行列をここで 1 回だけ計算してキャッシュする。
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         xi: f64,
         weight: f64,
         section: FiberSection,
         mut mats: Vec<Box<dyn UniaxialMaterial>>,
+        l: f64,
+        phi_y: f64,
+        phi_z: f64,
     ) -> Self {
         let n = section.fibers.len();
         // 接線キャッシュを各ファイバの初期弾性接線で初期化する。
         // 未初期化（0）のままだと、最初の update_state より前に tangent_stiffness を
         // 呼ぶ経路（pushover の初回 assemble_k）で剛性が 0 になり特異化する。
         let trial_et: Vec<f64> = mats.iter_mut().map(|m| m.trial(0.0).1).collect();
-        GaussPoint {
+        let b = FiberBeam::compute_b_matrix(xi, l, phi_y, phi_z);
+        let mut gp = GaussPoint {
             xi,
             weight,
             section,
             mats,
             trial_stress: vec![0.0; n],
             trial_et,
+            b,
+            cached_force: [0.0; 3],
+            cached_stiff: [[0.0; 3]; 3],
+        };
+        gp.refresh_response();
+        gp
+    }
+
+    /// `trial_stress`/`trial_et`（ファイバー単位のトライアル状態）から断面応答
+    /// （force, stiff）の総和を計算してキャッシュへ格納する。ファイバー順・
+    /// 演算式は総和の直接計算と同一（結果はビット一致）。`trial_stress`/
+    /// `trial_et` を書き換える経路（`update_section_trial`・
+    /// `update_hinge_section_trial`）は、書き換え直後に必ずこれを呼ぶこと。
+    fn refresh_response(&mut self) {
+        let mut force = [0.0; 3];
+        let mut stiff = [[0.0; 3]; 3];
+        for (i, fiber) in self.section.fibers.iter().enumerate() {
+            let a = fiber.area;
+            let sigma = self.trial_stress[i];
+            let et = self.trial_et[i];
+            force[0] += sigma * a;
+            force[1] += sigma * a * fiber.z;
+            force[2] += -sigma * a * fiber.y;
+            stiff[0][0] += et * a;
+            stiff[0][1] += et * a * fiber.z;
+            stiff[0][2] += -et * a * fiber.y;
+            stiff[1][1] += et * a * fiber.z * fiber.z;
+            stiff[1][2] += -et * a * fiber.y * fiber.z;
+            stiff[2][2] += et * a * fiber.y * fiber.y;
         }
+        stiff[1][0] = stiff[0][1];
+        stiff[2][0] = stiff[0][2];
+        stiff[2][1] = stiff[1][2];
+        self.cached_force = force;
+        self.cached_stiff = stiff;
     }
 }
 
@@ -502,8 +553,24 @@ impl FiberBeam {
             rebar_factor,
         );
         let gauss_points = vec![
-            GaussPoint::new(-0.5773502691896257, 1.0, sec_a, mats_a),
-            GaussPoint::new(0.5773502691896257, 1.0, sec_b, mats_b),
+            GaussPoint::new(
+                -0.5773502691896257,
+                1.0,
+                sec_a,
+                mats_a,
+                flex_length,
+                phi_y,
+                phi_z,
+            ),
+            GaussPoint::new(
+                0.5773502691896257,
+                1.0,
+                sec_b,
+                mats_b,
+                flex_length,
+                phi_y,
+                phi_z,
+            ),
         ];
 
         let axis = crate::transform::LocalFrame::from_nodes(
@@ -627,8 +694,8 @@ impl FiberBeam {
         let [(sec_a, mats_a), (sec_b, mats_b)] = sections;
         let w_end = 2.0 * lp / flex_length;
         let gauss_points = vec![
-            GaussPoint::new(-1.0, w_end, sec_a, mats_a),
-            GaussPoint::new(1.0, w_end, sec_b, mats_b),
+            GaussPoint::new(-1.0, w_end, sec_a, mats_a, flex_length, phi_y, phi_z),
+            GaussPoint::new(1.0, w_end, sec_b, mats_b, flex_length, phi_y, phi_z),
         ];
         let mut fb = FiberBeam {
             length,
@@ -789,8 +856,8 @@ impl FiberBeam {
             rebar_factor,
         );
         fb.gauss_points = vec![
-            GaussPoint::new(-1.0, w_end, sec_a, mats_a),
-            GaussPoint::new(1.0, w_end, sec_b, mats_b),
+            GaussPoint::new(-1.0, w_end, sec_a, mats_a, l, fb.phi_y, fb.phi_z),
+            GaussPoint::new(1.0, w_end, sec_b, mats_b, l, fb.phi_y, fb.phi_z),
         ];
 
         // 全可撓長の弾性剛性 K_el: B(ξ)ᵀ·diag(EA,EIy,EIz)·B(ξ) を 2 点 Gauss
@@ -882,7 +949,7 @@ impl FiberBeam {
             return;
         }
         for gp in &mut self.gauss_points {
-            let b = Self::compute_b_matrix(gp.xi, l, self.phi_y, self.phi_z);
+            let b = gp.b;
             let eps0 = b[0][0] * u_elem[0] + b[0][6] * u_elem[6];
             let ky = b[1][2] * u_elem[2]
                 + b[1][4] * u_elem[4]
@@ -898,6 +965,8 @@ impl FiberBeam {
                 gp.trial_stress[i] = sigma;
                 gp.trial_et[i] = et;
             }
+            // trial_stress/trial_et を書き換えた直後に断面応答キャッシュを更新する。
+            gp.refresh_response();
         }
     }
 
@@ -918,7 +987,7 @@ impl FiberBeam {
         for gp in &self.gauss_points {
             let (_, d) = Self::section_response_from_cache(gp);
             let w = gp.weight * half;
-            let b = Self::compute_b_matrix(gp.xi, l, self.phi_y, self.phi_z);
+            let b = gp.b;
 
             for i in 0..12 {
                 for p in 0..3 {
@@ -986,7 +1055,7 @@ impl FiberBeam {
         for gp in &self.gauss_points {
             let (force, _) = Self::section_response_from_cache(gp);
             let w = gp.weight * half;
-            let b = Self::compute_b_matrix(gp.xi, l, self.phi_y, self.phi_z);
+            let b = gp.b;
             for (i, fi) in f.iter_mut().enumerate() {
                 *fi += (b[0][i] * force[0] + b[1][i] * force[1] + b[2][i] * force[2]) * w;
             }
@@ -1026,13 +1095,15 @@ impl FiberBeam {
             self.update_trial_state(&u_elem);
             return;
         }
+        // releases は最大 6（EndRelease の SmallVec 上限）。ヒープ確保を避けるため
+        // 固定長配列（n はそれ以下の実長）で扱う。
         let n = self.releases.len();
         for _ in 0..MAX_ITER {
             let u_elem = self.elem_disp(&u_flex);
             self.update_trial_state(&u_elem);
             let f_elem = self.elem_internal_force(&u_elem);
 
-            let mut r = vec![0.0_f64; n];
+            let mut r = [0.0_f64; 6];
             for (k, rel) in self.releases.iter().enumerate() {
                 r[k] = f_elem[rel.dof] + rel.spring * (u_elem[rel.dof] - u_flex[rel.dof]);
             }
@@ -1041,38 +1112,79 @@ impl FiberBeam {
                 .iter()
                 .map(|&i| f_elem[i].abs())
                 .fold(1.0_f64, f64::max);
-            if r.iter().all(|v| v.abs() <= 1e-10 * scale) {
+            if r[..n].iter().all(|v| v.abs() <= 1e-10 * scale) {
                 return;
             }
 
             let k_elem = self.elem_tangent();
-            let mut kbb = vec![0.0_f64; n * n];
+            let mut kbb = [0.0_f64; 36];
             for (a, ra) in self.releases.iter().enumerate() {
                 for (b, rb) in self.releases.iter().enumerate() {
                     kbb[a * n + b] = k_elem.get(ra.dof, rb.dof);
                 }
                 kbb[a * n + a] += ra.spring;
             }
-            let kbb_inv = super::beam::invert_small(&kbb, n);
-            let mut du = vec![0.0_f64; n];
-            for (a, dua) in du.iter_mut().enumerate() {
+            let kbb_inv = Self::invert_small_stack(&kbb[..n * n], n);
+            let mut du = [0.0_f64; 6];
+            for (a, dua) in du[..n].iter_mut().enumerate() {
                 let mut s = 0.0;
-                for (b, rb) in r.iter().enumerate() {
+                for (b, rb) in r[..n].iter().enumerate() {
                     s += kbb_inv[a * n + b] * rb;
                 }
                 *dua = -s;
             }
             // 数値異常（縮約行列が特異）なら更新を打ち切り、直前の状態を保つ。
-            if du.iter().any(|v| !v.is_finite()) {
+            if du[..n].iter().any(|v| !v.is_finite()) {
                 break;
             }
-            for (k, d) in du.iter().enumerate() {
+            for (k, d) in du[..n].iter().enumerate() {
                 self.trial_int[k] += d;
             }
         }
         // 収束打ち切り時も断面状態を最終 u_elem と整合させる。
         let u_elem = self.elem_disp(&u_flex);
         self.update_trial_state(&u_elem);
+    }
+
+    /// 小行列（n≤6）の逆行列（ガウス・ジョルダン法）。`super::beam::invert_small`
+    /// と同一アルゴリズム・同一演算順序（結果はビット一致）だが、他クレートからも
+    /// 呼ばれる共通関数の方はシグネチャを変更できないため、fiber 要素内に閉じた
+    /// 呼び出し（`solve_internal_dofs`・`condense_releases`）向けにスタック上へ
+    /// 確保する版をここに用意し、反復のたびの小さなヒープ確保を避ける。
+    /// 戻り値はフラット化した n×n 逆行列（先頭 n*n 要素のみ有効）。
+    fn invert_small_stack(a: &[f64], n: usize) -> [f64; 36] {
+        debug_assert!(n <= 6, "invert_small_stack: n は releases 上限=最大6まで");
+        let mut aug = [0.0_f64; 72]; // n*(2n) ≤ 6*12 = 72
+        for i in 0..n {
+            for j in 0..n {
+                aug[i * (2 * n) + j] = a[i * n + j];
+            }
+            aug[i * (2 * n) + n + i] = 1.0;
+        }
+        for col in 0..n {
+            let mut pivot = aug[col * (2 * n) + col];
+            if pivot.abs() < 1e-15 {
+                pivot = 1.0;
+            }
+            for j in 0..2 * n {
+                aug[col * (2 * n) + j] /= pivot;
+            }
+            for row in 0..n {
+                if row != col {
+                    let factor = aug[row * (2 * n) + col];
+                    for j in 0..2 * n {
+                        aug[row * (2 * n) + j] -= factor * aug[col * (2 * n) + j];
+                    }
+                }
+            }
+        }
+        let mut inv = [0.0_f64; 36];
+        for i in 0..n {
+            for j in 0..n {
+                inv[i * n + j] = aug[i * (2 * n) + n + j];
+            }
+        }
+        inv
     }
 
     /// 要素変形 `u_elem` に対するトライアル状態の更新。
@@ -1097,7 +1209,9 @@ impl FiberBeam {
         }
         let nb = self.releases.len();
         let n = 12 + nb;
-        let mut k = vec![0.0_f64; n * n];
+        // n = 12 + nb（nb≤6 → n≤18）。ヒープ確保を避けるため固定長配列で扱う
+        // （n*n ≤ 18*18 = 324）。
+        let mut k = [0.0_f64; 324];
         // 解放回転は内部（12..）へ、それ以外は同位置へ写す。
         let mut map = [0usize; 12];
         for (i, m) in map.iter_mut().enumerate() {
@@ -1121,13 +1235,13 @@ impl FiberBeam {
         }
 
         let na = 12;
-        let mut kbb = vec![0.0_f64; nb * nb];
+        let mut kbb = [0.0_f64; 36];
         for i in 0..nb {
             for j in 0..nb {
                 kbb[i * nb + j] = k[(na + i) * n + (na + j)];
             }
         }
-        let kbb_inv = super::beam::invert_small(&kbb, nb);
+        let kbb_inv = Self::invert_small_stack(&kbb[..nb * nb], nb);
         let mut kstar = LocalMat::zeros(na);
         for i in 0..na {
             for j in 0..na {
@@ -1155,27 +1269,11 @@ impl FiberBeam {
         gdofs
     }
 
+    /// ガウス点の断面応答（force, stiff）を返す。総和は `GaussPoint::refresh_response`
+    /// で trial_stress/trial_et 書き換え直後に計算済みのため、ここでは
+    /// キャッシュを読むだけでよい（ファイバー再走査なし）。
     fn section_response_from_cache(gp: &GaussPoint) -> ([f64; 3], [[f64; 3]; 3]) {
-        let mut force = [0.0; 3];
-        let mut stiff = [[0.0; 3]; 3];
-        for (i, fiber) in gp.section.fibers.iter().enumerate() {
-            let a = fiber.area;
-            let sigma = gp.trial_stress[i];
-            let et = gp.trial_et[i];
-            force[0] += sigma * a;
-            force[1] += sigma * a * fiber.z;
-            force[2] += -sigma * a * fiber.y;
-            stiff[0][0] += et * a;
-            stiff[0][1] += et * a * fiber.z;
-            stiff[0][2] += -et * a * fiber.y;
-            stiff[1][1] += et * a * fiber.z * fiber.z;
-            stiff[1][2] += -et * a * fiber.y * fiber.z;
-            stiff[2][2] += et * a * fiber.y * fiber.y;
-        }
-        stiff[1][0] = stiff[0][1];
-        stiff[2][0] = stiff[0][2];
-        stiff[2][1] = stiff[1][2];
-        (force, stiff)
+        (gp.cached_force, gp.cached_stiff)
     }
 
     /// ひずみ－変位行列（行 0: 軸ひずみ、行 1: κy、行 2: κz）。
@@ -1244,6 +1342,8 @@ impl FiberBeam {
             gp.trial_stress[i] = sigma;
             gp.trial_et[i] = et;
         }
+        // trial_stress/trial_et を書き換えた直後に断面応答キャッシュを更新する。
+        gp.refresh_response();
     }
 
     /// ヒンジの内部平衡を解く。未知数は有効端の断面曲率 κ（最大 4）で、
@@ -1278,10 +1378,9 @@ impl FiberBeam {
             }
             return;
         }
-        let b_end = [
-            Self::compute_b_matrix(-1.0, l, self.phi_y, self.phi_z),
-            Self::compute_b_matrix(1.0, l, self.phi_y, self.phi_z),
-        ];
+        // ヒンジモデルは常にガウス点 2 点（ξ=∓1、i端/j端）を持つため、
+        // 各ガウス点のキャッシュ済み B 行列がそのまま b_end[0]/b_end[1] になる。
+        let b_end = [self.gauss_points[0].b, self.gauss_points[1].b];
 
         for _ in 0..MAX_ITER {
             // 1) 断面応答（両端）とヒンジ回転 γ → θb
@@ -1339,7 +1438,7 @@ impl FiberBeam {
                     jac[p * n + q] = v;
                 }
             }
-            let jinv = super::beam::invert_small(&jac[..n * n], n);
+            let jinv = Self::invert_small_stack(&jac[..n * n], n);
             let mut dk = [0.0_f64; 4];
             for (p, dkp) in dk.iter_mut().take(n).enumerate() {
                 let mut s = 0.0;
@@ -1395,7 +1494,6 @@ impl FiberBeam {
     /// 非対称になり得るため、対称ソルバ（Cholesky）前提の全体組立に合わせて
     /// 対称化して返す（内力は厳密なので収束解は変わらない）。
     fn hinge_tangent(&self, h: &HingeState) -> LocalMat {
-        let l = self.flex_length;
         let dofs = Self::hinge_dofs(h);
         let n = dofs.len();
         if n == 0 {
@@ -1404,10 +1502,9 @@ impl FiberBeam {
                 data: h.k_el.data.clone(),
             };
         }
-        let b_end = [
-            Self::compute_b_matrix(-1.0, l, self.phi_y, self.phi_z),
-            Self::compute_b_matrix(1.0, l, self.phi_y, self.phi_z),
-        ];
+        // ヒンジモデルは常にガウス点 2 点（ξ=∓1、i端/j端）を持つため、
+        // 各ガウス点のキャッシュ済み B 行列がそのまま b_end[0]/b_end[1] になる。
+        let b_end = [self.gauss_points[0].b, self.gauss_points[1].b];
         // 現在のトライアル状態の断面接線。
         let mut dm = [[[0.0_f64; 2]; 2]; 2];
         for end in 0..2 {
@@ -1442,9 +1539,9 @@ impl FiberBeam {
                 jac[p * n + q] = v;
             }
         }
-        let jinv = super::beam::invert_small(&jac[..n * n], n);
-        // ∂f/∂x[q] = Σ_{p'} K_el[:, slot_{p'}]·G[p'][q]（12×n）
-        let mut fx = vec![0.0_f64; 12 * n];
+        let jinv = Self::invert_small_stack(&jac[..n * n], n);
+        // ∂f/∂x[q] = Σ_{p'} K_el[:, slot_{p'}]·G[p'][q]（12×n、n≤4 → 12*n≤48）。
+        let mut fx = [0.0_f64; 48];
         for q in 0..n {
             for (pp, &(epp, app)) in dofs.iter().enumerate() {
                 let gv = g[pp * n + q];
@@ -1884,7 +1981,7 @@ impl ElementBehavior for FiberBeam {
             }
         } else {
             for (gi, gp) in self.gauss_points.iter().enumerate() {
-                let b = Self::compute_b_matrix(gp.xi, l, self.phi_y, self.phi_z);
+                let b = gp.b;
                 let eps0 = b[0][0] * td[0] + b[0][6] * td[6];
                 let ky = b[1][2] * td[2] + b[1][4] * td[4] + b[1][8] * td[8] + b[1][10] * td[10];
                 let kz = b[2][1] * td[1] + b[2][5] * td[5] + b[2][7] * td[7] + b[2][11] * td[11];
@@ -1956,7 +2053,7 @@ impl ElementBehavior for FiberBeam {
             let (eps0, ky, kz) = if let Some(h) = &self.hinge {
                 (eps0_hinge, h.trial_kappa[gi * 2], h.trial_kappa[gi * 2 + 1])
             } else {
-                let b = Self::compute_b_matrix(gp.xi, l, self.phi_y, self.phi_z);
+                let b = gp.b;
                 let eps0 = b[0][0] * td[0] + b[0][6] * td[6];
                 let ky = b[1][2] * td[2] + b[1][4] * td[4] + b[1][8] * td[8] + b[1][10] * td[10];
                 let kz = b[2][1] * td[1] + b[2][5] * td[5] + b[2][7] * td[7] + b[2][11] * td[11];

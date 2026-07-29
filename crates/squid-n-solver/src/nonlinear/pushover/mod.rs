@@ -30,8 +30,10 @@ pub use types::{
 };
 
 // dynamic/timehistory が `crate::pushover::{add_support_spring_f_int, assemble_k,
-// assemble_k_cached, compute_f_int}` で参照する。
-pub(crate) use assembly::{add_support_spring_f_int, assemble_k, assemble_k_cached, compute_f_int};
+// assemble_k_cached_ref, compute_f_int}` で参照する。
+pub(crate) use assembly::{
+    add_support_spring_f_int, assemble_k, assemble_k_cached_ref, compute_f_int,
+};
 
 // tests（`use super::*`）が参照する非公開項目・外部名を供給する
 // （非テストビルドでは持ち込まない）。

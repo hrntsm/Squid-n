@@ -5,7 +5,10 @@ pub struct ArcLengthStep {
     pub converged: bool,
 }
 
-pub type SolverFn<'a> = dyn FnMut(&[f64]) -> Result<Vec<f64>, String> + 'a;
+/// 線形ソルバクロージャ型。`K⁻¹·r` を第2引数の出力バッファへ書き込む
+/// （修正子反復のたびに戻り値 `Vec` を確保しないための出力引数契約。
+/// バッファは [`ArcLengthSolver::step`] が確保して反復間で使い回す）。
+pub type SolverFn<'a> = dyn FnMut(&[f64], &mut Vec<f64>) -> Result<(), String> + 'a;
 
 /// 変位増分 δu を要素状態へ反映し、更新後の内力ベクトルを返すクロージャ型。
 pub type FintFn<'a> = dyn FnMut(&[f64]) -> Result<Vec<f64>, String> + 'a;
@@ -34,6 +37,14 @@ impl ArcLengthSolver {
     ///   修正子の各反復で内力 f_int(u) を再評価することで真の非線形反復を行う
     ///   （旧実装は f_int を固定パラメータとして渡しており、非線形反復になっていなかった）。
     /// `prev_du`: 前ステップの変位増分（符号決定・根選択用）
+    ///
+    /// `eval_fint` から返る `f_int` は呼び出し元クロージャが所有する Vec のため
+    /// 確保を避けられないが、`solve` の解（`du_t`／`du_bar`）は出力バッファ契約
+    /// （[`SolverFn`]）で本メソッドが 1 回だけ確保したバッファへ書き込ませ、
+    /// その他の内部演算（`scale`／`add`）も同様に作業バッファへ書き込む形として、
+    /// 修正子反復（最大 `max_iter` 回）ごとの Vec 再確保を無くしている
+    /// （時刻歴応答解析高速化・第2波と同じ「同じ演算を同じ順序で行い、確保回数だけを
+    /// 減らす」方針。各要素の計算式・演算順序は従来と同一で数値結果はビット一致する）。
     pub fn step<'b>(
         &self,
         q: &[f64],
@@ -44,7 +55,8 @@ impl ArcLengthSolver {
     ) -> Result<ArcLengthStep, String> {
         let n = q.len();
 
-        let du_t = solve(q)?;
+        let mut du_t = vec![0.0; n];
+        solve(q, &mut du_t)?;
         let ut_norm = dot(&du_t, &du_t).sqrt();
         if ut_norm < 1e-30 {
             return Err("Zero tangent displacement".into());
@@ -69,7 +81,10 @@ impl ArcLengthSolver {
             }
         }
 
-        let mut du = scale(&du_t, dlambda);
+        // 修正子反復で繰り返し使う作業バッファ（反復ごとの Vec 再確保を避ける。
+        // 各要素は元の scale/add 呼び出しと同一の式で書き込むため数値結果は不変）。
+        let mut du = vec![0.0; n];
+        scale_into(&du_t, dlambda, &mut du);
 
         // 予測子スケール制限：円筒半径に対するオーバーシュートを抑制
         let du_pred_norm = dot(&du, &du).sqrt();
@@ -77,7 +92,7 @@ impl ArcLengthSolver {
         if du_pred_norm > bound {
             let scale_factor = bound / du_pred_norm;
             dlambda *= scale_factor;
-            du = scale(&du_t, dlambda);
+            scale_into(&du_t, dlambda, &mut du);
         }
 
         let qq = dot(q, q);
@@ -86,9 +101,18 @@ impl ArcLengthSolver {
         let mut f_int = eval_fint(&du)?;
 
         let mut converged = false;
+        let mut r = vec![0.0; n];
+        let mut du_bar = vec![0.0; n];
+        let mut du_aug = vec![0.0; n];
+        let mut tmp = vec![0.0; n];
+        let mut d1 = vec![0.0; n];
+        let mut d2 = vec![0.0; n];
+        let mut du_update = vec![0.0; n];
         for _iter in 0..self.max_iter {
             let current_lambda = lambda + dlambda;
-            let r: Vec<f64> = (0..n).map(|i| current_lambda * q[i] - f_int[i]).collect();
+            for i in 0..n {
+                r[i] = current_lambda * q[i] - f_int[i];
+            }
 
             let r_norm = dot(&r, &r).sqrt();
             let ext_norm = (current_lambda * current_lambda * qq).sqrt() + 1e-30;
@@ -97,14 +121,14 @@ impl ArcLengthSolver {
                 break;
             }
 
-            // du_bar = K⁻¹·r
-            let du_bar = solve(&r)?;
+            // du_bar = K⁻¹·r（出力バッファへ書き込み。反復間で使い回す）
+            solve(&r, &mut du_bar)?;
 
             // 円筒型拘束の2次方程式 a·δλ² + b·δλ + c = 0
             // a = du_tᵀ·du_t
             // b = 2·(du + du_bar)ᵀ·du_t
             // c = (du + du_bar)ᵀ·(du + du_bar) - Δl²
-            let du_aug = add(&du, &du_bar);
+            add_into(&du, &du_bar, &mut du_aug);
             let a = dot(&du_t, &du_t);
             let b = 2.0 * dot(&du_aug, &du_t);
             let c = dot(&du_aug, &du_aug) - self.delta_l * self.delta_l;
@@ -118,8 +142,10 @@ impl ArcLengthSolver {
             let dlambda2 = (-b - sqrt_disc) / (2.0 * a);
 
             // 根の選択：累積増分方向とのなす角が小さい根を選ぶ
-            let d1 = add(&du_bar, &scale(&du_t, dlambda1));
-            let d2 = add(&du_bar, &scale(&du_t, dlambda2));
+            scale_into(&du_t, dlambda1, &mut tmp);
+            add_into(&du_bar, &tmp, &mut d1);
+            scale_into(&du_t, dlambda2, &mut tmp);
+            add_into(&du_bar, &tmp, &mut d2);
             let cos1 = dot(prev_du, &d1);
             let cos2 = dot(prev_du, &d2);
 
@@ -142,7 +168,8 @@ impl ArcLengthSolver {
             };
 
             // 変位・荷重増分の更新
-            let du_update = add(&du_bar, &scale(&du_t, dlambda_sel));
+            scale_into(&du_t, dlambda_sel, &mut tmp);
+            add_into(&du_bar, &tmp, &mut du_update);
             for i in 0..n {
                 du[i] += du_update[i];
             }
@@ -164,12 +191,20 @@ fn dot(a: &[f64], b: &[f64]) -> f64 {
     a.iter().zip(b).map(|(x, y)| x * y).sum()
 }
 
-fn scale(v: &[f64], s: f64) -> Vec<f64> {
-    v.iter().map(|x| x * s).collect()
+/// `out[i] = v[i] * s`。[`Self::step`] の修正子反復で使う作業バッファへ書き込む
+/// （旧 `scale` と要素ごとに同一の式、Vec 確保が無いだけ）。
+fn scale_into(v: &[f64], s: f64, out: &mut [f64]) {
+    for i in 0..out.len() {
+        out[i] = v[i] * s;
+    }
 }
 
-fn add(a: &[f64], b: &[f64]) -> Vec<f64> {
-    a.iter().zip(b).map(|(x, y)| x + y).collect()
+/// `out[i] = a[i] + b[i]`。[`Self::step`] の修正子反復で使う作業バッファへ書き込む
+/// （旧 `add` と要素ごとに同一の式、Vec 確保が無いだけ）。
+fn add_into(a: &[f64], b: &[f64], out: &mut [f64]) {
+    for i in 0..out.len() {
+        out[i] = a[i] + b[i];
+    }
 }
 
 #[cfg(test)]
@@ -214,8 +249,9 @@ mod tests {
             let trial_u = Cell::new(u);
             let step = match solver.step(
                 &q,
-                &mut |r: &[f64]| -> Result<Vec<f64>, String> {
-                    Ok(vec![r[0] / tangent(trial_u.get())])
+                &mut |r: &[f64], out: &mut Vec<f64>| -> Result<(), String> {
+                    *out = vec![r[0] / tangent(trial_u.get())];
+                    Ok(())
                 },
                 &mut |du: &[f64]| -> Result<Vec<f64>, String> {
                     trial_u.set(trial_u.get() + du[0]);
@@ -292,8 +328,9 @@ mod tests {
                 .step(
                     &q,
                     // 接線 Newton: 現在の trial 変位の接線で K⁻¹ を構成。
-                    &mut |r: &[f64]| -> Result<Vec<f64>, String> {
-                        Ok(vec![r[0] / tangent(trial_u.get())])
+                    &mut |r: &[f64], out: &mut Vec<f64>| -> Result<(), String> {
+                        *out = vec![r[0] / tangent(trial_u.get())];
+                        Ok(())
                     },
                     // δu を trial 変位へ反映し、更新後の内力を返す（再評価される）。
                     &mut |du: &[f64]| -> Result<Vec<f64>, String> {

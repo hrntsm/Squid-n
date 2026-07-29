@@ -38,6 +38,12 @@ pub trait UniaxialMaterial: Send + Sync + Debug {
     /// 試行ひずみ strain に対する (応力 [N/mm²], 接線剛性 [N/mm²])。
     /// 状態は内部に試行値として保持。
     fn trial(&mut self, strain: f64) -> (f64, f64);
+    /// `trial()` と数学的に同一の (応力, 接線剛性) を、**状態を書き換えずに**
+    /// （直前の commit 状態のみを参照して）評価する。要素内 Newton 反復など
+    /// 「確定させずに何度も評価したい」場面で `clone_box()+trial()` の代わりに使い、
+    /// ヒープ確保（`Box` 複製）を避ける。実装は `trial()` と共通の内部関数を
+    /// 呼ぶこと（計算コードの重複による将来の乖離を防ぐため）。
+    fn probe(&self, strain: f64) -> (f64, f64);
     /// 試行を確定（収束後にコミット）。
     fn commit(&mut self);
     /// 試行を破棄して直前のコミット状態へ戻す（リジェクト時）。

@@ -127,7 +127,12 @@ impl LocalMat {
     }
 }
 
-pub trait ElementBehavior {
+/// `Send + Sync` を supertrait とするのは、静解析バッチ（`squid-n-solver::statics`）が
+/// 荷重ケース・組合せごとの `Box<dyn ElementBehavior>` キャッシュを rayon 並列
+/// （`&self` 共有）から参照するため。全実装型は内部に `Box<dyn UniaxialMaterial>`
+/// （既に `Send + Sync` 境界つき）等のみを持ち、`Rc`/`RefCell`/`Cell` 等の
+/// 非スレッド安全な型は含まないため自動的に満たされる。
+pub trait ElementBehavior: Send + Sync {
     fn n_dof(&self) -> usize;
     fn global_dofs(&self, dof: &DofMap) -> SmallVec<[usize; 24]>;
     fn tangent_stiffness(&self, state: &ElemState, ctx: &Ctx) -> LocalMat;

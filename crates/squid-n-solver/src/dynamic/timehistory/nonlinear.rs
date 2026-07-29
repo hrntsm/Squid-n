@@ -17,7 +17,7 @@ use crate::assemble::assemble_global_m;
 use crate::common::csc_cache::{CscCache, WeightedSumGuard};
 use crate::constraint::Reducer;
 use crate::damping::{Damping, DampingAccumulation};
-use crate::pushover::{add_support_spring_f_int, assemble_k, assemble_k_cached, compute_f_int};
+use crate::pushover::{add_support_spring_f_int, assemble_k, assemble_k_cached_ref, compute_f_int};
 use crate::transaction::{StateSnapshot, StatefulModel};
 use smallvec::SmallVec;
 use squid_n_core::dof::{DofMap, DOF_PER_NODE};
@@ -25,7 +25,7 @@ use squid_n_core::model::Model;
 use squid_n_element::behavior::{Ctx, ElementBehavior, LocalVec, MassOption};
 use squid_n_element::factory::{build_nonlinear_behavior, StrengthBasis};
 use squid_n_math::solver::{make_solver, LinearSolver, SolveError, SolverBackend};
-use squid_n_math::sparse::sparse_matvec;
+use squid_n_math::sparse::{sparse_matvec, Triplet};
 
 /// 非線形時刻歴応答解析の設定（Newton 収束条件・幾何剛性・長期荷重初期化・記録間引き）。
 ///
@@ -69,6 +69,44 @@ impl Default for NonlinearThCfg {
     /// 記録間引きは自動決定。
     fn default() -> Self {
         Self::new(20, 1e-6)
+    }
+}
+
+/// 要素状態を trial 更新する（`du_free`＝全自由 DOF 空間の変位増分を各要素の
+/// 局所自由度へ写像し `update_state` を呼ぶ）。メイン Newton ループ・
+/// `newton_static_converge` の両方で共有する（要素状態更新ループの並列化、
+/// 時刻歴応答解析高速化・第3波）。
+///
+/// 要素間にデータ依存が無く、各要素は自身の `&mut` のみを更新するため、並列度設定
+/// （`squid_n_math::parallelism`）が `Auto`/`Threads` のときは rayon
+/// （`par_iter_mut()`）で並列化する。書き込み先は要素番号順のスロットのため、結果は
+/// スレッドスケジューリングに依存せず逐次実行と完全にビット一致する
+/// （第2波申し送り `dev_docs/handoff/時刻歴応答解析高速化_第2波_申し送り.md` 4.1 の
+/// 設計方針）。`Deterministic`（既定）では従来どおり逐次実行する。
+fn update_behaviors_trial(
+    model: &Model,
+    dofmap: &DofMap,
+    behaviors: &mut [Box<dyn ElementBehavior>],
+    du_free: &[f64],
+) {
+    let update_one = |b: &mut Box<dyn ElementBehavior>| {
+        let gdofs = b.global_dofs(dofmap);
+        let mut du_elem = LocalVec {
+            data: SmallVec::from_elem(0.0, gdofs.len()),
+        };
+        for (i, &g) in gdofs.iter().enumerate() {
+            if g != usize::MAX && g < du_free.len() {
+                du_elem.data[i] = du_free[g];
+            }
+        }
+        let ctx = Ctx { model };
+        b.update_state(&du_elem, false, &ctx);
+    };
+    if squid_n_math::parallelism::is_parallel() {
+        use rayon::prelude::*;
+        behaviors.par_iter_mut().for_each(update_one);
+    } else {
+        behaviors.iter_mut().for_each(update_one);
     }
 }
 
@@ -418,6 +456,11 @@ pub fn nonlinear_time_history_analysis(
     let mut k_t_free_cache = CscCache::new();
     let mut k_t_red_cache = CscCache::new();
     let mut k_eff_cache = WeightedSumGuard::new();
+    // P10: `assemble_k_cached_ref`/`reduce_k_cached_ref` の triplet 一時バッファ。
+    // ステップ・Newton 反復を跨いでループ外で保持することで、`Vec` の容量が
+    // 反復間で維持され毎回の再確保が消える（`clear()` してから書き込む）。
+    let mut k_t_free_triplets_buf: Vec<Triplet> = Vec::new();
+    let mut k_t_red_triplets_buf: Vec<Triplet> = Vec::new();
 
     for n in 0..n_steps {
         let t_next = (n + 1) as f64 * dt;
@@ -479,18 +522,31 @@ pub fn nonlinear_time_history_analysis(
             // 毎反復再構成するため、この場合に限り残差の減衰力項 c_v_red の計算に
             // k_t_red が要る。そのため接線減衰のときだけ、ここで k_t_red・c_tan を
             // 先に組み立てて使い回す（後段で二重に組み立てない）。
-            let mut k_t_red_precomputed: Option<faer::sparse::SparseColMat<usize, f64>> = None;
-            let c_tan = if damping.is_tangent_based() {
-                let k_t_free =
-                    assemble_k_cached(model, dofmap, &behaviors, cfg.use_kg, &mut k_t_free_cache);
-                let k_t_red = reducer.reduce_k_cached(&k_t_free, &mut k_t_red_cache);
+            // P10: k_t_free_cache／k_t_red_cache の組立て結果は所有値へ複製せず
+            // 参照のまま使い回す（`assemble_k_cached_ref`/`reduce_k_cached_ref`）。
+            // k_t_red_precomputed は k_t_red_cache への可変借用と寿命が結びつくため、
+            // このブロック以降 k_t_red_cache へは（Some の場合）触れない
+            // （後段の `match` の None 分岐でのみ改めて借用する）。
+            let (c_tan, k_t_red_precomputed) = if damping.is_tangent_based() {
+                let k_t_free = assemble_k_cached_ref(
+                    model,
+                    dofmap,
+                    &behaviors,
+                    cfg.use_kg,
+                    &mut k_t_free_cache,
+                    &mut k_t_free_triplets_buf,
+                );
+                let k_t_red = reducer.reduce_k_cached_ref(
+                    k_t_free,
+                    &mut k_t_red_cache,
+                    &mut k_t_red_triplets_buf,
+                );
                 // h1 一定の {u} は初期剛性の1次固有ベクトル（u_mode1、固定）。
                 // α1 一定は u を参照しない。
-                let c = damping.assemble_c_tangent(&m_red, &k_t_red, &k_red, &u_mode1);
-                k_t_red_precomputed = Some(k_t_red);
-                Some(c)
+                let c = damping.assemble_c_tangent(&m_red, k_t_red, &k_red, &u_mode1);
+                (Some(c), Some(k_t_red))
             } else {
-                None
+                (None, None)
             };
             let c_cur = c_tan.as_ref().unwrap_or(&c_red);
 
@@ -552,19 +608,25 @@ pub fn nonlinear_time_history_analysis(
             let k_t_red = match k_t_red_precomputed {
                 Some(k) => k,
                 None => {
-                    let k_t_free = assemble_k_cached(
+                    let k_t_free = assemble_k_cached_ref(
                         model,
                         dofmap,
                         &behaviors,
                         cfg.use_kg,
                         &mut k_t_free_cache,
+                        &mut k_t_free_triplets_buf,
                     );
-                    reducer.reduce_k_cached(&k_t_free, &mut k_t_red_cache)
+                    reducer.reduce_k_cached_ref(
+                        k_t_free,
+                        &mut k_t_red_cache,
+                        &mut k_t_red_triplets_buf,
+                    )
                 }
             };
-            let k_eff = k_eff_cache.combine(n_indep, &[(1.0, &k_t_red), (c2, c_cur), (c1, &m_red)]);
+            let k_eff =
+                k_eff_cache.combine_ref(n_indep, &[(1.0, k_t_red), (c2, c_cur), (c1, &m_red)]);
             k_eff_solver
-                .factorize(&k_eff)
+                .factorize(k_eff)
                 .map_err(|e| SolveError::Backend(format!("factor: {:?}", e)))?;
             k_eff_solver.solve_into(r_red, &mut du_red_buf)?;
             let du_red = &du_red_buf;
@@ -578,21 +640,9 @@ pub fn nonlinear_time_history_analysis(
                 du_total[i] += du_red[i];
             }
 
-            // 要素状態を trial 更新
-            let model_ref: &Model = model;
-            for (_elem, b) in model_ref.elements.iter().zip(behaviors.iter_mut()) {
-                let gdofs = b.global_dofs(dofmap);
-                let mut du_elem = LocalVec {
-                    data: SmallVec::from_elem(0.0, gdofs.len()),
-                };
-                for (i, &g) in gdofs.iter().enumerate() {
-                    if g != usize::MAX && g < du_free.len() {
-                        du_elem.data[i] = du_free[g];
-                    }
-                }
-                let ctx = Ctx { model: model_ref };
-                b.update_state(&du_elem, false, &ctx);
-            }
+            // 要素状態を trial 更新（要素間にデータ依存が無いため、並列度設定が
+            // Auto/Threads のときは rayon で並列化する。update_behaviors_trial 参照）。
+            update_behaviors_trial(model, dofmap, &mut behaviors, du_free);
         }
 
         if converged {
@@ -804,6 +854,10 @@ fn apply_long_term_static(
     let mut k_free_cache = CscCache::new();
     let mut k_red_cache = CscCache::new();
     let mut du_red_buf = vec![0.0f64; n_indep];
+    // P10: `assemble_k_cached_ref`/`reduce_k_cached_ref` の triplet 一時バッファ
+    // （漸増ステップ全体を通じて保持し、`Vec` の容量を維持する）。
+    let mut k_free_triplets_buf: Vec<Triplet> = Vec::new();
+    let mut k_red_triplets_buf: Vec<Triplet> = Vec::new();
     while let Some(mu_target) = state.next_target() {
         let snap = StateSnapshot::capture(behaviors);
         let f_target: Vec<f64> = f0_red.iter().map(|&v| v * mu_target).collect();
@@ -820,6 +874,8 @@ fn apply_long_term_static(
             &mut k_free_cache,
             &mut k_red_cache,
             &mut du_red_buf,
+            &mut k_free_triplets_buf,
+            &mut k_red_triplets_buf,
         )? {
             Some(du) => {
                 for b in behaviors.iter_mut() {
@@ -852,11 +908,12 @@ fn apply_long_term_static(
 /// 確定累積）。支点ばね内力 `add_support_spring_f_int` に渡す縮約前の全体変位
 /// `u_base_red + du_total` の算定に使う。
 ///
-/// `solver`・`k_free_cache`・`k_red_cache`・`du_red_buf` は呼び出し元
-/// [`apply_long_term_static`] が漸増ステップ全体を通じて保持するソルバインスタンス・
-/// CSC 組立てキャッシュ・作業バッファ（時刻歴応答解析高速化・第2波）。K は対称正定値を
-/// 前提とする（旧 `SolverBackend::Auto` も本解析の自由度規模では常に疎 Cholesky
-/// 直接法を選ぶため、`DirectSparseCholesky` を明示しても既存挙動と同一）。
+/// `solver`・`k_free_cache`・`k_red_cache`・`du_red_buf`・`k_free_triplets_buf`・
+/// `k_red_triplets_buf` は呼び出し元 [`apply_long_term_static`] が漸増ステップ全体を
+/// 通じて保持するソルバインスタンス・CSC 組立てキャッシュ・作業バッファ（時刻歴応答
+/// 解析高速化・第2波/第3波）。K は対称正定値を前提とする（旧 `SolverBackend::Auto` も
+/// 本解析の自由度規模では常に疎 Cholesky 直接法を選ぶため、`DirectSparseCholesky` を
+/// 明示しても既存挙動と同一）。
 #[allow(clippy::too_many_arguments)]
 fn newton_static_converge(
     model: &Model,
@@ -871,11 +928,22 @@ fn newton_static_converge(
     k_free_cache: &mut CscCache,
     k_red_cache: &mut CscCache,
     du_red_buf: &mut Vec<f64>,
+    k_free_triplets_buf: &mut Vec<Triplet>,
+    k_red_triplets_buf: &mut Vec<Triplet>,
 ) -> Result<Option<Vec<f64>>, SolveError> {
     let mut du_total = vec![0.0; n_indep];
     for _iter in 0..50 {
-        let k_free = assemble_k_cached(model, dofmap, behaviors, use_kg, k_free_cache);
-        let k_red = reducer.reduce_k_cached(&k_free, k_red_cache);
+        // P10: 組立て結果は所有値へ複製せず参照のまま使う
+        // （`assemble_k_cached_ref`/`reduce_k_cached_ref`）。
+        let k_free = assemble_k_cached_ref(
+            model,
+            dofmap,
+            behaviors,
+            use_kg,
+            k_free_cache,
+            k_free_triplets_buf,
+        );
+        let k_red = reducer.reduce_k_cached_ref(k_free, k_red_cache, k_red_triplets_buf);
         // 内力（支点ばねの寄与を含む。u_trial は縮約前の全体変位、プッシュオーバーの
         // 長期載荷フェーズ（`driver.rs`）と同じ経路）。
         let mut f_int_free = compute_f_int(model, dofmap, behaviors);
@@ -895,27 +963,16 @@ fn newton_static_converge(
             return Ok(Some(du_total));
         }
         solver
-            .factorize(&k_red)
+            .factorize(k_red)
             .map_err(|e| SolveError::Backend(format!("factor: {:?}", e)))?;
         solver.solve_into(&r_red, du_red_buf)?;
         let du_free = reducer.expand_u(du_red_buf.as_slice());
         for i in 0..n_indep {
             du_total[i] += du_red_buf[i];
         }
-        let model_ref: &Model = model;
-        for (_elem, b) in model_ref.elements.iter().zip(behaviors.iter_mut()) {
-            let gdofs = b.global_dofs(dofmap);
-            let mut du_elem = LocalVec {
-                data: SmallVec::from_elem(0.0, gdofs.len()),
-            };
-            for (i, &g) in gdofs.iter().enumerate() {
-                if g != usize::MAX && g < du_free.len() {
-                    du_elem.data[i] = du_free[g];
-                }
-            }
-            let ctx = Ctx { model: model_ref };
-            b.update_state(&du_elem, false, &ctx);
-        }
+        // 要素状態を trial 更新（要素間にデータ依存が無いため、並列度設定が
+        // Auto/Threads のときは rayon で並列化する。update_behaviors_trial 参照）。
+        update_behaviors_trial(model, dofmap, behaviors, &du_free);
     }
     Ok(None)
 }

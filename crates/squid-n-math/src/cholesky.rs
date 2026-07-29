@@ -38,13 +38,13 @@ impl Default for CholeskySolver {
 impl LinearSolver for CholeskySolver {
     fn factorize(&mut self, k: &SparseColMat<usize, f64>) -> Result<(), SolveError> {
         self.n = k.nrows();
-        let pattern = SparsityPattern::of(k);
+        // ヒット時（パターン不変）は比較用 Vec を確保しない（`matches` はスライス比較のみ）。
         let symbolic = match &self.symbolic_cache {
-            Some((sym, cached_pattern)) if *cached_pattern == pattern => sym.clone(),
+            Some((sym, cached_pattern)) if cached_pattern.matches(k) => sym.clone(),
             _ => {
                 let sym = SymbolicLlt::try_new(k.symbolic(), Side::Lower)
                     .map_err(|e| SolveError::Backend(format!("symbolic: {e:?}")))?;
-                self.symbolic_cache = Some((sym.clone(), pattern));
+                self.symbolic_cache = Some((sym.clone(), SparsityPattern::of(k)));
                 sym
             }
         };

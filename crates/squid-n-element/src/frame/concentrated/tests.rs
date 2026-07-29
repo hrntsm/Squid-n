@@ -252,7 +252,12 @@ fn test_tangent_stiffness_symmetric() {
 fn test_spring_model_default() {
     let elem = make_test_element();
     assert_eq!(elem.model, SpringModel::OneComponent);
-    let k_node = compute_kstar(&elem.elastic, 1.0e10, 1.0e10);
+    let k_node = compute_kstar(
+        &elem.elastic,
+        &elem.elastic.local_stiffness_flex(),
+        1.0e10,
+        1.0e10,
+    );
     let u = &elem.elastic.committed_disp;
     let mut f = [0.0; 12];
     for i in 0..12 {
@@ -522,7 +527,7 @@ fn test_compute_kstar_matches_elastic_beam_with_rigid_zone_and_pin() {
         // ばね剛性を十分大きく取れば材端ばねは剛接と同等になる。ばね剛性を
         // 梁の回転剛性（≒3e11）より極端に大きくすると静縮約 Kaa−Kab·Kbb⁻¹·Kba が
         // 桁落ちするため、比 1e6〜1e7 程度に留める（直列剛性の誤差は 1e-7 以下）。
-        let k = compute_kstar(&beam, 1e18, 1e18);
+        let k = compute_kstar(&beam, &beam.local_stiffness_flex(), 1e18, 1e18);
         for i in 0..12 {
             for j in 0..12 {
                 let scale = k_ref.get(i, j).abs().max(1.0);
@@ -546,7 +551,7 @@ fn test_compute_kstar_respects_pinned_end() {
     use squid_n_core::model::EndCondition;
     let mut beam = make_test_beam();
     beam.end_cond = [EndCondition::Pinned, EndCondition::Fixed];
-    let k = compute_kstar(&beam, 1e12, 1e12);
+    let k = compute_kstar(&beam, &beam.local_stiffness_flex(), 1e12, 1e12);
     assert!(
         k.get(5, 5).abs() < 1.0,
         "i 端ピンなのに強軸モーメント剛性が残っている: {}",

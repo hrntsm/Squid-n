@@ -93,9 +93,19 @@ impl LinearSolver for AutoSolver {
                 fallback: Mutex::new(None),
             }));
         } else {
-            let mut chol = CholeskySolver::default();
-            chol.factorize(k)?;
-            self.state = State::Direct(chol);
+            // 直接法分岐: 既存の CholeskySolver インスタンスがあれば再利用する。
+            // symbolic 分解キャッシュ（AMD 順序付け＋elimination tree）は同一
+            // インスタンスへの factorize 繰り返しでのみ効くため、Newton 反復の
+            // ように同一パターンで再分解する呼び出し側で毎回作り直すと
+            // キャッシュが無効化されてしまう。再利用しても数値結果はビット一致
+            // する（`CholeskySolver` 側のテストで担保済み）。
+            if let State::Direct(chol) = &mut self.state {
+                chol.factorize(k)?;
+            } else {
+                let mut chol = CholeskySolver::default();
+                chol.factorize(k)?;
+                self.state = State::Direct(chol);
+            }
         }
         Ok(())
     }
@@ -122,6 +132,19 @@ impl LinearSolver for AutoSolver {
                 }
                 Err(e) => Err(e),
             },
+        }
+    }
+
+    /// バッファ再利用版。直接法選択時は `CholeskySolver::solve_into`（内部
+    /// スクラッチ再利用）へ委譲する。PCG 選択時はフォールバック分岐を含むため
+    /// 既定実装相当（`solve` の結果を書き込むだけ）に留める。
+    fn solve_into(&self, rhs: &[f64], out: &mut Vec<f64>) -> Result<(), SolveError> {
+        match &self.state {
+            State::Direct(chol) => chol.solve_into(rhs, out),
+            _ => {
+                *out = self.solve(rhs)?;
+                Ok(())
+            }
         }
     }
 }
@@ -242,6 +265,64 @@ mod tests {
             solver.solve(&[1.0]),
             Err(SolveError::NotFactorized)
         ));
+    }
+
+    /// 直接法分岐のインスタンス再利用: 同一 `AutoSolver` へ factorize を
+    /// 繰り返しても（値が変わっても）、毎回新規生成した場合とビット一致すること。
+    #[test]
+    fn test_auto_direct_refactorize_matches_fresh_bit_exact() {
+        faer::set_global_parallelism(faer::Par::Seq);
+        let k1 = k_2dof();
+        let k2 = assemble_csc(
+            2,
+            vec![
+                Triplet {
+                    row: 0,
+                    col: 0,
+                    val: 500.0,
+                },
+                Triplet {
+                    row: 1,
+                    col: 0,
+                    val: -120.0,
+                },
+                Triplet {
+                    row: 0,
+                    col: 1,
+                    val: -120.0,
+                },
+                Triplet {
+                    row: 1,
+                    col: 1,
+                    val: 340.0,
+                },
+            ],
+        );
+        let rhs = [7.0, -3.0];
+
+        let mut reused = AutoSolver::default();
+        reused.factorize(&k1).unwrap();
+        reused.factorize(&k2).unwrap();
+        let x_reused = reused.solve(&rhs).unwrap();
+
+        let mut fresh = AutoSolver::default();
+        fresh.factorize(&k2).unwrap();
+        let x_fresh = fresh.solve(&rhs).unwrap();
+
+        assert_eq!(x_reused, x_fresh, "インスタンス再利用でビット不一致");
+    }
+
+    /// `solve_into` が `solve` とビット一致すること（直接法分岐）。
+    #[test]
+    fn test_auto_solve_into_matches_solve() {
+        faer::set_global_parallelism(faer::Par::Seq);
+        let mut solver = AutoSolver::default();
+        solver.factorize(&k_2dof()).unwrap();
+        let rhs = [0.0, 1000.0];
+        let expected = solver.solve(&rhs).unwrap();
+        let mut out = Vec::new();
+        solver.solve_into(&rhs, &mut out).unwrap();
+        assert_eq!(expected, out);
     }
 
     #[test]

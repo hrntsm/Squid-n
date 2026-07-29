@@ -281,11 +281,21 @@ impl Reducer {
     /// [`Self::reduce_k`] と同じ triplet 列（Tᵀ·K·T の非ゼロ要素、加算前）を返す。
     /// [`Self::reduce_k`]・[`Self::reduce_k_cached`] が共有する。
     fn reduce_k_triplets(&self, k_free: &SparseColMat<usize, f64>) -> Vec<Triplet> {
+        let mut triplets = Vec::new();
+        self.reduce_k_triplets_into(k_free, &mut triplets);
+        triplets
+    }
+
+    /// [`Self::reduce_k_triplets`] の結果を呼び出し側の既存バッファへ書き込む版
+    /// （`out` は先頭で `clear()` してから書き込むため、確保済みの容量は保持され、
+    /// Newton 反復のように毎回呼ぶ場面で再確保が発生しない）。計算内容・順序は
+    /// [`Self::reduce_k_triplets`] と同一（ビット完全一致）。
+    fn reduce_k_triplets_into(&self, k_free: &SparseColMat<usize, f64>, out: &mut Vec<Triplet>) {
+        out.clear();
         let col_ptr = k_free.col_ptr();
         let row_idx = k_free.row_idx();
         let values = k_free.val();
         let ncols = k_free.ncols();
-        let mut triplets = Vec::new();
         for j in 0..ncols {
             let tj_list = &self.t_rows[j];
             if tj_list.is_empty() {
@@ -303,7 +313,7 @@ impl Reducer {
                 }
                 for &(a, ta) in ti_list {
                     for &(b, tb) in tj_list {
-                        triplets.push(Triplet {
+                        out.push(Triplet {
                             row: a,
                             col: b,
                             val: ta * v * tb,
@@ -312,7 +322,6 @@ impl Reducer {
                 }
             }
         }
-        triplets
     }
 
     /// [`Self::reduce_k`] のキャッシュ版。時刻歴応答解析の Newton 反復のように、
@@ -327,6 +336,22 @@ impl Reducer {
     ) -> SparseColMat<usize, f64> {
         let triplets = self.reduce_k_triplets(k_free);
         cache.assemble(self.n_indep, &triplets)
+    }
+
+    /// [`Self::reduce_k_cached`] の参照返し版。呼び出し側の triplet バッファ
+    /// `buf`（`clear()` して再利用、容量は呼び出し間で維持される）を使い、
+    /// `cache` が内部保持する行列への参照を返す（`.clone()` を伴わない）。
+    /// 非線形時刻歴の Newton 反復のように、結果をすぐ読むだけで所有権が要らない
+    /// 呼び出し元向け（[`crate::common::csc_cache::CscCache::assemble_ref`] 参照）。
+    /// 結果は常に [`Self::reduce_k`] とビット一致する。
+    pub fn reduce_k_cached_ref<'a>(
+        &self,
+        k_free: &SparseColMat<usize, f64>,
+        cache: &'a mut CscCache,
+        buf: &mut Vec<Triplet>,
+    ) -> &'a SparseColMat<usize, f64> {
+        self.reduce_k_triplets_into(k_free, buf);
+        cache.assemble_ref(self.n_indep, buf)
     }
 
     /// [`Self::reduce_f`] の結果を呼び出し側の既存バッファへ書き込む版（毎ステップの

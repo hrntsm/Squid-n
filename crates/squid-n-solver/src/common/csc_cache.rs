@@ -51,6 +51,15 @@ impl CscCache {
     /// 非ゼロ数が変わった場合）[`CscAssembler::new`] でパターンを作り直す
     /// （この回のみ通常の `assemble_csc` 相当のコストに戻るが、結果は変わらない）。
     pub fn assemble(&mut self, n: usize, triplets: &[Triplet]) -> SparseColMat<usize, f64> {
+        self.assemble_ref(n, triplets).clone()
+    }
+
+    /// [`Self::assemble`] と同じ結果を、内部保持する行列への参照として返す
+    /// （`.clone()` を伴わない。Newton 反復のように結果をすぐに読むだけで
+    /// 所有権が要らない呼び出し元向け）。返す参照の寿命は `self` への
+    /// 可変借用と結びつくため、次に `self` を可変に使う（別の `assemble`/
+    /// `assemble_ref` を呼ぶ等）までしか保持できない。
+    pub fn assemble_ref(&mut self, n: usize, triplets: &[Triplet]) -> &SparseColMat<usize, f64> {
         let rebuild = match &self.assembler {
             Some(_) => self.n != n || self.len != triplets.len(),
             None => true,
@@ -66,7 +75,6 @@ impl CscCache {
             .as_ref()
             .expect("直前の分岐で必ず Some を構築済み")
             .matrix()
-            .clone()
     }
 }
 
@@ -102,11 +110,26 @@ impl WeightedSumGuard {
     /// [`WeightedSumCache::combine_into`] の高速パス（triplet 化・ソート不要）を使う。
     /// 一致しなければ [`WeightedSumCache::new`] で出力パターンを作り直す
     /// （[`CscCache::assemble`] と同じフォールバック方針）。
+    // 現状 squid-n-solver 内の呼び出し元は `combine_ref`（参照返し）のみだが、
+    // `CscCache::assemble`（所有値返し・他クレート/箇所からの利用あり）との
+    // API 対称性を保つため、所有値を返す本メソッドも撤去せず維持する。
+    #[allow(dead_code)]
     pub fn combine(
         &mut self,
         n: usize,
         mats: &[(f64, &SparseColMat<usize, f64>)],
     ) -> SparseColMat<usize, f64> {
+        self.combine_ref(n, mats).clone()
+    }
+
+    /// [`Self::combine`] と同じ結果を、内部保持する行列への参照として返す
+    /// （`.clone()` を伴わない）。[`CscCache::assemble_ref`] と同様、返す参照の
+    /// 寿命は `self` への可変借用と結びつく。
+    pub fn combine_ref(
+        &mut self,
+        n: usize,
+        mats: &[(f64, &SparseColMat<usize, f64>)],
+    ) -> &SparseColMat<usize, f64> {
         let cur_nnz: Vec<usize> = mats.iter().map(|(_, m)| m.val().len()).collect();
         let rebuild = self.cache.is_none() || self.n != n || self.input_nnz != cur_nnz;
         if rebuild {
@@ -120,7 +143,6 @@ impl WeightedSumGuard {
             .as_ref()
             .expect("直前の分岐で必ず Some を構築済み")
             .matrix()
-            .clone()
     }
 }
 

@@ -66,6 +66,41 @@ impl TsujiYamada {
             self.k1 * self.k2 / d
         }
     }
+
+    /// committed 状態から strain における状態を評価する（trial・probe 共通の
+    /// 内部処理）。committed 状態のみを参照する（self.trial は書き換えない）。
+    fn eval_state(&self, strain: f64) -> TyState {
+        let c = self.committed;
+        let h = self.hardening();
+        let q_tr = self.k1 * (strain - c.dp);
+        let r = self.qy + c.r_iso;
+        let f = (q_tr - c.alpha).abs() - r;
+        if f <= 0.0 {
+            TyState {
+                strain,
+                stress: q_tr,
+                tangent: self.k1,
+                ..c
+            }
+        } else {
+            let s = (q_tr - c.alpha).signum();
+            let d_dp = f / (self.k1 + h);
+            let dp_new = c.dp + s * d_dp;
+            // 移動硬化（背応力）と等方硬化（降伏面膨張）へ配分。
+            let alpha_new = c.alpha + (1.0 - self.beta) * h * s * d_dp;
+            let r_iso_new = c.r_iso + self.beta * h * d_dp;
+            let stress = self.k1 * (strain - dp_new);
+            let tangent = self.k1 * h / (self.k1 + h);
+            TyState {
+                strain,
+                stress,
+                tangent,
+                dp: dp_new,
+                alpha: alpha_new,
+                r_iso: r_iso_new,
+            }
+        }
+    }
 }
 
 impl UniaxialMaterial for TsujiYamada {
@@ -86,37 +121,13 @@ impl UniaxialMaterial for TsujiYamada {
     }
 
     fn trial(&mut self, strain: f64) -> (f64, f64) {
-        let c = self.committed;
-        let h = self.hardening();
-        let q_tr = self.k1 * (strain - c.dp);
-        let r = self.qy + c.r_iso;
-        let f = (q_tr - c.alpha).abs() - r;
-        if f <= 0.0 {
-            self.trial = TyState {
-                strain,
-                stress: q_tr,
-                tangent: self.k1,
-                ..c
-            };
-        } else {
-            let s = (q_tr - c.alpha).signum();
-            let d_dp = f / (self.k1 + h);
-            let dp_new = c.dp + s * d_dp;
-            // 移動硬化（背応力）と等方硬化（降伏面膨張）へ配分。
-            let alpha_new = c.alpha + (1.0 - self.beta) * h * s * d_dp;
-            let r_iso_new = c.r_iso + self.beta * h * d_dp;
-            let stress = self.k1 * (strain - dp_new);
-            let tangent = self.k1 * h / (self.k1 + h);
-            self.trial = TyState {
-                strain,
-                stress,
-                tangent,
-                dp: dp_new,
-                alpha: alpha_new,
-                r_iso: r_iso_new,
-            };
-        }
+        self.trial = self.eval_state(strain);
         (self.trial.stress, self.trial.tangent)
+    }
+
+    fn probe(&self, strain: f64) -> (f64, f64) {
+        let s = self.eval_state(strain);
+        (s.stress, s.tangent)
     }
 
     fn commit(&mut self) {
@@ -182,6 +193,26 @@ mod tests {
         let (s_rev, t_rev) = m.trial(0.05);
         assert_relative_eq!(t_rev, 100.0, epsilon = 1e-6);
         assert!(s_rev < 0.0, "reverse plastic in compression: {s_rev}");
+    }
+
+    #[test]
+    fn test_probe_matches_trial_without_mutating_state() {
+        // probe は trial と数学的に同一の結果を返し、状態を書き換えない
+        // （塑性化・除荷後の状態で確認）。
+        let mut m = TsujiYamada::new(1000.0, 100.0, 100.0, 0.5);
+        m.trial(0.3);
+        m.commit();
+
+        let probe_strain = 0.1; // 除荷側
+        let before = m.probe(probe_strain);
+        assert_eq!(before, m.probe(probe_strain));
+
+        let mut clone_for_trial = m.clone();
+        let via_trial = clone_for_trial.trial(probe_strain);
+        assert_eq!(before, via_trial, "probe は trial と完全一致すること");
+
+        let after_probe = m.trial(probe_strain);
+        assert_eq!(after_probe, via_trial);
     }
 
     #[test]

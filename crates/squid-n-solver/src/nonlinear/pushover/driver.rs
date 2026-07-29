@@ -4,7 +4,7 @@
 //! - [`pushover_analysis_recording`] — 荷重制御・変位制御・弧長法の各フェーズを
 //!   実行し、ヒンジ・せん断降伏・崩壊機構・部材別応答を集約する本体
 
-use super::assembly::{add_support_spring_f_int, assemble_k, compute_f_int};
+use super::assembly::{add_support_spring_f_int, assemble_k_cached, compute_f_int};
 use super::ductility::{compute_ductility_refs, update_ductility, DuctilityTracker};
 use super::hinge::{compute_hinge_thresholds, track_hinges};
 use super::mechanism::determine_mechanism;
@@ -22,6 +22,7 @@ use crate::analysis::{
     building_height_mm, distribute_pi_over_diaphragms, steel_height_ratio, SeismicDir,
 };
 use crate::arc_length::ArcLengthSolver;
+use crate::common::csc_cache::CscCache;
 use crate::constraint::Reducer;
 use crate::transaction::{StateSnapshot, StatefulModel};
 use smallvec::SmallVec;
@@ -29,7 +30,65 @@ use squid_n_core::dof::DofMap;
 use squid_n_core::model::Model;
 use squid_n_element::behavior::{Ctx, ElementBehavior, LocalVec};
 use squid_n_element::factory::{build_nonlinear_behavior, StrengthBasis};
-use squid_n_math::solver::{make_solver, SolverBackend};
+use squid_n_math::solver::{make_solver, LinearSolver, SolverBackend};
+
+/// プッシュオーバー解析の全フェーズ（長期荷重初期載荷・荷重制御・変位制御・弧長法・
+/// [`elastic_roof_slope`] の弾性勾配推定）で持ち回るソルバインスタンス・CSC 組立て
+/// キャッシュ・作業バッファ（時刻歴応答解析高速化・第2波と同じ方針、
+/// `dynamic/timehistory/nonlinear.rs` 参照）。
+///
+/// - `solver`（既定で `CholeskySolver`）: `factorize` を同一インスタンスへ繰り返し
+///   呼ぶと、直前と同じスパースパターンなら symbolic 分解（AMD順序付け）を再利用し
+///   数値分解のみ行う。縮約後の DOF 数（本用途では数百〜数千）では
+///   `SolverBackend::Auto` も常に疎 Cholesky 直接法を選ぶため、`DirectSparseCholesky`
+///   を明示しても数値結果は不変。`Auto`（`AutoSolver`）は `factorize` のたびに内部
+///   ソルバを新規生成するため symbolic キャッシュが効かず、ここでは使わない。
+/// - `k_free_cache`／`k_red_cache`（`CscCache`）: 全体接線剛性 K・縮約後接線剛性の
+///   CSC 組立て。要素接続・拘束構成は不変なので、triplet の座標・並び順も
+///   （弾塑性要素の接線剛性が厳密 0.0 を跨がない限り）不変。パターン変化は
+///   `CscCache` 自身が検知し安全側（作り直し）へ自動フォールバックする。
+/// - `r_red`／`f_ext_red`／`du_red`（縮約空間、`n_indep` 長）・`du_free`（全自由 DOF
+///   空間、`n_active` 長）: [`newton_converge`] の共通反復で使う `reduce_f_into`／
+///   `solve_into`／`expand_u_into` の出力バッファ。
+/// - `q_red`／`du_r_red`／`du_q_red`（縮約空間）・`du_r`／`du_q`（全自由 DOF 空間）:
+///   変位制御フェーズの Newton 反復専用（残差解 δu_r と荷重パターン解 δu_q を
+///   同時に必要とするため独立バッファ）。
+///
+/// 各バッファ・キャッシュはフェーズをまたいで使い回すため、値そのものに意味は無く
+/// （呼び出しのたびに上書きされる）、確保回数を減らすためだけの器である。
+struct SolverState {
+    solver: Box<dyn LinearSolver>,
+    k_free_cache: CscCache,
+    k_red_cache: CscCache,
+    r_red: Vec<f64>,
+    f_ext_red: Vec<f64>,
+    du_red: Vec<f64>,
+    du_free: Vec<f64>,
+    q_red: Vec<f64>,
+    du_r_red: Vec<f64>,
+    du_q_red: Vec<f64>,
+    du_r: Vec<f64>,
+    du_q: Vec<f64>,
+}
+
+impl SolverState {
+    fn new(n_active: usize, n_indep: usize) -> Self {
+        Self {
+            solver: make_solver(SolverBackend::DirectSparseCholesky),
+            k_free_cache: CscCache::new(),
+            k_red_cache: CscCache::new(),
+            r_red: vec![0.0; n_indep],
+            f_ext_red: vec![0.0; n_indep],
+            du_red: vec![0.0; n_indep],
+            du_free: vec![0.0; n_active],
+            q_red: vec![0.0; n_indep],
+            du_r_red: vec![0.0; n_indep],
+            du_q_red: vec![0.0; n_indep],
+            du_r: vec![0.0; n_active],
+            du_q: vec![0.0; n_active],
+        }
+    }
+}
 
 /// 増分解析（プッシュオーバー解析、P5 §7）。
 /// `max_disp` は目標変位 [mm] のみの終了判定（[`PushoverTarget::from_max_disp`]）に
@@ -97,6 +156,12 @@ pub fn pushover_analysis_recording(
     if n_active == 0 {
         return Err("no active DOF".into());
     }
+
+    // ソルバインスタンス・CSC 組立てキャッシュ・作業バッファ（[`SolverState`] 参照）。
+    // 長期荷重初期載荷・荷重制御・変位制御・弧長法・[`elastic_roof_slope`] の
+    // 全フェーズで共有し、フェーズをまたいで同一インスタンスを持ち回る
+    // （時刻歴応答解析高速化・第2波と同じ方針）。
+    let mut st = SolverState::new(n_active, reducer.n_indep);
 
     // 部材の終局耐力を算定できない設定不備（耐震壁の Qu、線材の材料強度未入力）は、
     // 代替値で埋めず解析を止める。耐力が定まらない部材は際限なく応力を負担し、
@@ -216,8 +281,9 @@ pub fn pushover_analysis_recording(
     // 均等刻みの初期 λ 増分に用いる弾性勾配（頂部変位/λ）。初期接線剛性で
     // K·δu = q を 1 回解いて推定し、推定できない場合（頂部 DOF 不明・特異など）は
     // 従来の固定 λ 刻みへフォールバックする。
-    let mut roof_slope = du_uniform
-        .and_then(|_| elastic_roof_slope(model, dofmap, reducer, &behaviors, use_kg, dir, &q));
+    let mut roof_slope = du_uniform.and_then(|_| {
+        elastic_roof_slope(model, dofmap, reducer, &behaviors, use_kg, dir, &q, &mut st)
+    });
     let adaptive = du_uniform.is_some() && roof_slope.is_some();
 
     // 荷重制御の λ 上限。段階制御では λ=1（設計地震力レベル）で変位制御へ
@@ -283,6 +349,7 @@ pub fn pushover_analysis_recording(
                     use_kg,
                     n_active,
                     &total_disp,
+                    &mut st,
                 )? {
                     Some(step_du_free) => {
                         for b in behaviors.iter_mut() {
@@ -390,6 +457,7 @@ pub fn pushover_analysis_recording(
                 use_kg,
                 n_active,
                 &total_disp,
+                &mut st,
             )?;
 
             if let Some(step_du_free) = converged {
@@ -542,8 +610,14 @@ pub fn pushover_analysis_recording(
 
                     // 反復上限は荷重制御フェーズと同じ理由（準ニュートン形式）で 50 回。
                     for _iter in 0..50 {
-                        let k_free = assemble_k(model, dofmap, &behaviors, use_kg);
-                        let k_red = reducer.reduce_k(&k_free);
+                        let k_free = assemble_k_cached(
+                            model,
+                            dofmap,
+                            &behaviors,
+                            use_kg,
+                            &mut st.k_free_cache,
+                        );
+                        let k_red = reducer.reduce_k_cached(&k_free, &mut st.k_red_cache);
                         let mut f_int = compute_f_int(model, dofmap, &behaviors);
                         // 支点ばね（`Node::support_spring`）の内力寄与。トライアル変位は
                         // ステップ開始時の確定変位 `total_disp` ＋このステップの
@@ -565,16 +639,21 @@ pub fn pushover_analysis_recording(
                             .collect();
                         let r_free: Vec<f64> =
                             f_ext.iter().zip(f_int.iter()).map(|(e, i)| e - i).collect();
-                        let r_red = reducer.reduce_f(&r_free);
+                        reducer.reduce_f_into(&r_free, &mut st.r_red);
 
                         // 収束判定: 力の相対ノルム（外力ノルム基準、荷重制御と同形式）
                         // に加え、頂部変位が目標に一致していること。
                         let u_roof = total_disp[roof_active] + step_du_free[roof_active];
                         let gap = sub_target - u_roof;
-                        let r_norm: f64 = r_red.iter().map(|x| x * x).sum::<f64>().sqrt();
-                        let f_ext_red = reducer.reduce_f(&f_ext);
-                        let f_scale: f64 =
-                            f_ext_red.iter().map(|x| x * x).sum::<f64>().sqrt().max(1.0);
+                        let r_norm: f64 = st.r_red.iter().map(|x| x * x).sum::<f64>().sqrt();
+                        reducer.reduce_f_into(&f_ext, &mut st.f_ext_red);
+                        let f_scale: f64 = st
+                            .f_ext_red
+                            .iter()
+                            .map(|x| x * x)
+                            .sum::<f64>()
+                            .sqrt()
+                            .max(1.0);
                         if r_norm < 1e-6 * f_scale
                             && gap.abs() < (sub_target.abs() * 1e-6).max(1e-9)
                         {
@@ -585,37 +664,34 @@ pub fn pushover_analysis_recording(
                         // 崩壊機構の形成で接線剛性が正定値性を失った場合は factorize が
                         // 失敗する。エラーで解析全体を落とさず、attempt 側の増分半減へ
                         // 回す（半減しても解けなければこのフェーズを打ち切る）。
-                        let mut solver = make_solver(SolverBackend::Auto);
-                        if solver.factorize(&k_red).is_err() {
+                        if st.solver.factorize(&k_red).is_err() {
                             break;
                         }
-                        let Ok(du_r_red) = solver.solve(&r_red) else {
+                        if st.solver.solve_into(&st.r_red, &mut st.du_r_red).is_err() {
                             break;
-                        };
-                        let q_red = reducer.reduce_f(&q);
-                        let Ok(du_q_red) = solver.solve(&q_red) else {
+                        }
+                        reducer.reduce_f_into(&q, &mut st.q_red);
+                        if st.solver.solve_into(&st.q_red, &mut st.du_q_red).is_err() {
                             break;
-                        };
-                        let du_r = reducer.expand_u(&du_r_red);
-                        let du_q = reducer.expand_u(&du_q_red);
+                        }
+                        reducer.expand_u_into(&st.du_r_red, &mut st.du_r);
+                        reducer.expand_u_into(&st.du_q_red, &mut st.du_q);
                         // 荷重パターンが頂部を動かせない（δu_q[roof]≈0）場合は λ を
                         // 決定できない（拘束と載荷が直交）。増分半減しても解決しないが、
                         // モデル設定異常の防御として反復を打ち切る。
-                        let denom = du_q[roof_active];
+                        let denom = st.du_q[roof_active];
                         if denom.abs() < 1e-30 {
                             break;
                         }
-                        let dlambda_ctrl = (gap - du_r[roof_active]) / denom;
+                        let dlambda_ctrl = (gap - st.du_r[roof_active]) / denom;
                         lambda += dlambda_ctrl;
-                        let du_free: Vec<f64> = du_r
-                            .iter()
-                            .zip(du_q.iter())
-                            .map(|(&r, &qv)| r + dlambda_ctrl * qv)
-                            .collect();
-                        for (acc, &d) in step_du_free.iter_mut().zip(du_free.iter()) {
+                        for i in 0..n_active {
+                            st.du_free[i] = st.du_r[i] + dlambda_ctrl * st.du_q[i];
+                        }
+                        for (acc, &d) in step_du_free.iter_mut().zip(st.du_free.iter()) {
                             *acc += d;
                         }
-                        apply_du_to_behaviors(model, dofmap, &mut behaviors, &du_free);
+                        apply_du_to_behaviors(model, dofmap, &mut behaviors, &st.du_free);
                     }
 
                     if converged {
@@ -699,14 +775,14 @@ pub fn pushover_analysis_recording(
 
         for _step in 0..20 {
             let snap = StateSnapshot::capture(&behaviors);
-            let k_free = assemble_k(model, dofmap, &behaviors, use_kg);
-            let k_red = reducer.reduce_k(&k_free);
+            let k_free = assemble_k_cached(model, dofmap, &behaviors, use_kg, &mut st.k_free_cache);
+            let k_red = reducer.reduce_k_cached(&k_free, &mut st.k_red_cache);
 
             // ここは分解の失敗（正定値でない＝不安定化）を耐力喪失の終了判定に
             // 使うため、factorize が失敗し得る直接法を明示する（Auto の PCG 経路は
-            // factorize では失敗しないので判定が効かなくなる）。
-            let mut solver = make_solver(SolverBackend::DirectSparseCholesky);
-            if solver.factorize(&k_red).is_err() {
+            // factorize では失敗しないので判定が効かなくなる。SolverState は既定で
+            // DirectSparseCholesky を保持するため、ここでも同じインスタンスを使う）。
+            if st.solver.factorize(&k_red).is_err() {
                 model.restore(&snap, &mut behaviors);
                 break;
             }
@@ -722,12 +798,22 @@ pub fn pushover_analysis_recording(
                 let model_ref: &Model = &*model;
                 let behaviors_ref = &mut behaviors;
                 let total_disp_ref: &Vec<f64> = &total_disp;
+                // st を弧長修正子の solve クロージャへ再借用する（このブロックの
+                // スコープ内でのみ借用し、以後のステップで st を再度使えるようにする）。
+                let st_ref = &mut st;
                 arc_solver.step(
                     &q,
-                    &mut |r: &[f64]| -> Result<Vec<f64>, String> {
-                        let r_red = reducer.reduce_f(r);
-                        let du_red = solver.solve(&r_red).map_err(|e| format!("{:?}", e))?;
-                        Ok(reducer.expand_u(&du_red))
+                    &mut |r: &[f64], out: &mut Vec<f64>| -> Result<(), String> {
+                        reducer.reduce_f_into(r, &mut st_ref.r_red);
+                        st_ref
+                            .solver
+                            .solve_into(&st_ref.r_red, &mut st_ref.du_red)
+                            .map_err(|e| format!("{:?}", e))?;
+                        // 弧長法側の出力バッファへ直接展開する（従来はローカルバッファ
+                        // へ展開して clone で返しており、修正子反復ごとに O(n) の複製が
+                        // 発生していた）。
+                        reducer.expand_u_into(&st_ref.du_red, out);
+                        Ok(())
                     },
                     &mut |delta_u: &[f64]| -> Result<Vec<f64>, String> {
                         apply_du_to_behaviors(model_ref, dofmap, behaviors_ref, delta_u);
@@ -888,7 +974,7 @@ fn apply_du_to_behaviors(
     du_free: &[f64],
 ) {
     let ctx = Ctx { model };
-    for b in behaviors.iter_mut() {
+    let update_one = |b: &mut Box<dyn ElementBehavior>| {
         let gdofs = b.global_dofs(dofmap);
         let mut du_elem = LocalVec {
             data: SmallVec::from_elem(0.0, gdofs.len()),
@@ -899,6 +985,18 @@ fn apply_du_to_behaviors(
             }
         }
         b.update_state(&du_elem, false, &ctx);
+    };
+    // 要素間にデータ依存が無く、各要素は自身の `&mut` のみを更新するため、並列度設定
+    // （`squid_n_math::parallelism`）が Auto/Threads のときは rayon で並列化する。
+    // `par_iter_mut()` は要素番号順のスロットへ書き込むだけでスレッドスケジューリング
+    // の影響を受けないため、結果は逐次実行と完全にビット一致する（時刻歴応答解析
+    // 高速化・第2波申し送り 4.1 の設計方針）。Deterministic（既定）では従来どおり
+    // 逐次実行する。
+    if squid_n_math::parallelism::is_parallel() {
+        use rayon::prelude::*;
+        behaviors.par_iter_mut().for_each(update_one);
+    } else {
+        behaviors.iter_mut().for_each(update_one);
     }
 }
 
@@ -917,6 +1015,12 @@ fn apply_du_to_behaviors(
 /// `total_disp_base + step_du_free`（この関数のローカル累積）に対して都度
 /// 評価する必要があり（要素のように自身でトライアル状態を保持しないため）、
 /// 呼び出し側から基準変位を明示的に受け取る。
+///
+/// `st` は呼び出し元（長期載荷・荷重制御の各フェーズ）が保持するソルバインスタンス・
+/// CSC 組立てキャッシュ・作業バッファ（[`SolverState`] 参照、時刻歴応答解析高速化・
+/// 第2波と同じ方針）。K は対称正定値を前提とする（旧 `SolverBackend::Auto` も本解析の
+/// 自由度規模では常に疎 Cholesky 直接法を選ぶため、`DirectSparseCholesky` を明示しても
+/// 既存挙動と同一）。
 #[allow(clippy::too_many_arguments)]
 fn newton_converge(
     model: &Model,
@@ -927,11 +1031,12 @@ fn newton_converge(
     use_kg: bool,
     n_active: usize,
     total_disp_base: &[f64],
+    st: &mut SolverState,
 ) -> Result<Option<Vec<f64>>, String> {
     let mut step_du_free = vec![0.0; n_active];
     for _iter in 0..50 {
-        let k_free = assemble_k(model, dofmap, behaviors, use_kg);
-        let k_red = reducer.reduce_k(&k_free);
+        let k_free = assemble_k_cached(model, dofmap, behaviors, use_kg, &mut st.k_free_cache);
+        let k_red = reducer.reduce_k_cached(&k_free, &mut st.k_red_cache);
         let mut f_int = compute_f_int(model, dofmap, behaviors);
         let u_trial: Vec<f64> = total_disp_base
             .iter()
@@ -940,25 +1045,24 @@ fn newton_converge(
             .collect();
         add_support_spring_f_int(model, dofmap, &u_trial, &mut f_int);
         let r_free: Vec<f64> = f_ext.iter().zip(f_int.iter()).map(|(e, i)| e - i).collect();
-        let r_red = reducer.reduce_f(&r_free);
-        let f_ext_red = reducer.reduce_f(f_ext);
-        let r_norm: f64 = r_red.iter().map(|x| x * x).sum::<f64>().sqrt();
-        let f_norm: f64 = f_ext_red.iter().map(|x| x * x).sum::<f64>().sqrt();
+        reducer.reduce_f_into(&r_free, &mut st.r_red);
+        reducer.reduce_f_into(f_ext, &mut st.f_ext_red);
+        let r_norm: f64 = st.r_red.iter().map(|x| x * x).sum::<f64>().sqrt();
+        let f_norm: f64 = st.f_ext_red.iter().map(|x| x * x).sum::<f64>().sqrt();
         if r_norm < 1e-6 * f_norm.max(1.0) {
             return Ok(Some(step_du_free));
         }
-        let mut solver = make_solver(SolverBackend::Auto);
-        solver
+        st.solver
             .factorize(&k_red)
             .map_err(|e| format!("factor: {:?}", e))?;
-        let du_red = solver
-            .solve(&r_red)
+        st.solver
+            .solve_into(&st.r_red, &mut st.du_red)
             .map_err(|e| format!("solve: {:?}", e))?;
-        let du_free = reducer.expand_u(&du_red);
-        for (acc, &d) in step_du_free.iter_mut().zip(du_free.iter()) {
+        reducer.expand_u_into(&st.du_red, &mut st.du_free);
+        for (acc, &d) in step_du_free.iter_mut().zip(st.du_free.iter()) {
             *acc += d;
         }
-        apply_du_to_behaviors(model, dofmap, behaviors, &du_free);
+        apply_du_to_behaviors(model, dofmap, behaviors, &st.du_free);
     }
     Ok(None)
 }
@@ -967,6 +1071,11 @@ fn newton_converge(
 /// [mm/λ] を推定する（均等変位刻み制御の初期 λ 増分の算定用）。頂部 DOF が特定
 /// できない・分解や求解に失敗する・勾配が退化している場合は `None` を返し、
 /// 呼び出し側は従来の固定 λ 刻みへフォールバックする。
+///
+/// `st` は呼び出し元が全フェーズを通じて保持するソルバインスタンス・CSC 組立て
+/// キャッシュ・作業バッファ（[`SolverState`] 参照）。本関数は解析冒頭で 1 回だけ
+/// 呼ばれるため、以後の長期載荷・荷重制御フェーズと同じキャッシュに相乗りする。
+#[allow(clippy::too_many_arguments)]
 fn elastic_roof_slope(
     model: &Model,
     dofmap: &DofMap,
@@ -975,14 +1084,15 @@ fn elastic_roof_slope(
     use_kg: bool,
     dir: SeismicDir,
     q: &[f64],
+    st: &mut SolverState,
 ) -> Option<f64> {
     let roof_active = get_roof_dof(model, dofmap, dir)?;
-    let k_free = assemble_k(model, dofmap, behaviors, use_kg);
-    let k_red = reducer.reduce_k(&k_free);
-    let mut solver = make_solver(SolverBackend::Auto);
-    solver.factorize(&k_red).ok()?;
-    let du_red = solver.solve(&reducer.reduce_f(q)).ok()?;
-    let du = reducer.expand_u(&du_red);
-    let slope = du.get(roof_active).copied().unwrap_or(0.0).abs();
+    let k_free = assemble_k_cached(model, dofmap, behaviors, use_kg, &mut st.k_free_cache);
+    let k_red = reducer.reduce_k_cached(&k_free, &mut st.k_red_cache);
+    st.solver.factorize(&k_red).ok()?;
+    reducer.reduce_f_into(q, &mut st.r_red);
+    st.solver.solve_into(&st.r_red, &mut st.du_red).ok()?;
+    reducer.expand_u_into(&st.du_red, &mut st.du_free);
+    let slope = st.du_free.get(roof_active).copied().unwrap_or(0.0).abs();
     (slope > 1e-12).then_some(slope)
 }

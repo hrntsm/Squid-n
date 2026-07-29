@@ -55,6 +55,15 @@ pub struct ConcentratedSpringBeam {
     /// 可撓端回転のトライアル値。
     trial_thb_i: f64,
     trial_thb_j: f64,
+    /// [`crate::beam::BeamElement::local_stiffness_flex`] の結果キャッシュ
+    /// （可撓部の局所剛性 12×12、剛域変換・材端塑性ばねの静縮約の**手前**）。
+    /// 幾何・断面・材端条件は要素生成後不変のため、初回計算値を使い回してよい
+    /// （`solve_internal_equilibrium`／`internal_force`／`tangent_stiffness` の
+    /// 3 箇所から要素内 Newton・グローバル Newton の毎回呼ばれるため、
+    /// 再構築コスト（`BeamElement::clone()` を含む）を避ける）。
+    /// 派生値のため snapshot_state / restore_state の対象には含めない
+    /// （restore 後も幾何が変わらない限り正しい値のまま使い続けられる）。
+    flex_stiffness_cache: std::sync::OnceLock<LocalMat>,
 }
 
 impl ConcentratedSpringBeam {
@@ -78,6 +87,7 @@ impl ConcentratedSpringBeam {
             thb_j: 0.0,
             trial_thb_i: 0.0,
             trial_thb_j: 0.0,
+            flex_stiffness_cache: std::sync::OnceLock::new(),
         }
     }
 
@@ -121,6 +131,15 @@ impl ConcentratedSpringBeam {
         self.spring_j.set_yield(m_lim);
     }
 
+    /// 可撓部の局所剛性 12×12（[`crate::beam::BeamElement::local_stiffness_flex`]）。
+    /// 幾何・断面・材端条件は要素生成後不変なので初回計算値をキャッシュして返す
+    /// （`solve_internal_equilibrium`／`internal_force`／`tangent_stiffness` の
+    /// 毎呼び出しで `BeamElement::clone()` を含む再構築を避ける）。
+    fn k_flex(&self) -> &LocalMat {
+        self.flex_stiffness_cache
+            .get_or_init(|| self.elastic.local_stiffness_flex())
+    }
+
     /// 現在のトライアル節点変位を可撓端系の局所変位へ写す
     /// （グローバル→局所回転→剛域変換。回転成分は剛域で変わらない）。
     fn u_flex_local(&self) -> [f64; 12] {
@@ -136,7 +155,7 @@ impl ConcentratedSpringBeam {
     /// 履歴則は区分線形のため通常数回で収束する）。ばねはトライアル状態
     /// （確定状態からの trial 評価）を保持したまま返す。
     fn solve_internal_equilibrium(&mut self) {
-        let k_flex = self.elastic.local_stiffness_flex();
+        let k_flex = self.k_flex();
         let u_flex = self.u_flex_local();
         let er = SPRING_ROT_DOFS;
         let thn = [u_flex[er[0]], u_flex[er[1]]];
@@ -155,14 +174,9 @@ impl ConcentratedSpringBeam {
                 mb[k] = s;
             }
             let g = [thn[0] - thb[0], thn[1] - thb[1]];
-            let (ms_i, kt_i) = {
-                let mut m = self.spring_i.clone_box();
-                m.trial(g[0])
-            };
-            let (ms_j, kt_j) = {
-                let mut m = self.spring_j.clone_box();
-                m.trial(g[1])
-            };
+            // 状態を書き換えない probe（committed 基準の非破壊評価）で clone_box を回避。
+            let (ms_i, kt_i) = self.spring_i.probe(g[0]);
+            let (ms_j, kt_j) = self.spring_j.probe(g[1]);
             let r = [mb[0] - ms_i, mb[1] - ms_j];
             let scale = mb[0]
                 .abs()
@@ -298,9 +312,13 @@ fn condense_springs(k_elem: &LocalMat, k_i: f64, k_j: f64) -> LocalMat {
 /// (a) 剛域を持つ部材の可撓長が全長のままになる、(b) `end_cond` のピン・半剛が
 /// 反映されず両端剛接として解かれる（剛性の過大評価）という食い違いがあった。
 /// ばねは直列なので 1. の接合部ばねと 2. の塑性ばねの順序は結果に影響しない。
-fn compute_kstar(elastic: &crate::beam::BeamElement, kti: f64, ktj: f64) -> LocalMat {
-    let k_flex = elastic.local_stiffness_flex();
-    let k_end = condense_springs(&k_flex, kti, ktj);
+fn compute_kstar(
+    elastic: &crate::beam::BeamElement,
+    k_flex: &LocalMat,
+    kti: f64,
+    ktj: f64,
+) -> LocalMat {
+    let k_end = condense_springs(k_flex, kti, ktj);
     // 剛域長は `local_stiffness_flex` と同じ規則で解決する（可撓長が残らない
     // 病的な入力は剛域なし扱い。`BeamElement::rigid_lengths`）。
     let (li, lj) = elastic.rigid_lengths();
@@ -329,17 +347,12 @@ impl ElementBehavior for ConcentratedSpringBeam {
     }
 
     fn tangent_stiffness(&self, _state: &ElemState, _ctx: &Ctx) -> LocalMat {
-        let kti = {
-            let mut m = self.spring_i.clone_box();
-            m.trial(self.trial_rot_i).1
-        };
-        let ktj = {
-            let mut m = self.spring_j.clone_box();
-            m.trial(self.trial_rot_j).1
-        };
+        // 状態を書き換えない probe（committed 基準の非破壊評価）で clone_box を回避。
+        let kti = self.spring_i.probe(self.trial_rot_i).1;
+        let ktj = self.spring_j.probe(self.trial_rot_j).1;
 
         let k_local = match self.model {
-            SpringModel::OneComponent => compute_kstar(&self.elastic, kti, ktj),
+            SpringModel::OneComponent => compute_kstar(&self.elastic, self.k_flex(), kti, ktj),
             SpringModel::TwoComponent => unimplemented!(
                 "TwoComponent spring model is not yet implemented (P5 §3). Use OneComponent."
             ),
@@ -354,7 +367,7 @@ impl ElementBehavior for ConcentratedSpringBeam {
         // Newton 反復中の未確定変位も反映する）。節点の回転自由度にはばねを介して
         // モーメントが伝わるため、回転スロットはばね側の履歴力で置き換える
         // （内部平衡の解では両者は一致する）。
-        let k_flex = self.elastic.local_stiffness_flex();
+        let k_flex = self.k_flex();
         let u_flex = self.u_flex_local();
         let er = SPRING_ROT_DOFS;
         let mut uh = u_flex;
@@ -369,14 +382,9 @@ impl ElementBehavior for ConcentratedSpringBeam {
             }
             *f = s;
         }
-        let ms_i = {
-            let mut m = self.spring_i.clone_box();
-            m.trial(self.trial_rot_i).0
-        };
-        let ms_j = {
-            let mut m = self.spring_j.clone_box();
-            m.trial(self.trial_rot_j).0
-        };
+        // 状態を書き換えない probe（committed 基準の非破壊評価）で clone_box を回避。
+        let ms_i = self.spring_i.probe(self.trial_rot_i).0;
+        let ms_j = self.spring_j.probe(self.trial_rot_j).0;
         f_flex[er[0]] = ms_i;
         f_flex[er[1]] = ms_j;
 

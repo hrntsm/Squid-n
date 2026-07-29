@@ -154,23 +154,55 @@ pub fn solve_eigen_with_solver(
     // 質量ゼロ方向は +∞ になる）。
     let mut last_eigenvalues = vec![f64::MAX; q];
 
+    // 反復ループ内で毎回 Vec を新規確保しないよう、作業バッファをループ外で
+    // 確保して使い回す。y・x_new は各反復で n*q 個の要素すべてを漏れなく
+    // 書き込む（y は col×r の二重ループが全 (r,col) を、x_new は i×j の
+    // 二重ループが全 (i,j) を埋める）ため、ゼロクリアは不要。
+    let mut y = vec![0.0; n * q];
+    let mut x_new = vec![0.0; n * q];
+    let mut x_col = vec![0.0; n];
+    let mut rhs = vec![0.0; n];
+    // solver.solve_into の書き込み先。長さが解の次元と異なる場合のみ内部で
+    // resize されるため、反復・列をまたいで使い回すことで確保回数を削減する。
+    let mut yi: Vec<f64> = Vec::new();
+    let mut k_bar = vec![0.0; q * q];
+    let mut m_bar = vec![0.0; q * q];
+    let mut proj_col_buf = vec![0.0; n];
+    let mut proj_z_buf = vec![0.0; n * q];
+
     for _iteration in 0..EIGEN_MAX_ITER {
-        let mut y = vec![0.0; n * q];
         for col in 0..q {
-            let x_col: Vec<f64> = (0..n).map(|r| x[r * q + col]).collect();
-            let rhs = spmv(&m_red, &x_col);
-            let yi = solver.solve(&rhs)?;
+            for r in 0..n {
+                x_col[r] = x[r * q + col];
+            }
+            squid_n_math::sparse::sparse_matvec_into(&m_red, &x_col, &mut rhs);
+            solver.solve_into(&rhs, &mut yi)?;
             for r in 0..n {
                 y[r * q + col] = yi[r];
             }
         }
 
-        let k_bar = proj_yty(&y, &k_red, n, q);
-        let m_bar = proj_yty(&y, &m_red, n, q);
+        proj_yty(
+            &y,
+            &k_red,
+            n,
+            q,
+            &mut proj_col_buf,
+            &mut proj_z_buf,
+            &mut k_bar,
+        );
+        proj_yty(
+            &y,
+            &m_red,
+            n,
+            q,
+            &mut proj_col_buf,
+            &mut proj_z_buf,
+            &mut m_bar,
+        );
 
         let (eigenvalues, eigvecs_q) = gevd_jacobi(&k_bar, &m_bar, q);
 
-        let mut x_new = vec![0.0; n * q];
         for i in 0..n {
             for j in 0..q {
                 let mut s = 0.0;
@@ -180,7 +212,10 @@ pub fn solve_eigen_with_solver(
                 x_new[i * q + j] = s;
             }
         }
-        x = x_new;
+        // x_new は上のループで全要素を書き込み済みなので swap で使い回す
+        // （swap 後に x_new へ残る旧 x の値は、次反復の書き込みで上書きされるか、
+        // 収束してループを抜ければそのまま破棄される）。
+        std::mem::swap(&mut x, &mut x_new);
 
         let mut converged = 0;
         for m in 0..n_modes {
@@ -250,13 +285,8 @@ node.mass や材料の密度(ρ)で並進質量を追加するか、要求モー
         shapes.push(phi);
     }
 
-    let (participation, effective_mass) =
+    let (participation, effective_mass, node_shapes) =
         compute_participation(&shapes, &m_free, reducer, dofmap, model);
-
-    let node_shapes = shapes
-        .iter()
-        .map(|phi_red| expand_node_shape(phi_red, reducer, dofmap, model.nodes.len()))
-        .collect();
 
     Ok(ModalResult {
         omega2,
@@ -268,17 +298,14 @@ node.mass や材料の密度(ρ)で並進質量を追加するか、要求モー
     })
 }
 
-/// 縮約座標のモード形状を節点×6成分へ展開する
-/// （縮約独立自由度 → `Reducer::expand_u` → DofMap active順 → 節点×6散布）。
+/// 展開済み（`Reducer::expand_u` 済み）のモード形状を節点×6成分へ散布する。
+///
+/// `phi_free` は呼び出し側（[`compute_participation`]）で 1 回だけ計算した値を渡す
+/// （かつては `compute_participation` 内の質量射影用と本関数内とで同じ `expand_u` を
+/// モードごとに二重計算していたため、その重複を排除している）。
 /// 静的解析の変位展開（`crate::analysis::Analysis` の `expand_disp`）と同じ経路で、
 /// 剛床のスレーブ自由度にはマスターに従属した値が入る。fixed・非構造自由度は 0。
-fn expand_node_shape(
-    phi_red: &[f64],
-    reducer: &Reducer,
-    dofmap: &DofMap,
-    n_nodes: usize,
-) -> Vec<[f64; 6]> {
-    let phi_free = reducer.expand_u(phi_red);
+fn scatter_node_shape(phi_free: &[f64], dofmap: &DofMap, n_nodes: usize) -> Vec<[f64; 6]> {
     let mut disp = vec![[0.0; 6]; n_nodes];
     for (ni, d6) in disp.iter_mut().enumerate() {
         for (d, slot) in d6.iter_mut().enumerate() {
@@ -342,40 +369,46 @@ fn spmv(mat: &faer::sparse::SparseColMat<usize, f64>, x: &[f64]) -> Vec<f64> {
     squid_n_math::sparse::sparse_matvec(mat, x)
 }
 
-/// Y^T·A·Y（q×q 対称行列）を、A の非ゼロ要素だけを使って計算する。
+/// Y^T·A·Y（q×q 対称行列）を、A の非ゼロ要素だけを使って計算する（スクラッチ再利用版）。
 ///
 /// 従来は (a,b) 全ペアについて `mat.get()`（二分探索）で密に走査していたため
-/// O(q²·n²) だった。ここでは A の列ごとの積 Z = A·Y（各列は [`spmv`] で
-/// O(nnz)、q 列で O(nnz·q)）を先に求め、続いて Yᵀ·Z（O(n·q²)）を計算する
-/// ことで、密行列走査を完全に排除する。結果の対称性は i≤j のみ計算して
-/// 対角外を転写することで維持する（数値順序が変わるため最終桁のみ従来と
-/// 異なり得るが、固有値解析は収束判定つき反復であり許容される）。
+/// O(q²·n²) だった。ここでは A の列ごとの積 Z = A·Y（各列は spmv で O(nnz)、
+/// q 列で O(nnz·q)）を先に求め、続いて Yᵀ·Z（O(n·q²)）を計算することで、
+/// 密行列走査を完全に排除する。結果の対称性は i≤j のみ計算して対角外を
+/// 転写することで維持する（数値順序が変わるため最終桁のみ従来と異なり得るが、
+/// 固有値解析は収束判定つき反復であり許容される）。
+///
+/// `col_buf`（長さ n）・`z_buf`（長さ n*q、列 j のデータを
+/// `z_buf[j*n..(j+1)*n]` に格納）は呼び出し側が確保して使い回す作業バッファ。
+/// 結果は `result`（長さ q*q）へ書き込む。部分空間反復のループ内で毎回 Vec を
+/// 新規確保しないためのもので、計算内容自体は従来の戻り値版と同一。
 fn proj_yty(
     y: &[f64],
     mat_red: &faer::sparse::SparseColMat<usize, f64>,
     n: usize,
     q: usize,
-) -> Vec<f64> {
-    // z_cols[j] = A · y_col_j
-    let z_cols: Vec<Vec<f64>> = (0..q)
-        .map(|j| {
-            let col: Vec<f64> = (0..n).map(|r| y[r * q + j]).collect();
-            spmv(mat_red, &col)
-        })
-        .collect();
+    col_buf: &mut [f64],
+    z_buf: &mut [f64],
+    result: &mut [f64],
+) {
+    // z_buf[j] = A · y_col_j
+    for j in 0..q {
+        for r in 0..n {
+            col_buf[r] = y[r * q + j];
+        }
+        squid_n_math::sparse::sparse_matvec_into(mat_red, col_buf, &mut z_buf[j * n..(j + 1) * n]);
+    }
 
-    let mut result = vec![0.0; q * q];
     for i in 0..q {
         for j in i..q {
             let mut s = 0.0;
             for a in 0..n {
-                s += y[a * q + i] * z_cols[j][a];
+                s += y[a * q + i] * z_buf[j * n + a];
             }
             result[i * q + j] = s;
             result[j * q + i] = s;
         }
     }
-    result
 }
 
 /// φᵀ·M·φ を M の非ゼロ要素だけを使って計算する（[`spmv`] 1 回 + 内積）。
@@ -594,44 +627,69 @@ fn gevd_jacobi(k_in: &[f64], m_in: &[f64], n: usize) -> (Vec<f64>, Vec<f64>) {
     (sorted_vals, sorted_vecs)
 }
 
+/// [`compute_participation`] の戻り値
+/// （刺激係数・有効質量比・節点単位のモード形状のタプル）。
+type ParticipationResult = (Vec<[f64; 3]>, Vec<[f64; 3]>, Vec<Vec<[f64; 6]>>);
+
+/// モード刺激係数・有効質量比を計算し、あわせて節点単位のモード形状も返す
+/// （[`ModalResult::participation`]・[`ModalResult::effective_mass`]・
+/// [`ModalResult::node_shapes`]）。
+///
+/// `phi_free = reducer.expand_u(phi_red)` と、それを使った `m_phi = M·phi_free`・
+/// `phi_m_phi = φᵀMφ` は方向（X/Y/Z）に依存しない値なのに、以前はモード×3方向
+/// ループの内側（3方向で同一計算を3回繰り返す構造）で毎回再計算していた。
+/// ここではモードごとに1回だけ計算し、内側の方向ループではそれを使い回す。
+/// 各スカラー値（`phi_m_phi`・`phi_m_r`）自体の演算列（加算順序）は元の実装と
+/// 完全に同一のまま、同じ値の重複計算だけを取り除いているため、結果はビット単位で
+/// 一致する。`node_shapes` の展開（`expand_u` → 節点散布）も同じ `phi_free` を
+/// 使い回すことで、`compute_participation` と `expand_node_shape`（旧）が個別に
+/// 行っていた `expand_u` の二重計算を解消している。
 fn compute_participation(
     shapes: &[Vec<f64>],
     m_free: &faer::sparse::SparseColMat<usize, f64>,
     reducer: &Reducer,
     dofmap: &DofMap,
     model: &Model,
-) -> (Vec<[f64; 3]>, Vec<[f64; 3]>) {
+) -> ParticipationResult {
     let n_modes = shapes.len();
     let mut participation = vec![[0.0; 3]; n_modes];
     let mut effective_mass = vec![[0.0; 3]; n_modes];
+    let mut node_shapes = Vec::with_capacity(n_modes);
 
     let n_free = dofmap.n_active();
     let n_nodes = model.nodes.len();
 
-    for dir_idx in 0..3 {
-        let mut r_free = vec![0.0; n_free];
+    // 方向ごとの単位応答ベクトル r_free はモードに依存しないため、モードループの
+    // 外で（元の実装と同じ計算・同じ順序で）3方向分をあらかじめ用意しておく。
+    let r_free: [Vec<f64>; 3] = std::array::from_fn(|dir_idx| {
+        let mut r = vec![0.0; n_free];
         for ni in 0..n_nodes {
             let g = ni * squid_n_core::dof::DOF_PER_NODE + dir_idx;
             if let Some(active) = dofmap.active(g) {
-                r_free[active as usize] = 1.0;
+                r[active as usize] = 1.0;
             }
         }
+        r
+    });
 
-        for (m_idx, phi_red) in shapes.iter().enumerate() {
-            let phi_free = reducer.expand_u(phi_red);
+    for (m_idx, phi_red) in shapes.iter().enumerate() {
+        let phi_free = reducer.expand_u(phi_red);
 
-            // 従来は (a,b) 全ペアを `mat.get()` で密走査していた（モード×3方向で
-            // O(n_free²)）。M の非ゼロ要素のみを使う spmv に置き換え O(nnz) にする。
-            let m_phi = spmv(m_free, &phi_free);
+        // 従来は (a,b) 全ペアを `mat.get()` で密走査していた（モード×3方向で
+        // O(n_free²)）。M の非ゼロ要素のみを使う spmv に置き換え O(nnz) にする。
+        // また m_phi・phi_m_phi は方向に依存しないため、3方向ループの内側ではなく
+        // ここでモードごとに1回だけ計算する。
+        let m_phi = spmv(m_free, &phi_free);
 
-            let mut phi_m_phi = 0.0;
-            for a in 0..n_free {
-                phi_m_phi += phi_free[a] * m_phi[a];
-            }
+        let mut phi_m_phi = 0.0;
+        for a in 0..n_free {
+            phi_m_phi += phi_free[a] * m_phi[a];
+        }
 
+        for (dir_idx, r) in r_free.iter().enumerate() {
             let mut phi_m_r = 0.0;
             for a in 0..n_free {
-                phi_m_r += m_phi[a] * r_free[a];
+                phi_m_r += m_phi[a] * r[a];
             }
 
             if phi_m_phi.abs() > 1e-30 {
@@ -639,9 +697,11 @@ fn compute_participation(
                 effective_mass[m_idx][dir_idx] = phi_m_r * phi_m_r / phi_m_phi;
             }
         }
+
+        node_shapes.push(scatter_node_shape(&phi_free, dofmap, n_nodes));
     }
 
-    (participation, effective_mass)
+    (participation, effective_mass, node_shapes)
 }
 
 #[cfg(test)]

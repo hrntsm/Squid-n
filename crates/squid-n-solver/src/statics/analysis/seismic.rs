@@ -11,7 +11,6 @@ use squid_n_math::solver::SolveError;
 
 use super::config::{AiMode, SeismicCfg, SeismicDir};
 use super::Analysis;
-use crate::eigen;
 use crate::linear::StaticOnce;
 
 /// 建物の基部レベル（elevation の基準 0）を求める。
@@ -268,13 +267,9 @@ impl Analysis<'_> {
                 if let Some(&t) = self.semi_precise_t.get() {
                     return Ok(t);
                 }
-                let modal = eigen::solve_eigen_with_solver(
-                    self.model,
-                    &self.dofmap,
-                    &self.reducer,
-                    1,
-                    &*self.solver,
-                )?;
+                // ソルバの振り分け（PCG 規模では直接法で分解し直す）は
+                // `Analysis::eigen_solver_dispatch` に委ねる。
+                let modal = self.eigen_solver_dispatch(1)?;
                 let t = modal.period.first().copied().unwrap_or(0.3);
                 let _ = self.semi_precise_t.set(t);
                 Ok(t)

@@ -48,6 +48,24 @@ pub(crate) fn assemble_k_cached(
     cache.assemble(dofmap.n_active(), &triplets)
 }
 
+/// [`assemble_k_cached`] の参照返し版。呼び出し側の triplet バッファ `buf`
+/// （[`assemble_k_triplets_into`] 経由で `clear()` して再利用、容量は呼び出し間で
+/// 維持される）を使い、`cache` が内部保持する行列への参照を返す（`.clone()` を
+/// 伴わない）。非線形時刻歴の Newton 反復のように、結果をすぐ読むだけで所有権が
+/// 要らない呼び出し元向け（[`CscCache::assemble_ref`] 参照）。結果は常に
+/// [`assemble_k`] とビット一致する。
+pub(crate) fn assemble_k_cached_ref<'a>(
+    model: &Model,
+    dofmap: &DofMap,
+    behaviors: &[Box<dyn ElementBehavior>],
+    use_kg: bool,
+    cache: &'a mut CscCache,
+    buf: &mut Vec<squid_n_math::sparse::Triplet>,
+) -> &'a faer::sparse::SparseColMat<usize, f64> {
+    assemble_k_triplets_into(model, dofmap, behaviors, use_kg, buf);
+    cache.assemble_ref(dofmap.n_active(), buf)
+}
+
 /// [`assemble_k`]・[`assemble_k_cached`] が共有する triplet 列の組立て。
 fn assemble_k_triplets(
     model: &Model,
@@ -55,10 +73,29 @@ fn assemble_k_triplets(
     behaviors: &[Box<dyn ElementBehavior>],
     use_kg: bool,
 ) -> Vec<squid_n_math::sparse::Triplet> {
+    let mut triplets = Vec::new();
+    assemble_k_triplets_into(model, dofmap, behaviors, use_kg, &mut triplets);
+    triplets
+}
+
+/// [`assemble_k_triplets`] の結果を呼び出し側の既存バッファへ書き込む版
+/// （`out` は先頭で `clear()` してから書き込むため、確保済みの容量は保持され、
+/// Newton 反復のように毎回呼ぶ場面で再確保が発生しない）。計算内容・順序は
+/// [`assemble_k_triplets`] と同一（ビット完全一致）。
+fn assemble_k_triplets_into(
+    model: &Model,
+    dofmap: &DofMap,
+    behaviors: &[Box<dyn ElementBehavior>],
+    use_kg: bool,
+    out: &mut Vec<squid_n_math::sparse::Triplet>,
+) {
+    out.clear();
     let ctx = Ctx { model };
     let state = ElemState::default();
-    let mut triplets = Vec::new();
-    for (_elem, b) in model.elements.iter().zip(behaviors) {
+    // 要素ごとの接線剛性 triplet 化（要素間にデータ依存が無い）。
+    let elem_triplets = |elem: &squid_n_core::model::ElementData,
+                         b: &dyn ElementBehavior|
+     -> Vec<squid_n_math::sparse::Triplet> {
         let gdofs = b.global_dofs(dofmap);
         let mut k = b.tangent_stiffness(&state, &ctx);
         if use_kg {
@@ -69,7 +106,7 @@ fn assemble_k_triplets(
             // 従来は `f.data[0]`（＝節点 i のグローバル Fx）をそのまま渡しており、
             // 鉛直柱・斜材・任意方向材で軸力とは無関係な成分を用いていた
             // （P-Δ を有効化すると誤った幾何剛性になる潜在バグ）。
-            let n = axial_force_tension_positive(model, _elem, &f);
+            let n = axial_force_tension_positive(model, elem, &f);
             let kg = b.geometric_stiffness(n);
             for i in 0..12 {
                 for j in 0..12 {
@@ -78,18 +115,39 @@ fn assemble_k_triplets(
                 }
             }
         }
-        triplets.extend(k.to_triplets(&gdofs));
+        k.to_triplets(&gdofs)
+    };
+    // 並列度設定（`squid_n_math::parallelism`）が Auto/Threads のときは要素ループを
+    // rayon で並列化する。要素番号順を保った IndexedParallelIterator::collect で
+    // `Vec<Vec<Triplet>>` として集約してから要素順に extend するため、triplet の
+    // 並び順は逐次実行と完全に一致する（結果は常にビット一致する。時刻歴応答解析
+    // 高速化・第2波申し送り 4.1 の設計方針）。Deterministic（既定）では従来どおり
+    // 逐次実行する。
+    if squid_n_math::parallelism::is_parallel() {
+        use rayon::prelude::*;
+        let per_elem: Vec<Vec<squid_n_math::sparse::Triplet>> = model
+            .elements
+            .par_iter()
+            .zip(behaviors.par_iter())
+            .map(|(elem, b)| elem_triplets(elem, b.as_ref()))
+            .collect();
+        for triplets in per_elem {
+            out.extend(triplets);
+        }
+    } else {
+        for (elem, b) in model.elements.iter().zip(behaviors) {
+            out.extend(elem_triplets(elem, b.as_ref()));
+        }
     }
     // 支点ばね（`Node::support_spring`）の対角加算。線形経路の
     // `assemble_global_k`（`common::assemble`）と同じ [`support_spring_terms`] を使う。
     for (active, k) in support_spring_terms(model, dofmap) {
-        triplets.push(squid_n_math::sparse::Triplet {
+        out.push(squid_n_math::sparse::Triplet {
             row: active,
             col: active,
             val: k,
         });
     }
-    triplets
 }
 
 /// 材端力（グローバル成分）から部材軸力 N [N]（**引張正**）を求める。
@@ -130,12 +188,37 @@ pub(crate) fn compute_f_int(
     let ctx = Ctx { model };
     let state = ElemState::default();
     let mut f = vec![0.0; dofmap.n_active()];
-    for (_elem, b) in model.elements.iter().zip(behaviors) {
-        let gdofs = b.global_dofs(dofmap);
-        let f_local = b.internal_force(&state, &ctx);
-        for (&g, &v) in gdofs.iter().zip(f_local.data.iter()) {
-            if g != usize::MAX {
-                f[g] += v;
+    // 要素ごとの (gdofs, f_local) の算定は要素間にデータ依存が無いため、並列度設定
+    // （`squid_n_math::parallelism`）が Auto/Threads のときは rayon で並列化する。
+    // ただし共有ベクトル f への `f[g] += v` 累積は加算順序が結果に影響し得るため、
+    // 並列化するのは要素ごとの計算のみとし、累積自体は常に要素番号順に逐次行う
+    // （時刻歴応答解析高速化・第2波申し送り 4.1 の設計方針）。Deterministic（既定）
+    // では従来どおり全体を逐次実行する。
+    if squid_n_math::parallelism::is_parallel() {
+        use rayon::prelude::*;
+        let per_elem: Vec<_> = behaviors
+            .par_iter()
+            .map(|b| {
+                let gdofs = b.global_dofs(dofmap);
+                let f_local = b.internal_force(&state, &ctx);
+                (gdofs, f_local)
+            })
+            .collect();
+        for (gdofs, f_local) in &per_elem {
+            for (&g, &v) in gdofs.iter().zip(f_local.data.iter()) {
+                if g != usize::MAX {
+                    f[g] += v;
+                }
+            }
+        }
+    } else {
+        for b in behaviors {
+            let gdofs = b.global_dofs(dofmap);
+            let f_local = b.internal_force(&state, &ctx);
+            for (&g, &v) in gdofs.iter().zip(f_local.data.iter()) {
+                if g != usize::MAX {
+                    f[g] += v;
+                }
             }
         }
     }

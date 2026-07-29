@@ -110,20 +110,10 @@ impl Concrete {
             (stress, tangent)
         }
     }
-}
 
-impl UniaxialMaterial for Concrete {
-    fn reference_stress(&self) -> f64 {
-        // コンクリートの参照応力は圧縮強度 fc（塑性率 Jm の重み・降伏判定に用いる）。
-        self.fc
-    }
-
-    fn reference_strain(&self) -> f64 {
-        // コンクリートの参照ひずみは圧縮強度時ひずみ |εc0|。
-        self.ec0.abs()
-    }
-
-    fn trial(&mut self, strain: f64) -> (f64, f64) {
+    /// committed 状態から strain における状態を評価する（trial・probe 共通の
+    /// 内部処理）。committed 状態のみを参照し、self.trial は書き換えない。
+    fn eval_state(&self, strain: f64) -> ConcreteState {
         let c = &self.committed;
         let e0 = self.e0();
         let eps_cr = self.ft / e0;
@@ -177,15 +167,36 @@ impl UniaxialMaterial for Concrete {
             (s, t, c.max_comp_strain, max_tens, cracked)
         };
 
-        self.trial = ConcreteState {
+        ConcreteState {
             strain,
             stress,
             tangent,
             max_comp_strain: max_comp,
             max_tens_strain: max_tens,
             is_cracked,
-        };
-        (stress, tangent)
+        }
+    }
+}
+
+impl UniaxialMaterial for Concrete {
+    fn reference_stress(&self) -> f64 {
+        // コンクリートの参照応力は圧縮強度 fc（塑性率 Jm の重み・降伏判定に用いる）。
+        self.fc
+    }
+
+    fn reference_strain(&self) -> f64 {
+        // コンクリートの参照ひずみは圧縮強度時ひずみ |εc0|。
+        self.ec0.abs()
+    }
+
+    fn trial(&mut self, strain: f64) -> (f64, f64) {
+        self.trial = self.eval_state(strain);
+        (self.trial.stress, self.trial.tangent)
+    }
+
+    fn probe(&self, strain: f64) -> (f64, f64) {
+        let s = self.eval_state(strain);
+        (s.stress, s.tangent)
     }
 
     fn commit(&mut self) {
@@ -260,6 +271,26 @@ mod tests {
         c.commit();
         let (s_ts, _) = c.trial(eps_cr * 3.0);
         assert!(s_ts > 0.0 && s_ts < 2.0, "tension stiffening: {}", s_ts);
+    }
+
+    #[test]
+    fn test_probe_matches_trial_without_mutating_state() {
+        // probe は trial と数学的に同一の結果を返し、状態を書き換えない
+        // （除荷・再載荷の割線分岐を経た状態で確認）。
+        let mut c = Concrete::new(30.0, 2.0);
+        c.trial(-0.0025);
+        c.commit();
+
+        let probe_strain = -0.001; // 除荷側（割線剛性の分岐）
+        let before = c.probe(probe_strain);
+        assert_eq!(before, c.probe(probe_strain));
+
+        let mut clone_for_trial = c.clone();
+        let via_trial = clone_for_trial.trial(probe_strain);
+        assert_eq!(before, via_trial, "probe は trial と完全一致すること");
+
+        let after_probe = c.trial(probe_strain);
+        assert_eq!(after_probe, via_trial);
     }
 
     #[test]
