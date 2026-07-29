@@ -474,10 +474,7 @@ impl WallPanelElement {
                         area: a_each,
                         material: 1,
                     });
-                    mats.push(Box::new(squid_n_material::uniaxial::Bilinear::new(
-                        E_STEEL, rebar_fy, 0.01,
-                    ))
-                        as Box<dyn squid_n_material::uniaxial::UniaxialMaterial>);
+                    mats.push(crate::fiber::steel_fiber_material(E_STEEL, Some(rebar_fy)));
                 }
             }
             (section, mats)

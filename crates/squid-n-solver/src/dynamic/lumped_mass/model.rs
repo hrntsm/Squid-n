@@ -104,8 +104,12 @@ pub(crate) fn envelope_area(pts: &[(f64, f64)]) -> f64 {
 /// 層 Q-δ 曲線（δ 昇順・正値）を等包絡面積則でトリリニアへ縮約する。
 /// `secant_ratio`（0..1）: 第1折点＝割線剛性が K1 のこの比率以下となる変位。
 pub fn fit_story_trilinear(curve: &[(f64, f64)], secant_ratio: f64) -> StoryTrilinear {
-    // 正の変形のみ・δ 昇順に整える。
-    let mut pts: Vec<(f64, f64)> = curve.iter().copied().filter(|&(d, _)| d > 0.0).collect();
+    // 正の変形のみ・δ 昇順に整える。ゼロ荷重ステップの解が丸め誤差程度の
+    // 変形（〜1e-17 mm）を持つことがあるため、最大変形に対する相対許容差で
+    // 実質ゼロの点を除外する（残すと K1 = 0/ε の縮退が起きる）。
+    let d_max = curve.iter().map(|&(d, _)| d).fold(0.0, f64::max);
+    let tol = d_max * 1e-9;
+    let mut pts: Vec<(f64, f64)> = curve.iter().copied().filter(|&(d, _)| d > tol).collect();
     pts.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
     pts.dedup_by(|a, b| (a.0 - b.0).abs() < 1e-12);
 

@@ -5,7 +5,7 @@ use smallvec::SmallVec;
 use squid_n_core::dof::DofMap;
 use squid_n_core::ids::NodeId;
 use squid_n_core::section_shape::SectionShape;
-use squid_n_material::uniaxial::{Bilinear, UniaxialMaterial};
+use squid_n_material::uniaxial::{Bilinear, MenegottoPinto, UniaxialMaterial};
 use squid_n_section::fiber::{Fiber, FiberSection};
 use std::any::Any;
 
@@ -16,6 +16,20 @@ use std::any::Any;
 /// モデル化図の表示で同じ値を用いるため公開する。
 pub fn clamp_plastic_zone(lp: f64, l: f64) -> f64 {
     lp.clamp(1.0e-6 * l, 0.45 * l)
+}
+
+/// 鋼材・鉄筋のファイバ材料を生成する。
+///
+/// 降伏点が与えられた場合は Menegotto–Pinto（基本式 Menegotto & Pinto 1973、
+/// 履歴則 Filippou et al. 1983。既定 b=0.01, R0=20, a1=18.5, a2=0.15）を用いる。
+/// 単調載荷では従来のバイリニア（硬化率 0.01）とほぼ同じ骨格（降伏点近傍が
+/// 滑らかに丸まる）で、繰返し載荷ではバウシンガー効果を表現する。
+/// 降伏点未設定（設定不備）は従来どおり降伏しない弾性（Bilinear）で防御する。
+pub(crate) fn steel_fiber_material(e: f64, fy: Option<f64>) -> Box<dyn UniaxialMaterial> {
+    match fy {
+        Some(fy) => Box::new(MenegottoPinto::new(e, fy)),
+        None => Box::new(Bilinear::new(e, 1e20, 0.01)),
+    }
 }
 
 /// ガウス点のファイバー断面と材料を構築する（構造力学のファイバーモデル）。
@@ -58,7 +72,7 @@ pub(crate) fn build_gauss_fibers(
             let base: Box<dyn UniaxialMaterial> = match fc {
                 Some(fc) if fc <= 60.0 => Box::new(squid_n_material::ConcreteNewRc::new(fc, 2.0)),
                 Some(fc) => Box::new(squid_n_material::uniaxial::Concrete::new(fc, 2.0)),
-                None => Box::new(Bilinear::new(e, fy.unwrap_or(1e20) * steel_factor, 0.01)),
+                None => steel_fiber_material(e, fy.map(|fy| fy * steel_factor)),
             };
             let tag = if fc.is_some() { 0 } else { 2 };
             let grid = squid_n_section::fiber::rect_fiber_section(width, depth, nw, nd, tag);
@@ -91,10 +105,10 @@ pub(crate) fn build_gauss_fibers(
 /// 各ファイバの材料領域区分（[`FiberRegion`]）から非線形材料を割り当てる:
 /// - コンクリート領域: NewRC（fc≤60）／放物線モデル。fc 未設定の設定不備は
 ///   弾性フォールバック（降伏しないバイリニア）で防御する。
-/// - 主筋: バイリニア鋼材（E=205000、σy は断面の主筋材質 → 部材材料の fy の順で
-///   解決、`rebar_factor` 割増）。
-/// - 鋼材領域（形鋼・鋼管・内蔵鉄骨）: バイリニア鋼材（部材材料の E・fy、
-///   `steel_factor` 割増。fy 未設定は降伏しない弾性＝従来の既定と同じ）。
+/// - 主筋: Menegotto–Pinto 鉄筋（E=205000、σy は断面の主筋材質 → 部材材料の fy の
+///   順で解決、`rebar_factor` 割増）。
+/// - 鋼材領域（形鋼・鋼管・内蔵鉄骨）: Menegotto–Pinto 鋼材（部材材料の E・fy、
+///   `steel_factor` 割増。fy 未設定は降伏しない弾性で防御）。
 ///
 /// 解像度は最大寸法/16（従来の 12×20 中実格子と同程度のファイバ数）、円環は
 /// 周 24 分割とし、MN 曲面の細分割（/40・周 48）より粗く増分解析の計算量を抑える。
@@ -141,10 +155,9 @@ fn build_shape_fibers(
         // コンクリート領域があるのに fc 未設定（設定不備）: 弾性で防御。
         None => Box::new(Bilinear::new(e, 1e20, 0.01)),
     };
-    let steel: Box<dyn UniaxialMaterial> =
-        Box::new(Bilinear::new(e, fy.unwrap_or(1e20) * steel_factor, 0.01));
+    let steel: Box<dyn UniaxialMaterial> = steel_fiber_material(e, fy.map(|fy| fy * steel_factor));
     let rebar: Box<dyn UniaxialMaterial> =
-        Box::new(Bilinear::new(205000.0, rebar_fy * rebar_factor, 0.01));
+        steel_fiber_material(205000.0, Some(rebar_fy * rebar_factor));
 
     let mut fibers = Vec::with_capacity(placed.len());
     let mut mats: Vec<Box<dyn UniaxialMaterial>> = Vec::with_capacity(placed.len());
