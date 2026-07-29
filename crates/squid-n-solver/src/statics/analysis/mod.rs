@@ -9,8 +9,9 @@ use crate::assemble::{assemble_global_f, assemble_global_k};
 use crate::constraint::Reducer;
 use crate::damping::Damping;
 use crate::eigen::{self, ModalResult};
-use crate::linear::StaticOnce;
+use crate::linear::{group_member_loads_by_elem, StaticOnce};
 use crate::timehistory::{GroundMotion, NewmarkCfg, ResponseResult};
+use std::collections::HashMap;
 
 pub type StaticResult = StaticOnce;
 use squid_n_core::dof::DofMap;
@@ -52,6 +53,16 @@ fn scale_member_load(ml: &MemberLoad, factor: f64) -> MemberLoad {
     }
 }
 
+/// `model.load_cases` 全件の自由 DOF 荷重ベクトルを1回ずつ計算してマップに詰める
+/// （[`Analysis::f_free_cache`] の構築。`prepare`・`from_parts` で共有する）。
+fn build_f_free_cache(model: &Model, dofmap: &DofMap) -> HashMap<LoadCaseId, Vec<f64>> {
+    model
+        .load_cases
+        .iter()
+        .map(|lc| (lc.id, assemble_global_f(model, dofmap, lc.id)))
+        .collect()
+}
+
 pub struct Analysis<'m> {
     model: &'m Model,
     dofmap: DofMap,
@@ -62,6 +73,13 @@ pub struct Analysis<'m> {
     /// ため、同一 `Analysis` 上で X・Y 両方向の地震荷重を構築しても固有値解析は
     /// 1 回で済む（`build_seismic_load_case`）。
     semi_precise_t: std::sync::OnceLock<f64>,
+    /// `Model::load_cases` 各ケースの自由 DOF 荷重ベクトル（`assemble_global_f`）の
+    /// メモ化。`prepare` 時に全ケースぶん1回だけ計算する（`linear_combination` は
+    /// 同じ荷重ケースが複数の組合せへ登場する典型パターンで、都度
+    /// `assemble_global_f` を再計算すると無駄が大きいため）。`&self` のみで参照する
+    /// （書き込みは `prepare`/`from_parts` 構築時のみ）ため、`run_batch` の rayon
+    /// 並列からも安全に共有できる。
+    f_free_cache: HashMap<LoadCaseId, Vec<f64>>,
 }
 
 /// [`Analysis::prepare`] が構築した DofMap・拘束縮約・分解済みソルバを、
@@ -109,6 +127,7 @@ impl<'m> Analysis<'m> {
                 solver: make_solver(SolverBackend::Auto),
                 n_indep: 0,
                 semi_precise_t: std::sync::OnceLock::new(),
+                f_free_cache: HashMap::new(),
             });
         }
 
@@ -127,6 +146,8 @@ impl<'m> Analysis<'m> {
             })?;
         }
 
+        let f_free_cache = build_f_free_cache(model, &dofmap);
+
         Ok(Self {
             model,
             dofmap,
@@ -134,6 +155,7 @@ impl<'m> Analysis<'m> {
             solver,
             n_indep,
             semi_precise_t: std::sync::OnceLock::new(),
+            f_free_cache,
         })
     }
 
@@ -168,6 +190,7 @@ impl<'m> Analysis<'m> {
                 solver: make_solver(SolverBackend::Auto),
                 n_indep: 0,
                 semi_precise_t: std::sync::OnceLock::new(),
+                f_free_cache: HashMap::new(),
             });
         }
 
@@ -180,6 +203,9 @@ impl<'m> Analysis<'m> {
             solver: make_solver(SolverBackend::Auto),
             n_indep,
             semi_precise_t: std::sync::OnceLock::new(),
+            // 荷重ケース生成専用の軽量準備（求解を行わない契約）のため、
+            // K の組立・分解と同様に f_free のメモ化も省く。
+            f_free_cache: HashMap::new(),
         })
     }
 
@@ -210,6 +236,10 @@ impl<'m> Analysis<'m> {
     /// パニックの原因になる。そのような変更を行った場合は必ず
     /// [`Self::prepare`] を呼び直すこと。
     pub fn from_parts(model: &'m Model, parts: AnalysisParts) -> Analysis<'m> {
+        // f_free キャッシュは持ち越さない：`from_parts` は「荷重ケースの内容だけを
+        // 変えた」新しいモデルに対して呼ばれる想定であり、古いキャッシュのまま
+        // 使うと差し替え後の荷重が反映されない（新モデル・新 dofmap で作り直す）。
+        let f_free_cache = build_f_free_cache(model, &parts.dofmap);
         Analysis {
             model,
             dofmap: parts.dofmap,
@@ -219,6 +249,7 @@ impl<'m> Analysis<'m> {
             // SemiPrecise 周期キャッシュは持ち越さない（モデルの荷重内容が
             // 変わっても周期は不変だが、安全側で再算定させる）。
             semi_precise_t: std::sync::OnceLock::new(),
+            f_free_cache,
         }
     }
 
@@ -281,6 +312,9 @@ impl<'m> Analysis<'m> {
         squid_n_core::ids::ElemId,
         squid_n_element::beam::MemberForces,
     )> {
+        // 要素 ID で事前にグルーピングし、要素ごとの全部材荷重総当りスキャンを避ける
+        // （`crate::linear::solve_once_inner` と同じ最適化）。
+        let member_loads_by_elem = group_member_loads_by_elem(member_loads);
         let mut member_forces = Vec::new();
         for elem in &self.model.elements {
             let (behavior, _state) = build_behavior(elem, self.model);
@@ -292,7 +326,11 @@ impl<'m> Analysis<'m> {
                 }
             }
             if let Some(mut forces) = behavior.recover_forces(&u_elem) {
-                crate::linear::superpose_member_loads(self.model, elem, member_loads, &mut forces);
+                let loads = member_loads_by_elem
+                    .get(&elem.id)
+                    .map(Vec::as_slice)
+                    .unwrap_or(&[]);
+                crate::linear::superpose_member_loads(self.model, elem, loads, &mut forces);
                 member_forces.push((elem.id, forces));
             }
         }
@@ -310,7 +348,14 @@ impl<'m> Analysis<'m> {
                 lc.0
             )));
         }
-        let f_free = assemble_global_f(self.model, &self.dofmap, lc);
+        // `prepare`/`from_parts` が全荷重ケースぶん事前計算済みのメモ化を使う
+        // （`assemble_global_f` の再計算を避ける）。キャッシュに無い場合
+        // （`prepare_load_case_gen` 経由など想定外の経路）はその場で計算する。
+        let f_free = self
+            .f_free_cache
+            .get(&lc)
+            .cloned()
+            .unwrap_or_else(|| assemble_global_f(self.model, &self.dofmap, lc));
         let member_loads = self
             .model
             .load_cases
@@ -398,11 +443,23 @@ impl<'m> Analysis<'m> {
         let mut f_free = vec![0.0; n_active];
         // 各項の部材荷重を係数倍して集約する。荷重ベクトル f と同じ線形結合を
         // 内力回復のスパン内力にも適用し、組合せでも M の放物線分布を再現する。
+        // 各項の f_lc は `f_free_cache`（`prepare`/`from_parts` で全ケース事前計算済み）
+        // を参照する。同じ荷重ケースが複数の組合せへ登場する典型パターンで
+        // `assemble_global_f` の再計算を避ける。
         let mut member_loads: Vec<MemberLoad> = Vec::new();
         for (lc_id, factor) in &combo.terms {
-            let f_lc = assemble_global_f(self.model, &self.dofmap, *lc_id);
-            for (fi, &v) in f_lc.iter().enumerate() {
-                f_free[fi] += v * factor;
+            match self.f_free_cache.get(lc_id) {
+                Some(f_lc) => {
+                    for (fi, &v) in f_lc.iter().enumerate() {
+                        f_free[fi] += v * factor;
+                    }
+                }
+                None => {
+                    let f_lc = assemble_global_f(self.model, &self.dofmap, *lc_id);
+                    for (fi, &v) in f_lc.iter().enumerate() {
+                        f_free[fi] += v * factor;
+                    }
+                }
             }
             if let Some(lc) = self.model.load_cases.iter().find(|c| c.id == *lc_id) {
                 member_loads.extend(lc.member.iter().map(|ml| scale_member_load(ml, *factor)));

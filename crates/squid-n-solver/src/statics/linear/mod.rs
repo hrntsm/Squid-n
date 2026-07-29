@@ -1,12 +1,16 @@
-use crate::assemble::{assemble_global_f, assemble_global_k};
+use crate::assemble::{assemble_global_f, assemble_global_k, support_spring_terms};
+use crate::common::csc_cache::CscCache;
 use crate::constraint::Reducer;
 use squid_n_core::dof::DofMap;
-use squid_n_core::ids::LoadCaseId;
-use squid_n_core::model::{ElementData, ElementKind, LoadCaseKind, Model};
+use squid_n_core::ids::{ElemId, LoadCaseId};
+use squid_n_core::model::{ElementData, ElementKind, LoadCaseKind, MemberLoad, Model};
 use squid_n_element::beam::MemberForces;
+use squid_n_element::behavior::{Ctx, ElementBehavior};
 use squid_n_element::factory::build_behavior;
 use squid_n_math::solver::{make_solver, SolveError, SolverBackend};
+use squid_n_math::sparse::Triplet;
 use std::borrow::Cow;
+use std::collections::HashMap;
 
 /// 長期軸力無効化（一貫構造計算プログラムの実務慣行）で断面積に乗じる縮小係数。
 /// 完全にゼロにすると（ブレースのみで支持される節点等で）浮き自由度による
@@ -218,44 +222,277 @@ fn solve_tension_only_iterative(model: &Model, lc: LoadCaseId) -> Result<StaticO
         });
     }
 
+    // 要素接続・拘束・自由度構成は反復間で不変（変わるのは無効化ブレースの
+    // 断面積のみ）なので、DofMap・拘束縮約は1回だけ構築して使い回す。
+    let dofmap = DofMap::build(model);
+    let n_active = dofmap.n_active();
+    if n_active == 0 {
+        // 有効自由度なし: 変位は常に0であり、どの反復でも
+        // 全ブレース active（初期値）のまま収束する（`solve_once_inner` の
+        // 自由度なし分岐と同じ結果）。
+        return Ok(StaticOnce {
+            disp: vec![[0.0; 6]; model.nodes.len()],
+            member_forces: Vec::new(),
+        });
+    }
+    let reducer = Reducer::build(model, &dofmap);
+    let n_indep = reducer.n_indep;
+    if n_indep == 0 {
+        // 独立自由度なし（全自由度が拘束に吸収される特殊な拘束構成）:
+        // `solve_once_inner` の対応分岐と同じく、内力回収（`ensure_line_member_forces`
+        // の検証含む）を行わずゼロ結果を返す。
+        return Ok(StaticOnce {
+            disp: vec![[0.0; 6]; model.nodes.len()],
+            member_forces: Vec::new(),
+        });
+    }
+
+    // 要素ごとの global_dofs・局所剛性行列（有効時／無効時）・回収用 behavior を
+    // 1回だけ構築する（反復ごとの build_behavior 再実行・model.clone() を排除）。
+    let assembly = BraceIterAssembly::build(model, &dofmap, &braces);
+
+    // 荷重ベクトルはブレースの有効/無効に依存しないため1回だけ組み立てる。
+    let f_free = assemble_global_f(model, &dofmap, lc);
+    let f_red = reducer.reduce_f(&f_free);
+    let member_loads: &[MemberLoad] = model
+        .load_cases
+        .iter()
+        .find(|l| l.id == lc)
+        .map(|l| l.member.as_slice())
+        .unwrap_or(&[]);
+    let member_loads_by_elem = group_member_loads_by_elem(member_loads);
+
+    let mut k_free_cache = CscCache::new();
+    let mut k_red_cache = CscCache::new();
+    let mut solver = make_solver(SolverBackend::Auto);
+
     // active[k] = k 番目の引張専用ブレースが軸力を負担する（引張側）か。初期は全 active。
     let mut active = vec![true; braces.len()];
-    let mut last: Option<StaticOnce> = None;
+    // 収束しなかった場合に返す最後の結果（当該反復で使った active 集合と解）。
+    let mut fallback: Option<(Vec<bool>, Vec<f64>)> = None;
+
     for _ in 0..TENSION_ONLY_MAX_ITER {
-        let disabled: Vec<usize> = braces
-            .iter()
-            .zip(&active)
-            .filter(|(_, &a)| !a)
-            .map(|(b, _)| b.elem)
-            .collect();
-        let solve_model = reduce_brace_axial(model, &disabled);
-        let res = solve_once_inner(&solve_model, lc)?;
+        let active_used = active.clone();
+        let triplets = assembly.triplets(&active_used);
+        let k_free = k_free_cache.assemble(n_active, &triplets);
+        let k_red = reducer.reduce_k_cached(&k_free, &mut k_red_cache);
+
+        solver.factorize(&k_red)?;
+        let u_indep = solver.solve(&f_red)?;
+        let u_free = reducer.expand_u(&u_indep);
 
         // 各ブレースの軸伸び δ = t·(u_j − u_i) から次の active 集合を判定する。
         // δ≥0（引張）なら active、δ<0（圧縮・スラック）なら無効化。
         let new_active: Vec<bool> = braces
             .iter()
             .map(|b| {
-                let du = [
-                    res.disp[b.nj][0] - res.disp[b.ni][0],
-                    res.disp[b.nj][1] - res.disp[b.ni][1],
-                    res.disp[b.nj][2] - res.disp[b.ni][2],
-                ];
-                b.t[0] * du[0] + b.t[1] * du[1] + b.t[2] * du[2] >= 0.0
+                let du = |ni: usize, d: usize| -> f64 {
+                    let g = ni * squid_n_core::dof::DOF_PER_NODE + d;
+                    dofmap.active(g).map(|a| u_free[a as usize]).unwrap_or(0.0)
+                };
+                let dux = du(b.nj, 0) - du(b.ni, 0);
+                let duy = du(b.nj, 1) - du(b.ni, 1);
+                let duz = du(b.nj, 2) - du(b.ni, 2);
+                b.t[0] * dux + b.t[1] * duy + b.t[2] * duz >= 0.0
             })
             .collect();
 
-        if new_active == active {
-            return Ok(res);
+        if new_active == active_used {
+            return build_tension_only_result(
+                model,
+                &dofmap,
+                &assembly,
+                &active_used,
+                &u_free,
+                &member_loads_by_elem,
+            );
         }
         active = new_active;
-        last = Some(res);
+        fallback = Some((active_used, u_free));
     }
     // 収束しなかった（active 集合が振動した）場合は最後の結果を返す。
-    match last {
-        Some(res) => Ok(res),
+    match fallback {
+        Some((active_used, u_free)) => build_tension_only_result(
+            model,
+            &dofmap,
+            &assembly,
+            &active_used,
+            &u_free,
+            &member_loads_by_elem,
+        ),
         None => solve_once_inner(model, lc),
     }
+}
+
+/// active-set 反復1回分の要素アセンブリ情報。反復間で不変な
+/// （global_dofs・局所剛性行列・内力回収用 behavior）を1回だけ計算して保持し、
+/// 各反復では「引張専用ブレースの active/disabled のどちらの局所剛性を使うか」を
+/// 選択して triplet 化するだけにする。
+///
+/// 引張専用ブレースの無効化断面（[`reduce_brace_axial`] と同じ、軸剛性用面積を
+/// [`AXIAL_DISABLE_FACTOR`] 倍した断面）は、全ブレースぶんまとめて1回だけモデルを
+/// 複製して求める（従来は反復ごとに `model.clone()` していた）。個々の要素に対する
+/// `build_behavior`/`tangent_stiffness` の呼び出しは、有効時・無効時とも従来の
+/// 反復内呼び出しと完全に同じ入力（元モデル or 断面差し替え後のモデル）で行うため、
+/// 結果はビット一致する。
+struct BraceIterAssembly {
+    /// 要素ごとの global_dofs（active-set に依らず不変）。
+    gdofs: Vec<smallvec::SmallVec<[usize; 24]>>,
+    /// 要素ごとの「有効時」局所剛性行列（引張専用ブレースも含め元の断面のまま）。
+    k_active: Vec<squid_n_element::behavior::LocalMat>,
+    /// 引張専用ブレース要素のみ Some：無効化時（軸剛性 ×[`AXIAL_DISABLE_FACTOR`]）の
+    /// 局所剛性行列。それ以外の要素は常に None（無効化され得ない）。
+    k_disabled: Vec<Option<squid_n_element::behavior::LocalMat>>,
+    /// 内力回収用の behavior（有効時）。
+    behavior_active: Vec<Box<dyn ElementBehavior>>,
+    /// 引張専用ブレース要素のみ Some：内力回収用の behavior（無効化時）。
+    behavior_disabled: Vec<Option<Box<dyn ElementBehavior>>>,
+    /// 要素 index → `braces` 配列上のインデックス（引張専用ブレースのみ）。
+    brace_of_elem: HashMap<usize, usize>,
+    /// 支点ばねの対角項（ブレースの有効/無効に依存せず不変）。
+    spring_terms: Vec<(usize, f64)>,
+}
+
+impl BraceIterAssembly {
+    /// `dofmap` は元モデル（`model`）から構築したもの。
+    fn build(model: &Model, dofmap: &DofMap, braces: &[ToBrace]) -> Self {
+        let brace_of_elem: HashMap<usize, usize> = braces
+            .iter()
+            .enumerate()
+            .map(|(k, b)| (b.elem, k))
+            .collect();
+        // 全引張専用ブレースを無効化した断面を持つモデルを1回だけ複製する
+        // （`reduce_brace_axial` と同じ手法。反復ごとの複製を排除）。
+        let brace_elems: Vec<usize> = braces.iter().map(|b| b.elem).collect();
+        let disabled_model = reduce_brace_axial(model, &brace_elems);
+
+        let n_elem = model.elements.len();
+        let mut gdofs = Vec::with_capacity(n_elem);
+        let mut k_active = Vec::with_capacity(n_elem);
+        let mut k_disabled = Vec::with_capacity(n_elem);
+        let mut behavior_active = Vec::with_capacity(n_elem);
+        let mut behavior_disabled = Vec::with_capacity(n_elem);
+
+        for (i, elem) in model.elements.iter().enumerate() {
+            let (b_active, st_active) = build_behavior(elem, model);
+            let g = b_active.global_dofs(dofmap);
+            let k = b_active.tangent_stiffness(&st_active, &Ctx { model });
+
+            if brace_of_elem.contains_key(&i) {
+                let delem = &disabled_model.elements[i];
+                let (b_disabled, st_disabled) = build_behavior(delem, &disabled_model);
+                let kd = b_disabled.tangent_stiffness(
+                    &st_disabled,
+                    &Ctx {
+                        model: &disabled_model,
+                    },
+                );
+                k_disabled.push(Some(kd));
+                behavior_disabled.push(Some(b_disabled));
+            } else {
+                k_disabled.push(None);
+                behavior_disabled.push(None);
+            }
+            gdofs.push(g);
+            k_active.push(k);
+            behavior_active.push(b_active);
+        }
+
+        let spring_terms = support_spring_terms(model, dofmap);
+
+        Self {
+            gdofs,
+            k_active,
+            k_disabled,
+            behavior_active,
+            behavior_disabled,
+            brace_of_elem,
+            spring_terms,
+        }
+    }
+
+    /// 要素 index の、現在の `active` 集合における局所剛性行列を返す。
+    fn k_local_for(&self, i: usize, active: &[bool]) -> &squid_n_element::behavior::LocalMat {
+        match self.brace_of_elem.get(&i) {
+            Some(&bidx) if !active[bidx] => self.k_disabled[i]
+                .as_ref()
+                .expect("引張専用ブレース要素は k_disabled を必ず持つ"),
+            _ => &self.k_active[i],
+        }
+    }
+
+    /// 要素 index の、現在の `active` 集合における内力回収用 behavior を返す。
+    fn behavior_for(&self, i: usize, active: &[bool]) -> &dyn ElementBehavior {
+        match self.brace_of_elem.get(&i) {
+            Some(&bidx) if !active[bidx] => self.behavior_disabled[i]
+                .as_deref()
+                .expect("引張専用ブレース要素は behavior_disabled を必ず持つ"),
+            _ => self.behavior_active[i].as_ref(),
+        }
+    }
+
+    /// 現在の `active` 集合に基づき全体剛性 K（縮約前）の triplet 列を組み立てる。
+    fn triplets(&self, active: &[bool]) -> Vec<Triplet> {
+        let mut triplets = Vec::new();
+        for i in 0..self.gdofs.len() {
+            triplets.extend(self.k_local_for(i, active).to_triplets(&self.gdofs[i]));
+        }
+        for &(a, k) in &self.spring_terms {
+            triplets.push(Triplet {
+                row: a,
+                col: a,
+                val: k,
+            });
+        }
+        triplets
+    }
+}
+
+/// active-set 反復の収束（または反復上限）後、変位・部材内力を復元する。
+/// `solve_once_inner` の内力回収と同じ規則（要素順・重ね合わせ順）を用いる。
+fn build_tension_only_result(
+    model: &Model,
+    dofmap: &DofMap,
+    assembly: &BraceIterAssembly,
+    active: &[bool],
+    u_free: &[f64],
+    member_loads_by_elem: &HashMap<ElemId, Vec<MemberLoad>>,
+) -> Result<StaticOnce, SolveError> {
+    let mut disp: Vec<[f64; 6]> = vec![[0.0; 6]; model.nodes.len()];
+    for ni in 0..model.nodes.len() {
+        for d in 0..squid_n_core::dof::DOF_PER_NODE {
+            let g = ni * squid_n_core::dof::DOF_PER_NODE + d;
+            if let Some(a) = dofmap.active(g) {
+                disp[ni][d] = u_free[a as usize];
+            }
+        }
+    }
+
+    let mut member_forces = Vec::new();
+    for (i, elem) in model.elements.iter().enumerate() {
+        let behavior = assembly.behavior_for(i, active);
+        let gdofs = &assembly.gdofs[i];
+        let mut u_elem = vec![0.0; gdofs.len()];
+        for (k, &g) in gdofs.iter().enumerate() {
+            if g != usize::MAX && g < u_free.len() {
+                u_elem[k] = u_free[g];
+            }
+        }
+        if let Some(mut forces) = behavior.recover_forces(&u_elem) {
+            let loads = member_loads_by_elem
+                .get(&elem.id)
+                .map(Vec::as_slice)
+                .unwrap_or(&[]);
+            superpose_member_loads(model, elem, loads, &mut forces);
+            member_forces.push((elem.id, forces));
+        }
+    }
+    ensure_line_member_forces(model, &member_forces)?;
+
+    Ok(StaticOnce {
+        disp,
+        member_forces,
+    })
 }
 
 fn solve_once_inner(model: &Model, lc: LoadCaseId) -> Result<StaticOnce, SolveError> {
@@ -304,13 +541,15 @@ fn solve_once_inner(model: &Model, lc: LoadCaseId) -> Result<StaticOnce, SolveEr
 
         let mut member_forces = Vec::new();
         let _ctx = squid_n_element::behavior::Ctx { model };
-        // 解析対象荷重ケースの部材荷重（内力回復の重ね合わせ用）
+        // 解析対象荷重ケースの部材荷重（内力回復の重ね合わせ用）。要素 ID で
+        // 事前にグルーピングし、要素ごとの全部材荷重総当りスキャンを避ける。
         let member_loads: &[squid_n_core::model::MemberLoad] = model
             .load_cases
             .iter()
             .find(|l| l.id == lc)
             .map(|l| l.member.as_slice())
             .unwrap_or(&[]);
+        let member_loads_by_elem = group_member_loads_by_elem(member_loads);
         for elem in &model.elements {
             let (behavior, _state) = build_behavior(elem, model);
             let gdofs = behavior.global_dofs(&dofmap);
@@ -324,7 +563,11 @@ fn solve_once_inner(model: &Model, lc: LoadCaseId) -> Result<StaticOnce, SolveEr
             }
 
             if let Some(mut forces) = behavior.recover_forces(&u_elem) {
-                superpose_member_loads(model, elem, member_loads, &mut forces);
+                let loads = member_loads_by_elem
+                    .get(&elem.id)
+                    .map(Vec::as_slice)
+                    .unwrap_or(&[]);
+                superpose_member_loads(model, elem, loads, &mut forces);
                 member_forces.push((elem.id, forces));
             }
         }
@@ -396,22 +639,38 @@ pub(crate) fn ensure_line_member_forces(
     )))
 }
 
+/// 部材荷重を要素 ID でグルーピングする（内力回収の重ね合わせ用）。
+///
+/// 従来は要素ごとに `member_loads.iter().filter(...)` で全部材荷重を毎回
+/// 総当りスキャンしていた（O(要素数×荷重数)）。呼び出し側で1回だけ本関数を
+/// 呼んでグルーピングし、[`superpose_member_loads`] へ要素分の荷重だけを渡す。
+/// 各要素内の荷重順序は `member_loads` 内の元の出現順のまま保たれる
+/// （固定端内力の重ね合わせは加算順序に依存しないため数値上は問題ないが、
+/// 念のため元の順序を崩さない）。
+pub(crate) fn group_member_loads_by_elem(
+    member_loads: &[MemberLoad],
+) -> HashMap<ElemId, Vec<MemberLoad>> {
+    let mut by_elem: HashMap<ElemId, Vec<MemberLoad>> = HashMap::new();
+    for ml in member_loads {
+        by_elem.entry(ml.elem).or_default().push(ml.clone());
+    }
+    by_elem
+}
+
 /// 部材荷重の固定端内力を、`K·u` 由来の回復内力へ各断面で重ね合わせる。
 /// 線形重ね合わせ: 実内力 = （等価節点力に対する応答 K·u）＋（両端固定梁のスパン内力）。
+///
+/// `loads` は当該要素に作用する部材荷重のみ（[`group_member_loads_by_elem`] で
+/// 事前にグルーピングした結果から呼び出し側が取り出して渡す）。
 ///
 /// `Analysis` ファサード（分解済み K を再利用する経路）でも同じ重ね合わせが
 /// 要るため `pub(crate)` で共有する（[`crate::statics::analysis`] 参照）。
 pub(crate) fn superpose_member_loads(
     model: &Model,
     elem: &squid_n_core::model::ElementData,
-    member_loads: &[squid_n_core::model::MemberLoad],
+    loads: &[MemberLoad],
     forces: &mut squid_n_element::beam::MemberForces,
 ) {
-    let loads: Vec<squid_n_core::model::MemberLoad> = member_loads
-        .iter()
-        .filter(|ml| ml.elem == elem.id)
-        .cloned()
-        .collect();
     if loads.is_empty() {
         return;
     }
@@ -422,7 +681,7 @@ pub(crate) fn superpose_member_loads(
         return;
     };
     for (xi, vals) in forces.at.iter_mut() {
-        let fixed = squid_n_element::member_load::fixed_internal_local(&loads, &frame, length, *xi);
+        let fixed = squid_n_element::member_load::fixed_internal_local(loads, &frame, length, *xi);
         for k in 0..6 {
             vals[k] += fixed[k];
         }
