@@ -20,15 +20,45 @@ pub fn clamp_plastic_zone(lp: f64, l: f64) -> f64 {
 
 /// 鋼材・鉄筋のファイバ材料を生成する。
 ///
-/// 降伏点が与えられた場合は Menegotto–Pinto（基本式 Menegotto & Pinto 1973、
-/// 履歴則 Filippou et al. 1983。既定 b=0.01, R0=20, a1=18.5, a2=0.15）を用いる。
-/// 単調載荷では従来のバイリニア（硬化率 0.01）とほぼ同じ骨格（降伏点近傍が
-/// 滑らかに丸まる）で、繰返し載荷ではバウシンガー効果を表現する。
-/// 降伏点未設定（設定不備）は従来どおり降伏しない弾性（Bilinear）で防御する。
+/// Menegotto–Pinto（基本式 Menegotto & Pinto 1973、履歴則 Filippou et al. 1983。
+/// 既定 b=0.01, R0=20, a1=18.5, a2=0.15）を用いる。単調載荷ではバイリニア
+/// （硬化率 0.01）とほぼ同じ骨格（降伏点近傍が滑らかに丸まる）で、繰返し載荷では
+/// バウシンガー効果を表現する。
+///
+/// # Panics
+///
+/// ファイバー断面は降伏進展を追うことが目的のため、降伏点未設定は入力不備で
+/// あり、解析前の入力チェック（[`crate::factory::ensure_nonlinear_input`]）が
+/// エラーで停止する。fy 無し（または 0 以下）でここへ到達するのは呼び出し側の
+/// 契約違反（プログラムエラー）のため panic する（弾性で無音に代替しない）。
 pub(crate) fn steel_fiber_material(e: f64, fy: Option<f64>) -> Box<dyn UniaxialMaterial> {
-    match fy {
-        Some(fy) => Box::new(MenegottoPinto::new(e, fy)),
-        None => Box::new(Bilinear::new(e, 1e20, 0.01)),
+    let Some(fy) = fy.filter(|fy| *fy > 0.0) else {
+        panic!(
+            "ファイバー断面の鋼材・主筋に降伏強度 fy が未設定です。\
+             解析前に factory::ensure_nonlinear_input で入力チェックを行ってください"
+        );
+    };
+    Box::new(MenegottoPinto::new(e, fy))
+}
+
+/// 鋼材領域（形鋼・鋼管・内蔵鉄骨）のファイバ降伏点を解決する。
+///
+/// SRC は断面の内蔵鉄骨鋼種（`steel_grade` の F 値。フランジ厚の板厚区分を考慮）を
+/// 優先し、無ければ部材材料の fy を用いる。その他の形状は部材材料の fy。
+/// 非線形解析の入力チェック（`factory::ensure_nonlinear_input`）と要素生成が
+/// 同じ解決規則を共有する。
+pub(crate) fn resolve_steel_fiber_fy(
+    shape: Option<&SectionShape>,
+    mat_fy: Option<f64>,
+) -> Option<f64> {
+    match shape {
+        Some(SectionShape::SrcRect {
+            steel_grade,
+            steel_flange_thick,
+            ..
+        }) => squid_n_core::material_grade::steel_f_value_prefix(steel_grade, *steel_flange_thick)
+            .or(mat_fy),
+        _ => mat_fy,
     }
 }
 
@@ -108,7 +138,8 @@ pub(crate) fn build_gauss_fibers(
 /// - 主筋: Menegotto–Pinto 鉄筋（E=205000、σy は断面の主筋材質 → 部材材料の fy の
 ///   順で解決、`rebar_factor` 割増）。
 /// - 鋼材領域（形鋼・鋼管・内蔵鉄骨）: Menegotto–Pinto 鋼材（部材材料の E・fy、
-///   `steel_factor` 割増。fy 未設定は降伏しない弾性で防御）。
+///   `steel_factor` 割増。fy 未設定は [`steel_fiber_material`] が panic する。
+///   該当モデルは入力チェックが解析前に停止する）。
 ///
 /// 解像度は最大寸法/16（従来の 12×20 中実格子と同程度のファイバ数）、円環は
 /// 周 24 分割とし、MN 曲面の細分割（/40・周 48）より粗く増分解析の計算量を抑える。
@@ -125,19 +156,22 @@ fn build_shape_fibers(
     };
 
     // 主筋の降伏点は**断面（配筋）の主筋材質**から解決し、無ければ部材材料の fy を
-    // 用いる（`rebar_yield_strength`）。
-    // 既定値（σy=345・Fc=24 等）へのフォールバックは、非線形解析では
-    // [`crate::factory::ensure_nonlinear_input`] が材料強度未入力のモデルを
-    // 事前に停止するため到達しない（未入力を既定値で無音に埋めない規約）。
+    // 用いる（`rebar_yield_strength`）。未解決（None）のまま主筋・鋼材ファイバを
+    // 生成しようとすると `steel_fiber_material` が panic する（弾性で無音に代替
+    // しない）。該当モデルは [`crate::factory::ensure_nonlinear_input`] が解析前に
+    // エラーで停止するため、通常の解析経路では到達しない。
     let rebar_fy = shape
         .rebar()
         .and_then(|r| r.main_grade.as_deref())
         .and_then(squid_n_core::material_grade::rebar_grade_f_value)
-        .or(fy)
-        .unwrap_or(345.0);
+        .or(fy);
+    // 鋼材領域の降伏点: SRC は断面の内蔵鉄骨鋼種 → 部材材料 fy の順で解決。
+    let steel_fy = resolve_steel_fiber_fy(Some(shape), fy);
+    // StrengthParams はファイバの**配置**（形状分割・領域区分）にのみ使い、
+    // 材料モデルの強度には入らない（材料は下の各領域テンプレートで構築する）。
     let strength = StrengthParams {
-        steel_fy: fy.unwrap_or(235.0) * steel_factor,
-        rebar_fy: rebar_fy * rebar_factor,
+        steel_fy: steel_fy.unwrap_or(235.0) * steel_factor,
+        rebar_fy: rebar_fy.unwrap_or(345.0) * rebar_factor,
         concrete_fc: fc.unwrap_or(24.0),
         steel_e: e,
     };
@@ -149,23 +183,40 @@ fn build_shape_fibers(
     };
     let placed = plastic_fibers_at(shape, &strength, target, ring);
 
-    let concrete: Box<dyn UniaxialMaterial> = match fc {
-        Some(fc) if fc <= 60.0 => Box::new(squid_n_material::ConcreteNewRc::new(fc, 2.0)),
-        Some(fc) => Box::new(squid_n_material::uniaxial::Concrete::new(fc, 2.0)),
-        // コンクリート領域があるのに fc 未設定（設定不備）: 弾性で防御。
-        None => Box::new(Bilinear::new(e, 1e20, 0.01)),
-    };
-    let steel: Box<dyn UniaxialMaterial> = steel_fiber_material(e, fy.map(|fy| fy * steel_factor));
-    let rebar: Box<dyn UniaxialMaterial> =
-        steel_fiber_material(205000.0, Some(rebar_fy * rebar_factor));
+    // 各領域の材料テンプレートは**その領域のファイバが実在するときのみ**構築する
+    // （遅延構築）。純 RC 断面など鋼材領域を持たない断面で、材料の fy 未設定を
+    // 理由に panic しないため。
+    let mut concrete: Option<Box<dyn UniaxialMaterial>> = None;
+    let mut steel: Option<Box<dyn UniaxialMaterial>> = None;
+    let mut rebar: Option<Box<dyn UniaxialMaterial>> = None;
 
     let mut fibers = Vec::with_capacity(placed.len());
     let mut mats: Vec<Box<dyn UniaxialMaterial>> = Vec::with_capacity(placed.len());
     for f in &placed {
         let (tag, mat) = match f.region {
-            FiberRegion::Concrete => (0usize, concrete.clone_box()),
-            FiberRegion::Rebar => (1usize, rebar.clone_box()),
-            FiberRegion::Steel => (2usize, steel.clone_box()),
+            FiberRegion::Concrete => {
+                let template = concrete.get_or_insert_with(|| match fc {
+                    Some(fc) if fc <= 60.0 => {
+                        Box::new(squid_n_material::ConcreteNewRc::new(fc, 2.0))
+                    }
+                    Some(fc) => Box::new(squid_n_material::uniaxial::Concrete::new(fc, 2.0)),
+                    // コンクリート領域があるのに fc 未設定（設定不備）: 弾性で防御。
+                    None => Box::new(Bilinear::new(e, 1e20, 0.01)),
+                });
+                (0usize, template.clone_box())
+            }
+            FiberRegion::Rebar => {
+                let template = rebar.get_or_insert_with(|| {
+                    steel_fiber_material(205000.0, rebar_fy.map(|fy| fy * rebar_factor))
+                });
+                (1usize, template.clone_box())
+            }
+            FiberRegion::Steel => {
+                let template = steel.get_or_insert_with(|| {
+                    steel_fiber_material(e, steel_fy.map(|fy| fy * steel_factor))
+                });
+                (2usize, template.clone_box())
+            }
         };
         fibers.push(Fiber {
             y: f.y,

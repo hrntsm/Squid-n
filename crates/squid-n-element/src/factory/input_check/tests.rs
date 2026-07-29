@@ -175,6 +175,83 @@ fn test_issue_when_material_has_no_strength() {
     assert!(issues[0].contains("fy"), "{}", issues[0]);
 }
 
+/// H 形鋼断面を持つ部材の断面（鋼材ファイバ領域あり）。
+fn steel_h_section() -> Section {
+    SectionShape::SteelH {
+        height: 400.0,
+        width: 200.0,
+        web_thick: 8.0,
+        flange_thick: 13.0,
+    }
+    .to_section(SectionId(0), "H400".into())
+}
+
+/// 鋼材断面形状＋ fy 設定済みは不備なし。
+#[test]
+fn test_no_issue_for_steel_shape_with_fy() {
+    let model = beam_model(steel_h_section(), steel_material());
+    assert!(nonlinear_input_issues(&model).is_empty());
+}
+
+/// 鋼材断面形状なのに fy 未設定の部材はエラーとする。
+/// ファイバー断面は降伏進展を追うことが目的のため、弾性で代替すると
+/// 鋼材がいくら応力が上がっても降伏せず耐力を過大評価する（危険側）。
+#[test]
+fn test_issue_when_steel_shape_has_no_fy() {
+    let mut mat = steel_material();
+    mat.fy = None;
+    mat.fc = Some(24.0); // fc があっても鋼材形状は fy が必須
+    let model = beam_model(steel_h_section(), mat);
+    let issues = nonlinear_input_issues(&model);
+    assert_eq!(issues.len(), 1, "{:?}", issues);
+    assert!(issues[0].contains("fy"), "{}", issues[0]);
+    assert!(ensure_nonlinear_input(&model).is_err());
+}
+
+/// SRC 断面（内蔵鉄骨あり）を指定の鋼種で作るヘルパ。
+fn src_section(steel_grade: &str) -> Section {
+    let rebar = match rc_section().shape {
+        Some(SectionShape::RcRect { rebar, .. }) => rebar,
+        _ => unreachable!(),
+    };
+    SectionShape::SrcRect {
+        b: 500.0,
+        d: 700.0,
+        rebar,
+        steel_height: 300.0,
+        steel_width: 150.0,
+        steel_web_thick: 6.5,
+        steel_flange_thick: 9.0,
+        steel_grade: steel_grade.into(),
+    }
+    .to_section(SectionId(0), "SRC".into())
+}
+
+/// SRC 断面は内蔵鉄骨の鋼種から降伏強度を解決できれば、材料 fy 未設定でも不備なし。
+#[test]
+fn test_no_issue_for_src_section_with_steel_grade() {
+    let mut mat = steel_material();
+    mat.name = "FC24".into();
+    mat.fy = None;
+    mat.fc = Some(24.0);
+    let model = beam_model(src_section("SN400B"), mat);
+    assert!(nonlinear_input_issues(&model).is_empty());
+}
+
+/// SRC 断面で内蔵鉄骨の鋼種も材料 fy も解決できない部材はエラーとする。
+/// Fc・主筋材質が揃っていても、内蔵鉄骨のファイバに降伏強度が要る。
+#[test]
+fn test_issue_when_src_section_has_no_steel_yield() {
+    let mut mat = steel_material();
+    mat.name = "FC24".into();
+    mat.fy = None;
+    mat.fc = Some(24.0);
+    let model = beam_model(src_section(""), mat);
+    let issues = nonlinear_input_issues(&model);
+    assert_eq!(issues.len(), 1, "{:?}", issues);
+    assert!(issues[0].contains("降伏強度"), "{}", issues[0]);
+}
+
 /// 材料が割り当てられていない部材はエラーとする。
 #[test]
 fn test_issue_when_member_has_no_material() {

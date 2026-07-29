@@ -61,7 +61,9 @@ fn make_diaphragm_model() -> Model {
             density: 0.0,
             shear: None,
             fc: None,
-            fy: None,
+            // Fiber 要素の生成テスト用に、実質降伏しない大きな fy を明示する
+            // （fy 未設定の鋼材ファイバは契約違反として panic する）。
+            fy: Some(1e20),
         }],
         ..Default::default()
     }

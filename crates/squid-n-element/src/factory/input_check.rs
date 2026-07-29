@@ -12,9 +12,22 @@
 //! 代替値（既定の Fc・fy）で無音に埋めず、解析を停止して利用者へ是正を促す。
 
 use squid_n_core::model::{ElementData, ElementKind, Model};
+use squid_n_core::section_shape::SectionShape;
 
 /// エラーメッセージへ列挙する不備の最大件数（超過分は件数のみを示す）。
 const MAX_LISTED: usize = 5;
+
+/// ファイバー断面に鋼材領域（形鋼・鋼管・内蔵鉄骨・管壁）を持つ形状か。
+///
+/// 鋼材ファイバの材料には降伏強度 fy が必須。ファイバー断面は降伏進展を追う
+/// ことが目的のため、fy 未設定を弾性で無音に代替せず、解析前にエラーで停止する
+/// （`squid_n_element::fiber::steel_fiber_material` は fy 無しで呼ぶと panic する）。
+fn shape_has_steel_fiber_region(shape: &SectionShape) -> bool {
+    !matches!(
+        shape,
+        SectionShape::RcRect { .. } | SectionShape::RcCircle { .. } | SectionShape::RcWall { .. }
+    )
+}
 
 /// 非線形解析で部材耐力を算定できない設定不備を列挙する（是正内容を示す日本語文）。
 ///
@@ -125,7 +138,32 @@ fn member_strength_issue(data: &ElementData, model: &Model) -> Option<String> {
                 ));
             }
         }
+        // SRC・CFT は鋼材領域（内蔵鉄骨・管壁）のファイバに降伏強度が要る。
+        // SRC は断面の内蔵鉄骨鋼種 → 部材材料 fy の順で解決する
+        // （`crate::fiber::resolve_steel_fiber_fy`、要素生成と同じ規則）。
+        // 未設定のまま弾性で代替すると、鋼材部分がいくら応力が上がっても降伏せず
+        // 耐力を過大評価する（危険側）。
+        let fiber_shape = sec.and_then(|s| s.shape.as_ref());
+        if fiber_shape.is_some_and(shape_has_steel_fiber_region)
+            && !crate::fiber::resolve_steel_fiber_fy(fiber_shape, mat.fy).is_some_and(|fy| fy > 0.0)
+        {
+            return Some(format!(
+                "部材 ID {} の断面は鋼材領域（内蔵鉄骨・鋼管）を含みますが、鋼材の降伏強度を\
+                 解決できません。断面の鋼種（SRC の内蔵鉄骨）または材料「{}」の fy を\
+                 設定してください。ファイバー断面は鋼材の降伏進展を追うため必須です。",
+                data.id.0, mat.name
+            ));
+        }
         return None;
+    }
+    // 鋼材断面形状（形鋼・鋼管）はファイバの降伏強度 fy が必須。
+    if sec.and_then(|s| s.shape.as_ref()).is_some() && !mat.fy.is_some_and(|fy| fy > 0.0) {
+        return Some(format!(
+            "部材 ID {} は鋼材断面ですが、材料「{}」に降伏強度 fy が設定されていません。\
+             材料タブで fy を設定してください。\
+             ファイバー断面は鋼材の降伏進展を追うため fy が必須です。",
+            data.id.0, mat.name
+        ));
     }
     if mat.fy.is_none() && mat.fc.is_none() {
         return Some(format!(

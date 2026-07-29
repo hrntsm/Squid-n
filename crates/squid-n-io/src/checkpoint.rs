@@ -267,7 +267,9 @@ mod tests {
                 density: 0.0,
                 shear: None,
                 fc: None,
-                fy: None,
+                // 実質降伏しない大きな fy を明示する
+                // （fy 未設定の鋼材ファイバは契約違反として panic する）。
+                fy: Some(1e20),
             }],
             ..Default::default()
         };
@@ -383,7 +385,8 @@ mod tests {
                     density: 0.0,
                     shear: None,
                     fc: None,
-                    fy: None,
+                    // 実質降伏しない大きな fy を明示する。
+                    fy: Some(1e20),
                 }],
                 ..Default::default()
             }

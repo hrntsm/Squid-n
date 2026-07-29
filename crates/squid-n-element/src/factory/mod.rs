@@ -199,9 +199,9 @@ impl StrengthBasis {
 ///
 /// 注意（既知の制約）: `ConcentratedSpringBeam` は端ばねスケルトン（降伏モーメント）が必要だが、
 /// 現状 `Model` に降伏応力／スケルトン供給経路が無いため、軸-曲げ連成を扱う `FiberBeam` に
-/// フォールバックしている（P5 §5 の本来意図は集中ばね梁）。また鋼材はファイバ材料が
-/// `Bilinear(My=1e20)` で実質弾性のため、真の降伏は `fc` を持つコンクリート断面でのみ生じる。
-/// 鋼材の降伏・集中ばね梁の実体化には Model への降伏応力／スケルトン追加が前提（follow-up）。
+/// フォールバックしている（P5 §5 の本来意図は集中ばね梁）。鋼材ファイバは材料の fy から
+/// Menegotto–Pinto で降伏する（fy 未設定のモデルは [`ensure_nonlinear_input`] が解析前に
+/// エラーで停止する）。
 ///
 /// 部材耐力算定に用いる材料強度（鋼材 fy・RC 主筋 σy）の基準は `basis` で指定する。
 /// 時刻歴応答解析（`dynamic/timehistory/nonlinear.rs`）は [`StrengthBasis::Nominal`]、

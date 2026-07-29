@@ -103,7 +103,9 @@ fn build_test_model(shear_mod: Option<f64>) -> Model {
             density: 0.0,
             shear: shear_mod,
             fc: None,
-            fy: None,
+            // 弾性挙動の検証用に、実質降伏しない大きな fy を明示する
+            // （fy 未設定の鋼材ファイバは契約違反として panic する）。
+            fy: Some(1e20),
         }],
         ..Default::default()
     }
@@ -170,7 +172,8 @@ fn make_oriented_fiber(p0: [f64; 3], p1: [f64; 3], ref_vec: [f64; 3]) -> FiberBe
             density: 0.0,
             shear: Some(0.0),
             fc: None,
-            fy: None,
+            // 弾性挙動の検証用に、実質降伏しない大きな fy を明示する。
+            fy: Some(1e20),
         }],
         ..Default::default()
     };
@@ -253,8 +256,8 @@ fn make_torsion_fiber_beam(g: f64, j: f64) -> FiberBeam {
     FiberBeam::new(&model.elements[0], &model, StrengthBasis::Nominal)
 }
 
-/// 降伏データ検証: Material.fy を与えた鋼材ファイバは、同一の大曲率変形に対して
-/// 弾性材（fy 無し＝1e20）より小さい曲げ内力を示す（＝実際に降伏している）。
+/// 降伏データ検証: 現実的な fy を与えた鋼材ファイバは、同一の大曲率変形に対して
+/// 実質降伏しない弾性材（fy=1e20）より小さい曲げ内力を示す（＝実際に降伏している）。
 #[test]
 fn test_fiber_steel_yields_with_fy() {
     let ctx = Ctx {
@@ -272,7 +275,7 @@ fn test_fiber_steel_yields_with_fy() {
     yielding.update_state(&du, true, &ctx);
     let f_y = yielding.internal_force(&ElemState::default(), &ctx);
 
-    let mut elastic = make_steel_fiber_with_fy(None);
+    let mut elastic = make_steel_fiber_with_fy(Some(1e20));
     elastic.update_state(&du, true, &ctx);
     let f_e = elastic.internal_force(&ElemState::default(), &ctx);
 
@@ -577,8 +580,8 @@ fn test_yield_progression() {
                 density: 0.0,
                 shear: Some(0.0),
                 fc: None,
-                // fy 未設定だと Bilinear の降伏点が 1e20 となり降伏しない
-                // （テストが恒等比較になってしまう）ため明示する。
+                // 実際に降伏させるため現実的な fy を明示する
+                // （fy 未設定の鋼材ファイバは契約違反として panic する）。
                 fy: Some(235.0),
             }],
             ..Default::default()
@@ -919,7 +922,8 @@ fn test_vertical_column_rz_nonsingular() {
             density: 0.0,
             shear: Some(g),
             fc: None,
-            fy: None,
+            // 弾性挙動の検証用に、実質降伏しない大きな fy を明示する。
+            fy: Some(1e20),
         }],
         ..Default::default()
     };
@@ -1332,7 +1336,7 @@ fn make_plastic_zone_fiber(lp: f64, fy: Option<f64>) -> FiberBeam {
 #[test]
 fn test_plastic_zone_axial_stiffness_exact() {
     // 軸剛性は端部ファイバ(2Lp) + 中央弾性(L-2Lp) の合成で EA/L に厳密一致する
-    let fb = make_plastic_zone_fiber(300.0, None);
+    let fb = make_plastic_zone_fiber(300.0, Some(1e20));
     let ctx = Ctx {
         model: &build_test_model(Some(0.0)),
     };
@@ -1351,7 +1355,7 @@ fn test_plastic_zone_elastic_stiffness_close_to_full_fiber() {
     let full = FiberBeam::new(&model.elements[0], &model, StrengthBasis::Nominal);
     let k_full = full.tangent_stiffness(&ElemState::default(), &ctx);
 
-    let pz = make_plastic_zone_fiber(150.0, None); // Lp = L/20
+    let pz = make_plastic_zone_fiber(150.0, Some(1e20)); // Lp = L/20
     let k_pz = pz.tangent_stiffness(&ElemState::default(), &ctx);
     for (i, j) in [(1usize, 1usize), (2, 2), (4, 4), (5, 5), (1, 5), (2, 4)] {
         assert_relative_eq!(k_pz.get(i, j), k_full.get(i, j), max_relative = 5e-2);
@@ -1368,7 +1372,7 @@ fn test_plastic_zone_elastic_stiffness_close_to_full_fiber() {
 #[test]
 fn test_plastic_zone_k_el_strong_axis_in_mz_plane() {
     let model = build_test_model(Some(0.0));
-    let pz = make_plastic_zone_fiber(300.0, None);
+    let pz = make_plastic_zone_fiber(300.0, Some(1e20));
     let k_el = &pz
         .hinge
         .as_ref()
@@ -1513,7 +1517,8 @@ fn test_rc_fiber_section_includes_separated_rebar() {
             density: 0.0,
             shear: Some(0.0),
             fc: Some(30.0),
-            fy: None,
+            // 主筋材質未設定時は部材材料の fy へフォールバックするため明示する。
+            fy: Some(345.0),
         }],
         ..Default::default()
     };
