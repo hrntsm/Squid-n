@@ -368,17 +368,37 @@ impl<'m> Analysis<'m> {
 
     /// Solve eigenvalue problem (subspace iteration) for n_modes lowest modes.
     ///
-    /// 既に `prepare` で分解済みの `self.solver`（縮約後剛性行列 K_red の分解）を
-    /// そのまま再利用する。固有値解析専用の再分解は行わない
-    /// （[`eigen::solve_eigen_with_solver`] 参照）。
+    /// 通常は `prepare` で分解済みの `self.solver`（縮約後剛性行列 K_red の分解）を
+    /// そのまま再利用する（[`eigen::solve_eigen_with_solver`] 参照）。
+    /// 例外は [`Self::eigen_solver_dispatch`] を参照。
     pub fn eigen(&self, n_modes: usize) -> Result<ModalResult, SolveError> {
-        eigen::solve_eigen_with_solver(
-            self.model,
-            &self.dofmap,
-            &self.reducer,
-            n_modes,
-            &*self.solver,
-        )
+        self.eigen_solver_dispatch(n_modes)
+    }
+
+    /// 固有値解析に使うソルバの振り分け。
+    ///
+    /// `prepare` の `self.solver` は `SolverBackend::Auto` で生成しており、縮約後
+    /// 自由度数が [`squid_n_math::auto::AUTO_ITERATIVE_MIN_DOF`] 以上のモデルでは
+    /// f32 精度の反復法（PCG）が選ばれる。部分空間反復は 1 回の分解を
+    /// （部分空間サイズ×反復回数）回の求解で再利用する構造のため、反復法では
+    /// (1) 求解のたびに数千回規模の PCG 反復が走り桁違いに遅くなり、
+    /// (2) f32 精度・緩い収束判定の解では固有値反復の収束判定（相対誤差 1e-10）に
+    /// 達せず `NonConvergence` になり得る。このため PCG が選ばれる規模では
+    /// `self.solver` を使わず、固有値解析専用に直接法（疎 Cholesky）で分解し直す
+    /// [`eigen::solve_eigen`] へ振り分ける（静的解析側の PCG 採用はそのまま維持）。
+    /// しきい値未満では `Auto` は常に直接法を選ぶため、従来どおり分解を再利用する。
+    pub(crate) fn eigen_solver_dispatch(&self, n_modes: usize) -> Result<ModalResult, SolveError> {
+        if self.n_indep >= squid_n_math::auto::AUTO_ITERATIVE_MIN_DOF {
+            eigen::solve_eigen(self.model, &self.dofmap, &self.reducer, n_modes)
+        } else {
+            eigen::solve_eigen_with_solver(
+                self.model,
+                &self.dofmap,
+                &self.reducer,
+                n_modes,
+                &*self.solver,
+            )
+        }
     }
 
     /// 複数の荷重ケースを一括で解く（分解済み K を共有）。
