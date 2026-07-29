@@ -470,11 +470,12 @@ pub fn design_table(ui: &mut egui::Ui, app: &mut App) {
 
     // ── 非線形解析の材端履歴則 ──
     ui.add_space(12.0);
-    egui::CollapsingHeader::new("非線形解析の材端履歴則")
+    egui::CollapsingHeader::new("非線形解析の材端履歴則(増分)")
         .default_open(false)
         .show(ui, |ui| {
             ui.label(
-                "材端曲げバネの復元力履歴則。既定は RC/SRC/CFT 梁=武田型、S 梁=標準型（部材表で個別指定可）。",
+                "増分解析（保有水平耐力計算）の材端曲げバネの復元力履歴則。\
+                 既定は RC/SRC/CFT 梁=武田型、S 梁=標準型（部材表で個別指定可）。",
             );
             use std::collections::BTreeMap;
             let mut counts: BTreeMap<&'static str, u32> = BTreeMap::new();
@@ -483,10 +484,18 @@ pub fn design_table(ui: &mut egui::Ui, app: &mut App) {
                 if e.kind != squid_n_core::model::ElementKind::Beam {
                     continue;
                 }
-                let eff = squid_n_element::factory::resolve_member_hysteresis(e, &app.model);
+                let eff = squid_n_element::factory::resolve_member_hysteresis(
+                    e,
+                    &app.model,
+                    squid_n_core::model::AnalysisKind::Incremental,
+                );
                 *counts.entry(eff.label()).or_default() += 1;
                 if let Some(r) = app.model.member_hysteresis(e.id) {
-                    overrides.push(format!("部材{}: {}", e.id.0, r.label()));
+                    let mut line = format!("部材{}: {}", e.id.0, r.label());
+                    if let Some(r_th) = app.model.member_hysteresis_th_raw(e.id) {
+                        line.push_str(&format!("(時刻歴: {})", r_th.label()));
+                    }
+                    overrides.push(line);
                 }
             }
             if counts.is_empty() {

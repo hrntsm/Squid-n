@@ -29,6 +29,9 @@ pub enum HysteresisModel {
     TsujiYamada,
     /// 鉄骨大梁の座屈考慮履歴（耐力劣化型＋RO 除荷。局部/横/連成座屈）。
     SteelBuckling,
+    /// Karsan–Jirsa 型（Yassin 1994 / Concrete02 系。残留塑性ひずみを通る割線
+    /// 除荷・ひび割れ開閉。ファイバー断面・MS のコンクリートの時刻歴既定）。
+    KarsanJirsa,
 }
 
 impl HysteresisModel {
@@ -43,11 +46,12 @@ impl HysteresisModel {
             HysteresisModel::Takeda => "武田型",
             HysteresisModel::TsujiYamada => "辻・山田型",
             HysteresisModel::SteelBuckling => "座屈考慮型",
+            HysteresisModel::KarsanJirsa => "Karsan-Jirsa型",
         }
     }
 
     /// UI・列挙用の全候補。
-    pub const ALL: [HysteresisModel; 8] = [
+    pub const ALL: [HysteresisModel; 9] = [
         HysteresisModel::Auto,
         HysteresisModel::Retrograde,
         HysteresisModel::Standard,
@@ -56,13 +60,24 @@ impl HysteresisModel {
         HysteresisModel::Takeda,
         HysteresisModel::TsujiYamada,
         HysteresisModel::SteelBuckling,
+        HysteresisModel::KarsanJirsa,
     ];
 }
 
+/// 非線形解析の種別。履歴則の既定（`Auto` の解決先）と、部材個別指定の
+/// どちらのスロット（増分用／時刻歴用）を参照するかの切替に用いる。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum AnalysisKind {
+    /// 増分解析（保有水平耐力計算・プッシュオーバー）。
+    Incremental,
+    /// 時刻歴応答解析（非線形動的解析）。
+    TimeHistory,
+}
+
 /// 既定の部材曲げ履歴則（本実装の既定の非線形特性。各履歴則の原典による）。
-/// 梁の曲げは **RC/SRC/CFT 造＝武田型（トリリニア）**、
-/// **S 造＝標準型（バイリニア）** を既定とする。ブレースの軸は S 造＝標準型。
-/// `rc_like` は RC/SRC/CFT（コンクリート系）か否か。
+/// 材端集中バネの曲げは **RC/SRC/CFT 造＝武田型（トリリニア）**、
+/// **S 造＝標準型（バイリニア）** を既定とする（増分・時刻歴共通）。
+/// ブレースの軸は S 造＝標準型。`rc_like` は RC/SRC/CFT（コンクリート系）か否か。
 pub fn default_member_hysteresis(rc_like: bool) -> HysteresisModel {
     if rc_like {
         HysteresisModel::Takeda
@@ -71,11 +86,30 @@ pub fn default_member_hysteresis(rc_like: bool) -> HysteresisModel {
     }
 }
 
+/// ファイバー断面・MS 要素のコンクリート除荷則の既定。
+/// - 増分解析: 逆行型（除荷が稀で骨格追従が主目的のため、包絡線を可逆に辿る）
+/// - 時刻歴応答解析: Karsan–Jirsa 型（Yassin 1994。残留塑性ひずみ・ひび割れ開閉を
+///   表現し、履歴吸収エネルギーの評価が原点指向型より現実的）
+pub fn default_fiber_concrete_hysteresis(kind: AnalysisKind) -> HysteresisModel {
+    match kind {
+        AnalysisKind::Incremental => HysteresisModel::Retrograde,
+        AnalysisKind::TimeHistory => HysteresisModel::KarsanJirsa,
+    }
+}
+
 /// 部材の履歴則の指定（要素 ID と履歴則の対。`Model::member_hysteresis_attrs`）。
 /// 各履歴則の原典による履歴特性。既定（Auto）と異なる履歴則を
 /// 部材個別に指定する場合に用いる。
+///
+/// 増分解析用（`rule`）と時刻歴応答解析用（`rule_th`）を別々に指定できる。
+/// `rule_th = None` は「時刻歴も増分用と同じ指定に従う」（旧形式のファイルは
+/// この解釈で読み込まれ、従来と同じ挙動になる）。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct MemberHysteresisAttr {
     pub elem: ElemId,
+    /// 増分解析（保有水平耐力計算）用の履歴則。
     pub rule: HysteresisModel,
+    /// 時刻歴応答解析用の履歴則（`None` = 増分用と同じ）。
+    #[serde(default)]
+    pub rule_th: Option<HysteresisModel>,
 }

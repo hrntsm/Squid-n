@@ -20,7 +20,11 @@ mod wall_opening;
 
 pub use input_check::{ensure_nonlinear_input, nonlinear_input_issues};
 pub use regime::{resolve_force_regime, ResolvedRegime};
-pub use springs::{plastic_zone_length, resolve_member_hysteresis};
+pub use springs::{
+    plastic_zone_length, resolve_fiber_concrete_hysteresis, resolve_member_hysteresis,
+    resolve_wall_concrete_hysteresis, resolve_wall_shear_hysteresis,
+};
+pub use squid_n_core::model::AnalysisKind;
 pub(crate) use wall_opening::wall_opening_reduction;
 
 use springs::{build_fiber, build_flexural_springs, yield_moment_and_axial};
@@ -199,9 +203,9 @@ impl StrengthBasis {
 ///
 /// 注意（既知の制約）: `ConcentratedSpringBeam` は端ばねスケルトン（降伏モーメント）が必要だが、
 /// 現状 `Model` に降伏応力／スケルトン供給経路が無いため、軸-曲げ連成を扱う `FiberBeam` に
-/// フォールバックしている（P5 §5 の本来意図は集中ばね梁）。また鋼材はファイバ材料が
-/// `Bilinear(My=1e20)` で実質弾性のため、真の降伏は `fc` を持つコンクリート断面でのみ生じる。
-/// 鋼材の降伏・集中ばね梁の実体化には Model への降伏応力／スケルトン追加が前提（follow-up）。
+/// フォールバックしている（P5 §5 の本来意図は集中ばね梁）。鋼材ファイバは材料の fy から
+/// Menegotto–Pinto で降伏する（fy 未設定のモデルは [`ensure_nonlinear_input`] が解析前に
+/// エラーで停止する）。
 ///
 /// 部材耐力算定に用いる材料強度（鋼材 fy・RC 主筋 σy）の基準は `basis` で指定する。
 /// 時刻歴応答解析（`dynamic/timehistory/nonlinear.rs`）は [`StrengthBasis::Nominal`]、
@@ -210,6 +214,7 @@ pub fn build_nonlinear_behavior(
     data: &ElementData,
     model: &Model,
     basis: StrengthBasis,
+    kind: AnalysisKind,
 ) -> (Box<dyn ElementBehavior>, ElemState) {
     match data.kind {
         // 耐震壁の側柱は面内曲げ面の端部回転を静的縮約する（線形パスと同じ扱い）。
@@ -235,7 +240,7 @@ pub fn build_nonlinear_behavior(
                 // 履歴則を解決（部材個別指定 → 構造種別ごとの既定表。本実装の既定の
                 // 非線形特性は各履歴則の原典に基づく）。RC/SRC/CFT 梁は
                 // 武田型トリリニア、S 梁は標準型（kinematic バイリニア）を材端バネに用いる。
-                let rule = resolve_member_hysteresis(data, model);
+                let rule = resolve_member_hysteresis(data, model, kind);
                 let (spring_i, spring_j, use_mn) = build_flexural_springs(data, model, rule, basis);
                 let beam = crate::concentrated::ConcentratedSpringBeam::new_one_component(
                     elem, spring_i, spring_j,
@@ -251,18 +256,18 @@ pub fn build_nonlinear_behavior(
                 (Box::new(beam), ElemState::default())
             }
             ResolvedRegime::Fiber => (
-                Box::new(build_fiber(data, model, basis)),
+                Box::new(build_fiber(data, model, basis, kind)),
                 ElemState::default(),
             ),
         },
         ElementKind::Fiber => (
-            Box::new(build_fiber(data, model, basis)),
+            Box::new(build_fiber(data, model, basis, kind)),
             ElemState::default(),
         ),
         // MS 要素: 端部バネ断面 + 中央弾性の非線形要素（P5.5 §3）
         ElementKind::MultiSpring => (
             Box::new(crate::multi_spring::MultiSpringElement::new(
-                data, model, basis,
+                data, model, basis, kind,
             )),
             ElemState::default(),
         ),
@@ -294,12 +299,20 @@ pub fn build_nonlinear_behavior(
             match crate::wall_panel::WallPanelElement::try_new_scaled(data, model, stiffness_scale)
             {
                 Some(panel) => {
-                    let panel = panel.with_shear_capacity(qu);
+                    // 面内せん断は Qu 頭打ちの弾完全塑性骨格＋履歴則設定による
+                    // 除荷・再載荷則（既定: 最大点指向型）。
+                    // 面内せん断は Qu 頭打ちの弾完全塑性骨格＋履歴則設定による
+                    // 除荷・再載荷則（既定: 最大点指向型）。
+                    // 面内せん断は Qu 頭打ちの弾完全塑性骨格＋履歴則設定による
+                    // 除荷・再載荷則（既定: 最大点指向型）。
+                    let panel = panel
+                        .with_shear_capacity(qu)
+                        .with_shear_hysteresis(resolve_wall_shear_hysteresis(data, model, kind));
                     // 耐震壁の軸・曲げは既定でファイバー断面の弾塑性評価とする
                     // （柱の Fiber 既定と同様）。フレーム内雑壁（stiffness_scale が
                     // 実質 0）は弾性のままでよい。
                     let panel = if stiffness_scale >= 1.0 {
-                        panel.with_fiber_flexure(data, model, basis)
+                        panel.with_fiber_flexure(data, model, basis, kind)
                     } else {
                         panel
                     };

@@ -24,7 +24,7 @@ use crate::transform::LocalFrame;
 use smallvec::SmallVec;
 use squid_n_core::dof::{DofMap, DOF_PER_NODE};
 use squid_n_core::ids::NodeId;
-use squid_n_core::model::{ElementData, Model};
+use squid_n_core::model::{ElementData, HysteresisModel, Model};
 use squid_n_core::section_shape::{SectionShape, E_STEEL, KAPPA_RC};
 
 /// 耐震壁（壁エレメントモデル）。
@@ -56,6 +56,14 @@ pub struct WallPanelElement {
     committed_slip: f64,
     /// トライアル塑性せん断すべり γp [mm]。
     trial_slip: f64,
+    /// 面内せん断の復元力ばね。骨格は従来と同じ弾完全塑性（初期剛性 k_s0・耐力 Qu）
+    /// で、除荷・再載荷則を履歴則設定から解決する（既定は最大点指向型。
+    /// [`Self::with_shear_hysteresis`]）。`None` は従来の移動硬化型
+    /// （弾完全塑性リターンマッピング）のまま。
+    shear_spring: Option<Box<dyn squid_n_material::UniaxialMaterial>>,
+    /// せん断ばねの変形測度 D = γp + Q/k_s0 に用いる弾性モード剛性
+    /// k_s0 = pᵀ·K_elastic·p [N/mm]（ばね骨格の初期剛性と共有）。
+    shear_k0: f64,
     /// 壁柱の軸・曲げの弾塑性評価（ファイバー断面＋塑性増分ヒンジ）。
     /// `Some` のとき軸・曲げの応答（剛性・内力）はこのファイバー壁柱から得て、
     /// 面内せん断の Qu 頭打ちは従来どおり塑性すべりで扱う。
@@ -397,6 +405,8 @@ impl WallPanelElement {
             shear_mode,
             committed_slip: 0.0,
             trial_slip: 0.0,
+            shear_spring: None,
+            shear_k0: 0.0,
             fiber_column: None,
             fiber_u12_trial: [0.0; 12],
             fiber_u12_committed: [0.0; 12],
@@ -418,6 +428,7 @@ impl WallPanelElement {
         data: &ElementData,
         model: &Model,
         basis: crate::factory::StrengthBasis,
+        kind: squid_n_core::model::AnalysisKind,
     ) -> Self {
         let Some(geom) = wall_panel_geometry(data, model) else {
             return self;
@@ -450,6 +461,9 @@ impl WallPanelElement {
         let nw = 4;
         let nd = 20;
         let rebar_fy = 345.0 * basis.rebar_factor(Some(mat));
+        // コンクリート除荷則は解析種別と部材個別指定から解決する。壁柱の増分既定は
+        // 原点指向型（[`crate::factory::resolve_wall_concrete_hysteresis`] 参照）。
+        let concrete_rule = crate::factory::resolve_wall_concrete_hysteresis(data, model, kind);
         let make_section = || {
             let (mut section, mut mats) = crate::fiber::build_gauss_fibers(
                 t,
@@ -462,6 +476,7 @@ impl WallPanelElement {
                 None,
                 1.0,
                 1.0,
+                concrete_rule,
             );
             if ps > 0.0 {
                 let a_each = ps * t * lw / nd as f64;
@@ -474,10 +489,7 @@ impl WallPanelElement {
                         area: a_each,
                         material: 1,
                     });
-                    mats.push(Box::new(squid_n_material::uniaxial::Bilinear::new(
-                        E_STEEL, rebar_fy, 0.01,
-                    ))
-                        as Box<dyn squid_n_material::uniaxial::UniaxialMaterial>);
+                    mats.push(crate::fiber::steel_fiber_material(E_STEEL, Some(rebar_fy)));
                 }
             }
             (section, mats)
@@ -796,6 +808,82 @@ impl WallPanelElement {
         self
     }
 
+    /// 面内せん断の復元力ばねを構築する（[`Self::with_shear_capacity`] の後に呼ぶ）。
+    ///
+    /// 骨格は従来と同じ弾完全塑性（初期剛性 k_s0 = pᵀ·K_elastic·p、耐力 Qu で
+    /// 頭打ち）とし、除荷・再載荷則のみ `rule` に従う（既定は最大点指向型）。
+    /// トリリニア骨格のひび割れ点は弾性線上（Qu/3）に置きバイリニア相当、
+    /// 終局点は降伏変形の 10⁴ 倍（降伏後フラット＝Qu 頭打ちを保持）とする。
+    /// `qu_shear <= 0`（弾性）や k_s0 が取れない場合は何もしない
+    /// （従来の弾完全塑性リターンマッピングのまま）。
+    pub(crate) fn with_shear_hysteresis(mut self, rule: HysteresisModel) -> Self {
+        use squid_n_material::{HysteresisMaterial, HysteresisRule};
+        if self.qu_shear <= 0.0 {
+            return self;
+        }
+        // 弾性壁柱の全体系剛性で k_s0 = pᵀ·(Aᵀ·K12·A)·p を評価する。
+        let k12 = self.column.axis.to_global(&self.column.local_stiffness());
+        // v = A·p（12 自由度）
+        let mut v = [0.0_f64; 12];
+        for (i, vi) in v.iter_mut().enumerate() {
+            let mut acc = 0.0;
+            for q in 0..24 {
+                acc += self.a_mat[i * 24 + q] * self.shear_mode[q];
+            }
+            *vi = acc;
+        }
+        // w = K12·v
+        let mut w = [0.0_f64; 12];
+        for (i, wi) in w.iter_mut().enumerate() {
+            let mut acc = 0.0;
+            for (j, vj) in v.iter().enumerate() {
+                acc += k12.get(i, j) * vj;
+            }
+            *wi = acc;
+        }
+        // k_s0 = pᵀ·Aᵀ·w = vᵀ·w
+        let k_s0: f64 = v.iter().zip(w.iter()).map(|(a, b)| a * b).sum();
+        if k_s0 <= 0.0 {
+            return self;
+        }
+        let qu = self.qu_shear;
+        let dy = qu / k_s0;
+        let crack = (qu / 3.0, dy / 3.0);
+        let yield_point = (qu, dy);
+        let ultimate = (qu, dy * 1.0e4);
+        let r = match rule {
+            HysteresisModel::Retrograde => HysteresisRule::Retrograde {
+                crack,
+                yield_point,
+                ultimate,
+            },
+            HysteresisModel::Standard => HysteresisRule::Standard {
+                crack,
+                yield_point,
+                ultimate,
+            },
+            HysteresisModel::OriginOriented => HysteresisRule::OriginOriented {
+                yield_point,
+                ultimate,
+            },
+            HysteresisModel::Takeda => HysteresisRule::Takeda {
+                crack,
+                yield_point,
+                ultimate,
+                alpha: 0.4,
+            },
+            // 既定（Auto・Karsan–Jirsa 型等の Q–δ 系でない指定を含む）: 最大点指向型。
+            _ => HysteresisRule::MaxPointOriented {
+                crack,
+                yield_point,
+                ultimate,
+            },
+        };
+        self.shear_spring = Some(Box::new(HysteresisMaterial::new(r)));
+        self.shear_k0 = k_s0;
+        self
+    }
+
     /// 面内せん断の弾完全塑性リターンマッピング。
     ///
     /// せん断モード p（[`Self::shear_mode`]）に沿う塑性すべり γp を導入し、
@@ -832,6 +920,17 @@ impl WallPanelElement {
             .zip(f.iter())
             .map(|(p, v)| p * v)
             .sum();
+        if let Some(sp) = &self.shear_spring {
+            if self.shear_k0 > 0.0 {
+                // 直列ばねの整合: 変形測度 D = γp_c + Q(γp_c)/k_s0 でばね履歴を評価し、
+                // 伝達水平力がばね応答 M(D) と一致するよう γp を補正する（Q は γp に
+                // 線形なため 1 回で厳密。補正後も D は不変で自己整合）。
+                let d = self.committed_slip + q_trial / self.shear_k0;
+                let (q_target, _) = sp.probe(d);
+                let yielded = (q_trial - q_target).abs() > self.qu_shear * 1e-9;
+                return (self.committed_slip + (q_trial - q_target) / k_s, yielded);
+            }
+        }
         if q_trial.abs() <= self.qu_shear {
             return (self.committed_slip, false);
         }
@@ -889,6 +988,25 @@ impl WallPanelElement {
                 .map(|(p, v)| p * v)
                 .sum(),
         )
+    }
+
+    /// 現在のトライアル状態で壁が伝達している面内水平力 Q = pᵀ·f。
+    /// ファイバー壁柱はその内力から、弾性壁柱は f = K·(u − γp·p) から評価する。
+    fn inplane_shear_trial(&self, ctx: &Ctx) -> f64 {
+        if let Some(q) = self.inplane_shear_fiber(ctx) {
+            return q;
+        }
+        let k = self.stiffness_24(ctx);
+        let mut u_eff = self.trial_disp;
+        for (ue, p) in u_eff.iter_mut().zip(self.shear_mode.iter()) {
+            *ue -= self.trial_slip * p;
+        }
+        let f = Self::mat_vec(&k, &u_eff);
+        self.shear_mode
+            .iter()
+            .zip(f.iter())
+            .map(|(p, v)| p * v)
+            .sum()
     }
 
     /// 全体系 24×24 剛性 K = Aᵀ·K_col·A。
@@ -952,17 +1070,9 @@ impl ElementBehavior for WallPanelElement {
 
     fn tangent_stiffness(&self, _state: &ElemState, ctx: &Ctx) -> LocalMat {
         let k = self.stiffness_24(ctx);
-        let yielded = match self.inplane_shear_fiber(ctx) {
-            // ファイバー壁柱: すべり γp は update_state で確定済み。伝達中の面内
-            // 水平力が Qu 近傍なら降伏中（せん断方向の剛性を除去する）。
-            Some(q) => self.qu_shear > 0.0 && q.abs() >= self.qu_shear * (1.0 - 1e-9),
-            None => self.shear_return_map(&k, &self.trial_disp).1,
-        };
-        if !yielded {
+        if self.qu_shear <= 0.0 {
             return k;
         }
-        // 面内せん断が終局に達している間は、その方向の剛性を取り除いた整合接線
-        // K_t = K − (K·p)(K·p)ᵀ/(pᵀ·K·p) とする（弾完全塑性のコンシステント接線）。
         let kp = Self::mat_vec(&k, &self.shear_mode);
         let k_s: f64 = self
             .shear_mode
@@ -973,10 +1083,36 @@ impl ElementBehavior for WallPanelElement {
         if k_s <= 0.0 {
             return k;
         }
+        // せん断方向の剛性低減率 factor:
+        // - ばねあり: **剛性を保持**し（factor=0）、せん断非線形は内力側のすべり
+        //   補正（`Q = M(D)` の整合）だけで表現する（初期剛性法）。プラトー
+        //   （ばね接線 0）で剛性を除去する整合接線にすると、曲げ機構の形成後に
+        //   せん断が Qu から除荷へ向かう「角点」で大域 Newton が特異化して発散する。
+        //   従来の弾完全塑性リターンマッピングも、降伏判定の許容差により実質的に
+        //   全剛性を保持して同じ角点を通過していた（挙動踏襲）。
+        // - ばね無し（従来）: 降伏中のみ全除去（弾完全塑性のコンシステント接線）。
+        let factor = if self.shear_spring.is_some() && self.shear_k0 > 0.0 {
+            0.0
+        } else {
+            let yielded = match self.inplane_shear_fiber(ctx) {
+                // ファイバー壁柱: すべり γp は update_state で確定済み。伝達中の面内
+                // 水平力が Qu 近傍なら降伏中（せん断方向の剛性を除去する）。
+                Some(q) => q.abs() >= self.qu_shear * (1.0 - 1e-9),
+                None => self.shear_return_map(&k, &self.trial_disp).1,
+            };
+            if yielded {
+                1.0
+            } else {
+                0.0
+            }
+        };
+        if factor <= 0.0 {
+            return k;
+        }
         let mut kt = LocalMat::zeros(24);
         for i in 0..24 {
             for j in 0..24 {
-                let v = k.get(i, j) - kp[i] * kp[j] / k_s;
+                let v = k.get(i, j) - factor * kp[i] * kp[j] / k_s;
                 if v != 0.0 {
                     kt.set(i, j, v);
                 }
@@ -1041,7 +1177,22 @@ impl ElementBehavior for WallPanelElement {
                 let Some(q) = self.inplane_shear_fiber(ctx) else {
                     break;
                 };
-                if q.abs() <= self.qu_shear * (1.0 + 1e-9) {
+                // ばねあり: 残差 = 伝達水平力 − ばね応答 M(D)（D = γp + Q/k_s0 の
+                // 固定点 Q = M(D) を目指す）。ばね無し: 従来の Qu 超過分。
+                let residual = if self.shear_spring.is_some() && self.shear_k0 > 0.0 {
+                    let d = slip + q / self.shear_k0;
+                    let q_target = self
+                        .shear_spring
+                        .as_ref()
+                        .map(|sp| sp.probe(d).0)
+                        .unwrap_or(q);
+                    q - q_target
+                } else if q.abs() > self.qu_shear {
+                    (q.abs() - self.qu_shear) * q.signum()
+                } else {
+                    0.0
+                };
+                if residual.abs() <= self.qu_shear * 1e-9 {
                     break;
                 }
                 let k = self.stiffness_24(ctx);
@@ -1055,7 +1206,7 @@ impl ElementBehavior for WallPanelElement {
                 if k_s <= 0.0 {
                     break;
                 }
-                slip += (q.abs() - self.qu_shear) * q.signum() / k_s;
+                slip += residual / k_s;
             }
             self.trial_slip = slip;
         } else {
@@ -1064,6 +1215,14 @@ impl ElementBehavior for WallPanelElement {
             let k = self.stiffness_24(ctx);
             let (slip, _) = self.shear_return_map(&k, &self.trial_disp);
             self.trial_slip = slip;
+        }
+        // せん断ばねのトライアル状態を最終変形測度で更新（commit_state で確定）。
+        if self.shear_spring.is_some() && self.shear_k0 > 0.0 {
+            let q = self.inplane_shear_trial(ctx);
+            let d = self.trial_slip + q / self.shear_k0;
+            if let Some(sp) = &mut self.shear_spring {
+                sp.trial(d);
+            }
         }
         if commit {
             self.commit_state();
@@ -1076,6 +1235,9 @@ impl ElementBehavior for WallPanelElement {
         if let Some(f) = &mut self.fiber_column {
             f.commit_state();
         }
+        if let Some(sp) = &mut self.shear_spring {
+            sp.commit();
+        }
         self.fiber_u12_committed = self.fiber_u12_trial;
     }
 
@@ -1084,6 +1246,9 @@ impl ElementBehavior for WallPanelElement {
         self.trial_slip = self.committed_slip;
         if let Some(f) = &mut self.fiber_column {
             f.revert_state();
+        }
+        if let Some(sp) = &mut self.shear_spring {
+            sp.revert();
         }
         self.fiber_u12_trial = self.fiber_u12_committed;
     }
@@ -1097,6 +1262,7 @@ impl ElementBehavior for WallPanelElement {
             self.fiber_column.as_ref().map(|f| f.snapshot_state()),
             self.fiber_u12_trial,
             self.fiber_u12_committed,
+            self.shear_spring.as_ref().map(|sp| sp.serialize_state()),
         ))
     }
 
@@ -1109,8 +1275,9 @@ impl ElementBehavior for WallPanelElement {
             Option<Box<dyn std::any::Any>>,
             [f64; 12],
             [f64; 12],
+            Option<Vec<u8>>,
         );
-        if let Some((committed, trial, cslip, tslip, fsnap, u12t, u12c)) =
+        if let Some((committed, trial, cslip, tslip, fsnap, u12t, u12c, spring)) =
             state.downcast_ref::<Snapshot>()
         {
             self.committed_disp = *committed;
@@ -1122,6 +1289,12 @@ impl ElementBehavior for WallPanelElement {
             }
             self.fiber_u12_trial = *u12t;
             self.fiber_u12_committed = *u12c;
+            if let (Some(sp), Some(bytes)) = (&mut self.shear_spring, spring.as_ref()) {
+                // snapshot は同一実行内の巻き戻し用のため、復元失敗はプログラム
+                // エラー（形式は常に一致する）。
+                sp.deserialize_state(bytes)
+                    .expect("壁せん断ばねのスナップショット復元");
+            }
         } else if let Some((committed, trial, cslip, tslip)) =
             state.downcast_ref::<([f64; 24], [f64; 24], f64, f64)>()
         {
@@ -1141,6 +1314,7 @@ impl ElementBehavior for WallPanelElement {
             fiber: self.fiber_column.as_ref().map(|f| f.serialize_checkpoint()),
             fiber_u12_trial: self.fiber_u12_trial,
             fiber_u12_committed: self.fiber_u12_committed,
+            shear_spring: self.shear_spring.as_ref().map(|sp| sp.serialize_state()),
         };
         bincode::serialize(&cp).expect("serialize checkpoint")
     }
@@ -1163,6 +1337,10 @@ impl ElementBehavior for WallPanelElement {
             }
             self.fiber_u12_trial = cp.fiber_u12_trial;
             self.fiber_u12_committed = cp.fiber_u12_committed;
+            if let (Some(sp), Some(bytes)) = (&mut self.shear_spring, cp.shear_spring.as_ref()) {
+                sp.deserialize_state(bytes)
+                    .map_err(|e| crate::behavior::CheckpointError::Decode(e.to_string()))?;
+            }
             return Ok(());
         }
         // 旧形式（変位のみ）。
@@ -1176,12 +1354,6 @@ impl ElementBehavior for WallPanelElement {
     /// 塑性率評価はファイバー壁柱の危険断面プローブへ委譲する（弾性壁柱は None）。
     fn ductility_probe(&self) -> Option<crate::behavior::DuctilityProbe> {
         self.fiber_column.as_ref().and_then(|f| f.ductility_probe())
-    }
-
-    fn set_concrete_hysteresis(&mut self, dynamic: bool) {
-        if let Some(f) = &mut self.fiber_column {
-            f.set_concrete_hysteresis(dynamic);
-        }
     }
 
     fn mass_matrix(&self, _opt: MassOption) -> LocalMat {
@@ -1223,6 +1395,9 @@ struct WallPanelCheckpoint {
     fiber: Option<Vec<u8>>,
     fiber_u12_trial: [f64; 12],
     fiber_u12_committed: [f64; 12],
+    /// 面内せん断ばねの材料状態（ばね未構築は None。旧形式も None 扱い）。
+    #[serde(default)]
+    shear_spring: Option<Vec<u8>>,
 }
 
 fn sub(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
@@ -1758,6 +1933,7 @@ mod shear_yield_tests {
             &data,
             &model,
             crate::factory::StrengthBasis::MaterialStrength,
+            crate::factory::AnalysisKind::Incremental,
         );
         let ctx = Ctx { model: &model };
         let st = ElemState::default();
@@ -1785,6 +1961,83 @@ mod shear_yield_tests {
             max_q > qu * 0.99,
             "max_q={:.3e} が Qu={:.3e} に達していない",
             max_q,
+            qu
+        );
+    }
+
+    /// 面内せん断ばねの既定履歴（最大点指向型）: 除荷・再載荷が最大経験点を指向
+    /// する割線となり、除荷しても変形が完全には戻らず（残留変形）、再載荷の
+    /// 中間点では Qu より明確に小さい力（ピンチング）、最大経験変位まで戻すと
+    /// Qu へ復帰する。
+    #[test]
+    fn test_wall_shear_hysteresis_is_max_point_oriented() {
+        let (model, data) = wall_model();
+        let qu = WallPanelElement::shear_capacity_of(&data, &model);
+        assert!(qu > 0.0);
+        let (mut b, _) = crate::factory::build_nonlinear_behavior(
+            &data,
+            &model,
+            crate::factory::StrengthBasis::MaterialStrength,
+            crate::factory::AnalysisKind::TimeHistory,
+        );
+        let ctx = Ctx { model: &model };
+        let st = ElemState::default();
+        let push = |b: &mut Box<dyn ElementBehavior>, d: f64| -> f64 {
+            let mut du = LocalVec {
+                data: smallvec::SmallVec::from_elem(0.0, 24),
+            };
+            du.data[12] = d; // 上辺a Ux
+            du.data[18] = d; // 上辺b Ux
+            b.update_state(&du, false, &ctx);
+            b.commit_state();
+            let f = b.internal_force(&st, &ctx);
+            f.data[0] + f.data[6]
+        };
+
+        // (1) +30mm 押して降伏（|Q| ≈ Qu）。
+        let mut q_peak = 0.0;
+        for _ in 0..30 {
+            q_peak = push(&mut b, 1.0);
+        }
+        assert!(
+            (q_peak.abs() - qu).abs() <= qu * 0.02,
+            "ピークで Qu: {q_peak:.3e} vs {qu:.3e}"
+        );
+        let sgn = q_peak.signum();
+
+        // (2) 除荷: 最大点指向の除荷は反対側の経験点を指向する割線のため、
+        // Q が 0 付近へ落ちるまでに要する戻し量は 30mm より明確に小さい
+        // （＝残留変形が残る）。
+        let mut q = q_peak;
+        let mut n_unload = 0;
+        while q * sgn > qu * 0.02 && n_unload < 29 {
+            q = push(&mut b, -1.0);
+            n_unload += 1;
+        }
+        assert!(
+            n_unload < 29,
+            "除荷完了までの戻し量 {n_unload}mm が押し量より小さい（残留変形）"
+        );
+
+        // (3) 再載荷: 中間点は最大経験点への割線上（Qu より明確に小さい）で、
+        // ピーク変位まで戻すと Qu へ復帰する。
+        let mut q_mid = 0.0;
+        for i in 0..n_unload {
+            q = push(&mut b, 1.0);
+            if i == n_unload / 2 {
+                q_mid = q;
+            }
+        }
+        assert!(
+            q_mid * sgn < qu * 0.9,
+            "再載荷中間点はピンチング（割線上）: {:.3e} vs Qu={:.3e}",
+            q_mid,
+            qu
+        );
+        assert!(
+            (q * sgn - qu).abs() <= qu * 0.05,
+            "最大経験変位で Qu へ復帰: {:.3e} vs {:.3e}",
+            q,
             qu
         );
     }

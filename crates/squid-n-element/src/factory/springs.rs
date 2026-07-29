@@ -7,7 +7,10 @@
 //! - [`flexural_yield_moment`] / [`crack_moment`] / [`flexural_alpha_y`] — 骨格の折れ点算定
 //! - [`rotational_spring_params`] / [`flexible_length`] / [`is_rc_like_section`] — 補助算定
 
-use squid_n_core::model::{default_member_hysteresis, ElementData, HysteresisModel, Model};
+use squid_n_core::model::{
+    default_fiber_concrete_hysteresis, default_member_hysteresis, AnalysisKind, ElementData,
+    HysteresisModel, Model,
+};
 use squid_n_material::uniaxial::{Bilinear, UniaxialMaterial};
 use squid_n_material::{HysteresisMaterial, HysteresisRule, SteelBuckling, TsujiYamada};
 
@@ -38,9 +41,10 @@ pub(super) fn build_fiber(
     data: &ElementData,
     model: &Model,
     basis: StrengthBasis,
+    kind: AnalysisKind,
 ) -> crate::fiber::FiberBeam {
     let lp = plastic_zone_length(data, model);
-    crate::fiber::FiberBeam::with_plastic_zone(data, model, lp, basis)
+    crate::fiber::FiberBeam::with_plastic_zone(data, model, lp, basis, kind)
 }
 
 /// 部材の曲げ終局（降伏）モーメント My [N·mm]（技術基準解説書の曲げ終局強度）。
@@ -167,13 +171,105 @@ pub(super) fn is_rc_like_section(data: &ElementData, model: &Model) -> bool {
         .is_some_and(|s| s.is_concrete_like())
 }
 
-/// 部材の履歴則を解決する（属性 override → 構造種別ごとの既定表。本実装の既定の
-/// 非線形特性は各履歴則の原典に基づく）。`HysteresisModel::Auto` は
-/// 構造種別ごとの既定（RC/SRC/CFT=武田型、S=標準型）へ解決される。UI 表示にも用いる。
-pub fn resolve_member_hysteresis(data: &ElementData, model: &Model) -> HysteresisModel {
-    match model.member_hysteresis(data.id) {
+/// 解析種別に応じた部材個別指定のスロットを返す（増分用／時刻歴用）。
+/// 時刻歴用スロットが未指定の部材は増分用の指定に従う（`member_hysteresis_th`）。
+fn specified_hysteresis(
+    data: &ElementData,
+    model: &Model,
+    kind: AnalysisKind,
+) -> Option<HysteresisModel> {
+    match kind {
+        AnalysisKind::Incremental => model.member_hysteresis(data.id),
+        AnalysisKind::TimeHistory => model.member_hysteresis_th(data.id),
+    }
+}
+
+/// 部材の曲げ履歴則（材端集中バネ用）を解決する（属性 override → 構造種別ごとの
+/// 既定表。本実装の既定の非線形特性は各履歴則の原典に基づく）。
+/// `HysteresisModel::Auto` は構造種別ごとの既定（RC/SRC/CFT=武田型、S=標準型。
+/// 増分・時刻歴共通）へ解決される。UI 表示にも用いる。
+pub fn resolve_member_hysteresis(
+    data: &ElementData,
+    model: &Model,
+    kind: AnalysisKind,
+) -> HysteresisModel {
+    match specified_hysteresis(data, model, kind) {
         Some(r) if r != HysteresisModel::Auto => r,
         _ => default_member_hysteresis(is_rc_like_section(data, model)),
+    }
+}
+
+/// ファイバー断面・MS 要素のコンクリート除荷則を解決する。
+///
+/// 部材個別指定のうちコンクリート履歴として解釈できるもの
+/// （逆行型・原点指向型・Karsan–Jirsa 型）を採用し、その他
+/// （`Auto`、および武田型等の曲げバネ用履歴）は解析種別ごとの既定
+/// （増分=逆行型、時刻歴=Karsan–Jirsa 型。
+/// [`default_fiber_concrete_hysteresis`]）へフォールバックする。
+/// 鋼材・主筋ファイバは常に Menegotto–Pinto（選択対象外）。UI 表示にも用いる。
+pub fn resolve_fiber_concrete_hysteresis(
+    data: &ElementData,
+    model: &Model,
+    kind: AnalysisKind,
+) -> HysteresisModel {
+    match specified_hysteresis(data, model, kind) {
+        Some(
+            r @ (HysteresisModel::Retrograde
+            | HysteresisModel::OriginOriented
+            | HysteresisModel::KarsanJirsa),
+        ) => r,
+        _ => default_fiber_concrete_hysteresis(kind),
+    }
+}
+
+/// 耐震壁の壁柱ファイバのコンクリート除荷則を解決する。
+///
+/// 個別指定の解釈は [`resolve_fiber_concrete_hysteresis`] と同じだが、既定
+/// （`Auto`）の増分解析は**原点指向型**とする（逆行型は不可）。壁はロッキングに
+/// 伴う中立軸移動で圧縮縁の除荷が本質的に生じ、逆行型（除荷も包絡線を辿る）では
+/// 圧縮ブロックの応力が抜けずに曲げ寄与を過大評価し、面内水平力が終局せん断強度
+/// Qu の頭打ちを大きく超えてしまう（危険側）ため。時刻歴の既定は柱・梁と同じ
+/// Karsan–Jirsa 型。
+pub fn resolve_wall_concrete_hysteresis(
+    data: &ElementData,
+    model: &Model,
+    kind: AnalysisKind,
+) -> HysteresisModel {
+    match specified_hysteresis(data, model, kind) {
+        Some(
+            r @ (HysteresisModel::Retrograde
+            | HysteresisModel::OriginOriented
+            | HysteresisModel::KarsanJirsa),
+        ) => r,
+        _ => match kind {
+            AnalysisKind::Incremental => HysteresisModel::OriginOriented,
+            AnalysisKind::TimeHistory => HysteresisModel::KarsanJirsa,
+        },
+    }
+}
+
+/// 耐震壁の面内せん断ばねの履歴則を解決する。
+///
+/// Q–δ 履歴として解釈できる指定（逆行型・標準型・原点指向型・最大点指向型・
+/// 武田型）を採用し、その他（`Auto`、Karsan–Jirsa 型等のコンクリート用指定）は
+/// 既定の**最大点指向型**（増分・時刻歴共通）へフォールバックする。
+/// 壁の面内せん断はひび割れのスリップ性状が強く、除荷開始剛性が初期剛性のまま
+/// の移動硬化型（Masing）ではループの吸収エネルギーを過大評価するため、
+/// ピーク指向の復元力特性を既定とする。UI 表示にも用いる。
+pub fn resolve_wall_shear_hysteresis(
+    data: &ElementData,
+    model: &Model,
+    kind: AnalysisKind,
+) -> HysteresisModel {
+    match specified_hysteresis(data, model, kind) {
+        Some(
+            r @ (HysteresisModel::Retrograde
+            | HysteresisModel::Standard
+            | HysteresisModel::OriginOriented
+            | HysteresisModel::MaxPointOriented
+            | HysteresisModel::Takeda),
+        ) => r,
+        _ => HysteresisModel::MaxPointOriented,
     }
 }
 
@@ -308,7 +404,8 @@ pub(super) fn build_flexural_springs(
             yield_point: (my, ty),
             ultimate: (mu, tu),
         }),
-        // Takeda（RC 既定）とその他は武田型トリリニア。
+        // Takeda（RC 既定）とその他（Auto、および Karsan–Jirsa 型のような M–θ 履歴
+        // でない指定を含む）は武田型トリリニア。
         _ => make_pair(HysteresisRule::Takeda {
             crack: (mc, tc),
             yield_point: (my, ty),

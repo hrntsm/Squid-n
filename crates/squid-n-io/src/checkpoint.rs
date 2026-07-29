@@ -205,7 +205,7 @@ mod tests {
             Section,
         };
         use squid_n_element::behavior::{Ctx, ElementBehavior, LocalVec};
-        use squid_n_element::factory::{build_nonlinear_behavior, StrengthBasis};
+        use squid_n_element::factory::{build_nonlinear_behavior, AnalysisKind, StrengthBasis};
 
         let k = 1000.0_f64;
         let model = Model {
@@ -267,14 +267,20 @@ mod tests {
                 density: 0.0,
                 shear: None,
                 fc: None,
-                fy: None,
+                // 実質降伏しない大きな fy を明示する
+                // （fy 未設定の鋼材ファイバは契約違反として panic する）。
+                fy: Some(1e20),
             }],
             ..Default::default()
         };
 
         // 要素ビヘイビアを構築し、状態変化を加える
-        let (mut behavior, _) =
-            build_nonlinear_behavior(&model.elements[0], &model, StrengthBasis::Nominal);
+        let (mut behavior, _) = build_nonlinear_behavior(
+            &model.elements[0],
+            &model,
+            StrengthBasis::Nominal,
+            AnalysisKind::Incremental,
+        );
         let ctx = Ctx { model: &model };
         let du = LocalVec {
             data: smallvec![1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
@@ -293,8 +299,12 @@ mod tests {
             .unwrap();
 
         // 新しいビヘイビアを初期状態で作成し、チェックポイントから復元
-        let (new_behavior, _) =
-            build_nonlinear_behavior(&model.elements[0], &model, StrengthBasis::Nominal);
+        let (new_behavior, _) = build_nonlinear_behavior(
+            &model.elements[0],
+            &model,
+            StrengthBasis::Nominal,
+            AnalysisKind::Incremental,
+        );
         let mut new_behaviors: Vec<Box<dyn ElementBehavior>> = vec![new_behavior];
 
         let cp = load_nonlinear_checkpoint(&dir, &model, &mut new_behaviors).unwrap();
@@ -321,7 +331,7 @@ mod tests {
             Section,
         };
         use squid_n_element::behavior::ElementBehavior;
-        use squid_n_element::factory::{build_nonlinear_behavior, StrengthBasis};
+        use squid_n_element::factory::{build_nonlinear_behavior, AnalysisKind, StrengthBasis};
 
         let make_model = |k: f64| -> Model {
             Model {
@@ -383,7 +393,8 @@ mod tests {
                     density: 0.0,
                     shear: None,
                     fc: None,
-                    fy: None,
+                    // 実質降伏しない大きな fy を明示する。
+                    fy: Some(1e20),
                 }],
                 ..Default::default()
             }
@@ -392,8 +403,12 @@ mod tests {
         let model_a = make_model(1000.0);
         let model_b = make_model(2000.0); // 異なるヤング率 → ハッシュ不一致
 
-        let (behavior, _) =
-            build_nonlinear_behavior(&model_a.elements[0], &model_a, StrengthBasis::Nominal);
+        let (behavior, _) = build_nonlinear_behavior(
+            &model_a.elements[0],
+            &model_a,
+            StrengthBasis::Nominal,
+            AnalysisKind::Incremental,
+        );
         let dir = std::env::temp_dir().join("cp_hash_mismatch_test");
         let _ = std::fs::remove_dir_all(&dir);
 
@@ -401,8 +416,12 @@ mod tests {
         save_nonlinear_checkpoint(&dir, &model_a, 0, 0.0, &[0.0], &[0.0], &[0.0], &behaviors)
             .unwrap();
 
-        let (new_behavior, _) =
-            build_nonlinear_behavior(&model_b.elements[0], &model_b, StrengthBasis::Nominal);
+        let (new_behavior, _) = build_nonlinear_behavior(
+            &model_b.elements[0],
+            &model_b,
+            StrengthBasis::Nominal,
+            AnalysisKind::Incremental,
+        );
         let mut new_behaviors: Vec<Box<dyn ElementBehavior>> = vec![new_behavior];
 
         let result = load_nonlinear_checkpoint(&dir, &model_b, &mut new_behaviors);

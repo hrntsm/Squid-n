@@ -25,6 +25,86 @@ use crate::uniaxial::UniaxialMaterial;
 /// N/mm² → kgf/cm²（1 kgf/cm² = 0.0980665 N/mm²）。
 const NMM2_TO_KGFCM2: f64 = 1.0 / 0.0980665;
 
+/// NewRC 式の圧縮包絡線（有理式）。係数を事前計算して保持する。
+/// 単位: fc [N/mm²]。**大きさ表記**（圧縮を正）で評価する。
+///
+/// 式（工学単位系 kg/cm² で評価し、比 σc/σcB は無次元のため N/mm² 側にそのまま適用する）:
+/// ```text
+/// σc/σcB = (A·X + (D−1)·X²) / (1 + (A−2)·X + D·X²),  X = εc/εc0
+/// εc0 = 0.5243·(σB)^(1/4) × 10⁻³
+/// Ec  = 4k·(σB/1000)^(1/3) × 10⁵ × (γ/2.4)²   （k=1.0）
+/// A   = Ec·εc0/σcB,   D = α + β·σB   （α=1.50, β=1.68×10⁻³）
+/// σcB = σp = 1.0·σB   （コンファインド効果は考慮しない）
+/// ```
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct NewRcEnvelope {
+    /// コンクリート強度 Fc [N/mm²]。
+    pub fc: f64,
+    /// 初期接線 Ec [N/mm²]。
+    pub ec: f64,
+    /// 圧縮強度時ひずみ εc0（正）。
+    pub eps_c0: f64,
+    /// NewRC 係数 A（無次元）。
+    a: f64,
+    /// NewRC 係数 D（無次元）。
+    d_coef: f64,
+}
+
+impl NewRcEnvelope {
+    /// `fc` [N/mm²]、気乾単位体積重量 γ=2.4 [t/m³]（既定）で評価する。
+    pub fn new(fc: f64) -> Self {
+        Self::with_gamma(fc, 2.4)
+    }
+
+    /// `fc` [N/mm²]、`gamma` は気乾単位体積重量 [t/m³]（既定 2.4 → (γ/2.4)²=1）。
+    pub fn with_gamma(fc: f64, gamma: f64) -> Self {
+        let sigma_b = fc.max(1e-6) * NMM2_TO_KGFCM2; // kg/cm²
+        let eps_c0 = 0.5243 * sigma_b.powf(0.25) * 1e-3;
+        let ec_kgf = 4.0 * 1.0 * (sigma_b / 1000.0).powf(1.0 / 3.0) * 1e5 * (gamma / 2.4).powi(2);
+        let sigma_cb = sigma_b; // コンファインドなし
+        let a = ec_kgf * eps_c0 / sigma_cb;
+        let d_coef = 1.50 + 1.68e-3 * sigma_b;
+        let ec = ec_kgf * 0.0980665; // N/mm²
+        Self {
+            fc,
+            ec,
+            eps_c0,
+            a,
+            d_coef,
+        }
+    }
+
+    /// NewRC 圧縮包絡線の応力比 σc/σcB とその微分 d(比)/dX（X=εc/εc0、正規化ひずみ）。
+    fn ratio(&self, capital_x: f64) -> (f64, f64) {
+        let a = self.a;
+        let d = self.d_coef;
+        let num = a * capital_x + (d - 1.0) * capital_x * capital_x;
+        let den = 1.0 + (a - 2.0) * capital_x + d * capital_x * capital_x;
+        let ratio = num / den;
+        let num_p = a + 2.0 * (d - 1.0) * capital_x;
+        let den_p = (a - 2.0) + 2.0 * d * capital_x;
+        let dratio = (num_p * den - num * den_p) / (den * den);
+        (ratio, dratio)
+    }
+
+    /// 圧縮包絡線の評価。`x` は圧縮ひずみの大きさ（≥0）。
+    /// 戻り値 (応力の大きさ σ≥0, 大きさ座標系での接線 dσ/dx)。
+    /// σ は 0 未満にならないよう 0 でクランプ（有理式は x が大きいと負になり得るため）。
+    /// 接線はクランプ域で 0。
+    pub fn compression(&self, x: f64) -> (f64, f64) {
+        let capital_x = x / self.eps_c0; // X = εc/εc0
+        let (ratio, dratio) = self.ratio(capital_x);
+        let stress = ratio * self.fc;
+        if stress <= 0.0 {
+            (0.0, 0.0)
+        } else {
+            // dσ/dx = (fc/εc0)·d(ratio)/dX（初期は Ec）。
+            let tangent = (self.fc / self.eps_c0) * dratio;
+            (stress, tangent.max(0.0))
+        }
+    }
+}
+
 /// コンクリート履歴の除荷則（本実装の既定）。
 /// 静的解析は逆行型（包絡線を可逆に辿る）、動的解析は原点指向型（最大経験ひずみ点
 /// から原点への割線で除荷・再載荷）。
@@ -57,12 +137,10 @@ pub struct ConcreteNewRc {
     pub ft: f64,
     /// 初期接線 Ec [N/mm²]。
     pub ec: f64,
-    /// NewRC の係数 A（無次元）。
-    a: f64,
-    /// NewRC の係数 D（無次元）。
-    d_coef: f64,
     /// 圧縮強度時ひずみ εc0（正）。
     eps_c0: f64,
+    /// 圧縮包絡線（NewRC 式）。fc/ec/eps_c0 と重複するが、係数 A・D をここに保持する。
+    envelope: NewRcEnvelope,
     /// 除荷則（静的=逆行型／動的=原点指向型）。
     #[serde(default)]
     hysteresis: ConcreteHysteresis,
@@ -77,13 +155,9 @@ impl ConcreteNewRc {
     }
 
     pub fn with_gamma(fc: f64, ft: f64, gamma: f64) -> Self {
-        let sigma_b = fc.max(1e-6) * NMM2_TO_KGFCM2; // kg/cm²
-        let eps_c0 = 0.5243 * sigma_b.powf(0.25) * 1e-3;
-        let ec_kgf = 4.0 * 1.0 * (sigma_b / 1000.0).powf(1.0 / 3.0) * 1e5 * (gamma / 2.4).powi(2);
-        let sigma_cb = sigma_b; // コンファインドなし
-        let a = ec_kgf * eps_c0 / sigma_cb;
-        let d_coef = 1.50 + 1.68e-3 * sigma_b;
-        let ec = ec_kgf * 0.0980665; // N/mm²
+        let envelope = NewRcEnvelope::with_gamma(fc, gamma);
+        let ec = envelope.ec;
+        let eps_c0 = envelope.eps_c0;
         let init = NewRcState {
             strain: 0.0,
             stress: 0.0,
@@ -96,36 +170,18 @@ impl ConcreteNewRc {
             fc,
             ft,
             ec,
-            a,
-            d_coef,
             eps_c0,
+            envelope,
             hysteresis: ConcreteHysteresis::default(),
             committed: init.clone(),
             trial: init,
         }
     }
 
-    /// NewRC 圧縮包絡線の応力比 σc/σcB とその微分 d(比)/dX（X=εc/εc0）。
-    fn envelope_ratio(&self, x: f64) -> (f64, f64) {
-        let a = self.a;
-        let d = self.d_coef;
-        let num = a * x + (d - 1.0) * x * x;
-        let den = 1.0 + (a - 2.0) * x + d * x * x;
-        let ratio = num / den;
-        let num_p = a + 2.0 * (d - 1.0) * x;
-        let den_p = (a - 2.0) + 2.0 * d * x;
-        let dratio = (num_p * den - num * den_p) / (den * den);
-        (ratio, dratio)
-    }
-
     /// 圧縮包絡線（strain ≤ 0）。(σ[N/mm²]（圧縮負）, 接線[N/mm²])。
     fn envelope_compression(&self, strain: f64) -> (f64, f64) {
-        let x = (-strain) / self.eps_c0; // ≥0
-        let (ratio, dratio) = self.envelope_ratio(x);
-        let stress = -ratio * self.fc;
-        // dσ/dε = (fc/εc0)·d(ratio)/dX（初期は Ec）。
-        let tangent = (self.fc / self.eps_c0) * dratio;
-        (stress, tangent.max(0.0))
+        let (smag, tmag) = self.envelope.compression(-strain); // x=−strain≥0
+        (-smag, tmag)
     }
 
     fn eps_cr(&self) -> f64 {
@@ -315,5 +371,39 @@ mod tests {
         let c = ConcreteNewRc::new(30.0, 2.0);
         assert_eq!(c.reference_stress(), 30.0);
         assert_relative_eq!(c.reference_strain(), c.eps_c0);
+    }
+
+    #[test]
+    fn test_newrc_envelope_peak_at_ec0() {
+        // NewRcEnvelope 単体のピーク: compression(εc0) == (fc, ~0)。
+        let env = NewRcEnvelope::new(30.0);
+        let (stress, tangent) = env.compression(env.eps_c0);
+        assert_relative_eq!(stress, 30.0, max_relative = 1e-6);
+        assert_relative_eq!(tangent, 0.0, epsilon = 1e-6);
+    }
+
+    #[test]
+    fn test_newrc_envelope_initial_tangent_is_ec() {
+        // NewRcEnvelope 単体の初期接線: x→0 で接線 ≈ Ec。
+        let env = NewRcEnvelope::new(30.0);
+        let (_, tangent) = env.compression(1e-9);
+        assert_relative_eq!(tangent, env.ec, max_relative = 1e-3);
+    }
+
+    #[test]
+    fn test_newrc_refactor_matches_known_values() {
+        // リファクタ前の実装（工学単位系 kg/cm² 換算の有理式）を Python で再現し
+        // 得た既知値と、NewRcEnvelope 経由の ConcreteNewRc の応答が一致することを確認する。
+        // fc=30.0, gamma=2.4（既定）のとき εc0 ≈ 0.0021927039678952937。
+        let cases: [(f64, f64); 3] = [
+            (-0.0005, -13.585629463966358),
+            (-0.0021927039678952937, -30.0),
+            (-0.004385407935790587, -26.63656156909651),
+        ];
+        for (strain, expected_stress) in cases {
+            let mut c = ConcreteNewRc::new(30.0, 2.0);
+            let (stress, _) = c.trial(strain);
+            assert_relative_eq!(stress, expected_stress, max_relative = 1e-9);
+        }
     }
 }

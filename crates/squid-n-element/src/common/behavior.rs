@@ -201,11 +201,6 @@ pub trait ElementBehavior: Send + Sync {
     fn fiber_section_states(&self) -> Option<Vec<FiberSectionState>> {
         None
     }
-    /// コンクリート履歴の除荷則を解析種別で切替える（構造動力学の復元力特性モデル。
-    /// 静的=逆行型／動的=原点指向型）。`dynamic=true` で原点指向型。
-    /// ファイバー要素がコンクリート材料へ伝播する（既定は何もしない）。
-    fn set_concrete_hysteresis(&mut self, _dynamic: bool) {}
-
     /// 時刻歴解析の時間刻み Δt [s] を要素へ通知する（構造動力学の時刻歴応答解析。
     /// 制振要素）。速度依存の減衰要素（マクスウェル要素等）が後退 Euler の
     /// ダッシュポット積分に用いる。`dt<=0`（静的・線形）では減衰要素は不活性となる。

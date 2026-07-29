@@ -4,8 +4,9 @@ use crate::behavior::{
 use smallvec::SmallVec;
 use squid_n_core::dof::DofMap;
 use squid_n_core::ids::NodeId;
+use squid_n_core::model::{AnalysisKind, HysteresisModel};
 use squid_n_core::section_shape::SectionShape;
-use squid_n_material::uniaxial::{Bilinear, UniaxialMaterial};
+use squid_n_material::uniaxial::{MenegottoPinto, UniaxialMaterial};
 use squid_n_section::fiber::{Fiber, FiberSection};
 use std::any::Any;
 
@@ -16,6 +17,121 @@ use std::any::Any;
 /// モデル化図の表示で同じ値を用いるため公開する。
 pub fn clamp_plastic_zone(lp: f64, l: f64) -> f64 {
     lp.clamp(1.0e-6 * l, 0.45 * l)
+}
+
+/// 鋼材・鉄筋のファイバ材料を生成する。
+///
+/// Menegotto–Pinto（基本式 Menegotto & Pinto 1973、履歴則 Filippou et al. 1983。
+/// 既定 b=0.01, R0=20, a1=18.5, a2=0.15）を用いる。単調載荷ではバイリニア
+/// （硬化率 0.01）とほぼ同じ骨格（降伏点近傍が滑らかに丸まる）で、繰返し載荷では
+/// バウシンガー効果を表現する。
+///
+/// # Panics
+///
+/// ファイバー断面は降伏進展を追うことが目的のため、降伏点未設定は入力不備で
+/// あり、解析前の入力チェック（[`crate::factory::ensure_nonlinear_input`]）が
+/// エラーで停止する。fy 無し（または 0 以下）でここへ到達するのは呼び出し側の
+/// 契約違反（プログラムエラー）のため panic する（弾性で無音に代替しない）。
+pub(crate) fn steel_fiber_material(e: f64, fy: Option<f64>) -> Box<dyn UniaxialMaterial> {
+    let Some(fy) = fy.filter(|fy| *fy > 0.0) else {
+        panic!(
+            "ファイバー断面の鋼材・主筋に降伏強度 fy が未設定です。\
+             解析前に factory::ensure_nonlinear_input で入力チェックを行ってください"
+        );
+    };
+    Box::new(MenegottoPinto::new(e, fy))
+}
+
+/// コンクリートのファイバ材料を生成する。
+///
+/// 骨格は `fc ≤ 60` で NewRC 構成則、超過で放物線＋線形軟化モデル。
+/// 除荷則 `rule` は [`crate::factory::resolve_fiber_concrete_hysteresis`] で
+/// 解決した値（逆行型・原点指向型・Karsan–Jirsa 型のいずれか）を渡す:
+/// - 逆行型／原点指向型: NewRC（2.1.4）の除荷則切替。放物線モデル（fc>60）は
+///   原点指向型のみ対応のため、逆行型指定でも原点指向型で評価する。
+/// - Karsan–Jirsa 型: Yassin (1994) の繰返し履歴（`ConcreteCyclic`）。骨格は
+///   fc≤60 で NewRC（εcu=0.01）、超過で修正 Kent–Park
+///   （εc0=0.002・εcu=0.0035・残留 0＝放物線モデルと同一）。
+///   引張は ft=2.0 N/mm²・軟化勾配 Ets=E0/10（いずれも既定）。
+///
+/// # Panics
+///
+/// ファイバー断面は材料非線形（ひび割れ・圧壊）を追うことが目的のため、
+/// Fc 未設定は入力不備であり、解析前の入力チェック
+/// （[`crate::factory::ensure_nonlinear_input`]）がエラーで停止する。
+/// Fc 無し（または曲げバネ用履歴則の混入）でここへ到達するのは呼び出し側の
+/// 契約違反（プログラムエラー）のため panic する
+/// （弾性で無音に代替しない。耐力の過大評価＝危険側になるため）。
+pub(crate) fn concrete_fiber_material(
+    fc: Option<f64>,
+    rule: HysteresisModel,
+) -> Box<dyn UniaxialMaterial> {
+    let Some(fc) = fc else {
+        panic!(
+            "ファイバー断面のコンクリート領域に Fc が未設定です。\
+             解析前に factory::ensure_nonlinear_input で入力チェックを行ってください"
+        );
+    };
+    match rule {
+        HysteresisModel::KarsanJirsa => {
+            if fc <= 60.0 {
+                let ec = squid_n_material::newrc::NewRcEnvelope::new(fc).ec;
+                Box::new(squid_n_material::ConcreteCyclic::newrc(
+                    fc,
+                    0.01,
+                    2.0,
+                    ec / 10.0,
+                ))
+            } else {
+                let e0 = 2.0 * fc / 0.002;
+                Box::new(squid_n_material::ConcreteCyclic::kent_park(
+                    fc,
+                    0.002,
+                    0.0,
+                    0.0035,
+                    2.0,
+                    e0 / 10.0,
+                ))
+            }
+        }
+        HysteresisModel::Retrograde | HysteresisModel::OriginOriented => {
+            if fc <= 60.0 {
+                let mut m = squid_n_material::ConcreteNewRc::new(fc, 2.0);
+                // NewRC の除荷則切替（原点指向型= dynamic 相当、逆行型= static 相当）。
+                m.set_concrete_hysteresis(rule == HysteresisModel::OriginOriented);
+                Box::new(m)
+            } else {
+                // 放物線モデルは原点指向型のみ対応（逆行型指定でも原点指向型で評価）。
+                Box::new(squid_n_material::uniaxial::Concrete::new(fc, 2.0))
+            }
+        }
+        other => panic!(
+            "コンクリートのファイバ材料の除荷則として解釈できません: {other:?}\
+            （逆行型・原点指向型・Karsan-Jirsa型のみ。\
+             factory::resolve_fiber_concrete_hysteresis で解決した値を渡してください）"
+        ),
+    }
+}
+
+/// 鋼材領域（形鋼・鋼管・内蔵鉄骨）のファイバ降伏点を解決する。
+///
+/// SRC は断面の内蔵鉄骨鋼種（`steel_grade` の F 値。フランジ厚の板厚区分を考慮）を
+/// 優先し、無ければ部材材料の fy を用いる。その他の形状は部材材料の fy。
+/// 非線形解析の入力チェック（`factory::ensure_nonlinear_input`）と要素生成が
+/// 同じ解決規則を共有する。
+pub(crate) fn resolve_steel_fiber_fy(
+    shape: Option<&SectionShape>,
+    mat_fy: Option<f64>,
+) -> Option<f64> {
+    match shape {
+        Some(SectionShape::SrcRect {
+            steel_grade,
+            steel_flange_thick,
+            ..
+        }) => squid_n_core::material_grade::steel_f_value_prefix(steel_grade, *steel_flange_thick)
+            .or(mat_fy),
+        _ => mat_fy,
+    }
 }
 
 /// ガウス点のファイバー断面と材料を構築する（構造力学のファイバーモデル）。
@@ -32,6 +148,8 @@ pub fn clamp_plastic_zone(lp: f64, l: f64) -> f64 {
 ///
 /// ファイバの材料区分タグ（`Fiber::material`、塑性化マップの色分けに使用）:
 /// 0=コンクリート、1=主筋、2=鋼材（形鋼・鋼管・内蔵鉄骨）。
+/// `concrete_rule` はコンクリートの除荷則
+/// （[`crate::factory::resolve_fiber_concrete_hysteresis`] で解決した値）。
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn build_gauss_fibers(
     width: f64,
@@ -44,10 +162,11 @@ pub(crate) fn build_gauss_fibers(
     fy: Option<f64>,
     steel_factor: f64,
     rebar_factor: f64,
+    concrete_rule: HysteresisModel,
 ) -> (FiberSection, Vec<Box<dyn UniaxialMaterial>>) {
     let mut result = shape
         .filter(|s| !matches!(s, SectionShape::RcWall { .. }))
-        .map(|s| build_shape_fibers(s, fc, e, fy, steel_factor, rebar_factor));
+        .map(|s| build_shape_fibers(s, fc, e, fy, steel_factor, rebar_factor, concrete_rule));
 
     let (mut fibers, mats) = match result.take() {
         Some(r) => r,
@@ -55,10 +174,10 @@ pub(crate) fn build_gauss_fibers(
             // 形状なし（壁エレメントの壁柱など）: 従来どおりの中実矩形格子。
             // 基本格子（コンクリート or 鋼材）。保有水平耐力計算時は鋼材文脈の
             // 材料強度割増（steel_factor）を fy に乗じる（時刻歴応答解析等は 1.0）。
-            let base: Box<dyn UniaxialMaterial> = match fc {
-                Some(fc) if fc <= 60.0 => Box::new(squid_n_material::ConcreteNewRc::new(fc, 2.0)),
-                Some(fc) => Box::new(squid_n_material::uniaxial::Concrete::new(fc, 2.0)),
-                None => Box::new(Bilinear::new(e, fy.unwrap_or(1e20) * steel_factor, 0.01)),
+            let base: Box<dyn UniaxialMaterial> = if fc.is_some() {
+                concrete_fiber_material(fc, concrete_rule)
+            } else {
+                steel_fiber_material(e, fy.map(|fy| fy * steel_factor))
             };
             let tag = if fc.is_some() { 0 } else { 2 };
             let grid = squid_n_section::fiber::rect_fiber_section(width, depth, nw, nd, tag);
@@ -89,15 +208,18 @@ pub(crate) fn build_gauss_fibers(
 ///
 /// 配置は MN 相関曲面（`mn_surface::plastic_fibers_at`）と同一規則を共用し、
 /// 各ファイバの材料領域区分（[`FiberRegion`]）から非線形材料を割り当てる:
-/// - コンクリート領域: NewRC（fc≤60）／放物線モデル。fc 未設定の設定不備は
-///   弾性フォールバック（降伏しないバイリニア）で防御する。
-/// - 主筋: バイリニア鋼材（E=205000、σy は断面の主筋材質 → 部材材料の fy の順で
-///   解決、`rebar_factor` 割増）。
-/// - 鋼材領域（形鋼・鋼管・内蔵鉄骨）: バイリニア鋼材（部材材料の E・fy、
-///   `steel_factor` 割増。fy 未設定は降伏しない弾性＝従来の既定と同じ）。
+/// - コンクリート領域: NewRC（fc≤60）／放物線モデル。fc 未設定は
+///   [`concrete_fiber_material`] が panic する（該当モデルは入力チェックが
+///   解析前に停止する）。
+/// - 主筋: Menegotto–Pinto 鉄筋（E=205000、σy は断面の主筋材質 → 部材材料の fy の
+///   順で解決、`rebar_factor` 割増）。
+/// - 鋼材領域（形鋼・鋼管・内蔵鉄骨）: Menegotto–Pinto 鋼材（部材材料の E・fy、
+///   `steel_factor` 割増。fy 未設定は [`steel_fiber_material`] が panic する。
+///   該当モデルは入力チェックが解析前に停止する）。
 ///
 /// 解像度は最大寸法/16（従来の 12×20 中実格子と同程度のファイバ数）、円環は
 /// 周 24 分割とし、MN 曲面の細分割（/40・周 48）より粗く増分解析の計算量を抑える。
+#[allow(clippy::too_many_arguments)]
 fn build_shape_fibers(
     shape: &SectionShape,
     fc: Option<f64>,
@@ -105,25 +227,29 @@ fn build_shape_fibers(
     fy: Option<f64>,
     steel_factor: f64,
     rebar_factor: f64,
+    concrete_rule: HysteresisModel,
 ) -> (Vec<Fiber>, Vec<Box<dyn UniaxialMaterial>>) {
     use squid_n_section::mn_surface::{
         max_dimension, plastic_fibers_at, AnnulusRes, FiberRegion, StrengthParams,
     };
 
     // 主筋の降伏点は**断面（配筋）の主筋材質**から解決し、無ければ部材材料の fy を
-    // 用いる（`rebar_yield_strength`）。
-    // 既定値（σy=345・Fc=24 等）へのフォールバックは、非線形解析では
-    // [`crate::factory::ensure_nonlinear_input`] が材料強度未入力のモデルを
-    // 事前に停止するため到達しない（未入力を既定値で無音に埋めない規約）。
+    // 用いる（`rebar_yield_strength`）。未解決（None）のまま主筋・鋼材ファイバを
+    // 生成しようとすると `steel_fiber_material` が panic する（弾性で無音に代替
+    // しない）。該当モデルは [`crate::factory::ensure_nonlinear_input`] が解析前に
+    // エラーで停止するため、通常の解析経路では到達しない。
     let rebar_fy = shape
         .rebar()
         .and_then(|r| r.main_grade.as_deref())
         .and_then(squid_n_core::material_grade::rebar_grade_f_value)
-        .or(fy)
-        .unwrap_or(345.0);
+        .or(fy);
+    // 鋼材領域の降伏点: SRC は断面の内蔵鉄骨鋼種 → 部材材料 fy の順で解決。
+    let steel_fy = resolve_steel_fiber_fy(Some(shape), fy);
+    // StrengthParams はファイバの**配置**（形状分割・領域区分）にのみ使い、
+    // 材料モデルの強度には入らない（材料は下の各領域テンプレートで構築する）。
     let strength = StrengthParams {
-        steel_fy: fy.unwrap_or(235.0) * steel_factor,
-        rebar_fy: rebar_fy * rebar_factor,
+        steel_fy: steel_fy.unwrap_or(235.0) * steel_factor,
+        rebar_fy: rebar_fy.unwrap_or(345.0) * rebar_factor,
         concrete_fc: fc.unwrap_or(24.0),
         steel_e: e,
     };
@@ -135,24 +261,35 @@ fn build_shape_fibers(
     };
     let placed = plastic_fibers_at(shape, &strength, target, ring);
 
-    let concrete: Box<dyn UniaxialMaterial> = match fc {
-        Some(fc) if fc <= 60.0 => Box::new(squid_n_material::ConcreteNewRc::new(fc, 2.0)),
-        Some(fc) => Box::new(squid_n_material::uniaxial::Concrete::new(fc, 2.0)),
-        // コンクリート領域があるのに fc 未設定（設定不備）: 弾性で防御。
-        None => Box::new(Bilinear::new(e, 1e20, 0.01)),
-    };
-    let steel: Box<dyn UniaxialMaterial> =
-        Box::new(Bilinear::new(e, fy.unwrap_or(1e20) * steel_factor, 0.01));
-    let rebar: Box<dyn UniaxialMaterial> =
-        Box::new(Bilinear::new(205000.0, rebar_fy * rebar_factor, 0.01));
+    // 各領域の材料テンプレートは**その領域のファイバが実在するときのみ**構築する
+    // （遅延構築）。純 RC 断面など鋼材領域を持たない断面で fy 未設定を理由に、
+    // 純鋼材断面などコンクリート領域を持たない断面で Fc 未設定を理由に、
+    // それぞれ panic しないため。
+    let mut concrete: Option<Box<dyn UniaxialMaterial>> = None;
+    let mut steel: Option<Box<dyn UniaxialMaterial>> = None;
+    let mut rebar: Option<Box<dyn UniaxialMaterial>> = None;
 
     let mut fibers = Vec::with_capacity(placed.len());
     let mut mats: Vec<Box<dyn UniaxialMaterial>> = Vec::with_capacity(placed.len());
     for f in &placed {
         let (tag, mat) = match f.region {
-            FiberRegion::Concrete => (0usize, concrete.clone_box()),
-            FiberRegion::Rebar => (1usize, rebar.clone_box()),
-            FiberRegion::Steel => (2usize, steel.clone_box()),
+            FiberRegion::Concrete => {
+                let template =
+                    concrete.get_or_insert_with(|| concrete_fiber_material(fc, concrete_rule));
+                (0usize, template.clone_box())
+            }
+            FiberRegion::Rebar => {
+                let template = rebar.get_or_insert_with(|| {
+                    steel_fiber_material(205000.0, rebar_fy.map(|fy| fy * rebar_factor))
+                });
+                (1usize, template.clone_box())
+            }
+            FiberRegion::Steel => {
+                let template = steel.get_or_insert_with(|| {
+                    steel_fiber_material(e, steel_fy.map(|fy| fy * steel_factor))
+                });
+                (2usize, template.clone_box())
+            }
         };
         fibers.push(Fiber {
             y: f.y,
@@ -467,6 +604,7 @@ impl FiberBeam {
         data: &squid_n_core::model::ElementData,
         model: &squid_n_core::model::Model,
         basis: crate::factory::StrengthBasis,
+        kind: AnalysisKind,
     ) -> Self {
         let n0 = &model.nodes[data.nodes[0].index()];
         let n1 = &model.nodes[data.nodes[1].index()];
@@ -528,6 +666,8 @@ impl FiberBeam {
         let steel_factor = basis.steel_factor(mat_ref);
         let rebar_factor = basis.rebar_factor(mat_ref);
         // RC 断面はコンクリート格子＋主筋分離（構造力学のファイバーモデル）。
+        // コンクリート除荷則は解析種別と部材個別指定から解決する。
+        let concrete_rule = crate::factory::resolve_fiber_concrete_hysteresis(data, model, kind);
         let (sec_a, mats_a) = build_gauss_fibers(
             width,
             depth,
@@ -539,6 +679,7 @@ impl FiberBeam {
             fy,
             steel_factor,
             rebar_factor,
+            concrete_rule,
         );
         let (sec_b, mats_b) = build_gauss_fibers(
             width,
@@ -551,6 +692,7 @@ impl FiberBeam {
             fy,
             steel_factor,
             rebar_factor,
+            concrete_rule,
         );
         let gauss_points = vec![
             GaussPoint::new(
@@ -781,8 +923,9 @@ impl FiberBeam {
         model: &squid_n_core::model::Model,
         lp: f64,
         basis: crate::factory::StrengthBasis,
+        kind: AnalysisKind,
     ) -> Self {
-        Self::build_plastic_zone(data, model, lp, 12, 20, basis)
+        Self::build_plastic_zone(data, model, lp, 12, 20, basis, kind)
     }
 
     /// 塑性化域考慮要素の実体。
@@ -797,8 +940,9 @@ impl FiberBeam {
         nw: usize,
         nd: usize,
         basis: crate::factory::StrengthBasis,
+        kind: AnalysisKind,
     ) -> Self {
-        let mut fb = Self::new(data, model, basis);
+        let mut fb = Self::new(data, model, basis, kind);
         // 基準長は可撓長（剛域がなければ節点間長に等しい）。積分点 ξ=∓1 は
         // 剛域フェイス、塑性化域 Lp も剛域フェイスから測る。
         let l = fb.flex_length;
@@ -831,6 +975,7 @@ impl FiberBeam {
         let steel_factor = basis.steel_factor(mat_ref);
         let rebar_factor = basis.rebar_factor(mat_ref);
         // RC 断面はコンクリート格子＋主筋分離（構造力学のファイバーモデル）。
+        let concrete_rule = crate::factory::resolve_fiber_concrete_hysteresis(data, model, kind);
         let (sec_a, mats_a) = build_gauss_fibers(
             width,
             depth,
@@ -842,6 +987,7 @@ impl FiberBeam {
             fy,
             steel_factor,
             rebar_factor,
+            concrete_rule,
         );
         let (sec_b, mats_b) = build_gauss_fibers(
             width,
@@ -854,6 +1000,7 @@ impl FiberBeam {
             fy,
             steel_factor,
             rebar_factor,
+            concrete_rule,
         );
         fb.gauss_points = vec![
             GaussPoint::new(-1.0, w_end, sec_a, mats_a, l, fb.phi_y, fb.phi_z),
@@ -2020,14 +2167,6 @@ impl ElementBehavior for FiberBeam {
             max_yield_ratio: max_yr,
             jm,
         })
-    }
-
-    fn set_concrete_hysteresis(&mut self, dynamic: bool) {
-        for gp in &mut self.gauss_points {
-            for mat in &mut gp.mats {
-                mat.set_concrete_hysteresis(dynamic);
-            }
-        }
     }
 
     /// ヒンジ詳細表示用: 各ガウス点断面のファイバー状態（位置・ひずみ・降伏比）。
