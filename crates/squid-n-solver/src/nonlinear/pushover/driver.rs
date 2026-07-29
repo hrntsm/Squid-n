@@ -803,14 +803,17 @@ pub fn pushover_analysis_recording(
                 let st_ref = &mut st;
                 arc_solver.step(
                     &q,
-                    &mut |r: &[f64]| -> Result<Vec<f64>, String> {
+                    &mut |r: &[f64], out: &mut Vec<f64>| -> Result<(), String> {
                         reducer.reduce_f_into(r, &mut st_ref.r_red);
                         st_ref
                             .solver
                             .solve_into(&st_ref.r_red, &mut st_ref.du_red)
                             .map_err(|e| format!("{:?}", e))?;
-                        reducer.expand_u_into(&st_ref.du_red, &mut st_ref.du_free);
-                        Ok(st_ref.du_free.clone())
+                        // 弧長法側の出力バッファへ直接展開する（従来はローカルバッファ
+                        // へ展開して clone で返しており、修正子反復ごとに O(n) の複製が
+                        // 発生していた）。
+                        reducer.expand_u_into(&st_ref.du_red, out);
+                        Ok(())
                     },
                     &mut |delta_u: &[f64]| -> Result<Vec<f64>, String> {
                         apply_du_to_behaviors(model_ref, dofmap, behaviors_ref, delta_u);

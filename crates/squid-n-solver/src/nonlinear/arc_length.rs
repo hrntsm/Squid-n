@@ -5,7 +5,10 @@ pub struct ArcLengthStep {
     pub converged: bool,
 }
 
-pub type SolverFn<'a> = dyn FnMut(&[f64]) -> Result<Vec<f64>, String> + 'a;
+/// 線形ソルバクロージャ型。`K⁻¹·r` を第2引数の出力バッファへ書き込む
+/// （修正子反復のたびに戻り値 `Vec` を確保しないための出力引数契約。
+/// バッファは [`ArcLengthSolver::step`] が確保して反復間で使い回す）。
+pub type SolverFn<'a> = dyn FnMut(&[f64], &mut Vec<f64>) -> Result<(), String> + 'a;
 
 /// 変位増分 δu を要素状態へ反映し、更新後の内力ベクトルを返すクロージャ型。
 pub type FintFn<'a> = dyn FnMut(&[f64]) -> Result<Vec<f64>, String> + 'a;
@@ -35,13 +38,13 @@ impl ArcLengthSolver {
     ///   （旧実装は f_int を固定パラメータとして渡しており、非線形反復になっていなかった）。
     /// `prev_du`: 前ステップの変位増分（符号決定・根選択用）
     ///
-    /// `solve`／`eval_fint` から返る `du_t`／`du_bar`／`f_int` は呼び出し元クロージャが
-    /// 所有する Vec のため確保を避けられないが、それ以外の内部演算（`scale`／`add` の
-    /// 呼び出し）は本メソッド内で 1 回だけ確保した作業バッファへ書き込む形に変え、
+    /// `eval_fint` から返る `f_int` は呼び出し元クロージャが所有する Vec のため
+    /// 確保を避けられないが、`solve` の解（`du_t`／`du_bar`）は出力バッファ契約
+    /// （[`SolverFn`]）で本メソッドが 1 回だけ確保したバッファへ書き込ませ、
+    /// その他の内部演算（`scale`／`add`）も同様に作業バッファへ書き込む形として、
     /// 修正子反復（最大 `max_iter` 回）ごとの Vec 再確保を無くしている
     /// （時刻歴応答解析高速化・第2波と同じ「同じ演算を同じ順序で行い、確保回数だけを
-    /// 減らす」方針。各要素の計算式・演算順序は元の `scale`/`add` 呼び出しと同一で
-    /// 数値結果はビット一致する）。
+    /// 減らす」方針。各要素の計算式・演算順序は従来と同一で数値結果はビット一致する）。
     pub fn step<'b>(
         &self,
         q: &[f64],
@@ -52,7 +55,8 @@ impl ArcLengthSolver {
     ) -> Result<ArcLengthStep, String> {
         let n = q.len();
 
-        let du_t = solve(q)?;
+        let mut du_t = vec![0.0; n];
+        solve(q, &mut du_t)?;
         let ut_norm = dot(&du_t, &du_t).sqrt();
         if ut_norm < 1e-30 {
             return Err("Zero tangent displacement".into());
@@ -98,6 +102,7 @@ impl ArcLengthSolver {
 
         let mut converged = false;
         let mut r = vec![0.0; n];
+        let mut du_bar = vec![0.0; n];
         let mut du_aug = vec![0.0; n];
         let mut tmp = vec![0.0; n];
         let mut d1 = vec![0.0; n];
@@ -116,8 +121,8 @@ impl ArcLengthSolver {
                 break;
             }
 
-            // du_bar = K⁻¹·r
-            let du_bar = solve(&r)?;
+            // du_bar = K⁻¹·r（出力バッファへ書き込み。反復間で使い回す）
+            solve(&r, &mut du_bar)?;
 
             // 円筒型拘束の2次方程式 a·δλ² + b·δλ + c = 0
             // a = du_tᵀ·du_t
@@ -244,8 +249,9 @@ mod tests {
             let trial_u = Cell::new(u);
             let step = match solver.step(
                 &q,
-                &mut |r: &[f64]| -> Result<Vec<f64>, String> {
-                    Ok(vec![r[0] / tangent(trial_u.get())])
+                &mut |r: &[f64], out: &mut Vec<f64>| -> Result<(), String> {
+                    *out = vec![r[0] / tangent(trial_u.get())];
+                    Ok(())
                 },
                 &mut |du: &[f64]| -> Result<Vec<f64>, String> {
                     trial_u.set(trial_u.get() + du[0]);
@@ -322,8 +328,9 @@ mod tests {
                 .step(
                     &q,
                     // 接線 Newton: 現在の trial 変位の接線で K⁻¹ を構成。
-                    &mut |r: &[f64]| -> Result<Vec<f64>, String> {
-                        Ok(vec![r[0] / tangent(trial_u.get())])
+                    &mut |r: &[f64], out: &mut Vec<f64>| -> Result<(), String> {
+                        *out = vec![r[0] / tangent(trial_u.get())];
+                        Ok(())
                     },
                     // δu を trial 変位へ反映し、更新後の内力を返す（再評価される）。
                     &mut |du: &[f64]| -> Result<Vec<f64>, String> {
