@@ -49,6 +49,43 @@ impl Bilinear {
             self.hardening * self.e / (1.0 - self.hardening)
         }
     }
+
+    /// 塑性ひずみ ep（通常は committed 値）と strain から状態を評価する
+    /// （trial・probe 共通の内部処理）。
+    fn eval_state(&self, ep: f64, strain: f64) -> BilinearState {
+        let hp = self.hp();
+        // 弾性予測（塑性ひずみは前回コミット値で固定）
+        let sigma_tr = self.e * (strain - ep);
+        // 降伏関数 f = |σ - α| - fy, α = Hp·ep（kinematic hardening の背応力）
+        let alpha = hp * ep;
+        let f_tr = (sigma_tr - alpha).abs() - self.fy;
+        if f_tr <= 0.0 {
+            // 弾性
+            BilinearState {
+                strain,
+                stress: sigma_tr,
+                tangent: self.e,
+                plastic_strain: ep,
+            }
+        } else {
+            // 塑性戻し写像: Δep = f_tr/(e+Hp), 方向 = sign(σ_tr - α)
+            let sgn = (sigma_tr - alpha).signum();
+            let dep = f_tr / (self.e + hp);
+            let ep_new = ep + sgn * dep;
+            let stress = self.e * (strain - ep_new);
+            let tangent = if hp.is_infinite() {
+                0.0
+            } else {
+                self.e * hp / (self.e + hp)
+            };
+            BilinearState {
+                strain,
+                stress,
+                tangent,
+                plastic_strain: ep_new,
+            }
+        }
+    }
 }
 
 impl UniaxialMaterial for Bilinear {
@@ -76,39 +113,14 @@ impl UniaxialMaterial for Bilinear {
 
     fn trial(&mut self, strain: f64) -> (f64, f64) {
         let ep = self.committed.plastic_strain;
-        let hp = self.hp();
-        // 弾性予測（塑性ひずみは前回コミット値で固定）
-        let sigma_tr = self.e * (strain - ep);
-        // 降伏関数 f = |σ - α| - fy, α = Hp·ep（kinematic hardening の背応力）
-        let alpha = hp * ep;
-        let f_tr = (sigma_tr - alpha).abs() - self.fy;
-        if f_tr <= 0.0 {
-            // 弾性
-            self.trial = BilinearState {
-                strain,
-                stress: sigma_tr,
-                tangent: self.e,
-                plastic_strain: ep,
-            };
-        } else {
-            // 塑性戻し写像: Δep = f_tr/(e+Hp), 方向 = sign(σ_tr - α)
-            let sgn = (sigma_tr - alpha).signum();
-            let dep = f_tr / (self.e + hp);
-            let ep_new = ep + sgn * dep;
-            let stress = self.e * (strain - ep_new);
-            let tangent = if hp.is_infinite() {
-                0.0
-            } else {
-                self.e * hp / (self.e + hp)
-            };
-            self.trial = BilinearState {
-                strain,
-                stress,
-                tangent,
-                plastic_strain: ep_new,
-            };
-        }
+        self.trial = self.eval_state(ep, strain);
         (self.trial.stress, self.trial.tangent)
+    }
+
+    fn probe(&self, strain: f64) -> (f64, f64) {
+        let ep = self.committed.plastic_strain;
+        let s = self.eval_state(ep, strain);
+        (s.stress, s.tangent)
     }
 
     fn commit(&mut self) {
@@ -185,6 +197,29 @@ mod tests {
         s.revert();
         let (s3, _) = s.trial(0.0005);
         assert!(s3.abs() < s1.abs());
+    }
+
+    #[test]
+    fn test_probe_matches_trial_without_mutating_state() {
+        // probe は trial と数学的に同一の結果を返し、かつ状態を書き換えない
+        // （clone_box()+trial() の置換として使えることの検証）。
+        let mut m = Bilinear::new(205000.0, 235.0, 0.01);
+        let eps_y = 235.0 / 205000.0;
+        m.trial(eps_y * 3.0);
+        m.commit();
+
+        let probe_strain = eps_y * 10.0;
+        let before = m.probe(probe_strain);
+        // probe を何度呼んでも同じ結果（状態不変の確認）。
+        assert_eq!(before, m.probe(probe_strain));
+
+        let mut clone_for_trial = m.clone();
+        let via_trial = clone_for_trial.trial(probe_strain);
+        assert_eq!(before, via_trial, "probe は trial と完全一致すること");
+
+        // probe 呼び出し後も committed 状態から通常どおり trial できること。
+        let after_probe = m.trial(probe_strain);
+        assert_eq!(after_probe, via_trial);
     }
 
     #[test]

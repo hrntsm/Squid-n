@@ -201,6 +201,46 @@ impl SteelBuckling {
         let tangent = self.k1 / (1.0 + phi * g * ratio.powf(g - 1.0));
         (m_r + dm, tangent.max(1e-6))
     }
+
+    /// committed 状態から theta における状態を評価する（trial・probe 共通の
+    /// 内部処理）。committed 状態のみを参照する（self.trial は書き換えない）。
+    fn eval_state(&self, theta: f64) -> SbState {
+        let c = self.committed;
+        let dir = (theta - c.theta).signum();
+        if dir == 0.0 {
+            return c;
+        }
+        // 骨格更新の判定: その方向の経験最大を超えて進む → 骨格上。
+        let beyond_pos = dir > 0.0 && theta >= c.theta_max_pos;
+        let beyond_neg = dir < 0.0 && theta <= c.theta_max_neg;
+        let mut st = c;
+        st.dir = dir;
+        if beyond_pos || beyond_neg {
+            // 骨格。
+            let (m, k) = self.envelope(theta);
+            st.m = m;
+            st.tangent = k;
+            st.theta = theta;
+            st.on_backbone = true;
+            st.theta_max_pos = st.theta_max_pos.max(theta);
+            st.theta_max_neg = st.theta_max_neg.min(theta);
+            return st;
+        }
+        // 除荷・再載荷: 反転直後（骨格からの離脱／方向反転）に反転点を更新。
+        if c.on_backbone || (c.dir != 0.0 && dir != c.dir) {
+            st.theta_r = c.theta;
+            st.m_r = c.m;
+        }
+        st.on_backbone = false;
+        // 反転点からの RO 除荷・再載荷枝。経験最大点への復帰は上の beyond_pos/neg 判定が
+        // 担う（θ がその方向の経験最大を超えると骨格へ戻る）ため、ここでは骨格クランプは
+        // 行わない（プラトー骨格からの除荷が誤って骨格へ張り付くのを避ける）。
+        let (m, k) = self.ro_branch(theta, st.theta_r, st.m_r);
+        st.m = m;
+        st.tangent = k;
+        st.theta = theta;
+        st
+    }
 }
 
 impl UniaxialMaterial for SteelBuckling {
@@ -228,44 +268,14 @@ impl UniaxialMaterial for SteelBuckling {
     }
 
     fn trial(&mut self, theta: f64) -> (f64, f64) {
-        let c = self.committed;
-        let dir = (theta - c.theta).signum();
-        if dir == 0.0 {
-            self.trial = c;
-            return (c.m, c.tangent);
-        }
-        // 骨格更新の判定: その方向の経験最大を超えて進む → 骨格上。
-        let beyond_pos = dir > 0.0 && theta >= c.theta_max_pos;
-        let beyond_neg = dir < 0.0 && theta <= c.theta_max_neg;
-        let mut st = c;
-        st.dir = dir;
-        if beyond_pos || beyond_neg {
-            // 骨格。
-            let (m, k) = self.envelope(theta);
-            st.m = m;
-            st.tangent = k;
-            st.theta = theta;
-            st.on_backbone = true;
-            st.theta_max_pos = st.theta_max_pos.max(theta);
-            st.theta_max_neg = st.theta_max_neg.min(theta);
-            self.trial = st;
-            return (m, k);
-        }
-        // 除荷・再載荷: 反転直後（骨格からの離脱／方向反転）に反転点を更新。
-        if c.on_backbone || (c.dir != 0.0 && dir != c.dir) {
-            st.theta_r = c.theta;
-            st.m_r = c.m;
-        }
-        st.on_backbone = false;
-        // 反転点からの RO 除荷・再載荷枝。経験最大点への復帰は上の beyond_pos/neg 判定が
-        // 担う（θ がその方向の経験最大を超えると骨格へ戻る）ため、ここでは骨格クランプは
-        // 行わない（プラトー骨格からの除荷が誤って骨格へ張り付くのを避ける）。
-        let (m, k) = self.ro_branch(theta, st.theta_r, st.m_r);
-        st.m = m;
-        st.tangent = k;
-        st.theta = theta;
+        let st = self.eval_state(theta);
         self.trial = st;
-        (m, k)
+        (st.m, st.tangent)
+    }
+
+    fn probe(&self, theta: f64) -> (f64, f64) {
+        let st = self.eval_state(theta);
+        (st.m, st.tangent)
     }
 
     fn commit(&mut self) {
@@ -357,6 +367,27 @@ mod tests {
             energy > 0.0,
             "dissipated energy should be positive: {energy}"
         );
+    }
+
+    #[test]
+    fn test_probe_matches_trial_without_mutating_state() {
+        // probe は trial と数学的に同一の結果を返し、状態を書き換えない
+        // （RO 除荷枝を経た状態で確認）。
+        let mut m = SteelBuckling::with_defaults(1000.0, 100.0, 1.2);
+        let theta_y = 100.0 / 1000.0;
+        m.trial(3.0 * theta_y);
+        m.commit();
+
+        let probe_theta = 2.5 * theta_y; // 除荷（RO 枝）
+        let before = m.probe(probe_theta);
+        assert_eq!(before, m.probe(probe_theta));
+
+        let mut clone_for_trial = m.clone();
+        let via_trial = clone_for_trial.trial(probe_theta);
+        assert_eq!(before, via_trial, "probe は trial と完全一致すること");
+
+        let after_probe = m.trial(probe_theta);
+        assert_eq!(after_probe, via_trial);
     }
 
     #[test]

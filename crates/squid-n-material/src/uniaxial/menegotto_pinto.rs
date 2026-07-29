@@ -86,22 +86,10 @@ impl MenegottoPinto {
         state.sig_0 = new_sig_0;
         state.xi = xi_new;
     }
-}
 
-impl UniaxialMaterial for MenegottoPinto {
-    fn reference_stress(&self) -> f64 {
-        self.fy
-    }
-
-    fn reference_strain(&self) -> f64 {
-        if self.e > 0.0 {
-            self.fy / self.e
-        } else {
-            0.0
-        }
-    }
-
-    fn trial(&mut self, strain: f64) -> (f64, f64) {
+    /// committed 状態から strain における状態を評価する（trial・probe 共通の
+    /// 内部処理）。committed 状態のみを参照し、self.trial は書き換えない。
+    fn eval(&self, strain: f64) -> MpState {
         let c = &self.committed;
         // 進行方向の判定と反転検知（trial 内で行う＝標準 MP）
         let dir_new = (strain - c.strain).signum();
@@ -122,8 +110,7 @@ impl UniaxialMaterial for MenegottoPinto {
             working.strain = strain;
             working.stress = stress;
             working.tangent = self.e;
-            self.trial = working;
-            return (stress, self.e);
+            return working;
         }
         let eps_star = (strain - working.eps_r) / deps;
         let r = (self.r0 - self.a1 * working.xi / (self.a2 + working.xi)).max(1.0);
@@ -145,8 +132,32 @@ impl UniaxialMaterial for MenegottoPinto {
         working.strain = strain;
         working.stress = stress;
         working.tangent = tangent;
+        working
+    }
+}
+
+impl UniaxialMaterial for MenegottoPinto {
+    fn reference_stress(&self) -> f64 {
+        self.fy
+    }
+
+    fn reference_strain(&self) -> f64 {
+        if self.e > 0.0 {
+            self.fy / self.e
+        } else {
+            0.0
+        }
+    }
+
+    fn trial(&mut self, strain: f64) -> (f64, f64) {
+        let working = self.eval(strain);
         self.trial = working;
-        (stress, tangent)
+        (self.trial.stress, self.trial.tangent)
+    }
+
+    fn probe(&self, strain: f64) -> (f64, f64) {
+        let working = self.eval(strain);
+        (working.stress, working.tangent)
     }
 
     fn commit(&mut self) {
@@ -170,6 +181,29 @@ mod tests {
         let mut mp = MenegottoPinto::new(205000.0, 235.0);
         let (stress, _) = mp.trial(0.001);
         assert_relative_eq!(stress, 205.0, epsilon = 5.0);
+    }
+
+    #[test]
+    fn test_probe_matches_trial_without_mutating_state() {
+        // probe は trial と数学的に同一の結果を返し、状態を書き換えない
+        // （反転履歴を経た後の非弾性域で確認。反転検知ロジックの再現性が要点）。
+        let mut mp = MenegottoPinto::new(205000.0, 235.0);
+        let eps_y = 235.0 / 205000.0;
+        for &target in &[eps_y * 4.0, -eps_y * 4.0] {
+            mp.trial(target);
+            mp.commit();
+        }
+
+        let probe_strain = eps_y * 2.0;
+        let before = mp.probe(probe_strain);
+        assert_eq!(before, mp.probe(probe_strain));
+
+        let mut clone_for_trial = mp.clone();
+        let via_trial = clone_for_trial.trial(probe_strain);
+        assert_eq!(before, via_trial, "probe は trial と完全一致すること");
+
+        let after_probe = mp.trial(probe_strain);
+        assert_eq!(after_probe, via_trial);
     }
 
     #[test]

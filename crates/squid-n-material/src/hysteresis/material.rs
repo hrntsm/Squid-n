@@ -434,6 +434,11 @@ impl UniaxialMaterial for HysteresisMaterial {
         self.trial = s;
         (self.trial.m, self.trial.kt)
     }
+    fn probe(&self, theta: f64) -> (f64, f64) {
+        // evaluate() は committed 状態のみを参照する純粋関数（trial() と共通）。
+        let s = self.evaluate(theta);
+        (s.m, s.kt)
+    }
     fn commit(&mut self) {
         self.committed = self.trial.clone();
     }
@@ -569,6 +574,28 @@ mod tests {
         // 終点で target に一致（連続）。
         let (m_end, _) = reload_line(&rule, origin, target, target.0);
         assert!((m_end - target.1).abs() < 1e-9, "reload must reach target");
+    }
+
+    #[test]
+    fn test_probe_matches_trial_without_mutating_state() {
+        // probe は trial と数学的に同一の結果を返し、状態を書き換えない
+        // （反転・内側ループを経た複雑な分岐状態で確認）。
+        let mut mat = HysteresisMaterial::new(takeda());
+        mat.trial(0.03);
+        mat.commit();
+        mat.trial(0.01);
+        mat.commit();
+
+        let probe_theta = -0.005; // 内側ループへ入る反転
+        let before = mat.probe(probe_theta);
+        assert_eq!(before, mat.probe(probe_theta));
+
+        let mut clone_for_trial = mat.clone();
+        let via_trial = clone_for_trial.trial(probe_theta);
+        assert_eq!(before, via_trial, "probe は trial と完全一致すること");
+
+        let after_probe = mat.trial(probe_theta);
+        assert_eq!(after_probe, via_trial);
     }
 
     #[test]
