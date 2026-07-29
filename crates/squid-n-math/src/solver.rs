@@ -117,6 +117,15 @@ impl SparsityPattern {
             row_idx: sym.row_idx().to_vec(),
         }
     }
+
+    /// 行列 `k` のパターンとキャッシュ済みパターンが一致するか（アロケーション
+    /// なしのスライス比較）。symbolic キャッシュのヒット判定は毎 `factorize` で
+    /// 走るため、ヒット時（パターン不変が圧倒的多数）に比較用の `Vec` 複製
+    /// （[`Self::of`]）を作らないための判定専用メソッド。
+    pub(crate) fn matches(&self, k: &SparseColMat<usize, f64>) -> bool {
+        let sym = k.symbolic();
+        self.col_ptr == sym.col_ptr() && self.row_idx == sym.row_idx()
+    }
 }
 
 pub fn make_solver(backend: SolverBackend) -> Box<dyn LinearSolver> {
