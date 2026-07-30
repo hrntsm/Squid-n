@@ -499,15 +499,28 @@ impl App {
         }
     }
 
-    /// 解析タブ：準備計算（解析条件の入力・階の定義）と解析の実行を、
-    /// 一貫計算の手順どおり上から順に並べる。
+    /// 右ドック「① 準備計算」パネル：解析条件の入力・階の定義と、準備計算の実行。
     ///
-    /// 1. **準備計算** — 地震力・風圧力の算定諸元と計算条件を入力し、実行すると
-    ///    階の定義・剛域・荷重ケース（DL/LL/EX/EY/WX/WY）が確定する。
-    /// 2. **解析** — 確定した荷重ケース・荷重組合せを解く。地震力・風圧力も
-    ///    EX/EY・WX/WY の荷重ケースとして扱うため、専用の実行導線は設けない。
-    pub(crate) fn analysis_settings_panel(&mut self, ui: &mut egui::Ui) {
-        ui.heading("解析設定");
+    /// 一貫計算の手順（① 解析入力を確定 → ② 解く）のうち ① を担う。実行すると
+    /// 階の定義・剛域・荷重ケース（DL/LL/EX/EY/WX/WY）が確定する。② は
+    /// [`App::analysis_panel`]。
+    pub(crate) fn preparation_panel(&mut self, ui: &mut egui::Ui) {
+        self.right_panel_switcher(ui);
+        ui.heading("① 準備計算");
+        ui.separator();
+
+        // バックグラウンドジョブ実行中は実行ボタンを無効化する（P8 §5）。
+        let running = self.job.is_some();
+        self.preparation_section(ui, running);
+    }
+
+    /// 右ドック「② 解析」パネル：確定した荷重ケース・荷重組合せを解く。
+    ///
+    /// 地震力・風圧力も EX/EY・WX/WY の荷重ケースとして扱うため、専用の実行導線は
+    /// 設けない。① は [`App::preparation_panel`]。
+    pub(crate) fn analysis_panel(&mut self, ui: &mut egui::Ui) {
+        self.right_panel_switcher(ui);
+        ui.heading("② 解析");
         ui.separator();
 
         // バックグラウンドジョブ実行中は全解析ボタンを無効化する（P8 §5）。
@@ -528,14 +541,38 @@ impl App {
                 "⚠ モデルが編集されました。結果は再計算が必要です。",
             );
         }
+        if self.staleness.preparation_stale {
+            ui.colored_label(
+                crate::theme::BEST_YELLOW,
+                "⚠ 準備計算が未実行、またはモデル編集により古くなっています\
+                 （解析の実行時に自動で最新化されます）。",
+            );
+        }
         ui.separator();
 
-        self.preparation_section(ui, running);
-        ui.add_space(10.0);
-        ui.separator();
-        ui.strong("② 解析");
-        ui.add_space(4.0);
         self.analysis_run_sections(ui, running);
+    }
+
+    /// 「① 準備計算」「② 解析」を行き来する切替行（両パネルの先頭に置く）。
+    ///
+    /// ステータスバーのアイコンからも切り替えられるが、① と ② は一貫計算の手順として
+    /// 連続しているため、パネル内からも直接移動できるようにする。
+    fn right_panel_switcher(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal_wrapped(|ui| {
+            if ui
+                .selectable_label(self.right_panel == RightPanel::Preparation, "① 準備計算")
+                .clicked()
+            {
+                self.right_panel = RightPanel::Preparation;
+            }
+            if ui
+                .selectable_label(self.right_panel == RightPanel::Analysis, "② 解析")
+                .clicked()
+            {
+                self.right_panel = RightPanel::Analysis;
+            }
+        });
+        ui.add_space(2.0);
     }
 
     /// 準備計算（① 解析前の前処理）のセクション一式。
@@ -545,8 +582,6 @@ impl App {
     /// 階の定義を並べる。地震力・風圧力の諸元をここへ置くのは、これらが
     /// EX/EY・WX/WY の荷重ケースを決める準備計算の入力だからである。
     fn preparation_section(&mut self, ui: &mut egui::Ui, running: bool) {
-        ui.strong("① 準備計算");
-        ui.add_space(4.0);
         ui.horizontal_wrapped(|ui| {
             if ui
                 .add_enabled(!running, egui::Button::new("🛠 準備計算 実行"))
@@ -939,12 +974,10 @@ impl App {
         });
     }
 
-    /// 解析（② 実行）のセクション一式。荷重ケース・荷重組合せ・固有値・
-    /// 増分解析・時刻歴応答。
+    /// 解析（② 実行）のセクション一式。静的解析（荷重ケース・荷重組合せ）・
+    /// 固有値・増分解析・時刻歴応答。
     fn analysis_run_sections(&mut self, ui: &mut egui::Ui, running: bool) {
-        self.load_case_section(ui, running);
-        ui.add_space(6.0);
-        self.combination_section(ui, running);
+        self.static_analysis_section(ui, running);
         ui.add_space(6.0);
         self.eigen_section(ui, running);
         ui.add_space(6.0);
@@ -953,58 +986,102 @@ impl App {
         self.time_history_section(ui, running);
     }
 
-    /// 荷重ケース 1 つの静的解析。地震力（EX/EY）・風圧力（WX/WY）も準備計算が
-    /// 生成する荷重ケースなので、ここから同じ導線で実行する
-    /// （[`App::start_load_case_job`] が方向別の結果キーへ振り分ける）。
-    fn load_case_section(&mut self, ui: &mut egui::Ui, running: bool) {
-        egui::CollapsingHeader::new("荷重ケース（静的）")
+    /// 静的解析（荷重ケース単体・荷重組合せ）の実行。
+    ///
+    /// 実行導線は「単体実行」と「一括解析」の 2 つに統一する。求解の最小単位は
+    /// 荷重ケース単体で、荷重組合せはその結果の線形和として組み立てるため
+    /// （重ね合わせの原理。`Analysis::linear_combination`）、荷重ケースと荷重組合せを
+    /// 別の実行導線に分ける理由がない。
+    ///
+    /// - **単体実行**: 選択した 1 件（荷重ケースまたは荷重組合せ）を解く。
+    /// - **一括解析**: 全荷重ケースを解き、全荷重組合せをその線形和で求める。
+    ///
+    /// 地震力（EX/EY）・風圧力（WX/WY）も準備計算が生成する荷重ケースなので、
+    /// ここから同じ導線で実行する（[`App::start_load_case_job`] が方向別の結果キーへ
+    /// 振り分ける）。
+    fn static_analysis_section(&mut self, ui: &mut egui::Ui, running: bool) {
+        egui::CollapsingHeader::new("静的解析")
             .default_open(true)
-            .id_salt("as_linear")
+            .id_salt("as_static")
             .show(ui, |ui| {
-                let selected_lc = self
-                    .nav
-                    .focus_load_case
-                    .filter(|id| self.model.load_cases.iter().any(|c| c.id == *id))
-                    .or_else(|| self.model.load_cases.first().map(|c| c.id));
+                let target = self.resolved_analysis_target();
                 ui.horizontal_wrapped(|ui| {
-                    ui.label("荷重ケース:");
-                    let text = selected_lc
-                        .and_then(|id| {
-                            self.model
-                                .load_cases
-                                .iter()
-                                .find(|c| c.id == id)
-                                .map(|c| format!("[{}] {}", c.id.0, c.name))
-                        })
+                    ui.label("対象:");
+                    let text = target
+                        .and_then(|t| self.static_target_label(t))
                         .unwrap_or_else(|| "（なし）".to_string());
-                    egui::ComboBox::from_id_salt("analysis_lc")
+                    egui::ComboBox::from_id_salt("analysis_target")
                         .selected_text(text)
                         .show_ui(ui, |ui| {
-                            for lc in &self.model.load_cases {
-                                if ui
-                                    .selectable_label(
-                                        selected_lc == Some(lc.id),
-                                        format!("[{}] {}", lc.id.0, lc.name),
-                                    )
-                                    .clicked()
-                                {
-                                    self.nav.focus_load_case = Some(lc.id);
+                            // 荷重ケースと荷重組合せを 1 つの一覧に並べる（見出しで区切る）。
+                            ui.label(
+                                egui::RichText::new("荷重ケース").color(crate::theme::GRAY_600),
+                            );
+                            let cases: Vec<(LoadCaseId, String)> = self
+                                .model
+                                .load_cases
+                                .iter()
+                                .map(|c| (c.id, format!("[{}] {}", c.id.0, c.name)))
+                                .collect();
+                            for (id, label) in cases {
+                                let t = StaticTarget::Case(id);
+                                if ui.selectable_label(target == Some(t), label).clicked() {
+                                    self.analysis_target = Some(t);
+                                    self.nav.focus_load_case = Some(id);
+                                }
+                            }
+                            if !self.model.combinations.is_empty() {
+                                ui.separator();
+                                ui.label(
+                                    egui::RichText::new("荷重組合せ").color(crate::theme::GRAY_600),
+                                );
+                            }
+                            let combos: Vec<String> = self
+                                .model
+                                .combinations
+                                .iter()
+                                .map(|c| c.name.clone())
+                                .collect();
+                            for (i, name) in combos.into_iter().enumerate() {
+                                let t = StaticTarget::Combo(i);
+                                if ui.selectable_label(target == Some(t), name).clicked() {
+                                    self.analysis_target = Some(t);
                                 }
                             }
                         });
                     if ui
                         .add_enabled(
-                            selected_lc.is_some() && !running,
-                            egui::Button::new("▶ 実行"),
+                            target.is_some() && !running,
+                            egui::Button::new("▶ 単体実行"),
+                        )
+                        .on_hover_text(
+                            "選択した荷重ケース／荷重組合せを 1 件だけ解析します\
+                             （組合せは参照する荷重ケースを解いてから線形和で求めます）",
                         )
                         .clicked()
                     {
-                        if let Some(lc) = selected_lc {
-                            self.start_load_case_job(lc);
+                        if let Some(t) = target {
+                            self.start_static_target_job(t);
                             if self.last_error.is_none() {
                                 self.active_tab = Tab::Results;
                                 self.results_view = ResultsView::Spatial;
                             }
+                        }
+                    }
+                });
+                ui.horizontal_wrapped(|ui| {
+                    if ui
+                        .add_enabled(!running, egui::Button::new("▶▶ 一括解析"))
+                        .on_hover_text(
+                            "全ての荷重ケースを解析し、全ての荷重組合せをその結果の線形和で\
+                             求めます（並列スレッド数設定を使用）",
+                        )
+                        .clicked()
+                    {
+                        self.start_static_all_job();
+                        if self.last_error.is_none() {
+                            self.active_tab = Tab::Results;
+                            self.results_view = ResultsView::Spatial;
                         }
                     }
                 });
@@ -1016,74 +1093,50 @@ impl App {
                 } else {
                     ui.colored_label(
                         crate::theme::GRAY_600,
-                        "EX/EY（地震力）・WX/WY（風圧力）は準備計算が自動生成します。",
+                        "EX/EY（地震力）・WX/WY（風圧力）は準備計算が自動生成します。\
+                         荷重組合せは荷重ケース単体の解析結果の線形和として求めます。",
                     );
                 }
             });
     }
 
-    /// 荷重組合せの解析（単独・全組合せ一括）。
-    fn combination_section(&mut self, ui: &mut egui::Ui, running: bool) {
-        egui::CollapsingHeader::new("荷重組合せ")
-            .default_open(true)
-            .id_salt("as_combo")
-            .show(ui, |ui| {
-                if self.model.combinations.is_empty() {
-                    ui.colored_label(
-                        crate::theme::GRAY_600,
-                        "荷重組合せがありません。荷重タブで作成してください。",
-                    );
-                } else {
-                    if self.analysis_combo_idx >= self.model.combinations.len() {
-                        self.analysis_combo_idx = 0;
-                    }
-                    ui.horizontal_wrapped(|ui| {
-                        ui.label("組合せ:");
-                        let text = self
-                            .model
-                            .combinations
-                            .get(self.analysis_combo_idx)
-                            .map(|c| c.name.clone())
-                            .unwrap_or_else(|| "（なし）".to_string());
-                        egui::ComboBox::from_id_salt("analysis_combo")
-                            .selected_text(text)
-                            .show_ui(ui, |ui| {
-                                for (i, combo) in self.model.combinations.iter().enumerate() {
-                                    if ui
-                                        .selectable_label(
-                                            self.analysis_combo_idx == i,
-                                            format!("[{}] {}", i, combo.name),
-                                        )
-                                        .clicked()
-                                    {
-                                        self.analysis_combo_idx = i;
-                                    }
-                                }
-                            });
-                        if ui
-                            .add_enabled(!running, egui::Button::new("▶ 実行"))
-                            .clicked()
-                        {
-                            self.start_combination_job(self.analysis_combo_idx);
-                            if self.last_error.is_none() {
-                                self.active_tab = Tab::Results;
-                            }
-                        }
-                        if ui
-                            .add_enabled(!running, egui::Button::new("▶▶ 全組合せ一括解析"))
-                            .on_hover_text(
-                                "全ての荷重組合せをまとめて解析します（並列スレッド数設定を使用）",
-                            )
-                            .clicked()
-                        {
-                            self.start_all_combinations_job();
-                            if self.last_error.is_none() {
-                                self.active_tab = Tab::Results;
-                            }
-                        }
-                    });
-                }
-            });
+    /// 静的解析の実行対象（「対象」ドロップダウンの選択）を解決する。
+    ///
+    /// 優先順は「選択中の対象（モデル編集で失効していないもの）」→
+    /// 「ナビゲータ／荷重表で選択中の荷重ケース」→「荷重ケースの先頭」。
+    fn resolved_analysis_target(&self) -> Option<StaticTarget> {
+        let valid = |t: StaticTarget| match t {
+            StaticTarget::Case(id) => self.model.load_cases.iter().any(|c| c.id == id),
+            StaticTarget::Combo(i) => i < self.model.combinations.len(),
+        };
+        self.analysis_target
+            .filter(|t| valid(*t))
+            .or_else(|| {
+                self.nav
+                    .focus_load_case
+                    .filter(|id| self.model.load_cases.iter().any(|c| c.id == *id))
+                    .map(StaticTarget::Case)
+            })
+            .or_else(|| {
+                self.model
+                    .load_cases
+                    .first()
+                    .map(|c| StaticTarget::Case(c.id))
+            })
+    }
+
+    /// 静的解析の実行対象の表示名（ドロップダウンの選択表示）。対象が失効している
+    /// 場合は `None`。
+    fn static_target_label(&self, target: StaticTarget) -> Option<String> {
+        match target {
+            StaticTarget::Case(id) => self
+                .model
+                .load_cases
+                .iter()
+                .find(|c| c.id == id)
+                .map(|c| format!("[{}] {}", c.id.0, c.name)),
+            StaticTarget::Combo(i) => self.model.combinations.get(i).map(|c| c.name.clone()),
+        }
     }
 
     /// 固有値解析。
@@ -2004,7 +2057,7 @@ impl App {
             if ui
                 .button("▶ 質点系時刻歴を実行")
                 .on_hover_text(
-                    "サンプル波（解析設定の dt/継続/周期/振幅・減衰比）で串団子モデルの\
+                    "サンプル波（「時刻歴応答」の dt/継続/周期/振幅・減衰比）で串団子モデルの\
                      非線形時刻歴（Newmark-β、各層トリリニア）を実行します",
                 )
                 .clicked()
@@ -2387,7 +2440,7 @@ impl App {
                     self.bottom_dock_open && self.bottom_tab == BottomTab::Preparation;
                 if ui
                     .selectable_label(is_prep_active, "🛠")
-                    .on_hover_text("準備計算")
+                    .on_hover_text("準備計算の結果")
                     .clicked()
                     && toggle_dock_icon(&mut self.bottom_dock_open, is_prep_active)
                 {
@@ -2483,14 +2536,24 @@ impl App {
                 // toggle_dock_icon 方式（アクティブなら閉じる／それ以外は開いてそのパネルを
                 // アクティブにする）で右ドックのパネルを切り替える。
                 let is_analysis_active =
-                    self.right_dock_open && self.right_panel == RightPanel::AnalysisSettings;
+                    self.right_dock_open && self.right_panel == RightPanel::Analysis;
                 if ui
                     .selectable_label(is_analysis_active, "⚙")
-                    .on_hover_text("解析設定")
+                    .on_hover_text("② 解析（実行）")
                     .clicked()
                     && toggle_dock_icon(&mut self.right_dock_open, is_analysis_active)
                 {
-                    self.right_panel = RightPanel::AnalysisSettings;
+                    self.right_panel = RightPanel::Analysis;
+                }
+                let is_prep_panel_active =
+                    self.right_dock_open && self.right_panel == RightPanel::Preparation;
+                if ui
+                    .selectable_label(is_prep_panel_active, "🛠")
+                    .on_hover_text("① 準備計算（解析条件の入力・実行）")
+                    .clicked()
+                    && toggle_dock_icon(&mut self.right_dock_open, is_prep_panel_active)
+                {
+                    self.right_panel = RightPanel::Preparation;
                 }
                 let is_inspector_active =
                     self.right_dock_open && self.right_panel == RightPanel::Inspector;

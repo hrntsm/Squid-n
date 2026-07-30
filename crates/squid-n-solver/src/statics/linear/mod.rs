@@ -112,6 +112,57 @@ pub struct StaticOnce {
     pub member_forces: Vec<(squid_n_core::ids::ElemId, MemberForces)>,
 }
 
+/// 静的解析結果（節点変位・部材断面力）を係数倍して足し合わせた結果を返す。
+///
+/// 線形解析では重ね合わせの原理が成り立つため、荷重組合せ `Σ cᵢ·Lᵢ` の応答は、
+/// 荷重ケース単体 `Lᵢ` の応答を `cᵢ` 倍して足し合わせた値と一致する。解析の最小単位を
+/// 荷重ケース単体に統一し、荷重組合せはその結果の線形和として組み立てるための共通処理
+/// （[`crate::analysis::Analysis::linear_combination`] が使う）。
+///
+/// 各項は同一モデル・同一 [`crate::analysis::Analysis`] から得た結果である前提で、
+/// 節点数・部材の出現順・部材内の評価断面位置が一致しているものとして足し合わせる
+/// （評価断面の位置 `xi` は先頭の項の値を採る）。項が空の場合は変位・断面力とも
+/// 空の結果を返す。
+pub fn superpose_static(terms: &[(&StaticOnce, f64)]) -> StaticOnce {
+    let Some((first, _)) = terms.first() else {
+        return StaticOnce {
+            disp: Vec::new(),
+            member_forces: Vec::new(),
+        };
+    };
+    let mut disp = vec![[0.0; 6]; first.disp.len()];
+    let mut member_forces: Vec<(ElemId, MemberForces)> = first
+        .member_forces
+        .iter()
+        .map(|(id, mf)| {
+            (
+                *id,
+                MemberForces {
+                    at: mf.at.iter().map(|(xi, _)| (*xi, [0.0; 6])).collect(),
+                },
+            )
+        })
+        .collect();
+    for (res, factor) in terms {
+        for (dst, src) in disp.iter_mut().zip(res.disp.iter()) {
+            for (d, s) in dst.iter_mut().zip(src.iter()) {
+                *d += s * factor;
+            }
+        }
+        for ((_, dst), (_, src)) in member_forces.iter_mut().zip(res.member_forces.iter()) {
+            for ((_, d6), (_, s6)) in dst.at.iter_mut().zip(src.at.iter()) {
+                for (d, s) in d6.iter_mut().zip(s6.iter()) {
+                    *d += s * factor;
+                }
+            }
+        }
+    }
+    StaticOnce {
+        disp,
+        member_forces,
+    }
+}
+
 pub fn linear_static_once(model: &Model, lc: LoadCaseId) -> Result<StaticOnce, SolveError> {
     squid_n_math::parallelism::apply_to_faer();
     let lc_kind = model
