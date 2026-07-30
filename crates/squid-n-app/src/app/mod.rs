@@ -63,12 +63,19 @@ pub enum LeftPanel {
 }
 
 /// 右ドックのパネル。Zed のように下部バーのアイコンで切り替える。
+///
+/// 一貫計算の手順（① 解析入力を確定する準備計算 → ② 解く）はそれぞれ扱う情報量が
+/// 多いため、独立したパネルに分ける（1 枚に積むと縦に長くなり、いま何をしている
+/// 段階なのかが読み取りにくい）。どちらのパネルも 3D を見ながら設定・実行できる
+/// よう右ドックに置く。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum RightPanel {
     #[default]
     Inspector,
-    /// 解析設定（3D を見ながら設定・実行できるよう右ドックに置く）
-    AnalysisSettings,
+    /// ① 準備計算（地震力・風圧力の算定諸元・計算条件・階の定義と、その実行）
+    Preparation,
+    /// ② 解析（静的解析・固有値・増分解析・時刻歴応答の実行）
+    Analysis,
 }
 
 /// 結果タブ内の切替（3D 各種図・時刻歴グラフ・増分解析曲線）。
@@ -119,6 +126,20 @@ pub enum StaticCaseKey {
     Seismic(SeismicDir),
     /// 風荷重静的解析。方向別に共存できる
     Wind(SeismicDir),
+}
+
+/// 静的解析の実行対象（「単体実行」で選ぶ対象）。
+///
+/// 荷重ケース単体と荷重組合せは、いずれも同じ導線（単体実行／一括解析）から
+/// 実行する。組合せの求解は荷重ケース単体の解析結果の線形和として行うため
+/// （`Analysis::linear_combination`）、両者は「解析の実行対象」として同列に扱える。
+///
+/// `Combo` のインデックスは **`Model::combinations` 上の位置**
+/// （結果側の位置を指す [`StaticKey::Combo`] とは別）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StaticTarget {
+    Case(LoadCaseId),
+    Combo(usize),
 }
 
 /// 表示対象の静的解析結果を指すキー。荷重ケース単体（ユーザー／地震静的）か
@@ -505,8 +526,21 @@ impl Default for AnalysisSettings {
     }
 }
 
-/// バックグラウンド解析ジョブ（増分解析／時刻歴／線形静的・荷重組合せ・
-/// 全組合せ一括・地震静的・風荷重）が送る結果。
+/// 一括解析（`App::run_static_all`）の計算結果。荷重ケース単体と、その線形和で
+/// 得た荷重組合せの両方を運ぶ。
+#[derive(Default)]
+pub struct StaticAllComputed {
+    /// 荷重ケース単体の結果（格納キーと結果）。
+    pub cases: Vec<(
+        StaticCaseKey,
+        Result<squid_n_solver::linear::StaticOnce, String>,
+    )>,
+    /// 荷重組合せの結果（組合せ名と結果）。
+    pub combos: Vec<(String, Result<squid_n_solver::linear::StaticOnce, String>)>,
+}
+
+/// バックグラウンド解析ジョブ（増分解析／時刻歴／静的解析の単体実行・一括解析）が
+/// 送る結果。
 pub enum JobResult {
     Pushover(Result<squid_n_solver::pushover::PushoverResult, String>),
     /// 時刻歴応答解析。`ResponseResult` は詳細記録を含み大きいため Box で運ぶ。
@@ -521,18 +555,18 @@ pub enum JobResult {
         name: String,
         res: Result<squid_n_solver::linear::StaticOnce, String>,
     },
-    /// 全荷重組合せ一括解析。`computed` は `Analysis::prepare` 失敗時
-    /// （全件アボート）と個別解析結果の両方を運ぶ。`pre_errors` は UI スレッドで
-    /// 事前フィルタした「空の地震荷重ケース参照」等のエラーメッセージ。
-    AllCombos {
-        #[allow(clippy::type_complexity)]
-        computed: Result<Vec<(String, Result<squid_n_solver::linear::StaticOnce, String>)>, String>,
+    /// 一括解析（全荷重ケース単体＋全荷重組合せ）。`computed` は
+    /// `Analysis::prepare` 失敗時（全件アボート）と個別解析結果の両方を運ぶ。
+    /// `pre_errors` は UI スレッドで事前フィルタした「空の水平力ケース参照」等の
+    /// エラーメッセージ。
+    StaticAll {
+        computed: Result<StaticAllComputed, String>,
         pre_errors: Vec<String>,
     },
 }
 
-/// バックグラウンド解析ジョブ。重い解析(増分解析・時刻歴・線形静的・
-/// 荷重組合せ・全組合せ一括・地震静的・風荷重)を UI スレッドから逃がす(P8 §5)。
+/// バックグラウンド解析ジョブ。重い解析(増分解析・時刻歴・静的解析の単体実行と
+/// 一括解析)を UI スレッドから逃がす(P8 §5)。
 /// 結果は poll_job で受け取り適用する。
 pub struct AnalysisJob {
     pub label: &'static str,
@@ -618,8 +652,8 @@ pub struct App {
     pub last_notice: Option<String>,
     /// セッション内イベントログ（下ドックのログパネルに表示）。
     pub log: EventLog,
-    /// 実行中のバックグラウンド解析ジョブ（増分解析・時刻歴・線形静的・
-    /// 荷重組合せ・全組合せ一括・地震静的・風荷重、P8 §5）。
+    /// 実行中のバックグラウンド解析ジョブ（増分解析・時刻歴・静的解析の単体実行と
+    /// 一括解析、P8 §5）。
     /// 完了は `poll_job` で検知して結果を適用する。
     pub job: Option<AnalysisJob>,
     /// 節点座標の編集バッファ（model.nodes に同期）
@@ -696,10 +730,10 @@ pub struct App {
     /// 左ドックの表示パネル（ナビゲータ／作成パレット）
     #[cfg(feature = "gui")]
     pub left_panel: LeftPanel,
-    /// 右ドック（インスペクタ／解析設定）の表示状態
+    /// 右ドック（インスペクタ／準備計算／解析）の表示状態
     #[cfg(feature = "gui")]
     pub right_dock_open: bool,
-    /// 右ドックの表示パネル（インスペクタ／解析設定）
+    /// 右ドックの表示パネル（インスペクタ／準備計算／解析）
     #[cfg(feature = "gui")]
     pub right_panel: RightPanel,
     /// 下ドック（ログ／編集テーブル）の表示状態。既定で開き、イベントログを
@@ -883,9 +917,10 @@ pub struct App {
     /// DL/LL/EX/EY の再計算（床格子サブFEM解析等）を丸ごとスキップする。
     /// モデルの新規作成・読込では `None` にリセットする（永続化しない）。
     pub auto_load_sync_hash: Option<u64>,
-    /// 解析タブ「荷重組合せ」で選択中の組合せインデックス（model.combinations）
+    /// 解析パネル「静的解析」で選択中の単体実行の対象（荷重ケース／荷重組合せ）。
+    /// `None` は未選択（荷重ケースの先頭を既定として扱う）。
     #[cfg(feature = "gui")]
-    pub analysis_combo_idx: usize,
+    pub analysis_target: Option<StaticTarget>,
     /// 荷重タブ「荷重組合せ」自動生成 UI のドラフト状態
     #[cfg(feature = "gui")]
     pub combo_draft: ComboDraft,
@@ -1085,7 +1120,7 @@ impl Default for App {
             analysis_cfg: AnalysisSettings::default(),
             auto_load_sync_hash: None,
             #[cfg(feature = "gui")]
-            analysis_combo_idx: 0,
+            analysis_target: None,
             #[cfg(feature = "gui")]
             combo_draft: ComboDraft::default(),
             #[cfg(feature = "gui")]
@@ -2114,9 +2149,9 @@ impl eframe::App for App {
                 });
         }
 
-        // 右：パネル切替式（インスペクタ／解析設定）。Zed のようにステータスバーの
-        // アイコンで切り替える（切替自体は status_bar が行う）。解析設定は3D
-        // ビューを見ながら設定・実行できるようここに置くため、他パネルより
+        // 右：パネル切替式（インスペクタ／準備計算／解析）。Zed のようにステータス
+        // バーのアイコンで切り替える（切替自体は status_bar が行う）。準備計算・解析は
+        // 3D ビューを見ながら設定・実行できるようここに置くため、他パネルより
         // 縦に長くなりがちで、右ドック全体をスクロール可能にする。
         if self.right_dock_open {
             egui::Panel::right("right_dock")
@@ -2128,7 +2163,8 @@ impl eframe::App for App {
                         .auto_shrink([false, false])
                         .show(ui, |ui| match self.right_panel {
                             RightPanel::Inspector => self.inspector_panel(ui),
-                            RightPanel::AnalysisSettings => self.analysis_settings_panel(ui),
+                            RightPanel::Preparation => self.preparation_panel(ui),
+                            RightPanel::Analysis => self.analysis_panel(ui),
                         });
                 });
         }

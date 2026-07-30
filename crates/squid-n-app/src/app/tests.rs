@@ -1334,10 +1334,10 @@ fn test_async_combination_job_flow() {
     assert_eq!(app.last_static, Some(StaticKey::Combo(0)));
 }
 
-/// `start_all_combinations_job` はバックグラウンドで `run_all_combinations` と
+/// `start_static_all_job` はバックグラウンドで `run_static_all` と
 /// 同じ結果（combos の名前・変位）を与える。決定性のため `threads=1` を明示する。
 #[test]
-fn test_async_all_combinations_job_flow() {
+fn test_async_static_all_job_flow() {
     let combos = vec![
         squid_n_core::model::LoadCombination {
             name: "G+Kx".into(),
@@ -1360,7 +1360,7 @@ fn test_async_all_combinations_job_flow() {
             }),
         );
     }
-    app_sync.run_all_combinations();
+    app_sync.run_static_all();
     assert!(app_sync.last_error.is_none(), "{:?}", app_sync.last_error);
 
     let mut app = App::default();
@@ -1374,9 +1374,9 @@ fn test_async_all_combinations_job_flow() {
             }),
         );
     }
-    app.start_all_combinations_job();
+    app.start_static_all_job();
     assert!(app.job.is_some());
-    assert_eq!(app.job.as_ref().unwrap().label, "全組合せ一括解析");
+    assert_eq!(app.job.as_ref().unwrap().label, "一括解析");
 
     wait_for_job(&mut app);
 
@@ -1654,7 +1654,7 @@ fn test_select_displayed_result_switches_forces_and_term() {
             Box::new(squid_n_edit::AddCombination { combo }),
         );
     }
-    app.run_all_combinations();
+    app.run_static_all();
     assert!(app.last_error.is_none(), "{:?}", app.last_error);
     // 一括解析後は最後の組合せ（短期 DL+LL+EX）が表示対象。
     assert_eq!(app.last_static, Some(StaticKey::Combo(1)));
@@ -1692,11 +1692,11 @@ fn test_select_displayed_result_switches_forces_and_term() {
     assert_eq!(app.last_static, Some(StaticKey::Combo(1)));
 }
 
-/// `run_all_combinations` は個別に `run_combination` を実行した場合と
-/// 同じ結果（combos の名前・変位）を与える（並列/一括経路と単発経路の一致確認）。
+/// `run_static_all`（一括解析）は個別に `run_combination`（単体実行）を実行した
+/// 場合と同じ結果（combos の名前・変位）を与える（一括経路と単発経路の一致確認）。
 /// 決定性のため `threads=1`（Deterministic）を明示する。
 #[test]
-fn test_run_all_combinations_matches_individual_runs() {
+fn test_run_static_all_matches_individual_runs() {
     let combos = vec![
         squid_n_core::model::LoadCombination {
             name: "G+Kx".into(),
@@ -1717,7 +1717,7 @@ fn test_run_all_combinations_matches_individual_runs() {
             Box::new(squid_n_edit::AddCombination { combo }),
         );
     }
-    app_batch.run_all_combinations();
+    app_batch.run_static_all();
     assert!(app_batch.last_error.is_none(), "{:?}", app_batch.last_error);
 
     let mut app_each = App::default();
@@ -1746,16 +1746,83 @@ fn test_run_all_combinations_matches_individual_runs() {
     assert_eq!(app_batch.last_static, Some(StaticKey::Combo(1)));
 }
 
-/// 荷重組合せが 1 件も無い場合はエラーメッセージを設定し、結果は変更しない。
+/// 一括解析は荷重組合せが 1 件も無くても荷重ケース単体を解く（表示対象は
+/// 最後に成功した荷重ケース）。
 #[test]
-fn test_run_all_combinations_no_combos_is_error() {
+fn test_run_static_all_without_combos_solves_load_cases() {
     let mut app = App::default();
     app.load_model(crate::sample::portal_frame());
+    app.analysis_cfg.threads = 1;
     assert!(app.model.combinations.is_empty());
+    assert!(!app.model.load_cases.is_empty());
 
-    app.run_all_combinations();
+    app.run_static_all();
+    assert!(app.last_error.is_none(), "{:?}", app.last_error);
+    let bundle = app.results.as_ref().unwrap();
+    assert_eq!(
+        bundle.statics.len(),
+        app.model.load_cases.len(),
+        "全荷重ケースが単体で解かれるはず"
+    );
+    assert!(bundle.combos.is_empty());
+    assert!(matches!(app.last_static, Some(StaticKey::Case(_))));
+}
+
+/// 荷重ケースが 1 件も無い場合はエラーメッセージを設定し、結果は変更しない。
+#[test]
+fn test_run_static_all_no_load_cases_is_error() {
+    let mut app = App::default();
+    app.load_model(squid_n_core::model::Model::default());
+    assert!(app.model.load_cases.is_empty());
+
+    app.run_static_all();
     assert!(app.last_error.is_some());
     assert!(app.results.is_none());
+}
+
+/// 一括解析は荷重ケース単体の結果と、その線形和である荷重組合せの結果の双方を
+/// 格納する。組合せの応答は単体結果の線形和に一致する（重ね合わせの原理）。
+#[test]
+fn test_run_static_all_combo_is_linear_sum_of_cases() {
+    let mut app = App::default();
+    app.load_model(crate::sample::portal_frame());
+    app.analysis_cfg.threads = 1;
+    app.undo.run(
+        &mut app.model,
+        Box::new(squid_n_edit::AddCombination {
+            combo: squid_n_core::model::LoadCombination {
+                name: "G+Kx".into(),
+                terms: vec![(LoadCaseId(0), 1.0), (LoadCaseId(1), -0.5)],
+            },
+        }),
+    );
+
+    app.run_static_all();
+    assert!(app.last_error.is_none(), "{:?}", app.last_error);
+    let bundle = app.results.as_ref().unwrap();
+    let case = |id: LoadCaseId| {
+        bundle
+            .statics
+            .iter()
+            .find(|(k, _)| *k == StaticCaseKey::User(id))
+            .map(|(_, s)| s)
+            .expect("荷重ケース単体の結果があるはず")
+    };
+    let (c0, c1) = (case(LoadCaseId(0)), case(LoadCaseId(1)));
+    let combo = &bundle.combos[0].1;
+    for (i, d) in combo.disp.iter().enumerate() {
+        for (j, v) in d.iter().enumerate() {
+            let expected = c0.disp[i][j] - 0.5 * c1.disp[i][j];
+            assert!(
+                (v - expected).abs() <= 1e-9 * expected.abs().max(1.0),
+                "節点 {} 成分 {}: 組合せ {} ≠ 線形和 {}",
+                i,
+                j,
+                v,
+                expected
+            );
+        }
+    }
 }
 
 #[test]

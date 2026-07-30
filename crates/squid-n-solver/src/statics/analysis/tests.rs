@@ -5,8 +5,8 @@ use squid_n_core::dof::Dof6Mask;
 use squid_n_core::ids::{ElemId, MaterialId, NodeId, SectionId, StoryId};
 use squid_n_core::model::{
     Constraint, DiaphragmDef, ElementData, ElementKind, EndCondition, ForceRegime, LoadCase,
-    LocalAxis, Material, MemberLoad, MemberLoadKind, NodalLoad, Node, Section, Story,
-    StoryLevelKind, StoryStructure,
+    LoadCombination, LocalAxis, Material, MemberLoad, MemberLoadKind, NodalLoad, Node, Section,
+    Story, StoryLevelKind, StoryStructure,
 };
 use std::collections::HashSet;
 
@@ -1177,4 +1177,129 @@ fn analysis_linear_combination_scales_member_load() {
         mid,
         expected_mid
     );
+}
+
+/// 荷重組合せの応答（荷重ケース単体結果の線形和）は、同じ線形結合の荷重を 1 つの
+/// 荷重ケースへまとめて解いた結果と一致する（重ね合わせの原理の検証）。
+/// 節点荷重・部材中間荷重の両方を含む組合せで、節点変位と部材断面力の双方を比較する。
+#[test]
+fn analysis_linear_combination_matches_assembled_load_case() {
+    let l = 1000.0_f64;
+    let w = 3.0_f64;
+    let (c_axial, c_shear, c_udl) = (1.2_f64, 1.5_f64, -0.8_f64);
+    let udl = |scale: f64| MemberLoad {
+        elem: ElemId(0),
+        dir: [0.0, 0.0, -1.0],
+        kind: MemberLoadKind::Distributed {
+            a: 0.0,
+            b: l,
+            w1: w * scale,
+            w2: w * scale,
+        },
+    };
+
+    // 節点荷重 2 ケース（軸・せん断）＋部材中間荷重 1 ケースを参照する組合せ。
+    let mut model = make_cantilever_model();
+    model.load_cases.push(LoadCase {
+        kind: Default::default(),
+        id: LoadCaseId(3),
+        name: "udl".into(),
+        nodal: Vec::new(),
+        member: vec![udl(1.0)],
+    });
+    model.combinations = vec![LoadCombination {
+        name: "combo".into(),
+        terms: vec![
+            (LoadCaseId(1), c_axial),
+            (LoadCaseId(2), c_shear),
+            (LoadCaseId(3), c_udl),
+        ],
+    }];
+
+    // 同じ線形結合の荷重を 1 ケースへまとめたモデル（荷重ベクトルを合成して解く経路）。
+    let scale_nodal = |lc: &LoadCase, factor: f64| -> Vec<NodalLoad> {
+        lc.nodal
+            .iter()
+            .map(|n| NodalLoad {
+                node: n.node,
+                values: n.values.map(|v| v * factor),
+            })
+            .collect()
+    };
+    let mut nodal = scale_nodal(&model.load_cases[0], c_axial);
+    nodal.extend(scale_nodal(&model.load_cases[1], c_shear));
+    let mut merged = model.clone();
+    merged.combinations.clear();
+    merged.load_cases = vec![LoadCase {
+        kind: Default::default(),
+        id: LoadCaseId(9),
+        name: "merged".into(),
+        nodal,
+        member: vec![udl(c_udl)],
+    }];
+
+    let superposed = Analysis::prepare(&model)
+        .unwrap()
+        .linear_combination(&model.combinations[0])
+        .unwrap();
+    let assembled = Analysis::prepare(&merged)
+        .unwrap()
+        .linear_static(LoadCaseId(9))
+        .unwrap();
+
+    let scale = superposed
+        .disp
+        .iter()
+        .flatten()
+        .fold(0.0_f64, |m, v| m.max(v.abs()))
+        .max(1.0);
+    for (i, (a, b)) in superposed
+        .disp
+        .iter()
+        .zip(assembled.disp.iter())
+        .enumerate()
+    {
+        for (d, (x, y)) in a.iter().zip(b.iter()).enumerate() {
+            assert!(
+                (x - y).abs() < 1e-9 * scale,
+                "節点 {} 成分 {}: 線形和 {} ≠ 合成荷重 {}",
+                i,
+                d,
+                x,
+                y
+            );
+        }
+    }
+
+    assert_eq!(
+        superposed.member_forces.len(),
+        assembled.member_forces.len()
+    );
+    for ((id_a, mf_a), (id_b, mf_b)) in superposed
+        .member_forces
+        .iter()
+        .zip(assembled.member_forces.iter())
+    {
+        assert_eq!(id_a, id_b);
+        let scale = mf_a
+            .at
+            .iter()
+            .flat_map(|(_, v)| v.iter())
+            .fold(0.0_f64, |m, v| m.max(v.abs()))
+            .max(1.0);
+        for ((xi_a, v_a), (xi_b, v_b)) in mf_a.at.iter().zip(mf_b.at.iter()) {
+            assert!((xi_a - xi_b).abs() < 1e-12, "評価断面位置がずれている");
+            for (c, (x, y)) in v_a.iter().zip(v_b.iter()).enumerate() {
+                assert!(
+                    (x - y).abs() < 1e-9 * scale,
+                    "部材 {} xi={} 成分 {}: 線形和 {} ≠ 合成荷重 {}",
+                    id_a.0,
+                    xi_a,
+                    c,
+                    x,
+                    y
+                );
+            }
+        }
+    }
 }

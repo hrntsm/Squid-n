@@ -24,6 +24,19 @@ fn beam_key(a: NodeId, b: NodeId) -> (NodeId, NodeId) {
     }
 }
 
+/// 水平力の荷重ケース（種別が地震・風）なのに荷重が入っていないか。
+///
+/// 準備計算が EX/EY・WX/WY へ水平力を生成するため、空のまま残っているのは
+/// 「準備計算が未実行、または階が未定義で算定できなかった」ことの合図になる。
+/// これを解くと水平力の項が黙って 0 になり、長期と同じ応力を短期の検定に
+/// 使ってしまうため、解析の実行前ガードに使う。
+fn is_empty_lateral_case(lc: &squid_n_core::model::LoadCase) -> bool {
+    use squid_n_core::model::LoadCaseKind;
+    matches!(lc.kind, LoadCaseKind::Seismic | LoadCaseKind::Wind)
+        && lc.nodal.is_empty()
+        && lc.member.is_empty()
+}
+
 impl App {
     /// エラーを `last_error`（ステータスバー表示）とログの両方へ反映する。
     /// エラーはユーザーが気づかないまま埋もれると解析結果を誤って信頼しかねない
@@ -509,8 +522,38 @@ impl App {
         self.report_info(format!("⏳ {} を開始", self.job.as_ref().unwrap().label));
     }
 
+    /// 静的解析の単体実行（解析パネル「▶ 単体実行」の入口）をバックグラウンドで
+    /// 実行する。
+    ///
+    /// 荷重ケース単体・荷重組合せのどちらも同じ導線で実行する。求解の最小単位は
+    /// 荷重ケースであり、荷重組合せは参照する荷重ケースを解いてからその線形和として
+    /// 組み立てる（重ね合わせの原理。`Analysis::linear_combination`）。
+    pub fn start_static_target_job(&mut self, target: StaticTarget) {
+        match target {
+            StaticTarget::Case(lc) => self.start_load_case_job(lc),
+            StaticTarget::Combo(index) => self.start_combination_job(index),
+        }
+    }
+
+    /// [`Self::start_static_target_job`] の同期版（解き終わるまで戻らない）。
+    /// 振り分け先は同じで、標準の水平力ケース（EX/EY・WX/WY）は方向別の結果キーへ
+    /// 格納する（`start_load_case_job` と同じ規約）。
+    pub fn run_static_target(&mut self, target: StaticTarget) {
+        match target {
+            StaticTarget::Case(lc) => match self.standard_lateral_case(lc) {
+                Some(StaticCaseKey::Seismic(dir)) => self.run_seismic(dir),
+                Some(StaticCaseKey::Wind(dir)) => self.run_wind(dir),
+                _ => self.run_linear_static(lc),
+            },
+            StaticTarget::Combo(index) => self.run_combination(index),
+        }
+    }
+
     /// T7: 荷重組合せ解析を実行し、結果を `bundle.combos` に格納する。
     /// 指定インデックスの荷重組合せが存在しない場合はエラーメッセージをセット。
+    ///
+    /// 求解は参照する荷重ケース単体で行い、組合せの結果はその線形和として
+    /// 組み立てる（`Analysis::linear_combination`）。
     ///
     /// 解析に先立って準備計算（`ensure_preparation`）を実行し、スラブ荷重・躯体
     /// 自重を「DL」等の標準ケースへ、階が定義済みなら地震荷重を「EX」「EY」
@@ -540,6 +583,8 @@ impl App {
 
     /// 荷重組合せ解析の純粋計算部分。所有権を取り `&self` を使わないため、
     /// バックグラウンドジョブ（`start_combination_job`）からも呼び出せる。
+    /// `Analysis::linear_combination` は参照する荷重ケースを単体で解いてから
+    /// その結果を線形和する（荷重ベクトルを合成して解き直すことはしない）。
     fn compute_combination(
         model: squid_n_core::model::Model,
         combo: squid_n_core::model::LoadCombination,
@@ -643,41 +688,77 @@ impl App {
         self.report_info(format!("⏳ {} を開始", self.job.as_ref().unwrap().label));
     }
 
-    /// 全荷重組合せを一括解析し、結果を `bundle.combos` へ格納する
-    /// （`run_combination` の全件版。`Analysis::prepare` を 1 回だけ行い、
-    /// `analysis_cfg.threads` の並列設定に応じて
-    /// `Analysis::linear_combination_batch` で組合せ単位に並列解析する）。
+    /// 一括解析（全荷重ケース単体＋全荷重組合せ）を実行し、結果を `bundle` へ
+    /// 格納する（解析パネル「▶▶ 一括解析」の入口）。
     ///
-    /// 個別組合せの解析エラーは処理を止めず、件数と最初のエラー内容を
-    /// `last_error` にまとめる（他の組合せの結果は失わない）。荷重組合せが
-    /// 1 件も無い場合、および 1 件も解けなかった場合は既存の結果を変更せず、
-    /// 案内メッセージを `last_error` に設定して return する。
-    pub fn run_all_combinations(&mut self) {
+    /// 求解は荷重ケース単体のみで行い（`Analysis::prepare` を 1 回だけ行い、
+    /// `analysis_cfg.threads` の並列設定に応じて荷重ケース単位に並列解析する）、
+    /// 荷重組合せはその結果の線形和として組み立てる（重ね合わせの原理。
+    /// `Analysis::linear_static_with_combinations`）。同じ荷重ケースを参照する組合せが
+    /// 何件あっても、求解は荷重ケース数ぶんで済む。
+    ///
+    /// 個別の解析エラーは処理を止めず、件数と最初のエラー内容を `last_error` に
+    /// まとめる（他の結果は失わない）。荷重ケースが 1 件も無い場合、および 1 件も
+    /// 解けなかった場合は既存の結果を変更せず、案内メッセージを `last_error` に
+    /// 設定して return する。
+    pub fn run_static_all(&mut self) {
         self.apply_parallelism_setting();
         self.last_error = None;
         self.last_notice = None;
-        if self.model.combinations.is_empty() {
-            self.report_error("荷重組合せがありません。荷重タブで作成してください。");
+        if self.model.load_cases.is_empty() {
+            self.report_error("荷重ケースがありません。荷重タブで作成してください。");
             return;
         }
         // 解析に先立って準備計算を実行する（剛域の反映、スラブ荷重・躯体自重の
         // 「DL」等への同期、階が定義済みなら地震荷重の「EX」「EY」への同期）。
         self.ensure_preparation();
-        // 空の地震荷重ケース（未生成の EX/EY 等）を参照する組合せは解かずに
-        // エラーへ回す（地震項が黙って 0 になるのを防ぐ）。UI スレッド側の
-        // `self.model` を参照するためバックグラウンドジョブでもここで行う。
-        let (combos, errors) = self.filter_combos_for_all_combinations();
-        let computed = Self::compute_all_combinations(self.model.clone(), combos);
-        self.apply_all_combinations_result(computed, errors);
+        let (case_keys, combos, errors) = self.static_all_inputs();
+        let computed = Self::compute_static_all(self.model.clone(), case_keys, combos);
+        self.apply_static_all_result(computed, errors);
     }
 
-    /// `run_all_combinations`/`start_all_combinations_job` 共通の事前フィルタ。
-    /// 空の地震荷重ケースを参照する組合せを除外し、(解析対象の組合せ, エラー文一覧)
-    /// を返す。
-    fn filter_combos_for_all_combinations(
+    /// `run_static_all`/`start_static_all_job` 共通の事前準備。UI スレッド側の
+    /// `self.model` を参照するため、バックグラウンドジョブでもここで行う。
+    ///
+    /// - 荷重ケース: 結果の格納キー（標準の水平力ケースは方向別の
+    ///   `StaticCaseKey::Seismic`/`Wind`、それ以外は `User`）を対応付ける。
+    ///   空の水平力ケース（未生成の EX/EY 等）は解析対象から外す（水平力が黙って
+    ///   0 の結果を方向別キーへ格納すると、剛心の精算・保有水平耐力の判定が
+    ///   それを正しい地震時応力として扱ってしまうため）。
+    /// - 荷重組合せ: 空の水平力ケースを参照する組合せを除外する（地震・風の項が
+    ///   黙って 0 になるのを防ぐ）。
+    ///
+    /// 戻り値は (荷重ケースと格納キーの対応, 解析対象の組合せ, エラー文一覧)。
+    #[allow(clippy::type_complexity)]
+    fn static_all_inputs(
         &self,
-    ) -> (Vec<squid_n_core::model::LoadCombination>, Vec<String>) {
+    ) -> (
+        Vec<(LoadCaseId, StaticCaseKey)>,
+        Vec<squid_n_core::model::LoadCombination>,
+        Vec<String>,
+    ) {
         let mut errors: Vec<String> = Vec::new();
+        let case_keys = self
+            .model
+            .load_cases
+            .iter()
+            .filter(|lc| {
+                if is_empty_lateral_case(lc) {
+                    errors.push(format!(
+                        "[{}] 水平力の荷重ケースが空です。「準備計算 実行」を行って地震力・風圧力を生成してください。",
+                        lc.name
+                    ));
+                    return false;
+                }
+                true
+            })
+            .map(|lc| {
+                let key = self
+                    .standard_lateral_case(lc.id)
+                    .unwrap_or(StaticCaseKey::User(lc.id));
+                (lc.id, key)
+            })
+            .collect();
         let combos = self
             .model
             .combinations
@@ -685,7 +766,7 @@ impl App {
             .filter(|combo| match self.empty_lateral_case_in_combo(combo) {
                 Some(name) => {
                     errors.push(format!(
-                        "[{}] 水平力の荷重ケース「{}」が空です。解析タブの「準備計算 実行」を行ってください。",
+                        "[{}] 水平力の荷重ケース「{}」が空です。「準備計算 実行」を行ってください。",
                         combo.name, name
                     ));
                     false
@@ -694,45 +775,66 @@ impl App {
             })
             .cloned()
             .collect();
-        (combos, errors)
+        (case_keys, combos, errors)
     }
 
-    /// 全荷重組合せ一括解析の純粋計算部分。所有権を取り `&self` を使わないため、
-    /// バックグラウンドジョブ（`start_all_combinations_job`）からも呼び出せる。
-    /// `Analysis::prepare` を 1 回だけ行い、`analysis_cfg.threads` の並列設定に
-    /// 応じて `Analysis::linear_combination_batch` で組合せ単位に並列解析する。
+    /// 一括解析の純粋計算部分。所有権を取り `&self` を使わないため、
+    /// バックグラウンドジョブ（`start_static_all_job`）からも呼び出せる。
+    ///
+    /// `Analysis::prepare` を 1 回だけ行い、`case_keys` の荷重ケースを単体で解いて
+    /// （荷重ケース単位の並列）、`combos` をその結果の線形和として組み立てる。
     /// `Analysis::prepare` 自体が失敗した場合は `Err` で全体を中断する
-    /// （個別組合せへは処理を進めない。既存結果は `apply_all_combinations_result`
-    /// 側で変更しない）。
-    #[allow(clippy::type_complexity)]
-    fn compute_all_combinations(
+    /// （既存結果は `apply_static_all_result` 側で変更しない）。
+    fn compute_static_all(
         model: squid_n_core::model::Model,
+        case_keys: Vec<(LoadCaseId, StaticCaseKey)>,
         combos: Vec<squid_n_core::model::LoadCombination>,
-    ) -> Result<Vec<(String, Result<squid_n_solver::linear::StaticOnce, String>)>, String> {
+    ) -> Result<StaticAllComputed, String> {
         let analysis = Analysis::prepare(&model).map_err(|e| format!("解析準備エラー: {:?}", e))?;
-        let results = analysis.linear_combination_batch(&combos);
-        Ok(combos
+        let ids: Vec<LoadCaseId> = case_keys.iter().map(|(id, _)| *id).collect();
+        let batch = analysis.linear_static_with_combinations(&ids, &combos);
+        let case_name = |id: LoadCaseId| {
+            model
+                .load_cases
+                .iter()
+                .find(|c| c.id == id)
+                .map(|c| c.name.clone())
+                .unwrap_or_else(|| format!("#{}", id.0))
+        };
+        let cases = case_keys
             .iter()
-            .zip(results)
+            .zip(batch.cases)
+            .map(|((id, key), res)| {
+                (
+                    *key,
+                    res.map_err(|e| format!("[{}] {:?}", case_name(*id), e)),
+                )
+            })
+            .collect();
+        let combos = combos
+            .iter()
+            .zip(batch.combos)
             .map(|(combo, res)| {
                 (
                     combo.name.clone(),
                     res.map_err(|e| format!("[{}] {:?}", combo.name, e)),
                 )
             })
-            .collect())
+            .collect();
+        Ok(StaticAllComputed { cases, combos })
     }
 
-    /// `compute_all_combinations` の結果を適用する。個別組合せの解析エラーは
-    /// 処理を止めず、件数と最初のエラー内容を `last_error` にまとめる
-    /// （他の組合せの結果は失わない）。`pre_errors`（事前フィルタで除外された
-    /// 組合せのエラー）と合わせて1件も解けなかった場合、および
-    /// `Analysis::prepare` 自体が失敗した場合は既存の結果を変更せず、案内
-    /// メッセージを `last_error` に設定して return する。
-    #[allow(clippy::type_complexity)]
-    fn apply_all_combinations_result(
+    /// `compute_static_all` の結果を適用する。個別の解析エラーは処理を止めず、
+    /// 件数と最初のエラー内容を `last_error` にまとめる（他の結果は失わない）。
+    /// `pre_errors`（事前フィルタで除外された荷重ケース・組合せのエラー）と合わせて
+    /// 1 件も解けなかった場合、および `Analysis::prepare` 自体が失敗した場合は
+    /// 既存の結果を変更せず、案内メッセージを `last_error` に設定して return する。
+    ///
+    /// 表示対象（`last_static`）は最後に成功した荷重組合せ、組合せが 1 件も無ければ
+    /// 最後に成功した荷重ケースとする。
+    fn apply_static_all_result(
         &mut self,
-        computed: Result<Vec<(String, Result<squid_n_solver::linear::StaticOnce, String>)>, String>,
+        computed: Result<StaticAllComputed, String>,
         mut errors: Vec<String>,
     ) {
         let items = match computed {
@@ -743,12 +845,23 @@ impl App {
             }
         };
 
+        let had_results = self.results.is_some();
         let mut bundle = self.results.take().unwrap_or_default();
-        let mut last_ok: Option<(usize, String)> = None;
-        for (name, res) in items {
+        let mut last_case: Option<StaticCaseKey> = None;
+        for (key, res) in items.cases {
             match res {
                 Ok(res) => {
-                    let member_forces = res.member_forces.clone();
+                    bundle.statics.retain(|(k, _)| *k != key);
+                    bundle.statics.push((key, res));
+                    last_case = Some(key);
+                }
+                Err(e) => errors.push(e),
+            }
+        }
+        let mut last_combo: Option<(usize, String)> = None;
+        for (name, res) in items.combos {
+            match res {
+                Ok(res) => {
                     // StaticKey::Combo は bundle.combos 上の位置を指す規約
                     // （run_combination と同じ「名前一致なら置換、なければ push」）。
                     let pos = match bundle.combos.iter().position(|(n, _)| *n == name) {
@@ -761,47 +874,65 @@ impl App {
                             bundle.combos.len() - 1
                         }
                     };
-                    bundle.member_forces = member_forces;
-                    last_ok = Some((pos, name));
+                    last_combo = Some((pos, name));
                 }
                 Err(e) => errors.push(e),
             }
         }
 
-        let Some((pos, last_name)) = last_ok else {
-            // 1件も解けなかった場合は結果を壊さない。
+        let display = match &last_combo {
+            Some((pos, _)) => Some(StaticKey::Combo(*pos)),
+            None => last_case.map(StaticKey::Case),
+        };
+        let Some(display) = display else {
+            // 1件も解けなかった場合は既存の結果を壊さない（取り出した結果を戻す）。
+            if had_results {
+                self.results = Some(bundle);
+            }
             self.report_error(format!(
-                "全組合せ解析エラー（{} 件すべて失敗）: {}",
+                "一括解析エラー（{} 件すべて失敗）: {}",
                 errors.len(),
                 errors.first().cloned().unwrap_or_default()
             ));
             return;
         };
-        self.results = Some(bundle);
-        self.last_static = Some(StaticKey::Combo(pos));
-        self.staleness.mark_fresh();
-        // 荷重継続性区分（長期/短期）は最後に成功した組合せの内容から自動判定する
-        // （令82条の荷重組合せ: G+P=長期、地震・積雪・風入り=短期）。
-        self.design_term = if squid_n_load::combo::is_short_term_combo(&last_name) {
-            LoadTerm::Short
-        } else {
-            LoadTerm::Long
+        // 応力図・断面検定が参照する member_forces は表示対象の結果へ合わせる
+        // （`select_displayed_result` と同じ規約）。
+        let member_forces = match display {
+            StaticKey::Combo(pos) => bundle.combos.get(pos).map(|(_, s)| s.member_forces.clone()),
+            StaticKey::Case(key) => bundle
+                .statics
+                .iter()
+                .find(|(k, _)| *k == key)
+                .map(|(_, s)| s.member_forces.clone()),
         };
+        if let Some(member_forces) = member_forces {
+            bundle.member_forces = member_forces;
+        }
+        self.results = Some(bundle);
+        self.last_static = Some(display);
+        self.staleness.mark_fresh();
+        // 荷重継続性区分（長期/短期）は表示対象の組合せ名から自動判定する
+        // （令82条の荷重組合せ: G+P=長期、地震・積雪・風入り=短期）。荷重ケース単体を
+        // 表示対象にした場合は現在の区分を維持する（`apply_static_case_result` と同じ）。
+        if let Some((_, name)) = &last_combo {
+            self.design_term = if squid_n_load::combo::is_short_term_combo(name) {
+                LoadTerm::Short
+            } else {
+                LoadTerm::Long
+            };
+        }
         self.run_design_check();
 
         if !errors.is_empty() {
-            self.report_error(format!(
-                "{} 件の組合せでエラー: {}",
-                errors.len(),
-                errors[0]
-            ));
+            self.report_error(format!("{} 件でエラー: {}", errors.len(), errors[0]));
         }
     }
 
-    /// 全荷重組合せ一括解析をバックグラウンドスレッドで実行する（P8 §5）。
+    /// 一括解析をバックグラウンドスレッドで実行する（P8 §5）。
     /// UI スレッドをブロックしないよう重い解析を逃がす。
     /// 既にジョブが実行中の場合は何もしない（last_error に案内文を設定）。
-    pub fn start_all_combinations_job(&mut self) {
+    pub fn start_static_all_job(&mut self) {
         if self.job.is_some() {
             self.report_error("解析実行中です");
             return;
@@ -809,17 +940,17 @@ impl App {
         self.apply_parallelism_setting();
         self.last_error = None;
         self.last_notice = None;
-        if self.model.combinations.is_empty() {
-            self.report_error("荷重組合せがありません。荷重タブで作成してください。");
+        if self.model.load_cases.is_empty() {
+            self.report_error("荷重ケースがありません。荷重タブで作成してください。");
             return;
         }
         self.ensure_preparation();
-        let (combos, pre_errors) = self.filter_combos_for_all_combinations();
+        let (case_keys, combos, pre_errors) = self.static_all_inputs();
         let model = self.model.clone();
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
             let computed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                Self::compute_all_combinations(model, combos)
+                Self::compute_static_all(model, case_keys, combos)
             }))
             .unwrap_or_else(|_| {
                 Err(
@@ -827,13 +958,13 @@ impl App {
                         .to_string(),
                 )
             });
-            let _ = tx.send(JobResult::AllCombos {
+            let _ = tx.send(JobResult::StaticAll {
                 computed,
                 pre_errors,
             });
         });
         self.job = Some(AnalysisJob {
-            label: "全組合せ一括解析",
+            label: "一括解析",
             started: std::time::SystemTime::now(),
             rx,
             #[cfg(feature = "gui")]
@@ -2329,10 +2460,10 @@ impl App {
                     JobResult::TimeHistory(res) => self.apply_time_history_result(*res),
                     JobResult::StaticCase { key, res } => self.apply_static_case_result(key, res),
                     JobResult::Combo { name, res } => self.apply_combo_result(name, res),
-                    JobResult::AllCombos {
+                    JobResult::StaticAll {
                         computed,
                         pre_errors,
-                    } => self.apply_all_combinations_result(computed, pre_errors),
+                    } => self.apply_static_all_result(computed, pre_errors),
                 }
                 // 失敗時は各 apply_* が report_error 経由で last_error とログの両方
                 // へ反映済みのため、ここでは成功時のみ完了ログを追加する
@@ -2381,7 +2512,9 @@ impl App {
             }
             Tab::Analysis => {
                 self.right_dock_open = true;
-                self.right_panel = RightPanel::AnalysisSettings;
+                // 一貫計算の手順どおり ①（準備計算）から入れるようにする。
+                // ② 解析へはパネル先頭の切替行、またはステータスバーの ⚙ から移る。
+                self.right_panel = RightPanel::Preparation;
                 self.bottom_tab = BottomTab::Log;
             }
             Tab::Results => {
@@ -3619,23 +3752,18 @@ impl App {
     /// 組合せが参照する空の水平力ケース（kind=Seismic／Wind・内容なし）の名前を返す。
     /// 空の地震・風ケースを含む組合せをそのまま解くと水平力の項が黙って 0 になり、
     /// 長期と同じ結果を短期の検定に用いてしまうため、実行前のガードに使う
-    /// （`run_combination`/`run_all_combinations`）。いずれも準備計算が
+    /// （`run_combination`/`run_static_all`）。いずれも準備計算が
     /// EX/EY・WX/WY へ内容を生成するため、空のまま残っていることが異常の合図になる。
     fn empty_lateral_case_in_combo(
         &self,
         combo: &squid_n_core::model::LoadCombination,
     ) -> Option<String> {
-        use squid_n_core::model::LoadCaseKind;
         combo.terms.iter().find_map(|(id, _)| {
             self.model
                 .load_cases
                 .iter()
                 .find(|lc| lc.id == *id)
-                .filter(|lc| {
-                    matches!(lc.kind, LoadCaseKind::Seismic | LoadCaseKind::Wind)
-                        && lc.nodal.is_empty()
-                        && lc.member.is_empty()
-                })
+                .filter(|lc| is_empty_lateral_case(lc))
                 .map(|lc| lc.name.clone())
         })
     }

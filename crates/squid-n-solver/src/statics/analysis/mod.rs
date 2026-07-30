@@ -16,15 +16,17 @@ use std::collections::HashMap;
 pub type StaticResult = StaticOnce;
 use squid_n_core::dof::DofMap;
 use squid_n_core::ids::LoadCaseId;
-use squid_n_core::model::{LoadCombination, MemberLoad, Model};
+use squid_n_core::model::{MemberLoad, Model};
 use squid_n_element::factory::build_behavior;
 use squid_n_math::solver::{make_solver, LinearSolver, SolveError, SolverBackend};
 
+mod combination;
 mod config;
 mod precheck;
 mod seismic;
 mod wind;
 
+pub use combination::StaticBatch;
 pub use config::{AiMode, SeismicCfg, SeismicDir, WindStaticCfg};
 pub(crate) use seismic::distribute_pi_over_diaphragms;
 pub use seismic::{
@@ -32,26 +34,6 @@ pub use seismic::{
     seismic_distribution_for_model, steel_height_ratio,
 };
 pub use wind::{build_wind_load_case_from_model, wind_precalc_for_model, WindPrecalc};
-
-/// 部材荷重の強度を `factor` 倍した複製を返す（荷重組合せの線形結合用）。
-/// `dir`・作用区間はそのままに、集中荷重 `p` と分布強度 `w1,w2` のみを倍する。
-fn scale_member_load(ml: &MemberLoad, factor: f64) -> MemberLoad {
-    use squid_n_core::model::MemberLoadKind;
-    let kind = match ml.kind {
-        MemberLoadKind::Point { a, p } => MemberLoadKind::Point { a, p: p * factor },
-        MemberLoadKind::Distributed { a, b, w1, w2 } => MemberLoadKind::Distributed {
-            a,
-            b,
-            w1: w1 * factor,
-            w2: w2 * factor,
-        },
-    };
-    MemberLoad {
-        elem: ml.elem,
-        dir: ml.dir,
-        kind,
-    }
-}
 
 /// `model.load_cases` 全件の自由 DOF 荷重ベクトルを1回ずつ計算してマップに詰める
 /// （[`Analysis::f_free_cache`] の構築。`prepare`・`from_parts` で共有する）。
@@ -94,9 +76,10 @@ pub struct Analysis<'m> {
     /// 1 回で済む（`build_seismic_load_case`）。
     semi_precise_t: std::sync::OnceLock<f64>,
     /// `Model::load_cases` 各ケースの自由 DOF 荷重ベクトル（`assemble_global_f`）の
-    /// メモ化。`prepare` 時に全ケースぶん1回だけ計算する（`linear_combination` は
-    /// 同じ荷重ケースが複数の組合せへ登場する典型パターンで、都度
-    /// `assemble_global_f` を再計算すると無駄が大きいため）。`&self` のみで参照する
+    /// メモ化。`prepare` 時に全ケースぶん1回だけ計算する（同じ荷重ケースを
+    /// `linear_static` で繰り返し解く経路——荷重組合せは参照する荷重ケースを
+    /// 単体で解いて線形和する——で、都度 `assemble_global_f` を再計算すると
+    /// 無駄が大きいため）。`&self` のみで参照する
     /// （書き込みは `prepare`/`from_parts` 構築時のみ）ため、`run_batch` の rayon
     /// 並列からも安全に共有できる。
     f_free_cache: HashMap<LoadCaseId, Vec<f64>>,
@@ -451,15 +434,6 @@ impl<'m> Analysis<'m> {
         self.run_batch(lcs, |lc| self.linear_static(*lc))
     }
 
-    /// 複数の荷重組合せを一括で解く（分解済み K を共有）。
-    /// 並列実行の考え方は [`Self::linear_static_batch`] と同じ。
-    pub fn linear_combination_batch(
-        &self,
-        combos: &[LoadCombination],
-    ) -> Vec<Result<StaticOnce, SolveError>> {
-        self.run_batch(combos, |c| self.linear_combination(c))
-    }
-
     /// バッチ API の共通経路。並列設定時は項目単位に rayon で並列実行する。
     ///
     /// ケース並列（outer）とソルバ内部＝faer の並列（inner）の合計要求が
@@ -490,41 +464,6 @@ impl<'m> Analysis<'m> {
             // 1 件のみのバッチは逐次経路（設定どおりの faer 並列で 1 件を解く）
             items.iter().map(f).collect()
         }
-    }
-
-    /// Solve a load combination by assembling the weighted sum of load case
-    /// force vectors, then solving with the already factorized K.
-    pub fn linear_combination(&self, combo: &LoadCombination) -> Result<StaticOnce, SolveError> {
-        if self.n_indep == 0 {
-            return Ok(self.zero_result());
-        }
-        let n_active = self.dofmap.n_active();
-        let mut f_free = vec![0.0; n_active];
-        // 各項の部材荷重を係数倍して集約する。荷重ベクトル f と同じ線形結合を
-        // 内力回復のスパン内力にも適用し、組合せでも M の放物線分布を再現する。
-        // 各項の f_lc は `f_free_cache`（`prepare`/`from_parts` で全ケース事前計算済み）
-        // を参照する。同じ荷重ケースが複数の組合せへ登場する典型パターンで
-        // `assemble_global_f` の再計算を避ける。
-        let mut member_loads: Vec<MemberLoad> = Vec::new();
-        for (lc_id, factor) in &combo.terms {
-            match self.f_free_cache.get(lc_id) {
-                Some(f_lc) => {
-                    for (fi, &v) in f_lc.iter().enumerate() {
-                        f_free[fi] += v * factor;
-                    }
-                }
-                None => {
-                    let f_lc = assemble_global_f(self.model, &self.dofmap, *lc_id);
-                    for (fi, &v) in f_lc.iter().enumerate() {
-                        f_free[fi] += v * factor;
-                    }
-                }
-            }
-            if let Some(lc) = self.model.load_cases.iter().find(|c| c.id == *lc_id) {
-                member_loads.extend(lc.member.iter().map(|ml| scale_member_load(ml, *factor)));
-            }
-        }
-        self.solve_and_recover(&f_free, &member_loads)
     }
 
     /// 時刻歴応答解析（Newmark-β / HHT-α、減衰込み）。
