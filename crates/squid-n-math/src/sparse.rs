@@ -157,11 +157,16 @@ fn build_pattern_and_slots(
 /// assert_eq!(*mat2.get(0, 0).unwrap(), 10.0);
 /// ```
 ///
-/// # 前提（呼び出し側の責務）
-/// 2 回目以降に渡す `triplets` は、**長さ・各要素の (row, col) 座標・並び順**が
-/// 初回構築時と完全に一致していること（値のみ変わってよい）。`debug_assert` で
-/// この前提を検証するが、リリースビルドでは検証されないため、呼び出し側は
-/// パターン不変性を自ら担保すること。
+/// # パターン変化時の挙動
+/// 2 回目以降に渡す `triplets` の**長さ・各要素の (row, col) 座標・並び順**が
+/// 初回構築時と一致していれば O(nnz) の高速パス（値の書き込みのみ）を使う。
+/// 一致しない場合（弾塑性要素の接線剛性が厳密 0.0 を跨ぎ、非ゼロ集合が変わった等）は
+/// リリースビルドを含む全ビルドで [`CscAssembler::pattern_matches`] の座標比較
+/// （O(nnz)）により検知し、パターンを作り直してから組み立てる（この回のみ
+/// [`CscAssembler::new`] 相当のコストに戻るが、結果は常に [`assemble_csc`] と
+/// ビット一致する）。かつては個数一致のみを前提とし座標一致は `debug_assert` 任せ
+/// だったため、リリースビルドで「個数が同じまま座標集合が変わる」遷移が起きると
+/// 別座標のスロットへ値を書き込み、壊れた行列を返す不具合があった。
 pub struct CscAssembler {
     /// `assemble_into` に渡される triplet 列の (col, row) を、パターン検証用に保持する。
     orig_coords: Vec<(usize, usize)>,
@@ -182,22 +187,26 @@ impl CscAssembler {
         }
     }
 
-    /// `triplets` の値でパターン不変のまま再組立てし、更新後の行列への参照を返す。
-    /// ソートは行わず O(nnz) で完了する。結果は `assemble_csc(n, triplets.to_vec())`
-    /// とビット一致する（[`build_pattern_and_slots`] のドキュメント参照）。
-    pub fn assemble_into(&mut self, triplets: &[Triplet]) -> &SparseColMat<usize, f64> {
-        debug_assert_eq!(
-            triplets.len(),
-            self.orig_coords.len(),
-            "triplet 列の長さがパターン構築時と異なる"
-        );
-        debug_assert!(
-            triplets
+    /// `triplets` の (row, col) 座標・並び順がパターン構築時と完全一致するか
+    /// （O(nnz) のスライス比較）。[`Self::assemble_into`] の高速パス判定に使う。
+    pub fn pattern_matches(&self, triplets: &[Triplet]) -> bool {
+        triplets.len() == self.orig_coords.len()
+            && triplets
                 .iter()
                 .zip(self.orig_coords.iter())
-                .all(|(t, &(c, r))| t.col == c && t.row == r),
-            "triplet の (row,col) 座標・並び順がパターン構築時と異なる"
-        );
+                .all(|(t, &(c, r))| t.col == c && t.row == r)
+    }
+
+    /// `triplets` から CSC 行列を再組立てし、更新後の行列への参照を返す。
+    /// 座標・並び順がパターン構築時と一致していればソートせず O(nnz) で完了し、
+    /// 一致しなければパターンを作り直す（[`Self::pattern_matches`]・構造体ドキュメント
+    /// 参照）。いずれの経路でも結果は `assemble_csc(n, triplets.to_vec())` と
+    /// ビット一致する（[`build_pattern_and_slots`] のドキュメント参照）。
+    pub fn assemble_into(&mut self, triplets: &[Triplet]) -> &SparseColMat<usize, f64> {
+        if !self.pattern_matches(triplets) {
+            *self = Self::new(self.mat.nrows(), triplets);
+            return &self.mat;
+        }
         let (_, vals) = self.mat.parts_mut();
         vals.fill(0.0);
         for (i, t) in triplets.iter().enumerate() {
@@ -240,17 +249,23 @@ impl CscAssembler {
 /// assert_eq!(*c.get(0, 0).unwrap(), 7.0);
 /// ```
 ///
-/// # 前提（呼び出し側の責務）
-/// 2 回目以降に渡す `mats` は、要素数・各行列の非ゼロパターン（各行列自身の
-/// col_ptr/row_idx の並び）が初回構築時と完全に一致していること（係数・値のみ
-/// 変わってよい）。`debug_assert` で非ゼロ数の一致を検証するが、パターンそのものの
-/// 一致まではリリースビルドで検証されないため、呼び出し側が担保すること。
+/// # パターン変化時の挙動
+/// 2 回目以降に渡す `mats` の要素数・各行列の非ゼロパターン（各行列自身の
+/// col_ptr/row_idx の並び）が初回構築時と一致していれば axpy のみの高速パスを使う。
+/// 一致しない場合（接線剛性 K_t の非ゼロ集合が塑性遷移で変わった等）は
+/// リリースビルドを含む全ビルドで [`WeightedSumCache::pattern_matches`] の座標比較
+/// （O(nnz)）により検知し、出力パターンを作り直してから計算する（この回のみ
+/// [`WeightedSumCache::new`] 相当のコストに戻るが、結果は常に [`weighted_sum_csc`]
+/// とビット一致する）。かつては非ゼロ数の一致のみを検証し座標一致は呼び出し側の
+/// 責務としていたため、リリースビルドで「非ゼロ数が同じままパターンが変わる」遷移が
+/// 起きると壊れた行列を返す不具合があった。
 pub struct WeightedSumCache {
     /// フラット化した全入力（`mats` を順に、各行列の値配列の並び順）の
-    /// 各要素が対応する、出力の値配列内スロット位置。
+    /// 各要素が対応する、出力の値スロット位置。
     slot_of: Vec<usize>,
-    /// 各入力行列の非ゼロ数（`combine_into` での整合性チェック用）。
-    input_nnz: Vec<usize>,
+    /// 各入力行列のパターン（col_ptr, row_idx の複製）。`combine_into` の
+    /// 高速パス判定（[`Self::pattern_matches`]）に使う。
+    input_patterns: Vec<(Vec<usize>, Vec<usize>)>,
     mat: SparseColMat<usize, f64>,
 }
 
@@ -262,10 +277,10 @@ impl WeightedSumCache {
         // 走査するため、これをそのままフラット化すれば weighted_sum_csc と同じ
         // 入力順序の triplet 列になる。
         let mut triplets: Vec<Triplet> = Vec::new();
-        let mut input_nnz = Vec::with_capacity(mats.len());
+        let mut input_patterns = Vec::with_capacity(mats.len());
         for (coef, mat) in mats {
-            let nnz = mat.val().len();
-            input_nnz.push(nnz);
+            let sym = mat.symbolic();
+            input_patterns.push((sym.col_ptr().to_vec(), sym.row_idx().to_vec()));
             for t in sparse_to_triplets(mat) {
                 triplets.push(Triplet {
                     row: t.row,
@@ -277,33 +292,43 @@ impl WeightedSumCache {
         let (mat, slot_of) = build_pattern_and_slots(n, &triplets);
         Self {
             slot_of,
-            input_nnz,
+            input_patterns,
             mat,
         }
     }
 
-    /// `mats` の値でパターン不変のまま重み付き和を再計算し、更新後の行列への参照を
-    /// 返す。各行列の値配列を axpy するだけで、triplet 化・ソートは行わない。
+    /// `mats` の各入力行列の非ゼロパターン（col_ptr/row_idx）がパターン構築時と
+    /// 完全一致するか（O(nnz) のスライス比較）。[`Self::combine_into`] の高速パス
+    /// 判定に使う。
+    pub fn pattern_matches(&self, mats: &[(f64, &SparseColMat<usize, f64>)]) -> bool {
+        mats.len() == self.input_patterns.len()
+            && mats
+                .iter()
+                .zip(self.input_patterns.iter())
+                .all(|((_, m), (cp, ri))| {
+                    let sym = m.symbolic();
+                    sym.col_ptr() == cp.as_slice() && sym.row_idx() == ri.as_slice()
+                })
+    }
+
+    /// `mats` の重み付き和を再計算し、更新後の行列への参照を返す。各入力の
+    /// パターンが構築時と一致していれば各行列の値配列を axpy するだけで、
+    /// triplet 化・ソートは行わない。一致しなければ出力パターンを作り直す
+    /// （[`Self::pattern_matches`]・構造体ドキュメント参照）。いずれの経路でも
     /// 結果は `weighted_sum_csc(n, mats)` とビット一致する。
     pub fn combine_into(
         &mut self,
         mats: &[(f64, &SparseColMat<usize, f64>)],
     ) -> &SparseColMat<usize, f64> {
-        debug_assert_eq!(
-            mats.len(),
-            self.input_nnz.len(),
-            "入力行列の個数がパターン構築時と異なる"
-        );
+        if !self.pattern_matches(mats) {
+            *self = Self::new(self.mat.nrows(), mats);
+            return &self.mat;
+        }
         let (_, vals) = self.mat.parts_mut();
         vals.fill(0.0);
         let mut offset = 0;
-        for (k, (coef, mat)) in mats.iter().enumerate() {
+        for (coef, mat) in mats.iter() {
             let mv = mat.val();
-            debug_assert_eq!(
-                mv.len(),
-                self.input_nnz[k],
-                "行列 {k} の非ゼロ数がパターン構築時と異なる"
-            );
             for (j, &v) in mv.iter().enumerate() {
                 vals[self.slot_of[offset + j]] += coef * v;
             }
@@ -331,8 +356,9 @@ pub fn scale_csc(mat: &SparseColMat<usize, f64>, alpha: f64) -> SparseColMat<usi
 /// [`scale_csc`] のバッファ再利用版。`out` は事前に `mat` と同一パターン（同じ
 /// 非ゼロ数）を持つこと（典型的には初回に `mat.clone()` などで用意し、以降使い回す）。
 ///
-/// # Panics（debug のみ）
-/// `out` の非ゼロ数が `mat` と異なる場合。
+/// # Panics
+/// `out` の非ゼロ数が `mat` と異なる場合（リリースビルドでも検証する。
+/// 黙って不一致のまま書き込むと壊れた行列を返してしまうため）。
 pub fn scale_csc_into(
     mat: &SparseColMat<usize, f64>,
     alpha: f64,
@@ -340,7 +366,7 @@ pub fn scale_csc_into(
 ) {
     let src_len = mat.val().len();
     let (_, dst_vals) = out.parts_mut();
-    debug_assert_eq!(src_len, dst_vals.len(), "out のパターンが mat と一致しない");
+    assert_eq!(src_len, dst_vals.len(), "out のパターンが mat と一致しない");
     for (d, &s) in dst_vals.iter_mut().zip(mat.val().iter()) {
         *d = s * alpha;
     }
@@ -592,6 +618,128 @@ mod tests {
         let reference2 = assemble_csc(n, triplets2.clone());
         let assembled2 = asm.assemble_into(&triplets2);
         assert_dense_bit_eq(&reference2, assembled2, n);
+    }
+
+    /// 回帰テスト（増分解析の NotPositiveDefinite 不具合）: 非ゼロ数（triplet 個数）が
+    /// 同じまま座標集合だけが変わる遷移（あるヒンジの成分が厳密 0.0 になるのと同時に
+    /// 別のヒンジの成分が現れる等）でも、リリースビルド相当の経路で正しい行列が
+    /// 組み上がること。かつては個数一致のみでパターン不変と誤判定し、別座標の
+    /// スロットへ値を書き込んで壊れた剛性行列を返していた。
+    #[test]
+    fn test_csc_assembler_rebuilds_on_same_count_pattern_change() {
+        let n = 3;
+        let t1 = vec![
+            Triplet {
+                row: 0,
+                col: 0,
+                val: 10.0,
+            },
+            Triplet {
+                row: 1,
+                col: 1,
+                val: 20.0,
+            },
+        ];
+        let mut asm = CscAssembler::new(n, &t1);
+        // 個数は同じ 2 件のまま座標が全て変わる。
+        let t2 = vec![
+            Triplet {
+                row: 0,
+                col: 1,
+                val: 100.0,
+            },
+            Triplet {
+                row: 2,
+                col: 2,
+                val: 200.0,
+            },
+        ];
+        assert!(!asm.pattern_matches(&t2));
+        let reference = assemble_csc(n, t2.clone());
+        let assembled = asm.assemble_into(&t2);
+        assert_dense_bit_eq(&reference, assembled, n);
+        // 作り直し後は新パターンで高速パスが復帰する。
+        assert!(asm.pattern_matches(&t2));
+        let t3: Vec<Triplet> = t2
+            .iter()
+            .map(|t| Triplet {
+                val: t.val * 2.0,
+                ..*t
+            })
+            .collect();
+        let reference3 = assemble_csc(n, t3.clone());
+        let assembled3 = asm.assemble_into(&t3);
+        assert_dense_bit_eq(&reference3, assembled3, n);
+    }
+
+    /// 回帰テスト: 入力行列の非ゼロ数が同じままパターンだけが変わっても、
+    /// `combine_into` が作り直しで正しい重み付き和を返すこと（`CscAssembler` の
+    /// 同名不具合と同型。時刻歴の K_eff = K_t + c2·C + c1·M で K_t のパターンが
+    /// 塑性遷移で変わる場面に相当する）。
+    #[test]
+    fn test_weighted_sum_cache_rebuilds_on_same_nnz_pattern_change() {
+        let n = 3;
+        let m = assemble_csc(
+            n,
+            vec![
+                Triplet {
+                    row: 0,
+                    col: 0,
+                    val: 1.0,
+                },
+                Triplet {
+                    row: 1,
+                    col: 1,
+                    val: 1.0,
+                },
+                Triplet {
+                    row: 2,
+                    col: 2,
+                    val: 1.0,
+                },
+            ],
+        );
+        let k1 = assemble_csc(
+            n,
+            vec![
+                Triplet {
+                    row: 0,
+                    col: 0,
+                    val: 100.0,
+                },
+                Triplet {
+                    row: 1,
+                    col: 1,
+                    val: 100.0,
+                },
+            ],
+        );
+        // 非ゼロ数は同じ 2 のまま座標が変わった接線剛性。
+        let k2 = assemble_csc(
+            n,
+            vec![
+                Triplet {
+                    row: 2,
+                    col: 1,
+                    val: -30.0,
+                },
+                Triplet {
+                    row: 2,
+                    col: 2,
+                    val: 60.0,
+                },
+            ],
+        );
+        let mut cache = WeightedSumCache::new(n, &[(2.0, &m), (0.5, &k1)]);
+        assert!(!cache.pattern_matches(&[(2.0, &m), (0.5, &k2)]));
+        let reference = weighted_sum_csc(n, &[(2.0, &m), (0.5, &k2)]);
+        let combined = cache.combine_into(&[(2.0, &m), (0.5, &k2)]);
+        assert_dense_bit_eq(&reference, combined, n);
+        // 作り直し後は新パターンで高速パスが復帰する。
+        assert!(cache.pattern_matches(&[(9.0, &m), (0.1, &k2)]));
+        let reference2 = weighted_sum_csc(n, &[(9.0, &m), (0.1, &k2)]);
+        let combined2 = cache.combine_into(&[(9.0, &m), (0.1, &k2)]);
+        assert_dense_bit_eq(&reference2, combined2, n);
     }
 
     #[test]

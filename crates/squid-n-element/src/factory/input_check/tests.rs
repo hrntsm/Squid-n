@@ -175,6 +175,39 @@ fn test_issue_when_material_has_no_strength() {
     assert!(issues[0].contains("fy"), "{}", issues[0]);
 }
 
+/// 回帰テスト（時刻歴解析スレッドの panic 不具合）: 断面形状未設定の部材で
+/// fy が 0（非正値）の材料は「設定済み」と素通しせずエラーとする。
+/// 素通しすると入力チェック後の要素生成（`steel_fiber_material`）が解析
+/// スレッド内で panic し、UI には「解析スレッドが異常終了しました」としか
+/// 表示されず原因が利用者に伝わらない。
+#[test]
+fn test_issue_when_shapeless_member_fy_not_positive() {
+    let mut sec = rc_section();
+    sec.shape = None;
+    let mut mat = steel_material();
+    mat.fy = Some(0.0);
+    let model = beam_model(sec, mat);
+    let issues = nonlinear_input_issues(&model);
+    assert_eq!(issues.len(), 1, "{:?}", issues);
+    assert!(issues[0].contains("fy"), "{}", issues[0]);
+    assert!(ensure_nonlinear_input(&model).is_err());
+}
+
+/// 断面形状未設定の部材で Fc が 0（非正値）の材料もエラーとする
+/// （コンクリートのファイバが剛性 0 となり剛性行列が特異化する）。
+#[test]
+fn test_issue_when_shapeless_member_fc_not_positive() {
+    let mut sec = rc_section();
+    sec.shape = None;
+    let mut mat = steel_material();
+    mat.fy = None;
+    mat.fc = Some(0.0);
+    let model = beam_model(sec, mat);
+    let issues = nonlinear_input_issues(&model);
+    assert_eq!(issues.len(), 1, "{:?}", issues);
+    assert!(issues[0].contains("Fc"), "{}", issues[0]);
+}
+
 /// H 形鋼断面を持つ部材の断面（鋼材ファイバ領域あり）。
 fn steel_h_section() -> Section {
     SectionShape::SteelH {

@@ -24,6 +24,25 @@ fn beam_key(a: NodeId, b: NodeId) -> (NodeId, NodeId) {
     }
 }
 
+/// 解析スレッドの panic（`catch_unwind` の戻り値）を利用者向けエラーメッセージへ
+/// 変換する。`panic!`・`assert` 系のメッセージ（`String`／`&str` ペイロード）が
+/// 取れる場合は本文へ含める。定型文だけでは利用者が原因（入力不備か
+/// プログラム不具合か）にたどり着けず、不具合報告からの診断もできないため。
+fn analysis_panic_message(payload: &(dyn std::any::Any + Send)) -> String {
+    let detail = payload
+        .downcast_ref::<String>()
+        .map(String::as_str)
+        .or_else(|| payload.downcast_ref::<&str>().copied());
+    match detail {
+        Some(d) => {
+            format!("解析スレッドが異常終了しました（プログラムの不具合の可能性があります）: {d}")
+        }
+        None => {
+            "解析スレッドが異常終了しました（プログラムの不具合の可能性があります）。".to_string()
+        }
+    }
+}
+
 impl App {
     /// エラーを `last_error`（ステータスバー表示）とログの両方へ反映する。
     /// エラーはユーザーが気づかないまま埋もれると解析結果を誤って信頼しかねない
@@ -488,12 +507,7 @@ impl App {
             let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 Self::compute_linear_static(model, lc)
             }))
-            .unwrap_or_else(|_| {
-                Err(
-                    "解析スレッドが異常終了しました（プログラムの不具合の可能性があります）。"
-                        .to_string(),
-                )
-            });
+            .unwrap_or_else(|p| Err(analysis_panic_message(p.as_ref())));
             let _ = tx.send(JobResult::StaticCase {
                 key: StaticCaseKey::User(lc),
                 res,
@@ -625,12 +639,7 @@ impl App {
             let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 Self::compute_combination(model, combo)
             }))
-            .unwrap_or_else(|_| {
-                Err(
-                    "解析スレッドが異常終了しました（プログラムの不具合の可能性があります）。"
-                        .to_string(),
-                )
-            });
+            .unwrap_or_else(|p| Err(analysis_panic_message(p.as_ref())));
             let _ = tx.send(JobResult::Combo { name, res });
         });
         self.job = Some(AnalysisJob {
@@ -821,12 +830,7 @@ impl App {
             let computed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 Self::compute_all_combinations(model, combos)
             }))
-            .unwrap_or_else(|_| {
-                Err(
-                    "解析スレッドが異常終了しました（プログラムの不具合の可能性があります）。"
-                        .to_string(),
-                )
-            });
+            .unwrap_or_else(|p| Err(analysis_panic_message(p.as_ref())));
             let _ = tx.send(JobResult::AllCombos {
                 computed,
                 pre_errors,
@@ -1741,12 +1745,7 @@ impl App {
             let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 Self::compute_seismic(model, cfg, t)
             }))
-            .unwrap_or_else(|_| {
-                Err(
-                    "解析スレッドが異常終了しました（プログラムの不具合の可能性があります）。"
-                        .to_string(),
-                )
-            });
+            .unwrap_or_else(|p| Err(analysis_panic_message(p.as_ref())));
             let _ = tx.send(JobResult::StaticCase {
                 key: StaticCaseKey::Seismic(dir),
                 res,
@@ -1820,12 +1819,7 @@ impl App {
             let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 Self::compute_wind(model, cfg)
             }))
-            .unwrap_or_else(|_| {
-                Err(
-                    "解析スレッドが異常終了しました（プログラムの不具合の可能性があります）。"
-                        .to_string(),
-                )
-            });
+            .unwrap_or_else(|p| Err(analysis_panic_message(p.as_ref())));
             let _ = tx.send(JobResult::StaticCase {
                 key: StaticCaseKey::Wind(dir),
                 res,
@@ -1998,12 +1992,7 @@ impl App {
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 Self::compute_pushover(model, cfg)
             }))
-            .unwrap_or_else(|_| {
-                Err(
-                    "解析スレッドが異常終了しました（プログラムの不具合の可能性があります）。"
-                        .to_string(),
-                )
-            });
+            .unwrap_or_else(|p| Err(analysis_panic_message(p.as_ref())));
             let _ = tx.send(JobResult::Pushover(result));
         });
         self.job = Some(AnalysisJob {
@@ -2267,12 +2256,7 @@ impl App {
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 Self::compute_time_history(model, cfg, wave)
             }))
-            .unwrap_or_else(|_| {
-                Err(
-                    "解析スレッドが異常終了しました（プログラムの不具合の可能性があります）。"
-                        .to_string(),
-                )
-            });
+            .unwrap_or_else(|p| Err(analysis_panic_message(p.as_ref())));
             let _ = tx.send(JobResult::TimeHistory(Box::new(result)));
         });
         // 非線形／線形の別をジョブラベル・完了ログへ出す（実行中の判別・履歴の両方で有用）。
