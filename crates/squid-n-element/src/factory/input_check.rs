@@ -81,8 +81,10 @@ pub fn ensure_nonlinear_input(model: &Model) -> Result<(), String> {
 /// - コンクリート系断面（RC/SRC/CFT）なのに材料の Fc が未設定または 0 以下。
 ///   曲げひび割れ Mc=0.56·√Fc·Ze が 0 となりヒンジが一切検出されず、ファイバー断面は
 ///   Fc=24 N/mm² を勝手に仮定し、せん断降伏耐力も荒川式を適用できない。
-/// - 鋼系・断面形状未設定の部材で、材料に fy も Fc も無い。せん断降伏耐力が
-///   Qy=∞ となり、その部材はいくら応力が上がっても降伏しない。
+/// - 断面形状未設定の部材で、材料に正の fy も正の Fc も無い（fy=0 等の非正値を含む）。
+///   せん断降伏耐力が Qy=∞ となり、その部材はいくら応力が上がっても降伏しないうえ、
+///   ファイバの要素生成（Fc があればコンクリート、なければ鋼材で fy 必須）が
+///   解析実行中に panic あるいは剛性 0 で破綻する。
 fn member_strength_issue(data: &ElementData, model: &Model) -> Option<String> {
     let sec = data.section.and_then(|sid| model.sections.get(sid.index()));
     let Some(mat) = data
@@ -157,23 +159,39 @@ fn member_strength_issue(data: &ElementData, model: &Model) -> Option<String> {
         return None;
     }
     // 鋼材断面形状（形鋼・鋼管）はファイバの降伏強度 fy が必須。
-    if sec.and_then(|s| s.shape.as_ref()).is_some() && !mat.fy.is_some_and(|fy| fy > 0.0) {
-        return Some(format!(
-            "部材 ID {} は鋼材断面ですが、材料「{}」に降伏強度 fy が設定されていません。\
-             材料タブで fy を設定してください。\
-             ファイバー断面は鋼材の降伏進展を追うため fy が必須です。",
-            data.id.0, mat.name
-        ));
+    if sec.and_then(|s| s.shape.as_ref()).is_some() {
+        if !mat.fy.is_some_and(|fy| fy > 0.0) {
+            return Some(format!(
+                "部材 ID {} は鋼材断面ですが、材料「{}」に降伏強度 fy が設定されていません。\
+                 材料タブで fy を設定してください。\
+                 ファイバー断面は鋼材の降伏進展を追うため fy が必須です。",
+                data.id.0, mat.name
+            ));
+        }
+        return None;
     }
-    if mat.fy.is_none() && mat.fc.is_none() {
-        return Some(format!(
-            "部材 ID {} の材料「{}」に降伏強度 fy もコンクリート強度 Fc も設定されていません。\
+    // 断面形状未設定（shape: None）の線材。要素生成（`crate::fiber::build_gauss_fibers`
+    // の形状なし経路）は「Fc があればコンクリート、なければ鋼材（fy 必須）」の
+    // ファイバとして組み立てるため、同じ規則で正の値が設定されていることを検査する。
+    // fy=0 等の非正値を「設定済み」と扱って素通しすると、要素生成時の panic
+    // （`steel_fiber_material`）や剛性 0 のファイバによる剛性行列の特異化として
+    // 解析実行中に初めて表面化してしまう。
+    match mat.fc {
+        Some(fc) if fc > 0.0 => None,
+        Some(fc) => Some(format!(
+            "部材 ID {} の材料「{}」のコンクリート強度 Fc が {} で 0 以下です。\
+             材料タブで Fc を設定してください。\
+             非線形解析では Fc から部材の終局耐力を算定します。",
+            data.id.0, mat.name, fc
+        )),
+        None if mat.fy.is_some_and(|fy| fy > 0.0) => None,
+        None => Some(format!(
+            "部材 ID {} の材料「{}」に正の降伏強度 fy もコンクリート強度 Fc も設定されていません。\
              材料タブでいずれかを設定してください。\
              非線形解析では材料強度から部材の終局耐力を算定します。",
             data.id.0, mat.name
-        ));
+        )),
     }
-    None
 }
 
 #[cfg(test)]
