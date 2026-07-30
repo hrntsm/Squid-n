@@ -59,12 +59,8 @@ pub enum ViewMode {
     Deformed,
     /// モード形（固有値結果）
     Mode,
-    /// N 図
-    N,
-    /// Q 図
-    Q,
-    /// M 図
-    M,
+    /// 応力図（N/Q/M。表示する成分は [`ForceComponent`] で切り替える）
+    Force,
     /// CMQ 図（両端固定端モーメント C とせん断 Q）
     Cmq,
     /// 検定比図（部材検定の最大検定比で着色）
@@ -94,6 +90,41 @@ pub enum ModelingAnalysis {
     Static,
     /// 増分解析（弾塑性）: 降伏を考慮し、ファイバー要素と材端集中塑性を使い分ける。
     Incremental,
+}
+
+/// 応力図（[`ViewMode::Force`]）で表示する成分。
+///
+/// 部材内力 `[N, Qy, Qz, Mx, My, Mz]` のうち、軸力 N・強軸せん断 Qy・強軸曲げ Mz を
+/// 表示対象とする（従来の N 図・Q 図・M 図に対応）。
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
+pub enum ForceComponent {
+    /// 軸力 N 図
+    #[default]
+    N,
+    /// せん断力 Q 図（強軸 Qy）
+    Q,
+    /// 曲げモーメント M 図（強軸 Mz）
+    M,
+}
+
+impl ForceComponent {
+    /// 部材内力ベクトル `[N, Qy, Qz, Mx, My, Mz]` 内の添字。
+    pub(crate) fn force_index(self) -> usize {
+        match self {
+            ForceComponent::N => 0,
+            ForceComponent::Q => 1,
+            ForceComponent::M => 5,
+        }
+    }
+
+    /// 図中の記号ラベル。
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            ForceComponent::N => "N",
+            ForceComponent::Q => "Q",
+            ForceComponent::M => "M",
+        }
+    }
 }
 
 /// CMQ 図で表示する成分（C: 固定端モーメント／M: 単純梁中央モーメント／Q: せん断）。
@@ -605,6 +636,7 @@ fn draw_support_legend(
 pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
     let mut mode = app.view_mode;
     let mut mode_idx = app.view_mode_idx;
+    let mut force_component = app.force_component;
     let mut cmq_component = app.cmq_component;
     let mut check_ratio_filter = app.check_ratio_filter;
     let mut modeling_analysis = app.modeling_analysis;
@@ -624,9 +656,7 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
         ui.selectable_value(&mut mode, ViewMode::Shape, "形状");
         ui.selectable_value(&mut mode, ViewMode::Deformed, "変形");
         ui.selectable_value(&mut mode, ViewMode::Mode, "モード");
-        ui.selectable_value(&mut mode, ViewMode::N, "N図");
-        ui.selectable_value(&mut mode, ViewMode::Q, "Q図");
-        ui.selectable_value(&mut mode, ViewMode::M, "M図");
+        ui.selectable_value(&mut mode, ViewMode::Force, "応力図");
         ui.selectable_value(&mut mode, ViewMode::Cmq, "CMQ図");
         ui.selectable_value(&mut mode, ViewMode::CheckRatio, "検定比");
         ui.selectable_value(&mut mode, ViewMode::Hinge, "ヒンジ");
@@ -694,10 +724,16 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
             );
         });
     }
-    // N/Q/M 図: 単色塗り／コンター（値に応じた色分け）を切替。
+    // 応力図: 表示する成分（N/Q/M）を CMQ 図と同じ「成分:」行で選び、
+    // 単色塗り／コンター（値に応じた色分け）を切替。
     // コンター ON 時のみカラーマップ選択（既定 Viridis。TONMANUAL §3）を表示する。
-    if matches!(mode, ViewMode::N | ViewMode::Q | ViewMode::M) {
-        ui.horizontal(|ui| {
+    if mode == ViewMode::Force {
+        ui.horizontal_wrapped(|ui| {
+            ui.label("成分:");
+            ui.selectable_value(&mut force_component, ForceComponent::N, "N図");
+            ui.selectable_value(&mut force_component, ForceComponent::Q, "Q図");
+            ui.selectable_value(&mut force_component, ForceComponent::M, "M図");
+            ui.separator();
             // 応力図に変形図を重ねる（変位は自動倍率で節点座標に加味され、
             // 図も変形後の材軸に沿って描かれる）
             ui.toggle_value(&mut app.overlay_deform, "変形表示");
@@ -861,8 +897,7 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
     let show_deform_options = matches!(
         mode,
         ViewMode::Deformed | ViewMode::Mode | ViewMode::TimeHistory
-    ) || (matches!(mode, ViewMode::N | ViewMode::Q | ViewMode::M)
-        && app.overlay_deform);
+    ) || (mode == ViewMode::Force && app.overlay_deform);
     if show_deform_options {
         ui.horizontal(|ui| {
             ui.toggle_value(&mut app.show_beam_interpolation, "内部たわみ")
@@ -885,6 +920,7 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
 
     app.view_mode = mode;
     app.view_mode_idx = mode_idx;
+    app.force_component = force_component;
     app.cmq_component = cmq_component;
     app.check_ratio_filter = check_ratio_filter;
     app.modeling_analysis = modeling_analysis;
@@ -984,12 +1020,10 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
     // グリッド・軸（§3-2: 赤=X / 緑=Y / 青=Z）。モデルの背後に先に描く。
     draw_grid_and_axes(&painter, rect, &proj);
 
-    // 節点座標（変形・モード時と、N/Q/M 図の変形重ね表示時は変位を加味）
+    // 節点座標（変形・モード時と、応力図の変形重ね表示時は変位を加味）
     let disp = match mode {
         ViewMode::Deformed => app.current_static().map(|s| s.disp.clone()),
-        ViewMode::N | ViewMode::Q | ViewMode::M if app.overlay_deform => {
-            app.current_static().map(|s| s.disp.clone())
-        }
+        ViewMode::Force if app.overlay_deform => app.current_static().map(|s| s.disp.clone()),
         // `ModalResult::shapes` は剛床等の縮約後独立自由度座標のため直接は使えない。
         // ソルバが節点×6へ展開済みの `node_shapes` を用いる。
         ViewMode::Mode => app
@@ -1214,7 +1248,12 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
     // 部材線・断面ソリッドより先に描き、架構が床の上に重なるようにする。
     // CMQ 図は全体解析（主架構）に関するものなので、小梁・スラブは表示しない。
     // 「床・二次部材」トグル OFF 時も表示しない。
-    if mode != ViewMode::Cmq && app.show_floor_secondary {
+    //
+    // 床・二次部材（スラブ・小梁・間柱）の表示可否は、中心線と断面ソリッドで共通の
+    // 判定とする（断面表示だけがトグルを無視して小梁を描いてしまわないよう、判定を
+    // ここで 1 つの変数に集約して各描画へ渡す）。
+    let show_secondary = mode != ViewMode::Cmq && app.show_floor_secondary;
+    if show_secondary {
         draw_slabs_and_joists(&painter, app, &pts);
     }
 
@@ -1222,7 +1261,8 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
     // 節点・部材線より先に描き、線・シンボル類は上に重ねる（材軸が見えるように）。
     let mut solids_skipped = 0usize;
     if app.show_sections {
-        solids_skipped = solid::draw_section_solids(&painter, &app.model, &coords3, &proj);
+        solids_skipped =
+            solid::draw_section_solids(&painter, &app.model, &coords3, &proj, show_secondary);
     }
 
     // 節点（梁/壁作成モードで選択中の節点は強調表示）。
@@ -1315,7 +1355,7 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
     // （解析対象外を示す暖色アンバー。スラブの暖色と同族で、主架構の
     // 青/グレーと弁別。断面表示中はソリッドが上に描かれているため
     // 材軸線として薄く重ねる）。
-    if app.show_floor_secondary {
+    if show_secondary {
         let secondary_stroke = if app.show_sections {
             egui::Stroke::new(1.0_f32, theme::translucent(theme::SECONDARY_AMBER, 110))
         } else {
@@ -1347,11 +1387,11 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
     // --- 応力図（N/Q/M）: 部材ローカルに沿って描画 ---
     // 変形重ね（`disp` が Some）かつ内部たわみ表示が有効なとき、梁の張り出しは
     // 変形後の Hermite 曲線を基準線に描く。判定に必要な変位と表示倍率を渡す。
-    if matches!(mode, ViewMode::N | ViewMode::Q | ViewMode::M) {
+    if mode == ViewMode::Force {
         diagram::draw_force_diagram(
             &painter,
             app,
-            mode,
+            app.force_component,
             &coords3,
             disp.as_deref(),
             deform_scale_actual,
@@ -1414,8 +1454,8 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
         // N/Q/M 図の凡例（min.y+10）・コンターバー＋ラベル（min.y+30〜56 程度）と
         // 重ならない位置へ
         let y = match mode {
-            ViewMode::N | ViewMode::Q | ViewMode::M if app.diagram_contour => 70.0,
-            ViewMode::N | ViewMode::Q | ViewMode::M => 30.0,
+            ViewMode::Force if app.diagram_contour => 70.0,
+            ViewMode::Force => 30.0,
             _ => 10.0,
         };
         // 手動係数が 1.0 のときは「自動」、それ以外は「自動×係数」を併記する。

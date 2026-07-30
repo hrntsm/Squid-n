@@ -109,6 +109,10 @@ pub struct Model {
     /// `#[serde(default)]` があっても救済されない（default 補完は末尾欠損のみ有効）。
     #[serde(default)]
     pub damper_defs: Vec<DamperDef>,
+    /// 梁（水平材）のねじり剛性の扱い（建物一律。既定は i 端ねじれ解放）。
+    /// 旧スキーマ（フィールド無し）は既定＝`ReleaseIEnd` で補完される。
+    #[serde(default)]
+    pub beam_torsion: BeamTorsionMode,
     #[serde(skip)]
     pub dof_map: crate::dof::DofMap,
 }
@@ -386,6 +390,7 @@ impl Model {
             && self.damper_attrs == other.damper_attrs
             && self.damper_defs == other.damper_defs
             && self.member_detail_attrs == other.member_detail_attrs
+            && self.beam_torsion == other.beam_torsion
     }
 
     /// ダンパー要素の特性を返す（`Model::damper_attrs` から要素 ID で検索）。

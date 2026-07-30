@@ -89,6 +89,9 @@ impl BeamElement {
     ///   - ピン    (k_s = 0):        要素端回転が自由 → 厳密なモーメント解放
     ///   - 半剛    (k_s = k_theta):  有限の接合部回転剛性 [N·mm/rad]
     ///
+    /// ねじれ（rx）は上記に加え、[`BeamElement::torsion_release`] が立つ端でも解放する
+    /// （梁のねじり剛性を期待しない既定モデル化。`beam::torsion` 参照）。
+    ///
     /// 内部並びは [外部 0..11（節点 ux,uy,uz,rx,ry,rz ×2）, 内部 12..（解放した
     /// 要素端回転を出現順に並べる）]。
     fn condense_end_springs(&self, k_elem: &LocalMat) -> LocalMat {
@@ -105,12 +108,28 @@ impl BeamElement {
             }
         };
 
+        // ねじり剛性 GJ/L が無い部材（J≤0・G≤0）の rx は解放しない。解放しても
+        // 縮約行列 Kbb の対角がゼロになって特異化するだけで（`invert_small` は
+        // ゼロピボットを 1 に置換するため、無意味な値で縮約が進んでしまう）、
+        // モーメント解放としての意味が無いため（ファイバー梁
+        // `fiber::resolve_end_releases` と同じ規則）。
+        let has_torsion = self.j > 0.0 && self.g > 0.0;
+
         // 解放（非剛接）する回転自由度: (要素回転 DOF, ばね剛性 k_s)
         let mut released: Vec<(usize, f64)> = Vec::new();
         for &(r, end) in ROT_DOFS.iter() {
-            if let Some(ks) = released_spring(&self.end_cond[end]) {
-                released.push((r, ks));
+            let is_torsion = r == 3 || r == 9;
+            let spring = match released_spring(&self.end_cond[end]) {
+                Some(ks) => Some(ks),
+                // 端条件が剛接でも、ねじれ解放が指定された端の rx は解放する。
+                None if is_torsion && self.torsion_release[end] => Some(0.0),
+                None => None,
+            };
+            let Some(ks) = spring else { continue };
+            if is_torsion && !has_torsion {
+                continue;
             }
+            released.push((r, ks));
         }
 
         // 全端剛接: raw をそのまま返す（厳密）

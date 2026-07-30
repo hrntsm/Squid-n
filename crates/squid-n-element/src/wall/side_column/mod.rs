@@ -65,6 +65,7 @@ mod tests {
             },
             rigid: RigidZone::default(),
             end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+            torsion_release: [false, false],
             eval_sections: vec![0.0, 0.5, 1.0],
             section: None,
             material: None,

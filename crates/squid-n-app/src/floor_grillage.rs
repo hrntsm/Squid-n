@@ -388,6 +388,11 @@ pub fn build_slab_grillage(model: &Model, slab: &Slab, w: f64) -> Option<SlabGri
             nodal: vec![],
             member: member_loads,
         }],
+        // 格子解析では小梁のねじり剛性を保持する。剛接十字（`pinned_onto` 無し）は
+        // 交差する相手梁の**ねじり**で曲げを受け止めるモデル化そのものであり、
+        // 主架構の既定（梁の i 端ねじれ解放）を持ち込むと剛接十字とピン受けの
+        // 区別が消えてしまう（架け方の指定が結果に反映されなくなる）。
+        beam_torsion: squid_n_core::model::BeamTorsionMode::Keep,
         ..Default::default()
     };
     sub.validate().ok()?;

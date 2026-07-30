@@ -755,6 +755,9 @@ pub struct App {
     /// ビューアの表示モード
     #[cfg(feature = "gui")]
     pub view_mode: crate::viewer::ViewMode,
+    /// 応力図で表示する成分（N: 軸力／Q: せん断／M: 曲げ）
+    #[cfg(feature = "gui")]
+    pub force_component: crate::viewer::ForceComponent,
     /// CMQ 図で表示する成分（C: モーメント／Q: せん断）
     #[cfg(feature = "gui")]
     pub cmq_component: crate::viewer::CmqComponent,
@@ -1030,6 +1033,8 @@ impl Default for App {
             mn_view: crate::mn_view::MnViewState::default(),
             #[cfg(feature = "gui")]
             view_mode: crate::viewer::ViewMode::default(),
+            #[cfg(feature = "gui")]
+            force_component: crate::viewer::ForceComponent::default(),
             #[cfg(feature = "gui")]
             cmq_component: crate::viewer::CmqComponent::default(),
             #[cfg(feature = "gui")]
@@ -2103,24 +2108,11 @@ impl eframe::App for App {
                     self.undo.redo(&mut self.model);
                     self.staleness.mark_edited();
                 }
-                ui.separator();
-                // 荷重継続性区分は設計タブと関係するが、共有コントロールとして上部に残置
-                ui.label("荷重:");
-                let term = self.design_term;
-                if ui
-                    .selectable_label(term == LoadTerm::Long, "長期")
-                    .clicked()
-                {
-                    self.design_term = LoadTerm::Long;
-                    self.run_design_check();
-                }
-                if ui
-                    .selectable_label(term == LoadTerm::Short, "短期")
-                    .clicked()
-                {
-                    self.design_term = LoadTerm::Short;
-                    self.run_design_check();
-                }
+                // 荷重継続性区分（長期/短期）の手動切替はツールバーに置かない。
+                // 区分は表示対象の荷重ケース／組合せから自動判定される
+                // （`select_displayed_result` → `is_short_term_combo`）ため、
+                // 手動で切り替えても次の選択・再解析で必ず上書きされ、設定として
+                // 機能していなかった。現在の区分は設計タブに読み取り専用で表示する。
             });
         });
 

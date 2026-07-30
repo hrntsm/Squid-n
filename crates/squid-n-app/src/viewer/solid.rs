@@ -297,11 +297,18 @@ pub(super) fn section_inner_outline(sec: &Section) -> Option<Vec<[f64; 2]>> {
 /// `coords` は表示用の節点座標（変形図では変位を加味済み）で、
 /// `model.nodes` と同順であること。断面を描けなかった線材
 /// （断面未割当・形状情報なし）の本数を返す。
+///
+/// `show_secondary` は二次部材（小梁・間柱）を描くか。呼び出し側の
+/// 「床・二次部材」トグル（と、主架構の図である CMQ 図での常時非表示）に
+/// 追従させるための引数で、false のときは二次部材を一切描かず、
+/// 断面未定義の注記（戻り値）にも数えない（非表示の部材について
+/// 「断面未定義」と注記するのは誤解を招くため）。
 pub(super) fn draw_section_solids(
     painter: &egui::Painter,
     model: &Model,
     coords: &[[f64; 3]],
     proj: &Projector,
+    show_secondary: bool,
 ) -> usize {
     // (奥行き, 描画要素)。奥行きはカメラ空間 z（手前が正）の平均。
     let mut prims: Vec<(f32, SolidPrim)> = Vec::new();
@@ -420,28 +427,31 @@ pub(super) fn draw_section_solids(
     // 解析部材と同じ断面押し出しで大きさが分かるように描く。塗りは解析対象外を
     // 示す暖色（スラブと同族の BEST_YELLOW。解析部材の青/グレーと弁別）。
     // 断面の向きは既定の局所座標系（水平材は鉛直上基準、鉛直材は X 基準）とする。
-    for sm in &model.secondary_members {
-        let n0 = sm.nodes[0].index();
-        let n1 = sm.nodes[1].index();
-        if n0 >= coords.len() || n1 >= coords.len() {
-            continue;
-        }
-        let Some(sec) = sm
-            .section
-            .and_then(|sid| model.sections.iter().find(|s| s.id == sid))
-        else {
-            skipped += 1;
-            continue;
-        };
-        let (p_i, p_j) = (coords[n0], coords[n1]);
-        let dxy = ((p_j[0] - p_i[0]).powi(2) + (p_j[1] - p_i[1]).powi(2)).sqrt();
-        let ref_vector = if dxy < 1.0 {
-            [1.0, 0.0, 0.0] // 鉛直材（間柱）
-        } else {
-            [0.0, 0.0, 1.0] // 水平材（小梁）
-        };
-        if !extrude(p_i, p_j, ref_vector, sec, theme::BEST_YELLOW) {
-            skipped += 1;
+    // 二次部材が表示対象でないモード・トグル状態では描かない（中心線と同じ規則）。
+    if show_secondary {
+        for sm in &model.secondary_members {
+            let n0 = sm.nodes[0].index();
+            let n1 = sm.nodes[1].index();
+            if n0 >= coords.len() || n1 >= coords.len() {
+                continue;
+            }
+            let Some(sec) = sm
+                .section
+                .and_then(|sid| model.sections.iter().find(|s| s.id == sid))
+            else {
+                skipped += 1;
+                continue;
+            };
+            let (p_i, p_j) = (coords[n0], coords[n1]);
+            let dxy = ((p_j[0] - p_i[0]).powi(2) + (p_j[1] - p_i[1]).powi(2)).sqrt();
+            let ref_vector = if dxy < 1.0 {
+                [1.0, 0.0, 0.0] // 鉛直材（間柱）
+            } else {
+                [0.0, 0.0, 1.0] // 水平材（小梁）
+            };
+            if !extrude(p_i, p_j, ref_vector, sec, theme::BEST_YELLOW) {
+                skipped += 1;
+            }
         }
     }
 

@@ -25,6 +25,7 @@ fn make_test_beam() -> BeamElement {
         },
         rigid: RigidZone::default(),
         end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+        torsion_release: [false, false],
         eval_sections: vec![0.0, 0.5, 1.0],
         section: None,
         material: None,
@@ -2728,4 +2729,182 @@ fn test_misc_wall_wing_eccentricity_is_independent_of_wall_node_order() {
         normal.a,
         flipped.a
     );
+}
+
+// ===== 梁のねじり剛性の既定モデル化（i 端ねじれ解放） =====
+
+/// ねじれ解放の検証用モデル。2 本の柱（節点 0→1・2→3）の柱頭を X 方向の大梁で
+/// つないだ 1 スパン 1 層の骨組み。`split_x` を真にすると大梁を中間節点 4 で
+/// 2 分割し、「柱の無い・一直線の梁だけが集まる節点」を作る。
+fn torsion_test_model(split_x: bool) -> Model {
+    use squid_n_core::ids::{MaterialId, SectionId};
+    use squid_n_core::model::ForceRegime;
+
+    let mk_node = |id: u32, c: [f64; 3]| Node {
+        id: NodeId(id),
+        coord: c,
+        restraint: Default::default(),
+        mass: None,
+        story: None,
+        support_spring: None,
+    };
+    let mk_member = |id: u32, a: u32, b: u32, vertical: bool| ElementData {
+        id: ElemId(id),
+        kind: ElementKind::Beam,
+        nodes: smallvec::smallvec![NodeId(a), NodeId(b)],
+        section: Some(SectionId(0)),
+        material: Some(MaterialId(0)),
+        local_axis: LocalAxis {
+            ref_vector: if vertical {
+                [1.0, 0.0, 0.0]
+            } else {
+                [0.0, 0.0, 1.0]
+            },
+        },
+        end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+        force_regime: ForceRegime::Auto,
+        rigid_zone: Default::default(),
+        plastic_zone: None,
+        spring: None,
+    };
+    let mut nodes = vec![
+        mk_node(0, [0.0, 0.0, 0.0]),
+        mk_node(1, [0.0, 0.0, 3000.0]),
+        mk_node(2, [6000.0, 0.0, 0.0]),
+        mk_node(3, [6000.0, 0.0, 3000.0]),
+    ];
+    // 要素 0・1 = 柱、要素 2（＋分割時は 3）= 大梁。
+    let mut elements = vec![mk_member(0, 0, 1, true), mk_member(1, 2, 3, true)];
+    if split_x {
+        nodes.push(mk_node(4, [3000.0, 0.0, 3000.0]));
+        elements.push(mk_member(2, 1, 4, false));
+        elements.push(mk_member(3, 4, 3, false));
+    } else {
+        elements.push(mk_member(2, 1, 3, false));
+    }
+    Model {
+        nodes,
+        elements,
+        sections: vec![Section {
+            id: SectionId(0),
+            name: "H".into(),
+            area: 8000.0,
+            iy: 1.0e8,
+            iz: 2.0e8,
+            j: 1.0e6,
+            depth: 400.0,
+            width: 200.0,
+            as_y: 3000.0,
+            as_z: 3000.0,
+            panel_thickness: None,
+            thickness: None,
+            shape: None,
+        }],
+        materials: vec![Material {
+            strength_factor: None,
+            concrete_class: Default::default(),
+            id: MaterialId(0),
+            name: "S".into(),
+            young: 205000.0,
+            poisson: 0.3,
+            density: 0.0,
+            shear: None,
+            fc: None,
+            fy: Some(235.0),
+        }],
+        ..Default::default()
+    }
+}
+
+/// 水平材（梁）は既定で i 端ねじれが解放され、局所剛性のねじり行・列
+/// （rx = 局所 3・9）が厳密に 0 になる（部材全長で Mx = 0）。柱（鉛直材）は
+/// 従来どおり GJ/L を保持する。
+#[test]
+fn test_beam_i_end_torsion_released_by_default() {
+    let model = torsion_test_model(false);
+    // 大梁（要素 2、節点 1→3、X 方向。両端に柱が付く）
+    let beam = BeamElement::new(&model.elements[2], &model);
+    assert!(beam.torsion_release[0], "梁の i 端ねじれが解放されていない");
+    assert!(!beam.torsion_release[1], "j 端は解放しない");
+    let k = beam.local_stiffness();
+    for i in 0..12 {
+        for &r in &[3usize, 9] {
+            assert_eq!(
+                k.get(r, i),
+                0.0,
+                "ねじれ解放後の局所剛性 K[{r}][{i}] が 0 でない"
+            );
+            assert_eq!(k.get(i, r), 0.0, "K[{i}][{r}] が 0 でない");
+        }
+    }
+
+    // 柱（節点 0→1、鉛直材）は GJ/L を保持する。
+    let column = BeamElement::new(&model.elements[0], &model);
+    assert!(!column.torsion_release[0], "柱のねじれは解放しない");
+    let kc = column.local_stiffness_raw();
+    let expected = column.g * column.j / column.length;
+    approx::assert_relative_eq!(kc.get(3, 3), expected, max_relative = 1e-12);
+}
+
+/// 柱が無く一直線の梁だけが集まる節点（大梁の中間分割点）では、ねじれを解放すると
+/// 材軸まわり回転が浮いて剛性行列が特異になるため、解放しない（安全側）。
+#[test]
+fn test_i_end_torsion_release_skipped_at_collinear_beam_node() {
+    let model = torsion_test_model(true);
+    // 要素 2（節点 1→4）・要素 3（節点 4→3）はいずれも節点 4 を共有する X 方向材で、
+    // 節点 4 には他の非平行な部材が無い。
+    let seg_a = BeamElement::new(&model.elements[2], &model);
+    let seg_b = BeamElement::new(&model.elements[3], &model);
+    assert!(
+        !seg_a.torsion_release[0] && !seg_b.torsion_release[0],
+        "ねじれ回転が浮く節点を持つ梁は解放してはならない"
+    );
+    // ねじり剛性が残っていること（rx 対角が GJ/L）。
+    let k = seg_a.local_stiffness();
+    approx::assert_relative_eq!(
+        k.get(3, 3),
+        seg_a.g * seg_a.j / seg_a.length,
+        max_relative = 1e-12
+    );
+
+    // 柱が取り付く節点 1 を i 端に持つ要素 2 でも、j 端側（節点 4）が判定に
+    // 落ちるため解放されない（両端の判定が必要という規則の確認）。
+    assert!(!seg_a.torsion_release[0]);
+}
+
+/// `BeamTorsionMode::Keep` ではねじり剛性を保持する（床小梁の格子解析など、
+/// ねじりで釣り合わせるモデル化のための切替）。
+#[test]
+fn test_beam_torsion_mode_keep_retains_torsion() {
+    let mut model = torsion_test_model(false);
+    model.beam_torsion = squid_n_core::model::BeamTorsionMode::Keep;
+    let beam = BeamElement::new(&model.elements[2], &model);
+    assert!(!beam.torsion_release[0]);
+    let k = beam.local_stiffness();
+    approx::assert_relative_eq!(
+        k.get(3, 3),
+        beam.g * beam.j / beam.length,
+        max_relative = 1e-12
+    );
+}
+
+/// ねじり剛性が無い部材（J≤0）の rx は端条件がピンでも解放しない。解放すると
+/// 静縮約の `Kbb` の対角がゼロになり（`invert_small` がゼロピボットを 1 に置換して）
+/// 無意味な値で縮約が進むため（ファイバー梁 `resolve_end_releases` と同じ規則）。
+#[test]
+fn test_pinned_ends_without_torsion_keep_finite_stiffness() {
+    let mut beam = make_test_beam(); // j = 0.0
+    beam.end_cond = [EndCondition::Pinned, EndCondition::Pinned];
+    let k = beam.local_stiffness();
+    for i in 0..12 {
+        for j in 0..12 {
+            assert!(
+                k.get(i, j).is_finite(),
+                "両端ピン・J=0 の局所剛性 K[{i}][{j}] が有限でない: {}",
+                k.get(i, j)
+            );
+        }
+    }
+    // ねじり剛性が無いので rx 行・列は元から 0（解放の有無に依らない）。
+    assert_eq!(k.get(3, 3), 0.0);
 }

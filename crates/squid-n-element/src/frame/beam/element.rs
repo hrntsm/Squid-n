@@ -40,6 +40,13 @@ pub struct BeamElement {
     pub axis: LocalFrame,
     pub rigid: RigidZone,
     pub end_cond: [EndCondition; 2],
+    /// 材端のねじれ（材軸まわり回転）を解放するか（i 端, j 端）。
+    ///
+    /// 梁のねじり剛性を期待しない既定モデル化（`beam::i_end_torsion_release`）で
+    /// i 端が `true` になる。`end_cond` のピン・半剛とは独立で、ねじり自由度のみを
+    /// 解放する（曲げは `end_cond` の指定どおり）。解放端のねじりモーメントは 0 で、
+    /// ねじりは材長方向に一定なため部材全長で \\( M_x = 0 \\) となる。
+    pub torsion_release: [bool; 2],
     pub eval_sections: Vec<f64>,
     pub section: Option<squid_n_core::ids::SectionId>,
     pub material: Option<squid_n_core::ids::MaterialId>,

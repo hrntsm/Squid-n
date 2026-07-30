@@ -29,7 +29,7 @@
 use crate::app::App;
 use crate::theme;
 
-use super::{diagram_offset_dir, member_len3, BeamDeflection, Projector, ViewMode};
+use super::{diagram_offset_dir, member_len3, BeamDeflection, ForceComponent, Projector};
 
 /// 張り出しピークがこの px 未満の図形は描かない。60px 正規化に対して値が
 /// 相対的に極小の部材（ほぼ潰れた図形）は、輪郭の折り返し点で epaint のマイター
@@ -192,29 +192,19 @@ pub(crate) fn contour_color(t: f64, map: theme::ColorMap) -> egui::Color32 {
     map.sample((t + 1.0) * 0.5)
 }
 
-/// 部材ローカルに沿って N/Q/M 図を描く。
+/// 部材ローカルに沿って応力図（`component` が選ぶ N/Q/M のいずれか）を描く。
 pub(super) fn draw_force_diagram(
     painter: &egui::Painter,
     app: &App,
-    mode: ViewMode,
+    component: ForceComponent,
     coords3: &[[f64; 3]],
     disp: Option<&[[f64; 6]]>,
     deform_scale: f64,
     proj: &Projector,
 ) {
     let scale = proj.scale();
-    let force_idx = match mode {
-        ViewMode::N => 0, // N
-        ViewMode::Q => 1, // Qy
-        ViewMode::M => 5, // Mz
-        _ => return,
-    };
-    let label = match mode {
-        ViewMode::N => "N",
-        ViewMode::Q => "Q",
-        ViewMode::M => "M",
-        _ => "",
-    };
+    let force_idx = component.force_index();
+    let label = component.label();
 
     let Some(results) = &app.results else {
         return;
@@ -289,7 +279,7 @@ pub(super) fn draw_force_diagram(
         // [`moment_curve_samples`] 参照）。軸材・面要素・ばね類は曲げ内力場を
         // 持たないため対象外。N 図（一定）・Q 図（等分布下で 1 次）は評価断面を
         // 直線で結べば厳密なので従来どおり。
-        let curved = mode == ViewMode::M
+        let curved = component == ForceComponent::M
             && matches!(
                 elem.kind,
                 squid_n_core::model::ElementKind::Beam

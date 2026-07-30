@@ -27,6 +27,7 @@ fn make_test_beam() -> crate::beam::BeamElement {
             squid_n_core::model::EndCondition::Fixed,
             squid_n_core::model::EndCondition::Fixed,
         ],
+        torsion_release: [false, false],
         eval_sections: vec![0.0, 0.5, 1.0],
         section: None,
         material: None,

@@ -316,25 +316,30 @@ pub struct EndRelease {
     pub spring: f64,
 }
 
-/// 端条件から解放する回転自由度を決める。
+/// 端条件とねじれ解放から、解放する回転自由度を決める。
 ///
 /// `EndCondition::Fixed` は解放しない。ピン・半剛は当該端の rx/ry/rz を解放する。
+/// `torsion_release` が立つ端は、端条件が剛接でも rx（ねじれ）のみ解放する
+/// （梁のねじり剛性を期待しない既定モデル化。`beam::torsion` 参照）。
 /// ただし **ねじり剛性が無い部材（J≤0）の rx は解放しない**。解放しても縮約行列
 /// `Kbb` の対角がゼロになり特異化するだけで、モーメント解放としての意味がないため。
 fn resolve_end_releases(
     end_cond: &[squid_n_core::model::EndCondition; 2],
+    torsion_release: [bool; 2],
     has_torsion: bool,
 ) -> SmallVec<[EndRelease; 6]> {
     use squid_n_core::model::EndCondition;
     const ROT_DOFS: [(usize, usize); 6] = [(3, 0), (4, 0), (5, 0), (9, 1), (10, 1), (11, 1)];
     let mut out = SmallVec::new();
     for &(dof, end) in ROT_DOFS.iter() {
+        let is_torsion = dof == 3 || dof == 9;
         let spring = match end_cond[end] {
+            EndCondition::Fixed if is_torsion && torsion_release[end] => 0.0,
             EndCondition::Fixed => continue,
             EndCondition::Pinned => 0.0,
             EndCondition::SemiRigid { k_theta } => k_theta,
         };
-        if (dof == 3 || dof == 9) && !has_torsion {
+        if is_torsion && !has_torsion {
             continue;
         }
         out.push(EndRelease { dof, spring });
@@ -721,8 +726,13 @@ impl FiberBeam {
             data.local_axis.ref_vector,
         );
 
-        // 材端解放（ピン・半剛）。ねじり剛性が無い部材の rx は解放しない。
-        let releases = resolve_end_releases(&data.end_cond, torsion_j > 0.0 && g > 0.0);
+        // 材端解放（ピン・半剛＋梁の既定ねじれ解放）。ねじり剛性が無い部材の
+        // rx は解放しない。
+        let releases = resolve_end_releases(
+            &data.end_cond,
+            [crate::beam::i_end_torsion_release(data, model), false],
+            torsion_j > 0.0 && g > 0.0,
+        );
         let trial_int = SmallVec::from_elem(0.0, releases.len());
 
         FiberBeam {

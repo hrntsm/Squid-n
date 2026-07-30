@@ -2,6 +2,7 @@
 //!
 //! - [`types`] — 解析結果・イベントの型定義
 //! - [`assembly`] — 剛性行列の組立・内力ベクトルの算定（`dynamic`/`timehistory` 共有）
+//! - [`diagnosis`] — 接線剛性が特異・非正定値になったときの診断メッセージ
 //! - [`response`] — ベースシア・層せん断・層間変位・屋根変位の算定
 //! - [`driver`] — 荷重制御・変位制御・弧長法を統括する司令塔
 //! - [`hinge`] — 曲げヒンジの閾値算定と発生追跡
@@ -12,6 +13,7 @@
 //! - [`geom`] — 幾何ヘルパ（内積・軸圧縮力）
 
 mod assembly;
+mod diagnosis;
 mod driver;
 mod ductility;
 mod geom;
