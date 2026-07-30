@@ -9,7 +9,7 @@
 //! - [`behavior`] — `ElementBehavior` トレイト実装
 //! - [`linalg`] — 小行列の逆行列（汎用数値ヘルパ）
 //! - [`rigid_zone`] — 剛域の自動算定
-//! - [`torsion`] — 梁のねじり剛性の既定モデル化（i 端ねじれ解放）
+//! - [`torsion`] — 部材のねじり剛性の既定モデル化（i 端ねじれ解放）
 
 mod behavior;
 mod construct;
@@ -29,7 +29,7 @@ pub use stiffness_factors::{
     composite_props_of, stiffness_breakdown, StiffnessBreakdown, WALL_GIRDER_STIFF_FACTOR,
 };
 
-pub use torsion::i_end_torsion_release;
+pub use torsion::{i_end_torsion_release, i_end_torsion_release_skip, TorsionReleaseSkip};
 
 pub(crate) use construct::eval_sections_of;
 pub(crate) use forces::member_forces_from_end_forces;

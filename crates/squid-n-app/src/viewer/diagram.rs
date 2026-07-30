@@ -1,8 +1,23 @@
-//! 部材ローカルに沿った N/Q/M 図（内力分布図）の描画。
+//! 部材ローカルに沿った応力図（内力分布図）の描画。
 //!
-//! 図は要素ローカル y 軸方向（曲げ平面内）へワールド空間で張り出してから投影する。
-//! スクリーン上の部材線の法線ではなくワールドの要素軸を使うため、ビューを回転
-//! しても図の張り出し面は要素座標系に追従する（曲げ平面を真横から見ると線に潰れる）。
+//! 6 成分 `[N, Qy, Qz, Mx, My, Mz]` を個別に ON/OFF でき、選んだ成分をすべて
+//! 同時に描く。図は要素ローカル軸方向（曲げ平面内）へワールド空間で張り出して
+//! から投影する。スクリーン上の部材線の法線ではなくワールドの要素軸を使うため、
+//! ビューを回転しても図の張り出し面は要素座標系に追従する（曲げ平面を真横から
+//! 見ると線に潰れる）。張り出し面は成分で決まり、強軸側（N・Qy・Mx・Mz）は
+//! ローカル y 面、弱軸側（Qz・My）はローカル z 面へ出るため、6 成分同時でも
+//! 直交 2 面に分かれて重なりが減る。
+//!
+//! ## 成分ごとの独立正規化と符号
+//!
+//! N[N] と M[N·mm] は桁も単位も異なるため、正規化（60px 相当の最大値）・
+//! カラーバー・数値ラベルは**成分ごとに独立**に扱う。凡例・ラベルの表示単位は
+//! kN・kN·m とする。
+//!
+//! 断面力の符号規約は `Qy = dMz/dx`・`Qz = −dMy/dx` で My だけせん断との関係が
+//! 反転しているため、「正のモーメントを引張側へ張り出す」規約を保つには My の
+//! 張り出しだけ符号を反転させる（[`ForceComponent::plot_sign`]）。数値ラベルと
+//! コンター色は張り出し値ではなく内力値そのものを使う。
 //!
 //! ## 塗りつぶしの方式（凸多角形の扇状分割問題への対策）
 //!
@@ -23,13 +38,15 @@
 //!
 //! 断面力のサンプル位置は危険断面（節点芯・柱フェース・部材中央 ほか）の数点
 //! しかないため、そのまま直線で結ぶと等分布荷重の放物線が失われる。M 図だけは
-//! `dMz/dx = Qy` を用いた 3 次エルミート補間で区間内を稠密化する
-//! （[`moment_curve_samples`]）。
+//! せん断を勾配とする 3 次エルミート補間で区間内を稠密化する（Mz は `dMz/dx = Qy`、
+//! My は張り出し値 `−My` に対して `d(−My)/dx = Qz`。[`moment_curve_samples`]）。
 
 use crate::app::App;
 use crate::theme;
 
-use super::{diagram_offset_dir, member_len3, BeamDeflection, ForceComponent, Projector};
+use super::{
+    diagram_offset_dir, member_len3, BeamDeflection, ForceComponent, ForceComponents, Projector,
+};
 
 /// 張り出しピークがこの px 未満の図形は描かない。60px 正規化に対して値が
 /// 相対的に極小の部材（ほぼ潰れた図形）は、輪郭の折り返し点で epaint のマイター
@@ -192,31 +209,79 @@ pub(crate) fn contour_color(t: f64, map: theme::ColorMap) -> egui::Color32 {
     map.sample((t + 1.0) * 0.5)
 }
 
-/// 部材ローカルに沿って応力図（`component` が選ぶ N/Q/M のいずれか）を描く。
+/// 部材ローカルに沿って応力図を描く。
+///
+/// `components` が ON にした成分をすべて重ねて描き、成分ごとに
+/// **独立の最大値で正規化**する（N[N] と M[N·mm] は桁が異なるため 1 つの最大値を
+/// 共有できない）。張り出し面は成分で決まり（[`ForceComponent::plane`]）、
+/// 強軸側（N・Qy・Mx・Mz）は局所 ey 面、弱軸側（Qz・My）は局所 ez 面へ出るため、
+/// 6 成分同時でも直交 2 面に分かれて重なりが減る。
 pub(super) fn draw_force_diagram(
     painter: &egui::Painter,
     app: &App,
-    component: ForceComponent,
+    components: ForceComponents,
     coords3: &[[f64; 3]],
     disp: Option<&[[f64; 6]]>,
     deform_scale: f64,
     proj: &Projector,
 ) {
-    let scale = proj.scale();
-    let force_idx = component.force_index();
-    let label = component.label();
-
     let Some(results) = &app.results else {
         return;
     };
-    let max_abs = results
-        .member_forces
-        .iter()
-        .flat_map(|(_, mf)| mf.at.iter().map(|(_, f)| f[force_idx].abs()))
-        .fold(0.0_f64, f64::max);
-    if max_abs < 1e-12 {
-        return;
+    // 成分ごとの最大絶対値（正規化・凡例・数値ラベルの間引きに共通で使う）。
+    let mut maxes = [0.0_f64; 6];
+    for (_, mf) in &results.member_forces {
+        for (_, f) in &mf.at {
+            for (m, v) in maxes.iter_mut().zip(f.iter()) {
+                *m = m.max(v.abs());
+            }
+        }
     }
+
+    let mut legend_rows: Vec<(ForceComponent, f64)> = Vec::new();
+    for c in components.selected() {
+        let max_abs = maxes[c.force_index()];
+        // 最大値 0（例: 平面フレームの Qz）は図を描けないが、成分が選択中である
+        // ことは凡例で示す（「選んだのに何も出ない」理由が分かるようにする）。
+        if max_abs >= 1e-12 {
+            draw_component(
+                painter,
+                app,
+                c,
+                max_abs,
+                coords3,
+                disp,
+                deform_scale,
+                proj,
+                results,
+            );
+        }
+        legend_rows.push((c, max_abs));
+    }
+    draw_force_legend(
+        painter,
+        &legend_rows,
+        app.diagram_contour,
+        app.contour_colormap,
+    );
+}
+
+/// 1 成分ぶんの応力図を全部材について描く（[`draw_force_diagram`] の本体）。
+#[allow(clippy::too_many_arguments)]
+fn draw_component(
+    painter: &egui::Painter,
+    app: &App,
+    component: ForceComponent,
+    max_abs: f64,
+    coords3: &[[f64; 3]],
+    disp: Option<&[[f64; 6]]>,
+    deform_scale: f64,
+    proj: &Projector,
+    results: &crate::app::ResultsBundle,
+) {
+    let scale = proj.scale();
+    let force_idx = component.force_index();
+    let plot_sign = component.plot_sign();
     // 最大値で 60px 相当のワールド長（一様スケール正射影なので px/scale=ワールド長）
     let amp_world = 60.0 / max_abs / scale as f64;
 
@@ -224,12 +289,8 @@ pub(super) fn draw_force_diagram(
     let colormap = app.contour_colormap;
     // 塗りの不透明度: コンターは色そのものが情報を持つためモノクロより濃くする。
     let fill_alpha: u8 = if contour { 160 } else { 60 };
-    // 輪郭: コンター時は色と干渉しないよう中立なグレーの細線にする。
-    let outline_color = if contour {
-        theme::GRAY_600
-    } else {
-        theme::DATA_BLUE
-    };
+    // 輪郭は常に成分固定色。コンター中でも「どの図がどの成分か」を判別できる。
+    let outline_color = component.color();
     let outline_width: f32 = if contour { 1.0 } else { 1.5 };
 
     for (elem_id, mf) in &results.member_forces {
@@ -249,7 +310,7 @@ pub(super) fn draw_force_diagram(
             continue; // ゼロ長部材（同一節点間）は材軸が定まらず図を描けない
         }
         let ref_vec = elem.local_axis.ref_vector;
-        let ey = diagram_offset_dir(p_i, p_j, ref_vec);
+        let ey = diagram_offset_dir(p_i, p_j, ref_vec, component.plane());
         // 内部たわみ表示が有効な梁は、張り出しの基準線を変形後の Hermite 曲線に
         // する（`disp` が Some＝変形重ね時のみ）。梁の線描画と同じ `BeamDeflection`
         // で評価するため、基準線が梁の描画曲線に厳密一致する。それ以外（梁以外・
@@ -279,22 +340,32 @@ pub(super) fn draw_force_diagram(
         // [`moment_curve_samples`] 参照）。軸材・面要素・ばね類は曲げ内力場を
         // 持たないため対象外。N 図（一定）・Q 図（等分布下で 1 次）は評価断面を
         // 直線で結べば厳密なので従来どおり。
-        let curved = component == ForceComponent::M
-            && matches!(
+        let grad = component.moment_gradient_source().filter(|_| {
+            matches!(
                 elem.kind,
                 squid_n_core::model::ElementKind::Beam
                     | squid_n_core::model::ElementKind::Fiber
                     | squid_n_core::model::ElementKind::MultiSpring
-            );
-        // xi 昇順にソート（保険）
-        let samples: Vec<(f64, f64)> = if curved {
-            // 勾配 dMz/dξ = Qy·L に用いる部材長は、変形倍率の影響を受けない
-            // 未変形の節点間距離（内力回復時の材長）とする。
+            )
+        });
+        // 張り出し値（= 内力値 × plot_sign）。補間・塗り・輪郭はこの値で行い、
+        // 数値ラベル・コンター色は内力値そのもの（張り出し値 × plot_sign）を使う。
+        let samples: Vec<(f64, f64)> = if let Some(q) = grad {
+            // 勾配 d(張り出し値)/dξ = 対応せん断·L に用いる部材長は、変形倍率の
+            // 影響を受けない未変形の節点間距離（内力回復時の材長）とする。
             let model_len = member_len3(app.model.nodes[n0].coord, app.model.nodes[n1].coord);
-            let tri: Vec<(f64, f64, f64)> = mf.at.iter().map(|(xi, f)| (*xi, f[5], f[1])).collect();
+            let tri: Vec<(f64, f64, f64)> = mf
+                .at
+                .iter()
+                .map(|(xi, f)| (*xi, plot_sign * f[force_idx], f[q.force_index()]))
+                .collect();
             moment_curve_samples(&tri, model_len, MOMENT_CURVE_DIV)
         } else {
-            let mut s: Vec<(f64, f64)> = mf.at.iter().map(|(xi, f)| (*xi, f[force_idx])).collect();
+            let mut s: Vec<(f64, f64)> = mf
+                .at
+                .iter()
+                .map(|(xi, f)| (*xi, plot_sign * f[force_idx]))
+                .collect();
             s.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
             s
         };
@@ -303,7 +374,7 @@ pub(super) fn draw_force_diagram(
         }
         // コンター時は色の階調のため各区間を細分する。モノクロ時は単色なので不要。
         // 曲線補間済みの M 図は既に稠密なので、さらに細分はしない。
-        let subdiv = if contour && !curved {
+        let subdiv = if contour && grad.is_none() {
             CONTOUR_SUBDIV
         } else {
             1
@@ -338,10 +409,11 @@ pub(super) fn draw_force_diagram(
             let screen_poly: Vec<egui::Pos2> =
                 poly.iter().map(|&(xi, v)| to_screen(xi, v)).collect();
             let fill_color = if contour {
-                let repr = diagram_poly_repr_val(&poly) / max_abs;
+                // 色は内力値そのもの（張り出し値ではない）で決める。
+                let repr = plot_sign * diagram_poly_repr_val(&poly) / max_abs;
                 theme::translucent(contour_color(repr, colormap), fill_alpha)
             } else {
-                theme::translucent(theme::DATA_BLUE, fill_alpha)
+                theme::translucent(outline_color, fill_alpha)
             };
             painter.add(egui::Shape::convex_polygon(
                 screen_poly,
@@ -368,70 +440,135 @@ pub(super) fn draw_force_diagram(
             outline_pts,
             egui::Stroke::new(outline_width, outline_color),
         ));
-    }
 
-    // 凡例
-    painter.text(
-        egui::pos2(
-            painter.clip_rect().min.x + 10.0,
-            painter.clip_rect().min.y + 10.0,
-        ),
-        egui::Align2::LEFT_TOP,
-        format!("{}図 (max={:.2})", label, max_abs),
-        egui::FontId::proportional(14.0),
-        theme::GRAY_700,
-    );
-    if contour {
-        draw_contour_legend(painter, max_abs, colormap);
+        // --- 数値ラベル: 両端部と中央（ξ=0・0.5・1.0）---
+        if app.diagram_values {
+            draw_value_labels(painter, mf, component, max_abs, plot_sign, &to_screen);
+        }
     }
 }
 
-/// コンター表示時、凡例の下にカラーバー（グラデーション）を描く。
-/// 横 160px×縦 10px 程度のバーを短冊状に並べて描き、左端 −max・中央 0・右端 +max
-/// のラベルを添える。
-fn draw_contour_legend(painter: &egui::Painter, max_abs: f64, colormap: theme::ColorMap) {
+/// 部材の両端部・中央（ξ=0・0.5・1.0）の値を、図の輪郭上へ成分固定色で描く。
+///
+/// 表示は kN・kN·m（内部単位 N・N·mm から換算）の小数 1 桁。値が小さい点は
+/// ラベルが重なるだけで読めないため、**その成分のモデル全体最大の 1% 未満**は
+/// 描かない（張り出しピークが極小の部材を端から描かない扱いと同じ方針）。
+fn draw_value_labels(
+    painter: &egui::Painter,
+    mf: &squid_n_element::beam::MemberForces,
+    component: ForceComponent,
+    max_abs: f64,
+    plot_sign: f64,
+    to_screen: &dyn Fn(f64, f64) -> egui::Pos2,
+) {
+    const LABEL_XI: [f64; 3] = [0.0, 0.5, 1.0];
+    let idx = component.force_index();
+    let threshold = max_abs * 0.01;
+    let font = egui::FontId::proportional(11.0);
+    for xi_t in LABEL_XI {
+        // 評価断面（危険断面）に ξ=0・0.5・1.0 は常に含まれる（`eval_sections_of`）。
+        let Some((xi, f)) = mf
+            .at
+            .iter()
+            .find(|(xi, _)| (*xi - xi_t).abs() < 1e-9)
+            .map(|(xi, f)| (*xi, f))
+        else {
+            continue;
+        };
+        let value = f[idx];
+        if value.abs() < threshold {
+            continue;
+        }
+        let pos = to_screen(xi, plot_sign * value);
+        // 張り出し先の外側へ少しずらして図と重ならないようにする。
+        painter.text(
+            pos,
+            egui::Align2::CENTER_BOTTOM,
+            format!("{:.1}", value * component.display_scale()),
+            font.clone(),
+            component.color(),
+        );
+    }
+}
+
+/// ビュー左上に応力図の凡例を描く。
+///
+/// 表示中の成分ごとに「色見本＋成分名＋最大値（kN・kN·m）」を 1 行ずつ並べ、
+/// コンター表示中は各行の下にその成分のカラーバー（成分ごとの独立正規化）を
+/// 添える。成分で単位も桁も異なるため、最大値・カラーバーは必ず成分ごとに出す。
+fn draw_force_legend(
+    painter: &egui::Painter,
+    rows: &[(ForceComponent, f64)],
+    contour: bool,
+    colormap: theme::ColorMap,
+) {
+    const SWATCH: f32 = 10.0;
     const BAR_W: f32 = 160.0;
     const BAR_H: f32 = 10.0;
     const STRIPS: usize = 32;
 
     let rect = painter.clip_rect();
     let x0 = rect.min.x + 10.0;
-    let y0 = rect.min.y + 30.0;
+    let mut y = rect.min.y + 10.0;
+    let font = egui::FontId::proportional(13.0);
+    let small = egui::FontId::proportional(11.0);
 
-    for i in 0..STRIPS {
-        let t = (i as f64 + 0.5) / STRIPS as f64 * 2.0 - 1.0; // 短冊中央の t∈[-1,1]
-        let color = contour_color(t, colormap);
-        let sx0 = x0 + (i as f32 / STRIPS as f32) * BAR_W;
-        let sx1 = x0 + ((i + 1) as f32 / STRIPS as f32) * BAR_W;
+    for &(c, max_abs) in rows {
         painter.rect_filled(
-            egui::Rect::from_min_max(egui::pos2(sx0, y0), egui::pos2(sx1, y0 + BAR_H)),
-            0.0,
-            color,
+            egui::Rect::from_min_size(egui::pos2(x0, y + 2.0), egui::vec2(SWATCH, SWATCH)),
+            2.0,
+            c.color(),
         );
+        painter.text(
+            egui::pos2(x0 + SWATCH + 6.0, y),
+            egui::Align2::LEFT_TOP,
+            format!(
+                "{}図 max={:.1} {}",
+                c.label(),
+                max_abs * c.display_scale(),
+                c.unit()
+            ),
+            font.clone(),
+            theme::GRAY_700,
+        );
+        y += 16.0;
+        if contour && max_abs >= 1e-12 {
+            for i in 0..STRIPS {
+                let t = (i as f64 + 0.5) / STRIPS as f64 * 2.0 - 1.0; // 短冊中央の t∈[-1,1]
+                let color = contour_color(t, colormap);
+                let sx0 = x0 + (i as f32 / STRIPS as f32) * BAR_W;
+                let sx1 = x0 + ((i + 1) as f32 / STRIPS as f32) * BAR_W;
+                painter.rect_filled(
+                    egui::Rect::from_min_max(egui::pos2(sx0, y), egui::pos2(sx1, y + BAR_H)),
+                    0.0,
+                    color,
+                );
+            }
+            let disp_max = max_abs * c.display_scale();
+            painter.text(
+                egui::pos2(x0, y + BAR_H + 1.0),
+                egui::Align2::LEFT_TOP,
+                format!("-{:.1}", disp_max),
+                small.clone(),
+                theme::GRAY_600,
+            );
+            painter.text(
+                egui::pos2(x0 + BAR_W * 0.5, y + BAR_H + 1.0),
+                egui::Align2::CENTER_TOP,
+                "0",
+                small.clone(),
+                theme::GRAY_600,
+            );
+            painter.text(
+                egui::pos2(x0 + BAR_W, y + BAR_H + 1.0),
+                egui::Align2::RIGHT_TOP,
+                format!("{:.1}", disp_max),
+                small.clone(),
+                theme::GRAY_600,
+            );
+            y += BAR_H + 14.0;
+        }
     }
-
-    let font = egui::FontId::proportional(11.0);
-    painter.text(
-        egui::pos2(x0, y0 + BAR_H + 2.0),
-        egui::Align2::LEFT_TOP,
-        format!("-{:.2}", max_abs),
-        font.clone(),
-        theme::GRAY_600,
-    );
-    painter.text(
-        egui::pos2(x0 + BAR_W * 0.5, y0 + BAR_H + 2.0),
-        egui::Align2::CENTER_TOP,
-        "0",
-        font.clone(),
-        theme::GRAY_600,
-    );
-    painter.text(
-        egui::pos2(x0 + BAR_W, y0 + BAR_H + 2.0),
-        egui::Align2::RIGHT_TOP,
-        format!("{:.2}", max_abs),
-        font,
-        theme::GRAY_600,
-    );
 }
 
 #[cfg(test)]
@@ -660,5 +797,96 @@ mod tests {
         let viridis = contour_color(0.0, theme::ColorMap::Viridis);
         let jet = contour_color(0.0, theme::ColorMap::Jet);
         assert_ne!(viridis, jet);
+    }
+}
+
+#[cfg(test)]
+mod component_tests {
+    use super::super::{DiagramPlane, ForceComponent, ForceComponents};
+
+    /// 列挙順が部材内力ベクトル `[N, Qy, Qz, Mx, My, Mz]` の添字と一致する。
+    /// 添字がずれると別成分の値で図を描いてしまう（無言の誤表示）。
+    #[test]
+    fn force_component_index_matches_declaration_order() {
+        for (i, c) in ForceComponent::ALL.into_iter().enumerate() {
+            assert_eq!(c.force_index(), i, "{}", c.label());
+        }
+    }
+
+    /// 単位・換算係数は力＝kN（÷1e3）、モーメント＝kN·m（÷1e6）。
+    #[test]
+    fn force_component_units_are_kn_based() {
+        for c in ForceComponent::ALL {
+            if c.is_moment() {
+                assert_eq!(c.unit(), "kN·m");
+                assert_eq!(c.display_scale(), 1.0e-6);
+            } else {
+                assert_eq!(c.unit(), "kN");
+                assert_eq!(c.display_scale(), 1.0e-3);
+            }
+        }
+    }
+
+    /// 張り出し面は強軸側（N・Qy・Mx・Mz）が ey、弱軸側（Qz・My）が ez。
+    /// 曲げとせん断の対（Qy–Mz、Qz–My）が同じ面に出ることが読み取りの前提。
+    #[test]
+    fn force_component_planes_pair_bending_and_shear() {
+        assert_eq!(ForceComponent::Qy.plane(), DiagramPlane::Ey);
+        assert_eq!(ForceComponent::Mz.plane(), DiagramPlane::Ey);
+        assert_eq!(ForceComponent::N.plane(), DiagramPlane::Ey);
+        assert_eq!(ForceComponent::Mx.plane(), DiagramPlane::Ey);
+        assert_eq!(ForceComponent::Qz.plane(), DiagramPlane::Ez);
+        assert_eq!(ForceComponent::My.plane(), DiagramPlane::Ez);
+    }
+
+    /// 断面力の符号規約は `Qy = dMz/dx`・`Qz = −dMy/dx` で My だけ反転しているため、
+    /// 「正のモーメントを引張側へ張り出す」規約を保つには My の張り出しだけ符号を
+    /// 反転する。あわせて、エルミート補間の勾配源が対になっていることを確認する。
+    #[test]
+    fn my_is_plotted_with_flipped_sign_and_qz_gradient() {
+        assert_eq!(ForceComponent::My.plot_sign(), -1.0);
+        for c in ForceComponent::ALL
+            .into_iter()
+            .filter(|c| *c != ForceComponent::My)
+        {
+            assert_eq!(c.plot_sign(), 1.0, "{}", c.label());
+        }
+        assert_eq!(
+            ForceComponent::Mz.moment_gradient_source(),
+            Some(ForceComponent::Qy)
+        );
+        assert_eq!(
+            ForceComponent::My.moment_gradient_source(),
+            Some(ForceComponent::Qz)
+        );
+        assert_eq!(ForceComponent::N.moment_gradient_source(), None);
+        assert_eq!(ForceComponent::Qy.moment_gradient_source(), None);
+        assert_eq!(ForceComponent::Mx.moment_gradient_source(), None);
+    }
+
+    /// プリセットの内容と既定（M 図＝My・Mz）。
+    #[test]
+    fn presets_select_expected_components() {
+        let sel =
+            |s: ForceComponents| -> Vec<&'static str> { s.selected().map(|c| c.label()).collect() };
+        assert_eq!(sel(ForceComponents::PRESET_N), vec!["N"]);
+        assert_eq!(sel(ForceComponents::PRESET_Q), vec!["Qy", "Qz"]);
+        assert_eq!(sel(ForceComponents::PRESET_M), vec!["My", "Mz"]);
+        assert_eq!(
+            ForceComponents::default(),
+            ForceComponents::PRESET_M,
+            "既定は M 図プリセット"
+        );
+    }
+
+    /// チェックボックスの ON/OFF が `selected` の列挙に反映される（表示順は添字順）。
+    #[test]
+    fn toggling_flags_changes_selection_in_index_order() {
+        let mut s = ForceComponents::PRESET_M;
+        *s.flag_mut(ForceComponent::N) = true;
+        *s.flag_mut(ForceComponent::My) = false;
+        let labels: Vec<&'static str> = s.selected().map(|c| c.label()).collect();
+        assert_eq!(labels, vec!["N", "Mz"]);
+        assert!(s.is_on(ForceComponent::N) && !s.is_on(ForceComponent::My));
     }
 }

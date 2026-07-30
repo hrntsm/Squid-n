@@ -755,9 +755,12 @@ pub struct App {
     /// ビューアの表示モード
     #[cfg(feature = "gui")]
     pub view_mode: crate::viewer::ViewMode,
-    /// 応力図で表示する成分（N: 軸力／Q: せん断／M: 曲げ）
+    /// 応力図で表示中の成分（N/Qy/Qz/Mx/My/Mz の ON/OFF。複数同時表示）
     #[cfg(feature = "gui")]
-    pub force_component: crate::viewer::ForceComponent,
+    pub force_components: crate::viewer::ForceComponents,
+    /// 応力図に数値ラベル（両端部・中央の値）を表示するか
+    #[cfg(feature = "gui")]
+    pub diagram_values: bool,
     /// CMQ 図で表示する成分（C: モーメント／Q: せん断）
     #[cfg(feature = "gui")]
     pub cmq_component: crate::viewer::CmqComponent,
@@ -1034,7 +1037,9 @@ impl Default for App {
             #[cfg(feature = "gui")]
             view_mode: crate::viewer::ViewMode::default(),
             #[cfg(feature = "gui")]
-            force_component: crate::viewer::ForceComponent::default(),
+            force_components: crate::viewer::ForceComponents::default(),
+            #[cfg(feature = "gui")]
+            diagram_values: false,
             #[cfg(feature = "gui")]
             cmq_component: crate::viewer::CmqComponent::default(),
             #[cfg(feature = "gui")]

@@ -6204,3 +6204,73 @@ fn test_add_isolator_between_two_nodes_via_undo() {
     assert!(!app.model.elements.iter().any(|e| e.id == new_id));
     assert!(!app.model.isolator_attrs.iter().any(|a| a.elem == new_id));
 }
+
+// ===== 部材ねじり解放（i 端ねじれピン）の設定と準備計算の一覧 =====
+
+/// 既定でねじり解放が有効であること、準備計算が対象外部材を集計すること。
+/// 門型ラーメン（柱脚固定・柱頭に梁）は全部材が解放され、対象外は 0 本になる。
+#[test]
+fn test_preparation_lists_no_torsion_skip_for_portal_frame() {
+    use squid_n_core::model::BeamTorsionMode;
+    let mut app = App::default();
+    app.load_model(crate::sample::portal_frame());
+    assert_eq!(
+        app.model.beam_torsion,
+        BeamTorsionMode::ReleaseIEnd,
+        "既定は i 端ねじれ解放"
+    );
+    app.run_preparation();
+    let prep = app.preparation.as_ref().expect("準備計算の結果");
+    assert!(prep.torsion_release_enabled);
+    assert!(
+        prep.torsion_skipped.is_empty(),
+        "柱脚固定・柱頭に梁が付く門型ラーメンは全部材が解放されるはず: {:?}",
+        prep.torsion_skipped
+            .iter()
+            .map(|r| r.elem.0)
+            .collect::<Vec<_>>()
+    );
+}
+
+/// 柱脚をピン支点（回転自由）にすると、柱の i 端（柱脚）で材軸まわり回転を
+/// 拘束するものが無くなるため、その柱が対象外として一覧される。
+#[test]
+fn test_preparation_lists_torsion_skip_for_unrestrained_column_base() {
+    let mut app = App::default();
+    let mut model = crate::sample::portal_frame();
+    // 柱脚 2 節点を並進のみ拘束（回転自由）にする。
+    for n in model.nodes.iter_mut().take(2) {
+        n.restraint = squid_n_core::dof::Dof6Mask::PINNED;
+    }
+    app.load_model(model);
+    app.run_preparation();
+    let prep = app.preparation.as_ref().expect("準備計算の結果");
+    let ids: Vec<u32> = prep.torsion_skipped.iter().map(|r| r.elem.0).collect();
+    assert_eq!(ids, vec![0, 1], "柱 2 本が対象外になるはず: {ids:?}");
+}
+
+/// 設定を OFF（`Keep`）にすると、全部材でねじり剛性を保持し、対象外一覧は空になる
+/// （「対象外」という概念自体が無くなるため）。
+#[test]
+fn test_preparation_torsion_disabled_reports_no_rows() {
+    use squid_n_core::model::BeamTorsionMode;
+    let mut app = App::default();
+    app.load_model(crate::sample::portal_frame());
+    app.undo.run(
+        &mut app.model,
+        Box::new(squid_n_edit::SetBeamTorsion {
+            mode: BeamTorsionMode::Keep,
+        }),
+    );
+    assert_eq!(app.model.beam_torsion, BeamTorsionMode::Keep);
+    // undo で既定へ戻る（準備計算が別のコマンドを積む前に確認する）。
+    app.undo.undo(&mut app.model);
+    assert_eq!(app.model.beam_torsion, BeamTorsionMode::ReleaseIEnd);
+    app.undo.redo(&mut app.model);
+    assert_eq!(app.model.beam_torsion, BeamTorsionMode::Keep);
+
+    app.run_preparation();
+    let prep = app.preparation.as_ref().expect("準備計算の結果");
+    assert!(!prep.torsion_release_enabled);
+    assert!(prep.torsion_skipped.is_empty());
+}

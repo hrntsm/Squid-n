@@ -24,6 +24,8 @@ pub enum PrepView {
     Wind,
     /// 剛域。
     RigidZone,
+    /// ねじり解放（i 端ねじれピン）の対象外部材。
+    Torsion,
     /// 断面性能（断面諸量）。
     Sections,
     /// 鋼断面の幅厚比・部材ランク。
@@ -116,6 +118,7 @@ pub fn preparation_panel(ui: &mut egui::Ui, app: &mut App) {
             (PrepView::Seismic, "地震力 (Ai 分布)"),
             (PrepView::Wind, "風圧力"),
             (PrepView::RigidZone, "剛域"),
+            (PrepView::Torsion, "ねじり解放"),
             (PrepView::Sections, "断面性能"),
             (PrepView::WidthThickness, "幅厚比"),
             (PrepView::MemberStiffness, "部材剛性"),
@@ -137,6 +140,7 @@ pub fn preparation_panel(ui: &mut egui::Ui, app: &mut App) {
             PrepView::Seismic => seismic_section(ui, prep),
             PrepView::Wind => wind_section(ui, prep),
             PrepView::RigidZone => rigid_zone_section(ui, prep),
+            PrepView::Torsion => torsion_section(ui, prep),
             PrepView::Sections => sections_section(ui, prep),
             PrepView::WidthThickness => width_thickness_section(ui, prep),
             PrepView::MemberStiffness => member_stiffness_section(ui, prep),
@@ -495,6 +499,73 @@ fn wind_table(ui: &mut egui::Ui, w: &crate::app::PrepWind) {
                 });
                 row.col(|ui| {
                     ui.label(format!("{:.1}", kn(r.force)));
+                });
+            });
+        });
+}
+
+/// ねじり解放（i 端ねじれピン）の対象外部材。
+///
+/// 既定では線材（梁・柱）の i 端ねじれを解放し、部材全長で Mx=0 とする。
+/// ただし解放すると材軸まわりの回転を拘束するものが無い節点が生じる部材は、
+/// 剛性行列が特異になるため自動的に対象外とし、ねじり剛性 GJ/L を保持する。
+/// この表は「想定と違ってねじり剛性が残っている部材」を見つけるためのもので、
+/// ねじり剛性をもともと持たない部材（断面の J≤0・材料の G≤0）は含めない。
+fn torsion_section(ui: &mut egui::Ui, prep: &PreparationResult) {
+    if !prep.torsion_release_enabled {
+        ui.colored_label(
+            crate::theme::GRAY_600,
+            "「部材 i 端のねじりをピン（梁・柱）」が OFF のため、全部材でねじり剛性 GJ/L を             保持しています（準備計算パネルの「部材のモデル化」で切り替えます）。",
+        );
+        return;
+    }
+    ui.label(format!(
+        "ねじり解放の対象外部材: {} 本",
+        prep.torsion_skipped.len()
+    ));
+    ui.colored_label(
+        crate::theme::GRAY_600,
+        "既定では線材（梁・柱）の i 端ねじれをピンとし、部材全長で Mx=0 とします。         ただし、ねじりを解放すると材軸まわりの回転を拘束するものが無くなる節点を持つ部材は、         剛性行列が特異になるため自動的に対象外とし、ねじり剛性 GJ/L を保持します。         材軸まわりの回転は「非平行な線材の曲げ」「線材以外の要素（壁・シェル・パネルゾーン・         ばね類）」「支点拘束」「支点ばねの回転成分」のいずれかで拘束されている必要があります。",
+    );
+    ui.add_space(6.0);
+
+    if prep.torsion_skipped.is_empty() {
+        ui.colored_label(
+            crate::theme::GOOD_GREEN,
+            "✅ 対象外の部材はありません（ねじり剛性を持つ全ての線材で i 端ねじれを解放しています）",
+        );
+        return;
+    }
+
+    let row_h = crate::theme::table_row_height(ui);
+    let rows = &prep.torsion_skipped;
+    TableBuilder::new(ui)
+        .striped(true)
+        .column(Column::initial(70.0))
+        .column(Column::initial(70.0))
+        .column(Column::initial(80.0))
+        .column(Column::remainder())
+        .header(row_h, |mut h| {
+            for t in &["部材", "種別", "節点", "理由"] {
+                h.col(|ui| {
+                    ui.strong(*t);
+                });
+            }
+        })
+        .body(|body| {
+            body.rows(row_h, rows.len(), |mut row| {
+                let r = &rows[row.index()];
+                row.col(|ui| {
+                    ui.label(format!("#{}", r.elem.0));
+                });
+                row.col(|ui| {
+                    ui.label(member_kind_label(r.kind));
+                });
+                row.col(|ui| {
+                    ui.label(format!("{}", r.node.0));
+                });
+                row.col(|ui| {
+                    ui.label("この節点の材軸まわり回転を拘束する部材・支点がない");
                 });
             });
         });

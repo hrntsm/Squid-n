@@ -2767,12 +2767,16 @@ fn torsion_test_model(split_x: bool) -> Model {
         plastic_zone: None,
         spring: None,
     };
+    // 柱脚（節点 0・2）は固定支点。柱の i 端（＝柱脚）でも材軸（Z）まわりの
+    // 回転が支点で拘束されるため、柱もねじれ解放の判定を通る。
     let mut nodes = vec![
         mk_node(0, [0.0, 0.0, 0.0]),
         mk_node(1, [0.0, 0.0, 3000.0]),
         mk_node(2, [6000.0, 0.0, 0.0]),
         mk_node(3, [6000.0, 0.0, 3000.0]),
     ];
+    nodes[0].restraint = squid_n_core::dof::Dof6Mask::FIXED;
+    nodes[2].restraint = squid_n_core::dof::Dof6Mask::FIXED;
     // 要素 0・1 = 柱、要素 2（＋分割時は 3）= 大梁。
     let mut elements = vec![mk_member(0, 0, 1, true), mk_member(1, 2, 3, true)];
     if split_x {
@@ -2838,12 +2842,65 @@ fn test_beam_i_end_torsion_released_by_default() {
         }
     }
 
-    // 柱（節点 0→1、鉛直材）は GJ/L を保持する。
+    // 柱（節点 0→1、鉛直材）も対象。i 端（柱脚）は支点でねじれ回転が拘束され、
+    // j 端（柱頭）には非平行な大梁が付くため、判定を通って解放される。
     let column = BeamElement::new(&model.elements[0], &model);
-    assert!(!column.torsion_release[0], "柱のねじれは解放しない");
-    let kc = column.local_stiffness_raw();
-    let expected = column.g * column.j / column.length;
-    approx::assert_relative_eq!(kc.get(3, 3), expected, max_relative = 1e-12);
+    assert!(column.torsion_release[0], "柱の i 端ねじれも解放される");
+    let kc = column.local_stiffness();
+    for i in 0..12 {
+        for &r in &[3usize, 9] {
+            assert_eq!(kc.get(r, i), 0.0, "柱のねじり行 K[{r}][{i}] が 0 でない");
+        }
+    }
+    // raw（端条件・解放を適用する前）の段階では GJ/L を持つ。
+    let raw = column.local_stiffness_raw();
+    approx::assert_relative_eq!(
+        raw.get(3, 3),
+        column.g * column.j / column.length,
+        max_relative = 1e-12
+    );
+}
+
+/// 柱を中間節点で分割し、その節点に梁が取り付かない場合は、材軸（鉛直）まわりの
+/// 回転を拘束するものが無いため解放しない（梁の中間分割点と同じ規則）。
+#[test]
+fn test_column_torsion_release_skipped_at_collinear_column_node() {
+    use squid_n_core::ids::{MaterialId, SectionId};
+    use squid_n_core::model::ForceRegime;
+    let mut model = torsion_test_model(false);
+    // 柱 0（節点 0→1）を中間節点 5 で 2 分割する。
+    model.nodes.push(Node {
+        id: NodeId(model.nodes.len() as u32),
+        coord: [0.0, 0.0, 1500.0],
+        restraint: Default::default(),
+        mass: None,
+        story: None,
+        support_spring: None,
+    });
+    let mid = NodeId(model.nodes.len() as u32 - 1);
+    model.elements[0].nodes = smallvec::smallvec![NodeId(0), mid];
+    let upper = ElemId(model.elements.len() as u32);
+    model.elements.push(ElementData {
+        id: upper,
+        kind: ElementKind::Beam,
+        nodes: smallvec::smallvec![mid, NodeId(1)],
+        section: Some(SectionId(0)),
+        material: Some(MaterialId(0)),
+        local_axis: LocalAxis {
+            ref_vector: [1.0, 0.0, 0.0],
+        },
+        end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+        force_regime: ForceRegime::Auto,
+        rigid_zone: Default::default(),
+        plastic_zone: None,
+        spring: None,
+    });
+    let lower = BeamElement::new(&model.elements[0], &model);
+    let upper_el = BeamElement::new(model.elements.last().expect("追加済み"), &model);
+    assert!(
+        !lower.torsion_release[0] && !upper_el.torsion_release[0],
+        "鉛直材だけが集まる中間節点を持つ柱は解放してはならない"
+    );
 }
 
 /// 柱が無く一直線の梁だけが集まる節点（大梁の中間分割点）では、ねじれを解放すると
