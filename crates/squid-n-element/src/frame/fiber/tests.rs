@@ -1518,8 +1518,8 @@ fn test_plastic_zone_checkpoint_roundtrip() {
 /// RC 断面（RcRect＋配筋）のファイバー柱は、コンクリート格子に加えて主筋が
 /// 点ファイバーとして分離配置される（構造力学のファイバーモデルにおける鉄筋分離）。
 /// 従来は均質コンクリート断面で引張鉄筋を無視していた。
-#[test]
-fn test_rc_fiber_section_includes_separated_rebar() {
+/// RC 断面（RcRect＋配筋、500 角・Fc30）のファイバー柱モデル。
+fn rc_fiber_model() -> Model {
     use squid_n_core::section_shape::{BarSet, RcRebar, SectionShape, ShearBar};
 
     let shape = SectionShape::RcRect {
@@ -1547,7 +1547,7 @@ fn test_rc_fiber_section_includes_separated_rebar() {
         },
     };
     let sec = shape.to_section(SectionId(0), "C500".into());
-    let model = Model {
+    Model {
         nodes: vec![
             Node {
                 id: NodeId(0),
@@ -1596,7 +1596,12 @@ fn test_rc_fiber_section_includes_separated_rebar() {
             fy: Some(345.0),
         }],
         ..Default::default()
-    };
+    }
+}
+
+#[test]
+fn test_rc_fiber_section_includes_separated_rebar() {
+    let model = rc_fiber_model();
     let fb = FiberBeam::new(
         &model.elements[0],
         &model,
@@ -1621,6 +1626,55 @@ fn test_rc_fiber_section_includes_separated_rebar() {
         .map(|f| f.z.abs())
         .fold(0.0_f64, f64::max);
     assert!(max_abs_z > 180.0, "主筋が最外縁近くにない: {max_abs_z}");
+}
+
+/// 塑性化域考慮ファイバー梁（RC 断面）は、**弾性域では接線剛性が正定値**である。
+///
+/// ヒンジ回転 γ は「断面の弾性線を超える塑性超過分」
+/// \( \gamma = s L_p (\kappa - m_{sec}/EI_{sec}) \) として定義され、\( EI_{sec} \)
+/// （`sec_ei`）は要素生成時の断面接線をそのまま基準にする。したがって
+/// **ひずみ 0 の断面接線が実際の弾性接線と一致していなければならない**。
+/// コンクリート材料がひずみ 0 で接線 0 を返すと \( EI_{sec} \) が主筋分だけになり、
+/// 弾性状態でも \( \kappa - m_{sec}/EI_{sec} \neq 0 \) となって静縮約が破綻し、
+/// 接線剛性の対角が負になる（増分解析が長期載荷の時点で解けなくなる）。
+#[test]
+fn test_rc_plastic_zone_fiber_tangent_stays_positive_in_elastic_range() {
+    let model = rc_fiber_model();
+    let ctx = Ctx { model: &model };
+    let mut fb = FiberBeam::with_plastic_zone(
+        &model.elements[0],
+        &model,
+        250.0,
+        StrengthBasis::Nominal,
+        AnalysisKind::Incremental,
+    );
+
+    // 断面の弾性曲げ剛性の基準 `sec_ei` は、ひずみ 0 の断面接線と一致する。
+    // RC 断面（コンクリート格子＋主筋）なので公称 E·I よりやや大きい程度に収まる。
+    let h = fb.hinge.as_ref().expect("塑性化域ヒンジが構築されていない");
+    let d0 = fb.gauss_points[0].cached_stiff;
+    assert_relative_eq!(h.sec_ei[0][1], d0[2][2], max_relative = 1e-12);
+    let nominal_eiz = 25000.0 * model.sections[0].iy;
+    assert!(
+        d0[2][2] > 0.5 * nominal_eiz && d0[2][2] < 2.0 * nominal_eiz,
+        "初期断面剛性が公称 E·I とかけ離れている: EIz_sec={}, E·Iy={}",
+        d0[2][2],
+        nominal_eiz
+    );
+
+    // 弾性域に収まる微小変形（j 端に 0.2mm の並進）を与えても接線剛性は正定値。
+    let du = LocalVec {
+        data: SmallVec::from_slice(&[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.2, 0.2, 0.2, 0.0, 0.0, 0.0]),
+    };
+    fb.update_state(&du, false, &ctx);
+    let k = fb.tangent_stiffness(&ElemState::default(), &ctx);
+    for i in 0..12 {
+        assert!(
+            k.get(i, i) >= 0.0,
+            "弾性域なのに接線剛性の対角が負: K[{i}][{i}]={}",
+            k.get(i, i)
+        );
+    }
 }
 
 // ===== 剛域（材端剛体アーム）=====

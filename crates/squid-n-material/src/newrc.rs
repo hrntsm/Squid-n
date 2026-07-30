@@ -91,7 +91,18 @@ impl NewRcEnvelope {
     /// 戻り値 (応力の大きさ σ≥0, 大きさ座標系での接線 dσ/dx)。
     /// σ は 0 未満にならないよう 0 でクランプ（有理式は x が大きいと負になり得るため）。
     /// 接線はクランプ域で 0。
+    ///
+    /// **原点（x=0）は例外**とし、σ=0・接線 = 初期接線 Ec を返す。有理式は x=0 で
+    /// σ=0 になるため、終局域用の「σ≤0 なら接線 0」クランプをそのまま掛けると
+    /// **ひずみゼロのコンクリートの接線が 0** になる。この値はファイバー断面の
+    /// 初期接線（[`crate::uniaxial::UniaxialMaterial::trial`] を ε=0 で呼んだ
+    /// 戻り値）としてそのまま使われ、RC 断面の弾性曲げ剛性が主筋分だけに
+    /// 縮んでしまう（塑性化域考慮ファイバー梁の弾性整合が破れ、接線剛性が
+    /// 負になる）。
     pub fn compression(&self, x: f64) -> (f64, f64) {
+        if x <= 0.0 {
+            return (0.0, self.ec);
+        }
         let capital_x = x / self.eps_c0; // X = εc/εc0
         let (ratio, dratio) = self.ratio(capital_x);
         let stress = ratio * self.fc;
@@ -302,6 +313,39 @@ mod tests {
         assert_relative_eq!(t, c.ec, max_relative = 1e-3);
         // Ec は常識的な範囲（普通コンクリート 2〜3×10⁴ N/mm² 程度）。
         assert!(c.ec > 2.0e4 && c.ec < 3.5e4, "Ec={}", c.ec);
+    }
+
+    /// **ひずみちょうど 0** の接線が Ec であること（逆行型・原点指向型とも）。
+    ///
+    /// ひずみ 0 の接線はファイバー断面の初期弾性剛性としてそのまま使われる
+    /// （ファイバー梁は生成時に `trial(0.0)` を呼んで初期接線をキャッシュする）。
+    /// ここが 0 になると RC 断面の弾性曲げ剛性が主筋分だけに縮み、塑性化域考慮
+    /// ファイバー梁の「弾性状態ではヒンジ回転 γ=0」という整合が破れて接線剛性が
+    /// 負になる（増分解析が長期載荷の時点で解けなくなる）。ε≒0（-1e-9）ではなく
+    /// **厳密な 0** で確かめる（有理式は x=0 で σ=0 となり、終局域の
+    /// 「σ≤0 なら接線 0」クランプに掛かり得るため）。
+    #[test]
+    fn test_newrc_tangent_at_exactly_zero_strain_is_ec() {
+        for dynamic in [false, true] {
+            let mut c = ConcreteNewRc::new(21.0, 2.0);
+            c.set_concrete_hysteresis(dynamic);
+            let (s, t) = c.trial(0.0);
+            assert_relative_eq!(s, 0.0, epsilon = 1e-12);
+            assert_relative_eq!(t, c.ec, max_relative = 1e-12);
+            // probe（非破壊評価）も同じ値を返す。
+            let (ps, pt) = c.probe(0.0);
+            assert_relative_eq!(ps, 0.0, epsilon = 1e-12);
+            assert_relative_eq!(pt, c.ec, max_relative = 1e-12);
+        }
+    }
+
+    /// 圧縮包絡線の原点は σ=0・接線 Ec（終局域クランプの巻き添えにしない）。
+    #[test]
+    fn test_newrc_envelope_compression_at_origin() {
+        let e = NewRcEnvelope::new(21.0);
+        let (s, t) = e.compression(0.0);
+        assert_relative_eq!(s, 0.0, epsilon = 1e-12);
+        assert_relative_eq!(t, e.ec, max_relative = 1e-12);
     }
 
     #[test]

@@ -8,9 +8,24 @@ pub struct Reducer {
     pub t_rows: Vec<Vec<(usize, f64)>>,
     pub n_indep: usize,
     pub n_free: usize,
+    /// 縮約空間の自由度番号 → 自由 DOF 空間の自由度番号（`n_indep` 長）。
+    /// `t_rows` の逆写像だが、従属行が偶然 `[(a, 1.0)]` の形（剛リンクのスレーブ等）に
+    /// なるため `t_rows` からは一意に復元できない。縮約後の行列の行・列を
+    /// 節点・成分へ翻訳する用途（[`crate::pushover`] の特異診断）に用いる。
+    indep_free: Vec<usize>,
 }
 
 impl Reducer {
+    /// 自由度が 1 つも無いモデル向けの空の縮約（全長 0）。
+    pub fn empty() -> Self {
+        Reducer {
+            t_rows: Vec::new(),
+            n_indep: 0,
+            n_free: 0,
+            indep_free: Vec::new(),
+        }
+    }
+
     pub fn build(model: &Model, dofmap: &DofMap) -> Self {
         let n_free = dofmap.n_active();
         let n_nodes = model.nodes.len();
@@ -262,11 +277,30 @@ impl Reducer {
             })
             .collect();
 
+        // 縮約空間 → 自由 DOF 空間の逆写像。`new_indep[i] != usize::MAX` の i が
+        // 縮約後に残る（独立な）自由度なので、その対応をそのまま反転する。
+        let mut indep_free = vec![usize::MAX; counter];
+        for (i, &r) in new_indep.iter().enumerate() {
+            if r != usize::MAX {
+                indep_free[r] = i;
+            }
+        }
+
         Reducer {
             t_rows: remapped,
             n_indep: counter,
             n_free,
+            indep_free,
         }
+    }
+
+    /// 縮約空間の自由度 `reduced` に対応する自由 DOF 空間の自由度番号。
+    /// 範囲外・対応不明は `None`。
+    pub fn free_dof_of(&self, reduced: usize) -> Option<usize> {
+        self.indep_free
+            .get(reduced)
+            .copied()
+            .filter(|&i| i != usize::MAX)
     }
 
     /// 拘束縮約 Tᵀ·K·T を計算する。

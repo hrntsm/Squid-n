@@ -129,11 +129,7 @@ impl<'m> Analysis<'m> {
             return Ok(Self {
                 model,
                 dofmap,
-                reducer: Reducer {
-                    t_rows: vec![],
-                    n_indep: 0,
-                    n_free: 0,
-                },
+                reducer: Reducer::empty(),
                 solver: make_solver(SolverBackend::Auto),
                 n_indep: 0,
                 semi_precise_t: std::sync::OnceLock::new(),
@@ -195,11 +191,7 @@ impl<'m> Analysis<'m> {
             return Ok(Self {
                 model,
                 dofmap,
-                reducer: Reducer {
-                    t_rows: vec![],
-                    n_indep: 0,
-                    n_free: 0,
-                },
+                reducer: Reducer::empty(),
                 solver: make_solver(SolverBackend::Auto),
                 n_indep: 0,
                 semi_precise_t: std::sync::OnceLock::new(),
