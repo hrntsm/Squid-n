@@ -59,12 +59,8 @@ pub enum ViewMode {
     Deformed,
     /// モード形（固有値結果）
     Mode,
-    /// N 図
-    N,
-    /// Q 図
-    Q,
-    /// M 図
-    M,
+    /// 応力図（N/Q/M。表示する成分は [`ForceComponent`] で切り替える）
+    Force,
     /// CMQ 図（両端固定端モーメント C とせん断 Q）
     Cmq,
     /// 検定比図（部材検定の最大検定比で着色）
@@ -94,6 +90,187 @@ pub enum ModelingAnalysis {
     Static,
     /// 増分解析（弾塑性）: 降伏を考慮し、ファイバー要素と材端集中塑性を使い分ける。
     Incremental,
+}
+
+/// 応力図（[`ViewMode::Force`]）で表示できる成分。
+///
+/// 部材内力ベクトル `[N, Qy, Qz, Mx, My, Mz]` の 6 成分に 1 対 1 で対応し、
+/// 列挙順＝内力ベクトルの添字である（[`Self::force_index`]）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum ForceComponent {
+    /// 軸力 N（引張正）
+    #[default]
+    N,
+    /// 強軸せん断 Qy（Mz 面）
+    Qy,
+    /// 弱軸せん断 Qz（My 面）
+    Qz,
+    /// ねじりモーメント Mx
+    Mx,
+    /// 弱軸曲げ My
+    My,
+    /// 強軸曲げ Mz
+    Mz,
+}
+
+/// 応力図の張り出し面（部材局所座標のどちらの軸へ図を出すか）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum DiagramPlane {
+    /// 局所 ey 面（せい方向。強軸曲げ Mz・強軸せん断 Qy・N・Mx）
+    Ey,
+    /// 局所 ez 面（幅方向。弱軸曲げ My・弱軸せん断 Qz）
+    Ez,
+}
+
+impl ForceComponent {
+    /// 表示順（凡例・チェックボックスの並び）。内力ベクトルの添字順と同じ。
+    pub(crate) const ALL: [ForceComponent; 6] = [
+        ForceComponent::N,
+        ForceComponent::Qy,
+        ForceComponent::Qz,
+        ForceComponent::Mx,
+        ForceComponent::My,
+        ForceComponent::Mz,
+    ];
+
+    /// 部材内力ベクトル `[N, Qy, Qz, Mx, My, Mz]` 内の添字。
+    pub(crate) fn force_index(self) -> usize {
+        match self {
+            ForceComponent::N => 0,
+            ForceComponent::Qy => 1,
+            ForceComponent::Qz => 2,
+            ForceComponent::Mx => 3,
+            ForceComponent::My => 4,
+            ForceComponent::Mz => 5,
+        }
+    }
+
+    /// 図・凡例・チェックボックスの記号ラベル。
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            ForceComponent::N => "N",
+            ForceComponent::Qy => "Qy",
+            ForceComponent::Qz => "Qz",
+            ForceComponent::Mx => "Mx",
+            ForceComponent::My => "My",
+            ForceComponent::Mz => "Mz",
+        }
+    }
+
+    /// 成分固定色（複数成分を重ねたときの識別に用いる。単色塗り・輪郭線・
+    /// 数値ラベル・凡例の色見本で共通）。CMQ 図の配色（C=青・M=紫・Q=緑）と
+    /// 同系統になるよう、曲げ＝紫系／せん断＝緑系／軸力＝青とする。
+    pub(crate) fn color(self) -> egui::Color32 {
+        match self {
+            ForceComponent::N => theme::DATA_BLUE,
+            ForceComponent::Qy => theme::GOOD_GREEN,
+            ForceComponent::Qz => theme::ISOLATOR_TEAL,
+            ForceComponent::Mx => theme::SECONDARY_AMBER,
+            ForceComponent::My => theme::PARETO_RED,
+            ForceComponent::Mz => theme::HILITE_PURPLE,
+        }
+    }
+
+    /// モーメント成分か（表示単位の切り替えに用いる）。
+    pub(crate) fn is_moment(self) -> bool {
+        matches!(
+            self,
+            ForceComponent::Mx | ForceComponent::My | ForceComponent::Mz
+        )
+    }
+
+    /// 表示単位（内部単位 N・N·mm から換算した表示系）。
+    pub(crate) fn unit(self) -> &'static str {
+        if self.is_moment() {
+            "kN·m"
+        } else {
+            "kN"
+        }
+    }
+
+    /// 内部単位（N・N·mm）から表示単位（kN・kN·m）への換算係数。
+    pub(crate) fn display_scale(self) -> f64 {
+        if self.is_moment() {
+            1.0e-6
+        } else {
+            1.0e-3
+        }
+    }
+
+    /// 張り出し面。強軸曲げの組（Qy・Mz）と軸力・ねじりは局所 ey 面、
+    /// 弱軸曲げの組（Qz・My）は局所 ez 面へ出す。これにより 6 成分を同時表示
+    /// しても、直交 2 面に分かれて重なりが減る。
+    pub(crate) fn plane(self) -> DiagramPlane {
+        match self {
+            ForceComponent::Qz | ForceComponent::My => DiagramPlane::Ez,
+            _ => DiagramPlane::Ey,
+        }
+    }
+
+    /// 図として張り出す値の符号（内力値に乗じる）。
+    ///
+    /// 断面力の符号規約は `Qy = dMz/dx`・`Qz = −dMy/dx`（5.2）で、My だけ
+    /// せん断との関係が反転している。応力図は「正のモーメントを引張側へ
+    /// 張り出す」規約のため、My は符号を反転させて張り出すことで、強軸側
+    /// （Mz）を 90° 回した場合と同じ側（引張側）に図が出る。
+    pub(crate) fn plot_sign(self) -> f64 {
+        match self {
+            ForceComponent::My => -1.0,
+            _ => 1.0,
+        }
+    }
+
+    /// 曲げモーメント成分のとき、3 次エルミート補間の勾配に用いるせん断成分。
+    ///
+    /// 張り出し値 `plot_sign·M` に対して `d(張り出し値)/dx = 対応せん断` が
+    /// 成り立つ組（Mz→Qy、My→Qz）を返す。せん断・軸力・ねじりは補間しない。
+    pub(crate) fn moment_gradient_source(self) -> Option<ForceComponent> {
+        match self {
+            ForceComponent::Mz => Some(ForceComponent::Qy),
+            ForceComponent::My => Some(ForceComponent::Qz),
+            _ => None,
+        }
+    }
+}
+
+/// 応力図で表示中の成分の組（6 成分の ON/OFF）。
+///
+/// 既定は M 図プリセット（My・Mz）。複数成分を同時に表示でき、成分ごとに
+/// 独立の最大値で正規化して描く（N[kN] と M[kN·m] は桁が異なるため、
+/// 1 つの最大値を共有できない）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ForceComponents([bool; 6]);
+
+impl Default for ForceComponents {
+    fn default() -> Self {
+        Self::PRESET_M
+    }
+}
+
+impl ForceComponents {
+    /// N 図プリセット（軸力のみ）。
+    pub const PRESET_N: Self = Self([true, false, false, false, false, false]);
+    /// Q 図プリセット（両方向のせん断）。
+    pub const PRESET_Q: Self = Self([false, true, true, false, false, false]);
+    /// M 図プリセット（両方向の曲げ）。既定。
+    pub const PRESET_M: Self = Self([false, false, false, false, true, true]);
+
+    /// 成分が表示中か。
+    pub fn is_on(self, c: ForceComponent) -> bool {
+        self.0[c.force_index()]
+    }
+
+    /// チェックボックスへ渡す可変参照。
+    pub fn flag_mut(&mut self, c: ForceComponent) -> &mut bool {
+        &mut self.0[c.force_index()]
+    }
+
+    /// 表示中の成分を表示順（内力ベクトルの添字順）で列挙する。
+    pub fn selected(self) -> impl Iterator<Item = ForceComponent> {
+        ForceComponent::ALL
+            .into_iter()
+            .filter(move |c| self.is_on(*c))
+    }
 }
 
 /// CMQ 図で表示する成分（C: 固定端モーメント／M: 単純梁中央モーメント／Q: せん断）。
@@ -605,6 +782,7 @@ fn draw_support_legend(
 pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
     let mut mode = app.view_mode;
     let mut mode_idx = app.view_mode_idx;
+    let mut force_components = app.force_components;
     let mut cmq_component = app.cmq_component;
     let mut check_ratio_filter = app.check_ratio_filter;
     let mut modeling_analysis = app.modeling_analysis;
@@ -624,9 +802,7 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
         ui.selectable_value(&mut mode, ViewMode::Shape, "形状");
         ui.selectable_value(&mut mode, ViewMode::Deformed, "変形");
         ui.selectable_value(&mut mode, ViewMode::Mode, "モード");
-        ui.selectable_value(&mut mode, ViewMode::N, "N図");
-        ui.selectable_value(&mut mode, ViewMode::Q, "Q図");
-        ui.selectable_value(&mut mode, ViewMode::M, "M図");
+        ui.selectable_value(&mut mode, ViewMode::Force, "応力図");
         ui.selectable_value(&mut mode, ViewMode::Cmq, "CMQ図");
         ui.selectable_value(&mut mode, ViewMode::CheckRatio, "検定比");
         ui.selectable_value(&mut mode, ViewMode::Hinge, "ヒンジ");
@@ -694,10 +870,32 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
             );
         });
     }
-    // N/Q/M 図: 単色塗り／コンター（値に応じた色分け）を切替。
+    // 応力図: 6 成分（N/Qy/Qz/Mx/My/Mz）をチェックボックスで個別に ON/OFF し、
+    // 選んだ成分をすべて同時に描く。よく使う組はプリセットボタンで切り替える。
+    // 単色塗り／コンター（値に応じた色分け）と数値ラベルの表示もここで切替える。
     // コンター ON 時のみカラーマップ選択（既定 Viridis。TONMANUAL §3）を表示する。
-    if matches!(mode, ViewMode::N | ViewMode::Q | ViewMode::M) {
-        ui.horizontal(|ui| {
+    if mode == ViewMode::Force {
+        ui.horizontal_wrapped(|ui| {
+            ui.label("成分:");
+            for c in ForceComponent::ALL {
+                // ラベルを成分固定色で描き、図・凡例・数値ラベルの色と対応づける。
+                ui.checkbox(
+                    force_components.flag_mut(c),
+                    egui::RichText::new(c.label()).color(c.color()),
+                );
+            }
+            ui.separator();
+            if ui.button("N図").clicked() {
+                force_components = ForceComponents::PRESET_N;
+            }
+            if ui.button("Q図").clicked() {
+                force_components = ForceComponents::PRESET_Q;
+            }
+            if ui.button("M図").clicked() {
+                force_components = ForceComponents::PRESET_M;
+            }
+        });
+        ui.horizontal_wrapped(|ui| {
             // 応力図に変形図を重ねる（変位は自動倍率で節点座標に加味され、
             // 図も変形後の材軸に沿って描かれる）
             ui.toggle_value(&mut app.overlay_deform, "変形表示");
@@ -719,6 +917,11 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
                     });
                 app.contour_colormap = colormap;
             }
+            ui.toggle_value(&mut app.diagram_values, "値を表示")
+                .on_hover_text(
+                    "各部材の両端部と中央（ξ=0・0.5・1.0）の値を kN・kN·m で表示します\
+                     （その成分の最大値の 1% 未満は表示しません）。",
+                );
         });
     }
     // 検定比図: 検定式フィルタ（最大／式別、結果に現れる式のみ選択肢に出す）と
@@ -861,8 +1064,7 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
     let show_deform_options = matches!(
         mode,
         ViewMode::Deformed | ViewMode::Mode | ViewMode::TimeHistory
-    ) || (matches!(mode, ViewMode::N | ViewMode::Q | ViewMode::M)
-        && app.overlay_deform);
+    ) || (mode == ViewMode::Force && app.overlay_deform);
     if show_deform_options {
         ui.horizontal(|ui| {
             ui.toggle_value(&mut app.show_beam_interpolation, "内部たわみ")
@@ -885,6 +1087,7 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
 
     app.view_mode = mode;
     app.view_mode_idx = mode_idx;
+    app.force_components = force_components;
     app.cmq_component = cmq_component;
     app.check_ratio_filter = check_ratio_filter;
     app.modeling_analysis = modeling_analysis;
@@ -984,12 +1187,10 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
     // グリッド・軸（§3-2: 赤=X / 緑=Y / 青=Z）。モデルの背後に先に描く。
     draw_grid_and_axes(&painter, rect, &proj);
 
-    // 節点座標（変形・モード時と、N/Q/M 図の変形重ね表示時は変位を加味）
+    // 節点座標（変形・モード時と、応力図の変形重ね表示時は変位を加味）
     let disp = match mode {
         ViewMode::Deformed => app.current_static().map(|s| s.disp.clone()),
-        ViewMode::N | ViewMode::Q | ViewMode::M if app.overlay_deform => {
-            app.current_static().map(|s| s.disp.clone())
-        }
+        ViewMode::Force if app.overlay_deform => app.current_static().map(|s| s.disp.clone()),
         // `ModalResult::shapes` は剛床等の縮約後独立自由度座標のため直接は使えない。
         // ソルバが節点×6へ展開済みの `node_shapes` を用いる。
         ViewMode::Mode => app
@@ -1214,7 +1415,12 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
     // 部材線・断面ソリッドより先に描き、架構が床の上に重なるようにする。
     // CMQ 図は全体解析（主架構）に関するものなので、小梁・スラブは表示しない。
     // 「床・二次部材」トグル OFF 時も表示しない。
-    if mode != ViewMode::Cmq && app.show_floor_secondary {
+    //
+    // 床・二次部材（スラブ・小梁・間柱）の表示可否は、中心線と断面ソリッドで共通の
+    // 判定とする（断面表示だけがトグルを無視して小梁を描いてしまわないよう、判定を
+    // ここで 1 つの変数に集約して各描画へ渡す）。
+    let show_secondary = mode != ViewMode::Cmq && app.show_floor_secondary;
+    if show_secondary {
         draw_slabs_and_joists(&painter, app, &pts);
     }
 
@@ -1222,7 +1428,8 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
     // 節点・部材線より先に描き、線・シンボル類は上に重ねる（材軸が見えるように）。
     let mut solids_skipped = 0usize;
     if app.show_sections {
-        solids_skipped = solid::draw_section_solids(&painter, &app.model, &coords3, &proj);
+        solids_skipped =
+            solid::draw_section_solids(&painter, &app.model, &coords3, &proj, show_secondary);
     }
 
     // 節点（梁/壁作成モードで選択中の節点は強調表示）。
@@ -1315,7 +1522,7 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
     // （解析対象外を示す暖色アンバー。スラブの暖色と同族で、主架構の
     // 青/グレーと弁別。断面表示中はソリッドが上に描かれているため
     // 材軸線として薄く重ねる）。
-    if app.show_floor_secondary {
+    if show_secondary {
         let secondary_stroke = if app.show_sections {
             egui::Stroke::new(1.0_f32, theme::translucent(theme::SECONDARY_AMBER, 110))
         } else {
@@ -1347,11 +1554,11 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
     // --- 応力図（N/Q/M）: 部材ローカルに沿って描画 ---
     // 変形重ね（`disp` が Some）かつ内部たわみ表示が有効なとき、梁の張り出しは
     // 変形後の Hermite 曲線を基準線に描く。判定に必要な変位と表示倍率を渡す。
-    if matches!(mode, ViewMode::N | ViewMode::Q | ViewMode::M) {
+    if mode == ViewMode::Force {
         diagram::draw_force_diagram(
             &painter,
             app,
-            mode,
+            app.force_components,
             &coords3,
             disp.as_deref(),
             deform_scale_actual,
@@ -1414,8 +1621,8 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
         // N/Q/M 図の凡例（min.y+10）・コンターバー＋ラベル（min.y+30〜56 程度）と
         // 重ならない位置へ
         let y = match mode {
-            ViewMode::N | ViewMode::Q | ViewMode::M if app.diagram_contour => 70.0,
-            ViewMode::N | ViewMode::Q | ViewMode::M => 30.0,
+            ViewMode::Force if app.diagram_contour => 70.0,
+            ViewMode::Force => 30.0,
             _ => 10.0,
         };
         // 手動係数が 1.0 のときは「自動」、それ以外は「自動×係数」を併記する。
@@ -1636,13 +1843,24 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
     th_detail::show_th_detail_window(ui, app);
 }
 
-/// 応力図・CMQ 図のオフセット方向（要素ローカル y 軸）をワールド座標で返す。
+/// 応力図・CMQ 図のオフセット方向（要素ローカル y 軸または z 軸）をワールド座標で返す。
 ///
-/// N/Qy/Mz はローカル x-y 平面（曲げ平面）の成分のため、図はローカル y 方向へ
-/// 張り出す。解析と同じ局所座標系（[`LocalFrame`]: ex=材軸, ey=ref_vector 直交化）
-/// を使うことで、ビューを回転しても図が要素座標系に固定される。
-fn diagram_offset_dir(p_i: [f64; 3], p_j: [f64; 3], ref_vector: [f64; 3]) -> [f64; 3] {
-    squid_n_element::transform::LocalFrame::from_nodes(p_i, p_j, ref_vector).rot[1]
+/// N/Qy/Mx/Mz はローカル x-y 平面（強軸曲げ平面）の成分のため図はローカル y 方向へ、
+/// Qz/My はローカル x-z 平面（弱軸曲げ平面）の成分のため z 方向へ張り出す
+/// （[`ForceComponent::plane`]）。解析と同じ局所座標系（[`LocalFrame`]: ex=材軸、
+/// ey=ref_vector 直交化、ez=ex×ey）を使うことで、ビューを回転しても図が要素座標系に
+/// 固定される。CMQ 図は常に ey 面（[`DiagramPlane::Ey`]）を使う。
+fn diagram_offset_dir(
+    p_i: [f64; 3],
+    p_j: [f64; 3],
+    ref_vector: [f64; 3],
+    plane: DiagramPlane,
+) -> [f64; 3] {
+    let frame = squid_n_element::transform::LocalFrame::from_nodes(p_i, p_j, ref_vector);
+    match plane {
+        DiagramPlane::Ey => frame.rot[1],
+        DiagramPlane::Ez => frame.rot[2],
+    }
 }
 
 /// 部材両端間のワールド距離。ゼロ長部材（材軸が定まらない）の除外判定に使う。
@@ -2042,7 +2260,7 @@ fn draw_cmq_diagram(painter: &egui::Painter, app: &App, coords3: &[[f64; 3]], pr
         let p_i = coords3[g.n0];
         let p_j = coords3[g.n1];
         let l = member_len3(p_i, p_j);
-        let ey = diagram_offset_dir(p_i, p_j, g.ref_vec);
+        let ey = diagram_offset_dir(p_i, p_j, g.ref_vec, DiagramPlane::Ey);
         let p0 = proj.project(p_i);
         let p1 = proj.project(p_j);
 

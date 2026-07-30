@@ -322,6 +322,8 @@ impl WallPanelElement {
                 squid_n_core::model::EndCondition::Fixed,
                 squid_n_core::model::EndCondition::Fixed,
             ],
+            // 壁柱は鉛直材のため、梁のねじれ解放（`beam::torsion`）は適用しない。
+            torsion_release: [false, false],
             eval_sections: vec![0.0, 0.5, 1.0],
             section: data.section,
             material: data.material,

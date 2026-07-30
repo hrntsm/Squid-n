@@ -379,6 +379,9 @@ impl BeamElement {
             axis,
             rigid: data.rigid_zone,
             end_cond: data.end_cond,
+            // 梁のねじり剛性は設計上期待しない（日本の一貫計算の通例）。既定で
+            // i 端のねじれを解放する（判定・例外は `beam::torsion` 参照）。
+            torsion_release: [super::torsion::i_end_torsion_release(data, model), false],
             eval_sections,
             section: data.section,
             material: data.material,

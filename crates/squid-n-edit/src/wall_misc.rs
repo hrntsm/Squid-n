@@ -202,6 +202,27 @@ impl EditCommand for SetMultiOpeningMode {
     }
 }
 
+/// 部材のねじり剛性の扱い（`Model::beam_torsion`）を建物一律に変更する。
+///
+/// 既定は「線材（梁・柱）の i 端ねじれをピン（解放）」で、`Keep` にすると
+/// 全部材でねじり剛性 GJ/L を保持する。剛性そのものが変わるため、呼び出し側は
+/// 実行後に結果を陳腐化させること（UI は `staleness.mark_edited`）。
+/// 逆操作は変更前のモードへの再実行（[`SetMultiOpeningMode`] と同じ対称パターン）。
+pub struct SetBeamTorsion {
+    pub mode: squid_n_core::model::BeamTorsionMode,
+}
+
+impl EditCommand for SetBeamTorsion {
+    fn apply(&self, model: &mut Model) -> Box<dyn EditCommand> {
+        let old = std::mem::replace(&mut model.beam_torsion, self.mode);
+        Box::new(SetBeamTorsion { mode: old })
+    }
+
+    fn label(&self) -> &str {
+        "部材ねじり剛性の扱い変更"
+    }
+}
+
 /// 壁要素（`ElementKind::Wall`/`Shell`）の自重算定属性（`WallAttr`）を
 /// 追加/更新する。`attr.elem` に一致する既存エントリがあれば置換し、
 /// 無ければ末尾に追加する。逆操作は変更前の状態への復元

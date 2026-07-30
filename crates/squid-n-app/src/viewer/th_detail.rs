@@ -978,6 +978,7 @@ mod tests {
             axis: LocalFrame::from_nodes([0.0, 0.0, 0.0], [1000.0, 0.0, 0.0], [0.0, 1.0, 0.0]),
             rigid: RigidZone::default(),
             end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+            torsion_release: [false, false],
             eval_sections: vec![0.0, 1.0],
             section: None,
             material: None,

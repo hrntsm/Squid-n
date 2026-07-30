@@ -761,6 +761,11 @@ pub(super) fn show_modeling_tooltip(ui: &egui::Ui, app: &App, elem_id: squid_n_c
                     end_label(elem.end_cond[0]),
                     end_label(elem.end_cond[1])
                 ));
+                // 梁のねじり剛性を期待しない既定モデル化（i 端ねじれ解放）が
+                // この部材に適用されているかを明示する（適用されない例外がある）。
+                if squid_n_element::beam::i_end_torsion_release(elem, &app.model) {
+                    ui.label("ねじれ: i 端ピン（部材全長で Mx=0）");
+                }
                 let rz = &elem.rigid_zone;
                 if rz.length_i > 0.0 || rz.length_j > 0.0 {
                     ui.label(format!(

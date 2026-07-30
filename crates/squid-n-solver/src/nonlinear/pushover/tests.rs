@@ -3243,3 +3243,75 @@ fn test_pushover_wall_flexural_yield_softens() {
         k0 * p2.roof_disp
     );
 }
+
+/// 接線剛性が初めから特異なモデルは、ソルバの内部表現（`factor: NotPositiveDefinite`）
+/// ではなく**どの節点のどの自由度に剛性が無いか**を示す日本語診断で停止する。
+///
+/// 回帰対象: 従来は `newton_converge` の分解失敗をそのまま `Err` として上げており、
+/// UI には「増分解析エラー: factor: NotPositiveDefinite」だけが出て原因に辿り着けなかった。
+#[test]
+fn test_pushover_singular_tangent_reports_dof_diagnosis() {
+    // 単柱モデルの頂部ねじり拘束（rz）を外すと、ファイバ柱はねじり剛性
+    // （断面 J は正だが材料の G=0）を持たないため rz の剛性が 0 になり特異化する。
+    let mut model = single_column_model(235.0, 100_000.0);
+    model.nodes[1].restraint = Dof6Mask::FREE;
+    let dofmap = DofMap::build(&model);
+    let reducer = Reducer::build(&model, &dofmap);
+    let err = pushover_analysis(
+        &mut model,
+        &dofmap,
+        &reducer,
+        SeismicDir::X,
+        10,
+        50.0,
+        false,
+        false,
+        0.0,
+    )
+    .expect_err("特異なモデルは診断付きで停止する");
+    assert!(
+        err.contains("剛性がありません") && err.contains("節点 1"),
+        "自由度を名指しした診断になっていない: {err}"
+    );
+    assert!(
+        !err.contains("NotPositiveDefinite"),
+        "ソルバ内部表現がそのまま露出している: {err}"
+    );
+}
+
+/// 荷重制御フェーズが増分半減でも収束しない場合、結果を「Qu=0 の空の性能曲線」として
+/// 返さず、原因を切り分けた日本語メッセージで停止する（ソルバ内部表現は出さない）。
+///
+/// 回帰対象: 分解失敗を非収束扱いへ変えた際に、1 ステップも確定していないのに
+/// `Ok` で空の結果（Qu=0）を返すと保有水平耐力 0 と誤認させる（危険側）。
+#[test]
+fn test_pushover_unconverged_load_control_reports_reason() {
+    // fy を極小にすると最初の増分から釣合いに収束できない（全断面が即降伏する）。
+    let mut model = single_column_model(0.5, 100_000.0);
+    let dofmap = DofMap::build(&model);
+    let reducer = Reducer::build(&model, &dofmap);
+    let err = pushover_analysis_recording(
+        &mut model,
+        &dofmap,
+        &reducer,
+        SeismicDir::X,
+        20,
+        PushoverTarget::from_max_disp(200.0),
+        PushoverControl::Phased,
+        false,
+        false,
+        false,
+        0.0,
+        false,
+        DuctilityMethod::default(),
+    )
+    .expect_err("1 ステップも確定しないなら空の結果を返さず停止する");
+    assert!(
+        err.contains("収束しません"),
+        "非収束であることが伝わらない: {err}"
+    );
+    assert!(
+        !err.contains("NotPositiveDefinite") && !err.contains("factor:"),
+        "ソルバ内部表現がそのまま露出している: {err}"
+    );
+}

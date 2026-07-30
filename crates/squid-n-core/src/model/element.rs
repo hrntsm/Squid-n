@@ -67,6 +67,22 @@ pub enum EndCondition {
     SemiRigid { k_theta: f64 },
 }
 
+/// 梁（水平材）のねじり剛性の扱い（建物一律のモデル化方針）。
+///
+/// 日本の一貫計算プログラムでは、床と一体になる大梁のねじり剛性を設計上
+/// 期待しないのが通例のため、既定は「i 端のねじれを解放する」とする。
+/// 判定と例外（解放すると材軸まわり回転が浮く節点がある部材は解放しない）は
+/// `squid_n_element::beam::i_end_torsion_release` を参照。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum BeamTorsionMode {
+    /// 水平材の i 端ねじれをピン（解放）とし、梁のねじり剛性を期待しない（既定）。
+    #[default]
+    ReleaseIEnd,
+    /// ねじり剛性 GJ/L を両端で保持する。ねじりで釣り合わせるモデル化
+    /// （床小梁の格子解析の剛接十字など）で用いる。
+    Keep,
+}
+
 /// 剛域長の出所。Auto は再算定で上書きされる、Manual は保護される（設計書 §6.2.1）。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ZoneSource {

@@ -5,6 +5,7 @@
 //!   実行し、ヒンジ・せん断降伏・崩壊機構・部材別応答を集約する本体
 
 use super::assembly::{add_support_spring_f_int, assemble_k_cached, compute_f_int};
+use super::diagnosis::{nonconvergence_detail, tangent_singular_diagnosis};
 use super::ductility::{compute_ductility_refs, update_ductility, DuctilityTracker};
 use super::hinge::{compute_hinge_thresholds, track_hinges};
 use super::mechanism::determine_mechanism;
@@ -236,6 +237,24 @@ pub fn pushover_analysis_recording(
         }
     }
 
+    // 初期接線剛性の分解可否をここで確かめる。以降のフェーズ（長期載荷・荷重制御・
+    // 変位制御）は分解の失敗を「非収束」として増分を刻み直す扱いにしたため、
+    // **初めから特異なモデル**（剛性の無い自由度がある・拘束不足）は増分をいくら
+    // 刻んでも解けず、原因も伝わらないまま「収束しません」で終わってしまう。
+    // ここで一度だけ判定し、自由度を名指しした診断メッセージで停止する。
+    if reducer.n_indep > 0 {
+        let k_free = assemble_k_cached(model, dofmap, &behaviors, use_kg, &mut st.k_free_cache);
+        let k_red = reducer.reduce_k_cached(&k_free, &mut st.k_red_cache);
+        if st.solver.factorize(&k_red).is_err() {
+            return Err(tangent_singular_diagnosis(
+                model,
+                dofmap,
+                &k_free,
+                "増分解析の初期接線剛性",
+            ));
+        }
+    }
+
     let thresholds = compute_hinge_thresholds(model);
     let shear_thresholds = compute_shear_yield_thresholds(model);
     // 目標最大層間変形角の判定に使う階高（elevation の隣接差分、最下層は最下端節点まで）。
@@ -353,7 +372,7 @@ pub fn pushover_analysis_recording(
                     n_active,
                     &total_disp,
                     &mut st,
-                )? {
+                ) {
                     Some(step_du_free) => {
                         for b in behaviors.iter_mut() {
                             b.commit_state();
@@ -372,10 +391,21 @@ pub fn pushover_analysis_recording(
                 }
             }
             if !step_ok {
-                return Err(
-                    "長期荷重の初期載荷が収束しません（長期荷重に対して構造が不安定な可能性）"
-                        .into(),
+                // 収束しない原因（剛性ゼロの自由度・耐力劣化による非正定値化／
+                // 剛性は健全で反復が収束しないだけ）を現在の接線剛性から切り分け、
+                // 定型文だけで終わらせない。
+                let detail = current_failure_detail(
+                    model,
+                    dofmap,
+                    reducer,
+                    &behaviors,
+                    use_kg,
+                    &mut st,
+                    "長期荷重の初期載荷における接線剛性",
                 );
+                return Err(format!(
+                    "長期荷重の初期載荷が収束しません（長期荷重に対して構造が不安定な可能性）。{detail}"
+                ));
             }
         }
         // 長期載荷完了状態を 1 ステップとして記録する（λ=0、性能曲線の始点）。
@@ -461,7 +491,7 @@ pub fn pushover_analysis_recording(
                 n_active,
                 &total_disp,
                 &mut st,
-            )?;
+            );
 
             if let Some(step_du_free) = converged {
                 for b in behaviors.iter_mut() {
@@ -909,6 +939,24 @@ pub fn pushover_analysis_recording(
         }
     }
 
+    // 1 ステップも確定しなかった場合は結果を返さない。荷重制御の最初の増分すら
+    // 収束しなかったということで、空の性能曲線（Qu=0）を「解析できた」として
+    // 返すと保有水平耐力を 0 と誤認させる（危険側）。原因を診断して停止する。
+    if steps.is_empty() {
+        let detail = current_failure_detail(
+            model,
+            dofmap,
+            reducer,
+            &behaviors,
+            use_kg,
+            &mut st,
+            "接線剛性",
+        );
+        return Err(format!(
+            "水平力の増分が 1 ステップも収束しませんでした（性能曲線が得られません）。{detail}"
+        ));
+    }
+
     let mechanism = determine_mechanism(&hinges, model, dir);
     // 保有水平耐力 Qu = 性能曲線上の最大ベースシア（崩壊機構形成時の水平耐力）。
     // 単調載荷では機構形成後に頭打ちとなるため、ピーク値を採る。
@@ -967,6 +1015,26 @@ pub fn pushover_analysis_recording(
     })
 }
 
+/// 現時点の要素状態における接線剛性を組み立て直し、非収束の原因を切り分けた
+/// 診断メッセージを返す（[`nonconvergence_detail`] のラッパー）。
+///
+/// 分解可否の判定でソルバの状態（分解結果）を上書きするため、以降の求解に使わない
+/// 場面——すなわちエラーを返す直前——でのみ呼ぶこと。
+fn current_failure_detail(
+    model: &Model,
+    dofmap: &DofMap,
+    reducer: &Reducer,
+    behaviors: &[Box<dyn ElementBehavior>],
+    use_kg: bool,
+    st: &mut SolverState,
+    phase: &str,
+) -> String {
+    let k_free = assemble_k_cached(model, dofmap, behaviors, use_kg, &mut st.k_free_cache);
+    let k_red = reducer.reduce_k_cached(&k_free, &mut st.k_red_cache);
+    let factorizable = st.solver.factorize(&k_red).is_ok();
+    nonconvergence_detail(model, dofmap, &k_free, factorizable, phase)
+}
+
 /// ステップ変位増分 `du_free`（全自由 DOF 順）を各要素の局所自由度へ写像し、
 /// トライアル状態として反映する（確定は呼び出し側の `commit_state`）。
 /// 長期載荷・荷重制御・変位制御・弧長法の全フェーズで共有する。
@@ -1011,7 +1079,16 @@ fn apply_du_to_behaviors(
 /// 全 Newton 修正量の累積（＝ステップ変位増分。「最後の修正量」だけを返すと
 /// 塑性ステップで変位軸が過小評価される）を `Some` で返し、要素状態は
 /// トライアル反映済み・未確定のまま戻す（確定・巻き戻しは呼び出し側の責務）。
-/// 収束しなければ `Ok(None)`、分解・求解の失敗は `Err`。
+/// 収束しなければ `None`。
+///
+/// **接線剛性の分解・求解の失敗（`NotPositiveDefinite` 等）も `None`（非収束）として
+/// 返す**。降伏が進むと接線剛性は正定値性を失い得る（崩壊機構の形成・耐力劣化）ため、
+/// これは増分が大きすぎるときの非収束と同じ扱い——呼び出し側が増分を半減して解き直し、
+/// それでも進めなければフェーズを打ち切る——が適切である。従来はここで `Err` を返して
+/// **解析全体を中止**しており、機構形成の直前まで得られていた性能曲線ごと捨てて
+/// 「増分解析エラー: factor: NotPositiveDefinite」だけを表示していた（変位制御・
+/// 弧長法フェーズは元々この失敗を増分半減へ回しており、扱いが揃っていなかった）。
+/// 初めから特異なモデルは呼び出し側の初期接線剛性チェックが診断付きで停止させる。
 ///
 /// `total_disp_base` はステップ開始時点（直前確定状態）の全自由 DOF 変位。
 /// 支点ばね（`Node::support_spring`）の内力 `k・u` はトライアル変位
@@ -1035,7 +1112,7 @@ fn newton_converge(
     n_active: usize,
     total_disp_base: &[f64],
     st: &mut SolverState,
-) -> Result<Option<Vec<f64>>, String> {
+) -> Option<Vec<f64>> {
     let mut step_du_free = vec![0.0; n_active];
     for _iter in 0..50 {
         let k_free = assemble_k_cached(model, dofmap, behaviors, use_kg, &mut st.k_free_cache);
@@ -1053,21 +1130,22 @@ fn newton_converge(
         let r_norm: f64 = st.r_red.iter().map(|x| x * x).sum::<f64>().sqrt();
         let f_norm: f64 = st.f_ext_red.iter().map(|x| x * x).sum::<f64>().sqrt();
         if r_norm < 1e-6 * f_norm.max(1.0) {
-            return Ok(Some(step_du_free));
+            return Some(step_du_free);
         }
-        st.solver
-            .factorize(&k_red)
-            .map_err(|e| format!("factor: {:?}", e))?;
-        st.solver
-            .solve_into(&st.r_red, &mut st.du_red)
-            .map_err(|e| format!("solve: {:?}", e))?;
+        // 分解・求解の失敗は非収束として返す（関数ドキュメント参照）。
+        if st.solver.factorize(&k_red).is_err() {
+            return None;
+        }
+        if st.solver.solve_into(&st.r_red, &mut st.du_red).is_err() {
+            return None;
+        }
         reducer.expand_u_into(&st.du_red, &mut st.du_free);
         for (acc, &d) in step_du_free.iter_mut().zip(st.du_free.iter()) {
             *acc += d;
         }
         apply_du_to_behaviors(model, dofmap, behaviors, &st.du_free);
     }
-    Ok(None)
+    None
 }
 
 /// 初期接線剛性で K·δu = q を 1 回解き、荷重係数 λ あたりの頂部変位の弾性勾配

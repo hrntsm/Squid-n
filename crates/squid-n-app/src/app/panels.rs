@@ -634,9 +634,53 @@ impl App {
         ui.add_space(6.0);
         self.wind_condition_section(ui);
         ui.add_space(6.0);
+        self.member_modeling_section(ui);
+        ui.add_space(6.0);
         self.calc_condition_section(ui);
         ui.add_space(6.0);
         self.stories_section(ui);
+    }
+
+    /// 部材のモデル化（建物一律）。解析条件ではなく「部材をどう解くか」の設定で、
+    /// 変更した時点でモデルへ反映される（準備計算の実行を待たない）。剛性が変わる
+    /// ため、変更すると結果は陳腐化する（`staleness.mark_edited`）。
+    fn member_modeling_section(&mut self, ui: &mut egui::Ui) {
+        egui::CollapsingHeader::new("部材のモデル化")
+            .default_open(false)
+            .id_salt("as_member_modeling")
+            .show(ui, |ui| {
+                use squid_n_core::model::BeamTorsionMode;
+                let mut release = self.model.beam_torsion == BeamTorsionMode::ReleaseIEnd;
+                let resp = ui
+                    .checkbox(&mut release, "部材 i 端のねじりをピン（梁・柱）")
+                    .on_hover_text(
+                        "日本の一貫計算の通例に合わせ、線材（梁要素。柱を含む）の i 端の\
+                     ねじれ回転をピンとしてモデル化します。ねじりは材長方向に一定のため、\
+                     解放した部材は全長で Mx=0 になります。\
+                     ただし、ねじりを解放すると材軸まわりの回転が拘束されなくなる節点を\
+                     持つ部材（一直線に並ぶ部材だけが集まる中間節点・片持ち先端など）は、\
+                     剛性行列が特異になるため自動的に対象外とし、ねじり剛性を保持します。\
+                     対象外になった部材は準備計算の結果タブで確認できます。",
+                    );
+                if resp.changed() {
+                    let mode = if release {
+                        BeamTorsionMode::ReleaseIEnd
+                    } else {
+                        BeamTorsionMode::Keep
+                    };
+                    self.undo.run(
+                        &mut self.model,
+                        Box::new(squid_n_edit::SetBeamTorsion { mode }),
+                    );
+                    self.staleness.mark_edited();
+                }
+                ui.colored_label(
+                    crate::theme::GRAY_600,
+                    "OFF にすると全部材でねじり剛性 GJ/L を保持します。\
+                     床小梁の格子解析は、交差する小梁が両端を大梁にねじれ止めされた\
+                     一本材であるため、この設定によらず常にねじり剛性を保持します。",
+                );
+            });
     }
 
     /// 地震力（Ai 分布）の算定諸元。準備計算が EX/EY 荷重ケースを組み立てる入力。
@@ -1676,7 +1720,8 @@ impl App {
     /// 設計タブ：検定表（許容応力度・保有水平耐力）と MN 相関曲面ビューを切り替える。
     pub(crate) fn design_tab_panel(&mut self, ui: &mut egui::Ui) {
         // 断面算定の対象荷重（ケース／組合せ）を選ぶドロップダウン用の選択肢。
-        // 長期/短期区分は上部ツールバーの「荷重: 長期/短期」に表示される。
+        // 長期/短期区分は選んだ組合せ名から自動判定され（令82条の荷重組合せ:
+        // G+P=長期、地震・積雪・風入り=短期）、対象荷重の右に読み取り専用で表示する。
         let result_options = self.result_display_options();
         let current_key = self.nav.focus_result.or(self.last_static);
         let mut selected_result: Option<StaticKey> = None;
@@ -1717,6 +1762,16 @@ impl App {
                             }
                         }
                     });
+                // 荷重継続性区分（許容応力度の長期/短期）。対象荷重から自動判定した
+                // 結果の表示のみで、ここでの手動切替は行わない。
+                let term_label = match self.design_term {
+                    LoadTerm::Long => "長期",
+                    LoadTerm::Short => "短期",
+                };
+                ui.label(format!("許容応力度: {term_label}")).on_hover_text(
+                    "対象荷重（組合せ）の内容から自動判定します（令82条: G+P=長期、\
+                         地震・積雪・風を含む組合せ=短期）。",
+                );
             }
         });
         if let Some(key) = selected_result {

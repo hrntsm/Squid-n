@@ -40,6 +40,7 @@ fn make_test_beam_element(as_val: f64) -> crate::beam::BeamElement {
         },
         rigid: squid_n_core::model::RigidZone::default(),
         end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+        torsion_release: [false, false],
         eval_sections: vec![],
         section: None,
         material: None,

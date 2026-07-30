@@ -67,6 +67,12 @@ pub struct PreparationResult {
     pub member_stiffness: Vec<PrepMemberStiffnessRow>,
     /// 剛性割増し・等価換算の算定対象となった梁要素の総数。
     pub member_stiffness_candidates: usize,
+    /// ねじり解放（i 端ねじれピン）の対象外となり、ねじり剛性が残る部材。
+    /// 部材 ID 昇順。設定が OFF（全部材で保持）のときは空。
+    pub torsion_skipped: Vec<PrepTorsionSkipRow>,
+    /// ねじり解放の設定が有効か（`Model::beam_torsion == ReleaseIEnd`）。
+    /// false のときは全部材でねじり剛性を保持している。
+    pub torsion_release_enabled: bool,
     /// 荷重ケースの集計（`model.load_cases` と同順）。
     pub load_cases: Vec<PrepLoadCaseRow>,
     /// モデル整合性チェックのエラー件数。
@@ -209,6 +215,21 @@ pub struct PrepWindRow {
     pub pressure: f64,
     /// 層水平力 [N]。
     pub force: f64,
+}
+
+/// ねじり解放（i 端ねじれピン）の対象外となった部材の 1 行。
+///
+/// 対象外になるのは「解放すると材軸まわりの回転を拘束するものが無い節点が
+/// 生じる部材」で、この部材だけがねじり剛性 GJ/L を保持する。ねじり剛性を
+/// もともと持たない部材（断面の J≤0・材料の G≤0・トラス扱いのブレース）は
+/// 解放してもしなくても剛性が 0 のため、この表には含めない。
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct PrepTorsionSkipRow {
+    pub elem: ElemId,
+    /// 部材種別（柱／梁／ブレース）。
+    pub kind: squid_n_design_jp::MemberKind,
+    /// 判定に落ちた節点（この節点の材軸まわり回転を拘束するものが無い）。
+    pub node: NodeId,
 }
 
 /// 剛域の算定結果 1 部材分。
@@ -428,6 +449,7 @@ impl App {
         let (wind, wind_note) = self.build_prep_wind();
         let (rigid_zones, rigid_zone_candidates) = self.build_prep_rigid_zones();
         let (member_stiffness, member_stiffness_candidates) = self.build_prep_member_stiffness();
+        let torsion_skipped = self.build_prep_torsion_skipped();
         PreparationResult {
             computed_at: SystemTime::now(),
             summary: self.build_prep_summary(),
@@ -442,6 +464,9 @@ impl App {
             width_thickness: self.build_prep_width_thickness(),
             member_stiffness,
             member_stiffness_candidates,
+            torsion_skipped,
+            torsion_release_enabled: self.model.beam_torsion
+                == squid_n_core::model::BeamTorsionMode::ReleaseIEnd,
             load_cases: self.build_prep_load_cases(),
             diag_errors,
             diag_warnings,
@@ -691,6 +716,45 @@ impl App {
             });
         }
         (rows, candidates)
+    }
+
+    /// ねじり解放（i 端ねじれピン）の対象外となった部材を一覧化する。
+    ///
+    /// 「ねじり剛性が残っている部材」を確認するための表なので、判定で除外された
+    /// 部材（[`squid_n_element::beam::TorsionReleaseSkip::UnrestrainedRotation`]）
+    /// だけを載せる。ねじり剛性をもともと持たない部材は、解放してもしなくても
+    /// 剛性が 0 で設計上の影響が無いため対象外とする。
+    fn build_prep_torsion_skipped(&self) -> Vec<PrepTorsionSkipRow> {
+        use squid_n_element::beam::TorsionReleaseSkip;
+        let model = &self.model;
+        let mut rows = Vec::new();
+        for e in &model.elements {
+            let Some(TorsionReleaseSkip::UnrestrainedRotation { node }) =
+                squid_n_element::beam::i_end_torsion_release_skip(e, model)
+            else {
+                continue;
+            };
+            // ねじり剛性をもともと持たない部材は載せない（J≤0 または G≤0）。
+            let j = e
+                .section
+                .and_then(|sid| model.sections.get(sid.index()))
+                .map(|s| s.j)
+                .unwrap_or(0.0);
+            let g = e
+                .material
+                .and_then(|mid| model.materials.get(mid.index()))
+                .map(|m| m.shear_modulus())
+                .unwrap_or(0.0);
+            if j <= 0.0 || g <= 0.0 {
+                continue;
+            }
+            rows.push(PrepTorsionSkipRow {
+                elem: e.id,
+                kind: super::member_kind_of(e, model),
+                node,
+            });
+        }
+        rows
     }
 
     /// 断面性能を一覧化する。断面ごとに使用部材数と、割り当てられた材料
