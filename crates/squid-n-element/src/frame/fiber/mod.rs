@@ -620,8 +620,8 @@ impl FiberBeam {
         // 剛域長と可撓長。断面積分・B 行列・せん断・幾何剛性はすべて可撓長基準で
         // 組み、可撓端自由度を剛体アームで節点自由度へ写す（弾性梁と同じ扱い）。
         let (rigid_i, rigid_j) = crate::rigid_arm::resolve_lengths(
-            data.rigid_zone.length_i,
-            data.rigid_zone.length_j,
+            data.rigid_zone.rigid_length_i(),
+            data.rigid_zone.rigid_length_j(),
             length,
         );
         let flex_length = length - rigid_i - rigid_j;

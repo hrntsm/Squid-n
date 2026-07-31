@@ -404,10 +404,11 @@ impl App {
     /// 解析前に仕口パネル要素を再生成してモデルへ反映する。
     ///
     /// `Model::panel_zone` が有効なら S 造（CFT を除く）の柱梁接合節点へパネルを
-    /// 設け、無効なら既存のパネルを取り除く。剛域の自動算定と同じく冪等なので、
-    /// 各解析エントリの先頭で毎回呼んでよい。パネル分のオフセットを剛域へ折り込む
-    /// 都合上、剛域の自動算定より**後**に呼ぶ必要がある
-    /// （`panel_offset::resolve` が柱フェース距離 `RigidZone::face_i/j` を参照する）。
+    /// 設け、無効なら既存のパネルを取り除く。あわせて部材の
+    /// `RigidZone::panel_offset_i/j` を現在のパネル配置から求め直す。
+    ///
+    /// 剛域の自動算定と同じく冪等で、書き込み先が剛域長 `length_i/j` とは別の
+    /// フィールドのため、剛域算定との呼び出し順にも依存しない。
     fn apply_panel_zones_for_analysis(&mut self) {
         self.generated_panels = squid_n_element::panel_gen::apply_auto_panel_zones(&mut self.model);
     }

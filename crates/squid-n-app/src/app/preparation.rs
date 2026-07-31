@@ -277,9 +277,13 @@ pub struct PrepRigidZoneRow {
     /// i 端・j 端の柱フェース距離 [mm]（危険断面位置の基準）。
     pub face_i: f64,
     pub face_j: f64,
-    /// 可とう長 L' = L − λi − λj [mm]。
+    /// i 端・j 端の仕口パネル分オフセット [mm]（パネルが無い端は 0）。
+    /// 剛域長とは別の量で、剛体アーム長は両者の大きい方になる。
+    pub panel_offset_i: f64,
+    pub panel_offset_j: f64,
+    /// 可とう長 L' = L − 剛体アーム長 [mm]（剛域長とパネルオフセットの大きい方を控除）。
     pub clear_length: f64,
-    /// 剛域比 (λi + λj) / L。
+    /// 剛域比（剛体アーム長の合計）/ L。
     pub ratio: f64,
 }
 
@@ -734,7 +738,8 @@ impl App {
                 nj.coord[2] - ni.coord[2],
             ];
             let length = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
-            let clear_length = length - rz.length_i - rz.length_j;
+            let (arm_i, arm_j) = (rz.rigid_length_i(), rz.rigid_length_j());
+            let clear_length = length - arm_i - arm_j;
             rows.push(PrepRigidZoneRow {
                 elem: e.id,
                 kind: super::member_kind_of(e, model),
@@ -747,9 +752,11 @@ impl App {
                 source_j: rz.source_j,
                 face_i: rz.face_i,
                 face_j: rz.face_j,
+                panel_offset_i: rz.panel_offset_i,
+                panel_offset_j: rz.panel_offset_j,
                 clear_length,
                 ratio: if length > 0.0 {
-                    (rz.length_i + rz.length_j) / length
+                    (arm_i + arm_j) / length
                 } else {
                     0.0
                 },

@@ -14,9 +14,9 @@
 //! - 冷間成形角形鋼管の軸力比に用いる存在軸力は当該解析ケースの軸力
 //!   （`NL + 1.5·NE` の割増は組合せ分離情報が無いため未対応）。
 //! - S 造パネルの梁段違い形式（せい差 150mm 以上）は判別せず標準形式で計算する。
-//! - S 造パネルの軸力比 n は最初に見つかった鋼柱 1 本の軸力から算定する
-//!   （本来の「上下階の柱軸力の平均値＋ブレース軸力の鉛直方向成分」は
-//!   未対応の簡略化）。パネルの Fy も同じ柱の鋼種から板厚 40mm 区分で解決する
+//! - S 造パネルの軸力比 n は諸元を採った柱（実効体積 Ve が最小の柱）1 本の
+//!   軸力から算定する（本来の「上下階の柱軸力の平均値＋ブレース軸力の鉛直方向
+//!   成分」は未対応の簡略化）。パネルの Fy も同じ柱の鋼種から板厚 40mm 区分で解決する
 //!   （「下側柱の降伏強さ」の上下判別・実パネル厚の板厚区分は未対応。
 //!   tp > 40mm の極厚パネルでは F 値を過大評価しうる点に注意）。
 //! - 耐震壁は `SectionShape::RcWall` を割り当てた Wall 要素のみ検定する。
@@ -214,7 +214,7 @@ pub fn collect_joint_checks_with_long(
         });
 
         rc_joint::check_rc_joint(&cols, &beams, nid, &mut out);
-        steel_panel::check_s_panel(&cols, &beams, nid, panel_moment, &mut out);
+        steel_panel::check_s_panel(model, &cols, &beams, nid, panel_moment, &mut out);
         src_panel::check_src_panel(&cols, &beams, nid, term, &mut out);
         cold_formed::check_cold_formed(&cols, &beams, nid, long_member_forces, &mut out);
     }

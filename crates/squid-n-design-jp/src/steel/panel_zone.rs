@@ -168,8 +168,8 @@ mod tests {
             filled: true,
             ..steel
         };
-        assert!(steel.is_modeling_target(), "角形鋼管はモデル化の対象");
-        assert!(!cft.is_modeling_target(), "CFT はモデル化の対象外");
+        assert!(!steel.filled, "角形鋼管はモデル化の対象");
+        assert!(cft.filled, "CFT はモデル化の対象外");
 
         // 検定側は充填の有無で結果が変わらない。
         let check = |geometry: PanelGeometry| {

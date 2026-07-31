@@ -134,7 +134,7 @@ fn flexible_length(data: &ElementData, model: &Model) -> f64 {
         + (n1.coord[1] - n0.coord[1]).powi(2)
         + (n1.coord[2] - n0.coord[2]).powi(2))
     .sqrt();
-    let l_flex = l - data.rigid_zone.length_i - data.rigid_zone.length_j;
+    let l_flex = l - data.rigid_zone.rigid_length_i() - data.rigid_zone.rigid_length_j();
     if l_flex > 0.0 {
         l_flex
     } else {

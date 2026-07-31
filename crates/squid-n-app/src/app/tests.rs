@@ -5631,9 +5631,12 @@ fn test_preparation_lists_rigid_zones() {
     );
     for r in &prep.rigid_zones {
         assert!(r.length > 0.0);
-        assert!((r.clear_length - (r.length - r.zone_i - r.zone_j)).abs() < 1e-9);
-        assert!((r.ratio - (r.zone_i + r.zone_j) / r.length).abs() < 1e-12);
-        // モデル側の剛域長と一致する（表示が実際の解析入力と同じであること）。
+        // 可とう長は剛体アーム長（剛域長と仕口パネル分オフセットの大きい方）を控除する。
+        let arm_i = r.zone_i.max(r.panel_offset_i);
+        let arm_j = r.zone_j.max(r.panel_offset_j);
+        assert!((r.clear_length - (r.length - arm_i - arm_j)).abs() < 1e-9);
+        assert!((r.ratio - (arm_i + arm_j) / r.length).abs() < 1e-12);
+        // モデル側の値と一致する（表示が実際の解析入力と同じであること）。
         let elem = app
             .model
             .elements
@@ -5642,6 +5645,8 @@ fn test_preparation_lists_rigid_zones() {
             .expect("部材");
         assert_eq!(elem.rigid_zone.length_i, r.zone_i);
         assert_eq!(elem.rigid_zone.length_j, r.zone_j);
+        assert_eq!(elem.rigid_zone.panel_offset_i, r.panel_offset_i);
+        assert_eq!(elem.rigid_zone.panel_offset_j, r.panel_offset_j);
     }
 }
 

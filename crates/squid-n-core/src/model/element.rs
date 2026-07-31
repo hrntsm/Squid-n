@@ -97,7 +97,7 @@ pub enum BeamTorsionMode {
 ///
 /// CFT も対象外とする。充填コンクリートと通しダイアフラムが接合部のせん断挙動へ
 /// 関与し、鋼管のみの実効体積による弾性せん断パネルでは剛性を表せないため
-/// （`squid_n_core::panel_zone::PanelGeometry::is_modeling_target`）。
+/// （`squid_n_core::panel_zone::PanelJoint::has_filled_column`）。
 ///
 /// 検定（S 造パネルゾーンの断面検定）は本設定によらず常に実行し、**CFT も
 /// 検定の対象に含める**（モデル化と検定で対象範囲が異なる）。
@@ -124,14 +124,20 @@ pub enum ZoneSource {
     Manual,
 }
 
-/// 部材端の剛域（接合部の有限寸法）。可とう長 L' = L − length_i − length_j。
+/// 部材端の剛域（接合部の有限寸法）。可とう長 L' = L − 剛体アーム長。
 /// 力学計算は sc-element 側。ここではモデルに保持・永続化するデータ。
 ///
-/// **剛域長（length_i/j）とフェイス距離（face_i/j）は別概念**（設計書 §6.2.1）。
-/// - `length_i/j`: 剛性計算に使う剛域長 `λ = D_orth/2 − D_self/4`（低減率 `reduction` を含む）。
+/// **次の 3 つは別概念**（設計書 §6.2.1、計算根拠 4.1.4・4.1.5）。
+/// - `length_i/j`: 剛域の自動算定・手動指定による剛域長
+///   `λ = D_orth/2 − D_self/4`（低減率 `reduction` を含む）。
+/// - `panel_offset_i/j`: 仕口パネルを設けた接合部で、部材がパネル面まで離れて
+///   接合することによるオフセット。部材配置から決まる幾何量。
 /// - `face_i/j`: 断面算定・危険断面位置（§6.2.3）に使う柱フェース距離 `D_orth/2`。
 ///   剛域長のような低減率調整は行わない幾何量であり、節点から接合する直交部材せいの
 ///   半分までの距離をそのまま保持する。
+///
+/// 剛性計算に効く**剛体アームの長さ**は [`Self::rigid_length_i`] /
+/// [`Self::rigid_length_j`] で取る。剛域長とパネルオフセットの大きい方になる。
 #[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct RigidZone {
     pub length_i: f64,
@@ -146,6 +152,16 @@ pub struct RigidZone {
     /// 柱フェース距離 [mm]（j端）。意味は `face_i` と同様。
     #[serde(default)]
     pub face_j: f64,
+    /// 仕口パネル分のオフセット [mm]（i 端）。パネルが無い端は 0。
+    ///
+    /// 剛域長 `length_i` とは**別に保持する**。剛域の自動算定
+    /// （`apply_auto_rigid_zones`）は `Auto` 端の `length_i` を無条件に再算定するため、
+    /// 同じ場所へ入れると解析経路によってオフセットが消える。
+    #[serde(default)]
+    pub panel_offset_i: f64,
+    /// 仕口パネル分のオフセット [mm]（j 端）。意味は `panel_offset_i` と同様。
+    #[serde(default)]
+    pub panel_offset_j: f64,
 }
 
 impl Default for RigidZone {
@@ -158,7 +174,24 @@ impl Default for RigidZone {
             reduction: 1.0,
             face_i: 0.0,
             face_j: 0.0,
+            panel_offset_i: 0.0,
+            panel_offset_j: 0.0,
         }
+    }
+}
+
+impl RigidZone {
+    /// i 端の剛体アーム長 [mm]（剛域長と仕口パネル分オフセットの大きい方）。
+    ///
+    /// 可撓長の控除・剛域変換・幾何剛性・せん断降伏の内法高さ・座屈長さの剛度比は、
+    /// いずれもこの値を用いる。
+    pub fn rigid_length_i(&self) -> f64 {
+        self.length_i.max(self.panel_offset_i)
+    }
+
+    /// j 端の剛体アーム長 [mm]。意味は [`Self::rigid_length_i`] と同様。
+    pub fn rigid_length_j(&self) -> f64 {
+        self.length_j.max(self.panel_offset_j)
     }
 }
 

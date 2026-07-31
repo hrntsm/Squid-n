@@ -42,27 +42,26 @@
 //!    （剛体アーム `r` は既存の剛域変換が担う）
 //! 2. 節点の回転自由度へ `ζ・γ` を加える変換 `T = [I | C]` を被せる
 //!
-//! の 2 段で資料の `[B]` を厳密に再現する。オフセットの大きさには、剛域自動算定が
-//! 既に求めている柱フェース距離（`RigidZone::face_i` / `face_j` ＝ 接続する直交
-//! 部材せいの 1/2）を用いる。これにより剛域端と危険断面位置が一致し、資料
-//! 表 2.10.1 の「部材端・剛域端・危険断面位置」の整合が取れる。
+//! の 2 段で資料の `[B]` を厳密に再現する。1. はパネル生成
+//! （[`crate::panel_gen::apply_auto_panel_zones`]）が部材の剛域長へ書き込み済みで、
+//! 本モジュールは 2. だけを担う。
+//!
+//! オフセットの大きさは接合部の物理的な半寸法（はりは柱せいの 1/2、柱は梁せいの
+//! 1/2。[`squid_n_core::panel_zone::panel_half_extent`]）である。断面算定の
+//! 危険断面位置（`RigidZone::face_i` / `face_j`）は将来任意位置を取りうるため、
+//! そちらとは独立な量として扱う。
 //!
 //! # 適用対象
 //!
 //! 水平材（はり）と鉛直材（柱）のみを対象とする。斜材（ブレース等）は資料が
-//! 接合位置・`ζ` を定めていないため、従来どおり節点で接合する（パネル自由度と
-//! 連成させない）。
+//! 接合位置・`ζ` を定めていないため、節点で接合する（パネル自由度と連成させない）。
 
 use crate::behavior::{Ctx, ElemState, ElementBehavior, LocalMat, LocalVec, MassOption};
 use smallvec::SmallVec;
 use squid_n_core::dof::DofMap;
 use squid_n_core::ids::NodeId;
 use squid_n_core::model::{ElementData, ElementKind, Model};
-
-/// 部材軸の鉛直成分がこの値以上なら柱（鉛直材）とみなす。
-const COLUMN_EZ: f64 = 0.8;
-/// 部材軸の鉛直成分がこの値以下なら梁（水平材）とみなす。
-const BEAM_EZ: f64 = 0.2;
+use squid_n_core::panel_zone::{member_orientation, MemberOrientation};
 
 /// 水平材（はり）が仕口パネルへ接合するときの ζ。
 const ZETA_BEAM: f64 = -0.5;
@@ -78,29 +77,21 @@ pub struct PanelEnd {
     pub zeta: f64,
 }
 
-/// 部材 `data` の各端が仕口パネルへ接合するかを調べる。
+/// 部材 `data` の各端が仕口パネルへ接合するかを調べ、接合面の係数 ζ を返す。
 ///
-/// 戻り値は `(パネル分のオフセットを剛域長へ含めた ElementData, [i 端, j 端])`。
-/// どちらの端もパネルへ接合しない場合は `None`（従来どおり素の要素を組む）。
-pub fn resolve(data: &ElementData, model: &Model) -> Option<(ElementData, [Option<PanelEnd>; 2])> {
+/// どちらの端もパネルへ接合しない場合は `None`（素の要素をそのまま組む）。
+///
+/// パネル分のオフセットはここでは扱わない。パネル生成
+/// （[`crate::panel_gen::apply_auto_panel_zones`]）が既に部材の剛域長へ
+/// 書き込んでおり、剛体アーム `r` は既存の剛域変換がそのまま担う。
+pub fn resolve(data: &ElementData, model: &Model) -> Option<[Option<PanelEnd>; 2]> {
     if !matches!(data.kind, ElementKind::Beam) || data.nodes.len() < 2 {
         return None;
     }
-    let p0 = model.nodes.get(data.nodes[0].index())?.coord;
-    let p1 = model.nodes.get(data.nodes[1].index())?.coord;
-    let d = [p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2]];
-    let l = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
-    if l < 1e-12 {
-        return None;
-    }
     // 斜材はオフセット・ζ が定義されないため対象外。
-    let ez = (d[2] / l).abs();
-    let zeta = if ez >= COLUMN_EZ {
-        ZETA_COLUMN
-    } else if ez <= BEAM_EZ {
-        ZETA_BEAM
-    } else {
-        return None;
+    let zeta = match member_orientation(model, data)? {
+        MemberOrientation::Column => ZETA_COLUMN,
+        MemberOrientation::Beam => ZETA_BEAM,
     };
 
     let is_panel_node = |nid: NodeId| {
@@ -123,17 +114,7 @@ pub fn resolve(data: &ElementData, model: &Model) -> Option<(ElementData, [Optio
     if ends[0].is_none() && ends[1].is_none() {
         return None;
     }
-
-    // パネル分のオフセット（＝柱フェース距離）を剛域長へ含める。既に剛域長が
-    // フェース距離以上ある端（RC/SRC の剛域）は変えない。
-    let mut adjusted = data.clone();
-    if ends[0].is_some() {
-        adjusted.rigid_zone.length_i = adjusted.rigid_zone.length_i.max(data.rigid_zone.face_i);
-    }
-    if ends[1].is_some() {
-        adjusted.rigid_zone.length_j = adjusted.rigid_zone.length_j.max(data.rigid_zone.face_j);
-    }
-    Some((adjusted, ends))
+    Some(ends)
 }
 
 /// 仕口パネルへ接合する部材。内側の要素（12 自由度）へパネルのせん断変形角を
@@ -336,7 +317,7 @@ mod tests {
     use squid_n_core::section_shape::SectionShape;
 
     /// 柱 1 本＋梁 1 本、接合部（節点 0）に仕口パネルを持つモデル。
-    fn model_with_panel(face: f64) -> Model {
+    fn model_with_panel(offset: f64) -> Model {
         let node = |id: u32, coord: [f64; 3]| Node {
             id: NodeId(id),
             coord,
@@ -380,9 +361,13 @@ mod tests {
             plastic_zone: None,
             spring: None,
         };
+        // パネル分のオフセットは `panel_gen` が剛域長へ書き込み済みの状態を作る。
+        // 危険断面位置 face は別の量なので、独立していることを示すため異なる値を入れる。
         let rigid = RigidZone {
-            face_i: face,
-            face_j: face,
+            length_i: offset,
+            length_j: offset,
+            face_i: offset * 2.0,
+            face_j: offset * 2.0,
             ..Default::default()
         };
         Model {
@@ -431,28 +416,34 @@ mod tests {
     #[test]
     fn test_resolve_assigns_zeta_by_member_direction() {
         let model = model_with_panel(200.0);
-        let (_, beam_ends) = resolve(&model.elements[0], &model).expect("梁の i 端がパネル");
+        let beam_ends = resolve(&model.elements[0], &model).expect("梁の i 端がパネル");
         assert_eq!(beam_ends[0].map(|e| e.zeta), Some(ZETA_BEAM));
         assert!(beam_ends[1].is_none(), "j 端（節点 1）にパネルは無い");
 
-        let (_, col_ends) = resolve(&model.elements[1], &model).expect("柱の j 端がパネル");
+        let col_ends = resolve(&model.elements[1], &model).expect("柱の j 端がパネル");
         assert!(col_ends[0].is_none(), "i 端（節点 2）にパネルは無い");
         assert_eq!(col_ends[1].map(|e| e.zeta), Some(ZETA_COLUMN));
     }
 
-    /// パネル分のオフセット（＝柱フェース距離）が剛域長へ含まれる。
-    /// これにより剛域端と危険断面位置が一致する（資料 表 2.10.1 の整合）。
+    /// `resolve` は危険断面位置（`face_i`/`face_j`）を一切参照しない。
+    /// 危険断面位置は将来任意位置を取りうるため、パネルの接合位置とは独立させる。
     #[test]
-    fn test_resolve_folds_face_distance_into_rigid_zone() {
-        let model = model_with_panel(200.0);
-        let (adjusted, _) = resolve(&model.elements[0], &model).expect("梁");
-        assert!((adjusted.rigid_zone.length_i - 200.0).abs() < 1e-9);
+    fn test_resolve_is_independent_of_face_distance() {
+        let base = model_with_panel(200.0);
+        let ends = resolve(&base.elements[0], &base).expect("梁");
+
+        let mut moved = base.clone();
+        for e in &mut moved.elements {
+            e.rigid_zone.face_i = 9999.0;
+            e.rigid_zone.face_j = 0.0;
+        }
+        let moved_ends = resolve(&moved.elements[0], &moved).expect("梁");
         assert_eq!(
-            adjusted.rigid_zone.length_j, 0.0,
-            "パネルが無い端の剛域長は変えない"
+            ends[0].map(|e| e.zeta),
+            moved_ends[0].map(|e| e.zeta),
+            "危険断面位置を動かしても接合面の ζ は変わらない"
         );
-        // 危険断面位置（フェース距離）は幾何量なので変えない。
-        assert_eq!(adjusted.rigid_zone.face_i, 200.0);
+        assert!(moved_ends[1].is_none());
     }
 
     /// パネルが 1 つも無いモデルでは `None` を返し、従来どおり素の要素が組まれる。
@@ -481,8 +472,8 @@ mod tests {
     fn test_transform_preserves_inner_block_and_symmetry() {
         let model = model_with_panel(200.0);
         let ctx = Ctx { model: &model };
-        let (adjusted, ends) = resolve(&model.elements[0], &model).expect("梁");
-        let inner = crate::beam::BeamElement::new(&adjusted, &model);
+        let ends = resolve(&model.elements[0], &model).expect("梁");
+        let inner = crate::beam::BeamElement::new(&model.elements[0], &model);
         let k_inner = inner.tangent_stiffness(&ElemState::default(), &ctx);
         let wrapped = PanelOffsetMember::new(Box::new(inner), ends);
 
@@ -516,8 +507,8 @@ mod tests {
     #[test]
     fn test_panel_rotation_enters_member_end_rotation() {
         let model = model_with_panel(200.0);
-        let (adjusted, ends) = resolve(&model.elements[0], &model).expect("梁");
-        let inner = crate::beam::BeamElement::new(&adjusted, &model);
+        let ends = resolve(&model.elements[0], &model).expect("梁");
+        let inner = crate::beam::BeamElement::new(&model.elements[0], &model);
         let wrapped = PanelOffsetMember::new(Box::new(inner), ends);
 
         let mut u = vec![0.0; wrapped.n_dof()];
@@ -539,8 +530,8 @@ mod tests {
     fn test_internal_force_collects_panel_moment() {
         let model = model_with_panel(200.0);
         let ctx = Ctx { model: &model };
-        let (adjusted, ends) = resolve(&model.elements[0], &model).expect("梁");
-        let inner = crate::beam::BeamElement::new(&adjusted, &model);
+        let ends = resolve(&model.elements[0], &model).expect("梁");
+        let inner = crate::beam::BeamElement::new(&model.elements[0], &model);
         let mut wrapped = PanelOffsetMember::new(Box::new(inner), ends);
 
         // 梁 j 端（節点 1）に単位回転を与える。

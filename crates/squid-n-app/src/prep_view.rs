@@ -704,6 +704,7 @@ fn rigid_zone_section(ui: &mut egui::Ui, prep: &PreparationResult) {
         .column(Column::initial(110.0))
         .column(Column::initial(110.0))
         .column(Column::initial(110.0))
+        .column(Column::initial(110.0))
         .column(Column::initial(80.0))
         .header(row_h, |mut h| {
             for t in &[
@@ -713,6 +714,7 @@ fn rigid_zone_section(ui: &mut egui::Ui, prep: &PreparationResult) {
                 "材長 L [mm]",
                 "λi [mm]",
                 "λj [mm]",
+                "パネル i/j [mm]",
                 "可とう長 L' [mm]",
                 "フェース i/j [mm]",
                 "剛域比",
@@ -750,6 +752,11 @@ fn rigid_zone_section(ui: &mut egui::Ui, prep: &PreparationResult) {
                         r.zone_j,
                         zone_source_label(r.source_j)
                     ));
+                });
+                row.col(|ui| {
+                    // 仕口パネル分のオフセット。剛域長とは別の量で、剛体アーム長は
+                    // 両者の大きい方になる。
+                    ui.label(format!("{:.0} / {:.0}", r.panel_offset_i, r.panel_offset_j));
                 });
                 row.col(|ui| {
                     // 可とう長が 0 以下だと剛性・応力が算定できない（入力異常）。

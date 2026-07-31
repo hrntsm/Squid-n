@@ -87,8 +87,8 @@ pub(crate) fn member_end_forces_at_face(
     ];
     let length = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
     let (li, lj) = squid_n_element::rigid_arm::resolve_lengths(
-        elem.rigid_zone.length_i,
-        elem.rigid_zone.length_j,
+        elem.rigid_zone.rigid_length_i(),
+        elem.rigid_zone.rigid_length_j(),
         length,
     );
     Some(squid_n_element::rigid_arm::to_flex_force(&local, li, lj))
