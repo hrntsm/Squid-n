@@ -228,6 +228,7 @@ mod tests {
     use super::*;
     use squid_n_core::dof::Dof6Mask;
     use squid_n_core::ids::{MaterialId, SectionId};
+    use squid_n_core::model::MaterialCategory;
     use squid_n_core::model::{
         EndCondition, ForceRegime, LocalAxis, Material, Node, WallAttr, WallOpening,
     };
@@ -258,6 +259,7 @@ mod tests {
                 concrete_class: Default::default(),
                 id: MaterialId(0),
                 name: "FC24".into(),
+                category: MaterialCategory::Concrete,
                 young: 23000.0,
                 poisson: 0.2,
                 density: 2.4e-9,

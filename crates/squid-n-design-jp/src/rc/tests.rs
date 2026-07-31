@@ -1,5 +1,6 @@
 use super::*;
 use squid_n_core::ids::{MaterialId, SectionId};
+use squid_n_core::model::MaterialCategory;
 use squid_n_core::section_shape::{BarSet, RcRebar, SectionShape, ShearBar};
 
 pub(crate) fn make_material(fc: f64, grade: &str) -> Material {
@@ -8,6 +9,7 @@ pub(crate) fn make_material(fc: f64, grade: &str) -> Material {
         concrete_class: Default::default(),
         id: MaterialId(0),
         name: grade.to_string(),
+        category: MaterialCategory::Concrete,
         young: 205000.0,
         poisson: 0.3,
         density: 0.0,
@@ -592,6 +594,7 @@ fn test_fc_missing_fallback() {
         concrete_class: Default::default(),
         id: MaterialId(0),
         name: "SD345".to_string(),
+        category: MaterialCategory::Rebar,
         young: 205000.0,
         poisson: 0.3,
         density: 0.0,

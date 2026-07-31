@@ -2,11 +2,15 @@
 
 use super::*;
 use squid_n_core::ids::*;
+use squid_n_core::model::MaterialCategory;
 
 /// 材料追加。末尾に `MaterialId(len)` で追加する（ID＝配列インデックスの不変条件を維持）。
 /// 逆操作は材料削除。
 pub struct AddMaterial {
     pub name: String,
+    /// 材料の区分。部材が S 造か RC 造かはこの値で決まる
+    /// （`squid_n_core::structure_kind`）。
+    pub category: MaterialCategory,
     pub young: f64,
     pub poisson: f64,
     pub density: f64,
@@ -23,6 +27,7 @@ impl EditCommand for AddMaterial {
             concrete_class: Default::default(),
             id: new_id,
             name: self.name.clone(),
+            category: self.category,
             young: self.young,
             poisson: self.poisson,
             density: self.density,

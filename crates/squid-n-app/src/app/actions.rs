@@ -1,6 +1,7 @@
 //! `App` のアクション（解析実行・ファイル入出力・モデル操作）メソッド。
 
 use super::*;
+use squid_n_core::structure_kind::StructureKind;
 
 /// 節点対の順不同キー（`(min,max)`）。`beam_elem_map`（節点対→実 `Beam` 要素索引）と
 /// `slab_grillage_node_reactions`（実部材化判定）で、ノード順に依存しない同じキーを
@@ -1215,7 +1216,8 @@ impl App {
                     matches!(elem.kind, squid_n_core::model::ElementKind::Brace { .. })
                         || member_kind_of(elem, &self.model)
                             == squid_n_design_jp::MemberKind::Brace;
-                let rank = if is_brace_elem && is_steel(&mat.name) {
+                let elem_steel = elem_is_steel(elem, &self.model);
+                let rank = if is_brace_elem && elem_steel {
                     // 有効細長比 λ = Lk/i（節点間長を座屈長さ、i=√(Imin/A) とする
                     // ピン支持の軸材モデル）。断面性能が無い場合はスキップ。
                     let len = elem_geometric_length(elem, &self.model);
@@ -1233,7 +1235,7 @@ impl App {
                     )
                     .unwrap_or(235.0);
                     steel_brace_type(len / radius, f_value)
-                } else if is_steel(&mat.name) {
+                } else if elem_steel {
                     // 鋼部材: 形状情報がない断面(カタログ数値直入力等)はスキップ。
                     let Some(shape) = sec.shape.as_ref() else {
                         continue;
@@ -2803,18 +2805,16 @@ impl App {
                 steel_fb_rule: Default::default(),
             };
 
-            // 検定器の選択: 複合断面（SRC/CFT）は形状優先、それ以外は材料名で鋼/RC。
-            let checker: Box<dyn DesignCheck> = match sec.shape {
-                Some(squid_n_core::section_shape::SectionShape::SrcRect { .. }) => {
-                    Box::new(squid_n_design_jp::SrcDesign)
-                }
-                Some(squid_n_core::section_shape::SectionShape::CftBox { .. })
-                | Some(squid_n_core::section_shape::SectionShape::CftPipe { .. }) => {
-                    Box::new(squid_n_design_jp::CftDesign)
-                }
-                _ if is_steel(&mat.name) => Box::new(SteelDesign),
-                _ => Box::new(RcDesign),
-            };
+            // 検定器の選択は構造種別による（`squid_n_core::structure_kind`）。
+            // 複合断面（SRC/CFT）は断面形状で、それ以外は材料の区分で決まる。
+            let checker: Box<dyn DesignCheck> =
+                match squid_n_core::structure_kind::structure_kind_of(Some(sec), Some(mat.category))
+                {
+                    StructureKind::Src => Box::new(squid_n_design_jp::SrcDesign),
+                    StructureKind::Cft => Box::new(squid_n_design_jp::CftDesign),
+                    StructureKind::S => Box::new(SteelDesign),
+                    StructureKind::Rc => Box::new(RcDesign),
+                };
 
             let detail = self.model.member_detail(*elem_id);
             let positions = design_positions(elem, length, detail);

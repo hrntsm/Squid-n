@@ -17,7 +17,7 @@ use super::StbError;
 use squid_n_core::ids::{ElemId, LoadCaseId, MaterialId, NodeId, SectionId, SlabId, StoryId};
 use squid_n_core::model::{
     DistributionMethod, ElementData, ElementKind, EndCondition, ForceRegime, LoadCase, LocalAxis,
-    Material, Model, NodalLoad, Node, Section, Slab, Story,
+    Material, MaterialCategory, Model, NodalLoad, Node, Section, Slab, Story,
 };
 use squid_n_core::section_shape::{RcRebar, SectionShape};
 use std::collections::HashMap;
@@ -1068,11 +1068,20 @@ pub fn import_stbridge_with_report(xml: &str) -> Result<(Model, ImportReport), S
 
     raw_materials.sort_by_key(|m| m.file_id);
     for m in raw_materials {
+        // ST-Bridge はグレード名で材料を表すため、区分は名前から推定する。
+        // 名前から決まらない場合は fc の有無で分ける（fc を持つのはコンクリート）。
+        let category =
+            squid_n_core::material_grade::category_of_grade(&m.name).unwrap_or(if m.fc.is_some() {
+                MaterialCategory::Concrete
+            } else {
+                MaterialCategory::Steel
+            });
         model.materials.push(Material {
             strength_factor: None,
             concrete_class: Default::default(),
             id: MaterialId(material_index[&m.file_id]),
             name: m.name,
+            category,
             young: m.young,
             poisson: m.poisson,
             density: m.density,
@@ -1105,11 +1114,19 @@ pub fn import_stbridge_with_report(xml: &str) -> Result<(Model, ImportReport), S
             }
             if let Some(std) = material_std::resolve_grade(name) {
                 let id = MaterialId(model.materials.len() as u32);
+                let category = squid_n_core::material_grade::category_of_grade(name).unwrap_or(
+                    if std.fc.is_some() {
+                        MaterialCategory::Concrete
+                    } else {
+                        MaterialCategory::Steel
+                    },
+                );
                 model.materials.push(Material {
                     strength_factor: None,
                     concrete_class: Default::default(),
                     id,
                     name: name.to_string(),
+                    category,
                     young: std.young,
                     poisson: std.poisson,
                     density: std.density,

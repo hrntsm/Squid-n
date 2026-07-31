@@ -9,7 +9,7 @@ use squid_n_core::dof::Dof6Mask;
 use squid_n_core::ids::{ElemId, LoadCaseId, MaterialId, NodeId, SectionId};
 use squid_n_core::model::{
     ElementData, ElementKind, EndCondition, ForceRegime, LoadCase, LoadCombination, LocalAxis,
-    Material, Model, NodalLoad, Node, Section,
+    Material, MaterialCategory, Model, NodalLoad, Node, Section,
 };
 use squid_n_math::parallelism::{set_parallelism, Parallelism};
 use squid_n_solver::analysis::Analysis;
@@ -88,6 +88,7 @@ fn make_model(n_cases: usize) -> Model {
             concrete_class: Default::default(),
             id: MaterialId(0),
             name: "mat".into(),
+            category: MaterialCategory::Steel,
             young: 20000.0,
             poisson: 0.3,
             density: 0.0,

@@ -3,6 +3,7 @@ use smallvec::smallvec;
 use squid_n_core::dof::Dof6Mask;
 use squid_n_core::ids::NodeId;
 use squid_n_core::ids::*;
+use squid_n_core::model::MaterialCategory;
 use squid_n_core::model::{ElementData, ElementKind, EndCondition, ForceRegime, LocalAxis, Node};
 
 fn empty_model() -> Model {
@@ -873,6 +874,7 @@ fn test_add_delete_material_roundtrip() {
         &mut model,
         Box::new(AddMaterial {
             name: "SN400B".into(),
+            category: MaterialCategory::Steel,
             young: 205000.0,
             poisson: 0.3,
             density: 7.85e-9,
@@ -899,6 +901,7 @@ fn test_delete_material_in_use_is_noop() {
         &mut model,
         Box::new(AddMaterial {
             name: "SN400B".into(),
+            category: MaterialCategory::Steel,
             young: 205000.0,
             poisson: 0.3,
             density: 7.85e-9,
@@ -921,6 +924,7 @@ fn test_delete_material_middle_renumbers() {
             &mut model,
             Box::new(AddMaterial {
                 name: name.into(),
+                category: MaterialCategory::Steel,
                 young: 1.0,
                 poisson: 0.3,
                 density: 0.0,
@@ -949,6 +953,7 @@ fn test_set_material_field_roundtrip() {
         &mut model,
         Box::new(AddMaterial {
             name: "Fc21".into(),
+            category: MaterialCategory::Steel,
             young: 21500.0,
             poisson: 0.2,
             density: 2.3e-9,
@@ -978,6 +983,7 @@ fn test_set_material_strength_factor_roundtrip() {
         &mut model,
         Box::new(AddMaterial {
             name: "SA440".into(),
+            category: MaterialCategory::Steel,
             young: 205000.0,
             poisson: 0.3,
             density: 7.85e-9,

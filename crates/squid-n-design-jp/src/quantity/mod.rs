@@ -107,26 +107,7 @@ impl MemberCategory {
     }
 }
 
-/// 構造種別。
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum StructureKind {
-    Rc,
-    S,
-    Src,
-    Cft,
-}
-
-impl StructureKind {
-    /// 表示名。
-    pub fn label(self) -> &'static str {
-        match self {
-            StructureKind::Rc => "RC",
-            StructureKind::S => "S",
-            StructureKind::Src => "SRC",
-            StructureKind::Cft => "CFT",
-        }
-    }
-}
+pub use squid_n_core::structure_kind::StructureKind;
 
 /// 鉄筋の用途分類。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -362,52 +343,6 @@ fn polygon_area_3d(pts: &[[f64; 3]]) -> f64 {
         nz += p0[0] * p1[1] - p0[1] * p1[0];
     }
     0.5 * (nx * nx + ny * ny + nz * nz).sqrt()
-}
-
-/// 鋼材判定（`joint_wiring::common::is_steel` と同じ規則）。
-fn is_steel_name(name: &str) -> bool {
-    let upper = name.to_uppercase();
-    upper.starts_with("SS")
-        || upper.starts_with("SN")
-        || upper.starts_with("SM")
-        || upper.starts_with("STK")
-        || upper.starts_with("ST")
-        || upper.starts_with("SA")
-        || upper.starts_with("BC")
-}
-
-/// 構造種別の判定（`SectionShape` バリアント優先、無ければ材料名）。
-fn structure_kind(shape: Option<&SectionShape>, mat_name: &str) -> StructureKind {
-    match shape {
-        Some(SectionShape::SrcRect { .. }) => StructureKind::Src,
-        Some(SectionShape::CftBox { .. }) | Some(SectionShape::CftPipe { .. }) => {
-            StructureKind::Cft
-        }
-        Some(
-            SectionShape::SteelH { .. }
-            | SectionShape::SteelBox { .. }
-            | SectionShape::SteelAngle { .. }
-            | SectionShape::SteelChannel { .. }
-            | SectionShape::SteelTee { .. }
-            | SectionShape::SteelPipe { .. }
-            | SectionShape::SteelFlatBar { .. }
-            | SectionShape::SteelRoundBar { .. }
-            | SectionShape::SteelLipChannel { .. }
-            | SectionShape::SteelBuiltH { .. },
-        ) => StructureKind::S,
-        Some(
-            SectionShape::RcRect { .. }
-            | SectionShape::RcCircle { .. }
-            | SectionShape::RcWall { .. },
-        ) => StructureKind::Rc,
-        None => {
-            if is_steel_name(mat_name) {
-                StructureKind::S
-            } else {
-                StructureKind::Rc
-            }
-        }
-    }
 }
 
 /// SRC 内蔵 H 形鉄骨の断面積 [mm²]。
@@ -658,7 +593,7 @@ fn line_member_quantity(ctx: &Ctx, elem_idx: usize, elem: &ElementData) -> Optio
         return None;
     }
     let vertical = is_vertical_pair(ci, cj);
-    let structure = structure_kind(sec.shape.as_ref(), &mat.name);
+    let structure = squid_n_core::structure_kind::structure_kind_of(Some(sec), Some(mat.category));
 
     if vertical {
         Some(column_quantity(ctx, elem, sec, mat, ni, nj, len, structure))
@@ -1016,7 +951,7 @@ fn brace_quantity(ctx: &Ctx, elem: &ElementData) -> Option<MemberQuantity> {
     if lb <= 0.0 {
         return None;
     }
-    let structure = structure_kind(sec.shape.as_ref(), &mat.name);
+    let structure = squid_n_core::structure_kind::structure_kind_of(Some(sec), Some(mat.category));
     let lower = if ci[2] <= cj[2] { ni } else { nj };
 
     let mut item = MemberQuantity {

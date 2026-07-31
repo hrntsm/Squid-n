@@ -63,20 +63,21 @@ impl StoryStructure {
     /// 断面形状 1 つの構造種別。鋼断面は S、RC 断面は RC、鉄骨とコンクリートが
     /// 一体で働く断面（SRC・CFT）は SRC とする。
     pub fn of_section_shape(shape: &crate::section_shape::SectionShape) -> Self {
-        use crate::section_shape::SectionShape as S;
-        match shape {
-            S::RcRect { .. } | S::RcCircle { .. } | S::RcWall { .. } => StoryStructure::Rc,
-            S::SrcRect { .. } | S::CftBox { .. } | S::CftPipe { .. } => StoryStructure::Src,
-            S::SteelH { .. }
-            | S::SteelBuiltH { .. }
-            | S::SteelBox { .. }
-            | S::SteelPipe { .. }
-            | S::SteelAngle { .. }
-            | S::SteelChannel { .. }
-            | S::SteelLipChannel { .. }
-            | S::SteelTee { .. }
-            | S::SteelFlatBar { .. }
-            | S::SteelRoundBar { .. } => StoryStructure::S,
+        use crate::structure_kind::{shape_composite_kind, StructureKind};
+        // 複合断面（SRC・CFT）は SRC へ寄せる。略算周期 T = h(0.02 + 0.01α) は
+        // S の階が増えるほど T が長く Rt が小さくなって地震力が下がるため、
+        // 鋼管にコンクリートを充填した CFT を S へ寄せないのが安全側になる。
+        match shape_composite_kind(shape) {
+            Some(StructureKind::Src) | Some(StructureKind::Cft) => StoryStructure::Src,
+            Some(StructureKind::Rc) | Some(StructureKind::S) | None => {
+                // 単一材料で表せる形状は、形状名の系統で分ける。階の構造種別は
+                // 材料ではなく断面の見た目で集計する（利用者が図面で数える単位）。
+                use crate::section_shape::SectionShape as S;
+                match shape {
+                    S::RcRect { .. } | S::RcCircle { .. } | S::RcWall { .. } => StoryStructure::Rc,
+                    _ => StoryStructure::S,
+                }
+            }
         }
     }
 

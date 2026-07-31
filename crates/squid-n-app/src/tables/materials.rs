@@ -1,5 +1,6 @@
 use crate::app::App;
-use squid_n_core::material_grade::{material_presets, MaterialPreset, PresetCategory};
+use squid_n_core::material_grade::{material_presets, MaterialPreset};
+use squid_n_core::model::MaterialCategory;
 use squid_n_core::units::{
     concrete_unit_weight_kn_m3, to_internal::mass_density_from_unit_weight_kn_m3, ConcreteClass,
     ConcreteComposition,
@@ -10,14 +11,14 @@ use squid_n_edit::{AddMaterial, DeleteMaterial, MaterialField, SetMaterialField,
 /// `ui.data`/`data_mut` の temp storage に保持する。
 #[derive(Clone, Debug)]
 struct PresetDraft {
-    category: PresetCategory,
+    category: MaterialCategory,
     name: String,
     /// コンクリート区分のみ有効。ON のとき密度を γSRC 由来に差し替える。
     src: bool,
 }
 
 impl PresetDraft {
-    fn new(presets: &[MaterialPreset], category: PresetCategory) -> Self {
+    fn new(presets: &[MaterialPreset], category: MaterialCategory) -> Self {
         Self {
             category,
             name: first_name_in(presets, category),
@@ -26,7 +27,7 @@ impl PresetDraft {
     }
 }
 
-fn first_name_in(presets: &[MaterialPreset], category: PresetCategory) -> String {
+fn first_name_in(presets: &[MaterialPreset], category: MaterialCategory) -> String {
     presets
         .iter()
         .find(|p| p.category == category)
@@ -37,9 +38,9 @@ fn first_name_in(presets: &[MaterialPreset], category: PresetCategory) -> String
 /// プリセットのグレード選択に添えるホバーテキスト（主要値の要約）。
 fn preset_hover_text(p: &MaterialPreset) -> String {
     match p.category {
-        PresetCategory::Steel => format!("F={} (t≤40)", p.fy.unwrap_or_default()),
-        PresetCategory::Rebar => format!("降伏点 {}", p.fy.unwrap_or_default()),
-        PresetCategory::Concrete => format!("Fc={}, Ec={:.0}", p.fc.unwrap_or_default(), p.young),
+        MaterialCategory::Steel => format!("F={} (t≤40)", p.fy.unwrap_or_default()),
+        MaterialCategory::Rebar => format!("降伏点 {}", p.fy.unwrap_or_default()),
+        MaterialCategory::Concrete => format!("Fc={}, Ec={:.0}", p.fc.unwrap_or_default(), p.young),
     }
 }
 
@@ -62,14 +63,14 @@ pub fn materials_table(ui: &mut egui::Ui, app: &mut App) {
     let id_preset_draft = egui::Id::new("material_preset_draft");
     let mut draft = ui
         .data(|d| d.get_temp::<PresetDraft>(id_preset_draft))
-        .unwrap_or_else(|| PresetDraft::new(&presets, PresetCategory::Steel));
+        .unwrap_or_else(|| PresetDraft::new(&presets, MaterialCategory::Steel));
 
     ui.horizontal(|ui| {
         ui.label("プリセット追加:");
         for cat in [
-            PresetCategory::Steel,
-            PresetCategory::Rebar,
-            PresetCategory::Concrete,
+            MaterialCategory::Steel,
+            MaterialCategory::Rebar,
+            MaterialCategory::Concrete,
         ] {
             if ui
                 .selectable_label(draft.category == cat, cat.label())
@@ -110,13 +111,13 @@ pub fn materials_table(ui: &mut egui::Ui, app: &mut App) {
                     }
                 }
             });
-        if draft.category == PresetCategory::Concrete {
+        if draft.category == MaterialCategory::Concrete {
             ui.checkbox(&mut draft.src, "SRC造(γSRC)");
         }
 
         let selected = grades.iter().find(|p| p.name == draft.name).copied();
         if let Some(preset) = selected {
-            let (name, density) = if draft.category == PresetCategory::Concrete && draft.src {
+            let (name, density) = if draft.category == MaterialCategory::Concrete && draft.src {
                 apply_src_toggle(preset.name, preset.fc.unwrap_or_default())
             } else {
                 (preset.name.to_string(), preset.density)
@@ -126,6 +127,7 @@ pub fn materials_table(ui: &mut egui::Ui, app: &mut App) {
                     &mut app.model,
                     Box::new(AddMaterial {
                         name,
+                        category: draft.category,
                         young: preset.young,
                         poisson: preset.poisson,
                         density,
@@ -158,10 +160,30 @@ pub fn materials_table(ui: &mut egui::Ui, app: &mut App) {
             ]
         });
     let mut do_add_custom = false;
+    // 直接入力材料の区分。部材が S 造か RC 造かはこの値で決まるため、
+    // E・ν・ρ と同じく入力が必須の項目として扱う。
+    let id_cat = ui.id().with("custom_material_category");
+    let mut custom_category: MaterialCategory = ui
+        .data_mut(|d| d.get_temp(id_cat))
+        .unwrap_or(MaterialCategory::Steel);
     ui.horizontal(|ui| {
         ui.label("直接入力:");
         ui.add(egui::TextEdit::singleline(&mut draft[0]).desired_width(80.0))
             .on_hover_text("名称");
+        egui::ComboBox::from_id_salt(id_cat)
+            .selected_text(custom_category.label())
+            .width(100.0)
+            .show_ui(ui, |ui| {
+                for cat in [
+                    MaterialCategory::Steel,
+                    MaterialCategory::Rebar,
+                    MaterialCategory::Concrete,
+                ] {
+                    ui.selectable_value(&mut custom_category, cat, cat.label());
+                }
+            })
+            .response
+            .on_hover_text("区分。S 造 / RC 造の判定と検定式の選択に用います");
         for (k, label) in [(1, "E"), (2, "ν"), (3, "ρ"), (4, "Fc"), (5, "Fy")] {
             ui.label(label);
             ui.add(egui::TextEdit::singleline(&mut draft[k]).desired_width(60.0));
@@ -197,6 +219,7 @@ pub fn materials_table(ui: &mut egui::Ui, app: &mut App) {
                 &mut app.model,
                 Box::new(AddMaterial {
                     name: draft[0].clone(),
+                    category: custom_category,
                     young: e,
                     poisson: nu,
                     density: rho,
@@ -208,6 +231,7 @@ pub fn materials_table(ui: &mut egui::Ui, app: &mut App) {
             app.staleness.mark_edited();
         }
     }
+    ui.data_mut(|d| d.insert_temp(id_cat, custom_category));
     ui.data_mut(|d| d.insert_temp(id_draft, draft));
     ui.separator();
 
@@ -379,7 +403,7 @@ mod tests {
                 .iter()
                 .find(|p| p.name == name)
                 .unwrap_or_else(|| panic!("preset {name} not found"));
-            assert_eq!(p.category, PresetCategory::Concrete);
+            assert_eq!(p.category, MaterialCategory::Concrete);
             assert!(
                 (p.density - rc_density).abs() < 1e-18,
                 "{name}: density={} expected={}",
@@ -412,7 +436,7 @@ mod tests {
             .iter()
             .find(|p| p.name == "SS400")
             .expect("preset SS400 not found");
-        assert_eq!(ss400.category, PresetCategory::Steel);
+        assert_eq!(ss400.category, MaterialCategory::Steel);
         assert!((ss400.density - steel_density).abs() < 1e-18);
         // 旧実装の固定値 7.85e-9 とは厳密には一致しない（77/9.80665 が真値）。
         assert!((steel_density - 7.85e-9).abs() < 1e-11);

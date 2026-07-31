@@ -312,8 +312,8 @@ mod tests {
     use squid_n_core::dof::Dof6Mask;
     use squid_n_core::ids::{MaterialId, NodeId, SectionId};
     use squid_n_core::model::{
-        ElementData, ElementKind, EndCondition, ForceRegime, LocalAxis, Material, Node,
-        PcaBeamAttr, RigidZone,
+        ElementData, ElementKind, EndCondition, ForceRegime, LocalAxis, Material, MaterialCategory,
+        Node, PcaBeamAttr, RigidZone,
     };
     use squid_n_core::section_shape::{BarSet, RcRebar, ShearBar};
 
@@ -415,6 +415,7 @@ mod tests {
             concrete_class: Default::default(),
             id: MaterialId(0),
             name: "SD345".to_string(),
+            category: MaterialCategory::Rebar,
             young: 23000.0,
             poisson: 0.2,
             density: 2.4e-9,

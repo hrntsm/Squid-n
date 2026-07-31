@@ -1,38 +1,94 @@
-//! 部材の構造種別（RC/SRC 系・S/CFT 系）の判定。
+//! 部材の構造種別（RC・S・SRC・CFT）の判定。
 //!
-//! 剛域長の算定式・仕口パネルのモデル化対象・S 造パネルゾーンの検定対象は、
-//! いずれも「その部材が RC/SRC 系か S/CFT 系か」で分岐する。判定が箇所ごとに
-//! ずれると、剛域長 0 の接合部にパネルが設けられない（またはその逆）といった
-//! 食い違いが生じるため、判定を本モジュールへ一元化する。
+//! 剛域長の算定式・仕口パネルのモデル化対象・断面検定で用いる式・略算周期の
+//! 構造種別・数量集計の分類は、いずれも「その部材が何造か」で分岐する。判定が
+//! 箇所ごとにずれると、剛域長 0 の接合部にパネルが設けられない、鋼部材が RC の
+//! 検定式で検定される、といった食い違いが生じるため、判定を本モジュールへ
+//! 一元化する。
 //!
 //! # 判定の順序
 //!
-//! 1. 断面に形状（[`SectionShape`]）があれば形状で判定する
-//! 2. 形状が無い（カタログ数値の直入力など）場合は材料で判定する。
-//!    コンクリート設計基準強度 `fc` があれば RC/SRC 系、降伏応力 `fy` のみなら
-//!    S/CFT 系
-//! 3. どちらも無ければ判定材料が無いため RC/SRC 系とする（剛域式を変えない側）
+//! 1. 断面形状が**複合断面**なら、その種別で決まる
+//!    - `SrcRect` → [`StructureKind::Src`]
+//!    - `CftBox` / `CftPipe` → [`StructureKind::Cft`]
+//! 2. それ以外は**材料の区分**（[`MaterialCategory`]）で決まる
+//!    - `Steel` → [`StructureKind::S`]
+//!    - `Concrete` / `Rebar` → [`StructureKind::Rc`]
+//! 3. 材料が解決できない要素は [`StructureKind::Rc`] とする
+//!
+//! # 断面形状ではなく材料で判定する理由
+//!
+//! 断面形状は見た目であって力学的な性質ではない。H 形のコンクリート部材も、
+//! 矩形断面の鋼部材もありうる。材料の区分で判定すれば、任意の材料と任意の断面の
+//! 組み合わせに対して、どの検定式を適用すべきかが定まる。
+//!
+//! SRC・CFT だけを断面形状で判定するのは、これらが 1 つの材料では表せない
+//! **複合断面**だからである。`SrcRect` は内蔵鉄骨のグレードを断面側に持ち、
+//! CFT は `Material::fc` を充填コンクリートの強度として使う。
+//!
+//! # 用途ごとの畳み込み
+//!
+//! 4 種別をそのまま使うのは断面検定と数量集計で、他の用途はより粗い区分へ
+//! 畳み込む。畳み込みは本モジュールのメソッドとして定義し、各所が `matches!` で
+//! 書き下すのを避ける。`SectionShape` にバリアントが増えたとき、追随が必要なのは
+//! [`shape_composite_kind`] の網羅 `match` 1 箇所だけになる。
+//!
+//! | 用途 | 畳み込み |
+//! |---|---|
+//! | 剛域長の算定式・仕口パネルの対象 | [`StructureKind::is_steel_like`]（S・CFT） |
+//! | 略算周期の構造種別 | `StoryStructure`（CFT は SRC へ寄せる） |
+//! | 断面検定の式の選択・数量集計 | 4 種別をそのまま使う |
 
-use crate::model::{ElementData, Model};
+use crate::model::{ElementData, MaterialCategory, Model, Section};
 use crate::section_shape::SectionShape;
 
-/// 部材の構造種別（技術基準解説書「剛域の計算」の RC/SRC 系・S 系区分）。
+/// 部材の構造種別。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StructureKind {
-    /// RC・SRC 系（RC 造柱・梁・耐震壁、SRC 造柱・梁）。
-    RcSrc,
-    /// S・CFT 系（CFT は S 造と同様に扱う）。
-    Steel,
+    /// 鉄筋コンクリート造。
+    Rc,
+    /// 鉄骨造。
+    S,
+    /// 鉄骨鉄筋コンクリート造。
+    Src,
+    /// コンクリート充填鋼管造。
+    Cft,
 }
 
-/// 断面形状から構造種別を判定する。
-pub fn shape_structure_kind(shape: &SectionShape) -> StructureKind {
+impl StructureKind {
+    /// 表示名。
+    pub fn label(self) -> &'static str {
+        match self {
+            StructureKind::Rc => "RC",
+            StructureKind::S => "S",
+            StructureKind::Src => "SRC",
+            StructureKind::Cft => "CFT",
+        }
+    }
+
+    /// 鋼系（S・CFT）か。
+    ///
+    /// 剛域長の算定式（S・CFT 造は `D_self/4` を控除しない）と、仕口パネルの
+    /// 対象判定に用いる区分。CFT を S と同じ側へ置くのは、いずれも接合部の
+    /// 剛域長が 0 になり、接合部の有限寸法を剛域で評価しないためである。
+    pub fn is_steel_like(self) -> bool {
+        matches!(self, StructureKind::S | StructureKind::Cft)
+    }
+}
+
+/// 断面形状が複合断面（SRC・CFT）なら、その構造種別を返す。
+///
+/// 単一材料で表せる形状は `None` を返し、呼び出し側が材料の区分で判定する。
+/// `SectionShape` にバリアントが増えたときに追随が要るのはこの網羅 `match` だけで、
+/// 追随を忘れるとコンパイルエラーになる。
+pub fn shape_composite_kind(shape: &SectionShape) -> Option<StructureKind> {
     match shape {
+        SectionShape::SrcRect { .. } => Some(StructureKind::Src),
+        SectionShape::CftBox { .. } | SectionShape::CftPipe { .. } => Some(StructureKind::Cft),
         SectionShape::RcRect { .. }
         | SectionShape::RcCircle { .. }
         | SectionShape::RcWall { .. }
-        | SectionShape::SrcRect { .. } => StructureKind::RcSrc,
-        SectionShape::SteelH { .. }
+        | SectionShape::SteelH { .. }
         | SectionShape::SteelBox { .. }
         | SectionShape::SteelAngle { .. }
         | SectionShape::SteelChannel { .. }
@@ -41,50 +97,65 @@ pub fn shape_structure_kind(shape: &SectionShape) -> StructureKind {
         | SectionShape::SteelFlatBar { .. }
         | SectionShape::SteelRoundBar { .. }
         | SectionShape::SteelLipChannel { .. }
-        | SectionShape::SteelBuiltH { .. }
-        | SectionShape::CftBox { .. }
-        | SectionShape::CftPipe { .. } => StructureKind::Steel,
+        | SectionShape::SteelBuiltH { .. } => None,
     }
 }
 
-/// 要素の構造種別を判定する（モジュール冒頭「判定の順序」）。
+/// 材料の区分から構造種別を求める。
+///
+/// 鉄筋は材料としては鋼だが、これを割り当てた線材は S 造ではないため RC とする
+/// （RC 断面の配筋は断面側にグレード名として持ち、線材の材料として鉄筋を
+/// 割り当てるのは入力の誤り）。
+pub fn material_structure_kind(category: MaterialCategory) -> StructureKind {
+    match category {
+        MaterialCategory::Steel => StructureKind::S,
+        MaterialCategory::Concrete | MaterialCategory::Rebar => StructureKind::Rc,
+    }
+}
+
+/// 断面と材料から構造種別を判定する（モジュール冒頭「判定の順序」）。
+pub fn structure_kind_of(
+    sec: Option<&Section>,
+    category: Option<MaterialCategory>,
+) -> StructureKind {
+    if let Some(kind) = sec
+        .and_then(|s| s.shape.as_ref())
+        .and_then(shape_composite_kind)
+    {
+        return kind;
+    }
+    category.map_or(StructureKind::Rc, material_structure_kind)
+}
+
+/// 要素の構造種別を判定する。
 pub fn member_structure_kind(model: &Model, elem: &ElementData) -> StructureKind {
     let sec = elem.section.and_then(|sid| model.sections.get(sid.index()));
-    if let Some(shape) = sec.and_then(|s| s.shape.as_ref()) {
-        return shape_structure_kind(shape);
-    }
-    let mat = elem
+    let category = elem
         .material
-        .and_then(|mid| model.materials.get(mid.index()));
-    if let Some(mat) = mat {
-        if mat.fc.is_some() {
-            return StructureKind::RcSrc;
-        }
-        if mat.fy.is_some() {
-            return StructureKind::Steel;
-        }
-    }
-    StructureKind::RcSrc
+        .and_then(|mid| model.materials.get(mid.index()))
+        .map(|m| m.category);
+    structure_kind_of(sec, category)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::ids::{ElemId, MaterialId, SectionId};
-    use crate::model::{ElementKind, EndCondition, ForceRegime, LocalAxis, Material, Section};
+    use crate::model::{ElementKind, EndCondition, ForceRegime, LocalAxis, Material};
 
-    fn material(name: &str, fc: Option<f64>, fy: Option<f64>) -> Material {
+    fn material(category: MaterialCategory) -> Material {
         Material {
             strength_factor: None,
             concrete_class: Default::default(),
             id: MaterialId(0),
-            name: name.into(),
+            name: String::new(),
+            category,
             young: 205_000.0,
             poisson: 0.3,
             density: 0.0,
             shear: None,
-            fc,
-            fy,
+            fc: None,
+            fy: None,
         }
     }
 
@@ -106,106 +177,141 @@ mod tests {
         }
     }
 
-    fn elem() -> ElementData {
-        ElementData {
-            id: ElemId(0),
-            kind: ElementKind::Beam,
-            nodes: smallvec::smallvec![crate::ids::NodeId(0), crate::ids::NodeId(1)],
-            section: Some(SectionId(0)),
-            material: Some(MaterialId(0)),
-            local_axis: LocalAxis {
-                ref_vector: [0.0, 1.0, 0.0],
-            },
-            end_cond: [EndCondition::Fixed, EndCondition::Fixed],
-            force_regime: ForceRegime::Auto,
-            rigid_zone: Default::default(),
-            plastic_zone: None,
-            spring: None,
-        }
-    }
-
-    fn model_with(shape: Option<SectionShape>, mat: Material) -> Model {
+    fn model_with(shape: Option<SectionShape>, category: MaterialCategory) -> Model {
         Model {
             sections: vec![section(shape)],
-            materials: vec![mat],
-            elements: vec![elem()],
+            materials: vec![material(category)],
+            elements: vec![ElementData {
+                id: ElemId(0),
+                kind: ElementKind::Beam,
+                nodes: smallvec::smallvec![crate::ids::NodeId(0), crate::ids::NodeId(1)],
+                section: Some(SectionId(0)),
+                material: Some(MaterialId(0)),
+                local_axis: LocalAxis {
+                    ref_vector: [0.0, 1.0, 0.0],
+                },
+                end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+                force_regime: ForceRegime::Auto,
+                rigid_zone: Default::default(),
+                plastic_zone: None,
+                spring: None,
+            }],
             ..Default::default()
         }
     }
 
-    /// 断面形状があれば形状で判定する（材料は見ない）。
-    #[test]
-    fn test_shape_wins_over_material() {
-        // 形状は S だが材料は fc を持つ（形状優先で Steel）。
-        let m = model_with(
-            Some(SectionShape::SteelH {
-                height: 400.0,
-                width: 200.0,
-                web_thick: 8.0,
-                flange_thick: 13.0,
-            }),
-            material("SN400B", Some(24.0), None),
-        );
-        assert_eq!(
-            member_structure_kind(&m, &m.elements[0]),
-            StructureKind::Steel
-        );
-
-        // 形状は RC だが材料は fy を持つ（形状優先で RcSrc）。
-        let m = model_with(
-            Some(SectionShape::RcWall {
-                thickness: 180.0,
-                ps: 0.006,
-            }),
-            material("SN400B", None, Some(235.0)),
-        );
-        assert_eq!(
-            member_structure_kind(&m, &m.elements[0]),
-            StructureKind::RcSrc
-        );
-    }
-
-    /// CFT は S 系として扱う（剛域式・パネルの構造種別判定とも）。
-    #[test]
-    fn test_cft_is_steel() {
-        for shape in [
-            SectionShape::CftBox {
-                height: 400.0,
-                width: 400.0,
-                thick: 16.0,
-            },
-            SectionShape::CftPipe {
-                outer_dia: 400.0,
-                thick: 12.0,
-            },
-        ] {
-            assert_eq!(shape_structure_kind(&shape), StructureKind::Steel);
+    fn h_shape() -> SectionShape {
+        SectionShape::SteelH {
+            height: 400.0,
+            width: 200.0,
+            web_thick: 8.0,
+            flange_thick: 13.0,
         }
     }
 
-    /// 形状が無い断面は材料で判定する（fc → RC/SRC、fy のみ → S）。
+    fn rect_shape() -> SectionShape {
+        SectionShape::SteelBox {
+            height: 400.0,
+            width: 400.0,
+            thick: 16.0,
+            corner_r: 0.0,
+        }
+    }
+
+    fn rc_rebar() -> crate::section_shape::RcRebar {
+        use crate::section_shape::{BarSet, RcRebar, ShearBar};
+        let bars = BarSet {
+            dia: 25.0,
+            count: 4,
+            layers: 1,
+        };
+        RcRebar {
+            main_x: bars.clone(),
+            main_y: bars,
+            cover: 40.0,
+            shear: ShearBar {
+                dia: 10.0,
+                pitch: 100.0,
+                legs: 2,
+                grade: None,
+            },
+            main_grade: None,
+        }
+    }
+
+    /// 断面形状ではなく材料の区分で判定する。
+    /// H 形のコンクリート部材・矩形断面の鋼部材のいずれも正しく分類できる。
     #[test]
-    fn test_material_fallback() {
-        let m = model_with(None, material("FC24", Some(24.0), None));
+    fn test_material_decides_kind_not_shape() {
+        let m = model_with(Some(h_shape()), MaterialCategory::Concrete);
         assert_eq!(
             member_structure_kind(&m, &m.elements[0]),
-            StructureKind::RcSrc
+            StructureKind::Rc,
+            "H 形でも材料がコンクリートなら RC"
         );
 
-        let m = model_with(None, material("SN400B", None, Some(235.0)));
+        let m = model_with(Some(rect_shape()), MaterialCategory::Steel);
         assert_eq!(
             member_structure_kind(&m, &m.elements[0]),
-            StructureKind::Steel
+            StructureKind::S,
+            "矩形でも材料が鋼材なら S"
         );
     }
 
-    /// 形状も材料の判定材料も無い場合は RC/SRC 扱い（剛域式を変えない側）。
+    /// 断面形状を持たない断面（カタログ数値の直入力）でも材料で判定できる。
     #[test]
-    fn test_unknown_defaults_to_rc_src() {
-        let m = model_with(None, material("UNKNOWN", None, None));
+    fn test_shapeless_section_uses_material() {
+        let m = model_with(None, MaterialCategory::Steel);
+        assert_eq!(member_structure_kind(&m, &m.elements[0]), StructureKind::S);
+
+        let m = model_with(None, MaterialCategory::Concrete);
+        assert_eq!(member_structure_kind(&m, &m.elements[0]), StructureKind::Rc);
+    }
+
+    /// 複合断面は材料に依らず断面形状で決まる。
+    #[test]
+    fn test_composite_shape_wins_over_material() {
+        let src = SectionShape::SrcRect {
+            b: 700.0,
+            d: 700.0,
+            rebar: rc_rebar(),
+            steel_height: 400.0,
+            steel_width: 200.0,
+            steel_web_thick: 8.0,
+            steel_flange_thick: 13.0,
+            steel_grade: "SN400B".into(),
+        };
+        let m = model_with(Some(src), MaterialCategory::Steel);
         assert_eq!(
             member_structure_kind(&m, &m.elements[0]),
-            StructureKind::RcSrc
+            StructureKind::Src
         );
+
+        let cft = SectionShape::CftBox {
+            height: 400.0,
+            width: 400.0,
+            thick: 16.0,
+        };
+        let m = model_with(Some(cft), MaterialCategory::Concrete);
+        assert_eq!(
+            member_structure_kind(&m, &m.elements[0]),
+            StructureKind::Cft
+        );
+    }
+
+    /// 鉄筋は材料としては鋼だが、割り当てた線材は S 造ではない。
+    #[test]
+    fn test_rebar_is_not_steel_structure() {
+        let m = model_with(Some(h_shape()), MaterialCategory::Rebar);
+        assert_eq!(member_structure_kind(&m, &m.elements[0]), StructureKind::Rc);
+    }
+
+    /// 剛域式・仕口パネルの判定に使う畳み込みは S と CFT を同じ側へ置く。
+    #[test]
+    fn test_steel_like_folds_s_and_cft() {
+        assert!(StructureKind::S.is_steel_like());
+        assert!(StructureKind::Cft.is_steel_like());
+        assert!(!StructureKind::Rc.is_steel_like());
+        assert!(!StructureKind::Src.is_steel_like());
     }
 }

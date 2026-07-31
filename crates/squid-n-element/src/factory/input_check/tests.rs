@@ -3,7 +3,9 @@
 use super::*;
 use squid_n_core::dof::Dof6Mask;
 use squid_n_core::ids::{ElemId, MaterialId, NodeId, SectionId};
-use squid_n_core::model::{EndCondition, ForceRegime, LocalAxis, Material, Node, Section};
+use squid_n_core::model::{
+    EndCondition, ForceRegime, LocalAxis, Material, MaterialCategory, Node, Section,
+};
 use squid_n_core::section_shape::{BarSet, RcRebar, SectionShape, ShearBar};
 
 fn steel_material() -> Material {
@@ -12,6 +14,7 @@ fn steel_material() -> Material {
         concrete_class: Default::default(),
         id: MaterialId(0),
         name: "SN400".into(),
+        category: MaterialCategory::Steel,
         young: 205000.0,
         poisson: 0.3,
         density: 0.0,

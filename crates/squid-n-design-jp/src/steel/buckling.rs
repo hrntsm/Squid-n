@@ -52,10 +52,10 @@
 //! - 支点（節点の境界条件）の状態は考慮しない。
 //! - 斜材（水平・鉛直いずれでもない部材）は無視する。
 
+use squid_n_core::adjacency::NodeAdjacency;
 use squid_n_core::ids::NodeId;
 use squid_n_core::model::{ElementData, ElementKind, EndCondition, Material, Model, Section};
 use squid_n_element::transform::LocalFrame;
-use std::collections::HashMap;
 
 /// ピン端・梁無し節点に用いる剛度比 G の規定値（本実装の既定値）。
 const G_PIN: f64 = 10.0;
@@ -183,32 +183,32 @@ fn clear_length(elem: &ElementData, len: f64) -> f64 {
 /// 部材を求める際に、モデル全要素を毎回線形走査するのを避けるために使う。
 /// 判定ロジック自体（どの要素を G の柱側/梁側に数えるか）は一切変更しない
 /// （ここで絞り込むのは従来の `other.kind == ElementKind::Beam &&
-/// other.nodes[..2].contains(node_id)` と同じ集合）。
+/// 節点 → その節点に接続する線材要素への参照。
+///
+/// `g_ratio_at_with_index`（延いては `steel_column_k_with_index`）が節点まわりの
+/// 部材を求める際に、モデル全要素を毎回線形走査するのを避けるために使う。
+/// 隣接関係の構築は [`squid_n_core::adjacency::NodeAdjacency`] と共有する。
 pub struct BeamNodeIndex<'m> {
-    by_node: HashMap<NodeId, Vec<&'m ElementData>>,
+    model: &'m Model,
+    adjacency: NodeAdjacency,
 }
 
 impl<'m> BeamNodeIndex<'m> {
     /// モデル全体から一度だけ構築する。複数回の `steel_column_k_with_index`
     /// 呼び出し（部材数ぶん）で使い回すことを想定する。
     pub fn build(model: &'m Model) -> Self {
-        let mut by_node: HashMap<NodeId, Vec<&'m ElementData>> = HashMap::new();
-        for elem in &model.elements {
-            if elem.kind != ElementKind::Beam {
-                continue;
-            }
-            for node_id in elem.nodes.iter().take(2) {
-                by_node.entry(*node_id).or_default().push(elem);
-            }
+        Self {
+            model,
+            adjacency: NodeAdjacency::build(model),
         }
-        Self { by_node }
     }
 
-    fn beams_at(&self, node_id: NodeId) -> &[&'m ElementData] {
-        self.by_node
-            .get(&node_id)
-            .map(|v| v.as_slice())
-            .unwrap_or(&[])
+    /// 節点 `node` に接続する線材要素。
+    fn beams_at(&self, node: NodeId) -> impl Iterator<Item = &'m ElementData> + '_ {
+        self.adjacency
+            .indices_at(node)
+            .iter()
+            .filter_map(move |&ei| self.model.elements.get(ei))
     }
 }
 
@@ -440,6 +440,7 @@ mod tests {
     use smallvec::SmallVec;
     use squid_n_core::dof::Dof6Mask;
     use squid_n_core::ids::{ElemId, MaterialId, NodeId, SectionId};
+    use squid_n_core::model::MaterialCategory;
     use squid_n_core::model::{
         ElementData, ElementKind, EndCondition, ForceRegime, LocalAxis, Material, Model, Node,
         RigidZone, Section,
@@ -559,6 +560,7 @@ mod tests {
             strength_factor: None,
             id: MaterialId(0),
             name: "SN400B".to_string(),
+            category: MaterialCategory::Steel,
             young: 205_000.0,
             poisson: 0.3,
             density: 7.85e-9,

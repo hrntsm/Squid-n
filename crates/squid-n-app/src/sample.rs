@@ -4,8 +4,8 @@
 use squid_n_core::dof::Dof6Mask;
 use squid_n_core::ids::{ElemId, LoadCaseId, MaterialId, NodeId, SectionId};
 use squid_n_core::model::{
-    ElementData, ElementKind, EndCondition, ForceRegime, LoadCase, LocalAxis, Material, MemberLoad,
-    MemberLoadKind, Model, NodalLoad,
+    ElementData, ElementKind, EndCondition, ForceRegime, LoadCase, LocalAxis, Material,
+    MaterialCategory, MemberLoad, MemberLoadKind, Model, NodalLoad,
 };
 use squid_n_section::shape::SectionShape;
 
@@ -65,6 +65,7 @@ pub fn portal_frame() -> Model {
         concrete_class: Default::default(),
         id: MaterialId(0),
         name: "SN400B".into(),
+        category: MaterialCategory::Steel,
         young: 205000.0,
         poisson: 0.3,
         density: 7.85e-9,

@@ -179,6 +179,7 @@ pub fn collect_joint_checks_with_long(
             sec,
             mat,
             forces,
+            kind: squid_n_core::structure_kind::structure_kind_of(Some(sec), Some(mat.category)),
             ez: (dz / length).abs(),
             length,
         });

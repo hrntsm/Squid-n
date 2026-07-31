@@ -3,8 +3,8 @@ use smallvec::SmallVec;
 use squid_n_core::dof::Dof6Mask;
 use squid_n_core::ids::{ElemId, MaterialId, NodeId, SectionId};
 use squid_n_core::model::{
-    ElementData, ElementKind, EndCondition, ForceRegime, LocalAxis, Material, Node, RigidZone,
-    Section,
+    ElementData, ElementKind, EndCondition, ForceRegime, LocalAxis, Material, MaterialCategory,
+    Node, RigidZone, Section,
 };
 use squid_n_core::section_shape::{BarSet, RcRebar, SectionShape, ShearBar};
 
@@ -53,6 +53,7 @@ fn material() -> Material {
         concrete_class: Default::default(),
         id: MaterialId(0),
         name: "SD345".to_string(),
+        category: MaterialCategory::Rebar,
         young: 21000.0,
         poisson: 0.2,
         density: 2.4e-9,
@@ -506,6 +507,7 @@ fn test_collect_cft_ultimate_checks() {
         concrete_class: Default::default(),
         id: MaterialId(0),
         name: "BCR295".to_string(),
+        category: MaterialCategory::Concrete,
         young: 205000.0,
         poisson: 0.3,
         density: 7.85e-9,

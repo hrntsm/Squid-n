@@ -4,8 +4,8 @@ use super::*;
 use smallvec::smallvec;
 use squid_n_core::ids::{ElemId, MaterialId, NodeId, SectionId, StoryId};
 use squid_n_core::model::{
-    ElementData, ElementKind, EndCondition, ForceRegime, LocalAxis, Material, Model, Node, Section,
-    Story,
+    ElementData, ElementKind, EndCondition, ForceRegime, LocalAxis, Material, MaterialCategory,
+    Model, Node, Section, Story,
 };
 use squid_n_core::section_shape::SectionShape;
 
@@ -16,6 +16,7 @@ fn sn400b(id: u32) -> Material {
         concrete_class: Default::default(),
         id: MaterialId(id),
         name: "SN400B".into(),
+        category: MaterialCategory::Steel,
         young: 205000.0,
         poisson: 0.3,
         density: 7.85e-9,
@@ -312,6 +313,7 @@ fn frame_nodes() -> Model {
         concrete_class: Default::default(),
         id: MaterialId(0),
         name: "SN400B".into(),
+        category: MaterialCategory::Steel,
         young: 205000.0,
         poisson: 0.3,
         density: 7.85e-9,
@@ -2010,6 +2012,7 @@ fn test_shared_section_role_material() {
         concrete_class: Default::default(),
         id: MaterialId(1),
         name: "SN490B".into(),
+        category: MaterialCategory::Steel,
         young: 205000.0,
         poisson: 0.3,
         density: 7.85e-9,

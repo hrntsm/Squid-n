@@ -7,7 +7,7 @@
 
 use crate::app::App;
 use squid_n_core::ids::SectionId;
-use squid_n_edit::{AddSection, AddSectionShape, EditSectionShape};
+use squid_n_edit::{AddSection, AddSectionShape, EditSectionShape, SectionField, SetSectionField};
 use squid_n_section::catalog::CatalogShape;
 use squid_n_section::shape::{BarSet, RcRebar, SectionShape, ShearBar};
 
@@ -263,6 +263,15 @@ pub fn catalog_section_panel(ui: &mut egui::Ui, app: &mut App) {
 
 /// 断面作成パネル。モデルタブの断面サブタブに併置。
 pub fn section_editor_panel(ui: &mut egui::Ui, app: &mut App) {
+    // 仕口パネル板厚の欄はモデルを読むが、`draft` の可変借用と重なるため
+    // 必要な値だけ先に取り出し、編集要求は閉包の外で適用する。
+    let sections_tp: Vec<(SectionId, f64)> = app
+        .model
+        .sections
+        .iter()
+        .map(|s| (s.id, s.panel_thickness.unwrap_or(0.0)))
+        .collect();
+    let mut pending_tp: Option<(SectionId, f64)> = None;
     let draft = &mut app.section_draft;
 
     ui.group(|ui| {
@@ -385,6 +394,7 @@ pub fn section_editor_panel(ui: &mut egui::Ui, app: &mut App) {
                         );
                         app.staleness.mark_edited();
                     }
+                    panel_thickness_field(ui, &sections_tp, idx, &mut pending_tp);
                 }
                 None => {
                     apply_resp.on_hover_text("断面テーブルで対象断面を選択してください");
@@ -395,6 +405,18 @@ pub fn section_editor_panel(ui: &mut egui::Ui, app: &mut App) {
             ui.label(format!("現在: {}/セクション", app.model.sections.len()));
         });
     });
+
+    if let Some((id, value)) = pending_tp {
+        app.undo.run(
+            &mut app.model,
+            Box::new(SetSectionField {
+                id,
+                field: SectionField::PanelThickness,
+                value,
+            }),
+        );
+        app.staleness.mark_edited();
+    }
 }
 
 /// `focus_section`（ナビゲータで選択中の断面）が現在も存在するか確認し、
@@ -753,6 +775,54 @@ fn build_shape(d: &SectionEditorDraft) -> SectionShape {
             rebar: build_rebar(d),
         },
     }
+}
+
+/// 選択中の断面へ仕口パネルの板厚を入力する欄。
+///
+/// ダイアフラム補強・ダブラープレートで接合部の板厚を増した場合に、柱の断面形状から
+/// 算定される値（H 形＝ウェブ厚、角形・円形＝板厚）を上書きする。空欄・0 は未入力で、
+/// 断面形状からの算定値を用いる（計算根拠 4.6「パネル板厚 tp の解決順」）。
+///
+/// 仕口パネルのモデル化と S 造パネルゾーンの断面算定の双方がこの値を使う。
+fn panel_thickness_field(
+    ui: &mut egui::Ui,
+    sections_tp: &[(SectionId, f64)],
+    idx: usize,
+    pending: &mut Option<(SectionId, f64)>,
+) {
+    let Some(&(sid, current)) = sections_tp.get(idx) else {
+        return;
+    };
+    let id_buf = ui.id().with(("panel_thickness", sid.0));
+    let mut buf: String = ui.data_mut(|d| d.get_temp(id_buf)).unwrap_or_else(|| {
+        if current > 0.0 {
+            format!("{current:.1}")
+        } else {
+            String::new()
+        }
+    });
+
+    ui.horizontal(|ui| {
+        ui.label("パネル板厚 tp [mm]");
+        let resp = ui.add(egui::TextEdit::singleline(&mut buf).desired_width(60.0));
+        let resp = resp.on_hover_text(
+            "柱梁接合部の仕口パネルの板厚。ダイアフラム補強・ダブラープレートで\
+             増厚した場合に入力します。空欄なら柱の断面形状から算定します\
+             （H 形＝ウェブ厚、角形・円形＝板厚）",
+        );
+        if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+            // 空欄・数値でない入力は未入力（0）として扱う。
+            let value = buf.trim().parse::<f64>().unwrap_or(0.0).max(0.0);
+            if (value - current).abs() > 1e-9 {
+                *pending = Some((sid, value));
+            }
+        }
+        if current > 0.0 {
+            ui.label("（形状からの算定値を上書き中）");
+        }
+    });
+
+    ui.data_mut(|d| d.insert_temp(id_buf, buf));
 }
 
 #[cfg(test)]

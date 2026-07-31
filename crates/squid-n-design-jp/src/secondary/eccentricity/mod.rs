@@ -45,8 +45,8 @@ pub(crate) mod test_support {
         use squid_n_core::dof::Dof6Mask;
         use squid_n_core::ids::{ElemId, MaterialId, NodeId, SectionId};
         use squid_n_core::model::{
-            ElementData, ElementKind, EndCondition, ForceRegime, LocalAxis, Material, Node,
-            RigidZone, Section, Story,
+            ElementData, ElementKind, EndCondition, ForceRegime, LocalAxis, Material,
+            MaterialCategory, Node, RigidZone, Section, Story,
         };
 
         // 断面（共通: iy=iz=1.0e6）
@@ -96,6 +96,7 @@ pub(crate) mod test_support {
             concrete_class: Default::default(),
             id: MaterialId(0),
             name: "steel".to_string(),
+            category: MaterialCategory::Steel,
             young: 2.05e5,
             poisson: 0.3,
             density: 0.0,

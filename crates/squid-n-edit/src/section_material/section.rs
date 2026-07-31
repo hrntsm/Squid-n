@@ -21,6 +21,9 @@ pub enum SectionField {
     Width,
     AsY,
     AsZ,
+    /// 仕口パネルの板厚 [mm]（ダイアフラム補強・ダブラープレートによる増厚の
+    /// 明示指定）。0 以下は未入力として扱い、柱の断面形状から算定する。
+    PanelThickness,
 }
 
 impl EditCommand for SetSectionField {
@@ -69,6 +72,13 @@ impl EditCommand for SetSectionField {
             SectionField::AsZ => {
                 let o = sec.as_z;
                 sec.as_z = self.value;
+                o
+            }
+            SectionField::PanelThickness => {
+                let o = sec.panel_thickness.unwrap_or(0.0);
+                // 0 以下は「未入力」を表す。諸元解決も 0 以下を未入力として扱う
+                // （`squid_n_core::panel_zone::PanelGeometry::from_column`）。
+                sec.panel_thickness = (self.value > 0.0).then_some(self.value);
                 o
             }
         };

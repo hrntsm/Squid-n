@@ -52,6 +52,7 @@
 //! の順で処理する。パネルは常に末尾へ並ぶため、パネル生成後にモデルを編集しない
 //! 限り 1. で ID は動かない。
 
+use squid_n_core::adjacency::NodeAdjacency;
 use squid_n_core::ids::{ElemId, NodeId};
 use squid_n_core::model::{
     ElementData, ElementKind, EndCondition, ForceRegime, LocalAxis, Model, PanelZoneMode,
@@ -125,8 +126,12 @@ fn remove_existing_panels(model: &mut Model) {
 ///
 /// 判定は [`resolve_panel_joint`] に委ね、本関数はモデル化固有の追加条件
 /// （CFT を含まない・せん断弾性係数が正）とパネルせん断剛性の算定を担う。
-fn panel_at(model: &Model, node: NodeId) -> Option<(GeneratedPanel, Vec<NodeId>)> {
-    let joint = resolve_panel_joint(model, node, &model.elements)?;
+fn panel_at(
+    model: &Model,
+    adjacency: &NodeAdjacency,
+    node: NodeId,
+) -> Option<(GeneratedPanel, Vec<NodeId>)> {
+    let joint = resolve_panel_joint(model, node, adjacency.elements_at(model, node))?;
     // CFT はモデル化の対象外（充填部がせん断挙動に関与するため剛節点として扱う）。
     if joint.has_filled_column {
         return None;
@@ -147,9 +152,8 @@ fn panel_at(model: &Model, node: NodeId) -> Option<(GeneratedPanel, Vec<NodeId>)
     // 描画・パネル自由度との連成に用いる、接合部へ取り付く部材の他端。
     // 節点の照合を先に行い、合致した部材だけ向きを判定する（向きの判定は
     // 座標参照と平方根を伴うため、全要素へ先に掛けない）。
-    let connected: Vec<NodeId> = model
-        .elements
-        .iter()
+    let connected: Vec<NodeId> = adjacency
+        .elements_at(model, node)
         .filter_map(|e| {
             let far = far_end_at(e, node)?;
             member_orientation(model, e).map(|_| far)
@@ -184,11 +188,12 @@ fn far_end_at(e: &ElementData, node: NodeId) -> Option<NodeId> {
 ///
 /// 節点ごとに全要素を走査すると パネル数 × 要素数 になるため、半寸法を節点表へ
 /// 引けるようにしたうえで、要素側を 1 周して両端を引く。
-fn apply_panel_offsets(model: &mut Model, panels: &[GeneratedPanel]) {
+fn apply_panel_offsets(model: &mut Model, adjacency: &NodeAdjacency, panels: &[GeneratedPanel]) {
     let mut extent_of: Vec<Option<PanelHalfExtent>> = vec![None; model.nodes.len()];
     for p in panels {
+        let extent = panel_half_extent(model, p.node, adjacency.elements_at(model, p.node));
         if let Some(slot) = extent_of.get_mut(p.node.index()) {
-            *slot = Some(panel_half_extent(model, p.node, &model.elements));
+            *slot = Some(extent);
         }
     }
 
@@ -232,9 +237,12 @@ fn apply_panel_offsets(model: &mut Model, panels: &[GeneratedPanel]) {
 /// 戻り値は生成したパネルの諸元（節点 index の昇順）。準備計算の結果表示に用いる。
 pub fn apply_auto_panel_zones(model: &mut Model) -> Vec<GeneratedPanel> {
     remove_existing_panels(model);
+    // パネル要素を取り除いた状態で作る（パネル自身は線材ではないため隣接には
+    // 入らないが、要素の詰め直しで添字が動くため取り除いた後に構築する）。
+    let adjacency = NodeAdjacency::build(model);
     if model.panel_zone != PanelZoneMode::Model {
         // パネルが 1 つも無い状態のオフセット（＝すべて 0）へ戻す。
-        apply_panel_offsets(model, &[]);
+        apply_panel_offsets(model, &adjacency, &[]);
         return Vec::new();
     }
 
@@ -242,7 +250,7 @@ pub fn apply_auto_panel_zones(model: &mut Model) -> Vec<GeneratedPanel> {
     let mut new_elements = Vec::new();
     let node_ids: Vec<NodeId> = model.nodes.iter().map(|n| n.id).collect();
     for node in node_ids {
-        let Some((panel, connected)) = panel_at(model, node) else {
+        let Some((panel, connected)) = panel_at(model, &adjacency, node) else {
             continue;
         };
         let mut nodes: smallvec::SmallVec<[NodeId; 8]> = smallvec::smallvec![node];
@@ -270,7 +278,7 @@ pub fn apply_auto_panel_zones(model: &mut Model) -> Vec<GeneratedPanel> {
         model.elements.push(e);
     }
 
-    apply_panel_offsets(model, &generated);
+    apply_panel_offsets(model, &adjacency, &generated);
     generated
 }
 
@@ -279,6 +287,7 @@ mod tests {
     use super::*;
     use squid_n_core::dof::Dof6Mask;
     use squid_n_core::ids::{MaterialId, SectionId};
+    use squid_n_core::model::MaterialCategory;
     use squid_n_core::model::{Material, Node, Section};
     use squid_n_core::panel_zone::PanelGeometry;
     use squid_n_core::section_shape::SectionShape;
@@ -308,6 +317,30 @@ mod tests {
             thickness: None,
             shape: Some(shape),
         }
+    }
+
+    /// 材料 0 = 鋼材、材料 1 = コンクリート。
+    fn test_material(id: u32, category: MaterialCategory) -> Material {
+        Material {
+            strength_factor: None,
+            concrete_class: Default::default(),
+            id: MaterialId(id),
+            name: String::new(),
+            category,
+            young: 205_000.0,
+            poisson: 0.3,
+            density: 0.0,
+            shear: None,
+            fc: None,
+            fy: None,
+        }
+    }
+
+    /// 材料を指定して部材を作る。
+    fn member_with_mat(id: u32, n0: u32, n1: u32, sec: u32, mat: u32) -> ElementData {
+        let mut e = member(id, n0, n1, sec);
+        e.material = Some(MaterialId(mat));
+        e
     }
 
     fn member(id: u32, n0: u32, n1: u32, sec: u32) -> ElementData {
@@ -357,18 +390,10 @@ mod tests {
                 section(0, beam_shape, beam_depth),
                 section(1, col_shape, 400.0),
             ],
-            materials: vec![Material {
-                strength_factor: None,
-                concrete_class: Default::default(),
-                id: MaterialId(0),
-                name: "SN400B".into(),
-                young: 205_000.0,
-                poisson: 0.3,
-                density: 0.0,
-                shear: None,
-                fc: None,
-                fy: None,
-            }],
+            materials: vec![
+                test_material(0, MaterialCategory::Steel),
+                test_material(1, MaterialCategory::Concrete),
+            ],
             elements: vec![member(0, 0, 1, 0), member(1, 2, 0, 1)],
             ..Default::default()
         }
@@ -556,6 +581,8 @@ mod tests {
             rc_shape(400.0, 700.0),
             700.0,
         );
+        // 判定は材料の区分による。梁（要素 0）へコンクリートを割り当てる。
+        model.elements[0].material = Some(MaterialId(1));
         let panels = apply_auto_panel_zones(&mut model);
         assert!(panels.is_empty(), "RC 梁の接合部は対象外");
         assert_eq!(model.elements.len(), 2, "パネル要素は生成されない");
@@ -577,7 +604,8 @@ mod tests {
         model
             .sections
             .push(section(2, rc_shape(400.0, 700.0), 700.0));
-        model.elements.push(member(2, 0, 3, 2));
+        // 判定は材料の区分による（材料 1 = コンクリート）。
+        model.elements.push(member_with_mat(2, 0, 3, 2, 1));
 
         let panels = apply_auto_panel_zones(&mut model);
         assert!(panels.is_empty(), "RC 梁が 1 本でも混じれば対象外");

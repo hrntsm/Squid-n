@@ -271,18 +271,6 @@ fn design_member_kind(elem: &ElementData, model: &Model) -> Option<MemberKind> {
     }
 }
 
-/// 鋼材判定（`app::is_steel` と同じ規則の複製）。
-fn is_steel_material(name: &str) -> bool {
-    let upper = name.to_uppercase();
-    upper.starts_with("SS")
-        || upper.starts_with("SN")
-        || upper.starts_with("SM")
-        || upper.starts_with("STK")
-        || upper.starts_with("ST")
-        || upper.starts_with("SA")
-        || upper.starts_with("BC")
-}
-
 /// 時刻歴詳細ウィンドウ（`app.th_detail_elem` があれば表示）。
 pub(crate) fn show_th_detail_window(ui: &egui::Ui, app: &mut App) {
     let Some(elem_id) = app.th_detail_elem else {
@@ -742,17 +730,16 @@ fn draw_peak_check(
         mid_moment_z: m_at(0.5),
         ..Default::default()
     };
-    let checker: Box<dyn DesignCheck> = match sec.shape {
-        Some(squid_n_core::section_shape::SectionShape::SrcRect { .. }) => {
-            Box::new(squid_n_design_jp::SrcDesign)
-        }
-        Some(squid_n_core::section_shape::SectionShape::CftBox { .. })
-        | Some(squid_n_core::section_shape::SectionShape::CftPipe { .. }) => {
-            Box::new(squid_n_design_jp::CftDesign)
-        }
-        _ if is_steel_material(&mat.name) => Box::new(squid_n_design_jp::SteelDesign),
-        _ => Box::new(squid_n_design_jp::RcDesign),
-    };
+    // 検定器の選択は構造種別による（`squid_n_core::structure_kind`。
+    // 設計タブの検定と同じ規則）。
+    use squid_n_core::structure_kind::StructureKind;
+    let checker: Box<dyn DesignCheck> =
+        match squid_n_core::structure_kind::structure_kind_of(Some(sec), Some(mat.category)) {
+            StructureKind::Src => Box::new(squid_n_design_jp::SrcDesign),
+            StructureKind::Cft => Box::new(squid_n_design_jp::CftDesign),
+            StructureKind::S => Box::new(squid_n_design_jp::SteelDesign),
+            StructureKind::Rc => Box::new(squid_n_design_jp::RcDesign),
+        };
 
     for (pos, f) in &peak.at {
         let mfa = MemberForcesAt {
@@ -940,16 +927,6 @@ mod tests {
             loop_kind_of(&ElementKind::Wall),
             LoopKind::Unsupported
         ));
-    }
-
-    // ── is_steel_material ─────────────────────────────────────────────
-
-    #[test]
-    fn is_steel_material_detects_jis_grades() {
-        assert!(is_steel_material("SN400B"));
-        assert!(is_steel_material("ss400"));
-        assert!(!is_steel_material("SD295"));
-        assert!(!is_steel_material("Fc21"));
     }
 
     // ── end_moments / flexural_points（高-1: i端モーメント符号規約） ──────

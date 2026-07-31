@@ -15,8 +15,8 @@
 use squid_n_core::dof::{Dof6Mask, DofMap};
 use squid_n_core::ids::{ElemId, LoadCaseId, MaterialId, NodeId, SectionId};
 use squid_n_core::model::{
-    ElementData, ElementKind, EndCondition, ForceRegime, LoadCase, LocalAxis, Material, Model,
-    NodalLoad, Node, RigidZone, Section,
+    ElementData, ElementKind, EndCondition, ForceRegime, LoadCase, LocalAxis, Material,
+    MaterialCategory, Model, NodalLoad, Node, RigidZone, Section,
 };
 use squid_n_core::panel_zone::{beam_panel_depth, PanelGeometry};
 use squid_n_core::section_shape::SectionShape;
@@ -167,6 +167,7 @@ fn l_frame_with(with_panel: bool, rigid_joint: bool) -> Model {
             concrete_class: Default::default(),
             id: MaterialId(0),
             name: "SN400B".into(),
+            category: MaterialCategory::Steel,
             young: 205_000.0,
             poisson: 0.3,
             density: 0.0,

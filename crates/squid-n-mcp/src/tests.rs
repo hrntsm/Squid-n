@@ -1,8 +1,8 @@
 use super::*;
 use squid_n_core::ids::{ElemId, MaterialId, NodeId, SectionId};
 use squid_n_core::model::{
-    ElementData, ElementKind, Haunch, JointKind, LocalAxis, MemberDetailAttr, MemberJoint, Node,
-    Section,
+    ElementData, ElementKind, Haunch, JointKind, LocalAxis, MaterialCategory, MemberDetailAttr,
+    MemberJoint, Node, Section,
 };
 
 fn sample_model() -> Model {
@@ -185,6 +185,7 @@ fn rc_column_model() -> Model {
             concrete_class: Default::default(),
             id: MaterialId(0),
             name: "SD345".into(),
+            category: MaterialCategory::Rebar,
             young: 23000.0,
             poisson: 0.2,
             density: 2.4e-9,

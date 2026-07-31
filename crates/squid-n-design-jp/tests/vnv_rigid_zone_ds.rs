@@ -13,7 +13,7 @@ use squid_n_core::dof::{Dof6Mask, DofMap};
 use squid_n_core::ids::{ElemId, MaterialId, NodeId, SectionId, StoryId};
 use squid_n_core::model::{
     Constraint, DiaphragmDef, ElementData, ElementKind, EndCondition, ForceRegime, LocalAxis,
-    Material, Model, Node, RigidZone, Section, Story,
+    Material, MaterialCategory, Model, Node, RigidZone, Section, Story,
 };
 use squid_n_design_jp::secondary::holding_capacity::{FrameType, MemberRank};
 use squid_n_design_jp::secondary::member_rank::story_ds;
@@ -102,6 +102,7 @@ fn portal_frame(rigid: f64, seismic_weight: f64) -> Model {
             concrete_class: Default::default(),
             id: MaterialId(0),
             name: "steel".to_string(),
+            category: MaterialCategory::Steel,
             young: 205000.0,
             poisson: 0.3,
             density: 0.0,

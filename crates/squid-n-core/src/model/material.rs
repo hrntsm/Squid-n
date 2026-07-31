@@ -1,13 +1,51 @@
 //! 材料の型。
 //!
-//! - [`Material`] — 材料（ヤング率・ポアソン比・密度・強度等）。
+//! - [`MaterialCategory`] — 材料の区分（鋼材・鉄筋・コンクリート）。
+//! - [`Material`] — 材料（区分・ヤング率・ポアソン比・密度・強度等）。
 
 use super::*;
+
+/// 材料の区分。
+///
+/// 部材が S 造か RC 造かは、断面形状ではなく**この区分で判定する**
+/// （[`crate::structure_kind`]）。断面形状は見た目であって力学的な性質ではなく、
+/// H 形のコンクリート部材・矩形断面の鋼部材のいずれもありうるためである。
+/// 任意の材料と任意の断面の組み合わせでも、どの検定式を適用すべきかが定まる。
+///
+/// SRC・CFT は 1 つの材料では表せない複合断面なので、断面形状の側で判定する
+/// （`SrcRect` は内蔵鉄骨のグレードを断面に持ち、CFT は `Material::fc` を
+/// 充填コンクリートの強度として使う）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum MaterialCategory {
+    /// 構造用鋼材。
+    Steel,
+    /// 鉄筋。RC 部材の主筋・せん断補強筋に用いる。
+    ///
+    /// 材料としては鋼だが、これを割り当てた線材は S 造ではない。RC 断面の配筋は
+    /// 断面側（`RcRebar`）にグレード名として持つため、線材の材料として
+    /// 鉄筋を割り当てるのは入力の誤りである。
+    Rebar,
+    /// コンクリート。
+    Concrete,
+}
+
+impl MaterialCategory {
+    /// UI 表示名。
+    pub fn label(&self) -> &'static str {
+        match self {
+            MaterialCategory::Steel => "鋼材",
+            MaterialCategory::Rebar => "鉄筋",
+            MaterialCategory::Concrete => "コンクリート",
+        }
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Material {
     pub id: MaterialId,
     pub name: String,
+    /// 材料の区分。S 造・RC 造の判定はこの値による（[`MaterialCategory`]）。
+    pub category: MaterialCategory,
     pub young: f64,
     pub poisson: f64,
     pub density: f64,

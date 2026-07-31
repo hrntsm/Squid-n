@@ -4,8 +4,9 @@
 //! `ElementData::rigid_zone` へ反映する前処理を提供する。剛性・内力を計算する
 //! [`BeamElement`](super::BeamElement) とは独立しており、解析前に一度だけ適用する。
 
+use squid_n_core::adjacency::NodeAdjacency;
 use squid_n_core::model::{Model, RigidZone, ZoneSource};
-use squid_n_core::structure_kind::{member_structure_kind, StructureKind};
+use squid_n_core::structure_kind::member_structure_kind;
 
 pub struct RigidZoneRule {
     pub reduction: f64,
@@ -15,22 +16,6 @@ impl Default for RigidZoneRule {
     fn default() -> Self {
         Self { reduction: 1.0 }
     }
-}
-
-/// 節点 → 接続 Beam 要素のマップ（直交せい探索の対象は柱・梁＝Beam 要素のみ。
-/// 耐震壁・シェル等が混入すると「耐震壁周辺の柱・梁の剛域は考慮しません」
-/// という方針に反し、壁の名目せい等が誤って直交材に紛れ込む）。
-fn beam_adjacency(model: &Model) -> std::collections::HashMap<usize, Vec<usize>> {
-    let mut node_to_elems: std::collections::HashMap<usize, Vec<usize>> =
-        std::collections::HashMap::new();
-    for (ei, e) in model.elements.iter().enumerate() {
-        if e.nodes.len() >= 2 && matches!(e.kind, squid_n_core::model::ElementKind::Beam) {
-            for n in &e.nodes {
-                node_to_elems.entry(n.index()).or_default().push(ei);
-            }
-        }
-    }
-    node_to_elems
 }
 
 fn elem_axis(model: &Model, e: &squid_n_core::model::ElementData) -> [f64; 3] {
@@ -59,32 +44,26 @@ fn max_orth_depth(
     node_idx: usize,
     target_axis: [f64; 3],
     target_elem_idx: usize,
-    node_to_elems: &std::collections::HashMap<usize, Vec<usize>>,
+    adjacency: &NodeAdjacency,
     only_rc_src: bool,
 ) -> f64 {
     let mut d_max = 0.0;
-    if let Some(elems) = node_to_elems.get(&node_idx) {
-        for &ei in elems {
-            if ei == target_elem_idx {
-                continue;
-            }
-            let e = &model.elements[ei];
-            if e.nodes.len() < 2 {
-                continue;
-            }
-            if only_rc_src && member_structure_kind(model, e) != StructureKind::RcSrc {
-                continue;
-            }
-            let axis = elem_axis(model, e);
-            let dot =
-                (axis[0] * target_axis[0] + axis[1] * target_axis[1] + axis[2] * target_axis[2])
-                    .abs();
-            if dot < 0.707 {
-                // 概ね直交（45°以上）
-                if let Some(sec) = e.section.and_then(|sid| model.sections.get(sid.index())) {
-                    if sec.depth > d_max {
-                        d_max = sec.depth;
-                    }
+    for &ei in adjacency.indices_at(squid_n_core::ids::NodeId(node_idx as u32)) {
+        if ei == target_elem_idx {
+            continue;
+        }
+        let e = &model.elements[ei];
+        if only_rc_src && member_structure_kind(model, e).is_steel_like() {
+            continue;
+        }
+        let axis = elem_axis(model, e);
+        let dot =
+            (axis[0] * target_axis[0] + axis[1] * target_axis[1] + axis[2] * target_axis[2]).abs();
+        if dot < 0.707 {
+            // 概ね直交（45°以上）
+            if let Some(sec) = e.section.and_then(|sid| model.sections.get(sid.index())) {
+                if sec.depth > d_max {
+                    d_max = sec.depth;
                 }
             }
         }
@@ -97,7 +76,7 @@ fn max_orth_depth(
 fn rigid_zone_with_adjacency(
     model: &Model,
     target_elem_idx: usize,
-    node_to_elems: &std::collections::HashMap<usize, Vec<usize>>,
+    adjacency: &NodeAdjacency,
     rule: &RigidZoneRule,
 ) -> RigidZone {
     let elem = &model.elements[target_elem_idx];
@@ -120,7 +99,7 @@ fn rigid_zone_with_adjacency(
         nodes[0].index(),
         target_axis,
         target_elem_idx,
-        node_to_elems,
+        adjacency,
         false,
     );
     let d_orth_face_j = max_orth_depth(
@@ -128,7 +107,7 @@ fn rigid_zone_with_adjacency(
         nodes[nodes.len() - 1].index(),
         target_axis,
         target_elem_idx,
-        node_to_elems,
+        adjacency,
         false,
     );
     // λ 用: RC/SRC 系の直交 Beam 要素だけの最大せい。
@@ -137,7 +116,7 @@ fn rigid_zone_with_adjacency(
         nodes[0].index(),
         target_axis,
         target_elem_idx,
-        node_to_elems,
+        adjacency,
         true,
     );
     let d_orth_rc_j = max_orth_depth(
@@ -145,7 +124,7 @@ fn rigid_zone_with_adjacency(
         nodes[nodes.len() - 1].index(),
         target_axis,
         target_elem_idx,
-        node_to_elems,
+        adjacency,
         true,
     );
 
@@ -157,16 +136,10 @@ fn rigid_zone_with_adjacency(
     //   （Ｓ造の剛域長さは0となる）。
     let self_kind = member_structure_kind(model, elem);
     let lambda = |d_orth_rc: f64| -> f64 {
-        match self_kind {
-            StructureKind::RcSrc => {
-                let v = rule.reduction * (d_orth_rc / 2.0 - d_self / 4.0);
-                if v < 0.0 {
-                    0.0
-                } else {
-                    v
-                }
-            }
-            StructureKind::Steel => d_orth_rc / 2.0,
+        if self_kind.is_steel_like() {
+            d_orth_rc / 2.0
+        } else {
+            (rule.reduction * (d_orth_rc / 2.0 - d_self / 4.0)).max(0.0)
         }
     };
     // フェイス距離 = D_orth/2 は剛性用剛域の低減率（慣用調整）と無関係な幾何量なので
@@ -204,8 +177,8 @@ pub fn auto_rigid_zones(
             ..Default::default()
         };
     };
-    let node_to_elems = beam_adjacency(model);
-    rigid_zone_with_adjacency(model, target_elem_idx, &node_to_elems, rule)
+    let adjacency = NodeAdjacency::build(model);
+    rigid_zone_with_adjacency(model, target_elem_idx, &adjacency, rule)
 }
 
 pub fn recompute_auto_zones(zone: &mut RigidZone, recomputed: &RigidZone) {
@@ -236,13 +209,13 @@ pub fn recompute_auto_zones(zone: &mut RigidZone, recomputed: &RigidZone) {
 /// 隣接マップ（節点 → 接続 Beam 要素）を 1 回だけ構築して全要素で共有するため
 /// O(E)（辺数比例）で完了する。
 pub fn apply_auto_rigid_zones(model: &mut Model, rule: &RigidZoneRule) {
-    let node_to_elems = beam_adjacency(model);
+    let adjacency = NodeAdjacency::build(model);
     let recomputed: Vec<(usize, RigidZone)> = model
         .elements
         .iter()
         .enumerate()
         .filter(|(_, e)| matches!(e.kind, squid_n_core::model::ElementKind::Beam))
-        .map(|(i, _)| (i, rigid_zone_with_adjacency(model, i, &node_to_elems, rule)))
+        .map(|(i, _)| (i, rigid_zone_with_adjacency(model, i, &adjacency, rule)))
         .collect();
 
     for (i, rz) in recomputed {

@@ -5,7 +5,7 @@ use approx::assert_relative_eq;
 use squid_n_core::ids::{ElemId, MaterialId, NodeId, SectionId};
 use squid_n_core::model::{
     AnalysisKind, ElementData, ElementKind, EndCondition, ForceRegime, HysteresisModel, LocalAxis,
-    Material, Model, Node, Section,
+    Material, MaterialCategory, Model, Node, Section,
 };
 
 fn make_test_fiber_beam(shear_mod: Option<f64>) -> FiberBeam {
@@ -105,6 +105,7 @@ fn build_test_model(shear_mod: Option<f64>) -> Model {
             concrete_class: Default::default(),
             id: MaterialId(0),
             name: "steel".to_string(),
+            category: MaterialCategory::Steel,
             young: 205000.0,
             poisson: 0.3,
             density: 0.0,
@@ -174,6 +175,7 @@ fn make_oriented_fiber(p0: [f64; 3], p1: [f64; 3], ref_vec: [f64; 3]) -> FiberBe
             concrete_class: Default::default(),
             id: MaterialId(0),
             name: "steel".to_string(),
+            category: MaterialCategory::Steel,
             young: 205000.0,
             poisson: 0.3,
             density: 0.0,
@@ -248,6 +250,7 @@ fn make_steel_fiber_with_fy(fy: Option<f64>) -> FiberBeam {
             concrete_class: Default::default(),
             id: MaterialId(0),
             name: "steel".to_string(),
+            category: MaterialCategory::Steel,
             young: 205000.0,
             poisson: 0.3,
             density: 0.0,
@@ -597,6 +600,7 @@ fn test_yield_progression() {
                 concrete_class: Default::default(),
                 id: MaterialId(0),
                 name: "steel".to_string(),
+                category: MaterialCategory::Steel,
                 young: 205000.0,
                 poisson: 0.3,
                 density: 0.0,
@@ -944,6 +948,7 @@ fn test_vertical_column_rz_nonsingular() {
             concrete_class: Default::default(),
             id: MaterialId(0),
             name: "steel".to_string(),
+            category: MaterialCategory::Steel,
             young: 205000.0,
             poisson: 0.3,
             density: 0.0,
@@ -1587,6 +1592,7 @@ fn rc_fiber_model() -> Model {
             concrete_class: Default::default(),
             id: MaterialId(0),
             name: "FC30".into(),
+            category: MaterialCategory::Concrete,
             young: 25000.0,
             poisson: 0.2,
             density: 0.0,

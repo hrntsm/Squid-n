@@ -3,8 +3,8 @@ use crate::constraint::Reducer;
 use squid_n_core::dof::{Dof, Dof6Mask, DofMap};
 use squid_n_core::ids::{ElemId, MaterialId, NodeId, SectionId, StoryId};
 use squid_n_core::model::{
-    Constraint, ElementData, ElementKind, EndCondition, ForceRegime, LocalAxis, Material, Model,
-    Node, Section,
+    Constraint, ElementData, ElementKind, EndCondition, ForceRegime, LocalAxis, Material,
+    MaterialCategory, Model, Node, Section,
 };
 
 /// Ux のみ自由（並進1方向）にするマスク。
@@ -70,6 +70,7 @@ fn make_1dof_spring_model() -> Model {
             concrete_class: Default::default(),
             id: MaterialId(0),
             name: "mat".into(),
+            category: MaterialCategory::Steel,
             young: k * 1000.0 / 1.0, // EA/L = young*1/1000 = k
             poisson: 0.0,
             density: 0.0,
@@ -138,6 +139,7 @@ fn make_shear_2dof_model() -> Model {
             concrete_class: Default::default(),
             id: MaterialId(0),
             name: "mat".into(),
+            category: MaterialCategory::Steel,
             young,
             poisson: 0.0,
             density: 0.0,
@@ -244,6 +246,7 @@ fn make_portal_frame_like_model(top_mass: f64) -> Model {
             concrete_class: Default::default(),
             id: MaterialId(0),
             name: "SN400B".into(),
+            category: MaterialCategory::Steel,
             young: 205000.0,
             poisson: 0.3,
             density: 0.0, // 質量は集中質量のみで与える（水平質点系モデル化）
@@ -547,6 +550,7 @@ fn make_portal_frame_density_mass_model() -> Model {
             concrete_class: Default::default(),
             id: MaterialId(0),
             name: "SN400B".into(),
+            category: MaterialCategory::Steel,
             young: 205000.0,
             poisson: 0.3,
             density: 7.85e-9,
@@ -758,6 +762,7 @@ fn make_diaphragm_columns_model(top_mass: f64, rot_mass: f64) -> Model {
             concrete_class: Default::default(),
             id: MaterialId(0),
             name: "SN400B".into(),
+            category: MaterialCategory::Steel,
             young: 205000.0,
             poisson: 0.3,
             density: 0.0, // 質量はマスター節点の集中質量のみ
@@ -953,6 +958,7 @@ fn make_four_column_diaphragm_model(top_mass: f64, rot_mass: f64) -> Model {
             concrete_class: Default::default(),
             id: MaterialId(0),
             name: "SN400B".into(),
+            category: MaterialCategory::Steel,
             young: 205000.0,
             poisson: 0.3,
             density: 0.0, // 質量はマスター節点の集中質量のみ
@@ -1071,6 +1077,7 @@ fn test_2dof_shear_unequal_mass_matches_analytic() {
             concrete_class: Default::default(),
             id: MaterialId(0),
             name: "mat".into(),
+            category: MaterialCategory::Steel,
             young,
             poisson: 0.0,
             density: 0.0,
@@ -1171,6 +1178,7 @@ fn test_eigen_subspace_matches_dense_ground_truth_q_lt_n() {
             concrete_class: Default::default(),
             id: MaterialId(0),
             name: "mat".into(),
+            category: MaterialCategory::Steel,
             young,
             poisson: 0.0,
             density: 0.0,

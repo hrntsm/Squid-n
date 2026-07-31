@@ -81,12 +81,7 @@ impl App {
                     .model
                     .elements
                     .iter()
-                    .filter(|e| {
-                        e.material
-                            .and_then(|mid| self.model.materials.get(mid.index()))
-                            .map(|m| is_steel(&m.name))
-                            .unwrap_or(false)
-                    })
+                    .filter(|e| elem_is_steel(e, &self.model))
                     .map(|e| e.id)
                     .collect();
                 let rc_ids: Vec<ElemId> = self

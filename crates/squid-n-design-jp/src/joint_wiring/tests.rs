@@ -3,8 +3,8 @@ use smallvec::SmallVec;
 use squid_n_core::dof::Dof6Mask;
 use squid_n_core::ids::{ElemId, MaterialId, NodeId, SectionId};
 use squid_n_core::model::{
-    ElementData, EndCondition, ForceRegime, LocalAxis, Material, MultiOpeningMode, Node, RigidZone,
-    Section, WallAttr, WallOpening,
+    ElementData, EndCondition, ForceRegime, LocalAxis, Material, MaterialCategory,
+    MultiOpeningMode, Node, RigidZone, Section, WallAttr, WallOpening,
 };
 use squid_n_core::section_shape::SectionShape;
 
@@ -57,6 +57,7 @@ fn wall_model_sized(l: f64, h: f64, thickness: f64, wall_attr: Option<WallAttr>)
         concrete_class: Default::default(),
         id: MaterialId(0),
         name: "SD345".to_string(),
+        category: MaterialCategory::Rebar,
         young: 23000.0,
         poisson: 0.2,
         density: 2.4e-9,
@@ -597,6 +598,7 @@ fn rc_cross_joint_emits_ultimate_check() {
         concrete_class: Default::default(),
         id: MaterialId(0),
         name: "SD345".to_string(),
+        category: MaterialCategory::Rebar,
         young: 23000.0,
         poisson: 0.2,
         density: 2.4e-9,

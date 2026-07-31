@@ -1444,6 +1444,7 @@ mod tests {
     use super::*;
     use squid_n_core::dof::Dof6Mask;
     use squid_n_core::ids::{ElemId, MaterialId, SectionId};
+    use squid_n_core::model::MaterialCategory;
     use squid_n_core::model::{ElementKind, EndCondition, ForceRegime, LocalAxis, Material, Node};
     use squid_n_core::section_shape::SectionShape;
 
@@ -1474,6 +1475,7 @@ mod tests {
                 concrete_class: Default::default(),
                 id: MaterialId(0),
                 name: "FC24".into(),
+                category: MaterialCategory::Concrete,
                 young: 23000.0,
                 poisson: 0.2,
                 density: 2.4e-9,
@@ -1865,6 +1867,7 @@ mod shear_yield_tests {
     use crate::behavior::{Ctx, ElemState, LocalVec};
     use squid_n_core::dof::Dof6Mask;
     use squid_n_core::ids::{ElemId, MaterialId, SectionId};
+    use squid_n_core::model::MaterialCategory;
     use squid_n_core::model::{ElementKind, EndCondition, ForceRegime, LocalAxis, Material, Node};
     use squid_n_core::section_shape::SectionShape;
 
@@ -1894,6 +1897,7 @@ mod shear_yield_tests {
                 concrete_class: Default::default(),
                 id: MaterialId(0),
                 name: "FC24".into(),
+                category: MaterialCategory::Concrete,
                 young: 23000.0,
                 poisson: 0.2,
                 density: 2.4e-9,
@@ -2079,6 +2083,7 @@ mod capacity_issue_tests {
     use super::*;
     use squid_n_core::dof::Dof6Mask;
     use squid_n_core::ids::{ElemId, MaterialId, SectionId};
+    use squid_n_core::model::MaterialCategory;
     use squid_n_core::model::{
         ElementKind, EndCondition, ForceRegime, LocalAxis, Material, Node, Section,
     };
@@ -2150,6 +2155,7 @@ mod capacity_issue_tests {
                 concrete_class: Default::default(),
                 id: MaterialId(0),
                 name: "FC24".into(),
+                category: MaterialCategory::Concrete,
                 young: 23000.0,
                 poisson: 0.2,
                 density: 2.4e-9,

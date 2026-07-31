@@ -1,5 +1,6 @@
 use super::*;
 use crate::dof::Dof6Mask;
+use crate::model::MaterialCategory;
 
 fn make_grid_model(n: usize) -> Model {
     let nodes: Vec<Node> = (0..n)
@@ -134,6 +135,7 @@ fn test_shear_modulus_explicit() {
         id: MaterialId(0),
         strength_factor: None,
         name: "Test".to_string(),
+        category: MaterialCategory::Steel,
         young: 205000.0,
         poisson: 0.3,
         density: 0.0,
@@ -151,6 +153,7 @@ fn test_shear_modulus_derived() {
         id: MaterialId(0),
         strength_factor: None,
         name: "Test".to_string(),
+        category: MaterialCategory::Steel,
         young: 205000.0,
         poisson: 0.3,
         density: 0.0,
@@ -162,13 +165,15 @@ fn test_shear_modulus_derived() {
     assert!((mat.shear_modulus() - expected).abs() < 1e-9);
 }
 
-/// 旧スキーマ（concrete_class フィールドが無い JSON）の Material が
-/// 読み込めること（serde 後方互換。既定は Normal）。
+/// `concrete_class` を持たない入力は既定（Normal）で補完されること。
+/// 材料の区分 `category` は必須で、欠けている入力は読み込みエラーになる
+/// （区分を推測すると鋼材が黙って RC 扱いになりうるため、既定値を置かない）。
 #[test]
-fn test_material_serde_backward_compat_concrete_class() {
+fn test_material_serde_defaults_concrete_class() {
     let json = r#"{
             "id": 0,
             "name": "FC24",
+            "category": "Concrete",
             "young": 23000.0,
             "poisson": 0.2,
             "density": 2.4e-9,
@@ -176,7 +181,19 @@ fn test_material_serde_backward_compat_concrete_class() {
         }"#;
     let mat: Material = serde_json::from_str(json).unwrap();
     assert_eq!(mat.concrete_class, crate::units::ConcreteClass::Normal);
+    assert_eq!(mat.category, MaterialCategory::Concrete);
     assert_eq!(mat.fc, Some(24.0));
+
+    // 区分が無い入力は受け付けない。
+    let without_category = r#"{
+            "id": 0,
+            "name": "FC24",
+            "young": 23000.0,
+            "poisson": 0.2,
+            "density": 2.4e-9,
+            "fc": 24.0
+        }"#;
+    assert!(serde_json::from_str::<Material>(without_category).is_err());
 
     // ラウンドトリップ（Lightweight1 が保存・復元できること）。
     let mat2 = Material {

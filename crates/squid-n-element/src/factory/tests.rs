@@ -2,7 +2,7 @@ use super::*;
 use squid_n_core::dof::Dof6Mask;
 use squid_n_core::ids::{ElemId, MaterialId, NodeId, SectionId};
 use squid_n_core::model::AnalysisKind;
-use squid_n_core::model::{EndCondition, LocalAxis, Material, Node, Section};
+use squid_n_core::model::{EndCondition, LocalAxis, Material, MaterialCategory, Node, Section};
 
 fn make_diaphragm_model() -> Model {
     Model {
@@ -57,6 +57,7 @@ fn make_diaphragm_model() -> Model {
             concrete_class: Default::default(),
             id: MaterialId(0),
             name: "mat".into(),
+            category: MaterialCategory::Steel,
             young: 20000.0,
             poisson: 0.3,
             density: 0.0,
@@ -335,6 +336,7 @@ fn make_brace_model(tension_only: bool) -> (Model, ElementData) {
             concrete_class: Default::default(),
             id: MaterialId(0),
             name: "steel".into(),
+            category: MaterialCategory::Steel,
             young: 205000.0,
             poisson: 0.3,
             density: 0.0,
@@ -444,6 +446,7 @@ fn test_build_behavior_wall_opening_reduces_shear_stiffness() {
             concrete_class: Default::default(),
             id: MaterialId(0),
             name: "FC24".into(),
+            category: MaterialCategory::Concrete,
             young: 23000.0,
             poisson: 0.2,
             density: 0.0,

@@ -894,7 +894,7 @@ impl App {
             ) else {
                 continue;
             };
-            if !super::is_steel(&mat.name) {
+            if !super::elem_is_steel(e, model) {
                 continue;
             }
             let Some(shape) = sec.shape.as_ref() else {

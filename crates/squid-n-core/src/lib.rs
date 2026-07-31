@@ -1,3 +1,4 @@
+pub mod adjacency;
 pub mod dof;
 pub mod error;
 pub mod ids;

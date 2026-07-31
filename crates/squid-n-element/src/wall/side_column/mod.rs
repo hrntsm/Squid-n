@@ -32,7 +32,7 @@ use crate::transform::LocalFrame;
 #[cfg(test)]
 use squid_n_core::ids::NodeId;
 #[cfg(test)]
-use squid_n_core::model::{ElementData, ElementKind, Model};
+use squid_n_core::model::{ElementData, ElementKind, MaterialCategory, Model};
 #[cfg(test)]
 use squid_n_core::section_shape::SectionShape;
 
@@ -257,6 +257,7 @@ mod tests {
                 concrete_class: Default::default(),
                 id: MaterialId(0),
                 name: "FC24".into(),
+                category: MaterialCategory::Concrete,
                 young: 23000.0,
                 poisson: 0.2,
                 density: 2.4e-9,

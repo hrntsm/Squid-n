@@ -1,7 +1,7 @@
 use super::*;
 use approx::assert_relative_eq;
 use squid_n_core::ids::SectionId;
-use squid_n_core::model::{Material, Section};
+use squid_n_core::model::{Material, MaterialCategory, Section};
 use squid_n_material::{Bilinear, Concrete, UniaxialMaterial};
 use squid_n_section::fiber::rect_fiber_section;
 
@@ -31,6 +31,7 @@ fn test_member_skeleton_generic_basic() {
         concrete_class: Default::default(),
         id: squid_n_core::ids::MaterialId(0),
         name: "steel".into(),
+        category: MaterialCategory::Steel,
         young: 205000.0,
         poisson: 0.3,
         density: 7.85e-9,
