@@ -79,26 +79,6 @@ fn member(id: u32, n0: u32, n1: u32, sec: u32, rigid: RigidZone) -> ElementData 
     }
 }
 
-fn panel_element(id: u32, joint: u32, connected: &[u32]) -> ElementData {
-    let mut nodes: smallvec::SmallVec<[NodeId; 8]> = smallvec::smallvec![NodeId(joint)];
-    nodes.extend(connected.iter().map(|&n| NodeId(n)));
-    ElementData {
-        id: ElemId(id),
-        kind: ElementKind::PanelZone,
-        nodes,
-        section: None,
-        material: None,
-        local_axis: LocalAxis {
-            ref_vector: [0.0, 1.0, 0.0],
-        },
-        end_cond: [EndCondition::Fixed, EndCondition::Fixed],
-        force_regime: ForceRegime::Auto,
-        rigid_zone: Default::default(),
-        plastic_zone: None,
-        spring: None,
-    }
-}
-
 /// 面外自由度（Uy・Rx・Rz）の拘束マスク。
 ///
 /// 部材 2 本だけの最小モデルは面外方向に機構を持つ（柱の材軸まわり回転＝Rz は
@@ -123,9 +103,14 @@ fn l_frame(with_panel: bool) -> Model {
     l_frame_with(with_panel, false)
 }
 
-/// `rigid_joint` が真なら、パネルを設けずに接合部の有限寸法（フェース距離）だけを
-/// 剛域として与える。パネル有りモデルと剛域条件が揃うため、両者の差は
+/// `rigid_joint` が真なら、パネルを設けずに接合部の有限寸法だけを剛域として
+/// 与える。パネル有りモデルと剛域条件が揃うため、両者の差は
 /// **パネルのせん断変形のみ**に由来する。
+///
+/// パネル有りのモデルは準備計算と同じ経路
+/// （[`squid_n_element::panel_gen::apply_auto_panel_zones`]）で生成する。
+/// パネル要素の追加とオフセットの剛域長への書き込みが一体の処理であり、
+/// 手組みすると実際のモデル化と食い違うためである。
 fn l_frame_with(with_panel: bool, rigid_joint: bool) -> Model {
     let rigid = RigidZone {
         face_i: FACE_BEAM,
@@ -140,15 +125,12 @@ fn l_frame_with(with_panel: bool, rigid_joint: bool) -> Model {
         ..Default::default()
     };
 
-    let mut elements = vec![
+    let elements = vec![
         member(0, 0, 1, 0, rigid),     // 梁（水平材）: i 端が接合部
         member(1, 2, 0, 1, col_rigid), // 柱（鉛直材）: j 端が接合部
     ];
-    if with_panel {
-        elements.push(panel_element(2, 0, &[1, 2]));
-    }
 
-    Model {
+    let mut model = Model {
         nodes: vec![
             node(0, [0.0, 0.0, 3000.0], out_of_plane_fixed()),
             node(1, [6000.0, 0.0, 3000.0], out_of_plane_fixed()),
@@ -205,7 +187,12 @@ fn l_frame_with(with_panel: bool, rigid_joint: bool) -> Model {
             member: Vec::new(),
         }],
         ..Default::default()
+    };
+    if with_panel {
+        let panels = squid_n_element::panel_gen::apply_auto_panel_zones(&mut model);
+        assert_eq!(panels.len(), 1, "接合部にパネルが 1 つ生成される");
     }
+    model
 }
 
 /// パネルの実効体積 Ve と せん断剛性 G·Ve。

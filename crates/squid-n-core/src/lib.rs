@@ -7,6 +7,7 @@ pub mod panel_zone;
 pub mod rc_capacity;
 pub mod rc_wall_capacity;
 pub mod section_shape;
+pub mod structure_kind;
 pub mod units;
 
 pub use dof::*;

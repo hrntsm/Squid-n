@@ -62,10 +62,10 @@ pub fn build_behavior(data: &ElementData, model: &Model) -> (Box<dyn ElementBeha
                     ElemState::default(),
                 );
             }
-            // 仕口パネルへ接合する端がある部材は、パネル分のオフセットを剛域へ
-            // 含めたうえで、パネルのせん断変形角と連成させるデコレータを被せる。
-            if let Some((adjusted, ends)) = crate::panel_offset::resolve(data, model) {
-                let elem = crate::beam::BeamElement::new(&adjusted, model);
+            // 仕口パネルへ接合する端がある部材は、パネルのせん断変形角と連成させる
+            // デコレータを被せる（オフセットは剛域長へ書き込み済み）。
+            if let Some(ends) = crate::panel_offset::resolve(data, model) {
+                let elem = crate::beam::BeamElement::new(data, model);
                 return (
                     Box::new(crate::panel_offset::PanelOffsetMember::new(
                         Box::new(elem),
@@ -247,11 +247,10 @@ pub fn build_nonlinear_behavior(
             )
         }
         ElementKind::Beam => {
-            // 仕口パネルへ接合する端がある部材は、パネル分のオフセットを剛域へ
-            // 含めた諸元で内側の非線形要素を組み、パネルのせん断変形角と連成させる
-            // デコレータを被せる（線形パスと同じ扱い）。
+            // 仕口パネルへ接合する端がある部材は、パネルのせん断変形角と連成させる
+            // デコレータを被せる（線形パスと同じ扱い。オフセットは剛域長へ
+            // 書き込み済みなので内側の要素はそのまま組む）。
             let panel = crate::panel_offset::resolve(data, model);
-            let data = panel.as_ref().map_or(data, |(adjusted, _)| adjusted);
             let inner: Box<dyn ElementBehavior> = match resolve_force_regime(data, model) {
                 ResolvedRegime::ConcentratedSpring => {
                     let elem = crate::beam::BeamElement::new(data, model);
@@ -277,7 +276,7 @@ pub fn build_nonlinear_behavior(
                 ResolvedRegime::Fiber => Box::new(build_fiber(data, model, basis, kind)),
             };
             match panel {
-                Some((_, ends)) => (
+                Some(ends) => (
                     Box::new(crate::panel_offset::PanelOffsetMember::new(inner, ends)),
                     ElemState::default(),
                 ),

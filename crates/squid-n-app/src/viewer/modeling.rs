@@ -20,12 +20,12 @@
 //! - **端部接合条件**: ピン（○）・半剛（□）を材端（剛域がある場合は剛域フェイス）に描く。
 //! - **壁エレメント**: 耐震壁は壁エレメント置換モデル（壁柱＋両端ピンの上下剛梁）の
 //!   「エ」状で描く。フレーム内雑壁（周辺部材へ剛性算入）は半透明ポリゴンで区別する。
-//! - **仕口パネル**: モデル化されていれば、接合部が占める領域（幅＝柱フェース距離×2、
-//!   高さ＝梁フェース距離×2）を梁の構面ごとに四角形で描く。部材の可撓部がどこから
-//!   始まるかを図で確認できる。パネルへ接合する部材は解析側でこのオフセット分が
-//!   剛域へ折り込まれる（`squid_n_element::panel_offset::resolve`）が、モデルに
-//!   保存された剛域長は 0 のままなので剛域のブロックは描かれない。同じ領域を
-//!   パネルの四角形が示すため、可撓部の始まりは図から読み取れる。
+//! - **仕口パネル**: モデル化されていれば、接合部が占める領域（幅＝柱せい、
+//!   高さ＝梁せい）を梁の構面ごとに四角形で描く。パネルへ接合する部材は
+//!   パネル分のオフセットが剛域長へ書き込まれている（`panel_gen`）ため、同じ区間に
+//!   剛域のブロックも重なって描かれる。四角形は「この接合部にせん断変形角の
+//!   自由度を持つパネル要素がある」ことを、ハッチは「その部材のこの区間が剛体
+//!   アームである」ことを示す。
 //!
 //! 分類ロジックは要素生成（`squid_n_element::factory`）と同じ判定関数
 //! （[`resolve_force_regime`] / [`wall_side_column_release`] / [`wall_is_seismic`]）を
@@ -591,21 +591,6 @@ fn draw_wall_polygon(
     }
 }
 
-/// 接合部節点に取り付く部材から求めた、仕口パネルの見付き寸法。
-///
-/// パネルは接合部に設ける 6 面体で、部材はその面（柱フェース・梁フェース）で
-/// 接合する。したがってパネルの外形は、接合部節点から各部材の接合位置までの
-/// 距離＝**柱フェース距離**（`RigidZone::face_i` / `face_j`）で決まる。
-/// 解析側（`panel_offset::resolve`）がオフセットに用いる値と同じものを使うため、
-/// 図に現れる四角形は解析上のパネル寸法と一致する。
-struct PanelExtent {
-    /// 水平材（はり）の材軸方向と、その端の柱フェース距離 [mm]。
-    /// 平行な材はまとめる（左右の梁は同じ構面を作るため）。
-    beam_axes: Vec<([f64; 3], f64)>,
-    /// 鉛直方向の半寸法 [mm]（＝柱端の梁フェース距離の最大）。
-    half_height: f64,
-}
-
 /// 節点 index → その節点に接続する `Beam` 要素の index。
 ///
 /// 仕口パネルの見付き寸法は接合部に取り付く部材から求めるため、パネルごとに
@@ -628,29 +613,37 @@ fn build_beam_adjacency(model: &Model) -> BeamAdjacency {
     map
 }
 
-/// 接合部節点 `node` に取り付く部材から、パネルの見付き寸法を集める。
-fn panel_extent(model: &Model, adjacency: &BeamAdjacency, node: NodeId) -> PanelExtent {
-    let mut beam_axes: Vec<([f64; 3], f64)> = Vec::new();
-    let mut half_height = 0.0_f64;
+/// 接合部に取り付く部材から、パネルの見付き半寸法を求める。
+///
+/// 解析側が部材の剛域長へ書き込むオフセットと同じ値
+/// （[`squid_n_core::panel_zone::panel_half_extent`]）を使うため、図に現れる
+/// 四角形は解析上のパネル寸法と一致する。
+fn panel_half_extent_at(
+    model: &Model,
+    adjacency: &BeamAdjacency,
+    node: NodeId,
+) -> squid_n_core::panel_zone::PanelHalfExtent {
+    let members = adjacency
+        .get(&node.index())
+        .into_iter()
+        .flatten()
+        .filter_map(|&ei| model.elements.get(ei));
+    squid_n_core::panel_zone::panel_half_extent(model, node, members)
+}
 
-    let Some(elems) = adjacency.get(&node.index()) else {
-        return PanelExtent {
-            beam_axes,
-            half_height,
-        };
-    };
-    for &ei in elems {
+/// 水平材（はり）の材軸方向を、平行なものをまとめて集める。
+///
+/// 左右の梁は同じ構面を作るため、四角形は構面ごとに 1 枚だけ描く。
+fn panel_beam_axes(model: &Model, adjacency: &BeamAdjacency, node: NodeId) -> Vec<[f64; 3]> {
+    use squid_n_core::panel_zone::{member_orientation, MemberOrientation};
+    let mut axes: Vec<[f64; 3]> = Vec::new();
+    for &ei in adjacency.get(&node.index()).into_iter().flatten() {
         let Some(e) = model.elements.get(ei) else {
             continue;
         };
-        // 節点がこの部材のどちらの端かで、参照するフェース距離が変わる。
-        let face = if e.nodes[0] == node {
-            e.rigid_zone.face_i
-        } else if e.nodes[1] == node {
-            e.rigid_zone.face_j
-        } else {
+        if member_orientation(model, e) != Some(MemberOrientation::Beam) {
             continue;
-        };
+        }
         let (Some(p0), Some(p1)) = (
             model.nodes.get(e.nodes[0].index()).map(|n| n.coord),
             model.nodes.get(e.nodes[1].index()).map(|n| n.coord),
@@ -663,34 +656,27 @@ fn panel_extent(model: &Model, adjacency: &BeamAdjacency, node: NodeId) -> Panel
             continue;
         }
         let axis = [d[0] / l, d[1] / l, d[2] / l];
-        let ez = axis[2].abs();
-        if ez >= 0.8 {
-            half_height = half_height.max(face);
-        } else if ez <= 0.2 {
-            // 平行な梁（左右）は同じ構面なのでまとめ、フェース距離は大きい方を採る。
-            let parallel = beam_axes
-                .iter_mut()
-                .find(|(a, _)| (a[0] * axis[0] + a[1] * axis[1] + a[2] * axis[2]).abs() > 0.99);
-            match parallel {
-                Some((_, w)) => *w = w.max(face),
-                None => beam_axes.push((axis, face)),
-            }
+        let parallel = axes
+            .iter()
+            .any(|a| (a[0] * axis[0] + a[1] * axis[1] + a[2] * axis[2]).abs() > 0.99);
+        if !parallel {
+            axes.push(axis);
         }
     }
-    PanelExtent {
-        beam_axes,
-        half_height,
-    }
+    axes
 }
 
 /// 仕口パネル（柱梁接合部パネル）を、接合部に設ける四角形として描く。
 ///
-/// 梁が取り付く構面ごとに、幅＝柱フェース距離×2・高さ＝梁フェース距離×2 の
-/// 四角形を接合部中心に描く。これは解析でパネルが占める領域（部材がその面で
-/// 接合する範囲）そのもので、部材の可撓部がどこから始まるかを図で確認できる。
+/// 梁が取り付く構面ごとに、幅＝柱せい・高さ＝梁せいの四角形を接合部中心に描く。
+/// これは解析でパネルが占める領域（部材がその面で接合する範囲）そのものである。
 ///
-/// フェース距離が求まらない接合部（直交材の断面が未割当など）は四角形を描けない
-/// ため、従来どおり中心のひし形マーカーで位置だけを示す。
+/// 同じ区間には部材側の剛域ブロック（ハッチ）も重なって描かれる。両者は別の
+/// 情報で、ハッチは「その部材のこの区間が剛体アームである」、四角形は
+/// 「この接合部に γX・γY の 2 自由度を持つパネル要素がある」を示す。
+///
+/// 寸法が求まらない接合部（直交材の断面が未割当など）は四角形を描けないため、
+/// 中心のひし形マーカーで位置だけを示す。
 #[allow(clippy::too_many_arguments)]
 fn draw_panel_zone(
     painter: &egui::Painter,
@@ -712,28 +698,26 @@ fn draw_panel_zone(
     let c = pts[center];
     let c3 = coords3[center];
 
-    let extent = panel_extent(model, adjacency, node);
+    let extent = panel_half_extent_at(model, adjacency, node);
     let mut drawn = false;
-    if extent.half_height > 0.0 {
-        for (axis, half_width) in &extent.beam_axes {
-            if *half_width <= 0.0 {
-                continue;
-            }
+    if extent.beam_half > 0.0 && extent.column_half > 0.0 {
+        for axis in panel_beam_axes(model, adjacency, node) {
             // 構面内の 4 隅（中心 ± 幅方向 ± 鉛直方向）。
             let corner = |sw: f64, sh: f64| -> [f64; 3] {
                 [
-                    c3[0] + sw * half_width * axis[0],
-                    c3[1] + sw * half_width * axis[1],
-                    c3[2] + sh * extent.half_height,
+                    c3[0] + sw * extent.column_half * axis[0],
+                    c3[1] + sw * extent.column_half * axis[1],
+                    c3[2] + sh * extent.beam_half,
                 ]
             };
             let quad: Vec<egui::Pos2> = [(-1.0, -1.0), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)]
                 .iter()
                 .map(|&(sw, sh)| proj.project(corner(sw, sh)))
                 .collect();
+            // 剛域ハッチと重なるため、塗りは輪郭を邪魔しない程度に薄くする。
             painter.add(egui::Shape::convex_polygon(
                 quad,
-                theme::translucent(color, 70),
+                theme::translucent(color, 40),
                 egui::Stroke::new(1.5_f32, color),
             ));
             drawn = true;
@@ -1019,111 +1003,45 @@ mod tests {
         );
     }
 
-    /// 仕口パネルの見付き寸法は、接合部に取り付く部材のフェース距離から決まる。
-    /// 幅は梁端の柱フェース距離、高さは柱端の梁フェース距離。左右の梁は同じ構面へ
-    /// まとめられ、四角形が二重に描かれない。
+    /// 仕口パネルの見付き半寸法は、接合部に取り付く部材のせいから決まる。
+    /// 水平半寸法は柱せいの 1/2、鉛直半寸法は梁せいの 1/2 で、解析側が剛域長へ
+    /// 書き込むオフセットと同じ値になる。
     #[test]
-    fn test_panel_extent_from_face_distances() {
-        let node = |id: u32, coord: [f64; 3]| squid_n_core::model::Node {
-            id: NodeId(id),
-            coord,
-            restraint: squid_n_core::dof::Dof6Mask::FREE,
-            mass: None,
-            story: None,
-            support_spring: None,
-        };
-        let member = |id: u32, n0: u32, n1: u32, rigid: RigidZone| ElementData {
-            id: ElemId(id),
-            kind: ElementKind::Beam,
-            nodes: smallvec![NodeId(n0), NodeId(n1)],
-            section: Some(SectionId(0)),
-            material: Some(MaterialId(0)),
-            local_axis: LocalAxis {
-                ref_vector: [0.0, 1.0, 0.0],
-            },
-            end_cond: [EndCondition::Fixed, EndCondition::Fixed],
-            force_regime: ForceRegime::Auto,
-            rigid_zone: rigid,
-            plastic_zone: None,
-            spring: None,
-        };
-        // 節点 0 が接合部。左右に梁（X 方向）、上下に柱（Z 方向）。
-        let model = Model {
-            nodes: vec![
-                node(0, [0.0, 0.0, 3000.0]),
-                node(1, [-6000.0, 0.0, 3000.0]),
-                node(2, [6000.0, 0.0, 3000.0]),
-                node(3, [0.0, 0.0, 0.0]),
-                node(4, [0.0, 0.0, 6000.0]),
-            ],
-            elements: vec![
-                // 左梁: j 端が接合部 → face_j に柱フェース距離
-                member(
-                    0,
-                    1,
-                    0,
-                    RigidZone {
-                        face_j: 200.0,
-                        ..Default::default()
-                    },
-                ),
-                // 右梁: i 端が接合部
-                member(
-                    1,
-                    0,
-                    2,
-                    RigidZone {
-                        face_i: 200.0,
-                        ..Default::default()
-                    },
-                ),
-                // 下柱: j 端が接合部 → face_j に梁フェース距離
-                member(
-                    2,
-                    3,
-                    0,
-                    RigidZone {
-                        face_j: 300.0,
-                        ..Default::default()
-                    },
-                ),
-                // 上柱: i 端が接合部
-                member(
-                    3,
-                    0,
-                    4,
-                    RigidZone {
-                        face_i: 300.0,
-                        ..Default::default()
-                    },
-                ),
-            ],
-            ..Default::default()
-        };
+    fn test_panel_half_extent_from_member_depths() {
+        let model = cross_joint_model();
+        let extent = panel_half_extent_at(&model, &build_beam_adjacency(&model), NodeId(0));
+        assert!(
+            (extent.column_half - 200.0).abs() < 1e-9,
+            "水平半寸法は柱せい 400 の 1/2"
+        );
+        assert!(
+            (extent.beam_half - 300.0).abs() < 1e-9,
+            "鉛直半寸法は梁せい 600 の 1/2"
+        );
 
-        let extent = panel_extent(&model, &build_beam_adjacency(&model), NodeId(0));
-        assert!(
-            (extent.half_height - 300.0).abs() < 1e-9,
-            "高さは梁フェース距離"
-        );
-        assert_eq!(
-            extent.beam_axes.len(),
-            1,
-            "左右の梁は同一構面へまとめる: {:?}",
-            extent.beam_axes.iter().map(|(a, _)| *a).collect::<Vec<_>>()
-        );
-        assert!(
-            (extent.beam_axes[0].1 - 200.0).abs() < 1e-9,
-            "幅は柱フェース距離"
-        );
-        // 構面の向きは X 方向。
-        assert!(extent.beam_axes[0].0[0].abs() > 0.99);
+        let axes = panel_beam_axes(&model, &build_beam_adjacency(&model), NodeId(0));
+        assert_eq!(axes.len(), 1, "左右の梁は同一構面へまとめる: {axes:?}");
+        assert!(axes[0][0].abs() > 0.99, "構面の向きは X 方向");
+    }
+
+    /// 見付き半寸法は危険断面位置（`face_i`/`face_j`）を参照しない。
+    /// 危険断面位置は将来任意位置を取りうるため、パネル寸法とは独立させる。
+    #[test]
+    fn test_panel_half_extent_is_independent_of_face_distance() {
+        let mut model = cross_joint_model();
+        for e in &mut model.elements {
+            e.rigid_zone.face_i = 9999.0;
+            e.rigid_zone.face_j = 9999.0;
+        }
+        let extent = panel_half_extent_at(&model, &build_beam_adjacency(&model), NodeId(0));
+        assert!((extent.column_half - 200.0).abs() < 1e-9);
+        assert!((extent.beam_half - 300.0).abs() < 1e-9);
     }
 
     /// 直交する 2 方向に梁が取り付く接合部は、構面ごとに四角形を描くため
-    /// 見付き寸法も 2 組になる。
+    /// 材軸も 2 本になる。
     #[test]
-    fn test_panel_extent_has_one_entry_per_frame_plane() {
+    fn test_panel_beam_axes_has_one_entry_per_frame_plane() {
         let node = |id: u32, coord: [f64; 3]| squid_n_core::model::Node {
             id: NodeId(id),
             coord,
@@ -1131,24 +1049,6 @@ mod tests {
             mass: None,
             story: None,
             support_spring: None,
-        };
-        let member = |id: u32, n0: u32, n1: u32, face_i: f64| ElementData {
-            id: ElemId(id),
-            kind: ElementKind::Beam,
-            nodes: smallvec![NodeId(n0), NodeId(n1)],
-            section: Some(SectionId(0)),
-            material: Some(MaterialId(0)),
-            local_axis: LocalAxis {
-                ref_vector: [0.0, 1.0, 0.0],
-            },
-            end_cond: [EndCondition::Fixed, EndCondition::Fixed],
-            force_regime: ForceRegime::Auto,
-            rigid_zone: RigidZone {
-                face_i,
-                ..Default::default()
-            },
-            plastic_zone: None,
-            spring: None,
         };
         let model = Model {
             nodes: vec![
@@ -1157,26 +1057,99 @@ mod tests {
                 node(2, [0.0, 6000.0, 3000.0]),
                 node(3, [0.0, 0.0, 0.0]),
             ],
+            sections: vec![depth_section(0, 600.0), depth_section(1, 400.0)],
             elements: vec![
-                member(0, 0, 1, 200.0), // X 方向の梁
-                member(1, 0, 2, 250.0), // Y 方向の梁
-                member(2, 0, 3, 300.0), // 柱（下向き）
+                joint_member(0, 0, 1, 0), // X 方向の梁
+                joint_member(1, 0, 2, 0), // Y 方向の梁
+                joint_member(2, 0, 3, 1), // 柱（下向き）
             ],
             ..Default::default()
         };
-        let extent = panel_extent(&model, &build_beam_adjacency(&model), NodeId(0));
-        assert_eq!(extent.beam_axes.len(), 2, "直交 2 構面");
-        assert!((extent.half_height - 300.0).abs() < 1e-9);
+        let adjacency = build_beam_adjacency(&model);
+        assert_eq!(
+            panel_beam_axes(&model, &adjacency, NodeId(0)).len(),
+            2,
+            "直交 2 構面"
+        );
+        let extent = panel_half_extent_at(&model, &adjacency, NodeId(0));
+        assert!((extent.beam_half - 300.0).abs() < 1e-9);
     }
 
-    /// フェース距離が付かない接合部は四角形を描けないため、見付き寸法が 0 になる
+    /// 断面が求まらない接合部は四角形を描けないため、見付き半寸法が 0 になる
     /// （描画側はひし形マーカーへフォールバックする）。
     #[test]
-    fn test_panel_extent_without_face_distance() {
+    fn test_panel_half_extent_without_sections() {
         let model = Model::default();
-        let extent = panel_extent(&model, &build_beam_adjacency(&model), NodeId(0));
-        assert!(extent.beam_axes.is_empty());
-        assert_eq!(extent.half_height, 0.0);
+        let extent = panel_half_extent_at(&model, &build_beam_adjacency(&model), NodeId(0));
+        assert_eq!(extent.column_half, 0.0);
+        assert_eq!(extent.beam_half, 0.0);
+        assert!(panel_beam_axes(&model, &build_beam_adjacency(&model), NodeId(0)).is_empty());
+    }
+
+    /// せいだけを与えた断面（見付き寸法の算定に必要なのはせいのみ）。
+    fn depth_section(id: u32, depth: f64) -> squid_n_core::model::Section {
+        squid_n_core::model::Section {
+            id: SectionId(id),
+            name: String::new(),
+            area: 1.0e4,
+            iy: 1.0e8,
+            iz: 1.0e8,
+            j: 1.0e7,
+            depth,
+            width: depth,
+            as_y: 4.0e3,
+            as_z: 4.0e3,
+            panel_thickness: None,
+            thickness: None,
+            shape: None,
+        }
+    }
+
+    fn joint_member(id: u32, n0: u32, n1: u32, sec: u32) -> ElementData {
+        ElementData {
+            id: ElemId(id),
+            kind: ElementKind::Beam,
+            nodes: smallvec![NodeId(n0), NodeId(n1)],
+            section: Some(SectionId(sec)),
+            material: Some(MaterialId(0)),
+            local_axis: LocalAxis {
+                ref_vector: [0.0, 1.0, 0.0],
+            },
+            end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+            force_regime: ForceRegime::Auto,
+            rigid_zone: RigidZone::default(),
+            plastic_zone: None,
+            spring: None,
+        }
+    }
+
+    /// 節点 0 を接合部とする十字型（左右に梁せい 600、上下に柱せい 400）。
+    fn cross_joint_model() -> Model {
+        let node = |id: u32, coord: [f64; 3]| squid_n_core::model::Node {
+            id: NodeId(id),
+            coord,
+            restraint: squid_n_core::dof::Dof6Mask::FREE,
+            mass: None,
+            story: None,
+            support_spring: None,
+        };
+        Model {
+            nodes: vec![
+                node(0, [0.0, 0.0, 3000.0]),
+                node(1, [-6000.0, 0.0, 3000.0]),
+                node(2, [6000.0, 0.0, 3000.0]),
+                node(3, [0.0, 0.0, 0.0]),
+                node(4, [0.0, 0.0, 6000.0]),
+            ],
+            sections: vec![depth_section(0, 600.0), depth_section(1, 400.0)],
+            elements: vec![
+                joint_member(0, 1, 0, 0), // 左梁: j 端が接合部
+                joint_member(1, 0, 2, 0), // 右梁: i 端が接合部
+                joint_member(2, 3, 0, 1), // 下柱: j 端が接合部
+                joint_member(3, 0, 4, 1), // 上柱: i 端が接合部
+            ],
+            ..Default::default()
+        }
     }
 
     /// ブレース・パネルゾーン・その他要素の分類は解析種別に依らず一定。
