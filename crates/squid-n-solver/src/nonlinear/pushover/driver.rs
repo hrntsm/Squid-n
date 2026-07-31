@@ -249,7 +249,8 @@ pub fn pushover_analysis_recording(
             return Err(tangent_singular_diagnosis(
                 model,
                 dofmap,
-                &k_free,
+                reducer,
+                &k_red,
                 "増分解析の初期接線剛性",
             ));
         }
@@ -1032,7 +1033,7 @@ fn current_failure_detail(
     let k_free = assemble_k_cached(model, dofmap, behaviors, use_kg, &mut st.k_free_cache);
     let k_red = reducer.reduce_k_cached(&k_free, &mut st.k_red_cache);
     let factorizable = st.solver.factorize(&k_red).is_ok();
-    nonconvergence_detail(model, dofmap, &k_free, factorizable, phase)
+    nonconvergence_detail(model, dofmap, reducer, &k_red, factorizable, phase)
 }
 
 /// ステップ変位増分 `du_free`（全自由 DOF 順）を各要素の局所自由度へ写像し、

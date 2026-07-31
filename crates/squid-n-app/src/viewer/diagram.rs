@@ -209,13 +209,38 @@ pub(crate) fn contour_color(t: f64, map: theme::ColorMap) -> egui::Color32 {
     map.sample((t + 1.0) * 0.5)
 }
 
+/// 成分ごとの最大絶対値のうち、「実質ゼロ」ではなく図を描く意味がある成分か。
+///
+/// 応力図は**成分ごとに独立正規化**する（60px ＝ その成分のモデル全体最大）ため、
+/// 全部材で理論上ゼロの成分は、残った丸め誤差がそのまま最大値になり
+/// **誤差が画面いっぱいの図として描かれる**。実際、i 端ねじれを解放したモデルの
+/// Mx は理論上どの部材も 0 だが、静縮約 \\( K^* = K_{aa} - K_{ab}K_{bb}^{-1}K_{ba} \\)
+/// の桁落ちで \\( 10^{-12}\,\mathrm{N\cdot mm} \\) 程度が残る。この値は絶対値の
+/// しきい値では他成分と共通に判別できない（モデルの単位系・規模で何桁も変わる）。
+///
+/// そこで**同じ次元の成分の最大値**（力 `[N, Qy, Qz]` ／ モーメント `[Mx, My, Mz]`）を
+/// 基準にした相対値で判定する。丸め誤差は基準に対して \\( 10^{-12} \\) 以下の桁に
+/// 収まる一方、設計上意味を持つ内力は最小でも \\( 10^{-6} \\) 程度の比を持つため、
+/// しきい値 \\( 10^{-9} \\) は両者を安全に分離する。同次元の成分がすべてゼロの
+/// モデル（無載荷など）では何も描かない。
+fn is_significant(maxes: &[f64; 6], c: ForceComponent) -> bool {
+    /// 同次元成分の最大値に対する相対しきい値。
+    const REL_TOL: f64 = 1e-9;
+    let idx = c.force_index();
+    // 内力ベクトルの並び `[N, Qy, Qz, Mx, My, Mz]`: 前半が力、後半がモーメント。
+    let group = if idx < 3 { &maxes[0..3] } else { &maxes[3..6] };
+    let ref_max = group.iter().fold(0.0_f64, |m, v| m.max(*v));
+    ref_max > 0.0 && maxes[idx] > ref_max * REL_TOL
+}
+
 /// 部材ローカルに沿って応力図を描く。
 ///
 /// `components` が ON にした成分をすべて重ねて描き、成分ごとに
 /// **独立の最大値で正規化**する（N[N] と M[N·mm] は桁が異なるため 1 つの最大値を
 /// 共有できない）。張り出し面は成分で決まり（[`ForceComponent::plane`]）、
 /// 強軸側（N・Qy・Mx・Mz）は局所 ey 面、弱軸側（Qz・My）は局所 ez 面へ出るため、
-/// 6 成分同時でも直交 2 面に分かれて重なりが減る。
+/// 6 成分同時でも直交 2 面に分かれて重なりが減る。理論上ゼロの成分は描かない
+/// （[`is_significant`]）。
 pub(super) fn draw_force_diagram(
     painter: &egui::Painter,
     app: &App,
@@ -240,10 +265,17 @@ pub(super) fn draw_force_diagram(
 
     let mut legend_rows: Vec<(ForceComponent, f64)> = Vec::new();
     for c in components.selected() {
-        let max_abs = maxes[c.force_index()];
-        // 最大値 0（例: 平面フレームの Qz）は図を描けないが、成分が選択中である
-        // ことは凡例で示す（「選んだのに何も出ない」理由が分かるようにする）。
-        if max_abs >= 1e-12 {
+        // 実質ゼロの成分（例: 平面フレームの Qz、i 端ねじれ解放時の Mx）は図を
+        // 描けない。丸め誤差を最大値として正規化すると誤差が画面いっぱいに
+        // 描かれてしまうため、最大値も 0 に丸めて凡例へ渡す（[`is_significant`]）。
+        // 成分が選択中であること自体は凡例で示す（「選んだのに何も出ない」理由が
+        // 分かるようにする）。
+        let max_abs = if is_significant(&maxes, c) {
+            maxes[c.force_index()]
+        } else {
+            0.0
+        };
+        if max_abs > 0.0 {
             draw_component(
                 painter,
                 app,
@@ -519,15 +551,22 @@ fn draw_force_legend(
             2.0,
             c.color(),
         );
-        painter.text(
-            egui::pos2(x0 + SWATCH + 6.0, y),
-            egui::Align2::LEFT_TOP,
+        // 実質ゼロの成分は最大値 0 で渡ってくる（`is_significant`）。数値だけだと
+        // 「図が出ないのは不具合か」と迷うため、全部材でゼロである旨を明示する。
+        let text = if max_abs > 0.0 {
             format!(
                 "{}図 max={:.1} {}",
                 c.label(),
                 max_abs * c.display_scale(),
                 c.unit()
-            ),
+            )
+        } else {
+            format!("{}図 全部材ゼロ（図なし）", c.label())
+        };
+        painter.text(
+            egui::pos2(x0 + SWATCH + 6.0, y),
+            egui::Align2::LEFT_TOP,
+            text,
             font.clone(),
             theme::GRAY_700,
         );
@@ -803,6 +842,7 @@ mod tests {
 #[cfg(test)]
 mod component_tests {
     use super::super::{DiagramPlane, ForceComponent, ForceComponents};
+    use super::is_significant;
 
     /// 列挙順が部材内力ベクトル `[N, Qy, Qz, Mx, My, Mz]` の添字と一致する。
     /// 添字がずれると別成分の値で図を描いてしまう（無言の誤表示）。
@@ -877,6 +917,41 @@ mod component_tests {
             ForceComponents::PRESET_M,
             "既定は M 図プリセット"
         );
+    }
+
+    /// 理論上ゼロの成分に残った丸め誤差を「描くに値する」と判定しない。
+    ///
+    /// 応力図は成分ごとに独立正規化する（60px ＝ その成分の最大値）ため、
+    /// 全部材ゼロの成分を描いてしまうと**丸め誤差が画面いっぱいの図になる**。
+    /// i 端ねじれ解放時の Mx が実測でこの状態になる（静縮約の桁落ちで
+    /// 10⁻¹²N·mm 程度が残り、他成分は 10⁸N·mm 級）。
+    #[test]
+    fn negligible_component_is_not_drawn() {
+        // [N, Qy, Qz, Mx, My, Mz]。Mx は丸め誤差、My/Mz は実応力。
+        let maxes = [1.3e5, 7.6e4, 2.5e3, 2.7e-12, 5.4e6, 2.3e8];
+        assert!(!is_significant(&maxes, ForceComponent::Mx));
+        assert!(is_significant(&maxes, ForceComponent::My));
+        assert!(is_significant(&maxes, ForceComponent::Mz));
+        assert!(is_significant(&maxes, ForceComponent::N));
+        assert!(is_significant(&maxes, ForceComponent::Qz));
+    }
+
+    /// 小さくても「同次元の最大値に対して意味のある比」を持つ成分は描く
+    /// （平面フレームの面外成分のように、絶対値が小さいだけの実応力を消さない）。
+    #[test]
+    fn small_but_real_component_is_still_drawn() {
+        // Mx は Mz の 10⁻⁵。丸め誤差（10⁻¹²以下）とは桁が違う。
+        let maxes = [1.0e5, 1.0e5, 1.0e5, 2.3e3, 5.4e6, 2.3e8];
+        assert!(is_significant(&maxes, ForceComponent::Mx));
+    }
+
+    /// 同次元の成分がすべてゼロなら何も描かない（無載荷ケースなど）。
+    #[test]
+    fn all_zero_group_is_not_drawn() {
+        let maxes = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+        for c in ForceComponent::ALL {
+            assert!(!is_significant(&maxes, c), "{}", c.label());
+        }
     }
 
     /// チェックボックスの ON/OFF が `selected` の列挙に反映される（表示順は添字順）。
