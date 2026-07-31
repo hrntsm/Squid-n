@@ -190,6 +190,15 @@ pub trait ElementBehavior: Send + Sync {
     fn deserialize_checkpoint(&mut self, _data: &[u8]) -> Result<(), CheckpointError> {
         Ok(())
     }
+    /// 仕口パネル要素のせん断モーメント `{MSX, MSY}` [N·mm]（基準座標系）を、
+    /// 与えられた要素自由度の変位から返す（仕口パネルのみ実装。既定は `None`）。
+    ///
+    /// `u_elem` は [`Self::global_dofs`] と同じ並びの解ベクトル。断面検定の設計用
+    /// パネルモーメント `pM` に用いる。節点まわりのモーメント釣り合いが解析上
+    /// 厳密に満たされた値であり、部材端内力から手で組み立てる近似を経ない。
+    fn panel_moments_from(&self, _u_elem: &[f64]) -> Option<[f64; 2]> {
+        None
+    }
     /// 塑性率評価用の危険断面プローブ（ファイバー要素のみ実装。既定は None）。
     /// ファイバーモデルの塑性率算定（構造力学）に用いる。
     fn ductility_probe(&self) -> Option<DuctilityProbe> {

@@ -322,6 +322,11 @@ pub struct ResultsBundle {
     pub combos: Vec<(String, squid_n_solver::linear::StaticOnce)>,
     pub modal: Option<squid_n_solver::eigen::ModalResult>,
     pub member_forces: Vec<(ElemId, squid_n_element::beam::MemberForces)>,
+    /// 仕口パネルのせん断モーメント `{MSX, MSY}` [N·mm]（接合部の節点ごと）。
+    /// `member_forces` と同じく、直近に表示している静的結果のものを保持する。
+    /// S 造パネルゾーン検定の設計用パネルモーメント `pM` に用いる。
+    #[serde(default)]
+    pub panel_moments: Vec<(squid_n_core::ids::NodeId, [f64; 2])>,
     /// 部材単位の断面検定結果（部材ごとに検定位置をグループ化）。
     pub member_checks: Vec<MemberChecks>,
     /// 節点単位の検定結果（柱梁接合部・パネルゾーン・冷間成形耐力比など）。
@@ -923,6 +928,9 @@ pub struct App {
     /// DL/LL/EX/EY の再計算（床格子サブFEM解析等）を丸ごとスキップする。
     /// モデルの新規作成・読込では `None` にリセットする（永続化しない）。
     pub auto_load_sync_hash: Option<u64>,
+    /// 最後の準備計算で生成した仕口パネルの諸元（節点 index の昇順）。
+    /// 準備計算の結果タブに一覧表示する。永続化しない（モデルから毎回再生成する）。
+    pub generated_panels: Vec<squid_n_element::panel_gen::GeneratedPanel>,
     /// 解析パネル「静的解析」で選択中の単体実行の対象（荷重ケース／荷重組合せ）。
     /// `None` は未選択（荷重ケースの先頭を既定として扱う）。
     #[cfg(feature = "gui")]
@@ -1129,6 +1137,7 @@ impl Default for App {
             project_path: None,
             analysis_cfg: AnalysisSettings::default(),
             auto_load_sync_hash: None,
+            generated_panels: Vec::new(),
             #[cfg(feature = "gui")]
             analysis_target: None,
             #[cfg(feature = "gui")]

@@ -110,6 +110,14 @@ fn apply_long_axial_cut(model: &Model, lc_kind: LoadCaseKind) -> Cow<'_, Model> 
 pub struct StaticOnce {
     pub disp: Vec<[f64; 6]>,
     pub member_forces: Vec<(squid_n_core::ids::ElemId, MemberForces)>,
+    /// 仕口パネルのせん断モーメント `{MSX, MSY}` [N·mm]（基準座標系）を接合部の
+    /// 節点ごとに保持する。パネルをモデル化していない場合は空。
+    ///
+    /// 節点変位（`disp`）は標準 6 成分のみのため、パネルのせん断変形角は結果に
+    /// 現れない。断面検定の設計用パネルモーメント `pM` へ供給できるよう、
+    /// 解析側でモーメントへ換算して持たせる。
+    #[serde(default)]
+    pub panel_moments: Vec<(squid_n_core::ids::NodeId, [f64; 2])>,
 }
 
 /// 静的解析結果（節点変位・部材断面力）を係数倍して足し合わせた結果を返す。
@@ -128,6 +136,7 @@ pub fn superpose_static(terms: &[(&StaticOnce, f64)]) -> StaticOnce {
         return StaticOnce {
             disp: Vec::new(),
             member_forces: Vec::new(),
+            panel_moments: Vec::new(),
         };
     };
     let mut disp = vec![[0.0; 6]; first.disp.len()];
@@ -143,6 +152,12 @@ pub fn superpose_static(terms: &[(&StaticOnce, f64)]) -> StaticOnce {
             )
         })
         .collect();
+    // 仕口パネルは線形弾性（`Kxp = Kyp = G・Ve`）なのでモーメントも線形和で足せる。
+    let mut panel_moments: Vec<(squid_n_core::ids::NodeId, [f64; 2])> = first
+        .panel_moments
+        .iter()
+        .map(|(node, _)| (*node, [0.0; 2]))
+        .collect();
     for (res, factor) in terms {
         for (dst, src) in disp.iter_mut().zip(res.disp.iter()) {
             for (d, s) in dst.iter_mut().zip(src.iter()) {
@@ -156,10 +171,16 @@ pub fn superpose_static(terms: &[(&StaticOnce, f64)]) -> StaticOnce {
                 }
             }
         }
+        for ((_, dst), (_, src)) in panel_moments.iter_mut().zip(res.panel_moments.iter()) {
+            for (d, s) in dst.iter_mut().zip(src.iter()) {
+                *d += s * factor;
+            }
+        }
     }
     StaticOnce {
         disp,
         member_forces,
+        panel_moments,
     }
 }
 
@@ -284,6 +305,7 @@ fn solve_tension_only_iterative(model: &Model, lc: LoadCaseId) -> Result<StaticO
         return Ok(StaticOnce {
             disp: vec![[0.0; 6]; model.nodes.len()],
             member_forces: Vec::new(),
+            panel_moments: Vec::new(),
         });
     }
     let reducer = Reducer::build(model, &dofmap);
@@ -295,6 +317,7 @@ fn solve_tension_only_iterative(model: &Model, lc: LoadCaseId) -> Result<StaticO
         return Ok(StaticOnce {
             disp: vec![[0.0; 6]; model.nodes.len()],
             member_forces: Vec::new(),
+            panel_moments: Vec::new(),
         });
     }
 
@@ -520,6 +543,7 @@ fn build_tension_only_result(
     }
 
     let mut member_forces = Vec::new();
+    let mut panel_moments = Vec::new();
     for (i, elem) in model.elements.iter().enumerate() {
         let behavior = assembly.behavior_for(i, active);
         let gdofs = &assembly.gdofs[i];
@@ -537,12 +561,17 @@ fn build_tension_only_result(
             superpose_member_loads(model, elem, loads, &mut forces);
             member_forces.push((elem.id, forces));
         }
+        // 仕口パネルのせん断モーメント（断面検定の設計用パネルモーメント pM）。
+        if let (Some(&node), Some(m)) = (elem.nodes.first(), behavior.panel_moments_from(&u_elem)) {
+            panel_moments.push((node, m));
+        }
     }
     ensure_line_member_forces(model, &member_forces)?;
 
     Ok(StaticOnce {
         disp,
         member_forces,
+        panel_moments,
     })
 }
 
@@ -555,6 +584,7 @@ fn solve_once_inner(model: &Model, lc: LoadCaseId) -> Result<StaticOnce, SolveEr
         return Ok(StaticOnce {
             disp,
             member_forces: Vec::new(),
+            panel_moments: Vec::new(),
         });
     }
 
@@ -617,6 +647,7 @@ fn solve_once_inner(model: &Model, lc: LoadCaseId) -> Result<StaticOnce, SolveEr
             .map(|l| l.member.as_slice())
             .unwrap_or(&[]);
         let member_loads_by_elem = group_member_loads_by_elem(member_loads);
+        let mut panel_moments = Vec::new();
         for (elem, (behavior, gdofs)) in model.elements.iter().zip(behaviors.iter()) {
             let mut u_elem = vec![0.0; gdofs.len()];
 
@@ -634,18 +665,26 @@ fn solve_once_inner(model: &Model, lc: LoadCaseId) -> Result<StaticOnce, SolveEr
                 superpose_member_loads(model, elem, loads, &mut forces);
                 member_forces.push((elem.id, forces));
             }
+            // 仕口パネルのせん断モーメント（断面検定の設計用パネルモーメント pM）。
+            if let (Some(&node), Some(m)) =
+                (elem.nodes.first(), behavior.panel_moments_from(&u_elem))
+            {
+                panel_moments.push((node, m));
+            }
         }
         ensure_line_member_forces(model, &member_forces)?;
 
         Ok(StaticOnce {
             disp,
             member_forces,
+            panel_moments,
         })
     } else {
         let disp = vec![[0.0; 6]; model.nodes.len()];
         Ok(StaticOnce {
             disp,
             member_forces: Vec::new(),
+            panel_moments: Vec::new(),
         })
     }
 }

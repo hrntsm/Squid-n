@@ -5535,6 +5535,67 @@ fn test_preparation_ai_matches_synced_seismic_case() {
     );
 }
 
+/// 準備計算は S 造の柱梁接合部へ仕口パネルを生成し、その内容を一覧化する。
+/// 既定はモデル化オンで、OFF にすると生成済みのパネルが取り除かれる。
+#[test]
+fn test_preparation_generates_panel_zones() {
+    use squid_n_core::model::{ElementKind, PanelZoneMode};
+
+    let mut app = App::default();
+    app.load_model(crate::sample::portal_frame());
+    assert!(
+        app.model.panel_zone.is_enabled(),
+        "仕口パネルのモデル化は既定でオン"
+    );
+    app.run_preparation();
+
+    let n_panels = app
+        .model
+        .elements
+        .iter()
+        .filter(|e| e.kind == ElementKind::PanelZone)
+        .count();
+    assert!(n_panels > 0, "S 造の柱梁接合部にパネルが生成される");
+
+    let prep = app.preparation.as_ref().unwrap();
+    assert!(prep.panel_modeling_enabled);
+    assert_eq!(prep.panels.len(), n_panels, "一覧と生成数が一致する");
+    for p in &prep.panels {
+        assert!(
+            p.dc > 0.0 && p.db > 0.0 && p.tp > 0.0,
+            "諸元が解決されている"
+        );
+        assert!(
+            (p.ve - p.dc * p.db * p.tp).abs() <= 1e-6 * p.ve,
+            "H 形柱の実効体積 Ve = dc・db・tp"
+        );
+        assert!(p.k_panel > 0.0, "せん断剛性 Kxp = G・Ve が正");
+    }
+    // パネル節点には γX・γY の 2 自由度が増える。
+    let dofmap = squid_n_core::dof::DofMap::build(&app.model);
+    let panel_nodes: Vec<usize> = app
+        .model
+        .elements
+        .iter()
+        .filter(|e| e.kind == ElementKind::PanelZone)
+        .map(|e| e.nodes[0].index())
+        .collect();
+    for ni in &panel_nodes {
+        assert!(dofmap.has_panel_dof(*ni), "節点 {ni} にパネル自由度");
+    }
+
+    // OFF にすると生成済みのパネルが取り除かれ、モデルの不変条件も保たれる。
+    app.model.panel_zone = PanelZoneMode::None;
+    app.run_preparation();
+    assert!(!app
+        .model
+        .elements
+        .iter()
+        .any(|e| e.kind == ElementKind::PanelZone));
+    assert!(app.preparation.as_ref().unwrap().panels.is_empty());
+    app.model.validate().expect("配列添字 == ElemId が保たれる");
+}
+
 /// 準備計算は剛域を算定してモデルへ反映し、その内容を一覧化する。
 /// 可とう長 L' = L − λi − λj・剛域比が表の値と整合すること。
 #[test]
@@ -5544,10 +5605,17 @@ fn test_preparation_lists_rigid_zones() {
     app.run_preparation();
 
     let prep = app.preparation.as_ref().unwrap();
+    // 準備計算は柱梁接合部へ仕口パネル要素も生成するため、剛域の候補数は
+    // 全要素数ではなく梁要素（線材）の数と一致する。
+    let n_beams = app
+        .model
+        .elements
+        .iter()
+        .filter(|e| e.kind == squid_n_core::model::ElementKind::Beam)
+        .count();
     assert_eq!(
-        prep.rigid_zone_candidates,
-        app.model.elements.len(),
-        "サンプルは全要素が梁要素"
+        prep.rigid_zone_candidates, n_beams,
+        "剛域の候補は梁要素（線材）"
     );
     // サンプルは S 造のため剛域長 λ は 0 だが、危険断面位置の基準となる
     // 柱フェース距離は付く（λ とフェース距離は別概念。設計書 §6.2.1）。
@@ -5849,9 +5917,16 @@ fn test_preparation_member_stiffness_empty_for_plain_model() {
         "{:?}",
         prep.member_stiffness
     );
+    // 準備計算は柱梁接合部へ仕口パネル要素も生成するため、候補数は全要素数では
+    // なく梁要素（線材）の数と一致する。
+    let n_beams = app
+        .model
+        .elements
+        .iter()
+        .filter(|e| e.kind == squid_n_core::model::ElementKind::Beam)
+        .count();
     assert_eq!(
-        prep.member_stiffness_candidates,
-        app.model.elements.len(),
+        prep.member_stiffness_candidates, n_beams,
         "候補数（梁要素数）は数える"
     );
 }

@@ -227,6 +227,7 @@ mod tests {
         StaticOnce {
             disp,
             member_forces,
+            panel_moments: Vec::new(),
         }
     }
 

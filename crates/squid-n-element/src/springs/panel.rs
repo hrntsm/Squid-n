@@ -332,11 +332,11 @@ impl PanelZone {
         ]
     }
 
-    /// パネル部材座標系での接線剛性 `[Kyp, Kxp]`（`{γ'x, γ'y}` 各成分）と
-    /// モーメント `{mxp, myp}` を、現在のトライアル状態から評価する。
+    /// せん断変形角 `{γX, γY}` に対する、パネル部材座標系の接線剛性
+    /// `[Kyp, Kxp]`（`{γ'x, γ'y}` 各成分）とモーメント `{mxp, myp}` を返す。
     /// 状態は書き換えない（`probe`）。
-    fn panel_response(&self) -> ([f64; 2], [f64; 2]) {
-        let gp = self.to_panel_frame(self.trial_disp);
+    fn response_at(&self, gamma: [f64; 2]) -> ([f64; 2], [f64; 2]) {
+        let gp = self.to_panel_frame(gamma);
         match &self.springs {
             Some(sp) => {
                 let (m0, k0) = sp[0].probe(gp[0]);
@@ -350,12 +350,23 @@ impl PanelZone {
         }
     }
 
+    /// 現在のトライアル状態での接線剛性とモーメント。
+    fn panel_response(&self) -> ([f64; 2], [f64; 2]) {
+        self.response_at(self.trial_disp)
+    }
+
     /// 節点座標系のパネルせん断モーメント `{MSX, MSY}` [N·mm]。
     ///
     /// 断面検定の設計用パネルモーメント `pM` にそのまま用いる（節点まわりの
     /// モーメント釣り合いが解析上厳密に満たされた値）。
     pub fn panel_moments(&self) -> [f64; 2] {
         let (_, m) = self.panel_response();
+        self.to_node_frame(m)
+    }
+
+    /// 与えられたせん断変形角に対する節点座標系のパネルせん断モーメント。
+    pub fn panel_moments_at(&self, gamma: [f64; 2]) -> [f64; 2] {
+        let (_, m) = self.response_at(gamma);
         self.to_node_frame(m)
     }
 
@@ -568,6 +579,15 @@ impl ElementBehavior for PanelZone {
         // パネルは質量を持たない（せん断変形角の自由度に質量は対応しない）。
         // 固有値解析は零質量方向を質量ランク判定で除くため、回転自由度と同じ扱いになる。
         LocalMat::zeros(self.n_dof())
+    }
+
+    fn panel_moments_from(&self, u_elem: &[f64]) -> Option<[f64; 2]> {
+        // `global_dofs` の並びは [γX, γY, （軸力追従する場合）柱の 12 自由度]。
+        let gamma = [
+            u_elem.first().copied().unwrap_or(0.0),
+            u_elem.get(1).copied().unwrap_or(0.0),
+        ];
+        Some(self.panel_moments_at(gamma))
     }
 }
 

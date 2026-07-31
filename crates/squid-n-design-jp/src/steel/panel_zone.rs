@@ -43,6 +43,16 @@ pub struct SPanelInput {
     pub col_shear_upper: f64,
     /// 下柱せん断力 [N]。
     pub col_shear_lower: f64,
+    /// 設計用パネルモーメント `pM` [N·mm] を直接与える場合の値。
+    ///
+    /// 仕口パネルをモデル化した接合部では、解析が出力するパネルせん断モーメント
+    /// `{MSX, MSY}` の絶対値が大きい方をここへ与える。節点まわりのモーメント
+    /// 釣り合いが解析上厳密に満たされた値であり、梁端モーメント・柱せん断から
+    /// 手で組み立てる近似（`beam_moment_*` / `col_shear_*`）を経ない。
+    ///
+    /// `None` のときは従来どおり
+    /// `pM = bML + bMR − (cQU + cQL)・db/2` で組み立てる。
+    pub design_moment: Option<f64>,
 }
 
 /// S 造パネルゾーンの検定（鋼構造接合部設計指針）。
@@ -52,6 +62,10 @@ pub struct SPanelInput {
 ///
 /// 梁段違い形式（左右梁のせい差が概ね 150mm 以上）は本関数の対象外とし、
 /// 呼び出し側が段違いを考慮した等価な `db`（低い方の梁の値）を渡す簡略化とする。
+///
+/// 仕口パネルをモデル化した接合部では、この組み立てに代えて解析が出力する
+/// パネルせん断モーメントを [`SPanelInput::design_moment`] へ直接与える
+/// （節点まわりの釣り合いが解析上厳密に満たされた値を用いる）。
 ///
 /// ## パネル降伏モーメント
 /// `pMy = (Ve/κ)・√(1 − n²)・Fy/√3`
@@ -97,8 +111,12 @@ pub fn s_panel_zone_check(inp: &SPanelInput) -> CheckResult {
     // pMy = (Ve/κ)・√(1−n²)・Fy/√3（原典図で Ve/κ を確認、2026-07-11）。
     let kappa = if kappa.abs() > 1e-9 { kappa } else { 1e-9 };
     let p_my = ve / kappa * reduction * inp.fy / 3f64.sqrt();
-    let p_m = inp.beam_moment_left + inp.beam_moment_right
-        - (inp.col_shear_upper + inp.col_shear_lower) * inp.db / 2.0;
+    // 仕口パネルをモデル化した接合部は解析出力のパネルせん断モーメントを用いる。
+    // モデル化していない接合部は梁端モーメント・柱せん断から組み立てる。
+    let p_m = inp.design_moment.unwrap_or_else(|| {
+        inp.beam_moment_left + inp.beam_moment_right
+            - (inp.col_shear_upper + inp.col_shear_lower) * inp.db / 2.0
+    });
 
     let ratio = if p_my > 0.0 {
         p_m.abs() / p_my
@@ -141,7 +159,44 @@ mod tests {
             beam_moment_right: 200_000_000.0,
             col_shear_upper: 50_000.0,
             col_shear_lower: 50_000.0,
+            design_moment: None,
         }
+    }
+
+    /// `design_moment` を与えると、梁端モーメント・柱せん断からの組み立てに代えて
+    /// その値が設計用パネルモーメント pM に用いられる（仕口パネルをモデル化した
+    /// 接合部で、解析出力のせん断モーメントを使う経路）。
+    #[test]
+    fn s_panel_uses_design_moment_when_given() {
+        let assembled = s_panel_zone_check(&base_panel_h_input(0.0));
+        // 手組み式の pM = 200e6 + 200e6 − (50e3 + 50e3)・500/2 = 375e6
+        let assembled_pm = 375_000_000.0_f64;
+
+        let mut inp = base_panel_h_input(0.0);
+        inp.design_moment = Some(assembled_pm);
+        let same = s_panel_zone_check(&inp);
+        assert!(
+            (same.ratio() - assembled.ratio()).abs() < 1e-12,
+            "同じ pM を与えれば結果は一致する: {} vs {}",
+            same.ratio(),
+            assembled.ratio()
+        );
+
+        // 別の値を与えれば検定比は pM に比例して変わる。
+        let mut half = base_panel_h_input(0.0);
+        half.design_moment = Some(assembled_pm / 2.0);
+        let half = s_panel_zone_check(&half);
+        assert!(
+            (half.ratio() - assembled.ratio() / 2.0).abs() < 1e-12,
+            "pM が半分なら検定比も半分: {} vs {}",
+            half.ratio(),
+            assembled.ratio() / 2.0
+        );
+
+        // 符号は絶対値で扱う（左右どちら向きのパネルモーメントでも同じ検定比）。
+        let mut neg = base_panel_h_input(0.0);
+        neg.design_moment = Some(-assembled_pm);
+        assert!((s_panel_zone_check(&neg).ratio() - assembled.ratio()).abs() < 1e-12);
     }
 
     #[test]

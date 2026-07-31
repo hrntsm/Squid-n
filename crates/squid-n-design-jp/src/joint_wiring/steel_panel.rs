@@ -7,10 +7,15 @@ use squid_n_core::ids::NodeId;
 use squid_n_core::section_shape::SectionShape;
 
 /// S 造パネルゾーンの検定を `out` へ追加する。
+///
+/// `panel_moment` は仕口パネルをモデル化した接合部で解析が出力した設計用パネル
+/// モーメント `pM` [N·mm]。`None`（モデル化していない接合部）のときは従来どおり
+/// 梁端モーメント・柱せん断から `pM` を組み立てる。
 pub(super) fn check_s_panel(
     cols: &[&MemberInfo<'_>],
     beams: &[&MemberInfo<'_>],
     nid: NodeId,
+    panel_moment: Option<f64>,
     out: &mut Vec<(NodeId, String, CheckResult)>,
 ) {
     // ── S 造パネルゾーン ─────────────────────────────────────
@@ -94,6 +99,7 @@ pub(super) fn check_s_panel(
                 beam_moment_right: m_right,
                 col_shear_upper: col_qs[0],
                 col_shear_lower: col_qs[1],
+                design_moment: panel_moment,
             };
             out.push((nid, "パネルゾーン(S)".to_string(), s_panel_zone_check(&inp)));
         }

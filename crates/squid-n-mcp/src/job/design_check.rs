@@ -336,9 +336,13 @@ pub(crate) fn compute_design_check_job(
     }
     // 節点単位の検定も同様に退化ケースを持たない（該当なしの節点は push
     // されない）ため、常に Checked として扱う。
-    let joint_checks = squid_n_design_jp::joint_wiring::collect_joint_checks(
+    // 仕口パネルをモデル化した接合部は、解析出力のせん断モーメントを設計用
+    // パネルモーメントに用いる（モデル化していない接合部は従来の手組み式）。
+    let joint_checks = squid_n_design_jp::joint_wiring::collect_joint_checks_with_long(
         model,
         &mf_slices,
+        None,
+        &result.panel_moments,
         squid_n_design_jp::LoadTerm::Long,
     );
     let n_joint_checks = joint_checks.len();
