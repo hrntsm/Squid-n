@@ -14,7 +14,8 @@
 //! 2. それ以外は**材料の区分**（[`MaterialCategory`]）で決まる
 //!    - `Steel` → [`StructureKind::S`]
 //!    - `Concrete` / `Rebar` → [`StructureKind::Rc`]
-//! 3. 材料が解決できない要素は [`StructureKind::Rc`] とする
+//! 3. 材料が解決できない場合だけ、断面形状の系統で補う（[`shape_default_kind`]）
+//! 4. 断面形状も無ければ [`StructureKind::Rc`] とする
 //!
 //! # 断面形状ではなく材料で判定する理由
 //!
@@ -79,8 +80,8 @@ impl StructureKind {
 /// 断面形状が複合断面（SRC・CFT）なら、その構造種別を返す。
 ///
 /// 単一材料で表せる形状は `None` を返し、呼び出し側が材料の区分で判定する。
-/// `SectionShape` にバリアントが増えたときに追随が要るのはこの網羅 `match` だけで、
-/// 追随を忘れるとコンパイルエラーになる。
+/// `SectionShape` にバリアントが増えたときに追随が要るのはこの網羅 `match` と
+/// [`shape_default_kind`] だけで、追随を忘れるとコンパイルエラーになる。
 pub fn shape_composite_kind(shape: &SectionShape) -> Option<StructureKind> {
     match shape {
         SectionShape::SrcRect { .. } => Some(StructureKind::Src),
@@ -101,6 +102,31 @@ pub fn shape_composite_kind(shape: &SectionShape) -> Option<StructureKind> {
     }
 }
 
+/// 材料が解決できないときに断面形状から補う構造種別。
+///
+/// 判定の主は材料の区分だが、材料が未割当の部材まで一律 RC とすると、材料を
+/// 付け忘れた鋼部材に RC の剛域が入って架構が硬くなる。形状名の系統は入力の
+/// 意図をよく表すため、材料が無いときに限ってこれを既定として採る。
+pub fn shape_default_kind(shape: &SectionShape) -> StructureKind {
+    match shape {
+        SectionShape::SrcRect { .. } => StructureKind::Src,
+        SectionShape::CftBox { .. } | SectionShape::CftPipe { .. } => StructureKind::Cft,
+        SectionShape::RcRect { .. }
+        | SectionShape::RcCircle { .. }
+        | SectionShape::RcWall { .. } => StructureKind::Rc,
+        SectionShape::SteelH { .. }
+        | SectionShape::SteelBox { .. }
+        | SectionShape::SteelAngle { .. }
+        | SectionShape::SteelChannel { .. }
+        | SectionShape::SteelTee { .. }
+        | SectionShape::SteelPipe { .. }
+        | SectionShape::SteelFlatBar { .. }
+        | SectionShape::SteelRoundBar { .. }
+        | SectionShape::SteelLipChannel { .. }
+        | SectionShape::SteelBuiltH { .. } => StructureKind::S,
+    }
+}
+
 /// 材料の区分から構造種別を求める。
 ///
 /// 鉄筋は材料としては鋼だが、これを割り当てた線材は S 造ではないため RC とする
@@ -118,13 +144,15 @@ pub fn structure_kind_of(
     sec: Option<&Section>,
     category: Option<MaterialCategory>,
 ) -> StructureKind {
-    if let Some(kind) = sec
-        .and_then(|s| s.shape.as_ref())
-        .and_then(shape_composite_kind)
-    {
+    let shape = sec.and_then(|s| s.shape.as_ref());
+    if let Some(kind) = shape.and_then(shape_composite_kind) {
         return kind;
     }
-    category.map_or(StructureKind::Rc, material_structure_kind)
+    match category {
+        Some(category) => material_structure_kind(category),
+        // 材料が解決できない場合は断面形状の系統で補い、形状も無ければ RC とする。
+        None => shape.map_or(StructureKind::Rc, shape_default_kind),
+    }
 }
 
 /// 要素の構造種別を判定する。
@@ -303,6 +331,33 @@ mod tests {
     #[test]
     fn test_rebar_is_not_steel_structure() {
         let m = model_with(Some(h_shape()), MaterialCategory::Rebar);
+        assert_eq!(member_structure_kind(&m, &m.elements[0]), StructureKind::Rc);
+    }
+
+    /// 材料が未割当の部材は断面形状の系統で補う。
+    /// 材料を付け忘れた鋼部材に RC の剛域が入らないようにするための既定。
+    #[test]
+    fn test_missing_material_falls_back_to_shape() {
+        let mut m = model_with(Some(h_shape()), MaterialCategory::Steel);
+        m.elements[0].material = None;
+        assert_eq!(member_structure_kind(&m, &m.elements[0]), StructureKind::S);
+
+        let rc = SectionShape::RcRect {
+            b: 700.0,
+            d: 700.0,
+            rebar: rc_rebar(),
+        };
+        let mut m = model_with(Some(rc), MaterialCategory::Steel);
+        m.elements[0].material = None;
+        assert_eq!(member_structure_kind(&m, &m.elements[0]), StructureKind::Rc);
+    }
+
+    /// 断面形状も材料も無い部材は RC とする。
+    #[test]
+    fn test_no_section_no_material_is_rc() {
+        let mut m = model_with(None, MaterialCategory::Steel);
+        m.elements[0].material = None;
+        m.elements[0].section = None;
         assert_eq!(member_structure_kind(&m, &m.elements[0]), StructureKind::Rc);
     }
 

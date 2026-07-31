@@ -5,7 +5,10 @@ use squid_n_core::units::{
     concrete_unit_weight_kn_m3, to_internal::mass_density_from_unit_weight_kn_m3, ConcreteClass,
     ConcreteComposition,
 };
-use squid_n_edit::{AddMaterial, DeleteMaterial, MaterialField, SetMaterialField, SetMaterialName};
+use squid_n_edit::{
+    AddMaterial, DeleteMaterial, MaterialField, SetMaterialCategory, SetMaterialField,
+    SetMaterialName,
+};
 
 /// プリセット追加 UI の選択状態（区分・グレード名・SRC造トグル）。
 /// `ui.data`/`data_mut` の temp storage に保持する。
@@ -239,12 +242,14 @@ pub fn materials_table(ui: &mut egui::Ui, app: &mut App) {
     let n = app.model.materials.len();
     ui.label(format!("材料一覧（{} 件）", n));
     let mut pending_name: Option<(u32, String)> = None;
+    let mut pending_category: Option<(u32, MaterialCategory)> = None;
     let mut pending_field: Option<(u32, MaterialField, Option<f64>)> = None;
     let mut pending_delete: Option<u32> = None;
 
     TableBuilder::new(ui)
         .striped(true)
         .column(Column::auto())
+        .column(Column::initial(90.0))
         .column(Column::initial(90.0))
         .column(Column::initial(70.0))
         .column(Column::initial(45.0))
@@ -257,6 +262,7 @@ pub fn materials_table(ui: &mut egui::Ui, app: &mut App) {
             for t in &[
                 "ID",
                 "名称",
+                "区分",
                 "E [N/mm²]",
                 "ν",
                 "ρ [t/mm³]",
@@ -271,6 +277,11 @@ pub fn materials_table(ui: &mut egui::Ui, app: &mut App) {
                         resp.on_hover_text(
                             "保有水平耐力計算（増分解析）の材料強度割増係数。\
                              空欄=自動（鋼材1.1、590N級1.05、RC主筋1.1）",
+                        );
+                    } else if *t == "区分" {
+                        resp.on_hover_text(
+                            "S 造 / RC 造の判定に用います。剛域長・仕口パネルの対象・\
+                             断面検定の式・数量集計がこの値で変わります",
                         );
                     }
                 });
@@ -292,6 +303,24 @@ pub fn materials_table(ui: &mut egui::Ui, app: &mut App) {
                         && name != mat.name
                     {
                         pending_name = Some((mat_id.0, name));
+                    }
+                });
+                row.col(|ui| {
+                    let mut category = mat.category;
+                    egui::ComboBox::from_id_salt(("mat_category", mat_id.0))
+                        .selected_text(category.label())
+                        .width(85.0)
+                        .show_ui(ui, |ui| {
+                            for cat in [
+                                MaterialCategory::Steel,
+                                MaterialCategory::Rebar,
+                                MaterialCategory::Concrete,
+                            ] {
+                                ui.selectable_value(&mut category, cat, cat.label());
+                            }
+                        });
+                    if category != mat.category {
+                        pending_category = Some((mat_id.0, category));
                     }
                 });
                 // 数値セル: フォーカス喪失時に確定
@@ -360,6 +389,16 @@ pub fn materials_table(ui: &mut egui::Ui, app: &mut App) {
             Box::new(SetMaterialName {
                 id: squid_n_core::ids::MaterialId(id),
                 name,
+            }),
+        );
+        edited = true;
+    }
+    if let Some((id, category)) = pending_category {
+        app.undo.run(
+            &mut app.model,
+            Box::new(SetMaterialCategory {
+                id: squid_n_core::ids::MaterialId(id),
+                category,
             }),
         );
         edited = true;

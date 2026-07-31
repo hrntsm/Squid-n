@@ -467,13 +467,10 @@ fn assign_story_structures(model: &Model, node_story: &[Option<StoryId>], storie
         if !matches!(e.kind, ElementKind::Beam) || e.nodes.len() < 2 {
             continue;
         }
-        let Some(shape) = e
-            .section
-            .and_then(|sid| model.sections.get(sid.index()))
-            .and_then(|sec| sec.shape.as_ref())
-        else {
+        // 断面も材料も未割当の部材は構造種別を判定できないため集計から除く。
+        if e.section.is_none() && e.material.is_none() {
             continue;
-        };
+        }
         // 材端節点のうち最も高い節点の所属階へ計上する。
         let top = e
             .nodes
@@ -484,7 +481,9 @@ fn assign_story_structures(model: &Model, node_story: &[Option<StoryId>], storie
             continue;
         };
         let slot = counts.entry(story).or_default();
-        match StoryStructure::of_section_shape(shape) {
+        match StoryStructure::of_structure_kind(
+            squid_n_core::structure_kind::member_structure_kind(model, e),
+        ) {
             StoryStructure::Rc => slot.0 += 1,
             StoryStructure::S => slot.1 += 1,
             StoryStructure::Src => slot.2 += 1,

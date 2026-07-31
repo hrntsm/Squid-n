@@ -953,7 +953,7 @@ fn test_set_material_field_roundtrip() {
         &mut model,
         Box::new(AddMaterial {
             name: "Fc21".into(),
-            category: MaterialCategory::Steel,
+            category: MaterialCategory::Concrete,
             young: 21500.0,
             poisson: 0.2,
             density: 2.3e-9,

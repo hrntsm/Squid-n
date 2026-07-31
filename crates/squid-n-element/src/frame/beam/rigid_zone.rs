@@ -41,14 +41,14 @@ fn elem_axis(model: &Model, e: &squid_n_core::model::ElementData) -> [f64; 3] {
 /// Beam 要素が対象（危険断面位置 face 用。§6.2.3 は幾何量であり種別を区別しない）。
 fn max_orth_depth(
     model: &Model,
-    node_idx: usize,
+    node: squid_n_core::ids::NodeId,
     target_axis: [f64; 3],
     target_elem_idx: usize,
     adjacency: &NodeAdjacency,
     only_rc_src: bool,
 ) -> f64 {
     let mut d_max = 0.0;
-    for &ei in adjacency.indices_at(squid_n_core::ids::NodeId(node_idx as u32)) {
+    for &ei in adjacency.indices_at(node) {
         if ei == target_elem_idx {
             continue;
         }
@@ -96,7 +96,7 @@ fn rigid_zone_with_adjacency(
     // face 用: 種別を問わない直交 Beam 要素の最大せい（従来どおりの幾何量）。
     let d_orth_face_i = max_orth_depth(
         model,
-        nodes[0].index(),
+        nodes[0],
         target_axis,
         target_elem_idx,
         adjacency,
@@ -104,7 +104,7 @@ fn rigid_zone_with_adjacency(
     );
     let d_orth_face_j = max_orth_depth(
         model,
-        nodes[nodes.len() - 1].index(),
+        nodes[nodes.len() - 1],
         target_axis,
         target_elem_idx,
         adjacency,
@@ -113,7 +113,7 @@ fn rigid_zone_with_adjacency(
     // λ 用: RC/SRC 系の直交 Beam 要素だけの最大せい。
     let d_orth_rc_i = max_orth_depth(
         model,
-        nodes[0].index(),
+        nodes[0],
         target_axis,
         target_elem_idx,
         adjacency,
@@ -121,7 +121,7 @@ fn rigid_zone_with_adjacency(
     );
     let d_orth_rc_j = max_orth_depth(
         model,
-        nodes[nodes.len() - 1].index(),
+        nodes[nodes.len() - 1],
         target_axis,
         target_elem_idx,
         adjacency,

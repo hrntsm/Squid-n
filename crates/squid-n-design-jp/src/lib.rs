@@ -349,3 +349,18 @@ pub trait DesignCheck {
         ctx: &DesignCtx,
     ) -> CheckOutcome;
 }
+
+/// 構造種別に対応する断面検定器を返す。
+///
+/// 構造種別の判定は [`squid_n_core::structure_kind`] が一元で行い、本関数は
+/// その結果を検定器へ写すだけとする。検定・設計タブ・時刻歴の詳細表示・MCP の
+/// いずれも同じ対応表を使うことで、経路によって適用される式が変わらないようにする。
+pub fn checker_for(kind: squid_n_core::structure_kind::StructureKind) -> Box<dyn DesignCheck> {
+    use squid_n_core::structure_kind::StructureKind;
+    match kind {
+        StructureKind::Rc => Box::new(RcDesign),
+        StructureKind::S => Box::new(SteelDesign),
+        StructureKind::Src => Box::new(SrcDesign),
+        StructureKind::Cft => Box::new(CftDesign),
+    }
+}

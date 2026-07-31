@@ -63,9 +63,12 @@ fn member_moment_thresholds(elem: &ElementData, model: &Model) -> HingeThreshold
     // 正しい式へ振り分けられる。
     let kind = squid_n_core::structure_kind::structure_kind_of(Some(sec), mat.map(|m| m.category));
     match (&sec.shape, kind) {
+        // 配筋を持つ形状は材料の区分に依らず RC の式で評価する。鋼の Mp 式は
+        // 配筋を無視した素の断面係数を使うため、RC 断面へ当てると My が桁で
+        // 過大になり、増分解析で曲げヒンジが検出されなくなる。
         (
             Some(SectionShape::RcRect { rebar, d, .. }) | Some(SectionShape::RcCircle { rebar, d }),
-            StructureKind::Rc,
+            _,
         ) => {
             // Fc 未設定（fc=0 → Mc=0 でヒンジが一切検出されない）のモデルは
             // `squid_n_element::factory::ensure_nonlinear_input` が解析前に停止する

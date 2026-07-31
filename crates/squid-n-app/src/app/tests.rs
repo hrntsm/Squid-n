@@ -4326,7 +4326,7 @@ fn test_compute_cft_ultimate_checks() {
             concrete_class: Default::default(),
             id: MaterialId(0),
             name: "BCR295".into(),
-            category: MaterialCategory::Concrete,
+            category: MaterialCategory::Steel,
             young: 205000.0,
             poisson: 0.3,
             density: 7.85e-9,

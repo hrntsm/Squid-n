@@ -18,7 +18,6 @@
 use super::section_std::standard_sections;
 use super::{StbError, STB_VERSION};
 use squid_n_core::model::{ElementKind, EndCondition, Model, StoryLevelKind};
-use squid_n_core::section_shape::SectionShape;
 
 /// ST-Bridge の id は `positiveInteger`（1 以上）。内部 0 始まり id に +1 して出力する。
 fn sid(internal_id: u32) -> u32 {
@@ -135,11 +134,6 @@ fn members_body(
     let mut braces = String::new();
 
     for e in &model.elements {
-        let mat_grade = e
-            .material
-            .and_then(|m| model.materials.get(m.index()))
-            .map(|m| m.name.clone())
-            .unwrap_or_default();
         match e.kind {
             ElementKind::Beam if e.nodes.len() == 2 => {
                 let n0 = &model.nodes[e.nodes[0].index()];
@@ -156,7 +150,7 @@ fn members_body(
                     .map(|v| v as i64)
                     .unwrap_or(-1);
                 let rot = rotate_of(e, n0.coord, n1.coord);
-                let ks = kind_structure(model, e, &mat_grade);
+                let ks = kind_structure(model, e);
                 if is_col {
                     let (bot, top) = if n0.coord[2] <= n1.coord[2] {
                         (e.nodes[0], e.nodes[1])
@@ -400,31 +394,15 @@ fn story_kind(k: StoryLevelKind) -> &'static str {
     }
 }
 
-/// 部材の構造種別（`kind_structure`）を断面形状・材料から推定する。
+/// 部材の構造種別（`kind_structure`）。
+///
+/// 判定は [`squid_n_core::structure_kind::member_structure_kind`] に委ね、
+/// ラベル（RC / S / SRC / CFT）をそのまま ST-Bridge の属性値として書き出す。
 fn kind_structure(
     model: &squid_n_core::model::Model,
     e: &squid_n_core::model::ElementData,
-    mat_grade: &str,
 ) -> &'static str {
-    let shape = e
-        .section
-        .and_then(|s| model.sections.get(s.index()))
-        .and_then(|s| s.shape.as_ref());
-    match shape {
-        Some(SectionShape::RcRect { .. } | SectionShape::RcCircle { .. }) => "RC",
-        Some(SectionShape::SrcRect { .. }) => "SRC",
-        // CFT は柱のみ。梁の kind_structure に CFT が無いため、ここでは柱前提で扱う。
-        Some(SectionShape::CftBox { .. } | SectionShape::CftPipe { .. }) => "CFT",
-        Some(_) => "S",
-        // 形状が無い場合は材料グレード名から推定（Fc… はコンクリート）。
-        None => {
-            if mat_grade.starts_with("Fc") || mat_grade.starts_with("FC") {
-                "RC"
-            } else {
-                "S"
-            }
-        }
-    }
+    squid_n_core::structure_kind::member_structure_kind(model, e).label()
 }
 
 /// 部材の ref_vector と軸から `rotate` 角 [deg] を復元する（import の逆変換）。

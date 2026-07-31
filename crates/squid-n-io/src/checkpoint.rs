@@ -202,8 +202,8 @@ mod tests {
         use squid_n_core::dof::Dof6Mask;
         use squid_n_core::ids::{ElemId, MaterialId, NodeId, SectionId};
         use squid_n_core::model::{
-            ElementData, ElementKind, EndCondition, ForceRegime, LocalAxis, Material,
-            MaterialCategory, Model, Node, Section,
+            ElementData, ElementKind, EndCondition, ForceRegime, LocalAxis, Material, Model, Node,
+            Section,
         };
         use squid_n_element::behavior::{Ctx, ElementBehavior, LocalVec};
         use squid_n_element::factory::{build_nonlinear_behavior, AnalysisKind, StrengthBasis};

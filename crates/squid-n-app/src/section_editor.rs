@@ -263,14 +263,8 @@ pub fn catalog_section_panel(ui: &mut egui::Ui, app: &mut App) {
 
 /// 断面作成パネル。モデルタブの断面サブタブに併置。
 pub fn section_editor_panel(ui: &mut egui::Ui, app: &mut App) {
-    // 仕口パネル板厚の欄はモデルを読むが、`draft` の可変借用と重なるため
-    // 必要な値だけ先に取り出し、編集要求は閉包の外で適用する。
-    let sections_tp: Vec<(SectionId, f64)> = app
-        .model
-        .sections
-        .iter()
-        .map(|s| (s.id, s.panel_thickness.unwrap_or(0.0)))
-        .collect();
+    // 仕口パネル板厚の欄はモデルを読むが、編集要求は `draft` の可変借用が
+    // 切れたあと（閉包の外）で適用する。
     let mut pending_tp: Option<(SectionId, f64)> = None;
     let draft = &mut app.section_draft;
 
@@ -394,7 +388,8 @@ pub fn section_editor_panel(ui: &mut egui::Ui, app: &mut App) {
                         );
                         app.staleness.mark_edited();
                     }
-                    panel_thickness_field(ui, &sections_tp, idx, &mut pending_tp);
+                    let current_tp = app.model.sections[idx].panel_thickness.unwrap_or(0.0);
+                    panel_thickness_field(ui, sid, current_tp, &mut pending_tp);
                 }
                 None => {
                     apply_resp.on_hover_text("断面テーブルで対象断面を選択してください");
@@ -786,13 +781,10 @@ fn build_shape(d: &SectionEditorDraft) -> SectionShape {
 /// 仕口パネルのモデル化と S 造パネルゾーンの断面算定の双方がこの値を使う。
 fn panel_thickness_field(
     ui: &mut egui::Ui,
-    sections_tp: &[(SectionId, f64)],
-    idx: usize,
+    sid: SectionId,
+    current: f64,
     pending: &mut Option<(SectionId, f64)>,
 ) {
-    let Some(&(sid, current)) = sections_tp.get(idx) else {
-        return;
-    };
     let id_buf = ui.id().with(("panel_thickness", sid.0));
     let mut buf: String = ui.data_mut(|d| d.get_temp(id_buf)).unwrap_or_else(|| {
         if current > 0.0 {

@@ -77,20 +77,20 @@ impl App {
                 .default_open(true)
                 .id_salt("nav_groups");
             header.show(ui, |ui| {
-                let steel_ids: Vec<ElemId> = self
+                // 鋼系（S・CFT）とそれ以外へ 1 回の走査で分ける。
+                let (steel_ids, rc_ids): (Vec<ElemId>, Vec<ElemId>) = self
                     .model
                     .elements
                     .iter()
-                    .filter(|e| elem_is_steel(e, &self.model))
-                    .map(|e| e.id)
-                    .collect();
-                let rc_ids: Vec<ElemId> = self
-                    .model
-                    .elements
-                    .iter()
-                    .map(|e| e.id)
-                    .filter(|id| !steel_ids.contains(id))
-                    .collect();
+                    .map(|e| (e.id, elem_is_steel(e, &self.model)))
+                    .fold((Vec::new(), Vec::new()), |(mut s, mut r), (id, steel)| {
+                        if steel {
+                            s.push(id);
+                        } else {
+                            r.push(id);
+                        }
+                        (s, r)
+                    });
                 // selected 表示は簡易判定（先頭要素が当該グループに属するか）。
                 let is_steel_sel = self
                     .selection

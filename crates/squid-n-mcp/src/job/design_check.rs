@@ -1,7 +1,6 @@
 //! 断面検定・接合部検定ジョブの純粋計算。
 //!
 //! - [`compute_design_check_job`] — DesignCheck ジョブの純粋計算部分。
-//! - [`is_steel`] — 鋼材判定（priv）。
 //! - [`member_kind_of`] — 部材種別判定（priv）。
 //! - [`elem_geometric_length`] — 部材両端節点間の幾何長（priv）。
 //! - [`design_positions`] — 危険断面位置を正規化座標で算定する（priv）。
@@ -9,7 +8,6 @@
 
 use super::{model_with_auto_rigid_zones, resolve_load_case, JobOutcome};
 use squid_n_core::model::Model;
-use squid_n_core::structure_kind::StructureKind;
 
 /// 部材種別判定（部材軸の鉛直成分による幾何判定）。
 /// squid-n-app の `member_kind_of`（app.rs）と同じロジック。
@@ -103,8 +101,8 @@ fn is_near_design_position(pos: f64, positions: &[f64]) -> bool {
 /// DesignCheck ジョブの純粋計算部分。
 /// 指定/先頭の荷重ケースで線形静的解析を行い、断面力に対して
 /// squid-n-app の `App::run_design_check`（app.rs）と同じ判定
-/// （材料名先頭文字で鋼/RC を判定し SteelDesign/RcDesign を適用）を行う
-/// （squid-n-mcp は squid-n-app に依存しないため複製している）。
+/// （構造種別を `squid_n_core::structure_kind` で求め、[`squid_n_design_jp::checker_for`]
+/// で検定器を選ぶ）を行う（squid-n-mcp は squid-n-app に依存しないため複製している）。
 /// 検定条件（長期/短期）は既定で長期（`LoadTerm::Long`）とする。
 pub(crate) fn compute_design_check_job(
     model: &Model,
@@ -130,7 +128,7 @@ pub(crate) fn compute_design_check_job(
 
     // 柱の座屈長さ係数 K 用の節点まわり梁索引（全部材ぶんのループで使い回し、
     // `steel_column_k_axes_with_index` の全要素走査を避ける。app.rs と同じ流儀）。
-    let column_k_index = squid_n_design_jp::steel::buckling::BeamNodeIndex::build(model);
+    let column_k_index = squid_n_core::adjacency::NodeAdjacency::build(model);
 
     for (elem_id, mf) in &result.member_forces {
         for (pos, forces) in &mf.at {
@@ -242,13 +240,9 @@ pub(crate) fn compute_design_check_job(
 
         // 検定器の選択は構造種別による（`squid_n_core::structure_kind`。
         // app.rs の run_design_check と同じ規則）。
-        let checker: Box<dyn squid_n_design_jp::DesignCheck> =
-            match squid_n_core::structure_kind::structure_kind_of(Some(sec), Some(mat.category)) {
-                StructureKind::Src => Box::new(squid_n_design_jp::SrcDesign),
-                StructureKind::Cft => Box::new(squid_n_design_jp::CftDesign),
-                StructureKind::S => Box::new(squid_n_design_jp::SteelDesign),
-                StructureKind::Rc => Box::new(squid_n_design_jp::RcDesign),
-            };
+        let checker: Box<dyn squid_n_design_jp::DesignCheck> = squid_n_design_jp::checker_for(
+            squid_n_core::structure_kind::structure_kind_of(Some(sec), Some(mat.category)),
+        );
         // 危険断面位置（§6.2.3、既定は柱フェイスと中央）の内力のみ検定する。
         // 節点芯は剛域が有る場合は検定対象外（app.rs の run_design_check と同じ規則）。
         let geom_len = elem_geometric_length(elem, model);

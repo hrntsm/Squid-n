@@ -237,14 +237,17 @@ fn apply_panel_offsets(model: &mut Model, adjacency: &NodeAdjacency, panels: &[G
 /// 戻り値は生成したパネルの諸元（節点 index の昇順）。準備計算の結果表示に用いる。
 pub fn apply_auto_panel_zones(model: &mut Model) -> Vec<GeneratedPanel> {
     remove_existing_panels(model);
+    if model.panel_zone != PanelZoneMode::Model {
+        // パネルが 1 つも無い状態のオフセット（＝すべて 0）へ戻す。
+        for e in &mut model.elements {
+            e.rigid_zone.panel_offset_i = 0.0;
+            e.rigid_zone.panel_offset_j = 0.0;
+        }
+        return Vec::new();
+    }
     // パネル要素を取り除いた状態で作る（パネル自身は線材ではないため隣接には
     // 入らないが、要素の詰め直しで添字が動くため取り除いた後に構築する）。
     let adjacency = NodeAdjacency::build(model);
-    if model.panel_zone != PanelZoneMode::Model {
-        // パネルが 1 つも無い状態のオフセット（＝すべて 0）へ戻す。
-        apply_panel_offsets(model, &adjacency, &[]);
-        return Vec::new();
-    }
 
     let mut generated = Vec::new();
     let mut new_elements = Vec::new();

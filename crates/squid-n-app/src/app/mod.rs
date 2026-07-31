@@ -1,7 +1,7 @@
 use std::time::SystemTime;
 
 use squid_n_core::ids::{ElemId, LoadCaseId, NodeId, SectionId};
-use squid_n_design_jp::{DesignCheck, DesignCtx, LoadTerm, MemberForcesAt, RcDesign, SteelDesign};
+use squid_n_design_jp::{DesignCheck, DesignCtx, LoadTerm, MemberForcesAt};
 use squid_n_edit::UndoStack;
 use squid_n_solver::analysis::{AiMode, Analysis, SeismicDir};
 
@@ -2371,9 +2371,6 @@ impl eframe::App for App {
     }
 }
 
-#[cfg(test)]
-mod tests;
-
 /// 要素の構造種別が鋼系（S・CFT）か。
 ///
 /// 判定は断面と材料から `squid_n_core::structure_kind` が行う。断面形状は
@@ -2384,3 +2381,6 @@ fn elem_is_steel(
 ) -> bool {
     squid_n_core::structure_kind::member_structure_kind(model, elem).is_steel_like()
 }
+
+#[cfg(test)]
+mod tests;

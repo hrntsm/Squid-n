@@ -375,6 +375,68 @@ pub fn material_presets() -> Vec<MaterialPreset> {
 mod tests {
     use super::*;
 
+    /// ST-Bridge の代表的なグレード名から区分を判定できることを確認する。
+    #[test]
+    fn test_category_of_grade() {
+        for (name, expected) in [
+            ("Fc21", MaterialCategory::Concrete),
+            ("FC60", MaterialCategory::Concrete),
+            ("SN400B", MaterialCategory::Steel),
+            ("SS400", MaterialCategory::Steel),
+            ("SM490A", MaterialCategory::Steel),
+            ("STKR400", MaterialCategory::Steel),
+            ("BCR295", MaterialCategory::Steel),
+            ("TMCP325", MaterialCategory::Steel),
+            ("LY225", MaterialCategory::Steel),
+            ("SD295A", MaterialCategory::Rebar),
+            ("SD345", MaterialCategory::Rebar),
+            ("SR235", MaterialCategory::Rebar),
+            ("KH785", MaterialCategory::Rebar),
+        ] {
+            assert_eq!(
+                category_of_grade(name),
+                Some(expected),
+                "グレード名 {name} の区分"
+            );
+        }
+    }
+
+    /// 判定できない名称は `None` を返し、取込側が既定を決める。
+    #[test]
+    fn test_category_of_grade_unknown() {
+        for name in ["コンクリート", "普通強度", "", "   ", "X999"] {
+            assert_eq!(category_of_grade(name), None, "未知の名称 {name:?}");
+        }
+    }
+
+    /// 判定の順序（コンクリート → 鉄筋 → 鋼材）を確認する。
+    /// `SD`/`SR` は鋼材の前方一致（`S…`）より先に判定する必要がある。
+    #[test]
+    fn test_category_of_grade_order() {
+        // 鉄筋は鋼材より先に判定する。
+        assert_eq!(category_of_grade("SD390"), Some(MaterialCategory::Rebar));
+        // 大文字小文字は区別しない。
+        assert_eq!(category_of_grade("fc24"), Some(MaterialCategory::Concrete));
+        assert_eq!(category_of_grade("sn400b"), Some(MaterialCategory::Steel));
+        // 前後の空白は無視する。
+        assert_eq!(
+            category_of_grade("  SD345  "),
+            Some(MaterialCategory::Rebar)
+        );
+    }
+
+    /// プリセット表の区分は、名前から推定した区分と一致する。
+    /// 一致しない項目があるとプリセットで追加した材料と ST-Bridge から
+    /// 取り込んだ同名の材料で構造種別が食い違う。
+    #[test]
+    fn test_presets_agree_with_category_of_grade() {
+        for p in material_presets() {
+            if let Some(guessed) = category_of_grade(p.name) {
+                assert_eq!(guessed, p.category, "プリセット {} の区分", p.name);
+            }
+        }
+    }
+
     /// H12 建告第2464号の基準強度表と一致することを確認する（板厚 40mm 以下）。
     #[test]
     fn test_steel_f_value_le40() {

@@ -732,14 +732,9 @@ fn draw_peak_check(
     };
     // 検定器の選択は構造種別による（`squid_n_core::structure_kind`。
     // 設計タブの検定と同じ規則）。
-    use squid_n_core::structure_kind::StructureKind;
-    let checker: Box<dyn DesignCheck> =
-        match squid_n_core::structure_kind::structure_kind_of(Some(sec), Some(mat.category)) {
-            StructureKind::Src => Box::new(squid_n_design_jp::SrcDesign),
-            StructureKind::Cft => Box::new(squid_n_design_jp::CftDesign),
-            StructureKind::S => Box::new(squid_n_design_jp::SteelDesign),
-            StructureKind::Rc => Box::new(squid_n_design_jp::RcDesign),
-        };
+    let checker: Box<dyn DesignCheck> = squid_n_design_jp::checker_for(
+        squid_n_core::structure_kind::structure_kind_of(Some(sec), Some(mat.category)),
+    );
 
     for (pos, f) in &peak.at {
         let mfa = MemberForcesAt {
