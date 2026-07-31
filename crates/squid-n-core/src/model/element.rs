@@ -83,6 +83,35 @@ pub enum BeamTorsionMode {
     Keep,
 }
 
+/// 仕口パネル（柱梁接合部パネル）のモデル化（建物一律のモデル化方針）。
+///
+/// 有効にすると、S 造（CFT を含む）の柱梁接合節点へ仕口パネル要素を設け、
+/// 接合部のせん断変形を解析へ反映する。パネルが設けられた節点はせん断変形角
+/// `γX`・`γY` の 2 自由度を追加で持ち、その節点へ取り付く部材はパネル寸法分の
+/// オフセット位置で接合する。
+///
+/// 対象を S 造に限るのは、S 造の接合部が剛域長 0（`squid_n_element::beam` の
+/// 剛域自動算定は RC/SRC の直交材のみを探す）であり、パネルのせん断変形を
+/// 明示的に評価しても剛域と二重計上にならないため。RC・SRC の接合部は
+/// 従来どおり剛域で接合部の有限寸法を評価する。
+///
+/// 検定（S 造パネルゾーンの断面検定）は本設定によらず常に実行する。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum PanelZoneMode {
+    /// 仕口パネルをモデル化する（既定）。
+    #[default]
+    Model,
+    /// 仕口パネルをモデル化しない（接合部を剛節点として扱う従来のモデル化）。
+    None,
+}
+
+impl PanelZoneMode {
+    /// モデル化が有効か。
+    pub fn is_enabled(self) -> bool {
+        matches!(self, PanelZoneMode::Model)
+    }
+}
+
 /// 剛域長の出所。Auto は再算定で上書きされる、Manual は保護される（設計書 §6.2.1）。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ZoneSource {

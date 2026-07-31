@@ -113,6 +113,11 @@ pub struct Model {
     /// 旧スキーマ（フィールド無し）は既定＝`ReleaseIEnd` で補完される。
     #[serde(default)]
     pub beam_torsion: BeamTorsionMode,
+    /// 仕口パネル（柱梁接合部パネル）のモデル化（建物一律。既定はモデル化する）。
+    /// 旧スキーマ（フィールド無し）は既定＝`Model` で補完されるため、旧ファイルも
+    /// パネルをモデル化した状態で開く。
+    #[serde(default)]
+    pub panel_zone: PanelZoneMode,
     #[serde(skip)]
     pub dof_map: crate::dof::DofMap,
 }
@@ -391,6 +396,7 @@ impl Model {
             && self.damper_defs == other.damper_defs
             && self.member_detail_attrs == other.member_detail_attrs
             && self.beam_torsion == other.beam_torsion
+            && self.panel_zone == other.panel_zone
     }
 
     /// ダンパー要素の特性を返す（`Model::damper_attrs` から要素 ID で検索）。

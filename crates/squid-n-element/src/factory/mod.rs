@@ -62,6 +62,18 @@ pub fn build_behavior(data: &ElementData, model: &Model) -> (Box<dyn ElementBeha
                     ElemState::default(),
                 );
             }
+            // 仕口パネルへ接合する端がある部材は、パネル分のオフセットを剛域へ
+            // 含めたうえで、パネルのせん断変形角と連成させるデコレータを被せる。
+            if let Some((adjusted, ends)) = crate::panel_offset::resolve(data, model) {
+                let elem = crate::beam::BeamElement::new(&adjusted, model);
+                return (
+                    Box::new(crate::panel_offset::PanelOffsetMember::new(
+                        Box::new(elem),
+                        ends,
+                    )),
+                    ElemState::default(),
+                );
+            }
             // 線形弾性解析は `ForceRegime` に依らず弾性 `BeamElement` を用いる
             // （計算根拠 4.9.4「モデルの自動選択」）。材端集中ばね／ファイバーへの
             // 振り分けは非線形解析の [`build_nonlinear_behavior`] のみが行う。
@@ -234,32 +246,44 @@ pub fn build_nonlinear_behavior(
                 ElemState::default(),
             )
         }
-        ElementKind::Beam => match resolve_force_regime(data, model) {
-            ResolvedRegime::ConcentratedSpring => {
-                let elem = crate::beam::BeamElement::new(data, model);
-                // 履歴則を解決（部材個別指定 → 構造種別ごとの既定表。本実装の既定の
-                // 非線形特性は各履歴則の原典に基づく）。RC/SRC/CFT 梁は
-                // 武田型トリリニア、S 梁は標準型（kinematic バイリニア）を材端バネに用いる。
-                let rule = resolve_member_hysteresis(data, model, kind);
-                let (spring_i, spring_j, use_mn) = build_flexural_springs(data, model, rule, basis);
-                let beam = crate::concentrated::ConcentratedSpringBeam::new_one_component(
-                    elem, spring_i, spring_j,
-                );
-                // 端バネの N-M 相関（M_lim = My0·(1-|N|/N許容)）はバイリニア（標準型）
-                // のみ適用（`set_yield` 対応）。武田型等の履歴材料は骨格固定のため対象外。
-                let beam = if use_mn {
-                    let (my0, n_allow) = yield_moment_and_axial(data, model, basis);
-                    beam.with_mn_interaction(my0, n_allow)
-                } else {
-                    beam
-                };
-                (Box::new(beam), ElemState::default())
+        ElementKind::Beam => {
+            // 仕口パネルへ接合する端がある部材は、パネル分のオフセットを剛域へ
+            // 含めた諸元で内側の非線形要素を組み、パネルのせん断変形角と連成させる
+            // デコレータを被せる（線形パスと同じ扱い）。
+            let panel = crate::panel_offset::resolve(data, model);
+            let data = panel.as_ref().map_or(data, |(adjusted, _)| adjusted);
+            let inner: Box<dyn ElementBehavior> = match resolve_force_regime(data, model) {
+                ResolvedRegime::ConcentratedSpring => {
+                    let elem = crate::beam::BeamElement::new(data, model);
+                    // 履歴則を解決（部材個別指定 → 構造種別ごとの既定表。本実装の既定の
+                    // 非線形特性は各履歴則の原典に基づく）。RC/SRC/CFT 梁は
+                    // 武田型トリリニア、S 梁は標準型（kinematic バイリニア）を材端バネに用いる。
+                    let rule = resolve_member_hysteresis(data, model, kind);
+                    let (spring_i, spring_j, use_mn) =
+                        build_flexural_springs(data, model, rule, basis);
+                    let beam = crate::concentrated::ConcentratedSpringBeam::new_one_component(
+                        elem, spring_i, spring_j,
+                    );
+                    // 端バネの N-M 相関（M_lim = My0·(1-|N|/N許容)）はバイリニア（標準型）
+                    // のみ適用（`set_yield` 対応）。武田型等の履歴材料は骨格固定のため対象外。
+                    let beam = if use_mn {
+                        let (my0, n_allow) = yield_moment_and_axial(data, model, basis);
+                        beam.with_mn_interaction(my0, n_allow)
+                    } else {
+                        beam
+                    };
+                    Box::new(beam)
+                }
+                ResolvedRegime::Fiber => Box::new(build_fiber(data, model, basis, kind)),
+            };
+            match panel {
+                Some((_, ends)) => (
+                    Box::new(crate::panel_offset::PanelOffsetMember::new(inner, ends)),
+                    ElemState::default(),
+                ),
+                None => (inner, ElemState::default()),
             }
-            ResolvedRegime::Fiber => (
-                Box::new(build_fiber(data, model, basis, kind)),
-                ElemState::default(),
-            ),
-        },
+        }
         ElementKind::Fiber => (
             Box::new(build_fiber(data, model, basis, kind)),
             ElemState::default(),
@@ -321,7 +345,13 @@ pub fn build_nonlinear_behavior(
                 None => (b, st),
             }
         }
-        // PanelZone / Shell / NodalSpring は現状の挙動（弾性ベース）を踏襲。
+        // 仕口パネルは降伏を考慮する（骨格 pMy = (Ve/κ)・√(1−n²)・Fy/√3 の
+        // バイリニア。軸力比 n は各ステップの柱軸力で更新）。
+        ElementKind::PanelZone => (
+            Box::new(crate::panel::PanelZone::new_nonlinear(data, model)),
+            ElemState::default(),
+        ),
+        // Shell / NodalSpring は現状の挙動（弾性ベース）を踏襲。
         // 節点バネは非線形解析でも常に弾性のまま（スケルトン未対応）。
         _ => build_behavior(data, model),
     }
