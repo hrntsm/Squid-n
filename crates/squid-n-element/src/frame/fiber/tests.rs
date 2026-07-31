@@ -1628,6 +1628,45 @@ fn test_rc_fiber_section_includes_separated_rebar() {
     assert!(max_abs_z > 180.0, "主筋が最外縁近くにない: {max_abs_z}");
 }
 
+/// ファイバー材料は、**未経験状態でひずみ 0 を与えたとき初期弾性係数を返す**
+/// （[`squid_n_material::uniaxial::UniaxialMaterial::trial`] の共通要件）。
+///
+/// `GaussPoint::new` はこの値を断面の初期接線としてキャッシュし、塑性化域考慮
+/// モデルはそこから「弾性状態でヒンジ回転 0」を成立させる基準剛性 `sec_ei` を採る。
+/// 0 を返す材料が 1 つでも混ざると、その断面の弾性曲げ剛性が過小になって
+/// 弾性域でも要素接線剛性が負になる。骨格式は原点で応力 0 になるため、終局域の
+/// ゼロクランプに巻き込まれやすい箇所であり、**実際に使う全材料**を通しで確かめる。
+#[test]
+fn test_all_fiber_materials_return_initial_tangent_at_zero_strain() {
+    use squid_n_core::model::HysteresisModel;
+
+    // コンクリート: 除荷則 3 種 × NewRC 適用内外（fc≤60 / fc>60）の全分岐。
+    // 期待値は各骨格の定義そのもの（NewRC 式の Ec ／ 放物線モデルの 2fc/|εc0|）。
+    for rule in [
+        HysteresisModel::Retrograde,
+        HysteresisModel::OriginOriented,
+        HysteresisModel::KarsanJirsa,
+    ] {
+        for fc in [21.0, 60.0, 80.0] {
+            let expected = if fc <= 60.0 {
+                squid_n_material::newrc::NewRcEnvelope::new(fc).ec
+            } else {
+                2.0 * fc / 0.002
+            };
+            let mut m = concrete_fiber_material(Some(fc), rule);
+            let (s, t) = m.trial(0.0);
+            assert_eq!(s, 0.0, "rule={rule:?} fc={fc}: ひずみ 0 で応力が 0 でない");
+            assert_relative_eq!(t, expected, max_relative = 1e-9);
+        }
+    }
+
+    // 鋼材・主筋。
+    let mut steel = steel_fiber_material(205000.0, Some(345.0));
+    let (s, t) = steel.trial(0.0);
+    assert_eq!(s, 0.0);
+    assert_relative_eq!(t, 205000.0, max_relative = 1e-9);
+}
+
 /// 塑性化域考慮ファイバー梁（RC 断面）は、**弾性域では接線剛性が正定値**である。
 ///
 /// ヒンジ回転 γ は「断面の弾性線を超える塑性超過分」
