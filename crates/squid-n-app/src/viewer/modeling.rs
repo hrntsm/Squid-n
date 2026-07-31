@@ -20,7 +20,12 @@
 //! - **端部接合条件**: ピン（○）・半剛（□）を材端（剛域がある場合は剛域フェイス）に描く。
 //! - **壁エレメント**: 耐震壁は壁エレメント置換モデル（壁柱＋両端ピンの上下剛梁）の
 //!   「エ」状で描く。フレーム内雑壁（周辺部材へ剛性算入）は半透明ポリゴンで区別する。
-//! - **パネルゾーン**: モデル化されていれば接合部中心にマーカーを描く。
+//! - **仕口パネル**: モデル化されていれば、接合部が占める領域（幅＝柱フェース距離×2、
+//!   高さ＝梁フェース距離×2）を梁の構面ごとに四角形で描く。部材の可撓部がどこから
+//!   始まるかを図で確認できる。パネルへ接合する部材は解析側でこのオフセット分が
+//!   剛域へ折り込まれる（`squid_n_element::panel_offset::resolve`）が、モデルに
+//!   保存された剛域長は 0 のままなので剛域のブロックは描かれない。同じ領域を
+//!   パネルの四角形が示すため、可撓部の始まりは図から読み取れる。
 //!
 //! 分類ロジックは要素生成（`squid_n_element::factory`）と同じ判定関数
 //! （[`resolve_force_regime`] / [`wall_side_column_release`] / [`wall_is_seismic`]）を
@@ -28,6 +33,7 @@
 
 use crate::app::App;
 use crate::theme;
+use squid_n_core::ids::NodeId;
 use squid_n_core::model::{ElementData, ElementKind, EndCondition, Model};
 use squid_n_element::factory::{resolve_force_regime, ResolvedRegime};
 use squid_n_element::misc_wall::wall_is_seismic;
@@ -51,7 +57,7 @@ pub(super) enum ModelClass {
     Wall,
     /// フレーム内雑壁（耐震壁不成立。剛性を周辺の柱・梁へ算入する）。
     WallMisc,
-    /// パネルゾーン（柱梁接合部パネル）。
+    /// 仕口パネル（柱梁接合部パネル）。
     Panel,
     /// トラス／軸材（ブレースなど軸剛性のみ）。
     Truss,
@@ -76,7 +82,7 @@ impl ModelClass {
             ModelClass::Wall => Color32::from_rgb(0x25, 0x63, 0xEB),
             // 雑壁＝淡い暖色（周辺部材へ剛性算入。構造壁エレメントと区別）
             ModelClass::WallMisc => theme::SECONDARY_AMBER,
-            // パネルゾーン＝藍
+            // 仕口パネル＝藍
             ModelClass::Panel => Color32::from_rgb(0x6D, 0x28, 0xD9),
             // トラス／軸材＝ティール
             ModelClass::Truss => Color32::from_rgb(0x0D, 0x94, 0x88),
@@ -94,7 +100,7 @@ impl ModelClass {
             ModelClass::SideColumnPin => "側柱(面内両端ピン)",
             ModelClass::Wall => "壁エレメント(エ型)",
             ModelClass::WallMisc => "雑壁(周辺部材へ剛性算入)",
-            ModelClass::Panel => "パネルゾーン",
+            ModelClass::Panel => "仕口パネル",
             ModelClass::Truss => "トラス/軸材",
             ModelClass::Other => "その他(バネ/免震/ダンパー)",
         }
@@ -330,6 +336,9 @@ pub(super) fn draw_modeling(
     // 凡例に載せる情報を収集する。
     let mut present: Vec<ModelClass> = Vec::new();
     let mut sym = Symbols::default();
+    // 仕口パネルの見付き寸法算定で使う隣接マップ。パネルが 1 つも無いモデルでは
+    // 構築しない（遅延初期化）。
+    let mut beam_adjacency: Option<BeamAdjacency> = None;
 
     for elem in &model.elements {
         let class = classify(elem, model, analysis);
@@ -342,7 +351,16 @@ pub(super) fn draw_modeling(
                 draw_wall_element(painter, model, pts, proj, elem, class.color(), &mut sym)
             }
             ModelClass::WallMisc => draw_wall_polygon(painter, pts, elem, class.color(), true),
-            ModelClass::Panel => draw_panel_zone(painter, pts, elem, class.color()),
+            ModelClass::Panel => draw_panel_zone(
+                painter,
+                model,
+                beam_adjacency.get_or_insert_with(|| build_beam_adjacency(model)),
+                pts,
+                coords3,
+                proj,
+                elem,
+                class.color(),
+            ),
             _ => draw_line_member(painter, model, pts, coords3, elem, class, &mut sym),
         }
     }
@@ -573,43 +591,179 @@ fn draw_wall_polygon(
     }
 }
 
-/// パネルゾーン（柱梁接合部パネル）を接合部中心のマーカー（塗りひし形）で描く。
+/// 接合部節点に取り付く部材から求めた、仕口パネルの見付き寸法。
+///
+/// パネルは接合部に設ける 6 面体で、部材はその面（柱フェース・梁フェース）で
+/// 接合する。したがってパネルの外形は、接合部節点から各部材の接合位置までの
+/// 距離＝**柱フェース距離**（`RigidZone::face_i` / `face_j`）で決まる。
+/// 解析側（`panel_offset::resolve`）がオフセットに用いる値と同じものを使うため、
+/// 図に現れる四角形は解析上のパネル寸法と一致する。
+struct PanelExtent {
+    /// 水平材（はり）の材軸方向と、その端の柱フェース距離 [mm]。
+    /// 平行な材はまとめる（左右の梁は同じ構面を作るため）。
+    beam_axes: Vec<([f64; 3], f64)>,
+    /// 鉛直方向の半寸法 [mm]（＝柱端の梁フェース距離の最大）。
+    half_height: f64,
+}
+
+/// 節点 index → その節点に接続する `Beam` 要素の index。
+///
+/// 仕口パネルの見付き寸法は接合部に取り付く部材から求めるため、パネルごとに
+/// 全要素を走査すると描画のたびに O(パネル数 × 要素数) になる。描画は毎フレーム
+/// 走るので、隣接関係は 1 回だけ構築して共有する（剛域の自動算定が
+/// `beam_adjacency` を 1 回だけ作るのと同じ方針）。
+type BeamAdjacency = std::collections::HashMap<usize, Vec<usize>>;
+
+/// 節点 → 接続 `Beam` 要素の隣接マップを構築する。
+fn build_beam_adjacency(model: &Model) -> BeamAdjacency {
+    let mut map: BeamAdjacency = std::collections::HashMap::new();
+    for (ei, e) in model.elements.iter().enumerate() {
+        if !matches!(e.kind, ElementKind::Beam) || e.nodes.len() < 2 {
+            continue;
+        }
+        for n in e.nodes.iter().take(2) {
+            map.entry(n.index()).or_default().push(ei);
+        }
+    }
+    map
+}
+
+/// 接合部節点 `node` に取り付く部材から、パネルの見付き寸法を集める。
+fn panel_extent(model: &Model, adjacency: &BeamAdjacency, node: NodeId) -> PanelExtent {
+    let mut beam_axes: Vec<([f64; 3], f64)> = Vec::new();
+    let mut half_height = 0.0_f64;
+
+    let Some(elems) = adjacency.get(&node.index()) else {
+        return PanelExtent {
+            beam_axes,
+            half_height,
+        };
+    };
+    for &ei in elems {
+        let Some(e) = model.elements.get(ei) else {
+            continue;
+        };
+        // 節点がこの部材のどちらの端かで、参照するフェース距離が変わる。
+        let face = if e.nodes[0] == node {
+            e.rigid_zone.face_i
+        } else if e.nodes[1] == node {
+            e.rigid_zone.face_j
+        } else {
+            continue;
+        };
+        let (Some(p0), Some(p1)) = (
+            model.nodes.get(e.nodes[0].index()).map(|n| n.coord),
+            model.nodes.get(e.nodes[1].index()).map(|n| n.coord),
+        ) else {
+            continue;
+        };
+        let d = [p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2]];
+        let l = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+        if l < 1e-9 {
+            continue;
+        }
+        let axis = [d[0] / l, d[1] / l, d[2] / l];
+        let ez = axis[2].abs();
+        if ez >= 0.8 {
+            half_height = half_height.max(face);
+        } else if ez <= 0.2 {
+            // 平行な梁（左右）は同じ構面なのでまとめ、フェース距離は大きい方を採る。
+            let parallel = beam_axes
+                .iter_mut()
+                .find(|(a, _)| (a[0] * axis[0] + a[1] * axis[1] + a[2] * axis[2]).abs() > 0.99);
+            match parallel {
+                Some((_, w)) => *w = w.max(face),
+                None => beam_axes.push((axis, face)),
+            }
+        }
+    }
+    PanelExtent {
+        beam_axes,
+        half_height,
+    }
+}
+
+/// 仕口パネル（柱梁接合部パネル）を、接合部に設ける四角形として描く。
+///
+/// 梁が取り付く構面ごとに、幅＝柱フェース距離×2・高さ＝梁フェース距離×2 の
+/// 四角形を接合部中心に描く。これは解析でパネルが占める領域（部材がその面で
+/// 接合する範囲）そのもので、部材の可撓部がどこから始まるかを図で確認できる。
+///
+/// フェース距離が求まらない接合部（直交材の断面が未割当など）は四角形を描けない
+/// ため、従来どおり中心のひし形マーカーで位置だけを示す。
+#[allow(clippy::too_many_arguments)]
 fn draw_panel_zone(
     painter: &egui::Painter,
+    model: &Model,
+    adjacency: &BeamAdjacency,
     pts: &[egui::Pos2],
+    coords3: &[[f64; 3]],
+    proj: &Projector,
     elem: &ElementData,
     color: egui::Color32,
 ) {
-    let Some(center) = elem.nodes.first().map(|n| n.index()) else {
+    let Some(node) = elem.nodes.first().copied() else {
         return;
     };
-    if center >= pts.len() {
+    let center = node.index();
+    if center >= pts.len() || center >= coords3.len() {
         return;
     }
     let c = pts[center];
-    // 接続節点へ細線を引き、接合部パネルであることを示す。
-    for n in elem.nodes.iter().skip(1) {
-        let i = n.index();
-        if i < pts.len() {
-            painter.line_segment(
-                [c, lerp(c, pts[i], 0.35)],
-                egui::Stroke::new(1.5_f32, theme::translucent(color, 160)),
-            );
+    let c3 = coords3[center];
+
+    let extent = panel_extent(model, adjacency, node);
+    let mut drawn = false;
+    if extent.half_height > 0.0 {
+        for (axis, half_width) in &extent.beam_axes {
+            if *half_width <= 0.0 {
+                continue;
+            }
+            // 構面内の 4 隅（中心 ± 幅方向 ± 鉛直方向）。
+            let corner = |sw: f64, sh: f64| -> [f64; 3] {
+                [
+                    c3[0] + sw * half_width * axis[0],
+                    c3[1] + sw * half_width * axis[1],
+                    c3[2] + sh * extent.half_height,
+                ]
+            };
+            let quad: Vec<egui::Pos2> = [(-1.0, -1.0), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)]
+                .iter()
+                .map(|&(sw, sh)| proj.project(corner(sw, sh)))
+                .collect();
+            painter.add(egui::Shape::convex_polygon(
+                quad,
+                theme::translucent(color, 70),
+                egui::Stroke::new(1.5_f32, color),
+            ));
+            drawn = true;
         }
     }
-    // 中心にひし形マーカー。
-    const R: f32 = 7.0;
-    let diamond = [
-        egui::pos2(c.x, c.y - R),
-        egui::pos2(c.x + R, c.y),
-        egui::pos2(c.x, c.y + R),
-        egui::pos2(c.x - R, c.y),
-    ];
-    painter.add(egui::Shape::convex_polygon(
-        diamond.to_vec(),
-        theme::translucent(color, 90),
-        egui::Stroke::new(1.5_f32, color),
-    ));
+
+    if !drawn {
+        // 寸法が求まらない場合は位置だけを示す（接続節点へ細線＋ひし形）。
+        for n in elem.nodes.iter().skip(1) {
+            let i = n.index();
+            if i < pts.len() {
+                painter.line_segment(
+                    [c, lerp(c, pts[i], 0.35)],
+                    egui::Stroke::new(1.5_f32, theme::translucent(color, 160)),
+                );
+            }
+        }
+        const R: f32 = 7.0;
+        let diamond = [
+            egui::pos2(c.x, c.y - R),
+            egui::pos2(c.x + R, c.y),
+            egui::pos2(c.x, c.y + R),
+            egui::pos2(c.x - R, c.y),
+        ];
+        painter.add(egui::Shape::convex_polygon(
+            diamond.to_vec(),
+            theme::translucent(color, 90),
+            egui::Stroke::new(1.5_f32, color),
+        ));
+    }
 }
 
 /// モデル化図の凡例をビュー左上に描く（支持条件凡例は左下のため衝突しない）。
@@ -863,6 +1017,166 @@ mod tests {
             classify(&fiber, &model, ModelingAnalysis::Incremental),
             ModelClass::Fiber
         );
+    }
+
+    /// 仕口パネルの見付き寸法は、接合部に取り付く部材のフェース距離から決まる。
+    /// 幅は梁端の柱フェース距離、高さは柱端の梁フェース距離。左右の梁は同じ構面へ
+    /// まとめられ、四角形が二重に描かれない。
+    #[test]
+    fn test_panel_extent_from_face_distances() {
+        let node = |id: u32, coord: [f64; 3]| squid_n_core::model::Node {
+            id: NodeId(id),
+            coord,
+            restraint: squid_n_core::dof::Dof6Mask::FREE,
+            mass: None,
+            story: None,
+            support_spring: None,
+        };
+        let member = |id: u32, n0: u32, n1: u32, rigid: RigidZone| ElementData {
+            id: ElemId(id),
+            kind: ElementKind::Beam,
+            nodes: smallvec![NodeId(n0), NodeId(n1)],
+            section: Some(SectionId(0)),
+            material: Some(MaterialId(0)),
+            local_axis: LocalAxis {
+                ref_vector: [0.0, 1.0, 0.0],
+            },
+            end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+            force_regime: ForceRegime::Auto,
+            rigid_zone: rigid,
+            plastic_zone: None,
+            spring: None,
+        };
+        // 節点 0 が接合部。左右に梁（X 方向）、上下に柱（Z 方向）。
+        let model = Model {
+            nodes: vec![
+                node(0, [0.0, 0.0, 3000.0]),
+                node(1, [-6000.0, 0.0, 3000.0]),
+                node(2, [6000.0, 0.0, 3000.0]),
+                node(3, [0.0, 0.0, 0.0]),
+                node(4, [0.0, 0.0, 6000.0]),
+            ],
+            elements: vec![
+                // 左梁: j 端が接合部 → face_j に柱フェース距離
+                member(
+                    0,
+                    1,
+                    0,
+                    RigidZone {
+                        face_j: 200.0,
+                        ..Default::default()
+                    },
+                ),
+                // 右梁: i 端が接合部
+                member(
+                    1,
+                    0,
+                    2,
+                    RigidZone {
+                        face_i: 200.0,
+                        ..Default::default()
+                    },
+                ),
+                // 下柱: j 端が接合部 → face_j に梁フェース距離
+                member(
+                    2,
+                    3,
+                    0,
+                    RigidZone {
+                        face_j: 300.0,
+                        ..Default::default()
+                    },
+                ),
+                // 上柱: i 端が接合部
+                member(
+                    3,
+                    0,
+                    4,
+                    RigidZone {
+                        face_i: 300.0,
+                        ..Default::default()
+                    },
+                ),
+            ],
+            ..Default::default()
+        };
+
+        let extent = panel_extent(&model, &build_beam_adjacency(&model), NodeId(0));
+        assert!(
+            (extent.half_height - 300.0).abs() < 1e-9,
+            "高さは梁フェース距離"
+        );
+        assert_eq!(
+            extent.beam_axes.len(),
+            1,
+            "左右の梁は同一構面へまとめる: {:?}",
+            extent.beam_axes.iter().map(|(a, _)| *a).collect::<Vec<_>>()
+        );
+        assert!(
+            (extent.beam_axes[0].1 - 200.0).abs() < 1e-9,
+            "幅は柱フェース距離"
+        );
+        // 構面の向きは X 方向。
+        assert!(extent.beam_axes[0].0[0].abs() > 0.99);
+    }
+
+    /// 直交する 2 方向に梁が取り付く接合部は、構面ごとに四角形を描くため
+    /// 見付き寸法も 2 組になる。
+    #[test]
+    fn test_panel_extent_has_one_entry_per_frame_plane() {
+        let node = |id: u32, coord: [f64; 3]| squid_n_core::model::Node {
+            id: NodeId(id),
+            coord,
+            restraint: squid_n_core::dof::Dof6Mask::FREE,
+            mass: None,
+            story: None,
+            support_spring: None,
+        };
+        let member = |id: u32, n0: u32, n1: u32, face_i: f64| ElementData {
+            id: ElemId(id),
+            kind: ElementKind::Beam,
+            nodes: smallvec![NodeId(n0), NodeId(n1)],
+            section: Some(SectionId(0)),
+            material: Some(MaterialId(0)),
+            local_axis: LocalAxis {
+                ref_vector: [0.0, 1.0, 0.0],
+            },
+            end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+            force_regime: ForceRegime::Auto,
+            rigid_zone: RigidZone {
+                face_i,
+                ..Default::default()
+            },
+            plastic_zone: None,
+            spring: None,
+        };
+        let model = Model {
+            nodes: vec![
+                node(0, [0.0, 0.0, 3000.0]),
+                node(1, [6000.0, 0.0, 3000.0]),
+                node(2, [0.0, 6000.0, 3000.0]),
+                node(3, [0.0, 0.0, 0.0]),
+            ],
+            elements: vec![
+                member(0, 0, 1, 200.0), // X 方向の梁
+                member(1, 0, 2, 250.0), // Y 方向の梁
+                member(2, 0, 3, 300.0), // 柱（下向き）
+            ],
+            ..Default::default()
+        };
+        let extent = panel_extent(&model, &build_beam_adjacency(&model), NodeId(0));
+        assert_eq!(extent.beam_axes.len(), 2, "直交 2 構面");
+        assert!((extent.half_height - 300.0).abs() < 1e-9);
+    }
+
+    /// フェース距離が付かない接合部は四角形を描けないため、見付き寸法が 0 になる
+    /// （描画側はひし形マーカーへフォールバックする）。
+    #[test]
+    fn test_panel_extent_without_face_distance() {
+        let model = Model::default();
+        let extent = panel_extent(&model, &build_beam_adjacency(&model), NodeId(0));
+        assert!(extent.beam_axes.is_empty());
+        assert_eq!(extent.half_height, 0.0);
     }
 
     /// ブレース・パネルゾーン・その他要素の分類は解析種別に依らず一定。

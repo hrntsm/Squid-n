@@ -1587,10 +1587,20 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
         check_ratio::draw_check_ratio(&painter, app, &pts);
         // B-3: ホバー詳細（ViewCube ホバー中は除く。通常モードのクリック選択と
         // 同じ最近傍部材探索・8px 閾値で最寄り部材を求め、ヒットしたらツールチップ表示）。
+        //
+        // 節点検定（接合部・仕口パネル・耐震壁）は部材の線とは別に節点位置へ
+        // 描くため、節点を先に判定する（節点マーカーの上にポインタがあるときは
+        // 節点の詳細を優先する。マーカー半径より少し広い閾値で拾う）。
         if cube_hover.is_none() {
             if let Some(hover_pos) = response.hover_pos() {
                 const HOVER_PICK_THRESHOLD: f32 = 8.0;
-                if let Some((id, d)) = pick_nearest_member(&app.model, &pts, hover_pos) {
+                let node_hit = check_ratio::pick_nearest_checked_node(app, &pts, hover_pos)
+                    .filter(|&(_, d)| d <= check_ratio::NODE_HOVER_THRESHOLD);
+                if let Some((idx, _)) = node_hit {
+                    if let Some(node) = app.model.nodes.get(idx) {
+                        check_ratio::show_node_check_tooltip(ui, app, node.id);
+                    }
+                } else if let Some((id, d)) = pick_nearest_member(&app.model, &pts, hover_pos) {
                     if d <= HOVER_PICK_THRESHOLD {
                         check_ratio::show_check_tooltip(ui, app, id);
                     }
@@ -2572,6 +2582,13 @@ fn pick_nearest_member(
     let mut best: Option<(squid_n_core::ids::ElemId, f32)> = None;
     for elem in &model.elements {
         if elem.nodes.len() < 2 {
+            continue;
+        }
+        // 仕口パネルの節点列は「接合部の節点 ＋ 取り付く部材の他端」であり、
+        // 先頭 2 節点を結んでも部材の線にはならない（取り付く部材の 1 本と
+        // 同じ線分になり、実部材の選択・ホバーを横取りする）。線材ではないため
+        // ピック対象から外す。
+        if matches!(elem.kind, squid_n_core::model::ElementKind::PanelZone) {
             continue;
         }
         let n0 = elem.nodes[0].index();

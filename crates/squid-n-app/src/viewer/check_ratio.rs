@@ -162,6 +162,106 @@ pub(super) fn should_label(ratio: f64, label_all: bool) -> bool {
     label_all || ratio >= LABEL_MIN_RATIO
 }
 
+/// 節点検定マーカー（ひし形）の半径 [px]。OK 判定用。
+pub(super) const NODE_MARKER_RADIUS: f32 = 7.0;
+/// 節点検定マーカーの半径 [px]。NG は一回り大きくして目立たせる。
+pub(super) const NODE_MARKER_RADIUS_NG: f32 = 9.0;
+/// 節点検定のホバー判定しきい値 [px]（マーカーより少し広く取る）。
+pub(super) const NODE_HOVER_THRESHOLD: f32 = 10.0;
+
+/// ホバー位置に最も近い「検定結果を持つ節点」を返す（`(節点 index, 距離)`）。
+///
+/// 部材のホバー判定（`pick_nearest_member`）と同じ方針で、しきい値の判定は
+/// 呼び出し側が行う。検定結果を持たない節点は候補にしない。
+///
+/// ホバー判定は毎フレーム走るため、検定を持つ節点は先に集合へ集めてから走査する
+/// （節点ごとに検定リストを線形探索すると O(節点数 × 検定数) になる）。
+pub(super) fn pick_nearest_checked_node(
+    app: &App,
+    pts: &[egui::Pos2],
+    pos: egui::Pos2,
+) -> Option<(usize, f32)> {
+    let results = app.results.as_ref()?;
+    if results.joint_checks.is_empty() {
+        return None;
+    }
+    let checked: std::collections::HashSet<NodeId> =
+        results.joint_checks.iter().map(|j| j.node).collect();
+    let mut best: Option<(usize, f32)> = None;
+    for (idx, node) in app.model.nodes.iter().enumerate() {
+        if idx >= pts.len() || !checked.contains(&node.id) {
+            continue;
+        }
+        let d = pts[idx].distance(pos);
+        if best.is_none_or(|(_, bd)| d < bd) {
+            best = Some((idx, d));
+        }
+    }
+    best
+}
+
+/// 節点 `node` の検定詳細（種別・検定比・判定・根拠）をポインタ位置に表示する。
+pub(super) fn show_node_check_tooltip(ui: &egui::Ui, app: &App, node: NodeId) {
+    let Some(results) = app.results.as_ref() else {
+        return;
+    };
+    let rows: Vec<&crate::app::JointCheck> = results
+        .joint_checks
+        .iter()
+        .filter(|j| j.node == node)
+        .collect();
+    if rows.is_empty() {
+        return;
+    }
+    // `show_tooltip_at_pointer` は egui 0.34 で非推奨だが、ウィジェットに紐付かない
+    // 任意位置への表示という用途に代替が無いため、部材側と同じ方針で使用する。
+    #[allow(deprecated)]
+    egui::show_tooltip_at_pointer(
+        ui.ctx(),
+        ui.layer_id(),
+        egui::Id::new("node_check_tooltip"),
+        |ui| {
+            ui.label(format!("節点 {}", node.0));
+            egui::Grid::new("node_check_tooltip_grid")
+                .striped(true)
+                .show(ui, |ui| {
+                    ui.strong("種別");
+                    ui.strong("検定比");
+                    ui.strong("判定");
+                    ui.strong("根拠");
+                    ui.end_row();
+                    for j in rows {
+                        ui.label(&j.label);
+                        match &j.outcome {
+                            CheckOutcome::Checked(cr) => {
+                                ui.label(format!("{:.2}", cr.ratio()));
+                                if cr.ok() {
+                                    ui.colored_label(theme::GOOD_GREEN, "OK");
+                                } else {
+                                    ui.colored_label(theme::PARETO_RED, "NG");
+                                }
+                                let mut detail = cr.basis.clone();
+                                if let Some(c) = cr.components.first() {
+                                    if !c.detail.is_empty() {
+                                        detail.push_str(" / ");
+                                        detail.push_str(&c.detail);
+                                    }
+                                }
+                                ui.label(detail);
+                            }
+                            CheckOutcome::Skipped { reason } => {
+                                ui.label("-");
+                                ui.colored_label(theme::GRAY_600, "検定不能");
+                                ui.label(reason);
+                            }
+                        }
+                        ui.end_row();
+                    }
+                });
+        },
+    );
+}
+
 /// 部材中点ラベルの文字列を組み立てる（純粋関数）。支配式が分かる場合
 /// （フィルタ=最大かつ components が非空）は「1.13 せん断」のように併記し、
 /// それ以外（フィルタ=特定式、または components が空の部材）は数値のみ。
@@ -412,8 +512,12 @@ pub(super) fn draw_check_ratio(painter: &egui::Painter, app: &App, pts: &[egui::
     // NodeId の内部値はそのまま配列添字とは限らないため、`app.model.nodes` を
     // 走査してインデックスを求め（`enumerate` の添字が実際の `pts` の添字）、
     // `node.id` と突き合わせてから `pts` を引く。
+    //
+    // 節点には支点記号・ヒンジ等の他の記号も重なるため、部材の線とは別形状
+    // （ひし形）で描いて識別できるようにする。NG は一回り大きくし、輪郭を
+    // 背景色で縁取って他の記号に埋もれないようにする。
     for (idx, node) in app.model.nodes.iter().enumerate() {
-        let Some(&(ratio, _ok)) = node_ratios.get(&node.id) else {
+        let Some(&(ratio, ok)) = node_ratios.get(&node.id) else {
             continue;
         };
         if idx >= pts.len() {
@@ -421,8 +525,38 @@ pub(super) fn draw_check_ratio(painter: &egui::Painter, app: &App, pts: &[egui::
         }
         let p = pts[idx];
         let color = theme::check_ratio_color(ratio);
-        painter.circle_filled(p, 5.0, color);
-        painter.circle_stroke(p, 5.0, egui::Stroke::new(1.0_f32, theme::VIEW_BG));
+        let r = if ok {
+            NODE_MARKER_RADIUS
+        } else {
+            NODE_MARKER_RADIUS_NG
+        };
+        let diamond = vec![
+            egui::pos2(p.x, p.y - r),
+            egui::pos2(p.x + r, p.y),
+            egui::pos2(p.x, p.y + r),
+            egui::pos2(p.x - r, p.y),
+        ];
+        painter.add(egui::Shape::convex_polygon(
+            diamond,
+            color,
+            egui::Stroke::new(1.5_f32, theme::VIEW_BG),
+        ));
+        // 「全ラベル表示」ON、または NG の節点は検定比を数値で添える
+        // （部材の中央ラベルと同じ規約）。
+        if label_all || !ok {
+            let (font_size, label_color) = if ok {
+                (11.0, theme::GRAY_700)
+            } else {
+                (12.0, theme::PARETO_RED)
+            };
+            painter.text(
+                egui::pos2(p.x, p.y - r - 1.0),
+                egui::Align2::CENTER_BOTTOM,
+                format!("{:.2}", ratio),
+                egui::FontId::proportional(font_size),
+                label_color,
+            );
+        }
     }
 
     draw_legend(
@@ -657,6 +791,22 @@ fn draw_legend(
         theme::GRAY_600,
     );
     y = note_rect.max.y + 4.0;
+
+    // 節点検定（接合部・仕口パネル・耐震壁）の記号説明。部材の線と区別できるよう
+    // ひし形で描くため、凡例でもその旨を示す。
+    if !node_ratios.is_empty() {
+        let node_note = painter.text(
+            egui::pos2(x0, y),
+            egui::Align2::LEFT_TOP,
+            format!(
+                "◆ 節点検定 {} 箇所（接合部・仕口パネル・耐震壁）　ホバーで種別と根拠を表示",
+                node_ratios.len()
+            ),
+            egui::FontId::proportional(11.0),
+            theme::GRAY_600,
+        );
+        y = node_note.max.y + 4.0;
+    }
 
     if app.staleness.design_stale {
         painter.text(
@@ -1103,5 +1253,78 @@ mod tests {
         let (kinds, rows) = build_tooltip_rows(&[]);
         assert!(kinds.is_empty());
         assert!(rows.is_empty());
+    }
+
+    // ── 節点検定のホバー判定 ────────────────────────────────────
+
+    /// 節点検定を持つ節点だけがホバー候補になり、最も近い節点が返る。
+    /// 検定結果を持たない節点は、より近くても候補にならない。
+    #[test]
+    fn pick_nearest_checked_node_ignores_unchecked_nodes() {
+        use crate::app::JointCheck;
+        use squid_n_core::model::Node;
+
+        let mut app = App::default();
+        let node = |id: u32, x: f64| Node {
+            id: NodeId(id),
+            coord: [x, 0.0, 0.0],
+            restraint: squid_n_core::dof::Dof6Mask::FREE,
+            mass: None,
+            story: None,
+            support_spring: None,
+        };
+        app.model.nodes = vec![node(0, 0.0), node(1, 1000.0), node(2, 2000.0)];
+
+        let mut results = crate::app::ResultsBundle::default();
+        // 節点 0 と 2 のみ検定結果を持つ。
+        for id in [0u32, 2] {
+            results.joint_checks.push(JointCheck {
+                node: NodeId(id),
+                label: "パネルゾーン(S)".into(),
+                outcome: checked(0.5, vec![]),
+            });
+        }
+        app.results = Some(results);
+
+        let pts = [
+            egui::pos2(0.0, 0.0),
+            egui::pos2(10.0, 0.0),
+            egui::pos2(100.0, 0.0),
+        ];
+
+        // 節点 1（検定なし）のすぐ近くでも、候補になるのは検定を持つ節点 0。
+        let hit = pick_nearest_checked_node(&app, &pts, egui::pos2(11.0, 0.0)).expect("ヒット");
+        assert_eq!(hit.0, 0, "検定を持たない節点は候補にしない");
+
+        // 節点 2 の近くではその節点が返る。
+        let hit = pick_nearest_checked_node(&app, &pts, egui::pos2(98.0, 0.0)).expect("ヒット");
+        assert_eq!(hit.0, 2);
+        assert!(hit.1 <= NODE_HOVER_THRESHOLD);
+    }
+
+    /// 検定結果がまったく無ければホバー候補も無い。
+    #[test]
+    fn pick_nearest_checked_node_without_results() {
+        let app = App::default();
+        assert!(
+            pick_nearest_checked_node(&app, &[egui::pos2(0.0, 0.0)], egui::pos2(0.0, 0.0))
+                .is_none()
+        );
+    }
+
+    /// マーカー半径とホバー判定しきい値の大小関係を保つ。
+    ///
+    /// NG のマーカーは OK より大きく描き（他の節点記号に埋もれないようにする）、
+    /// ホバー判定はマーカーより広く取る（マーカーの縁でも詳細を出せるようにする）。
+    /// 値を調整したときに関係が崩れていないかを押さえる。
+    #[test]
+    fn node_marker_radii_keep_ordering() {
+        let (ok, ng, hover) = (
+            NODE_MARKER_RADIUS,
+            NODE_MARKER_RADIUS_NG,
+            NODE_HOVER_THRESHOLD,
+        );
+        assert!(ng > ok, "NG のマーカーは OK より大きい: {ng} vs {ok}");
+        assert!(hover >= ng, "ホバー判定はマーカーより広い: {hover} vs {ng}");
     }
 }

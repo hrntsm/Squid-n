@@ -270,7 +270,30 @@ impl<'m> Analysis<'m> {
         StaticOnce {
             disp: vec![[0.0; 6]; self.model.nodes.len()],
             member_forces: Vec::new(),
+            panel_moments: Vec::new(),
         }
+    }
+
+    /// 仕口パネルのせん断モーメント `{MSX, MSY}` を接合部の節点ごとに回収する。
+    /// パネル要素が無ければ空。
+    fn recover_panel_moments(&self, u_free: &[f64]) -> Vec<(squid_n_core::ids::NodeId, [f64; 2])> {
+        let mut out = Vec::new();
+        for (elem, (behavior, gdofs)) in self.model.elements.iter().zip(self.behavior_cache.iter())
+        {
+            let Some(&node) = elem.nodes.first() else {
+                continue;
+            };
+            let mut u_elem = vec![0.0; gdofs.len()];
+            for (k, &g) in gdofs.iter().enumerate() {
+                if g != usize::MAX && g < u_free.len() {
+                    u_elem[k] = u_free[g];
+                }
+            }
+            if let Some(m) = behavior.panel_moments_from(&u_elem) {
+                out.push((node, m));
+            }
+        }
+        out
     }
 
     /// 自由 DOF 空間の荷重ベクトルを縮約 → 解 → 展開し、
@@ -292,6 +315,7 @@ impl<'m> Analysis<'m> {
         Ok(StaticOnce {
             disp: self.expand_disp(&u_free),
             member_forces,
+            panel_moments: self.recover_panel_moments(&u_free),
         })
     }
 

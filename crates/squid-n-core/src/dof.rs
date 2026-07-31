@@ -12,6 +12,17 @@ pub enum Dof {
 
 pub const DOF_PER_NODE: usize = 6;
 
+/// 仕口パネルが設けられた節点が追加で持つ自由度の数。
+///
+/// せん断変形角 `γX`・`γY`（基準座標系。X'-Z' 平面と Y'-Z' 平面のパネルせん断
+/// 変形角）の 2 個。標準の 6 自由度とは別枠で、[`DofMap`] のグローバル自由度
+/// 空間の末尾（`節点数 × DOF_PER_NODE` の後ろ）へ払い出す。
+///
+/// この置き方にすることで、`節点番号 × DOF_PER_NODE + 成分` でグローバル自由度を
+/// 求める既存コードは追加自由度に一切触れず、パネルを持たないモデルでは追加
+/// 自由度が 1 つも払い出されないため剛性行列・独立自由度数が従来と完全に一致する。
+pub const PANEL_DOF_PER_NODE: usize = 2;
+
 #[derive(Clone, Copy, Default, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Dof6Mask(pub u8);
 
@@ -80,11 +91,38 @@ pub fn structural_nodes(model: &Model) -> Vec<bool> {
     structural
 }
 
+/// 仕口パネル（`ElementKind::PanelZone`）が設けられた節点を、節点 index ごとの
+/// 真偽で返す。パネル要素の先頭節点（`nodes[0]`）が接合部の節点である。
+///
+/// 該当する節点は [`PANEL_DOF_PER_NODE`] 個の追加自由度（せん断変形角）を持つ。
+pub fn panel_zone_nodes(model: &Model) -> Vec<bool> {
+    let mut is_panel = vec![false; model.nodes.len()];
+    for e in &model.elements {
+        if !matches!(e.kind, crate::model::ElementKind::PanelZone) {
+            continue;
+        }
+        if let Some(n) = e.nodes.first() {
+            if let Some(slot) = is_panel.get_mut(n.index()) {
+                *slot = true;
+            }
+        }
+    }
+    is_panel
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct DofMap {
     active_of: Vec<Option<u32>>,
     global_of: Vec<GlobalDof>,
     n_active: usize,
+    /// 節点 index → 仕口パネル自由度のスロット番号。パネルを持たない節点は `None`。
+    /// スロット `s` の `d` 番目のグローバル自由度は
+    /// `n_node_global + s * PANEL_DOF_PER_NODE + d`。
+    panel_slot_of: Vec<Option<u32>>,
+    /// スロット番号 → 節点 index（[`Self::panel_slot_of`] の逆写像）。
+    panel_node_of: Vec<u32>,
+    /// 標準自由度（節点 × 6）の総数。仕口パネル自由度のグローバル番号はここから始まる。
+    n_node_global: usize,
 }
 
 impl DofMap {
@@ -94,8 +132,23 @@ impl DofMap {
         // 無視される。荷重は同期側で主架構へ変換する規約）。判定規則は
         // [`structural_nodes`] を参照。
         let structural = structural_nodes(model);
+        let is_panel = panel_zone_nodes(model);
 
-        let n_global = model.nodes.len() * DOF_PER_NODE;
+        // 仕口パネル自由度は標準自由度の後ろへ連続して並べる。パネルが 1 つも
+        // 無ければ `n_panel_slots == 0` となり、以降は従来と完全に同一の写像になる。
+        let n_node_global = model.nodes.len() * DOF_PER_NODE;
+        let mut panel_slot_of = vec![None; model.nodes.len()];
+        let mut panel_node_of = Vec::new();
+        for (ni, &p) in is_panel.iter().enumerate() {
+            // 構造節点でない節点にパネルは付かない（パネル要素が接続していれば
+            // その節点は必ず構造節点になるため、通常この分岐は成立しない）。
+            if p && structural[ni] {
+                panel_slot_of[ni] = Some(panel_node_of.len() as u32);
+                panel_node_of.push(ni as u32);
+            }
+        }
+
+        let n_global = n_node_global + panel_node_of.len() * PANEL_DOF_PER_NODE;
         let mut active_of = vec![None; n_global];
         let mut global_of = Vec::new();
         let mut counter = 0u32;
@@ -120,10 +173,26 @@ impl DofMap {
                 }
             }
         }
+        // 仕口パネル自由度は `Node::restraint`（6 成分のマスク）の対象外であり、
+        // 拘束する手段を持たない。パネル要素が必ず剛性 `Kxp`・`Kyp` を与えるため
+        // 零剛性にはならず、常に活性としてよい。
+        for (ni, slot) in panel_slot_of.iter().enumerate() {
+            let Some(s) = slot else { continue };
+            let _ = ni;
+            for d in 0..PANEL_DOF_PER_NODE {
+                let g = n_node_global + *s as usize * PANEL_DOF_PER_NODE + d;
+                active_of[g] = Some(counter);
+                global_of.push(g);
+                counter += 1;
+            }
+        }
         DofMap {
             active_of,
             global_of,
             n_active: counter as usize,
+            panel_slot_of,
+            panel_node_of,
+            n_node_global,
         }
     }
 
@@ -131,10 +200,43 @@ impl DofMap {
         self.n_active
     }
     pub fn active(&self, g: GlobalDof) -> Option<u32> {
-        self.active_of[g]
+        self.active_of.get(g).copied().flatten()
     }
     pub fn global(&self, a: u32) -> GlobalDof {
         self.global_of[a as usize]
+    }
+
+    /// 節点 `node_idx` の仕口パネル自由度（`d = 0` が γX、`1` が γY）の独立自由度番号。
+    /// パネルを持たない節点・範囲外は `None`。
+    pub fn panel_dof(&self, node_idx: usize, d: usize) -> Option<u32> {
+        let slot = (*self.panel_slot_of.get(node_idx)?)? as usize;
+        if d >= PANEL_DOF_PER_NODE {
+            return None;
+        }
+        self.active(self.n_node_global + slot * PANEL_DOF_PER_NODE + d)
+    }
+
+    /// 節点 `node_idx` に仕口パネル自由度が払い出されているか。
+    pub fn has_panel_dof(&self, node_idx: usize) -> bool {
+        self.panel_slot_of
+            .get(node_idx)
+            .is_some_and(|s| s.is_some())
+    }
+
+    /// グローバル自由度 `g` が標準自由度（節点 × 6）の範囲にあるか。
+    /// `false` は仕口パネルの追加自由度を指す（`g / DOF_PER_NODE` で節点番号へ
+    /// 換算してはならない）。
+    pub fn is_node_dof(&self, g: GlobalDof) -> bool {
+        g < self.n_node_global
+    }
+
+    /// グローバル自由度 `g` が仕口パネルの追加自由度であれば
+    /// `(節点 index, 成分（0 = γX, 1 = γY）)` を返す。標準自由度・範囲外は `None`。
+    pub fn panel_dof_ref(&self, g: GlobalDof) -> Option<(usize, usize)> {
+        let off = g.checked_sub(self.n_node_global)?;
+        let slot = off / PANEL_DOF_PER_NODE;
+        let d = off % PANEL_DOF_PER_NODE;
+        Some((*self.panel_node_of.get(slot)? as usize, d))
     }
 }
 
@@ -213,6 +315,65 @@ mod tests {
         let model = make_model_with_restraints(&[Dof6Mask::FREE; 3]);
         let map = DofMap::build(&model);
         assert_eq!(map.n_active(), 18);
+    }
+
+    /// 仕口パネルが 1 つも無いモデルでは追加自由度が払い出されず、独立自由度数・
+    /// 写像とも従来（節点 × 6）と完全に一致する（既存モデルの回帰防止）。
+    #[test]
+    fn test_no_panel_keeps_dof_map_identical() {
+        let model = make_model_with_restraints(&[Dof6Mask::FREE; 3]);
+        let map = DofMap::build(&model);
+        assert_eq!(map.n_active(), 3 * DOF_PER_NODE);
+        for ni in 0..3 {
+            assert!(!map.has_panel_dof(ni));
+            assert!(map.panel_dof(ni, 0).is_none());
+        }
+        // 全独立自由度が標準自由度（節点 × 6）の範囲に収まる。
+        for a in 0..map.n_active() {
+            assert!(map.is_node_dof(map.global(a as u32)));
+        }
+    }
+
+    /// 仕口パネル要素がある節点には γX・γY の 2 自由度が追加され、標準自由度の
+    /// 後ろへ連続して並ぶ。標準自由度側の番号は従来と変わらない。
+    #[test]
+    fn test_panel_node_gets_two_extra_dofs() {
+        let mut model = make_model_with_restraints(&[Dof6Mask::FREE; 3]);
+        let base = DofMap::build(&model).n_active();
+
+        // 節点 1 に仕口パネルを設ける（先頭節点が接合部の節点）。
+        model.elements.push(ElementData {
+            id: ElemId(100),
+            kind: ElementKind::PanelZone,
+            nodes: [NodeId(1), NodeId(0), NodeId(2)].into_iter().collect(),
+            section: None,
+            material: None,
+            local_axis: LocalAxis {
+                ref_vector: [0.0, 0.0, 1.0],
+            },
+            end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+            force_regime: ForceRegime::Auto,
+            rigid_zone: Default::default(),
+            plastic_zone: None,
+            spring: None,
+        });
+
+        let map = DofMap::build(&model);
+        assert_eq!(map.n_active(), base + PANEL_DOF_PER_NODE);
+        assert!(map.has_panel_dof(1));
+        assert!(!map.has_panel_dof(0) && !map.has_panel_dof(2));
+
+        // パネル自由度は標準自由度の後ろ（＝既存の番号を押し出さない）。
+        let gx = map.panel_dof(1, 0).expect("γX");
+        let gy = map.panel_dof(1, 1).expect("γY");
+        assert_eq!(gy, gx + 1);
+        assert!(gx as usize >= base);
+        assert!(map.panel_dof(1, 2).is_none(), "成分は 2 個まで");
+
+        // 逆写像で節点・成分が引ける（増分解析の特異診断が使う）。
+        assert!(!map.is_node_dof(map.global(gx)));
+        assert_eq!(map.panel_dof_ref(map.global(gx)), Some((1, 0)));
+        assert_eq!(map.panel_dof_ref(map.global(gy)), Some((1, 1)));
     }
 
     #[test]

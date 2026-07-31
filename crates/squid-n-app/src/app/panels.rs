@@ -680,6 +680,37 @@ impl App {
                      床小梁の格子解析は、交差する小梁が両端を大梁にねじれ止めされた\
                      一本材であるため、この設定によらず常にねじり剛性を保持します。",
                 );
+
+                ui.add_space(6.0);
+                use squid_n_core::model::PanelZoneMode;
+                let mut panel = self.model.panel_zone.is_enabled();
+                let resp = ui
+                    .checkbox(&mut panel, "仕口パネルをモデル化（柱梁接合部）")
+                    .on_hover_text(
+                        "S 造（CFT を除く）の柱梁接合部に仕口パネルを設け、接合部の\
+                     せん断変形を解析へ反映します。パネルを設けた節点はせん断変形角\
+                     γX・γY の 2 自由度を追加で持ち、取り付く部材はパネル寸法分だけ\
+                     離れた位置（柱フェース・梁フェース）で接合します。\
+                     RC・SRC・CFT の接合部は対象外で、従来どおり剛域で有限寸法を評価します。\
+                     生成されたパネルは準備計算の結果タブで確認できます。",
+                    );
+                if resp.changed() {
+                    let mode = if panel {
+                        PanelZoneMode::Model
+                    } else {
+                        PanelZoneMode::None
+                    };
+                    self.undo.run(
+                        &mut self.model,
+                        Box::new(squid_n_edit::SetPanelZoneMode { mode }),
+                    );
+                    self.staleness.mark_edited();
+                }
+                ui.colored_label(
+                    crate::theme::GRAY_600,
+                    "OFF にすると接合部を剛節点として扱います（パネルのせん断変形を\
+                     考慮しません）。柱梁接合部の断面算定は、この設定によらず常に行います。",
+                );
             });
     }
 

@@ -119,7 +119,7 @@ pub fn collect_joint_checks(
     member_forces: &[(ElemId, ForcesAt<'_>)],
     term: LoadTerm,
 ) -> Vec<(NodeId, String, CheckResult)> {
-    collect_joint_checks_with_long(model, member_forces, None, term)
+    collect_joint_checks_with_long(model, member_forces, None, &[], term)
 }
 
 /// [`collect_joint_checks`] の長期内力付き版。
@@ -129,10 +129,18 @@ pub fn collect_joint_checks(
 /// （NE = 当該ケースの軸力 − NL。冷間成形角形鋼管設計・施工マニュアルの
 /// Ds/Co = 1.5 割増）で算定する。None の場合は当該ケースの
 /// 軸力をそのまま用いる（従来動作）。地震時組合せの結果を渡すことを想定する。
+///
+/// `panel_moments` には、仕口パネルをモデル化した接合部で解析が出力した
+/// せん断モーメント `{MSX, MSY}` [N·mm] を節点ごとに渡す。該当する節点の
+/// S 造パネルゾーン検定は、この値の絶対値の大きい方を設計用パネルモーメント
+/// `pM` に用いる（節点まわりの釣り合いが解析上厳密に満たされた値）。空スライス、
+/// または該当節点が含まれない場合は、従来どおり梁端モーメント・柱せん断から
+/// `pM` を組み立てる。**検定の実施自体はパネルのモデル化の有無に依らない**。
 pub fn collect_joint_checks_with_long(
     model: &Model,
     member_forces: &[(ElemId, ForcesAt<'_>)],
     long_member_forces: Option<&[(ElemId, ForcesAt<'_>)]>,
+    panel_moments: &[(NodeId, [f64; 2])],
     term: LoadTerm,
 ) -> Vec<(NodeId, String, CheckResult)> {
     let mut out = Vec::new();
@@ -195,8 +203,18 @@ pub fn collect_joint_checks_with_long(
             continue;
         }
 
+        // 仕口パネルをモデル化した接合部は、解析出力のせん断モーメントのうち
+        // 絶対値の大きい方（支配的な面）を設計用パネルモーメントに用いる。
+        let panel_moment = panel_moments.iter().find(|(n, _)| *n == nid).map(|(_, m)| {
+            if m[0].abs() >= m[1].abs() {
+                m[0]
+            } else {
+                m[1]
+            }
+        });
+
         rc_joint::check_rc_joint(&cols, &beams, nid, &mut out);
-        steel_panel::check_s_panel(&cols, &beams, nid, &mut out);
+        steel_panel::check_s_panel(&cols, &beams, nid, panel_moment, &mut out);
         src_panel::check_src_panel(&cols, &beams, nid, term, &mut out);
         cold_formed::check_cold_formed(&cols, &beams, nid, long_member_forces, &mut out);
     }

@@ -398,6 +398,18 @@ impl App {
             &mut self.model,
             &squid_n_element::beam::RigidZoneRule::default(),
         );
+        self.apply_panel_zones_for_analysis();
+    }
+
+    /// 解析前に仕口パネル要素を再生成してモデルへ反映する。
+    ///
+    /// `Model::panel_zone` が有効なら S 造（CFT を除く）の柱梁接合節点へパネルを
+    /// 設け、無効なら既存のパネルを取り除く。剛域の自動算定と同じく冪等なので、
+    /// 各解析エントリの先頭で毎回呼んでよい。パネル分のオフセットを剛域へ折り込む
+    /// 都合上、剛域の自動算定より**後**に呼ぶ必要がある
+    /// （`panel_offset::resolve` が柱フェース距離 `RigidZone::face_i/j` を参照する）。
+    fn apply_panel_zones_for_analysis(&mut self) {
+        self.generated_panels = squid_n_element::panel_gen::apply_auto_panel_zones(&mut self.model);
     }
 
     /// `analysis_cfg.threads` を並列度設定（プロセスグローバル）へ反映する。
@@ -455,10 +467,12 @@ impl App {
         match res {
             Ok(res) => {
                 let member_forces = res.member_forces.clone();
+                let panel_moments = res.panel_moments.clone();
                 let mut bundle = self.results.take().unwrap_or_default();
                 bundle.statics.retain(|(id, _)| *id != key);
                 bundle.statics.push((key, res));
                 bundle.member_forces = member_forces;
+                bundle.panel_moments = panel_moments;
                 self.results = Some(bundle);
                 self.last_static = Some(StaticKey::Case(key));
                 self.staleness.mark_fresh();
@@ -623,6 +637,7 @@ impl App {
         match res {
             Ok(res) => {
                 let member_forces = res.member_forces.clone();
+                let panel_moments = res.panel_moments.clone();
                 let mut bundle = self.results.take().unwrap_or_default();
                 // StaticKey::Combo は bundle.combos 上の位置を指す規約
                 // （current_static・ナビゲータと共有）。再実行時は既存位置を
@@ -638,6 +653,7 @@ impl App {
                     }
                 };
                 bundle.member_forces = member_forces;
+                bundle.panel_moments = panel_moments;
                 self.results = Some(bundle);
                 self.last_static = Some(StaticKey::Combo(pos));
                 self.staleness.mark_fresh();
@@ -907,16 +923,20 @@ impl App {
         };
         // 応力図・断面検定が参照する member_forces は表示対象の結果へ合わせる
         // （`select_displayed_result` と同じ規約）。
-        let member_forces = match display {
-            StaticKey::Combo(pos) => bundle.combos.get(pos).map(|(_, s)| s.member_forces.clone()),
+        let displayed = match display {
+            StaticKey::Combo(pos) => bundle
+                .combos
+                .get(pos)
+                .map(|(_, s)| (s.member_forces.clone(), s.panel_moments.clone())),
             StaticKey::Case(key) => bundle
                 .statics
                 .iter()
                 .find(|(k, _)| *k == key)
-                .map(|(_, s)| s.member_forces.clone()),
+                .map(|(_, s)| (s.member_forces.clone(), s.panel_moments.clone())),
         };
-        if let Some(member_forces) = member_forces {
+        if let Some((member_forces, panel_moments)) = displayed {
             bundle.member_forces = member_forces;
+            bundle.panel_moments = panel_moments;
         }
         self.results = Some(bundle);
         self.last_static = Some(display);
@@ -1011,19 +1031,23 @@ impl App {
                 .statics
                 .iter()
                 .find(|(k, _)| *k == case_key)
-                .map(|(_, s)| (s.member_forces.clone(), None)),
-            StaticKey::Combo(idx) => bundle
-                .combos
-                .get(idx)
-                .map(|(name, s)| (s.member_forces.clone(), Some(name.clone()))),
+                .map(|(_, s)| (s.member_forces.clone(), s.panel_moments.clone(), None)),
+            StaticKey::Combo(idx) => bundle.combos.get(idx).map(|(name, s)| {
+                (
+                    s.member_forces.clone(),
+                    s.panel_moments.clone(),
+                    Some(name.clone()),
+                )
+            }),
         });
-        let Some((member_forces, combo_name)) = resolved else {
+        let Some((member_forces, panel_moments, combo_name)) = resolved else {
             return;
         };
         self.nav.focus_result = Some(key);
         self.last_static = Some(key);
         if let Some(bundle) = self.results.as_mut() {
             bundle.member_forces = member_forces;
+            bundle.panel_moments = panel_moments;
         }
         // 組合せは名前から長期/短期を再判定する（単一ケースは現在の区分を維持）。
         if let Some(name) = combo_name {
@@ -2839,10 +2863,14 @@ impl App {
             });
         // 節点単位の検定は退化ケースを持たない（該当なしの節点はそもそも push
         // されない）ため、常に Checked として扱う。
+        // 仕口パネルをモデル化した接合部は、解析出力のせん断モーメントを設計用
+        // パネルモーメントに用いる（モデル化していない接合部は従来の手組み式）。
+        let panel_moments = results.panel_moments.clone();
         let joint_checks = squid_n_design_jp::joint_wiring::collect_joint_checks_with_long(
             &self.model,
             &mf_slices,
             long_slices.as_deref(),
+            &panel_moments,
             self.design_term,
         )
         .into_iter()

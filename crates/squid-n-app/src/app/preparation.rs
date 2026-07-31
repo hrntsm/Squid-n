@@ -73,6 +73,13 @@ pub struct PreparationResult {
     /// ねじり解放の設定が有効か（`Model::beam_torsion == ReleaseIEnd`）。
     /// false のときは全部材でねじり剛性を保持している。
     pub torsion_release_enabled: bool,
+    /// 生成した仕口パネル（節点 index の昇順）。設定が OFF のときは空。
+    #[serde(default)]
+    pub panels: Vec<PrepPanelRow>,
+    /// 仕口パネルのモデル化が有効か（`Model::panel_zone` が有効）。
+    /// false のときは接合部を剛節点として扱っている。
+    #[serde(default)]
+    pub panel_modeling_enabled: bool,
     /// 荷重ケースの集計（`model.load_cases` と同順）。
     pub load_cases: Vec<PrepLoadCaseRow>,
     /// モデル整合性チェックのエラー件数。
@@ -230,6 +237,26 @@ pub struct PrepTorsionSkipRow {
     pub kind: squid_n_design_jp::MemberKind,
     /// 判定に落ちた節点（この節点の材軸まわり回転を拘束するものが無い）。
     pub node: NodeId,
+}
+
+/// 生成した仕口パネル 1 箇所分。
+///
+/// S 造（CFT を除く）の柱梁接合節点に設けたパネルの寸法とせん断剛性を示す。
+/// `Model::panel_zone` が無効なとき、および RC・SRC 接合部では空になる。
+#[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
+pub struct PrepPanelRow {
+    /// 接合部の節点。
+    pub node: NodeId,
+    /// 柱せい方向のパネル寸法 dc [mm]。
+    pub dc: f64,
+    /// 梁フランジ板厚中心間距離 db [mm]。
+    pub db: f64,
+    /// パネル板厚 tp [mm]。
+    pub tp: f64,
+    /// 実効体積 Ve [mm³]。
+    pub ve: f64,
+    /// パネルせん断剛性 Kxp = Kyp = G・Ve [N·mm/rad]。
+    pub k_panel: f64,
 }
 
 /// 剛域の算定結果 1 部材分。
@@ -467,6 +494,19 @@ impl App {
             torsion_skipped,
             torsion_release_enabled: self.model.beam_torsion
                 == squid_n_core::model::BeamTorsionMode::ReleaseIEnd,
+            panels: self
+                .generated_panels
+                .iter()
+                .map(|p| PrepPanelRow {
+                    node: p.node,
+                    dc: p.dc,
+                    db: p.db,
+                    tp: p.tp,
+                    ve: p.ve,
+                    k_panel: p.k_panel,
+                })
+                .collect(),
+            panel_modeling_enabled: self.model.panel_zone.is_enabled(),
             load_cases: self.build_prep_load_cases(),
             diag_errors,
             diag_warnings,

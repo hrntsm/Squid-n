@@ -25,8 +25,10 @@ pub mod shell;
 // 階層化後も従来のモジュールパス（例: `squid_n_element::beam` や
 // クレート内部の `crate::behavior`）を維持するための再エクスポート。
 pub use common::{behavior, transform};
-pub use frame::{beam, concentrated, fiber, member_load, multi_spring, rigid_arm, truss};
-pub use springs::{damper, isolator, panel, spring};
+pub use frame::{
+    beam, concentrated, fiber, member_load, multi_spring, panel_offset, rigid_arm, truss,
+};
+pub use springs::{damper, isolator, panel, panel_gen, spring};
 pub use wall::{misc_wall, side_column, wall_panel};
 
 pub use behavior::*;

@@ -62,6 +62,9 @@ impl ConstructionResult {
         StaticOnce {
             disp: self.disp.clone(),
             member_forces: self.member_forces.clone(),
+            // 施工段階解析はステージごとの積み上げ結果で、仕口パネルの
+            // せん断モーメントは保持しない。
+            panel_moments: Vec::new(),
         }
     }
 }

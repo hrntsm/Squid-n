@@ -23,7 +23,8 @@ use crate::constraint::Reducer;
 use squid_n_core::dof::{DofMap, DOF_PER_NODE};
 use squid_n_core::model::Model;
 
-/// 全体自由度番号（節点 index × 6 + 成分）から成分名を返す。
+/// 自由度の成分名を返す。`d` は標準の 6 成分（0..6 = Ux..Rz）に加え、
+/// 仕口パネルのせん断変形角 γX・γY（6・7）を取りうる。
 fn dof_label(d: usize) -> &'static str {
     match d {
         0 => "Ux（X 方向移動）",
@@ -31,11 +32,13 @@ fn dof_label(d: usize) -> &'static str {
         2 => "Uz（Z 方向移動）",
         3 => "Rx（X 軸まわり回転）",
         4 => "Ry（Y 軸まわり回転）",
-        _ => "Rz（Z 軸まわり回転）",
+        5 => "Rz（Z 軸まわり回転）",
+        6 => "γX（仕口パネルのせん断変形角・X'-Z' 面）",
+        _ => "γY（仕口パネルのせん断変形角・Y'-Z' 面）",
     }
 }
 
-/// 自由度の識別子（節点 ID, 成分 index（0..6 = Ux..Rz））。
+/// 自由度の識別子（節点 ID, 成分 index（0..6 = Ux..Rz、6..8 = 仕口パネルの γX・γY））。
 type DofRef = (u32, usize);
 
 /// 接線剛性 `k_red`（拘束縮約後・CSC）の対角成分から、剛性がほぼ 0 の自由度と
@@ -69,12 +72,21 @@ fn diagonal_defects(
     let mut zero = Vec::new();
     let mut negative = Vec::new();
     for (r, &d) in diag.iter().enumerate() {
-        // 縮約空間 → 自由 DOF 空間 → 全体 DOF（節点 × 6 + 成分）。
+        // 縮約空間 → 自由 DOF 空間 → 全体 DOF。
         let Some(active) = reducer.free_dof_of(r) else {
             continue;
         };
         let g = dofmap.global(active as u32);
-        let entry = ((g / DOF_PER_NODE) as u32, g % DOF_PER_NODE);
+        // 仕口パネルの追加自由度は標準自由度の後ろに並ぶため、`g / DOF_PER_NODE`
+        // では節点番号へ換算できない。パネル自由度は逆写像で節点を引き当てる。
+        let entry = if dofmap.is_node_dof(g) {
+            ((g / DOF_PER_NODE) as u32, g % DOF_PER_NODE)
+        } else {
+            match dofmap.panel_dof_ref(g) {
+                Some((ni, c)) => (ni as u32, DOF_PER_NODE + c),
+                None => continue,
+            }
+        };
         if d.abs() <= tol {
             zero.push(entry);
         } else if d < 0.0 {

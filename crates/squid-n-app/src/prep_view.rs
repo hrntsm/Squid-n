@@ -26,6 +26,8 @@ pub enum PrepView {
     RigidZone,
     /// ねじり解放（i 端ねじれピン）の対象外部材。
     Torsion,
+    /// 仕口パネル（柱梁接合部パネル）。
+    PanelZone,
     /// 断面性能（断面諸量）。
     Sections,
     /// 鋼断面の幅厚比・部材ランク。
@@ -119,6 +121,7 @@ pub fn preparation_panel(ui: &mut egui::Ui, app: &mut App) {
             (PrepView::Wind, "風圧力"),
             (PrepView::RigidZone, "剛域"),
             (PrepView::Torsion, "ねじり解放"),
+            (PrepView::PanelZone, "仕口パネル"),
             (PrepView::Sections, "断面性能"),
             (PrepView::WidthThickness, "幅厚比"),
             (PrepView::MemberStiffness, "部材剛性"),
@@ -141,6 +144,7 @@ pub fn preparation_panel(ui: &mut egui::Ui, app: &mut App) {
             PrepView::Wind => wind_section(ui, prep),
             PrepView::RigidZone => rigid_zone_section(ui, prep),
             PrepView::Torsion => torsion_section(ui, prep),
+            PrepView::PanelZone => panel_zone_section(ui, prep),
             PrepView::Sections => sections_section(ui, prep),
             PrepView::WidthThickness => width_thickness_section(ui, prep),
             PrepView::MemberStiffness => member_stiffness_section(ui, prep),
@@ -525,7 +529,7 @@ fn torsion_section(ui: &mut egui::Ui, prep: &PreparationResult) {
     ));
     ui.colored_label(
         crate::theme::GRAY_600,
-        "既定では線材（梁・柱）の i 端ねじれをピンとし、部材全長で Mx=0 とします。         ただし、ねじりを解放すると材軸まわりの回転を拘束するものが無くなる節点を持つ部材は、         剛性行列が特異になるため自動的に対象外とし、ねじり剛性 GJ/L を保持します。         材軸まわりの回転は「非平行な線材の曲げ」「線材以外の要素（壁・シェル・パネルゾーン・         ばね類）」「支点拘束」「支点ばねの回転成分」のいずれかで拘束されている必要があります。",
+        "既定では線材（梁・柱）の i 端ねじれをピンとし、部材全長で Mx=0 とします。         ただし、ねじりを解放すると材軸まわりの回転を拘束するものが無くなる節点を持つ部材は、         剛性行列が特異になるため自動的に対象外とし、ねじり剛性 GJ/L を保持します。         材軸まわりの回転は「非平行な線材の曲げ」「線材以外の要素（壁・シェル・ばね類）」         「支点拘束」「支点ばねの回転成分」のいずれかで拘束されている必要があります。         仕口パネルは接合部のせん断変形角にのみ剛性を与え、節点の回転自由度には         寄与しないため、この判定には含めません。",
     );
     ui.add_space(6.0);
 
@@ -566,6 +570,93 @@ fn torsion_section(ui: &mut egui::Ui, prep: &PreparationResult) {
                 });
                 row.col(|ui| {
                     ui.label("この節点の材軸まわり回転を拘束する部材・支点がない");
+                });
+            });
+        });
+}
+
+/// 仕口パネル（柱梁接合部パネル）。
+///
+/// S 造（CFT を除く）の柱梁接合節点に生成したパネルの寸法とせん断剛性を一覧する。
+/// パネルを設けた節点はせん断変形角 γX・γY の 2 自由度を追加で持ち、取り付く部材は
+/// パネル寸法分だけ離れた位置（柱フェース・梁フェース）で接合する。
+fn panel_zone_section(ui: &mut egui::Ui, prep: &PreparationResult) {
+    if !prep.panel_modeling_enabled {
+        ui.colored_label(
+            crate::theme::GRAY_600,
+            "「仕口パネルをモデル化（柱梁接合部）」が OFF のため、接合部を剛節点として\
+             扱っています（準備計算パネルの「部材のモデル化」で切り替えます）。\
+             柱梁接合部の断面算定は、この設定によらず常に行います。",
+        );
+        return;
+    }
+    ui.label(format!("仕口パネル: {} 箇所", prep.panels.len()));
+    ui.colored_label(
+        crate::theme::GRAY_600,
+        "せん断剛性は Kxp = Kyp = G・Ve です。実効体積 Ve は H 形柱で dc・db・tp、\
+         角形・円形鋼管柱で 2・dc・db・tp とし、断面検定の降伏モーメント \
+         pMy = (Ve/κ)・√(1−n²)・Fy/√3 と同じ体積を用います。板厚 tp は柱断面形状から\
+         算出し、断面に「パネル板厚」が入力されていればそちらを優先します。\
+         RC・SRC・CFT の接合部はモデル化の対象外で、従来どおり剛域で有限寸法を評価します\
+         （CFT の断面算定は従来どおり行います）。",
+    );
+    ui.add_space(6.0);
+
+    if prep.panels.is_empty() {
+        ui.colored_label(
+            crate::theme::GRAY_600,
+            "生成されたパネルはありません（対象となる S 造の柱梁接合部がない、または\
+             柱・梁の断面が未割当です）。",
+        );
+        return;
+    }
+
+    let row_h = crate::theme::table_row_height(ui);
+    let rows = &prep.panels;
+    TableBuilder::new(ui)
+        .striped(true)
+        .id_salt("prep_panels")
+        .column(Column::initial(70.0))
+        .column(Column::initial(90.0))
+        .column(Column::initial(90.0))
+        .column(Column::initial(80.0))
+        .column(Column::initial(120.0))
+        .column(Column::remainder())
+        .header(row_h, |mut h| {
+            for t in &[
+                "節点",
+                "dc [mm]",
+                "db [mm]",
+                "tp [mm]",
+                "Ve [mm³]",
+                "Kxp=Kyp [kN·m/rad]",
+            ] {
+                h.col(|ui| {
+                    ui.strong(*t);
+                });
+            }
+        })
+        .body(|body| {
+            body.rows(row_h, rows.len(), |mut row| {
+                let r = &rows[row.index()];
+                row.col(|ui| {
+                    ui.label(format!("{}", r.node.0));
+                });
+                row.col(|ui| {
+                    ui.label(format!("{:.1}", r.dc));
+                });
+                row.col(|ui| {
+                    ui.label(format!("{:.1}", r.db));
+                });
+                row.col(|ui| {
+                    ui.label(format!("{:.1}", r.tp));
+                });
+                row.col(|ui| {
+                    ui.label(format!("{:.3e}", r.ve));
+                });
+                row.col(|ui| {
+                    // N·mm/rad → kN·m/rad
+                    ui.label(format!("{:.3e}", r.k_panel / 1.0e6));
                 });
             });
         });

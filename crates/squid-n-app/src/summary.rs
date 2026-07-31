@@ -375,6 +375,34 @@ pub fn build_report_csv(app: &App) -> String {
         }
     }
 
+    // 節点単位の検定（RC 柱梁接合部・S/SRC 仕口パネル・冷間成形耐力比・耐震壁）。
+    // 部材検定と違い評価位置を持たないため、節点・種別・検定比・判定・根拠を並べる。
+    if !results.joint_checks.is_empty() {
+        out.push_str("\n[接合部検定]\n節点,種別,検定比,判定,根拠\n");
+        for j in &results.joint_checks {
+            match &j.outcome {
+                squid_n_design_jp::CheckOutcome::Checked(cr) => {
+                    out.push_str(&format!(
+                        "{},{},{:.4},{},{}\n",
+                        j.node.0,
+                        j.label.replace(',', ";"),
+                        cr.ratio(),
+                        if cr.ok() { "OK" } else { "NG" },
+                        cr.basis.replace(',', ";")
+                    ));
+                }
+                squid_n_design_jp::CheckOutcome::Skipped { reason } => {
+                    out.push_str(&format!(
+                        "{},{},-,検定不能,{}\n",
+                        j.node.0,
+                        j.label.replace(',', ";"),
+                        reason.replace(',', ";")
+                    ));
+                }
+            }
+        }
+    }
+
     if let Some(po) = &results.pushover {
         let control = match po.control {
             squid_n_solver::pushover::PushoverControl::Phased => "段階制御",
@@ -896,6 +924,10 @@ mod tests {
         assert!(csv.contains("[モデル概要]"));
         assert!(csv.contains("[層指標(二次設計)]"));
         assert!(csv.contains("[部材検定]"));
+        // 節点単位の検定（柱梁接合部・仕口パネル・耐震壁）もレポートへ出力する。
+        // サンプルは S 造ラーメンのため、パネルゾーンの検定行が現れる。
+        assert!(csv.contains("[接合部検定]"), "{csv}");
+        assert!(csv.contains("パネルゾーン"), "{csv}");
         // 数量積算セクションも常時含まれる。
         assert!(csv.contains("[数量積算 部位別]"));
     }

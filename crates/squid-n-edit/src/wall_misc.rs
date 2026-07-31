@@ -223,6 +223,27 @@ impl EditCommand for SetBeamTorsion {
     }
 }
 
+/// 仕口パネルのモデル化（`Model::panel_zone`）を建物一律に変更する。
+///
+/// 既定は「モデル化する」で、`None` にすると接合部を剛節点として扱う従来の
+/// モデル化へ戻る。パネル要素の生成有無と接合部の剛性が変わるため、呼び出し側は
+/// 実行後に結果を陳腐化させること（UI は `staleness.mark_edited`）。
+/// 逆操作は変更前のモードへの再実行（[`SetBeamTorsion`] と同じ対称パターン）。
+pub struct SetPanelZoneMode {
+    pub mode: squid_n_core::model::PanelZoneMode,
+}
+
+impl EditCommand for SetPanelZoneMode {
+    fn apply(&self, model: &mut Model) -> Box<dyn EditCommand> {
+        let old = std::mem::replace(&mut model.panel_zone, self.mode);
+        Box::new(SetPanelZoneMode { mode: old })
+    }
+
+    fn label(&self) -> &str {
+        "仕口パネルのモデル化変更"
+    }
+}
+
 /// 壁要素（`ElementKind::Wall`/`Shell`）の自重算定属性（`WallAttr`）を
 /// 追加/更新する。`attr.elem` に一致する既存エントリがあれば置換し、
 /// 無ければ末尾に追加する。逆操作は変更前の状態への復元
