@@ -241,7 +241,7 @@ pub struct PrepTorsionSkipRow {
 
 /// 生成した仕口パネル 1 箇所分。
 ///
-/// S 造（CFT を含む）の柱梁接合節点に設けたパネルの寸法とせん断剛性を示す。
+/// S 造（CFT を除く）の柱梁接合節点に設けたパネルの寸法とせん断剛性を示す。
 /// `Model::panel_zone` が無効なとき、および RC・SRC 接合部では空になる。
 #[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
 pub struct PrepPanelRow {

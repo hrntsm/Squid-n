@@ -577,7 +577,7 @@ fn torsion_section(ui: &mut egui::Ui, prep: &PreparationResult) {
 
 /// 仕口パネル（柱梁接合部パネル）。
 ///
-/// S 造（CFT を含む）の柱梁接合節点に生成したパネルの寸法とせん断剛性を一覧する。
+/// S 造（CFT を除く）の柱梁接合節点に生成したパネルの寸法とせん断剛性を一覧する。
 /// パネルを設けた節点はせん断変形角 γX・γY の 2 自由度を追加で持ち、取り付く部材は
 /// パネル寸法分だけ離れた位置（柱フェース・梁フェース）で接合する。
 fn panel_zone_section(ui: &mut egui::Ui, prep: &PreparationResult) {
@@ -597,15 +597,16 @@ fn panel_zone_section(ui: &mut egui::Ui, prep: &PreparationResult) {
          角形・円形鋼管柱で 2・dc・db・tp とし、断面検定の降伏モーメント \
          pMy = (Ve/κ)・√(1−n²)・Fy/√3 と同じ体積を用います。板厚 tp は柱断面形状から\
          算出し、断面に「パネル板厚」が入力されていればそちらを優先します。\
-         RC・SRC の接合部は対象外で、従来どおり剛域で有限寸法を評価します。",
+         RC・SRC・CFT の接合部はモデル化の対象外で、従来どおり剛域で有限寸法を評価します\
+         （CFT の断面算定は従来どおり行います）。",
     );
     ui.add_space(6.0);
 
     if prep.panels.is_empty() {
         ui.colored_label(
             crate::theme::GRAY_600,
-            "生成されたパネルはありません（S 造の柱梁接合部がない、または柱・梁の断面が\
-             未割当です）。",
+            "生成されたパネルはありません（対象となる S 造の柱梁接合部がない、または\
+             柱・梁の断面が未割当です）。",
         );
         return;
     }

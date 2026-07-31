@@ -22,11 +22,22 @@
 //!
 //! # 対象とする柱断面
 //!
-//! H 形鋼・角形鋼管・円形鋼管・CFT（角形・円形）のみを対象とする。RC・SRC 柱は
-//! [`PanelGeometry::from_column`] が `None` を返し、パネルのモデル化・S 造パネル
-//! 検定のいずれの対象にもならない（RC・SRC の接合部は剛域と各構造の接合部検定で
-//! 扱う）。組立 H 形（`SteelBuiltH`）は上下フランジが異なりパネル形状係数 κ の
-//! 標準式が適用できないため対象外とする。
+//! 諸元を解決できるのは H 形鋼・角形鋼管・円形鋼管・CFT（角形・円形）である。
+//! RC・SRC 柱は [`PanelGeometry::from_column`] が `None` を返し、パネルのモデル化・
+//! S 造パネル検定のいずれの対象にもならない（RC・SRC の接合部は剛域と各構造の
+//! 接合部検定で扱う）。組立 H 形（`SteelBuiltH`）は上下フランジが異なりパネル
+//! 形状係数 κ の標準式が適用できないため対象外とする。
+//!
+//! **モデル化と断面検定で対象範囲が異なる**点に注意する。
+//!
+//! | 柱断面 | モデル化 | 断面検定 |
+//! |---|---|---|
+//! | H 形鋼・角形鋼管・円形鋼管 | 対象 | 対象 |
+//! | CFT（角形・円形） | **対象外** | 対象 |
+//! | RC・SRC・組立 H 形 | 対象外 | 対象外 |
+//!
+//! CFT を諸元解決の対象に残したまま、モデル化からは
+//! [`PanelGeometry::is_modeling_target`] で除外する。理由は同メソッドを参照。
 
 use crate::model::Section;
 use crate::section_shape::SectionShape;
@@ -50,6 +61,11 @@ pub struct PanelGeometry {
     pub dc: f64,
     /// パネル板厚 `tp` [mm]。
     pub tp: f64,
+    /// 充填コンクリートを持つ柱（CFT）か。
+    ///
+    /// 断面検定では鋼管部を S 造と同じ式で評価するため区別しないが、仕口パネルの
+    /// **モデル化からは除外する**（[`Self::is_modeling_target`]）。
+    pub filled: bool,
 }
 
 impl PanelGeometry {
@@ -60,7 +76,7 @@ impl PanelGeometry {
     /// 優先し、未入力なら断面形状から算出する（モジュール冒頭「パネル板厚 `tp`
     /// の解決順」）。
     pub fn from_column(sec: &Section) -> Option<Self> {
-        let (kind, dc, tp) = match sec.shape {
+        let (kind, dc, tp, filled) = match sec.shape {
             Some(SectionShape::SteelH {
                 height,
                 width,
@@ -73,21 +89,34 @@ impl PanelGeometry {
                 },
                 height - flange_thick,
                 web_thick,
+                false,
             ),
             Some(SectionShape::SteelBox {
                 height,
                 width,
                 thick,
                 ..
-            })
-            | Some(SectionShape::CftBox {
+            }) => (
+                PanelShapeKind::Box { bc: width },
+                height - thick,
+                thick,
+                false,
+            ),
+            Some(SectionShape::CftBox {
                 height,
                 width,
                 thick,
-            }) => (PanelShapeKind::Box { bc: width }, height - thick, thick),
-            Some(SectionShape::SteelPipe { outer_dia, thick })
-            | Some(SectionShape::CftPipe { outer_dia, thick }) => {
-                (PanelShapeKind::Pipe, outer_dia - thick, thick)
+            }) => (
+                PanelShapeKind::Box { bc: width },
+                height - thick,
+                thick,
+                true,
+            ),
+            Some(SectionShape::SteelPipe { outer_dia, thick }) => {
+                (PanelShapeKind::Pipe, outer_dia - thick, thick, false)
+            }
+            Some(SectionShape::CftPipe { outer_dia, thick }) => {
+                (PanelShapeKind::Pipe, outer_dia - thick, thick, true)
             }
             _ => return None,
         };
@@ -95,7 +124,25 @@ impl PanelGeometry {
             Some(t) if t > 0.0 => t,
             _ => tp,
         };
-        Some(Self { kind, dc, tp })
+        Some(Self {
+            kind,
+            dc,
+            tp,
+            filled,
+        })
+    }
+
+    /// 仕口パネルの**モデル化**の対象か。
+    ///
+    /// S 造（H 形鋼・角形鋼管・円形鋼管）は対象、CFT は対象外とする。CFT の接合部は
+    /// 充填コンクリートと通しダイアフラムが接合部のせん断挙動に関与し、鋼管のみの
+    /// 実効体積による弾性せん断パネル `G・Ve` では剛性を表せないため、接合部を
+    /// 剛節点として扱う。
+    ///
+    /// 断面検定（S 造パネルゾーン）は本判定に依らず CFT も対象に含める（鋼管部を
+    /// S 造と同じ式で評価する従来どおりの扱い）。
+    pub fn is_modeling_target(&self) -> bool {
+        !self.filled
     }
 
     /// パネルの形状係数 κ（鋼構造接合部設計指針）。
@@ -249,6 +296,101 @@ mod tests {
         );
         let gz = PanelGeometry::from_column(&z).expect("H 形は対象");
         assert!((gz.tp - 13.0).abs() < 1e-9);
+    }
+
+    /// CFT は諸元を解決できるが、モデル化の対象外とする。断面検定は鋼管部を
+    /// S 造と同じ式で評価するため、諸元解決自体は成功させる必要がある。
+    #[test]
+    fn test_cft_resolves_but_is_not_modeling_target() {
+        let cases = [
+            (
+                SectionShape::CftBox {
+                    height: 400.0,
+                    width: 400.0,
+                    thick: 16.0,
+                },
+                PanelShapeKind::Box { bc: 400.0 },
+            ),
+            (
+                SectionShape::CftPipe {
+                    outer_dia: 400.0,
+                    thick: 12.0,
+                },
+                PanelShapeKind::Pipe,
+            ),
+        ];
+        for (shape, kind) in cases {
+            let s = sec(shape, 400.0, None);
+            let g = PanelGeometry::from_column(&s).expect("CFT も諸元は解決できる");
+            assert_eq!(g.kind, kind);
+            assert!(g.filled, "CFT は充填断面");
+            assert!(!g.is_modeling_target(), "CFT はモデル化の対象外");
+            // 検定に使う Ve・κ は鋼管と同じ式で求まる。
+            assert!(g.effective_volume(500.0) > 0.0);
+            assert!(g.kappa() > 0.0);
+        }
+    }
+
+    /// CFT でない鋼管（角形・円形）と H 形はモデル化の対象。
+    #[test]
+    fn test_steel_sections_are_modeling_targets() {
+        let shapes = [
+            SectionShape::SteelH {
+                height: 400.0,
+                width: 400.0,
+                web_thick: 13.0,
+                flange_thick: 21.0,
+            },
+            SectionShape::SteelBox {
+                height: 400.0,
+                width: 400.0,
+                thick: 16.0,
+                corner_r: 0.0,
+            },
+            SectionShape::SteelPipe {
+                outer_dia: 400.0,
+                thick: 12.0,
+            },
+        ];
+        for shape in shapes {
+            let s = sec(shape, 400.0, None);
+            let g = PanelGeometry::from_column(&s).expect("S 造は対象");
+            assert!(!g.filled);
+            assert!(g.is_modeling_target());
+        }
+    }
+
+    /// CFT と対応する鋼管は、断面検定に使う Ve・κ が同一になる
+    /// （CFT を検定対象から外していないことの裏付け）。
+    #[test]
+    fn test_cft_and_steel_tube_share_check_properties() {
+        let steel = sec(
+            SectionShape::SteelBox {
+                height: 400.0,
+                width: 400.0,
+                thick: 16.0,
+                corner_r: 0.0,
+            },
+            400.0,
+            None,
+        );
+        let cft = sec(
+            SectionShape::CftBox {
+                height: 400.0,
+                width: 400.0,
+                thick: 16.0,
+            },
+            400.0,
+            None,
+        );
+        let (gs, gc) = (
+            PanelGeometry::from_column(&steel).expect("角形"),
+            PanelGeometry::from_column(&cft).expect("CFT 角形"),
+        );
+        assert!((gs.dc - gc.dc).abs() < 1e-12);
+        assert!((gs.tp - gc.tp).abs() < 1e-12);
+        assert!((gs.kappa() - gc.kappa()).abs() < 1e-12);
+        assert!((gs.effective_volume(500.0) - gc.effective_volume(500.0)).abs() < 1e-9);
     }
 
     /// RC 柱はパネルの対象外（剛域と RC 柱梁接合部検定で扱う）。

@@ -172,8 +172,8 @@ fn axis_and_length(model: &Model, e: &ElementData) -> Option<([f64; 3], f64)> {
 
 /// 接合部節点 `node` に取り付く柱・梁からパネル諸元を解決する。
 ///
-/// - 柱: 鉛直材（`|ez| ≥ 0.8`）のうち、パネル諸元を解決できる断面
-///   （H 形鋼・角形鋼管・円形鋼管・CFT）を持つ最初のもの。パネル寸法 `dc`・`tp`、
+/// - 柱: 鉛直材（`|ez| ≥ 0.8`）のうち、モデル化対象の断面
+///   （H 形鋼・角形鋼管・円形鋼管。CFT は対象外）を持つ最初のもの。パネル寸法 `dc`・`tp`、
 ///   せん断弾性係数 `G`、基準強度 `F`、軸力比の基準軸力をこの柱から取る。
 /// - 梁: 水平材（`|ez| ≤ 0.2`）のうち最大の `db`（フランジ板厚中心間距離）。
 ///
@@ -196,7 +196,10 @@ fn resolve(model: &Model, node: NodeId) -> Option<ResolvedPanel> {
         let ez = axis[2].abs();
         if ez >= COLUMN_EZ {
             if column.is_none() {
-                if let Some(geom) = PanelGeometry::from_column(sec) {
+                // CFT はモデル化の対象外（`PanelGeometry::is_modeling_target`）。
+                if let Some(geom) =
+                    PanelGeometry::from_column(sec).filter(PanelGeometry::is_modeling_target)
+                {
                     column = Some((e, geom, axis, length));
                 }
             }

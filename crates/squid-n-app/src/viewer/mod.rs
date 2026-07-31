@@ -2584,6 +2584,13 @@ fn pick_nearest_member(
         if elem.nodes.len() < 2 {
             continue;
         }
+        // 仕口パネルの節点列は「接合部の節点 ＋ 取り付く部材の他端」であり、
+        // 先頭 2 節点を結んでも部材の線にはならない（取り付く部材の 1 本と
+        // 同じ線分になり、実部材の選択・ホバーを横取りする）。線材ではないため
+        // ピック対象から外す。
+        if matches!(elem.kind, squid_n_core::model::ElementKind::PanelZone) {
+            continue;
+        }
         let n0 = elem.nodes[0].index();
         let n1 = elem.nodes[1].index();
         if n0 >= pts.len() || n1 >= pts.len() {

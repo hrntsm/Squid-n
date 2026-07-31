@@ -2,9 +2,15 @@
 //! 鋼構造接合部設計指針のパネルゾーン部分に準拠）。
 //!
 //! # 位置付け
-//! このモジュールは `squid_n_core`（モデル）や要素（`squid_n_element`）に依存せず、
-//! 呼び出し側（節点まわりの応力集計・断面形状の解決を担当する別モジュール）が
-//! 用意した数値入力を受け取る**純関数**として実装する。
+//! このモジュールは `Model` や要素（`squid_n_element`）に依存せず、呼び出し側
+//! （節点まわりの応力集計・断面形状の解決を担当する別モジュール）が用意した数値
+//! 入力を受け取る**純関数**として実装する。
+//!
+//! ただしパネルの寸法・形状係数 κ・実効体積 `Ve` は、仕口パネルの**モデル化**
+//! （`squid_n_element::panel`）と同一の値でなければならない。同じ接合部に対して
+//! 剛性と耐力が食い違う諸元で算定されるのを防ぐため、これらは
+//! [`squid_n_core::panel_zone::PanelGeometry`]（`Model` に依存しない値型）へ
+//! 一元化し、本モジュールもモデル化側もそこを唯一の出所とする。
 //!
 //! 準拠する規準: 日本建築学会「鋼構造接合部設計指針」
 //!
@@ -14,21 +20,13 @@
 //! 再構成した（下記 [`s_panel_zone_check`] のドキュメント参照）。
 
 use crate::{CheckComponent, CheckKind, CheckResult};
-
-/// パネルゾーンの柱断面形状。
-pub enum PanelSection {
-    /// H形鋼柱。`bc`: フランジ幅、`tf`: フランジ厚、`dc`: 柱せい、`tp`: パネル厚。
-    H { bc: f64, tf: f64, dc: f64, tp: f64 },
-    /// 角形鋼管柱。`bc`: 柱幅、`dc`: 柱せい、`tp`: パネル厚。
-    Box { bc: f64, dc: f64, tp: f64 },
-    /// 円形鋼管柱。`dc`: 柱径、`tp`: パネル厚。
-    Pipe { dc: f64, tp: f64 },
-}
+use squid_n_core::panel_zone::{PanelGeometry, PanelShapeKind};
 
 /// S 造パネルゾーンの検定の入力。
 pub struct SPanelInput {
-    /// 柱断面形状。
-    pub section: PanelSection,
+    /// 柱断面から解決したパネル諸元（寸法 `dc`・板厚 `tp`・断面区分）。
+    /// CFT も対象に含める（鋼管部を S 造と同じ式で評価する）。
+    pub geometry: PanelGeometry,
     /// 梁フランジ板厚中心間距離 db [mm]。
     pub db: f64,
     /// パネルの降伏強さ F 値 [N/mm²]。
@@ -86,23 +84,13 @@ pub struct SPanelInput {
 ///
 /// 検定比 = `|pM| / pMy`（1.0 以下で OK）。
 pub fn s_panel_zone_check(inp: &SPanelInput) -> CheckResult {
-    let (ve, kappa, shape_label) = match &inp.section {
-        PanelSection::H { bc, tf, dc, tp } => {
-            let ve = dc * inp.db * tp;
-            let kappa = 1.0 / (2.0 / 3.0 + (4.0 * bc * tf) / (dc * tp))
-                + 1.0 / (1.0 + (dc * tp) / (6.0 * bc * tf));
-            (ve, kappa, "H形")
-        }
-        PanelSection::Box { bc, dc, tp } => {
-            let ve = 2.0 * dc * inp.db * tp;
-            let kappa = 1.0 / (2.0 / 3.0 + 2.0 * bc / dc) + 1.0 / (1.0 + dc / (3.0 * bc));
-            (ve, kappa, "角形")
-        }
-        PanelSection::Pipe { dc, tp } => {
-            let ve = 2.0 * dc * inp.db * tp;
-            let kappa = 4.0 / std::f64::consts::PI;
-            (ve, kappa, "円形")
-        }
+    // Ve・κ はモデル化側（仕口パネル要素の剛性 Kxp = Kyp = G・Ve）と同じ値を用いる。
+    let ve = inp.geometry.effective_volume(inp.db);
+    let kappa = inp.geometry.kappa();
+    let shape_label = match inp.geometry.kind {
+        PanelShapeKind::H { .. } => "H形",
+        PanelShapeKind::Box { .. } => "角形",
+        PanelShapeKind::Pipe => "円形",
     };
 
     let n = inp.axial_ratio.abs();
@@ -146,11 +134,14 @@ mod tests {
 
     fn base_panel_h_input(axial_ratio: f64) -> SPanelInput {
         SPanelInput {
-            section: PanelSection::H {
-                bc: 300.0,
-                tf: 20.0,
+            geometry: PanelGeometry {
+                kind: PanelShapeKind::H {
+                    bc: 300.0,
+                    tf: 20.0,
+                },
                 dc: 400.0,
                 tp: 12.0,
+                filled: false,
             },
             db: 500.0,
             fy: 235.0,
@@ -161,6 +152,37 @@ mod tests {
             col_shear_lower: 50_000.0,
             design_moment: None,
         }
+    }
+
+    /// CFT 柱も断面検定の対象に含める（鋼管部を S 造と同じ式で評価する）。
+    /// 仕口パネルの**モデル化**は CFT を除外するため、対象範囲が食い違う点を押さえる。
+    #[test]
+    fn s_panel_covers_cft_columns() {
+        let steel = PanelGeometry {
+            kind: PanelShapeKind::Box { bc: 400.0 },
+            dc: 384.0,
+            tp: 16.0,
+            filled: false,
+        };
+        let cft = PanelGeometry {
+            filled: true,
+            ..steel
+        };
+        assert!(steel.is_modeling_target(), "角形鋼管はモデル化の対象");
+        assert!(!cft.is_modeling_target(), "CFT はモデル化の対象外");
+
+        // 検定側は充填の有無で結果が変わらない。
+        let check = |geometry: PanelGeometry| {
+            let mut inp = base_panel_h_input(0.0);
+            inp.geometry = geometry;
+            s_panel_zone_check(&inp).ratio()
+        };
+        let (rs, rc) = (check(steel), check(cft));
+        assert!(rs > 0.0 && rs.is_finite());
+        assert!(
+            (rs - rc).abs() < 1e-12,
+            "CFT も同じ検定比になる: {rs} vs {rc}"
+        );
     }
 
     /// `design_moment` を与えると、梁端モーメント・柱せん断からの組み立てに代えて

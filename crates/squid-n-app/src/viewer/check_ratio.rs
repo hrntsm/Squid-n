@@ -173,18 +173,23 @@ pub(super) const NODE_HOVER_THRESHOLD: f32 = 10.0;
 ///
 /// 部材のホバー判定（`pick_nearest_member`）と同じ方針で、しきい値の判定は
 /// 呼び出し側が行う。検定結果を持たない節点は候補にしない。
+///
+/// ホバー判定は毎フレーム走るため、検定を持つ節点は先に集合へ集めてから走査する
+/// （節点ごとに検定リストを線形探索すると O(節点数 × 検定数) になる）。
 pub(super) fn pick_nearest_checked_node(
     app: &App,
     pts: &[egui::Pos2],
     pos: egui::Pos2,
 ) -> Option<(usize, f32)> {
     let results = app.results.as_ref()?;
+    if results.joint_checks.is_empty() {
+        return None;
+    }
+    let checked: std::collections::HashSet<NodeId> =
+        results.joint_checks.iter().map(|j| j.node).collect();
     let mut best: Option<(usize, f32)> = None;
     for (idx, node) in app.model.nodes.iter().enumerate() {
-        if idx >= pts.len() {
-            continue;
-        }
-        if !results.joint_checks.iter().any(|j| j.node == node.id) {
+        if idx >= pts.len() || !checked.contains(&node.id) {
             continue;
         }
         let d = pts[idx].distance(pos);

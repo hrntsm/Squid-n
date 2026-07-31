@@ -1,6 +1,6 @@
 //! 仕口パネル要素の自動生成（準備計算の前処理）。
 //!
-//! S 造（CFT を含む）の柱梁接合節点を検出し、[`ElementKind::PanelZone`] の要素を
+//! S 造（CFT を除く）の柱梁接合節点を検出し、[`ElementKind::PanelZone`] の要素を
 //! モデルへ生成する。剛域の自動算定（[`crate::beam::apply_auto_rigid_zones`]）と
 //! 同じく、解析に先立って 1 回適用する冪等な前処理である。
 //!
@@ -8,14 +8,20 @@
 //!
 //! 節点に次のすべてが揃うときにパネルを設ける。
 //!
-//! - パネル諸元を解決できる断面（H 形鋼・角形鋼管・円形鋼管・CFT）の**柱**
-//!   （鉛直材）が 1 本以上取り付く
+//! - モデル化対象の断面（H 形鋼・角形鋼管・円形鋼管）の**柱**（鉛直材）が
+//!   1 本以上取り付く
 //! - 断面の割り当てられた**梁**（水平材）が 1 本以上取り付く
 //! - 実効体積 `Ve` が正
 //!
 //! RC・SRC 柱は [`PanelGeometry::from_column`] が `None` を返すため対象外となる。
 //! これらの接合部は従来どおり剛域で有限寸法を評価し、接合部の検定は
 //! RC 柱梁接合部・SRC パネルゾーンの断面検定が担う。
+//!
+//! CFT 柱も**モデル化の対象外**とする（[`PanelGeometry::is_modeling_target`]）。
+//! 充填コンクリートと通しダイアフラムが接合部のせん断挙動に関与し、鋼管のみの
+//! 実効体積による弾性せん断パネルでは剛性を表せないため、接合部を剛節点として
+//! 扱う。S 造パネルゾーンの断面検定は CFT も対象に含めており、モデル化の有無に
+//! よらず実施される。
 //!
 //! # 要素 ID の扱い
 //!
@@ -139,7 +145,10 @@ fn panel_at(model: &Model, node: NodeId) -> Option<(GeneratedPanel, Vec<NodeId>)
         };
         if ez >= COLUMN_EZ {
             if geom.is_none() {
-                if let Some(g) = PanelGeometry::from_column(sec) {
+                // CFT はモデル化の対象外（`PanelGeometry::is_modeling_target`）。
+                if let Some(g) =
+                    PanelGeometry::from_column(sec).filter(PanelGeometry::is_modeling_target)
+                {
                     geom = Some(g);
                     shear_modulus = e
                         .material
@@ -433,6 +442,55 @@ mod tests {
         let panels = apply_auto_panel_zones(&mut model);
         assert!(panels.is_empty(), "RC 柱は対象外");
         assert_eq!(model.elements.len(), 2);
+    }
+
+    /// CFT 柱の接合部にはパネルを設けない（充填コンクリートと通しダイアフラムが
+    /// 接合部のせん断挙動に関与し、鋼管のみの実効体積では剛性を表せないため）。
+    /// 断面検定は CFT も対象に含めるため、検定側の判定とは分かれる。
+    #[test]
+    fn test_cft_column_is_not_modeling_target() {
+        for shape in [
+            SectionShape::CftBox {
+                height: 400.0,
+                width: 400.0,
+                thick: 16.0,
+            },
+            SectionShape::CftPipe {
+                outer_dia: 400.0,
+                thick: 12.0,
+            },
+        ] {
+            let mut model = l_frame(shape);
+            let panels = apply_auto_panel_zones(&mut model);
+            assert!(panels.is_empty(), "CFT 柱はモデル化の対象外");
+            assert_eq!(model.elements.len(), 2, "パネル要素は生成されない");
+
+            // 一方、諸元の解決自体は成功する（断面検定はこの経路を使う）。
+            let geom = PanelGeometry::from_column(&model.sections[1]).expect("諸元は解決できる");
+            assert!(!geom.is_modeling_target(), "モデル化対象ではない");
+            assert!(geom.effective_volume(500.0) > 0.0, "検定用の Ve は求まる");
+        }
+    }
+
+    /// 角形鋼管・円形鋼管（CFT でない S 造）はモデル化の対象になる。
+    #[test]
+    fn test_steel_tube_columns_are_modeling_targets() {
+        for shape in [
+            SectionShape::SteelBox {
+                height: 400.0,
+                width: 400.0,
+                thick: 16.0,
+                corner_r: 0.0,
+            },
+            SectionShape::SteelPipe {
+                outer_dia: 400.0,
+                thick: 12.0,
+            },
+        ] {
+            let mut model = l_frame(shape);
+            let panels = apply_auto_panel_zones(&mut model);
+            assert_eq!(panels.len(), 1, "S 造の鋼管柱はモデル化の対象");
+        }
     }
 
     /// 梁が取り付かない節点（柱だけ）にはパネルを設けない。
