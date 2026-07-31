@@ -182,6 +182,11 @@ fn rigid_zone_with_adjacency(
         reduction: rule.reduction,
         face_i: face(d_orth_face_i),
         face_j: face(d_orth_face_j),
+        // パネル分のオフセットは剛域算定の対象外（`panel_gen` が別途書き込む）。
+        // ここで既定値へ落としても、`recompute_auto_zones` が反映しないため
+        // モデル側の値は保たれる。
+        panel_offset_i: 0.0,
+        panel_offset_j: 0.0,
     }
 }
 
@@ -210,6 +215,11 @@ pub fn recompute_auto_zones(zone: &mut RigidZone, recomputed: &RigidZone) {
     if matches!(zone.source_j, ZoneSource::Auto) {
         zone.length_j = recomputed.length_j;
     }
+    // 仕口パネル分のオフセット（`panel_offset_i/j`）は**触らない**。剛域算定は
+    // 単独で走る経路（増分解析・時刻歴・MCP のジョブ）があり、ここで初期化すると
+    // パネル要素が残ったままオフセットだけが消えたモデルで解析が走る。
+    // オフセットの更新は `springs::panel_gen::apply_auto_panel_zones` の責務とする。
+
     // フェイス距離は剛域長の Manual/Auto フラグとは独立な幾何量（接続関係から
     // 一意に決まる §6.2.1）。手動で剛域長を保護しているときも、モデルの接続情報
     // が変われば危険断面位置は追従すべきなので、Manual 保護の対象外として常に

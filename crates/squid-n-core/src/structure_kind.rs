@@ -72,7 +72,6 @@ mod tests {
     use super::*;
     use crate::ids::{ElemId, MaterialId, SectionId};
     use crate::model::{ElementKind, EndCondition, ForceRegime, LocalAxis, Material, Section};
-    use crate::section_shape::{BarSet, RcRebar, ShearBar};
 
     fn material(name: &str, fc: Option<f64>, fy: Option<f64>) -> Material {
         Material {
@@ -134,30 +133,6 @@ mod tests {
         }
     }
 
-    fn rc_rect() -> SectionShape {
-        let bars = BarSet {
-            dia: 25.0,
-            count: 4,
-            layers: 1,
-        };
-        SectionShape::RcRect {
-            b: 700.0,
-            d: 700.0,
-            rebar: RcRebar {
-                main_x: bars.clone(),
-                main_y: bars,
-                cover: 40.0,
-                shear: ShearBar {
-                    dia: 10.0,
-                    pitch: 100.0,
-                    legs: 2,
-                    grade: None,
-                },
-                main_grade: None,
-            },
-        }
-    }
-
     /// 断面形状があれば形状で判定する（材料は見ない）。
     #[test]
     fn test_shape_wins_over_material() {
@@ -176,7 +151,14 @@ mod tests {
             StructureKind::Steel
         );
 
-        let m = model_with(Some(rc_rect()), material("SN400B", None, Some(235.0)));
+        // 形状は RC だが材料は fy を持つ（形状優先で RcSrc）。
+        let m = model_with(
+            Some(SectionShape::RcWall {
+                thickness: 180.0,
+                ps: 0.006,
+            }),
+            material("SN400B", None, Some(235.0)),
+        );
         assert_eq!(
             member_structure_kind(&m, &m.elements[0]),
             StructureKind::RcSrc

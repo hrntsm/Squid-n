@@ -53,8 +53,8 @@ use crate::behavior::{Ctx, ElemState, ElementBehavior, LocalMat, LocalVec, MassO
 use smallvec::SmallVec;
 use squid_n_core::dof::{DofMap, DOF_PER_NODE};
 use squid_n_core::ids::NodeId;
-use squid_n_core::model::{ElementData, ElementKind, Model};
-use squid_n_core::panel_zone::{beam_panel_depth, PanelGeometry};
+use squid_n_core::model::{ElementData, Model};
+use squid_n_core::panel_zone::{resolve_panel_joint, PanelGeometry};
 use squid_n_material::uniaxial::{Bilinear, UniaxialMaterial};
 
 /// パネル降伏後の二次勾配比（材端集中ばねの既定と同じ）。
@@ -68,11 +68,6 @@ pub const PANEL_HARDENING: f64 = 0.01;
 /// （`squid_n_app` の準備計算）は `Ve > 0` を確認した接合部にのみパネルを設ける
 /// ため、通常この値は使われない。
 const PANEL_RIGID_STIFFNESS: f64 = 1.0e14;
-
-/// 部材軸の鉛直成分がこの値以上なら柱（鉛直材）とみなす。
-const COLUMN_EZ: f64 = 0.8;
-/// 部材軸の鉛直成分がこの値以下なら梁（水平材）とみなす。
-const BEAM_EZ: f64 = 0.2;
 
 /// パネルの降伏モーメント `pMy` の軸力比 `n` を追従するための柱の情報。
 ///
@@ -155,60 +150,23 @@ struct ResolvedPanel {
     column: Option<ColumnAxial>,
 }
 
-/// 要素 `e` の単位軸ベクトルと材長を返す（2 節点未満・長さ 0 は `None`）。
-fn axis_and_length(model: &Model, e: &ElementData) -> Option<([f64; 3], f64)> {
-    if e.nodes.len() < 2 {
-        return None;
-    }
-    let p0 = model.nodes.get(e.nodes[0].index())?.coord;
-    let p1 = model.nodes.get(e.nodes[1].index())?.coord;
-    let d = [p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2]];
-    let l = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
-    if l < 1e-12 {
-        return None;
-    }
-    Some(([d[0] / l, d[1] / l, d[2] / l], l))
-}
-
 /// 接合部節点 `node` に取り付く柱・梁からパネル諸元を解決する。
 ///
-/// - 柱: 鉛直材（`|ez| ≥ 0.8`）のうち、モデル化対象の断面
-///   （H 形鋼・角形鋼管・円形鋼管。CFT は対象外）を持つ最初のもの。パネル寸法 `dc`・`tp`、
-///   せん断弾性係数 `G`、基準強度 `F`、軸力比の基準軸力をこの柱から取る。
-/// - 梁: 水平材（`|ez| ≤ 0.2`）のうち最大の `db`（フランジ板厚中心間距離）。
+/// 対象接合部の判定・`dc`・`tp`・`db`・柱の選択は
+/// [`squid_n_core::panel_zone::resolve_panel_joint`] に委ねる。準備計算のパネル生成
+/// （[`crate::panel_gen`]）・S 造パネルゾーンの断面検定と同じ関数を通るため、
+/// 準備計算の表に出る諸元と、実際に組まれる要素の剛性・耐力が一致する。
 ///
-/// 柱の `F` 値は鋼種名の前方一致（板厚 40mm 区分）で解決し、解決できない場合は
-/// 材料の `fy`、それも無ければ 235 とする（S 造パネルゾーン検定と同じ規則）。
+/// 本関数が加えるのは、解決した柱から取る材料量（せん断弾性係数 `G`・基準強度 `F`・
+/// 軸力比の基準軸力）だけである。`F` は鋼種名の前方一致（板厚 40mm 区分）で解決し、
+/// 解決できない場合は材料の `fy`、それも無ければ 235 とする（断面検定と同じ規則）。
 fn resolve(model: &Model, node: NodeId) -> Option<ResolvedPanel> {
-    let mut column: Option<(&ElementData, PanelGeometry, [f64; 3], f64)> = None;
-    let mut db = 0.0_f64;
-
-    for e in &model.elements {
-        if !matches!(e.kind, ElementKind::Beam) || !e.nodes.contains(&node) {
-            continue;
-        }
-        let Some((axis, length)) = axis_and_length(model, e) else {
-            continue;
-        };
-        let Some(sec) = e.section.and_then(|sid| model.sections.get(sid.index())) else {
-            continue;
-        };
-        let ez = axis[2].abs();
-        if ez >= COLUMN_EZ {
-            if column.is_none() {
-                // CFT はモデル化の対象外（`PanelGeometry::is_modeling_target`）。
-                if let Some(geom) =
-                    PanelGeometry::from_column(sec).filter(PanelGeometry::is_modeling_target)
-                {
-                    column = Some((e, geom, axis, length));
-                }
-            }
-        } else if ez <= BEAM_EZ {
-            db = db.max(beam_panel_depth(sec));
-        }
+    let joint = resolve_panel_joint(model, node, &model.elements)?;
+    // CFT はモデル化の対象外（充填部がせん断挙動に関与するため剛節点として扱う）。
+    if joint.has_filled_column {
+        return None;
     }
-
-    let (col_elem, geom, axis, length) = column?;
+    let col_elem = model.elements.get(joint.column.index())?;
     let mat = col_elem
         .material
         .and_then(|mid| model.materials.get(mid.index()))?;
@@ -220,21 +178,40 @@ fn resolve(model: &Model, node: NodeId) -> Option<ResolvedPanel> {
         .or(mat.fy)
         .unwrap_or(235.0);
 
-    let column = (col_elem.nodes.len() >= 2).then(|| ColumnAxial {
-        nodes: [col_elem.nodes[0], col_elem.nodes[1]],
+    Some(ResolvedPanel {
+        geom: joint.geometry,
+        db: joint.db,
+        g: mat.shear_modulus(),
+        fy,
+        column: column_axial(model, col_elem, mat, sec, fy),
+    })
+}
+
+/// 軸力比 `n` の追従に使う柱の情報を組み立てる（材軸が退化する柱は `None`）。
+fn column_axial(
+    model: &Model,
+    col: &ElementData,
+    mat: &squid_n_core::model::Material,
+    sec: &squid_n_core::model::Section,
+    fy: f64,
+) -> Option<ColumnAxial> {
+    if col.nodes.len() < 2 {
+        return None;
+    }
+    let p0 = model.nodes.get(col.nodes[0].index())?.coord;
+    let p1 = model.nodes.get(col.nodes[1].index())?.coord;
+    let d = [p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2]];
+    let length = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+    if length < 1e-12 {
+        return None;
+    }
+    Some(ColumnAxial {
+        nodes: [col.nodes[0], col.nodes[1]],
         ea_over_l: mat.young * sec.area / length.max(1.0),
-        axis,
+        axis: [d[0] / length, d[1] / length, d[2] / length],
         n_ref: (fy * sec.area).max(1.0),
         committed: [0.0; 12],
         trial: [0.0; 12],
-    });
-
-    Some(ResolvedPanel {
-        geom,
-        db,
-        g: mat.shear_modulus(),
-        fy,
-        column,
     })
 }
 
@@ -659,7 +636,9 @@ mod tests {
     use super::*;
     use squid_n_core::dof::Dof6Mask;
     use squid_n_core::ids::{ElemId, MaterialId, SectionId};
-    use squid_n_core::model::{EndCondition, ForceRegime, LocalAxis, Material, Node, Section};
+    use squid_n_core::model::{
+        ElementKind, EndCondition, ForceRegime, LocalAxis, Material, Node, Section,
+    };
     use squid_n_core::section_shape::SectionShape;
 
     // ── フェイスモーメント（原典: 添付資料『パネルゾーンの力学』小野瀬, 2009） ──

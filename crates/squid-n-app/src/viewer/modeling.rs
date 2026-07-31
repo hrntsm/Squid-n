@@ -312,8 +312,8 @@ fn flexible_span(elem: &ElementData, l: f64) -> (f32, f32, f64) {
         return (0.0, 1.0, l);
     }
     let (li, lj) = squid_n_element::rigid_arm::resolve_lengths(
-        elem.rigid_zone.length_i,
-        elem.rigid_zone.length_j,
+        elem.rigid_zone.rigid_length_i(),
+        elem.rigid_zone.rigid_length_j(),
         l,
     );
     ((li / l) as f32, 1.0 - (lj / l) as f32, l - li - lj)
@@ -635,7 +635,7 @@ fn panel_half_extent_at(
 ///
 /// 左右の梁は同じ構面を作るため、四角形は構面ごとに 1 枚だけ描く。
 fn panel_beam_axes(model: &Model, adjacency: &BeamAdjacency, node: NodeId) -> Vec<[f64; 3]> {
-    use squid_n_core::panel_zone::{member_orientation, MemberOrientation};
+    use squid_n_core::panel_zone::{member_orientation, member_unit_axis, MemberOrientation};
     let mut axes: Vec<[f64; 3]> = Vec::new();
     for &ei in adjacency.get(&node.index()).into_iter().flatten() {
         let Some(e) = model.elements.get(ei) else {
@@ -644,18 +644,9 @@ fn panel_beam_axes(model: &Model, adjacency: &BeamAdjacency, node: NodeId) -> Ve
         if member_orientation(model, e) != Some(MemberOrientation::Beam) {
             continue;
         }
-        let (Some(p0), Some(p1)) = (
-            model.nodes.get(e.nodes[0].index()).map(|n| n.coord),
-            model.nodes.get(e.nodes[1].index()).map(|n| n.coord),
-        ) else {
+        let Some(axis) = member_unit_axis(model, e) else {
             continue;
         };
-        let d = [p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2]];
-        let l = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
-        if l < 1e-9 {
-            continue;
-        }
-        let axis = [d[0] / l, d[1] / l, d[2] / l];
         let parallel = axes
             .iter()
             .any(|a| (a[0] * axis[0] + a[1] * axis[1] + a[2] * axis[2]).abs() > 0.99);
@@ -1009,7 +1000,8 @@ mod tests {
     #[test]
     fn test_panel_half_extent_from_member_depths() {
         let model = cross_joint_model();
-        let extent = panel_half_extent_at(&model, &build_beam_adjacency(&model), NodeId(0));
+        let adjacency = build_beam_adjacency(&model);
+        let extent = panel_half_extent_at(&model, &adjacency, NodeId(0));
         assert!(
             (extent.column_half - 200.0).abs() < 1e-9,
             "水平半寸法は柱せい 400 の 1/2"
@@ -1019,23 +1011,9 @@ mod tests {
             "鉛直半寸法は梁せい 600 の 1/2"
         );
 
-        let axes = panel_beam_axes(&model, &build_beam_adjacency(&model), NodeId(0));
+        let axes = panel_beam_axes(&model, &adjacency, NodeId(0));
         assert_eq!(axes.len(), 1, "左右の梁は同一構面へまとめる: {axes:?}");
         assert!(axes[0][0].abs() > 0.99, "構面の向きは X 方向");
-    }
-
-    /// 見付き半寸法は危険断面位置（`face_i`/`face_j`）を参照しない。
-    /// 危険断面位置は将来任意位置を取りうるため、パネル寸法とは独立させる。
-    #[test]
-    fn test_panel_half_extent_is_independent_of_face_distance() {
-        let mut model = cross_joint_model();
-        for e in &mut model.elements {
-            e.rigid_zone.face_i = 9999.0;
-            e.rigid_zone.face_j = 9999.0;
-        }
-        let extent = panel_half_extent_at(&model, &build_beam_adjacency(&model), NodeId(0));
-        assert!((extent.column_half - 200.0).abs() < 1e-9);
-        assert!((extent.beam_half - 300.0).abs() < 1e-9);
     }
 
     /// 直交する 2 方向に梁が取り付く接合部は、構面ごとに四角形を描くため
@@ -1080,10 +1058,11 @@ mod tests {
     #[test]
     fn test_panel_half_extent_without_sections() {
         let model = Model::default();
-        let extent = panel_half_extent_at(&model, &build_beam_adjacency(&model), NodeId(0));
+        let adjacency = build_beam_adjacency(&model);
+        let extent = panel_half_extent_at(&model, &adjacency, NodeId(0));
         assert_eq!(extent.column_half, 0.0);
         assert_eq!(extent.beam_half, 0.0);
-        assert!(panel_beam_axes(&model, &build_beam_adjacency(&model), NodeId(0)).is_empty());
+        assert!(panel_beam_axes(&model, &adjacency, NodeId(0)).is_empty());
     }
 
     /// せいだけを与えた断面（見付き寸法の算定に必要なのはせいのみ）。

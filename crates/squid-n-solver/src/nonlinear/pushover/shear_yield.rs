@@ -252,7 +252,7 @@ fn elem_length(model: &Model, elem: &ElementData) -> Option<f64> {
 /// ため過大な Qsu には至らないが、異常値の握り潰しではなくフォールバックとして
 /// 明示する）。
 pub(crate) fn effective_clear_span(raw_length: f64, rigid_zone: &RigidZone) -> f64 {
-    let net = raw_length - rigid_zone.length_i - rigid_zone.length_j;
+    let net = raw_length - rigid_zone.rigid_length_i() - rigid_zone.rigid_length_j();
     if net > 1e-6 {
         net
     } else {

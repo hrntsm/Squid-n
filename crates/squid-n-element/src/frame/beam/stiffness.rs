@@ -226,7 +226,11 @@ impl BeamElement {
     /// 可撓長がゼロ以下では要素が剛性ゼロに退化するためで、規則はファイバー梁と共通
     /// （[`crate::rigid_arm::resolve_lengths`]）。
     pub(crate) fn rigid_lengths(&self) -> (f64, f64) {
-        crate::rigid_arm::resolve_lengths(self.rigid.length_i, self.rigid.length_j, self.length)
+        crate::rigid_arm::resolve_lengths(
+            self.rigid.rigid_length_i(),
+            self.rigid.rigid_length_j(),
+            self.length,
+        )
     }
 
     /// 可撓部（剛域を除いた部分）の局所剛性 12×12。剛域変換の**手前**の状態で、

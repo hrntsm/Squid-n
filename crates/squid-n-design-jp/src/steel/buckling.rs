@@ -169,7 +169,7 @@ fn end_index_at(elem: &ElementData, node_id: NodeId) -> Option<usize> {
 /// （squid_n_element の可とう長と同じ式）。`L' ≤ 0` になる場合は
 /// 幾何学的長さ `len` にフォールバックする。
 fn clear_length(elem: &ElementData, len: f64) -> f64 {
-    let l = len - elem.rigid_zone.length_i - elem.rigid_zone.length_j;
+    let l = len - elem.rigid_zone.rigid_length_i() - elem.rigid_zone.rigid_length_j();
     if l > 0.0 {
         l
     } else {

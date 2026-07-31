@@ -57,8 +57,9 @@
 //! | RC・SRC・組立 H 形 | 対象外 | 対象外 |
 //!
 //! CFT を諸元解決の対象に残したまま、モデル化からは
-//! [`PanelJoint::has_filled_column`] で除外する。理由は
-//! [`PanelGeometry::is_modeling_target`] を参照。
+//! [`PanelJoint::has_filled_column`] で除外する。CFT の接合部では充填コンクリートと
+//! 通しダイアフラムがせん断挙動に関与し、鋼管のみの実効体積による弾性せん断パネル
+//! `G・Ve` では剛性を表せないため、接合部を剛節点として扱う。
 
 use crate::ids::{ElemId, NodeId};
 use crate::model::{ElementData, ElementKind, Model, Section};
@@ -66,14 +67,14 @@ use crate::section_shape::SectionShape;
 use crate::structure_kind::{member_structure_kind, StructureKind};
 
 /// 部材軸の鉛直成分がこの値以上なら柱（鉛直材）とみなす。
-pub const COLUMN_EZ: f64 = 0.8;
+const COLUMN_EZ: f64 = 0.8;
 /// 部材軸の鉛直成分がこの値以下なら梁（水平材）とみなす。
-pub const BEAM_EZ: f64 = 0.2;
+const BEAM_EZ: f64 = 0.2;
 
 /// 仕口パネルに対する部材の向き。
 ///
-/// 斜材（鉛直成分が [`BEAM_EZ`] と [`COLUMN_EZ`] の間）は、資料が接合位置と
-/// 係数 ζ を定めていないため、いずれにも分類しない（`None`）。
+/// 斜材（鉛直成分が 0.2 と 0.8 の間）は、資料が接合位置と係数 ζ を定めていない
+/// ため、いずれにも分類しない（`None`）。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MemberOrientation {
     /// 柱（鉛直材）。パネルの上下面で接合する。
@@ -82,8 +83,8 @@ pub enum MemberOrientation {
     Beam,
 }
 
-/// 要素の材軸の鉛直成分から柱・はりを判定する。線材以外・退化長さは `None`。
-pub fn member_orientation(model: &Model, elem: &ElementData) -> Option<MemberOrientation> {
+/// 線材要素の単位材軸ベクトル（i 端 → j 端）。線材以外・退化長さは `None`。
+pub fn member_unit_axis(model: &Model, elem: &ElementData) -> Option<[f64; 3]> {
     if !matches!(elem.kind, ElementKind::Beam) || elem.nodes.len() < 2 {
         return None;
     }
@@ -91,10 +92,12 @@ pub fn member_orientation(model: &Model, elem: &ElementData) -> Option<MemberOri
     let p1 = model.nodes.get(elem.nodes[1].index())?.coord;
     let d = [p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2]];
     let l = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
-    if l < 1e-12 {
-        return None;
-    }
-    let ez = (d[2] / l).abs();
+    (l >= 1e-12).then(|| [d[0] / l, d[1] / l, d[2] / l])
+}
+
+/// 要素の材軸の鉛直成分から柱・はりを判定する。線材以外・退化長さは `None`。
+pub fn member_orientation(model: &Model, elem: &ElementData) -> Option<MemberOrientation> {
+    let ez = member_unit_axis(model, elem)?[2].abs();
     if ez >= COLUMN_EZ {
         Some(MemberOrientation::Column)
     } else if ez <= BEAM_EZ {
@@ -191,7 +194,7 @@ pub struct PanelGeometry {
     /// 充填コンクリートを持つ柱（CFT）か。
     ///
     /// 断面検定では鋼管部を S 造と同じ式で評価するため区別しないが、仕口パネルの
-    /// **モデル化からは除外する**（[`Self::is_modeling_target`]）。
+    /// **モデル化からは除外する**（[`PanelJoint::has_filled_column`]）。
     pub filled: bool,
 }
 
@@ -259,19 +262,6 @@ impl PanelGeometry {
         })
     }
 
-    /// 仕口パネルの**モデル化**の対象か。
-    ///
-    /// S 造（H 形鋼・角形鋼管・円形鋼管）は対象、CFT は対象外とする。CFT の接合部は
-    /// 充填コンクリートと通しダイアフラムが接合部のせん断挙動に関与し、鋼管のみの
-    /// 実効体積による弾性せん断パネル `G・Ve` では剛性を表せないため、接合部を
-    /// 剛節点として扱う。
-    ///
-    /// 断面検定（S 造パネルゾーン）は本判定に依らず CFT も対象に含める（鋼管部を
-    /// S 造と同じ式で評価する従来どおりの扱い）。
-    pub fn is_modeling_target(&self) -> bool {
-        !self.filled
-    }
-
     /// パネルの形状係数 κ（鋼構造接合部設計指針）。
     ///
     /// - H 形: `κ = 1/(2/3 + 4・bc・tf/(dc・tp)) + 1/(1 + dc・tp/(6・bc・tf))`
@@ -321,9 +311,9 @@ pub struct PanelJoint {
     pub column: ElemId,
     /// 取り付く柱に充填断面（CFT）が 1 本でもあるか。
     ///
-    /// モデル化はこれが `true` の接合部を対象外とする
-    /// （[`PanelGeometry::is_modeling_target`] と同じ理由）。断面検定は
-    /// 鋼管部を S 造と同じ式で評価するため区別しない。
+    /// モデル化はこれが `true` の接合部を対象外とする（モジュール冒頭
+    /// 「柱断面ごとの扱い」）。断面検定は鋼管部を S 造と同じ式で評価するため
+    /// 区別しない。
     pub has_filled_column: bool,
 }
 
@@ -377,36 +367,26 @@ pub fn resolve_panel_joint<'a>(
         return None;
     }
 
+    let geometry_of = |e: &&ElementData| section_of(e).and_then(PanelGeometry::from_column);
+    let has_filled_column = columns.iter().filter_map(geometry_of).any(|g| g.filled);
+
     // 柱が複数取り付く場合は Ve が最小になる柱を採る。要素の並び順に依存せず
     // 決定的で、かつ剛性・耐力とも安全側になる。
-    let mut best: Option<PanelJoint> = None;
-    let mut has_filled_column = false;
-    for e in &columns {
-        let Some(geometry) = section_of(e).and_then(PanelGeometry::from_column) else {
-            continue;
-        };
-        has_filled_column |= geometry.filled;
-        let ve = geometry.effective_volume(db);
-        if ve <= 0.0 {
-            continue;
-        }
-        let better = match &best {
-            Some(cur) => ve < cur.ve,
-            None => true,
-        };
-        if better {
-            best = Some(PanelJoint {
-                geometry,
-                db,
-                ve,
-                column: e.id,
-                has_filled_column: false,
-            });
-        }
-    }
-    best.map(|j| PanelJoint {
+    let (column, geometry, ve) = columns
+        .iter()
+        .filter_map(|e| {
+            let geometry = geometry_of(e)?;
+            let ve = geometry.effective_volume(db);
+            (ve > 0.0).then_some((e.id, geometry, ve))
+        })
+        .min_by(|a, b| a.2.total_cmp(&b.2))?;
+
+    Some(PanelJoint {
+        geometry,
+        db,
+        ve,
+        column,
         has_filled_column,
-        ..j
     })
 }
 
@@ -554,7 +534,7 @@ mod tests {
             let g = PanelGeometry::from_column(&s).expect("CFT も諸元は解決できる");
             assert_eq!(g.kind, kind);
             assert!(g.filled, "CFT は充填断面");
-            assert!(!g.is_modeling_target(), "CFT はモデル化の対象外");
+            assert!(g.filled, "CFT はモデル化の対象外");
             // 検定に使う Ve・κ は鋼管と同じ式で求まる。
             assert!(g.effective_volume(500.0) > 0.0);
             assert!(g.kappa() > 0.0);
@@ -586,7 +566,7 @@ mod tests {
             let s = sec(shape, 400.0, None);
             let g = PanelGeometry::from_column(&s).expect("S 造は対象");
             assert!(!g.filled);
-            assert!(g.is_modeling_target());
+            assert!(!g.filled);
         }
     }
 
@@ -626,32 +606,7 @@ mod tests {
     /// RC 柱はパネルの対象外（剛域と RC 柱梁接合部検定で扱う）。
     #[test]
     fn test_rc_column_is_not_panel_target() {
-        use crate::section_shape::{BarSet, RcRebar, ShearBar};
-        let bars = BarSet {
-            dia: 25.0,
-            count: 4,
-            layers: 1,
-        };
-        let s = sec(
-            SectionShape::RcRect {
-                b: 700.0,
-                d: 700.0,
-                rebar: RcRebar {
-                    main_x: bars.clone(),
-                    main_y: bars,
-                    cover: 40.0,
-                    shear: ShearBar {
-                        dia: 10.0,
-                        pitch: 100.0,
-                        legs: 2,
-                        grade: None,
-                    },
-                    main_grade: None,
-                },
-            },
-            700.0,
-            None,
-        );
+        let s = sec(rc_rect_shape(700.0, 700.0), 700.0, None);
         assert!(PanelGeometry::from_column(&s).is_none());
     }
 
@@ -707,15 +662,16 @@ mod tests {
         }
     }
 
-    fn rc_shape() -> SectionShape {
+    /// RC 矩形断面。
+    fn rc_rect_shape(b: f64, d: f64) -> SectionShape {
         let bars = BarSet {
             dia: 25.0,
             count: 4,
             layers: 1,
         };
         SectionShape::RcRect {
-            b: 400.0,
-            d: 700.0,
+            b,
+            d,
             rebar: RcRebar {
                 main_x: bars.clone(),
                 main_y: bars,
@@ -771,14 +727,14 @@ mod tests {
     /// RC 梁が 1 本でもあれば対象外（柱が S でも接合部は RC になる）。
     #[test]
     fn test_rc_beam_disqualifies_joint() {
-        let m = joint_model(rc_shape(), 700.0, h_col());
+        let m = joint_model(rc_rect_shape(400.0, 700.0), 700.0, h_col());
         assert!(resolve_panel_joint(&m, NodeId(0), &m.elements).is_none());
     }
 
     /// RC 柱が 1 本でもあれば対象外。
     #[test]
     fn test_rc_column_disqualifies_joint() {
-        let m = joint_model(h_beam(), 600.0, rc_shape());
+        let m = joint_model(h_beam(), 600.0, rc_rect_shape(400.0, 700.0));
         assert!(resolve_panel_joint(&m, NodeId(0), &m.elements).is_none());
     }
 

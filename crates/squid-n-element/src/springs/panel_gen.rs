@@ -16,25 +16,29 @@
 //! 実効体積による弾性せん断パネルでは剛性を表せないため、接合部を剛節点として
 //! 扱う。CFT の接合部は S 造パネルゾーンの断面検定の対象には含まれる。
 //!
-//! # パネル分のオフセットを剛域長へ書き込む
+//! # パネル分のオフセットをモデルへ書き込む
 //!
 //! パネルを設けた接合部では、部材は節点ではなくパネルの面（柱フェース・梁フェース）
 //! で接合する。この接合位置までのオフセットは剛体アームそのものなので、生成時に
-//! 各部材の**剛域長へ書き込む**（`max(現在値, オフセット)`）。
+//! 各部材の `rigid_zone.panel_offset_i/j` へ書き込む。
 //!
 //! オフセットを要素の組み立て時にだけ折り込む方式では、`rigid_zone` を直接読む
 //! 側（幾何剛性・せん断降伏の `h0`・座屈長さの剛度比 `G`・モデル化図）が
-//! オフセットを見落とす。モデルに一度だけ確定させることで、`rigid_zone` を読む
-//! すべての経路が同じ値を見る。
+//! オフセットを見落とす。モデルに一度だけ確定させることで、
+//! [`RigidZone::rigid_length_i`] を読むすべての経路が同じ値を見る。
 //!
-//! 書き込みは剛域長の `source`（`Auto`/`Manual`）に依らず行う。オフセットは
-//! 「部材が節点ではなくパネル面で接合する」という幾何的事実であり、剛域長の
-//! 設計的な調整量とは性質が異なるためである。`max` を取るので、手動指定が
-//! オフセットより大きければその値が残る。
+//! **剛域長 `length_i/j` とは別のフィールドへ入れる。**剛域の自動算定
+//! （[`crate::beam::apply_auto_rigid_zones`]）は `Auto` 端の `length_i/j` を無条件に
+//! 再算定するため、同じ場所へ入れると増分解析・時刻歴のように剛域算定を単独で
+//! 走らせる経路でオフセットが消える。別フィールドなら呼び出し順に依存しない。
 //!
-//! 剛域の自動算定（[`crate::beam::apply_auto_rigid_zones`]）はパネル生成より前に
-//! 走って `Auto` 端を再算定するため、パネルを OFF にすれば書き込みは消え、
-//! 繰り返し適用しても値は増えない（冪等）。
+//! 剛体アーム長は `max(剛域長, パネルオフセット)` とする。オフセットは
+//! 「部材が節点ではなくパネル面で接合する」という幾何的事実なので、剛域長の手動
+//! 指定が 0 でも部材が節点まで伸びることはない。手動指定がオフセットより大きければ
+//! そちらが効く。
+//!
+//! 本関数は全要素の `panel_offset_i/j` を毎回求め直すため、パネルを OFF にすれば
+//! 値は 0 へ戻り、繰り返し適用しても増えない（冪等）。
 //!
 //! # 要素 ID の扱い
 //!
@@ -123,7 +127,7 @@ fn remove_existing_panels(model: &mut Model) {
 /// （CFT を含まない・せん断弾性係数が正）とパネルせん断剛性の算定を担う。
 fn panel_at(model: &Model, node: NodeId) -> Option<(GeneratedPanel, Vec<NodeId>)> {
     let joint = resolve_panel_joint(model, node, &model.elements)?;
-    // CFT はモデル化の対象外（`PanelGeometry::is_modeling_target`）。
+    // CFT はモデル化の対象外（充填部がせん断挙動に関与するため剛節点として扱う）。
     if joint.has_filled_column {
         return None;
     }
@@ -141,14 +145,14 @@ fn panel_at(model: &Model, node: NodeId) -> Option<(GeneratedPanel, Vec<NodeId>)
     }
 
     // 描画・パネル自由度との連成に用いる、接合部へ取り付く部材の他端。
+    // 節点の照合を先に行い、合致した部材だけ向きを判定する（向きの判定は
+    // 座標参照と平方根を伴うため、全要素へ先に掛けない）。
     let connected: Vec<NodeId> = model
         .elements
         .iter()
-        .filter(|e| member_orientation(model, e).is_some())
-        .filter_map(|e| match (e.nodes[0], e.nodes[1]) {
-            (n, far) if n == node => Some(far),
-            (far, n) if n == node => Some(far),
-            _ => None,
+        .filter_map(|e| {
+            let far = far_end_at(e, node)?;
+            member_orientation(model, e).map(|_| far)
         })
         .collect();
 
@@ -165,38 +169,58 @@ fn panel_at(model: &Model, node: NodeId) -> Option<(GeneratedPanel, Vec<NodeId>)
     ))
 }
 
-/// パネルを設けた接合部で、取り付く部材の剛域長へパネル分のオフセットを
-/// 書き込む（モジュール冒頭「パネル分のオフセットを剛域長へ書き込む」）。
-fn apply_panel_offsets(model: &mut Model, panel_nodes: &[NodeId]) {
-    let extents: Vec<(NodeId, PanelHalfExtent)> = panel_nodes
+/// 要素 `e` の端点に `node` が現れるなら、その反対端の節点を返す。
+fn far_end_at(e: &ElementData, node: NodeId) -> Option<NodeId> {
+    match e.nodes.iter().take(2).position(|n| *n == node)? {
+        0 => e.nodes.get(1).copied(),
+        _ => e.nodes.first().copied(),
+    }
+}
+
+/// 部材の `rigid_zone.panel_offset_i/j` を、現在のパネル配置から求め直す。
+///
+/// パネルが 1 つも無ければ全要素の値が 0 になるため、モデル化を OFF にすると
+/// オフセットは消える（冪等）。
+///
+/// 節点ごとに全要素を走査すると パネル数 × 要素数 になるため、半寸法を節点表へ
+/// 引けるようにしたうえで、要素側を 1 周して両端を引く。
+fn apply_panel_offsets(model: &mut Model, panels: &[GeneratedPanel]) {
+    let mut extent_of: Vec<Option<PanelHalfExtent>> = vec![None; model.nodes.len()];
+    for p in panels {
+        if let Some(slot) = extent_of.get_mut(p.node.index()) {
+            *slot = Some(panel_half_extent(model, p.node, &model.elements));
+        }
+    }
+
+    let offsets: Vec<(usize, [f64; 2])> = model
+        .elements
         .iter()
-        .map(|&n| (n, panel_half_extent(model, n, &model.elements)))
+        .enumerate()
+        .map(|(ei, e)| {
+            let ends = match (e.nodes.len() >= 2)
+                .then(|| member_orientation(model, e))
+                .flatten()
+            {
+                Some(orientation) => {
+                    let offset_at = |end: usize| {
+                        extent_of
+                            .get(e.nodes[end].index())
+                            .and_then(|x| x.as_ref())
+                            .map(|x| x.offset_for(orientation))
+                            .unwrap_or(0.0)
+                    };
+                    [offset_at(0), offset_at(1)]
+                }
+                None => [0.0, 0.0],
+            };
+            (ei, ends)
+        })
         .collect();
 
-    for (node, extent) in extents {
-        let updates: Vec<(usize, usize, f64)> = model
-            .elements
-            .iter()
-            .enumerate()
-            .filter_map(|(ei, e)| {
-                let orientation = member_orientation(model, e)?;
-                let offset = extent.offset_for(orientation);
-                if offset <= 0.0 {
-                    return None;
-                }
-                let end = e.nodes.iter().take(2).position(|n| *n == node)?;
-                Some((ei, end, offset))
-            })
-            .collect();
-        for (ei, end, offset) in updates {
-            let zone = &mut model.elements[ei].rigid_zone;
-            let length = if end == 0 {
-                &mut zone.length_i
-            } else {
-                &mut zone.length_j
-            };
-            *length = length.max(offset);
-        }
+    for (ei, ends) in offsets {
+        let zone = &mut model.elements[ei].rigid_zone;
+        zone.panel_offset_i = ends[0];
+        zone.panel_offset_j = ends[1];
     }
 }
 
@@ -209,6 +233,8 @@ fn apply_panel_offsets(model: &mut Model, panel_nodes: &[NodeId]) {
 pub fn apply_auto_panel_zones(model: &mut Model) -> Vec<GeneratedPanel> {
     remove_existing_panels(model);
     if model.panel_zone != PanelZoneMode::Model {
+        // パネルが 1 つも無い状態のオフセット（＝すべて 0）へ戻す。
+        apply_panel_offsets(model, &[]);
         return Vec::new();
     }
 
@@ -244,8 +270,7 @@ pub fn apply_auto_panel_zones(model: &mut Model) -> Vec<GeneratedPanel> {
         model.elements.push(e);
     }
 
-    let panel_nodes: Vec<NodeId> = generated.iter().map(|p| p.node).collect();
-    apply_panel_offsets(model, &panel_nodes);
+    apply_panel_offsets(model, &generated);
     generated
 }
 
@@ -496,7 +521,7 @@ mod tests {
 
             // 一方、諸元の解決自体は成功する（断面検定はこの経路を使う）。
             let geom = PanelGeometry::from_column(&model.sections[1]).expect("諸元は解決できる");
-            assert!(!geom.is_modeling_target(), "モデル化対象ではない");
+            assert!(geom.filled, "モデル化対象ではない");
             assert!(geom.effective_volume(500.0) > 0.0, "検定用の Ve は求まる");
         }
     }
@@ -558,28 +583,31 @@ mod tests {
         assert!(panels.is_empty(), "RC 梁が 1 本でも混じれば対象外");
     }
 
-    /// パネル分のオフセットが部材の剛域長へ書き込まれる。
-    /// 梁の端は柱せいの 1/2、柱の端は梁せいの 1/2。
+    /// パネル分のオフセットが `panel_offset_i/j` へ書き込まれる。
+    /// 梁の端は柱せいの 1/2、柱の端は梁せいの 1/2。剛域長 `length_i/j` は触らない。
     #[test]
     fn test_offsets_are_written_into_rigid_zones() {
         let mut model = l_frame(h_shape(400.0, 400.0, 13.0, 21.0));
         apply_auto_panel_zones(&mut model);
 
         // 梁（要素 0）の i 端が接合部。オフセットは柱せい 400 の 1/2。
-        assert!((model.elements[0].rigid_zone.length_i - 200.0).abs() < 1e-9);
-        assert_eq!(
-            model.elements[0].rigid_zone.length_j, 0.0,
-            "接合部でない端は変えない"
-        );
+        let beam = &model.elements[0].rigid_zone;
+        assert!((beam.panel_offset_i - 200.0).abs() < 1e-9);
+        assert_eq!(beam.panel_offset_j, 0.0, "接合部でない端は 0");
+        assert_eq!(beam.length_i, 0.0, "剛域長そのものは変えない");
+        assert!((beam.rigid_length_i() - 200.0).abs() < 1e-9);
+
         // 柱（要素 1）の j 端が接合部。オフセットは梁せい 600 の 1/2。
-        assert!((model.elements[1].rigid_zone.length_j - 300.0).abs() < 1e-9);
-        assert_eq!(model.elements[1].rigid_zone.length_i, 0.0);
+        let col = &model.elements[1].rigid_zone;
+        assert!((col.panel_offset_j - 300.0).abs() < 1e-9);
+        assert_eq!(col.panel_offset_i, 0.0);
+        assert!((col.rigid_length_j() - 300.0).abs() < 1e-9);
     }
 
-    /// 書き込みは `max` なので、手動指定の剛域長がオフセットより大きければ残る。
-    /// 逆にオフセットより小さい手動値は上書きする（接合位置は幾何的事実のため）。
+    /// 剛体アーム長は `max(剛域長, オフセット)`。手動指定が大きければそちらが効き、
+    /// 小さくてもオフセットの分は確保される（接合位置は幾何的事実のため）。
     #[test]
-    fn test_offsets_keep_larger_manual_rigid_zone() {
+    fn test_rigid_length_takes_larger_of_zone_and_offset() {
         let mut model = l_frame(h_shape(400.0, 400.0, 13.0, 21.0));
         model.elements[0].rigid_zone.length_i = 500.0;
         model.elements[0].rigid_zone.source_i = squid_n_core::model::ZoneSource::Manual;
@@ -587,17 +615,46 @@ mod tests {
         model.elements[1].rigid_zone.source_j = squid_n_core::model::ZoneSource::Manual;
 
         apply_auto_panel_zones(&mut model);
-        assert_eq!(
-            model.elements[0].rigid_zone.length_i, 500.0,
-            "オフセットより大きい手動値は残す"
-        );
+        let beam = &model.elements[0].rigid_zone;
+        assert_eq!(beam.length_i, 500.0, "手動指定はそのまま残る");
+        assert!((beam.panel_offset_i - 200.0).abs() < 1e-9);
+        assert_eq!(beam.rigid_length_i(), 500.0, "大きい方が剛体アーム長");
+
+        let col = &model.elements[1].rigid_zone;
+        assert_eq!(col.length_j, 10.0, "手動指定はそのまま残る");
         assert!(
-            (model.elements[1].rigid_zone.length_j - 300.0).abs() < 1e-9,
-            "オフセットより小さい手動値は上書きする"
+            (col.rigid_length_j() - 300.0).abs() < 1e-9,
+            "オフセットの方が大きければそちらが効く"
         );
     }
 
-    /// 繰り返し適用しても剛域長は増えない（`max` なので冪等）。
+    /// 剛域の自動算定を単独で走らせてもオフセットは消えない。
+    ///
+    /// 増分解析・時刻歴・MCP のジョブは `apply_auto_rigid_zones` だけを呼ぶ経路が
+    /// あるため、剛域長と同じフィールドへ入れると「パネル要素は残るのに剛体アームだけ
+    /// 消えたモデル」で解析が走る。別フィールドに保持することで順序に依存しない。
+    #[test]
+    fn test_offsets_survive_rigid_zone_recomputation() {
+        let mut model = l_frame(h_shape(400.0, 400.0, 13.0, 21.0));
+        apply_auto_panel_zones(&mut model);
+        let before: Vec<_> = model
+            .elements
+            .iter()
+            .map(|e| (e.rigid_zone.panel_offset_i, e.rigid_zone.panel_offset_j))
+            .collect();
+
+        crate::beam::apply_auto_rigid_zones(&mut model, &crate::beam::RigidZoneRule::default());
+
+        let after: Vec<_> = model
+            .elements
+            .iter()
+            .map(|e| (e.rigid_zone.panel_offset_i, e.rigid_zone.panel_offset_j))
+            .collect();
+        assert_eq!(before, after, "剛域の再算定でオフセットが消えてはいけない");
+        assert!((model.elements[0].rigid_zone.rigid_length_i() - 200.0).abs() < 1e-9);
+    }
+
+    /// 繰り返し適用してもオフセットは増えず、OFF にすると 0 へ戻る。
     #[test]
     fn test_offset_write_is_idempotent() {
         let mut model = l_frame(h_shape(400.0, 400.0, 13.0, 21.0));
@@ -605,15 +662,26 @@ mod tests {
         let first: Vec<_> = model
             .elements
             .iter()
-            .map(|e| (e.rigid_zone.length_i, e.rigid_zone.length_j))
+            .map(|e| (e.rigid_zone.panel_offset_i, e.rigid_zone.panel_offset_j))
             .collect();
         apply_auto_panel_zones(&mut model);
         let second: Vec<_> = model
             .elements
             .iter()
-            .map(|e| (e.rigid_zone.length_i, e.rigid_zone.length_j))
+            .map(|e| (e.rigid_zone.panel_offset_i, e.rigid_zone.panel_offset_j))
             .collect();
         assert_eq!(first, second);
+        assert!(first.iter().any(|(i, j)| *i > 0.0 || *j > 0.0));
+
+        model.panel_zone = PanelZoneMode::None;
+        apply_auto_panel_zones(&mut model);
+        assert!(
+            model
+                .elements
+                .iter()
+                .all(|e| e.rigid_zone.panel_offset_i == 0.0 && e.rigid_zone.panel_offset_j == 0.0),
+            "モデル化を OFF にするとオフセットは消える"
+        );
     }
 
     /// 柱が複数取り付く接合部では、実効体積 Ve が最小になる柱の諸元を採る。

@@ -28,10 +28,14 @@ pub(super) fn check_s_panel(
     panel_moment: Option<f64>,
     out: &mut Vec<(NodeId, String, CheckResult)>,
 ) {
-    let Some(joint) = resolve_panel_joint(model, nid, &model.elements) else {
+    // 判定に渡すのは当該節点へ取り付く部材だけとする。呼び出し側が既に集めた
+    // 集合をそのまま使うため、節点ごとにモデル全体を走査しない。
+    let members = cols.iter().chain(beams.iter()).map(|m| m.elem);
+    let Some(joint) = resolve_panel_joint(model, nid, members) else {
         return;
     };
     // 諸元は `Ve` が最小の柱から採る。軸力比 n と基準強度 F もその柱の値を用いる。
+    // 柱は `cols` から選ばれるため、この検索が外れることはない。
     let Some(col) = cols.iter().find(|c| c.elem.id == joint.column) else {
         return;
     };
