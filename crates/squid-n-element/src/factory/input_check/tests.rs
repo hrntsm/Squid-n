@@ -3,7 +3,9 @@
 use super::*;
 use squid_n_core::dof::Dof6Mask;
 use squid_n_core::ids::{ElemId, MaterialId, NodeId, SectionId};
-use squid_n_core::model::{EndCondition, ForceRegime, LocalAxis, Material, Node, Section};
+use squid_n_core::model::{
+    EndCondition, ForceRegime, LocalAxis, Material, MaterialCategory, Node, Section,
+};
 use squid_n_core::section_shape::{BarSet, RcRebar, SectionShape, ShearBar};
 
 fn steel_material() -> Material {
@@ -12,12 +14,24 @@ fn steel_material() -> Material {
         concrete_class: Default::default(),
         id: MaterialId(0),
         name: "SN400".into(),
+        category: MaterialCategory::Steel,
         young: 205000.0,
         poisson: 0.3,
         density: 0.0,
         shear: None,
         fc: None,
         fy: Some(235.0),
+    }
+}
+
+/// コンクリート区分の材料（RC・SRC 断面の部材に割り当てる）。
+fn concrete_material() -> Material {
+    Material {
+        category: MaterialCategory::Concrete,
+        name: "FC24".into(),
+        fy: None,
+        fc: Some(24.0),
+        ..steel_material()
     }
 }
 
@@ -104,20 +118,14 @@ fn test_no_issue_for_steel_member_with_fy() {
 /// RC 断面＋ Fc 設定済みの部材は不備なし。
 #[test]
 fn test_no_issue_for_rc_member_with_fc() {
-    let mut mat = steel_material();
-    mat.name = "FC24".into();
-    mat.fy = None;
-    mat.fc = Some(24.0);
-    let model = beam_model(rc_section(), mat);
+    let model = beam_model(rc_section(), concrete_material());
     assert!(nonlinear_input_issues(&model).is_empty());
 }
 
 /// 主筋の材質が未設定でも、部材材料に fy があれば解決できるため不備ではない。
 #[test]
 fn test_no_issue_when_main_grade_unset_but_material_has_fy() {
-    let mut mat = steel_material();
-    mat.name = "FC24".into();
-    mat.fc = Some(24.0);
+    let mut mat = concrete_material();
     mat.fy = Some(345.0);
     let model = beam_model(rc_section_without_main_grade(), mat);
     assert!(nonlinear_input_issues(&model).is_empty());
@@ -127,11 +135,7 @@ fn test_no_issue_when_main_grade_unset_but_material_has_fy() {
 /// 既定 345 N/mm² で埋めると SD295 の部材で曲げ降伏耐力を過大評価する（危険側）。
 #[test]
 fn test_issue_when_main_rebar_grade_unset() {
-    let mut mat = steel_material();
-    mat.name = "FC24".into();
-    mat.fy = None;
-    mat.fc = Some(24.0);
-    let model = beam_model(rc_section_without_main_grade(), mat);
+    let model = beam_model(rc_section_without_main_grade(), concrete_material());
     let issues = nonlinear_input_issues(&model);
     assert_eq!(issues.len(), 1, "{:?}", issues);
     assert!(issues[0].contains("主筋の材質"), "{}", issues[0]);
@@ -141,8 +145,8 @@ fn test_issue_when_main_rebar_grade_unset() {
 /// Fc=0 相当で解析を通すと Mc=0 となりヒンジが一切検出されない（危険側）。
 #[test]
 fn test_issue_when_rc_member_has_no_fc() {
-    let mut mat = steel_material();
-    mat.fy = None;
+    let mut mat = concrete_material();
+    mat.fc = None;
     let model = beam_model(rc_section(), mat);
     let issues = nonlinear_input_issues(&model);
     assert_eq!(issues.len(), 1, "{:?}", issues);
@@ -153,8 +157,7 @@ fn test_issue_when_rc_member_has_no_fc() {
 /// RC 断面で Fc が 0 以下の部材もエラーとする（未設定と同じく耐力を算定できない）。
 #[test]
 fn test_issue_when_rc_member_fc_not_positive() {
-    let mut mat = steel_material();
-    mat.fy = None;
+    let mut mat = concrete_material();
     mat.fc = Some(0.0);
     let model = beam_model(rc_section(), mat);
     let issues = nonlinear_input_issues(&model);
@@ -263,11 +266,7 @@ fn src_section(steel_grade: &str) -> Section {
 /// SRC 断面は内蔵鉄骨の鋼種から降伏強度を解決できれば、材料 fy 未設定でも不備なし。
 #[test]
 fn test_no_issue_for_src_section_with_steel_grade() {
-    let mut mat = steel_material();
-    mat.name = "FC24".into();
-    mat.fy = None;
-    mat.fc = Some(24.0);
-    let model = beam_model(src_section("SN400B"), mat);
+    let model = beam_model(src_section("SN400B"), concrete_material());
     assert!(nonlinear_input_issues(&model).is_empty());
 }
 
@@ -275,11 +274,7 @@ fn test_no_issue_for_src_section_with_steel_grade() {
 /// Fc・主筋材質が揃っていても、内蔵鉄骨のファイバに降伏強度が要る。
 #[test]
 fn test_issue_when_src_section_has_no_steel_yield() {
-    let mut mat = steel_material();
-    mat.name = "FC24".into();
-    mat.fy = None;
-    mat.fc = Some(24.0);
-    let model = beam_model(src_section(""), mat);
+    let model = beam_model(src_section(""), concrete_material());
     let issues = nonlinear_input_issues(&model);
     assert_eq!(issues.len(), 1, "{:?}", issues);
     assert!(issues[0].contains("降伏強度"), "{}", issues[0]);
@@ -313,11 +308,52 @@ fn test_elastic_only_element_kinds_are_not_checked() {
     assert!(nonlinear_input_issues(&model).is_empty());
 }
 
+/// 配筋を持つ RC 断面に鋼材区分の材料が付いた部材はエラーとする。
+/// 鋼材として検定・ヒンジ算定すると耐力を大きく過大評価する（危険側）。
+#[test]
+fn test_issue_when_rc_section_has_steel_material() {
+    let model = beam_model(rc_section(), steel_material());
+    let issues = nonlinear_input_issues(&model);
+    assert_eq!(issues.len(), 1, "{:?}", issues);
+    assert!(issues[0].contains("区分が鋼材"), "{}", issues[0]);
+}
+
+/// 線材の材料に鉄筋を割り当てるのは入力の誤りとする。
+/// RC 断面の配筋は断面側にグレード名として持つ。
+#[test]
+fn test_issue_when_member_material_is_rebar() {
+    let mut mat = concrete_material();
+    mat.category = MaterialCategory::Rebar;
+    mat.name = "SD345".into();
+    let model = beam_model(rc_section(), mat);
+    let issues = nonlinear_input_issues(&model);
+    assert_eq!(issues.len(), 1, "{:?}", issues);
+    assert!(issues[0].contains("区分が鉄筋"), "{}", issues[0]);
+}
+
+/// 鋼断面にコンクリート区分の材料が付いても区分の不備とはしない。
+/// 構造種別は材料の区分で決まる仕様であり、H 形のコンクリート部材は
+/// 正しい入力である（断面形状は見た目であって力学的な性質ではない）。
+///
+/// ファイバー断面は形鋼の板要素を鋼材ファイバとして組み立てるため fy を要求するが、
+/// これは区分の矛盾ではなく材料強度の不足として扱う。
+#[test]
+fn test_no_category_issue_for_steel_shape_with_concrete_material() {
+    let mut mat = concrete_material();
+    mat.fy = Some(235.0);
+    let model = beam_model(steel_h_section(), mat);
+    assert!(
+        nonlinear_input_issues(&model).is_empty(),
+        "{:?}",
+        nonlinear_input_issues(&model)
+    );
+}
+
 /// 複数件の不備はメッセージへ 5 件まで列挙し、残りは件数で示す。
 #[test]
 fn test_error_message_lists_head_and_remaining_count() {
-    let mut mat = steel_material();
-    mat.fy = None;
+    let mut mat = concrete_material();
+    mat.fc = None;
     let mut model = beam_model(rc_section(), mat);
     let base = model.elements[0].clone();
     for i in 1..8u32 {

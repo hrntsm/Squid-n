@@ -3,7 +3,7 @@ use crate::transform::LocalFrame;
 use smallvec::SmallVec;
 use squid_n_core::dof::{DofMap, DOF_PER_NODE};
 use squid_n_core::ids::{ElemId, NodeId};
-use squid_n_core::model::{ElementData, Material, Model, Section};
+use squid_n_core::model::{ElementData, Material, MaterialCategory, Model, Section};
 
 /// 一般ブレース要素（材料力学。トラス要素の軸剛性 KB = E·A/L）。
 ///
@@ -80,6 +80,7 @@ fn get_material(model: &Model, mid: Option<squid_n_core::ids::MaterialId>) -> Ma
         concrete_class: Default::default(),
         id: squid_n_core::ids::MaterialId(0),
         name: String::new(),
+        category: MaterialCategory::Steel,
         young: 0.0,
         poisson: 0.0,
         density: 0.0,
@@ -347,6 +348,7 @@ mod tests {
                 concrete_class: Default::default(),
                 id: MaterialId(0),
                 name: "steel".to_string(),
+                category: MaterialCategory::Steel,
                 young: 205000.0,
                 poisson: 0.3,
                 density: 7.85e-9,

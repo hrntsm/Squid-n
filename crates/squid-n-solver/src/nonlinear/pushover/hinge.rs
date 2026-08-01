@@ -12,6 +12,7 @@ use squid_n_core::material_grade::{
 use squid_n_core::model::{ElementData, Model};
 use squid_n_core::rc_capacity::{rc_mu_simple, RcCapacityInput};
 use squid_n_core::section_shape::{bar_set_area, SectionShape};
+use squid_n_core::structure_kind::StructureKind;
 use squid_n_element::behavior::{Ctx, ElemState, ElementBehavior};
 
 /// 部材塑性率の終局ヒンジ判定値。降伏後、部材塑性率がこの値以上のヒンジを
@@ -27,19 +28,6 @@ pub(crate) struct HingeThreshold {
     pub(crate) mc: f64,
     /// 曲げ降伏モーメント My [N·mm]。
     pub(crate) my: f64,
-}
-
-/// 鉄骨系の断面形状か。
-fn is_steel_shape(shape: &SectionShape) -> bool {
-    matches!(
-        shape,
-        SectionShape::SteelH { .. }
-            | SectionShape::SteelBox { .. }
-            | SectionShape::SteelAngle { .. }
-            | SectionShape::SteelChannel { .. }
-            | SectionShape::SteelTee { .. }
-            | SectionShape::SteelPipe { .. }
-    )
 }
 
 /// 部材の曲げヒンジ閾値（実スケルトン）を算定する。
@@ -70,8 +58,18 @@ fn member_moment_thresholds(elem: &ElementData, model: &Model) -> HingeThreshold
     let sigma_y_steel = mat.and_then(|m| m.fy).unwrap_or(235.0)
         * mat.map(material_strength_factor_steel).unwrap_or(1.0);
 
-    match &sec.shape {
-        Some(SectionShape::RcRect { rebar, d, .. }) | Some(SectionShape::RcCircle { rebar, d }) => {
+    // 分岐は構造種別による（`squid_n_core::structure_kind`）。断面形状ではなく
+    // 材料の区分で決まるため、H 形のコンクリート部材・矩形断面の鋼部材も
+    // 正しい式へ振り分けられる。
+    let kind = squid_n_core::structure_kind::structure_kind_of(Some(sec), mat.map(|m| m.category));
+    match (&sec.shape, kind) {
+        // 配筋を持つ形状は材料の区分に依らず RC の式で評価する。鋼の Mp 式は
+        // 配筋を無視した素の断面係数を使うため、RC 断面へ当てると My が桁で
+        // 過大になり、増分解析で曲げヒンジが検出されなくなる。
+        (
+            Some(SectionShape::RcRect { rebar, d, .. }) | Some(SectionShape::RcCircle { rebar, d }),
+            _,
+        ) => {
             // Fc 未設定（fc=0 → Mc=0 でヒンジが一切検出されない）のモデルは
             // `squid_n_element::factory::ensure_nonlinear_input` が解析前に停止する
             // ため、非線形解析ではこのフォールバックに到達しない。
@@ -107,15 +105,16 @@ fn member_moment_thresholds(elem: &ElementData, model: &Model) -> HingeThreshold
             let my = if my > 0.0 { my } else { sigma_y_rebar * ze };
             HingeThreshold { mc: mc.min(my), my }
         }
-        Some(shape) if is_steel_shape(shape) => {
+        (Some(shape), StructureKind::S) => {
             // 鉄骨: 全塑性モーメント Mp = Zp·σy。ひび割れは無いため Mc=My=Mp。
+            // 塑性断面係数を持たない形状は 1.12·Ze で近似する。
             let zp = shape.plastic_modulus_strong().unwrap_or(1.12 * ze);
             let mp = sigma_y_steel * zp;
             HingeThreshold { mc: mp, my: mp }
         }
         _ => {
-            // 複合断面(SRC/CFT)・形状不明: σy·Ze を降伏、コンクリを含むなら
-            // κ·Fc·Ze をひび割れとする改良簡易値。
+            // 複合断面(SRC/CFT)・形状不明・配筋を持たない RC 断面:
+            // σy·Ze を降伏、コンクリを含むなら κ·Fc·Ze をひび割れとする改良簡易値。
             let my = sigma_y_steel * ze;
             let fc = mat.and_then(|m| m.fc).unwrap_or(0.0);
             let mc = if fc > 0.0 {

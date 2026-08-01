@@ -3,8 +3,8 @@ use squid_n_core::dof::Dof6Mask;
 use squid_n_core::ids::{ElemId, MaterialId, SectionId};
 use squid_n_core::model::{
     DamperSpec, ElementData, EndCondition, ForceRegime, LoadCase, LoadCaseKind, LoadCfg, LocalAxis,
-    Material, MemberLoad, MiscWall, MiscWallTransfer, NodalLoad, Node, RigidZone, SecondaryMember,
-    SecondaryMemberKind, Section, WallAttr,
+    Material, MaterialCategory, MemberLoad, MiscWall, MiscWallTransfer, NodalLoad, Node, RigidZone,
+    SecondaryMember, SecondaryMemberKind, Section, WallAttr,
 };
 
 /// 2 層 × 1 スパンの平面ラーメン（各レベル 2 節点）。
@@ -52,6 +52,7 @@ fn two_story_model() -> Model {
         concrete_class: Default::default(),
         id: MaterialId(0),
         name: "SN400B".into(),
+        category: MaterialCategory::Steel,
         young: 205000.0,
         poisson: 0.3,
         density: 7.85e-9,
@@ -350,6 +351,7 @@ fn two_columns_with_dl_model() -> Model {
         concrete_class: Default::default(),
         id: MaterialId(0),
         name: "S".into(),
+        category: MaterialCategory::Steel,
         young: 205000.0,
         poisson: 0.3,
         density: 7.85e-9,
@@ -523,6 +525,7 @@ fn secondary_joist_model() -> Model {
         concrete_class: Default::default(),
         id: MaterialId(0),
         name: "S".into(),
+        category: MaterialCategory::Steel,
         young: 205000.0,
         poisson: 0.3,
         density: 7.85e-9,
@@ -609,6 +612,7 @@ fn single_beam_model(
         concrete_class: Default::default(),
         id: MaterialId(0),
         name: "M".into(),
+        category: MaterialCategory::Steel,
         young: 205000.0,
         poisson: 0.3,
         density,
@@ -833,6 +837,7 @@ fn test_face_reduction_applies_to_horizontal_concrete_beam() {
         concrete_class: Default::default(),
         id: MaterialId(0),
         name: "Fc24".into(),
+        category: MaterialCategory::Concrete,
         young: 22000.0,
         poisson: 0.2,
         density,
@@ -985,6 +990,7 @@ fn wall_model() -> Model {
         concrete_class: Default::default(),
         id: MaterialId(0),
         name: "Fc24".into(),
+        category: MaterialCategory::Concrete,
         young: 23000.0,
         poisson: 0.2,
         density: 2.4e-9,
@@ -1321,6 +1327,7 @@ fn test_misc_wall_column_transfer_splits_to_column_ends() {
         concrete_class: Default::default(),
         id: MaterialId(0),
         name: "Fc24".into(),
+        category: MaterialCategory::Concrete,
         young: 23000.0,
         poisson: 0.2,
         density: 2.4e-9,
@@ -1495,6 +1502,7 @@ fn test_finish_area_weight_beam_perimeter_three_side() {
         concrete_class: Default::default(),
         id: MaterialId(0),
         name: "S".into(),
+        category: MaterialCategory::Steel,
         young: 205000.0,
         poisson: 0.3,
         density: 7.85e-9,
@@ -1600,6 +1608,7 @@ fn test_base_column_without_lower_column_adds_max_beam_depth() {
         concrete_class: Default::default(),
         id: MaterialId(0),
         name: "Fc24".into(),
+        category: MaterialCategory::Concrete,
         young: 23000.0,
         poisson: 0.2,
         density: 2.4e-9,
@@ -1733,6 +1742,7 @@ fn test_base_column_with_lower_column_does_not_add_beam_depth() {
         concrete_class: Default::default(),
         id: MaterialId(0),
         name: "Fc24".into(),
+        category: MaterialCategory::Concrete,
         young: 23000.0,
         poisson: 0.2,
         density: 2.4e-9,
@@ -1882,6 +1892,7 @@ fn k_brace_model(rule: KBraceWeightRule) -> Model {
         concrete_class: Default::default(),
         id: MaterialId(0),
         name: "S".into(),
+        category: MaterialCategory::Steel,
         young: 205000.0,
         poisson: 0.3,
         density: 7.85e-9,
@@ -2012,17 +2023,26 @@ fn test_k_brace_internal_nodes_default_is_half_half() {
     );
 }
 
-/// 断面形状に応じて `SectionShape` を割り当てた [`two_story_model`]。
-/// `lower`・`upper` はそれぞれ 1F・2F の柱梁に与える形状。
+/// 断面形状と材料を階ごとに割り当てた [`two_story_model`]。
+/// `lower`・`upper` はそれぞれ 1F・2F の柱梁に与える形状と材料の区分。
+///
+/// 階の構造種別は部材の構造種別から決まり、それは材料の区分で決まるため、
+/// 形状だけでなく材料も階ごとに割り当てる。
 fn two_story_model_with_shapes(
-    lower: squid_n_core::section_shape::SectionShape,
-    upper: squid_n_core::section_shape::SectionShape,
+    lower: (squid_n_core::section_shape::SectionShape, MaterialCategory),
+    upper: (squid_n_core::section_shape::SectionShape, MaterialCategory),
 ) -> Model {
     let mut model = two_story_model();
     model.sections = vec![
-        lower.to_section(SectionId(0), "1F".into()),
-        upper.to_section(SectionId(1), "2F".into()),
+        lower.0.to_section(SectionId(0), "1F".into()),
+        upper.0.to_section(SectionId(1), "2F".into()),
     ];
+    // 既定の材料（MaterialId(0)）を 1F 用に置き換え、2F 用を追加する。
+    model.materials[0].category = lower.1;
+    let mut upper_mat = model.materials[0].clone();
+    upper_mat.id = MaterialId(1);
+    upper_mat.category = upper.1;
+    model.materials.push(upper_mat);
     // 部材の所属階は「材端節点のうち最も高い節点」で決まる。
     // 節点 Z: 0/0/3500/3500/7000/7000 → 1F = 柱(0-2,1-3)・梁(2-3)、2F = 柱(2-4,3-5)・梁(4-5)。
     for e in &mut model.elements {
@@ -2031,10 +2051,16 @@ fn two_story_model_with_shapes(
             .iter()
             .map(|n| model.nodes[n.index()].coord[2])
             .fold(f64::NEG_INFINITY, f64::max);
-        e.section = Some(if top_z <= 3500.0 {
+        let lower_story = top_z <= 3500.0;
+        e.section = Some(if lower_story {
             SectionId(0)
         } else {
             SectionId(1)
+        });
+        e.material = Some(if lower_story {
+            MaterialId(0)
+        } else {
+            MaterialId(1)
         });
     }
     model
@@ -2074,24 +2100,54 @@ fn steel_h_shape() -> squid_n_core::section_shape::SectionShape {
     }
 }
 
-/// 階の主要構造種別は、その階に属する柱・梁の断面形状から自動判定される
+/// 階の主要構造種別は、その階に属する柱・梁の構造種別から自動判定される
 /// （下階 RC・上階 S の混合構造で階ごとに別々に判定されること）。
 #[test]
-fn test_generate_infers_story_structure_from_sections() {
+fn test_generate_infers_story_structure_from_members() {
     use squid_n_core::model::StoryStructure;
-    let model = two_story_model_with_shapes(rc_rect_shape(), steel_h_shape());
+    let model = two_story_model_with_shapes(
+        (rc_rect_shape(), MaterialCategory::Concrete),
+        (steel_h_shape(), MaterialCategory::Steel),
+    );
     let gen = generate_stories(&model, Some(LoadCaseId(0))).unwrap();
     assert_eq!(gen.stories.len(), 2);
     assert_eq!(gen.stories[0].structure, StoryStructure::Rc);
     assert_eq!(gen.stories[1].structure, StoryStructure::S);
 }
 
-/// 形状定義を持たない断面（カタログ数値の直入力）だけの階は種別を決められないため
-/// 既定の RC 扱いになる（略算周期 α で S を算入しない安全側）。
+/// 構造種別は断面形状ではなく材料の区分で決まる。
+/// H 形の断面でも材料がコンクリートなら、その階は RC になる。
 #[test]
-fn test_generate_story_structure_defaults_to_rc_without_shapes() {
+fn test_generate_story_structure_follows_material_not_shape() {
     use squid_n_core::model::StoryStructure;
-    let model = two_story_model(); // shape: None の断面のみ
+    let model = two_story_model_with_shapes(
+        (steel_h_shape(), MaterialCategory::Concrete),
+        (steel_h_shape(), MaterialCategory::Steel),
+    );
+    let gen = generate_stories(&model, Some(LoadCaseId(0))).unwrap();
+    assert_eq!(gen.stories[0].structure, StoryStructure::Rc);
+    assert_eq!(gen.stories[1].structure, StoryStructure::S);
+}
+
+/// 形状定義を持たない断面（カタログ数値の直入力）でも材料の区分で判定できる。
+#[test]
+fn test_generate_story_structure_uses_material_without_shapes() {
+    use squid_n_core::model::StoryStructure;
+    let model = two_story_model(); // shape: None の断面＋鋼材の材料
+    let gen = generate_stories(&model, Some(LoadCaseId(0))).unwrap();
+    assert!(gen.stories.iter().all(|s| s.structure == StoryStructure::S));
+}
+
+/// 断面も材料も未割当の部材は種別を判定できないため集計から除く。
+/// 対象部材が 1 本も無い階は既定の RC になる（略算周期 α で S を算入しない安全側）。
+#[test]
+fn test_generate_story_structure_defaults_to_rc_without_section_and_material() {
+    use squid_n_core::model::StoryStructure;
+    let mut model = two_story_model();
+    for e in &mut model.elements {
+        e.section = None;
+        e.material = None;
+    }
     let gen = generate_stories(&model, Some(LoadCaseId(0))).unwrap();
     assert!(gen
         .stories

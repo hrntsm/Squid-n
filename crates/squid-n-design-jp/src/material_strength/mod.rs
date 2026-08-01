@@ -39,7 +39,7 @@ pub use steel::{
 mod tests {
     use super::*;
     use crate::LoadTerm;
-    use squid_n_core::model::Material;
+    use squid_n_core::model::{Material, MaterialCategory};
     use squid_n_core::units::ConcreteClass;
 
     // ------------------------------------------------------------------
@@ -128,6 +128,7 @@ mod tests {
             concrete_class: Default::default(),
             id: squid_n_core::ids::MaterialId(0),
             name: "SD390".to_string(),
+            category: MaterialCategory::Rebar,
             young: 205000.0,
             poisson: 0.3,
             density: 0.0,

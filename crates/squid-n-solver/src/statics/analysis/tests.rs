@@ -5,8 +5,8 @@ use squid_n_core::dof::Dof6Mask;
 use squid_n_core::ids::{ElemId, MaterialId, NodeId, SectionId, StoryId};
 use squid_n_core::model::{
     Constraint, DiaphragmDef, ElementData, ElementKind, EndCondition, ForceRegime, LoadCase,
-    LoadCombination, LocalAxis, Material, MemberLoad, MemberLoadKind, NodalLoad, Node, Section,
-    Story, StoryLevelKind, StoryStructure,
+    LoadCombination, LocalAxis, Material, MaterialCategory, MemberLoad, MemberLoadKind, NodalLoad,
+    Node, Section, Story, StoryLevelKind, StoryStructure,
 };
 use std::collections::HashSet;
 
@@ -65,6 +65,7 @@ fn make_cantilever_model() -> Model {
             concrete_class: Default::default(),
             id: MaterialId(0),
             name: "mat".into(),
+            category: MaterialCategory::Steel,
             young: 20000.0,
             poisson: 0.3,
             density: 0.0,
@@ -487,6 +488,7 @@ fn two_story_wind_model() -> Model {
         concrete_class: Default::default(),
         id: MaterialId(0),
         name: "SN400B".into(),
+        category: MaterialCategory::Steel,
         young: 205000.0,
         poisson: 0.3,
         density: 7.85e-9,
@@ -854,6 +856,7 @@ fn test_wind_story_geometry_setback_gives_narrower_upper_story_width() {
         concrete_class: Default::default(),
         id: MaterialId(0),
         name: "SN400B".into(),
+        category: MaterialCategory::Steel,
         young: 205000.0,
         poisson: 0.3,
         density: 7.85e-9,
@@ -1083,6 +1086,7 @@ fn ss_beam_udl(l: f64, w: f64) -> Model {
             concrete_class: Default::default(),
             id: MaterialId(0),
             name: "m".into(),
+            category: MaterialCategory::Steel,
             young: 205000.0,
             poisson: 0.3,
             density: 0.0,

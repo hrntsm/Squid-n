@@ -52,10 +52,10 @@
 //! - 支点（節点の境界条件）の状態は考慮しない。
 //! - 斜材（水平・鉛直いずれでもない部材）は無視する。
 
+use squid_n_core::adjacency::NodeAdjacency;
 use squid_n_core::ids::NodeId;
 use squid_n_core::model::{ElementData, ElementKind, EndCondition, Material, Model, Section};
 use squid_n_element::transform::LocalFrame;
-use std::collections::HashMap;
 
 /// ピン端・梁無し節点に用いる剛度比 G の規定値（本実装の既定値）。
 const G_PIN: f64 = 10.0;
@@ -177,41 +177,6 @@ fn clear_length(elem: &ElementData, len: f64) -> f64 {
     }
 }
 
-/// 節点ID → その節点に接続する線材（`ElementKind::Beam`）要素への参照インデックス。
-///
-/// `g_ratio_at_with_index`（延いては `steel_column_k_with_index`）が節点まわりの
-/// 部材を求める際に、モデル全要素を毎回線形走査するのを避けるために使う。
-/// 判定ロジック自体（どの要素を G の柱側/梁側に数えるか）は一切変更しない
-/// （ここで絞り込むのは従来の `other.kind == ElementKind::Beam &&
-/// other.nodes[..2].contains(node_id)` と同じ集合）。
-pub struct BeamNodeIndex<'m> {
-    by_node: HashMap<NodeId, Vec<&'m ElementData>>,
-}
-
-impl<'m> BeamNodeIndex<'m> {
-    /// モデル全体から一度だけ構築する。複数回の `steel_column_k_with_index`
-    /// 呼び出し（部材数ぶん）で使い回すことを想定する。
-    pub fn build(model: &'m Model) -> Self {
-        let mut by_node: HashMap<NodeId, Vec<&'m ElementData>> = HashMap::new();
-        for elem in &model.elements {
-            if elem.kind != ElementKind::Beam {
-                continue;
-            }
-            for node_id in elem.nodes.iter().take(2) {
-                by_node.entry(*node_id).or_default().push(elem);
-            }
-        }
-        Self { by_node }
-    }
-
-    fn beams_at(&self, node_id: NodeId) -> &[&'m ElementData] {
-        self.by_node
-            .get(&node_id)
-            .map(|v| v.as_slice())
-            .unwrap_or(&[])
-    }
-}
-
 /// 節点 `node_idx`（`elem.nodes` の 0/1）まわりの剛度比 G を求める（インデックス版）。
 ///
 /// `G = Σ(E・I/L)_柱 / Σ(E・I/L)_梁`。部材種別は部材軸の鉛直成分による
@@ -222,7 +187,7 @@ impl<'m> BeamNodeIndex<'m> {
 /// - 節点に接する梁が無い場合（Σ梁 = 0）は G=10（同上）。
 fn g_ratio_at_with_index(
     model: &Model,
-    index: &BeamNodeIndex<'_>,
+    index: &NodeAdjacency,
     column: &ElementData,
     node_idx: usize,
 ) -> f64 {
@@ -235,7 +200,7 @@ fn g_ratio_at_with_index(
 
     let mut sum_col = 0.0_f64;
     let mut sum_beam = 0.0_f64;
-    for other in index.beams_at(*node_id) {
+    for other in index.elements_at(model, *node_id) {
         let Some((len, ez)) = line_geometry(model, other) else {
             continue;
         };
@@ -263,11 +228,11 @@ fn g_ratio_at_with_index(
 /// （両軸同値）に渡すことを想定する。強軸・弱軸を個別に評価する場合は
 /// [`steel_column_k_axes_with_index`] を使うこと。
 ///
-/// `index` は事前に `BeamNodeIndex::build(model)` で一度だけ構築し、
+/// `index` は事前に `NodeAdjacency::build(model)` で一度だけ構築し、
 /// 全部材ぶんのループで使い回すこと（全部材×全要素の O(n²) 線形探索を回避）。
 pub fn steel_column_k_with_index(
     model: &Model,
-    index: &BeamNodeIndex<'_>,
+    index: &NodeAdjacency,
     elem: &ElementData,
 ) -> Option<f64> {
     if elem.kind != ElementKind::Beam {
@@ -289,11 +254,11 @@ pub fn steel_column_k_with_index(
 /// 呼び出し側は `lk = K・L` を [`crate::DesignCtx::lk_y`]/[`crate::DesignCtx::lk_z`]
 /// （両軸同値）に渡すことを想定する。
 ///
-/// 単発呼び出し用の互換 API（内部で `BeamNodeIndex` を都度構築する）。
-/// 部材数ぶんループで呼ぶ場合は `BeamNodeIndex::build` を一度だけ構築して
+/// 単発呼び出し用の互換 API（内部で [`NodeAdjacency`] を都度構築する）。
+/// 部材数ぶんループで呼ぶ場合は [`NodeAdjacency::build`] を一度だけ構築して
 /// [`steel_column_k_with_index`] を使うこと（O(n²) を避けられる）。
 pub fn steel_column_k(model: &Model, elem: &ElementData) -> Option<f64> {
-    let index = BeamNodeIndex::build(model);
+    let index = NodeAdjacency::build(model);
     steel_column_k_with_index(model, &index, elem)
 }
 
@@ -322,7 +287,7 @@ pub fn steel_column_k(model: &Model, elem: &ElementData) -> Option<f64> {
 /// 当該柱端が `Pinned`、または節点に接する梁が無い（Σ梁 ≤ 0）場合は G=10。
 fn g_ratio_axis_at(
     model: &Model,
-    index: &BeamNodeIndex<'_>,
+    index: &NodeAdjacency,
     column: &ElementData,
     node_idx: usize,
     d_a: [f64; 2],
@@ -336,7 +301,7 @@ fn g_ratio_axis_at(
 
     let mut sum_col = 0.0_f64;
     let mut sum_beam = 0.0_f64;
-    for other in index.beams_at(*node_id) {
+    for other in index.elements_at(model, *node_id) {
         let Some((raw_len, ez)) = line_geometry(model, other) else {
             continue;
         };
@@ -399,11 +364,11 @@ fn g_ratio_axis_at(
 /// 呼び出し側は `lk_y = K_y・L`・`lk_z = K_z・L` を
 /// [`crate::DesignCtx::lk_y`]/[`crate::DesignCtx::lk_z`] に渡すことを想定する。
 ///
-/// `index` は事前に `BeamNodeIndex::build(model)` で一度だけ構築し、
+/// `index` は事前に `NodeAdjacency::build(model)` で一度だけ構築し、
 /// 全部材ぶんのループで使い回すこと。
 pub fn steel_column_k_axes_with_index(
     model: &Model,
-    index: &BeamNodeIndex<'_>,
+    index: &NodeAdjacency,
     elem: &ElementData,
 ) -> Option<(f64, f64)> {
     if elem.kind != ElementKind::Beam {
@@ -440,6 +405,7 @@ mod tests {
     use smallvec::SmallVec;
     use squid_n_core::dof::Dof6Mask;
     use squid_n_core::ids::{ElemId, MaterialId, NodeId, SectionId};
+    use squid_n_core::model::MaterialCategory;
     use squid_n_core::model::{
         ElementData, ElementKind, EndCondition, ForceRegime, LocalAxis, Material, Model, Node,
         RigidZone, Section,
@@ -559,6 +525,7 @@ mod tests {
             strength_factor: None,
             id: MaterialId(0),
             name: "SN400B".to_string(),
+            category: MaterialCategory::Steel,
             young: 205_000.0,
             poisson: 0.3,
             density: 7.85e-9,
@@ -664,7 +631,7 @@ mod tests {
     #[test]
     fn steel_column_k_axes_plane_portal_matches_hand_g() {
         let model = portal_model(4000.0, 8000.0);
-        let index = BeamNodeIndex::build(&model);
+        let index = NodeAdjacency::build(&model);
         let (k_y, k_z) = steel_column_k_axes_with_index(&model, &index, &model.elements[0])
             .expect("柱として判定される");
         let expected_ky = sway_buckling_k(2.0, 2.0);
@@ -707,7 +674,7 @@ mod tests {
             materials: vec![steel_material()],
             ..Default::default()
         };
-        let index = BeamNodeIndex::build(&model);
+        let index = NodeAdjacency::build(&model);
         let (k_y, k_z) = steel_column_k_axes_with_index(&model, &index, &model.elements[0])
             .expect("柱として判定される");
         let expected_ky = sway_buckling_k(2.0, 2.0);
@@ -744,7 +711,7 @@ mod tests {
             materials: vec![steel_material()],
             ..Default::default()
         };
-        let index = BeamNodeIndex::build(&model);
+        let index = NodeAdjacency::build(&model);
         let (k_y, _k_z) = steel_column_k_axes_with_index(&model, &index, &model.elements[0])
             .expect("柱として判定される");
         // 整列時 G=8000/4000=2 に対し cos²θ=0.5 で G=2/0.5=4。上端は梁が無く G=10。
@@ -783,7 +750,7 @@ mod tests {
             materials: vec![steel_material()],
             ..Default::default()
         };
-        let index = BeamNodeIndex::build(&model);
+        let index = NodeAdjacency::build(&model);
         let (k_y, k_z) = steel_column_k_axes_with_index(&model, &index, &model.elements[0])
             .expect("柱として判定される");
 
@@ -815,7 +782,7 @@ mod tests {
     fn steel_column_k_axes_pinned_beam_end_excluded_from_sum() {
         let mut model = portal_model(4000.0, 8000.0);
         model.elements[1].end_cond[0] = EndCondition::Pinned;
-        let index = BeamNodeIndex::build(&model);
+        let index = NodeAdjacency::build(&model);
         let (k_y, k_z) = steel_column_k_axes_with_index(&model, &index, &model.elements[0])
             .expect("柱として判定される");
         // 下端: 梁が不算入となり Σ梁=0 → G=10。上端は従来通り G=2。
@@ -842,7 +809,7 @@ mod tests {
             length_i: 2000.0,
             ..RigidZone::default()
         };
-        let index = BeamNodeIndex::build(&model);
+        let index = NodeAdjacency::build(&model);
         let (k_y, _k_z) = steel_column_k_axes_with_index(&model, &index, &model.elements[0])
             .expect("柱として判定される");
         // 下端 G_y = (E・iy/4000)/(E・iy/(8000-2000)) = 6000/4000 = 1.5（剛域控除前は 2.0）。

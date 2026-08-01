@@ -1,7 +1,6 @@
 //! 断面検定・接合部検定ジョブの純粋計算。
 //!
 //! - [`compute_design_check_job`] — DesignCheck ジョブの純粋計算部分。
-//! - [`is_steel`] — 鋼材判定（priv）。
 //! - [`member_kind_of`] — 部材種別判定（priv）。
 //! - [`elem_geometric_length`] — 部材両端節点間の幾何長（priv）。
 //! - [`design_positions`] — 危険断面位置を正規化座標で算定する（priv）。
@@ -9,20 +8,6 @@
 
 use super::{model_with_auto_rigid_zones, resolve_load_case, JobOutcome};
 use squid_n_core::model::Model;
-
-/// 鋼材判定（Material.name が JIS 鋼種名で始まるか。鉄筋 SD/SR は RC 扱い）。
-/// squid-n-app の `is_steel`（app.rs）と同じロジック
-/// （squid-n-mcp は squid-n-app に依存しないため複製している）。
-fn is_steel(name: &str) -> bool {
-    let upper = name.to_uppercase();
-    upper.starts_with("SS")
-        || upper.starts_with("SN")
-        || upper.starts_with("SM")
-        || upper.starts_with("STK")
-        || upper.starts_with("ST")
-        || upper.starts_with("SA")
-        || upper.starts_with("BC")
-}
 
 /// 部材種別判定（部材軸の鉛直成分による幾何判定）。
 /// squid-n-app の `member_kind_of`（app.rs）と同じロジック。
@@ -116,8 +101,8 @@ fn is_near_design_position(pos: f64, positions: &[f64]) -> bool {
 /// DesignCheck ジョブの純粋計算部分。
 /// 指定/先頭の荷重ケースで線形静的解析を行い、断面力に対して
 /// squid-n-app の `App::run_design_check`（app.rs）と同じ判定
-/// （材料名先頭文字で鋼/RC を判定し SteelDesign/RcDesign を適用）を行う
-/// （squid-n-mcp は squid-n-app に依存しないため複製している）。
+/// （構造種別を `squid_n_core::structure_kind` で求め、[`squid_n_design_jp::checker_for`]
+/// で検定器を選ぶ）を行う（squid-n-mcp は squid-n-app に依存しないため複製している）。
 /// 検定条件（長期/短期）は既定で長期（`LoadTerm::Long`）とする。
 pub(crate) fn compute_design_check_job(
     model: &Model,
@@ -143,7 +128,7 @@ pub(crate) fn compute_design_check_job(
 
     // 柱の座屈長さ係数 K 用の節点まわり梁索引（全部材ぶんのループで使い回し、
     // `steel_column_k_axes_with_index` の全要素走査を避ける。app.rs と同じ流儀）。
-    let column_k_index = squid_n_design_jp::steel::buckling::BeamNodeIndex::build(model);
+    let column_k_index = squid_n_core::adjacency::NodeAdjacency::build(model);
 
     for (elem_id, mf) in &result.member_forces {
         for (pos, forces) in &mf.at {
@@ -253,19 +238,11 @@ pub(crate) fn compute_design_check_job(
             steel_fb_rule: Default::default(),
         };
 
-        // 検定器の選択: 複合断面（SRC/CFT）は形状優先、それ以外は材料名で鋼/RC
-        // （app.rs の run_design_check と同じ規則）。
-        let checker: Box<dyn squid_n_design_jp::DesignCheck> = match sec.shape {
-            Some(squid_n_core::section_shape::SectionShape::SrcRect { .. }) => {
-                Box::new(squid_n_design_jp::SrcDesign)
-            }
-            Some(squid_n_core::section_shape::SectionShape::CftBox { .. })
-            | Some(squid_n_core::section_shape::SectionShape::CftPipe { .. }) => {
-                Box::new(squid_n_design_jp::CftDesign)
-            }
-            _ if is_steel(&mat.name) => Box::new(squid_n_design_jp::SteelDesign),
-            _ => Box::new(squid_n_design_jp::RcDesign),
-        };
+        // 検定器の選択は構造種別による（`squid_n_core::structure_kind`。
+        // app.rs の run_design_check と同じ規則）。
+        let checker: Box<dyn squid_n_design_jp::DesignCheck> = squid_n_design_jp::checker_for(
+            squid_n_core::structure_kind::structure_kind_of(Some(sec), Some(mat.category)),
+        );
         // 危険断面位置（§6.2.3、既定は柱フェイスと中央）の内力のみ検定する。
         // 節点芯は剛域が有る場合は検定対象外（app.rs の run_design_check と同じ規則）。
         let geom_len = elem_geometric_length(elem, model);

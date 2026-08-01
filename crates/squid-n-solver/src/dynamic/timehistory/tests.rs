@@ -60,7 +60,8 @@ use crate::damping::{Damping, DampingAccumulation, StiffnessKind};
 use squid_n_core::dof::{Dof6Mask, DofMap};
 use squid_n_core::ids::{ElemId, MaterialId, NodeId, SectionId};
 use squid_n_core::model::{
-    ElementData, ElementKind, EndCondition, ForceRegime, LocalAxis, Material, Model, Node, Section,
+    ElementData, ElementKind, EndCondition, ForceRegime, LocalAxis, Material, MaterialCategory,
+    Model, Node, Section,
 };
 
 /// Ux のみ自由。
@@ -133,6 +134,7 @@ fn sdof_model() -> Model {
             concrete_class: Default::default(),
             id: MaterialId(0),
             name: "mat".into(),
+            category: MaterialCategory::Steel,
             young: k * 1000.0 / 1.0,
             poisson: 0.0,
             density: 0.0,
@@ -204,6 +206,7 @@ fn sdof_model_y() -> Model {
             concrete_class: Default::default(),
             id: MaterialId(0),
             name: "mat".into(),
+            category: MaterialCategory::Steel,
             young: k * 1000.0 / 1.0,
             poisson: 0.0,
             density: 0.0,
@@ -432,6 +435,7 @@ fn test_2dof_free_vibration_runs() {
             concrete_class: Default::default(),
             id: MaterialId(0),
             name: "mat".into(),
+            category: MaterialCategory::Steel,
             young,
             poisson: 0.0,
             density: 0.0,
@@ -546,6 +550,7 @@ fn test_2dof_mode_superposition_consistency() {
             concrete_class: Default::default(),
             id: MaterialId(0),
             name: "mat".into(),
+            category: MaterialCategory::Steel,
             young,
             poisson: 0.0,
             density: 0.0,
@@ -1274,6 +1279,7 @@ fn fiber_column_model(fy: f64) -> Model {
             concrete_class: Default::default(),
             id: MaterialId(0),
             name: "steel".to_string(),
+            category: MaterialCategory::Steel,
             young: 205000.0,
             poisson: 0.3,
             density: 0.0,

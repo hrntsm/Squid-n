@@ -3,6 +3,7 @@ use crate::rc::{concrete_allowable_shear, rebar_allowable_shear};
 use crate::steel::{steel_f_value_prefix, steel_fs, steel_ft};
 use crate::{LoadTerm, SeismicQd};
 use squid_n_core::ids::{MaterialId, SectionId};
+use squid_n_core::model::MaterialCategory;
 use squid_n_core::rc_capacity::{rc_mu_simple, RcCapacityInput};
 use squid_n_core::section_shape::{BarSet, RcRebar, SectionShape, ShearBar};
 
@@ -12,6 +13,7 @@ pub(crate) fn make_material(fc: f64, grade: &str) -> Material {
         concrete_class: Default::default(),
         id: MaterialId(0),
         name: grade.to_string(),
+        category: MaterialCategory::Concrete,
         young: 205000.0,
         poisson: 0.3,
         density: 0.0,
@@ -27,6 +29,7 @@ pub(crate) fn make_material_no_fc(grade: &str) -> Material {
         concrete_class: Default::default(),
         id: MaterialId(0),
         name: grade.to_string(),
+        category: MaterialCategory::Steel,
         young: 205000.0,
         poisson: 0.3,
         density: 0.0,

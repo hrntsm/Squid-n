@@ -1215,7 +1215,8 @@ impl App {
                     matches!(elem.kind, squid_n_core::model::ElementKind::Brace { .. })
                         || member_kind_of(elem, &self.model)
                             == squid_n_design_jp::MemberKind::Brace;
-                let rank = if is_brace_elem && is_steel(&mat.name) {
+                let elem_steel = elem_is_steel(elem, &self.model);
+                let rank = if is_brace_elem && elem_steel {
                     // 有効細長比 λ = Lk/i（節点間長を座屈長さ、i=√(Imin/A) とする
                     // ピン支持の軸材モデル）。断面性能が無い場合はスキップ。
                     let len = elem_geometric_length(elem, &self.model);
@@ -1233,7 +1234,7 @@ impl App {
                     )
                     .unwrap_or(235.0);
                     steel_brace_type(len / radius, f_value)
-                } else if is_steel(&mat.name) {
+                } else if elem_steel {
                     // 鋼部材: 形状情報がない断面(カタログ数値直入力等)はスキップ。
                     let Some(shape) = sec.shape.as_ref() else {
                         continue;
@@ -2607,7 +2608,7 @@ impl App {
     /// - せん断スパン比 M/(Q·d) 用の代表値は、モーメントが最大となる
     ///   検定位置の値を採用する方針で部材単位に求める。
     /// - 柱は軸力＋二軸曲げ（n, my, mz）を検定に渡す。
-    /// - 検定器は形状優先（SRC/CFT）、それ以外は材料名で鋼/RC を選択する。
+    /// - 検定器は構造種別（`squid_n_core::structure_kind`）で選択する。
     pub fn run_design_check(&mut self) {
         // rigid_zone（face_i/j）から危険断面位置を決めるため、算定前に自動剛域を
         // 反映する（設計書 §6.2.1、冪等なので他の解析エントリと重複して呼んでも安全）。
@@ -2671,7 +2672,7 @@ impl App {
         });
         // 柱の座屈長さ係数 K 用の節点まわり梁索引（`buckling::g_ratio_at` の全要素
         // 走査を避けるため、ループ前に 1 回だけ構築して使い回す）。
-        let column_k_index = squid_n_design_jp::steel::buckling::BeamNodeIndex::build(&self.model);
+        let column_k_index = squid_n_core::adjacency::NodeAdjacency::build(&self.model);
         let mut checks: Vec<(ElemId, f64, squid_n_design_jp::CheckOutcome)> = Vec::new();
         for (elem_id, mf) in &results.member_forces {
             let elem = elem_by_id.get(elem_id).copied();
@@ -2803,18 +2804,11 @@ impl App {
                 steel_fb_rule: Default::default(),
             };
 
-            // 検定器の選択: 複合断面（SRC/CFT）は形状優先、それ以外は材料名で鋼/RC。
-            let checker: Box<dyn DesignCheck> = match sec.shape {
-                Some(squid_n_core::section_shape::SectionShape::SrcRect { .. }) => {
-                    Box::new(squid_n_design_jp::SrcDesign)
-                }
-                Some(squid_n_core::section_shape::SectionShape::CftBox { .. })
-                | Some(squid_n_core::section_shape::SectionShape::CftPipe { .. }) => {
-                    Box::new(squid_n_design_jp::CftDesign)
-                }
-                _ if is_steel(&mat.name) => Box::new(SteelDesign),
-                _ => Box::new(RcDesign),
-            };
+            // 検定器の選択は構造種別による（`squid_n_core::structure_kind`）。
+            // 複合断面（SRC/CFT）は断面形状で、それ以外は材料の区分で決まる。
+            let checker: Box<dyn DesignCheck> = squid_n_design_jp::checker_for(
+                squid_n_core::structure_kind::structure_kind_of(Some(sec), Some(mat.category)),
+            );
 
             let detail = self.model.member_detail(*elem_id);
             let positions = design_positions(elem, length, detail);

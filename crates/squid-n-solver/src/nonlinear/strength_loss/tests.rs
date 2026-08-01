@@ -3,7 +3,8 @@ use crate::analysis::SeismicDir;
 use squid_n_core::dof::Dof6Mask;
 use squid_n_core::ids::{ElemId, MaterialId, NodeId, SectionId, StoryId};
 use squid_n_core::model::{
-    DiaphragmDef, ElementData, ElementKind, ForceRegime, LocalAxis, Material, Node, Section, Story,
+    DiaphragmDef, ElementData, ElementKind, ForceRegime, LocalAxis, Material, MaterialCategory,
+    Node, Section, Story,
 };
 
 // ---- FEMA テーブル関数の単体テスト ----
@@ -142,6 +143,7 @@ fn portal_frame_model(fy: f64, seismic_weight: f64) -> Model {
         concrete_class: Default::default(),
         id: MaterialId(0),
         name: "steel".to_string(),
+        category: MaterialCategory::Steel,
         young: 205000.0,
         poisson: 0.3,
         density: 0.0,

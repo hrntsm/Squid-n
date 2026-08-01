@@ -17,7 +17,7 @@ use super::StbError;
 use squid_n_core::ids::{ElemId, LoadCaseId, MaterialId, NodeId, SectionId, SlabId, StoryId};
 use squid_n_core::model::{
     DistributionMethod, ElementData, ElementKind, EndCondition, ForceRegime, LoadCase, LocalAxis,
-    Material, Model, NodalLoad, Node, Section, Slab, Story,
+    Material, MaterialCategory, Model, NodalLoad, Node, Section, Slab, Story,
 };
 use squid_n_core::section_shape::{RcRebar, SectionShape};
 use std::collections::HashMap;
@@ -1066,13 +1066,18 @@ pub fn import_stbridge_with_report(xml: &str) -> Result<(Model, ImportReport), S
         }
     }
 
+    // 区分をグレード名から決められず、物性から推定した材料の名前。
+    // 推定は外れることがあるため、取込後に notes で利用者へ通知する。
+    let mut guessed_categories: Vec<String> = Vec::new();
     raw_materials.sort_by_key(|m| m.file_id);
     for m in raw_materials {
+        let category = resolve_material_category(&m.name, m.fc, m.fy, &mut guessed_categories);
         model.materials.push(Material {
             strength_factor: None,
             concrete_class: Default::default(),
             id: MaterialId(material_index[&m.file_id]),
             name: m.name,
+            category,
             young: m.young,
             poisson: m.poisson,
             density: m.density,
@@ -1105,11 +1110,14 @@ pub fn import_stbridge_with_report(xml: &str) -> Result<(Model, ImportReport), S
             }
             if let Some(std) = material_std::resolve_grade(name) {
                 let id = MaterialId(model.materials.len() as u32);
+                let category =
+                    resolve_material_category(name, std.fc, std.fy, &mut guessed_categories);
                 model.materials.push(Material {
                     strength_factor: None,
                     concrete_class: Default::default(),
                     id,
                     name: name.to_string(),
+                    category,
                     young: std.young,
                     poisson: std.poisson,
                     density: std.density,
@@ -1458,6 +1466,15 @@ pub fn import_stbridge_with_report(xml: &str) -> Result<(Model, ImportReport), S
     // 支点にしない。仮定した内容は notes で通知する。拘束を 1 つでも持つモデル
     // （将来の方言拡張等で取り込んだ場合）はそのまま尊重して何もしない。
     let mut notes: Vec<String> = Vec::new();
+    if !guessed_categories.is_empty() {
+        guessed_categories.sort();
+        guessed_categories.dedup();
+        notes.push(format!(
+            "材料 {} の区分をグレード名から決められないため、物性から推定しました\
+            （区分は構造種別の判定に使います。「材料」タブで確認してください）",
+            guessed_categories.join("・")
+        ));
+    }
     if n_joists + n_posts > 0 {
         notes.push(format!(
             "小梁 {n_joists} 本・間柱 {n_posts} 本を二次部材として取り込みました\
@@ -1556,6 +1573,33 @@ fn check_unique_ids(
         )));
     }
     Ok(())
+}
+
+/// ST-Bridge の材料の区分を決める。
+///
+/// ST-Bridge はグレード名で材料を表すため、区分はまずグレード名から決める。
+/// 名前から決まらない場合は物性から推定し、推定した材料の名前を `guessed` へ
+/// 積む（取込後に notes で利用者へ通知するため）。
+///
+/// 推定は `Fc` を持つものをコンクリート、`Fy` だけを持つものを鋼材とし、
+/// どちらも無ければコンクリートとする。区分を誤って鋼材にすると RC 部材が
+/// 鋼の検定式・鋼の Mp 式で評価されて危険側になるため、判断がつかない場合は
+/// コンクリート側へ寄せる。
+fn resolve_material_category(
+    name: &str,
+    fc: Option<f64>,
+    fy: Option<f64>,
+    guessed: &mut Vec<String>,
+) -> MaterialCategory {
+    if let Some(category) = squid_n_core::material_grade::category_of_grade(name) {
+        return category;
+    }
+    guessed.push(name.to_string());
+    match (fc, fy) {
+        (Some(_), _) => MaterialCategory::Concrete,
+        (None, Some(_)) => MaterialCategory::Steel,
+        (None, None) => MaterialCategory::Concrete,
+    }
 }
 
 /// file id の集合を昇順・重複排除して 0 始まり連番へ写像する（file id → 新 index）。

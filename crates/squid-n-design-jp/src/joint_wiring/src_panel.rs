@@ -1,6 +1,6 @@
 //! SRC 造柱梁接合部（パネルゾーン）の検定配線。
 
-use super::common::{is_steel, rc_dt, MemberInfo};
+use super::common::{rc_dt, MemberInfo};
 use crate::rc::joint::JointShape;
 use crate::srrc::panel_zone::{src_panel_zone_check, SrcPanelInput};
 use crate::{CheckResult, LoadTerm};
@@ -36,7 +36,7 @@ pub(super) fn check_src_panel(
             let j_tw = steel_web_thick;
 
             let beam0 = beams[0];
-            let beam_is_steel = is_steel(&beam0.mat.name);
+            let beam_is_steel = beam0.kind.is_steel_like();
             let m_bd = if beam_is_steel {
                 // 梁が S 造の場合は mBd の代わりに sBd（フランジ板厚中心間
                 // 距離）を渡す（S パネルゾーンの db 算定と同じ近似）。

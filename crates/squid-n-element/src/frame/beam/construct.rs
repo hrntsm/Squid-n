@@ -8,7 +8,7 @@ use super::element::BeamElement;
 use super::stiffness_factors::{breakdown_with, composite_props_with};
 use crate::transform::LocalFrame;
 use squid_n_core::ids::NodeId;
-use squid_n_core::model::{Material, Model, Section};
+use squid_n_core::model::{Material, MaterialCategory, Model, Section};
 
 fn get_section(model: &Model, sid: Option<squid_n_core::ids::SectionId>) -> Section {
     sid.and_then(|s| {
@@ -58,6 +58,7 @@ fn get_material(model: &Model, mid: Option<squid_n_core::ids::MaterialId>) -> Ma
         concrete_class: Default::default(),
         id: squid_n_core::ids::MaterialId(0),
         name: String::new(),
+        category: MaterialCategory::Steel,
         young: 0.0,
         poisson: 0.0,
         density: 0.0,

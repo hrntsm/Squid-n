@@ -2,11 +2,15 @@
 
 use super::*;
 use squid_n_core::ids::*;
+use squid_n_core::model::MaterialCategory;
 
 /// 材料追加。末尾に `MaterialId(len)` で追加する（ID＝配列インデックスの不変条件を維持）。
 /// 逆操作は材料削除。
 pub struct AddMaterial {
     pub name: String,
+    /// 材料の区分。部材が S 造か RC 造かはこの値で決まる
+    /// （`squid_n_core::structure_kind`）。
+    pub category: MaterialCategory,
     pub young: f64,
     pub poisson: f64,
     pub density: f64,
@@ -23,6 +27,7 @@ impl EditCommand for AddMaterial {
             concrete_class: Default::default(),
             id: new_id,
             name: self.name.clone(),
+            category: self.category,
             young: self.young,
             poisson: self.poisson,
             density: self.density,
@@ -190,5 +195,32 @@ impl EditCommand for SetMaterialName {
 
     fn label(&self) -> &str {
         "材料名変更"
+    }
+}
+
+/// 材料の区分変更（鋼材・鉄筋・コンクリート）。
+///
+/// 区分は部材の構造種別を決めるため、変更すると剛域長・仕口パネルの対象・
+/// 断面検定の式・数量集計がまとめて変わる。
+pub struct SetMaterialCategory {
+    pub id: MaterialId,
+    pub category: MaterialCategory,
+}
+
+impl EditCommand for SetMaterialCategory {
+    fn apply(&self, model: &mut Model) -> Box<dyn EditCommand> {
+        let idx = self.id.index();
+        if idx >= model.materials.len() || model.materials[idx].id != self.id {
+            return Box::new(Noop);
+        }
+        let old = std::mem::replace(&mut model.materials[idx].category, self.category);
+        Box::new(SetMaterialCategory {
+            id: self.id,
+            category: old,
+        })
+    }
+
+    fn label(&self) -> &str {
+        "材料区分変更"
     }
 }

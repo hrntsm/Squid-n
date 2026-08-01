@@ -33,6 +33,7 @@
 
 use crate::app::App;
 use crate::theme;
+use squid_n_core::adjacency::NodeAdjacency;
 use squid_n_core::ids::NodeId;
 use squid_n_core::model::{ElementData, ElementKind, EndCondition, Model};
 use squid_n_element::factory::{resolve_force_regime, ResolvedRegime};
@@ -338,7 +339,7 @@ pub(super) fn draw_modeling(
     let mut sym = Symbols::default();
     // 仕口パネルの見付き寸法算定で使う隣接マップ。パネルが 1 つも無いモデルでは
     // 構築しない（遅延初期化）。
-    let mut beam_adjacency: Option<BeamAdjacency> = None;
+    let mut beam_adjacency: Option<NodeAdjacency> = None;
 
     for elem in &model.elements {
         let class = classify(elem, model, analysis);
@@ -354,7 +355,7 @@ pub(super) fn draw_modeling(
             ModelClass::Panel => draw_panel_zone(
                 painter,
                 model,
-                beam_adjacency.get_or_insert_with(|| build_beam_adjacency(model)),
+                beam_adjacency.get_or_insert_with(|| NodeAdjacency::build(model)),
                 pts,
                 coords3,
                 proj,
@@ -591,28 +592,6 @@ fn draw_wall_polygon(
     }
 }
 
-/// 節点 index → その節点に接続する `Beam` 要素の index。
-///
-/// 仕口パネルの見付き寸法は接合部に取り付く部材から求めるため、パネルごとに
-/// 全要素を走査すると描画のたびに O(パネル数 × 要素数) になる。描画は毎フレーム
-/// 走るので、隣接関係は 1 回だけ構築して共有する（剛域の自動算定が
-/// `beam_adjacency` を 1 回だけ作るのと同じ方針）。
-type BeamAdjacency = std::collections::HashMap<usize, Vec<usize>>;
-
-/// 節点 → 接続 `Beam` 要素の隣接マップを構築する。
-fn build_beam_adjacency(model: &Model) -> BeamAdjacency {
-    let mut map: BeamAdjacency = std::collections::HashMap::new();
-    for (ei, e) in model.elements.iter().enumerate() {
-        if !matches!(e.kind, ElementKind::Beam) || e.nodes.len() < 2 {
-            continue;
-        }
-        for n in e.nodes.iter().take(2) {
-            map.entry(n.index()).or_default().push(ei);
-        }
-    }
-    map
-}
-
 /// 接合部に取り付く部材から、パネルの見付き半寸法を求める。
 ///
 /// 解析側が部材の剛域長へ書き込むオフセットと同じ値
@@ -620,27 +599,19 @@ fn build_beam_adjacency(model: &Model) -> BeamAdjacency {
 /// 四角形は解析上のパネル寸法と一致する。
 fn panel_half_extent_at(
     model: &Model,
-    adjacency: &BeamAdjacency,
+    adjacency: &NodeAdjacency,
     node: NodeId,
 ) -> squid_n_core::panel_zone::PanelHalfExtent {
-    let members = adjacency
-        .get(&node.index())
-        .into_iter()
-        .flatten()
-        .filter_map(|&ei| model.elements.get(ei));
-    squid_n_core::panel_zone::panel_half_extent(model, node, members)
+    squid_n_core::panel_zone::panel_half_extent(model, node, adjacency.elements_at(model, node))
 }
 
 /// 水平材（はり）の材軸方向を、平行なものをまとめて集める。
 ///
 /// 左右の梁は同じ構面を作るため、四角形は構面ごとに 1 枚だけ描く。
-fn panel_beam_axes(model: &Model, adjacency: &BeamAdjacency, node: NodeId) -> Vec<[f64; 3]> {
+fn panel_beam_axes(model: &Model, adjacency: &NodeAdjacency, node: NodeId) -> Vec<[f64; 3]> {
     use squid_n_core::panel_zone::{member_orientation, member_unit_axis, MemberOrientation};
     let mut axes: Vec<[f64; 3]> = Vec::new();
-    for &ei in adjacency.get(&node.index()).into_iter().flatten() {
-        let Some(e) = model.elements.get(ei) else {
-            continue;
-        };
+    for e in adjacency.elements_at(model, node) {
         if member_orientation(model, e) != Some(MemberOrientation::Beam) {
             continue;
         }
@@ -672,7 +643,7 @@ fn panel_beam_axes(model: &Model, adjacency: &BeamAdjacency, node: NodeId) -> Ve
 fn draw_panel_zone(
     painter: &egui::Painter,
     model: &Model,
-    adjacency: &BeamAdjacency,
+    adjacency: &NodeAdjacency,
     pts: &[egui::Pos2],
     coords3: &[[f64; 3]],
     proj: &Projector,
@@ -1000,7 +971,7 @@ mod tests {
     #[test]
     fn test_panel_half_extent_from_member_depths() {
         let model = cross_joint_model();
-        let adjacency = build_beam_adjacency(&model);
+        let adjacency = NodeAdjacency::build(&model);
         let extent = panel_half_extent_at(&model, &adjacency, NodeId(0));
         assert!(
             (extent.column_half - 200.0).abs() < 1e-9,
@@ -1043,7 +1014,7 @@ mod tests {
             ],
             ..Default::default()
         };
-        let adjacency = build_beam_adjacency(&model);
+        let adjacency = NodeAdjacency::build(&model);
         assert_eq!(
             panel_beam_axes(&model, &adjacency, NodeId(0)).len(),
             2,
@@ -1058,7 +1029,7 @@ mod tests {
     #[test]
     fn test_panel_half_extent_without_sections() {
         let model = Model::default();
-        let adjacency = build_beam_adjacency(&model);
+        let adjacency = NodeAdjacency::build(&model);
         let extent = panel_half_extent_at(&model, &adjacency, NodeId(0));
         assert_eq!(extent.column_half, 0.0);
         assert_eq!(extent.beam_half, 0.0);

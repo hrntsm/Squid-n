@@ -2,21 +2,10 @@
 
 use squid_n_core::ids::NodeId;
 use squid_n_core::model::{ElementData, Material, Section};
+use squid_n_core::structure_kind::StructureKind;
 
 /// 1 部材分の内力（評価位置と [N,Qy,Qz,Mx,My,Mz]）。
 pub type ForcesAt<'a> = &'a [(f64, [f64; 6])];
-
-/// 鋼材判定（app の `is_steel` と同じ規則。鉄筋 SD/SR は RC 扱い）。
-pub(super) fn is_steel(name: &str) -> bool {
-    let upper = name.to_uppercase();
-    upper.starts_with("SS")
-        || upper.starts_with("SN")
-        || upper.starts_with("SM")
-        || upper.starts_with("STK")
-        || upper.starts_with("ST")
-        || upper.starts_with("SA")
-        || upper.starts_with("BC")
-}
 
 /// 収集済みの部材情報。
 pub(super) struct MemberInfo<'a> {
@@ -24,6 +13,8 @@ pub(super) struct MemberInfo<'a> {
     pub(super) sec: &'a Section,
     pub(super) mat: &'a Material,
     pub(super) forces: ForcesAt<'a>,
+    /// 部材の構造種別（断面と材料から解決済み。`squid_n_core::structure_kind`）。
+    pub(super) kind: StructureKind,
     /// 部材軸の鉛直成分（|ez|）。
     pub(super) ez: f64,
     pub(super) length: f64,

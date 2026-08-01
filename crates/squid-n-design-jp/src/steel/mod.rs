@@ -221,7 +221,7 @@ impl DesignCheck for SteelDesign {
 #[cfg(test)]
 pub(crate) mod test_support {
     use squid_n_core::ids::{MaterialId, SectionId};
-    use squid_n_core::model::{Material, Section};
+    use squid_n_core::model::{Material, MaterialCategory, Section};
     use squid_n_core::section_shape::SectionShape;
 
     pub(crate) fn mat(name: &str) -> Material {
@@ -230,6 +230,7 @@ pub(crate) mod test_support {
             concrete_class: Default::default(),
             id: MaterialId(0),
             name: name.to_string(),
+            category: MaterialCategory::Steel,
             young: 205_000.0,
             poisson: 0.3,
             density: 7.85e-9,

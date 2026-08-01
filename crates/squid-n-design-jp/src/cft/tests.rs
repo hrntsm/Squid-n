@@ -1,5 +1,6 @@
 use super::*;
 use squid_n_core::ids::{MaterialId, SectionId};
+use squid_n_core::model::MaterialCategory;
 use squid_n_core::units::ConcreteClass;
 
 fn make_material(fc: f64, grade: &str) -> Material {
@@ -8,6 +9,7 @@ fn make_material(fc: f64, grade: &str) -> Material {
         concrete_class: Default::default(),
         id: MaterialId(0),
         name: grade.to_string(),
+        category: MaterialCategory::Concrete,
         young: 205000.0,
         poisson: 0.3,
         density: 0.0,
@@ -23,6 +25,7 @@ fn make_material_no_fc(grade: &str) -> Material {
         concrete_class: Default::default(),
         id: MaterialId(0),
         name: grade.to_string(),
+        category: MaterialCategory::Steel,
         young: 205000.0,
         poisson: 0.3,
         density: 0.0,

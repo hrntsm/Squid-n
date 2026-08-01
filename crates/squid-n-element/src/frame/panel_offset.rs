@@ -311,6 +311,7 @@ mod tests {
     use super::*;
     use squid_n_core::dof::Dof6Mask;
     use squid_n_core::ids::{ElemId, MaterialId, SectionId};
+    use squid_n_core::model::MaterialCategory;
     use squid_n_core::model::{
         EndCondition, ForceRegime, LocalAxis, Material, Node, RigidZone, Section,
     };
@@ -382,6 +383,7 @@ mod tests {
                 concrete_class: Default::default(),
                 id: MaterialId(0),
                 name: "SN400B".into(),
+                category: MaterialCategory::Steel,
                 young: 205_000.0,
                 poisson: 0.3,
                 density: 0.0,

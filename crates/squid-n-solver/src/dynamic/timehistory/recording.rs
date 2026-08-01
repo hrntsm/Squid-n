@@ -546,8 +546,8 @@ mod tests {
     use squid_n_core::dof::Dof6Mask;
     use squid_n_core::ids::{ElemId, MaterialId, NodeId, SectionId, StoryId};
     use squid_n_core::model::{
-        ElementData, ElementKind, EndCondition, ForceRegime, LocalAxis, Material, Node, Section,
-        Story,
+        ElementData, ElementKind, EndCondition, ForceRegime, LocalAxis, Material, MaterialCategory,
+        Node, Section, Story,
     };
 
     /// 高-2 検証用: 密度による一貫質量を持つ 2 層（3 節点）の柱列。曲げ回転
@@ -634,6 +634,7 @@ mod tests {
                 concrete_class: Default::default(),
                 id: MaterialId(0),
                 name: "steel".into(),
+                category: MaterialCategory::Steel,
                 young: 205000.0,
                 poisson: 0.3,
                 density,

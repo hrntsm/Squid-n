@@ -38,7 +38,7 @@ use squid_n_core::dof::Dof6Mask;
 use squid_n_core::ids::{ElemId, LoadCaseId, MaterialId, NodeId, SectionId, SlabId};
 use squid_n_core::model::{
     AreaLoad, DistributionMethod, ElementData, ElementKind, EndCondition, ForceRegime,
-    LoadCaseKind, LocalAxis, Material, Model, Node, Section, Slab,
+    LoadCaseKind, LocalAxis, Material, MaterialCategory, Model, Node, Section, Slab,
 };
 use squid_n_element::beam::{apply_auto_rigid_zones, RigidZoneRule};
 
@@ -107,6 +107,7 @@ fn build_grid_model(nx: usize, ny: usize, n_stories: usize, with_slabs: bool) ->
         concrete_class: Default::default(),
         id: MaterialId(0),
         name: "Fc24".into(),
+        category: MaterialCategory::Concrete,
         young: 22000.0,
         poisson: 0.2,
         density: 2.4e-9,

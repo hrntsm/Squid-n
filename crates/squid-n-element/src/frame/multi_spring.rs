@@ -147,7 +147,8 @@ mod tests {
     use squid_n_core::ids::{ElemId, MaterialId, NodeId, SectionId};
     use squid_n_core::model::AnalysisKind;
     use squid_n_core::model::{
-        ElementData, ElementKind, EndCondition, ForceRegime, LocalAxis, Material, Node, Section,
+        ElementData, ElementKind, EndCondition, ForceRegime, LocalAxis, Material, MaterialCategory,
+        Node, Section,
     };
 
     /// 鋼断面柱相当のテストモデル（fy 付き材料 → バイリニアバネ）
@@ -206,6 +207,7 @@ mod tests {
                 concrete_class: Default::default(),
                 id: MaterialId(0),
                 name: "steel".to_string(),
+                category: MaterialCategory::Steel,
                 young: 205000.0,
                 poisson: 0.3,
                 density: 0.0,

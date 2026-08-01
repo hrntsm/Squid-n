@@ -6,7 +6,7 @@ use squid_n_core::dof::Dof6Mask;
 use squid_n_core::ids::{ElemId, MaterialId, NodeId, SectionId, SlabId};
 use squid_n_core::model::{
     DistributionMethod, ElementData, ElementKind, EndCondition, ForceRegime, LocalAxis, Material,
-    Model, Node, RigidZone, Section, Slab, SlabKind,
+    MaterialCategory, Model, Node, RigidZone, Section, Slab, SlabKind,
 };
 use squid_n_core::section_shape::{BarSet, RcRebar, SectionShape, ShearBar};
 
@@ -112,6 +112,7 @@ fn rc_material(id: u32) -> Material {
         strength_factor: None,
         id: MaterialId(id),
         name: "Fc24".to_string(),
+        category: MaterialCategory::Concrete,
         young: 22_700.0,
         poisson: 0.2,
         density: 2.4e-9,
@@ -127,6 +128,7 @@ fn steel_material(id: u32) -> Material {
         strength_factor: None,
         id: MaterialId(id),
         name: "SN400B".to_string(),
+        category: MaterialCategory::Steel,
         young: 205_000.0,
         poisson: 0.3,
         density: 7.85e-9,

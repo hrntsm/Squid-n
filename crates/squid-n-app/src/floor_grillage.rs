@@ -11,7 +11,7 @@
 //! **鉛直 Uz のみ**を `RigidLink` で結合（曲げは伝えず鉛直せん断のみ）で表現する。
 
 use squid_n_core::ids::{ElemId, LoadCaseId, NodeId};
-use squid_n_core::model::{Model, Slab};
+use squid_n_core::model::{MaterialCategory, Model, Slab};
 use squid_n_element::beam::MemberForces;
 
 /// 床格子サブモデルと、支点（大梁接続点）→本体モデルの原節点 id の対応。
@@ -352,6 +352,7 @@ pub fn build_slab_grillage(model: &Model, slab: &Slab, w: f64) -> Option<SlabGri
         concrete_class: Default::default(),
         id: MaterialId(0),
         name: "小梁鋼材(既定)".into(),
+        category: MaterialCategory::Steel,
         young: STEEL_YOUNG,
         poisson: 0.3,
         density: 7.85e-9,
@@ -626,6 +627,7 @@ mod tests {
             concrete_class: Default::default(),
             id: MaterialId(id),
             name: "SN400".into(),
+            category: MaterialCategory::Steel,
             young: 205_000.0,
             poisson: 0.3,
             density: 7.85e-9,

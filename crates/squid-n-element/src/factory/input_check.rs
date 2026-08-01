@@ -73,6 +73,48 @@ pub fn ensure_nonlinear_input(model: &Model) -> Result<(), String> {
     Err(format!("{}{}", head.join("\n"), more))
 }
 
+/// 材料の区分が断面形状と矛盾する場合に、その内容を返す。
+///
+/// 構造種別は材料の区分で決まるため、H 形のコンクリート部材・矩形断面の鋼部材は
+/// いずれも正しい入力である。ここで検出するのは、断面形状そのものが区分を否定する
+/// 次の 2 つだけに絞る。
+///
+/// - 配筋を持つ断面（RC 矩形・RC 円形）に鋼材の材料が付いている。
+///   配筋を持つ断面はコンクリート断面であり、鋼材として検定すると素の断面積で
+///   許容応力度を評価してしまい、検定比が桁で小さくなる（**危険側**）。
+/// - 線材の材料に鉄筋が割り当てられている。RC 断面の配筋は断面側にグレード名として
+///   持つため、線材の材料に鉄筋を割り当てるのは入力の誤りである。
+fn category_mismatch_issue(
+    data: &ElementData,
+    sec: Option<&squid_n_core::model::Section>,
+    mat: &squid_n_core::model::Material,
+) -> Option<String> {
+    use squid_n_core::model::MaterialCategory;
+    if mat.category == MaterialCategory::Rebar {
+        return Some(format!(
+            "部材 ID {} の材料「{}」は区分が鉄筋です。\
+             線材の材料には鋼材またはコンクリートを割り当ててください。\
+             RC 断面の配筋は断面タブで主筋の材質として設定します。",
+            data.id.0, mat.name
+        ));
+    }
+    let has_rebar = sec.and_then(|s| s.shape.as_ref()).is_some_and(|s| {
+        matches!(
+            s,
+            SectionShape::RcRect { .. } | SectionShape::RcCircle { .. }
+        )
+    });
+    if has_rebar && mat.category == MaterialCategory::Steel {
+        return Some(format!(
+            "部材 ID {} は配筋を持つ RC 断面ですが、材料「{}」の区分が鋼材です。\
+             材料タブで区分をコンクリートに変更してください。\
+             区分は構造種別の判定に用い、鋼材のまま検定すると耐力を過大評価します。",
+            data.id.0, mat.name
+        ));
+    }
+    None
+}
+
 /// 線材の終局耐力を算定できない設定不備があれば、その内容を返す。
 ///
 /// 検出する不備:
@@ -98,6 +140,9 @@ fn member_strength_issue(data: &ElementData, model: &Model) -> Option<String> {
             data.id.0
         ));
     };
+    if let Some(msg) = category_mismatch_issue(data, sec, mat) {
+        return Some(msg);
+    }
     let is_concrete = sec
         .and_then(|s| s.shape.as_ref())
         .is_some_and(|s| s.is_concrete_like());

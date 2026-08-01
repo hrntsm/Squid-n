@@ -134,6 +134,7 @@ pub fn load_nonlinear_checkpoint(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use squid_n_core::model::MaterialCategory;
 
     fn make_checkpoint(model_hash: &str, step: u64) -> Checkpoint {
         Checkpoint {
@@ -262,6 +263,7 @@ mod tests {
                 concrete_class: Default::default(),
                 id: MaterialId(0),
                 name: "mat".into(),
+                category: MaterialCategory::Steel,
                 young: k * 1000.0 / 1.0,
                 poisson: 0.0,
                 density: 0.0,
@@ -388,6 +390,7 @@ mod tests {
                     concrete_class: Default::default(),
                     id: MaterialId(0),
                     name: "mat".into(),
+                    category: MaterialCategory::Steel,
                     young: k * 1000.0 / 1.0,
                     poisson: 0.0,
                     density: 0.0,

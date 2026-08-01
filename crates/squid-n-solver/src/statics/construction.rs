@@ -235,6 +235,7 @@ mod tests {
     use super::*;
     use squid_n_core::dof::Dof6Mask;
     use squid_n_core::ids::{ElemId, LoadCaseId, MaterialId, NodeId, SectionId, StoryId};
+    use squid_n_core::model::MaterialCategory;
     use squid_n_core::model::{
         DiaphragmDef, ElementData, ElementKind, EndCondition, ForceRegime, LoadCase, LoadCaseKind,
         LocalAxis, Material, Model, NodalLoad, Node, Section, Story, StoryLevelKind,
@@ -266,6 +267,7 @@ mod tests {
             concrete_class: Default::default(),
             id: MaterialId(0),
             name: "steel".to_string(),
+            category: MaterialCategory::Steel,
             young: 205000.0,
             poisson: 0.3,
             density: 0.0,
@@ -474,6 +476,7 @@ mod tests {
             concrete_class: Default::default(),
             id: MaterialId(0),
             name: "steel".to_string(),
+            category: MaterialCategory::Steel,
             young: 205000.0,
             poisson: 0.3,
             density: 0.0,

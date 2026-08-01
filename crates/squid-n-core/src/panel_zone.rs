@@ -26,7 +26,7 @@
 //! （[`resolve_panel_joint`]）。モデル化と断面検定は同じ判定を通る。
 //!
 //! - 柱（鉛直材）が 1 本以上・はり（水平材）が 1 本以上取り付く
-//! - 取り付く**柱・はりがすべて S/CFT 系**（[`StructureKind::Steel`]）
+//! - 取り付く**柱・はりがすべて S/CFT 系**（`StructureKind::is_steel_like`）
 //! - 諸元を解決できる柱が 1 本以上あり、実効体積 `Ve` が正
 //!
 //! 斜材（ブレース等）は資料が接合位置と係数 ζ を定めておらずパネル自由度と
@@ -64,7 +64,7 @@
 use crate::ids::{ElemId, NodeId};
 use crate::model::{ElementData, ElementKind, Model, Section};
 use crate::section_shape::SectionShape;
-use crate::structure_kind::{member_structure_kind, StructureKind};
+use crate::structure_kind::member_structure_kind;
 
 /// 部材軸の鉛直成分がこの値以上なら柱（鉛直材）とみなす。
 const COLUMN_EZ: f64 = 0.8;
@@ -352,7 +352,7 @@ pub fn resolve_panel_joint<'a>(
     if columns
         .iter()
         .chain(beams.iter())
-        .any(|e| member_structure_kind(model, e) != StructureKind::Steel)
+        .any(|e| !member_structure_kind(model, e).is_steel_like())
     {
         return None;
     }
@@ -405,6 +405,7 @@ pub fn beam_panel_depth(sec: &Section) -> f64 {
 mod tests {
     use super::*;
     use crate::ids::SectionId;
+    use crate::model::MaterialCategory;
     use crate::section_shape::{BarSet, RcRebar, ShearBar};
 
     fn sec(shape: SectionShape, depth: f64, panel_thickness: Option<f64>) -> Section {
@@ -623,6 +624,12 @@ mod tests {
         }
     }
 
+    fn member_with_mat(id: u32, n0: u32, n1: u32, sec: u32, mat: u32) -> ElementData {
+        let mut e = member(id, n0, n1, sec);
+        e.material = Some(crate::ids::MaterialId(mat));
+        e
+    }
+
     fn member(id: u32, n0: u32, n1: u32, sec: u32) -> ElementData {
         ElementData {
             id: ElemId(id),
@@ -687,9 +694,36 @@ mod tests {
         }
     }
 
+    fn mat(id: u32, category: MaterialCategory) -> crate::model::Material {
+        crate::model::Material {
+            strength_factor: None,
+            concrete_class: Default::default(),
+            id: crate::ids::MaterialId(id),
+            name: String::new(),
+            category,
+            young: 205_000.0,
+            poisson: 0.3,
+            density: 0.0,
+            shear: None,
+            fc: None,
+            fy: None,
+        }
+    }
+
     /// 節点 0 を接合部とする T 型（梁 1 本・柱 1 本）のモデル。
-    /// 断面 0 が梁、断面 1 が柱。
+    /// 断面 0 が梁、断面 1 が柱。材料 0 が鋼材、材料 1 がコンクリート。
     fn joint_model(beam: SectionShape, beam_depth: f64, col: SectionShape) -> Model {
+        joint_model_with_mats(beam, beam_depth, col, 0, 0)
+    }
+
+    /// [`joint_model`] の材料も指定できる版（0 = 鋼材、1 = コンクリート）。
+    fn joint_model_with_mats(
+        beam: SectionShape,
+        beam_depth: f64,
+        col: SectionShape,
+        beam_mat: u32,
+        col_mat: u32,
+    ) -> Model {
         Model {
             nodes: vec![
                 node(0, [0.0, 0.0, 3000.0]),
@@ -697,19 +731,14 @@ mod tests {
                 node(2, [0.0, 0.0, 0.0]),
             ],
             sections: vec![sec(beam, beam_depth, None), sec(col, 400.0, None)],
-            materials: vec![crate::model::Material {
-                strength_factor: None,
-                concrete_class: Default::default(),
-                id: crate::ids::MaterialId(0),
-                name: "SN400B".into(),
-                young: 205_000.0,
-                poisson: 0.3,
-                density: 0.0,
-                shear: None,
-                fc: None,
-                fy: None,
-            }],
-            elements: vec![member(0, 0, 1, 0), member(1, 2, 0, 1)],
+            materials: vec![
+                mat(0, MaterialCategory::Steel),
+                mat(1, MaterialCategory::Concrete),
+            ],
+            elements: vec![
+                member_with_mat(0, 0, 1, 0, beam_mat),
+                member_with_mat(1, 2, 0, 1, col_mat),
+            ],
             ..Default::default()
         }
     }
@@ -725,17 +754,29 @@ mod tests {
     }
 
     /// RC 梁が 1 本でもあれば対象外（柱が S でも接合部は RC になる）。
+    /// 判定は材料の区分によるため、断面形状ではなく材料で RC にする。
     #[test]
     fn test_rc_beam_disqualifies_joint() {
-        let m = joint_model(rc_rect_shape(400.0, 700.0), 700.0, h_col());
+        let m = joint_model_with_mats(rc_rect_shape(400.0, 700.0), 700.0, h_col(), 1, 0);
         assert!(resolve_panel_joint(&m, NodeId(0), &m.elements).is_none());
     }
 
     /// RC 柱が 1 本でもあれば対象外。
     #[test]
     fn test_rc_column_disqualifies_joint() {
-        let m = joint_model(h_beam(), 600.0, rc_rect_shape(400.0, 700.0));
+        let m = joint_model_with_mats(h_beam(), 600.0, rc_rect_shape(400.0, 700.0), 0, 1);
         assert!(resolve_panel_joint(&m, NodeId(0), &m.elements).is_none());
+    }
+
+    /// H 形の断面でも材料がコンクリートなら対象外になる。
+    /// 断面形状ではなく材料の区分で判定していることの裏付け。
+    #[test]
+    fn test_steel_shape_with_concrete_material_is_excluded() {
+        let m = joint_model_with_mats(h_beam(), 600.0, h_col(), 1, 0);
+        assert!(
+            resolve_panel_joint(&m, NodeId(0), &m.elements).is_none(),
+            "H 形でも材料がコンクリートなら S 造の接合部ではない"
+        );
     }
 
     /// 柱だけ・はりだけの節点は対象外。

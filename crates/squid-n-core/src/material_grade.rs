@@ -14,6 +14,7 @@
 //! - [`parse_concrete_fc`] — コンクリート `FcXX` 名称の解釈
 //! - [`material_presets`] — UI に提示する標準材料プリセット一覧
 
+use crate::model::MaterialCategory;
 use crate::section_shape::{concrete_young_modulus_gamma, E_STEEL};
 use crate::units::{
     concrete_unit_weight_kn_m3, to_internal::mass_density_from_unit_weight_kn_m3, ConcreteClass,
@@ -256,33 +257,37 @@ pub fn parse_concrete_fc(name: &str) -> Option<f64> {
     digits.parse::<f64>().ok().filter(|v| *v > 0.0)
 }
 
-/// プリセット材料の区分（UI の分類表示に用いる）。
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum PresetCategory {
-    /// 構造用鋼材
-    Steel,
-    /// 鉄筋
-    Rebar,
-    /// コンクリート
-    Concrete,
-}
-
-impl PresetCategory {
-    /// UI 表示名。
-    pub fn label(&self) -> &'static str {
-        match self {
-            PresetCategory::Steel => "鋼材",
-            PresetCategory::Rebar => "鉄筋",
-            PresetCategory::Concrete => "コンクリート",
-        }
+/// グレード名から材料の区分を推定する。
+///
+/// **ST-Bridge の取込専用**である。ST-Bridge は材料を「グレード名」で表し
+/// （`Fc21`・`SN400B`・`SD345`）、名称が物性を一意に定める規格化された体系なので、
+/// 名前からの推定が成り立つ。
+///
+/// モデル内部では区分を [`crate::model::Material::category`] として明示的に持ち、
+/// 構造種別の判定に名前は用いない（`crate::structure_kind`）。利用者が任意の名前を
+/// 付けた材料でも正しく扱うためである。
+///
+/// 判定できない名称は `None` を返し、呼び出し側が既定を決める。
+pub fn category_of_grade(name: &str) -> Option<MaterialCategory> {
+    let upper = name.trim().to_uppercase();
+    if upper.starts_with("FC") {
+        return Some(MaterialCategory::Concrete);
     }
+    if upper.starts_with("SD") || upper.starts_with("SR") || upper.starts_with("KH") {
+        return Some(MaterialCategory::Rebar);
+    }
+    const STEEL_PREFIX: &[&str] = &["SS", "SN", "SM", "STK", "ST", "SA", "BC", "TMCP", "LY"];
+    if STEEL_PREFIX.iter().any(|p| upper.starts_with(p)) {
+        return Some(MaterialCategory::Steel);
+    }
+    None
 }
 
 /// UI に提示する標準材料プリセット（内部単位系 N-mm-s。密度は ton/mm³）。
 #[derive(Clone, Debug, PartialEq)]
 pub struct MaterialPreset {
     pub name: &'static str,
-    pub category: PresetCategory,
+    pub category: MaterialCategory,
     /// ヤング係数 E [N/mm²]
     pub young: f64,
     /// ポアソン比 ν
@@ -329,7 +334,7 @@ pub fn material_presets() -> Vec<MaterialPreset> {
     for &name in PRESET_STEEL {
         out.push(MaterialPreset {
             name,
-            category: PresetCategory::Steel,
+            category: MaterialCategory::Steel,
             young: E_STEEL,
             poisson: 0.3,
             density: steel_density,
@@ -340,7 +345,7 @@ pub fn material_presets() -> Vec<MaterialPreset> {
     for &name in PRESET_REBAR {
         out.push(MaterialPreset {
             name,
-            category: PresetCategory::Rebar,
+            category: MaterialCategory::Rebar,
             young: E_STEEL,
             poisson: 0.3,
             density: steel_density,
@@ -355,7 +360,7 @@ pub fn material_presets() -> Vec<MaterialPreset> {
             concrete_unit_weight_kn_m3(fc, ConcreteClass::Normal, ConcreteComposition::Rc);
         out.push(MaterialPreset {
             name,
-            category: PresetCategory::Concrete,
+            category: MaterialCategory::Concrete,
             young: concrete_young_modulus_gamma(fc, gamma_c),
             poisson: 0.2,
             density: mass_density_from_unit_weight_kn_m3(gamma_rc),
@@ -369,6 +374,68 @@ pub fn material_presets() -> Vec<MaterialPreset> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// ST-Bridge の代表的なグレード名から区分を判定できることを確認する。
+    #[test]
+    fn test_category_of_grade() {
+        for (name, expected) in [
+            ("Fc21", MaterialCategory::Concrete),
+            ("FC60", MaterialCategory::Concrete),
+            ("SN400B", MaterialCategory::Steel),
+            ("SS400", MaterialCategory::Steel),
+            ("SM490A", MaterialCategory::Steel),
+            ("STKR400", MaterialCategory::Steel),
+            ("BCR295", MaterialCategory::Steel),
+            ("TMCP325", MaterialCategory::Steel),
+            ("LY225", MaterialCategory::Steel),
+            ("SD295A", MaterialCategory::Rebar),
+            ("SD345", MaterialCategory::Rebar),
+            ("SR235", MaterialCategory::Rebar),
+            ("KH785", MaterialCategory::Rebar),
+        ] {
+            assert_eq!(
+                category_of_grade(name),
+                Some(expected),
+                "グレード名 {name} の区分"
+            );
+        }
+    }
+
+    /// 判定できない名称は `None` を返し、取込側が既定を決める。
+    #[test]
+    fn test_category_of_grade_unknown() {
+        for name in ["コンクリート", "普通強度", "", "   ", "X999"] {
+            assert_eq!(category_of_grade(name), None, "未知の名称 {name:?}");
+        }
+    }
+
+    /// 判定の順序（コンクリート → 鉄筋 → 鋼材）を確認する。
+    /// `SD`/`SR` は鋼材の前方一致（`S…`）より先に判定する必要がある。
+    #[test]
+    fn test_category_of_grade_order() {
+        // 鉄筋は鋼材より先に判定する。
+        assert_eq!(category_of_grade("SD390"), Some(MaterialCategory::Rebar));
+        // 大文字小文字は区別しない。
+        assert_eq!(category_of_grade("fc24"), Some(MaterialCategory::Concrete));
+        assert_eq!(category_of_grade("sn400b"), Some(MaterialCategory::Steel));
+        // 前後の空白は無視する。
+        assert_eq!(
+            category_of_grade("  SD345  "),
+            Some(MaterialCategory::Rebar)
+        );
+    }
+
+    /// プリセット表の区分は、名前から推定した区分と一致する。
+    /// 一致しない項目があるとプリセットで追加した材料と ST-Bridge から
+    /// 取り込んだ同名の材料で構造種別が食い違う。
+    #[test]
+    fn test_presets_agree_with_category_of_grade() {
+        for p in material_presets() {
+            if let Some(guessed) = category_of_grade(p.name) {
+                assert_eq!(guessed, p.category, "プリセット {} の区分", p.name);
+            }
+        }
+    }
 
     /// H12 建告第2464号の基準強度表と一致することを確認する（板厚 40mm 以下）。
     #[test]
@@ -445,6 +512,7 @@ mod tests {
         let mk = |name: &str, factor: Option<f64>| crate::model::Material {
             id: crate::ids::MaterialId(0),
             name: name.to_string(),
+            category: MaterialCategory::Steel,
             young: 205000.0,
             poisson: 0.3,
             density: 7.85e-9,
@@ -498,6 +566,7 @@ mod tests {
             concrete_class: Default::default(),
             id: crate::ids::MaterialId(0),
             name: "Fc24".into(),
+            category: MaterialCategory::Concrete,
             young: 23000.0,
             poisson: 0.2,
             density: 0.0,
@@ -548,7 +617,7 @@ mod tests {
         };
 
         let ss400 = find("SS400");
-        assert_eq!(ss400.category, PresetCategory::Steel);
+        assert_eq!(ss400.category, MaterialCategory::Steel);
         assert_eq!(ss400.young, 205000.0);
         assert_eq!(ss400.fy, Some(235.0));
 
@@ -556,12 +625,12 @@ mod tests {
         assert_eq!(ly100.fy, Some(80.0));
 
         let sd345 = find("SD345");
-        assert_eq!(sd345.category, PresetCategory::Rebar);
+        assert_eq!(sd345.category, MaterialCategory::Rebar);
         assert_eq!(sd345.fy, Some(345.0));
 
         // コンクリート: Fc≤36 は γ=23、36<Fc≤48 は γ=23.5、48<Fc は γ=24 で Ec を算定。
         let fc24 = find("Fc24");
-        assert_eq!(fc24.category, PresetCategory::Concrete);
+        assert_eq!(fc24.category, MaterialCategory::Concrete);
         assert_eq!(fc24.fc, Some(24.0));
         let ec24 = 3.35e4 * (23.0f64 / 24.0).powi(2) * (24.0f64 / 60.0).powf(1.0 / 3.0);
         assert!((fc24.young - ec24).abs() < 1e-9);

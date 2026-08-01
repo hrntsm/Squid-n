@@ -1,12 +1,39 @@
 use super::*;
+use squid_n_core::model::MaterialCategory;
 
+/// 部材が鋼系かは材料の区分で決まる。断面形状ではないため、H 形のコンクリート
+/// 部材・矩形断面の鋼部材も正しく判定できる。
 #[test]
-fn test_is_steel() {
-    assert!(is_steel("SN400"));
-    assert!(is_steel("SS400"));
-    assert!(is_steel("SM490"));
-    assert!(!is_steel("SD345"));
-    assert!(!is_steel(" Concrete"));
+fn test_elem_is_steel_follows_material_category() {
+    use squid_n_core::section_shape::SectionShape;
+    let h = SectionShape::SteelH {
+        height: 400.0,
+        width: 200.0,
+        web_thick: 8.0,
+        flange_thick: 13.0,
+    };
+    let mut model = crate::sample::portal_frame();
+    model.sections[0].shape = Some(h);
+    model.materials[0].category = MaterialCategory::Steel;
+    let elem = model
+        .elements
+        .iter()
+        .find(|e| e.section == Some(model.sections[0].id))
+        .expect("断面 0 を使う部材")
+        .clone();
+    assert!(elem_is_steel(&elem, &model));
+
+    model.materials[0].category = MaterialCategory::Concrete;
+    assert!(
+        !elem_is_steel(&elem, &model),
+        "H 形でも材料がコンクリートなら RC"
+    );
+
+    model.materials[0].category = MaterialCategory::Rebar;
+    assert!(
+        !elem_is_steel(&elem, &model),
+        "鉄筋を割り当てた部材は S 造ではない"
+    );
 }
 
 #[test]
@@ -251,6 +278,7 @@ fn aligned_portal_frame() -> squid_n_core::model::Model {
         concrete_class: Default::default(),
         id: squid_n_core::ids::MaterialId(0),
         name: "FC24".into(),
+        category: MaterialCategory::Concrete,
         young: 23000.0,
         poisson: 0.2,
         density: 2.4e-9,
@@ -922,6 +950,7 @@ fn shear_2dof_model() -> squid_n_core::model::Model {
             concrete_class: Default::default(),
             id: MaterialId(0),
             name: "mat".into(),
+            category: MaterialCategory::Steel,
             young,
             poisson: 0.0,
             density: 0.0,
@@ -2020,6 +2049,7 @@ fn test_rc_capacity_input_from_rect_matches_handcalc() {
         concrete_class: Default::default(),
         id: MaterialId(0),
         name: "FC24".into(),
+        category: MaterialCategory::Concrete,
         young: 23000.0,
         poisson: 0.2,
         density: 2.4e-9,
@@ -2168,6 +2198,7 @@ fn test_holding_capacity_rank_auto_rc_rect_from_shape() {
             concrete_class: Default::default(),
             id: MaterialId(0),
             name: "FC24".into(),
+            category: MaterialCategory::Concrete,
             young: 23000.0,
             poisson: 0.2,
             density: 2.4e-9,
@@ -2400,6 +2431,7 @@ fn test_rc_sigma_0_from_compression_axial_force() {
             concrete_class: Default::default(),
             id: MaterialId(0),
             name: "FC24".into(),
+            category: MaterialCategory::Concrete,
             young: 23000.0,
             poisson: 0.2,
             density: 2.4e-9,
@@ -2543,6 +2575,7 @@ fn test_rc_sigma_0_prefers_gravity_load_case_over_last_static() {
             concrete_class: Default::default(),
             id: MaterialId(0),
             name: "FC24".into(),
+            category: MaterialCategory::Concrete,
             young: 23000.0,
             poisson: 0.2,
             density: 2.4e-9,
@@ -4204,6 +4237,7 @@ fn test_compute_ultimate_checks_rc_frame() {
             concrete_class: Default::default(),
             id: MaterialId(0),
             name: "SD345".into(),
+            category: MaterialCategory::Rebar,
             young: 23000.0,
             poisson: 0.2,
             density: 2.4e-9,
@@ -4292,6 +4326,7 @@ fn test_compute_cft_ultimate_checks() {
             concrete_class: Default::default(),
             id: MaterialId(0),
             name: "BCR295".into(),
+            category: MaterialCategory::Steel,
             young: 205000.0,
             poisson: 0.3,
             density: 7.85e-9,
@@ -4400,6 +4435,7 @@ fn test_sync_gravity_dl_includes_self_weight_and_slab() {
         concrete_class: Default::default(),
         id: MaterialId(0),
         name: "Fc24".into(),
+        category: MaterialCategory::Concrete,
         young: 22000.0,
         poisson: 0.2,
         density: 2.4e-9,
@@ -4757,6 +4793,7 @@ fn test_import_stbridge_then_run_dl_succeeds() {
         concrete_class: Default::default(),
         id: MaterialId(0),
         name: "SN400B".into(),
+        category: MaterialCategory::Steel,
         young: 205000.0,
         poisson: 0.3,
         density: 7.85e-9,
@@ -4953,6 +4990,7 @@ fn test_secondary_joist_panel_slab_dl_cmq_and_solve() {
             concrete_class: Default::default(),
             id: MaterialId(0),
             name: "Fc24".into(),
+            category: MaterialCategory::Concrete,
             young: 22000.0,
             poisson: 0.2,
             density: 2.4e-9,

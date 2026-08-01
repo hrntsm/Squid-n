@@ -1,7 +1,7 @@
 use std::time::SystemTime;
 
 use squid_n_core::ids::{ElemId, LoadCaseId, NodeId, SectionId};
-use squid_n_design_jp::{DesignCheck, DesignCtx, LoadTerm, MemberForcesAt, RcDesign, SteelDesign};
+use squid_n_design_jp::{DesignCheck, DesignCtx, LoadTerm, MemberForcesAt};
 use squid_n_edit::UndoStack;
 use squid_n_solver::analysis::{AiMode, Analysis, SeismicDir};
 
@@ -1478,19 +1478,6 @@ fn parse_wave_csv(content: &str, dir: ThDir) -> Result<(Vec<f64>, Option<Vec<f64
     }
 }
 
-/// 鋼材判定（Material.name が JIS 鋼種名で始まるか）。
-/// 鉄筋（SD/SR）は RC 扱いのため含めない。
-fn is_steel(name: &str) -> bool {
-    let upper = name.to_uppercase();
-    upper.starts_with("SS")
-        || upper.starts_with("SN")
-        || upper.starts_with("SM")
-        || upper.starts_with("STK")
-        || upper.starts_with("ST")
-        || upper.starts_with("SA")
-        || upper.starts_with("BC")
-}
-
 /// 部材種別判定（部材軸の鉛直成分による幾何判定）。
 ///
 /// - |ez| ≥ 0.8: 柱（軸力＋二軸曲げの複合検定）
@@ -2382,6 +2369,17 @@ impl eframe::App for App {
             Tab::Report => self.report_tab_panel(ui),
         });
     }
+}
+
+/// 要素の構造種別が鋼系（S・CFT）か。
+///
+/// 判定は断面と材料から `squid_n_core::structure_kind` が行う。断面形状は
+/// 見た目であって力学的な性質ではないため、材料の区分を主体に判定する。
+fn elem_is_steel(
+    elem: &squid_n_core::model::ElementData,
+    model: &squid_n_core::model::Model,
+) -> bool {
+    squid_n_core::structure_kind::member_structure_kind(model, elem).is_steel_like()
 }
 
 #[cfg(test)]

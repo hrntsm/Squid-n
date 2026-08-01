@@ -282,7 +282,7 @@ mod tests {
     use squid_n_core::ids::{ElemId, LoadCaseId, MaterialId, NodeId, SectionId, StoryId};
     use squid_n_core::model::{
         DiaphragmDef, ElementData, ElementKind, EndCondition, ForceRegime, LoadCase, LocalAxis,
-        Material, NodalLoad, Node, Section, Story,
+        Material, MaterialCategory, NodalLoad, Node, Section, Story,
     };
     use std::path::{Path, PathBuf};
     use std::time::Duration;
@@ -365,6 +365,7 @@ mod tests {
                 strength_factor: None,
                 id: MaterialId(0),
                 name: "SN400".into(),
+                category: MaterialCategory::Steel,
                 young: 20000.0,
                 poisson: 0.3,
                 density: 0.0,
@@ -459,6 +460,7 @@ mod tests {
                 strength_factor: None,
                 id: MaterialId(0),
                 name: "steel".into(),
+                category: MaterialCategory::Steel,
                 young: 205000.0,
                 poisson: 0.3,
                 density: 0.0,

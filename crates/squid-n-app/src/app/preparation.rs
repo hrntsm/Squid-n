@@ -894,7 +894,7 @@ impl App {
             ) else {
                 continue;
             };
-            if !super::is_steel(&mat.name) {
+            if !super::elem_is_steel(e, model) {
                 continue;
             }
             let Some(shape) = sec.shape.as_ref() else {
@@ -943,15 +943,12 @@ impl App {
             .elements
             .iter()
             .any(|e| matches!(e.kind, ElementKind::Wall) && e.nodes.len() >= 4);
+        // 複合断面（SRC・CFT）の判定は `squid_n_core::structure_kind` に一元化する。
         let has_composite_section = model.sections.iter().any(|s| {
-            matches!(
-                s.shape,
-                Some(
-                    SectionShape::SrcRect { .. }
-                        | SectionShape::CftBox { .. }
-                        | SectionShape::CftPipe { .. }
-                )
-            )
+            s.shape
+                .as_ref()
+                .and_then(squid_n_core::structure_kind::shape_composite_kind)
+                .is_some()
         });
         if !(slab_stiffness_enabled || has_wall_element || has_composite_section) {
             return (Vec::new(), candidates);

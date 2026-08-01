@@ -1,6 +1,6 @@
 //! 冷間成形角形鋼管（BCR/BCP）柱の柱梁耐力比検定配線。
 
-use super::common::{is_steel, ForcesAt, MemberInfo};
+use super::common::{ForcesAt, MemberInfo};
 use crate::steel::cold_formed::{
     box_zp, cold_formed_column_ratio_check, panel_mpp, ColdFormedInput,
 };
@@ -103,7 +103,7 @@ pub(super) fn check_cold_formed(
             // 梁の全塑性モーメント和 Σ(Fyb·Zpb)（H 形鋼の鋼梁のみ算入）。
             let sum_beam_mp: f64 = beams
                 .iter()
-                .filter(|b| is_steel(&b.mat.name))
+                .filter(|b| b.kind.is_steel_like())
                 .filter_map(|b| match b.sec.shape {
                     Some(SectionShape::SteelH {
                         height,

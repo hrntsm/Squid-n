@@ -16,7 +16,8 @@ use std::time::Instant;
 use squid_n_core::dof::{Dof6Mask, DofMap};
 use squid_n_core::ids::{ElemId, MaterialId, NodeId, SectionId};
 use squid_n_core::model::{
-    ElementData, ElementKind, EndCondition, ForceRegime, LocalAxis, Material, Model, Node, Section,
+    ElementData, ElementKind, EndCondition, ForceRegime, LocalAxis, Material, MaterialCategory,
+    Model, Node, Section,
 };
 use squid_n_solver::constraint::Reducer;
 use squid_n_solver::eigen::solve_eigen;
@@ -157,6 +158,7 @@ fn make_frame(nx: usize, ny: usize, nz: usize) -> Model {
             concrete_class: Default::default(),
             id: MaterialId(0),
             name: "SN400".into(),
+            category: MaterialCategory::Steel,
             young: 205_000.0,
             poisson: 0.3,
             density: 0.0,

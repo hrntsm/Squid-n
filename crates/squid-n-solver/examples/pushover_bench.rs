@@ -21,7 +21,7 @@ use squid_n_core::dof::{Dof6Mask, DofMap};
 use squid_n_core::ids::{ElemId, LoadCaseId, MaterialId, NodeId, SectionId, StoryId};
 use squid_n_core::model::{
     DiaphragmDef, ElementData, ElementKind, EndCondition, ForceRegime, LoadCase, LoadCaseKind,
-    LocalAxis, Material, MemberLoad, MemberLoadKind, Model, Node, Section, Story,
+    LocalAxis, Material, MaterialCategory, MemberLoad, MemberLoadKind, Model, Node, Section, Story,
 };
 use squid_n_solver::analysis::SeismicDir;
 use squid_n_solver::constraint::Reducer;
@@ -218,6 +218,7 @@ fn make_frame(nx: usize, ny: usize, nz: usize) -> Model {
             concrete_class: Default::default(),
             id: MaterialId(0),
             name: "SN400".into(),
+            category: MaterialCategory::Steel,
             young: 205_000.0,
             poisson: 0.3,
             density: 0.0,
