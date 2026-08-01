@@ -1467,8 +1467,12 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
         egui::Stroke::new(2.0_f32, line_color)
     };
     for elem in &app.model.elements {
-        // 壁（面要素）は半透明ポリゴンで描画
-        if elem.kind == squid_n_core::model::ElementKind::Wall && elem.nodes.len() >= 3 {
+        // 壁・シェル（面要素）は半透明ポリゴンで描画
+        if matches!(
+            elem.kind,
+            squid_n_core::model::ElementKind::Wall | squid_n_core::model::ElementKind::Shell
+        ) && elem.nodes.len() >= 3
+        {
             let poly: Vec<egui::Pos2> = elem
                 .nodes
                 .iter()
@@ -1486,7 +1490,12 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
             }
             continue;
         }
-        if elem.nodes.len() < 2 {
+        // 線材でない要素（面要素・仕口パネル）は材軸を持たないため線で描かない
+        // （`draws_as_line`）。特に仕口パネルの節点列は「接合部の節点 ＋ 取り付く
+        // 部材の他端」なので、先頭 2 節点を結ぶと取り付く柱・梁とまったく同じ線分に
+        // なる。全部材を直線で描くうちは実部材と重なって見えないが、内部たわみ表示で
+        // 梁・柱を曲線にすると弦の直線だけが残り、部材が二重に描かれて見えてしまう。
+        if !draws_as_line(elem.kind) || elem.nodes.len() < 2 {
             continue;
         }
         let n0 = elem.nodes[0].index();
@@ -1871,6 +1880,17 @@ fn diagram_offset_dir(
         DiagramPlane::Ey => frame.rot[1],
         DiagramPlane::Ez => frame.rot[2],
     }
+}
+
+/// 材軸を持つ線材か（先頭 2 節点を結ぶ線分＝部材線として描いてよい要素か）。
+///
+/// 壁・シェルは面要素で材軸を持たない（壁は多角形として別に描く）。仕口パネルは
+/// 「接合部の節点 ＋ 取り付く部材の他端」を節点列に持つ接合部要素であり、先頭
+/// 2 節点は取り付く柱・梁そのものと同じ節点対になる（`pick_nearest_member` が
+/// ピック対象から外しているのと同じ理由）。
+fn draws_as_line(kind: squid_n_core::model::ElementKind) -> bool {
+    use squid_n_core::model::ElementKind as K;
+    !matches!(kind, K::Wall | K::Shell | K::PanelZone)
 }
 
 /// 部材両端間のワールド距離。ゼロ長部材（材軸が定まらない）の除外判定に使う。
@@ -3309,6 +3329,27 @@ mod tests {
             plastic_zone: None,
             spring: None,
         }
+    }
+
+    #[test]
+    fn 仕口パネルと面要素は部材線として描かない() {
+        // 仕口パネルの節点列は「接合部の節点 ＋ 取り付く部材の他端」なので、先頭
+        // 2 節点を結ぶと取り付く柱・梁と同じ線分になる。全部材が直線のうちは実部材と
+        // 重なって見えないが、内部たわみ表示で梁・柱を曲線にすると弦の直線だけが
+        // 残り、部材が二重に描かれてしまうため線材として扱わない。
+        assert!(!draws_as_line(ElementKind::PanelZone));
+        assert!(!draws_as_line(ElementKind::Wall));
+        assert!(!draws_as_line(ElementKind::Shell));
+        // 材軸を持つ 2 節点要素は従来どおり線で描く。
+        assert!(draws_as_line(ElementKind::Beam));
+        assert!(draws_as_line(ElementKind::Fiber));
+        assert!(draws_as_line(ElementKind::MultiSpring));
+        assert!(draws_as_line(ElementKind::Brace {
+            tension_only: false
+        }));
+        assert!(draws_as_line(ElementKind::NodalSpring));
+        assert!(draws_as_line(ElementKind::Isolator));
+        assert!(draws_as_line(ElementKind::Damper));
     }
 
     #[test]
