@@ -265,13 +265,12 @@ impl WallPanelElement {
         // （＝面内せん断を負担しない）場合に限る。ピン化条件
         // （`side_column::wall_side_column_release`）と同じ判定をここでも課さないと、
         // ピン化されない柱の断面を壁が肩代わりして**面内せん断の二重計上**になる。
-        let side_columns_released = crate::side_column::is_rc_wall(data, model)
-            && crate::misc_wall::wall_is_seismic(data, model);
+        let side_columns_released = crate::misc_wall::wall_is_seismic(data, model);
         for e in &model.elements {
             if !side_columns_released {
                 break;
             }
-            if !matches!(e.kind, squid_n_core::model::ElementKind::Beam) || e.nodes.len() < 2 {
+            if !crate::side_column::is_side_column_member(e.kind) || e.nodes.len() < 2 {
                 continue;
             }
             // 鉛直材のみ（ピン化条件と同じ規約）。
@@ -642,6 +641,11 @@ impl WallPanelElement {
             Some(SectionShape::RcWall { thickness, ps }) => (*thickness, (*ps).max(0.0)),
             _ => (sec.thickness.unwrap_or(sec.width), 0.0),
         };
+        // 鋼板耐震壁はせん断降伏で決まる（[`Self::steel_shear_capacity_of`]）。
+        // 荒川式は RC 耐震壁の終局せん断強度のため適用しない。
+        if !crate::misc_wall::is_rc_wall(data, model) {
+            return Self::steel_shear_capacity_of(data, model);
+        }
         let fc = data
             .material
             .and_then(|mid| model.materials.get(mid.index()))
@@ -652,7 +656,7 @@ impl WallPanelElement {
         let mut col_main_at: f64 = 0.0;
         let mut has_side_column = false;
         for e in &model.elements {
-            if !matches!(e.kind, squid_n_core::model::ElementKind::Beam) || e.nodes.len() < 2 {
+            if !crate::side_column::is_side_column_member(e.kind) || e.nodes.len() < 2 {
                 continue;
             }
             let (n0, n1) = (e.nodes[0], e.nodes[1]);
@@ -696,6 +700,42 @@ impl WallPanelElement {
             has_side_column,
             opening,
         )
+    }
+
+    /// 鋼板耐震壁の面内せん断終局強度 Qy [N]。
+    ///
+    /// 鋼板のせん断降伏で決まるものとし、von Mises の降伏条件による純せん断の
+    /// 降伏せん断応力度 τy = F/√3 を全断面 t·lw に乗じる。
+    ///
+    /// ```text
+    /// Qy = t · lw · F / √3
+    /// ```
+    ///
+    /// F は材料の降伏強度 `Material.fy` を用いる。
+    ///
+    /// **せん断座屈は考慮していない。** 幅厚比の大きい無補剛の鋼板は、せん断降伏に
+    /// 達する前に面外へせん断座屈して耐力が頭打ちになるため、本式は座屈が生じない
+    /// （十分に補剛された）鋼板を前提とする**危険側**の評価である。増分解析の実行時に
+    /// その旨を情報表示する（`squid-n-app` の解析実行）。座屈耐力の評価は原典の
+    /// 入手後に対応する。
+    pub fn steel_shear_capacity_of(data: &ElementData, model: &Model) -> f64 {
+        let Some(geom) = wall_panel_geometry(data, model) else {
+            return 0.0;
+        };
+        let Some(sec) = data.section.and_then(|sid| model.sections.get(sid.index())) else {
+            return 0.0;
+        };
+        // 壁形状 `RcWall` は RC 壁専用のため、鋼板壁の板厚は断面の板厚を用いる。
+        let t = sec.thickness.unwrap_or(sec.width);
+        let f = data
+            .material
+            .and_then(|mid| model.materials.get(mid.index()))
+            .and_then(|m| m.fy)
+            .unwrap_or(0.0);
+        if t <= 0.0 || geom.lw <= 0.0 || f <= 0.0 {
+            return 0.0;
+        }
+        t * geom.lw * f / 3.0_f64.sqrt()
     }
 
     /// 耐震壁のせん断終局強度 Qu を算定できない**設定不備**があれば、その内容を返す。
@@ -771,11 +811,32 @@ impl WallPanelElement {
         else {
             return Some(format!(
                 "耐震壁 ID {} に材料が設定されていません。\
-                 材料タブでコンクリート強度 Fc を持つ材料を割り当ててください。\
+                 材料タブで材料を割り当ててください。\
                  保有水平耐力計算では耐震壁の終局せん断強度が必要です。",
                 data.id.0
             ));
         };
+        // 鋼板耐震壁はせん断降伏 Qy=t·lw·F/√3 で決まるため、要するのは Fc ではなく
+        // 降伏強度 fy である（[`Self::steel_shear_capacity_of`]）。
+        if !crate::misc_wall::is_rc_wall(data, model) {
+            if !mat.fy.is_some_and(|fy| fy > 0.0) {
+                return Some(format!(
+                    "鋼板耐震壁 ID {} の材料「{}」に降伏強度 fy が設定されていません。\
+                     材料タブで fy を設定してください。\
+                     保有水平耐力計算では鋼板のせん断降伏 Qy=t·lw·F/√3 で面内せん断を頭打ちにします。",
+                    data.id.0, mat.name
+                ));
+            }
+            if Self::steel_shear_capacity_of(data, model) <= 0.0 {
+                return Some(format!(
+                    "鋼板耐震壁 ID {} の終局せん断強度 Qy を算定できません（算定結果が 0 以下）。\
+                     壁の板厚・壁長さの入力を確認してください。\
+                     保有水平耐力計算では Qy が定まらない壁を弾性として扱えません。",
+                    data.id.0
+                ));
+            }
+            return None;
+        }
         match mat.fc {
             None => {
                 return Some(format!(
@@ -798,7 +859,7 @@ impl WallPanelElement {
         let mut has_side_column = false;
         let mut col_main_at: f64 = 0.0;
         for e in &model.elements {
-            if !matches!(e.kind, squid_n_core::model::ElementKind::Beam) || e.nodes.len() < 2 {
+            if !crate::side_column::is_side_column_member(e.kind) || e.nodes.len() < 2 {
                 continue;
             }
             let (n0, n1) = (e.nodes[0], e.nodes[1]);
@@ -1715,18 +1776,28 @@ mod tests {
         model
             .sections
             .push(col_shape.to_section(SectionId(1), "C600".into()));
-        // 四周の鉛直辺（ElemId 3・4）を 600×600 RC 側柱にする。
-        for e in model
-            .elements
-            .iter_mut()
-            .filter(|e| e.id == ElemId(3) || e.id == ElemId(4))
+        // 左右の鉛直辺（節点 0-3・1-2）へ 600×600 RC 側柱を追加する。
+        // `add_surrounding_frame` は上下辺の大梁だけを置くため、側柱はここで足す。
+        let base = model.elements.iter().map(|e| e.id.0).max().unwrap_or(0) + 1;
+        for (i, (a, b)) in [(NodeId(0), NodeId(3)), (NodeId(1), NodeId(2))]
+            .into_iter()
+            .enumerate()
         {
-            e.kind = ElementKind::Beam;
-            e.section = Some(SectionId(1));
-            e.material = Some(MaterialId(0));
-            e.local_axis = LocalAxis {
-                ref_vector: [1.0, 0.0, 0.0],
-            };
+            model.elements.push(ElementData {
+                id: ElemId(base + i as u32),
+                kind: ElementKind::Beam,
+                nodes: smallvec::smallvec![a, b],
+                section: Some(SectionId(1)),
+                material: Some(MaterialId(0)),
+                local_axis: LocalAxis {
+                    ref_vector: [1.0, 0.0, 0.0],
+                },
+                end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+                force_regime: ForceRegime::Auto,
+                rigid_zone: Default::default(),
+                plastic_zone: None,
+                spring: None,
+            });
         }
         let wall_cols = WallPanelElement::try_new(&data, &model).unwrap();
         // (壁板+側柱2本)/κ(I形) > 壁板/1.2
@@ -2149,21 +2220,10 @@ mod capacity_issue_tests {
         };
         let mut sections = vec![shape.to_section(SectionId(0), "W200".into())];
         let mut elements = vec![];
-        // 四周の部材。耐震壁は四周を柱・梁に囲まれた壁を対象とするため、
-        // 側柱の有無に依らず四辺へ線材を置く（`misc_wall::wall_is_seismic`）。
-        //
-        // 「側柱なし」の場合の鉛直辺は Fiber 種別とする。四周条件は線材種別を
-        // 問わない一方、Qu 算定側の側柱集計は `ElementKind::Beam` のみを数えるため、
-        // Fiber を置けば四周を満たしたまま「側柱が無い壁」を再現できる。
-        let side_kind = if side_col_sec.is_some() {
-            ElementKind::Beam
-        } else {
-            ElementKind::Fiber
-        };
-        let mut edge = |id: u32, kind: ElementKind, n0: u32, n1: u32, sec: Option<SectionId>| {
+        let mut edge = |id: u32, n0: u32, n1: u32, sec: Option<SectionId>| {
             elements.push(ElementData {
                 id: ElemId(id),
-                kind,
+                kind: ElementKind::Beam,
                 nodes: smallvec::smallvec![NodeId(n0), NodeId(n1)],
                 section: sec,
                 material: Some(MaterialId(0)),
@@ -2182,10 +2242,17 @@ mod capacity_issue_tests {
             sections.push(cs);
             SectionId(1)
         });
-        edge(1, side_kind, 0, 3, side_sec); // 左の鉛直辺（側柱）
-        edge(2, side_kind, 1, 2, None); // 右の鉛直辺
-        edge(3, ElementKind::Beam, 0, 1, None); // 下辺
-        edge(4, ElementKind::Beam, 3, 2, None); // 上辺
+        // 上下辺の大梁。耐震壁は上下辺が大梁で囲まれた壁を対象とする
+        // （`misc_wall::wall_is_framed`）。ElemId は壁（0）に続く連番とする。
+        edge(1, 0, 1, None); // 下辺
+        edge(2, 3, 2, None); // 上辺
+                             // 側柱は「側柱あり」のときだけ鉛直辺へ置く。側柱を持たない耐震壁は壁筋比 ps から
+                             // 等価引張鉄筋比 pte を算定する正規の対象であり、鉛直材を置かないことで再現する。
+                             // 断面の無い鉛直材を置くと「側柱はあるのに主筋量を読み取れない＝入力不備」となる。
+        if let Some(sec) = side_sec {
+            edge(3, 0, 3, Some(sec)); // 左の鉛直辺（側柱）
+            edge(4, 1, 2, None); // 右の鉛直辺
+        }
         let wall = ElementData {
             id: ElemId(0),
             kind: ElementKind::Wall,

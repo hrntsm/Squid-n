@@ -117,6 +117,12 @@ pub(super) fn check_walls(
         if !squid_n_element::misc_wall::wall_is_seismic(elem, model) {
             continue;
         }
+        // 本検定は RC 規準 18 条の RC 耐震壁の式のため、RC 壁のみを対象とする。
+        // 鋼板耐震壁も耐震壁としては成立する（`wall_is_seismic`）が、RC の式を
+        // 適用すると根拠のない検定比を返すため対象外とする。
+        if !squid_n_element::misc_wall::is_rc_wall(elem, model) {
+            continue;
+        }
         // 側柱: 壁節点のうち 2 節点を両端に持つ鉛直部材。
         let wall_nodes = &elem.nodes;
         let mut side_columns = Vec::new();

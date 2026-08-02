@@ -10,18 +10,43 @@
 //! 周辺部材への断面性能の合成は梁要素側（`beam.rs`）で行う。
 
 use squid_n_core::ids::{ElemId, NodeId};
-use squid_n_core::model::{ElementData, ElementKind, Model};
+use squid_n_core::model::{ElementData, ElementKind, MaterialCategory, Model};
 use squid_n_core::section_shape::SectionShape;
 
-/// 耐震壁の成立判定（RC規準・耐震壁の判定）。
+/// RC 造の壁か（断面形状が [`SectionShape::RcWall`]、または材料の区分が
+/// コンクリート）。
 ///
-/// - 四周が柱・梁に囲まれていること（[`wall_is_framed`]）
+/// 構造種別の判定軸は材料の区分（[`MaterialCategory`]）である。壁形状
+/// [`SectionShape::RcWall`] は壁厚と壁筋比を持つ RC 壁専用の形状のため、
+/// 形状が付いていればそれだけで RC と判定する。
+///
+/// 耐震壁の成立条件のうち、スリット・壁厚・開口周比の 3 つは RC 規準の規定で
+/// あり、RC 壁にのみ課す（[`wall_is_seismic`]）。鋼板耐震壁は板厚 9〜16mm 程度
+/// で RC の 120mm 閾値に掛かるため、材種を問わず課すと耐震壁として成立しない。
+pub fn is_rc_wall(data: &ElementData, model: &Model) -> bool {
+    let sec_is_rc_wall = data
+        .section
+        .and_then(|sid| model.sections.get(sid.index()))
+        .is_some_and(|s| matches!(s.shape, Some(SectionShape::RcWall { .. })));
+    let mat_is_rc = data
+        .material
+        .and_then(|mid| model.materials.get(mid.index()))
+        .is_some_and(|m| m.category == MaterialCategory::Concrete);
+    sec_is_rc_wall || mat_is_rc
+}
+
+/// 耐震壁の成立判定。
+///
+/// 材種によらず課す条件:
+/// - 上下辺が大梁（水平材）で囲まれていること（[`wall_is_framed`]）
+///
+/// RC 壁（[`is_rc_wall`]）にのみ課す条件（RC規準・耐震壁の判定）:
 /// - スリット（三方スリット）がないこと
 /// - 壁厚が 120mm 以上であること
 /// - 開口周比 r0=√(開口面積/(l·h)) ≤ 0.4（複数開口モード適用後の面積）
 ///
 /// 壁厚が特定できない（断面未設定の暫定壁）場合は、四周条件さえ満たせば
-/// 成立扱い（true）とする。開口周比までの 3 条件の原典実装は
+/// 成立扱い（true）とする。RC 固有の 3 条件の原典実装は
 /// `squid-n-design-jp::wall_opening::is_seismic_wall` と同一規定で、四周条件だけは
 /// モデルのトポロジを要するため本関数が担う。耐震壁か否かの答えが解析と検定で
 /// 食い違わないよう、検定側（`squid-n-design-jp::joint_wiring`）も本関数を用いる。
@@ -32,6 +57,10 @@ use squid_n_core::section_shape::SectionShape;
 pub fn wall_is_seismic(data: &ElementData, model: &Model) -> bool {
     if !wall_is_framed(data, model) {
         return false;
+    }
+    // 以降は RC 規準の耐震壁規定。鋼板耐震壁には課さない。
+    if !is_rc_wall(data, model) {
+        return true;
     }
     let Some(t) = wall_thickness(data, model) else {
         return true;
@@ -59,50 +88,94 @@ pub fn wall_is_seismic(data: &ElementData, model: &Model) -> bool {
     r0 <= 0.4
 }
 
-/// 壁の四周（下辺・上辺・左右の鉛直辺）がすべて柱・梁で囲まれているか。
+/// 壁の上下辺がともに大梁（水平材）で囲まれているか。
 ///
-/// 耐震壁は四周を柱・梁に囲まれた壁を対象とする。壁が負担した面内せん断を四周の
-/// 部材へ伝達できることが前提のため、1 辺でも部材が無い壁は耐震壁として扱わず、
+/// 壁が負担した面内せん断は、壁エレメントの上下の剛梁を介して大梁へ伝達される。
+/// 上下辺のいずれかに大梁が無い壁は伝達先を持たないため耐震壁として扱わず、
 /// フレーム内雑壁とする（最下階で基礎梁を省略した入力も、下辺の伝達先が無いため
 /// 対象外となる）。
+///
+/// 左右の鉛直辺（側柱）は要求しない。側柱を持たない耐震壁は、壁の縦筋が一様配筋
+/// であるとみなして等価引張鉄筋比を pte=100·ps とする正規の対象であり
+/// （[`crate::wall_panel::WallPanelElement::shear_capacity_of`]）、側柱を必須にすると
+/// この経路へ到達できなくなる。
 ///
 /// 辺と部材の対応は節点の一致で判定する。壁の四隅とは別の節点を使う部材は、
 /// 壁エレメントの剛梁が拾えない（四隅の並進しか伝達しない）ため対象外である。
 pub fn wall_is_framed(data: &ElementData, model: &Model) -> bool {
-    // 幾何を取れない壁（4 節点未満・退化）は四周を定義できないため不成立。
+    // 幾何を取れない壁（4 節点未満・退化）は辺を定義できないため不成立。
     let Some(g) = crate::wall_panel::wall_panel_geometry(data, model) else {
         return false;
     };
-    has_edge_member(model, g.bottom[0], g.bottom[1], EdgeKind::Girder)
-        && has_edge_member(model, g.top[0], g.top[1], EdgeKind::Girder)
-        && has_edge_member(model, g.bottom[0], g.top[0], EdgeKind::SideColumn)
-        && has_edge_member(model, g.bottom[1], g.top[1], EdgeKind::SideColumn)
+    has_girder(model, g.bottom[0], g.bottom[1]) && has_girder(model, g.top[0], g.top[1])
 }
 
-/// 壁の辺に取り付く部材の向き。
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum EdgeKind {
-    /// 上下の大梁（水平材）。
-    Girder,
-    /// 左右の側柱（鉛直材）。
-    SideColumn,
-}
-
-/// 節点 `a`・`b` を両端に持つ、指定した向きの線材が存在するか。
+/// 耐震壁とその周辺架構（上下の大梁・左右の側柱）で構造種別が食い違う場合に、
+/// 是正内容を示す文を返す。
 ///
-/// 向きの判定規約は既存の実装と揃える。水平材は勾配 5% まで
-/// （[`crate::beam::stiffness_breakdown`]）、鉛直材は dz が水平成分の和の 1/2 超
-/// （[`crate::side_column::wall_side_column_release`]）とする。
+/// 壁エレメントは、面内せん断を壁が負担し曲げを周辺架構が負担する置換モデルであり、
+/// 壁と周辺架構は一体の耐震要素として挙動する。RC 壁に S 骨組（あるいはその逆）を
+/// 組み合わせた混合構造は、耐力式・剛性評価の前提が成り立たないため扱わない。
 ///
-/// 柱・梁として四周を構成しうるのは線材のみで、ブレース（軸材）・面要素・バネは
-/// 曲げを伝達しないため除く。
-fn has_edge_member(model: &Model, a: NodeId, b: NodeId, kind: EdgeKind) -> bool {
-    model.elements.iter().any(|e| {
-        if !matches!(
-            e.kind,
-            ElementKind::Beam | ElementKind::Fiber | ElementKind::MultiSpring
-        ) || e.nodes.len() < 2
+/// 判定は材料の区分（[`MaterialCategory`]）による。材料が未設定の部材は別の入力
+/// チェックが捕捉するため、ここでは対象外とする。
+pub fn wall_frame_category_issue(data: &ElementData, model: &Model) -> Option<String> {
+    if !matches!(data.kind, ElementKind::Wall) || !wall_is_seismic(data, model) {
+        return None;
+    }
+    let g = crate::wall_panel::wall_panel_geometry(data, model)?;
+    let (wall_label, want) = if is_rc_wall(data, model) {
+        ("RC 造", MaterialCategory::Concrete)
+    } else {
+        ("S 造", MaterialCategory::Steel)
+    };
+    let edges = [
+        (g.bottom[0], g.bottom[1]),
+        (g.top[0], g.top[1]),
+        (g.bottom[0], g.top[0]),
+        (g.bottom[1], g.top[1]),
+    ];
+    for e in &model.elements {
+        if !crate::side_column::is_line_member(e.kind) || e.nodes.len() < 2 {
+            continue;
+        }
+        let (n0, n1) = (e.nodes[0], e.nodes[1]);
+        if !edges
+            .iter()
+            .any(|(a, b)| (*a == n0 && *b == n1) || (*a == n1 && *b == n0))
         {
+            continue;
+        }
+        let Some(mat) = e.material.and_then(|mid| model.materials.get(mid.index())) else {
+            continue;
+        };
+        if mat.category != want {
+            return Some(format!(
+                "耐震壁 ID {} は{}ですが、周辺架構の部材 ID {} の材料「{}」の区分は{}です。\
+                 耐震壁と周辺架構の構造種別を揃えてください。\
+                 壁エレメントは壁と周辺架構を一体の耐震要素としてモデル化するため、\
+                 混合構造は扱えません。",
+                data.id.0,
+                wall_label,
+                e.id.0,
+                mat.name,
+                mat.category.label()
+            ));
+        }
+    }
+    None
+}
+
+/// 節点 `a`・`b` を両端に持つ大梁（水平材）が存在するか。
+///
+/// 水平材の判定規約は既存の実装と揃え、勾配 5% までを水平とみなす
+/// （[`crate::beam::stiffness_breakdown`]）。
+///
+/// 大梁として辺を構成しうるのは線材のみで、ブレース（軸材）・面要素・バネは
+/// 曲げを伝達しないため除く。
+fn has_girder(model: &Model, a: NodeId, b: NodeId) -> bool {
+    model.elements.iter().any(|e| {
+        if !crate::side_column::is_line_member(e.kind) || e.nodes.len() < 2 {
             return false;
         }
         let (n0, n1) = (e.nodes[0], e.nodes[1]);
@@ -118,13 +191,8 @@ fn has_edge_member(model: &Model, a: NodeId, b: NodeId, kind: EdgeKind) -> bool 
             p1.coord[1] - p0.coord[1],
             p1.coord[2] - p0.coord[2],
         );
-        match kind {
-            EdgeKind::Girder => {
-                let lp = (dx * dx + dy * dy).sqrt();
-                lp > 1e-9 && dz.abs() <= 0.05 * lp
-            }
-            EdgeKind::SideColumn => dz.abs() > (dx.abs() + dy.abs()) * 0.5,
-        }
+        let lp = (dx * dx + dy * dy).sqrt();
+        lp > 1e-9 && dz.abs() <= 0.05 * lp
     })
 }
 
@@ -360,7 +428,7 @@ mod tests {
             plastic_zone: None,
             spring: None,
         };
-        // 耐震壁は四周を柱・梁に囲まれた壁を対象とするため、四周に線材を置く。
+        // 耐震壁は上下辺が大梁で囲まれた壁を対象とするため、上下辺に線材を置く。
         crate::wall::add_surrounding_frame(&mut model, &data);
         (model, data)
     }
@@ -390,31 +458,34 @@ mod tests {
         assert!(!wall_is_seismic(&data, &model));
     }
 
-    /// 耐震壁は四周を柱・梁に囲まれた壁のみを対象とする。1 辺でも部材が欠けた壁は
+    /// 耐震壁は上下辺が大梁で囲まれた壁のみを対象とする。上下辺のいずれかが欠けた壁は
     /// 面内せん断の伝達先が無いため不成立（フレーム内雑壁）とする。
+    ///
+    /// 側柱は要求しない。`make_model` は上下辺の大梁だけを置くため、この成立は
+    /// 「側柱を持たない壁も耐震壁として成立する」ことを同時に示す。
     #[test]
-    fn 四周が柱梁に囲まれていない壁は耐震壁として扱わない() {
-        // 四周が揃っていれば成立（`make_model` が四周を配置する）。
+    fn 上下辺に大梁が無い壁は耐震壁として扱わない() {
+        // 上下辺が揃っていれば、側柱が無くても成立する。
         let (model, data) = make_model(150.0);
         assert!(wall_is_framed(&data, &model));
         assert!(wall_is_seismic(&data, &model));
 
-        // 四周のうち 1 辺を取り除くと不成立になる。下辺（基礎梁）を落とした
+        // 上下辺のうち一方を取り除くと不成立になる。下辺（基礎梁）を落とした
         // 最下階の壁も、下辺の伝達先が無いため対象外である。
-        for drop_id in 1..=4u32 {
+        for drop_id in 1..=2u32 {
             let (mut model, data) = make_model(150.0);
             model.elements.retain(|e| e.id != ElemId(drop_id));
             assert!(
                 !wall_is_seismic(&data, &model),
-                "1 辺（ElemId {drop_id}）が欠けた壁は耐震壁不成立"
+                "上下辺の一方（ElemId {drop_id}）が欠けた壁は耐震壁不成立"
             );
         }
     }
 
-    /// 四周を構成するのは曲げを伝達する線材（柱・梁）に限る。軸材であるブレースや、
+    /// 上下辺を構成するのは曲げを伝達する線材（大梁）に限る。軸材であるブレースや、
     /// 辺ではなく対角に架かる部材は、壁が負担した面内せん断の伝達先にならない。
     #[test]
-    fn 四周を構成するのは辺に一致する柱梁のみ() {
+    fn 上下辺を構成するのは辺に一致する大梁のみ() {
         // 下辺の部材（ElemId 1）をブレースへ変えると不成立になる。
         let (mut model, data) = make_model(150.0);
         for e in model.elements.iter_mut().filter(|e| e.id == ElemId(1)) {
@@ -422,17 +493,81 @@ mod tests {
                 tension_only: false,
             };
         }
-        assert!(!wall_is_seismic(&data, &model), "ブレースは柱・梁ではない");
+        assert!(!wall_is_seismic(&data, &model), "ブレースは大梁ではない");
 
-        // 左の鉛直辺の部材（ElemId 3）を対角（節点 0-2）へ架け替えると不成立になる。
+        // 上辺の部材（ElemId 2）を対角（節点 0-2）へ架け替えると不成立になる。
         let (mut model, data) = make_model(150.0);
-        for e in model.elements.iter_mut().filter(|e| e.id == ElemId(3)) {
+        for e in model.elements.iter_mut().filter(|e| e.id == ElemId(2)) {
             e.nodes = smallvec::smallvec![NodeId(0), NodeId(2)];
         }
+        assert!(!wall_is_seismic(&data, &model), "対角材は上辺に一致しない");
+    }
+
+    /// 鋼板耐震壁は RC 規準に由来する条件（スリット・板厚 120mm・開口周比）を
+    /// 課さない。鋼板は板厚 9〜16mm 程度のため、材種を問わず課すと成立しなくなる。
+    #[test]
+    fn 鋼板耐震壁にはrc固有の成立条件を課さない() {
+        use squid_n_core::model::WallAttr;
+
+        // 板厚 9mm・大開口・三方スリットのいずれも、鋼板壁では不成立の理由にしない。
+        let (mut model, mut data) = make_model(9.0);
+        model.materials[0].category = MaterialCategory::Steel;
+        model.materials[0].fc = None;
+        model.materials[0].fy = Some(235.0);
+        // 壁形状 RcWall は RC 壁専用のため、鋼板壁は板厚のみを持つ断面とする。
+        model.sections[0].shape = None;
+        model.sections[0].thickness = Some(9.0);
+        data.section = Some(SectionId(0));
+        model.wall_attrs.push(WallAttr {
+            elem: ElemId(0),
+            opening_area: 3.0e6,
+            opening_weight: 0.0,
+            three_side_slit: true,
+            openings: vec![],
+        });
+        assert!(!is_rc_wall(&data, &model));
         assert!(
-            !wall_is_seismic(&data, &model),
-            "対角材は鉛直辺に一致しない"
+            wall_is_seismic(&data, &model),
+            "鋼板耐震壁は板厚・開口・スリットの条件を課さない"
         );
+
+        // 同じ寸法でも RC 壁なら板厚 120mm 未満で不成立になる。
+        let (model, data) = make_model(9.0);
+        assert!(is_rc_wall(&data, &model));
+        assert!(!wall_is_seismic(&data, &model));
+    }
+
+    /// 耐震壁と周辺架構の構造種別が食い違うモデルは入力不備として報告する。
+    #[test]
+    fn 壁と周辺架構の構造種別の食い違いを報告する() {
+        // RC 壁＋RC 架構は整合（`add_surrounding_frame` は材料を割り当てないため、
+        // 判定が働くよう周辺架構へコンクリートの材料を与える）。
+        let (mut model, data) = make_model(150.0);
+        for e in model.elements.iter_mut().filter(|e| e.id != ElemId(0)) {
+            e.material = Some(MaterialId(0));
+        }
+        assert!(wall_frame_category_issue(&data, &model).is_none());
+
+        // 周辺架構だけ鋼材へ変えると食い違いとして報告する。
+        let (mut model, data) = make_model(150.0);
+        model.materials.push(Material {
+            strength_factor: None,
+            concrete_class: Default::default(),
+            id: MaterialId(1),
+            name: "SN400".into(),
+            category: MaterialCategory::Steel,
+            young: 205000.0,
+            poisson: 0.3,
+            density: 7.85e-9,
+            shear: None,
+            fc: None,
+            fy: Some(235.0),
+        });
+        for e in model.elements.iter_mut().filter(|e| e.id == ElemId(1)) {
+            e.material = Some(MaterialId(1));
+        }
+        let msg = wall_frame_category_issue(&data, &model).expect("食い違いを報告する");
+        assert!(msg.contains("構造種別を揃えて"), "是正内容を示す: {msg}");
     }
 
     #[test]

@@ -20,8 +20,7 @@ mod column;
 mod detect;
 
 pub use column::{InPlaneReleasedColumn, ReleaseAxis};
-pub(crate) use detect::is_rc_wall;
-pub use detect::wall_side_column_release;
+pub use detect::{is_line_member, is_side_column_member, wall_side_column_release};
 
 #[cfg(test)]
 use crate::beam::BeamElement;
