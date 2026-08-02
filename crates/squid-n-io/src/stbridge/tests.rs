@@ -4,8 +4,8 @@ use super::*;
 use smallvec::smallvec;
 use squid_n_core::ids::{ElemId, MaterialId, NodeId, SectionId, StoryId};
 use squid_n_core::model::{
-    ElementData, ElementKind, EndCondition, ForceRegime, LocalAxis, Material, MaterialCategory,
-    Model, Node, Section, Story,
+    AxisGroupKind, AxisSource, ElementData, ElementKind, EndCondition, ForceRegime, LocalAxis,
+    Material, MaterialCategory, Model, Node, Section, Story,
 };
 use squid_n_core::section_shape::SectionShape;
 
@@ -2383,4 +2383,121 @@ fn test_import_slab_auto_self_weight_from_thickness() {
         "自動設定を通知: {:?}",
         report.notes
     );
+}
+
+/// 実 ST-Bridge の通り芯（`StbAxes` > `StbParallelAxes` > `StbParallelAxis`）を
+/// グループの幾何・通り名・所属節点まで取り込み、書き戻して往復することを確認する。
+///
+/// 所属節点は座標から導けない（`X1a` は `distance=3000` だが所属節点の X は 3500 という
+/// 芯ずれが実務で普通に起きる）ため、リストをそのまま保持することを併せて確かめる。
+#[test]
+fn test_import_export_parallel_axes() {
+    let xml = r#"<?xml version="1.0"?>
+<ST_BRIDGE version="2.0.0"><StbModel>
+  <StbNodes>
+    <StbNode id="10" X="1000" Y="0" Z="0"/>
+    <StbNode id="11" X="3500" Y="0" Z="0"/>
+    <StbNode id="12" X="1000" Y="6000" Z="0"/>
+  </StbNodes>
+  <StbAxes>
+    <StbParallelAxes group_name="Y" X="0.0" Y="0.0" angle="0.0">
+      <StbParallelAxis id="1" name="Y1" distance="0.0">
+        <StbNodeIdList>
+          <StbNodeId id="10"/>
+          <StbNodeId id="11"/>
+        </StbNodeIdList>
+      </StbParallelAxis>
+      <StbParallelAxis id="2" name="Y2" distance="6000.0">
+        <StbNodeIdList><StbNodeId id="12"/></StbNodeIdList>
+      </StbParallelAxis>
+    </StbParallelAxes>
+    <StbParallelAxes group_name="X" X="0.0" Y="0.0" angle="270.0">
+      <StbParallelAxis id="3" name="X1" distance="1000.0">
+        <StbNodeIdList>
+          <StbNodeId id="10"/>
+          <StbNodeId id="12"/>
+        </StbNodeIdList>
+      </StbParallelAxis>
+      <StbParallelAxis id="4" name="X1a" distance="3000.0">
+        <StbNodeIdList><StbNodeId id="11"/></StbNodeIdList>
+      </StbParallelAxis>
+    </StbParallelAxes>
+  </StbAxes>
+</StbModel></ST_BRIDGE>"#;
+    let (m, report) = import_stbridge_with_report(xml).expect("import");
+    assert!(m.validate().is_ok(), "{:?}", m.validate());
+    assert!(
+        report.is_clean(),
+        "通り芯は対応済みなので欠落警告は出ない: {:?}",
+        report.warnings
+    );
+
+    assert_eq!(m.axes.len(), 2);
+    let y = &m.axes[0];
+    assert_eq!(y.name, "Y");
+    assert_eq!(
+        y.kind,
+        AxisGroupKind::Parallel {
+            origin: [0.0, 0.0],
+            angle_deg: 0.0
+        }
+    );
+    assert_eq!(
+        y.axes.iter().map(|a| a.name.as_str()).collect::<Vec<_>>(),
+        vec!["Y1", "Y2"]
+    );
+    // 節点 id は 0 始まり連番へ正規化される（file id 10/11/12 → 0/1/2）。
+    assert_eq!(y.axes[0].nodes, vec![NodeId(0), NodeId(1)]);
+    // 取り込んだ通りは利用者の入力と同格に扱い、自動生成で作り直さない。
+    assert!(y.axes.iter().all(|a| a.source == AxisSource::Manual));
+
+    let x = &m.axes[1];
+    assert_eq!(x.axes[1].name, "X1a");
+    assert_eq!(x.axes[1].distance, Some(3000.0));
+    // 芯ずれ（通りは X=3000、節点は X=3500）でも所属はリストのとおり保つ。
+    assert_eq!(x.axes[1].nodes, vec![NodeId(1)]);
+    assert_eq!(m.nodes[1].coord[0], 3500.0);
+
+    // 書き戻して再取り込みしても通り芯が一致する。
+    let out = export_stbridge(&m).expect("export");
+    let (again, _) = import_stbridge_with_report(&out).expect("re-import");
+    assert_eq!(m.axes, again.axes, "通り芯が往復で一致する");
+}
+
+/// 円弧芯・放射芯・作図芯は幾何を表す型を持たないため `Other` として所属節点だけを
+/// 取り込む（＝データを捨てずに読める）。書き出しでは平行芯のみを出す。
+#[test]
+fn test_import_non_parallel_axes_as_other() {
+    let xml = r#"<?xml version="1.0"?>
+<ST_BRIDGE version="2.0.0"><StbModel>
+  <StbNodes>
+    <StbNode id="1" X="0" Y="0" Z="0"/>
+    <StbNode id="2" X="5000" Y="0" Z="0"/>
+  </StbNodes>
+  <StbAxes>
+    <StbArcAxes group_name="R" X="0.0" Y="0.0">
+      <StbArcAxis id="1" name="R1" radius="5000.0">
+        <StbNodeIdList><StbNodeId id="2"/></StbNodeIdList>
+      </StbArcAxis>
+    </StbArcAxes>
+    <StbRadialAxes group_name="A" X="0.0" Y="0.0">
+      <StbRadialAxis id="2" name="A1" angle="30.0"/>
+    </StbRadialAxes>
+  </StbAxes>
+</StbModel></ST_BRIDGE>"#;
+    let (m, report) = import_stbridge_with_report(xml).expect("import");
+    assert!(m.validate().is_ok(), "{:?}", m.validate());
+    assert!(report.is_clean(), "警告: {:?}", report.warnings);
+
+    assert_eq!(m.axes.len(), 2);
+    assert_eq!(m.axes[0].name, "R");
+    assert_eq!(m.axes[0].kind, AxisGroupKind::Other);
+    assert_eq!(m.axes[0].axes[0].name, "R1");
+    assert_eq!(m.axes[0].axes[0].distance, None, "幾何は保持しない");
+    assert_eq!(m.axes[0].axes[0].nodes, vec![NodeId(1)], "所属節点は保つ");
+    assert_eq!(m.axes[1].axes[0].name, "A1");
+
+    // 平行芯グループが 1 つも無いモデルは StbAxes 自体を出力しない。
+    let out = export_stbridge(&m).expect("export");
+    assert!(!out.contains("<StbAxes>"), "{out}");
 }

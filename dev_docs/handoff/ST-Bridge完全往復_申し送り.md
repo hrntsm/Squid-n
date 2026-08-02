@@ -61,8 +61,22 @@ SteelFlatBar / SteelRoundBar / RcRect / RcCircle / SrcRect / CftBox / CftPipe / 
 
 ### 部材・トポロジ
 
-- **通り芯・軸（`StbAxes`）**: `Model` に grid/axis の概念が無い。`Model.axes` を追加しないと
-  通り芯が往復で失われる。
+- **通り芯・軸（`StbAxes`）**: ✅ **実装済み**。`Model.axes: Vec<AxisGroup>` を追加した。
+  通り芯は「幾何を持つ線」ではなく「**名前の付いた節点のまとまり**」として表現する
+  （`AxisGroup { name, kind, axes }` / `Axis { name, distance, nodes, source }`）。この形にした
+  ことで、平行芯（`StbParallelAxes`）は原点・方向角ごと往復し、幾何を表す型を持たない
+  円弧芯・放射芯・作図芯も `AxisGroupKind::Other` として**通り名と所属節点を落とさずに読める**。
+  書き出しは平行芯のみで、`Other` のグループを除いたことは GUI 側で通知する。
+  - 所属節点は座標から導かずリストを正とする。実 ST-Bridge（`FileA.stb`）で
+    `distance=3000` の `X1a` に X=3500 の節点が属する**芯ずれ**を確認しており、座標から
+    復元する方式では往復できないため。所属要素は `Model::axis_elements`（すべての材端節点が
+    その通りに属する要素）で算出し、モデルには持たない。
+  - 自動生成（`squid_n_core::axis_gen`）は柱位置から X/Y の通りを作るが、**準備計算には
+    含めない**。通り芯は計算に用いないため、準備計算の成果にすると通り芯 1 本の変化で
+    解析結果・設計結果が陳腐化してしまう。`Staleness::mark_non_calc_edited`（未保存フラグ
+    のみ）を新設し、モデルタブ「通り芯」の明示操作として実行する。
+  - 残課題: 利用者が任意の位置・任意の節点で通りを作る**手動生成 UI**（`AxisSource::Manual`
+    の枠組みは実装済みで、UI を足せば載る）。円弧芯・放射芯の幾何の保持。
 - **基礎・杭・フーチング**（`StbFooting` / `StbPile` / `StbFoundationColumn` /
   `StbStripFooting`）: 基礎系の部材型が無い。
 - **間柱（`StbPost`）**: 柱/梁と別の意味を持つが対応する種別が無い（Beam 代用は可だが情報欠落）。

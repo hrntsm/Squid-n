@@ -163,6 +163,21 @@ struct RawWall {
     boundary: Vec<u32>,
 }
 
+/// 取り込み途中の通り芯グループ（節点参照は file id。`StbAxes` の子）。
+struct RawAxisGroup {
+    name: String,
+    kind: squid_n_core::model::AxisGroupKind,
+    axes: Vec<RawAxis>,
+}
+
+/// 取り込み途中の通り芯（節点参照は file id）。
+struct RawAxis {
+    name: String,
+    /// 平行芯の原点からの符号付き離れ（`distance`）。平行芯以外は `None`。
+    distance: Option<f64>,
+    node_ids: Vec<u32>,
+}
+
 /// RC 断面の図形（配筋と組み合わせて `SectionShape` を確定する）。
 enum RcGeom {
     Rect { b: f64, d: f64 },
@@ -243,8 +258,6 @@ impl ImportReport {
 /// ループの `other` 分岐を参照）。本リストは、直属の親からは判別しづらい要素（通り芯など
 /// `StbModel` 直下のもの）を確実に拾うために併用する。
 const UNSUPPORTED_ELEMENTS: &[&str] = &[
-    // 通り芯（Model 直下。grid/axis 概念が無く往復対象外）
-    "StbAxes",
     // 部材（面要素・基礎・開口。StbSlab・StbWall は対応済み）
     "StbFooting",
     "StbPile",
@@ -362,6 +375,9 @@ pub fn import_stbridge_with_report(xml: &str) -> Result<(Model, ImportReport), S
     // 実 ST-Bridge の `StbStory`（内部に `StbNodeIdList/StbNodeId` を持つ）を開いている間 true。
     // 開いている `StbNodeId` を直近の階の所属節点として集めるために使う。
     let mut in_story = false;
+    // 通り芯（`StbAxes` の子。開いているグループの最後の通りへ `StbNodeId` を集める）。
+    let mut raw_axis_groups: Vec<RawAxisGroup> = Vec::new();
+    let mut cur_axis_group: Option<RawAxisGroup> = None;
 
     loop {
         let ev = reader
@@ -755,6 +771,41 @@ pub fn import_stbridge_with_report(xml: &str) -> Result<(Model, ImportReport), S
                             boundary: Vec::new(),
                         });
                     }
+                    // --- 通り芯（StbAxes）---
+                    // 平行芯は原点・方向角ごと取り込む。円弧芯・放射芯・作図芯は
+                    // 幾何を表す型を持たないため `Other` とし、通り名と所属節点だけを
+                    // 取り込む（通り芯は識別用のデータなので、所属が残れば用を成す）。
+                    "StbAxes" => {}
+                    "StbParallelAxes" | "StbArcAxes" | "StbRadialAxes" | "StbDrawingAxes" => {
+                        if let Some(g) = cur_axis_group.take() {
+                            raw_axis_groups.push(g);
+                        }
+                        let kind = if tag == "StbParallelAxes" {
+                            squid_n_core::model::AxisGroupKind::Parallel {
+                                origin: [
+                                    get_opt_f64(&a, "X").unwrap_or(0.0),
+                                    get_opt_f64(&a, "Y").unwrap_or(0.0),
+                                ],
+                                angle_deg: get_opt_f64(&a, "angle").unwrap_or(0.0),
+                            }
+                        } else {
+                            squid_n_core::model::AxisGroupKind::Other
+                        };
+                        cur_axis_group = Some(RawAxisGroup {
+                            name: a.get("group_name").cloned().unwrap_or_default(),
+                            kind,
+                            axes: Vec::new(),
+                        });
+                    }
+                    "StbParallelAxis" | "StbArcAxis" | "StbRadialAxis" | "StbDrawingAxis" => {
+                        if let Some(g) = cur_axis_group.as_mut() {
+                            g.axes.push(RawAxis {
+                                name: a.get("name").cloned().unwrap_or_default(),
+                                distance: get_opt_f64(&a, "distance"),
+                                node_ids: Vec::new(),
+                            });
+                        }
+                    }
                     "StbNodeIdOrder" => {
                         in_node_id_order = true;
                     }
@@ -770,6 +821,10 @@ pub fn import_stbridge_with_report(xml: &str) -> Result<(Model, ImportReport), S
                                 if let Some(story) = raw_stories.last_mut() {
                                     story.node_ids.push(id);
                                 }
+                            } else if let Some(axis) =
+                                cur_axis_group.as_mut().and_then(|g| g.axes.last_mut())
+                            {
+                                axis.node_ids.push(id);
                             }
                         }
                     }
@@ -940,6 +995,11 @@ pub fn import_stbridge_with_report(xml: &str) -> Result<(Model, ImportReport), S
                     "StbStory" => {
                         in_story = false;
                     }
+                    "StbParallelAxes" | "StbArcAxes" | "StbRadialAxes" | "StbDrawingAxes" => {
+                        if let Some(g) = cur_axis_group.take() {
+                            raw_axis_groups.push(g);
+                        }
+                    }
                     "StbSlab" => {
                         if let Some(slab) = cur_slab.take() {
                             raw_slabs.push(slab);
@@ -1064,6 +1124,40 @@ pub fn import_stbridge_with_report(xml: &str) -> Result<(Model, ImportReport), S
                 list.push(node.id);
             }
         }
+    }
+
+    // 通り芯。所属節点の file id を正規化後の NodeId へ張り替える。取り込んだ通りは
+    // 利用者の入力と同格の `Manual` とし、柱位置からの自動生成で作り直さない
+    // （通り名・芯ずれした所属は自動生成では復元できないため）。
+    for g in raw_axis_groups {
+        let axes: Vec<squid_n_core::model::Axis> = g
+            .axes
+            .into_iter()
+            .map(|ax| {
+                let mut nodes: Vec<NodeId> = ax
+                    .node_ids
+                    .iter()
+                    .filter_map(|fid| node_index.get(fid).copied().map(NodeId))
+                    .collect();
+                nodes.sort();
+                nodes.dedup();
+                squid_n_core::model::Axis {
+                    name: ax.name,
+                    distance: ax.distance,
+                    nodes,
+                    source: squid_n_core::model::AxisSource::Manual,
+                }
+            })
+            .collect();
+        model.axes.push(squid_n_core::model::AxisGroup {
+            name: g.name,
+            kind: g.kind,
+            axes,
+        });
+    }
+    // 平行芯グループは離れの昇順に保つ（一覧表示・書き出しが座標順になる）。
+    for group in &mut model.axes {
+        group.sort_axes();
     }
 
     // 区分をグレード名から決められず、物性から推定した材料の名前。

@@ -1,6 +1,8 @@
 pub mod adjacency;
+pub mod axis_gen;
 pub mod dof;
 pub mod error;
+pub mod geom;
 pub mod ids;
 pub mod material_grade;
 pub mod model;

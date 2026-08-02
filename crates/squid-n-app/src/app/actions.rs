@@ -369,9 +369,65 @@ impl App {
             Ok(xml) => {
                 if let Err(e) = std::fs::write(&path, xml) {
                     self.report_error(format!("ST-Bridge書出エラー: {}", e));
+                    return;
+                }
+                // 平行芯以外の通り芯（円弧芯・放射芯・作図芯）は幾何を保持して
+                // いないため書き出せない。無言で落とさず利用者へ知らせる。
+                let dropped = self
+                    .model
+                    .axes
+                    .iter()
+                    .filter(|g| g.kind == squid_n_core::model::AxisGroupKind::Other)
+                    .count();
+                if dropped > 0 {
+                    self.report_notice(format!(
+                        "通り芯のうち平行芯でないグループ {dropped} 件は ST-Bridge へ書き出せないため除きました"
+                    ));
                 }
             }
             Err(e) => self.report_error(format!("ST-Bridge書出エラー: {}", e)),
+        }
+    }
+
+    /// 柱位置から通り芯を自動生成してモデルへ反映する（モデルタブ「通り芯」の操作）。
+    ///
+    /// 通り芯は構造計算に用いないため、**準備計算の一部ではなく利用者が明示的に
+    /// 実行する操作**とし、解析結果・設計結果も陳腐化させない
+    /// （[`Staleness::mark_non_calc_edited`](crate::app::Staleness::mark_non_calc_edited)）。
+    /// 生成規則は [`squid_n_core::axis_gen`] を参照。手動作成・ST-Bridge 取り込み・
+    /// 利用者が改名した通り（`AxisSource::Manual`）は保護される。
+    pub fn generate_axes_action(&mut self) {
+        use squid_n_core::model::AxisSource;
+        self.last_error = None;
+        self.last_notice = None;
+        let axes = squid_n_core::axis_gen::generate_axes(&self.model);
+        if axes == self.model.axes {
+            self.report_notice("通り芯は既に最新です（柱位置から作られる通りに変更はありません）");
+            return;
+        }
+        let n_auto = axes
+            .iter()
+            .flat_map(|g| &g.axes)
+            .filter(|a| a.source == AxisSource::Auto)
+            .count();
+        let n_manual = axes
+            .iter()
+            .flat_map(|g| &g.axes)
+            .filter(|a| a.source == AxisSource::Manual)
+            .count();
+        self.undo.run(
+            &mut self.model,
+            Box::new(squid_n_edit::ReplaceAxes { axes }),
+        );
+        self.staleness.mark_non_calc_edited();
+        if n_auto == 0 {
+            self.report_notice(
+                "柱が見つからないため通り芯を生成できませんでした（自動生成の対象は柱の材端節点です）",
+            );
+        } else {
+            self.report_notice(format!(
+                "通り芯を生成しました（自動 {n_auto} 本・保持 {n_manual} 本）"
+            ));
         }
     }
 

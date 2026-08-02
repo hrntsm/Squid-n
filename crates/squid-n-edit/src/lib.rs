@@ -88,6 +88,7 @@ pub fn push_edit_command(model: &mut Model, stack: &mut UndoStack, cmd: Box<dyn 
     stack.run(model, cmd);
 }
 
+mod axis;
 mod composite;
 mod load_case;
 mod member_detail;
@@ -96,6 +97,7 @@ mod section_material;
 mod steel_design;
 mod wall_misc;
 
+pub use axis::*;
 pub use composite::*;
 pub use load_case::*;
 pub use member_detail::*;
