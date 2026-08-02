@@ -27,15 +27,18 @@ pub(crate) fn add_surrounding_frame(
     use squid_n_core::model::{ElementData, ElementKind, EndCondition, ForceRegime, LocalAxis};
 
     let g = wall_panel::wall_panel_geometry(wall, model).expect("壁の幾何を取得できない");
-    let mut next = model.elements.iter().map(|e| e.id.0).max().unwrap_or(0) + 1;
-    for (a, b, kind) in [
+    let base = model.elements.iter().map(|e| e.id.0).max().unwrap_or(0) + 1;
+    for (i, (a, b, kind)) in [
         (g.bottom[0], g.bottom[1], ElementKind::Beam),
         (g.top[0], g.top[1], ElementKind::Beam),
         (g.bottom[0], g.top[0], ElementKind::Fiber),
         (g.bottom[1], g.top[1], ElementKind::Fiber),
-    ] {
+    ]
+    .into_iter()
+    .enumerate()
+    {
         model.elements.push(ElementData {
-            id: ElemId(next),
+            id: ElemId(base + i as u32),
             kind,
             nodes: smallvec::smallvec![a, b],
             section: None,
@@ -49,6 +52,5 @@ pub(crate) fn add_surrounding_frame(
             plastic_zone: None,
             spring: None,
         });
-        next += 1;
     }
 }
