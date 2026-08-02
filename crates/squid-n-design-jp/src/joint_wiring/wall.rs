@@ -3,7 +3,7 @@
 use super::common::{rc_dt, ForcesAt, MemberInfo};
 use crate::rc::wall::{rc_wall_shear_check, RcWallInput, WallSideColumn};
 use crate::rc::wall_nonlinear::{wall_shear_trilinear, WallShearTrilinearInput};
-use crate::wall_opening::{equivalent_opening, is_seismic_wall, opening_ratio_r0, WallJudgeInput};
+use crate::wall_opening::equivalent_opening;
 use crate::{CheckComponent, CheckKind, CheckResult, LoadTerm};
 use squid_n_core::ids::{ElemId, NodeId};
 use squid_n_core::model::{ElementKind, Model};
@@ -68,10 +68,10 @@ pub(super) fn check_walls(
         let h = coords.iter().map(|c| c[2]).fold(f64::MIN, f64::max)
             - coords.iter().map(|c| c[2]).fold(f64::MAX, f64::min);
 
-        // 壁自重属性（開口面積合計・個別開口寸法・三方スリット）。未登録の壁は
-        // 開口ゼロ・スリット無し（無開口の耐震壁）として扱う。
+        // 壁自重属性（開口面積合計・個別開口寸法）。未登録の壁は開口ゼロ
+        // （無開口の耐震壁）として扱う。三方スリットの有無は耐震壁判定でのみ効き、
+        // その判定は `wall_is_seismic` へ委ねている。
         let attr = model.wall_attrs.iter().find(|w| w.elem == elem.id);
-        let has_slit = attr.map(|a| a.three_side_slit).unwrap_or(false);
 
         // 開口寸法 (l0',h0') の評価。h・l ≤ 0（寸法不定）の場合は開口ゼロ扱い
         // とする。
@@ -107,16 +107,14 @@ pub(super) fn check_walls(
         l0p = l0p.clamp(0.0, l);
         h0p = h0p.clamp(0.0, h);
 
-        // 耐震壁判定（RC規準（耐震壁判定））。スリットあり・壁厚
-        // <120mm・開口周比 r0>0.4 のいずれかに該当する壁は耐震壁として
-        // 扱わないため、RC規準18条の耐震壁せん断検定自体を対象外とする。
-        let r0 = opening_ratio_r0(h0p, l0p, h, l);
-        let judge = WallJudgeInput {
-            thickness,
-            r0,
-            has_slit,
-        };
-        if !is_seismic_wall(&judge) {
+        // 耐震壁判定（RC規準（耐震壁判定））。四周が柱・梁に囲まれていない・
+        // スリットあり・壁厚 <120mm・開口周比 r0>0.4 のいずれかに該当する壁は
+        // 耐震壁として扱わないため、RC規準18条の耐震壁せん断検定自体を対象外とする。
+        //
+        // 判定は解析側（`squid_n_element::misc_wall::wall_is_seismic`）へ委ねる。
+        // 検定側で同じ規定を独立に実装すると、解析では雑壁なのに検定では耐震壁と
+        // いった食い違いが生じるため、耐震壁か否かの答えは 1 か所に持つ。
+        if !squid_n_element::misc_wall::wall_is_seismic(elem, model) {
             continue;
         }
         // 側柱: 壁節点のうち 2 節点を両端に持つ鉛直部材。

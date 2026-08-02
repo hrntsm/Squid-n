@@ -239,7 +239,18 @@ mod tests {
 
     /// 4000×3000 の RC 耐震壁（X-Z 面内、Y=0）を持つモデル。
     /// 節点0=下辺a(0,0,0)、1=下辺b(4000,0,0)、2=上辺(4000,0,3000)、3=上辺(0,0,3000)。
+    ///
+    /// 耐震壁は四周を柱・梁に囲まれた壁を対象とするため、四周に線材を配置する
+    /// （追加される側柱の ElemId は 3・4）。
     fn make_wall_model() -> Model {
+        let mut model = make_bare_wall_model();
+        let wall = model.elements[0].clone();
+        crate::wall::add_surrounding_frame(&mut model, &wall);
+        model
+    }
+
+    /// 四周の柱・梁を持たない壁のみのモデル（[`make_wall_model`] の素材）。
+    fn make_bare_wall_model() -> Model {
         let wall_shape = SectionShape::RcWall {
             thickness: 150.0,
             ps: 0.0025,

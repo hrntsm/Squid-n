@@ -161,6 +161,39 @@ pub fn wall_panel_geometry(data: &ElementData, model: &Model) -> Option<WallPane
     })
 }
 
+/// 増分解析（保有水平耐力）で壁柱がファイバー化されるときの塑性化域長 Lp [mm]。
+/// ファイバー化されない壁（耐震壁不成立・Qu を算定できない・Fc 未設定など）は `None`。
+///
+/// 判定条件・Lp の値ともに要素生成（[`crate::factory::build_nonlinear_behavior`] と
+/// [`WallPanelElement::with_fiber_flexure`]）と同一のため、モデル化図の表示は解析の
+/// モデル化と一致する。Lp は壁長の 0.5 倍を壁高さ h の 45% でクランプした値で、
+/// 断面せい基準（0.5D）の柱・梁とは基準が異なる。
+pub fn wall_column_fiber_lp(data: &ElementData, model: &Model) -> Option<f64> {
+    // 耐震壁不成立（フレーム内雑壁）は剛性が実質 0 のため弾性のまま扱う。
+    if !crate::misc_wall::wall_is_seismic(data, model) {
+        return None;
+    }
+    // Qu を算定できない壁は、非線形経路が弾性要素へフォールバックする。
+    if WallPanelElement::shear_capacity_of(data, model) <= 0.0 {
+        return None;
+    }
+    let geom = wall_panel_geometry(data, model)?;
+    // コンクリート強度が無ければファイバー断面を組めない。
+    data.material
+        .and_then(|mid| model.materials.get(mid.index()))?
+        .fc
+        .filter(|fc| *fc > 0.0)?;
+    let sec = data.section.and_then(|sid| model.sections.get(sid.index()));
+    let t = match sec.and_then(|s| s.shape.as_ref()) {
+        Some(SectionShape::RcWall { thickness, .. }) => *thickness,
+        _ => sec.map(|s| s.thickness.unwrap_or(s.width))?,
+    };
+    if t <= 0.0 || geom.lw <= 0.0 || geom.h <= 0.0 {
+        return None;
+    }
+    Some(crate::fiber::clamp_plastic_zone(0.5 * geom.lw, geom.h))
+}
+
 impl WallPanelElement {
     /// 生成。4 節点未満・寸法/断面が不定の場合は None
     /// （呼び出し側は従来の暫定等価梁へフォールバックする）。
@@ -595,7 +628,10 @@ impl WallPanelElement {
 
     /// この壁の面内せん断終局強度 Qu [N] を、要素と同じ幾何・配筋から算定する
     /// （非線形経路が [`Self::with_shear_capacity`] へ渡す値）。
-    pub(crate) fn shear_capacity_of(data: &ElementData, model: &Model) -> f64 {
+    ///
+    /// モデル化図（`squid-n-app`）が、面内せん断を Qu で頭打ちにする壁かどうかの
+    /// 判定と表示値に用いるため公開する。
+    pub fn shear_capacity_of(data: &ElementData, model: &Model) -> f64 {
         let Some(geom) = wall_panel_geometry(data, model) else {
             return 0.0;
         };
@@ -689,20 +725,26 @@ impl WallPanelElement {
         if !matches!(data.kind, squid_n_core::model::ElementKind::Wall) {
             return None;
         }
+        // 4 節点を与えているのに壁エレメントの幾何を組めない壁（節点の指定ミス・
+        // 退化した座標）は、耐震壁の四周条件を判定できず雑壁へ落ちる。雑壁としての
+        // 剛性算入も 4 節点の幾何を要するため、剛性も耐力も持たないまま無音で消える。
+        // 入力不備として報告する。
+        let geom = match wall_panel_geometry(data, model) {
+            Some(g) => g,
+            None if data.nodes.len() >= 4 => {
+                return Some(format!(
+                    "耐震壁 ID {} を壁エレメントとして構築できません（4 節点の指定と節点座標を確認してください）。\
+                     壁エレメントを構築できない壁は弾性の等価梁として扱われ、\
+                     保有水平耐力計算で面内せん断が終局せん断強度で頭打ちになりません。",
+                    data.id.0
+                ));
+            }
+            None => return None,
+        };
         // 耐震壁として成立しない壁（フレーム内雑壁）は Qu を要さない。
         if !crate::misc_wall::wall_is_seismic(data, model) {
             return None;
         }
-        // 壁エレメントとして構築できない壁は暫定等価梁（弾性）へフォールバックし、
-        // 面内せん断が頭打ちにならない。耐震壁として成立する以上は不備として扱う。
-        let Some(geom) = wall_panel_geometry(data, model) else {
-            return Some(format!(
-                "耐震壁 ID {} を壁エレメントとして構築できません（4 節点の指定と節点座標を確認してください）。\
-                 壁エレメントを構築できない壁は弾性の等価梁として扱われ、\
-                 保有水平耐力計算で面内せん断が終局せん断強度で頭打ちになりません。",
-                data.id.0
-            ));
-        };
         let Some(sec) = data.section.and_then(|sid| model.sections.get(sid.index())) else {
             return Some(format!(
                 "耐震壁 ID {} に断面が設定されていません。\
@@ -1500,6 +1542,9 @@ mod tests {
             plastic_zone: None,
             spring: None,
         };
+        // 耐震壁は四周を柱・梁に囲まれた壁を対象とするため、四周に線材を置く。
+        let mut model = model;
+        crate::wall::add_surrounding_frame(&mut model, &data);
         (model, data)
     }
 
@@ -1670,22 +1715,18 @@ mod tests {
         model
             .sections
             .push(col_shape.to_section(SectionId(1), "C600".into()));
-        for (eid, n0, n1) in [(1u32, 0u32, 3u32), (2, 1, 2)] {
-            model.elements.push(ElementData {
-                id: ElemId(eid),
-                kind: ElementKind::Beam,
-                nodes: smallvec::smallvec![NodeId(n0), NodeId(n1)],
-                section: Some(SectionId(1)),
-                material: Some(MaterialId(0)),
-                local_axis: LocalAxis {
-                    ref_vector: [1.0, 0.0, 0.0],
-                },
-                end_cond: [EndCondition::Fixed, EndCondition::Fixed],
-                force_regime: ForceRegime::Auto,
-                rigid_zone: Default::default(),
-                plastic_zone: None,
-                spring: None,
-            });
+        // 四周の鉛直辺（ElemId 3・4）を 600×600 RC 側柱にする。
+        for e in model
+            .elements
+            .iter_mut()
+            .filter(|e| e.id == ElemId(3) || e.id == ElemId(4))
+        {
+            e.kind = ElementKind::Beam;
+            e.section = Some(SectionId(1));
+            e.material = Some(MaterialId(0));
+            e.local_axis = LocalAxis {
+                ref_vector: [1.0, 0.0, 0.0],
+            };
         }
         let wall_cols = WallPanelElement::try_new(&data, &model).unwrap();
         // (壁板+側柱2本)/κ(I形) > 壁板/1.2
@@ -1922,6 +1963,9 @@ mod shear_yield_tests {
             plastic_zone: None,
             spring: None,
         };
+        // 耐震壁は四周を柱・梁に囲まれた壁を対象とするため、四周に線材を置く。
+        let mut model = model;
+        crate::wall::add_surrounding_frame(&mut model, &data);
         (model, data)
     }
 
@@ -2105,15 +2149,23 @@ mod capacity_issue_tests {
         };
         let mut sections = vec![shape.to_section(SectionId(0), "W200".into())];
         let mut elements = vec![];
-        if let Some(mut cs) = side_col_sec {
-            cs.id = SectionId(1);
-            sections.push(cs);
-            // 壁の鉛直辺（節点0-3）に取り付く側柱。
+        // 四周の部材。耐震壁は四周を柱・梁に囲まれた壁を対象とするため、
+        // 側柱の有無に依らず四辺へ線材を置く（`misc_wall::wall_is_seismic`）。
+        //
+        // 「側柱なし」の場合の鉛直辺は Fiber 種別とする。四周条件は線材種別を
+        // 問わない一方、Qu 算定側の側柱集計は `ElementKind::Beam` のみを数えるため、
+        // Fiber を置けば四周を満たしたまま「側柱が無い壁」を再現できる。
+        let side_kind = if side_col_sec.is_some() {
+            ElementKind::Beam
+        } else {
+            ElementKind::Fiber
+        };
+        let mut edge = |id: u32, kind: ElementKind, n0: u32, n1: u32, sec: Option<SectionId>| {
             elements.push(ElementData {
-                id: ElemId(1),
-                kind: ElementKind::Beam,
-                nodes: smallvec::smallvec![NodeId(0), NodeId(3)],
-                section: Some(SectionId(1)),
+                id: ElemId(id),
+                kind,
+                nodes: smallvec::smallvec![NodeId(n0), NodeId(n1)],
+                section: sec,
                 material: Some(MaterialId(0)),
                 local_axis: LocalAxis {
                     ref_vector: [1.0, 0.0, 0.0],
@@ -2124,7 +2176,16 @@ mod capacity_issue_tests {
                 plastic_zone: None,
                 spring: None,
             });
-        }
+        };
+        let side_sec = side_col_sec.map(|mut cs| {
+            cs.id = SectionId(1);
+            sections.push(cs);
+            SectionId(1)
+        });
+        edge(1, side_kind, 0, 3, side_sec); // 左の鉛直辺（側柱）
+        edge(2, side_kind, 1, 2, None); // 右の鉛直辺
+        edge(3, ElementKind::Beam, 0, 1, None); // 下辺
+        edge(4, ElementKind::Beam, 3, 2, None); // 上辺
         let wall = ElementData {
             id: ElemId(0),
             kind: ElementKind::Wall,
@@ -2311,12 +2372,12 @@ mod capacity_issue_tests {
         assert_eq!(WallPanelElement::shear_capacity_of(&wall, &model), 0.0);
     }
 
-    /// 壁エレメントとして構築できない壁（4 節点未満）は暫定等価梁（弾性）へ
-    /// フォールバックし面内せん断が頭打ちにならないため、不備として検出する。
+    /// 4 節点を与えているのに幾何が退化した壁（下辺の 2 節点が同一座標）は、
+    /// 壁エレメントも雑壁も組めず剛性・耐力を持たないまま消えるため不備として検出する。
     #[test]
     fn test_issue_when_wall_panel_cannot_be_built() {
-        let (model, mut wall) = model_with(None, 0.0025);
-        wall.nodes.truncate(3);
+        let (mut model, wall) = model_with(None, 0.0025);
+        model.nodes[1].coord = model.nodes[0].coord;
         let issue = WallPanelElement::wall_shear_capacity_issue(&wall, &model)
             .expect("壁エレメントを構築できない壁は不備");
         assert!(
