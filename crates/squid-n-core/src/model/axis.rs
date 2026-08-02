@@ -170,6 +170,22 @@ impl Model {
     /// 通り芯自身は所属節点しか持たないため、「その通りで構成される構面の要素」は
     /// 常にこのヘルパーで求める。柱・梁・ブレースのような線材のほか、4 節点すべてが
     /// その通りに属する壁・シェルも該当する。
+    /// 部材の所属階（材端節点のうち**最も高い節点**の所属階）。
+    ///
+    /// 階 \\(i\\) の階高区間にある柱は上端が階 \\(i\\) に属し、階 \\(i\\) のレベルにある梁も
+    /// 階 \\(i\\) に属する、という数え方であり、階の主要構造種別の判定
+    /// （準備計算の階生成）と同じ規則である。判定の情報源を 1 つに保つため、
+    /// 部材の所属階が要るところは常にこのメソッドを使う。
+    ///
+    /// 節点が階に割り当てられていない場合は `None`。
+    pub fn member_story(&self, elem: &ElementData) -> Option<crate::ids::StoryId> {
+        elem.nodes
+            .iter()
+            .filter_map(|nid| self.nodes.get(nid.index()))
+            .max_by(|a, b| a.coord[2].total_cmp(&b.coord[2]))
+            .and_then(|n| n.story)
+    }
+
     pub fn axis_elements(&self, axis: &Axis) -> Vec<ElemId> {
         let on_axis: std::collections::HashSet<NodeId> = axis.nodes.iter().copied().collect();
         let mut ids: Vec<ElemId> = self

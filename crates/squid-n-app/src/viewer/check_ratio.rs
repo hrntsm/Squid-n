@@ -180,6 +180,7 @@ pub(super) fn pick_nearest_checked_node(
     app: &App,
     pts: &[egui::Pos2],
     pos: egui::Pos2,
+    frame_filter: super::FrameFilter,
 ) -> Option<(usize, f32)> {
     let results = app.results.as_ref()?;
     if results.joint_checks.is_empty() {
@@ -189,7 +190,8 @@ pub(super) fn pick_nearest_checked_node(
         results.joint_checks.iter().map(|j| j.node).collect();
     let mut best: Option<(usize, f32)> = None;
     for (idx, node) in app.model.nodes.iter().enumerate() {
-        if idx >= pts.len() || !checked.contains(&node.id) {
+        // 構面表示で描いていない節点は選べない（見えない節点の検定詳細が出るのを防ぐ）。
+        if idx >= pts.len() || !checked.contains(&node.id) || !frame_filter.shows_node(idx) {
             continue;
         }
         let d = pts[idx].distance(pos);
@@ -353,7 +355,12 @@ pub(super) fn build_tooltip_rows(positions: &[PositionCheck]) -> (Vec<CheckKind>
 
 /// 検定比図を描く。`pts` は `viewer_panel` で計算済みの節点スクリーン座標
 /// （`app.model.nodes` と同じ順序）。
-pub(super) fn draw_check_ratio(painter: &egui::Painter, app: &App, pts: &[egui::Pos2]) {
+pub(super) fn draw_check_ratio(
+    painter: &egui::Painter,
+    app: &App,
+    pts: &[egui::Pos2],
+    frame_filter: super::FrameFilter,
+) {
     let Some(results) = &app.results else {
         draw_no_result_legend(painter);
         return;
@@ -389,6 +396,9 @@ pub(super) fn draw_check_ratio(painter: &egui::Painter, app: &App, pts: &[egui::
 
     // --- 部材の着色 ---
     for elem in &app.model.elements {
+        if !frame_filter.shows(elem.id) {
+            continue;
+        }
         let Some(&(ratio, ok)) = elem_ratios.get(&elem.id) else {
             continue;
         };
@@ -1293,11 +1303,13 @@ mod tests {
         ];
 
         // 節点 1（検定なし）のすぐ近くでも、候補になるのは検定を持つ節点 0。
-        let hit = pick_nearest_checked_node(&app, &pts, egui::pos2(11.0, 0.0)).expect("ヒット");
+        let hit = pick_nearest_checked_node(&app, &pts, egui::pos2(11.0, 0.0), Default::default())
+            .expect("ヒット");
         assert_eq!(hit.0, 0, "検定を持たない節点は候補にしない");
 
         // 節点 2 の近くではその節点が返る。
-        let hit = pick_nearest_checked_node(&app, &pts, egui::pos2(98.0, 0.0)).expect("ヒット");
+        let hit = pick_nearest_checked_node(&app, &pts, egui::pos2(98.0, 0.0), Default::default())
+            .expect("ヒット");
         assert_eq!(hit.0, 2);
         assert!(hit.1 <= NODE_HOVER_THRESHOLD);
     }
@@ -1306,10 +1318,13 @@ mod tests {
     #[test]
     fn pick_nearest_checked_node_without_results() {
         let app = App::default();
-        assert!(
-            pick_nearest_checked_node(&app, &[egui::pos2(0.0, 0.0)], egui::pos2(0.0, 0.0))
-                .is_none()
-        );
+        assert!(pick_nearest_checked_node(
+            &app,
+            &[egui::pos2(0.0, 0.0)],
+            egui::pos2(0.0, 0.0),
+            Default::default()
+        )
+        .is_none());
     }
 
     /// マーカー半径とホバー判定しきい値の大小関係を保つ。

@@ -309,6 +309,7 @@ pub(super) fn draw_section_solids(
     coords: &[[f64; 3]],
     proj: &Projector,
     show_secondary: bool,
+    frame_filter: super::FrameFilter,
 ) -> usize {
     // (奥行き, 描画要素)。奥行きはカメラ空間 z（手前が正）の平均。
     let mut prims: Vec<(f32, SolidPrim)> = Vec::new();
@@ -389,6 +390,9 @@ pub(super) fn draw_section_solids(
     };
 
     for elem in &model.elements {
+        if !frame_filter.shows(elem.id) {
+            continue;
+        }
         let is_line_member = matches!(
             elem.kind,
             ElementKind::Beam

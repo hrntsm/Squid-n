@@ -118,7 +118,12 @@ const INSET_T: f32 = 0.1;
 
 /// ヒンジ図を描く。`pts` は `viewer_panel` で計算済みの節点スクリーン座標
 /// （`app.model.nodes` と同じ順序）。
-pub(super) fn draw_hinge(painter: &egui::Painter, app: &App, pts: &[egui::Pos2]) {
+pub(super) fn draw_hinge(
+    painter: &egui::Painter,
+    app: &App,
+    pts: &[egui::Pos2],
+    frame_filter: super::FrameFilter,
+) {
     let Some(po) = app.results.as_ref().and_then(|r| r.pushover.as_ref()) else {
         draw_no_result_legend(painter);
         return;
@@ -129,6 +134,9 @@ pub(super) fn draw_hinge(painter: &egui::Painter, app: &App, pts: &[egui::Pos2])
     let mut counts = [0usize; 3];
 
     for m in &markers {
+        if !frame_filter.shows(m.elem) {
+            continue;
+        }
         let Some(elem) = app.model.elements.iter().find(|e| e.id == m.elem) else {
             continue;
         };

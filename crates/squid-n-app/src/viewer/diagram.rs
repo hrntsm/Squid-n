@@ -241,6 +241,7 @@ fn is_significant(maxes: &[f64; 6], c: ForceComponent) -> bool {
 /// 強軸側（N・Qy・Mx・Mz）は局所 ey 面、弱軸側（Qz・My）は局所 ez 面へ出るため、
 /// 6 成分同時でも直交 2 面に分かれて重なりが減る。理論上ゼロの成分は描かない
 /// （[`is_significant`]）。
+#[allow(clippy::too_many_arguments)]
 pub(super) fn draw_force_diagram(
     painter: &egui::Painter,
     app: &App,
@@ -249,6 +250,8 @@ pub(super) fn draw_force_diagram(
     disp: Option<&[[f64; 6]]>,
     deform_scale: f64,
     proj: &Projector,
+    frame_filter: super::FrameFilter,
+    frame_normal: Option<[f64; 3]>,
 ) {
     let Some(results) = &app.results else {
         return;
@@ -286,6 +289,8 @@ pub(super) fn draw_force_diagram(
                 deform_scale,
                 proj,
                 results,
+                frame_filter,
+                frame_normal,
             );
         }
         legend_rows.push((c, max_abs));
@@ -310,6 +315,8 @@ fn draw_component(
     deform_scale: f64,
     proj: &Projector,
     results: &crate::app::ResultsBundle,
+    frame_filter: super::FrameFilter,
+    frame_normal: Option<[f64; 3]>,
 ) {
     let scale = proj.scale();
     let force_idx = component.force_index();
@@ -326,6 +333,9 @@ fn draw_component(
     let outline_width: f32 = if contour { 1.0 } else { 1.5 };
 
     for (elem_id, mf) in &results.member_forces {
+        if !frame_filter.shows(*elem_id) {
+            continue;
+        }
         let elem = app.model.elements.iter().find(|e| e.id == *elem_id);
         let Some(elem) = elem else { continue };
         if elem.nodes.len() < 2 {
@@ -343,6 +353,11 @@ fn draw_component(
         }
         let ref_vec = elem.local_axis.ref_vector;
         let ey = diagram_offset_dir(p_i, p_j, ref_vec, component.plane());
+        // 構面表示では張り出しを構面内へ倒す（面外成分が線に潰れるのを防ぐ）。
+        let ey = match frame_normal {
+            Some(n) => super::in_plane_offset_dir(ey, p_i, p_j, n),
+            None => ey,
+        };
         // 内部たわみ表示が有効な梁は、張り出しの基準線を変形後の Hermite 曲線に
         // する（`disp` が Some＝変形重ね時のみ）。梁の線描画と同じ `BeamDeflection`
         // で評価するため、基準線が梁の描画曲線に厳密一致する。それ以外（梁以外・

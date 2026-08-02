@@ -819,6 +819,11 @@ pub struct App {
     /// ビューアのカメラ状態
     #[cfg(feature = "gui")]
     pub camera: crate::viewer::CameraState,
+    /// 2D 構面表示の対象（`None` は全体表示＝従来の 3D ビュー）。
+    /// 通り芯の再生成・モデルの入れ替えで添字がずれるため、描画のたびに
+    /// 実在を検証し、解決できなければ全体表示へ戻す。
+    #[cfg(feature = "gui")]
+    pub frame_target: Option<squid_n_core::frame::FrameTarget>,
     /// ビューアの断面表示（部材を断面形状の押し出しソリッドで立体表示する）
     #[cfg(feature = "gui")]
     pub show_sections: bool,
@@ -1088,6 +1093,8 @@ impl Default for App {
             view_mode_idx: 0,
             #[cfg(feature = "gui")]
             camera: crate::viewer::CameraState::default(),
+            #[cfg(feature = "gui")]
+            frame_target: None,
             #[cfg(feature = "gui")]
             show_sections: false,
             #[cfg(feature = "gui")]
