@@ -2181,9 +2181,37 @@ impl App {
 
     /// 増分解析（プッシュオーバー）を実行する。モデルは複製の上で解析する
     /// （非線形状態の副作用を GUI 上のモデルへ残さないため）。
+    /// 鋼板耐震壁を含むモデルの増分解析で、せん断座屈を考慮していない旨を知らせる。
+    ///
+    /// 鋼板耐震壁の面内せん断終局強度は鋼板のせん断降伏 Qy=t·lw·F/√3 で評価している
+    /// （`squid_n_element::wall_panel::WallPanelElement::steel_shear_capacity_of`）。
+    /// 幅厚比の大きい無補剛の鋼板は降伏前に面外へせん断座屈するため、その場合は
+    /// 耐力を過大評価する（危険側）。解析は継続してよい事項のため注意事項として扱う。
+    fn notice_steel_seismic_walls(&mut self) {
+        let n = self
+            .model
+            .elements
+            .iter()
+            .filter(|e| {
+                matches!(e.kind, squid_n_core::model::ElementKind::Wall)
+                    && squid_n_element::misc_wall::wall_is_seismic(e, &self.model)
+                    && !squid_n_element::misc_wall::is_rc_wall(e, &self.model)
+            })
+            .count();
+        if n == 0 {
+            return;
+        }
+        self.report_notice(format!(
+            "鋼板耐震壁 {} 枚の面内せん断終局強度を、鋼板のせん断降伏 Qy=t·lw·F/√3 で評価します。\
+             せん断座屈は考慮していないため、幅厚比が大きく補剛のない鋼板では耐力を過大評価します。",
+            n
+        ));
+    }
+
     pub fn run_pushover(&mut self) {
         self.apply_parallelism_setting();
         self.last_error = None;
+        self.notice_steel_seismic_walls();
         let res = Self::compute_pushover(self.model.clone(), self.analysis_cfg);
         self.apply_pushover_result(res);
     }
@@ -2198,6 +2226,7 @@ impl App {
         }
         self.apply_parallelism_setting();
         self.last_error = None;
+        self.notice_steel_seismic_walls();
         let model = self.model.clone();
         let cfg = self.analysis_cfg;
         let (tx, rx) = std::sync::mpsc::channel();

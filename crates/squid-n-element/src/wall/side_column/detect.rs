@@ -6,7 +6,6 @@ use super::ReleaseAxis;
 use crate::transform::LocalFrame;
 use squid_n_core::ids::NodeId;
 use squid_n_core::model::{ElementData, ElementKind, Model};
-use squid_n_core::section_shape::SectionShape;
 
 fn sub(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
     [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
@@ -37,35 +36,62 @@ fn unit(a: [f64; 3]) -> Option<[f64; 3]> {
     }
 }
 
-/// 壁（Section.shape=RcWall、または材料に fc がある）かどうか
-/// （ＲＣ耐震壁面内方向に限り側柱を両端ピンとする規定の判定用）。
-pub(crate) fn is_rc_wall(wall: &ElementData, model: &Model) -> bool {
-    let sec_is_rc_wall = wall
-        .section
-        .and_then(|sid| model.sections.get(sid.index()))
-        .is_some_and(|s| matches!(s.shape, Some(SectionShape::RcWall { .. })));
-    let mat_is_rc = wall
-        .material
-        .and_then(|mid| model.materials.get(mid.index()))
-        .is_some_and(|m| m.fc.is_some());
-    sec_is_rc_wall || mat_is_rc
+/// 曲げを伝達する線材（柱・梁として扱う要素種別）か。
+///
+/// 大梁として壁の辺を構成しうるのは線材のみで、ブレース（軸材）・面要素・バネは
+/// 曲げを伝達しないため除く。ファイバー梁・マルチスプリング梁は増分解析で用いる
+/// 正規の線材のため、解析種別で辺の有無が変わらないよう対象に含める。
+///
+/// 大梁の判定（[`crate::misc_wall::wall_is_framed`]）と周辺架構の構造種別の判定
+/// （[`crate::misc_wall::wall_frame_category_issue`]）で対象種別が食い違わないよう、
+/// 判定を本関数へ集約する。
+pub fn is_line_member(kind: ElementKind) -> bool {
+    matches!(
+        kind,
+        ElementKind::Beam | ElementKind::Fiber | ElementKind::MultiSpring
+    )
+}
+
+/// 耐震壁の側柱として扱う要素種別か。
+///
+/// 線材（[`is_line_member`]）のうち `Beam` に限る。側柱は面内両端ピンとして
+/// [`super::InPlaneReleasedColumn`] へ差し替えるが、この要素は `BeamElement` を
+/// 内包する実装のため、要素生成（`crate::factory`）がピン化できるのは `Beam` だけ
+/// である。
+///
+/// ピン化できない種別を側柱として数えると、その断面を壁のせん断断面へ算入しながら
+/// 柱自身も面内せん断を負担するため、**面内せん断の二重計上**になる。側柱を数える
+/// 箇所（ピン化・せん断断面への算入・Qu・入力診断）は、要素生成が実際にピン化できる
+/// 範囲と一致させる必要があるため、判定を本関数へ集約する。
+///
+/// `Fiber`・`MultiSpring` の側柱に対応するには
+/// [`super::InPlaneReleasedColumn`] を任意の要素挙動に対して静的縮約できるよう
+/// 一般化する必要がある（`dev_docs/handoff/申し送り.md`）。
+pub fn is_side_column_member(kind: ElementKind) -> bool {
+    matches!(kind, ElementKind::Beam)
 }
 
 /// 自部材（`data`）が耐震壁（壁エレメントモデル）の側柱（面内両端ピンの柱）かどうかを
 /// 判定し、そうであれば解放すべき局所曲げ面を返す。
 ///
 /// 条件:
-/// 1. 自部材が鉛直材であること（dz が dx・dy に対して支配的）。
-/// 2. `model.elements` 中に節点数4以上の `ElementKind::Wall` があり、かつ RC 限定
-///    （`is_rc_wall`）を満たすこと。
+/// 1. 自部材が側柱として扱う種別（[`is_side_column_member`]）かつ鉛直材であること
+///    （dz が dx・dy に対して支配的）。
+/// 2. `model.elements` 中に節点数4以上の `ElementKind::Wall` があり、それが耐震壁として
+///    成立すること（[`crate::misc_wall::wall_is_seismic`]）。
 /// 3. その壁の四隅を z で下辺2・上辺2 に分け、下辺の軸方向への射影で上辺と対応付けた
 ///    （`wall_panel.rs::try_new` と同じロジック）とき、自部材の両端節点が
 ///    「下辺a-上辺a」または「下辺b-上辺b」のいずれかの鉛直辺の2節点と一致すること。
 ///
+/// 側柱を面内両端ピンとするのは、面内せん断を壁エレメントが全部負担するモデルにおいて
+/// 側柱にも面内曲げ・せん断を持たせると**二重計上**になるという置換モデルの内部整合の
+/// 要請である。壁材料が RC か鋼かとは無関係のため、材種による条件は課さない
+/// （RC 規準に由来する条件は [`crate::misc_wall::wall_is_seismic`] が持つ）。
+///
 /// 解放曲げ面は、壁面法線（下辺方向×鉛直の外積）と柱の局所 ey・ez の内積絶対値が
 /// 大きい方（＝回転軸が壁法線に平行な方）とする。
 pub fn wall_side_column_release(data: &ElementData, model: &Model) -> Option<ReleaseAxis> {
-    if data.nodes.len() < 2 {
+    if !is_side_column_member(data.kind) || data.nodes.len() < 2 {
         return None;
     }
     let n0 = data.nodes[0];
@@ -83,9 +109,6 @@ pub fn wall_side_column_release(data: &ElementData, model: &Model) -> Option<Rel
 
     for wall in &model.elements {
         if !matches!(wall.kind, ElementKind::Wall) || wall.nodes.len() < 4 {
-            continue;
-        }
-        if !is_rc_wall(wall, model) {
             continue;
         }
         // 耐震壁が不成立（フレーム内雑壁）の場合、柱は側柱としてピン化せず、

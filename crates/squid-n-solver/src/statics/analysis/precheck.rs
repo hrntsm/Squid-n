@@ -89,6 +89,20 @@ pub(super) fn precheck_model(model: &Model) -> Result<(), SolveError> {
         )));
     }
 
+    // 耐震壁と周辺架構の構造種別の食い違い
+    //
+    // 壁エレメントは壁と周辺架構を一体の耐震要素としてモデル化するため、RC 壁に
+    // S 骨組（あるいはその逆）を組み合わせた混合構造は耐力式・剛性評価の前提が
+    // 成り立たない。一次設計の剛性・断面検定にも効くため、非線形解析だけでなく
+    // 全解析の入口で捕捉する。
+    if let Some(msg) = model
+        .elements
+        .iter()
+        .find_map(|e| squid_n_element::misc_wall::wall_frame_category_issue(e, model))
+    {
+        return Err(SolveError::InvalidInput(msg));
+    }
+
     // 孤立節点（要素・拘束・剛床から参照されず、完全固定でもない）
     // → 剛性ゼロの自由 DOF となり特異行列の典型原因
     //

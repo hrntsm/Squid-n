@@ -1545,19 +1545,33 @@ mod tests {
         );
     }
 
-    /// 四周の柱・梁が 1 辺でも欠けた壁は、板厚が足りていても雑壁として描く。
+    /// 上下辺の大梁が一方でも欠けた壁は、板厚が足りていても雑壁として描く。
     /// 着色は要素生成と同じ判定に基づくため、解析側の扱いと一致する。
     #[test]
-    fn 四周が欠けた壁は雑壁として描く() {
-        for drop_id in 1..=4u32 {
+    fn 上下辺の大梁が欠けた壁は雑壁として描く() {
+        for drop_id in 1..=2u32 {
             let (mut model, wall) = wall_model(150.0);
             model.elements.retain(|e| e.id != ElemId(drop_id));
             assert_eq!(
                 classify(&wall, &model, ModelingAnalysis::Static),
                 ModelClass::WallMisc,
-                "1 辺（ElemId {drop_id}）が欠けた壁は雑壁"
+                "上下辺の一方（ElemId {drop_id}）が欠けた壁は雑壁"
             );
         }
+    }
+
+    /// 側柱（左右の鉛直辺）が無くても、上下辺の大梁が揃っていれば耐震壁として描く。
+    /// 側柱を持たない壁は壁筋比から等価引張鉄筋比を算定する正規の対象である。
+    #[test]
+    fn 側柱が無くても耐震壁として描く() {
+        let (mut model, wall) = wall_model(150.0);
+        model
+            .elements
+            .retain(|e| e.id != ElemId(3) && e.id != ElemId(4));
+        assert_eq!(
+            classify(&wall, &model, ModelingAnalysis::Static),
+            ModelClass::Wall
+        );
     }
 
     /// 壁の上下大梁（付帯梁）は、断面性能へ倍率が乗った剛性で解析へ入る。
