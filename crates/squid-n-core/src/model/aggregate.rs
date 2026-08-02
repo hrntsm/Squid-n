@@ -27,6 +27,10 @@ pub struct Model {
     pub sections: Vec<Section>,
     pub materials: Vec<Material>,
     pub stories: Vec<Story>,
+    /// 通り芯（各通りを識別するための呼称。[`AxisGroup`]）。**構造計算には
+    /// 用いない**表示・識別専用のデータで、解析結果・設計結果には影響しない。
+    #[serde(default)]
+    pub axes: Vec<AxisGroup>,
     pub slabs: Vec<Slab>,
     pub constraints: Vec<Constraint>,
     pub load_cases: Vec<LoadCase>,
@@ -205,6 +209,20 @@ impl Model {
             |s| s.id.index(),
             |s| s.id.0,
         )?;
+        // 通り芯が参照する節点が実在すること（陳腐化した参照の検出）。通り芯は
+        // 計算に用いないが、節点の削除で参照が壊れたまま保存されるのを防ぐ。
+        for group in &self.axes {
+            for axis in &group.axes {
+                for &nid in &axis.nodes {
+                    if nid.index() >= self.nodes.len() || self.nodes[nid.index()].id != nid {
+                        return Err(CoreError::DanglingRef(format!(
+                            "Axis {}/{} -> Node {}",
+                            group.name, axis.name, nid.0
+                        )));
+                    }
+                }
+            }
+        }
         check_id_consistency(&self.slabs, "slabs", "SlabId", |s| s.id.index(), |s| s.id.0)?;
         // スラブの境界・小梁が参照する節点が実在すること（陳腐化した参照の検出）。
         for slab in &self.slabs {

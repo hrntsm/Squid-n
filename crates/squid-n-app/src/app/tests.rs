@@ -6392,3 +6392,88 @@ fn test_preparation_torsion_disabled_reports_no_rows() {
     assert!(!prep.torsion_release_enabled);
     assert!(prep.torsion_skipped.is_empty());
 }
+
+/// 通り芯の自動生成（`generate_axes_action`）が、柱位置から X・Y の通りを作り、
+/// **解析結果・設計結果・準備計算を陳腐化させない**ことを確認する。
+///
+/// 通り芯は構造計算に用いないため、生成しても再解析は不要である。これが崩れると
+/// 通り芯を 1 本足すたびに解析のやり直しが必要になる。
+#[test]
+fn test_generate_axes_action_does_not_stale_results() {
+    use smallvec::SmallVec;
+    use squid_n_core::dof::Dof6Mask;
+    use squid_n_core::ids::NodeId;
+    use squid_n_core::model::{
+        ElementData, ElementKind, EndCondition, ForceRegime, LocalAxis, Node,
+    };
+
+    let mut app = App::default();
+    // (0,0) と (6000,0) に柱を 1 本ずつ立てる。
+    for (i, x) in [0.0f64, 6000.0].iter().enumerate() {
+        let base = (i * 2) as u32;
+        for (k, z) in [0.0f64, 3000.0].iter().enumerate() {
+            app.model.nodes.push(Node {
+                id: NodeId(base + k as u32),
+                coord: [*x, 0.0, *z],
+                restraint: Dof6Mask::FREE,
+                mass: None,
+                story: None,
+                support_spring: None,
+            });
+        }
+        let mut nodes: SmallVec<[NodeId; 8]> = SmallVec::new();
+        nodes.push(NodeId(base));
+        nodes.push(NodeId(base + 1));
+        app.model.elements.push(ElementData {
+            id: ElemId(i as u32),
+            kind: ElementKind::Beam,
+            nodes,
+            section: None,
+            material: None,
+            local_axis: LocalAxis {
+                ref_vector: [1.0, 0.0, 0.0],
+            },
+            end_cond: [EndCondition::Fixed; 2],
+            force_regime: ForceRegime::Auto,
+            rigid_zone: Default::default(),
+            plastic_zone: None,
+            spring: None,
+        });
+    }
+
+    // 解析済み・準備計算済みの状態を作る。
+    app.staleness.mark_fresh();
+    app.staleness.preparation_stale = false;
+    app.staleness.diagnostics_stale = false;
+    app.staleness.unsaved_changes = false;
+
+    app.generate_axes_action();
+
+    // X 方向 2 本・Y 方向 1 本（柱はすべて Y=0）。
+    let x = app.model.axes.iter().find(|g| g.name == "X").unwrap();
+    assert_eq!(
+        x.axes.iter().map(|a| a.name.as_str()).collect::<Vec<_>>(),
+        vec!["X1", "X2"]
+    );
+    assert_eq!(x.axes[0].distance, Some(0.0));
+    assert_eq!(x.axes[1].distance, Some(6000.0));
+    let y = app.model.axes.iter().find(|g| g.name == "Y").unwrap();
+    assert_eq!(y.axes.len(), 1);
+
+    // 通り芯は計算に用いないため、結果は陳腐化しない（未保存フラグだけ立つ）。
+    assert!(!app.staleness.results_stale, "解析結果は有効なまま");
+    assert!(!app.staleness.design_stale, "設計結果は有効なまま");
+    assert!(!app.staleness.preparation_stale, "準備計算は有効なまま");
+    assert!(!app.staleness.diagnostics_stale, "診断は有効なまま");
+    assert!(app.staleness.unsaved_changes, "保存は必要になる");
+
+    // 再実行しても増殖せず、モデルは変わらない（冪等）。
+    let before = app.model.axes.clone();
+    app.generate_axes_action();
+    assert_eq!(app.model.axes, before);
+
+    // undo で通り芯だけが元へ戻る。
+    app.undo.undo(&mut app.model);
+    assert!(app.model.axes.is_empty());
+    assert!(app.model.validate().is_ok(), "{:?}", app.model.validate());
+}

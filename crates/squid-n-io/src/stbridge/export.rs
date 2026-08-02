@@ -17,7 +17,9 @@
 
 use super::section_std::standard_sections;
 use super::{StbError, STB_VERSION};
-use squid_n_core::model::{ElementKind, EndCondition, Model, StoryLevelKind};
+use squid_n_core::model::{
+    AxisGroup, AxisGroupKind, ElementKind, EndCondition, Model, StoryLevelKind,
+};
 
 /// ST-Bridge の id は `positiveInteger`（1 以上）。内部 0 始まり id に +1 して出力する。
 fn sid(internal_id: u32) -> u32 {
@@ -57,6 +59,9 @@ pub fn export_stbridge(model: &Model) -> Result<String, StbError> {
         ));
     }
     s.push_str("    </StbNodes>\n");
+
+    // 通り芯（`StbAxes`。スキーマ上 `StbNodes` と `StbStories` の間に置く）。
+    s.push_str(&axes_body(model));
 
     // 層（name・height・kind 必須。所属節点は StbNodeIdList で列挙）。所属は各節点の
     // `story`（正）と層の `node_ids` の和集合を、節点 id 昇順・重複なしで書き出す。
@@ -383,6 +388,60 @@ fn cond(c: EndCondition) -> &'static str {
         EndCondition::Pinned => "PIN",
         _ => "FIX",
     }
+}
+
+/// 通り芯（`StbAxes`）。
+///
+/// 書き出せるのは平行芯（[`AxisGroupKind::Parallel`]）のグループのみ。円弧芯・
+/// 放射芯・作図芯に相当する [`AxisGroupKind::Other`] のグループは幾何を保持して
+/// いないため出力せず、往復しない（取り込みでは所属節点だけを保つ）。
+///
+/// `StbParallelAxis` の `id` は ST-Bridge の `positiveInteger`。内部の通り芯は id を
+/// 持たないため、グループをまたいで 1 から通し番号を振る。
+fn axes_body(model: &Model) -> String {
+    let mut s = String::new();
+    let groups: Vec<&AxisGroup> = model
+        .axes
+        .iter()
+        .filter(|g| matches!(g.kind, AxisGroupKind::Parallel { .. }))
+        .collect();
+    if groups.is_empty() {
+        return s;
+    }
+    s.push_str("    <StbAxes>\n");
+    let mut next_id = 1u32;
+    for g in groups {
+        let AxisGroupKind::Parallel { origin, angle_deg } = g.kind else {
+            continue;
+        };
+        s.push_str(&format!(
+            "      <StbParallelAxes group_name=\"{}\" X=\"{}\" Y=\"{}\" angle=\"{}\">\n",
+            esc(&g.name),
+            fmt(origin[0]),
+            fmt(origin[1]),
+            fmt(angle_deg),
+        ));
+        for ax in &g.axes {
+            s.push_str(&format!(
+                "        <StbParallelAxis id=\"{}\" name=\"{}\" distance=\"{}\">\n",
+                next_id,
+                esc(&ax.name),
+                fmt(ax.distance.unwrap_or(0.0)),
+            ));
+            next_id += 1;
+            if !ax.nodes.is_empty() {
+                s.push_str("          <StbNodeIdList>\n");
+                for n in &ax.nodes {
+                    s.push_str(&format!("            <StbNodeId id=\"{}\"/>\n", sid(n.0)));
+                }
+                s.push_str("          </StbNodeIdList>\n");
+            }
+            s.push_str("        </StbParallelAxis>\n");
+        }
+        s.push_str("      </StbParallelAxes>\n");
+    }
+    s.push_str("    </StbAxes>\n");
+    s
 }
 
 /// 層種別を ST-Bridge の `kind`（GENERAL/PENTHOUSE/BASEMENT）へ写す。

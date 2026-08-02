@@ -1,3 +1,4 @@
+pub mod axes;
 pub mod load_cfg;
 pub mod loads;
 pub mod materials;

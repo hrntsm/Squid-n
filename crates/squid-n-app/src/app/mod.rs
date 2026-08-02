@@ -35,6 +35,8 @@ pub enum ModelTab {
     MemberDetails,
     /// S造検定属性（継手・スカラップ欠損率、横座屈長さ・座屈長さの直接入力）
     SteelAttrs,
+    /// 通り芯（各通りの呼称。構造計算には用いない）
+    Axes,
 }
 
 /// 下ドックのタブ。ログに加え、横幅を要する編集テーブルを収容する
@@ -201,6 +203,15 @@ impl Staleness {
         self.diagnostics_stale = true;
         self.preparation_stale = true;
     }
+    /// 計算に用いないモデルデータ（通り芯）が編集された → 未保存フラグだけ立てる。
+    ///
+    /// 通り芯は識別のための呼称であり、応力・断面算定・保有耐力のいずれにも入らない。
+    /// [`Staleness::mark_edited`] を使うと通り芯を 1 本足しただけで解析結果・設計結果・
+    /// 準備計算が陳腐化してしまうため、保存が必要なことだけを記録する。
+    pub fn mark_non_calc_edited(&mut self) {
+        self.unsaved_changes = true;
+    }
+
     /// 解析が完了 → 最新化する。
     pub fn mark_fresh(&mut self) {
         self.results_stale = false;
@@ -955,6 +966,9 @@ pub struct App {
     /// モデルタブ「雑壁」追加フォームのドラフト状態
     #[cfg(feature = "gui")]
     pub misc_wall_draft: crate::tables::misc_walls::MiscWallDraft,
+    /// モデルタブ「通り芯」の通り名編集のドラフト状態
+    #[cfg(feature = "gui")]
+    pub axis_name_draft: crate::tables::axes::AxisNameDraft,
     /// 荷重タブ「荷重計算条件」フォームのドラフト状態
     #[cfg(feature = "gui")]
     pub load_cfg_draft: crate::tables::load_cfg::LoadCfgDraft,
@@ -1153,6 +1167,8 @@ impl Default for App {
             #[cfg(feature = "gui")]
             misc_wall_draft: crate::tables::misc_walls::MiscWallDraft::default(),
             #[cfg(feature = "gui")]
+            axis_name_draft: crate::tables::axes::AxisNameDraft::default(),
+            #[cfg(feature = "gui")]
             load_cfg_draft: crate::tables::load_cfg::LoadCfgDraft::default(),
             #[cfg(feature = "gui")]
             member_detail_draft: crate::tables::member_details::MemberDetailDraft::default(),
@@ -1244,12 +1260,9 @@ pub use squid_n_core::model::{
 pub const SELF_WEIGHT_AUTO_LOAD_CASE_NAME: &str =
     squid_n_load::self_weight::SELF_WEIGHT_AUTO_LOAD_CASE_NAME;
 
-/// 節点ペアが鉛直材（柱）かどうかを判定する。両端の水平距離（XY平面）が
-/// 1mm 未満なら鉛直とみなす（`squid_n_load::story_gen::is_vertical_pair` と
-/// 同じ判定規則。あちらは非公開のためここで同じ規則を再実装する）。
-fn is_vertical_pair(a: [f64; 3], b: [f64; 3]) -> bool {
-    ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2)).sqrt() < 1.0
-}
+// 節点ペアが鉛直材（柱）かどうかの判定。判定規則は `squid-n-core` を情報源とし、
+// 荷重集計（`squid_n_load::story_gen`）・通り芯の自動生成と共通にする。
+use squid_n_core::geom::is_vertical_pair;
 
 /// 柱要素ごとの「支持する床数」と「積載荷重低減率」（令85条2項）を一覧する。
 ///

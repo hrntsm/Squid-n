@@ -21,6 +21,7 @@ mathjax-support = true
 # 章ディレクトリを追加したら、ここにも 1 行追加する。
 [output.html.redirect]
 "/model_io/README.html" = "index.html"
+"/model_edit/README.html" = "index.html"
 "/mcp_server/README.html" = "index.html"
 "/preparation/README.html" = "index.html"
 "/result_view/README.html" = "index.html"

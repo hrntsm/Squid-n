@@ -138,6 +138,18 @@ impl EditCommand for DeleteNode {
             } else {
                 false
             };
+        // 通り芯の所属は退避してから外す。通り芯は計算に用いない呼称であり、
+        // `node_in_use` には数えない（＝節点削除を妨げない）ため、ここで参照を
+        // 解消しないと `validate` の DanglingRef になる。
+        let mut axis_membership = Vec::new();
+        for (gi, group) in model.axes.iter_mut().enumerate() {
+            for (ai, axis) in group.axes.iter_mut().enumerate() {
+                if let Some(pos) = axis.nodes.iter().position(|n| *n == self.id) {
+                    axis.nodes.remove(pos);
+                    axis_membership.push((gi, ai));
+                }
+            }
+        }
         let removed = model.nodes.remove(idx);
         shift_node_ids(model, |id| {
             if id.0 > self.id.0 {
@@ -152,6 +164,7 @@ impl EditCommand for DeleteNode {
             story: removed.story,
             support_spring: removed.support_spring,
             generated_master,
+            axis_membership,
         })
     }
 
@@ -173,6 +186,9 @@ pub struct InsertNode {
     /// 削除された節点が `generated_masters`（剛床代表節点）に含まれていたか。
     /// 含まれていた場合、再挿入後の ID を `generated_masters` へ戻す。
     pub generated_master: bool,
+    /// 削除された節点が属していた通り芯の位置（`model.axes` のグループ添字, 通り添字）。
+    /// 再挿入後、同じ通りへ所属を戻す。
+    pub axis_membership: Vec<(usize, usize)>,
 }
 
 impl EditCommand for InsertNode {
@@ -197,6 +213,13 @@ impl EditCommand for InsertNode {
         if self.generated_master {
             model.generated_masters.push(id);
             model.generated_masters.sort();
+        }
+        // 通り芯の所属を戻す（所属リストは節点 ID 昇順に保つ）。
+        for &(gi, ai) in &self.axis_membership {
+            if let Some(axis) = model.axes.get_mut(gi).and_then(|g| g.axes.get_mut(ai)) {
+                let pos = axis.nodes.partition_point(|n| *n < id);
+                axis.nodes.insert(pos, id);
+            }
         }
         Box::new(DeleteNode { id })
     }
@@ -228,6 +251,13 @@ fn shift_node_ids(model: &mut Model, mut f: impl FnMut(&mut NodeId)) {
             f(&mut d.master);
             for s in &mut d.slaves {
                 f(s);
+            }
+        }
+    }
+    for group in &mut model.axes {
+        for axis in &mut group.axes {
+            for n in &mut axis.nodes {
+                f(n);
             }
         }
     }

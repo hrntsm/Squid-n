@@ -3,6 +3,7 @@ use crate::ids::*;
 use smallvec::SmallVec;
 
 mod aggregate;
+mod axis;
 mod constraint;
 mod element;
 mod hysteresis;
@@ -18,6 +19,7 @@ mod stress_cfg;
 mod wall;
 
 pub use aggregate::*;
+pub use axis::*;
 pub use constraint::*;
 pub use element::*;
 pub use hysteresis::*;
