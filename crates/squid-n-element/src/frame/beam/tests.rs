@@ -1695,9 +1695,32 @@ fn test_beam_new_wall_girder_bottom_edge_scales_stiffness() {
         plastic_zone: None,
         spring: None,
     };
+    // 耐震壁は四周を柱・梁に囲まれた壁を対象とするため、下辺（beam_elem）に加えて
+    // 上辺・左右の鉛直辺を置く（`misc_wall::wall_is_seismic`）。
+    let edge = |id: u32, n0: u32, n1: u32| ElementData {
+        id: ElemId(id),
+        kind: ElementKind::Beam,
+        nodes: smallvec::smallvec![NodeId(n0), NodeId(n1)],
+        section: None,
+        material: None,
+        local_axis: LocalAxis {
+            ref_vector: [0.0, 0.0, 1.0],
+        },
+        end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+        force_regime: ForceRegime::Auto,
+        rigid_zone: Default::default(),
+        plastic_zone: None,
+        spring: None,
+    };
     let model_with_wall = Model {
         nodes,
-        elements: vec![beam_elem.clone(), wall_elem],
+        elements: vec![
+            beam_elem.clone(),
+            wall_elem,
+            edge(2, 3, 2), // 上辺
+            edge(3, 0, 3), // 左の鉛直辺
+            edge(4, 1, 2), // 右の鉛直辺
+        ],
         sections: vec![sec],
         materials: vec![mat],
         ..Default::default()
@@ -2334,10 +2357,33 @@ fn test_beam_new_seismic_wall_no_misc_wall_augmentation() {
         plastic_zone: None,
         spring: None,
     };
+    // 耐震壁は四周を柱・梁に囲まれた壁を対象とするため、既にある左の鉛直辺
+    // （column_elem）・下辺（beam_elem）に加えて、上辺と右の鉛直辺を置く。
+    let edge = |id: u32, n0: u32, n1: u32| ElementData {
+        id: ElemId(id),
+        kind: ElementKind::Beam,
+        nodes: smallvec::smallvec![NodeId(n0), NodeId(n1)],
+        section: None,
+        material: None,
+        local_axis: LocalAxis {
+            ref_vector: [0.0, 0.0, 1.0],
+        },
+        end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+        force_regime: ForceRegime::Auto,
+        rigid_zone: Default::default(),
+        plastic_zone: None,
+        spring: None,
+    };
     // 開口なし（wall_attrs 未設定）・t=150 → 耐震壁成立
     let model = Model {
         nodes,
-        elements: vec![column_elem.clone(), beam_elem.clone(), wall_elem],
+        elements: vec![
+            column_elem.clone(),
+            beam_elem.clone(),
+            wall_elem,
+            edge(3, 3, 2), // 上辺
+            edge(4, 1, 2), // 右の鉛直辺
+        ],
         sections: vec![
             col_sec.clone(),
             beam_sec.clone(),

@@ -8,15 +8,19 @@ use squid_n_core::model::{
 };
 use squid_n_core::section_shape::SectionShape;
 
-/// 矩形壁（4000×3000, t=180）1 枚のみのモデル。側柱なし。
+/// 矩形壁（4000×3000, t=180）1 枚のモデル。
 /// `wall_attr` を指定すると `model.wall_attrs` に登録する。
 fn wall_model(wall_attr: Option<WallAttr>) -> Model {
     wall_model_sized(4000.0, 3000.0, 180.0, wall_attr)
 }
 
-/// 矩形壁（`l`×`h`, 厚さ `thickness`）1 枚のみのモデル。側柱なし。
+/// 矩形壁（`l`×`h`, 厚さ `thickness`）1 枚のモデル。
 /// `wall_model` の寸法可変版（近接開口・包絡開口のテストで、開口周比 r0
 /// を任意の壁面積に対して調整するために用いる）。
+///
+/// 耐震壁は四周を柱・梁に囲まれた壁を対象とするため、四周に線材を配置する
+/// （`wall_is_seismic` の四周条件）。検定側が集計する側柱の断面諸元は
+/// `MemberInfo` として別途与えるため、ここでは断面を割り当てない。
 fn wall_model_sized(l: f64, h: f64, thickness: f64, wall_attr: Option<WallAttr>) -> Model {
     let mut nodes: Vec<Node> = Vec::new();
     let coords = [[0.0, 0.0, 0.0], [l, 0.0, 0.0], [l, 0.0, h], [0.0, 0.0, h]];
@@ -65,28 +69,54 @@ fn wall_model_sized(l: f64, h: f64, thickness: f64, wall_attr: Option<WallAttr>)
         fc: Some(24.0),
         fy: None,
     }];
-    let elements = vec![ElementData {
-        id: ElemId(0),
-        kind: ElementKind::Wall,
+    let frame_member = |id: u32, n0: u32, n1: u32| ElementData {
+        id: ElemId(id),
+        kind: ElementKind::Beam,
         nodes: {
             let mut v: SmallVec<[NodeId; 8]> = SmallVec::new();
-            v.push(NodeId(0));
-            v.push(NodeId(1));
-            v.push(NodeId(2));
-            v.push(NodeId(3));
+            v.push(NodeId(n0));
+            v.push(NodeId(n1));
             v
         },
-        section: Some(SectionId(0)),
-        material: Some(MaterialId(0)),
+        section: None,
+        material: None,
         local_axis: LocalAxis {
-            ref_vector: [0.0, 0.0, 1.0],
+            ref_vector: [0.0, 1.0, 0.0],
         },
         end_cond: [EndCondition::Fixed, EndCondition::Fixed],
         force_regime: ForceRegime::Auto,
         rigid_zone: RigidZone::default(),
         plastic_zone: None,
         spring: None,
-    }];
+    };
+    let elements = vec![
+        ElementData {
+            id: ElemId(0),
+            kind: ElementKind::Wall,
+            nodes: {
+                let mut v: SmallVec<[NodeId; 8]> = SmallVec::new();
+                v.push(NodeId(0));
+                v.push(NodeId(1));
+                v.push(NodeId(2));
+                v.push(NodeId(3));
+                v
+            },
+            section: Some(SectionId(0)),
+            material: Some(MaterialId(0)),
+            local_axis: LocalAxis {
+                ref_vector: [0.0, 0.0, 1.0],
+            },
+            end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+            force_regime: ForceRegime::Auto,
+            rigid_zone: RigidZone::default(),
+            plastic_zone: None,
+            spring: None,
+        },
+        frame_member(1, 0, 1), // 下梁
+        frame_member(2, 3, 2), // 上梁
+        frame_member(3, 0, 3), // 左側柱
+        frame_member(4, 1, 2), // 右側柱
+    ];
     Model {
         nodes,
         elements,
@@ -444,7 +474,7 @@ fn wall_with_side_columns_emits_nonlinear_shear_trilinear() {
     use squid_n_core::section_shape::{BarSet, RcRebar, ShearBar};
 
     let mut model = wall_model(None);
-    // 両側の鉛直辺（節点 0-3・1-2）に 600×600 RC 側柱を追加する。
+    // 四周のうち両側の鉛直辺（ElemId 3・4）へ 600×600 RC 側柱の断面を与える。
     let col_shape = SectionShape::RcRect {
         b: 600.0,
         d: 600.0,
@@ -472,25 +502,16 @@ fn wall_with_side_columns_emits_nonlinear_shear_trilinear() {
     model
         .sections
         .push(col_shape.to_section(SectionId(1), "C600".into()));
-    for (eid, n0, n1) in [(1u32, 0u32, 3u32), (2u32, 1u32, 2u32)] {
-        let mut v: SmallVec<[NodeId; 8]> = SmallVec::new();
-        v.push(NodeId(n0));
-        v.push(NodeId(n1));
-        model.elements.push(ElementData {
-            id: ElemId(eid),
-            kind: ElementKind::Beam,
-            nodes: v,
-            section: Some(SectionId(1)),
-            material: Some(MaterialId(0)),
-            local_axis: LocalAxis {
-                ref_vector: [1.0, 0.0, 0.0],
-            },
-            end_cond: [EndCondition::Fixed, EndCondition::Fixed],
-            force_regime: ForceRegime::Auto,
-            rigid_zone: RigidZone::default(),
-            plastic_zone: None,
-            spring: None,
-        });
+    for e in model
+        .elements
+        .iter_mut()
+        .filter(|e| e.id == ElemId(3) || e.id == ElemId(4))
+    {
+        e.section = Some(SectionId(1));
+        e.material = Some(MaterialId(0));
+        e.local_axis = LocalAxis {
+            ref_vector: [1.0, 0.0, 0.0],
+        };
     }
     // 圧縮軸力 1000kN・水平せん断 800kN・曲げ 1000kN·m（壁）。
     let forces: [(f64, [f64; 6]); 1] = [(0.0, [-1_000_000.0, 800_000.0, 0.0, 0.0, 0.0, 1.0e9])];
@@ -499,8 +520,8 @@ fn wall_with_side_columns_emits_nonlinear_shear_trilinear() {
     let col_forces: [(f64, [f64; 6]); 1] = [(0.0, [-500_000.0, 0.0, 0.0, 0.0, 0.0, 0.0])];
     let member_forces = vec![
         (ElemId(0), forces.as_slice()),
-        (ElemId(1), col_forces.as_slice()),
-        (ElemId(2), col_forces.as_slice()),
+        (ElemId(3), col_forces.as_slice()),
+        (ElemId(4), col_forces.as_slice()),
     ];
     let checks = collect_joint_checks(&model, &member_forces, LoadTerm::Short);
 

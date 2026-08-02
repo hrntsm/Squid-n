@@ -3009,8 +3009,12 @@ fn wall_story_model(seismic_weight: f64) -> Model {
 }
 
 /// 壁長 lw を指定できる版（曲げ支配の細長壁の検証用）。
+///
+/// 耐震壁は四周を柱・梁に囲まれた壁を対象とする（`misc_wall::wall_is_seismic`）ため、
+/// 四周へ RC 側柱・大梁を配置する。側柱は面内両端ピン化されて面内せん断・曲げを
+/// 負担しないため、面内の応答は壁エレメントが支配する。
 fn wall_story_model_with(lw: f64, seismic_weight: f64) -> Model {
-    use squid_n_core::section_shape::SectionShape;
+    use squid_n_core::section_shape::{BarSet, RcRebar, SectionShape, ShearBar};
     let make_node = |id: u32, coord: [f64; 3], restraint: Dof6Mask, story: Option<StoryId>| Node {
         id: NodeId(id),
         coord,
@@ -3025,6 +3029,45 @@ fn wall_story_model_with(lw: f64, seismic_weight: f64) -> Model {
         thickness: 150.0,
         ps: 0.0025,
     };
+    let rebar = RcRebar {
+        main_grade: Some("SD345".into()),
+        main_x: BarSet {
+            count: 8,
+            dia: 22.0,
+            layers: 1,
+        },
+        main_y: BarSet {
+            count: 8,
+            dia: 22.0,
+            layers: 1,
+        },
+        cover: 50.0,
+        shear: ShearBar {
+            dia: 10.0,
+            pitch: 100.0,
+            legs: 2,
+            grade: None,
+        },
+    };
+    let frame_shape = SectionShape::RcRect {
+        b: 600.0,
+        d: 600.0,
+        rebar,
+    };
+    // 四周の柱・梁（下辺・上辺・左右の鉛直辺）。
+    let edge = |id: u32, n0: u32, n1: u32, ref_vector: [f64; 3]| ElementData {
+        id: ElemId(id),
+        kind: ElementKind::Beam,
+        nodes: smallvec::smallvec![NodeId(n0), NodeId(n1)],
+        section: Some(SectionId(1)),
+        material: Some(MaterialId(0)),
+        local_axis: LocalAxis { ref_vector },
+        end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+        force_regime: ForceRegime::Auto,
+        rigid_zone: Default::default(),
+        plastic_zone: None,
+        spring: None,
+    };
     Model {
         nodes: vec![
             make_node(0, [0.0, 0.0, 0.0], Dof6Mask::FIXED, None),
@@ -3032,22 +3075,31 @@ fn wall_story_model_with(lw: f64, seismic_weight: f64) -> Model {
             make_node(2, [lw, 0.0, 3000.0], top_mask, Some(StoryId(0))),
             make_node(3, [0.0, 0.0, 3000.0], top_mask, Some(StoryId(0))),
         ],
-        elements: vec![ElementData {
-            id: ElemId(0),
-            kind: ElementKind::Wall,
-            nodes: smallvec::smallvec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
-            section: Some(SectionId(0)),
-            material: Some(MaterialId(0)),
-            local_axis: LocalAxis {
-                ref_vector: [0.0, 1.0, 0.0],
+        elements: vec![
+            ElementData {
+                id: ElemId(0),
+                kind: ElementKind::Wall,
+                nodes: smallvec::smallvec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
+                section: Some(SectionId(0)),
+                material: Some(MaterialId(0)),
+                local_axis: LocalAxis {
+                    ref_vector: [0.0, 1.0, 0.0],
+                },
+                end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+                force_regime: ForceRegime::Auto,
+                rigid_zone: Default::default(),
+                plastic_zone: None,
+                spring: None,
             },
-            end_cond: [EndCondition::Fixed, EndCondition::Fixed],
-            force_regime: ForceRegime::Auto,
-            rigid_zone: Default::default(),
-            plastic_zone: None,
-            spring: None,
-        }],
-        sections: vec![shape.to_section(SectionId(0), "W150".into())],
+            edge(1, 0, 1, [0.0, 0.0, 1.0]), // 下辺
+            edge(2, 3, 2, [0.0, 0.0, 1.0]), // 上辺
+            edge(3, 0, 3, [1.0, 0.0, 0.0]), // 左の鉛直辺（側柱）
+            edge(4, 1, 2, [1.0, 0.0, 0.0]), // 右の鉛直辺（側柱）
+        ],
+        sections: vec![
+            shape.to_section(SectionId(0), "W150".into()),
+            frame_shape.to_section(SectionId(1), "RC-600x600".into()),
+        ],
         materials: vec![Material {
             strength_factor: None,
             concrete_class: Default::default(),
