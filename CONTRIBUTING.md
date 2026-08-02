@@ -8,7 +8,9 @@ Issue / PR のやりとりは日本語**で行ってください。
 
 ## 前提ツール
 
-- [Rust ツールチェイン](https://rustup.rs/)（stable）。`cargo` / `rustc` が使えること
+- [Rust ツールチェイン](https://rustup.rs/)（stable）。`cargo` / `rustc` が使えること。
+  CI は毎回その時点の最新 stable を取得するため、手元も `rustup update stable` で最新に
+  保ってください（「[静的解析](#静的解析)」の「ツールチェインのバージョンを合わせる」）
 - ドキュメントをローカルで確認する場合は [mdBook](https://rust-lang.github.io/mdBook/)
 
 ## ビルド
@@ -75,6 +77,24 @@ cargo fmt --all -- --check
 ```
 
 `cargo fmt --all` で自動整形できます。
+
+### ツールチェインのバージョンを合わせる
+
+**静的解析を実行する前に、ツールチェインを最新の stable へ更新してください。**
+
+```bash
+rustup update stable
+cargo clippy --version
+```
+
+CI は `dtolnay/rust-toolchain@stable` で**その時点の最新 stable** を取得します。clippy の
+lint は stable の更新で追加・拡張されるため、手元のツールチェインが古いと手元では通って
+CI だけが落ちます。実際に、手元の 1.94 では通ったコードが CI の 1.97 で
+`explicit_counter_loop` に引っかかった例があります。
+
+`--locked` が固定するのは `Cargo.lock` による依存の解決だけで、ツールチェインの
+バージョンは固定されません。既存の開発環境や、ツールチェインが同梱されたコンテナを
+使う場合は、そこに入っているものが最新の stable とは限らないため特に注意してください。
 
 ## ドキュメントサイト（mdBook）
 
