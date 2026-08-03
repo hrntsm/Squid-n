@@ -160,11 +160,11 @@ pub fn column_stiffnesses(model: &Model, story: StoryId) -> Vec<ColumnStiffness>
                 if bl < 1e-12 {
                     continue;
                 }
-                let bex = [bdx / bl, bdy / bl, bdz / bl];
-                // 水平部材（梁）判定: ez[2].abs() < 0.707
-                if bex[2].abs() >= 0.707 {
+                // 鉛直材は梁剛比に算入しない（全クレート共通の 45° 余弦基準）。
+                if squid_n_core::geom::is_vertical_axis(bn0.coord, bn1.coord) {
                     continue;
                 }
+                let bex = [bdx / bl, bdy / bl, bdz / bl];
                 // 梁の断面二次モーメント（強軸＝断面レイヤの iy）と梁剛比。
                 let beam_i_strong = match other.section {
                     Some(s) => model.sections[s.index()].iy,

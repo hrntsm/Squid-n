@@ -6865,3 +6865,50 @@ fn test_wall_has_src_boundary_column() {
         "節点を共有しない SRC 柱は対象外"
     );
 }
+
+/// 敵対的レビュー検証用（一時テスト）: sync_gravity_load_cases_action が
+/// beam_loads を直接書き換えるとき beam_loads_hash を更新しないため、
+/// undo でモデルをハッシュ記録時点の状態へ戻すと refresh がスキップされ、
+/// 別状態の beam_loads が残るか。
+#[test]
+fn adversarial_beam_loads_hash_bypass() {
+    let mut app = App {
+        model: make_slab_test_model(),
+        ..App::default()
+    };
+    // M1 で CMQ 表示（毎フレーム refresh）を模擬。
+    app.refresh_beam_loads();
+    let b1 = app.beam_loads.clone();
+    let h1 = app.beam_loads_hash;
+
+    // スラブ荷重を編集（M2）。
+    app.model.slabs[0]
+        .loads
+        .push(squid_n_core::model::AreaLoad {
+            kind: "追加仕上げ".into(),
+            value: 2.0e-3,
+        });
+    // 解析入口の荷重同期（beam_loads を直接上書き。hash は未更新のはず）。
+    app.sync_gravity_load_cases_action();
+    let b2 = app.beam_loads.clone();
+    assert_ne!(
+        format!("{:?}", b1),
+        format!("{:?}", b2),
+        "前提: 編集で分配は変わる"
+    );
+    assert_eq!(app.beam_loads_hash, h1, "前提: sync は hash を更新しない");
+
+    // 編集と同期を undo でぜんぶ戻す（モデルは M1 とバイト同一へ）。
+    while app.undo.can_undo() {
+        app.undo.undo(&mut app.model);
+    }
+    app.model.slabs[0].loads.pop();
+
+    // CMQ 表示を再開 → hash が一致してスキップされ、M2 の分配が残るか。
+    app.refresh_beam_loads();
+    assert_eq!(
+        format!("{:?}", app.beam_loads),
+        format!("{:?}", b1),
+        "M1 へ戻したのだから M1 の分配が表示されるべき（B2 が残っていればバグ）"
+    );
+}

@@ -1329,8 +1329,8 @@ impl App {
                         continue;
                     };
                     // 幅厚比による部材ランク判定は準備計算の表示と共通
-                    // （`steel_width_thickness_rank`。構造規定の幅厚比表を優先し、
-                    // 表の対象外形状は単一幅厚比法へフォールバックする）。
+                    // （`steel_width_thickness_rank`。構造規定の幅厚比表のみで判定し、
+                    // 表の対象外形状は未判定＝選択ランクへのフォールバックとする）。
                     let member_use = steel_member_use_of(elem, &self.model);
                     let Some(rank) = steel_width_thickness_rank(shape, member_use, &mat.name)
                     else {
