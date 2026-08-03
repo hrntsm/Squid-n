@@ -408,6 +408,10 @@ pub fn nonlinear_time_history_analysis(
             .and_then(|a| a.first().copied())
             .unwrap_or(0.0);
         let mf_init = member_forces_nonlinear(model, &behaviors);
+        // 線材の内力欠落（state_member_forces 未実装）を開始時点でエラー化する。
+        // 従来は None のまま全ステップ記録され、当該部材の応力履歴が無言で
+        // 空になっていた（線形経路の ensure_line_member_forces と同じ趣旨）。
+        super::recording::ensure_line_member_forces_nonlinear(model, &mf_init)?;
         recorder.record_step(
             0, 0.0, model, dofmap, &m_r_x, &m_r_y, &ma_free, &u_free, &v_free, &a_free, xg_x_init,
             xg_y_init, &mf_init,
