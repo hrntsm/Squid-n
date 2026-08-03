@@ -43,65 +43,20 @@ impl EditCommand for AddMaterial {
     }
 }
 
-/// 材料削除。部材から参照中の材料は Noop。逆操作は [`InsertMaterial`]。
-/// ID＝配列インデックスの不変条件を保つため、後続の材料 ID と部材からの参照を繰り上げる。
-pub struct DeleteMaterial {
-    pub id: MaterialId,
-}
-
-impl EditCommand for DeleteMaterial {
-    fn apply(&self, model: &mut Model) -> Box<dyn EditCommand> {
-        let idx = self.id.index();
-        if idx >= model.materials.len() || model.materials[idx].id != self.id {
-            return Box::new(Noop);
-        }
-        if material_in_use(model, self.id) {
-            return Box::new(Noop);
-        }
-        let removed = model.materials.remove(idx);
-        shift_material_ids(model, |mid| {
-            if mid.0 > self.id.0 {
-                mid.0 -= 1;
-            }
-        });
-        Box::new(InsertMaterial {
-            index: idx,
-            old: removed,
-        })
-    }
-
-    fn label(&self) -> &str {
-        "材料削除"
-    }
-}
-
-/// 指定インデックスへ材料を再挿入する（[`DeleteMaterial`] の逆操作専用）。
-pub struct InsertMaterial {
-    pub index: usize,
-    pub old: squid_n_core::model::Material,
-}
-
-impl EditCommand for InsertMaterial {
-    fn apply(&self, model: &mut Model) -> Box<dyn EditCommand> {
-        if self.index > model.materials.len() {
-            return Box::new(Noop);
-        }
-        let id = MaterialId(self.index as u32);
-        shift_material_ids(model, |mid| {
-            if mid.0 >= id.0 {
-                mid.0 += 1;
-            }
-        });
-        let mut mat = self.old.clone();
-        mat.id = id;
-        model.materials.insert(self.index, mat);
-        Box::new(DeleteMaterial { id })
-    }
-
-    fn label(&self) -> &str {
-        "材料削除の取り消し"
-    }
-}
+id_indexed_delete_insert!(
+    /// 材料削除。部材から参照中の材料は Noop。逆操作は [`InsertMaterial`]。
+    /// ID＝配列インデックスの不変条件を保つため、後続の材料 ID と部材からの参照を繰り上げる。
+    DeleteMaterial,
+    /// 指定インデックスへ材料を再挿入する（[`DeleteMaterial`] の逆操作専用）。
+    InsertMaterial,
+    id = MaterialId,
+    entity = squid_n_core::model::Material,
+    vec = materials,
+    shift = shift_material_ids,
+    guard = material_in_use,
+    del_label = "材料削除",
+    ins_label = "材料削除の取り消し",
+);
 
 /// モデル内の全ての `MaterialId` 参照（材料自身の ID を含む）に `f` を適用する。
 /// 走査は core 側（[`Model::visit_material_ids`]）が単一情報源として持つ
