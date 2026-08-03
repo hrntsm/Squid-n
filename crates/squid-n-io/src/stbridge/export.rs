@@ -103,15 +103,7 @@ pub fn export_stbridge(model: &Model) -> Result<String, StbError> {
     s.push_str("    </StbMembers>\n");
 
     // 断面（標準要素＋形鋼ライブラリ）＋スラブ断面＋壁断面。
-    // スラブ断面 id は既存断面 id（柱・梁。分割で増える）と衝突しない範囲から採番する。
-    let slab_sec_base = col_map
-        .values()
-        .chain(beam_map.values())
-        .copied()
-        .max()
-        .map(|m| m + 1)
-        .unwrap_or(0)
-        .max(model.sections.len() as u32);
+    let slab_sec_base = slab_section_id_base(model, &col_map, &beam_map);
     let wall_sec_base = slab_sec_base + model.slabs.len() as u32;
 
     // スキーマ順: 柱・梁・ブレース断面 → スラブ断面 → 壁断面 → 形鋼ライブラリ。
@@ -126,6 +118,25 @@ pub fn export_stbridge(model: &Model) -> Result<String, StbError> {
     s.push_str("  </StbModel>\n");
     s.push_str("</ST_BRIDGE>\n");
     Ok(s)
+}
+
+/// スラブ断面 id の採番開始値。既存断面 id（柱・梁。柱/梁の役割分割で
+/// 増える分は col_map/beam_map の値域に現れる）と衝突しない範囲から採る。
+/// `StbSections`（断面定義側）と `StbMembers`（スラブの断面参照側）が同じ
+/// 採番を共有するための単一実装。
+fn slab_section_id_base(
+    model: &Model,
+    col_map: &std::collections::HashMap<u32, u32>,
+    beam_map: &std::collections::HashMap<u32, u32>,
+) -> u32 {
+    col_map
+        .values()
+        .chain(beam_map.values())
+        .copied()
+        .max()
+        .map(|m| m + 1)
+        .unwrap_or(0)
+        .max(model.sections.len() as u32)
 }
 
 /// `StbMembers` 本体（柱・大梁・ブレース・スラブ・壁を複数形コンテナに束ねる）。
@@ -265,14 +276,7 @@ fn members_body(
     // スラブ（StbSlab）。境界節点ループ＋断面参照。member id は要素 id と別空間なので
     // 要素数の次から採番する（1 始まり。二次部材の後）。
     let slab_member_base = model.elements.len() as u32 + model.secondary_members.len() as u32;
-    let slab_sec_base = col_map
-        .values()
-        .chain(beam_map.values())
-        .copied()
-        .max()
-        .map(|m| m + 1)
-        .unwrap_or(0)
-        .max(model.sections.len() as u32);
+    let slab_sec_base = slab_section_id_base(model, col_map, beam_map);
     let mut slabs = String::new();
     for slab in &model.slabs {
         let mid = slab_member_base + slab.id.0;
