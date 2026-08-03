@@ -17,7 +17,7 @@ use super::response::{
 use super::shear_yield::{compute_shear_yield_thresholds, track_shear_yield};
 use super::types::{
     CapacityPoint, DuctilityMethod, MemberHistory, MemberStepState, PushoverControl,
-    PushoverResult, PushoverStep, PushoverTarget,
+    PushoverResult, PushoverStep, PushoverTarget, PushoverTermination,
 };
 use crate::analysis::{
     building_height_mm, distribute_pi_over_diaphragms, steel_height_ratio, SeismicDir,
@@ -276,6 +276,10 @@ pub fn pushover_analysis_recording(
     // 更新し、変位制御・弧長法の各フェーズが「同じ比例荷重パターン λ·q」を
     // 引き継ぐための状態変数。
     let mut lambda = 0.0;
+    // 最後に実行されたフェーズの終了理由（目標到達は target_reached が優先）。
+    // 非収束・特異化の打ち切りを結果へ明示するために追跡する（従来は全て無言で、
+    // 低い λ での収束不能でも Qu が正常な結果の顔で返っていた）。
+    let mut phase_outcome = PushoverTermination::Unknown;
 
     // 変位増分の押込み上限（頂部変位換算）。目標変位はその値を、目標最大層間変形角は
     // 「全層が一様に目標角へ達した場合の頂部変位」＝角×Σ階高を用いる。最大層間
@@ -452,6 +456,7 @@ pub fn pushover_analysis_recording(
     for _step in 0..max_load_steps {
         // λ_cap（段階制御=1、LoadOnly+目標有効=10）に達したら荷重制御を終える。
         if lambda >= lambda_cap - 1e-12 {
+            phase_outcome = PushoverTermination::LambdaCap { lambda };
             break;
         }
         let prev_lambda = lambda;
@@ -582,11 +587,18 @@ pub fn pushover_analysis_recording(
             // これ以上の荷重に釣合う解が無い＝耐力ピーク近傍）。従来の固定刻みは
             // 失敗ステップを読み飛ばして次のスケジュール値を試しており、確定状態
             // との乖離で実効増分が拡大する欠陥だった（ループ冒頭のコメント参照）。
+            phase_outcome = PushoverTermination::NonConvergence {
+                phase: "荷重制御".into(),
+                load_factor: lambda,
+            };
             break;
         }
         if target_reached {
             break;
         }
+        // ループ回数上限に達した場合はスケジュール完了扱い（通常は λ_cap・目標・
+        // 非収束のいずれかで先に止まる）。
+        phase_outcome = PushoverTermination::ScheduleCompleted;
     }
 
     // 変位制御フェーズ（P5 §7.1）。段階制御で、荷重制御が目標に達しなかった場合のみ
@@ -792,7 +804,17 @@ pub fn pushover_analysis_recording(
                         lambda = lambda_snap;
                     }
                 }
-                if !step_ok || target_reached {
+                if !step_ok {
+                    phase_outcome = PushoverTermination::NonConvergence {
+                        phase: "変位制御".into(),
+                        load_factor: lambda,
+                    };
+                    break;
+                }
+                // 押込みスケジュールを最後まで完了した場合の終了理由（非収束・
+                // 目標到達で break しなかった場合に残る）。
+                phase_outcome = PushoverTermination::ScheduleCompleted;
+                if target_reached {
                     break;
                 }
             }
@@ -818,6 +840,12 @@ pub fn pushover_analysis_recording(
             // DirectSparseCholesky を保持するため、ここでも同じインスタンスを使う）。
             if st.solver.factorize(&k_red).is_err() {
                 model.restore(&snap, &mut behaviors);
+                // 分解失敗＝機構形成・耐力喪失による特異化。弧長法フェーズでは
+                // 期待される終了だが、理由として結果へ明示する。
+                phase_outcome = PushoverTermination::TangentSingular {
+                    phase: "弧長法".into(),
+                    load_factor: arc_lambda,
+                };
                 break;
             }
 
@@ -934,9 +962,15 @@ pub fn pushover_analysis_recording(
                 }
                 _ => {
                     model.restore(&snap, &mut behaviors);
+                    phase_outcome = PushoverTermination::NonConvergence {
+                        phase: "弧長法".into(),
+                        load_factor: arc_lambda,
+                    };
                     break;
                 }
             }
+            // 最大ステップ数（20）まで完了した場合の終了理由。
+            phase_outcome = PushoverTermination::ScheduleCompleted;
         }
     }
 
@@ -1002,6 +1036,12 @@ pub fn pushover_analysis_recording(
         .filter(|(e, _)| detail_elems.contains(&e.id))
         .filter_map(|(e, b)| b.fiber_section_states().map(|s| (e.id, s)))
         .collect();
+    // 終了理由: 目標到達が最優先、それ以外は最後に実行されたフェーズの終了理由。
+    let termination = if target_reached {
+        PushoverTermination::TargetReached
+    } else {
+        phase_outcome
+    };
     Ok(PushoverResult {
         steps,
         capacity_curve,
@@ -1013,6 +1053,7 @@ pub fn pushover_analysis_recording(
         control,
         member_history,
         fiber_states,
+        termination,
     })
 }
 

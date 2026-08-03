@@ -56,6 +56,80 @@ impl PushoverTarget {
     }
 }
 
+/// 増分解析がどのように終了したか（P5 §7.4）。
+///
+/// 従来は非収束・特異化を含む全ての打ち切りが無言で、荷重制御が低い荷重係数で
+/// 収束不能になっても Qu が「その時点までの最大ベースシア」として正常な結果の
+/// 顔で返っていた（保有水平耐力の過小評価を利用者が判別できない）。終了理由を
+/// 結果へ明示し、目標到達以外の打ち切りを表示側で警告できるようにする。
+///
+/// 複数フェーズ（荷重制御→変位制御→弧長法）を経る場合は、目標到達が最優先、
+/// それ以外は**最後に実行されたフェーズの終了理由**を記録する。
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize, Default)]
+pub enum PushoverTermination {
+    /// 終了目標（頂部変位・最大層間変形角）へ到達して終了した。
+    TargetReached,
+    /// 荷重制御の λ 上限（段階制御=1、荷重増分のみ+目標有効=10）まで載荷して
+    /// 終了した（目標は未到達）。
+    LambdaCap {
+        /// 到達した荷重係数。
+        lambda: f64,
+    },
+    /// 押込みスケジュール（変位制御の上限変位・弧長法の最大ステップ数）を
+    /// 完了して終了した（目標判定は未成立）。
+    ScheduleCompleted,
+    /// 増分半減を尽くしても釣合い反復が収束せず打ち切った。
+    /// **Qu が過小評価の可能性がある**（目標未到達のまま性能曲線が途切れている）。
+    NonConvergence {
+        /// 打ち切ったフェーズ（"荷重制御"・"変位制御"・"弧長法"）。
+        phase: String,
+        /// 打ち切り時点の確定済み荷重係数。
+        load_factor: f64,
+    },
+    /// 接線剛性の分解が失敗（崩壊機構の形成・耐力喪失による特異化）して
+    /// 打ち切った。弧長法フェーズでは耐力喪失の終了判定として期待される終了。
+    TangentSingular {
+        /// 打ち切ったフェーズ。
+        phase: String,
+        /// 打ち切り時点の確定済み荷重係数。
+        load_factor: f64,
+    },
+    /// 旧プロジェクトファイル（終了理由が未記録）。
+    #[default]
+    Unknown,
+}
+
+impl PushoverTermination {
+    /// 目標未到達のまま途中で打ち切られた（Qu が過小評価の可能性がある）か。
+    pub fn is_premature(&self) -> bool {
+        matches!(
+            self,
+            PushoverTermination::NonConvergence { .. }
+                | PushoverTermination::TangentSingular { .. }
+        )
+    }
+
+    /// 表示用の説明文（UI・レポート共通）。
+    pub fn describe(&self) -> String {
+        match self {
+            PushoverTermination::TargetReached => "終了目標へ到達".into(),
+            PushoverTermination::LambdaCap { lambda } => {
+                format!("荷重係数上限 λ={:.2} まで載荷", lambda)
+            }
+            PushoverTermination::ScheduleCompleted => "押込みスケジュール完了".into(),
+            PushoverTermination::NonConvergence { phase, load_factor } => format!(
+                "{}が λ={:.3} で収束不能（目標未到達。Qu 過小評価の可能性）",
+                phase, load_factor
+            ),
+            PushoverTermination::TangentSingular { phase, load_factor } => format!(
+                "{}で λ={:.3} にて接線剛性が特異化（機構形成・耐力喪失）",
+                phase, load_factor
+            ),
+            PushoverTermination::Unknown => "終了理由未記録（旧形式の結果）".into(),
+        }
+    }
+}
+
 /// 増分解析の制御方式（P5 §7）。
 ///
 /// 既定の段階制御と、比較検証用の荷重増分のみの 2 方式。いずれも外力は
@@ -232,6 +306,12 @@ pub struct PushoverResult {
     /// ファイルには無いフィールドのため、読込時は空で補う。
     #[serde(default)]
     pub fiber_states: Vec<(ElemId, Vec<squid_n_element::behavior::FiberSectionState>)>,
+    /// 解析がどのように終了したか（[`PushoverTermination`]）。目標到達以外の
+    /// 打ち切り（非収束・特異化）は Qu が過小評価の可能性があるため、表示側は
+    /// [`PushoverTermination::is_premature`] で警告すること。旧プロジェクト
+    /// ファイルには無いフィールドのため、読込時は `Unknown` で補う。
+    #[serde(default)]
+    pub termination: PushoverTermination,
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]

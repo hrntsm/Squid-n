@@ -28,7 +28,7 @@ pub use driver::{pushover_analysis, pushover_analysis_recording};
 pub use types::{
     CapacityPoint, DuctilityMethod, HingeEvent, HingeLevel, MechanismType, MemberHistory,
     MemberStepState, PushoverControl, PushoverMemberResponse, PushoverResult, PushoverStep,
-    PushoverTarget, ShearYieldEvent,
+    PushoverTarget, PushoverTermination, ShearYieldEvent,
 };
 
 // dynamic/timehistory が `crate::pushover::{add_support_spring_f_int, assemble_k,

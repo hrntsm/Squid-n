@@ -385,6 +385,7 @@ mod tests {
             control: Default::default(),
             member_history: vec![],
             fiber_states: vec![],
+            termination: Default::default(),
         }
     }
 
@@ -428,6 +429,7 @@ mod tests {
             control: Default::default(),
             member_history: vec![],
             fiber_states: vec![],
+            termination: Default::default(),
         };
         let result = check_holding_capacity(
             &pushover,

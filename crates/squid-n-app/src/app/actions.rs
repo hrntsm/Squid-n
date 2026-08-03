@@ -2177,6 +2177,14 @@ impl App {
     ) {
         match res {
             Ok(result) => {
+                // 目標未到達の打ち切り（非収束・特異化）は Qu が過小評価の可能性が
+                // あるため、結果画面の警告に加えてログにも残す。
+                if result.termination.is_premature() {
+                    self.report_notice(format!(
+                        "⚠ 増分解析は目標到達前に打ち切られました（{}）。Qu はその時点までの最大値です。",
+                        result.termination.describe()
+                    ));
+                }
                 let mut bundle = self.results.take().unwrap_or_default();
                 bundle.pushover = Some(result);
                 self.results = Some(bundle);
