@@ -271,6 +271,11 @@ fn shift_node_ids(model: &mut Model, mut f: impl FnMut(&mut NodeId)) {
             }
         }
     }
+    for sm in &mut model.secondary_members {
+        for n in &mut sm.nodes {
+            f(n);
+        }
+    }
     for c in &mut model.constraints {
         use squid_n_core::model::Constraint;
         match c {
@@ -723,6 +728,21 @@ impl EditCommand for DeleteMember {
         }
         // 側テーブル属性（履歴則・ダンパー・免震等）を退避してから削除（残余は shift で繰上げ）。
         let removed_attrs = model.take_elem_attrs(self.id);
+        // 一本部材指定（beam_groups）から当該部材を連動削除する（残すと shift 後に
+        // 別部材を指し、検定の採用応力が無関係な部材と合成される）。undo 用に
+        // (グループ index, グループ内位置) を退避する。
+        let mut removed_group_refs = Vec::new();
+        for (gi, group) in model.beam_groups.iter_mut().enumerate() {
+            let mut pos = 0;
+            while pos < group.len() {
+                if group[pos] == self.id {
+                    group.remove(pos);
+                    removed_group_refs.push((gi, pos));
+                } else {
+                    pos += 1;
+                }
+            }
+        }
         let removed = model.elements.remove(idx);
         shift_elem_ids(model, |id| {
             if id.0 > self.id.0 {
@@ -734,6 +754,7 @@ impl EditCommand for DeleteMember {
             elem: removed,
             member_loads: removed_loads,
             elem_attrs: removed_attrs,
+            beam_group_refs: removed_group_refs,
         })
     }
 
@@ -751,6 +772,9 @@ pub struct InsertMember {
     pub member_loads: Vec<(usize, usize, squid_n_core::model::MemberLoad)>,
     /// 削除時に退避した側テーブル属性（履歴則・ダンパー・免震等）。
     pub elem_attrs: squid_n_core::model::ElemAttrs,
+    /// 削除時に一本部材指定（beam_groups）から外した参照の
+    /// (グループ index, グループ内位置)。undo で同じ位置へ復元する。
+    pub beam_group_refs: Vec<(usize, usize)>,
 }
 
 impl EditCommand for InsertMember {
@@ -779,6 +803,14 @@ impl EditCommand for InsertMember {
         }
         // 退避した側テーブル属性を再挿入 ID へ紐づけ直して復元。
         model.restore_elem_attrs(id, self.elem_attrs.clone());
+        // 一本部材指定（beam_groups）から外した参照を元の位置へ復元する。
+        // 削除時は「縮んでいく配列での位置」を昇順で記録しているため、
+        // 部材荷重と同様に逆順で挿入すると削除前の並びに戻る。
+        for &(gi, pos) in self.beam_group_refs.iter().rev() {
+            if let Some(group) = model.beam_groups.get_mut(gi) {
+                group.insert(pos.min(group.len()), id);
+            }
+        }
         Box::new(DeleteMember { id })
     }
 

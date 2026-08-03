@@ -333,13 +333,23 @@ fn shift_section_ids(model: &mut Model, mut f: impl FnMut(&mut SectionId)) {
             }
         }
     }
+    // 二次部材（小梁・間柱）の断面参照も追従させる。
+    for sm in &mut model.secondary_members {
+        if let Some(sid) = &mut sm.section {
+            f(sid);
+        }
+    }
 }
 
-/// 指定断面を参照している要素または小梁が存在するか（削除ガード用）。
+/// 指定断面を参照している要素・小梁・二次部材が存在するか（削除ガード用）。
 fn section_in_use(model: &Model, id: SectionId) -> bool {
     model.elements.iter().any(|e| e.section == Some(id))
         || model
             .slabs
             .iter()
             .any(|s| s.joists.iter().any(|j| j.section == Some(id)))
+        || model
+            .secondary_members
+            .iter()
+            .any(|sm| sm.section == Some(id))
 }

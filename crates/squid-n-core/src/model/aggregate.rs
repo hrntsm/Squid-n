@@ -305,6 +305,19 @@ impl Model {
             }
         }
 
+        // 一本部材指定（beam_groups）の参照整合。検定の採用応力がグループの要素を
+        // 直接引くため、ダングリングすると無関係な部材の応力を合成してしまう。
+        for (gi, group) in self.beam_groups.iter().enumerate() {
+            for &eid in group {
+                if eid.index() >= self.elements.len() || self.elements[eid.index()].id != eid {
+                    return Err(CoreError::DanglingRef(format!(
+                        "BeamGroup {} -> Elem {}",
+                        gi, eid.0
+                    )));
+                }
+            }
+        }
+
         Ok(())
     }
 
@@ -407,6 +420,8 @@ impl Model {
             && self.steel_design_attrs == other.steel_design_attrs
             && self.brb_attrs == other.brb_attrs
             && self.pca_attrs == other.pca_attrs
+            && self.secondary_members == other.secondary_members
+            && self.axes == other.axes
             && self.beam_groups == other.beam_groups
             && self.isolator_attrs == other.isolator_attrs
             && self.member_hysteresis_attrs == other.member_hysteresis_attrs
@@ -440,9 +455,9 @@ impl Model {
         old
     }
 
-    /// 要素に紐づく全ての側テーブル属性（壁・鉄骨・BRB・PCa・免震・履歴則・ダンパー）の
-    /// `elem` 参照に `f` を適用する。要素の追加・削除に伴う ID 繰上げ／繰下げで、
-    /// 側テーブルの参照整合を保つために用いる。
+    /// 要素に紐づく全ての側テーブル属性（壁・鉄骨・BRB・PCa・免震・履歴則・ダンパー）と
+    /// 一本部材指定（`beam_groups`）の `elem` 参照に `f` を適用する。
+    /// 要素の追加・削除に伴う ID 繰上げ／繰下げで、参照整合を保つために用いる。
     pub fn shift_elem_attr_refs(&mut self, mut f: impl FnMut(&mut ElemId)) {
         for a in &mut self.wall_attrs {
             f(&mut a.elem);
@@ -467,6 +482,11 @@ impl Model {
         }
         for a in &mut self.member_detail_attrs {
             f(&mut a.elem);
+        }
+        for group in &mut self.beam_groups {
+            for e in group.iter_mut() {
+                f(e);
+            }
         }
     }
 

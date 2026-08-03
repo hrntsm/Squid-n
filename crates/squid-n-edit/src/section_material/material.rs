@@ -55,7 +55,7 @@ impl EditCommand for DeleteMaterial {
         if idx >= model.materials.len() || model.materials[idx].id != self.id {
             return Box::new(Noop);
         }
-        if model.elements.iter().any(|e| e.material == Some(self.id)) {
+        if material_in_use(model, self.id) {
             return Box::new(Noop);
         }
         let removed = model.materials.remove(idx);
@@ -113,6 +113,21 @@ fn shift_material_ids(model: &mut Model, mut f: impl FnMut(&mut MaterialId)) {
             f(mid);
         }
     }
+    // 二次部材（小梁・間柱）の材料参照も追従させる（自重算定が参照する）。
+    for sm in &mut model.secondary_members {
+        if let Some(mid) = &mut sm.material {
+            f(mid);
+        }
+    }
+}
+
+/// 指定材料を参照している要素・二次部材が存在するか（削除ガード用）。
+fn material_in_use(model: &Model, id: MaterialId) -> bool {
+    model.elements.iter().any(|e| e.material == Some(id))
+        || model
+            .secondary_members
+            .iter()
+            .any(|sm| sm.material == Some(id))
 }
 
 /// 編集対象の材料プロパティ。
