@@ -539,6 +539,102 @@ impl ElementBehavior for IsolatorElement {
         }
         self.trial_disp = self.committed_disp;
     }
+
+    fn serialize_checkpoint(&self) -> Vec<u8> {
+        use squid_n_material::UniaxialMaterial;
+        // 免震装置は履歴（バイリニアの塑性変位・摩擦の滑り変位）を保持するため、
+        // チェックポイントに変位とせん断ばね状態の両方を含める。トレイト既定の
+        // 空バイト列のままではレジューム時に履歴が初期状態へ戻り、以降の応答が
+        // 別の履歴経路を辿ってしまう（他要素と同じ規約で明示的に直列化する）。
+        let (laminated, friction, strain) = match &self.shear {
+            ShearModel::Laminated { sy, sz } => (
+                Some((sy.serialize_state(), sz.serialize_state())),
+                None,
+                None,
+            ),
+            ShearModel::Friction {
+                pl_y,
+                pl_z,
+                tr_pl_y,
+                tr_pl_z,
+                ..
+            } => (None, Some([*pl_y, *pl_z, *tr_pl_y, *tr_pl_z]), None),
+            ShearModel::StrainDependent { sy, sz, .. } => {
+                (None, None, Some([sy.pl, sy.tr_pl, sz.pl, sz.tr_pl]))
+            }
+        };
+        let cp = IsolatorCheckpoint {
+            committed_disp: self.committed_disp,
+            trial_disp: self.trial_disp,
+            laminated,
+            friction,
+            strain,
+        };
+        bincode::serialize(&cp).expect("serialize checkpoint")
+    }
+
+    fn deserialize_checkpoint(
+        &mut self,
+        data: &[u8],
+    ) -> Result<(), crate::behavior::CheckpointError> {
+        use squid_n_material::UniaxialMaterial;
+        // 旧チェックポイント（状態未収録・空バイト列）は「状態なし」として許容する。
+        if data.is_empty() {
+            return Ok(());
+        }
+        let cp: IsolatorCheckpoint = bincode::deserialize(data)
+            .map_err(|e| crate::behavior::CheckpointError::Decode(e.to_string()))?;
+        self.committed_disp = cp.committed_disp;
+        self.trial_disp = cp.trial_disp;
+        match &mut self.shear {
+            ShearModel::Laminated { sy, sz } => {
+                if let Some((by, bz)) = &cp.laminated {
+                    sy.deserialize_state(by)
+                        .map_err(|e| crate::behavior::CheckpointError::Decode(e.to_string()))?;
+                    sz.deserialize_state(bz)
+                        .map_err(|e| crate::behavior::CheckpointError::Decode(e.to_string()))?;
+                }
+            }
+            ShearModel::Friction {
+                pl_y,
+                pl_z,
+                tr_pl_y,
+                tr_pl_z,
+                ..
+            } => {
+                if let Some([py, pz, tpy, tpz]) = cp.friction {
+                    *pl_y = py;
+                    *pl_z = pz;
+                    *tr_pl_y = tpy;
+                    *tr_pl_z = tpz;
+                }
+            }
+            ShearModel::StrainDependent { sy, sz, .. } => {
+                if let Some([py, tpy, pz, tpz]) = cp.strain {
+                    sy.pl = py;
+                    sy.tr_pl = tpy;
+                    sz.pl = pz;
+                    sz.tr_pl = tpz;
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+/// [`IsolatorElement`] のチェックポイント形式（serialize/deserialize 共用）。
+/// せん断モデルの状態はモデル種別ごとの排他フィールドで持つ（復元時は現在の
+/// モデル種別に一致するフィールドのみを適用する）。
+#[derive(serde::Serialize, serde::Deserialize)]
+struct IsolatorCheckpoint {
+    committed_disp: [f64; 12],
+    trial_disp: [f64; 12],
+    /// Laminated: 各方向バイリニアの直列化状態 (y, z)。
+    laminated: Option<(Vec<u8>, Vec<u8>)>,
+    /// Friction: [pl_y, pl_z, tr_pl_y, tr_pl_z]。
+    friction: Option<[f64; 4]>,
+    /// StrainDependent: [pl_y, tr_pl_y, pl_z, tr_pl_z]。
+    strain: Option<[f64; 4]>,
 }
 
 #[cfg(test)]
