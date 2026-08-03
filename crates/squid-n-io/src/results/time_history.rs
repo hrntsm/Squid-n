@@ -24,13 +24,15 @@ impl TimeHistoryWriter {
         disp: &[[f64; 6]],
     ) -> arrow::error::Result<()> {
         let batch = time_history_batch(self.step, time, node_ids, disp)?;
-        self.writer.write_rows(&batch);
+        self.writer
+            .write_rows(&batch)
+            .map_err(|e| arrow::error::ArrowError::IoError(e.to_string(), e))?;
         self.step += 1;
         Ok(())
     }
 
-    pub fn finish(self) {
-        Box::new(self.writer).finish();
+    pub fn finish(self) -> std::io::Result<()> {
+        Box::new(self.writer).finish()
     }
 
     pub fn current_step(&self) -> u64 {

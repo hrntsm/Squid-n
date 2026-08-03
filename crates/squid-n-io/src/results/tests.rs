@@ -17,8 +17,8 @@ fn test_parquet_roundtrip() {
             ],
         )
         .unwrap();
-        writer.write_rows(&batch);
-        Box::new(writer).finish();
+        writer.write_rows(&batch).unwrap();
+        Box::new(writer).finish().unwrap();
     }
 
     let batches = read_all(path_str).unwrap();
@@ -42,8 +42,8 @@ fn test_modal_roundtrip_partial() {
             &[[1.894, 0.0, 0.0], [0.106, 0.0, 0.0]],
         )
         .unwrap();
-        writer.write_rows(&batch);
-        Box::new(writer).finish();
+        writer.write_rows(&batch).unwrap();
+        Box::new(writer).finish().unwrap();
     }
     // 部分読出し: period 列(=1)のみ射影
     let batches = read_partial(path_str, vec![1]).unwrap();
@@ -64,8 +64,8 @@ fn test_member_force_roundtrip() {
             (1, 1.0, [100.0, 5.0, 0.0, 0.0, 0.0, -200.0]),
         ])
         .unwrap();
-        writer.write_rows(&batch);
-        Box::new(writer).finish();
+        writer.write_rows(&batch).unwrap();
+        Box::new(writer).finish().unwrap();
     }
     let batches = read_all(path_str).unwrap();
     assert_eq!(batches[0].num_rows(), 2);
@@ -155,7 +155,7 @@ fn test_time_history_write_read_roundtrip() {
             writer.write_step(t, &nodes, &d).unwrap();
         }
         assert_eq!(writer.current_step(), 3);
-        writer.finish();
+        writer.finish().unwrap();
     }
 
     let batches = read_all(path_str).unwrap();
@@ -176,7 +176,7 @@ fn test_time_history_partial_read_step_range() {
                 .write_step(s as f64 * 0.1, &[1, 2], &[[0.1; 6], [0.2; 6]])
                 .unwrap();
         }
-        writer.finish();
+        writer.finish().unwrap();
     }
 
     let batches = read_time_history_range(path_str, Some((1, 2)), None).unwrap();
@@ -207,7 +207,7 @@ fn test_time_history_partial_read_node_filter() {
         writer
             .write_step(0.0, &[1, 2, 3], &[[0.1; 6], [0.2; 6], [0.3; 6]])
             .unwrap();
-        writer.finish();
+        writer.finish().unwrap();
     }
 
     let batches = read_time_history_range(path_str, None, Some(&[1u32])).unwrap();
@@ -230,7 +230,7 @@ fn test_fs_result_store_writer_and_manifest() {
     let mut store = FsResultStore::open(&dir).unwrap();
 
     {
-        let mut writer = store.writer(1, ResultKind::NodalDisp);
+        let mut writer = store.writer(1, ResultKind::NodalDisp).unwrap();
         let batch = nodal_disp_batch(
             &[1, 2, 3],
             &[
@@ -240,8 +240,8 @@ fn test_fs_result_store_writer_and_manifest() {
             ],
         )
         .unwrap();
-        writer.write_rows(&batch);
-        writer.finish();
+        writer.write_rows(&batch).unwrap();
+        writer.finish().unwrap();
     }
     store.sync().unwrap();
 
@@ -262,12 +262,12 @@ fn test_fs_result_store_rewrite_dedup() {
     let mut store = FsResultStore::open(&dir).unwrap();
 
     for rows in [2usize, 4usize] {
-        let mut writer = store.writer(1, ResultKind::NodalDisp);
+        let mut writer = store.writer(1, ResultKind::NodalDisp).unwrap();
         let ids: Vec<u32> = (0..rows as u32).collect();
         let disp: Vec<[f64; 6]> = vec![[0.0; 6]; rows];
         let batch = nodal_disp_batch(&ids, &disp).unwrap();
-        writer.write_rows(&batch);
-        writer.finish();
+        writer.write_rows(&batch).unwrap();
+        writer.finish().unwrap();
         store.sync().unwrap();
     }
 
@@ -284,20 +284,22 @@ fn test_fs_result_store_query_node_filter() {
     let _ = std::fs::remove_dir_all(&dir);
     let mut store = FsResultStore::open(&dir).unwrap();
     {
-        let mut writer = store.writer(1, ResultKind::NodalDisp);
+        let mut writer = store.writer(1, ResultKind::NodalDisp).unwrap();
         let batch = nodal_disp_batch(&[1, 2, 3], &[[0.1; 6], [0.2; 6], [0.3; 6]]).unwrap();
-        writer.write_rows(&batch);
-        writer.finish();
+        writer.write_rows(&batch).unwrap();
+        writer.finish().unwrap();
     }
     store.sync().unwrap();
 
-    let result = store.query(&ResultQuery {
-        case: 1,
-        kind: ResultKind::NodalDisp,
-        node_filter: Some(vec![NodeId(2)]),
-        member_filter: None,
-        step_range: None,
-    });
+    let result = store
+        .query(&ResultQuery {
+            case: 1,
+            kind: ResultKind::NodalDisp,
+            node_filter: Some(vec![NodeId(2)]),
+            member_filter: None,
+            step_range: None,
+        })
+        .unwrap();
     assert_eq!(result.batch.num_rows(), 1);
     let node_col = result
         .batch
@@ -316,10 +318,10 @@ fn test_fs_result_store_reopen_restores_manifest() {
     let _ = std::fs::remove_dir_all(&dir);
     {
         let mut store = FsResultStore::open(&dir).unwrap();
-        let mut writer = store.writer(1, ResultKind::NodalDisp);
+        let mut writer = store.writer(1, ResultKind::NodalDisp).unwrap();
         let batch = nodal_disp_batch(&[1, 2], &[[0.1; 6], [0.2; 6]]).unwrap();
-        writer.write_rows(&batch);
-        writer.finish();
+        writer.write_rows(&batch).unwrap();
+        writer.finish().unwrap();
         store.sync().unwrap();
     }
 
@@ -338,23 +340,25 @@ fn test_fs_result_store_time_history_step_range_query() {
     let _ = std::fs::remove_dir_all(&dir);
     let mut store = FsResultStore::open(&dir).unwrap();
     {
-        let mut writer = store.writer(1, ResultKind::TimeHistory);
+        let mut writer = store.writer(1, ResultKind::TimeHistory).unwrap();
         for s in 0..3u64 {
             let batch =
                 time_history_batch(s, s as f64 * 0.1, &[1, 2], &[[0.1; 6], [0.2; 6]]).unwrap();
-            writer.write_rows(&batch);
+            writer.write_rows(&batch).unwrap();
         }
-        writer.finish();
+        writer.finish().unwrap();
     }
     store.sync().unwrap();
 
-    let result = store.query(&ResultQuery {
-        case: 1,
-        kind: ResultKind::TimeHistory,
-        node_filter: None,
-        member_filter: None,
-        step_range: Some((1, 2)),
-    });
+    let result = store
+        .query(&ResultQuery {
+            case: 1,
+            kind: ResultKind::TimeHistory,
+            node_filter: None,
+            member_filter: None,
+            step_range: Some((1, 2)),
+        })
+        .unwrap();
     assert_eq!(result.batch.num_rows(), 4);
     let step_col = result
         .batch

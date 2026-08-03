@@ -28,13 +28,14 @@ impl ParquetWriter {
 }
 
 impl ResultWriter for ParquetWriter {
-    fn write_rows(&mut self, batch: &RecordBatch) {
+    fn write_rows(&mut self, batch: &RecordBatch) -> std::io::Result<()> {
         self.rows += batch.num_rows() as u64;
-        self.inner.write(batch).expect("parquet write");
+        self.inner.write(batch).map_err(std::io::Error::other)
     }
 
-    fn finish(self: Box<Self>) {
-        self.inner.close().expect("parquet close");
+    fn finish(self: Box<Self>) -> std::io::Result<()> {
+        self.inner.close().map_err(std::io::Error::other)?;
+        Ok(())
     }
 }
 
