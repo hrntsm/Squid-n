@@ -1153,6 +1153,54 @@ fn test_standard_roundtrip_steel_box_corner_r() {
     );
 }
 
+/// 同寸で角部半径だけ異なる 2 つの角形鋼管が、それぞれの r を保って往復すること。
+/// 形鋼ライブラリは名前で重複排除するため、従来は名前に corner_r が含まれず
+/// 同一名に潰れ、後着断面の r が先着の値に化けていた。
+#[test]
+fn test_standard_roundtrip_steel_box_distinct_corner_r() {
+    let mut m = frame_nodes();
+    let with_r = SectionShape::SteelBox {
+        height: 300.0,
+        width: 300.0,
+        thick: 12.0,
+        corner_r: 30.0,
+    };
+    let without_r = SectionShape::SteelBox {
+        height: 300.0,
+        width: 300.0,
+        thick: 12.0,
+        corner_r: 0.0,
+    };
+    m.sections
+        .push(with_r.to_section(SectionId(0), "BOX-R30".into()));
+    m.sections
+        .push(without_r.to_section(SectionId(1), "BOX-R0".into()));
+    m.elements.push(member(0, true, 0));
+    m.elements.push(member(1, true, 1));
+
+    let xml = export_stbridge(&m).unwrap();
+    let back = import_stbridge(&xml).expect("import");
+    assert!(back.validate().is_ok(), "{:?}", back.validate());
+    assert_eq!(
+        back.sections[0].shape, m.sections[0].shape,
+        "corner_r=30 の断面が自身の r を保って往復"
+    );
+    // corner_r=0 は ST-Bridge スキーマ（r は正値必須）の制約で便宜値 r=t として
+    // 出力されるため、再取り込みでは corner_r=t になる（既存仕様）。ここで
+    // 検証するのは「同寸別 r の断面（corner_r=30）の値に化けない」こと。
+    match back.sections[1].shape {
+        Some(SectionShape::SteelBox {
+            corner_r, thick, ..
+        }) => {
+            assert_eq!(
+                corner_r, thick,
+                "corner_r=0 の断面は便宜値 r=t のまま（別断面の r=30 に化けない）"
+            );
+        }
+        ref other => panic!("SteelBox のはず: {:?}", other),
+    }
+}
+
 /// import: `r` 属性が無い `StbSecRoll-BOX` は角部直角（corner_r=0.0）として読む。
 #[test]
 fn test_import_box_without_r_attr_is_corner_r_zero() {
@@ -1858,6 +1906,23 @@ fn test_wall_roundtrip_export_import() {
     );
     let t = walls[0].section.and_then(|s| m2.sections.get(s.index()));
     assert_eq!(t.and_then(|s| s.thickness), Some(250.0), "厚さが往復");
+
+    // 往復を重ねても断面数が増殖しないこと。従来は壁専用の厚さ断面が
+    // StbSecRaw と StbSecWall_RC の両方で出力され、1 サイクルごとに
+    // 未参照断面が 1 枚ずつ増えていた。
+    assert_eq!(
+        m2.sections.len(),
+        model.sections.len(),
+        "1 サイクル目で断面数が保たれる"
+    );
+    let xml2 = export_stbridge(&m2).expect("export 2nd");
+    let (m3, _) = import_stbridge_with_report(&xml2).expect("import 2nd");
+    assert_eq!(
+        m3.sections.len(),
+        m2.sections.len(),
+        "2 サイクル目でも断面数が保たれる（増殖しない）"
+    );
+    assert!(m3.validate().is_ok(), "{:?}", m3.validate());
 }
 
 /// スラブ（境界＋厚さ）を含むモデルが export→import で往復すること。
