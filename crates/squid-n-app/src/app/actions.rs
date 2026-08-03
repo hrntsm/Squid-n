@@ -3149,8 +3149,17 @@ impl App {
     /// `NodalLoad` へ変換する。CMQ 図描画側は `elem` で梁を引くため、この番兵は
     /// 単に描画対象外になるだけで安全）。
     pub fn refresh_beam_loads(&mut self) {
+        // CMQ 図表示中は毎フレーム呼ばれるため、前回算定時からモデル・関連設定が
+        // 変わっていなければスキップする（交差小梁スラブでは床格子サブ FEM 解析を
+        // 含む重い処理になり得る）。ハッシュは荷重同期のキャッシュと同じ
+        // `compute_auto_load_sync_hash`（モデル全体＋荷重関連設定）を用いる。
+        let hash = self.compute_auto_load_sync_hash();
+        if self.beam_loads_hash == Some(hash) {
+            return;
+        }
         // CMQ 図表示・従来互換のため `self.beam_loads` には固定荷重（DL）分配を格納する。
         self.beam_loads = self.slab_beam_loads(|slab| slab.dead_intensity());
+        self.beam_loads_hash = Some(hash);
     }
 
     /// 交差小梁スラブについて、床格子サブモデル（二方向）の**支点反力**を大梁接続点

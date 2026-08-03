@@ -885,6 +885,12 @@ pub struct App {
     pub th_scale_cache: Option<crate::viewer::TimeHistoryScaleCache>,
     /// 床荷重分配の CMQ 結果（P2 §5.1）。描画用。
     pub beam_loads: Vec<squid_n_load::floor::BeamLoad>,
+    /// `beam_loads` を算定した時点のモデル・設定ハッシュ
+    /// （`compute_auto_load_sync_hash`）。CMQ 図表示中は毎フレーム
+    /// `refresh_beam_loads` が呼ばれるため、モデルが変わっていなければ
+    /// 床荷重分配（交差小梁スラブでは床格子サブ FEM 解析を含む）を
+    /// スキップするためのキャッシュキー。`None` は未算定。
+    pub beam_loads_hash: Option<u64>,
     /// 時刻歴応答データ（描画用）
     #[cfg(feature = "gui")]
     pub time_history_data: crate::time_history_view::TimeHistoryData,
@@ -1123,6 +1129,7 @@ impl Default for App {
             #[cfg(feature = "gui")]
             th_scale_cache: None,
             beam_loads: Vec::new(),
+            beam_loads_hash: None,
             #[cfg(feature = "gui")]
             time_history_data: crate::time_history_view::TimeHistoryData::default(),
             #[cfg(feature = "gui")]

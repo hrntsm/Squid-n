@@ -2772,6 +2772,37 @@ fn test_refresh_beam_loads_maps_edges_to_members() {
     );
 }
 
+/// CMQ 図表示中は毎フレーム `refresh_beam_loads` が呼ばれるため、モデル・設定が
+/// 変わっていなければ床荷重分配を再計算しない（ハッシュキャッシュ）。
+/// モデルを編集するとハッシュが変わり再計算される。
+#[test]
+fn test_refresh_beam_loads_caches_by_model_hash() {
+    let mut app = App {
+        model: make_slab_test_model(),
+        ..App::default()
+    };
+    app.refresh_beam_loads();
+    assert_eq!(app.beam_loads.len(), 4);
+
+    // モデル不変のまま beam_loads を汚しても、再計算はスキップされ汚れたまま。
+    app.beam_loads.clear();
+    app.refresh_beam_loads();
+    assert!(
+        app.beam_loads.is_empty(),
+        "モデル不変なら再計算せずスキップするはず"
+    );
+
+    // モデルを編集するとハッシュが変わり再計算される。
+    app.model.slabs[0]
+        .loads
+        .push(squid_n_core::model::AreaLoad {
+            kind: "追加仕上げ".into(),
+            value: 1.0e-3,
+        });
+    app.refresh_beam_loads();
+    assert_eq!(app.beam_loads.len(), 4, "モデル編集後は再計算されるはず");
+}
+
 /// 正方形スラブ（4000×4000）+ 外周4本の梁を持つモデル
 /// （`make_slab_test_model` の正方形版。正方形は `TriTrapezoid` で全辺
 /// 三角形分布になるため §1.1 のスラブ→荷重ケース同期の検算がしやすい）。
