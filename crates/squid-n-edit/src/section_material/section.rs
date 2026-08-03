@@ -316,29 +316,10 @@ impl EditCommand for AddSection {
 }
 
 /// モデル内の全ての `SectionId` 参照（断面自身の ID を含む）に `f` を適用する。
-fn shift_section_ids(model: &mut Model, mut f: impl FnMut(&mut SectionId)) {
-    for sec in &mut model.sections {
-        f(&mut sec.id);
-    }
-    for elem in &mut model.elements {
-        if let Some(sid) = &mut elem.section {
-            f(sid);
-        }
-    }
-    // 小梁（床設計用）の断面参照も追従させる（陳腐化した参照を防ぐ）。
-    for slab in &mut model.slabs {
-        for j in &mut slab.joists {
-            if let Some(sid) = &mut j.section {
-                f(sid);
-            }
-        }
-    }
-    // 二次部材（小梁・間柱）の断面参照も追従させる。
-    for sm in &mut model.secondary_members {
-        if let Some(sid) = &mut sm.section {
-            f(sid);
-        }
-    }
+/// 走査は core 側（[`Model::visit_section_ids`]）が単一情報源として持つ
+/// （新フィールド追加時の追随漏れを防ぐ）。
+fn shift_section_ids(model: &mut Model, f: impl FnMut(&mut SectionId)) {
+    model.visit_section_ids(f);
 }
 
 /// 指定断面を参照している要素・小梁・二次部材が存在するか（削除ガード用）。

@@ -48,8 +48,8 @@ fn test_set_node_coord_invalid_id_is_noop() {
             coord: [1.0, 2.0, 3.0],
         }),
     );
-    assert!(stack.can_undo());
-    stack.undo(&mut model);
+    // 失敗したコマンド（Noop）は undo 履歴に積まれない。
+    assert!(!stack.can_undo());
     assert!(model.nodes.is_empty());
 }
 
@@ -93,8 +93,8 @@ fn test_set_node_restraint_invalid_id_is_noop() {
             restraint: Dof6Mask::FIXED,
         }),
     );
-    assert!(stack.can_undo());
-    stack.undo(&mut model);
+    // 失敗したコマンド（Noop）は undo 履歴に積まれない。
+    assert!(!stack.can_undo());
     assert!(model.nodes.is_empty());
 }
 
@@ -177,8 +177,8 @@ fn test_set_node_support_spring_invalid_id_is_noop() {
             spring: Some([1.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
         }),
     );
-    assert!(stack.can_undo());
-    stack.undo(&mut model);
+    // 失敗したコマンド（Noop）は undo 履歴に積まれない。
+    assert!(!stack.can_undo());
     assert!(model.nodes.is_empty());
 }
 
@@ -607,8 +607,8 @@ fn test_edit_section_shape_invalid_id_noop() {
         new_shape: shape,
     };
     stack.run(&mut model, Box::new(cmd));
-    assert!(stack.can_undo());
-    stack.undo(&mut model);
+    // 失敗したコマンド（Noop）は undo 履歴に積まれない。
+    assert!(!stack.can_undo());
     assert!(model.sections.is_empty());
 }
 
@@ -677,8 +677,8 @@ fn test_duplicate_section_no_section_noop() {
 
     let cmd = DuplicateSectionForMember { member: ElemId(0) };
     stack.run(&mut model, Box::new(cmd));
-    assert!(stack.can_undo());
-    stack.undo(&mut model);
+    // 失敗したコマンド（Noop）は undo 履歴に積まれない。
+    assert!(!stack.can_undo());
 }
 
 /// 2 節点 + 部材 2 本のモデル（部材削除・再採番テスト用）。
@@ -1120,9 +1120,8 @@ fn test_delete_combination_out_of_range_is_noop() {
     let mut stack = UndoStack::new();
     stack.run(&mut model, Box::new(DeleteCombination { index: 0 }));
     assert!(model.combinations.is_empty());
-    assert!(stack.can_undo());
-    // Noop の undo でも状態は変わらない
-    stack.undo(&mut model);
+    // 失敗したコマンド（Noop）は undo 履歴に積まれない。
+    assert!(!stack.can_undo());
     assert!(model.combinations.is_empty());
 }
 
@@ -1236,8 +1235,8 @@ fn test_delete_slab_out_of_range_is_noop() {
     let mut stack = UndoStack::new();
     stack.run(&mut model, Box::new(DeleteSlab { id: SlabId(0) }));
     assert!(model.slabs.is_empty());
-    assert!(stack.can_undo());
-    stack.undo(&mut model);
+    // 失敗したコマンド（Noop）は undo 履歴に積まれない。
+    assert!(!stack.can_undo());
     assert!(model.slabs.is_empty());
 }
 
@@ -1324,8 +1323,8 @@ fn test_set_story_weight_invalid_id_is_noop() {
         }),
     );
     assert_eq!(model.stories[0].seismic_weight, Some(999.0));
-    assert!(stack.can_undo());
-    stack.undo(&mut model);
+    // 失敗したコマンド（Noop）は undo 履歴に積まれない。
+    assert!(!stack.can_undo());
     assert_eq!(model.stories[0].seismic_weight, Some(999.0));
 }
 
@@ -1762,8 +1761,8 @@ fn test_remove_wall_attr_missing_is_noop() {
     let mut stack = UndoStack::new();
     stack.run(&mut model, Box::new(RemoveWallAttr { elem: ElemId(0) }));
     assert!(model.wall_attrs.is_empty());
-    assert!(stack.can_undo());
-    stack.undo(&mut model);
+    // 失敗したコマンド（Noop）は undo 履歴に積まれない。
+    assert!(!stack.can_undo());
     assert!(model.wall_attrs.is_empty());
 }
 
@@ -2768,8 +2767,8 @@ fn test_remove_member_detail_attr_missing_is_noop() {
         Box::new(RemoveMemberDetailAttr { elem: ElemId(0) }),
     );
     assert!(model.member_detail_attrs.is_empty());
-    assert!(stack.can_undo());
-    stack.undo(&mut model);
+    // 失敗したコマンド（Noop）は undo 履歴に積まれない。
+    assert!(!stack.can_undo());
     assert!(model.member_detail_attrs.is_empty());
 }
 
@@ -2847,8 +2846,8 @@ fn test_remove_steel_design_attr_missing_is_noop() {
         Box::new(RemoveSteelDesignAttr { elem: ElemId(0) }),
     );
     assert!(model.steel_design_attrs.is_empty());
-    assert!(stack.can_undo());
-    stack.undo(&mut model);
+    // 失敗したコマンド（Noop）は undo 履歴に積まれない。
+    assert!(!stack.can_undo());
     assert!(model.steel_design_attrs.is_empty());
 }
 
@@ -3218,4 +3217,34 @@ fn test_validate_detects_dangling_beam_group() {
     let mut model = two_member_model();
     model.beam_groups = vec![vec![ElemId(5)]];
     assert!(model.validate().is_err());
+}
+
+/// 失敗したコマンドが redo 履歴を消さないこと。従来は失敗（Noop）でも
+/// `undone.clear()` が走り、undo 直後に無効な操作をすると redo が失われていた。
+#[test]
+fn test_failed_command_keeps_redo_history() {
+    let mut model = empty_model();
+    let mut stack = UndoStack::new();
+    stack.run(
+        &mut model,
+        Box::new(AddNode {
+            coord: [1.0, 2.0, 3.0],
+            restraint: Dof6Mask::FREE,
+        }),
+    );
+    stack.undo(&mut model);
+    assert!(stack.can_redo(), "undo 直後は redo できる");
+
+    // 無効なコマンド（存在しない節点への座標設定）は適用されず、redo 履歴も残る。
+    let applied = stack.run(
+        &mut model,
+        Box::new(SetNodeCoord {
+            node: NodeId(99),
+            coord: [0.0, 0.0, 0.0],
+        }),
+    );
+    assert!(!applied, "失敗したコマンドは適用されない");
+    assert!(stack.can_redo(), "失敗したコマンドで redo 履歴が消えない");
+    stack.redo(&mut model);
+    assert_eq!(model.nodes.len(), 1, "redo で節点追加が再適用される");
 }

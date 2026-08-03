@@ -7,6 +7,11 @@ use squid_n_core::model::Model;
 pub trait EditCommand: Send {
     fn apply(&self, model: &mut Model) -> Box<dyn EditCommand>;
     fn label(&self) -> &str;
+    /// 何も変更しないコマンド（適用失敗時の安全なフォールバック `Noop` 等）か。
+    /// [`UndoStack::run`] は逆コマンドがこれに該当する場合、undo 履歴へ積まない。
+    fn is_noop(&self) -> bool {
+        false
+    }
 }
 
 impl<T: EditCommand + 'static> From<T> for Box<dyn EditCommand> {
@@ -38,13 +43,23 @@ impl UndoStack {
         }
     }
 
-    pub fn run(&mut self, model: &mut Model, cmd: Box<dyn EditCommand>) {
+    /// コマンドを適用し、モデルが変更されたか（適用に成功したか）を返す。
+    ///
+    /// 適用に失敗したコマンド（逆コマンドが `Noop`）は undo 履歴へ積まず、
+    /// redo 履歴も消さない。かつては失敗時も `Noop` を積んでいたため、
+    /// undo ラベルに「Noop」が表示される・undo が 1 段を無駄に消費する・
+    /// 失敗した操作で redo 履歴が失われる、という不整合が生じていた。
+    pub fn run(&mut self, model: &mut Model, cmd: Box<dyn EditCommand>) -> bool {
         let inv = cmd.apply(model);
+        if inv.is_noop() {
+            return false;
+        }
         self.done.push(inv);
         if self.done.len() > self.max_undo {
             self.done.remove(0);
         }
         self.undone.clear();
+        true
     }
 
     pub fn undo(&mut self, model: &mut Model) {
