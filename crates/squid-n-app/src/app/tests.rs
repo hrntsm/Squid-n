@@ -6575,3 +6575,57 @@ fn test_frame_view_filters_members_by_axis_and_story() {
     )
     .is_none());
 }
+
+/// 解析結果の適用が表示対象（`nav.focus_result`）も新しい結果へ切り替えること。
+/// 従来は `last_static`・`member_forces` だけが差し替わり、`current_static` が
+/// 優先する `focus_result` は旧結果を指したままだったため、変位図（旧結果）と
+/// 応力図・断面検定（新結果）が食い違う表示になっていた。
+#[test]
+fn test_apply_static_result_updates_focus_result() {
+    let mut app = App::default();
+    app.load_model(aligned_portal_frame());
+
+    app.run_linear_static(LoadCaseId(0));
+    assert!(app.last_error.is_none(), "{:?}", app.last_error);
+    assert_eq!(
+        app.nav.focus_result,
+        Some(StaticKey::Case(StaticCaseKey::User(LoadCaseId(0)))),
+        "解析実行後は表示対象も新しい結果を指すべき"
+    );
+
+    // 別の結果を表示対象にした状態で再実行しても、表示対象は実行した結果へ移る。
+    app.nav.focus_result = Some(StaticKey::Case(StaticCaseKey::Seismic(SeismicDir::X)));
+    app.run_linear_static(LoadCaseId(0));
+    assert_eq!(
+        app.nav.focus_result,
+        Some(StaticKey::Case(StaticCaseKey::User(LoadCaseId(0)))),
+        "再実行後の表示対象は実行した結果へ切り替わるべき"
+    );
+    // 表示対象（current_static）と応力図・検定が参照する member_forces が
+    // 同じ結果を指している（食い違いがない）。
+    let displayed = app.current_static().unwrap().member_forces.clone();
+    assert_eq!(
+        app.results.as_ref().unwrap().member_forces,
+        displayed,
+        "変位図と応力図・検定の参照元は一致すべき"
+    );
+}
+
+/// 時刻歴応答解析の完了で stale が解消されること。従来は `last_run` の更新のみで
+/// `results_stale` が立ったままとなり、モデル編集後に時刻歴だけを実行しても
+/// ビューアのアニメーション・部材クリックが無効のまま復帰しなかった。
+#[test]
+fn test_time_history_apply_clears_stale() {
+    let mut app = App::default();
+    app.load_model(crate::sample::portal_frame());
+    app.analysis_cfg.th_duration = 1.0;
+    // モデル編集で stale を立ててから時刻歴のみ実行する。
+    app.staleness.mark_edited();
+    assert!(app.staleness.results_stale);
+    app.run_time_history_sample();
+    assert!(app.last_error.is_none(), "{:?}", app.last_error);
+    assert!(
+        !app.staleness.results_stale,
+        "時刻歴の完了後は stale が解消されるべき"
+    );
+}

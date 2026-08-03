@@ -532,6 +532,10 @@ impl App {
                 bundle.panel_moments = panel_moments;
                 self.results = Some(bundle);
                 self.last_static = Some(StaticKey::Case(key));
+                // 表示対象（focus_result）も新しい結果へ切り替える。据え置くと
+                // 変位図・応力図は旧結果、member_forces・断面検定は新結果という
+                // 不整合な表示になる（`current_static` は focus_result を優先する）。
+                self.nav.focus_result = Some(StaticKey::Case(key));
                 self.staleness.mark_fresh();
                 self.run_design_check();
             }
@@ -713,6 +717,8 @@ impl App {
                 bundle.panel_moments = panel_moments;
                 self.results = Some(bundle);
                 self.last_static = Some(StaticKey::Combo(pos));
+                // 表示対象も新しい結果へ（`apply_static_case_result` と同じ理由）。
+                self.nav.focus_result = Some(StaticKey::Combo(pos));
                 self.staleness.mark_fresh();
                 // 荷重継続性区分（長期/短期）は組合せ内容から自動判定する
                 // （令82条の荷重組合せ: G+P=長期、地震・積雪・風入り=短期）。
@@ -997,6 +1003,8 @@ impl App {
         }
         self.results = Some(bundle);
         self.last_static = Some(display);
+        // 表示対象も新しい結果へ（`apply_static_case_result` と同じ理由）。
+        self.nav.focus_result = Some(display);
         self.staleness.mark_fresh();
         // 荷重継続性区分（長期/短期）は表示対象の組合せ名から自動判定する
         // （令82条の荷重組合せ: G+P=長期、地震・積雪・風入り=短期）。荷重ケース単体を
@@ -2172,7 +2180,11 @@ impl App {
                 let mut bundle = self.results.take().unwrap_or_default();
                 bundle.pushover = Some(result);
                 self.results = Some(bundle);
-                self.staleness.last_run = Some(SystemTime::now());
+                // mark_fresh で stale を解消する（`apply_static_case_result` と同じ扱い）。
+                // last_run の更新だけでは results_stale が立ったままになり、編集後に
+                // 増分解析だけを実行してもビューアが「再実行してください」表示のまま
+                // 復帰しなかった。
+                self.staleness.mark_fresh();
                 self.last_error = None;
             }
             Err(e) => self.report_error(e),
@@ -2465,7 +2477,11 @@ impl App {
                 let mut bundle = self.results.take().unwrap_or_default();
                 bundle.time_history = Some(res);
                 self.results = Some(bundle);
-                self.staleness.last_run = Some(SystemTime::now());
+                // mark_fresh で stale を解消する（`apply_pushover_result` と同じ理由。
+                // last_run の更新だけでは、編集後に時刻歴だけを実行しても
+                // アニメーション・部材クリック・詳細ウィンドウが stale 判定で
+                // 無効化されたまま復帰しなかった）。
+                self.staleness.mark_fresh();
                 self.last_error = None;
             }
             Err(e) => self.report_error(e),

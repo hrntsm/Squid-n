@@ -6,7 +6,7 @@ use squid_n_core::ids::{ElemId, NodeId};
 use squid_n_core::model::{EndCondition, RigidZone};
 use std::sync::OnceLock;
 
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct MemberForces {
     pub at: Vec<(f64, [f64; 6])>,
 }
