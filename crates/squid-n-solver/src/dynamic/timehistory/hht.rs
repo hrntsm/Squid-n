@@ -76,7 +76,16 @@ pub fn linear_hht_alpha_analysis(
 
     let m_free = assemble_global_m(model, dofmap, MassOption::Consistent);
     let k_free = assemble_global_k(model, dofmap);
-    let _ = use_kg;
+    // 幾何剛性（P-Δ）は線形時刻歴では未実装。かつては `let _ = use_kg;` で
+    // 無言に捨てており、P-Δ を有効化したつもりの呼び出しでも考慮されないまま
+    // 解析が通っていた。未対応である事実を明示エラーで返す。
+    if use_kg {
+        return Err(SolveError::InvalidInput(
+            "線形時刻歴応答解析の幾何剛性（P-Δ、use_kg）は未対応です。\
+             P-Δ を考慮する場合は非線形時刻歴応答解析を使用してください。"
+                .into(),
+        ));
+    }
     let m_red = reducer.reduce_k(&m_free);
     let k_red = reducer.reduce_k(&k_free);
     let c_red = damping.assemble_c(&m_red, &k_red);

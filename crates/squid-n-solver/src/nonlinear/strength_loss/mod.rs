@@ -51,7 +51,7 @@ use crate::constraint::Reducer;
 use crate::pushover::{pushover_analysis_recording, HingeLevel, PushoverResult, PushoverStep};
 use squid_n_core::dof::DofMap;
 use squid_n_core::ids::{ElemId, SectionId};
-use squid_n_core::model::{ElementData, EndCondition, Model};
+use squid_n_core::model::{EndCondition, Model};
 use std::collections::{HashMap, HashSet};
 
 /// 耐力喪失変形角の判定基準（原典 §段階的耐力喪失解析）。
@@ -180,51 +180,9 @@ pub struct StagedStrengthLossResult {
     pub removed: Vec<(usize, ElemId)>,
 }
 
-/// 部材の変形角（弦回転角相当）を、節点変位から算定する。
-///
-/// - 鉛直材（柱系、|Δz| が水平成分より大きい）: 材端の水平相対変位 / 材長
-///   （層間変形角に相当する近似）。
-/// - 水平材（梁系）: 材端の鉛直相対変位 / 材長（弦回転角）。
-///
-/// `disp` は `PushoverStep::node_disp`（`DofMap` アクティブ添字順の全節点変位）。
-///
-/// **既知の近似（保守側）:** この弦回転角は弾性変形・剛体回転成分を含む
-/// 全回転角であり、FEMA 356 の塑性回転角 a（降伏後の塑性成分のみ）と
-/// 比較する際は塑性成分を過大評価する（喪失判定が早まる＝保有耐力を
-/// 過小評価する保守側）。降伏時回転角の控除（θp = θ − θy）は
-/// ヒンジ塑性回転の抽出を要するため将来課題とする。
-fn member_drift_angle(model: &Model, dofmap: &DofMap, disp: &[f64], elem: &ElementData) -> f64 {
-    if elem.nodes.len() < 2 {
-        return 0.0;
-    }
-    let ni = elem.nodes[0].index();
-    let nj = elem.nodes[1].index();
-    let (Some(pi), Some(pj)) = (model.nodes.get(ni), model.nodes.get(nj)) else {
-        return 0.0;
-    };
-    let dx = pj.coord[0] - pi.coord[0];
-    let dy = pj.coord[1] - pi.coord[1];
-    let dz = pj.coord[2] - pi.coord[2];
-    let length = (dx * dx + dy * dy + dz * dz).sqrt();
-    if length <= 0.0 {
-        return 0.0;
-    }
-    let get = |node_index: usize, dof: usize| -> f64 {
-        let g = node_index * 6 + dof;
-        dofmap
-            .active(g)
-            .and_then(|a| disp.get(a as usize).copied())
-            .unwrap_or(0.0)
-    };
-    let vertical = dz.abs() > (dx.abs() + dy.abs()) * 0.5;
-    if vertical {
-        let dux = get(nj, 0) - get(ni, 0);
-        let duy = get(nj, 1) - get(ni, 1);
-        (dux * dux + duy * duy).sqrt() / length
-    } else {
-        (get(nj, 2) - get(ni, 2)).abs() / length
-    }
-}
+// 部材の変形角（弦回転角相当）は部材別 Rp の算定と共通の実装を使う
+// （`member_rp_angle`。かつては完全同一の実装が本モジュールにも複製されていた）。
+use crate::nonlinear::pushover::member_response::member_rp_angle as member_drift_angle;
 
 /// 部材を「両端ピン・せん断非負担」の耐力喪失部材へ置き換える。
 ///
