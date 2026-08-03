@@ -138,6 +138,11 @@ pub trait ElementBehavior: Send + Sync {
     fn tangent_stiffness(&self, state: &ElemState, ctx: &Ctx) -> LocalMat;
     fn internal_force(&self, state: &ElemState, ctx: &Ctx) -> LocalVec;
     fn update_state(&mut self, _du: &LocalVec, _commit: bool, _ctx: &Ctx) {}
+    /// 質量行列を**全体系**で返す（`tangent_stiffness` と同じ契約）。
+    /// ソルバはこの返り値をそのまま全体自由度へ散布するため、回転不変でない
+    /// 整合質量（軸方向と曲げ方向で係数が異なる）は実装側で
+    /// `M_global = Rᵀ M_local R` の変換を済ませること。並進 3 成分が等しい
+    /// 対角の集中質量は回転不変なので変換を省略してよい。
     fn mass_matrix(&self, opt: MassOption) -> LocalMat;
     /// 節点変位から部材内力分布を復元する（線形解析の内力回収）。
     ///

@@ -1854,11 +1854,17 @@ impl ElementBehavior for FiberBeam {
         let mut mm = LocalMat::zeros(12);
         match opt {
             MassOption::Lumped => {
+                // 並進 3 成分が等しい対角行列は回転不変のため全体系変換は不要。
                 for d in [0, 1, 2, 6, 7, 8] {
                     mm.set(d, d, total_mass / 2.0);
                 }
+                mm
             }
             MassOption::Consistent => {
+                // Hermite 梁の一貫質量（beam/behavior.rs と同一の DOF 配置）。
+                // DOF は連続ではないためインデックス配列で指定する。
+                //   Uy-Rz 面: [Uy_i=1, Rz_i=5, Uy_j=7, Rz_j=11]
+                //   Uz-Ry 面: [Uz_i=2, Ry_i=4, Uz_j=8, Ry_j=10]（回転符号は逆）
                 let c1 = total_mass / 6.0;
                 let c2 = total_mass / 420.0;
                 let l = self.length;
@@ -1867,29 +1873,31 @@ impl ElementBehavior for FiberBeam {
                 mm.set(0, 6, 1.0 * c1);
                 mm.set(6, 0, 1.0 * c1);
                 mm.set(6, 6, 2.0 * c1);
-                let b4 = |mm: &mut LocalMat, i0: usize, j0: usize, sign: f64| {
-                    mm.set(i0, j0, 156.0 * c2);
-                    mm.set(i0, j0 + 1, 22.0 * l * c2 * sign);
-                    mm.set(i0, j0 + 2, 54.0 * c2);
-                    mm.set(i0, j0 + 3, -13.0 * l * c2 * sign);
-                    mm.set(i0 + 1, j0, 22.0 * l * c2 * sign);
-                    mm.set(i0 + 1, j0 + 1, 4.0 * l2 * c2);
-                    mm.set(i0 + 1, j0 + 2, 13.0 * l * c2 * sign);
-                    mm.set(i0 + 1, j0 + 3, -3.0 * l2 * c2);
-                    mm.set(i0 + 2, j0, 54.0 * c2);
-                    mm.set(i0 + 2, j0 + 1, 13.0 * l * c2 * sign);
-                    mm.set(i0 + 2, j0 + 2, 156.0 * c2);
-                    mm.set(i0 + 2, j0 + 3, -22.0 * l * c2 * sign);
-                    mm.set(i0 + 3, j0, -13.0 * l * c2 * sign);
-                    mm.set(i0 + 3, j0 + 1, -3.0 * l2 * c2);
-                    mm.set(i0 + 3, j0 + 2, -22.0 * l * c2 * sign);
-                    mm.set(i0 + 3, j0 + 3, 4.0 * l2 * c2);
+                let b4 = |mm: &mut LocalMat, idx: [usize; 4], sign: f64| {
+                    let [d0, r0, d1, r1] = idx;
+                    mm.set(d0, d0, 156.0 * c2);
+                    mm.set(d0, d1, 54.0 * c2);
+                    mm.set(d1, d0, 54.0 * c2);
+                    mm.set(d1, d1, 156.0 * c2);
+                    mm.set(d0, r0, 22.0 * l * c2 * sign);
+                    mm.set(r0, d0, 22.0 * l * c2 * sign);
+                    mm.set(d0, r1, -13.0 * l * c2 * sign);
+                    mm.set(r1, d0, -13.0 * l * c2 * sign);
+                    mm.set(d1, r0, 13.0 * l * c2 * sign);
+                    mm.set(r0, d1, 13.0 * l * c2 * sign);
+                    mm.set(d1, r1, -22.0 * l * c2 * sign);
+                    mm.set(r1, d1, -22.0 * l * c2 * sign);
+                    mm.set(r0, r0, 4.0 * l2 * c2);
+                    mm.set(r0, r1, -3.0 * l2 * c2);
+                    mm.set(r1, r0, -3.0 * l2 * c2);
+                    mm.set(r1, r1, 4.0 * l2 * c2);
                 };
-                b4(&mut mm, 1, 1, 1.0);
-                b4(&mut mm, 2, 2, -1.0);
+                b4(&mut mm, [1, 5, 7, 11], 1.0);
+                b4(&mut mm, [2, 4, 8, 10], -1.0);
+                // 整合質量は回転不変ではないため全体系へ回す（beam と同じ契約）。
+                self.axis.to_global(&mm)
             }
         }
-        mm
     }
 
     fn geometric_stiffness(&self, n: f64) -> LocalMat {
