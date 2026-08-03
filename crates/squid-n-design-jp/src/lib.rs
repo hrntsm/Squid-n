@@ -66,6 +66,36 @@ pub enum QdMethod {
     Min,
 }
 
+impl QdMethod {
+    /// QD1・QD2 から設計用せん断力を決定する（RC・SRC 共通の決定規約）。
+    /// `Qd1` 選択時でも QD1 が無効（`qd1` が非有限）なら QD2 で代替する。
+    pub(crate) fn resolve(self, qd1: f64, qd2: f64) -> f64 {
+        match self {
+            QdMethod::Qd1 => {
+                if qd1.is_finite() {
+                    qd1
+                } else {
+                    qd2
+                }
+            }
+            QdMethod::Qd2 => qd2,
+            QdMethod::Min => qd1.min(qd2),
+        }
+    }
+}
+
+/// 検定比 M/MA。MA<=0 の場合に検定比が発散しないよう、大きな有限値で代用する
+/// （M も 0 なら 0。RC・SRC・CFT の累加強度式検定で共通の規約）。
+pub(crate) fn ratio_or_large(m: f64, ma: f64) -> f64 {
+    if ma > 1e-9 {
+        m.abs() / ma
+    } else if m.abs() > 1e-9 {
+        1.0e9
+    } else {
+        0.0
+    }
+}
+
 /// 地震時短期の設計用せん断力 QD = min(QD1, QD2) の算定に用いる文脈
 /// （RC規準、RC 梁・柱）。
 ///

@@ -51,9 +51,9 @@
 //! - [`column`][]: 鉄骨鉄筋コンクリート造柱の断面検定（累加強度式・fc′低減）。
 //! - [`panel_zone`][]: SRC 造柱梁接合部（パネルゾーン）の断面検定（SRC 規準）。
 
-use crate::{CheckOutcome, DesignCheck, DesignCtx, LoadTerm, MemberForcesAt, MemberKind, QdMethod};
+use crate::{CheckOutcome, DesignCheck, DesignCtx, LoadTerm, MemberForcesAt, MemberKind};
 use squid_n_core::model::{Material, Section};
-use squid_n_core::section_shape::{BarSet, RcRebar, SectionShape, ShearBar};
+use squid_n_core::section_shape::SectionShape;
 
 mod beam;
 /// 鉄骨鉄筋コンクリート造梁のせん断終局強度（非線形解析のせん断ばね終局耐力）。
@@ -66,93 +66,15 @@ pub mod panel_zone;
 // 0. 共通ヘルパ
 // ============================================================================
 
-/// 主筋 1 本あたりの断面積 [mm²]。
-fn one_bar_area(dia: f64) -> f64 {
-    let r = dia / 2.0;
-    std::f64::consts::PI * r * r
-}
-
-/// 主筋セットの総断面積 [mm²]。
-fn bar_set_area(bar: &BarSet) -> f64 {
-    bar.count as f64 * one_bar_area(bar.dia)
-}
-
-/// 引張縁 → 引張筋重心までの距離 dt [mm]（`rc/mod.rs` の `tension_dt` と同じ
-/// 考え方。private のため自前実装する）。
-fn tension_dt(cover: f64, shear_dia: f64, main: &BarSet) -> f64 {
-    let k1 = cover + shear_dia + main.dia / 2.0;
-    if main.layers <= 1 {
-        return k1;
-    }
-    let k_prime = 25.0_f64.max(1.5 * main.dia);
-    let s = main.dia + k_prime;
-    k1 + (main.layers as f64 - 1.0) / 2.0 * s
-}
-
-/// せん断補強筋比 pw = (legs・π/4・dia²) / (b・pitch)。
-fn pw_ratio(shear: &ShearBar, b: f64) -> f64 {
-    if shear.pitch <= 0.0 || b <= 0.0 {
-        return 0.0;
-    }
-    let aw = shear.legs as f64 * std::f64::consts::PI / 4.0 * shear.dia * shear.dia;
-    aw / (b * shear.pitch)
-}
-
-/// せん断スパン比による割増係数 α = 4/(M/(Q・d)+1)（`max_alpha` でクランプ、
-/// 下限 1.0）。
-fn shear_alpha_src(m: f64, q: f64, d: f64, max_alpha: f64) -> f64 {
-    if q.abs() < 1e-9 || d <= 0.0 {
-        return max_alpha;
-    }
-    let mqd = m.abs() / (q.abs() * d);
-    (4.0 / (mqd + 1.0)).clamp(1.0, max_alpha)
-}
-
-/// MA<=0 の場合に検定比が発散しないよう、大きな有限値で代用する。
-fn ratio_or_large(m: f64, ma: f64) -> f64 {
-    if ma > 1e-9 {
-        m.abs() / ma
-    } else if m.abs() > 1e-9 {
-        1.0e9
-    } else {
-        0.0
-    }
-}
-
-/// 矩形断面 1 軸分の断面諸元（`rc/mod.rs` の `AxisProps`/`rect_axis_props` と
-/// 同じ考え方）。
-#[derive(Clone, Copy)]
-struct SrcAxisProps {
-    b: f64,
-    d_full: f64,
-    dt: f64,
-    d: f64,
-    at: f64,
-    ac: f64,
-    j: f64,
-    pw: f64,
-}
-
-fn src_rect_axis_props(
-    width_dir_b: f64,
-    depth_dir_d: f64,
-    main: &BarSet,
-    rebar: &RcRebar,
-) -> SrcAxisProps {
-    let dt = tension_dt(rebar.cover, rebar.shear.dia, main);
-    let d = depth_dir_d - dt;
-    let at = bar_set_area(main) / 2.0;
-    SrcAxisProps {
-        b: width_dir_b,
-        d_full: depth_dir_d,
-        dt,
-        d,
-        at,
-        ac: at,
-        j: 7.0 * d / 8.0,
-        pw: pw_ratio(&rebar.shear, width_dir_b),
-    }
-}
+// 断面諸元（主筋断面積・dt・pw・1 軸分の断面諸元）と、せん断スパン比 α・
+// 検定比 M/MA の規約は RC 検定と共通（SRC 規準 1987 も RC 部分は RC 規準の
+// 考え方を踏襲する）。RC 側の実装を単一情報源として共用し、SRC 側での
+// 再実装はしない（片側だけの修正で仕様が乖離するのを防ぐ）。
+// α の退化時規約（Q≈0 は下限 1.0）も RC と共通（`crate::rc::shear_alpha`）。
+pub(crate) use crate::ratio_or_large;
+pub(crate) use crate::rc::{
+    bar_set_area, rect_axis_props as src_rect_axis_props, shear_alpha, AxisProps as SrcAxisProps,
+};
 
 /// 内蔵鋼材の断面積・断面係数を [`SectionShape`] の断面性能計算を借りて
 /// 求める（H 形鋼: `sA`, 強軸 `sZ`, 弱軸 `sZ`）。
@@ -219,8 +141,8 @@ struct SrcSeismicCtx<'a> {
 ///   （SRC規準1987 の `rQD2 = n・(QL+QE−sQD)` を、`QL+QE` = 当該組合せの
 ///   全せん断力 `|Q|` と読んだもの。`QE` は水平力分のせん断力増分であり、
 ///   `QL+QE` はその和として組合せ後の全せん断力に一致するとみなした）
-/// - `rQD = min(rQD1, rQD2)`（[`QdMethod::Qd1`]/[`QdMethod::Qd2`] 選択時は
-///   それぞれ単独。`QdMethod::Qd1` で rQD1 が無効な場合は rQD2 で代替する）
+/// - `rQD = min(rQD1, rQD2)`（[`crate::QdMethod::Qd1`]/[`crate::QdMethod::Qd2`]
+///   選択時はそれぞれ単独。`Qd1` で rQD1 が無効な場合は rQD2 で代替する）
 /// - 戻り値は `(sQD, rQD)`。
 fn src_seismic_qd(
     seismic: &SrcSeismicCtx,
@@ -255,17 +177,7 @@ fn src_seismic_qd(
     };
     let r_qd2 = (qd.n_factor * (q - s_qd)).max(0.0);
 
-    let r_qd = match qd.method {
-        QdMethod::Qd1 => {
-            if r_qd1.is_finite() {
-                r_qd1
-            } else {
-                r_qd2
-            }
-        }
-        QdMethod::Qd2 => r_qd2,
-        QdMethod::Min => r_qd1.min(r_qd2),
-    };
+    let r_qd = qd.method.resolve(r_qd1, r_qd2);
 
     Some((s_qd, r_qd))
 }
@@ -313,7 +225,7 @@ fn src_shear_check(
     mode: &SrcShearMode,
     seismic: &SrcSeismicCtx,
 ) -> SrcShearResult {
-    let alpha = shear_alpha_src(m_for_alpha, q_for_alpha, rd, alpha_max);
+    let alpha = shear_alpha(m_for_alpha, q_for_alpha, rd, alpha_max);
     let q = q_signed.abs();
 
     // SRC 規準1987 準拠: 「pw が 0.6% を超える場合は 0.6% として算定する」

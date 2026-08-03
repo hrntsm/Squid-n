@@ -68,6 +68,7 @@ pub use crate::material_strength::{
 // 分割した共有ヘルパを従来の `crate::rc::X`（他モジュール）・`super::X`
 // （rc 直下の兄弟モジュール）パスで参照できるよう再エクスポートする。
 pub(crate) use allowable::*;
+pub(crate) use column::interp_ma;
 pub(crate) use design_shear::*;
 pub(crate) use section_props::*;
 pub(crate) use shear_capacity::*;
