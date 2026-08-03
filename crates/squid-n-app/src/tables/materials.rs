@@ -156,7 +156,13 @@ pub fn materials_table(ui: &mut egui::Ui, app: &mut App) {
                 "新規材料".into(),
                 "205000".into(),
                 "0.3".into(),
-                "7.85e-9".into(),
+                // 鋼材の γs=77 kN/m³ を質量密度へ換算した既定値（プリセットと同一）。
+                format!(
+                    "{:.4e}",
+                    mass_density_from_unit_weight_kn_m3(
+                        squid_n_core::units::STEEL_UNIT_WEIGHT_KN_M3
+                    )
+                ),
                 String::new(),
                 String::new(),
                 String::new(),

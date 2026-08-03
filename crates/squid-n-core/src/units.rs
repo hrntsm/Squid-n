@@ -60,6 +60,14 @@ pub fn concrete_unit_weight_kn_m3(fc: f64, class: ConcreteClass, comp: ConcreteC
 /// 鋼材の単位体積重量 [kN/m³]（固定荷重: γs = 77 kN/m³）。
 pub const STEEL_UNIT_WEIGHT_KN_M3: f64 = 77.0;
 
+/// 鋼材の単位重量 [t/m³]（数量積算の慣用値）。
+///
+/// 積算分野では鋼材比重 7.85 を用いるのが慣用であり、固定荷重の
+/// γs = 77 kN/m³（[`STEEL_UNIT_WEIGHT_KN_M3`]。質量換算 ≒7.8518 t/m³）とは
+/// 約 0.02% の系統差がある。荷重・質量は 77 kN/m³、数量積算は 7.85 t/m³ を
+/// それぞれ正とする分野別の慣用値として使い分ける（仕様）。
+pub const STEEL_UNIT_WEIGHT_TAKEOFF_T_M3: f64 = 7.85;
+
 pub mod to_internal {
     pub fn length_m(m: f64) -> f64 {
         m * 1_000.0
