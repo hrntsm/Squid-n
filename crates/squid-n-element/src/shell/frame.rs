@@ -3,7 +3,7 @@
 //! - [`ShellFrame`] — 4節点シェルのローカル基底 (e1, e2, n)
 //! - [`ShellFrame::from_nodes`] — 節点座標から正規直交フレームを構築
 //! - [`ShellFrame::to_global`] — ローカル剛性 → グローバル剛性 (K_g = R·K_l·Rᵀ)
-//! - [`ShellFrame::rotate_to_global_24`] / [`ShellFrame::rotate_to_local_24`] — 24 ベクトル回転
+//! - [`ShellFrame::rotate_to_local_24`] — 24 ベクトル回転
 
 use crate::behavior::LocalMat;
 
@@ -122,30 +122,6 @@ impl ShellFrame {
     }
 
     /// Rotate a 24-vector from local to global: v_g = R v_l（R=[e1 e2 n]列）。
-    pub fn rotate_to_global_24(&self, v_local: &[f64; 24]) -> [f64; 24] {
-        let r = self.rot_6x6();
-        let n = 24;
-        let mut r_block = vec![0.0; n * n];
-        for b in 0..4 {
-            let bo = b * 6;
-            for i in 0..6 {
-                for j in 0..6 {
-                    r_block[(bo + i) * n + (bo + j)] = r[i * 6 + j];
-                }
-            }
-        }
-        let mut vg = [0.0; 24];
-        for i in 0..24 {
-            let mut s = 0.0;
-            for j in 0..24 {
-                s += r_block[i * 24 + j] * v_local[j];
-            }
-            vg[i] = s;
-        }
-        vg
-    }
-
-    /// Rotate a 24-vector from global to local: v_l = Rᵀ v_g。
     pub fn rotate_to_local_24(&self, v_global: &[f64; 24]) -> [f64; 24] {
         let rt = self.rot_6x6_transpose();
         let n = 24;

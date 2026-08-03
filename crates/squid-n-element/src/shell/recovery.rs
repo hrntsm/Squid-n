@@ -1,35 +1,11 @@
-//! 断面力の回復とコンター用の節点値外挿。
+//! 断面力の回復。
 //!
 //! - [`ShellElement::recover_resultants`] — 2×2 ガウス点で断面力を回復
-//! - [`ShellElement::compute_contour`] — ガウス点値を節点へ外挿しコンターデータ化
-//! - [`extrap_2x2`] — 2×2 ガウス点 → 節点の外挿行列（内部用）
 
 use super::constitutive::{d_bending, d_membrane, d_shear};
 use super::element::ShellElement;
-use super::resultants::{ShellContourData, ShellContourPoint, ShellResultants};
+use super::resultants::ShellResultants;
 use super::shape::{dshape_cart, shape_2d, GAUSS_PTS_2};
-
-/// Pre‑computed 2×2 Gauss‑point → node extrapolation matrix.
-///
-/// For Gauss points at (ξ=±g, η=±g) with g=1/√3, the inverse of the
-/// shape‑function matrix is:
-/// ```text
-///     H = ½ · [ 1+α   -1   1-α   -1 ]   (α = √3)
-///               -1   1+α   -1   1-α
-///               1-α   -1   1+α   -1
-///               -1   1-α   -1   1+α
-/// ```
-use std::sync::OnceLock;
-fn extrap_2x2() -> &'static [[f64; 4]; 4] {
-    static H: OnceLock<[[f64; 4]; 4]> = OnceLock::new();
-    H.get_or_init(|| {
-        let s3 = (3.0_f64).sqrt();
-        let a = 0.5 * (1.0 + s3);
-        let b = -0.5;
-        let c = 0.5 * (1.0 - s3);
-        [[a, b, c, b], [b, a, b, c], [c, b, a, b], [b, c, b, a]]
-    })
-}
 
 impl ShellElement {
     #[allow(non_snake_case)]
@@ -104,76 +80,5 @@ impl ShellElement {
         }
 
         results
-    }
-
-    /// Compute per‑node contour data from element nodal displacements.
-    ///
-    /// 1. Recover resultants at the 4 Gauss points via [`recover_resultants`].
-    /// 2. Extrapolate each resultant component to the 4 corner nodes using
-    ///    the inverse shape‑function matrix.
-    ///
-    /// The returned [`ShellContourData`] holds one [`ShellContourPoint`] per
-    /// element node; the UI layer can consume this for smooth colour‑fringe
-    /// plots (UI‑11).
-    pub fn compute_contour(&self, u_elem_global: &[f64; 24]) -> ShellContourData {
-        let gp = self.recover_resultants(u_elem_global);
-        let h = extrap_2x2();
-
-        // Helper: extrapolate a single component across all 4 Gauss points.
-        let extrap = |comp: fn(&ShellResultants) -> f64| -> [f64; 4] {
-            let mut v = [0.0; 4];
-            for i in 0..4 {
-                v[i] = h[i][0] * comp(&gp[0].1)
-                    + h[i][1] * comp(&gp[1].1)
-                    + h[i][2] * comp(&gp[2].1)
-                    + h[i][3] * comp(&gp[3].1);
-            }
-            v
-        };
-
-        let nx = extrap(|r| r.nx);
-        let ny = extrap(|r| r.ny);
-        let nxy = extrap(|r| r.nxy);
-        let mx = extrap(|r| r.mx);
-        let my = extrap(|r| r.my);
-        let mxy = extrap(|r| r.mxy);
-        let qx = extrap(|r| r.qx);
-        let qy = extrap(|r| r.qy);
-
-        // Node coordinates (in the element‑local xy‑plane).
-        let node_xy: [[f64; 2]; 4] = {
-            let f = &self.frame;
-            let to_xy = |c: &[f64; 3]| -> [f64; 2] {
-                [
-                    c[0] * f.e1[0] + c[1] * f.e1[1] + c[2] * f.e1[2],
-                    c[0] * f.e2[0] + c[1] * f.e2[1] + c[2] * f.e2[2],
-                ]
-            };
-            [
-                to_xy(&self.coords[0]),
-                to_xy(&self.coords[1]),
-                to_xy(&self.coords[2]),
-                to_xy(&self.coords[3]),
-            ]
-        };
-
-        let make_pt = |i: usize| ShellContourPoint {
-            x: node_xy[i][0],
-            y: node_xy[i][1],
-            resultants: ShellResultants {
-                nx: nx[i],
-                ny: ny[i],
-                nxy: nxy[i],
-                mx: mx[i],
-                my: my[i],
-                mxy: mxy[i],
-                qx: qx[i],
-                qy: qy[i],
-            },
-        };
-
-        ShellContourData {
-            node_values: [make_pt(0), make_pt(1), make_pt(2), make_pt(3)],
-        }
     }
 }

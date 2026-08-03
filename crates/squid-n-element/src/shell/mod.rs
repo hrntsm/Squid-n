@@ -32,7 +32,7 @@ mod stiffness;
 
 pub use element::ShellElement;
 pub use frame::ShellFrame;
-pub use resultants::{ShellContourData, ShellContourPoint, ShellResultants};
+pub use resultants::ShellResultants;
 
 // tests（shell::tests）が `use super::*` から直接参照する自由関数を供給。
 #[cfg(test)]
