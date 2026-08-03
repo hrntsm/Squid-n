@@ -5803,6 +5803,53 @@ fn test_load_model_resets_preparation() {
     assert!(app.staleness.preparation_stale);
 }
 
+/// モデル差し替え（load_model）は旧モデル由来の結果・表示状態をすべてリセット
+/// する。従来は results/selection 等のみで、質点系応答・仕口パネル一覧・
+/// 時刻歴の選択部材などが旧モデルの ID を指したまま残っていた。
+#[test]
+fn test_load_model_resets_model_derived_state() {
+    let mut app = App::default();
+    app.load_model(crate::sample::portal_frame());
+    app.run_preparation();
+
+    // 旧モデル由来の状態を擬似的に残す。
+    app.stick_response = Some(squid_n_solver::lumped_mass::StickResponse {
+        time: vec![0.0],
+        roof_disp: vec![0.0],
+        story_peak_drift: vec![0.0],
+        story_peak_shear: vec![0.0],
+        story_ductility: vec![0.0],
+    });
+    app.generated_panels
+        .push(squid_n_element::panel_gen::GeneratedPanel {
+            node: NodeId(0),
+            dc: 300.0,
+            db: 400.0,
+            tp: 12.0,
+            ve: 1.0e6,
+            k_panel: 1.0e9,
+        });
+    #[cfg(feature = "gui")]
+    {
+        app.hinge_detail_elem = Some(squid_n_core::ids::ElemId(0));
+        app.th_detail_elem = Some(squid_n_core::ids::ElemId(0));
+        app.analysis_target = None;
+        app.th_frame = 42;
+        app.th_playing = true;
+    }
+
+    app.load_model(crate::sample::portal_frame());
+    assert!(app.stick_response.is_none());
+    assert!(app.generated_panels.is_empty());
+    #[cfg(feature = "gui")]
+    {
+        assert!(app.hinge_detail_elem.is_none());
+        assert!(app.th_detail_elem.is_none());
+        assert_eq!(app.th_frame, 0);
+        assert!(!app.th_playing);
+    }
+}
+
 /// 準備計算の CSV には階の分布・Ai 分布・剛域・荷重集計の各セクションが出る。
 #[test]
 fn test_build_preparation_csv() {

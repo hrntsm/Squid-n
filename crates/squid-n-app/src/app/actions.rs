@@ -105,6 +105,41 @@ impl App {
         self.preparation = None;
         self.diagnostics.clear();
         self.staleness = Staleness::default();
+        // 旧モデル由来の解析結果・準備計算表示・詳細ウィンドウの選択部材など、
+        // モデル差し替えで無効になる状態をすべてリセットする（従来は
+        // results/selection 等のみで、時刻歴データ・質点系応答・仕口パネル一覧・
+        // 各種ドラフトが旧モデルの ID を指したまま残っていた）。
+        self.stick_response = None;
+        self.generated_panels.clear();
+        #[cfg(feature = "gui")]
+        {
+            self.frame_target = None;
+            self.analysis_target = None;
+            self.hinge_detail_elem = None;
+            self.hinge_mn_cache = None;
+            self.th_detail_elem = None;
+            self.th_detail_axial_component = None;
+            self.th_scale_cache = None;
+            self.th_frame = 0;
+            self.th_playing = false;
+            self.th_play_time = 0.0;
+            self.time_history_data = crate::time_history_view::TimeHistoryData::default();
+            self.section_draft = Default::default();
+            self.catalog_draft = Default::default();
+            self.isolator_support_draft = Default::default();
+            self.isolator_member_draft = Default::default();
+            self.damper_def_draft = Default::default();
+            self.combo_draft = ComboDraft::default();
+            self.slab_draft = Default::default();
+            self.story_weight_edit.clear();
+            self.story_weight_active.clear();
+            self.wall_attr_draft = Default::default();
+            self.misc_wall_draft = Default::default();
+            self.axis_name_draft = Default::default();
+            self.load_cfg_draft = Default::default();
+            self.member_detail_draft = Default::default();
+            self.steel_attr_draft = Default::default();
+        }
         #[cfg(feature = "gui")]
         self.reset_draw_modes();
         self.sync_node_edit();
