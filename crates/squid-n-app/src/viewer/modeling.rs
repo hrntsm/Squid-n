@@ -409,6 +409,7 @@ pub(super) fn draw_modeling(
     pts: &[egui::Pos2],
     coords3: &[[f64; 3]],
     proj: &Projector,
+    frame_filter: super::FrameFilter,
 ) {
     let model = &app.model;
     let analysis = app.modeling_analysis;
@@ -423,6 +424,9 @@ pub(super) fn draw_modeling(
     let wall_nodes = seismic_wall_nodes(model);
 
     for elem in &model.elements {
+        if !frame_filter.shows(elem.id) {
+            continue;
+        }
         let class = classify(elem, model, analysis);
         if !present.contains(&class) {
             present.push(class);

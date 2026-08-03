@@ -6477,3 +6477,101 @@ fn test_generate_axes_action_does_not_stale_results() {
     assert!(app.model.axes.is_empty());
     assert!(app.model.validate().is_ok(), "{:?}", app.model.validate());
 }
+
+/// 2D 構面表示: 通り芯を自動生成したモデルで、通りと階の構面が期待どおりに
+/// 切り出され、部材の絞り込みが効くことを確認する。
+///
+/// ビューアの描画自体は egui の実行文脈が要るため、ここでは描画へ渡す材料
+/// （構面の所属判定・法線）と、それが解析結果を陳腐化させないことを確かめる。
+#[test]
+fn test_frame_view_filters_members_by_axis_and_story() {
+    use smallvec::SmallVec;
+    use squid_n_core::dof::Dof6Mask;
+    use squid_n_core::frame::{build_frame, FrameTarget};
+    use squid_n_core::ids::NodeId;
+    use squid_n_core::model::{
+        ElementData, ElementKind, EndCondition, ForceRegime, LocalAxis, Node,
+    };
+
+    let mut app = App::default();
+    let mut node = |x: f64, y: f64, z: f64| -> NodeId {
+        let id = NodeId(app.model.nodes.len() as u32);
+        app.model.nodes.push(Node {
+            id,
+            coord: [x, y, z],
+            restraint: Dof6Mask::FREE,
+            mass: None,
+            story: None,
+            support_spring: None,
+        });
+        id
+    };
+    // 2×1 スパン・1 層のラーメン（X=0 と X=6000 の 2 通り）。
+    let a0 = node(0.0, 0.0, 0.0);
+    let a1 = node(0.0, 0.0, 4000.0);
+    let b0 = node(6000.0, 0.0, 0.0);
+    let b1 = node(6000.0, 0.0, 4000.0);
+    let mut line = |i: NodeId, j: NodeId| {
+        let id = ElemId(app.model.elements.len() as u32);
+        let mut nodes: SmallVec<[NodeId; 8]> = SmallVec::new();
+        nodes.push(i);
+        nodes.push(j);
+        app.model.elements.push(ElementData {
+            id,
+            kind: ElementKind::Beam,
+            nodes,
+            section: None,
+            material: None,
+            local_axis: LocalAxis {
+                ref_vector: [0.0, 0.0, 1.0],
+            },
+            end_cond: [EndCondition::Fixed; 2],
+            force_regime: ForceRegime::Auto,
+            rigid_zone: Default::default(),
+            plastic_zone: None,
+            spring: None,
+        });
+        id
+    };
+    let col_a = line(a0, a1);
+    let col_b = line(b0, b1);
+    let girder = line(a1, b1);
+
+    app.generate_axes_action();
+    // X 群には X1(0) と X2(6000)、Y 群には Y1(0) ができる。
+    let xg = app.model.axes.iter().position(|g| g.name == "X").unwrap();
+    let yg = app.model.axes.iter().position(|g| g.name == "Y").unwrap();
+    assert_eq!(app.model.axes[xg].axes.len(), 2);
+    assert_eq!(app.model.axes[yg].axes.len(), 1);
+
+    // X1 通り（X=0 の構面）には、その位置の柱だけが属する。
+    let f = build_frame(&app.model, FrameTarget::Axis { group: xg, axis: 0 }).expect("X1 通り");
+    assert_eq!(f.normal, [1.0, 0.0, 0.0]);
+    assert!(f.elem_on[col_a.index()]);
+    assert!(!f.elem_on[col_b.index()], "別の通りの柱");
+    assert!(!f.elem_on[girder.index()], "通りをまたぐ梁");
+
+    // Y1 通り（Y=0 の構面）には、柱 2 本と大梁がすべて属する（同一平面）。
+    let f = build_frame(&app.model, FrameTarget::Axis { group: yg, axis: 0 }).expect("Y1 通り");
+    assert_eq!(f.normal, [0.0, 1.0, 0.0]);
+    assert_eq!(f.elem_count(), 3, "Y1 構面には 3 部材すべてが属する");
+
+    // 階（伏図）: 準備計算で階を生成してから切り出す。柱は上端がその階に属する。
+    app.generate_stories_action();
+    let story = app.model.stories.first().expect("階").id;
+    let f = build_frame(&app.model, FrameTarget::Story(story)).expect("階");
+    assert_eq!(f.normal, [0.0, 0.0, 1.0], "伏図の法線は鉛直");
+    assert!(f.elem_on[girder.index()], "その階の梁");
+    assert!(f.elem_on[col_a.index()], "上端がその階の柱");
+    assert!(f.elem_on[col_b.index()], "上端がその階の柱");
+
+    // 存在しない通りを指すと構面は解決できない（ビューアは全体表示へ戻す）。
+    assert!(build_frame(
+        &app.model,
+        FrameTarget::Axis {
+            group: xg,
+            axis: 99
+        }
+    )
+    .is_none());
+}
