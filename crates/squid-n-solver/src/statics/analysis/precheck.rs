@@ -27,12 +27,23 @@ pub(super) fn precheck_model(model: &Model) -> Result<(), SolveError> {
         ));
     }
 
-    // 梁要素の断面・材料未割当
+    // 断面・材料が必要な要素（線材・面材）の未割当。
+    // 従来は Beam のみが対象で、Fiber / MultiSpring / Brace / Shell / Wall は
+    // 未割当のまま要素構築の既定値（ゼロ剛性）へ落ちて特異行列エラーになるか、
+    // かつては「もっともらしい既定断面」で無音に解析が通っていた（危険側）。
     let missing: Vec<u32> = model
         .elements
         .iter()
         .filter(|e| {
-            matches!(e.kind, ElementKind::Beam) && (e.section.is_none() || e.material.is_none())
+            matches!(
+                e.kind,
+                ElementKind::Beam
+                    | ElementKind::Fiber
+                    | ElementKind::MultiSpring
+                    | ElementKind::Brace { .. }
+                    | ElementKind::Shell
+                    | ElementKind::Wall
+            ) && (e.section.is_none() || e.material.is_none())
         })
         .map(|e| e.id.0)
         .collect();
@@ -45,6 +56,39 @@ pub(super) fn precheck_model(model: &Model) -> Result<(), SolveError> {
         };
         return Err(SolveError::InvalidInput(format!(
             "断面または材料が未割当の部材があります: ID {}{}。部材タブで割り当ててください。",
+            head.join(", "),
+            more
+        )));
+    }
+
+    // シェル要素の断面に板厚が無い（線材用断面を割り当てた等）。
+    // 要素構築は板厚 0（ゼロ剛性）となり特異行列で止まるが、原因が伝わらないため
+    // ここで名指しする。
+    let no_thickness: Vec<u32> = model
+        .elements
+        .iter()
+        .filter(|e| matches!(e.kind, ElementKind::Shell))
+        .filter(|e| {
+            e.section
+                .and_then(|sid| model.sections.get(sid.index()))
+                .is_some_and(|s| s.thickness.is_none())
+        })
+        .map(|e| e.id.0)
+        .collect();
+    if !no_thickness.is_empty() {
+        let head: Vec<String> = no_thickness
+            .iter()
+            .take(5)
+            .map(|id| id.to_string())
+            .collect();
+        let more = if no_thickness.len() > 5 {
+            format!(" 他{}件", no_thickness.len() - 5)
+        } else {
+            String::new()
+        };
+        return Err(SolveError::InvalidInput(format!(
+            "シェル要素の断面に板厚が設定されていません: 部材 ID {}{}。\
+             断面タブで板厚を持つ断面を割り当ててください。",
             head.join(", "),
             more
         )));

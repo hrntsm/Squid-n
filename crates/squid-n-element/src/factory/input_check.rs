@@ -128,7 +128,17 @@ fn category_mismatch_issue(
 ///   ファイバの要素生成（Fc があればコンクリート、なければ鋼材で fy 必須）が
 ///   解析実行中に panic あるいは剛性 0 で破綻する。
 fn member_strength_issue(data: &ElementData, model: &Model) -> Option<String> {
-    let sec = data.section.and_then(|sid| model.sections.get(sid.index()));
+    // 断面未割当は要素生成がゼロ剛性の断面（かつては 100×200 の架空断面）へ
+    // 落ちるため、材料と同様に入力エラーとして停止する。
+    let Some(sec) = data.section.and_then(|sid| model.sections.get(sid.index())) else {
+        return Some(format!(
+            "部材 ID {} に断面が設定されていません。\
+             部材タブで断面を割り当ててください。\
+             非線形解析では断面諸元から部材の剛性・終局耐力を算定します。",
+            data.id.0
+        ));
+    };
+    let sec = Some(sec);
     let Some(mat) = data
         .material
         .and_then(|mid| model.materials.get(mid.index()))
