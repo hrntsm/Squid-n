@@ -522,15 +522,7 @@ fn build_tension_only_result(
     u_free: &[f64],
     member_loads_by_elem: &HashMap<ElemId, Vec<MemberLoad>>,
 ) -> Result<StaticOnce, SolveError> {
-    let mut disp: Vec<[f64; 6]> = vec![[0.0; 6]; model.nodes.len()];
-    for ni in 0..model.nodes.len() {
-        for d in 0..squid_n_core::dof::DOF_PER_NODE {
-            let g = ni * squid_n_core::dof::DOF_PER_NODE + d;
-            if let Some(a) = dofmap.active(g) {
-                disp[ni][d] = u_free[a as usize];
-            }
-        }
-    }
+    let disp = dofmap.expand_to_nodes(u_free, model.nodes.len());
 
     let mut member_forces = Vec::new();
     let mut panel_moments = Vec::new();

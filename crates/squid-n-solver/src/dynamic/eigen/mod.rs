@@ -306,16 +306,7 @@ node.mass や材料の密度(ρ)で並進質量を追加するか、要求モー
 /// 静的解析の変位展開（`crate::analysis::Analysis` の `expand_disp`）と同じ経路で、
 /// 剛床のスレーブ自由度にはマスターに従属した値が入る。fixed・非構造自由度は 0。
 fn scatter_node_shape(phi_free: &[f64], dofmap: &DofMap, n_nodes: usize) -> Vec<[f64; 6]> {
-    let mut disp = vec![[0.0; 6]; n_nodes];
-    for (ni, d6) in disp.iter_mut().enumerate() {
-        for (d, slot) in d6.iter_mut().enumerate() {
-            let g = ni * squid_n_core::dof::DOF_PER_NODE + d;
-            if let Some(active) = dofmap.active(g) {
-                *slot = phi_free[active as usize];
-            }
-        }
-    }
-    disp
+    dofmap.expand_to_nodes(phi_free, n_nodes)
 }
 
 /// 部分空間反復の開始ベクトルを Bathe の定石に従って選ぶ。
