@@ -1282,6 +1282,86 @@ fn test_compute_shear_yield_qy_rc_fallback_without_rc_rect_shape() {
     );
 }
 
+/// SRC 矩形の Qy は「RC 部（荒川式）＋内蔵鉄骨の全塑性せん断 sAw·F/√3」の
+/// 累加式。同一の b・d・配筋の RcRect との差が鉄骨項の手計算値と一致する。
+#[test]
+fn test_compute_shear_yield_qy_src_is_rc_plus_steel() {
+    use squid_n_core::section_shape::{BarSet, RcRebar, SectionShape, ShearBar};
+
+    let mat = Material {
+        strength_factor: None,
+        concrete_class: Default::default(),
+        id: MaterialId(0),
+        name: "FC24".to_string(),
+        category: MaterialCategory::Concrete,
+        young: 23000.0,
+        poisson: 0.2,
+        density: 0.0,
+        shear: None,
+        fc: Some(24.0),
+        fy: None,
+    };
+    let rebar = RcRebar {
+        main_grade: Some("SD345".into()),
+        main_x: BarSet {
+            count: 8,
+            dia: 25.0,
+            layers: 1,
+        },
+        main_y: BarSet {
+            count: 4,
+            dia: 25.0,
+            layers: 1,
+        },
+        cover: 40.0,
+        shear: ShearBar {
+            dia: 10.0,
+            pitch: 100.0,
+            legs: 2,
+            grade: None,
+        },
+    };
+    let rc_shape = SectionShape::RcRect {
+        b: 600.0,
+        d: 600.0,
+        rebar: rebar.clone(),
+    };
+    let src_shape = SectionShape::SrcRect {
+        b: 600.0,
+        d: 600.0,
+        rebar,
+        steel_height: 400.0,
+        steel_width: 200.0,
+        steel_web_thick: 8.0,
+        steel_flange_thick: 13.0,
+        steel_grade: "SN400B".into(),
+    };
+    let rc_sec = rc_shape.to_section(SectionId(0), "rc".into());
+    let src_sec = src_shape.to_section(SectionId(1), "src".into());
+
+    // 強軸（局所 y）: 鉄骨項 = tw·(H−2tf)·F·1.1/√3（SN400B tf/tw≤40 → F=235）。
+    let qy_rc = compute_shear_yield_qy(1.0, Some(&mat), Some(&rc_sec), ShearDir::Y, 3000.0);
+    let qy_src = compute_shear_yield_qy(1.0, Some(&mat), Some(&src_sec), ShearDir::Y, 3000.0);
+    let steel_y = 8.0 * (400.0 - 2.0 * 13.0) * 235.0 * 1.1 / 3.0_f64.sqrt();
+    assert!(
+        (qy_src - qy_rc - steel_y).abs() < 1e-6,
+        "強軸: qy_src−qy_rc={} 期待 {}",
+        qy_src - qy_rc,
+        steel_y
+    );
+
+    // 弱軸（局所 z）: 鉄骨項 = 2·B·tf·F·1.1/√3。
+    let qy_rc_z = compute_shear_yield_qy(1.0, Some(&mat), Some(&rc_sec), ShearDir::Z, 3000.0);
+    let qy_src_z = compute_shear_yield_qy(1.0, Some(&mat), Some(&src_sec), ShearDir::Z, 3000.0);
+    let steel_z = 2.0 * 200.0 * 13.0 * 235.0 * 1.1 / 3.0_f64.sqrt();
+    assert!(
+        (qy_src_z - qy_rc_z - steel_z).abs() < 1e-6,
+        "弱軸: qy_src−qy_rc={} 期待 {}",
+        qy_src_z - qy_rc_z,
+        steel_z
+    );
+}
+
 #[test]
 fn test_compute_shear_yield_qy_zero_as_is_infinite() {
     // 有効せん断断面積が 0 の断面は判定対象外（Qy=∞扱い）。
@@ -1726,7 +1806,9 @@ fn test_compute_shear_yield_thresholds_rc_rect_uses_rigid_zone_reduced_clear_spa
         sigma_0: 0.0,
     });
     match &th.y {
-        DirThreshold::RcArakawa { input, gross_area } => {
+        DirThreshold::RcArakawa {
+            input, gross_area, ..
+        } => {
             assert!(
                 (input.clear_span - expected_clear_span).abs() < 1e-9,
                 "clear_span={} expected={}",
@@ -1797,7 +1879,11 @@ fn test_dir_threshold_qy_axial_term_matches_handcalc() {
         sigma_0: 0.0, // プレースホルダ（qy() が上書きする）
     };
     let gross_area = b * d;
-    let th = DirThreshold::RcArakawa { input, gross_area };
+    let th = DirThreshold::RcArakawa {
+        input,
+        gross_area,
+        steel_qy: 0.0,
+    };
 
     let qy_base = th.qy(0.0);
     let qsu_base_handcalc = rc_qsu_simple(&input);
@@ -1901,7 +1987,9 @@ fn test_track_shear_yield_axial_compression_raises_qy_end_to_end() {
     let (model, _rebar, b, d) = rc_column_model_with_rigid_zone(RigidZone::default());
     let thresholds = compute_shear_yield_thresholds(&model);
     let (input, gross_area) = match &thresholds[0].z {
-        DirThreshold::RcArakawa { input, gross_area } => (*input, *gross_area),
+        DirThreshold::RcArakawa {
+            input, gross_area, ..
+        } => (*input, *gross_area),
         DirThreshold::Static(_) => panic!("expected RcArakawa"),
     };
     assert!((gross_area - b * d).abs() < 1e-6);

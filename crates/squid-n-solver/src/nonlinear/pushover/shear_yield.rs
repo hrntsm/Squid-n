@@ -36,9 +36,11 @@ pub(crate) struct ShearThreshold {
 ///
 /// `Static` は解析開始時に一度だけ算定される軸力非依存のしきい値（鋼系、または
 /// 配筋情報が無い／算定不能な RC のフォールバック）。`RcArakawa` は RC矩形
-/// （`SectionShape::RcRect`）の荒川mean式系の略算式で、σ0 を除く入力一式を
-/// 保持しておき、各ステップの軸力から求めた σ0 で上書きして
-/// [`rc_qsu_simple`] を呼び直す（精緻化2）。
+/// （`SectionShape::RcRect`）・SRC矩形（`SectionShape::SrcRect`）の
+/// 荒川mean式系の略算式で、σ0 を除く入力一式を保持しておき、各ステップの
+/// 軸力から求めた σ0 で上書きして [`rc_qsu_simple`] を呼び直す（精緻化2）。
+/// SRC は内蔵鉄骨の全塑性せん断（`steel_qy`）を累加する（SRC 規準の
+/// 累加強度の考え方）。
 pub(crate) enum DirThreshold {
     Static(f64),
     RcArakawa {
@@ -48,6 +50,8 @@ pub(crate) enum DirThreshold {
         /// 全断面積 [mm²]（= b・D。方向によらず同一値。σ0 = 圧縮軸力/gross_area
         /// の算定に用いる）。
         gross_area: f64,
+        /// 内蔵鉄骨の全塑性せん断耐力 sAw・F/√3 [N]（SRC の累加項。RC は 0）。
+        steel_qy: f64,
     },
 }
 
@@ -57,11 +61,15 @@ impl DirThreshold {
     ///
     /// `Static` は軸力によらず一定値。`RcArakawa` は σ0 = n_compress/gross_area
     /// （荒川式の適用範囲 0〜0.4Fc へのクランプは [`rc_qsu_simple`] 内で行う）を
-    /// 反映した Qsu を都度算定する。
+    /// 反映した Qsu を都度算定し、SRC の場合は内蔵鉄骨の累加項を加える。
     pub(crate) fn qy(&self, n_compress: f64) -> f64 {
         match self {
             DirThreshold::Static(v) => *v,
-            DirThreshold::RcArakawa { input, gross_area } => {
+            DirThreshold::RcArakawa {
+                input,
+                gross_area,
+                steel_qy,
+            } => {
                 let sigma_0 = if *gross_area > 0.0 {
                     n_compress / gross_area
                 } else {
@@ -69,7 +77,7 @@ impl DirThreshold {
                 };
                 let mut inp = *input;
                 inp.sigma_0 = sigma_0;
-                rc_qsu_simple(&inp)
+                rc_qsu_simple(&inp) + steel_qy
             }
         }
     }
@@ -201,6 +209,62 @@ fn build_dir_threshold(
                 return DirThreshold::RcArakawa {
                     gross_area: input.b * input.d,
                     input,
+                    steel_qy: 0.0,
+                };
+            }
+        }
+    }
+    // SRC 矩形: RC 部（荒川式。鉄骨を控除しない gross b·d と配筋で評価し、
+    // σ0 の動的反映も RcRect と同一）に内蔵鉄骨の全塑性せん断 sAw·F/√3 を
+    // 累加する（SRC 規準の累加強度の考え方。表 2.6.6-5 の N0・sM0 略算と同じ流儀）。
+    // 従来は剛性等価換算せん断断面積（ヤング係数比で増した鋼材面積を含む）に
+    // 0.7√Fc を乗じており、剛性計算用の面積を強度式へ流用する根拠がなかった。
+    if let Some(Section {
+        shape:
+            Some(SectionShape::SrcRect {
+                b,
+                d,
+                rebar,
+                steel_height,
+                steel_width,
+                steel_web_thick,
+                steel_flange_thick,
+                steel_grade,
+            }),
+        ..
+    }) = section
+    {
+        let input = match dir {
+            ShearDir::Y => rc_rect_capacity_input(*b, *d, &rebar.main_x, rebar, mat, clear_span),
+            ShearDir::Z => rc_rect_capacity_input(*d, *b, &rebar.main_y, rebar, mat, clear_span),
+        };
+        // 鉄骨のせん断有効断面積: 強軸（局所 y）＝ウェブ内法 tw·(H−2tf)、
+        // 弱軸（局所 z）＝上下フランジ 2·B·tf（全塑性評価のため許容応力度検定の
+        // 応力分布係数 1.5 による低減は行わない）。F 値は鋼種名の前方一致で
+        // 当該板厚の区分から解決し、不明時は 235。材料強度割増は直接入力係数を
+        // 優先し、無ければ鋼種名から判定（鋼材=1.1・590N 級=1.05）。
+        let (sh, sb, tw, tf) = (
+            *steel_height,
+            *steel_width,
+            *steel_web_thick,
+            *steel_flange_thick,
+        );
+        let (s_aw, plate_t) = match dir {
+            ShearDir::Y => ((tw * (sh - 2.0 * tf)).max(0.0), tw),
+            ShearDir::Z => ((2.0 * sb * tf).max(0.0), tf),
+        };
+        let s_f = squid_n_core::material_grade::steel_f_value_prefix(steel_grade, plate_t)
+            .unwrap_or(235.0);
+        let factor = mat.strength_factor.unwrap_or_else(|| {
+            squid_n_core::material_grade::steel_material_strength_factor(steel_grade)
+        });
+        let steel_qy = s_aw * s_f * factor / 3.0_f64.sqrt();
+        if let Some(input) = input {
+            if rc_qsu_simple(&input) + steel_qy > 0.0 {
+                return DirThreshold::RcArakawa {
+                    gross_area: input.b * input.d,
+                    input,
+                    steel_qy,
                 };
             }
         }
