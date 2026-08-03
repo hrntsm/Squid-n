@@ -216,7 +216,8 @@ impl BeamElement {
                     "壁要素と周辺部材のIDが衝突している（model 不整合）"
                 );
             }
-            let is_vertical_member = dz.abs() > (dx.abs() + dy.abs()) * 0.5;
+            // 全クレート共通の 45° 余弦基準（|ez| > 0.707）で柱系/梁系を分ける。
+            let is_vertical_member = squid_n_core::geom::is_vertical_axis(p0, p1);
 
             // 自部材の両端節点集合が節点対 b と一致するか（順序不問）
             let same_pair = |a: [NodeId; 2], b: (NodeId, NodeId)| -> bool {

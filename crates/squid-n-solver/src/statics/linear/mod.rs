@@ -19,8 +19,8 @@ use std::collections::HashMap;
 const AXIAL_DISABLE_FACTOR: f64 = 1.0e-6;
 
 /// 部材が「柱」（鉛直な `ElementKind::Beam`）かどうかを判定する。
-/// 判定規則は `squid-n-design-jp::eccentricity::column_stiffnesses` の柱判定
-/// （部材軸単位ベクトルの ez 成分 |ez|>0.707）に合わせる。
+/// 判定規則は全クレート共通の 45° 余弦基準
+/// （[`squid_n_core::geom::is_vertical_axis`]: |ez| > 0.707）。
 fn is_vertical_column(elem: &ElementData, model: &Model) -> bool {
     if !matches!(elem.kind, ElementKind::Beam) || elem.nodes.len() < 2 {
         return false;
@@ -31,14 +31,7 @@ fn is_vertical_column(elem: &ElementData, model: &Model) -> bool {
     ) else {
         return false;
     };
-    let dx = n1.coord[0] - n0.coord[0];
-    let dy = n1.coord[1] - n0.coord[1];
-    let dz = n1.coord[2] - n0.coord[2];
-    let len = (dx * dx + dy * dy + dz * dz).sqrt();
-    if len < 1e-9 {
-        return false;
-    }
-    (dz / len).abs() > 0.707
+    squid_n_core::geom::is_vertical_axis(n0.coord, n1.coord)
 }
 
 /// 長期応力解析で軸力を負担させない部材（対象: ブレース／柱）かどうかを、

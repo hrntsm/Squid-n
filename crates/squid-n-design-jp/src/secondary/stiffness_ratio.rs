@@ -27,11 +27,9 @@ pub struct ColumnDrift {
 /// 異なる柱は「斜め柱」として層間変形角の確認から除外する（本実装の扱い）。
 const INCLINED_PLAN_TOL: f64 = 1.0;
 
-/// 鉛直部材（柱）判定の方向余弦しきい値（`eccentricity::column_stiffnesses` と同じ）。
-const VERTICAL_COS_TOL: f64 = 0.707;
-
 /// 当該層に帰属する柱を列挙して `f(elem_id, 柱頭節点, 柱脚節点)` を呼ぶ。
-/// 柱の判定: 2 節点 `Beam` かつ部材軸の z 方向余弦 > 0.707。
+/// 柱の判定: 2 節点 `Beam` かつ全クレート共通の 45° 余弦基準
+/// （[`squid_n_core::geom::is_vertical_axis`]）。
 /// 層帰属: 柱頭（z 大）節点の `story == Some(story)`。
 fn for_each_story_column(model: &Model, story: StoryId, mut f: impl FnMut(ElemId, &Node, &Node)) {
     for elem in &model.elements {
@@ -40,13 +38,7 @@ fn for_each_story_column(model: &Model, story: StoryId, mut f: impl FnMut(ElemId
         }
         let n0 = &model.nodes[elem.nodes[0].index()];
         let n1 = &model.nodes[elem.nodes[1].index()];
-        let d = [
-            n1.coord[0] - n0.coord[0],
-            n1.coord[1] - n0.coord[1],
-            n1.coord[2] - n0.coord[2],
-        ];
-        let l = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
-        if l < 1e-12 || (d[2] / l).abs() <= VERTICAL_COS_TOL {
+        if !squid_n_core::geom::is_vertical_axis(n0.coord, n1.coord) {
             continue;
         }
         let (top, bot) = if n0.coord[2] < n1.coord[2] {

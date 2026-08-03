@@ -55,11 +55,8 @@ fn section_roles(model: &Model) -> HashMap<u32, (bool, bool)> {
             ElementKind::Beam => {
                 let n0 = &model.nodes[e.nodes[0].index()];
                 let n1 = &model.nodes[e.nodes[1].index()];
-                let dz = (n1.coord[2] - n0.coord[2]).abs();
-                let dx = n1.coord[0] - n0.coord[0];
-                let dy = n1.coord[1] - n0.coord[1];
-                let len = (dx * dx + dy * dy + dz * dz).sqrt();
-                len > 1e-12 && dz / len > 0.707
+                // 全クレート共通の 45° 余弦基準で柱/梁を分ける。
+                squid_n_core::geom::is_vertical_axis(n0.coord, n1.coord)
             }
             ElementKind::Brace { .. } => false,
             _ => continue,
@@ -96,11 +93,8 @@ fn section_materials(model: &Model) -> HashMap<u32, RoleMaterial> {
             ElementKind::Beam => {
                 let n0 = &model.nodes[e.nodes[0].index()];
                 let n1 = &model.nodes[e.nodes[1].index()];
-                let dz = (n1.coord[2] - n0.coord[2]).abs();
-                let dx = n1.coord[0] - n0.coord[0];
-                let dy = n1.coord[1] - n0.coord[1];
-                let len = (dx * dx + dy * dy + dz * dz).sqrt();
-                len > 1e-12 && dz / len > 0.707
+                // 全クレート共通の 45° 余弦基準で柱/梁を分ける。
+                squid_n_core::geom::is_vertical_axis(n0.coord, n1.coord)
             }
             ElementKind::Brace { .. } => false,
             _ => continue,

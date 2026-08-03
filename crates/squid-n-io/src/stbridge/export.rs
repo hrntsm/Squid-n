@@ -143,11 +143,8 @@ fn members_body(
             ElementKind::Beam if e.nodes.len() == 2 => {
                 let n0 = &model.nodes[e.nodes[0].index()];
                 let n1 = &model.nodes[e.nodes[1].index()];
-                let dz = (n1.coord[2] - n0.coord[2]).abs();
-                let dx = n1.coord[0] - n0.coord[0];
-                let dy = n1.coord[1] - n0.coord[1];
-                let len = (dx * dx + dy * dy + dz * dz).sqrt();
-                let is_col = len > 1e-12 && dz / len > 0.707;
+                // 全クレート共通の 45° 余弦基準で柱/大梁を分ける。
+                let is_col = squid_n_core::geom::is_vertical_axis(n0.coord, n1.coord);
                 let role_map = if is_col { col_map } else { beam_map };
                 let sec = e
                     .section

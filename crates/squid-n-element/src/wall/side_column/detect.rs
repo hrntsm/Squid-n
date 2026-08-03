@@ -99,11 +99,8 @@ pub fn wall_side_column_release(data: &ElementData, model: &Model) -> Option<Rel
     let node0 = model.nodes.get(n0.index())?;
     let node1 = model.nodes.get(n1.index())?;
     let (p0, p1) = (node0.coord, node1.coord);
-    let dx = p1[0] - p0[0];
-    let dy = p1[1] - p0[1];
-    let dz = p1[2] - p0[2];
-    // 鉛直材の判定（factory.rs::is_vertical_member と同じ規約）
-    if dz.abs() <= (dx.abs() + dy.abs()) * 0.5 {
+    // 鉛直材の判定（全クレート共通の 45° 余弦基準）
+    if !squid_n_core::geom::is_vertical_axis(p0, p1) {
         return None;
     }
 

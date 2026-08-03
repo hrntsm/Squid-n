@@ -57,7 +57,9 @@ pub(crate) fn member_rp_angle(
             .and_then(|a| disp.get(a as usize).copied())
             .unwrap_or(0.0)
     };
-    let vertical = dz.abs() > (dx.abs() + dy.abs()) * 0.5;
+    // 全クレート共通の 45° 余弦基準（|ez| > 0.707）。柱系は水平変位/部材長
+    // （層間変形角相当）、梁系は鉛直変位/部材長（たわみ角相当）で Rp を測る。
+    let vertical = squid_n_core::geom::is_vertical_axis(pi.coord, pj.coord);
     if vertical {
         let dux = get(nj, 0) - get(ni, 0);
         let duy = get(nj, 1) - get(ni, 1);

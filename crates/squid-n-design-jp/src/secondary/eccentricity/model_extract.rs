@@ -84,10 +84,8 @@ pub fn column_stiffnesses(model: &Model, story: StoryId) -> Vec<ColumnStiffness>
         if l < 1e-12 {
             continue;
         }
-        let ex_z = dz / l;
-
-        // 鉛直部材（柱）判定。
-        if ex_z.abs() <= 0.707 {
+        // 鉛直部材（柱）判定（全クレート共通の 45° 余弦基準）。
+        if !squid_n_core::geom::is_vertical_axis(p0, p1) {
             continue;
         }
 

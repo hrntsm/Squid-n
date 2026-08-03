@@ -768,9 +768,8 @@ fn auto_assign_supports(model: &mut Model, notes: &mut Vec<String>) {
             .fold(f64::INFINITY, f64::min);
 
         // 柱脚が取り付く節点の集合を求める。柱＝鉛直な 2 節点 Beam 要素
-        // （部材軸の鉛直成分 |ez| > 0.707。偏心率算定 column_stiffnesses と同じ
-        // 判定規則）。その下端節点（Z が小さい方）を柱脚候補とする。
-        const VERTICAL_COS_TOL: f64 = 0.707;
+        // （全クレート共通の 45° 余弦基準 `squid_n_core::geom::is_vertical_axis`）。
+        // その下端節点（Z が小さい方）を柱脚候補とする。
         let mut column_base: std::collections::HashSet<usize> = std::collections::HashSet::new();
         for elem in &model.elements {
             if elem.kind != ElementKind::Beam || elem.nodes.len() != 2 {
@@ -781,9 +780,7 @@ fn auto_assign_supports(model: &mut Model, notes: &mut Vec<String>) {
                 continue;
             }
             let (pa, pb) = (model.nodes[a].coord, model.nodes[b].coord);
-            let d = [pb[0] - pa[0], pb[1] - pa[1], pb[2] - pa[2]];
-            let l = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
-            if l < 1e-9 || (d[2] / l).abs() <= VERTICAL_COS_TOL {
+            if !squid_n_core::geom::is_vertical_axis(pa, pb) {
                 continue; // 長さ 0 または水平材（梁）は柱ではない
             }
             let bottom = if pa[2] <= pb[2] { a } else { b };

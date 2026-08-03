@@ -44,12 +44,9 @@ pub(super) fn is_vertical_member(data: &ElementData, model: &Model) -> bool {
     let n0 = &model.nodes.get(data.nodes[0].index());
     let n1 = &model.nodes.get(data.nodes[1].index());
     match (n0, n1) {
-        (Some(n0), Some(n1)) => {
-            let dz = (n1.coord[2] - n0.coord[2]).abs();
-            let dx = (n1.coord[0] - n0.coord[0]).abs();
-            let dy = (n1.coord[1] - n0.coord[1]).abs();
-            dz > (dx + dy) * 0.5
-        }
+        // 全クレート共通の 45° 余弦基準（|ez| > 0.707）。層せん断集計・
+        // 変形角定義と同じ規約で柱系/梁系を分ける。
+        (Some(n0), Some(n1)) => squid_n_core::geom::is_vertical_axis(n0.coord, n1.coord),
         _ => false,
     }
 }

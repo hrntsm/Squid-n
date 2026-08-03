@@ -37,13 +37,8 @@ pub(super) fn for_each_story_column(
         }
         let n0 = &model.nodes[elem.nodes[0].index()];
         let n1 = &model.nodes[elem.nodes[1].index()];
-        let d = [
-            n1.coord[0] - n0.coord[0],
-            n1.coord[1] - n0.coord[1],
-            n1.coord[2] - n0.coord[2],
-        ];
-        let l = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
-        if l < 1e-12 || (d[2] / l).abs() <= 0.707 {
+        // 鉛直部材（柱）判定（全クレート共通の 45° 余弦基準）。
+        if !squid_n_core::geom::is_vertical_axis(n0.coord, n1.coord) {
             continue;
         }
         let (top, bot) = if n0.coord[2] < n1.coord[2] {
