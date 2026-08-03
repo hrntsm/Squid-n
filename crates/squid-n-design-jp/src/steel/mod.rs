@@ -193,8 +193,12 @@ fn shear_area_2d(shape: ShapeCategory, sec: &Section, tf: f64, tw: f64) -> (f64,
             (a, a)
         }
         ShapeCategory::Other => {
-            let ay = if sec.as_y > 0.0 { sec.as_y } else { sec.area };
-            let az = if sec.as_z > 0.0 { sec.as_z } else { sec.area };
+            // 断面レイヤの規約（P1 §4.1・squid-n-core builder.rs）は
+            // 「as_z=強軸曲げ用（ウェブ）・as_y=弱軸曲げ用（フランジ）」で、
+            // 検定の Qy は強軸せん断のため、要素剛性側（construct.rs）と同じ
+            // クロス対応（Ay ← 断面 as_z、Az ← 断面 as_y）で引き当てる。
+            let ay = if sec.as_z > 0.0 { sec.as_z } else { sec.area };
+            let az = if sec.as_y > 0.0 { sec.as_y } else { sec.area };
             (ay, az)
         }
     }

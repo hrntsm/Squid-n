@@ -1543,11 +1543,16 @@ fn member_kind_of(
     }
 }
 
-/// 壁要素の周辺柱（壁と節点を共有する鉛直線材）に SRC 造の柱があるか。
+/// 壁要素の側柱（壁と**両端の**節点を共有する鉛直線材）に SRC 造の柱があるか。
 ///
 /// SRC 耐震壁（部材種別 WA/WC の判定対象）かどうかの判定に用いる。壁自体の
-/// 断面は RC 壁（`RcWall`）のままモデル化されるため、壁の構造種別は周辺柱の
+/// 断面は RC 壁（`RcWall`）のままモデル化されるため、壁の構造種別は側柱の
 /// 構造種別（`member_structure_kind`）から推定する。
+///
+/// 側柱は柱頭・柱脚の双方が壁の隅節点に一致するため、**両端**の共有を課す。
+/// 片側 1 節点の共有まで許すと、壁上辺の隅節点から立ち上がる上階の柱にも
+/// 反応し、SRC 階→RC 階の切替部で RC 側の耐震壁を SRC 壁と誤判定する。
+/// 鉛直判定は側柱ピン化（`side_column`）と同じ 45° 余弦基準。
 fn wall_has_src_boundary_column(
     wall: &squid_n_core::model::ElementData,
     model: &squid_n_core::model::Model,
@@ -1563,7 +1568,7 @@ fn wall_has_src_boundary_column(
                 ElementKind::Beam | ElementKind::Fiber | ElementKind::MultiSpring
             )
             || e.nodes.len() < 2
-            || !e.nodes.iter().any(|n| wall_nodes.contains(n))
+            || !e.nodes.iter().take(2).all(|n| wall_nodes.contains(n))
         {
             return false;
         }
@@ -1573,7 +1578,7 @@ fn wall_has_src_boundary_column(
         ) else {
             return false;
         };
-        squid_n_core::geom::is_vertical_pair(a.coord, b.coord)
+        squid_n_core::geom::is_vertical_axis(a.coord, b.coord)
             && member_structure_kind(model, e) == StructureKind::Src
     })
 }

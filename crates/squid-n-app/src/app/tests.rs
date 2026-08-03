@@ -6864,14 +6864,30 @@ fn test_wall_has_src_boundary_column() {
         !wall_has_src_boundary_column(&wall, &model),
         "節点を共有しない SRC 柱は対象外"
     );
+
+    // 壁上辺の隅節点から立ち上がる上階の SRC 柱（片側 1 節点のみ共有）は
+    // 側柱ではないため対象外（SRC 階→RC 階の切替部での誤判定防止）。
+    model.nodes.push(Node {
+        id: NodeId(6),
+        coord: [0.0, 0.0, 6000.0],
+        restraint: squid_n_core::dof::Dof6Mask::FREE,
+        mass: None,
+        story: None,
+        support_spring: None,
+    });
+    model.elements.push(elem(3, ElementKind::Beam, &[3, 6], 1));
+    assert!(
+        !wall_has_src_boundary_column(&wall, &model),
+        "片側 1 節点のみ共有する上階柱は側柱ではない"
+    );
 }
 
-/// 敵対的レビュー検証用（一時テスト）: sync_gravity_load_cases_action が
-/// beam_loads を直接書き換えるとき beam_loads_hash を更新しないため、
-/// undo でモデルをハッシュ記録時点の状態へ戻すと refresh がスキップされ、
-/// 別状態の beam_loads が残るか。
+/// `sync_gravity_load_cases_action` は `beam_loads` を直接上書きするため、
+/// キャッシュキー `beam_loads_hash` を無効化しなければならない。無効化しないと、
+/// 編集→同期→undo でモデルをハッシュ記録時点の状態へ戻したとき refresh が
+/// スキップされ、編集後の分配（B2）が表示に残り続ける（敵対的レビューで検出）。
 #[test]
-fn adversarial_beam_loads_hash_bypass() {
+fn test_sync_gravity_invalidates_beam_loads_hash() {
     let mut app = App {
         model: make_slab_test_model(),
         ..App::default()
@@ -6879,7 +6895,6 @@ fn adversarial_beam_loads_hash_bypass() {
     // M1 で CMQ 表示（毎フレーム refresh）を模擬。
     app.refresh_beam_loads();
     let b1 = app.beam_loads.clone();
-    let h1 = app.beam_loads_hash;
 
     // スラブ荷重を編集（M2）。
     app.model.slabs[0]
@@ -6888,7 +6903,7 @@ fn adversarial_beam_loads_hash_bypass() {
             kind: "追加仕上げ".into(),
             value: 2.0e-3,
         });
-    // 解析入口の荷重同期（beam_loads を直接上書き。hash は未更新のはず）。
+    // 解析入口の荷重同期（beam_loads を直接上書き）→ hash は無効化される。
     app.sync_gravity_load_cases_action();
     let b2 = app.beam_loads.clone();
     assert_ne!(
@@ -6896,19 +6911,19 @@ fn adversarial_beam_loads_hash_bypass() {
         format!("{:?}", b2),
         "前提: 編集で分配は変わる"
     );
-    assert_eq!(app.beam_loads_hash, h1, "前提: sync は hash を更新しない");
+    assert_eq!(
+        app.beam_loads_hash, None,
+        "直接上書きの後はキャッシュキーが無効化されるべき"
+    );
 
-    // 編集と同期を undo でぜんぶ戻す（モデルは M1 とバイト同一へ）。
-    while app.undo.can_undo() {
-        app.undo.undo(&mut app.model);
-    }
+    // 編集を戻す（モデルは M1 とバイト同一へ）。
     app.model.slabs[0].loads.pop();
 
-    // CMQ 表示を再開 → hash が一致してスキップされ、M2 の分配が残るか。
+    // CMQ 表示を再開 → キーが無効なので再計算され、M1 の分配へ戻る。
     app.refresh_beam_loads();
     assert_eq!(
         format!("{:?}", app.beam_loads),
         format!("{:?}", b1),
-        "M1 へ戻したのだから M1 の分配が表示されるべき（B2 が残っていればバグ）"
+        "M1 へ戻したのだから M1 の分配が表示されるべき"
     );
 }

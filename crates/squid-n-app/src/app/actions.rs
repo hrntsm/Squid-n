@@ -109,6 +109,15 @@ impl App {
         // モデル差し替えで無効になる状態をすべてリセットする（従来は
         // results/selection 等のみで、時刻歴データ・質点系応答・仕口パネル一覧・
         // 各種ドラフトが旧モデルの ID を指したまま残っていた）。
+        //
+        // 実行中のバックグラウンド解析ジョブも破棄する。残したままだと、旧モデルで
+        // 計算中の結果が完了時に poll_job 経由で新モデルへ「最新結果」として適用され、
+        // 別モデルの変位・応力が stale 警告なしに表示される（受信側 Receiver の破棄
+        // だけでよい。ワーカースレッドの送信は失敗して静かに終了する）。
+        self.job = None;
+        // 保存確認ダイアログの保留も破棄する（旧モデル用に選んだパスへ
+        // 新モデルを保存してしまうのを防ぐ）。
+        self.pending_save_recording = None;
         self.stick_response = None;
         self.generated_panels.clear();
         #[cfg(feature = "gui")]
@@ -1371,13 +1380,31 @@ impl App {
                     src_column_rank(n_n0, smo_m0, shear_yield_elems.contains(&elem.id))
                 } else if let Some(SectionShape::RcWall { thickness, .. }) = sec.shape.as_ref() {
                     if wall_has_src_boundary_column(elem, &self.model) {
-                        // SRC 耐震壁（周辺柱が SRC の壁）: 技術基準解説書の規定により
+                        // SRC 耐震壁（側柱が SRC の壁）: 技術基準解説書の規定により
                         // 破壊モードがせん断破壊の場合を WC、それ以外を WA とする
-                        // （τu/Fc の表は用いない）。せん断破壊は増分解析のせん断降伏
-                        // イベントの有無で判定する。
-                        squid_n_design_jp::secondary::src_rank::src_wall_type(
-                            shear_yield_elems.contains(&elem.id),
-                        )
+                        // （τu/Fc の表は用いない）。
+                        //
+                        // 破壊モードの判定: 増分解析の壁要素は面内せん断を終局せん断
+                        // 強度 Qu で頭打ちにする弾完全塑性のため、終局時の負担水平力が
+                        // Qu に達していれば「せん断破壊」とみなす。線材のせん断降伏
+                        // イベント（shear_yields）は 2 節点要素のみが対象で、4 節点の
+                        // 壁要素はそちらでは検出できない。Qu を算定できない壁
+                        // （耐震壁不成立等）と終局時応答が無い壁は判定不能として
+                        // スキップ（層の選択ランクへフォールバック）。
+                        let qu = squid_n_element::wall_panel::WallPanelElement::shear_capacity_of(
+                            elem,
+                            &self.model,
+                        );
+                        let Some(resp) = resp_by_elem.get(&elem.id) else {
+                            continue;
+                        };
+                        if qu <= 0.0 {
+                            continue;
+                        }
+                        // 頭打ち到達の判定は数値誤差を見込み 99% で切る（過検出側＝
+                        // WC 寄りは Ds を大きくする安全側）。
+                        let shear_failure = resp.horizontal_force >= 0.99 * qu;
+                        squid_n_design_jp::secondary::src_rank::src_wall_type(shear_failure)
                     } else {
                         // RC 耐力壁: 告示「耐力壁の種別」表（τu/Fc により WA〜WD）。
                         // τu は Ds 算定時（増分解析＝プッシュオーバー終局時）に壁断面に生じる
@@ -3632,8 +3659,12 @@ impl App {
         // CMQ 図表示・従来互換のため `self.beam_loads` には固定荷重（DL）分配を
         // 格納する（`refresh_beam_loads` と同じ結果。ここでは共有済みの
         // `beam_map`/`unit_reactions` を使い回すため直接 `slab_beam_loads_with` を呼ぶ）。
+        // キャッシュキーを経由しない直接書き込みのため `beam_loads_hash` を無効化する
+        // （残したままだと、この後モデルを undo で元に戻したとき refresh_beam_loads が
+        // 「ハッシュ一致＝最新」と誤認し、編集後の分配を表示し続ける）。
         self.beam_loads =
             self.slab_beam_loads_with(|slab| slab.dead_intensity(), &unit_reactions, &beam_map);
+        self.beam_loads_hash = None;
 
         // DL（固定荷重）: スラブ分配（`self.beam_loads` は上で dead_intensity 分配済み）
         // ＋躯体自重。自重には二次部材（小梁・間柱）の分（支持点への節点荷重）が
