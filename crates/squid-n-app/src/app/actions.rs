@@ -1208,6 +1208,10 @@ impl App {
             ElemId,
             squid_n_solver::pushover::PushoverMemberResponse,
         > = po.member_response.iter().map(|r| (r.elem, *r)).collect();
+        // 増分解析でせん断降伏が記録された部材（SRC 柱・SRC 耐震壁の
+        // 「破壊モードがせん断破壊か」の判定に用いる）。
+        let shear_yield_elems: std::collections::HashSet<ElemId> =
+            po.shear_yields.iter().map(|s| s.elem).collect();
         // 層別の保有水平耐力 Qu（性能曲線の層別ピーク層せん断）。βu の分母。
         let story_qu: Vec<f64> = (0..n_stories)
             .map(|i| {
@@ -1298,34 +1302,76 @@ impl App {
                         continue;
                     };
                     rank
-                } else if let Some(SectionShape::RcWall { thickness, .. }) = sec.shape.as_ref() {
-                    // RC 耐力壁: 告示「耐力壁の種別」表（τu/Fc により WA〜WD）。
-                    // τu は Ds 算定時（増分解析＝プッシュオーバー終局時）に壁断面に生じる
-                    // 平均せん断応力度 = 負担水平力 /(壁厚・壁長)。
-                    let Some(fc) = mat.fc else {
+                } else if matches!(sec.shape.as_ref(), Some(SectionShape::SrcRect { .. })) {
+                    // SRC 柱: 技術基準解説書 表 2.6.6-5（N/N0・sM0/M0・破壊モード）。
+                    // SRC 梁の種別表は原典に規定が無いためスキップ（層は選択ランクへ
+                    // フォールバック）。破壊モードは増分解析のせん断降伏イベントの
+                    // 有無で判定し、N はメカニズム時軸力（圧縮正）を用いる。
+                    use squid_n_design_jp::secondary::src_rank::{
+                        src_column_rank, src_column_rank_ratios,
+                    };
+                    if member_kind_of(elem, &self.model) != squid_n_design_jp::MemberKind::Column {
+                        continue;
+                    }
+                    let Some(fc) = mat.fc.filter(|f| *f > 0.0) else {
                         continue;
                     };
                     let Some(resp) = resp_by_elem.get(&elem.id) else {
                         continue;
                     };
-                    // 壁長 lw は壁エレメント要素と同じ幾何（`wall_panel_geometry`）を
-                    // 用いる。節点は標高 z で下辺・上辺に分けられ（`ElementData::nodes` の
-                    // 並び順には依存しない）、lw は**上下辺長さの平均**となる
-                    // （台形壁では上下辺長が異なるため一方の辺では代表長さにならない）。
-                    let Some(wgeom) =
-                        squid_n_element::wall_panel::wall_panel_geometry(elem, &self.model)
+                    let shape = sec.shape.as_ref().expect("SrcRect と判定済み");
+                    let Some(rebar_sy) = shape.rebar().and_then(|r| {
+                        squid_n_core::material_grade::rebar_yield_strength(
+                            r.main_grade.as_deref(),
+                            Some(mat),
+                        )
+                    }) else {
+                        continue;
+                    };
+                    let Some((n_n0, smo_m0)) =
+                        src_column_rank_ratios(shape, fc, rebar_sy, resp.axial)
                     else {
                         continue;
                     };
-                    let wall_len = wgeom.lw;
-                    let area = thickness * wall_len;
-                    if area <= 0.0 || fc <= 0.0 {
-                        continue;
+                    src_column_rank(n_n0, smo_m0, shear_yield_elems.contains(&elem.id))
+                } else if let Some(SectionShape::RcWall { thickness, .. }) = sec.shape.as_ref() {
+                    if wall_has_src_boundary_column(elem, &self.model) {
+                        // SRC 耐震壁（周辺柱が SRC の壁）: 技術基準解説書の規定により
+                        // 破壊モードがせん断破壊の場合を WC、それ以外を WA とする
+                        // （τu/Fc の表は用いない）。せん断破壊は増分解析のせん断降伏
+                        // イベントの有無で判定する。
+                        squid_n_design_jp::secondary::src_rank::src_wall_type(
+                            shear_yield_elems.contains(&elem.id),
+                        )
+                    } else {
+                        // RC 耐力壁: 告示「耐力壁の種別」表（τu/Fc により WA〜WD）。
+                        // τu は Ds 算定時（増分解析＝プッシュオーバー終局時）に壁断面に生じる
+                        // 平均せん断応力度 = 負担水平力 /(壁厚・壁長)。
+                        let Some(fc) = mat.fc else {
+                            continue;
+                        };
+                        let Some(resp) = resp_by_elem.get(&elem.id) else {
+                            continue;
+                        };
+                        // 壁長 lw は壁エレメント要素と同じ幾何（`wall_panel_geometry`）を
+                        // 用いる。節点は標高 z で下辺・上辺に分けられ（`ElementData::nodes` の
+                        // 並び順には依存しない）、lw は**上下辺長さの平均**となる
+                        // （台形壁では上下辺長が異なるため一方の辺では代表長さにならない）。
+                        let Some(wgeom) =
+                            squid_n_element::wall_panel::wall_panel_geometry(elem, &self.model)
+                        else {
+                            continue;
+                        };
+                        let wall_len = wgeom.lw;
+                        let area = thickness * wall_len;
+                        if area <= 0.0 || fc <= 0.0 {
+                            continue;
+                        }
+                        // 壁式構造か否かは設計設定（設計タブのチェックボックス）による。
+                        // 告示「耐力壁の種別」表は壁式構造で限界値が厳しくなる。
+                        let wall_structure = self.wall_structure;
+                        rc_wall_type((resp.horizontal_force / area) / fc, wall_structure, false)
                     }
-                    // 壁式構造か否かは設計設定（設計タブのチェックボックス）による。
-                    // 告示「耐力壁の種別」表は壁式構造で限界値が厳しくなる。
-                    let wall_structure = self.wall_structure;
-                    rc_wall_type((resp.horizontal_force / area) / fc, wall_structure, false)
                 } else {
                     // RC 部材: RcRect のみ対応。RcCircle・形状未設定・
                     // コンクリート強度(fc)未設定の材料はスキップ(選択値へフォールバック)。

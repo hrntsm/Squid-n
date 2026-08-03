@@ -6658,3 +6658,139 @@ fn test_time_history_and_pushover_run_preparation() {
         "増分解析の実行で準備計算が走るべき"
     );
 }
+
+/// SRC 耐震壁の判定（`wall_has_src_boundary_column`）: 壁と節点を共有する
+/// 鉛直線材が SRC 断面（SrcRect）のとき真、RC 断面のときは偽となる。
+#[test]
+fn test_wall_has_src_boundary_column() {
+    use squid_n_core::model::{
+        ElementData, ElementKind, EndCondition, ForceRegime, LocalAxis, Model, Node,
+    };
+    use squid_n_core::section_shape::SectionShape;
+
+    let mut model = Model::default();
+    // 壁パネル: n0(0,0,0)-n1(2000,0,0)-n2(2000,0,3000)-n3(0,0,3000)。
+    // 柱は x=0 の辺（n0-n3）を共有する鉛直材。
+    for (i, c) in [
+        [0.0, 0.0, 0.0],
+        [2000.0, 0.0, 0.0],
+        [2000.0, 0.0, 3000.0],
+        [0.0, 0.0, 3000.0],
+    ]
+    .iter()
+    .enumerate()
+    {
+        model.nodes.push(Node {
+            id: NodeId(i as u32),
+            coord: *c,
+            restraint: squid_n_core::dof::Dof6Mask::FREE,
+            mass: None,
+            story: None,
+            support_spring: None,
+        });
+    }
+    let rebar = squid_n_core::section_shape::RcRebar {
+        main_grade: None,
+        main_x: squid_n_core::section_shape::BarSet {
+            count: 4,
+            dia: 22.0,
+            layers: 1,
+        },
+        main_y: squid_n_core::section_shape::BarSet {
+            count: 4,
+            dia: 22.0,
+            layers: 1,
+        },
+        cover: 40.0,
+        shear: squid_n_core::section_shape::ShearBar {
+            dia: 10.0,
+            pitch: 100.0,
+            legs: 2,
+            grade: None,
+        },
+    };
+    let wall_shape = SectionShape::RcWall {
+        thickness: 180.0,
+        ps: 0.0025,
+    };
+    let src_shape = SectionShape::SrcRect {
+        b: 600.0,
+        d: 600.0,
+        rebar: rebar.clone(),
+        steel_height: 300.0,
+        steel_width: 300.0,
+        steel_web_thick: 10.0,
+        steel_flange_thick: 15.0,
+        steel_grade: "SN400B".into(),
+    };
+    let rc_shape = SectionShape::RcRect {
+        b: 600.0,
+        d: 600.0,
+        rebar,
+    };
+    model
+        .sections
+        .push(wall_shape.to_section(SectionId(0), "W180".into()));
+    model
+        .sections
+        .push(src_shape.to_section(SectionId(1), "SRC柱".into()));
+    model
+        .sections
+        .push(rc_shape.to_section(SectionId(2), "RC柱".into()));
+
+    let elem = |id: u32, kind: ElementKind, nodes: &[u32], sec: u32| ElementData {
+        id: ElemId(id),
+        kind,
+        nodes: nodes.iter().map(|&n| NodeId(n)).collect(),
+        section: Some(SectionId(sec)),
+        material: None,
+        local_axis: LocalAxis {
+            ref_vector: [1.0, 0.0, 0.0],
+        },
+        end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+        force_regime: ForceRegime::Auto,
+        rigid_zone: Default::default(),
+        plastic_zone: None,
+        spring: None,
+    };
+    model
+        .elements
+        .push(elem(0, ElementKind::Wall, &[0, 1, 2, 3], 0));
+    model.elements.push(elem(1, ElementKind::Beam, &[0, 3], 1));
+
+    let wall = model.elements[0].clone();
+    assert!(
+        wall_has_src_boundary_column(&wall, &model),
+        "SRC 断面の鉛直材が壁節点を共有 → SRC 耐震壁"
+    );
+
+    // 柱を RC 断面へ差し替えると偽（通常の RC 耐力壁として扱う）。
+    model.elements[1].section = Some(SectionId(2));
+    assert!(
+        !wall_has_src_boundary_column(&wall, &model),
+        "周辺柱が RC のみなら SRC 耐震壁ではない"
+    );
+
+    // 節点を共有しない SRC 柱（別位置）は判定に影響しない。
+    model.nodes.push(Node {
+        id: NodeId(4),
+        coord: [8000.0, 0.0, 0.0],
+        restraint: squid_n_core::dof::Dof6Mask::FREE,
+        mass: None,
+        story: None,
+        support_spring: None,
+    });
+    model.nodes.push(Node {
+        id: NodeId(5),
+        coord: [8000.0, 0.0, 3000.0],
+        restraint: squid_n_core::dof::Dof6Mask::FREE,
+        mass: None,
+        story: None,
+        support_spring: None,
+    });
+    model.elements.push(elem(2, ElementKind::Beam, &[4, 5], 1));
+    assert!(
+        !wall_has_src_boundary_column(&wall, &model),
+        "節点を共有しない SRC 柱は対象外"
+    );
+}

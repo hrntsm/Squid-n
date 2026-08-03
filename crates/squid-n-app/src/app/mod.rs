@@ -1537,6 +1537,41 @@ fn member_kind_of(
     }
 }
 
+/// 壁要素の周辺柱（壁と節点を共有する鉛直線材）に SRC 造の柱があるか。
+///
+/// SRC 耐震壁（部材種別 WA/WC の判定対象）かどうかの判定に用いる。壁自体の
+/// 断面は RC 壁（`RcWall`）のままモデル化されるため、壁の構造種別は周辺柱の
+/// 構造種別（`member_structure_kind`）から推定する。
+fn wall_has_src_boundary_column(
+    wall: &squid_n_core::model::ElementData,
+    model: &squid_n_core::model::Model,
+) -> bool {
+    use squid_n_core::model::ElementKind;
+    use squid_n_core::structure_kind::{member_structure_kind, StructureKind};
+    let wall_nodes: std::collections::HashSet<squid_n_core::ids::NodeId> =
+        wall.nodes.iter().copied().collect();
+    model.elements.iter().any(|e| {
+        if e.id == wall.id
+            || !matches!(
+                e.kind,
+                ElementKind::Beam | ElementKind::Fiber | ElementKind::MultiSpring
+            )
+            || e.nodes.len() < 2
+            || !e.nodes.iter().any(|n| wall_nodes.contains(n))
+        {
+            return false;
+        }
+        let (Some(a), Some(b)) = (
+            model.nodes.get(e.nodes[0].index()),
+            model.nodes.get(e.nodes[1].index()),
+        ) else {
+            return false;
+        };
+        squid_n_core::geom::is_vertical_pair(a.coord, b.coord)
+            && member_structure_kind(model, e) == StructureKind::Src
+    })
+}
+
 /// `SectionShape::RcRect` の配筋情報から RC 終局耐力算定（rank-auto）用の入力を組み立てる。
 ///
 /// # 変換規則
