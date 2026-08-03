@@ -63,7 +63,24 @@ impl InPlaneReleasedColumn {
             k.get(b[1], b[0]),
             k.get(b[1], b[1]),
         ];
-        let kbb_inv = invert_small(&kbb, 2);
+        let Some(kbb_inv) = invert_small(&kbb, 2) else {
+            // 解放面の 2×2 が特異（当該曲げ面の剛性なし）。補正項を省略し、
+            // 解放行・列を 0 にした剛性を返す（もっともらしい剛性を作らない。
+            // `beam::stiffness::condense_end_springs` と同じ扱い）。
+            let mut out = LocalMat::zeros(n);
+            for i in 0..n {
+                if b.contains(&i) {
+                    continue;
+                }
+                for j in 0..n {
+                    if b.contains(&j) {
+                        continue;
+                    }
+                    out.set(i, j, k.get(i, j));
+                }
+            }
+            return out;
+        };
 
         let mut out = LocalMat::zeros(n);
         for i in 0..n {

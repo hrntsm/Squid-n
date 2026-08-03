@@ -631,10 +631,15 @@ impl FiberBeam {
             .material
             .and_then(|mid| model.materials.get(mid.index()));
         let density = mat_ref.map(|m| m.density).unwrap_or(0.0);
-        let e = mat_ref.map(|m| m.young).unwrap_or(205000.0);
-        let g = mat_ref.map(|m| m.shear_modulus()).unwrap_or(78846.0);
-        let width = sec.map(|s| s.width).unwrap_or(100.0);
-        let depth = sec.map(|s| s.depth).unwrap_or(200.0);
+        // 断面・材料の未割当は解析前チェック（solver の precheck_model・
+        // factory の ensure_nonlinear_input）で捕捉される前提。ここでの既定は
+        // ゼロ剛性とし、チェックを通らない経路から来ても「もっともらしい断面」で
+        // 無音に解析が通ることはなく、特異行列として顕在化させる
+        // （従来は E=205000・100×200 の架空の鋼断面として静かに解析されていた）。
+        let e = mat_ref.map(|m| m.young).unwrap_or(0.0);
+        let g = mat_ref.map(|m| m.shear_modulus()).unwrap_or(0.0);
+        let width = sec.map(|s| s.width).unwrap_or(0.0);
+        let depth = sec.map(|s| s.depth).unwrap_or(0.0);
         let torsion_j = sec.map(|s| s.j).unwrap_or(0.0);
 
         // Timoshenko 適合内挿の φ（弾性断面諸元から算定して凍結）。
@@ -966,15 +971,17 @@ impl FiberBeam {
         let mat_ref = data
             .material
             .and_then(|mid| model.materials.get(mid.index()));
-        let e = mat_ref.map(|m| m.young).unwrap_or(205000.0);
-        let width = sec.map(|s| s.width).unwrap_or(100.0);
-        let depth = sec.map(|s| s.depth).unwrap_or(200.0);
+        // 断面・材料の未割当時の既定はゼロ剛性（`Self::new` と同じ方針。
+        // 解析前チェックで捕捉される前提で、架空の断面を作らない）。
+        let e = mat_ref.map(|m| m.young).unwrap_or(0.0);
+        let width = sec.map(|s| s.width).unwrap_or(0.0);
+        let depth = sec.map(|s| s.depth).unwrap_or(0.0);
         let area = sec.map(|s| s.area).unwrap_or(width * depth);
         // 断面レイヤ→要素座標系のクロス変換（beam/construct.rs と同一規約）。
         // 断面 iy（強軸）は要素座標系では z 軸まわり（Mz 面）＝EIz へ、
         // 断面 iz（弱軸）は y 軸まわり（My 面）＝EIy へ対応する。
-        let iy = sec.map(|s| s.iz).unwrap_or(1.0);
-        let iz = sec.map(|s| s.iy).unwrap_or(1.0);
+        let iy = sec.map(|s| s.iz).unwrap_or(0.0);
+        let iz = sec.map(|s| s.iy).unwrap_or(0.0);
 
         // 端部積分点: ξ=∓1、重み w·(L/2) = Lp → w = 2Lp/L
         let w_end = 2.0 * lp / l;
@@ -1281,7 +1288,10 @@ impl FiberBeam {
                 }
                 kbb[a * n + a] += ra.spring;
             }
-            let kbb_inv = Self::invert_small_stack(&kbb[..n * n], n);
+            // 縮約行列が特異なら更新を打ち切り、直前の状態を保つ。
+            let Some(kbb_inv) = Self::invert_small_stack(&kbb[..n * n], n) else {
+                break;
+            };
             let mut du = [0.0_f64; 6];
             for (a, dua) in du[..n].iter_mut().enumerate() {
                 let mut s = 0.0;
@@ -1290,7 +1300,6 @@ impl FiberBeam {
                 }
                 *dua = -s;
             }
-            // 数値異常（縮約行列が特異）なら更新を打ち切り、直前の状態を保つ。
             if du[..n].iter().any(|v| !v.is_finite()) {
                 break;
             }
@@ -1303,34 +1312,58 @@ impl FiberBeam {
         self.update_trial_state(&u_elem);
     }
 
-    /// 小行列（n≤6）の逆行列（ガウス・ジョルダン法）。`super::beam::invert_small`
-    /// と同一アルゴリズム・同一演算順序（結果はビット一致）だが、他クレートからも
-    /// 呼ばれる共通関数の方はシグネチャを変更できないため、fiber 要素内に閉じた
-    /// 呼び出し（`solve_internal_dofs`・`condense_releases`）向けにスタック上へ
-    /// 確保する版をここに用意し、反復のたびの小さなヒープ確保を避ける。
+    /// 小行列（n≤6）の逆行列（部分ピボッティング付きガウス・ジョルダン法）。
+    /// `super::beam::invert_small` と同一アルゴリズムだが、fiber 要素内に閉じた
+    /// 呼び出し（`solve_internal_dofs`・`solve_hinges`・`hinge_tangent`・
+    /// `condense_releases`）向けにスタック上へ確保する版をここに用意し、
+    /// 反復のたびの小さなヒープ確保を避ける。
+    /// 特異（ピボット候補の最大絶対値がスケール比 1e-12 未満）の場合は `None`
+    /// （従来はピボットを 1.0 へ差し替えて誤った行列を無言で返していた）。
     /// 戻り値はフラット化した n×n 逆行列（先頭 n*n 要素のみ有効）。
-    fn invert_small_stack(a: &[f64], n: usize) -> [f64; 36] {
+    fn invert_small_stack(a: &[f64], n: usize) -> Option<[f64; 36]> {
         debug_assert!(n <= 6, "invert_small_stack: n は releases 上限=最大6まで");
+        let scale = a.iter().fold(0.0_f64, |m, &v| m.max(v.abs()));
+        if !scale.is_finite() || scale <= 0.0 {
+            return None;
+        }
+        let tol = 1e-12 * scale;
+        let w = 2 * n;
         let mut aug = [0.0_f64; 72]; // n*(2n) ≤ 6*12 = 72
         for i in 0..n {
             for j in 0..n {
-                aug[i * (2 * n) + j] = a[i * n + j];
+                aug[i * w + j] = a[i * n + j];
             }
-            aug[i * (2 * n) + n + i] = 1.0;
+            aug[i * w + n + i] = 1.0;
         }
         for col in 0..n {
-            let mut pivot = aug[col * (2 * n) + col];
-            if pivot.abs() < 1e-15 {
-                pivot = 1.0;
+            let mut best = col;
+            let mut best_abs = aug[col * w + col].abs();
+            for row in (col + 1)..n {
+                let v = aug[row * w + col].abs();
+                if v > best_abs {
+                    best = row;
+                    best_abs = v;
+                }
             }
-            for j in 0..2 * n {
-                aug[col * (2 * n) + j] /= pivot;
+            if best_abs < tol {
+                return None;
+            }
+            if best != col {
+                for j in 0..w {
+                    aug.swap(col * w + j, best * w + j);
+                }
+            }
+            let pivot = aug[col * w + col];
+            for j in 0..w {
+                aug[col * w + j] /= pivot;
             }
             for row in 0..n {
                 if row != col {
-                    let factor = aug[row * (2 * n) + col];
-                    for j in 0..2 * n {
-                        aug[row * (2 * n) + j] -= factor * aug[col * (2 * n) + j];
+                    let factor = aug[row * w + col];
+                    if factor != 0.0 {
+                        for j in 0..w {
+                            aug[row * w + j] -= factor * aug[col * w + j];
+                        }
                     }
                 }
             }
@@ -1338,10 +1371,10 @@ impl FiberBeam {
         let mut inv = [0.0_f64; 36];
         for i in 0..n {
             for j in 0..n {
-                inv[i * n + j] = aug[i * (2 * n) + n + j];
+                inv[i * n + j] = aug[i * w + n + j];
             }
         }
-        inv
+        Some(inv)
     }
 
     /// 要素変形 `u_elem` に対するトライアル状態の更新。
@@ -1398,7 +1431,18 @@ impl FiberBeam {
                 kbb[i * nb + j] = k[(na + i) * n + (na + j)];
             }
         }
-        let kbb_inv = Self::invert_small_stack(&kbb[..nb * nb], nb);
+        let Some(kbb_inv) = Self::invert_small_stack(&kbb[..nb * nb], nb) else {
+            // 縮約行列 Kbb が特異（解放自由度が機構化）。補正項を省略して返し、
+            // 全体求解の特異検出（自由度名指しの診断）に委ねる（`beam::stiffness::
+            // condense_end_springs` と同じ扱い）。
+            let mut kstar = LocalMat::zeros(na);
+            for i in 0..na {
+                for j in 0..na {
+                    kstar.set(i, j, k[i * n + j]);
+                }
+            }
+            return kstar;
+        };
         let mut kstar = LocalMat::zeros(na);
         for i in 0..na {
             for j in 0..na {
@@ -1595,7 +1639,10 @@ impl FiberBeam {
                     jac[p * n + q] = v;
                 }
             }
-            let jinv = Self::invert_small_stack(&jac[..n * n], n);
+            // ヤコビアンが特異なら反復を打ち切り、直前の状態を保つ。
+            let Some(jinv) = Self::invert_small_stack(&jac[..n * n], n) else {
+                break;
+            };
             let mut dk = [0.0_f64; 4];
             for (p, dkp) in dk.iter_mut().take(n).enumerate() {
                 let mut s = 0.0;
@@ -1696,7 +1743,15 @@ impl FiberBeam {
                 jac[p * n + q] = v;
             }
         }
-        let jinv = Self::invert_small_stack(&jac[..n * n], n);
+        // ヤコビアンが特異な場合は補正なしの弾性剛性 K_el を接線として返す
+        // （内力は履歴に整合した厳密値のため収束解は変わらない。反復回数が
+        // 増えるだけで、誤った接線を混入させるより安全）。
+        let Some(jinv) = Self::invert_small_stack(&jac[..n * n], n) else {
+            return LocalMat {
+                n: 12,
+                data: h.k_el.data.clone(),
+            };
+        };
         // ∂f/∂x[q] = Σ_{p'} K_el[:, slot_{p'}]·G[p'][q]（12×n、n≤4 → 12*n≤48）。
         let mut fx = [0.0_f64; 48];
         for q in 0..n {
