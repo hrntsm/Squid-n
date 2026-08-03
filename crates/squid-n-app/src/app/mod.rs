@@ -559,6 +559,8 @@ pub struct StaticAllComputed {
 /// 送る結果。
 pub enum JobResult {
     Pushover(Result<squid_n_solver::pushover::PushoverResult, String>),
+    /// 固有値解析（モード数は起動時の `analysis_cfg.n_modes`）。
+    Modal(Result<squid_n_solver::eigen::ModalResult, String>),
     /// 時刻歴応答解析。`ResponseResult` は詳細記録を含み大きいため Box で運ぶ。
     TimeHistory(Box<Result<squid_n_solver::timehistory::ResponseResult, String>>),
     /// 線形静的・地震静的(Ai)・風荷重静的解析（`StaticCaseKey` で結果格納先を区別）。

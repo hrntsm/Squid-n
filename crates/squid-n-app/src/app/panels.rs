@@ -1226,7 +1226,9 @@ impl App {
                         .add_enabled(!running, egui::Button::new("▶ 実行"))
                         .clicked()
                     {
-                        self.run_eigen(self.analysis_cfg.n_modes);
+                        // UI スレッドをブロックしないようバックグラウンドで実行する
+                        // （他の解析と同じジョブ経路）。
+                        self.start_eigen_job(self.analysis_cfg.n_modes);
                     }
                 });
                 ui.colored_label(

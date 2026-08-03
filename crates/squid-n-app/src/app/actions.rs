@@ -478,6 +478,60 @@ impl App {
         );
     }
 
+    /// 全解析エントリ共通の前処理（同期実行・バックグラウンドジョブ共通）。
+    /// 並列度設定 → エラー/通知クリア → 準備計算（剛域・仕口パネルの反映と
+    /// 荷重同期。冪等・ハッシュ判定でスキップされる）。
+    ///
+    /// 解析の入口は必ず本メソッドを通ること。かつては経路ごとに前処理を
+    /// 個別に書いており、「増分解析・時刻歴・固有値だけ準備計算を通らず、
+    /// 仕口パネルの生成が省かれて静的解析と異なるモデルを解く」という
+    /// 抜けが実際に起きていた。
+    fn begin_analysis(&mut self) {
+        self.apply_parallelism_setting();
+        self.last_error = None;
+        self.last_notice = None;
+        self.ensure_preparation();
+    }
+
+    /// バックグラウンドジョブ共通の入口ガード＋前処理。
+    /// ジョブ実行中なら案内を出して `false` を返す（呼び出し側は即 return）。
+    fn begin_analysis_job(&mut self) -> bool {
+        if self.job.is_some() {
+            self.report_error("解析実行中です");
+            return false;
+        }
+        self.begin_analysis();
+        true
+    }
+
+    /// パニックを解析エラーへ変換して計算を実行する（ジョブスレッド用）。
+    fn run_compute<T>(f: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(f))
+            .unwrap_or_else(|p| Err(analysis_panic_message(p.as_ref())))
+    }
+
+    /// 計算クロージャをバックグラウンドスレッドで起動し、ジョブとして登録する
+    /// （起動ログ込み）。結果タブへの自動遷移（`jump_on_success`）が必要な場合は
+    /// 呼び出し側が登録後に `self.job` へ設定する。
+    fn spawn_analysis_job(
+        &mut self,
+        label: &'static str,
+        work: impl FnOnce() -> JobResult + Send + 'static,
+    ) {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(work());
+        });
+        self.job = Some(AnalysisJob {
+            label,
+            started: std::time::SystemTime::now(),
+            rx,
+            #[cfg(feature = "gui")]
+            jump_on_success: None,
+        });
+        self.report_info(format!("⏳ {label} を開始"));
+    }
+
     /// T3: 線形静的解析を実行し、結果を `self.results` に格納する。
     /// 指定した荷重ケースが存在しない場合はエラーメッセージをセット。
     ///
@@ -487,10 +541,7 @@ impl App {
     /// 地震荷重を「EX」「EY」ケースへ同期する（モデル・関連設定が前回同期時から
     /// 変わっていなければ荷重の再計算は丸ごとスキップする）。
     pub fn run_linear_static(&mut self, lc: LoadCaseId) {
-        self.apply_parallelism_setting();
-        self.last_error = None;
-        self.last_notice = None;
-        self.ensure_preparation();
+        self.begin_analysis();
         let res = Self::compute_linear_static(self.model.clone(), lc);
         self.apply_static_case_result(StaticCaseKey::User(lc), res);
     }
@@ -581,34 +632,14 @@ impl App {
     /// UI スレッドをブロックしないよう重い解析を逃がす。
     /// 既にジョブが実行中の場合は何もしない（last_error に案内文を設定）。
     pub fn start_linear_static_job(&mut self, lc: LoadCaseId) {
-        if self.job.is_some() {
-            self.report_error("解析実行中です");
+        if !self.begin_analysis_job() {
             return;
         }
-        self.apply_parallelism_setting();
-        self.last_error = None;
-        self.last_notice = None;
-        self.ensure_preparation();
         let model = self.model.clone();
-        let (tx, rx) = std::sync::mpsc::channel();
-        std::thread::spawn(move || {
-            let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                Self::compute_linear_static(model, lc)
-            }))
-            .unwrap_or_else(|p| Err(analysis_panic_message(p.as_ref())));
-            let _ = tx.send(JobResult::StaticCase {
-                key: StaticCaseKey::User(lc),
-                res,
-            });
+        self.spawn_analysis_job("線形静的解析", move || JobResult::StaticCase {
+            key: StaticCaseKey::User(lc),
+            res: Self::run_compute(|| Self::compute_linear_static(model, lc)),
         });
-        self.job = Some(AnalysisJob {
-            label: "線形静的解析",
-            started: std::time::SystemTime::now(),
-            rx,
-            #[cfg(feature = "gui")]
-            jump_on_success: None,
-        });
-        self.report_info(format!("⏳ {} を開始", self.job.as_ref().unwrap().label));
     }
 
     /// 静的解析の単体実行（解析パネル「▶ 単体実行」の入口）をバックグラウンドで
@@ -650,10 +681,7 @@ impl App {
     /// 組合せが空の地震荷重ケースを参照している場合は解かずにエラーで案内する
     /// （地震項が黙って 0 になるのを防ぐ）。
     pub fn run_combination(&mut self, index: usize) {
-        self.apply_parallelism_setting();
-        self.last_error = None;
-        self.last_notice = None;
-        self.ensure_preparation();
+        self.begin_analysis();
         let Some(combo) = self.model.combinations.get(index).cloned() else {
             self.report_error(format!("荷重組合せ #{} が存在しません", index));
             return;
@@ -737,14 +765,9 @@ impl App {
     /// UI スレッドをブロックしないよう重い解析を逃がす。
     /// 既にジョブが実行中の場合は何もしない（last_error に案内文を設定）。
     pub fn start_combination_job(&mut self, index: usize) {
-        if self.job.is_some() {
-            self.report_error("解析実行中です");
+        if !self.begin_analysis_job() {
             return;
         }
-        self.apply_parallelism_setting();
-        self.last_error = None;
-        self.last_notice = None;
-        self.ensure_preparation();
         let Some(combo) = self.model.combinations.get(index).cloned() else {
             self.report_error(format!("荷重組合せ #{} が存在しません", index));
             return;
@@ -758,22 +781,10 @@ impl App {
         }
         let model = self.model.clone();
         let name = combo.name.clone();
-        let (tx, rx) = std::sync::mpsc::channel();
-        std::thread::spawn(move || {
-            let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                Self::compute_combination(model, combo)
-            }))
-            .unwrap_or_else(|p| Err(analysis_panic_message(p.as_ref())));
-            let _ = tx.send(JobResult::Combo { name, res });
+        self.spawn_analysis_job("荷重組合せ解析", move || JobResult::Combo {
+            name,
+            res: Self::run_compute(|| Self::compute_combination(model, combo)),
         });
-        self.job = Some(AnalysisJob {
-            label: "荷重組合せ解析",
-            started: std::time::SystemTime::now(),
-            rx,
-            #[cfg(feature = "gui")]
-            jump_on_success: None,
-        });
-        self.report_info(format!("⏳ {} を開始", self.job.as_ref().unwrap().label));
     }
 
     /// 一括解析（全荷重ケース単体＋全荷重組合せ）を実行し、結果を `bundle` へ
@@ -790,16 +801,11 @@ impl App {
     /// 解けなかった場合は既存の結果を変更せず、案内メッセージを `last_error` に
     /// 設定して return する。
     pub fn run_static_all(&mut self) {
-        self.apply_parallelism_setting();
-        self.last_error = None;
-        self.last_notice = None;
+        self.begin_analysis();
         if self.model.load_cases.is_empty() {
             self.report_error("荷重ケースがありません。荷重タブで作成してください。");
             return;
         }
-        // 解析に先立って準備計算を実行する（剛域の反映、スラブ荷重・躯体自重の
-        // 「DL」等への同期、階が定義済みなら地震荷重の「EX」「EY」への同期）。
-        self.ensure_preparation();
         let (case_keys, combos, errors) = self.static_all_inputs();
         let computed = Self::compute_static_all(self.model.clone(), case_keys, combos);
         self.apply_static_all_result(computed, errors);
@@ -1027,39 +1033,19 @@ impl App {
     /// UI スレッドをブロックしないよう重い解析を逃がす。
     /// 既にジョブが実行中の場合は何もしない（last_error に案内文を設定）。
     pub fn start_static_all_job(&mut self) {
-        if self.job.is_some() {
-            self.report_error("解析実行中です");
+        if !self.begin_analysis_job() {
             return;
         }
-        self.apply_parallelism_setting();
-        self.last_error = None;
-        self.last_notice = None;
         if self.model.load_cases.is_empty() {
             self.report_error("荷重ケースがありません。荷重タブで作成してください。");
             return;
         }
-        self.ensure_preparation();
         let (case_keys, combos, pre_errors) = self.static_all_inputs();
         let model = self.model.clone();
-        let (tx, rx) = std::sync::mpsc::channel();
-        std::thread::spawn(move || {
-            let computed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                Self::compute_static_all(model, case_keys, combos)
-            }))
-            .unwrap_or_else(|p| Err(analysis_panic_message(p.as_ref())));
-            let _ = tx.send(JobResult::StaticAll {
-                computed,
-                pre_errors,
-            });
+        self.spawn_analysis_job("一括解析", move || JobResult::StaticAll {
+            computed: Self::run_compute(|| Self::compute_static_all(model, case_keys, combos)),
+            pre_errors,
         });
-        self.job = Some(AnalysisJob {
-            label: "一括解析",
-            started: std::time::SystemTime::now(),
-            rx,
-            #[cfg(feature = "gui")]
-            jump_on_success: None,
-        });
-        self.report_info(format!("⏳ {} を開始", self.job.as_ref().unwrap().label));
     }
 
     /// 表示対象の静的解析結果を解決する。優先順: ナビゲータ選択 → 最後に実行した結果。
@@ -1790,24 +1776,51 @@ impl App {
         Ok(checks)
     }
 
-    /// T3: 固有値解析を実行し、結果を `self.results` に格納する。
+    /// T3: 固有値解析を実行し、結果を `self.results` に格納する（同期）。
     pub fn run_eigen(&mut self, n_modes: usize) {
-        self.apply_parallelism_setting();
-        self.last_error = None;
-        self.last_notice = None;
-        self.apply_rigid_zones_for_analysis();
-        match Analysis::prepare(&self.model) {
-            Ok(analysis) => match analysis.eigen(n_modes) {
-                Ok(modal) => {
-                    let mut bundle = self.results.take().unwrap_or_default();
-                    bundle.modal = Some(modal);
-                    self.results = Some(bundle);
-                    // 固有値のみの更新では設計は更新されないが、最新実行時刻は更新
-                    self.staleness.last_run = Some(SystemTime::now());
-                }
-                Err(e) => self.report_error(format!("固有値解析エラー: {:?}", e)),
-            },
-            Err(e) => self.report_error(format!("解析準備エラー: {:?}", e)),
+        self.begin_analysis();
+        let res = Self::compute_eigen(self.model.clone(), n_modes);
+        self.apply_eigen_result(res);
+    }
+
+    /// 固有値解析をバックグラウンドスレッドで実行する（解析パネル「▶ 実行」の
+    /// 入口）。かつて固有値だけは UI スレッドで同期実行しており、モード数の
+    /// 多い固有値解析中にアプリが無応答になっていた。
+    pub fn start_eigen_job(&mut self, n_modes: usize) {
+        if !self.begin_analysis_job() {
+            return;
+        }
+        let model = self.model.clone();
+        self.spawn_analysis_job("固有値解析", move || {
+            JobResult::Modal(Self::run_compute(|| Self::compute_eigen(model, n_modes)))
+        });
+    }
+
+    /// 固有値解析の純粋計算部分。所有権を取り `&self` を使わないため、
+    /// バックグラウンドジョブ（`start_eigen_job`）からも呼び出せる。
+    fn compute_eigen(
+        model: squid_n_core::model::Model,
+        n_modes: usize,
+    ) -> Result<squid_n_solver::eigen::ModalResult, String> {
+        match Analysis::prepare(&model) {
+            Ok(analysis) => analysis
+                .eigen(n_modes)
+                .map_err(|e| format!("固有値解析エラー: {:?}", e)),
+            Err(e) => Err(format!("解析準備エラー: {:?}", e)),
+        }
+    }
+
+    /// `compute_eigen` の結果を適用する（bundle 格納・最終実行時刻更新）。
+    fn apply_eigen_result(&mut self, res: Result<squid_n_solver::eigen::ModalResult, String>) {
+        match res {
+            Ok(modal) => {
+                let mut bundle = self.results.take().unwrap_or_default();
+                bundle.modal = Some(modal);
+                self.results = Some(bundle);
+                // 固有値のみの更新では設計は更新されないが、最新実行時刻は更新
+                self.staleness.last_run = Some(SystemTime::now());
+            }
+            Err(e) => self.report_error(e),
         }
     }
 
@@ -1897,10 +1910,7 @@ impl App {
     /// 使う）。SemiPrecise で固有値解析が未実行の場合は解析せず、実行を促す
     /// メッセージを `last_error` に設定して return する。
     pub fn run_seismic(&mut self, dir: SeismicDir) {
-        self.apply_parallelism_setting();
-        self.last_error = None;
-        self.last_notice = None;
-        self.ensure_preparation();
+        self.begin_analysis();
         let t = match self.design_seismic_period() {
             Ok(t) => t,
             Err(msg) => {
@@ -1938,14 +1948,9 @@ impl App {
     /// UI スレッドをブロックしないよう重い解析を逃がす。
     /// 既にジョブが実行中の場合は何もしない（last_error に案内文を設定）。
     pub fn start_seismic_job(&mut self, dir: SeismicDir) {
-        if self.job.is_some() {
-            self.report_error("解析実行中です");
+        if !self.begin_analysis_job() {
             return;
         }
-        self.apply_parallelism_setting();
-        self.last_error = None;
-        self.last_notice = None;
-        self.ensure_preparation();
         let t = match self.design_seismic_period() {
             Ok(t) => t,
             Err(msg) => {
@@ -1961,34 +1966,17 @@ impl App {
             c0: self.analysis_cfg.c0,
         };
         let model = self.model.clone();
-        let (tx, rx) = std::sync::mpsc::channel();
-        std::thread::spawn(move || {
-            let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                Self::compute_seismic(model, cfg, t)
-            }))
-            .unwrap_or_else(|p| Err(analysis_panic_message(p.as_ref())));
-            let _ = tx.send(JobResult::StaticCase {
-                key: StaticCaseKey::Seismic(dir),
-                res,
-            });
+        self.spawn_analysis_job("地震静的解析", move || JobResult::StaticCase {
+            key: StaticCaseKey::Seismic(dir),
+            res: Self::run_compute(|| Self::compute_seismic(model, cfg, t)),
         });
-        self.job = Some(AnalysisJob {
-            label: "地震静的解析",
-            started: std::time::SystemTime::now(),
-            rx,
-            #[cfg(feature = "gui")]
-            jump_on_success: None,
-        });
-        self.report_info(format!("⏳ {} を開始", self.job.as_ref().unwrap().label));
     }
 
     /// 風荷重の静的解析を実行し、結果を `StaticCaseKey::Wind(dir)` に格納する
     /// （`run_seismic` と同じパターン。X/Y 双方の結果および他の静的結果と共存できる）。
     /// 基準風速・地表面粗度区分・パラペット高さは `analysis_cfg` を用いる。
     pub fn run_wind(&mut self, dir: SeismicDir) {
-        self.apply_parallelism_setting();
-        self.last_error = None;
-        self.last_notice = None;
+        self.begin_analysis();
         let cfg = squid_n_solver::analysis::WindStaticCfg {
             dir,
             v0: self.analysis_cfg.v0,
@@ -1996,7 +1984,6 @@ impl App {
             cpi: 0.0,
             parapet_mm: self.analysis_cfg.parapet_mm,
         };
-        self.ensure_preparation();
         let res = Self::compute_wind(self.model.clone(), cfg);
         self.apply_static_case_result(StaticCaseKey::Wind(dir), res);
     }
@@ -2019,13 +2006,9 @@ impl App {
     /// UI スレッドをブロックしないよう重い解析を逃がす。
     /// 既にジョブが実行中の場合は何もしない（last_error に案内文を設定）。
     pub fn start_wind_job(&mut self, dir: SeismicDir) {
-        if self.job.is_some() {
-            self.report_error("解析実行中です");
+        if !self.begin_analysis_job() {
             return;
         }
-        self.apply_parallelism_setting();
-        self.last_error = None;
-        self.last_notice = None;
         let cfg = squid_n_solver::analysis::WindStaticCfg {
             dir,
             v0: self.analysis_cfg.v0,
@@ -2033,27 +2016,11 @@ impl App {
             cpi: 0.0,
             parapet_mm: self.analysis_cfg.parapet_mm,
         };
-        self.ensure_preparation();
         let model = self.model.clone();
-        let (tx, rx) = std::sync::mpsc::channel();
-        std::thread::spawn(move || {
-            let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                Self::compute_wind(model, cfg)
-            }))
-            .unwrap_or_else(|p| Err(analysis_panic_message(p.as_ref())));
-            let _ = tx.send(JobResult::StaticCase {
-                key: StaticCaseKey::Wind(dir),
-                res,
-            });
+        self.spawn_analysis_job("風荷重静的解析", move || JobResult::StaticCase {
+            key: StaticCaseKey::Wind(dir),
+            res: Self::run_compute(|| Self::compute_wind(model, cfg)),
         });
-        self.job = Some(AnalysisJob {
-            label: "風荷重静的解析",
-            started: std::time::SystemTime::now(),
-            rx,
-            #[cfg(feature = "gui")]
-            jump_on_success: None,
-        });
-        self.report_info(format!("⏳ {} を開始", self.job.as_ref().unwrap().label));
     }
 
     /// 荷重ケースから標準組合せを生成し、undo 可能に一括追加する
@@ -2132,16 +2099,15 @@ impl App {
     /// バックグラウンドジョブ（`start_pushover_job`）からも呼び出せる。
     /// モデルは呼び出し側で複製したものを渡す
     /// （非線形状態の副作用を GUI 上のモデルへ残さないため）。
+    /// 増分解析の純粋計算部分。剛域・仕口パネル・荷重同期は呼び出し側
+    /// （`begin_analysis` → `ensure_preparation`）で適用済みのモデルを渡す前提
+    /// （静的解析と同じ規約。かつてはここで剛域だけをインライン適用しており、
+    /// 仕口パネルの生成が省かれて静的解析と剛性の異なるモデルを解いていた）。
     fn compute_pushover(
         model: squid_n_core::model::Model,
         cfg: AnalysisSettings,
     ) -> Result<squid_n_solver::pushover::PushoverResult, String> {
         let mut work = model;
-        // 解析前に剛域を自動算定（設計書 §6.2.1、標準実装）。
-        squid_n_element::beam::apply_auto_rigid_zones(
-            &mut work,
-            &squid_n_element::beam::RigidZoneRule::default(),
-        );
         Analysis::prepare(&work).map_err(|e| format!("解析準備エラー: {}", e))?;
         let dofmap = squid_n_core::dof::DofMap::build(&work);
         let reducer = squid_n_solver::constraint::Reducer::build(&work, &dofmap);
@@ -2229,8 +2195,7 @@ impl App {
     }
 
     pub fn run_pushover(&mut self) {
-        self.apply_parallelism_setting();
-        self.last_error = None;
+        self.begin_analysis();
         self.notice_steel_seismic_walls();
         let res = Self::compute_pushover(self.model.clone(), self.analysis_cfg);
         self.apply_pushover_result(res);
@@ -2240,31 +2205,19 @@ impl App {
     /// UI スレッドをブロックしないよう重い解析を逃がす。
     /// 既にジョブが実行中の場合は何もしない（last_error に案内文を設定）。
     pub fn start_pushover_job(&mut self) {
-        if self.job.is_some() {
-            self.report_error("解析実行中です");
+        if !self.begin_analysis_job() {
             return;
         }
-        self.apply_parallelism_setting();
-        self.last_error = None;
         self.notice_steel_seismic_walls();
         let model = self.model.clone();
         let cfg = self.analysis_cfg;
-        let (tx, rx) = std::sync::mpsc::channel();
-        std::thread::spawn(move || {
-            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                Self::compute_pushover(model, cfg)
-            }))
-            .unwrap_or_else(|p| Err(analysis_panic_message(p.as_ref())));
-            let _ = tx.send(JobResult::Pushover(result));
+        self.spawn_analysis_job("増分解析", move || {
+            JobResult::Pushover(Self::run_compute(|| Self::compute_pushover(model, cfg)))
         });
-        self.job = Some(AnalysisJob {
-            label: "増分解析",
-            started: std::time::SystemTime::now(),
-            rx,
-            #[cfg(feature = "gui")]
-            jump_on_success: Some((Tab::Results, ResultsView::Pushover)),
-        });
-        self.report_info(format!("⏳ {} を開始", self.job.as_ref().unwrap().label));
+        #[cfg(feature = "gui")]
+        if let Some(job) = self.job.as_mut() {
+            job.jump_on_success = Some((Tab::Results, ResultsView::Pushover));
+        }
     }
 
     /// 線形時刻歴応答解析の純粋計算部分。所有権を取り `&self` を使わないため、
@@ -2298,19 +2251,17 @@ impl App {
         wave
     }
 
+    /// 時刻歴応答解析の純粋計算部分。剛域・仕口パネル・荷重同期は呼び出し側
+    /// （`begin_analysis` → `ensure_preparation`）で適用済みのモデルを渡す前提
+    /// （静的解析と同じ規約。かつてはここで剛域だけをインライン適用しており、
+    /// 仕口パネルの生成が省かれて静的解析と剛性の異なるモデルを解いていた）。
     fn compute_time_history(
         model: squid_n_core::model::Model,
         cfg: AnalysisSettings,
         wave: squid_n_solver::timehistory::GroundMotion,
     ) -> Result<squid_n_solver::timehistory::ResponseResult, String> {
-        let mut model = model;
         // 位相差入力（ねじれ加振）を指定時に付加する（構造動力学の位相差入力解析）。
         let wave = Self::apply_phase_diff(&cfg, wave);
-        // 解析前に剛域を自動算定（設計書 §6.2.1、標準実装）。
-        squid_n_element::beam::apply_auto_rigid_zones(
-            &mut model,
-            &squid_n_element::beam::RigidZoneRule::default(),
-        );
         let analysis = Analysis::prepare(&model).map_err(|e| format!("解析準備エラー: {}", e))?;
         let damping = match cfg.th_damping_model {
             ThDampingModel::StiffnessProportional => {
@@ -2499,8 +2450,7 @@ impl App {
     /// 線形時刻歴応答解析を実行する。減衰モデル・積分法は `analysis_cfg` に従う
     /// （剛性比例／Rayleigh、Newmark-β／HHT-α）。
     pub fn run_time_history(&mut self, wave: squid_n_solver::timehistory::GroundMotion) {
-        self.apply_parallelism_setting();
-        self.last_error = None;
+        self.begin_analysis();
         let res = Self::compute_time_history(self.model.clone(), self.analysis_cfg, wave);
         self.apply_time_history_result(res);
     }
@@ -2509,36 +2459,26 @@ impl App {
     /// UI スレッドをブロックしないよう重い解析を逃がす。
     /// 既にジョブが実行中の場合は何もしない（last_error に案内文を設定）。
     pub fn start_time_history_job(&mut self, wave: squid_n_solver::timehistory::GroundMotion) {
-        if self.job.is_some() {
-            self.report_error("解析実行中です");
+        if !self.begin_analysis_job() {
             return;
         }
-        self.apply_parallelism_setting();
-        self.last_error = None;
         let model = self.model.clone();
         let cfg = self.analysis_cfg;
-        let (tx, rx) = std::sync::mpsc::channel();
-        std::thread::spawn(move || {
-            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                Self::compute_time_history(model, cfg, wave)
-            }))
-            .unwrap_or_else(|p| Err(analysis_panic_message(p.as_ref())));
-            let _ = tx.send(JobResult::TimeHistory(Box::new(result)));
-        });
         // 非線形／線形の別をジョブラベル・完了ログへ出す（実行中の判別・履歴の両方で有用）。
         let label = if cfg.th_nonlinear {
             "時刻歴応答(非線形)"
         } else {
             "時刻歴応答(線形)"
         };
-        self.job = Some(AnalysisJob {
-            label,
-            started: std::time::SystemTime::now(),
-            rx,
-            #[cfg(feature = "gui")]
-            jump_on_success: Some((Tab::Results, ResultsView::TimeHistory)),
+        self.spawn_analysis_job(label, move || {
+            JobResult::TimeHistory(Box::new(Self::run_compute(|| {
+                Self::compute_time_history(model, cfg, wave)
+            })))
         });
-        self.report_info(format!("⏳ {} を開始", self.job.as_ref().unwrap().label));
+        #[cfg(feature = "gui")]
+        if let Some(job) = self.job.as_mut() {
+            job.jump_on_success = Some((Tab::Results, ResultsView::TimeHistory));
+        }
     }
 
     /// 実行中のジョブの完了を確認し、完了していれば結果を適用する。
@@ -2576,6 +2516,7 @@ impl App {
                 self.last_error = None;
                 match result {
                     JobResult::Pushover(res) => self.apply_pushover_result(res),
+                    JobResult::Modal(res) => self.apply_eigen_result(res),
                     JobResult::TimeHistory(res) => self.apply_time_history_result(*res),
                     JobResult::StaticCase { key, res } => self.apply_static_case_result(key, res),
                     JobResult::Combo { name, res } => self.apply_combo_result(name, res),

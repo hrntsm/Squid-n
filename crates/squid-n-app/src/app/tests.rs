@@ -6629,3 +6629,32 @@ fn test_time_history_apply_clears_stale() {
         "時刻歴の完了後は stale が解消されるべき"
     );
 }
+
+/// 増分解析・時刻歴応答解析の実行でも準備計算（剛域・仕口パネル・荷重同期）が
+/// 走ること。従来はこれらの経路だけ ensure_preparation を通らず、仕口パネルの
+/// 生成が省かれて静的解析と剛性の異なるモデルを解いていた。
+#[test]
+fn test_time_history_and_pushover_run_preparation() {
+    let mut app = App::default();
+    app.load_model(crate::sample::portal_frame());
+    app.analysis_cfg.th_duration = 0.5;
+    assert!(
+        app.staleness.preparation_stale,
+        "読込直後は準備計算が未実行のはず"
+    );
+    app.run_time_history_sample();
+    assert!(app.last_error.is_none(), "{:?}", app.last_error);
+    assert!(
+        !app.staleness.preparation_stale,
+        "時刻歴の実行で準備計算が走るべき"
+    );
+
+    // 増分解析も同じ入口（begin_analysis）を通ること。
+    app.staleness.mark_edited();
+    assert!(app.staleness.preparation_stale);
+    app.run_pushover();
+    assert!(
+        !app.staleness.preparation_stale,
+        "増分解析の実行で準備計算が走るべき"
+    );
+}
