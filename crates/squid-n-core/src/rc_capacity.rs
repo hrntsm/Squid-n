@@ -1,7 +1,7 @@
 //! RC 矩形断面の簡易終局耐力算定（部材ランク判定・プッシュオーバーせん断降伏判定用）。
 //!
 //! squid-n-skeleton のファイバ解析（`build_rc_member_skeleton`）は Mu を精算できるが、
-//! 保有水平耐力の部材ランク自動判定（`squid_n_design_jp::secondary::member_rank::rc_member_rank`）
+//! 保有水平耐力の部材ランク自動判定（RC 部材の脆性破壊判定 Qsu/Qmu）
 //! は毎フレーム実行されるため重すぎる。また `squid_n_solver::pushover` のせん断降伏判定
 //! （`compute_shear_yield_qy`）も同様に軽量な閉形式解を必要とする。本モジュールは
 //! 閉形式の簡易式で Mu・Qsu・Qmu を算定し、両者の入力とする。係数は靭性指針・
@@ -54,8 +54,8 @@ pub struct RcCapacityInput {
 /// そのまま用いる（さらに j = 7d/8 を乗じていた従来実装は Mu を 12.5%
 /// 過小評価する誤りだった）。
 ///
-/// 不正入力（at, d_eff, σy のいずれかが 0 以下）は 0.0 を返す（`ds::rc_member_rank` は
-/// qmu<=0 で FD を返す仕様に整合）。
+/// 不正入力（at, d_eff, σy のいずれかが 0 以下）は 0.0 を返す（呼び出し側の
+/// 部材ランク判定は qmu<=0 を判定不能＝最不利側として扱う）。
 pub fn rc_mu_simple(inp: &RcCapacityInput) -> f64 {
     if inp.at <= 0.0 || inp.d_eff <= 0.0 || inp.sigma_y <= 0.0 {
         return 0.0;

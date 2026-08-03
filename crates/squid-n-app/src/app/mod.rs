@@ -708,8 +708,7 @@ pub struct App {
     pub design_rank: squid_n_design_jp::secondary::holding_capacity::MemberRank,
     /// 保有水平耐力（ルート3）の部材ランクを鋼部材の幅厚比から自動判定するか（UI-13）。
     /// true の場合、鋼部材かつ断面形状(`Section.shape`)を持つ部材について
-    /// `squid_n_design_jp::secondary::width_thickness::max_width_thickness` →
-    /// `s_member_rank` で算定し、
+    /// 構造規定の幅厚比表（`steel_width_thickness_rank`）で算定し、
     /// 算定できなかった層のみ `design_rank`（選択値）にフォールバックする。
     pub design_rank_auto: bool,
     /// 耐力壁の種別（WA〜WD）判定で**壁式構造**の列を用いるか。
@@ -1740,12 +1739,11 @@ pub(crate) fn steel_member_use_of(
 /// 鋼断面の幅厚比から部材ランク（FA〜FD）を判定する。
 ///
 /// 構造規定の幅厚比表（部材種別×断面×部位×鋼種級。
-/// [`squid_n_design_jp::secondary::width_thickness::s_member_rank_by_kihon`]）を
-/// 優先し、表の対象外形状（溝形・T形・山形等）は単一幅厚比法
-/// （[`squid_n_design_jp::secondary::member_rank::s_member_rank_scaled`]）へ
-/// フォールバックする。F 値は材料名の前方一致で引き（例 "SN400B"→235）、
-/// 引けなければ 235 とする。幅厚比を算定できない形状（円形鋼管・RC 断面等）は
-/// `None`。
+/// [`squid_n_design_jp::secondary::width_thickness::s_member_rank_by_kihon`]）に
+/// よる判定のみを行い、表の対象外形状（溝形・T形・山形・円形鋼管以外の
+/// 幅厚比非対象断面等）は `None`（未判定。層は選択ランクへフォールバック）と
+/// する。表に規範的根拠のない形状へ仮のしきい値で自動ランクを付けると、
+/// 根拠のない値が Ds を決めてしまうため、未判定として手動選択に委ねる。
 ///
 /// 保有水平耐力の Ds 算定（`compute_holding_capacity`）と準備計算の表示
 /// （`build_prep_width_thickness`）が同一の判定を用いるための共通関数。
@@ -1754,18 +1752,11 @@ pub(crate) fn steel_width_thickness_rank(
     member_use: squid_n_design_jp::secondary::width_thickness::SteelMemberUse,
     material_name: &str,
 ) -> Option<squid_n_design_jp::secondary::holding_capacity::MemberRank> {
-    use squid_n_design_jp::secondary::member_rank::{s_member_rank_scaled, RankCriteria};
-    use squid_n_design_jp::secondary::width_thickness::{
-        max_width_thickness, s_member_rank_by_kihon,
-    };
-    use squid_n_design_jp::steel_f_value_prefix;
-
-    if let Some(rank) = s_member_rank_by_kihon(shape, member_use, material_name) {
-        return Some(rank);
-    }
-    let wt = max_width_thickness(shape)?;
-    let f_value = steel_f_value_prefix(material_name, steel_max_thickness(shape)).unwrap_or(235.0);
-    Some(s_member_rank_scaled(wt, f_value, &RankCriteria::default()))
+    squid_n_design_jp::secondary::width_thickness::s_member_rank_by_kihon(
+        shape,
+        member_use,
+        material_name,
+    )
 }
 
 /// 部材両端節点間の幾何長 \[mm\]（内法補正なしの簡易値。剛域等は考慮しない）。

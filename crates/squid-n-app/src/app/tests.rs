@@ -2011,14 +2011,13 @@ fn test_holding_capacity_rank_auto_from_width_thickness() {
 
 /// SectionShape::RcRect の配筋情報から `rc_capacity_input_from_rect` で
 /// `RcCapacityInput` を組み立てる経路そのものを検証する（RcRect→入力構築）。
-/// 得られた入力から `rc_qsu_simple`/`rc_qmu_simple` → `rc_member_rank` の結果が、
+/// 得られた入力から `rc_qsu_simple`/`rc_qmu_simple` の結果が、
 /// 同じ式を独立に書き下した手計算と一致することを確認する。
 #[test]
 fn test_rc_capacity_input_from_rect_matches_handcalc() {
     use squid_n_core::ids::MaterialId;
     use squid_n_core::model::Material;
     use squid_n_core::section_shape::{BarSet, RcRebar, ShearBar};
-    use squid_n_design_jp::secondary::member_rank::{rc_member_rank, RankCriteria};
     use squid_n_design_jp::secondary::rc_capacity::{rc_qmu_simple, rc_qsu_simple};
 
     let b = 400.0;
@@ -2105,20 +2104,14 @@ fn test_rc_capacity_input_from_rect_matches_handcalc() {
         qsu_handcalc
     );
 
-    let rank = rc_member_rank(qsu, qmu, &RankCriteria::default());
-    let rank_handcalc = rc_member_rank(qsu_handcalc, qmu_handcalc, &RankCriteria::default());
-    assert_eq!(rank, rank_handcalc);
-    // Qsu/Qmu ≈ 2.12（曲げ降伏が十分先行する健全な配筋）なので FA になるはず。
-    assert_eq!(
-        rank,
-        squid_n_design_jp::secondary::holding_capacity::MemberRank::FA
-    );
+    // Qsu/Qmu ≈ 1.85（曲げ降伏が先行する健全な配筋）であること。
+    assert!(qsu / qmu > 1.5, "Qsu/Qmu={}", qsu / qmu);
 }
 
 /// UI-13(RC): SectionShape::RcRect + fc 付き材料（コンクリート、is_steel=false）を
 /// 持つ小さな門型ラーメンを組み、rank-auto で member_ranks に RC 部材のランクが入り、
-/// `rc_capacity_input_from_rect` → `rc_qsu_simple`/`rc_qmu_simple` → `rc_member_rank`
-/// の手計算と一致することを確認する。
+/// 告示の部材種別表（`rc_column_type`/`rc_beam_type`）の手計算と一致することを
+/// 確認する。
 #[test]
 fn test_holding_capacity_rank_auto_rc_rect_from_shape() {
     use squid_n_core::dof::Dof6Mask;
