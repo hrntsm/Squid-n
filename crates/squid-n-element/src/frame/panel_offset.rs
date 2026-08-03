@@ -56,7 +56,7 @@
 //! 水平材（はり）と鉛直材（柱）のみを対象とする。斜材（ブレース等）は資料が
 //! 接合位置・`ζ` を定めていないため、節点で接合する（パネル自由度と連成させない）。
 
-use crate::behavior::{Ctx, ElemState, ElementBehavior, LocalMat, LocalVec, MassOption};
+use crate::behavior::{Ctx, ElementBehavior, LocalMat, LocalVec, MassOption};
 use smallvec::SmallVec;
 use squid_n_core::dof::DofMap;
 use squid_n_core::ids::NodeId;
@@ -217,8 +217,8 @@ impl ElementBehavior for PanelOffsetMember {
         gdofs
     }
 
-    fn tangent_stiffness(&self, state: &ElemState, ctx: &Ctx) -> LocalMat {
-        self.transform_matrix(&self.inner.tangent_stiffness(state, ctx))
+    fn tangent_stiffness(&self, ctx: &Ctx) -> LocalMat {
+        self.transform_matrix(&self.inner.tangent_stiffness(ctx))
     }
 
     fn geometric_stiffness(&self, n: f64) -> LocalMat {
@@ -229,10 +229,10 @@ impl ElementBehavior for PanelOffsetMember {
         self.transform_matrix(&self.inner.mass_matrix(opt))
     }
 
-    fn internal_force(&self, state: &ElemState, ctx: &Ctx) -> LocalVec {
+    fn internal_force(&self, ctx: &Ctx) -> LocalVec {
         // f_elem = Tᵀ · f_inner。パネル自由度には ζ·（節点回転まわりのモーメント）が
         // 集まり、パネル要素の内力と釣り合う（資料 (2.10.3-3)）。
-        let f_inner = self.inner.internal_force(state, ctx);
+        let f_inner = self.inner.internal_force(ctx);
         let mut f = LocalVec {
             data: SmallVec::from_elem(0.0, self.n_dof()),
         };
@@ -284,13 +284,9 @@ impl ElementBehavior for PanelOffsetMember {
         self.inner.recover_forces(&self.to_inner(u_elem))
     }
 
-    fn state_member_forces(
-        &self,
-        state: &ElemState,
-        ctx: &Ctx,
-    ) -> Option<crate::beam::MemberForces> {
+    fn state_member_forces(&self, ctx: &Ctx) -> Option<crate::beam::MemberForces> {
         // 内側は自身のトライアル変位（パネル寄与を反映済み）を保持している。
-        self.inner.state_member_forces(state, ctx)
+        self.inner.state_member_forces(ctx)
     }
 
     fn ductility_probe(&self) -> Option<crate::behavior::DuctilityProbe> {
@@ -476,11 +472,11 @@ mod tests {
         let ctx = Ctx { model: &model };
         let ends = resolve(&model.elements[0], &model).expect("梁");
         let inner = crate::beam::BeamElement::new(&model.elements[0], &model);
-        let k_inner = inner.tangent_stiffness(&ElemState::default(), &ctx);
+        let k_inner = inner.tangent_stiffness(&ctx);
         let wrapped = PanelOffsetMember::new(Box::new(inner), ends);
 
         assert_eq!(wrapped.n_dof(), 14, "12 ＋ パネル 2");
-        let k = wrapped.tangent_stiffness(&ElemState::default(), &ctx);
+        let k = wrapped.tangent_stiffness(&ctx);
 
         // 左上 12×12 は内側そのまま（パネル変形角 0 のとき従来と一致）。
         for i in 0..12 {
@@ -543,7 +539,7 @@ mod tests {
         du.data[11] = 1.0e-4;
         wrapped.update_state(&du, true, &ctx);
 
-        let f = wrapped.internal_force(&ElemState::default(), &ctx);
+        let f = wrapped.internal_force(&ctx);
         // i 端の ΘX・ΘY（内側 3・4）に対応するパネル自由度の値は ζ 倍。
         assert!((f.data[12] - ZETA_BEAM * f.data[3]).abs() <= 1e-6 * f.data[3].abs().max(1.0));
         assert!((f.data[13] - ZETA_BEAM * f.data[4]).abs() <= 1e-6 * f.data[4].abs().max(1.0));

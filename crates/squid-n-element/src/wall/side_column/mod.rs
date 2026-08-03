@@ -25,7 +25,7 @@ pub use detect::{is_line_member, is_side_column_member, wall_side_column_release
 #[cfg(test)]
 use crate::beam::BeamElement;
 #[cfg(test)]
-use crate::behavior::{Ctx, ElemState, ElementBehavior, LocalMat};
+use crate::behavior::{Ctx, ElementBehavior, LocalMat};
 #[cfg(test)]
 use crate::transform::LocalFrame;
 #[cfg(test)]
@@ -116,7 +116,7 @@ mod tests {
 
         // LocalZ 解放（rz を消去）→ uy 面（1,5,7,11。iz を用いる面）が縮約でゼロになる。
         let col_z = col_ref;
-        let k_z = col_z.tangent_stiffness(&ElemState::default(), &ctx);
+        let k_z = col_z.tangent_stiffness(&ctx);
         let e_uy_zero = energy_at(&k_z, 7);
         assert!(
             e_uy_zero.abs() / expected_uy < 1e-6,
@@ -131,7 +131,7 @@ mod tests {
 
         // LocalY 解放（ry を消去）→ uz 面（2,4,8,10。iy を用いる面）が縮約でゼロになる。
         let col_y = make_test_column(ReleaseAxis::LocalY);
-        let k_y = col_y.tangent_stiffness(&ElemState::default(), &ctx);
+        let k_y = col_y.tangent_stiffness(&ctx);
         let e_uz_zero = energy_at(&k_y, 8);
         assert!(
             e_uz_zero.abs() / expected_uz < 1e-6,
@@ -152,7 +152,7 @@ mod tests {
         let ctx = Ctx { model: &model };
         for axis in [ReleaseAxis::LocalY, ReleaseAxis::LocalZ] {
             let col = make_test_column(axis);
-            let k = col.tangent_stiffness(&ElemState::default(), &ctx);
+            let k = col.tangent_stiffness(&ctx);
             let expected = col.inner.e * col.inner.a / col.inner.length;
             let e_axial = energy_at(&k, 6);
             assert!(
@@ -180,7 +180,7 @@ mod tests {
             let mut u_axial = [0.0; 12];
             u_axial[0] = 1.0;
             col.inner.trial_disp = u_axial;
-            let f_axial = col.internal_force(&ElemState::default(), &ctx);
+            let f_axial = col.internal_force(&ctx);
             assert!(
                 f_axial.data.iter().any(|fi| fi.abs() > 1e-3),
                 "axis={axis:?} 片端軸方向変位で内力が生じない（テストが無効化されている）"
@@ -192,7 +192,7 @@ mod tests {
                 u[dir] = 1.0;
                 u[6 + dir] = 1.0;
                 col.inner.trial_disp = u;
-                let f = col.internal_force(&ElemState::default(), &ctx);
+                let f = col.internal_force(&ctx);
                 for (i, fi) in f.data.iter().enumerate() {
                     assert!(
                         fi.abs() < 1e-6,
@@ -210,7 +210,7 @@ mod tests {
         let ctx = Ctx { model: &model };
         for axis in [ReleaseAxis::LocalY, ReleaseAxis::LocalZ] {
             let col = make_test_column(axis);
-            let k = col.tangent_stiffness(&ElemState::default(), &ctx);
+            let k = col.tangent_stiffness(&ctx);
             for i in 0..12 {
                 for j in 0..12 {
                     let kij = k.get(i, j);

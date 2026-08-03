@@ -13,7 +13,7 @@ use crate::common::assemble::support_spring_terms;
 use crate::common::csc_cache::CscCache;
 use squid_n_core::dof::DofMap;
 use squid_n_core::model::Model;
-use squid_n_element::behavior::{Ctx, ElemState, ElementBehavior};
+use squid_n_element::behavior::{Ctx, ElementBehavior};
 
 /// 全体接線剛性行列を組み立てる。
 ///
@@ -91,15 +91,14 @@ fn assemble_k_triplets_into(
 ) {
     out.clear();
     let ctx = Ctx { model };
-    let state = ElemState::default();
     // 要素ごとの接線剛性 triplet 化（要素間にデータ依存が無い）。
     let elem_triplets = |elem: &squid_n_core::model::ElementData,
                          b: &dyn ElementBehavior|
      -> Vec<squid_n_math::sparse::Triplet> {
         let gdofs = b.global_dofs(dofmap);
-        let mut k = b.tangent_stiffness(&state, &ctx);
+        let mut k = b.tangent_stiffness(&ctx);
         if use_kg {
-            let f = b.internal_force(&state, &ctx);
+            let f = b.internal_force(&ctx);
             // 幾何剛性には**部材軸力 N（引張正）**を渡す。`internal_force` は
             // グローバル成分を返す契約なので、材端力を要素局所 ex へ射影して得る
             // （`geom::axial_compression` と同じ符号規約: dot(f_j, ex) = +N）。
@@ -186,7 +185,6 @@ pub(crate) fn compute_f_int(
     behaviors: &[Box<dyn ElementBehavior>],
 ) -> Vec<f64> {
     let ctx = Ctx { model };
-    let state = ElemState::default();
     let mut f = vec![0.0; dofmap.n_active()];
     // 要素ごとの (gdofs, f_local) の算定は要素間にデータ依存が無いため、並列度設定
     // （`squid_n_math::parallelism`）が Auto/Threads のときは rayon で並列化する。
@@ -200,7 +198,7 @@ pub(crate) fn compute_f_int(
             .par_iter()
             .map(|b| {
                 let gdofs = b.global_dofs(dofmap);
-                let f_local = b.internal_force(&state, &ctx);
+                let f_local = b.internal_force(&ctx);
                 (gdofs, f_local)
             })
             .collect();
@@ -214,7 +212,7 @@ pub(crate) fn compute_f_int(
     } else {
         for b in behaviors {
             let gdofs = b.global_dofs(dofmap);
-            let f_local = b.internal_force(&state, &ctx);
+            let f_local = b.internal_force(&ctx);
             for (&g, &v) in gdofs.iter().zip(f_local.data.iter()) {
                 if g != usize::MAX {
                     f[g] += v;

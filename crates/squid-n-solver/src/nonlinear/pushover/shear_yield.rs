@@ -13,7 +13,7 @@ use squid_n_core::material_grade::{
 use squid_n_core::model::{ElementData, Material, Model, RigidZone, Section};
 use squid_n_core::rc_capacity::{rc_qsu_simple, RcCapacityInput};
 use squid_n_core::section_shape::{BarSet, RcRebar, SectionShape};
-use squid_n_element::behavior::{Ctx, ElemState, ElementBehavior};
+use squid_n_element::behavior::{Ctx, ElementBehavior};
 use squid_n_element::transform::LocalFrame;
 
 /// せん断降伏耐力 Qy の判定しきい値（部材ごと、局所 y・z 方向、独立）。
@@ -372,7 +372,6 @@ pub(crate) fn track_shear_yield(
     step: u32,
     events: &mut Vec<ShearYieldEvent>,
 ) {
-    let state = ElemState::default();
     let ctx = Ctx { model };
     for (i, (elem, b)) in model.elements.iter().zip(behaviors).enumerate() {
         // 2 節点の線材のみ対象。4 節点の耐震壁は nodes[0]→nodes[1] が壁脚の幅方向
@@ -396,7 +395,7 @@ pub(crate) fn track_shear_yield(
         let ey = frame.rot[1];
         let ez = frame.rot[2];
 
-        let f = b.internal_force(&state, &ctx);
+        let f = b.internal_force(&ctx);
         let f_i = [f.data[0], f.data[1], f.data[2]];
         let f_j = [f.data[6], f.data[7], f.data[8]];
         let vy = dot3(f_i, ey).abs().max(dot3(f_j, ey).abs());

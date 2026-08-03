@@ -1,4 +1,4 @@
-use crate::behavior::{Ctx, ElemState, ElementBehavior, LocalMat, LocalVec, MassOption};
+use crate::behavior::{Ctx, ElementBehavior, LocalMat, LocalVec, MassOption};
 use crate::fiber::FiberBeam;
 use smallvec::SmallVec;
 use squid_n_core::dof::DofMap;
@@ -80,21 +80,17 @@ impl ElementBehavior for MultiSpringElement {
         self.inner.global_dofs(dof)
     }
 
-    fn tangent_stiffness(&self, state: &ElemState, ctx: &Ctx) -> LocalMat {
-        self.inner.tangent_stiffness(state, ctx)
+    fn tangent_stiffness(&self, ctx: &Ctx) -> LocalMat {
+        self.inner.tangent_stiffness(ctx)
     }
 
-    fn internal_force(&self, state: &ElemState, ctx: &Ctx) -> LocalVec {
-        self.inner.internal_force(state, ctx)
+    fn internal_force(&self, ctx: &Ctx) -> LocalVec {
+        self.inner.internal_force(ctx)
     }
 
     /// 内力分布は実体（端部バネ断面＋中央弾性のファイバー要素）へ委譲する。
-    fn state_member_forces(
-        &self,
-        state: &ElemState,
-        ctx: &Ctx,
-    ) -> Option<crate::beam::MemberForces> {
-        self.inner.state_member_forces(state, ctx)
+    fn state_member_forces(&self, ctx: &Ctx) -> Option<crate::beam::MemberForces> {
+        self.inner.state_member_forces(ctx)
     }
 
     fn update_state(&mut self, du: &LocalVec, commit: bool, ctx: &Ctx) {
@@ -250,7 +246,6 @@ mod tests {
         // shear: Some(0.0) → None にして G = E/(2(1+ν)) > 0（φ>0）にする
         model.materials[0].shear = None;
         let ctx = Ctx { model: &model };
-        let state = ElemState::default();
         let build = || {
             MultiSpringElement::new(
                 &model.elements[0],
@@ -284,7 +279,7 @@ mod tests {
             ],
         };
         ms.update_state(&du, false, &ctx);
-        let f = ms.internal_force(&state, &ctx);
+        let f = ms.internal_force(&ctx);
         for (i, v) in f.data.iter().enumerate() {
             assert!(v.abs() < 1.0, "MS+φ>0 で客観性違反: dof {i} = {v}");
         }
@@ -302,8 +297,8 @@ mod tests {
             false,
             &ctx,
         );
-        let f0 = b0.internal_force(&state, &ctx);
-        let k = b0.tangent_stiffness(&state, &ctx);
+        let f0 = b0.internal_force(&ctx);
+        let k = b0.tangent_stiffness(&ctx);
         let kmax = (0..12)
             .flat_map(|i| (0..12).map(move |j| (i, j)))
             .map(|(i, j)| k.get(i, j).abs())
@@ -319,7 +314,7 @@ mod tests {
                 false,
                 &ctx,
             );
-            let fp = bp.internal_force(&state, &ctx);
+            let fp = bp.internal_force(&ctx);
             for i in 0..12 {
                 let fd = (fp.data[i] - f0.data[i]) / h;
                 let err = (fd - k.get(i, j)).abs() / kmax;
@@ -351,7 +346,7 @@ mod tests {
             data: smallvec::smallvec![0.0, 0.0, 0.0, 0.0, theta, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
         };
         elem1.update_state(&du1, false, &ctx);
-        let f1 = elem1.internal_force(&ElemState::default(), &ctx);
+        let f1 = elem1.internal_force(&ctx);
         let m1 = f1.data[4].abs();
 
         // ケース2: 同じ回転 + 軸ひずみ −15εy。塑性増分ヒンジモデルでは端部断面の
@@ -372,7 +367,7 @@ mod tests {
             ],
         };
         elem2.update_state(&du2, false, &ctx);
-        let f2 = elem2.internal_force(&ElemState::default(), &ctx);
+        let f2 = elem2.internal_force(&ctx);
         let m2 = f2.data[4].abs();
 
         // バネ群の全塑性モーメント Mp ≈ Σa·|z|·fy = 2列×25000mm²×(200+100+0+100+200)×295
@@ -399,7 +394,7 @@ mod tests {
             data: smallvec::smallvec![0.0, 0.0, 0.0, 0.0, 0.02, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
         };
         elem.update_state(&du, true, &ctx);
-        let f_committed = elem.internal_force(&ElemState::default(), &ctx);
+        let f_committed = elem.internal_force(&ctx);
 
         // さらに trial を進めてから revert → コミット状態の内力へ戻る
         // （revert 後の応力キャッシュはソルバ契約どおり次の update_state で更新される
@@ -413,7 +408,7 @@ mod tests {
             data: smallvec::smallvec![0.0; 12],
         };
         elem.update_state(&zero, false, &ctx);
-        let f_reverted = elem.internal_force(&ElemState::default(), &ctx);
+        let f_reverted = elem.internal_force(&ctx);
         for i in 0..12 {
             approx::assert_relative_eq!(
                 f_committed.data[i],
@@ -453,8 +448,8 @@ mod tests {
         };
         elem.update_state(&du2, false, &ctx);
         elem2.update_state(&du2, false, &ctx);
-        let f1 = elem.internal_force(&ElemState::default(), &ctx);
-        let f2 = elem2.internal_force(&ElemState::default(), &ctx);
+        let f1 = elem.internal_force(&ctx);
+        let f2 = elem2.internal_force(&ctx);
         for i in 0..12 {
             approx::assert_relative_eq!(f1.data[i], f2.data[i], epsilon = 1e-6);
         }

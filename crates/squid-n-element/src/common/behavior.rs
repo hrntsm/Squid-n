@@ -28,9 +28,6 @@ pub struct Ctx<'a> {
     pub model: &'a Model,
 }
 
-#[derive(Clone, Debug, Default)]
-pub struct ElemState {}
-
 #[derive(Clone, Copy)]
 pub enum MassOption {
     Lumped,
@@ -135,8 +132,8 @@ impl LocalMat {
 pub trait ElementBehavior: Send + Sync {
     fn n_dof(&self) -> usize;
     fn global_dofs(&self, dof: &DofMap) -> SmallVec<[usize; 24]>;
-    fn tangent_stiffness(&self, state: &ElemState, ctx: &Ctx) -> LocalMat;
-    fn internal_force(&self, state: &ElemState, ctx: &Ctx) -> LocalVec;
+    fn tangent_stiffness(&self, ctx: &Ctx) -> LocalMat;
+    fn internal_force(&self, ctx: &Ctx) -> LocalVec;
     fn update_state(&mut self, _du: &LocalVec, _commit: bool, _ctx: &Ctx) {}
     /// 質量行列を**全体系**で返す（`tangent_stiffness` と同じ契約）。
     /// ソルバはこの返り値をそのまま全体自由度へ散布するため、回転不変でない
@@ -165,11 +162,7 @@ pub trait ElementBehavior: Send + Sync {
     /// 既定は `None`（内力分布を持たない要素、または状態から正しく内力を
     /// 取り出せない要素）。プッシュオーバー・時刻歴の結果から部材応力を
     /// 取り出す用途はこちらを使う。
-    fn state_member_forces(
-        &self,
-        _state: &ElemState,
-        _ctx: &Ctx,
-    ) -> Option<crate::beam::MemberForces> {
+    fn state_member_forces(&self, _ctx: &Ctx) -> Option<crate::beam::MemberForces> {
         None
     }
     /// T7: 線形化幾何剛性 Kg（P-Δ）。軸力 N（引張正）。デフォルトはゼロ。

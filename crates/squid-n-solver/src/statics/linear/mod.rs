@@ -441,19 +441,16 @@ impl BraceIterAssembly {
         let mut behavior_disabled = Vec::with_capacity(n_elem);
 
         for (i, elem) in model.elements.iter().enumerate() {
-            let (b_active, st_active) = build_behavior(elem, model);
+            let b_active = build_behavior(elem, model);
             let g = b_active.global_dofs(dofmap);
-            let k = b_active.tangent_stiffness(&st_active, &Ctx { model });
+            let k = b_active.tangent_stiffness(&Ctx { model });
 
             if brace_of_elem.contains_key(&i) {
                 let delem = &disabled_model.elements[i];
-                let (b_disabled, st_disabled) = build_behavior(delem, &disabled_model);
-                let kd = b_disabled.tangent_stiffness(
-                    &st_disabled,
-                    &Ctx {
-                        model: &disabled_model,
-                    },
-                );
+                let b_disabled = build_behavior(delem, &disabled_model);
+                let kd = b_disabled.tangent_stiffness(&Ctx {
+                    model: &disabled_model,
+                });
                 k_disabled.push(Some(kd));
                 behavior_disabled.push(Some(b_disabled));
             } else {
@@ -591,9 +588,9 @@ fn solve_once_inner(model: &Model, lc: LoadCaseId) -> Result<StaticOnce, SolveEr
         Vec::with_capacity(model.elements.len());
     let mut k_triplets = Vec::new();
     for elem in &model.elements {
-        let (behavior, state) = build_behavior(elem, model);
+        let behavior = build_behavior(elem, model);
         let gdofs = behavior.global_dofs(&dofmap);
-        let k_local = behavior.tangent_stiffness(&state, &ctx);
+        let k_local = behavior.tangent_stiffness(&ctx);
         k_triplets.extend(k_local.to_triplets(&gdofs));
         behaviors.push((behavior, gdofs));
     }

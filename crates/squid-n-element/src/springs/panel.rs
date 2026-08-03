@@ -49,7 +49,7 @@
 //! [`PANEL_HARDENING`]）で、履歴則は S 造部材の既定と同じ標準型（Masing）とする。
 //! 軸力比 `n` は各ステップの柱軸力から更新する（[`ColumnAxial`]）。
 
-use crate::behavior::{Ctx, ElemState, ElementBehavior, LocalMat, LocalVec, MassOption};
+use crate::behavior::{Ctx, ElementBehavior, LocalMat, LocalVec, MassOption};
 use smallvec::SmallVec;
 use squid_n_core::dof::{DofMap, DOF_PER_NODE};
 use squid_n_core::ids::NodeId;
@@ -403,7 +403,7 @@ impl ElementBehavior for PanelZone {
         gdofs
     }
 
-    fn tangent_stiffness(&self, _state: &ElemState, _ctx: &Ctx) -> LocalMat {
+    fn tangent_stiffness(&self, _ctx: &Ctx) -> LocalMat {
         let (k_panel_frame, _) = self.panel_response();
         // K_node = [Tp]ᵀ S K' S [Tp]（S = diag(-1, 1)）。S は対角 ±1 のため
         // S K' S = K' となり、実質 [Tp]ᵀ K' [Tp] に帰着する。
@@ -421,7 +421,7 @@ impl ElementBehavior for PanelZone {
         k
     }
 
-    fn internal_force(&self, _state: &ElemState, _ctx: &Ctx) -> LocalVec {
+    fn internal_force(&self, _ctx: &Ctx) -> LocalVec {
         let ms = self.panel_moments();
         let mut f = LocalVec {
             data: SmallVec::from_elem(0.0, self.n_dof()),
@@ -911,7 +911,7 @@ mod tests {
         let pz = PanelZone::new(&data, &model);
         assert_eq!(pz.n_dof(), 2, "弾性パネルは 2 自由度");
 
-        let k = pz.tangent_stiffness(&ElemState::default(), &Ctx { model: &model });
+        let k = pz.tangent_stiffness(&Ctx { model: &model });
         let expected = pz.g * pz.ve;
         assert!((k.get(0, 0) - expected).abs() / expected < 1e-12);
         assert!((k.get(1, 1) - expected).abs() / expected < 1e-12);
@@ -932,7 +932,7 @@ mod tests {
         du.data[0] = 1.0e-4;
         pz.update_state(&du, false, &ctx);
 
-        let f = pz.internal_force(&ElemState::default(), &ctx);
+        let f = pz.internal_force(&ctx);
         assert!((f.data[0] - k * 1.0e-4).abs() / (k * 1.0e-4) < 1e-12);
         assert!(f.data[1].abs() < 1e-6);
         // panel_moments() は内力と同じ値（検定の pM に供給する）。
@@ -947,7 +947,7 @@ mod tests {
         let ctx = Ctx { model: &model };
         let mut pz = PanelZone::new(&data, &model);
         pz.theta = 0.37; // 任意角
-        let k = pz.tangent_stiffness(&ElemState::default(), &ctx);
+        let k = pz.tangent_stiffness(&ctx);
         let expected = pz.g * pz.ve;
         assert!((k.get(0, 0) - expected).abs() / expected < 1e-12);
         assert!((k.get(1, 1) - expected).abs() / expected < 1e-12);
@@ -975,7 +975,7 @@ mod tests {
         };
         du.data[0] = gamma_y * 0.5;
         pz.update_state(&du, true, &ctx);
-        let k = pz.tangent_stiffness(&ElemState::default(), &ctx);
+        let k = pz.tangent_stiffness(&ctx);
         assert!((k.get(0, 0) - pz.g * pz.ve).abs() / (pz.g * pz.ve) < 1e-9);
 
         // 降伏後は二次勾配。接線剛性は確定状態からの載荷方向で評価されるため、
@@ -986,7 +986,7 @@ mod tests {
         };
         du2.data[0] = gamma_y * 2.0;
         pz.update_state(&du2, false, &ctx);
-        let k2 = pz.tangent_stiffness(&ElemState::default(), &ctx);
+        let k2 = pz.tangent_stiffness(&ctx);
         let k_expected = PANEL_HARDENING * pz.g * pz.ve;
         assert!(
             (k2.get(0, 0) - k_expected).abs() / k_expected < 1e-9,
@@ -1013,7 +1013,7 @@ mod tests {
         let pz = PanelZone::new_nonlinear(&data, &model);
         assert_eq!(pz.n_dof(), 14, "パネル 2 ＋ 柱 12");
 
-        let k = pz.tangent_stiffness(&ElemState::default(), &ctx);
+        let k = pz.tangent_stiffness(&ctx);
         for i in 0..14 {
             for j in 0..14 {
                 if i < 2 && j < 2 {
@@ -1084,7 +1084,7 @@ mod tests {
         model.sections[1].shape = None;
         let pz = PanelZone::new(&data, &model);
         assert_eq!(pz.k_panel, PANEL_RIGID_STIFFNESS);
-        let k = pz.tangent_stiffness(&ElemState::default(), &Ctx { model: &model });
+        let k = pz.tangent_stiffness(&Ctx { model: &model });
         assert!(k.get(0, 0) > 0.0 && k.get(1, 1) > 0.0);
     }
 }

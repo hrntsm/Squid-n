@@ -3,7 +3,7 @@
 //! 弾塑性バイリニア軸ばねの `ElementBehavior` 実装。変位依存のため静的・動的
 //! いずれの解析でも作用する（`dt` 不要）。
 
-use crate::behavior::{Ctx, ElemState, ElementBehavior, LocalMat, LocalVec, MassOption};
+use crate::behavior::{Ctx, ElementBehavior, LocalMat, LocalVec, MassOption};
 use crate::transform::LocalFrame;
 use smallvec::SmallVec;
 use squid_n_core::dof::{DofMap, DOF_PER_NODE};
@@ -87,7 +87,7 @@ impl ElementBehavior for HystereticDamperElement {
         gdofs
     }
 
-    fn tangent_stiffness(&self, _state: &ElemState, _ctx: &Ctx) -> LocalMat {
+    fn tangent_stiffness(&self, _ctx: &Ctx) -> LocalMat {
         // trial を汚さないよう複製して接線のみ取得。
         use squid_n_material::UniaxialMaterial;
         let mut m = self.mat.clone();
@@ -95,7 +95,7 @@ impl ElementBehavior for HystereticDamperElement {
         self.axis.to_global(&self.local_stiffness(k))
     }
 
-    fn internal_force(&self, _state: &ElemState, _ctx: &Ctx) -> LocalVec {
+    fn internal_force(&self, _ctx: &Ctx) -> LocalVec {
         use squid_n_material::UniaxialMaterial;
         let mut f = LocalVec {
             data: SmallVec::from_elem(0.0, 12),
@@ -127,11 +127,7 @@ impl ElementBehavior for HystereticDamperElement {
         LocalMat::zeros(12)
     }
 
-    fn state_member_forces(
-        &self,
-        _state: &ElemState,
-        _ctx: &Ctx,
-    ) -> Option<crate::beam::MemberForces> {
+    fn state_member_forces(&self, _ctx: &Ctx) -> Option<crate::beam::MemberForces> {
         use squid_n_material::UniaxialMaterial;
         // trial を汚さないよう複製し、現在状態の復元力（引張正）を取り出す。
         let mut m = self.mat.clone();
@@ -244,11 +240,11 @@ mod tests {
         let dy = qy / k1; // 0.1
         drive(&mut d, 0.5 * dy, &model);
         let ctx = Ctx { model: &model };
-        let f_el = d.internal_force(&ElemState {}, &ctx).data[6];
+        let f_el = d.internal_force(&ctx).data[6];
         assert!((f_el - k1 * 0.5 * dy).abs() < 1e-6, "elastic: {f_el}");
         // 降伏後（5δy）。
         drive(&mut d, 5.0 * dy, &model);
-        let f_pl = d.internal_force(&ElemState {}, &ctx).data[6];
+        let f_pl = d.internal_force(&ctx).data[6];
         let expect = qy + 0.02 * k1 * (5.0 * dy - dy);
         assert!(
             (f_pl - expect).abs() < 1.0,
@@ -263,9 +259,9 @@ mod tests {
         let model = Model::default();
         let ctx = Ctx { model: &model };
         drive(&mut d, 0.05, &model);
-        let n = d.internal_force(&ElemState {}, &ctx).data[6];
+        let n = d.internal_force(&ctx).data[6];
         assert!(n > 0.0, "hysteretic damper must be active in static: {n}");
-        let kt = d.tangent_stiffness(&ElemState {}, &ctx).get(6, 6);
+        let kt = d.tangent_stiffness(&ctx).get(6, 6);
         assert!(kt > 0.0);
     }
 
@@ -285,7 +281,7 @@ mod tests {
             let phase = i as f64 / 20.0 * std::f64::consts::PI;
             let elong = amp * phase.sin();
             drive(&mut d, elong, &model);
-            let n = d.internal_force(&ElemState {}, &ctx).data[6];
+            let n = d.internal_force(&ctx).data[6];
             energy += 0.5 * (prev.1 + n) * (elong - prev.0);
             prev = (elong, n);
         }
@@ -307,7 +303,7 @@ mod tests {
         let ctx = Ctx { model: &model };
         // 降伏域まで押し込んで履歴（塑性変位）を作る。
         drive(&mut d, 3.0 * qy / k1, &model);
-        let f_before = d.internal_force(&ElemState {}, &ctx).data[6];
+        let f_before = d.internal_force(&ctx).data[6];
 
         let cp = d.serialize_checkpoint();
         assert!(!cp.is_empty(), "チェックポイントに状態が直列化されるべき");
@@ -316,7 +312,7 @@ mod tests {
         restored
             .deserialize_checkpoint(&cp)
             .expect("チェックポイント復元は成功するはず");
-        let f_after = restored.internal_force(&ElemState {}, &ctx).data[6];
+        let f_after = restored.internal_force(&ctx).data[6];
         assert!(
             (f_before - f_after).abs() < 1e-9,
             "復元後の内力が一致すべき: {f_before} vs {f_after}"

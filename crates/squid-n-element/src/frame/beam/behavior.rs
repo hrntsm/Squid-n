@@ -1,7 +1,7 @@
 //! [`ElementBehavior`] トレイト実装（自由度写像・接線/幾何剛性・内力・質量行列）。
 
 use super::element::BeamElement;
-use crate::behavior::{Ctx, ElemState, ElementBehavior, LocalMat, LocalVec, MassOption};
+use crate::behavior::{Ctx, ElementBehavior, LocalMat, LocalVec, MassOption};
 use smallvec::SmallVec;
 use squid_n_core::dof::{DofMap, DOF_PER_NODE};
 
@@ -26,7 +26,7 @@ impl ElementBehavior for BeamElement {
         gdofs
     }
 
-    fn tangent_stiffness(&self, _state: &ElemState, _ctx: &Ctx) -> LocalMat {
+    fn tangent_stiffness(&self, _ctx: &Ctx) -> LocalMat {
         // 要素ローカルの 12×12 を全体系へ回す（K_global = Rᵀ K_local R）。
         // ElementBehavior::tangent_stiffness は全体系を返す契約（シェルと同じ）。
         // これを欠くと、ローカル系とグローバル系が一致しない部材（鉛直柱・
@@ -78,7 +78,7 @@ impl ElementBehavior for BeamElement {
         self.axis.to_global(&kg_node)
     }
 
-    fn internal_force(&self, _state: &ElemState, _ctx: &Ctx) -> LocalVec {
+    fn internal_force(&self, _ctx: &Ctx) -> LocalVec {
         // trial_disp はグローバル系で蓄積されるため、グローバル剛性で内力を評価する。
         // f_global = (R^T·K_local·R)·u_global
         // Newton 反復中の未確定変位も反映する（トライアル追従。committed のみを
@@ -223,11 +223,7 @@ impl ElementBehavior for BeamElement {
 
     /// 弾性材は常に線形なので、蓄積した trial 変位からの復元でよい
     /// （非線形解析中の弾性材＝`recover_forces` と同じ結果）。
-    fn state_member_forces(
-        &self,
-        _state: &ElemState,
-        _ctx: &Ctx,
-    ) -> Option<crate::beam::MemberForces> {
+    fn state_member_forces(&self, _ctx: &Ctx) -> Option<crate::beam::MemberForces> {
         Some(self.recover_forces(&self.trial_disp))
     }
 }

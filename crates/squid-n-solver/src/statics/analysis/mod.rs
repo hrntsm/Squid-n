@@ -58,7 +58,7 @@ fn build_behavior_cache(model: &Model, dofmap: &DofMap) -> Vec<crate::statics::B
         .elements
         .iter()
         .map(|elem| {
-            let (behavior, _state) = build_behavior(elem, model);
+            let behavior = build_behavior(elem, model);
             let gdofs = behavior.global_dofs(dofmap);
             (behavior, gdofs)
         })

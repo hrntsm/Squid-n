@@ -1957,14 +1957,10 @@ impl ElementBehavior for FixedForceBehavior {
     fn global_dofs(&self, _dof: &DofMap) -> SmallVec<[usize; 24]> {
         SmallVec::new()
     }
-    fn tangent_stiffness(
-        &self,
-        _state: &ElemState,
-        _ctx: &Ctx,
-    ) -> squid_n_element::behavior::LocalMat {
+    fn tangent_stiffness(&self, _ctx: &Ctx) -> squid_n_element::behavior::LocalMat {
         squid_n_element::behavior::LocalMat::zeros(12)
     }
-    fn internal_force(&self, _state: &ElemState, _ctx: &Ctx) -> LocalVec {
+    fn internal_force(&self, _ctx: &Ctx) -> LocalVec {
         LocalVec {
             data: self.f.data.clone(),
         }

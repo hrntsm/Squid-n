@@ -4,7 +4,7 @@
 //! `ReleaseAxis`。
 
 use crate::beam::{invert_small, BeamElement};
-use crate::behavior::{Ctx, ElemState, ElementBehavior, LocalMat, LocalVec, MassOption};
+use crate::behavior::{Ctx, ElementBehavior, LocalMat, LocalVec, MassOption};
 use smallvec::SmallVec;
 use squid_n_core::dof::DofMap;
 
@@ -137,11 +137,11 @@ impl ElementBehavior for InPlaneReleasedColumn {
         self.inner.global_dofs(dof)
     }
 
-    fn tangent_stiffness(&self, _state: &ElemState, _ctx: &Ctx) -> LocalMat {
+    fn tangent_stiffness(&self, _ctx: &Ctx) -> LocalMat {
         self.inner.axis.to_global(&self.released_local_stiffness())
     }
 
-    fn internal_force(&self, _state: &ElemState, _ctx: &Ctx) -> LocalVec {
+    fn internal_force(&self, _ctx: &Ctx) -> LocalVec {
         // trial_disp はグローバル系で蓄積される（BeamElement と同じトライアル追従規約）
         // ため、解放後の局所剛性をグローバルへ回した K で内力を評価する。
         let k = self.inner.axis.to_global(&self.released_local_stiffness());
@@ -207,11 +207,7 @@ impl ElementBehavior for InPlaneReleasedColumn {
     }
 
     /// 側柱は面内解放を除けば弾性材のため、蓄積した trial 変位から復元する。
-    fn state_member_forces(
-        &self,
-        _state: &ElemState,
-        _ctx: &Ctx,
-    ) -> Option<crate::beam::MemberForces> {
+    fn state_member_forces(&self, _ctx: &Ctx) -> Option<crate::beam::MemberForces> {
         Some(self.recover_forces_released(&self.inner.trial_disp))
     }
 }

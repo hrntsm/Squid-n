@@ -9,7 +9,7 @@ use super::result::{StoryResponse, ThRecording};
 use squid_n_core::dof::{DofMap, DOF_PER_NODE};
 use squid_n_core::model::Model;
 use squid_n_element::beam::MemberForces;
-use squid_n_element::behavior::{Ctx, ElemState, ElementBehavior};
+use squid_n_element::behavior::{Ctx, ElementBehavior};
 
 /// 記録フレーム数が概ね 1000 になるよう `record_every`（間引き係数）を自動決定する。
 /// `n_steps` はステップ数（フレーム数は `n_steps+1`）。
@@ -47,10 +47,9 @@ pub(crate) fn member_forces_nonlinear(
     behaviors: &[Box<dyn ElementBehavior>],
 ) -> Vec<Option<MemberForces>> {
     let ctx = Ctx { model };
-    let state = ElemState::default();
     behaviors
         .iter()
-        .map(|b| b.state_member_forces(&state, &ctx))
+        .map(|b| b.state_member_forces(&ctx))
         .collect()
 }
 

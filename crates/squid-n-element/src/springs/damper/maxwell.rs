@@ -27,7 +27,7 @@
 //! 収束用に整合接線 `∂Fk/∂Uij` を接線剛性へ与えるが、収束解は要素力の釣合いに
 //! 一致するため結果は原典と等価。`Δt<=0`（静的・線形解析）では不活性（力・剛性 0）。
 
-use crate::behavior::{Ctx, ElemState, ElementBehavior, LocalMat, LocalVec, MassOption};
+use crate::behavior::{Ctx, ElementBehavior, LocalMat, LocalVec, MassOption};
 use crate::transform::LocalFrame;
 use smallvec::SmallVec;
 use squid_n_core::dof::{DofMap, DOF_PER_NODE};
@@ -213,12 +213,12 @@ impl ElementBehavior for MaxwellDamperElement {
         gdofs
     }
 
-    fn tangent_stiffness(&self, _state: &ElemState, _ctx: &Ctx) -> LocalMat {
+    fn tangent_stiffness(&self, _ctx: &Ctx) -> LocalMat {
         self.axis
             .to_global(&self.local_stiffness(self.axial_tangent()))
     }
 
-    fn internal_force(&self, _state: &ElemState, _ctx: &Ctx) -> LocalVec {
+    fn internal_force(&self, _ctx: &Ctx) -> LocalVec {
         let mut f = LocalVec {
             data: SmallVec::from_elem(0.0, 12),
         };
@@ -254,11 +254,7 @@ impl ElementBehavior for MaxwellDamperElement {
         LocalMat::zeros(12)
     }
 
-    fn state_member_forces(
-        &self,
-        _state: &ElemState,
-        _ctx: &Ctx,
-    ) -> Option<crate::beam::MemberForces> {
+    fn state_member_forces(&self, _ctx: &Ctx) -> Option<crate::beam::MemberForces> {
         // 現在状態の軸力（引張正）を両評価点一定で返す。時刻歴・増分解析の
         // 部材内力記録（N-δ 履歴ループ表示など）に用いる。
         //
@@ -384,12 +380,9 @@ mod tests {
         let n = d.axial_force(1.0);
         assert!(n > 0.0);
         let mf = d
-            .state_member_forces(
-                &ElemState::default(),
-                &Ctx {
-                    model: &squid_n_core::model::Model::default(),
-                },
-            )
+            .state_member_forces(&Ctx {
+                model: &squid_n_core::model::Model::default(),
+            })
             .expect("マクスウェルダンパーは状態から内力を返す");
         assert_eq!(mf.at.len(), 2);
         for (_, v) in &mf.at {
@@ -430,7 +423,7 @@ mod tests {
             // state_member_forces（commit 直後、trial_elong==committed_elong）は
             // キャッシュ値 committed_force を返す。
             let mf = d
-                .state_member_forces(&ElemState::default(), &ctx)
+                .state_member_forces(&ctx)
                 .expect("マクスウェルダンパーは状態から内力を返す");
             assert!((mf.at[0].1[0] - d.committed_force).abs() < 1e-12);
 
@@ -514,7 +507,7 @@ mod tests {
         let ctx = Ctx { model: &model };
         d.update_state(&du, false, &ctx);
         assert!((d.trial_elong - 1.0).abs() < 1e-9);
-        let f = d.internal_force(&ElemState {}, &ctx);
+        let f = d.internal_force(&ctx);
         let n = d.axial_force(1.0);
         assert!(n > 0.0);
         assert!((f.data[0] + n).abs() < 1e-9); // 節点0 ux = −N

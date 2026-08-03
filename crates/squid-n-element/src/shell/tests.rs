@@ -659,12 +659,11 @@ fn test_patch_bending_distorted() {
 /// （膜・曲げの解析解照合）が担保する（両者を合わせて非循環な検証となる）。
 #[test]
 fn test_shell_trial_displacement_tracking() {
-    use crate::behavior::{Ctx, ElemState, ElementBehavior, LocalVec};
+    use crate::behavior::{Ctx, ElementBehavior, LocalVec};
     use squid_n_core::model::Model;
     let mut shell = make_flat_shell(10.0);
     let model = Model::default();
     let ctx = Ctx { model: &model };
-    let state = ElemState::default();
 
     // 面内せん断的な非剛体変位（節点2・3 のみ x 方向）
     let mut du = LocalVec {
@@ -675,8 +674,8 @@ fn test_shell_trial_displacement_tracking() {
     shell.update_state(&du, false, &ctx);
 
     // commit 前でも内力へ反映され、接線剛性·u と厳密に一致する
-    let f = shell.internal_force(&state, &ctx);
-    let k = shell.tangent_stiffness(&state, &ctx);
+    let f = shell.internal_force(&ctx);
+    let k = shell.tangent_stiffness(&ctx);
     for i in 0..24 {
         let expected: f64 = (0..24).map(|j| k.get(i, j) * du.data[j]).sum();
         assert!(
@@ -699,7 +698,7 @@ fn test_shell_trial_displacement_tracking() {
         du_rigid.data[n * 6] = 1.0;
     }
     shell.update_state(&du_rigid, false, &ctx);
-    let f_rigid = shell.internal_force(&state, &ctx);
+    let f_rigid = shell.internal_force(&ctx);
     assert!(
         f_rigid.data.iter().all(|v| v.abs() < 1e-6),
         "剛体並進で内力が生じた: {:?}",

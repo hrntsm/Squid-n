@@ -1,4 +1,4 @@
-use crate::behavior::{Ctx, ElemState, ElementBehavior, LocalMat, LocalVec, MassOption};
+use crate::behavior::{Ctx, ElementBehavior, LocalMat, LocalVec, MassOption};
 use crate::transform::LocalFrame;
 use smallvec::SmallVec;
 use squid_n_core::dof::{DofMap, DOF_PER_NODE};
@@ -164,14 +164,14 @@ impl ElementBehavior for TrussElement {
         gdofs
     }
 
-    fn tangent_stiffness(&self, _state: &ElemState, _ctx: &Ctx) -> LocalMat {
+    fn tangent_stiffness(&self, _ctx: &Ctx) -> LocalMat {
         // ElementBehavior::tangent_stiffness は全体系を返す契約（beam.rs 参照）。
         // 部材軸方向ベクトル t による K = k·(t·tᵀ) 展開は、ローカル軸剛性を
         // 回転行列で全体系へ回すことと等価（t = axis.rot[0]）。
         self.axis.to_global(&self.local_stiffness())
     }
 
-    fn internal_force(&self, _state: &ElemState, _ctx: &Ctx) -> LocalVec {
+    fn internal_force(&self, _ctx: &Ctx) -> LocalVec {
         // トライアル追従: Newton 反復中の未確定変位も内力へ反映する
         // （beam/behavior.rs と同じ規約）。
         let k = self.axis.to_global(&self.local_stiffness());
@@ -295,11 +295,7 @@ impl ElementBehavior for TrussElement {
 
     /// トラス（ブレース）は非線形解析でも弾性軸材のため、蓄積した trial 変位から
     /// 復元する（`recover_forces` と同じ結果）。
-    fn state_member_forces(
-        &self,
-        _state: &ElemState,
-        _ctx: &Ctx,
-    ) -> Option<crate::beam::MemberForces> {
+    fn state_member_forces(&self, _ctx: &Ctx) -> Option<crate::beam::MemberForces> {
         self.recover_forces(&self.trial_disp)
     }
 }
@@ -401,7 +397,7 @@ mod tests {
         let (model, data) = make_model([0.0, 0.0, 0.0], [3000.0, 0.0, 4000.0]);
         let truss = TrussElement::new(&data, &model);
         let ctx = Ctx { model: &model };
-        let k_global = truss.tangent_stiffness(&ElemState::default(), &ctx);
+        let k_global = truss.tangent_stiffness(&ctx);
 
         let l = truss.length;
         let t = [3000.0 / l, 0.0, 4000.0 / l];
@@ -437,7 +433,7 @@ mod tests {
         let (model, data) = make_model([1000.0, 500.0, 0.0], [5000.0, 2500.0, 3000.0]);
         let truss = TrussElement::new(&data, &model);
         let ctx = Ctx { model: &model };
-        let k = truss.tangent_stiffness(&ElemState::default(), &ctx);
+        let k = truss.tangent_stiffness(&ctx);
         for i in 0..12 {
             for j in 0..12 {
                 assert!(
@@ -461,7 +457,7 @@ mod tests {
         };
         let ctx = Ctx { model: &model };
         truss.update_state(&du, true, &ctx);
-        let f = truss.internal_force(&ElemState::default(), &ctx);
+        let f = truss.internal_force(&ctx);
         for i in 0..12 {
             assert!(f.data[i].abs() < 1e-6, "f[{i}]={}", f.data[i]);
         }
@@ -481,7 +477,7 @@ mod tests {
             ]),
         };
         truss.update_state(&du, true, &ctx);
-        let f = truss.internal_force(&ElemState::default(), &ctx);
+        let f = truss.internal_force(&ctx);
         assert!((f.data[6] - ea_l).abs() < 1e-6, "f[6]={}", f.data[6]);
         assert!((f.data[0] + ea_l).abs() < 1e-6, "f[0]={}", f.data[0]);
     }

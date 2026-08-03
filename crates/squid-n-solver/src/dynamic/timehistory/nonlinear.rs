@@ -974,7 +974,7 @@ fn build_behaviors(model: &Model) -> Vec<Box<dyn squid_n_element::behavior::Elem
         // 時刻歴応答解析は公称値（材料強度割増なし）。履歴則は
         // AnalysisKind::TimeHistory で解決する（部材個別指定の時刻歴用スロット →
         // 既定表。コンクリート除荷則の既定は Karsan–Jirsa 型）。
-        let (b, _) = build_nonlinear_behavior(
+        let b = build_nonlinear_behavior(
             elem,
             model,
             StrengthBasis::Nominal,

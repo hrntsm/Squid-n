@@ -13,7 +13,7 @@ use squid_n_core::model::{ElementData, Model};
 use squid_n_core::rc_capacity::{rc_mu_simple, RcCapacityInput};
 use squid_n_core::section_shape::{bar_set_area, SectionShape};
 use squid_n_core::structure_kind::StructureKind;
-use squid_n_element::behavior::{Ctx, ElemState, ElementBehavior};
+use squid_n_element::behavior::{Ctx, ElementBehavior};
 
 /// 部材塑性率の終局ヒンジ判定値。降伏後、部材塑性率がこの値以上のヒンジを
 /// Ultimate（終局）と分類する（μ<この値は Yield）。塑性率の
@@ -143,10 +143,9 @@ pub(crate) fn track_hinges(
     step: u32,
     hinges: &mut Vec<HingeEvent>,
 ) {
-    let state = ElemState::default();
     let ctx = Ctx { model };
     for (i, (elem, b)) in model.elements.iter().zip(behaviors).enumerate() {
-        let f = b.internal_force(&state, &ctx);
+        let f = b.internal_force(&ctx);
         // 曲げ降伏は**危険断面＝剛域フェイス**で判定する。材端力を局所座標へ回して
         // 剛体アームのモーメントを差し引いた成分（局所 My=4/10・Mz=5/11）を用いる
         // （[`member_end_forces_at_face`]）。節点位置のモーメントはアーム分だけ

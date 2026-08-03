@@ -16,7 +16,7 @@
 //! （`FiberBeam` と同じ規約）。せん断バイリニアの履歴は `squid_n_material::Bilinear`
 //! （変位=ひずみ、力=応力とみなす）で追跡する。
 
-use crate::behavior::{Ctx, ElemState, ElementBehavior, LocalMat, LocalVec, MassOption};
+use crate::behavior::{Ctx, ElementBehavior, LocalMat, LocalVec, MassOption};
 use crate::transform::LocalFrame;
 use smallvec::SmallVec;
 use squid_n_core::dof::{DofMap, DOF_PER_NODE};
@@ -298,7 +298,7 @@ impl ElementBehavior for IsolatorElement {
         gdofs
     }
 
-    fn tangent_stiffness(&self, _state: &ElemState, _ctx: &Ctx) -> LocalMat {
+    fn tangent_stiffness(&self, _ctx: &Ctx) -> LocalMat {
         let kv = self.props.kv.max(0.0);
         let (_, (ty, tz)) = self.shear_forces();
         // 局所系ばね: 軸(0)=Kv、せん断(1,2)=接線、回転(3,4,5)=剛。
@@ -316,7 +316,7 @@ impl ElementBehavior for IsolatorElement {
         self.axis.to_global(&m)
     }
 
-    fn internal_force(&self, _state: &ElemState, _ctx: &Ctx) -> LocalVec {
+    fn internal_force(&self, _ctx: &Ctx) -> LocalVec {
         let kv = self.props.kv.max(0.0);
         let ((fy, fz), _) = self.shear_forces();
         // 局所相対変位。
@@ -333,11 +333,7 @@ impl ElementBehavior for IsolatorElement {
         }
     }
 
-    fn state_member_forces(
-        &self,
-        _state: &ElemState,
-        _ctx: &Ctx,
-    ) -> Option<crate::beam::MemberForces> {
+    fn state_member_forces(&self, _ctx: &Ctx) -> Option<crate::beam::MemberForces> {
         // 現在状態の断面力を両評価点一定で返す（時刻歴・増分解析の記録用）。
         // 符号規約は節点バネ（`spring.rs::recover_forces`）と同じ:
         // N は引張正、せん断は i 端節点力そのまま、モーメントは i 端の符号反転。

@@ -298,11 +298,11 @@ fn test_fiber_steel_yields_with_fy() {
 
     let mut yielding = make_steel_fiber_with_fy(Some(235.0));
     yielding.update_state(&du, true, &ctx);
-    let f_y = yielding.internal_force(&ElemState::default(), &ctx);
+    let f_y = yielding.internal_force(&ctx);
 
     let mut elastic = make_steel_fiber_with_fy(Some(1e20));
     elastic.update_state(&du, true, &ctx);
-    let f_e = elastic.internal_force(&ElemState::default(), &ctx);
+    let f_e = elastic.internal_force(&ctx);
 
     // 曲げモーメント DOF(ry_i = index 4) で比較。降伏材は弾性材より明確に小さいこと。
     assert!(
@@ -333,11 +333,11 @@ fn test_global_rotation_vertical_column() {
     // X 整列（ref [0,1,0] で恒等フレーム）: local x = global X(軸), local y = global Y(曲げ)
     let mut fx = make_oriented_fiber([0.0, 0.0, 0.0], [l, 0.0, 0.0], [0.0, 1.0, 0.0]);
     fx.update_state(&zero_du, false, &ctx); // 初期接線（弾性係数）をキャッシュへ
-    let kx = fx.tangent_stiffness(&ElemState::default(), &ctx);
+    let kx = fx.tangent_stiffness(&ctx);
     // Z 整列（鉛直柱, ref [1,0,0]）: local x = global Z(軸), local y = global X(曲げ)
     let mut fz = make_oriented_fiber([0.0, 0.0, 0.0], [0.0, 0.0, l], [1.0, 0.0, 0.0]);
     fz.update_state(&zero_du, false, &ctx);
-    let kz = fz.tangent_stiffness(&ElemState::default(), &ctx);
+    let kz = fz.tangent_stiffness(&ctx);
 
     // 軸剛性: X 整列の ux_i (DOF0) == Z 整列の uz_i (DOF2)
     assert_relative_eq!(kz.get(2, 2), kx.get(0, 0), epsilon = 1.0);
@@ -360,7 +360,6 @@ fn test_elastic_stiffness_matches_beam() {
     let ctx = Ctx {
         model: &build_test_model(Some(0.0)),
     };
-    let state = ElemState::default();
 
     let u = [
         1.0, 0.5, 0.3, 0.0, 0.001, 0.002, -0.5, 0.2, -0.1, 0.0, 0.003, -0.001,
@@ -370,7 +369,7 @@ fn test_elastic_stiffness_matches_beam() {
     };
     fiber.update_state(&du, true, &ctx);
 
-    let k_fiber = fiber.tangent_stiffness(&state, &ctx);
+    let k_fiber = fiber.tangent_stiffness(&ctx);
     let k_beam = beam.local_stiffness_raw();
 
     for i in 0..12 {
@@ -395,7 +394,6 @@ fn test_elastic_stiffness_symmetric() {
     let ctx = Ctx {
         model: &build_test_model(Some(0.0)),
     };
-    let state = ElemState::default();
 
     let u = [
         1.0, 0.5, 0.3, 0.0, 0.001, 0.002, -0.5, 0.2, -0.1, 0.0, 0.003, -0.001,
@@ -405,7 +403,7 @@ fn test_elastic_stiffness_symmetric() {
     };
     fiber.update_state(&du, true, &ctx);
 
-    let k = fiber.tangent_stiffness(&state, &ctx);
+    let k = fiber.tangent_stiffness(&ctx);
     for i in 0..12 {
         for j in 0..12 {
             assert!(
@@ -424,7 +422,6 @@ fn test_axial_response() {
     let ctx = Ctx {
         model: &build_test_model(Some(0.0)),
     };
-    let state = ElemState::default();
 
     let eps0 = 0.001;
     let du = LocalVec {
@@ -445,7 +442,7 @@ fn test_axial_response() {
     };
     fiber.update_state(&du, true, &ctx);
 
-    let f = fiber.internal_force(&state, &ctx);
+    let f = fiber.internal_force(&ctx);
     let a_disc: f64 = fiber.gauss_points[0]
         .section
         .fibers
@@ -463,7 +460,6 @@ fn test_pure_bending_mphi() {
     let ctx = Ctx {
         model: &build_test_model(Some(0.0)),
     };
-    let state = ElemState::default();
 
     let ky = 1e-6;
     let du = LocalVec {
@@ -484,7 +480,7 @@ fn test_pure_bending_mphi() {
     };
     fiber.update_state(&du, true, &ctx);
 
-    let f = fiber.internal_force(&state, &ctx);
+    let f = fiber.internal_force(&ctx);
     let iy_disc: f64 = fiber.gauss_points[0]
         .section
         .fibers
@@ -502,7 +498,6 @@ fn test_n_m_interaction() {
     let ctx = Ctx {
         model: &build_test_model(Some(0.0)),
     };
-    let state = ElemState::default();
 
     let eps0 = 0.0005;
     let ky = 1e-6;
@@ -524,7 +519,7 @@ fn test_n_m_interaction() {
     };
     fiber.update_state(&du, true, &ctx);
 
-    let f = fiber.internal_force(&state, &ctx);
+    let f = fiber.internal_force(&ctx);
     let a_disc: f64 = fiber.gauss_points[0]
         .section
         .fibers
@@ -623,7 +618,6 @@ fn test_yield_progression() {
     let ctx = Ctx {
         model: &Model::default(),
     };
-    let state = ElemState::default();
 
     let eps_y = 235.0 / 205000.0;
     // My 面（κy）の縁距離はファイバ座標の |z| 最大 = 幅/2 = 50mm
@@ -657,7 +651,7 @@ fn test_yield_progression() {
         };
         fiber.update_state(&du, true, &ctx);
 
-        let f = fiber.internal_force(&state, &ctx);
+        let f = fiber.internal_force(&ctx);
         last_my = f.data[4];
     }
 
@@ -749,12 +743,9 @@ fn test_geometric_stiffness() {
 #[test]
 fn test_internal_force_zero_at_zero_disp() {
     let fiber = make_test_fiber_beam(None);
-    let f = fiber.internal_force(
-        &ElemState::default(),
-        &Ctx {
-            model: &Model::default(),
-        },
-    );
+    let f = fiber.internal_force(&Ctx {
+        model: &Model::default(),
+    });
     for v in f.data.iter() {
         assert!(v.abs() < 1e-12, "zero disp should give zero force, got {v}");
     }
@@ -820,7 +811,7 @@ fn test_torsional_stiffness() {
     };
     fiber.update_state(&zero_du, false, &ctx);
 
-    let k = fiber.tangent_stiffness(&ElemState::default(), &ctx);
+    let k = fiber.tangent_stiffness(&ctx);
     assert!(
         (k.get(3, 3) - expected_kt).abs() < 1e-6 * expected_kt.max(1.0),
         "K[3][3] should be G*J/L: expected {}, got {}",
@@ -866,7 +857,7 @@ fn test_torsional_internal_force() {
         ],
     };
     fiber.update_state(&du, true, &ctx);
-    let f = fiber.internal_force(&ElemState::default(), &ctx);
+    let f = fiber.internal_force(&ctx);
 
     let expected_mx_i = kt * (theta_i - theta_j);
     assert!(
@@ -974,7 +965,7 @@ fn test_vertical_column_rz_nonsingular() {
     };
     fiber.update_state(&zero_du, false, &ctx);
 
-    let k = fiber.tangent_stiffness(&ElemState::default(), &ctx);
+    let k = fiber.tangent_stiffness(&ctx);
     // 鉛直柱では local rx が global rz に回転される。
     // global rz は節点自由度 index 5 (i端) と index 11 (j端)。
     let k55 = k.get(5, 5);
@@ -1038,7 +1029,7 @@ fn test_fiber_rigid_rotation_produces_no_force() {
         ]),
     };
     fiber.update_state(&du, false, &ctx);
-    let f = fiber.internal_force(&ElemState::default(), &ctx);
+    let f = fiber.internal_force(&ctx);
     // 許容値 1.0 の根拠: 旧実装の偽せん断力は GAs/L・θL ≈ 1.6e6 N、正常時は
     // 丸め誤差（~1e-7）で、判定は 6 桁以上の余裕を持つ。並進 [N]・回転 [N·mm]
     // の単位混在は、双方とも「ほぼゼロ vs 1e6 以上」の判別であり問題にならない。
@@ -1078,7 +1069,7 @@ fn test_fiber_initial_lateral_stiffness_matches_timoshenko_theory() {
         data: SmallVec::from_elem(0.0, 12),
     };
     fiber.update_state(&zero, false, &ctx); // 初期弾性接線をキャッシュへ
-    let k = fiber.tangent_stiffness(&ElemState::default(), &ctx);
+    let k = fiber.tangent_stiffness(&ctx);
 
     // 片持ち（i端固定）の j 端 [uy, rz] 2x2 ブロックを縮約し、
     // 先端モーメントフリーの並進剛性 k_tip = det/K(rz,rz) を求める。
@@ -1149,7 +1140,7 @@ fn test_fiber_elastic_stiffness_matches_timoshenko_beam_element() {
         data: SmallVec::from_elem(0.0, 12),
     };
     fiber.update_state(&zero, false, &ctx);
-    let k_fb = fiber.tangent_stiffness(&ElemState::default(), &ctx);
+    let k_fb = fiber.tangent_stiffness(&ctx);
 
     let mut be = make_test_beam_element(as_y_elem);
     be.a = area;
@@ -1159,7 +1150,7 @@ fn test_fiber_elastic_stiffness_matches_timoshenko_beam_element() {
     be.j = j;
     be.as_y = as_y_elem;
     be.as_z = as_z_elem;
-    let k_be = be.tangent_stiffness(&ElemState::default(), &ctx);
+    let k_be = be.tangent_stiffness(&ctx);
 
     let kmax = (0..12)
         .flat_map(|i| (0..12).map(move |j| (i, j)))
@@ -1202,7 +1193,6 @@ fn test_plastic_zone_phi_positive_timoshenko_behavior() {
     set_square500_shear_section(&mut model);
     model.elements[0].plastic_zone = Some(250.0);
     let ctx = Ctx { model: &model };
-    let state = ElemState::default();
     let build = || {
         FiberBeam::with_plastic_zone(
             &model.elements[0],
@@ -1234,7 +1224,7 @@ fn test_plastic_zone_phi_positive_timoshenko_behavior() {
         ]),
     };
     fb.update_state(&du, false, &ctx);
-    let f = fb.internal_force(&state, &ctx);
+    let f = fb.internal_force(&ctx);
     for (i, v) in f.data.iter().enumerate() {
         assert!(v.abs() < 1.0, "塑性化域+φ>0 で客観性違反: dof {i} = {v}");
     }
@@ -1252,8 +1242,8 @@ fn test_plastic_zone_phi_positive_timoshenko_behavior() {
         false,
         &ctx,
     );
-    let f0 = b0.internal_force(&state, &ctx);
-    let k = b0.tangent_stiffness(&state, &ctx);
+    let f0 = b0.internal_force(&ctx);
+    let k = b0.tangent_stiffness(&ctx);
     let kmax = (0..12)
         .flat_map(|i| (0..12).map(move |j| (i, j)))
         .map(|(i, j)| k.get(i, j).abs())
@@ -1269,7 +1259,7 @@ fn test_plastic_zone_phi_positive_timoshenko_behavior() {
             false,
             &ctx,
         );
-        let fp = bp.internal_force(&state, &ctx);
+        let fp = bp.internal_force(&ctx);
         for i in 0..12 {
             let fd = (fp.data[i] - f0.data[i]) / h;
             let err = (fd - k.get(i, j)).abs() / kmax;
@@ -1286,7 +1276,7 @@ fn test_plastic_zone_phi_positive_timoshenko_behavior() {
         data: SmallVec::from_elem(0.0, 12),
     };
     fb2.update_state(&zero, false, &ctx);
-    let k2 = fb2.tangent_stiffness(&state, &ctx);
+    let k2 = fb2.tangent_stiffness(&ctx);
     let a = k2.get(7, 7);
     let b = k2.get(7, 11);
     let c = k2.get(11, 11);
@@ -1310,7 +1300,6 @@ fn test_plastic_zone_phi_positive_timoshenko_behavior() {
 fn test_fiber_tangent_consistent_with_internal_force() {
     let model = build_test_model(Some(78846.15));
     let ctx = Ctx { model: &model };
-    let state = ElemState::default();
     let h = 1e-6;
     // 弾性域の代表的な変形状態（並進 [mm]・回転 [rad] 混在）
     let u0: [f64; 12] = [
@@ -1330,8 +1319,8 @@ fn test_fiber_tangent_consistent_with_internal_force() {
         false,
         &ctx,
     );
-    let f0 = b0.internal_force(&state, &ctx);
-    let k = b0.tangent_stiffness(&state, &ctx);
+    let f0 = b0.internal_force(&ctx);
+    let k = b0.tangent_stiffness(&ctx);
     let kmax = (0..12)
         .flat_map(|i| (0..12).map(move |j| (i, j)))
         .map(|(i, j)| k.get(i, j).abs())
@@ -1353,7 +1342,7 @@ fn test_fiber_tangent_consistent_with_internal_force() {
             false,
             &ctx,
         );
-        let fp = bp.internal_force(&state, &ctx);
+        let fp = bp.internal_force(&ctx);
         for i in 0..12 {
             let fd = (fp.data[i] - f0.data[i]) / h;
             let err = (fd - k.get(i, j)).abs() / kmax;
@@ -1415,7 +1404,7 @@ fn test_plastic_zone_axial_stiffness_exact() {
     let ctx = Ctx {
         model: &build_test_model(Some(0.0)),
     };
-    let k = fb.tangent_stiffness(&ElemState::default(), &ctx);
+    let k = fb.tangent_stiffness(&ctx);
     let ea_over_l = 205000.0 * 20000.0 / 3000.0;
     assert_relative_eq!(k.get(0, 0), ea_over_l, max_relative = 1e-9);
 }
@@ -1433,10 +1422,10 @@ fn test_plastic_zone_elastic_stiffness_close_to_full_fiber() {
         StrengthBasis::Nominal,
         AnalysisKind::Incremental,
     );
-    let k_full = full.tangent_stiffness(&ElemState::default(), &ctx);
+    let k_full = full.tangent_stiffness(&ctx);
 
     let pz = make_plastic_zone_fiber(150.0, Some(1e20)); // Lp = L/20
-    let k_pz = pz.tangent_stiffness(&ElemState::default(), &ctx);
+    let k_pz = pz.tangent_stiffness(&ctx);
     for (i, j) in [(1usize, 1usize), (2, 2), (4, 4), (5, 5), (1, 5), (2, 4)] {
         assert_relative_eq!(k_pz.get(i, j), k_full.get(i, j), max_relative = 5e-2);
     }
@@ -1477,14 +1466,14 @@ fn test_plastic_zone_yield_reduces_stiffness() {
     let mut fb = make_plastic_zone_fiber(300.0, Some(235.0));
     let model = build_test_model(Some(0.0));
     let ctx = Ctx { model: &model };
-    let k0 = fb.tangent_stiffness(&ElemState::default(), &ctx);
+    let k0 = fb.tangent_stiffness(&ctx);
 
     // i端に大回転 → 端部断面降伏
     let du = LocalVec {
         data: SmallVec::from_slice(&[0.0, 0.0, 0.0, 0.0, 0.05, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
     };
     fb.update_state(&du, false, &ctx);
-    let k1 = fb.tangent_stiffness(&ElemState::default(), &ctx);
+    let k1 = fb.tangent_stiffness(&ctx);
     assert!(
         k1.get(4, 4) < 0.9 * k0.get(4, 4),
         "降伏後の回転剛性は低下するはず: k0={}, k1={}",
@@ -1513,8 +1502,8 @@ fn test_plastic_zone_checkpoint_roundtrip() {
     };
     fb.update_state(&du2, false, &ctx);
     fb2.update_state(&du2, false, &ctx);
-    let f1 = fb.internal_force(&ElemState::default(), &ctx);
-    let f2 = fb2.internal_force(&ElemState::default(), &ctx);
+    let f1 = fb.internal_force(&ctx);
+    let f2 = fb2.internal_force(&ctx);
     for i in 0..12 {
         assert_relative_eq!(f1.data[i], f2.data[i], epsilon = 1e-6);
     }
@@ -1712,7 +1701,7 @@ fn test_rc_plastic_zone_fiber_tangent_stays_positive_in_elastic_range() {
         data: SmallVec::from_slice(&[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.2, 0.2, 0.2, 0.0, 0.0, 0.0]),
     };
     fb.update_state(&du, false, &ctx);
-    let k = fb.tangent_stiffness(&ElemState::default(), &ctx);
+    let k = fb.tangent_stiffness(&ctx);
     for i in 0..12 {
         assert!(
             k.get(i, i) >= 0.0,
@@ -1783,7 +1772,7 @@ fn 剛域ありの弾性剛性は軸以外が弾性梁と厳密一致する() {
     );
     assert_relative_eq!(fiber.flex_length, l_flex, max_relative = 1e-12);
     fiber.update_state(&zero, false, &ctx);
-    let k_fb = fiber.tangent_stiffness(&ElemState::default(), &ctx);
+    let k_fb = fiber.tangent_stiffness(&ctx);
 
     let mut be = make_test_beam_element(as_y_elem);
     be.a = area;
@@ -1794,7 +1783,7 @@ fn 剛域ありの弾性剛性は軸以外が弾性梁と厳密一致する() {
     be.as_y = as_y_elem;
     be.as_z = as_z_elem;
     be.rigid = model.elements[0].rigid_zone;
-    let k_be = be.tangent_stiffness(&ElemState::default(), &ctx);
+    let k_be = be.tangent_stiffness(&ctx);
 
     let kmax = (0..12)
         .flat_map(|i| (0..12).map(move |j| (i, j)))
@@ -1850,7 +1839,7 @@ fn 剛域は片持ち先端の曲げ剛性を増大させる() {
             false,
             &ctx,
         );
-        let k = fb.tangent_stiffness(&ElemState::default(), &ctx);
+        let k = fb.tangent_stiffness(&ctx);
         // j 端 [uy, rz] の 2×2 を縮約した先端モーメントフリー剛性
         let (a, b, c) = (k.get(7, 7), k.get(7, 11), k.get(11, 11));
         (a * c - b * b) / c
@@ -1898,7 +1887,7 @@ fn 剛域ありでも剛体回転で内力が生じない() {
         ]),
     };
     fiber.update_state(&du, false, &ctx);
-    let f = fiber.internal_force(&ElemState::default(), &ctx);
+    let f = fiber.internal_force(&ctx);
     for (i, v) in f.data.iter().enumerate() {
         assert!(
             v.abs() < 1.0,
@@ -1913,7 +1902,6 @@ fn 剛域ありでも剛体回転で内力が生じない() {
 fn 剛域ありでも接線剛性が内力の勾配と一致する() {
     let model = build_rigid_zone_model(400.0, 250.0);
     let ctx = Ctx { model: &model };
-    let state = ElemState::default();
     let h = 1e-6;
     let u0: [f64; 12] = [
         0.1, 0.2, -0.1, 0.0005, 0.001, -0.0005, -0.05, 0.15, 0.1, -0.0005, 0.0008, 0.0002,
@@ -1932,8 +1920,8 @@ fn 剛域ありでも接線剛性が内力の勾配と一致する() {
         false,
         &ctx,
     );
-    let f0 = b0.internal_force(&state, &ctx);
-    let k = b0.tangent_stiffness(&state, &ctx);
+    let f0 = b0.internal_force(&ctx);
+    let k = b0.tangent_stiffness(&ctx);
     let kmax = (0..12)
         .flat_map(|i| (0..12).map(move |j| (i, j)))
         .map(|(i, j)| k.get(i, j).abs())
@@ -1955,7 +1943,7 @@ fn 剛域ありでも接線剛性が内力の勾配と一致する() {
             false,
             &ctx,
         );
-        let fp = bp.internal_force(&state, &ctx);
+        let fp = bp.internal_force(&ctx);
         for i in 0..12 {
             let fd = (fp.data[i] - f0.data[i]) / h;
             let err = (fd - k.get(i, j)).abs() / kmax;
@@ -2068,7 +2056,7 @@ fn 材端ピンの弾性剛性が弾性梁と一致する() {
 
     let ctx = Ctx { model: &model };
     let fiber = elastic_fiber(&model);
-    let k_fb = fiber.tangent_stiffness(&ElemState::default(), &ctx);
+    let k_fb = fiber.tangent_stiffness(&ctx);
 
     let mut be = make_test_beam_element(as_y_elem);
     be.a = area;
@@ -2079,7 +2067,7 @@ fn 材端ピンの弾性剛性が弾性梁と一致する() {
     be.as_y = as_y_elem;
     be.as_z = as_z_elem;
     be.end_cond = model.elements[0].end_cond;
-    let k_be = be.tangent_stiffness(&ElemState::default(), &ctx);
+    let k_be = be.tangent_stiffness(&ctx);
 
     let kmax = (0..12)
         .flat_map(|i| (0..12).map(move |j| (i, j)))
@@ -2130,7 +2118,7 @@ fn 材端ピンでは当該端の曲げモーメントがゼロになる() {
         AnalysisKind::Incremental,
     );
     fb_p.update_state(&du(1.0), false, &ctx_p);
-    let f_p = fb_p.internal_force(&ElemState::default(), &ctx_p);
+    let f_p = fb_p.internal_force(&ctx_p);
 
     let ctx_f = Ctx { model: &fixed };
     let mut fb_f = FiberBeam::new(
@@ -2140,7 +2128,7 @@ fn 材端ピンでは当該端の曲げモーメントがゼロになる() {
         AnalysisKind::Incremental,
     );
     fb_f.update_state(&du(1.0), false, &ctx_f);
-    let f_f = fb_f.internal_force(&ElemState::default(), &ctx_f);
+    let f_f = fb_f.internal_force(&ctx_f);
 
     // 剛接端は i 端に大きなモーメントを持つ
     assert!(
@@ -2171,8 +2159,7 @@ fn 半剛端は剛接とピンの中間になる() {
         let model = build_release_model(end_cond);
         let ctx = Ctx { model: &model };
         let fb = elastic_fiber(&model);
-        fb.tangent_stiffness(&ElemState::default(), &ctx)
-            .get(11, 11)
+        fb.tangent_stiffness(&ctx).get(11, 11)
     };
     let k_fixed = rot_stiffness([EndCondition::Fixed, EndCondition::Fixed]);
     let k_pin = rot_stiffness([EndCondition::Pinned, EndCondition::Fixed]);
@@ -2229,7 +2216,6 @@ fn 材端解放ありでも接線剛性が内力の勾配と一致する() {
             ..Default::default()
         };
         let ctx = Ctx { model: &model };
-        let state = ElemState::default();
         let h = 1e-6;
         let u0: [f64; 12] = [
             0.1, 0.2, -0.1, 0.0005, 0.001, -0.0005, -0.05, 0.15, 0.1, -0.0005, 0.0008, 0.0002,
@@ -2248,8 +2234,8 @@ fn 材端解放ありでも接線剛性が内力の勾配と一致する() {
             false,
             &ctx,
         );
-        let f0 = b0.internal_force(&state, &ctx);
-        let k = b0.tangent_stiffness(&state, &ctx);
+        let f0 = b0.internal_force(&ctx);
+        let k = b0.tangent_stiffness(&ctx);
         let kmax = (0..12)
             .flat_map(|i| (0..12).map(move |j| (i, j)))
             .map(|(i, j)| k.get(i, j).abs())
@@ -2271,7 +2257,7 @@ fn 材端解放ありでも接線剛性が内力の勾配と一致する() {
                 false,
                 &ctx,
             );
-            let fp = bp.internal_force(&state, &ctx);
+            let fp = bp.internal_force(&ctx);
             for i in 0..12 {
                 let fd = (fp.data[i] - f0.data[i]) / h;
                 let err = (fd - k.get(i, j)).abs() / kmax;
@@ -2316,7 +2302,7 @@ fn 材端解放ありでも剛体回転で内力が生じない() {
         ]),
     };
     fiber.update_state(&du, false, &ctx);
-    let f = fiber.internal_force(&ElemState::default(), &ctx);
+    let f = fiber.internal_force(&ctx);
     for (i, v) in f.data.iter().enumerate() {
         assert!(
             v.abs() < 1.0,
@@ -2349,7 +2335,7 @@ fn 降伏後もピン端のモーメント解放が保たれる() {
         };
         fb.update_state(&du, true, &ctx);
     }
-    let f = fb.internal_force(&ElemState::default(), &ctx);
+    let f = fb.internal_force(&ctx);
     // 剛接端（j 端）のモーメントを基準に、ピン端（i 端）は無視できる大きさ
     let m_fixed = f.data[11].abs().max(1.0);
     assert!(
@@ -2359,12 +2345,12 @@ fn 降伏後もピン端のモーメント解放が保たれる() {
         f.data[11]
     );
     // 実際に降伏していること（弾性なら接線剛性が初期値のまま）
-    let k = fb.tangent_stiffness(&ElemState::default(), &ctx);
+    let k = fb.tangent_stiffness(&ctx);
     let k0 = elastic_fiber(&build_release_model([
         EndCondition::Pinned,
         EndCondition::Fixed,
     ]))
-    .tangent_stiffness(&ElemState::default(), &ctx);
+    .tangent_stiffness(&ctx);
     assert!(
         k.get(7, 7) < 0.95 * k0.get(7, 7),
         "降伏していない（接線剛性が低下していない）: {} vs {}",
@@ -2462,10 +2448,9 @@ fn test_state_member_forces_uses_fiber_state_not_tangent() {
     };
     let mut elem = make_steel_fiber_with_fy(Some(235.0));
     elem.update_state(&du, true, &ctx);
-    let state = ElemState::default();
 
     let mf = elem
-        .state_member_forces(&state, &ctx)
+        .state_member_forces(&ctx)
         .expect("ファイバー梁は状態から内力を返す");
     // 評価断面は弾性梁と同じ規則（剛域なし → 節点芯・中央）。
     assert!(mf.at.iter().any(|(xi, _)| xi.abs() < 1e-12));
@@ -2473,7 +2458,7 @@ fn test_state_member_forces_uses_fiber_state_not_tangent() {
     assert!(mf.at.iter().any(|(xi, _)| (xi - 1.0).abs() < 1e-12));
 
     // i 端（xi=0）の Mz は復元力の f[5] と符号反転で一致する（断面内力の規約）。
-    let f = elem.internal_force(&state, &ctx);
+    let f = elem.internal_force(&ctx);
     let mz_i = mf
         .at
         .iter()
@@ -2484,7 +2469,7 @@ fn test_state_member_forces_uses_fiber_state_not_tangent() {
     assert!(f.data[5].abs() > 1.0, "前提: 曲げが有意であること");
 
     // 接線剛性 × 全変位で組んだ内力は降伏後に過小評価となり、状態由来の値と一致しない。
-    let k = elem.tangent_stiffness(&state, &ctx);
+    let k = elem.tangent_stiffness(&ctx);
     let mut f_tangent = 0.0;
     for j in 0..12 {
         f_tangent += k.get(5, j) * elem.axis.rotate_to_global(&elem.trial_disp)[j];
@@ -2518,9 +2503,7 @@ fn test_state_member_forces_field_is_continuous() {
     elem.eval_sections = vec![0.0, 0.25, 0.5, 0.75, 1.0];
     elem.update_state(&du, true, &ctx);
 
-    let mf = elem
-        .state_member_forces(&ElemState::default(), &ctx)
-        .unwrap();
+    let mf = elem.state_member_forces(&ctx).unwrap();
     let l = elem.length;
     let at = |xi: f64| -> [f64; 6] {
         mf.at

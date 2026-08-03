@@ -11,9 +11,9 @@ pub fn assemble_global_k(model: &Model, dofmap: &DofMap) -> SparseColMat<usize, 
     let mut all_triplets = Vec::new();
 
     for elem in &model.elements {
-        let (behavior, state) = build_behavior(elem, model);
+        let behavior = build_behavior(elem, model);
         let gdofs = behavior.global_dofs(dofmap);
-        let k_local = behavior.tangent_stiffness(&state, &ctx);
+        let k_local = behavior.tangent_stiffness(&ctx);
         let triplets = k_local.to_triplets(&gdofs);
         all_triplets.extend(triplets);
     }
@@ -100,7 +100,7 @@ pub fn assemble_global_m(
     let mut all_triplets = Vec::new();
     if model.mass_method != squid_n_core::model::MassMethod::LumpedOnly {
         for elem in &model.elements {
-            let (behavior, _state) = build_behavior(elem, model);
+            let behavior = build_behavior(elem, model);
             let gdofs = behavior.global_dofs(dofmap);
             let m_local = behavior.mass_matrix(opt);
             let triplets = m_local.to_triplets(&gdofs);
