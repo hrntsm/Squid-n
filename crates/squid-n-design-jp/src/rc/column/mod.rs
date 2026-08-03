@@ -17,6 +17,8 @@ use squid_n_core::section_shape::SectionShape;
 mod nm_interaction;
 
 use nm_interaction::*;
+// N-M 相関曲線の補間は SRC 柱（`crate::srrc`）とも共通利用する。
+pub(crate) use nm_interaction::interp_ma;
 
 // ============================================================================
 // DesignCheck 実装（柱）

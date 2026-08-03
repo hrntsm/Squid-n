@@ -21,8 +21,8 @@ pub(super) struct StdMat {
     pub fy: Option<f64>,
 }
 
-/// 鋼材の単位体積重量 γs = 77 kN/m³（固定荷重）。
-const STEEL_UNIT_WEIGHT_KN_M3: f64 = 77.0;
+use squid_n_core::units::STEEL_UNIT_WEIGHT_KN_M3;
+
 /// 鉄筋コンクリートの単位体積重量 γrc = 24 kN/m³（固定荷重）。
 const RC_UNIT_WEIGHT_KN_M3: f64 = 24.0;
 

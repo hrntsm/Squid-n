@@ -17,7 +17,33 @@ pub fn assemble_csc(n: usize, mut triplets: Vec<Triplet>) -> SparseColMat<usize,
             _ => merged.push(faer::sparse::Triplet::new(t.row, t.col, t.val)),
         }
     }
-    SparseColMat::try_new_from_triplets(n, n, &merged).expect("valid triplets")
+    csc_from_merged(n, &merged)
+}
+
+/// マージ済み三つ組から n×n CSC 行列を構築する。
+///
+/// 失敗は自由度番号の割当バグ（`n` を超える row/col）に限られるため回復不能
+/// として panic するが、原因調査に足る診断（n・三つ組数・範囲外の要素）を
+/// メッセージへ含める（従来の `expect("valid triplets")` は診断価値が無かった）。
+fn csc_from_merged(
+    n: usize,
+    merged: &[faer::sparse::Triplet<usize, usize, f64>],
+) -> SparseColMat<usize, f64> {
+    match SparseColMat::try_new_from_triplets(n, n, merged) {
+        Ok(m) => m,
+        Err(e) => {
+            let bad = merged
+                .iter()
+                .find(|t| t.row >= n || t.col >= n)
+                .map(|t| format!("(row={}, col={}, val={})", t.row, t.col, t.val))
+                .unwrap_or_else(|| "検出できず".into());
+            panic!(
+                "疎行列の組立に失敗（自由度番号の割当バグの疑い）: \
+                 n={n}, 三つ組数={}, 範囲外の三つ組={bad}, 原因={e:?}",
+                merged.len()
+            );
+        }
+    }
 }
 
 /// 組立済み CSC 疎行列の非ゼロ要素を Triplet のリストへ変換する。
@@ -123,7 +149,7 @@ fn build_pattern_and_slots(
         }
         slot_of[i] = merged.len() - 1;
     }
-    let mat = SparseColMat::try_new_from_triplets(n, n, &merged).expect("valid triplets");
+    let mat = csc_from_merged(n, &merged);
     (mat, slot_of)
 }
 

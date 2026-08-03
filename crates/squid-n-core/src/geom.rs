@@ -15,6 +15,24 @@ pub fn is_vertical_pair(a: [f64; 3], b: [f64; 3]) -> bool {
     ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2)).sqrt() < VERTICAL_TOL_MM
 }
 
+/// 部材軸を鉛直（柱系）とみなす方向余弦 |ez| の下限（45° 基準）。
+pub const VERTICAL_COS_TOL: f64 = 0.707;
+
+/// 部材軸（両端座標）が鉛直（柱系）か。部材軸単位ベクトルの z 成分
+/// |ez| > [`VERTICAL_COS_TOL`]（水平から 45° 超）で判定する。長さ 0 は偽。
+///
+/// 力学レジーム選択・プッシュオーバーの変形角定義・層せん断集計・
+/// 偏心率/剛性率・ST-Bridge 入出力が共通で用いる**単一規約**。
+/// 設計検定の部材種別（柱 |ez|≥0.8／梁 ≤0.2／中間ブレースの 3 区分）は
+/// 検定式の選択という別目的の規約であり、本判定へは統合しない。
+/// [`is_vertical_pair`]（水平距離の実寸トレランス）は「厳密に直立した柱」の
+/// 抽出用でこれも別物。
+pub fn is_vertical_axis(a: [f64; 3], b: [f64; 3]) -> bool {
+    let (dx, dy, dz) = (b[0] - a[0], b[1] - a[1], b[2] - a[2]);
+    let len = (dx * dx + dy * dy + dz * dz).sqrt();
+    len > 1e-12 && (dz / len).abs() > VERTICAL_COS_TOL
+}
+
 /// ベクトルを正規化する（長さが 0 に近ければ `None`）。
 fn normalize(v: [f64; 3]) -> Option<[f64; 3]> {
     let n = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();

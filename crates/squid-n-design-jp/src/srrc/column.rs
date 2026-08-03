@@ -12,8 +12,8 @@ use super::{
 };
 use crate::material_strength::{main_rebar_grade, rebar_sigma_y_of};
 use crate::rc::{
-    concrete_allowable_compression_class, concrete_allowable_shear_class, rebar_allowable_shear,
-    rebar_allowable_tension, young_ratio_n,
+    concrete_allowable_compression_class, concrete_allowable_shear_class, interp_ma,
+    rebar_allowable_shear, rebar_allowable_tension, young_ratio_n,
 };
 use crate::steel::{steel_f_value_prefix, steel_fs, steel_ft};
 use crate::{CheckComponent, CheckKind, CheckResult, DesignCtx, LoadTerm, MemberForcesAt};
@@ -137,33 +137,6 @@ fn src_column_nm_curve(
     pts
 }
 
-/// N-M 相関曲線から設計軸力（圧縮正）に対する許容曲げモーメントを線形補間で
-/// 求める。範囲外は端点値でクランプする。
-fn interp_ma_curve(points: &[(f64, f64)], n_design: f64) -> f64 {
-    if points.is_empty() {
-        return 0.0;
-    }
-    if n_design <= points[0].0 {
-        return points[0].1;
-    }
-    let last = points.len() - 1;
-    if n_design >= points[last].0 {
-        return points[last].1;
-    }
-    for w in points.windows(2) {
-        let (n0, m0) = w[0];
-        let (n1, m1) = w[1];
-        if n_design >= n0 && n_design <= n1 {
-            if (n1 - n0).abs() < 1e-9 {
-                return m0.max(m1);
-            }
-            let t = (n_design - n0) / (n1 - n0);
-            return m0 + t * (m1 - m0);
-        }
-    }
-    points[last].1
-}
-
 /// SRC 柱 1 軸分の許容曲げモーメント MA(N)。SRC規準1987 の 3 分岐
 /// （RC+鉄骨累加 / 圧縮超過で鉄骨のみ / 引張超過で鉄骨のみ）を実装する。
 #[allow(clippy::too_many_arguments)]
@@ -179,7 +152,8 @@ fn src_column_axis_ma(
     curve: &[(f64, f64)],
 ) -> f64 {
     if n_design >= rnt && n_design <= rnc {
-        s_mo + interp_ma_curve(curve, n_design)
+        // N-M 相関曲線の補間は RC 柱と共通の実装を使う（`crate::rc::interp_ma`）。
+        s_mo + interp_ma(curve, n_design)
     } else if n_design > rnc {
         let sn = n_design - rnc;
         (sz * (s_fc - sn / sa)).max(0.0)

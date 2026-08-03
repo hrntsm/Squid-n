@@ -272,7 +272,18 @@ fn condense_springs(k_elem: &LocalMat, k_i: f64, k_j: f64) -> LocalMat {
         }
     }
 
-    let kbb_inv = invert_small(&kbb, nb);
+    let Some(kbb_inv) = invert_small(&kbb, nb) else {
+        // 縮約行列 Kbb が特異（材端ばね＋可撓部回転が機構化）。補正項を省略して
+        // 返し、全体求解の特異検出（自由度名指しの診断）に委ねる（`beam::stiffness::
+        // condense_end_springs` と同じ扱い）。
+        let mut kstar = LocalMat::zeros(na);
+        for i in 0..na {
+            for j in 0..na {
+                kstar.set(i, j, kaa[i * na + j]);
+            }
+        }
+        return kstar;
+    };
 
     let mut kab_kbbinv = vec![0.0; na * nb];
     for i in 0..na {
@@ -394,6 +405,29 @@ impl ElementBehavior for ConcentratedSpringBeam {
         LocalVec {
             data: SmallVec::from_slice(&f_global),
         }
+    }
+
+    /// 現在のばね履歴状態から部材内力分布を返す。
+    ///
+    /// 端部節点力は [`Self::internal_force`]（弾性可撓部の `K_flex·û` と
+    /// ばねの履歴モーメントから経路整合に評価した復元力）であり、接線剛性 ×
+    /// 全変位ではないため降伏後も正しい。これを釣合いで材軸方向へ分配する
+    /// （[`crate::beam::member_forces_from_end_forces`]、ファイバー梁と同規約）。
+    /// 未実装のままトレイト既定の `None` に落ちると、時刻歴応答解析の部材応力
+    /// 履歴が全ステップ空になり、応力図・検定から当該部材が無言で欠落する。
+    fn state_member_forces(
+        &self,
+        state: &ElemState,
+        ctx: &Ctx,
+    ) -> Option<crate::beam::MemberForces> {
+        let f_global = self.internal_force(state, ctx);
+        let arr: [f64; 12] = std::array::from_fn(|i| f_global.data[i]);
+        let f_local = self.elastic.axis.rotate_to_local(&arr);
+        Some(crate::beam::member_forces_from_end_forces(
+            &f_local,
+            self.elastic.length,
+            &self.elastic.eval_sections,
+        ))
     }
 
     fn update_state(&mut self, du: &LocalVec, commit: bool, _ctx: &Ctx) {

@@ -175,6 +175,38 @@ impl ElementBehavior for HystereticDamperElement {
             let _ = self.mat.deserialize_state(ms);
         }
     }
+
+    fn serialize_checkpoint(&self) -> Vec<u8> {
+        use squid_n_material::UniaxialMaterial;
+        // 弾塑性軸ばねの履歴（塑性変位）と伸びの確定/試行値をチェックポイントへ
+        // 含める。トレイト既定の空バイト列のままではレジューム時に履歴が初期状態へ
+        // 戻り、以降の応答が別の履歴経路を辿ってしまう。
+        bincode::serialize(&(
+            self.committed_elong,
+            self.trial_elong,
+            self.mat.serialize_state(),
+        ))
+        .expect("serialize checkpoint")
+    }
+
+    fn deserialize_checkpoint(
+        &mut self,
+        data: &[u8],
+    ) -> Result<(), crate::behavior::CheckpointError> {
+        use squid_n_material::UniaxialMaterial;
+        // 旧チェックポイント（状態未収録・空バイト列）は「状態なし」として許容する。
+        if data.is_empty() {
+            return Ok(());
+        }
+        let (ce, te, ms): (f64, f64, Vec<u8>) = bincode::deserialize(data)
+            .map_err(|e| crate::behavior::CheckpointError::Decode(e.to_string()))?;
+        self.committed_elong = ce;
+        self.trial_elong = te;
+        self.mat
+            .deserialize_state(&ms)
+            .map_err(|e| crate::behavior::CheckpointError::Decode(e.to_string()))?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -261,5 +293,37 @@ mod tests {
             energy > 0.0,
             "hysteretic loop must dissipate energy: {energy}"
         );
+    }
+
+    /// チェックポイントの往復で履歴（塑性変位）と伸びが完全復元されること。
+    /// 従来はトレイト既定（空バイト列）のままで、レジューム時に履歴ダンパーだけが
+    /// 初期状態へ戻っていた。
+    #[test]
+    fn test_checkpoint_roundtrip_restores_hysteresis() {
+        let k1 = 1000.0;
+        let qy = 100.0;
+        let mut d = hyst_damper(k1, qy, 0.02);
+        let model = Model::default();
+        let ctx = Ctx { model: &model };
+        // 降伏域まで押し込んで履歴（塑性変位）を作る。
+        drive(&mut d, 3.0 * qy / k1, &model);
+        let f_before = d.internal_force(&ElemState {}, &ctx).data[6];
+
+        let cp = d.serialize_checkpoint();
+        assert!(!cp.is_empty(), "チェックポイントに状態が直列化されるべき");
+
+        let mut restored = hyst_damper(k1, qy, 0.02);
+        restored
+            .deserialize_checkpoint(&cp)
+            .expect("チェックポイント復元は成功するはず");
+        let f_after = restored.internal_force(&ElemState {}, &ctx).data[6];
+        assert!(
+            (f_before - f_after).abs() < 1e-9,
+            "復元後の内力が一致すべき: {f_before} vs {f_after}"
+        );
+
+        // 空バイト列（旧チェックポイント）は「状態なし」として成功する。
+        let mut fresh = hyst_damper(k1, qy, 0.02);
+        assert!(fresh.deserialize_checkpoint(&[]).is_ok());
     }
 }

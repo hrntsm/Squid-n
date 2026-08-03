@@ -1,5 +1,6 @@
 //! 積分スキーム間で共有する下位ルーチン。
 //!
+//! - [`horizontal_influence_m`] — 水平 2 方向の地動入力用 `(M·r_x, M·r_y)`
 //! - [`theta_influence_m`] — 位相差入力（ねじれ加振）の回転影響ベクトル `M·r_θ`
 //! - [`theta_accel_at`] — ステップ `n` のねじれ地動加速度取得
 //! - [`solve_initial_accel`] — 初期加速度 `M·a₀ = rhs` の求解
@@ -20,6 +21,35 @@ use squid_n_math::sparse::sparse_matvec;
 /// （第1波はここにローカル実装を置いていたが、第2波で squid-n-math 側の実装へ寄せた。
 /// 呼び出し側の変更は不要）。
 pub(crate) use squid_n_math::sparse::sparse_matvec_into;
+
+/// 水平 2 方向（X・Y）の地動入力用影響ベクトル × 質量 `(M·r_x, M·r_y)` を構築する。
+///
+/// 影響ベクトル r は当該方向の並進自由度に 1 を立てた単位剛体並進で、
+/// `M·r` が各ステップの等価地震力 `−M·r·üg` の係数になる。積分スキーム
+/// （Newmark 線形・HHT-α・非線形）で同一のため単一実装とする。
+pub(crate) fn horizontal_influence_m(
+    model: &Model,
+    dofmap: &DofMap,
+    m_free: &faer::sparse::SparseColMat<usize, f64>,
+) -> (Vec<f64>, Vec<f64>) {
+    let n_free = dofmap.n_active();
+    let mut r_x_free = vec![0.0; n_free];
+    let mut r_y_free = vec![0.0; n_free];
+    for ni in 0..model.nodes.len() {
+        let g_ux = ni * DOF_PER_NODE;
+        let g_uy = ni * DOF_PER_NODE + 1;
+        if let Some(a) = dofmap.active(g_ux) {
+            r_x_free[a as usize] = 1.0;
+        }
+        if let Some(a) = dofmap.active(g_uy) {
+            r_y_free[a as usize] = 1.0;
+        }
+    }
+    (
+        sparse_matvec(m_free, &r_x_free),
+        sparse_matvec(m_free, &r_y_free),
+    )
+}
 
 /// 位相差入力（ねじれ加振）用の回転影響ベクトル × 質量 `M·r_θ` を構築する
 /// （多点位相差入力、構造力学）。鉛直（Z）軸まわりの単位角加速度に対し、各節点は

@@ -109,10 +109,9 @@ impl BeamElement {
         };
 
         // ねじり剛性 GJ/L が無い部材（J≤0・G≤0）の rx は解放しない。解放しても
-        // 縮約行列 Kbb の対角がゼロになって特異化するだけで（`invert_small` は
-        // ゼロピボットを 1 に置換するため、無意味な値で縮約が進んでしまう）、
-        // モーメント解放としての意味が無いため（ファイバー梁
-        // `fiber::resolve_end_releases` と同じ規則）。
+        // 縮約行列 Kbb が特異化して縮約の意味が無いため（ファイバー梁
+        // `fiber::resolve_end_releases` と同じ規則。特異な Kbb は `invert_small` が
+        // `None` を返し補正項が省略される）。
         let has_torsion = self.j > 0.0 && self.g > 0.0;
 
         // 解放（非剛接）する回転自由度: (要素回転 DOF, ばね剛性 k_s)
@@ -193,7 +192,19 @@ impl BeamElement {
             }
         }
 
-        let kbb_inv = invert_small(&kbb, nb);
+        let Some(kbb_inv) = invert_small(&kbb, nb) else {
+            // 縮約行列 Kbb が特異（解放自由度が機構化）。もっともらしい剛性を
+            // 作らず補正項を省略して返す。解放回転の外部行はばね剛性を除き
+            // ゼロのため、全体求解が特異を検出して自由度名指しの診断で停止する
+            // （従来はピボット 1.0 差し替えで誤った剛性が無言で混入していた）。
+            let mut kstar = LocalMat::zeros(na);
+            for i in 0..na {
+                for j in 0..na {
+                    kstar.set(i, j, kaa[i * na + j]);
+                }
+            }
+            return kstar;
+        };
 
         // kab_kbbinv = Kab * Kbb^-1
         let mut kab_kbbinv = vec![0.0; na * nb];

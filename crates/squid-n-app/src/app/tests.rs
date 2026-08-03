@@ -2011,14 +2011,13 @@ fn test_holding_capacity_rank_auto_from_width_thickness() {
 
 /// SectionShape::RcRect の配筋情報から `rc_capacity_input_from_rect` で
 /// `RcCapacityInput` を組み立てる経路そのものを検証する（RcRect→入力構築）。
-/// 得られた入力から `rc_qsu_simple`/`rc_qmu_simple` → `rc_member_rank` の結果が、
+/// 得られた入力から `rc_qsu_simple`/`rc_qmu_simple` の結果が、
 /// 同じ式を独立に書き下した手計算と一致することを確認する。
 #[test]
 fn test_rc_capacity_input_from_rect_matches_handcalc() {
     use squid_n_core::ids::MaterialId;
     use squid_n_core::model::Material;
     use squid_n_core::section_shape::{BarSet, RcRebar, ShearBar};
-    use squid_n_design_jp::secondary::member_rank::{rc_member_rank, RankCriteria};
     use squid_n_design_jp::secondary::rc_capacity::{rc_qmu_simple, rc_qsu_simple};
 
     let b = 400.0;
@@ -2105,20 +2104,14 @@ fn test_rc_capacity_input_from_rect_matches_handcalc() {
         qsu_handcalc
     );
 
-    let rank = rc_member_rank(qsu, qmu, &RankCriteria::default());
-    let rank_handcalc = rc_member_rank(qsu_handcalc, qmu_handcalc, &RankCriteria::default());
-    assert_eq!(rank, rank_handcalc);
-    // Qsu/Qmu ≈ 2.12（曲げ降伏が十分先行する健全な配筋）なので FA になるはず。
-    assert_eq!(
-        rank,
-        squid_n_design_jp::secondary::holding_capacity::MemberRank::FA
-    );
+    // Qsu/Qmu ≈ 1.85（曲げ降伏が先行する健全な配筋）であること。
+    assert!(qsu / qmu > 1.5, "Qsu/Qmu={}", qsu / qmu);
 }
 
 /// UI-13(RC): SectionShape::RcRect + fc 付き材料（コンクリート、is_steel=false）を
 /// 持つ小さな門型ラーメンを組み、rank-auto で member_ranks に RC 部材のランクが入り、
-/// `rc_capacity_input_from_rect` → `rc_qsu_simple`/`rc_qmu_simple` → `rc_member_rank`
-/// の手計算と一致することを確認する。
+/// 告示の部材種別表（`rc_column_type`/`rc_beam_type`）の手計算と一致することを
+/// 確認する。
 #[test]
 fn test_holding_capacity_rank_auto_rc_rect_from_shape() {
     use squid_n_core::dof::Dof6Mask;
@@ -2777,6 +2770,37 @@ fn test_refresh_beam_loads_maps_edges_to_members() {
         1,
         "欠けた辺は未解決の節点対として残るはず"
     );
+}
+
+/// CMQ 図表示中は毎フレーム `refresh_beam_loads` が呼ばれるため、モデル・設定が
+/// 変わっていなければ床荷重分配を再計算しない（ハッシュキャッシュ）。
+/// モデルを編集するとハッシュが変わり再計算される。
+#[test]
+fn test_refresh_beam_loads_caches_by_model_hash() {
+    let mut app = App {
+        model: make_slab_test_model(),
+        ..App::default()
+    };
+    app.refresh_beam_loads();
+    assert_eq!(app.beam_loads.len(), 4);
+
+    // モデル不変のまま beam_loads を汚しても、再計算はスキップされ汚れたまま。
+    app.beam_loads.clear();
+    app.refresh_beam_loads();
+    assert!(
+        app.beam_loads.is_empty(),
+        "モデル不変なら再計算せずスキップするはず"
+    );
+
+    // モデルを編集するとハッシュが変わり再計算される。
+    app.model.slabs[0]
+        .loads
+        .push(squid_n_core::model::AreaLoad {
+            kind: "追加仕上げ".into(),
+            value: 1.0e-3,
+        });
+    app.refresh_beam_loads();
+    assert_eq!(app.beam_loads.len(), 4, "モデル編集後は再計算されるはず");
 }
 
 /// 正方形スラブ（4000×4000）+ 外周4本の梁を持つモデル
@@ -5779,6 +5803,53 @@ fn test_load_model_resets_preparation() {
     assert!(app.staleness.preparation_stale);
 }
 
+/// モデル差し替え（load_model）は旧モデル由来の結果・表示状態をすべてリセット
+/// する。従来は results/selection 等のみで、質点系応答・仕口パネル一覧・
+/// 時刻歴の選択部材などが旧モデルの ID を指したまま残っていた。
+#[test]
+fn test_load_model_resets_model_derived_state() {
+    let mut app = App::default();
+    app.load_model(crate::sample::portal_frame());
+    app.run_preparation();
+
+    // 旧モデル由来の状態を擬似的に残す。
+    app.stick_response = Some(squid_n_solver::lumped_mass::StickResponse {
+        time: vec![0.0],
+        roof_disp: vec![0.0],
+        story_peak_drift: vec![0.0],
+        story_peak_shear: vec![0.0],
+        story_ductility: vec![0.0],
+    });
+    app.generated_panels
+        .push(squid_n_element::panel_gen::GeneratedPanel {
+            node: NodeId(0),
+            dc: 300.0,
+            db: 400.0,
+            tp: 12.0,
+            ve: 1.0e6,
+            k_panel: 1.0e9,
+        });
+    #[cfg(feature = "gui")]
+    {
+        app.hinge_detail_elem = Some(squid_n_core::ids::ElemId(0));
+        app.th_detail_elem = Some(squid_n_core::ids::ElemId(0));
+        app.analysis_target = None;
+        app.th_frame = 42;
+        app.th_playing = true;
+    }
+
+    app.load_model(crate::sample::portal_frame());
+    assert!(app.stick_response.is_none());
+    assert!(app.generated_panels.is_empty());
+    #[cfg(feature = "gui")]
+    {
+        assert!(app.hinge_detail_elem.is_none());
+        assert!(app.th_detail_elem.is_none());
+        assert_eq!(app.th_frame, 0);
+        assert!(!app.th_playing);
+    }
+}
+
 /// 準備計算の CSV には階の分布・Ai 分布・剛域・荷重集計の各セクションが出る。
 #[test]
 fn test_build_preparation_csv() {
@@ -6574,4 +6645,285 @@ fn test_frame_view_filters_members_by_axis_and_story() {
         }
     )
     .is_none());
+}
+
+/// 解析結果の適用が表示対象（`nav.focus_result`）も新しい結果へ切り替えること。
+/// 従来は `last_static`・`member_forces` だけが差し替わり、`current_static` が
+/// 優先する `focus_result` は旧結果を指したままだったため、変位図（旧結果）と
+/// 応力図・断面検定（新結果）が食い違う表示になっていた。
+#[test]
+fn test_apply_static_result_updates_focus_result() {
+    let mut app = App::default();
+    app.load_model(aligned_portal_frame());
+
+    app.run_linear_static(LoadCaseId(0));
+    assert!(app.last_error.is_none(), "{:?}", app.last_error);
+    assert_eq!(
+        app.nav.focus_result,
+        Some(StaticKey::Case(StaticCaseKey::User(LoadCaseId(0)))),
+        "解析実行後は表示対象も新しい結果を指すべき"
+    );
+
+    // 別の結果を表示対象にした状態で再実行しても、表示対象は実行した結果へ移る。
+    app.nav.focus_result = Some(StaticKey::Case(StaticCaseKey::Seismic(SeismicDir::X)));
+    app.run_linear_static(LoadCaseId(0));
+    assert_eq!(
+        app.nav.focus_result,
+        Some(StaticKey::Case(StaticCaseKey::User(LoadCaseId(0)))),
+        "再実行後の表示対象は実行した結果へ切り替わるべき"
+    );
+    // 表示対象（current_static）と応力図・検定が参照する member_forces が
+    // 同じ結果を指している（食い違いがない）。
+    let displayed = app.current_static().unwrap().member_forces.clone();
+    assert_eq!(
+        app.results.as_ref().unwrap().member_forces,
+        displayed,
+        "変位図と応力図・検定の参照元は一致すべき"
+    );
+}
+
+/// 時刻歴応答解析の完了で stale が解消されること。従来は `last_run` の更新のみで
+/// `results_stale` が立ったままとなり、モデル編集後に時刻歴だけを実行しても
+/// ビューアのアニメーション・部材クリックが無効のまま復帰しなかった。
+#[test]
+fn test_time_history_apply_clears_stale() {
+    let mut app = App::default();
+    app.load_model(crate::sample::portal_frame());
+    app.analysis_cfg.th_duration = 1.0;
+    // モデル編集で stale を立ててから時刻歴のみ実行する。
+    app.staleness.mark_edited();
+    assert!(app.staleness.results_stale);
+    app.run_time_history_sample();
+    assert!(app.last_error.is_none(), "{:?}", app.last_error);
+    assert!(
+        !app.staleness.results_stale,
+        "時刻歴の完了後は stale が解消されるべき"
+    );
+}
+
+/// 増分解析・時刻歴応答解析の実行でも準備計算（剛域・仕口パネル・荷重同期）が
+/// 走ること。従来はこれらの経路だけ ensure_preparation を通らず、仕口パネルの
+/// 生成が省かれて静的解析と剛性の異なるモデルを解いていた。
+#[test]
+fn test_time_history_and_pushover_run_preparation() {
+    let mut app = App::default();
+    app.load_model(crate::sample::portal_frame());
+    app.analysis_cfg.th_duration = 0.5;
+    assert!(
+        app.staleness.preparation_stale,
+        "読込直後は準備計算が未実行のはず"
+    );
+    app.run_time_history_sample();
+    assert!(app.last_error.is_none(), "{:?}", app.last_error);
+    assert!(
+        !app.staleness.preparation_stale,
+        "時刻歴の実行で準備計算が走るべき"
+    );
+
+    // 増分解析も同じ入口（begin_analysis）を通ること。
+    app.staleness.mark_edited();
+    assert!(app.staleness.preparation_stale);
+    app.run_pushover();
+    assert!(
+        !app.staleness.preparation_stale,
+        "増分解析の実行で準備計算が走るべき"
+    );
+}
+
+/// SRC 耐震壁の判定（`wall_has_src_boundary_column`）: 壁と節点を共有する
+/// 鉛直線材が SRC 断面（SrcRect）のとき真、RC 断面のときは偽となる。
+#[test]
+fn test_wall_has_src_boundary_column() {
+    use squid_n_core::model::{
+        ElementData, ElementKind, EndCondition, ForceRegime, LocalAxis, Model, Node,
+    };
+    use squid_n_core::section_shape::SectionShape;
+
+    let mut model = Model::default();
+    // 壁パネル: n0(0,0,0)-n1(2000,0,0)-n2(2000,0,3000)-n3(0,0,3000)。
+    // 柱は x=0 の辺（n0-n3）を共有する鉛直材。
+    for (i, c) in [
+        [0.0, 0.0, 0.0],
+        [2000.0, 0.0, 0.0],
+        [2000.0, 0.0, 3000.0],
+        [0.0, 0.0, 3000.0],
+    ]
+    .iter()
+    .enumerate()
+    {
+        model.nodes.push(Node {
+            id: NodeId(i as u32),
+            coord: *c,
+            restraint: squid_n_core::dof::Dof6Mask::FREE,
+            mass: None,
+            story: None,
+            support_spring: None,
+        });
+    }
+    let rebar = squid_n_core::section_shape::RcRebar {
+        main_grade: None,
+        main_x: squid_n_core::section_shape::BarSet {
+            count: 4,
+            dia: 22.0,
+            layers: 1,
+        },
+        main_y: squid_n_core::section_shape::BarSet {
+            count: 4,
+            dia: 22.0,
+            layers: 1,
+        },
+        cover: 40.0,
+        shear: squid_n_core::section_shape::ShearBar {
+            dia: 10.0,
+            pitch: 100.0,
+            legs: 2,
+            grade: None,
+        },
+    };
+    let wall_shape = SectionShape::RcWall {
+        thickness: 180.0,
+        ps: 0.0025,
+    };
+    let src_shape = SectionShape::SrcRect {
+        b: 600.0,
+        d: 600.0,
+        rebar: rebar.clone(),
+        steel_height: 300.0,
+        steel_width: 300.0,
+        steel_web_thick: 10.0,
+        steel_flange_thick: 15.0,
+        steel_grade: "SN400B".into(),
+    };
+    let rc_shape = SectionShape::RcRect {
+        b: 600.0,
+        d: 600.0,
+        rebar,
+    };
+    model
+        .sections
+        .push(wall_shape.to_section(SectionId(0), "W180".into()));
+    model
+        .sections
+        .push(src_shape.to_section(SectionId(1), "SRC柱".into()));
+    model
+        .sections
+        .push(rc_shape.to_section(SectionId(2), "RC柱".into()));
+
+    let elem = |id: u32, kind: ElementKind, nodes: &[u32], sec: u32| ElementData {
+        id: ElemId(id),
+        kind,
+        nodes: nodes.iter().map(|&n| NodeId(n)).collect(),
+        section: Some(SectionId(sec)),
+        material: None,
+        local_axis: LocalAxis {
+            ref_vector: [1.0, 0.0, 0.0],
+        },
+        end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+        force_regime: ForceRegime::Auto,
+        rigid_zone: Default::default(),
+        plastic_zone: None,
+        spring: None,
+    };
+    model
+        .elements
+        .push(elem(0, ElementKind::Wall, &[0, 1, 2, 3], 0));
+    model.elements.push(elem(1, ElementKind::Beam, &[0, 3], 1));
+
+    let wall = model.elements[0].clone();
+    assert!(
+        wall_has_src_boundary_column(&wall, &model),
+        "SRC 断面の鉛直材が壁節点を共有 → SRC 耐震壁"
+    );
+
+    // 柱を RC 断面へ差し替えると偽（通常の RC 耐力壁として扱う）。
+    model.elements[1].section = Some(SectionId(2));
+    assert!(
+        !wall_has_src_boundary_column(&wall, &model),
+        "周辺柱が RC のみなら SRC 耐震壁ではない"
+    );
+
+    // 節点を共有しない SRC 柱（別位置）は判定に影響しない。
+    model.nodes.push(Node {
+        id: NodeId(4),
+        coord: [8000.0, 0.0, 0.0],
+        restraint: squid_n_core::dof::Dof6Mask::FREE,
+        mass: None,
+        story: None,
+        support_spring: None,
+    });
+    model.nodes.push(Node {
+        id: NodeId(5),
+        coord: [8000.0, 0.0, 3000.0],
+        restraint: squid_n_core::dof::Dof6Mask::FREE,
+        mass: None,
+        story: None,
+        support_spring: None,
+    });
+    model.elements.push(elem(2, ElementKind::Beam, &[4, 5], 1));
+    assert!(
+        !wall_has_src_boundary_column(&wall, &model),
+        "節点を共有しない SRC 柱は対象外"
+    );
+
+    // 壁上辺の隅節点から立ち上がる上階の SRC 柱（片側 1 節点のみ共有）は
+    // 側柱ではないため対象外（SRC 階→RC 階の切替部での誤判定防止）。
+    model.nodes.push(Node {
+        id: NodeId(6),
+        coord: [0.0, 0.0, 6000.0],
+        restraint: squid_n_core::dof::Dof6Mask::FREE,
+        mass: None,
+        story: None,
+        support_spring: None,
+    });
+    model.elements.push(elem(3, ElementKind::Beam, &[3, 6], 1));
+    assert!(
+        !wall_has_src_boundary_column(&wall, &model),
+        "片側 1 節点のみ共有する上階柱は側柱ではない"
+    );
+}
+
+/// `sync_gravity_load_cases_action` は `beam_loads` を直接上書きするため、
+/// キャッシュキー `beam_loads_hash` を無効化しなければならない。無効化しないと、
+/// 編集→同期→undo でモデルをハッシュ記録時点の状態へ戻したとき refresh が
+/// スキップされ、編集後の分配（B2）が表示に残り続ける（敵対的レビューで検出）。
+#[test]
+fn test_sync_gravity_invalidates_beam_loads_hash() {
+    let mut app = App {
+        model: make_slab_test_model(),
+        ..App::default()
+    };
+    // M1 で CMQ 表示（毎フレーム refresh）を模擬。
+    app.refresh_beam_loads();
+    let b1 = app.beam_loads.clone();
+
+    // スラブ荷重を編集（M2）。
+    app.model.slabs[0]
+        .loads
+        .push(squid_n_core::model::AreaLoad {
+            kind: "追加仕上げ".into(),
+            value: 2.0e-3,
+        });
+    // 解析入口の荷重同期（beam_loads を直接上書き）→ hash は無効化される。
+    app.sync_gravity_load_cases_action();
+    let b2 = app.beam_loads.clone();
+    assert_ne!(
+        format!("{:?}", b1),
+        format!("{:?}", b2),
+        "前提: 編集で分配は変わる"
+    );
+    assert_eq!(
+        app.beam_loads_hash, None,
+        "直接上書きの後はキャッシュキーが無効化されるべき"
+    );
+
+    // 編集を戻す（モデルは M1 とバイト同一へ）。
+    app.model.slabs[0].loads.pop();
+
+    // CMQ 表示を再開 → キーが無効なので再計算され、M1 の分配へ戻る。
+    app.refresh_beam_loads();
+    assert_eq!(
+        format!("{:?}", app.beam_loads),
+        format!("{:?}", b1),
+        "M1 へ戻したのだから M1 の分配が表示されるべき"
+    );
 }

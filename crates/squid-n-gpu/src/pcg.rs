@@ -33,12 +33,13 @@ impl LinearSolver for PcgGpu {
 
     fn solve(&self, rhs: &[f64]) -> Result<Vec<f64>, SolveError> {
         let _spmv = self.inner.as_ref().ok_or(SolveError::NotFactorized)?;
-        use squid_n_math::pcg::PcgSolver;
-        let mut cpu = PcgSolver::new(self.tol, self.max_iter);
-        cpu.factorize(
-            &faer::sparse::SparseColMat::<usize, f64>::try_new_from_triplets(self.n, self.n, &[])
-                .map_err(|e| SolveError::Backend(format!("{e:?}")))?,
-        )?;
-        cpu.solve(rhs)
+        let _ = rhs;
+        // GPU PCG（T1: SpMV カーネル）は未実装。かつては要素ゼロの n×n 行列を
+        // CPU PCG へ分解させて解いており、エラーも panic も出さずに誤った変位を
+        // 返す構造だった（make_solver 相当の経路へ差し込むと静かに誤答する）。
+        // 実装されるまで明示エラーで停止する。
+        Err(SolveError::Backend(
+            "GPU PCG は未実装です（gpu フィーチャは開発中）。CPU ソルバを使用してください。".into(),
+        ))
     }
 }

@@ -14,7 +14,10 @@ fn attach_store_info(summary: &mut serde_json::Value, case: u32, kinds: &[&str])
 }
 
 /// `JobOutcome` を結果ストアへ永続化し、`JobStatus::Done::result_ref` に格納する
-/// サマリ JSON 文字列を返す。`ServerState` のロックを保持したまま
+/// サマリ JSON 文字列を返す。書き込み・manifest 永続化の失敗は `Err` で返す
+/// （呼び出し側はジョブを `Failed` へ遷移させる。かつては失敗を握りつぶして
+/// `Done` を報告し、利用者が「結果 0 行」を正常な解析結果と誤解し得た）。
+/// `ServerState` のロックを保持したまま
 /// （= ジョブ状態更新と同じロック内で）呼び出すこと。
 ///
 /// ## 対応表（JobKind → 書き込む ResultKind）
@@ -35,8 +38,26 @@ fn attach_store_info(summary: &mut serde_json::Value, case: u32, kinds: &[&str])
 pub fn persist_job_outcome(
     store: &mut squid_n_io::results::FsResultStore,
     outcome: JobOutcome,
-) -> String {
+) -> Result<String, String> {
     use squid_n_io::results::{member_force_batch, modal_batch, nodal_disp_batch, ResultKind};
+
+    /// バッチを 1 つ書き込んで finish する（バッチ生成・IO いずれの失敗も伝播）。
+    fn write_one(
+        store: &mut squid_n_io::results::FsResultStore,
+        case: u32,
+        kind: ResultKind,
+        batch: Result<arrow::record_batch::RecordBatch, arrow::error::ArrowError>,
+    ) -> Result<(), String> {
+        let batch = batch.map_err(|e| format!("結果バッチの生成に失敗: {e}"))?;
+        let mut w = store
+            .writer(case, kind)
+            .map_err(|e| format!("結果ストアの書き込み開始に失敗: {e}"))?;
+        w.write_rows(&batch)
+            .map_err(|e| format!("結果ストアへの書き込みに失敗: {e}"))?;
+        w.finish()
+            .map_err(|e| format!("結果ストアの書き込み完了に失敗: {e}"))?;
+        Ok(())
+    }
 
     match outcome {
         JobOutcome::LinearStatic {
@@ -47,25 +68,27 @@ pub fn persist_job_outcome(
             mut summary,
         } => {
             let mut kinds: Vec<&str> = Vec::new();
-            {
-                let mut w = store.writer(case, ResultKind::NodalDisp);
-                if let Ok(batch) = nodal_disp_batch(&node_ids, &disp) {
-                    w.write_rows(&batch);
-                }
-                w.finish();
-            }
+            write_one(
+                store,
+                case,
+                ResultKind::NodalDisp,
+                nodal_disp_batch(&node_ids, &disp),
+            )?;
             kinds.push("NodalDisp");
             if !member_force_rows.is_empty() {
-                let mut w = store.writer(case, ResultKind::MemberForce);
-                if let Ok(batch) = member_force_batch(&member_force_rows) {
-                    w.write_rows(&batch);
-                }
-                w.finish();
+                write_one(
+                    store,
+                    case,
+                    ResultKind::MemberForce,
+                    member_force_batch(&member_force_rows),
+                )?;
                 kinds.push("MemberForce");
             }
-            let _ = store.sync();
+            store
+                .sync()
+                .map_err(|e| format!("結果マニフェストの永続化に失敗: {e}"))?;
             attach_store_info(&mut summary, case, &kinds);
-            summary.to_string()
+            Ok(summary.to_string())
         }
         JobOutcome::DesignCheck {
             case,
@@ -74,18 +97,21 @@ pub fn persist_job_outcome(
         } => {
             let mut kinds: Vec<&str> = Vec::new();
             if !member_force_rows.is_empty() {
-                let mut w = store.writer(case, ResultKind::MemberForce);
-                if let Ok(batch) = member_force_batch(&member_force_rows) {
-                    w.write_rows(&batch);
-                }
-                w.finish();
+                write_one(
+                    store,
+                    case,
+                    ResultKind::MemberForce,
+                    member_force_batch(&member_force_rows),
+                )?;
                 kinds.push("MemberForce");
             }
-            let _ = store.sync();
+            store
+                .sync()
+                .map_err(|e| format!("結果マニフェストの永続化に失敗: {e}"))?;
             if !kinds.is_empty() {
                 attach_store_info(&mut summary, case, &kinds);
             }
-            summary.to_string()
+            Ok(summary.to_string())
         }
         JobOutcome::Eigen {
             period,
@@ -96,20 +122,21 @@ pub fn persist_job_outcome(
         } => {
             // LoadCaseId(0) の二重使用を避けるための設計は上記ドキュメントコメント参照。
             let case = 0u32;
-            {
-                let mut w = store.writer(case, ResultKind::Modal);
-                if let Ok(batch) = modal_batch(&period, &omega2, &participation, &effective_mass) {
-                    w.write_rows(&batch);
-                }
-                w.finish();
-            }
-            let _ = store.sync();
+            write_one(
+                store,
+                case,
+                ResultKind::Modal,
+                modal_batch(&period, &omega2, &participation, &effective_mass),
+            )?;
+            store
+                .sync()
+                .map_err(|e| format!("結果マニフェストの永続化に失敗: {e}"))?;
             attach_store_info(&mut summary, case, &["Modal"]);
-            summary.to_string()
+            Ok(summary.to_string())
         }
         JobOutcome::Pushover { summary }
         | JobOutcome::TimeHistory { summary }
-        | JobOutcome::UltimateCheck { summary } => summary.to_string(),
+        | JobOutcome::UltimateCheck { summary } => Ok(summary.to_string()),
     }
 }
 
@@ -214,7 +241,9 @@ pub fn result_get_json(
         member_filter,
         step_range,
     };
-    let result = store.query(&query);
+    let result = store
+        .query(&query)
+        .map_err(|e| format!("結果の読み出しに失敗しました: {e}"))?;
     let (rows, truncated) = batch_to_json_rows(&result.batch, RESULT_GET_ROW_LIMIT);
     Ok(serde_json::json!({
         "case": case,

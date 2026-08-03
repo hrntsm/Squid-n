@@ -114,11 +114,8 @@ fn remove_existing_panels(model: &mut Model) {
             shift(&mut ml.elem);
         }
     }
-    for group in &mut model.beam_groups {
-        for id in group.iter_mut() {
-            shift(id);
-        }
-    }
+    // 側テーブル属性と一本部材指定（beam_groups）の参照は shift_elem_attr_refs が
+    // 一括で付け替える。
     model.shift_elem_attr_refs(shift);
 }
 

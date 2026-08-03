@@ -273,17 +273,12 @@ impl WallPanelElement {
             if !crate::side_column::is_side_column_member(e.kind) || e.nodes.len() < 2 {
                 continue;
             }
-            // 鉛直材のみ（ピン化条件と同じ規約）。
+            // 鉛直材のみ（ピン化条件と同じ、全クレート共通の 45° 余弦基準）。
             if let (Some(a), Some(b)) = (
                 model.nodes.get(e.nodes[0].index()),
                 model.nodes.get(e.nodes[1].index()),
             ) {
-                let (dx, dy, dz) = (
-                    b.coord[0] - a.coord[0],
-                    b.coord[1] - a.coord[1],
-                    b.coord[2] - a.coord[2],
-                );
-                if dz.abs() <= (dx.abs() + dy.abs()) * 0.5 {
+                if !squid_n_core::geom::is_vertical_axis(a.coord, b.coord) {
                     continue;
                 }
             } else {

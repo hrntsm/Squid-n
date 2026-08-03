@@ -1220,3 +1220,101 @@ fn test_eigen_subspace_matches_dense_ground_truth_q_lt_n() {
         exact_vals[0]
     );
 }
+
+/// 整合質量行列の座標系の回帰テスト: 同一断面・同一長さの片持ち梁を
+/// X 方向（水平）と Z 方向（鉛直柱）に置いたとき、固有周期が一致すること。
+///
+/// 整合質量は軸方向（m/3 系）と曲げ方向（156m/420 系）で係数が異なり回転
+/// 不変ではないため、剛性と同様に全体系へ変換して組み立てる必要がある。
+/// 従来は要素局所系のまま全体自由度へ散布しており、鉛直柱・斜材で質量が
+/// 誤った全体軸へ配分されていた（水平材と鉛直材で固有周期が食い違う）。
+#[test]
+fn test_eigen_consistent_mass_orientation_invariant() {
+    // iy=iz・as_y=as_z の対称断面とし、部材の向きだけが異なるモデルを作る。
+    let make_cantilever = |dir: [f64; 3], ref_vector: [f64; 3]| -> Model {
+        let l = 3000.0;
+        let nodes = vec![
+            Node {
+                id: NodeId(0),
+                coord: [0.0, 0.0, 0.0],
+                restraint: Dof6Mask::FIXED,
+                mass: None,
+                story: None,
+                support_spring: None,
+            },
+            Node {
+                id: NodeId(1),
+                coord: [dir[0] * l, dir[1] * l, dir[2] * l],
+                restraint: Dof6Mask::FREE,
+                mass: None,
+                story: None,
+                support_spring: None,
+            },
+        ];
+        let section = Section {
+            id: SectionId(0),
+            name: "sym".into(),
+            area: 10000.0,
+            iy: 1.0e8,
+            iz: 1.0e8,
+            j: 2.0e8,
+            depth: 300.0,
+            width: 300.0,
+            as_y: 5000.0,
+            as_z: 5000.0,
+            panel_thickness: None,
+            thickness: None,
+            shape: None,
+        };
+        let elements = vec![ElementData {
+            id: ElemId(0),
+            kind: ElementKind::Beam,
+            nodes: smallvec::smallvec![NodeId(0), NodeId(1)],
+            section: Some(SectionId(0)),
+            material: Some(MaterialId(0)),
+            local_axis: LocalAxis { ref_vector },
+            end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+            force_regime: ForceRegime::Auto,
+            rigid_zone: Default::default(),
+            plastic_zone: None,
+            spring: None,
+        }];
+        Model {
+            nodes,
+            elements,
+            sections: vec![section],
+            materials: vec![Material {
+                id: MaterialId(0),
+                name: "SN400B".into(),
+                category: MaterialCategory::Steel,
+                young: 205000.0,
+                poisson: 0.3,
+                density: 7.85e-9,
+                shear: None,
+                fc: None,
+                fy: Some(235.0),
+                concrete_class: Default::default(),
+                strength_factor: None,
+            }],
+            ..Default::default()
+        }
+    };
+
+    let solve_first = |model: &Model| -> f64 {
+        let dofmap = DofMap::build(model);
+        let reducer = Reducer::build(model, &dofmap);
+        solve_eigen(model, &dofmap, &reducer, 1)
+            .expect("片持ち梁の eigen(1) は解けるべき")
+            .period[0]
+    };
+
+    let t_horizontal = solve_first(&make_cantilever([1.0, 0.0, 0.0], [0.0, 0.0, 1.0]));
+    let t_vertical = solve_first(&make_cantilever([0.0, 0.0, 1.0], [1.0, 0.0, 0.0]));
+
+    assert!(
+        ((t_horizontal - t_vertical) / t_horizontal).abs() < 1e-6,
+        "水平材 T={} と鉛直材 T={} の固有周期は一致すべき（整合質量の座標系）",
+        t_horizontal,
+        t_vertical
+    );
+}

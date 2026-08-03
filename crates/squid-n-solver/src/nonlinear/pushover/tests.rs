@@ -152,6 +152,17 @@ fn test_pushover_single_column_forms_hinge() {
         );
     }
 
+    // 終了理由が記録されること（従来は非収束を含む全打ち切りが無言だった）。
+    // 本モデルは目標無効（max_disp=0）の荷重制御のみのため、終了理由は
+    // 「目標到達以外の正常系」（λ 上限・スケジュール完了）または「非収束」の
+    // いずれかであり、少なくとも Unknown（未記録）ではないこと。
+    assert_ne!(
+        result.termination,
+        crate::pushover::PushoverTermination::Unknown,
+        "終了理由が記録されるべき: {:?}",
+        result.termination
+    );
+
     // 部材別終局応答（終局検定の設計用応力・部材別 Rp 反映用）が生成されること。
     assert_eq!(
         result.member_response.len(),

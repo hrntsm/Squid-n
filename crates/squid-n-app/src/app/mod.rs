@@ -559,6 +559,8 @@ pub struct StaticAllComputed {
 /// 送る結果。
 pub enum JobResult {
     Pushover(Result<squid_n_solver::pushover::PushoverResult, String>),
+    /// 固有値解析（モード数は起動時の `analysis_cfg.n_modes`）。
+    Modal(Result<squid_n_solver::eigen::ModalResult, String>),
     /// 時刻歴応答解析。`ResponseResult` は詳細記録を含み大きいため Box で運ぶ。
     TimeHistory(Box<Result<squid_n_solver::timehistory::ResponseResult, String>>),
     /// 線形静的・地震静的(Ai)・風荷重静的解析（`StaticCaseKey` で結果格納先を区別）。
@@ -706,8 +708,7 @@ pub struct App {
     pub design_rank: squid_n_design_jp::secondary::holding_capacity::MemberRank,
     /// 保有水平耐力（ルート3）の部材ランクを鋼部材の幅厚比から自動判定するか（UI-13）。
     /// true の場合、鋼部材かつ断面形状(`Section.shape`)を持つ部材について
-    /// `squid_n_design_jp::secondary::width_thickness::max_width_thickness` →
-    /// `s_member_rank` で算定し、
+    /// 構造規定の幅厚比表（`steel_width_thickness_rank`）で算定し、
     /// 算定できなかった層のみ `design_rank`（選択値）にフォールバックする。
     pub design_rank_auto: bool,
     /// 耐力壁の種別（WA〜WD）判定で**壁式構造**の列を用いるか。
@@ -884,6 +885,12 @@ pub struct App {
     pub th_scale_cache: Option<crate::viewer::TimeHistoryScaleCache>,
     /// 床荷重分配の CMQ 結果（P2 §5.1）。描画用。
     pub beam_loads: Vec<squid_n_load::floor::BeamLoad>,
+    /// `beam_loads` を算定した時点のモデル・設定ハッシュ
+    /// （`compute_auto_load_sync_hash`）。CMQ 図表示中は毎フレーム
+    /// `refresh_beam_loads` が呼ばれるため、モデルが変わっていなければ
+    /// 床荷重分配（交差小梁スラブでは床格子サブ FEM 解析を含む）を
+    /// スキップするためのキャッシュキー。`None` は未算定。
+    pub beam_loads_hash: Option<u64>,
     /// 時刻歴応答データ（描画用）
     #[cfg(feature = "gui")]
     pub time_history_data: crate::time_history_view::TimeHistoryData,
@@ -1122,6 +1129,7 @@ impl Default for App {
             #[cfg(feature = "gui")]
             th_scale_cache: None,
             beam_loads: Vec::new(),
+            beam_loads_hash: None,
             #[cfg(feature = "gui")]
             time_history_data: crate::time_history_view::TimeHistoryData::default(),
             #[cfg(feature = "gui")]
@@ -1535,6 +1543,46 @@ fn member_kind_of(
     }
 }
 
+/// 壁要素の側柱（壁と**両端の**節点を共有する鉛直線材）に SRC 造の柱があるか。
+///
+/// SRC 耐震壁（部材種別 WA/WC の判定対象）かどうかの判定に用いる。壁自体の
+/// 断面は RC 壁（`RcWall`）のままモデル化されるため、壁の構造種別は側柱の
+/// 構造種別（`member_structure_kind`）から推定する。
+///
+/// 側柱は柱頭・柱脚の双方が壁の隅節点に一致するため、**両端**の共有を課す。
+/// 片側 1 節点の共有まで許すと、壁上辺の隅節点から立ち上がる上階の柱にも
+/// 反応し、SRC 階→RC 階の切替部で RC 側の耐震壁を SRC 壁と誤判定する。
+/// 鉛直判定は側柱ピン化（`side_column`）と同じ 45° 余弦基準。
+fn wall_has_src_boundary_column(
+    wall: &squid_n_core::model::ElementData,
+    model: &squid_n_core::model::Model,
+) -> bool {
+    use squid_n_core::model::ElementKind;
+    use squid_n_core::structure_kind::{member_structure_kind, StructureKind};
+    let wall_nodes: std::collections::HashSet<squid_n_core::ids::NodeId> =
+        wall.nodes.iter().copied().collect();
+    model.elements.iter().any(|e| {
+        if e.id == wall.id
+            || !matches!(
+                e.kind,
+                ElementKind::Beam | ElementKind::Fiber | ElementKind::MultiSpring
+            )
+            || e.nodes.len() < 2
+            || !e.nodes.iter().take(2).all(|n| wall_nodes.contains(n))
+        {
+            return false;
+        }
+        let (Some(a), Some(b)) = (
+            model.nodes.get(e.nodes[0].index()),
+            model.nodes.get(e.nodes[1].index()),
+        ) else {
+            return false;
+        };
+        squid_n_core::geom::is_vertical_axis(a.coord, b.coord)
+            && member_structure_kind(model, e) == StructureKind::Src
+    })
+}
+
 /// `SectionShape::RcRect` の配筋情報から RC 終局耐力算定（rank-auto）用の入力を組み立てる。
 ///
 /// # 変換規則
@@ -1703,12 +1751,11 @@ pub(crate) fn steel_member_use_of(
 /// 鋼断面の幅厚比から部材ランク（FA〜FD）を判定する。
 ///
 /// 構造規定の幅厚比表（部材種別×断面×部位×鋼種級。
-/// [`squid_n_design_jp::secondary::width_thickness::s_member_rank_by_kihon`]）を
-/// 優先し、表の対象外形状（溝形・T形・山形等）は単一幅厚比法
-/// （[`squid_n_design_jp::secondary::member_rank::s_member_rank_scaled`]）へ
-/// フォールバックする。F 値は材料名の前方一致で引き（例 "SN400B"→235）、
-/// 引けなければ 235 とする。幅厚比を算定できない形状（円形鋼管・RC 断面等）は
-/// `None`。
+/// [`squid_n_design_jp::secondary::width_thickness::s_member_rank_by_kihon`]）に
+/// よる判定のみを行い、表の対象外形状（溝形・T形・山形・円形鋼管以外の
+/// 幅厚比非対象断面等）は `None`（未判定。層は選択ランクへフォールバック）と
+/// する。表に規範的根拠のない形状へ仮のしきい値で自動ランクを付けると、
+/// 根拠のない値が Ds を決めてしまうため、未判定として手動選択に委ねる。
 ///
 /// 保有水平耐力の Ds 算定（`compute_holding_capacity`）と準備計算の表示
 /// （`build_prep_width_thickness`）が同一の判定を用いるための共通関数。
@@ -1717,18 +1764,11 @@ pub(crate) fn steel_width_thickness_rank(
     member_use: squid_n_design_jp::secondary::width_thickness::SteelMemberUse,
     material_name: &str,
 ) -> Option<squid_n_design_jp::secondary::holding_capacity::MemberRank> {
-    use squid_n_design_jp::secondary::member_rank::{s_member_rank_scaled, RankCriteria};
-    use squid_n_design_jp::secondary::width_thickness::{
-        max_width_thickness, s_member_rank_by_kihon,
-    };
-    use squid_n_design_jp::steel_f_value_prefix;
-
-    if let Some(rank) = s_member_rank_by_kihon(shape, member_use, material_name) {
-        return Some(rank);
-    }
-    let wt = max_width_thickness(shape)?;
-    let f_value = steel_f_value_prefix(material_name, steel_max_thickness(shape)).unwrap_or(235.0);
-    Some(s_member_rank_scaled(wt, f_value, &RankCriteria::default()))
+    squid_n_design_jp::secondary::width_thickness::s_member_rank_by_kihon(
+        shape,
+        member_use,
+        material_name,
+    )
 }
 
 /// 部材両端節点間の幾何長 \[mm\]（内法補正なしの簡易値。剛域等は考慮しない）。

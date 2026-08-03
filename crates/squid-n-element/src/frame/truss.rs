@@ -243,9 +243,11 @@ impl ElementBehavior for TrussElement {
         let mut mm = LocalMat::zeros(12);
         match opt {
             MassOption::Lumped => {
+                // 並進 3 成分が等しい対角行列は回転不変のため全体系変換は不要。
                 for d in [0, 1, 2, 6, 7, 8] {
                     mm.set(d, d, m / 2.0);
                 }
+                mm
             }
             MassOption::Consistent => {
                 // 軸方向のみ整合質量（m/6·[2,1;1,2]）。並進の他成分（uy, uz）は
@@ -258,9 +260,11 @@ impl ElementBehavior for TrussElement {
                 for d in [1, 2, 7, 8] {
                     mm.set(d, d, m / 2.0);
                 }
+                // 軸方向と直交方向で係数が異なり回転不変ではないため、
+                // 剛性行列と同様に要素局所系から全体系へ回す。
+                self.axis.to_global(&mm)
             }
         }
-        mm
     }
 
     fn recover_forces(&self, u_elem: &[f64]) -> Option<crate::beam::MemberForces> {

@@ -1,4 +1,9 @@
 //! 塑性化域を考慮した M-φ / M-θ 曲線（材端剛塑性ばねモデルと適合するファイバーモデル化）。
+//!
+//! **GUI のヒンジ詳細表示専用**の弾完全塑性評価であり、非線形解析本体
+//! （`squid-n-element` のファイバ定式化）や V&V 参照実装（`squid-n-skeleton` の
+//! RC トリリニア骨格）とは塑性化域の集約規則が異なる。適用範囲の使い分けは
+//! `squid_n_skeleton` クレートの doc（M–φ エンジンの使い分け）を参照。
 
 use super::plastic::axial_capacity;
 use super::types::PlasticFiber;

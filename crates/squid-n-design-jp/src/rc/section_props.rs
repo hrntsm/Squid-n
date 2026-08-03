@@ -14,6 +14,7 @@ use squid_n_core::model::Section;
 use squid_n_core::section_shape::{BarSet, RcRebar, ShearBar};
 
 /// 検討方向 1 軸分の断面諸元。
+#[derive(Clone, Copy)]
 pub(crate) struct AxisProps {
     /// 検討方向の幅 [mm]（強軸曲げなら sec.width 等）。
     pub(crate) b: f64,

@@ -33,8 +33,13 @@ use squid_n_core::section_shape::{RcRebar, SectionShape};
 
 use member::{BeamBarEnd, Haunch};
 
-/// 鉄骨単位重量 [t/mm³]（7.85 t/m³ 固定値。各部位共通事項）。
-const STEEL_UNIT_WEIGHT_T_PER_MM3: f64 = 7.85e-9;
+/// 鉄骨・鉄筋の単位重量 [t/m³]（数量積算の慣用値 7.85 t/m³。各部位共通事項）。
+/// 固定荷重の γs=77 kN/m³ とは分野別の慣用値として使い分ける
+/// （`squid_n_core::units::STEEL_UNIT_WEIGHT_TAKEOFF_T_M3` 参照）。
+const STEEL_UNIT_WEIGHT_T_PER_M3: f64 = squid_n_core::units::STEEL_UNIT_WEIGHT_TAKEOFF_T_M3;
+
+/// 鉄骨単位重量 [t/mm³]（[`STEEL_UNIT_WEIGHT_T_PER_M3`] の内部単位系換算）。
+const STEEL_UNIT_WEIGHT_T_PER_MM3: f64 = STEEL_UNIT_WEIGHT_T_PER_M3 * 1e-9;
 
 /// 「同一レベル」とみなす標高差 [mm]（基礎梁レベルの判定用）。
 const LEVEL_TOL_MM: f64 = 10.0;
@@ -824,13 +829,13 @@ fn beam_quantity(
             usage: RebarUsage::JoistMain,
             dia: None,
             total_length_m: 0.0,
-            weight_t: vol_m3 * ctx.cfg.joist_main_ratio * 7.85,
+            weight_t: vol_m3 * ctx.cfg.joist_main_ratio * STEEL_UNIT_WEIGHT_T_PER_M3,
         });
         item.rebar.push(RebarItem {
             usage: RebarUsage::JoistStirrup,
             dia: None,
             total_length_m: 0.0,
-            weight_t: vol_m3 * ctx.cfg.joist_stirrup_ratio * 7.85,
+            weight_t: vol_m3 * ctx.cfg.joist_stirrup_ratio * STEEL_UNIT_WEIGHT_T_PER_M3,
         });
     } else {
         // 大梁・基礎梁。ハンチは部材付帯情報（`Model::member_detail_attrs`。
@@ -1173,7 +1178,7 @@ fn slab_quantity(ctx: &Ctx, slab: &squid_n_core::model::Slab) -> Option<MemberQu
             usage: RebarUsage::SlabBar,
             dia: None,
             total_length_m: 0.0,
-            weight_t: vol_m3 * ctx.cfg.slab_rebar_ratio * 7.85,
+            weight_t: vol_m3 * ctx.cfg.slab_rebar_ratio * STEEL_UNIT_WEIGHT_T_PER_M3,
         });
     }
     Some(item)

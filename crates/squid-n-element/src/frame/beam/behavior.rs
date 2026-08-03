@@ -152,9 +152,12 @@ impl ElementBehavior for BeamElement {
         let mut mm = LocalMat::zeros(12);
         match opt {
             MassOption::Lumped => {
+                // 並進 3 成分が等しい対角行列は回転不変（Rᵀ·(m/2)I·R = (m/2)I）の
+                // ため、全体系変換は不要。
                 for d in [0, 1, 2, 6, 7, 8] {
                     mm.set(d, d, m / 2.0);
                 }
+                mm
             }
             MassOption::Consistent => {
                 let c1 = m / 6.0;
@@ -200,9 +203,13 @@ impl ElementBehavior for BeamElement {
                 };
                 b4(&mut mm, [1, 5, 7, 11], 1.0);
                 b4(&mut mm, [2, 4, 8, 10], -1.0);
+                // 整合質量は軸方向（m/3 系）と曲げ方向（156m/420 系）で係数が異なり
+                // 回転不変ではないため、剛性行列と同様に要素局所系から全体系へ回す
+                // （M_global = Rᵀ M_local R）。これを欠くと鉛直柱・斜材で質量が
+                // 誤った全体軸へ配分される。
+                self.axis.to_global(&mm)
             }
         }
-        mm
     }
 
     fn recover_forces(&self, u_elem: &[f64]) -> Option<crate::beam::MemberForces> {

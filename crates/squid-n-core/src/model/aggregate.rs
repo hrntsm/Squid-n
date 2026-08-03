@@ -305,6 +305,19 @@ impl Model {
             }
         }
 
+        // 一本部材指定（beam_groups）の参照整合。検定の採用応力がグループの要素を
+        // 直接引くため、ダングリングすると無関係な部材の応力を合成してしまう。
+        for (gi, group) in self.beam_groups.iter().enumerate() {
+            for &eid in group {
+                if eid.index() >= self.elements.len() || self.elements[eid.index()].id != eid {
+                    return Err(CoreError::DanglingRef(format!(
+                        "BeamGroup {} -> Elem {}",
+                        gi, eid.0
+                    )));
+                }
+            }
+        }
+
         Ok(())
     }
 
@@ -407,6 +420,8 @@ impl Model {
             && self.steel_design_attrs == other.steel_design_attrs
             && self.brb_attrs == other.brb_attrs
             && self.pca_attrs == other.pca_attrs
+            && self.secondary_members == other.secondary_members
+            && self.axes == other.axes
             && self.beam_groups == other.beam_groups
             && self.isolator_attrs == other.isolator_attrs
             && self.member_hysteresis_attrs == other.member_hysteresis_attrs
@@ -440,9 +455,144 @@ impl Model {
         old
     }
 
-    /// 要素に紐づく全ての側テーブル属性（壁・鉄骨・BRB・PCa・免震・履歴則・ダンパー）の
-    /// `elem` 参照に `f` を適用する。要素の追加・削除に伴う ID 繰上げ／繰下げで、
-    /// 側テーブルの参照整合を保つために用いる。
+    /// モデル内の全ての `NodeId` 参照（節点自身の ID を含む）へ `f` を適用する。
+    /// 節点の削除・挿入に伴う ID 繰り上げ／繰り下げ（squid-n-edit）で用いる。
+    ///
+    /// **`NodeId` を持つフィールドを `Model` へ追加したら必ずここへ追随すること**
+    /// （`validate`・`eq_ignoring_dofmap` と同様）。かつては走査が編集側に散在して
+    /// おり、`secondary_members` の追随漏れが「節点削除後に二次部材が別の節点へ
+    /// 張り付く」ダングリング参照を生んでいた。フィールド定義と同じクレートに
+    /// 走査を置くことで、追加時の抜けを構造的に防ぐ。
+    pub fn visit_node_ids(&mut self, mut f: impl FnMut(&mut NodeId)) {
+        for node in &mut self.nodes {
+            f(&mut node.id);
+        }
+        for id in &mut self.generated_masters {
+            f(id);
+        }
+        for elem in &mut self.elements {
+            for n in &mut elem.nodes {
+                f(n);
+            }
+        }
+        for story in &mut self.stories {
+            for n in &mut story.node_ids {
+                f(n);
+            }
+            for d in &mut story.diaphragms {
+                f(&mut d.master);
+                for s in &mut d.slaves {
+                    f(s);
+                }
+            }
+        }
+        for group in &mut self.axes {
+            for axis in &mut group.axes {
+                for n in &mut axis.nodes {
+                    f(n);
+                }
+            }
+        }
+        for slab in &mut self.slabs {
+            for n in &mut slab.boundary {
+                f(n);
+            }
+            for j in &mut slab.joists {
+                for n in &mut j.support {
+                    f(n);
+                }
+            }
+        }
+        for sm in &mut self.secondary_members {
+            for n in &mut sm.nodes {
+                f(n);
+            }
+        }
+        for c in &mut self.constraints {
+            match c {
+                Constraint::RigidDiaphragm { master, slaves, .. }
+                | Constraint::RigidLink { master, slaves, .. } => {
+                    f(master);
+                    for s in slaves {
+                        f(s);
+                    }
+                }
+                Constraint::Mpc { master, terms } => {
+                    f(master);
+                    for (n, _, _) in terms {
+                        f(n);
+                    }
+                }
+            }
+        }
+        for lc in &mut self.load_cases {
+            for nl in &mut lc.nodal {
+                f(&mut nl.node);
+            }
+        }
+    }
+
+    /// モデル内の全ての `SectionId` 参照（断面自身の ID を含む）へ `f` を適用する
+    /// （[`Model::visit_node_ids`] と同じ規約）。
+    pub fn visit_section_ids(&mut self, mut f: impl FnMut(&mut crate::ids::SectionId)) {
+        for sec in &mut self.sections {
+            f(&mut sec.id);
+        }
+        for elem in &mut self.elements {
+            if let Some(sid) = &mut elem.section {
+                f(sid);
+            }
+        }
+        for slab in &mut self.slabs {
+            for j in &mut slab.joists {
+                if let Some(sid) = &mut j.section {
+                    f(sid);
+                }
+            }
+        }
+        for sm in &mut self.secondary_members {
+            if let Some(sid) = &mut sm.section {
+                f(sid);
+            }
+        }
+    }
+
+    /// モデル内の全ての `MaterialId` 参照（材料自身の ID を含む）へ `f` を適用する
+    /// （[`Model::visit_node_ids`] と同じ規約）。
+    pub fn visit_material_ids(&mut self, mut f: impl FnMut(&mut crate::ids::MaterialId)) {
+        for mat in &mut self.materials {
+            f(&mut mat.id);
+        }
+        for elem in &mut self.elements {
+            if let Some(mid) = &mut elem.material {
+                f(mid);
+            }
+        }
+        for sm in &mut self.secondary_members {
+            if let Some(mid) = &mut sm.material {
+                f(mid);
+            }
+        }
+    }
+
+    /// モデル内の全ての `ElemId` 参照（要素自身の ID・部材荷重・側テーブル属性・
+    /// 一本部材指定）へ `f` を適用する（[`Model::visit_node_ids`] と同じ規約）。
+    pub fn visit_elem_ids(&mut self, mut f: impl FnMut(&mut ElemId)) {
+        for elem in &mut self.elements {
+            f(&mut elem.id);
+        }
+        for lc in &mut self.load_cases {
+            for ml in &mut lc.member {
+                f(&mut ml.elem);
+            }
+        }
+        self.shift_elem_attr_refs(&mut f);
+    }
+
+    /// 要素に紐づく全ての側テーブル属性（壁・鉄骨・BRB・PCa・免震・履歴則・ダンパー）と
+    /// 一本部材指定（`beam_groups`）の `elem` 参照に `f` を適用する。
+    /// 要素の追加・削除に伴う ID 繰上げ／繰下げで、参照整合を保つために用いる
+    /// （要素自身の ID・部材荷重も含めた全参照は [`Model::visit_elem_ids`]）。
     pub fn shift_elem_attr_refs(&mut self, mut f: impl FnMut(&mut ElemId)) {
         for a in &mut self.wall_attrs {
             f(&mut a.elem);
@@ -467,6 +617,11 @@ impl Model {
         }
         for a in &mut self.member_detail_attrs {
             f(&mut a.elem);
+        }
+        for group in &mut self.beam_groups {
+            for e in group.iter_mut() {
+                f(e);
+            }
         }
     }
 

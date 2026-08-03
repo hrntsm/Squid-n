@@ -55,11 +55,8 @@ fn section_roles(model: &Model) -> HashMap<u32, (bool, bool)> {
             ElementKind::Beam => {
                 let n0 = &model.nodes[e.nodes[0].index()];
                 let n1 = &model.nodes[e.nodes[1].index()];
-                let dz = (n1.coord[2] - n0.coord[2]).abs();
-                let dx = n1.coord[0] - n0.coord[0];
-                let dy = n1.coord[1] - n0.coord[1];
-                let len = (dx * dx + dy * dy + dz * dz).sqrt();
-                len > 1e-12 && dz / len > 0.707
+                // 全クレート共通の 45° 余弦基準で柱/梁を分ける。
+                squid_n_core::geom::is_vertical_axis(n0.coord, n1.coord)
             }
             ElementKind::Brace { .. } => false,
             _ => continue,
@@ -96,11 +93,8 @@ fn section_materials(model: &Model) -> HashMap<u32, RoleMaterial> {
             ElementKind::Beam => {
                 let n0 = &model.nodes[e.nodes[0].index()];
                 let n1 = &model.nodes[e.nodes[1].index()];
-                let dz = (n1.coord[2] - n0.coord[2]).abs();
-                let dx = n1.coord[0] - n0.coord[0];
-                let dy = n1.coord[1] - n0.coord[1];
-                let len = (dx * dx + dy * dy + dz * dz).sqrt();
-                len > 1e-12 && dz / len > 0.707
+                // 全クレート共通の 45° 余弦基準で柱/梁を分ける。
+                squid_n_core::geom::is_vertical_axis(n0.coord, n1.coord)
             }
             ElementKind::Brace { .. } => false,
             _ => continue,
@@ -206,7 +200,21 @@ fn h_figure(height: f64, width: f64, web_thick: f64, flange_thick: f64) -> (Stri
 /// ST-Bridge スキーマ上 r（length）に 0 以下を許さないため、従来通り板厚を
 /// 便宜値として与える（取り込み側では r 属性は無視されるため実害は無い）。
 fn box_figure(height: f64, width: f64, thick: f64, corner_r: f64) -> (String, String) {
-    let name = format!("BOX-{}x{}x{}", num(height), num(width), num(thick));
+    // 形鋼ライブラリ（`SteelLibrary::add`）は名前で重複排除するため、名前は形状の
+    // 全パラメータから導く。corner_r を含めないと「同寸で角部半径だけ異なる」
+    // 2 断面が同一名に潰れ、後着エントリが捨てられて再取り込みで角部半径が
+    // 先着の値に化ける。
+    let name = if corner_r > 0.0 {
+        format!(
+            "BOX-{}x{}x{}r{}",
+            num(height),
+            num(width),
+            num(thick),
+            num(corner_r)
+        )
+    } else {
+        format!("BOX-{}x{}x{}", num(height), num(width), num(thick))
+    };
     // type は BCP/BCR/STKR/ELSE のいずれか（種別を内部で持たないため ELSE）。
     let r = if corner_r > 0.0 { corner_r } else { thick };
     let body = format!(
@@ -831,8 +839,41 @@ pub(super) fn standard_sections(model: &Model) -> StandardSections {
     let mut col_map: HashMap<u32, u32> = HashMap::new();
     let mut beam_map: HashMap<u32, u32> = HashMap::new();
 
+    // 壁要素だけが参照する厚さ専用断面（thickness のみ・形状なし。import が
+    // StbSecWall_RC の厚さから生成する）は、壁断面ブロック（StbSecWall_RC、
+    // `export::wall_sections`）側で出力されるためここでは出力しない。
+    // 従来は StbSecRaw としても二重に出力され、再取り込みのたびに
+    // 「Raw 由来の断面＋厚さ専用断面」が 1 組ずつ増殖していた。
+    let wall_only_sections: std::collections::HashSet<u32> = {
+        let mut used_by_wall = std::collections::HashSet::new();
+        let mut used_by_other = std::collections::HashSet::new();
+        for e in &model.elements {
+            if let Some(sid) = e.section {
+                // 壁ブロック（`export::wall_sections`）の出力対象は Wall と
+                // Shell の双方のため、「壁側で出力される」判定もそろえる。
+                if matches!(e.kind, ElementKind::Wall | ElementKind::Shell) {
+                    used_by_wall.insert(sid.0);
+                } else {
+                    used_by_other.insert(sid.0);
+                }
+            }
+        }
+        // 二次部材（StbBeam/StbPost）は生の断面 id を id_section へ書き出すため、
+        // 二次部材が参照する断面を Raw 出力から除外すると出力 XML 内に存在しない
+        // 断面参照が生じる。壁専用扱いから外す（Raw を出力する）。
+        for sm in &model.secondary_members {
+            if let Some(sid) = sm.section {
+                used_by_other.insert(sid.0);
+            }
+        }
+        used_by_wall.difference(&used_by_other).copied().collect()
+    };
+
     for sec in &model.sections {
         let base = sec.id.0;
+        if wall_only_sections.contains(&base) && sec.thickness.is_some() && sec.shape.is_none() {
+            continue;
+        }
         let (used_col, used_beam) = roles.get(&base).copied().unwrap_or((false, false));
         // どの部材からも参照されない断面も出力に残す（既定で柱扱い）。
         let need_col = used_col || !used_beam;

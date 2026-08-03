@@ -414,6 +414,7 @@ fn test_detect_strength_loss_uses_shear_yield_when_present() {
         control: Default::default(),
         member_history: vec![],
         fiber_states: vec![],
+        termination: Default::default(),
     };
 
     let criterion = LossCriterion::DriftRange {
@@ -497,6 +498,7 @@ fn test_detect_strength_loss_falls_back_to_bending_yield_without_shear_events() 
         control: Default::default(),
         member_history: vec![],
         fiber_states: vec![],
+        termination: Default::default(),
     };
 
     let criterion = LossCriterion::DriftRange {

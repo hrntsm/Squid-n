@@ -231,74 +231,10 @@ impl EditCommand for InsertNode {
 
 /// モデル内の全ての `NodeId` 参照（節点自身の ID を含む）に `f` を適用する。
 /// [`DeleteNode`]／[`InsertNode`] の ID 繰り上げ・繰り下げで共用する。
-fn shift_node_ids(model: &mut Model, mut f: impl FnMut(&mut NodeId)) {
-    for node in &mut model.nodes {
-        f(&mut node.id);
-    }
-    for id in &mut model.generated_masters {
-        f(id);
-    }
-    for elem in &mut model.elements {
-        for n in &mut elem.nodes {
-            f(n);
-        }
-    }
-    for story in &mut model.stories {
-        for n in &mut story.node_ids {
-            f(n);
-        }
-        for d in &mut story.diaphragms {
-            f(&mut d.master);
-            for s in &mut d.slaves {
-                f(s);
-            }
-        }
-    }
-    for group in &mut model.axes {
-        for axis in &mut group.axes {
-            for n in &mut axis.nodes {
-                f(n);
-            }
-        }
-    }
-    for slab in &mut model.slabs {
-        for n in &mut slab.boundary {
-            f(n);
-        }
-        for j in &mut slab.joists {
-            for n in &mut j.support {
-                f(n);
-            }
-        }
-    }
-    for c in &mut model.constraints {
-        use squid_n_core::model::Constraint;
-        match c {
-            Constraint::RigidDiaphragm { master, slaves, .. } => {
-                f(master);
-                for s in slaves {
-                    f(s);
-                }
-            }
-            Constraint::Mpc { master, terms } => {
-                f(master);
-                for (n, _, _) in terms {
-                    f(n);
-                }
-            }
-            Constraint::RigidLink { master, slaves, .. } => {
-                f(master);
-                for s in slaves {
-                    f(s);
-                }
-            }
-        }
-    }
-    for lc in &mut model.load_cases {
-        for nl in &mut lc.nodal {
-            f(&mut nl.node);
-        }
-    }
+/// 走査そのものはフィールド定義と同じ core 側（[`Model::visit_node_ids`]）が
+/// 単一情報源として持つ（新フィールド追加時の追随漏れを防ぐ）。
+fn shift_node_ids(model: &mut Model, f: impl FnMut(&mut NodeId)) {
+    model.visit_node_ids(f);
 }
 
 /// 部材追加。逆操作は部材削除。
@@ -723,6 +659,21 @@ impl EditCommand for DeleteMember {
         }
         // 側テーブル属性（履歴則・ダンパー・免震等）を退避してから削除（残余は shift で繰上げ）。
         let removed_attrs = model.take_elem_attrs(self.id);
+        // 一本部材指定（beam_groups）から当該部材を連動削除する（残すと shift 後に
+        // 別部材を指し、検定の採用応力が無関係な部材と合成される）。undo 用に
+        // (グループ index, グループ内位置) を退避する。
+        let mut removed_group_refs = Vec::new();
+        for (gi, group) in model.beam_groups.iter_mut().enumerate() {
+            let mut pos = 0;
+            while pos < group.len() {
+                if group[pos] == self.id {
+                    group.remove(pos);
+                    removed_group_refs.push((gi, pos));
+                } else {
+                    pos += 1;
+                }
+            }
+        }
         let removed = model.elements.remove(idx);
         shift_elem_ids(model, |id| {
             if id.0 > self.id.0 {
@@ -734,6 +685,7 @@ impl EditCommand for DeleteMember {
             elem: removed,
             member_loads: removed_loads,
             elem_attrs: removed_attrs,
+            beam_group_refs: removed_group_refs,
         })
     }
 
@@ -751,6 +703,9 @@ pub struct InsertMember {
     pub member_loads: Vec<(usize, usize, squid_n_core::model::MemberLoad)>,
     /// 削除時に退避した側テーブル属性（履歴則・ダンパー・免震等）。
     pub elem_attrs: squid_n_core::model::ElemAttrs,
+    /// 削除時に一本部材指定（beam_groups）から外した参照の
+    /// (グループ index, グループ内位置)。undo で同じ位置へ復元する。
+    pub beam_group_refs: Vec<(usize, usize)>,
 }
 
 impl EditCommand for InsertMember {
@@ -779,6 +734,14 @@ impl EditCommand for InsertMember {
         }
         // 退避した側テーブル属性を再挿入 ID へ紐づけ直して復元。
         model.restore_elem_attrs(id, self.elem_attrs.clone());
+        // 一本部材指定（beam_groups）から外した参照を元の位置へ復元する。
+        // 削除時は「縮んでいく配列での位置」を昇順で記録しているため、
+        // 部材荷重と同様に逆順で挿入すると削除前の並びに戻る。
+        for &(gi, pos) in self.beam_group_refs.iter().rev() {
+            if let Some(group) = model.beam_groups.get_mut(gi) {
+                group.insert(pos.min(group.len()), id);
+            }
+        }
         Box::new(DeleteMember { id })
     }
 
@@ -787,19 +750,11 @@ impl EditCommand for InsertMember {
     }
 }
 
-/// モデル内の全ての `ElemId` 参照（部材自身の ID・部材荷重・要素キー付き側テーブル）に
-/// `f` を適用する。要素の削除・挿入に伴う ID 繰上げ／繰下げで参照整合を保つ。
-fn shift_elem_ids(model: &mut Model, mut f: impl FnMut(&mut ElemId)) {
-    for elem in &mut model.elements {
-        f(&mut elem.id);
-    }
-    for lc in &mut model.load_cases {
-        for ml in &mut lc.member {
-            f(&mut ml.elem);
-        }
-    }
-    // 壁・鉄骨・BRB・PCa・免震・履歴則・ダンパーの側テーブルも同様に繰上げ／繰下げする。
-    model.shift_elem_attr_refs(&mut f);
+/// モデル内の全ての `ElemId` 参照（部材自身の ID・部材荷重・要素キー付き側テーブル・
+/// 一本部材指定）に `f` を適用する。要素の削除・挿入に伴う ID 繰上げ／繰下げで
+/// 参照整合を保つ。走査は core 側（[`Model::visit_elem_ids`]）が単一情報源として持つ。
+fn shift_elem_ids(model: &mut Model, f: impl FnMut(&mut ElemId)) {
+    model.visit_elem_ids(f);
 }
 
 /// 何もしないコマンド（参照不正時の安全なフォールバック）。
@@ -812,5 +767,9 @@ impl EditCommand for Noop {
 
     fn label(&self) -> &str {
         "Noop"
+    }
+
+    fn is_noop(&self) -> bool {
+        true
     }
 }

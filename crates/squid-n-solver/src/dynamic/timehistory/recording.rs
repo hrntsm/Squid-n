@@ -54,6 +54,48 @@ pub(crate) fn member_forces_nonlinear(
         .collect()
 }
 
+/// 非線形経路の線材内力の欠落ガード（[`crate::linear::ensure_line_member_forces`]
+/// の非線形版）。線材（梁・ファイバー・MS・ブレース）の `state_member_forces` が
+/// `None` を返す要素実装の不備を、解析開始時点でエラーとして顕在化させる
+/// （このまま続けると当該部材の応力履歴が全ステップ空のまま無言で欠落する）。
+pub(crate) fn ensure_line_member_forces_nonlinear(
+    model: &Model,
+    member_forces: &[Option<MemberForces>],
+) -> Result<(), squid_n_math::solver::SolveError> {
+    use squid_n_core::model::ElementKind;
+    let missing: Vec<u32> = model
+        .elements
+        .iter()
+        .zip(member_forces)
+        .filter(|(e, mf)| {
+            matches!(
+                e.kind,
+                ElementKind::Beam
+                    | ElementKind::Fiber
+                    | ElementKind::MultiSpring
+                    | ElementKind::Brace { .. }
+            ) && mf.is_none()
+        })
+        .map(|(e, _)| e.id.0)
+        .collect();
+    if missing.is_empty() {
+        return Ok(());
+    }
+    let head: Vec<String> = missing.iter().take(5).map(|id| id.to_string()).collect();
+    let more = if missing.len() > 5 {
+        format!(" 他{}件", missing.len() - 5)
+    } else {
+        String::new()
+    };
+    Err(squid_n_math::solver::SolveError::InvalidInput(format!(
+        "非線形解析で線材の部材内力を取得できませんでした: 部材 ID {}{}。\
+         要素実装の不具合です（state_member_forces 未実装。このまま続けると\
+         応力図・断面検定から当該部材が無言で欠落します）。",
+        head.join(", "),
+        more
+    )))
+}
+
 /// 部材端力の包絡を更新する（各成分・各評価位置の絶対値最大。符号は極値の符号を保持）。
 /// 評価位置数が一致しない場合（要素構成が変わることは実運用上ないが防御的に）は
 /// 短い方の長さまでのみ更新する。

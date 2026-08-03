@@ -105,6 +105,50 @@ impl App {
         self.preparation = None;
         self.diagnostics.clear();
         self.staleness = Staleness::default();
+        // 旧モデル由来の解析結果・準備計算表示・詳細ウィンドウの選択部材など、
+        // モデル差し替えで無効になる状態をすべてリセットする（従来は
+        // results/selection 等のみで、時刻歴データ・質点系応答・仕口パネル一覧・
+        // 各種ドラフトが旧モデルの ID を指したまま残っていた）。
+        //
+        // 実行中のバックグラウンド解析ジョブも破棄する。残したままだと、旧モデルで
+        // 計算中の結果が完了時に poll_job 経由で新モデルへ「最新結果」として適用され、
+        // 別モデルの変位・応力が stale 警告なしに表示される（受信側 Receiver の破棄
+        // だけでよい。ワーカースレッドの送信は失敗して静かに終了する）。
+        self.job = None;
+        // 保存確認ダイアログの保留も破棄する（旧モデル用に選んだパスへ
+        // 新モデルを保存してしまうのを防ぐ）。
+        self.pending_save_recording = None;
+        self.stick_response = None;
+        self.generated_panels.clear();
+        #[cfg(feature = "gui")]
+        {
+            self.frame_target = None;
+            self.analysis_target = None;
+            self.hinge_detail_elem = None;
+            self.hinge_mn_cache = None;
+            self.th_detail_elem = None;
+            self.th_detail_axial_component = None;
+            self.th_scale_cache = None;
+            self.th_frame = 0;
+            self.th_playing = false;
+            self.th_play_time = 0.0;
+            self.time_history_data = crate::time_history_view::TimeHistoryData::default();
+            self.section_draft = Default::default();
+            self.catalog_draft = Default::default();
+            self.isolator_support_draft = Default::default();
+            self.isolator_member_draft = Default::default();
+            self.damper_def_draft = Default::default();
+            self.combo_draft = ComboDraft::default();
+            self.slab_draft = Default::default();
+            self.story_weight_edit.clear();
+            self.story_weight_active.clear();
+            self.wall_attr_draft = Default::default();
+            self.misc_wall_draft = Default::default();
+            self.axis_name_draft = Default::default();
+            self.load_cfg_draft = Default::default();
+            self.member_detail_draft = Default::default();
+            self.steel_attr_draft = Default::default();
+        }
         #[cfg(feature = "gui")]
         self.reset_draw_modes();
         self.sync_node_edit();
@@ -478,6 +522,60 @@ impl App {
         );
     }
 
+    /// 全解析エントリ共通の前処理（同期実行・バックグラウンドジョブ共通）。
+    /// 並列度設定 → エラー/通知クリア → 準備計算（剛域・仕口パネルの反映と
+    /// 荷重同期。冪等・ハッシュ判定でスキップされる）。
+    ///
+    /// 解析の入口は必ず本メソッドを通ること。かつては経路ごとに前処理を
+    /// 個別に書いており、「増分解析・時刻歴・固有値だけ準備計算を通らず、
+    /// 仕口パネルの生成が省かれて静的解析と異なるモデルを解く」という
+    /// 抜けが実際に起きていた。
+    fn begin_analysis(&mut self) {
+        self.apply_parallelism_setting();
+        self.last_error = None;
+        self.last_notice = None;
+        self.ensure_preparation();
+    }
+
+    /// バックグラウンドジョブ共通の入口ガード＋前処理。
+    /// ジョブ実行中なら案内を出して `false` を返す（呼び出し側は即 return）。
+    fn begin_analysis_job(&mut self) -> bool {
+        if self.job.is_some() {
+            self.report_error("解析実行中です");
+            return false;
+        }
+        self.begin_analysis();
+        true
+    }
+
+    /// パニックを解析エラーへ変換して計算を実行する（ジョブスレッド用）。
+    fn run_compute<T>(f: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(f))
+            .unwrap_or_else(|p| Err(analysis_panic_message(p.as_ref())))
+    }
+
+    /// 計算クロージャをバックグラウンドスレッドで起動し、ジョブとして登録する
+    /// （起動ログ込み）。結果タブへの自動遷移（`jump_on_success`）が必要な場合は
+    /// 呼び出し側が登録後に `self.job` へ設定する。
+    fn spawn_analysis_job(
+        &mut self,
+        label: &'static str,
+        work: impl FnOnce() -> JobResult + Send + 'static,
+    ) {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(work());
+        });
+        self.job = Some(AnalysisJob {
+            label,
+            started: std::time::SystemTime::now(),
+            rx,
+            #[cfg(feature = "gui")]
+            jump_on_success: None,
+        });
+        self.report_info(format!("⏳ {label} を開始"));
+    }
+
     /// T3: 線形静的解析を実行し、結果を `self.results` に格納する。
     /// 指定した荷重ケースが存在しない場合はエラーメッセージをセット。
     ///
@@ -487,10 +585,7 @@ impl App {
     /// 地震荷重を「EX」「EY」ケースへ同期する（モデル・関連設定が前回同期時から
     /// 変わっていなければ荷重の再計算は丸ごとスキップする）。
     pub fn run_linear_static(&mut self, lc: LoadCaseId) {
-        self.apply_parallelism_setting();
-        self.last_error = None;
-        self.last_notice = None;
-        self.ensure_preparation();
+        self.begin_analysis();
         let res = Self::compute_linear_static(self.model.clone(), lc);
         self.apply_static_case_result(StaticCaseKey::User(lc), res);
     }
@@ -532,6 +627,10 @@ impl App {
                 bundle.panel_moments = panel_moments;
                 self.results = Some(bundle);
                 self.last_static = Some(StaticKey::Case(key));
+                // 表示対象（focus_result）も新しい結果へ切り替える。据え置くと
+                // 変位図・応力図は旧結果、member_forces・断面検定は新結果という
+                // 不整合な表示になる（`current_static` は focus_result を優先する）。
+                self.nav.focus_result = Some(StaticKey::Case(key));
                 self.staleness.mark_fresh();
                 self.run_design_check();
             }
@@ -577,34 +676,14 @@ impl App {
     /// UI スレッドをブロックしないよう重い解析を逃がす。
     /// 既にジョブが実行中の場合は何もしない（last_error に案内文を設定）。
     pub fn start_linear_static_job(&mut self, lc: LoadCaseId) {
-        if self.job.is_some() {
-            self.report_error("解析実行中です");
+        if !self.begin_analysis_job() {
             return;
         }
-        self.apply_parallelism_setting();
-        self.last_error = None;
-        self.last_notice = None;
-        self.ensure_preparation();
         let model = self.model.clone();
-        let (tx, rx) = std::sync::mpsc::channel();
-        std::thread::spawn(move || {
-            let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                Self::compute_linear_static(model, lc)
-            }))
-            .unwrap_or_else(|p| Err(analysis_panic_message(p.as_ref())));
-            let _ = tx.send(JobResult::StaticCase {
-                key: StaticCaseKey::User(lc),
-                res,
-            });
+        self.spawn_analysis_job("線形静的解析", move || JobResult::StaticCase {
+            key: StaticCaseKey::User(lc),
+            res: Self::run_compute(|| Self::compute_linear_static(model, lc)),
         });
-        self.job = Some(AnalysisJob {
-            label: "線形静的解析",
-            started: std::time::SystemTime::now(),
-            rx,
-            #[cfg(feature = "gui")]
-            jump_on_success: None,
-        });
-        self.report_info(format!("⏳ {} を開始", self.job.as_ref().unwrap().label));
     }
 
     /// 静的解析の単体実行（解析パネル「▶ 単体実行」の入口）をバックグラウンドで
@@ -646,10 +725,7 @@ impl App {
     /// 組合せが空の地震荷重ケースを参照している場合は解かずにエラーで案内する
     /// （地震項が黙って 0 になるのを防ぐ）。
     pub fn run_combination(&mut self, index: usize) {
-        self.apply_parallelism_setting();
-        self.last_error = None;
-        self.last_notice = None;
-        self.ensure_preparation();
+        self.begin_analysis();
         let Some(combo) = self.model.combinations.get(index).cloned() else {
             self.report_error(format!("荷重組合せ #{} が存在しません", index));
             return;
@@ -713,6 +789,8 @@ impl App {
                 bundle.panel_moments = panel_moments;
                 self.results = Some(bundle);
                 self.last_static = Some(StaticKey::Combo(pos));
+                // 表示対象も新しい結果へ（`apply_static_case_result` と同じ理由）。
+                self.nav.focus_result = Some(StaticKey::Combo(pos));
                 self.staleness.mark_fresh();
                 // 荷重継続性区分（長期/短期）は組合せ内容から自動判定する
                 // （令82条の荷重組合せ: G+P=長期、地震・積雪・風入り=短期）。
@@ -731,14 +809,9 @@ impl App {
     /// UI スレッドをブロックしないよう重い解析を逃がす。
     /// 既にジョブが実行中の場合は何もしない（last_error に案内文を設定）。
     pub fn start_combination_job(&mut self, index: usize) {
-        if self.job.is_some() {
-            self.report_error("解析実行中です");
+        if !self.begin_analysis_job() {
             return;
         }
-        self.apply_parallelism_setting();
-        self.last_error = None;
-        self.last_notice = None;
-        self.ensure_preparation();
         let Some(combo) = self.model.combinations.get(index).cloned() else {
             self.report_error(format!("荷重組合せ #{} が存在しません", index));
             return;
@@ -752,22 +825,10 @@ impl App {
         }
         let model = self.model.clone();
         let name = combo.name.clone();
-        let (tx, rx) = std::sync::mpsc::channel();
-        std::thread::spawn(move || {
-            let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                Self::compute_combination(model, combo)
-            }))
-            .unwrap_or_else(|p| Err(analysis_panic_message(p.as_ref())));
-            let _ = tx.send(JobResult::Combo { name, res });
+        self.spawn_analysis_job("荷重組合せ解析", move || JobResult::Combo {
+            name,
+            res: Self::run_compute(|| Self::compute_combination(model, combo)),
         });
-        self.job = Some(AnalysisJob {
-            label: "荷重組合せ解析",
-            started: std::time::SystemTime::now(),
-            rx,
-            #[cfg(feature = "gui")]
-            jump_on_success: None,
-        });
-        self.report_info(format!("⏳ {} を開始", self.job.as_ref().unwrap().label));
     }
 
     /// 一括解析（全荷重ケース単体＋全荷重組合せ）を実行し、結果を `bundle` へ
@@ -784,16 +845,11 @@ impl App {
     /// 解けなかった場合は既存の結果を変更せず、案内メッセージを `last_error` に
     /// 設定して return する。
     pub fn run_static_all(&mut self) {
-        self.apply_parallelism_setting();
-        self.last_error = None;
-        self.last_notice = None;
+        self.begin_analysis();
         if self.model.load_cases.is_empty() {
             self.report_error("荷重ケースがありません。荷重タブで作成してください。");
             return;
         }
-        // 解析に先立って準備計算を実行する（剛域の反映、スラブ荷重・躯体自重の
-        // 「DL」等への同期、階が定義済みなら地震荷重の「EX」「EY」への同期）。
-        self.ensure_preparation();
         let (case_keys, combos, errors) = self.static_all_inputs();
         let computed = Self::compute_static_all(self.model.clone(), case_keys, combos);
         self.apply_static_all_result(computed, errors);
@@ -997,6 +1053,8 @@ impl App {
         }
         self.results = Some(bundle);
         self.last_static = Some(display);
+        // 表示対象も新しい結果へ（`apply_static_case_result` と同じ理由）。
+        self.nav.focus_result = Some(display);
         self.staleness.mark_fresh();
         // 荷重継続性区分（長期/短期）は表示対象の組合せ名から自動判定する
         // （令82条の荷重組合せ: G+P=長期、地震・積雪・風入り=短期）。荷重ケース単体を
@@ -1019,39 +1077,19 @@ impl App {
     /// UI スレッドをブロックしないよう重い解析を逃がす。
     /// 既にジョブが実行中の場合は何もしない（last_error に案内文を設定）。
     pub fn start_static_all_job(&mut self) {
-        if self.job.is_some() {
-            self.report_error("解析実行中です");
+        if !self.begin_analysis_job() {
             return;
         }
-        self.apply_parallelism_setting();
-        self.last_error = None;
-        self.last_notice = None;
         if self.model.load_cases.is_empty() {
             self.report_error("荷重ケースがありません。荷重タブで作成してください。");
             return;
         }
-        self.ensure_preparation();
         let (case_keys, combos, pre_errors) = self.static_all_inputs();
         let model = self.model.clone();
-        let (tx, rx) = std::sync::mpsc::channel();
-        std::thread::spawn(move || {
-            let computed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                Self::compute_static_all(model, case_keys, combos)
-            }))
-            .unwrap_or_else(|p| Err(analysis_panic_message(p.as_ref())));
-            let _ = tx.send(JobResult::StaticAll {
-                computed,
-                pre_errors,
-            });
+        self.spawn_analysis_job("一括解析", move || JobResult::StaticAll {
+            computed: Self::run_compute(|| Self::compute_static_all(model, case_keys, combos)),
+            pre_errors,
         });
-        self.job = Some(AnalysisJob {
-            label: "一括解析",
-            started: std::time::SystemTime::now(),
-            rx,
-            #[cfg(feature = "gui")]
-            jump_on_success: None,
-        });
-        self.report_info(format!("⏳ {} を開始", self.job.as_ref().unwrap().label));
     }
 
     /// 表示対象の静的解析結果を解決する。優先順: ナビゲータ選択 → 最後に実行した結果。
@@ -1214,6 +1252,10 @@ impl App {
             ElemId,
             squid_n_solver::pushover::PushoverMemberResponse,
         > = po.member_response.iter().map(|r| (r.elem, *r)).collect();
+        // 増分解析でせん断降伏が記録された部材（SRC 柱・SRC 耐震壁の
+        // 「破壊モードがせん断破壊か」の判定に用いる）。
+        let shear_yield_elems: std::collections::HashSet<ElemId> =
+            po.shear_yields.iter().map(|s| s.elem).collect();
         // 層別の保有水平耐力 Qu（性能曲線の層別ピーク層せん断）。βu の分母。
         let story_qu: Vec<f64> = (0..n_stories)
             .map(|i| {
@@ -1296,42 +1338,102 @@ impl App {
                         continue;
                     };
                     // 幅厚比による部材ランク判定は準備計算の表示と共通
-                    // （`steel_width_thickness_rank`。構造規定の幅厚比表を優先し、
-                    // 表の対象外形状は単一幅厚比法へフォールバックする）。
+                    // （`steel_width_thickness_rank`。構造規定の幅厚比表のみで判定し、
+                    // 表の対象外形状は未判定＝選択ランクへのフォールバックとする）。
                     let member_use = steel_member_use_of(elem, &self.model);
                     let Some(rank) = steel_width_thickness_rank(shape, member_use, &mat.name)
                     else {
                         continue;
                     };
                     rank
-                } else if let Some(SectionShape::RcWall { thickness, .. }) = sec.shape.as_ref() {
-                    // RC 耐力壁: 告示「耐力壁の種別」表（τu/Fc により WA〜WD）。
-                    // τu は Ds 算定時（増分解析＝プッシュオーバー終局時）に壁断面に生じる
-                    // 平均せん断応力度 = 負担水平力 /(壁厚・壁長)。
-                    let Some(fc) = mat.fc else {
+                } else if matches!(sec.shape.as_ref(), Some(SectionShape::SrcRect { .. })) {
+                    // SRC 柱: 技術基準解説書 表 2.6.6-5（N/N0・sM0/M0・破壊モード）。
+                    // SRC 梁の種別表は原典に規定が無いためスキップ（層は選択ランクへ
+                    // フォールバック）。破壊モードは増分解析のせん断降伏イベントの
+                    // 有無で判定し、N はメカニズム時軸力（圧縮正）を用いる。
+                    use squid_n_design_jp::secondary::src_rank::{
+                        src_column_rank, src_column_rank_ratios,
+                    };
+                    if member_kind_of(elem, &self.model) != squid_n_design_jp::MemberKind::Column {
+                        continue;
+                    }
+                    let Some(fc) = mat.fc.filter(|f| *f > 0.0) else {
                         continue;
                     };
                     let Some(resp) = resp_by_elem.get(&elem.id) else {
                         continue;
                     };
-                    // 壁長 lw は壁エレメント要素と同じ幾何（`wall_panel_geometry`）を
-                    // 用いる。節点は標高 z で下辺・上辺に分けられ（`ElementData::nodes` の
-                    // 並び順には依存しない）、lw は**上下辺長さの平均**となる
-                    // （台形壁では上下辺長が異なるため一方の辺では代表長さにならない）。
-                    let Some(wgeom) =
-                        squid_n_element::wall_panel::wall_panel_geometry(elem, &self.model)
+                    let shape = sec.shape.as_ref().expect("SrcRect と判定済み");
+                    let Some(rebar_sy) = shape.rebar().and_then(|r| {
+                        squid_n_core::material_grade::rebar_yield_strength(
+                            r.main_grade.as_deref(),
+                            Some(mat),
+                        )
+                    }) else {
+                        continue;
+                    };
+                    let Some((n_n0, smo_m0)) =
+                        src_column_rank_ratios(shape, fc, rebar_sy, resp.axial)
                     else {
                         continue;
                     };
-                    let wall_len = wgeom.lw;
-                    let area = thickness * wall_len;
-                    if area <= 0.0 || fc <= 0.0 {
-                        continue;
+                    src_column_rank(n_n0, smo_m0, shear_yield_elems.contains(&elem.id))
+                } else if let Some(SectionShape::RcWall { thickness, .. }) = sec.shape.as_ref() {
+                    if wall_has_src_boundary_column(elem, &self.model) {
+                        // SRC 耐震壁（側柱が SRC の壁）: 技術基準解説書の規定により
+                        // 破壊モードがせん断破壊の場合を WC、それ以外を WA とする
+                        // （τu/Fc の表は用いない）。
+                        //
+                        // 破壊モードの判定: 増分解析の壁要素は面内せん断を終局せん断
+                        // 強度 Qu で頭打ちにする弾完全塑性のため、終局時の負担水平力が
+                        // Qu に達していれば「せん断破壊」とみなす。線材のせん断降伏
+                        // イベント（shear_yields）は 2 節点要素のみが対象で、4 節点の
+                        // 壁要素はそちらでは検出できない。Qu を算定できない壁
+                        // （耐震壁不成立等）と終局時応答が無い壁は判定不能として
+                        // スキップ（層の選択ランクへフォールバック）。
+                        let qu = squid_n_element::wall_panel::WallPanelElement::shear_capacity_of(
+                            elem,
+                            &self.model,
+                        );
+                        let Some(resp) = resp_by_elem.get(&elem.id) else {
+                            continue;
+                        };
+                        if qu <= 0.0 {
+                            continue;
+                        }
+                        // 頭打ち到達の判定は数値誤差を見込み 99% で切る（過検出側＝
+                        // WC 寄りは Ds を大きくする安全側）。
+                        let shear_failure = resp.horizontal_force >= 0.99 * qu;
+                        squid_n_design_jp::secondary::src_rank::src_wall_type(shear_failure)
+                    } else {
+                        // RC 耐力壁: 告示「耐力壁の種別」表（τu/Fc により WA〜WD）。
+                        // τu は Ds 算定時（増分解析＝プッシュオーバー終局時）に壁断面に生じる
+                        // 平均せん断応力度 = 負担水平力 /(壁厚・壁長)。
+                        let Some(fc) = mat.fc else {
+                            continue;
+                        };
+                        let Some(resp) = resp_by_elem.get(&elem.id) else {
+                            continue;
+                        };
+                        // 壁長 lw は壁エレメント要素と同じ幾何（`wall_panel_geometry`）を
+                        // 用いる。節点は標高 z で下辺・上辺に分けられ（`ElementData::nodes` の
+                        // 並び順には依存しない）、lw は**上下辺長さの平均**となる
+                        // （台形壁では上下辺長が異なるため一方の辺では代表長さにならない）。
+                        let Some(wgeom) =
+                            squid_n_element::wall_panel::wall_panel_geometry(elem, &self.model)
+                        else {
+                            continue;
+                        };
+                        let wall_len = wgeom.lw;
+                        let area = thickness * wall_len;
+                        if area <= 0.0 || fc <= 0.0 {
+                            continue;
+                        }
+                        // 壁式構造か否かは設計設定（設計タブのチェックボックス）による。
+                        // 告示「耐力壁の種別」表は壁式構造で限界値が厳しくなる。
+                        let wall_structure = self.wall_structure;
+                        rc_wall_type((resp.horizontal_force / area) / fc, wall_structure, false)
                     }
-                    // 壁式構造か否かは設計設定（設計タブのチェックボックス）による。
-                    // 告示「耐力壁の種別」表は壁式構造で限界値が厳しくなる。
-                    let wall_structure = self.wall_structure;
-                    rc_wall_type((resp.horizontal_force / area) / fc, wall_structure, false)
                 } else {
                     // RC 部材: RcRect のみ対応。RcCircle・形状未設定・
                     // コンクリート強度(fc)未設定の材料はスキップ(選択値へフォールバック)。
@@ -1782,24 +1884,51 @@ impl App {
         Ok(checks)
     }
 
-    /// T3: 固有値解析を実行し、結果を `self.results` に格納する。
+    /// T3: 固有値解析を実行し、結果を `self.results` に格納する（同期）。
     pub fn run_eigen(&mut self, n_modes: usize) {
-        self.apply_parallelism_setting();
-        self.last_error = None;
-        self.last_notice = None;
-        self.apply_rigid_zones_for_analysis();
-        match Analysis::prepare(&self.model) {
-            Ok(analysis) => match analysis.eigen(n_modes) {
-                Ok(modal) => {
-                    let mut bundle = self.results.take().unwrap_or_default();
-                    bundle.modal = Some(modal);
-                    self.results = Some(bundle);
-                    // 固有値のみの更新では設計は更新されないが、最新実行時刻は更新
-                    self.staleness.last_run = Some(SystemTime::now());
-                }
-                Err(e) => self.report_error(format!("固有値解析エラー: {:?}", e)),
-            },
-            Err(e) => self.report_error(format!("解析準備エラー: {:?}", e)),
+        self.begin_analysis();
+        let res = Self::compute_eigen(self.model.clone(), n_modes);
+        self.apply_eigen_result(res);
+    }
+
+    /// 固有値解析をバックグラウンドスレッドで実行する（解析パネル「▶ 実行」の
+    /// 入口）。かつて固有値だけは UI スレッドで同期実行しており、モード数の
+    /// 多い固有値解析中にアプリが無応答になっていた。
+    pub fn start_eigen_job(&mut self, n_modes: usize) {
+        if !self.begin_analysis_job() {
+            return;
+        }
+        let model = self.model.clone();
+        self.spawn_analysis_job("固有値解析", move || {
+            JobResult::Modal(Self::run_compute(|| Self::compute_eigen(model, n_modes)))
+        });
+    }
+
+    /// 固有値解析の純粋計算部分。所有権を取り `&self` を使わないため、
+    /// バックグラウンドジョブ（`start_eigen_job`）からも呼び出せる。
+    fn compute_eigen(
+        model: squid_n_core::model::Model,
+        n_modes: usize,
+    ) -> Result<squid_n_solver::eigen::ModalResult, String> {
+        match Analysis::prepare(&model) {
+            Ok(analysis) => analysis
+                .eigen(n_modes)
+                .map_err(|e| format!("固有値解析エラー: {:?}", e)),
+            Err(e) => Err(format!("解析準備エラー: {:?}", e)),
+        }
+    }
+
+    /// `compute_eigen` の結果を適用する（bundle 格納・最終実行時刻更新）。
+    fn apply_eigen_result(&mut self, res: Result<squid_n_solver::eigen::ModalResult, String>) {
+        match res {
+            Ok(modal) => {
+                let mut bundle = self.results.take().unwrap_or_default();
+                bundle.modal = Some(modal);
+                self.results = Some(bundle);
+                // 固有値のみの更新では設計は更新されないが、最新実行時刻は更新
+                self.staleness.last_run = Some(SystemTime::now());
+            }
+            Err(e) => self.report_error(e),
         }
     }
 
@@ -1889,10 +2018,7 @@ impl App {
     /// 使う）。SemiPrecise で固有値解析が未実行の場合は解析せず、実行を促す
     /// メッセージを `last_error` に設定して return する。
     pub fn run_seismic(&mut self, dir: SeismicDir) {
-        self.apply_parallelism_setting();
-        self.last_error = None;
-        self.last_notice = None;
-        self.ensure_preparation();
+        self.begin_analysis();
         let t = match self.design_seismic_period() {
             Ok(t) => t,
             Err(msg) => {
@@ -1930,14 +2056,9 @@ impl App {
     /// UI スレッドをブロックしないよう重い解析を逃がす。
     /// 既にジョブが実行中の場合は何もしない（last_error に案内文を設定）。
     pub fn start_seismic_job(&mut self, dir: SeismicDir) {
-        if self.job.is_some() {
-            self.report_error("解析実行中です");
+        if !self.begin_analysis_job() {
             return;
         }
-        self.apply_parallelism_setting();
-        self.last_error = None;
-        self.last_notice = None;
-        self.ensure_preparation();
         let t = match self.design_seismic_period() {
             Ok(t) => t,
             Err(msg) => {
@@ -1953,34 +2074,17 @@ impl App {
             c0: self.analysis_cfg.c0,
         };
         let model = self.model.clone();
-        let (tx, rx) = std::sync::mpsc::channel();
-        std::thread::spawn(move || {
-            let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                Self::compute_seismic(model, cfg, t)
-            }))
-            .unwrap_or_else(|p| Err(analysis_panic_message(p.as_ref())));
-            let _ = tx.send(JobResult::StaticCase {
-                key: StaticCaseKey::Seismic(dir),
-                res,
-            });
+        self.spawn_analysis_job("地震静的解析", move || JobResult::StaticCase {
+            key: StaticCaseKey::Seismic(dir),
+            res: Self::run_compute(|| Self::compute_seismic(model, cfg, t)),
         });
-        self.job = Some(AnalysisJob {
-            label: "地震静的解析",
-            started: std::time::SystemTime::now(),
-            rx,
-            #[cfg(feature = "gui")]
-            jump_on_success: None,
-        });
-        self.report_info(format!("⏳ {} を開始", self.job.as_ref().unwrap().label));
     }
 
     /// 風荷重の静的解析を実行し、結果を `StaticCaseKey::Wind(dir)` に格納する
     /// （`run_seismic` と同じパターン。X/Y 双方の結果および他の静的結果と共存できる）。
     /// 基準風速・地表面粗度区分・パラペット高さは `analysis_cfg` を用いる。
     pub fn run_wind(&mut self, dir: SeismicDir) {
-        self.apply_parallelism_setting();
-        self.last_error = None;
-        self.last_notice = None;
+        self.begin_analysis();
         let cfg = squid_n_solver::analysis::WindStaticCfg {
             dir,
             v0: self.analysis_cfg.v0,
@@ -1988,7 +2092,6 @@ impl App {
             cpi: 0.0,
             parapet_mm: self.analysis_cfg.parapet_mm,
         };
-        self.ensure_preparation();
         let res = Self::compute_wind(self.model.clone(), cfg);
         self.apply_static_case_result(StaticCaseKey::Wind(dir), res);
     }
@@ -2011,13 +2114,9 @@ impl App {
     /// UI スレッドをブロックしないよう重い解析を逃がす。
     /// 既にジョブが実行中の場合は何もしない（last_error に案内文を設定）。
     pub fn start_wind_job(&mut self, dir: SeismicDir) {
-        if self.job.is_some() {
-            self.report_error("解析実行中です");
+        if !self.begin_analysis_job() {
             return;
         }
-        self.apply_parallelism_setting();
-        self.last_error = None;
-        self.last_notice = None;
         let cfg = squid_n_solver::analysis::WindStaticCfg {
             dir,
             v0: self.analysis_cfg.v0,
@@ -2025,27 +2124,11 @@ impl App {
             cpi: 0.0,
             parapet_mm: self.analysis_cfg.parapet_mm,
         };
-        self.ensure_preparation();
         let model = self.model.clone();
-        let (tx, rx) = std::sync::mpsc::channel();
-        std::thread::spawn(move || {
-            let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                Self::compute_wind(model, cfg)
-            }))
-            .unwrap_or_else(|p| Err(analysis_panic_message(p.as_ref())));
-            let _ = tx.send(JobResult::StaticCase {
-                key: StaticCaseKey::Wind(dir),
-                res,
-            });
+        self.spawn_analysis_job("風荷重静的解析", move || JobResult::StaticCase {
+            key: StaticCaseKey::Wind(dir),
+            res: Self::run_compute(|| Self::compute_wind(model, cfg)),
         });
-        self.job = Some(AnalysisJob {
-            label: "風荷重静的解析",
-            started: std::time::SystemTime::now(),
-            rx,
-            #[cfg(feature = "gui")]
-            jump_on_success: None,
-        });
-        self.report_info(format!("⏳ {} を開始", self.job.as_ref().unwrap().label));
     }
 
     /// 荷重ケースから標準組合せを生成し、undo 可能に一括追加する
@@ -2124,16 +2207,15 @@ impl App {
     /// バックグラウンドジョブ（`start_pushover_job`）からも呼び出せる。
     /// モデルは呼び出し側で複製したものを渡す
     /// （非線形状態の副作用を GUI 上のモデルへ残さないため）。
+    /// 増分解析の純粋計算部分。剛域・仕口パネル・荷重同期は呼び出し側
+    /// （`begin_analysis` → `ensure_preparation`）で適用済みのモデルを渡す前提
+    /// （静的解析と同じ規約。かつてはここで剛域だけをインライン適用しており、
+    /// 仕口パネルの生成が省かれて静的解析と剛性の異なるモデルを解いていた）。
     fn compute_pushover(
         model: squid_n_core::model::Model,
         cfg: AnalysisSettings,
     ) -> Result<squid_n_solver::pushover::PushoverResult, String> {
         let mut work = model;
-        // 解析前に剛域を自動算定（設計書 §6.2.1、標準実装）。
-        squid_n_element::beam::apply_auto_rigid_zones(
-            &mut work,
-            &squid_n_element::beam::RigidZoneRule::default(),
-        );
         Analysis::prepare(&work).map_err(|e| format!("解析準備エラー: {}", e))?;
         let dofmap = squid_n_core::dof::DofMap::build(&work);
         let reducer = squid_n_solver::constraint::Reducer::build(&work, &dofmap);
@@ -2169,10 +2251,22 @@ impl App {
     ) {
         match res {
             Ok(result) => {
+                // 目標未到達の打ち切り（非収束・特異化）は Qu が過小評価の可能性が
+                // あるため、結果画面の警告に加えてログにも残す。
+                if result.termination.is_premature() {
+                    self.report_notice(format!(
+                        "⚠ 増分解析は目標到達前に打ち切られました（{}）。Qu はその時点までの最大値です。",
+                        result.termination.describe()
+                    ));
+                }
                 let mut bundle = self.results.take().unwrap_or_default();
                 bundle.pushover = Some(result);
                 self.results = Some(bundle);
-                self.staleness.last_run = Some(SystemTime::now());
+                // mark_fresh で stale を解消する（`apply_static_case_result` と同じ扱い）。
+                // last_run の更新だけでは results_stale が立ったままになり、編集後に
+                // 増分解析だけを実行してもビューアが「再実行してください」表示のまま
+                // 復帰しなかった。
+                self.staleness.mark_fresh();
                 self.last_error = None;
             }
             Err(e) => self.report_error(e),
@@ -2209,8 +2303,7 @@ impl App {
     }
 
     pub fn run_pushover(&mut self) {
-        self.apply_parallelism_setting();
-        self.last_error = None;
+        self.begin_analysis();
         self.notice_steel_seismic_walls();
         let res = Self::compute_pushover(self.model.clone(), self.analysis_cfg);
         self.apply_pushover_result(res);
@@ -2220,31 +2313,19 @@ impl App {
     /// UI スレッドをブロックしないよう重い解析を逃がす。
     /// 既にジョブが実行中の場合は何もしない（last_error に案内文を設定）。
     pub fn start_pushover_job(&mut self) {
-        if self.job.is_some() {
-            self.report_error("解析実行中です");
+        if !self.begin_analysis_job() {
             return;
         }
-        self.apply_parallelism_setting();
-        self.last_error = None;
         self.notice_steel_seismic_walls();
         let model = self.model.clone();
         let cfg = self.analysis_cfg;
-        let (tx, rx) = std::sync::mpsc::channel();
-        std::thread::spawn(move || {
-            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                Self::compute_pushover(model, cfg)
-            }))
-            .unwrap_or_else(|p| Err(analysis_panic_message(p.as_ref())));
-            let _ = tx.send(JobResult::Pushover(result));
+        self.spawn_analysis_job("増分解析", move || {
+            JobResult::Pushover(Self::run_compute(|| Self::compute_pushover(model, cfg)))
         });
-        self.job = Some(AnalysisJob {
-            label: "増分解析",
-            started: std::time::SystemTime::now(),
-            rx,
-            #[cfg(feature = "gui")]
-            jump_on_success: Some((Tab::Results, ResultsView::Pushover)),
-        });
-        self.report_info(format!("⏳ {} を開始", self.job.as_ref().unwrap().label));
+        #[cfg(feature = "gui")]
+        if let Some(job) = self.job.as_mut() {
+            job.jump_on_success = Some((Tab::Results, ResultsView::Pushover));
+        }
     }
 
     /// 線形時刻歴応答解析の純粋計算部分。所有権を取り `&self` を使わないため、
@@ -2278,19 +2359,17 @@ impl App {
         wave
     }
 
+    /// 時刻歴応答解析の純粋計算部分。剛域・仕口パネル・荷重同期は呼び出し側
+    /// （`begin_analysis` → `ensure_preparation`）で適用済みのモデルを渡す前提
+    /// （静的解析と同じ規約。かつてはここで剛域だけをインライン適用しており、
+    /// 仕口パネルの生成が省かれて静的解析と剛性の異なるモデルを解いていた）。
     fn compute_time_history(
         model: squid_n_core::model::Model,
         cfg: AnalysisSettings,
         wave: squid_n_solver::timehistory::GroundMotion,
     ) -> Result<squid_n_solver::timehistory::ResponseResult, String> {
-        let mut model = model;
         // 位相差入力（ねじれ加振）を指定時に付加する（構造動力学の位相差入力解析）。
         let wave = Self::apply_phase_diff(&cfg, wave);
-        // 解析前に剛域を自動算定（設計書 §6.2.1、標準実装）。
-        squid_n_element::beam::apply_auto_rigid_zones(
-            &mut model,
-            &squid_n_element::beam::RigidZoneRule::default(),
-        );
         let analysis = Analysis::prepare(&model).map_err(|e| format!("解析準備エラー: {}", e))?;
         let damping = match cfg.th_damping_model {
             ThDampingModel::StiffnessProportional => {
@@ -2465,7 +2544,11 @@ impl App {
                 let mut bundle = self.results.take().unwrap_or_default();
                 bundle.time_history = Some(res);
                 self.results = Some(bundle);
-                self.staleness.last_run = Some(SystemTime::now());
+                // mark_fresh で stale を解消する（`apply_pushover_result` と同じ理由。
+                // last_run の更新だけでは、編集後に時刻歴だけを実行しても
+                // アニメーション・部材クリック・詳細ウィンドウが stale 判定で
+                // 無効化されたまま復帰しなかった）。
+                self.staleness.mark_fresh();
                 self.last_error = None;
             }
             Err(e) => self.report_error(e),
@@ -2475,8 +2558,7 @@ impl App {
     /// 線形時刻歴応答解析を実行する。減衰モデル・積分法は `analysis_cfg` に従う
     /// （剛性比例／Rayleigh、Newmark-β／HHT-α）。
     pub fn run_time_history(&mut self, wave: squid_n_solver::timehistory::GroundMotion) {
-        self.apply_parallelism_setting();
-        self.last_error = None;
+        self.begin_analysis();
         let res = Self::compute_time_history(self.model.clone(), self.analysis_cfg, wave);
         self.apply_time_history_result(res);
     }
@@ -2485,36 +2567,26 @@ impl App {
     /// UI スレッドをブロックしないよう重い解析を逃がす。
     /// 既にジョブが実行中の場合は何もしない（last_error に案内文を設定）。
     pub fn start_time_history_job(&mut self, wave: squid_n_solver::timehistory::GroundMotion) {
-        if self.job.is_some() {
-            self.report_error("解析実行中です");
+        if !self.begin_analysis_job() {
             return;
         }
-        self.apply_parallelism_setting();
-        self.last_error = None;
         let model = self.model.clone();
         let cfg = self.analysis_cfg;
-        let (tx, rx) = std::sync::mpsc::channel();
-        std::thread::spawn(move || {
-            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                Self::compute_time_history(model, cfg, wave)
-            }))
-            .unwrap_or_else(|p| Err(analysis_panic_message(p.as_ref())));
-            let _ = tx.send(JobResult::TimeHistory(Box::new(result)));
-        });
         // 非線形／線形の別をジョブラベル・完了ログへ出す（実行中の判別・履歴の両方で有用）。
         let label = if cfg.th_nonlinear {
             "時刻歴応答(非線形)"
         } else {
             "時刻歴応答(線形)"
         };
-        self.job = Some(AnalysisJob {
-            label,
-            started: std::time::SystemTime::now(),
-            rx,
-            #[cfg(feature = "gui")]
-            jump_on_success: Some((Tab::Results, ResultsView::TimeHistory)),
+        self.spawn_analysis_job(label, move || {
+            JobResult::TimeHistory(Box::new(Self::run_compute(|| {
+                Self::compute_time_history(model, cfg, wave)
+            })))
         });
-        self.report_info(format!("⏳ {} を開始", self.job.as_ref().unwrap().label));
+        #[cfg(feature = "gui")]
+        if let Some(job) = self.job.as_mut() {
+            job.jump_on_success = Some((Tab::Results, ResultsView::TimeHistory));
+        }
     }
 
     /// 実行中のジョブの完了を確認し、完了していれば結果を適用する。
@@ -2552,6 +2624,7 @@ impl App {
                 self.last_error = None;
                 match result {
                     JobResult::Pushover(res) => self.apply_pushover_result(res),
+                    JobResult::Modal(res) => self.apply_eigen_result(res),
                     JobResult::TimeHistory(res) => self.apply_time_history_result(*res),
                     JobResult::StaticCase { key, res } => self.apply_static_case_result(key, res),
                     JobResult::Combo { name, res } => self.apply_combo_result(name, res),
@@ -3138,8 +3211,17 @@ impl App {
     /// `NodalLoad` へ変換する。CMQ 図描画側は `elem` で梁を引くため、この番兵は
     /// 単に描画対象外になるだけで安全）。
     pub fn refresh_beam_loads(&mut self) {
+        // CMQ 図表示中は毎フレーム呼ばれるため、前回算定時からモデル・関連設定が
+        // 変わっていなければスキップする（交差小梁スラブでは床格子サブ FEM 解析を
+        // 含む重い処理になり得る）。ハッシュは荷重同期のキャッシュと同じ
+        // `compute_auto_load_sync_hash`（モデル全体＋荷重関連設定）を用いる。
+        let hash = self.compute_auto_load_sync_hash();
+        if self.beam_loads_hash == Some(hash) {
+            return;
+        }
         // CMQ 図表示・従来互換のため `self.beam_loads` には固定荷重（DL）分配を格納する。
         self.beam_loads = self.slab_beam_loads(|slab| slab.dead_intensity());
+        self.beam_loads_hash = Some(hash);
     }
 
     /// 交差小梁スラブについて、床格子サブモデル（二方向）の**支点反力**を大梁接続点
@@ -3577,8 +3659,12 @@ impl App {
         // CMQ 図表示・従来互換のため `self.beam_loads` には固定荷重（DL）分配を
         // 格納する（`refresh_beam_loads` と同じ結果。ここでは共有済みの
         // `beam_map`/`unit_reactions` を使い回すため直接 `slab_beam_loads_with` を呼ぶ）。
+        // キャッシュキーを経由しない直接書き込みのため `beam_loads_hash` を無効化する
+        // （残したままだと、この後モデルを undo で元に戻したとき refresh_beam_loads が
+        // 「ハッシュ一致＝最新」と誤認し、編集後の分配を表示し続ける）。
         self.beam_loads =
             self.slab_beam_loads_with(|slab| slab.dead_intensity(), &unit_reactions, &beam_map);
+        self.beam_loads_hash = None;
 
         // DL（固定荷重）: スラブ分配（`self.beam_loads` は上で dead_intensity 分配済み）
         // ＋躯体自重。自重には二次部材（小梁・間柱）の分（支持点への節点荷重）が

@@ -135,38 +135,49 @@ pub fn steel_fb_h(f: f64, term: LoadTerm, lb: f64, i: f64, h: f64, af: f64, c: f
 ///   情報が無いため従来通り `C=1.0`（安全側・最も不利な等曲げ分布相当）
 ///   とする。
 pub(crate) fn steel_lateral_buckling_c(ctx: &DesignCtx) -> f64 {
-    let Some((m_i, m_j)) = ctx.end_moments_z else {
+    // 端部モーメント比が代表できない場合は安全側の C=1.0（等曲げ分布相当）。
+    let Some(m2_over_m1) = end_moment_ratio_m2_m1(ctx) else {
         return 1.0;
     };
+    let c = 1.75 + 1.05 * m2_over_m1 + 0.3 * m2_over_m1 * m2_over_m1;
+    c.min(2.3)
+}
+
+/// 座屈区間端部の強軸モーメント比 `M2/M1`（複曲率＝両端異符号で正・
+/// 単曲率＝同符号で負。[`steel_lateral_buckling_c`] と [`steel_p_lambda_b`] が
+/// 共有する符号規約の単一実装）。
+///
+/// 次の場合は端部比で区間内の曲げ分布を代表できないため `None` を返し、
+/// 呼び出し側が各式の安全側既定値へフォールバックする:
+/// - [`DesignCtx::end_moments_z`] が未設定（端部モーメントの情報が無い）
+/// - 座屈区間中央（[`DesignCtx::mid_moment_z`]）の絶対値が両端より大きい
+///   （区間内の最大曲げが端部に無い）
+///
+/// 両端とも曲げがほぼ無い場合は `M2/M1 = 0` として `Some(0.0)`。
+fn end_moment_ratio_m2_m1(ctx: &DesignCtx) -> Option<f64> {
+    let (m_i, m_j) = ctx.end_moments_z?;
     let abs_i = m_i.abs();
     let abs_j = m_j.abs();
     let m1 = abs_i.max(abs_j);
     let m2 = abs_i.min(abs_j);
 
-    // 区間中央の曲げが端部より大きければ、区間内最大曲げが端部に無いため C=1.0。
     if let Some(mid) = ctx.mid_moment_z {
         if mid.abs() > m1 + 1e-9 {
-            return 1.0;
+            return None;
         }
     }
-
     if m1 <= 1e-9 {
-        // 両端とも曲げがほぼ無い（M2/M1=0 相当）→ C=1.75。
-        return 1.75;
+        return Some(0.0);
     }
-
     let ratio_abs = m2 / m1;
     // 異符号（反曲点あり＝複曲率）なら正、同符号（単曲率）なら負。
     // 片端がほぼゼロなら ratio_abs=0 で符号は結果に影響しない。
     let double_curvature = m_i * m_j < 0.0;
-    let m2_over_m1 = if double_curvature {
+    Some(if double_curvature {
         ratio_abs
     } else {
         -ratio_abs
-    };
-
-    let c = 1.75 + 1.05 * m2_over_m1 + 0.3 * m2_over_m1 * m2_over_m1;
-    c.min(2.3)
+    })
 }
 
 /// 横座屈修正係数 C の解決（beam.rs・column.rs で共通のロジックに統一）。
@@ -272,34 +283,10 @@ pub fn steel_fb_h_new(
 /// - [`DesignCtx::end_moments_z`] が `None` の場合も同様に安全側の `pλb=0.3`。
 /// - `M1≈0`（両端とも曲げがほぼ無い）のときは `M2/M1=0` 扱いで `pλb=0.6`。
 pub(crate) fn steel_p_lambda_b(ctx: &DesignCtx) -> f64 {
-    let Some((m_i, m_j)) = ctx.end_moments_z else {
+    // 端部モーメント比が代表できない場合は安全側の pλb=0.3。
+    let Some(m2_over_m1) = end_moment_ratio_m2_m1(ctx) else {
         return 0.3;
     };
-    let abs_i = m_i.abs();
-    let abs_j = m_j.abs();
-    let m1 = abs_i.max(abs_j);
-    let m2 = abs_i.min(abs_j);
-
-    // 区間中央の曲げが端部より大きければ、区間内最大曲げが端部に無いため 0.3。
-    if let Some(mid) = ctx.mid_moment_z {
-        if mid.abs() > m1 + 1e-9 {
-            return 0.3;
-        }
-    }
-
-    if m1 <= 1e-9 {
-        // 両端とも曲げがほぼ無い（M2/M1=0 相当）→ 0.6。
-        return 0.6;
-    }
-
-    let ratio_abs = m2 / m1;
-    let double_curvature = m_i * m_j < 0.0;
-    let m2_over_m1 = if double_curvature {
-        ratio_abs
-    } else {
-        -ratio_abs
-    };
-
     0.6 + 0.3 * m2_over_m1
 }
 

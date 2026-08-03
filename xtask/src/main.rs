@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::path::Path;
 
 fn main() -> anyhow::Result<()> {
@@ -25,7 +25,9 @@ fn main() -> anyhow::Result<()> {
         &["squid-n-mcp", "squid-n-app"],
     ];
 
-    let layer_map: HashMap<&str, usize> = layers
+    // BTreeMap で走査順を固定する（HashMap では実行ごとに出力・検査順が変わり、
+    // CI ログの diff 比較や違反の再現確認がしづらい）。
+    let layer_map: BTreeMap<&str, usize> = layers
         .iter()
         .enumerate()
         .flat_map(|(i, names)| names.iter().map(move |&n| (n, i)))
@@ -34,7 +36,10 @@ fn main() -> anyhow::Result<()> {
     let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
     let crate_root = workspace_root.join("crates");
 
-    let mut errors = Vec::new();
+    // OK 件数と違反は分けて数える（かつては同じ Vec に "OK:"/"VIOLATION:" を
+    // 混ぜて積み、総数を「upstream checks」件数として表示していた）。
+    let mut ok_count = 0usize;
+    let mut violations = Vec::new();
 
     for (name, &layer_idx) in &layer_map {
         // Only check crates/ subdir
@@ -48,47 +53,29 @@ fn main() -> anyhow::Result<()> {
         let content = std::fs::read_to_string(&cargo_toml)?;
         let parsed: toml::Value = content.parse()?;
 
-        if let Some(deps) = parsed.get("dependencies").and_then(|d| d.as_table()) {
+        for (table, verb) in [
+            ("dependencies", "depends on"),
+            ("dev-dependencies", "dev-depends on"),
+        ] {
+            let Some(deps) = parsed.get(table).and_then(|d| d.as_table()) else {
+                continue;
+            };
             for (dep_name, _) in deps {
-                if let Some(&dep_layer) = layer_map.get(dep_name.as_str()) {
-                    if dep_layer < layer_idx {
-                        errors.push(format!(
-                            "OK: {} (layer {}) depends on {} (layer {})",
-                            name, layer_idx, dep_name, dep_layer
-                        ));
-                    } else {
-                        errors.push(format!(
-                            "VIOLATION: {} (layer {}) depends on DOWNSTREAM {} (layer {})",
-                            name, layer_idx, dep_name, dep_layer
-                        ));
-                    }
-                }
-            }
-        }
-
-        if let Some(deps) = parsed.get("dev-dependencies").and_then(|d| d.as_table()) {
-            for (dep_name, _) in deps {
-                if let Some(&dep_layer) = layer_map.get(dep_name.as_str()) {
-                    if dep_layer < layer_idx {
-                        errors.push(format!(
-                            "OK: {} (layer {}) dev-depends on {} (layer {})",
-                            name, layer_idx, dep_name, dep_layer
-                        ));
-                    } else {
-                        errors.push(format!(
-                            "VIOLATION: {} (layer {}) dev-depends on DOWNSTREAM {} (layer {})",
-                            name, layer_idx, dep_name, dep_layer
-                        ));
-                    }
+                let Some(&dep_layer) = layer_map.get(dep_name.as_str()) else {
+                    continue;
+                };
+                if dep_layer < layer_idx {
+                    ok_count += 1;
+                } else {
+                    violations.push(format!(
+                        "VIOLATION: {} (layer {}) {} DOWNSTREAM {} (layer {})",
+                        name, layer_idx, verb, dep_name, dep_layer
+                    ));
                 }
             }
         }
     }
 
-    let violations: Vec<_> = errors
-        .iter()
-        .filter(|e| e.starts_with("VIOLATION"))
-        .collect();
     if !violations.is_empty() {
         for v in &violations {
             eprintln!("{}", v);
@@ -101,7 +88,7 @@ fn main() -> anyhow::Result<()> {
 
     println!(
         "All dependency directions OK ({} upstream checks)",
-        errors.len()
+        ok_count
     );
     Ok(())
 }

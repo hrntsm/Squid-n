@@ -142,24 +142,64 @@ fn shape_of(sec: &Section) -> (ShapeCategory, f64, f64) {
     (classify_shape(&sec.name), t, t)
 }
 
-/// せん断有効断面積 As [mm²]（梁の H形以外／柱の H形・その他 で共用）。
-/// - H: `tw·H`（ウェブ全せい×ウェブ厚）
-/// - Box: `2·t·(H−2t)`
-/// - Pipe: `A/2`
-/// - Other: `as_y>0 ? as_y : area`
-fn shear_area(shape: ShapeCategory, sec: &Section, tw: f64) -> f64 {
+/// せん断有効断面積 `(Ay, Az)` [mm²]（強軸 Qy・弱軸 Qz。梁・柱で共用の単一定義）。
+///
+/// - H形: `Ay=tw・(H−2tf)`（ウェブ内法せい×ウェブ厚）、
+///   `Az=2・B・tf/1.5`（上下フランジ断面積を応力分布係数 1.5 で低減）。
+/// - 角形鋼管: 角部外半径 r は断面定義時の入力値（`SteelBox.corner_r`）を
+///   用いる。`r>0` は角部を 1/4 円弧とみなし直線部＋角部円弧の断面積を
+///   合算する: `Ay=2{t・max(H−2r,0)+π・t・(2r−t)/4}`（`Az` は `H` を `B` に
+///   置き換えた同式）。`r=0`（未入力・名前推定フォールバック・角部半径を
+///   持たない CftBox）は角部を直角とみなし `Ay=2t・max(H−2t,0)`（`Az` は
+///   同様に `B`）。
+/// - 円形鋼管: `Ay=Az=π・t・(D−t)/2`（薄肉円管のせん断有効断面積。
+///   `D=sec.depth` は外径）。
+/// - その他: `Ay=as_y>0 ? as_y : area`、`Az=as_z>0 ? as_z : area`。
+fn shear_area_2d(shape: ShapeCategory, sec: &Section, tf: f64, tw: f64) -> (f64, f64) {
     let h = sec.depth;
-    let t = tw;
+    let b = sec.width;
     match shape {
-        ShapeCategory::H => (t * h).max(0.0),
-        ShapeCategory::Box => (2.0 * t * (h - 2.0 * t).max(0.0)).max(0.0),
-        ShapeCategory::Pipe => sec.area / 2.0,
-        ShapeCategory::Other => {
-            if sec.as_y > 0.0 {
-                sec.as_y
+        ShapeCategory::H => {
+            let ay = (tw * (h - 2.0 * tf).max(0.0)).max(0.0);
+            let az = (2.0 * b * tf / 1.5).max(0.0);
+            (ay, az)
+        }
+        ShapeCategory::Box => {
+            // 角形鋼管は tf=tw=t（shape_of 参照）。角部外半径 r は断面入力値。
+            let t = tw;
+            let r = match &sec.shape {
+                Some(SectionShape::SteelBox { corner_r, .. }) => corner_r.max(0.0),
+                _ => 0.0,
+            };
+            let (ay, az) = if r > 1e-9 {
+                let corner = (std::f64::consts::PI * t * (2.0 * r - t) / 4.0).max(0.0);
+                (
+                    2.0 * (t * (h - 2.0 * r).max(0.0) + corner),
+                    2.0 * (t * (b - 2.0 * r).max(0.0) + corner),
+                )
             } else {
-                sec.area
-            }
+                // 角部直角（未入力・CftBox・名前推定フォールバック）。
+                (
+                    2.0 * t * (h - 2.0 * t).max(0.0),
+                    2.0 * t * (b - 2.0 * t).max(0.0),
+                )
+            };
+            (ay.max(0.0), az.max(0.0))
+        }
+        ShapeCategory::Pipe => {
+            let t = tw;
+            let d = sec.depth;
+            let a = (std::f64::consts::PI * t * (d - t) / 2.0).max(0.0);
+            (a, a)
+        }
+        ShapeCategory::Other => {
+            // 断面レイヤの規約（P1 §4.1・squid-n-core builder.rs）は
+            // 「as_z=強軸曲げ用（ウェブ）・as_y=弱軸曲げ用（フランジ）」で、
+            // 検定の Qy は強軸せん断のため、要素剛性側（construct.rs）と同じ
+            // クロス対応（Ay ← 断面 as_z、Az ← 断面 as_y）で引き当てる。
+            let ay = if sec.as_z > 0.0 { sec.as_z } else { sec.area };
+            let az = if sec.as_y > 0.0 { sec.as_y } else { sec.area };
+            (ay, az)
         }
     }
 }

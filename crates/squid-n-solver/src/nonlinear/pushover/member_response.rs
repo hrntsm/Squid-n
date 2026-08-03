@@ -13,12 +13,28 @@ use squid_n_core::model::{ElementData, Model};
 use squid_n_element::behavior::{Ctx, ElemState, ElementBehavior, LocalVec};
 use squid_n_element::transform::LocalFrame;
 
-/// 部材の変形角 R [rad]（弦回転角＝層間変形角相当）を最終確定変位から算定する。
+/// 部材の変形角 R [rad]（弦回転角＝層間変形角相当）を節点変位から算定する。
 ///
-/// [`crate::strength_loss`] の `member_drift_angle` と同じ規則（鉛直材は材端の
-/// 水平相対変位/材長、水平材は鉛直相対変位/材長）。`disp` は `DofMap` アクティブ
-/// 添字順の全自由節点変位（プッシュオーバー最終ステップの `total_disp`）。
-fn member_rp_angle(model: &Model, dofmap: &DofMap, disp: &[f64], elem: &ElementData) -> f64 {
+/// - 鉛直材（柱系、|Δz| が水平成分より大きい）: 材端の水平相対変位 / 材長
+///   （層間変形角に相当する近似）。
+/// - 水平材（梁系）: 材端の鉛直相対変位 / 材長（弦回転角）。
+///
+/// `disp` は `DofMap` アクティブ添字順の全自由節点変位（プッシュオーバー
+/// 最終ステップの `total_disp` または `PushoverStep::node_disp`）。
+/// 部材別 Rp（本モジュール）と段階的耐力喪失解析（[`crate::strength_loss`]）で
+/// 共通利用する（かつては両所に完全同一の実装が複製されていた）。
+///
+/// **既知の近似（保守側）:** この弦回転角は弾性変形・剛体回転成分を含む
+/// 全回転角であり、FEMA 356 の塑性回転角 a（降伏後の塑性成分のみ）と
+/// 比較する際は塑性成分を過大評価する（喪失判定が早まる＝保有耐力を
+/// 過小評価する保守側）。降伏時回転角の控除（θp = θ − θy）は
+/// ヒンジ塑性回転の抽出を要するため将来課題とする。
+pub(crate) fn member_rp_angle(
+    model: &Model,
+    dofmap: &DofMap,
+    disp: &[f64],
+    elem: &ElementData,
+) -> f64 {
     if elem.nodes.len() < 2 {
         return 0.0;
     }
@@ -41,7 +57,9 @@ fn member_rp_angle(model: &Model, dofmap: &DofMap, disp: &[f64], elem: &ElementD
             .and_then(|a| disp.get(a as usize).copied())
             .unwrap_or(0.0)
     };
-    let vertical = dz.abs() > (dx.abs() + dy.abs()) * 0.5;
+    // 全クレート共通の 45° 余弦基準（|ez| > 0.707）。柱系は水平変位/部材長
+    // （層間変形角相当）、梁系は鉛直変位/部材長（たわみ角相当）で Rp を測る。
+    let vertical = squid_n_core::geom::is_vertical_axis(pi.coord, pj.coord);
     if vertical {
         let dux = get(nj, 0) - get(ni, 0);
         let duy = get(nj, 1) - get(ni, 1);

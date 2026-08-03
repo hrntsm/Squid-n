@@ -55,7 +55,7 @@ impl EditCommand for DeleteMaterial {
         if idx >= model.materials.len() || model.materials[idx].id != self.id {
             return Box::new(Noop);
         }
-        if model.elements.iter().any(|e| e.material == Some(self.id)) {
+        if material_in_use(model, self.id) {
             return Box::new(Noop);
         }
         let removed = model.materials.remove(idx);
@@ -104,15 +104,19 @@ impl EditCommand for InsertMaterial {
 }
 
 /// モデル内の全ての `MaterialId` 参照（材料自身の ID を含む）に `f` を適用する。
-fn shift_material_ids(model: &mut Model, mut f: impl FnMut(&mut MaterialId)) {
-    for mat in &mut model.materials {
-        f(&mut mat.id);
-    }
-    for elem in &mut model.elements {
-        if let Some(mid) = &mut elem.material {
-            f(mid);
-        }
-    }
+/// 走査は core 側（[`Model::visit_material_ids`]）が単一情報源として持つ
+/// （新フィールド追加時の追随漏れを防ぐ）。
+fn shift_material_ids(model: &mut Model, f: impl FnMut(&mut MaterialId)) {
+    model.visit_material_ids(f);
+}
+
+/// 指定材料を参照している要素・二次部材が存在するか（削除ガード用）。
+fn material_in_use(model: &Model, id: MaterialId) -> bool {
+    model.elements.iter().any(|e| e.material == Some(id))
+        || model
+            .secondary_members
+            .iter()
+            .any(|sm| sm.material == Some(id))
 }
 
 /// 編集対象の材料プロパティ。

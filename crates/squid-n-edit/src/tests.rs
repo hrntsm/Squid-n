@@ -48,8 +48,8 @@ fn test_set_node_coord_invalid_id_is_noop() {
             coord: [1.0, 2.0, 3.0],
         }),
     );
-    assert!(stack.can_undo());
-    stack.undo(&mut model);
+    // 失敗したコマンド（Noop）は undo 履歴に積まれない。
+    assert!(!stack.can_undo());
     assert!(model.nodes.is_empty());
 }
 
@@ -93,8 +93,8 @@ fn test_set_node_restraint_invalid_id_is_noop() {
             restraint: Dof6Mask::FIXED,
         }),
     );
-    assert!(stack.can_undo());
-    stack.undo(&mut model);
+    // 失敗したコマンド（Noop）は undo 履歴に積まれない。
+    assert!(!stack.can_undo());
     assert!(model.nodes.is_empty());
 }
 
@@ -177,8 +177,8 @@ fn test_set_node_support_spring_invalid_id_is_noop() {
             spring: Some([1.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
         }),
     );
-    assert!(stack.can_undo());
-    stack.undo(&mut model);
+    // 失敗したコマンド（Noop）は undo 履歴に積まれない。
+    assert!(!stack.can_undo());
     assert!(model.nodes.is_empty());
 }
 
@@ -607,8 +607,8 @@ fn test_edit_section_shape_invalid_id_noop() {
         new_shape: shape,
     };
     stack.run(&mut model, Box::new(cmd));
-    assert!(stack.can_undo());
-    stack.undo(&mut model);
+    // 失敗したコマンド（Noop）は undo 履歴に積まれない。
+    assert!(!stack.can_undo());
     assert!(model.sections.is_empty());
 }
 
@@ -677,8 +677,8 @@ fn test_duplicate_section_no_section_noop() {
 
     let cmd = DuplicateSectionForMember { member: ElemId(0) };
     stack.run(&mut model, Box::new(cmd));
-    assert!(stack.can_undo());
-    stack.undo(&mut model);
+    // 失敗したコマンド（Noop）は undo 履歴に積まれない。
+    assert!(!stack.can_undo());
 }
 
 /// 2 節点 + 部材 2 本のモデル（部材削除・再採番テスト用）。
@@ -1120,9 +1120,8 @@ fn test_delete_combination_out_of_range_is_noop() {
     let mut stack = UndoStack::new();
     stack.run(&mut model, Box::new(DeleteCombination { index: 0 }));
     assert!(model.combinations.is_empty());
-    assert!(stack.can_undo());
-    // Noop の undo でも状態は変わらない
-    stack.undo(&mut model);
+    // 失敗したコマンド（Noop）は undo 履歴に積まれない。
+    assert!(!stack.can_undo());
     assert!(model.combinations.is_empty());
 }
 
@@ -1236,8 +1235,8 @@ fn test_delete_slab_out_of_range_is_noop() {
     let mut stack = UndoStack::new();
     stack.run(&mut model, Box::new(DeleteSlab { id: SlabId(0) }));
     assert!(model.slabs.is_empty());
-    assert!(stack.can_undo());
-    stack.undo(&mut model);
+    // 失敗したコマンド（Noop）は undo 履歴に積まれない。
+    assert!(!stack.can_undo());
     assert!(model.slabs.is_empty());
 }
 
@@ -1324,8 +1323,8 @@ fn test_set_story_weight_invalid_id_is_noop() {
         }),
     );
     assert_eq!(model.stories[0].seismic_weight, Some(999.0));
-    assert!(stack.can_undo());
-    stack.undo(&mut model);
+    // 失敗したコマンド（Noop）は undo 履歴に積まれない。
+    assert!(!stack.can_undo());
     assert_eq!(model.stories[0].seismic_weight, Some(999.0));
 }
 
@@ -1762,8 +1761,8 @@ fn test_remove_wall_attr_missing_is_noop() {
     let mut stack = UndoStack::new();
     stack.run(&mut model, Box::new(RemoveWallAttr { elem: ElemId(0) }));
     assert!(model.wall_attrs.is_empty());
-    assert!(stack.can_undo());
-    stack.undo(&mut model);
+    // 失敗したコマンド（Noop）は undo 履歴に積まれない。
+    assert!(!stack.can_undo());
     assert!(model.wall_attrs.is_empty());
 }
 
@@ -2768,8 +2767,8 @@ fn test_remove_member_detail_attr_missing_is_noop() {
         Box::new(RemoveMemberDetailAttr { elem: ElemId(0) }),
     );
     assert!(model.member_detail_attrs.is_empty());
-    assert!(stack.can_undo());
-    stack.undo(&mut model);
+    // 失敗したコマンド（Noop）は undo 履歴に積まれない。
+    assert!(!stack.can_undo());
     assert!(model.member_detail_attrs.is_empty());
 }
 
@@ -2847,8 +2846,8 @@ fn test_remove_steel_design_attr_missing_is_noop() {
         Box::new(RemoveSteelDesignAttr { elem: ElemId(0) }),
     );
     assert!(model.steel_design_attrs.is_empty());
-    assert!(stack.can_undo());
-    stack.undo(&mut model);
+    // 失敗したコマンド（Noop）は undo 履歴に積まれない。
+    assert!(!stack.can_undo());
     assert!(model.steel_design_attrs.is_empty());
 }
 
@@ -3051,4 +3050,201 @@ fn test_composite_delete_nodes_descending_roundtrip() {
     stack.redo(&mut model);
     assert_eq!(model.nodes.len(), 3);
     assert_eq!(model.elements[0].nodes[1], NodeId(2));
+}
+
+// ============================================================================
+// 二次部材（小梁・間柱）・一本部材指定（beam_groups）の参照整合
+// ============================================================================
+
+fn sample_secondary(n0: u32, n1: u32) -> squid_n_core::model::SecondaryMember {
+    squid_n_core::model::SecondaryMember {
+        kind: squid_n_core::model::SecondaryMemberKind::Joist,
+        nodes: [NodeId(n0), NodeId(n1)],
+        section: None,
+        material: None,
+        name: "小梁".into(),
+    }
+}
+
+/// 節点削除の ID 繰り上げが二次部材の節点参照にも波及すること。
+/// 従来は `shift_node_ids` が `secondary_members` を走査しておらず、
+/// 節点削除後に二次部材が別の節点へ張り付いていた（保存時の validate まで
+/// 発覚しないダングリング）。
+#[test]
+fn test_delete_node_shifts_secondary_member_nodes() {
+    let mut model = empty_model();
+    for i in 0..3u32 {
+        model.nodes.push(Node {
+            id: NodeId(i),
+            coord: [f64::from(i) * 1000.0, 0.0, 0.0],
+            restraint: Dof6Mask::FREE,
+            mass: None,
+            story: None,
+            support_spring: None,
+        });
+    }
+    model.secondary_members.push(sample_secondary(1, 2));
+    let before = model.clone();
+    let mut stack = UndoStack::new();
+
+    // 節点 0 はどこからも参照されていないので削除できる。
+    stack.run(&mut model, Box::new(DeleteNode { id: NodeId(0) }));
+    assert_eq!(model.nodes.len(), 2);
+    // 二次部材の参照は旧 1→新 0、旧 2→新 1 へ繰り上がる。
+    assert_eq!(model.secondary_members[0].nodes, [NodeId(0), NodeId(1)]);
+    assert!(model.validate().is_ok());
+
+    stack.undo(&mut model);
+    assert!(model.eq_ignoring_dofmap(&before));
+}
+
+/// 二次部材の節点は「使用中」とみなされ、節点削除が Noop になること。
+#[test]
+fn test_delete_node_used_by_secondary_member_is_noop() {
+    let mut model = empty_model();
+    for i in 0..2u32 {
+        model.nodes.push(Node {
+            id: NodeId(i),
+            coord: [f64::from(i) * 1000.0, 0.0, 0.0],
+            restraint: Dof6Mask::FREE,
+            mass: None,
+            story: None,
+            support_spring: None,
+        });
+    }
+    model.secondary_members.push(sample_secondary(0, 1));
+    let mut stack = UndoStack::new();
+    stack.run(&mut model, Box::new(DeleteNode { id: NodeId(0) }));
+    assert_eq!(model.nodes.len(), 2, "二次部材が参照する節点は削除できない");
+}
+
+/// 断面・材料削除の ID 繰り上げが二次部材の参照にも波及し、
+/// 二次部材が参照中の断面・材料は削除ガードで Noop になること。
+#[test]
+fn test_delete_section_material_shift_and_guard_secondary_refs() {
+    use squid_n_core::model::{Material, Section};
+    let mut model = empty_model();
+    for i in 0..2u32 {
+        model.nodes.push(Node {
+            id: NodeId(i),
+            coord: [f64::from(i) * 1000.0, 0.0, 0.0],
+            restraint: Dof6Mask::FREE,
+            mass: None,
+            story: None,
+            support_spring: None,
+        });
+        model.sections.push(Section {
+            id: SectionId(i),
+            name: format!("S{}", i),
+            area: 100.0,
+            iy: 1.0,
+            iz: 1.0,
+            j: 1.0,
+            depth: 10.0,
+            width: 10.0,
+            as_y: 80.0,
+            as_z: 80.0,
+            panel_thickness: None,
+            thickness: None,
+            shape: None,
+        });
+        model.materials.push(Material {
+            id: MaterialId(i),
+            name: format!("M{}", i),
+            category: MaterialCategory::Steel,
+            young: 205000.0,
+            poisson: 0.3,
+            density: 7.85e-9,
+            shear: None,
+            fc: None,
+            fy: None,
+            concrete_class: Default::default(),
+            strength_factor: None,
+        });
+    }
+    let mut sm = sample_secondary(0, 1);
+    sm.section = Some(SectionId(1));
+    sm.material = Some(MaterialId(1));
+    model.secondary_members.push(sm);
+    let mut stack = UndoStack::new();
+
+    // 未使用の断面 0・材料 0 を削除 → 二次部材の参照は 1→0 へ繰り上がる。
+    stack.run(&mut model, Box::new(DeleteSection { id: SectionId(0) }));
+    stack.run(&mut model, Box::new(DeleteMaterial { id: MaterialId(0) }));
+    assert_eq!(model.secondary_members[0].section, Some(SectionId(0)));
+    assert_eq!(model.secondary_members[0].material, Some(MaterialId(0)));
+    assert!(model.validate().is_ok());
+
+    // 二次部材が参照中の断面・材料は削除できない（Noop）。
+    stack.run(&mut model, Box::new(DeleteSection { id: SectionId(0) }));
+    stack.run(&mut model, Box::new(DeleteMaterial { id: MaterialId(0) }));
+    assert_eq!(
+        model.sections.len(),
+        1,
+        "二次部材が参照する断面は削除できない"
+    );
+    assert_eq!(
+        model.materials.len(),
+        1,
+        "二次部材が参照する材料は削除できない"
+    );
+}
+
+/// 部材削除が一本部材指定（beam_groups）から当該部材を連動削除し、
+/// 残る参照は ID 繰り上げに追従し、undo で完全復元されること。
+/// 従来は beam_groups が繰り上げの対象外で、部材削除後にグループが
+/// 無関係な部材のモーメントを検定に合成していた。
+#[test]
+fn test_delete_member_cascades_beam_groups_and_restores() {
+    let mut model = two_member_model();
+    model.beam_groups = vec![vec![ElemId(0), ElemId(1)]];
+    let before = model.clone();
+    let mut stack = UndoStack::new();
+
+    stack.run(&mut model, Box::new(DeleteMember { id: ElemId(0) }));
+    // グループから削除部材が外れ、旧 ElemId(1) は新 ElemId(0) へ繰り上がる。
+    assert_eq!(model.beam_groups, vec![vec![ElemId(0)]]);
+    assert!(model.validate().is_ok());
+
+    stack.undo(&mut model);
+    assert!(model.eq_ignoring_dofmap(&before));
+    assert!(model.validate().is_ok());
+}
+
+/// `Model::validate` が beam_groups のダングリング参照を検出すること。
+#[test]
+fn test_validate_detects_dangling_beam_group() {
+    let mut model = two_member_model();
+    model.beam_groups = vec![vec![ElemId(5)]];
+    assert!(model.validate().is_err());
+}
+
+/// 失敗したコマンドが redo 履歴を消さないこと。従来は失敗（Noop）でも
+/// `undone.clear()` が走り、undo 直後に無効な操作をすると redo が失われていた。
+#[test]
+fn test_failed_command_keeps_redo_history() {
+    let mut model = empty_model();
+    let mut stack = UndoStack::new();
+    stack.run(
+        &mut model,
+        Box::new(AddNode {
+            coord: [1.0, 2.0, 3.0],
+            restraint: Dof6Mask::FREE,
+        }),
+    );
+    stack.undo(&mut model);
+    assert!(stack.can_redo(), "undo 直後は redo できる");
+
+    // 無効なコマンド（存在しない節点への座標設定）は適用されず、redo 履歴も残る。
+    let applied = stack.run(
+        &mut model,
+        Box::new(SetNodeCoord {
+            node: NodeId(99),
+            coord: [0.0, 0.0, 0.0],
+        }),
+    );
+    assert!(!applied, "失敗したコマンドは適用されない");
+    assert!(stack.can_redo(), "失敗したコマンドで redo 履歴が消えない");
+    stack.redo(&mut model);
+    assert_eq!(model.nodes.len(), 1, "redo で節点追加が再適用される");
 }

@@ -235,18 +235,14 @@ pub fn build_nonlinear_behavior(
         // `as_gross = 壁板 + 側柱断面` で側柱分を既に負担しているため、
         // 非線形解析で側柱の面内せん断が二重計上され保有水平耐力を過大評価する
         // （危険側）。
-        ElementKind::Beam
-            if crate::side_column::wall_side_column_release(data, model).is_some() =>
-        {
-            let axis = crate::side_column::wall_side_column_release(data, model)
-                .expect("guard で Some を確認済み");
-            let elem = crate::beam::BeamElement::new(data, model);
-            (
-                Box::new(crate::side_column::InPlaneReleasedColumn::new(elem, axis)),
-                ElemState::default(),
-            )
-        }
         ElementKind::Beam => {
+            if let Some(axis) = crate::side_column::wall_side_column_release(data, model) {
+                let elem = crate::beam::BeamElement::new(data, model);
+                return (
+                    Box::new(crate::side_column::InPlaneReleasedColumn::new(elem, axis)),
+                    ElemState::default(),
+                );
+            }
             // 仕口パネルへ接合する端がある部材は、パネルのせん断変形角と連成させる
             // デコレータを被せる（線形パスと同じ扱い。オフセットは剛域長へ
             // 書き込み済みなので内側の要素はそのまま組む）。
@@ -309,10 +305,13 @@ pub fn build_nonlinear_behavior(
         // なるのは耐震壁不成立のフレーム内雑壁（剛性が実質 0）に限られる。
         // 本関数は要素を返す契約でエラーを返せないため、その場合のみ弾性とする。
         ElementKind::Wall => {
-            let (b, st) = build_behavior(data, model);
+            // qu<=0（耐震壁不成立のフレーム内雑壁）と壁エレメント構築不能時のみ
+            // 線形パスへフォールバックする。従来は先に build_behavior で線形の
+            // 壁エレメントを無条件に構築してから非線形用をもう一度構築しており、
+            // 非線形要素 1 枚につき壁エレメントが 2 回組まれていた。
             let qu = crate::wall_panel::WallPanelElement::shear_capacity_of(data, model);
             if qu <= 0.0 {
-                return (b, st);
+                return build_behavior(data, model);
             }
             let stiffness_scale = if crate::misc_wall::wall_is_seismic(data, model) {
                 1.0
@@ -322,10 +321,6 @@ pub fn build_nonlinear_behavior(
             match crate::wall_panel::WallPanelElement::try_new_scaled(data, model, stiffness_scale)
             {
                 Some(panel) => {
-                    // 面内せん断は Qu 頭打ちの弾完全塑性骨格＋履歴則設定による
-                    // 除荷・再載荷則（既定: 最大点指向型）。
-                    // 面内せん断は Qu 頭打ちの弾完全塑性骨格＋履歴則設定による
-                    // 除荷・再載荷則（既定: 最大点指向型）。
                     // 面内せん断は Qu 頭打ちの弾完全塑性骨格＋履歴則設定による
                     // 除荷・再載荷則（既定: 最大点指向型）。
                     let panel = panel
@@ -341,7 +336,7 @@ pub fn build_nonlinear_behavior(
                     };
                     (Box::new(panel), ElemState::default())
                 }
-                None => (b, st),
+                None => build_behavior(data, model),
             }
         }
         // 仕口パネルは降伏を考慮する（骨格 pMy = (Ve/κ)・√(1−n²)・Fy/√3 の

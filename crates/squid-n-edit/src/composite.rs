@@ -25,4 +25,10 @@ impl EditCommand for CompositeCommand {
     fn label(&self) -> &str {
         &self.label
     }
+
+    /// 全子コマンドが Noop（＝1 件も適用されなかった）なら複合全体も Noop。
+    /// 空の複合コマンドも何も変更しないため Noop 扱いとする。
+    fn is_noop(&self) -> bool {
+        self.children.iter().all(|c| c.is_noop())
+    }
 }

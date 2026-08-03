@@ -4,8 +4,8 @@
 //! - [`nonlinear_time_history_analysis`] — 非線形時刻歴応答解析
 
 use super::common::{
-    mass_accel_free_into, solve_initial_accel, sparse_matvec_into, theta_accel_at,
-    theta_influence_m,
+    horizontal_influence_m, mass_accel_free_into, solve_initial_accel, sparse_matvec_into,
+    theta_accel_at, theta_influence_m,
 };
 use super::config::{GroundMotion, NewmarkCfg};
 use super::history::{
@@ -181,20 +181,7 @@ pub fn nonlinear_time_history_analysis(
 
     // 影響ベクトルと M·r
     let n_free = dofmap.n_active();
-    let mut r_x_free = vec![0.0; n_free];
-    let mut r_y_free = vec![0.0; n_free];
-    for ni in 0..model.nodes.len() {
-        let g_ux = ni * DOF_PER_NODE + 0;
-        let g_uy = ni * DOF_PER_NODE + 1;
-        if let Some(a) = dofmap.active(g_ux) {
-            r_x_free[a as usize] = 1.0;
-        }
-        if let Some(a) = dofmap.active(g_uy) {
-            r_y_free[a as usize] = 1.0;
-        }
-    }
-    let m_r_x = sparse_matvec(&m_free, &r_x_free);
-    let m_r_y = sparse_matvec(&m_free, &r_y_free);
+    let (m_r_x, m_r_y) = horizontal_influence_m(model, dofmap, &m_free);
     // 位相差入力（ねじれ加振）用の回転影響 M·r_θ。
     let m_r_theta = theta_influence_m(model, dofmap, &m_free);
 
@@ -408,6 +395,10 @@ pub fn nonlinear_time_history_analysis(
             .and_then(|a| a.first().copied())
             .unwrap_or(0.0);
         let mf_init = member_forces_nonlinear(model, &behaviors);
+        // 線材の内力欠落（state_member_forces 未実装）を開始時点でエラー化する。
+        // 従来は None のまま全ステップ記録され、当該部材の応力履歴が無言で
+        // 空になっていた（線形経路の ensure_line_member_forces と同じ趣旨）。
+        super::recording::ensure_line_member_forces_nonlinear(model, &mf_init)?;
         recorder.record_step(
             0, 0.0, model, dofmap, &m_r_x, &m_r_y, &ma_free, &u_free, &v_free, &a_free, xg_x_init,
             xg_y_init, &mf_init,

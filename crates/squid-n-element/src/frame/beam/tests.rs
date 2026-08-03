@@ -3014,9 +3014,10 @@ fn test_beam_torsion_mode_keep_retains_torsion() {
     );
 }
 
-/// ねじり剛性が無い部材（J≤0）の rx は端条件がピンでも解放しない。解放すると
-/// 静縮約の `Kbb` の対角がゼロになり（`invert_small` がゼロピボットを 1 に置換して）
-/// 無意味な値で縮約が進むため（ファイバー梁 `resolve_end_releases` と同じ規則）。
+/// ねじり剛性が無い部材（J≤0）の rx は端条件がピンでも解放しない。解放しても
+/// 静縮約の `Kbb` が特異になり縮約の意味が無いため（ファイバー梁
+/// `resolve_end_releases` と同じ規則。特異な `Kbb` は `invert_small` が `None` を
+/// 返し補正項が省略される）。
 #[test]
 fn test_pinned_ends_without_torsion_keep_finite_stiffness() {
     let mut beam = make_test_beam(); // j = 0.0

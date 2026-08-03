@@ -3,8 +3,8 @@
 //! - [`linear_hht_alpha_analysis`] — HHT-α 法による線形時刻歴応答解析
 
 use super::common::{
-    mass_accel_free_into, solve_initial_accel, sparse_matvec_into, theta_accel_at,
-    theta_influence_m,
+    horizontal_influence_m, mass_accel_free_into, solve_initial_accel, sparse_matvec_into,
+    theta_accel_at, theta_influence_m,
 };
 use super::config::{GroundMotion, HhtCfg};
 use super::history::{
@@ -76,26 +76,21 @@ pub fn linear_hht_alpha_analysis(
 
     let m_free = assemble_global_m(model, dofmap, MassOption::Consistent);
     let k_free = assemble_global_k(model, dofmap);
-    let _ = use_kg;
+    // 幾何剛性（P-Δ）は線形時刻歴では未実装。かつては `let _ = use_kg;` で
+    // 無言に捨てており、P-Δ を有効化したつもりの呼び出しでも考慮されないまま
+    // 解析が通っていた。未対応である事実を明示エラーで返す。
+    if use_kg {
+        return Err(SolveError::InvalidInput(
+            "線形時刻歴応答解析の幾何剛性（P-Δ、use_kg）は未対応です。\
+             P-Δ を考慮する場合は非線形時刻歴応答解析を使用してください。"
+                .into(),
+        ));
+    }
     let m_red = reducer.reduce_k(&m_free);
     let k_red = reducer.reduce_k(&k_free);
     let c_red = damping.assemble_c(&m_red, &k_red);
 
-    let n_free = dofmap.n_active();
-    let mut r_x_free = vec![0.0; n_free];
-    let mut r_y_free = vec![0.0; n_free];
-    for ni in 0..model.nodes.len() {
-        let g_ux = ni * DOF_PER_NODE + 0;
-        let g_uy = ni * DOF_PER_NODE + 1;
-        if let Some(a) = dofmap.active(g_ux) {
-            r_x_free[a as usize] = 1.0;
-        }
-        if let Some(a) = dofmap.active(g_uy) {
-            r_y_free[a as usize] = 1.0;
-        }
-    }
-    let m_r_x = sparse_matvec(&m_free, &r_x_free);
-    let m_r_y = sparse_matvec(&m_free, &r_y_free);
+    let (m_r_x, m_r_y) = horizontal_influence_m(model, dofmap, &m_free);
     // 位相差入力（ねじれ加振）用の回転影響 M·r_θ。
     let m_r_theta = theta_influence_m(model, dofmap, &m_free);
 

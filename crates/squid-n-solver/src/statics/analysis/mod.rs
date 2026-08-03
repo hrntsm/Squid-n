@@ -36,7 +36,7 @@ pub use seismic::{
 pub use wind::{build_wind_load_case_from_model, wind_precalc_for_model, WindPrecalc};
 
 /// `model.load_cases` 全件の自由 DOF 荷重ベクトルを1回ずつ計算してマップに詰める
-/// （[`Analysis::f_free_cache`] の構築。`prepare`・`from_parts` で共有する）。
+/// （[`Analysis::f_free_cache`] の構築。`prepare` から使う）。
 fn build_f_free_cache(model: &Model, dofmap: &DofMap) -> HashMap<LoadCaseId, Vec<f64>> {
     model
         .load_cases
@@ -46,7 +46,7 @@ fn build_f_free_cache(model: &Model, dofmap: &DofMap) -> HashMap<LoadCaseId, Vec
 }
 
 /// `model.elements` 全件の `(ElementBehavior, global_dofs)` を1回だけ構築する
-/// （[`Analysis::behavior_cache`] の構築。`prepare`・`from_parts` で共有する）。
+/// （[`Analysis::behavior_cache`] の構築。`prepare` から使う）。
 ///
 /// `build_behavior` は局所座標変換・断面/材料 clone・SRC/CFT 合成断面換算など
 /// 荷重ケースに依存しない処理のため、荷重ケース・組合せごとに毎回呼び直す
@@ -80,7 +80,7 @@ pub struct Analysis<'m> {
     /// `linear_static` で繰り返し解く経路——荷重組合せは参照する荷重ケースを
     /// 単体で解いて線形和する——で、都度 `assemble_global_f` を再計算すると
     /// 無駄が大きいため）。`&self` のみで参照する
-    /// （書き込みは `prepare`/`from_parts` 構築時のみ）ため、`run_batch` の rayon
+    /// （書き込みは `prepare` 構築時のみ）ため、`run_batch` の rayon
     /// 並列からも安全に共有できる。
     f_free_cache: HashMap<LoadCaseId, Vec<f64>>,
     /// `model.elements` 各要素の `(ElementBehavior, global_dofs)` のメモ化
@@ -90,23 +90,6 @@ pub struct Analysis<'m> {
     /// `f_free_cache` と同様、書き込みは構築時のみで `run_batch` の rayon 並列
     /// からも安全に共有できる（`ElementBehavior: Send + Sync`）。
     behavior_cache: Vec<crate::statics::BehaviorEntry>,
-}
-
-/// [`Analysis::prepare`] が構築した DofMap・拘束縮約・分解済みソルバを、
-/// モデルへの参照から切り離して保持する入れ物。
-///
-/// UI 側で「`prepare` → 地震荷重ケース構築 → 荷重ケースだけ更新 →
-/// 再度 `prepare`」という流れを取ると、剛性・自由度構成が変わっていないのに
-/// 毎回 K を再分解してしまう。荷重ケースの内容（`Model::load_cases`）だけを
-/// 差し替える場合は、[`Analysis::into_parts`] で分解結果を取り出しておき、
-/// 荷重ケース更新後のモデルに対して [`Analysis::from_parts`] で結合し直せば、
-/// 再分解を避けられる。フィールドは非公開で、`Analysis` の内部表現以外の
-/// 用途を持たない。
-pub struct AnalysisParts {
-    dofmap: DofMap,
-    reducer: Reducer,
-    solver: Box<dyn LinearSolver>,
-    n_indep: usize,
 }
 
 impl<'m> Analysis<'m> {
@@ -166,103 +149,6 @@ impl<'m> Analysis<'m> {
             f_free_cache,
             behavior_cache,
         })
-    }
-
-    /// 荷重ケース生成専用の軽量準備。モデル検証・DofMap・拘束縮約の構築までを
-    /// 行い、全体剛性 K の組立・分解を省く。
-    ///
-    /// [`Self::build_seismic_load_case`] は分解済み K を使わない（略算 T は
-    /// モデル形状のみ、固有値 T も内部の固有値解析が独自に K・M を組立・分解する）
-    /// ため、荷重同期だけが目的ならこちらを使うことで大規模モデルの組立・分解
-    /// コスト（`prepare` の支配的コスト）を丸ごと省ける。
-    ///
-    /// 返した `Analysis` で `linear_static` 等の求解系を呼んではならない
-    /// （ソルバが未分解のため求解時にエラーになる）。
-    pub fn prepare_load_case_gen(model: &'m Model) -> Result<Self, SolveError> {
-        squid_n_math::parallelism::apply_to_faer();
-        model
-            .validate()
-            .map_err(|e| SolveError::InvalidInput(format!("モデル検証エラー: {:?}", e)))?;
-        precheck::precheck_model(model)?;
-        let dofmap = DofMap::build(model);
-        let n_active = dofmap.n_active();
-
-        if n_active == 0 {
-            return Ok(Self {
-                model,
-                dofmap,
-                reducer: Reducer::empty(),
-                solver: make_solver(SolverBackend::Auto),
-                n_indep: 0,
-                semi_precise_t: std::sync::OnceLock::new(),
-                f_free_cache: HashMap::new(),
-                behavior_cache: Vec::new(),
-            });
-        }
-
-        let reducer = Reducer::build(model, &dofmap);
-        let n_indep = reducer.n_indep;
-        Ok(Self {
-            model,
-            dofmap,
-            reducer,
-            solver: make_solver(SolverBackend::Auto),
-            n_indep,
-            semi_precise_t: std::sync::OnceLock::new(),
-            // 荷重ケース生成専用の軽量準備（求解を行わない契約）のため、
-            // K の組立・分解と同様に f_free・behavior のメモ化も省く。
-            f_free_cache: HashMap::new(),
-            behavior_cache: Vec::new(),
-        })
-    }
-
-    /// DofMap・拘束縮約・分解済みソルバをモデル参照から切り離して取り出す。
-    ///
-    /// 荷重ケースの内容だけを変えて再度解析したい場合、[`Self::prepare`] を
-    /// 呼び直す代わりに、本メソッドで取り出した [`AnalysisParts`] を
-    /// [`Self::from_parts`] で新しいモデル参照に結合し直すことで、
-    /// K の組立・拘束縮約・分解を再実行せずに済む。
-    pub fn into_parts(self) -> AnalysisParts {
-        AnalysisParts {
-            dofmap: self.dofmap,
-            reducer: self.reducer,
-            solver: self.solver,
-            n_indep: self.n_indep,
-        }
-    }
-
-    /// [`Self::into_parts`] で取り出した分解済み状態を、モデルへの参照と
-    /// 結合して `Analysis` を再構築する。
-    ///
-    /// **重要**: 節点・要素・拘束・断面/材料の割当（＝剛性と自由度構成）が
-    /// `into_parts` を呼んだ時点から変わっていない場合にのみ有効。
-    /// 荷重ケース（`Model::load_cases`）の内容の変更のみを想定しており、
-    /// `validate`/`precheck` は再実行しない。剛性・自由度構成に影響する変更
-    /// （節点座標・要素・拘束・断面/材料割当など）を行った後に呼ぶと、
-    /// 古い DofMap・分解済み K のまま解析することになり、誤った結果や
-    /// パニックの原因になる。そのような変更を行った場合は必ず
-    /// [`Self::prepare`] を呼び直すこと。
-    pub fn from_parts(model: &'m Model, parts: AnalysisParts) -> Analysis<'m> {
-        // f_free キャッシュは持ち越さない：`from_parts` は「荷重ケースの内容だけを
-        // 変えた」新しいモデルに対して呼ばれる想定であり、古いキャッシュのまま
-        // 使うと差し替え後の荷重が反映されない（新モデル・新 dofmap で作り直す）。
-        let f_free_cache = build_f_free_cache(model, &parts.dofmap);
-        // behavior キャッシュも同様に新モデルで作り直す。`from_parts` の契約上
-        // 要素・断面/材料の割当は不変のはずだが、f_free_cache と同じ方針
-        // （新モデル参照に対して安全側で再構築する）に揃える。
-        let behavior_cache = build_behavior_cache(model, &parts.dofmap);
-        Analysis {
-            model,
-            dofmap: parts.dofmap,
-            reducer: parts.reducer,
-            solver: parts.solver,
-            n_indep: parts.n_indep,
-            // SemiPrecise 周期キャッシュは持ち越さない（モデルの荷重内容が
-            // 変わっても周期は不変だが、安全側で再算定させる）。
-            semi_precise_t: std::sync::OnceLock::new(),
-            f_free_cache,
-            behavior_cache,
-        }
     }
 
     /// 全自由度ゼロの結果（有効自由度なしのモデル用）。
@@ -352,7 +238,7 @@ impl<'m> Analysis<'m> {
         // （`crate::linear::solve_once_inner` と同じ最適化）。
         let member_loads_by_elem = group_member_loads_by_elem(member_loads);
         let mut member_forces = Vec::new();
-        // `behavior_cache`（`prepare`/`from_parts` で1回だけ構築済み）を参照する。
+        // `behavior_cache`（`prepare` で1回だけ構築済み）を参照する。
         // ケースごとの `build_behavior` 再構築（局所座標変換・断面/材料 clone 等）を
         // 排除する（要素順は `self.model.elements` と `behavior_cache` で一致する）。
         for (elem, (behavior, gdofs)) in self.model.elements.iter().zip(self.behavior_cache.iter())
@@ -386,9 +272,9 @@ impl<'m> Analysis<'m> {
                 lc.0
             )));
         }
-        // `prepare`/`from_parts` が全荷重ケースぶん事前計算済みのメモ化を使う
+        // `prepare` が全荷重ケースぶん事前計算済みのメモ化を使う
         // （`assemble_global_f` の再計算を避ける）。キャッシュに無い場合
-        // （`prepare_load_case_gen` 経由など想定外の経路）はその場で計算する。
+        // （想定外の経路）はその場で計算する。
         let f_free = self
             .f_free_cache
             .get(&lc)

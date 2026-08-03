@@ -92,13 +92,23 @@ impl SquidNServer {
             match outcome {
                 Ok(Ok(job_outcome)) => {
                     let mut st = state.lock().await;
-                    let summary = super::persist_job_outcome(&mut st.results, job_outcome);
-                    st.jobs.update(
-                        &job_id,
-                        JobStatus::Done {
-                            result_ref: summary,
-                        },
-                    );
+                    // 永続化の失敗（ディスクフル・権限エラー等）はジョブを Failed へ
+                    // 遷移させる。かつては書き込み失敗を握りつぶして Done を報告し、
+                    // 利用者が「結果 0 行」を正常な解析結果と誤解し得た。
+                    match super::persist_job_outcome(&mut st.results, job_outcome) {
+                        Ok(summary) => st.jobs.update(
+                            &job_id,
+                            JobStatus::Done {
+                                result_ref: summary,
+                            },
+                        ),
+                        Err(e) => st.jobs.update(
+                            &job_id,
+                            JobStatus::Failed {
+                                error: format!("解析は完了しましたが結果の保存に失敗しました: {e}"),
+                            },
+                        ),
+                    }
                 }
                 Ok(Err(e)) => {
                     let mut st = state.lock().await;

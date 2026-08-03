@@ -11,7 +11,7 @@ use squid_n_core::model::{Material, Section};
 use super::section::{
     steel_c_factor, steel_fb_h, steel_fb_h_new, steel_i_t, steel_p_lambda_b, steel_warping_constant,
 };
-use super::{nonzero, safe_denom, section_modulus, shape_of, shear_area, ShapeCategory};
+use super::{nonzero, safe_denom, section_modulus, shape_of, shear_area_2d, ShapeCategory};
 
 /// 鉄骨造柱の断面検定（鋼構造設計規準）。
 ///
@@ -118,14 +118,14 @@ pub(crate) fn check_column(
         axial_basis = "引張+曲げ: σt/ft+ΣσB/fb";
     }
 
-    // せん断: H形 τ=Q/(tw·H)、角形 τ=2Q/A、円形 τ=2√(qy²+qz²)/A、他は一般化。
-    let as_shear = shear_area(shape, sec, tw);
+    // せん断: せん断有効断面積は梁と共用の単一定義（`shear_area_2d`。
+    // H形はウェブ内法 tw·(H−2tf)、角形は角部円弧考慮）。H形・角形は
+    // 強軸 τ=Qy/Ay、円形（Ay=Az）・その他は合成 τ=√(qy²+qz²)/Ay。
+    let (as_y, _as_z) = shear_area_2d(shape, sec, tf, tw);
     let tau = match shape {
-        ShapeCategory::H => forces.qy.abs() / safe_denom(as_shear),
-        ShapeCategory::Box => 2.0 * forces.qy.abs() / area,
-        ShapeCategory::Pipe => 2.0 * (forces.qy.powi(2) + forces.qz.powi(2)).sqrt() / area,
-        ShapeCategory::Other => {
-            (forces.qy.powi(2) + forces.qz.powi(2)).sqrt() / safe_denom(as_shear)
+        ShapeCategory::H | ShapeCategory::Box => forces.qy.abs() / safe_denom(as_y),
+        ShapeCategory::Pipe | ShapeCategory::Other => {
+            (forces.qy.powi(2) + forces.qz.powi(2)).sqrt() / safe_denom(as_y)
         }
     };
     let sigma_total = match shape {
@@ -353,8 +353,9 @@ mod tests {
             .check(&forces, &sec, &mat_v, &ctx)
             .unwrap_checked();
 
-        let area = sec.area;
-        let tau = 2.0 * 300_000.0_f64.abs() / area; // 角形: τ=2Q/A
+        // 角形: 梁と共用のせん断有効断面積 Ay=2t(H−2t)（角部直角。r 未入力）。
+        let ay = 2.0 * 12.0 * (300.0 - 2.0 * 12.0);
+        let tau = 300_000.0_f64.abs() / ay;
         let ft = steel_ft(235.0, LoadTerm::Long);
         let fs = steel_fs(235.0, LoadTerm::Long);
         // σ=0（純せん断）なので von Mises 側は sqrt(3)*τ/ft。

@@ -48,15 +48,5 @@ pub(crate) fn seismic_design_shear(
     } else {
         f64::INFINITY
     };
-    match qd.method {
-        crate::QdMethod::Qd1 => {
-            if qd1.is_finite() {
-                qd1
-            } else {
-                qd2
-            }
-        }
-        crate::QdMethod::Qd2 => qd2,
-        crate::QdMethod::Min => qd1.min(qd2),
-    }
+    qd.method.resolve(qd1, qd2)
 }

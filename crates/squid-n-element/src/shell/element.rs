@@ -42,12 +42,16 @@ impl ShellElement {
         let frame = ShellFrame::from_nodes(coords);
 
         let sec = data.section.and_then(|sid| model.sections.get(sid.index()));
-        let t = sec.and_then(|s| s.thickness).unwrap_or(100.0);
+        // 断面（厚さ）・材料の未割当は解析前チェック（precheck_model）で捕捉される
+        // 前提。ここでの既定はゼロ剛性とし、チェックを通らない経路から来ても
+        // 「もっともらしい板厚・剛性」で無音に解析が通ることはなく、特異行列と
+        // して顕在化させる（従来は t=100・E=205000 として静かに解析されていた）。
+        let t = sec.and_then(|s| s.thickness).unwrap_or(0.0);
 
         let mat = data
             .material
             .and_then(|mid| model.materials.get(mid.index()));
-        let e = mat.map(|m| m.young).unwrap_or(205000.0);
+        let e = mat.map(|m| m.young).unwrap_or(0.0);
         let nu = mat.map(|m| m.poisson).unwrap_or(0.3);
 
         // Determine membrane_active: true unless every node is part of a rigid diaphragm

@@ -140,8 +140,9 @@ pub(super) fn column_nm_curve(
 }
 
 /// N-M 相関曲線から、設計軸力 `n_design`（圧縮正）に対する許容曲げモーメント
-/// MA を線形補間で求める。範囲外は端点値でクランプする。
-pub(super) fn interp_ma(points: &[(f64, f64)], n_design: f64) -> f64 {
+/// MA を線形補間で求める。範囲外は端点値でクランプする
+/// （RC・SRC の N-M 相関検定で共通利用）。
+pub(crate) fn interp_ma(points: &[(f64, f64)], n_design: f64) -> f64 {
     if points.is_empty() {
         return 0.0;
     }

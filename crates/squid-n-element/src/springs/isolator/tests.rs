@@ -243,3 +243,41 @@ fn test_hdr_strain_dependent_softens_with_strain() {
     );
     assert!(f_sd > 0.0);
 }
+
+/// チェックポイントの往復で履歴（バイリニアの塑性変位）と変位が完全復元されること。
+/// 従来はトレイト既定（空バイト列）のままで、レジューム時に免震装置だけが
+/// 初期状態へ戻り、以降の応答が別の履歴経路を辿っていた。
+#[test]
+fn test_checkpoint_roundtrip_restores_hysteresis() {
+    let model = iso_model(laminated());
+    let ctx = Ctx { model: &model };
+    let mut elem = IsolatorElement::new(&model.elements[0], &model);
+    // 降伏域まで押し込んで履歴（塑性変位）を作る。
+    let f_before = push_horizontal(&mut elem, &ctx, 150.0);
+
+    let cp = elem.serialize_checkpoint();
+    assert!(!cp.is_empty(), "チェックポイントに状態が直列化されるべき");
+
+    // 新品の要素へ復元 → 内力・接線がチェックポイント時点と一致する。
+    let mut restored = IsolatorElement::new(&model.elements[0], &model);
+    restored
+        .deserialize_checkpoint(&cp)
+        .expect("チェックポイント復元は成功するはず");
+    let zero = LocalVec {
+        data: smallvec::smallvec![0.0; 12],
+    };
+    restored.update_state(&zero, false, &ctx);
+    let f_after = restored.internal_force(&ElemState::default(), &ctx);
+    for i in 0..12 {
+        approx::assert_relative_eq!(
+            f_before.data[i],
+            f_after.data[i],
+            epsilon = 1e-3,
+            max_relative = 1e-6
+        );
+    }
+
+    // 空バイト列（旧チェックポイント）は「状態なし」として成功する。
+    let mut fresh = IsolatorElement::new(&model.elements[0], &model);
+    assert!(fresh.deserialize_checkpoint(&[]).is_ok());
+}
