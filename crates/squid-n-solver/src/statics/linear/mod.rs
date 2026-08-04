@@ -529,12 +529,7 @@ fn build_tension_only_result(
     for (i, elem) in model.elements.iter().enumerate() {
         let behavior = assembly.behavior_for(i, active);
         let gdofs = &assembly.gdofs[i];
-        let mut u_elem = vec![0.0; gdofs.len()];
-        for (k, &g) in gdofs.iter().enumerate() {
-            if g != usize::MAX && g < u_free.len() {
-                u_elem[k] = u_free[g];
-            }
-        }
+        let u_elem = crate::common::elem_loop::gather_u_elem(gdofs, u_free);
         if let Some(mut forces) = behavior.recover_forces(&u_elem) {
             let loads = member_loads_by_elem
                 .get(&elem.id)
@@ -615,14 +610,7 @@ fn solve_once_inner(model: &Model, lc: LoadCaseId) -> Result<StaticOnce, SolveEr
         let member_loads_by_elem = group_member_loads_by_elem(member_loads);
         let mut panel_moments = Vec::new();
         for (elem, (behavior, gdofs)) in model.elements.iter().zip(behaviors.iter()) {
-            let mut u_elem = vec![0.0; gdofs.len()];
-
-            for (k, &g) in gdofs.iter().enumerate() {
-                if g != usize::MAX && g < u_free.len() {
-                    u_elem[k] = u_free[g];
-                }
-            }
-
+            let u_elem = crate::common::elem_loop::gather_u_elem(gdofs, &u_free);
             if let Some(mut forces) = behavior.recover_forces(&u_elem) {
                 let loads = member_loads_by_elem
                     .get(&elem.id)

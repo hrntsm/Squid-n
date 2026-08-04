@@ -29,12 +29,7 @@ pub(crate) fn member_forces_linear(
         .iter()
         .map(|b| {
             let gdofs = b.global_dofs(dofmap);
-            let mut u_elem = vec![0.0; gdofs.len()];
-            for (k, &g) in gdofs.iter().enumerate() {
-                if g != usize::MAX && g < u_free.len() {
-                    u_elem[k] = u_free[g];
-                }
-            }
+            let u_elem = crate::common::elem_loop::gather_u_elem(&gdofs, u_free);
             b.recover_forces(&u_elem)
         })
         .collect()

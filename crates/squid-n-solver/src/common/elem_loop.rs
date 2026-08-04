@@ -55,6 +55,20 @@ where
     }
 }
 
+/// 全自由 DOF 空間のベクトル `u_free` から、要素のグローバル DOF 添字
+/// `gdofs`（`ElementBehavior::global_dofs`。拘束済み DOF は `usize::MAX`）に
+/// 対応する成分を収集して要素局所ベクトルを作る。拘束済み・範囲外の成分は 0。
+/// 断面力復元（`recover_forces`）・パネルモーメント算定の入力で共有する。
+pub(crate) fn gather_u_elem(gdofs: &[usize], u_free: &[f64]) -> Vec<f64> {
+    let mut u_elem = vec![0.0; gdofs.len()];
+    for (k, &g) in gdofs.iter().enumerate() {
+        if g != usize::MAX && g < u_free.len() {
+            u_elem[k] = u_free[g];
+        }
+    }
+    u_elem
+}
+
 /// 全自由 DOF 空間の変位増分 `du_free` を各要素の局所自由度へ写像し、
 /// トライアル状態として反映する（`update_state(du, commit=false)`。確定・巻き戻しは
 /// 呼び出し側の `commit_state`/`revert_state`）。
