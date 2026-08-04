@@ -721,6 +721,11 @@ pub struct App {
     /// 架構種別が耐力壁付き／筋かい付きなのに耐力壁・筋かいを検出できず、βu を
     /// 算定できなかったため架構種別別 Ds 表へフォールバックしたか（表示用）。
     pub ds_beta_u_unavailable: bool,
+    /// 部材ランク自動判定（`design_rank_auto`）で 1 本も算定できず、選択ランク
+    /// （`design_rank`）へフォールバックした層の名前（下階→上階順）。
+    /// `compute_holding_capacity` が設定する（表示用）。選択ランク（既定 FA）が
+    /// 実状より甘い場合に Ds を過小評価する危険側となるため、設計タブで警告する。
+    pub ds_rank_fallback_stories: Vec<String>,
     /// 終局検定（靭性保証型耐震設計指針）のヒンジ回転角 Rp [rad]（ν・cotφ 用。既定 0）。
     pub ultimate_rp: f64,
     /// 終局検定で軽量コンクリートのせん断終局耐力 0.9 倍低減を適用するか。
@@ -1041,6 +1046,7 @@ impl Default for App {
             wall_structure: false,
             ds_beta_u_by_story: Vec::new(),
             ds_beta_u_unavailable: false,
+            ds_rank_fallback_stories: Vec::new(),
             ultimate_rp: 0.0,
             ultimate_lightweight: false,
             ultimate_include_bond: true,

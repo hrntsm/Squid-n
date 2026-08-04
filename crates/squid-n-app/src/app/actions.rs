@@ -1577,13 +1577,28 @@ impl App {
                 }
             }
             // 階ごとの代表ランク = 算定できた部材ランクの最悪値。
-            // 1 本も算定できなかった層は手動選択ランクへフォールバック。
+            // 1 本も算定できなかった層は手動選択ランクへフォールバックし、
+            // 該当層を表示用に記録する（選択ランク（既定 FA）が実状より甘いと
+            // Ds を過小評価する危険側となるため、設計タブで警告する）。
+            let mut fallback_stories: Vec<String> = Vec::new();
             let ranks: Vec<MemberRank> = per_story
                 .into_iter()
-                .map(|rs| worst_rank(&rs).unwrap_or(self.design_rank))
+                .enumerate()
+                .map(|(i, rs)| {
+                    worst_rank(&rs).unwrap_or_else(|| {
+                        if let Some(s) = self.model.stories.get(i) {
+                            fallback_stories.push(s.name.clone());
+                        }
+                        self.design_rank
+                    })
+                })
                 .collect();
+            self.ds_rank_fallback_stories = fallback_stories;
             (ranks, computed)
         } else {
+            // 自動判定 OFF は全層が選択ランクによる明示運用のため、警告対象の
+            // フォールバックではない。
+            self.ds_rank_fallback_stories = Vec::new();
             (vec![self.design_rank; n_stories], Vec::new())
         };
 

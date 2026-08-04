@@ -2007,6 +2007,48 @@ fn test_holding_capacity_rank_auto_from_width_thickness() {
     // 唯一の層の代表ランクは柱・梁のうち最悪値（FD 寄り）。
     assert_eq!(story_ranks.len(), 1);
     assert_eq!(story_ranks[0], worst_rank(&[col_rank, beam_rank]).unwrap());
+    // 全部材のランクを算定できているため、選択ランクへのフォールバック層は無い。
+    assert!(
+        app.ds_rank_fallback_stories.is_empty(),
+        "{:?}",
+        app.ds_rank_fallback_stories
+    );
+}
+
+/// rank-auto で部材ランクを 1 本も算定できない層（断面形状未設定等）は選択ランクへ
+/// フォールバックし、該当層が `ds_rank_fallback_stories` に記録される（設計タブの
+/// 警告表示用）。自動判定 OFF は全層が明示運用のため記録されない。
+#[test]
+fn test_holding_capacity_rank_auto_records_fallback_stories() {
+    use squid_n_design_jp::secondary::holding_capacity::MemberRank;
+
+    let mut app = App::default();
+    app.load_model(crate::sample::portal_frame());
+    app.generate_stories_action();
+    app.run_seismic(SeismicDir::X);
+    app.analysis_cfg.push_steps = 10;
+    app.run_pushover();
+    assert!(app.last_error.is_none(), "{:?}", app.last_error);
+
+    // 全断面の形状情報を外し、幅厚比・RC 略算のいずれも算定不能にする。
+    for sec in &mut app.model.sections {
+        sec.shape = None;
+    }
+    app.design_rank_auto = true;
+    app.design_rank = MemberRank::FB;
+    let (_, story_ranks) = app.compute_holding_capacity().expect("Ok のはず");
+
+    // 全層が選択ランクへフォールバックし、層名が記録される。
+    assert_eq!(story_ranks, vec![MemberRank::FB]);
+    assert_eq!(
+        app.ds_rank_fallback_stories,
+        vec![app.model.stories[0].name.clone()]
+    );
+
+    // 自動判定 OFF では全層が選択値の明示運用のため、フォールバック記録は空。
+    app.design_rank_auto = false;
+    let _ = app.compute_holding_capacity().expect("Ok のはず");
+    assert!(app.ds_rank_fallback_stories.is_empty());
 }
 
 /// SectionShape::RcRect の配筋情報から `rc_capacity_input_from_rect` で
