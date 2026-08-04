@@ -18,6 +18,8 @@ pub mod quantity_view;
 #[cfg(feature = "gui")]
 pub mod section_editor;
 #[cfg(feature = "gui")]
+mod table_util;
+#[cfg(feature = "gui")]
 pub mod tables;
 #[cfg(feature = "gui")]
 pub mod theme;
