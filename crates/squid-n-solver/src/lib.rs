@@ -25,4 +25,4 @@ mod statics;
 pub use common::{assemble, constraint, newton, transaction};
 pub use dynamic::{damping, eigen, lumped_mass, phase_diff, timehistory};
 pub use nonlinear::{arc_length, pushover, strength_loss};
-pub use statics::{analysis, construction, linear};
+pub use statics::{analysis, linear};
