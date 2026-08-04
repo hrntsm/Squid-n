@@ -115,70 +115,64 @@ pub fn quantity_panel(ui: &mut egui::Ui, app: &mut App) {
             QuantityGrouping::SteelBySection => {
                 let rows = takeoff.steel_by_section();
                 let row_h = crate::theme::table_row_height(ui);
-                TableBuilder::new(ui)
-                    .striped(true)
-                    .column(Column::initial(220.0))
-                    .column(Column::initial(100.0))
-                    .column(Column::initial(100.0))
-                    .header(row_h, |mut h| {
-                        for t in &["断面", "長さ [m]", "重量 [t]"] {
-                            h.col(|ui| {
-                                ui.strong(*t);
-                            });
-                        }
-                    })
-                    .body(|body| {
-                        body.rows(row_h, rows.len(), |mut row| {
-                            let it = &rows[row.index()];
-                            row.col(|ui| {
-                                ui.label(&it.section_name);
-                            });
-                            row.col(|ui| {
-                                ui.label(format!("{:.2}", it.length_m));
-                            });
-                            row.col(|ui| {
-                                ui.label(format!("{:.3}", it.weight_t));
-                            });
+                crate::table_util::read_only_table(
+                    ui,
+                    "quantity_view_tbl_0",
+                    &[
+                        Column::initial(220.0),
+                        Column::initial(100.0),
+                        Column::initial(100.0),
+                    ],
+                    &["断面", "長さ [m]", "重量 [t]"],
+                    rows.len(),
+                    |row| {
+                        let it = &rows[row.index()];
+                        row.col(|ui| {
+                            ui.label(&it.section_name);
                         });
-                    });
+                        row.col(|ui| {
+                            ui.label(format!("{:.2}", it.length_m));
+                        });
+                        row.col(|ui| {
+                            ui.label(format!("{:.3}", it.weight_t));
+                        });
+                    },
+                );
             }
             QuantityGrouping::RebarByDia => {
                 let rows = takeoff.rebar_by_dia();
                 let row_h = crate::theme::table_row_height(ui);
-                TableBuilder::new(ui)
-                    .striped(true)
-                    .column(Column::initial(120.0))
-                    .column(Column::initial(120.0))
-                    .column(Column::initial(100.0))
-                    .header(row_h, |mut h| {
-                        for t in &["呼び径", "長さ [m]", "重量 [t]"] {
-                            h.col(|ui| {
-                                ui.strong(*t);
-                            });
-                        }
-                    })
-                    .body(|body| {
-                        body.rows(row_h, rows.len(), |mut row| {
-                            let (dia, len, w) = rows[row.index()];
-                            row.col(|ui| {
-                                if dia > 0.0 {
-                                    ui.label(format!("D{:.0}", dia));
-                                } else {
-                                    ui.label("（鉄筋比概算）");
-                                }
-                            });
-                            row.col(|ui| {
-                                if len > 0.0 {
-                                    ui.label(format!("{:.1}", len));
-                                } else {
-                                    ui.label("-");
-                                }
-                            });
-                            row.col(|ui| {
-                                ui.label(format!("{:.3}", w));
-                            });
+                crate::table_util::read_only_table(
+                    ui,
+                    "quantity_view_tbl_1",
+                    &[
+                        Column::initial(120.0),
+                        Column::initial(120.0),
+                        Column::initial(100.0),
+                    ],
+                    &["呼び径", "長さ [m]", "重量 [t]"],
+                    rows.len(),
+                    |row| {
+                        let (dia, len, w) = rows[row.index()];
+                        row.col(|ui| {
+                            if dia > 0.0 {
+                                ui.label(format!("D{:.0}", dia));
+                            } else {
+                                ui.label("（鉄筋比概算）");
+                            }
                         });
-                    });
+                        row.col(|ui| {
+                            if len > 0.0 {
+                                ui.label(format!("{:.1}", len));
+                            } else {
+                                ui.label("-");
+                            }
+                        });
+                        row.col(|ui| {
+                            ui.label(format!("{:.3}", w));
+                        });
+                    },
+                );
             }
             QuantityGrouping::Detail => {
                 let row_h = crate::theme::table_row_height(ui);
