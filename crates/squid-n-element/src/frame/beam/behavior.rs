@@ -119,10 +119,10 @@ impl ElementBehavior for BeamElement {
     }
 
     fn restore_state(&mut self, state: &dyn std::any::Any) {
-        if let Some((committed, trial)) = state.downcast_ref::<([f64; 12], [f64; 12])>() {
-            self.committed_disp = *committed;
-            self.trial_disp = *trial;
-        }
+        let (committed, trial) =
+            crate::behavior::downcast_snapshot::<([f64; 12], [f64; 12])>("BeamElement", state);
+        self.committed_disp = *committed;
+        self.trial_disp = *trial;
     }
 
     fn serialize_checkpoint(&self) -> Vec<u8> {

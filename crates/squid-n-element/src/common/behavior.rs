@@ -14,6 +14,23 @@ pub enum CheckpointError {
     MaterialState(#[from] squid_n_material::MaterialStateError),
 }
 
+/// [`ElementBehavior::restore_state`] のスナップショット downcast（診断付き）。
+///
+/// スナップショットは同一実行内の巻き戻し専用のため、型不一致は
+/// `snapshot_state` と `restore_state` の実装対応が崩れたプログラムエラーであり、
+/// データ起因では発生しない。従来は不一致を無音で握りつぶして復元をスキップ
+/// しており、非収束ステップのロールバックが効かないまま汚染された要素状態で
+/// 解析が続行し、誤った結果を返し得た。要素種別と期待型を名指しして panic する。
+pub fn downcast_snapshot<'a, T: 'static>(element: &str, state: &'a dyn Any) -> &'a T {
+    state.downcast_ref::<T>().unwrap_or_else(|| {
+        panic!(
+            "{element}::restore_state: スナップショットの型が一致しません（期待: {}）。\
+             snapshot_state と restore_state の実装対応が崩れています",
+            std::any::type_name::<T>()
+        )
+    })
+}
+
 #[derive(Clone)]
 pub struct LocalMat {
     pub n: usize,

@@ -82,10 +82,10 @@ impl crate::behavior::ElementBehavior for ShellElement {
     }
 
     fn restore_state(&mut self, state: &dyn std::any::Any) {
-        if let Some((committed, trial)) = state.downcast_ref::<([f64; 24], [f64; 24])>() {
-            self.committed_disp = *committed;
-            self.trial_disp = *trial;
-        }
+        let (committed, trial) =
+            crate::behavior::downcast_snapshot::<([f64; 24], [f64; 24])>("ShellElement", state);
+        self.committed_disp = *committed;
+        self.trial_disp = *trial;
     }
 
     fn serialize_checkpoint(&self) -> Vec<u8> {

@@ -498,17 +498,24 @@ impl ElementBehavior for PanelZone {
             ([f64; 12], [f64; 12]),
             Option<[Vec<u8>; 2]>,
         );
-        if let Some((committed, trial, col, springs)) = state.downcast_ref::<Snapshot>() {
-            self.committed_disp = *committed;
-            self.trial_disp = *trial;
-            if let Some(c) = self.column.as_mut() {
-                c.committed = col.0;
-                c.trial = col.1;
-            }
-            if let (Some(sp), Some(data)) = (self.springs.as_mut(), springs.as_ref()) {
-                let _ = sp[0].deserialize_state(&data[0]);
-                let _ = sp[1].deserialize_state(&data[1]);
-            }
+        let (committed, trial, col, springs) =
+            crate::behavior::downcast_snapshot::<Snapshot>("PanelZone", state);
+        self.committed_disp = *committed;
+        self.trial_disp = *trial;
+        if let Some(c) = self.column.as_mut() {
+            c.committed = col.0;
+            c.trial = col.1;
+        }
+        if let (Some(sp), Some(data)) = (self.springs.as_mut(), springs.as_ref()) {
+            // 同一実行内で serialize_state した信頼済みバイト列のため、復元失敗は
+            // snapshot_state との実装対応が崩れたプログラムエラー。無音で据え置くと
+            // ロールバック漏れの履歴汚染で解析が続行してしまうため診断付きで停止する。
+            sp[0]
+                .deserialize_state(&data[0])
+                .expect("PanelZone::restore_state: せん断ばね状態の復元");
+            sp[1]
+                .deserialize_state(&data[1])
+                .expect("PanelZone::restore_state: せん断ばね状態の復元");
         }
     }
 

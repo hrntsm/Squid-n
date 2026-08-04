@@ -162,14 +162,18 @@ impl ElementBehavior for HystereticDamperElement {
 
     fn restore_state(&mut self, state: &dyn Any) {
         use squid_n_material::UniaxialMaterial;
-        if let Some((ce, te, ms)) = state.downcast_ref::<(f64, f64, Vec<u8>)>() {
-            self.committed_elong = *ce;
-            self.trial_elong = *te;
-            // 同一プロセス内で serialize_state した信頼済みバイト列のため、
-            // 復元失敗は起こらない想定。トランザクション巻き戻しでの panic を
-            // 避けるため失敗時は状態を据え置く。
-            let _ = self.mat.deserialize_state(ms);
-        }
+        let (ce, te, ms) = crate::behavior::downcast_snapshot::<(f64, f64, Vec<u8>)>(
+            "HystereticDamperElement",
+            state,
+        );
+        self.committed_elong = *ce;
+        self.trial_elong = *te;
+        // 同一プロセス内で serialize_state した信頼済みバイト列のため、復元失敗は
+        // snapshot_state との実装対応が崩れたプログラムエラー。無音で据え置くと
+        // ロールバック漏れの履歴汚染で解析が続行してしまうため診断付きで停止する。
+        self.mat
+            .deserialize_state(ms)
+            .expect("HystereticDamperElement::restore_state: 材料状態の復元");
     }
 
     fn serialize_checkpoint(&self) -> Vec<u8> {

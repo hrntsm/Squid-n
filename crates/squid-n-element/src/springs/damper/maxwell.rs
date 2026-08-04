@@ -302,12 +302,14 @@ impl ElementBehavior for MaxwellDamperElement {
     }
 
     fn restore_state(&mut self, state: &dyn Any) {
-        if let Some(&(ce, cud, te, cf)) = state.downcast_ref::<(f64, f64, f64, f64)>() {
-            self.committed_elong = ce;
-            self.committed_ud = cud;
-            self.trial_elong = te;
-            self.committed_force = cf;
-        }
+        let &(ce, cud, te, cf) = crate::behavior::downcast_snapshot::<(f64, f64, f64, f64)>(
+            "MaxwellDamperElement",
+            state,
+        );
+        self.committed_elong = ce;
+        self.committed_ud = cud;
+        self.trial_elong = te;
+        self.committed_force = cf;
     }
 
     fn serialize_checkpoint(&self) -> Vec<u8> {

@@ -477,16 +477,16 @@ impl ElementBehavior for ConcentratedSpringBeam {
             [f64; 12],
             [f64; 12],
         );
-        if let Some(snapshot) = state.downcast_ref::<Snapshot>() {
-            if snapshot.0.len() == 2 {
-                self.spring_i = snapshot.0[0].clone_box();
-                self.spring_j = snapshot.0[1].clone_box();
-            }
-            [self.rot_i, self.rot_j, self.trial_rot_i, self.trial_rot_j] = snapshot.1;
-            [self.thb_i, self.thb_j, self.trial_thb_i, self.trial_thb_j] = snapshot.2;
-            self.elastic.committed_disp = snapshot.3;
-            self.elastic.trial_disp = snapshot.4;
+        let snapshot =
+            crate::behavior::downcast_snapshot::<Snapshot>("ConcentratedSpringBeam", state);
+        if snapshot.0.len() == 2 {
+            self.spring_i = snapshot.0[0].clone_box();
+            self.spring_j = snapshot.0[1].clone_box();
         }
+        [self.rot_i, self.rot_j, self.trial_rot_i, self.trial_rot_j] = snapshot.1;
+        [self.thb_i, self.thb_j, self.trial_thb_i, self.trial_thb_j] = snapshot.2;
+        self.elastic.committed_disp = snapshot.3;
+        self.elastic.trial_disp = snapshot.4;
     }
 
     fn commit_state(&mut self) {
