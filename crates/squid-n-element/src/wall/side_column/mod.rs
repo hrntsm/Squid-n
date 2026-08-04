@@ -20,7 +20,9 @@ mod column;
 mod detect;
 
 pub use column::{InPlaneReleasedColumn, ReleaseAxis};
-pub use detect::{is_line_member, is_side_column_member, wall_side_column_release};
+pub use detect::{
+    is_line_member, is_side_column_member, wall_side_column_release, SideColumnEdges,
+};
 
 #[cfg(test)]
 use crate::beam::BeamElement;
@@ -339,6 +341,27 @@ mod tests {
         let model = make_wall_model();
         let data = make_column_data([0, 2]);
         assert!(wall_side_column_release(&data, &model).is_none());
+    }
+
+    /// 事前インデックス（`SideColumnEdges`）は走査版 `wall_side_column_release` と
+    /// 同じ判定結果を返す（側柱=Some で軸も一致、対角材・無関係柱=None）。
+    #[test]
+    fn test_side_column_edges_matches_scan() {
+        let mut model = make_wall_model();
+        model.nodes.push(make_node(4, [100_000.0, 100_000.0, 0.0]));
+        model
+            .nodes
+            .push(make_node(5, [100_000.0, 100_000.0, 3000.0]));
+        let idx = SideColumnEdges::build(&model);
+        for nodes in [[0u32, 3], [1, 2], [0, 2], [4, 5]] {
+            let data = make_column_data(nodes);
+            assert_eq!(
+                idx.release_axis(&data, &model),
+                wall_side_column_release(&data, &model),
+                "節点対 {:?} で走査版と不一致",
+                nodes
+            );
+        }
     }
 
     /// recover_forces（縮約剛性版）の内力場が i/j 分岐（ξ=0.5）をまたいで

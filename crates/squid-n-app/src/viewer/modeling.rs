@@ -45,7 +45,7 @@ use squid_n_core::ids::NodeId;
 use squid_n_core::model::{ElementData, ElementKind, EndCondition, Model};
 use squid_n_element::factory::{resolve_force_regime, ResolvedRegime};
 use squid_n_element::misc_wall::wall_is_seismic;
-use squid_n_element::side_column::wall_side_column_release;
+use squid_n_element::side_column::{wall_side_column_release, SideColumnEdges};
 use squid_n_element::wall_panel::wall_panel_geometry;
 
 use super::{ModelingAnalysis, Projector};
@@ -125,11 +125,28 @@ pub(super) fn classify(
     model: &Model,
     analysis: ModelingAnalysis,
 ) -> ModelClass {
+    classify_with(data, model, analysis, None)
+}
+
+/// [`classify`] の全部材ループ向け変種。側柱判定（1 部材ごとに全要素を走査する）を
+/// 事前構築した [`SideColumnEdges`] の定数時間参照へ差し替えられる。
+/// `None` は 1 部材だけ分類する呼び出し（ツールチップ・テスト）用で、
+/// [`wall_side_column_release`] による従来の走査判定になる。
+pub(super) fn classify_with(
+    data: &ElementData,
+    model: &Model,
+    analysis: ModelingAnalysis,
+    side_cols: Option<&SideColumnEdges>,
+) -> ModelClass {
     match data.kind {
         // 梁・柱（Beam）とファイバー梁（Fiber）は解析種別で扱いが変わる。
         ElementKind::Beam | ElementKind::Fiber => {
             // 耐震壁の側柱は面内両端ピン（トポロジ由来の解放。解析種別に依らない）。
-            if wall_side_column_release(data, model).is_some() {
+            let is_side_column = match side_cols {
+                Some(idx) => idx.release_axis(data, model).is_some(),
+                None => wall_side_column_release(data, model).is_some(),
+            };
+            if is_side_column {
                 return ModelClass::SideColumnPin;
             }
             match analysis {
@@ -422,12 +439,15 @@ pub(super) fn draw_modeling(
     let mut beam_adjacency: Option<NodeAdjacency> = None;
     // 壁の付帯梁の絞り込みに使う耐震壁の節点集合（描画 1 回につき一度だけ作る）。
     let wall_nodes = seismic_wall_nodes(model);
+    // 側柱判定の事前インデックス（描画 1 回につき一度だけ作る。1 部材ごとの
+    // 全要素走査を避ける）。
+    let side_cols = SideColumnEdges::build(model);
 
     for elem in &model.elements {
         if !frame_filter.shows(elem.id) {
             continue;
         }
-        let class = classify(elem, model, analysis);
+        let class = classify_with(elem, model, analysis, Some(&side_cols));
         if !present.contains(&class) {
             present.push(class);
         }
