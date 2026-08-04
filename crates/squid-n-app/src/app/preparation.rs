@@ -1112,16 +1112,22 @@ pub fn story_level_kind_label(k: StoryLevelKind) -> String {
     }
 }
 
-/// 荷重ケース種別の表示名。
+/// 荷重ケース種別の表示名（GUI 全体で共有する単一定義）。
+///
+/// 荷重タブの種別セレクタ・準備計算の荷重集計表・CSV レポートのすべてが
+/// 本関数を用いる。従来は荷重タブに別定義があり、同じ種別が画面によって
+/// 「積載(架構用)」「積載荷重(長期)」と食い違って表示されていた。
+/// 訳語は標準ケース名（DL・LL(架構用)・LL(地震用)）と同じ「架構用/地震用」の
+/// 区別に揃える。
 pub fn load_case_kind_label(k: LoadCaseKind) -> &'static str {
     match k {
-        LoadCaseKind::Dead => "固定",
-        LoadCaseKind::Live => "積載(架構用)",
-        LoadCaseKind::LiveSeismic => "積載(地震用)",
-        LoadCaseKind::Snow => "積雪",
-        LoadCaseKind::Wind => "風",
-        LoadCaseKind::Seismic => "地震",
-        LoadCaseKind::Other => "その他",
+        LoadCaseKind::Dead => "固定荷重",
+        LoadCaseKind::Live => "積載荷重(架構用)",
+        LoadCaseKind::LiveSeismic => "積載荷重(地震用)",
+        LoadCaseKind::Snow => "積雪荷重",
+        LoadCaseKind::Wind => "風荷重",
+        LoadCaseKind::Seismic => "地震荷重",
+        LoadCaseKind::Other => "その他/未設定",
     }
 }
 
@@ -1133,7 +1139,11 @@ pub fn zone_source_label(s: ZoneSource) -> &'static str {
     }
 }
 
-/// 部材種別の表示名。
+/// 部材種別の表示名（GUI 全体で共有する単一定義）。
+///
+/// 準備計算の各表・終局検定ビュー・CSV レポートのすべてが本関数を用いる。
+/// 従来は終局検定ビューに別定義があり、`Brace` が画面によって
+/// 「ブレース」「斜材」と食い違って表示されていた。
 pub fn member_kind_label(k: squid_n_design_jp::MemberKind) -> &'static str {
     use squid_n_design_jp::MemberKind;
     match k {

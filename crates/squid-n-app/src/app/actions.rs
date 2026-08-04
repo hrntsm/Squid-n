@@ -87,6 +87,16 @@ impl App {
         self.log.push(LogLevel::Info, msg.into());
     }
 
+    /// 荷重組合せの自動生成に固有のエラー。ステータスバー・ログ
+    /// （[`Self::report_error`]）に加え、荷重組合せ欄にだけ出す専用スロット
+    /// `combo_error` へも反映する（`last_error` は共用の単一スロットのため、
+    /// 組合せ欄へそのまま出すと他の操作のエラーが無関係な欄に現れる）。
+    pub fn report_combo_error(&mut self, msg: impl Into<String>) {
+        let msg = msg.into();
+        self.combo_error = Some(msg.clone());
+        self.report_error(msg);
+    }
+
     /// モデルを丸ごと差し替える（新規作成・サンプル読込・ファイル読込で共用）。
     /// undo 履歴・結果・選択・stale 状態をすべてリセットする。
     /// 旧スキーマの自動生成荷重ケース名（「床荷重(自動)」「自重(自動)」等）は
@@ -119,6 +129,7 @@ impl App {
         // 新モデルを保存してしまうのを防ぐ）。
         self.pending_save_recording = None;
         self.stick_response = None;
+        self.combo_error = None;
         self.generated_panels.clear();
         #[cfg(feature = "gui")]
         {
@@ -2162,6 +2173,7 @@ impl App {
         };
 
         self.last_error = None;
+        self.combo_error = None;
         let find_first = |kind: LoadCaseKind| {
             self.model
                 .load_cases
@@ -2177,11 +2189,11 @@ impl App {
                 .map(|lc| lc.id)
         };
         let Some(dl) = find_first(LoadCaseKind::Dead) else {
-            self.report_error("種別「固定荷重」の荷重ケースが見つかりません");
+            self.report_combo_error("種別「固定荷重」の荷重ケースが見つかりません");
             return;
         };
         let Some(ll) = find_first(LoadCaseKind::Live) else {
-            self.report_error("種別「積載荷重(長期)」の荷重ケースが見つかりません");
+            self.report_combo_error("種別「積載荷重(架構用)」の荷重ケースが見つかりません");
             return;
         };
         let snow = find_first(LoadCaseKind::Snow);

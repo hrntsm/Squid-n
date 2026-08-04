@@ -966,6 +966,10 @@ pub struct App {
     /// 荷重タブ「荷重組合せ」自動生成 UI のドラフト状態
     #[cfg(feature = "gui")]
     pub combo_draft: ComboDraft,
+    /// 荷重組合せの自動生成に固有のエラー（荷重組合せ欄にだけ表示する）。
+    /// `last_error` はステータスバー共用の単一スロットのため、これを組合せ欄へ
+    /// そのまま出すと他の操作のエラーが無関係な欄に現れる。
+    pub combo_error: Option<String>,
     /// モデルタブ「スラブ」追加フォームのドラフト状態
     #[cfg(feature = "gui")]
     pub slab_draft: crate::tables::slabs::SlabDraft,
@@ -1177,6 +1181,7 @@ impl Default for App {
             analysis_target: None,
             #[cfg(feature = "gui")]
             combo_draft: ComboDraft::default(),
+            combo_error: None,
             #[cfg(feature = "gui")]
             slab_draft: crate::tables::slabs::SlabDraft::default(),
             #[cfg(feature = "gui")]

@@ -3791,6 +3791,8 @@ fn test_auto_generate_combinations_missing_dead_or_live_is_error() {
     app.model.load_cases = vec![kind_lc(0, "積載", LoadCaseKind::Live)];
     app.auto_generate_combinations_action();
     assert!(app.last_error.as_deref().unwrap().contains("固定荷重"));
+    // 荷重組合せ欄に表示する専用スロットにも同じエラーが入る。
+    assert_eq!(app.combo_error, app.last_error);
     assert!(app.model.combinations.is_empty());
 
     // Live 無し
@@ -3798,7 +3800,16 @@ fn test_auto_generate_combinations_missing_dead_or_live_is_error() {
     app.model.load_cases = vec![kind_lc(0, "固定", LoadCaseKind::Dead)];
     app.auto_generate_combinations_action();
     assert!(app.last_error.as_deref().unwrap().contains("積載荷重"));
+    assert_eq!(app.combo_error, app.last_error);
     assert!(app.model.combinations.is_empty());
+
+    // Dead/Live が揃えば生成に成功し、組合せ欄のエラーは消える。
+    app.model
+        .load_cases
+        .push(kind_lc(1, "積載", LoadCaseKind::Live));
+    app.auto_generate_combinations_action();
+    assert!(app.combo_error.is_none());
+    assert!(!app.model.combinations.is_empty());
 }
 
 /// SetLoadCfg が App の undo スタック経由で機能すること

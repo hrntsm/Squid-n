@@ -17,19 +17,7 @@ const LOAD_CASE_KINDS: [LoadCaseKind; 7] = [
     LoadCaseKind::Other,
 ];
 
-/// `LoadCaseKind` の表示ラベル（レビュー §1.7: 地震用重量の集計に使う種別を
-/// 荷重タブから明示的に選べるようにする）。
-fn load_case_kind_label(kind: LoadCaseKind) -> &'static str {
-    match kind {
-        LoadCaseKind::Dead => "固定荷重",
-        LoadCaseKind::Live => "積載荷重(長期)",
-        LoadCaseKind::LiveSeismic => "積載荷重(地震用)",
-        LoadCaseKind::Snow => "積雪荷重",
-        LoadCaseKind::Wind => "風荷重",
-        LoadCaseKind::Seismic => "地震荷重",
-        LoadCaseKind::Other => "その他/未設定",
-    }
-}
+use crate::app::load_case_kind_label;
 
 #[derive(Clone)]
 struct MemberLoadDraft {
@@ -779,7 +767,9 @@ fn combinations_section(ui: &mut egui::Ui, app: &mut App) {
             app.auto_generate_combinations_action();
         }
     });
-    if let Some(err) = &app.last_error {
+    // 組合せ生成に固有のエラーのみ表示する（`last_error` は共用スロットのため、
+    // ここへ出すと他の操作のエラーが無関係な欄に現れる）。
+    if let Some(err) = &app.combo_error {
         ui.colored_label(crate::theme::ERROR_RED, err);
     }
 }
