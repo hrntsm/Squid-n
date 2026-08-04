@@ -19,7 +19,7 @@ use crate::common::newton::{l2_norm, NewtonCriteria, STATIC_NEWTON};
 use crate::constraint::Reducer;
 use crate::damping::{Damping, DampingAccumulation};
 use crate::pushover::{add_support_spring_f_int, assemble_k, assemble_k_cached_ref, compute_f_int};
-use crate::transaction::{StateSnapshot, StatefulModel};
+use crate::transaction::{revert_all, StateSnapshot};
 use smallvec::SmallVec;
 use squid_n_core::dof::{DofMap, DOF_PER_NODE};
 use squid_n_core::model::Model;
@@ -120,7 +120,7 @@ fn update_behaviors_trial(
 /// 記録される変位は長期変位を含む全変位である。
 #[allow(clippy::too_many_arguments)]
 pub fn nonlinear_time_history_analysis(
-    model: &mut Model,
+    model: &Model,
     dofmap: &DofMap,
     reducer: &Reducer,
     wave: &GroundMotion,
@@ -461,7 +461,7 @@ pub fn nonlinear_time_history_analysis(
         // 本ループ自体が Err を返して打ち切るため、次ステップへは進まない。
         // したがって「あるステップ開始時に trial!=committed のまま次ステップへ
         // 入る」ことは起こらず、不収束時の rollback は
-        // `model.revert_all(&mut behaviors)`（各要素の trial←committed）で
+        // `revert_all(&mut behaviors)`（各要素の trial←committed）で
         // スナップショット捕捉・復元と厳密に等価になる。ファイバーモデルでは
         // `snapshot_state` が全要素・全ゲージ点の状態を Box 確保して複製するため
         // （毎ステップ数万 Box）、この等価性を利用して捕捉自体を省く。
@@ -716,7 +716,7 @@ pub fn nonlinear_time_history_analysis(
             // 不収束: rollback（P3: ステップ開始時点は trial==committed のため、
             // 全要素 revert_state（trial←committed）はスナップショット復元と等価。
             // 上のコメント参照）。
-            model.revert_all(&mut behaviors);
+            revert_all(&mut behaviors);
             return Err(SolveError::Backend(format!(
                 "nonlinear time history: step {} did not converge",
                 n
@@ -826,7 +826,7 @@ impl LoadFractionState {
 /// [`LoadFractionState`] 参照）。収束したステップごとに要素状態を commit し、
 /// 載荷完了時の変位（縮約空間）を `u_out` に加算する。
 fn apply_long_term_static(
-    model: &mut Model,
+    model: &Model,
     dofmap: &DofMap,
     reducer: &Reducer,
     behaviors: &mut [Box<dyn ElementBehavior>],
@@ -877,7 +877,7 @@ fn apply_long_term_static(
                 state.record_success(mu_target);
             }
             None => {
-                model.restore(&snap, behaviors);
+                snap.restore(behaviors);
                 if !state.record_failure() {
                     return Err(SolveError::InvalidInput(
                         "長期荷重の初期載荷が収束しません（長期荷重に対して構造が不安定な可能性）"

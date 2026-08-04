@@ -234,7 +234,7 @@ fn make_frame(nx: usize, ny: usize, nz: usize) -> Model {
 
 /// 計測1回分: プッシュオーバー解析を実行して所要時間と結果を返す。
 fn run_case(control: PushoverControl) -> (f64, PushoverResult) {
-    let mut model = make_frame(3, 3, 5);
+    let model = make_frame(3, 3, 5);
     let dofmap = DofMap::build(&model);
     let reducer = Reducer::build(&model, &dofmap);
     let target = PushoverTarget {
@@ -243,7 +243,7 @@ fn run_case(control: PushoverControl) -> (f64, PushoverResult) {
     };
     let t0 = Instant::now();
     let result = pushover_analysis_recording(
-        &mut model,
+        &model,
         &dofmap,
         &reducer,
         SeismicDir::X,

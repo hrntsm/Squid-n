@@ -137,11 +137,11 @@ fn portal_frame(rigid: f64, seismic_weight: f64) -> Model {
 }
 
 fn run_pushover(rigid: f64, seismic_weight: f64, steps: usize) -> PushoverResult {
-    let mut model = portal_frame(rigid, seismic_weight);
+    let model = portal_frame(rigid, seismic_weight);
     let dofmap = DofMap::build(&model);
     let reducer = Reducer::build(&model, &dofmap);
     pushover_analysis(
-        &mut model,
+        &model,
         &dofmap,
         &reducer,
         SeismicDir::X,

@@ -32,7 +32,7 @@ pub(crate) fn compute_pushover_job(
         JobDir::Y => squid_n_solver::analysis::SeismicDir::Y,
     };
     let result = squid_n_solver::pushover::pushover_analysis_recording(
-        &mut work,
+        &work,
         &dofmap,
         &reducer,
         seismic_dir,

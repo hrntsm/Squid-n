@@ -330,7 +330,7 @@ where
 fn main() {
     // --- モデル生成: 5層×3スパン×3スパンのS造立体フレーム ---
     let (nx, ny, nz) = (3, 3, 5);
-    let mut model = make_frame(nx, ny, nz);
+    let model = make_frame(nx, ny, nz);
     let dofmap = DofMap::build(&model);
     let reducer = Reducer::build(&model, &dofmap);
     let ndof = reducer.n_indep;
@@ -417,7 +417,7 @@ fn main() {
         ndof,
         || {
             nonlinear_time_history_analysis(
-                &mut model,
+                &model,
                 &dofmap,
                 &reducer,
                 &wave_nonlinear,
@@ -442,7 +442,7 @@ fn main() {
         ndof,
         || {
             nonlinear_time_history_analysis(
-                &mut model,
+                &model,
                 &dofmap,
                 &reducer,
                 &wave_nonlinear,
@@ -528,7 +528,7 @@ fn main() {
         ndof,
         || {
             nonlinear_time_history_analysis(
-                &mut model,
+                &model,
                 &dofmap,
                 &reducer,
                 &wave_nonlinear,

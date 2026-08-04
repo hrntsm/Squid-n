@@ -26,7 +26,7 @@ use crate::arc_length::ArcLengthSolver;
 use crate::common::csc_cache::CscCache;
 use crate::common::newton::{l2_norm, STATIC_NEWTON};
 use crate::constraint::Reducer;
-use crate::transaction::{StateSnapshot, StatefulModel};
+use crate::transaction::StateSnapshot;
 use smallvec::SmallVec;
 use squid_n_core::dof::DofMap;
 use squid_n_core::model::Model;
@@ -98,7 +98,7 @@ impl SolverState {
 /// [`pushover_analysis_recording`] に [`PushoverTarget`] を渡す。
 #[allow(clippy::too_many_arguments)]
 pub fn pushover_analysis(
-    model: &mut Model,
+    model: &Model,
     dofmap: &DofMap,
     reducer: &Reducer,
     dir: SeismicDir,
@@ -140,7 +140,7 @@ pub fn pushover_analysis(
 /// `pushover_analysis` は本関数に `record_node_disp = false` で委譲する薄いラッパー。
 #[allow(clippy::too_many_arguments)]
 pub fn pushover_analysis_recording(
-    model: &mut Model,
+    model: &Model,
     dofmap: &DofMap,
     reducer: &Reducer,
     dir: SeismicDir,
@@ -391,7 +391,7 @@ pub fn pushover_analysis_recording(
                         break;
                     }
                     None => {
-                        model.restore(&snap, &mut behaviors);
+                        snap.restore(&mut behaviors);
                         mu_target = applied + (mu_target - applied) * 0.5;
                     }
                 }
@@ -572,7 +572,7 @@ pub fn pushover_analysis_recording(
                 }
                 break;
             } else {
-                model.restore(&snap, &mut behaviors);
+                snap.restore(&mut behaviors);
                 // 収束失敗時は「前確定点 prev_lambda からの増分」を半減する。絶対 λ を
                 // 半減すると prev_lambda を下回り、前確定状態から除荷方向に解いて荷重−変位
                 // 経路が非物理的にジグザグする（ヒンジ／せん断降伏追跡も汚染される）。
@@ -794,7 +794,7 @@ pub fn pushover_analysis_recording(
                         }
                         break;
                     } else {
-                        model.restore(&snap, &mut behaviors);
+                        snap.restore(&mut behaviors);
                         // λ は反復中に更新しているため、要素状態と同時に巻き戻す。
                         lambda = lambda_snap;
                     }
@@ -834,7 +834,7 @@ pub fn pushover_analysis_recording(
             // factorize では失敗しないので判定が効かなくなる。SolverState は既定で
             // DirectSparseCholesky を保持するため、ここでも同じインスタンスを使う）。
             if st.solver.factorize(&k_red).is_err() {
-                model.restore(&snap, &mut behaviors);
+                snap.restore(&mut behaviors);
                 // 分解失敗＝機構形成・耐力喪失による特異化。弧長法フェーズでは
                 // 期待される終了だが、理由として結果へ明示する。
                 phase_outcome = PushoverTermination::TangentSingular {
@@ -852,7 +852,7 @@ pub fn pushover_analysis_recording(
             // 変位として内力へ加算する。
             let mut cum_du = vec![0.0; n_active];
             let result = {
-                let model_ref: &Model = &*model;
+                let model_ref: &Model = model;
                 let behaviors_ref = &mut behaviors;
                 let total_disp_ref: &Vec<f64> = &total_disp;
                 // st を弧長修正子の solve クロージャへ再借用する（このブロックの
@@ -956,7 +956,7 @@ pub fn pushover_analysis_recording(
                     step_no += 1;
                 }
                 _ => {
-                    model.restore(&snap, &mut behaviors);
+                    snap.restore(&mut behaviors);
                     phase_outcome = PushoverTermination::NonConvergence {
                         phase: "弧長法".into(),
                         load_factor: arc_lambda,

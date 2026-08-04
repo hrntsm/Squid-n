@@ -2230,7 +2230,7 @@ impl App {
         model: squid_n_core::model::Model,
         cfg: AnalysisSettings,
     ) -> Result<squid_n_solver::pushover::PushoverResult, String> {
-        let mut work = model;
+        let work = model;
         Analysis::prepare(&work).map_err(|e| format!("解析準備エラー: {}", e))?;
         let dofmap = squid_n_core::dof::DofMap::build(&work);
         let reducer = squid_n_solver::constraint::Reducer::build(&work, &dofmap);
@@ -2242,7 +2242,7 @@ impl App {
                 .then_some(1.0 / cfg.push_drift_denom.max(1.0)),
         };
         squid_n_solver::pushover::pushover_analysis_recording(
-            &mut work,
+            &work,
             &dofmap,
             &reducer,
             cfg.push_dir,
@@ -2502,7 +2502,7 @@ impl App {
         wave: squid_n_solver::timehistory::GroundMotion,
         damping: squid_n_solver::damping::Damping,
     ) -> Result<squid_n_solver::timehistory::ResponseResult, String> {
-        let mut model = model;
+        let model = model;
         squid_n_element::factory::ensure_nonlinear_input(&model).map_err(|e| {
             format!(
                 "非線形時刻歴の入力エラー（部材耐力を算定できません）:\n{}",
@@ -2523,7 +2523,7 @@ impl App {
             record_every,
         };
         squid_n_solver::timehistory::nonlinear_time_history_analysis(
-            &mut model,
+            &model,
             &dofmap,
             &reducer,
             &wave,
