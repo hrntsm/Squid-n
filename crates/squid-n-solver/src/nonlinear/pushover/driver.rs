@@ -24,13 +24,13 @@ use crate::analysis::{
 };
 use crate::arc_length::ArcLengthSolver;
 use crate::common::csc_cache::CscCache;
+use crate::common::elem_loop::apply_du_trial;
 use crate::common::newton::{l2_norm, STATIC_NEWTON};
 use crate::constraint::Reducer;
 use crate::transaction::StateSnapshot;
-use smallvec::SmallVec;
 use squid_n_core::dof::DofMap;
 use squid_n_core::model::Model;
-use squid_n_element::behavior::{Ctx, ElementBehavior, LocalVec};
+use squid_n_element::behavior::ElementBehavior;
 use squid_n_element::factory::{build_nonlinear_behavior, StrengthBasis};
 use squid_n_math::solver::{make_solver, LinearSolver, SolverBackend};
 
@@ -732,7 +732,7 @@ pub fn pushover_analysis_recording(
                         for (acc, &d) in step_du_free.iter_mut().zip(st.du_free.iter()) {
                             *acc += d;
                         }
-                        apply_du_to_behaviors(model, dofmap, &mut behaviors, &st.du_free);
+                        apply_du_trial(model, dofmap, &mut behaviors, &st.du_free);
                     }
 
                     if converged {
@@ -873,7 +873,7 @@ pub fn pushover_analysis_recording(
                         Ok(())
                     },
                     &mut |delta_u: &[f64]| -> Result<Vec<f64>, String> {
-                        apply_du_to_behaviors(model_ref, dofmap, behaviors_ref, delta_u);
+                        apply_du_trial(model_ref, dofmap, behaviors_ref, delta_u);
                         for (acc, &d) in cum_du.iter_mut().zip(delta_u.iter()) {
                             *acc += d;
                         }
@@ -1072,42 +1072,6 @@ fn current_failure_detail(
     nonconvergence_detail(model, dofmap, reducer, &k_red, factorizable, phase)
 }
 
-/// ステップ変位増分 `du_free`（全自由 DOF 順）を各要素の局所自由度へ写像し、
-/// トライアル状態として反映する（確定は呼び出し側の `commit_state`）。
-/// 長期載荷・荷重制御・変位制御・弧長法の全フェーズで共有する。
-fn apply_du_to_behaviors(
-    model: &Model,
-    dofmap: &DofMap,
-    behaviors: &mut [Box<dyn ElementBehavior>],
-    du_free: &[f64],
-) {
-    let ctx = Ctx { model };
-    let update_one = |b: &mut Box<dyn ElementBehavior>| {
-        let gdofs = b.global_dofs(dofmap);
-        let mut du_elem = LocalVec {
-            data: SmallVec::from_elem(0.0, gdofs.len()),
-        };
-        for (i, &g) in gdofs.iter().enumerate() {
-            if g != usize::MAX && g < du_free.len() {
-                du_elem.data[i] = du_free[g];
-            }
-        }
-        b.update_state(&du_elem, false, &ctx);
-    };
-    // 要素間にデータ依存が無く、各要素は自身の `&mut` のみを更新するため、並列度設定
-    // （`squid_n_math::parallelism`）が Auto/Threads のときは rayon で並列化する。
-    // `par_iter_mut()` は要素番号順のスロットへ書き込むだけでスレッドスケジューリング
-    // の影響を受けないため、結果は逐次実行と完全にビット一致する（時刻歴応答解析
-    // 高速化・第2波申し送り 4.1 の設計方針）。Deterministic（既定）では従来どおり
-    // 逐次実行する。
-    if squid_n_math::parallelism::is_parallel() {
-        use rayon::prelude::*;
-        behaviors.par_iter_mut().for_each(update_one);
-    } else {
-        behaviors.iter_mut().for_each(update_one);
-    }
-}
-
 /// 固定外力 `f_ext` に対する Newton 反復（長期載荷・荷重制御フェーズの共通経路）。
 ///
 /// 収束判定は力の相対ノルム r < tol·max(|f_ext|, 1)（規約は [`STATIC_NEWTON`]）。
@@ -1180,7 +1144,7 @@ fn newton_converge(
         for (acc, &d) in step_du_free.iter_mut().zip(st.du_free.iter()) {
             *acc += d;
         }
-        apply_du_to_behaviors(model, dofmap, behaviors, &st.du_free);
+        apply_du_trial(model, dofmap, behaviors, &st.du_free);
     }
     None
 }

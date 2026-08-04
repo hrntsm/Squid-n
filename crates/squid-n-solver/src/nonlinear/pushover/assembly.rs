@@ -116,27 +116,13 @@ fn assemble_k_triplets_into(
         }
         k.to_triplets(&gdofs)
     };
-    // 並列度設定（`squid_n_math::parallelism`）が Auto/Threads のときは要素ループを
-    // rayon で並列化する。要素番号順を保った IndexedParallelIterator::collect で
-    // `Vec<Vec<Triplet>>` として集約してから要素順に extend するため、triplet の
-    // 並び順は逐次実行と完全に一致する（結果は常にビット一致する。時刻歴応答解析
-    // 高速化・第2波申し送り 4.1 の設計方針）。Deterministic（既定）では従来どおり
-    // 逐次実行する。
-    if squid_n_math::parallelism::is_parallel() {
-        use rayon::prelude::*;
-        let per_elem: Vec<Vec<squid_n_math::sparse::Triplet>> = model
-            .elements
-            .par_iter()
-            .zip(behaviors.par_iter())
-            .map(|(elem, b)| elem_triplets(elem, b.as_ref()))
-            .collect();
-        for triplets in per_elem {
-            out.extend(triplets);
-        }
-    } else {
-        for (elem, b) in model.elements.iter().zip(behaviors) {
-            out.extend(elem_triplets(elem, b.as_ref()));
-        }
+    // 並列/逐次の分岐と要素番号順の保証は共通足場（`common::elem_loop`）が担う。
+    // 要素順に extend するため triplet の並び順は逐次実行と完全に一致する。
+    let per_elem = crate::common::elem_loop::map_behaviors_ordered(behaviors, |i, b| {
+        elem_triplets(&model.elements[i], b)
+    });
+    for triplets in per_elem {
+        out.extend(triplets);
     }
     // 支点ばね（`Node::support_spring`）の対角加算。線形経路の
     // `assemble_global_k`（`common::assemble`）と同じ [`support_spring_terms`] を使う。
@@ -186,37 +172,18 @@ pub(crate) fn compute_f_int(
 ) -> Vec<f64> {
     let ctx = Ctx { model };
     let mut f = vec![0.0; dofmap.n_active()];
-    // 要素ごとの (gdofs, f_local) の算定は要素間にデータ依存が無いため、並列度設定
-    // （`squid_n_math::parallelism`）が Auto/Threads のときは rayon で並列化する。
-    // ただし共有ベクトル f への `f[g] += v` 累積は加算順序が結果に影響し得るため、
-    // 並列化するのは要素ごとの計算のみとし、累積自体は常に要素番号順に逐次行う
-    // （時刻歴応答解析高速化・第2波申し送り 4.1 の設計方針）。Deterministic（既定）
-    // では従来どおり全体を逐次実行する。
-    if squid_n_math::parallelism::is_parallel() {
-        use rayon::prelude::*;
-        let per_elem: Vec<_> = behaviors
-            .par_iter()
-            .map(|b| {
-                let gdofs = b.global_dofs(dofmap);
-                let f_local = b.internal_force(&ctx);
-                (gdofs, f_local)
-            })
-            .collect();
-        for (gdofs, f_local) in &per_elem {
-            for (&g, &v) in gdofs.iter().zip(f_local.data.iter()) {
-                if g != usize::MAX {
-                    f[g] += v;
-                }
-            }
-        }
-    } else {
-        for b in behaviors {
-            let gdofs = b.global_dofs(dofmap);
-            let f_local = b.internal_force(&ctx);
-            for (&g, &v) in gdofs.iter().zip(f_local.data.iter()) {
-                if g != usize::MAX {
-                    f[g] += v;
-                }
+    // 要素ごとの (gdofs, f_local) の算定は共通足場（`common::elem_loop`）で
+    // 並列化し、共有ベクトル f への `f[g] += v` 累積は加算順序が結果に影響し得る
+    // ため、常に要素番号順に逐次行う。
+    let per_elem = crate::common::elem_loop::map_behaviors_ordered(behaviors, |_, b| {
+        let gdofs = b.global_dofs(dofmap);
+        let f_local = b.internal_force(&ctx);
+        (gdofs, f_local)
+    });
+    for (gdofs, f_local) in &per_elem {
+        for (&g, &v) in gdofs.iter().zip(f_local.data.iter()) {
+            if g != usize::MAX {
+                f[g] += v;
             }
         }
     }
