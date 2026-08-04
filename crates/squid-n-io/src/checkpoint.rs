@@ -153,7 +153,7 @@ mod tests {
 
     #[test]
     fn test_checkpoint_save_load_roundtrip() {
-        let dir = std::env::temp_dir().join("cp_roundtrip_test");
+        let dir = crate::test_util::test_tmp().join("cp_roundtrip_test");
         let _ = std::fs::remove_dir_all(&dir);
         let cp = make_checkpoint("abc123", 42);
 
@@ -184,7 +184,7 @@ mod tests {
 
     #[test]
     fn test_load_nonexistent_returns_error() {
-        let dir = std::env::temp_dir().join("cp_nonexistent_test");
+        let dir = crate::test_util::test_tmp().join("cp_nonexistent_test");
         let _ = std::fs::remove_dir_all(&dir);
         // dir は存在するが checkpoint/ は存在しない → NotFound
         std::fs::create_dir_all(&dir).unwrap();
@@ -290,7 +290,7 @@ mod tests {
         behavior.update_state(&du, false, &ctx);
         behavior.commit_state();
 
-        let dir = std::env::temp_dir().join("cp_nonlinear_roundtrip_test");
+        let dir = crate::test_util::test_tmp().join("cp_nonlinear_roundtrip_test");
         let _ = std::fs::remove_dir_all(&dir);
 
         let behaviors: Vec<Box<dyn ElementBehavior>> = vec![behavior];
@@ -412,7 +412,7 @@ mod tests {
             StrengthBasis::Nominal,
             AnalysisKind::Incremental,
         );
-        let dir = std::env::temp_dir().join("cp_hash_mismatch_test");
+        let dir = crate::test_util::test_tmp().join("cp_hash_mismatch_test");
         let _ = std::fs::remove_dir_all(&dir);
 
         let behaviors: Vec<Box<dyn ElementBehavior>> = vec![behavior];

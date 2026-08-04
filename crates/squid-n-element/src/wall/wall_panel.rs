@@ -122,7 +122,7 @@ pub fn wall_panel_geometry(data: &ElementData, model: &Model) -> Option<WallPane
 
     // z で下辺 2 節点・上辺 2 節点に分ける（入力順には依存しない）。
     let mut order: Vec<usize> = (0..4).collect();
-    order.sort_by(|&a, &b| coords[a][2].partial_cmp(&coords[b][2]).unwrap());
+    order.sort_by(|&a, &b| coords[a][2].total_cmp(&coords[b][2]));
     let (b0, b1, t0, t1) = (order[0], order[1], order[2], order[3]);
 
     // 下辺の軸方向 a→b

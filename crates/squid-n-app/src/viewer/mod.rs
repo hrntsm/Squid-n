@@ -1983,7 +1983,7 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
                         .map(|&p| (elem_id, props, (hover_pos - p).length()))
                 })
                 .filter(|&(_, _, d)| d <= HOVER_PICK_THRESHOLD)
-                .min_by(|a, b| a.2.partial_cmp(&b.2).unwrap());
+                .min_by(|a, b| a.2.total_cmp(&b.2));
             if let Some((elem_id, props, _)) = nearest {
                 support_symbols::show_isolator_tooltip(ui, elem_id, &props);
             }

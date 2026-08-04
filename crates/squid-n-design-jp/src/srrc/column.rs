@@ -133,7 +133,7 @@ fn src_column_nm_curve(
     }
     pts.push((rnc, 0.0));
     pts.push((rnt, 0.0));
-    pts.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+    pts.sort_by(|a, b| a.0.total_cmp(&b.0));
     pts
 }
 

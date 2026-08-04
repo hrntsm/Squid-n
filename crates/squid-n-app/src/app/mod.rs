@@ -1976,7 +1976,7 @@ fn design_positions(
     if let Some(detail) = detail {
         xs.extend(detail.extra_check_positions(&elem.rigid_zone, geom_len));
     }
-    xs.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    xs.sort_by(|a, b| a.total_cmp(b));
     xs.dedup_by(|a, b| (*a - *b).abs() < 1e-9);
     xs
 }

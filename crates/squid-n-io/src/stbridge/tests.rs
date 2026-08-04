@@ -199,7 +199,7 @@ fn test_read_stbridge_file_shift_jis() {
     let with_jp = format!("<!-- 柱と梁のモデル -->\n{}", xml);
     let (encoded, _, _) = SHIFT_JIS.encode(&with_jp);
 
-    let dir = std::env::temp_dir().join("squid_n_test_stb_sjis");
+    let dir = crate::test_util::test_tmp().join("squid_n_test_stb_sjis");
     let _ = std::fs::create_dir_all(&dir);
     let path = dir.join("shift_jis.stb");
     std::fs::write(&path, encoded.as_ref()).unwrap();
@@ -219,7 +219,7 @@ fn test_read_stbridge_file_utf8_bom() {
         b.extend_from_slice(xml.as_bytes());
         b
     };
-    let dir = std::env::temp_dir().join("squid_n_test_stb_bom");
+    let dir = crate::test_util::test_tmp().join("squid_n_test_stb_bom");
     let _ = std::fs::create_dir_all(&dir);
     let path = dir.join("utf8_bom.stb");
     std::fs::write(&path, bytes).unwrap();

@@ -299,7 +299,7 @@ mod tests {
     #[test]
     fn test_roundtrip() {
         let model = make_3node_model();
-        let dir = std::env::temp_dir();
+        let dir = crate::test_util::test_tmp();
         let path = dir.join("p.scz");
         save_scz(&path, &model, SczExtras::default()).unwrap();
         let back = load_scz(&path).unwrap().model;
@@ -311,7 +311,7 @@ mod tests {
     #[test]
     fn test_hash_mismatch() {
         let model = make_3node_model();
-        let dir = std::env::temp_dir();
+        let dir = crate::test_util::test_tmp();
         let path = dir.join("p_hash.scz");
         save_scz(&path, &model, SczExtras::default()).unwrap();
         let settings_bytes = {
@@ -353,7 +353,7 @@ mod tests {
     #[test]
     fn test_unsupported_version() {
         let model = make_3node_model();
-        let dir = std::env::temp_dir();
+        let dir = crate::test_util::test_tmp();
         let path = dir.join("p_ver.scz");
         save_scz(&path, &model, SczExtras::default()).unwrap();
 
@@ -386,7 +386,7 @@ mod tests {
     #[test]
     fn test_old_version_rejected() {
         let model = make_3node_model();
-        let dir = std::env::temp_dir();
+        let dir = crate::test_util::test_tmp();
         let path = dir.join("p_old_ver.scz");
         // まず通常保存し、その model.msgpack / settings.json を取り出す。
         save_scz(&path, &model, SczExtras::default()).unwrap();
@@ -434,7 +434,7 @@ mod tests {
     #[test]
     fn test_manifest_missing_required_entry_rejected() {
         let model = make_3node_model();
-        let dir = std::env::temp_dir();
+        let dir = crate::test_util::test_tmp();
         let path = dir.join("p_missing_entry.scz");
         save_scz(&path, &model, SczExtras::default()).unwrap();
         let (model_bytes, settings_bytes) = {
@@ -513,7 +513,7 @@ mod tests {
         let mut model = make_3node_model();
         model.sections.push(section.clone());
 
-        let dir = std::env::temp_dir();
+        let dir = crate::test_util::test_tmp();
         let path = dir.join("p_shape_roundtrip.scz");
         save_scz(&path, &model, SczExtras::default()).unwrap();
         let back = load_scz(&path).unwrap().model;
@@ -529,7 +529,7 @@ mod tests {
     #[test]
     fn test_roundtrip_preserves_preparation_entry() {
         let model = make_3node_model();
-        let dir = std::env::temp_dir();
+        let dir = crate::test_util::test_tmp();
         let path = dir.join("p_prep_roundtrip.scz");
         let prep = b"preparation payload".to_vec();
         save_scz(
@@ -572,7 +572,7 @@ mod tests {
     #[test]
     fn test_load_without_preparation_entry() {
         let model = make_3node_model();
-        let dir = std::env::temp_dir();
+        let dir = crate::test_util::test_tmp();
         let path = dir.join("p_prep_absent.scz");
         save_scz(&path, &model, SczExtras::default()).unwrap();
 
@@ -604,7 +604,7 @@ mod tests {
             spring: None,
         });
 
-        let dir = std::env::temp_dir();
+        let dir = crate::test_util::test_tmp();
         let path = dir.join("p_brace_roundtrip.scz");
         save_scz(&path, &model, SczExtras::default()).unwrap();
         let back = load_scz(&path).unwrap().model;
@@ -662,7 +662,7 @@ mod tests {
             },
         ];
 
-        let dir = std::env::temp_dir();
+        let dir = crate::test_util::test_tmp();
         let path = dir.join("p_member_detail_roundtrip.scz");
         save_scz(&path, &model, SczExtras::default()).unwrap();
         let back = load_scz(&path).unwrap().model;

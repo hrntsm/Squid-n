@@ -1,6 +1,16 @@
 use super::*;
 use squid_n_core::model::MaterialCategory;
 
+/// テストが書き込む一時ディレクトリ（プロセス ID 入り）。
+/// `std::env::temp_dir()` 直下へ固定名で書き込むと、同一マシンで並行する
+/// 別プロセスのテスト実行と衝突するため、プロセスごとに一意なサブディレクトリを
+/// 介する（同一プロセス内はテストごとの固有ファイル名で分離する）。
+fn test_tmp() -> std::path::PathBuf {
+    let d = std::env::temp_dir().join(format!("squid-n-test-{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&d);
+    d
+}
+
 /// 部材が鋼系かは材料の区分で決まる。断面形状ではないため、H 形のコンクリート
 /// 部材・矩形断面の鋼部材も正しく判定できる。
 #[test]
@@ -1481,7 +1491,7 @@ fn test_async_wind_job_flow() {
 
 #[test]
 fn test_save_and_open_project_roundtrip() {
-    let dir = std::env::temp_dir().join("squid_n_app_test_scz");
+    let dir = test_tmp().join("squid_n_app_test_scz");
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("roundtrip.scz");
 
@@ -1522,7 +1532,7 @@ fn test_open_project_missing_file_sets_error() {
 
 #[test]
 fn test_export_and_import_stbridge_roundtrip() {
-    let dir = std::env::temp_dir().join("squid_n_app_test_stbridge");
+    let dir = test_tmp().join("squid_n_app_test_stbridge");
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("roundtrip.stb");
 
@@ -1562,7 +1572,7 @@ fn test_export_and_import_stbridge_roundtrip() {
 
 #[test]
 fn test_export_stbridge_standard_mode_writes_steel_library() {
-    let dir = std::env::temp_dir().join("squid_n_app_test_stbridge_std");
+    let dir = test_tmp().join("squid_n_app_test_stbridge_std");
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("standard.stb");
 
@@ -1589,7 +1599,7 @@ fn test_export_stbridge_standard_mode_writes_steel_library() {
 fn test_stbridge_standard_mode_roundtrip_through_app() {
     // 断面形状モードで書き出したファイルを GUI 経路（import_stbridge_from）で
     // 読み戻せる（検証エラーなくモデルが差し替わり、断面形状が復元される）。
-    let dir = std::env::temp_dir().join("squid_n_app_test_stbridge_std_rt");
+    let dir = test_tmp().join("squid_n_app_test_stbridge_std_rt");
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("standard_rt.stb");
 
@@ -4739,7 +4749,7 @@ fn test_run_combination_errors_on_empty_seismic_case() {
 /// 書き出し→読み戻しで確認できる）。
 #[test]
 fn test_import_stbridge_without_loads_creates_default_cases() {
-    let dir = std::env::temp_dir().join("squid_n_app_test_stbridge_default_lc");
+    let dir = test_tmp().join("squid_n_app_test_stbridge_default_lc");
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("no_loads.stb");
 
@@ -4804,7 +4814,7 @@ fn test_import_stbridge_with_loads_keeps_file_cases() {
     </StbLoadCase>
   </StbLoads>
 </StbModel></ST_BRIDGE>"#;
-    let dir = std::env::temp_dir().join("squid_n_app_test_stbridge_with_lc");
+    let dir = test_tmp().join("squid_n_app_test_stbridge_with_lc");
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("with_loads.stb");
     std::fs::write(&path, xml).unwrap();
@@ -4837,7 +4847,7 @@ fn test_import_stbridge_then_run_dl_succeeds() {
     };
     use squid_n_section::shape::SectionShape;
 
-    let dir = std::env::temp_dir().join("squid_n_app_test_stbridge_run_dl");
+    let dir = test_tmp().join("squid_n_app_test_stbridge_run_dl");
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("run_dl.stb");
 
@@ -5999,7 +6009,7 @@ fn test_preparation_lists_width_thickness() {
 /// 復元できた場合は実行済み扱い（stale でない）になる。
 #[test]
 fn test_preparation_persisted_in_project_file() {
-    let dir = std::env::temp_dir();
+    let dir = test_tmp();
     let path = dir.join("squid_n_prep_persist_test.scz");
     let _ = std::fs::remove_file(&path);
 
@@ -6039,7 +6049,7 @@ fn test_preparation_persisted_in_project_file() {
 /// 読込側は未実行のままにする（古い結果を最新と誤認させない）。
 #[test]
 fn test_stale_preparation_not_persisted() {
-    let dir = std::env::temp_dir();
+    let dir = test_tmp();
     let path = dir.join("squid_n_prep_stale_test.scz");
     let _ = std::fs::remove_file(&path);
 
@@ -6153,7 +6163,7 @@ fn test_preparation_member_stiffness_reports_composite_props() {
 /// 復元できた場合は再計算不要（stale でない）扱いになる。
 #[test]
 fn test_results_persisted_in_project_file() {
-    let dir = std::env::temp_dir();
+    let dir = test_tmp();
     let path = dir.join("squid_n_results_persist_test.scz");
     let _ = std::fs::remove_file(&path);
 
@@ -6194,7 +6204,7 @@ fn test_results_persisted_in_project_file() {
 /// 読込側は結果なし・要再計算のままにする。
 #[test]
 fn test_stale_results_not_persisted() {
-    let dir = std::env::temp_dir();
+    let dir = test_tmp();
     let path = dir.join("squid_n_results_stale_test.scz");
     let _ = std::fs::remove_file(&path);
 
@@ -6221,7 +6231,7 @@ fn test_stale_results_not_persisted() {
 /// 「除外して保存」（`save_project_without_recording`）の分岐も併せて検証する。
 #[test]
 fn test_time_history_recording_saved_and_optional_exclusion() {
-    let dir = std::env::temp_dir();
+    let dir = test_tmp();
     let path = dir.join("squid_n_th_recording_saved_test.scz");
     let path_excl = dir.join("squid_n_th_recording_excluded_test.scz");
     let _ = std::fs::remove_file(&path);

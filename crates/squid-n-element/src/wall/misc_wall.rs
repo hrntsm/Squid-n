@@ -318,7 +318,7 @@ pub(crate) fn collect_misc_walls(model: &Model) -> Vec<MiscWall> {
             continue;
         };
         let mut order: Vec<usize> = (0..4).collect();
-        order.sort_by(|&a, &b| coords[a][2].partial_cmp(&coords[b][2]).unwrap());
+        order.sort_by(|&a, &b| coords[a][2].total_cmp(&coords[b][2]));
         let (b0, b1, t0, t1) = (order[0], order[1], order[2], order[3]);
         let (pa, pb) = (coords[b0], coords[b1]);
         let dxy = [pb[0] - pa[0], pb[1] - pa[1]];

@@ -167,7 +167,7 @@ fn wall_side_edges(wall: &ElementData, model: &Model) -> Option<SideEdges> {
 
     // z で下辺2節点・上辺2節点に分ける（wall_panel.rs::try_new と同じロジック）
     let mut order: Vec<usize> = (0..4).collect();
-    order.sort_by(|&a, &b| coords[a][2].partial_cmp(&coords[b][2]).unwrap());
+    order.sort_by(|&a, &b| coords[a][2].total_cmp(&coords[b][2]));
     let (b0, b1, t0, t1) = (order[0], order[1], order[2], order[3]);
 
     let (pa, pb) = (coords[b0], coords[b1]);
