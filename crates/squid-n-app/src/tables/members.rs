@@ -323,6 +323,7 @@ pub fn members_table(ui: &mut egui::Ui, app: &mut App) {
     let mut pending_hysteresis_th: Vec<(usize, Option<HysteresisModel>)> = Vec::new();
     let mut pending_delete: Option<ElemId> = None;
 
+    let row_h = crate::theme::table_row_height(ui);
     TableBuilder::new(ui)
         .striped(true)
         .column(Column::auto())
@@ -333,7 +334,7 @@ pub fn members_table(ui: &mut egui::Ui, app: &mut App) {
         .column(Column::initial(120.0))
         .column(Column::initial(120.0))
         .column(Column::auto())
-        .header(20.0, |mut h| {
+        .header(row_h, |mut h| {
             for t in &[
                 "ID",
                 "種別",
@@ -350,7 +351,7 @@ pub fn members_table(ui: &mut egui::Ui, app: &mut App) {
             }
         })
         .body(|body| {
-            body.rows(22.0, n, |mut row| {
+            body.rows(row_h, n, |mut row| {
                 let i = row.index();
                 let elem = &app.model.elements[i];
                 let is_focus = app.nav.focus_member == Some(elem.id);
@@ -692,6 +693,7 @@ fn dampers_table(ui: &mut egui::Ui, app: &mut App) {
         ui.data_mut(|d| d.insert_temp(id_bulk_sel, bulk_sel));
     }
 
+    let row_h = crate::theme::table_row_height(ui);
     TableBuilder::new(ui)
         .id_salt("dampers_table")
         .striped(true)
@@ -704,7 +706,7 @@ fn dampers_table(ui: &mut egui::Ui, app: &mut App) {
         .column(Column::initial(80.0))
         .column(Column::initial(64.0))
         .column(Column::auto())
-        .header(20.0, |mut h| {
+        .header(row_h, |mut h| {
             for t in &["ID", "節点", "種別", "Kd", "C0", "α", "Qy", "k2/k1", ""] {
                 h.col(|ui| {
                     ui.strong(*t);
@@ -716,7 +718,7 @@ fn dampers_table(ui: &mut egui::Ui, app: &mut App) {
                 let elem_id = *elem_id;
                 let mut props = *props;
                 let is_maxwell = props.kind == DamperKind::Maxwell;
-                body.row(22.0, |mut row| {
+                body.row(row_h, |mut row| {
                     row.col(|ui| {
                         ui.label(elem_id.0.to_string());
                     });
@@ -897,6 +899,7 @@ fn isolators_table(ui: &mut egui::Ui, app: &mut App) {
     let mut pending_props: Vec<(ElemId, IsolatorProps)> = Vec::new();
     let mut pending_del: Option<ElemId> = None;
 
+    let row_h = crate::theme::table_row_height(ui);
     TableBuilder::new(ui)
         .id_salt("isolators_table")
         .striped(true)
@@ -909,7 +912,7 @@ fn isolators_table(ui: &mut egui::Ui, app: &mut App) {
         .column(Column::initial(80.0))
         .column(Column::initial(64.0))
         .column(Column::auto())
-        .header(20.0, |mut h| {
+        .header(row_h, |mut h| {
             for t in &["ID", "節点", "種別", "K1", "K2", "Qd", "Kv", "μ", ""] {
                 h.col(|ui| {
                     ui.strong(*t);
@@ -921,7 +924,7 @@ fn isolators_table(ui: &mut egui::Ui, app: &mut App) {
                 let elem_id = *elem_id;
                 let mut props = *props;
                 let is_sliding = props.kind == squid_n_core::model::IsolatorKind::ElasticSliding;
-                body.row(22.0, |mut row| {
+                body.row(row_h, |mut row| {
                     row.col(|ui| {
                         ui.label(elem_id.0.to_string());
                     });

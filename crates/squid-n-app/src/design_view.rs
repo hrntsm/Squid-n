@@ -862,6 +862,7 @@ fn floor_design_section(ui: &mut egui::Ui, app: &App) {
     if !r.joist_checks.is_empty() {
         ui.label("小梁（単純支持梁）:");
         let row_h = crate::theme::table_row_height(ui);
+        let row_h = crate::theme::table_row_height(ui);
         TableBuilder::new(ui)
             .id_salt("joist_design_table")
             .striped(true)
@@ -891,7 +892,7 @@ fn floor_design_section(ui: &mut egui::Ui, app: &App) {
             })
             .body(|mut body| {
                 for (sid, ji, jr) in &r.joist_checks {
-                    body.row(22.0, |mut row| {
+                    body.row(row_h, |mut row| {
                         row.col(|ui| {
                             ui.label(format!("#{}", sid.0));
                         });
@@ -938,6 +939,7 @@ fn floor_design_section(ui: &mut egui::Ui, app: &App) {
         ui.add_space(6.0);
         ui.label("スラブ（一方向版）:");
         let row_h = crate::theme::table_row_height(ui);
+        let row_h = crate::theme::table_row_height(ui);
         TableBuilder::new(ui)
             .id_salt("slab_design_table")
             .striped(true)
@@ -963,7 +965,7 @@ fn floor_design_section(ui: &mut egui::Ui, app: &App) {
             })
             .body(|mut body| {
                 for (sid, sr) in &r.slab_checks {
-                    body.row(22.0, |mut row| {
+                    body.row(row_h, |mut row| {
                         row.col(|ui| {
                             ui.label(format!("#{}", sid.0));
                         });

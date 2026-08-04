@@ -31,6 +31,7 @@ pub fn sections_table(ui: &mut egui::Ui, app: &mut App) {
         })
         .collect();
 
+    let row_h = crate::theme::table_row_height(ui);
     TableBuilder::new(ui)
         .striped(true)
         .column(Column::auto())
@@ -40,7 +41,7 @@ pub fn sections_table(ui: &mut egui::Ui, app: &mut App) {
         .column(Column::initial(80.0))
         .column(Column::initial(80.0))
         .column(Column::auto())
-        .header(20.0, |mut h| {
+        .header(row_h, |mut h| {
             for t in &["ID", "名称", "A", "Iy", "Iz", "J", ""] {
                 h.col(|ui| {
                     ui.strong(*t);
@@ -48,7 +49,7 @@ pub fn sections_table(ui: &mut egui::Ui, app: &mut App) {
             }
         })
         .body(|body| {
-            body.rows(22.0, n, |mut row| {
+            body.rows(row_h, n, |mut row| {
                 let i = row.index();
                 let sec = &app.model.sections[i];
                 row.col(|ui| {

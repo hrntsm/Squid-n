@@ -82,6 +82,7 @@ pub fn loads_table(ui: &mut egui::Ui, app: &mut App) {
         .map(|lc| lc.name.clone())
         .collect();
 
+    let row_h = crate::theme::table_row_height(ui);
     TableBuilder::new(ui)
         .striped(true)
         .column(Column::auto())
@@ -89,7 +90,7 @@ pub fn loads_table(ui: &mut egui::Ui, app: &mut App) {
         .column(Column::initial(130.0))
         .column(Column::initial(60.0))
         .column(Column::auto())
-        .header(20.0, |mut h| {
+        .header(row_h, |mut h| {
             for t in &["ID", "名称", "種別", "荷重数", ""] {
                 h.col(|ui| {
                     ui.strong(*t);
@@ -97,7 +98,7 @@ pub fn loads_table(ui: &mut egui::Ui, app: &mut App) {
             }
         })
         .body(|body| {
-            body.rows(22.0, n_lc, |mut row| {
+            body.rows(row_h, n_lc, |mut row| {
                 let i = row.index();
                 let lc = &app.model.load_cases[i];
                 let is_sel = app.nav.focus_load_case == Some(lc.id);
@@ -249,12 +250,13 @@ pub fn loads_table(ui: &mut egui::Ui, app: &mut App) {
         .map(|n| n.values.map(|v| format!("{:.2}", v)))
         .collect();
 
+    let row_h = crate::theme::table_row_height(ui);
     TableBuilder::new(ui)
         .striped(true)
         .column(Column::auto())
         .columns(Column::initial(70.0), 6)
         .column(Column::auto())
-        .header(20.0, |mut h| {
+        .header(row_h, |mut h| {
             h.col(|ui| {
                 ui.strong("節点");
             });
@@ -266,7 +268,7 @@ pub fn loads_table(ui: &mut egui::Ui, app: &mut App) {
             h.col(|_| {});
         })
         .body(|body| {
-            body.rows(22.0, nodal_count, |mut row| {
+            body.rows(row_h, nodal_count, |mut row| {
                 let i = row.index();
                 let nodal = &app.model.load_cases[lc_idx].nodal[i];
                 row.col(|ui| {
