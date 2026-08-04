@@ -22,7 +22,7 @@ mod statics;
 
 // 階層化後も従来のモジュールパス（例: `squid_n_solver::pushover` や
 // クレート内部の `crate::constraint`）を維持するための再エクスポート。
-pub use common::{assemble, constraint, transaction};
+pub use common::{assemble, constraint, newton, transaction};
 pub use dynamic::{damping, eigen, lumped_mass, phase_diff, timehistory};
 pub use nonlinear::{arc_length, pushover, strength_loss};
 pub use statics::{analysis, construction, linear};

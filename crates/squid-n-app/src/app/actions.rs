@@ -2502,8 +2502,7 @@ impl App {
         // 0 は「自動決定」の意（`ThRecorder`/`recording.rs::auto_record_every` に委ねる）。
         let record_every = (cfg.th_record_every > 0).then_some(cfg.th_record_every);
         let nl_cfg = squid_n_solver::timehistory::NonlinearThCfg {
-            max_iter: cfg.th_max_iter,
-            tol: cfg.th_tol,
+            newton: squid_n_solver::newton::NewtonCriteria::new(cfg.th_max_iter, cfg.th_tol),
             use_kg: false,
             apply_long_term: cfg.th_apply_long_term,
             record_every,

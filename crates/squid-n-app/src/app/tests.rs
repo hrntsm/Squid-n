@@ -5819,6 +5819,7 @@ fn test_load_model_resets_model_derived_state() {
         story_peak_drift: vec![0.0],
         story_peak_shear: vec![0.0],
         story_ductility: vec![0.0],
+        non_converged_steps: 0,
     });
     app.generated_panels
         .push(squid_n_element::panel_gen::GeneratedPanel {

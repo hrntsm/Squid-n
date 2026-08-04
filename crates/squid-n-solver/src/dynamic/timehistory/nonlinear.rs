@@ -15,6 +15,7 @@ use super::recording::{member_forces_nonlinear, ThRecorder};
 use super::result::{ResponseHistory, ResponseResult};
 use crate::assemble::assemble_global_m;
 use crate::common::csc_cache::{CscCache, WeightedSumGuard};
+use crate::common::newton::{l2_norm, NewtonCriteria, STATIC_NEWTON};
 use crate::constraint::Reducer;
 use crate::damping::{Damping, DampingAccumulation};
 use crate::pushover::{add_support_spring_f_int, assemble_k, assemble_k_cached_ref, compute_f_int};
@@ -29,15 +30,14 @@ use squid_n_math::sparse::{sparse_matvec, Triplet};
 
 /// 非線形時刻歴応答解析の設定（Newton 収束条件・幾何剛性・長期荷重初期化・記録間引き）。
 ///
-/// 引数が多くなるため、`use_kg`・`max_iter`・`tol` に加えて長期荷重初期化・記録間引きの
+/// 引数が多くなるため、`use_kg`・`newton` に加えて長期荷重初期化・記録間引きの
 /// 設定を 1 つの構造体へまとめている（呼び出し元は本モジュールの `tests` のみのため、
 /// 破壊的変更として導入した）。
 #[derive(Clone, Copy, Debug)]
 pub struct NonlinearThCfg {
-    /// 各時刻ステップの Newton 反復の最大回数。
-    pub max_iter: usize,
-    /// Newton 収束判定の相対許容誤差（残差ノルム / 外力ノルムの最大値基準）。
-    pub tol: f64,
+    /// 各時刻ステップの Newton 反復の収束規約（反復上限・相対許容誤差）。
+    /// 基準ノルムは長期荷重を除いた動的外力ノルムと 1.0 の大きい方。
+    pub newton: NewtonCriteria,
     /// 幾何剛性（P-Δ、Kg）を接線剛性に含めるか。
     pub use_kg: bool,
     /// 時刻歴開始前に長期荷重（固定・積載等、`LoadCaseKind::is_long_term`）を
@@ -52,11 +52,10 @@ pub struct NonlinearThCfg {
 
 impl NonlinearThCfg {
     /// 既定値: 長期荷重初期化あり・幾何剛性なし・記録間引きは自動決定。
-    /// `max_iter`・`tol` のみ呼び出し側で指定する。
+    /// Newton 反復の上限・相対許容誤差のみ呼び出し側で指定する。
     pub fn new(max_iter: usize, tol: f64) -> Self {
         Self {
-            max_iter,
-            tol,
+            newton: NewtonCriteria::new(max_iter, tol),
             use_kg: false,
             apply_long_term: true,
             record_every: None,
@@ -501,7 +500,7 @@ pub fn nonlinear_time_history_analysis(
         let mut du_total = vec![0.0; n_indep];
         let mut converged = false;
 
-        for _iter in 0..cfg.max_iter {
+        for _iter in cfg.newton.iters() {
             // P1: 残差（f_int・C·v・M·a のみで計算可能、K は不要）を先に評価し、
             // 収束していれば接線剛性の組立・有効剛性の組立・分解（このループ内で
             // 最もコストが大きい）を一切行わずに break する。反復が収束するまで
@@ -587,9 +586,9 @@ pub fn nonlinear_time_history_analysis(
 
             // 収束判定（分母は長期荷重 f0 を除いた動的外力ノルムと 1.0 の大きい方。
             // f0 を含めると長期荷重が大きいモデルで判定が過度に緩む）。
-            let r_norm: f64 = r_red.iter().map(|x| x * x).sum::<f64>().sqrt();
-            let p_norm: f64 = p_dyn_red.iter().map(|x| x * x).sum::<f64>().sqrt();
-            if r_norm < cfg.tol * p_norm.max(1.0) {
+            let r_norm = l2_norm(r_red);
+            let p_norm = l2_norm(p_dyn_red);
+            if cfg.newton.converged(r_norm, p_norm.max(1.0)) {
                 converged = true;
                 break;
             }
@@ -923,7 +922,7 @@ fn newton_static_converge(
     k_red_triplets_buf: &mut Vec<Triplet>,
 ) -> Result<Option<Vec<f64>>, SolveError> {
     let mut du_total = vec![0.0; n_indep];
-    for _iter in 0..50 {
+    for _iter in STATIC_NEWTON.iters() {
         // P10: 組立て結果は所有値へ複製せず参照のまま使う
         // （`assemble_k_cached_ref`/`reduce_k_cached_ref`）。
         let k_free = assemble_k_cached_ref(
@@ -948,9 +947,9 @@ fn newton_static_converge(
         for i in 0..n_indep {
             r_red[i] = f_target_red[i] - f_int_red[i];
         }
-        let r_norm: f64 = r_red.iter().map(|x| x * x).sum::<f64>().sqrt();
-        let f_norm: f64 = f_target_red.iter().map(|x| x * x).sum::<f64>().sqrt();
-        if r_norm < 1e-6 * f_norm.max(1.0) {
+        let r_norm = l2_norm(&r_red);
+        let f_norm = l2_norm(f_target_red);
+        if STATIC_NEWTON.converged(r_norm, f_norm.max(1.0)) {
             return Ok(Some(du_total));
         }
         solver

@@ -7,6 +7,7 @@
 //! - [`lumped_mass_time_history`] — 質点系モデルの非線形時刻歴応答解析。
 
 use super::model::{LumpedMassModel, StoryTrilinear};
+use crate::common::newton::{l2_norm, NewtonCriteria};
 use squid_n_material::{HysteresisMaterial, HysteresisRule, UniaxialMaterial};
 
 /// 質点系（せん断型）時刻歴応答解析の結果。
@@ -22,7 +23,16 @@ pub struct StickResponse {
     pub story_peak_shear: Vec<f64>,
     /// 各層の最大塑性率 μ = δmax/δ1（δ1=第1折点変形。δ1≤0 は 0）。
     pub story_ductility: Vec<f64>,
+    /// Newton 反復が上限（[`STICK_NEWTON`]）内に収束しなかった時刻ステップ数。
+    /// 0 でない場合、そのステップは残差が許容誤差を超えたまま確定しており、
+    /// 応答値の信頼性が下がっているため、表示側は利用者へ注記すること
+    /// （従来は非収束をどこにも表さず無音で確定していた）。
+    pub non_converged_steps: usize,
 }
+
+/// 各時刻ステップの Newton 反復の収束規約。基準ノルムは `1 + ‖外力‖`
+/// （無地動区間で分母が退化しないよう 1 を加える）。
+pub const STICK_NEWTON: NewtonCriteria = NewtonCriteria::new(30, 1e-6);
 
 /// 三重対角系 `A·x=b` を Thomas 法で解く（`a`=下副対角, `b_diag`=主対角, `c`=上副対角）。
 pub(crate) fn solve_tridiagonal(a: &[f64], b_diag: &[f64], c: &[f64], d: &[f64]) -> Vec<f64> {
@@ -132,6 +142,7 @@ pub fn lumped_mass_time_history(
             story_peak_drift: vec![0.0; n],
             story_peak_shear: vec![0.0; n],
             story_ductility: vec![0.0; n],
+            non_converged_steps: 0,
         };
     }
     let mass: Vec<f64> = lm.stories.iter().map(|s| s.mass.max(1e-9)).collect();
@@ -164,6 +175,8 @@ pub fn lumped_mass_time_history(
     // 層ドリフト δ_i = u_i − u_{i-1}（u_0=base=0）。
     let drift = |u: &[f64], i: usize| if i == 0 { u[0] } else { u[i] - u[i - 1] };
 
+    let mut non_converged_steps = 0usize;
+
     for (step, &ag) in accel.iter().enumerate() {
         // 外力（地動慣性力）。
         let p: Vec<f64> = mass.iter().map(|&mi| -mi * ag).collect();
@@ -172,8 +185,9 @@ pub fn lumped_mass_time_history(
         let v_prev = v.clone();
         let a_prev = a.clone();
         let mut u_tr = u_prev.clone();
+        let mut step_converged = false;
 
-        for _iter in 0..30 {
+        for _iter in STICK_NEWTON.iters() {
             // 層せん断・接線（各 spring を drift で試行）。
             let mut q = vec![0.0; n];
             let mut kt = vec![0.0; n];
@@ -211,8 +225,8 @@ pub fn lumped_mass_time_history(
                 r[i] = p[i] - mass[i] * a_tr[i] - cv[i] - f_int[i];
                 rnorm += r[i] * r[i];
             }
-            if rnorm.sqrt() < 1e-6 * (1.0 + p.iter().map(|x| x * x).sum::<f64>().sqrt()) {
-                // 収束。
+            if STICK_NEWTON.converged(rnorm.sqrt(), 1.0 + l2_norm(&p)) {
+                step_converged = true;
                 break;
             }
             // 有効接線 Keff = c1·M + c2·C + K_t（三重対角）。
@@ -224,7 +238,12 @@ pub fn lumped_mass_time_history(
             }
         }
 
-        // 確定。
+        // 確定。非収束のまま反復上限へ達した場合も従来どおりトライアル状態を
+        // 確定する（数値挙動は不変）が、無音にはせずステップ数を数えて結果へ
+        // 明示する（プッシュオーバーの打ち切り明示と同じ方針）。
+        if !step_converged {
+            non_converged_steps += 1;
+        }
         for s in springs.iter_mut() {
             s.commit();
         }
@@ -276,6 +295,7 @@ pub fn lumped_mass_time_history(
         story_peak_drift: peak_drift,
         story_peak_shear: peak_shear,
         story_ductility: ductility,
+        non_converged_steps,
     }
 }
 

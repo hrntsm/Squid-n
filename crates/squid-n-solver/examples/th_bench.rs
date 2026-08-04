@@ -355,7 +355,7 @@ fn main() {
 
     let dt = 0.01;
     let n_steps_linear = 4096;
-    // 非線形は Newton 反復（ステップごと最大 `NonlinearThCfg::max_iter` 回、
+    // 非線形は Newton 反復（ステップごと最大 `NonlinearThCfg::newton.max_iter` 回、
     // 既定 20 回）を伴い、線形時刻歴（1ステップ1回の前進代入のみ）より大幅に
     // 計算コストが高い。重ければステップ数を落として計測する。
     let n_steps_nonlinear = 1024;

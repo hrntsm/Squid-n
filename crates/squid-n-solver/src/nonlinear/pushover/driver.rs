@@ -24,6 +24,7 @@ use crate::analysis::{
 };
 use crate::arc_length::ArcLengthSolver;
 use crate::common::csc_cache::CscCache;
+use crate::common::newton::{l2_norm, STATIC_NEWTON};
 use crate::constraint::Reducer;
 use crate::transaction::{StateSnapshot, StatefulModel};
 use smallvec::SmallVec;
@@ -654,8 +655,8 @@ pub fn pushover_analysis_recording(
                     // 荷重制御フェーズと同じく、ステップ内の全 Newton 修正量を累積する。
                     let mut step_du_free = vec![0.0; n_active];
 
-                    // 反復上限は荷重制御フェーズと同じ理由（準ニュートン形式）で 50 回。
-                    for _iter in 0..50 {
+                    // 収束規約は荷重制御フェーズと同じ（[`STATIC_NEWTON`]、準ニュートン形式）。
+                    for _iter in STATIC_NEWTON.iters() {
                         let k_free = assemble_k_cached(
                             model,
                             dofmap,
@@ -691,17 +692,11 @@ pub fn pushover_analysis_recording(
                         // に加え、頂部変位が目標に一致していること。
                         let u_roof = total_disp[roof_active] + step_du_free[roof_active];
                         let gap = sub_target - u_roof;
-                        let r_norm: f64 = st.r_red.iter().map(|x| x * x).sum::<f64>().sqrt();
+                        let r_norm = l2_norm(&st.r_red);
                         reducer.reduce_f_into(&f_ext, &mut st.f_ext_red);
-                        let f_scale: f64 = st
-                            .f_ext_red
-                            .iter()
-                            .map(|x| x * x)
-                            .sum::<f64>()
-                            .sqrt()
-                            .max(1.0);
-                        if r_norm < 1e-6 * f_scale
-                            && gap.abs() < (sub_target.abs() * 1e-6).max(1e-9)
+                        let f_scale = l2_norm(&st.f_ext_red).max(1.0);
+                        if STATIC_NEWTON.converged(r_norm, f_scale)
+                            && gap.abs() < (sub_target.abs() * STATIC_NEWTON.tol).max(1e-9)
                         {
                             converged = true;
                             break;
@@ -1115,9 +1110,9 @@ fn apply_du_to_behaviors(
 
 /// 固定外力 `f_ext` に対する Newton 反復（長期載荷・荷重制御フェーズの共通経路）。
 ///
-/// 収束判定は力の相対ノルム r < 1e-6·max(|f_ext|, 1)。全要素がトライアル追従
-/// （`internal_force` が反復中の未確定変位を反映する）のため弾性支配ではほぼ
-/// 1〜2 回で収束し、上限 50 回は塑性進行時の余裕。収束したらステップ内の
+/// 収束判定は力の相対ノルム r < tol·max(|f_ext|, 1)（規約は [`STATIC_NEWTON`]）。
+/// 全要素がトライアル追従（`internal_force` が反復中の未確定変位を反映する）のため
+/// 弾性支配ではほぼ 1〜2 回で収束し、反復上限は塑性進行時の余裕。収束したらステップ内の
 /// 全 Newton 修正量の累積（＝ステップ変位増分。「最後の修正量」だけを返すと
 /// 塑性ステップで変位軸が過小評価される）を `Some` で返し、要素状態は
 /// トライアル反映済み・未確定のまま戻す（確定・巻き戻しは呼び出し側の責務）。
@@ -1156,7 +1151,7 @@ fn newton_converge(
     st: &mut SolverState,
 ) -> Option<Vec<f64>> {
     let mut step_du_free = vec![0.0; n_active];
-    for _iter in 0..50 {
+    for _iter in STATIC_NEWTON.iters() {
         let k_free = assemble_k_cached(model, dofmap, behaviors, use_kg, &mut st.k_free_cache);
         let k_red = reducer.reduce_k_cached(&k_free, &mut st.k_red_cache);
         let mut f_int = compute_f_int(model, dofmap, behaviors);
@@ -1169,9 +1164,9 @@ fn newton_converge(
         let r_free: Vec<f64> = f_ext.iter().zip(f_int.iter()).map(|(e, i)| e - i).collect();
         reducer.reduce_f_into(&r_free, &mut st.r_red);
         reducer.reduce_f_into(f_ext, &mut st.f_ext_red);
-        let r_norm: f64 = st.r_red.iter().map(|x| x * x).sum::<f64>().sqrt();
-        let f_norm: f64 = st.f_ext_red.iter().map(|x| x * x).sum::<f64>().sqrt();
-        if r_norm < 1e-6 * f_norm.max(1.0) {
+        let r_norm = l2_norm(&st.r_red);
+        let f_norm = l2_norm(&st.f_ext_red);
+        if STATIC_NEWTON.converged(r_norm, f_norm.max(1.0)) {
             return Some(step_du_free);
         }
         // 分解・求解の失敗は非収束として返す（関数ドキュメント参照）。

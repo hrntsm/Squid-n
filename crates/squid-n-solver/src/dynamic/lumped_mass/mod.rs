@@ -20,7 +20,7 @@ pub use model::{
     build_lumped_mass_model, fit_story_trilinear, LumpedMassModel, LumpedMassType, StoryStick,
     StoryTrilinear,
 };
-pub use time_history::{lumped_mass_time_history, StickResponse};
+pub use time_history::{lumped_mass_time_history, StickResponse, STICK_NEWTON};
 
 // tests は両サブモジュールの非公開項目（`pub(crate)`）を `super::*` で参照するため、
 // テストビルド時のみ mod.rs 名前空間へ取り込む。
