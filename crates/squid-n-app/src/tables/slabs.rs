@@ -141,6 +141,7 @@ pub fn slabs_table(ui: &mut egui::Ui, app: &mut App) {
     let mut pending_one_way: Vec<(SlabId, Option<OneWayDir>)> = Vec::new();
     let mut pending_usage: Vec<(SlabId, Option<SlabUsage>)> = Vec::new();
 
+    let row_h = crate::theme::table_row_height(ui);
     TableBuilder::new(ui)
         .striped(true)
         .column(Column::auto())
@@ -152,7 +153,7 @@ pub fn slabs_table(ui: &mut egui::Ui, app: &mut App) {
         .column(Column::initial(230.0))
         .column(Column::initial(60.0))
         .column(Column::auto())
-        .header(20.0, |mut h| {
+        .header(row_h, |mut h| {
             for t in &[
                 "ID",
                 "境界節点",
@@ -170,7 +171,7 @@ pub fn slabs_table(ui: &mut egui::Ui, app: &mut App) {
             }
         })
         .body(|body| {
-            body.rows(22.0, n, |mut row| {
+            body.rows(row_h, n, |mut row| {
                 let i = row.index();
                 let slab = &app.model.slabs[i];
                 row.col(|ui| {

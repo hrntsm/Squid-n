@@ -252,6 +252,7 @@ pub fn materials_table(ui: &mut egui::Ui, app: &mut App) {
     let mut pending_field: Option<(u32, MaterialField, Option<f64>)> = None;
     let mut pending_delete: Option<u32> = None;
 
+    let row_h = crate::theme::table_row_height(ui);
     TableBuilder::new(ui)
         .striped(true)
         .column(Column::auto())
@@ -264,7 +265,7 @@ pub fn materials_table(ui: &mut egui::Ui, app: &mut App) {
         .column(Column::initial(50.0))
         .column(Column::initial(50.0))
         .column(Column::auto())
-        .header(20.0, |mut h| {
+        .header(row_h, |mut h| {
             for t in &[
                 "ID",
                 "名称",
@@ -294,7 +295,7 @@ pub fn materials_table(ui: &mut egui::Ui, app: &mut App) {
             }
         })
         .body(|body| {
-            body.rows(22.0, n, |mut row| {
+            body.rows(row_h, n, |mut row| {
                 let idx = row.index();
                 let mat = &app.model.materials[idx];
                 let mat_id = mat.id;

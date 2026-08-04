@@ -169,12 +169,7 @@ impl<'m> Analysis<'m> {
             let Some(&node) = elem.nodes.first() else {
                 continue;
             };
-            let mut u_elem = vec![0.0; gdofs.len()];
-            for (k, &g) in gdofs.iter().enumerate() {
-                if g != usize::MAX && g < u_free.len() {
-                    u_elem[k] = u_free[g];
-                }
-            }
+            let u_elem = crate::common::elem_loop::gather_u_elem(gdofs, u_free);
             if let Some(m) = behavior.panel_moments_from(&u_elem) {
                 out.push((node, m));
             }

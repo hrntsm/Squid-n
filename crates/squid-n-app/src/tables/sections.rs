@@ -3,7 +3,7 @@ use squid_n_core::ids::SectionId;
 use squid_n_edit::{DeleteSection, SectionField, SetSectionField, SetSectionName};
 
 pub fn sections_table(ui: &mut egui::Ui, app: &mut App) {
-    use egui_extras::{Column, TableBuilder};
+    use egui_extras::Column;
 
     let n = app.model.sections.len();
     let mut pending_name: Vec<(usize, String)> = Vec::new();
@@ -31,105 +31,102 @@ pub fn sections_table(ui: &mut egui::Ui, app: &mut App) {
         })
         .collect();
 
-    TableBuilder::new(ui)
-        .striped(true)
-        .column(Column::auto())
-        .column(Column::initial(100.0))
-        .column(Column::initial(80.0))
-        .column(Column::initial(80.0))
-        .column(Column::initial(80.0))
-        .column(Column::initial(80.0))
-        .column(Column::auto())
-        .header(20.0, |mut h| {
-            for t in &["ID", "名称", "A", "Iy", "Iz", "J", ""] {
-                h.col(|ui| {
-                    ui.strong(*t);
-                });
-            }
-        })
-        .body(|body| {
-            body.rows(22.0, n, |mut row| {
-                let i = row.index();
-                let sec = &app.model.sections[i];
-                row.col(|ui| {
-                    let sid = sec.id;
-                    let is_sel = app.nav.focus_section == Some(sid);
-                    if ui
-                        .add(egui::Button::selectable(is_sel, sid.0.to_string()))
-                        .on_hover_text("クリックでインスペクタに断面詳細を表示")
-                        .clicked()
-                    {
-                        pending_focus = Some(sid);
+    crate::table_util::standard_table(
+        ui,
+        "sections_tbl_0",
+        &[
+            Column::auto(),
+            Column::initial(100.0),
+            Column::initial(80.0),
+            Column::initial(80.0),
+            Column::initial(80.0),
+            Column::initial(80.0),
+            Column::auto(),
+        ],
+        &["ID", "名称", "A", "Iy", "Iz", "J", ""],
+        n,
+        |row| {
+            let i = row.index();
+            let sec = &app.model.sections[i];
+            row.col(|ui| {
+                let sid = sec.id;
+                let is_sel = app.nav.focus_section == Some(sid);
+                if ui
+                    .add(egui::Button::selectable(is_sel, sid.0.to_string()))
+                    .on_hover_text("クリックでインスペクタに断面詳細を表示")
+                    .clicked()
+                {
+                    pending_focus = Some(sid);
+                }
+            });
+            row.col(|ui| {
+                let resp = ui.add(
+                    egui::TextEdit::singleline(&mut name_buf[i])
+                        .desired_width(90.0)
+                        .clip_text(false),
+                );
+                if resp.lost_focus() && resp.changed() {
+                    let trimmed = name_buf[i].trim().to_string();
+                    if trimmed != sec.name && !trimmed.is_empty() {
+                        pending_name.push((i, trimmed));
                     }
-                });
+                }
+            });
+            // A, Iy, Iz, J
+            let fields = [
+                SectionField::Area,
+                SectionField::Iy,
+                SectionField::Iz,
+                SectionField::J,
+            ];
+            for (k, field) in fields.iter().enumerate() {
                 row.col(|ui| {
+                    let buf = &mut num_bufs[i][k];
                     let resp = ui.add(
-                        egui::TextEdit::singleline(&mut name_buf[i])
-                            .desired_width(90.0)
+                        egui::TextEdit::singleline(buf)
+                            .desired_width(70.0)
                             .clip_text(false),
                     );
                     if resp.lost_focus() && resp.changed() {
-                        let trimmed = name_buf[i].trim().to_string();
-                        if trimmed != sec.name && !trimmed.is_empty() {
-                            pending_name.push((i, trimmed));
-                        }
-                    }
-                });
-                // A, Iy, Iz, J
-                let fields = [
-                    SectionField::Area,
-                    SectionField::Iy,
-                    SectionField::Iz,
-                    SectionField::J,
-                ];
-                for (k, field) in fields.iter().enumerate() {
-                    row.col(|ui| {
-                        let buf = &mut num_bufs[i][k];
-                        let resp = ui.add(
-                            egui::TextEdit::singleline(buf)
-                                .desired_width(70.0)
-                                .clip_text(false),
-                        );
-                        if resp.lost_focus() && resp.changed() {
-                            if let Ok(val) = buf.trim().parse::<f64>() {
-                                let old = match field {
-                                    SectionField::Area => sec.area,
-                                    SectionField::Iy => sec.iy,
-                                    SectionField::Iz => sec.iz,
-                                    SectionField::J => sec.j,
-                                    _ => 0.0,
-                                };
-                                if (val - old).abs() > 1e-9 {
-                                    pending_field.push((i, *field, val));
-                                }
+                        if let Ok(val) = buf.trim().parse::<f64>() {
+                            let old = match field {
+                                SectionField::Area => sec.area,
+                                SectionField::Iy => sec.iy,
+                                SectionField::Iz => sec.iz,
+                                SectionField::J => sec.j,
+                                _ => 0.0,
+                            };
+                            if (val - old).abs() > 1e-9 {
+                                pending_field.push((i, *field, val));
                             }
                         }
-                        if buf.trim().parse::<f64>().is_err() {
-                            ui.painter().rect_filled(
-                                resp.rect,
-                                0.0,
-                                crate::theme::translucent(crate::theme::ERROR_RED, 60),
-                            );
-                        }
-                    });
-                }
-                row.col(|ui| {
-                    let sec_id = app.model.sections[i].id;
-                    let in_use = app.model.elements.iter().any(|e| e.section == Some(sec_id))
-                        || app
-                            .model
-                            .slabs
-                            .iter()
-                            .any(|s| s.joists.iter().any(|j| j.section == Some(sec_id)));
-                    let btn = ui.add_enabled(!in_use, egui::Button::new("🗑"));
-                    if in_use {
-                        btn.on_hover_text("部材・小梁から参照中のため削除できません");
-                    } else if btn.clicked() {
-                        pending_delete = Some(sec_id);
+                    }
+                    if buf.trim().parse::<f64>().is_err() {
+                        ui.painter().rect_filled(
+                            resp.rect,
+                            0.0,
+                            crate::theme::translucent(crate::theme::ERROR_RED, 60),
+                        );
                     }
                 });
+            }
+            row.col(|ui| {
+                let sec_id = app.model.sections[i].id;
+                let in_use = app.model.elements.iter().any(|e| e.section == Some(sec_id))
+                    || app
+                        .model
+                        .slabs
+                        .iter()
+                        .any(|s| s.joists.iter().any(|j| j.section == Some(sec_id)));
+                let btn = ui.add_enabled(!in_use, egui::Button::new("🗑"));
+                if in_use {
+                    btn.on_hover_text("部材・小梁から参照中のため削除できません");
+                } else if btn.clicked() {
+                    pending_delete = Some(sec_id);
+                }
             });
-        });
+        },
+    );
 
     // 確定処理
     let (had_name, had_field) = (!pending_name.is_empty(), !pending_field.is_empty());
