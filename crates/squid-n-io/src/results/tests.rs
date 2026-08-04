@@ -255,6 +255,44 @@ fn test_fs_result_store_writer_and_manifest() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// finish 済みでも `discard_pending` した保留エントリは manifest へ採用されない
+/// （途中失敗ジョブの部分結果が後続の sync で照会可能になるのを防ぐ）。
+/// 破棄後の sync は何も追加せず、以降の正常な書き込みは通常どおり反映される。
+#[test]
+fn test_fs_result_store_discard_pending_drops_partial_results() {
+    let dir = std::env::temp_dir().join("p8_fsrs_discard");
+    let _ = std::fs::remove_dir_all(&dir);
+    let mut store = FsResultStore::open(&dir).unwrap();
+
+    // 途中失敗ジョブを模擬: NodalDisp は finish 済み（保留に積まれる）だが、
+    // 後続の書き込みが失敗した想定で保留分を破棄する。
+    {
+        let mut writer = store.writer(1, ResultKind::NodalDisp).unwrap();
+        let batch = nodal_disp_batch(&[1], &[[0.1; 6]]).unwrap();
+        writer.write_rows(&batch).unwrap();
+        writer.finish().unwrap();
+    }
+    store.discard_pending();
+    store.sync().unwrap();
+    assert!(
+        store.manifest().entries.is_empty(),
+        "破棄した保留エントリが manifest へ採用されてはならない"
+    );
+
+    // 破棄後の正常な書き込みは通常どおり manifest へ反映される。
+    {
+        let mut writer = store.writer(2, ResultKind::NodalDisp).unwrap();
+        let batch = nodal_disp_batch(&[1, 2], &[[0.1; 6], [0.2; 6]]).unwrap();
+        writer.write_rows(&batch).unwrap();
+        writer.finish().unwrap();
+    }
+    store.sync().unwrap();
+    assert_eq!(store.manifest().entries.len(), 1);
+    assert_eq!(store.manifest().entries[0].case, 2);
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn test_fs_result_store_rewrite_dedup() {
     let dir = std::env::temp_dir().join("p8_fsrs_dedup");

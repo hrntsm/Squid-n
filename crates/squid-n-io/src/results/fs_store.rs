@@ -97,6 +97,24 @@ impl FsResultStore {
         self.persist()
     }
 
+    /// finish 済みライタが積んだ保留エントリを、manifest へ吸収せずに破棄する。
+    ///
+    /// 複数種別を書き込むジョブが途中で失敗した場合、それまでに finish した
+    /// エントリが保留のまま残り、後続の `sync()`（次の [`Self::writer`] 呼び出し時
+    /// にも自動で走る）で manifest へ採用されて **失敗ジョブの部分結果が照会可能に
+    /// なる**。失敗時は本メソッドで保留分を破棄すること。
+    ///
+    /// 書き込み済みの Parquet ファイル自体は削除しない。同じ case+kind の
+    /// 成功済みエントリが manifest に残っている場合、そのファイルは
+    /// [`Self::writer`] の時点で既に上書きされており、削除するとかえって既存
+    /// エントリの読み出しまで壊すためである（manifest に載らないエントリは
+    /// `query` から参照されない）。
+    pub fn discard_pending(&mut self) {
+        if let Ok(mut pending) = self.pending.lock() {
+            pending.clear();
+        }
+    }
+
     fn persist(&self) -> std::io::Result<()> {
         let data = serde_json::to_string_pretty(&self.manifest).map_err(std::io::Error::other)?;
         std::fs::write(&self.manifest_path, data)
