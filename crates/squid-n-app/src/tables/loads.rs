@@ -754,6 +754,9 @@ fn combinations_section(ui: &mut egui::Ui, app: &mut App) {
                         .run(&mut app.model, Box::new(AddCombination { combo }));
                 }
                 app.staleness.mark_edited();
+                // 別経路で組合せを作れたため、自動生成の失敗表示は解消する
+                // （残すと解決済みのエラーが欄に出続ける）。
+                app.combo_error = None;
             }
         }
         if ui
