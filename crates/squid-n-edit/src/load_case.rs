@@ -26,69 +26,28 @@ impl EditCommand for AddLoadCase {
     }
 }
 
-/// 荷重ケース削除（中身の節点荷重・部材荷重ごと削除し、undo で復元する）。
-/// 荷重組合せから参照中のケースは Noop。
-/// ID＝配列インデックスの不変条件を保つため、後続のケース ID と組合せからの参照を繰り上げる。
-pub struct DeleteLoadCase {
-    pub id: LoadCaseId,
-}
+id_indexed_delete_insert!(
+    /// 荷重ケース削除（中身の節点荷重・部材荷重ごと削除し、undo で復元する）。
+    /// 荷重組合せから参照中のケースは Noop。
+    /// ID＝配列インデックスの不変条件を保つため、後続のケース ID と組合せからの参照を繰り上げる。
+    DeleteLoadCase,
+    /// 指定インデックスへ荷重ケースを再挿入する（[`DeleteLoadCase`] の逆操作専用）。
+    InsertLoadCase,
+    id = LoadCaseId,
+    entity = squid_n_core::model::LoadCase,
+    vec = load_cases,
+    shift = shift_load_case_ids,
+    guard = load_case_in_use,
+    del_label = "荷重ケース削除",
+    ins_label = "荷重ケース削除の取り消し",
+);
 
-impl EditCommand for DeleteLoadCase {
-    fn apply(&self, model: &mut Model) -> Box<dyn EditCommand> {
-        let idx = self.id.index();
-        if idx >= model.load_cases.len() || model.load_cases[idx].id != self.id {
-            return Box::new(Noop);
-        }
-        if model
-            .combinations
-            .iter()
-            .any(|c| c.terms.iter().any(|(lc, _)| *lc == self.id))
-        {
-            return Box::new(Noop);
-        }
-        let removed = model.load_cases.remove(idx);
-        shift_load_case_ids(model, |lcid| {
-            if lcid.0 > self.id.0 {
-                lcid.0 -= 1;
-            }
-        });
-        Box::new(InsertLoadCase {
-            index: idx,
-            old: removed,
-        })
-    }
-
-    fn label(&self) -> &str {
-        "荷重ケース削除"
-    }
-}
-
-/// 指定インデックスへ荷重ケースを再挿入する（[`DeleteLoadCase`] の逆操作専用）。
-pub struct InsertLoadCase {
-    pub index: usize,
-    pub old: squid_n_core::model::LoadCase,
-}
-
-impl EditCommand for InsertLoadCase {
-    fn apply(&self, model: &mut Model) -> Box<dyn EditCommand> {
-        if self.index > model.load_cases.len() {
-            return Box::new(Noop);
-        }
-        let id = LoadCaseId(self.index as u32);
-        shift_load_case_ids(model, |lcid| {
-            if lcid.0 >= id.0 {
-                lcid.0 += 1;
-            }
-        });
-        let mut lc = self.old.clone();
-        lc.id = id;
-        model.load_cases.insert(self.index, lc);
-        Box::new(DeleteLoadCase { id })
-    }
-
-    fn label(&self) -> &str {
-        "荷重ケース削除の取り消し"
-    }
+/// 指定荷重ケースを参照している荷重組合せが存在するか（削除ガード用）。
+fn load_case_in_use(model: &Model, id: LoadCaseId) -> bool {
+    model
+        .combinations
+        .iter()
+        .any(|c| c.terms.iter().any(|(lc, _)| *lc == id))
 }
 
 /// モデル内の全ての `LoadCaseId` 参照（ケース自身の ID を含む）に `f` を適用する。
@@ -126,48 +85,18 @@ impl EditCommand for AddCombination {
     }
 }
 
-/// 荷重組合せを index 指定で削除。逆操作は [`InsertCombination`]（同じ位置への復元）。
-/// 組合せは他のデータから参照されないため ID 再採番は不要。index が範囲外なら Noop。
-pub struct DeleteCombination {
-    pub index: usize,
-}
-
-impl EditCommand for DeleteCombination {
-    fn apply(&self, model: &mut Model) -> Box<dyn EditCommand> {
-        if self.index >= model.combinations.len() {
-            return Box::new(Noop);
-        }
-        let removed = model.combinations.remove(self.index);
-        Box::new(InsertCombination {
-            index: self.index,
-            combo: removed,
-        })
-    }
-
-    fn label(&self) -> &str {
-        "荷重組合せ削除"
-    }
-}
-
-/// 指定インデックスへ荷重組合せを再挿入する（[`DeleteCombination`] の逆操作専用）。
-pub struct InsertCombination {
-    pub index: usize,
-    pub combo: squid_n_core::model::LoadCombination,
-}
-
-impl EditCommand for InsertCombination {
-    fn apply(&self, model: &mut Model) -> Box<dyn EditCommand> {
-        if self.index > model.combinations.len() {
-            return Box::new(Noop);
-        }
-        model.combinations.insert(self.index, self.combo.clone());
-        Box::new(DeleteCombination { index: self.index })
-    }
-
-    fn label(&self) -> &str {
-        "荷重組合せ削除の取り消し"
-    }
-}
+indexed_delete_insert!(
+    /// 荷重組合せを index 指定で削除。逆操作は [`InsertCombination`]（同じ位置への復元）。
+    /// 組合せは他のデータから参照されないため ID 再採番は不要。index が範囲外なら Noop。
+    DeleteCombination,
+    /// 指定インデックスへ荷重組合せを再挿入する（[`DeleteCombination`] の逆操作専用）。
+    InsertCombination,
+    entity = squid_n_core::model::LoadCombination,
+    vec = combinations,
+    field = combo,
+    del_label = "荷重組合せ削除",
+    ins_label = "荷重組合せ削除の取り消し",
+);
 
 /// 階定義の一括適用（階自動生成の結果を反映する）。
 ///
@@ -301,65 +230,23 @@ impl EditCommand for AddSlab {
     }
 }
 
-/// 床削除（中間の床も可）。逆操作は [`InsertSlab`]。
-///
-/// ID＝配列インデックスの不変条件を保つため、削除後は当該床より後ろの
-/// 床 ID を 1 つずつ繰り上げる。`SlabId` は床自身の ID 以外からは参照されない
-/// （`crates` 全体で grep 済み）ため、他データへの追従は不要。
-pub struct DeleteSlab {
-    pub id: SlabId,
-}
-
-impl EditCommand for DeleteSlab {
-    fn apply(&self, model: &mut Model) -> Box<dyn EditCommand> {
-        let idx = self.id.index();
-        if idx >= model.slabs.len() || model.slabs[idx].id != self.id {
-            return Box::new(Noop);
-        }
-        let removed = model.slabs.remove(idx);
-        shift_slab_ids(model, |id| {
-            if id.0 > self.id.0 {
-                id.0 -= 1;
-            }
-        });
-        Box::new(InsertSlab {
-            index: idx,
-            old: removed,
-        })
-    }
-
-    fn label(&self) -> &str {
-        "床削除"
-    }
-}
-
-/// 指定インデックスへ床を再挿入する（[`DeleteSlab`] の逆操作専用）。
-pub struct InsertSlab {
-    pub index: usize,
-    pub old: squid_n_core::model::Slab,
-}
-
-impl EditCommand for InsertSlab {
-    fn apply(&self, model: &mut Model) -> Box<dyn EditCommand> {
-        if self.index > model.slabs.len() {
-            return Box::new(Noop);
-        }
-        let id = SlabId(self.index as u32);
-        shift_slab_ids(model, |sid| {
-            if sid.0 >= id.0 {
-                sid.0 += 1;
-            }
-        });
-        let mut slab = self.old.clone();
-        slab.id = id;
-        model.slabs.insert(self.index, slab);
-        Box::new(DeleteSlab { id })
-    }
-
-    fn label(&self) -> &str {
-        "床削除の取り消し"
-    }
-}
+id_indexed_delete_insert!(
+    /// 床削除（中間の床も可）。逆操作は [`InsertSlab`]。
+    ///
+    /// ID＝配列インデックスの不変条件を保つため、削除後は当該床より後ろの
+    /// 床 ID を 1 つずつ繰り上げる。`SlabId` は床自身の ID 以外からは参照されない
+    /// （`crates` 全体で grep 済み）ため、他データへの追従は不要。
+    DeleteSlab,
+    /// 指定インデックスへ床を再挿入する（[`DeleteSlab`] の逆操作専用）。
+    InsertSlab,
+    id = SlabId,
+    entity = squid_n_core::model::Slab,
+    vec = slabs,
+    shift = shift_slab_ids,
+    guard = |_: &Model, _| false,
+    del_label = "床削除",
+    ins_label = "床削除の取り消し",
+);
 
 /// モデル内の全ての `SlabId` 参照（床自身の ID を含む）に `f` を適用する。
 fn shift_slab_ids(model: &mut Model, mut f: impl FnMut(&mut SlabId)) {

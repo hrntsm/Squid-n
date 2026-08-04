@@ -30,7 +30,7 @@
 //! 定義できないため、全体座標系＝局所座標系（単位回転）とみなして扱う
 //! （零長バネは主に鉛直な独立要素として用いられ、軸の傾きを持たないため）。
 
-use crate::behavior::{Ctx, ElemState, ElementBehavior, LocalMat, LocalVec, MassOption};
+use crate::behavior::{Ctx, ElementBehavior, LocalMat, LocalVec, MassOption};
 use crate::transform::LocalFrame;
 use smallvec::SmallVec;
 use squid_n_core::dof::{DofMap, DOF_PER_NODE};
@@ -137,11 +137,11 @@ impl ElementBehavior for NodalSpringElement {
         gdofs
     }
 
-    fn tangent_stiffness(&self, _state: &ElemState, _ctx: &Ctx) -> LocalMat {
+    fn tangent_stiffness(&self, _ctx: &Ctx) -> LocalMat {
         self.axis.to_global(&self.local_stiffness())
     }
 
-    fn internal_force(&self, _state: &ElemState, _ctx: &Ctx) -> LocalVec {
+    fn internal_force(&self, _ctx: &Ctx) -> LocalVec {
         // 線形弾性: f = K_global · u（トライアル追従。truss.rs と同じ規約）。
         let k = self.axis.to_global(&self.local_stiffness());
         let mut f = LocalVec {
@@ -213,11 +213,7 @@ impl ElementBehavior for NodalSpringElement {
         LocalMat::zeros(12)
     }
 
-    fn state_member_forces(
-        &self,
-        _state: &ElemState,
-        _ctx: &Ctx,
-    ) -> Option<crate::beam::MemberForces> {
+    fn state_member_forces(&self, _ctx: &Ctx) -> Option<crate::beam::MemberForces> {
         // 弾性バネのため、累積した全変位（global）から `recover_forces` と
         // 同じ経路で断面力を返す（非線形解析の部材内力記録用）。
         self.recover_forces(&self.trial_disp)
@@ -373,7 +369,7 @@ mod tests {
         );
 
         let ctx = Ctx { model: &model };
-        let k_global = spring.tangent_stiffness(&ElemState::default(), &ctx);
+        let k_global = spring.tangent_stiffness(&ctx);
         let k_local = spring.local_stiffness();
         for i in 0..12 {
             for j in 0..12 {
@@ -396,7 +392,7 @@ mod tests {
         );
         let spring = NodalSpringElement::new(&data, &model);
         let ctx = Ctx { model: &model };
-        let k_global = spring.tangent_stiffness(&ElemState::default(), &ctx);
+        let k_global = spring.tangent_stiffness(&ctx);
 
         let t = [2000.0 / l, 2000.0 / l, 0.0];
         let kx = 1000.0;
@@ -423,14 +419,14 @@ mod tests {
         let spring = NodalSpringElement::new(&data, &model);
         assert_eq!(spring.k, [0.0; 6]);
         let ctx = Ctx { model: &model };
-        let k_global = spring.tangent_stiffness(&ElemState::default(), &ctx);
+        let k_global = spring.tangent_stiffness(&ctx);
         for i in 0..12 {
             for j in 0..12 {
                 assert_eq!(k_global.get(i, j), 0.0);
             }
         }
         // internal_force / recover_forces もパニックしないこと
-        let f = spring.internal_force(&ElemState::default(), &ctx);
+        let f = spring.internal_force(&ctx);
         for i in 0..12 {
             assert_eq!(f.data[i], 0.0);
         }
@@ -490,7 +486,7 @@ mod tests {
             make_model([500.0, 100.0, 0.0], [1800.0, 900.0, 700.0], [0.0, 0.0, 1.0]);
         let spring = NodalSpringElement::new(&data, &model);
         let ctx = Ctx { model: &model };
-        let k = spring.tangent_stiffness(&ElemState::default(), &ctx);
+        let k = spring.tangent_stiffness(&ctx);
         for i in 0..12 {
             for j in 0..12 {
                 assert!(

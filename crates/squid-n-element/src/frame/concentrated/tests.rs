@@ -66,13 +66,12 @@ fn test_internal_force_no_double_count() {
     let ctx = Ctx {
         model: &squid_n_core::model::Model::default(),
     };
-    let state = ElemState::default();
     let du = LocalVec {
         data: smallvec::smallvec![0.0, 0.0, 0.0, 0.0, 0.0, 0.001, 0.0, 0.0, 0.0, 0.0, 0.0, -0.001],
     };
     elem.update_state(&du, true, &ctx);
-    let k = elem.tangent_stiffness(&state, &ctx);
-    let f = elem.internal_force(&state, &ctx);
+    let k = elem.tangent_stiffness(&ctx);
+    let f = elem.internal_force(&ctx);
     let mut k_u = [0.0; 12];
     for i in 0..12 {
         let mut s = 0.0;
@@ -95,18 +94,17 @@ fn test_dof_only_rz() {
     let ctx = Ctx {
         model: &squid_n_core::model::Model::default(),
     };
-    let state = ElemState::default();
     let du = LocalVec {
         data: smallvec::smallvec![0.0, 0.0, 0.0, 0.0, 0.0, 0.001, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
     };
     elem.update_state(&du, true, &ctx);
-    let f = elem.internal_force(&state, &ctx);
+    let f = elem.internal_force(&ctx);
     assert!(f.data[3].abs() < 1.0, "rx_i should not have spring moment");
     assert!(f.data[4].abs() < 1.0, "ry_i should not have spring moment");
     assert!(f.data[9].abs() < 1.0, "rx_j should not have spring moment");
     assert!(f.data[10].abs() < 1.0, "ry_j should not have spring moment");
 
-    let k = elem.tangent_stiffness(&state, &ctx);
+    let k = elem.tangent_stiffness(&ctx);
     let k_sym = |i: usize, j: usize| {
         if k.get(i, j) != k.get(j, i) {
             (k.get(i, j) - k.get(j, i)).abs() < 1e-6
@@ -127,7 +125,6 @@ fn test_spring_yield() {
     let ctx = Ctx {
         model: &squid_n_core::model::Model::default(),
     };
-    let state = ElemState::default();
 
     let rot_yield = 1.0e7 / 1.0e12;
     let du_large = LocalVec {
@@ -147,10 +144,10 @@ fn test_spring_yield() {
         ],
     };
 
-    let k_elastic = elem.tangent_stiffness(&state, &ctx);
+    let k_elastic = elem.tangent_stiffness(&ctx);
 
     elem.update_state(&du_large, true, &ctx);
-    let k_yielded = elem.tangent_stiffness(&state, &ctx);
+    let k_yielded = elem.tangent_stiffness(&ctx);
 
     let k55_elastic = k_elastic.get(5, 5);
     let k55_yielded = k_yielded.get(5, 5);
@@ -230,13 +227,12 @@ fn test_tangent_stiffness_symmetric() {
     let ctx = Ctx {
         model: &squid_n_core::model::Model::default(),
     };
-    let state = ElemState::default();
 
     let du = LocalVec {
         data: smallvec::smallvec![0.0, 0.0, 0.0, 0.0, 0.0, 0.001, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
     };
     elem.update_state(&du, true, &ctx);
-    let k = elem.tangent_stiffness(&state, &ctx);
+    let k = elem.tangent_stiffness(&ctx);
     for i in 0..12 {
         for j in 0..12 {
             assert!(
@@ -574,20 +570,19 @@ fn test_state_member_forces_matches_internal_force() {
     let ctx = Ctx {
         model: &squid_n_core::model::Model::default(),
     };
-    let state = ElemState::default();
     let du = LocalVec {
         data: smallvec::smallvec![0.0, 0.0, 0.0, 0.0, 0.0, 0.001, 0.0, 0.0, 0.0, 0.0, 0.0, -0.001],
     };
     elem.update_state(&du, true, &ctx);
 
     let mf = elem
-        .state_member_forces(&state, &ctx)
+        .state_member_forces(&ctx)
         .expect("材端集中ばね梁は state_member_forces を実装しているはず");
     assert_eq!(mf.at.len(), 3, "評価断面数（0/0.5/1.0）と一致するはず");
 
     // 端部の断面内力は復元力の端部節点力（局所系）と釣合いで対応する。
     // i 端: Mz = -f5、j 端: Mz = +f11（member_forces_from_end_forces の規約）。
-    let f = elem.internal_force(&state, &ctx);
+    let f = elem.internal_force(&ctx);
     let arr: [f64; 12] = std::array::from_fn(|i| f.data[i]);
     let f_local = elem.elastic.axis.rotate_to_local(&arr);
     let mz_i = mf.at[0].1[5];

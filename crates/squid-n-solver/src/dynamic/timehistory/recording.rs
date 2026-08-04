@@ -9,7 +9,7 @@ use super::result::{StoryResponse, ThRecording};
 use squid_n_core::dof::{DofMap, DOF_PER_NODE};
 use squid_n_core::model::Model;
 use squid_n_element::beam::MemberForces;
-use squid_n_element::behavior::{Ctx, ElemState, ElementBehavior};
+use squid_n_element::behavior::{Ctx, ElementBehavior};
 
 /// 記録フレーム数が概ね 1000 になるよう `record_every`（間引き係数）を自動決定する。
 /// `n_steps` はステップ数（フレーム数は `n_steps+1`）。
@@ -47,10 +47,9 @@ pub(crate) fn member_forces_nonlinear(
     behaviors: &[Box<dyn ElementBehavior>],
 ) -> Vec<Option<MemberForces>> {
     let ctx = Ctx { model };
-    let state = ElemState::default();
     behaviors
         .iter()
-        .map(|b| b.state_member_forces(&state, &ctx))
+        .map(|b| b.state_member_forces(&ctx))
         .collect()
 }
 
@@ -148,18 +147,10 @@ fn trim_member_forces_to_endpoints(forces: &[Option<MemberForces>]) -> Vec<Optio
 }
 
 /// 節点順の全自由度変位（拘束・従属自由度を含む）を組み立てる。`u_free` は
-/// 自由 DOF 空間（`dofmap` のアクティブ添字順）の展開済みベクトル。
+/// 自由 DOF 空間（`dofmap` のアクティブ添字順）の展開済みベクトル
+/// （単一実装は core 側）。
 fn expand_node_disp(model: &Model, dofmap: &DofMap, u_free: &[f64]) -> Vec<[f64; 6]> {
-    let mut out = vec![[0.0f64; 6]; model.nodes.len()];
-    for ni in 0..model.nodes.len() {
-        for d in 0..DOF_PER_NODE {
-            let g = ni * DOF_PER_NODE + d;
-            if let Some(a) = dofmap.active(g) {
-                out[ni][d] = u_free[a as usize];
-            }
-        }
-    }
-    out
+    dofmap.expand_to_nodes(u_free, model.nodes.len())
 }
 
 /// 階に属する節点の自由 DOF の一覧。

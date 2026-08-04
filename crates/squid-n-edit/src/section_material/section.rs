@@ -251,69 +251,22 @@ impl EditCommand for RestoreElementSectionAndDeleteSection {
     }
 }
 
-/// 断面削除。逆操作は AddSection。
-///
-/// 部材から参照中の断面は削除すると参照が壊れるため Noop とする
-/// （先に割当を解除するか、UI 側でボタンを無効化する）。
-/// ID＝配列インデックスの不変条件を保つため、削除後は後続の断面 ID と
-/// 部材からの参照を 1 つずつ繰り上げる。
-pub struct DeleteSection {
-    pub id: SectionId,
-}
-
-impl EditCommand for DeleteSection {
-    fn apply(&self, model: &mut Model) -> Box<dyn EditCommand> {
-        let idx = self.id.index();
-        if idx >= model.sections.len() || model.sections[idx].id != self.id {
-            return Box::new(Noop);
-        }
-        if section_in_use(model, self.id) {
-            return Box::new(Noop);
-        }
-        let removed = model.sections.remove(idx);
-        shift_section_ids(model, |sid| {
-            if sid.0 > self.id.0 {
-                sid.0 -= 1;
-            }
-        });
-        Box::new(AddSection {
-            old: removed,
-            index: idx,
-        })
-    }
-
-    fn label(&self) -> &str {
-        "断面削除"
-    }
-}
-
-/// 断面追加（DeleteSection の逆操作）。後続の断面 ID・参照を 1 つ繰り下げてから挿入する。
-pub struct AddSection {
-    pub old: squid_n_core::model::Section,
-    pub index: usize,
-}
-
-impl EditCommand for AddSection {
-    fn apply(&self, model: &mut Model) -> Box<dyn EditCommand> {
-        if self.index > model.sections.len() {
-            return Box::new(Noop);
-        }
-        let id = SectionId(self.index as u32);
-        shift_section_ids(model, |sid| {
-            if sid.0 >= id.0 {
-                sid.0 += 1;
-            }
-        });
-        let mut sec = self.old.clone();
-        sec.id = id;
-        model.sections.insert(self.index, sec);
-        Box::new(DeleteSection { id })
-    }
-
-    fn label(&self) -> &str {
-        "断面追加"
-    }
-}
+id_indexed_delete_insert!(
+    /// 断面削除。部材から参照中の断面は削除すると参照が壊れるため Noop とする
+    /// （先に割当を解除するか、UI 側でボタンを無効化する）。
+    /// ID＝配列インデックスの不変条件を保つため、削除後は後続の断面 ID と
+    /// 部材からの参照を 1 つずつ繰り上げる。
+    DeleteSection,
+    /// 断面追加（DeleteSection の逆操作）。後続の断面 ID・参照を 1 つ繰り下げてから挿入する。
+    AddSection,
+    id = SectionId,
+    entity = squid_n_core::model::Section,
+    vec = sections,
+    shift = shift_section_ids,
+    guard = section_in_use,
+    del_label = "断面削除",
+    ins_label = "断面追加",
+);
 
 /// モデル内の全ての `SectionId` 参照（断面自身の ID を含む）に `f` を適用する。
 /// 走査は core 側（[`Model::visit_section_ids`]）が単一情報源として持つ

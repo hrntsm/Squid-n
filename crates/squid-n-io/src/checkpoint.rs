@@ -5,7 +5,7 @@ use sha2::{Digest, Sha256};
 use std::io;
 use std::path::Path;
 
-/// P5 §6 の StateSnapshot を直列化したバイト列（全 ElemState・全材料 committed）。
+/// P5 §6 の StateSnapshot を直列化したバイト列（全要素・全材料の committed 状態）。
 /// 線形時刻歴では空配列でよい。
 #[derive(serde::Serialize, serde::Deserialize, PartialEq, Debug)]
 pub struct StateBlob {
@@ -277,7 +277,7 @@ mod tests {
         };
 
         // 要素ビヘイビアを構築し、状態変化を加える
-        let (mut behavior, _) = build_nonlinear_behavior(
+        let mut behavior = build_nonlinear_behavior(
             &model.elements[0],
             &model,
             StrengthBasis::Nominal,
@@ -301,7 +301,7 @@ mod tests {
             .unwrap();
 
         // 新しいビヘイビアを初期状態で作成し、チェックポイントから復元
-        let (new_behavior, _) = build_nonlinear_behavior(
+        let new_behavior = build_nonlinear_behavior(
             &model.elements[0],
             &model,
             StrengthBasis::Nominal,
@@ -406,7 +406,7 @@ mod tests {
         let model_a = make_model(1000.0);
         let model_b = make_model(2000.0); // 異なるヤング率 → ハッシュ不一致
 
-        let (behavior, _) = build_nonlinear_behavior(
+        let behavior = build_nonlinear_behavior(
             &model_a.elements[0],
             &model_a,
             StrengthBasis::Nominal,
@@ -419,7 +419,7 @@ mod tests {
         save_nonlinear_checkpoint(&dir, &model_a, 0, 0.0, &[0.0], &[0.0], &[0.0], &behaviors)
             .unwrap();
 
-        let (new_behavior, _) = build_nonlinear_behavior(
+        let new_behavior = build_nonlinear_behavior(
             &model_b.elements[0],
             &model_b,
             StrengthBasis::Nominal,

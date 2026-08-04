@@ -13,7 +13,7 @@ use squid_n_core::material_grade::{
 use squid_n_core::model::{ElementData, Material, Model, RigidZone, Section};
 use squid_n_core::rc_capacity::{rc_qsu_simple, RcCapacityInput};
 use squid_n_core::section_shape::{BarSet, RcRebar, SectionShape};
-use squid_n_element::behavior::{Ctx, ElemState, ElementBehavior};
+use squid_n_element::behavior::{Ctx, ElementBehavior};
 use squid_n_element::transform::LocalFrame;
 
 /// せん断降伏耐力 Qy の判定しきい値（部材ごと、局所 y・z 方向、独立）。
@@ -25,7 +25,7 @@ use squid_n_element::transform::LocalFrame;
 /// Vy vs `y.qy(..)`・Vz vs `z.qy(..)` を独立に判定する（v1 のような
 /// 「合力 vs min(qy_y,qy_z)」の丸めは行わない）。断面→要素座標系のクロス変換は
 /// `beam/construct.rs` と同一規約。
-/// RC矩形（[`DirThreshold::RcArakawa`]）方向は、各ステップの部材軸力（圧縮）
+/// RC矩形・SRC矩形（[`DirThreshold::RcArakawa`]）方向は、各ステップの部材軸力（圧縮）
 /// から動的に σ0 を反映した Qy を都度算定する（精緻化2、`track_shear_yield` 参照）。
 pub(crate) struct ShearThreshold {
     pub(crate) y: DirThreshold,
@@ -36,9 +36,11 @@ pub(crate) struct ShearThreshold {
 ///
 /// `Static` は解析開始時に一度だけ算定される軸力非依存のしきい値（鋼系、または
 /// 配筋情報が無い／算定不能な RC のフォールバック）。`RcArakawa` は RC矩形
-/// （`SectionShape::RcRect`）の荒川mean式系の略算式で、σ0 を除く入力一式を
-/// 保持しておき、各ステップの軸力から求めた σ0 で上書きして
-/// [`rc_qsu_simple`] を呼び直す（精緻化2）。
+/// （`SectionShape::RcRect`）・SRC矩形（`SectionShape::SrcRect`）の
+/// 荒川mean式系の略算式で、σ0 を除く入力一式を保持しておき、各ステップの
+/// 軸力から求めた σ0 で上書きして [`rc_qsu_simple`] を呼び直す（精緻化2）。
+/// SRC は内蔵鉄骨の全塑性せん断（`steel_qy`）を累加する（SRC 規準の
+/// 累加強度の考え方）。
 pub(crate) enum DirThreshold {
     Static(f64),
     RcArakawa {
@@ -48,6 +50,8 @@ pub(crate) enum DirThreshold {
         /// 全断面積 [mm²]（= b・D。方向によらず同一値。σ0 = 圧縮軸力/gross_area
         /// の算定に用いる）。
         gross_area: f64,
+        /// 内蔵鉄骨の全塑性せん断耐力 sAw・F/√3 [N]（SRC の累加項。RC は 0）。
+        steel_qy: f64,
     },
 }
 
@@ -57,11 +61,15 @@ impl DirThreshold {
     ///
     /// `Static` は軸力によらず一定値。`RcArakawa` は σ0 = n_compress/gross_area
     /// （荒川式の適用範囲 0〜0.4Fc へのクランプは [`rc_qsu_simple`] 内で行う）を
-    /// 反映した Qsu を都度算定する。
+    /// 反映した Qsu を都度算定し、SRC の場合は内蔵鉄骨の累加項を加える。
     pub(crate) fn qy(&self, n_compress: f64) -> f64 {
         match self {
             DirThreshold::Static(v) => *v,
-            DirThreshold::RcArakawa { input, gross_area } => {
+            DirThreshold::RcArakawa {
+                input,
+                gross_area,
+                steel_qy,
+            } => {
                 let sigma_0 = if *gross_area > 0.0 {
                     n_compress / gross_area
                 } else {
@@ -69,7 +77,7 @@ impl DirThreshold {
                 };
                 let mut inp = *input;
                 inp.sigma_0 = sigma_0;
-                rc_qsu_simple(&inp)
+                rc_qsu_simple(&inp) + steel_qy
             }
         }
     }
@@ -149,14 +157,15 @@ fn rc_rect_capacity_input(
 
 /// 方向別のせん断降伏耐力しきい値（[`DirThreshold`]）を組み立てる。
 ///
-/// RC矩形（`SectionShape::RcRect`）で `fy` が無く、配筋情報から Qsu(σ0=0) が
-/// 算定可能（正の値）な場合のみ [`DirThreshold::RcArakawa`] を採用し、各ステップ
-/// で軸力から動的算定した σ0 を反映する。それ以外（鋼系・配筋情報が無い／
-/// 算定不能な RC・有効せん断断面積や材料情報が無い場合）は、解析開始時に一度だけ
-/// 算定した [`DirThreshold::Static`] を用いる（採用式は下記）:
+/// 断面形状から精算できる場合（RC矩形＝荒川式、SRC矩形＝荒川式＋内蔵鉄骨の
+/// 累加）を**材料 `fy` の有無より優先**して [`DirThreshold::RcArakawa`] を採用し、
+/// 各ステップで軸力から動的算定した σ0 を反映する（fy は主筋 σy の解決用に
+/// RC・SRC 材料へも設定され得るため、fy を先に見ると鋼系の式へ誤って流れる）。
+/// 形状から精算できない断面は、解析開始時に一度だけ算定した
+/// [`DirThreshold::Static`] を用いる（採用式は下記）:
 /// - 鋼系部材（材料に `fy` が設定されている）: Qy = as・fy / √3
 ///   （純せん断降伏条件 τy = fy/√3（von Mises）に有効せん断断面積を乗じた慣用式）。
-/// - RC 系部材で `RcRect` 形状が無い、または Qsu 算定不能な場合: Qy = as・0.7√fc
+/// - RC 系部材で形状が無い、または Qsu 算定不能な場合: Qy = as・0.7√fc
 ///   （コンクリートのせん断終局強度に対する簡易慣用値。荒川式等の精算は行わない）。
 /// - 有効せん断断面積 `as_area` が 0（未設定）、または材料・強度情報が無い場合は
 ///   判定対象外として Qy = +∞（その方向のせん断では耐力喪失を判定しない）。
@@ -177,16 +186,12 @@ fn build_dir_threshold(
     let Some(mat) = material else {
         return DirThreshold::Static(f64::INFINITY);
     };
-    if let Some(fy) = mat.fy {
-        // 保有水平耐力計算専用のため、鋼材の材料強度割増を無条件で乗じる
-        // （直接入力係数優先、無ければ鋼材グレード名判定=1.1・590N級=1.05）。
-        return DirThreshold::Static(
-            as_area * fy * material_strength_factor_steel(mat) / 3.0_f64.sqrt(),
-        );
-    }
-    let Some(fc) = mat.fc else {
-        return DirThreshold::Static(f64::INFINITY);
-    };
+    // 断面形状（RcRect・SrcRect）による精算を材料 fy の有無より**先に**判定する。
+    // RC・SRC 部材でも fy は「主筋 σy のフォールバック」等の目的で設定され得る
+    // （鋼種名を解決できない SRC は解析前チェックが fy の設定を利用者へ指示する）
+    // ため、fy を先に見ると剛性等価換算面積 × fy/√3 という桁違いに大きい鋼系式へ
+    // 流れ、せん断降伏が事実上検出されなくなる（危険側）。形状から精算できる
+    // 断面は常に荒川式系（RC）・累加式（SRC）で評価する。
     if let Some(Section {
         shape: Some(SectionShape::RcRect { b, d, rebar }),
         ..
@@ -201,10 +206,78 @@ fn build_dir_threshold(
                 return DirThreshold::RcArakawa {
                     gross_area: input.b * input.d,
                     input,
+                    steel_qy: 0.0,
                 };
             }
         }
     }
+    // SRC 矩形: RC 部（荒川式。鉄骨を控除しない gross b·d と配筋で評価し、
+    // σ0 の動的反映も RcRect と同一）に内蔵鉄骨の全塑性せん断 sAw·F/√3 を
+    // 累加する（SRC 規準の累加強度の考え方。表 2.6.6-5 の N0・sM0 略算と同じ流儀）。
+    // 従来は剛性等価換算せん断断面積（ヤング係数比で増した鋼材面積を含む）に
+    // 0.7√Fc を乗じており、剛性計算用の面積を強度式へ流用する根拠がなかった。
+    if let Some(Section {
+        shape:
+            Some(SectionShape::SrcRect {
+                b,
+                d,
+                rebar,
+                steel_height,
+                steel_width,
+                steel_web_thick,
+                steel_flange_thick,
+                steel_grade,
+            }),
+        ..
+    }) = section
+    {
+        let input = match dir {
+            ShearDir::Y => rc_rect_capacity_input(*b, *d, &rebar.main_x, rebar, mat, clear_span),
+            ShearDir::Z => rc_rect_capacity_input(*d, *b, &rebar.main_y, rebar, mat, clear_span),
+        };
+        // 鉄骨のせん断有効断面積: 強軸（局所 y）＝ウェブ内法 tw·(H−2tf)、
+        // 弱軸（局所 z）＝上下フランジ 2·B·tf（全塑性評価のため許容応力度検定の
+        // 応力分布係数 1.5 による低減は行わない）。F 値は鋼種名の前方一致で
+        // 当該板厚の区分から解決し、不明時は 235。材料強度割増は直接入力係数を
+        // 優先し、無ければ鋼種名から判定（鋼材=1.1・590N 級=1.05）。
+        let (sh, sb, tw, tf) = (
+            *steel_height,
+            *steel_width,
+            *steel_web_thick,
+            *steel_flange_thick,
+        );
+        let (s_aw, plate_t) = match dir {
+            ShearDir::Y => ((tw * (sh - 2.0 * tf)).max(0.0), tw),
+            ShearDir::Z => ((2.0 * sb * tf).max(0.0), tf),
+        };
+        let s_f = squid_n_core::material_grade::steel_f_value_prefix(steel_grade, plate_t)
+            .unwrap_or(235.0);
+        let factor = mat.strength_factor.unwrap_or_else(|| {
+            squid_n_core::material_grade::steel_material_strength_factor(steel_grade)
+        });
+        let steel_qy = s_aw * s_f * factor / 3.0_f64.sqrt();
+        if let Some(input) = input {
+            if rc_qsu_simple(&input) + steel_qy > 0.0 {
+                return DirThreshold::RcArakawa {
+                    gross_area: input.b * input.d,
+                    input,
+                    steel_qy,
+                };
+            }
+        }
+    }
+    // 形状から精算できない断面: 鋼系（fy あり）は von Mises の慣用式、
+    // RC 系（fc あり）は簡易慣用値、どちらも無ければ判定対象外。
+    if let Some(fy) = mat.fy {
+        // 保有水平耐力計算専用のため、鋼材の材料強度割増を無条件で乗じる
+        // （直接入力係数優先、無ければ鋼材グレード名判定=1.1・590N級=1.05）。
+        return DirThreshold::Static(
+            as_area * fy * material_strength_factor_steel(mat) / 3.0_f64.sqrt(),
+        );
+    }
+    let Some(fc) = mat.fc else {
+        return DirThreshold::Static(f64::INFINITY);
+    };
     DirThreshold::Static(as_area * 0.7 * fc.sqrt())
 }
 
@@ -308,7 +381,6 @@ pub(crate) fn track_shear_yield(
     step: u32,
     events: &mut Vec<ShearYieldEvent>,
 ) {
-    let state = ElemState::default();
     let ctx = Ctx { model };
     for (i, (elem, b)) in model.elements.iter().zip(behaviors).enumerate() {
         // 2 節点の線材のみ対象。4 節点の耐震壁は nodes[0]→nodes[1] が壁脚の幅方向
@@ -332,7 +404,7 @@ pub(crate) fn track_shear_yield(
         let ey = frame.rot[1];
         let ez = frame.rot[2];
 
-        let f = b.internal_force(&state, &ctx);
+        let f = b.internal_force(&ctx);
         let f_i = [f.data[0], f.data[1], f.data[2]];
         let f_j = [f.data[6], f.data[7], f.data[8]];
         let vy = dot3(f_i, ey).abs().max(dot3(f_j, ey).abs());

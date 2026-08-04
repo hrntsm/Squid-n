@@ -10,7 +10,7 @@ use super::geom::{axial_compression, dot3, member_end_forces_at_face};
 use super::types::{MemberStepState, PushoverMemberResponse};
 use squid_n_core::dof::DofMap;
 use squid_n_core::model::{ElementData, Model};
-use squid_n_element::behavior::{Ctx, ElemState, ElementBehavior, LocalVec};
+use squid_n_element::behavior::{Ctx, ElementBehavior, LocalVec};
 use squid_n_element::transform::LocalFrame;
 
 /// 部材の変形角 R [rad]（弦回転角＝層間変形角相当）を節点変位から算定する。
@@ -105,7 +105,6 @@ pub(crate) fn record_member_step(
     behaviors: &[Box<dyn ElementBehavior>],
     total_disp: &[f64],
 ) -> Vec<MemberStepState> {
-    let state = ElemState::default();
     let ctx = Ctx { model };
     model
         .elements
@@ -135,7 +134,7 @@ pub(crate) fn record_member_step(
             let ez = frame.rot[2];
 
             // 剛域フェイス位置の局所曲げ（My=4/10・Mz=5/11）と軸力。
-            let f = b.internal_force(&state, &ctx);
+            let f = b.internal_force(&ctx);
             let (my_i, mz_i, my_j, mz_j) = match member_end_forces_at_face(model, elem, &f.data) {
                 Some(fl) => (fl[4], fl[5], fl[10], fl[11]),
                 None => {
@@ -201,7 +200,6 @@ pub(crate) fn compute_member_response(
         crate::analysis::SeismicDir::X => 0usize,
         crate::analysis::SeismicDir::Y => 1usize,
     };
-    let state = ElemState::default();
     let ctx = Ctx { model };
     let mut out = Vec::with_capacity(model.elements.len());
     for (elem, b) in model.elements.iter().zip(behaviors) {
@@ -213,7 +211,7 @@ pub(crate) fn compute_member_response(
         // 軸力・Rp は算定せず、βu の分子となる加力方向水平力のみ集計する
         // （[`horizontal_force_in_dir`] は節点群合計で 4 節点壁を正しく扱う）。
         if elem.nodes.len() != 2 {
-            let f = b.internal_force(&state, &ctx);
+            let f = b.internal_force(&ctx);
             out.push(PushoverMemberResponse {
                 elem: elem.id,
                 m_strong: 0.0,
@@ -237,7 +235,7 @@ pub(crate) fn compute_member_response(
         let ey = frame.rot[1];
         let ez = frame.rot[2];
 
-        let f = b.internal_force(&state, &ctx);
+        let f = b.internal_force(&ctx);
         let f_i = [f.data[0], f.data[1], f.data[2]];
         let f_j = [f.data[6], f.data[7], f.data[8]];
 

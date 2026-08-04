@@ -1,5 +1,5 @@
 use crate::beam::invert_small;
-use crate::behavior::{Ctx, ElemState, ElementBehavior, LocalMat, LocalVec, MassOption};
+use crate::behavior::{Ctx, ElementBehavior, LocalMat, LocalVec, MassOption};
 use squid_n_core::dof::{DofMap, DOF_PER_NODE};
 
 use smallvec::SmallVec;
@@ -357,7 +357,7 @@ impl ElementBehavior for ConcentratedSpringBeam {
         gdofs
     }
 
-    fn tangent_stiffness(&self, _state: &ElemState, _ctx: &Ctx) -> LocalMat {
+    fn tangent_stiffness(&self, _ctx: &Ctx) -> LocalMat {
         // 状態を書き換えない probe（committed 基準の非破壊評価）で clone_box を回避。
         let kti = self.spring_i.probe(self.trial_rot_i).1;
         let ktj = self.spring_j.probe(self.trial_rot_j).1;
@@ -372,7 +372,7 @@ impl ElementBehavior for ConcentratedSpringBeam {
         self.elastic.axis.to_global(&k_local)
     }
 
-    fn internal_force(&self, _state: &ElemState, _ctx: &Ctx) -> LocalVec {
+    fn internal_force(&self, _ctx: &Ctx) -> LocalVec {
         // 復元力は「弾性可撓部の K_flex·û（回転スロットは可撓端回転 θb）」と
         // 「ばねの履歴モーメント M_s(γ)」から経路整合に評価する（トライアル追従。
         // Newton 反復中の未確定変位も反映する）。節点の回転自由度にはばねを介して
@@ -415,12 +415,8 @@ impl ElementBehavior for ConcentratedSpringBeam {
     /// （[`crate::beam::member_forces_from_end_forces`]、ファイバー梁と同規約）。
     /// 未実装のままトレイト既定の `None` に落ちると、時刻歴応答解析の部材応力
     /// 履歴が全ステップ空になり、応力図・検定から当該部材が無言で欠落する。
-    fn state_member_forces(
-        &self,
-        state: &ElemState,
-        ctx: &Ctx,
-    ) -> Option<crate::beam::MemberForces> {
-        let f_global = self.internal_force(state, ctx);
+    fn state_member_forces(&self, ctx: &Ctx) -> Option<crate::beam::MemberForces> {
+        let f_global = self.internal_force(ctx);
         let arr: [f64; 12] = std::array::from_fn(|i| f_global.data[i]);
         let f_local = self.elastic.axis.rotate_to_local(&arr);
         Some(crate::beam::member_forces_from_end_forces(

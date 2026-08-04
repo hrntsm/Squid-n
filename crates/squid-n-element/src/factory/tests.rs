@@ -171,7 +171,7 @@ fn test_build_behavior_concentrated_spring_regime_is_elastic_beam() {
         ResolvedRegime::ConcentratedSpring
     ));
 
-    let (behavior, _state) = build_behavior(&beam, &model);
+    let behavior = build_behavior(&beam, &model);
     // 弾性 BeamElement なので部材内力を回収できる。
     assert!(
         behavior.recover_forces(&[0.0; 12]).is_some(),
@@ -181,10 +181,7 @@ fn test_build_behavior_concentrated_spring_regime_is_elastic_beam() {
     let elastic = crate::beam::BeamElement::new(&beam, &model);
     let k_ref = elastic.local_stiffness();
     let k_ref = elastic.axis.to_global(&k_ref);
-    let k = behavior.tangent_stiffness(
-        &ElemState::default(),
-        &crate::behavior::Ctx { model: &model },
-    );
+    let k = behavior.tangent_stiffness(&crate::behavior::Ctx { model: &model });
     for i in 0..12 {
         for j in 0..12 {
             assert!(
@@ -215,7 +212,7 @@ fn test_build_behavior_fiber_still_fiber() {
         plastic_zone: None,
         spring: None,
     };
-    let (behavior, _state) = build_behavior(&col, &model);
+    let behavior = build_behavior(&col, &model);
     // Fiber 分岐は暫定 BeamElement（線形解析）→ recover_forces は Some
     assert!(
         behavior.recover_forces(&[0.0; 12]).is_some(),
@@ -242,7 +239,7 @@ fn test_build_nonlinear_behavior_concentrated_spring_uses_spring_beam() {
         plastic_zone: None,
         spring: None,
     };
-    let (behavior, _state) = build_nonlinear_behavior(
+    let behavior = build_nonlinear_behavior(
         &beam,
         &model,
         StrengthBasis::Nominal,
@@ -282,7 +279,7 @@ fn test_build_nonlinear_behavior_fiber_uses_fiber_beam() {
         plastic_zone: None,
         spring: None,
     };
-    let (behavior, _state) = build_nonlinear_behavior(
+    let behavior = build_nonlinear_behavior(
         &col,
         &model,
         StrengthBasis::Nominal,
@@ -369,9 +366,9 @@ fn make_brace_model(tension_only: bool) -> (Model, ElementData) {
 #[test]
 fn test_build_behavior_brace_normal_full_stiffness() {
     let (model, elem) = make_brace_model(false);
-    let (behavior, state) = build_behavior(&elem, &model);
+    let behavior = build_behavior(&elem, &model);
     let ctx = crate::behavior::Ctx { model: &model };
-    let k = behavior.tangent_stiffness(&state, &ctx);
+    let k = behavior.tangent_stiffness(&ctx);
     let ea_l = 205000.0 * 2000.0 / 4000.0;
     assert!((k.get(0, 0) - ea_l).abs() < 1e-6, "k00={}", k.get(0, 0));
 }
@@ -381,9 +378,9 @@ fn test_build_behavior_brace_normal_full_stiffness() {
 #[test]
 fn test_build_behavior_brace_tension_only_full_stiffness() {
     let (model, elem) = make_brace_model(true);
-    let (behavior, state) = build_behavior(&elem, &model);
+    let behavior = build_behavior(&elem, &model);
     let ctx = crate::behavior::Ctx { model: &model };
-    let k = behavior.tangent_stiffness(&state, &ctx);
+    let k = behavior.tangent_stiffness(&ctx);
     let ea_l = 205000.0 * 2000.0 / 4000.0;
     assert!((k.get(0, 0) - ea_l).abs() < 1e-6, "k00={}", k.get(0, 0));
 }
@@ -393,14 +390,14 @@ fn test_build_behavior_brace_tension_only_full_stiffness() {
 #[test]
 fn test_build_nonlinear_behavior_brace_tension_only_full_stiffness() {
     let (model, elem) = make_brace_model(true);
-    let (behavior, state) = build_nonlinear_behavior(
+    let behavior = build_nonlinear_behavior(
         &elem,
         &model,
         StrengthBasis::Nominal,
         AnalysisKind::Incremental,
     );
     let ctx = crate::behavior::Ctx { model: &model };
-    let k = behavior.tangent_stiffness(&state, &ctx);
+    let k = behavior.tangent_stiffness(&ctx);
     let ea_l = 205000.0 * 2000.0 / 4000.0;
     assert!((k.get(0, 0) - ea_l).abs() < 1e-6, "k00={}", k.get(0, 0));
 }
@@ -501,9 +498,9 @@ fn test_build_behavior_wall_opening_reduces_shear_stiffness() {
     };
 
     // 開口なし
-    let (b_no, state) = build_behavior(&wall, &model);
+    let b_no = build_behavior(&wall, &model);
     let ctx = crate::behavior::Ctx { model: &model };
-    let k_no = b_no.tangent_stiffness(&state, &ctx);
+    let k_no = b_no.tangent_stiffness(&ctx);
 
     // 開口 10%（壁 4000×3000=12e6 mm² に対し 1.2e6 mm²）→ r0=0.316(耐震壁
     // 成立のまま)、r=1−1.25·0.316=0.605
@@ -514,9 +511,9 @@ fn test_build_behavior_wall_opening_reduces_shear_stiffness() {
         three_side_slit: false,
         openings: vec![],
     });
-    let (b_open, state2) = build_behavior(&wall, &model);
+    let b_open = build_behavior(&wall, &model);
     let ctx2 = crate::behavior::Ctx { model: &model };
-    let k_open = b_open.tangent_stiffness(&state2, &ctx2);
+    let k_open = b_open.tangent_stiffness(&ctx2);
 
     // 個別開口(合計 1.2e6 mm²)は面積のみ指定と同じ低減率になる。
     // また opening_area(古い値)より個別開口が優先される。
@@ -538,9 +535,9 @@ fn test_build_behavior_wall_opening_reduces_shear_stiffness() {
             },
         ],
     };
-    let (b_dims, state3) = build_behavior(&wall, &model);
+    let b_dims = build_behavior(&wall, &model);
     let ctx3 = crate::behavior::Ctx { model: &model };
-    let k_dims = b_dims.tangent_stiffness(&state3, &ctx3);
+    let k_dims = b_dims.tangent_stiffness(&ctx3);
     assert!(
         (shear_pattern(&k_dims) - shear_pattern(&k_open)).abs() < 1e-6,
         "個別開口(Σ1.2e6)と面積のみ(1.2e6)の低減が一致しない: {} vs {}",
@@ -551,9 +548,9 @@ fn test_build_behavior_wall_opening_reduces_shear_stiffness() {
     // 包絡モード: 離れた2開口の包絡矩形(2300×800=1.84e6、r0=0.39≦0.4 で
     // 耐震壁成立のまま)により低減がさらに大きくなる
     model.multi_opening_mode = squid_n_core::model::MultiOpeningMode::Envelope;
-    let (b_env, state4) = build_behavior(&wall, &model);
+    let b_env = build_behavior(&wall, &model);
     let ctx4 = crate::behavior::Ctx { model: &model };
-    let k_env = b_env.tangent_stiffness(&state4, &ctx4);
+    let k_env = b_env.tangent_stiffness(&ctx4);
     assert!(
         shear_pattern(&k_env) < shear_pattern(&k_dims) * 0.999,
         "包絡モードで低減が強まらない: env={} eq={}",

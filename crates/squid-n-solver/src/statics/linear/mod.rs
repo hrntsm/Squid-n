@@ -441,19 +441,16 @@ impl BraceIterAssembly {
         let mut behavior_disabled = Vec::with_capacity(n_elem);
 
         for (i, elem) in model.elements.iter().enumerate() {
-            let (b_active, st_active) = build_behavior(elem, model);
+            let b_active = build_behavior(elem, model);
             let g = b_active.global_dofs(dofmap);
-            let k = b_active.tangent_stiffness(&st_active, &Ctx { model });
+            let k = b_active.tangent_stiffness(&Ctx { model });
 
             if brace_of_elem.contains_key(&i) {
                 let delem = &disabled_model.elements[i];
-                let (b_disabled, st_disabled) = build_behavior(delem, &disabled_model);
-                let kd = b_disabled.tangent_stiffness(
-                    &st_disabled,
-                    &Ctx {
-                        model: &disabled_model,
-                    },
-                );
+                let b_disabled = build_behavior(delem, &disabled_model);
+                let kd = b_disabled.tangent_stiffness(&Ctx {
+                    model: &disabled_model,
+                });
                 k_disabled.push(Some(kd));
                 behavior_disabled.push(Some(b_disabled));
             } else {
@@ -525,15 +522,7 @@ fn build_tension_only_result(
     u_free: &[f64],
     member_loads_by_elem: &HashMap<ElemId, Vec<MemberLoad>>,
 ) -> Result<StaticOnce, SolveError> {
-    let mut disp: Vec<[f64; 6]> = vec![[0.0; 6]; model.nodes.len()];
-    for ni in 0..model.nodes.len() {
-        for d in 0..squid_n_core::dof::DOF_PER_NODE {
-            let g = ni * squid_n_core::dof::DOF_PER_NODE + d;
-            if let Some(a) = dofmap.active(g) {
-                disp[ni][d] = u_free[a as usize];
-            }
-        }
-    }
+    let disp = dofmap.expand_to_nodes(u_free, model.nodes.len());
 
     let mut member_forces = Vec::new();
     let mut panel_moments = Vec::new();
@@ -591,9 +580,9 @@ fn solve_once_inner(model: &Model, lc: LoadCaseId) -> Result<StaticOnce, SolveEr
         Vec::with_capacity(model.elements.len());
     let mut k_triplets = Vec::new();
     for elem in &model.elements {
-        let (behavior, state) = build_behavior(elem, model);
+        let behavior = build_behavior(elem, model);
         let gdofs = behavior.global_dofs(&dofmap);
-        let k_local = behavior.tangent_stiffness(&state, &ctx);
+        let k_local = behavior.tangent_stiffness(&ctx);
         k_triplets.extend(k_local.to_triplets(&gdofs));
         behaviors.push((behavior, gdofs));
     }
@@ -612,23 +601,7 @@ fn solve_once_inner(model: &Model, lc: LoadCaseId) -> Result<StaticOnce, SolveEr
         let u_indep = solver.solve(&f_red)?;
         let u_free = reducer.expand_u(&u_indep);
 
-        let mut disp: Vec<[f64; 6]> = vec![[0.0; 6]; model.nodes.len()];
-        for ni in 0..model.nodes.len() {
-            for d in 0..squid_n_core::dof::DOF_PER_NODE {
-                let g = ni * squid_n_core::dof::DOF_PER_NODE + d;
-                if let Some(active) = dofmap.active(g) {
-                    let val = u_free[active as usize];
-                    match d {
-                        0 => disp[ni][0] = val,
-                        1 => disp[ni][1] = val,
-                        2 => disp[ni][2] = val,
-                        3 => disp[ni][3] = val,
-                        4 => disp[ni][4] = val,
-                        _ => disp[ni][5] = val,
-                    }
-                }
-            }
-        }
+        let disp = dofmap.expand_to_nodes(&u_free, model.nodes.len());
 
         let mut member_forces = Vec::new();
         // 解析対象荷重ケースの部材荷重（内力回復の重ね合わせ用）。要素 ID で

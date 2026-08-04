@@ -177,7 +177,7 @@ pub fn pushover_analysis_recording(
     // 増分用スロット → 既定表。コンクリート除荷則の既定は逆行型）。
     let mut behaviors: Vec<Box<dyn ElementBehavior>> = Vec::new();
     for elem in &model.elements {
-        let (b, _) = build_nonlinear_behavior(
+        let b = build_nonlinear_behavior(
             elem,
             model,
             StrengthBasis::MaterialStrength,

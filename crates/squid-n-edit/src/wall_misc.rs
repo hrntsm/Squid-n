@@ -318,48 +318,18 @@ impl EditCommand for AddMiscWall {
     }
 }
 
-/// 雑壁を index 指定で削除。逆操作は [`InsertMiscWall`]（同じ位置への復元）。
-/// `MiscWall` は他データから参照されないため ID 再採番は不要。index が範囲外なら Noop。
-pub struct DeleteMiscWall {
-    pub index: usize,
-}
-
-impl EditCommand for DeleteMiscWall {
-    fn apply(&self, model: &mut Model) -> Box<dyn EditCommand> {
-        if self.index >= model.misc_walls.len() {
-            return Box::new(Noop);
-        }
-        let removed = model.misc_walls.remove(self.index);
-        Box::new(InsertMiscWall {
-            index: self.index,
-            wall: removed,
-        })
-    }
-
-    fn label(&self) -> &str {
-        "雑壁削除"
-    }
-}
-
-/// 指定インデックスへ雑壁を再挿入する（[`DeleteMiscWall`] の逆操作専用）。
-pub struct InsertMiscWall {
-    pub index: usize,
-    pub wall: squid_n_core::model::MiscWall,
-}
-
-impl EditCommand for InsertMiscWall {
-    fn apply(&self, model: &mut Model) -> Box<dyn EditCommand> {
-        if self.index > model.misc_walls.len() {
-            return Box::new(Noop);
-        }
-        model.misc_walls.insert(self.index, self.wall.clone());
-        Box::new(DeleteMiscWall { index: self.index })
-    }
-
-    fn label(&self) -> &str {
-        "雑壁削除の取り消し"
-    }
-}
+indexed_delete_insert!(
+    /// 雑壁を index 指定で削除。逆操作は [`InsertMiscWall`]（同じ位置への復元）。
+    /// `MiscWall` は他データから参照されないため ID 再採番は不要。index が範囲外なら Noop。
+    DeleteMiscWall,
+    /// 指定インデックスへ雑壁を再挿入する（[`DeleteMiscWall`] の逆操作専用）。
+    InsertMiscWall,
+    entity = squid_n_core::model::MiscWall,
+    vec = misc_walls,
+    field = wall,
+    del_label = "雑壁削除",
+    ins_label = "雑壁削除の取り消し",
+);
 
 /// 雑壁の内容を index 指定で置換する（フィールド編集用）。逆操作は変更前の
 /// 内容への復元。index が範囲外なら Noop。

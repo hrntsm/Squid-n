@@ -515,8 +515,8 @@ fn compute_reactions(model: &Model, lc: LoadCaseId, disp: &[[f64; 6]]) -> Vec<[f
         if ni >= n || nj >= n {
             continue;
         }
-        let (behavior, state) = squid_n_element::build_behavior(elem, model);
-        let k = behavior.tangent_stiffness(&state, &Ctx { model });
+        let behavior = squid_n_element::build_behavior(elem, model);
+        let k = behavior.tangent_stiffness(&Ctx { model });
         // u_global（12）= [i:0..6, j:6..12]
         let mut u = [0.0f64; 12];
         u[0..6].copy_from_slice(&disp[ni]);

@@ -19,7 +19,7 @@
 //! 側柱の面内両端ピン化は `side_column.rs`（方向別端部解放の静縮約）で扱う。
 
 use crate::beam::BeamElement;
-use crate::behavior::{Ctx, ElemState, ElementBehavior, LocalMat, LocalVec, MassOption};
+use crate::behavior::{Ctx, ElementBehavior, LocalMat, LocalVec, MassOption};
 use crate::transform::LocalFrame;
 use smallvec::SmallVec;
 use squid_n_core::dof::{DofMap, DOF_PER_NODE};
@@ -1057,7 +1057,7 @@ impl WallPanelElement {
     /// なければ弾性壁柱）。
     fn k12_global(&self, ctx: &Ctx) -> LocalMat {
         match &self.fiber_column {
-            Some(f) => f.tangent_stiffness(&ElemState::default(), ctx),
+            Some(f) => f.tangent_stiffness(ctx),
             None => self.column.axis.to_global(&self.column.local_stiffness()),
         }
     }
@@ -1066,7 +1066,7 @@ impl WallPanelElement {
     /// （履歴に整合した復元力 f24 = Aᵀ·f12）。
     fn f24_fiber(&self, ctx: &Ctx) -> Option<[f64; 24]> {
         let f = self.fiber_column.as_ref()?;
-        let f12 = f.internal_force(&ElemState::default(), ctx);
+        let f12 = f.internal_force(ctx);
         let mut f24 = [0.0_f64; 24];
         for (p, fp) in f24.iter_mut().enumerate() {
             let mut s = 0.0;
@@ -1168,7 +1168,7 @@ impl ElementBehavior for WallPanelElement {
         gdofs
     }
 
-    fn tangent_stiffness(&self, _state: &ElemState, ctx: &Ctx) -> LocalMat {
+    fn tangent_stiffness(&self, ctx: &Ctx) -> LocalMat {
         let k = self.stiffness_24(ctx);
         if self.qu_shear <= 0.0 {
             return k;
@@ -1221,7 +1221,7 @@ impl ElementBehavior for WallPanelElement {
         kt
     }
 
-    fn internal_force(&self, _state: &ElemState, ctx: &Ctx) -> LocalVec {
+    fn internal_force(&self, ctx: &Ctx) -> LocalVec {
         // ファイバー壁柱: 復元力は履歴に整合したファイバー内力 f24 = Aᵀ·f12
         // （すべり γp は update_state で反映済み）。
         if let Some(f24) = self.f24_fiber(ctx) {
@@ -1830,11 +1830,10 @@ mod tests {
     /// （両者を合わせて非循環な検証となる）。
     #[test]
     fn test_wall_panel_trial_displacement_tracking() {
-        use crate::behavior::{Ctx, ElemState, ElementBehavior, LocalVec};
+        use crate::behavior::{Ctx, ElementBehavior, LocalVec};
         let (model, data) = make_wall_model();
         let mut wall = WallPanelElement::try_new(&data, &model).unwrap();
         let ctx = Ctx { model: &model };
-        let state = ElemState::default();
 
         // 上辺 2 節点へ面内水平変位（両端固定柱のせん断変形モード）
         let mut du = LocalVec {
@@ -1846,7 +1845,7 @@ mod tests {
         wall.update_state(&du, false, &ctx);
 
         // commit 前でも内力へ反映され、K24·u と厳密に一致する
-        let f = wall.internal_force(&state, &ctx);
+        let f = wall.internal_force(&ctx);
         let k = wall.stiffness_24(&ctx);
         for i in 0..24 {
             let expected: f64 = (0..24).map(|j| k.get(i, j) * du.data[j]).sum();
@@ -1863,14 +1862,14 @@ mod tests {
         wall.commit_state();
         wall.update_state(&du, false, &ctx);
         wall.revert_state();
-        let f2 = wall.internal_force(&state, &ctx);
+        let f2 = wall.internal_force(&ctx);
         for i in 0..24 {
             assert!((f2.data[i] - f.data[i]).abs() < 1e-9);
         }
 
         // restore_state でスナップショット時点（初期状態）へ完全ロールバック
         wall.restore_state(&*snap);
-        let f0 = wall.internal_force(&state, &ctx);
+        let f0 = wall.internal_force(&ctx);
         assert!(f0.data.iter().all(|v| v.abs() < 1e-12));
     }
 }
@@ -1971,7 +1970,7 @@ mod geometry_tests {
 #[cfg(test)]
 mod shear_yield_tests {
     use super::*;
-    use crate::behavior::{Ctx, ElemState, LocalVec};
+    use crate::behavior::{Ctx, LocalVec};
     use squid_n_core::dof::Dof6Mask;
     use squid_n_core::ids::{ElemId, MaterialId, SectionId};
     use squid_n_core::model::MaterialCategory;
@@ -2045,14 +2044,13 @@ mod shear_yield_tests {
         let qu = WallPanelElement::shear_capacity_of(&data, &model);
         assert!(qu > 0.0, "Qu が算定できるはず");
 
-        let (mut b, _) = crate::factory::build_nonlinear_behavior(
+        let mut b = crate::factory::build_nonlinear_behavior(
             &data,
             &model,
             crate::factory::StrengthBasis::MaterialStrength,
             crate::factory::AnalysisKind::Incremental,
         );
         let ctx = Ctx { model: &model };
-        let st = ElemState::default();
         let mut max_q: f64 = 0.0;
         for _ in 0..300 {
             let mut du = LocalVec {
@@ -2062,7 +2060,7 @@ mod shear_yield_tests {
             du.data[18] = 1.0; // 上辺b Ux
             b.update_state(&du, false, &ctx);
             b.commit_state();
-            let f = b.internal_force(&st, &ctx);
+            let f = b.internal_force(&ctx);
             max_q = max_q.max((f.data[0] + f.data[6]).abs());
         }
         // 300mm 押しても Qu を（数値誤差程度を除き）超えない。
@@ -2090,14 +2088,13 @@ mod shear_yield_tests {
         let (model, data) = wall_model();
         let qu = WallPanelElement::shear_capacity_of(&data, &model);
         assert!(qu > 0.0);
-        let (mut b, _) = crate::factory::build_nonlinear_behavior(
+        let mut b = crate::factory::build_nonlinear_behavior(
             &data,
             &model,
             crate::factory::StrengthBasis::MaterialStrength,
             crate::factory::AnalysisKind::TimeHistory,
         );
         let ctx = Ctx { model: &model };
-        let st = ElemState::default();
         let push = |b: &mut Box<dyn ElementBehavior>, d: f64| -> f64 {
             let mut du = LocalVec {
                 data: smallvec::SmallVec::from_elem(0.0, 24),
@@ -2106,7 +2103,7 @@ mod shear_yield_tests {
             du.data[18] = d; // 上辺b Ux
             b.update_state(&du, false, &ctx);
             b.commit_state();
-            let f = b.internal_force(&st, &ctx);
+            let f = b.internal_force(&ctx);
             f.data[0] + f.data[6]
         };
 
@@ -2162,9 +2159,8 @@ mod shear_yield_tests {
     #[test]
     fn test_wall_stays_elastic_in_linear_path() {
         let (model, data) = wall_model();
-        let (mut b, _) = crate::factory::build_behavior(&data, &model);
+        let mut b = crate::factory::build_behavior(&data, &model);
         let ctx = Ctx { model: &model };
-        let st = ElemState::default();
         let mut q_at = vec![];
         for step in 1..=200 {
             let mut du = LocalVec {
@@ -2175,7 +2171,7 @@ mod shear_yield_tests {
             b.update_state(&du, false, &ctx);
             b.commit_state();
             if step == 100 || step == 200 {
-                let f = b.internal_force(&st, &ctx);
+                let f = b.internal_force(&ctx);
                 q_at.push((f.data[0] + f.data[6]).abs());
             }
         }

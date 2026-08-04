@@ -1,6 +1,4 @@
-use crate::behavior::{
-    Ctx, DuctilityProbe, ElemState, ElementBehavior, LocalMat, LocalVec, MassOption,
-};
+use crate::behavior::{Ctx, DuctilityProbe, ElementBehavior, LocalMat, LocalVec, MassOption};
 use smallvec::SmallVec;
 use squid_n_core::dof::DofMap;
 use squid_n_core::ids::NodeId;
@@ -1811,7 +1809,7 @@ impl ElementBehavior for FiberBeam {
         self.beam_global_dofs(dof)
     }
 
-    fn tangent_stiffness(&self, _state: &ElemState, _ctx: &Ctx) -> LocalMat {
+    fn tangent_stiffness(&self, _ctx: &Ctx) -> LocalMat {
         if self.flex_length <= 0.0 {
             return LocalMat::zeros(12);
         }
@@ -1823,7 +1821,7 @@ impl ElementBehavior for FiberBeam {
         self.axis.to_global(&k_node)
     }
 
-    fn internal_force(&self, _state: &ElemState, _ctx: &Ctx) -> LocalVec {
+    fn internal_force(&self, _ctx: &Ctx) -> LocalVec {
         if self.flex_length <= 0.0 {
             return LocalVec {
                 data: SmallVec::from_elem(0.0, 12),
@@ -1855,12 +1853,8 @@ impl ElementBehavior for FiberBeam {
     /// 端部節点力は [`Self::internal_force`]（各積分点の断面応答＝ファイバーの
     /// 履歴状態から算定した復元力）であり、接線剛性 × 全変位ではないため
     /// 降伏後も正しい。これを釣合いで材軸方向へ分配する。
-    fn state_member_forces(
-        &self,
-        state: &ElemState,
-        ctx: &Ctx,
-    ) -> Option<crate::beam::MemberForces> {
-        let f_global = self.internal_force(state, ctx);
+    fn state_member_forces(&self, ctx: &Ctx) -> Option<crate::beam::MemberForces> {
+        let f_global = self.internal_force(ctx);
         let arr: [f64; 12] = std::array::from_fn(|i| f_global.data[i]);
         let f_local = self.axis.rotate_to_local(&arr);
         Some(crate::beam::member_forces_from_end_forces(

@@ -2534,15 +2534,14 @@ fn test_vertical_bending_stiffness_uses_section_strong_axis() {
 /// 誤った釣合いの原因）。
 #[test]
 fn test_beam_trial_displacement_tracking() {
-    use crate::behavior::{Ctx, ElemState, ElementBehavior, LocalVec};
+    use crate::behavior::{Ctx, ElementBehavior, LocalVec};
     let mut beam = make_test_beam();
     let model = Model::default();
     let ctx = Ctx { model: &model };
-    let state = ElemState::default();
 
     // 初期状態: 内力ゼロ
     assert!(beam
-        .internal_force(&state, &ctx)
+        .internal_force(&ctx)
         .data
         .iter()
         .all(|v| v.abs() < 1e-12));
@@ -2555,7 +2554,7 @@ fn test_beam_trial_displacement_tracking() {
     beam.update_state(&du, false, &ctx);
 
     // commit 前でも内力へ反映される（トライアル追従）
-    let f = beam.internal_force(&state, &ctx);
+    let f = beam.internal_force(&ctx);
     let ea_over_l = beam.e * beam.a / beam.length;
     assert!(
         (f.data[6] - ea_over_l).abs() / ea_over_l < 1e-12,
@@ -2577,7 +2576,7 @@ fn test_beam_trial_displacement_tracking() {
     // restore_state でスナップショット時点（初期状態）へ完全ロールバック
     beam.restore_state(&*snap);
     assert!(beam
-        .internal_force(&state, &ctx)
+        .internal_force(&ctx)
         .data
         .iter()
         .all(|v| v.abs() < 1e-12));

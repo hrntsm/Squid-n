@@ -71,7 +71,7 @@ pub fn linear_hht_alpha_analysis(
     let behaviors: Vec<Box<dyn ElementBehavior>> = model
         .elements
         .iter()
-        .map(|e| build_behavior(e, model).0)
+        .map(|e| build_behavior(e, model))
         .collect();
 
     let m_free = assemble_global_m(model, dofmap, MassOption::Consistent);

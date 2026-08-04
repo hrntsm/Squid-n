@@ -58,7 +58,7 @@ fn build_behavior_cache(model: &Model, dofmap: &DofMap) -> Vec<crate::statics::B
         .elements
         .iter()
         .map(|elem| {
-            let (behavior, _state) = build_behavior(elem, model);
+            let behavior = build_behavior(elem, model);
             let gdofs = behavior.global_dofs(dofmap);
             (behavior, gdofs)
         })
@@ -205,18 +205,9 @@ impl<'m> Analysis<'m> {
         })
     }
 
-    /// 自由 DOF ベクトルを節点 6 成分配列へ展開する。
+    /// 自由 DOF ベクトルを節点 6 成分配列へ展開する（単一実装は core 側）。
     fn expand_disp(&self, u_free: &[f64]) -> Vec<[f64; 6]> {
-        let mut disp: Vec<[f64; 6]> = vec![[0.0; 6]; self.model.nodes.len()];
-        for (ni, d6) in disp.iter_mut().enumerate() {
-            for (d, slot) in d6.iter_mut().enumerate() {
-                let g = ni * squid_n_core::dof::DOF_PER_NODE + d;
-                if let Some(active) = self.dofmap.active(g) {
-                    *slot = u_free[active as usize];
-                }
-            }
-        }
-        disp
+        self.dofmap.expand_to_nodes(u_free, self.model.nodes.len())
     }
 
     /// 自由 DOF ベクトルから全部材の断面力を復元する。

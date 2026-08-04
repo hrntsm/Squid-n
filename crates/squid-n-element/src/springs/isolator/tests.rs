@@ -103,7 +103,7 @@ fn push_horizontal(elem: &mut IsolatorElement, ctx: &Ctx, delta: f64) -> LocalVe
     };
     du.data[6] = delta; // node j, global ux
     elem.update_state(&du, true, ctx);
-    elem.internal_force(&ElemState::default(), ctx)
+    elem.internal_force(ctx)
 }
 
 fn horiz_resultant(f: &LocalVec) -> f64 {
@@ -151,7 +151,7 @@ fn test_vertical_axial_elastic() {
     };
     du.data[8] = 2.0; // node j, global uz（鉛直）
     elem.update_state(&du, true, &ctx);
-    let f = elem.internal_force(&ElemState::default(), &ctx);
+    let f = elem.internal_force(&ctx);
     // 鉛直軸力 = Kv·δ = 5e6·2 = 1e7 N。
     assert!(
         (f.data[8].abs() - 5_000_000.0 * 2.0).abs() < 1.0,
@@ -201,7 +201,7 @@ fn test_commit_revert_roundtrip() {
         data: smallvec::smallvec![0.0; 12],
     };
     elem.update_state(&zero, false, &ctx);
-    let f_reverted = elem.internal_force(&ElemState::default(), &ctx);
+    let f_reverted = elem.internal_force(&ctx);
     for i in 0..12 {
         approx::assert_relative_eq!(
             f_committed.data[i],
@@ -267,7 +267,7 @@ fn test_checkpoint_roundtrip_restores_hysteresis() {
         data: smallvec::smallvec![0.0; 12],
     };
     restored.update_state(&zero, false, &ctx);
-    let f_after = restored.internal_force(&ElemState::default(), &ctx);
+    let f_after = restored.internal_force(&ctx);
     for i in 0..12 {
         approx::assert_relative_eq!(
             f_before.data[i],

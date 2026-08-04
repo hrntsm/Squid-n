@@ -114,7 +114,7 @@ pub fn linear_time_history_with_state(
     let behaviors: Vec<Box<dyn ElementBehavior>> = model
         .elements
         .iter()
-        .map(|e| build_behavior(e, model).0)
+        .map(|e| build_behavior(e, model))
         .collect();
 
     // --- 行列組立（縮約空間） ---
@@ -271,7 +271,7 @@ pub fn linear_time_history_from_state(
     let behaviors: Vec<Box<dyn ElementBehavior>> = model
         .elements
         .iter()
-        .map(|e| build_behavior(e, model).0)
+        .map(|e| build_behavior(e, model))
         .collect();
 
     // 行列・係数の再計算（線形なので同一）

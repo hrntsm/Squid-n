@@ -5,7 +5,7 @@
 use super::element::ShellElement;
 use super::geom::element_area;
 use super::shape::{jacobian, jacobian_det, shape_2d, GAUSS_PTS_2};
-use crate::behavior::{ElemState, LocalMat, LocalVec, MassOption};
+use crate::behavior::{LocalMat, LocalVec, MassOption};
 use smallvec::SmallVec;
 use squid_n_core::dof::{DofMap, DOF_PER_NODE};
 
@@ -29,13 +29,13 @@ impl crate::behavior::ElementBehavior for ShellElement {
         gdofs
     }
 
-    fn tangent_stiffness(&self, _state: &ElemState, _ctx: &crate::behavior::Ctx) -> LocalMat {
+    fn tangent_stiffness(&self, _ctx: &crate::behavior::Ctx) -> LocalMat {
         let mut k_local = self.local_stiffness();
         self.apply_rigid_floor_membrane_off(&mut k_local);
         self.frame.to_global(&k_local)
     }
 
-    fn internal_force(&self, _state: &ElemState, _ctx: &crate::behavior::Ctx) -> LocalVec {
+    fn internal_force(&self, _ctx: &crate::behavior::Ctx) -> LocalVec {
         // 線形弾性: f = K_global · u（トライアル追従。beam/behavior.rs と同じ規約）。
         // 接線剛性と同じ構成（剛床時の面内剛性無効化を含む）で評価し、
         // K・u の整合を保つ。従来は恒常的にゼロを返しており、非線形解析で

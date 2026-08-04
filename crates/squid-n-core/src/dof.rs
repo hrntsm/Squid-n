@@ -202,6 +202,24 @@ impl DofMap {
     pub fn active(&self, g: GlobalDof) -> Option<u32> {
         self.active_of.get(g).copied().flatten()
     }
+
+    /// 自由 DOF 空間のベクトル（`active` 添字順。従属自由度は `expand_u` 済み）を
+    /// 節点×6 成分の配列へ展開する。拘束・非構造自由度は 0 のまま。
+    ///
+    /// 静的解析の変位・時刻歴の節点変位・固有モード形状の散布で同一の展開が
+    /// 必要になるため、単一実装としてここに置く（各ソルバでの手書きコピーの
+    /// 再発防止）。
+    pub fn expand_to_nodes(&self, u_free: &[f64], n_nodes: usize) -> Vec<[f64; 6]> {
+        let mut out = vec![[0.0f64; 6]; n_nodes];
+        for (ni, d6) in out.iter_mut().enumerate() {
+            for (d, slot) in d6.iter_mut().enumerate() {
+                if let Some(a) = self.active(ni * DOF_PER_NODE + d) {
+                    *slot = u_free[a as usize];
+                }
+            }
+        }
+        out
+    }
     pub fn global(&self, a: u32) -> GlobalDof {
         self.global_of[a as usize]
     }
