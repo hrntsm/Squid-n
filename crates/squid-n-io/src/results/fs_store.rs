@@ -20,12 +20,15 @@ use super::{
 ///   `finish` 時にはそこへエントリを push するだけに留める(`Mutex` は `Send` なので
 ///   `ResultStore: Send` 制約はそのまま満たせる)。
 /// - ストア本体は `pending` を drain して `ResultManifest` 本体へ吸収し、
-///   manifest.json へ永続化する `sync(&mut self)` を持つ。`writer()`(`&mut self`)の
-///   先頭で自動的に `sync()` を呼ぶため、直前に finish したライタの結果は次に
-///   writer を取得した時点で必ず manifest に反映される。
-/// - トレイトの `manifest(&self)` / `query(&self)` は `&self` を返す都合上、自動では
-///   同期できない。ライタの `finish` 直後に manifest/query を使いたい場合は、
-///   呼び出し側(MCP サーバ)が明示的に `sync()` を呼ぶこと。
+///   manifest.json へ永続化する `sync(&mut self)` を持つ。**`sync()` は
+///   呼び出し側(MCP サーバ)がジョブの全書き込み成功後に明示的に呼ぶ
+///   コミット点であり、`writer()` は自動で `sync()` しない**。かつては
+///   `writer()` 先頭で自動同期していたが、複数種別を書くジョブの 2 種別目の
+///   `writer()` 取得時に 1 種別目の保留エントリが manifest へ吸収されてしまい、
+///   その後の書き込み失敗時に [`Self::discard_pending`] で巻き戻せない
+///   (＝失敗ジョブの部分結果が照会可能になる)穴があった。
+/// - 途中失敗したジョブは `sync()` を呼ばず [`Self::discard_pending`] で
+///   保留分を破棄すること。
 ///
 /// ## query の対応範囲(素朴な実装)
 /// - `NodalDisp` / `MemberForce` / `Modal`: 全行読み出し後にフィルタを適用する。
@@ -71,6 +74,13 @@ impl FsResultStore {
 
     /// finish 済みライタが積んだ保留エントリを manifest 本体へ吸収し、manifest.json
     /// へ永続化する。同一 case+kind のエントリは上書きする。
+    ///
+    /// 永続化(manifest.json 書き込み)に**成功したときだけ**メモリ上の manifest へ
+    /// 反映する。失敗時は drain した保留エントリを pending へ戻して Err を返す
+    /// (メモリ上 manifest はディスクと一致したまま)。かつては先にメモリへ反映して
+    /// から書き込んでいたため、ディスクフル等で書き込みが失敗するとジョブは
+    /// Failed になる一方、in-memory manifest 経由の `query` からは失敗ジョブの
+    /// 結果が照会できてしまった。
     pub fn sync(&mut self) -> std::io::Result<()> {
         let drained: Vec<ResultEntry> = {
             let mut pending = self
@@ -82,27 +92,40 @@ impl FsResultStore {
         if drained.is_empty() {
             return Ok(());
         }
-        for entry in drained {
-            if let Some(existing) = self
-                .manifest
+        let mut new_manifest = self.manifest.clone();
+        for entry in &drained {
+            if let Some(existing) = new_manifest
                 .entries
                 .iter_mut()
                 .find(|e| e.case == entry.case && e.kind == entry.kind)
             {
-                *existing = entry;
+                *existing = entry.clone();
             } else {
-                self.manifest.entries.push(entry);
+                new_manifest.entries.push(entry.clone());
             }
         }
-        self.persist()
+        let data = serde_json::to_string_pretty(&new_manifest).map_err(std::io::Error::other)?;
+        if let Err(e) = std::fs::write(&self.manifest_path, data) {
+            // 失敗時は保留へ戻す(呼び出し側が discard_pending すればまとめて破棄
+            // できる)。ロック取得に失敗した場合はエントリを落とすが、manifest へ
+            // 吸収されない方向の失敗のため「失敗ジョブの結果が見える」ことはない。
+            if let Ok(mut pending) = self.pending.lock() {
+                for entry in drained {
+                    pending.push(entry);
+                }
+            }
+            return Err(e);
+        }
+        self.manifest = new_manifest;
+        Ok(())
     }
 
     /// finish 済みライタが積んだ保留エントリを、manifest へ吸収せずに破棄する。
     ///
     /// 複数種別を書き込むジョブが途中で失敗した場合、それまでに finish した
-    /// エントリが保留のまま残り、後続の `sync()`（次の [`Self::writer`] 呼び出し時
-    /// にも自動で走る）で manifest へ採用されて **失敗ジョブの部分結果が照会可能に
-    /// なる**。失敗時は本メソッドで保留分を破棄すること。
+    /// エントリが保留のまま残り、後続の `sync()` で manifest へ採用されて
+    /// **失敗ジョブの部分結果が照会可能になる**。失敗時は本メソッドで保留分を
+    /// 破棄すること。
     ///
     /// 書き込み済みの Parquet ファイル自体は削除しない。同じ case+kind の
     /// 成功済みエントリが manifest に残っている場合、そのファイルは
@@ -113,11 +136,6 @@ impl FsResultStore {
         if let Ok(mut pending) = self.pending.lock() {
             pending.clear();
         }
-    }
-
-    fn persist(&self) -> std::io::Result<()> {
-        let data = serde_json::to_string_pretty(&self.manifest).map_err(std::io::Error::other)?;
-        std::fs::write(&self.manifest_path, data)
     }
 }
 
@@ -189,8 +207,10 @@ impl ResultWriter for FsResultWriter {
 
 impl ResultStore for FsResultStore {
     fn writer(&mut self, case: CaseId, kind: ResultKind) -> std::io::Result<Box<dyn ResultWriter>> {
-        // 直前に finish したライタの結果を manifest へ反映してから新規書き込みを開始する。
-        self.sync()?;
+        // ここで自動 sync() はしない(冒頭のモジュールコメント参照)。同一ジョブ内の
+        // 2 種別目の writer 取得で 1 種別目の保留エントリが manifest へ吸収されると、
+        // 以降の書き込み失敗時に discard_pending で巻き戻せなくなるため、manifest への
+        // 反映は呼び出し側が全書き込み成功後に呼ぶ sync() だけが行う。
         let path = self.file_path(case, kind);
         let path_str = path.to_string_lossy().into_owned();
         let schema = match kind {

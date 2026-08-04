@@ -264,13 +264,20 @@ fn test_fs_result_store_discard_pending_drops_partial_results() {
     let _ = std::fs::remove_dir_all(&dir);
     let mut store = FsResultStore::open(&dir).unwrap();
 
-    // 途中失敗ジョブを模擬: NodalDisp は finish 済み（保留に積まれる）だが、
-    // 後続の書き込みが失敗した想定で保留分を破棄する。
+    // 途中失敗ジョブを模擬: 1 種別目（NodalDisp）は finish 済み（保留に積まれる）で、
+    // **2 種別目のライタを取得してから**失敗した想定（複数種別を書くジョブの実際の
+    // 失敗経路。かつては writer() が自動 sync して 1 種別目が manifest へ吸収され、
+    // discard_pending で巻き戻せなかった）。
     {
         let mut writer = store.writer(1, ResultKind::NodalDisp).unwrap();
         let batch = nodal_disp_batch(&[1], &[[0.1; 6]]).unwrap();
         writer.write_rows(&batch).unwrap();
         writer.finish().unwrap();
+    }
+    {
+        // 2 種別目のライタ取得（この時点で 1 種別目が manifest へ漏れてはならない）。
+        let _writer = store.writer(1, ResultKind::MemberForce).unwrap();
+        // finish せず drop ＝ 書き込み失敗の想定。
     }
     store.discard_pending();
     store.sync().unwrap();
