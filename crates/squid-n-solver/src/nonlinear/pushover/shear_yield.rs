@@ -25,7 +25,7 @@ use squid_n_element::transform::LocalFrame;
 /// Vy vs `y.qy(..)`・Vz vs `z.qy(..)` を独立に判定する（v1 のような
 /// 「合力 vs min(qy_y,qy_z)」の丸めは行わない）。断面→要素座標系のクロス変換は
 /// `beam/construct.rs` と同一規約。
-/// RC矩形（[`DirThreshold::RcArakawa`]）方向は、各ステップの部材軸力（圧縮）
+/// RC矩形・SRC矩形（[`DirThreshold::RcArakawa`]）方向は、各ステップの部材軸力（圧縮）
 /// から動的に σ0 を反映した Qy を都度算定する（精緻化2、`track_shear_yield` 参照）。
 pub(crate) struct ShearThreshold {
     pub(crate) y: DirThreshold,
@@ -157,14 +157,15 @@ fn rc_rect_capacity_input(
 
 /// 方向別のせん断降伏耐力しきい値（[`DirThreshold`]）を組み立てる。
 ///
-/// RC矩形（`SectionShape::RcRect`）で `fy` が無く、配筋情報から Qsu(σ0=0) が
-/// 算定可能（正の値）な場合のみ [`DirThreshold::RcArakawa`] を採用し、各ステップ
-/// で軸力から動的算定した σ0 を反映する。それ以外（鋼系・配筋情報が無い／
-/// 算定不能な RC・有効せん断断面積や材料情報が無い場合）は、解析開始時に一度だけ
-/// 算定した [`DirThreshold::Static`] を用いる（採用式は下記）:
+/// 断面形状から精算できる場合（RC矩形＝荒川式、SRC矩形＝荒川式＋内蔵鉄骨の
+/// 累加）を**材料 `fy` の有無より優先**して [`DirThreshold::RcArakawa`] を採用し、
+/// 各ステップで軸力から動的算定した σ0 を反映する（fy は主筋 σy の解決用に
+/// RC・SRC 材料へも設定され得るため、fy を先に見ると鋼系の式へ誤って流れる）。
+/// 形状から精算できない断面は、解析開始時に一度だけ算定した
+/// [`DirThreshold::Static`] を用いる（採用式は下記）:
 /// - 鋼系部材（材料に `fy` が設定されている）: Qy = as・fy / √3
 ///   （純せん断降伏条件 τy = fy/√3（von Mises）に有効せん断断面積を乗じた慣用式）。
-/// - RC 系部材で `RcRect` 形状が無い、または Qsu 算定不能な場合: Qy = as・0.7√fc
+/// - RC 系部材で形状が無い、または Qsu 算定不能な場合: Qy = as・0.7√fc
 ///   （コンクリートのせん断終局強度に対する簡易慣用値。荒川式等の精算は行わない）。
 /// - 有効せん断断面積 `as_area` が 0（未設定）、または材料・強度情報が無い場合は
 ///   判定対象外として Qy = +∞（その方向のせん断では耐力喪失を判定しない）。
@@ -185,16 +186,12 @@ fn build_dir_threshold(
     let Some(mat) = material else {
         return DirThreshold::Static(f64::INFINITY);
     };
-    if let Some(fy) = mat.fy {
-        // 保有水平耐力計算専用のため、鋼材の材料強度割増を無条件で乗じる
-        // （直接入力係数優先、無ければ鋼材グレード名判定=1.1・590N級=1.05）。
-        return DirThreshold::Static(
-            as_area * fy * material_strength_factor_steel(mat) / 3.0_f64.sqrt(),
-        );
-    }
-    let Some(fc) = mat.fc else {
-        return DirThreshold::Static(f64::INFINITY);
-    };
+    // 断面形状（RcRect・SrcRect）による精算を材料 fy の有無より**先に**判定する。
+    // RC・SRC 部材でも fy は「主筋 σy のフォールバック」等の目的で設定され得る
+    // （鋼種名を解決できない SRC は解析前チェックが fy の設定を利用者へ指示する）
+    // ため、fy を先に見ると剛性等価換算面積 × fy/√3 という桁違いに大きい鋼系式へ
+    // 流れ、せん断降伏が事実上検出されなくなる（危険側）。形状から精算できる
+    // 断面は常に荒川式系（RC）・累加式（SRC）で評価する。
     if let Some(Section {
         shape: Some(SectionShape::RcRect { b, d, rebar }),
         ..
@@ -269,6 +266,18 @@ fn build_dir_threshold(
             }
         }
     }
+    // 形状から精算できない断面: 鋼系（fy あり）は von Mises の慣用式、
+    // RC 系（fc あり）は簡易慣用値、どちらも無ければ判定対象外。
+    if let Some(fy) = mat.fy {
+        // 保有水平耐力計算専用のため、鋼材の材料強度割増を無条件で乗じる
+        // （直接入力係数優先、無ければ鋼材グレード名判定=1.1・590N級=1.05）。
+        return DirThreshold::Static(
+            as_area * fy * material_strength_factor_steel(mat) / 3.0_f64.sqrt(),
+        );
+    }
+    let Some(fc) = mat.fc else {
+        return DirThreshold::Static(f64::INFINITY);
+    };
     DirThreshold::Static(as_area * 0.7 * fc.sqrt())
 }
 

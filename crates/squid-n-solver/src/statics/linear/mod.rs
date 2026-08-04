@@ -601,23 +601,7 @@ fn solve_once_inner(model: &Model, lc: LoadCaseId) -> Result<StaticOnce, SolveEr
         let u_indep = solver.solve(&f_red)?;
         let u_free = reducer.expand_u(&u_indep);
 
-        let mut disp: Vec<[f64; 6]> = vec![[0.0; 6]; model.nodes.len()];
-        for ni in 0..model.nodes.len() {
-            for d in 0..squid_n_core::dof::DOF_PER_NODE {
-                let g = ni * squid_n_core::dof::DOF_PER_NODE + d;
-                if let Some(active) = dofmap.active(g) {
-                    let val = u_free[active as usize];
-                    match d {
-                        0 => disp[ni][0] = val,
-                        1 => disp[ni][1] = val,
-                        2 => disp[ni][2] = val,
-                        3 => disp[ni][3] = val,
-                        4 => disp[ni][4] = val,
-                        _ => disp[ni][5] = val,
-                    }
-                }
-            }
-        }
+        let disp = dofmap.expand_to_nodes(&u_free, model.nodes.len());
 
         let mut member_forces = Vec::new();
         // 解析対象荷重ケースの部材荷重（内力回復の重ね合わせ用）。要素 ID で

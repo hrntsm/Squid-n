@@ -1360,6 +1360,50 @@ fn test_compute_shear_yield_qy_src_is_rc_plus_steel() {
         qy_src_z - qy_rc_z,
         steel_z
     );
+
+    // 材料に fy が設定されていても（主筋 σy のフォールバック等）、形状から
+    // 精算できる SRC は累加式を使う（fy 先行だと剛性等価換算面積 × fy/√3 の
+    // 桁違いに大きい鋼系式へ流れ、せん断降伏が検出されなくなる危険側）。
+    let mut mat_with_fy = mat.clone();
+    mat_with_fy.fy = Some(235.0);
+    let qy_with_fy = compute_shear_yield_qy(
+        1.0e6,
+        Some(&mat_with_fy),
+        Some(&src_sec),
+        ShearDir::Y,
+        3000.0,
+    );
+    assert!(
+        (qy_with_fy - qy_src).abs() < 1e-6,
+        "fy 設定時も累加式: qy={} 期待 {}",
+        qy_with_fy,
+        qy_src
+    );
+
+    // 板厚区分: フランジ厚 45mm（>40）の SN400B は弱軸（フランジ）の F が
+    // 215 へ落ち、強軸（ウェブ tw=8 ≤40）は 235 のまま（板厚は板要素ごとに解決）。
+    let thick_flange = SectionShape::SrcRect {
+        b: 600.0,
+        d: 600.0,
+        rebar: match &rc_shape {
+            SectionShape::RcRect { rebar, .. } => rebar.clone(),
+            _ => unreachable!(),
+        },
+        steel_height: 400.0,
+        steel_width: 200.0,
+        steel_web_thick: 8.0,
+        steel_flange_thick: 45.0,
+        steel_grade: "SN400B".into(),
+    };
+    let tf_sec = thick_flange.to_section(SectionId(2), "src-tf45".into());
+    let qy_tf_z = compute_shear_yield_qy(1.0, Some(&mat), Some(&tf_sec), ShearDir::Z, 3000.0);
+    let steel_tf_z = 2.0 * 200.0 * 45.0 * 215.0 * 1.1 / 3.0_f64.sqrt();
+    assert!(
+        (qy_tf_z - qy_rc_z - steel_tf_z).abs() < 1e-6,
+        "厚板フランジの弱軸: qy_src−qy_rc={} 期待 {}",
+        qy_tf_z - qy_rc_z,
+        steel_tf_z
+    );
 }
 
 #[test]
