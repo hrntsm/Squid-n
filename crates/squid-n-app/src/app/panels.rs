@@ -2190,6 +2190,16 @@ impl App {
                 ui.separator();
                 ui.label(format!("最大層塑性率 μ: {:.2}", mu_max));
             });
+            if res.non_converged_steps > 0 {
+                ui.colored_label(
+                    crate::theme::SECONDARY_AMBER,
+                    format!(
+                        "⚠ Newton 反復が {} ステップで収束しませんでした。\
+                         応答値は参考値です（dt を小さくすると改善する場合があります）。",
+                        res.non_converged_steps
+                    ),
+                );
+            }
             egui::Grid::new("stick_th_result")
                 .striped(true)
                 .num_columns(4)

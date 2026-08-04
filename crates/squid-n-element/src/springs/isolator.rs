@@ -444,7 +444,7 @@ impl ElementBehavior for IsolatorElement {
 
     #[allow(clippy::type_complexity)]
     fn restore_state(&mut self, state: &dyn Any) {
-        if let Some((trial, committed, shear)) = state.downcast_ref::<(
+        type Snapshot = (
             [f64; 12],
             [f64; 12],
             (
@@ -452,39 +452,40 @@ impl ElementBehavior for IsolatorElement {
                 Option<(f64, f64)>,
                 Option<(f64, f64)>,
             ),
-        )>() {
-            self.trial_disp = *trial;
-            self.committed_disp = *committed;
-            match (&mut self.shear, &shear.0, &shear.1, &shear.2) {
-                (ShearModel::Laminated { sy, sz }, Some((sy0, sz0)), _, _) => {
-                    *sy = sy0.clone();
-                    *sz = sz0.clone();
-                }
-                (
-                    ShearModel::Friction {
-                        pl_y,
-                        pl_z,
-                        tr_pl_y,
-                        tr_pl_z,
-                        ..
-                    },
-                    _,
-                    Some((py, pz)),
-                    _,
-                ) => {
-                    *pl_y = *py;
-                    *pl_z = *pz;
-                    *tr_pl_y = *py;
-                    *tr_pl_z = *pz;
-                }
-                (ShearModel::StrainDependent { sy, sz, .. }, _, _, Some((py, pz))) => {
-                    sy.pl = *py;
-                    sy.tr_pl = *py;
-                    sz.pl = *pz;
-                    sz.tr_pl = *pz;
-                }
-                _ => {}
+        );
+        let (trial, committed, shear) =
+            crate::behavior::downcast_snapshot::<Snapshot>("IsolatorElement", state);
+        self.trial_disp = *trial;
+        self.committed_disp = *committed;
+        match (&mut self.shear, &shear.0, &shear.1, &shear.2) {
+            (ShearModel::Laminated { sy, sz }, Some((sy0, sz0)), _, _) => {
+                *sy = sy0.clone();
+                *sz = sz0.clone();
             }
+            (
+                ShearModel::Friction {
+                    pl_y,
+                    pl_z,
+                    tr_pl_y,
+                    tr_pl_z,
+                    ..
+                },
+                _,
+                Some((py, pz)),
+                _,
+            ) => {
+                *pl_y = *py;
+                *pl_z = *pz;
+                *tr_pl_y = *py;
+                *tr_pl_z = *pz;
+            }
+            (ShearModel::StrainDependent { sy, sz, .. }, _, _, Some((py, pz))) => {
+                sy.pl = *py;
+                sy.tr_pl = *py;
+                sz.pl = *pz;
+                sz.tr_pl = *pz;
+            }
+            _ => {}
         }
     }
 

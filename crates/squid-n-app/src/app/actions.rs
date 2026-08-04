@@ -87,6 +87,16 @@ impl App {
         self.log.push(LogLevel::Info, msg.into());
     }
 
+    /// 荷重組合せの自動生成に固有のエラー。ステータスバー・ログ
+    /// （[`Self::report_error`]）に加え、荷重組合せ欄にだけ出す専用スロット
+    /// `combo_error` へも反映する（`last_error` は共用の単一スロットのため、
+    /// 組合せ欄へそのまま出すと他の操作のエラーが無関係な欄に現れる）。
+    pub fn report_combo_error(&mut self, msg: impl Into<String>) {
+        let msg = msg.into();
+        self.combo_error = Some(msg.clone());
+        self.report_error(msg);
+    }
+
     /// モデルを丸ごと差し替える（新規作成・サンプル読込・ファイル読込で共用）。
     /// undo 履歴・結果・選択・stale 状態をすべてリセットする。
     /// 旧スキーマの自動生成荷重ケース名（「床荷重(自動)」「自重(自動)」等）は
@@ -119,6 +129,7 @@ impl App {
         // 新モデルを保存してしまうのを防ぐ）。
         self.pending_save_recording = None;
         self.stick_response = None;
+        self.combo_error = None;
         self.generated_panels.clear();
         #[cfg(feature = "gui")]
         {
@@ -1577,13 +1588,28 @@ impl App {
                 }
             }
             // 階ごとの代表ランク = 算定できた部材ランクの最悪値。
-            // 1 本も算定できなかった層は手動選択ランクへフォールバック。
+            // 1 本も算定できなかった層は手動選択ランクへフォールバックし、
+            // 該当層を表示用に記録する（選択ランク（既定 FA）が実状より甘いと
+            // Ds を過小評価する危険側となるため、設計タブで警告する）。
+            let mut fallback_stories: Vec<String> = Vec::new();
             let ranks: Vec<MemberRank> = per_story
                 .into_iter()
-                .map(|rs| worst_rank(&rs).unwrap_or(self.design_rank))
+                .enumerate()
+                .map(|(i, rs)| {
+                    worst_rank(&rs).unwrap_or_else(|| {
+                        if let Some(s) = self.model.stories.get(i) {
+                            fallback_stories.push(s.name.clone());
+                        }
+                        self.design_rank
+                    })
+                })
                 .collect();
+            self.ds_rank_fallback_stories = fallback_stories;
             (ranks, computed)
         } else {
+            // 自動判定 OFF は全層が選択ランクによる明示運用のため、警告対象の
+            // フォールバックではない。
+            self.ds_rank_fallback_stories = Vec::new();
             (vec![self.design_rank; n_stories], Vec::new())
         };
 
@@ -2147,6 +2173,7 @@ impl App {
         };
 
         self.last_error = None;
+        self.combo_error = None;
         let find_first = |kind: LoadCaseKind| {
             self.model
                 .load_cases
@@ -2162,11 +2189,11 @@ impl App {
                 .map(|lc| lc.id)
         };
         let Some(dl) = find_first(LoadCaseKind::Dead) else {
-            self.report_error("種別「固定荷重」の荷重ケースが見つかりません");
+            self.report_combo_error("種別「固定荷重」の荷重ケースが見つかりません");
             return;
         };
         let Some(ll) = find_first(LoadCaseKind::Live) else {
-            self.report_error("種別「積載荷重(長期)」の荷重ケースが見つかりません");
+            self.report_combo_error("種別「積載荷重(架構用)」の荷重ケースが見つかりません");
             return;
         };
         let snow = find_first(LoadCaseKind::Snow);
@@ -2215,7 +2242,7 @@ impl App {
         model: squid_n_core::model::Model,
         cfg: AnalysisSettings,
     ) -> Result<squid_n_solver::pushover::PushoverResult, String> {
-        let mut work = model;
+        let work = model;
         Analysis::prepare(&work).map_err(|e| format!("解析準備エラー: {}", e))?;
         let dofmap = squid_n_core::dof::DofMap::build(&work);
         let reducer = squid_n_solver::constraint::Reducer::build(&work, &dofmap);
@@ -2227,7 +2254,7 @@ impl App {
                 .then_some(1.0 / cfg.push_drift_denom.max(1.0)),
         };
         squid_n_solver::pushover::pushover_analysis_recording(
-            &mut work,
+            &work,
             &dofmap,
             &reducer,
             cfg.push_dir,
@@ -2487,7 +2514,7 @@ impl App {
         wave: squid_n_solver::timehistory::GroundMotion,
         damping: squid_n_solver::damping::Damping,
     ) -> Result<squid_n_solver::timehistory::ResponseResult, String> {
-        let mut model = model;
+        let model = model;
         squid_n_element::factory::ensure_nonlinear_input(&model).map_err(|e| {
             format!(
                 "非線形時刻歴の入力エラー（部材耐力を算定できません）:\n{}",
@@ -2502,14 +2529,13 @@ impl App {
         // 0 は「自動決定」の意（`ThRecorder`/`recording.rs::auto_record_every` に委ねる）。
         let record_every = (cfg.th_record_every > 0).then_some(cfg.th_record_every);
         let nl_cfg = squid_n_solver::timehistory::NonlinearThCfg {
-            max_iter: cfg.th_max_iter,
-            tol: cfg.th_tol,
+            newton: squid_n_solver::newton::NewtonCriteria::new(cfg.th_max_iter, cfg.th_tol),
             use_kg: false,
             apply_long_term: cfg.th_apply_long_term,
             record_every,
         };
         squid_n_solver::timehistory::nonlinear_time_history_analysis(
-            &mut model,
+            &model,
             &dofmap,
             &reducer,
             &wave,

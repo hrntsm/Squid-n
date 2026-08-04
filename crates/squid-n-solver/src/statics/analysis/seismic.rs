@@ -103,8 +103,7 @@ pub fn steel_height_ratio(model: &Model) -> f64 {
         return 0.0;
     }
     // 階高は標高の隣接差分で求めるため、`model.stories` の並び順に依存しない
-    // よう標高昇順に並べ替えてから走査する（同一クレート内の施工時解析
-    // `construction.rs` と同じ防御。並びが乱れた入力では h が負になり
+    // よう標高昇順に並べ替えてから走査する（並びが乱れた入力では h が負になり
     // 鉄骨階の高さが無言で欠落していた）。
     let mut normals: Vec<&Story> = model
         .stories

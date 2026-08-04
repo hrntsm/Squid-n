@@ -49,7 +49,7 @@ pub fn build_rc_member_skeleton(
             .main_bars
             .iter()
             .map(|(_, z, _)| (section.depth / 2.0 - z).abs())
-            .min_by(|a, b| a.partial_cmp(b).unwrap())
+            .min_by(|a, b| a.total_cmp(b))
             .unwrap_or(section.depth / 2.0);
     let j = 7.0 * d_eff / 8.0;
     let ky_yield_est = eps_y / j;

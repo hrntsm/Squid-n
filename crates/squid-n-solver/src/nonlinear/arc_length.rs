@@ -1,3 +1,5 @@
+use crate::common::newton::NewtonCriteria;
+
 /// 円筒型弧長ステップの結果
 pub struct ArcLengthStep {
     pub du: Vec<f64>,
@@ -16,16 +18,15 @@ pub type FintFn<'a> = dyn FnMut(&[f64]) -> Result<Vec<f64>, String> + 'a;
 /// 円筒型弧長法ソルバ（Crisfield 1981）
 pub struct ArcLengthSolver {
     pub delta_l: f64,
-    pub max_iter: u32,
-    pub tol: f64,
+    /// 修正子反復の収束規約。基準ノルムは現在の外力ノルム ‖λ·q‖（＋退化防止の 1e-30）。
+    pub newton: NewtonCriteria,
 }
 
 impl ArcLengthSolver {
     pub fn new(delta_l: f64) -> Self {
         ArcLengthSolver {
             delta_l,
-            max_iter: 20,
-            tol: 1e-6,
+            newton: NewtonCriteria::new(20, 1e-6),
         }
     }
 
@@ -42,7 +43,7 @@ impl ArcLengthSolver {
     /// 確保を避けられないが、`solve` の解（`du_t`／`du_bar`）は出力バッファ契約
     /// （[`SolverFn`]）で本メソッドが 1 回だけ確保したバッファへ書き込ませ、
     /// その他の内部演算（`scale`／`add`）も同様に作業バッファへ書き込む形として、
-    /// 修正子反復（最大 `max_iter` 回）ごとの Vec 再確保を無くしている
+    /// 修正子反復（最大 `newton.max_iter` 回）ごとの Vec 再確保を無くしている
     /// （時刻歴応答解析高速化・第2波と同じ「同じ演算を同じ順序で行い、確保回数だけを
     /// 減らす」方針。各要素の計算式・演算順序は従来と同一で数値結果はビット一致する）。
     pub fn step<'b>(
@@ -108,7 +109,7 @@ impl ArcLengthSolver {
         let mut d1 = vec![0.0; n];
         let mut d2 = vec![0.0; n];
         let mut du_update = vec![0.0; n];
-        for _iter in 0..self.max_iter {
+        for _iter in self.newton.iters() {
             let current_lambda = lambda + dlambda;
             for i in 0..n {
                 r[i] = current_lambda * q[i] - f_int[i];
@@ -116,7 +117,7 @@ impl ArcLengthSolver {
 
             let r_norm = dot(&r, &r).sqrt();
             let ext_norm = (current_lambda * current_lambda * qq).sqrt() + 1e-30;
-            if r_norm < self.tol * ext_norm {
+            if self.newton.converged(r_norm, ext_norm) {
                 converged = true;
                 break;
             }
@@ -236,8 +237,7 @@ mod tests {
 
         let solver = ArcLengthSolver {
             delta_l: 0.05,
-            max_iter: 80,
-            tol: 1e-4,
+            newton: NewtonCriteria::new(80, 1e-4),
         };
         let q = [1.0_f64];
         let mut u = 0.0_f64;

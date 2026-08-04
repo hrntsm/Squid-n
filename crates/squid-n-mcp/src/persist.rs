@@ -39,6 +39,21 @@ pub fn persist_job_outcome(
     store: &mut squid_n_io::results::FsResultStore,
     outcome: JobOutcome,
 ) -> Result<String, String> {
+    let result = persist_job_outcome_inner(store, outcome);
+    if result.is_err() {
+        // 複数種別の書き込みが途中で失敗した場合、それまでに finish 済みの
+        // エントリが保留のまま残り、次のジョブの writer()→sync() で manifest へ
+        // 採用されて Failed ジョブの部分結果が照会可能になる。失敗時は保留分を
+        // 破棄してロールバックする。
+        store.discard_pending();
+    }
+    result
+}
+
+fn persist_job_outcome_inner(
+    store: &mut squid_n_io::results::FsResultStore,
+    outcome: JobOutcome,
+) -> Result<String, String> {
     use squid_n_io::results::{member_force_batch, modal_batch, nodal_disp_batch, ResultKind};
 
     /// バッチを 1 つ書き込んで finish する（バッチ生成・IO いずれの失敗も伝播）。

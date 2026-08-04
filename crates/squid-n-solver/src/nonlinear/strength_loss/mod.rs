@@ -375,9 +375,9 @@ pub fn staged_strength_loss(
 
     let n_passes = max_passes.max(1);
     for pass_idx in 0..n_passes {
-        let mut m = current_model.clone();
+        let m = current_model.clone();
         let result = match pushover_analysis_recording(
-            &mut m,
+            &m,
             &dofmap,
             &reducer,
             dir,

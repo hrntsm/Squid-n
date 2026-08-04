@@ -299,8 +299,13 @@ mod tests {
 
     /// テスト用の結果ストアディレクトリを用意する（テストごとに固有の名前を渡すこと）。
     /// 前回実行の残骸を消してから使う（実ストア=ファイルシステムを使うため）。
+    /// プロセス ID 入りのサブディレクトリを介し、同一マシンで並行する別プロセスの
+    /// テスト実行と衝突しないようにする。
     fn test_store_dir(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("squid_n_mcp_test_{name}"));
+        let dir = std::env::temp_dir().join(format!(
+            "squid-n-test-{}/squid_n_mcp_test_{name}",
+            std::process::id()
+        ));
         let _ = std::fs::remove_dir_all(&dir);
         dir
     }

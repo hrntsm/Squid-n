@@ -1,6 +1,16 @@
 use super::*;
 use squid_n_core::model::MaterialCategory;
 
+/// テストが書き込む一時ディレクトリ（プロセス ID 入り）。
+/// `std::env::temp_dir()` 直下へ固定名で書き込むと、同一マシンで並行する
+/// 別プロセスのテスト実行と衝突するため、プロセスごとに一意なサブディレクトリを
+/// 介する（同一プロセス内はテストごとの固有ファイル名で分離する）。
+fn test_tmp() -> std::path::PathBuf {
+    let d = std::env::temp_dir().join(format!("squid-n-test-{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&d);
+    d
+}
+
 /// 部材が鋼系かは材料の区分で決まる。断面形状ではないため、H 形のコンクリート
 /// 部材・矩形断面の鋼部材も正しく判定できる。
 #[test]
@@ -1481,7 +1491,7 @@ fn test_async_wind_job_flow() {
 
 #[test]
 fn test_save_and_open_project_roundtrip() {
-    let dir = std::env::temp_dir().join("squid_n_app_test_scz");
+    let dir = test_tmp().join("squid_n_app_test_scz");
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("roundtrip.scz");
 
@@ -1522,7 +1532,7 @@ fn test_open_project_missing_file_sets_error() {
 
 #[test]
 fn test_export_and_import_stbridge_roundtrip() {
-    let dir = std::env::temp_dir().join("squid_n_app_test_stbridge");
+    let dir = test_tmp().join("squid_n_app_test_stbridge");
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("roundtrip.stb");
 
@@ -1562,7 +1572,7 @@ fn test_export_and_import_stbridge_roundtrip() {
 
 #[test]
 fn test_export_stbridge_standard_mode_writes_steel_library() {
-    let dir = std::env::temp_dir().join("squid_n_app_test_stbridge_std");
+    let dir = test_tmp().join("squid_n_app_test_stbridge_std");
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("standard.stb");
 
@@ -1589,7 +1599,7 @@ fn test_export_stbridge_standard_mode_writes_steel_library() {
 fn test_stbridge_standard_mode_roundtrip_through_app() {
     // 断面形状モードで書き出したファイルを GUI 経路（import_stbridge_from）で
     // 読み戻せる（検証エラーなくモデルが差し替わり、断面形状が復元される）。
-    let dir = std::env::temp_dir().join("squid_n_app_test_stbridge_std_rt");
+    let dir = test_tmp().join("squid_n_app_test_stbridge_std_rt");
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("standard_rt.stb");
 
@@ -2007,6 +2017,48 @@ fn test_holding_capacity_rank_auto_from_width_thickness() {
     // 唯一の層の代表ランクは柱・梁のうち最悪値（FD 寄り）。
     assert_eq!(story_ranks.len(), 1);
     assert_eq!(story_ranks[0], worst_rank(&[col_rank, beam_rank]).unwrap());
+    // 全部材のランクを算定できているため、選択ランクへのフォールバック層は無い。
+    assert!(
+        app.ds_rank_fallback_stories.is_empty(),
+        "{:?}",
+        app.ds_rank_fallback_stories
+    );
+}
+
+/// rank-auto で部材ランクを 1 本も算定できない層（断面形状未設定等）は選択ランクへ
+/// フォールバックし、該当層が `ds_rank_fallback_stories` に記録される（設計タブの
+/// 警告表示用）。自動判定 OFF は全層が明示運用のため記録されない。
+#[test]
+fn test_holding_capacity_rank_auto_records_fallback_stories() {
+    use squid_n_design_jp::secondary::holding_capacity::MemberRank;
+
+    let mut app = App::default();
+    app.load_model(crate::sample::portal_frame());
+    app.generate_stories_action();
+    app.run_seismic(SeismicDir::X);
+    app.analysis_cfg.push_steps = 10;
+    app.run_pushover();
+    assert!(app.last_error.is_none(), "{:?}", app.last_error);
+
+    // 全断面の形状情報を外し、幅厚比・RC 略算のいずれも算定不能にする。
+    for sec in &mut app.model.sections {
+        sec.shape = None;
+    }
+    app.design_rank_auto = true;
+    app.design_rank = MemberRank::FB;
+    let (_, story_ranks) = app.compute_holding_capacity().expect("Ok のはず");
+
+    // 全層が選択ランクへフォールバックし、層名が記録される。
+    assert_eq!(story_ranks, vec![MemberRank::FB]);
+    assert_eq!(
+        app.ds_rank_fallback_stories,
+        vec![app.model.stories[0].name.clone()]
+    );
+
+    // 自動判定 OFF では全層が選択値の明示運用のため、フォールバック記録は空。
+    app.design_rank_auto = false;
+    let _ = app.compute_holding_capacity().expect("Ok のはず");
+    assert!(app.ds_rank_fallback_stories.is_empty());
 }
 
 /// SectionShape::RcRect の配筋情報から `rc_capacity_input_from_rect` で
@@ -3749,6 +3801,8 @@ fn test_auto_generate_combinations_missing_dead_or_live_is_error() {
     app.model.load_cases = vec![kind_lc(0, "積載", LoadCaseKind::Live)];
     app.auto_generate_combinations_action();
     assert!(app.last_error.as_deref().unwrap().contains("固定荷重"));
+    // 荷重組合せ欄に表示する専用スロットにも同じエラーが入る。
+    assert_eq!(app.combo_error, app.last_error);
     assert!(app.model.combinations.is_empty());
 
     // Live 無し
@@ -3756,7 +3810,16 @@ fn test_auto_generate_combinations_missing_dead_or_live_is_error() {
     app.model.load_cases = vec![kind_lc(0, "固定", LoadCaseKind::Dead)];
     app.auto_generate_combinations_action();
     assert!(app.last_error.as_deref().unwrap().contains("積載荷重"));
+    assert_eq!(app.combo_error, app.last_error);
     assert!(app.model.combinations.is_empty());
+
+    // Dead/Live が揃えば生成に成功し、組合せ欄のエラーは消える。
+    app.model
+        .load_cases
+        .push(kind_lc(1, "積載", LoadCaseKind::Live));
+    app.auto_generate_combinations_action();
+    assert!(app.combo_error.is_none());
+    assert!(!app.model.combinations.is_empty());
 }
 
 /// SetLoadCfg が App の undo スタック経由で機能すること
@@ -4686,7 +4749,7 @@ fn test_run_combination_errors_on_empty_seismic_case() {
 /// 書き出し→読み戻しで確認できる）。
 #[test]
 fn test_import_stbridge_without_loads_creates_default_cases() {
-    let dir = std::env::temp_dir().join("squid_n_app_test_stbridge_default_lc");
+    let dir = test_tmp().join("squid_n_app_test_stbridge_default_lc");
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("no_loads.stb");
 
@@ -4751,7 +4814,7 @@ fn test_import_stbridge_with_loads_keeps_file_cases() {
     </StbLoadCase>
   </StbLoads>
 </StbModel></ST_BRIDGE>"#;
-    let dir = std::env::temp_dir().join("squid_n_app_test_stbridge_with_lc");
+    let dir = test_tmp().join("squid_n_app_test_stbridge_with_lc");
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("with_loads.stb");
     std::fs::write(&path, xml).unwrap();
@@ -4784,7 +4847,7 @@ fn test_import_stbridge_then_run_dl_succeeds() {
     };
     use squid_n_section::shape::SectionShape;
 
-    let dir = std::env::temp_dir().join("squid_n_app_test_stbridge_run_dl");
+    let dir = test_tmp().join("squid_n_app_test_stbridge_run_dl");
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("run_dl.stb");
 
@@ -5819,6 +5882,7 @@ fn test_load_model_resets_model_derived_state() {
         story_peak_drift: vec![0.0],
         story_peak_shear: vec![0.0],
         story_ductility: vec![0.0],
+        non_converged_steps: 0,
     });
     app.generated_panels
         .push(squid_n_element::panel_gen::GeneratedPanel {
@@ -5945,7 +6009,7 @@ fn test_preparation_lists_width_thickness() {
 /// 復元できた場合は実行済み扱い（stale でない）になる。
 #[test]
 fn test_preparation_persisted_in_project_file() {
-    let dir = std::env::temp_dir();
+    let dir = test_tmp();
     let path = dir.join("squid_n_prep_persist_test.scz");
     let _ = std::fs::remove_file(&path);
 
@@ -5985,7 +6049,7 @@ fn test_preparation_persisted_in_project_file() {
 /// 読込側は未実行のままにする（古い結果を最新と誤認させない）。
 #[test]
 fn test_stale_preparation_not_persisted() {
-    let dir = std::env::temp_dir();
+    let dir = test_tmp();
     let path = dir.join("squid_n_prep_stale_test.scz");
     let _ = std::fs::remove_file(&path);
 
@@ -6099,7 +6163,7 @@ fn test_preparation_member_stiffness_reports_composite_props() {
 /// 復元できた場合は再計算不要（stale でない）扱いになる。
 #[test]
 fn test_results_persisted_in_project_file() {
-    let dir = std::env::temp_dir();
+    let dir = test_tmp();
     let path = dir.join("squid_n_results_persist_test.scz");
     let _ = std::fs::remove_file(&path);
 
@@ -6140,7 +6204,7 @@ fn test_results_persisted_in_project_file() {
 /// 読込側は結果なし・要再計算のままにする。
 #[test]
 fn test_stale_results_not_persisted() {
-    let dir = std::env::temp_dir();
+    let dir = test_tmp();
     let path = dir.join("squid_n_results_stale_test.scz");
     let _ = std::fs::remove_file(&path);
 
@@ -6167,7 +6231,7 @@ fn test_stale_results_not_persisted() {
 /// 「除外して保存」（`save_project_without_recording`）の分岐も併せて検証する。
 #[test]
 fn test_time_history_recording_saved_and_optional_exclusion() {
-    let dir = std::env::temp_dir();
+    let dir = test_tmp();
     let path = dir.join("squid_n_th_recording_saved_test.scz");
     let path_excl = dir.join("squid_n_th_recording_excluded_test.scz");
     let _ = std::fs::remove_file(&path);

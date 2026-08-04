@@ -806,6 +806,22 @@ pub fn design_table(ui: &mut egui::Ui, app: &mut App) {
                     format!("βu（耐力壁・筋かいの水平耐力比、下階→上階）: {}", list),
                 );
             }
+            // rank-auto で 1 本も算定できず選択ランクへフォールバックした層の警告。
+            // 幅厚比表の対象外形状（円形鋼管等）・形状未設定などの層は選択ランク
+            // （既定 FA）のまま Ds が決まり、実状より甘いと危険側になるため明示する。
+            if app.design_rank_auto && !app.ds_rank_fallback_stories.is_empty() {
+                ui.colored_label(
+                    crate::theme::SECONDARY_AMBER,
+                    format!(
+                        "⚠ 部材ランクを 1 本も算定できず、選択ランク {:?} を適用した層があります\
+                         （{}）。幅厚比表の対象外形状・断面形状未設定・Fc 未設定などが原因です。\
+                         選択ランクが実状より甘いと Ds を過小評価するため、該当層の部材種別を\
+                         確認してください。",
+                        app.design_rank,
+                        app.ds_rank_fallback_stories.join("、"),
+                    ),
+                );
+            }
             let note = if app.design_rank_auto {
                 "Qu は増分解析性能曲線上の層別ピーク層せん断力（崩壊機構形成時の耐力）。\
                  Ds は部材ランク自動判定（鋼=幅厚比、RC矩形=せん断余裕度 Qsu/Qmu の略算。柱は\

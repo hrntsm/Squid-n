@@ -7,7 +7,7 @@
 //! 解析の種類ごとにモジュールを階層化している:
 //!
 //! - [`common`] —    解析共通の基盤（組み立て・拘束・状態スナップショット）
-//! - [`statics`] —   静的解析（線形静的・地震/風荷重・施工時）
+//! - [`statics`] —   静的解析（線形静的・地震/風荷重）
 //! - [`nonlinear`] — 非線形（漸増）静的解析（プッシュオーバー・弧長法・耐力喪失）
 //! - [`dynamic`] —   動的解析（時刻歴・減衰・固有値）
 //!
@@ -22,7 +22,7 @@ mod statics;
 
 // 階層化後も従来のモジュールパス（例: `squid_n_solver::pushover` や
 // クレート内部の `crate::constraint`）を維持するための再エクスポート。
-pub use common::{assemble, constraint, transaction};
+pub use common::{assemble, constraint, newton, transaction};
 pub use dynamic::{damping, eigen, lumped_mass, phase_diff, timehistory};
 pub use nonlinear::{arc_length, pushover, strength_loss};
-pub use statics::{analysis, construction, linear};
+pub use statics::{analysis, linear};

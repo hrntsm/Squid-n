@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn test_parquet_roundtrip() {
-    let dir = std::env::temp_dir();
+    let dir = crate::test_util::test_tmp();
     let path = dir.join("p2_test_nodal.parquet");
     let path_str = path.to_str().unwrap();
 
@@ -30,7 +30,7 @@ fn test_parquet_roundtrip() {
 
 #[test]
 fn test_modal_roundtrip_partial() {
-    let dir = std::env::temp_dir();
+    let dir = crate::test_util::test_tmp();
     let path = dir.join("p2_test_modal.parquet");
     let path_str = path.to_str().unwrap();
     {
@@ -54,7 +54,7 @@ fn test_modal_roundtrip_partial() {
 
 #[test]
 fn test_member_force_roundtrip() {
-    let dir = std::env::temp_dir();
+    let dir = crate::test_util::test_tmp();
     let path = dir.join("p2_test_member.parquet");
     let path_str = path.to_str().unwrap();
     {
@@ -138,7 +138,7 @@ fn test_time_history_batch_values() {
 
 #[test]
 fn test_time_history_write_read_roundtrip() {
-    let dir = std::env::temp_dir();
+    let dir = crate::test_util::test_tmp();
     let path = dir.join("p6_th_roundtrip.parquet");
     let path_str = path.to_str().unwrap();
 
@@ -165,7 +165,7 @@ fn test_time_history_write_read_roundtrip() {
 
 #[test]
 fn test_time_history_partial_read_step_range() {
-    let dir = std::env::temp_dir();
+    let dir = crate::test_util::test_tmp();
     let path = dir.join("p6_th_step_range.parquet");
     let path_str = path.to_str().unwrap();
 
@@ -198,7 +198,7 @@ fn test_time_history_partial_read_step_range() {
 
 #[test]
 fn test_time_history_partial_read_node_filter() {
-    let dir = std::env::temp_dir();
+    let dir = crate::test_util::test_tmp();
     let path = dir.join("p6_th_node_filter.parquet");
     let path_str = path.to_str().unwrap();
 
@@ -225,7 +225,7 @@ fn test_time_history_partial_read_node_filter() {
 
 #[test]
 fn test_fs_result_store_writer_and_manifest() {
-    let dir = std::env::temp_dir().join("p8_fsrs_basic");
+    let dir = crate::test_util::test_tmp().join("p8_fsrs_basic");
     let _ = std::fs::remove_dir_all(&dir);
     let mut store = FsResultStore::open(&dir).unwrap();
 
@@ -255,9 +255,54 @@ fn test_fs_result_store_writer_and_manifest() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// finish 済みでも `discard_pending` した保留エントリは manifest へ採用されない
+/// （途中失敗ジョブの部分結果が後続の sync で照会可能になるのを防ぐ）。
+/// 破棄後の sync は何も追加せず、以降の正常な書き込みは通常どおり反映される。
+#[test]
+fn test_fs_result_store_discard_pending_drops_partial_results() {
+    let dir = crate::test_util::test_tmp().join("p8_fsrs_discard");
+    let _ = std::fs::remove_dir_all(&dir);
+    let mut store = FsResultStore::open(&dir).unwrap();
+
+    // 途中失敗ジョブを模擬: 1 種別目（NodalDisp）は finish 済み（保留に積まれる）で、
+    // **2 種別目のライタを取得してから**失敗した想定（複数種別を書くジョブの実際の
+    // 失敗経路。かつては writer() が自動 sync して 1 種別目が manifest へ吸収され、
+    // discard_pending で巻き戻せなかった）。
+    {
+        let mut writer = store.writer(1, ResultKind::NodalDisp).unwrap();
+        let batch = nodal_disp_batch(&[1], &[[0.1; 6]]).unwrap();
+        writer.write_rows(&batch).unwrap();
+        writer.finish().unwrap();
+    }
+    {
+        // 2 種別目のライタ取得（この時点で 1 種別目が manifest へ漏れてはならない）。
+        let _writer = store.writer(1, ResultKind::MemberForce).unwrap();
+        // finish せず drop ＝ 書き込み失敗の想定。
+    }
+    store.discard_pending();
+    store.sync().unwrap();
+    assert!(
+        store.manifest().entries.is_empty(),
+        "破棄した保留エントリが manifest へ採用されてはならない"
+    );
+
+    // 破棄後の正常な書き込みは通常どおり manifest へ反映される。
+    {
+        let mut writer = store.writer(2, ResultKind::NodalDisp).unwrap();
+        let batch = nodal_disp_batch(&[1, 2], &[[0.1; 6], [0.2; 6]]).unwrap();
+        writer.write_rows(&batch).unwrap();
+        writer.finish().unwrap();
+    }
+    store.sync().unwrap();
+    assert_eq!(store.manifest().entries.len(), 1);
+    assert_eq!(store.manifest().entries[0].case, 2);
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn test_fs_result_store_rewrite_dedup() {
-    let dir = std::env::temp_dir().join("p8_fsrs_dedup");
+    let dir = crate::test_util::test_tmp().join("p8_fsrs_dedup");
     let _ = std::fs::remove_dir_all(&dir);
     let mut store = FsResultStore::open(&dir).unwrap();
 
@@ -280,7 +325,7 @@ fn test_fs_result_store_rewrite_dedup() {
 
 #[test]
 fn test_fs_result_store_query_node_filter() {
-    let dir = std::env::temp_dir().join("p8_fsrs_query_filter");
+    let dir = crate::test_util::test_tmp().join("p8_fsrs_query_filter");
     let _ = std::fs::remove_dir_all(&dir);
     let mut store = FsResultStore::open(&dir).unwrap();
     {
@@ -314,7 +359,7 @@ fn test_fs_result_store_query_node_filter() {
 
 #[test]
 fn test_fs_result_store_reopen_restores_manifest() {
-    let dir = std::env::temp_dir().join("p8_fsrs_reopen");
+    let dir = crate::test_util::test_tmp().join("p8_fsrs_reopen");
     let _ = std::fs::remove_dir_all(&dir);
     {
         let mut store = FsResultStore::open(&dir).unwrap();
@@ -336,7 +381,7 @@ fn test_fs_result_store_reopen_restores_manifest() {
 
 #[test]
 fn test_fs_result_store_time_history_step_range_query() {
-    let dir = std::env::temp_dir().join("p8_fsrs_th_steprange");
+    let dir = crate::test_util::test_tmp().join("p8_fsrs_th_steprange");
     let _ = std::fs::remove_dir_all(&dir);
     let mut store = FsResultStore::open(&dir).unwrap();
     {

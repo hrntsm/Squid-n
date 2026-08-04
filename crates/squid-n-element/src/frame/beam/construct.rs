@@ -92,7 +92,7 @@ pub(crate) fn eval_sections_of(
     if let Some(detail) = model.member_detail(data.id) {
         xs.extend(detail.extra_check_positions(&data.rigid_zone, length));
     }
-    xs.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    xs.sort_by(|a, b| a.total_cmp(b));
     xs.dedup_by(|a, b| (*a - *b).abs() < 1e-9);
     xs
 }

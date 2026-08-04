@@ -87,7 +87,7 @@ pub fn generate_stories_with_opts(
 
     // --- 1. Z レベルのクラスタリング（構造節点のみ） ---
     let mut zs: Vec<f64> = struct_nodes.iter().map(|n| n.coord[2]).collect();
-    zs.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    zs.sort_by(|a, b| a.total_cmp(b));
     let mut levels: Vec<f64> = Vec::new();
     for z in zs {
         match levels.last() {

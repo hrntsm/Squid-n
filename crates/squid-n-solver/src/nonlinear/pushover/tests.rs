@@ -101,12 +101,12 @@ fn single_column_model(fy: f64, seismic_weight: f64) -> Model {
 fn test_pushover_single_column_forms_hinge() {
     // 降伏応力を低め、地震重量を降伏荷重をやや超える程度に設定し、
     // 柱脚に曲げヒンジが形成されることを確認する。
-    let mut model = single_column_model(235.0, 80_000.0);
+    let model = single_column_model(235.0, 80_000.0);
     let dofmap = DofMap::build(&model);
     let reducer = Reducer::build(&model, &dofmap);
 
     let result = pushover_analysis(
-        &mut model,
+        &model,
         &dofmap,
         &reducer,
         SeismicDir::X,
@@ -197,11 +197,11 @@ fn test_pushover_load_control_endpoint_is_mesh_independent() {
     // 本モデルは弾性降伏変位 ≈69mm（Qy=My/L≈13.05kN、k=3EI/L³≈189.8N/mm）で、
     // λ=1 の base_shear=16000N は降伏後（塑性域）にあり複数反復ステップを含む。
     let run = |steps: usize| -> (f64, f64) {
-        let mut model = single_column_model(235.0, 80_000.0);
+        let model = single_column_model(235.0, 80_000.0);
         let dofmap = DofMap::build(&model);
         let reducer = Reducer::build(&model, &dofmap);
         let result = pushover_analysis(
-            &mut model,
+            &model,
             &dofmap,
             &reducer,
             SeismicDir::X,
@@ -279,7 +279,7 @@ fn test_pushover_stops_when_concrete_strength_unset() {
     let dofmap = DofMap::build(&model);
     let reducer = Reducer::build(&model, &dofmap);
     let err = pushover_analysis(
-        &mut model,
+        &model,
         &dofmap,
         &reducer,
         SeismicDir::X,
@@ -296,7 +296,7 @@ fn test_pushover_stops_when_concrete_strength_unset() {
     model.materials[0].fc = Some(24.0);
     assert!(
         pushover_analysis(
-            &mut model,
+            &model,
             &dofmap,
             &reducer,
             SeismicDir::X,
@@ -314,11 +314,11 @@ fn test_pushover_stops_when_concrete_strength_unset() {
 #[test]
 fn test_pushover_requires_seismic_weight() {
     // 地震重量未定義ではエラーを返す（入力検証）。
-    let mut model = single_column_model(235.0, 0.0);
+    let model = single_column_model(235.0, 0.0);
     let dofmap = DofMap::build(&model);
     let reducer = Reducer::build(&model, &dofmap);
     let result = pushover_analysis(
-        &mut model,
+        &model,
         &dofmap,
         &reducer,
         SeismicDir::X,
@@ -416,11 +416,11 @@ fn test_pushover_support_spring_affects_k_and_f_int() {
     let weight = 80_000.0;
 
     let run = |support_kx: Option<f64>| -> (f64, f64) {
-        let mut model = spring_column_model(kx, support_kx, weight);
+        let model = spring_column_model(kx, support_kx, weight);
         let dofmap = DofMap::build(&model);
         let reducer = Reducer::build(&model, &dofmap);
         let result = pushover_analysis(
-            &mut model,
+            &model,
             &dofmap,
             &reducer,
             SeismicDir::X,
@@ -473,11 +473,11 @@ fn test_pushover_support_spring_affects_k_and_f_int() {
 #[test]
 fn test_pushover_arc_length_path_runs() {
     // 弧長法フェーズ（f_int 反復再評価版）がエンドツーエンドで動作すること。
-    let mut model = single_column_model(235.0, 80_000.0);
+    let model = single_column_model(235.0, 80_000.0);
     let dofmap = DofMap::build(&model);
     let reducer = Reducer::build(&model, &dofmap);
     let result = pushover_analysis(
-        &mut model,
+        &model,
         &dofmap,
         &reducer,
         SeismicDir::X,
@@ -496,11 +496,11 @@ fn test_pushover_arc_length_path_runs() {
 fn test_pushover_computes_member_ductility() {
     // 変位制御で十分に押し込み、ファイバ柱の部材塑性率 μ が算定されること
     // （降伏方式では降伏曲率が基点、降伏後 μ≥1 が報告される）。
-    let mut model = single_column_model(235.0, 80_000.0);
+    let model = single_column_model(235.0, 80_000.0);
     let dofmap = DofMap::build(&model);
     let reducer = Reducer::build(&model, &dofmap);
     let result = pushover_analysis_recording(
-        &mut model,
+        &model,
         &dofmap,
         &reducer,
         SeismicDir::X,
@@ -534,11 +534,11 @@ fn test_pushover_ductility_method_selection_changes_reference() {
     // 基点到達し μ≥1、基点歪み方式(1)は本押込量では基点ひずみ（鉄骨 0.01）未到達で
     // μ=0（未評価）となる。
     let run = |method: DuctilityMethod| -> f64 {
-        let mut model = single_column_model(235.0, 80_000.0);
+        let model = single_column_model(235.0, 80_000.0);
         let dofmap = DofMap::build(&model);
         let reducer = Reducer::build(&model, &dofmap);
         let result = pushover_analysis_recording(
-            &mut model,
+            &model,
             &dofmap,
             &reducer,
             SeismicDir::X,
@@ -949,11 +949,11 @@ fn test_determine_mechanism_overall() {
 fn test_pushover_base_shear_is_real_force() {
     // 最初の（弾性）ステップで base_shear/roof_disp が片持ち柱の弾性剛性
     // 3EI/L³ ≈ 189.8 N/mm に一致することを確認（DOF添字加算の旧バグを排除）。
-    let mut model = single_column_model(235.0, 80_000.0);
+    let model = single_column_model(235.0, 80_000.0);
     let dofmap = DofMap::build(&model);
     let reducer = Reducer::build(&model, &dofmap);
     let result = pushover_analysis(
-        &mut model,
+        &model,
         &dofmap,
         &reducer,
         SeismicDir::X,
@@ -1129,12 +1129,12 @@ fn portal_frame_model(fy: f64, seismic_weight: f64) -> Model {
 #[test]
 fn test_portal_frame_collapse_load() {
     let qu_theory: f64 = 52_220.0;
-    let mut model = portal_frame_model(235.0, 600_000.0);
+    let model = portal_frame_model(235.0, 600_000.0);
     let dofmap = DofMap::build(&model);
     let reducer = Reducer::build(&model, &dofmap);
 
     let result = pushover_analysis(
-        &mut model,
+        &model,
         &dofmap,
         &reducer,
         SeismicDir::X,
@@ -1205,12 +1205,12 @@ fn test_portal_frame_collapse_load() {
 
 #[test]
 fn test_portal_frame_mechanism_classified() {
-    let mut model = portal_frame_model(235.0, 600_000.0);
+    let model = portal_frame_model(235.0, 600_000.0);
     let dofmap = DofMap::build(&model);
     let reducer = Reducer::build(&model, &dofmap);
 
     let result = pushover_analysis(
-        &mut model,
+        &model,
         &dofmap,
         &reducer,
         SeismicDir::X,
@@ -1628,12 +1628,12 @@ fn test_pushover_shear_yield_event_recorded() {
     // せん断有効断面積を小さく設定してせん断降伏耐力 Qy を小さくすることで、
     // 水平荷重漸増中にせん断降伏イベントが記録されることを確認する
     // （曲げヒンジ判定 `track_hinges` とは独立の判定経路の検証）。
-    let mut model = single_column_model_with_shear(235.0, 80_000.0, 50.0);
+    let model = single_column_model_with_shear(235.0, 80_000.0, 50.0);
     let dofmap = DofMap::build(&model);
     let reducer = Reducer::build(&model, &dofmap);
 
     let result = pushover_analysis(
-        &mut model,
+        &model,
         &dofmap,
         &reducer,
         SeismicDir::X,
@@ -1665,11 +1665,11 @@ fn single_column_model_with_shear_yz(fy: f64, seismic_weight: f64, as_y: f64, as
 /// 局所 z（ez＝グローバル Y）方向にはほぼ生じない。
 /// 局所 y のしきい値は断面 as_z、局所 z は断面 as_y から作られる（クロス変換）。
 fn run_pushover_has_shear_yield(as_y: f64, as_z: f64) -> bool {
-    let mut model = single_column_model_with_shear_yz(235.0, 80_000.0, as_y, as_z);
+    let model = single_column_model_with_shear_yz(235.0, 80_000.0, as_y, as_z);
     let dofmap = DofMap::build(&model);
     let reducer = Reducer::build(&model, &dofmap);
     let result = pushover_analysis(
-        &mut model,
+        &model,
         &dofmap,
         &reducer,
         SeismicDir::X,
@@ -2352,18 +2352,18 @@ fn test_compute_shear_yield_thresholds_rc_rebar_scaled_but_shear_reinforcement_i
 #[test]
 fn test_pushover_displacement_control_reaches_target_and_exceeds_design_load() {
     let seismic_weight = 80_000.0;
-    let mut model = single_column_model(235.0, seismic_weight);
+    let model = single_column_model(235.0, seismic_weight);
     let dofmap = DofMap::build(&model);
     let reducer = Reducer::build(&model, &dofmap);
     let max_disp = 200.0;
     let n_steps = 50usize;
 
     // 荷重制御のみ（max_disp=0）: Qu は参照荷重 C0=0.2・地震重量で頭打ち。
-    let mut load_only_model = single_column_model(235.0, seismic_weight);
+    let load_only_model = single_column_model(235.0, seismic_weight);
     let lo_dofmap = DofMap::build(&load_only_model);
     let lo_reducer = Reducer::build(&load_only_model, &lo_dofmap);
     let load_only = pushover_analysis(
-        &mut load_only_model,
+        &load_only_model,
         &lo_dofmap,
         &lo_reducer,
         SeismicDir::X,
@@ -2376,7 +2376,7 @@ fn test_pushover_displacement_control_reaches_target_and_exceeds_design_load() {
     .expect("load control run");
 
     let result = pushover_analysis(
-        &mut model,
+        &model,
         &dofmap,
         &reducer,
         SeismicDir::X,
@@ -2449,11 +2449,11 @@ fn test_pushover_elastic_curve_monotonic_across_phase_switch() {
     // 降伏応力を非現実的に高くし、曲げヒンジ・ファイバー降伏を発生させない。
     let seismic_weight = 80_000.0;
     let n_steps = 20usize;
-    let mut model = single_column_model(100_000.0, seismic_weight);
+    let model = single_column_model(100_000.0, seismic_weight);
     let dofmap = DofMap::build(&model);
     let reducer = Reducer::build(&model, &dofmap);
     let result = pushover_analysis(
-        &mut model,
+        &model,
         &dofmap,
         &reducer,
         SeismicDir::X,
@@ -2519,11 +2519,11 @@ fn test_pushover_uniform_displacement_spacing() {
     let seismic_weight = 80_000.0;
     let max_disp = 200.0;
     let n_steps = 50usize;
-    let mut model = single_column_model(235.0, seismic_weight);
+    let model = single_column_model(235.0, seismic_weight);
     let dofmap = DofMap::build(&model);
     let reducer = Reducer::build(&model, &dofmap);
     let result = pushover_analysis(
-        &mut model,
+        &model,
         &dofmap,
         &reducer,
         SeismicDir::X,
@@ -2570,11 +2570,11 @@ fn test_pushover_uniform_displacement_spacing() {
 #[test]
 fn test_pushover_load_only_extends_beyond_design_level() {
     let seismic_weight = 80_000.0;
-    let mut model = single_column_model(235.0, seismic_weight);
+    let model = single_column_model(235.0, seismic_weight);
     let dofmap = DofMap::build(&model);
     let reducer = Reducer::build(&model, &dofmap);
     let result = pushover_analysis_recording(
-        &mut model,
+        &model,
         &dofmap,
         &reducer,
         SeismicDir::X,
@@ -2650,7 +2650,7 @@ fn test_pushover_long_term_preload_sets_initial_axial_state() {
     let dofmap = DofMap::build(&model);
     let reducer = Reducer::build(&model, &dofmap);
     let result = pushover_analysis_recording(
-        &mut model,
+        &model,
         &dofmap,
         &reducer,
         SeismicDir::X,
@@ -2695,11 +2695,11 @@ fn test_pushover_long_term_preload_sets_initial_axial_state() {
     );
 
     // 長期荷重を無効にした場合は従来どおり λ=0 の記録は無い。
-    let mut model2 = single_column_model(235.0, 80_000.0);
+    let model2 = single_column_model(235.0, 80_000.0);
     let dofmap2 = DofMap::build(&model2);
     let reducer2 = Reducer::build(&model2, &dofmap2);
     let result2 = pushover_analysis_recording(
-        &mut model2,
+        &model2,
         &dofmap2,
         &reducer2,
         SeismicDir::X,
@@ -2725,11 +2725,11 @@ fn test_pushover_long_term_preload_sets_initial_axial_state() {
 /// 有効な場合に限る）。
 #[test]
 fn test_pushover_load_only_without_target_stops_at_lambda_1() {
-    let mut model = single_column_model(235.0, 80_000.0);
+    let model = single_column_model(235.0, 80_000.0);
     let dofmap = DofMap::build(&model);
     let reducer = Reducer::build(&model, &dofmap);
     let result = pushover_analysis_recording(
-        &mut model,
+        &model,
         &dofmap,
         &reducer,
         SeismicDir::X,
@@ -2863,11 +2863,11 @@ fn observed_collapse_shear(result: &PushoverResult) -> Option<f64> {
 }
 
 fn run_rigid_zone_pushover(rigid: f64) -> PushoverResult {
-    let mut model = portal_frame_rigid_zone_model(235.0, 600_000.0, rigid);
+    let model = portal_frame_rigid_zone_model(235.0, 600_000.0, rigid);
     let dofmap = DofMap::build(&model);
     let reducer = Reducer::build(&model, &dofmap);
     pushover_analysis(
-        &mut model,
+        &model,
         &dofmap,
         &reducer,
         SeismicDir::X,
@@ -2998,7 +2998,7 @@ fn portal_frame_spring_model(fy: f64, seismic_weight: f64) -> Model {
 /// 起こす（荷重制御で機構を超えると剛性行列が正定値性を失い解析が止まるため）。
 #[test]
 fn test_pushover_drift_angle_target_forms_hinge_with_stiffness_reduction() {
-    let mut model = portal_frame_spring_model(50.0, 30_000.0);
+    let model = portal_frame_spring_model(50.0, 30_000.0);
     let dofmap = DofMap::build(&model);
     let reducer = Reducer::build(&model, &dofmap);
     let target = PushoverTarget::default();
@@ -3009,7 +3009,7 @@ fn test_pushover_drift_angle_target_forms_hinge_with_stiffness_reduction() {
         "既定は層間変形角 1/150"
     );
     let result = pushover_analysis_recording(
-        &mut model,
+        &model,
         &dofmap,
         &reducer,
         SeismicDir::X,
@@ -3074,11 +3074,11 @@ fn test_pushover_drift_angle_target_forms_hinge_with_stiffness_reduction() {
 /// 変形角 1/150（=20mm）は目標変位 100mm より先に到達する。
 #[test]
 fn test_pushover_both_targets_stop_at_earlier_one() {
-    let mut model = single_column_model(30.0, 10_000.0);
+    let model = single_column_model(30.0, 10_000.0);
     let dofmap = DofMap::build(&model);
     let reducer = Reducer::build(&model, &dofmap);
     let result = pushover_analysis_recording(
-        &mut model,
+        &model,
         &dofmap,
         &reducer,
         SeismicDir::X,
@@ -3117,7 +3117,7 @@ fn test_pushover_drift_angle_target_runs_with_multi_spring() {
     let dofmap = DofMap::build(&model);
     let reducer = Reducer::build(&model, &dofmap);
     let result = pushover_analysis_recording(
-        &mut model,
+        &model,
         &dofmap,
         &reducer,
         SeismicDir::X,
@@ -3284,11 +3284,11 @@ fn wall_story_model_with(lw: f64, seismic_weight: f64) -> Model {
 /// 重量とし、頭打ちは変位制御側で起こす。
 #[test]
 fn test_pushover_drift_angle_target_runs_with_wall_panel() {
-    let mut model = wall_story_model(100_000.0);
+    let model = wall_story_model(100_000.0);
     let dofmap = DofMap::build(&model);
     let reducer = Reducer::build(&model, &dofmap);
     let result = pushover_analysis_recording(
-        &mut model,
+        &model,
         &dofmap,
         &reducer,
         SeismicDir::X,
@@ -3339,11 +3339,11 @@ fn test_pushover_drift_angle_target_runs_with_wall_panel() {
 /// 全塑性の間にあり、荷重制御中に降伏が始まり変位制御で目標まで押し込む。
 #[test]
 fn test_pushover_fiber_hinge_softens_at_drift_target() {
-    let mut model = single_column_model(30.0, 10_000.0);
+    let model = single_column_model(30.0, 10_000.0);
     let dofmap = DofMap::build(&model);
     let reducer = Reducer::build(&model, &dofmap);
     let result = pushover_analysis_recording(
-        &mut model,
+        &model,
         &dofmap,
         &reducer,
         SeismicDir::X,
@@ -3402,11 +3402,11 @@ fn test_pushover_fiber_hinge_softens_at_drift_target() {
 /// 細長壁の耐力を危険側に過大評価していた。
 #[test]
 fn test_pushover_wall_flexural_yield_softens() {
-    let mut model = wall_story_model_with(1000.0, 30_000.0);
+    let model = wall_story_model_with(1000.0, 30_000.0);
     let dofmap = DofMap::build(&model);
     let reducer = Reducer::build(&model, &dofmap);
     let result = pushover_analysis_recording(
-        &mut model,
+        &model,
         &dofmap,
         &reducer,
         SeismicDir::X,
@@ -3464,7 +3464,7 @@ fn test_pushover_singular_tangent_reports_dof_diagnosis() {
     let dofmap = DofMap::build(&model);
     let reducer = Reducer::build(&model, &dofmap);
     let err = pushover_analysis(
-        &mut model,
+        &model,
         &dofmap,
         &reducer,
         SeismicDir::X,
@@ -3493,11 +3493,11 @@ fn test_pushover_singular_tangent_reports_dof_diagnosis() {
 #[test]
 fn test_pushover_unconverged_load_control_reports_reason() {
     // fy を極小にすると最初の増分から釣合いに収束できない（全断面が即降伏する）。
-    let mut model = single_column_model(0.5, 100_000.0);
+    let model = single_column_model(0.5, 100_000.0);
     let dofmap = DofMap::build(&model);
     let reducer = Reducer::build(&model, &dofmap);
     let err = pushover_analysis_recording(
-        &mut model,
+        &model,
         &dofmap,
         &reducer,
         SeismicDir::X,

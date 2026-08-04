@@ -2022,25 +2022,23 @@ impl ElementBehavior for FiberBeam {
     }
 
     fn restore_state(&mut self, state: &dyn Any) {
-        if let Some((trial, committed, mats_data, trial_int, committed_int, th, ch)) =
-            state.downcast_ref::<FiberBeamSnapshot>()
-        {
-            self.trial_disp = *trial;
-            self.committed_disp = *committed;
-            for (gp, gp_mats) in self.gauss_points.iter_mut().zip(mats_data) {
-                for (mat, new_mat) in gp.mats.iter_mut().zip(gp_mats) {
-                    *mat = new_mat.clone_box();
-                }
+        let (trial, committed, mats_data, trial_int, committed_int, th, ch) =
+            crate::behavior::downcast_snapshot::<FiberBeamSnapshot>("FiberBeam", state);
+        self.trial_disp = *trial;
+        self.committed_disp = *committed;
+        for (gp, gp_mats) in self.gauss_points.iter_mut().zip(mats_data) {
+            for (mat, new_mat) in gp.mats.iter_mut().zip(gp_mats) {
+                *mat = new_mat.clone_box();
             }
-            self.trial_int = SmallVec::from_slice(trial_int);
-            self.committed_int = SmallVec::from_slice(committed_int);
-            if let Some(h) = &mut self.hinge {
-                if th.len() == 8 && ch.len() == 8 {
-                    h.trial_kappa.copy_from_slice(&th[..4]);
-                    h.trial_thb.copy_from_slice(&th[4..]);
-                    h.committed_kappa.copy_from_slice(&ch[..4]);
-                    h.committed_thb.copy_from_slice(&ch[4..]);
-                }
+        }
+        self.trial_int = SmallVec::from_slice(trial_int);
+        self.committed_int = SmallVec::from_slice(committed_int);
+        if let Some(h) = &mut self.hinge {
+            if th.len() == 8 && ch.len() == 8 {
+                h.trial_kappa.copy_from_slice(&th[..4]);
+                h.trial_thb.copy_from_slice(&th[4..]);
+                h.committed_kappa.copy_from_slice(&ch[..4]);
+                h.committed_thb.copy_from_slice(&ch[4..]);
             }
         }
     }

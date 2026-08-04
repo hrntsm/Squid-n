@@ -721,6 +721,11 @@ pub struct App {
     /// 架構種別が耐力壁付き／筋かい付きなのに耐力壁・筋かいを検出できず、βu を
     /// 算定できなかったため架構種別別 Ds 表へフォールバックしたか（表示用）。
     pub ds_beta_u_unavailable: bool,
+    /// 部材ランク自動判定（`design_rank_auto`）で 1 本も算定できず、選択ランク
+    /// （`design_rank`）へフォールバックした層の名前（下階→上階順）。
+    /// `compute_holding_capacity` が設定する（表示用）。選択ランク（既定 FA）が
+    /// 実状より甘い場合に Ds を過小評価する危険側となるため、設計タブで警告する。
+    pub ds_rank_fallback_stories: Vec<String>,
     /// 終局検定（靭性保証型耐震設計指針）のヒンジ回転角 Rp [rad]（ν・cotφ 用。既定 0）。
     pub ultimate_rp: f64,
     /// 終局検定で軽量コンクリートのせん断終局耐力 0.9 倍低減を適用するか。
@@ -961,6 +966,10 @@ pub struct App {
     /// 荷重タブ「荷重組合せ」自動生成 UI のドラフト状態
     #[cfg(feature = "gui")]
     pub combo_draft: ComboDraft,
+    /// 荷重組合せの自動生成に固有のエラー（荷重組合せ欄にだけ表示する）。
+    /// `last_error` はステータスバー共用の単一スロットのため、これを組合せ欄へ
+    /// そのまま出すと他の操作のエラーが無関係な欄に現れる。
+    pub combo_error: Option<String>,
     /// モデルタブ「スラブ」追加フォームのドラフト状態
     #[cfg(feature = "gui")]
     pub slab_draft: crate::tables::slabs::SlabDraft,
@@ -1041,6 +1050,7 @@ impl Default for App {
             wall_structure: false,
             ds_beta_u_by_story: Vec::new(),
             ds_beta_u_unavailable: false,
+            ds_rank_fallback_stories: Vec::new(),
             ultimate_rp: 0.0,
             ultimate_lightweight: false,
             ultimate_include_bond: true,
@@ -1171,6 +1181,7 @@ impl Default for App {
             analysis_target: None,
             #[cfg(feature = "gui")]
             combo_draft: ComboDraft::default(),
+            combo_error: None,
             #[cfg(feature = "gui")]
             slab_draft: crate::tables::slabs::SlabDraft::default(),
             #[cfg(feature = "gui")]
@@ -1965,7 +1976,7 @@ fn design_positions(
     if let Some(detail) = detail {
         xs.extend(detail.extra_check_positions(&elem.rigid_zone, geom_len));
     }
-    xs.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    xs.sort_by(|a, b| a.total_cmp(b));
     xs.dedup_by(|a, b| (*a - *b).abs() < 1e-9);
     xs
 }

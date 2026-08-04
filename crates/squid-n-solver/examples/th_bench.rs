@@ -330,7 +330,7 @@ where
 fn main() {
     // --- モデル生成: 5層×3スパン×3スパンのS造立体フレーム ---
     let (nx, ny, nz) = (3, 3, 5);
-    let mut model = make_frame(nx, ny, nz);
+    let model = make_frame(nx, ny, nz);
     let dofmap = DofMap::build(&model);
     let reducer = Reducer::build(&model, &dofmap);
     let ndof = reducer.n_indep;
@@ -355,7 +355,7 @@ fn main() {
 
     let dt = 0.01;
     let n_steps_linear = 4096;
-    // 非線形は Newton 反復（ステップごと最大 `NonlinearThCfg::max_iter` 回、
+    // 非線形は Newton 反復（ステップごと最大 `NonlinearThCfg::newton.max_iter` 回、
     // 既定 20 回）を伴い、線形時刻歴（1ステップ1回の前進代入のみ）より大幅に
     // 計算コストが高い。重ければステップ数を落として計測する。
     let n_steps_nonlinear = 1024;
@@ -417,7 +417,7 @@ fn main() {
         ndof,
         || {
             nonlinear_time_history_analysis(
-                &mut model,
+                &model,
                 &dofmap,
                 &reducer,
                 &wave_nonlinear,
@@ -442,7 +442,7 @@ fn main() {
         ndof,
         || {
             nonlinear_time_history_analysis(
-                &mut model,
+                &model,
                 &dofmap,
                 &reducer,
                 &wave_nonlinear,
@@ -528,7 +528,7 @@ fn main() {
         ndof,
         || {
             nonlinear_time_history_analysis(
-                &mut model,
+                &model,
                 &dofmap,
                 &reducer,
                 &wave_nonlinear,

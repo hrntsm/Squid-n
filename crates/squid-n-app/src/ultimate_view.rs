@@ -5,18 +5,8 @@
 //! 算定本体は [`squid_n_design_jp::ultimate`]、部材内力（軸力）の収集は
 //! [`crate::app::App::compute_ultimate_checks`] による。
 
-use crate::app::App;
+use crate::app::{member_kind_label, App};
 use egui_extras::{Column, TableBuilder};
-use squid_n_design_jp::MemberKind;
-
-/// 部材種別ラベル。
-fn kind_label(kind: MemberKind) -> &'static str {
-    match kind {
-        MemberKind::Column => "柱",
-        MemberKind::Beam => "梁",
-        MemberKind::Brace => "斜材",
-    }
-}
 
 /// 余裕度セルの色（1.0 未満＝せん断先行で NG を赤系に）。
 fn margin_color(margin: f64) -> egui::Color32 {
@@ -187,7 +177,7 @@ pub fn ultimate_table(ui: &mut egui::Ui, app: &mut App) {
                             ui.label(format!("{}", c.elem.0)).on_hover_text(&c.detail);
                         });
                         row.col(|ui| {
-                            ui.label(kind_label(c.kind));
+                            ui.label(member_kind_label(c.kind));
                         });
                         row.col(|ui| {
                             ui.label(format!("{:.1}", c.mu / 1.0e6));

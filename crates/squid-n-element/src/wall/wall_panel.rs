@@ -122,7 +122,7 @@ pub fn wall_panel_geometry(data: &ElementData, model: &Model) -> Option<WallPane
 
     // z で下辺 2 節点・上辺 2 節点に分ける（入力順には依存しない）。
     let mut order: Vec<usize> = (0..4).collect();
-    order.sort_by(|&a, &b| coords[a][2].partial_cmp(&coords[b][2]).unwrap());
+    order.sort_by(|&a, &b| coords[a][2].total_cmp(&coords[b][2]));
     let (b0, b1, t0, t1) = (order[0], order[1], order[2], order[3]);
 
     // 下辺の軸方向 a→b
@@ -1377,31 +1377,22 @@ impl ElementBehavior for WallPanelElement {
             [f64; 12],
             Option<Vec<u8>>,
         );
-        if let Some((committed, trial, cslip, tslip, fsnap, u12t, u12c, spring)) =
-            state.downcast_ref::<Snapshot>()
-        {
-            self.committed_disp = *committed;
-            self.trial_disp = *trial;
-            self.committed_slip = *cslip;
-            self.trial_slip = *tslip;
-            if let (Some(f), Some(snap)) = (&mut self.fiber_column, fsnap.as_ref()) {
-                f.restore_state(snap.as_ref());
-            }
-            self.fiber_u12_trial = *u12t;
-            self.fiber_u12_committed = *u12c;
-            if let (Some(sp), Some(bytes)) = (&mut self.shear_spring, spring.as_ref()) {
-                // snapshot は同一実行内の巻き戻し用のため、復元失敗はプログラム
-                // エラー（形式は常に一致する）。
-                sp.deserialize_state(bytes)
-                    .expect("壁せん断ばねのスナップショット復元");
-            }
-        } else if let Some((committed, trial, cslip, tslip)) =
-            state.downcast_ref::<([f64; 24], [f64; 24], f64, f64)>()
-        {
-            self.committed_disp = *committed;
-            self.trial_disp = *trial;
-            self.committed_slip = *cslip;
-            self.trial_slip = *tslip;
+        let (committed, trial, cslip, tslip, fsnap, u12t, u12c, spring) =
+            crate::behavior::downcast_snapshot::<Snapshot>("WallPanelElement", state);
+        self.committed_disp = *committed;
+        self.trial_disp = *trial;
+        self.committed_slip = *cslip;
+        self.trial_slip = *tslip;
+        if let (Some(f), Some(snap)) = (&mut self.fiber_column, fsnap.as_ref()) {
+            f.restore_state(snap.as_ref());
+        }
+        self.fiber_u12_trial = *u12t;
+        self.fiber_u12_committed = *u12c;
+        if let (Some(sp), Some(bytes)) = (&mut self.shear_spring, spring.as_ref()) {
+            // snapshot は同一実行内の巻き戻し用のため、復元失敗はプログラム
+            // エラー（形式は常に一致する）。
+            sp.deserialize_state(bytes)
+                .expect("壁せん断ばねのスナップショット復元");
         }
     }
 

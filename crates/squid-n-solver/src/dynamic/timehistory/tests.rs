@@ -1312,7 +1312,7 @@ fn fiber_column_model(fy: f64) -> Model {
 #[test]
 fn test_nonlinear_time_history_sdof_elastic() {
     // fy を非常に高く設定し、塑性化しないようにする
-    let mut model = fiber_column_model(1e10);
+    let model = fiber_column_model(1e10);
     let dofmap = DofMap::build(&model);
     let reducer = Reducer::build(&model, &dofmap);
 
@@ -1344,7 +1344,7 @@ fn test_nonlinear_time_history_sdof_elastic() {
 
     // 非線形解析
     let result_nl = nonlinear_time_history_analysis(
-        &mut model,
+        &model,
         &dofmap,
         &reducer,
         &wave,
@@ -1391,7 +1391,7 @@ fn test_nonlinear_time_history_sdof_elastic() {
 #[test]
 fn test_nonlinear_time_history_sdof_plastic() {
     // fy を低く設定して塑性化させる
-    let mut model = fiber_column_model(100.0);
+    let model = fiber_column_model(100.0);
     let dofmap = DofMap::build(&model);
     let reducer = Reducer::build(&model, &dofmap);
 
@@ -1421,7 +1421,7 @@ fn test_nonlinear_time_history_sdof_plastic() {
 
     // 大きな初期変位（塑性化させる）
     let result = nonlinear_time_history_analysis(
-        &mut model,
+        &model,
         &dofmap,
         &reducer,
         &wave,
@@ -1487,11 +1487,11 @@ fn test_nonlinear_time_history_extended_damping_models_run() {
     ];
 
     for damping in &dampings {
-        let mut model = fiber_column_model(100.0);
+        let model = fiber_column_model(100.0);
         let dofmap = DofMap::build(&model);
         let reducer = Reducer::build(&model, &dofmap);
         let result = nonlinear_time_history_analysis(
-            &mut model,
+            &model,
             &dofmap,
             &reducer,
             &wave,
@@ -1531,11 +1531,11 @@ fn test_nonlinear_time_history_cumulative_vs_noncumulative() {
     };
 
     let run = |damping: &Damping, acc: DampingAccumulation| {
-        let mut m = fiber_column_model(100.0);
+        let m = fiber_column_model(100.0);
         let d = DofMap::build(&m);
         let r = Reducer::build(&m, &d);
         nonlinear_time_history_analysis(
-            &mut m,
+            &m,
             &d,
             &r,
             &wave,
@@ -1579,7 +1579,7 @@ fn test_nonlinear_time_history_cumulative_vs_noncumulative() {
 /// 不収束時の restore が動作すること（収束失敗時にステップ開始状態に戻る）。
 #[test]
 fn test_nonlinear_time_history_convergence() {
-    let mut model = fiber_column_model(100.0);
+    let model = fiber_column_model(100.0);
     let dofmap = DofMap::build(&model);
     let reducer = Reducer::build(&model, &dofmap);
 
@@ -1609,7 +1609,7 @@ fn test_nonlinear_time_history_convergence() {
 
     // 十分な反復回数で正常収束
     let result = nonlinear_time_history_analysis(
-        &mut model,
+        &model,
         &dofmap,
         &reducer,
         &wave,
@@ -1626,9 +1626,9 @@ fn test_nonlinear_time_history_convergence() {
     assert!(result.peak_disp[1][0] > 0.0);
 
     // 反復回数 1 で同じ問題を解く（収束しないはず → rollback される）
-    let mut model2 = fiber_column_model(100.0);
+    let model2 = fiber_column_model(100.0);
     let result2 = nonlinear_time_history_analysis(
-        &mut model2,
+        &model2,
         &dofmap,
         &reducer,
         &wave,
@@ -1699,7 +1699,7 @@ fn test_maxwell_damper_reduces_free_vibration() {
             dt,
         };
         let result = nonlinear_time_history_analysis(
-            &mut model,
+            &model,
             &dofmap,
             &reducer,
             &wave,
@@ -1879,7 +1879,7 @@ fn test_nonlinear_apply_long_term_matches_static_solution() {
     let mut cfg = NonlinearThCfg::new(20, 1e-9);
     cfg.apply_long_term = true;
     let result = nonlinear_time_history_analysis(
-        &mut model,
+        &model,
         &dofmap,
         &reducer,
         &wave,
@@ -1997,7 +1997,7 @@ fn test_support_spring_long_term_static_matches_analytical() {
     let mut cfg = NonlinearThCfg::new(20, 1e-9);
     cfg.apply_long_term = true;
     let result = nonlinear_time_history_analysis(
-        &mut model,
+        &model,
         &dofmap,
         &reducer,
         &wave,
@@ -2026,7 +2026,7 @@ fn test_support_spring_long_term_static_matches_analytical() {
 fn test_support_spring_free_vibration_matches_linear() {
     let k = 800.0_f64;
     let m = 1.0_f64;
-    let mut model_nl = support_spring_sdof_model(k, m);
+    let model_nl = support_spring_sdof_model(k, m);
     let model_lin = support_spring_sdof_model(k, m);
     let dofmap = DofMap::build(&model_nl);
     let reducer = Reducer::build(&model_nl, &dofmap);
@@ -2049,7 +2049,7 @@ fn test_support_spring_free_vibration_matches_linear() {
     let mut cfg = NonlinearThCfg::new(20, 1e-10);
     cfg.apply_long_term = false;
     let result_nl = nonlinear_time_history_analysis(
-        &mut model_nl,
+        &model_nl,
         &dofmap,
         &reducer,
         &wave,
@@ -2097,7 +2097,7 @@ fn test_support_spring_free_vibration_matches_linear() {
 /// `n_steps=50, record_every=5` なら、ステップ 0,5,...,50 の 11 フレームが記録される。
 #[test]
 fn test_nonlinear_record_every_thinning() {
-    let mut model = fiber_column_model(1e10);
+    let model = fiber_column_model(1e10);
     let dofmap = DofMap::build(&model);
     let reducer = Reducer::build(&model, &dofmap);
 
@@ -2118,7 +2118,7 @@ fn test_nonlinear_record_every_thinning() {
     let mut cfg = NonlinearThCfg::new(20, 1e-6);
     cfg.record_every = Some(5);
     let result = nonlinear_time_history_analysis(
-        &mut model,
+        &model,
         &dofmap,
         &reducer,
         &wave,
@@ -2490,7 +2490,7 @@ fn test_linear_and_hht_result_flags_are_linear() {
 /// `NonlinearThCfg::apply_long_term` の値をそのまま反映すること。
 #[test]
 fn test_nonlinear_result_flags_reflect_cfg() {
-    let mut model = fiber_column_model(1e10);
+    let model = fiber_column_model(1e10);
     let dofmap = DofMap::build(&model);
     let reducer = Reducer::build(&model, &dofmap);
 
@@ -2511,7 +2511,7 @@ fn test_nonlinear_result_flags_reflect_cfg() {
     let mut cfg = NonlinearThCfg::new(20, 1e-6);
     cfg.apply_long_term = false;
     let result = nonlinear_time_history_analysis(
-        &mut model,
+        &model,
         &dofmap,
         &reducer,
         &wave,
@@ -2529,7 +2529,7 @@ fn test_nonlinear_result_flags_reflect_cfg() {
     let mut cfg2 = NonlinearThCfg::new(20, 1e-6);
     cfg2.apply_long_term = true;
     let result2 = nonlinear_time_history_analysis(
-        &mut model,
+        &model,
         &dofmap,
         &reducer,
         &wave,
@@ -2698,11 +2698,11 @@ fn test_nonlinear_time_history_deterministic_guard() {
     };
 
     let run = || {
-        let mut model = fiber_column_model(100.0);
+        let model = fiber_column_model(100.0);
         let dofmap = DofMap::build(&model);
         let reducer = Reducer::build(&model, &dofmap);
         nonlinear_time_history_analysis(
-            &mut model,
+            &model,
             &dofmap,
             &reducer,
             &wave,
@@ -2750,11 +2750,11 @@ fn test_nonlinear_time_history_tangent_damping_deterministic_guard() {
     };
 
     let run = || {
-        let mut model = fiber_column_model(100.0);
+        let model = fiber_column_model(100.0);
         let dofmap = DofMap::build(&model);
         let reducer = Reducer::build(&model, &dofmap);
         nonlinear_time_history_analysis(
-            &mut model,
+            &model,
             &dofmap,
             &reducer,
             &wave,

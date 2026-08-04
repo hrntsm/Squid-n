@@ -24,8 +24,9 @@ use crate::analysis::{
 };
 use crate::arc_length::ArcLengthSolver;
 use crate::common::csc_cache::CscCache;
+use crate::common::newton::{l2_norm, STATIC_NEWTON};
 use crate::constraint::Reducer;
-use crate::transaction::{StateSnapshot, StatefulModel};
+use crate::transaction::StateSnapshot;
 use smallvec::SmallVec;
 use squid_n_core::dof::DofMap;
 use squid_n_core::model::Model;
@@ -97,7 +98,7 @@ impl SolverState {
 /// [`pushover_analysis_recording`] に [`PushoverTarget`] を渡す。
 #[allow(clippy::too_many_arguments)]
 pub fn pushover_analysis(
-    model: &mut Model,
+    model: &Model,
     dofmap: &DofMap,
     reducer: &Reducer,
     dir: SeismicDir,
@@ -139,7 +140,7 @@ pub fn pushover_analysis(
 /// `pushover_analysis` は本関数に `record_node_disp = false` で委譲する薄いラッパー。
 #[allow(clippy::too_many_arguments)]
 pub fn pushover_analysis_recording(
-    model: &mut Model,
+    model: &Model,
     dofmap: &DofMap,
     reducer: &Reducer,
     dir: SeismicDir,
@@ -390,7 +391,7 @@ pub fn pushover_analysis_recording(
                         break;
                     }
                     None => {
-                        model.restore(&snap, &mut behaviors);
+                        snap.restore(&mut behaviors);
                         mu_target = applied + (mu_target - applied) * 0.5;
                     }
                 }
@@ -571,7 +572,7 @@ pub fn pushover_analysis_recording(
                 }
                 break;
             } else {
-                model.restore(&snap, &mut behaviors);
+                snap.restore(&mut behaviors);
                 // 収束失敗時は「前確定点 prev_lambda からの増分」を半減する。絶対 λ を
                 // 半減すると prev_lambda を下回り、前確定状態から除荷方向に解いて荷重−変位
                 // 経路が非物理的にジグザグする（ヒンジ／せん断降伏追跡も汚染される）。
@@ -654,8 +655,8 @@ pub fn pushover_analysis_recording(
                     // 荷重制御フェーズと同じく、ステップ内の全 Newton 修正量を累積する。
                     let mut step_du_free = vec![0.0; n_active];
 
-                    // 反復上限は荷重制御フェーズと同じ理由（準ニュートン形式）で 50 回。
-                    for _iter in 0..50 {
+                    // 収束規約は荷重制御フェーズと同じ（[`STATIC_NEWTON`]、準ニュートン形式）。
+                    for _iter in STATIC_NEWTON.iters() {
                         let k_free = assemble_k_cached(
                             model,
                             dofmap,
@@ -691,17 +692,11 @@ pub fn pushover_analysis_recording(
                         // に加え、頂部変位が目標に一致していること。
                         let u_roof = total_disp[roof_active] + step_du_free[roof_active];
                         let gap = sub_target - u_roof;
-                        let r_norm: f64 = st.r_red.iter().map(|x| x * x).sum::<f64>().sqrt();
+                        let r_norm = l2_norm(&st.r_red);
                         reducer.reduce_f_into(&f_ext, &mut st.f_ext_red);
-                        let f_scale: f64 = st
-                            .f_ext_red
-                            .iter()
-                            .map(|x| x * x)
-                            .sum::<f64>()
-                            .sqrt()
-                            .max(1.0);
-                        if r_norm < 1e-6 * f_scale
-                            && gap.abs() < (sub_target.abs() * 1e-6).max(1e-9)
+                        let f_scale = l2_norm(&st.f_ext_red).max(1.0);
+                        if STATIC_NEWTON.converged(r_norm, f_scale)
+                            && gap.abs() < (sub_target.abs() * STATIC_NEWTON.tol).max(1e-9)
                         {
                             converged = true;
                             break;
@@ -799,7 +794,7 @@ pub fn pushover_analysis_recording(
                         }
                         break;
                     } else {
-                        model.restore(&snap, &mut behaviors);
+                        snap.restore(&mut behaviors);
                         // λ は反復中に更新しているため、要素状態と同時に巻き戻す。
                         lambda = lambda_snap;
                     }
@@ -839,7 +834,7 @@ pub fn pushover_analysis_recording(
             // factorize では失敗しないので判定が効かなくなる。SolverState は既定で
             // DirectSparseCholesky を保持するため、ここでも同じインスタンスを使う）。
             if st.solver.factorize(&k_red).is_err() {
-                model.restore(&snap, &mut behaviors);
+                snap.restore(&mut behaviors);
                 // 分解失敗＝機構形成・耐力喪失による特異化。弧長法フェーズでは
                 // 期待される終了だが、理由として結果へ明示する。
                 phase_outcome = PushoverTermination::TangentSingular {
@@ -857,7 +852,7 @@ pub fn pushover_analysis_recording(
             // 変位として内力へ加算する。
             let mut cum_du = vec![0.0; n_active];
             let result = {
-                let model_ref: &Model = &*model;
+                let model_ref: &Model = model;
                 let behaviors_ref = &mut behaviors;
                 let total_disp_ref: &Vec<f64> = &total_disp;
                 // st を弧長修正子の solve クロージャへ再借用する（このブロックの
@@ -961,7 +956,7 @@ pub fn pushover_analysis_recording(
                     step_no += 1;
                 }
                 _ => {
-                    model.restore(&snap, &mut behaviors);
+                    snap.restore(&mut behaviors);
                     phase_outcome = PushoverTermination::NonConvergence {
                         phase: "弧長法".into(),
                         load_factor: arc_lambda,
@@ -1115,9 +1110,9 @@ fn apply_du_to_behaviors(
 
 /// 固定外力 `f_ext` に対する Newton 反復（長期載荷・荷重制御フェーズの共通経路）。
 ///
-/// 収束判定は力の相対ノルム r < 1e-6·max(|f_ext|, 1)。全要素がトライアル追従
-/// （`internal_force` が反復中の未確定変位を反映する）のため弾性支配ではほぼ
-/// 1〜2 回で収束し、上限 50 回は塑性進行時の余裕。収束したらステップ内の
+/// 収束判定は力の相対ノルム r < tol·max(|f_ext|, 1)（規約は [`STATIC_NEWTON`]）。
+/// 全要素がトライアル追従（`internal_force` が反復中の未確定変位を反映する）のため
+/// 弾性支配ではほぼ 1〜2 回で収束し、反復上限は塑性進行時の余裕。収束したらステップ内の
 /// 全 Newton 修正量の累積（＝ステップ変位増分。「最後の修正量」だけを返すと
 /// 塑性ステップで変位軸が過小評価される）を `Some` で返し、要素状態は
 /// トライアル反映済み・未確定のまま戻す（確定・巻き戻しは呼び出し側の責務）。
@@ -1156,7 +1151,7 @@ fn newton_converge(
     st: &mut SolverState,
 ) -> Option<Vec<f64>> {
     let mut step_du_free = vec![0.0; n_active];
-    for _iter in 0..50 {
+    for _iter in STATIC_NEWTON.iters() {
         let k_free = assemble_k_cached(model, dofmap, behaviors, use_kg, &mut st.k_free_cache);
         let k_red = reducer.reduce_k_cached(&k_free, &mut st.k_red_cache);
         let mut f_int = compute_f_int(model, dofmap, behaviors);
@@ -1169,9 +1164,9 @@ fn newton_converge(
         let r_free: Vec<f64> = f_ext.iter().zip(f_int.iter()).map(|(e, i)| e - i).collect();
         reducer.reduce_f_into(&r_free, &mut st.r_red);
         reducer.reduce_f_into(f_ext, &mut st.f_ext_red);
-        let r_norm: f64 = st.r_red.iter().map(|x| x * x).sum::<f64>().sqrt();
-        let f_norm: f64 = st.f_ext_red.iter().map(|x| x * x).sum::<f64>().sqrt();
-        if r_norm < 1e-6 * f_norm.max(1.0) {
+        let r_norm = l2_norm(&st.r_red);
+        let f_norm = l2_norm(&st.f_ext_red);
+        if STATIC_NEWTON.converged(r_norm, f_norm.max(1.0)) {
             return Some(step_du_free);
         }
         // 分解・求解の失敗は非収束として返す（関数ドキュメント参照）。
