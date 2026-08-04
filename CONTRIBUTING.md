@@ -73,10 +73,25 @@ cargo run -p xtask -- check-deps
 
 ```bash
 cargo clippy --workspace --all-targets --locked -- -D warnings
+cargo clippy -p squid-n-app --all-targets --features gui --locked -- -D warnings
+cargo clippy -p squid-n-mcp --all-targets --features mcp --locked -- -D warnings
 cargo fmt --all -- --check
 ```
 
 `cargo fmt --all` で自動整形できます。
+
+**フラグ付きの 2 行を省略しないでください。** `gui`・`mcp` は既定で無効な
+フィーチャフラグのため、1 行目のワークスペース全体の実行だけでは
+`cfg(feature = "gui")` 配下のコード（GUI のビュー・テーブル・3D 表示のほぼ全体）が
+コンパイルすらされません。フラグ付きでしか現れないビルドエラー・警告があります。
+
+テストも同様に、フラグ付きの実行が必要です。
+
+```bash
+cargo test --workspace --locked
+cargo test -p squid-n-app --features gui
+cargo test -p squid-n-mcp --features mcp
+```
 
 ### ツールチェインのバージョンを合わせる
 

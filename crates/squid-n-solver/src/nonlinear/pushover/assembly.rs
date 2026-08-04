@@ -118,12 +118,16 @@ fn assemble_k_triplets_into(
     };
     // 並列/逐次の分岐と要素番号順の保証は共通足場（`common::elem_loop`）が担う。
     // 要素順に extend するため triplet の並び順は逐次実行と完全に一致する。
-    let per_elem = crate::common::elem_loop::map_behaviors_ordered(behaviors, |i, b| {
-        elem_triplets(&model.elements[i], b)
-    });
-    for triplets in per_elem {
-        out.extend(triplets);
-    }
+    // `elements.get(i)` は要素数と behaviors 長が食い違う入力への防御
+    // （旧実装の `elements.iter().zip(behaviors)` と同じく短い方で打ち切る）。
+    crate::common::elem_loop::fold_behaviors_ordered(
+        behaviors,
+        |i, b| match model.elements.get(i) {
+            Some(elem) => elem_triplets(elem, b),
+            None => Vec::new(),
+        },
+        |triplets| out.extend(triplets),
+    );
     // 支点ばね（`Node::support_spring`）の対角加算。線形経路の
     // `assemble_global_k`（`common::assemble`）と同じ [`support_spring_terms`] を使う。
     for (active, k) in support_spring_terms(model, dofmap) {
@@ -175,18 +179,21 @@ pub(crate) fn compute_f_int(
     // 要素ごとの (gdofs, f_local) の算定は共通足場（`common::elem_loop`）で
     // 並列化し、共有ベクトル f への `f[g] += v` 累積は加算順序が結果に影響し得る
     // ため、常に要素番号順に逐次行う。
-    let per_elem = crate::common::elem_loop::map_behaviors_ordered(behaviors, |_, b| {
-        let gdofs = b.global_dofs(dofmap);
-        let f_local = b.internal_force(&ctx);
-        (gdofs, f_local)
-    });
-    for (gdofs, f_local) in &per_elem {
-        for (&g, &v) in gdofs.iter().zip(f_local.data.iter()) {
-            if g != usize::MAX {
-                f[g] += v;
+    crate::common::elem_loop::fold_behaviors_ordered(
+        behaviors,
+        |_, b| {
+            let gdofs = b.global_dofs(dofmap);
+            let f_local = b.internal_force(&ctx);
+            (gdofs, f_local)
+        },
+        |(gdofs, f_local)| {
+            for (&g, &v) in gdofs.iter().zip(f_local.data.iter()) {
+                if g != usize::MAX {
+                    f[g] += v;
+                }
             }
-        }
-    }
+        },
+    );
     f
 }
 

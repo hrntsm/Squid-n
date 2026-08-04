@@ -4,7 +4,7 @@
 //! （`squid_n_math::parallelism`）が `Auto`/`Threads` のときは rayon で並列化する。
 //! いずれのヘルパも**結果は逐次実行と完全にビット一致する**:
 //!
-//! - [`map_behaviors_ordered`] は要素番号順を保った
+//! - [`fold_behaviors_ordered`] は要素番号順を保った
 //!   `IndexedParallelIterator::collect` で集約するため、後段の要素順の畳み込み
 //!   （triplet の extend・内力の累積）が逐次実行と同一順序になる。
 //! - [`for_each_behavior_mut`] は各要素が自身の `&mut` のみを更新するため、
@@ -19,26 +19,37 @@ use squid_n_core::dof::DofMap;
 use squid_n_core::model::Model;
 use squid_n_element::behavior::{Ctx, ElementBehavior, LocalVec};
 
-/// 要素ごとの読み取り計算 `f(要素番号, behavior)` を全要素へ適用し、
-/// **要素番号順**の `Vec` で返す。
-pub(crate) fn map_behaviors_ordered<T, F>(behaviors: &[Box<dyn ElementBehavior>], f: F) -> Vec<T>
-where
+/// 要素ごとの読み取り計算 `compute(要素番号, behavior)` の結果を、**要素番号順**に
+/// `consume` へ渡す。
+///
+/// 逐次パス（`Deterministic`＝既定）では計算結果をその場で `consume` へ渡し、
+/// 中間バッファを作らない。全要素分を `Vec` へマテリアライズするのは並列パス
+/// （要素順の畳み込みを保つために集約が要る）だけである。計算と消費を分けずに
+/// 「順序付き `Vec` を返す」形にすると、既定の逐次パスでも要素数分の一時領域を
+/// 抱えることになり、Newton 反復のように毎反復呼ぶ経路でヒープ確保が増える。
+pub(crate) fn fold_behaviors_ordered<T, F, G>(
+    behaviors: &[Box<dyn ElementBehavior>],
+    compute: F,
+    mut consume: G,
+) where
     T: Send,
     F: Fn(usize, &dyn ElementBehavior) -> T + Sync,
+    G: FnMut(T),
 {
     if squid_n_math::parallelism::is_parallel() {
         use rayon::prelude::*;
-        behaviors
+        let per_elem: Vec<T> = behaviors
             .par_iter()
             .enumerate()
-            .map(|(i, b)| f(i, b.as_ref()))
-            .collect()
+            .map(|(i, b)| compute(i, b.as_ref()))
+            .collect();
+        for t in per_elem {
+            consume(t);
+        }
     } else {
-        behaviors
-            .iter()
-            .enumerate()
-            .map(|(i, b)| f(i, b.as_ref()))
-            .collect()
+        for (i, b) in behaviors.iter().enumerate() {
+            consume(compute(i, b.as_ref()));
+        }
     }
 }
 

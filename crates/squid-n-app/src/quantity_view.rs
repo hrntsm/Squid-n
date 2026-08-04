@@ -114,8 +114,7 @@ pub fn quantity_panel(ui: &mut egui::Ui, app: &mut App) {
             }
             QuantityGrouping::SteelBySection => {
                 let rows = takeoff.steel_by_section();
-                let row_h = crate::theme::table_row_height(ui);
-                crate::table_util::read_only_table(
+                crate::table_util::standard_table(
                     ui,
                     "quantity_view_tbl_0",
                     &[
@@ -141,8 +140,7 @@ pub fn quantity_panel(ui: &mut egui::Ui, app: &mut App) {
             }
             QuantityGrouping::RebarByDia => {
                 let rows = takeoff.rebar_by_dia();
-                let row_h = crate::theme::table_row_height(ui);
-                crate::table_util::read_only_table(
+                crate::table_util::standard_table(
                     ui,
                     "quantity_view_tbl_1",
                     &[

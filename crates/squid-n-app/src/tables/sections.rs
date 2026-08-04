@@ -3,7 +3,7 @@ use squid_n_core::ids::SectionId;
 use squid_n_edit::{DeleteSection, SectionField, SetSectionField, SetSectionName};
 
 pub fn sections_table(ui: &mut egui::Ui, app: &mut App) {
-    use egui_extras::{Column, TableBuilder};
+    use egui_extras::Column;
 
     let n = app.model.sections.len();
     let mut pending_name: Vec<(usize, String)> = Vec::new();
@@ -31,8 +31,7 @@ pub fn sections_table(ui: &mut egui::Ui, app: &mut App) {
         })
         .collect();
 
-    let row_h = crate::theme::table_row_height(ui);
-    crate::table_util::read_only_table(
+    crate::table_util::standard_table(
         ui,
         "sections_tbl_0",
         &[

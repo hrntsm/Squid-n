@@ -4,7 +4,7 @@
 //! Ai 分布・風圧力・荷重集計を確認できるようにする。CSV エクスポート
 //! （[`crate::summary::build_preparation_csv`]）にも対応する。
 
-use egui_extras::Column;
+use egui_extras::{Column, TableBuilder};
 
 use crate::app::{
     ai_mode_label, load_case_kind_label, member_kind_label, member_rank_label, soil_class_label,
@@ -195,7 +195,7 @@ fn stories_section(ui: &mut egui::Ui, prep: &PreparationResult) {
 
     // 上階→下階の順で並べる（伏図・軸組図と同じ見え方にする）。
     let rows: Vec<_> = prep.stories.iter().rev().collect();
-    crate::table_util::read_only_table(
+    crate::table_util::standard_table(
         ui,
         "prep_stories",
         &[
@@ -315,7 +315,7 @@ fn seismic_section(ui: &mut egui::Ui, prep: &PreparationResult) {
     ui.add_space(6.0);
 
     let rows: Vec<_> = sm.rows.iter().rev().collect();
-    crate::table_util::read_only_table(
+    crate::table_util::standard_table(
         ui,
         "prep_seismic",
         &[
@@ -446,7 +446,7 @@ fn wind_section(ui: &mut egui::Ui, prep: &PreparationResult) {
 /// 風圧力の層別表（1 方向分）。
 fn wind_table(ui: &mut egui::Ui, w: &crate::app::PrepWind) {
     let rows: Vec<_> = w.rows.iter().rev().collect();
-    crate::table_util::read_only_table(
+    crate::table_util::standard_table(
         ui,
         &format!("prep_wind_table_{:?}", w.dir),
         &[
@@ -529,7 +529,7 @@ fn torsion_section(ui: &mut egui::Ui, prep: &PreparationResult) {
     }
 
     let rows = &prep.torsion_skipped;
-    crate::table_util::read_only_table(
+    crate::table_util::standard_table(
         ui,
         "prep_torsion",
         &[
@@ -595,7 +595,7 @@ fn panel_zone_section(ui: &mut egui::Ui, prep: &PreparationResult) {
     }
 
     let rows = &prep.panels;
-    crate::table_util::read_only_table(
+    crate::table_util::standard_table(
         ui,
         "prep_panels",
         &[
@@ -671,7 +671,7 @@ fn rigid_zone_section(ui: &mut egui::Ui, prep: &PreparationResult) {
     }
 
     let rows = &prep.rigid_zones;
-    crate::table_util::read_only_table(
+    crate::table_util::standard_table(
         ui,
         "prep_rigid_zones",
         &[
