@@ -731,3 +731,42 @@ fn test_migrate_legacy_self_weight_only_renames_to_dl() {
     assert_eq!(model.load_cases[0].name, DL_CASE_NAME);
     assert_eq!(model.load_cases[0].kind, LoadCaseKind::Dead);
 }
+
+/// 断面・材料の割当が必須なのは剛性を断面諸元から作る線材・面材のみ。
+#[test]
+fn test_requires_section_and_material_covers_line_and_area_elements() {
+    for kind in [
+        ElementKind::Beam,
+        ElementKind::Fiber,
+        ElementKind::MultiSpring,
+        ElementKind::Brace {
+            tension_only: false,
+        },
+        ElementKind::Brace { tension_only: true },
+        ElementKind::Shell,
+        ElementKind::Wall,
+    ] {
+        assert!(
+            kind.requires_section_and_material(),
+            "{kind:?} は断面・材料から剛性を作る"
+        );
+    }
+}
+
+/// 仕口パネル・節点バネ・免震・ダンパーは断面を持たないのが正常な状態であり、
+/// 未割当の検出対象にしてはならない（準備計算が自動生成する仕口パネル要素が
+/// そのまま「断面未割当」警告になっていた不具合の再発防止）。
+#[test]
+fn test_requires_section_and_material_excludes_property_driven_elements() {
+    for kind in [
+        ElementKind::PanelZone,
+        ElementKind::NodalSpring,
+        ElementKind::Isolator,
+        ElementKind::Damper,
+    ] {
+        assert!(
+            !kind.requires_section_and_material(),
+            "{kind:?} は専用の特性値から剛性を作るため断面・材料を持たない"
+        );
+    }
+}

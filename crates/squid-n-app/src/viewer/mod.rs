@@ -1580,11 +1580,7 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
             continue;
         }
         // 壁・シェル（面要素）は半透明ポリゴンで描画
-        if matches!(
-            elem.kind,
-            squid_n_core::model::ElementKind::Wall | squid_n_core::model::ElementKind::Shell
-        ) && elem.nodes.len() >= 3
-        {
+        if element_draw_shape(elem.kind) == DrawShape::Polygon && elem.nodes.len() >= 3 {
             let poly: Vec<egui::Pos2> = elem
                 .nodes
                 .iter()
@@ -1806,17 +1802,36 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
         );
     }
 
-    // 選択ハイライト
+    // 選択ハイライト（描き方の規約は `element_draw_shape`）。
     for &elem_id in &app.selection.members {
-        if let Some(elem) = app.model.elements.iter().find(|e| e.id == elem_id) {
-            if elem.nodes.len() >= 2 {
+        let Some(elem) = app.model.elements.iter().find(|e| e.id == elem_id) else {
+            continue;
+        };
+        let stroke = egui::Stroke::new(4.0_f32, theme::PARETO_RED);
+        match element_draw_shape(elem.kind) {
+            DrawShape::None => {}
+            DrawShape::Polygon => {
+                // 面要素は輪郭を閉じた折れ線で強調する（塗りは通常描画のまま）。
+                let poly: Vec<egui::Pos2> = elem
+                    .nodes
+                    .iter()
+                    .filter_map(|n| {
+                        let idx = n.index();
+                        (idx < pts.len()).then(|| pts[idx])
+                    })
+                    .collect();
+                if poly.len() >= 3 && poly.len() == elem.nodes.len() {
+                    painter.add(egui::Shape::closed_line(poly, stroke));
+                }
+            }
+            DrawShape::Line => {
+                if elem.nodes.len() < 2 {
+                    continue;
+                }
                 let n0 = elem.nodes[0].index();
                 let n1 = elem.nodes[1].index();
                 if n0 < pts.len() && n1 < pts.len() {
-                    painter.line_segment(
-                        [pts[n0], pts[n1]],
-                        egui::Stroke::new(4.0_f32, theme::PARETO_RED),
-                    );
+                    painter.line_segment([pts[n0], pts[n1]], stroke);
                 }
             }
         }
@@ -2066,8 +2081,44 @@ fn in_plane_offset_dir(dir: [f64; 3], p_i: [f64; 3], p_j: [f64; 3], normal: [f64
 /// 2 節点は取り付く柱・梁そのものと同じ節点対になる（`pick_nearest_member` が
 /// ピック対象から外しているのと同じ理由）。
 fn draws_as_line(kind: squid_n_core::model::ElementKind) -> bool {
+    element_draw_shape(kind) == DrawShape::Line
+}
+
+/// 3D ビューでの要素の描き方。部材線・選択ハイライトとも本区分に従う。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DrawShape {
+    /// 材軸の線分（先頭 2 節点を結ぶ）。
+    Line,
+    /// 節点列の多角形（面要素）。
+    Polygon,
+    /// 描かない。
+    None,
+}
+
+/// 要素種別ごとの描き方。部材線（[`draws_as_line`]）・面要素のポリゴン・選択
+/// ハイライトが同じ規約を共有するための単一情報源。
+///
+/// 壁・シェルは面要素で材軸を持たないため多角形で描く。仕口パネルは「接合部の
+/// 節点 ＋ 取り付く部材の他端」を節点列に持つ接合部要素で、材軸も輪郭も持たない
+/// ため描かない（`pick_nearest_member` がピック対象から外しているのと同じ理由）。
+/// 先頭 2 節点を結ぶと取り付く柱・梁とまったく同じ線分になるため、線で描くと
+/// 内部たわみ表示で部材が二重に見え、選択ハイライトでは選択していない柱・梁が
+/// 選択されているように見えてしまう。
+///
+/// 要素種別を追加したときに描き方を決め忘れないよう、網羅 `match` で書く。
+fn element_draw_shape(kind: squid_n_core::model::ElementKind) -> DrawShape {
     use squid_n_core::model::ElementKind as K;
-    !matches!(kind, K::Wall | K::Shell | K::PanelZone)
+    match kind {
+        K::Wall | K::Shell => DrawShape::Polygon,
+        K::PanelZone => DrawShape::None,
+        K::Beam
+        | K::Fiber
+        | K::MultiSpring
+        | K::Brace { .. }
+        | K::NodalSpring
+        | K::Isolator
+        | K::Damper => DrawShape::Line,
+    }
 }
 
 /// 部材両端間のワールド距離。ゼロ長部材（材軸が定まらない）の除外判定に使う。
@@ -2812,11 +2863,11 @@ fn pick_nearest_member(
         if elem.nodes.len() < 2 {
             continue;
         }
-        // 仕口パネルの節点列は「接合部の節点 ＋ 取り付く部材の他端」であり、
-        // 先頭 2 節点を結んでも部材の線にはならない（取り付く部材の 1 本と
-        // 同じ線分になり、実部材の選択・ホバーを横取りする）。線材ではないため
-        // ピック対象から外す。
-        if matches!(elem.kind, squid_n_core::model::ElementKind::PanelZone) {
+        // 描かない要素（仕口パネル）はピック対象から外す（`element_draw_shape`）。
+        // 節点列が「接合部の節点 ＋ 取り付く部材の他端」であり、先頭 2 節点を
+        // 結んでも部材の線にはならない（取り付く部材の 1 本と同じ線分になり、
+        // 実部材の選択・ホバーを横取りする）。面要素は描いているので対象に残す。
+        if element_draw_shape(elem.kind) == DrawShape::None {
             continue;
         }
         let n0 = elem.nodes[0].index();
@@ -3707,6 +3758,31 @@ mod tests {
         assert!(draws_as_line(ElementKind::NodalSpring));
         assert!(draws_as_line(ElementKind::Isolator));
         assert!(draws_as_line(ElementKind::Damper));
+    }
+
+    #[test]
+    fn 要素の描き方は種別ごとに一意に決まる() {
+        // 仕口パネルは部材線も選択ハイライトも描かない。先頭 2 節点が取り付く
+        // 柱・梁と同じ節点対になるため、線を引くと選択していない柱・梁が
+        // 選択されているように見えてしまう。
+        assert_eq!(element_draw_shape(ElementKind::PanelZone), DrawShape::None);
+        // 面要素は多角形（ハイライトはその輪郭）。
+        assert_eq!(element_draw_shape(ElementKind::Wall), DrawShape::Polygon);
+        assert_eq!(element_draw_shape(ElementKind::Shell), DrawShape::Polygon);
+        // 材軸を持つ要素は線分。
+        for kind in [
+            ElementKind::Beam,
+            ElementKind::Fiber,
+            ElementKind::MultiSpring,
+            ElementKind::Brace {
+                tension_only: false,
+            },
+            ElementKind::NodalSpring,
+            ElementKind::Isolator,
+            ElementKind::Damper,
+        ] {
+            assert_eq!(element_draw_shape(kind), DrawShape::Line, "{kind:?}");
+        }
     }
 
     #[test]

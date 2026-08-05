@@ -27,23 +27,16 @@ pub(super) fn precheck_model(model: &Model) -> Result<(), SolveError> {
         ));
     }
 
-    // 断面・材料が必要な要素（線材・面材）の未割当。
-    // 従来は Beam のみが対象で、Fiber / MultiSpring / Brace / Shell / Wall は
+    // 断面・材料が必要な要素（線材・面材）の未割当。対象は
+    // `ElementKind::requires_section_and_material`（仕口パネル・節点バネ・免震・
+    // ダンパーは断面を持たないのが正常なため除かれる）。
     // 未割当のまま要素構築の既定値（ゼロ剛性）へ落ちて特異行列エラーになるか、
     // かつては「もっともらしい既定断面」で無音に解析が通っていた（危険側）。
     let missing: Vec<u32> = model
         .elements
         .iter()
         .filter(|e| {
-            matches!(
-                e.kind,
-                ElementKind::Beam
-                    | ElementKind::Fiber
-                    | ElementKind::MultiSpring
-                    | ElementKind::Brace { .. }
-                    | ElementKind::Shell
-                    | ElementKind::Wall
-            ) && (e.section.is_none() || e.material.is_none())
+            e.kind.requires_section_and_material() && (e.section.is_none() || e.material.is_none())
         })
         .map(|e| e.id.0)
         .collect();

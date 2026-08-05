@@ -48,6 +48,42 @@ pub enum ElementKind {
     Damper,
 }
 
+impl ElementKind {
+    /// 剛性の算定に断面（`ElementData::section`）と材料（`ElementData::material`）の
+    /// 割当が必須な要素種別か。断面・材料の未割当を検出する検査は、必ず本判定で
+    /// 対象を絞ること。
+    ///
+    /// 必須なのは線材（梁・ファイバー梁・マルチスプリング梁・ブレース）と
+    /// 面材（シェル・壁）で、断面諸元と材料定数から剛性を作るため、いずれかが
+    /// 未割当だとゼロ剛性となり解析が成立しない。
+    ///
+    /// 一方、次の要素は断面・材料を持たないのが正常な状態であり、未割当として
+    /// 扱ってはならない。
+    /// - 仕口パネル（`PanelZone`）: 剛性は取り付く柱・梁の断面から求めた実効体積 Ve
+    ///   による。準備計算が自動生成するため、未割当として警告すると生成数だけ
+    ///   警告が並び、本当に割当が漏れている部材が埋もれる。
+    /// - 節点バネ（`NodalSpring`）: 剛性は `ElementData::spring`（局所軸 6 成分）。
+    /// - 免震支承材（`Isolator`）・制振ダンパー（`Damper`）: 特性は
+    ///   `Model::isolator_attrs`・`Model::damper_attrs` に持つ。
+    ///
+    /// 要素種別を追加したときに扱いを決め忘れないよう、網羅 `match` で書く
+    /// （ワイルドカードを使わない）。
+    pub fn requires_section_and_material(self) -> bool {
+        match self {
+            ElementKind::Beam
+            | ElementKind::Fiber
+            | ElementKind::MultiSpring
+            | ElementKind::Brace { .. }
+            | ElementKind::Shell
+            | ElementKind::Wall => true,
+            ElementKind::PanelZone
+            | ElementKind::NodalSpring
+            | ElementKind::Isolator
+            | ElementKind::Damper => false,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum ForceRegime {
     UniaxialBendingShear,

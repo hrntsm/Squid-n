@@ -4003,12 +4003,16 @@ impl App {
 
         // 断面未割当: 大モデルで診断リストが溢れないよう 100 件で打ち切り、
         // 超過分は集約1件にまとめる。
+        //
+        // 対象は断面が必須の要素種別（`ElementKind::requires_section_and_material`）
+        // に限る。準備計算が自動生成する仕口パネル要素は断面を持たないのが正常で、
+        // 絞り込まないと生成数だけ警告が並び、本当に割当が漏れた部材が埋もれる。
         const MAX_UNASSIGNED_SECTION: usize = 100;
         let unassigned: Vec<ElemId> = self
             .model
             .elements
             .iter()
-            .filter(|e| e.section.is_none())
+            .filter(|e| e.kind.requires_section_and_material() && e.section.is_none())
             .map(|e| e.id)
             .collect();
         for id in unassigned.iter().take(MAX_UNASSIGNED_SECTION) {
