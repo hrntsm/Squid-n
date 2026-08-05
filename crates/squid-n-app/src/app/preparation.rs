@@ -294,7 +294,10 @@ pub struct PrepRigidZoneRow {
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct PrepSectionRow {
     pub section: SectionId,
+    /// 断面符号。階と組で断面の同一性キーになるため、単独では一意にならない。
     pub name: String,
+    /// 階（階を持たない断面は `None`）。同じ符号の断面を見分けるために併記する。
+    pub floor: Option<String>,
     /// 形状種別の表示名（形状定義を持たない断面は `None`）。
     pub shape_label: Option<String>,
     /// この断面を割り当てられた部材の数。
@@ -850,6 +853,7 @@ impl App {
                 PrepSectionRow {
                     section: sec.id,
                     name: sec.name.clone(),
+                    floor: sec.floor.clone(),
                     shape_label: sec
                         .shape
                         .as_ref()

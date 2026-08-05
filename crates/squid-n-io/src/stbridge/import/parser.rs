@@ -7,16 +7,15 @@
 use super::super::StbError;
 use super::rebar::{default_rebar, parse_rebar};
 use super::steel::steel_shape_from;
-use super::xml::{attrs, get_f64, get_f64_any, get_i64, get_opt_f64, get_u32, push_node_id_tokens};
+use super::xml::{
+    attrs, get_f64, get_f64_any, get_i64, get_opt_f64, get_u32, push_node_id_tokens, Attrs,
+};
 use super::{
     PendingMember, PendingMemberKind, PendingSec, PendingSecKind, PendingSecondary, RawAxis,
     RawAxisGroup, RawLoadCase, RawMaterial, RawNode, RawSlab, RawStory, RawWall, SecMatRef,
 };
 use squid_n_core::section_shape::{RcRebar, SectionShape};
 use std::collections::HashMap;
-
-/// XML 属性の辞書（属性名 → 値）。
-type Attrs = HashMap<String, String>;
 
 /// RC 断面の図形（配筋と組み合わせて `SectionShape` を確定する）。
 pub(super) enum RcGeom {
@@ -32,12 +31,16 @@ pub(super) enum CurSec {
     Steel {
         file_id: u32,
         name: String,
+        /// 断面の階（`floor` 属性）。符号と併せて断面の同一性キーになる。
+        floor: Option<String>,
         shape_name: Option<String>,
         grade: Option<String>,
     },
     Rc {
         file_id: u32,
         name: String,
+        /// 断面の階（`floor` 属性）。符号と併せて断面の同一性キーになる。
+        floor: Option<String>,
         geom: Option<RcGeom>,
         rebar: Option<RcRebar>,
         /// 配筋コンテナ（`StbSecBarArrangement*`）側に付くかぶり [mm]。実 ST-Bridge は
@@ -49,12 +52,16 @@ pub(super) enum CurSec {
     Cft {
         file_id: u32,
         name: String,
+        /// 断面の階（`floor` 属性）。符号と併せて断面の同一性キーになる。
+        floor: Option<String>,
         steel_name: Option<String>,
         mat: Option<SecMatRef>,
     },
     Src {
         file_id: u32,
         name: String,
+        /// 断面の階（`floor` 属性）。符号と併せて断面の同一性キーになる。
+        floor: Option<String>,
         geom: Option<(f64, f64)>,
         rebar: Option<RcRebar>,
         /// 配筋コンテナ側に付くかぶり [mm]（[`CurSec::Rc`] と同じ）。
@@ -123,6 +130,17 @@ const MEMBER_GROUP_CONTAINERS: &[&str] = &[
     "StbOpens",
 ];
 
+/// 属性 1 種類（要素名＋属性名）の出現件数と、そのうち取り込んだ件数。
+///
+/// 同じ属性でも文脈により取り込む・取り込まないが分かれることがある
+/// （例: 断面の図形要素が複数あり、2 つ目以降は最初の図形を採るため参照しない）。
+/// 件数を分けて持つことで「一部だけ取り込んだ」状態も報告できる。
+#[derive(Debug, Default, Clone, Copy)]
+pub(super) struct AttrCount {
+    pub(super) total: u32,
+    pub(super) imported: u32,
+}
+
 /// XML イベントループの可変状態（暗黙の状態機械）を集約したパーサ。
 ///
 /// 全要素を一旦 file id 付きの中間表現へ集め、パース後に id を 0 始まり連番へ
@@ -138,6 +156,10 @@ pub(super) struct StbParser {
     /// 明示リストにない未知の要素も、部材/断面/荷重の直属子であれば「取り込み対象外」
     /// として拾う（fail-loud。取りこぼしを無言で捨てない）ため、キーは String とする。
     pub(super) unsupported: HashMap<String, u32>,
+    /// 属性の扱いの集計（キー: 要素名と属性名、値: 出現件数と取り込んだ件数）。
+    /// ファイルに現れた属性はすべて記録し、取り込んだものも取り込まなかったものも
+    /// [`ImportReport`](super::ImportReport) で報告する。無視リストは持たない。
+    pub(super) attr_usage: HashMap<(String, String), AttrCount>,
     /// 開いている要素のスタック（直属の親要素を知り、未知の部材/断面/荷重を検出するため）。
     pub(super) container_stack: Vec<String>,
     pub(super) raw_nodes: Vec<RawNode>,
@@ -190,6 +212,10 @@ pub(super) fn parse(xml: &str) -> Result<StbParser, StbError> {
                 let tag = String::from_utf8_lossy(name.as_ref()).to_string();
                 let a = attrs(&e)?;
                 p.on_start(&tag, &a)?;
+                // 属性の参照は on_start の内側で完結する（ハンドラは値を取り出して
+                // 中間表現へ写すだけで、`Attrs` を保持しない）。したがって戻った直後が
+                // 「この要素で何を読み、何を読まなかったか」を確定できる唯一の地点。
+                p.record_attr_usage(&tag, &a);
                 // 開始要素はスタックへ積む（自己終了要素は End が来ないため積まない）。
                 if !is_empty {
                     p.container_stack.push(tag);
@@ -322,6 +348,7 @@ impl StbParser {
                 self.pending_secs.push(PendingSec {
                     file_id: get_u32(a, "id")?,
                     name: a.get("name").cloned().unwrap_or_default(),
+                    floor: floor_of(a),
                     kind: PendingSecKind::Raw {
                         area: get_f64(a, "area")?,
                         iy: get_f64(a, "iy")?,
@@ -338,6 +365,7 @@ impl StbParser {
                 self.cur = CurSec::Steel {
                     file_id: get_u32(a, "id")?,
                     name: a.get("name").cloned().unwrap_or_default(),
+                    floor: floor_of(a),
                     shape_name: None,
                     // 鋼種は形鋼参照（下）に付くことが多いが、要素側にあれば拾う。
                     grade: a.get("strength_main").cloned(),
@@ -377,6 +405,7 @@ impl StbParser {
                 self.cur = CurSec::Rc {
                     file_id: get_u32(a, "id")?,
                     name: a.get("name").cloned().unwrap_or_default(),
+                    floor: floor_of(a),
                     geom: None,
                     rebar: None,
                     rebar_cover: None,
@@ -417,6 +446,7 @@ impl StbParser {
                 self.cur = CurSec::Cft {
                     file_id: get_u32(a, "id")?,
                     name: a.get("name").cloned().unwrap_or_default(),
+                    floor: floor_of(a),
                     steel_name: None,
                     mat: sec_mat_ref_of(a),
                 };
@@ -426,6 +456,7 @@ impl StbParser {
                 self.cur = CurSec::Src {
                     file_id: get_u32(a, "id")?,
                     name: a.get("name").cloned().unwrap_or_default(),
+                    floor: floor_of(a),
                     geom: None,
                     rebar: None,
                     rebar_cover: None,
@@ -760,6 +791,24 @@ impl StbParser {
         }
     }
 
+    /// この要素に存在した属性を、取り込んだもの・取り込まなかったものに分けて集計する。
+    ///
+    /// 無視リストは持たない。`guid` のように解析に用いない属性も「取り込まなかった」と
+    /// して報告し、どの属性がどう扱われたかを利用者がすべて追えるようにする。
+    fn record_attr_usage(&mut self, tag: &str, a: &Attrs) {
+        let unread: std::collections::HashSet<&str> = a.unread().into_iter().collect();
+        for name in a.names() {
+            let e = self
+                .attr_usage
+                .entry((tag.to_string(), name.to_string()))
+                .or_default();
+            e.total += 1;
+            if !unread.contains(name) {
+                e.imported += 1;
+            }
+        }
+    }
+
     /// 終了イベントを処理する（開いていた断面・階・通り芯・スラブ・壁を閉じる）。
     fn on_end(&mut self, tag: &str) {
         // 対応する開始要素をスタックから降ろす。
@@ -801,6 +850,7 @@ impl StbParser {
                 if let CurSec::Steel {
                     file_id,
                     name,
+                    floor,
                     shape_name,
                     grade,
                 } = std::mem::replace(&mut self.cur, CurSec::None)
@@ -808,6 +858,7 @@ impl StbParser {
                     self.pending_secs.push(PendingSec {
                         file_id,
                         name,
+                        floor,
                         kind: PendingSecKind::SteelRef(shape_name),
                         mat: grade.map(SecMatRef::Grade),
                     });
@@ -817,6 +868,7 @@ impl StbParser {
                 if let CurSec::Rc {
                     file_id,
                     name,
+                    floor,
                     geom,
                     rebar,
                     rebar_cover,
@@ -840,6 +892,7 @@ impl StbParser {
                             self.pending_secs.push(PendingSec {
                                 file_id,
                                 name,
+                                floor,
                                 kind: PendingSecKind::Shape(shape),
                                 mat,
                             });
@@ -854,6 +907,7 @@ impl StbParser {
                 if let CurSec::Cft {
                     file_id,
                     name,
+                    floor,
                     steel_name,
                     mat,
                 } = std::mem::replace(&mut self.cur, CurSec::None)
@@ -861,6 +915,7 @@ impl StbParser {
                     self.pending_secs.push(PendingSec {
                         file_id,
                         name,
+                        floor,
                         kind: PendingSecKind::CftRef(steel_name),
                         mat,
                     });
@@ -870,6 +925,7 @@ impl StbParser {
                 if let CurSec::Src {
                     file_id,
                     name,
+                    floor,
                     geom,
                     rebar,
                     rebar_cover,
@@ -889,6 +945,7 @@ impl StbParser {
                             self.pending_secs.push(PendingSec {
                                 file_id,
                                 name,
+                                floor,
                                 mat,
                                 kind: PendingSecKind::SrcRef {
                                     b,
@@ -955,7 +1012,7 @@ fn make_member(
         Some(s) if s >= 0 => Some(s as u32),
         _ => None,
     };
-    let has_material_attr = a.contains_key("id_material");
+    let has_material_attr = a.get("id_material").is_some();
     let material = match get_i64(a, "id_material") {
         Some(m) if m >= 0 => Some(m as u32),
         _ => None,
@@ -991,7 +1048,7 @@ fn make_secondary(
         Some(s) if s >= 0 => Some(s as u32),
         _ => None,
     };
-    let has_material_attr = a.contains_key("id_material");
+    let has_material_attr = a.get("id_material").is_some();
     let material = match get_i64(a, "id_material") {
         Some(m) if m >= 0 => Some(m as u32),
         _ => None,
@@ -1007,13 +1064,21 @@ fn make_secondary(
     }
 }
 
+/// 断面の階（`floor` 属性）。空文字列は「階の指定なし」として `None` に落とす
+/// （空文字列と未指定を別扱いにすると、同じ断面がキー違いで二重に残るため）。
+fn floor_of(a: &Attrs) -> Option<String> {
+    a.get("floor")
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
 /// 部材端の接合条件属性（`FIX`/`PIN`）を [`EndCondition`] へ写す。既定・未知は `Fixed`。
 ///
 /// [`EndCondition`]: squid_n_core::model::EndCondition
 fn end_condition_of(a: &Attrs, keys: &[&str]) -> squid_n_core::model::EndCondition {
     use squid_n_core::model::EndCondition;
     for k in keys {
-        if let Some(v) = a.get(*k) {
+        if let Some(v) = a.get(k) {
             return match v.as_str() {
                 "PIN" => EndCondition::Pinned,
                 _ => EndCondition::Fixed,

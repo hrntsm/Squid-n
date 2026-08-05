@@ -483,6 +483,7 @@ fn test_add_section_shape_roundtrip() {
         shape,
         new_id: SectionId(0),
         name: "H-300x300x10x15".into(),
+        floor: None,
     };
     stack.run(&mut model, Box::new(cmd));
     assert_eq!(model.sections.len(), 1);
@@ -772,6 +773,7 @@ fn test_delete_section_in_use_is_noop_and_renumbers() {
             width: 10.0,
             as_y: 80.0,
             as_z: 80.0,
+            floor: None,
             panel_thickness: None,
             thickness: None,
             shape: None,
@@ -825,6 +827,7 @@ fn test_delete_section_referenced_by_joist() {
             width: 10.0,
             as_y: 80.0,
             as_z: 80.0,
+            floor: None,
             panel_thickness: None,
             thickness: None,
             shape: None,
@@ -3144,6 +3147,7 @@ fn test_delete_section_material_shift_and_guard_secondary_refs() {
             width: 10.0,
             as_y: 80.0,
             as_z: 80.0,
+            floor: None,
             panel_thickness: None,
             thickness: None,
             shape: None,
@@ -3247,4 +3251,159 @@ fn test_failed_command_keeps_redo_history() {
     assert!(stack.can_redo(), "失敗したコマンドで redo 履歴が消えない");
     stack.redo(&mut model);
     assert_eq!(model.nodes.len(), 1, "redo で節点追加が再適用される");
+}
+
+// ---------------------------------------------------------------------------
+// 断面の同一性キー（符号＋階）の不変条件
+// ---------------------------------------------------------------------------
+
+fn h_shape() -> squid_n_section::shape::SectionShape {
+    squid_n_section::shape::SectionShape::SteelH {
+        height: 300.0,
+        width: 150.0,
+        web_thick: 6.5,
+        flange_thick: 9.0,
+    }
+}
+
+/// 符号＋階が同じ断面は追加できない。符号か階のどちらかが違えば追加できる。
+/// GUI 以外の呼び出し元（MCP など）に対しても不変条件を守るため、コマンド側で拒否する。
+#[test]
+fn test_add_section_shape_rejects_duplicate_key() {
+    let mut model = empty_model();
+    let mut stack = UndoStack::new();
+    let add = |name: &str, floor: Option<&str>, id: u32| AddSectionShape {
+        shape: h_shape(),
+        new_id: SectionId(id),
+        name: name.into(),
+        floor: floor.map(str::to_string),
+    };
+
+    stack.run(&mut model, Box::new(add("C1", Some("1"), 0)));
+    assert_eq!(model.sections.len(), 1);
+
+    // 符号＋階が同じなので追加されない。
+    stack.run(&mut model, Box::new(add("C1", Some("1"), 1)));
+    assert_eq!(model.sections.len(), 1, "符号＋階の重複は追加できない");
+
+    // 階が違えば別断面として追加できる。
+    stack.run(&mut model, Box::new(add("C1", Some("2"), 1)));
+    assert_eq!(model.sections.len(), 2);
+    assert_eq!(model.sections[1].floor.as_deref(), Some("2"));
+
+    // 階なしも符号だけで一意判定する。
+    stack.run(&mut model, Box::new(add("C1", None, 2)));
+    assert_eq!(model.sections.len(), 3);
+    stack.run(&mut model, Box::new(add("C1", None, 3)));
+    assert_eq!(model.sections.len(), 3, "階なしどうしの符号重複も拒否する");
+}
+
+/// 符号・階の変更も、他の断面と衝突する場合は適用しない。自分自身は衝突判定から外す。
+#[test]
+fn test_set_section_name_rejects_duplicate_key() {
+    let mut model = empty_model();
+    let mut stack = UndoStack::new();
+    for (i, floor) in ["1", "2"].iter().enumerate() {
+        stack.run(
+            &mut model,
+            Box::new(AddSectionShape {
+                shape: h_shape(),
+                new_id: SectionId(i as u32),
+                name: "C1".into(),
+                floor: Some((*floor).to_string()),
+            }),
+        );
+    }
+
+    // C1(2) を C1(1) にしようとしても適用されない。
+    stack.run(
+        &mut model,
+        Box::new(SetSectionName {
+            id: SectionId(1),
+            name: "C1".into(),
+            floor: Some("1".into()),
+        }),
+    );
+    assert_eq!(model.sections[1].floor.as_deref(), Some("2"), "衝突は拒否");
+
+    // 空いているキーへは変更でき、undo で戻る。
+    stack.run(
+        &mut model,
+        Box::new(SetSectionName {
+            id: SectionId(1),
+            name: "C9".into(),
+            floor: Some("3".into()),
+        }),
+    );
+    assert_eq!(model.sections[1].name, "C9");
+    assert_eq!(model.sections[1].floor.as_deref(), Some("3"));
+    stack.undo(&mut model);
+    assert_eq!(model.sections[1].name, "C1");
+    assert_eq!(model.sections[1].floor.as_deref(), Some("2"));
+
+    // 自分自身と同じキーへの変更は衝突扱いにしない（符号だけを直す操作が通る）。
+    stack.run(
+        &mut model,
+        Box::new(SetSectionName {
+            id: SectionId(0),
+            name: "C1".into(),
+            floor: Some("1".into()),
+        }),
+    );
+    assert_eq!(model.sections[0].name, "C1");
+}
+
+/// 断面形状を変更しても符号と階は維持する（同一性キーが形状変更で消えない）。
+#[test]
+fn test_edit_section_shape_keeps_name_and_floor() {
+    let mut model = empty_model();
+    let mut stack = UndoStack::new();
+    stack.run(
+        &mut model,
+        Box::new(AddSectionShape {
+            shape: h_shape(),
+            new_id: SectionId(0),
+            name: "C1".into(),
+            floor: Some("1".into()),
+        }),
+    );
+    stack.run(
+        &mut model,
+        Box::new(EditSectionShape {
+            section: SectionId(0),
+            new_shape: squid_n_section::shape::SectionShape::SteelBox {
+                height: 300.0,
+                width: 300.0,
+                thick: 12.0,
+                corner_r: 0.0,
+            },
+        }),
+    );
+    assert_eq!(model.sections[0].name, "C1");
+    assert_eq!(model.sections[0].floor.as_deref(), Some("1"));
+    assert!(matches!(
+        model.sections[0].shape,
+        Some(squid_n_section::shape::SectionShape::SteelBox { .. })
+    ));
+}
+
+/// カタログ断面の追加も符号の重複を拒否する（同じカタログ断面を 2 回追加できない）。
+#[test]
+fn test_add_catalog_section_rejects_duplicate_key() {
+    let mut model = empty_model();
+    let mut stack = UndoStack::new();
+    let sec = h_shape().to_section(SectionId(0), "H-300x150x6.5x9".into());
+
+    stack.run(
+        &mut model,
+        Box::new(AddCatalogSection {
+            section: sec.clone(),
+        }),
+    );
+    assert_eq!(model.sections.len(), 1);
+    stack.run(&mut model, Box::new(AddCatalogSection { section: sec }));
+    assert_eq!(model.sections.len(), 1, "同じ符号は 2 回追加できない");
+
+    stack.undo(&mut model);
+    assert_eq!(model.sections.len(), 0);
 }

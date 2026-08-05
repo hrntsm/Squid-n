@@ -144,6 +144,7 @@ fn make_frame(nx: usize, ny: usize, nz: usize, n_cases: usize) -> Model {
             width: 200.0,
             as_y: 4_000.0,
             as_z: 4_000.0,
+            floor: None,
             panel_thickness: None,
             thickness: None,
             shape: None,

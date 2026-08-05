@@ -1,11 +1,10 @@
 //! 形鋼ライブラリ要素（`StbSecRoll-*` / `StbSecBuild-*` / `StbSecPipe`）からの断面形状復元。
 
-use super::xml::get_f64_any;
+use super::xml::{get_f64_any, Attrs};
 use squid_n_core::section_shape::SectionShape;
-use std::collections::HashMap;
 
 /// 形鋼ライブラリ要素（`StbSecRoll-H` 等）と属性から [`SectionShape`] を復元する。
-pub(super) fn steel_shape_from(tag: &str, a: &HashMap<String, String>) -> Option<SectionShape> {
+pub(super) fn steel_shape_from(tag: &str, a: &Attrs) -> Option<SectionShape> {
     // 形鋼の寸法属性は A(せい/長辺)・B(幅/短辺)・t1(ウェブ)・t2(フランジ) を基本とする。
     let a_ = |keys: &[&str]| get_f64_any(a, keys).ok();
     match tag {

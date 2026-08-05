@@ -398,14 +398,23 @@ impl App {
                 }
                 self.load_model(model);
                 self.project_path = None;
+                self.log_attribute_dispositions(&report);
                 // 欠落・近似（warnings）と自動補完の仮定（notes。支点の自動設定など）が
                 // あれば注意として表示する（致命的ではない）。
-                let lines: Vec<&str> = report
+                let mut lines: Vec<String> = report
                     .warnings
                     .iter()
                     .chain(report.notes.iter())
-                    .map(String::as_str)
+                    .cloned()
                     .collect();
+                // 属性の扱いは件数が多く（実ファイルで数十種類）そのまま並べると読めないため、
+                // ここは要約 1 行に留めて全量はログへ出す。
+                let dropped = report.dropped_attributes().count();
+                if dropped > 0 {
+                    lines.push(format!(
+                        "取り込まなかった属性が {dropped} 種類あります（扱いの全量はログを参照）"
+                    ));
+                }
                 if !lines.is_empty() {
                     self.report_error(format!(
                         "⚠️ ST-Bridge 取り込み時の注意:\n- {}",
@@ -414,6 +423,54 @@ impl App {
                 }
             }
             Err(e) => self.report_error(format!("ST-Bridge読込エラー: {}", e)),
+        }
+    }
+
+    /// ファイルに現れた属性の扱いをすべてログへ出す。
+    ///
+    /// 取り込まなかった属性を先に、取り込んだ属性を後に並べる。無視リストを持たない
+    /// 設計なので `guid` のように解析へ用いない属性も「未取り込み」として現れるが、
+    /// 「どの属性がどう扱われたか」を利用者が漏れなく追えることを優先する。
+    fn log_attribute_dispositions(&mut self, report: &squid_n_io::stbridge::ImportReport) {
+        if report.attributes.is_empty() {
+            return;
+        }
+        let dropped: Vec<&squid_n_io::stbridge::AttrDisposition> =
+            report.dropped_attributes().collect();
+        if dropped.is_empty() {
+            self.log.push(
+                crate::app::LogLevel::Info,
+                "ST-Bridge 取り込み: ファイルの属性はすべて取り込みました",
+            );
+        } else {
+            self.log.push(
+                crate::app::LogLevel::Notice,
+                format!(
+                    "ST-Bridge 取り込み: 取り込まなかった属性 {} 種類\n  {}",
+                    dropped.len(),
+                    dropped
+                        .iter()
+                        .map(|a| a.log_line())
+                        .collect::<Vec<_>>()
+                        .join("\n  ")
+                ),
+            );
+        }
+        let kept: Vec<String> = report
+            .attributes
+            .iter()
+            .filter(|a| !a.is_dropped())
+            .map(|a| a.log_line())
+            .collect();
+        if !kept.is_empty() {
+            self.log.push(
+                crate::app::LogLevel::Info,
+                format!(
+                    "ST-Bridge 取り込み: 取り込んだ属性 {} 種類\n  {}",
+                    kept.len(),
+                    kept.join("\n  ")
+                ),
+            );
         }
     }
 

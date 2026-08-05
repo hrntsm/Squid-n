@@ -134,6 +134,7 @@ fn portal_frame_model(fy: f64, seismic_weight: f64) -> Model {
         width: 100.0,
         as_y: 0.0,
         as_z: 0.0,
+        floor: None,
         panel_thickness: None,
         thickness: None,
         shape: None,

@@ -40,6 +40,9 @@ enum SecMatRef {
 struct PendingSec {
     file_id: u32,
     name: String,
+    /// 断面の階（`floor` 属性）。ST-Bridge は同じ符号の断面を階ごとに別定義として
+    /// 持つため、符号と併せて断面の同一性キーになる。属性がなければ `None`。
+    floor: Option<String>,
     kind: PendingSecKind,
     /// 断面側に付いた材料参照（部材が id_material を持たないとき部材へ伝播する）。
     mat: Option<SecMatRef>,
@@ -175,6 +178,47 @@ struct RawAxis {
     node_ids: Vec<u32>,
 }
 
+/// ファイルに現れた属性 1 種類（要素名＋属性名）の扱い。
+///
+/// ST-Bridge ファイルに存在した属性は、取り込んだものも取り込まなかったものも
+/// すべてここに現れる。無視リストは持たないため、`guid` のように解析へ用いない
+/// 属性も「取り込まなかった」として報告される。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AttrDisposition {
+    /// 属性が付いていた要素名（例 `StbSecColumn_S`）。
+    pub element: String,
+    /// 属性名（例 `floor`）。
+    pub attribute: String,
+    /// ファイル中での出現件数。
+    pub count: u32,
+    /// うち取り込んだ件数。0 なら一度も取り込んでいない。
+    pub imported: u32,
+}
+
+impl AttrDisposition {
+    /// 一度も取り込まなかった属性か。
+    pub fn is_dropped(&self) -> bool {
+        self.imported == 0
+    }
+
+    /// 出現の一部だけを取り込んだ属性か（同じ属性でも文脈により扱いが分かれる場合）。
+    pub fn is_partial(&self) -> bool {
+        self.imported > 0 && self.imported < self.count
+    }
+
+    /// ログ表示用の 1 行（例 `StbSecColumn_S/@floor: 8 件すべて取り込み`）。
+    pub fn log_line(&self) -> String {
+        let state = if self.is_dropped() {
+            format!("{} 件すべて未取り込み", self.count)
+        } else if self.is_partial() {
+            format!("{} 件中 {} 件を取り込み", self.count, self.imported)
+        } else {
+            format!("{} 件すべて取り込み", self.count)
+        };
+        format!("{}/@{}: {}", self.element, self.attribute, state)
+    }
+}
+
 /// 取り込み時に欠落・近似した内容の報告（データ欠損を顕在化させる）。
 #[derive(Debug, Default, Clone)]
 pub struct ImportReport {
@@ -184,6 +228,12 @@ pub struct ImportReport {
     /// データ欠損ではないため [`is_clean`](Self::is_clean) には影響しないが、
     /// ユーザーへ明示すべき内容として呼び出し側で表示する。
     pub notes: Vec<String>,
+    /// ファイルに現れた属性の扱い（要素名・属性名の昇順）。
+    ///
+    /// 未取り込みの属性も含むが `warnings` には積まない。件数が多く（実ファイルで
+    /// 数十種類になる）警告文へ混ぜると読めなくなるためで、扱いの一覧は呼び出し側が
+    /// ログなどへ展開する。[`is_clean`](Self::is_clean) の判定にも影響しない。
+    pub attributes: Vec<AttrDisposition>,
 }
 
 impl ImportReport {
@@ -191,6 +241,11 @@ impl ImportReport {
     /// 自動補完の通知（`notes`）は欠落ではないため判定に含めない。
     pub fn is_clean(&self) -> bool {
         self.warnings.is_empty()
+    }
+
+    /// 一度も取り込まなかった属性（要素名・属性名の昇順）。
+    pub fn dropped_attributes(&self) -> impl Iterator<Item = &AttrDisposition> {
+        self.attributes.iter().filter(|a| a.is_dropped())
     }
 }
 

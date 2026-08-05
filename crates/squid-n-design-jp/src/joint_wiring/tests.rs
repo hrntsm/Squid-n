@@ -49,6 +49,7 @@ fn wall_model_sized(l: f64, h: f64, thickness: f64, wall_attr: Option<WallAttr>)
         width: 0.0,
         as_y: 0.0,
         as_z: 0.0,
+        floor: None,
         panel_thickness: None,
         thickness: Some(thickness),
         shape: Some(SectionShape::RcWall {

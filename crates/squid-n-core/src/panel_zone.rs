@@ -412,6 +412,7 @@ mod tests {
         Section {
             id: SectionId(0),
             name: String::new(),
+            floor: None,
             area: 1.0e4,
             iy: 1.0e8,
             iz: 1.0e8,

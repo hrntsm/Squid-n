@@ -11,6 +11,7 @@
     - [ST-Bridge 要素別 変換状況一覧](./model_io/03_ST-Bridge_要素別変換状況.md)
 - [モデルの編集](./model_edit/README.md)
     - [通り芯](./model_edit/01_通り芯.md)
+    - [断面の符号と階](./model_edit/02_断面の符号と階.md)
 - [MCP サーバ](./mcp_server/README.md)
     - [ビルドと起動](./mcp_server/01_ビルドと起動.md)
     - [クライアント設定例](./mcp_server/02_クライアント設定例.md)

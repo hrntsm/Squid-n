@@ -7,7 +7,10 @@
 
 use crate::app::App;
 use squid_n_core::ids::SectionId;
-use squid_n_edit::{AddSection, AddSectionShape, EditSectionShape, SectionField, SetSectionField};
+use squid_n_edit::{
+    AddCatalogSection, AddSectionShape, EditSectionShape, SectionField, SetSectionField,
+    SetSectionName,
+};
 use squid_n_section::catalog::CatalogShape;
 use squid_n_section::shape::{BarSet, RcRebar, SectionShape, ShearBar};
 
@@ -15,7 +18,15 @@ use squid_n_section::shape::{BarSet, RcRebar, SectionShape, ShearBar};
 #[derive(Debug, Clone)]
 pub struct SectionEditorDraft {
     pub kind: ShapeKind,
+    /// 断面符号。階と組で断面の同一性キーになる。
     pub name: String,
+    /// 階（空欄は「階の指定なし」）。ST-Bridge 由来の断面は階を持つため、
+    /// 既存断面の符号・階を直すときにもこの欄を使う。
+    pub floor: String,
+    /// 符号・階の欄へ内容を読み込み済みの断面。断面テーブルで別の断面を選ぶたびに
+    /// その断面の符号・階を欄へ写すための記録で、同じ断面を選び直しても
+    /// 編集途中の入力を上書きしないようにする。
+    pub synced_focus: Option<SectionId>,
     // 鋼共通パラメータ
     pub h: f64,
     pub b: f64,
@@ -63,6 +74,8 @@ impl Default for SectionEditorDraft {
         Self {
             kind: ShapeKind::SteelH,
             name: "断面1".to_string(),
+            floor: String::new(),
+            synced_focus: None,
             h: 400.0,
             b: 200.0,
             tw: 8.0,
@@ -250,12 +263,20 @@ pub fn catalog_section_panel(ui: &mut egui::Ui, app: &mut App) {
             entry.area, entry.iy, entry.iz, entry.j
         ));
 
-        if ui.button("+ 追加").clicked() {
-            let new_id = SectionId(app.model.sections.len() as u32);
-            let sec = squid_n_section::catalog::to_section(entry, new_id);
-            let index = app.model.sections.len();
+        // カタログ断面の符号はカタログ名（`H-400x200x8x13` 等）で、階は持たない。
+        // 同じ断面を 2 回追加すると符号＋階が衝突するため、追加を止めて理由を示す。
+        let new_id = SectionId(app.model.sections.len() as u32);
+        let sec = squid_n_section::catalog::to_section(entry, new_id);
+        let taken = squid_n_core::model::section_key_taken(&app.model.sections, sec.key(), None);
+        let add_resp = ui.add_enabled(!taken, egui::Button::new("+ 追加"));
+        if taken {
+            add_resp.on_hover_text(format!(
+                "符号「{}」の断面が既にあります（符号は断面作成パネルで変更できます）",
+                sec.name
+            ));
+        } else if add_resp.clicked() {
             app.undo
-                .run(&mut app.model, Box::new(AddSection { old: sec, index }));
+                .run(&mut app.model, Box::new(AddCatalogSection { section: sec }));
             app.staleness.mark_edited();
         }
     });
@@ -266,6 +287,22 @@ pub fn section_editor_panel(ui: &mut egui::Ui, app: &mut App) {
     // 仕口パネル板厚の欄はモデルを読むが、編集要求は `draft` の可変借用が
     // 切れたあと（閉包の外）で適用する。
     let mut pending_tp: Option<(SectionId, f64)> = None;
+
+    // 断面テーブルで断面を選んだら、その符号・階を欄へ読み込む。断面テーブルは
+    // 読み取り専用で、既存断面の符号・階を直す手段がこのパネルしかないため、
+    // 選んだ断面の現在値から編集を始められるようにする。
+    let focused = focused_section_index(app.nav.focus_section, &app.model.sections)
+        .map(|idx| &app.model.sections[idx]);
+    if let Some(sec) = focused {
+        if app.section_draft.synced_focus != Some(sec.id) {
+            app.section_draft.name = sec.name.clone();
+            app.section_draft.floor = sec.floor.clone().unwrap_or_default();
+            app.section_draft.synced_focus = Some(sec.id);
+        }
+    } else {
+        app.section_draft.synced_focus = None;
+    }
+
     let draft = &mut app.section_draft;
 
     ui.group(|ui| {
@@ -282,8 +319,14 @@ pub fn section_editor_panel(ui: &mut egui::Ui, app: &mut App) {
         });
 
         ui.horizontal(|ui| {
-            ui.label("名称:");
-            ui.text_edit_singleline(&mut draft.name);
+            ui.label("符号:");
+            ui.add(egui::TextEdit::singleline(&mut draft.name).desired_width(120.0));
+            ui.label("階:");
+            ui.add(egui::TextEdit::singleline(&mut draft.floor).desired_width(80.0))
+                .on_hover_text(
+                    "同じ符号の断面を階ごとに分けて持つための欄です。\
+                     空欄なら階の指定なしとして扱います",
+                );
         });
         ui.separator();
 
@@ -344,8 +387,35 @@ pub fn section_editor_panel(ui: &mut egui::Ui, app: &mut App) {
 
         ui.separator();
 
+        let draft_floor = non_empty(&draft.floor);
+        let focus = focused_section_index(app.nav.focus_section, &app.model.sections);
+        // 符号＋階は断面の同一性キーなので、既存断面と衝突する追加・改名はできない。
+        // 改名では対象の断面自身を衝突判定から外す。
+        let key_free_for_add = !squid_n_core::model::section_key_taken(
+            &app.model.sections,
+            (draft.name.as_str(), draft_floor.as_deref()),
+            None,
+        );
+        let key_free_for_rename = !squid_n_core::model::section_key_taken(
+            &app.model.sections,
+            (draft.name.as_str(), draft_floor.as_deref()),
+            focus,
+        );
+        let key_label = match &draft_floor {
+            Some(f) => format!("{} ({})", draft.name, f),
+            None => draft.name.clone(),
+        };
+
         ui.horizontal(|ui| {
-            if ui.button("+ 追加").clicked() {
+            let can_add = key_free_for_add && !draft.name.trim().is_empty();
+            let add_resp = ui.add_enabled(can_add, egui::Button::new("+ 追加"));
+            if !can_add {
+                add_resp.on_hover_text(if draft.name.trim().is_empty() {
+                    "符号を入力してください".to_string()
+                } else {
+                    format!("符号＋階「{key_label}」の断面が既にあります。符号か階を変えてください")
+                });
+            } else if add_resp.clicked() {
                 predicted_id = SectionId(app.model.sections.len() as u32);
                 app.undo.run(
                     &mut app.model,
@@ -353,21 +423,21 @@ pub fn section_editor_panel(ui: &mut egui::Ui, app: &mut App) {
                         shape: shape.clone(),
                         new_id: predicted_id,
                         name: draft.name.clone(),
+                        floor: draft_floor.clone(),
                     }),
                 );
                 app.staleness.mark_edited();
-                // 生成後、次の断面をすぐ作れるよう名称を更新
+                // 生成後、次の断面をすぐ作れるよう符号を更新
                 let n = app.model.sections.len();
                 draft.name = format!("断面{}", n + 1);
             }
             ui.separator();
 
-            let focus = focused_section_index(app.nav.focus_section, &app.model.sections);
             let apply_resp = ui.add_enabled(focus.is_some(), egui::Button::new("✏ 選択断面へ適用"));
             match focus {
                 Some(idx) => {
                     let sid = app.model.sections[idx].id;
-                    let name = app.model.sections[idx].name.clone();
+                    let name = app.model.sections[idx].display_name();
                     let used = app
                         .model
                         .elements
@@ -376,7 +446,7 @@ pub fn section_editor_panel(ui: &mut egui::Ui, app: &mut App) {
                         .count();
                     let apply_resp = apply_resp.on_hover_text(format!(
                         "現在のフォーム内容で断面 {name} の形状を再定義します\
-（この断面を使う全 {used} 部材に波及。名称 {name} は維持されます）"
+（この断面を使う全 {used} 部材に波及。符号と階は維持されます）"
                     ));
                     if apply_resp.clicked() {
                         app.undo.run(
@@ -384,6 +454,33 @@ pub fn section_editor_panel(ui: &mut egui::Ui, app: &mut App) {
                             Box::new(EditSectionShape {
                                 section: sid,
                                 new_shape: shape.clone(),
+                            }),
+                        );
+                        app.staleness.mark_edited();
+                    }
+                    // 断面テーブルは読み取り専用なので、既存断面の符号・階を直す手段は
+                    // ここに置く（フォームの符号・階を選択中の断面へ書き込む）。
+                    let can_rename = key_free_for_rename && !draft.name.trim().is_empty();
+                    let rename_resp =
+                        ui.add_enabled(can_rename, egui::Button::new("✏ 符号・階を変更"));
+                    if !can_rename {
+                        rename_resp.on_hover_text(if draft.name.trim().is_empty() {
+                            "符号を入力してください".to_string()
+                        } else {
+                            format!("符号＋階「{key_label}」の断面が既にあります")
+                        });
+                    } else if rename_resp
+                        .on_hover_text(format!(
+                            "選択中の断面 {name} の符号・階をフォームの内容（{key_label}）へ変更します"
+                        ))
+                        .clicked()
+                    {
+                        app.undo.run(
+                            &mut app.model,
+                            Box::new(SetSectionName {
+                                id: sid,
+                                name: draft.name.clone(),
+                                floor: draft_floor.clone(),
                             }),
                         );
                         app.staleness.mark_edited();
