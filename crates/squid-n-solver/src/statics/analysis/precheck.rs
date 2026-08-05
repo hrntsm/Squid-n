@@ -100,7 +100,8 @@ pub fn model_issues(model: &Model) -> Vec<ModelIssue> {
     }
     if !model.nodes.iter().any(|n| n.restraint.0 != 0) {
         issues.push(ModelIssue::model(
-            "拘束(支点)が 1 つもありません。境界条件タブで支点を設定してください。",
+            "拘束(支点)が 1 つもありません。境界条件タブで支点を設定してください\
+             (拘束が無いと構造全体が剛体移動し、剛性行列が特異になります)。",
         ));
     }
 

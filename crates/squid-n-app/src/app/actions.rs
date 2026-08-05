@@ -3974,7 +3974,12 @@ impl App {
 
     /// モデル整合性チェック（診断）を実行し `self.diagnostics` を再構築する。
     /// 下ドック「診断」タブを開いたとき／「再チェック」ボタン押下時のみ呼ばれる
-    /// 想定で、O(部材数) 程度の軽い検査に留める（解析等の重い処理は行わない）。
+    /// 想定で、解析等の重い処理は行わない。
+    ///
+    /// 計算量は概ね O(部材数)。ただし耐震壁と周辺架構の種別照合だけは壁 1 枚ごとに
+    /// 周辺部材を走査するため O(壁数 × 部材数) になる（解析前チェックが元から
+    /// 払っているのと同じコスト）。これ以上重い検査を足す場合は、診断タブを開くたびに
+    /// 走ることを踏まえて遅延評価の粒度から見直すこと。
     pub fn run_diagnostics(&mut self) {
         let mut diags = Vec::new();
 
@@ -3996,7 +4001,7 @@ impl App {
         // `PreparationResult::is_ready`（`diag_errors == 0`）が
         // 「解析前に解消すべきか」の判定にそのまま使えるようにするため。
         for issue in squid_n_solver::analysis::precheck::model_issues(&self.model) {
-            self.push_issue_diagnostics(&mut diags, issue);
+            push_issue_diagnostics(&mut diags, issue);
         }
 
         // 空の水平力ケース（地震・風）を参照する荷重組合せ: そのまま解くと水平力の
@@ -4029,64 +4034,6 @@ impl App {
 
         self.diagnostics = diags;
         self.staleness.diagnostics_stale = false;
-    }
-
-    /// 解析前チェックの不備 1 件を診断行へ展開する。
-    ///
-    /// 対象が特定できる不備は対象 1 件ごとに行を作り、クリックで 3D 選択へ
-    /// 飛べるようにする。大モデルで診断リストが溢れないよう
-    /// [`MAX_ISSUE_TARGETS`] 件で打ち切り、超過分は集約 1 行にまとめる。
-    fn push_issue_diagnostics(
-        &self,
-        diags: &mut Vec<Diagnostic>,
-        issue: squid_n_solver::analysis::precheck::ModelIssue,
-    ) {
-        use squid_n_solver::analysis::precheck::IssueTargets;
-
-        /// 対象単位の行を並べる上限。超過分は集約 1 行にまとめる。
-        const MAX_ISSUE_TARGETS: usize = 100;
-
-        let (n_targets, unit) = match &issue.targets {
-            IssueTargets::Model => {
-                diags.push(Diagnostic {
-                    severity: DiagSeverity::Error,
-                    message: issue.message,
-                    target: None,
-                });
-                return;
-            }
-            IssueTargets::Members(ids) => {
-                for id in ids.iter().take(MAX_ISSUE_TARGETS) {
-                    diags.push(Diagnostic {
-                        severity: DiagSeverity::Error,
-                        message: format!("部材 #{}: {}", id.0, issue.short),
-                        target: Some(DiagTarget::Member(*id)),
-                    });
-                }
-                (ids.len(), "部材")
-            }
-            IssueTargets::Nodes(ids) => {
-                for id in ids.iter().take(MAX_ISSUE_TARGETS) {
-                    diags.push(Diagnostic {
-                        severity: DiagSeverity::Error,
-                        message: format!("節点 #{}: {}", id.0, issue.short),
-                        target: Some(DiagTarget::Node(*id)),
-                    });
-                }
-                (ids.len(), "節点")
-            }
-        };
-        if n_targets > MAX_ISSUE_TARGETS {
-            diags.push(Diagnostic {
-                severity: DiagSeverity::Error,
-                message: format!(
-                    "…他 {} {unit}で{}",
-                    n_targets - MAX_ISSUE_TARGETS,
-                    issue.short
-                ),
-                target: None,
-            });
-        }
     }
 
     /// 診断結果の件数集計（Error数, Warning数）。タブラベル・ステータス表示用。
@@ -4181,4 +4128,61 @@ fn simple_beam_q0_by_elem(
     acc.into_iter()
         .map(|(k, (ri, rj))| (k, ri.max(rj)))
         .collect()
+}
+
+/// 解析前チェックの不備 1 件を診断行へ展開する。
+///
+/// 対象が特定できる不備は対象 1 件ごとに行を作り、クリックで 3D 選択へ
+/// 飛べるようにする。大モデルで診断リストが溢れないよう
+/// `MAX_ISSUE_TARGETS` 件で打ち切り、超過分は集約 1 行にまとめる。
+fn push_issue_diagnostics(
+    diags: &mut Vec<Diagnostic>,
+    issue: squid_n_solver::analysis::precheck::ModelIssue,
+) {
+    use squid_n_solver::analysis::precheck::IssueTargets;
+
+    /// 対象単位の行を並べる上限。超過分は集約 1 行にまとめる。
+    const MAX_ISSUE_TARGETS: usize = 100;
+
+    let (n_targets, unit) = match &issue.targets {
+        IssueTargets::Model => {
+            diags.push(Diagnostic {
+                severity: DiagSeverity::Error,
+                message: issue.message,
+                target: None,
+            });
+            return;
+        }
+        IssueTargets::Members(ids) => {
+            for id in ids.iter().take(MAX_ISSUE_TARGETS) {
+                diags.push(Diagnostic {
+                    severity: DiagSeverity::Error,
+                    message: format!("部材 #{}: {}", id.0, issue.short),
+                    target: Some(DiagTarget::Member(*id)),
+                });
+            }
+            (ids.len(), "部材")
+        }
+        IssueTargets::Nodes(ids) => {
+            for id in ids.iter().take(MAX_ISSUE_TARGETS) {
+                diags.push(Diagnostic {
+                    severity: DiagSeverity::Error,
+                    message: format!("節点 #{}: {}", id.0, issue.short),
+                    target: Some(DiagTarget::Node(*id)),
+                });
+            }
+            (ids.len(), "節点")
+        }
+    };
+    if n_targets > MAX_ISSUE_TARGETS {
+        diags.push(Diagnostic {
+            severity: DiagSeverity::Error,
+            message: format!(
+                "…他 {} {unit}で{}",
+                n_targets - MAX_ISSUE_TARGETS,
+                issue.short
+            ),
+            target: None,
+        });
+    }
 }
