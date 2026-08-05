@@ -5,7 +5,7 @@ use super::*;
 use squid_n_core::ids::*;
 
 /// S 造部材の断面検定用属性（`SteelDesignAttr`）を追加/更新する。`attr.elem` に
-/// 一致する既存エントリがあれば置換し、無ければ末尾に追加する。逆操作は変更前の
+/// 一致する既存エントリがあれば置換し、なければ末尾に追加する。逆操作は変更前の
 /// 状態への復元（既存エントリの置換なら変更前の `SteelDesignAttr` で
 /// [`SetSteelDesignAttr`] を再実行、新規追加なら [`RemoveSteelDesignAttr`] で
 /// 取り消す）。[`SetWallAttr`](crate::SetWallAttr)・
@@ -38,11 +38,11 @@ impl EditCommand for SetSteelDesignAttr {
 }
 
 /// S 造部材の断面検定用属性エントリを削除する（`elem` に一致するものを削除）。
-/// 一致するエントリが無ければ Noop。逆操作は削除前の値を復元する
+/// 一致するエントリがなければ Noop。逆操作は削除前の値を復元する
 /// [`SetSteelDesignAttr`]（このエントリの `elem` は削除時点で存在しないため、
 /// `SetSteelDesignAttr` は「既存エントリなし→末尾追加」の枝を通り、元の位置
 /// には戻らないが、`steel_design_attrs` は `ElemId` をキーとする集合的な
-/// データであり配列順に意味は無いため問題ない）。
+/// データであり配列順に意味はないため問題ない）。
 pub struct RemoveSteelDesignAttr {
     pub elem: ElemId,
 }

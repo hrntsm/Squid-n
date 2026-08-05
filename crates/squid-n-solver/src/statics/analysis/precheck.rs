@@ -15,7 +15,7 @@ use squid_n_math::solver::SolveError;
 /// 不備の対象。診断一覧がクリックで 3D 選択・インスペクタへ結びつけるために持つ。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum IssueTargets {
-    /// 対象を特定できない不備（節点・部材・拘束が 1 つも無い等）。
+    /// 対象を特定できない不備（節点・部材・拘束が 1 つもない等）。
     Model,
     Members(Vec<ElemId>),
     Nodes(Vec<NodeId>),
@@ -81,12 +81,28 @@ fn id_list_message(what: &str, label: &str, ids: &[u32], remedy: &str) -> String
 
 /// 解析を妨げるモデルの不備をすべて集める。
 ///
-/// 返す順は「モデル全体の欠落 → 部材の入力不備 → 節点参照の不整合」で、
+/// 返す順は「モデル検証 → モデル全体の欠落 → 部材の入力不備 → 節点参照の不整合」で、
 /// [`precheck_model`] はこの先頭 1 件をエラーにする。
+///
+/// 先頭のモデル検証（[`Model::validate`]）が失敗したときは、その 1 件だけを返して
+/// 打ち切る。検証が見るのは「配列添字 == id」の不変条件と参照整合であり、これが
+/// 崩れたモデルでは後続の検査が別実体を指した結果を報告してしまうため、まず
+/// データの破損を直してもらう。
 pub fn model_issues(model: &Model) -> Vec<ModelIssue> {
     use squid_n_core::model::ElementKind;
 
     let mut issues = Vec::new();
+
+    // `CoreError` は日本語 UI へ出す前提の Display（"index mismatch: ..." 等）を持つ。
+    // `{:?}` にすると "IndexMismatch(\"...\")" と Rust の列挙子表記が露出するため
+    // Display で出し、他の不備と同じく是正方法を添える。
+    if let Err(e) = model.validate() {
+        issues.push(ModelIssue::model(format!(
+            "モデル検証エラー: {e}。モデルの ID 参照が壊れています。\
+             直前の編集を取り消すか、保存済みのプロジェクトファイルを開き直してください。"
+        )));
+        return issues;
+    }
 
     if model.nodes.is_empty() {
         issues.push(ModelIssue::model(
@@ -101,7 +117,7 @@ pub fn model_issues(model: &Model) -> Vec<ModelIssue> {
     if !model.nodes.iter().any(|n| n.restraint.0 != 0) {
         issues.push(ModelIssue::model(
             "拘束(支点)が 1 つもありません。境界条件タブで支点を設定してください\
-             (拘束が無いと構造全体が剛体移動し、剛性行列が特異になります)。",
+             (拘束がないと構造全体が剛体移動し、剛性行列が特異になります)。",
         ));
     }
 
@@ -148,7 +164,7 @@ pub fn model_issues(model: &Model) -> Vec<ModelIssue> {
         ));
     }
 
-    // シェル要素の断面に板厚が無い（線材用断面を割り当てた等）。
+    // シェル要素の断面に板厚がない（線材用断面を割り当てた等）。
     // 要素構築は板厚 0（ゼロ剛性）となり特異行列で止まるが、原因が伝わらないため
     // ここで名指しする。
     let no_thickness: Vec<ElemId> = model
@@ -306,7 +322,7 @@ fn node_reference_issues(model: &Model) -> Vec<ModelIssue> {
              (節点削除後の不整合の可能性があります)。",
         ));
     }
-    // 部材が 1 つも無いモデルでは全節点が孤立になる。「部材がありません」で
+    // 部材が 1 つもないモデルでは全節点が孤立になる。「部材がありません」で
     // 同じことを言っているため、節点を 1 つずつ挙げても情報が増えない。
     if model.elements.is_empty() {
         return issues;

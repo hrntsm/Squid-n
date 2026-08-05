@@ -169,7 +169,7 @@ pub fn center_of_gravity_from_axial(
 /// 応力解析結果に基づく当該層の偏心率（精算ルート）。
 ///
 /// - 剛心: `column_stiffnesses_from_analysis`（ki = Qi/δi）
-/// - 重心: `center_of_gravity_from_axial`（長期軸力。`long_term` が無い/算定不能なら
+/// - 重心: `center_of_gravity_from_axial`（長期軸力。`long_term` がない/算定不能なら
 ///   質量重心 `center_of_mass` にフォールバック）
 ///
 /// 偏心率は常に弾性解析結果から算定するため（令82条の6 の運用に基づく実務的

@@ -169,7 +169,7 @@ fn test_beam_new_src_cft_composite_props() {
     assert!((cft_beam.iz - pc.iy).abs() / pc.iy < 1e-12);
     assert!((cft_beam.j - pc.j).abs() / pc.j < 1e-12);
 
-    // SRC + fc の無い材料: 既定 N_S_EQ の軸剛性累加へフォールバック
+    // SRC + fc のない材料: 既定 N_S_EQ の軸剛性累加へフォールバック
     model.materials[0].fc = None;
     let src_fallback = BeamElement::new(&make_elem(0, 0), &model);
     assert!((src_fallback.a - src_shape.calc_axial_stiffness_area()).abs() < 1e-6);
@@ -271,7 +271,7 @@ fn test_beam_new_slab_cooperation_width_amplifies_iy() {
     };
 
     // 期待値: a は隣接平行梁との内法距離（RC規準8条の a）。軸間 2500 から
-    // 自梁の幅/2 と相手梁の幅/2（向かい側に梁要素が無いため自梁と同幅の
+    // 自梁の幅/2 と相手梁の幅/2（向かい側に梁要素がないため自梁と同幅の
     // フォールバック）を控除して a=2500−150−150=2200 < l/2=3000
     // → ba=(0.5−0.6·2200/6000)·2200=616(片側のみ)
     let (b, d, t, l) = (300.0_f64, 600.0_f64, 150.0_f64, 6000.0_f64);
@@ -1317,7 +1317,7 @@ fn test_auto_rigid_zone_steel_beam_rc_column() {
     );
 }
 
-/// RC梁 + S柱のみ: 直交する RC/SRC 系の柱が無いため D_orth_rc=0 となり、
+/// RC梁 + S柱のみ: 直交する RC/SRC 系の柱がないため D_orth_rc=0 となり、
 /// 従来式 λ=reduction·(0/2−梁せい/4) は負となって 0 にクランプされる。
 #[test]
 fn test_auto_rigid_zone_rc_beam_steel_column_only_is_zero() {
@@ -1432,7 +1432,7 @@ fn test_auto_rigid_zone_rc_beam_steel_column_only_is_zero() {
     let zone = auto_rigid_zones(&model, ElemId(1), &RigidZoneRule::default());
     assert_eq!(
         zone.length_i, 0.0,
-        "RC梁+S柱のみ: 剛域長は0のはず（RC/SRC直交材が無い）。length_i={}",
+        "RC梁+S柱のみ: 剛域長は0のはず（RC/SRC直交材がない）。length_i={}",
         zone.length_i
     );
 }
@@ -2802,7 +2802,7 @@ fn test_misc_wall_wing_eccentricity_is_independent_of_wall_node_order() {
 
 /// ねじれ解放の検証用モデル。2 本の柱（節点 0→1・2→3）の柱頭を X 方向の大梁で
 /// つないだ 1 スパン 1 層の骨組み。`split_x` を真にすると大梁を中間節点 4 で
-/// 2 分割し、「柱の無い・一直線の梁だけが集まる節点」を作る。
+/// 2 分割し、「柱のない・一直線の梁だけが集まる節点」を作る。
 fn torsion_test_model(split_x: bool) -> Model {
     use squid_n_core::ids::{MaterialId, SectionId};
     use squid_n_core::model::ForceRegime;
@@ -2930,7 +2930,7 @@ fn test_beam_i_end_torsion_released_by_default() {
 }
 
 /// 柱を中間節点で分割し、その節点に梁が取り付かない場合は、材軸（鉛直）まわりの
-/// 回転を拘束するものが無いため解放しない（梁の中間分割点と同じ規則）。
+/// 回転を拘束するものがないため解放しない（梁の中間分割点と同じ規則）。
 #[test]
 fn test_column_torsion_release_skipped_at_collinear_column_node() {
     use squid_n_core::ids::{MaterialId, SectionId};
@@ -2971,13 +2971,13 @@ fn test_column_torsion_release_skipped_at_collinear_column_node() {
     );
 }
 
-/// 柱が無く一直線の梁だけが集まる節点（大梁の中間分割点）では、ねじれを解放すると
+/// 柱がなく一直線の梁だけが集まる節点（大梁の中間分割点）では、ねじれを解放すると
 /// 材軸まわり回転が浮いて剛性行列が特異になるため、解放しない（安全側）。
 #[test]
 fn test_i_end_torsion_release_skipped_at_collinear_beam_node() {
     let model = torsion_test_model(true);
     // 要素 2（節点 1→4）・要素 3（節点 4→3）はいずれも節点 4 を共有する X 方向材で、
-    // 節点 4 には他の非平行な部材が無い。
+    // 節点 4 には他の非平行な部材がない。
     let seg_a = BeamElement::new(&model.elements[2], &model);
     let seg_b = BeamElement::new(&model.elements[3], &model);
     assert!(
@@ -3013,8 +3013,8 @@ fn test_beam_torsion_mode_keep_retains_torsion() {
     );
 }
 
-/// ねじり剛性が無い部材（J≤0）の rx は端条件がピンでも解放しない。解放しても
-/// 静縮約の `Kbb` が特異になり縮約の意味が無いため（ファイバー梁
+/// ねじり剛性がない部材（J≤0）の rx は端条件がピンでも解放しない。解放しても
+/// 静縮約の `Kbb` が特異になり縮約の意味がないため（ファイバー梁
 /// `resolve_end_releases` と同じ規則。特異な `Kbb` は `invert_small` が `None` を
 /// 返し補正項が省略される）。
 #[test]
@@ -3031,6 +3031,6 @@ fn test_pinned_ends_without_torsion_keep_finite_stiffness() {
             );
         }
     }
-    // ねじり剛性が無いので rx 行・列は元から 0（解放の有無に依らない）。
+    // ねじり剛性がないので rx 行・列は元から 0（解放の有無に依らない）。
     assert_eq!(k.get(3, 3), 0.0);
 }

@@ -220,7 +220,7 @@ mod tests {
         assert!(xs[1] > 0.5);
     }
 
-    /// is_empty はハンチ・継手のいずれも無いときだけ真。
+    /// is_empty はハンチ・継手のいずれもないときだけ真。
     #[test]
     fn test_is_empty() {
         let mut attr = MemberDetailAttr::new(ElemId(1));

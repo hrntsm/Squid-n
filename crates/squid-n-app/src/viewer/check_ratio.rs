@@ -49,7 +49,7 @@ const ALL_KINDS: [CheckKind; 6] = [
 ///   未検定と同様に着色しない）。
 /// - `Max`: `cr.ratio()`／`cr.ok()` を返す（従来動作）。
 /// - `Kind(k)`: `cr.components` から `kind == k` の最大検定比を探し
-///   `Some((r, r <= 1.0))` を返す。該当する式が無ければ `None`
+///   `Some((r, r <= 1.0))` を返す。該当する式がなければ `None`
 ///   （＝この検定位置は当該式の検定対象外。着色・マーカーとも描かない）。
 pub(super) fn ratio_for_filter(
     outcome: &CheckOutcome,
@@ -118,7 +118,7 @@ where
 /// 部材（または節点）ごとに、フィルタ適用後の検定比・OK フラグを集計する
 /// （純粋関数）。`items` は `(キー, フィルタ適用後の (検定比, OK) または None)`。
 /// `None`（フィルタ対象外の位置。検定不能を含む）は無視され、対象位置が一つも
-/// 無い部材・節点は集計結果に含まれない（＝未検定として扱われ、着色されない）。
+/// ない部材・節点は集計結果に含まれない（＝未検定として扱われ、着色されない）。
 fn max_ratio_by_key<K, I>(items: I) -> HashMap<K, (f64, bool)>
 where
     K: Eq + std::hash::Hash,
@@ -216,7 +216,7 @@ pub(super) fn show_node_check_tooltip(ui: &egui::Ui, app: &App, node: NodeId) {
         return;
     }
     // `show_tooltip_at_pointer` は egui 0.34 で非推奨だが、ウィジェットに紐付かない
-    // 任意位置への表示という用途に代替が無いため、部材側と同じ方針で使用する。
+    // 任意位置への表示という用途に代替がないため、部材側と同じ方針で使用する。
     #[allow(deprecated)]
     egui::show_tooltip_at_pointer(
         ui.ctx(),
@@ -300,7 +300,7 @@ pub(super) enum RowVerdict {
 pub(super) struct TooltipRow {
     /// 検定位置 xi ∈ [0,1]
     pub xi: f64,
-    /// 列（`kinds`）に対応する検定比。該当式が無い列・検定不能の行は `None`。
+    /// 列（`kinds`）に対応する検定比。該当式がない列・検定不能の行は `None`。
     pub values: Vec<Option<f64>>,
     pub verdict: RowVerdict,
 }
@@ -581,7 +581,7 @@ pub(super) fn draw_check_ratio(
 }
 
 /// B-3: 部材 `elem_id` の検定詳細（位置×式）をポインタ位置にツールチップ表示する。
-/// `app.results.member_checks` に当該部材の検定が無ければ何も描かない。
+/// `app.results.member_checks` に当該部材の検定がなければ何も描かない。
 pub(super) fn show_check_tooltip(ui: &egui::Ui, app: &App, elem_id: ElemId) {
     let Some(results) = &app.results else {
         return;
@@ -600,7 +600,7 @@ pub(super) fn show_check_tooltip(ui: &egui::Ui, app: &App, elem_id: ElemId) {
 
     // `show_tooltip_at_pointer` は egui 0.34 で非推奨（`Tooltip` 型を使う新 API へ
     // 移行中）だが、ウィジェットに紐付かない任意位置へのツールチップ表示という
-    // 用途には他に簡潔な代替が無いため、既存コード（app/panels.rs）と同じ方針で
+    // 用途には他に簡潔な代替がないため、既存コード（app/panels.rs）と同じ方針で
     // `#[allow(deprecated)]` を付けて使用する。
     #[allow(deprecated)]
     egui::show_tooltip_at_pointer(
@@ -648,7 +648,7 @@ pub(super) fn show_check_tooltip(ui: &egui::Ui, app: &App, elem_id: ElemId) {
     );
 }
 
-/// 検定結果が無い場合の案内表示。
+/// 検定結果がない場合の案内表示。
 fn draw_no_result_legend(painter: &egui::Painter) {
     painter.text(
         egui::pos2(
@@ -1002,7 +1002,7 @@ mod tests {
         );
     }
 
-    /// 該当する式が components に無ければ None（フィルタ対象外）。
+    /// 該当する式が components になければ None（フィルタ対象外）。
     #[test]
     fn ratio_for_filter_kind_absent_returns_none() {
         let c = checked(
@@ -1147,7 +1147,7 @@ mod tests {
         assert_eq!(mid_label_text(1.13, Some(CheckKind::Shear)), "1.13 せん断");
     }
 
-    /// 支配式が無い場合（フィルタ=特定式、または内訳なし）は数値のみ。
+    /// 支配式がない場合（フィルタ=特定式、または内訳なし）は数値のみ。
     #[test]
     fn mid_label_text_without_dominant() {
         assert_eq!(mid_label_text(0.82, None), "0.82");
@@ -1188,7 +1188,7 @@ mod tests {
         assert_eq!(positions[1].xi, 1.0);
     }
 
-    /// 検定位置の無い部材は空スライスを返す。
+    /// 検定位置のない部材は空スライスを返す。
     #[test]
     fn elem_check_positions_unknown_elem_returns_empty() {
         let member_checks: Vec<MemberChecks> = vec![];
@@ -1235,7 +1235,7 @@ mod tests {
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0].values, vec![Some(0.5), Some(0.4)]);
         assert!(matches!(rows[0].verdict, RowVerdict::Ok));
-        // 2 行目は Bending 式が無いため None。
+        // 2 行目は Bending 式がないため None。
         assert_eq!(rows[1].values, vec![None, Some(1.13)]);
         assert!(matches!(rows[1].verdict, RowVerdict::Ng));
     }
@@ -1257,7 +1257,7 @@ mod tests {
         }
     }
 
-    /// 検定位置が無ければ表も空。
+    /// 検定位置がなければ表も空。
     #[test]
     fn build_tooltip_rows_empty_positions() {
         let (kinds, rows) = build_tooltip_rows(&[]);
@@ -1314,7 +1314,7 @@ mod tests {
         assert!(hit.1 <= NODE_HOVER_THRESHOLD);
     }
 
-    /// 検定結果がまったく無ければホバー候補も無い。
+    /// 検定結果がまったくなければホバー候補もない。
     #[test]
     fn pick_nearest_checked_node_without_results() {
         let app = App::default();

@@ -5,7 +5,7 @@ edition = "2021"
 license = "MIT"
 
 [features]
-# P7（二次設計）は完成済みフェーズで重い依存も無いため default に含める。
+# P7（二次設計）は完成済みフェーズで重い依存もないため default に含める。
 # 非デフォルトのまま放置すると通常の cargo test/build で検証されず腐る（実際 P7 は
 # コンパイル不能のまま「✅」と誤報告されていた）。再発防止のため default 化する。
 default = ["p7"]

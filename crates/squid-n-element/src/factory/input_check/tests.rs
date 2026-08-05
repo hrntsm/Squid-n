@@ -131,7 +131,7 @@ fn test_no_issue_when_main_grade_unset_but_material_has_fy() {
     assert!(nonlinear_input_issues(&model).is_empty());
 }
 
-/// 主筋の材質も材料の fy も無い RC 部材はエラーとする。
+/// 主筋の材質も材料の fy もない RC 部材はエラーとする。
 /// 既定 345 N/mm² で埋めると SD295 の部材で曲げ降伏耐力を過大評価する（危険側）。
 #[test]
 fn test_issue_when_main_rebar_grade_unset() {
@@ -165,7 +165,7 @@ fn test_issue_when_rc_member_fc_not_positive() {
     assert!(issues[0].contains("Fc"), "{}", issues[0]);
 }
 
-/// fy も Fc も無い材料の部材はエラーとする（せん断降伏耐力が ∞ となり降伏しない）。
+/// fy も Fc もない材料の部材はエラーとする（せん断降伏耐力が ∞ となり降伏しない）。
 #[test]
 fn test_issue_when_material_has_no_strength() {
     let mut sec = rc_section();

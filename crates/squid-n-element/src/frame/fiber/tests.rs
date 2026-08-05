@@ -876,7 +876,7 @@ fn test_torsional_internal_force() {
 
 /// 鉛直柱（Z整列）でねじり剛性 GJ 追加後、グローバル rz DOF (index 5, 11) が
 /// 特異でない（非ゼロの対角成分を持つ）ことを確認する回帰テスト。
-/// 以前は rz 拘束が無いと特異化していた。
+/// 以前は rz 拘束がないと特異化していた。
 #[test]
 fn test_vertical_column_rz_nonsingular() {
     let g = 78846.0;
@@ -2362,7 +2362,7 @@ fn 降伏後もピン端のモーメント解放が保たれる() {
 /// ねじり剛性を持たない部材（J=0）ではピン端でも rx を解放しない
 /// （解放しても縮約行列が特異化するだけで意味がないため）。
 #[test]
-fn ねじり剛性が無い部材はrxを解放しない() {
+fn ねじり剛性がない部材はrxを解放しない() {
     let mut model = build_release_model([EndCondition::Pinned, EndCondition::Pinned]);
     model.sections[0].j = 0.0;
     let fb = FiberBeam::new(
@@ -2578,7 +2578,7 @@ fn test_steel_box_fibers_are_hollow() {
     let i_exact = (400.0_f64.powi(4) - 376.0_f64.powi(4)) / 12.0;
     assert_relative_eq!(i_sum, i_exact, max_relative = 0.02);
 
-    // 材料区分はすべて鋼材（2）で、管内側（|y|,|z| < 376/2 の中央部）にファイバが無い。
+    // 材料区分はすべて鋼材（2）で、管内側（|y|,|z| < 376/2 の中央部）にファイバがない。
     assert!(sec.fibers.iter().all(|f| f.material == 2));
     assert!(sec
         .fibers

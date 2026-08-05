@@ -150,7 +150,7 @@ fn build_nodes_and_stories(
     story_index: &HashMap<u32, u32>,
 ) {
     // 実 ST-Bridge の階所属（StbStory/StbNodeIdList）から file node id → file story id を作る。
-    // 節点の所属階は、まず節点自身の `story` 属性（Squid 方言）を優先し、無ければこの表を引く。
+    // 節点の所属階は、まず節点自身の `story` 属性（Squid 方言）を優先し、なければこの表を引く。
     let node_story_from_list: HashMap<u32, u32> = raw_stories
         .iter()
         .flat_map(|s| {
@@ -278,7 +278,7 @@ fn build_materials(
     // ST-Bridge 2.0 の StbModel は材料テーブル（E・ν・密度）を持たず、材料は断面に付く
     // グレード名（コンクリート `Fc21`、鋼種 `SN400B`、鉄筋 `SD345` 等）で表す。日本の
     // 構造材料は規格化されており名前が物性を一意に定めるため、断面が参照するグレード名を
-    // 標準材料表で物性へ解決し、同名の材料がまだ無ければ材料として追加する。
+    // 標準材料表で物性へ解決し、同名の材料がまだなければ材料として追加する。
     {
         use std::collections::HashSet;
         let mut existing: HashSet<String> =
@@ -404,7 +404,7 @@ fn build_members(
                 None
             }
         });
-        // 材料は部材自身の id_material を優先。id_material 属性が無い（実 ST-Bridge 相当の）
+        // 材料は部材自身の id_material を優先。id_material 属性がない（実 ST-Bridge 相当の）
         // ときのみ断面の材料を伝播する（属性がある部材の None を上書きしない）。
         let own_material = m.material.and_then(|fid| match material_index.get(&fid) {
             Some(&idx) => Some(idx),
@@ -750,7 +750,7 @@ fn push_import_notes(
 }
 
 /// 支点の自動設定: ST-Bridge は境界条件（支点）を持たないため、支点が 1 つも
-/// 無いモデルは最下レベル（Z 最小、許容差 1mm）で柱脚を持つ節点をピン支点
+/// ないモデルは最下レベル（Z 最小、許容差 1mm）で柱脚を持つ節点をピン支点
 /// （並進固定・回転自由）に設定する（柱脚ピンの仮定＝基礎の回転拘束を
 /// 期待しない安全側の既定。解析可能な出発点にする）。
 ///
@@ -798,10 +798,10 @@ fn auto_assign_supports(model: &mut Model, notes: &mut Vec<String>) {
 
         if fixed > 0 {
             notes.push(format!(
-                "支点情報が無いため、最下レベル（Z={z_min:.0} mm）で柱が取り付く節点 {fixed} 箇所をピン支点に設定しました（モデルタブ→境界条件で変更できます）"
+                "支点情報がないため、最下レベル（Z={z_min:.0} mm）で柱が取り付く節点 {fixed} 箇所をピン支点に設定しました（モデルタブ→境界条件で変更できます）"
             ));
         } else {
-            // 最下レベルに柱脚が 1 つも無い（柱が全く無い／柱脚が最下レベルに
+            // 最下レベルに柱脚が 1 つもない（柱が全くない／柱脚が最下レベルに
             // 達しない）場合は、解析可能性を優先して従来どおり最下レベルの全節点を
             // ピン支点にフォールバックする。
             for n in &mut model.nodes {
@@ -812,7 +812,7 @@ fn auto_assign_supports(model: &mut Model, notes: &mut Vec<String>) {
             }
             if fixed > 0 {
                 notes.push(format!(
-                    "支点情報が無いため、最下レベル（Z={z_min:.0} mm）の節点 {fixed} 箇所をピン支点に設定しました（柱脚が特定できなかったため全節点。モデルタブ→境界条件で変更できます）"
+                    "支点情報がないため、最下レベル（Z={z_min:.0} mm）の節点 {fixed} 箇所をピン支点に設定しました（柱脚が特定できなかったため全節点。モデルタブ→境界条件で変更できます）"
                 ));
             }
         }
@@ -844,7 +844,7 @@ fn check_unique_ids(
 /// 積む（取込後に notes で利用者へ通知するため）。
 ///
 /// 推定は `Fc` を持つものをコンクリート、`Fy` だけを持つものを鋼材とし、
-/// どちらも無ければコンクリートとする。区分を誤って鋼材にすると RC 部材が
+/// どちらもなければコンクリートとする。区分を誤って鋼材にすると RC 部材が
 /// 鋼の検定式・鋼の Mp 式で評価されて危険側になるため、判断がつかない場合は
 /// コンクリート側へ寄せる。
 fn resolve_material_category(
@@ -916,7 +916,7 @@ fn build_sections(
             },
             PendingSecKind::Shape(shape) => shape.to_section(new_id, ps.name),
             PendingSecKind::SteelRef(shape_name) => {
-                // 形鋼ライブラリに定義が無い参照は物性ゼロの断面として残す
+                // 形鋼ライブラリに定義がない参照は物性ゼロの断面として残す
                 // （参照する部材の断面リンクを保つため。解析前に要確認）。
                 match shape_name.and_then(|nm| steel_lib.get(&nm).cloned()) {
                     Some(shape) => shape.to_section(new_id, ps.name),

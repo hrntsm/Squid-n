@@ -83,7 +83,7 @@ pub(super) fn check_src_panel(
                 s_cd,
                 beam_is_steel,
                 n_ratio: crate::rc::young_ratio_n(fc),
-                // h′/h（内法階高/階高比、原典図 2026-07-11）は情報が無いため 1.0 固定（暫定、
+                // h′/h（内法階高/階高比、原典図 2026-07-11）は情報がないため 1.0 固定（暫定、
                 // 冒頭 doc 参照）。
                 h_ratio: 1.0,
                 sum_beam_moments,

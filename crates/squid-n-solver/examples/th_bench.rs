@@ -38,7 +38,7 @@ use squid_n_solver::timehistory::{
 /// 記録をほぼ無効化した近似として使う `record_every`。ステップ数を大きく
 /// 上回る値を渡すと、フレーム記録は最終ステップのみになる
 /// （`ThRecorder::record_step` は `step % record_every == 0 || step == n_steps` の
-/// ときだけフレームを積むため）。API に「記録無効化」の専用フラグは無いため、
+/// ときだけフレームを積むため）。API に「記録無効化」の専用フラグはないため、
 /// この近似を用いる。
 const RECORD_EVERY_DISABLED: usize = 1_000_000_000;
 

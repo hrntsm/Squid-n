@@ -29,7 +29,7 @@ pub struct RcWallShearInput {
     pub t: f64,
     /// 付帯柱を含めた耐震壁の全長 D [mm]。
     pub d_wall: f64,
-    /// 圧縮側柱のせい Dc [mm]（有効せい d = D − Dc/2）。付帯柱が無い場合は 0。
+    /// 圧縮側柱のせい Dc [mm]（有効せい d = D − Dc/2）。付帯柱がない場合は 0。
     pub dc_compression: f64,
     /// 引張側柱の主筋断面積 at [mm²]（pte = 100·at/(te·d) の分子）。
     pub tension_column_at: f64,

@@ -83,7 +83,7 @@ pub fn column_drifts(
 }
 
 /// 当該層の柱の層間変位の最大値 `max(δ1, δ2, …, δn)` [mm]（層間変形角の式の分子）。
-/// 柱が無い（または全て斜め柱の）層は `None`。
+/// 柱がない（または全て斜め柱の）層は `None`。
 pub fn max_column_drift(
     model: &Model,
     disp: &[[f64; 6]],

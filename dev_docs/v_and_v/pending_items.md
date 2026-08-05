@@ -117,7 +117,7 @@ P9 §0.3 のスコープ境界にも「壁の V&V は P5.5 完了後」と明記
 |------|------|------|
 | 許容応力度の数値（鋼梁曲げ §6.4） | ✅ | 単位バグ（M*1000）を修正、検定比=0.1197 に厳密一致するテストを追加。**旧版の「1000倍ズレ」指摘は虚偽**: 現コード `allowable_stress.rs:58` は `M.abs() / z_eff` |
 | RC 許容応力度（Fc 参照・鉄筋グレード・短期上限） | ✅ | `Material.fc` を新設し Fc を正しく取得（`allowable_stress.rs:156`）。鉄筋グレードを `mat.name` から（`:194`）。SD345 短期上限を F=345 ベースに（`:144`） |
-| RC 曲げの本格検定式（a_t·j 等） | 🔶 | `Section` に引張鉄筋断面積 a_t が無いため暫定（σc=M/Z でコンクリート圧縮検定）。P4 で SectionShape 経路が整ってから本格実装 |
+| RC 曲げの本格検定式（a_t·j 等） | 🔶 | `Section` に引張鉄筋断面積 a_t がないため暫定（σc=M/Z でコンクリート圧縮検定）。P4 で SectionShape 経路が整ってから本格実装 |
 | RC せん断検定 | 🔶 | τ=Q/(b·j), j=7d/8 の暫定式を実装。αs·fw 等の詳細式は P7/AIJ 外部データ |
 | 編集トランザクション（Undo/Redo） | ✅ | `squid-n-edit` クレートに統一。断面・荷重編集コマンド（SetSectionField/SetSectionName/SetElementSection/SetLoadCaseName/SetNodalLoad/DeleteNodalLoad）も追加 |
 | **UI 横断タスク（UI設計.md §9.2 UI-1〜UI-7）: 旧版では未達を過小申告** |

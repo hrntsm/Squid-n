@@ -8,7 +8,7 @@
 //! - RC: 矩形・円形（幾何＋配筋。配筋は `StbSecBarArrangement*` として書き出す）。
 //! - CFT: 角形・円形（充填鋼管を `StbSecColumn_CFT`＋`StbSecSteel` 参照で。柱のみ）。
 //! - SRC: 矩形（`StbSecColumn_SRC`/`StbSecBeam_SRC`。コンクリート図形＋内蔵鉄骨＋配筋＋鋼種）。
-//! - 上記以外（耐震壁・形状未定義・CFT 梁・RC 円形梁）は、標準 ST-Bridge に対応要素が無いため
+//! - 上記以外（耐震壁・形状未定義・CFT 梁・RC 円形梁）は、標準 ST-Bridge に対応要素がないため
 //!   物性直持ちの拡張要素 `StbSecRaw` へフォールバックする（他ソフトは解釈できないが
 //!   参照部材の断面リンクは保つ。完全一致の保存は `.scz`）。
 //!
@@ -179,7 +179,7 @@ fn h_figure(height: f64, width: f64, web_thick: f64, flange_thick: f64) -> (Stri
         num(web_thick),
         num(flange_thick)
     );
-    // r（フィレット半径）は内部モデルに無いが、スキーマ上 length>0 が必須。取り込みでは
+    // r（フィレット半径）は内部モデルにないが、スキーマ上 length>0 が必須。取り込みでは
     // 無視される（A/B/t1/t2 のみ使用）ため、フランジ厚を便宜値として与える。
     let body = format!(
         "<StbSecRoll-H name=\"{}\" type=\"H\" A=\"{}\" B=\"{}\" t1=\"{}\" t2=\"{}\" r=\"{}\"/>",
@@ -198,7 +198,7 @@ fn h_figure(height: f64, width: f64, web_thick: f64, flange_thick: f64) -> (Stri
 /// `corner_r` は断面入力の角部外半径 [mm]。`corner_r > 0` ならその値を r 属性に
 /// 出力する。`corner_r <= 0`（未入力、または角部半径を持たない CftBox 由来）は
 /// ST-Bridge スキーマ上 r（length）に 0 以下を許さないため、従来通り板厚を
-/// 便宜値として与える（取り込み側では r 属性は無視されるため実害は無い）。
+/// 便宜値として与える（取り込み側では r 属性は無視されるため実害はない）。
 fn box_figure(height: f64, width: f64, thick: f64, corner_r: f64) -> (String, String) {
     // 形鋼ライブラリ（`SteelLibrary::add`）は名前で重複排除するため、名前は形状の
     // 全パラメータから導く。corner_r を含めないと「同寸で角部半径だけ異なる」
@@ -525,7 +525,7 @@ fn cover_attr_column(cover: f64) -> String {
     }
 }
 
-/// RC 柱断面の配筋 `StbSecBarArrangementColumn_RC`（矩形/円形）。配筋の無い形状は空文字。
+/// RC 柱断面の配筋 `StbSecBarArrangementColumn_RC`（矩形/円形）。配筋のない形状は空文字。
 fn rebar_arrangement_column(shape: &SectionShape) -> String {
     let (child, r) = match shape {
         SectionShape::RcRect { rebar, .. } => ("StbSecBarColumn_RC_RectSame", rebar),
@@ -542,7 +542,7 @@ fn rebar_arrangement_column(shape: &SectionShape) -> String {
     )
 }
 
-/// RC 梁断面の配筋 `StbSecBarArrangementBeam_RC`（矩形）。配筋の無い形状は空文字。
+/// RC 梁断面の配筋 `StbSecBarArrangementBeam_RC`（矩形）。配筋のない形状は空文字。
 fn rebar_arrangement_beam(shape: &SectionShape) -> String {
     let r = match shape {
         SectionShape::RcRect { rebar, .. } => rebar,
@@ -737,7 +737,7 @@ fn src_section(
     )
 }
 
-/// SRC の配筋要素 `StbSecBarArrangement{Column,Beam}_SRC`。配筋の無い形状は空文字。
+/// SRC の配筋要素 `StbSecBarArrangement{Column,Beam}_SRC`。配筋のない形状は空文字。
 /// `kind` は要素名の中置（"SRC"）。
 fn rebar_arrangement_generic(shape: &SectionShape, is_beam: bool, kind: &str) -> String {
     let r = match shape {
@@ -774,7 +774,7 @@ fn rebar_arrangement_generic(shape: &SectionShape, is_beam: bool, kind: &str) ->
 }
 
 /// 標準 ST-Bridge で表現できない断面（形状未定義・CFT 梁・RC 円形梁など）の
-/// 最終フォールバック。ST-Bridge に汎用物性断面が無いため、物性直持ちの拡張要素
+/// 最終フォールバック。ST-Bridge に汎用物性断面がないため、物性直持ちの拡張要素
 /// `StbSecRaw` で残す（他ソフトは解釈できないが、参照部材の断面リンクは保たれる）。
 fn raw(id: u32, sec: &Section) -> String {
     let id = sid(id);
@@ -805,7 +805,7 @@ pub(super) fn standard_sections(model: &Model) -> StandardSections {
     let sec_mat = section_materials(model);
     // 断面へ付す材料属性（ST-Bridge は材料を断面側にグレード名で持つ）。鋼は形鋼参照へ
     // strength_main、RC/CFT/SRC のコンクリートは要素へ strength_concrete を付す。柱用・梁用で
-    // 異材料を共有する断面でも役割別に正しい材料を付す（役割側に材料が無ければもう一方で代用）。
+    // 異材料を共有する断面でも役割別に正しい材料を付す（役割側に材料がなければもう一方で代用）。
     let mat_of = |base: u32, is_beam: bool| -> Option<(i64, String)> {
         let rm = sec_mat.get(&base)?;
         if is_beam {
@@ -901,7 +901,7 @@ pub(super) fn standard_sections(model: &Model) -> StandardSections {
             continue;
         }
 
-        // CFT（充填鋼管）: 柱として StbSecColumn_CFT。ST-Bridge に CFT 梁が無いため
+        // CFT（充填鋼管）: 柱として StbSecColumn_CFT。ST-Bridge に CFT 梁がないため
         // 梁で使われる場合は Raw へフォールバックする。
         if matches!(
             sec.shape,
@@ -963,7 +963,7 @@ pub(super) fn standard_sections(model: &Model) -> StandardSections {
         if rc_col_fig.is_some() || rc_beam_fig.is_some() {
             let shape = sec.shape.as_ref().expect("RC 図形がある＝shape は Some");
             if need_col {
-                // 円形など梁図形が無い場合も柱としては出力できる。
+                // 円形など梁図形がない場合も柱としては出力できる。
                 if let Some(fig) = &rc_col_fig {
                     parts.push((
                         0,
@@ -993,7 +993,7 @@ pub(super) fn standard_sections(model: &Model) -> StandardSections {
                 }
             }
             // 柱でも梁でも使われない RC 断面は need_col で拾えているが、
-            // 梁図形しか無い（RcRect を柱に使わない）ケースでも need_col=true のとき
+            // 梁図形しかない（RcRect を柱に使わない）ケースでも need_col=true のとき
             // rc_col_fig=Some なので出力済み。念のため未出力なら Raw で残す。
             if !col_map.contains_key(&base) && !beam_map.contains_key(&base) {
                 parts.push((90, raw(base, sec)));

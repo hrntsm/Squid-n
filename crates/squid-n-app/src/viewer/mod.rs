@@ -1657,7 +1657,7 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
         }
     }
 
-    // 構面に部材が 1 本も無い場合の注記。ST-Bridge から取り込んだ、所属節点を
+    // 構面に部材が 1 本もない場合の注記。ST-Bridge から取り込んだ、所属節点を
     // 持たない通り（`Y0`・`X2a` など）を選ぶと空の図になるため、モデルや表示の
     // 不具合と紛れないよう理由を示す。
     if let Some(f) = &frame {
@@ -2128,7 +2128,7 @@ fn member_len3(p_i: [f64; 3], p_j: [f64; 3]) -> f64 {
 
 /// 時刻歴アニメーションの再生経過時刻を実時間 `dt_real`[s]×速度 `speed` だけ進める。
 /// `duration`（最終フレーム時刻）を超えたら先頭へループする（`rem_euclid` で周回）。
-/// `duration` が 0 以下（フレームが実質無い）なら常に 0 を返す。
+/// `duration` が 0 以下（フレームが実質ない）なら常に 0 を返す。
 fn advance_play_time(current: f64, dt_real: f32, speed: f32, duration: f64) -> f64 {
     if duration <= 0.0 {
         return 0.0;
@@ -2456,7 +2456,7 @@ fn draw_cmq_diagram(
 ) {
     let scale = proj.scale();
     if app.beam_loads.is_empty() {
-        // スラブ自体が無いのか、スラブはあるが床荷重（強度）が 0 なのかを区別して案内する。
+        // スラブ自体がないのか、スラブはあるが床荷重（強度）が 0 なのかを区別して案内する。
         let msg = if app.model.slabs.is_empty() {
             "スラブが未定義です。モデルタブの「スラブ」でスラブと床荷重を定義すると CMQ 図を表示できます"
         } else {
@@ -3149,7 +3149,7 @@ fn display_disp(
     fill_diaphragm_master_disp_for_display(model, d)
 }
 
-/// 変形図の実効表示倍率（自動倍率 × 手動係数）を算定する。変位が無い（`None`）・
+/// 変形図の実効表示倍率（自動倍率 × 手動係数）を算定する。変位がない（`None`）・
 /// 全並進成分がゼロなら 0 を返す（変形を描かない）。
 ///
 /// 自動倍率は次の小さい方:
@@ -3218,7 +3218,7 @@ fn th_peak_translation_disp(result: &squid_n_solver::timehistory::ResponseResult
 
 /// 時刻歴アニメーションの実効表示倍率（自動倍率 × 手動係数）。
 /// `app.th_scale_cache` を記録の同一性で使い回し、フレーム切替のたびに
-/// 自動倍率を再計算しない（高-2）。時刻歴の詳細記録・結果が無ければ 0。
+/// 自動倍率を再計算しない（高-2）。時刻歴の詳細記録・結果がなければ 0。
 fn time_history_deform_scale(app: &mut App, model_size: f64) -> f64 {
     let Some(result) = app.results.as_ref().and_then(|r| r.time_history.as_ref()) else {
         app.th_scale_cache = None;
@@ -3261,7 +3261,7 @@ fn time_history_deform_scale(app: &mut App, model_size: f64) -> f64 {
 }
 
 /// 梁のスパンに対する内部たわみが過大にならないよう、表示倍率の上限を算定する。
-/// 制約する梁が無ければ `None`。
+/// 制約する梁がなければ `None`。
 ///
 /// 変形図の梁は端部 6 自由度からの Hermite 3 次曲線で描くため、端部回転が大きいと
 /// 中央のふくらみ（変形後両端を結ぶ弦からの逸脱）がスパンに対して過大になり得る。
@@ -3336,7 +3336,7 @@ fn model_bbox(model: &squid_n_core::model::Model) -> ([f64; 3], [f64; 3]) {
 /// 表示範囲（全体 / 通り / 階）の切替と、対象の選択・前後送りを描く。
 ///
 /// 通り芯・階は準備計算やモデルタブで作られるデータであり、ここでは選ぶだけで
-/// 変更しない。通り芯が 1 本も無い（階が 1 つも無い）モデルではその選択肢を出さず、
+/// 変更しない。通り芯が 1 本もない（階が 1 つもない）モデルではその選択肢を出さず、
 /// 選べない項目を並べない。
 fn frame_range_controls(ui: &mut egui::Ui, app: &mut App) {
     use squid_n_core::frame::FrameTarget;
@@ -3444,7 +3444,7 @@ fn frame_range_controls(ui: &mut egui::Ui, app: &mut App) {
 ///
 /// 構面表示の回転中心とフィット倍率の基準に使う。モデル全体を基準にすると、
 /// 大きな建物の 1 構面が小さく画面の端へ寄ってしまうため。所属部材が 1 本も
-/// 無い構面（ST-Bridge から取り込んだ、節点を持たない通りなど）では `None` を
+/// ない構面（ST-Bridge から取り込んだ、節点を持たない通りなど）では `None` を
 /// 返し、呼び出し側がモデル全体の基準へ戻す。
 fn frame_bbox(
     model: &squid_n_core::model::Model,
@@ -3911,7 +3911,7 @@ mod tests {
     }
 
     #[test]
-    fn 主架構の線材が無ければ未参照節点の変位はゼロのまま() {
+    fn 主架構の線材がなければ未参照節点の変位はゼロのまま() {
         let mut model = Model::default();
         model.nodes.push(test_node(0, [0.0, 0.0, 0.0]));
         model.nodes.push(test_node(1, [1000.0, 0.0, 0.0]));
@@ -4070,7 +4070,7 @@ mod tests {
     fn 二次部材の連鎖でも主架構に近い側から順に追従する() {
         // node 1(大梁 G1 上, 直付き) → 二次部材 → node 2 → 二次部材 → node 3 の連鎖。
         // node 3 は変位ゼロの別の大梁 G2 に近く、単純射影では G2 へ張り付くが、
-        // 連鎖を辿って node 1 の変位へ揃うことを確認する（伝播が無いと誤る配置）。
+        // 連鎖を辿って node 1 の変位へ揃うことを確認する（伝播がないと誤る配置）。
         let mut model = Model::default();
         model.nodes.push(test_node(0, [0.0, 0.0, 0.0])); // G1 端
         model.nodes.push(test_node(1, [4000.0, 0.0, 0.0])); // G1 端（直付きアンカー元）
@@ -4145,7 +4145,7 @@ mod tests {
 
     #[test]
     fn 変位ゼロなら梁スケール上限は無し() {
-        // たわみが生じない（全変位ゼロ）と制約する梁が無く None を返す。
+        // たわみが生じない（全変位ゼロ）と制約する梁がなく None を返す。
         let mut model = Model::default();
         model.nodes.push(test_node(0, [0.0, 0.0, 0.0]));
         model.nodes.push(test_node(1, [6000.0, 0.0, 0.0]));
@@ -4170,7 +4170,7 @@ mod tests {
 
     #[test]
     fn 内部たわみオフの表示倍率はbox基準に手動係数を掛ける() {
-        // 梁要素が無く（＝梁スパン基準は無関係）、box 基準 × 手動係数になる。
+        // 梁要素がなく（＝梁スパン基準は無関係）、box 基準 × 手動係数になる。
         let mut model = Model::default();
         model.nodes.push(test_node(0, [0.0, 0.0, 0.0]));
         model.nodes.push(test_node(1, [10000.0, 0.0, 0.0]));

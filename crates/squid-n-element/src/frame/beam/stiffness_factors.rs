@@ -156,7 +156,7 @@ pub(super) fn slab_stiffness_factor(
 }
 
 /// S 造合成梁の断面性能に用いる床スラブコンクリートの設計基準強度の仮定値
-/// [N/mm²]（モデルにスラブ材料が無いための標準仮定。普通コンクリート Fc21）。
+/// [N/mm²]（モデルにスラブ材料がないための標準仮定。普通コンクリート Fc21）。
 const COMPOSITE_SLAB_FC: f64 = 21.0;
 
 /// S 造合成梁の強軸曲げ剛性の増大率。
@@ -177,7 +177,7 @@ const COMPOSITE_SLAB_FC: f64 = 21.0;
 /// 簡略化（適用条件とともに doc 固定）:
 /// - デッキ高さ Hd は未対応（=0。スラブ下端＝鉄骨上端と仮定）
 /// - スラブコンクリートは Fc21 標準仮定（`COMPOSITE_SLAB_FC`。モデルにスラブ
-///   材料が無いため）
+///   材料がないため）
 /// - 頭付きスタッド等の合成条件は判定しない（スラブが取り付けば合成とみなす）
 pub(super) fn composite_beam_stiffness_factor(
     model: &Model,

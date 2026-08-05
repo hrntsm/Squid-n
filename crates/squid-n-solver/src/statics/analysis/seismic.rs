@@ -39,7 +39,7 @@ pub fn base_elevation(model: &Model) -> f64 {
 /// 地下階（`StoryLevelKind::Basement`）が定義されているモデルでは、
 /// 各地下階の「床レベル + 地盤面からの深さ depth_m」から GL を復元する
 /// （深さの定義より各地下階で同一値になる想定。数値ずれに備え最大値を採る）。
-/// 地下階が無ければ [`base_elevation`]（最下構造節点レベル）を GL とみなす。
+/// 地下階がなければ [`base_elevation`]（最下構造節点レベル）を GL とみなす。
 ///
 /// 建築物の高さ（令2条・令88条の略算周期 T の h）や風荷重の受風範囲
 /// （地上部分のみ）は、基部レベルではなくこの GL を基準に測る。
@@ -64,7 +64,7 @@ pub fn ground_elevation(model: &Model) -> f64 {
 ///
 /// GL（[`ground_elevation`]）から、PH（塔屋）階を除く最上の一般階の
 /// 床レベルまでの高さとする。地下階の深さ・塔屋の高さは h に算入しない。
-/// 一般階が無い場合は最上階レベルで代用し、負値は 0 にクランプする。
+/// 一般階がない場合は最上階レベルで代用し、負値は 0 にクランプする。
 pub fn building_height_mm(model: &Model) -> f64 {
     let gl = ground_elevation(model);
     let top_normal = model
@@ -162,7 +162,7 @@ fn distribute_pi_over_slice(diaphragms: &[DiaphragmDef], pi: f64) -> Vec<(NodeId
 ///   多剛床の階では地震力が剛床数倍に水増しされるバグだった）。
 ///
 /// `ci_override`（副剛床の Ci 直接入力）は考慮しない。風荷重など Ci の
-/// 概念が無い荷重ケースはこの関数をそのまま使う。地震荷重は
+/// 概念がない荷重ケースはこの関数をそのまま使う。地震荷重は
 /// [`distribute_seismic_forces`] を使う。
 pub(crate) fn distribute_pi_over_diaphragms(story: &Story, pi: f64) -> Vec<(NodeId, f64)> {
     distribute_pi_over_slice(&story.diaphragms, pi)
@@ -171,7 +171,7 @@ pub(crate) fn distribute_pi_over_diaphragms(story: &Story, pi: f64) -> Vec<(Node
 /// 階の主系統（Ai 分布：昭55建告1793号）に用いる地震用重量（副剛床の Ci を
 /// 直接入力した場合の扱い）。`ci_override` を持つ剛床の重量は主系統の Ai 分布から
 /// 除外する（主剛床は全剛床の Ci に従うが、副剛床は指定 Ci で別途計算するため）。
-/// `ci_override` を持つ剛床が無ければ `story.seismic_weight` をそのまま返す
+/// `ci_override` を持つ剛床がなければ `story.seismic_weight` をそのまま返す
 /// （既存挙動と厳密一致）。
 pub(super) fn main_system_weight(story: &Story) -> f64 {
     let total = story.seismic_weight.unwrap_or(0.0);
@@ -245,7 +245,7 @@ impl Analysis<'_> {
     ///
     /// - `AiMode::Approx`: 略算式 T = h(0.02+0.01α)（令88条・昭和55年建設省
     ///   告示第1793号）。h は建築物の高さ（GL〜PH 階を除く最上階。地下深さ・
-    ///   塔屋は含めない。従来の「最上階の生 Z 標高」は、基部が Z=0 に無い
+    ///   塔屋は含めない。従来の「最上階の生 Z 標高」は、基部が Z=0 にない
     ///   モデルや地下階付きモデルで h を誤っていた）。
     /// - `AiMode::SemiPrecise`: 固有値解析（1 次モード）による周期。
     ///

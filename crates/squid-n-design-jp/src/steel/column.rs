@@ -157,7 +157,7 @@ fbY={:.4} N/mm², λ={:.3}, 軸曲げ比={:.4}",
         "τ={:.4} N/mm², fs={:.4} N/mm², せん断比={:.4}",
         tau, fs_val, ratio_shear
     );
-    // 両式で共有する断面諸元は無いため共通 detail は空文字列とする。
+    // 両式で共有する断面諸元はないため共通 detail は空文字列とする。
     let detail = String::new();
 
     let components = vec![

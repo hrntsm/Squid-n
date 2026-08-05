@@ -392,7 +392,7 @@ pub fn resolve_panel_joint<'a>(
 
 /// 梁のフランジ板厚中心間距離 `db` [mm]。
 ///
-/// H 形鋼は `せい − フランジ厚`、それ以外の断面は情報が無いため `0.9・せい` で
+/// H 形鋼は `せい − フランジ厚`、それ以外の断面は情報がないため `0.9・せい` で
 /// 近似する（S 造パネルゾーン検定と同じ近似）。
 pub fn beam_panel_depth(sec: &Section) -> f64 {
     match sec.shape {

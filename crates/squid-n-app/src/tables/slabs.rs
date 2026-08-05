@@ -393,13 +393,13 @@ pub fn slabs_table(ui: &mut egui::Ui, app: &mut App) {
     let mut dedup = selected.clone();
     dedup.sort_by_key(|n| n.0);
     dedup.dedup();
-    // 全スロットが埋まり（selected.len == slots）、3頂点以上、重複が無いこと。
+    // 全スロットが埋まり（selected.len == slots）、3頂点以上、重複がないこと。
     let n_slots = app.slab_draft.nodes.len();
     let can_add = selected.len() == n_slots && n_slots >= 3 && dedup.len() == n_slots;
 
     if ui
         .add_enabled(can_add, egui::Button::new("+ 追加"))
-        .on_hover_text("境界節点が3つ以上すべて選択され、かつ重複が無い場合に追加できます")
+        .on_hover_text("境界節点が3つ以上すべて選択され、かつ重複がない場合に追加できます")
         .clicked()
     {
         let boundary: Vec<NodeId> = app

@@ -135,7 +135,7 @@ pub(crate) fn src_beam_check(
         shear.s_q, shear.r_q, shear.s_qa, shear.r_qa, shear.alpha, shear.pw
     );
 
-    // 両式で共有する断面諸元は無いため共通 detail は空文字列とする。
+    // 両式で共有する断面諸元はないため共通 detail は空文字列とする。
     CheckResult {
         basis,
         detail: String::new(),

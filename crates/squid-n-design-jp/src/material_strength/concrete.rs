@@ -97,7 +97,7 @@ pub fn concrete_young_modulus(fc: f64, gamma_kn_m3: Option<f64>) -> f64 {
 /// - `長期・その他 = min(Fc/10, 1.35 + Fc/25)`
 /// - `短期 = 長期 × 1.5`
 ///
-/// 丸鋼（4/100・Fc かつ 0.9 以下等）はモデルに丸鋼の区分が無いため未対応
+/// 丸鋼（4/100・Fc かつ 0.9 以下等）はモデルに丸鋼の区分がないため未対応
 /// （異形鉄筋のみ）。
 pub fn concrete_allowable_bond(fc: f64, top_bar: bool, long_term: bool) -> f64 {
     let long = if top_bar {

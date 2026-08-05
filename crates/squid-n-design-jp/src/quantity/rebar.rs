@@ -22,7 +22,7 @@ const UNIT_MASS_TABLE: &[(f64, f64)] = &[
 /// 呼び径 `dia` [mm] の異形棒鋼の単位質量 [kg/m]。
 ///
 /// JIS G 3112 の単位質量表（D10〜D51）から呼び径 ±1mm 以内の一致を探し、
-/// 表に無い径（高強度せん断補強筋の中間径等）は公称断面積
+/// 表にない径（高強度せん断補強筋の中間径等）は公称断面積
 /// `π/4·d²` × 鋼材密度（積算慣用値 7.85 t/m³ = 7.85e-3 kg/(mm²·m)）で計算する。
 pub fn rebar_unit_mass_kg_per_m(dia: f64) -> f64 {
     for &(d, m) in UNIT_MASS_TABLE {
@@ -50,7 +50,7 @@ mod tests {
     fn test_unit_mass_table() {
         assert_eq!(rebar_unit_mass_kg_per_m(13.0), 0.995);
         assert_eq!(rebar_unit_mass_kg_per_m(22.0), 3.04);
-        // 表に無い径は計算値（D14 相当: π/4·14²·7.85e-3 ≈ 1.208）
+        // 表にない径は計算値（D14 相当: π/4·14²·7.85e-3 ≈ 1.208）
         let m = rebar_unit_mass_kg_per_m(14.5);
         assert!((m - std::f64::consts::PI / 4.0 * 14.5 * 14.5 * 7.85e-3).abs() < 1e-12);
     }

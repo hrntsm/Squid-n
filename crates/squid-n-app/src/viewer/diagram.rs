@@ -434,7 +434,7 @@ fn draw_component(
         }
 
         // (xi, val) → スクリーン座標。val=0 は基準線そのもの（オフセット無し）。
-        // 基準線は deflection があれば梁の変形後 Hermite 曲線、無ければ節点間直線。
+        // 基準線は deflection があれば梁の変形後 Hermite 曲線、なければ節点間直線。
         let to_screen = |xi: f64, val: f64| -> egui::Pos2 {
             let base3 = match &deflection {
                 Some(bd) => bd.point_at(xi, deform_scale),
@@ -736,7 +736,7 @@ mod tests {
         assert!(at_quarter > 0.0 && straight < 0.0, "直線補間と符号が同じ");
     }
 
-    /// 部材中間荷重が無い部材（M は 1 次・Q は一定）では、補間しても直線のまま。
+    /// 部材中間荷重がない部材（M は 1 次・Q は一定）では、補間しても直線のまま。
     #[test]
     fn moment_curve_samples_keeps_linear_field_straight() {
         let l = 1000.0_f64;

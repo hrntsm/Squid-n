@@ -1959,7 +1959,7 @@ fn support_spring_sdof_model(k: f64, m: f64) -> Model {
 
 /// 高-1: 支点ばねのみで支持される SDOF で、非線形時刻歴の長期荷重初期化
 /// （`apply_long_term_static`）が収束し、静的解析解 `u=F/k` と一致すること。
-/// 修正前は `compute_f_int` が常に 0（要素が無いため）で、支点ばねの内力寄与が
+/// 修正前は `compute_f_int` が常に 0（要素がないため）で、支点ばねの内力寄与が
 /// 残差へ入らず、載荷率 0% 超で Newton 反復が収束せずエラーになっていた。
 #[test]
 fn test_support_spring_long_term_static_matches_analytical() {
@@ -2020,7 +2020,7 @@ fn test_support_spring_long_term_static_matches_analytical() {
 }
 
 /// 高-1: 支点ばねのみで支持される SDOF の自由振動応答が、同一モデルの線形時刻歴
-/// （既に支点ばねを正しく扱っている参照経路）と一致すること。要素が無いため
+/// （既に支点ばねを正しく扱っている参照経路）と一致すること。要素がないため
 /// 弾性範囲を超える降伏は起こらず、非線形・線形の両経路は理論上完全に一致する。
 #[test]
 fn test_support_spring_free_vibration_matches_linear() {
@@ -2142,7 +2142,7 @@ fn test_nonlinear_record_every_thinning() {
 /// UI からの `record_every` 指定が線形（Newmark-β）経路にも効くこと
 /// （`n_steps=50, record_every=5` なら 0,5,..,50 の 11 フレーム）。
 /// 線形（Newmark-β）・HHT-α には、非線形 `NonlinearThCfg::record_every` に相当する
-/// 明示指定手段が無かった（申し送り「時刻歴応答_詳細記録と長期荷重初期化」参照）ため、
+/// 明示指定手段がなかった（申し送り「時刻歴応答_詳細記録と長期荷重初期化」参照）ため、
 /// `linear_time_history_analysis` の末尾引数追加で解消したことを確認する。
 #[test]
 fn test_linear_record_every_thinning() {
@@ -2544,12 +2544,12 @@ fn test_nonlinear_result_flags_reflect_cfg() {
     assert!(result2.nonlinear);
     assert!(
         result2.applied_long_term,
-        "長期系荷重ケースが無くても apply_long_term=true を反映（載荷有無ではなく設定値）"
+        "長期系荷重ケースがなくても apply_long_term=true を反映（載荷有無ではなく設定値）"
     );
 }
 
 /// 旧プロジェクトファイル（.scz）相当の JSON（`recording`/`nonlinear`/
-/// `applied_long_term` フィールドが無い）を読み込んだ場合、いずれも既定値
+/// `applied_long_term` フィールドがない）を読み込んだ場合、いずれも既定値
 /// （`recording=None`・`nonlinear=false`・`applied_long_term=false`）に
 /// フォールバックすること（`#[serde(default)]` の後方互換確認）。
 #[test]

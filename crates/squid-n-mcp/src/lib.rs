@@ -81,7 +81,7 @@ impl JobRegistry {
 /// （`result_get` が manifest 存在確認で結果を見つけられないと困る）、
 /// `ServerState` は `Box<dyn ResultStore>` ではなく具象型 `FsResultStore` を直接保持し、
 /// 書き込み後は明示的に `sync()` を呼ぶ設計とする（`Box<dyn ResultStore>` のままだと
-/// `sync()` を呼ぶ手段が無く、ダウンキャストするにはトレイトに `Any` を足す必要が
+/// `sync()` を呼ぶ手段がなく、ダウンキャストするにはトレイトに `Any` を足す必要が
 /// あるが、それは squid-n-io 側の変更になってしまうため避けた）。
 pub struct ServerState {
     pub model: Model,
@@ -103,7 +103,7 @@ impl ServerState {
 }
 
 /// 結果ストアの既定ディレクトリ。環境変数 `SQUID_N_RESULT_DIR` があれば優先し、
-/// 無ければ OS 一時ディレクトリ配下の `squid-n-mcp-results` を使う。
+/// なければ OS 一時ディレクトリ配下の `squid-n-mcp-results` を使う。
 pub fn default_result_dir() -> PathBuf {
     std::env::var_os("SQUID_N_RESULT_DIR")
         .map(PathBuf::from)

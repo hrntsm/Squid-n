@@ -14,7 +14,7 @@ pub(super) fn steel_shape_from(tag: &str, a: &HashMap<String, String>) -> Option
             let web_thick = a_(&["t1"])?;
             let upper_width = a_(&["B"])?;
             let upper_thick = a_(&["t2"])?;
-            // 下フランジの方言属性があれば非対称組立 H、無ければ対称 H。
+            // 下フランジの方言属性があれば非対称組立 H、なければ対称 H。
             match (a_(&["B2", "B_lower"]), a_(&["t2_lower", "t2_2"])) {
                 (Some(lower_width), Some(lower_thick)) => Some(SectionShape::SteelBuiltH {
                     height,
@@ -45,7 +45,7 @@ pub(super) fn steel_shape_from(tag: &str, a: &HashMap<String, String>) -> Option
         }
         // 鋼管。Squid 方言の `StbSecPipe` に加え、実 ST-Bridge の形鋼ライブラリ名
         // （`StbSecRoll-Pipe`／冷間成形の `StbSecBuild-Pipe`）も受ける。いずれも外径 D・
-        // 板厚 t を持つ（別名 A/t1 も許容）。これが無いと他社ファイルの鋼管柱・梁の
+        // 板厚 t を持つ（別名 A/t1 も許容）。これがないと他社ファイルの鋼管柱・梁の
         // 形鋼参照が解決できず、物性ゼロの断面になってしまう。
         t if t == "StbSecPipe" || t.ends_with("-Pipe") => Some(SectionShape::SteelPipe {
             outer_dia: a_(&["D", "A"])?,

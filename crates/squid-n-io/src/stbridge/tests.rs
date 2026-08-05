@@ -434,7 +434,7 @@ fn test_standard_mode_fallback_raw_for_shapeless() {
     let xml = export_stbridge(&m).unwrap();
     assert!(
         xml.contains("<StbSecRaw "),
-        "形状の無い断面は Raw にフォールバック"
+        "形状のない断面は Raw にフォールバック"
     );
 }
 
@@ -607,7 +607,7 @@ fn test_import_duplicate_node_id_is_error() {
     );
 }
 
-/// 配筋要素の無い（幾何のみの）RC 断面ファイルも、無筋相当の既定配筋で読める。
+/// 配筋要素のない（幾何のみの）RC 断面ファイルも、無筋相当の既定配筋で読める。
 #[test]
 fn test_import_rc_without_bar_arrangement_uses_default() {
     let xml = r#"<?xml version="1.0"?>
@@ -754,7 +754,7 @@ fn test_standard_roundtrip_rc_rebar_grade_with_control_chars() {
     );
 }
 
-/// 円形 RC を梁に使うと（ST-Bridge に円形梁図形が無いため）StbSecRaw へフォールバックし、
+/// 円形 RC を梁に使うと（ST-Bridge に円形梁図形がないため）StbSecRaw へフォールバックし、
 /// 形状・配筋は失われるが物性は残り、検証は通る（ドキュメント化された既知の挙動）。
 #[test]
 fn test_standard_rc_circle_beam_falls_back_to_raw() {
@@ -1124,7 +1124,7 @@ fn test_import_symmetric_build_h_is_steel_h() {
             web_thick: 8.0,
             flange_thick: 12.0
         }),
-        "下フランジ属性が無ければ対称 H"
+        "下フランジ属性がなければ対称 H"
     );
 }
 
@@ -1201,7 +1201,7 @@ fn test_standard_roundtrip_steel_box_distinct_corner_r() {
     }
 }
 
-/// import: `r` 属性が無い `StbSecRoll-BOX` は角部直角（corner_r=0.0）として読む。
+/// import: `r` 属性がない `StbSecRoll-BOX` は角部直角（corner_r=0.0）として読む。
 #[test]
 fn test_import_box_without_r_attr_is_corner_r_zero() {
     let xml = r#"<?xml version="1.0"?>
@@ -1231,7 +1231,7 @@ fn test_import_box_without_r_attr_is_corner_r_zero() {
             thick: 12.0,
             corner_r: 0.0,
         }),
-        "r 属性が無ければ角部直角（corner_r=0.0）"
+        "r 属性がなければ角部直角（corner_r=0.0）"
     );
 }
 
@@ -1340,7 +1340,7 @@ fn test_standard_roundtrip_src_beam() {
     assert_eq!(back.sections[0].shape, m.sections[0].shape, "SRC 梁が往復");
 }
 
-/// CFT を梁に使うと（ST-Bridge に CFT 梁が無いため）Raw へフォールバックする。
+/// CFT を梁に使うと（ST-Bridge に CFT 梁がないため）Raw へフォールバックする。
 #[test]
 fn test_standard_cft_beam_falls_back_to_raw() {
     let mut m = frame_nodes();
@@ -1617,7 +1617,7 @@ fn test_import_report_lists_unsupported_elements() {
     );
 }
 
-/// 明示リストに無い未知の部材・断面・荷重要素も「取り込み対象外」として通知される
+/// 明示リストにない未知の部材・断面・荷重要素も「取り込み対象外」として通知される
 /// （fail-loud）。一方、形鋼ライブラリのコンテナ StbSecSteel は誤検出しない。
 #[test]
 fn test_import_report_unknown_elements_are_reported() {
@@ -1971,7 +1971,7 @@ fn test_slab_roundtrip_export_import() {
     assert!(report.is_clean(), "警告なし {:?}", report.warnings);
 }
 
-/// 形鋼ライブラリに定義の無い断面参照は、物性ゼロで取り込みつつ警告する。
+/// 形鋼ライブラリに定義のない断面参照は、物性ゼロで取り込みつつ警告する。
 #[test]
 fn test_import_report_warns_unresolved_steel_ref() {
     let xml = r#"<?xml version="1.0"?>
@@ -2251,7 +2251,7 @@ fn test_import_auto_fixes_base_level_supports() {
 #[test]
 fn test_import_auto_support_excludes_beam_only_base_nodes() {
     // 最下レベル Z=0 に節点 0,1,4。柱 C1(0→2)・C2(1→4... ではなく 1→3)。
-    // 地中梁 G1(0→4)・G2(4→1) は水平材で節点 4 に柱は無い。
+    // 地中梁 G1(0→4)・G2(4→1) は水平材で節点 4 に柱はない。
     let xml = r#"<?xml version="1.0"?>
 <ST_BRIDGE version="2.0.0"><StbModel>
   <StbNodes>
@@ -2562,7 +2562,7 @@ fn test_import_non_parallel_axes_as_other() {
     assert_eq!(m.axes[0].axes[0].nodes, vec![NodeId(1)], "所属節点は保つ");
     assert_eq!(m.axes[1].axes[0].name, "A1");
 
-    // 平行芯グループが 1 つも無いモデルは StbAxes 自体を出力しない。
+    // 平行芯グループが 1 つもないモデルは StbAxes 自体を出力しない。
     let out = export_stbridge(&m).expect("export");
     assert!(!out.contains("<StbAxes>"), "{out}");
 }

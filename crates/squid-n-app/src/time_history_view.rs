@@ -202,8 +202,8 @@ fn waveform_panel(ui: &mut egui::Ui, app: &mut App) {
 
 /// 層応答分布（縦軸=階、横軸=層せん断力／層せん断力係数／階加速度／階速度／階変位）。
 /// データは `App.results.time_history.recording`（`ThRecording`）から直接参照する
-/// （コピー保持しない）。`recording` が無い（旧い結果、または非線形以前の解析結果でも
-/// 無いことは無いが念のため）場合は再解析を案内する。
+/// （コピー保持しない）。`recording` がない（旧い結果、または非線形以前の解析結果でも
+/// ないことはないが念のため）場合は再解析を案内する。
 fn story_response_panel(ui: &mut egui::Ui, app: &mut App) {
     let Some(recording) = app
         .results

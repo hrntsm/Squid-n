@@ -26,7 +26,7 @@ V&V 索引（`dev_docs/v_and_v/README.md` #14）は「保有耐力 / holding_cap
 | ID | タスク | 仕様の要求 | 実態 | 判定 |
 |----|--------|-----------|------|------|
 | T1 | 剛性率 Rs・層間変形角 | δ/h、Ks=h/δ、Rs=Ks/mean(Ks)、規定比較 | `stiffness_ratios` `check_story_drift` 実装。式は正しい。 | ✅ |
-| T2 | 偏心率 Re（D値法剛心） | 剛心・重心・KR・弾力半径・Re をモデルから算定 | `eccentricity_ratio(e,r)` の割り算ヘルパーのみ。**剛心・重心・KR・rex は未実装**。`eccentricity.rs` は存在しない。DoD「剛心・偏心距離 e が手計算一致」を満たすコードが無い。 | ❌ |
+| T2 | 偏心率 Re（D値法剛心） | 剛心・重心・KR・弾力半径・Re をモデルから算定 | `eccentricity_ratio(e,r)` の割り算ヘルパーのみ。**剛心・重心・KR・rex は未実装**。`eccentricity.rs` は存在しない。DoD「剛心・偏心距離 e が手計算一致」を満たすコードがない。 | ❌ |
 | T3 | Fes（Fs·Fe） | 告示1792 の Fs/Fe | `fs` `fe` `fes` 実装。式は正しい。 | ✅ |
 | T4 | Ds 自動分類 | 部材ランク判定＋層 Ds 決定 | `ds_value` 値表のみ。**`member_rank`／`story_ds` は未実装**（stubコメント）。`ds.rs` は存在しない。 | 🔶 |
 | T5 | パネルせん断検定 | PanelResult.τ に対する検定比 | **完全未実装**（stubコメント）。`panel_shear.rs` は存在しない。 | ❌ |

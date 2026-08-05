@@ -135,7 +135,7 @@ impl DofMap {
         let is_panel = panel_zone_nodes(model);
 
         // 仕口パネル自由度は標準自由度の後ろへ連続して並べる。パネルが 1 つも
-        // 無ければ `n_panel_slots == 0` となり、以降は従来と完全に同一の写像になる。
+        // なければ `n_panel_slots == 0` となり、以降は従来と完全に同一の写像になる。
         let n_node_global = model.nodes.len() * DOF_PER_NODE;
         let mut panel_slot_of = vec![None; model.nodes.len()];
         let mut panel_node_of = Vec::new();
@@ -335,7 +335,7 @@ mod tests {
         assert_eq!(map.n_active(), 18);
     }
 
-    /// 仕口パネルが 1 つも無いモデルでは追加自由度が払い出されず、独立自由度数・
+    /// 仕口パネルが 1 つもないモデルでは追加自由度が払い出されず、独立自由度数・
     /// 写像とも従来（節点 × 6）と完全に一致する（既存モデルの回帰防止）。
     #[test]
     fn test_no_panel_keeps_dof_map_identical() {

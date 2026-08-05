@@ -37,7 +37,7 @@ pub enum GroupType {
 /// ```
 ///
 /// 種別 D の部材を 1 つでも含む場合は [`GroupType::D`] を返す（上記の解釈）。
-/// 対象部材が無い、または種別 D を除く耐力の総和が 0 の場合は `None`。
+/// 対象部材がない、または種別 D を除く耐力の総和が 0 の場合は `None`。
 pub fn member_group(members: &[(u8, f64)]) -> Option<GroupType> {
     if members.is_empty() {
         return None;
@@ -117,7 +117,7 @@ fn group_col(g: GroupType) -> usize {
 /// `wall_group`: 耐力壁の部材群としての種別、`beta_u`: 耐力壁の水平耐力の和を保有水平
 /// 耐力で除した数値、`cb_group`: 柱及びはりの部材群としての種別。
 ///
-/// 耐力壁が無い（βu=0）場合は純ラーメンとして A 行相当の 0.30/0.35/0.40/0.45 を用いる。
+/// 耐力壁がない（βu=0）場合は純ラーメンとして A 行相当の 0.30/0.35/0.40/0.45 を用いる。
 pub fn ds_rc(wall_group: GroupType, beta_u: f64, cb_group: GroupType) -> f64 {
     let col = group_col(cb_group);
     // 耐力壁なし（βu=0）: RC ラーメンの Ds。
@@ -162,7 +162,7 @@ pub fn ds_steel(brace_group: GroupType, beta_u: f64, cb_group: GroupType) -> f64
                 [0.40, 0.40, 0.45, 0.50]
             }
         }
-        // 筋かいに種別 D は無い（BA/BB/BC）。安全側に C の最不利行を用いる。
+        // 筋かいに種別 D はない（BA/BB/BC）。安全側に C の最不利行を用いる。
         (GroupType::D, _) => [0.40, 0.40, 0.45, 0.50],
     };
     row[col]

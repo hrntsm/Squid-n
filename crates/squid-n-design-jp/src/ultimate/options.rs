@@ -108,7 +108,7 @@ pub struct UltimateShearOptions {
     pub lightweight: bool,
     /// 上限強度倍率（Qmu = 上限強度倍率·(Mu上+Mu下)/内法。既定 1.0）。
     pub upper_strength_factor: f64,
-    /// せん断補強筋の降伏強度算定用強度 σwy [N/mm²]（モデルに材質情報が無い場合の
+    /// せん断補強筋の降伏強度算定用強度 σwy [N/mm²]（モデルに材質情報がない場合の
     /// 代表値。既定 295 = SD295 相当）。
     pub sigma_wy: f64,
     /// 付着割裂の検定を含める場合 true。

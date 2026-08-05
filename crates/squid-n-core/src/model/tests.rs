@@ -184,7 +184,7 @@ fn test_material_serde_defaults_concrete_class() {
     assert_eq!(mat.category, MaterialCategory::Concrete);
     assert_eq!(mat.fc, Some(24.0));
 
-    // 区分が無い入力は受け付けない。
+    // 区分がない入力は受け付けない。
     let without_category = r#"{
             "id": 0,
             "name": "FC24",
@@ -374,7 +374,7 @@ fn test_section_new_fields_default() {
 
 #[test]
 fn test_element_data_plastic_zone_default_missing_field() {
-    // 旧スキーマ（plastic_zone フィールドが無い JSON）からの互換性を確認する。
+    // 旧スキーマ（plastic_zone フィールドがない JSON）からの互換性を確認する。
     let json = r#"{
             "id": 0,
             "kind": "Beam",
@@ -413,7 +413,7 @@ fn test_stress_cfg_default_is_false() {
 
 #[test]
 fn test_model_stress_cfg_default_missing_field() {
-    // 旧スキーマ（stress_cfg フィールドが無い JSON）からの互換性を確認する。
+    // 旧スキーマ（stress_cfg フィールドがない JSON）からの互換性を確認する。
     let json = r#"{
             "nodes": [], "elements": [], "sections": [], "materials": [],
             "stories": [], "slabs": [], "constraints": [], "load_cases": [],
@@ -423,7 +423,7 @@ fn test_model_stress_cfg_default_missing_field() {
     assert_eq!(model.stress_cfg, StressAnalysisCfg::default());
 }
 
-/// 旧スキーマ（support_spring フィールドが無い JSON）の Node が読み込めること
+/// 旧スキーマ（support_spring フィールドがない JSON）の Node が読み込めること
 /// （serde 後方互換。既定は None＝ばね支持なし）。
 #[test]
 fn test_node_support_spring_default_missing_field() {
@@ -438,7 +438,7 @@ fn test_node_support_spring_default_missing_field() {
     assert_eq!(node.support_spring, None);
 }
 
-/// 旧スキーマ（relief_velocity/c2_ratio フィールドが無い JSON）の DamperProps が
+/// 旧スキーマ（relief_velocity/c2_ratio フィールドがない JSON）の DamperProps が
 /// 読み込めること（serde 後方互換。既定は両方とも None＝リリーフなし。
 /// 既存前例の qy/k2_ratio と同じ扱い）。
 #[test]
@@ -457,7 +457,7 @@ fn test_damper_props_relief_default_missing_field() {
     assert_eq!(props.k2_ratio, DamperProps::default().k2_ratio);
 }
 
-/// 旧スキーマ（damper_defs フィールドが無い JSON）の Model が読み込めること
+/// 旧スキーマ（damper_defs フィールドがない JSON）の Model が読み込めること
 /// （serde 後方互換。既定は空の Vec）。
 #[test]
 fn test_model_damper_defs_default_missing_field() {

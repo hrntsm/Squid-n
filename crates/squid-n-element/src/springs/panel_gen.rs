@@ -11,7 +11,7 @@
 //! 柱とはりが 1 本以上ずつ取り付き、**それらがすべて S 系**で、諸元を解決できる
 //! 柱があり `Ve` が正の節点である。
 //!
-//! モデル化はこれに加えて、取り付く柱に CFT が 1 本も無いことを要求する。
+//! モデル化はこれに加えて、取り付く柱に CFT が 1 本もないことを要求する。
 //! 充填コンクリートと通しダイアフラムが接合部のせん断挙動に関与し、鋼管のみの
 //! 実効体積による弾性せん断パネルでは剛性を表せないため、接合部を剛節点として
 //! 扱う。CFT の接合部は S 造パネルゾーンの断面検定の対象には含まれる。
@@ -180,7 +180,7 @@ fn far_end_at(e: &ElementData, node: NodeId) -> Option<NodeId> {
 
 /// 部材の `rigid_zone.panel_offset_i/j` を、現在のパネル配置から求め直す。
 ///
-/// パネルが 1 つも無ければ全要素の値が 0 になるため、モデル化を OFF にすると
+/// パネルが 1 つもなければ全要素の値が 0 になるため、モデル化を OFF にすると
 /// オフセットは消える（冪等）。
 ///
 /// 節点ごとに全要素を走査すると パネル数 × 要素数 になるため、半寸法を節点表へ
@@ -235,7 +235,7 @@ fn apply_panel_offsets(model: &mut Model, adjacency: &NodeAdjacency, panels: &[G
 pub fn apply_auto_panel_zones(model: &mut Model) -> Vec<GeneratedPanel> {
     remove_existing_panels(model);
     if model.panel_zone != PanelZoneMode::Model {
-        // パネルが 1 つも無い状態のオフセット（＝すべて 0）へ戻す。
+        // パネルが 1 つもない状態のオフセット（＝すべて 0）へ戻す。
         for e in &mut model.elements {
             e.rigid_zone.panel_offset_i = 0.0;
             e.rigid_zone.panel_offset_j = 0.0;

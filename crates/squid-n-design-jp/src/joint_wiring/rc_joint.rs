@@ -103,7 +103,7 @@ pub(super) fn check_rc_joint(
         // 上端・下端鉄筋引張力 T・T′。梁の main_x（せい方向主筋）を上下対称配筋
         // と仮定し、片側（総断面積の半分）が降伏引張力を負担するとみなす。
         // スラブ筋の寄与は本配線では未加算（モデルに接合部位置のスラブ筋情報が
-        // 無いため。T にスラブ筋を含める場合と比べ Qdu を安全側に過小評価しうる）。
+        // ないため。T にスラブ筋を含める場合と比べ Qdu を安全側に過小評価しうる）。
         let (t_top, t_bottom) = if let Some(SectionShape::RcRect { rebar, .. }) = &beam0.sec.shape {
             let half_area = squid_n_core::section_shape::bar_set_area(&rebar.main_x) / 2.0;
             let sigma_y = crate::material_strength::rebar_sigma_y(beam0.mat);

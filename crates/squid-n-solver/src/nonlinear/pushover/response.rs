@@ -78,7 +78,7 @@ pub(crate) fn compute_story_shear(
 
 /// 層間変位を剛床マスター節点の水平変位差から求める。
 /// 第 i 層の層間変位 = マスター変位(第 i 層) − マスター変位(1 つ下の階)。
-/// 最下層は基部（変位 0）との差。マスターが無い／拘束済みの階は変位 0 とみなす。
+/// 最下層は基部（変位 0）との差。マスターがない／拘束済みの階は変位 0 とみなす。
 pub(crate) fn compute_story_drift(
     model: &Model,
     dofmap: &DofMap,

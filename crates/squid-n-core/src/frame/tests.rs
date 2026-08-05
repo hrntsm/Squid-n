@@ -95,7 +95,7 @@ fn axis_frame_uses_exact_geometry_and_selects_in_plane_members() {
     assert_eq!(f.elem_count(), 3);
 }
 
-/// 所属節点リストに無い中間節点があっても、座標が通り上にあれば拾う。
+/// 所属節点リストにない中間節点があっても、座標が通り上にあれば拾う。
 /// リストだけで判定すると、分割された大梁が丸ごと落ちる。
 #[test]
 fn axis_frame_includes_split_girder_via_coordinates() {
@@ -167,7 +167,7 @@ fn other_group_fits_plane_from_nodes() {
     let s = 1.0 / 2.0_f64.sqrt();
     let dot = f.normal[0] * s - f.normal[1] * s;
     assert!((dot.abs() - 1.0).abs() < 1e-6, "法線: {:?}", f.normal);
-    // 幾何が無いため座標では拾えず、所属節点リストだけが頼りになる。
+    // 幾何がないため座標では拾えず、所属節点リストだけが頼りになる。
     assert_eq!(f.elem_count(), 2);
 }
 

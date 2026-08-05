@@ -24,14 +24,14 @@ fn attach_store_info(summary: &mut serde_json::Value, case: u32, kinds: &[&str])
 /// - LinearStatic: NodalDisp（全節点変位）+ MemberForce（評価位置ごとの断面力）。
 ///   case = 使用した荷重ケース ID。
 /// - DesignCheck: MemberForce のみ（検定の元データ）。検定結果自体（OK/NG・検定比）は
-///   専用の ResultKind が無いためサマリ JSON にのみ含める。case = 使用した荷重ケース ID。
+///   専用の ResultKind がないためサマリ JSON にのみ含める。case = 使用した荷重ケース ID。
 /// - Eigen: Modal のみ。case は固定で 0 を使う。固有値解析は荷重ケースに依存しない
 ///   1系統の結果のため、実在する荷重ケース番号と衝突しないダミー値を使う設計とした。
 ///   manifest のキーは (case, kind) の組であり、Modal は NodalDisp/MemberForce とは
 ///   別の ResultKind（＝別の名前空間）なので、仮に実際の荷重ケースが `case=0` を
 ///   使っていても NodalDisp/MemberForce の case=0 エントリとは衝突しない
 ///   （LoadCaseId(0) を実荷重ケースとしても二重利用してしまう設計は避けている）。
-/// - Pushover/TimeHistory: 対応する ResultKind スキーマが無いため
+/// - Pushover/TimeHistory: 対応する ResultKind スキーマがないため
 ///   （TimeHistory 結果 `ResponseResult` は代表1節点の応答のみを保持し、
 ///   `ResultKind::TimeHistory` が要求する全節点×全ステップの変位を持たない）
 ///   ストアへは書き込まず、サマリ JSON のみを返す。
@@ -224,7 +224,7 @@ fn batch_to_json_rows(
 }
 
 /// `result_get` ツールの中核ロジック（feature 非依存・テスト可能）。
-/// manifest に該当エントリが無ければエラー文字列を返す
+/// manifest に該当エントリがなければエラー文字列を返す
 /// （呼び出し側は MCP の `invalid_params` へマップする）。
 pub fn result_get_json(
     store: &dyn squid_n_io::results::ResultStore,

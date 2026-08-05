@@ -132,7 +132,7 @@ fn rigid_zone_with_adjacency(
     // - RC/SRC 造: λ = reduction·(D_orth_rc/2 − D_self/4)（従来式。負は 0 クランプ）。
     // - Ｓ・ＣＦＴ造: λ = D_orth_rc/2（D_self/4 の控除なし・reduction も掛けない。
     //   RC/SRC 大梁のうち最大せいの梁フェイスまでの長さ＝仕口部を除いた長さ）。
-    //   直交する RC/SRC 系の梁（柱）が無ければ D_orth_rc=0 なので λ=0
+    //   直交する RC/SRC 系の梁（柱）がなければ D_orth_rc=0 なので λ=0
     //   （Ｓ造の剛域長さは0となる）。
     let self_kind = member_structure_kind(model, elem);
     let lambda = |d_orth_rc: f64| -> f64 {

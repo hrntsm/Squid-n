@@ -351,7 +351,7 @@ fn test_staged_strength_loss_single_pass_when_no_loss() {
 
 // ---- せん断降伏イベントに基づく耐力喪失判定の単体テスト ----
 
-/// 曲げヒンジが1件も無くても、`PushoverResult::shear_yields` にせん断降伏
+/// 曲げヒンジが1件もなくても、`PushoverResult::shear_yields` にせん断降伏
 /// イベントが記録されていれば、それを「降伏後」として耐力喪失判定に用いる
 /// ことを確認する（原典の「せん断降伏後、耐力喪失変形角に達した部材」判定の検証）。
 #[test]
@@ -434,7 +434,7 @@ fn test_detect_strength_loss_uses_shear_yield_when_present() {
     );
 }
 
-/// せん断降伏イベントが1件も無いモデルでは、曲げ降伏（`HingeLevel::Yield`
+/// せん断降伏イベントが1件もないモデルでは、曲げ降伏（`HingeLevel::Yield`
 /// 以降）で代用するフォールバックが機能することを確認する。
 #[test]
 fn test_detect_strength_loss_falls_back_to_bending_yield_without_shear_events() {

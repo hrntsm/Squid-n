@@ -25,7 +25,7 @@ pub(crate) fn member_forces_from_end_forces(
 ) -> MemberForces {
     let mut at = Vec::with_capacity(eval_sections.len());
     for &xi in eval_sections {
-        // 軸力 N は部材内力（引張正）。スパン内軸方向荷重が無い限り一定で、
+        // 軸力 N は部材内力（引張正）。スパン内軸方向荷重がない限り一定で、
         // i 端側は節点力 f_local[0]（引張時に -N）、j 端側は f_local[6]（+N）。
         // 旧実装の f0·(1-ξ)+f6·ξ は両端で符号が逆の節点力を線形補間しており、
         // 中央で N=0 となる誤りだったため、せん断と同じ端別採用に修正。

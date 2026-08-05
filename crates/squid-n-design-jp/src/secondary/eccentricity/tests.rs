@@ -203,14 +203,14 @@ fn test_story_eccentricity_biased_rigidity() {
     );
 }
 
-/// テスト3: 柱が無い層（story=S1 が存在するが柱の上端は S0）→ 空 Vec、剛心 [0,0]。
+/// テスト3: 柱がない層（story=S1 が存在するが柱の上端は S0）→ 空 Vec、剛心 [0,0]。
 #[test]
 fn test_story_eccentricity_empty_story() {
     let (model, _s0) = build_symmetric_frame(None);
     // S1 は存在しない（stories は S0 のみ）→ column_stiffnesses は空を返す。
     let s1 = StoryId(1);
     let cols = column_stiffnesses(&model, s1);
-    assert!(cols.is_empty(), "S1 に柱が無いはず、got {} 本", cols.len());
+    assert!(cols.is_empty(), "S1 に柱がないはず、got {} 本", cols.len());
     let cor = center_of_rigidity(&cols);
     assert_eq!(cor, [0.0, 0.0], "空時の剛心は [0,0]");
 }

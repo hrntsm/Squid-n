@@ -108,8 +108,8 @@ impl BeamElement {
             }
         };
 
-        // ねじり剛性 GJ/L が無い部材（J≤0・G≤0）の rx は解放しない。解放しても
-        // 縮約行列 Kbb が特異化して縮約の意味が無いため（ファイバー梁
+        // ねじり剛性 GJ/L がない部材（J≤0・G≤0）の rx は解放しない。解放しても
+        // 縮約行列 Kbb が特異化して縮約の意味がないため（ファイバー梁
         // `fiber::resolve_end_releases` と同じ規則。特異な Kbb は `invert_small` が
         // `None` を返し補正項が省略される）。
         let has_torsion = self.j > 0.0 && self.g > 0.0;

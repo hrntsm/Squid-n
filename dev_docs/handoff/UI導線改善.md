@@ -231,9 +231,9 @@ TimeHistory の書き込み・フィルタ付き照会・再オープン復元�
 - `analysis_run` が全 JobKind を実行: LinearStatic（NodalDisp+MemberForce を永続化、
   case=荷重ケース ID）、Eigen（Modal を case=0 で永続化。ResultKind で名前空間が
   分かれるため静的結果と衝突しない設計）、Pushover/TimeHistory（対応 ResultKind が
-  無いためサマリのみ）、DesignCheck（MemberForce 永続化+NG 数サマリ）。
+  ないためサマリのみ）、DesignCheck（MemberForce 永続化+NG 数サマリ）。
   引数は kind ごとの任意パラメータ（load_case/n_modes/dir/steps/…、既定は GUI と同一）。
-- 永続化とジョブ Done への遷移を同一ロック内で行い、「Done なのに manifest に無い」
+- 永続化とジョブ Done への遷移を同一ロック内で行い、「Done なのに manifest にない」
   状態を作らない。
 - `result_get` ツール: manifest 存在確認→query→JSON 行配列（10,000 行で打ち切り+
   truncated フラグ）。node/member フィルタ・step_range 対応。

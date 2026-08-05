@@ -238,7 +238,7 @@ fn test_pushover_load_control_endpoint_is_mesh_independent() {
 }
 
 /// コンクリート強度 Fc が未設定の RC 部材があるモデルは、弾性のまま解析せず
-/// エラーで停止する。Fc が無いと曲げひび割れ Mc=0 でヒンジが一切検出されず、
+/// エラーで停止する。Fc がないと曲げひび割れ Mc=0 でヒンジが一切検出されず、
 /// ファイバー断面も Fc を勝手に仮定するため、崩壊機構が形成されないまま
 /// 保有水平耐力を過大評価する（危険側）。
 #[test]
@@ -1259,7 +1259,7 @@ fn test_compute_shear_yield_qy_steel() {
 
 #[test]
 fn test_compute_shear_yield_qy_rc_fallback_without_rc_rect_shape() {
-    // RC系（fy 無し・fc 設定あり）かつ断面形状情報（RcRect）が無い場合:
+    // RC系（fy 無し・fc 設定あり）かつ断面形状情報（RcRect）がない場合:
     // Qy = as・0.7√fc（慣用値へフォールバック）。
     let mat = Material {
         strength_factor: None,
@@ -1484,7 +1484,7 @@ fn test_compute_shear_yield_qy_rc_rect_matches_arakawa_handcalc() {
     // y 方向（強軸曲げのせん断）: b=幅, d=せい, 引張鉄筋 main_x。
     // しきい値のせん断有効断面積は断面 as_z（ウェブ）由来（クロス変換）。
     // 本モジュール（shear_yield.rs）は保有水平耐力計算専用のため、主筋 σy には
-    // 材料強度係数（直接入力係数優先、無ければ一律1.1）を無条件で乗じる
+    // 材料強度係数（直接入力係数優先、なければ一律1.1）を無条件で乗じる
     // （`material_strength_factor_rebar`）。せん断補強筋 σwy=295 は割増対象外。
     let bar_area = |bs: &BarSet| bs.count as f64 * std::f64::consts::PI / 4.0 * bs.dia * bs.dia;
     let qsu_y_handcalc = rc_qsu_simple(&RcCapacityInput {
@@ -2018,7 +2018,7 @@ impl ElementBehavior for FixedForceBehavior {
 }
 
 /// 精緻化2のエンドツーエンド確認: 同一のせん断力 Vz デマンドに対し、
-/// 軸圧縮が作用する場合は σ0 反映で Qy が増え判定を免れるが、圧縮が無い
+/// 軸圧縮が作用する場合は σ0 反映で Qy が増え判定を免れるが、圧縮がない
 /// （引張・軸力ゼロ）場合は従来どおり判定に掛かることを、実際の
 /// `track_shear_yield` を通して確認する（`compute_shear_yield_thresholds` の
 /// 構築から一貫して検証）。
@@ -2440,7 +2440,7 @@ fn test_pushover_displacement_control_reaches_target_and_exceeds_design_load() {
 ///
 /// 旧実装の変位制御は Ai 分布の比例荷重を残差から外し、頂部 1 自由度を
 /// ペナルティばねで押し込んでいた。載荷パターンが「Ai 分布」→「頂部 1 点載荷」へ
-/// 不連続に変わるため、ヒンジが無い弾性のままでもフェーズ切替点でベースシアが
+/// 不連続に変わるため、ヒンジがない弾性のままでもフェーズ切替点でベースシアが
 /// 落ち込み、その後頂部 1 点載荷の剛性勾配で伸び直す非物理的な V 字曲線を描いて
 /// いた。現行実装は比例荷重パターン λ·q を保持し、荷重係数 λ を頂部変位拘束から
 /// 決定するため、弾性域では曲線が単調増加し λ も 1 を超えて滑らかに増加する。
@@ -2694,7 +2694,7 @@ fn test_pushover_long_term_preload_sets_initial_axial_state() {
         p
     );
 
-    // 長期荷重を無効にした場合は従来どおり λ=0 の記録は無い。
+    // 長期荷重を無効にした場合は従来どおり λ=0 の記録はない。
     let model2 = single_column_model(235.0, 80_000.0);
     let dofmap2 = DofMap::build(&model2);
     let reducer2 = Reducer::build(&model2, &dofmap2);
@@ -2758,7 +2758,7 @@ fn test_pushover_load_only_without_target_stops_at_lambda_1() {
 /// 従来は data[0..3]（下辺a）と data[6..9]（下辺b）の最大値を取っており、下辺 2 節点の
 /// 一方だけを見る形で水平力を約 1/2 に過小評価していた（βu・壁の τu が過小＝
 /// 部材種別・Ds が甘くなる危険側）。2 節点の線材では従来と同じ値になること
-/// （リグレッションが無いこと）も併せて確認する。
+/// （リグレッションがないこと）も併せて確認する。
 #[test]
 fn test_horizontal_force_sums_wall_bottom_nodes() {
     use squid_n_element::behavior::LocalVec;
@@ -3451,7 +3451,7 @@ fn test_pushover_wall_flexural_yield_softens() {
 }
 
 /// 接線剛性が初めから特異なモデルは、ソルバの内部表現（`factor: NotPositiveDefinite`）
-/// ではなく**どの節点のどの自由度に剛性が無いか**を示す日本語診断で停止する。
+/// ではなく**どの節点のどの自由度に剛性がないか**を示す日本語診断で停止する。
 ///
 /// 回帰対象: 従来は `newton_converge` の分解失敗をそのまま `Err` として上げており、
 /// UI には「増分解析エラー: factor: NotPositiveDefinite」だけが出て原因に辿り着けなかった。

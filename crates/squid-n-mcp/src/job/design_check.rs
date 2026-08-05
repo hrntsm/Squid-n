@@ -66,7 +66,7 @@ fn elem_geometric_length(elem: &squid_n_core::model::ElementData, model: &Model)
 /// 危険断面位置（§6.2.3、既定は柱フェイスと中央）を正規化座標 \[0,1\] で算定する。
 /// `squid_n_element::beam::BeamElement::new` の `eval_sections` 算定と同じ規則
 /// （xi_i は \[0.0, 0.5) へ、xi_j は (0.5, 1.0\] へクランプ）で face_i/face_j から
-/// 求める。face=0（直交材が無い端）では節点芯（0.0/1.0）と一致する。
+/// 求める。face=0（直交材がない端）では節点芯（0.0/1.0）と一致する。
 /// 部材付帯情報（ハンチ・継手位置。剛性には影響しない）があれば、その追加検定
 /// 位置（`MemberDetailAttr::extra_check_positions`）も加え、ソートして 1e-9
 /// 以内の重複を除去する（`BeamElement::new` の `eval_sections` と同じ規則。

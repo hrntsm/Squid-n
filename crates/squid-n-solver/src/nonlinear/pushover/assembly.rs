@@ -91,7 +91,7 @@ fn assemble_k_triplets_into(
 ) {
     out.clear();
     let ctx = Ctx { model };
-    // 要素ごとの接線剛性 triplet 化（要素間にデータ依存が無い）。
+    // 要素ごとの接線剛性 triplet 化（要素間にデータ依存がない）。
     let elem_triplets = |elem: &squid_n_core::model::ElementData,
                          b: &dyn ElementBehavior|
      -> Vec<squid_n_math::sparse::Triplet> {

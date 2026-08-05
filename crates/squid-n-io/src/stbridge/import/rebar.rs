@@ -81,10 +81,10 @@ pub(super) fn parse_rebar(a: &HashMap<String, String>) -> RcRebar {
         0
     };
     // 主筋本数と段数を求める。Squid 出力の合計本数キー（`count_main_*`）があれば
-    // それを最優先で使う（往復での本数一致を保つ）。無ければ実 ST-Bridge の段別本数
+    // それを最優先で使う（往復での本数一致を保つ）。なければ実 ST-Bridge の段別本数
     // （`N_main_*_1st`/`_2nd`/`_3rd`）を合算する（他社ファイルは段別にしか本数を持たず、
     // 1 段目だけ読むと下端筋の 2 段目等を取りこぼす）。段数は明示キー
-    // （`count_main_layers_*`）を優先し、無ければ非ゼロの段数を数える。
+    // （`count_main_layers_*`）を優先し、なければ非ゼロの段数を数える。
     // 各引数: totals=合計本数キー, layers=段ごとの候補キー列, layer_attr=明示段数キー。
     let count_and_layers = |totals: &[&str], stages: &[&[&str]], layer_attr: &str| -> (u32, u32) {
         for k in totals {
@@ -117,7 +117,7 @@ pub(super) fn parse_rebar(a: &HashMap<String, String>) -> RcRebar {
             .unwrap_or_else(|| nonzero_stages.max(1));
         (sum, layers)
     };
-    // せい方向（X）／梁上端。合計本数キーが無いときは 1〜3 段目を合算する。
+    // せい方向（X）／梁上端。合計本数キーがないときは 1〜3 段目を合算する。
     let (count_x, layers_x) = count_and_layers(
         &["count_main_X", "count_main_top"],
         &[

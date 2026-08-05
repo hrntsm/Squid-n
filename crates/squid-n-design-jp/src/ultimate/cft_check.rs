@@ -76,7 +76,7 @@ fn cft_section_props(shape: &SectionShape) -> Option<(bool, f64, f64, f64, f64, 
 /// モデルの CFT 柱（`CftBox`/`CftPipe`）について軸終局検定を一括実行する
 /// （CFT指針）。
 ///
-/// - `axial_by_elem`: 設計軸力 [N]（**圧縮正**）。無ければ軸力 0（安全側）。
+/// - `axial_by_elem`: 設計軸力 [N]（**圧縮正**）。なければ軸力 0（安全側）。
 /// - 座屈長さ lk は部材の幾何長（K=1 相当）を用いる。鋼管の降伏強さ Fy は
 ///   材料名の板厚区分から解決した F 値（解決できなければ 235）、ヤング係数は
 ///   205000 N/mm²（鋼）を用いる。Fc は材料の `fc`（未設定はスキップ）。
@@ -110,7 +110,7 @@ pub fn collect_cft_ultimate_checks(
             SectionShape::CftBox { thick, .. } | SectionShape::CftPipe { thick, .. } => thick,
             _ => 0.0,
         };
-        // プリセット外の直接入力材料は fy を基準強度として用いる（それも無ければ 235）。
+        // プリセット外の直接入力材料は fy を基準強度として用いる（それもなければ 235）。
         let fy = crate::material_strength::steel_f_value_prefix(&mat.name, thick)
             .or(mat.fy)
             .unwrap_or(235.0);

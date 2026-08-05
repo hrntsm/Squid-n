@@ -8,7 +8,7 @@ use std::path::Path;
 // 未リリースのため後方互換なし。リリース前のスキーマ変更は版を上げずにこのまま 1 とする。
 pub const CURRENT_SCHEMA_VERSION: u32 = 1;
 
-/// manifest への記載が必須な zip エントリ。ここに無い名前はハッシュ検証されないまま
+/// manifest への記載が必須な zip エントリ。ここにない名前はハッシュ検証されないまま
 /// 読み込まれてしまうため、読込時に存在を強制する。
 const REQUIRED_ENTRIES: [&str; 2] = ["model.msgpack", "settings.json"];
 
@@ -93,9 +93,9 @@ pub struct SczExtras<'a> {
 /// [`load_scz`] の返り値。モデルと、同梱されていれば派生データ。
 pub struct SczContents {
     pub model: Model,
-    /// 準備計算の結果（同梱が無ければ `None`）。
+    /// 準備計算の結果（同梱がなければ `None`）。
     pub preparation: Option<Vec<u8>>,
-    /// 解析結果（同梱が無ければ `None`）。
+    /// 解析結果（同梱がなければ `None`）。
     pub results: Option<Vec<u8>>,
 }
 
@@ -217,7 +217,7 @@ pub fn load_scz(path: &Path) -> Result<SczContents, IoError> {
         return Err(IoError::UnsupportedVersion(manifest.schema_version));
     }
 
-    // 必須エントリが manifest に列挙されていることを強制する。これが無いと、
+    // 必須エントリが manifest に列挙されていることを強制する。これがないと、
     // manifest から model.msgpack を落としたファイルがハッシュ未検証のまま読めてしまう。
     for required in REQUIRED_ENTRIES {
         if !manifest.entries.iter().any(|e| e.name == required) {

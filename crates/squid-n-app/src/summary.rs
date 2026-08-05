@@ -38,7 +38,7 @@ pub struct StoryMetric {
 }
 
 /// 層指標算定の追加入力（偏心率の精算・重心の長期軸力算定用）。
-/// 無い項目は `None` のままでよく、その場合は略算（D値法・質量重心）へ
+/// ない項目は `None` のままでよく、その場合は略算（D値法・質量重心）へ
 /// フォールバックする。
 #[derive(Default, Clone, Copy)]
 pub struct StoryMetricsCtx<'a> {
@@ -51,7 +51,7 @@ pub struct StoryMetricsCtx<'a> {
 }
 
 /// 解析結果一式から `StoryMetricsCtx` を組み立てる。
-/// 長期は「短期でない荷重組合せ」を優先し、無ければ None。
+/// 長期は「短期でない荷重組合せ」を優先し、なければ None。
 pub fn metrics_ctx_from_results(results: Option<&ResultsBundle>) -> StoryMetricsCtx<'_> {
     let Some(r) = results else {
         return StoryMetricsCtx::default();
@@ -92,7 +92,7 @@ pub fn compute_story_metrics(
 /// - **剛性率 Rs**: 重心位置の層間変位 δg（質量重み付き平均変位の差。
 ///   `story_metrics::cog_story_drifts`）から `Rs = rs/r̄s`。
 /// - **偏心率 Re**: `ctx` に X/Y 加力の解析結果があれば精算
-///   （剛心 ki=Qi/δi・重心=長期軸力）、無ければ D値法（略算）。
+///   （剛心 ki=Qi/δi・重心=長期軸力）、なければ D値法（略算）。
 pub fn compute_story_metrics_with(
     model: &Model,
     disp: &[[f64; 6]],
@@ -110,7 +110,7 @@ pub fn compute_story_metrics_with(
     // 剛性率 Rs・層間変形角は「加力方向の地震時弾性層間変位」で算定すべき
     // （令82条の2 の層間変形角・令82条の6 の剛性率はいずれも地震力による弾性変位が前提）。
     // 偏心率 Re は既に `ctx` の地震ケースへ固定されているため、Rs・層間変形角も同じ
-    // 加力方向の地震静的結果へ揃える。当該方向の結果が `ctx` に無い場合のみ、呼び出し側が
+    // 加力方向の地震静的結果へ揃える。当該方向の結果が `ctx` にない場合のみ、呼び出し側が
     // 渡した `disp`（＝表示中の任意ケース）へフォールバックする（後方互換）。
     let metric_disp: &[[f64; 6]] = match dir {
         SeismicDir::X => ctx.seismic_x,
@@ -415,7 +415,7 @@ pub fn build_report_csv(app: &App) -> String {
             po.hinges.len()
         ));
         // 層別データ列（層間変位・層せん断力）を層数分だけヘッダに追加する。
-        // 列名はモデルの階名（`Story::name`）を用い、無ければ「1F」形式で補う。
+        // 列名はモデルの階名（`Story::name`）を用い、なければ「1F」形式で補う。
         let n_stories = model.stories.len();
         let story_name = |i: usize| -> String {
             model

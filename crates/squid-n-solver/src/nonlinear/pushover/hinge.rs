@@ -37,7 +37,7 @@ pub(crate) struct HingeThreshold {
 ///
 /// 本モジュールは保有水平耐力計算（プッシュオーバー）専用のため、降伏応力
 /// σy には無条件で材料強度割増（鋼材=`material_strength_factor_steel`、
-/// RC 主筋=`material_strength_factor_rebar`。直接入力係数優先、無ければ
+/// RC 主筋=`material_strength_factor_rebar`。直接入力係数優先、なければ
 /// 鋼材グレード名判定=1.1/590N級=1.05、主筋=一律1.1）を適用する。
 fn member_moment_thresholds(elem: &ElementData, model: &Model) -> HingeThreshold {
     let Some(sec) = elem.section.and_then(|sid| model.sections.get(sid.index())) else {
@@ -54,7 +54,7 @@ fn member_moment_thresholds(elem: &ElementData, model: &Model) -> HingeThreshold
         0.0
     };
     // 降伏応力は部材材料の fy を優先。未設定なら鋼材既定 235 N/mm²（SN400 級）。
-    // 保有水平耐力計算のため材料強度割増を乗じる（mat が無ければ係数 1.0）。
+    // 保有水平耐力計算のため材料強度割増を乗じる（mat がなければ係数 1.0）。
     let sigma_y_steel = mat.and_then(|m| m.fy).unwrap_or(235.0)
         * mat.map(material_strength_factor_steel).unwrap_or(1.0);
 
@@ -106,7 +106,7 @@ fn member_moment_thresholds(elem: &ElementData, model: &Model) -> HingeThreshold
             HingeThreshold { mc: mc.min(my), my }
         }
         (Some(shape), StructureKind::S) => {
-            // 鉄骨: 全塑性モーメント Mp = Zp·σy。ひび割れは無いため Mc=My=Mp。
+            // 鉄骨: 全塑性モーメント Mp = Zp·σy。ひび割れはないため Mc=My=Mp。
             // 塑性断面係数を持たない形状は 1.12·Ze で近似する。
             let zp = shape.plastic_modulus_strong().unwrap_or(1.12 * ze);
             let mp = sigma_y_steel * zp;
@@ -151,7 +151,7 @@ pub(crate) fn track_hinges(
         // （[`member_end_forces_at_face`]）。節点位置のモーメントはアーム分だけ
         // 大きく、断面耐力 My と直接比較すると剛域を持つ部材のヒンジを過早に検出し、
         // 崩壊荷重を過小評価する。局所成分を使うことで、材軸まわりのねじりを
-        // 曲げと取り違えることも無くなる。
+        // 曲げと取り違えることもなくなる。
         let Some(fl) = member_end_forces_at_face(model, elem, &f.data) else {
             continue;
         };

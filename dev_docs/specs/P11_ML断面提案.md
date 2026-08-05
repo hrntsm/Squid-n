@@ -169,7 +169,7 @@ pub fn propose_and_verify(features: &[f32], model: &squid_n_core::model::Model)
 {
     // 1. ML で候補断面（複数）を提案（§4）/ サロゲートで足切り（§5）
     // 2. 各候補を squid_n_design_jp で検定（P3 許容応力度 / P7 保有耐力）
-    // 3. 検定比≤1.0 の最良案のみ VerifiedProposal で返す。無ければ None。
+    // 3. 検定比≤1.0 の最良案のみ VerifiedProposal で返す。なければ None。
     todo!()
 }
 ```

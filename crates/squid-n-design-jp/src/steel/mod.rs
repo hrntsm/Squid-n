@@ -9,7 +9,7 @@
 //! 1. `Section.shape`（[`squid_n_core::section_shape::SectionShape`]）があれば
 //!    `SteelH`/`SteelBox`/`SteelPipe` の実寸（`flange_thick`/`web_thick`/`thick`）
 //!    を用いる（パラメトリック断面の正規経路）。
-//! 2. 無ければ `Section.name` の先頭トークン（`"H-..."`, `"BOX-..."`,
+//! 2. なければ `Section.name` の先頭トークン（`"H-..."`, `"BOX-..."`,
 //!    `"PIPE-..."`）から形状カテゴリを推定し、板厚は `Section.thickness` の
 //!    単一値を `tf ≈ tw` として近似する（カタログ断面等のフォールバック。
 //!    フランジとウェブの実厚が異なる断面では誤差を生む）。
@@ -57,7 +57,7 @@ mod section;
 pub use section::{resolve_lb, steel_fb_h, steel_fb_h_new, steel_h_z_with_loss, steel_i_t};
 
 // ---------------------------------------------------------------------
-// 断面形状カテゴリ（`Section.shape` 優先、無ければ `Section.name` から推定。
+// 断面形状カテゴリ（`Section.shape` 優先、なければ `Section.name` から推定。
 // 上記モジュール doc 参照）
 // ---------------------------------------------------------------------
 
@@ -90,7 +90,7 @@ fn classify_shape(name: &str) -> ShapeCategory {
 /// 形状カテゴリと板厚 `(カテゴリ, tf, tw)` を解決する。
 ///
 /// `Section.shape`（パラメトリック断面）があれば実寸のフランジ厚・ウェブ厚を、
-/// 無ければ断面名からカテゴリを推定して `Section.thickness` を `tf ≈ tw` の
+/// なければ断面名からカテゴリを推定して `Section.thickness` を `tf ≈ tw` の
 /// 単一板厚として近似する（モジュール doc 参照）。
 fn shape_of(sec: &Section) -> (ShapeCategory, f64, f64) {
     if let Some(shape) = &sec.shape {
@@ -241,7 +241,7 @@ impl DesignCheck for SteelDesign {
         ctx: &DesignCtx,
     ) -> CheckOutcome {
         let t = plate_thickness(sec);
-        // プリセット外の直接入力材料は fy を基準強度として用いる（それも無ければ 235）。
+        // プリセット外の直接入力材料は fy を基準強度として用いる（それもなければ 235）。
         let f = steel_f_value_prefix(&mat.name, t)
             .or(mat.fy)
             .unwrap_or(235.0);

@@ -10,7 +10,7 @@ use squid_n_core::model::{ElementData, Model};
 /// 依存できないため、面積比による同値式をここで評価する）。
 ///
 /// 壁面積は節点群の包絡寸法（最大水平距離 × 鉛直高さ）で近似する。
-/// `Model::wall_attrs` に該当が無い・開口ゼロ・寸法不定では 1.0（低減なし）。
+/// `Model::wall_attrs` に該当がない・開口ゼロ・寸法不定では 1.0（低減なし）。
 pub(crate) fn wall_opening_reduction(data: &ElementData, model: &Model) -> f64 {
     let Some(attr) = model.wall_attrs.iter().find(|w| w.elem == data.id) else {
         return 1.0;

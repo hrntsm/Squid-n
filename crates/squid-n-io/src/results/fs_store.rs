@@ -33,13 +33,13 @@ use super::{
 /// ## query の対応範囲(素朴な実装)
 /// - `NodalDisp` / `MemberForce` / `Modal`: 全行読み出し後にフィルタを適用する。
 ///   `NodalDisp` は `node_filter`(node_id 列)、`MemberForce` は `member_filter`
-///   (elem_id 列)に対応する。`Modal` には node/member の概念が無いためフィルタは
+///   (elem_id 列)に対応する。`Modal` には node/member の概念がないためフィルタは
 ///   無視する。
 /// - `TimeHistory`: 既存の `read_time_history_range` を利用し、`step_range` /
-///   `node_filter` に対応する(`member_filter` は概念が無いため無視)。
+///   `node_filter` に対応する(`member_filter` は概念がないため無視)。
 /// - `Story` はスキーマ関数が未実装のため `writer()` / `query()` ともに
 ///   `Err(Unsupported)` を返す。MCP サーバはこの kind を使わない前提。
-/// - `query` はマニフェストに該当エントリが無い場合・IO 失敗時に `Err` を返す
+/// - `query` はマニフェストに該当エントリがない場合・IO 失敗時に `Err` を返す
 ///   (panic しない)。
 pub struct FsResultStore {
     dir: PathBuf,
@@ -291,7 +291,7 @@ impl ResultStore for FsResultStore {
                 Ok(ResultBatch { batch })
             }
             ResultKind::Modal => {
-                // モーダル結果に node/member の概念は無いため node_filter/member_filter は無視する。
+                // モーダル結果に node/member の概念はないため node_filter/member_filter は無視する。
                 let batches = read_all(&path).map_err(std::io::Error::other)?;
                 let batch = arrow::compute::concat_batches(&modal_schema(), &batches)
                     .map_err(std::io::Error::other)?;

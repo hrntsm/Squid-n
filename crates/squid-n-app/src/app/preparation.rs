@@ -48,8 +48,8 @@ pub struct PreparationResult {
     /// 風圧力の算定結果（X 方向・Y 方向の順）。見付幅が風向で変わるため
     /// 両方向を算定する。算定できなかった風向は含まれない。
     pub wind: Vec<PrepWind>,
-    /// 算定できなかった風向がある場合の理由（無ければ `None`）。
-    /// 平面的に一方向へ広がりが無いモデルでは、その方向の見付幅が 0 になり
+    /// 算定できなかった風向がある場合の理由（なければ `None`）。
+    /// 平面的に一方向へ広がりがないモデルでは、その方向の見付幅が 0 になり
     /// 片方向だけ算定できないことがある。
     pub wind_note: Option<String>,
     /// 剛域・危険断面位置の算定結果（剛域長 λ または柱フェース距離が
@@ -63,7 +63,7 @@ pub struct PreparationResult {
     /// 鋼断面の幅厚比・部材ランク（断面 × 部材用途 × 材料でまとめる）。
     pub width_thickness: Vec<PrepWidthThicknessRow>,
     /// 部材単位の剛性割増し（スラブ協力幅・合成梁・壁エレメント上下大梁）と
-    /// SRC/CFT 等価断面。割増しも等価換算も無い部材は含まない。
+    /// SRC/CFT 等価断面。割増しも等価換算もない部材は含まない。
     pub member_stiffness: Vec<PrepMemberStiffnessRow>,
     /// 剛性割増し・等価換算の算定対象となった梁要素の総数。
     pub member_stiffness_candidates: usize,
@@ -89,7 +89,7 @@ pub struct PreparationResult {
 }
 
 impl PreparationResult {
-    /// 解析を進めてよい状態か（整合性チェックにエラーが無いか）。
+    /// 解析を進めてよい状態か（整合性チェックにエラーがないか）。
     pub fn is_ready(&self) -> bool {
         self.diag_errors == 0
     }
@@ -226,7 +226,7 @@ pub struct PrepWindRow {
 
 /// ねじり解放（i 端ねじれピン）の対象外となった部材の 1 行。
 ///
-/// 対象外になるのは「解放すると材軸まわりの回転を拘束するものが無い節点が
+/// 対象外になるのは「解放すると材軸まわりの回転を拘束するものがない節点が
 /// 生じる部材」で、この部材だけがねじり剛性 GJ/L を保持する。ねじり剛性を
 /// もともと持たない部材（断面の J≤0・材料の G≤0・トラス扱いのブレース）は
 /// 解放してもしなくても剛性が 0 のため、この表には含めない。
@@ -235,7 +235,7 @@ pub struct PrepTorsionSkipRow {
     pub elem: ElemId,
     /// 部材種別（柱／梁／ブレース）。
     pub kind: squid_n_design_jp::MemberKind,
-    /// 判定に落ちた節点（この節点の材軸まわり回転を拘束するものが無い）。
+    /// 判定に落ちた節点（この節点の材軸まわり回転を拘束するものがない）。
     pub node: NodeId,
 }
 
@@ -277,7 +277,7 @@ pub struct PrepRigidZoneRow {
     /// i 端・j 端の柱フェース距離 [mm]（危険断面位置の基準）。
     pub face_i: f64,
     pub face_j: f64,
-    /// i 端・j 端の仕口パネル分オフセット [mm]（パネルが無い端は 0）。
+    /// i 端・j 端の仕口パネル分オフセット [mm]（パネルがない端は 0）。
     /// 剛域長とは別の量で、剛体アーム長は両者の大きい方になる。
     pub panel_offset_i: f64,
     pub panel_offset_j: f64,
@@ -412,7 +412,7 @@ impl App {
     /// 剛域以外のすべての準備計算項目の前提となる）。利用者の手入力
     /// （地震用重量の手入力値・階の種別）は再生成後も引き継がれる。
     ///
-    /// 階を生成できないモデル（節点が無い・単一レベルのみ）でも中断せず、
+    /// 階を生成できないモデル（節点がない・単一レベルのみ）でも中断せず、
     /// 生成エラーを `last_error` に残したまま残りの項目（剛域・断面性能・
     /// 整合性チェックなど、階を前提としない項目）を集計する。
     ///
@@ -770,7 +770,7 @@ impl App {
     /// 「ねじり剛性が残っている部材」を確認するための表なので、判定で除外された
     /// 部材（[`squid_n_element::beam::TorsionReleaseSkip::UnrestrainedRotation`]）
     /// だけを載せる。ねじり剛性をもともと持たない部材は、解放してもしなくても
-    /// 剛性が 0 で設計上の影響が無いため対象外とする。
+    /// 剛性が 0 で設計上の影響がないため対象外とする。
     fn build_prep_torsion_skipped(&self) -> Vec<PrepTorsionSkipRow> {
         use squid_n_element::beam::TorsionReleaseSkip;
         let model = &self.model;
@@ -923,8 +923,8 @@ impl App {
     /// 部材単位の剛性割増し（スラブ協力幅・合成梁・壁エレメント上下大梁）と
     /// SRC/CFT 等価断面を一覧化する。返り値は `(該当部材の行, 梁要素の総数)`。
     ///
-    /// 割増しも等価換算も生じ得ないモデル（スラブ剛性を考慮しない・壁が無い・
-    /// SRC/CFT 断面が無い）では、部材ごとの判定（`O(部材数)` の走査を含む）を
+    /// 割増しも等価換算も生じ得ないモデル（スラブ剛性を考慮しない・壁がない・
+    /// SRC/CFT 断面がない）では、部材ごとの判定（`O(部材数)` の走査を含む）を
     /// 行わずに空を返す。
     fn build_prep_member_stiffness(&self) -> (Vec<PrepMemberStiffnessRow>, usize) {
         use squid_n_core::model::ElementKind;

@@ -477,7 +477,7 @@ fn run_steps(
     // 確保し、以後は書き込みのみで再利用する（p_free・p_red・mw・cw・m_mw・
     // c_cw・p_eff）。`u_next_buf` は時刻歴応答解析高速化・第2波で追加された
     // `LinearSolver::solve_into`（squid-n-math）を使い、`solver.solve` の
-    // 戻り値確保（P9 当時は避けられなかった）も無くしている。
+    // 戻り値確保（P9 当時は避けられなかった）もなくしている。
     let mut p_free_buf = vec![0.0f64; n_free];
     let mut p_red_buf = vec![0.0f64; n_indep];
     let mut mw_buf = vec![0.0f64; n_indep];

@@ -76,7 +76,7 @@ pub(super) fn check_cold_formed(
                 }) => (height, width, thick),
                 _ => return None,
             };
-            // プリセット外の直接入力材料は fy を基準強度として用いる（それも無ければ 295）。
+            // プリセット外の直接入力材料は fy を基準強度として用いる（それもなければ 295）。
             let f = crate::steel::steel_f_value_prefix(&c.mat.name, t)
                 .or(c.mat.fy)
                 .unwrap_or(295.0);

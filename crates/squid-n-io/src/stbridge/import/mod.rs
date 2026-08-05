@@ -87,7 +87,7 @@ struct PendingMember {
     material: Option<u32>,
     /// `id_material` 属性がファイルに存在したか。存在する（=-1 含む）場合は部材が材料を
     /// 明示しているとみなし、断面材料の伝播を行わない（往復で None→Some 化を防ぐ）。
-    /// 属性が無い場合のみ断面材料を伝播する。
+    /// 属性がない場合のみ断面材料を伝播する。
     has_material_attr: bool,
     /// 部材軸まわりの断面回転角 [deg]（ST-Bridge `rotate`）。ref_vector は節点座標が
     /// 揃う構築時に軸と `rotate` から算出する。
@@ -187,7 +187,7 @@ pub struct ImportReport {
 }
 
 impl ImportReport {
-    /// 警告が 1 件も無い（＝取り込みで欠落が無かった）か。
+    /// 警告が 1 件もない（＝取り込みで欠落がなかった）か。
     /// 自動補完の通知（`notes`）は欠落ではないため判定に含めない。
     pub fn is_clean(&self) -> bool {
         self.warnings.is_empty()
