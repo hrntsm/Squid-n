@@ -5291,7 +5291,7 @@ fn test_diagnostics_errors_agree_with_analysis_precheck() {
     /// 不備の名前と、健全なモデルへそれを仕込む手続き。
     type BreakCase = (&'static str, fn(&mut squid_n_core::model::Model));
 
-    let broken: [BreakCase; 4] = [
+    let broken: [BreakCase; 6] = [
         ("断面未割当", |m| m.elements[0].section = None),
         ("材料未割当", |m| m.elements[0].material = None),
         ("As=0", |m| {
@@ -5302,6 +5302,15 @@ fn test_diagnostics_errors_agree_with_analysis_precheck() {
             for n in &mut m.nodes {
                 n.restraint = squid_n_core::dof::Dof6Mask::FREE;
             }
+        }),
+        // モデル検証が見る不変条件の破壊。解析側は Analysis::prepare が別途
+        // validate を呼んでいたため、共通判定へ取り込む前は診断だけが
+        // 挙げる不備になりかねなかった（実際は両者とも止めていた）。
+        ("ID と配列添字の不一致", |m| {
+            m.elements[0].id = squid_n_core::ids::ElemId(99)
+        }),
+        ("存在しない節点への参照", |m| {
+            m.elements[0].nodes[0] = squid_n_core::ids::NodeId(99)
         }),
     ];
 

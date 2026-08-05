@@ -3983,16 +3983,7 @@ impl App {
     pub fn run_diagnostics(&mut self) {
         let mut diags = Vec::new();
 
-        // モデル検証（節点/部材の ID 整合性など）。最初の1件のみ返る。
-        if let Err(e) = self.model.validate() {
-            diags.push(Diagnostic {
-                severity: DiagSeverity::Error,
-                message: format!("モデル検証エラー: {}", e),
-                target: None,
-            });
-        }
-
-        // 解析を妨げる不備（支点なし・断面/材料の未割当・シェルの板厚なし・As=0・
+        // 解析を妨げる不備（モデル検証・支点なし・断面/材料の未割当・シェルの板厚なし・As=0・
         // 耐震壁と周辺架構の種別食い違い・孤立節点など）。判定は解析前チェックと
         // 同じ `model_issues` を使う。診断と解析前チェックが別々に検査を持つと、
         // 片方だけに項目を足したときに「診断は通ったのに解析が止まる」状態になる。

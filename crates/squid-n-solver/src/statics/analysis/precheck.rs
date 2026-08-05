@@ -81,12 +81,22 @@ fn id_list_message(what: &str, label: &str, ids: &[u32], remedy: &str) -> String
 
 /// 解析を妨げるモデルの不備をすべて集める。
 ///
-/// 返す順は「モデル全体の欠落 → 部材の入力不備 → 節点参照の不整合」で、
+/// 返す順は「モデル検証 → モデル全体の欠落 → 部材の入力不備 → 節点参照の不整合」で、
 /// [`precheck_model`] はこの先頭 1 件をエラーにする。
+///
+/// 先頭のモデル検証（[`Model::validate`]）が失敗したときは、その 1 件だけを返して
+/// 打ち切る。検証が見るのは「配列添字 == id」の不変条件と参照整合であり、これが
+/// 崩れたモデルでは後続の検査が別実体を指した結果を報告してしまうため、まず
+/// データの破損を直してもらう。
 pub fn model_issues(model: &Model) -> Vec<ModelIssue> {
     use squid_n_core::model::ElementKind;
 
     let mut issues = Vec::new();
+
+    if let Err(e) = model.validate() {
+        issues.push(ModelIssue::model(format!("モデル検証エラー: {:?}", e)));
+        return issues;
+    }
 
     if model.nodes.is_empty() {
         issues.push(ModelIssue::model(

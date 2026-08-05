@@ -97,13 +97,16 @@ impl<'m> Analysis<'m> {
     /// After this, `linear_static` and `linear_combination` can be called
     /// multiple times reusing the factorized K.
     ///
-    /// 解析前にモデルの静的検証（参照整合・拘束・断面/材料割当・孤立節点）を行い、
-    /// 問題があればユーザー向けの日本語診断メッセージ付きでエラーを返す。
+    /// 解析前にモデルの静的検証（`Model::validate` の不変条件・参照整合・拘束・
+    /// 断面/材料割当・孤立節点）を行い、問題があればユーザー向けの日本語診断
+    /// メッセージ付きでエラーを返す。
+    ///
+    /// 検証は [`precheck::model_issues`] に一本化されており、UI のモデル整合性
+    /// チェック（診断タブ）も同じ関数を呼ぶ。**ここへ検証を直接足さないこと**。
+    /// 足すと診断が同じ不備を挙げられなくなり、「診断は通ったのに解析が止まる」
+    /// 状態に戻る。
     pub fn prepare(model: &'m Model) -> Result<Self, SolveError> {
         squid_n_math::parallelism::apply_to_faer();
-        model
-            .validate()
-            .map_err(|e| SolveError::InvalidInput(format!("モデル検証エラー: {:?}", e)))?;
         precheck::precheck_model(model)?;
         let dofmap = DofMap::build(model);
         let n_active = dofmap.n_active();

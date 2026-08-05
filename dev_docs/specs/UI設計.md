@@ -138,15 +138,18 @@ pub struct Diagnostic { pub severity: DiagSeverity, pub message: String, pub tar
 
 - チェック内容（`App::run_diagnostics`。概ね O(部材数)。耐震壁と周辺架構の種別照合のみ
   O(壁数 × 部材数)。これ以上重い検査は足さない）:
-  モデル検証（`Model::validate`）／解析を妨げる不備
-  （`squid_n_solver::analysis::precheck::model_issues`）／
-  空の地震荷重ケースを参照する荷重組合せ／荷重が空の荷重ケース。
+  解析を妨げる不備（`squid_n_solver::analysis::precheck::model_issues`。モデル検証
+  `Model::validate` を含む）／空の地震荷重ケースを参照する荷重組合せ／
+  荷重が空の荷重ケース。
 - **重要度の規約**:
   - `Error` — 解析前チェックが解析を止める不備。判定は解析前チェック
     （`precheck_model`）と同じ `model_issues` を共有し、片方だけに検査を足して
     「診断は通ったのに解析が止まる」状態が生まれないようにする。
     `PreparationResult::is_ready`（`diag_errors == 0`）がそのまま
     「解析へ進んでよいか」の判定になる。
+    **解析を妨げる検査は `Analysis::prepare` や `run_diagnostics` へ直接書かず、
+    必ず `model_issues` へ足すこと**（`Model::validate` は `Analysis::prepare` 側に
+    直接書かれていたため、診断だけが挙げる不備に見えていた）。
   - `Warning` — 解析は通るが結果が意図と異なりうるもの（空の水平力ケースの参照など）。
   - `Info` — 気づきの提供（荷重が空の荷重ケースなど）。
 - 対象が特定できる不備は対象 1 件ごとに行を作る（100 件超は集約 1 行にまとめる）。
