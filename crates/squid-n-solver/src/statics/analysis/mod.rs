@@ -22,7 +22,7 @@ use squid_n_math::solver::{make_solver, LinearSolver, SolveError, SolverBackend}
 
 mod combination;
 mod config;
-mod precheck;
+pub mod precheck;
 mod seismic;
 mod wind;
 

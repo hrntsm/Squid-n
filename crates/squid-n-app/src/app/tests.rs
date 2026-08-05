@@ -5237,7 +5237,8 @@ fn test_run_diagnostics_no_missing_support_for_sample() {
         .any(|d| d.severity == DiagSeverity::Error && d.message.contains("支点")));
 }
 
-/// 断面未割当の部材があれば Warning が出て、target がその部材を指す。
+/// 断面未割当の部材があれば Error が出て、target がその部材を指す。
+/// 解析前チェックが解析を止める不備のため、`is_ready` が false になる Error とする。
 #[test]
 fn test_run_diagnostics_flags_unassigned_section() {
     let mut model = crate::sample::portal_frame();
@@ -5252,9 +5253,85 @@ fn test_run_diagnostics_flags_unassigned_section() {
         .diagnostics
         .iter()
         .find(|d| matches!(d.target, Some(DiagTarget::Member(id)) if id == target_id))
-        .expect("断面未割当の Warning が出るはず");
-    assert_eq!(diag.severity, DiagSeverity::Warning);
-    assert!(diag.message.contains("断面"));
+        .expect("断面未割当の Error が出るはず");
+    assert_eq!(diag.severity, DiagSeverity::Error);
+    assert!(diag.message.contains("断面"), "{}", diag.message);
+}
+
+/// 材料未割当の部材も断面と同じく部材単位の Error になる。
+///
+/// 解析前チェック（`precheck_model`）は断面・材料のどちらが欠けても解析を止めるが、
+/// 診断はかつて断面しか見ておらず、材料だけが未割当のモデルは E0/W0 と表示された
+/// うえで解析だけが止まっていた。判定を `model_issues` へ共通化して解消している。
+#[test]
+fn test_run_diagnostics_flags_unassigned_material() {
+    let mut model = crate::sample::portal_frame();
+    let target_id = model.elements[0].id;
+    model.elements[0].material = None;
+
+    let mut app = App::default();
+    app.load_model(model);
+    app.run_diagnostics();
+
+    let diag = app
+        .diagnostics
+        .iter()
+        .find(|d| matches!(d.target, Some(DiagTarget::Member(id)) if id == target_id))
+        .expect("材料未割当の Error が出るはず");
+    assert_eq!(diag.severity, DiagSeverity::Error);
+    assert!(diag.message.contains("材料"), "{}", diag.message);
+}
+
+/// 診断が Error を 1 件も出さないモデルは、解析前チェックも通る（逆も同じ）。
+///
+/// 両者が別々の検査を持っていた頃は「診断は E0 なのに解析が止まる」組合せが
+/// 存在した。同じ `model_issues` を共有していることを、代表的な不備で確かめる。
+#[test]
+fn test_diagnostics_errors_agree_with_analysis_precheck() {
+    /// 不備の名前と、健全なモデルへそれを仕込む手続き。
+    type BreakCase = (&'static str, fn(&mut squid_n_core::model::Model));
+
+    let broken: [BreakCase; 4] = [
+        ("断面未割当", |m| m.elements[0].section = None),
+        ("材料未割当", |m| m.elements[0].material = None),
+        ("As=0", |m| {
+            m.sections[0].as_y = 0.0;
+            m.sections[0].as_z = 0.0;
+        }),
+        ("支点なし", |m| {
+            for n in &mut m.nodes {
+                n.restraint = squid_n_core::dof::Dof6Mask::FREE;
+            }
+        }),
+    ];
+
+    // 健全なモデルは診断 Error 0 件・解析前チェック通過。
+    let mut app = App::default();
+    app.load_model(crate::sample::portal_frame());
+    app.run_diagnostics();
+    assert_eq!(
+        app.diagnostics_counts().0,
+        0,
+        "健全なモデルで Error: {:?}",
+        app.diagnostics
+    );
+    assert!(squid_n_solver::analysis::Analysis::prepare(&app.model).is_ok());
+
+    for (name, break_it) in broken {
+        let mut model = crate::sample::portal_frame();
+        break_it(&mut model);
+        let mut app = App::default();
+        app.load_model(model);
+        app.run_diagnostics();
+        assert!(
+            app.diagnostics_counts().0 > 0,
+            "{name}: 解析が止まるのに診断が Error を出していない"
+        );
+        assert!(
+            squid_n_solver::analysis::Analysis::prepare(&app.model).is_err(),
+            "{name}: 診断が Error を出したのに解析前チェックが通った"
+        );
+    }
 }
 
 /// 準備計算が自動生成した仕口パネル要素は「断面未割当」警告の対象外。

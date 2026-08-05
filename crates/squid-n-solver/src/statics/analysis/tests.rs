@@ -184,7 +184,83 @@ fn test_prepare_missing_section_gives_diagnostic() {
     model.elements[0].section = None;
     let err = Analysis::prepare(&model).err().unwrap();
     let msg = format!("{}", err);
-    assert!(msg.contains("未割当"), "{}", msg);
+    assert!(msg.contains("断面が未割当"), "{}", msg);
+}
+
+/// 材料だけが未割当でも解析は止まる。断面と材料は別々の不備として報告し、
+/// どちらを直せばよいかがメッセージから分かるようにする。
+#[test]
+fn test_prepare_missing_material_gives_diagnostic() {
+    let mut model = make_cantilever_model();
+    model.elements[0].material = None;
+    let err = Analysis::prepare(&model).err().unwrap();
+    let msg = format!("{}", err);
+    assert!(msg.contains("材料が未割当"), "{}", msg);
+}
+
+/// `model_issues` は最初の 1 件で打ち切らず、不備をすべて集める。
+/// 診断タブが「あと何を直せば解析できるか」を一覧で示せるようにするため。
+#[test]
+fn test_model_issues_collects_every_issue() {
+    use super::precheck::{model_issues, IssueTargets};
+
+    let mut model = make_cantilever_model();
+    model.elements[0].section = None;
+    model.elements[0].material = None;
+    for n in &mut model.nodes {
+        n.restraint = Dof6Mask::FREE;
+    }
+
+    let issues = model_issues(&model);
+    let messages: Vec<&str> = issues.iter().map(|i| i.message.as_str()).collect();
+    assert!(
+        messages.iter().any(|m| m.contains("拘束(支点)")),
+        "{messages:?}"
+    );
+    assert!(
+        messages.iter().any(|m| m.contains("断面が未割当")),
+        "{messages:?}"
+    );
+    assert!(
+        messages.iter().any(|m| m.contains("材料が未割当")),
+        "{messages:?}"
+    );
+
+    // 部材を名指しする不備は対象 ID を持ち、UI が 3D 選択へ結び付けられる。
+    let section_issue = issues
+        .iter()
+        .find(|i| i.message.contains("断面が未割当"))
+        .unwrap();
+    assert_eq!(
+        section_issue.targets,
+        IssueTargets::Members(vec![model.elements[0].id])
+    );
+
+    // 健全なモデルでは 1 件も出ない。
+    assert!(model_issues(&make_cantilever_model()).is_empty());
+}
+
+/// 部材が 1 つも無いモデルで、全節点を孤立節点として並べない。
+/// 「部材がありません」で同じことを言っており、節点を 1 つずつ挙げても情報が増えない。
+#[test]
+fn test_model_issues_skips_isolated_nodes_without_elements() {
+    use super::precheck::model_issues;
+
+    let mut model = make_cantilever_model();
+    model.elements.clear();
+
+    let messages: Vec<String> = model_issues(&model)
+        .into_iter()
+        .map(|i| i.message)
+        .collect();
+    assert!(
+        messages.iter().any(|m| m.contains("部材がありません")),
+        "{messages:?}"
+    );
+    assert!(
+        !messages.iter().any(|m| m.contains("接続されていない節点")),
+        "{messages:?}"
+    );
 }
 
 #[test]
