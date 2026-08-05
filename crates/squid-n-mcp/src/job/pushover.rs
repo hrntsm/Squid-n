@@ -43,7 +43,6 @@ pub(crate) fn compute_pushover_job(
         false,
         false,
         0.0,
-        false,
         squid_n_solver::pushover::DuctilityMethod::default(),
     )
     .map_err(|e| format!("増分解析エラー: {e}"))?;

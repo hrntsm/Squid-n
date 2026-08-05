@@ -207,7 +207,7 @@ pub enum MechanismType {
     Partial,
 }
 
-/// せん断降伏イベント（段階的耐力喪失解析のせん断降伏判定）。
+/// せん断降伏イベント（SRC 柱・SRC 耐震壁の部材ランク判定に用いる）。
 ///
 /// 部材端のせん断力（局所 Vy・Vz の材端最大値）がせん断降伏耐力 Qy
 /// （[`compute_shear_yield_qy`] 参照）を超えたステップを記録する。曲げヒンジ
@@ -285,7 +285,8 @@ pub struct PushoverResult {
     /// ヒンジ記録（確定ステップごとの閾値超過スナップショットの連なり。
     /// 同一材端が複数ステップで重複して並ぶ。[`HingeEvent`] の記録粒度参照）。
     pub hinges: Vec<HingeEvent>,
-    /// せん断降伏イベント履歴（段階的耐力喪失解析の判定に使用、`strength_loss` モジュール参照）。
+    /// せん断降伏イベント履歴（SRC 柱・SRC 耐震壁の部材ランク判定に使用、
+    /// [`ShearYieldEvent`] 参照）。
     pub shear_yields: Vec<ShearYieldEvent>,
     pub mechanism: MechanismType,
     pub qu: f64,
@@ -320,8 +321,4 @@ pub struct PushoverStep {
     pub top_disp: f64,
     pub base_shear: f64,
     pub story_drifts: Vec<f64>,
-    /// 当該ステップ確定時点の全自由節点変位（`DofMap` のアクティブ添字順）。
-    /// 段階的耐力喪失解析（`strength_loss` モジュール）が部材変形角を算定するための
-    /// 記録で、既定では収集しない（オプトイン、`pushover_analysis_recording` 参照）。
-    pub node_disp: Option<Vec<f64>>,
 }

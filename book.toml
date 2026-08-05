@@ -34,9 +34,8 @@ mathjax-support = true
 "/calc_basis/06_一次設計/README.html" = "index.html"
 "/calc_basis/07_二次設計/README.html" = "index.html"
 "/calc_basis/08_部材終局耐力/README.html" = "index.html"
-"/calc_basis/09_限界耐力計算/README.html" = "index.html"
-"/calc_basis/10_免震制振/README.html" = "index.html"
-"/calc_basis/11_数量積算/README.html" = "index.html"
+"/calc_basis/09_免震制振/README.html" = "index.html"
+"/calc_basis/10_数量積算/README.html" = "index.html"
 
 [output.html.fold]
 enable = true

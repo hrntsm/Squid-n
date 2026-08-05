@@ -69,17 +69,16 @@
 | 15 | プッシュオーバー | squid-n-solver | pushover.rs | — | P5 | 🔶 |
 | 16 | 壁（TVLEM） | squid-n-element | — | — | P5.5 | ❌ |
 | 17 | 時刻歴 | squid-n-solver | timehistory.rs | — | P6 | ❌ |
-| 18 | 限界耐力 | squid-n-design-jp | capacity_spectrum.rs | `test_capacity_spectrum` | P12 | ❌ |
-| 19 | 一軸履歴則（Concrete/Bilinear/MP） | squid-n-material | uniaxial.rs | `test_concrete_*`/`test_bilinear_*`/`test_menegotto_pinto_*` | P4 | ✅ |
-| 20 | 部材履歴則（武田・原点指向・スリップ） | squid-n-material | hysteresis.rs | `tests/hysteresis_snapshots.rs`/`tests/uniaxial_snapshots.rs` | P4 | ✅ |
-| 21 | ファイバ断面（M–φ 積分） | squid-n-section | fiber.rs | `test_section_*` | P4 | ✅ |
-| 22 | スケルトン自動算定（M–φ→M–θ） | squid-n-skeleton | lib.rs | `test_rc_skeleton_*` | P4 | ✅ |
-| 23 | MCP サーバ（rmcp） | squid-n-mcp | lib.rs | — | P8 | ❌ |
-| 24 | ST-Bridge 入出力 | squid-n-io | stbridge.rs | `test_roundtrip_*` | P8 | 🔶 |
-| 25 | 編集トランザクション（EditCommand/Undo） | squid-n-edit | lib.rs | `test_*` | P3/P8 | ✅ |
-| 26 | 終局検定（塑性 Qsu・付着 Qbu・軸 Nuc/Nut・2軸せん断・接合部 Vju/Qdu・CFT 軸終局+N-M・柱 Mu の ACI） | squid-n-design-jp | ultimate/{rc_shear,rc_axial,joint,cft,cft_nm,rc_column_aci,mod}.rs | `test_rc_shear_qsu_plastic_*`/`test_rc_joint_ultimate_*`/`test_cft_*`/`test_cft_short_column_mu_*`/`test_rc_column_mu_aci_*`/`test_biaxial_*`/`test_collect_*_ultimate_checks_*` | P7 | 🔶 |
-| 27 | 数量積算（部位別のコンクリート・型枠・鉄筋・鉄骨・継手個所） | squid-n-design-jp | quantity/{mod,member,rebar}.rs | `quantity::member::tests::*`（手計算照合）/`quantity::tests::*`（走査・分類）/`summary::tests::test_quantity_csv_from_sample_model`（CSV 一気通貫）/`test_quantity_takeoff_json_column`（MCP） | 横断 | 🔶 |
-| 28 | 材料グレード対応表（F 値・鉄筋・Fc・プリセット） | squid-n-core | material_grade.rs | `material_grade::tests::*`（告示値一致） | 横断 | ✅ |
+| 18 | 一軸履歴則（Concrete/Bilinear/MP） | squid-n-material | uniaxial.rs | `test_concrete_*`/`test_bilinear_*`/`test_menegotto_pinto_*` | P4 | ✅ |
+| 19 | 部材履歴則（武田・原点指向・スリップ） | squid-n-material | hysteresis.rs | `tests/hysteresis_snapshots.rs`/`tests/uniaxial_snapshots.rs` | P4 | ✅ |
+| 20 | ファイバ断面（M–φ 積分） | squid-n-section | fiber.rs | `test_section_*` | P4 | ✅ |
+| 21 | スケルトン自動算定（M–φ→M–θ） | squid-n-skeleton | lib.rs | `test_rc_skeleton_*` | P4 | ✅ |
+| 22 | MCP サーバ（rmcp） | squid-n-mcp | lib.rs | — | P8 | ❌ |
+| 23 | ST-Bridge 入出力 | squid-n-io | stbridge.rs | `test_roundtrip_*` | P8 | 🔶 |
+| 24 | 編集トランザクション（EditCommand/Undo） | squid-n-edit | lib.rs | `test_*` | P3/P8 | ✅ |
+| 25 | 終局検定（塑性 Qsu・付着 Qbu・軸 Nuc/Nut・2軸せん断・接合部 Vju/Qdu・CFT 軸終局+N-M・柱 Mu の ACI） | squid-n-design-jp | ultimate/{rc_shear,rc_axial,joint,cft,cft_nm,rc_column_aci,mod}.rs | `test_rc_shear_qsu_plastic_*`/`test_rc_joint_ultimate_*`/`test_cft_*`/`test_cft_short_column_mu_*`/`test_rc_column_mu_aci_*`/`test_biaxial_*`/`test_collect_*_ultimate_checks_*` | P7 | 🔶 |
+| 26 | 数量積算（部位別のコンクリート・型枠・鉄筋・鉄骨・継手個所） | squid-n-design-jp | quantity/{mod,member,rebar}.rs | `quantity::member::tests::*`（手計算照合）/`quantity::tests::*`（走査・分類）/`summary::tests::test_quantity_csv_from_sample_model`（CSV 一気通貫）/`test_quantity_takeoff_json_column`（MCP） | 横断 | 🔶 |
+| 27 | 材料グレード対応表（F 値・鉄筋・Fc・プリセット） | squid-n-core | material_grade.rs | `material_grade::tests::*`（告示値一致） | 横断 | ✅ |
 
 凡例: ✅ 実装済み・🔶 一部実装（要拡張）・❌ 未実装
 

@@ -204,7 +204,7 @@ pub fn propose_and_verify(features: &[f32], model: &squid_n_core::model::Model)
 | 2 | 提案→規準検証ループが MCP から動く | §7.2 | §6 |
 | 3 | 無検証採用の禁止（構造保証） | §7.2 | §6 |
 
-> **全チェック緑＝ P11 完了。** ML は提案、判定は規準計算。次は P12（限界耐力計算）。
+> **全チェック緑＝ P11 完了。** ML は提案、判定は規準計算。
 
 ---
 
@@ -238,4 +238,4 @@ pub fn propose_and_verify(features: &[f32], model: &squid_n_core::model::Model)
 ---
 
 *本仕様書は P11（ML 断面提案）を対象とする。ML は提案のみ・判定は必ず squid-n-design-jp。最適化ループは将来。*
-*次は P12（限界耐力計算）で v2.0 を完結。*
+*P11 の完了をもって v2.0 の ML 断面提案は完結。*

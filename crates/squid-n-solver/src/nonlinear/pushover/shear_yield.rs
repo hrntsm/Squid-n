@@ -1,4 +1,5 @@
-//! せん断降伏耐力 Qy の算定と降伏イベントの追跡（段階的耐力喪失解析用）。
+//! せん断降伏耐力 Qy の算定と降伏イベントの追跡（SRC 柱・SRC 耐震壁の
+//! 部材ランク判定で「破壊モードがせん断破壊か」の判定に用いる）。
 //!
 //! - [`ShearThreshold`] / [`DirThreshold`] / [`ShearDir`] — 方向別 Qy しきい値
 //! - [`compute_shear_yield_thresholds`] — 全部材のしきい値を組み立て
@@ -168,7 +169,7 @@ fn rc_rect_capacity_input(
 /// - RC 系部材で形状がない、または Qsu 算定不能な場合: Qy = as・0.7√fc
 ///   （コンクリートのせん断終局強度に対する簡易慣用値。荒川式等の精算は行わない）。
 /// - 有効せん断断面積 `as_area` が 0（未設定）、または材料・強度情報がない場合は
-///   判定対象外として Qy = +∞（その方向のせん断では耐力喪失を判定しない）。
+///   判定対象外として Qy = +∞（その方向のせん断降伏は判定しない）。
 fn build_dir_threshold(
     as_area: f64,
     material: Option<&Material>,
@@ -281,8 +282,7 @@ fn build_dir_threshold(
     DirThreshold::Static(as_area * 0.7 * fc.sqrt())
 }
 
-/// せん断降伏耐力 Qy [N] を算定する（段階的耐力喪失解析の
-/// せん断降伏判定に使用）。
+/// せん断降伏耐力 Qy [N] を算定する。
 ///
 /// 軸力なし（σ0=0）の静的評価。単体テスト・後方互換用の薄いラッパーで、
 /// [`build_dir_threshold`] が返す [`DirThreshold`] を `n_compress=0` で評価する
