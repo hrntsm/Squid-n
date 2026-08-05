@@ -40,7 +40,9 @@ mod import;
 mod section_std;
 
 pub use export::export_stbridge;
-pub use import::{import_stbridge, import_stbridge_with_report, read_stbridge_file, ImportReport};
+pub use import::{
+    import_stbridge, import_stbridge_with_report, read_stbridge_file, AttrDisposition, ImportReport,
+};
 
 #[derive(Debug, thiserror::Error)]
 pub enum StbError {

@@ -73,6 +73,7 @@ fn portal_frame(rigid: f64, seismic_weight: f64) -> Model {
             width: b,
             as_y: 0.0,
             as_z: 0.0,
+            floor: None,
             panel_thickness: None,
             thickness: None,
             shape: None,

@@ -121,6 +121,7 @@ pub fn to_section(entry: &CatalogEntry, id: SectionId) -> Section {
         width: entry.width,
         as_y: entry.as_y,
         as_z: entry.as_z,
+        floor: None,
         panel_thickness: None,
         thickness: None,
         shape: parse_shape_from_name(entry.shape, &entry.name),

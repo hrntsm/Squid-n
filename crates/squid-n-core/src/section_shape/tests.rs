@@ -644,3 +644,185 @@ fn test_rc_circle_area() {
     assert!((iy - std::f64::consts::PI * 800.0_f64.powi(4) / 64.0).abs() < 1e-6);
     assert!((shape.calc_iy() - shape.calc_iz()).abs() < 1e-6);
 }
+
+// ---------------------------------------------------------------------------
+// 断面形状の寸法表記（docs/model_edit/02_断面の符号と階.md の表と対応）
+// ---------------------------------------------------------------------------
+
+/// 空の配筋（表記は配筋に依存しないため寸法だけを見る）。
+fn no_rebar() -> RcRebar {
+    let zero = BarSet {
+        count: 0,
+        dia: 0.0,
+        layers: 0,
+    };
+    RcRebar {
+        main_grade: None,
+        main_x: zero.clone(),
+        main_y: zero,
+        cover: 0.0,
+        shear: ShearBar {
+            dia: 0.0,
+            pitch: 0.0,
+            legs: 0,
+            grade: None,
+        },
+    }
+}
+
+/// 全形状の寸法表記が、ドキュメントに記載した接頭辞・寸法順と一致する。
+#[test]
+fn test_dimension_label_covers_all_shapes() {
+    let cases: Vec<(SectionShape, &str)> = vec![
+        (
+            SectionShape::SteelH {
+                height: 500.0,
+                width: 250.0,
+                web_thick: 9.0,
+                flange_thick: 16.0,
+            },
+            "H-500x250x9x16",
+        ),
+        (
+            SectionShape::SteelBuiltH {
+                height: 800.0,
+                upper_width: 300.0,
+                upper_thick: 19.0,
+                lower_width: 400.0,
+                lower_thick: 25.0,
+                web_thick: 12.0,
+            },
+            "BH-800x300x19x400x25x12",
+        ),
+        (
+            SectionShape::SteelBox {
+                height: 300.0,
+                width: 300.0,
+                thick: 12.0,
+                // 角部外半径は表記に含めない。
+                corner_r: 42.0,
+            },
+            "BOX-300x300x12",
+        ),
+        (
+            SectionShape::SteelPipe {
+                outer_dia: 216.3,
+                thick: 8.0,
+            },
+            "P-216.3x8",
+        ),
+        (
+            SectionShape::SteelAngle {
+                leg_a: 75.0,
+                leg_b: 75.0,
+                thick: 9.0,
+            },
+            "L-75x75x9",
+        ),
+        (
+            SectionShape::SteelChannel {
+                height: 200.0,
+                width: 80.0,
+                web_thick: 7.5,
+                flange_thick: 11.0,
+            },
+            "CH-200x80x7.5x11",
+        ),
+        (
+            SectionShape::SteelLipChannel {
+                height: 150.0,
+                width: 75.0,
+                lip: 20.0,
+                thick: 3.2,
+            },
+            "LC-150x75x20x3.2",
+        ),
+        (
+            SectionShape::SteelTee {
+                height: 100.0,
+                width: 200.0,
+                web_thick: 8.0,
+                flange_thick: 12.0,
+            },
+            "T-100x200x8x12",
+        ),
+        (
+            SectionShape::SteelFlatBar {
+                width: 100.0,
+                thick: 9.0,
+            },
+            "FB-100x9",
+        ),
+        (SectionShape::SteelRoundBar { dia: 25.0 }, "RB-25"),
+        (
+            SectionShape::RcRect {
+                b: 300.0,
+                d: 600.0,
+                rebar: no_rebar(),
+            },
+            "BD-300x600",
+        ),
+        (
+            SectionShape::RcCircle {
+                d: 600.0,
+                rebar: no_rebar(),
+            },
+            "RD-600",
+        ),
+        (
+            SectionShape::SrcRect {
+                b: 500.0,
+                d: 800.0,
+                rebar: no_rebar(),
+                steel_height: 400.0,
+                steel_width: 200.0,
+                steel_web_thick: 8.0,
+                steel_flange_thick: 13.0,
+                steel_grade: "SN400B".into(),
+            },
+            "SRC-500x800+H-400x200x8x13",
+        ),
+        (
+            SectionShape::CftBox {
+                height: 300.0,
+                width: 300.0,
+                thick: 12.0,
+            },
+            "CFT-BOX-300x300x12",
+        ),
+        (
+            SectionShape::CftPipe {
+                outer_dia: 300.0,
+                thick: 9.0,
+            },
+            "CFT-P-300x9",
+        ),
+        (
+            SectionShape::RcWall {
+                thickness: 180.0,
+                ps: 0.0025,
+            },
+            "W-t180",
+        ),
+    ];
+    for (shape, expected) in cases {
+        assert_eq!(shape.dimension_label(), expected, "shape={shape:?}");
+    }
+}
+
+/// 整数の寸法は小数点以下を落とし、端数のある寸法はそのまま出す。
+/// 丸めで別寸法が同じ表記になると断面を見分けられなくなるため、小数は 3 桁まで残す。
+#[test]
+fn test_dimension_label_number_format() {
+    let label = |t: f64| {
+        SectionShape::SteelFlatBar {
+            width: 100.0,
+            thick: t,
+        }
+        .dimension_label()
+    };
+    assert_eq!(label(9.0), "FB-100x9");
+    assert_eq!(label(3.2), "FB-100x3.2");
+    assert_eq!(label(4.5), "FB-100x4.5");
+    assert_eq!(label(1.234), "FB-100x1.234");
+}

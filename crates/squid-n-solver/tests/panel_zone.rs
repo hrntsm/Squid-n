@@ -55,6 +55,7 @@ fn steel_section(id: u32, shape: SectionShape, depth: f64, width: f64, area: f64
         width,
         as_y: area * 0.4,
         as_z: area * 0.4,
+        floor: None,
         panel_thickness: None,
         thickness: None,
         shape: Some(shape),

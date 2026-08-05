@@ -425,6 +425,7 @@ fn test_standard_mode_fallback_raw_for_shapeless() {
         width: 300.0,
         as_y: 0.0,
         as_z: 0.0,
+        floor: None,
         panel_thickness: None,
         thickness: None,
         shape: None,
@@ -627,8 +628,12 @@ fn test_import_rc_without_bar_arrangement_uses_default() {
     }
 }
 
-/// 標準モードで柱・梁に分割された共有鋼断面が、import で 2 断面として復元され
-/// 各部材が別 id を参照する（検証を通る）。
+/// 標準モードで柱・梁に分割された共有鋼断面が、import で元の 1 断面へ統合され、
+/// 両部材が同じ id を参照する（検証を通る）。
+///
+/// 書き出しは共有断面を柱用（`StbSecColumn_S`）・梁用（`StbSecBeam_S`）へ分割するが、
+/// 分割後の 2 定義は符号も階も同じで断面性能も一致する。断面の同一性キーは符号＋階
+/// なので、取り込みでこの 2 定義は 1 件へ統合され、往復で断面が増えない。
 #[test]
 fn test_standard_import_recovers_split_shared_section() {
     let mut m = frame_nodes();
@@ -645,18 +650,26 @@ fn test_standard_import_recovers_split_shared_section() {
     let xml = export_stbridge(&m).unwrap();
     let back = import_stbridge(&xml).expect("import");
     assert!(back.validate().is_ok(), "{:?}", back.validate());
-    assert_eq!(back.sections.len(), 2, "共有断面は柱用・梁用に分割される");
-    assert!(
-        back.sections
-            .iter()
-            .all(|s| matches!(s.shape, Some(SectionShape::SteelH { .. }))),
-        "両断面とも H 形鋼として復元される"
+    assert_eq!(
+        back.sections.len(),
+        1,
+        "分割された 2 定義は符号＋階と断面性能が一致するため 1 断面へ統合される"
     );
+    assert!(
+        matches!(back.sections[0].shape, Some(SectionShape::SteelH { .. })),
+        "H 形鋼として復元される"
+    );
+    assert_eq!(back.sections[0].name, "S1");
     assert_eq!(back.elements[0].section, Some(SectionId(0)));
-    assert_eq!(back.elements[1].section, Some(SectionId(1)));
+    assert_eq!(
+        back.elements[1].section,
+        Some(SectionId(0)),
+        "柱・梁とも統合後の同じ断面を参照する"
+    );
 }
 
-/// 柱・梁で共有する RC 矩形断面が、配筋ごと 2 断面へ分割・復元される。
+/// 柱・梁で共有する RC 矩形断面が、配筋ごと往復する。
+/// 書き出しで柱用・梁用へ分割されるが、取り込みで 1 断面へ統合される。
 #[test]
 fn test_standard_roundtrip_shared_rc_rect_rebar() {
     let mut m = frame_nodes();
@@ -672,10 +685,15 @@ fn test_standard_roundtrip_shared_rc_rect_rebar() {
 
     let back = import_stbridge(&export_stbridge(&m).unwrap()).expect("import");
     assert!(back.validate().is_ok(), "{:?}", back.validate());
-    assert_eq!(back.sections.len(), 2, "共有 RC 断面は 2 断面へ分割される");
-    // 分割された両断面とも、元の形状・配筋が保存されている。
+    assert_eq!(
+        back.sections.len(),
+        1,
+        "分割された共有 RC 断面は 1 件へ統合される"
+    );
+    // 元の形状・配筋が保存されている。
     assert_eq!(back.sections[0].shape, m.sections[0].shape);
-    assert_eq!(back.sections[1].shape, m.sections[0].shape);
+    assert_eq!(back.elements[0].section, Some(SectionId(0)));
+    assert_eq!(back.elements[1].section, Some(SectionId(0)));
 }
 
 /// grade=None の配筋も完全一致で往復する（strength_band 属性を出力しない経路）。
@@ -1869,6 +1887,7 @@ fn test_wall_roundtrip_export_import() {
         width: 0.0,
         as_y: 0.0,
         as_z: 0.0,
+        floor: None,
         panel_thickness: None,
         thickness: Some(250.0),
         shape: None,
@@ -2565,4 +2584,170 @@ fn test_import_non_parallel_axes_as_other() {
     // 平行芯グループが 1 つもないモデルは StbAxes 自体を出力しない。
     let out = export_stbridge(&m).expect("export");
     assert!(!out.contains("<StbAxes>"), "{out}");
+}
+
+// ---------------------------------------------------------------------------
+// 断面の同一性キー（符号＋階）と属性の扱いの報告
+// ---------------------------------------------------------------------------
+
+/// 階（`floor`）を持つ断面を取り込み、符号と階の両方が保持される。
+/// ST-Bridge は同じ符号の断面を階ごとに別定義で持つため、階を落とすと別断面が
+/// 区別できなくなる。
+#[test]
+fn test_import_keeps_section_floor() {
+    let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<ST_BRIDGE version="2.0.2"><StbModel>
+  <StbNodes>
+    <StbNode id="1" X="0" Y="0" Z="0"/>
+    <StbNode id="2" X="0" Y="0" Z="4000"/>
+  </StbNodes>
+  <StbSections>
+    <StbSecColumn_S id="1" name="C1" floor="1">
+      <StbSecSteelFigureColumn_S>
+        <StbSecSteelColumn_S_Same shape="H-300x150x6.5x9"/>
+      </StbSecSteelFigureColumn_S>
+    </StbSecColumn_S>
+    <StbSecColumn_S id="2" name="C1" floor="2">
+      <StbSecSteelFigureColumn_S>
+        <StbSecSteelColumn_S_Same shape="BOX-300x300x12"/>
+      </StbSecSteelFigureColumn_S>
+    </StbSecColumn_S>
+    <StbSecSteel>
+      <StbSecRoll-H name="H-300x150x6.5x9" type="H" A="300" B="150" t1="6.5" t2="9"/>
+      <StbSecRoll-BOX name="BOX-300x300x12" type="BOX" A="300" B="300" t="12"/>
+    </StbSecSteel>
+  </StbSections>
+</StbModel></ST_BRIDGE>"#;
+    let m = import_stbridge(xml).expect("import");
+    assert_eq!(m.sections.len(), 2, "階が違えば別断面");
+    assert_eq!(m.sections[0].name, "C1");
+    assert_eq!(m.sections[0].floor.as_deref(), Some("1"));
+    assert_eq!(m.sections[1].name, "C1");
+    assert_eq!(m.sections[1].floor.as_deref(), Some("2"));
+    // 階は書き出しでも保持する（往復で同一性キーが崩れない）。
+    let out = export_stbridge(&m).expect("export");
+    assert!(out.contains(r#"floor="1""#), "{out}");
+    assert!(out.contains(r#"floor="2""#), "{out}");
+    let back = import_stbridge(&out).expect("re-import");
+    assert_eq!(back.sections.len(), 2);
+    assert_eq!(back.sections[0].floor.as_deref(), Some("1"));
+    assert_eq!(back.sections[1].floor.as_deref(), Some("2"));
+}
+
+/// 符号＋階が同じで内容も同じ断面定義は 1 件へ統合し、参照していた部材は
+/// 統合先を指す。統合したことは notes で通知する。
+#[test]
+fn test_import_merges_identical_duplicate_sections() {
+    let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<ST_BRIDGE version="2.0.2"><StbModel>
+  <StbNodes>
+    <StbNode id="1" X="0" Y="0" Z="0"/>
+    <StbNode id="2" X="5000" Y="0" Z="0"/>
+    <StbNode id="3" X="10000" Y="0" Z="0"/>
+  </StbNodes>
+  <StbSections>
+    <StbSecBeam_S id="1" name="b3">
+      <StbSecSteelFigureBeam_S>
+        <StbSecSteelBeam_S_Straight shape="H-300x150x6.5x9"/>
+      </StbSecSteelFigureBeam_S>
+    </StbSecBeam_S>
+    <StbSecBeam_S id="2" name="b3">
+      <StbSecSteelFigureBeam_S>
+        <StbSecSteelBeam_S_Straight shape="H-300x150x6.5x9"/>
+      </StbSecSteelFigureBeam_S>
+    </StbSecBeam_S>
+    <StbSecSteel>
+      <StbSecRoll-H name="H-300x150x6.5x9" type="H" A="300" B="150" t1="6.5" t2="9"/>
+    </StbSecSteel>
+  </StbSections>
+  <StbMembers>
+    <StbGirders>
+      <StbGirder id="1" name="G1" id_node_start="1" id_node_end="2" id_section="1"/>
+      <StbGirder id="2" name="G2" id_node_start="2" id_node_end="3" id_section="2"/>
+    </StbGirders>
+  </StbMembers>
+</StbModel></ST_BRIDGE>"#;
+    let (m, report) = import_stbridge_with_report(xml).expect("import");
+    assert!(m.validate().is_ok(), "{:?}", m.validate());
+    assert_eq!(m.sections.len(), 1, "同一内容の重複定義は統合される");
+    assert_eq!(
+        m.elements[0].section, m.elements[1].section,
+        "統合先を両部材が参照する"
+    );
+    assert!(
+        report.notes.iter().any(|n| n.contains("統合")),
+        "notes: {:?}",
+        report.notes
+    );
+}
+
+/// 符号＋階が同じでも断面性能が違う定義は捨てず、符号へ連番を付けて残す。
+/// 定義を 1 件も失わずに「符号＋階は一意」の不変条件を保つための扱い。
+#[test]
+fn test_import_renames_conflicting_duplicate_sections() {
+    let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<ST_BRIDGE version="2.0.2"><StbModel>
+  <StbNodes>
+    <StbNode id="1" X="0" Y="0" Z="0"/>
+    <StbNode id="2" X="5000" Y="0" Z="0"/>
+  </StbNodes>
+  <StbSections>
+    <StbSecBeam_S id="1" name="b3">
+      <StbSecSteelFigureBeam_S>
+        <StbSecSteelBeam_S_Straight shape="H-300x150x6.5x9"/>
+      </StbSecSteelFigureBeam_S>
+    </StbSecBeam_S>
+    <StbSecBeam_S id="2" name="b3">
+      <StbSecSteelFigureBeam_S>
+        <StbSecSteelBeam_S_Straight shape="H-400x200x8x13"/>
+      </StbSecSteelFigureBeam_S>
+    </StbSecBeam_S>
+    <StbSecSteel>
+      <StbSecRoll-H name="H-300x150x6.5x9" type="H" A="300" B="150" t1="6.5" t2="9"/>
+      <StbSecRoll-H name="H-400x200x8x13" type="H" A="400" B="200" t1="8" t2="13"/>
+    </StbSecSteel>
+  </StbSections>
+</StbModel></ST_BRIDGE>"#;
+    let (m, report) = import_stbridge_with_report(xml).expect("import");
+    assert_eq!(m.sections.len(), 2, "内容が違う定義は捨てない");
+    assert_eq!(m.sections[0].name, "b3");
+    assert_eq!(m.sections[1].name, "b3#2", "符号へ連番を付けて一意にする");
+    assert!(
+        report.warnings.iter().any(|w| w.contains("b3#2")),
+        "warnings: {:?}",
+        report.warnings
+    );
+}
+
+/// ファイルに存在した属性は、取り込んだものも取り込まなかったものもすべて報告する。
+/// 無視リストを持たないため `guid` も未取り込みとして現れる。
+#[test]
+fn test_import_reports_attribute_dispositions() {
+    let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<ST_BRIDGE version="2.0.2"><StbModel>
+  <StbNodes>
+    <StbNode id="1" guid="abc" X="0" Y="0" Z="0" kind="ON_GIRDER"/>
+  </StbNodes>
+</StbModel></ST_BRIDGE>"#;
+    let (_m, report) = import_stbridge_with_report(xml).expect("import");
+    let find = |attr: &str| {
+        report
+            .attributes
+            .iter()
+            .find(|a| a.element == "StbNode" && a.attribute == attr)
+            .unwrap_or_else(|| panic!("{attr} の扱いが報告されていない: {:?}", report.attributes))
+    };
+    assert_eq!(find("X").imported, 1, "座標は取り込む");
+    assert!(!find("X").is_dropped());
+    assert!(find("guid").is_dropped(), "guid は取り込まない");
+    assert!(find("kind").is_dropped(), "kind は取り込まない");
+    // 報告は要素名・属性名の昇順（HashMap の走査順に依存しない）。
+    let mut sorted = report.attributes.clone();
+    sorted.sort_by(|a, b| {
+        a.element
+            .cmp(&b.element)
+            .then_with(|| a.attribute.cmp(&b.attribute))
+    });
+    assert_eq!(sorted, report.attributes, "報告は整列済み");
+    assert!(report.dropped_attributes().count() >= 2);
 }

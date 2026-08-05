@@ -10,7 +10,9 @@ impl SectionShape {
     /// Build a fully-populated `squid_n_core::Section` from the shape parameters.
     ///
     /// `id` and `name` must be supplied by the caller; all section properties
-    /// are computed automatically.
+    /// are computed automatically. 階（`Section::floor`）は形状から決まらないため
+    /// `None` とし、必要な呼び出し側（ST-Bridge 取り込み・断面形状の変更）が
+    /// 生成後に設定する。
     pub fn to_section(&self, id: SectionId, name: String) -> Section {
         let area = self.calc_area();
         let iy = self.calc_iy();
@@ -157,6 +159,7 @@ impl SectionShape {
         Section {
             id,
             name,
+            floor: None,
             area,
             iy,
             iz,

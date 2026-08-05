@@ -767,6 +767,7 @@ fn sections_section(ui: &mut egui::Ui, prep: &PreparationResult) {
         .id_salt("prep_sections")
         .column(Column::initial(50.0))
         .column(Column::initial(180.0))
+        .column(Column::initial(50.0))
         .column(Column::initial(100.0))
         .column(Column::initial(60.0))
         .column(Column::initial(110.0))
@@ -780,7 +781,8 @@ fn sections_section(ui: &mut egui::Ui, prep: &PreparationResult) {
         .header(row_h, |mut h| {
             for t in &[
                 "ID",
-                "断面",
+                "符号",
+                "階",
                 "形状",
                 "部材数",
                 "D×B [mm]",
@@ -805,6 +807,13 @@ fn sections_section(ui: &mut egui::Ui, prep: &PreparationResult) {
                 });
                 row.col(|ui| {
                     ui.label(&r.name);
+                });
+                row.col(|ui| {
+                    // 同じ符号の断面を階で見分けられるようにする（断面の同一性は符号＋階）。
+                    match r.floor.as_deref() {
+                        Some(f) => ui.label(f),
+                        None => ui.colored_label(crate::theme::GRAY_600, "—"),
+                    };
                 });
                 row.col(|ui| {
                     match r.shape_label.as_deref() {

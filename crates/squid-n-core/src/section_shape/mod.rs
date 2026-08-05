@@ -9,11 +9,13 @@
 //! - [`properties`] — 基本断面性能（A, Iy, Iz, J, ...）
 //! - [`composite`] — SRC/CFT の複合換算断面性能
 //! - [`builder`] — Section 生成
+//! - [`label`] — 形状と寸法の表記（`H-500x250x9x16` 等）
 
 mod builder;
 mod composite;
 mod constants;
 mod geometry;
+mod label;
 mod material;
 mod properties;
 mod types;

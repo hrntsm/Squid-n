@@ -79,6 +79,7 @@ fn make_model(n_cases: usize) -> Model {
             width: 10.0,
             as_y: 83.33,
             as_z: 83.33,
+            floor: None,
             panel_thickness: None,
             thickness: None,
             shape: None,

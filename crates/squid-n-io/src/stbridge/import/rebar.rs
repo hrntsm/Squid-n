@@ -1,7 +1,7 @@
 //! ST-Bridge の配筋（`StbSecBarArrangement*`）属性の解析（best-effort）。
 
+use super::xml::Attrs;
 use squid_n_core::section_shape::{BarSet, RcRebar, ShearBar};
-use std::collections::HashMap;
 
 /// ST-Bridge 標準断面（幾何のみ）から復元する RC 断面の既定配筋（無筋相当）。
 /// 弾性断面性能は b・d のみで決まり配筋に依存しないため、往復での剛性は保たれる。
@@ -48,10 +48,10 @@ fn parse_bar_dia(v: &str) -> Option<f64> {
 /// 段別本数（`N_main_X_1st`/`_2nd`/`_3rd`、梁は `N_main_top`/`_bottom` の各段）は合算して
 /// 総本数とし、非ゼロの段数を `layers` に反映する。呼び名→公称径の正確な対応や、梁の
 /// 上端/下端 ↔ 内部 `main_x`/`main_y`（せい/幅方向）の厳密な意味対応は今後の課題。
-pub(super) fn parse_rebar(a: &HashMap<String, String>) -> RcRebar {
+pub(super) fn parse_rebar(a: &Attrs) -> RcRebar {
     let f = |keys: &[&str]| -> f64 {
         for k in keys {
-            if let Some(v) = a.get(*k) {
+            if let Some(v) = a.get(k) {
                 if let Ok(x) = v.parse::<f64>() {
                     return x;
                 }
@@ -62,7 +62,7 @@ pub(super) fn parse_rebar(a: &HashMap<String, String>) -> RcRebar {
     // 径（数値 or 呼び名 `D22`）。
     let dia = |keys: &[&str]| -> f64 {
         for k in keys {
-            if let Some(v) = a.get(*k) {
+            if let Some(v) = a.get(k) {
                 if let Some(x) = parse_bar_dia(v) {
                     return x;
                 }
@@ -72,7 +72,7 @@ pub(super) fn parse_rebar(a: &HashMap<String, String>) -> RcRebar {
     };
     let u = |keys: &[&str]| -> u32 {
         for k in keys {
-            if let Some(v) = a.get(*k) {
+            if let Some(v) = a.get(k) {
                 if let Ok(x) = v.parse::<u32>() {
                     return x;
                 }
@@ -88,7 +88,7 @@ pub(super) fn parse_rebar(a: &HashMap<String, String>) -> RcRebar {
     // 各引数: totals=合計本数キー, layers=段ごとの候補キー列, layer_attr=明示段数キー。
     let count_and_layers = |totals: &[&str], stages: &[&[&str]], layer_attr: &str| -> (u32, u32) {
         for k in totals {
-            if let Some(x) = a.get(*k).and_then(|v| v.parse::<u32>().ok()) {
+            if let Some(x) = a.get(k).and_then(|v| v.parse::<u32>().ok()) {
                 let l = a
                     .get(layer_attr)
                     .and_then(|v| v.parse::<u32>().ok())
@@ -102,7 +102,7 @@ pub(super) fn parse_rebar(a: &HashMap<String, String>) -> RcRebar {
         for stage in stages {
             if let Some(x) = stage
                 .iter()
-                .find_map(|k| a.get(*k).and_then(|v| v.parse::<u32>().ok()))
+                .find_map(|k| a.get(k).and_then(|v| v.parse::<u32>().ok()))
             {
                 if x > 0 {
                     sum += x;

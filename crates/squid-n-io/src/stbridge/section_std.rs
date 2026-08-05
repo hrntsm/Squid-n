@@ -30,6 +30,18 @@ fn sid(id: u32) -> u32 {
     id + 1
 }
 
+/// 断面の階を `floor` 属性へ整形する（階を持たない断面は属性ごと省く）。
+///
+/// ST-Bridge 2.0 の `floor` は省略可能な `xs:string` なので、未設定を空文字列で
+/// 書き出すと取り込み側で「階なし」と「階が空文字列」を区別できなくなる。
+/// 属性を出さないことで往復しても同一性キー（符号＋階）が保たれる。
+fn floor_attr(sec: &Section) -> String {
+    match &sec.floor {
+        Some(f) => format!(" floor=\"{}\"", esc(f)),
+        None => String::new(),
+    }
+}
+
 /// 標準モードで生成した断面ブロックと、部材参照の張り替え用 id マップ。
 pub(super) struct StandardSections {
     /// 断面要素群（柱・梁・ブレース。`StbSections` のスキーマ順に整列済み。形鋼ライブラリは含まない）。
@@ -400,13 +412,14 @@ fn steel_figure(shape: &SectionShape) -> Option<(String, String)> {
 fn steel_column(id: u32, sec: &Section, figure: &str, strength: &str) -> String {
     let id = sid(id);
     format!(
-        "      <StbSecColumn_S id=\"{}\" name=\"{}\" kind_column=\"COLUMN\">\n\
+        "      <StbSecColumn_S id=\"{}\" name=\"{}\"{} kind_column=\"COLUMN\">\n\
          \x20       <StbSecSteelFigureColumn_S>\n\
          \x20         <StbSecSteelColumn_S_Same shape=\"{}\"{}/>\n\
          \x20       </StbSecSteelFigureColumn_S>\n\
          \x20     </StbSecColumn_S>\n",
         id,
         esc(&sec.name),
+        floor_attr(sec),
         esc(figure),
         strength
     )
@@ -416,13 +429,14 @@ fn steel_column(id: u32, sec: &Section, figure: &str, strength: &str) -> String 
 fn steel_beam(id: u32, sec: &Section, figure: &str, strength: &str) -> String {
     let id = sid(id);
     format!(
-        "      <StbSecBeam_S id=\"{}\" name=\"{}\" kind_beam=\"GIRDER\">\n\
+        "      <StbSecBeam_S id=\"{}\" name=\"{}\"{} kind_beam=\"GIRDER\">\n\
          \x20       <StbSecSteelFigureBeam_S>\n\
          \x20         <StbSecSteelBeam_S_Straight shape=\"{}\"{}/>\n\
          \x20       </StbSecSteelFigureBeam_S>\n\
          \x20     </StbSecBeam_S>\n",
         id,
         esc(&sec.name),
+        floor_attr(sec),
         esc(figure),
         strength
     )
@@ -568,7 +582,7 @@ fn rc_column(
 ) -> String {
     let id = sid(id);
     format!(
-        "      <StbSecColumn_RC id=\"{}\" name=\"{}\"{}>\n\
+        "      <StbSecColumn_RC id=\"{}\" name=\"{}\"{}{}>\n\
          \x20       <StbSecFigureColumn_RC>\n\
          \x20         {}\n\
          \x20       </StbSecFigureColumn_RC>\n\
@@ -576,6 +590,7 @@ fn rc_column(
          \x20     </StbSecColumn_RC>\n",
         id,
         esc(&sec.name),
+        floor_attr(sec),
         id_mat,
         figure_body,
         rebar_arrangement_column(shape),
@@ -592,7 +607,7 @@ fn rc_beam(
 ) -> String {
     let id = sid(id);
     format!(
-        "      <StbSecBeam_RC id=\"{}\" name=\"{}\"{}>\n\
+        "      <StbSecBeam_RC id=\"{}\" name=\"{}\"{}{}>\n\
          \x20       <StbSecFigureBeam_RC>\n\
          \x20         {}\n\
          \x20       </StbSecFigureBeam_RC>\n\
@@ -600,6 +615,7 @@ fn rc_beam(
          \x20     </StbSecBeam_RC>\n",
         id,
         esc(&sec.name),
+        floor_attr(sec),
         id_mat,
         figure_body,
         rebar_arrangement_beam(shape),
@@ -627,13 +643,14 @@ fn cft_figure(shape: &SectionShape, steel: &mut SteelLibrary) -> Option<String> 
 fn cft_column(id: u32, sec: &Section, figure: &str, id_mat: &str) -> String {
     let id = sid(id);
     format!(
-        "      <StbSecColumn_CFT id=\"{}\" name=\"{}\"{}>\n\
+        "      <StbSecColumn_CFT id=\"{}\" name=\"{}\"{}{}>\n\
          \x20       <StbSecSteelFigureColumn_CFT>\n\
          \x20         <StbSecSteelColumn_CFT_Same shape=\"{}\"/>\n\
          \x20       </StbSecSteelFigureColumn_CFT>\n\
          \x20     </StbSecColumn_CFT>\n",
         id,
         esc(&sec.name),
+        floor_attr(sec),
         id_mat,
         esc(figure)
     )
@@ -714,7 +731,7 @@ fn src_section(
     };
     let id = sid(id);
     format!(
-        "      <{elem} id=\"{id}\" name=\"{name}\"{id_mat} strength_steel=\"{grade}\">\n\
+        "      <{elem} id=\"{id}\" name=\"{name}\"{floor}{id_mat} strength_steel=\"{grade}\">\n\
          \x20       <{fig_wrap}>\n\
          \x20         {fig_body}\n\
          \x20       </{fig_wrap}>\n\
@@ -726,6 +743,7 @@ fn src_section(
         elem = elem,
         id = id,
         name = esc(&sec.name),
+        floor = floor_attr(sec),
         id_mat = id_mat,
         grade = esc(&grade),
         fig_wrap = fig_wrap,
@@ -779,9 +797,10 @@ fn rebar_arrangement_generic(shape: &SectionShape, is_beam: bool, kind: &str) ->
 fn raw(id: u32, sec: &Section) -> String {
     let id = sid(id);
     format!(
-        "      <StbSecRaw id=\"{}\" name=\"{}\" area=\"{}\" iy=\"{}\" iz=\"{}\" j=\"{}\" depth=\"{}\" width=\"{}\"/>\n",
+        "      <StbSecRaw id=\"{}\" name=\"{}\"{} area=\"{}\" iy=\"{}\" iz=\"{}\" j=\"{}\" depth=\"{}\" width=\"{}\"/>\n",
         id,
         esc(&sec.name),
+        floor_attr(sec),
         num(sec.area),
         num(sec.iy),
         num(sec.iz),

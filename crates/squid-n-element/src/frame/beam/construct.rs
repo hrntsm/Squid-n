@@ -34,6 +34,7 @@ fn get_section(model: &Model, sid: Option<squid_n_core::ids::SectionId>) -> Sect
         width: 0.0,
         as_y: 0.0,
         as_z: 0.0,
+        floor: None,
         panel_thickness: None,
         thickness: None,
         shape: None,

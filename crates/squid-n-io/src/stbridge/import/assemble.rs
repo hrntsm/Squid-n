@@ -24,6 +24,7 @@ pub(super) fn assemble(parsed: StbParser) -> Result<(Model, ImportReport), StbEr
     let StbParser {
         mut warnings,
         unsupported,
+        attr_usage,
         raw_nodes,
         raw_stories,
         raw_materials,
@@ -86,8 +87,17 @@ pub(super) fn assemble(parsed: StbParser) -> Result<(Model, ImportReport), StbEr
 
     let section_material = section_material_map(&model, &pending_secs, &material_index);
 
+    let mut notes: Vec<String> = Vec::new();
+
     // 断面 id を整列・連番へ再割当てし、形鋼名を解決してモデルへ格納する。
-    let section_index = build_sections(&mut model, pending_secs, &steel_lib, &mut warnings);
+    // 符号＋階が重複する定義の統合・改番もここで行う。
+    let section_index = build_sections(
+        &mut model,
+        pending_secs,
+        &steel_lib,
+        &mut warnings,
+        &mut notes,
+    );
 
     let mut stats = LinkStats::default();
     build_members(
@@ -128,7 +138,6 @@ pub(super) fn assemble(parsed: StbParser) -> Result<(Model, ImportReport), StbEr
     build_load_cases(&mut model, raw_load_cases, &node_index, &mut warnings);
     warn_unsupported(&unsupported, &mut warnings);
 
-    let mut notes: Vec<String> = Vec::new();
     push_import_notes(
         &mut notes,
         guessed_categories,
@@ -138,7 +147,37 @@ pub(super) fn assemble(parsed: StbParser) -> Result<(Model, ImportReport), StbEr
     );
     auto_assign_supports(&mut model, &mut notes);
 
-    Ok((model, ImportReport { warnings, notes }))
+    let attributes = attr_dispositions(attr_usage);
+    Ok((
+        model,
+        ImportReport {
+            warnings,
+            notes,
+            attributes,
+        },
+    ))
+}
+
+/// 属性の扱いの集計を、要素名・属性名の昇順に整列した報告へ変換する。
+/// 整列は出力の決定性のため（`HashMap` の走査順は不定）。
+fn attr_dispositions(
+    usage: HashMap<(String, String), super::parser::AttrCount>,
+) -> Vec<super::AttrDisposition> {
+    let mut v: Vec<super::AttrDisposition> = usage
+        .into_iter()
+        .map(|((element, attribute), c)| super::AttrDisposition {
+            element,
+            attribute,
+            count: c.total,
+            imported: c.imported,
+        })
+        .collect();
+    v.sort_by(|a, b| {
+        a.element
+            .cmp(&b.element)
+            .then_with(|| a.attribute.cmp(&b.attribute))
+    });
+    v
 }
 
 /// 節点と階を id 正規化してモデルへ格納する（階所属の解決・補完を含む）。
@@ -586,8 +625,10 @@ fn build_slabs(
 /// 壁（StbWall）を壁要素（`ElementKind::Wall`）として格納する。
 ///
 /// 厚さ（StbSecWall_RC）は t>0 のとき厚さ専用の Section を末尾に追加して参照する
-/// （壁自重は section.thickness を用いるため）。3頂点未満・存在しない節点を含む壁は
-/// スキップして報告する。
+/// （壁自重は section.thickness を用いるため）。断面は**厚さごとに 1 件**とし、同じ厚さの
+/// 壁が何枚あっても使い回す（断面の同一性キー「符号＋階」を壁でも一意に保つため。
+/// 壁ごとに断面を作ると `Wall t180` が枚数分並び、断面一覧が実態と合わなくなる）。
+/// 3頂点未満・存在しない節点を含む壁はスキップして報告する。
 fn build_walls(
     model: &mut Model,
     raw_walls: Vec<RawWall>,
@@ -597,6 +638,9 @@ fn build_walls(
     warnings: &mut Vec<String>,
 ) {
     let mut skipped_walls = 0u32;
+    // 壁厚 → 生成済みの厚さ専用断面。同じ厚さの壁で断面を使い回すための索引。
+    // f64 は Hash を持たないため、符号（`Wall t180`）そのものをキーにする。
+    let mut wall_sections: HashMap<String, SectionId> = HashMap::new();
     for rw in raw_walls {
         let mut boundary: smallvec::SmallVec<[NodeId; 8]> =
             smallvec::SmallVec::with_capacity(rw.boundary.len());
@@ -614,16 +658,28 @@ fn build_walls(
             skipped_walls += 1;
             continue;
         }
-        // 厚さ >0 のときのみ厚さ専用断面を作成して参照する。
+        // 厚さ >0 のときのみ厚さ専用断面を参照する（同じ厚さなら既存の断面を使い回す）。
         let section = rw
             .section_fid
             .and_then(|fid| wall_sec_thickness.get(&fid).copied())
             .filter(|t| *t > 0.0)
             .map(|t| {
+                let base = format!("Wall t{}", t);
+                if let Some(&sid) = wall_sections.get(&base) {
+                    return sid;
+                }
+                // 断面定義側に同名の断面があるとキーが衝突するため、空いた符号まで送る
+                // （壁の厚さ断面は階を持たないので、符号だけで一意になればよい）。
+                let mut name = base.clone();
+                let mut n = 2u32;
+                while squid_n_core::model::section_key_taken(&model.sections, (&name, None), None) {
+                    name = format!("{base}#{n}");
+                    n += 1;
+                }
                 let sid = SectionId(model.sections.len() as u32);
                 model.sections.push(Section {
                     id: sid,
-                    name: format!("Wall t{}", t),
+                    name: name.clone(),
                     area: 0.0,
                     iy: 0.0,
                     iz: 0.0,
@@ -632,10 +688,12 @@ fn build_walls(
                     width: 0.0,
                     as_y: 0.0,
                     as_z: 0.0,
+                    floor: None,
                     panel_thickness: None,
                     thickness: Some(t),
                     shape: None,
                 });
+                wall_sections.insert(base, sid);
                 sid
             });
         let material = rw
@@ -878,19 +936,34 @@ fn build_index(ids: impl Iterator<Item = u32>) -> HashMap<u32, u32> {
 
 /// 保留していた断面を id 昇順に整列・連番へ再割当てし、形鋼名を解決して
 /// `model.sections` を構築する。返り値は 元の file id → 再割当て後 index のマップ。
+///
+/// ST-Bridge は断面の一意キーが `guid` で、同じ符号の断面を階ごとに別定義として持つ。
+/// Squid-n の断面は**符号＋階**が一意キーなので、キーが衝突した定義はここで解決する。
+///
+/// - 断面性能・形状が完全に一致するものは 1 件へ統合し、参照していた file id を
+///   同じ index へ写す（統合件数は `notes` で通知する）
+/// - 一致しないものは符号へ連番を付けて（`b3` → `b3#2`）別断面として残す。
+///   キーを一意にしたうえで定義を 1 件も捨てないための扱いで、`warnings` で通知する
 fn build_sections(
     model: &mut Model,
     mut pending: Vec<PendingSec>,
     steel_lib: &HashMap<String, SectionShape>,
     warnings: &mut Vec<String>,
+    notes: &mut Vec<String>,
 ) -> HashMap<u32, u32> {
     // file id 昇順で整列（Standard 書き出しは分割断面を文書順に整列させないため）。
     pending.sort_by_key(|s| s.file_id);
 
     let mut index_map: HashMap<u32, u32> = HashMap::new();
-    for (idx, ps) in pending.into_iter().enumerate() {
-        let new_id = SectionId(idx as u32);
-        index_map.insert(ps.file_id, idx as u32);
+    // 符号＋階 → model.sections の添字。衝突の検出と統合先の解決に使う。
+    let mut by_key: HashMap<(String, Option<String>), usize> = HashMap::new();
+    let mut merged = 0u32;
+    let mut renamed: Vec<String> = Vec::new();
+    for ps in pending.into_iter() {
+        let file_id = ps.file_id;
+        let floor = ps.floor.clone();
+        // 統合・改番で最終的な添字が決まるまで id は仮置きする（下で確定させる）。
+        let new_id = SectionId(model.sections.len() as u32);
         let section = match ps.kind {
             PendingSecKind::Raw {
                 area,
@@ -910,6 +983,7 @@ fn build_sections(
                 width,
                 as_y: 0.0,
                 as_z: 0.0,
+                floor: None,
                 panel_thickness: None,
                 thickness: None,
                 shape: None,
@@ -999,9 +1073,70 @@ fn build_sections(
                 .to_section(new_id, ps.name)
             }
         };
-        model.sections.push(section);
+        let mut section = section;
+        section.floor = floor;
+
+        // 符号＋階の衝突を解決してから格納する。
+        let idx = match by_key.get(&(section.name.clone(), section.floor.clone())) {
+            // 完全に同じ断面の重複定義。統合し、参照だけを既存の断面へ向ける。
+            Some(&existing) if model.sections[existing].properties_eq(&section) => {
+                merged += 1;
+                existing
+            }
+            // 同じ符号＋階で中身が違う。定義を捨てないよう符号へ連番を付けて残す。
+            Some(_) => {
+                let original = section.name.clone();
+                let mut n = 2u32;
+                while by_key.contains_key(&(format!("{original}#{n}"), section.floor.clone())) {
+                    n += 1;
+                }
+                section.name = format!("{original}#{n}");
+                renamed.push(format!("{} → {}", original, section.name));
+                push_section(model, &mut by_key, section)
+            }
+            None => push_section(model, &mut by_key, section),
+        };
+        index_map.insert(file_id, idx as u32);
+    }
+    if merged > 0 {
+        notes.push(format!(
+            "符号＋階と断面性能が同一の断面定義 {merged} 件を既存の断面へ統合しました"
+        ));
+    }
+    if !renamed.is_empty() {
+        // 衝突が多いファイルで警告 1 行が際限なく伸びないよう、列挙は先頭のみに留める。
+        const MAX_LISTED: usize = 10;
+        let listed = renamed
+            .iter()
+            .take(MAX_LISTED)
+            .cloned()
+            .collect::<Vec<_>>()
+            .join("、");
+        let rest = renamed.len().saturating_sub(MAX_LISTED);
+        let tail = if rest > 0 {
+            format!("（ほか {rest} 件）")
+        } else {
+            String::new()
+        };
+        warnings.push(format!(
+            "符号＋階が重複し断面性能が異なる断面が {} 件あったため、符号に連番を付けて取り込みました: {listed}{tail}",
+            renamed.len()
+        ));
     }
     index_map
+}
+
+/// 断面を末尾へ追加し、`id`（＝配列添字）を確定して符号＋階の索引へ登録する。
+fn push_section(
+    model: &mut Model,
+    by_key: &mut HashMap<(String, Option<String>), usize>,
+    mut section: Section,
+) -> usize {
+    let idx = model.sections.len();
+    section.id = SectionId(idx as u32);
+    by_key.insert((section.name.clone(), section.floor.clone()), idx);
+    model.sections.push(section);
+    idx
 }
 
 /// 物性ゼロ・形状なしの断面（形鋼名未解決などのフォールバック。解析前に要確認）。
@@ -1017,6 +1152,7 @@ fn zero_section(id: SectionId, name: String) -> Section {
         width: 0.0,
         as_y: 0.0,
         as_z: 0.0,
+        floor: None,
         panel_thickness: None,
         thickness: None,
         shape: None,

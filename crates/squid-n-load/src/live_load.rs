@@ -132,6 +132,7 @@ mod tests {
             width: 300.0,
             as_y: 8000.0,
             as_z: 8000.0,
+            floor: None,
             panel_thickness: None,
             thickness: None,
             shape: None,

@@ -94,10 +94,16 @@ impl EditCommand for SetSectionField {
     }
 }
 
-/// 断面名称変更。
+/// 断面の符号と階の変更。
+///
+/// 断面の同一性キーは符号＋階なので、既存の断面と同じ組合せになる変更は
+/// [`Noop`] として拒否する（モデル側の不変条件を GUI 以外の呼び出し元に対しても守る）。
+/// 呼び出し側は事前に [`squid_n_core::model::section_key_taken`] で判定し、
+/// 利用者へ理由を示したうえでコマンドを発行しないことが望ましい。
 pub struct SetSectionName {
     pub id: SectionId,
     pub name: String,
+    pub floor: Option<String>,
 }
 
 impl EditCommand for SetSectionName {
@@ -106,28 +112,49 @@ impl EditCommand for SetSectionName {
         if idx >= model.sections.len() || model.sections[idx].id != self.id {
             return Box::new(Noop);
         }
-        let old = std::mem::replace(&mut model.sections[idx].name, self.name.clone());
+        // 符号＋階が他の断面と衝突する変更は適用しない。
+        if squid_n_core::model::section_key_taken(
+            &model.sections,
+            (self.name.as_str(), self.floor.as_deref()),
+            Some(idx),
+        ) {
+            return Box::new(Noop);
+        }
+        let old_name = std::mem::replace(&mut model.sections[idx].name, self.name.clone());
+        let old_floor = std::mem::replace(&mut model.sections[idx].floor, self.floor.clone());
         Box::new(SetSectionName {
             id: self.id,
-            name: old,
+            name: old_name,
+            floor: old_floor,
         })
     }
 
     fn label(&self) -> &str {
-        "断面名称変更"
+        "断面符号・階変更"
     }
 }
 
 /// 断面形状を新規追加（UI-3 の新規断面作成）。
+///
+/// 符号＋階が既存の断面と衝突する追加は [`Noop`] として拒否する。
 pub struct AddSectionShape {
     pub shape: squid_n_section::shape::SectionShape,
     pub new_id: SectionId,
     pub name: String,
+    pub floor: Option<String>,
 }
 
 impl EditCommand for AddSectionShape {
     fn apply(&self, model: &mut Model) -> Box<dyn EditCommand> {
-        let sec = self.shape.to_section(self.new_id, self.name.clone());
+        if squid_n_core::model::section_key_taken(
+            &model.sections,
+            (self.name.as_str(), self.floor.as_deref()),
+            None,
+        ) {
+            return Box::new(Noop);
+        }
+        let mut sec = self.shape.to_section(self.new_id, self.name.clone());
+        sec.floor = self.floor.clone();
         model.sections.push(sec);
         Box::new(DeleteSection { id: self.new_id })
     }
@@ -138,6 +165,9 @@ impl EditCommand for AddSectionShape {
 }
 
 /// 断面形状変更。逆操作は RestoreSection。
+///
+/// 符号と階は断面の同一性キーなので、形状を差し替えても維持する
+/// （`to_section` は形状から決まらない階を `None` で返すため、明示的に引き継ぐ）。
 pub struct EditSectionShape {
     pub section: SectionId,
     pub new_shape: squid_n_section::shape::SectionShape,
@@ -150,7 +180,8 @@ impl EditCommand for EditSectionShape {
             return Box::new(Noop);
         }
         let old = model.sections[idx].clone();
-        let new_sec = self.new_shape.to_section(self.section, old.name.clone());
+        let mut new_sec = self.new_shape.to_section(self.section, old.name.clone());
+        new_sec.floor = old.floor.clone();
         model.sections[idx] = new_sec;
         Box::new(RestoreSection { old })
     }
@@ -180,6 +211,54 @@ impl EditCommand for RestoreSection {
     }
 }
 
+/// カタログから選んだ断面（数値直入力）を末尾へ追加する。
+///
+/// 断面性能はカタログの表値をそのまま用いるため形状からは作れず、
+/// [`AddSectionShape`] とは別の経路になる。符号＋階が既存の断面と衝突する追加は
+/// [`Noop`] として拒否する。逆操作の [`AddSection`] は削除の取り消し専用で
+/// 衝突判定を持たないため、新規追加はこちらを使う。
+pub struct AddCatalogSection {
+    pub section: squid_n_core::model::Section,
+}
+
+impl EditCommand for AddCatalogSection {
+    fn apply(&self, model: &mut Model) -> Box<dyn EditCommand> {
+        let mut sec = self.section.clone();
+        if squid_n_core::model::section_key_taken(&model.sections, sec.key(), None) {
+            return Box::new(Noop);
+        }
+        let new_id = SectionId(model.sections.len() as u32);
+        sec.id = new_id;
+        model.sections.push(sec);
+        Box::new(DeleteSection { id: new_id })
+    }
+
+    fn label(&self) -> &str {
+        "カタログ断面追加"
+    }
+}
+
+/// 複製断面の符号を、符号＋階が既存の断面と衝突しないように決める。
+/// `C1(複製)` を起点に、埋まっていれば `C1(複製2)`・`C1(複製3)`… と後ろへ送る。
+fn unique_duplicate_name(
+    sections: &[squid_n_core::model::Section],
+    base: &str,
+    floor: Option<&str>,
+) -> String {
+    let first = format!("{base}(複製)");
+    if !squid_n_core::model::section_key_taken(sections, (first.as_str(), floor), None) {
+        return first;
+    }
+    let mut n = 2u32;
+    loop {
+        let candidate = format!("{base}(複製{n})");
+        if !squid_n_core::model::section_key_taken(sections, (candidate.as_str(), floor), None) {
+            return candidate;
+        }
+        n += 1;
+    }
+}
+
 /// 部材が参照する断面を複製し、部材に新断面を割り当てる。
 pub struct DuplicateSectionForMember {
     pub member: ElemId,
@@ -203,7 +282,9 @@ impl EditCommand for DuplicateSectionForMember {
         let new_id = SectionId(model.sections.len() as u32);
         let mut new_sec = orig.clone();
         new_sec.id = new_id;
-        new_sec.name = format!("{}(複製)", orig.name);
+        // 符号＋階は一意でなければならないため、階は元断面のまま符号を自動採番する
+        // （同じ断面を 2 回複製しても衝突しない）。
+        new_sec.name = unique_duplicate_name(&model.sections, &orig.name, orig.floor.as_deref());
         model.sections.push(new_sec);
         model.elements[elem_idx].section = Some(new_id);
         Box::new(RestoreElementSectionAndDeleteSection {

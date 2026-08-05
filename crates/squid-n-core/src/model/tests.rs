@@ -364,6 +364,7 @@ fn test_section_new_fields_default() {
         width: 0.0,
         as_y: 0.0,
         as_z: 0.0,
+        floor: None,
         panel_thickness: None,
         thickness: None,
         shape: None,
@@ -769,4 +770,80 @@ fn test_requires_section_and_material_excludes_property_driven_elements() {
             "{kind:?} は専用の特性値から剛性を作るため断面・材料を持たない"
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// 断面の同一性キー（符号＋階）
+// ---------------------------------------------------------------------------
+
+fn named_section(id: u32, name: &str, floor: Option<&str>) -> Section {
+    Section {
+        id: crate::ids::SectionId(id),
+        name: name.to_string(),
+        floor: floor.map(str::to_string),
+        area: 1.0e4,
+        iy: 1.0e8,
+        iz: 1.0e8,
+        j: 1.0e8,
+        depth: 300.0,
+        width: 300.0,
+        as_y: 0.0,
+        as_z: 0.0,
+        panel_thickness: None,
+        thickness: None,
+        shape: None,
+    }
+}
+
+/// 同一性キーは符号と階の組で、階が違えば別断面になる。
+#[test]
+fn test_section_key_pairs_name_and_floor() {
+    let a = named_section(0, "C1", Some("1"));
+    let b = named_section(1, "C1", Some("2"));
+    let c = named_section(2, "C1", None);
+    assert_ne!(a.key(), b.key(), "階が違えば別のキー");
+    assert_ne!(a.key(), c.key(), "階の有無も区別する");
+    assert_eq!(a.key(), ("C1", Some("1")));
+    assert_eq!(c.key(), ("C1", None));
+}
+
+/// 表示用ラベルは階を持つ断面だけ括弧で階を添える。
+#[test]
+fn test_section_display_name() {
+    assert_eq!(named_section(0, "C1", Some("2")).display_name(), "C1 (2)");
+    assert_eq!(named_section(0, "C1", None).display_name(), "C1");
+}
+
+/// `section_key_taken` は自分自身を除外できる（改名で自分と衝突しないため）。
+#[test]
+fn test_section_key_taken_skips_self() {
+    let sections = vec![
+        named_section(0, "C1", Some("1")),
+        named_section(1, "C1", Some("2")),
+    ];
+    assert!(section_key_taken(&sections, ("C1", Some("1")), None));
+    assert!(
+        !section_key_taken(&sections, ("C1", Some("1")), Some(0)),
+        "自分自身は衝突扱いにしない"
+    );
+    assert!(
+        section_key_taken(&sections, ("C1", Some("1")), Some(1)),
+        "他の断面との衝突は検出する"
+    );
+    assert!(!section_key_taken(&sections, ("C1", Some("3")), None));
+    assert!(!section_key_taken(&sections, ("C1", None), None));
+}
+
+/// `properties_eq` は同一性キーを見ず、断面性能・形状だけを比べる。
+/// 取り込みで符号＋階が衝突した定義を統合してよいかの判定に使う。
+#[test]
+fn test_section_properties_eq_ignores_key() {
+    let a = named_section(0, "C1", Some("1"));
+    let mut b = named_section(1, "C9", Some("PH1"));
+    assert!(
+        a.properties_eq(&b),
+        "符号・階・ID が違っても中身が同じなら真"
+    );
+    b.iy *= 2.0;
+    assert!(!a.properties_eq(&b));
 }
