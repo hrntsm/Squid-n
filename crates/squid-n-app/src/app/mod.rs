@@ -2243,6 +2243,11 @@ impl eframe::App for App {
                 .default_size(200.0)
                 .size_range(80.0..=520.0)
                 .show_inside(ui, |ui| {
+                    // egui の上下パネルは「中身の高さ＝パネルの高さ」となり、その高さが
+                    // PanelState として保存される。中身の短いタブ（準備計算の未実行時・
+                    // ログ 0 件など）を開くとドックが最小高さまで縮み、他タブへ戻しても
+                    // 縮んだままになる。割り当て済みの高さを下限に固定して高さを保つ。
+                    ui.set_min_height(ui.available_height());
                     ui.horizontal(|ui| {
                         let log_label = format!("ログ ({})", self.log.entries.len());
                         if ui
