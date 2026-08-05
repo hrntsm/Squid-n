@@ -93,8 +93,14 @@ pub fn model_issues(model: &Model) -> Vec<ModelIssue> {
 
     let mut issues = Vec::new();
 
+    // `CoreError` は日本語 UI へ出す前提の Display（"index mismatch: ..." 等）を持つ。
+    // `{:?}` にすると "IndexMismatch(\"...\")" と Rust の列挙子表記が露出するため
+    // Display で出し、他の不備と同じく是正方法を添える。
     if let Err(e) = model.validate() {
-        issues.push(ModelIssue::model(format!("モデル検証エラー: {:?}", e)));
+        issues.push(ModelIssue::model(format!(
+            "モデル検証エラー: {e}。モデルの ID 参照が壊れています。\
+             直前の編集を取り消すか、保存済みのプロジェクトファイルを開き直してください。"
+        )));
         return issues;
     }
 
