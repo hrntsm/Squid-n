@@ -2322,7 +2322,6 @@ impl App {
             false,
             false,
             0.0,
-            false,
             cfg.ductility_method,
         )
         .map_err(|e| format!("増分解析エラー: {}", e))

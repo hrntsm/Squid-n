@@ -256,7 +256,6 @@ fn run_case(control: PushoverControl) -> (f64, PushoverResult) {
         false, // use_kg
         false, // use_arc_length
         0.0,
-        false, // record_node_disp
         DuctilityMethod::default(),
     )
     .expect("pushover should converge");

@@ -43,8 +43,7 @@ use squid_n_core::model::{
 };
 
 /// 重力加速度 [mm/s²]（内部単位系 N-mm-s、質量 ton）。
-/// レビュー §1.11: `squid-n-core` 側の定数（`capacity_spectrum.rs` も使用）と
-/// ソースオブトゥルースを統一する。
+/// 値は `squid-n-core` の定数を単一情報源とし、クレートごとに再定義しない。
 use squid_n_core::units::GRAVITY_MM_S2;
 
 /// 同一階とみなす標高差 [mm]。

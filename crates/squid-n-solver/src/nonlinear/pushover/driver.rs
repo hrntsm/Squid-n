@@ -121,7 +121,6 @@ pub fn pushover_analysis(
         use_kg,
         use_arc_length,
         arc_length_dl,
-        false,
         DuctilityMethod::default(),
     )
 }
@@ -134,10 +133,6 @@ pub fn pushover_analysis(
 /// 荷重増分を継続する）を選択できる。`apply_long_term` が真の場合、長期系荷重
 /// ケース（`LoadCaseKind::is_long_term`）の外力を水平力増分の前に載荷して初期
 /// 応力状態とし、全フェーズで保持する（長期荷重ケースがないモデルでは何もしない）。
-/// `record_node_disp` が真の場合、各ステップの
-/// `PushoverStep::node_disp` に全自由節点変位を記録する（段階的耐力喪失解析の
-/// 部材変形角算定用、`strength_loss` モジュール参照）。既存 API を壊さないよう
-/// `pushover_analysis` は本関数に `record_node_disp = false` で委譲する薄いラッパー。
 #[allow(clippy::too_many_arguments)]
 pub fn pushover_analysis_recording(
     model: &Model,
@@ -151,7 +146,6 @@ pub fn pushover_analysis_recording(
     use_kg: bool,
     use_arc_length: bool,
     arc_length_dl: f64,
-    record_node_disp: bool,
     ductility_method: DuctilityMethod,
 ) -> Result<PushoverResult, String> {
     let n_active = dofmap.n_active();
@@ -433,7 +427,6 @@ pub fn pushover_analysis_recording(
             top_disp: roof,
             base_shear,
             story_drifts: story_drift,
-            node_disp: record_node_disp.then(|| total_disp.clone()),
         });
         let mu = update_ductility(
             &behaviors,
@@ -529,7 +522,6 @@ pub fn pushover_analysis_recording(
                     top_disp: roof,
                     base_shear,
                     story_drifts: story_drift,
-                    node_disp: record_node_disp.then(|| total_disp.clone()),
                 });
                 let mu = update_ductility(
                     &behaviors,
@@ -764,7 +756,6 @@ pub fn pushover_analysis_recording(
                             top_disp: roof,
                             base_shear,
                             story_drifts: story_drift,
-                            node_disp: record_node_disp.then(|| total_disp.clone()),
                         });
                         let mu = update_ductility(
                             &behaviors,
@@ -928,7 +919,6 @@ pub fn pushover_analysis_recording(
                         top_disp: roof,
                         base_shear,
                         story_drifts: story_drift,
-                        node_disp: record_node_disp.then(|| total_disp.clone()),
                     });
                     // ヒンジ・せん断降伏の追跡は荷重制御・変位制御と同じ扱いで継続する
                     // （従来は弧長法フェーズだけ追跡が抜けており、耐力ピーク以降に

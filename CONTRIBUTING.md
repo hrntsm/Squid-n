@@ -32,7 +32,6 @@ cargo build --workspace --release
 | `gpu` | squid-n-gpu | GPU 行列演算（P10、実装中） |
 | `ml` | squid-n-ml | ML 断面提案（P11、未実装） |
 | `p7` | squid-n-design-jp | 二次設計（Ds、偏心率、保有耐力、パネルせん断）。既定で有効 |
-| `p12` | squid-n-design-jp | 限界耐力計算（容量スペクトル法）。未実装・opt-in |
 
 GPU や ML を無効化しても解析機能は CPU で動作する。
 

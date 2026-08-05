@@ -512,7 +512,6 @@ fn test_pushover_computes_member_ductility() {
         false,
         false,
         0.0,
-        false,
         DuctilityMethod::FirstYield,
     )
     .expect("pushover should run");
@@ -550,7 +549,6 @@ fn test_pushover_ductility_method_selection_changes_reference() {
             false,
             false,
             0.0,
-            false,
             method,
         )
         .expect("pushover should run");
@@ -2590,7 +2588,6 @@ fn test_pushover_load_only_extends_beyond_design_level() {
         false,
         false,
         0.0,
-        false,
         DuctilityMethod::default(),
     )
     .expect("pushover should run");
@@ -2666,7 +2663,6 @@ fn test_pushover_long_term_preload_sets_initial_axial_state() {
         false,
         false,
         0.0,
-        false,
         DuctilityMethod::default(),
     )
     .expect("pushover should run");
@@ -2715,7 +2711,6 @@ fn test_pushover_long_term_preload_sets_initial_axial_state() {
         false,
         false,
         0.0,
-        false,
         DuctilityMethod::default(),
     )
     .expect("pushover should run");
@@ -2745,7 +2740,6 @@ fn test_pushover_load_only_without_target_stops_at_lambda_1() {
         false,
         false,
         0.0,
-        false,
         DuctilityMethod::default(),
     )
     .expect("pushover should run");
@@ -3026,7 +3020,6 @@ fn test_pushover_drift_angle_target_forms_hinge_with_stiffness_reduction() {
         false,
         false,
         0.0,
-        false,
         DuctilityMethod::default(),
     )
     .expect("pushover should run");
@@ -3098,7 +3091,6 @@ fn test_pushover_both_targets_stop_at_earlier_one() {
         false,
         false,
         0.0,
-        false,
         DuctilityMethod::default(),
     )
     .expect("pushover should run");
@@ -3134,7 +3126,6 @@ fn test_pushover_drift_angle_target_runs_with_multi_spring() {
         false,
         false,
         0.0,
-        false,
         DuctilityMethod::default(),
     )
     .expect("MS 柱の増分解析が完走すること");
@@ -3305,7 +3296,6 @@ fn test_pushover_drift_angle_target_runs_with_wall_panel() {
         false,
         false,
         0.0,
-        false,
         DuctilityMethod::default(),
     )
     .expect("耐震壁モデルの増分解析が完走すること");
@@ -3360,7 +3350,6 @@ fn test_pushover_fiber_hinge_softens_at_drift_target() {
         false,
         false,
         0.0,
-        false,
         DuctilityMethod::default(),
     )
     .expect("fiber pushover should run");
@@ -3423,7 +3412,6 @@ fn test_pushover_wall_flexural_yield_softens() {
         false,
         false,
         0.0,
-        false,
         DuctilityMethod::default(),
     )
     .expect("細長壁の増分解析が完走すること");
@@ -3514,7 +3502,6 @@ fn test_pushover_unconverged_load_control_reports_reason() {
         false,
         false,
         0.0,
-        false,
         DuctilityMethod::default(),
     )
     .expect_err("1 ステップも確定しないなら空の結果を返さず停止する");
