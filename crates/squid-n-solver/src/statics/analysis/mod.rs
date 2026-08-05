@@ -164,7 +164,7 @@ impl<'m> Analysis<'m> {
     }
 
     /// 仕口パネルのせん断モーメント `{MSX, MSY}` を接合部の節点ごとに回収する。
-    /// パネル要素が無ければ空。
+    /// パネル要素がなければ空。
     fn recover_panel_moments(&self, u_free: &[f64]) -> Vec<(squid_n_core::ids::NodeId, [f64; 2])> {
         let mut out = Vec::new();
         for (elem, (behavior, gdofs)) in self.model.elements.iter().zip(self.behavior_cache.iter())
@@ -262,7 +262,7 @@ impl<'m> Analysis<'m> {
             )));
         }
         // `prepare` が全荷重ケースぶん事前計算済みのメモ化を使う
-        // （`assemble_global_f` の再計算を避ける）。キャッシュに無い場合
+        // （`assemble_global_f` の再計算を避ける）。キャッシュにない場合
         // （想定外の経路）はその場で計算する。
         let f_free = self
             .f_free_cache

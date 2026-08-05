@@ -24,7 +24,7 @@ pub fn assemble_csc(n: usize, mut triplets: Vec<Triplet>) -> SparseColMat<usize,
 ///
 /// 失敗は自由度番号の割当バグ（`n` を超える row/col）に限られるため回復不能
 /// として panic するが、原因調査に足る診断（n・三つ組数・範囲外の要素）を
-/// メッセージへ含める（従来の `expect("valid triplets")` は診断価値が無かった）。
+/// メッセージへ含める（従来の `expect("valid triplets")` は診断価値がなかった）。
 fn csc_from_merged(
     n: usize,
     merged: &[faer::sparse::Triplet<usize, usize, f64>],

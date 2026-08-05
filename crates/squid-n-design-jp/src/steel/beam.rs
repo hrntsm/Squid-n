@@ -108,7 +108,7 @@ pub(crate) fn check_beam(
             // C 係数の解決（直接入力 > 部分区間なら安全側 1.0 > 自動算定）。
             // 「座屈区間端部」のモーメント比によるが、実装が保持するのは部材端
             // モーメントのみ。横補剛で lb が部材の部分区間となる場合は区間端
-            // モーメント比が不明なため、直接入力が無ければ安全側の C=1.0 とする。
+            // モーメント比が不明なため、直接入力がなければ安全側の C=1.0 とする。
             let c = steel_c_factor(ctx, lb < ctx.length - 1e-9);
             match ctx.steel_fb_rule {
                 SteelFbRule::Old => {
@@ -1528,7 +1528,7 @@ mod tests {
         assert!(steel_beam_deflection(&ctx, &sec, &material).is_none());
     }
 
-    /// 梁検定 detail に短期ではたわみ出力が無いこと（長期では出力されること）
+    /// 梁検定 detail に短期ではたわみ出力がないこと（長期では出力されること）
     /// を確認する。
     #[test]
     fn test_beam_check_detail_deflection_only_for_long_term() {

@@ -115,8 +115,8 @@ pub fn rebar_sigma_y_of(rebar: &RcRebar, mat: &Material) -> f64 {
 
 /// 主筋の降伏点 σy [N/mm²]（終局曲げ ΣMy 算定用）。
 ///
-/// `Material.fy` があればそれを、無ければ材料名（鉄筋グレード名）の数値部
-/// （例 "SD345"→345）を、どちらも無ければ 345（SD345 相当）を用いる。
+/// `Material.fy` があればそれを、なければ材料名（鉄筋グレード名）の数値部
+/// （例 "SD345"→345）を、どちらもなければ 345（SD345 相当）を用いる。
 /// 断面に主筋材質が設定されている場合は [`rebar_sigma_y_of`] を用いること。
 pub fn rebar_sigma_y(mat: &Material) -> f64 {
     if let Some(fy) = mat.fy {

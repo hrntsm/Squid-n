@@ -377,7 +377,7 @@ pub struct AnalysisSettings {
     /// 増分解析: 制御方式（段階制御／荷重増分のみ）。
     pub push_control: squid_n_solver::pushover::PushoverControl,
     /// 増分解析: 長期系荷重ケース（固定・積載等）を水平力増分の前に初期載荷するか。
-    /// 長期荷重ケースが無いモデルでは無視される（ソルバ側の対応実装に依存）。
+    /// 長期荷重ケースがないモデルでは無視される（ソルバ側の対応実装に依存）。
     pub push_apply_long_term: bool,
     /// 質点系モデル生成: モデル化タイプ（等価せん断型など）。
     pub lumped_mass_type: squid_n_solver::lumped_mass::LumpedMassType,
@@ -1335,7 +1335,7 @@ pub fn column_live_load_factors(model: &squid_n_core::model::Model) -> Vec<(Elem
 ///   （その場合は密度からの自重直接算入と二重計上になるため。
 ///   [`density_self_weight_for_stories`] 参照）。
 /// - `kind == LiveSeismic`（地震用積載）のケースがあれば併せて対象とする。
-///   無ければ `kind == Live`（長期用積載）で代用する
+///   なければ `kind == Live`（長期用積載）で代用する
 ///   （地震用の積載荷重には地震用の値を用いる（令85条）。地震用の値が
 ///   個別に定義されていなければ長期用の値をそのまま使う）。ただし
 ///   スラブ自動生成の骨組用積載ケース（[`LL_FRAME_CASE_NAME`]）は
@@ -1388,7 +1388,7 @@ fn gravity_cases_for_seismic_weight(model: &squid_n_core::model::Model) -> Vec<L
 ///
 /// 標準構成では躯体自重は「DL」（kind=Dead・[`DL_CASE_NAME`]）へ自動同期され、
 /// `gravity_cases_for_seismic_weight` が DL を重力ケースに含めるため、密度からの
-/// 直接算入は行わない（`false`）。DL ケースが無い旧モデル・手動構成では従来
+/// 直接算入は行わない（`false`）。DL ケースがない旧モデル・手動構成では従来
 /// どおり密度から直接算入する（`true`）。
 fn density_self_weight_for_stories(model: &squid_n_core::model::Model) -> bool {
     !model
@@ -1652,15 +1652,15 @@ fn rc_capacity_input_from_rect(
 }
 
 /// 長期軸力の簡易近似として先頭荷重ケース(`model.load_cases.first()`)の結果を優先し、
-/// `bundle.statics` に無ければ従来どおり最後に実行した静的解析結果(`member_forces`)を
+/// `bundle.statics` になければ従来どおり最後に実行した静的解析結果(`member_forces`)を
 /// 用いて部材の軸力を取得する。圧縮のときのみ σ0 \[N/mm²\]（= |N|/(b・D)）を返す。
-/// 引張・軸力なし・対象部材の結果が無い場合は 0.0（安全側）。
+/// 引張・軸力なし・対象部材の結果がない場合は 0.0（安全側）。
 ///
 /// `statics` は `StaticCaseKey` をキーとするため、ユーザー荷重ケースの結果
 /// (`StaticCaseKey::User`)と地震静的の結果(`StaticCaseKey::Seismic`)は別々に
 /// 格納される（旧実装では両者とも `LoadCaseId(0)` を共有し、後から実行した方が
 /// 先頭荷重ケースの結果を上書きしてしまう問題があったが、型で区別したことで解消済み）。
-/// 先頭荷重ケースが `statics` に無い（未実行）場合のみ `fallback_member_forces`
+/// 先頭荷重ケースが `statics` にない（未実行）場合のみ `fallback_member_forces`
 /// （最後に実行した静的解析の内力）を用いる。
 ///
 /// # 符号規約（要確認済み・推測ではない）
@@ -1954,7 +1954,7 @@ fn beam_group_overrides(
 /// 危険断面位置（§6.2.3、既定は柱フェイスと中央）を正規化座標 \[0,1\] で算定する。
 /// `squid_n_element::beam::BeamElement::new` の `eval_sections` 算定と同じ規則
 /// （xi_i は \[0.0, 0.5) へ、xi_j は (0.5, 1.0\] へクランプ）で face_i/face_j から
-/// 求める。face=0（直交材が無い端）では節点芯（0.0/1.0）と一致する。
+/// 求める。face=0（直交材がない端）では節点芯（0.0/1.0）と一致する。
 ///
 /// `detail`（`Model::member_detail(elem.id)`）が付帯情報を持つ場合は、その
 /// 追加検定位置（ハンチ端・継手位置。`MemberDetailAttr::extra_check_positions`）

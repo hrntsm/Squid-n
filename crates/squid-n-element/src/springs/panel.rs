@@ -159,7 +159,7 @@ struct ResolvedPanel {
 ///
 /// 本関数が加えるのは、解決した柱から取る材料量（せん断弾性係数 `G`・基準強度 `F`・
 /// 軸力比の基準軸力）だけである。`F` は鋼種名の前方一致（板厚 40mm 区分）で解決し、
-/// 解決できない場合は材料の `fy`、それも無ければ 235 とする（断面検定と同じ規則）。
+/// 解決できない場合は材料の `fy`、それもなければ 235 とする（断面検定と同じ規則）。
 fn resolve(model: &Model, node: NodeId) -> Option<ResolvedPanel> {
     let joint = resolve_panel_joint(model, node, &model.elements)?;
     // CFT はモデル化の対象外（充填部がせん断挙動に関与するため剛節点として扱う）。
@@ -350,7 +350,7 @@ impl PanelZone {
         self.to_node_frame(m)
     }
 
-    /// 現在の軸力比 `n`（追従対象の柱が無ければ 0）。
+    /// 現在の軸力比 `n`（追従対象の柱がなければ 0）。
     pub fn axial_ratio(&self) -> f64 {
         self.column.as_ref().map_or(0.0, ColumnAxial::axial_ratio)
     }

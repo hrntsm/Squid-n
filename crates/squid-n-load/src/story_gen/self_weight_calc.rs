@@ -179,7 +179,7 @@ pub(crate) fn enumerate_self_weight(model: &Model, load_cfg: &LoadCfg) -> Vec<Se
                     len
                 };
 
-                // §柱の長さ: コンクリート造の柱で、下端節点から下に続く柱が無い場合、
+                // §柱の長さ: コンクリート造の柱で、下端節点から下に続く柱がない場合、
                 // 下端節点に取り付く梁（非鉛直 Beam）の最大せいを自重算定長へ加算する。
                 if is_concrete && is_vertical {
                     let bottom_local = if ci[2] <= cj[2] { 0 } else { 1 };
@@ -234,7 +234,7 @@ pub(crate) fn enumerate_self_weight(model: &Model, load_cfg: &LoadCfg) -> Vec<Se
                 };
                 // §1.9: RC/SRC 梁（水平材）はスラブ厚分の断面積 b·t を控除する
                 // （w_c = γ·b(D−t)+…。スラブ重量が構造芯間の面積で別途計上される
-                // ための二重計上防止）。スラブが無いモデルでは控除しない。
+                // ための二重計上防止）。スラブがないモデルでは控除しない。
                 let self_weight_area = if is_concrete
                     && !is_vertical
                     && model.slab_thickness > 0.0

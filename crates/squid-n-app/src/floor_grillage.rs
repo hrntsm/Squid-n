@@ -83,7 +83,7 @@ impl NodeRegistry {
 /// - 小梁の端部節点（大梁接続点）は鉛直支持（`Ux,Uy,Uz,Rz` 拘束・`Rx,Ry` 自由の
 ///   単純支持）とする。大梁は分割しない。
 /// - 各小梁分割区間に負担幅の等分布荷重 `w·spacing`（下向き）を載せる。
-/// - 全小梁に断面が必要（`JoistLine.section`）。欠ける・支持節点が無効・交点が無い
+/// - 全小梁に断面が必要（`JoistLine.section`）。欠ける・支持節点が無効・交点がない
 ///   （＝格子でない）場合は `None`（呼び出し側は既存の単純梁設計へフォールバック）。
 ///
 /// `w` は面荷重強度 [N/mm²]（床用）。返り値の荷重ケースは `LoadCaseId(0)`。
@@ -217,7 +217,7 @@ pub fn build_slab_grillage(model: &Model, slab: &Slab, w: f64) -> Option<SlabGri
         }
     }
     if !crossings {
-        // 交差が無ければ格子ではない（既存の単純梁設計で十分）。
+        // 交差がなければ格子ではない（既存の単純梁設計で十分）。
         return None;
     }
 

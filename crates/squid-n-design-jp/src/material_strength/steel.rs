@@ -25,8 +25,8 @@ pub use squid_n_core::material_grade::steel_f_value_prefix;
 
 /// F 値の板厚区分判定に用いる最大板厚 [mm]。
 ///
-/// `Section.shape` があれば形状の最大板厚、無ければ `Section.thickness`、
-/// いずれも無ければ 40mm 以下区分として扱う。
+/// `Section.shape` があれば形状の最大板厚、なければ `Section.thickness`、
+/// いずれもなければ 40mm 以下区分として扱う。
 pub fn plate_thickness(sec: &Section) -> f64 {
     if let Some(shape) = &sec.shape {
         match *shape {

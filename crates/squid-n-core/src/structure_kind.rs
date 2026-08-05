@@ -15,7 +15,7 @@
 //!    - `Steel` → [`StructureKind::S`]
 //!    - `Concrete` / `Rebar` → [`StructureKind::Rc`]
 //! 3. 材料が解決できない場合だけ、断面形状の系統で補う（[`shape_default_kind`]）
-//! 4. 断面形状も無ければ [`StructureKind::Rc`] とする
+//! 4. 断面形状もなければ [`StructureKind::Rc`] とする
 //!
 //! # 断面形状ではなく材料で判定する理由
 //!
@@ -106,7 +106,7 @@ pub fn shape_composite_kind(shape: &SectionShape) -> Option<StructureKind> {
 ///
 /// 判定の主は材料の区分だが、材料が未割当の部材まで一律 RC とすると、材料を
 /// 付け忘れた鋼部材に RC の剛域が入って架構が硬くなる。形状名の系統は入力の
-/// 意図をよく表すため、材料が無いときに限ってこれを既定として採る。
+/// 意図をよく表すため、材料がないときに限ってこれを既定として採る。
 pub fn shape_default_kind(shape: &SectionShape) -> StructureKind {
     match shape {
         SectionShape::SrcRect { .. } => StructureKind::Src,
@@ -150,7 +150,7 @@ pub fn structure_kind_of(
     }
     match category {
         Some(category) => material_structure_kind(category),
-        // 材料が解決できない場合は断面形状の系統で補い、形状も無ければ RC とする。
+        // 材料が解決できない場合は断面形状の系統で補い、形状もなければ RC とする。
         None => shape.map_or(StructureKind::Rc, shape_default_kind),
     }
 }
@@ -352,7 +352,7 @@ mod tests {
         assert_eq!(member_structure_kind(&m, &m.elements[0]), StructureKind::Rc);
     }
 
-    /// 断面形状も材料も無い部材は RC とする。
+    /// 断面形状も材料もない部材は RC とする。
     #[test]
     fn test_no_section_no_material_is_rc() {
         let mut m = model_with(None, MaterialCategory::Steel);

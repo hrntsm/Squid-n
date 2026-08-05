@@ -114,7 +114,7 @@ pub(crate) fn concrete_fiber_material(
 /// 鋼材領域（形鋼・鋼管・内蔵鉄骨）のファイバ降伏点を解決する。
 ///
 /// SRC は断面の内蔵鉄骨鋼種（`steel_grade` の F 値。フランジ厚の板厚区分を考慮）を
-/// 優先し、無ければ部材材料の fy を用いる。その他の形状は部材材料の fy。
+/// 優先し、なければ部材材料の fy を用いる。その他の形状は部材材料の fy。
 /// 非線形解析の入力チェック（`factory::ensure_nonlinear_input`）と要素生成が
 /// 同じ解決規則を共有する。
 pub(crate) fn resolve_steel_fiber_fy(
@@ -140,7 +140,7 @@ pub(crate) fn resolve_steel_fiber_fy(
 /// CFT は管壁＋充填コンクリート、RC はコンクリート領域＋主筋点ファイバ、
 /// SRC はさらに内蔵鉄骨、のように中空・薄肉断面が正しく表現される
 /// （従来は形状によらず width×depth の中実矩形格子で、角形鋼管等の面積・剛性・
-/// 耐力を大幅に過大評価していた）。形状が無い場合（壁エレメントの壁柱など）は
+/// 耐力を大幅に過大評価していた）。形状がない場合（壁エレメントの壁柱など）は
 /// 従来どおり width×depth の中実格子とする。
 /// `fc≤60` はコンクリートに NewRC、超過は放物線モデルを用いる。
 ///
@@ -231,7 +231,7 @@ fn build_shape_fibers(
         max_dimension, plastic_fibers_at, AnnulusRes, FiberRegion, StrengthParams,
     };
 
-    // 主筋の降伏点は**断面（配筋）の主筋材質**から解決し、無ければ部材材料の fy を
+    // 主筋の降伏点は**断面（配筋）の主筋材質**から解決し、なければ部材材料の fy を
     // 用いる（`rebar_yield_strength`）。未解決（None）のまま主筋・鋼材ファイバを
     // 生成しようとすると `steel_fiber_material` が panic する（弾性で無音に代替
     // しない）。該当モデルは [`crate::factory::ensure_nonlinear_input`] が解析前に
@@ -319,7 +319,7 @@ pub struct EndRelease {
 /// `EndCondition::Fixed` は解放しない。ピン・半剛は当該端の rx/ry/rz を解放する。
 /// `torsion_release` が立つ端は、端条件が剛接でも rx（ねじれ）のみ解放する
 /// （梁のねじり剛性を期待しない既定モデル化。`beam::torsion` 参照）。
-/// ただし **ねじり剛性が無い部材（J≤0）の rx は解放しない**。解放しても縮約行列
+/// ただし **ねじり剛性がない部材（J≤0）の rx は解放しない**。解放しても縮約行列
 /// `Kbb` の対角がゼロになり特異化するだけで、モーメント解放としての意味がないため。
 fn resolve_end_releases(
     end_cond: &[squid_n_core::model::EndCondition; 2],
@@ -729,7 +729,7 @@ impl FiberBeam {
             data.local_axis.ref_vector,
         );
 
-        // 材端解放（ピン・半剛＋梁の既定ねじれ解放）。ねじり剛性が無い部材の
+        // 材端解放（ピン・半剛＋梁の既定ねじれ解放）。ねじり剛性がない部材の
         // rx は解放しない。
         let releases = resolve_end_releases(
             &data.end_cond,

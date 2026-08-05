@@ -78,7 +78,7 @@ T0..T7 ─> T8 テスト・DoD (§8)
 > **★UI 構成は [UI設計.md](UI設計.md) で確定（本フェーズで土台を作る）。** 下記の対応で実装する
 > （いつ何をやるかは UI設計 §9.2 のスケジュール）:
 > - **UI-D1（T0 の前段・前提）**：`squid-n-core`／`squid-n-section` に `SectionShape`/`RcRebar` 等を新設し
->   `to_section`（鋼H形・RC矩形）で A/I/J/As 算定（UI設計 §4.2）。これが無いと断面作成UIが作れない。
+>   `to_section`（鋼H形・RC矩形）で A/I/J/As 算定（UI設計 §4.2）。これがないと断面作成UIが作れない。
 > - **UI-1〜UI-2**：T0 を **4ペイン＋工程タブ**（Model/Loads/Analysis/Results/Design/Report）へ。
 >   タブは `Nodes/Members/…` ではなく**工程ベース**（UI設計 §1）。ナビゲータ・3D/表/ナビ連動を追加。
 > - **UI-3**：T1 に**断面作成UI**（鋼H形・RC矩形＋配筋・プレビュー、UI設計 §4）。
@@ -382,11 +382,11 @@ pub enum LoadTerm { Long, Short }
 
 - **RC**：曲げ・せん断・付着・定着（長期/短期）。
   - **曲げ（暫定式）**: コンクリート縁応力 σc = M / Z（Z は `Section.iz`）を `Fc/3`（長期）・`2Fc/3`（短期）で検定。
-    本格な引張鉄筋検定 σs = M / (a_t·j)（j=7d/8）は `Section` に a_t が無いため P4 で `SectionShape` 経路が整ってから実装。
+    本格な引張鉄筋検定 σs = M / (a_t·j)（j=7d/8）は `Section` に a_t がないため P4 で `SectionShape` 経路が整ってから実装。
   - **せん断（暫定式）**: τ = Q / (b·j), j = 7d/8 を `Fc/20`（長期, 0.55 上限）・その2倍（短期）で検定。
     αs·fw 等の詳細式は AIJ（Category B）外部データ → P7。
 - **S（鋼）**：曲げ・せん断・座屈（横座屈・局部座屈）・接合部。
-  - 曲げ σ = M / Z を fb で、せん断 τ = Q / As を fs で検定（As は `Section.as_z`/`as_y`、無ければ `area`）。
+  - 曲げ σ = M / Z を fb で、せん断 τ = Q / As を fs で検定（As は `Section.as_z`/`as_y`、なければ `area`）。
 - **SRC**：P3 は骨格のみ（本実装は後続）。
 - **柱梁接合部パネルのせん断検定（S）** は P1 §6.7 の `τ` を入力に取るが、**本格検定は P7**。P3 は
   許容応力度の部材検定を主対象。

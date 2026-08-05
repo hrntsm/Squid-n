@@ -13,7 +13,7 @@
 //!   不算入）に同係数を乗じる
 //! - せん断剛性: (壁板断面＋側柱断面)/κ に開口低減率 r を乗じる。
 //!   κ は側柱がある場合 I 形断面の形状係数（`wall_shear_shape_factor`、
-//!   ξ・η の定義は要原典照合）、無い場合は矩形の 1.2
+//!   ξ・η の定義は要原典照合）、ない場合は矩形の 1.2
 //!
 //! 上下大梁の剛性倍率（既定 100 倍）は梁要素側（`beam.rs`）で扱う。
 //! 側柱の面内両端ピン化は `side_column.rs`（方向別端部解放の静縮約）で扱う。
@@ -178,7 +178,7 @@ pub fn wall_column_fiber_lp(data: &ElementData, model: &Model) -> Option<f64> {
         return None;
     }
     let geom = wall_panel_geometry(data, model)?;
-    // コンクリート強度が無ければファイバー断面を組めない。
+    // コンクリート強度がなければファイバー断面を組めない。
     data.material
         .and_then(|mid| model.materials.get(mid.index()))?
         .fc
@@ -304,9 +304,9 @@ impl WallPanelElement {
             }
         }
         // κ: 側柱があれば I 形断面の形状係数（ξ=内法長さ/外面間全長、η=t/側柱幅。
-        // 定義は要原典照合）、無ければ矩形の 1.2。
+        // 定義は要原典照合）、なければ矩形の 1.2。
         // κ: 側柱があれば平面 I 形断面（ウェブ＝壁板、フランジ＝側柱）の厳密な
-        // せん断形状係数 κ = A/I²·∫Q²/b dy、無ければ矩形の 1.2。
+        // せん断形状係数 κ = A/I²·∫Q²/b dy、なければ矩形の 1.2。
         // 従来の閉形式（`wall_shear_shape_factor`）は記号定義が原典で確認できず、
         // η=1（側柱幅＝壁厚＝一様矩形）でも 0.6(1+ξ) を返すなど内部整合性を欠き、
         // 側柱が大きいほど κ が 1.2 から**減少**して as_y が総断面積を超える
@@ -444,7 +444,7 @@ impl WallPanelElement {
 
     /// 壁柱の軸・曲げをファイバー断面（コンクリート格子＋縦筋の等価分散配置）の
     /// 弾塑性評価に切り替える（保有水平耐力・非線形解析の既定）。
-    /// コンクリート強度 Fc が無い等でファイバー断面を組めない場合は弾性のまま返す。
+    /// コンクリート強度 Fc がない等でファイバー断面を組めない場合は弾性のまま返す。
     ///
     /// ファイバー壁柱は「全長弾性梁＋端部塑性増分ヒンジ」
     /// （[`crate::fiber::FiberBeam::from_raw_parts`]）で、弾性剛性は従来の弾性壁柱
@@ -555,7 +555,7 @@ impl WallPanelElement {
     /// 主な仮定（要・原典照合）:
     /// - 等価壁厚 te は壁厚 t と同値とする。
     /// - 引張側柱の主筋量 at は側柱（`SectionShape::RcRect`）の `main_x` 総断面積。
-    ///   側柱が無い／配筋が取れない場合は、壁の縦筋が一様配筋であるとみなして
+    ///   側柱がない／配筋が取れない場合は、壁の縦筋が一様配筋であるとみなして
     ///   `at = ps·te·d`（＝等価引張鉄筋比 pte = 100·ps \[%\]）とする。
     /// - 横筋比 Pwh は壁筋比 ps（縦横共通とみなす近似）、σwh は SD295 相当 295。
     /// - せん断スパン比 M/(Q·D) は壁の h/D（適用範囲 1.0〜3.0 にクランプ）。
@@ -591,7 +591,7 @@ impl WallPanelElement {
         //   側柱があるのに主筋を読み取れない場合は**断面設定の不備**であり、
         //   代替値で埋めずに 0 を返す（呼び出し側が
         //   [`wall_shear_capacity_issue`] で検出しエラーとする）。
-        // - 付帯柱が無い壁: 壁の縦筋が一様配筋であるとみなし at = ps·te·d
+        // - 付帯柱がない壁: 壁の縦筋が一様配筋であるとみなし at = ps·te·d
         //   （＝ pte = 100·ps \[%\]）とする。壁のみで構成される耐震壁の
         //   正規の扱いであり、データ不備の代替ではない。
         let at = if has_side_column {
@@ -750,8 +750,8 @@ impl WallPanelElement {
     ///   算定できない。
     /// - 上記のいずれにも当てはまらないが Qu が 0 以下になる（適用範囲外の寸法など）。
     ///
-    /// 付帯柱が無い壁（壁のみの耐震壁）は不備ではなく、壁の縦筋比 ps から pte を
-    /// 算定する。`ps = 0` の場合は主筋・壁筋がいずれも無いことになるため不備とする。
+    /// 付帯柱がない壁（壁のみの耐震壁）は不備ではなく、壁の縦筋比 ps から pte を
+    /// 算定する。`ps = 0` の場合は主筋・壁筋がいずれもないことになるため不備とする。
     ///
     /// 耐震壁として成立する壁について、[`Self::shear_capacity_of`] が 0 を返す
     /// （＝弾性のまま扱われる）ケースを**必ず**いずれかの不備として拾う。個別診断を
@@ -882,7 +882,7 @@ impl WallPanelElement {
         }
         if !has_side_column && ps <= 0.0 {
             return Some(format!(
-                "耐震壁 ID {} は側柱（付帯柱）が無く、かつ壁筋比 ps が 0 です。\
+                "耐震壁 ID {} は側柱（付帯柱）がなく、かつ壁筋比 ps が 0 です。\
                  断面タブで壁筋比を設定してください。\
                  保有水平耐力計算では壁筋比から耐震壁の等価引張鉄筋比 pte を算定します。",
                 data.id.0
@@ -1805,7 +1805,7 @@ mod tests {
     #[test]
     fn test_wall_panel_try_new_fallbacks() {
         let (model, mut data) = make_wall_model();
-        // 2 節点しか無い場合は None（従来の暫定等価梁へ）
+        // 2 節点しかない場合は None（従来の暫定等価梁へ）
         data.nodes = smallvec::smallvec![NodeId(0), NodeId(2)];
         assert!(WallPanelElement::try_new(&data, &model).is_none());
     }
@@ -2230,7 +2230,7 @@ mod capacity_issue_tests {
         edge(2, 3, 2, None); // 上辺
                              // 側柱は「側柱あり」のときだけ鉛直辺へ置く。側柱を持たない耐震壁は壁筋比 ps から
                              // 等価引張鉄筋比 pte を算定する正規の対象であり、鉛直材を置かないことで再現する。
-                             // 断面の無い鉛直材を置くと「側柱はあるのに主筋量を読み取れない＝入力不備」となる。
+                             // 断面のない鉛直材を置くと「側柱はあるのに主筋量を読み取れない＝入力不備」となる。
         if let Some(sec) = side_sec {
             edge(3, 0, 3, Some(sec)); // 左の鉛直辺（側柱）
             edge(4, 1, 2, None); // 右の鉛直辺
@@ -2350,13 +2350,13 @@ mod capacity_issue_tests {
     fn test_issue_when_side_column_has_no_main_rebar() {
         let (model, wall) = model_with(Some(rc_col(false)), 0.0025);
         let issue = WallPanelElement::wall_shear_capacity_issue(&wall, &model)
-            .expect("側柱主筋が無ければ不備として検出されるべき");
+            .expect("側柱主筋がなければ不備として検出されるべき");
         assert!(issue.contains("側柱"), "{}", issue);
         // 壁筋比 ps があっても代替しない（Qu=0 のまま）。
         assert_eq!(WallPanelElement::shear_capacity_of(&wall, &model), 0.0);
     }
 
-    /// 側柱が無い壁（壁のみの耐震壁）は不備ではなく、壁筋比から pte を算定する。
+    /// 側柱がない壁（壁のみの耐震壁）は不備ではなく、壁筋比から pte を算定する。
     #[test]
     fn test_no_side_column_uses_wall_rebar_ratio() {
         let (model, wall) = model_with(None, 0.0025);
@@ -2367,12 +2367,12 @@ mod capacity_issue_tests {
         assert!(WallPanelElement::shear_capacity_of(&wall, &model) > 0.0);
     }
 
-    /// 側柱も壁筋比も無ければ pte を算定できないため不備とする。
+    /// 側柱も壁筋比もなければ pte を算定できないため不備とする。
     #[test]
     fn test_issue_when_no_side_column_and_no_wall_rebar() {
         let (model, wall) = model_with(None, 0.0);
         let issue = WallPanelElement::wall_shear_capacity_issue(&wall, &model)
-            .expect("側柱も壁筋も無ければ不備");
+            .expect("側柱も壁筋もなければ不備");
         assert!(issue.contains("壁筋比"), "{}", issue);
     }
 

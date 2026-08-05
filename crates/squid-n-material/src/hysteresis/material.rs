@@ -86,7 +86,7 @@ impl HysteresisMaterial {
         }
     }
 
-    /// 反対側の目標点（再載荷先）。経験が無ければ降伏点。
+    /// 反対側の目標点（再載荷先）。経験がなければ降伏点。
     fn opposite_target(&self, dir: f64) -> (f64, f64) {
         self.opposite_target_degraded(dir, 1.0)
     }

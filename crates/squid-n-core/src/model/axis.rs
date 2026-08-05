@@ -143,7 +143,7 @@ pub struct AxisGroup {
 
 impl AxisGroup {
     /// 平行芯グループの通りを [`Axis::distance`] の昇順へ整える
-    /// （[`AxisGroupKind::Other`] のグループは並びに意味が無いため何もしない）。
+    /// （[`AxisGroupKind::Other`] のグループは並びに意味がないため何もしない）。
     ///
     /// 通りを追加・取り込みしたあとに呼び、一覧表示と ST-Bridge の書き出しが
     /// そのまま座標順になるようにする。この不変条件を保つ場所を 1 つにするため、

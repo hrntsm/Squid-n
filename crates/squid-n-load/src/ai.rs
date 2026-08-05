@@ -117,7 +117,7 @@ pub struct StorySeismicSpec {
     pub weight: f64,
     /// α・Ai・Ci の算定に用いる階全体の地震用重量 [N]。
     /// 「主剛床は全剛床の場合の Ci に従って層せん断力を計算する」規定に対応し、
-    /// 副剛床（Ci 直接入力）の重量も**含めた**値を渡す。副剛床が無い通常の階では
+    /// 副剛床（Ci 直接入力）の重量も**含めた**値を渡す。副剛床がない通常の階では
     /// `weight` と同値。
     pub ci_weight: f64,
     /// 階種別（一般/PH/地下）。地震層せん断力の算定式を切り替える。
@@ -127,8 +127,8 @@ pub struct StorySeismicSpec {
 /// 一般階・PH（塔屋）階・地下階が混在する建物の地震層せん断力分布を求める
 /// （令88条および同条の実務的運用）。
 ///
-/// `stories_bottom_to_top` は建物の最下部（最も深い地下階、無ければ最下の一般階）
-/// から最上部（最上の PH 階、無ければ最上の一般階）の順に並べる。階種別は
+/// `stories_bottom_to_top` は建物の最下部（最も深い地下階、なければ最下の一般階）
+/// から最上部（最上の PH 階、なければ最上の一般階）の順に並べる。階種別は
 /// 下から「地下 → 一般 → PH」の順で連続する前提（`debug_assert` で検証。
 /// 違反しても計算自体は各層の式に従って進める）。
 ///
@@ -156,7 +156,7 @@ pub fn seismic_shear_distribution(
 ) -> AiDistribution {
     let n = stories_bottom_to_top.len();
 
-    // 全階が一般階かつ副剛床の重量除外が無ければ ai_distribution と厳密一致（委譲）。
+    // 全階が一般階かつ副剛床の重量除外がなければ ai_distribution と厳密一致（委譲）。
     if stories_bottom_to_top
         .iter()
         .all(|s| matches!(s.level_kind, StoryLevelKind::Normal) && s.ci_weight == s.weight)

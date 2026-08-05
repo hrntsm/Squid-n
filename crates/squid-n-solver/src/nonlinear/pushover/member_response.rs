@@ -240,7 +240,7 @@ pub(crate) fn compute_member_response(
         let f_j = [f.data[6], f.data[7], f.data[8]];
 
         // 設計用曲げは**危険断面＝剛域フェイス**で評価する（局所座標への射影＋
-        // 剛体アームのモーメント控除。[`member_end_forces_at_face`]）。剛域が無い
+        // 剛体アームのモーメント控除。[`member_end_forces_at_face`]）。剛域がない
         // 部材では従来どおり局所成分への射影と一致する。せん断・軸力は剛体アームで
         // 変化しないため従来の射影のままとする。
         let (m_strong, m_weak) = match member_end_forces_at_face(model, elem, &f.data) {

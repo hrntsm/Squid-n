@@ -12,7 +12,7 @@ pub fn get_model_json(state: &ServerState) -> String {
 /// `member`/`elements` では、`Model::member_detail` に付帯情報（ハンチ・継手位置。
 /// 剛性には影響しない）が登録されている部材について `haunch_i`/`haunch_j`
 /// （`length`/`depth_increase`/`width_increase`）と `joints`（`distance`/`kind`）
-/// を追加で含める（付帯情報が無い部材は従来どおりのフィールドのみ）。
+/// を追加で含める（付帯情報がない部材は従来どおりのフィールドのみ）。
 /// `filter` が与えられたときは、各 JSON を文字列化した中に部分一致するものだけを残す
 /// （簡易フィルタ。名前・ID 等での絞り込み用）。MCP ツール `model_query` はこれを呼ぶ。
 pub fn query_model(model: &Model, kind: &str, filter: Option<&str>) -> Vec<serde_json::Value> {
@@ -41,7 +41,7 @@ pub fn query_model(model: &Model, kind: &str, filter: Option<&str>) -> Vec<serde
                     "material": e.material.map(|m| m.0),
                 });
                 // 付帯情報（ハンチ・継手位置。剛性には影響しない）があれば併記する
-                // （側テーブルが無い/空の部材は従来どおりのフィールドのみ）。
+                // （側テーブルがない/空の部材は従来どおりのフィールドのみ）。
                 if let Some(detail) = model.member_detail(e.id) {
                     let haunch_json = |h: &squid_n_core::model::Haunch| {
                         json!({

@@ -182,13 +182,13 @@ pub struct RigidZone {
     pub source_j: ZoneSource,
     pub reduction: f64,
     /// 柱フェース距離 [mm]（節点→フェース、= 接合する直交部材せい/2）。
-    /// 直交材が無い端は 0。断面算定の既定危険断面位置に用いる（§6.2.3）。
+    /// 直交材がない端は 0。断面算定の既定危険断面位置に用いる（§6.2.3）。
     #[serde(default)]
     pub face_i: f64,
     /// 柱フェース距離 [mm]（j端）。意味は `face_i` と同様。
     #[serde(default)]
     pub face_j: f64,
-    /// 仕口パネル分のオフセット [mm]（i 端）。パネルが無い端は 0。
+    /// 仕口パネル分のオフセット [mm]（i 端）。パネルがない端は 0。
     ///
     /// 剛域長 `length_i` とは**別に保持する**。剛域の自動算定
     /// （`apply_auto_rigid_zones`）は `Auto` 端の `length_i` を無条件に再算定するため、

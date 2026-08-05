@@ -142,7 +142,7 @@ pub enum PushoverControl {
     Phased,
     /// 荷重増分のみ。変位制御・弧長法へは移行せず（`use_arc_length` は無視）、
     /// 終了目標が有効な場合は λ=1 を超えて同じ刻みで荷重増分を継続する。
-    /// 増分半減でも収束しない（＝これ以上の荷重に釣合う解が無い、耐力ピーク近傍）
+    /// 増分半減でも収束しない（＝これ以上の荷重に釣合う解がない、耐力ピーク近傍）
     /// 時点で打ち切る。段階制御との結果比較（変位制御の要否確認）用。
     LoadOnly,
 }
@@ -294,22 +294,22 @@ pub struct PushoverResult {
     pub member_response: Vec<PushoverMemberResponse>,
     /// この結果を生成した制御方式（[`PushoverControl`]）。結果画面・CSV で
     /// どの方式の結果かを識別するために保持する。旧プロジェクトファイルには
-    /// 無いフィールドのため、読込時は既定値（段階制御）で補う。
+    /// ないフィールドのため、読込時は既定値（段階制御）で補う。
     #[serde(default)]
     pub control: PushoverControl,
     /// ヒンジ詳細図用の部材応答履歴（ヒンジ・せん断降伏が記録された部材のみ）。
-    /// 旧プロジェクトファイルには無いフィールドのため、読込時は空で補う。
+    /// 旧プロジェクトファイルにはないフィールドのため、読込時は空で補う。
     #[serde(default)]
     pub member_history: Vec<MemberHistory>,
     /// 終局（最終確定ステップ）時のファイバー断面状態（ヒンジ・せん断降伏が記録
     /// されたファイバー要素のみ。断面塑性化状況の可視化用）。旧プロジェクト
-    /// ファイルには無いフィールドのため、読込時は空で補う。
+    /// ファイルにはないフィールドのため、読込時は空で補う。
     #[serde(default)]
     pub fiber_states: Vec<(ElemId, Vec<squid_n_element::behavior::FiberSectionState>)>,
     /// 解析がどのように終了したか（[`PushoverTermination`]）。目標到達以外の
     /// 打ち切り（非収束・特異化）は Qu が過小評価の可能性があるため、表示側は
     /// [`PushoverTermination::is_premature`] で警告すること。旧プロジェクト
-    /// ファイルには無いフィールドのため、読込時は `Unknown` で補う。
+    /// ファイルにはないフィールドのため、読込時は `Unknown` で補う。
     #[serde(default)]
     pub termination: PushoverTermination,
 }

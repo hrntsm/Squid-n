@@ -17,7 +17,7 @@ CPU で全機能が完結していることを前提に、効果の高い処理�
 
 - **疎行列ベクトル積（SpMV）と PCG 反復**：大規模線形・固有値の内部反復を高速化（最効果）。
 - **要素剛性・内力の一括計算（ファイバ積分）**：要素数×ファイバ数が大きい非線形で有効。
-- すべて **opt-in feature `gpu`**。**GPU が無くても全機能が CPU で動く（CPU フォールバック必須）**。
+- すべて **opt-in feature `gpu`**。**GPU がなくても全機能が CPU で動く（CPU フォールバック必須）**。
 
 ### 0.2 完了像（ゴール）
 
@@ -97,7 +97,7 @@ impl GpuContext {
 pub trait SpMv { fn spmv(&self, x: &[f32]) -> Vec<f32>; }
 pub struct CpuSpMv { /* CSR */ }            // 常に存在
 #[cfg(feature = "gpu")] pub struct GpuSpMv { /* GPUバッファ */ }
-pub fn make_spmv(/* CSR, gpu: Option<&GpuContext> */) -> Box<dyn SpMv> { /* gpu可なら Gpu、無ければ Cpu */ todo!() }
+pub fn make_spmv(/* CSR, gpu: Option<&GpuContext> */) -> Box<dyn SpMv> { /* gpu可なら Gpu、なければ Cpu */ todo!() }
 ```
 
 **DoD（T0）:** `gpu` 無効でビルド・テストが通る。`gpu` 有効でも GPU 不在環境（CI）では CPU に落ちる。

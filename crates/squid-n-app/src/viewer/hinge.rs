@@ -168,7 +168,7 @@ pub(super) fn draw_hinge(
 
 /// ヒンジ図のホバー詳細ツールチップ。部材 `elem_id` にヒンジがあれば
 /// i端／j端それぞれの最高レベル・最大塑性率・初出 step を表示する。
-/// ヒンジの無い部材は何も表示しない。
+/// ヒンジのない部材は何も表示しない。
 pub(super) fn show_hinge_tooltip(ui: &egui::Ui, app: &App, elem_id: ElemId) {
     let Some(po) = app.results.as_ref().and_then(|r| r.pushover.as_ref()) else {
         return;
@@ -328,7 +328,7 @@ pub(super) fn m_theta_series(
 /// 済む（[`extract_mn_meridian`] 参照）。
 ///
 /// 先頭に原点 [0.0, 0.0]（無載荷状態）を前置する。`member_history` の記録は
-/// 最初の記録ステップから始まるため、これが無いと経路の始点が分からない。
+/// 最初の記録ステップから始まるため、これがないと経路の始点が分からない。
 /// 長期荷重の初期載荷が実装されれば最初の記録ステップは長期荷重時点になるが、
 /// その場合も「無載荷→長期荷重→水平力」の経路として原点前置のままで正しい。
 pub(super) fn n_m_response_path(records: &[MemberStepState], bend_dir_z: bool) -> Vec<[f64; 2]> {
@@ -566,7 +566,7 @@ fn draw_hinge_detail_content(ui: &mut egui::Ui, app: &mut App, elem_id: ElemId) 
             return;
         }
     };
-    // 終局時のファイバー断面状態（無ければファイバー要素以外、または旧データ）。
+    // 終局時のファイバー断面状態（なければファイバー要素以外、または旧データ）。
     let fiber_sections: Option<Vec<FiberSectionState>> = po
         .fiber_states
         .iter()
@@ -857,7 +857,7 @@ fn draw_mn_response_path_3d(
     screen_center: [f32; 2],
 ) {
     let path = n_my_mz_response_path_3d(records);
-    // 原点のみ（記録なし）なら描く経路が無い。
+    // 原点のみ（記録なし）なら描く経路がない。
     if path.len() < 2 {
         return;
     }
@@ -915,7 +915,7 @@ fn draw_mn_plot_2d(
                 .width(1.5_f32),
             );
             // 応答経路は原点 [0,0]（無載荷状態）を前置済み（`n_m_response_path`）
-            // のため、記録が 1 件も無い場合でも要素数は必ず 1 以上になる。
+            // のため、記録が 1 件もない場合でも要素数は必ず 1 以上になる。
             plot_ui.line(
                 egui_plot::Line::new(
                     "応答経路",
@@ -1740,7 +1740,7 @@ mod tests {
     /// する際に断面積重心補正が輪郭側へ正しく効いており、ファイバー群
     /// （`plastic_fibers` に要素側と同じ 90°回転を適用したもの）が
     /// 外形線のバウンディングボックス内に収まる（ウェブ位置がずれて外形線と
-    /// ファイバー群の左右が逆転する等の座標系不整合が無い）ことを確認する。
+    /// ファイバー群の左右が逆転する等の座標系不整合がない）ことを確認する。
     #[test]
     fn fiber_frame_outline_asymmetric_channel_aligns_with_fibers() {
         let sec = Section {
@@ -1764,7 +1764,7 @@ mod tests {
             }),
         };
         let (outer, inner) = fiber_frame_outline(&sec).unwrap();
-        assert!(inner.is_none(), "溝形鋼は中実断面のため内側輪郭は無い");
+        assert!(inner.is_none(), "溝形鋼は中実断面のため内側輪郭はない");
         let (omin, omax) = bbox(&outer);
 
         let shape = sec.shape.clone().unwrap();

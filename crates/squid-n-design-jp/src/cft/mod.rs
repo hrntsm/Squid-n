@@ -264,7 +264,7 @@ fn cft_box_check(
     // 軽量コンクリート1種・2種は許容圧縮応力度を 0.9 倍に低減（class 対応版）。
     let fc_allow = concrete_allowable_compression_class(fc_raw, mat.concrete_class, long_term);
 
-    // プリセット外の直接入力材料は fy を基準強度として用いる（それも無ければ 235）。
+    // プリセット外の直接入力材料は fy を基準強度として用いる（それもなければ 235）。
     let f_value = steel_f_value_prefix(&mat.name, thick)
         .or(mat.fy)
         .unwrap_or(235.0);
@@ -373,7 +373,7 @@ fn cft_box_check(
         "sQAy={:.1} N, sQAz={:.1} N, qy={:.1} N, qz={:.1} N",
         s_qa_y, s_qa_z, forces.qy, forces.qz
     );
-    // 両式で共有する断面諸元は無いため共通 detail は空文字列とする。
+    // 両式で共有する断面諸元はないため共通 detail は空文字列とする。
     let detail = String::new();
 
     let components = vec![
@@ -408,7 +408,7 @@ fn cft_pipe_check(
     // 軽量コンクリート1種・2種は許容圧縮応力度を 0.9 倍に低減（class 対応版）。
     let fc_allow = concrete_allowable_compression_class(fc_raw, mat.concrete_class, long_term);
 
-    // プリセット外の直接入力材料は fy を基準強度として用いる（それも無ければ 235）。
+    // プリセット外の直接入力材料は fy を基準強度として用いる（それもなければ 235）。
     let f_value = steel_f_value_prefix(&mat.name, thick)
         .or(mat.fy)
         .unwrap_or(235.0);
@@ -479,7 +479,7 @@ fn cft_pipe_check(
         "sQA={:.1} N, qy={:.1} N, qz={:.1} N",
         s_qa, forces.qy, forces.qz
     );
-    // 両式で共有する断面諸元は無いため共通 detail は空文字列とする。
+    // 両式で共有する断面諸元はないため共通 detail は空文字列とする。
     let detail = String::new();
 
     let components = vec![
@@ -507,7 +507,7 @@ fn cft_pipe_check(
 // ============================================================================
 
 /// CFT 柱の断面検定（`SectionShape::CftBox`/`CftPipe` を対象とする）。
-/// 準拠規準に CFT 梁の規定は無いため、`ctx.kind` に依らず柱の検定式を
+/// 準拠規準に CFT 梁の規定はないため、`ctx.kind` に依らず柱の検定式を
 /// 適用する。
 pub struct CftDesign;
 

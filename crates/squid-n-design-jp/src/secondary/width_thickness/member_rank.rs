@@ -129,7 +129,7 @@ fn h_web_limits(member_use: SteelMemberUse, is_490: bool) -> WtLimits {
 /// 円形鋼管（径厚比 D/t）の幅厚比限界。
 ///
 /// 構造規定表には柱の行のみが定義されている。梁の円形鋼管は同表に
-/// 独立の行が無いため、柱の行を準用する（呼び出し側では `member_use` を
+/// 独立の行がないため、柱の行を準用する（呼び出し側では `member_use` を
 /// 見ずに本関数を呼ぶ）。
 fn pipe_limits(is_490: bool) -> WtLimits {
     if is_490 {
@@ -177,7 +177,7 @@ fn box_grade_from_name(name: &str) -> Option<BoxGrade> {
 }
 
 /// 角形鋼管（角形鋼管・BOX）の幅厚比限界（d=H、部位は柱の行のみ。梁の角形鋼管も
-/// 構造規定表に独立の行が無いため柱の行を準用する）。
+/// 構造規定表に独立の行がないため柱の行を準用する）。
 fn box_limits(g: BoxGrade) -> WtLimits {
     match g {
         BoxGrade::Stkr400 => WtLimits {
@@ -262,7 +262,7 @@ fn is_490_class(grade_name: &str, thickness: f64) -> bool {
 ///
 /// # 部材用途と表の行
 /// `member_use` で柱／梁の行を選ぶ（H形はフランジ・ウェブとも柱・梁で異なる
-/// 限界値を持つ）。角形鋼管・円形鋼管は構造規定表に梁の行が無いため、
+/// 限界値を持つ）。角形鋼管・円形鋼管は構造規定表に梁の行がないため、
 /// `member_use` によらず柱の行を準用する。
 ///
 /// # 鋼種の判定

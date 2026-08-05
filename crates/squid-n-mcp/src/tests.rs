@@ -96,7 +96,7 @@ fn test_query_model_unknown_kind() {
 
 /// 部材付帯情報（ハンチ・継手位置）が登録された部材は、`query_model` の
 /// member/elements 出力に `haunch_i`/`haunch_j`/`joints` が含まれる。
-/// 付帯情報が無い部材（本テストには含めない）は従来どおりのフィールドのみとなる
+/// 付帯情報がない部材（本テストには含めない）は従来どおりのフィールドのみとなる
 /// （`test_query_model_elements_and_sections` で確認済み）。
 #[test]
 fn test_query_model_elements_with_member_detail() {

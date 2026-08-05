@@ -314,7 +314,7 @@ impl App {
     ///
     /// 準備計算の結果・解析結果が同梱されていれば復元し、実行済み扱いにする
     /// （保存側が最新のときだけ書き出すため、同梱＝そのモデルに対して最新である）。
-    /// 同梱が無い・復号に失敗した場合は未実行のままとし、解析実行時または
+    /// 同梱がない・復号に失敗した場合は未実行のままとし、解析実行時または
     /// 「準備計算 実行」で再計算する。
     pub fn open_project_from(&mut self, path: std::path::PathBuf) {
         self.last_error = None;
@@ -852,7 +852,7 @@ impl App {
     /// 何件あっても、求解は荷重ケース数ぶんで済む。
     ///
     /// 個別の解析エラーは処理を止めず、件数と最初のエラー内容を `last_error` に
-    /// まとめる（他の結果は失わない）。荷重ケースが 1 件も無い場合、および 1 件も
+    /// まとめる（他の結果は失わない）。荷重ケースが 1 件もない場合、および 1 件も
     /// 解けなかった場合は既存の結果を変更せず、案内メッセージを `last_error` に
     /// 設定して return する。
     pub fn run_static_all(&mut self) {
@@ -979,7 +979,7 @@ impl App {
     /// 1 件も解けなかった場合、および `Analysis::prepare` 自体が失敗した場合は
     /// 既存の結果を変更せず、案内メッセージを `last_error` に設定して return する。
     ///
-    /// 表示対象（`last_static`）は最後に成功した荷重組合せ、組合せが 1 件も無ければ
+    /// 表示対象（`last_static`）は最後に成功した荷重組合せ、組合せが 1 件もなければ
     /// 最後に成功した荷重ケースとする。
     fn apply_static_all_result(
         &mut self,
@@ -1129,7 +1129,7 @@ impl App {
     /// 場合は荷重継続性区分（長期/短期）を組合せ名から `is_short_term_combo` で
     /// 再判定し、断面検定を再実行する。これにより、選んだ荷重（組合せ）の長期/短期に
     /// 応じた断面算定結果が表示される。単一荷重ケースを選んだ場合は現在の区分を維持する
-    /// （`apply_static_case_result` と同じ扱い）。該当キーの解析結果が無い場合は何もしない。
+    /// （`apply_static_case_result` と同じ扱い）。該当キーの解析結果がない場合は何もしない。
     pub fn select_displayed_result(&mut self, key: StaticKey) {
         // 選択キーに対応する解析結果（内力と、組合せなら名前）を取り出す。
         let resolved = self.results.as_ref().and_then(|bundle| match key {
@@ -1327,7 +1327,7 @@ impl App {
                 let elem_steel = elem_is_steel(elem, &self.model);
                 let rank = if is_brace_elem && elem_steel {
                     // 有効細長比 λ = Lk/i（節点間長を座屈長さ、i=√(Imin/A) とする
-                    // ピン支持の軸材モデル）。断面性能が無い場合はスキップ。
+                    // ピン支持の軸材モデル）。断面性能がない場合はスキップ。
                     let len = elem_geometric_length(elem, &self.model);
                     let i_min = sec.iy.min(sec.iz);
                     if sec.area <= 0.0 || i_min <= 0.0 || len <= 0.0 {
@@ -1359,7 +1359,7 @@ impl App {
                     rank
                 } else if matches!(sec.shape.as_ref(), Some(SectionShape::SrcRect { .. })) {
                     // SRC 柱: 技術基準解説書 表 2.6.6-5（N/N0・sM0/M0・破壊モード）。
-                    // SRC 梁の種別表は原典に規定が無いためスキップ（層は選択ランクへ
+                    // SRC 梁の種別表は原典に規定がないためスキップ（層は選択ランクへ
                     // フォールバック）。破壊モードは増分解析のせん断降伏イベントの
                     // 有無で判定し、N はメカニズム時軸力（圧縮正）を用いる。
                     use squid_n_design_jp::secondary::src_rank::{
@@ -1400,7 +1400,7 @@ impl App {
                         // Qu に達していれば「せん断破壊」とみなす。線材のせん断降伏
                         // イベント（shear_yields）は 2 節点要素のみが対象で、4 節点の
                         // 壁要素はそちらでは検出できない。Qu を算定できない壁
-                        // （耐震壁不成立等）と終局時応答が無い壁は判定不能として
+                        // （耐震壁不成立等）と終局時応答がない壁は判定不能として
                         // スキップ（層の選択ランクへフォールバック）。
                         let qu = squid_n_element::wall_panel::WallPanelElement::shear_capacity_of(
                             elem,
@@ -1468,7 +1468,7 @@ impl App {
                         continue;
                     };
                     // σ0: 長期軸力の簡易近似として先頭荷重ケース(gravity_lc)の
-                    // 静的解析結果を優先し、無ければ最後に実行した静的解析結果
+                    // 静的解析結果を優先し、なければ最後に実行した静的解析結果
                     // (self.results.member_forces)から当該部材の軸力を引き、
                     // 圧縮のときのみ設定する。
                     let sigma_0 = self
@@ -1657,7 +1657,7 @@ impl App {
                         };
                     }
                 }
-                // 耐力壁・筋かいの群種別と βu。壁・筋かいが無い層は βu=0（純ラーメン）。
+                // 耐力壁・筋かいの群種別と βu。壁・筋かいがない層は βu=0（純ラーメン）。
                 let wall_group = member_group(&wall_members[i]).unwrap_or(GroupType::A);
                 let qu_i = story_qu.get(i).copied().unwrap_or(0.0);
                 let beta_u = if qu_i > 0.0 {
@@ -1706,10 +1706,10 @@ impl App {
     /// 理論式）・付着割裂耐力・軸終局耐力に対する余裕度を算定する。
     ///
     /// 柱の曲げ終局強度 Mu・軸余裕度に用いる設計軸力は、長期（G+P 相当）静的
-    /// 解析結果（先頭重力ケースを優先、無ければ最後に実行した静的解析）の軸力
-    /// （圧縮正）を用いる。静的解析結果が無い場合は軸力 0（安全側）で評価する。
+    /// 解析結果（先頭重力ケースを優先、なければ最後に実行した静的解析）の軸力
+    /// （圧縮正）を用いる。静的解析結果がない場合は軸力 0（安全側）で評価する。
     ///
-    /// 対象 RC 矩形部材が 1 つも無い場合は `Err` を返す（UI 側で案内表示）。
+    /// 対象 RC 矩形部材が 1 つもない場合は `Err` を返す（UI 側で案内表示）。
     pub fn compute_ultimate_checks(
         &mut self,
     ) -> Result<Vec<squid_n_design_jp::ultimate::UltimateCheck>, String> {
@@ -1742,7 +1742,7 @@ impl App {
         let checks =
             squid_n_design_jp::ultimate::collect_rc_ultimate_checks(&self.model, &demand, &opts);
 
-        // RC 矩形部材が無い場合の案内。
+        // RC 矩形部材がない場合の案内。
         let has_rc_rect = self.model.elements.iter().any(|e| {
             e.section
                 .and_then(|sid| self.model.sections.get(sid.index()))
@@ -1771,9 +1771,9 @@ impl App {
     /// `ultimate_use_pushover` が真で増分解析応答（部材別応答）が得られる場合は、
     /// 終局時の部材別 Qmu（設計用せん断）・需要曲げ・軸力・Rp を直接反映する
     /// （[`Self::ultimate_demand_from_pushover`]）。それ以外は先頭重力ケース（G+P 相当）の
-    /// 静的解析結果を優先し、無ければ最後に実行した静的解析結果を用いる（軸力は始端値、
+    /// 静的解析結果を優先し、なければ最後に実行した静的解析結果を用いる（軸力は始端値、
     /// 曲げは部材内の最大絶対値、Qmu は両端ヒンジ 2·Mu/内法、Rp は UI 一律指定）。
-    /// いずれの応答も無ければ空（＝需要 0）。
+    /// いずれの応答もなければ空（＝需要 0）。
     fn ultimate_demand_by_elem(&self) -> Vec<(ElemId, squid_n_design_jp::ultimate::MemberDemand)> {
         use squid_n_design_jp::ultimate::MemberDemand;
         // 増分解析応答からの直接反映（優先、指定時かつ応答があれば）。
@@ -1888,7 +1888,7 @@ impl App {
     /// CFT 柱の軸終局検定（CFT指針）: CftBox/CftPipe 柱の
     /// 軸圧縮終局耐力 Ncu・軸引張終局耐力 Ntu に対する軸余裕度を算定する。
     ///
-    /// 対象 CFT 柱が 1 つも無い場合は `Err` を返す（UI 側で案内表示）。
+    /// 対象 CFT 柱が 1 つもない場合は `Err` を返す（UI 側で案内表示）。
     pub fn compute_cft_ultimate_checks(
         &mut self,
     ) -> Result<Vec<squid_n_design_jp::ultimate::CftUltimateCheck>, String> {
@@ -1961,11 +1961,11 @@ impl App {
     /// 階(Story)を節点標高から自動生成して適用する（undo 可能）。準備計算
     /// （[`Self::run_preparation`]）の一工程であり、単独の UI 操作ではない。
     ///
-    /// 地震重量には kind=Dead/LiveSeismic（無ければ Dead+Live、種別未設定なら
+    /// 地震重量には kind=Dead/LiveSeismic（なければ Dead+Live、種別未設定なら
     /// 先頭ケース）の荷重ケースの鉛直下向き荷重を用いる（レビュー §1.7）。
     /// 先立ってスラブ荷重・躯体自重を「DL」等の標準ケースへ同期する
     /// （レビュー §1.1）ため、面荷重・自重も地震用重量に反映される
-    /// （DL に自重が含まれるため、密度からの自重直接算入は DL が無い場合のみ。
+    /// （DL に自重が含まれるため、密度からの自重直接算入は DL がない場合のみ。
     /// `density_self_weight_for_stories`）。主要構造種別は各階の柱・梁の断面形状
     /// から自動判定される（`story_gen`）。
     ///
@@ -2163,7 +2163,7 @@ impl App {
     /// 固定（Dead）・積載（Live）・積雪（Snow）は種別の先頭 1 件を用いる。
     /// 方向を持つ地震・風は、準備計算が自動生成する標準ケース名
     /// （`EX`/`EY`/`WX`/`WY`）で方向を判別する（種別だけでは X・Y を区別できない）。
-    /// 標準名のケースが無い場合、風は種別 Wind の先頭 1 件を X 方向として扱い、
+    /// 標準名のケースがない場合、風は種別 Wind の先頭 1 件を X 方向として扱い、
     /// 地震は割り当てない（方向不明の地震ケースを機械的に EX とみなさない）。
     ///
     /// Dead/Live のいずれかが見つからない場合は組合せを生成せず `last_error` を設定する。
@@ -2197,7 +2197,7 @@ impl App {
             return;
         };
         let snow = find_first(LoadCaseKind::Snow);
-        // 標準名の風ケースが 1 つも無いモデルに限り、種別 Wind の先頭 1 件を
+        // 標準名の風ケースが 1 つもないモデルに限り、種別 Wind の先頭 1 件を
         // X 方向として扱う（WY だけがあるモデルでそれを WX と誤って扱わない）。
         let mut wind_x = find_named(WX_CASE_NAME, LoadCaseKind::Wind);
         let wind_y = find_named(WY_CASE_NAME, LoadCaseKind::Wind);
@@ -2505,9 +2505,9 @@ impl App {
     /// dofmap/reducer の組み立ては `compute_pushover` と同じ経路
     /// （`Analysis::prepare` は damping 算定用の固有値解析のみに使い、解の本体は
     /// `DofMap::build` / `Reducer::build` を直接呼んで組み立てる）。
-    /// `use_kg`（幾何剛性）は増分解析 UI に対応する設定が無いため、増分解析の
+    /// `use_kg`（幾何剛性）は増分解析 UI に対応する設定がないため、増分解析の
     /// 既定と同じ `false` を用いる。減衰の累積方式（`DampingAccumulation`）も
-    /// UI 設定が無いため既定（非累積型）を用いる。
+    /// UI 設定がないため既定（非累積型）を用いる。
     fn compute_nonlinear_time_history(
         model: squid_n_core::model::Model,
         cfg: AnalysisSettings,
@@ -2802,7 +2802,7 @@ impl App {
         };
         // 地震時短期の設計用せん断力 QD = min(QD1, QD2) 用の長期(DL+LL)内力。
         // 現在の結果が地震時組合せ（名前に K/E を含む）かつ短期のときのみ、
-        // 解析済みの長期組合せ（"DL + LL" 優先、無ければ長期判定の組合せ）を引く。
+        // 解析済みの長期組合せ（"DL + LL" 優先、なければ長期判定の組合せ）を引く。
         // 長期が未解析なら None（QD 割増なし＝従来動作）。
         let is_seismic_combo = match self.last_static {
             Some(StaticKey::Combo(idx)) => results
@@ -3124,7 +3124,7 @@ impl App {
                 })
             };
 
-            // --- 小梁: 交差があれば床格子サブモデル（二方向）で、無ければ単純支持梁で検定 ---
+            // --- 小梁: 交差があれば床格子サブモデル（二方向）で、なければ単純支持梁で検定 ---
             let grillage = crate::floor_grillage::build_slab_grillage(&self.model, slab, w)
                 .and_then(|g| {
                     crate::floor_grillage::solve_grillage(&g.model, LoadCaseId(0))
@@ -3199,7 +3199,7 @@ impl App {
             if let Some((lx, ly)) = squid_n_load::floor::slab_dimensions(&self.model, slab) {
                 use squid_n_core::model::OneWayDir;
                 // 設計スパンは伝達方向に一致させる（分配エンジンと同じ規約: X→lx, Y→ly）。
-                // 一方向指定が無い（両方向）場合は安全側に短辺で設計する。
+                // 一方向指定がない（両方向）場合は安全側に短辺で設計する。
                 let span = match slab.one_way {
                     Some(OneWayDir::X) => lx,
                     Some(OneWayDir::Y) => ly,
@@ -3225,7 +3225,7 @@ impl App {
     }
 
     /// 全スラブの床荷重を大梁（および小梁経由の節点反力）へ分配し、
-    /// `self.beam_loads` を更新する。対応する梁が無い辺の荷重は捨てる。
+    /// `self.beam_loads` を更新する。対応する梁がない辺の荷重は捨てる。
     ///
     /// `squid_n_load::floor::distribute_slab` が返す `BeamLoad.target` は
     /// `LoadTarget::Edge(i)`（スラブ境界の辺 i、`boundary[i]` → `boundary[(i+1)%n]`、
@@ -3335,7 +3335,7 @@ impl App {
 
     /// 各スラブについて面荷重強度 `w_of(slab)`（N/mm²）を境界へ分配し、
     /// `LoadTarget::Edge` を実 `ElemId` に対応付けた `BeamLoad` 列を返す。
-    /// 対応する梁が無い辺の荷重は捨てる。`refresh_beam_loads`（DL）と
+    /// 対応する梁がない辺の荷重は捨てる。`refresh_beam_loads`（DL）と
     /// `sync_gravity_load_cases_action`（LL）の共通経路（令85条1項の DL/LL 分離）。
     ///
     /// 交差小梁スラブ（軸平行・全仮想）は、平行小梁モデルの小梁点反力
@@ -3404,7 +3404,7 @@ impl App {
                                 beam_loads.push(bl);
                             }
                             None => {
-                                // 対応する実梁が無い辺（二次部材（小梁）上の辺・大梁の
+                                // 対応する実梁がない辺（二次部材（小梁）上の辺・大梁の
                                 // 中間区間など）は節点対を保持して渡し、
                                 // `slab_load_case_content` が主架構へ変換する
                                 // （大梁の部分分布 or 単純梁反力→CMQ）。
@@ -3577,7 +3577,7 @@ impl App {
                     emit_shape(&mut member, elem.id, 0.0, l, false, &bl.shape);
                 }
                 // Span（節点対）: 実部材化小梁（解決済み ElemId）はそのまま全長へ。
-                // 実梁が無い節点対（二次部材（小梁）上の辺・大梁の中間区間）は
+                // 実梁がない節点対（二次部材（小梁）上の辺・大梁の中間区間）は
                 // 主架構へ変換する:
                 // 1. 両節点が同一の大梁スパン上 → その大梁の**部分区間**分布へ
                 // 2. それ以外 → 単純梁の両端反力として節点荷重化
@@ -3666,7 +3666,7 @@ impl App {
     /// 各ケースについて現在の自動計算値を求め、既存ケースの内容と一致するなら
     /// 何もしない（undo 履歴・stale フラグを汚さない）。差分があれば
     /// `SyncSlabLoadsToCase`（全置換、undo 対応）を発行する。
-    /// 対応するケースが無く内容も空の場合は空ケースを作らない。
+    /// 対応するケースがなく内容も空の場合は空ケースを作らない。
     ///
     /// DL に自重を含めるため、階の自動生成（地震用重量）では密度からの自重直接
     /// 算入を無効にして二重計上を防ぐ（`density_self_weight_for_stories`）。
@@ -3741,7 +3741,7 @@ impl App {
     ///   告示第1793号）。即時計算で解析は不要。
     /// - `AiMode::SemiPrecise`: 明示実行済みの固有値解析結果
     ///   （`self.results` の `modal`）の1次周期（`ModalResult::period[0]`）を
-    ///   再利用する。固有値解析が未実行（`results` が無い・`modal` が無い・
+    ///   再利用する。固有値解析が未実行（`results` がない・`modal` がない・
     ///   `period` が空のいずれか）の場合は `Err`（実行を促す日本語メッセージ）。
     ///
     /// `Analysis::prepare`（剛性行列組立+Cholesky分解）や固有値解析を新たに
@@ -3829,7 +3829,7 @@ impl App {
     /// 基準風速・粗度区分・パラペット高さは `analysis_cfg`）を WX/WY ケースへ
     /// 書き込む。これにより荷重組合せ（G+P±W など）が WX/WY を参照して解析できる。
     ///
-    /// 見付け幅が 0 になる方向（平面的に広がりが無いモデル）では、その方向の
+    /// 見付け幅が 0 になる方向（平面的に広がりがないモデル）では、その方向の
     /// 荷重ケースは構築できないため何もしない（既存ケースは変更しない）。
     /// 冪等な同期アクション（`sync_gravity_load_cases_action` と同じ規約）。
     pub fn sync_wind_load_cases_action(&mut self) {

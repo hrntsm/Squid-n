@@ -61,7 +61,7 @@ fn test_member_material_groups_excludes_generated_panel_zones() {
     app.load_model(crate::sample::portal_frame());
     let (steel_before, rc_before) = member_material_groups(&app.model);
     assert_eq!(steel_before.len(), 3, "柱 2 本・梁 1 本はすべて S");
-    assert!(rc_before.is_empty(), "純 S 造モデルに RC 部材は無い");
+    assert!(rc_before.is_empty(), "純 S 造モデルに RC 部材はない");
 
     // 実際の導線と同じく準備計算を通し、仕口パネルを自動生成させる。
     app.ensure_preparation();
@@ -424,7 +424,7 @@ fn test_run_linear_static_applies_auto_rigid_zones() {
 
 /// `run_design_check` が危険断面位置（§6.2.3、既定は柱フェイスと中央）のみを
 /// 検定し、剛域が有る端の節点芯は検定対象外になることを確認する。
-/// 剛域が無い端（face=0）では従来どおり節点芯が検定対象に残る。
+/// 剛域がない端（face=0）では従来どおり節点芯が検定対象に残る。
 #[test]
 fn test_run_design_check_filters_to_design_positions() {
     let mut app = App::default();
@@ -466,7 +466,7 @@ fn test_run_design_check_filters_to_design_positions() {
     let col_positions: Vec<f64> = positions_of(ElemId(0));
     assert!(
         col_positions.iter().any(|p| *p < 1e-6),
-        "剛域の無い柱脚(節点芯)が検定対象から抜けている: {:?}",
+        "剛域のない柱脚(節点芯)が検定対象から抜けている: {:?}",
         col_positions
     );
     assert!(
@@ -1580,7 +1580,7 @@ fn test_export_and_import_stbridge_roundtrip() {
     let mut app2 = App::default();
     app2.import_stbridge_from(path.clone());
     // ST-Bridge は支点を持たないため、支点の自動設定の通知だけが出る
-    // （それ以外の欠落警告は無い）。
+    // （それ以外の欠落警告はない）。
     let msg = app2.last_error.as_deref().unwrap_or("");
     assert!(
         msg.contains("ピン支点に設定"),
@@ -1646,7 +1646,7 @@ fn test_stbridge_standard_mode_roundtrip_through_app() {
 
     let mut app2 = App::default();
     app2.import_stbridge_from(path.clone());
-    // 支点の自動設定の通知以外の警告（欠落・断面未解決など）が無いこと
+    // 支点の自動設定の通知以外の警告（欠落・断面未解決など）がないこと
     // ＝標準モードのファイルを読み戻せることを確認する。
     let msg = app2.last_error.as_deref().unwrap_or("");
     assert!(
@@ -1655,7 +1655,7 @@ fn test_stbridge_standard_mode_roundtrip_through_app() {
     );
     assert!(
         !msg.contains("スキップ") && !msg.contains("破棄"),
-        "欠落警告は無いはず: {msg}"
+        "欠落警告はないはず: {msg}"
     );
     assert!(app2.model.validate().is_ok());
     assert_eq!(app2.model.sections.len(), n_sections);
@@ -1820,7 +1820,7 @@ fn test_run_static_all_matches_individual_runs() {
     assert_eq!(app_batch.last_static, Some(StaticKey::Combo(1)));
 }
 
-/// 一括解析は荷重組合せが 1 件も無くても荷重ケース単体を解く（表示対象は
+/// 一括解析は荷重組合せが 1 件もなくても荷重ケース単体を解く（表示対象は
 /// 最後に成功した荷重ケース）。
 #[test]
 fn test_run_static_all_without_combos_solves_load_cases() {
@@ -1842,7 +1842,7 @@ fn test_run_static_all_without_combos_solves_load_cases() {
     assert!(matches!(app.last_static, Some(StaticKey::Case(_))));
 }
 
-/// 荷重ケースが 1 件も無い場合はエラーメッセージを設定し、結果は変更しない。
+/// 荷重ケースが 1 件もない場合はエラーメッセージを設定し、結果は変更しない。
 #[test]
 fn test_run_static_all_no_load_cases_is_error() {
     let mut app = App::default();
@@ -1963,7 +1963,7 @@ fn test_holding_capacity_falls_back_when_brace_undetected() {
     use squid_n_design_jp::secondary::holding_capacity::{ds_value, FrameType, MemberRank};
 
     let mut app = App::default();
-    app.load_model(crate::sample::portal_frame()); // 筋かいの無いラーメン
+    app.load_model(crate::sample::portal_frame()); // 筋かいのないラーメン
     app.generate_stories_action();
     app.run_seismic(SeismicDir::X);
     app.analysis_cfg.push_steps = 10;
@@ -2052,7 +2052,7 @@ fn test_holding_capacity_rank_auto_from_width_thickness() {
     // 唯一の層の代表ランクは柱・梁のうち最悪値（FD 寄り）。
     assert_eq!(story_ranks.len(), 1);
     assert_eq!(story_ranks[0], worst_rank(&[col_rank, beam_rank]).unwrap());
-    // 全部材のランクを算定できているため、選択ランクへのフォールバック層は無い。
+    // 全部材のランクを算定できているため、選択ランクへのフォールバック層はない。
     assert!(
         app.ds_rank_fallback_stories.is_empty(),
         "{:?}",
@@ -2985,7 +2985,7 @@ fn test_sync_gravity_load_cases_action_square_slab_triangle_distribution() {
         .expect("DLケースが作られるはず");
     assert_eq!(case.kind, LoadCaseKind::Dead);
     assert_eq!(case.member.len(), 8, "4辺 × 2区間（三角形分布）= 8件");
-    assert!(case.nodal.is_empty(), "小梁が無いので節点荷重は空のはず");
+    assert!(case.nodal.is_empty(), "小梁がないので節点荷重は空のはず");
 
     // 各梁にちょうど2区間ずつ入っていることを確認
     for elem_id in 0..4u32 {
@@ -3096,7 +3096,7 @@ fn test_sync_gravity_load_cases_action_separates_dead_and_live() {
     assert_eq!(ll.kind, LoadCaseKind::Live);
     assert!((sum_vertical(&app.model, LL_FRAME_CASE_NAME) - 1.8e-3 * area).abs() < 1e-6);
 
-    // 用途を外すと LL ケースは空同期され、寄与が無くなる（新規なら作られない）。
+    // 用途を外すと LL ケースは空同期され、寄与がなくなる（新規なら作られない）。
     app.model.slabs[0].usage = None;
     app.sync_gravity_load_cases_action();
     assert!(
@@ -3664,7 +3664,7 @@ fn test_slab_design_span_respects_one_way() {
 
 /// レビュー §1.7: 地震用重量に使う荷重ケースの選択が、並び順ではなく
 /// `LoadCaseKind` に基づくことを確認する（Dead+LiveSeismic 優先、
-/// LiveSeismic が無ければ Dead+Live、種別が一つも設定されていなければ
+/// LiveSeismic がなければ Dead+Live、種別が一つも設定されていなければ
 /// 従来互換で先頭ケースのみ）。
 #[test]
 fn test_gravity_cases_for_seismic_weight_selection() {
@@ -3692,7 +3692,7 @@ fn test_gravity_cases_for_seismic_weight_selection() {
         "種別未設定モデルは従来互換で先頭ケースのみ"
     );
 
-    // LiveSeismic が無い → Dead + Live
+    // LiveSeismic がない → Dead + Live
     let model_dead_live = squid_n_core::model::Model {
         load_cases: vec![
             mk_lc(0, "固定", LoadCaseKind::Dead),
@@ -3704,7 +3704,7 @@ fn test_gravity_cases_for_seismic_weight_selection() {
     assert_eq!(
         gravity_cases_for_seismic_weight(&model_dead_live),
         vec![LoadCaseId(0), LoadCaseId(1)],
-        "LiveSeismic が無ければ Dead+Live"
+        "LiveSeismic がなければ Dead+Live"
     );
 
     // LiveSeismic があれば Live ではなく LiveSeismic を優先
@@ -3825,7 +3825,7 @@ fn test_auto_generate_combinations_heavy_snow() {
     assert!(names.contains(&"DL + LL + 0.35SL - WX"), "{names:?}");
 }
 
-/// Dead ケースが無い場合はエラーメッセージが設定され、組合せは生成されないこと。
+/// Dead ケースがない場合はエラーメッセージが設定され、組合せは生成されないこと。
 /// Live 欠如も同様。
 #[test]
 fn test_auto_generate_combinations_missing_dead_or_live_is_error() {
@@ -3992,7 +3992,7 @@ fn test_run_preparation_generates_stories_and_infers_structure() {
 }
 
 /// 準備計算は冪等: モデルが変わっていなければ 2 回目以降の実行で undo 履歴を積まず、
-/// 解析結果を stale にもしない（毎回階を再生成する構成でも、実質的な差分が無ければ
+/// 解析結果を stale にもしない（毎回階を再生成する構成でも、実質的な差分がなければ
 /// `ApplyStories` を発行しない）。
 #[test]
 fn test_run_preparation_is_idempotent() {
@@ -4017,11 +4017,11 @@ fn test_run_preparation_is_idempotent() {
     assert_eq!(
         app.undo.undo_label().map(|s| s.to_string()),
         undo_label,
-        "差分が無ければ undo 履歴を積まないはず"
+        "差分がなければ undo 履歴を積まないはず"
     );
     assert!(
         !app.staleness.results_stale,
-        "差分が無ければ解析結果を stale にしないはず"
+        "差分がなければ解析結果を stale にしないはず"
     );
 }
 
@@ -4695,7 +4695,7 @@ fn test_generate_stories_syncs_ex_ey_cases() {
     assert!(fx > 0.0, "EX は +X 方向の水平力を持つはず: {fx}");
     assert!(
         ex.nodal.iter().all(|nl| nl.values[1] == 0.0),
-        "EX に Y 成分は無いはず"
+        "EX に Y 成分はないはず"
     );
 
     let ey = app
@@ -4813,7 +4813,7 @@ fn test_import_stbridge_without_loads_creates_default_cases() {
             EX_CASE_NAME,
             EY_CASE_NAME
         ],
-        "荷重の無い STB は標準荷重ケースが自動作成されるはず"
+        "荷重のない STB は標準荷重ケースが自動作成されるはず"
     );
     assert!(app2.model.validate().is_ok());
 
@@ -4867,7 +4867,7 @@ fn test_import_stbridge_with_loads_keeps_file_cases() {
     std::fs::remove_file(&path).ok();
 }
 
-/// 報告された問題の再発防止: 支点情報の無い ST-Bridge を読み込んだ直後に
+/// 報告された問題の再発防止: 支点情報のない ST-Bridge を読み込んだ直後に
 /// DL の線形静的解析がそのまま実行できる（支点の自動設定（ピン）＋標準荷重
 /// ケースの自動作成＋DL 自重同期のエンドツーエンド）。
 ///
@@ -5006,7 +5006,7 @@ fn test_import_stbridge_then_run_dl_succeeds() {
 ///
 /// - 小梁は解析要素ではなく、その支持節点（大梁スパン中間・要素非接続）に
 ///   落ちる床荷重・小梁自重は大梁の**中間集中荷重（CMQ）**へ変換される。
-/// - 実梁が無いスラブ辺（小梁上の辺・大梁の中間区間）の荷重も捨てられず
+/// - 実梁がないスラブ辺（小梁上の辺・大梁の中間区間）の荷重も捨てられず
 ///   主架構へ伝達され、鉛直荷重の総和が保存される。
 /// - そのまま線形静的解析が成功する（小梁支持節点は解析自由度から除外）。
 #[test]
@@ -6098,7 +6098,7 @@ fn test_build_preparation_csv() {
         "[剛域]",
         "[荷重集計]",
     ] {
-        assert!(csv.contains(section), "{section} が無い:\n{csv}");
+        assert!(csv.contains(section), "{section} がない:\n{csv}");
     }
     assert!(csv.contains("階,Wi[kN],ΣWj[kN],αi,Ai,Ci,Qi[kN],Pi[kN],種別"));
 }
@@ -6305,7 +6305,7 @@ fn test_preparation_member_stiffness_reports_composite_props() {
     // 充填コンクリート分だけ鋼管のみより剛性が大きくなる。
     assert!(c.iy > row.section_iy, "{} vs {}", c.iy, row.section_iy);
     assert!(c.area_ax > 0.0);
-    // 割増しは無いので実効値＝等価換算値。
+    // 割増しはないので実効値＝等価換算値。
     assert_eq!(row.slab_factor, 1.0);
     assert_eq!(row.wall_girder_factor, 1.0);
     assert_eq!(row.effective_iy, c.iy);
@@ -6383,7 +6383,7 @@ fn test_stale_results_not_persisted() {
     let mut reopened = App::default();
     reopened.open_project_from(path.clone());
     assert!(reopened.last_error.is_none(), "{:?}", reopened.last_error);
-    // 結果自体が復元されない（`results_stale` は結果が無い既定状態のまま）。
+    // 結果自体が復元されない（`results_stale` は結果がない既定状態のまま）。
     assert!(reopened.results.is_none());
     assert_eq!(reopened.last_static, None);
 
@@ -6651,7 +6651,7 @@ fn test_preparation_lists_no_torsion_skip_for_portal_frame() {
 }
 
 /// 柱脚をピン支点（回転自由）にすると、柱の i 端（柱脚）で材軸まわり回転を
-/// 拘束するものが無くなるため、その柱が対象外として一覧される。
+/// 拘束するものがなくなるため、その柱が対象外として一覧される。
 #[test]
 fn test_preparation_lists_torsion_skip_for_unrestrained_column_base() {
     let mut app = App::default();
@@ -6668,7 +6668,7 @@ fn test_preparation_lists_torsion_skip_for_unrestrained_column_base() {
 }
 
 /// 設定を OFF（`Keep`）にすると、全部材でねじり剛性を保持し、対象外一覧は空になる
-/// （「対象外」という概念自体が無くなるため）。
+/// （「対象外」という概念自体がなくなるため）。
 #[test]
 fn test_preparation_torsion_disabled_reports_no_rows() {
     use squid_n_core::model::BeamTorsionMode;

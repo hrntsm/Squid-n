@@ -27,7 +27,7 @@
 //! 分離し、Vy は qy_y、Vz は qy_z と独立に比較する（軸直交合力を単一値として
 //! min(qy_y,qy_z) と比較していた v1 の丸めを解消）。また RC 矩形断面
 //! （`SectionShape::RcRect`）で配筋情報が得られる場合、Qy は荒川mean式系の略算式
-//! （`squid_n_core::rc_capacity::rc_qsu_simple`）で算定する（配筋情報が無い場合は
+//! （`squid_n_core::rc_capacity::rc_qsu_simple`）で算定する（配筋情報がない場合は
 //! 従来どおり慣用値 `as・0.7√fc` へフォールバック）。さらに、荒川式のせん断スパン
 //! h0 は剛域長（`rigid_zone.length_i/length_j`）を控除した値を用い、軸力項 0.1・σ0
 //! は各ステップの部材軸力（圧縮のみ、引張は0）から動的に反映する（旧来の
@@ -37,7 +37,7 @@
 //!
 //! ただし、せん断降伏イベントが解析全体を通じて1件も発生しないモデル
 //! （断面にせん断有効断面積 `as_y`/`as_z` が設定されていない、またはせん断余裕が
-//! 大きく Qy に到達しないモデル）では、せん断耐力情報が実質的に無いに等しく、
+//! 大きく Qy に到達しないモデル）では、せん断耐力情報が実質的にないに等しく、
 //! せん断降伏の発生を厳密に要求すると耐力喪失解析そのものが機能しなくなる。
 //! そのため、その場合に限り従来どおり「曲げ降伏（`HingeLevel::Yield` 以降）後、
 //! 耐力喪失変形角を超えたこと」をもって代用するフォールバックを維持する
@@ -64,7 +64,7 @@ pub enum LossCriterion {
     /// FEMA 356 Table 6-7 相当の非線形特性設定（大梁のみ。柱は未対応）。
     /// 部材ごとの `FemaBeamParams` から塑性回転角 a [rad] を算定し、
     /// 部材変形角が a に達した梁を耐力喪失部材として除去する
-    /// （開始・終了の区別は無く、a 到達時点で即座に除去）。
+    /// （開始・終了の区別はなく、a 到達時点で即座に除去）。
     Fema {
         params: Vec<(ElemId, FemaBeamParams)>,
     },
@@ -155,7 +155,7 @@ pub fn fema_plastic_rotation(p: &FemaBeamParams) -> f64 {
 
 impl LossCriterion {
     /// 部材の耐力喪失変形角しきい値 (start, end) [rad] を返す。
-    /// `Fema` で該当部材のパラメータが無い場合は None（対象外＝喪失判定しない）。
+    /// `Fema` で該当部材のパラメータがない場合は None（対象外＝喪失判定しない）。
     fn thresholds(&self, elem: ElemId) -> Option<(f64, f64)> {
         match self {
             LossCriterion::DriftRange { start, end } => Some((*start, *end)),
@@ -272,8 +272,8 @@ fn detect_strength_loss(
     already_removed: &HashSet<ElemId>,
 ) -> Option<(u32, Vec<ElemId>)> {
     // 部材ごとの「降伏後」到達ステップ。原典どおりせん断降伏イベントを優先する。
-    // 解析全体を通じてせん断降伏イベントが1件も無いモデル（せん断耐力情報が
-    // 実質的に無い、またはせん断余裕が大きい）に限り、従来どおり曲げ降伏
+    // 解析全体を通じてせん断降伏イベントが1件もないモデル（せん断耐力情報が
+    // 実質的にない、またはせん断余裕が大きい）に限り、従来どおり曲げ降伏
     // （`HingeLevel::Yield` 以降）で代用するフォールバックを行う（モジュール doc 参照）。
     let mut first_yield_step: HashMap<ElemId, u32> = HashMap::new();
     if result.shear_yields.is_empty() {

@@ -22,7 +22,7 @@ use crate::units::{
 };
 
 /// 板厚 2 区分（`t<=40` / `40<t<=100`）の F 値を返す。
-/// 100mm 超は規定が無いため最終区分値をそのまま用いる（非保守的になり得る）。
+/// 100mm 超は規定がないため最終区分値をそのまま用いる（非保守的になり得る）。
 fn bucket2(t: f64, le40: f64, gt40: f64) -> f64 {
     if t <= 40.0 {
         le40
@@ -60,7 +60,7 @@ pub const STEEL_GRADES: &[&str] = &[
 ///
 /// JIS 規格品は厚さ 40mm 以下 / 40mm 超 100mm 以下の 2 区分
 /// （SM520 のみ 40/75/100mm の 3 区分）。大臣認定品（BCR/BCP・TMCP・SA440・LY）は
-/// 板厚区分を持たない。100mm を超える板厚は規定が無いため最終区分値を
+/// 板厚区分を持たない。100mm を超える板厚は規定がないため最終区分値を
 /// そのまま用いる（非保守的になり得るため実運用では要確認）。
 ///
 /// 戻り値は F 値。長期許容引張・圧縮・曲げ `ft = F/1.5`、
@@ -139,7 +139,7 @@ pub fn steel_material_strength_factor(name: &str) -> f64 {
 /// 曲げヒンジ・せん断降伏閾値）の材料強度割増係数。
 ///
 /// 直接入力の割増係数（[`crate::model::Material::strength_factor`]）があれば
-/// それを優先し、無ければ材料名から自動判定する
+/// それを優先し、なければ材料名から自動判定する
 /// （[`steel_material_strength_factor`]: 鋼材グレード=1.1、590N 級=1.05、
 /// 名称から解決できない材料=1.0）。
 pub fn material_strength_factor_steel(mat: &crate::model::Material) -> f64 {
@@ -152,7 +152,7 @@ pub fn material_strength_factor_steel(mat: &crate::model::Material) -> f64 {
 /// 曲げヒンジ・せん断降伏の主筋 σy）の材料強度割増係数。
 ///
 /// 直接入力の割増係数（[`crate::model::Material::strength_factor`]）があれば
-/// それを優先し、無ければ 1.1（鉄筋の材料強度は基準強度の 1.1 倍以下と
+/// それを優先し、なければ 1.1（鉄筋の材料強度は基準強度の 1.1 倍以下と
 /// できる規定）。fy 未設定で既定値（SD345 相当の 345）を用いる場合にも
 /// 同係数を乗じる。**せん断補強筋は割増対象外**（本係数を用いないこと）。
 pub fn material_strength_factor_rebar(mat: &crate::model::Material) -> f64 {
@@ -197,7 +197,7 @@ pub fn rebar_grade_f_value(name: &str) -> Option<f64> {
 /// RC 主筋の降伏点 σy [N/mm²] を解決する。
 ///
 /// 断面（配筋）の主筋材質 [`crate::section_shape::RcRebar::main_grade`] を第一に、
-/// 無ければ部材材料の `fy` を用いる。どちらも無い場合は `None` を返し、**既定値で
+/// なければ部材材料の `fy` を用いる。どちらもない場合は `None` を返し、**既定値で
 /// 埋めない**（未入力のまま既定 345 N/mm² を用いると、SD295 の部材で耐力を過大評価
 /// する＝危険側になるため。非線形解析は `None` を入力不備として停止する）。
 pub fn rebar_yield_strength(
@@ -506,7 +506,7 @@ mod tests {
         assert_eq!(steel_material_strength_factor("SD345"), 1.0);
     }
 
-    /// 文脈別係数: 直接入力の割増係数が最優先、無ければ鋼材=名称判定・主筋=1.1。
+    /// 文脈別係数: 直接入力の割増係数が最優先、なければ鋼材=名称判定・主筋=1.1。
     #[test]
     fn test_material_strength_factor_by_context() {
         let mk = |name: &str, factor: Option<f64>| crate::model::Material {
@@ -558,7 +558,7 @@ mod tests {
     }
 
     /// 主筋 σy は「断面の主筋材質 → 部材材料の fy」の順で解決し、
-    /// どちらも無ければ None（既定値で埋めない）。
+    /// どちらもなければ None（既定値で埋めない）。
     #[test]
     fn test_rebar_yield_strength_resolution_order() {
         let mut mat = crate::model::Material {
@@ -582,7 +582,7 @@ mod tests {
         // 材質未設定なら材料の fy。
         mat.fy = Some(390.0);
         assert_eq!(rebar_yield_strength(None, Some(&mat)), Some(390.0));
-        // 両方無ければ None（呼び出し側が入力不備として扱う）。
+        // 両方なければ None（呼び出し側が入力不備として扱う）。
         mat.fy = None;
         assert_eq!(rebar_yield_strength(None, Some(&mat)), None);
     }

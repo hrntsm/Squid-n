@@ -65,7 +65,7 @@ mod tests {
 
     #[test]
     fn test_symmetric_structure_theta_zero() {
-        // 対称構造: 交差変位が無い（uy=vx=0）→ Θ = 0
+        // 対称構造: 交差変位がない（uy=vx=0）→ Θ = 0
         let p = vec![1.0, 2.0];
         let ux = vec![1.0, 1.0];
         let vy = vec![2.0, 2.0];

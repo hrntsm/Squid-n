@@ -127,7 +127,7 @@ fn wall_model_sized(l: f64, h: f64, thickness: f64, wall_attr: Option<WallAttr>)
     }
 }
 
-/// 壁要素 ElemId(0) の耐震壁(RC)検定結果（無ければ None）。
+/// 壁要素 ElemId(0) の耐震壁(RC)検定結果（なければ None）。
 fn wall_check_result(model: &Model, forces: ForcesAt<'_>) -> Option<CheckResult> {
     let member_forces = vec![(ElemId(0), forces)];
     collect_joint_checks(model, &member_forces, LoadTerm::Short)
@@ -195,7 +195,7 @@ fn wall_with_large_opening_ratio_is_not_checked() {
     assert!(wall_check_result(&model, &forces).is_none());
 }
 
-/// `wall_attrs` に属性が無い壁（厚さ≥120mm）は、従来どおり無開口として
+/// `wall_attrs` に属性がない壁（厚さ≥120mm）は、従来どおり無開口として
 /// 耐震壁検定される。
 #[test]
 fn wall_without_attr_is_checked_as_no_opening() {
@@ -541,13 +541,13 @@ fn wall_with_side_columns_emits_nonlinear_shear_trilinear() {
     );
     assert!(cr.ratio() > 0.0, "Qu 検定比が正: {}", cr.ratio());
 
-    // 側柱の無い壁（主筋量ゼロ）ではトリリニアは出力されない。
+    // 側柱のない壁（主筋量ゼロ）ではトリリニアは出力されない。
     let plain = collect_joint_checks(&wall_model(None), &member_forces, LoadTerm::Short);
     assert!(
         !plain
             .iter()
             .any(|(_, label, _)| label == "耐震壁(RC)せん断非線形"),
-        "側柱の無い壁はトリリニア対象外"
+        "側柱のない壁はトリリニア対象外"
     );
 }
 

@@ -1085,7 +1085,7 @@ fn isolators_table(ui: &mut egui::Ui, app: &mut App) {
 /// 免震支承材の特性（`IsolatorProps`）変更。
 ///
 /// `squid-n-edit` には制振ダンパーの `SetDamperProps` に相当する免震支承材用の
-/// コマンドが無いため（今回の作業範囲は `squid-n-edit` を読み取り専用とする方針）、
+/// コマンドがないため（今回の作業範囲は `squid-n-edit` を読み取り専用とする方針）、
 /// `Model::isolator_attrs` が公開フィールドであることを利用してこの UI 層で
 /// `EditCommand` を実装する。`SetDamperProps` と同様、`props=None` で指定解除。
 ///

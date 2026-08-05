@@ -16,7 +16,7 @@ pub struct Reducer {
 }
 
 impl Reducer {
-    /// 自由度が 1 つも無いモデル向けの空の縮約（全長 0）。
+    /// 自由度が 1 つもないモデル向けの空の縮約（全長 0）。
     pub fn empty() -> Self {
         Reducer {
             t_rows: Vec::new(),
@@ -54,7 +54,7 @@ impl Reducer {
                         // スレーブも 0 に縮約する（従来は空行のとき恒等写像のまま
                         // 残してスレーブが独立自由度になり、拘束が無言で破れていた。
                         // RigidDiaphragm の扱いと同じ規則に統一）。
-                        // ただし当該 DOF にマスター項が 1 つも無い場合は MPC の対象外
+                        // ただし当該 DOF にマスター項が 1 つもない場合は MPC の対象外
                         // なので恒等のまま残す。
                         let mut has_term = false;
                         let mut row = Vec::new();

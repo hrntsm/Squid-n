@@ -160,7 +160,7 @@ impl HysteresisRule {
         self.yield_point().0
     }
 
-    /// ひび割れ点 (Mc, θc)。武田系のみ。無い場合は None。
+    /// ひび割れ点 (Mc, θc)。武田系のみ。ない場合は None。
     pub fn crack_point(&self) -> Option<(f64, f64)> {
         match *self {
             HysteresisRule::Takeda { crack, .. }
@@ -266,7 +266,7 @@ fn trilinear_symmetric(
         let k = (mu - my) / (tu - ty);
         (my + k * (t - ty), k)
     } else {
-        // 終局以降は耐力保持（軟化はスケルトンに無い前提。必要なら ultimate 超過で 0）
+        // 終局以降は耐力保持（軟化はスケルトンにない前提。必要なら ultimate 超過で 0）
         (mu, 0.0)
     };
     (sgn * m, k)

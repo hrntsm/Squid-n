@@ -141,7 +141,7 @@ fn test_seismic_design_shear_min_of_qd1_qd2() {
     ctx.seismic_qd.as_mut().unwrap().method = QdMethod::Min;
     let q_no_mu = seismic_design_shear(&ctx, 0.0, 150_000.0, 1, 0.0, false);
     assert!((q_no_mu - 200_000.0).abs() < 1e-6);
-    // 評価位置が長期内力に無い場合・文脈なしの場合は解析値のまま。
+    // 評価位置が長期内力にない場合・文脈なしの場合は解析値のまま。
     let q_missing = seismic_design_shear(&ctx, 0.5, 150_000.0, 1, 400.0e6, false);
     assert!((q_missing - 150_000.0).abs() < 1e-6);
     ctx.seismic_qd = None;

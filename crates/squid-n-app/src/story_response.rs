@@ -9,7 +9,7 @@
 /// 層/階の時系列 `[frame][story]` から、各層(階)の絶対値最大値を層ごとに求める。
 /// `n_story` は結果ベクトルの長さ（`series` の要素数が 0 でもゼロ埋めで返す）。
 /// 各フレームの要素数が `n_story` と異なる場合は短い方までのみ集計する
-/// （層構成が解析中に変わることは無いが、防御的に扱う）。
+/// （層構成が解析中に変わることはないが、防御的に扱う）。
 pub fn story_absmax(series: &[Vec<f64>], n_story: usize) -> Vec<f64> {
     let mut out = vec![0.0_f64; n_story];
     for frame in series {

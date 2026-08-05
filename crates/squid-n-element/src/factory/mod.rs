@@ -153,7 +153,7 @@ impl StrengthBasis {
     /// 鋼材文脈（鋼材断面の集中ばね・純鋼材ファイバー等）の材料強度割増係数。
     /// `Nominal` は常に 1.0、`MaterialStrength` は
     /// [`squid_n_core::material_grade::material_strength_factor_steel`] に委譲する
-    /// （材料が無い場合は 1.0）。
+    /// （材料がない場合は 1.0）。
     pub(crate) fn steel_factor(self, mat: Option<&squid_n_core::model::Material>) -> f64 {
         match self {
             StrengthBasis::Nominal => 1.0,
@@ -166,7 +166,7 @@ impl StrengthBasis {
     /// RC 主筋文脈（RC 断面の集中ばね・主筋ファイバー等。せん断補強筋には用いない）の
     /// 材料強度割増係数。`Nominal` は常に 1.0、`MaterialStrength` は
     /// [`squid_n_core::material_grade::material_strength_factor_rebar`] に委譲する
-    /// （材料が無い場合は 1.0）。
+    /// （材料がない場合は 1.0）。
     pub(crate) fn rebar_factor(self, mat: Option<&squid_n_core::model::Material>) -> f64 {
         match self {
             StrengthBasis::Nominal => 1.0,
@@ -184,7 +184,7 @@ impl StrengthBasis {
 /// 線形解析の弾性梁まで非線形要素に置き換わってしまうため。
 ///
 /// 注意（既知の制約）: `ConcentratedSpringBeam` は端ばねスケルトン（降伏モーメント）が必要だが、
-/// 現状 `Model` に降伏応力／スケルトン供給経路が無いため、軸-曲げ連成を扱う `FiberBeam` に
+/// 現状 `Model` に降伏応力／スケルトン供給経路がないため、軸-曲げ連成を扱う `FiberBeam` に
 /// フォールバックしている（P5 §5 の本来意図は集中ばね梁）。鋼材ファイバは材料の fy から
 /// Menegotto–Pinto で降伏する（fy 未設定のモデルは [`ensure_nonlinear_input`] が解析前に
 /// エラーで停止する）。
@@ -200,7 +200,7 @@ pub fn build_nonlinear_behavior(
 ) -> Box<dyn ElementBehavior> {
     match data.kind {
         // 耐震壁の側柱は面内曲げ面の端部回転を静的縮約する（線形パスと同じ扱い）。
-        // これが無いと、一次設計は「側柱＝面内両端ピン」、保有水平耐力は
+        // これがないと、一次設計は「側柱＝面内両端ピン」、保有水平耐力は
         // 「側柱＝両端剛接」という別モデルになり、さらに壁パネルが
         // `as_gross = 壁板 + 側柱断面` で側柱分を既に負担しているため、
         // 非線形解析で側柱の面内せん断が二重計上され保有水平耐力を過大評価する

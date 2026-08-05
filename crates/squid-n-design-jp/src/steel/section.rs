@@ -127,12 +127,12 @@ pub fn steel_fb_h(f: f64, term: LoadTerm, lb: f64, i: f64, h: f64, af: f64, c: f
 ///   単曲率（一様な向きに曲がる）なら負」という鋼構造設計規準の定義に従う。
 ///   **squid-n の内力（断面力）符号規約では、`mz` は部材全長で連続な内力場
 ///   のため、両端の `mz` が異符号＝モーメント図が軸をまたぐ＝反曲点を持つ
-///   複曲率、同符号＝軸をまたがない＝反曲点の無い単曲率に対応する**。
+///   複曲率、同符号＝軸をまたがない＝反曲点のない単曲率に対応する**。
 /// - 座屈区間中央部（[`DesignCtx::mid_moment_z`]）の絶対値が両端部の絶対値
 ///   より大きい場合は、区間内の最大曲げが端部にないため安全側の `C=1.0`
 ///   とする。
 /// - [`DesignCtx::end_moments_z`] が `None` の場合は、端部モーメント比の
-///   情報が無いため従来通り `C=1.0`（安全側・最も不利な等曲げ分布相当）
+///   情報がないため従来通り `C=1.0`（安全側・最も不利な等曲げ分布相当）
 ///   とする。
 pub(crate) fn steel_lateral_buckling_c(ctx: &DesignCtx) -> f64 {
     // 端部モーメント比が代表できない場合は安全側の C=1.0（等曲げ分布相当）。
@@ -149,11 +149,11 @@ pub(crate) fn steel_lateral_buckling_c(ctx: &DesignCtx) -> f64 {
 ///
 /// 次の場合は端部比で区間内の曲げ分布を代表できないため `None` を返し、
 /// 呼び出し側が各式の安全側既定値へフォールバックする:
-/// - [`DesignCtx::end_moments_z`] が未設定（端部モーメントの情報が無い）
+/// - [`DesignCtx::end_moments_z`] が未設定（端部モーメントの情報がない）
 /// - 座屈区間中央（[`DesignCtx::mid_moment_z`]）の絶対値が両端より大きい
-///   （区間内の最大曲げが端部に無い）
+///   （区間内の最大曲げが端部にない）
 ///
-/// 両端とも曲げがほぼ無い場合は `M2/M1 = 0` として `Some(0.0)`。
+/// 両端とも曲げがほぼない場合は `M2/M1 = 0` として `Some(0.0)`。
 fn end_moment_ratio_m2_m1(ctx: &DesignCtx) -> Option<f64> {
     let (m_i, m_j) = ctx.end_moments_z?;
     let abs_i = m_i.abs();
@@ -185,7 +185,7 @@ fn end_moment_ratio_m2_m1(ctx: &DesignCtx) -> Option<f64> {
 /// 1. [`DesignCtx::steel_attr`] に `c_direct`（正値）の直接入力があれば、
 ///    その値をそのまま採用する（参考資料の「入力がある場合は入力値を採用」。
 ///    自動算定の上限 `2.3` はこの場合適用しない）。
-/// 2. 直接入力が無い場合、`lb_is_partial=true`（横補剛等により座屈区間が
+/// 2. 直接入力がない場合、`lb_is_partial=true`（横補剛等により座屈区間が
 ///    部材の部分区間となり区間端モーメント比が不明）であれば安全側の `1.0`。
 /// 3. それ以外は従来の自動算定 [`steel_lateral_buckling_c`]（`ctx.end_moments_z`/
 ///    `ctx.mid_moment_z` から `M2/M1` により算定）。
@@ -279,9 +279,9 @@ pub fn steel_fb_h_new(
 /// 複曲率＝両端モーメント異符号で正、単曲率＝同符号で負）。
 ///
 /// - 座屈区間中央部（[`DesignCtx::mid_moment_z`]）の絶対値が両端部より
-///   大きい場合は、区間内の最大曲げが端部に無いため安全側の `pλb=0.3` とする。
+///   大きい場合は、区間内の最大曲げが端部にないため安全側の `pλb=0.3` とする。
 /// - [`DesignCtx::end_moments_z`] が `None` の場合も同様に安全側の `pλb=0.3`。
-/// - `M1≈0`（両端とも曲げがほぼ無い）のときは `M2/M1=0` 扱いで `pλb=0.6`。
+/// - `M1≈0`（両端とも曲げがほぼない）のときは `M2/M1=0` 扱いで `pλb=0.6`。
 pub(crate) fn steel_p_lambda_b(ctx: &DesignCtx) -> f64 {
     // 端部モーメント比が代表できない場合は安全側の pλb=0.3。
     let Some(m2_over_m1) = end_moment_ratio_m2_m1(ctx) else {
@@ -383,9 +383,9 @@ pub fn steel_h_z_with_loss(
 /// 1. `lb_direct = Some((始端, 中央, 終端))` が与えられていれば、`pos`
 ///    （部材軸方向の無次元位置 0.0〜1.0）に応じて該当区間の値を返す:
 ///    `pos<0.25` は始端、`pos<0.75` は中央、それ以外は終端。
-/// 2. 直接入力が無く `brace_count = Some(n)`（等間隔横補剛の本数）が
+/// 2. 直接入力がなく `brace_count = Some(n)`（等間隔横補剛の本数）が
 ///    あれば `lb = L/(n+1)`（`n` 本の補剛で部材が `n+1` 等分される）。
-/// 3. いずれも無ければ部材長 `length` をそのまま横座屈長さとする
+/// 3. いずれもなければ部材長 `length` をそのまま横座屈長さとする
 ///    （横補剛なし＝全長で座屈）。
 pub fn resolve_lb(
     pos: f64,
@@ -585,7 +585,7 @@ mod tests {
         assert_eq!(steel_c_factor(&ctx, true), 1.5);
     }
 
-    /// c_direct が無い場合、部分区間（lb_is_partial=true。横補剛により座屈
+    /// c_direct がない場合、部分区間（lb_is_partial=true。横補剛により座屈
     /// 区間が部材の部分区間となり区間端モーメント比が不明）では安全側の
     /// C=1.0 とする（自動算定なら異なる値になる状況でも 1.0 に落ちること）。
     #[test]
@@ -756,7 +756,7 @@ mod tests {
         assert_eq!(resolve_lb(1.0, 9000.0, direct, Some(2)), 3000.0);
     }
 
-    /// resolve_lb: 直接入力が無く等間隔横補剛の本数があれば L/(n+1)。
+    /// resolve_lb: 直接入力がなく等間隔横補剛の本数があれば L/(n+1)。
     #[test]
     fn test_resolve_lb_brace_count_when_no_direct() {
         // n=2 本の補剛で 3 等分 → 9000/3=3000。
@@ -764,7 +764,7 @@ mod tests {
         assert_eq!(resolve_lb(0.0, 9000.0, None, Some(2)), 3000.0);
     }
 
-    /// resolve_lb: どちらも無ければ部材長そのまま。
+    /// resolve_lb: どちらもなければ部材長そのまま。
     #[test]
     fn test_resolve_lb_falls_back_to_length() {
         assert_eq!(resolve_lb(0.5, 9000.0, None, None), 9000.0);

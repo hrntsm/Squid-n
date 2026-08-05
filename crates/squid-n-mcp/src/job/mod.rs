@@ -162,8 +162,8 @@ pub fn compute_job(model: &Model, kind: JobKind, params: &JobParams) -> Result<J
     }
 }
 
-/// `load_case` 指定があればそれを、無ければ先頭の荷重ケースを返す。
-/// 荷重ケースが1つも無いモデルでは "no load cases" を返す
+/// `load_case` 指定があればそれを、なければ先頭の荷重ケースを返す。
+/// 荷重ケースが1つもないモデルでは "no load cases" を返す
 /// （既存の `analyze_model` と同じ文言。P8 のテストが this を確認している）。
 pub(crate) fn resolve_load_case(
     model: &Model,

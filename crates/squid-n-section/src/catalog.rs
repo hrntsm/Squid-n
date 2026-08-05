@@ -135,7 +135,7 @@ pub fn to_section(entry: &CatalogEntry, id: SectionId) -> Section {
 ///   `"Box-{h}x{w}x{t}x{r}"`（BCP/BCR/JIS_Rectangle/JIS_Square/STKR 系, 角R付き,
 ///   例: `"Box-1000x1000x22x77"`）。末尾の角R があれば無視。
 /// - 丸鋼管: `"O-{outer_dia}x{t}"`（例: `"O-400x19"`）。
-/// - フラットバー（`"FL {t}x{b}"`）はパース対象外（対応する `SectionShape` が無い）。
+/// - フラットバー（`"FL {t}x{b}"`）はパース対象外（対応する `SectionShape` がない）。
 ///
 /// 上記いずれの数値パースにも失敗した場合は `None`。
 fn parse_shape_from_name(shape: CatalogShape, name: &str) -> Option<SectionShape> {
@@ -199,7 +199,7 @@ fn parse_csv() -> Vec<CatalogEntry> {
             continue;
         }
         let fields: Vec<&str> = line.split(';').map(|f| f.trim_matches('"')).collect();
-        // It (ねじり定数) は index 28。それ未満しか無い行は不正なので無視する。
+        // It (ねじり定数) は index 28。それ未満しかない行は不正なので無視する。
         if fields.len() <= 28 {
             continue;
         }
@@ -384,7 +384,7 @@ mod tests {
 
     #[test]
     fn test_parse_shape_flat_is_none() {
-        // フラットバーに対応する SectionShape 派生は無いため常に None。
+        // フラットバーに対応する SectionShape 派生はないため常に None。
         assert_eq!(parse_shape_from_name(CatalogShape::Flat, "FL 12x100"), None);
     }
 }

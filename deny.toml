@@ -2,7 +2,7 @@
 # RustSec advisory DB に対する脆弱性チェック（脆弱性は常に deny）。
 yanked = "warn"
 # 以下は推移的依存の「メンテ終了(unmaintained)」勧告で、脆弱性ではない。
-# 直接の対処手段が無く、上流の更新待ちのため除外する。
+# 直接の対処手段がなく、上流の更新待ちのため除外する。
 ignore = [
     "RUSTSEC-2025-0141", # bincode: unmaintained
     "RUSTSEC-2024-0436", # paste: unmaintained

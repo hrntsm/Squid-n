@@ -237,12 +237,12 @@ fn test_generate_weighted_centroid_matches_hand_calc() {
     assert!((rep.coord[0] - 3000.0).abs() < 1e-6, "Gx={}", rep.coord[0]);
     assert!((rep.coord[1] - 0.0).abs() < 1e-6, "Gy={}", rep.coord[1]);
     assert_eq!(rep.coord[2], 3000.0);
-    // 自重を持つ要素が無いモデルなので CorrectedLumped でも控除は発生せず、
+    // 自重を持つ要素がないモデルなので CorrectedLumped でも控除は発生せず、
     // 節点荷重の全量がそのまま質点質量になる。
     // mt = ΣiW/g = 400000/g、j = Σ(iW/g)·r² = (100000*3000² + 300000*1000²)/g
     let mass = rep
         .mass
-        .expect("CorrectedLumped: 自重が無いため全量が質点質量になる");
+        .expect("CorrectedLumped: 自重がないため全量が質点質量になる");
     let expected_mt = 400000.0 / GRAVITY_MM_S2;
     assert!(
         (mass[0] - expected_mt).abs() < 1e-9 * expected_mt,
@@ -2139,7 +2139,7 @@ fn test_generate_story_structure_uses_material_without_shapes() {
 }
 
 /// 断面も材料も未割当の部材は種別を判定できないため集計から除く。
-/// 対象部材が 1 本も無い階は既定の RC になる（略算周期 α で S を算入しない安全側）。
+/// 対象部材が 1 本もない階は既定の RC になる（略算周期 α で S を算入しない安全側）。
 #[test]
 fn test_generate_story_structure_defaults_to_rc_without_section_and_material() {
     use squid_n_core::model::StoryStructure;
@@ -2193,5 +2193,5 @@ fn test_carry_over_manual_story_settings() {
         StoryLevelKind::Penthouse { k: 0.7 },
         "階の種別も引き継ぐ"
     );
-    assert_eq!(fresh[1].weight_override, None, "手入力の無い階はそのまま");
+    assert_eq!(fresh[1].weight_override, None, "手入力のない階はそのまま");
 }

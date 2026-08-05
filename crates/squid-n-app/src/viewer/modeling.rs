@@ -434,7 +434,7 @@ pub(super) fn draw_modeling(
     // 凡例に載せる情報を収集する。
     let mut present: Vec<ModelClass> = Vec::new();
     let mut sym = Symbols::default();
-    // 仕口パネルの見付き寸法算定で使う隣接マップ。パネルが 1 つも無いモデルでは
+    // 仕口パネルの見付き寸法算定で使う隣接マップ。パネルが 1 つもないモデルでは
     // 構築しない（遅延初期化）。
     let mut beam_adjacency: Option<NodeAdjacency> = None;
     // 壁の付帯梁の絞り込みに使う耐震壁の節点集合（描画 1 回につき一度だけ作る）。
@@ -1584,10 +1584,10 @@ mod tests {
         }
     }
 
-    /// 側柱（左右の鉛直辺）が無くても、上下辺の大梁が揃っていれば耐震壁として描く。
+    /// 側柱（左右の鉛直辺）がなくても、上下辺の大梁が揃っていれば耐震壁として描く。
     /// 側柱を持たない壁は壁筋比から等価引張鉄筋比を算定する正規の対象である。
     #[test]
-    fn 側柱が無くても耐震壁として描く() {
+    fn 側柱がなくても耐震壁として描く() {
         let (mut model, wall) = wall_model(150.0);
         model
             .elements

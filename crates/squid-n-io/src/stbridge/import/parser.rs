@@ -77,7 +77,7 @@ pub(super) enum CurSec {
 
 /// ST-Bridge の要素のうち Squid-n が未対応で、取り込み時に必ず警告対象とするもの。
 /// これに加え、部材（`StbMembers`）・断面（`StbSections`）・荷重（`StbLoadCase`）の直属子で
-/// 未対応のものは、このリストに無い未知要素であっても警告する（fail-loud。詳細は
+/// 未対応のものは、このリストにない未知要素であっても警告する（fail-loud。詳細は
 /// [`StbParser::record_unsupported`] を参照）。本リストは、直属の親からは判別しづらい要素
 /// （通り芯など `StbModel` 直下のもの）を確実に拾うために併用する。
 const UNSUPPORTED_ELEMENTS: &[&str] = &[
@@ -135,7 +135,7 @@ pub(super) struct StbParser {
     /// 人間可読の警告（断面図形を認識できず取り込めなかった等）。
     pub(super) warnings: Vec<String>,
     /// 未対応要素はタグごとに件数を集計し、最後にまとめて 1 行の警告にする。
-    /// 明示リストに無い未知の要素も、部材/断面/荷重の直属子であれば「取り込み対象外」
+    /// 明示リストにない未知の要素も、部材/断面/荷重の直属子であれば「取り込み対象外」
     /// として拾う（fail-loud。取りこぼしを無言で捨てない）ため、キーは String とする。
     pub(super) unsupported: HashMap<String, u32>,
     /// 開いている要素のスタック（直属の親要素を知り、未知の部材/断面/荷重を検出するため）。
@@ -292,7 +292,7 @@ impl StbParser {
                     node_ids: Vec::new(),
                 });
                 // 直下の StbNodeIdList/StbNodeId をこの階へ集める窓を開く
-                // （空の <StbStory/> でも害は無い。StbNodeId はスラブ・壁を優先し、
+                // （空の <StbStory/> でも害はない。StbNodeId はスラブ・壁を優先し、
                 // かつ階は通常部材より前に現れるため誤取り込みしない）。
                 self.in_story = true;
             }
@@ -514,7 +514,7 @@ impl StbParser {
             | "StbSecSlabDeckStraight"
             | "StbSecFigureSlabDeck" => {
                 if let CurSec::Slab { thickness, .. } = &mut self.cur {
-                    // 厚さ属性を持つ図形要素なら更新、無ければ既存値を保持。
+                    // 厚さ属性を持つ図形要素なら更新、なければ既存値を保持。
                     *thickness = get_f64_any(a, &["depth", "thickness", "t", "D"])
                         .ok()
                         .or(*thickness);
@@ -825,9 +825,9 @@ impl StbParser {
                 {
                     match geom {
                         Some(geom) => {
-                            // 配筋が無い（幾何のみの）ファイルは無筋相当の既定配筋で補う。
+                            // 配筋がない（幾何のみの）ファイルは無筋相当の既定配筋で補う。
                             let mut rebar = rebar.unwrap_or_else(default_rebar);
-                            // かぶりが配筋要素側に無ければ配置コンテナ側の値を採る。
+                            // かぶりが配筋要素側になければ配置コンテナ側の値を採る。
                             if rebar.cover == 0.0 {
                                 if let Some(c) = rebar_cover {
                                     rebar.cover = c;
@@ -1024,7 +1024,7 @@ fn end_condition_of(a: &Attrs, keys: &[&str]) -> squid_n_core::model::EndConditi
 }
 
 /// RC/SRC/CFT 断面のコンクリート材料参照。数値 id（`id_material` 系）を優先し、
-/// 無ければ ST-Bridge 標準のグレード名 `strength_concrete`（`Fc21` 等）を採る。
+/// なければ ST-Bridge 標準のグレード名 `strength_concrete`（`Fc21` 等）を採る。
 fn sec_mat_ref_of(a: &Attrs) -> Option<SecMatRef> {
     let id = get_i64(a, "id_material")
         .or_else(|| get_i64(a, "id_material_concrete"))

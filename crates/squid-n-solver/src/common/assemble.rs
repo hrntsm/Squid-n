@@ -26,7 +26,7 @@ pub fn assemble_global_k(model: &Model, dofmap: &DofMap) -> SparseColMat<usize, 
 /// 支点ばね（`Node::support_spring`）の有効項を `(active DOF 番号, ばね剛性 k)` の
 /// 列で列挙する。値 0・`restraint` で固定されている自由度（固定支持を優先し
 /// ばね値は無視する。[`squid_n_core::model::Node::support_spring`] の仕様）・
-/// 不活性（`dofmap` 側で自由度が無い＝孤立節点等）の項は含まない。
+/// 不活性（`dofmap` 側で自由度がない＝孤立節点等）の項は含まない。
 ///
 /// 全体剛性の対角加算（[`add_support_spring_diag`]、線形経路）と、非線形経路
 /// （`nonlinear::pushover::assembly` の `assemble_k`・`add_support_spring_f_int`）の

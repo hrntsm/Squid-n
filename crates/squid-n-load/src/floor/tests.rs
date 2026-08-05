@@ -810,7 +810,7 @@ fn test_materialized_joist_uses_span_distributed_load() {
         expected_total
     );
 
-    // 実部材化されたので Node 点反力は無く、Span 等分布が2本分できる。
+    // 実部材化されたので Node 点反力はなく、Span 等分布が2本分できる。
     assert!(
         !loads
             .iter()
@@ -1158,7 +1158,7 @@ fn test_interior_edge_supported_partial_conservation() {
 
 #[test]
 fn test_edge_supported_no_true_falls_back_to_all_edges() {
-    // 支持辺が1つも無い指定(全false)は全辺支持へフォールバックする。
+    // 支持辺が1つもない指定(全false)は全辺支持へフォールバックする。
     let (lx, ly) = (4000.0_f64, 3000.0_f64);
     let w = 0.002_f64;
     let (model, mut slab) = make_rect_slab_model(lx, ly, DistributionMethod::TriTrapezoid, w);

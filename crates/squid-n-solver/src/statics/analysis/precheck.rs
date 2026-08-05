@@ -15,7 +15,7 @@ use squid_n_math::solver::SolveError;
 /// 不備の対象。診断一覧がクリックで 3D 選択・インスペクタへ結びつけるために持つ。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum IssueTargets {
-    /// 対象を特定できない不備（節点・部材・拘束が 1 つも無い等）。
+    /// 対象を特定できない不備（節点・部材・拘束が 1 つもない等）。
     Model,
     Members(Vec<ElemId>),
     Nodes(Vec<NodeId>),
@@ -117,7 +117,7 @@ pub fn model_issues(model: &Model) -> Vec<ModelIssue> {
     if !model.nodes.iter().any(|n| n.restraint.0 != 0) {
         issues.push(ModelIssue::model(
             "拘束(支点)が 1 つもありません。境界条件タブで支点を設定してください\
-             (拘束が無いと構造全体が剛体移動し、剛性行列が特異になります)。",
+             (拘束がないと構造全体が剛体移動し、剛性行列が特異になります)。",
         ));
     }
 
@@ -164,7 +164,7 @@ pub fn model_issues(model: &Model) -> Vec<ModelIssue> {
         ));
     }
 
-    // シェル要素の断面に板厚が無い（線材用断面を割り当てた等）。
+    // シェル要素の断面に板厚がない（線材用断面を割り当てた等）。
     // 要素構築は板厚 0（ゼロ剛性）となり特異行列で止まるが、原因が伝わらないため
     // ここで名指しする。
     let no_thickness: Vec<ElemId> = model
@@ -322,7 +322,7 @@ fn node_reference_issues(model: &Model) -> Vec<ModelIssue> {
              (節点削除後の不整合の可能性があります)。",
         ));
     }
-    // 部材が 1 つも無いモデルでは全節点が孤立になる。「部材がありません」で
+    // 部材が 1 つもないモデルでは全節点が孤立になる。「部材がありません」で
     // 同じことを言っているため、節点を 1 つずつ挙げても情報が増えない。
     if model.elements.is_empty() {
         return issues;

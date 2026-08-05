@@ -79,7 +79,7 @@ impl StoryStructure {
     ///
     /// 略算周期 T = h(0.02 + 0.01α) は S の階が増えるほど T が長く、Rt が
     /// 小さくなって地震力が下がるため、判定が割れた場合は S を採らないのが
-    /// 安全側になる（同数時の優先順の根拠）。対象部材が 1 本も無い階は RC。
+    /// 安全側になる（同数時の優先順の根拠）。対象部材が 1 本もない階は RC。
     pub fn majority(n_rc: usize, n_s: usize, n_src: usize) -> Self {
         let max = n_rc.max(n_s).max(n_src);
         if max == 0 || n_rc == max {

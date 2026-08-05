@@ -321,7 +321,7 @@ mod tests {
         assert_eq!(rank, MemberRank::FC);
     }
 
-    /// 梁の円形鋼管・角形鋼管は柱の行を準用する（構造規定表に梁の行が無いため）。
+    /// 梁の円形鋼管・角形鋼管は柱の行を準用する（構造規定表に梁の行がないため）。
     #[test]
     fn test_s_member_rank_by_kihon_beam_pipe_and_box_use_column_row() {
         let pipe = SectionShape::SteelPipe {

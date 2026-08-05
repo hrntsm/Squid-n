@@ -240,7 +240,7 @@ fn test_model_issues_collects_every_issue() {
     assert!(model_issues(&make_cantilever_model()).is_empty());
 }
 
-/// 部材が 1 つも無いモデルで、全節点を孤立節点として並べない。
+/// 部材が 1 つもないモデルで、全節点を孤立節点として並べない。
 /// 「部材がありません」で同じことを言っており、節点を 1 つずつ挙げても情報が増えない。
 #[test]
 fn test_model_issues_skips_isolated_nodes_without_elements() {

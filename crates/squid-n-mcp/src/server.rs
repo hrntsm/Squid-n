@@ -84,7 +84,7 @@ impl SquidNServer {
         // 永続化・ジョブ状態の更新は別タスク（tokio::spawn）で行うことで、本ツール呼び出し
         // 自体は job_id を即時返し、応答をブロックしない（非同期ジョブとしての仕様どおり）。
         // 結果ストアへの書き込みとジョブ状態の Done への遷移は、同じロック保持区間内で
-        // 行う（result_get が「Done なのに manifest に無い」状態を観測しないため）。
+        // 行う（result_get が「Done なのに manifest にない」状態を観測しないため）。
         tokio::spawn(async move {
             let outcome =
                 tokio::task::spawn_blocking(move || super::compute_job(&model, kind, &params))
@@ -133,7 +133,7 @@ impl SquidNServer {
     }
 
     /// 結果ストアから結果を取得する。`kind` は "NodalDisp"/"MemberForce"/
-    /// "Modal"/"TimeHistory" のいずれか。`case`+`kind` の組が manifest に無い
+    /// "Modal"/"TimeHistory" のいずれか。`case`+`kind` の組が manifest にない
     /// 場合はエラーを返す（analysis_run で該当ジョブを先に実行すること）。
     #[tool(description = "解析結果ストアから結果を取得する")]
     pub async fn result_get(
@@ -742,7 +742,7 @@ mod tests {
                 step_range: None,
             }))
             .await
-            .expect_err("manifest に無い case は Err のはず");
+            .expect_err("manifest にない case は Err のはず");
         assert!(
             err.message.contains("結果がありません"),
             "エラーメッセージに『結果がありません』が含まれるはず: {err:?}"

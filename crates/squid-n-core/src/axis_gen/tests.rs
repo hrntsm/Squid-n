@@ -131,7 +131,7 @@ fn ignores_non_vertical_members() {
     push_line(&mut m, a, b); // 梁
     push_line(&mut m, a, c); // 斜材
     let groups = generate_axes(&m);
-    assert!(groups.is_empty(), "柱が無ければグループを作らない");
+    assert!(groups.is_empty(), "柱がなければグループを作らない");
 }
 
 /// 既存の手動・取り込み由来の通りは保護され、同じ位置には新しい通りを作らない。

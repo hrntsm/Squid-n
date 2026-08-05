@@ -43,7 +43,7 @@ pub struct NonlinearThCfg {
     /// 時刻歴開始前に長期荷重（固定・積載等、`LoadCaseKind::is_long_term`）を
     /// 静的 Newton 反復で載荷し、その変位・応力状態を時刻歴の初期条件とするか
     /// （プッシュオーバーの長期載荷フェーズと同じ考え方）。長期系荷重ケースが
-    /// 無いモデルでは何もしない。
+    /// ないモデルでは何もしない。
     pub apply_long_term: bool,
     /// 詳細記録（[`super::ThRecording`]）の間引き係数。`None` は自動決定
     /// （記録フレーム数が概ね 1000 になるよう [`super::recording::auto_record_every`] で調整）。
@@ -159,7 +159,7 @@ pub fn nonlinear_time_history_analysis(
     // ── 長期荷重ベクトル（apply_long_term） ─────────────────────────────
     // 長期系荷重ケース（固定・積載等、`LoadCaseKind::is_long_term`）の外力を、
     // プッシュオーバーの長期載荷フェーズ（driver.rs）と同じ経路で組み立てる。
-    // `cfg.apply_long_term` が偽、または該当荷重ケースが無い場合はゼロベクトル。
+    // `cfg.apply_long_term` が偽、または該当荷重ケースがない場合はゼロベクトル。
     let f0_free: Vec<f64> = if cfg.apply_long_term {
         let mut f = vec![0.0; n_free];
         for lc in model.load_cases.iter().filter(|l| l.kind.is_long_term()) {

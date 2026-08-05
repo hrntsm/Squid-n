@@ -162,7 +162,7 @@ fn emit_edge_loads(coords: &[[f64; 3]], w: f64, edge_area: &[f64], loads: &mut V
 /// - `SlabKind::Interior` + `edge_supported`: 開口際などで一部の辺が大梁・小梁に
 ///   取り付かない一般スラブの分配に用いる（非支持辺には荷重を負担させない一般化）。
 ///
-/// `supported` の長さが `coords.len()` と一致しない、または支持辺が1つも無い
+/// `supported` の長さが `coords.len()` と一致しない、または支持辺が1つもない
 /// （全要素 `false`）場合は、指定が無意味なため安全側（総荷重を捨てない）に倒して
 /// 全辺支持へフォールバックする（＝ [`distribute_polygon`] と同じ結果になる）。
 pub(crate) fn distribute_polygon_supported(

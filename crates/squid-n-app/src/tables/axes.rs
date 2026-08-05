@@ -144,7 +144,7 @@ pub fn axes_table(ui: &mut egui::Ui, app: &mut App) {
     }
     if let Some((gi, ai, name)) = pending_commit {
         app.axis_name_draft.editing = None;
-        // 空欄は無視する（名前の無い通りは識別札として意味を成さない）。
+        // 空欄は無視する（名前のない通りは識別札として意味を成さない）。
         if !name.is_empty() && app.model.axes[gi].axes[ai].name != name {
             app.undo.run(
                 &mut app.model,

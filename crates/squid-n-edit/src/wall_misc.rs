@@ -246,7 +246,7 @@ impl EditCommand for SetPanelZoneMode {
 
 /// 壁要素（`ElementKind::Wall`/`Shell`）の自重算定属性（`WallAttr`）を
 /// 追加/更新する。`attr.elem` に一致する既存エントリがあれば置換し、
-/// 無ければ末尾に追加する。逆操作は変更前の状態への復元
+/// なければ末尾に追加する。逆操作は変更前の状態への復元
 /// （既存エントリの置換なら変更前の `WallAttr` で [`SetWallAttr`] を再実行、
 /// 新規追加なら [`RemoveWallAttr`] で取り消す）。
 pub struct SetWallAttr {
@@ -277,11 +277,11 @@ impl EditCommand for SetWallAttr {
 }
 
 /// 壁属性エントリを削除する（`elem` に一致するものを削除）。一致するエントリが
-/// 無ければ Noop。逆操作は削除前の値を復元する [`SetWallAttr`]
+/// なければ Noop。逆操作は削除前の値を復元する [`SetWallAttr`]
 /// （このエントリの `elem` は削除時点で存在しないため、`SetWallAttr` は
 /// 「既存エントリなし→末尾追加」の枝を通り、元の位置には戻らないが、
 /// `wall_attrs` は `ElemId` をキーとする集合的なデータであり配列順に意味は
-/// 無いため問題ない）。
+/// ないため問題ない）。
 pub struct RemoveWallAttr {
     pub elem: ElemId,
 }

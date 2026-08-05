@@ -40,7 +40,7 @@ pub(super) fn check_s_panel(
         return;
     };
 
-    // プリセット外の直接入力材料は fy を基準強度として用いる（それも無ければ 235）。
+    // プリセット外の直接入力材料は fy を基準強度として用いる（それもなければ 235）。
     let t = crate::steel::steel_f_value_prefix(&col.mat.name, 40.0);
     let fy = t.or(col.mat.fy).unwrap_or(235.0);
     // 軸力比 n = 圧縮軸力/(F·A)（当該ケースの軸力。引張は 0）。

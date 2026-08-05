@@ -50,7 +50,7 @@ impl NodeAdjacency {
         Self { by_node }
     }
 
-    /// 節点 `node` に接続する線材要素の添字（接続が無ければ空）。
+    /// 節点 `node` に接続する線材要素の添字（接続がなければ空）。
     pub fn indices_at(&self, node: NodeId) -> &[usize] {
         self.by_node
             .get(&node.index())
@@ -135,7 +135,7 @@ mod tests {
         );
     }
 
-    /// 接続が無い節点・範囲外の節点は空を返す。
+    /// 接続がない節点・範囲外の節点は空を返す。
     #[test]
     fn test_unknown_node_is_empty() {
         let m = model();

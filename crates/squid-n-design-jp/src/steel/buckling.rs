@@ -9,7 +9,7 @@
 //!
 //! 座屈長さ算定で本実装が対応する規定:
 //! - 柱端がピン接合の場合は G=10。
-//! - 節点に接する梁が無い場合は G=10。
+//! - 節点に接する梁がない場合は G=10。
 //! - 混合構造（RC/SRC 部材が節点に接する場合）はその部材の剛性をヤング係数比
 //!   により補正する → 本実装は `Σ(E・I/L)` の比で G を計算するため、各部材の
 //!   実ヤング係数がそのまま補正として効く。
@@ -184,7 +184,7 @@ fn clear_length(elem: &ElementData, len: f64) -> f64 {
 /// `member_kind_of`（app/mcp）と同じ規則。
 ///
 /// - 当該柱端の `EndCondition` が `Pinned` の場合は G=10（本実装の既定値）。
-/// - 節点に接する梁が無い場合（Σ梁 = 0）は G=10（同上）。
+/// - 節点に接する梁がない場合（Σ梁 = 0）は G=10（同上）。
 fn g_ratio_at_with_index(
     model: &Model,
     index: &NodeAdjacency,
@@ -284,7 +284,7 @@ pub fn steel_column_k(model: &Model, elem: &ElementData) -> Option<f64> {
 ///   Σ梁 に算入しない（`SemiRigid` は従来通り剛接合とみなす）。
 /// - 斜材（0.2 < |ez| < 0.8）は従来通り無視する。
 ///
-/// 当該柱端が `Pinned`、または節点に接する梁が無い（Σ梁 ≤ 0）場合は G=10。
+/// 当該柱端が `Pinned`、または節点に接する梁がない（Σ梁 ≤ 0）場合は G=10。
 fn g_ratio_axis_at(
     model: &Model,
     index: &NodeAdjacency,
@@ -626,8 +626,8 @@ mod tests {
     /// 平面ポータルフレーム（X-Z 面、柱・梁とも `ref_vector=[0,0,1]`）:
     /// 柱は ref_vector が材軸と平行なため `LocalFrame` の縮退フォールバックで
     /// `ey≈X`（強軸たわみ方向）・`ez≈Y`（弱軸たわみ方向）となる。梁は X 方向に
-    /// しか無いため、K_y は従来の G=2（`steel_column_k_matches_hand_g` と同じ）
-    /// と一致し、K_z（Y 方向に梁が無い）は `sway_buckling_k(10,10)` になる。
+    /// しかないため、K_y は従来の G=2（`steel_column_k_matches_hand_g` と同じ）
+    /// と一致し、K_z（Y 方向に梁がない）は `sway_buckling_k(10,10)` になる。
     #[test]
     fn steel_column_k_axes_plane_portal_matches_hand_g() {
         let model = portal_model(4000.0, 8000.0);
@@ -691,7 +691,7 @@ mod tests {
 
     /// 45° 斜め梁（水平投影が強軸たわみ方向と 45°）: `cos²θ=0.5` の重みにより、
     /// 梁が完全に整列する場合（G=beam_len/col_len=2）に対して G が 2 倍
-    /// （=4）になることを確認する。上端は梁が無く G=10。
+    /// （=4）になることを確認する。上端は梁がなく G=10。
     #[test]
     fn steel_column_k_axes_diagonal_beam_half_weight() {
         let diag = 8000.0 / std::f64::consts::SQRT_2;
@@ -714,7 +714,7 @@ mod tests {
         let index = NodeAdjacency::build(&model);
         let (k_y, _k_z) = steel_column_k_axes_with_index(&model, &index, &model.elements[0])
             .expect("柱として判定される");
-        // 整列時 G=8000/4000=2 に対し cos²θ=0.5 で G=2/0.5=4。上端は梁が無く G=10。
+        // 整列時 G=8000/4000=2 に対し cos²θ=0.5 で G=2/0.5=4。上端は梁がなく G=10。
         let expected = sway_buckling_k(4.0, 10.0);
         assert!(
             (k_y - expected).abs() < 1e-6,
@@ -755,7 +755,7 @@ mod tests {
             .expect("柱として判定される");
 
         // 下端 G_y: 対象柱自身(iy、cos²β=1)＋他柱(iz、cos²β=0 のため iz のみ)を
-        // 柱側に、X 方向梁(iy)を梁側に集計。上端は取付部材が無く G=10。
+        // 柱側に、X 方向梁(iy)を梁側に集計。上端は取付部材がなく G=10。
         let e = 205_000.0;
         let (iy, iz) = (2.0e8, 2.0e7);
         let sum_col_y = e * iy / 4000.0 + e * iz / 3000.0;
@@ -766,7 +766,7 @@ mod tests {
             "k_y={k_y}, expected={expected_ky}"
         );
 
-        // Z 方向には整列する梁が無い（X 方向梁の cos²θ=0）ため両端 G=10。
+        // Z 方向には整列する梁がない（X 方向梁の cos²θ=0）ため両端 G=10。
         let expected_kz = sway_buckling_k(10.0, 10.0);
         assert!(
             (k_z - expected_kz).abs() < 1e-9,
@@ -787,7 +787,7 @@ mod tests {
             .expect("柱として判定される");
         // 下端: 梁が不算入となり Σ梁=0 → G=10。上端は従来通り G=2。
         let expected_ky = sway_buckling_k(10.0, 2.0);
-        // 平面ポータルモデルは Y 方向（弱軸）に梁が無いため元々両端 G=10 のまま。
+        // 平面ポータルモデルは Y 方向（弱軸）に梁がないため元々両端 G=10 のまま。
         let expected_kz = sway_buckling_k(10.0, 10.0);
         assert!(
             (k_y - expected_ky).abs() < 1e-9,

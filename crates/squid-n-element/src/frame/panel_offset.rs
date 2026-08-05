@@ -416,10 +416,10 @@ mod tests {
         let model = model_with_panel(200.0);
         let beam_ends = resolve(&model.elements[0], &model).expect("梁の i 端がパネル");
         assert_eq!(beam_ends[0].map(|e| e.zeta), Some(ZETA_BEAM));
-        assert!(beam_ends[1].is_none(), "j 端（節点 1）にパネルは無い");
+        assert!(beam_ends[1].is_none(), "j 端（節点 1）にパネルはない");
 
         let col_ends = resolve(&model.elements[1], &model).expect("柱の j 端がパネル");
-        assert!(col_ends[0].is_none(), "i 端（節点 2）にパネルは無い");
+        assert!(col_ends[0].is_none(), "i 端（節点 2）にパネルはない");
         assert_eq!(col_ends[1].map(|e| e.zeta), Some(ZETA_COLUMN));
     }
 
@@ -444,7 +444,7 @@ mod tests {
         assert!(moved_ends[1].is_none());
     }
 
-    /// パネルが 1 つも無いモデルでは `None` を返し、従来どおり素の要素が組まれる。
+    /// パネルが 1 つもないモデルでは `None` を返し、従来どおり素の要素が組まれる。
     #[test]
     fn test_resolve_returns_none_without_panel() {
         let mut model = model_with_panel(200.0);
