@@ -46,6 +46,41 @@ fn test_elem_is_steel_follows_material_category() {
     );
 }
 
+/// ナビゲータの部材グループは材料を持つ要素だけを振り分ける。
+///
+/// 準備計算が自動生成する仕口パネル要素は材料を持たないため、材種で分けようがない。
+/// かつては「鋼系でないもの」をすべて RC 部材へ入れていたため、純 S 造の建物でも
+/// 生成されたパネルの本数だけ RC 部材が計上され、選択すると取り付く柱・梁が
+/// ハイライトされて柱が RC と判定されているように見えていた。
+#[cfg(feature = "gui")]
+#[test]
+fn test_member_material_groups_excludes_generated_panel_zones() {
+    use squid_n_core::model::ElementKind;
+
+    let mut app = App::default();
+    app.load_model(crate::sample::portal_frame());
+    let (steel_before, rc_before) = member_material_groups(&app.model);
+    assert_eq!(steel_before.len(), 3, "柱 2 本・梁 1 本はすべて S");
+    assert!(rc_before.is_empty(), "純 S 造モデルに RC 部材は無い");
+
+    // 実際の導線と同じく準備計算を通し、仕口パネルを自動生成させる。
+    app.ensure_preparation();
+    assert!(
+        app.model
+            .elements
+            .iter()
+            .any(|e| e.kind == ElementKind::PanelZone),
+        "S 造の門型ラーメンでは柱頭に仕口パネルが生成されるはず"
+    );
+
+    let (steel, rc) = member_material_groups(&app.model);
+    assert_eq!(steel, steel_before, "パネル生成で鋼材部材は増減しない");
+    assert!(
+        rc.is_empty(),
+        "仕口パネルが RC 部材へ流れ込んでいる: {rc:?}"
+    );
+}
+
 #[test]
 fn test_run_design_check_empty_model() {
     let mut app = App::default();
@@ -5220,6 +5255,50 @@ fn test_run_diagnostics_flags_unassigned_section() {
         .expect("断面未割当の Warning が出るはず");
     assert_eq!(diag.severity, DiagSeverity::Warning);
     assert!(diag.message.contains("断面"));
+}
+
+/// 準備計算が自動生成した仕口パネル要素は「断面未割当」警告の対象外。
+///
+/// 仕口パネルの剛性は取り付く柱・梁の断面から求めた実効体積 Ve による（断面参照は
+/// 持たないのが正常）。かつては要素種別で絞らずに `section.is_none()` を拾っていた
+/// ため、S 造モデルを取り込んで準備計算を通すと生成されたパネルの本数だけ警告が並び、
+/// 断面は正しく割り当たっているのに未割当と表示されていた。
+#[test]
+fn test_run_diagnostics_ignores_generated_panel_zones() {
+    use squid_n_core::model::ElementKind;
+
+    let mut app = App::default();
+    app.load_model(crate::sample::portal_frame());
+    // 実際の導線と同じく準備計算を通す（内部で仕口パネルを自動生成してから
+    // 診断を実行する）。
+    app.ensure_preparation();
+
+    let panels: Vec<_> = app
+        .model
+        .elements
+        .iter()
+        .filter(|e| e.kind == ElementKind::PanelZone)
+        .map(|e| e.id)
+        .collect();
+    assert!(
+        !panels.is_empty(),
+        "S 造の門型ラーメンでは柱頭に仕口パネルが生成されるはず"
+    );
+
+    for id in panels {
+        assert!(
+            !app.diagnostics
+                .iter()
+                .any(|d| d.target == Some(DiagTarget::Member(id))),
+            "仕口パネル #{} が診断に上がっている",
+            id.0
+        );
+    }
+    assert!(
+        !app.diagnostics.iter().any(|d| d.message.contains("未割当")),
+        "断面がすべて割り当たったモデルで未割当警告が出ている: {:?}",
+        app.diagnostics
+    );
 }
 
 /// `mark_edited` 後は診断が再実行待ち（stale）に戻る。

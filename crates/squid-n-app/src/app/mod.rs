@@ -2453,5 +2453,30 @@ fn elem_is_steel(
     squid_n_core::structure_kind::member_structure_kind(model, elem).is_steel_like()
 }
 
+/// ナビゲータの部材グループ（鋼材部材, RC部材）へ振り分けた要素 ID。
+///
+/// 対象は材料を持つ要素（[`squid_n_core::model::ElementKind::requires_section_and_material`]）
+/// に限る。仕口パネル・節点バネ・免震支承材・制振ダンパーは材料を持たないのが正常で、
+/// 材種で分けようがない。特に仕口パネルは準備計算が接合部ごとに自動生成するため、
+/// 除外しないと「鋼系でないもの」＝RC 部材へ生成数だけ流れ込み、純 S 造の建物でも
+/// RC 部材が多数あるように見えてしまう。
+#[cfg(feature = "gui")]
+fn member_material_groups(model: &squid_n_core::model::Model) -> (Vec<ElemId>, Vec<ElemId>) {
+    let mut steel = Vec::new();
+    let mut rc = Vec::new();
+    for e in model
+        .elements
+        .iter()
+        .filter(|e| e.kind.requires_section_and_material())
+    {
+        if elem_is_steel(e, model) {
+            steel.push(e.id);
+        } else {
+            rc.push(e.id);
+        }
+    }
+    (steel, rc)
+}
+
 #[cfg(test)]
 mod tests;
