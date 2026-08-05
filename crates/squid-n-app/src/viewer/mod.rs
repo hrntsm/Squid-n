@@ -2863,11 +2863,11 @@ fn pick_nearest_member(
         if elem.nodes.len() < 2 {
             continue;
         }
-        // 仕口パネルの節点列は「接合部の節点 ＋ 取り付く部材の他端」であり、
-        // 先頭 2 節点を結んでも部材の線にはならない（取り付く部材の 1 本と
-        // 同じ線分になり、実部材の選択・ホバーを横取りする）。線材ではないため
-        // ピック対象から外す。
-        if matches!(elem.kind, squid_n_core::model::ElementKind::PanelZone) {
+        // 描かない要素（仕口パネル）はピック対象から外す（`element_draw_shape`）。
+        // 節点列が「接合部の節点 ＋ 取り付く部材の他端」であり、先頭 2 節点を
+        // 結んでも部材の線にはならない（取り付く部材の 1 本と同じ線分になり、
+        // 実部材の選択・ホバーを横取りする）。面要素は描いているので対象に残す。
+        if element_draw_shape(elem.kind) == DrawShape::None {
             continue;
         }
         let n0 = elem.nodes[0].index();
