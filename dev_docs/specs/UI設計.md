@@ -137,8 +137,18 @@ pub struct Diagnostic { pub severity: DiagSeverity, pub message: String, pub tar
 ```
 
 - チェック内容（`App::run_diagnostics`。O(部材数) 程度の軽い検査に限る）:
-  モデル検証（`Model::validate`）／支点なし／断面未割当（100 件超は集約）／
+  モデル検証（`Model::validate`）／解析を妨げる不備
+  （`squid_n_solver::analysis::precheck::model_issues`）／
   空の地震荷重ケースを参照する荷重組合せ／荷重が空の荷重ケース。
+- **重要度の規約**:
+  - `Error` — 解析前チェックが解析を止める不備。判定は解析前チェック
+    （`precheck_model`）と同じ `model_issues` を共有し、片方だけに検査を足して
+    「診断は通ったのに解析が止まる」状態が生まれないようにする。
+    `PreparationResult::is_ready`（`diag_errors == 0`）がそのまま
+    「解析へ進んでよいか」の判定になる。
+  - `Warning` — 解析は通るが結果が意図と異なりうるもの（空の水平力ケースの参照など）。
+  - `Info` — 気づきの提供（荷重が空の荷重ケースなど）。
+- 対象が特定できる不備は対象 1 件ごとに行を作る（100 件超は集約 1 行にまとめる）。
 - **遅延評価**: 編集で `Staleness::diagnostics_stale` を立て、診断タブを開いた時点で
   stale なら再実行する（編集のたびに毎フレーム走らせない）。「再チェック」で手動実行も可能。
 - `target` を持つ行はクリックで 3D 選択（`Selection`）とインスペクタ（`Navigator::focus_*`）へ反映。

@@ -2,28 +2,105 @@
 //!
 //! よくあるモデリングミス（節点・部材・拘束の欠如、断面/材料未割当、孤立節点）を
 //! 特異行列エラーの前に検出し、「何をすれば直るか」を含む日本語メッセージで返す。
+//!
+//! 判定の本体は [`model_issues`] にあり、解析前チェック [`precheck_model`] と
+//! UI のモデル整合性チェック（診断タブ）はどちらもこれを呼ぶ。両者が別々に検査を
+//! 持つと、片方だけに項目を足したときに「診断は通ったのに解析が止まる」状態が生まれる。
+//! **解析を妨げる不備の検査を増やすときは、必ず [`model_issues`] へ足すこと。**
 
+use squid_n_core::ids::{ElemId, NodeId};
 use squid_n_core::model::Model;
 use squid_n_math::solver::SolveError;
 
-/// 解析前のモデル静的検証。よくあるモデリングミスを特異行列エラーの前に検出し、
-/// 「何をすれば直るか」を含むメッセージで返す。
-pub(super) fn precheck_model(model: &Model) -> Result<(), SolveError> {
+/// 不備の対象。診断一覧がクリックで 3D 選択・インスペクタへ結びつけるために持つ。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum IssueTargets {
+    /// 対象を特定できない不備（節点・部材・拘束が 1 つも無い等）。
+    Model,
+    Members(Vec<ElemId>),
+    Nodes(Vec<NodeId>),
+}
+
+/// 解析を妨げるモデルの不備 1 件。
+pub struct ModelIssue {
+    /// 対象 ID と是正方法を含む、単体で完結する説明文。
+    /// 解析前チェックはこれをそのままエラーメッセージにする。
+    pub message: String,
+    /// 対象 1 件ごとに添える短い説明（例: 「断面が未割当です」）。
+    /// 診断タブが対象単位の行に並べるときに使う。
+    pub short: String,
+    pub targets: IssueTargets,
+}
+
+impl ModelIssue {
+    /// 対象を特定できない不備。
+    fn model(message: impl Into<String>) -> Self {
+        let message = message.into();
+        Self {
+            short: message.clone(),
+            message,
+            targets: IssueTargets::Model,
+        }
+    }
+
+    /// 部材を名指しする不備。`what` と `remedy` から説明文を組み立てる。
+    fn members(what: &str, label: &str, ids: Vec<ElemId>, short: &str, remedy: &str) -> Self {
+        let raw: Vec<u32> = ids.iter().map(|id| id.0).collect();
+        Self {
+            message: id_list_message(what, label, &raw, remedy),
+            short: short.to_string(),
+            targets: IssueTargets::Members(ids),
+        }
+    }
+
+    /// 節点を名指しする不備。
+    fn nodes(what: &str, label: &str, ids: Vec<NodeId>, short: &str, remedy: &str) -> Self {
+        let raw: Vec<u32> = ids.iter().map(|id| id.0).collect();
+        Self {
+            message: id_list_message(what, label, &raw, remedy),
+            short: short.to_string(),
+            targets: IssueTargets::Nodes(ids),
+        }
+    }
+}
+
+/// 「{what}: {label}{id 列}。{remedy}」形式の説明文を組み立てる。
+///
+/// ID は先頭 5 件までを挙げ、残りは件数へまとめる。大規模モデルで同じ不備が
+/// 数百件あってもメッセージが際限なく伸びないようにするため。
+fn id_list_message(what: &str, label: &str, ids: &[u32], remedy: &str) -> String {
+    const HEAD: usize = 5;
+    let head: Vec<String> = ids.iter().take(HEAD).map(|id| id.to_string()).collect();
+    let more = if ids.len() > HEAD {
+        format!(" 他{}件", ids.len() - HEAD)
+    } else {
+        String::new()
+    };
+    format!("{what}: {label}{}{more}。{remedy}", head.join(", "))
+}
+
+/// 解析を妨げるモデルの不備をすべて集める。
+///
+/// 返す順は「モデル全体の欠落 → 部材の入力不備 → 節点参照の不整合」で、
+/// [`precheck_model`] はこの先頭 1 件をエラーにする。
+pub fn model_issues(model: &Model) -> Vec<ModelIssue> {
     use squid_n_core::model::ElementKind;
 
+    let mut issues = Vec::new();
+
     if model.nodes.is_empty() {
-        return Err(SolveError::InvalidInput(
-            "節点がありません。モデルタブで節点を追加してください。".into(),
+        issues.push(ModelIssue::model(
+            "節点がありません。モデルタブで節点を追加してください。",
         ));
     }
     if model.elements.is_empty() {
-        return Err(SolveError::InvalidInput(
-            "部材がありません。モデルタブで部材を追加してください。".into(),
+        issues.push(ModelIssue::model(
+            "部材がありません。モデルタブで部材を追加してください。",
         ));
     }
     if !model.nodes.iter().any(|n| n.restraint.0 != 0) {
-        return Err(SolveError::InvalidInput(
-            "拘束(支点)が 1 つもありません。境界条件タブで支点を設定してください。".into(),
+        issues.push(ModelIssue::model(
+            "拘束(支点)が 1 つもありません。境界条件タブで支点を設定してください。",
         ));
     }
 
@@ -32,32 +109,48 @@ pub(super) fn precheck_model(model: &Model) -> Result<(), SolveError> {
     // ダンパーは断面を持たないのが正常なため除かれる）。
     // 未割当のまま要素構築の既定値（ゼロ剛性）へ落ちて特異行列エラーになるか、
     // かつては「もっともらしい既定断面」で無音に解析が通っていた（危険側）。
-    let missing: Vec<u32> = model
+    //
+    // 断面と材料は別々の不備として挙げる。まとめると診断タブの行が
+    // 「断面または材料が未割当です」となり、どちらを直せばよいか伝わらないため。
+    let needs_input =
+        |e: &&squid_n_core::model::ElementData| e.kind.requires_section_and_material();
+    let no_section: Vec<ElemId> = model
         .elements
         .iter()
-        .filter(|e| {
-            e.kind.requires_section_and_material() && (e.section.is_none() || e.material.is_none())
-        })
-        .map(|e| e.id.0)
+        .filter(needs_input)
+        .filter(|e| e.section.is_none())
+        .map(|e| e.id)
         .collect();
-    if !missing.is_empty() {
-        let head: Vec<String> = missing.iter().take(5).map(|id| id.to_string()).collect();
-        let more = if missing.len() > 5 {
-            format!(" 他{}件", missing.len() - 5)
-        } else {
-            String::new()
-        };
-        return Err(SolveError::InvalidInput(format!(
-            "断面または材料が未割当の部材があります: ID {}{}。部材タブで割り当ててください。",
-            head.join(", "),
-            more
-        )));
+    if !no_section.is_empty() {
+        issues.push(ModelIssue::members(
+            "断面が未割当の部材があります",
+            "ID ",
+            no_section,
+            "断面が未割当です",
+            "部材タブで断面を割り当ててください。",
+        ));
+    }
+    let no_material: Vec<ElemId> = model
+        .elements
+        .iter()
+        .filter(needs_input)
+        .filter(|e| e.material.is_none())
+        .map(|e| e.id)
+        .collect();
+    if !no_material.is_empty() {
+        issues.push(ModelIssue::members(
+            "材料が未割当の部材があります",
+            "ID ",
+            no_material,
+            "材料が未割当です",
+            "部材タブで材料を割り当ててください。",
+        ));
     }
 
     // シェル要素の断面に板厚が無い（線材用断面を割り当てた等）。
     // 要素構築は板厚 0（ゼロ剛性）となり特異行列で止まるが、原因が伝わらないため
     // ここで名指しする。
-    let no_thickness: Vec<u32> = model
+    let no_thickness: Vec<ElemId> = model
         .elements
         .iter()
         .filter(|e| matches!(e.kind, ElementKind::Shell))
@@ -66,25 +159,16 @@ pub(super) fn precheck_model(model: &Model) -> Result<(), SolveError> {
                 .and_then(|sid| model.sections.get(sid.index()))
                 .is_some_and(|s| s.thickness.is_none())
         })
-        .map(|e| e.id.0)
+        .map(|e| e.id)
         .collect();
     if !no_thickness.is_empty() {
-        let head: Vec<String> = no_thickness
-            .iter()
-            .take(5)
-            .map(|id| id.to_string())
-            .collect();
-        let more = if no_thickness.len() > 5 {
-            format!(" 他{}件", no_thickness.len() - 5)
-        } else {
-            String::new()
-        };
-        return Err(SolveError::InvalidInput(format!(
-            "シェル要素の断面に板厚が設定されていません: 部材 ID {}{}。\
-             断面タブで板厚を持つ断面を割り当ててください。",
-            head.join(", "),
-            more
-        )));
+        issues.push(ModelIssue::members(
+            "シェル要素の断面に板厚が設定されていません",
+            "部材 ID ",
+            no_thickness,
+            "シェル要素の断面に板厚がありません",
+            "断面タブで板厚を持つ断面を割り当ててください。",
+        ));
     }
 
     // 線材の有効せん断断面積 As が 0（未入力）
@@ -94,7 +178,7 @@ pub(super) fn precheck_model(model: &Model) -> Result<(), SolveError> {
     // 「せん断について無限に強い部材」として通ってしまう（危険側）。
     // せん断変形を無視するモデル化は部材（梁）のモデル化として指定すべきことであり、
     // 断面の As を 0 とする形で表現してはならないため、入力エラーとする。
-    let zero_shear: Vec<u32> = model
+    let zero_shear: Vec<ElemId> = model
         .elements
         .iter()
         .filter(|e| {
@@ -108,22 +192,17 @@ pub(super) fn precheck_model(model: &Model) -> Result<(), SolveError> {
                 .and_then(|sid| model.sections.get(sid.index()))
                 .is_some_and(|s| s.as_y <= 0.0 || s.as_z <= 0.0)
         })
-        .map(|e| e.id.0)
+        .map(|e| e.id)
         .collect();
     if !zero_shear.is_empty() {
-        let head: Vec<String> = zero_shear.iter().take(5).map(|id| id.to_string()).collect();
-        let more = if zero_shear.len() > 5 {
-            format!(" 他{}件", zero_shear.len() - 5)
-        } else {
-            String::new()
-        };
-        return Err(SolveError::InvalidInput(format!(
-            "有効せん断断面積 As が 0 の断面を使う部材があります: ID {}{}。\
-             断面タブで As（Asy・Asz）を設定してください。\
+        issues.push(ModelIssue::members(
+            "有効せん断断面積 As が 0 の断面を使う部材があります",
+            "ID ",
+            zero_shear,
+            "断面の有効せん断断面積 As が 0 です",
+            "断面タブで As（Asy・Asz）を設定してください。\
              As=0 はせん断変形が生じず、せん断降伏も判定されない部材となります。",
-            head.join(", "),
-            more
-        )));
+        ));
     }
 
     // 耐震壁と周辺架構の構造種別の食い違い
@@ -131,27 +210,37 @@ pub(super) fn precheck_model(model: &Model) -> Result<(), SolveError> {
     // 壁エレメントは壁と周辺架構を一体の耐震要素としてモデル化するため、RC 壁に
     // S 骨組（あるいはその逆）を組み合わせた混合構造は耐力式・剛性評価の前提が
     // 成り立たない。一次設計の剛性・断面検定にも効くため、非線形解析だけでなく
-    // 全解析の入口で捕捉する。
-    if let Some(msg) = model
-        .elements
-        .iter()
-        .find_map(|e| squid_n_element::misc_wall::wall_frame_category_issue(e, model))
-    {
-        return Err(SolveError::InvalidInput(msg));
+    // 全解析の入口で捕捉する。メッセージが壁と相手部材を名指しするため、
+    // まとめずに壁 1 枚ごとの不備として挙げる。
+    for e in &model.elements {
+        if let Some(msg) = squid_n_element::misc_wall::wall_frame_category_issue(e, model) {
+            issues.push(ModelIssue {
+                message: msg,
+                short: "耐震壁と周辺架構の構造種別が食い違っています".to_string(),
+                targets: IssueTargets::Members(vec![e.id]),
+            });
+        }
     }
 
+    issues.extend(node_reference_issues(model));
+    issues
+}
+
+/// 節点参照の不整合（ダングリング参照・孤立節点）を集める。
+fn node_reference_issues(model: &Model) -> Vec<ModelIssue> {
     // 孤立節点（要素・拘束・剛床から参照されず、完全固定でもない）
     // → 剛性ゼロの自由 DOF となり特異行列の典型原因
     //
     // 参照のマークは範囲チェック付きで行い、存在しない節点への参照
     // （ダングリング NodeId。編集・インポート層の不整合で混入し得る）は
-    // `dangling` に収集して明示エラーにする（従来は直接添字で panic していた）。
+    // `dangling` に収集して明示エラーにする（直接添字では panic するため）。
+    let mut issues = Vec::new();
     let mut referenced = vec![false; model.nodes.len()];
-    let mut dangling: Vec<u32> = Vec::new();
+    let mut dangling: Vec<NodeId> = Vec::new();
     {
-        let mut mark = |n: squid_n_core::ids::NodeId| match referenced.get_mut(n.index()) {
+        let mut mark = |n: NodeId| match referenced.get_mut(n.index()) {
             Some(slot) => *slot = true,
-            None => dangling.push(n.0),
+            None => dangling.push(n),
         };
         for e in &model.elements {
             for n in &e.nodes {
@@ -205,42 +294,53 @@ pub(super) fn precheck_model(model: &Model) -> Result<(), SolveError> {
         }
     }
     if !dangling.is_empty() {
-        dangling.sort_unstable();
+        dangling.sort_unstable_by_key(|n| n.0);
         dangling.dedup();
-        let head: Vec<String> = dangling.iter().take(5).map(|id| id.to_string()).collect();
-        let more = if dangling.len() > 5 {
-            format!(" 他{}件", dangling.len() - 5)
-        } else {
-            String::new()
-        };
-        return Err(SolveError::InvalidInput(format!(
-            "存在しない節点への参照があります: 節点 ID {}{}。部材・拘束・剛床・床の\
-             節点参照を確認してください(節点削除後の不整合の可能性があります)。",
-            head.join(", "),
-            more
-        )));
+        issues.push(ModelIssue::nodes(
+            "存在しない節点への参照があります",
+            "節点 ID ",
+            dangling,
+            "存在しない節点を参照しています",
+            "部材・拘束・剛床・床の節点参照を確認してください\
+             (節点削除後の不整合の可能性があります)。",
+        ));
     }
-    let isolated: Vec<u32> = model
+    // 部材が 1 つも無いモデルでは全節点が孤立になる。「部材がありません」で
+    // 同じことを言っているため、節点を 1 つずつ挙げても情報が増えない。
+    if model.elements.is_empty() {
+        return issues;
+    }
+    // `referenced` は添字で引くため、`Model::validate` の不変条件（id == 添字）が
+    // 崩れているモデルでは引けない。診断は検証エラーのあるモデルでも動くため、
+    // 引けない節点は孤立と決めつけず対象外にする。
+    let isolated: Vec<NodeId> = model
         .nodes
         .iter()
-        .filter(|n| !referenced[n.id.index()] && n.restraint != squid_n_core::dof::Dof6Mask::FIXED)
-        .map(|n| n.id.0)
+        .filter(|n| {
+            !referenced.get(n.id.index()).copied().unwrap_or(true)
+                && n.restraint != squid_n_core::dof::Dof6Mask::FIXED
+        })
+        .map(|n| n.id)
         .collect();
     if !isolated.is_empty() {
-        let head: Vec<String> = isolated.iter().take(5).map(|id| id.to_string()).collect();
-        let more = if isolated.len() > 5 {
-            format!(" 他{}件", isolated.len() - 5)
-        } else {
-            String::new()
-        };
-        return Err(SolveError::InvalidInput(format!(
-            "どの部材にも接続されていない節点があります: ID {}{}。削除するか完全固定にしてください(剛性ゼロの自由度は解析できません)。",
-            head.join(", "),
-            more
-        )));
+        issues.push(ModelIssue::nodes(
+            "どの部材にも接続されていない節点があります",
+            "ID ",
+            isolated,
+            "どの部材にも接続されていません",
+            "削除するか完全固定にしてください(剛性ゼロの自由度は解析できません)。",
+        ));
     }
+    issues
+}
 
-    Ok(())
+/// 解析前のモデル静的検証。よくあるモデリングミスを特異行列エラーの前に検出し、
+/// 「何をすれば直るか」を含むメッセージで返す。
+pub(super) fn precheck_model(model: &Model) -> Result<(), SolveError> {
+    match model_issues(model).into_iter().next() {
+        Some(issue) => Err(SolveError::InvalidInput(issue.message)),
+        None => Ok(()),
+    }
 }
 
 /// 剛性行列の分解に失敗した（特異・非正定値）ときの診断メッセージ。

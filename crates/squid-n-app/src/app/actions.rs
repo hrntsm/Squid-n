@@ -3987,50 +3987,16 @@ impl App {
             });
         }
 
-        // 支点なし: 全節点が無拘束だと解析時に剛体移動し特異行列になる。
-        let has_support = self
-            .model
-            .nodes
-            .iter()
-            .any(|n| n.restraint.0 != squid_n_core::dof::Dof6Mask::FREE.0);
-        if !has_support {
-            diags.push(Diagnostic {
-                severity: DiagSeverity::Error,
-                message: "支点が定義されていません（解析すると剛体移動します）".to_string(),
-                target: None,
-            });
-        }
-
-        // 断面未割当: 大モデルで診断リストが溢れないよう 100 件で打ち切り、
-        // 超過分は集約1件にまとめる。
+        // 解析を妨げる不備（支点なし・断面/材料の未割当・シェルの板厚なし・As=0・
+        // 耐震壁と周辺架構の種別食い違い・孤立節点など）。判定は解析前チェックと
+        // 同じ `model_issues` を使う。診断と解析前チェックが別々に検査を持つと、
+        // 片方だけに項目を足したときに「診断は通ったのに解析が止まる」状態になる。
         //
-        // 対象は断面が必須の要素種別（`ElementKind::requires_section_and_material`）
-        // に限る。準備計算が自動生成する仕口パネル要素は断面を持たないのが正常で、
-        // 絞り込まないと生成数だけ警告が並び、本当に割当が漏れた部材が埋もれる。
-        const MAX_UNASSIGNED_SECTION: usize = 100;
-        let unassigned: Vec<ElemId> = self
-            .model
-            .elements
-            .iter()
-            .filter(|e| e.kind.requires_section_and_material() && e.section.is_none())
-            .map(|e| e.id)
-            .collect();
-        for id in unassigned.iter().take(MAX_UNASSIGNED_SECTION) {
-            diags.push(Diagnostic {
-                severity: DiagSeverity::Warning,
-                message: format!("部材 #{}: 断面が未割当です", id.0),
-                target: Some(DiagTarget::Member(*id)),
-            });
-        }
-        if unassigned.len() > MAX_UNASSIGNED_SECTION {
-            diags.push(Diagnostic {
-                severity: DiagSeverity::Warning,
-                message: format!(
-                    "…他 {} 部材で断面未割当",
-                    unassigned.len() - MAX_UNASSIGNED_SECTION
-                ),
-                target: None,
-            });
+        // これらは解析が必ず止まる不備なので Error とする。準備計算の
+        // `PreparationResult::is_ready`（`diag_errors == 0`）が
+        // 「解析前に解消すべきか」の判定にそのまま使えるようにするため。
+        for issue in squid_n_solver::analysis::precheck::model_issues(&self.model) {
+            self.push_issue_diagnostics(&mut diags, issue);
         }
 
         // 空の水平力ケース（地震・風）を参照する荷重組合せ: そのまま解くと水平力の
@@ -4063,6 +4029,64 @@ impl App {
 
         self.diagnostics = diags;
         self.staleness.diagnostics_stale = false;
+    }
+
+    /// 解析前チェックの不備 1 件を診断行へ展開する。
+    ///
+    /// 対象が特定できる不備は対象 1 件ごとに行を作り、クリックで 3D 選択へ
+    /// 飛べるようにする。大モデルで診断リストが溢れないよう
+    /// [`MAX_ISSUE_TARGETS`] 件で打ち切り、超過分は集約 1 行にまとめる。
+    fn push_issue_diagnostics(
+        &self,
+        diags: &mut Vec<Diagnostic>,
+        issue: squid_n_solver::analysis::precheck::ModelIssue,
+    ) {
+        use squid_n_solver::analysis::precheck::IssueTargets;
+
+        /// 対象単位の行を並べる上限。超過分は集約 1 行にまとめる。
+        const MAX_ISSUE_TARGETS: usize = 100;
+
+        let (n_targets, unit) = match &issue.targets {
+            IssueTargets::Model => {
+                diags.push(Diagnostic {
+                    severity: DiagSeverity::Error,
+                    message: issue.message,
+                    target: None,
+                });
+                return;
+            }
+            IssueTargets::Members(ids) => {
+                for id in ids.iter().take(MAX_ISSUE_TARGETS) {
+                    diags.push(Diagnostic {
+                        severity: DiagSeverity::Error,
+                        message: format!("部材 #{}: {}", id.0, issue.short),
+                        target: Some(DiagTarget::Member(*id)),
+                    });
+                }
+                (ids.len(), "部材")
+            }
+            IssueTargets::Nodes(ids) => {
+                for id in ids.iter().take(MAX_ISSUE_TARGETS) {
+                    diags.push(Diagnostic {
+                        severity: DiagSeverity::Error,
+                        message: format!("節点 #{}: {}", id.0, issue.short),
+                        target: Some(DiagTarget::Node(*id)),
+                    });
+                }
+                (ids.len(), "節点")
+            }
+        };
+        if n_targets > MAX_ISSUE_TARGETS {
+            diags.push(Diagnostic {
+                severity: DiagSeverity::Error,
+                message: format!(
+                    "…他 {} {unit}で{}",
+                    n_targets - MAX_ISSUE_TARGETS,
+                    issue.short
+                ),
+                target: None,
+            });
+        }
     }
 
     /// 診断結果の件数集計（Error数, Warning数）。タブラベル・ステータス表示用。
