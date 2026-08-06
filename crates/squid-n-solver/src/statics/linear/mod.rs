@@ -738,7 +738,13 @@ pub(crate) fn superpose_member_loads(
         return;
     };
     for (xi, vals) in forces.at.iter_mut() {
-        let fixed = squid_n_element::member_load::fixed_internal_local(loads, &frame, length, *xi);
+        let fixed = squid_n_element::member_load::fixed_internal_local(
+            loads,
+            &frame,
+            length,
+            *xi,
+            crate::assemble::span_load_transfer(elem),
+        );
         for k in 0..6 {
             vals[k] += fixed[k];
         }

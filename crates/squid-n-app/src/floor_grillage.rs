@@ -291,16 +291,16 @@ pub fn build_slab_grillage(model: &Model, slab: &Slab, w: f64) -> Option<SlabGri
                 let d = [p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2]];
                 (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt()
             };
-            member_loads.push(MemberLoad {
-                elem: ElemId(eid),
-                dir: [0.0, 0.0, -1.0],
-                kind: MemberLoadKind::Distributed {
+            member_loads.push(MemberLoad::auto(
+                ElemId(eid),
+                [0.0, 0.0, -1.0],
+                MemberLoadKind::Distributed {
                     a: 0.0,
                     b: seg_len,
                     w1: w_udl,
                     w2: w_udl,
                 },
-            });
+            ));
             elem_joist.push((eid as usize, j.idx));
         }
     }
@@ -573,8 +573,14 @@ fn compute_reactions(model: &Model, lc: LoadCaseId, disp: &[[f64; 6]]) -> Vec<[f
                 continue;
             }
             let frame = LocalFrame::from_nodes(p_i, p_j, elem.local_axis.ref_vector);
-            let q_local =
-                squid_n_element::member_load::consistent_load_local(&loads, &frame, length);
+            // 床格子は大梁・小梁のみで構成され、ブレースは現れない
+            // （`SpanLoadTransfer::Consistent` 固定でよい）。
+            let q_local = squid_n_element::member_load::consistent_load_local(
+                &loads,
+                &frame,
+                length,
+                squid_n_element::member_load::SpanLoadTransfer::Consistent,
+            );
             let q_global = frame.rotate_to_global(&q_local);
             for (i, pf) in [ni, nj].into_iter().enumerate() {
                 for (d, fd) in f_ext[pf].iter_mut().enumerate() {
@@ -684,16 +690,16 @@ mod tests {
                 name: "床".into(),
                 kind: LoadCaseKind::Dead,
                 nodal: vec![],
-                member: vec![MemberLoad {
-                    elem: ElemId(0),
-                    dir: [0.0, 0.0, -1.0],
-                    kind: MemberLoadKind::Distributed {
+                member: vec![MemberLoad::manual(
+                    ElemId(0),
+                    [0.0, 0.0, -1.0],
+                    MemberLoadKind::Distributed {
                         a: 0.0,
                         b: l,
                         w1: w,
                         w2: w,
                     },
-                }],
+                )],
             }],
             ..Default::default()
         };
