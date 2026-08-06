@@ -4,7 +4,7 @@
 //! Ai 分布・風圧力・荷重集計を確認できるようにする。CSV エクスポート
 //! （[`crate::summary::build_preparation_csv`]）にも対応する。
 
-use egui_extras::{Column, TableBuilder};
+use crate::table_util::Col;
 
 use crate::app::{
     ai_mode_label, load_case_kind_label, member_kind_label, member_rank_label, soil_class_label,
@@ -199,32 +199,21 @@ fn stories_section(ui: &mut egui::Ui, prep: &PreparationResult) {
         ui,
         "prep_stories",
         &[
-            Column::initial(90.0),
-            Column::initial(90.0),
-            Column::initial(90.0),
-            Column::initial(70.0),
-            Column::initial(70.0),
-            Column::initial(110.0),
-            Column::initial(110.0),
-            Column::initial(60.0),
-            Column::initial(110.0),
-        ],
-        &[
-            "階",
-            "床レベル [mm]",
-            "階高 [mm]",
-            "節点数",
-            "剛床数",
-            "地震用重量 Wi [kN]",
-            "累積 ΣWj [kN]",
-            "構造",
-            "種別",
+            Col::label("階"),
+            Col::num("床レベル [mm]"),
+            Col::num("階高 [mm]"),
+            Col::num("節点数"),
+            Col::num("剛床数"),
+            Col::num("地震用重量 Wi [kN]"),
+            Col::num("累積 ΣWj [kN]"),
+            Col::label("構造"),
+            Col::label("種別"),
         ],
         rows.len(),
         |row| {
             let r = rows[row.index()];
             row.col(|ui| {
-                ui.label(&r.name);
+                crate::table_util::text_cell(ui, &r.name);
             });
             row.col(|ui| {
                 ui.label(format!("{:.0}", r.elevation));
@@ -319,26 +308,15 @@ fn seismic_section(ui: &mut egui::Ui, prep: &PreparationResult) {
         ui,
         "prep_seismic",
         &[
-            Column::initial(90.0),
-            Column::initial(110.0),
-            Column::initial(110.0),
-            Column::initial(70.0),
-            Column::initial(70.0),
-            Column::initial(70.0),
-            Column::initial(100.0),
-            Column::initial(100.0),
-            Column::initial(110.0),
-        ],
-        &[
-            "階",
-            "Wi [kN]",
-            "ΣWj [kN]",
-            "αi",
-            "Ai",
-            "Ci",
-            "Qi [kN]",
-            "Pi [kN]",
-            "種別",
+            Col::label("階"),
+            Col::num("Wi [kN]"),
+            Col::num("ΣWj [kN]"),
+            Col::num("αi"),
+            Col::num("Ai"),
+            Col::num("Ci"),
+            Col::num("Qi [kN]"),
+            Col::num("Pi [kN]"),
+            Col::label("種別"),
         ],
         rows.len(),
         |row| {
@@ -346,7 +324,7 @@ fn seismic_section(ui: &mut egui::Ui, prep: &PreparationResult) {
             // αi・Ai は一般階のみ意味を持つ（PH 階・地下階は別式）。
             let normal = matches!(r.level_kind, squid_n_core::model::StoryLevelKind::Normal);
             row.col(|ui| {
-                ui.label(&r.name);
+                crate::table_util::text_cell(ui, &r.name);
             });
             row.col(|ui| {
                 ui.label(format!("{:.1}", kn(r.weight)));
@@ -450,28 +428,19 @@ fn wind_table(ui: &mut egui::Ui, w: &crate::app::PrepWind) {
         ui,
         &format!("prep_wind_table_{:?}", w.dir),
         &[
-            Column::initial(90.0),
-            Column::initial(140.0),
-            Column::initial(100.0),
-            Column::initial(110.0),
-            Column::initial(70.0),
-            Column::initial(110.0),
-            Column::initial(100.0),
-        ],
-        &[
-            "階",
-            "負担高さ [mm]",
-            "見付幅 [mm]",
-            "見付面積 [m²]",
-            "Kz",
-            "風圧力 [N/m²]",
-            "層水平力 [kN]",
+            Col::label("階"),
+            Col::wide_num("負担高さ [mm]"),
+            Col::num("見付幅 [mm]"),
+            Col::num("見付面積 [m²]"),
+            Col::num("Kz"),
+            Col::num("風圧力 [N/m²]"),
+            Col::num("層水平力 [kN]"),
         ],
         rows.len(),
         |row| {
             let r = rows[row.index()];
             row.col(|ui| {
-                ui.label(&r.name);
+                crate::table_util::text_cell(ui, &r.name);
             });
             row.col(|ui| {
                 ui.label(format!("{:.0} 〜 {:.0}", r.z_bottom, r.z_top));
@@ -533,12 +502,11 @@ fn torsion_section(ui: &mut egui::Ui, prep: &PreparationResult) {
         ui,
         "prep_torsion",
         &[
-            Column::initial(70.0),
-            Column::initial(70.0),
-            Column::initial(80.0),
-            Column::remainder(),
+            Col::id_named("部材"),
+            Col::label("種別"),
+            Col::num("節点"),
+            Col::remainder("理由"),
         ],
-        &["部材", "種別", "節点", "理由"],
         rows.len(),
         |row| {
             let r = &rows[row.index()];
@@ -599,20 +567,12 @@ fn panel_zone_section(ui: &mut egui::Ui, prep: &PreparationResult) {
         ui,
         "prep_panels",
         &[
-            Column::initial(70.0),
-            Column::initial(90.0),
-            Column::initial(90.0),
-            Column::initial(80.0),
-            Column::initial(120.0),
-            Column::remainder(),
-        ],
-        &[
-            "節点",
-            "dc [mm]",
-            "db [mm]",
-            "tp [mm]",
-            "Ve [mm³]",
-            "Kxp=Kyp [kN·m/rad]",
+            Col::id_named("節点"),
+            Col::num("dc [mm]"),
+            Col::num("db [mm]"),
+            Col::num("tp [mm]"),
+            Col::num("Ve [mm³]"),
+            Col::remainder("Kxp=Kyp [kN·m/rad]"),
         ],
         rows.len(),
         |row| {
@@ -675,28 +635,16 @@ fn rigid_zone_section(ui: &mut egui::Ui, prep: &PreparationResult) {
         ui,
         "prep_rigid_zones",
         &[
-            Column::initial(70.0),
-            Column::initial(70.0),
-            Column::initial(100.0),
-            Column::initial(90.0),
-            Column::initial(110.0),
-            Column::initial(110.0),
-            Column::initial(110.0),
-            Column::initial(110.0),
-            Column::initial(110.0),
-            Column::initial(80.0),
-        ],
-        &[
-            "部材",
-            "種別",
-            "節点 i–j",
-            "材長 L [mm]",
-            "λi [mm]",
-            "λj [mm]",
-            "パネル i/j [mm]",
-            "可とう長 L' [mm]",
-            "フェース i/j [mm]",
-            "剛域比",
+            Col::id_named("部材"),
+            Col::label("種別"),
+            Col::wide_num("節点 i–j"),
+            Col::num("材長 L [mm]"),
+            Col::wide_num("λi [mm]"),
+            Col::wide_num("λj [mm]"),
+            Col::wide_num("パネル i/j [mm]"),
+            Col::num("可とう長 L' [mm]"),
+            Col::wide_num("フェース i/j [mm]"),
+            Col::num("剛域比"),
         ],
         rows.len(),
         |row| {
@@ -760,108 +708,92 @@ fn sections_section(ui: &mut egui::Ui, prep: &PreparationResult) {
         ui.colored_label(crate::theme::GRAY_600, "断面が定義されていません");
         return;
     }
-    let row_h = crate::theme::table_row_height(ui);
     let rows = &prep.sections;
-    TableBuilder::new(ui)
-        .striped(true)
-        .id_salt("prep_sections")
-        .column(Column::initial(50.0))
-        .column(Column::initial(180.0))
-        .column(Column::initial(50.0))
-        .column(Column::initial(100.0))
-        .column(Column::initial(60.0))
-        .column(Column::initial(110.0))
-        .column(Column::initial(100.0))
-        .column(Column::initial(100.0))
-        .column(Column::initial(100.0))
-        .column(Column::initial(100.0))
-        .column(Column::initial(110.0))
-        .column(Column::initial(110.0))
-        .column(Column::initial(140.0))
-        .header(row_h, |mut h| {
-            for t in &[
-                "ID",
-                "符号",
-                "階",
-                "形状",
-                "部材数",
-                "D×B [mm]",
-                "A [cm²]",
-                "Iy [cm⁴]",
-                "Iz [cm⁴]",
-                "J [cm⁴]",
-                "Asy/Asz [cm²]",
-                "iy/iz [mm]",
-                "材料 (E [N/mm²])",
-            ] {
-                h.col(|ui| {
-                    ui.strong(*t);
-                });
-            }
-        })
-        .body(|body| {
-            body.rows(row_h, rows.len(), |mut row| {
-                let r = &rows[row.index()];
-                row.col(|ui| {
-                    ui.label(format!("{}", r.section.0));
-                });
-                row.col(|ui| {
-                    ui.label(&r.name);
-                });
-                row.col(|ui| {
-                    // 同じ符号の断面を階で見分けられるようにする（断面の同一性は符号＋階）。
-                    match r.floor.as_deref() {
-                        Some(f) => ui.label(f),
-                        None => ui.colored_label(crate::theme::GRAY_600, "—"),
-                    };
-                });
-                row.col(|ui| {
-                    match r.shape_label.as_deref() {
-                        Some(l) => ui.label(l),
-                        // 形状定義を持たない断面は剛性増大率・幅厚比・終局耐力の
-                        // 算定対象外になるため、数値直入力であることを示す。
-                        None => ui.colored_label(crate::theme::GRAY_600, "数値直入力"),
-                    };
-                });
-                row.col(|ui| {
-                    // どの部材にも使われていない断面は入力漏れ・不要断面の目印。
-                    if r.n_elements == 0 {
-                        ui.colored_label(crate::theme::GRAY_600, "0");
-                    } else {
-                        ui.label(format!("{}", r.n_elements));
-                    }
-                });
-                row.col(|ui| {
-                    ui.label(format!("{:.0} × {:.0}", r.depth, r.width));
-                });
-                // cm 系へ換算して表示する（mm 系のままでは桁が大きく比較しづらい）。
-                row.col(|ui| {
-                    ui.label(format!("{:.1}", r.area * 1e-2));
-                });
-                row.col(|ui| {
-                    ui.label(format!("{:.0}", r.iy * 1e-4));
-                });
-                row.col(|ui| {
-                    ui.label(format!("{:.0}", r.iz * 1e-4));
-                });
-                row.col(|ui| {
-                    ui.label(format!("{:.0}", r.j * 1e-4));
-                });
-                row.col(|ui| {
-                    ui.label(format!("{:.1} / {:.1}", r.as_y * 1e-2, r.as_z * 1e-2));
-                });
-                row.col(|ui| {
-                    ui.label(format!("{:.1} / {:.1}", r.ry, r.rz));
-                });
-                row.col(|ui| {
-                    match (&r.material, r.young) {
-                        (Some(m), Some(e)) => ui.label(format!("{} ({:.0})", m, e)),
-                        (Some(m), None) => ui.label(m.clone()),
-                        _ => ui.colored_label(crate::theme::GRAY_600, "未割当"),
-                    };
-                });
+    crate::table_util::standard_table(
+        ui,
+        "prep_sections",
+        &[
+            Col::id(),
+            Col::name("符号"),
+            Col::label("階"),
+            Col::text("形状"),
+            Col::num("部材数"),
+            Col::wide_num("D×B [mm]"),
+            Col::num("A [cm²]"),
+            Col::num("Iy [cm⁴]"),
+            Col::num("Iz [cm⁴]"),
+            Col::num("J [cm⁴]"),
+            Col::wide_num("Asy/Asz [cm²]"),
+            Col::wide_num("iy/iz [mm]"),
+            Col::text("材料 (E [N/mm²])"),
+        ],
+        rows.len(),
+        |row| {
+            let r = &rows[row.index()];
+            row.col(|ui| {
+                ui.label(format!("{}", r.section.0));
             });
-        });
+            row.col(|ui| {
+                crate::table_util::text_cell(ui, &r.name);
+            });
+            row.col(|ui| {
+                // 同じ符号の断面を階で見分けられるようにする（断面の同一性は符号＋階）。
+                match r.floor.as_deref() {
+                    Some(f) => crate::table_util::text_cell(ui, f),
+                    None => crate::table_util::muted_cell(ui, "—", "階が設定されていません"),
+                }
+            });
+            row.col(|ui| {
+                match r.shape_label.as_deref() {
+                    Some(l) => crate::table_util::text_cell(ui, l),
+                    // 形状定義を持たない断面は剛性増大率・幅厚比・終局耐力の
+                    // 算定対象外になるため、数値直入力であることを示す。
+                    None => crate::table_util::muted_cell(
+                        ui,
+                        "数値直入力",
+                        "形状定義がありません（断面性能の数値直入力）",
+                    ),
+                }
+            });
+            row.col(|ui| {
+                // どの部材にも使われていない断面は入力漏れ・不要断面の目印。
+                if r.n_elements == 0 {
+                    ui.colored_label(crate::theme::GRAY_600, "0");
+                } else {
+                    ui.label(format!("{}", r.n_elements));
+                }
+            });
+            row.col(|ui| {
+                ui.label(format!("{:.0} × {:.0}", r.depth, r.width));
+            });
+            // cm 系へ換算して表示する（mm 系のままでは桁が大きく比較しづらい）。
+            row.col(|ui| {
+                ui.label(format!("{:.1}", r.area * 1e-2));
+            });
+            row.col(|ui| {
+                ui.label(format!("{:.0}", r.iy * 1e-4));
+            });
+            row.col(|ui| {
+                ui.label(format!("{:.0}", r.iz * 1e-4));
+            });
+            row.col(|ui| {
+                ui.label(format!("{:.0}", r.j * 1e-4));
+            });
+            row.col(|ui| {
+                ui.label(format!("{:.1} / {:.1}", r.as_y * 1e-2, r.as_z * 1e-2));
+            });
+            row.col(|ui| {
+                ui.label(format!("{:.1} / {:.1}", r.ry, r.rz));
+            });
+            row.col(|ui| match (&r.material, r.young) {
+                (Some(m), Some(e)) => {
+                    crate::table_util::text_cell(ui, &format!("{} ({:.0})", m, e))
+                }
+                (Some(m), None) => crate::table_util::text_cell(ui, m),
+                _ => crate::table_util::muted_cell(ui, "未割当", "材料が割り当てられていません"),
+            });
+        },
+    );
     ui.add_space(4.0);
     ui.colored_label(
         crate::theme::GRAY_600,
@@ -880,61 +812,55 @@ fn width_thickness_section(ui: &mut egui::Ui, prep: &PreparationResult) {
         );
         return;
     }
-    let row_h = crate::theme::table_row_height(ui);
     let rows = &prep.width_thickness;
-    TableBuilder::new(ui)
-        .striped(true)
-        .id_salt("prep_width_thickness")
-        .column(Column::initial(180.0))
-        .column(Column::initial(60.0))
-        .column(Column::initial(110.0))
-        .column(Column::initial(70.0))
-        .column(Column::initial(110.0))
-        .column(Column::initial(80.0))
-        .header(row_h, |mut h| {
-            for t in &["断面", "用途", "材料", "部材数", "最大幅厚比", "ランク"] {
-                h.col(|ui| {
-                    ui.strong(*t);
-                });
-            }
-        })
-        .body(|body| {
-            body.rows(row_h, rows.len(), |mut row| {
-                let r = &rows[row.index()];
-                row.col(|ui| {
-                    ui.label(&r.section_name);
-                });
-                row.col(|ui| {
-                    ui.label(steel_member_use_label(r.member_use));
-                });
-                row.col(|ui| {
-                    ui.label(&r.material);
-                });
-                row.col(|ui| {
-                    ui.label(format!("{}", r.n_elements));
-                });
-                row.col(|ui| {
-                    match r.max_ratio {
-                        Some(v) => ui.label(format!("{:.1}", v)),
-                        None => ui.colored_label(crate::theme::GRAY_600, "—"),
-                    };
-                });
-                row.col(|ui| {
-                    use squid_n_design_jp::secondary::holding_capacity::MemberRank;
-                    match r.rank {
-                        // FD は Ds を最も不利にする（幅厚比の入力確認を促す）。
-                        Some(rank @ MemberRank::FD) => {
-                            ui.colored_label(crate::theme::ERROR_RED, member_rank_label(rank))
-                        }
-                        Some(rank @ MemberRank::FC) => {
-                            ui.colored_label(crate::theme::BEST_YELLOW, member_rank_label(rank))
-                        }
-                        Some(rank) => ui.label(member_rank_label(rank)),
-                        None => ui.colored_label(crate::theme::GRAY_600, "判定不可"),
-                    };
-                });
+    crate::table_util::standard_table(
+        ui,
+        "prep_width_thickness",
+        &[
+            Col::text("断面"),
+            Col::label("用途"),
+            Col::name("材料"),
+            Col::num("部材数"),
+            Col::num("最大幅厚比"),
+            Col::label("ランク"),
+        ],
+        rows.len(),
+        |row| {
+            let r = &rows[row.index()];
+            row.col(|ui| {
+                crate::table_util::text_cell(ui, &r.section_name);
             });
-        });
+            row.col(|ui| {
+                ui.label(steel_member_use_label(r.member_use));
+            });
+            row.col(|ui| {
+                crate::table_util::text_cell(ui, &r.material);
+            });
+            row.col(|ui| {
+                ui.label(format!("{}", r.n_elements));
+            });
+            row.col(|ui| {
+                match r.max_ratio {
+                    Some(v) => ui.label(format!("{:.1}", v)),
+                    None => ui.colored_label(crate::theme::GRAY_600, "—"),
+                };
+            });
+            row.col(|ui| {
+                use squid_n_design_jp::secondary::holding_capacity::MemberRank;
+                match r.rank {
+                    // FD は Ds を最も不利にする（幅厚比の入力確認を促す）。
+                    Some(rank @ MemberRank::FD) => {
+                        ui.colored_label(crate::theme::ERROR_RED, member_rank_label(rank))
+                    }
+                    Some(rank @ MemberRank::FC) => {
+                        ui.colored_label(crate::theme::BEST_YELLOW, member_rank_label(rank))
+                    }
+                    Some(rank) => ui.label(member_rank_label(rank)),
+                    None => ui.colored_label(crate::theme::GRAY_600, "判定不可"),
+                };
+            });
+        },
+    );
     ui.add_space(4.0);
     ui.colored_label(
         crate::theme::GRAY_600,
@@ -964,91 +890,75 @@ fn member_stiffness_section(ui: &mut egui::Ui, prep: &PreparationResult) {
         return;
     }
 
-    let row_h = crate::theme::table_row_height(ui);
     let rows = &prep.member_stiffness;
-    TableBuilder::new(ui)
-        .striped(true)
-        .id_salt("prep_member_stiffness")
-        .column(Column::initial(70.0))
-        .column(Column::initial(70.0))
-        .column(Column::initial(160.0))
-        .column(Column::initial(100.0))
-        .column(Column::initial(100.0))
-        .column(Column::initial(100.0))
-        .column(Column::initial(120.0))
-        .column(Column::initial(120.0))
-        .column(Column::initial(100.0))
-        .header(row_h, |mut h| {
-            for t in &[
-                "部材",
-                "種別",
-                "断面",
-                "材料",
-                "スラブ",
-                "壁上下梁",
-                "元 Iy [cm⁴]",
-                "実効 Iy [cm⁴]",
-                "総増大率",
-            ] {
-                h.col(|ui| {
-                    ui.strong(*t);
-                });
-            }
-        })
-        .body(|body| {
-            body.rows(row_h, rows.len(), |mut row| {
-                let r = &rows[row.index()];
-                row.col(|ui| {
-                    ui.label(format!("#{}", r.elem.0));
-                });
-                row.col(|ui| {
-                    ui.label(member_kind_label(r.kind));
-                });
-                row.col(|ui| {
-                    // SRC/CFT は等価換算後の値を使うことが分かるよう印を付ける。
-                    let text = if r.composite.is_some() {
-                        format!("{}（等価換算）", r.section_name)
-                    } else {
-                        r.section_name.clone()
-                    };
-                    ui.label(text).on_hover_text(match &r.composite {
-                        Some(c) => format!(
-                            "SRC/CFT 等価断面: A={:.1} cm², Iy={:.0} cm⁴, Iz={:.0} cm⁴,\n\
+    crate::table_util::standard_table(
+        ui,
+        "prep_member_stiffness",
+        &[
+            Col::id_named("部材"),
+            Col::label("種別"),
+            Col::text("断面"),
+            Col::name("材料"),
+            Col::num("スラブ"),
+            Col::num("壁上下梁"),
+            Col::num("元 Iy [cm⁴]"),
+            Col::num("実効 Iy [cm⁴]"),
+            Col::num("総増大率"),
+        ],
+        rows.len(),
+        |row| {
+            let r = &rows[row.index()];
+            row.col(|ui| {
+                ui.label(format!("#{}", r.elem.0));
+            });
+            row.col(|ui| {
+                ui.label(member_kind_label(r.kind));
+            });
+            row.col(|ui| {
+                // SRC/CFT は等価換算後の値を使うことが分かるよう印を付ける。
+                let text = if r.composite.is_some() {
+                    format!("{}（等価換算）", r.section_name)
+                } else {
+                    r.section_name.clone()
+                };
+                ui.label(text).on_hover_text(match &r.composite {
+                    Some(c) => format!(
+                        "SRC/CFT 等価断面: A={:.1} cm², Iy={:.0} cm⁴, Iz={:.0} cm⁴,\n\
                              J={:.0} cm⁴, Asy={:.1} cm², Asz={:.1} cm²",
-                            c.area_ax * 1e-2,
-                            c.iy * 1e-4,
-                            c.iz * 1e-4,
-                            c.j * 1e-4,
-                            c.as_y * 1e-2,
-                            c.as_z * 1e-2
-                        ),
-                        None => "等価換算なし".to_string(),
-                    });
-                });
-                row.col(|ui| {
-                    ui.label(&r.material);
-                });
-                row.col(|ui| {
-                    label_factor(ui, r.slab_factor);
-                });
-                row.col(|ui| {
-                    label_factor(ui, r.wall_girder_factor);
-                });
-                row.col(|ui| {
-                    ui.label(format!("{:.0}", r.section_iy * 1e-4));
-                });
-                row.col(|ui| {
-                    ui.label(format!("{:.0}", r.effective_iy * 1e-4));
-                });
-                row.col(|ui| {
-                    if r.section_iy > 0.0 {
-                        ui.label(format!("{:.2} 倍", r.effective_iy / r.section_iy));
-                    } else {
-                        ui.colored_label(crate::theme::GRAY_600, "—");
-                    }
+                        c.area_ax * 1e-2,
+                        c.iy * 1e-4,
+                        c.iz * 1e-4,
+                        c.j * 1e-4,
+                        c.as_y * 1e-2,
+                        c.as_z * 1e-2
+                    ),
+                    None => "等価換算なし".to_string(),
                 });
             });
-        });
+            row.col(|ui| {
+                crate::table_util::text_cell(ui, &r.material);
+            });
+            row.col(|ui| {
+                label_factor(ui, r.slab_factor);
+            });
+            row.col(|ui| {
+                label_factor(ui, r.wall_girder_factor);
+            });
+            row.col(|ui| {
+                ui.label(format!("{:.0}", r.section_iy * 1e-4));
+            });
+            row.col(|ui| {
+                ui.label(format!("{:.0}", r.effective_iy * 1e-4));
+            });
+            row.col(|ui| {
+                if r.section_iy > 0.0 {
+                    ui.label(format!("{:.2} 倍", r.effective_iy / r.section_iy));
+                } else {
+                    ui.colored_label(crate::theme::GRAY_600, "—");
+                }
+            });
+        },
+    );
     ui.add_space(4.0);
     ui.colored_label(
         crate::theme::GRAY_600,
@@ -1076,60 +986,47 @@ fn loads_section(ui: &mut egui::Ui, prep: &PreparationResult) {
         ui.colored_label(crate::theme::GRAY_600, "荷重ケースがありません");
         return;
     }
-    let row_h = crate::theme::table_row_height(ui);
     let rows = &prep.load_cases;
-    TableBuilder::new(ui)
-        .striped(true)
-        .column(Column::initial(140.0))
-        .column(Column::initial(110.0))
-        .column(Column::initial(90.0))
-        .column(Column::initial(90.0))
-        .column(Column::initial(110.0))
-        .column(Column::initial(110.0))
-        .column(Column::initial(110.0))
-        .header(row_h, |mut h| {
-            for t in &[
-                "荷重ケース",
-                "種別",
-                "節点荷重数",
-                "部材荷重数",
-                "ΣFx [kN]",
-                "ΣFy [kN]",
-                "ΣFz [kN]",
-            ] {
-                h.col(|ui| {
-                    ui.strong(*t);
+    crate::table_util::standard_table(
+        ui,
+        "prep_load_cases",
+        &[
+            Col::name("荷重ケース"),
+            Col::label("種別"),
+            Col::num("節点荷重数"),
+            Col::num("部材荷重数"),
+            Col::num("ΣFx [kN]"),
+            Col::num("ΣFy [kN]"),
+            Col::num("ΣFz [kN]"),
+        ],
+        rows.len(),
+        |row| {
+            let r = &rows[row.index()];
+            let empty = r.n_nodal == 0 && r.n_member == 0;
+            row.col(|ui| {
+                crate::table_util::text_cell(ui, &r.name);
+            });
+            row.col(|ui| {
+                ui.label(load_case_kind_label(r.kind));
+            });
+            row.col(|ui| {
+                ui.label(format!("{}", r.n_nodal));
+            });
+            row.col(|ui| {
+                ui.label(format!("{}", r.n_member));
+            });
+            for k in 0..3 {
+                row.col(|ui| {
+                    let text = format!("{:.1}", kn(r.sum_force[k]));
+                    if empty {
+                        ui.colored_label(crate::theme::GRAY_600, text);
+                    } else {
+                        ui.label(text);
+                    }
                 });
             }
-        })
-        .body(|body| {
-            body.rows(row_h, rows.len(), |mut row| {
-                let r = &rows[row.index()];
-                let empty = r.n_nodal == 0 && r.n_member == 0;
-                row.col(|ui| {
-                    ui.label(&r.name);
-                });
-                row.col(|ui| {
-                    ui.label(load_case_kind_label(r.kind));
-                });
-                row.col(|ui| {
-                    ui.label(format!("{}", r.n_nodal));
-                });
-                row.col(|ui| {
-                    ui.label(format!("{}", r.n_member));
-                });
-                for k in 0..3 {
-                    row.col(|ui| {
-                        let text = format!("{:.1}", kn(r.sum_force[k]));
-                        if empty {
-                            ui.colored_label(crate::theme::GRAY_600, text);
-                        } else {
-                            ui.label(text);
-                        }
-                    });
-                }
-            });
-        });
+        },
+    );
     ui.add_space(4.0);
     ui.colored_label(
         crate::theme::GRAY_600,

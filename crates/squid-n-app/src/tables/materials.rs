@@ -59,7 +59,7 @@ fn apply_src_toggle(name: &str, fc: f64) -> (String, f64) {
 
 /// 材料タブ：プリセット追加・カスタム追加・一覧編集・削除。
 pub fn materials_table(ui: &mut egui::Ui, app: &mut App) {
-    use egui_extras::{Column, TableBuilder};
+    use crate::table_util::{self, Col};
 
     // ── プリセット追加 ─────────────────────────────────────────
     let presets = material_presets();
@@ -252,141 +252,111 @@ pub fn materials_table(ui: &mut egui::Ui, app: &mut App) {
     let mut pending_field: Option<(u32, MaterialField, Option<f64>)> = None;
     let mut pending_delete: Option<u32> = None;
 
-    let row_h = crate::theme::table_row_height(ui);
-    TableBuilder::new(ui)
-        .striped(true)
-        .column(Column::auto())
-        .column(Column::initial(90.0))
-        .column(Column::initial(90.0))
-        .column(Column::initial(70.0))
-        .column(Column::initial(45.0))
-        .column(Column::initial(70.0))
-        .column(Column::initial(50.0))
-        .column(Column::initial(50.0))
-        .column(Column::initial(50.0))
-        .column(Column::auto())
-        .header(row_h, |mut h| {
-            for t in &[
-                "ID",
-                "名称",
-                "区分",
-                "E [N/mm²]",
-                "ν",
-                "ρ [t/mm³]",
-                "Fc",
-                "Fy",
-                "割増",
-                "",
-            ] {
-                h.col(|ui| {
-                    let resp = ui.strong(*t);
-                    if *t == "割増" {
-                        resp.on_hover_text(
-                            "保有水平耐力計算（増分解析）の材料強度割増係数。\
-                             空欄=自動（鋼材1.1、590N級1.05、RC主筋1.1）",
-                        );
-                    } else if *t == "区分" {
-                        resp.on_hover_text(
-                            "S 造 / RC 造の判定に用います。剛域長・仕口パネルの対象・\
-                             断面検定の式・数量集計がこの値で変わります",
-                        );
+    table_util::standard_table(
+        ui,
+        "materials_tbl",
+        &[
+            Col::id(),
+            Col::name("名称"),
+            Col::name("区分").hover(
+                "S 造 / RC 造の判定に用います。剛域長・仕口パネルの対象・\
+                 断面検定の式・数量集計がこの値で変わります",
+            ),
+            Col::num("E [N/mm²]"),
+            Col::num("ν"),
+            Col::num("ρ [t/mm³]"),
+            Col::num("Fc"),
+            Col::num("Fy"),
+            Col::num("割増").hover(
+                "保有水平耐力計算（増分解析）の材料強度割増係数。\
+                 空欄=自動（鋼材1.1、590N級1.05、RC主筋1.1）",
+            ),
+            Col::actions(),
+        ],
+        n,
+        |row| {
+            let idx = row.index();
+            let mat = &app.model.materials[idx];
+            let mat_id = mat.id;
+            row.col(|ui| {
+                table_util::id_label(ui, mat_id.0);
+            });
+            row.col(|ui| {
+                let mut name = mat.name.clone();
+                if table_util::cell_text_edit(ui, &mut name).lost_focus() && name != mat.name {
+                    pending_name = Some((mat_id.0, name));
+                }
+            });
+            row.col(|ui| {
+                let mut category = mat.category;
+                table_util::cell_combo(ui, ("mat_category", mat_id.0), category.label(), |ui| {
+                    for cat in [
+                        MaterialCategory::Steel,
+                        MaterialCategory::Rebar,
+                        MaterialCategory::Concrete,
+                    ] {
+                        ui.selectable_value(&mut category, cat, cat.label());
+                    }
+                });
+                if category != mat.category {
+                    pending_category = Some((mat_id.0, category));
+                }
+            });
+            // 数値セル: フォーカス喪失時に確定
+            let cells: [(MaterialField, String, bool); 6] = [
+                (MaterialField::Young, format!("{}", mat.young), true),
+                (MaterialField::Poisson, format!("{}", mat.poisson), true),
+                (MaterialField::Density, format!("{:.3e}", mat.density), true),
+                (
+                    MaterialField::Fc,
+                    mat.fc.map(|v| format!("{}", v)).unwrap_or_default(),
+                    false,
+                ),
+                (
+                    MaterialField::Fy,
+                    mat.fy.map(|v| format!("{}", v)).unwrap_or_default(),
+                    false,
+                ),
+                (
+                    MaterialField::StrengthFactor,
+                    mat.strength_factor
+                        .map(|v| format!("{}", v))
+                        .unwrap_or_default(),
+                    false,
+                ),
+            ];
+            for (field, current, required) in cells {
+                row.col(|ui| {
+                    let cell_id = egui::Id::new(("mat_cell", mat_id.0, field as u8));
+                    let mut buf = ui
+                        .data(|d| d.get_temp::<String>(cell_id))
+                        .unwrap_or_else(|| current.clone());
+                    let resp = table_util::cell_text_edit(ui, &mut buf);
+                    if resp.lost_focus() {
+                        let parsed = buf.trim().parse::<f64>().ok();
+                        let changed = buf.trim() != current.trim();
+                        if changed && (parsed.is_some() || !required) {
+                            pending_field = Some((mat_id.0, field, parsed));
+                        }
+                        ui.data_mut(|d| d.remove::<String>(cell_id));
+                    } else if resp.has_focus() {
+                        ui.data_mut(|d| d.insert_temp(cell_id, buf));
                     }
                 });
             }
-        })
-        .body(|body| {
-            body.rows(row_h, n, |mut row| {
-                let idx = row.index();
-                let mat = &app.model.materials[idx];
-                let mat_id = mat.id;
-                row.col(|ui| {
-                    ui.label(format!("{}", mat_id.0));
-                });
-                row.col(|ui| {
-                    let mut name = mat.name.clone();
-                    if ui
-                        .add(egui::TextEdit::singleline(&mut name).desired_width(85.0))
-                        .lost_focus()
-                        && name != mat.name
-                    {
-                        pending_name = Some((mat_id.0, name));
-                    }
-                });
-                row.col(|ui| {
-                    let mut category = mat.category;
-                    egui::ComboBox::from_id_salt(("mat_category", mat_id.0))
-                        .selected_text(category.label())
-                        .width(85.0)
-                        .show_ui(ui, |ui| {
-                            for cat in [
-                                MaterialCategory::Steel,
-                                MaterialCategory::Rebar,
-                                MaterialCategory::Concrete,
-                            ] {
-                                ui.selectable_value(&mut category, cat, cat.label());
-                            }
-                        });
-                    if category != mat.category {
-                        pending_category = Some((mat_id.0, category));
-                    }
-                });
-                // 数値セル: フォーカス喪失時に確定
-                let cells: [(MaterialField, String, bool); 6] = [
-                    (MaterialField::Young, format!("{}", mat.young), true),
-                    (MaterialField::Poisson, format!("{}", mat.poisson), true),
-                    (MaterialField::Density, format!("{:.3e}", mat.density), true),
-                    (
-                        MaterialField::Fc,
-                        mat.fc.map(|v| format!("{}", v)).unwrap_or_default(),
-                        false,
-                    ),
-                    (
-                        MaterialField::Fy,
-                        mat.fy.map(|v| format!("{}", v)).unwrap_or_default(),
-                        false,
-                    ),
-                    (
-                        MaterialField::StrengthFactor,
-                        mat.strength_factor
-                            .map(|v| format!("{}", v))
-                            .unwrap_or_default(),
-                        false,
-                    ),
-                ];
-                for (field, current, required) in cells {
-                    row.col(|ui| {
-                        let cell_id = egui::Id::new(("mat_cell", mat_id.0, field as u8));
-                        let mut buf = ui
-                            .data(|d| d.get_temp::<String>(cell_id))
-                            .unwrap_or_else(|| current.clone());
-                        let resp = ui.add(egui::TextEdit::singleline(&mut buf).desired_width(60.0));
-                        if resp.lost_focus() {
-                            let parsed = buf.trim().parse::<f64>().ok();
-                            let changed = buf.trim() != current.trim();
-                            if changed && (parsed.is_some() || !required) {
-                                pending_field = Some((mat_id.0, field, parsed));
-                            }
-                            ui.data_mut(|d| d.remove::<String>(cell_id));
-                        } else if resp.has_focus() {
-                            ui.data_mut(|d| d.insert_temp(cell_id, buf));
-                        }
-                    });
+            row.col(|ui| {
+                let in_use = app
+                    .model
+                    .elements
+                    .iter()
+                    .any(|e| e.material == Some(mat_id));
+                let blocked = in_use.then_some("部材から参照中のため削除できません");
+                if table_util::delete_cell(ui, "この材料を削除", blocked) {
+                    pending_delete = Some(mat_id.0);
                 }
-                row.col(|ui| {
-                    let in_use = app
-                        .model
-                        .elements
-                        .iter()
-                        .any(|e| e.material == Some(mat_id));
-                    let btn = ui.add_enabled(!in_use, egui::Button::new("🗑"));
-                    if in_use {
-                        btn.on_hover_text("部材から参照中のため削除できません");
-                    } else if btn.clicked() {
-                        pending_delete = Some(mat_id.0);
-                    }
-                });
             });
-        });
+        },
+    );
 
     // 確定処理（テーブル描画後に model を可変借用）
     let mut edited = false;

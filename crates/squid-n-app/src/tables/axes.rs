@@ -8,6 +8,7 @@
 //! 編集は `squid_n_edit::{ReplaceAxes, RenameAxis}` 経由（undo 対応）。
 
 use crate::app::App;
+use crate::table_util::Col;
 use squid_n_core::model::{AxisGroupKind, AxisSource};
 use squid_n_edit::RenameAxis;
 
@@ -78,54 +79,69 @@ pub fn axes_table(ui: &mut egui::Ui, app: &mut App) {
             ui.colored_label(crate::theme::GRAY_600, "  （通りなし）");
             continue;
         }
-        egui::Grid::new(format!("axes_grid_{gi}"))
-            .striped(true)
-            .show(ui, |ui| {
-                ui.label("通り名");
-                ui.label("離れ [mm]");
-                ui.label("所属節点");
-                ui.label("所属要素");
-                ui.label("出所");
-                ui.label("");
-                ui.end_row();
-
-                for (ai, axis) in group.axes.iter().enumerate() {
-                    if app.axis_name_draft.editing == Some((gi, ai)) {
-                        let resp = ui.add(
-                            egui::TextEdit::singleline(&mut app.axis_name_draft.name)
-                                .desired_width(80.0),
-                        );
+        let draft = &mut app.axis_name_draft;
+        let model = &app.model;
+        crate::table_util::standard_table(
+            ui,
+            &format!("axes_tbl_{gi}"),
+            &[
+                Col::name("通り名"),
+                Col::num("離れ [mm]"),
+                Col::num("所属節点"),
+                Col::num("所属要素"),
+                Col::label("出所"),
+                Col::actions_n(2),
+            ],
+            group.axes.len(),
+            |row| {
+                let ai = row.index();
+                let axis = &group.axes[ai];
+                let editing = draft.editing == Some((gi, ai));
+                row.col(|ui| {
+                    if editing {
+                        let resp = crate::table_util::cell_text_edit(ui, &mut draft.name);
                         if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                            pending_commit =
-                                Some((gi, ai, app.axis_name_draft.name.trim().to_string()));
+                            pending_commit = Some((gi, ai, draft.name.trim().to_string()));
                         }
                     } else {
-                        ui.label(&axis.name);
+                        crate::table_util::text_cell(ui, &axis.name);
                     }
-                    ui.label(
-                        axis.distance
-                            .map(|d| format!("{d:.0}"))
-                            .unwrap_or_else(|| "―".to_string()),
-                    );
+                });
+                row.col(|ui| match axis.distance {
+                    Some(d) => {
+                        ui.label(format!("{d:.0}"));
+                    }
+                    None => {
+                        crate::table_util::muted_cell(ui, "―", "通り芯の離れが設定されていません")
+                    }
+                });
+                row.col(|ui| {
                     ui.label(format!("{}", axis.nodes.len()));
-                    ui.label(format!("{}", app.model.axis_elements(axis).len()));
+                });
+                row.col(|ui| {
+                    ui.label(format!("{}", model.axis_elements(axis).len()));
+                });
+                row.col(|ui| {
                     ui.label(source_label(axis.source));
-                    if app.axis_name_draft.editing == Some((gi, ai)) {
-                        ui.horizontal(|ui| {
+                });
+                row.col(|ui| {
+                    // セルの既定レイアウトは親（縦並びのパネル）を引き継ぐため、
+                    // ボタンを 2 つ置く場合は横並びに明示しないと行高からはみ出す。
+                    ui.horizontal(|ui| {
+                        if editing {
                             if ui.button("✔").on_hover_text("名前を確定").clicked() {
-                                pending_commit =
-                                    Some((gi, ai, app.axis_name_draft.name.trim().to_string()));
+                                pending_commit = Some((gi, ai, draft.name.trim().to_string()));
                             }
                             if ui.button("✖").on_hover_text("取り消し").clicked() {
                                 pending_cancel = true;
                             }
-                        });
-                    } else if ui.button("✏").on_hover_text("通り名を変更").clicked() {
-                        pending_edit = Some((gi, ai));
-                    }
-                    ui.end_row();
-                }
-            });
+                        } else if ui.button("✏").on_hover_text("通り名を変更").clicked() {
+                            pending_edit = Some((gi, ai));
+                        }
+                    });
+                });
+            },
+        );
         ui.add_space(6.0);
     }
 

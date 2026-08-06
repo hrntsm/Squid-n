@@ -47,7 +47,7 @@ impl Default for MemberLoadDraft {
 }
 
 pub fn loads_table(ui: &mut egui::Ui, app: &mut App) {
-    use egui_extras::{Column, TableBuilder};
+    use crate::table_util::{self, Col};
 
     // --- スラブ荷重（床荷重）への案内 ---
     ui.label(format!(
@@ -82,91 +82,73 @@ pub fn loads_table(ui: &mut egui::Ui, app: &mut App) {
         .map(|lc| lc.name.clone())
         .collect();
 
-    let row_h = crate::theme::table_row_height(ui);
-    TableBuilder::new(ui)
-        .striped(true)
-        .column(Column::auto())
-        .column(Column::initial(120.0))
-        .column(Column::initial(130.0))
-        .column(Column::initial(60.0))
-        .column(Column::auto())
-        .header(row_h, |mut h| {
-            for t in &["ID", "名称", "種別", "荷重数", ""] {
-                h.col(|ui| {
-                    ui.strong(*t);
-                });
-            }
-        })
-        .body(|body| {
-            body.rows(row_h, n_lc, |mut row| {
-                let i = row.index();
-                let lc = &app.model.load_cases[i];
-                let is_sel = app.nav.focus_load_case == Some(lc.id);
-                row.col(|ui| {
-                    let rich = egui::RichText::new(lc.id.0.to_string()).color(if is_sel {
-                        crate::theme::WHITE
-                    } else {
-                        egui::Color32::PLACEHOLDER
-                    });
-                    if ui
-                        .selectable_label(is_sel, rich)
-                        .on_hover_text("クリックで下の荷重編集の対象にする")
-                        .clicked()
-                    {
-                        app.nav.focus_load_case = Some(lc.id);
-                    }
-                });
-                row.col(|ui| {
-                    if i < name_bufs.len() {
-                        let resp = ui.add(
-                            egui::TextEdit::singleline(&mut name_bufs[i])
-                                .desired_width(110.0)
-                                .clip_text(false),
-                        );
-                        if resp.lost_focus() && resp.changed() {
-                            let trimmed = name_bufs[i].trim().to_string();
-                            if trimmed != lc.name && !trimmed.is_empty() {
-                                pending_name.push((i, trimmed));
-                            }
+    table_util::standard_table(
+        ui,
+        "load_cases_tbl",
+        &[
+            Col::id(),
+            Col::name("名称"),
+            Col::name("種別"),
+            Col::num("荷重数"),
+            Col::actions(),
+        ],
+        n_lc,
+        |row| {
+            let i = row.index();
+            let lc = &app.model.load_cases[i];
+            let is_sel = app.nav.focus_load_case == Some(lc.id);
+            row.col(|ui| {
+                if table_util::id_cell(ui, is_sel, lc.id.0, "クリックで下の荷重編集の対象にする")
+                {
+                    app.nav.focus_load_case = Some(lc.id);
+                }
+            });
+            row.col(|ui| {
+                if i < name_bufs.len() {
+                    let resp = table_util::cell_text_edit(ui, &mut name_bufs[i]);
+                    if resp.lost_focus() && resp.changed() {
+                        let trimmed = name_bufs[i].trim().to_string();
+                        if trimmed != lc.name && !trimmed.is_empty() {
+                            pending_name.push((i, trimmed));
                         }
                     }
-                });
-                row.col(|ui| {
-                    egui::ComboBox::from_id_salt(("load_case_kind", lc.id.0))
-                        .selected_text(load_case_kind_label(lc.kind))
-                        .show_ui(ui, |ui| {
-                            for kind in LOAD_CASE_KINDS {
-                                if ui
-                                    .selectable_label(lc.kind == kind, load_case_kind_label(kind))
-                                    .clicked()
-                                    && lc.kind != kind
-                                {
-                                    pending_kind.push((lc.id, kind));
-                                }
-                            }
-                        });
-                });
-                row.col(|ui| {
-                    ui.label((lc.nodal.len() + lc.member.len()).to_string());
-                });
-                row.col(|ui| {
-                    let referenced = app
-                        .model
-                        .combinations
-                        .iter()
-                        .any(|c| c.terms.iter().any(|(id, _)| *id == lc.id));
-                    let btn = ui.add_enabled(!referenced, egui::Button::new("🗑"));
-                    if referenced {
-                        btn.on_hover_text("荷重組合せから参照中のため削除できません");
-                    } else if btn
-                        .on_hover_text("ケースと中身の荷重をまとめて削除")
-                        .clicked()
-                    {
-                        pending_delete = Some(lc.id);
-                    }
-                });
+                }
             });
-        });
+            row.col(|ui| {
+                table_util::cell_combo(
+                    ui,
+                    ("load_case_kind", lc.id.0),
+                    load_case_kind_label(lc.kind),
+                    |ui| {
+                        for kind in LOAD_CASE_KINDS {
+                            if ui
+                                .selectable_label(lc.kind == kind, load_case_kind_label(kind))
+                                .clicked()
+                                && lc.kind != kind
+                            {
+                                pending_kind.push((lc.id, kind));
+                            }
+                        }
+                    },
+                );
+            });
+            row.col(|ui| {
+                ui.label((lc.nodal.len() + lc.member.len()).to_string());
+            });
+            row.col(|ui| {
+                let referenced = app
+                    .model
+                    .combinations
+                    .iter()
+                    .any(|c| c.terms.iter().any(|(id, _)| *id == lc.id));
+                let blocked = referenced.then_some("荷重組合せから参照中のため削除できません");
+                if table_util::delete_cell(ui, "ケースと中身の荷重をまとめて削除", blocked)
+                {
+                    pending_delete = Some(lc.id);
+                }
+            });
+        },
+    );
 
     let had_name = !pending_name.is_empty() || !pending_kind.is_empty() || pending_delete.is_some();
     for (i, name) in pending_name {
@@ -250,63 +232,55 @@ pub fn loads_table(ui: &mut egui::Ui, app: &mut App) {
         .map(|n| n.values.map(|v| format!("{:.2}", v)))
         .collect();
 
-    let row_h = crate::theme::table_row_height(ui);
-    TableBuilder::new(ui)
-        .striped(true)
-        .column(Column::auto())
-        .columns(Column::initial(70.0), 6)
-        .column(Column::auto())
-        .header(row_h, |mut h| {
-            h.col(|ui| {
-                ui.strong("節点");
+    table_util::standard_table(
+        ui,
+        "nodal_loads_tbl",
+        &[
+            Col::id_named("節点"),
+            Col::num("Fx"),
+            Col::num("Fy"),
+            Col::num("Fz"),
+            Col::num("Mx"),
+            Col::num("My"),
+            Col::num("Mz"),
+            Col::actions(),
+        ],
+        nodal_count,
+        |row| {
+            let i = row.index();
+            let nodal = &app.model.load_cases[lc_idx].nodal[i];
+            row.col(|ui| {
+                table_util::id_label(ui, nodal.node.0);
             });
-            for t in &["Fx", "Fy", "Fz", "Mx", "My", "Mz"] {
-                h.col(|ui| {
-                    ui.strong(*t);
-                });
-            }
-            h.col(|_| {});
-        })
-        .body(|body| {
-            body.rows(row_h, nodal_count, |mut row| {
-                let i = row.index();
-                let nodal = &app.model.load_cases[lc_idx].nodal[i];
+            for k in 0..6 {
                 row.col(|ui| {
-                    ui.label(nodal.node.0.to_string());
-                });
-                for k in 0..6 {
-                    row.col(|ui| {
-                        let buf = &mut value_bufs[i][k];
-                        let resp = ui.add(
-                            egui::TextEdit::singleline(buf)
-                                .desired_width(60.0)
-                                .clip_text(false),
-                        );
-                        if resp.lost_focus() && resp.changed() {
-                            if let Ok(val) = buf.trim().parse::<f64>() {
-                                if (val - nodal.values[k]).abs() > 1e-9 {
-                                    let mut new_vals = nodal.values;
-                                    new_vals[k] = val;
-                                    pending_load.push((nodal.node, new_vals));
-                                }
+                    let buf = &mut value_bufs[i][k];
+                    let resp = table_util::cell_text_edit(ui, buf);
+                    if resp.lost_focus() && resp.changed() {
+                        if let Ok(val) = buf.trim().parse::<f64>() {
+                            if (val - nodal.values[k]).abs() > 1e-9 {
+                                let mut new_vals = nodal.values;
+                                new_vals[k] = val;
+                                pending_load.push((nodal.node, new_vals));
                             }
                         }
-                        if buf.trim().parse::<f64>().is_err() {
-                            ui.painter().rect_filled(
-                                resp.rect,
-                                0.0,
-                                crate::theme::translucent(crate::theme::ERROR_RED, 60),
-                            );
-                        }
-                    });
-                }
-                row.col(|ui| {
-                    if ui.button("🗑").on_hover_text("この節点荷重を削除").clicked() {
-                        pending_nodal_delete = Some(nodal.node);
+                    }
+                    if buf.trim().parse::<f64>().is_err() {
+                        ui.painter().rect_filled(
+                            resp.rect,
+                            0.0,
+                            crate::theme::translucent(crate::theme::ERROR_RED, 60),
+                        );
                     }
                 });
+            }
+            row.col(|ui| {
+                if table_util::delete_cell(ui, "この節点荷重を削除", None) {
+                    pending_nodal_delete = Some(nodal.node);
+                }
             });
-        });
+        },
+    );
 
     let had_load = !pending_load.is_empty() || pending_nodal_delete.is_some();
     for (node, values) in pending_load {

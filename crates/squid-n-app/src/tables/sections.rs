@@ -21,7 +21,7 @@ fn to_cm4(mm4: f64) -> f64 {
 }
 
 pub fn sections_table(ui: &mut egui::Ui, app: &mut App) {
-    use egui_extras::Column;
+    use crate::table_util::{self, Col};
 
     let n = app.model.sections.len();
     let mut pending_delete: Option<SectionId> = None;
@@ -52,36 +52,22 @@ pub fn sections_table(ui: &mut egui::Ui, app: &mut App) {
         count(sm.section, &mut n_elements);
     }
 
-    crate::table_util::standard_table(
+    table_util::standard_table(
         ui,
         "sections_tbl_0",
         &[
-            Column::initial(40.0),
-            Column::initial(90.0),
-            Column::initial(50.0),
-            Column::initial(190.0),
-            Column::initial(60.0),
-            Column::initial(110.0),
-            Column::initial(90.0),
-            Column::initial(100.0),
-            Column::initial(100.0),
-            Column::initial(100.0),
-            Column::initial(110.0),
-            Column::auto(),
-        ],
-        &[
-            "ID",
-            "符号",
-            "階",
-            "断面形状",
-            "部材数",
-            "D×B [mm]",
-            "A [cm²]",
-            "Iy [cm⁴]",
-            "Iz [cm⁴]",
-            "J [cm⁴]",
-            "Asy/Asz [cm²]",
-            "",
+            Col::id(),
+            Col::name("符号"),
+            Col::label("階"),
+            Col::text("断面形状"),
+            Col::num("部材数"),
+            Col::wide_num("D×B [mm]"),
+            Col::num("A [cm²]"),
+            Col::num("Iy [cm⁴]"),
+            Col::num("Iz [cm⁴]"),
+            Col::num("J [cm⁴]"),
+            Col::wide_num("Asy/Asz [cm²]"),
+            Col::actions(),
         ],
         n,
         |row| {
@@ -90,41 +76,37 @@ pub fn sections_table(ui: &mut egui::Ui, app: &mut App) {
             row.col(|ui| {
                 let sid = sec.id;
                 let is_sel = app.nav.focus_section == Some(sid);
-                if ui
-                    .add(egui::Button::selectable(is_sel, sid.0.to_string()))
-                    .on_hover_text("クリックでインスペクタに断面詳細を表示")
-                    .clicked()
+                if table_util::id_cell(ui, is_sel, sid.0, "クリックでインスペクタに断面詳細を表示")
                 {
                     pending_focus = Some(sid);
                 }
             });
             row.col(|ui| {
-                ui.label(&sec.name).on_hover_text(&sec.name);
+                table_util::text_cell(ui, &sec.name);
             });
             row.col(|ui| {
                 // 階を持たない断面（アプリ内で作成した断面など）は符号だけが同一性キー。
                 match &sec.floor {
-                    Some(f) => ui.label(f),
-                    None => ui.colored_label(crate::theme::GRAY_600, "—"),
-                };
+                    Some(f) => table_util::text_cell(ui, f),
+                    None => table_util::muted_cell(ui, "—", "階が設定されていません"),
+                }
             });
             row.col(|ui| {
                 match &sec.shape {
-                    Some(shape) => {
-                        let label = shape.dimension_label();
-                        ui.label(&label).on_hover_text(&label)
-                    }
+                    Some(shape) => table_util::text_cell(ui, &shape.dimension_label()),
                     // 形状定義を持たない断面は剛性増大率・幅厚比・終局耐力の
                     // 算定対象外になるため、数値直入力であることを示す。
-                    None => ui
-                        .colored_label(crate::theme::GRAY_600, "—")
-                        .on_hover_text("形状定義がありません（断面性能の数値直入力）"),
-                };
+                    None => table_util::muted_cell(
+                        ui,
+                        "—",
+                        "形状定義がありません（断面性能の数値直入力）",
+                    ),
+                }
             });
             row.col(|ui| {
                 // どの部材にも使われていない断面は入力漏れ・不要断面の目印。
                 if n_elements[i] == 0 {
-                    ui.colored_label(crate::theme::GRAY_600, "0");
+                    table_util::muted_cell(ui, "0", "どの部材からも参照されていません");
                 } else {
                     ui.label(format!("{}", n_elements[i]));
                 }
@@ -149,11 +131,9 @@ pub fn sections_table(ui: &mut egui::Ui, app: &mut App) {
             });
             row.col(|ui| {
                 let sec_id = sec.id;
-                let in_use = n_elements[i] > 0;
-                let btn = ui.add_enabled(!in_use, egui::Button::new("🗑"));
-                if in_use {
-                    btn.on_hover_text("部材・小梁・二次部材から参照中のため削除できません");
-                } else if btn.clicked() {
+                let blocked = (n_elements[i] > 0)
+                    .then_some("部材・小梁・二次部材から参照中のため削除できません");
+                if table_util::delete_cell(ui, "この断面を削除", blocked) {
                     pending_delete = Some(sec_id);
                 }
             });

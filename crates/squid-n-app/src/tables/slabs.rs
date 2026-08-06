@@ -127,7 +127,7 @@ fn one_way_label(o: Option<OneWayDir>) -> &'static str {
 }
 
 pub fn slabs_table(ui: &mut egui::Ui, app: &mut App) {
-    use egui_extras::{Column, TableBuilder};
+    use crate::table_util::{self, Col};
 
     ui.label(
         "スラブは境界4節点・外周の梁があって初めて機能します（結果タブ/モデルタブの3Dビューで表示モード「CMQ図」を選ぶと分配結果を確認できます）。",
@@ -141,124 +141,116 @@ pub fn slabs_table(ui: &mut egui::Ui, app: &mut App) {
     let mut pending_one_way: Vec<(SlabId, Option<OneWayDir>)> = Vec::new();
     let mut pending_usage: Vec<(SlabId, Option<SlabUsage>)> = Vec::new();
 
-    let row_h = crate::theme::table_row_height(ui);
-    TableBuilder::new(ui)
-        .striped(true)
-        .column(Column::auto())
-        .column(Column::initial(140.0))
-        .column(Column::initial(200.0))
-        .column(Column::initial(140.0))
-        .column(Column::initial(90.0))
-        .column(Column::initial(90.0))
-        .column(Column::initial(230.0))
-        .column(Column::initial(60.0))
-        .column(Column::auto())
-        .header(row_h, |mut h| {
-            for t in &[
-                "ID",
-                "境界節点",
-                "荷重",
-                "分配法",
-                "種別",
-                "一方向",
-                "用途",
-                "小梁",
-                "",
-            ] {
-                h.col(|ui| {
-                    ui.strong(*t);
-                });
-            }
-        })
-        .body(|body| {
-            body.rows(row_h, n, |mut row| {
-                let i = row.index();
-                let slab = &app.model.slabs[i];
-                row.col(|ui| {
-                    ui.label(slab.id.0.to_string());
-                });
-                row.col(|ui| {
-                    let s = slab
-                        .boundary
-                        .iter()
-                        .map(|n| n.0.to_string())
-                        .collect::<Vec<_>>()
-                        .join("-");
-                    ui.label(s);
-                });
-                row.col(|ui| {
-                    let s = slab
-                        .loads
-                        .iter()
-                        .map(|l| format!("{} {:.2}kN/m²", l.kind, l.value * 1e3))
-                        .collect::<Vec<_>>()
-                        .join(", ");
-                    ui.label(if s.is_empty() { "―".to_string() } else { s });
-                });
-                row.col(|ui| {
-                    ui.label(method_label(slab.method));
-                });
-                row.col(|ui| {
-                    egui::ComboBox::from_id_salt(("slab_kind", slab.id.0))
-                        .selected_text(kind_label(slab.kind))
-                        .show_ui(ui, |ui| {
-                            for kind in [SlabKind::Interior, SlabKind::Cantilever, SlabKind::Corner]
-                            {
-                                if ui
-                                    .selectable_label(slab.kind == kind, kind_label(kind))
-                                    .clicked()
-                                    && slab.kind != kind
-                                {
-                                    pending_kind.push((slab.id, kind));
-                                }
-                            }
-                        });
-                });
-                row.col(|ui| {
-                    egui::ComboBox::from_id_salt(("slab_one_way", slab.id.0))
-                        .selected_text(one_way_label(slab.one_way))
-                        .show_ui(ui, |ui| {
-                            for ow in [None, Some(OneWayDir::X), Some(OneWayDir::Y)] {
-                                if ui
-                                    .selectable_label(slab.one_way == ow, one_way_label(ow))
-                                    .clicked()
-                                    && slab.one_way != ow
-                                {
-                                    pending_one_way.push((slab.id, ow));
-                                }
-                            }
-                        });
-                });
-                row.col(|ui| {
-                    egui::ComboBox::from_id_salt(("slab_usage", slab.id.0))
-                        .selected_text(usage_label(slab.usage))
-                        .show_ui(ui, |ui| {
-                            for &u in USAGE_PRESETS {
-                                if ui
-                                    .selectable_label(slab.usage == u, usage_label(u))
-                                    .clicked()
-                                    && slab.usage != u
-                                {
-                                    pending_usage.push((slab.id, u));
-                                }
-                            }
-                        });
-                });
-                row.col(|ui| {
-                    let cnt = slab.joists.len();
-                    ui.label(if cnt == 0 {
-                        "―".to_string()
-                    } else {
-                        format!("{cnt}本")
-                    });
-                });
-                row.col(|ui| {
-                    if ui.button("🗑").on_hover_text("このスラブを削除").clicked() {
-                        pending_delete = Some(slab.id);
+    table_util::standard_table(
+        ui,
+        "slabs_tbl",
+        &[
+            Col::id(),
+            Col::text("境界節点"),
+            Col::text("荷重"),
+            Col::name("分配法"),
+            Col::name("種別"),
+            Col::name("一方向"),
+            Col::text("用途"),
+            Col::label("小梁"),
+            Col::actions(),
+        ],
+        n,
+        |row| {
+            let i = row.index();
+            let slab = &app.model.slabs[i];
+            row.col(|ui| {
+                table_util::id_label(ui, slab.id.0);
+            });
+            row.col(|ui| {
+                let s = slab
+                    .boundary
+                    .iter()
+                    .map(|n| n.0.to_string())
+                    .collect::<Vec<_>>()
+                    .join("-");
+                table_util::text_cell(ui, &s);
+            });
+            row.col(|ui| {
+                let s = slab
+                    .loads
+                    .iter()
+                    .map(|l| format!("{} {:.2}kN/m²", l.kind, l.value * 1e3))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                if s.is_empty() {
+                    table_util::muted_cell(ui, "―", "床荷重が登録されていません");
+                } else {
+                    table_util::text_cell(ui, &s);
+                }
+            });
+            row.col(|ui| {
+                table_util::text_cell(ui, method_label(slab.method));
+            });
+            row.col(|ui| {
+                table_util::cell_combo(ui, ("slab_kind", slab.id.0), kind_label(slab.kind), |ui| {
+                    for kind in [SlabKind::Interior, SlabKind::Cantilever, SlabKind::Corner] {
+                        if ui
+                            .selectable_label(slab.kind == kind, kind_label(kind))
+                            .clicked()
+                            && slab.kind != kind
+                        {
+                            pending_kind.push((slab.id, kind));
+                        }
                     }
                 });
             });
-        });
+            row.col(|ui| {
+                table_util::cell_combo(
+                    ui,
+                    ("slab_one_way", slab.id.0),
+                    one_way_label(slab.one_way),
+                    |ui| {
+                        for ow in [None, Some(OneWayDir::X), Some(OneWayDir::Y)] {
+                            if ui
+                                .selectable_label(slab.one_way == ow, one_way_label(ow))
+                                .clicked()
+                                && slab.one_way != ow
+                            {
+                                pending_one_way.push((slab.id, ow));
+                            }
+                        }
+                    },
+                );
+            });
+            row.col(|ui| {
+                table_util::cell_combo(
+                    ui,
+                    ("slab_usage", slab.id.0),
+                    usage_label(slab.usage),
+                    |ui| {
+                        for &u in USAGE_PRESETS {
+                            if ui
+                                .selectable_label(slab.usage == u, usage_label(u))
+                                .clicked()
+                                && slab.usage != u
+                            {
+                                pending_usage.push((slab.id, u));
+                            }
+                        }
+                    },
+                );
+            });
+            row.col(|ui| {
+                let cnt = slab.joists.len();
+                if cnt == 0 {
+                    table_util::muted_cell(ui, "―", "小梁が配置されていません");
+                } else {
+                    ui.label(format!("{cnt}本"));
+                }
+            });
+            row.col(|ui| {
+                if table_util::delete_cell(ui, "このスラブを削除", None) {
+                    pending_delete = Some(slab.id);
+                }
+            });
+        },
+    );
 
     let had_pending = !pending_kind.is_empty()
         || !pending_one_way.is_empty()
