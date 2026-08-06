@@ -2162,8 +2162,7 @@ impl App {
     /// （種別だけでは X・Y を区別できない）。標準名のケースがなければ割り当てない
     /// （方向不明の地震ケースを機械的に EX とみなさない）。
     ///
-    /// 風は自動算定しないため標準ケース名を持たない。種別 Wind の荷重ケースを
-    /// 利用者が定義していれば、その先頭 1 件を X 方向として扱う。
+    /// 風荷重は算定・生成の対象外のため、暴風の組合せは生成しない。
     ///
     /// Dead/Live のいずれかが見つからない場合は組合せを生成せず `last_error` を設定する。
     pub fn auto_generate_combinations_action(&mut self) {
@@ -2194,22 +2193,16 @@ impl App {
             return;
         };
         let snow = find_first(LoadCaseKind::Snow);
-        // 風は方向を判別する手掛かりがないため、種別 Wind の先頭 1 件を
-        // X 方向として扱う。
-        let wind_x = find_first(LoadCaseKind::Wind);
 
         let input = squid_n_load::combo::ComboInput {
             dl,
             ll,
             seismic_x: find_named(EX_CASE_NAME, LoadCaseKind::Seismic),
             seismic_y: find_named(EY_CASE_NAME, LoadCaseKind::Seismic),
-            wind_x,
-            wind_y: None,
             snow,
             heavy_snow_zone: self.analysis_cfg.heavy_snow_zone,
             snow_factors: Some(squid_n_load::combo::SnowFactors {
                 delta1: self.analysis_cfg.snow_delta1,
-                delta2: self.analysis_cfg.snow_delta2,
                 delta3: self.analysis_cfg.snow_delta3,
             }),
         };

@@ -563,21 +563,15 @@ fn combinations_section(ui: &mut egui::Ui, app: &mut App) {
     );
 
     ui.checkbox(&mut app.analysis_cfg.heavy_snow_zone, "多雪区域")
-        .on_hover_text("有効にすると長期 G+P+δ1・S、短期地震/暴風 G+P+δ3・S±K / G+P+δ2・S±W の組合せも生成します（施行令86条・82条）");
+        .on_hover_text("有効にすると長期 G+P+δ1・S、短期地震 G+P+δ3・S±K の組合せも生成します（施行令86条・82条）");
     if app.analysis_cfg.heavy_snow_zone {
         ui.horizontal(|ui| {
             ui.label("積雪低減係数:").on_hover_text(
-                "多雪区域の積雪荷重低減係数（平12建告1455号。既定 δ1=0.7、δ2=δ3=0.35）",
+                "多雪区域の積雪荷重低減係数（平12建告1455号。既定 δ1=0.7、δ3=0.35）",
             );
             ui.label("δ1(長期)");
             ui.add(
                 egui::DragValue::new(&mut app.analysis_cfg.snow_delta1)
-                    .speed(0.01)
-                    .range(0.0..=1.0),
-            );
-            ui.label("δ2(暴風時)");
-            ui.add(
-                egui::DragValue::new(&mut app.analysis_cfg.snow_delta2)
                     .speed(0.01)
                     .range(0.0..=1.0),
             );
@@ -605,13 +599,10 @@ fn combinations_section(ui: &mut egui::Ui, app: &mut App) {
                     ll,
                     seismic_x: app.combo_draft.seismic_x,
                     seismic_y: app.combo_draft.seismic_y,
-                    wind_x: None,
-                    wind_y: None,
                     snow: app.combo_draft.snow,
                     heavy_snow_zone: app.analysis_cfg.heavy_snow_zone,
                     snow_factors: Some(squid_n_load::combo::SnowFactors {
                         delta1: app.analysis_cfg.snow_delta1,
-                        delta2: app.analysis_cfg.snow_delta2,
                         delta3: app.analysis_cfg.snow_delta3,
                     }),
                 };

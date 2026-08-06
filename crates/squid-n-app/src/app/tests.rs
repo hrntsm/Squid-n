@@ -3761,8 +3761,10 @@ fn kind_lc(
     }
 }
 
-/// 種別から組合せを自動生成: Dead/Live/Snow/Wind の種別を設定したモデルで
-/// 標準組合せ（長期・短期積雪・短期暴風±）が undo 可能に一括生成されること。
+/// 種別から組合せを自動生成: Dead/Live/Snow の種別を設定したモデルで
+/// 標準組合せ（長期・短期積雪）が undo 可能に一括生成されること。
+/// 風荷重は算定・生成の対象外のため、種別 Wind のケースがあっても
+/// 暴風の組合せは作られない。
 #[test]
 fn test_auto_generate_combinations_from_kinds() {
     use squid_n_core::model::LoadCaseKind;
@@ -3778,18 +3780,16 @@ fn test_auto_generate_combinations_from_kinds() {
     app.auto_generate_combinations_action();
     assert!(app.last_error.is_none(), "{:?}", app.last_error);
 
-    // 多雪区域=false: DL+LL(1) + DL+LL+SL(1) + 風±(2) = 4 ケース
-    // （地震(EX/EY)は kind だけでは方向を判別できないため対象外の仕様）。
+    // 多雪区域=false: DL+LL(1) + DL+LL+SL(1) = 2 ケース
+    // （地震(EX/EY)は kind だけでは方向を判別できないため対象外の仕様。
+    // 風は種別 Wind のケースがあっても生成しない）。
     let names: Vec<&str> = app
         .model
         .combinations
         .iter()
         .map(|c| c.name.as_str())
         .collect();
-    assert_eq!(
-        names,
-        vec!["DL + LL", "DL + LL + SL", "DL + LL + WX", "DL + LL - WX"]
-    );
+    assert_eq!(names, vec!["DL + LL", "DL + LL + SL"]);
 
     // DL+LL の中身は Dead(0)+Live(1) を各1.0で参照する。
     assert_eq!(
@@ -3805,7 +3805,7 @@ fn test_auto_generate_combinations_from_kinds() {
 }
 
 /// 多雪区域フラグ（AnalysisSettings::heavy_snow_zone）を立てると
-/// 0.7S・0.35S 系の組合せも生成されること。
+/// 長期の 0.7S 系の組合せも生成されること。
 #[test]
 fn test_auto_generate_combinations_heavy_snow() {
     use squid_n_core::model::LoadCaseKind;
@@ -3829,8 +3829,8 @@ fn test_auto_generate_combinations_heavy_snow() {
         .map(|c| c.name.as_str())
         .collect();
     assert!(names.contains(&"DL + LL + 0.7SL"), "{names:?}");
-    assert!(names.contains(&"DL + LL + 0.35SL + WX"), "{names:?}");
-    assert!(names.contains(&"DL + LL + 0.35SL - WX"), "{names:?}");
+    // 風は生成対象外のため、暴風の組合せは多雪区域でも作られない。
+    assert!(!names.iter().any(|n| n.contains('W')), "{names:?}");
 }
 
 /// Dead ケースがない場合はエラーメッセージが設定され、組合せは生成されないこと。

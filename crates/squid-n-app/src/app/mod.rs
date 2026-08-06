@@ -427,9 +427,6 @@ pub struct AnalysisSettings {
     pub heavy_snow_zone: bool,
     /// 多雪区域の積雪荷重低減係数 δ1（長期 G+P+δ1・S。既定 0.7）。
     pub snow_delta1: f64,
-    /// 同 δ2（暴風時 G+P+δ2・S±W。既定 0.35。風荷重ケースを定義した場合の
-    /// 組合せに用いる）。
-    pub snow_delta2: f64,
     /// 同 δ3（地震時 G+P+δ3・S±K。既定 0.35）。
     pub snow_delta3: f64,
     /// RC 短期許容せん断力の「損傷制御のための検討」（false=安全確保のための検討）。
@@ -522,7 +519,6 @@ impl Default for AnalysisSettings {
             phase_diff_dir_y: false,
             heavy_snow_zone: false,
             snow_delta1: 0.7,
-            snow_delta2: 0.35,
             snow_delta3: 0.35,
             rc_damage_control: true,
             qd_method: squid_n_design_jp::QdMethod::Min,
