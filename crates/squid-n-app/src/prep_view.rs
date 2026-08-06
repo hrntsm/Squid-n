@@ -1,7 +1,7 @@
 //! 準備計算ビュー（下ドック「準備計算」タブ）。
 //!
 //! [`crate::app::PreparationResult`] を表として表示し、解析前に階の分布・剛域・
-//! Ai 分布・風圧力・荷重集計を確認できるようにする。CSV エクスポート
+//! Ai 分布・荷重集計を確認できるようにする。CSV エクスポート
 //! （[`crate::summary::build_preparation_csv`]）にも対応する。
 
 use crate::table_util::Col;
@@ -20,8 +20,6 @@ pub enum PrepView {
     Stories,
     /// 地震力（Ai 分布）。
     Seismic,
-    /// 風圧力。
-    Wind,
     /// 剛域。
     RigidZone,
     /// ねじり解放（i 端ねじれピン）の対象外部材。
@@ -90,7 +88,7 @@ pub fn preparation_panel(ui: &mut egui::Ui, app: &mut App) {
         ui.colored_label(
             crate::theme::GRAY_600,
             "準備計算が未実行です。「▶ 準備計算 実行」を押すと、\
-             階の分布・剛域・Ai 分布・風圧力・荷重集計を確認できます。",
+             階の分布・剛域・Ai 分布・荷重集計を確認できます。",
         );
         return;
     };
@@ -118,7 +116,6 @@ pub fn preparation_panel(ui: &mut egui::Ui, app: &mut App) {
         for (v, label) in [
             (PrepView::Stories, "階の分布"),
             (PrepView::Seismic, "地震力 (Ai 分布)"),
-            (PrepView::Wind, "風圧力"),
             (PrepView::RigidZone, "剛域"),
             (PrepView::Torsion, "ねじり解放"),
             (PrepView::PanelZone, "仕口パネル"),
@@ -143,7 +140,6 @@ pub fn preparation_panel(ui: &mut egui::Ui, app: &mut App) {
         .show(ui, |ui| match view {
             PrepView::Stories => stories_section(ui, prep),
             PrepView::Seismic => seismic_section(ui, prep),
-            PrepView::Wind => wind_section(ui, prep),
             PrepView::RigidZone => rigid_zone_section(ui, prep),
             PrepView::Torsion => torsion_section(ui, prep),
             PrepView::PanelZone => panel_zone_section(ui, prep),
@@ -190,7 +186,7 @@ fn stories_section(ui: &mut egui::Ui, prep: &PreparationResult) {
     if prep.stories.is_empty() {
         ui.colored_label(
             crate::theme::GRAY_600,
-            "階が定義されていません（地震力・風圧力・増分解析には階の定義が必要です）",
+            "階が定義されていません（地震力・増分解析には階の定義が必要です）",
         );
         return;
     }
@@ -227,7 +223,7 @@ fn stories_section(ui: &mut egui::Ui, prep: &PreparationResult) {
                 ui.label(format!("{}", r.n_nodes));
             });
             row.col(|ui| {
-                // 剛床がない階には地震力・風荷重を載荷できない。
+                // 剛床がない階には地震力を載荷できない。
                 if r.n_diaphragms == 0 {
                     ui.colored_label(crate::theme::BEST_YELLOW, "0");
                 } else {
@@ -367,102 +363,6 @@ fn seismic_section(ui: &mut egui::Ui, prep: &PreparationResult) {
         crate::theme::GRAY_600,
         "Ci は一般階が層せん断力係数、PH 階は震度 k、地下階は水平震度 K を表します。\
          αi・Ai は一般階のみ算定します（令88条・昭55建告1793号）。",
-    );
-}
-
-/// 風圧力（X・Y の両方向）。速度圧など方向によらない諸元は 1 度だけ表示し、
-/// 見付面積・層水平力は方向ごとに表を分ける。
-fn wind_section(ui: &mut egui::Ui, prep: &PreparationResult) {
-    let Some(first) = prep.wind.first() else {
-        ui.colored_label(
-            crate::theme::BEST_YELLOW,
-            prep.wind_note
-                .clone()
-                .unwrap_or_else(|| "風圧力を算定できませんでした".to_string()),
-        );
-        return;
-    };
-
-    egui::Grid::new("prep_wind_cfg")
-        .num_columns(4)
-        .spacing([16.0, 2.0])
-        .show(ui, |ui| {
-            ui.label("建物高さ H [m]");
-            ui.label(format!("{:.2}", first.h_mm / 1000.0));
-            ui.label("基準風速 V0 [m/s]");
-            ui.label(format!("{:.1}", first.v0));
-            ui.end_row();
-            ui.label("地表面粗度区分");
-            ui.label(format!("{:?}", first.roughness));
-            ui.label("速度圧 q [N/m²]");
-            ui.label(format!("{:.1}", first.q));
-            ui.end_row();
-            ui.label("Er / Gf / E");
-            ui.label(format!(
-                "{:.3} / {:.3} / {:.3}",
-                first.er, first.gf, first.e
-            ));
-            ui.label("");
-            ui.label("");
-            ui.end_row();
-        });
-    ui.add_space(6.0);
-
-    if let Some(note) = prep.wind_note.as_ref() {
-        ui.colored_label(crate::theme::BEST_YELLOW, note);
-    }
-
-    for w in &prep.wind {
-        ui.strong(format!(
-            "{:?} 方向（基部せん断力 {:.1} kN）",
-            w.dir,
-            kn(w.base_shear)
-        ));
-        wind_table(ui, w);
-        ui.add_space(6.0);
-    }
-}
-
-/// 風圧力の層別表（1 方向分）。
-fn wind_table(ui: &mut egui::Ui, w: &crate::app::PrepWind) {
-    let rows: Vec<_> = w.rows.iter().rev().collect();
-    crate::table_util::standard_table(
-        ui,
-        &format!("prep_wind_table_{:?}", w.dir),
-        &[
-            Col::label("階"),
-            Col::wide_num("負担高さ [mm]"),
-            Col::num("見付幅 [mm]"),
-            Col::num("見付面積 [m²]"),
-            Col::num("Kz"),
-            Col::num("風圧力 [N/m²]"),
-            Col::num("層水平力 [kN]"),
-        ],
-        rows.len(),
-        |row| {
-            let r = rows[row.index()];
-            row.col(|ui| {
-                crate::table_util::text_cell(ui, &r.name);
-            });
-            row.col(|ui| {
-                ui.label(format!("{:.0} 〜 {:.0}", r.z_bottom, r.z_top));
-            });
-            row.col(|ui| {
-                ui.label(format!("{:.0}", r.width));
-            });
-            row.col(|ui| {
-                ui.label(format!("{:.2}", r.area * 1e-6));
-            });
-            row.col(|ui| {
-                ui.label(format!("{:.3}", r.kz));
-            });
-            row.col(|ui| {
-                ui.label(format!("{:.1}", r.pressure));
-            });
-            row.col(|ui| {
-                ui.label(format!("{:.1}", kn(r.force)));
-            });
-        },
     );
 }
 

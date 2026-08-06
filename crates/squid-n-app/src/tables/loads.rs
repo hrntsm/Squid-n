@@ -1,9 +1,9 @@
 use crate::app::App;
-use squid_n_core::ids::{ElemId, LoadCaseId, NodeId};
-use squid_n_core::model::{ElementKind, LoadCaseKind, MemberLoad, MemberLoadKind};
+use squid_n_core::ids::LoadCaseId;
+use squid_n_core::model::{LoadCaseKind, MemberLoad, MemberLoadKind};
 use squid_n_edit::{
-    AddCombination, AddLoadCase, AddMemberLoad, DeleteCombination, DeleteLoadCase,
-    DeleteMemberLoad, DeleteNodalLoad, SetLoadCaseKind, SetLoadCaseName, SetNodalLoad,
+    AddCombination, AddLoadCase, DeleteCombination, DeleteLoadCase, DeleteMemberLoad,
+    DeleteNodalLoad, SetLoadCaseKind, SetLoadCaseName, SetNodalLoad,
 };
 
 /// `LoadCaseKind` の全種別（UI の選択肢一覧・順序を1箇所に集約する）。
@@ -18,33 +18,6 @@ const LOAD_CASE_KINDS: [LoadCaseKind; 7] = [
 ];
 
 use crate::app::load_case_kind_label;
-
-#[derive(Clone)]
-struct MemberLoadDraft {
-    elem_idx: usize, // app.model.elements のインデックス
-    kind: u8,        // 0=中間集中, 1=等分布, 2=台形
-    dir: u8,         // 0=-Z(鉛直下),1=+Z,2=+X,3=-X,4=+Y,5=-Y
-    a: String,
-    b: String,
-    w1: String,
-    w2: String,
-    p: String,
-}
-
-impl Default for MemberLoadDraft {
-    fn default() -> Self {
-        Self {
-            elem_idx: 0,
-            kind: 1,
-            dir: 0,
-            a: "0".into(),
-            b: "0".into(),
-            w1: "0".into(),
-            w2: "0".into(),
-            p: "0".into(),
-        }
-    }
-}
 
 pub fn loads_table(ui: &mut egui::Ui, app: &mut App) {
     use crate::table_util::{self, Col};
@@ -206,13 +179,12 @@ pub fn loads_table(ui: &mut egui::Ui, app: &mut App) {
         .and_then(|id| app.model.load_cases.iter().position(|lc| lc.id == id))
         .or_else(|| {
             app.last_static.and_then(|key| match key {
-                // 地震静的(Seismic)・風静的(Wind)はユーザー荷重ケースに対応しないため
+                // 地震静的(Seismic)はユーザー荷重ケースに対応しないため
                 // None（呼び出し元のフォールバックで先頭ケースが選ばれる）。
                 crate::app::StaticKey::Case(crate::app::StaticCaseKey::User(id)) => {
                     app.model.load_cases.iter().position(|lc| lc.id == id)
                 }
                 crate::app::StaticKey::Case(crate::app::StaticCaseKey::Seismic(_))
-                | crate::app::StaticKey::Case(crate::app::StaticCaseKey::Wind(_))
                 | crate::app::StaticKey::Combo(_) => None,
             })
         })
@@ -224,18 +196,27 @@ pub fn loads_table(ui: &mut egui::Ui, app: &mut App) {
     ));
 
     let nodal_count = app.model.load_cases[lc_idx].nodal.len();
-    let mut pending_load: Vec<(NodeId, [f64; 6])> = Vec::new();
-    let mut pending_nodal_delete: Option<NodeId> = None;
+    // 準備計算が生成した荷重は同期のたびに作り直されるため編集・削除できない。
+    // 表には残す（この画面は準備計算の結果を確認する場でもある）。
+    let mut pending_load: Vec<(usize, [f64; 6])> = Vec::new();
+    let mut pending_name_edit: Vec<(usize, String)> = Vec::new();
+    let mut pending_nodal_delete: Option<usize> = None;
     let mut value_bufs: Vec<[String; 6]> = app.model.load_cases[lc_idx]
         .nodal
         .iter()
         .map(|n| n.values.map(|v| format!("{:.2}", v)))
+        .collect();
+    let mut nodal_name_bufs: Vec<String> = app.model.load_cases[lc_idx]
+        .nodal
+        .iter()
+        .map(|n| n.name.clone())
         .collect();
 
     table_util::standard_table(
         ui,
         "nodal_loads_tbl",
         &[
+            Col::name("名称"),
             Col::id_named("節点"),
             Col::num("Fx"),
             Col::num("Fy"),
@@ -249,11 +230,26 @@ pub fn loads_table(ui: &mut egui::Ui, app: &mut App) {
         |row| {
             let i = row.index();
             let nodal = &app.model.load_cases[lc_idx].nodal[i];
+            let is_auto = nodal.source.is_auto();
+            row.col(|ui| {
+                if is_auto {
+                    table_util::muted_cell(ui, AUTO_LOAD_LABEL, AUTO_LOAD_HOVER);
+                } else {
+                    let resp = table_util::cell_text_edit(ui, &mut nodal_name_bufs[i]);
+                    if resp.lost_focus() && resp.changed() {
+                        pending_name_edit.push((i, nodal_name_bufs[i].trim().to_string()));
+                    }
+                }
+            });
             row.col(|ui| {
                 table_util::id_label(ui, nodal.node.0);
             });
             for k in 0..6 {
                 row.col(|ui| {
+                    if is_auto {
+                        ui.label(format!("{:.2}", nodal.values[k]));
+                        return;
+                    }
                     let buf = &mut value_bufs[i][k];
                     let resp = table_util::cell_text_edit(ui, buf);
                     if resp.lost_focus() && resp.changed() {
@@ -261,7 +257,7 @@ pub fn loads_table(ui: &mut egui::Ui, app: &mut App) {
                             if (val - nodal.values[k]).abs() > 1e-9 {
                                 let mut new_vals = nodal.values;
                                 new_vals[k] = val;
-                                pending_load.push((nodal.node, new_vals));
+                                pending_load.push((i, new_vals));
                             }
                         }
                     }
@@ -275,28 +271,49 @@ pub fn loads_table(ui: &mut egui::Ui, app: &mut App) {
                 });
             }
             row.col(|ui| {
-                if table_util::delete_cell(ui, "この節点荷重を削除", None) {
-                    pending_nodal_delete = Some(nodal.node);
+                let blocked = is_auto.then_some(AUTO_LOAD_HOVER);
+                if table_util::delete_cell(ui, "この節点荷重を削除", blocked) {
+                    pending_nodal_delete = Some(i);
                 }
             });
         },
     );
 
-    let had_load = !pending_load.is_empty() || pending_nodal_delete.is_some();
-    for (node, values) in pending_load {
+    let had_load =
+        !pending_load.is_empty() || !pending_name_edit.is_empty() || pending_nodal_delete.is_some();
+    // 値・名称の変更は `SetNodalLoad`（要素まるごと差し替え）で行うため、
+    // 変更前の内容を読んでから 1 件ずつ発行する。
+    for (index, values) in pending_load {
+        let mut load = app.model.load_cases[lc_idx].nodal[index].clone();
+        load.values = values;
         app.undo.run(
             &mut app.model,
             Box::new(SetNodalLoad {
                 lc: lc_id,
-                node,
-                values,
+                index,
+                load,
             }),
         );
     }
-    if let Some(node) = pending_nodal_delete {
+    for (index, name) in pending_name_edit {
+        let mut load = app.model.load_cases[lc_idx].nodal[index].clone();
+        if load.name == name {
+            continue;
+        }
+        load.name = name;
         app.undo.run(
             &mut app.model,
-            Box::new(DeleteNodalLoad { lc: lc_id, node }),
+            Box::new(SetNodalLoad {
+                lc: lc_id,
+                index,
+                load,
+            }),
+        );
+    }
+    if let Some(index) = pending_nodal_delete {
+        app.undo.run(
+            &mut app.model,
+            Box::new(DeleteNodalLoad { lc: lc_id, index }),
         );
     }
     if had_load {
@@ -307,7 +324,6 @@ pub fn loads_table(ui: &mut egui::Ui, app: &mut App) {
     ui.add_space(8.0);
     ui.strong("部材荷重");
 
-    // (A) 既存の部材荷重リスト（削除可能）
     let mut pending_delete: Option<usize> = None;
     {
         let member_loads = &app.model.load_cases[lc_idx].member;
@@ -316,218 +332,93 @@ pub fn loads_table(ui: &mut egui::Ui, app: &mut App) {
         } else {
             for (i, ml) in member_loads.iter().enumerate() {
                 ui.horizontal(|ui| {
-                    let kind_str = match &ml.kind {
-                        MemberLoadKind::Point { a, p } => {
-                            format!("中間集中 a={:.0} P={:.1}", a, p)
-                        }
-                        MemberLoadKind::Distributed { a, b, w1, w2 } => {
-                            format!("分布 [{:.0},{:.0}] w1={:.2} w2={:.2}", a, b, w1, w2)
-                        }
-                    };
-                    let dir_str =
-                        format!("dir=({:.1},{:.1},{:.1})", ml.dir[0], ml.dir[1], ml.dir[2]);
-                    ui.label(format!("梁#{} / {} / {}", ml.elem.0, kind_str, dir_str));
-                    if ui.button("削除").clicked() {
+                    let is_auto = ml.source.is_auto();
+                    let label = format!(
+                        "{} / 部材#{} / {} / {}",
+                        if is_auto {
+                            AUTO_LOAD_LABEL.to_string()
+                        } else {
+                            member_load_display_name(ml)
+                        },
+                        ml.elem.0,
+                        member_load_kind_text(&ml.kind),
+                        format_args!("dir=({:.1},{:.1},{:.1})", ml.dir[0], ml.dir[1], ml.dir[2]),
+                    );
+                    if is_auto {
+                        ui.colored_label(crate::theme::GRAY_600, label)
+                            .on_hover_text(AUTO_LOAD_HOVER);
+                    } else {
+                        ui.label(label);
+                    }
+                    let btn = ui.add_enabled(!is_auto, egui::Button::new("削除"));
+                    if is_auto {
+                        btn.on_disabled_hover_text(AUTO_LOAD_HOVER);
+                    } else if btn.clicked() {
                         pending_delete = Some(i);
                     }
                 });
             }
         }
     }
-    if let Some(idx) = pending_delete {
+    if let Some(index) = pending_delete {
         app.undo.run(
             &mut app.model,
-            Box::new(DeleteMemberLoad {
-                lc: lc_id,
-                index: idx,
-            }),
+            Box::new(DeleteMemberLoad { lc: lc_id, index }),
         );
         app.staleness.mark_edited();
     }
 
-    // (B) 追加フォーム
-    // 梁要素のインデックス一覧を収集
-    let beam_indices: Vec<usize> = app
-        .model
-        .elements
+    ui.add_space(4.0);
+    ui.colored_label(
+        crate::theme::GRAY_600,
+        "荷重の追加は左パネルのナビゲータで、荷重ケースを右クリックして行います\
+         （対象の節点・部材を 3D ビューで選べます）。",
+    );
+}
+
+/// 自動生成された荷重であることを示す表示名。
+pub(crate) const AUTO_LOAD_LABEL: &str = "（自動計算）";
+
+/// 自動生成された荷重を編集・削除できない理由。
+pub(crate) const AUTO_LOAD_HOVER: &str =
+    "準備計算が生成した荷重です。実行のたびに作り直されるため編集・削除できません";
+
+/// 部材荷重の種別・諸元の表示文字列。
+pub(crate) fn member_load_kind_text(kind: &MemberLoadKind) -> String {
+    match *kind {
+        MemberLoadKind::Point { a, p } => format!("中間集中 a={:.0} P={:.1}", a, p),
+        MemberLoadKind::Distributed { a, b, w1, w2 } => {
+            format!("分布 [{:.0},{:.0}] w1={:.2} w2={:.2}", a, b, w1, w2)
+        }
+    }
+}
+
+/// 部材荷重の表示名。名称が未入力なら種別から自動ラベルを作る。
+pub(crate) fn member_load_display_name(ml: &MemberLoad) -> String {
+    if ml.name.trim().is_empty() {
+        member_load_kind_text(&ml.kind)
+    } else {
+        ml.name.clone()
+    }
+}
+
+/// 節点荷重の表示名。名称が未入力なら零でない成分から自動ラベルを作る。
+pub(crate) fn nodal_load_display_name(nl: &squid_n_core::model::NodalLoad) -> String {
+    if !nl.name.trim().is_empty() {
+        return nl.name.clone();
+    }
+    const COMPONENTS: [&str; 6] = ["Fx", "Fy", "Fz", "Mx", "My", "Mz"];
+    let parts: Vec<String> = nl
+        .values
         .iter()
         .enumerate()
-        .filter(|(_, e)| e.kind == ElementKind::Beam)
-        .map(|(i, _)| i)
+        .filter(|(_, v)| v.abs() > 1e-9)
+        .map(|(k, v)| format!("{}={:.1}", COMPONENTS[k], v))
         .collect();
-
-    if beam_indices.is_empty() {
-        ui.label("梁がありません");
-        return;
-    }
-
-    let draft_id = egui::Id::new("member_load_draft");
-    let mut draft: MemberLoadDraft = ui
-        .data_mut(|d| d.get_temp::<MemberLoadDraft>(draft_id))
-        .unwrap_or_default();
-
-    // elem_idx が梁一覧の範囲外なら先頭梁に補正
-    if !beam_indices.contains(&draft.elem_idx) {
-        draft.elem_idx = beam_indices[0];
-    }
-
-    let mut pending_add: Option<MemberLoad> = None;
-
-    ui.add_space(4.0);
-
-    // 対象梁 ComboBox
-    ui.horizontal(|ui| {
-        ui.label("対象梁:");
-        let current_beam_label = app
-            .model
-            .elements
-            .get(draft.elem_idx)
-            .map(|e| format!("梁#{}", e.id.0))
-            .unwrap_or_else(|| "―".to_string());
-        egui::ComboBox::from_id_salt("member_load_beam")
-            .selected_text(current_beam_label)
-            .show_ui(ui, |ui| {
-                for &bi in &beam_indices {
-                    if let Some(elem) = app.model.elements.get(bi) {
-                        let label = format!("梁#{}", elem.id.0);
-                        if ui.selectable_label(draft.elem_idx == bi, &label).clicked() {
-                            draft.elem_idx = bi;
-                        }
-                    }
-                }
-            });
-    });
-
-    // 種別選択
-    ui.horizontal(|ui| {
-        ui.label("種別:");
-        ui.selectable_value(&mut draft.kind, 0u8, "中間集中");
-        ui.selectable_value(&mut draft.kind, 1u8, "等分布");
-        ui.selectable_value(&mut draft.kind, 2u8, "台形");
-    });
-
-    // 方向 ComboBox
-    ui.horizontal(|ui| {
-        ui.label("方向:");
-        let dir_labels = ["鉛直下(-Z)", "鉛直上(+Z)", "X+", "X-", "Y+", "Y-"];
-        let current_dir_label = dir_labels.get(draft.dir as usize).copied().unwrap_or("―");
-        egui::ComboBox::from_id_salt("member_load_dir")
-            .selected_text(current_dir_label)
-            .show_ui(ui, |ui| {
-                for (idx, label) in dir_labels.iter().enumerate() {
-                    if ui
-                        .selectable_label(draft.dir == idx as u8, *label)
-                        .clicked()
-                    {
-                        draft.dir = idx as u8;
-                    }
-                }
-            });
-    });
-
-    // パラメータ（kind で出し分け）
-    match draft.kind {
-        0 => {
-            // 中間集中
-            ui.horizontal(|ui| {
-                ui.label("a[mm]:");
-                ui.add(egui::TextEdit::singleline(&mut draft.a).desired_width(80.0));
-                ui.label("P[N]:");
-                ui.add(egui::TextEdit::singleline(&mut draft.p).desired_width(80.0));
-            });
-        }
-        1 => {
-            // 等分布
-            ui.horizontal(|ui| {
-                ui.label("w1[N/mm]:");
-                ui.add(egui::TextEdit::singleline(&mut draft.w1).desired_width(80.0));
-            });
-        }
-        _ => {
-            // 台形
-            ui.horizontal(|ui| {
-                ui.label("a[mm]:");
-                ui.add(egui::TextEdit::singleline(&mut draft.a).desired_width(80.0));
-                ui.label("b[mm]:");
-                ui.add(egui::TextEdit::singleline(&mut draft.b).desired_width(80.0));
-            });
-            ui.horizontal(|ui| {
-                ui.label("w1[N/mm]:");
-                ui.add(egui::TextEdit::singleline(&mut draft.w1).desired_width(80.0));
-                ui.label("w2[N/mm]:");
-                ui.add(egui::TextEdit::singleline(&mut draft.w2).desired_width(80.0));
-            });
-        }
-    }
-
-    // 追加ボタン
-    if ui.button("+ 部材荷重追加").clicked() {
-        if let Some(elem) = app.model.elements.get(draft.elem_idx) {
-            let elem_id: ElemId = elem.id;
-
-            // 梁長を計算（等分布の b 用）
-            let len = if elem.nodes.len() >= 2 {
-                let ni = elem.nodes[0].index();
-                let nj = elem.nodes[1].index();
-                if ni < app.model.nodes.len() && nj < app.model.nodes.len() {
-                    let pi = app.model.nodes[ni].coord;
-                    let pj = app.model.nodes[nj].coord;
-                    ((pj[0] - pi[0]).powi(2) + (pj[1] - pi[1]).powi(2) + (pj[2] - pi[2]).powi(2))
-                        .sqrt()
-                } else {
-                    0.0
-                }
-            } else {
-                0.0
-            };
-
-            // 方向ベクトル
-            let dir: [f64; 3] = match draft.dir {
-                0 => [0.0, 0.0, -1.0],
-                1 => [0.0, 0.0, 1.0],
-                2 => [1.0, 0.0, 0.0],
-                3 => [-1.0, 0.0, 0.0],
-                4 => [0.0, 1.0, 0.0],
-                _ => [0.0, -1.0, 0.0],
-            };
-
-            let parse = |s: &str| s.trim().parse::<f64>().unwrap_or(0.0);
-
-            let kind = match draft.kind {
-                0 => MemberLoadKind::Point {
-                    a: parse(&draft.a),
-                    p: parse(&draft.p),
-                },
-                1 => MemberLoadKind::Distributed {
-                    a: 0.0,
-                    b: len,
-                    w1: parse(&draft.w1),
-                    w2: parse(&draft.w1),
-                },
-                _ => MemberLoadKind::Distributed {
-                    a: parse(&draft.a),
-                    b: parse(&draft.b),
-                    w1: parse(&draft.w1),
-                    w2: parse(&draft.w2),
-                },
-            };
-
-            pending_add = Some(MemberLoad {
-                elem: elem_id,
-                dir,
-                kind,
-            });
-        }
-    }
-
-    // draft を書き戻す（クロージャ外）
-    ui.data_mut(|d| d.insert_temp(draft_id, draft));
-
-    // (C) 追加コマンド発行（クロージャ外、借用衝突なし）
-    if let Some(load) = pending_add {
-        app.undo
-            .run(&mut app.model, Box::new(AddMemberLoad { lc: lc_id, load }));
-        app.staleness.mark_edited();
+    if parts.is_empty() {
+        "0".to_string()
+    } else {
+        parts.join(" ")
     }
 }
 

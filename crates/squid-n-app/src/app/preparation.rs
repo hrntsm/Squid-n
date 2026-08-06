@@ -17,12 +17,11 @@
 //!    標準荷重ケース（DL・LL(架構用)・LL(地震用)）へ同期する。
 //! 4. **地震力（Ai 分布）** — 設計用固有周期 T から Rt・αi・Ai・Ci・Qi・Pi を
 //!    算定し、水平力を EX・EY ケースへ同期する。
-//! 5. **風圧力** — 速度圧 q・Kz から層水平力を算定し、WX・WY ケースへ同期する。
-//! 6. **モデル整合性チェック** — 解析を妨げる不備（支点なし・断面未割当など）を
+//! 5. **モデル整合性チェック** — 解析を妨げる不備（支点なし・断面未割当など）を
 //!    検出する。
 //!
-//! 地震力・風圧力が荷重ケース（EX/EY・WX/WY）として確定するため、解析側は
-//! 荷重ケース・荷重組合せを解くだけでよく、地震・風のための専用の解析入口を
+//! 地震力が荷重ケース（EX/EY）として確定するため、解析側は
+//! 荷重ケース・荷重組合せを解くだけでよく、地震のための専用の解析入口を
 //! 別に設けない。
 
 use super::*;
@@ -45,13 +44,6 @@ pub struct PreparationResult {
     pub seismic: Option<PrepSeismic>,
     /// 地震力を算定できなかった理由（`seismic` が `None` のとき）。
     pub seismic_note: Option<String>,
-    /// 風圧力の算定結果（X 方向・Y 方向の順）。見付幅が風向で変わるため
-    /// 両方向を算定する。算定できなかった風向は含まれない。
-    pub wind: Vec<PrepWind>,
-    /// 算定できなかった風向がある場合の理由（なければ `None`）。
-    /// 平面的に一方向へ広がりがないモデルでは、その方向の見付幅が 0 になり
-    /// 片方向だけ算定できないことがある。
-    pub wind_note: Option<String>,
     /// 剛域・危険断面位置の算定結果（剛域長 λ または柱フェース距離が
     /// 付いた部材のみ。部材 ID 昇順）。
     pub rigid_zones: Vec<PrepRigidZoneRow>,
@@ -179,49 +171,6 @@ pub struct PrepSeismicRow {
     /// 層の水平外力 Pi [N]。
     pub pi: f64,
     pub level_kind: StoryLevelKind,
-}
-
-/// 風圧力の算定諸元と層ごとの結果。
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
-pub struct PrepWind {
-    /// 算定方向。
-    pub dir: SeismicDir,
-    /// 建築物の高さ H [mm]（GL 基準・パラペットの半分を含む）。
-    pub h_mm: f64,
-    /// 基準風速 V0 [m/s]。
-    pub v0: f64,
-    pub roughness: squid_n_load::wind::TerrainRoughness,
-    /// 速度圧 q [N/m²]。
-    pub q: f64,
-    /// 平均風速の高さ方向の分布係数 Er。
-    pub er: f64,
-    /// ガスト影響係数 Gf。
-    pub gf: f64,
-    /// E = Er²·Gf。
-    pub e: f64,
-    /// 層ごとの結果（下階→上階。地上一般階のみ）。
-    pub rows: Vec<PrepWindRow>,
-    /// 基部せん断力（層水平力の総和）[N]。
-    pub base_shear: f64,
-}
-
-/// 風圧力の 1 層分。
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
-pub struct PrepWindRow {
-    pub name: String,
-    /// 負担高さ区間 [mm]（GL 基準）。
-    pub z_bottom: f64,
-    pub z_top: f64,
-    /// 見付け幅 [mm]。
-    pub width: f64,
-    /// 見付面積 [mm²]。
-    pub area: f64,
-    /// 高さ方向分布係数 Kz。
-    pub kz: f64,
-    /// 風圧力 [N/m²]。
-    pub pressure: f64,
-    /// 層水平力 [N]。
-    pub force: f64,
 }
 
 /// ねじり解放（i 端ねじれピン）の対象外となった部材の 1 行。
@@ -480,7 +429,6 @@ impl App {
     fn build_preparation_result(&self) -> PreparationResult {
         let (diag_errors, diag_warnings) = self.diagnostics_counts();
         let (seismic, seismic_note) = self.build_prep_seismic();
-        let (wind, wind_note) = self.build_prep_wind();
         let (rigid_zones, rigid_zone_candidates) = self.build_prep_rigid_zones();
         let (member_stiffness, member_stiffness_candidates) = self.build_prep_member_stiffness();
         let torsion_skipped = self.build_prep_torsion_skipped();
@@ -490,8 +438,6 @@ impl App {
             stories: self.build_prep_stories(),
             seismic,
             seismic_note,
-            wind,
-            wind_note,
             rigid_zones,
             rigid_zone_candidates,
             sections: self.build_prep_sections(),
@@ -648,66 +594,6 @@ impl App {
             rows,
         };
         (Some(seismic), None)
-    }
-
-    /// 風圧力（速度圧・層水平力）を X・Y の両方向について算定する。
-    /// 見付け幅は風向直交方向の座標範囲で決まるため方向ごとに異なる。
-    /// 算定できない場合（階が未定義など）は空と理由を返す。
-    fn build_prep_wind(&self) -> (Vec<PrepWind>, Option<String>) {
-        let mut winds = Vec::new();
-        let mut note = None;
-        for dir in [SeismicDir::X, SeismicDir::Y] {
-            let cfg = squid_n_solver::analysis::WindStaticCfg {
-                dir,
-                v0: self.analysis_cfg.v0,
-                roughness: self.analysis_cfg.roughness,
-                cpi: 0.0,
-                parapet_mm: self.analysis_cfg.parapet_mm,
-            };
-            let precalc = match squid_n_solver::analysis::wind_precalc_for_model(&self.model, cfg) {
-                Ok(p) => p,
-                Err(e) => {
-                    // 片方向だけ算定できないことがある（見付幅 0 など）ため、
-                    // 風向を明示して理由を残す。
-                    note.get_or_insert_with(|| {
-                        format!("{:?} 方向の風圧力を算定できません: {}", dir, e)
-                    });
-                    continue;
-                }
-            };
-            let d = &precalc.distribution;
-            let rows: Vec<PrepWindRow> = precalc
-                .stories
-                .iter()
-                .enumerate()
-                .map(|(i, s)| {
-                    let g = &precalc.geometry[i];
-                    PrepWindRow {
-                        name: s.name.clone(),
-                        z_bottom: g.z_bottom,
-                        z_top: g.z_top,
-                        width: g.width,
-                        area: g.width * (g.z_top - g.z_bottom),
-                        kz: d.kz.get(i).copied().unwrap_or(0.0),
-                        pressure: d.pressure.get(i).copied().unwrap_or(0.0),
-                        force: d.force.get(i).copied().unwrap_or(0.0),
-                    }
-                })
-                .collect();
-            winds.push(PrepWind {
-                dir,
-                h_mm: precalc.h_mm,
-                v0: cfg.v0,
-                roughness: cfg.roughness,
-                q: d.q,
-                er: d.er,
-                gf: d.gf,
-                e: d.e,
-                base_shear: rows.iter().map(|r| r.force).sum(),
-                rows,
-            });
-        }
-        (winds, note)
     }
 
     /// 剛域長 λ または柱フェース距離を持つ梁要素を一覧化する。

@@ -41,22 +41,3 @@ impl Default for SeismicCfg {
         }
     }
 }
-
-/// 風荷重の静的解析（`wind_static`）の設定。
-#[derive(Debug, Clone, Copy)]
-pub struct WindStaticCfg {
-    pub dir: SeismicDir,
-    /// 基準風速 V0 [m/s]。
-    pub v0: f64,
-    /// 地表面粗度区分。
-    pub roughness: squid_n_load::wind::TerrainRoughness,
-    /// 内圧係数 Cpi（現行の `wind_forces` 実装では風上・風下合算で相殺され
-    /// 結果に影響しない。将来の片面評価用に保持する）。
-    pub cpi: f64,
-    /// パラペット高さ [mm]（既定 0）。平12建告1454号の建築物の高さ H（建築物の
-    /// 高さと軒の高さとの平均）= GLからPH階を除く最上階の床高さ + パラペット高さの半分、に
-    /// 対応する。建物高さ H にはこの半分のみを算入するが、見付面積の算定では
-    /// 最上層の負担区間上端をパラペット天端（最上階床高さ + `parapet_mm`）まで
-    /// 延長する（実壁はパラペット天端まで存在するため）。
-    pub parapet_mm: f64,
-}
