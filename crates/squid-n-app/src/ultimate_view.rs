@@ -6,7 +6,7 @@
 //! [`crate::app::App::compute_ultimate_checks`] による。
 
 use crate::app::{member_kind_label, App};
-use egui_extras::{Column, TableBuilder};
+use crate::table_util::Col;
 
 /// 余裕度セルの色（1.0 未満＝せん断先行で NG を赤系に）。
 fn margin_color(margin: f64) -> egui::Color32 {
@@ -139,86 +139,70 @@ pub fn ultimate_table(ui: &mut egui::Ui, app: &mut App) {
             } else {
                 ("Qsu[kN]", "Qsu/Qmu", "Qbu[kN]", "Qbu/Qmu")
             };
-            let row_h = crate::theme::table_row_height(ui);
-            TableBuilder::new(ui)
-                .id_salt("ultimate_checks")
-                .striped(true)
-                .column(Column::auto())
-                .column(Column::initial(48.0))
-                .column(Column::initial(90.0))
-                .column(Column::initial(80.0))
-                .column(Column::initial(80.0))
-                .column(Column::initial(72.0))
-                .column(Column::initial(80.0))
-                .column(Column::initial(72.0))
-                .column(Column::initial(50.0))
-                .header(row_h, |mut h| {
-                    for t in &[
-                        "部材",
-                        "種別",
-                        "Mu[kN·m]",
-                        "Qmu[kN]",
-                        qsu_hdr,
-                        ratio_hdr,
-                        qbu_hdr,
-                        bond_ratio_hdr,
-                        "判定",
-                    ] {
-                        h.col(|ui| {
-                            ui.strong(*t);
-                        });
-                    }
-                })
-                .body(|body| {
-                    body.rows(row_h, checks.len(), |mut row| {
-                        let i = row.index();
-                        let c = &checks[i];
-                        row.col(|ui| {
-                            ui.label(format!("{}", c.elem.0)).on_hover_text(&c.detail);
-                        });
-                        row.col(|ui| {
-                            ui.label(member_kind_label(c.kind));
-                        });
-                        row.col(|ui| {
-                            ui.label(format!("{:.1}", c.mu / 1.0e6));
-                        });
-                        row.col(|ui| {
-                            ui.label(format!("{:.1}", c.qmu / 1000.0));
-                        });
-                        row.col(|ui| {
-                            ui.label(format!("{:.1}", c.qsu / 1000.0));
-                        });
-                        row.col(|ui| {
-                            // 2 軸せん断指定時は合成余裕度を表示（柱のみ Some）。
-                            let m = c.biaxial_shear_margin.unwrap_or(c.shear_margin);
-                            ui.colored_label(margin_color(m), format!("{m:.2}"));
-                        });
-                        row.col(|ui| {
-                            if bond {
-                                ui.label(format!("{:.1}", c.qbu / 1000.0));
-                            } else {
-                                ui.label("-");
-                            }
-                        });
-                        row.col(|ui| {
-                            if bond {
-                                ui.colored_label(
-                                    margin_color(c.bond_margin),
-                                    format!("{:.2}", c.bond_margin),
-                                );
-                            } else {
-                                ui.label("-");
-                            }
-                        });
-                        row.col(|ui| {
-                            if c.ok {
-                                ui.colored_label(crate::theme::GOOD_GREEN, "OK");
-                            } else {
-                                ui.colored_label(crate::theme::ERROR_RED, "NG");
-                            }
-                        });
+            crate::table_util::standard_table(
+                ui,
+                "ultimate_checks",
+                &[
+                    Col::id_named("部材"),
+                    Col::label("種別"),
+                    Col::num("Mu[kN·m]"),
+                    Col::num("Qmu[kN]"),
+                    Col::num(qsu_hdr),
+                    Col::num(ratio_hdr),
+                    Col::num(qbu_hdr),
+                    Col::num(bond_ratio_hdr),
+                    Col::label("判定"),
+                ],
+                checks.len(),
+                |row| {
+                    let i = row.index();
+                    let c = &checks[i];
+                    row.col(|ui| {
+                        ui.label(format!("{}", c.elem.0)).on_hover_text(&c.detail);
                     });
-                });
+                    row.col(|ui| {
+                        ui.label(member_kind_label(c.kind));
+                    });
+                    row.col(|ui| {
+                        ui.label(format!("{:.1}", c.mu / 1.0e6));
+                    });
+                    row.col(|ui| {
+                        ui.label(format!("{:.1}", c.qmu / 1000.0));
+                    });
+                    row.col(|ui| {
+                        ui.label(format!("{:.1}", c.qsu / 1000.0));
+                    });
+                    row.col(|ui| {
+                        // 2 軸せん断指定時は合成余裕度を表示（柱のみ Some）。
+                        let m = c.biaxial_shear_margin.unwrap_or(c.shear_margin);
+                        ui.colored_label(margin_color(m), format!("{m:.2}"));
+                    });
+                    row.col(|ui| {
+                        if bond {
+                            ui.label(format!("{:.1}", c.qbu / 1000.0));
+                        } else {
+                            ui.label("-");
+                        }
+                    });
+                    row.col(|ui| {
+                        if bond {
+                            ui.colored_label(
+                                margin_color(c.bond_margin),
+                                format!("{:.2}", c.bond_margin),
+                            );
+                        } else {
+                            ui.label("-");
+                        }
+                    });
+                    row.col(|ui| {
+                        if c.ok {
+                            ui.colored_label(crate::theme::GOOD_GREEN, "OK");
+                        } else {
+                            ui.colored_label(crate::theme::ERROR_RED, "NG");
+                        }
+                    });
+                },
+            );
 
             ui.add_space(4.0);
             let (shear_note, bond_note) = if app.ultimate_shear_ductility {
@@ -271,71 +255,56 @@ pub fn ultimate_table(ui: &mut egui::Ui, app: &mut App) {
                 }
             });
             ui.add_space(4.0);
-            let row_h = crate::theme::table_row_height(ui);
-            TableBuilder::new(ui)
-                .id_salt("cft_ultimate_checks")
-                .striped(true)
-                .column(Column::auto())
-                .column(Column::initial(48.0))
-                .column(Column::initial(90.0))
-                .column(Column::initial(90.0))
-                .column(Column::initial(100.0))
-                .column(Column::initial(90.0))
-                .column(Column::initial(72.0))
-                .column(Column::initial(50.0))
-                .header(row_h, |mut h| {
-                    for t in &[
-                        "部材",
-                        "分類",
-                        "Ncu[kN]",
-                        "Ntu[kN]",
-                        "Mu(N-M)[kN·m]",
-                        "N[kN]",
-                        "軸余裕度",
-                        "判定",
-                    ] {
-                        h.col(|ui| {
-                            ui.strong(*t);
-                        });
-                    }
-                })
-                .body(|body| {
-                    body.rows(row_h, checks.len(), |mut row| {
-                        let i = row.index();
-                        let c = &checks[i];
-                        row.col(|ui| {
-                            ui.label(format!("{}", c.elem.0)).on_hover_text(&c.detail);
-                        });
-                        row.col(|ui| {
-                            ui.label(cft_class_label(c.class));
-                        });
-                        row.col(|ui| {
-                            ui.label(format!("{:.0}", c.ncu / 1000.0));
-                        });
-                        row.col(|ui| {
-                            ui.label(format!("{:.0}", c.ntu / 1000.0));
-                        });
-                        row.col(|ui| {
-                            ui.label(format!("{:.1}", c.mu_nm / 1.0e6));
-                        });
-                        row.col(|ui| {
-                            ui.label(format!("{:.0}", c.n_design / 1000.0));
-                        });
-                        row.col(|ui| {
-                            ui.colored_label(
-                                margin_color(c.axial_margin),
-                                format!("{:.2}", c.axial_margin),
-                            );
-                        });
-                        row.col(|ui| {
-                            if c.ok {
-                                ui.colored_label(crate::theme::GOOD_GREEN, "OK");
-                            } else {
-                                ui.colored_label(crate::theme::ERROR_RED, "NG");
-                            }
-                        });
+            crate::table_util::standard_table(
+                ui,
+                "cft_ultimate_checks",
+                &[
+                    Col::id_named("部材"),
+                    Col::label("分類"),
+                    Col::num("Ncu[kN]"),
+                    Col::num("Ntu[kN]"),
+                    Col::num("Mu(N-M)[kN·m]"),
+                    Col::num("N[kN]"),
+                    Col::num("軸余裕度"),
+                    Col::label("判定"),
+                ],
+                checks.len(),
+                |row| {
+                    let i = row.index();
+                    let c = &checks[i];
+                    row.col(|ui| {
+                        ui.label(format!("{}", c.elem.0)).on_hover_text(&c.detail);
                     });
-                });
+                    row.col(|ui| {
+                        ui.label(cft_class_label(c.class));
+                    });
+                    row.col(|ui| {
+                        ui.label(format!("{:.0}", c.ncu / 1000.0));
+                    });
+                    row.col(|ui| {
+                        ui.label(format!("{:.0}", c.ntu / 1000.0));
+                    });
+                    row.col(|ui| {
+                        ui.label(format!("{:.1}", c.mu_nm / 1.0e6));
+                    });
+                    row.col(|ui| {
+                        ui.label(format!("{:.0}", c.n_design / 1000.0));
+                    });
+                    row.col(|ui| {
+                        ui.colored_label(
+                            margin_color(c.axial_margin),
+                            format!("{:.2}", c.axial_margin),
+                        );
+                    });
+                    row.col(|ui| {
+                        if c.ok {
+                            ui.colored_label(crate::theme::GOOD_GREEN, "OK");
+                        } else {
+                            ui.colored_label(crate::theme::ERROR_RED, "NG");
+                        }
+                    });
+                },
+            );
             ui.add_space(4.0);
             ui.colored_label(
                 crate::theme::GRAY_600,

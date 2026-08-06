@@ -1,6 +1,7 @@
 //! `App` の egui パネル描画メソッド。
 
 use super::*;
+use crate::table_util::Col;
 
 /// ステータスバーのドック/パネル切替アイコンの共通クリック挙動（Zed 風）。
 /// 対象ドックが開いていて対象パネルが既にアクティブなら閉じて `false` を返す。
@@ -134,39 +135,28 @@ impl App {
                 .default_open(false)
                 .id_salt("nav_members");
             header.show(ui, |ui| {
-                use egui_extras::{Column, TableBuilder};
-                let row_h = crate::theme::table_row_height(ui);
-                TableBuilder::new(ui)
-                    .striped(true)
-                    .column(Column::auto())
-                    .column(Column::remainder())
-                    .header(row_h, |mut h| {
-                        h.col(|ui| {
-                            ui.strong("ID");
+                use crate::table_util::{self, Col};
+                let n = self.model.elements.len();
+                table_util::standard_table(
+                    ui,
+                    "nav_members_tbl",
+                    &[Col::id(), Col::label("種別")],
+                    n,
+                    |row| {
+                        let idx = row.index();
+                        let elem = self.model.elements[idx].clone();
+                        let is_focus = self.nav.focus_member == Some(elem.id);
+                        row.col(|ui| {
+                            if table_util::id_cell(ui, is_focus, elem.id.0, "クリックで部材を選択")
+                            {
+                                self.nav.focus_member = Some(elem.id);
+                            }
                         });
-                        h.col(|ui| {
-                            ui.strong("種別");
+                        row.col(|ui| {
+                            ui.label(format!("{:?}", elem.kind));
                         });
-                    })
-                    .body(|body| {
-                        let n = self.model.elements.len();
-                        body.rows(row_h, n, |mut row| {
-                            let idx = row.index();
-                            let elem = self.model.elements[idx].clone();
-                            let is_focus = self.nav.focus_member == Some(elem.id);
-                            row.col(|ui| {
-                                if ui
-                                    .add(egui::Button::selectable(is_focus, elem.id.0.to_string()))
-                                    .clicked()
-                                {
-                                    self.nav.focus_member = Some(elem.id);
-                                }
-                            });
-                            row.col(|ui| {
-                                ui.label(format!("{:?}", elem.kind));
-                            });
-                        });
-                    });
+                    },
+                );
             });
 
             // 結果ケース：静的解析結果／荷重組合せ結果をクリックで表示対象に選択できる。
@@ -2090,42 +2080,63 @@ impl App {
 
         // 層ごとの質点・復元力特性（トリリニア）を一覧。上層から順に表示。
         egui::ScrollArea::vertical().show(ui, |ui| {
-            egui::Grid::new("lumped_mass_stories")
-                .num_columns(9)
-                .striped(true)
-                .show(ui, |ui| {
-                    ui.strong("階");
-                    ui.strong("質量[t]");
-                    ui.strong("階高[mm]");
-                    ui.strong("K1[kN/mm]");
-                    ui.strong("K2[kN/mm]");
-                    ui.strong("K3[kN/mm]");
-                    ui.strong("第1折点 δ1/Q1");
-                    ui.strong("第2折点 δ2/Q2");
-                    ui.strong("第3折点 δ3/Q3");
-                    ui.end_row();
-
-                    // model.stories と stick は同順（build_lumped_mass_model が順に生成）。
-                    for (i, stick) in lm.stories.iter().enumerate().rev() {
-                        let name = self
-                            .model
-                            .stories
-                            .get(i)
-                            .map(|s| s.name.as_str())
-                            .unwrap_or("-");
-                        let sk = &stick.skeleton;
-                        ui.label(name);
+            // model.stories と stick は同順（build_lumped_mass_model が順に生成）。
+            // 上層から順に見せるため、表示順は逆順にした索引で引く。
+            let order: Vec<usize> = (0..lm.stories.len()).rev().collect();
+            crate::table_util::standard_table(
+                ui,
+                "lumped_mass_stories",
+                &[
+                    Col::label("階"),
+                    Col::num("質量[t]"),
+                    Col::num("階高[mm]"),
+                    Col::num("K1[kN/mm]"),
+                    Col::num("K2[kN/mm]"),
+                    Col::num("K3[kN/mm]"),
+                    Col::wide_num("第1折点 δ1/Q1"),
+                    Col::wide_num("第2折点 δ2/Q2"),
+                    Col::wide_num("第3折点 δ3/Q3"),
+                ],
+                order.len(),
+                |row| {
+                    let i = order[row.index()];
+                    let stick = &lm.stories[i];
+                    let name = self
+                        .model
+                        .stories
+                        .get(i)
+                        .map(|s| s.name.as_str())
+                        .unwrap_or("-");
+                    let sk = &stick.skeleton;
+                    row.col(|ui| {
+                        crate::table_util::text_cell(ui, name);
+                    });
+                    row.col(|ui| {
                         ui.label(format!("{:.2}", stick.mass));
+                    });
+                    row.col(|ui| {
                         ui.label(format!("{:.0}", stick.height));
+                    });
+                    row.col(|ui| {
                         ui.label(format!("{:.1}", sk.k1 / 1000.0));
+                    });
+                    row.col(|ui| {
                         ui.label(format!("{:.1}", sk.k2() / 1000.0));
+                    });
+                    row.col(|ui| {
                         ui.label(format!("{:.1}", sk.k3() / 1000.0));
+                    });
+                    row.col(|ui| {
                         ui.label(format!("{:.2} / {:.0}", sk.d1, sk.q1 / 1000.0));
+                    });
+                    row.col(|ui| {
                         ui.label(format!("{:.2} / {:.0}", sk.d2, sk.q2 / 1000.0));
+                    });
+                    row.col(|ui| {
                         ui.label(format!("{:.2} / {:.0}", sk.d3, sk.q3 / 1000.0));
-                        ui.end_row();
-                    }
-                });
+                    });
+                },
+            );
 
             ui.add_space(6.0);
             ui.colored_label(
@@ -2189,29 +2200,40 @@ impl App {
                     ),
                 );
             }
-            egui::Grid::new("stick_th_result")
-                .striped(true)
-                .num_columns(4)
-                .show(ui, |ui| {
-                    ui.strong("階");
-                    ui.strong("最大層間変形[mm]");
-                    ui.strong("最大層せん断[kN]");
-                    ui.strong("塑性率μ");
-                    ui.end_row();
-                    for i in (0..res.story_peak_drift.len()).rev() {
-                        let name = self
-                            .model
-                            .stories
-                            .get(i)
-                            .map(|s| s.name.as_str())
-                            .unwrap_or("-");
-                        ui.label(name);
+            // 上層から順に見せるため、表示順は逆順にした索引で引く。
+            let order: Vec<usize> = (0..res.story_peak_drift.len()).rev().collect();
+            crate::table_util::standard_table(
+                ui,
+                "stick_th_result",
+                &[
+                    Col::label("階"),
+                    Col::num("最大層間変形[mm]"),
+                    Col::num("最大層せん断[kN]"),
+                    Col::num("塑性率μ"),
+                ],
+                order.len(),
+                |row| {
+                    let i = order[row.index()];
+                    let name = self
+                        .model
+                        .stories
+                        .get(i)
+                        .map(|s| s.name.as_str())
+                        .unwrap_or("-");
+                    row.col(|ui| {
+                        crate::table_util::text_cell(ui, name);
+                    });
+                    row.col(|ui| {
                         ui.label(format!("{:.2}", res.story_peak_drift[i]));
+                    });
+                    row.col(|ui| {
                         ui.label(format!("{:.0}", res.story_peak_shear[i] / 1000.0));
+                    });
+                    row.col(|ui| {
                         ui.label(format!("{:.2}", res.story_ductility[i]));
-                        ui.end_row();
-                    }
-                });
+                    });
+                },
+            );
             let pts: Vec<[f64; 2]> = res
                 .time
                 .iter()

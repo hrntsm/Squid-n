@@ -57,7 +57,7 @@ fn resolve_member_hysteresis_for_kind(
 }
 
 pub fn members_table(ui: &mut egui::Ui, app: &mut App) {
-    use egui_extras::{Column, TableBuilder};
+    use crate::table_util::{self, Col};
 
     // ── 梁追加フォーム ──────────────────────────────────────────
     if app.model.nodes.len() < 2 {
@@ -323,66 +323,45 @@ pub fn members_table(ui: &mut egui::Ui, app: &mut App) {
     let mut pending_hysteresis_th: Vec<(usize, Option<HysteresisModel>)> = Vec::new();
     let mut pending_delete: Option<ElemId> = None;
 
-    let row_h = crate::theme::table_row_height(ui);
-    TableBuilder::new(ui)
-        .striped(true)
-        .column(Column::auto())
-        .column(Column::auto())
-        .column(Column::initial(70.0))
-        .column(Column::initial(80.0))
-        .column(Column::initial(90.0))
-        .column(Column::initial(120.0))
-        .column(Column::initial(120.0))
-        .column(Column::auto())
-        .header(row_h, |mut h| {
-            for t in &[
-                "ID",
-                "種別",
-                "節点",
-                "断面",
-                "材料",
-                "履歴則(増分)",
-                "履歴則(時刻歴)",
-                "",
-            ] {
-                h.col(|ui| {
-                    ui.strong(*t);
-                });
-            }
-        })
-        .body(|body| {
-            body.rows(row_h, n, |mut row| {
-                let i = row.index();
-                let elem = &app.model.elements[i];
-                let is_focus = app.nav.focus_member == Some(elem.id);
-                row.col(|ui| {
-                    let text = elem.id.0.to_string();
-                    // 選択行は blue-500 背景になるため文字は白、非選択は既定色
-                    let rich = egui::RichText::new(text).color(if is_focus {
-                        crate::theme::WHITE
-                    } else {
-                        egui::Color32::PLACEHOLDER
-                    });
-                    if ui.selectable_label(is_focus, rich).clicked() {
-                        app.nav.focus_member = Some(elem.id);
-                    }
-                });
-                row.col(|ui| {
-                    ui.label(format!("{:?}", elem.kind));
-                });
-                row.col(|ui| {
-                    let ids: Vec<String> = elem.nodes.iter().map(|n| n.0.to_string()).collect();
-                    ui.label(ids.join(","));
-                });
-                row.col(|ui| {
-                    let selected = elem.section.map(|s| s.0).unwrap_or(u32::MAX);
-                    let combo = egui::ComboBox::from_id_salt(format!("elem_sec_{}", i))
-                        .selected_text(
-                            elem.section
-                                .map(|s| format!("S{}", s.0))
-                                .unwrap_or_else(|| "―".to_string()),
-                        );
-                    combo.show_ui(ui, |ui| {
+    table_util::standard_table(
+        ui,
+        "members_tbl",
+        &[
+            Col::id(),
+            Col::label("種別"),
+            Col::wide_num("節点"),
+            Col::name("断面"),
+            Col::name("材料"),
+            Col::text("履歴則(増分)"),
+            Col::text("履歴則(時刻歴)"),
+            Col::actions(),
+        ],
+        n,
+        |row| {
+            let i = row.index();
+            let elem = &app.model.elements[i];
+            let is_focus = app.nav.focus_member == Some(elem.id);
+            row.col(|ui| {
+                if table_util::id_cell(ui, is_focus, elem.id.0, "クリックで部材を選択") {
+                    app.nav.focus_member = Some(elem.id);
+                }
+            });
+            row.col(|ui| {
+                ui.label(format!("{:?}", elem.kind));
+            });
+            row.col(|ui| {
+                let ids: Vec<String> = elem.nodes.iter().map(|n| n.0.to_string()).collect();
+                table_util::text_cell(ui, &ids.join(","));
+            });
+            row.col(|ui| {
+                let selected = elem.section.map(|s| s.0).unwrap_or(u32::MAX);
+                table_util::cell_combo(
+                    ui,
+                    format!("elem_sec_{}", i),
+                    elem.section
+                        .map(|s| format!("S{}", s.0))
+                        .unwrap_or_else(|| "―".to_string()),
+                    |ui| {
                         if ui.selectable_label(selected == u32::MAX, "―").clicked() {
                             pending_section.push((i, u32::MAX));
                         }
@@ -397,18 +376,19 @@ pub fn members_table(ui: &mut egui::Ui, app: &mut App) {
                                 pending_section.push((i, sec.id.0));
                             }
                         }
-                    });
-                });
-                row.col(|ui| {
-                    let selected = elem.material.map(|m| m.0).unwrap_or(u32::MAX);
-                    let combo = egui::ComboBox::from_id_salt(format!("elem_mat_{}", i))
-                        .selected_text(
-                            elem.material
-                                .and_then(|m| app.model.materials.get(m.index()))
-                                .map(|m| m.name.clone())
-                                .unwrap_or_else(|| "―".to_string()),
-                        );
-                    combo.show_ui(ui, |ui| {
+                    },
+                );
+            });
+            row.col(|ui| {
+                let selected = elem.material.map(|m| m.0).unwrap_or(u32::MAX);
+                table_util::cell_combo(
+                    ui,
+                    format!("elem_mat_{}", i),
+                    elem.material
+                        .and_then(|m| app.model.materials.get(m.index()))
+                        .map(|m| m.name.clone())
+                        .unwrap_or_else(|| "―".to_string()),
+                    |ui| {
                         if ui.selectable_label(selected == u32::MAX, "―").clicked() {
                             pending_material.push((i, u32::MAX));
                         }
@@ -420,112 +400,111 @@ pub fn members_table(ui: &mut egui::Ui, app: &mut App) {
                                 pending_material.push((i, mat.id.0));
                             }
                         }
-                    });
-                });
-                row.col(|ui| {
-                    // 履歴則（復元力特性、増分解析用）。非線形解析の材端履歴則。
-                    // 梁=材端曲げバネ、柱（ファイバー）・MS・壁=コンクリート除荷則へ反映。
-                    let current = app.model.member_hysteresis(elem.id);
-                    let selected_text = match current {
-                        Some(r) => r.label().to_string(),
-                        None => {
-                            let eff = resolve_member_hysteresis_for_kind(
-                                elem,
-                                &app.model,
-                                squid_n_core::model::AnalysisKind::Incremental,
-                            );
-                            format!("自動（{}）", eff.label())
+                    },
+                );
+            });
+            row.col(|ui| {
+                // 履歴則（復元力特性、増分解析用）。非線形解析の材端履歴則。
+                // 梁=材端曲げバネ、柱（ファイバー）・MS・壁=コンクリート除荷則へ反映。
+                let current = app.model.member_hysteresis(elem.id);
+                let selected_text = match current {
+                    Some(r) => r.label().to_string(),
+                    None => {
+                        let eff = resolve_member_hysteresis_for_kind(
+                            elem,
+                            &app.model,
+                            squid_n_core::model::AnalysisKind::Incremental,
+                        );
+                        format!("自動（{}）", eff.label())
+                    }
+                };
+                let enabled = matches!(
+                    elem.kind,
+                    ElementKind::Beam
+                        | ElementKind::Fiber
+                        | ElementKind::MultiSpring
+                        | ElementKind::Wall
+                );
+                ui.add_enabled_ui(enabled, |ui| {
+                    table_util::cell_combo(ui, format!("elem_hyst_{}", i), selected_text, |ui| {
+                        for m in HysteresisModel::ALL {
+                            let is_sel = match current {
+                                Some(c) => m == c,
+                                None => m == HysteresisModel::Auto,
+                            };
+                            if ui.selectable_label(is_sel, m.label()).clicked() {
+                                pending_hysteresis.push((i, m));
+                            }
                         }
-                    };
-                    let enabled = matches!(
-                        elem.kind,
-                        ElementKind::Beam
-                            | ElementKind::Fiber
-                            | ElementKind::MultiSpring
-                            | ElementKind::Wall
-                    );
-                    ui.add_enabled_ui(enabled, |ui| {
-                        egui::ComboBox::from_id_salt(format!("elem_hyst_{}", i))
-                            .selected_text(selected_text)
-                            .show_ui(ui, |ui| {
-                                for m in HysteresisModel::ALL {
-                                    let is_sel = match current {
-                                        Some(c) => m == c,
-                                        None => m == HysteresisModel::Auto,
-                                    };
-                                    if ui.selectable_label(is_sel, m.label()).clicked() {
-                                        pending_hysteresis.push((i, m));
-                                    }
-                                }
-                            })
-                            .response
-                            .on_hover_text(
-                                "増分解析（保有水平耐力計算）の履歴則。\
+                    })
+                    .response
+                    .on_hover_text(
+                        "増分解析（保有水平耐力計算）の履歴則。\
                                  梁=材端曲げバネ（自動: RC/SRC/CFT=武田型、S=標準型）。\
                                  柱（ファイバー）・MS・壁=コンクリート除荷則\
                                  （逆行型／原点指向型／Karsan-Jirsa型のみ有効。\
                                  自動: 柱・MS=逆行型、壁=原点指向型）",
-                            );
-                    });
-                });
-                row.col(|ui| {
-                    // 履歴則（時刻歴応答解析用スロット）。`None`＝増分用の指定に従う。
-                    let current_th_raw = app.model.member_hysteresis_th_raw(elem.id);
-                    let selected_text = match current_th_raw {
-                        None => "増分と同じ".to_string(),
-                        Some(HysteresisModel::Auto) => {
-                            let eff = resolve_member_hysteresis_for_kind(
-                                elem,
-                                &app.model,
-                                squid_n_core::model::AnalysisKind::TimeHistory,
-                            );
-                            format!("自動（{}）", eff.label())
-                        }
-                        Some(r) => r.label().to_string(),
-                    };
-                    let enabled = matches!(
-                        elem.kind,
-                        ElementKind::Beam
-                            | ElementKind::Fiber
-                            | ElementKind::MultiSpring
-                            | ElementKind::Wall
                     );
-                    ui.add_enabled_ui(enabled, |ui| {
-                        egui::ComboBox::from_id_salt(format!("elem_hyst_th_{}", i))
-                            .selected_text(selected_text)
-                            .show_ui(ui, |ui| {
-                                if ui
-                                    .selectable_label(current_th_raw.is_none(), "増分と同じ")
-                                    .clicked()
-                                {
-                                    pending_hysteresis_th.push((i, None));
-                                }
-                                for m in HysteresisModel::ALL {
-                                    let is_sel = current_th_raw == Some(m);
-                                    if ui.selectable_label(is_sel, m.label()).clicked() {
-                                        pending_hysteresis_th.push((i, Some(m)));
-                                    }
-                                }
-                            })
-                            .response
-                            .on_hover_text(
-                                "時刻歴応答解析の履歴則。「増分と同じ」で増分用の指定に従う。\
-                                 自動: 梁=増分と同じ既定、柱（ファイバー）・MS・壁の\
-                                 コンクリートは Karsan-Jirsa型",
-                            );
-                    });
-                });
-                row.col(|ui| {
-                    if ui
-                        .button("🗑")
-                        .on_hover_text("部材を削除（関連する部材荷重も削除されます）")
-                        .clicked()
-                    {
-                        pending_delete = Some(elem.id);
-                    }
                 });
             });
-        });
+            row.col(|ui| {
+                // 履歴則（時刻歴応答解析用スロット）。`None`＝増分用の指定に従う。
+                let current_th_raw = app.model.member_hysteresis_th_raw(elem.id);
+                let selected_text = match current_th_raw {
+                    None => "増分と同じ".to_string(),
+                    Some(HysteresisModel::Auto) => {
+                        let eff = resolve_member_hysteresis_for_kind(
+                            elem,
+                            &app.model,
+                            squid_n_core::model::AnalysisKind::TimeHistory,
+                        );
+                        format!("自動（{}）", eff.label())
+                    }
+                    Some(r) => r.label().to_string(),
+                };
+                let enabled = matches!(
+                    elem.kind,
+                    ElementKind::Beam
+                        | ElementKind::Fiber
+                        | ElementKind::MultiSpring
+                        | ElementKind::Wall
+                );
+                ui.add_enabled_ui(enabled, |ui| {
+                    table_util::cell_combo(
+                        ui,
+                        format!("elem_hyst_th_{}", i),
+                        selected_text,
+                        |ui| {
+                            if ui
+                                .selectable_label(current_th_raw.is_none(), "増分と同じ")
+                                .clicked()
+                            {
+                                pending_hysteresis_th.push((i, None));
+                            }
+                            for m in HysteresisModel::ALL {
+                                let is_sel = current_th_raw == Some(m);
+                                if ui.selectable_label(is_sel, m.label()).clicked() {
+                                    pending_hysteresis_th.push((i, Some(m)));
+                                }
+                            }
+                        },
+                    )
+                    .response
+                    .on_hover_text(
+                        "時刻歴応答解析の履歴則。「増分と同じ」で増分用の指定に従う。\
+                                 自動: 梁=増分と同じ既定、柱（ファイバー）・MS・壁の\
+                                 コンクリートは Karsan-Jirsa型",
+                    );
+                });
+            });
+            row.col(|ui| {
+                if table_util::delete_cell(ui, "部材を削除（関連する部材荷重も削除されます）", None)
+                {
+                    pending_delete = Some(elem.id);
+                }
+            });
+        },
+    );
 
     // 確定処理
     let had_pending = !pending_section.is_empty()
@@ -617,7 +596,7 @@ pub fn members_table(ui: &mut egui::Ui, app: &mut App) {
 /// （非線形動的解析の制振要素）。種別（マクスウェル＝速度依存型／
 /// 履歴型バイリニア＝鋼材系）を選択し、種別に応じた諸元を編集する。
 fn dampers_table(ui: &mut egui::Ui, app: &mut App) {
-    use egui_extras::{Column, TableBuilder};
+    use crate::table_util::{self, Col};
 
     let dampers: Vec<(ElemId, DamperProps)> = app
         .model
@@ -693,150 +672,141 @@ fn dampers_table(ui: &mut egui::Ui, app: &mut App) {
         ui.data_mut(|d| d.insert_temp(id_bulk_sel, bulk_sel));
     }
 
-    let row_h = crate::theme::table_row_height(ui);
-    TableBuilder::new(ui)
-        .id_salt("dampers_table")
-        .striped(true)
-        .column(Column::auto())
-        .column(Column::auto())
-        .column(Column::initial(120.0))
-        .column(Column::initial(80.0))
-        .column(Column::initial(80.0))
-        .column(Column::initial(64.0))
-        .column(Column::initial(80.0))
-        .column(Column::initial(64.0))
-        .column(Column::auto())
-        .header(row_h, |mut h| {
-            for t in &["ID", "節点", "種別", "Kd", "C0", "α", "Qy", "k2/k1", ""] {
-                h.col(|ui| {
-                    ui.strong(*t);
-                });
-            }
-        })
-        .body(|mut body| {
-            for (elem_id, props) in &dampers {
-                let elem_id = *elem_id;
-                let mut props = *props;
-                let is_maxwell = props.kind == DamperKind::Maxwell;
-                body.row(row_h, |mut row| {
-                    row.col(|ui| {
-                        ui.label(elem_id.0.to_string());
-                    });
-                    row.col(|ui| {
-                        let nodes = app
-                            .model
-                            .elements
+    table_util::standard_table(
+        ui,
+        "dampers_table",
+        &[
+            Col::id(),
+            Col::wide_num("節点"),
+            Col::name("種別"),
+            Col::num("Kd"),
+            Col::num("C0"),
+            Col::num("α"),
+            Col::num("Qy"),
+            Col::num("k2/k1"),
+            Col::actions(),
+        ],
+        dampers.len(),
+        |row| {
+            let (elem_id, props) = dampers[row.index()];
+            let mut props = props;
+            let is_maxwell = props.kind == DamperKind::Maxwell;
+            row.col(|ui| {
+                table_util::id_label(ui, elem_id.0);
+            });
+            row.col(|ui| {
+                let nodes = app
+                    .model
+                    .elements
+                    .iter()
+                    .find(|e| e.id == elem_id)
+                    .map(|e| {
+                        e.nodes
                             .iter()
-                            .find(|e| e.id == elem_id)
-                            .map(|e| {
-                                e.nodes
-                                    .iter()
-                                    .map(|n| n.0.to_string())
-                                    .collect::<Vec<_>>()
-                                    .join(",")
-                            })
-                            .unwrap_or_default();
-                        ui.label(nodes);
-                    });
-                    // 種別セレクタ。
-                    row.col(|ui| {
-                        let label = match props.kind {
+                            .map(|n| n.0.to_string())
+                            .collect::<Vec<_>>()
+                            .join(",")
+                    })
+                    .unwrap_or_default();
+                table_util::text_cell(ui, &nodes);
+            });
+            // 種別セレクタ。
+            row.col(|ui| {
+                let label = match props.kind {
+                    DamperKind::Maxwell => "マクスウェル",
+                    DamperKind::HystereticBilinear => "履歴型ﾊﾞｲﾘﾆｱ",
+                };
+                table_util::cell_combo(ui, format!("damper_kind_{}", elem_id.0), label, |ui| {
+                    for k in [DamperKind::Maxwell, DamperKind::HystereticBilinear] {
+                        let l = match k {
                             DamperKind::Maxwell => "マクスウェル",
                             DamperKind::HystereticBilinear => "履歴型ﾊﾞｲﾘﾆｱ",
                         };
-                        egui::ComboBox::from_id_salt(format!("damper_kind_{}", elem_id.0))
-                            .selected_text(label)
-                            .show_ui(ui, |ui| {
-                                for k in [DamperKind::Maxwell, DamperKind::HystereticBilinear] {
-                                    let l = match k {
-                                        DamperKind::Maxwell => "マクスウェル",
-                                        DamperKind::HystereticBilinear => "履歴型ﾊﾞｲﾘﾆｱ",
-                                    };
-                                    if ui.selectable_label(props.kind == k, l).clicked()
-                                        && props.kind != k
-                                    {
-                                        props.kind = k;
-                                        pending_props.push((elem_id, props));
-                                    }
-                                }
-                            });
-                    });
-                    // Kd（両種別で使用。kN/mm 単位で編集）。
-                    row.col(|ui| {
-                        let mut kd_kn = props.kd / 1000.0;
-                        if ui
-                            .add(
-                                egui::DragValue::new(&mut kd_kn)
-                                    .speed(1.0)
-                                    .range(0.0..=1.0e9),
-                            )
-                            .changed()
-                        {
-                            props.kd = kd_kn * 1000.0;
+                        if ui.selectable_label(props.kind == k, l).clicked() && props.kind != k {
+                            props.kind = k;
                             pending_props.push((elem_id, props));
                         }
-                    });
-                    // C0（マクスウェルのみ）。
-                    row.col(|ui| {
-                        let mut c0_kn = props.c0 / 1000.0;
-                        let resp = ui.add_enabled(
-                            is_maxwell,
-                            egui::DragValue::new(&mut c0_kn)
-                                .speed(0.1)
-                                .range(0.0..=1.0e9),
-                        );
-                        if resp.changed() {
-                            props.c0 = c0_kn * 1000.0;
-                            pending_props.push((elem_id, props));
-                        }
-                    });
-                    // α（マクスウェルのみ）。
-                    row.col(|ui| {
-                        let resp = ui.add_enabled(
-                            is_maxwell,
-                            egui::DragValue::new(&mut props.alpha)
-                                .speed(0.01)
-                                .range(0.05..=2.0),
-                        );
-                        if resp.changed() {
-                            pending_props.push((elem_id, props));
-                        }
-                    });
-                    // Qy（履歴型のみ。kN 単位）。
-                    row.col(|ui| {
-                        let mut qy_kn = props.qy / 1000.0;
-                        let resp = ui.add_enabled(
-                            !is_maxwell,
-                            egui::DragValue::new(&mut qy_kn)
-                                .speed(1.0)
-                                .range(0.0..=1.0e9),
-                        );
-                        if resp.changed() {
-                            props.qy = qy_kn * 1000.0;
-                            pending_props.push((elem_id, props));
-                        }
-                    });
-                    // k2/k1（履歴型のみ）。
-                    row.col(|ui| {
-                        let resp = ui.add_enabled(
-                            !is_maxwell,
-                            egui::DragValue::new(&mut props.k2_ratio)
-                                .speed(0.005)
-                                .range(0.0..=0.99),
-                        );
-                        if resp.changed() {
-                            pending_props.push((elem_id, props));
-                        }
-                    });
-                    row.col(|ui| {
-                        if ui.button("🗑").on_hover_text("制振ダンパーを削除").clicked()
-                        {
-                            pending_del = Some(elem_id);
-                        }
-                    });
+                    }
                 });
-            }
-        });
+            });
+            // Kd（両種別で使用。kN/mm 単位で編集）。
+            row.col(|ui| {
+                let mut kd_kn = props.kd / 1000.0;
+                let resp = table_util::cell_drag_value(
+                    ui,
+                    true,
+                    egui::DragValue::new(&mut kd_kn)
+                        .speed(1.0)
+                        .range(0.0..=1.0e9),
+                );
+                if resp.changed() {
+                    props.kd = kd_kn * 1000.0;
+                    pending_props.push((elem_id, props));
+                }
+            });
+            // C0（マクスウェルのみ）。
+            row.col(|ui| {
+                let mut c0_kn = props.c0 / 1000.0;
+                let resp = table_util::cell_drag_value(
+                    ui,
+                    is_maxwell,
+                    egui::DragValue::new(&mut c0_kn)
+                        .speed(0.1)
+                        .range(0.0..=1.0e9),
+                );
+                if resp.changed() {
+                    props.c0 = c0_kn * 1000.0;
+                    pending_props.push((elem_id, props));
+                }
+            });
+            // α（マクスウェルのみ）。
+            row.col(|ui| {
+                let resp = table_util::cell_drag_value(
+                    ui,
+                    is_maxwell,
+                    egui::DragValue::new(&mut props.alpha)
+                        .speed(0.01)
+                        .range(0.05..=2.0),
+                );
+                if resp.changed() {
+                    pending_props.push((elem_id, props));
+                }
+            });
+            // Qy（履歴型のみ。kN 単位）。
+            row.col(|ui| {
+                let mut qy_kn = props.qy / 1000.0;
+                let resp = table_util::cell_drag_value(
+                    ui,
+                    !is_maxwell,
+                    egui::DragValue::new(&mut qy_kn)
+                        .speed(1.0)
+                        .range(0.0..=1.0e9),
+                );
+                if resp.changed() {
+                    props.qy = qy_kn * 1000.0;
+                    pending_props.push((elem_id, props));
+                }
+            });
+            // k2/k1（履歴型のみ）。
+            row.col(|ui| {
+                let resp = table_util::cell_drag_value(
+                    ui,
+                    !is_maxwell,
+                    egui::DragValue::new(&mut props.k2_ratio)
+                        .speed(0.005)
+                        .range(0.0..=0.99),
+                );
+                if resp.changed() {
+                    pending_props.push((elem_id, props));
+                }
+            });
+            row.col(|ui| {
+                if table_util::delete_cell(ui, "制振ダンパーを削除", None) {
+                    pending_del = Some(elem_id);
+                }
+            });
+        },
+    );
 
     let mut changed = false;
     for (elem_id, props) in pending_props {
@@ -866,7 +836,7 @@ fn dampers_table(ui: &mut egui::Ui, app: &mut App) {
 /// 支点への設置（`PlaceSupportIsolator`、境界条件タブ）で生成された零長要素も
 /// ここに一覧される（削除もここから行える。境界条件タブ側は要約表示のみ）。
 fn isolators_table(ui: &mut egui::Ui, app: &mut App) {
-    use egui_extras::{Column, TableBuilder};
+    use crate::table_util::{self, Col};
 
     let isolators: Vec<(ElemId, IsolatorProps)> = app
         .model
@@ -899,151 +869,153 @@ fn isolators_table(ui: &mut egui::Ui, app: &mut App) {
     let mut pending_props: Vec<(ElemId, IsolatorProps)> = Vec::new();
     let mut pending_del: Option<ElemId> = None;
 
-    let row_h = crate::theme::table_row_height(ui);
-    TableBuilder::new(ui)
-        .id_salt("isolators_table")
-        .striped(true)
-        .column(Column::auto())
-        .column(Column::auto())
-        .column(Column::initial(150.0))
-        .column(Column::initial(80.0))
-        .column(Column::initial(80.0))
-        .column(Column::initial(80.0))
-        .column(Column::initial(80.0))
-        .column(Column::initial(64.0))
-        .column(Column::auto())
-        .header(row_h, |mut h| {
-            for t in &["ID", "節点", "種別", "K1", "K2", "Qd", "Kv", "μ", ""] {
-                h.col(|ui| {
-                    ui.strong(*t);
-                });
-            }
-        })
-        .body(|mut body| {
-            for (elem_id, props) in &isolators {
-                let elem_id = *elem_id;
-                let mut props = *props;
-                let is_sliding = props.kind == squid_n_core::model::IsolatorKind::ElasticSliding;
-                body.row(row_h, |mut row| {
-                    row.col(|ui| {
-                        ui.label(elem_id.0.to_string());
-                    });
-                    row.col(|ui| {
-                        let nodes = app
-                            .model
-                            .elements
+    table_util::standard_table(
+        ui,
+        "isolators_table",
+        &[
+            Col::id(),
+            Col::wide_num("節点"),
+            Col::text("種別"),
+            Col::num("K1"),
+            Col::num("K2"),
+            Col::num("Qd"),
+            Col::num("Kv"),
+            Col::num("μ"),
+            Col::actions(),
+        ],
+        isolators.len(),
+        |row| {
+            let (elem_id, props) = isolators[row.index()];
+            let mut props = props;
+            let is_sliding = props.kind == squid_n_core::model::IsolatorKind::ElasticSliding;
+            row.col(|ui| {
+                table_util::id_label(ui, elem_id.0);
+            });
+            row.col(|ui| {
+                let nodes = app
+                    .model
+                    .elements
+                    .iter()
+                    .find(|e| e.id == elem_id)
+                    .map(|e| {
+                        e.nodes
                             .iter()
-                            .find(|e| e.id == elem_id)
-                            .map(|e| {
-                                e.nodes
-                                    .iter()
-                                    .map(|n| n.0.to_string())
-                                    .collect::<Vec<_>>()
-                                    .join(",")
-                            })
-                            .unwrap_or_default();
-                        ui.label(nodes);
-                    });
-                    // 種別セレクタ。
-                    row.col(|ui| {
-                        egui::ComboBox::from_id_salt(format!("isolator_kind_{}", elem_id.0))
-                            .selected_text(isolator_kind_label(props.kind))
-                            .show_ui(ui, |ui| {
-                                for k in [
-                                    squid_n_core::model::IsolatorKind::LaminatedRubber,
-                                    squid_n_core::model::IsolatorKind::LeadRubber,
-                                    squid_n_core::model::IsolatorKind::HighDampingRubber,
-                                    squid_n_core::model::IsolatorKind::ElasticSliding,
-                                ] {
-                                    if ui
-                                        .selectable_label(props.kind == k, isolator_kind_label(k))
-                                        .clicked()
-                                        && props.kind != k
-                                    {
-                                        props.kind = k;
-                                        pending_props.push((elem_id, props));
-                                    }
-                                }
-                            });
-                    });
-                    // K1（両種別で使用。kN/mm 単位で編集）。
-                    // ドラッグ中は毎フレーム changed() が真になるため、コマンド発行は
-                    // ドラッグ終了（またはフォーカス喪失）まで遅らせる（undo スタックの
-                    // 大量消費防止）。表示用の変換自体は毎フレーム行い、ドラッグ中の
-                    // ライブ表示は維持する。
-                    row.col(|ui| {
-                        let mut k1_kn = props.k1 / 1000.0;
-                        let resp = ui.add(
-                            egui::DragValue::new(&mut k1_kn)
-                                .speed(1.0)
-                                .range(0.0..=1.0e6),
-                        );
-                        props.k1 = k1_kn * 1000.0;
-                        if resp.drag_stopped() || resp.lost_focus() {
-                            pending_props.push((elem_id, props));
+                            .map(|n| n.0.to_string())
+                            .collect::<Vec<_>>()
+                            .join(",")
+                    })
+                    .unwrap_or_default();
+                table_util::text_cell(ui, &nodes);
+            });
+            // 種別セレクタ。
+            row.col(|ui| {
+                table_util::cell_combo(
+                    ui,
+                    format!("isolator_kind_{}", elem_id.0),
+                    isolator_kind_label(props.kind),
+                    |ui| {
+                        for k in [
+                            squid_n_core::model::IsolatorKind::LaminatedRubber,
+                            squid_n_core::model::IsolatorKind::LeadRubber,
+                            squid_n_core::model::IsolatorKind::HighDampingRubber,
+                            squid_n_core::model::IsolatorKind::ElasticSliding,
+                        ] {
+                            if ui
+                                .selectable_label(props.kind == k, isolator_kind_label(k))
+                                .clicked()
+                                && props.kind != k
+                            {
+                                props.kind = k;
+                                pending_props.push((elem_id, props));
+                            }
                         }
-                    });
-                    // K2（積層ゴム系のみ）。
-                    row.col(|ui| {
-                        let mut k2_kn = props.k2 / 1000.0;
-                        let resp = ui.add_enabled(
-                            !is_sliding,
-                            egui::DragValue::new(&mut k2_kn)
-                                .speed(1.0)
-                                .range(0.0..=1.0e6),
-                        );
-                        props.k2 = k2_kn * 1000.0;
-                        if resp.drag_stopped() || resp.lost_focus() {
-                            pending_props.push((elem_id, props));
-                        }
-                    });
-                    // Qd（積層ゴム系のみ。kN 単位）。
-                    row.col(|ui| {
-                        let mut qd_kn = props.qd / 1000.0;
-                        let resp = ui.add_enabled(
-                            !is_sliding,
-                            egui::DragValue::new(&mut qd_kn)
-                                .speed(1.0)
-                                .range(0.0..=1.0e6),
-                        );
-                        props.qd = qd_kn * 1000.0;
-                        if resp.drag_stopped() || resp.lost_focus() {
-                            pending_props.push((elem_id, props));
-                        }
-                    });
-                    // Kv（両種別で使用。kN/mm 単位）。
-                    row.col(|ui| {
-                        let mut kv_kn = props.kv / 1000.0;
-                        let resp = ui.add(
-                            egui::DragValue::new(&mut kv_kn)
-                                .speed(10.0)
-                                .range(0.0..=1.0e9),
-                        );
-                        props.kv = kv_kn * 1000.0;
-                        if resp.drag_stopped() || resp.lost_focus() {
-                            pending_props.push((elem_id, props));
-                        }
-                    });
-                    // μ（すべり支承のみ）。
-                    row.col(|ui| {
-                        let resp = ui.add_enabled(
-                            is_sliding,
-                            egui::DragValue::new(&mut props.mu)
-                                .speed(0.005)
-                                .range(0.0..=2.0),
-                        );
-                        if resp.drag_stopped() || resp.lost_focus() {
-                            pending_props.push((elem_id, props));
-                        }
-                    });
-                    row.col(|ui| {
-                        if ui.button("🗑").on_hover_text("免震支承材を削除").clicked() {
-                            pending_del = Some(elem_id);
-                        }
-                    });
-                });
-            }
-        });
+                    },
+                );
+            });
+            // K1（両種別で使用。kN/mm 単位で編集）。
+            // ドラッグ中は毎フレーム changed() が真になるため、コマンド発行は
+            // ドラッグ終了（またはフォーカス喪失）まで遅らせる（undo スタックの
+            // 大量消費防止）。表示用の変換自体は毎フレーム行い、ドラッグ中の
+            // ライブ表示は維持する。
+            row.col(|ui| {
+                let mut k1_kn = props.k1 / 1000.0;
+                let resp = table_util::cell_drag_value(
+                    ui,
+                    true,
+                    egui::DragValue::new(&mut k1_kn)
+                        .speed(1.0)
+                        .range(0.0..=1.0e6),
+                );
+                props.k1 = k1_kn * 1000.0;
+                if resp.drag_stopped() || resp.lost_focus() {
+                    pending_props.push((elem_id, props));
+                }
+            });
+            // K2（積層ゴム系のみ）。
+            row.col(|ui| {
+                let mut k2_kn = props.k2 / 1000.0;
+                let resp = table_util::cell_drag_value(
+                    ui,
+                    !is_sliding,
+                    egui::DragValue::new(&mut k2_kn)
+                        .speed(1.0)
+                        .range(0.0..=1.0e6),
+                );
+                props.k2 = k2_kn * 1000.0;
+                if resp.drag_stopped() || resp.lost_focus() {
+                    pending_props.push((elem_id, props));
+                }
+            });
+            // Qd（積層ゴム系のみ。kN 単位）。
+            row.col(|ui| {
+                let mut qd_kn = props.qd / 1000.0;
+                let resp = table_util::cell_drag_value(
+                    ui,
+                    !is_sliding,
+                    egui::DragValue::new(&mut qd_kn)
+                        .speed(1.0)
+                        .range(0.0..=1.0e6),
+                );
+                props.qd = qd_kn * 1000.0;
+                if resp.drag_stopped() || resp.lost_focus() {
+                    pending_props.push((elem_id, props));
+                }
+            });
+            // Kv（両種別で使用。kN/mm 単位）。
+            row.col(|ui| {
+                let mut kv_kn = props.kv / 1000.0;
+                let resp = table_util::cell_drag_value(
+                    ui,
+                    true,
+                    egui::DragValue::new(&mut kv_kn)
+                        .speed(10.0)
+                        .range(0.0..=1.0e9),
+                );
+                props.kv = kv_kn * 1000.0;
+                if resp.drag_stopped() || resp.lost_focus() {
+                    pending_props.push((elem_id, props));
+                }
+            });
+            // μ（すべり支承のみ）。
+            row.col(|ui| {
+                let resp = table_util::cell_drag_value(
+                    ui,
+                    is_sliding,
+                    egui::DragValue::new(&mut props.mu)
+                        .speed(0.005)
+                        .range(0.0..=2.0),
+                );
+                if resp.drag_stopped() || resp.lost_focus() {
+                    pending_props.push((elem_id, props));
+                }
+            });
+            row.col(|ui| {
+                if table_util::delete_cell(ui, "免震支承材を削除", None) {
+                    pending_del = Some(elem_id);
+                }
+            });
+        },
+    );
 
     let mut changed = false;
     for (elem_id, props) in pending_props {

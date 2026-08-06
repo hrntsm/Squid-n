@@ -37,7 +37,7 @@ fn live_load_reduction_section(ui: &mut egui::Ui, app: &App) {
 }
 
 pub fn design_table(ui: &mut egui::Ui, app: &mut App) {
-    use egui_extras::{Column, TableBuilder};
+    use crate::table_util::Col;
 
     live_load_reduction_section(ui, app);
 
@@ -165,103 +165,96 @@ pub fn design_table(ui: &mut egui::Ui, app: &mut App) {
     let mut focus: Option<squid_n_core::ids::ElemId> = None;
     let mut jump_to_section: Option<(squid_n_core::ids::SectionId, squid_n_core::ids::ElemId)> =
         None;
-    let row_h = crate::theme::table_row_height(ui);
-    TableBuilder::new(ui)
-        .striped(true)
-        .column(Column::auto())
-        .column(Column::auto())
-        .column(Column::initial(80.0))
-        .column(Column::initial(60.0))
-        .column(Column::initial(200.0))
-        .column(Column::initial(220.0))
-        .column(Column::initial(90.0))
-        .header(row_h, |mut h| {
-            for t in &["部材", "位置", "検定比", "判定", "根拠", "内訳", "断面"] {
-                h.col(|ui| {
-                    ui.strong(*t);
-                });
-            }
-        })
-        .body(|body| {
-            body.rows(row_h, n, |mut row| {
-                let i = row.index();
-                let r = &checks[i];
-                let is_focus = app.nav.focus_member == Some(r.elem);
-                row.col(|ui| {
+    crate::table_util::standard_table(
+        ui,
+        "design_member_checks",
+        &[
+            Col::id_named("部材"),
+            Col::num("位置"),
+            Col::num("検定比"),
+            Col::label("判定"),
+            Col::text("根拠"),
+            Col::text("内訳"),
+            Col::name("断面"),
+        ],
+        n,
+        |row| {
+            let i = row.index();
+            let r = &checks[i];
+            let is_focus = app.nav.focus_member == Some(r.elem);
+            row.col(|ui| {
+                if crate::table_util::id_cell(
+                    ui,
+                    is_focus,
+                    r.elem.0,
+                    "クリックで部材を選択（結果タブの3Dビューで確認できます）",
+                ) {
+                    focus = Some(r.elem);
+                }
+            });
+            row.col(|ui| {
+                ui.label(format!("{:.3}", r.pos));
+            });
+            row.col(|ui| match r.ratio {
+                Some(ratio) => {
+                    ui.colored_label(crate::theme::status_color(ratio), format!("{:.4}", ratio));
+                }
+                None => {
+                    ui.label("-");
+                }
+            });
+            row.col(|ui| match r.ok {
+                Some(true) => {
+                    ui.label("OK");
+                }
+                Some(false) => {
+                    ui.colored_label(crate::theme::ERROR_RED, "NG");
+                }
+                None => {
+                    ui.colored_label(crate::theme::GRAY_600, "検定不能");
+                }
+            });
+            row.col(|ui| {
+                if r.detail.is_empty() {
+                    crate::table_util::text_cell(ui, &r.basis);
+                } else {
+                    ui.label(&r.basis).on_hover_text(&r.detail);
+                }
+            });
+            row.col(|ui| {
+                if r.components.is_empty() {
+                    ui.label("-");
+                } else {
+                    ui.horizontal(|ui| {
+                        for (idx, c) in r.components.iter().enumerate() {
+                            if idx > 0 {
+                                ui.label("／");
+                            }
+                            ui.colored_label(
+                                crate::theme::status_color(c.ratio),
+                                format!("{} {:.2}", c.kind.label(), c.ratio),
+                            )
+                            .on_hover_text(&c.detail);
+                        }
+                    });
+                }
+            });
+            row.col(|ui| match &section_of[i] {
+                Some((sid, name)) => {
                     if ui
-                        .selectable_label(is_focus, r.elem.0.to_string())
-                        .on_hover_text("クリックで部材を選択（結果タブの3Dビューで確認できます）")
+                        .button(name)
+                        .on_hover_text("クリックでモデルタブの断面編集へ移動")
                         .clicked()
                     {
-                        focus = Some(r.elem);
+                        jump_to_section = Some((*sid, r.elem));
                     }
-                });
-                row.col(|ui| {
-                    ui.label(format!("{:.3}", r.pos));
-                });
-                row.col(|ui| match r.ratio {
-                    Some(ratio) => {
-                        ui.colored_label(
-                            crate::theme::status_color(ratio),
-                            format!("{:.4}", ratio),
-                        );
-                    }
-                    None => {
-                        ui.label("-");
-                    }
-                });
-                row.col(|ui| match r.ok {
-                    Some(true) => {
-                        ui.label("OK");
-                    }
-                    Some(false) => {
-                        ui.colored_label(crate::theme::ERROR_RED, "NG");
-                    }
-                    None => {
-                        ui.colored_label(crate::theme::GRAY_600, "検定不能");
-                    }
-                });
-                row.col(|ui| {
-                    if r.detail.is_empty() {
-                        ui.label(&r.basis);
-                    } else {
-                        ui.label(&r.basis).on_hover_text(&r.detail);
-                    }
-                });
-                row.col(|ui| {
-                    if r.components.is_empty() {
-                        ui.label("-");
-                    } else {
-                        ui.horizontal(|ui| {
-                            for (idx, c) in r.components.iter().enumerate() {
-                                if idx > 0 {
-                                    ui.label("／");
-                                }
-                                ui.colored_label(
-                                    crate::theme::status_color(c.ratio),
-                                    format!("{} {:.2}", c.kind.label(), c.ratio),
-                                )
-                                .on_hover_text(&c.detail);
-                            }
-                        });
-                    }
-                });
-                row.col(|ui| match &section_of[i] {
-                    Some((sid, name)) => {
-                        if ui
-                            .button(name)
-                            .on_hover_text("クリックでモデルタブの断面編集へ移動")
-                            .clicked()
-                        {
-                            jump_to_section = Some((*sid, r.elem));
-                        }
-                    }
-                    None => {
-                        ui.label("-");
-                    }
-                });
+                }
+                None => {
+                    ui.label("-");
+                }
             });
-        });
+        },
+    );
     if let Some(id) = focus {
         app.nav.focus_member = Some(id);
     }
@@ -325,62 +318,56 @@ pub fn design_table(ui: &mut egui::Ui, app: &mut App) {
         // NG 件数集計には検定不能（ok=None）を含めない。
         let ng = joint_checks.iter().filter(|j| j.ok == Some(false)).count();
         ui.label(format!("{} 箇所を検定、NG {} 件", joint_checks.len(), ng));
-        let row_h = crate::theme::table_row_height(ui);
-        TableBuilder::new(ui)
-            .striped(true)
-            .id_salt("joint_checks")
-            .column(Column::auto())
-            .column(Column::initial(110.0))
-            .column(Column::initial(80.0))
-            .column(Column::initial(60.0))
-            .column(Column::initial(260.0))
-            .header(row_h, |mut h| {
-                for t in &["節点", "種別", "検定比", "判定", "根拠"] {
-                    h.col(|ui| {
-                        ui.strong(*t);
-                    });
-                }
-            })
-            .body(|body| {
-                body.rows(row_h, joint_checks.len(), |mut row| {
-                    let j = &joint_checks[row.index()];
-                    row.col(|ui| {
-                        ui.label(j.node.0.to_string());
-                    });
-                    row.col(|ui| {
-                        ui.label(&j.label);
-                    });
-                    row.col(|ui| match j.ratio {
-                        Some(ratio) => {
-                            ui.colored_label(
-                                crate::theme::status_color(ratio),
-                                format!("{:.4}", ratio),
-                            );
-                        }
-                        None => {
-                            ui.label("-");
-                        }
-                    });
-                    row.col(|ui| match j.ok {
-                        Some(true) => {
-                            ui.label("OK");
-                        }
-                        Some(false) => {
-                            ui.colored_label(crate::theme::ERROR_RED, "NG");
-                        }
-                        None => {
-                            ui.colored_label(crate::theme::GRAY_600, "検定不能");
-                        }
-                    });
-                    row.col(|ui| {
-                        if j.detail.is_empty() {
-                            ui.label(&j.basis);
-                        } else {
-                            ui.label(&j.basis).on_hover_text(&j.detail);
-                        }
-                    });
+        crate::table_util::standard_table(
+            ui,
+            "joint_checks",
+            &[
+                Col::id_named("節点"),
+                Col::name("種別"),
+                Col::num("検定比"),
+                Col::label("判定"),
+                Col::text("根拠"),
+            ],
+            joint_checks.len(),
+            |row| {
+                let j = &joint_checks[row.index()];
+                row.col(|ui| {
+                    crate::table_util::id_label(ui, j.node.0);
                 });
-            });
+                row.col(|ui| {
+                    crate::table_util::text_cell(ui, &j.label);
+                });
+                row.col(|ui| match j.ratio {
+                    Some(ratio) => {
+                        ui.colored_label(
+                            crate::theme::status_color(ratio),
+                            format!("{:.4}", ratio),
+                        );
+                    }
+                    None => {
+                        ui.label("-");
+                    }
+                });
+                row.col(|ui| match j.ok {
+                    Some(true) => {
+                        ui.label("OK");
+                    }
+                    Some(false) => {
+                        ui.colored_label(crate::theme::ERROR_RED, "NG");
+                    }
+                    None => {
+                        ui.colored_label(crate::theme::GRAY_600, "検定不能");
+                    }
+                });
+                row.col(|ui| {
+                    if j.detail.is_empty() {
+                        crate::table_util::text_cell(ui, &j.basis);
+                    } else {
+                        ui.label(&j.basis).on_hover_text(&j.detail);
+                    }
+                });
+            },
+        );
     }
 
     // ── 免震支承材の非線形特性 ────────────
@@ -540,82 +527,69 @@ pub fn design_table(ui: &mut egui::Ui, app: &mut App) {
             &ctx,
         );
 
-        let row_h = crate::theme::table_row_height(ui);
-        TableBuilder::new(ui)
-            .striped(true)
-            .column(Column::auto())
-            .column(Column::initial(70.0))
-            .column(Column::initial(80.0))
-            .column(Column::initial(90.0))
-            .column(Column::initial(80.0))
-            .column(Column::initial(80.0))
-            .column(Column::initial(60.0))
-            .header(row_h, |mut h| {
-                // 変形角の制限値は計算条件（令82条の2: 原則 1/200、緩和時 1/120）に追従する。
-                let denom = metrics
-                    .first()
-                    .map(|m| m.drift_limit_denom)
-                    .unwrap_or(app.model.stress_cfg.drift_limit_denom);
-                let drift_label = format!("変形角(1/{:.0})", denom);
-                for t in [
-                    "階",
-                    "階高[mm]",
-                    "層間変位[mm]",
-                    drift_label.as_str(),
-                    "剛性率Rs(≥0.6)",
-                    "偏心率Re(≤0.15)",
-                    "Fes",
-                ] {
-                    h.col(|ui| {
-                        ui.strong(t);
-                    });
-                }
-            })
-            .body(|body| {
-                body.rows(row_h, metrics.len(), |mut row| {
-                    let m = &metrics[row.index()];
-                    row.col(|ui| {
-                        ui.label(&m.name);
-                    });
-                    row.col(|ui| {
-                        ui.label(format!("{:.0}", m.height));
-                    });
-                    row.col(|ui| {
-                        ui.label(format!("{:.3}", m.drift));
-                    });
-                    row.col(|ui| {
-                        let txt = if m.drift_angle > 1e-12 {
-                            format!("1/{:.0}", 1.0 / m.drift_angle)
-                        } else {
-                            "0".to_string()
-                        };
-                        if m.drift_ok {
-                            ui.colored_label(crate::theme::GOOD_GREEN, txt);
-                        } else {
-                            ui.colored_label(crate::theme::ERROR_RED, format!("{} NG", txt));
-                        }
-                    });
-                    row.col(|ui| {
-                        let txt = format!("{:.3}", m.rs);
-                        if m.rs_ok {
-                            ui.colored_label(crate::theme::GOOD_GREEN, txt);
-                        } else {
-                            ui.colored_label(crate::theme::ERROR_RED, format!("{} NG", txt));
-                        }
-                    });
-                    row.col(|ui| {
-                        let txt = format!("{:.3}", m.re);
-                        if m.re_ok {
-                            ui.colored_label(crate::theme::GOOD_GREEN, txt);
-                        } else {
-                            ui.colored_label(crate::theme::ERROR_RED, format!("{} NG", txt));
-                        }
-                    });
-                    row.col(|ui| {
-                        ui.label(format!("{:.3}", m.fes));
-                    });
+        // 変形角の制限値は計算条件（令82条の2: 原則 1/200、緩和時 1/120）に追従する。
+        let denom = metrics
+            .first()
+            .map(|m| m.drift_limit_denom)
+            .unwrap_or(app.model.stress_cfg.drift_limit_denom);
+        let drift_label = format!("変形角(1/{:.0})", denom);
+        crate::table_util::standard_table(
+            ui,
+            "design_story_metrics",
+            &[
+                Col::label("階"),
+                Col::num("階高[mm]"),
+                Col::num("層間変位[mm]"),
+                Col::num(drift_label.as_str()),
+                Col::num("剛性率Rs(≥0.6)"),
+                Col::num("偏心率Re(≤0.15)"),
+                Col::num("Fes"),
+            ],
+            metrics.len(),
+            |row| {
+                let m = &metrics[row.index()];
+                row.col(|ui| {
+                    crate::table_util::text_cell(ui, &m.name);
                 });
-            });
+                row.col(|ui| {
+                    ui.label(format!("{:.0}", m.height));
+                });
+                row.col(|ui| {
+                    ui.label(format!("{:.3}", m.drift));
+                });
+                row.col(|ui| {
+                    let txt = if m.drift_angle > 1e-12 {
+                        format!("1/{:.0}", 1.0 / m.drift_angle)
+                    } else {
+                        "0".to_string()
+                    };
+                    if m.drift_ok {
+                        ui.colored_label(crate::theme::GOOD_GREEN, txt);
+                    } else {
+                        ui.colored_label(crate::theme::ERROR_RED, format!("{} NG", txt));
+                    }
+                });
+                row.col(|ui| {
+                    let txt = format!("{:.3}", m.rs);
+                    if m.rs_ok {
+                        ui.colored_label(crate::theme::GOOD_GREEN, txt);
+                    } else {
+                        ui.colored_label(crate::theme::ERROR_RED, format!("{} NG", txt));
+                    }
+                });
+                row.col(|ui| {
+                    let txt = format!("{:.3}", m.re);
+                    if m.re_ok {
+                        ui.colored_label(crate::theme::GOOD_GREEN, txt);
+                    } else {
+                        ui.colored_label(crate::theme::ERROR_RED, format!("{} NG", txt));
+                    }
+                });
+                row.col(|ui| {
+                    ui.label(format!("{:.3}", m.fes));
+                });
+            },
+        );
     } else {
         ui.colored_label(
             crate::theme::GRAY_600,
@@ -687,73 +661,59 @@ pub fn design_table(ui: &mut egui::Ui, app: &mut App) {
             }
         }
         Ok((result, story_ranks)) => {
-            let row_h = crate::theme::table_row_height(ui);
-            TableBuilder::new(ui)
-                .striped(true)
-                .column(Column::auto())
-                .column(Column::initial(80.0))
-                .column(Column::initial(80.0))
-                .column(Column::initial(60.0))
-                .column(Column::initial(60.0))
-                .column(Column::initial(80.0))
-                .column(Column::initial(60.0))
-                .column(Column::initial(70.0))
-                .header(row_h, |mut h| {
-                    for t in &[
-                        "階",
-                        "Qu[kN]",
-                        "Qud[kN]",
-                        "Ds",
-                        "Fes",
-                        "Qun[kN]",
-                        "判定",
-                        "採用ランク",
-                    ] {
-                        h.col(|ui| {
-                            ui.strong(*t);
-                        });
-                    }
-                })
-                .body(|body| {
-                    body.rows(row_h, result.stories.len(), |mut row| {
-                        let i = row.index();
-                        let s = &result.stories[i];
-                        let name = app
-                            .model
-                            .stories
-                            .get(i)
-                            .map(|st| st.name.clone())
-                            .unwrap_or_else(|| format!("{}", s.story.0));
-                        row.col(|ui| {
-                            ui.label(&name);
-                        });
-                        row.col(|ui| {
-                            ui.label(format!("{:.1}", s.qu / 1000.0));
-                        });
-                        row.col(|ui| {
-                            ui.label(format!("{:.1}", s.qud / 1000.0));
-                        });
-                        row.col(|ui| {
-                            ui.label(format!("{:.2}", s.ds));
-                        });
-                        row.col(|ui| {
-                            ui.label(format!("{:.2}", s.fes));
-                        });
-                        row.col(|ui| {
-                            ui.label(format!("{:.1}", s.qun / 1000.0));
-                        });
-                        row.col(|ui| {
-                            if s.ok {
-                                ui.colored_label(crate::theme::GOOD_GREEN, "OK");
-                            } else {
-                                ui.colored_label(crate::theme::ERROR_RED, "NG");
-                            }
-                        });
-                        row.col(|ui| {
-                            ui.label(story_ranks.get(i).map(|r| rank_label(*r)).unwrap_or("-"));
-                        });
+            crate::table_util::standard_table(
+                ui,
+                "design_holding_capacity",
+                &[
+                    Col::label("階"),
+                    Col::num("Qu[kN]"),
+                    Col::num("Qud[kN]"),
+                    Col::num("Ds"),
+                    Col::num("Fes"),
+                    Col::num("Qun[kN]"),
+                    Col::label("判定"),
+                    Col::label("採用ランク"),
+                ],
+                result.stories.len(),
+                |row| {
+                    let i = row.index();
+                    let s = &result.stories[i];
+                    let name = app
+                        .model
+                        .stories
+                        .get(i)
+                        .map(|st| st.name.clone())
+                        .unwrap_or_else(|| format!("{}", s.story.0));
+                    row.col(|ui| {
+                        crate::table_util::text_cell(ui, &name);
                     });
-                });
+                    row.col(|ui| {
+                        ui.label(format!("{:.1}", s.qu / 1000.0));
+                    });
+                    row.col(|ui| {
+                        ui.label(format!("{:.1}", s.qud / 1000.0));
+                    });
+                    row.col(|ui| {
+                        ui.label(format!("{:.2}", s.ds));
+                    });
+                    row.col(|ui| {
+                        ui.label(format!("{:.2}", s.fes));
+                    });
+                    row.col(|ui| {
+                        ui.label(format!("{:.1}", s.qun / 1000.0));
+                    });
+                    row.col(|ui| {
+                        if s.ok {
+                            ui.colored_label(crate::theme::GOOD_GREEN, "OK");
+                        } else {
+                            ui.colored_label(crate::theme::ERROR_RED, "NG");
+                        }
+                    });
+                    row.col(|ui| {
+                        ui.label(story_ranks.get(i).map(|r| rank_label(*r)).unwrap_or("-"));
+                    });
+                },
+            );
             // 崩壊機構（増分解析判定）を表示する。Ds は部材ランクに加えて
             // この崩壊機構を層別に反映する（層崩壊形の層は1段階不利、部分崩壊形は
             // 機構未確定として補正なし＝暫定値、全体崩壊形は標準）。
@@ -842,7 +802,7 @@ pub fn design_table(ui: &mut egui::Ui, app: &mut App) {
 /// 小梁は単純支持梁として曲げ・たわみを検定し、スラブは一方向版として設計曲げ
 /// モーメント・必要鉄筋量を表示する（いずれも全体 FEM から独立）。
 fn floor_design_section(ui: &mut egui::Ui, app: &App) {
-    use egui_extras::{Column, TableBuilder};
+    use crate::table_util::Col;
     let Some(r) = app.results.as_ref() else {
         return;
     };
@@ -861,132 +821,102 @@ fn floor_design_section(ui: &mut egui::Ui, app: &App) {
 
     if !r.joist_checks.is_empty() {
         ui.label("小梁（単純支持梁）:");
-        let row_h = crate::theme::table_row_height(ui);
-        TableBuilder::new(ui)
-            .id_salt("joist_design_table")
-            .striped(true)
-            .column(Column::auto())
-            .column(Column::auto())
-            .column(Column::initial(80.0))
-            .column(Column::initial(90.0))
-            .column(Column::initial(90.0))
-            .column(Column::initial(90.0))
-            .column(Column::initial(70.0))
-            .column(Column::auto())
-            .header(row_h, |mut h| {
-                for t in &[
-                    "スラブ",
-                    "小梁",
-                    "スパン[mm]",
-                    "M[kN·m]",
-                    "Q[kN]",
-                    "δ[mm]",
-                    "検定比",
-                    "判定",
-                ] {
-                    h.col(|ui| {
-                        ui.strong(*t);
-                    });
-                }
-            })
-            .body(|mut body| {
-                for (sid, ji, jr) in &r.joist_checks {
-                    body.row(row_h, |mut row| {
-                        row.col(|ui| {
-                            ui.label(format!("#{}", sid.0));
-                        });
-                        row.col(|ui| {
-                            ui.label(format!("{ji}"));
-                        });
-                        row.col(|ui| {
-                            ui.label(format!("{:.0}", jr.span));
-                        });
-                        row.col(|ui| {
-                            ui.label(format!("{:.2}", jr.m_max * 1e-6));
-                        });
-                        row.col(|ui| {
-                            ui.label(format!("{:.2}", jr.q_max * 1e-3));
-                        });
-                        row.col(|ui| {
-                            ui.label(format!("{:.2} (δ/L=1/{:.0})", jr.deflection, {
-                                if jr.deflection_span_ratio > 0.0 {
-                                    1.0 / jr.deflection_span_ratio
-                                } else {
-                                    f64::INFINITY
-                                }
-                            }));
-                        });
-                        row.col(|ui| {
-                            ui.colored_label(
-                                crate::theme::status_color(jr.ratio),
-                                format!("{:.2}", jr.ratio),
-                            );
-                        });
-                        row.col(|ui| {
-                            if jr.ok {
-                                ui.colored_label(crate::theme::GOOD_GREEN, "OK");
-                            } else {
-                                ui.colored_label(crate::theme::ERROR_RED, "NG");
-                            }
-                        });
-                    });
-                }
-            });
+        crate::table_util::standard_table(
+            ui,
+            "joist_design_table",
+            &[
+                Col::id_named("スラブ"),
+                Col::id_named("小梁"),
+                Col::num("スパン[mm]"),
+                Col::num("M[kN·m]"),
+                Col::num("Q[kN]"),
+                Col::wide_num("δ[mm]"),
+                Col::num("検定比"),
+                Col::label("判定"),
+            ],
+            r.joist_checks.len(),
+            |row| {
+                let (sid, ji, jr) = &r.joist_checks[row.index()];
+                row.col(|ui| {
+                    ui.label(format!("#{}", sid.0));
+                });
+                row.col(|ui| {
+                    ui.label(format!("{ji}"));
+                });
+                row.col(|ui| {
+                    ui.label(format!("{:.0}", jr.span));
+                });
+                row.col(|ui| {
+                    ui.label(format!("{:.2}", jr.m_max * 1e-6));
+                });
+                row.col(|ui| {
+                    ui.label(format!("{:.2}", jr.q_max * 1e-3));
+                });
+                row.col(|ui| {
+                    ui.label(format!("{:.2} (δ/L=1/{:.0})", jr.deflection, {
+                        if jr.deflection_span_ratio > 0.0 {
+                            1.0 / jr.deflection_span_ratio
+                        } else {
+                            f64::INFINITY
+                        }
+                    }));
+                });
+                row.col(|ui| {
+                    ui.colored_label(
+                        crate::theme::status_color(jr.ratio),
+                        format!("{:.2}", jr.ratio),
+                    );
+                });
+                row.col(|ui| {
+                    if jr.ok {
+                        ui.colored_label(crate::theme::GOOD_GREEN, "OK");
+                    } else {
+                        ui.colored_label(crate::theme::ERROR_RED, "NG");
+                    }
+                });
+            },
+        );
     }
 
     if !r.slab_checks.is_empty() {
         ui.add_space(6.0);
         ui.label("スラブ（一方向版）:");
-        let row_h = crate::theme::table_row_height(ui);
-        TableBuilder::new(ui)
-            .id_salt("slab_design_table")
-            .striped(true)
-            .column(Column::auto())
-            .column(Column::initial(80.0))
-            .column(Column::initial(90.0))
-            .column(Column::initial(100.0))
-            .column(Column::initial(80.0))
-            .column(Column::initial(120.0))
-            .header(row_h, |mut h| {
-                for t in &[
-                    "スラブ",
-                    "スパン[mm]",
-                    "w[kN/m²]",
-                    "M[kN·m/m]",
-                    "t[mm]",
-                    "必要As[mm²/m]",
-                ] {
-                    h.col(|ui| {
-                        ui.strong(*t);
-                    });
-                }
-            })
-            .body(|mut body| {
-                for (sid, sr) in &r.slab_checks {
-                    body.row(row_h, |mut row| {
-                        row.col(|ui| {
-                            ui.label(format!("#{}", sid.0));
-                        });
-                        row.col(|ui| {
-                            ui.label(format!("{:.0}", sr.span));
-                        });
-                        row.col(|ui| {
-                            // w[N/mm²] → kN/m²（×1e3）。
-                            ui.label(format!("{:.2}", sr.w * 1e3));
-                        });
-                        row.col(|ui| {
-                            // M[N·mm/mm] → kN·m/m（×1e-3）。
-                            ui.label(format!("{:.2}", sr.moment * 1e-3));
-                        });
-                        row.col(|ui| {
-                            ui.label(format!("{:.0}", sr.thickness));
-                        });
-                        row.col(|ui| {
-                            ui.label(format!("{:.0}", sr.as_req_per_m));
-                        });
-                    });
-                }
-            });
+        crate::table_util::standard_table(
+            ui,
+            "slab_design_table",
+            &[
+                Col::id_named("スラブ"),
+                Col::num("スパン[mm]"),
+                Col::num("w[kN/m²]"),
+                Col::num("M[kN·m/m]"),
+                Col::num("t[mm]"),
+                Col::num("必要As[mm²/m]"),
+            ],
+            r.slab_checks.len(),
+            |row| {
+                let (sid, sr) = &r.slab_checks[row.index()];
+                row.col(|ui| {
+                    ui.label(format!("#{}", sid.0));
+                });
+                row.col(|ui| {
+                    ui.label(format!("{:.0}", sr.span));
+                });
+                row.col(|ui| {
+                    // w[N/mm²] → kN/m²（×1e3）。
+                    ui.label(format!("{:.2}", sr.w * 1e3));
+                });
+                row.col(|ui| {
+                    // M[N·mm/mm] → kN·m/m（×1e-3）。
+                    ui.label(format!("{:.2}", sr.moment * 1e-3));
+                });
+                row.col(|ui| {
+                    ui.label(format!("{:.0}", sr.thickness));
+                });
+                row.col(|ui| {
+                    ui.label(format!("{:.0}", sr.as_req_per_m));
+                });
+            },
+        );
     }
 }
 

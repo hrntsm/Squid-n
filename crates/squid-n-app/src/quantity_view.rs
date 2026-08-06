@@ -5,7 +5,7 @@
 //! を集計し、部位別・階別・明細・鉄骨種類別・鉄筋径別に表示する。
 //! CSV エクスポート（[`crate::summary::build_quantity_csv`]）にも対応する。
 
-use egui_extras::{Column, TableBuilder};
+use crate::table_util::Col;
 use squid_n_design_jp::quantity::{compute_quantity_takeoff, QuantityCfg, QuantityTotals};
 
 use crate::app::App;
@@ -118,16 +118,15 @@ pub fn quantity_panel(ui: &mut egui::Ui, app: &mut App) {
                     ui,
                     "quantity_view_tbl_0",
                     &[
-                        Column::initial(220.0),
-                        Column::initial(100.0),
-                        Column::initial(100.0),
+                        Col::text("断面"),
+                        Col::num("長さ [m]"),
+                        Col::num("重量 [t]"),
                     ],
-                    &["断面", "長さ [m]", "重量 [t]"],
                     rows.len(),
                     |row| {
                         let it = &rows[row.index()];
                         row.col(|ui| {
-                            ui.label(&it.section_name);
+                            crate::table_util::text_cell(ui, &it.section_name);
                         });
                         row.col(|ui| {
                             ui.label(format!("{:.2}", it.length_m));
@@ -144,11 +143,10 @@ pub fn quantity_panel(ui: &mut egui::Ui, app: &mut App) {
                     ui,
                     "quantity_view_tbl_1",
                     &[
-                        Column::initial(120.0),
-                        Column::initial(120.0),
-                        Column::initial(100.0),
+                        Col::name("呼び径"),
+                        Col::num("長さ [m]"),
+                        Col::num("重量 [t]"),
                     ],
-                    &["呼び径", "長さ [m]", "重量 [t]"],
                     rows.len(),
                     |row| {
                         let (dia, len, w) = rows[row.index()];
@@ -173,88 +171,73 @@ pub fn quantity_panel(ui: &mut egui::Ui, app: &mut App) {
                 );
             }
             QuantityGrouping::Detail => {
-                let row_h = crate::theme::table_row_height(ui);
-                TableBuilder::new(ui)
-                    .striped(true)
-                    .column(Column::initial(60.0)) // ID
-                    .column(Column::initial(60.0)) // 階
-                    .column(Column::initial(70.0)) // 部位
-                    .column(Column::initial(50.0)) // 構造
-                    .column(Column::initial(160.0)) // 符号
-                    .column(Column::initial(110.0)) // コンクリート
-                    .column(Column::initial(90.0)) // 型枠
-                    .column(Column::initial(80.0)) // 鉄筋
-                    .column(Column::initial(80.0)) // 鉄骨
-                    .column(Column::initial(80.0)) // 継手
-                    .header(row_h, |mut h| {
-                        for t in &[
-                            "ID",
-                            "階",
-                            "部位",
-                            "構造",
-                            "符号",
-                            "ｺﾝｸﾘｰﾄ [m³]",
-                            "型枠 [m²]",
-                            "鉄筋 [t]",
-                            "鉄骨 [t]",
-                            "継手 [個所]",
-                        ] {
-                            h.col(|ui| {
-                                ui.strong(*t);
-                            });
-                        }
-                    })
-                    .body(|body| {
-                        body.rows(row_h, takeoff.items.len(), |mut row| {
-                            let it = &takeoff.items[row.index()];
-                            row.col(|ui| match it.elem {
-                                Some(id) => {
-                                    let is_focus = app.nav.focus_member == Some(id);
-                                    if ui
-                                        .selectable_label(is_focus, id.0.to_string())
-                                        .on_hover_text("クリックで部材を選択")
-                                        .clicked()
-                                    {
-                                        focus = Some(id);
-                                    }
+                crate::table_util::standard_table(
+                    ui,
+                    "quantity_detail",
+                    &[
+                        Col::id(),
+                        Col::label("階"),
+                        Col::label("部位"),
+                        Col::label("構造"),
+                        Col::name("符号"),
+                        Col::num("ｺﾝｸﾘｰﾄ [m³]"),
+                        Col::num("型枠 [m²]"),
+                        Col::num("鉄筋 [t]"),
+                        Col::num("鉄骨 [t]"),
+                        Col::num("継手 [個所]"),
+                    ],
+                    takeoff.items.len(),
+                    |row| {
+                        let it = &takeoff.items[row.index()];
+                        row.col(|ui| match it.elem {
+                            Some(id) => {
+                                let is_focus = app.nav.focus_member == Some(id);
+                                if crate::table_util::id_cell(
+                                    ui,
+                                    is_focus,
+                                    id.0,
+                                    "クリックで部材を選択",
+                                ) {
+                                    focus = Some(id);
                                 }
-                                None => {
-                                    ui.label(
-                                        it.slab
-                                            .map(|s| format!("S{}", s.0))
-                                            .unwrap_or_else(|| "-".to_string()),
-                                    );
-                                }
-                            });
-                            row.col(|ui| {
-                                ui.label(&it.story);
-                            });
-                            row.col(|ui| {
-                                ui.label(it.category.label());
-                            });
-                            row.col(|ui| {
-                                ui.label(it.structure.label());
-                            });
-                            row.col(|ui| {
-                                ui.label(&it.label);
-                            });
-                            row.col(|ui| {
-                                ui.label(format!("{:.3}", it.concrete_m3));
-                            });
-                            row.col(|ui| {
-                                ui.label(format!("{:.2}", it.formwork_m2));
-                            });
-                            row.col(|ui| {
-                                ui.label(format!("{:.4}", it.rebar_weight_t()));
-                            });
-                            row.col(|ui| {
-                                ui.label(format!("{:.4}", it.steel_weight_t()));
-                            });
-                            row.col(|ui| {
-                                ui.label(format!("{:.1}", it.rebar_joints));
-                            });
+                            }
+                            None => {
+                                ui.label(
+                                    it.slab
+                                        .map(|s| format!("S{}", s.0))
+                                        .unwrap_or_else(|| "-".to_string()),
+                                );
+                            }
                         });
-                    });
+                        row.col(|ui| {
+                            crate::table_util::text_cell(ui, &it.story);
+                        });
+                        row.col(|ui| {
+                            ui.label(it.category.label());
+                        });
+                        row.col(|ui| {
+                            ui.label(it.structure.label());
+                        });
+                        row.col(|ui| {
+                            crate::table_util::text_cell(ui, &it.label);
+                        });
+                        row.col(|ui| {
+                            ui.label(format!("{:.3}", it.concrete_m3));
+                        });
+                        row.col(|ui| {
+                            ui.label(format!("{:.2}", it.formwork_m2));
+                        });
+                        row.col(|ui| {
+                            ui.label(format!("{:.4}", it.rebar_weight_t()));
+                        });
+                        row.col(|ui| {
+                            ui.label(format!("{:.4}", it.steel_weight_t()));
+                        });
+                        row.col(|ui| {
+                            ui.label(format!("{:.1}", it.rebar_joints));
+                        });
+                    },
+                );
             }
         }
 
@@ -282,72 +265,60 @@ fn totals_table(
     totals: QuantityTotals,
 ) {
     let n = rows.len();
-    let row_h = crate::theme::table_row_height(ui);
-    TableBuilder::new(ui)
-        .striped(true)
-        .column(Column::initial(90.0))
-        .column(Column::initial(110.0))
-        .column(Column::initial(90.0))
-        .column(Column::initial(80.0))
-        .column(Column::initial(80.0))
-        .column(Column::initial(80.0))
-        .header(row_h, |mut h| {
-            for t in &[
-                key_label,
-                "ｺﾝｸﾘｰﾄ [m³]",
-                "型枠 [m²]",
-                "鉄筋 [t]",
-                "鉄骨 [t]",
-                "継手 [個所]",
-            ] {
-                h.col(|ui| {
-                    ui.strong(*t);
+    crate::table_util::standard_table(
+        ui,
+        "quantity_totals",
+        &[
+            Col::name(key_label),
+            Col::num("ｺﾝｸﾘｰﾄ [m³]"),
+            Col::num("型枠 [m²]"),
+            Col::num("鉄筋 [t]"),
+            Col::num("鉄骨 [t]"),
+            Col::num("継手 [個所]"),
+        ],
+        n + 1,
+        |row| {
+            let i = row.index();
+            if i < n {
+                let (name, t) = &rows[i];
+                row.col(|ui| {
+                    crate::table_util::text_cell(ui, name);
+                });
+                row.col(|ui| {
+                    ui.label(format!("{:.2}", t.concrete_m3));
+                });
+                row.col(|ui| {
+                    ui.label(format!("{:.2}", t.formwork_m2));
+                });
+                row.col(|ui| {
+                    ui.label(format!("{:.3}", t.rebar_t));
+                });
+                row.col(|ui| {
+                    ui.label(format!("{:.3}", t.steel_t));
+                });
+                row.col(|ui| {
+                    ui.label(format!("{:.1}", t.rebar_joints));
+                });
+            } else {
+                row.col(|ui| {
+                    ui.strong("合計");
+                });
+                row.col(|ui| {
+                    ui.strong(format!("{:.2}", totals.concrete_m3));
+                });
+                row.col(|ui| {
+                    ui.strong(format!("{:.2}", totals.formwork_m2));
+                });
+                row.col(|ui| {
+                    ui.strong(format!("{:.3}", totals.rebar_t));
+                });
+                row.col(|ui| {
+                    ui.strong(format!("{:.3}", totals.steel_t));
+                });
+                row.col(|ui| {
+                    ui.strong(format!("{:.1}", totals.rebar_joints));
                 });
             }
-        })
-        .body(|body| {
-            body.rows(row_h, n + 1, |mut row| {
-                let i = row.index();
-                if i < n {
-                    let (name, t) = &rows[i];
-                    row.col(|ui| {
-                        ui.label(name);
-                    });
-                    row.col(|ui| {
-                        ui.label(format!("{:.2}", t.concrete_m3));
-                    });
-                    row.col(|ui| {
-                        ui.label(format!("{:.2}", t.formwork_m2));
-                    });
-                    row.col(|ui| {
-                        ui.label(format!("{:.3}", t.rebar_t));
-                    });
-                    row.col(|ui| {
-                        ui.label(format!("{:.3}", t.steel_t));
-                    });
-                    row.col(|ui| {
-                        ui.label(format!("{:.1}", t.rebar_joints));
-                    });
-                } else {
-                    row.col(|ui| {
-                        ui.strong("合計");
-                    });
-                    row.col(|ui| {
-                        ui.strong(format!("{:.2}", totals.concrete_m3));
-                    });
-                    row.col(|ui| {
-                        ui.strong(format!("{:.2}", totals.formwork_m2));
-                    });
-                    row.col(|ui| {
-                        ui.strong(format!("{:.3}", totals.rebar_t));
-                    });
-                    row.col(|ui| {
-                        ui.strong(format!("{:.3}", totals.steel_t));
-                    });
-                    row.col(|ui| {
-                        ui.strong(format!("{:.1}", totals.rebar_joints));
-                    });
-                }
-            });
-        });
+        },
+    );
 }
