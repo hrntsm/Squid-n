@@ -107,7 +107,8 @@ pub struct LoadEditor {
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum PickBackup {
     Node(Option<NodeId>),
-    Member(Option<ElemId>),
+    /// 対象部材と作用方向の選択肢番号。
+    Member(Option<ElemId>, usize),
 }
 
 impl LoadEditor {
@@ -218,7 +219,9 @@ impl LoadEditor {
     pub fn begin_pick(&mut self) {
         self.pick_backup = Some(match &self.draft {
             LoadDraft::Nodal(d) => PickBackup::Node(d.node),
-            LoadDraft::Member(d) => PickBackup::Member(d.elem),
+            // 方向も一緒に控える。ピック中にブレースを選ぶと方向が材軸方向へ
+            // 切り替わるため、対象だけ戻すと方向がブレース用のまま残る。
+            LoadDraft::Member(d) => PickBackup::Member(d.elem, d.dir),
         });
         self.picking = true;
         self.error = None;
@@ -230,11 +233,14 @@ impl LoadEditor {
         self.pick_backup = None;
     }
 
-    /// ピックを取り消し、対象を元へ戻してモーダルへ戻る。
+    /// ピックを取り消し、対象と方向を元へ戻してモーダルへ戻る。
     pub fn cancel_pick(&mut self) {
         match (self.pick_backup.take(), &mut self.draft) {
             (Some(PickBackup::Node(n)), LoadDraft::Nodal(d)) => d.node = n,
-            (Some(PickBackup::Member(e)), LoadDraft::Member(d)) => d.elem = e,
+            (Some(PickBackup::Member(e, dir)), LoadDraft::Member(d)) => {
+                d.elem = e;
+                d.dir = dir;
+            }
             _ => {}
         }
         self.picking = false;
@@ -440,7 +446,7 @@ impl App {
             .map(|lc| format!("[{}] {}", lc.id.0, lc.name))
             .unwrap_or_else(|| "（不明な荷重ケース）".to_string());
 
-        egui::Modal::new(egui::Id::new("load_editor_modal")).show(ctx, |ui| {
+        let modal = egui::Modal::new(egui::Id::new("load_editor_modal")).show(ctx, |ui| {
             ui.set_width(420.0);
             ui.heading(title);
             ui.label(format!("荷重ケース: {}", case_label));
@@ -627,6 +633,9 @@ impl App {
                 close = ui.button("キャンセル").clicked();
             });
         });
+        // Esc・背景クリックによる閉じ操作もキャンセルとして扱う
+        // （モーダルの作法どおりに閉じられないと、閉じる手段がボタンだけになる）。
+        close |= modal.should_close();
 
         if begin_pick {
             editor.begin_pick();
@@ -701,10 +710,17 @@ impl App {
                 if length <= 1e-9 {
                     return Err(format!("部材 #{} の材長が 0 です", elem.0));
                 }
-                let dir = if d.dir == DIR_ALONG_AXIS {
+                // 方向は下書きの選択肢番号ではなく、対象部材から決める。
+                // ブレースかどうかが唯一の条件であり、下書き側の番号を信じると、
+                // ピックの取り消しなどで番号だけがブレース用に残った場合に
+                // 選択肢の範囲外を引く。
+                let dir = if is_brace(&self.model, elem) {
                     brace_axis_dir(&self.model, elem)
                 } else {
-                    DIR_CHOICES[d.dir].1
+                    DIR_CHOICES
+                        .get(d.dir)
+                        .map(|(_, v)| *v)
+                        .unwrap_or(DIR_CHOICES[0].1)
                 };
                 let kind = match d.kind {
                     0 => MemberLoadKind::Point {
@@ -806,3 +822,177 @@ impl App {
 /// 編集対象が入れ替わっていたときの案内。
 const STALE_TARGET_MESSAGE: &str =
     "編集中に対象の荷重が変更・削除されました。閉じてから選び直してください";
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use squid_n_core::model::{ElementKind, LoadCase, LoadCaseKind};
+
+    /// ブレースと梁を 1 本ずつ持つモデル（荷重の対象選択の検証用）。
+    /// 要素 0 が梁、要素 1 がブレース。
+    fn beam_and_brace_model() -> Model {
+        use squid_n_core::dof::Dof6Mask;
+        use squid_n_core::ids::NodeId;
+        use squid_n_core::model::{ElementData, EndCondition, ForceRegime, LocalAxis, Node};
+
+        let node = |id: u32, x: f64, z: f64| Node {
+            id: NodeId(id),
+            coord: [x, 0.0, z],
+            restraint: Dof6Mask::FREE,
+            mass: None,
+            story: None,
+            support_spring: None,
+        };
+        let elem = |id: u32, kind: ElementKind, a: u32, b: u32| ElementData {
+            id: ElemId(id),
+            kind,
+            nodes: [NodeId(a), NodeId(b)].into_iter().collect(),
+            section: None,
+            material: None,
+            local_axis: LocalAxis {
+                ref_vector: [0.0, 0.0, 1.0],
+            },
+            end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+            force_regime: ForceRegime::Auto,
+            rigid_zone: Default::default(),
+            plastic_zone: None,
+            spring: None,
+        };
+        Model {
+            nodes: vec![
+                node(0, 0.0, 0.0),
+                node(1, 6000.0, 0.0),
+                node(2, 6000.0, 4000.0),
+            ],
+            elements: vec![
+                elem(0, ElementKind::Beam, 0, 1),
+                elem(
+                    1,
+                    ElementKind::Brace {
+                        tension_only: false,
+                    },
+                    0,
+                    2,
+                ),
+            ],
+            load_cases: vec![LoadCase {
+                id: LoadCaseId(0),
+                name: "LC0".into(),
+                nodal: Vec::new(),
+                member: Vec::new(),
+                kind: LoadCaseKind::Other,
+            }],
+            ..Default::default()
+        }
+    }
+
+    /// ピック中にブレースを選んでから取り消すと、対象だけでなく作用方向も元へ戻る。
+    ///
+    /// 方向が戻らないと、対象が梁に戻ったのに方向だけ「材軸方向」を指したままになり、
+    /// 確定時に選択肢の範囲外を引く（かつて追加時に落ちていた経路）。
+    #[test]
+    fn cancel_pick_restores_direction_together_with_target() {
+        let model = beam_and_brace_model();
+        let mut editor = LoadEditor::new_member(LoadCaseId(0), Some(ElemId(0)));
+        if let LoadDraft::Member(d) = &mut editor.draft {
+            d.dir = 2; // X+
+        }
+
+        editor.begin_pick();
+        editor.set_picked_member(ElemId(1), &model); // ブレース
+        match &editor.draft {
+            LoadDraft::Member(d) => {
+                assert_eq!(d.elem, Some(ElemId(1)));
+                assert_eq!(d.dir, DIR_ALONG_AXIS, "ブレースは材軸方向へ切り替わる");
+            }
+            _ => panic!("部材荷重のはず"),
+        }
+
+        editor.cancel_pick();
+        match &editor.draft {
+            LoadDraft::Member(d) => {
+                assert_eq!(d.elem, Some(ElemId(0)), "対象が元へ戻る");
+                assert_eq!(d.dir, 2, "方向も元へ戻る");
+            }
+            _ => panic!("部材荷重のはず"),
+        }
+    }
+
+    /// 対象がブレースでないのに方向が材軸方向を指していても、確定は落ちずに
+    /// 対象部材から方向を決め直す（下書きの番号を信じない）。
+    #[test]
+    fn commit_derives_direction_from_target_not_draft() {
+        let mut app = App::default();
+        app.load_model(beam_and_brace_model());
+
+        let mut editor = LoadEditor::new_member(LoadCaseId(0), Some(ElemId(0)));
+        if let LoadDraft::Member(d) = &mut editor.draft {
+            d.dir = DIR_ALONG_AXIS; // 梁なのに材軸方向を指した状態
+            d.w1 = "2.0".into();
+        }
+        app.commit_load_editor(&editor).expect("追加できるはず");
+
+        let load = &app.model.load_cases[0].member[0];
+        assert_eq!(load.dir, DIR_CHOICES[0].1, "梁は既定の鉛直下向きへ落とす");
+    }
+
+    /// ブレースを対象にすると、下書きの方向によらず材軸方向の単位ベクトルになる。
+    #[test]
+    fn commit_uses_axis_direction_for_brace() {
+        let mut app = App::default();
+        app.load_model(beam_and_brace_model());
+
+        let mut editor = LoadEditor::new_member(LoadCaseId(0), Some(ElemId(1)));
+        if let LoadDraft::Member(d) = &mut editor.draft {
+            d.dir = 0; // 鉛直下向きを指した状態
+            d.w1 = "1.0".into();
+        }
+        app.commit_load_editor(&editor).expect("追加できるはず");
+
+        // 節点 0 (0,0,0) → 節点 2 (6000,0,4000) の単位ベクトル
+        let load = &app.model.load_cases[0].member[0];
+        let n = (6000.0_f64.powi(2) + 4000.0_f64.powi(2)).sqrt();
+        assert!((load.dir[0] - 6000.0 / n).abs() < 1e-9, "{:?}", load.dir);
+        assert!(load.dir[1].abs() < 1e-9, "{:?}", load.dir);
+        assert!((load.dir[2] - 4000.0 / n).abs() < 1e-9, "{:?}", load.dir);
+    }
+
+    /// 編集中に対象の荷重が入れ替わっていたら、別の荷重を書き換えずにエラーにする。
+    #[test]
+    fn commit_rejects_stale_edit_target() {
+        use squid_n_core::model::NodalLoad;
+
+        let mut app = App::default();
+        app.load_model(beam_and_brace_model());
+        let first = NodalLoad::manual(NodeId(0), [1.0, 0.0, 0.0, 0.0, 0.0, 0.0]);
+        let second = NodalLoad::manual(NodeId(1), [2.0, 0.0, 0.0, 0.0, 0.0, 0.0]);
+        for load in [first.clone(), second.clone()] {
+            app.undo.run(
+                &mut app.model,
+                Box::new(squid_n_edit::AddNodalLoad {
+                    lc: LoadCaseId(0),
+                    load,
+                }),
+            );
+        }
+
+        // 添字 1 の荷重を編集するモーダルを開いた状態を作る。
+        let editor = LoadEditor::edit_nodal(LoadCaseId(0), 1, &second);
+        // 開いている間に添字 0 が消え、添字 1 が別の荷重を指すようになる。
+        app.undo.run(
+            &mut app.model,
+            Box::new(squid_n_edit::DeleteNodalLoad {
+                lc: LoadCaseId(0),
+                index: 0,
+            }),
+        );
+
+        let err = app.commit_load_editor(&editor).unwrap_err();
+        assert_eq!(err, STALE_TARGET_MESSAGE);
+        assert_eq!(
+            app.model.load_cases[0].nodal,
+            vec![second],
+            "書き換わらない"
+        );
+    }
+}

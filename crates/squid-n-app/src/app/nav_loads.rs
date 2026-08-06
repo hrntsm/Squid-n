@@ -294,6 +294,16 @@ impl App {
         if !matches!(self.active_tab, Tab::Model | Tab::Loads | Tab::Analysis) {
             self.active_tab = Tab::Model;
         }
+        // 作成モードと排他にする。3D のクリックは荷重の対象ピックが先に受け取るため、
+        // 作成モードを ON のままにすると、選択中の節点が赤く残ったまま操作だけが
+        // 効かない状態になる。
+        self.beam_draw_mode = false;
+        self.beam_draw_first = None;
+        self.wall_draw_mode = false;
+        self.wall_draw_nodes.clear();
+        self.slab_draw_mode = false;
+        self.slab_draw_nodes.clear();
+
         self.nav.focus_load_case = Some(editor.lc);
         self.load_editor = Some(editor);
     }

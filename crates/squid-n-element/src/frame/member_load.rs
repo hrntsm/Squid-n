@@ -187,9 +187,24 @@ fn add_bending_consistent(q: &mut [f64; 12], comp: &Comp, l: f64, plane: usize) 
 /// 残り `R − R_j` を i 端へ配る。合力と作用位置の 1 次モーメントがともに保存される。
 fn add_bending_static(q: &mut [f64; 12], comp: &Comp, l: f64, plane: usize) {
     let (iv, jv) = if plane == 1 { (1usize, 7usize) } else { (2, 8) };
-    let r = comp_resultant(comp, 0.0, l);
-    // comp_moment(.., xref=0) = ∫w(s)(0−s) ds = −∫w(s)·s ds
-    let r_j = -comp_moment(comp, 0.0, l, 0.0) / l;
+    // 積分区間は荷重自身の定義域とし、材長で切り取らない
+    // （[`add_bending_consistent`] が形状関数を [a,b] 上で積分するのと合わせ、
+    // 両方式で合力が一致するようにする）。
+    let (r, r_j) = match *comp {
+        Comp::Point { a, p } => {
+            // 材端ちょうど（a = L）の集中荷重を落とさないよう、位置は比で扱う。
+            let xi = (a / l).clamp(0.0, 1.0);
+            (p, p * xi)
+        }
+        Comp::Dist { a, b, w1, w2 } => {
+            if b <= a {
+                return;
+            }
+            let r = integ2(a, b, w1, w2, a, b, |_s| 1.0);
+            let first_moment = integ2(a, b, w1, w2, a, b, |s| s);
+            (r, first_moment / l)
+        }
+    };
     q[iv] += r - r_j;
     q[jv] += r_j;
 }
@@ -489,6 +504,56 @@ mod tests {
             q[5].abs() < 1e-9 && q[11].abs() < 1e-9,
             "材端モーメントは 0"
         );
+    }
+
+    /// 材端ちょうどに載る集中荷重も落とさずに配る。
+    /// 位置 a = L は「材長で切り取る」実装では区間外と判定されて消えるため、
+    /// 静定分配では位置を比で扱っている。
+    #[test]
+    fn brace_point_load_at_far_end_goes_entirely_to_that_end() {
+        let l = 1000.0;
+        let p = 100.0;
+        let frame = horiz_frame();
+        let loads = vec![MemberLoad::manual(
+            ElemId(0),
+            [0.0, 0.0, -1.0],
+            MemberLoadKind::Point { a: l, p },
+        )];
+        let q = consistent_load_local(&loads, &frame, l, SpanLoadTransfer::StaticallyEquivalent);
+        assert!(q[1].abs() < 1e-9, "i 端の分担は 0 のはず q1={}", q[1]);
+        assert!(
+            (q[7].abs() - p).abs() < 1e-6,
+            "j 端が全量を持つ q7={}",
+            q[7]
+        );
+    }
+
+    /// 分布荷重が材長の一部に載る場合も、合力は等価節点力方式と一致する
+    /// （静定分配が積分区間を材長で切り取っていないことの確認）。
+    #[test]
+    fn brace_partial_span_load_preserves_resultant() {
+        let l = 1000.0;
+        let frame = horiz_frame();
+        let loads = vec![MemberLoad::manual(
+            ElemId(0),
+            [0.0, 0.0, -1.0],
+            MemberLoadKind::Distributed {
+                a: 200.0,
+                b: 700.0,
+                w1: 1.0,
+                w2: 4.0,
+            },
+        )];
+        let qs = consistent_load_local(&loads, &frame, l, SpanLoadTransfer::StaticallyEquivalent);
+        let qc = consistent_load_local(&loads, &frame, l, SpanLoadTransfer::Consistent);
+        assert!(
+            ((qs[1] + qs[7]) - (qc[1] + qc[7])).abs() < 1e-6,
+            "合力が方式で変わってはいけない: static={} consistent={}",
+            qs[1] + qs[7],
+            qc[1] + qc[7]
+        );
+        // 台形分布 w1=1→w2=4 を [200,700] に載せた合力は (1+4)/2×500 = 1250
+        assert!(((qs[1] + qs[7]).abs() - 1250.0).abs() < 1e-6);
     }
 
     /// ブレースは材軸直交成分を負担しないため、固定端内力はどの断面でも

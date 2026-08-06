@@ -226,6 +226,17 @@ impl App {
         ui.strong("作成");
         ui.separator();
 
+        // 荷重の対象ピック中は 3D のクリックをそちらが受け取るため、作成モードを
+        // ON にできると「切り替えたのに反応しない」状態になる。パネルごと無効にする。
+        if self.load_pick_active() {
+            ui.colored_label(
+                crate::theme::BEST_YELLOW,
+                "荷重の対象を選択中は作成モードを使えません。\
+                 3D ビューで対象を選ぶか、Esc で選択を取り消してください。",
+            );
+            return;
+        }
+
         // --- 梁作成モード ---
         // ON 中はクリックで節点を選び、2 点目で梁を生成する（OFF 中は部材クリック=断面割当）。
         ui.horizontal(|ui| {
