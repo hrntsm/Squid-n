@@ -1,8 +1,16 @@
-//! 階(Story)の自動生成。
+//! 階(Story)への節点・剛床・地震用重量の割り付け。
 //!
-//! 節点の標高(Z)をクラスタリングして階を推定し、各階に剛床(ダイアフラム)と
-//! 地震重量を設定する。地震静的解析(Ai分布)・プッシュオーバー・偏心率計算の
-//! 前提データを 1 操作で用意するための機能。
+//! **階そのもの（階名・階レベル・階種別）は利用者が定義するデータであり、本
+//! モジュールは書き換えない**（`squid_n_core::model::story` のモジュール
+//! ドキュメント参照）。ここが決めるのは、その階定義に対して
+//!
+//! - どの節点がどの階に属するか（**区間**による帰属）
+//! - どの節点が剛床に拘束されるか（**床面**による帰属）
+//! - 各階の地震用重量と剛床代表節点の質点質量
+//!
+//! である。地震静的解析(Ai分布)・プッシュオーバー・偏心率計算の前提データを
+//! 1 操作で用意する。階が 1 つも定義されていないモデルに限り、節点の標高(Z)を
+//! クラスタリングして階レベルを初期化する。
 //!
 //! 重量は「自重(線材: ρ·A·L·g、壁・シェル: ρ·t·A·g) + 指定荷重ケースの
 //! 鉛直下向き荷重」を節点に配分し、階ごとに合計する簡易法(節点支配)による。
@@ -38,8 +46,8 @@
 use squid_n_core::dof::{Dof, Dof6Mask};
 use squid_n_core::ids::{LoadCaseId, NodeId, StoryId};
 use squid_n_core::model::{
-    Constraint, DiaphragmDef, ElementData, ElementKind, KBraceWeightRule, LoadCfg, MassMethod,
-    MemberLoadKind, MiscWallTransfer, Model, Node, Story,
+    Constraint, ElementData, ElementKind, KBraceWeightRule, LoadCfg, MassMethod, MemberLoadKind,
+    MiscWallTransfer, Model, Node, Story, DIAPHRAGM_LEVEL_TOL_MM,
 };
 
 /// 重力加速度 [mm/s²]（内部単位系 N-mm-s、質量 ton）。
@@ -56,8 +64,7 @@ mod reactions;
 mod self_weight_calc;
 
 pub use generate::{
-    carry_over_manual_story_settings, generate_stories, generate_stories_multi,
-    generate_stories_with_opts, StoryGenResult,
+    generate_stories, generate_stories_multi, generate_stories_with_opts, StoryGenResult,
 };
 pub(crate) use misc_wall::misc_wall_weight_shares;
 pub(crate) use self_weight_calc::{enumerate_self_weight, SelfWeightItem};

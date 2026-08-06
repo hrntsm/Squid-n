@@ -213,7 +213,6 @@ fn build_nodes_and_stories(
             name: s.name,
             elevation: s.elevation,
             node_ids,
-            diaphragms: vec![],
             seismic_weight: None,
             weight_override: None,
         });

@@ -55,22 +55,9 @@ impl ShellElement {
         let nu = mat.map(|m| m.poisson).unwrap_or(0.3);
 
         // Determine membrane_active: true unless every node is part of a rigid diaphragm
-        let membrane_active = {
-            let node_in_rigid_diaphragm = |nid: NodeId| -> bool {
-                model
-                    .nodes
-                    .get(nid.index())
-                    .and_then(|n| n.story)
-                    .and_then(|sid| model.stories.get(sid.index()))
-                    .map(|s| {
-                        s.diaphragms
-                            .iter()
-                            .any(|d| d.rigid && (d.master == nid || d.slaves.contains(&nid)))
-                    })
-                    .unwrap_or(false)
-            };
-            !nids.iter().all(|&n| node_in_rigid_diaphragm(n))
-        };
+        // （剛床の情報源は `Constraint::RigidDiaphragm` のみ。節点の所属階を
+        // 経由すると、階には属するが剛床には入らない中間節点を取り違える）
+        let membrane_active = !nids.iter().all(|&n| model.node_on_rigid_diaphragm(n));
 
         ShellElement {
             nodes: nids,

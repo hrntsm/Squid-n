@@ -55,7 +55,6 @@ fn representative_model() -> Model {
         name: "1F".into(),
         elevation: 3000.0,
         node_ids: vec![NodeId(2), NodeId(3)],
-        diaphragms: vec![],
         seismic_weight: None,
         weight_override: None,
     });

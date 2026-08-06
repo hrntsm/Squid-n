@@ -5,11 +5,13 @@
 //! - [`compute_story_drift`] — 層間変位
 //! - [`story_heights`] — 階高（elevation の隣接差分）
 //! - [`max_story_drift_angle`] — 全層の最大層間変形角
-//! - [`get_roof_disp`] / [`get_roof_dof`] — 屋根（最上階マスター）の変位・DOF
+//! - [`story_reference_node`] — 階を代表する節点（剛床マスター、なければ最重量節点）
+//! - [`get_roof_disp`] / [`get_roof_dof`] — 屋根（最上階の代表節点）の変位・DOF
 
 use crate::analysis::{base_elevation, SeismicDir};
 use squid_n_core::dof::DofMap;
-use squid_n_core::model::Model;
+use squid_n_core::ids::NodeId;
+use squid_n_core::model::{Model, Story};
 
 /// 載荷方向 [`SeismicDir`] を並進 DOF の添字（X→0, Y→1）へ変換する。
 fn dir_index(dir: SeismicDir) -> usize {
@@ -76,9 +78,31 @@ pub(crate) fn compute_story_shear(
     shear
 }
 
-/// 層間変位を剛床マスター節点の水平変位差から求める。
-/// 第 i 層の層間変位 = マスター変位(第 i 層) − マスター変位(1 つ下の階)。
-/// 最下層は基部（変位 0）との差。マスターがない／拘束済みの階は変位 0 とみなす。
+/// 階を代表する節点（層の水平変位・制御自由度を読む点）。
+///
+/// 剛床がある階はその代表節点（マスター）を返す。**階と剛床は別概念**であり
+/// （`squid_n_core::model::story`）、剛床を持たない階もあるため、その場合は
+/// 階に属する節点のうち質点質量が最大のものを代表とする（質量が無ければ
+/// 最初の節点）。代表を採れない階は `None`。
+pub(crate) fn story_reference_node(model: &Model, story: &Story) -> Option<NodeId> {
+    if let Some(dia) = model.diaphragms_of(story.id).next() {
+        return Some(dia.master);
+    }
+    story
+        .node_ids
+        .iter()
+        .filter_map(|nid| model.nodes.get(nid.index()))
+        .max_by(|a, b| {
+            let ma = a.mass.map(|m| m[0]).unwrap_or(0.0);
+            let mb = b.mass.map(|m| m[0]).unwrap_or(0.0);
+            ma.total_cmp(&mb)
+        })
+        .map(|n| n.id)
+}
+
+/// 層間変位を階の代表節点（[`story_reference_node`]）の水平変位差から求める。
+/// 第 i 層の層間変位 = 代表変位(第 i 層) − 代表変位(1 つ下の階)。
+/// 最下層は基部（変位 0）との差。代表がない／拘束済みの階は変位 0 とみなす。
 pub(crate) fn compute_story_drift(
     model: &Model,
     dofmap: &DofMap,
@@ -91,11 +115,9 @@ pub(crate) fn compute_story_drift(
         .stories
         .iter()
         .map(|story| {
-            let d = story
-                .diaphragms
-                .first()
-                .and_then(|dia| {
-                    let g = dia.master.index() * 6 + dir_idx;
+            let d = story_reference_node(model, story)
+                .and_then(|node| {
+                    let g = node.index() * 6 + dir_idx;
                     dofmap
                         .active(g)
                         .and_then(|a| total_disp.get(a as usize).copied())
@@ -143,10 +165,9 @@ pub(crate) fn get_roof_disp(
     dir: SeismicDir,
 ) -> f64 {
     if let Some(story) = model.stories.last() {
-        if let Some(dia) = story.diaphragms.first() {
-            let ni = dia.master.index();
+        if let Some(node) = story_reference_node(model, story) {
             let dof_idx = dir_index(dir);
-            let g = ni * 6 + dof_idx;
+            let g = node.index() * 6 + dof_idx;
             if let Some(a) = dofmap.active(g) {
                 let idx = a as usize;
                 if idx < total_disp.len() {
@@ -161,9 +182,8 @@ pub(crate) fn get_roof_disp(
 pub(crate) fn get_roof_dof(model: &Model, dofmap: &DofMap, dir: SeismicDir) -> Option<usize> {
     let dir_idx = dir_index(dir);
     if let Some(story) = model.stories.last() {
-        if let Some(dia) = story.diaphragms.first() {
-            let ni = dia.master.index();
-            let g = ni * 6 + dir_idx;
+        if let Some(node) = story_reference_node(model, story) {
+            let g = node.index() * 6 + dir_idx;
             return dofmap.active(g).map(|a| a as usize);
         }
     }

@@ -241,7 +241,7 @@ pub fn build_wind_load_case_from_model(
         if force == 0.0 {
             continue;
         }
-        for (master, share) in distribute_pi_over_diaphragms(story, force) {
+        for (master, share) in distribute_pi_over_diaphragms(model, story, force) {
             let f = [dir_vec[0] * share, dir_vec[1] * share, 0.0, 0.0, 0.0, 0.0];
             nodal.push(squid_n_core::model::NodalLoad {
                 node: master,

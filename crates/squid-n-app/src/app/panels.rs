@@ -831,208 +831,343 @@ impl App {
             });
     }
 
-    /// 階の定義（準備計算の成果）。標高・節点数・主要構造種別は自動算定のため
-    /// 表示のみとし、自動判定できない地震用重量の手入力と階の種別（一般／PH／
-    /// 地下）だけを編集できる。
-    fn stories_section(&mut self, ui: &mut egui::Ui) {
-        egui::CollapsingHeader::new("階の定義")
-            .default_open(false)
-            .id_salt("as_stories")
-            .show(ui, |ui| {
-            if self.model.stories.is_empty() {
-                ui.colored_label(
-                    crate::theme::GRAY_600,
-                    "未定義です。準備計算を実行すると節点の標高から生成されます。",
-                );
-                return;
-            }
-            ui.colored_label(
-                crate::theme::GRAY_600,
-                "標高・節点・構造種別は準備計算が自動算定します（構造種別は柱・梁の断面から判定）。",
+    /// 階の追加フォーム。階名と階レベルだけを与えて階を作る（所属節点・重量は
+    /// 準備計算が埋める）。既定の階レベルは最上階の 1 つ上を階高 3500mm で見込む。
+    fn story_add_row(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            ui.label("階名:");
+            ui.add(
+                egui::TextEdit::singleline(&mut self.new_story_draft.0)
+                    .desired_width(60.0)
+                    .hint_text("3F"),
             );
-            use squid_n_core::model::StoryLevelKind;
-            // model.stories を借用したまま undo.run（model の可変借用）はできないため、
-            // 行データを先に複製してから描画・編集確定を行う。
-            #[allow(clippy::type_complexity)]
-            let story_rows: Vec<(
-                squid_n_core::ids::StoryId,
-                String,
-                f64,
-                usize,
-                Option<f64>,
-                Option<f64>,
-                squid_n_core::model::StoryStructure,
-                StoryLevelKind,
-            )> = self
-                .model
-                .stories
-                .iter()
-                .map(|s| {
-                    (
-                        s.id,
-                        s.name.clone(),
-                        s.elevation,
-                        s.node_ids.len(),
-                        s.seismic_weight,
-                        s.weight_override,
-                        s.structure,
-                        s.level_kind,
-                    )
-                })
-                .collect();
-            self.story_weight_edit.resize(story_rows.len(), 0.0);
-            self.story_weight_active.resize(story_rows.len(), false);
-            for (
-                i,
-                (story, name, elevation, n_nodes, weight, weight_override, structure, level_kind),
-            ) in story_rows.into_iter().enumerate()
+            ui.label("レベル[mm]:");
+            ui.add(
+                egui::DragValue::new(&mut self.new_story_draft.1)
+                    .speed(50.0)
+                    .range(-1.0e6..=1.0e6),
+            );
+            let name = self.new_story_draft.0.trim().to_string();
+            let can_add = !name.is_empty();
+            if ui
+                .add_enabled(can_add, egui::Button::new("➕ 階を追加"))
+                .on_hover_text(
+                    "階名とレベルだけを定義します。所属節点・剛床・地震用重量は\
+                     次の準備計算で算定されます。",
+                )
+                .on_disabled_hover_text("階名を入力してください")
+                .clicked()
             {
-                if !self.story_weight_active[i] {
-                    self.story_weight_edit[i] = weight.unwrap_or(0.0) / 1000.0;
+                let elevation = self.new_story_draft.1;
+                self.undo.run(
+                    &mut self.model,
+                    Box::new(squid_n_edit::AddStory { name, elevation }),
+                );
+                self.staleness.mark_edited();
+                self.new_story_draft.0.clear();
+                self.new_story_draft.1 = elevation + 3500.0;
+            }
+        });
+        ui.separator();
+    }
+
+    /// 階 1 行の見出し（階名・階レベルの編集と削除）。
+    ///
+    /// 階の追加・削除・レベル変更は `StoryId` の繰り上げ・並べ替えを伴うため、
+    /// 描画ループの途中でモデルを書き換えると、同じフレームの残りの行が
+    /// 古い ID を指したまま描かれる。編集コマンドはここでは実行せず返し、
+    /// 呼び出し側がループを抜けてから 1 つだけ適用する。
+    #[must_use]
+    fn story_definition_row(
+        &mut self,
+        ui: &mut egui::Ui,
+        story: squid_n_core::ids::StoryId,
+        name: &str,
+        elevation: f64,
+        n_nodes: usize,
+        structure: squid_n_core::model::StoryStructure,
+    ) -> Option<Box<dyn squid_n_edit::EditCommand>> {
+        let mut pending: Option<Box<dyn squid_n_edit::EditCommand>> = None;
+        let editing = matches!(self.story_def_draft, Some((s, _, _)) if s == story);
+        ui.horizontal(|ui| {
+            if editing {
+                let Some((_, draft_name, draft_elev)) = self.story_def_draft.as_mut() else {
+                    return;
+                };
+                ui.add(egui::TextEdit::singleline(draft_name).desired_width(60.0));
+                ui.label("レベル[mm]:");
+                ui.add(
+                    egui::DragValue::new(draft_elev)
+                        .speed(50.0)
+                        .range(-1.0e6..=1.0e6),
+                );
+                let commit = ui.button("✔").on_hover_text("確定").clicked();
+                let cancel = ui.button("✖").on_hover_text("取り消し").clicked();
+                if commit {
+                    if let Some((_, new_name, new_elev)) = self.story_def_draft.take() {
+                        let new_name = new_name.trim().to_string();
+                        // 空の階名は識別札として意味を成さないため無視する。
+                        if !new_name.is_empty() {
+                            pending = Some(Box::new(squid_n_edit::SetStoryLevel {
+                                story,
+                                name: new_name,
+                                elevation: new_elev,
+                            }));
+                        }
+                    }
+                } else if cancel {
+                    self.story_def_draft = None;
                 }
+            } else {
                 ui.strong(format!(
-                    "{}: 標高 {:.0} mm, 節点 {}, 構造 {}",
+                    "{}: レベル {:.0} mm, 節点 {}, 構造 {}",
                     name,
                     elevation,
                     n_nodes,
                     crate::app::preparation::story_structure_label(structure)
                 ));
-                ui.horizontal_wrapped(|ui| {
-                    ui.label("W[kN]:");
-                    let resp = ui
-                        .add(
-                            egui::DragValue::new(&mut self.story_weight_edit[i])
-                                .speed(1.0)
-                                .range(0.0..=1.0e9),
-                        )
-                        .on_hover_text(
-                            "地震用重量。編集すると手入力値として保持され、\
-                             準備計算で再生成しても上書きされません（undo 可）",
-                        );
-                    self.story_weight_active[i] = resp.dragged() || resp.has_focus();
-                    if resp.drag_stopped() || resp.lost_focus() {
-                        let new_weight = self.story_weight_edit[i] * 1000.0;
-                        if (new_weight - weight.unwrap_or(0.0)).abs() > 1e-6 {
-                            self.undo.run(
-                                &mut self.model,
-                                Box::new(squid_n_edit::SetStoryWeight {
-                                    story,
-                                    weight: Some(new_weight),
-                                }),
-                            );
-                            self.staleness.mark_edited();
-                        }
-                    }
-                    if weight_override.is_some() {
-                        if ui
-                            .small_button("手入力を解除")
-                            .on_hover_text("次の準備計算で自動算定値へ戻ります")
-                            .clicked()
-                        {
-                            self.undo.run(
-                                &mut self.model,
-                                Box::new(squid_n_edit::SetStoryWeight {
-                                    story,
-                                    weight: None,
-                                }),
-                            );
-                            self.staleness.mark_edited();
-                        }
-                    } else {
-                        ui.colored_label(crate::theme::GRAY_600, "（自動）");
-                    }
-
-                    ui.separator();
-                    ui.label("種別:");
-                    let level_label = match level_kind {
-                        StoryLevelKind::Normal => "一般".to_string(),
-                        StoryLevelKind::Penthouse { k } => format!("PH k={:.2}", k),
-                        StoryLevelKind::Basement { depth_m } => {
-                            format!("地下 depth={:.1}m", depth_m)
-                        }
-                    };
-                    let mut new_level_kind: Option<StoryLevelKind> = None;
-                    egui::ComboBox::from_id_salt(("story_level_kind", story.0))
-                        .selected_text(level_label)
-                        .show_ui(ui, |ui| {
-                            if ui
-                                .selectable_label(
-                                    matches!(level_kind, StoryLevelKind::Normal),
-                                    "一般",
-                                )
-                                .clicked()
-                            {
-                                new_level_kind = Some(StoryLevelKind::Normal);
-                            }
-                            if ui
-                                .selectable_label(
-                                    matches!(level_kind, StoryLevelKind::Penthouse { .. }),
-                                    "PH(塔屋)",
-                                )
-                                .clicked()
-                            {
-                                let k = if let StoryLevelKind::Penthouse { k } = level_kind {
-                                    k
-                                } else {
-                                    0.5
-                                };
-                                new_level_kind = Some(StoryLevelKind::Penthouse { k });
-                            }
-                            if ui
-                                .selectable_label(
-                                    matches!(level_kind, StoryLevelKind::Basement { .. }),
-                                    "地下",
-                                )
-                                .clicked()
-                            {
-                                let depth_m =
-                                    if let StoryLevelKind::Basement { depth_m } = level_kind {
-                                        depth_m
-                                    } else {
-                                        3.0
-                                    };
-                                new_level_kind = Some(StoryLevelKind::Basement { depth_m });
-                            }
-                        });
-                    if let StoryLevelKind::Penthouse { k } = level_kind {
-                        let mut kv = k;
-                        let resp = ui.add(
-                            egui::DragValue::new(&mut kv)
-                                .speed(0.05)
-                                .range(0.0..=2.0)
-                                .prefix("k="),
-                        );
-                        if (resp.drag_stopped() || resp.lost_focus()) && (kv - k).abs() > 1e-9 {
-                            new_level_kind = Some(StoryLevelKind::Penthouse { k: kv });
-                        }
-                    }
-                    if let StoryLevelKind::Basement { depth_m } = level_kind {
-                        let mut dv = depth_m;
-                        let resp = ui.add(
-                            egui::DragValue::new(&mut dv)
-                                .speed(0.1)
-                                .range(0.0..=100.0)
-                                .suffix("m"),
-                        );
-                        if (resp.drag_stopped() || resp.lost_focus())
-                            && (dv - depth_m).abs() > 1e-9
-                        {
-                            new_level_kind = Some(StoryLevelKind::Basement { depth_m: dv });
-                        }
-                    }
-                    if let Some(lk) = new_level_kind {
-                        self.undo.run(
-                            &mut self.model,
-                            Box::new(squid_n_edit::SetStoryLevelKind {
-                                story,
-                                level_kind: lk,
-                            }),
-                        );
-                        self.staleness.mark_edited();
-                    }
-                });
+                if ui
+                    .small_button("✏")
+                    .on_hover_text("階名・レベルを変更")
+                    .clicked()
+                {
+                    self.story_def_draft = Some((story, name.to_string(), elevation));
+                }
+                if ui
+                    .small_button("🗑")
+                    .on_hover_text(
+                        "この階の定義を削除します。節点・部材は消えません\
+                         （所属していた節点は次の準備計算で直下階へ吸収されます）。",
+                    )
+                    .clicked()
+                {
+                    self.story_def_draft = None;
+                    pending = Some(Box::new(squid_n_edit::DeleteStory { story }));
+                }
             }
         });
+        pending
+    }
+
+    /// 階の定義。**階名・階レベル・階種別・地震用重量の手入力は利用者が決める**
+    /// データで、ここで編集する。所属節点数・主要構造種別・自動算定の重量は
+    /// 準備計算が埋める派生値のため表示のみとする。
+    fn stories_section(&mut self, ui: &mut egui::Ui) {
+        egui::CollapsingHeader::new("階の定義")
+            .default_open(false)
+            .id_salt("as_stories")
+            .show(ui, |ui| {
+                self.story_add_row(ui);
+                if self.model.stories.is_empty() {
+                    ui.colored_label(
+                        crate::theme::GRAY_600,
+                        "未定義です。上の「階を追加」で定義するか、準備計算を実行すると\
+                     節点の標高から生成されます。",
+                    );
+                    return;
+                }
+                ui.colored_label(
+                    crate::theme::GRAY_600,
+                    "階名・階レベルは利用者が決めます。節点・構造種別は準備計算が算定します\
+                 （構造種別は柱・梁の断面から判定）。",
+                );
+                use squid_n_core::model::StoryLevelKind;
+                // model.stories を借用したまま undo.run（model の可変借用）はできないため、
+                // 行データを先に複製してから描画・編集確定を行う。
+                #[allow(clippy::type_complexity)]
+                let story_rows: Vec<(
+                    squid_n_core::ids::StoryId,
+                    String,
+                    f64,
+                    usize,
+                    Option<f64>,
+                    Option<f64>,
+                    squid_n_core::model::StoryStructure,
+                    StoryLevelKind,
+                )> = self
+                    .model
+                    .stories
+                    .iter()
+                    .map(|s| {
+                        (
+                            s.id,
+                            s.name.clone(),
+                            s.elevation,
+                            s.node_ids.len(),
+                            s.seismic_weight,
+                            s.weight_override,
+                            s.structure,
+                            s.level_kind,
+                        )
+                    })
+                    .collect();
+                self.story_weight_edit.resize(story_rows.len(), 0.0);
+                self.story_weight_active.resize(story_rows.len(), false);
+                // 階の追加・削除・レベル変更は StoryId の繰り上げを伴うため、描画ループを
+                // 抜けてから 1 つだけ適用する（1 フレームに複数行を操作することはない）。
+                let mut pending_story_cmd: Option<Box<dyn squid_n_edit::EditCommand>> = None;
+                for (
+                    i,
+                    (
+                        story,
+                        name,
+                        elevation,
+                        n_nodes,
+                        weight,
+                        weight_override,
+                        structure,
+                        level_kind,
+                    ),
+                ) in story_rows.into_iter().enumerate()
+                {
+                    if !self.story_weight_active[i] {
+                        self.story_weight_edit[i] = weight.unwrap_or(0.0) / 1000.0;
+                    }
+                    if let Some(cmd) =
+                        self.story_definition_row(ui, story, &name, elevation, n_nodes, structure)
+                    {
+                        pending_story_cmd = Some(cmd);
+                    }
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label("W[kN]:");
+                        let resp = ui
+                            .add(
+                                egui::DragValue::new(&mut self.story_weight_edit[i])
+                                    .speed(1.0)
+                                    .range(0.0..=1.0e9),
+                            )
+                            .on_hover_text(
+                                "地震用重量。編集すると手入力値として保持され、\
+                             準備計算で再生成しても上書きされません（undo 可）",
+                            );
+                        self.story_weight_active[i] = resp.dragged() || resp.has_focus();
+                        if resp.drag_stopped() || resp.lost_focus() {
+                            let new_weight = self.story_weight_edit[i] * 1000.0;
+                            if (new_weight - weight.unwrap_or(0.0)).abs() > 1e-6 {
+                                self.undo.run(
+                                    &mut self.model,
+                                    Box::new(squid_n_edit::SetStoryWeight {
+                                        story,
+                                        weight: Some(new_weight),
+                                    }),
+                                );
+                                self.staleness.mark_edited();
+                            }
+                        }
+                        if weight_override.is_some() {
+                            if ui
+                                .small_button("手入力を解除")
+                                .on_hover_text("次の準備計算で自動算定値へ戻ります")
+                                .clicked()
+                            {
+                                self.undo.run(
+                                    &mut self.model,
+                                    Box::new(squid_n_edit::SetStoryWeight {
+                                        story,
+                                        weight: None,
+                                    }),
+                                );
+                                self.staleness.mark_edited();
+                            }
+                        } else {
+                            ui.colored_label(crate::theme::GRAY_600, "（自動）");
+                        }
+
+                        ui.separator();
+                        ui.label("種別:");
+                        let level_label = match level_kind {
+                            StoryLevelKind::Normal => "一般".to_string(),
+                            StoryLevelKind::Penthouse { k } => format!("PH k={:.2}", k),
+                            StoryLevelKind::Basement { depth_m } => {
+                                format!("地下 depth={:.1}m", depth_m)
+                            }
+                        };
+                        let mut new_level_kind: Option<StoryLevelKind> = None;
+                        egui::ComboBox::from_id_salt(("story_level_kind", story.0))
+                            .selected_text(level_label)
+                            .show_ui(ui, |ui| {
+                                if ui
+                                    .selectable_label(
+                                        matches!(level_kind, StoryLevelKind::Normal),
+                                        "一般",
+                                    )
+                                    .clicked()
+                                {
+                                    new_level_kind = Some(StoryLevelKind::Normal);
+                                }
+                                if ui
+                                    .selectable_label(
+                                        matches!(level_kind, StoryLevelKind::Penthouse { .. }),
+                                        "PH(塔屋)",
+                                    )
+                                    .clicked()
+                                {
+                                    let k = if let StoryLevelKind::Penthouse { k } = level_kind {
+                                        k
+                                    } else {
+                                        0.5
+                                    };
+                                    new_level_kind = Some(StoryLevelKind::Penthouse { k });
+                                }
+                                if ui
+                                    .selectable_label(
+                                        matches!(level_kind, StoryLevelKind::Basement { .. }),
+                                        "地下",
+                                    )
+                                    .clicked()
+                                {
+                                    let depth_m =
+                                        if let StoryLevelKind::Basement { depth_m } = level_kind {
+                                            depth_m
+                                        } else {
+                                            3.0
+                                        };
+                                    new_level_kind = Some(StoryLevelKind::Basement { depth_m });
+                                }
+                            });
+                        if let StoryLevelKind::Penthouse { k } = level_kind {
+                            let mut kv = k;
+                            let resp = ui.add(
+                                egui::DragValue::new(&mut kv)
+                                    .speed(0.05)
+                                    .range(0.0..=2.0)
+                                    .prefix("k="),
+                            );
+                            if (resp.drag_stopped() || resp.lost_focus()) && (kv - k).abs() > 1e-9 {
+                                new_level_kind = Some(StoryLevelKind::Penthouse { k: kv });
+                            }
+                        }
+                        if let StoryLevelKind::Basement { depth_m } = level_kind {
+                            let mut dv = depth_m;
+                            let resp = ui.add(
+                                egui::DragValue::new(&mut dv)
+                                    .speed(0.1)
+                                    .range(0.0..=100.0)
+                                    .suffix("m"),
+                            );
+                            if (resp.drag_stopped() || resp.lost_focus())
+                                && (dv - depth_m).abs() > 1e-9
+                            {
+                                new_level_kind = Some(StoryLevelKind::Basement { depth_m: dv });
+                            }
+                        }
+                        if let Some(lk) = new_level_kind {
+                            self.undo.run(
+                                &mut self.model,
+                                Box::new(squid_n_edit::SetStoryLevelKind {
+                                    story,
+                                    level_kind: lk,
+                                }),
+                            );
+                            self.staleness.mark_edited();
+                        }
+                    });
+                }
+                if let Some(cmd) = pending_story_cmd {
+                    self.undo.run(&mut self.model, cmd);
+                    self.staleness.mark_edited();
+                }
+            });
     }
 
     /// 解析（② 実行）のセクション一式。静的解析（荷重ケース・荷重組合せ）・

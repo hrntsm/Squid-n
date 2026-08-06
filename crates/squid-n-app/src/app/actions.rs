@@ -153,6 +153,8 @@ impl App {
             self.slab_draft = Default::default();
             self.story_weight_edit.clear();
             self.story_weight_active.clear();
+            self.story_def_draft = None;
+            self.new_story_draft = (String::new(), 0.0);
             self.wall_attr_draft = Default::default();
             self.misc_wall_draft = Default::default();
             self.axis_name_draft = Default::default();
@@ -2026,8 +2028,9 @@ impl App {
     /// `density_self_weight_for_stories`）。主要構造種別は各階の柱・梁の断面形状
     /// から自動判定される（`story_gen`）。
     ///
-    /// 再生成にあたり、利用者の手入力（地震用重量の手入力値・階の種別）は
-    /// 標高が一致する旧階から引き継ぐ（`carry_over_manual_story_settings`）。
+    /// 階そのもの（階名・階レベル・階種別・地震用重量の手入力）は利用者が定義する
+    /// データであり、再生成では書き換えない（`story_gen` が既存の階定義から
+    /// そのまま引き継ぐ）。ここで更新されるのは所属節点・剛床・算定重量である。
     ///
     /// 階の適用後、地震荷重を「EX」「EY」、風荷重を「WX」「WY」ケースへ同期する
     /// （Ai 分布の水平力・速度圧による層水平力。これで荷重組合せ G+P±K・G+P±W が
@@ -2050,11 +2053,7 @@ impl App {
             include_density,
             mass_method,
         ) {
-            Ok(mut gen) => {
-                squid_n_load::story_gen::carry_over_manual_story_settings(
-                    &self.model.stories,
-                    &mut gen.stories,
-                );
+            Ok(gen) => {
                 if !story_gen_changes_model(&self.model, &gen, mass_method) {
                     // 階は既に最新。荷重の同期だけ冪等に確認して終える。
                     self.apply_rigid_zones_for_analysis();

@@ -52,26 +52,5 @@ pub(super) fn is_vertical_member(data: &ElementData, model: &Model) -> bool {
 }
 
 fn is_on_rigid_diaphragm(data: &ElementData, model: &Model) -> bool {
-    let elem_nodes: Vec<squid_n_core::ids::NodeId> = data.nodes.iter().copied().collect();
-    for story in &model.stories {
-        for dia in &story.diaphragms {
-            if elem_nodes
-                .iter()
-                .any(|n| *n == dia.master || dia.slaves.contains(n))
-            {
-                return true;
-            }
-        }
-    }
-    for c in &model.constraints {
-        if let squid_n_core::model::Constraint::RigidDiaphragm { master, slaves, .. } = c {
-            if elem_nodes
-                .iter()
-                .any(|n| *n == *master || slaves.contains(n))
-            {
-                return true;
-            }
-        }
-    }
-    false
+    data.nodes.iter().any(|&n| model.node_on_rigid_diaphragm(n))
 }

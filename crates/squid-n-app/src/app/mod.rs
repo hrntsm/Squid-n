@@ -981,6 +981,13 @@ pub struct App {
     /// true の間は model 値での上書きを止めて入力中の値を保つ。
     #[cfg(feature = "gui")]
     pub story_weight_active: Vec<bool>,
+    /// 階定義（階名・階レベル）の編集中バッファ `(編集中の階, 階名, 階レベル)`。
+    /// 通り芯の改名（`AxisNameDraft`）と同じ「1 行ずつ編集して確定する」方式。
+    #[cfg(feature = "gui")]
+    pub story_def_draft: Option<(squid_n_core::ids::StoryId, String, f64)>,
+    /// 階の追加フォームの入力 `(階名, 階レベル [mm])`。
+    #[cfg(feature = "gui")]
+    pub new_story_draft: (String, f64),
     /// モデルタブ「壁属性」フォームのドラフト状態
     #[cfg(feature = "gui")]
     pub wall_attr_draft: crate::tables::wall_attrs::WallAttrDraft,
@@ -1188,6 +1195,10 @@ impl Default for App {
             story_weight_edit: Vec::new(),
             #[cfg(feature = "gui")]
             story_weight_active: Vec::new(),
+            #[cfg(feature = "gui")]
+            story_def_draft: None,
+            #[cfg(feature = "gui")]
+            new_story_draft: (String::new(), 0.0),
             #[cfg(feature = "gui")]
             wall_attr_draft: crate::tables::wall_attrs::WallAttrDraft::default(),
             #[cfg(feature = "gui")]

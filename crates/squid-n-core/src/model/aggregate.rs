@@ -344,12 +344,7 @@ impl Model {
         self.load_cases
             .iter()
             .any(|lc| lc.nodal.iter().any(|nl| nl.node == id))
-            || self.stories.iter().any(|s| {
-                s.node_ids.contains(&id)
-                    || s.diaphragms
-                        .iter()
-                        .any(|d| d.master == id || d.slaves.contains(&id))
-            })
+            || self.stories.iter().any(|s| s.node_ids.contains(&id))
             || self.slabs.iter().any(|sl| {
                 sl.boundary.contains(&id) || sl.joists.iter().any(|j| j.support.contains(&id))
             })
@@ -479,12 +474,6 @@ impl Model {
             for n in &mut story.node_ids {
                 f(n);
             }
-            for d in &mut story.diaphragms {
-                f(&mut d.master);
-                for s in &mut d.slaves {
-                    f(s);
-                }
-            }
         }
         for group in &mut self.axes {
             for axis in &mut group.axes {
@@ -528,6 +517,27 @@ impl Model {
         for lc in &mut self.load_cases {
             for nl in &mut lc.nodal {
                 f(&mut nl.node);
+            }
+        }
+    }
+
+    /// モデル内の全ての `StoryId` 参照（階自身の ID を含む）へ `f` を適用する
+    /// （[`Model::visit_node_ids`] と同じ規約）。
+    ///
+    /// 階の追加・削除では「ID＝配列位置」の不変条件を保つために ID の繰り上げが
+    /// 必要になる。参照箇所を呼び出し側へ散らさないよう、走査はここに集約する。
+    pub fn visit_story_ids(&mut self, mut f: impl FnMut(&mut StoryId)) {
+        for story in &mut self.stories {
+            f(&mut story.id);
+        }
+        for node in &mut self.nodes {
+            if let Some(sid) = &mut node.story {
+                f(sid);
+            }
+        }
+        for c in &mut self.constraints {
+            if let Constraint::RigidDiaphragm { story, .. } = c {
+                f(story);
             }
         }
     }
