@@ -71,7 +71,7 @@ fn resort_and_renumber(model: &mut Model) {
     });
     // 参照を書き換えたあとに実体を並べ替える（並べ替えを先にすると
     // `visit_story_ids` が拾う `Story::id` の対応が崩れる）。
-    model.stories.sort_by(|a, b| a.id.0.cmp(&b.id.0));
+    model.stories.sort_by_key(|s| s.id.0);
 }
 
 impl EditCommand for SetStoryLevel {
