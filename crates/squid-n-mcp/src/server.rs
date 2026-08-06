@@ -392,10 +392,10 @@ mod tests {
             load_cases: vec![LoadCase {
                 id: LoadCaseId(1),
                 name: "case1".into(),
-                nodal: vec![NodalLoad {
-                    node: NodeId(1),
-                    values: [0.0, 0.0, 1000.0, 0.0, 0.0, 0.0],
-                }],
+                nodal: vec![NodalLoad::manual(
+                    NodeId(1),
+                    [0.0, 0.0, 1000.0, 0.0, 0.0, 0.0],
+                )],
                 member: Vec::new(),
                 kind: Default::default(),
             }],

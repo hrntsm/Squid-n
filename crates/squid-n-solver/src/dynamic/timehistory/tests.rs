@@ -1848,10 +1848,10 @@ fn test_nonlinear_apply_long_term_matches_static_solution() {
     model.load_cases.push(squid_n_core::model::LoadCase {
         id: squid_n_core::ids::LoadCaseId(0),
         name: "DL".to_string(),
-        nodal: vec![squid_n_core::model::NodalLoad {
-            node: NodeId(1),
-            values: [1000.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-        }],
+        nodal: vec![squid_n_core::model::NodalLoad::manual(
+            NodeId(1),
+            [1000.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+        )],
         member: vec![],
         kind: squid_n_core::model::LoadCaseKind::Dead,
     });
@@ -1975,10 +1975,10 @@ fn test_support_spring_long_term_static_matches_analytical() {
     model.load_cases.push(squid_n_core::model::LoadCase {
         id: squid_n_core::ids::LoadCaseId(0),
         name: "DL".to_string(),
-        nodal: vec![squid_n_core::model::NodalLoad {
-            node: NodeId(1),
-            values: [f_load, 0.0, 0.0, 0.0, 0.0, 0.0],
-        }],
+        nodal: vec![squid_n_core::model::NodalLoad::manual(
+            NodeId(1),
+            [f_load, 0.0, 0.0, 0.0, 0.0, 0.0],
+        )],
         member: vec![],
         kind: squid_n_core::model::LoadCaseKind::Dead,
     });

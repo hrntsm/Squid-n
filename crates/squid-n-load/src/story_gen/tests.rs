@@ -84,20 +84,20 @@ fn two_story_model() -> Model {
         kind: Default::default(),
         id: LoadCaseId(0),
         name: "DL".into(),
-        nodal: vec![NodalLoad {
-            node: NodeId(4),
-            values: [0.0, 0.0, -50000.0, 0.0, 0.0, 0.0],
-        }],
-        member: vec![MemberLoad {
-            elem: ElemId(4),
-            dir: [0.0, 0.0, -1.0],
-            kind: MemberLoadKind::Distributed {
+        nodal: vec![NodalLoad::manual(
+            NodeId(4),
+            [0.0, 0.0, -50000.0, 0.0, 0.0, 0.0],
+        )],
+        member: vec![MemberLoad::manual(
+            ElemId(4),
+            [0.0, 0.0, -1.0],
+            MemberLoadKind::Distributed {
                 a: 0.0,
                 b: 6000.0,
                 w1: 10.0,
                 w2: 10.0,
             },
-        }],
+        )],
     });
     model
 }
@@ -204,14 +204,8 @@ fn asymmetric_weight_model() -> Model {
         id: LoadCaseId(0),
         name: "DL".into(),
         nodal: vec![
-            NodalLoad {
-                node: NodeId(2),
-                values: [0.0, 0.0, -100000.0, 0.0, 0.0, 0.0],
-            },
-            NodalLoad {
-                node: NodeId(3),
-                values: [0.0, 0.0, -300000.0, 0.0, 0.0, 0.0],
-            },
+            NodalLoad::manual(NodeId(2), [0.0, 0.0, -100000.0, 0.0, 0.0, 0.0]),
+            NodalLoad::manual(NodeId(3), [0.0, 0.0, -300000.0, 0.0, 0.0, 0.0]),
         ],
         member: vec![],
     });
@@ -383,14 +377,8 @@ fn two_columns_with_dl_model() -> Model {
         id: LoadCaseId(0),
         name: "DL".into(),
         nodal: vec![
-            NodalLoad {
-                node: NodeId(2),
-                values: [0.0, 0.0, -100000.0, 0.0, 0.0, 0.0],
-            },
-            NodalLoad {
-                node: NodeId(3),
-                values: [0.0, 0.0, -300000.0, 0.0, 0.0, 0.0],
-            },
+            NodalLoad::manual(NodeId(2), [0.0, 0.0, -100000.0, 0.0, 0.0, 0.0]),
+            NodalLoad::manual(NodeId(3), [0.0, 0.0, -300000.0, 0.0, 0.0, 0.0]),
         ],
         member: vec![],
     });
@@ -738,16 +726,16 @@ fn test_member_load_reaction_distribution_end_to_end() {
         id: LoadCaseId(0),
         name: "DL".into(),
         nodal: vec![],
-        member: vec![MemberLoad {
-            elem: ElemId(0),
-            dir: [0.0, 0.0, -1.0],
-            kind: MemberLoadKind::Distributed {
+        member: vec![MemberLoad::manual(
+            ElemId(0),
+            [0.0, 0.0, -1.0],
+            MemberLoadKind::Distributed {
                 a: 0.0,
                 b: 4000.0,
                 w1: 0.0,
                 w2: 20.0,
             },
-        }],
+        )],
     });
     let gen = generate_stories(&model, Some(LoadCaseId(0))).unwrap();
     let rep = &gen.rep_nodes[0];
@@ -1122,10 +1110,10 @@ fn test_generate_stories_multi_sums_multiple_gravity_cases_and_dedupes() {
         kind: Default::default(),
         id: LoadCaseId(1),
         name: "LL".into(),
-        nodal: vec![NodalLoad {
-            node: NodeId(2),
-            values: [0.0, 0.0, -10000.0, 0.0, 0.0, 0.0],
-        }],
+        nodal: vec![NodalLoad::manual(
+            NodeId(2),
+            [0.0, 0.0, -10000.0, 0.0, 0.0, 0.0],
+        )],
         member: vec![],
     });
 

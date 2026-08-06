@@ -109,30 +109,24 @@ pub fn portal_frame() -> Model {
         id: LoadCaseId(0),
         name: "長期".into(),
         nodal: Vec::new(),
-        member: vec![MemberLoad {
-            elem: ElemId(2),
-            dir: [0.0, 0.0, -1.0],
-            kind: MemberLoadKind::Distributed {
+        member: vec![MemberLoad::manual(
+            ElemId(2),
+            [0.0, 0.0, -1.0],
+            MemberLoadKind::Distributed {
                 a: 0.0,
                 b: 6000.0,
                 w1: 10.0,
                 w2: 10.0,
             },
-        }],
+        )],
     });
     model.load_cases.push(LoadCase {
         kind: squid_n_core::model::LoadCaseKind::Seismic,
         id: LoadCaseId(1),
         name: "地震X".into(),
         nodal: vec![
-            NodalLoad {
-                node: NodeId(2),
-                values: [20000.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-            },
-            NodalLoad {
-                node: NodeId(3),
-                values: [20000.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-            },
+            NodalLoad::manual(NodeId(2), [20000.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
+            NodalLoad::manual(NodeId(3), [20000.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
         ],
         member: Vec::new(),
     });

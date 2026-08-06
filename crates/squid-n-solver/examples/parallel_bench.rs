@@ -112,7 +112,7 @@ fn make_frame(nx: usize, ny: usize, nz: usize, n_cases: usize) -> Model {
                 name: format!("case{}", i + 1),
                 nodal: top_nodes
                     .iter()
-                    .map(|&n| NodalLoad { node: n, values })
+                    .map(|&n| NodalLoad::manual(n, values))
                     .collect(),
                 member: Vec::new(),
             }

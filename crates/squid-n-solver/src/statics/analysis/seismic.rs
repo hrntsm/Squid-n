@@ -425,10 +425,8 @@ pub fn build_seismic_load_case_from_model(
                 continue;
             }
             let f = [dir_vec[0] * share, dir_vec[1] * share, 0.0, 0.0, 0.0, 0.0];
-            lc.nodal.push(squid_n_core::model::NodalLoad {
-                node: master,
-                values: f,
-            });
+            lc.nodal
+                .push(squid_n_core::model::NodalLoad::auto(master, f));
         }
     }
 

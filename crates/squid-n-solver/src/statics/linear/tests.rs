@@ -82,16 +82,16 @@ fn simply_supported_udl_midspan_moment() {
             id: LoadCaseId(1),
             name: "udl".into(),
             nodal: vec![],
-            member: vec![MemberLoad {
-                elem: ElemId(0),
-                dir: [0.0, 0.0, -1.0],
-                kind: MemberLoadKind::Distributed {
+            member: vec![MemberLoad::manual(
+                ElemId(0),
+                [0.0, 0.0, -1.0],
+                MemberLoadKind::Distributed {
                     a: 0.0,
                     b: l,
                     w1: w,
                     w2: w,
                 },
-            }],
+            )],
         }],
         ..Default::default()
     };
@@ -220,11 +220,11 @@ fn simply_supported_point_mid_moment() {
     let p = 500.0_f64;
     let model = ss_beam(
         l,
-        vec![MemberLoad {
-            elem: ElemId(0),
-            dir: [0.0, 0.0, -1.0],
-            kind: MemberLoadKind::Point { a: l / 2.0, p },
-        }],
+        vec![MemberLoad::manual(
+            ElemId(0),
+            [0.0, 0.0, -1.0],
+            MemberLoadKind::Point { a: l / 2.0, p },
+        )],
     );
     let res = linear_static_once(&model, LoadCaseId(1)).expect("solve");
     let (_, mf) = res
@@ -249,16 +249,16 @@ fn simply_supported_udl_zplane_moment() {
     let w = 1.5_f64;
     let model = ss_beam(
         l,
-        vec![MemberLoad {
-            elem: ElemId(0),
-            dir: [0.0, -1.0, 0.0],
-            kind: MemberLoadKind::Distributed {
+        vec![MemberLoad::manual(
+            ElemId(0),
+            [0.0, -1.0, 0.0],
+            MemberLoadKind::Distributed {
                 a: 0.0,
                 b: l,
                 w1: w,
                 w2: w,
             },
-        }],
+        )],
     );
     let res = linear_static_once(&model, LoadCaseId(1)).expect("solve");
     let (_, mf) = res
@@ -346,10 +346,10 @@ fn make_axial_cantilever() -> Model {
             kind: Default::default(),
             id: LoadCaseId(1),
             name: "axial".to_string(),
-            nodal: vec![NodalLoad {
-                node: NodeId(1),
-                values: [1000.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-            }],
+            nodal: vec![NodalLoad::manual(
+                NodeId(1),
+                [1000.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+            )],
             member: vec![],
         }],
         ..Default::default()
@@ -517,10 +517,10 @@ fn test_linear_static_vertical_cantilever_bending() {
             kind: Default::default(),
             id: LoadCaseId(1),
             name: "h".to_string(),
-            nodal: vec![NodalLoad {
-                node: NodeId(1),
-                values: [1000.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-            }],
+            nodal: vec![NodalLoad::manual(
+                NodeId(1),
+                [1000.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+            )],
             member: vec![],
         }],
         ..Default::default()
@@ -620,10 +620,7 @@ fn test_linear_static_shell_element() {
             kind: Default::default(),
             id: LoadCaseId(1),
             name: "shell_load".to_string(),
-            nodal: vec![NodalLoad {
-                node: NodeId(2),
-                values: [0.0, 0.0, 1.0, 0.0, 0.0, 0.0],
-            }],
+            nodal: vec![NodalLoad::manual(NodeId(2), [0.0, 0.0, 1.0, 0.0, 0.0, 0.0])],
             member: vec![],
         }],
         ..Default::default()
@@ -858,10 +855,7 @@ fn test_shell_membrane_patch_test() {
             kind: Default::default(),
             id: LoadCaseId(1),
             name: "patch".to_string(),
-            nodal: vec![NodalLoad {
-                node: NodeId(8),
-                values: [0.0, 0.0, 1.0, 0.0, 0.0, 0.0],
-            }],
+            nodal: vec![NodalLoad::manual(NodeId(8), [0.0, 0.0, 1.0, 0.0, 0.0, 0.0])],
             member: vec![],
         }],
         ..Default::default()
@@ -957,10 +951,7 @@ fn test_shell_membrane_off_no_diaphragm() {
             kind: Default::default(),
             id: LoadCaseId(1),
             name: "shell_load".to_string(),
-            nodal: vec![NodalLoad {
-                node: NodeId(2),
-                values: [0.0, 0.0, 1.0, 0.0, 0.0, 0.0],
-            }],
+            nodal: vec![NodalLoad::manual(NodeId(2), [0.0, 0.0, 1.0, 0.0, 0.0, 0.0])],
             member: vec![],
         }],
         ..Default::default()
@@ -1100,10 +1091,7 @@ fn test_shell_rigid_floor_membrane_off() {
             kind: Default::default(),
             id: LoadCaseId(1),
             name: "load".to_string(),
-            nodal: vec![NodalLoad {
-                node: NodeId(2),
-                values: [0.0, 0.0, 1.0, 0.0, 0.0, 0.0],
-            }],
+            nodal: vec![NodalLoad::manual(NodeId(2), [0.0, 0.0, 1.0, 0.0, 0.0, 0.0])],
             member: vec![],
         }],
         ..Default::default()
@@ -1187,10 +1175,10 @@ fn make_ss_plate(n: usize, a: f64, t: f64, e: f64, nu: f64, q: f64, clamped: boo
             let wx = if ix == 0 || ix == n { 0.5 } else { 1.0 };
             let wy = if iy == 0 || iy == n { 0.5 } else { 1.0 };
             let fz = q * (wx * h) * (wy * h);
-            nodal.push(NodalLoad {
-                node: NodeId(idx(ix, iy)),
-                values: [0.0, 0.0, fz, 0.0, 0.0, 0.0],
-            });
+            nodal.push(NodalLoad::manual(
+                NodeId(idx(ix, iy)),
+                [0.0, 0.0, fz, 0.0, 0.0, 0.0],
+            ));
         }
     }
     Model {
@@ -1445,10 +1433,10 @@ fn braced_frame(kind: squid_n_core::model::LoadCaseKind) -> Model {
         load_cases: vec![LoadCase {
             id: LoadCaseId(1),
             name: "gravity".into(),
-            nodal: vec![NodalLoad {
-                node: NodeId(2),
-                values: [0.0, 0.0, -1.0e5, 0.0, 0.0, 0.0],
-            }],
+            nodal: vec![NodalLoad::manual(
+                NodeId(2),
+                [0.0, 0.0, -1.0e5, 0.0, 0.0, 0.0],
+            )],
             member: vec![],
             kind,
         }],
@@ -1563,10 +1551,10 @@ fn column_with_parallel_vertical_brace() -> Model {
         load_cases: vec![LoadCase {
             id: LoadCaseId(1),
             name: "gravity".into(),
-            nodal: vec![NodalLoad {
-                node: NodeId(1),
-                values: [0.0, 0.0, -1.0e5, 0.0, 0.0, 0.0],
-            }],
+            nodal: vec![NodalLoad::manual(
+                NodeId(1),
+                [0.0, 0.0, -1.0e5, 0.0, 0.0, 0.0],
+            )],
             member: vec![],
             kind: squid_n_core::model::LoadCaseKind::Dead,
         }],
@@ -1685,10 +1673,10 @@ fn test_axial_cut_not_applied_to_short_term_case() {
     model.load_cases.push(LoadCase {
         id: LoadCaseId(2),
         name: "seismic_gravity_dummy".into(),
-        nodal: vec![NodalLoad {
-            node: NodeId(2),
-            values: [0.0, 0.0, -1.0e5, 0.0, 0.0, 0.0],
-        }],
+        nodal: vec![NodalLoad::manual(
+            NodeId(2),
+            [0.0, 0.0, -1.0e5, 0.0, 0.0, 0.0],
+        )],
         member: vec![],
         kind: squid_n_core::model::LoadCaseKind::Seismic,
     });
@@ -1895,14 +1883,8 @@ fn tension_only_portal(fx: f64, tension_only: bool) -> Model {
             id: LoadCaseId(1),
             name: "wind".into(),
             nodal: vec![
-                NodalLoad {
-                    node: NodeId(2),
-                    values: [fx, 0.0, 0.0, 0.0, 0.0, 0.0],
-                },
-                NodalLoad {
-                    node: NodeId(3),
-                    values: [fx, 0.0, 0.0, 0.0, 0.0, 0.0],
-                },
+                NodalLoad::manual(NodeId(2), [fx, 0.0, 0.0, 0.0, 0.0, 0.0]),
+                NodalLoad::manual(NodeId(3), [fx, 0.0, 0.0, 0.0, 0.0, 0.0]),
             ],
             member: vec![],
             kind: squid_n_core::model::LoadCaseKind::Seismic,
@@ -2062,16 +2044,16 @@ fn rigid_floor_portal(with_rigid_floor: bool) -> Model {
             id: LoadCaseId(1),
             name: "udl".into(),
             nodal: vec![],
-            member: vec![MemberLoad {
-                elem: ElemId(2),
-                dir: [0.0, 0.0, -1.0],
-                kind: MemberLoadKind::Distributed {
+            member: vec![MemberLoad::manual(
+                ElemId(2),
+                [0.0, 0.0, -1.0],
+                MemberLoadKind::Distributed {
                     a: 0.0,
                     b: l,
                     w1: 10.0,
                     w2: 10.0,
                 },
-            }],
+            )],
         }],
         ..Default::default()
     };
