@@ -82,8 +82,12 @@ pub(crate) fn compute_story_shear(
 ///
 /// 剛床がある階はその代表節点（マスター）を返す。**階と剛床は別概念**であり
 /// （`squid_n_core::model::story`）、剛床を持たない階もあるため、その場合は
-/// 階に属する節点のうち質点質量が最大のものを代表とする（質量が無ければ
-/// 最初の節点）。代表を採れない階は `None`。
+/// 階に属する節点のうち質点質量が最大のものを代表とする。
+///
+/// 質量が同じ節点が複数ある場合（質量未設定の階では全節点が該当する）は
+/// **節点 ID の最小のもの**を採る。ここが不定だと、同じモデル・同じ解析でも
+/// 層間変位と変位制御の基準点が入れ替わり、結果が再現しなくなる。
+/// 代表を採れない階（所属節点がない階）は `None`。
 pub(crate) fn story_reference_node(model: &Model, story: &Story) -> Option<NodeId> {
     if let Some(dia) = model.diaphragms_of(story.id).next() {
         return Some(dia.master);
@@ -95,7 +99,9 @@ pub(crate) fn story_reference_node(model: &Model, story: &Story) -> Option<NodeI
         .max_by(|a, b| {
             let ma = a.mass.map(|m| m[0]).unwrap_or(0.0);
             let mb = b.mass.map(|m| m[0]).unwrap_or(0.0);
-            ma.total_cmp(&mb)
+            // 質量が同点なら ID の小さい側を「大きい」として採る
+            // （`max_by` は同点で最後の要素を返すため、比較を反転させる）。
+            ma.total_cmp(&mb).then(b.id.0.cmp(&a.id.0))
         })
         .map(|n| n.id)
 }

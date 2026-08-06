@@ -65,13 +65,7 @@ pub(super) fn assemble(parsed: StbParser) -> Result<(Model, ImportReport), StbEr
         &material_index,
     )?;
 
-    build_nodes_and_stories(
-        &mut model,
-        raw_nodes,
-        raw_stories,
-        &node_index,
-        &story_index,
-    );
+    build_nodes_and_stories(&mut model, raw_nodes, raw_stories, &node_index);
     build_axes(&mut model, raw_axis_groups, &node_index);
 
     // 区分をグレード名から決められず、物性から推定した材料の名前。
@@ -186,7 +180,6 @@ fn build_nodes_and_stories(
     mut raw_nodes: Vec<RawNode>,
     mut raw_stories: Vec<RawStory>,
     node_index: &HashMap<u32, u32>,
-    story_index: &HashMap<u32, u32>,
 ) {
     // 実 ST-Bridge の階所属（StbStory/StbNodeIdList）から file node id → file story id を作る。
     // 節点の所属階は、まず節点自身の `story` 属性（Squid 方言）を優先し、なければこの表を引く。
@@ -198,7 +191,21 @@ fn build_nodes_and_stories(
         })
         .collect();
 
-    raw_stories.sort_by_key(|s| s.file_id);
+    // `Model::stories` は標高（`elevation`）の昇順という不変条件を持つ（階への帰属区間が
+    // 直下階のレベルで決まるため、並びが崩れると帰属が壊れる）。ST-Bridge の `StbStory` は
+    // 標高順に並んでいる保証がないため、ここで並べ替えたうえで `StoryId` を振り直す。
+    // 標高が同じ階は file id の昇順で安定させる。
+    raw_stories.sort_by(|a, b| {
+        a.elevation
+            .total_cmp(&b.elevation)
+            .then(a.file_id.cmp(&b.file_id))
+    });
+    // file id → 標高昇順での位置（`StoryId` ＝配列位置の不変条件を満たす）。
+    let story_rank: HashMap<u32, u32> = raw_stories
+        .iter()
+        .enumerate()
+        .map(|(i, s)| (s.file_id, i as u32))
+        .collect();
     for s in raw_stories {
         // 階の所属節点を正規化後の NodeId へ解決する（存在しない節点は除外）。
         let node_ids = s
@@ -209,7 +216,7 @@ fn build_nodes_and_stories(
         model.stories.push(Story {
             level_kind: Default::default(),
             structure: Default::default(),
-            id: StoryId(story_index[&s.file_id]),
+            id: StoryId(story_rank[&s.file_id]),
             name: s.name,
             elevation: s.elevation,
             node_ids,
@@ -228,7 +235,7 @@ fn build_nodes_and_stories(
             // 節点の所属階は `StbStory/StbNodeIdList` から引く（標準スキーマ）。
             story: node_story_from_list
                 .get(&n.file_id)
-                .and_then(|sfid| story_index.get(sfid).copied())
+                .and_then(|sfid| story_rank.get(sfid).copied())
                 .map(StoryId),
             support_spring: None,
         });

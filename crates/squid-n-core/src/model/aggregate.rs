@@ -209,6 +209,18 @@ impl Model {
             |s| s.id.index(),
             |s| s.id.0,
         )?;
+        // 階は標高の昇順に並ぶこと。階への帰属区間は直下階のレベルで決まる
+        // （[`Model::story_spans`]）ため、並びが崩れると区間が反転し、節点が
+        // 無言で別の階へ入る・どの階にも入らないという壊れ方をする。
+        for pair in self.stories.windows(2) {
+            if pair[1].elevation < pair[0].elevation {
+                return Err(CoreError::DanglingRef(format!(
+                    "Story {} ({}) の標高 {} が直下の Story {} ({}) の標高 {} より低い（階は標高の昇順に並べる）",
+                    pair[1].id.0, pair[1].name, pair[1].elevation,
+                    pair[0].id.0, pair[0].name, pair[0].elevation,
+                )));
+            }
+        }
         // 通り芯が参照する節点が実在すること（陳腐化した参照の検出）。通り芯は
         // 計算に用いないが、節点の削除で参照が壊れたまま保存されるのを防ぐ。
         for group in &self.axes {

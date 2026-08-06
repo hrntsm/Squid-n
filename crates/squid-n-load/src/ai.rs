@@ -60,6 +60,23 @@ fn pi_from_qi(qi: &[f64]) -> (Vec<f64>, bool) {
     (pi, clamped_negative)
 }
 
+/// 高さ方向分布係数 Ai = 1 + (1/√αi − αi)・2T/(1+3T)。
+///
+/// αi = 0 は「その階から上に地震用重量がない」退化状態（利用者が定義しただけで
+/// まだ部材を持たない最上階、地震用重量が算定できていない階など）で、式の
+/// 1/√αi が発散して Ai を定義できない。支える重量が 0 である以上、層せん断力
+/// Qi = Ci・αi・ΣW も 0 が正しいので、Ai を 0 に倒して Qi を 0 に落とす。
+///
+/// クランプしないと ∞ と 0 の積が NaN になり、NaN の水平力が載荷時に
+/// 非有限値として無言で捨てられ、地震力そのものが消える。
+fn ai_of_alpha(alpha: f64, t_factor: f64) -> f64 {
+    if alpha <= 0.0 {
+        0.0
+    } else {
+        1.0 + ((1.0 / alpha.sqrt()) - alpha) * t_factor
+    }
+}
+
 pub fn ai_distribution(
     stories_weight_bottom_to_top: &[f64],
     z: f64,
@@ -73,15 +90,18 @@ pub fn ai_distribution(
     let mut cumulative = 0.0;
     for i in (0..n).rev() {
         cumulative += stories_weight_bottom_to_top[i];
-        alpha.push(cumulative / total_w);
+        // 総重量 0 のモデル（解析前チェックが弾く入力不備）で 0/0 の NaN を
+        // 生まないよう、αi を 0 に倒す。以降の Ai・Qi はすべて 0 になる。
+        alpha.push(if total_w > 0.0 {
+            cumulative / total_w
+        } else {
+            0.0
+        });
     }
     alpha.reverse();
 
     let t_factor = 2.0 * t / (1.0 + 3.0 * t);
-    let ai: Vec<f64> = alpha
-        .iter()
-        .map(|a| 1.0 + ((1.0 / a.sqrt()) - a) * t_factor)
-        .collect();
+    let ai: Vec<f64> = alpha.iter().map(|a| ai_of_alpha(*a, t_factor)).collect();
     let ci: Vec<f64> = ai.iter().map(|a| z * rt_val * a * c0).collect();
     // 層せん断力 Qi = Ci · Wi（Wi＝当該層以上の累積重量＝令88条）。
     // αi = Wi/total_w なので Wi = αi・total_w。
@@ -225,7 +245,7 @@ pub fn seismic_shear_distribution(
             } else {
                 0.0
             };
-            let ai_val = 1.0 + ((1.0 / a.sqrt()) - a) * t_factor;
+            let ai_val = ai_of_alpha(a, t_factor);
             let c = z * rt_val * ai_val * c0;
             alpha[i] = a;
             ai[i] = ai_val;
@@ -531,5 +551,83 @@ mod tests {
             r.qi[0]
         );
         assert!(!r.clamped_negative_pi);
+    }
+
+    /// 重量 0 の最上階（利用者が定義しただけでまだ部材のない階）があっても、
+    /// Ai・Qi・Pi が NaN にならず、その階の層せん断力が 0 になること。
+    ///
+    /// αi = 0 で 1/√αi が発散し、Qi = Ci・αi・ΣW が ∞×0 = NaN になると、
+    /// 載荷側が非有限値を捨てるため地震力が無言で消える。
+    #[test]
+    fn test_ai_distribution_with_zero_weight_top_story_is_finite() {
+        let r = ai_distribution(&[1000.0, 800.0, 0.0], 1.0, 1.0, 0.2, 0.4);
+        assert!(
+            r.ai.iter().all(|v| v.is_finite()),
+            "Ai に非有限値がある: {:?}",
+            r.ai
+        );
+        assert!(
+            r.qi.iter().all(|v| v.is_finite()) && r.pi.iter().all(|v| v.is_finite()),
+            "Qi/Pi に非有限値がある: qi={:?} pi={:?}",
+            r.qi,
+            r.pi
+        );
+        assert_eq!(r.qi[2], 0.0, "上に重量がない階の層せん断力は 0");
+        assert_eq!(r.pi[2], 0.0);
+        // 下層は重量 0 の階がない場合と同じ結果になる。
+        let base = ai_distribution(&[1000.0, 800.0], 1.0, 1.0, 0.2, 0.4);
+        for i in 0..2 {
+            assert!(
+                (r.qi[i] - base.qi[i]).abs() < 1e-9,
+                "層 {i}: {} vs {}",
+                r.qi[i],
+                base.qi[i]
+            );
+        }
+    }
+
+    /// 地震用重量が全階 0 のモデル（入力不備。解析前チェックが弾く）でも
+    /// 0/0 の NaN を作らない。
+    #[test]
+    fn test_ai_distribution_with_zero_total_weight_is_finite() {
+        let r = ai_distribution(&[0.0, 0.0], 1.0, 1.0, 0.2, 0.4);
+        assert!(r.alpha.iter().all(|v| v.is_finite()));
+        assert!(r.qi.iter().all(|v| *v == 0.0), "qi={:?}", r.qi);
+        assert!(r.pi.iter().all(|v| *v == 0.0), "pi={:?}", r.pi);
+    }
+
+    /// PH 階を含む混在モデルでも、重量 0 の一般階で Ai・Qi が発散しないこと
+    /// （`ai_distribution` と同じクランプが `seismic_shear_distribution` 側にも効く）。
+    #[test]
+    fn test_seismic_shear_distribution_zero_weight_normal_story_is_finite() {
+        let stories = vec![
+            StorySeismicSpec {
+                weight: 1000.0,
+                ci_weight: 1000.0,
+                level_kind: StoryLevelKind::Normal,
+            },
+            StorySeismicSpec {
+                weight: 0.0,
+                ci_weight: 0.0,
+                level_kind: StoryLevelKind::Normal,
+            },
+            StorySeismicSpec {
+                weight: 0.0,
+                ci_weight: 0.0,
+                level_kind: StoryLevelKind::Penthouse { k: 0.6 },
+            },
+        ];
+        let r = seismic_shear_distribution(&stories, 1.0, 1.0, 0.2, 0.4);
+        assert!(
+            r.ai.iter().all(|v| v.is_finite())
+                && r.ci.iter().all(|v| v.is_finite())
+                && r.qi.iter().all(|v| v.is_finite())
+                && r.pi.iter().all(|v| v.is_finite()),
+            "非有限値がある: ai={:?} ci={:?} qi={:?} pi={:?}",
+            r.ai,
+            r.ci,
+            r.qi,
+            r.pi
+        );
     }
 }

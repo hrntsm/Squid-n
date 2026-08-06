@@ -967,3 +967,16 @@ fn test_visit_story_ids_covers_all_references() {
     assert_eq!(m.nodes[1].story, Some(StoryId(10)));
     assert_eq!(m.diaphragms_of(StoryId(10)).count(), 1);
 }
+
+/// 階が標高の昇順に並んでいないモデルは検証で弾く。階への帰属区間は直下階の
+/// レベルで決まるため、並びが崩れると節点が無言で別の階へ入る。
+#[test]
+fn test_validate_rejects_stories_out_of_elevation_order() {
+    let mut m = make_story_model(&[0.0, 4000.0, 7500.0], &[("1F", 4000.0), ("2F", 7500.0)]);
+    assert!(m.validate().is_ok());
+
+    m.stories[1].elevation = 1000.0;
+    let err = m.validate().expect_err("標高の逆転を検出する");
+    let msg = format!("{err}");
+    assert!(msg.contains("昇順"), "{msg}");
+}
