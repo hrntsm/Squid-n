@@ -135,7 +135,9 @@ pub fn preparation_panel(ui: &mut egui::Ui, app: &mut App) {
     ui.separator();
 
     let view = app.prep_view.view;
-    egui::ScrollArea::both()
+    // 横スクロールは表ごとに `table_util::standard_table` が持つため、ここは縦のみ。
+    // 外側にも横スクロールを置くと、表の横スクロールと二重になって操作が定まらない。
+    egui::ScrollArea::vertical()
         .id_salt("prep_view")
         .auto_shrink([false, false])
         .show(ui, |ui| match view {
@@ -505,7 +507,7 @@ fn torsion_section(ui: &mut egui::Ui, prep: &PreparationResult) {
             Col::id_named("部材"),
             Col::label("種別"),
             Col::num("節点"),
-            Col::remainder("理由"),
+            Col::text("理由"),
         ],
         rows.len(),
         |row| {
@@ -520,7 +522,10 @@ fn torsion_section(ui: &mut egui::Ui, prep: &PreparationResult) {
                 ui.label(format!("{}", r.node.0));
             });
             row.col(|ui| {
-                ui.label("この節点の材軸まわり回転を拘束する部材・支点がない");
+                crate::table_util::text_cell(
+                    ui,
+                    "この節点の材軸まわり回転を拘束する部材・支点がない",
+                );
             });
         },
     );
@@ -572,7 +577,7 @@ fn panel_zone_section(ui: &mut egui::Ui, prep: &PreparationResult) {
             Col::num("db [mm]"),
             Col::num("tp [mm]"),
             Col::num("Ve [mm³]"),
-            Col::remainder("Kxp=Kyp [kN·m/rad]"),
+            Col::num("Kxp=Kyp [kN·m/rad]"),
         ],
         rows.len(),
         |row| {

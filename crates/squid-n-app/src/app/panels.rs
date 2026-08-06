@@ -140,7 +140,7 @@ impl App {
                 table_util::standard_table(
                     ui,
                     "nav_members_tbl",
-                    &[Col::id(), Col::remainder("種別")],
+                    &[Col::id(), Col::label("種別")],
                     n,
                     |row| {
                         let idx = row.index();

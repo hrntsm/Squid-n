@@ -31,9 +31,6 @@ pub(crate) enum ColWidth {
     Text,
     /// 行操作ボタンだけを置く列。値はボタンの個数
     Actions(u8),
-    /// 残り幅を埋める列（理由・注記のような自由文の最終列）。
-    /// `egui_extras` の制約により**表の最終列にのみ**使える
-    Remainder,
 }
 
 /// 各トークンの幅を決める代表文字列。実データの最大長ではなく「この用途で
@@ -67,11 +64,9 @@ fn min_column_width(ui: &egui::Ui) -> f32 {
 }
 
 impl ColWidth {
-    /// トークンの実幅 [pt]。[`ColWidth::Remainder`] は幅を持たないため、
-    /// リサイズ下限としてだけ意味のある最小値を返す。
+    /// トークンの実幅 [pt]。
     fn to_pt(self, ui: &egui::Ui) -> f32 {
         let sample = match self {
-            Self::Remainder => return min_column_width(ui),
             // ボタンを置く列は、セル余白の内側にボタン自身の余白が入るため 2 重に見る
             Self::Id => return text_width(ui, SAMPLE_ID) + cell_padding(ui) * 2.0,
             Self::Actions(n) => {
@@ -154,11 +149,6 @@ impl<'a> Col<'a> {
         Self::new("", ColWidth::Actions(n))
     }
 
-    /// 残り幅を埋める列（自由文の最終列）。表の最終列にのみ置くこと。
-    pub(crate) fn remainder(header: &'a str) -> Self {
-        Self::new(header, ColWidth::Remainder)
-    }
-
     /// 見出しにツールチップを付ける（列の意味・単位・既定値の補足）。
     pub(crate) fn hover(mut self, text: &'a str) -> Self {
         self.hover = Some(text);
@@ -179,12 +169,15 @@ impl<'a> Col<'a> {
     /// 自分の初期幅を下限にする（下限が初期幅を上回ると、列が意図より広く開く）。
     fn to_column(&self, ui: &egui::Ui, min_w: f32) -> Column {
         let width = self.width_pt(ui);
-        let col = match self.width {
-            ColWidth::Remainder => Column::remainder(),
-            _ => Column::initial(width),
-        };
-        col.clip(true).at_least(min_w.min(width))
+        Column::initial(width).clip(true).at_least(min_w.min(width))
     }
+}
+
+/// 表が横スクロールを要するときの、スクロール領域の縦方向の最小高さ。
+/// 行が数行しか見えない高さまで縮むと表として読めないため、行高から導出する
+/// （TONMANUAL §4: テキストを内包する箱の寸法を固定 px で書かない）。
+fn min_scrolled_height(row_h: f32) -> f32 {
+    row_h * 8.0
 }
 
 /// 共通フォーマットの表を描く。`salt` は同一パネル内に複数の表を置くときの
@@ -200,6 +193,15 @@ impl<'a> Col<'a> {
 ///   有効にすると内容はセル内で切り詰められ、列位置は全行で揃う。
 /// - **リサイズ**: `egui_extras` は列境界の縦線をリサイズハンドルとして描くため、
 ///   これを有効にすることが列区切りの縦線を出す手段でもある。
+///
+/// 縦横のスクロールは表の外側の [`egui::ScrollArea`] が持ち、`TableBuilder` 自身の
+/// 縦スクロールは切る（`vscroll(false)`）。`egui_extras` は横スクロールを持たないため
+/// 外側に出す必要があり、縦だけを内側に残すと縦スクロールバーが表の右端＝横スクロール
+/// で画面外へ流れる位置に付いてしまうため、縦横ともに外側へ寄せている。
+///
+/// 行の仮想化（可視行だけ描く）は失われない。`TableBody::rows` は自身のスクロール
+/// 状態ではなくクリップ矩形と表の先頭位置の差から可視範囲を求めるため、外側の
+/// スクロール領域でも正しく働く。
 pub(crate) fn standard_table(
     ui: &mut egui::Ui,
     salt: &str,
@@ -209,28 +211,58 @@ pub(crate) fn standard_table(
 ) {
     let row_h = crate::theme::table_row_height(ui);
     let min_w = min_column_width(ui);
+    let spacing_x = ui.spacing().item_spacing.x;
+
+    // 表の実幅は利用者の列リサイズで変わるため、前フレームの実測値を使う。
+    // 初回は列定義からの見積もりで代用し、実測値との差が出たら再描画を要求する。
+    let estimate: f32 = cols.iter().map(|c| c.width_pt(ui)).sum::<f32>()
+        + spacing_x * cols.len().saturating_sub(1) as f32;
+    let width_id = egui::Id::new(("table_content_width", salt));
+    let content_w = ui.data(|d| d.get_temp::<f32>(width_id)).unwrap_or(estimate);
+    // 表が可視幅より狭いときは可視幅を与える（余白に横スクロールバーを出さない）。
+    let table_w = content_w.max(ui.available_width());
+
     let columns: Vec<Column> = cols.iter().map(|c| c.to_column(ui, min_w)).collect();
 
-    let mut tb = TableBuilder::new(ui)
-        .id_salt(salt)
-        .striped(true)
-        .resizable(true);
-    for c in columns {
-        tb = tb.column(c);
-    }
-    tb.header(row_h, |mut h| {
-        for c in cols {
-            h.col(|ui| {
-                let resp = ui.strong(c.header);
-                if let Some(hover) = c.hover {
-                    resp.on_hover_text(hover);
+    let out = egui::ScrollArea::both()
+        .id_salt((salt, "scroll"))
+        // 横は可視幅いっぱいに広げ（スクロールバーをパネル幅で出す）、
+        // 縦は内容ぶんに縮める（短い表がパネル高さを占有しないように）。
+        .auto_shrink([false, true])
+        .min_scrolled_height(min_scrolled_height(row_h))
+        .show(ui, |ui| {
+            // 横スクロール領域の内側では利用可能幅が無限になるため、表の幅を明示する。
+            ui.set_max_width(table_w);
+
+            let mut tb = TableBuilder::new(ui)
+                .id_salt(salt)
+                .striped(true)
+                .resizable(true)
+                .vscroll(false);
+            for c in columns {
+                tb = tb.column(c);
+            }
+            tb.header(row_h, |mut h| {
+                for c in cols {
+                    h.col(|ui| {
+                        let resp = ui.strong(c.header);
+                        if let Some(hover) = c.hover {
+                            resp.on_hover_text(hover);
+                        }
+                    });
                 }
+            })
+            .body(|body| {
+                body.rows(row_h, n_rows, |mut row| row_fn(&mut row));
             });
-        }
-    })
-    .body(|body| {
-        body.rows(row_h, n_rows, |mut row| row_fn(&mut row));
-    });
+        });
+
+    let measured = out.content_size.x;
+    ui.data_mut(|d| d.insert_temp(width_id, measured));
+    if (measured - content_w).abs() > 0.5 {
+        // 見積もりと実幅がずれたフレームは、横スクロールバーの要否が変わる。
+        ui.ctx().request_repaint();
+    }
 }
 
 // ===== セル =====
@@ -385,6 +417,16 @@ mod tests {
         assert_eq!(Col::actions().header, "");
         assert_eq!(Col::id().header, "ID");
         assert_eq!(Col::num("A").hover, None);
+    }
+
+    /// 横スクロール時のスクロール領域の最小高さは、行が数行しか見えない高さまで
+    /// 縮まない（行高から導出しているので、フォントを変えても比が保たれる）。
+    #[test]
+    fn min_scrolled_height_keeps_several_rows() {
+        run_test_ui(|ui| {
+            let row_h = crate::theme::table_row_height(ui);
+            assert!(min_scrolled_height(row_h) >= row_h * 4.0);
+        });
     }
 
     /// リサイズの下限は 0 ではなく、3 桁が読める幅を残す。

@@ -2355,13 +2355,18 @@ impl eframe::App for App {
                             }
                         }
                         BottomTab::Model => {
-                            egui::ScrollArea::both()
+                            // 横スクロールは表ごとに `table_util::standard_table` が
+                            // 持つため、ここは縦のみ。外側にも横スクロールを置くと、
+                            // 表を横へ送ったつもりでサブタブ行や追加フォームまで
+                            // 一緒に流れてしまう。
+                            egui::ScrollArea::vertical()
                                 .id_salt("bottom_model")
                                 .auto_shrink([false, false])
                                 .show(ui, |ui| self.model_tab_panel(ui));
                         }
                         BottomTab::Loads => {
-                            egui::ScrollArea::both()
+                            // 横スクロールは表側が持つ（BottomTab::Model と同じ理由）。
+                            egui::ScrollArea::vertical()
                                 .id_salt("bottom_loads")
                                 .auto_shrink([false, false])
                                 .show(ui, |ui| crate::tables::loads::loads_table(ui, self));

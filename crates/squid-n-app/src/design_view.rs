@@ -326,7 +326,7 @@ pub fn design_table(ui: &mut egui::Ui, app: &mut App) {
                 Col::name("種別"),
                 Col::num("検定比"),
                 Col::label("判定"),
-                Col::remainder("根拠"),
+                Col::text("根拠"),
             ],
             joint_checks.len(),
             |row| {
