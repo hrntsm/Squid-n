@@ -1,0 +1,14 @@
+/* footer.js が全ページ本文末尾に差し込むフッターの体裁。 */
+main .site-footer {
+    margin-top: 3rem;
+    padding-top: 1rem;
+    border-top: 1px solid var(--table-border-color);
+    font-size: 0.85em;
+    line-height: 1.6;
+    /* 本文より一段弱めて、注意書きが本文と競合しないようにする。 */
+    opacity: 0.75;
+}
+
+main .site-footer p {
+    margin: 0.2em 0;
+}

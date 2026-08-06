@@ -15,6 +15,9 @@ preferred-dark-theme = "ayu"
 git-repository-url = "https://github.com/hrntsm/squid-n"
 edit-url-template = "https://github.com/hrntsm/squid-n/edit/main/docs/{path}"
 mathjax-support = true
+# 全ページ末尾に MIT License と無保証の注意書き（`docs/introduction.md` へのリンク）を出す。
+additional-css = ["theme/footer.css"]
+additional-js = ["theme/footer.js"]
 
 # 章トップ（`README.md`）は `index.html` として出力される一方、目次・本文中の
 # `README.md` リンクは `README.html` のまま解決されるため、リダイレクトで受ける。

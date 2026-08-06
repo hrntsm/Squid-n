@@ -137,6 +137,9 @@ mdbook build
 - 章トップの `README.md` は `index.html` として出力される一方、リンクは `README.html` の
   まま解決されるため、章ディレクトリを追加したら `book.toml` の
   `[output.html.redirect]` にも 1 行追加してください
+- 全ページ末尾のフッター（MIT License と無保証の注意書き）は `theme/footer.js`・`theme/footer.css`
+  で差し込んでいます。リンク先は `docs/introduction.md` の「ライセンスと免責事項」のため、
+  この見出しを変更する場合は `theme/footer.js` のアンカーも合わせて更新してください
 
 `main` への push で GitHub Pages に自動デプロイされます
 （`.github/workflows/docs.yml`）。API リファレンス（rustdoc）も同時に生成され、
