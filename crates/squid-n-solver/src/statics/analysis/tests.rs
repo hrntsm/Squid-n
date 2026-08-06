@@ -4,9 +4,9 @@ use super::*;
 use squid_n_core::dof::Dof6Mask;
 use squid_n_core::ids::{ElemId, MaterialId, NodeId, SectionId, StoryId};
 use squid_n_core::model::{
-    Constraint, DiaphragmDef, ElementData, ElementKind, EndCondition, ForceRegime, LoadCase,
-    LoadCombination, LocalAxis, Material, MaterialCategory, MemberLoad, MemberLoadKind, NodalLoad,
-    Node, Section, Story, StoryLevelKind, StoryStructure,
+    Constraint, ElementData, ElementKind, EndCondition, ForceRegime, LoadCase, LoadCombination,
+    LocalAxis, Material, MaterialCategory, MemberLoad, MemberLoadKind, NodalLoad, Node, Section,
+    Story, StoryLevelKind, StoryStructure,
 };
 use std::collections::HashSet;
 
@@ -391,7 +391,6 @@ fn make_story_ratio_model(structures: &[StoryStructure]) -> Model {
             name: format!("F{}", i + 1),
             elevation: elev,
             node_ids: vec![nid],
-            diaphragms: Vec::new(),
             seismic_weight: Some(1000.0),
             weight_override: None,
             structure: *s,
@@ -434,13 +433,13 @@ fn test_steel_height_ratio_no_stories_is_zero() {
 
 // ---- §1.6 多剛床のPi重複載荷 ----
 
-fn make_diaphragm_story(diaphragms: Vec<DiaphragmDef>) -> Story {
+/// 剛床を持たない素の階（見付け幅など階単体の算定を検証するためのもの）。
+fn make_bare_story() -> Story {
     Story {
         id: StoryId(0),
         name: "F1".into(),
         elevation: 1000.0,
         node_ids: Vec::new(),
-        diaphragms,
         seismic_weight: Some(400.0),
         weight_override: None,
         structure: StoryStructure::Rc,
@@ -448,39 +447,50 @@ fn make_diaphragm_story(diaphragms: Vec<DiaphragmDef>) -> Story {
     }
 }
 
+/// 剛床の分配規則の検証用モデル。地震用重量 400 の階を 1 つ持ち、指定した
+/// `(マスター, 剛床重量, ci_override)` の剛床拘束を備える。剛床は階ではなく
+/// 拘束として保持されるため、分配関数はモデルごと受け取る。
+fn make_diaphragm_model(diaphragms: Vec<(NodeId, Option<f64>, Option<f64>)>) -> Model {
+    let mut model = Model {
+        stories: vec![Story {
+            id: StoryId(0),
+            name: "F1".into(),
+            elevation: 1000.0,
+            node_ids: Vec::new(),
+            seismic_weight: Some(400.0),
+            weight_override: None,
+            structure: StoryStructure::Rc,
+            level_kind: StoryLevelKind::Normal,
+        }],
+        ..Default::default()
+    };
+    for (master, weight, ci_override) in diaphragms {
+        model.constraints.push(Constraint::RigidDiaphragm {
+            story: StoryId(0),
+            master,
+            slaves: Vec::new(),
+            weight,
+            ci_override,
+        });
+    }
+    model
+}
+
 #[test]
 fn test_distribute_pi_single_diaphragm_gets_full_pi() {
-    let story = make_diaphragm_story(vec![DiaphragmDef {
-        ci_override: None,
-        master: NodeId(10),
-        slaves: vec![],
-        rigid: true,
-        weight: None,
-    }]);
-    let shares = distribute_pi_over_diaphragms(&story, 40.0);
+    let model = make_diaphragm_model(vec![(NodeId(10), None, None)]);
+    let shares = distribute_pi_over_diaphragms(&model, &model.stories[0], 40.0);
     assert_eq!(shares, vec![(NodeId(10), 40.0)]);
 }
 
 #[test]
 fn test_distribute_pi_weight_ratio_3_to_1() {
-    let story = make_diaphragm_story(vec![
-        DiaphragmDef {
-            ci_override: None,
-            master: NodeId(10),
-            slaves: vec![],
-            rigid: true,
-            weight: Some(300.0),
-        },
-        DiaphragmDef {
-            ci_override: None,
-            master: NodeId(11),
-            slaves: vec![],
-            rigid: true,
-            weight: Some(100.0),
-        },
+    let model = make_diaphragm_model(vec![
+        (NodeId(10), Some(300.0), None),
+        (NodeId(11), Some(100.0), None),
     ]);
     let pi = 40.0;
-    let shares = distribute_pi_over_diaphragms(&story, pi);
+    let shares = distribute_pi_over_diaphragms(&model, &model.stories[0], pi);
     let s10 = shares.iter().find(|(n, _)| *n == NodeId(10)).unwrap().1;
     let s11 = shares.iter().find(|(n, _)| *n == NodeId(11)).unwrap().1;
     assert!((s10 - 30.0).abs() < 1e-9, "s10={}", s10);
@@ -492,29 +502,74 @@ fn test_distribute_pi_weight_ratio_3_to_1() {
 
 #[test]
 fn test_distribute_pi_equal_split_when_no_weight() {
-    let story = make_diaphragm_story(vec![
-        DiaphragmDef {
-            ci_override: None,
-            master: NodeId(10),
-            slaves: vec![],
-            rigid: true,
-            weight: None,
-        },
-        DiaphragmDef {
-            ci_override: None,
-            master: NodeId(11),
-            slaves: vec![],
-            rigid: true,
-            weight: None,
-        },
-    ]);
+    let model = make_diaphragm_model(vec![(NodeId(10), None, None), (NodeId(11), None, None)]);
     let pi = 40.0;
-    let shares = distribute_pi_over_diaphragms(&story, pi);
+    let shares = distribute_pi_over_diaphragms(&model, &model.stories[0], pi);
     for (_, v) in &shares {
         assert!((*v - 20.0).abs() < 1e-9, "share={}", v);
     }
     let total: f64 = shares.iter().map(|(_, v)| v).sum();
     assert!((total - pi).abs() < 1e-9, "total={}", total);
+}
+
+/// 剛床を持たない階の水平力は、階に属する節点へ質点質量の比で分配される
+/// （階と剛床は別概念であり、剛床がない階にも水平力は載る）。
+#[test]
+fn test_distribute_pi_without_diaphragm_falls_back_to_story_nodes() {
+    let mut model = make_diaphragm_model(vec![]);
+    model.nodes = vec![
+        Node {
+            id: NodeId(0),
+            coord: [0.0, 0.0, 1000.0],
+            restraint: Dof6Mask::FREE,
+            mass: Some([3.0, 3.0, 3.0, 0.0, 0.0, 0.0]),
+            story: Some(StoryId(0)),
+            support_spring: None,
+        },
+        Node {
+            id: NodeId(1),
+            coord: [6000.0, 0.0, 1000.0],
+            restraint: Dof6Mask::FREE,
+            mass: Some([1.0, 1.0, 1.0, 0.0, 0.0, 0.0]),
+            story: Some(StoryId(0)),
+            support_spring: None,
+        },
+    ];
+    model.stories[0].node_ids = vec![NodeId(0), NodeId(1)];
+
+    let pi = 40.0;
+    let shares = distribute_pi_over_diaphragms(&model, &model.stories[0], pi);
+    let s0 = shares.iter().find(|(n, _)| *n == NodeId(0)).unwrap().1;
+    let s1 = shares.iter().find(|(n, _)| *n == NodeId(1)).unwrap().1;
+    assert!((s0 - 30.0).abs() < 1e-9, "s0={s0}");
+    assert!((s1 - 10.0).abs() < 1e-9, "s1={s1}");
+    let total: f64 = shares.iter().map(|(_, v)| v).sum();
+    assert!(
+        (total - pi).abs() < 1e-9,
+        "層せん断力の総量は保たれる: {total}"
+    );
+}
+
+/// 剛床も質量もない階では等分割する（載荷位置は決まらないが総量は保つ）。
+#[test]
+fn test_distribute_pi_without_diaphragm_and_mass_splits_equally() {
+    let mut model = make_diaphragm_model(vec![]);
+    model.nodes = (0..2)
+        .map(|i| Node {
+            id: NodeId(i),
+            coord: [i as f64 * 6000.0, 0.0, 1000.0],
+            restraint: Dof6Mask::FREE,
+            mass: None,
+            story: Some(StoryId(0)),
+            support_spring: None,
+        })
+        .collect();
+    model.stories[0].node_ids = vec![NodeId(0), NodeId(1)];
+
+    let shares = distribute_pi_over_diaphragms(&model, &model.stories[0], 40.0);
+    for (_, v) in &shares {
+        assert!((*v - 20.0).abs() < 1e-9, "share={v}");
+    }
 }
 
 // ---- §4 風荷重の静的解析接続 ----
@@ -726,51 +781,27 @@ fn test_wind_static_without_stories_is_error() {
 
 #[test]
 fn test_main_system_weight_excludes_ci_override_diaphragm() {
-    let story = make_diaphragm_story(vec![
-        DiaphragmDef {
-            ci_override: None,
-            master: NodeId(10),
-            slaves: vec![],
-            rigid: true,
-            weight: Some(300.0),
-        },
-        DiaphragmDef {
-            ci_override: Some(0.3),
-            master: NodeId(11),
-            slaves: vec![],
-            rigid: true,
-            weight: Some(100.0),
-        },
+    let model = make_diaphragm_model(vec![
+        (NodeId(10), Some(300.0), None),
+        (NodeId(11), Some(100.0), Some(0.3)),
     ]);
-    // make_diaphragm_story は seismic_weight=400.0 固定（主300+副100）。
+    // make_diaphragm_model は seismic_weight=400.0 固定（主300+副100）。
     // 主系統重量は ci_override を持つ副剛床の重量(100)を除いた 300 になる。
-    let w = main_system_weight(&story);
+    let w = main_system_weight(&model, &model.stories[0]);
     assert!((w - 300.0).abs() < 1e-9, "main_system_weight={}", w);
 }
 
 #[test]
 fn test_distribute_seismic_forces_ci_override_adds_separate_force() {
-    let story = make_diaphragm_story(vec![
-        DiaphragmDef {
-            ci_override: None,
-            master: NodeId(10),
-            slaves: vec![],
-            rigid: true,
-            weight: Some(300.0),
-        },
-        DiaphragmDef {
-            ci_override: Some(0.3),
-            master: NodeId(11),
-            slaves: vec![],
-            rigid: true,
-            weight: Some(100.0),
-        },
+    let model = make_diaphragm_model(vec![
+        (NodeId(10), Some(300.0), None),
+        (NodeId(11), Some(100.0), Some(0.3)),
     ]);
     // 主系統(重量300ベースで別途算定済み)の Pi として 60.0 を渡す。
     // 主剛床(唯一の ci_override 無し剛床)が全量を受け、副剛床には
     // 0.3×100=30 が別途載る。
     let pi = 60.0;
-    let shares = distribute_seismic_forces(&story, pi);
+    let shares = distribute_seismic_forces(&model, &model.stories[0], pi);
     let s10 = shares.iter().find(|(n, _)| *n == NodeId(10)).unwrap().1;
     let s11 = shares.iter().find(|(n, _)| *n == NodeId(11)).unwrap().1;
     assert!((s10 - 60.0).abs() < 1e-9, "s10={}", s10);
@@ -780,25 +811,13 @@ fn test_distribute_seismic_forces_ci_override_adds_separate_force() {
 #[test]
 fn test_distribute_seismic_forces_matches_pi_distribution_without_ci_override() {
     // 全剛床が ci_override 無しなら distribute_pi_over_diaphragms と厳密一致。
-    let story = make_diaphragm_story(vec![
-        DiaphragmDef {
-            ci_override: None,
-            master: NodeId(10),
-            slaves: vec![],
-            rigid: true,
-            weight: Some(300.0),
-        },
-        DiaphragmDef {
-            ci_override: None,
-            master: NodeId(11),
-            slaves: vec![],
-            rigid: true,
-            weight: Some(100.0),
-        },
+    let model = make_diaphragm_model(vec![
+        (NodeId(10), Some(300.0), None),
+        (NodeId(11), Some(100.0), None),
     ]);
     let pi = 40.0;
-    let expected = distribute_pi_over_diaphragms(&story, pi);
-    let actual = distribute_seismic_forces(&story, pi);
+    let expected = distribute_pi_over_diaphragms(&model, &model.stories[0], pi);
+    let actual = distribute_seismic_forces(&model, &model.stories[0], pi);
     assert_eq!(expected, actual);
 }
 
@@ -825,8 +844,7 @@ fn make_node_only_model(coords: &[[f64; 3]]) -> Model {
 #[test]
 fn test_story_wind_width_uses_story_node_range() {
     let model = make_node_only_model(&[[0.0, 0.0, 0.0], [6000.0, 0.0, 0.0]]);
-    let story = make_diaphragm_story(vec![]);
-    let mut story = story;
+    let mut story = make_bare_story();
     story.node_ids = vec![NodeId(0), NodeId(1)];
     let excluded = HashSet::new();
     let w = story_wind_width(&story, &model, 0, &excluded, 999.0);
@@ -836,7 +854,7 @@ fn test_story_wind_width_uses_story_node_range() {
 #[test]
 fn test_story_wind_width_fallback_when_single_node() {
     let model = make_node_only_model(&[[0.0, 0.0, 0.0], [6000.0, 0.0, 0.0]]);
-    let mut story = make_diaphragm_story(vec![]);
+    let mut story = make_bare_story();
     story.node_ids = vec![NodeId(0)];
     let excluded = HashSet::new();
     let w = story_wind_width(&story, &model, 0, &excluded, 999.0);
@@ -846,7 +864,7 @@ fn test_story_wind_width_fallback_when_single_node() {
 #[test]
 fn test_story_wind_width_fallback_when_zero_range() {
     let model = make_node_only_model(&[[3000.0, 0.0, 0.0], [3000.0, 5000.0, 0.0]]);
-    let mut story = make_diaphragm_story(vec![]);
+    let mut story = make_bare_story();
     story.node_ids = vec![NodeId(0), NodeId(1)];
     let excluded = HashSet::new();
     // 両節点とも X=3000 なので axis=0(X) の範囲は 0 → フォールバック。

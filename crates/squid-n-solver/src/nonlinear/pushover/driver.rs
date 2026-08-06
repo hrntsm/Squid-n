@@ -221,7 +221,7 @@ pub fn pushover_analysis_recording(
         }
         // 多剛床の階では重量比で按分する（レビュー §1.6、analysis.rs と同じ規則。
         // 従来は各剛床へ pi をそのまま重複して載せていた）。
-        for (master, share) in distribute_pi_over_diaphragms(story, pi) {
+        for (master, share) in distribute_pi_over_diaphragms(model, story, pi) {
             let ni = master.index();
             for d in 0..6 {
                 let g = ni * 6 + d;

@@ -206,7 +206,6 @@ mod tests {
             name: "1F".to_string(),
             elevation: 3000.0,
             node_ids: vec![NodeId(3), NodeId(4), NodeId(5)],
-            diaphragms: vec![],
             seismic_weight: None,
             weight_override: None,
             structure: Default::default(),

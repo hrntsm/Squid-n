@@ -129,12 +129,7 @@ impl Reducer {
 
         // RigidDiaphragm
         for constraint in &model.constraints {
-            if let Constraint::RigidDiaphragm {
-                story: _,
-                master,
-                slaves,
-            } = constraint
-            {
+            if let Constraint::RigidDiaphragm { master, slaves, .. } = constraint {
                 let mi = master.index();
                 let Some(&[mx, my, _]) = node_coords.get(mi) else {
                     continue;
@@ -536,11 +531,11 @@ mod tests {
     #[test]
     fn test_rigid_diaphragm() {
         let mut model = make_3node_model();
-        model.constraints.push(Constraint::RigidDiaphragm {
-            story: StoryId(0),
-            master: NodeId(1),
-            slaves: vec![NodeId(2)],
-        });
+        model.constraints.push(Constraint::rigid_diaphragm(
+            StoryId(0),
+            NodeId(1),
+            vec![NodeId(2)],
+        ));
         let dofmap = DofMap::build(&model);
         let reducer = Reducer::build(&model, &dofmap);
         // slave Ux/Uy/Rz が master に従うため独立 DOF が減る
@@ -580,11 +575,11 @@ mod tests {
             story: None,
             support_spring: None,
         });
-        model.constraints.push(Constraint::RigidDiaphragm {
-            story: StoryId(0),
-            master: NodeId(3),
-            slaves: vec![NodeId(1), NodeId(2)],
-        });
+        model.constraints.push(Constraint::rigid_diaphragm(
+            StoryId(0),
+            NodeId(3),
+            vec![NodeId(1), NodeId(2)],
+        ));
         let dofmap = DofMap::build(&model);
         let reducer = Reducer::build(&model, &dofmap);
 
@@ -692,11 +687,11 @@ mod tests {
     #[test]
     fn test_dangling_constraint_reference_does_not_panic() {
         let mut model = make_3node_model();
-        model.constraints.push(Constraint::RigidDiaphragm {
-            story: StoryId(0),
-            master: NodeId(99),
-            slaves: vec![NodeId(1)],
-        });
+        model.constraints.push(Constraint::rigid_diaphragm(
+            StoryId(0),
+            NodeId(99),
+            vec![NodeId(1)],
+        ));
         model.constraints.push(Constraint::RigidLink {
             master: NodeId(1),
             slaves: vec![NodeId(98)],

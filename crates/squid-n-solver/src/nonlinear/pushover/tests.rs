@@ -3,8 +3,8 @@ use crate::constraint::Reducer;
 use squid_n_core::dof::{Dof6Mask, DofMap};
 use squid_n_core::ids::{ElemId, MaterialId, NodeId, SectionId, StoryId};
 use squid_n_core::model::{
-    Constraint, DiaphragmDef, ElementData, ElementKind, EndCondition, ForceRegime, LocalAxis,
-    Material, MaterialCategory, Node, Section, Story,
+    Constraint, ElementData, ElementKind, EndCondition, ForceRegime, LocalAxis, Material,
+    MaterialCategory, Node, Section, Story,
 };
 use squid_n_core::section_shape::ShearBar;
 
@@ -84,13 +84,6 @@ fn single_column_model(fy: f64, seismic_weight: f64) -> Model {
             name: "1F".to_string(),
             elevation: 3000.0,
             node_ids: vec![NodeId(1)],
-            diaphragms: vec![DiaphragmDef {
-                ci_override: None,
-                weight: None,
-                master: NodeId(1),
-                slaves: vec![],
-                rigid: true,
-            }],
             seismic_weight: Some(seismic_weight),
             weight_override: None,
         }],
@@ -385,13 +378,6 @@ fn spring_column_model(kx: f64, support_kx: Option<f64>, seismic_weight: f64) ->
             name: "1F".to_string(),
             elevation: 3000.0,
             node_ids: vec![NodeId(1)],
-            diaphragms: vec![DiaphragmDef {
-                ci_override: None,
-                weight: None,
-                master: NodeId(1),
-                slaves: vec![],
-                rigid: true,
-            }],
             seismic_weight: Some(seismic_weight),
             weight_override: None,
         }],
@@ -674,7 +660,6 @@ fn two_story_model() -> Model {
                 name: "1F".to_string(),
                 elevation: 3000.0,
                 node_ids: vec![NodeId(1)],
-                diaphragms: vec![],
                 seismic_weight: None,
                 weight_override: None,
             },
@@ -685,7 +670,6 @@ fn two_story_model() -> Model {
                 name: "2F".to_string(),
                 elevation: 6000.0,
                 node_ids: vec![NodeId(2)],
-                diaphragms: vec![],
                 seismic_weight: None,
                 weight_override: None,
             },
@@ -863,7 +847,6 @@ fn test_compute_static_indeterminacy_indeterminate_portal() {
             name: "1F".to_string(),
             elevation: 3000.0,
             node_ids: vec![NodeId(1), NodeId(2)],
-            diaphragms: vec![],
             seismic_weight: None,
             weight_override: None,
         }],
@@ -1104,21 +1087,14 @@ fn portal_frame_model(fy: f64, seismic_weight: f64) -> Model {
             name: "1F".to_string(),
             elevation: 3000.0,
             node_ids: vec![NodeId(1), NodeId(2)],
-            diaphragms: vec![DiaphragmDef {
-                ci_override: None,
-                weight: None,
-                master: NodeId(1),
-                slaves: vec![NodeId(2)],
-                rigid: true,
-            }],
             seismic_weight: Some(seismic_weight),
             weight_override: None,
         }],
-        constraints: vec![Constraint::RigidDiaphragm {
-            story: StoryId(0),
-            master: NodeId(1),
-            slaves: vec![NodeId(2)],
-        }],
+        constraints: vec![Constraint::rigid_diaphragm(
+            StoryId(0),
+            NodeId(1),
+            vec![NodeId(2)],
+        )],
         ..Default::default()
     }
 }
@@ -3256,21 +3232,14 @@ fn wall_story_model_with(lw: f64, seismic_weight: f64) -> Model {
             name: "1F".to_string(),
             elevation: 3000.0,
             node_ids: vec![NodeId(2), NodeId(3)],
-            diaphragms: vec![DiaphragmDef {
-                ci_override: None,
-                weight: None,
-                master: NodeId(3),
-                slaves: vec![NodeId(2)],
-                rigid: true,
-            }],
             seismic_weight: Some(seismic_weight),
             weight_override: None,
         }],
-        constraints: vec![Constraint::RigidDiaphragm {
-            story: StoryId(0),
-            master: NodeId(3),
-            slaves: vec![NodeId(2)],
-        }],
+        constraints: vec![Constraint::rigid_diaphragm(
+            StoryId(0),
+            NodeId(3),
+            vec![NodeId(2)],
+        )],
         ..Default::default()
     }
 }

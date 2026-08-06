@@ -282,14 +282,6 @@ fn node_reference_issues(model: &Model) -> Vec<ModelIssue> {
                 }
             }
         }
-        for story in &model.stories {
-            for d in &story.diaphragms {
-                mark(d.master);
-                for s in &d.slaves {
-                    mark(*s);
-                }
-            }
-        }
         // 床（スラブ境界・小梁支持点）・二次部材（小梁・間柱）が参照する節点は、
         // 要素が接続しなくても意図的な幾何節点（荷重伝達点）なので孤立扱いしない。
         // これらは `DofMap::build` が解析自由度から自動的に除外するため、

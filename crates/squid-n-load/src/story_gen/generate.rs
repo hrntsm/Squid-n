@@ -26,9 +26,19 @@ pub struct StoryGenResult {
     pub generated_masters: Vec<NodeId>,
 }
 
-/// 節点 Z 座標から階を自動生成する（複数の重力荷重ケースを地震用重量に算入する版）。
+/// 階へ節点・剛床・地震用重量を割り付ける（複数の重力荷重ケースを地震用重量に
+/// 算入する版）。
 ///
-/// - 最下レベルは基部(支点レベル)とみなし階に含めない
+/// **階レベルの正は [`Model::stories`] の `elevation`**（利用者が定義する）であり、
+/// 本関数はそれを書き換えない。階が 1 つも定義されていないモデルに限り、節点の
+/// Z 座標をクラスタリングして階レベルを初期化する（最下レベルは基部＝支点レベルと
+/// みなし階に含めない）。階名・階種別・地震用重量の手入力も既存の階定義から
+/// そのまま引き継ぐ。
+///
+/// - **階への帰属は区間**（直下階のレベル超〜当該階のレベル以下）。中間高さの
+///   節点も区間に入る階へ属し、その重量は階の地震用重量へ算入される
+/// - **剛床のスレーブは床面のみ**（階のレベル ±[`DIAPHRAGM_LEVEL_TOL_MM`]）。
+///   床面に節点がない階は剛床を持たない
 /// - 前回生成した剛床代表節点（`model.generated_masters`）は構造節点の
 ///   クラスタリング対象から除外する（再生成時に過去の代表節点を混ぜない）
 /// - 各階の剛床代表節点は、その階の全構造節点の慣性力重心（重量重み付き重心）に
@@ -85,35 +95,55 @@ pub fn generate_stories_with_opts(
         return Err("節点がありません".into());
     }
 
-    // --- 1. Z レベルのクラスタリング（構造節点のみ） ---
-    let mut zs: Vec<f64> = struct_nodes.iter().map(|n| n.coord[2]).collect();
-    zs.sort_by(|a, b| a.total_cmp(b));
-    let mut levels: Vec<f64> = Vec::new();
-    for z in zs {
-        match levels.last() {
-            Some(&last) if (z - last).abs() <= LEVEL_TOL_MM => {}
-            _ => levels.push(z),
+    // --- 1. 階レベルの決定 ---
+    // 階（[`Story`]）は利用者が定義するデータであり、その `elevation` が階レベルの
+    // 正である。階が 1 つも定義されていないモデル（ST-Bridge 以外の取り込み・
+    // 旧いプロジェクト）に限り、節点の Z 座標をクラスタリングして階レベルを
+    // 初期化する。このとき**最下レベルは基部（基礎レベル）とみなして階にしない**。
+    let story_levels: Vec<f64> = if model.stories.is_empty() {
+        let mut zs: Vec<f64> = struct_nodes.iter().map(|n| n.coord[2]).collect();
+        zs.sort_by(|a, b| a.total_cmp(b));
+        let mut levels: Vec<f64> = Vec::new();
+        for z in zs {
+            match levels.last() {
+                Some(&last) if (z - last).abs() <= LEVEL_TOL_MM => {}
+                _ => levels.push(z),
+            }
         }
-    }
-    if levels.len() < 2 {
-        return Err(
-            "節点の標高(Z)が 1 レベルしかありません。階を生成するには 2 レベル以上必要です。"
-                .into(),
-        );
-    }
-
-    let level_of = |z: f64| -> usize {
-        levels
-            .iter()
-            .position(|&l| (z - l).abs() <= LEVEL_TOL_MM)
-            .unwrap_or(0)
+        if levels.len() < 2 {
+            return Err(
+                "階が定義されておらず、節点の標高(Z)も 1 レベルしかありません。\
+                 階を定義するか、2 レベル以上の節点を作成してください。"
+                    .into(),
+            );
+        }
+        levels[1..].to_vec()
+    } else {
+        model.stories.iter().map(|s| s.elevation).collect()
     };
 
-    // 各レベルの所属節点を 1 パスでグルーピングする（階ごとに全節点を
-    // 走査し直すと O(節点数×レベル数²) になるため）。
-    let mut nodes_by_level: Vec<Vec<NodeId>> = vec![Vec::new(); levels.len()];
+    // 階への帰属区間 `(下端, 上端]`。下端は直下階のレベル、最下階は基部レベル
+    // （規則は `Model::story_spans` と同一。ここでは生成中の階レベル列に対して
+    // 同じ規則を適用する）。
+    let base = model.base_elevation();
+    let spans: Vec<(f64, f64)> = story_levels
+        .iter()
+        .enumerate()
+        .map(|(i, &top)| {
+            let bottom = if i == 0 { base } else { story_levels[i - 1] };
+            (bottom, top)
+        })
+        .collect();
+
+    // 各階の所属節点を 1 パスでグルーピングする（階ごとに全節点を
+    // 走査し直すと O(節点数×階数²) になるため）。区間に入らない節点
+    // （基部の支点・最上階より上の節点）はどの階にも属さない。
+    let mut nodes_by_story: Vec<Vec<NodeId>> = vec![Vec::new(); story_levels.len()];
     for n in &struct_nodes {
-        nodes_by_level[level_of(n.coord[2])].push(n.id);
+        let z = n.coord[2];
+        if let Some(i) = spans.iter().position(|&(b, t)| z > b && z <= t) {
+            nodes_by_story[i].push(n.id);
+        }
     }
 
     // --- 2. 節点の重量配分 ---
@@ -298,117 +328,136 @@ pub fn generate_stories_with_opts(
     rep_restraint.set_fixed(Dof::Rx);
     rep_restraint.set_fixed(Dof::Ry);
 
-    for (si, &elev) in levels.iter().enumerate().skip(1) {
-        let story_id = StoryId((si - 1) as u32);
-        let node_ids: Vec<NodeId> = std::mem::take(&mut nodes_by_level[si]);
-        if node_ids.is_empty() {
-            continue;
-        }
+    for (si, &elev) in story_levels.iter().enumerate() {
+        let story_id = StoryId(si as u32);
+        let node_ids: Vec<NodeId> = std::mem::take(&mut nodes_by_story[si]);
+
+        // 利用者が決める欄（階名・階種別・重量の手入力）は、既存の階定義から
+        // そのまま引き継ぐ。階が未定義のモデルから生成した場合のみ既定名を付ける。
+        let prev = model.stories.get(si);
+        let name = prev
+            .map(|s| s.name.clone())
+            .unwrap_or_else(|| format!("{}F", si + 1));
+        let level_kind = prev.map(|s| s.level_kind).unwrap_or_default();
+        let weight_override = prev.and_then(|s| s.weight_override);
 
         let weight: f64 = node_ids.iter().map(|n| node_weight[n.index()]).sum();
 
-        // 慣性力重心（重量重み付き重心）。重量が算定できない場合は幾何重心へフォールバック。
-        let (gx, gy) = if weight > 0.0 {
-            let gx = node_ids
-                .iter()
-                .map(|n| node_weight[n.index()] * model.nodes[n.index()].coord[0])
-                .sum::<f64>()
-                / weight;
-            let gy = node_ids
-                .iter()
-                .map(|n| node_weight[n.index()] * model.nodes[n.index()].coord[1])
-                .sum::<f64>()
-                / weight;
-            (gx, gy)
-        } else {
-            let gx = node_ids
-                .iter()
-                .map(|n| model.nodes[n.index()].coord[0])
-                .sum::<f64>()
-                / node_ids.len() as f64;
-            let gy = node_ids
-                .iter()
-                .map(|n| model.nodes[n.index()].coord[1])
-                .sum::<f64>()
-                / node_ids.len() as f64;
-            (gx, gy)
-        };
-
-        // 剛床代表節点（慣性力重心に置く専用の仮想節点）の生成/再利用。
-        let master = reuse_masters.next().unwrap_or_else(|| {
-            let id = NodeId(next_new_id);
-            next_new_id += 1;
-            id
-        });
-
-        // マスターへ与える質点質量（mass_method による。§CorrectedLumped/LumpedOnly）。
-        // 控除後重量 net_i:
-        // - CorrectedLumped: 地震用重量から、解析の質量行列に部材密度質量として
-        //   計上される自重（線材・壁パネル）を控除した残り（負にはしない）。
-        // - LumpedOnly: 控除せず地震用重量そのもの。
-        let net_i = |idx: usize| -> f64 {
-            match mass_method {
-                MassMethod::CorrectedLumped => (node_weight[idx] - node_self_weight[idx]).max(0.0),
-                MassMethod::LumpedOnly => node_weight[idx],
-            }
-        };
-        let mt_weight: f64 = node_ids.iter().map(|n| net_i(n.index())).sum();
-        // 質点質量が算定できる階のみ設定する（Σnet_i ≦ 0 は None のまま）。
-        let mass = if mt_weight > 0.0 {
-            let mt = squid_n_core::units::to_internal::weight_n_to_mass(mt_weight);
-            // 回転慣性 j = Σ(net_i/g)·r_i²（r_i はマスター座標 (gx,gy) からの平面距離）。
-            let j: f64 = node_ids
-                .iter()
-                .map(|n| {
-                    let idx = n.index();
-                    let mi = squid_n_core::units::to_internal::weight_n_to_mass(net_i(idx));
-                    let dx = model.nodes[idx].coord[0] - gx;
-                    let dy = model.nodes[idx].coord[1] - gy;
-                    mi * (dx * dx + dy * dy)
-                })
-                .sum();
-            Some([mt, mt, 0.0, 0.0, 0.0, j])
-        } else {
-            None
-        };
-
-        rep_nodes.push(Node {
-            id: master,
-            coord: [gx, gy, elev],
-            restraint: rep_restraint,
-            mass,
-            story: Some(story_id),
-            support_spring: None,
-        });
-        generated_masters.push(master);
-
-        // 当該階の全構造節点がスレーブ（マスターは専用節点のため、既存節点は 1 点でも全てスレーブ）。
-        let slaves = node_ids.clone();
+        // 剛床のスレーブは**この階の床面上にある節点だけ**とする。中間高さの節点
+        // （柱の分割点・階高の途中に取り付く梁）は階には属するが剛床には入らない。
+        // 面内剛体として拘束してよいのは同一床面の節点に限られ、中間節点を含めると
+        // 存在しない水平剛性が生じるためである。
+        let slaves: Vec<NodeId> = node_ids
+            .iter()
+            .copied()
+            .filter(|n| (model.nodes[n.index()].coord[2] - elev).abs() <= DIAPHRAGM_LEVEL_TOL_MM)
+            .collect();
 
         for n in &node_ids {
             node_story[n.index()] = Some(story_id);
         }
-        constraints.push(Constraint::RigidDiaphragm {
-            story: story_id,
-            master,
-            slaves: slaves.clone(),
-        });
-        stories.push(Story {
-            id: story_id,
-            name: format!("{}F", si),
-            elevation: elev,
-            node_ids,
-            diaphragms: vec![DiaphragmDef {
-                ci_override: None,
+
+        // 床面に節点がない階（利用者が定義しただけで部材がまだない階、
+        // 基部と同レベルの階など）は剛床を作らない。その階の水平力は階の節点へ
+        // 重量比で直接分配される（分配規則は `squid_n_solver` 側）。
+        if !slaves.is_empty() {
+            // 慣性力重心（重量重み付き重心）。重量が算定できない場合は幾何重心へフォールバック。
+            let (gx, gy) = if weight > 0.0 {
+                let gx = node_ids
+                    .iter()
+                    .map(|n| node_weight[n.index()] * model.nodes[n.index()].coord[0])
+                    .sum::<f64>()
+                    / weight;
+                let gy = node_ids
+                    .iter()
+                    .map(|n| node_weight[n.index()] * model.nodes[n.index()].coord[1])
+                    .sum::<f64>()
+                    / weight;
+                (gx, gy)
+            } else {
+                let gx = node_ids
+                    .iter()
+                    .map(|n| model.nodes[n.index()].coord[0])
+                    .sum::<f64>()
+                    / node_ids.len() as f64;
+                let gy = node_ids
+                    .iter()
+                    .map(|n| model.nodes[n.index()].coord[1])
+                    .sum::<f64>()
+                    / node_ids.len() as f64;
+                (gx, gy)
+            };
+
+            // 剛床代表節点（慣性力重心に置く専用の仮想節点）の生成/再利用。
+            let master = reuse_masters.next().unwrap_or_else(|| {
+                let id = NodeId(next_new_id);
+                next_new_id += 1;
+                id
+            });
+
+            // マスターへ与える質点質量（mass_method による。§CorrectedLumped/LumpedOnly）。
+            // 控除後重量 net_i:
+            // - CorrectedLumped: 地震用重量から、解析の質量行列に部材密度質量として
+            //   計上される自重（線材・壁パネル）を控除した残り（負にはしない）。
+            // - LumpedOnly: 控除せず地震用重量そのもの。
+            let net_i = |idx: usize| -> f64 {
+                match mass_method {
+                    MassMethod::CorrectedLumped => {
+                        (node_weight[idx] - node_self_weight[idx]).max(0.0)
+                    }
+                    MassMethod::LumpedOnly => node_weight[idx],
+                }
+            };
+            let mt_weight: f64 = node_ids.iter().map(|n| net_i(n.index())).sum();
+            // 質点質量が算定できる階のみ設定する（Σnet_i ≦ 0 は None のまま）。
+            let mass = if mt_weight > 0.0 {
+                let mt = squid_n_core::units::to_internal::weight_n_to_mass(mt_weight);
+                // 回転慣性 j = Σ(net_i/g)·r_i²（r_i はマスター座標 (gx,gy) からの平面距離）。
+                let j: f64 = node_ids
+                    .iter()
+                    .map(|n| {
+                        let idx = n.index();
+                        let mi = squid_n_core::units::to_internal::weight_n_to_mass(net_i(idx));
+                        let dx = model.nodes[idx].coord[0] - gx;
+                        let dy = model.nodes[idx].coord[1] - gy;
+                        mi * (dx * dx + dy * dy)
+                    })
+                    .sum();
+                Some([mt, mt, 0.0, 0.0, 0.0, j])
+            } else {
+                None
+            };
+
+            rep_nodes.push(Node {
+                id: master,
+                coord: [gx, gy, elev],
+                restraint: rep_restraint,
+                mass,
+                story: Some(story_id),
+                support_spring: None,
+            });
+            generated_masters.push(master);
+
+            constraints.push(Constraint::RigidDiaphragm {
+                story: story_id,
                 master,
                 slaves,
-                rigid: true,
                 weight: Some(weight),
-            }],
-            seismic_weight: Some(weight),
-            weight_override: None,
+                ci_override: None,
+            });
+        }
+
+        stories.push(Story {
+            id: story_id,
+            name,
+            elevation: elev,
+            node_ids,
+            // 手入力の地震用重量があればそれを優先する（解析・設計側は
+            // `seismic_weight` だけを読めばよいという規約を保つ）。
+            seismic_weight: Some(weight_override.unwrap_or(weight)),
+            weight_override,
             structure: Default::default(),
-            level_kind: Default::default(),
+            level_kind,
         });
     }
 
@@ -492,32 +541,6 @@ fn assign_story_structures(model: &Model, node_story: &[Option<StoryId>], storie
     for story in stories.iter_mut() {
         let (n_rc, n_s, n_src) = counts.get(&story.id).copied().unwrap_or_default();
         story.structure = StoryStructure::majority(n_rc, n_s, n_src);
-    }
-}
-
-/// 階の再生成で失われる利用者の手入力を、標高が一致する旧階から引き継ぐ。
-///
-/// 準備計算は毎回階を再生成する（節点・断面・荷重の変更を階の重量へ反映するため）
-/// が、地震用重量の手入力（[`Story::weight_override`]）と階の種別
-/// （[`squid_n_core::model::StoryLevelKind`]。PH・地下の指定は自動判定できない）は
-/// 利用者の入力であり、再生成で失ってはならない。標高差が [`LEVEL_TOL_MM`] 以内の
-/// 旧階を同じ階とみなして引き継ぐ（階数が変わっても残った階の入力は保たれる）。
-///
-/// 手入力の重量は `seismic_weight` へも反映するため、解析・設計側は
-/// `seismic_weight` だけを読めばよい。
-pub fn carry_over_manual_story_settings(prev: &[Story], stories: &mut [Story]) {
-    for story in stories.iter_mut() {
-        let Some(old) = prev
-            .iter()
-            .find(|o| (o.elevation - story.elevation).abs() <= LEVEL_TOL_MM)
-        else {
-            continue;
-        };
-        story.level_kind = old.level_kind;
-        story.weight_override = old.weight_override;
-        if let Some(w) = old.weight_override {
-            story.seismic_weight = Some(w);
-        }
     }
 }
 

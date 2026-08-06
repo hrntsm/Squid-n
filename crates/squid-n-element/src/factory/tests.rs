@@ -32,11 +32,11 @@ fn make_diaphragm_model() -> Model {
                 support_spring: None,
             },
         ],
-        constraints: vec![squid_n_core::model::Constraint::RigidDiaphragm {
-            story: squid_n_core::ids::StoryId(0),
-            master: NodeId(2),
-            slaves: vec![NodeId(1)],
-        }],
+        constraints: vec![squid_n_core::model::Constraint::rigid_diaphragm(
+            squid_n_core::ids::StoryId(0),
+            NodeId(2),
+            vec![NodeId(1)],
+        )],
         sections: vec![Section {
             id: SectionId(0),
             name: "sec".into(),

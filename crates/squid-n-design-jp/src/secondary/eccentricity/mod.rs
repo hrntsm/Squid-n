@@ -116,7 +116,6 @@ pub(crate) mod test_support {
             name: "1F".to_string(),
             elevation: 3000.0,
             node_ids: vec![],
-            diaphragms: vec![],
             seismic_weight: None,
             weight_override: None,
         };

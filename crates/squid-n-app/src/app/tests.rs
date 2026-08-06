@@ -5682,11 +5682,16 @@ mod grid_headless {
 /// （剛床に載らない基礎梁と柱だけが残る症状）。
 #[test]
 fn test_rigid_floor_beam_has_forces_and_checks() {
-    use squid_n_core::model::{DiaphragmDef, Story};
+    use squid_n_core::model::{Constraint, Story};
 
     let mut model = aligned_portal_frame();
-    // 梁の両端（node1・node2）を剛床に載せる。自由度の拘束は付けない
-    // （`constraints` は空のまま）ので解析可能性は変わらない。
+    // 梁の両端（node1・node2）を剛床に載せる。剛床の情報源は拘束
+    // （`Constraint::RigidDiaphragm`）のみなので、階と対で登録する。
+    model.constraints.push(Constraint::rigid_diaphragm(
+        squid_n_core::ids::StoryId(0),
+        NodeId(1),
+        vec![NodeId(2)],
+    ));
     model.stories.push(Story {
         level_kind: Default::default(),
         structure: Default::default(),
@@ -5694,13 +5699,6 @@ fn test_rigid_floor_beam_has_forces_and_checks() {
         name: "2F".into(),
         elevation: 3000.0,
         node_ids: vec![NodeId(1), NodeId(2)],
-        diaphragms: vec![DiaphragmDef {
-            ci_override: None,
-            weight: None,
-            master: NodeId(1),
-            slaves: vec![NodeId(2)],
-            rigid: true,
-        }],
         seismic_weight: None,
         weight_override: None,
     });
