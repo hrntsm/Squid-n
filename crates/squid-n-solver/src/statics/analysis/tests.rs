@@ -247,6 +247,129 @@ fn test_model_issues_collects_every_issue() {
     assert!(model_issues(&make_cantilever_model()).is_empty());
 }
 
+/// 断面が未割当のスラブ・断面の材料が未割当のスラブは解析前チェックで止まる。
+///
+/// スラブの板厚と自重は断面から解決するため、断面が無いと床の固定荷重が
+/// 過小なまま長期応力が出る（危険側）。既定厚で補わずに止める。
+#[test]
+fn test_model_issues_rejects_slab_without_section() {
+    use super::precheck::{model_issues, precheck_model};
+    use squid_n_core::ids::{SectionId, SlabId};
+    use squid_n_core::model::{DistributionMethod, Slab};
+
+    let mut model = make_cantilever_model();
+    // 境界節点は 3 点必要なので、床用の節点を足す。
+    let n = model.nodes.len() as u32;
+    for (i, c) in [[0.0, 1000.0, 0.0], [1000.0, 1000.0, 0.0]]
+        .into_iter()
+        .enumerate()
+    {
+        model.nodes.push(Node {
+            id: NodeId(n + i as u32),
+            coord: c,
+            restraint: Dof6Mask::FREE,
+            mass: None,
+            story: None,
+            support_spring: None,
+        });
+    }
+    model.slabs.push(Slab {
+        id: SlabId(0),
+        boundary: vec![NodeId(0), NodeId(1), NodeId(n + 1), NodeId(n)],
+        joists: Vec::new(),
+        loads: Vec::new(),
+        method: DistributionMethod::TriTrapezoid,
+        kind: Default::default(),
+        one_way: None,
+        edge_supported: None,
+        usage: None,
+        section: None,
+    });
+
+    // 断面が未割当。
+    let msgs: Vec<String> = model_issues(&model)
+        .into_iter()
+        .map(|i| i.message)
+        .collect();
+    assert!(
+        msgs.iter().any(|m| m.contains("断面が未割当の床")),
+        "{msgs:?}"
+    );
+    assert!(precheck_model(&model).is_err());
+
+    // 断面はあるが材料が未割当。
+    let sid = SectionId(model.sections.len() as u32);
+    model.sections.push(
+        squid_n_core::section_shape::SectionShape::RcSlab { thickness: 150.0 }
+            .to_section(sid, "S15".into()),
+    );
+    model.slabs[0].section = Some(sid);
+    let msgs: Vec<String> = model_issues(&model)
+        .into_iter()
+        .map(|i| i.message)
+        .collect();
+    assert!(
+        msgs.iter().any(|m| m.contains("断面の材料または板厚")),
+        "{msgs:?}"
+    );
+
+    // 材料を割り当てれば通る。
+    let mid = squid_n_core::ids::MaterialId(model.materials.len() as u32);
+    model.materials.push(squid_n_core::model::Material {
+        strength_factor: None,
+        concrete_class: Default::default(),
+        id: mid,
+        name: "Fc24".into(),
+        category: squid_n_core::model::MaterialCategory::Concrete,
+        young: 23000.0,
+        poisson: 0.2,
+        density: 2.4e-9,
+        shear: None,
+        fc: Some(24.0),
+        fy: None,
+    });
+    model.sections[sid.index()].material = Some(mid);
+    let msgs: Vec<String> = model_issues(&model)
+        .into_iter()
+        .map(|i| i.message)
+        .collect();
+    assert!(!msgs.iter().any(|m| m.contains("床")), "{msgs:?}");
+}
+
+/// 剛床のない階は警告として挙げ、解析は止めない。
+///
+/// 剛床がない階の水平力は階の節点へ質量比で直接分配されるため解析は成立する。
+/// 一方、剛床を意図していたのに床が拾えていない場合に気づけないと困るので、
+/// 診断には出す。
+#[test]
+fn test_model_issues_warns_story_without_diaphragm() {
+    use super::precheck::{model_issues, precheck_model, IssueSeverity};
+    use squid_n_core::ids::StoryId;
+    use squid_n_core::model::Story;
+
+    let mut model = make_cantilever_model();
+    model.stories.push(Story {
+        id: StoryId(0),
+        name: "2F".into(),
+        elevation: 3000.0,
+        node_ids: vec![NodeId(1)],
+        seismic_weight: None,
+        weight_override: None,
+        structure: Default::default(),
+        level_kind: Default::default(),
+    });
+
+    let issues = model_issues(&model);
+    let warning = issues
+        .iter()
+        .find(|i| i.message.contains("剛床のない階"))
+        .unwrap_or_else(|| panic!("剛床のない階の警告が出ていない: {:?}", issues.len()));
+    assert_eq!(warning.severity, IssueSeverity::Warning);
+    assert!(warning.message.contains("2F"), "{}", warning.message);
+    // 警告だけなら解析前チェックは通す。
+    assert!(precheck_model(&model).is_ok());
+}
+
 /// 部材が 1 つもないモデルで、全節点を孤立節点として並べない。
 /// 「部材がありません」で同じことを言っており、節点を 1 つずつ挙げても情報が増えない。
 #[test]

@@ -77,7 +77,8 @@ fn base_color(shape: Option<&SectionShape>) -> egui::Color32 {
             SectionShape::RcRect { .. }
             | SectionShape::RcCircle { .. }
             | SectionShape::SrcRect { .. }
-            | SectionShape::RcWall { .. },
+            | SectionShape::RcWall { .. }
+            | SectionShape::RcSlab { .. },
         ) => theme::GRAY_300,
         Some(_) => theme::BLUE_300,
         // 形状定義なし（カタログ数値直入力等）は中立グレー
@@ -254,8 +255,8 @@ pub(super) fn section_outline(sec: &Section) -> Option<Vec<[f64; 2]>> {
         }
         SectionShape::RcCircle { d, .. } => circle_outline(*d),
         SectionShape::CftBox { height, width, .. } => rect_outline(*height, *width),
-        // 壁は要素側で面ポリゴン表示するため対象外
-        SectionShape::RcWall { .. } => return None,
+        // 壁は要素側で面ポリゴン表示するため対象外。スラブは線材の断面ではない。
+        SectionShape::RcWall { .. } | SectionShape::RcSlab { .. } => return None,
     };
     Some(outline)
 }

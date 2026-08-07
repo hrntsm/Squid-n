@@ -121,6 +121,18 @@ impl EditCommand for SyncSlabLoadsToCase {
     fn apply(&self, model: &mut Model) -> Box<dyn EditCommand> {
         use squid_n_core::model::LoadCase;
 
+        // 分配結果が実在しない節点・部材を指す場合は同期しない（crate::refs の規約）。
+        if !self
+            .nodal
+            .iter()
+            .all(|l| crate::refs::node_exists(model, l.node))
+            || !self
+                .member
+                .iter()
+                .all(|l| crate::refs::elem_exists(model, l.elem))
+        {
+            return Box::new(Noop);
+        }
         if let Some(idx) = model.load_cases.iter().position(|lc| lc.name == self.name) {
             let old = model.load_cases[idx].clone();
             model.load_cases[idx].kind = self.kind;
@@ -260,6 +272,9 @@ pub struct SetWallAttr {
 
 impl EditCommand for SetWallAttr {
     fn apply(&self, model: &mut Model) -> Box<dyn EditCommand> {
+        if !crate::refs::elem_exists(model, self.attr.elem) {
+            return Box::new(Noop);
+        }
         if let Some(pos) = model
             .wall_attrs
             .iter()
@@ -464,9 +479,40 @@ impl EditCommand for SetSlabUsage {
     }
 }
 
+/// スラブの断面（`section`。板厚・コンクリート材料を持つ断面）変更。
+/// 逆操作は変更前の値への復元。存在しない `SlabId`、および実在しない断面を
+/// 指す割当は Noop（crate::refs の規約）。
+pub struct SetSlabSection {
+    pub id: SlabId,
+    pub section: Option<SectionId>,
+}
+
+impl EditCommand for SetSlabSection {
+    fn apply(&self, model: &mut Model) -> Box<dyn EditCommand> {
+        let idx = self.id.index();
+        if idx >= model.slabs.len() || model.slabs[idx].id != self.id {
+            return Box::new(Noop);
+        }
+        if !crate::refs::section_ref_ok(model, self.section) {
+            return Box::new(Noop);
+        }
+        let old = model.slabs[idx].section;
+        model.slabs[idx].section = self.section;
+        Box::new(SetSlabSection {
+            id: self.id,
+            section: old,
+        })
+    }
+
+    fn label(&self) -> &str {
+        "スラブ断面変更"
+    }
+}
+
 /// スラブの小梁（`joists`。二段階伝達の小梁ライン）を全置換する。逆操作は
 /// 変更前の `joists` への復元（`SetLoadCfg` と同様の値置換パターン）。
-/// 存在しない `SlabId` は Noop。
+/// 存在しない `SlabId`、および実在しない節点・断面を指す小梁は Noop
+/// （crate::refs の規約）。
 pub struct SetSlabJoists {
     pub id: SlabId,
     pub joists: Vec<squid_n_core::model::JoistLine>,
@@ -476,6 +522,9 @@ impl EditCommand for SetSlabJoists {
     fn apply(&self, model: &mut Model) -> Box<dyn EditCommand> {
         let idx = self.id.index();
         if idx >= model.slabs.len() || model.slabs[idx].id != self.id {
+            return Box::new(Noop);
+        }
+        if !crate::refs::joists_ok(model, &self.joists) {
             return Box::new(Noop);
         }
         let old = std::mem::replace(&mut model.slabs[idx].joists, self.joists.clone());

@@ -89,6 +89,7 @@ pub fn shape_composite_kind(shape: &SectionShape) -> Option<StructureKind> {
         SectionShape::RcRect { .. }
         | SectionShape::RcCircle { .. }
         | SectionShape::RcWall { .. }
+        | SectionShape::RcSlab { .. }
         | SectionShape::SteelH { .. }
         | SectionShape::SteelBox { .. }
         | SectionShape::SteelAngle { .. }
@@ -113,7 +114,8 @@ pub fn shape_default_kind(shape: &SectionShape) -> StructureKind {
         SectionShape::CftBox { .. } | SectionShape::CftPipe { .. } => StructureKind::Cft,
         SectionShape::RcRect { .. }
         | SectionShape::RcCircle { .. }
-        | SectionShape::RcWall { .. } => StructureKind::Rc,
+        | SectionShape::RcWall { .. }
+        | SectionShape::RcSlab { .. } => StructureKind::Rc,
         SectionShape::SteelH { .. }
         | SectionShape::SteelBox { .. }
         | SectionShape::SteelAngle { .. }

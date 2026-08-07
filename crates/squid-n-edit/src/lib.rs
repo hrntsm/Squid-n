@@ -259,6 +259,7 @@ mod composite;
 mod load_case;
 mod member_detail;
 mod node_member;
+mod refs;
 mod section_material;
 mod steel_design;
 mod story;

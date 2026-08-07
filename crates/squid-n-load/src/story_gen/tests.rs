@@ -119,6 +119,28 @@ fn gen_slaves(gen: &StoryGenResult, story: StoryId) -> Vec<NodeId> {
         .unwrap_or_default()
 }
 
+/// 階が未定義のモデルから初期化したときの既定の階名は**床基準**である。
+///
+/// 最下レベルを基部（1FL）とみなして階にしないため、下から順に `2F`・`3F` … となる。
+/// ST-Bridge の `StbStory` も床基準のため、取り込んだモデルとアプリ内で作った
+/// モデルで階名の意味が一致する。利用者が名前を付けた階は上書きしない。
+#[test]
+fn test_generated_story_names_are_floor_based() {
+    let model = two_story_model();
+    assert!(model.stories.is_empty(), "階が未定義の状態から生成する");
+    let gen = generate_stories(&model, Some(LoadCaseId(0))).unwrap();
+    let names: Vec<&str> = gen.stories.iter().map(|s| s.name.as_str()).collect();
+    assert_eq!(names, vec!["2F", "3F"]);
+
+    // 利用者が付けた階名は再生成でも保たれる。
+    let mut named = model.clone();
+    named.stories = gen.stories.clone();
+    named.stories[0].name = "2FL".into();
+    let regen = generate_stories(&named, Some(LoadCaseId(0))).unwrap();
+    let names: Vec<&str> = regen.stories.iter().map(|s| s.name.as_str()).collect();
+    assert_eq!(names, vec!["2FL", "3F"]);
+}
+
 #[test]
 fn test_generate_two_stories() {
     let model = two_story_model();

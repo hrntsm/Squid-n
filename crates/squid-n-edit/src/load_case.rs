@@ -205,17 +205,29 @@ pub struct AddSlab {
     pub method: squid_n_core::model::DistributionMethod,
     /// スラブ用途（積載荷重プリセット。`None` は積載寄与なし）。
     pub usage: Option<squid_n_core::model::SlabUsage>,
+    /// スラブ断面（板厚・コンクリート材料を持つ断面）。`None` は未割当。
+    pub section: Option<SectionId>,
 }
 
 impl EditCommand for AddSlab {
     fn apply(&self, model: &mut Model) -> Box<dyn EditCommand> {
+        // 境界・小梁が実在しない節点や断面を指す床は作らない（crate::refs の規約）。
+        if !self
+            .boundary
+            .iter()
+            .all(|&n| crate::refs::node_exists(model, n))
+            || !crate::refs::joists_ok(model, &self.joists)
+            || !crate::refs::section_ref_ok(model, self.section)
+        {
+            return Box::new(Noop);
+        }
         let new_id = SlabId(model.slabs.len() as u32);
         model.slabs.push(squid_n_core::model::Slab {
             edge_supported: None,
             kind: Default::default(),
             one_way: None,
             usage: self.usage,
-            thickness: None,
+            section: self.section,
             id: new_id,
             boundary: self.boundary.clone(),
             joists: self.joists.clone(),

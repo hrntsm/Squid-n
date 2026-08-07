@@ -63,8 +63,9 @@ use fem::{fem_trapezoid, fem_triangle, fem_uniform};
 /// 設計している（床スラブは全体座標 XY 平面内（Z一定）にあることを仮定する）。
 /// 入隅の片持ちスラブは本実装では未対応。
 pub fn distribute_slab(model: &Model, slab: &Slab) -> Vec<BeamLoad> {
-    // 従来互換: `slab.loads`（固定荷重 DL）の総和を分配する。
-    distribute_slab_w(model, slab, slab.dead_intensity())
+    // 固定荷重 DL（スラブ自重＋仕上げ等）の総和を分配する。自重は断面の板厚と
+    // 材料から算定する（`Model::slab_dead_intensity`）。
+    distribute_slab_w(model, slab, model.slab_dead_intensity(slab))
 }
 
 /// [`distribute_slab_w`] がこのスラブで**小梁二段階伝達**（`distribute_rect_with_joists`。

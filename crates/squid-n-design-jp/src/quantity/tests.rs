@@ -311,7 +311,7 @@ fn test_girder_formwork_slab_deduction() {
             kind: SlabKind::Interior,
             one_way: None,
             edge_supported: None,
-            thickness: None,
+            section: None,
         });
     }
 
@@ -421,10 +421,15 @@ fn test_brace_length_and_weight() {
 #[test]
 fn test_slab_quantity() {
     let mut model = rc_portal_model();
-    model.slab_thickness = 150.0;
-    // 6m×5m の床パネル。
+    // 6m×5m の床パネル。板厚はスラブ断面が持つ（建物一律の `slab_thickness` は
+    // 剛性計算に見込む厚さであり、数量には使わない）。
     model.nodes.push(node(4, 0.0, 5_000.0, 3_500.0));
     model.nodes.push(node(5, 6_000.0, 5_000.0, 3_500.0));
+    let slab_sec = squid_n_core::ids::SectionId(model.sections.len() as u32);
+    model.sections.push(
+        squid_n_core::section_shape::SectionShape::RcSlab { thickness: 150.0 }
+            .to_section(slab_sec, "S15".into()),
+    );
     model.slabs.push(Slab {
         usage: None,
         id: SlabId(0),
@@ -435,7 +440,7 @@ fn test_slab_quantity() {
         kind: SlabKind::Interior,
         one_way: None,
         edge_supported: None,
-        thickness: None,
+        section: Some(slab_sec),
     });
 
     let q = compute_quantity_takeoff(&model, &QuantityCfg::default());

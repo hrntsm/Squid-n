@@ -41,6 +41,16 @@ pub(super) fn check_walls(
         if fc <= 0.0 {
             continue;
         }
+        // 壁筋の材質は断面が持つ。縦筋は主筋欄、横筋はせん断補強筋欄から引き、
+        // 未割当のときは規格上の最小グレードである SD295 相当（295 N/mm²）を既定とする。
+        let wall_shear_mat = model.element_shear_rebar_material(elem);
+        let sigma_y_wall =
+            squid_n_core::material_grade::rebar_yield_strength(model.element_rebar_material(elem))
+                .unwrap_or(squid_n_core::material_grade::SHEAR_REBAR_DEFAULT_FY);
+        let sigma_wh = squid_n_core::material_grade::shear_rebar_yield_strength(wall_shear_mat)
+            .unwrap_or(squid_n_core::material_grade::SHEAR_REBAR_DEFAULT_FY);
+        let high_strength_shear_rebar =
+            squid_n_core::material_grade::is_high_strength_shear_material(wall_shear_mat);
         // 壁の平面寸法: 節点群の水平距離の最大 = l、鉛直 extent = h。
         let coords: Vec<[f64; 3]> = elem
             .nodes
@@ -213,10 +223,7 @@ pub(super) fn check_walls(
             ps,
             // 壁筋の材質も断面が持つ材料の名前で決まる。
             w_ft: crate::rc::rebar_allowable_shear(
-                model
-                    .element_shear_rebar_material(elem)
-                    .map(|mm| mm.name.as_str())
-                    .unwrap_or(""),
+                wall_shear_mat.map(|mm| mm.name.as_str()).unwrap_or(""),
                 term == LoadTerm::Long,
             ),
             side_columns,
@@ -264,17 +271,17 @@ pub(super) fn check_walls(
                 aw,
                 tension_column_main_area: col_main_area_max,
                 pw_vertical: ps,
-                sigma_y_wall: 295.0, // 壁縦筋 SD295 相当、要・原典照合
+                sigma_y_wall,
                 te,
                 t: thickness,
                 d_wall,
                 dc_compression: dc_max,
                 tension_column_at: col_main_area_max,
-                sigma_wh: 295.0, // 壁横筋 SD295 相当、要・原典照合
+                sigma_wh,
                 pwh_ratio: ps,
                 sigma_0,
                 shear_span_ratio,
-                high_strength_shear_rebar: false,
+                high_strength_shear_rebar,
                 opening: if l0p > 1e-9 && h0p > 1e-9 {
                     Some((l0p, h0p, h, l))
                 } else {

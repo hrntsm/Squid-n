@@ -332,6 +332,15 @@ impl App {
                 ));
                 if self.slab_draw_nodes.len() >= 3 && ui.button("確定").clicked() {
                     let boundary = self.slab_draw_nodes.clone();
+                    // 床タブの追加フォームと同じ下書きの断面を使う。消えた断面を
+                    // 指したままだと `AddSlab` が参照検証で Noop になり無反応に
+                    // 見えるため、解決できない下書きは未割当として渡す。
+                    let draft_section = self.slab_draft.section.filter(|sid| {
+                        self.model
+                            .sections
+                            .get(sid.index())
+                            .is_some_and(|s| s.thickness.is_some_and(|t| t > 0.0))
+                    });
                     self.undo.run(
                         &mut self.model,
                         Box::new(squid_n_edit::AddSlab {
@@ -339,7 +348,8 @@ impl App {
                             joists: Vec::new(),
                             loads: Vec::new(),
                             method: squid_n_core::model::DistributionMethod::TriTrapezoid,
-                            usage: None,
+                            usage: self.slab_draft.usage,
+                            section: draft_section,
                         }),
                     );
                     self.staleness.mark_edited();
@@ -2012,7 +2022,7 @@ impl App {
                 .stories
                 .get(i)
                 .map(|s| s.name.clone())
-                .unwrap_or_else(|| format!("{}F", i + 1))
+                .unwrap_or_else(|| squid_n_core::model::default_story_name(i))
         };
         let story_qu_kn: Vec<f64> = (0..n_stories)
             .map(|i| {

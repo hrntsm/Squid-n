@@ -107,6 +107,7 @@ pub fn max_width_thickness(shape: &SectionShape) -> Option<f64> {
         | SectionShape::RcRect { .. }
         | SectionShape::RcCircle { .. }
         | SectionShape::SrcRect { .. }
-        | SectionShape::RcWall { .. } => None,
+        | SectionShape::RcWall { .. }
+        | SectionShape::RcSlab { .. } => None,
     }
 }

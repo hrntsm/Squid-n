@@ -87,8 +87,10 @@ impl SectionShape {
                 let ri = r - thick;
                 std::f64::consts::PI * (r * r - ri * ri)
             }
-            // 壁: 名目値（1m 幅相当の板断面。解析剛性は要素実装側の課題）。
-            SectionShape::RcWall { thickness, .. } => thickness * 1000.0,
+            // 壁・スラブ: 名目値（1m 幅相当の板断面。解析剛性は要素実装側の課題）。
+            SectionShape::RcWall { thickness, .. } | SectionShape::RcSlab { thickness } => {
+                thickness * 1000.0
+            }
         }
     }
 
@@ -269,7 +271,9 @@ impl SectionShape {
                 let ri = r - thick;
                 std::f64::consts::PI / 4.0 * (r.powi(4) - ri.powi(4))
             }
-            SectionShape::RcWall { thickness, .. } => 1000.0 * thickness.powi(3) / 12.0,
+            SectionShape::RcWall { thickness, .. } | SectionShape::RcSlab { thickness } => {
+                1000.0 * thickness.powi(3) / 12.0
+            }
         }
     }
 
@@ -405,8 +409,8 @@ impl SectionShape {
                 (height * width.powi(3) - (height - 2.0 * thick) * wi.powi(3)) / 12.0
             }
             SectionShape::CftPipe { .. } => self.calc_iy(),
-            // 壁: 面外は薄いため名目的に iy と同値の板剛性を返す。
-            SectionShape::RcWall { .. } => self.calc_iy(),
+            // 壁・スラブ: 面外は薄いため名目的に iy と同値の板剛性を返す。
+            SectionShape::RcWall { .. } | SectionShape::RcSlab { .. } => self.calc_iy(),
         }
     }
 
@@ -506,7 +510,9 @@ impl SectionShape {
                 let ri = r - thick;
                 std::f64::consts::PI / 2.0 * (r.powi(4) - ri.powi(4))
             }
-            SectionShape::RcWall { thickness, .. } => 1000.0 * thickness.powi(3) / 3.0,
+            SectionShape::RcWall { thickness, .. } | SectionShape::RcSlab { thickness } => {
+                1000.0 * thickness.powi(3) / 3.0
+            }
         }
     }
 

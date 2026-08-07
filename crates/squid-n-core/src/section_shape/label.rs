@@ -124,6 +124,7 @@ impl SectionShape {
                 format!("CFT-P-{}", dims(&[*outer_dia, *thick]))
             }
             SectionShape::RcWall { thickness, .. } => format!("W-t{}", dim(*thickness)),
+            SectionShape::RcSlab { thickness } => format!("S-t{}", dim(*thickness)),
         }
     }
 }

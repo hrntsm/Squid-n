@@ -223,7 +223,9 @@ fn stories_section(ui: &mut egui::Ui, prep: &PreparationResult) {
                 ui.label(format!("{}", r.n_nodes));
             });
             row.col(|ui| {
-                // 剛床がない階には地震力を載荷できない。
+                // 剛床がない階の水平力は、その階の節点へ質量比で直接分配される。
+                // 解析は通るため、意図した入力かどうかを確かめられるよう強調する
+                // （診断タブにも警告として出る）。
                 if r.n_diaphragms == 0 {
                     ui.colored_label(crate::theme::BEST_YELLOW, "0");
                 } else {

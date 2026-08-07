@@ -238,12 +238,18 @@ fn shift_node_ids(model: &mut Model, f: impl FnMut(&mut NodeId)) {
 }
 
 /// 部材追加。逆操作は部材削除。
+///
+/// `elem.id` は `ElemId(model.elements.len())`（末尾の次の添字）と一致し、参照する
+/// 節点・断面が実在していること（crate::refs の規約）。満たさない場合は `Noop`。
 pub struct AddMember {
     pub elem: squid_n_core::model::ElementData,
 }
 
 impl EditCommand for AddMember {
     fn apply(&self, model: &mut Model) -> Box<dyn EditCommand> {
+        if !crate::refs::new_elem_ok(model, &self.elem) {
+            return Box::new(Noop);
+        }
         model.elements.push(self.elem.clone());
         Box::new(DeleteMember { id: self.elem.id })
     }
@@ -363,6 +369,8 @@ impl EditCommand for PushTailMembers {
 /// 制振ダンパー要素の追加（制振部材の力学モデル: Maxwell モデル等）。
 /// 要素（`ElementKind::Damper`）と特性（`Model::damper_attrs`）を原子的に追加する。
 /// 逆操作は部材削除（`DeleteMember` が側テーブル属性も退避・復元する）。
+///
+/// `elem` の ID・節点・断面の要件は [`AddMember`] と同じ（crate::refs の規約）。
 pub struct AddDamper {
     pub elem: squid_n_core::model::ElementData,
     pub props: squid_n_core::model::DamperProps,
@@ -370,6 +378,9 @@ pub struct AddDamper {
 
 impl EditCommand for AddDamper {
     fn apply(&self, model: &mut Model) -> Box<dyn EditCommand> {
+        if !crate::refs::new_elem_ok(model, &self.elem) {
+            return Box::new(Noop);
+        }
         let id = self.elem.id;
         model.elements.push(self.elem.clone());
         model.set_damper_props(id, Some(self.props));
@@ -385,9 +396,7 @@ impl EditCommand for AddDamper {
 /// 要素（`ElementKind::Isolator`）と特性（`Model::isolator_attrs`）を原子的に追加する。
 /// 逆操作は部材削除（`DeleteMember` が側テーブル属性も退避・復元する）。
 ///
-/// `elem.id` は `model.elements.len()`（＝末尾の次のインデックス）と一致していること
-/// （ID＝配列インデックスの不変条件。呼び出し側が `ElemId(model.elements.len())` で
-/// 生成する前提）。一致しない場合は ID の不変条件を壊すため Noop とする。
+/// `elem` の ID・節点・断面の要件は [`AddMember`] と同じ（crate::refs の規約）。
 pub struct AddIsolator {
     pub elem: squid_n_core::model::ElementData,
     pub props: squid_n_core::model::IsolatorProps,
@@ -395,7 +404,7 @@ pub struct AddIsolator {
 
 impl EditCommand for AddIsolator {
     fn apply(&self, model: &mut Model) -> Box<dyn EditCommand> {
-        if self.elem.id.index() != model.elements.len() {
+        if !crate::refs::new_elem_ok(model, &self.elem) {
             return Box::new(Noop);
         }
         let id = self.elem.id;

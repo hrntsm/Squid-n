@@ -701,11 +701,18 @@ impl App {
         let model = &self.model;
         // 断面 → 使用部材数
         let mut usage: Vec<usize> = vec![0; model.sections.len()];
-        for e in &model.elements {
-            let Some(sid) = e.section else { continue };
-            if let Some(slot) = usage.get_mut(sid.index()) {
+        let mut count = |sid: Option<squid_n_core::ids::SectionId>| {
+            if let Some(slot) = sid.and_then(|s| usage.get_mut(s.index())) {
                 *slot += 1;
             }
+        };
+        for e in &model.elements {
+            count(e.section);
+        }
+        // 床も断面を参照する（板厚・自重の情報源）。数えないと、床だけが使う断面が
+        // 「使用部材数 0」として淡色表示され、未使用の断面と見分けられなくなる。
+        for s in &model.slabs {
+            count(s.section);
         }
 
         model
@@ -934,6 +941,7 @@ pub fn section_shape_label(shape: &squid_n_core::section_shape::SectionShape) ->
         SectionShape::RcRect { .. } => "RC 矩形",
         SectionShape::RcCircle { .. } => "RC 円形",
         SectionShape::RcWall { .. } => "RC 壁",
+        SectionShape::RcSlab { .. } => "RC スラブ",
         SectionShape::SrcRect { .. } => "SRC 矩形",
         SectionShape::SteelH { .. } => "H 形鋼",
         SectionShape::SteelBuiltH { .. } => "組立 H 形鋼",

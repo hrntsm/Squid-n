@@ -250,7 +250,7 @@ fn test_beam_new_slab_cooperation_width_amplifies_iy() {
             kind: Default::default(),
             one_way: None,
             edge_supported: None,
-            thickness: None,
+            section: None,
         }],
         slab_thickness: 150.0,
         ..Default::default()
@@ -365,7 +365,7 @@ fn test_beam_new_composite_steel_beam_averages_stiffness() {
             kind: Default::default(),
             one_way: None,
             edge_supported: None,
-            thickness: None,
+            section: None,
         }],
         slab_thickness: 150.0,
         ..Default::default()

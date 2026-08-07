@@ -78,12 +78,30 @@ pub(super) enum CurSec {
     Slab {
         file_id: u32,
         thickness: Option<f64>,
+        /// 断面の符号（`name` 属性）。
+        name: Option<String>,
+        /// 断面の階（`floor` 属性）。断面の同一性は符号＋階で決まる。
+        floor: Option<String>,
+        /// コンクリートのグレード名（`strength_concrete` 属性）。
+        concrete: Option<String>,
     },
     /// RC 壁断面（`StbSecWall_RC`）。子の図形要素から厚さを集める。
     Wall {
         file_id: u32,
         thickness: Option<f64>,
     },
+}
+
+/// 取り込んだスラブ断面（`StbSecSlab_RC` / `StbSecSlabDeck`）。
+///
+/// スラブは断面を持つ（`Slab::section`）ため、板厚だけでなく符号・階・
+/// コンクリートのグレード名も控え、`assemble` が `Section` を組み立てる。
+#[derive(Clone, Debug)]
+pub(super) struct RawSlabSection {
+    pub(super) thickness: f64,
+    pub(super) name: Option<String>,
+    pub(super) floor: Option<String>,
+    pub(super) concrete: Option<String>,
 }
 
 /// ST-Bridge の要素のうち Squid-n が未対応で、取り込み時に必ず警告対象とするもの。
@@ -179,7 +197,7 @@ pub(super) struct StbParser {
     pub(super) cur: CurSec,
     // --- スラブ・壁関連の中間状態 ---
     pub(super) raw_slabs: Vec<RawSlab>,
-    pub(super) slab_sec_thickness: HashMap<u32, f64>,
+    pub(super) slab_secs: HashMap<u32, RawSlabSection>,
     pub(super) cur_slab: Option<RawSlab>,
     pub(super) raw_walls: Vec<RawWall>,
     pub(super) wall_sec_thickness: HashMap<u32, f64>,
@@ -560,6 +578,12 @@ impl StbParser {
                 self.cur = CurSec::Slab {
                     file_id: get_u32(a, "id")?,
                     thickness: get_f64_any(a, &["depth", "thickness", "t", "D"]).ok(),
+                    name: a.get("name").cloned().filter(|v| !v.is_empty()),
+                    floor: a.get("floor").cloned().filter(|v| !v.is_empty()),
+                    concrete: a
+                        .get("strength_concrete")
+                        .cloned()
+                        .filter(|v| !v.is_empty()),
                 };
             }
             // スラブ断面の図形（厚さ = `depth`）。RC・デッキ双方の図形要素を受ける。
@@ -1003,10 +1027,21 @@ impl StbParser {
                 // 厚さが取れたスラブ断面のみ登録する（cur は必ず None へ戻す）。
                 if let CurSec::Slab {
                     file_id,
-                    thickness: Some(t),
+                    thickness: Some(thickness),
+                    name,
+                    floor,
+                    concrete,
                 } = std::mem::replace(&mut self.cur, CurSec::None)
                 {
-                    self.slab_sec_thickness.insert(file_id, t);
+                    self.slab_secs.insert(
+                        file_id,
+                        RawSlabSection {
+                            thickness,
+                            name,
+                            floor,
+                            concrete,
+                        },
+                    );
                 }
             }
             "StbSecWall_RC" => {

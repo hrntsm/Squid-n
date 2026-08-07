@@ -2859,7 +2859,7 @@ fn make_slab_test_model() -> squid_n_core::model::Model {
     let slab = Slab {
         usage: None,
         edge_supported: None,
-        thickness: None,
+        section: None,
         kind: Default::default(),
         one_way: None,
         id: SlabId(0),
@@ -3009,7 +3009,7 @@ fn make_square_slab_test_model() -> squid_n_core::model::Model {
     let slab = Slab {
         usage: None,
         edge_supported: None,
-        thickness: None,
+        section: None,
         kind: Default::default(),
         one_way: None,
         id: SlabId(0),
@@ -3234,7 +3234,7 @@ fn test_slab_grillage_node_reactions_total_and_gate() {
     let slab = Slab {
         usage: None,
         edge_supported: None,
-        thickness: None,
+        section: None,
         kind: Default::default(),
         one_way: None,
         id: SlabId(0),
@@ -3458,7 +3458,6 @@ fn test_floor_design_checks_joist_and_slab() {
     let mut model = make_square_slab_test_model();
     // 事務室用途（床用積載 2900 N/m² = 2.9e-3 N/mm²）＋固定荷重 0.005。
     model.slabs[0].usage = Some(SlabUsage::Office);
-    model.slabs[0].thickness = Some(150.0);
     // 鋼小梁の断面（Iy=1e8 mm⁴, せい 400mm → Z=5e5 mm³）。
     model.sections.push(Section {
         id: SectionId(0),
@@ -3501,6 +3500,13 @@ fn test_floor_design_checks_joist_and_slab() {
         section: Some(SectionId(0)),
         pinned_onto: None,
     });
+    // 板厚はスラブ断面が持つ（材料は割り当てないので自重は算定されない）。
+    let slab_sec_id = SectionId(model.sections.len() as u32);
+    model.sections.push(
+        squid_n_core::section_shape::SectionShape::RcSlab { thickness: 150.0 }
+            .to_section(slab_sec_id, "S15".into()),
+    );
+    model.slabs[0].section = Some(slab_sec_id);
     model.validate().expect("validate");
     let app = App {
         model,
@@ -3708,7 +3714,8 @@ fn test_slab_design_span_respects_one_way() {
         one_way,
         edge_supported: None,
         usage: None,
-        thickness: Some(150.0),
+        // 板厚はスラブ断面が持つ（設計にはこの厚さを使う）。
+        section: Some(squid_n_core::ids::SectionId(0)),
     };
     let mk_model = |one_way: Option<OneWayDir>| squid_n_core::model::Model {
         nodes: vec![
@@ -3716,6 +3723,10 @@ fn test_slab_design_span_respects_one_way() {
             mk_node(1, 6000.0, 0.0),
             mk_node(2, 6000.0, 3000.0),
             mk_node(3, 0.0, 3000.0),
+        ],
+        sections: vec![
+            squid_n_core::section_shape::SectionShape::RcSlab { thickness: 150.0 }
+                .to_section(squid_n_core::ids::SectionId(0), "S15".into()),
         ],
         slabs: vec![base_slab(one_way)],
         ..Default::default()
@@ -5125,35 +5136,46 @@ fn test_secondary_joist_panel_slab_dl_cmq_and_solve() {
         method: DistributionMethod::TriTrapezoid,
         usage: None,
         edge_supported: None,
-        thickness: None,
+        // 板厚と自重はスラブ断面（`SectionId(1)`）から解決する。
+        section: Some(SectionId(1)),
         kind: Default::default(),
         one_way: None,
     };
     let model = Model {
         nodes,
         elements,
-        sections: vec![Section {
-            id: SectionId(0),
-            name: "RC400x600".into(),
-            area: 400.0 * 600.0,
-            iy: 1.0e9,
-            iz: 1.0e9,
-            j: 1.0e9,
-            depth: 600.0,
-            width: 400.0,
-            // RC の有効せん断断面積 As = A/κ（κ=1.2）。解析前チェックが As=0 を
-            // 入力不足として弾くため、直接入力断面でも実値を与える。
-            as_y: 400.0 * 600.0 / 1.2,
-            as_z: 400.0 * 600.0 / 1.2,
-            floor: None,
-            panel_thickness: None,
-            thickness: None,
-            shape: None,
-            material: Some(MaterialId(0)),
-            rebar_material: None,
-            shear_rebar_material: None,
-            steel_material: None,
-        }],
+        sections: vec![
+            Section {
+                id: SectionId(0),
+                name: "RC400x600".into(),
+                area: 400.0 * 600.0,
+                iy: 1.0e9,
+                iz: 1.0e9,
+                j: 1.0e9,
+                depth: 600.0,
+                width: 400.0,
+                // RC の有効せん断断面積 As = A/κ（κ=1.2）。解析前チェックが As=0 を
+                // 入力不足として弾くため、直接入力断面でも実値を与える。
+                as_y: 400.0 * 600.0 / 1.2,
+                as_z: 400.0 * 600.0 / 1.2,
+                floor: None,
+                panel_thickness: None,
+                thickness: None,
+                shape: None,
+                material: Some(MaterialId(0)),
+                rebar_material: None,
+                shear_rebar_material: None,
+                steel_material: None,
+            },
+            {
+                // スラブ断面（板厚 150 mm・Fc24）。板厚と自重はここから解決する。
+                let mut sec =
+                    squid_n_core::section_shape::SectionShape::RcSlab { thickness: 150.0 }
+                        .to_section(SectionId(1), "S15".into());
+                sec.material = Some(MaterialId(0));
+                sec
+            },
+        ],
         materials: vec![Material {
             strength_factor: None,
             concrete_class: Default::default(),
@@ -5215,7 +5237,17 @@ fn test_secondary_joist_panel_slab_dl_cmq_and_solve() {
         })
         .sum::<f64>()
         + sw_nodal.iter().map(|nl| -nl.values[2]).sum::<f64>();
-    let slab_dl = 0.005 * 8000.0 * 6000.0;
+    // スラブの固定荷重は「仕上げ（AreaLoad 0.005）＋スラブ自重（板厚×材料密度）」。
+    // 自重は断面から都度算定するため、期待値もモデルから引く。
+    let slab_area = 8000.0 * 6000.0;
+    let slab_w: f64 = app
+        .model
+        .slabs
+        .iter()
+        .map(|sl| app.model.slab_dead_intensity(sl))
+        .next()
+        .expect("スラブがある");
+    let slab_dl = slab_w * slab_area;
     assert!(
         (dl_total - (slab_dl + sw_total)).abs() < 1e-6 * (slab_dl + sw_total),
         "DL 合計 {dl_total} = スラブ {slab_dl} + 自重 {sw_total} のはず（荷重を捨てない）"
@@ -6135,6 +6167,53 @@ fn test_build_preparation_csv() {
         assert!(csv.contains(section), "{section} がない:\n{csv}");
     }
     assert!(csv.contains("階,Wi[kN],ΣWj[kN],αi,Ai,Ci,Qi[kN],Pi[kN],種別"));
+}
+
+/// 床だけが使う断面も「使用部材数」に数える。
+///
+/// 数えないと、床が参照しているのに 0 と表示され未使用の断面と見分けられない。
+/// 断面テーブル側の数え方は削除ガード（`squid_n_edit` の `section_in_use`）と
+/// そろえる必要があり、片方だけ数え漏らすと削除ボタンが押せるのに Noop になる。
+#[test]
+fn test_prep_sections_count_slab_reference() {
+    use squid_n_core::ids::{SectionId, SlabId};
+    use squid_n_core::model::{DistributionMethod, Slab};
+
+    let mut model = crate::sample::portal_frame();
+    let slab_sec = SectionId(model.sections.len() as u32);
+    model.sections.push(
+        squid_n_core::section_shape::SectionShape::RcSlab { thickness: 150.0 }
+            .to_section(slab_sec, "S15".into()),
+    );
+    // 門型ラーメンの 4 節点を境界にした床を 1 枚置く。
+    model.slabs.push(Slab {
+        id: SlabId(0),
+        boundary: vec![NodeId(0), NodeId(1), NodeId(3), NodeId(2)],
+        joists: Vec::new(),
+        loads: Vec::new(),
+        method: DistributionMethod::TriTrapezoid,
+        kind: Default::default(),
+        one_way: None,
+        edge_supported: None,
+        usage: None,
+        section: Some(slab_sec),
+    });
+    assert!(model.validate().is_ok(), "{:?}", model.validate());
+
+    let mut app = App {
+        model,
+        ..App::default()
+    };
+    app.run_preparation();
+    let row = app
+        .preparation
+        .as_ref()
+        .expect("準備計算")
+        .sections
+        .iter()
+        .find(|r| r.name == "S15")
+        .expect("スラブ断面の行");
+    assert_eq!(row.n_elements, 1, "床 1 枚が使用として数えられる");
 }
 
 /// 準備計算は断面性能（断面諸量・使用部材数・材料）を一覧化する。

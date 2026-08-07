@@ -135,7 +135,8 @@ fn shape_of(sec: &Section) -> (ShapeCategory, f64, f64) {
             SectionShape::RcRect { .. }
             | SectionShape::RcCircle { .. }
             | SectionShape::SrcRect { .. }
-            | SectionShape::RcWall { .. } => return (ShapeCategory::Other, 0.0, 0.0),
+            | SectionShape::RcWall { .. }
+            | SectionShape::RcSlab { .. } => return (ShapeCategory::Other, 0.0, 0.0),
         }
     }
     let t = sec.thickness.unwrap_or(0.0);

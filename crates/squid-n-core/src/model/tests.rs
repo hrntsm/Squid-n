@@ -117,7 +117,7 @@ fn test_validate_dangling_slab_boundary() {
             one_way: None,
             edge_supported: None,
             usage: None,
-            thickness: None,
+            section: None,
         }],
         ..Default::default()
     };

@@ -157,6 +157,15 @@ pub enum SectionShape {
     /// ため形状には持たない。`to_section` の断面性能は名目値（壁は暫定的に
     /// 等価梁でモデル化されており、実剛性の評価は要素実装側の課題）。
     RcWall { thickness: f64, ps: f64 },
+    /// RC スラブ（床）。
+    ///
+    /// `thickness`: 板厚 [mm]。スラブの平面形状は境界節点から得るため形状には
+    /// 持たない。スラブは解析部材ではなく荷重を分配する面のため、断面性能
+    /// （`A`・`I`・`As`）は幅 1 m の帯としての名目値であり、剛性計算には用いない。
+    ///
+    /// 配筋は持たない。スラブ配筋の設計は板厚とかぶり厚から算定しており
+    /// （`design_slab_oneway`）、断面にも配筋を置くと入力の持ち主が二重になる。
+    RcSlab { thickness: f64 },
 }
 
 impl SectionShape {
@@ -186,6 +195,7 @@ impl SectionShape {
                 | SectionShape::CftBox { .. }
                 | SectionShape::CftPipe { .. }
                 | SectionShape::RcWall { .. }
+                | SectionShape::RcSlab { .. }
         )
     }
 }

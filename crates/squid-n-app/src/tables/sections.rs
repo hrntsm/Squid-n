@@ -44,7 +44,8 @@ fn role_applies(shape: Option<&SectionShape>, role: SectionMaterialRole) -> bool
                 | SectionShape::SrcRect { .. }
                 | SectionShape::RcWall { .. }
         ),
-        // 内蔵鉄骨は SRC のみ。
+        // 内蔵鉄骨は SRC のみ。スラブは配筋も内蔵鉄骨も持たないため、
+        // 主材料（コンクリート）の欄だけが有効になる。
         SectionMaterialRole::Steel => matches!(shape, SectionShape::SrcRect { .. }),
     }
 }
@@ -123,6 +124,9 @@ pub fn sections_table(ui: &mut egui::Ui, app: &mut App) {
         count(e.section, &mut n_elements);
     }
     for s in &app.model.slabs {
+        // 床も断面を参照する（板厚・自重の情報源）。削除ガードが数える対象と
+        // そろえないと、使用部材数 0 の行で削除ボタンが押せるのに Noop になる。
+        count(s.section, &mut n_elements);
         for j in &s.joists {
             count(j.section, &mut n_elements);
         }

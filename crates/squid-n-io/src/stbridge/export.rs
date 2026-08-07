@@ -17,6 +17,7 @@
 
 use super::section_std::standard_sections;
 use super::{StbError, STB_VERSION};
+use squid_n_core::ids::{SectionId, SlabId};
 use squid_n_core::model::{
     AxisGroup, AxisGroupKind, ElementKind, EndCondition, Model, StoryLevelKind,
 };
@@ -276,10 +277,11 @@ fn members_body(
     // 要素数の次から採番する（1 始まり。二次部材の後）。
     let slab_member_base = model.elements.len() as u32 + model.secondary_members.len() as u32;
     let slab_sec_base = slab_section_id_base(model, col_map, beam_map);
+    let slab_sec_ids = slab_section_ids(model, slab_sec_base);
     let mut slabs = String::new();
     for slab in &model.slabs {
         let mid = slab_member_base + slab.id.0;
-        let sec = slab_sec_base + slab.id.0;
+        let sec = slab_sec_ids.get(&slab.id).copied().unwrap_or(slab_sec_base);
         let order = slab
             .boundary
             .iter()
@@ -517,17 +519,71 @@ fn normalize(v: [f64; 3]) -> [f64; 3] {
     }
 }
 
-/// スラブ断面（`StbSecSlab_RC`）ブロックを生成する。各スラブに 1 つの断面を出力し、
-/// 厚さは `slab.thickness`（未設定なら建物一律の `model.slab_thickness`）を用いる。
-fn slab_sections(model: &Model, base: u32) -> String {
-    let mut body = String::new();
+/// 各スラブが参照する `StbSecSlab_RC` の id を決める。
+///
+/// **同じ内部断面を指すスラブは 1 つの ST-Bridge 断面を共有する**。スラブごとに
+/// 断面を出すと、断面を共有する床が N 枚あるモデルで同名の断面が N 個並び、
+/// 再取り込みのたびに符号が `S15`・`S15#2`… と増殖する。
+/// 断面が未割当のスラブは、そのスラブ専用の id を後ろへ割り当てる。
+///
+/// 割り当てる id は `base` から連番で、総数はスラブ枚数を超えない
+/// （呼び出し側が `base + slabs.len()` を壁断面の開始値として予約している）。
+/// `StbSections`（断面定義側）と `StbMembers`（スラブの参照側）が同じ採番を
+/// 共有するための単一実装。
+fn slab_section_ids(model: &Model, base: u32) -> std::collections::HashMap<SlabId, u32> {
+    let mut shared: std::collections::HashMap<SectionId, u32> = std::collections::HashMap::new();
+    let mut out: std::collections::HashMap<SlabId, u32> = std::collections::HashMap::new();
+    let mut next = base;
     for slab in &model.slabs {
-        let s = sid(base + slab.id.0);
-        let t = slab.thickness.unwrap_or(model.slab_thickness);
+        let id = match slab.section {
+            Some(sec) => *shared.entry(sec).or_insert_with(|| {
+                let v = next;
+                next += 1;
+                v
+            }),
+            None => {
+                let v = next;
+                next += 1;
+                v
+            }
+        };
+        out.insert(slab.id, id);
+    }
+    out
+}
+
+/// スラブ断面（`StbSecSlab_RC`）ブロックを生成する。
+///
+/// 符号・階・板厚・コンクリート材料はいずれも**スラブへ割り当てた断面**から取り、
+/// 同じ断面を指すスラブは 1 つのブロックを共有する（[`slab_section_ids`]）。
+/// 断面が未割当のスラブは符号を `S{スラブID}`、板厚を建物一律の
+/// `model.slab_thickness` として出力する（解析前チェックが止める状態だが、
+/// 書き出し自体は不完全なモデルでも通す）。
+fn slab_sections(model: &Model, base: u32) -> String {
+    let ids = slab_section_ids(model, base);
+    let mut body = String::new();
+    let mut written: std::collections::HashSet<u32> = std::collections::HashSet::new();
+    for slab in &model.slabs {
+        let Some(&s) = ids.get(&slab.id) else {
+            continue;
+        };
+        if !written.insert(s) {
+            continue;
+        }
+        let sec = model.slab_section(slab);
+        let t = model
+            .slab_thickness_of(slab)
+            .unwrap_or(model.slab_thickness);
+        let name = sec
+            .map(|sc| sc.name.clone())
+            .filter(|n| !n.is_empty())
+            .unwrap_or_else(|| format!("S{}", sid(slab.id.0)));
         body.push_str(&format!(
-            "      <StbSecSlab_RC id=\"{}\" name=\"{}\" strength_concrete=\"Fc21\">\n",
-            s,
-            esc(&format!("S{}", sid(slab.id.0))),
+            "      <StbSecSlab_RC id=\"{}\" name=\"{}\"{}{}>\n",
+            sid(s),
+            esc(&name),
+            sec.map(slab_floor_attr).unwrap_or_default(),
+            sec.map(|sc| concrete_attr(model, sc)).unwrap_or_default(),
         ));
         body.push_str("        <StbSecFigureSlab_RC>\n");
         body.push_str(&format!(
@@ -541,7 +597,7 @@ fn slab_sections(model: &Model, base: u32) -> String {
 }
 
 /// 壁断面（`StbSecWall_RC`）ブロックを生成する。壁要素ごとに 1 つの断面を出力し、
-/// 厚さは壁の断面（`elem.section.thickness`、未設定は 0）を用いる。
+/// 厚さとコンクリート材料は壁の断面（`elem.section`）から取る（厚さの未設定は 0）。
 fn wall_sections(model: &Model, base: u32) -> String {
     let mut body = String::new();
     let mut idx = 0u32;
@@ -555,10 +611,12 @@ fn wall_sections(model: &Model, base: u32) -> String {
             .and_then(|sc| model.sections.get(sc.index()))
             .and_then(|sc| sc.thickness)
             .unwrap_or(0.0);
+        let sec = e.section.and_then(|sc| model.sections.get(sc.index()));
         body.push_str(&format!(
-            "      <StbSecWall_RC id=\"{}\" name=\"{}\" strength_concrete=\"Fc21\">\n",
+            "      <StbSecWall_RC id=\"{}\" name=\"{}\"{}>\n",
             s,
             esc(&format!("W{}", sid(e.id.0))),
+            sec.map(|sc| concrete_attr(model, sc)).unwrap_or_default(),
         ));
         body.push_str("        <StbSecFigureWall_RC>\n");
         body.push_str(&format!(
@@ -599,4 +657,29 @@ pub(super) fn esc(s: &str) -> String {
         .replace('\t', "&#9;")
         .replace('\n', "&#10;")
         .replace('\r', "&#13;")
+}
+
+/// 断面の `floor` を ST-Bridge の `floor` 属性へ（未設定は属性ごと省く）。
+fn slab_floor_attr(sec: &squid_n_core::model::Section) -> String {
+    match &sec.floor {
+        Some(f) => format!(" floor=\"{}\"", esc(f)),
+        None => String::new(),
+    }
+}
+
+/// 断面の主材料の名前を `strength_concrete` 属性へ（未割当は属性ごと省く）。
+///
+/// ST-Bridge は材料をグレード名で表すため、材料の名前をそのまま出す。かつては
+/// スラブ・壁だけ `Fc21` 決め打ちだったが、断面が材料を持つようになったため
+/// 根拠のない既定値は置かない。
+fn concrete_attr(model: &Model, sec: &squid_n_core::model::Section) -> String {
+    match sec
+        .material
+        .and_then(|mid| model.materials.get(mid.index()))
+        .map(|m| m.name.as_str())
+        .filter(|n| !n.is_empty())
+    {
+        Some(name) => format!(" strength_concrete=\"{}\"", esc(name)),
+        None => String::new(),
+    }
 }
