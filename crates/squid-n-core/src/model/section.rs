@@ -87,8 +87,12 @@ impl Section {
         }
     }
 
-    /// 断面性能・形状が一致するか（同一性キーは見ない）。
+    /// 断面性能・形状・材料が一致するか（同一性キーは見ない）。
     /// 取り込み時に符号＋階が衝突した断面を統合してよいかの判定に使う。
+    ///
+    /// **材料も比較の対象に含める。** 材料は断面が持ち、違う材料を割り当てるなら
+    /// それは別の断面であるため、材料だけが違う定義を統合すると片方の材料が
+    /// 無言で捨てられる。
     pub fn properties_eq(&self, other: &Section) -> bool {
         self.area == other.area
             && self.iy == other.iy
@@ -101,6 +105,10 @@ impl Section {
             && self.panel_thickness == other.panel_thickness
             && self.thickness == other.thickness
             && self.shape == other.shape
+            && self.material == other.material
+            && self.rebar_material == other.rebar_material
+            && self.shear_rebar_material == other.shear_rebar_material
+            && self.steel_material == other.steel_material
     }
 }
 

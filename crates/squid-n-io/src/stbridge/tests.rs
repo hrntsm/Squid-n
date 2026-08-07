@@ -725,6 +725,108 @@ fn test_standard_import_recovers_split_shared_section() {
     );
 }
 
+/// 符号＋階が同じでも**材料が違えば統合しない**。
+///
+/// 材料は断面が持つため、材料だけが違う定義を 1 断面へまとめると片方の材料が
+/// 無言で捨てられる。符号へ連番を付けて両方の定義を残す。
+#[test]
+fn test_import_does_not_merge_sections_with_different_materials() {
+    let xml = r#"<?xml version="1.0"?>
+<ST_BRIDGE version="2.0.0"><StbModel>
+  <StbNodes>
+    <StbNode id="0" X="0" Y="0" Z="0"/>
+    <StbNode id="1" X="0" Y="0" Z="3000"/>
+    <StbNode id="2" X="6000" Y="0" Z="3000"/>
+  </StbNodes>
+  <StbMaterials>
+    <StbMaterial id="0" name="SN400B" young="205000" poisson="0.3" density="0"/>
+    <StbMaterial id="1" name="SN490B" young="205000" poisson="0.3" density="0"/>
+  </StbMaterials>
+  <StbSections>
+    <StbSecColumn_S id="0" name="C1"><StbSecSteelFigureColumn_S><StbSecSteelColumn_S_Same shape="H1" strength_main="SN400B"/></StbSecSteelFigureColumn_S></StbSecColumn_S>
+    <StbSecBeam_S id="1" name="C1"><StbSecSteelFigureBeam_S><StbSecSteelBeam_S_Straight shape="H1" strength_main="SN490B"/></StbSecSteelFigureBeam_S></StbSecBeam_S>
+    <StbSecSteel><StbSecRoll-H name="H1" type="H" A="300" B="150" t1="6.5" t2="9" r="0"/></StbSecSteel>
+  </StbSections>
+  <StbMembers>
+    <StbColumn id="0" id_node_bottom="0" id_node_top="1" id_section="0"/>
+    <StbGirder id="1" id_node_start="1" id_node_end="2" id_section="1"/>
+  </StbMembers>
+</StbModel></ST_BRIDGE>"#;
+    let (m, report) = import_stbridge_with_report(xml).expect("import");
+    assert!(m.validate().is_ok(), "{:?}", m.validate());
+    assert_eq!(
+        m.sections.len(),
+        2,
+        "材料が違うので統合されず 2 断面のまま: {:?}",
+        m.sections.iter().map(|s| &s.name).collect::<Vec<_>>()
+    );
+    // それぞれが自分の材料を持つ（片方が無言で捨てられていない）。
+    let names: Vec<Option<&str>> = m
+        .sections
+        .iter()
+        .map(|s| {
+            s.material
+                .and_then(|id| m.materials.get(id.index()))
+                .map(|mm| mm.name.as_str())
+        })
+        .collect();
+    assert!(names.contains(&Some("SN400B")), "{names:?}");
+    assert!(names.contains(&Some("SN490B")), "{names:?}");
+    // 衝突した符号は連番を付けて残したことを報告する。
+    assert!(
+        report
+            .notes
+            .iter()
+            .chain(report.warnings.iter())
+            .any(|n| n.contains("C1")),
+        "符号の改番を報告する: notes={:?} warnings={:?}",
+        report.notes,
+        report.warnings
+    );
+}
+
+/// 同じ断面を指す部材が別々の `id_material` を持つファイルは、先に解決した材料を
+/// 採ったうえで**警告する**。材料は断面が持つため後勝ちの材料は行き場がなく、
+/// 黙って捨てると利用者が食い違いに気づけない。
+#[test]
+fn test_import_warns_when_members_conflict_on_section_material() {
+    let xml = r#"<?xml version="1.0"?>
+<ST_BRIDGE version="2.0.0"><StbModel>
+  <StbNodes>
+    <StbNode id="0" X="0" Y="0" Z="0"/>
+    <StbNode id="1" X="0" Y="0" Z="3000"/>
+    <StbNode id="2" X="6000" Y="0" Z="0"/>
+    <StbNode id="3" X="6000" Y="0" Z="3000"/>
+  </StbNodes>
+  <StbMaterials>
+    <StbMaterial id="0" name="SN400B" young="205000" poisson="0.3" density="0"/>
+    <StbMaterial id="1" name="SN490B" young="205000" poisson="0.3" density="0"/>
+  </StbMaterials>
+  <StbSections>
+    <StbSecColumn_S id="0" name="C1"><StbSecSteelFigureColumn_S><StbSecSteelColumn_S_Same shape="H1"/></StbSecSteelFigureColumn_S></StbSecColumn_S>
+    <StbSecSteel><StbSecRoll-H name="H1" type="H" A="300" B="150" t1="6.5" t2="9" r="0"/></StbSecSteel>
+  </StbSections>
+  <StbMembers>
+    <StbColumn id="0" id_node_bottom="0" id_node_top="1" id_section="0" id_material="0"/>
+    <StbColumn id="1" id_node_bottom="2" id_node_top="3" id_section="0" id_material="1"/>
+  </StbMembers>
+</StbModel></ST_BRIDGE>"#;
+    let (m, report) = import_stbridge_with_report(xml).expect("import");
+    assert!(m.validate().is_ok(), "{:?}", m.validate());
+    assert_eq!(m.sections.len(), 1, "断面定義は 1 件");
+    // 先に解決した材料（柱 0 の SN400B）が断面へ付く。
+    let name = m.sections[0]
+        .material
+        .and_then(|id| m.materials.get(id.index()))
+        .map(|mm| mm.name.as_str());
+    assert_eq!(name, Some("SN400B"));
+    assert!(
+        report.warnings.iter().any(|w| w.contains("別々の材料")),
+        "材料の食い違いを警告する: {:?}",
+        report.warnings
+    );
+}
+
 /// 柱・梁で共有する RC 矩形断面が、配筋ごと往復する。
 /// 書き出しで柱用・梁用へ分割されるが、取り込みで 1 断面へ統合される。
 #[test]

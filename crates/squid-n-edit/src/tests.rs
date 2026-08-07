@@ -980,6 +980,104 @@ fn test_delete_material_middle_renumbers() {
     assert!(model.eq_ignoring_dofmap(&before));
 }
 
+/// 断面の材料割当は 4 つの役割それぞれで往復し、undo で元へ戻る。
+/// 材料は断面が持つため、この経路が材料割当の唯一の入口になる。
+#[test]
+fn test_set_section_material_roundtrip_for_every_role() {
+    use crate::{SectionMaterialRole, SetSectionMaterial};
+
+    let mut model = two_member_model();
+    model.sections.push(bare_section(SectionId(0), None));
+    for name in ["Fc24", "SD345"] {
+        stack_add_material(&mut model, name);
+    }
+    let mut stack = UndoStack::new();
+
+    let slot = |m: &squid_n_core::model::Model, role: SectionMaterialRole| match role {
+        SectionMaterialRole::Main => m.sections[0].material,
+        SectionMaterialRole::Rebar => m.sections[0].rebar_material,
+        SectionMaterialRole::ShearRebar => m.sections[0].shear_rebar_material,
+        SectionMaterialRole::Steel => m.sections[0].steel_material,
+    };
+    for role in [
+        SectionMaterialRole::Main,
+        SectionMaterialRole::Rebar,
+        SectionMaterialRole::ShearRebar,
+        SectionMaterialRole::Steel,
+    ] {
+        assert_eq!(slot(&model, role), None, "{role:?} の初期値は未割当");
+        stack.run(
+            &mut model,
+            Box::new(SetSectionMaterial {
+                section: SectionId(0),
+                role,
+                material: Some(MaterialId(1)),
+            }),
+        );
+        assert_eq!(
+            slot(&model, role),
+            Some(MaterialId(1)),
+            "{role:?} を割り当てる"
+        );
+        // ほかの欄は動かない（役割ごとに独立した欄であること）。
+        for other in [
+            SectionMaterialRole::Main,
+            SectionMaterialRole::Rebar,
+            SectionMaterialRole::ShearRebar,
+            SectionMaterialRole::Steel,
+        ] {
+            if other != role {
+                assert_eq!(slot(&model, other), None, "{other:?} は変わらない");
+            }
+        }
+        assert!(model.validate().is_ok(), "{:?}", model.validate());
+        stack.undo(&mut model);
+        assert_eq!(slot(&model, role), None, "{role:?} の undo で未割当へ戻る");
+    }
+}
+
+/// 存在しない断面を指す割当は Noop（モデルを壊さない）。
+#[test]
+fn test_set_section_material_on_missing_section_is_noop() {
+    use crate::{SectionMaterialRole, SetSectionMaterial};
+
+    let mut model = two_member_model();
+    model.sections.push(bare_section(SectionId(0), None));
+    stack_add_material(&mut model, "Fc24");
+    let before = model.clone();
+    let mut stack = UndoStack::new();
+    stack.run(
+        &mut model,
+        Box::new(SetSectionMaterial {
+            section: SectionId(9),
+            role: SectionMaterialRole::Main,
+            material: Some(MaterialId(0)),
+        }),
+    );
+    assert!(
+        model.eq_ignoring_dofmap(&before),
+        "存在しない断面への割当は無視する"
+    );
+}
+
+/// テスト用: 名前だけを指定して材料を足す。
+fn stack_add_material(model: &mut squid_n_core::model::Model, name: &str) {
+    let id = MaterialId(model.materials.len() as u32);
+    model.materials.push(squid_n_core::model::Material {
+        strength_factor: None,
+        concrete_class: Default::default(),
+        id,
+        name: name.to_string(),
+        category: MaterialCategory::Steel,
+        young: 205000.0,
+        poisson: 0.3,
+        density: 7.85e-9,
+        shear: None,
+        fc: None,
+        fy: None,
+    });
+}
+
 #[test]
 fn test_set_material_field_roundtrip() {
     let mut model = empty_model();

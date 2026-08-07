@@ -84,6 +84,23 @@ fn test_query_model_elements_and_sections() {
     assert_eq!(secs[0]["name"], "H-400");
 }
 
+/// 断面の問い合わせは材料 4 欄を出す。材料は断面が持ち、未割当は解析前チェックが
+/// 止めるため、どの断面のどの欄が空かを問い合わせ側から追えるようにする。
+#[test]
+fn test_query_model_sections_expose_materials() {
+    let mut m = sample_model();
+    m.sections[0].rebar_material = None;
+    let secs = query_model(&m, "section", None);
+    assert_eq!(secs[0]["material"], 0, "主材料の ID を出す");
+    assert!(
+        secs[0]["rebar_material"].is_null(),
+        "未割当の欄は null で見分けられる"
+    );
+    for key in ["floor", "shear_rebar_material", "steel_material"] {
+        assert!(secs[0].get(key).is_some(), "{key} の欄がある");
+    }
+}
+
 #[test]
 fn test_query_model_filter() {
     let m = sample_model();

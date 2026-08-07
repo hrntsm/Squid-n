@@ -374,6 +374,8 @@ struct LinkStats {
     dangling_section: u32,
     /// 存在しない材料を参照し材料リンクを外した部材数。
     dangling_material: u32,
+    /// 断面に既に付いている材料と違う材料を指した部材数（先に付いた方を採る）。
+    conflicting_material: u32,
 }
 
 impl LinkStats {
@@ -395,6 +397,14 @@ impl LinkStats {
             warnings.push(format!(
                 "存在しない材料を参照する部材が {} 件あり、材料リンクを外しました",
                 self.dangling_material
+            ));
+        }
+        if self.conflicting_material > 0 {
+            warnings.push(format!(
+                "同じ断面を参照する部材が別々の材料を指しています（{} 件）。\
+                 材料は断面が持つため先に解決した材料を採りました。\
+                 違う材料を使う部材は断面を分けてください",
+                self.conflicting_material
             ));
         }
     }
@@ -431,7 +441,15 @@ fn build_members(
             match material_index.get(&fid) {
                 Some(&idx) => {
                     if let Some(sec) = section.and_then(|sid| model.sections.get_mut(sid.index())) {
-                        sec.material.get_or_insert(MaterialId(idx));
+                        // 既に別の材料が付いている断面は上書きしない（先勝ち）。
+                        // 黙って捨てると材料の食い違いに気づけないため件数を数える。
+                        match sec.material {
+                            Some(existing) if existing != MaterialId(idx) => {
+                                stats.conflicting_material += 1;
+                            }
+                            Some(_) => {}
+                            None => sec.material = Some(MaterialId(idx)),
+                        }
                     }
                 }
                 None => stats.dangling_material += 1,
@@ -497,7 +515,13 @@ fn build_secondaries(
             match material_index.get(&fid) {
                 Some(&idx) => {
                     if let Some(sec) = section.and_then(|sid| model.sections.get_mut(sid.index())) {
-                        sec.material.get_or_insert(MaterialId(idx));
+                        match sec.material {
+                            Some(existing) if existing != MaterialId(idx) => {
+                                stats.conflicting_material += 1;
+                            }
+                            Some(_) => {}
+                            None => sec.material = Some(MaterialId(idx)),
+                        }
                     }
                 }
                 None => stats.dangling_material += 1,
