@@ -424,6 +424,25 @@ mod tests {
             panel_thickness,
             thickness: None,
             shape: Some(shape),
+            material: None,
+            rebar_material: None,
+            shear_rebar_material: None,
+            steel_material: None,
+        }
+    }
+
+    /// [`sec`] の id と主材料も指定できる版。
+    fn sec_with_mat(
+        shape: SectionShape,
+        depth: f64,
+        panel_thickness: Option<f64>,
+        id: u32,
+        mat: u32,
+    ) -> Section {
+        Section {
+            id: SectionId(id),
+            material: Some(crate::ids::MaterialId(mat)),
+            ..sec(shape, depth, panel_thickness)
         }
     }
 
@@ -625,19 +644,12 @@ mod tests {
         }
     }
 
-    fn member_with_mat(id: u32, n0: u32, n1: u32, sec: u32, mat: u32) -> ElementData {
-        let mut e = member(id, n0, n1, sec);
-        e.material = Some(crate::ids::MaterialId(mat));
-        e
-    }
-
     fn member(id: u32, n0: u32, n1: u32, sec: u32) -> ElementData {
         ElementData {
             id: ElemId(id),
             kind: ElementKind::Beam,
             nodes: smallvec::smallvec![NodeId(n0), NodeId(n1)],
             section: Some(crate::ids::SectionId(sec)),
-            material: Some(crate::ids::MaterialId(0)),
             local_axis: crate::model::LocalAxis {
                 ref_vector: [0.0, 1.0, 0.0],
             },
@@ -688,9 +700,7 @@ mod tests {
                     dia: 10.0,
                     pitch: 100.0,
                     legs: 2,
-                    grade: None,
                 },
-                main_grade: None,
             },
         }
     }
@@ -731,15 +741,16 @@ mod tests {
                 node(1, [6000.0, 0.0, 3000.0]),
                 node(2, [0.0, 0.0, 0.0]),
             ],
-            sections: vec![sec(beam, beam_depth, None), sec(col, 400.0, None)],
+            // 材料は断面が持つ。断面 0（梁）・断面 1（柱）へそれぞれ割り当てる。
+            sections: vec![
+                sec_with_mat(beam, beam_depth, None, 0, beam_mat),
+                sec_with_mat(col, 400.0, None, 1, col_mat),
+            ],
             materials: vec![
                 mat(0, MaterialCategory::Steel),
                 mat(1, MaterialCategory::Concrete),
             ],
-            elements: vec![
-                member_with_mat(0, 0, 1, 0, beam_mat),
-                member_with_mat(1, 2, 0, 1, col_mat),
-            ],
+            elements: vec![member(0, 0, 1, 0), member(1, 2, 0, 1)],
             ..Default::default()
         }
     }

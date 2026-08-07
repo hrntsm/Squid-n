@@ -172,6 +172,10 @@ impl SectionShape {
             thickness,
             // UI設計 §4.2: Section は SectionShape の派生。生成元の形状を保持する。
             shape: Some(self.clone()),
+            material: None,
+            rebar_material: None,
+            shear_rebar_material: None,
+            steel_material: None,
         }
     }
 }

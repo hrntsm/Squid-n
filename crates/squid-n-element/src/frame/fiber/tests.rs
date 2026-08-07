@@ -75,7 +75,6 @@ fn build_test_model(shear_mod: Option<f64>) -> Model {
             kind: ElementKind::Fiber,
             nodes: smallvec::smallvec![NodeId(0), NodeId(1)],
             section: Some(SectionId(0)),
-            material: Some(MaterialId(0)),
             local_axis: LocalAxis {
                 ref_vector: [0.0, 1.0, 0.0],
             },
@@ -100,6 +99,10 @@ fn build_test_model(shear_mod: Option<f64>) -> Model {
             panel_thickness: None,
             thickness: None,
             shape: None,
+            material: Some(MaterialId(0)),
+            rebar_material: None,
+            shear_rebar_material: None,
+            steel_material: None,
         }],
         materials: vec![Material {
             strength_factor: None,
@@ -146,7 +149,6 @@ fn make_oriented_fiber(p0: [f64; 3], p1: [f64; 3], ref_vec: [f64; 3]) -> FiberBe
             kind: ElementKind::Fiber,
             nodes: smallvec::smallvec![NodeId(0), NodeId(1)],
             section: Some(SectionId(0)),
-            material: Some(MaterialId(0)),
             local_axis: LocalAxis {
                 ref_vector: ref_vec,
             },
@@ -171,6 +173,10 @@ fn make_oriented_fiber(p0: [f64; 3], p1: [f64; 3], ref_vec: [f64; 3]) -> FiberBe
             panel_thickness: None,
             thickness: None,
             shape: None,
+            material: Some(MaterialId(0)),
+            rebar_material: None,
+            shear_rebar_material: None,
+            steel_material: None,
         }],
         materials: vec![Material {
             strength_factor: None,
@@ -222,7 +228,6 @@ fn make_steel_fiber_with_fy(fy: Option<f64>) -> FiberBeam {
             kind: ElementKind::Fiber,
             nodes: smallvec::smallvec![NodeId(0), NodeId(1)],
             section: Some(SectionId(0)),
-            material: Some(MaterialId(0)),
             local_axis: LocalAxis {
                 ref_vector: [0.0, 1.0, 0.0],
             },
@@ -247,6 +252,10 @@ fn make_steel_fiber_with_fy(fy: Option<f64>) -> FiberBeam {
             panel_thickness: None,
             thickness: None,
             shape: None,
+            material: Some(MaterialId(0)),
+            rebar_material: None,
+            shear_rebar_material: None,
+            steel_material: None,
         }],
         materials: vec![Material {
             strength_factor: None,
@@ -568,7 +577,6 @@ fn test_yield_progression() {
                 kind: ElementKind::Fiber,
                 nodes: smallvec::smallvec![NodeId(0), NodeId(1)],
                 section: Some(SectionId(0)),
-                material: Some(MaterialId(0)),
                 local_axis: LocalAxis {
                     ref_vector: [0.0, 1.0, 0.0],
                 },
@@ -593,6 +601,10 @@ fn test_yield_progression() {
                 panel_thickness: None,
                 thickness: None,
                 shape: None,
+                material: Some(MaterialId(0)),
+                rebar_material: None,
+                shear_rebar_material: None,
+                steel_material: None,
             }],
             materials: vec![Material {
                 strength_factor: None,
@@ -913,7 +925,6 @@ fn test_vertical_column_rz_nonsingular() {
             kind: ElementKind::Fiber,
             nodes: smallvec::smallvec![NodeId(0), NodeId(1)],
             section: Some(SectionId(0)),
-            material: Some(MaterialId(0)),
             local_axis: LocalAxis {
                 ref_vector: [1.0, 0.0, 0.0],
             },
@@ -938,6 +949,10 @@ fn test_vertical_column_rz_nonsingular() {
             panel_thickness: None,
             thickness: None,
             shape: None,
+            material: Some(MaterialId(0)),
+            rebar_material: None,
+            shear_rebar_material: None,
+            steel_material: None,
         }],
         materials: vec![Material {
             strength_factor: None,
@@ -1525,7 +1540,6 @@ fn rc_fiber_model() -> Model {
         b: 500.0,
         d: 500.0,
         rebar: RcRebar {
-            main_grade: None,
             main_x: BarSet {
                 count: 4,
                 dia: 25.0,
@@ -1541,11 +1555,14 @@ fn rc_fiber_model() -> Model {
                 dia: 10.0,
                 pitch: 100.0,
                 legs: 2,
-                grade: None,
             },
         },
     };
-    let sec = shape.to_section(SectionId(0), "C500".into());
+    // 材料は断面が持つ。主材料 = コンクリート（0）、主筋・せん断補強筋 = SD345（1）。
+    let mut sec = shape.to_section(SectionId(0), "C500".into());
+    sec.material = Some(MaterialId(0));
+    sec.rebar_material = Some(MaterialId(1));
+    sec.shear_rebar_material = Some(MaterialId(1));
     Model {
         nodes: vec![
             Node {
@@ -1570,7 +1587,6 @@ fn rc_fiber_model() -> Model {
             kind: ElementKind::Fiber,
             nodes: smallvec::smallvec![NodeId(0), NodeId(1)],
             section: Some(SectionId(0)),
-            material: Some(MaterialId(0)),
             local_axis: LocalAxis {
                 ref_vector: [1.0, 0.0, 0.0],
             },
@@ -1581,20 +1597,34 @@ fn rc_fiber_model() -> Model {
             spring: None,
         }],
         sections: vec![sec],
-        materials: vec![Material {
-            strength_factor: None,
-            concrete_class: Default::default(),
-            id: MaterialId(0),
-            name: "FC30".into(),
-            category: MaterialCategory::Concrete,
-            young: 25000.0,
-            poisson: 0.2,
-            density: 0.0,
-            shear: Some(0.0),
-            fc: Some(30.0),
-            // 主筋材質未設定時は部材材料の fy へフォールバックするため明示する。
-            fy: Some(345.0),
-        }],
+        materials: vec![
+            Material {
+                strength_factor: None,
+                concrete_class: Default::default(),
+                id: MaterialId(0),
+                name: "FC30".into(),
+                category: MaterialCategory::Concrete,
+                young: 25000.0,
+                poisson: 0.2,
+                density: 0.0,
+                shear: Some(0.0),
+                fc: Some(30.0),
+                fy: None,
+            },
+            Material {
+                strength_factor: None,
+                concrete_class: Default::default(),
+                id: MaterialId(1),
+                name: "SD345".into(),
+                category: MaterialCategory::Rebar,
+                young: 205000.0,
+                poisson: 0.3,
+                density: 0.0,
+                shear: None,
+                fc: None,
+                fy: Some(345.0),
+            },
+        ],
         ..Default::default()
     }
 }
@@ -2565,7 +2595,11 @@ fn test_steel_box_fibers_are_hollow() {
         Some(&shape),
         None,
         205000.0,
-        Some(295.0),
+        FiberYield {
+            main: Some(295.0),
+            rebar: None,
+            steel: Some(295.0),
+        },
         1.0,
         1.0,
         HysteresisModel::Retrograde,
@@ -2597,7 +2631,6 @@ fn test_steel_box_fibers_are_hollow() {
 #[test]
 fn test_rc_circle_fibers_match_circle_area() {
     let rebar = squid_n_core::section_shape::RcRebar {
-        main_grade: None,
         main_x: squid_n_core::section_shape::BarSet {
             count: 4,
             dia: 22.0,
@@ -2613,7 +2646,6 @@ fn test_rc_circle_fibers_match_circle_area() {
             dia: 10.0,
             pitch: 100.0,
             legs: 2,
-            grade: None,
         },
     };
     let shape = squid_n_core::section_shape::SectionShape::RcCircle { d: 600.0, rebar };
@@ -2625,7 +2657,11 @@ fn test_rc_circle_fibers_match_circle_area() {
         Some(&shape),
         Some(24.0),
         22000.0,
-        Some(345.0),
+        FiberYield {
+            main: Some(345.0),
+            rebar: Some(345.0),
+            steel: None,
+        },
         1.0,
         1.0,
         HysteresisModel::Retrograde,

@@ -74,6 +74,11 @@ pub fn portal_frame() -> Model {
         fy: Some(235.0),
     });
 
+    // 材料は断面に割り当てる。
+    for sec in &mut model.sections {
+        sec.material = Some(MaterialId(0));
+    }
+
     // 部材: 柱 2 本 + 梁 1 本
     let members = [
         (0u32, 0u32, 2u32, 0u32), // id, i, j, section
@@ -86,7 +91,6 @@ pub fn portal_frame() -> Model {
             kind: ElementKind::Beam,
             nodes: [NodeId(i), NodeId(j)].into_iter().collect(),
             section: Some(SectionId(sec)),
-            material: Some(MaterialId(0)),
             local_axis: LocalAxis {
                 // 柱は +X、梁は +Z を参照ベクトルにする
                 ref_vector: if sec == 0 {

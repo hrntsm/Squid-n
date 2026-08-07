@@ -28,28 +28,60 @@ impl EditCommand for SetElementSection {
     }
 }
 
-/// 部材の材料割当変更。
-pub struct SetElementMaterial {
-    pub elem: ElemId,
+/// 断面の材料割当変更。
+///
+/// **材料は断面が持つ**（`Section::material` ほか）。役割ごとに欄が分かれており、
+/// どれを変更するかは [`SectionMaterialRole`] で指定する。
+pub struct SetSectionMaterial {
+    pub section: squid_n_core::ids::SectionId,
+    pub role: SectionMaterialRole,
     pub material: Option<squid_n_core::ids::MaterialId>,
 }
 
-impl EditCommand for SetElementMaterial {
+/// 断面が持つ材料の役割。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SectionMaterialRole {
+    /// 主材料（弾性剛性 E・ν と自重の密度を決める）。
+    Main,
+    /// 主筋。
+    Rebar,
+    /// せん断補強筋。
+    ShearRebar,
+    /// SRC 断面の内蔵鉄骨。
+    Steel,
+}
+
+impl SectionMaterialRole {
+    fn slot(
+        self,
+        sec: &mut squid_n_core::model::Section,
+    ) -> &mut Option<squid_n_core::ids::MaterialId> {
+        match self {
+            SectionMaterialRole::Main => &mut sec.material,
+            SectionMaterialRole::Rebar => &mut sec.rebar_material,
+            SectionMaterialRole::ShearRebar => &mut sec.shear_rebar_material,
+            SectionMaterialRole::Steel => &mut sec.steel_material,
+        }
+    }
+}
+
+impl EditCommand for SetSectionMaterial {
     fn apply(&self, model: &mut Model) -> Box<dyn EditCommand> {
-        let idx = self.elem.index();
-        if idx >= model.elements.len() || model.elements[idx].id != self.elem {
+        let idx = self.section.index();
+        if idx >= model.sections.len() || model.sections[idx].id != self.section {
             return Box::new(Noop);
         }
-        let old = model.elements[idx].material;
-        model.elements[idx].material = self.material;
-        Box::new(SetElementMaterial {
-            elem: self.elem,
+        let slot = self.role.slot(&mut model.sections[idx]);
+        let old = std::mem::replace(slot, self.material);
+        Box::new(SetSectionMaterial {
+            section: self.section,
+            role: self.role,
             material: old,
         })
     }
 
     fn label(&self) -> &str {
-        "部材材料割当変更"
+        "断面材料割当変更"
     }
 }
 

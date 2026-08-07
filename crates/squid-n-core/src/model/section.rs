@@ -44,6 +44,30 @@ pub struct Section {
     /// 形状から生成されなかった断面（カタログ数値直入力・ST-Bridge 読込等）は None。
     #[serde(default)]
     pub shape: Option<crate::section_shape::SectionShape>,
+    /// 主材料（この断面の弾性剛性 E・ν と自重の密度を決める材料）。
+    ///
+    /// S 断面は鋼材、RC・SRC・CFT 断面はコンクリートを指す。**材料は断面の属性**で
+    /// あり、部材は持たない（材料が違えばそれは別の断面である）。要素から引くときは
+    /// [`Model::element_material`] を用いる。
+    ///
+    /// `None` は未割当。もっともらしい既定値で埋めず、解析へ進む時点で
+    /// 解析前チェックが止める。
+    #[serde(default)]
+    pub material: Option<MaterialId>,
+    /// 主筋の材料（RC・SRC 断面のみ意味を持つ）。降伏点は `Material::fy`。
+    #[serde(default)]
+    pub rebar_material: Option<MaterialId>,
+    /// せん断補強筋の材料（RC・SRC 断面のみ意味を持つ）。
+    ///
+    /// `None` は未設定。呼び出し側は普通強度せん断補強筋の SD295 相当
+    /// （[`crate::material_grade::SHEAR_REBAR_DEFAULT_FY`]）を既定とする
+    /// （規格上の最小グレードであり、実際がより高強度でも耐力を過小評価する
+    /// 側＝安全側に外れる）。
+    #[serde(default)]
+    pub shear_rebar_material: Option<MaterialId>,
+    /// SRC 断面の内蔵鉄骨の材料（SRC 断面のみ意味を持つ）。
+    #[serde(default)]
+    pub steel_material: Option<MaterialId>,
 }
 
 /// 断面の同一性キー（符号＋階）。モデル内で重複してはならない。
@@ -89,4 +113,46 @@ pub fn section_key_taken(sections: &[Section], key: SectionKey<'_>, skip: Option
         .iter()
         .enumerate()
         .any(|(i, s)| Some(i) != skip && s.key() == key)
+}
+
+impl Model {
+    /// 要素の断面。
+    pub fn element_section(&self, elem: &ElementData) -> Option<&Section> {
+        self.sections.get(elem.section?.index())
+    }
+
+    /// 要素の主材料（弾性剛性 E・ν と自重の密度を決める材料）。
+    ///
+    /// **材料は断面が持つ**（[`Section::material`]）ため、要素からは断面を経由して
+    /// 引く。材料が要る箇所は常にこのヘルパーを情報源とし、断面と材料の対応を
+    /// 呼び出し側へ散らさない。断面が未割当、または断面が材料を持たない場合は `None`。
+    pub fn element_material(&self, elem: &ElementData) -> Option<&Material> {
+        self.materials
+            .get(self.element_section(elem)?.material?.index())
+    }
+
+    /// 二次部材（小梁・間柱）の主材料（自重算定に用いる）。
+    /// 規約は [`Model::element_material`] と同じ。
+    pub fn secondary_material(&self, sm: &SecondaryMember) -> Option<&Material> {
+        let sec = self.sections.get(sm.section?.index())?;
+        self.materials.get(sec.material?.index())
+    }
+
+    /// 要素の主筋材料（RC・SRC 断面のみ）。
+    pub fn element_rebar_material(&self, elem: &ElementData) -> Option<&Material> {
+        self.materials
+            .get(self.element_section(elem)?.rebar_material?.index())
+    }
+
+    /// 要素のせん断補強筋材料（RC・SRC 断面のみ）。
+    pub fn element_shear_rebar_material(&self, elem: &ElementData) -> Option<&Material> {
+        self.materials
+            .get(self.element_section(elem)?.shear_rebar_material?.index())
+    }
+
+    /// 要素の内蔵鉄骨材料（SRC 断面のみ）。
+    pub fn element_steel_material(&self, elem: &ElementData) -> Option<&Material> {
+        self.materials
+            .get(self.element_section(elem)?.steel_material?.index())
+    }
 }

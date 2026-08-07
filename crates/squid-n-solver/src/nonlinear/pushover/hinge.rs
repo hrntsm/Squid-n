@@ -43,9 +43,7 @@ fn member_moment_thresholds(elem: &ElementData, model: &Model) -> HingeThreshold
     let Some(sec) = elem.section.and_then(|sid| model.sections.get(sid.index())) else {
         return HingeThreshold { mc: 0.0, my: 0.0 };
     };
-    let mat = elem
-        .material
-        .and_then(|mid| model.materials.get(mid.index()));
+    let mat = model.element_material(elem);
     let depth = sec.depth.max(sec.width);
     let i_gross = sec.iz.max(sec.iy);
     let ze = if depth > 0.0 {
@@ -81,12 +79,11 @@ fn member_moment_thresholds(elem: &ElementData, model: &Model) -> HingeThreshold
             // どちらも未設定のモデルは `ensure_nonlinear_input` が解析前に停止するため、
             // 既定値 345 へのフォールバックには到達しない。
             // 保有水平耐力計算のため主筋の材料強度割増を乗じる（せん断補強筋は対象外）。
-            let sigma_y_rebar = squid_n_core::material_grade::rebar_yield_strength(
-                rebar.main_grade.as_deref(),
-                mat,
-            )
-            .unwrap_or(345.0)
-                * mat.map(material_strength_factor_rebar).unwrap_or(1.0);
+            let rebar_mat = model.element_rebar_material(elem);
+            let sigma_y_rebar = squid_n_core::material_grade::rebar_yield_strength(rebar_mat)
+                .or_else(|| mat.and_then(|m| m.fy))
+                .unwrap_or(345.0)
+                * rebar_mat.map(material_strength_factor_rebar).unwrap_or(1.0);
             let at = bar_set_area(&rebar.main_x) / 2.0;
             let d_eff = (d - rebar.cover - rebar.main_x.dia / 2.0).max(0.0);
             let inp = RcCapacityInput {

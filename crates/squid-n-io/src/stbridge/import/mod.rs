@@ -44,8 +44,22 @@ struct PendingSec {
     /// 持つため、符号と併せて断面の同一性キーになる。属性がなければ `None`。
     floor: Option<String>,
     kind: PendingSecKind,
-    /// 断面側に付いた材料参照（部材が id_material を持たないとき部材へ伝播する）。
+    /// 断面側に付いた材料参照（この断面の主材料になる）。
     mat: Option<SecMatRef>,
+    /// 配筋・内蔵鉄骨の材質（ST-Bridge はグレード名で持つ）。取り込み後に
+    /// 材料テーブルへ解決して断面の材料欄へ結ぶ（`resolve_section_materials`）。
+    grades: SecGrades,
+}
+
+/// ST-Bridge の断面属性に現れる材質のグレード名。
+#[derive(Default, Clone, Debug)]
+struct SecGrades {
+    /// 主筋（`strength_main` 等）。
+    main_rebar: Option<String>,
+    /// せん断補強筋（`strength_band` 等）。
+    shear_rebar: Option<String>,
+    /// SRC の内蔵鉄骨（`shape` の鋼種）。
+    steel: Option<String>,
 }
 
 enum PendingSecKind {
@@ -71,7 +85,6 @@ enum PendingSecKind {
         d: f64,
         rebar: RcRebar,
         steel_name: Option<String>,
-        grade: String,
     },
 }
 
@@ -88,10 +101,6 @@ struct PendingMember {
     n_j: u32,
     section: Option<u32>,
     material: Option<u32>,
-    /// `id_material` 属性がファイルに存在したか。存在する（=-1 含む）場合は部材が材料を
-    /// 明示しているとみなし、断面材料の伝播を行わない（往復で None→Some 化を防ぐ）。
-    /// 属性がない場合のみ断面材料を伝播する。
-    has_material_attr: bool,
     /// 部材軸まわりの断面回転角 [deg]（ST-Bridge `rotate`）。ref_vector は節点座標が
     /// 揃う構築時に軸と `rotate` から算出する。
     rotate: f64,
@@ -108,7 +117,6 @@ struct PendingSecondary {
     n_j: u32,
     section: Option<u32>,
     material: Option<u32>,
-    has_material_attr: bool,
     name: String,
 }
 

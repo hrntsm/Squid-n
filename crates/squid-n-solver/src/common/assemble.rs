@@ -275,7 +275,6 @@ mod tests {
                 kind: ElementKind::NodalSpring,
                 nodes: smallvec::smallvec![NodeId(0), NodeId(1)],
                 section: None,
-                material: None,
                 local_axis: LocalAxis {
                     ref_vector: [0.0, 1.0, 0.0],
                 },

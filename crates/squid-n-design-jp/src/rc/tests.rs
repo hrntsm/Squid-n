@@ -35,7 +35,6 @@ pub(crate) fn rc_rect_shape(
         b,
         d,
         rebar: RcRebar {
-            main_grade: None,
             main_x: BarSet {
                 count: main_count,
                 dia: main_dia,
@@ -51,42 +50,8 @@ pub(crate) fn rc_rect_shape(
                 dia: shear_dia,
                 pitch: shear_pitch,
                 legs: shear_legs,
-                grade: None,
             },
         },
-    }
-}
-
-/// `rc_rect_shape` のせん断補強筋に高強度品の `grade` を付与した版。
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn rc_rect_shape_with_shear_grade(
-    b: f64,
-    d: f64,
-    main_count: u32,
-    main_dia: f64,
-    main_layers: u32,
-    cover: f64,
-    shear_dia: f64,
-    shear_pitch: f64,
-    shear_legs: u32,
-    shear_grade: &str,
-) -> SectionShape {
-    match rc_rect_shape(
-        b,
-        d,
-        main_count,
-        main_dia,
-        main_layers,
-        cover,
-        shear_dia,
-        shear_pitch,
-        shear_legs,
-    ) {
-        SectionShape::RcRect { b, d, mut rebar } => {
-            rebar.shear.grade = Some(shear_grade.to_string());
-            SectionShape::RcRect { b, d, rebar }
-        }
-        _ => unreachable!(),
     }
 }
 
@@ -94,20 +59,53 @@ pub(crate) fn make_section(shape: SectionShape) -> Section {
     shape.to_section(SectionId(0), "test".to_string())
 }
 
-pub(crate) fn ctx_beam(term: LoadTerm) -> DesignCtx {
-    DesignCtx {
-        term,
-        kind: MemberKind::Beam,
-        ..Default::default()
+/// 鉄筋の材料（材料名がグレード名、`fy` が降伏点）。
+pub(crate) fn make_rebar_material(grade: &str, fy: f64) -> Material {
+    Material {
+        strength_factor: None,
+        concrete_class: Default::default(),
+        id: MaterialId(1),
+        name: grade.to_string(),
+        category: MaterialCategory::Rebar,
+        young: 205000.0,
+        poisson: 0.3,
+        density: 0.0,
+        shear: None,
+        fc: None,
+        fy: Some(fy),
     }
 }
 
-pub(crate) fn ctx_column(term: LoadTerm) -> DesignCtx {
+/// RC 検定の標準の材料構成（主筋 SD345・せん断補強筋 SD295A）。
+/// 材料は断面が持つため、検定コンテキストへ渡して解決させる。
+fn ctx_materials(ctx: DesignCtx) -> DesignCtx {
     DesignCtx {
+        rebar_material: Some(make_rebar_material("SD345", 345.0)),
+        shear_rebar_material: Some(make_rebar_material("SD295A", 295.0)),
+        ..ctx
+    }
+}
+
+/// せん断補強筋の材料を指定のグレードへ差し替える（高強度品の検証用）。
+pub(crate) fn with_shear_grade(mut ctx: DesignCtx, grade: &str, fy: f64) -> DesignCtx {
+    ctx.shear_rebar_material = Some(make_rebar_material(grade, fy));
+    ctx
+}
+
+pub(crate) fn ctx_beam(term: LoadTerm) -> DesignCtx {
+    ctx_materials(DesignCtx {
+        term,
+        kind: MemberKind::Beam,
+        ..Default::default()
+    })
+}
+
+pub(crate) fn ctx_column(term: LoadTerm) -> DesignCtx {
+    ctx_materials(DesignCtx {
         term,
         kind: MemberKind::Column,
         ..Default::default()
-    }
+    })
 }
 
 // ------------------------------------------------------------------
@@ -369,8 +367,7 @@ fn test_column_long_term_shear_has_no_rebar_term() {
 #[test]
 fn test_high_strength_shear_capacity_offset_0_001_beam() {
     // 高強度せん断補強筋の暫定対応式（短期）は pw オフセットが 0.001。
-    let shape =
-        rc_rect_shape_with_shear_grade(300.0, 600.0, 4, 19.0, 1, 40.0, 10.0, 100.0, 2, "KH785");
+    let shape = rc_rect_shape(300.0, 600.0, 4, 19.0, 1, 40.0, 10.0, 100.0, 2);
     let rebar = match &shape {
         SectionShape::RcRect { rebar, .. } => rebar.clone(),
         _ => unreachable!(),
@@ -419,8 +416,7 @@ fn test_high_strength_offset_differs_from_normal_short_term() {
     // pw を 0.001 < pw < 0.002 の範囲に設定する。普通強度式（offset=0.002）
     // では pw 項が 0 のままだが、高強度式（短期 offset=0.001）では
     // pw 項が有効になり QA が普通強度より大きくなることを確認する。
-    let shape =
-        rc_rect_shape_with_shear_grade(300.0, 600.0, 4, 19.0, 1, 40.0, 13.0, 600.0, 2, "KH785");
+    let shape = rc_rect_shape(300.0, 600.0, 4, 19.0, 1, 40.0, 13.0, 600.0, 2);
     let rebar = match &shape {
         SectionShape::RcRect { rebar, .. } => rebar.clone(),
         _ => unreachable!(),
@@ -460,8 +456,7 @@ fn test_high_strength_shear_capacity_long_term_matches_normal_formula() {
     // 長期は普通強度と同じ式（offset=0.002, pw 上限 0.6%）で、
     // w_ft も高強度テーブル値=195 と SD345 長期値=195 が一致するため、
     // 高強度パスと普通強度パスの結果は一致するはず。
-    let shape =
-        rc_rect_shape_with_shear_grade(300.0, 600.0, 4, 19.0, 1, 40.0, 10.0, 100.0, 2, "UB785");
+    let shape = rc_rect_shape(300.0, 600.0, 4, 19.0, 1, 40.0, 10.0, 100.0, 2);
     let rebar = match &shape {
         SectionShape::RcRect { rebar, .. } => rebar.clone(),
         _ => unreachable!(),
@@ -490,8 +485,7 @@ fn test_high_strength_shear_capacity_long_term_matches_normal_formula() {
 
 #[test]
 fn test_high_strength_column_safety_check_excludes_alpha() {
-    let shape =
-        rc_rect_shape_with_shear_grade(400.0, 400.0, 8, 22.0, 2, 40.0, 10.0, 100.0, 2, "SHD685");
+    let shape = rc_rect_shape(400.0, 400.0, 8, 22.0, 2, 40.0, 10.0, 100.0, 2);
     let rebar = match &shape {
         SectionShape::RcRect { rebar, .. } => rebar.clone(),
         _ => unreachable!(),
@@ -637,6 +631,10 @@ fn test_shape_missing_fallback() {
         panel_thickness: None,
         thickness: None,
         shape: None,
+        material: Some(MaterialId(0)),
+        rebar_material: None,
+        shear_rebar_material: None,
+        steel_material: None,
     };
     let mat = make_material(24.0, "SD345");
     let ctx = ctx_beam(LoadTerm::Long);
@@ -661,7 +659,6 @@ fn test_rc_circle_beam_and_column_smoke() {
     let shape = SectionShape::RcCircle {
         d: 600.0,
         rebar: RcRebar {
-            main_grade: None,
             main_x: BarSet {
                 count: 12,
                 dia: 22.0,
@@ -677,7 +674,6 @@ fn test_rc_circle_beam_and_column_smoke() {
                 dia: 10.0,
                 pitch: 100.0,
                 legs: 1,
-                grade: None,
             },
         },
     };

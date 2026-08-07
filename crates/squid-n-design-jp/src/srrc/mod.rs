@@ -343,12 +343,36 @@ impl DesignCheck for SrcDesign {
             steel_width,
             steel_web_thick,
             steel_flange_thick,
-            steel_grade,
         } = shape
         else {
             unreachable!()
         };
 
+        // 主筋・せん断補強筋・内蔵鉄骨の材料はいずれも断面が持つ。未割当のまま
+        // 既定グレードで検定すると許容応力度・F 値の根拠が消えるため、検定せず
+        // 理由を返す。
+        if ctx.rebar_material.is_none() {
+            return CheckOutcome::Skipped {
+                reason: "SRC検定: 主筋の材料が未割当（断面タブで主筋の材料を割り当ててください）"
+                    .to_string(),
+            };
+        }
+        if ctx.shear_rebar_material.is_none() {
+            return CheckOutcome::Skipped {
+                reason: "SRC検定: せん断補強筋の材料が未割当\
+                         （断面タブでせん断補強筋の材料を割り当ててください）"
+                    .to_string(),
+            };
+        }
+        let Some(steel_mat) = ctx.steel_material.as_ref() else {
+            return CheckOutcome::Skipped {
+                reason: "SRC検定: 内蔵鉄骨の材料が未割当\
+                         （断面タブで内蔵鉄骨の材料を割り当ててください）"
+                    .to_string(),
+            };
+        };
+        // 内蔵鉄骨の鋼種は断面の材料が持つ（形状は材質を持たない）。
+        let steel_grade = steel_mat.name.as_str();
         let cr = match ctx.kind {
             MemberKind::Beam | MemberKind::Brace => beam::src_beam_check(
                 forces,

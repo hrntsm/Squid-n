@@ -104,7 +104,6 @@ fn sdof_model() -> Model {
             kind: ElementKind::Beam,
             nodes: smallvec::smallvec![NodeId(0), NodeId(1)],
             section: Some(SectionId(0)),
-            material: Some(MaterialId(0)),
             local_axis: LocalAxis {
                 ref_vector: [0.0, 0.0, 1.0],
             },
@@ -129,6 +128,10 @@ fn sdof_model() -> Model {
             panel_thickness: None,
             thickness: None,
             shape: None,
+            material: Some(MaterialId(0)),
+            rebar_material: None,
+            shear_rebar_material: None,
+            steel_material: None,
         }],
         materials: vec![Material {
             strength_factor: None,
@@ -177,7 +180,6 @@ fn sdof_model_y() -> Model {
             kind: ElementKind::Beam,
             nodes: smallvec::smallvec![NodeId(0), NodeId(1)],
             section: Some(SectionId(0)),
-            material: Some(MaterialId(0)),
             local_axis: LocalAxis {
                 ref_vector: [0.0, 0.0, 1.0],
             },
@@ -202,6 +204,10 @@ fn sdof_model_y() -> Model {
             panel_thickness: None,
             thickness: None,
             shape: None,
+            material: Some(MaterialId(0)),
+            rebar_material: None,
+            shear_rebar_material: None,
+            steel_material: None,
         }],
         materials: vec![Material {
             strength_factor: None,
@@ -400,7 +406,6 @@ fn test_2dof_free_vibration_runs() {
         kind: ElementKind::Beam,
         nodes: smallvec::smallvec![NodeId(a), NodeId(b)],
         section: Some(SectionId(0)),
-        material: Some(MaterialId(0)),
         local_axis: LocalAxis {
             ref_vector: [0.0, 0.0, 1.0],
         },
@@ -432,6 +437,10 @@ fn test_2dof_free_vibration_runs() {
             panel_thickness: None,
             thickness: None,
             shape: None,
+            material: Some(MaterialId(0)),
+            rebar_material: None,
+            shear_rebar_material: None,
+            steel_material: None,
         }],
         materials: vec![Material {
             strength_factor: None,
@@ -516,7 +525,6 @@ fn test_2dof_mode_superposition_consistency() {
         kind: ElementKind::Beam,
         nodes: smallvec::smallvec![NodeId(a), NodeId(b)],
         section: Some(SectionId(0)),
-        material: Some(MaterialId(0)),
         local_axis: LocalAxis {
             ref_vector: [0.0, 0.0, 1.0],
         },
@@ -548,6 +556,10 @@ fn test_2dof_mode_superposition_consistency() {
             panel_thickness: None,
             thickness: None,
             shape: None,
+            material: Some(MaterialId(0)),
+            rebar_material: None,
+            shear_rebar_material: None,
+            steel_material: None,
         }],
         materials: vec![Material {
             strength_factor: None,
@@ -1253,7 +1265,6 @@ fn fiber_column_model(fy: f64) -> Model {
             kind: ElementKind::Fiber,
             nodes: smallvec::smallvec![NodeId(0), NodeId(1)],
             section: Some(SectionId(0)),
-            material: Some(MaterialId(0)),
             local_axis: LocalAxis {
                 ref_vector: [1.0, 0.0, 0.0],
             },
@@ -1278,6 +1289,10 @@ fn fiber_column_model(fy: f64) -> Model {
             panel_thickness: None,
             thickness: None,
             shape: None,
+            material: Some(MaterialId(0)),
+            rebar_material: None,
+            shear_rebar_material: None,
+            steel_material: None,
         }],
         materials: vec![Material {
             strength_factor: None,
@@ -1659,7 +1674,6 @@ fn test_maxwell_damper_reduces_free_vibration() {
                 kind: ElementKind::Damper,
                 nodes: smallvec::smallvec![NodeId(0), NodeId(1)],
                 section: None,
-                material: None,
                 local_axis: LocalAxis {
                     ref_vector: [0.0, 0.0, 1.0],
                 },
@@ -1941,7 +1955,6 @@ fn support_spring_sdof_model(k: f64, m: f64) -> Model {
             kind: ElementKind::NodalSpring,
             nodes: smallvec::smallvec![NodeId(0), NodeId(1)],
             section: None,
-            material: None,
             local_axis: LocalAxis {
                 ref_vector: [0.0, 1.0, 0.0],
             },

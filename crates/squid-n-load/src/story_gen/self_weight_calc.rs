@@ -153,13 +153,9 @@ pub(crate) fn enumerate_self_weight(model: &Model, load_cfg: &LoadCfg) -> Vec<Se
             }
         }
 
-        let (Some(sec_id), Some(mat_id)) = (elem.section, elem.material) else {
-            continue;
-        };
-        let (Some(sec), Some(mat)) = (
-            model.sections.get(sec_id.index()),
-            model.materials.get(mat_id.index()),
-        ) else {
+        // 材料は断面が持つ（`Model::element_material`）。
+        let (Some(sec), Some(mat)) = (model.element_section(elem), model.element_material(elem))
+        else {
             continue;
         };
 
@@ -313,13 +309,10 @@ pub(crate) fn enumerate_self_weight(model: &Model, load_cfg: &LoadCfg) -> Vec<Se
     // 柱面間控除・スラブ厚控除は行わない簡易則）。鋼材は鉄骨重量割増率を乗じる。
     // 両端節点へ 1/2 ずつ帰属する（[`SelfWeightItem::SecondaryLine`]）。
     for sm in &model.secondary_members {
-        let (Some(sec_id), Some(mat_id)) = (sm.section, sm.material) else {
+        let (Some(sec_id), Some(mat)) = (sm.section, model.secondary_material(sm)) else {
             continue;
         };
-        let (Some(sec), Some(mat)) = (
-            model.sections.get(sec_id.index()),
-            model.materials.get(mat_id.index()),
-        ) else {
+        let Some(sec) = model.sections.get(sec_id.index()) else {
             continue;
         };
         let ni = sm.nodes[0].index();

@@ -241,6 +241,14 @@ pub enum MemberKind {
 
 /// 検定コンテキスト（部材単位で一定の情報）。
 pub struct DesignCtx {
+    /// 断面が持つ主筋の材料（`Section::rebar_material` の実体）。RC・SRC の
+    /// 主筋降伏点 σy と付着・定着のグレード判定に用いる。**材料は断面が持つ**ため、
+    /// 検定側は部材ではなく断面の材料を見る。未割当は `None`。
+    pub rebar_material: Option<squid_n_core::model::Material>,
+    /// 断面が持つせん断補強筋の材料（`Section::shear_rebar_material` の実体）。
+    pub shear_rebar_material: Option<squid_n_core::model::Material>,
+    /// 断面が持つ内蔵鉄骨の材料（`Section::steel_material` の実体。SRC のみ）。
+    pub steel_material: Option<squid_n_core::model::Material>,
     pub term: LoadTerm,
     pub kind: MemberKind,
     /// 部材長 [mm]。座屈長さ lk・横座屈長さ lb の既定値として用いる。
@@ -287,6 +295,9 @@ pub struct DesignCtx {
 impl Default for DesignCtx {
     fn default() -> Self {
         DesignCtx {
+            rebar_material: None,
+            shear_rebar_material: None,
+            steel_material: None,
             term: LoadTerm::Long,
             kind: MemberKind::Beam,
             length: 0.0,

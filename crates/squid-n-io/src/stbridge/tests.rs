@@ -72,17 +72,15 @@ fn representative_model() -> Model {
         web_thick: 8.0,
         flange_thick: 13.0,
     };
-    m.sections
-        .push(col_h.to_section(SectionId(0), "C&1<2".into())); // 名前にエスケープ対象
-    m.sections
-        .push(beam_h.to_section(SectionId(1), "G1".into()));
+    // 名前にエスケープ対象を含める。
+    push_section(&mut m, col_h.to_section(SectionId(0), "C&1<2".into()));
+    push_section(&mut m, beam_h.to_section(SectionId(1), "G1".into()));
     // 柱2本（鉛直, section 0）＋大梁1本（水平, section 1）。
     let mk = |id: u32, ni: u32, nj: u32, sec: u32, refv: [f64; 3]| ElementData {
         id: ElemId(id),
         kind: ElementKind::Beam,
         nodes: smallvec![NodeId(ni), NodeId(nj)],
         section: Some(SectionId(sec)),
-        material: Some(MaterialId(0)),
         local_axis: LocalAxis { ref_vector: refv },
         end_cond: [EndCondition::Fixed, EndCondition::Fixed],
         force_regime: ForceRegime::Auto,
@@ -132,13 +130,20 @@ fn assert_semantic_eq(a: &Model, b: &Model) {
         assert!((x.iy - y.iy).abs().max((x.iz - y.iz).abs()) < 1.0, "iy/iz");
         assert_eq!(x.depth, y.depth);
         assert_eq!(x.width, y.width);
+        // 材料は断面が持つ。主材料・鉄筋・内蔵鉄骨のすべてを比べる。
+        assert_eq!(x.material, y.material, "断面の主材料");
+        assert_eq!(x.rebar_material, y.rebar_material, "主筋の材料");
+        assert_eq!(
+            x.shear_rebar_material, y.shear_rebar_material,
+            "せん断補強筋の材料"
+        );
+        assert_eq!(x.steel_material, y.steel_material, "内蔵鉄骨の材料");
     }
     assert_eq!(a.elements.len(), b.elements.len());
     for (x, y) in a.elements.iter().zip(&b.elements) {
         assert_eq!(x.id, y.id);
         assert_eq!(x.nodes.as_slice(), y.nodes.as_slice(), "connectivity");
         assert_eq!(x.section, y.section);
-        assert_eq!(x.material, y.material);
         assert!(
             ref_vec_close(x.local_axis.ref_vector, y.local_axis.ref_vector),
             "ref_vector {:?} vs {:?}",
@@ -241,7 +246,6 @@ use squid_n_core::section_shape::{BarSet, RcRebar, ShearBar};
 
 fn rebar() -> RcRebar {
     RcRebar {
-        main_grade: None,
         main_x: BarSet {
             count: 3,
             dia: 22.0,
@@ -257,7 +261,6 @@ fn rebar() -> RcRebar {
             dia: 10.0,
             pitch: 100.0,
             legs: 2,
-            grade: None,
         },
     }
 }
@@ -274,7 +277,6 @@ fn member(id: u32, kind_col: bool, sec: u32) -> ElementData {
         kind: ElementKind::Beam,
         nodes: smallvec![a, b],
         section: Some(SectionId(sec)),
-        material: Some(MaterialId(0)),
         local_axis: LocalAxis {
             ref_vector: [0.0, 1.0, 0.0],
         },
@@ -323,6 +325,60 @@ fn frame_nodes() -> Model {
     m
 }
 
+/// 材料は断面が持つ。断面へ材料を割り当ててモデルへ足す。
+///
+/// 主材料は [`frame_nodes`] の材料 0（SN400B）。配筋を持つ断面には主筋・せん断補強筋
+/// （SD345）を、SRC 断面にはさらに内蔵鉄骨（SN490B）を、モデルへ足して割り当てる。
+fn push_section(m: &mut Model, mut sec: Section) {
+    sec.material = Some(MaterialId(0));
+    let has_rebar = matches!(
+        sec.shape,
+        Some(
+            SectionShape::RcRect { .. }
+                | SectionShape::RcCircle { .. }
+                | SectionShape::SrcRect { .. }
+                | SectionShape::RcWall { .. }
+        )
+    );
+    if has_rebar {
+        let id = ensure_material(m, "SD345", MaterialCategory::Rebar, Some(345.0));
+        sec.rebar_material = Some(id);
+        sec.shear_rebar_material = Some(id);
+    }
+    if matches!(sec.shape, Some(SectionShape::SrcRect { .. })) {
+        let id = ensure_material(m, "SN490B", MaterialCategory::Steel, Some(325.0));
+        sec.steel_material = Some(id);
+    }
+    m.sections.push(sec);
+}
+
+/// 同名の材料があればその id を、なければ足してその id を返す。
+fn ensure_material(
+    m: &mut Model,
+    name: &str,
+    category: MaterialCategory,
+    fy: Option<f64>,
+) -> MaterialId {
+    if let Some(found) = m.materials.iter().find(|x| x.name == name) {
+        return found.id;
+    }
+    let id = MaterialId(m.materials.len() as u32);
+    m.materials.push(Material {
+        strength_factor: None,
+        concrete_class: Default::default(),
+        id,
+        name: name.into(),
+        category,
+        young: 205000.0,
+        poisson: 0.3,
+        density: 7.85e-9,
+        shear: None,
+        fc: None,
+        fy,
+    });
+    id
+}
+
 /// Raw モード（既定）は従来どおり StbSecRaw を出力し、標準要素は出さない。
 /// 標準モード: 鋼 H 断面が形鋼ライブラリ参照付きの StbSecColumn_S として出力される。
 #[test]
@@ -334,7 +390,7 @@ fn test_standard_mode_steel_column() {
         web_thick: 8.0,
         flange_thick: 13.0,
     };
-    m.sections.push(h.to_section(SectionId(0), "C1".into()));
+    push_section(&mut m, h.to_section(SectionId(0), "C1".into()));
     m.elements.push(member(0, true, 0)); // 柱
 
     let xml = export_stbridge(&m).unwrap();
@@ -363,7 +419,7 @@ fn test_standard_mode_rc_beam() {
         d: 700.0,
         rebar: rebar(),
     };
-    m.sections.push(rc.to_section(SectionId(0), "G1".into()));
+    push_section(&mut m, rc.to_section(SectionId(0), "G1".into()));
     m.elements.push(member(0, false, 0)); // 梁
 
     let xml = export_stbridge(&m).unwrap();
@@ -385,7 +441,7 @@ fn test_standard_mode_shared_section_split() {
         web_thick: 6.5,
         flange_thick: 9.0,
     };
-    m.sections.push(h.to_section(SectionId(0), "S1".into()));
+    push_section(&mut m, h.to_section(SectionId(0), "S1".into()));
     m.elements.push(member(0, true, 0)); // 柱が section 0 を使用
     m.elements.push(member(1, false, 0)); // 梁も section 0 を使用（共有）
 
@@ -428,6 +484,10 @@ fn test_standard_mode_fallback_raw_for_shapeless() {
         panel_thickness: None,
         thickness: None,
         shape: None,
+        material: Some(MaterialId(0)),
+        rebar_material: None,
+        shear_rebar_material: None,
+        steel_material: None,
     });
     m.elements.push(member(0, true, 0));
 
@@ -449,13 +509,13 @@ fn test_standard_import_roundtrip_steel_and_rc() {
         web_thick: 8.0,
         flange_thick: 13.0,
     };
-    m.sections.push(h.to_section(SectionId(0), "C1".into()));
+    push_section(&mut m, h.to_section(SectionId(0), "C1".into()));
     let rc = SectionShape::RcRect {
         b: 400.0,
         d: 700.0,
         rebar: rebar(),
     };
-    m.sections.push(rc.to_section(SectionId(1), "G1".into()));
+    push_section(&mut m, rc.to_section(SectionId(1), "G1".into()));
     m.elements.push(member(0, true, 0)); // 柱 → 鋼断面
     m.elements.push(member(1, false, 1)); // 梁 → RC 断面
 
@@ -491,7 +551,6 @@ fn test_standard_import_roundtrip_steel_and_rc() {
 /// したりは標準では往復しない（[`super`] モジュールドキュメント参照）。
 fn rebar_distinct() -> RcRebar {
     RcRebar {
-        main_grade: None,
         main_x: BarSet {
             count: 4,
             dia: 25.0,
@@ -507,7 +566,6 @@ fn rebar_distinct() -> RcRebar {
             dia: 13.0,
             pitch: 150.0,
             legs: 4,
-            grade: Some("KH785".into()),
         },
     }
 }
@@ -521,7 +579,7 @@ fn test_standard_roundtrip_rc_rect_column_rebar() {
         d: 700.0,
         rebar: rebar_distinct(),
     };
-    m.sections.push(shape.to_section(SectionId(0), "C1".into()));
+    push_section(&mut m, shape.to_section(SectionId(0), "C1".into()));
     m.elements.push(member(0, true, 0)); // 柱
 
     let xml = export_stbridge(&m).unwrap();
@@ -546,7 +604,7 @@ fn test_standard_roundtrip_rc_circle_column_rebar() {
         d: 800.0,
         rebar: rebar_distinct(),
     };
-    m.sections.push(shape.to_section(SectionId(0), "C1".into()));
+    push_section(&mut m, shape.to_section(SectionId(0), "C1".into()));
     m.elements.push(member(0, true, 0)); // 柱
 
     let xml = export_stbridge(&m).unwrap();
@@ -571,7 +629,7 @@ fn test_standard_roundtrip_rc_beam_rebar() {
         d: 700.0,
         rebar: rebar_distinct(),
     };
-    m.sections.push(shape.to_section(SectionId(0), "G1".into()));
+    push_section(&mut m, shape.to_section(SectionId(0), "G1".into()));
     m.elements.push(member(0, false, 0)); // 梁
 
     let xml = export_stbridge(&m).unwrap();
@@ -642,7 +700,7 @@ fn test_standard_import_recovers_split_shared_section() {
         web_thick: 6.5,
         flange_thick: 9.0,
     };
-    m.sections.push(h.to_section(SectionId(0), "S1".into()));
+    push_section(&mut m, h.to_section(SectionId(0), "S1".into()));
     m.elements.push(member(0, true, 0)); // 柱
     m.elements.push(member(1, false, 0)); // 梁（同じ断面を共有）
 
@@ -677,8 +735,7 @@ fn test_standard_roundtrip_shared_rc_rect_rebar() {
         d: 800.0,
         rebar: rebar_distinct(),
     };
-    m.sections
-        .push(shape.to_section(SectionId(0), "RC1".into()));
+    push_section(&mut m, shape.to_section(SectionId(0), "RC1".into()));
     m.elements.push(member(0, true, 0)); // 柱
     m.elements.push(member(1, false, 0)); // 梁（共有）
 
@@ -695,22 +752,24 @@ fn test_standard_roundtrip_shared_rc_rect_rebar() {
     assert_eq!(back.elements[1].section, Some(SectionId(0)));
 }
 
-/// grade=None の配筋も完全一致で往復する（strength_band 属性を出力しない経路）。
+/// せん断補強筋の材料が未割当でも配筋は完全一致で往復する
+/// （strength_band 属性を出力しない経路）。
 #[test]
-fn test_standard_roundtrip_rc_rebar_grade_none() {
+fn test_standard_roundtrip_rc_rebar_without_shear_material() {
     let mut m = frame_nodes();
-    let mut r = rebar_distinct();
-    r.shear.grade = None;
     let shape = SectionShape::RcRect {
         b: 400.0,
         d: 600.0,
-        rebar: r,
+        rebar: rebar_distinct(),
     };
-    m.sections.push(shape.to_section(SectionId(0), "C1".into()));
+    let mut sec = shape.to_section(SectionId(0), "C1".into());
+    sec.shear_rebar_material = None;
+    m.sections.push(sec);
     m.elements.push(member(0, true, 0));
 
     let back = import_stbridge(&export_stbridge(&m).unwrap()).expect("import");
     assert_eq!(back.sections[0].shape, m.sections[0].shape);
+    assert_eq!(back.sections[0].shear_rebar_material, None);
 }
 
 /// 非整数の径・ピッチ・かぶりも桁落ちなく往復する。
@@ -719,7 +778,6 @@ fn test_standard_roundtrip_rc_rebar_non_integer() {
     let mut m = frame_nodes();
     // 主筋径は単一 `D_main`・1 段のみ標準往復する（X/Y で径・段数は変えない）。
     let r = RcRebar {
-        main_grade: None,
         main_x: BarSet {
             count: 6,
             dia: 12.7,
@@ -735,7 +793,6 @@ fn test_standard_roundtrip_rc_rebar_non_integer() {
             dia: 6.35,
             pitch: 133.3,
             legs: 2,
-            grade: Some("SD295".into()),
         },
     };
     let shape = SectionShape::RcRect {
@@ -743,31 +800,51 @@ fn test_standard_roundtrip_rc_rebar_non_integer() {
         d: 650.0,
         rebar: r,
     };
-    m.sections.push(shape.to_section(SectionId(0), "C1".into()));
+    push_section(&mut m, shape.to_section(SectionId(0), "C1".into()));
     m.elements.push(member(0, true, 0));
 
     let back = import_stbridge(&export_stbridge(&m).unwrap()).expect("import");
     assert_eq!(back.sections[0].shape, m.sections[0].shape);
 }
 
-/// 帯筋グレードにタブ等の制御空白が含まれても往復で保存される（esc の制御文字対策）。
+/// 帯筋の材料名にタブ等の制御空白が含まれても往復で保存される（esc の制御文字対策）。
 #[test]
-fn test_standard_roundtrip_rc_rebar_grade_with_control_chars() {
+fn test_standard_roundtrip_shear_rebar_material_with_control_chars() {
     let mut m = frame_nodes();
-    let mut r = rebar_distinct();
-    r.shear.grade = Some("KH\t785\nX".into());
+    let name = "KH\t785\nX";
+    m.materials.push(Material {
+        strength_factor: None,
+        concrete_class: Default::default(),
+        id: MaterialId(m.materials.len() as u32),
+        name: name.into(),
+        category: MaterialCategory::Rebar,
+        young: 205000.0,
+        poisson: 0.3,
+        density: 0.0,
+        shear: None,
+        fc: None,
+        fy: Some(785.0),
+    });
+    let shear_mat = MaterialId(m.materials.len() as u32 - 1);
     let shape = SectionShape::RcRect {
         b: 400.0,
         d: 700.0,
-        rebar: r,
+        rebar: rebar_distinct(),
     };
-    m.sections.push(shape.to_section(SectionId(0), "C1".into()));
+    let mut sec = shape.to_section(SectionId(0), "C1".into());
+    sec.shear_rebar_material = Some(shear_mat);
+    m.sections.push(sec);
     m.elements.push(member(0, true, 0));
 
     let back = import_stbridge(&export_stbridge(&m).unwrap()).expect("import");
+    assert_eq!(back.sections[0].shape, m.sections[0].shape);
+    let back_mat = back.sections[0]
+        .shear_rebar_material
+        .map(|id| back.materials[id.index()].name.as_str());
     assert_eq!(
-        back.sections[0].shape, m.sections[0].shape,
-        "制御空白を含む grade が往復で保存される"
+        back_mat,
+        Some(name),
+        "制御空白を含む材料名が往復で保存される"
     );
 }
 
@@ -780,8 +857,7 @@ fn test_standard_rc_circle_beam_falls_back_to_raw() {
         d: 700.0,
         rebar: rebar_distinct(),
     };
-    m.sections
-        .push(shape.to_section(SectionId(0), "CB1".into()));
+    push_section(&mut m, shape.to_section(SectionId(0), "CB1".into()));
     m.elements.push(member(0, false, 0)); // 梁（水平材）で円形を使う
 
     let xml = export_stbridge(&m).unwrap();
@@ -938,8 +1014,7 @@ fn test_standard_roundtrip_flat_bar() {
         width: 100.0,
         thick: 12.0,
     };
-    m.sections
-        .push(shape.to_section(SectionId(0), "FB1".into()));
+    push_section(&mut m, shape.to_section(SectionId(0), "FB1".into()));
     m.elements.push(member(0, true, 0)); // 柱
 
     let xml = export_stbridge(&m).unwrap();
@@ -957,8 +1032,7 @@ fn test_standard_roundtrip_flat_bar() {
 fn test_standard_roundtrip_round_bar() {
     let mut m = frame_nodes();
     let shape = SectionShape::SteelRoundBar { dia: 32.0 };
-    m.sections
-        .push(shape.to_section(SectionId(0), "RB1".into()));
+    push_section(&mut m, shape.to_section(SectionId(0), "RB1".into()));
     m.elements.push(member(0, true, 0));
 
     let xml = export_stbridge(&m).unwrap();
@@ -1024,8 +1098,7 @@ fn test_standard_roundtrip_lip_channel() {
         lip: 20.0,
         thick: 2.3,
     };
-    m.sections
-        .push(shape.to_section(SectionId(0), "LipC1".into()));
+    push_section(&mut m, shape.to_section(SectionId(0), "LipC1".into()));
     m.elements.push(member(0, true, 0)); // 柱
 
     let xml = export_stbridge(&m).unwrap();
@@ -1093,8 +1166,7 @@ fn test_standard_roundtrip_built_h() {
         lower_thick: 19.0,
         web_thick: 9.0,
     };
-    m.sections
-        .push(shape.to_section(SectionId(0), "BH1".into()));
+    push_section(&mut m, shape.to_section(SectionId(0), "BH1".into()));
     m.elements.push(member(0, true, 0)); // 柱
 
     let xml = export_stbridge(&m).unwrap();
@@ -1156,8 +1228,7 @@ fn test_standard_roundtrip_steel_box_corner_r() {
         thick: 12.0,
         corner_r: 30.0,
     };
-    m.sections
-        .push(shape.to_section(SectionId(0), "BOX1".into()));
+    push_section(&mut m, shape.to_section(SectionId(0), "BOX1".into()));
     m.elements.push(member(0, true, 0)); // 柱
 
     let xml = export_stbridge(&m).unwrap();
@@ -1188,10 +1259,8 @@ fn test_standard_roundtrip_steel_box_distinct_corner_r() {
         thick: 12.0,
         corner_r: 0.0,
     };
-    m.sections
-        .push(with_r.to_section(SectionId(0), "BOX-R30".into()));
-    m.sections
-        .push(without_r.to_section(SectionId(1), "BOX-R0".into()));
+    push_section(&mut m, with_r.to_section(SectionId(0), "BOX-R30".into()));
+    push_section(&mut m, without_r.to_section(SectionId(1), "BOX-R0".into()));
     m.elements.push(member(0, true, 0));
     m.elements.push(member(1, true, 1));
 
@@ -1261,8 +1330,7 @@ fn test_standard_roundtrip_cft_box() {
         width: 400.0,
         thick: 16.0,
     };
-    m.sections
-        .push(shape.to_section(SectionId(0), "CFT1".into()));
+    push_section(&mut m, shape.to_section(SectionId(0), "CFT1".into()));
     m.elements.push(member(0, true, 0)); // 柱
 
     let xml = export_stbridge(&m).unwrap();
@@ -1284,8 +1352,7 @@ fn test_standard_roundtrip_cft_pipe() {
         outer_dia: 500.0,
         thick: 12.0,
     };
-    m.sections
-        .push(shape.to_section(SectionId(0), "CFT2".into()));
+    push_section(&mut m, shape.to_section(SectionId(0), "CFT2".into()));
     m.elements.push(member(0, true, 0));
 
     let xml = export_stbridge(&m).unwrap();
@@ -1311,10 +1378,8 @@ fn test_standard_roundtrip_src_column() {
         steel_width: 200.0,
         steel_web_thick: 8.0,
         steel_flange_thick: 13.0,
-        steel_grade: "SN490B".into(),
     };
-    m.sections
-        .push(shape.to_section(SectionId(0), "SRC1".into()));
+    push_section(&mut m, shape.to_section(SectionId(0), "SRC1".into()));
     m.elements.push(member(0, true, 0)); // 柱
 
     let xml = export_stbridge(&m).unwrap();
@@ -1344,10 +1409,8 @@ fn test_standard_roundtrip_src_beam() {
         steel_width: 200.0,
         steel_web_thick: 9.0,
         steel_flange_thick: 14.0,
-        steel_grade: "SN400B".into(),
     };
-    m.sections
-        .push(shape.to_section(SectionId(0), "SG1".into()));
+    push_section(&mut m, shape.to_section(SectionId(0), "SG1".into()));
     m.elements.push(member(0, false, 0)); // 梁
 
     let xml = export_stbridge(&m).unwrap();
@@ -1366,7 +1429,7 @@ fn test_standard_cft_beam_falls_back_to_raw() {
         width: 300.0,
         thick: 12.0,
     };
-    m.sections.push(shape.to_section(SectionId(0), "CB".into()));
+    push_section(&mut m, shape.to_section(SectionId(0), "CB".into()));
     m.elements.push(member(0, false, 0)); // 梁
 
     let xml = export_stbridge(&m).unwrap();
@@ -1387,7 +1450,7 @@ fn test_standard_import_steel_library_order_independent() {
         web_thick: 7.0,
         flange_thick: 11.0,
     };
-    m.sections.push(h.to_section(SectionId(0), "C1".into()));
+    push_section(&mut m, h.to_section(SectionId(0), "C1".into()));
     m.elements.push(member(0, true, 0));
 
     let xml = export_stbridge(&m).unwrap();
@@ -1436,7 +1499,7 @@ fn test_import_normalizes_noncontiguous_ids() {
     // 参照が正規化後の index に張り替わっている。
     assert_eq!(m.elements[0].nodes.as_slice(), &[NodeId(0), NodeId(1)]);
     assert_eq!(m.elements[0].section, Some(SectionId(0)));
-    assert_eq!(m.elements[0].material, Some(MaterialId(0)));
+    assert_eq!(m.sections[0].material, Some(MaterialId(0)));
     assert!(matches!(
         m.sections[0].shape,
         Some(SectionShape::SteelH { .. })
@@ -1463,14 +1526,13 @@ fn test_roundtrip_brace() {
         outer_dia: 100.0,
         thick: 5.0,
     };
-    m.sections.push(pipe.to_section(SectionId(0), "BR".into()));
+    push_section(&mut m, pipe.to_section(SectionId(0), "BR".into()));
     // 節点0→3 の斜材（引張専用）。
     m.elements.push(ElementData {
         id: ElemId(0),
         kind: ElementKind::Brace { tension_only: true },
         nodes: smallvec![NodeId(0), NodeId(3)],
         section: Some(SectionId(0)),
-        material: Some(MaterialId(0)),
         local_axis: LocalAxis {
             ref_vector: [0.0, 1.0, 0.0],
         },
@@ -1497,7 +1559,7 @@ fn test_roundtrip_brace() {
         );
         assert_eq!(back.elements[0].nodes.as_slice(), &[NodeId(0), NodeId(3)]);
         assert_eq!(back.elements[0].section, Some(SectionId(0)));
-        assert_eq!(back.elements[0].material, Some(MaterialId(0)));
+        assert_eq!(back.sections[0].material, Some(MaterialId(0)));
     }
 }
 
@@ -1512,7 +1574,7 @@ fn test_standard_writes_section_material() {
         web_thick: 6.5,
         flange_thick: 9.0,
     };
-    m.sections.push(h.to_section(SectionId(0), "C".into()));
+    push_section(&mut m, h.to_section(SectionId(0), "C".into()));
     m.elements.push(member(0, true, 0));
     let xml = export_stbridge(&m).unwrap();
     assert!(
@@ -1527,7 +1589,7 @@ fn test_standard_writes_section_material() {
         d: 500.0,
         rebar: rebar(),
     };
-    m2.sections.push(rc.to_section(SectionId(0), "C".into()));
+    push_section(&mut m2, rc.to_section(SectionId(0), "C".into()));
     m2.elements.push(member(0, true, 0));
     let xml2 = export_stbridge(&m2).unwrap();
     assert!(
@@ -1556,9 +1618,9 @@ fn test_import_propagates_steel_grade_material_to_member() {
     let m = import_stbridge(xml).expect("import");
     assert!(m.validate().is_ok(), "{:?}", m.validate());
     assert_eq!(
-        m.elements[0].material,
+        m.sections[0].material,
         Some(MaterialId(0)),
-        "部材が id_material を持たなくても断面の鋼種から材料が伝播する"
+        "断面の鋼種から断面の材料が決まる"
     );
 }
 
@@ -1581,9 +1643,9 @@ fn test_import_propagates_rc_material_to_member() {
     assert!(m.validate().is_ok(), "{:?}", m.validate());
     // 材料 id=5 は正規化で index 0 になる。
     assert_eq!(
-        m.elements[0].material,
+        m.sections[0].material,
         Some(MaterialId(0)),
-        "断面の id_material が部材へ伝播する"
+        "断面の id_material が断面の材料になる"
     );
 }
 
@@ -1597,7 +1659,7 @@ fn test_import_report_clean_for_supported_model() {
         web_thick: 6.5,
         flange_thick: 9.0,
     };
-    m.sections.push(h.to_section(SectionId(0), "C".into()));
+    push_section(&mut m, h.to_section(SectionId(0), "C".into()));
     m.elements.push(member(0, true, 0));
     let xml = export_stbridge(&m).unwrap();
     let (_m, report) = import_stbridge_with_report(&xml).expect("import");
@@ -1890,13 +1952,16 @@ fn test_wall_roundtrip_export_import() {
         panel_thickness: None,
         thickness: Some(250.0),
         shape: None,
+        material: None,
+        rebar_material: None,
+        shear_rebar_material: None,
+        steel_material: None,
     });
     model.elements.push(ElementData {
         id: ElemId(0),
         kind: ElementKind::Wall,
         nodes: smallvec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
         section: Some(SectionId(0)),
-        material: None,
         local_axis: LocalAxis {
             ref_vector: [0.0, 0.0, 1.0],
         },
@@ -2056,10 +2121,10 @@ fn test_import_report_warns_unresolved_src_steel() {
     );
 }
 
-/// 標準 ST-Bridge では材料は断面のグレード名で表すため、材料未設定の部材も
-/// 取り込み時に断面のグレード材料を継承する（名前が材料を一意に定める）。
+/// 標準 ST-Bridge では材料は断面のグレード名で表す。断面が持つ材料は
+/// 書き出し→再取り込みで保存され、その断面を使う全部材に効く。
 #[test]
-fn test_member_inherits_section_grade_material() {
+fn test_section_grade_material_roundtrips() {
     let mut m = frame_nodes(); // 材料0="SN400B"
     let h = SectionShape::SteelH {
         height: 300.0,
@@ -2067,28 +2132,22 @@ fn test_member_inherits_section_grade_material() {
         web_thick: 6.5,
         flange_thick: 9.0,
     };
-    m.sections.push(h.to_section(SectionId(0), "S".into()));
-    let mut col = member(0, true, 0);
-    col.material = Some(MaterialId(0));
-    let mut beam = member(1, false, 0);
-    beam.material = None;
-    m.elements.push(col);
-    m.elements.push(beam);
+    let mut sec = h.to_section(SectionId(0), "S".into());
+    sec.material = Some(MaterialId(0));
+    m.sections.push(sec);
+    m.elements.push(member(0, true, 0));
+    m.elements.push(member(1, false, 0));
 
     let back = import_stbridge(&export_stbridge(&m).unwrap()).expect("import");
-    // 柱・梁とも断面グレード（SN400B）の材料を持つ。
-    assert_eq!(back.elements[0].material, Some(MaterialId(0)), "柱の材料");
-    assert_eq!(
-        back.elements[1].material,
-        Some(MaterialId(0)),
-        "梁は断面グレード材料を継承する"
-    );
+    // 柱・梁が同じ断面を使うため、材料も断面ごとに 1 つで足りる。
+    assert_eq!(back.sections[0].material, Some(MaterialId(0)), "断面の材料");
     assert_eq!(back.materials[0].name, "SN400B");
 }
 
-/// [中] 柱・梁で異なる材料が同一断面を共有する場合、分割後の各断面に正しい材料を書き出す。
+/// [中] 柱と梁で材料が違うならそれは別の断面になる。それぞれの断面へ
+/// 自分の材料のグレード名を書き出す。
 #[test]
-fn test_shared_section_role_material() {
+fn test_column_and_beam_sections_write_own_material() {
     let mut m = frame_nodes();
     m.materials.push(Material {
         strength_factor: None,
@@ -2109,13 +2168,14 @@ fn test_shared_section_role_material() {
         web_thick: 6.5,
         flange_thick: 9.0,
     };
-    m.sections.push(h.to_section(SectionId(0), "S".into()));
-    let mut col = member(0, true, 0);
-    col.material = Some(MaterialId(0));
-    let mut beam = member(1, false, 0);
-    beam.material = Some(MaterialId(1));
-    m.elements.push(col);
-    m.elements.push(beam);
+    let mut col_sec = h.clone().to_section(SectionId(0), "C".into());
+    col_sec.material = Some(MaterialId(0));
+    let mut beam_sec = h.to_section(SectionId(1), "G".into());
+    beam_sec.material = Some(MaterialId(1));
+    m.sections.push(col_sec);
+    m.sections.push(beam_sec);
+    m.elements.push(member(0, true, 0));
+    m.elements.push(member(1, false, 1));
 
     let xml = export_stbridge(&m).unwrap();
     assert!(
@@ -2365,7 +2425,10 @@ fn test_import_stbbeam_as_secondary_member() {
     assert_eq!(sm.kind, SecondaryMemberKind::Joist);
     assert_eq!(sm.nodes, [NodeId(2), NodeId(3)]);
     assert!(sm.section.is_some(), "断面参照が解決されるはず");
-    assert!(sm.material.is_some(), "グレード材料が伝播されるはず");
+    assert!(
+        m.sections[sm.section.unwrap().index()].material.is_some(),
+        "断面にグレード材料が設定されるはず"
+    );
     assert!(
         report.notes.iter().any(|n| n.contains("小梁 1 本")),
         "二次部材の取り込みを通知: {:?}",
@@ -2378,7 +2441,6 @@ fn test_import_stbbeam_as_secondary_member() {
 /// 保存されること（往復）。
 #[test]
 fn test_secondary_members_roundtrip() {
-    use squid_n_core::ids::MaterialId;
     use squid_n_core::model::{SecondaryMember, SecondaryMemberKind};
 
     let mut m = frame_nodes();
@@ -2388,21 +2450,19 @@ fn test_secondary_members_roundtrip() {
         web_thick: 6.5,
         flange_thick: 9.0,
     };
-    m.sections.push(h.to_section(SectionId(0), "G".into()));
+    push_section(&mut m, h.to_section(SectionId(0), "G".into()));
     m.elements.push(member(0, false, 0));
     // 小梁と間柱を 1 本ずつ（節点は既存節点を使う）。
     m.secondary_members.push(SecondaryMember {
         kind: SecondaryMemberKind::Joist,
         nodes: [NodeId(0), NodeId(1)],
         section: Some(SectionId(0)),
-        material: Some(MaterialId(0)),
         name: "B1".into(),
     });
     m.secondary_members.push(SecondaryMember {
         kind: SecondaryMemberKind::Post,
         nodes: [NodeId(0), NodeId(2)],
         section: Some(SectionId(0)),
-        material: Some(MaterialId(0)),
         name: "P1".into(),
     });
     m.validate().expect("元モデルは validate を通る");

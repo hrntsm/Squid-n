@@ -38,7 +38,8 @@ pub fn query_model(model: &Model, kind: &str, filter: Option<&str>) -> Vec<serde
                     "kind": format!("{:?}", e.kind),
                     "nodes": e.nodes.iter().map(|n| n.0).collect::<Vec<_>>(),
                     "section": e.section.map(|s| s.0),
-                    "material": e.material.map(|m| m.0),
+                    // 材料は断面が持つ。参照の実体を追えるよう解決済みの ID を出す。
+                    "material": model.element_material(e).map(|m| m.id.0),
                 });
                 // 付帯情報（ハンチ・継手位置。剛性には影響しない）があれば併記する
                 // （側テーブルがない/空の部材は従来どおりのフィールドのみ）。

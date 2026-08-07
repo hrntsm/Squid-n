@@ -34,10 +34,7 @@ pub(super) fn check_walls(
         let Some(SectionShape::RcWall { thickness, ps }) = sec.shape else {
             continue;
         };
-        let Some(mat) = elem
-            .material
-            .and_then(|mid| model.materials.iter().find(|m| m.id == mid))
-        else {
+        let Some(mat) = model.element_material(elem) else {
             continue;
         };
         let fc = mat.fc.unwrap_or(0.0);
@@ -148,13 +145,14 @@ pub(super) fn check_walls(
                     steel_height,
                     steel_web_thick,
                     steel_flange_thick,
-                    ref steel_grade,
                     ..
                 }) => {
                     let as_web =
                         (steel_web_thick * (steel_height - 2.0 * steel_flange_thick)).max(0.0);
+                    // 内蔵鉄骨の鋼種は断面の材料が持つ。
+                    let steel_name = m.steel_mat.map(|mm| mm.name.as_str()).unwrap_or("");
                     let f = crate::steel::steel_f_value_prefix(
-                        steel_grade,
+                        steel_name,
                         steel_flange_thick.max(steel_web_thick),
                     )
                     .unwrap_or(235.0);
@@ -184,7 +182,11 @@ pub(super) fn check_walls(
                 b,
                 d_eff: d - dt,
                 pw,
-                w_ft: crate::rc::rebar_allowable_shear(&m.mat.name, term == LoadTerm::Long),
+                // せん断補強筋の材質は断面が持つ材料の名前で決まる。
+                w_ft: crate::rc::rebar_allowable_shear(
+                    m.shear_mat.map(|mm| mm.name.as_str()).unwrap_or(""),
+                    term == LoadTerm::Long,
+                ),
                 steel_shear,
             });
             sum_col_depth += d;
@@ -209,7 +211,14 @@ pub(super) fn check_walls(
             l_clear,
             fc,
             ps,
-            w_ft: crate::rc::rebar_allowable_shear(&mat.name, term == LoadTerm::Long),
+            // 壁筋の材質も断面が持つ材料の名前で決まる。
+            w_ft: crate::rc::rebar_allowable_shear(
+                model
+                    .element_shear_rebar_material(elem)
+                    .map(|mm| mm.name.as_str())
+                    .unwrap_or(""),
+                term == LoadTerm::Long,
+            ),
             side_columns,
             // 開口寸法 (l0',h0')（単一開口は実寸法・複数開口は等価開口・
             // 面積のみは擬似等価開口）を 18条のγ式（r=min(γ1,γ2,γ3)）へ

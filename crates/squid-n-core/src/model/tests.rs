@@ -80,7 +80,6 @@ fn test_validate_dangling_elem_node() {
             kind: ElementKind::Beam,
             nodes: smallvec::smallvec![NodeId(0), NodeId(5)],
             section: None,
-            material: None,
             local_axis: LocalAxis {
                 ref_vector: [1.0, 0.0, 0.0],
             },
@@ -368,6 +367,10 @@ fn test_section_new_fields_default() {
         panel_thickness: None,
         thickness: None,
         shape: None,
+        material: Some(MaterialId(0)),
+        rebar_material: None,
+        shear_rebar_material: None,
+        steel_material: None,
     };
     assert_eq!(sec.depth, 0.0);
     assert!(sec.panel_thickness.is_none());
@@ -792,6 +795,10 @@ fn named_section(id: u32, name: &str, floor: Option<&str>) -> Section {
         panel_thickness: None,
         thickness: None,
         shape: None,
+        material: Some(MaterialId(0)),
+        rebar_material: None,
+        shear_rebar_material: None,
+        steel_material: None,
     }
 }
 

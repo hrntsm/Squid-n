@@ -35,7 +35,36 @@ fn concrete_material() -> Material {
     }
 }
 
+/// 主筋・せん断補強筋の材料（`MaterialId(1)`）。RC・SRC 断面へ割り当てる。
+fn rebar_material() -> Material {
+    Material {
+        id: MaterialId(1),
+        name: "SD345".into(),
+        category: MaterialCategory::Rebar,
+        fy: Some(345.0),
+        fc: None,
+        ..steel_material()
+    }
+}
+
+/// 内蔵鉄骨の材料（`MaterialId(2)`）。鋼種名から F 値を引くため名前が要る。
+fn steel_grade_material(grade: &str) -> Material {
+    Material {
+        id: MaterialId(2),
+        name: grade.into(),
+        ..steel_material()
+    }
+}
+
 fn rc_section() -> Section {
+    let mut sec = rc_section_shape();
+    // 材料は断面が持つ。主筋・せん断補強筋は `MaterialId(1)`。
+    sec.rebar_material = Some(MaterialId(1));
+    sec.shear_rebar_material = Some(MaterialId(1));
+    sec
+}
+
+fn rc_section_shape() -> Section {
     SectionShape::RcRect {
         b: 400.0,
         d: 600.0,
@@ -55,25 +84,34 @@ fn rc_section() -> Section {
                 dia: 10.0,
                 pitch: 200.0,
                 legs: 2,
-                grade: Some("SD295A".into()),
             },
-            main_grade: Some("SD345".into()),
         },
     }
     .to_section(SectionId(0), "G1".into())
 }
 
-/// `rc_section` の主筋材質を取り除いた断面（材質未設定の入力不備を模擬）。
-fn rc_section_without_main_grade() -> Section {
+/// `rc_section` の主筋材料を取り除いた断面（未割当の入力不備を模擬）。
+fn rc_section_without_rebar_material() -> Section {
     let mut sec = rc_section();
-    if let Some(SectionShape::RcRect { rebar, .. }) = sec.shape.as_mut() {
-        rebar.main_grade = None;
-    }
+    sec.rebar_material = None;
     sec
 }
 
 /// 1 部材（2 節点の梁）だけのモデル。断面形状・材料は引数で差し替える。
-fn beam_model(section: Section, material: Material) -> Model {
+///
+/// 材料は断面が持つため、`material` は断面の主材料として割り当てる。主筋
+/// （`MaterialId(1)`）・内蔵鉄骨（`MaterialId(2)`）はモデルへ常に登録しておき、
+/// 断面側の割り当ての有無で不備を作り分ける。
+fn beam_model(mut section: Section, material: Material) -> Model {
+    section.material = Some(MaterialId(0));
+    beam_model_inner(
+        section,
+        vec![material, rebar_material(), steel_grade_material("SN400B")],
+    )
+}
+
+/// 材料一覧まで指定する版。
+fn beam_model_inner(section: Section, materials: Vec<Material>) -> Model {
     let mk = |id: u32, c: [f64; 3]| Node {
         id: NodeId(id),
         coord: c,
@@ -89,7 +127,6 @@ fn beam_model(section: Section, material: Material) -> Model {
             kind: ElementKind::Beam,
             nodes: smallvec::smallvec![NodeId(0), NodeId(1)],
             section: Some(SectionId(0)),
-            material: Some(MaterialId(0)),
             local_axis: LocalAxis {
                 ref_vector: [0.0, 0.0, 1.0],
             },
@@ -100,7 +137,7 @@ fn beam_model(section: Section, material: Material) -> Model {
             spring: None,
         }],
         sections: vec![section],
-        materials: vec![material],
+        materials,
         ..Default::default()
     }
 }
@@ -122,23 +159,32 @@ fn test_no_issue_for_rc_member_with_fc() {
     assert!(nonlinear_input_issues(&model).is_empty());
 }
 
-/// 主筋の材質が未設定でも、部材材料に fy があれば解決できるため不備ではない。
-#[test]
-fn test_no_issue_when_main_grade_unset_but_material_has_fy() {
-    let mut mat = concrete_material();
-    mat.fy = Some(345.0);
-    let model = beam_model(rc_section_without_main_grade(), mat);
-    assert!(nonlinear_input_issues(&model).is_empty());
-}
-
-/// 主筋の材質も材料の fy もない RC 部材はエラーとする。
+/// 主筋の材料が未割当の RC 部材はエラーとする。
 /// 既定 345 N/mm² で埋めると SD295 の部材で曲げ降伏耐力を過大評価する（危険側）。
 #[test]
-fn test_issue_when_main_rebar_grade_unset() {
-    let model = beam_model(rc_section_without_main_grade(), concrete_material());
+fn test_issue_when_rebar_material_unset() {
+    let model = beam_model(rc_section_without_rebar_material(), concrete_material());
     let issues = nonlinear_input_issues(&model);
     assert_eq!(issues.len(), 1, "{:?}", issues);
-    assert!(issues[0].contains("主筋の材質"), "{}", issues[0]);
+    assert!(issues[0].contains("主筋の材料"), "{}", issues[0]);
+}
+
+/// 主筋の材料はあっても fy が無ければ σy を決められないためエラーとする
+/// （材料名 "SD345" からは推定しない）。
+#[test]
+fn test_issue_when_rebar_material_has_no_fy() {
+    let mut mats = vec![
+        concrete_material(),
+        rebar_material(),
+        steel_grade_material("SN400B"),
+    ];
+    mats[1].fy = None;
+    let mut sec = rc_section();
+    sec.material = Some(MaterialId(0));
+    let model = beam_model_inner(sec, mats);
+    let issues = nonlinear_input_issues(&model);
+    assert_eq!(issues.len(), 1, "{:?}", issues);
+    assert!(issues[0].contains("主筋の材料"), "{}", issues[0]);
 }
 
 /// RC 断面なのに Fc が未設定の部材はエラーとする。
@@ -244,8 +290,17 @@ fn test_issue_when_steel_shape_has_no_fy() {
     assert!(ensure_nonlinear_input(&model).is_err());
 }
 
-/// SRC 断面（内蔵鉄骨あり）を指定の鋼種で作るヘルパ。
-fn src_section(steel_grade: &str) -> Section {
+/// SRC 断面（内蔵鉄骨あり）。内蔵鉄骨の材料は `MaterialId(2)` を割り当てる。
+fn src_section() -> Section {
+    let mut sec = src_section_bare();
+    sec.rebar_material = Some(MaterialId(1));
+    sec.shear_rebar_material = Some(MaterialId(1));
+    sec.steel_material = Some(MaterialId(2));
+    sec
+}
+
+/// 内蔵鉄骨・鉄筋の材料を割り当てていない SRC 断面。
+fn src_section_bare() -> Section {
     let rebar = match rc_section().shape {
         Some(SectionShape::RcRect { rebar, .. }) => rebar,
         _ => unreachable!(),
@@ -258,35 +313,36 @@ fn src_section(steel_grade: &str) -> Section {
         steel_width: 150.0,
         steel_web_thick: 6.5,
         steel_flange_thick: 9.0,
-        steel_grade: steel_grade.into(),
     }
     .to_section(SectionId(0), "SRC".into())
 }
 
-/// SRC 断面は内蔵鉄骨の鋼種から降伏強度を解決できれば、材料 fy 未設定でも不備なし。
+/// SRC 断面は内蔵鉄骨の材料から降伏強度を解決できれば、主材料 fy 未設定でも不備なし。
 #[test]
-fn test_no_issue_for_src_section_with_steel_grade() {
-    let model = beam_model(src_section("SN400B"), concrete_material());
+fn test_no_issue_for_src_section_with_steel_material() {
+    let model = beam_model(src_section(), concrete_material());
     assert!(nonlinear_input_issues(&model).is_empty());
 }
 
-/// SRC 断面で内蔵鉄骨の鋼種も材料 fy も解決できない部材はエラーとする。
-/// Fc・主筋材質が揃っていても、内蔵鉄骨のファイバに降伏強度が要る。
+/// SRC 断面で内蔵鉄骨の材料も主材料 fy も解決できない部材はエラーとする。
+/// Fc・主筋の材料が揃っていても、内蔵鉄骨のファイバに降伏強度が要る。
 #[test]
 fn test_issue_when_src_section_has_no_steel_yield() {
-    let model = beam_model(src_section(""), concrete_material());
+    let mut sec = src_section();
+    sec.steel_material = None;
+    let model = beam_model(sec, concrete_material());
     let issues = nonlinear_input_issues(&model);
     assert_eq!(issues.len(), 1, "{:?}", issues);
     assert!(issues[0].contains("降伏強度"), "{}", issues[0]);
 }
 
-/// 材料が割り当てられていない部材はエラーとする。
+/// 断面に材料が割り当てられていない部材はエラーとする。
 #[test]
 fn test_issue_when_member_has_no_material() {
     let mut sec = rc_section();
     sec.shape = None;
     let mut model = beam_model(sec, steel_material());
-    model.elements[0].material = None;
+    model.sections[0].material = None;
     let issues = nonlinear_input_issues(&model);
     assert_eq!(issues.len(), 1, "{:?}", issues);
     assert!(
@@ -318,8 +374,8 @@ fn test_issue_when_rc_section_has_steel_material() {
     assert!(issues[0].contains("区分が鋼材"), "{}", issues[0]);
 }
 
-/// 線材の材料に鉄筋を割り当てるのは入力の誤りとする。
-/// RC 断面の配筋は断面側にグレード名として持つ。
+/// 線材の主材料に鉄筋を割り当てるのは入力の誤りとする。
+/// RC 断面の主筋・せん断補強筋は断面の専用の欄で持つ。
 #[test]
 fn test_issue_when_member_material_is_rebar() {
     let mut mat = concrete_material();

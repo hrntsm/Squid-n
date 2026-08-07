@@ -59,6 +59,10 @@ fn steel_section(id: u32, shape: SectionShape, depth: f64, width: f64, area: f64
         panel_thickness: None,
         thickness: None,
         shape: Some(shape),
+        material: Some(MaterialId(0)),
+        rebar_material: None,
+        shear_rebar_material: None,
+        steel_material: None,
     }
 }
 
@@ -68,7 +72,6 @@ fn member(id: u32, n0: u32, n1: u32, sec: u32, rigid: RigidZone) -> ElementData 
         kind: ElementKind::Beam,
         nodes: smallvec::smallvec![NodeId(n0), NodeId(n1)],
         section: Some(SectionId(sec)),
-        material: Some(MaterialId(0)),
         local_axis: LocalAxis {
             ref_vector: [0.0, 1.0, 0.0],
         },

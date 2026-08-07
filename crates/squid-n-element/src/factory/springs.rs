@@ -54,9 +54,7 @@ pub(super) fn build_fiber(
 fn flexural_yield_moment(data: &ElementData, model: &Model, basis: StrengthBasis) -> f64 {
     use squid_n_core::section_shape::SectionShape;
     let sec = data.section.and_then(|sid| model.sections.get(sid.index()));
-    let mat = data
-        .material
-        .and_then(|mid| model.materials.get(mid.index()));
+    let mat = model.element_material(data);
     let depth = sec.map(|s| s.depth.max(s.width)).unwrap_or(100.0);
     let iz = sec.map(|s| s.iz.max(s.iy)).unwrap_or(1.0e6);
     let ze = if depth > 0.0 { iz / (depth / 2.0) } else { 0.0 };
@@ -66,12 +64,11 @@ fn flexural_yield_moment(data: &ElementData, model: &Model, basis: StrengthBasis
             // RC 主筋: σy は断面（配筋）の主筋材質 → 部材材料の fy の順で解決する。
             // 保有水平耐力計算では σy に主筋の材料強度係数を乗じる
             // （せん断補強筋は対象外。本分岐は曲げ主筋のみを扱う）。
-            let sy = squid_n_core::material_grade::rebar_yield_strength(
-                rebar.main_grade.as_deref(),
-                mat,
-            )
-            .unwrap_or(345.0)
-                * basis.rebar_factor(mat);
+            let rebar_mat = model.element_rebar_material(data);
+            let sy = squid_n_core::material_grade::rebar_yield_strength(rebar_mat)
+                .or_else(|| mat.and_then(|m| m.fy))
+                .unwrap_or(345.0)
+                * basis.rebar_factor(rebar_mat);
             // Fc 未設定は [`super::ensure_nonlinear_input`] が解析前に停止するため、
             // 非線形解析ではこのフォールバック（0）に到達しない。
             let fc = mat.and_then(|m| m.fc).unwrap_or(0.0);
@@ -117,9 +114,7 @@ pub(super) fn yield_moment_and_axial(
     basis: StrengthBasis,
 ) -> (f64, f64) {
     let sec = data.section.and_then(|sid| model.sections.get(sid.index()));
-    let mat = data
-        .material
-        .and_then(|mid| model.materials.get(mid.index()));
+    let mat = model.element_material(data);
     // 軸許容耐力の σy も鋼材文脈（集中ばね梁は鋼材の N-M 相関を想定）。
     let fy_sigma = mat.and_then(|m| m.fy).unwrap_or(235.0) * basis.steel_factor(mat);
     let area = sec.map(|s| s.area).unwrap_or(1.0e4);
@@ -146,9 +141,7 @@ fn flexible_length(data: &ElementData, model: &Model) -> f64 {
 /// k_rot は可とう長 L'（= L − 剛域長。§6.2.1）基準で評価する。
 fn rotational_spring_params(data: &ElementData, model: &Model, basis: StrengthBasis) -> (f64, f64) {
     let sec = data.section.and_then(|sid| model.sections.get(sid.index()));
-    let mat = data
-        .material
-        .and_then(|mid| model.materials.get(mid.index()));
+    let mat = model.element_material(data);
     let e = mat.map(|m| m.young).unwrap_or(205000.0);
     let iz = sec.map(|s| s.iz.max(s.iy)).unwrap_or(1.0e6);
     // 材端バネの降伏モーメントは規準の曲げ終局強度（RC=0.9·at·σy·d、鉄骨=Zp·σy）を用いる。
@@ -278,9 +271,7 @@ pub fn resolve_wall_shear_hysteresis(
 /// 近似する。
 fn crack_moment(data: &ElementData, model: &Model, my: f64) -> f64 {
     let sec = data.section.and_then(|sid| model.sections.get(sid.index()));
-    let mat = data
-        .material
-        .and_then(|mid| model.materials.get(mid.index()));
+    let mat = model.element_material(data);
     let depth = sec.map(|s| s.depth.max(s.width)).unwrap_or(100.0);
     let iz = sec.map(|s| s.iz.max(s.iy)).unwrap_or(1.0e6);
     let ze = if depth > 0.0 { iz / (depth / 2.0) } else { 0.0 };
@@ -321,11 +312,7 @@ pub(super) fn flexural_alpha_y(data: &ElementData, model: &Model) -> f64 {
     let at = squid_n_core::section_shape::bar_set_area(&rebar.main_x) / 2.0;
     let pt = at / (b * d);
     let d_eff = (d - rebar.cover - rebar.main_x.dia / 2.0).max(0.0);
-    let ec = data
-        .material
-        .and_then(|mid| model.materials.get(mid.index()))
-        .map(|m| m.young)
-        .unwrap_or(0.0);
+    let ec = model.element_material(data).map(|m| m.young).unwrap_or(0.0);
     let n = if ec > 0.0 {
         squid_n_core::section_shape::E_STEEL / ec
     } else {

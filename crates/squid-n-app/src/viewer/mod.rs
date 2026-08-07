@@ -1404,7 +1404,6 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
                                         kind: squid_n_core::model::ElementKind::Beam,
                                         nodes: [first, node_id].into_iter().collect(),
                                         section: None,
-                                        material: None,
                                         local_axis: squid_n_core::model::LocalAxis {
                                             ref_vector: [0.0, 0.0, 1.0],
                                         },
@@ -1451,7 +1450,6 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
                                 kind: squid_n_core::model::ElementKind::Wall,
                                 nodes: ordered.into_iter().collect(),
                                 section: None,
-                                material: None,
                                 local_axis: squid_n_core::model::LocalAxis {
                                     ref_vector: [0.0, 0.0, 1.0],
                                 },
@@ -3715,7 +3713,6 @@ mod tests {
             kind: SecondaryMemberKind::Joist,
             nodes: [NodeId(i), NodeId(j)],
             section: None,
-            material: None,
             name: String::new(),
         }
     }
@@ -3727,7 +3724,6 @@ mod tests {
             kind: ElementKind::Beam,
             nodes: [NodeId(i), NodeId(j)].into_iter().collect(),
             section: None,
-            material: None,
             local_axis: LocalAxis {
                 ref_vector: [0.0, 0.0, 1.0],
             },

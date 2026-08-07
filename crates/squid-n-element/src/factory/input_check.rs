@@ -139,10 +139,7 @@ fn member_strength_issue(data: &ElementData, model: &Model) -> Option<String> {
         ));
     };
     let sec = Some(sec);
-    let Some(mat) = data
-        .material
-        .and_then(|mid| model.materials.get(mid.index()))
-    else {
+    let Some(mat) = model.element_material(data) else {
         return Some(format!(
             "部材 ID {} に材料が設定されていません。\
              材料タブで材料を割り当ててください。\
@@ -180,20 +177,18 @@ fn member_strength_issue(data: &ElementData, model: &Model) -> Option<String> {
         // 未設定のまま既定 345 N/mm²（SD345 相当）で埋めると、SD295 の部材で曲げ降伏
         // 耐力を約 17% 過大評価する（危険側）。
         let rebar = sec.and_then(|s| s.shape.as_ref()).and_then(|s| s.rebar());
-        if let Some(rebar) = rebar {
-            if squid_n_core::material_grade::rebar_yield_strength(
-                rebar.main_grade.as_deref(),
-                Some(mat),
+        if rebar.is_some()
+            && squid_n_core::material_grade::rebar_yield_strength(
+                model.element_rebar_material(data),
             )
             .is_none()
-            {
-                return Some(format!(
-                    "部材 ID {} の断面に主筋の材質が設定されていません。\
-                     断面タブで主筋の材質（SD295A・SD345 等）を設定してください。\
-                     非線形解析では主筋の降伏強度 σy から曲げ降伏耐力を算定します。",
-                    data.id.0
-                ));
-            }
+        {
+            return Some(format!(
+                "部材 ID {} の断面に主筋の材料が割り当てられていません。\
+                 断面タブで主筋の材料（SD295A・SD345 等）を割り当ててください。\
+                 非線形解析では主筋の降伏強度 σy から曲げ降伏耐力を算定します。",
+                data.id.0
+            ));
         }
         // SRC・CFT は鋼材領域（内蔵鉄骨・管壁）のファイバに降伏強度が要る。
         // SRC は断面の内蔵鉄骨鋼種 → 部材材料 fy の順で解決する
@@ -202,11 +197,16 @@ fn member_strength_issue(data: &ElementData, model: &Model) -> Option<String> {
         // 耐力を過大評価する（危険側）。
         let fiber_shape = sec.and_then(|s| s.shape.as_ref());
         if fiber_shape.is_some_and(shape_has_steel_fiber_region)
-            && !crate::fiber::resolve_steel_fiber_fy(fiber_shape, mat.fy).is_some_and(|fy| fy > 0.0)
+            && !crate::fiber::resolve_steel_fiber_fy(
+                fiber_shape,
+                model.element_steel_material(data),
+                mat.fy,
+            )
+            .is_some_and(|fy| fy > 0.0)
         {
             return Some(format!(
                 "部材 ID {} の断面は鋼材領域（内蔵鉄骨・鋼管）を含みますが、鋼材の降伏強度を\
-                 解決できません。断面の鋼種（SRC の内蔵鉄骨）または材料「{}」の fy を\
+                 解決できません。断面へ内蔵鉄骨の材料を割り当てるか、材料「{}」の fy を\
                  設定してください。ファイバー断面は鋼材の降伏進展を追うため必須です。",
                 data.id.0, mat.name
             ));

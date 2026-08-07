@@ -234,6 +234,13 @@ pub fn build_slab_grillage(model: &Model, slab: &Slab, w: f64) -> Option<SlabGri
         let mut s = model.sections[orig.index()].clone();
         let idx = sub_sections.len();
         s.id = SectionId(idx as u32);
+        // 格子解析用のサブモデルは材料を 1 つしか持たないため、断面の材料参照は
+        // すべてその既定鋼材へ差し替える（剛性のみを見る解析であり、
+        // 鉄筋・内蔵鉄骨の材料は使わない）。
+        s.material = Some(MaterialId(0));
+        s.rebar_material = None;
+        s.shear_rebar_material = None;
+        s.steel_material = None;
         sub_sections.push(s);
         sec_map.push((orig, idx));
         idx
@@ -274,7 +281,6 @@ pub fn build_slab_grillage(model: &Model, slab: &Slab, w: f64) -> Option<SlabGri
                 kind: ElementKind::Beam,
                 nodes: [NodeId(n0 as u32), NodeId(n1 as u32)].into_iter().collect(),
                 section: Some(SectionId(sec_idx as u32)),
-                material: Some(MaterialId(0)),
                 local_axis: LocalAxis {
                     ref_vector: [0.0, 0.0, 1.0],
                 },
@@ -620,6 +626,11 @@ mod tests {
             panel_thickness: None,
             thickness: None,
             shape: None,
+            // 材料は断面が持つ。
+            material: Some(MaterialId(0)),
+            rebar_material: None,
+            shear_rebar_material: None,
+            steel_material: None,
         }
     }
     fn steel(id: u32) -> Material {
@@ -667,7 +678,6 @@ mod tests {
                 kind: ElementKind::Beam,
                 nodes: [NodeId(0), NodeId(1)].into_iter().collect(),
                 section: Some(SectionId(0)),
-                material: Some(MaterialId(0)),
                 local_axis: LocalAxis {
                     ref_vector: [0.0, 0.0, 1.0],
                 },

@@ -245,7 +245,6 @@ fn test_delete_node_middle_renumbers_and_roundtrips() {
         kind: ElementKind::Beam,
         nodes: smallvec![NodeId(0), NodeId(2)],
         section: None,
-        material: None,
         local_axis: LocalAxis {
             ref_vector: [1.0, 0.0, 0.0],
         },
@@ -305,7 +304,6 @@ fn test_delete_node_in_use_is_noop() {
         kind: ElementKind::Beam,
         nodes: smallvec![NodeId(0), NodeId(1)],
         section: None,
-        material: None,
         local_axis: LocalAxis {
             ref_vector: [1.0, 0.0, 0.0],
         },
@@ -384,7 +382,6 @@ fn test_delete_member_undo_preserves_member_load_order() {
         kind: ElementKind::Beam,
         nodes: smallvec![NodeId(0), NodeId(1)],
         section: None,
-        material: None,
         local_axis: LocalAxis {
             ref_vector: [1.0, 0.0, 0.0],
         },
@@ -451,7 +448,6 @@ fn test_add_delete_member_roundtrip() {
         kind: ElementKind::Beam,
         nodes: smallvec![NodeId(0), NodeId(1)],
         section: None,
-        material: None,
         local_axis: LocalAxis {
             ref_vector: [1.0, 0.0, 0.0],
         },
@@ -567,7 +563,6 @@ fn test_duplicate_section_for_member_roundtrip() {
         kind: ElementKind::Beam,
         nodes: smallvec![NodeId(0), NodeId(1)],
         section: Some(SectionId(0)),
-        material: None,
         local_axis: LocalAxis {
             ref_vector: [1.0, 0.0, 0.0],
         },
@@ -665,7 +660,6 @@ fn test_duplicate_section_no_section_noop() {
         kind: ElementKind::Beam,
         nodes: smallvec![NodeId(0), NodeId(1)],
         section: None,
-        material: None,
         local_axis: LocalAxis {
             ref_vector: [1.0, 0.0, 0.0],
         },
@@ -701,7 +695,6 @@ fn two_member_model() -> Model {
             kind: ElementKind::Beam,
             nodes: smallvec![NodeId(i), NodeId(i + 1)],
             section: None,
-            material: None,
             local_axis: LocalAxis {
                 ref_vector: [1.0, 0.0, 0.0],
             },
@@ -713,6 +706,30 @@ fn two_member_model() -> Model {
         });
     }
     model
+}
+
+/// 形状を持たない最小の断面（材料参照の検証用）。
+fn bare_section(id: SectionId, material: Option<MaterialId>) -> squid_n_core::model::Section {
+    squid_n_core::model::Section {
+        id,
+        name: format!("S{}", id.0),
+        area: 100.0,
+        iy: 1.0,
+        iz: 1.0,
+        j: 1.0,
+        depth: 10.0,
+        width: 10.0,
+        as_y: 80.0,
+        as_z: 80.0,
+        floor: None,
+        panel_thickness: None,
+        thickness: None,
+        shape: None,
+        material,
+        rebar_material: None,
+        shear_rebar_material: None,
+        steel_material: None,
+    }
 }
 
 #[test]
@@ -777,6 +794,11 @@ fn test_delete_section_in_use_is_noop_and_renumbers() {
             panel_thickness: None,
             thickness: None,
             shape: None,
+            // 断面削除の検証だけを行うため、材料は割り当てない。
+            material: None,
+            rebar_material: None,
+            shear_rebar_material: None,
+            steel_material: None,
         });
     }
     // 部材 0 に断面 1 を割当（断面 0 は未使用）
@@ -831,6 +853,11 @@ fn test_delete_section_referenced_by_joist() {
             panel_thickness: None,
             thickness: None,
             shape: None,
+            // 断面削除の検証だけを行うため、材料は割り当てない。
+            material: None,
+            rebar_material: None,
+            shear_rebar_material: None,
+            steel_material: None,
         });
     }
     // 小梁が断面 1 のみを参照するスラブ（要素は断面を参照しない）。
@@ -913,7 +940,10 @@ fn test_delete_material_in_use_is_noop() {
             strength_factor: None,
         }),
     );
-    model.elements[0].material = Some(MaterialId(0));
+    // 材料は断面が持つ。参照元となる断面を 1 つ足して割り当てる。
+    model
+        .sections
+        .push(bare_section(SectionId(0), Some(MaterialId(0))));
     stack.run(&mut model, Box::new(DeleteMaterial { id: MaterialId(0) }));
     assert_eq!(model.materials.len(), 1, "使用中の材料は削除できない");
 }
@@ -937,12 +967,14 @@ fn test_delete_material_middle_renumbers() {
             }),
         );
     }
-    model.elements[0].material = Some(MaterialId(1));
+    model
+        .sections
+        .push(bare_section(SectionId(0), Some(MaterialId(1))));
     let before = model.clone();
     stack.run(&mut model, Box::new(DeleteMaterial { id: MaterialId(0) }));
     assert_eq!(model.materials.len(), 1);
     assert_eq!(model.materials[0].name, "B");
-    assert_eq!(model.elements[0].material, Some(MaterialId(0)));
+    assert_eq!(model.sections[0].material, Some(MaterialId(0)));
     assert!(model.validate().is_ok());
     stack.undo(&mut model);
     assert!(model.eq_ignoring_dofmap(&before));
@@ -1482,7 +1514,6 @@ fn test_delete_leftover_generated_master_roundtrip() {
         kind: ElementKind::Beam,
         nodes: smallvec![NodeId(0), NodeId(2)],
         section: None,
-        material: None,
         local_axis: LocalAxis {
             ref_vector: [1.0, 0.0, 0.0],
         },
@@ -2089,7 +2120,6 @@ fn test_set_member_hysteresis_roundtrip() {
         kind: ElementKind::Beam,
         nodes: smallvec![NodeId(0), NodeId(1)],
         section: None,
-        material: None,
         local_axis: LocalAxis {
             ref_vector: [0.0, 0.0, 1.0],
         },
@@ -2208,7 +2238,6 @@ fn test_add_damper_creates_element_and_attr_roundtrip() {
         kind: ElementKind::Damper,
         nodes: smallvec![NodeId(0), NodeId(2)],
         section: None,
-        material: None,
         local_axis: LocalAxis {
             ref_vector: [0.0, 0.0, 1.0],
         },
@@ -2300,7 +2329,6 @@ fn test_add_isolator_creates_element_and_attr_roundtrip() {
         kind: ElementKind::Isolator,
         nodes: smallvec![NodeId(0), NodeId(2)],
         section: None,
-        material: None,
         local_axis: LocalAxis {
             ref_vector: [1.0, 0.0, 0.0],
         },
@@ -2358,7 +2386,6 @@ fn test_add_isolator_id_mismatch_is_noop() {
         kind: ElementKind::Isolator,
         nodes: smallvec![NodeId(0), NodeId(2)],
         section: None,
-        material: None,
         local_axis: LocalAxis {
             ref_vector: [1.0, 0.0, 0.0],
         },
@@ -2535,7 +2562,6 @@ fn test_remove_support_isolator_noop_when_not_support_isolator() {
         kind: ElementKind::Isolator,
         nodes: smallvec![NodeId(0), NodeId(1)],
         section: None,
-        material: None,
         local_axis: LocalAxis {
             ref_vector: [1.0, 0.0, 0.0],
         },
@@ -3005,7 +3031,6 @@ fn test_composite_delete_nodes_descending_roundtrip() {
         kind: ElementKind::Beam,
         nodes: smallvec![NodeId(0), NodeId(4)],
         section: None,
-        material: None,
         local_axis: LocalAxis {
             ref_vector: [1.0, 0.0, 0.0],
         },
@@ -3056,7 +3081,6 @@ fn sample_secondary(n0: u32, n1: u32) -> squid_n_core::model::SecondaryMember {
         kind: squid_n_core::model::SecondaryMemberKind::Joist,
         nodes: [NodeId(n0), NodeId(n1)],
         section: None,
-        material: None,
         name: "小梁".into(),
     }
 }
@@ -3143,6 +3167,11 @@ fn test_delete_section_material_shift_and_guard_secondary_refs() {
             panel_thickness: None,
             thickness: None,
             shape: None,
+            // 材料は断面が持つ。断面 i に材料 i を割り当てる。
+            material: Some(MaterialId(i)),
+            rebar_material: None,
+            shear_rebar_material: None,
+            steel_material: None,
         });
         model.materials.push(Material {
             id: MaterialId(i),
@@ -3160,18 +3189,18 @@ fn test_delete_section_material_shift_and_guard_secondary_refs() {
     }
     let mut sm = sample_secondary(0, 1);
     sm.section = Some(SectionId(1));
-    sm.material = Some(MaterialId(1));
     model.secondary_members.push(sm);
     let mut stack = UndoStack::new();
 
-    // 未使用の断面 0・材料 0 を削除 → 二次部材の参照は 1→0 へ繰り上がる。
+    // 未使用の断面 0・材料 0 を削除 → 二次部材の断面参照と、その断面が持つ
+    // 材料参照がどちらも 1→0 へ繰り上がる。
     stack.run(&mut model, Box::new(DeleteSection { id: SectionId(0) }));
     stack.run(&mut model, Box::new(DeleteMaterial { id: MaterialId(0) }));
     assert_eq!(model.secondary_members[0].section, Some(SectionId(0)));
-    assert_eq!(model.secondary_members[0].material, Some(MaterialId(0)));
+    assert_eq!(model.sections[0].material, Some(MaterialId(0)));
     assert!(model.validate().is_ok());
 
-    // 二次部材が参照中の断面・材料は削除できない（Noop）。
+    // 二次部材が参照中の断面と、その断面が参照中の材料は削除できない（Noop）。
     stack.run(&mut model, Box::new(DeleteSection { id: SectionId(0) }));
     stack.run(&mut model, Box::new(DeleteMaterial { id: MaterialId(0) }));
     assert_eq!(
@@ -3179,11 +3208,7 @@ fn test_delete_section_material_shift_and_guard_secondary_refs() {
         1,
         "二次部材が参照する断面は削除できない"
     );
-    assert_eq!(
-        model.materials.len(),
-        1,
-        "二次部材が参照する材料は削除できない"
-    );
+    assert_eq!(model.materials.len(), 1, "断面が参照する材料は削除できない");
 }
 
 /// 部材削除が一本部材指定（beam_groups）から当該部材を連動削除し、

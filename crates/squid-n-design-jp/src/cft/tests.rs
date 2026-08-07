@@ -337,6 +337,10 @@ fn test_cft_shape_mismatch_skip() {
         panel_thickness: None,
         thickness: None,
         shape: None,
+        material: Some(MaterialId(0)),
+        rebar_material: None,
+        shear_rebar_material: None,
+        steel_material: None,
     };
     let mat = make_material(24.0, "SN400B");
     let ctx = ctx_column(LoadTerm::Long);

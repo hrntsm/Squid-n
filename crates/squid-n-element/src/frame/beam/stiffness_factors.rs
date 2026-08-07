@@ -284,8 +284,7 @@ pub fn stiffness_breakdown(
     }
     let (Some(sec), Some(mat)) = (
         data.section.and_then(|sid| model.sections.get(sid.index())),
-        data.material
-            .and_then(|mid| model.materials.get(mid.index())),
+        model.element_material(data),
     ) else {
         return StiffnessBreakdown::default();
     };
@@ -317,9 +316,7 @@ pub fn composite_props_of(
     let sec = data
         .section
         .and_then(|sid| model.sections.get(sid.index()))?;
-    let mat = data
-        .material
-        .and_then(|mid| model.materials.get(mid.index()))?;
+    let mat = model.element_material(data)?;
     composite_props_with(sec.shape.as_ref()?, mat)
 }
 

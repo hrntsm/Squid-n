@@ -489,7 +489,6 @@ mod tests {
             kind: ElementKind::Isolator,
             nodes: [NodeId(0), NodeId(1)].into_iter().collect(),
             section: None,
-            material: None,
             local_axis: LocalAxis {
                 ref_vector: [1.0, 0.0, 0.0],
             },

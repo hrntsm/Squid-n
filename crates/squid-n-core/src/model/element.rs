@@ -49,15 +49,19 @@ pub enum ElementKind {
 }
 
 impl ElementKind {
-    /// 剛性の算定に断面（`ElementData::section`）と材料（`ElementData::material`）の
-    /// 割当が必須な要素種別か。断面・材料の未割当を検出する検査は、必ず本判定で
-    /// 対象を絞ること。
+    /// 剛性の算定に断面（`ElementData::section`）の割当が必須な要素種別か。
+    /// 断面・材料の未割当を検出する検査は、必ず本判定で対象を絞ること。
+    ///
+    /// **材料は断面が持つ**（`Section::material`）ため、部材に要るのは断面の割当
+    /// だけである。断面が材料を持たない場合も剛性を作れないので、検査は「断面が
+    /// 割り当てられているか」と「その断面が材料を持つか」の 2 段になる
+    /// （`Model::element_material`）。
     ///
     /// 必須なのは線材（梁・ファイバー梁・マルチスプリング梁・ブレース）と
     /// 面材（シェル・壁）で、断面諸元と材料定数から剛性を作るため、いずれかが
     /// 未割当だとゼロ剛性となり解析が成立しない。
     ///
-    /// 一方、次の要素は断面・材料を持たないのが正常な状態であり、未割当として
+    /// 一方、次の要素は断面を持たないのが正常な状態であり、未割当として
     /// 扱ってはならない。
     /// - 仕口パネル（`PanelZone`）: 剛性は取り付く柱・梁の断面から求めた実効体積 Ve
     ///   による。準備計算が自動生成するため、未割当として警告すると生成数だけ
@@ -237,7 +241,6 @@ pub struct ElementData {
     pub kind: ElementKind,
     pub nodes: SmallVec<[NodeId; 8]>,
     pub section: Option<SectionId>,
-    pub material: Option<MaterialId>,
     pub local_axis: LocalAxis,
     pub end_cond: [EndCondition; 2],
     pub force_regime: ForceRegime,

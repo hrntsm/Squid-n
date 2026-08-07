@@ -87,6 +87,10 @@ fn build_grid_model(nx: usize, ny: usize, n_stories: usize, with_slabs: bool) ->
         panel_thickness: None,
         thickness: None,
         shape: None,
+        material: Some(MaterialId(0)),
+        rebar_material: None,
+        shear_rebar_material: None,
+        steel_material: None,
     });
     model.sections.push(Section {
         id: SectionId(1),
@@ -103,6 +107,10 @@ fn build_grid_model(nx: usize, ny: usize, n_stories: usize, with_slabs: bool) ->
         panel_thickness: None,
         thickness: None,
         shape: None,
+        material: Some(MaterialId(0)),
+        rebar_material: None,
+        shear_rebar_material: None,
+        steel_material: None,
     });
     model.materials.push(Material {
         strength_factor: None,
@@ -125,7 +133,6 @@ fn build_grid_model(nx: usize, ny: usize, n_stories: usize, with_slabs: bool) ->
             kind: ElementKind::Beam,
             nodes: [NodeId(n0), NodeId(n1)].into_iter().collect(),
             section: Some(SectionId(section)),
-            material: Some(MaterialId(0)),
             local_axis: LocalAxis { ref_vector: ref_v },
             end_cond: [EndCondition::Fixed, EndCondition::Fixed],
             force_regime: ForceRegime::Auto,

@@ -193,12 +193,11 @@ pub fn collect_pca_checks(
         let Some(SectionShape::RcRect { b, d, ref rebar }) = sec.shape else {
             continue;
         };
-        let Some(mat) = elem
-            .material
-            .and_then(|mid| model.materials.iter().find(|m| m.id == mid))
-        else {
+        let Some(mat) = model.element_material(elem) else {
             continue;
         };
+        // 主筋の材料も断面が持つ。
+        let rebar_mat = model.element_rebar_material(elem);
         if mat.fc.unwrap_or(0.0) <= 0.0 {
             continue;
         }
@@ -250,7 +249,7 @@ pub fn collect_pca_checks(
             moment_zero_distance(-m1.abs(), -m2.abs(), m0_simple, length).unwrap_or(length / 2.0);
 
         // 補強筋の降伏強度 σy: 断面（配筋）の主筋材質 → 材料の fy → 材料名の順。
-        let sigma_y_steel = crate::material_strength::rebar_sigma_y_of(rebar, mat);
+        let sigma_y_steel = crate::material_strength::rebar_sigma_y_of(rebar_mat);
 
         for (pos, f_end) in [f_end0, f_end1] {
             let q = f_end[1];
@@ -409,20 +408,40 @@ mod tests {
                 support_spring: None,
             },
         ];
-        let sections = vec![shape.to_section(SectionId(0), "beam".to_string())];
-        let materials = vec![Material {
-            strength_factor: None,
-            concrete_class: Default::default(),
-            id: MaterialId(0),
-            name: "SD345".to_string(),
-            category: MaterialCategory::Rebar,
-            young: 23000.0,
-            poisson: 0.2,
-            density: 2.4e-9,
-            shear: None,
-            fc: Some(24.0),
-            fy: None,
-        }];
+        // 材料は断面が持つ。主材料 = コンクリート、主筋・せん断補強筋 = SD345。
+        let mut sec = shape.to_section(SectionId(0), "beam".to_string());
+        sec.material = Some(MaterialId(0));
+        sec.rebar_material = Some(MaterialId(1));
+        sec.shear_rebar_material = Some(MaterialId(1));
+        let sections = vec![sec];
+        let materials = vec![
+            Material {
+                strength_factor: None,
+                concrete_class: Default::default(),
+                id: MaterialId(0),
+                name: "Fc24".to_string(),
+                category: MaterialCategory::Concrete,
+                young: 23000.0,
+                poisson: 0.2,
+                density: 2.4e-9,
+                shear: None,
+                fc: Some(24.0),
+                fy: None,
+            },
+            Material {
+                strength_factor: None,
+                concrete_class: Default::default(),
+                id: MaterialId(1),
+                name: "SD345".to_string(),
+                category: MaterialCategory::Rebar,
+                young: 205000.0,
+                poisson: 0.3,
+                density: 7.85e-9,
+                shear: None,
+                fc: None,
+                fy: Some(345.0),
+            },
+        ];
         let elements = vec![ElementData {
             id: ElemId(0),
             kind: ElementKind::Beam,
@@ -433,7 +452,6 @@ mod tests {
                 v
             },
             section: Some(SectionId(0)),
-            material: Some(MaterialId(0)),
             local_axis: LocalAxis {
                 ref_vector: [0.0, 0.0, 1.0],
             },
@@ -458,7 +476,6 @@ mod tests {
             b: 400.0,
             d: 700.0,
             rebar: RcRebar {
-                main_grade: None,
                 main_x: BarSet {
                     count: 6,
                     dia: 22.0,
@@ -474,7 +491,6 @@ mod tests {
                     dia: 10.0,
                     pitch: 150.0,
                     legs: 2,
-                    grade: None,
                 },
             },
         }

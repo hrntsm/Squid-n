@@ -33,18 +33,16 @@ pub(crate) fn src_beam_check(
     fc_raw: f64,
 ) -> CheckResult {
     let long_term = ctx.term == LoadTerm::Long;
-    // 主筋の材質は断面（配筋）の属性を第一とし、未設定のときのみ部材材料名を用いる。
-    let grade = main_rebar_grade(rebar, mat);
+    // 主筋の材質は**断面が持つ材料**の名前で決まる（未割当は検定前に弾く）。
+    let grade = main_rebar_grade(ctx.rebar_material.as_ref());
 
     // 軽量コンクリート1種・2種は許容応力度を 0.9 倍に低減（SRC規準1987。
     // `mat.concrete_class` を考慮した class 対応版を使用）。
     let fs = concrete_allowable_shear_class(fc_raw, mat.concrete_class, long_term);
-    let shear_grade = rebar
-        .shear
-        .grade
-        .clone()
-        .unwrap_or_else(|| grade.to_string());
-    let w_ft = rebar_allowable_shear(&shear_grade, long_term);
+    let w_ft = rebar_allowable_shear(
+        crate::material_strength::shear_rebar_grade(ctx.shear_rebar_material.as_ref()),
+        long_term,
+    );
     let ft = rebar_allowable_tension(grade, rebar.main_x.dia, long_term);
 
     let thickness = steel_web_thick.max(steel_flange_thick);
@@ -81,7 +79,7 @@ pub(crate) fn src_beam_check(
         d: props.d_full,
         at: props.at,
         d_eff: props.d,
-        sigma_y: rebar_sigma_y_of(rebar, mat),
+        sigma_y: rebar_sigma_y_of(ctx.rebar_material.as_ref()),
         fc: fc_raw,
         pw: props.pw,
         sigma_wy: 0.0,
@@ -168,7 +166,7 @@ mod tests {
     #[test]
     fn test_src_beam_moment_handcalc() {
         let shape = src_rect_shape(
-            400.0, 700.0, 6, 22.0, 2, 40.0, 10.0, 100.0, 2, 500.0, 200.0, 9.0, 14.0, "SN400B",
+            400.0, 700.0, 6, 22.0, 2, 40.0, 10.0, 100.0, 2, 500.0, 200.0, 9.0, 14.0,
         );
         let sec = make_section(shape.clone());
         let mat = make_material(24.0, "SD345");
