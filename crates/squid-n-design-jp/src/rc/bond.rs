@@ -251,7 +251,6 @@ mod tests {
             layers: 1,
         };
         let rebar = RcRebar {
-            main_grade: None,
             main_x: main.clone(),
             main_y: main.clone(),
             cover: 40.0,
@@ -259,7 +258,6 @@ mod tests {
                 dia: 10.0,
                 pitch: 100.0,
                 legs: 2,
-                grade: None,
             },
         };
         (main, rebar)
@@ -414,7 +412,6 @@ mod tests {
             layers: 1,
         };
         let rebar = RcRebar {
-            main_grade: None,
             main_x: main.clone(),
             main_y: main.clone(),
             cover: 100.0,
@@ -422,7 +419,6 @@ mod tests {
                 dia: 12.0,
                 pitch: 50.0,
                 legs: 10,
-                grade: None,
             },
         };
         let result = rc_beam_bond_check(
@@ -455,7 +451,6 @@ mod tests {
             ..main1.clone()
         };
         let rebar2 = RcRebar {
-            main_grade: None,
             main_x: main2.clone(),
             ..rebar1.clone()
         };

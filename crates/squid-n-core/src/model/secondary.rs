@@ -30,8 +30,6 @@ pub struct SecondaryMember {
     pub nodes: [NodeId; 2],
     /// 断面参照（自重算定・将来の小梁/間柱断面算定に用いる）。
     pub section: Option<SectionId>,
-    /// 材料参照（自重算定に用いる。`None` は自重 0 扱い）。
-    pub material: Option<MaterialId>,
     /// 表示名（ST-Bridge の name 等）。
     pub name: String,
 }

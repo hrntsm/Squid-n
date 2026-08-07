@@ -236,9 +236,8 @@ fn members_body(
                     .unwrap_or(s.0) as i64
             })
             .unwrap_or(-1);
-        let ks = sm
-            .material
-            .and_then(|m| model.materials.get(m.index()))
+        let ks = model
+            .secondary_material(sm)
             .map(|m| {
                 if m.fc.is_some() {
                     "RC".to_string()

@@ -61,8 +61,8 @@ pub use crate::material_strength::{
     concrete_allowable_bond, concrete_allowable_compression, concrete_allowable_compression_class,
     concrete_allowable_shear, concrete_allowable_shear_class, concrete_young_modulus,
     high_strength_group, high_strength_pw_cap, high_strength_w_ft, is_high_strength_shear_grade,
-    main_rebar_grade, rebar_allowable_shear, rebar_allowable_tension, rebar_sigma_y,
-    rebar_sigma_y_of, shear_rebar_grade, young_ratio_n, HighStrengthGroup,
+    main_rebar_grade, rebar_allowable_shear, rebar_allowable_tension, rebar_sigma_y_of,
+    shear_rebar_grade, young_ratio_n, HighStrengthGroup,
 };
 
 // 分割した共有ヘルパを従来の `crate::rc::X`（他モジュール）・`super::X`
@@ -105,6 +105,22 @@ impl DesignCheck for RcDesign {
                 };
             }
         };
+
+        // 主筋・せん断補強筋の材料は断面が持つ。未割当のまま既定グレードで検定すると
+        // 許容応力度・降伏点の根拠が消えるため、検定せず理由を返す。
+        if ctx.rebar_material.is_none() {
+            return CheckOutcome::Skipped {
+                reason: "RC 検定: 主筋の材料が未割当（断面タブで主筋の材料を割り当ててください）"
+                    .to_string(),
+            };
+        }
+        if ctx.shear_rebar_material.is_none() {
+            return CheckOutcome::Skipped {
+                reason: "RC 検定: せん断補強筋の材料が未割当\
+                         （断面タブでせん断補強筋の材料を割り当ててください）"
+                    .to_string(),
+            };
+        }
 
         let cr = match ctx.kind {
             MemberKind::Beam | MemberKind::Brace => {

@@ -65,13 +65,18 @@ fn shift_material_ids(model: &mut Model, f: impl FnMut(&mut MaterialId)) {
     model.visit_material_ids(f);
 }
 
-/// 指定材料を参照している要素・二次部材が存在するか（削除ガード用）。
+/// 指定材料を参照している断面が存在するか（削除ガード用）。
+/// **材料は断面が持つ**ため、参照元は断面だけを見ればよい。
 fn material_in_use(model: &Model, id: MaterialId) -> bool {
-    model.elements.iter().any(|e| e.material == Some(id))
-        || model
-            .secondary_members
-            .iter()
-            .any(|sm| sm.material == Some(id))
+    model.sections.iter().any(|s| {
+        [
+            s.material,
+            s.rebar_material,
+            s.shear_rebar_material,
+            s.steel_material,
+        ]
+        .contains(&Some(id))
+    })
 }
 
 /// 編集対象の材料プロパティ。

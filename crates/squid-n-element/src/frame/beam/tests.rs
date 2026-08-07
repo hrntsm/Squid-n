@@ -48,7 +48,6 @@ fn test_beam_new_src_cft_composite_props() {
         b: 600.0,
         d: 600.0,
         rebar: RcRebar {
-            main_grade: None,
             main_x: BarSet {
                 count: 8,
                 dia: 22.0,
@@ -64,14 +63,12 @@ fn test_beam_new_src_cft_composite_props() {
                 dia: 10.0,
                 pitch: 100.0,
                 legs: 2,
-                grade: None,
             },
         },
         steel_height: 400.0,
         steel_width: 200.0,
         steel_web_thick: 9.0,
         steel_flange_thick: 12.0,
-        steel_grade: "SN400B".into(),
     };
     let cft_shape = SectionShape::CftBox {
         height: 400.0,
@@ -98,9 +95,16 @@ fn test_beam_new_src_cft_composite_props() {
                 support_spring: None,
             },
         ],
+        // 材料は断面が持つ。断面 0 = SRC（コンクリート）、断面 1 = CFT（鋼材）。
         sections: vec![
-            src_shape.to_section(SectionId(0), "SRC-600".into()),
-            cft_shape.to_section(SectionId(1), "CFT-400".into()),
+            Section {
+                material: Some(MaterialId(0)),
+                ..src_shape.to_section(SectionId(0), "SRC-600".into())
+            },
+            Section {
+                material: Some(MaterialId(1)),
+                ..cft_shape.to_section(SectionId(1), "CFT-400".into())
+            },
         ],
         materials: vec![
             Material {
@@ -132,12 +136,11 @@ fn test_beam_new_src_cft_composite_props() {
         ],
         ..Default::default()
     };
-    let make_elem = |sec: u32, mat: u32| ElementData {
+    let make_elem = |sec: u32| ElementData {
         id: ElemId(0),
         kind: ElementKind::Beam,
         nodes: smallvec::smallvec![NodeId(0), NodeId(1)],
         section: Some(squid_n_core::ids::SectionId(sec)),
-        material: Some(squid_n_core::ids::MaterialId(mat)),
         local_axis: LocalAxis {
             ref_vector: [1.0, 0.0, 0.0],
         },
@@ -149,7 +152,7 @@ fn test_beam_new_src_cft_composite_props() {
     };
 
     // SRC + コンクリート材料: ns=Es/Ec による等価断面性能
-    let src_beam = BeamElement::new(&make_elem(0, 0), &model);
+    let src_beam = BeamElement::new(&make_elem(0), &model);
     let p = src_shape.src_equivalent_props(23000.0, 0.2).unwrap();
     assert!((src_beam.a - p.area_ax).abs() < 1e-6);
     // 断面レイヤの iy（強軸）・as_z（ウェブ）は要素座標系では iz・as_y に入る
@@ -163,7 +166,7 @@ fn test_beam_new_src_cft_composite_props() {
     assert!((src_beam.a_mass - 360_000.0).abs() < 1e-9);
 
     // CFT + 鋼材料(fc=充填強度): 充填コンクリートの 1/n 換算累加
-    let cft_beam = BeamElement::new(&make_elem(1, 1), &model);
+    let cft_beam = BeamElement::new(&make_elem(1), &model);
     let pc = cft_shape.cft_equivalent_props(205000.0, 0.3, 36.0).unwrap();
     assert!((cft_beam.a - pc.area_ax).abs() < 1e-6);
     assert!((cft_beam.iz - pc.iy).abs() / pc.iy < 1e-12);
@@ -171,7 +174,7 @@ fn test_beam_new_src_cft_composite_props() {
 
     // SRC + fc のない材料: 既定 N_S_EQ の軸剛性累加へフォールバック
     model.materials[0].fc = None;
-    let src_fallback = BeamElement::new(&make_elem(0, 0), &model);
+    let src_fallback = BeamElement::new(&make_elem(0), &model);
     assert!((src_fallback.a - src_shape.calc_axial_stiffness_area()).abs() < 1e-6);
     assert!((src_fallback.iz - model.sections[0].iy).abs() < 1e-6);
 }
@@ -198,7 +201,6 @@ fn test_beam_new_slab_cooperation_width_amplifies_iy() {
         b: 300.0,
         d: 600.0,
         rebar: RcRebar {
-            main_grade: None,
             main_x: BarSet {
                 count: 4,
                 dia: 22.0,
@@ -214,7 +216,6 @@ fn test_beam_new_slab_cooperation_width_amplifies_iy() {
                 dia: 10.0,
                 pitch: 100.0,
                 legs: 2,
-                grade: None,
             },
         },
     };
@@ -259,7 +260,6 @@ fn test_beam_new_slab_cooperation_width_amplifies_iy() {
         kind: ElementKind::Beam,
         nodes: smallvec::smallvec![NodeId(0), NodeId(1)],
         section: Some(SectionId(0)),
-        material: Some(MaterialId(0)),
         local_axis: LocalAxis {
             ref_vector: [0.0, 1.0, 0.0],
         },
@@ -337,7 +337,11 @@ fn test_beam_new_composite_steel_beam_averages_stiffness() {
             make_node(2, [6000.0, 2500.0, 3000.0]),
             make_node(3, [0.0, 2500.0, 3000.0]),
         ],
-        sections: vec![shape.to_section(SectionId(0), "H-400x200".into())],
+        // 材料は断面が持つ。
+        sections: vec![Section {
+            material: Some(MaterialId(0)),
+            ..shape.to_section(SectionId(0), "H-400x200".into())
+        }],
         materials: vec![Material {
             strength_factor: None,
             concrete_class: Default::default(),
@@ -371,7 +375,6 @@ fn test_beam_new_composite_steel_beam_averages_stiffness() {
         kind: ElementKind::Beam,
         nodes: smallvec::smallvec![NodeId(0), NodeId(1)],
         section: Some(SectionId(0)),
-        material: Some(MaterialId(0)),
         local_axis: LocalAxis {
             ref_vector: [0.0, 1.0, 0.0],
         },
@@ -733,6 +736,10 @@ fn test_auto_rigid_zone_standard_formula() {
         panel_thickness: None,
         thickness: None,
         shape: None,
+        material: Some(MaterialId(0)),
+        rebar_material: None,
+        shear_rebar_material: None,
+        steel_material: None,
     };
     let beam_sec = Section {
         id: SectionId(1),
@@ -749,6 +756,10 @@ fn test_auto_rigid_zone_standard_formula() {
         panel_thickness: None,
         thickness: None,
         shape: None,
+        material: Some(MaterialId(0)),
+        rebar_material: None,
+        shear_rebar_material: None,
+        steel_material: None,
     };
     let mat = Material {
         strength_factor: None,
@@ -797,7 +808,6 @@ fn test_auto_rigid_zone_standard_formula() {
                 kind: ElementKind::Beam,
                 nodes: smallvec::smallvec![NodeId(0), NodeId(1)],
                 section: Some(SectionId(0)),
-                material: Some(MaterialId(0)),
                 local_axis: LocalAxis {
                     ref_vector: [0.0, 0.0, 1.0],
                 },
@@ -812,7 +822,6 @@ fn test_auto_rigid_zone_standard_formula() {
                 kind: ElementKind::Beam,
                 nodes: smallvec::smallvec![NodeId(1), NodeId(2)],
                 section: Some(SectionId(1)),
-                material: Some(MaterialId(0)),
                 local_axis: LocalAxis {
                     ref_vector: [0.0, 0.0, 1.0],
                 },
@@ -856,6 +865,10 @@ fn test_apply_auto_rigid_zones_and_manual_protection() {
         panel_thickness: None,
         thickness: None,
         shape: None,
+        material: Some(MaterialId(0)),
+        rebar_material: None,
+        shear_rebar_material: None,
+        steel_material: None,
     };
     let mk_node = |id: u32, c: [f64; 3]| Node {
         id: NodeId(id),
@@ -870,7 +883,6 @@ fn test_apply_auto_rigid_zones_and_manual_protection() {
         kind: ElementKind::Beam,
         nodes: smallvec::smallvec![NodeId(a), NodeId(b)],
         section: Some(SectionId(sec)),
-        material: Some(MaterialId(0)),
         local_axis: LocalAxis {
             ref_vector: [0.0, 0.0, 1.0],
         },
@@ -956,6 +968,10 @@ fn test_eval_sections_from_face_distance() {
         panel_thickness: None,
         thickness: None,
         shape: None,
+        material: Some(MaterialId(0)),
+        rebar_material: None,
+        shear_rebar_material: None,
+        steel_material: None,
     };
     let mat = Material {
         strength_factor: None,
@@ -994,7 +1010,6 @@ fn test_eval_sections_from_face_distance() {
             kind: ElementKind::Beam,
             nodes: smallvec::smallvec![NodeId(0), NodeId(1)],
             section: Some(SectionId(0)),
-            material: Some(MaterialId(0)),
             local_axis: LocalAxis {
                 ref_vector: [0.0, 0.0, 1.0],
             },
@@ -1072,7 +1087,6 @@ fn test_eval_sections_from_face_distance() {
 fn simple_rc_rebar() -> squid_n_core::section_shape::RcRebar {
     use squid_n_core::section_shape::{BarSet, RcRebar, ShearBar};
     RcRebar {
-        main_grade: None,
         main_x: BarSet {
             count: 4,
             dia: 16.0,
@@ -1088,7 +1102,6 @@ fn simple_rc_rebar() -> squid_n_core::section_shape::RcRebar {
             dia: 10.0,
             pitch: 100.0,
             legs: 2,
-            grade: None,
         },
     }
 }
@@ -1162,7 +1175,6 @@ fn test_auto_rigid_zone_steel_joint_is_zero() {
                 kind: ElementKind::Beam,
                 nodes: smallvec::smallvec![NodeId(0), NodeId(1)],
                 section: Some(SectionId(0)),
-                material: Some(MaterialId(0)),
                 local_axis: LocalAxis {
                     ref_vector: [0.0, 0.0, 1.0],
                 },
@@ -1177,7 +1189,6 @@ fn test_auto_rigid_zone_steel_joint_is_zero() {
                 kind: ElementKind::Beam,
                 nodes: smallvec::smallvec![NodeId(1), NodeId(2)],
                 section: Some(SectionId(1)),
-                material: Some(MaterialId(0)),
                 local_axis: LocalAxis {
                     ref_vector: [0.0, 0.0, 1.0],
                 },
@@ -1282,7 +1293,6 @@ fn test_auto_rigid_zone_steel_beam_rc_column() {
                 kind: ElementKind::Beam,
                 nodes: smallvec::smallvec![NodeId(0), NodeId(1)],
                 section: Some(SectionId(0)),
-                material: Some(MaterialId(0)),
                 local_axis: LocalAxis {
                     ref_vector: [0.0, 0.0, 1.0],
                 },
@@ -1297,7 +1307,6 @@ fn test_auto_rigid_zone_steel_beam_rc_column() {
                 kind: ElementKind::Beam,
                 nodes: smallvec::smallvec![NodeId(1), NodeId(2)],
                 section: Some(SectionId(1)),
-                material: Some(MaterialId(1)),
                 local_axis: LocalAxis {
                     ref_vector: [0.0, 0.0, 1.0],
                 },
@@ -1402,7 +1411,6 @@ fn test_auto_rigid_zone_rc_beam_steel_column_only_is_zero() {
                 kind: ElementKind::Beam,
                 nodes: smallvec::smallvec![NodeId(0), NodeId(1)],
                 section: Some(SectionId(0)),
-                material: Some(MaterialId(0)),
                 local_axis: LocalAxis {
                     ref_vector: [0.0, 0.0, 1.0],
                 },
@@ -1417,7 +1425,6 @@ fn test_auto_rigid_zone_rc_beam_steel_column_only_is_zero() {
                 kind: ElementKind::Beam,
                 nodes: smallvec::smallvec![NodeId(1), NodeId(2)],
                 section: Some(SectionId(1)),
-                material: Some(MaterialId(1)),
                 local_axis: LocalAxis {
                     ref_vector: [0.0, 0.0, 1.0],
                 },
@@ -1462,6 +1469,10 @@ fn test_auto_rigid_zone_wall_does_not_affect_orthogonal_search() {
         panel_thickness: None,
         thickness: None,
         shape: None,
+        material: Some(MaterialId(0)),
+        rebar_material: None,
+        shear_rebar_material: None,
+        steel_material: None,
     };
     let beam_sec = Section {
         id: SectionId(1),
@@ -1478,6 +1489,10 @@ fn test_auto_rigid_zone_wall_does_not_affect_orthogonal_search() {
         panel_thickness: None,
         thickness: None,
         shape: None,
+        material: Some(MaterialId(0)),
+        rebar_material: None,
+        shear_rebar_material: None,
+        steel_material: None,
     };
     // 壁のせい（名目値）を柱・梁より大きくし、混入すれば結果が変わることを検証可能にする。
     let wall_sec = Section {
@@ -1495,6 +1510,10 @@ fn test_auto_rigid_zone_wall_does_not_affect_orthogonal_search() {
         panel_thickness: None,
         thickness: None,
         shape: None,
+        material: Some(MaterialId(0)),
+        rebar_material: None,
+        shear_rebar_material: None,
+        steel_material: None,
     };
     let mat = Material {
         strength_factor: None,
@@ -1551,7 +1570,6 @@ fn test_auto_rigid_zone_wall_does_not_affect_orthogonal_search() {
                 kind: ElementKind::Beam,
                 nodes: smallvec::smallvec![NodeId(0), NodeId(1)],
                 section: Some(SectionId(0)),
-                material: Some(MaterialId(0)),
                 local_axis: LocalAxis {
                     ref_vector: [0.0, 0.0, 1.0],
                 },
@@ -1566,7 +1584,6 @@ fn test_auto_rigid_zone_wall_does_not_affect_orthogonal_search() {
                 kind: ElementKind::Beam,
                 nodes: smallvec::smallvec![NodeId(1), NodeId(2)],
                 section: Some(SectionId(1)),
-                material: Some(MaterialId(0)),
                 local_axis: LocalAxis {
                     ref_vector: [0.0, 0.0, 1.0],
                 },
@@ -1582,7 +1599,6 @@ fn test_auto_rigid_zone_wall_does_not_affect_orthogonal_search() {
                 kind: ElementKind::Wall,
                 nodes: smallvec::smallvec![NodeId(1), NodeId(3)],
                 section: Some(SectionId(2)),
-                material: Some(MaterialId(0)),
                 local_axis: LocalAxis {
                     ref_vector: [0.0, 0.0, 1.0],
                 },
@@ -1633,6 +1649,10 @@ fn test_beam_new_wall_girder_bottom_edge_scales_stiffness() {
         panel_thickness: None,
         thickness: None,
         shape: None,
+        material: Some(MaterialId(0)),
+        rebar_material: None,
+        shear_rebar_material: None,
+        steel_material: None,
     };
     let mat = Material {
         strength_factor: None,
@@ -1666,7 +1686,6 @@ fn test_beam_new_wall_girder_bottom_edge_scales_stiffness() {
         kind: ElementKind::Beam,
         nodes: smallvec::smallvec![NodeId(0), NodeId(1)],
         section: Some(SectionId(0)),
-        material: Some(MaterialId(0)),
         local_axis: LocalAxis {
             ref_vector: [0.0, 0.0, 1.0],
         },
@@ -1693,7 +1712,6 @@ fn test_beam_new_wall_girder_bottom_edge_scales_stiffness() {
         kind: ElementKind::Wall,
         nodes: smallvec::smallvec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
         section: None,
-        material: None,
         local_axis: LocalAxis {
             ref_vector: [0.0, 0.0, 1.0],
         },
@@ -1710,7 +1728,6 @@ fn test_beam_new_wall_girder_bottom_edge_scales_stiffness() {
         kind: ElementKind::Beam,
         nodes: smallvec::smallvec![NodeId(n0), NodeId(n1)],
         section: None,
-        material: None,
         local_axis: LocalAxis {
             ref_vector: [0.0, 0.0, 1.0],
         },
@@ -1775,6 +1792,10 @@ fn test_beam_new_wall_girder_requires_both_nodes_shared() {
         panel_thickness: None,
         thickness: None,
         shape: None,
+        material: Some(MaterialId(0)),
+        rebar_material: None,
+        shear_rebar_material: None,
+        steel_material: None,
     };
     let mat = Material {
         strength_factor: None,
@@ -1810,7 +1831,6 @@ fn test_beam_new_wall_girder_requires_both_nodes_shared() {
         kind: ElementKind::Beam,
         nodes: smallvec::smallvec![NodeId(1), NodeId(4)],
         section: Some(SectionId(0)),
-        material: Some(MaterialId(0)),
         local_axis: LocalAxis {
             ref_vector: [0.0, 0.0, 1.0],
         },
@@ -1825,7 +1845,6 @@ fn test_beam_new_wall_girder_requires_both_nodes_shared() {
         kind: ElementKind::Wall,
         nodes: smallvec::smallvec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
         section: None,
-        material: None,
         local_axis: LocalAxis {
             ref_vector: [0.0, 0.0, 1.0],
         },
@@ -1871,6 +1890,10 @@ fn test_beam_new_wall_girder_vertical_member_not_scaled() {
         panel_thickness: None,
         thickness: None,
         shape: None,
+        material: Some(MaterialId(0)),
+        rebar_material: None,
+        shear_rebar_material: None,
+        steel_material: None,
     };
     let mat = Material {
         strength_factor: None,
@@ -1905,7 +1928,6 @@ fn test_beam_new_wall_girder_vertical_member_not_scaled() {
         kind: ElementKind::Beam,
         nodes: smallvec::smallvec![NodeId(0), NodeId(3)],
         section: Some(SectionId(0)),
-        material: Some(MaterialId(0)),
         local_axis: LocalAxis {
             ref_vector: [1.0, 0.0, 0.0],
         },
@@ -1920,7 +1942,6 @@ fn test_beam_new_wall_girder_vertical_member_not_scaled() {
         kind: ElementKind::Wall,
         nodes: smallvec::smallvec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
         section: None,
-        material: None,
         local_axis: LocalAxis {
             ref_vector: [0.0, 0.0, 1.0],
         },
@@ -1980,6 +2001,10 @@ fn test_beam_new_misc_wall_wing_augments_column_inplane_stiffness() {
         panel_thickness: None,
         thickness: None,
         shape: None,
+        material: Some(MaterialId(0)),
+        rebar_material: None,
+        shear_rebar_material: None,
+        steel_material: None,
     };
     let wall_shape = SectionShape::RcWall {
         thickness: 150.0,
@@ -2009,7 +2034,6 @@ fn test_beam_new_misc_wall_wing_augments_column_inplane_stiffness() {
         kind: ElementKind::Beam,
         nodes: smallvec::smallvec![NodeId(0), NodeId(3)],
         section: Some(SectionId(0)),
-        material: Some(MaterialId(0)),
         local_axis: LocalAxis {
             ref_vector: [1.0, 0.0, 0.0],
         },
@@ -2024,7 +2048,6 @@ fn test_beam_new_misc_wall_wing_augments_column_inplane_stiffness() {
         kind: ElementKind::Wall,
         nodes: smallvec::smallvec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
         section: Some(SectionId(1)),
-        material: Some(MaterialId(0)),
         local_axis: LocalAxis {
             ref_vector: [0.0, 1.0, 0.0],
         },
@@ -2130,6 +2153,10 @@ fn test_beam_new_misc_wall_strip_augments_girder_iy_without_100x() {
         panel_thickness: None,
         thickness: None,
         shape: None,
+        material: Some(MaterialId(0)),
+        rebar_material: None,
+        shear_rebar_material: None,
+        steel_material: None,
     };
     let wall_shape = SectionShape::RcWall {
         thickness: 150.0,
@@ -2159,7 +2186,6 @@ fn test_beam_new_misc_wall_strip_augments_girder_iy_without_100x() {
         kind: ElementKind::Beam,
         nodes: smallvec::smallvec![NodeId(0), NodeId(1)],
         section: Some(SectionId(0)),
-        material: Some(MaterialId(0)),
         local_axis: LocalAxis {
             ref_vector: [0.0, 0.0, 1.0],
         },
@@ -2174,7 +2200,6 @@ fn test_beam_new_misc_wall_strip_augments_girder_iy_without_100x() {
         kind: ElementKind::Wall,
         nodes: smallvec::smallvec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
         section: Some(SectionId(1)),
-        material: Some(MaterialId(0)),
         local_axis: LocalAxis {
             ref_vector: [0.0, 1.0, 0.0],
         },
@@ -2286,6 +2311,10 @@ fn test_beam_new_seismic_wall_no_misc_wall_augmentation() {
         panel_thickness: None,
         thickness: None,
         shape: None,
+        material: Some(MaterialId(0)),
+        rebar_material: None,
+        shear_rebar_material: None,
+        steel_material: None,
     };
     let beam_sec = Section {
         id: SectionId(1),
@@ -2302,6 +2331,10 @@ fn test_beam_new_seismic_wall_no_misc_wall_augmentation() {
         panel_thickness: None,
         thickness: None,
         shape: None,
+        material: Some(MaterialId(0)),
+        rebar_material: None,
+        shear_rebar_material: None,
+        steel_material: None,
     };
     let wall_shape = SectionShape::RcWall {
         thickness: 150.0,
@@ -2331,7 +2364,6 @@ fn test_beam_new_seismic_wall_no_misc_wall_augmentation() {
         kind: ElementKind::Beam,
         nodes: smallvec::smallvec![NodeId(0), NodeId(3)],
         section: Some(SectionId(0)),
-        material: Some(MaterialId(0)),
         local_axis: LocalAxis {
             ref_vector: [1.0, 0.0, 0.0],
         },
@@ -2346,7 +2378,6 @@ fn test_beam_new_seismic_wall_no_misc_wall_augmentation() {
         kind: ElementKind::Beam,
         nodes: smallvec::smallvec![NodeId(0), NodeId(1)],
         section: Some(SectionId(1)),
-        material: Some(MaterialId(0)),
         local_axis: LocalAxis {
             ref_vector: [0.0, 0.0, 1.0],
         },
@@ -2361,7 +2392,6 @@ fn test_beam_new_seismic_wall_no_misc_wall_augmentation() {
         kind: ElementKind::Wall,
         nodes: smallvec::smallvec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
         section: Some(SectionId(2)),
-        material: Some(MaterialId(0)),
         local_axis: LocalAxis {
             ref_vector: [0.0, 1.0, 0.0],
         },
@@ -2378,7 +2408,6 @@ fn test_beam_new_seismic_wall_no_misc_wall_augmentation() {
         kind: ElementKind::Beam,
         nodes: smallvec::smallvec![NodeId(n0), NodeId(n1)],
         section: None,
-        material: None,
         local_axis: LocalAxis {
             ref_vector: [0.0, 0.0, 1.0],
         },
@@ -2470,6 +2499,10 @@ fn test_vertical_bending_stiffness_uses_section_strong_axis() {
         panel_thickness: None,
         thickness: None,
         shape: None,
+        material: Some(MaterialId(0)),
+        rebar_material: None,
+        shear_rebar_material: None,
+        steel_material: None,
     };
     let mat = Material {
         strength_factor: None,
@@ -2489,7 +2522,6 @@ fn test_vertical_bending_stiffness_uses_section_strong_axis() {
         kind: ElementKind::Beam,
         nodes: smallvec::smallvec![NodeId(0), NodeId(1)],
         section: Some(SectionId(0)),
-        material: Some(MaterialId(0)),
         local_axis: LocalAxis {
             ref_vector: [0.0, 0.0, 1.0],
         },
@@ -2706,6 +2738,10 @@ fn test_misc_wall_wing_eccentricity_is_independent_of_wall_node_order() {
         panel_thickness: None,
         thickness: None,
         shape: None,
+        material: Some(MaterialId(0)),
+        rebar_material: None,
+        shear_rebar_material: None,
+        steel_material: None,
     };
     let wall_shape = SectionShape::RcWall {
         thickness: 150.0,
@@ -2738,7 +2774,6 @@ fn test_misc_wall_wing_eccentricity_is_independent_of_wall_node_order() {
         kind: ElementKind::Beam,
         nodes: smallvec::smallvec![NodeId(1), NodeId(4)],
         section: Some(SectionId(0)),
-        material: Some(MaterialId(0)),
         local_axis: LocalAxis {
             ref_vector: [1.0, 0.0, 0.0],
         },
@@ -2753,7 +2788,6 @@ fn test_misc_wall_wing_eccentricity_is_independent_of_wall_node_order() {
         kind: ElementKind::Wall,
         nodes: ns.iter().map(|n| NodeId(*n)).collect(),
         section: Some(SectionId(1)),
-        material: Some(MaterialId(0)),
         local_axis: LocalAxis {
             ref_vector: [0.0, 1.0, 0.0],
         },
@@ -2836,7 +2870,6 @@ fn torsion_test_model(split_x: bool) -> Model {
         kind: ElementKind::Beam,
         nodes: smallvec::smallvec![NodeId(a), NodeId(b)],
         section: Some(SectionId(0)),
-        material: Some(MaterialId(0)),
         local_axis: LocalAxis {
             ref_vector: if vertical {
                 [1.0, 0.0, 0.0]
@@ -2887,6 +2920,10 @@ fn torsion_test_model(split_x: bool) -> Model {
             panel_thickness: None,
             thickness: None,
             shape: None,
+            material: Some(MaterialId(0)),
+            rebar_material: None,
+            shear_rebar_material: None,
+            steel_material: None,
         }],
         materials: vec![Material {
             strength_factor: None,
@@ -2950,7 +2987,7 @@ fn test_beam_i_end_torsion_released_by_default() {
 /// 回転を拘束するものがないため解放しない（梁の中間分割点と同じ規則）。
 #[test]
 fn test_column_torsion_release_skipped_at_collinear_column_node() {
-    use squid_n_core::ids::{MaterialId, SectionId};
+    use squid_n_core::ids::SectionId;
     use squid_n_core::model::ForceRegime;
     let mut model = torsion_test_model(false);
     // 柱 0（節点 0→1）を中間節点 5 で 2 分割する。
@@ -2970,7 +3007,6 @@ fn test_column_torsion_release_skipped_at_collinear_column_node() {
         kind: ElementKind::Beam,
         nodes: smallvec::smallvec![mid, NodeId(1)],
         section: Some(SectionId(0)),
-        material: Some(MaterialId(0)),
         local_axis: LocalAxis {
             ref_vector: [1.0, 0.0, 0.0],
         },

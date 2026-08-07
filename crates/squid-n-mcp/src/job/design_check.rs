@@ -141,9 +141,7 @@ pub(crate) fn compute_design_check_job(
         let sec = elem
             .section
             .and_then(|sid| model.sections.iter().find(|s| s.id == sid));
-        let mat = elem
-            .material
-            .and_then(|mid| model.materials.iter().find(|m| m.id == mid));
+        let mat = model.element_material(elem);
         let (Some(sec), Some(mat)) = (sec, mat) else {
             continue;
         };
@@ -222,6 +220,10 @@ pub(crate) fn compute_design_check_job(
             .and_then(|a| a.lk_z_direct)
             .or(lk_z_auto);
         let ctx = squid_n_design_jp::DesignCtx {
+            // 材料は断面が持つ（主筋・せん断補強筋・内蔵鉄骨）。
+            rebar_material: model.element_rebar_material(elem).cloned(),
+            shear_rebar_material: model.element_shear_rebar_material(elem).cloned(),
+            steel_material: model.element_steel_material(elem).cloned(),
             term: squid_n_design_jp::LoadTerm::Long,
             kind,
             length,

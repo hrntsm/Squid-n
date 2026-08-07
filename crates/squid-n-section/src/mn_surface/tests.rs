@@ -68,7 +68,6 @@ fn sample_rc_shape() -> SectionShape {
         b: 500.0,
         d: 500.0,
         rebar: RcRebar {
-            main_grade: None,
             main_x: BarSet {
                 count: 4,
                 dia: 22.0,
@@ -84,7 +83,6 @@ fn sample_rc_shape() -> SectionShape {
                 dia: 10.0,
                 pitch: 100.0,
                 legs: 2,
-                grade: None,
             },
         },
     }

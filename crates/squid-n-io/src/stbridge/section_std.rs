@@ -84,47 +84,29 @@ fn section_roles(model: &Model) -> HashMap<u32, (bool, bool)> {
     roles
 }
 
-/// 断面 → 柱用・梁用それぞれの代表材料（id と名前）。
-/// ST-Bridge は材料を断面側に持つため、Standard 書き出しでは断面要素へ材料を付す
-/// （鋼は `strength_main`＝材料名、RC/CFT/SRC は `id_material`＝材料 id）。内部モデルは
-/// 材料を部材側に持つため「最初に参照する部材の材料」を役割（柱／梁）別に代表とする。
-/// 柱・梁で材料の異なる部材が同一断面を共有していても、分割後の各断面へ正しい材料を付す。
-#[derive(Default, Clone)]
-struct RoleMaterial {
-    col: Option<(i64, String)>,
-    beam: Option<(i64, String)>,
+/// 断面が持つ鉄筋・内蔵鉄骨の材質名（ST-Bridge はグレード名で書く）。
+///
+/// ST-Bridge も Squid-n も材料を断面が持つため、部材からの逆算は行わない。
+#[derive(Default, Clone, Copy)]
+struct BarGrades<'a> {
+    /// 主筋（`strength_main`）。
+    main: Option<&'a str>,
+    /// せん断補強筋（`strength_band` ほか）。
+    shear: Option<&'a str>,
+    /// SRC の内蔵鉄骨（`strength_steel`）。
+    steel: Option<&'a str>,
 }
 
-fn section_materials(model: &Model) -> HashMap<u32, RoleMaterial> {
-    let mut map: HashMap<u32, RoleMaterial> = HashMap::new();
-    for e in &model.elements {
-        if e.nodes.len() != 2 {
-            continue;
-        }
-        let is_col = match e.kind {
-            ElementKind::Beam => {
-                let n0 = &model.nodes[e.nodes[0].index()];
-                let n1 = &model.nodes[e.nodes[1].index()];
-                // 全クレート共通の 45° 余弦基準で柱/梁を分ける。
-                squid_n_core::geom::is_vertical_axis(n0.coord, n1.coord)
-            }
-            ElementKind::Brace { .. } => false,
-            _ => continue,
-        };
-        let Some(sec) = e.section else { continue };
-        let Some(mid) = e.material else { continue };
-        let name = model
-            .materials
-            .get(mid.index())
-            .map(|mat| mat.name.clone())
-            .unwrap_or_default();
-        let ent = map.entry(sec.0).or_default();
-        let slot = if is_col { &mut ent.col } else { &mut ent.beam };
-        if slot.is_none() {
-            *slot = Some((mid.0 as i64, name));
-        }
+/// 断面の鉄筋・内蔵鉄骨の材質名を引く。
+fn bar_grades<'a>(model: &'a Model, sec: &Section) -> BarGrades<'a> {
+    let name = |mid: Option<squid_n_core::ids::MaterialId>| -> Option<&'a str> {
+        model.materials.get(mid?.index()).map(|m| m.name.as_str())
+    };
+    BarGrades {
+        main: name(sec.rebar_material),
+        shear: name(sec.shear_rebar_material),
+        steel: name(sec.steel_material),
     }
-    map
 }
 
 /// 形鋼ライブラリ（`StbSecSteel`）。図形名で重複排除しつつ挿入順を保つ。
@@ -475,7 +457,7 @@ fn rc_beam_figure(shape: &SectionShape) -> Option<String> {
 ///   `pitch_band`・`N_band_direction_X`/`_Y`・`strength_band`。
 /// - 梁（`is_beam=true`）: `D_main`・`N_main_top_1st`・`N_main_bottom_1st`・あばら筋
 ///   `D_stirrup`・`pitch_stirrup`・`N_stirrup`・`strength_stirrup`。
-fn rebar_attrs(r: &RcRebar, is_beam: bool) -> String {
+fn rebar_attrs(r: &RcRebar, grades: BarGrades<'_>, is_beam: bool) -> String {
     if is_beam {
         let mut s = format!(
             "D_main=\"{dm}\" N_main_top_1st=\"{nt}\" N_main_bottom_1st=\"{nb}\" \
@@ -487,10 +469,10 @@ fn rebar_attrs(r: &RcRebar, is_beam: bool) -> String {
             ps = num(r.shear.pitch),
             ns = r.shear.legs,
         );
-        if let Some(g) = &r.shear.grade {
+        if let Some(g) = grades.shear {
             s.push_str(&format!(" strength_stirrup=\"{}\"", esc(g)));
         }
-        if let Some(g) = &r.main_grade {
+        if let Some(g) = grades.main {
             s.push_str(&format!(" strength_main=\"{}\"", esc(g)));
         }
         s
@@ -505,10 +487,10 @@ fn rebar_attrs(r: &RcRebar, is_beam: bool) -> String {
             pb = num(r.shear.pitch),
             nb = r.shear.legs,
         );
-        if let Some(g) = &r.shear.grade {
+        if let Some(g) = grades.shear {
             s.push_str(&format!(" strength_band=\"{}\"", esc(g)));
         }
-        if let Some(g) = &r.main_grade {
+        if let Some(g) = grades.main {
             s.push_str(&format!(" strength_main=\"{}\"", esc(g)));
         }
         s
@@ -540,7 +522,7 @@ fn cover_attr_column(cover: f64) -> String {
 }
 
 /// RC 柱断面の配筋 `StbSecBarArrangementColumn_RC`（矩形/円形）。配筋のない形状は空文字。
-fn rebar_arrangement_column(shape: &SectionShape) -> String {
+fn rebar_arrangement_column(shape: &SectionShape, grades: BarGrades<'_>) -> String {
     let (child, r) = match shape {
         SectionShape::RcRect { rebar, .. } => ("StbSecBarColumn_RC_RectSame", rebar),
         SectionShape::RcCircle { rebar, .. } => ("StbSecBarColumn_RC_CircleSame", rebar),
@@ -552,12 +534,12 @@ fn rebar_arrangement_column(shape: &SectionShape) -> String {
          \x20       </StbSecBarArrangementColumn_RC>\n",
         cover_attr_column(r.cover),
         child,
-        rebar_attrs(r, false)
+        rebar_attrs(r, grades, false)
     )
 }
 
 /// RC 梁断面の配筋 `StbSecBarArrangementBeam_RC`（矩形）。配筋のない形状は空文字。
-fn rebar_arrangement_beam(shape: &SectionShape) -> String {
+fn rebar_arrangement_beam(shape: &SectionShape, grades: BarGrades<'_>) -> String {
     let r = match shape {
         SectionShape::RcRect { rebar, .. } => rebar,
         _ => return String::new(),
@@ -567,7 +549,7 @@ fn rebar_arrangement_beam(shape: &SectionShape) -> String {
          \x20         <StbSecBarBeam_RC_Same {}/>\n\
          \x20       </StbSecBarArrangementBeam_RC>\n",
         cover_attr_beam(r.cover),
-        rebar_attrs(r, true)
+        rebar_attrs(r, grades, true)
     )
 }
 
@@ -577,6 +559,7 @@ fn rc_column(
     id: u32,
     sec: &Section,
     shape: &SectionShape,
+    grades: BarGrades<'_>,
     figure_body: &str,
     id_mat: &str,
 ) -> String {
@@ -593,7 +576,7 @@ fn rc_column(
         floor_attr(sec),
         id_mat,
         figure_body,
-        rebar_arrangement_column(shape),
+        rebar_arrangement_column(shape, grades),
     )
 }
 
@@ -602,6 +585,7 @@ fn rc_beam(
     id: u32,
     sec: &Section,
     shape: &SectionShape,
+    grades: BarGrades<'_>,
     figure_body: &str,
     id_mat: &str,
 ) -> String {
@@ -618,7 +602,7 @@ fn rc_beam(
         floor_attr(sec),
         id_mat,
         figure_body,
-        rebar_arrangement_beam(shape),
+        rebar_arrangement_beam(shape, grades),
     )
 }
 
@@ -686,17 +670,18 @@ fn src_section(
     sec: &Section,
     is_beam: bool,
     shape: &SectionShape,
+    grades: BarGrades<'_>,
     steel_fig: &str,
     id_mat: &str,
 ) -> String {
+    // 内蔵鉄骨の鋼種は断面の内蔵鉄骨材料の名前（未割当は空文字列）。
+    let steel_grade = grades.steel.unwrap_or("");
     let (b, d, rebar_arrangement, grade) = match shape {
-        SectionShape::SrcRect {
-            b, d, steel_grade, ..
-        } => (
+        SectionShape::SrcRect { b, d, .. } => (
             *b,
             *d,
-            rebar_arrangement_generic(shape, is_beam, "SRC"),
-            steel_grade.clone(),
+            rebar_arrangement_generic(shape, grades, is_beam, "SRC"),
+            steel_grade.to_string(),
         ),
         // 呼び出し側で SrcRect のみ渡す想定。防御的に空で返す。
         _ => return raw(id, sec),
@@ -757,7 +742,12 @@ fn src_section(
 
 /// SRC の配筋要素 `StbSecBarArrangement{Column,Beam}_SRC`。配筋のない形状は空文字。
 /// `kind` は要素名の中置（"SRC"）。
-fn rebar_arrangement_generic(shape: &SectionShape, is_beam: bool, kind: &str) -> String {
+fn rebar_arrangement_generic(
+    shape: &SectionShape,
+    grades: BarGrades<'_>,
+    is_beam: bool,
+    kind: &str,
+) -> String {
     let r = match shape {
         SectionShape::SrcRect { rebar, .. } => rebar,
         _ => return String::new(),
@@ -786,7 +776,7 @@ fn rebar_arrangement_generic(shape: &SectionShape, is_beam: bool, kind: &str) ->
         wrap,
         cover_attr,
         child,
-        rebar_attrs(r, is_beam),
+        rebar_attrs(r, grades, is_beam),
         wrap
     )
 }
@@ -821,31 +811,25 @@ pub(super) fn standard_sections(model: &Model) -> StandardSections {
         v
     };
 
-    let sec_mat = section_materials(model);
-    // 断面へ付す材料属性（ST-Bridge は材料を断面側にグレード名で持つ）。鋼は形鋼参照へ
-    // strength_main、RC/CFT/SRC のコンクリートは要素へ strength_concrete を付す。柱用・梁用で
-    // 異材料を共有する断面でも役割別に正しい材料を付す（役割側に材料がなければもう一方で代用）。
-    let mat_of = |base: u32, is_beam: bool| -> Option<(i64, String)> {
-        let rm = sec_mat.get(&base)?;
-        if is_beam {
-            rm.beam.clone().or_else(|| rm.col.clone())
-        } else {
-            rm.col.clone().or_else(|| rm.beam.clone())
+    // 断面へ付す材料属性（ST-Bridge は材料を断面側にグレード名で持つ）。**内部でも
+    // 材料は断面が持つ**ため、部材からの逆算や柱用／梁用の代用は不要で、断面の
+    // 主材料をそのまま書き出す。鋼は形鋼参照へ strength_main、RC/CFT/SRC の
+    // コンクリートは strength_concrete を付す。
+    let mat_name = |base: u32| -> Option<&str> {
+        let sec = model.sections.get(base as usize)?;
+        let mat = model.materials.get(sec.material?.index())?;
+        (!mat.name.is_empty()).then_some(mat.name.as_str())
+    };
+    let strength_attr = |base: u32| -> String {
+        match mat_name(base) {
+            Some(name) => format!(" strength_main=\"{}\"", esc(name)),
+            None => String::new(),
         }
     };
-    let strength_attr = |base: u32, is_beam: bool| -> String {
-        match mat_of(base, is_beam) {
-            Some((_, name)) if !name.is_empty() => format!(" strength_main=\"{}\"", esc(&name)),
-            _ => String::new(),
-        }
-    };
-    // RC/CFT/SRC のコンクリート材料はグレード名（`Fc21` 等）を strength_concrete に付す。
-    let id_mat_attr = |base: u32, is_beam: bool| -> String {
-        match mat_of(base, is_beam) {
-            Some((_, name)) if !name.is_empty() => {
-                format!(" strength_concrete=\"{}\"", esc(&name))
-            }
-            _ => String::new(),
+    let id_mat_attr = |base: u32| -> String {
+        match mat_name(base) {
+            Some(name) => format!(" strength_concrete=\"{}\"", esc(name)),
+            None => String::new(),
         }
     };
 
@@ -903,18 +887,12 @@ pub(super) fn standard_sections(model: &Model) -> StandardSections {
         if let Some((fig_name, fig_body)) = steel_fig {
             steel.add(&fig_name, fig_body);
             if need_col {
-                parts.push((
-                    1,
-                    steel_column(base, sec, &fig_name, &strength_attr(base, false)),
-                ));
+                parts.push((1, steel_column(base, sec, &fig_name, &strength_attr(base))));
                 col_map.insert(base, base);
             }
             if need_beam {
                 let bid = if need_col { alloc() } else { base };
-                parts.push((
-                    5,
-                    steel_beam(bid, sec, &fig_name, &strength_attr(base, true)),
-                ));
+                parts.push((5, steel_beam(bid, sec, &fig_name, &strength_attr(base))));
                 beam_map.insert(base, bid);
             }
             continue;
@@ -929,7 +907,7 @@ pub(super) fn standard_sections(model: &Model) -> StandardSections {
             let shape = sec.shape.as_ref().unwrap();
             if need_col {
                 let fig = cft_figure(shape, &mut steel).expect("CFT 図形");
-                parts.push((3, cft_column(base, sec, &fig, &id_mat_attr(base, false))));
+                parts.push((3, cft_column(base, sec, &fig, &id_mat_attr(base))));
                 col_map.insert(base, base);
             }
             if need_beam {
@@ -948,6 +926,7 @@ pub(super) fn standard_sections(model: &Model) -> StandardSections {
         if matches!(sec.shape, Some(SectionShape::SrcRect { .. })) {
             let shape = sec.shape.as_ref().unwrap();
             let steel_fig = src_steel_figure(shape, &mut steel).expect("SRC 内蔵鉄骨図形");
+            let grades = bar_grades(model, sec);
             if need_col {
                 parts.push((
                     2,
@@ -956,8 +935,9 @@ pub(super) fn standard_sections(model: &Model) -> StandardSections {
                         sec,
                         false,
                         shape,
+                        grades,
                         &steel_fig,
-                        &id_mat_attr(base, false),
+                        &id_mat_attr(base),
                     ),
                 ));
                 col_map.insert(base, base);
@@ -970,7 +950,15 @@ pub(super) fn standard_sections(model: &Model) -> StandardSections {
                 };
                 parts.push((
                     6,
-                    src_section(bid, sec, true, shape, &steel_fig, &id_mat_attr(base, true)),
+                    src_section(
+                        bid,
+                        sec,
+                        true,
+                        shape,
+                        grades,
+                        &steel_fig,
+                        &id_mat_attr(base),
+                    ),
                 ));
                 beam_map.insert(base, bid);
             }
@@ -981,12 +969,13 @@ pub(super) fn standard_sections(model: &Model) -> StandardSections {
         let rc_beam_fig = sec.shape.as_ref().and_then(rc_beam_figure);
         if rc_col_fig.is_some() || rc_beam_fig.is_some() {
             let shape = sec.shape.as_ref().expect("RC 図形がある＝shape は Some");
+            let grades = bar_grades(model, sec);
             if need_col {
                 // 円形など梁図形がない場合も柱としては出力できる。
                 if let Some(fig) = &rc_col_fig {
                     parts.push((
                         0,
-                        rc_column(base, sec, shape, fig, &id_mat_attr(base, false)),
+                        rc_column(base, sec, shape, grades, fig, &id_mat_attr(base)),
                     ));
                     col_map.insert(base, base);
                 }
@@ -998,7 +987,7 @@ pub(super) fn standard_sections(model: &Model) -> StandardSections {
                     } else {
                         base
                     };
-                    parts.push((4, rc_beam(bid, sec, shape, fig, &id_mat_attr(base, true))));
+                    parts.push((4, rc_beam(bid, sec, shape, grades, fig, &id_mat_attr(base))));
                     beam_map.insert(base, bid);
                 } else {
                     // 梁で使われるが梁図形に落ちない形状（例: RC 円形）は Raw で残す。

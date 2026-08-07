@@ -52,6 +52,10 @@ fn make_diaphragm_model() -> Model {
             panel_thickness: None,
             thickness: None,
             shape: None,
+            material: Some(MaterialId(0)),
+            rebar_material: None,
+            shear_rebar_material: None,
+            steel_material: None,
         }],
         materials: vec![Material {
             strength_factor: None,
@@ -80,7 +84,6 @@ fn test_resolve_force_regime_explicit() {
         kind: ElementKind::Beam,
         nodes: smallvec::smallvec![NodeId(0), NodeId(1)],
         section: Some(SectionId(0)),
-        material: Some(MaterialId(0)),
         local_axis: LocalAxis {
             ref_vector: [0.0, 1.0, 0.0],
         },
@@ -105,7 +108,6 @@ fn test_resolve_force_regime_auto() {
         kind: ElementKind::Beam,
         nodes: smallvec::smallvec![NodeId(0), NodeId(1)],
         section: Some(SectionId(0)),
-        material: Some(MaterialId(0)),
         local_axis: LocalAxis {
             ref_vector: [0.0, 1.0, 0.0],
         },
@@ -126,7 +128,6 @@ fn test_resolve_force_regime_auto() {
         kind: ElementKind::Beam,
         nodes: smallvec::smallvec![NodeId(0), NodeId(2)],
         section: Some(SectionId(0)),
-        material: Some(MaterialId(0)),
         local_axis: LocalAxis {
             ref_vector: [0.0, 1.0, 0.0],
         },
@@ -156,7 +157,6 @@ fn test_build_behavior_concentrated_spring_regime_is_elastic_beam() {
         kind: ElementKind::Beam,
         nodes: smallvec::smallvec![NodeId(0), NodeId(1)],
         section: Some(SectionId(0)),
-        material: Some(MaterialId(0)),
         local_axis: LocalAxis {
             ref_vector: [0.0, 1.0, 0.0],
         },
@@ -203,7 +203,6 @@ fn test_build_behavior_fiber_still_fiber() {
         kind: ElementKind::Beam,
         nodes: smallvec::smallvec![NodeId(0), NodeId(2)],
         section: Some(SectionId(0)),
-        material: Some(MaterialId(0)),
         local_axis: LocalAxis {
             ref_vector: [0.0, 1.0, 0.0],
         },
@@ -230,7 +229,6 @@ fn test_build_nonlinear_behavior_concentrated_spring_uses_spring_beam() {
         kind: ElementKind::Beam,
         nodes: smallvec::smallvec![NodeId(0), NodeId(1)],
         section: Some(SectionId(0)),
-        material: Some(MaterialId(0)),
         local_axis: LocalAxis {
             ref_vector: [0.0, 1.0, 0.0],
         },
@@ -270,7 +268,6 @@ fn test_build_nonlinear_behavior_fiber_uses_fiber_beam() {
         kind: ElementKind::Beam,
         nodes: smallvec::smallvec![NodeId(0), NodeId(2)],
         section: Some(SectionId(0)),
-        material: Some(MaterialId(0)),
         local_axis: LocalAxis {
             ref_vector: [0.0, 1.0, 0.0],
         },
@@ -329,6 +326,10 @@ fn make_brace_model(tension_only: bool) -> (Model, ElementData) {
             panel_thickness: None,
             thickness: None,
             shape: None,
+            material: Some(MaterialId(0)),
+            rebar_material: None,
+            shear_rebar_material: None,
+            steel_material: None,
         }],
         materials: vec![Material {
             strength_factor: None,
@@ -350,7 +351,6 @@ fn make_brace_model(tension_only: bool) -> (Model, ElementData) {
         kind: ElementKind::Brace { tension_only },
         nodes: smallvec::smallvec![NodeId(0), NodeId(1)],
         section: Some(SectionId(0)),
-        material: Some(MaterialId(0)),
         local_axis: LocalAxis {
             ref_vector: [0.0, 0.0, 1.0],
         },
@@ -440,6 +440,10 @@ fn test_build_behavior_wall_opening_reduces_shear_stiffness() {
             panel_thickness: None,
             thickness: Some(150.0),
             shape: None,
+            material: Some(MaterialId(0)),
+            rebar_material: None,
+            shear_rebar_material: None,
+            steel_material: None,
         }],
         materials: vec![Material {
             strength_factor: None,
@@ -461,7 +465,6 @@ fn test_build_behavior_wall_opening_reduces_shear_stiffness() {
         kind: ElementKind::Wall,
         nodes: smallvec::smallvec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
         section: Some(SectionId(0)),
-        material: Some(MaterialId(0)),
         local_axis: LocalAxis {
             ref_vector: [0.0, 1.0, 0.0],
         },
@@ -579,7 +582,6 @@ fn test_resolve_member_hysteresis_and_flexural_springs() {
 
     fn rebar() -> RcRebar {
         RcRebar {
-            main_grade: None,
             main_x: BarSet {
                 count: 4,
                 dia: 22.0,
@@ -595,7 +597,6 @@ fn test_resolve_member_hysteresis_and_flexural_springs() {
                 dia: 10.0,
                 pitch: 100.0,
                 legs: 2,
-                grade: None,
             },
         }
     }
@@ -606,7 +607,6 @@ fn test_resolve_member_hysteresis_and_flexural_springs() {
         kind: ElementKind::Beam,
         nodes: smallvec::smallvec![NodeId(0), NodeId(1)],
         section: Some(SectionId(0)),
-        material: Some(MaterialId(0)),
         local_axis: LocalAxis {
             ref_vector: [0.0, 1.0, 0.0],
         },
@@ -697,7 +697,6 @@ fn test_resolve_member_hysteresis_two_slots() {
         kind: ElementKind::Beam,
         nodes: smallvec::smallvec![NodeId(0), NodeId(1)],
         section: Some(SectionId(0)),
-        material: Some(MaterialId(0)),
         local_axis: LocalAxis {
             ref_vector: [0.0, 1.0, 0.0],
         },
@@ -749,7 +748,6 @@ fn test_resolve_fiber_concrete_hysteresis_defaults_and_overrides() {
         kind: ElementKind::Fiber,
         nodes: smallvec::smallvec![NodeId(0), NodeId(2)],
         section: Some(SectionId(0)),
-        material: Some(MaterialId(0)),
         local_axis: LocalAxis {
             ref_vector: [0.0, 1.0, 0.0],
         },
@@ -823,7 +821,6 @@ fn test_resolve_wall_shear_hysteresis_defaults_and_overrides() {
         kind: ElementKind::Wall,
         nodes: smallvec::smallvec![NodeId(0), NodeId(1), NodeId(2)],
         section: Some(SectionId(0)),
-        material: Some(MaterialId(0)),
         local_axis: LocalAxis {
             ref_vector: [0.0, 1.0, 0.0],
         },
@@ -873,7 +870,6 @@ fn test_flexural_alpha_y_sugano_for_rc_beam() {
         kind: ElementKind::Beam,
         nodes: smallvec::smallvec![NodeId(0), NodeId(1)],
         section: Some(SectionId(0)),
-        material: Some(MaterialId(0)),
         local_axis: LocalAxis {
             ref_vector: [0.0, 1.0, 0.0],
         },
@@ -894,7 +890,6 @@ fn test_flexural_alpha_y_sugano_for_rc_beam() {
         b: 400.0,
         d: 700.0,
         rebar: RcRebar {
-            main_grade: None,
             main_x: BarSet {
                 count: 4,
                 dia: 22.0,
@@ -910,7 +905,6 @@ fn test_flexural_alpha_y_sugano_for_rc_beam() {
                 dia: 10.0,
                 pitch: 100.0,
                 legs: 2,
-                grade: None,
             },
         },
     });
@@ -955,7 +949,6 @@ fn test_rc_beam_flexural_spring_exhibits_takeda_degradation() {
         kind: ElementKind::Beam,
         nodes: smallvec::smallvec![NodeId(0), NodeId(1)],
         section: Some(SectionId(0)),
-        material: Some(MaterialId(0)),
         local_axis: LocalAxis {
             ref_vector: [0.0, 1.0, 0.0],
         },
@@ -970,7 +963,6 @@ fn test_rc_beam_flexural_spring_exhibits_takeda_degradation() {
         b: 400.0,
         d: 700.0,
         rebar: RcRebar {
-            main_grade: None,
             main_x: BarSet {
                 count: 4,
                 dia: 22.0,
@@ -986,7 +978,6 @@ fn test_rc_beam_flexural_spring_exhibits_takeda_degradation() {
                 dia: 10.0,
                 pitch: 100.0,
                 legs: 2,
-                grade: None,
             },
         },
     });
@@ -1037,7 +1028,6 @@ fn test_steel_beam_flexural_spring_buckling_degrades() {
         kind: ElementKind::Beam,
         nodes: smallvec::smallvec![NodeId(0), NodeId(1)],
         section: Some(SectionId(0)),
-        material: Some(MaterialId(0)),
         local_axis: LocalAxis {
             ref_vector: [0.0, 1.0, 0.0],
         },

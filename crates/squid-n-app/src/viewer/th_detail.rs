@@ -687,11 +687,11 @@ fn draw_peak_check(
         ui.colored_label(theme::GRAY_600, "断面が未設定のため検定対象外です。");
         return;
     };
-    let Some(mat) = elem
-        .material
-        .and_then(|mid| app.model.materials.get(mid.index()))
-    else {
-        ui.colored_label(theme::GRAY_600, "材料が未設定のため検定対象外です。");
+    let Some(mat) = app.model.element_material(elem) else {
+        ui.colored_label(
+            theme::GRAY_600,
+            "断面に材料が割り当てられていないため検定対象外です。",
+        );
         return;
     };
 
@@ -728,6 +728,11 @@ fn draw_peak_check(
         rc_damage_control: app.analysis_cfg.rc_damage_control,
         end_moments_z,
         mid_moment_z: m_at(0.5),
+        // 材料は断面が持つ。RC・SRC の検定は主筋・せん断補強筋・内蔵鉄骨の材料を
+        // 要求するため、設計タブの検定（`actions.rs`）と同じく断面から解決して渡す。
+        rebar_material: app.model.element_rebar_material(elem).cloned(),
+        shear_rebar_material: app.model.element_shear_rebar_material(elem).cloned(),
+        steel_material: app.model.element_steel_material(elem).cloned(),
         ..Default::default()
     };
     // 検定器の選択は構造種別による（`squid_n_core::structure_kind`。

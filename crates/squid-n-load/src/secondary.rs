@@ -189,7 +189,6 @@ mod tests {
             kind: ElementKind::Beam,
             nodes: [NodeId(a), NodeId(b)].into_iter().collect(),
             section: None,
-            material: None,
             local_axis: LocalAxis {
                 ref_vector: [0.0, 0.0, 1.0],
             },
@@ -216,7 +215,6 @@ mod tests {
                 kind: SecondaryMemberKind::Joist,
                 nodes: [NodeId(2), NodeId(2)],
                 section: Some(SectionId(0)),
-                material: None,
                 name: "b1".into(),
             }],
             ..Default::default()

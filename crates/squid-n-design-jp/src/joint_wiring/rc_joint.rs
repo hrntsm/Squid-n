@@ -59,7 +59,7 @@ pub(super) fn check_rc_joint(
                         d,
                         at,
                         d_eff: d - dt,
-                        sigma_y: crate::material_strength::rebar_sigma_y(b.mat),
+                        sigma_y: crate::material_strength::rebar_sigma_y_of(b.rebar_mat),
                         fc: b.mat.fc.unwrap_or(0.0),
                         pw: 0.0,
                         sigma_wy: 0.0,
@@ -106,7 +106,7 @@ pub(super) fn check_rc_joint(
         // ないため。T にスラブ筋を含める場合と比べ Qdu を安全側に過小評価しうる）。
         let (t_top, t_bottom) = if let Some(SectionShape::RcRect { rebar, .. }) = &beam0.sec.shape {
             let half_area = squid_n_core::section_shape::bar_set_area(&rebar.main_x) / 2.0;
-            let sigma_y = crate::material_strength::rebar_sigma_y(beam0.mat);
+            let sigma_y = crate::material_strength::rebar_sigma_y_of(beam0.rebar_mat);
             (half_area * sigma_y, half_area * sigma_y)
         } else {
             (0.0, 0.0)

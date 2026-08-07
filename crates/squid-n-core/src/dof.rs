@@ -291,7 +291,6 @@ mod tests {
                 .into_iter()
                 .collect(),
                 section: None,
-                material: None,
                 local_axis: LocalAxis {
                     ref_vector: [0.0, 0.0, 1.0],
                 },
@@ -365,7 +364,6 @@ mod tests {
             kind: ElementKind::PanelZone,
             nodes: [NodeId(1), NodeId(0), NodeId(2)].into_iter().collect(),
             section: None,
-            material: None,
             local_axis: LocalAxis {
                 ref_vector: [0.0, 0.0, 1.0],
             },

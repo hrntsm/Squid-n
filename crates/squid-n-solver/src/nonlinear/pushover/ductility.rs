@@ -22,11 +22,7 @@ pub(crate) fn compute_ductility_refs(model: &Model) -> Vec<DuctilityRef> {
         .elements
         .iter()
         .map(|elem| {
-            let is_rc = elem
-                .material
-                .and_then(|mid| model.materials.get(mid.index()))
-                .and_then(|m| m.fc)
-                .is_some();
+            let is_rc = model.element_material(elem).and_then(|m| m.fc).is_some();
             if is_rc {
                 DuctilityRef {
                     tens: 0.01,

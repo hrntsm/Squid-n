@@ -60,6 +60,10 @@ fn get_section(model: &Model, sid: Option<squid_n_core::ids::SectionId>) -> Sect
         panel_thickness: None,
         thickness: None,
         shape: None,
+        material: None,
+        rebar_material: None,
+        shear_rebar_material: None,
+        steel_material: None,
     })
 }
 
@@ -112,7 +116,7 @@ impl TrussElement {
 
         let axis = LocalFrame::from_nodes(p0, p1, data.local_axis.ref_vector);
         let sec = get_section(model, data.section);
-        let mat = get_material(model, data.material);
+        let mat = get_material(model, sec_material(model, data));
 
         Self {
             id: data.id,
@@ -301,6 +305,14 @@ impl ElementBehavior for TrussElement {
     }
 }
 
+/// 要素の主材料 ID を断面経由で引く（材料は断面が持つ）。
+pub(crate) fn sec_material(
+    model: &Model,
+    data: &squid_n_core::model::ElementData,
+) -> Option<squid_n_core::ids::MaterialId> {
+    model.element_section(data).and_then(|s| s.material)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -344,6 +356,10 @@ mod tests {
                 panel_thickness: None,
                 thickness: None,
                 shape: None,
+                material: Some(MaterialId(0)),
+                rebar_material: None,
+                shear_rebar_material: None,
+                steel_material: None,
             }],
             materials: vec![Material {
                 strength_factor: None,
@@ -367,7 +383,6 @@ mod tests {
             },
             nodes: smallvec::smallvec![NodeId(0), NodeId(1)],
             section: Some(SectionId(0)),
-            material: Some(MaterialId(0)),
             local_axis: LocalAxis {
                 ref_vector: [0.0, 0.0, 1.0],
             },

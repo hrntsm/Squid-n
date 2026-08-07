@@ -30,7 +30,6 @@ fn iso_model(props: IsolatorProps) -> Model {
             kind: ElementKind::Isolator,
             nodes: smallvec::smallvec![NodeId(0), NodeId(1)],
             section: None,
-            material: None,
             local_axis: LocalAxis {
                 ref_vector: [1.0, 0.0, 0.0],
             },

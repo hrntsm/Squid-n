@@ -297,7 +297,6 @@ impl EditCommand for MaterializeSlabJoists {
                 kind: ElementKind::Beam,
                 nodes: [a, b].into_iter().collect(),
                 section: None,
-                material: None,
                 local_axis: LocalAxis {
                     ref_vector: [0.0, 0.0, 1.0],
                 },
@@ -462,7 +461,6 @@ impl EditCommand for PlaceSupportIsolator {
             kind: squid_n_core::model::ElementKind::Isolator,
             nodes: [ground_id, self.node].into_iter().collect(),
             section: None,
-            material: None,
             local_axis: squid_n_core::model::LocalAxis {
                 ref_vector: [1.0, 0.0, 0.0],
             },

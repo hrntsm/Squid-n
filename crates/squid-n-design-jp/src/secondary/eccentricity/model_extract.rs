@@ -102,15 +102,13 @@ pub fn column_stiffnesses(model: &Model, story: StoryId) -> Vec<ColumnStiffness>
         }
 
         // material / section が必須。
-        let mid = match elem.material {
-            Some(m) => m,
-            None => continue,
+        let Some(mat) = model.element_material(elem) else {
+            continue;
         };
         let sid = match elem.section {
             Some(s) => s,
             None => continue,
         };
-        let mat = &model.materials[mid.index()];
         let sec = &model.sections[sid.index()];
         let e = mat.young;
         let h = (p_top[2] - p_bot[2]).abs();

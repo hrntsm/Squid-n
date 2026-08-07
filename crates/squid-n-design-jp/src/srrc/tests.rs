@@ -54,13 +54,11 @@ pub(crate) fn src_rect_shape(
     steel_width: f64,
     steel_web_thick: f64,
     steel_flange_thick: f64,
-    steel_grade: &str,
 ) -> SectionShape {
     SectionShape::SrcRect {
         b,
         d,
         rebar: RcRebar {
-            main_grade: None,
             main_x: BarSet {
                 count: main_count,
                 dia: main_dia,
@@ -76,21 +74,19 @@ pub(crate) fn src_rect_shape(
                 dia: shear_dia,
                 pitch: shear_pitch,
                 legs: shear_legs,
-                grade: None,
             },
         },
         steel_height,
         steel_width,
         steel_web_thick,
         steel_flange_thick,
-        steel_grade: steel_grade.to_string(),
     }
 }
 
 /// SRC 柱の標準テスト断面（500x500、8-D22 主筋、内蔵鉄骨 300x200 H形）。
 pub(crate) fn src_column_shape() -> SectionShape {
     src_rect_shape(
-        500.0, 500.0, 8, 22.0, 2, 40.0, 10.0, 100.0, 2, 300.0, 200.0, 9.0, 14.0, "SN400B",
+        500.0, 500.0, 8, 22.0, 2, 40.0, 10.0, 100.0, 2, 300.0, 200.0, 9.0, 14.0,
     )
 }
 
@@ -109,20 +105,65 @@ pub(crate) fn zero_forces() -> MemberForcesAt {
     }
 }
 
-pub(crate) fn ctx_beam(term: LoadTerm) -> DesignCtx {
-    DesignCtx {
-        term,
-        kind: MemberKind::Beam,
-        ..Default::default()
+/// 鉄筋の材料（材料名がグレード名、`fy` が降伏点）。
+pub(crate) fn make_rebar_material(grade: &str, fy: f64) -> Material {
+    Material {
+        strength_factor: None,
+        concrete_class: Default::default(),
+        id: MaterialId(1),
+        name: grade.to_string(),
+        category: MaterialCategory::Rebar,
+        young: 205000.0,
+        poisson: 0.3,
+        density: 0.0,
+        shear: None,
+        fc: None,
+        fy: Some(fy),
     }
 }
 
-pub(crate) fn ctx_column(term: LoadTerm) -> DesignCtx {
+/// 内蔵鉄骨の材料（材料名が鋼種名。F 値の解決に用いる）。
+pub(crate) fn make_steel_material(grade: &str) -> Material {
+    Material {
+        strength_factor: None,
+        concrete_class: Default::default(),
+        id: MaterialId(2),
+        name: grade.to_string(),
+        category: MaterialCategory::Steel,
+        young: 205000.0,
+        poisson: 0.3,
+        density: 0.0,
+        shear: None,
+        fc: None,
+        fy: None,
+    }
+}
+
+/// SRC 検定の標準の材料構成（主筋 SD345・せん断補強筋 SD295A・内蔵鉄骨 SN400B）。
+/// 材料は断面が持つため、検定コンテキストへ渡して解決させる。
+fn ctx_materials(ctx: DesignCtx) -> DesignCtx {
     DesignCtx {
+        rebar_material: Some(make_rebar_material("SD345", 345.0)),
+        shear_rebar_material: Some(make_rebar_material("SD295A", 295.0)),
+        steel_material: Some(make_steel_material("SN400B")),
+        ..ctx
+    }
+}
+
+pub(crate) fn ctx_beam(term: LoadTerm) -> DesignCtx {
+    ctx_materials(DesignCtx {
+        term,
+        kind: MemberKind::Beam,
+        ..Default::default()
+    })
+}
+
+pub(crate) fn ctx_column(term: LoadTerm) -> DesignCtx {
+    ctx_materials(DesignCtx {
         term,
         kind: MemberKind::Column,
         ..Default::default()
-    }
+    })
 }
 
 // ------------------------------------------------------------------
@@ -132,7 +173,7 @@ pub(crate) fn ctx_column(term: LoadTerm) -> DesignCtx {
 #[test]
 fn test_src_beam_shear_split_handcalc() {
     let shape = src_rect_shape(
-        400.0, 700.0, 6, 22.0, 2, 40.0, 10.0, 100.0, 2, 500.0, 200.0, 9.0, 14.0, "SN400B",
+        400.0, 700.0, 6, 22.0, 2, 40.0, 10.0, 100.0, 2, 500.0, 200.0, 9.0, 14.0,
     );
     let rebar = match &shape {
         SectionShape::SrcRect { rebar, .. } => rebar.clone(),
@@ -188,7 +229,7 @@ fn test_src_shear_pw_capped_at_0_6_percent_both_terms() {
     // 過大なせん断補強筋比（pw > 0.6%）を与え、算定に使われる pw が
     // 0.6% に頭打ちされることを確認する。
     let shape = src_rect_shape(
-        400.0, 700.0, 6, 22.0, 2, 40.0, 13.0, 30.0, 4, 500.0, 200.0, 9.0, 14.0, "SN400B",
+        400.0, 700.0, 6, 22.0, 2, 40.0, 13.0, 30.0, 4, 500.0, 200.0, 9.0, 14.0,
     );
     let rebar = match &shape {
         SectionShape::SrcRect { rebar, .. } => rebar.clone(),
@@ -247,7 +288,7 @@ fn test_src_shear_pw_capped_at_0_6_percent_both_terms() {
 #[test]
 fn test_src_column_short_rc_allowable_has_no_alpha() {
     let shape = src_rect_shape(
-        400.0, 700.0, 6, 22.0, 2, 40.0, 13.0, 100.0, 2, 500.0, 200.0, 9.0, 14.0, "SN400B",
+        400.0, 700.0, 6, 22.0, 2, 40.0, 13.0, 100.0, 2, 500.0, 200.0, 9.0, 14.0,
     );
     let rebar = match &shape {
         SectionShape::SrcRect { rebar, .. } => rebar.clone(),
@@ -302,7 +343,7 @@ fn test_src_column_short_rc_allowable_has_no_alpha() {
 #[test]
 fn test_src_column_long_combined_formula() {
     let shape = src_rect_shape(
-        400.0, 700.0, 6, 22.0, 2, 40.0, 13.0, 100.0, 2, 500.0, 200.0, 9.0, 14.0, "SN400B",
+        400.0, 700.0, 6, 22.0, 2, 40.0, 13.0, 100.0, 2, 500.0, 200.0, 9.0, 14.0,
     );
     let rebar = match &shape {
         SectionShape::SrcRect { rebar, .. } => rebar.clone(),
@@ -388,6 +429,10 @@ fn test_src_shape_mismatch_skip() {
         panel_thickness: None,
         thickness: None,
         shape: None,
+        material: Some(MaterialId(0)),
+        rebar_material: None,
+        shear_rebar_material: None,
+        steel_material: None,
     };
     let mat = make_material(24.0, "SD345");
     let ctx = ctx_column(LoadTerm::Long);
@@ -409,7 +454,7 @@ fn test_src_shape_mismatch_skip() {
 fn test_src_beam_seismic_qd2_handcalc() {
     use crate::QdMethod;
     let shape = src_rect_shape(
-        400.0, 700.0, 6, 22.0, 2, 40.0, 10.0, 100.0, 2, 500.0, 200.0, 9.0, 14.0, "SN400B",
+        400.0, 700.0, 6, 22.0, 2, 40.0, 10.0, 100.0, 2, 500.0, 200.0, 9.0, 14.0,
     );
     let rebar = match &shape {
         SectionShape::SrcRect { rebar, .. } => rebar.clone(),
@@ -494,7 +539,7 @@ fn test_src_beam_seismic_qd2_handcalc() {
 fn test_src_beam_seismic_qd1_handcalc() {
     use crate::QdMethod;
     let shape = src_rect_shape(
-        400.0, 700.0, 6, 22.0, 2, 40.0, 10.0, 100.0, 2, 500.0, 200.0, 9.0, 14.0, "SN400B",
+        400.0, 700.0, 6, 22.0, 2, 40.0, 10.0, 100.0, 2, 500.0, 200.0, 9.0, 14.0,
     );
     let rebar = match &shape {
         SectionShape::SrcRect { rebar, .. } => rebar.clone(),
@@ -584,7 +629,7 @@ fn test_src_beam_seismic_qd1_handcalc() {
 #[test]
 fn test_src_beam_seismic_qd_none_falls_back_to_elastic_share() {
     let shape = src_rect_shape(
-        400.0, 700.0, 6, 22.0, 2, 40.0, 10.0, 100.0, 2, 500.0, 200.0, 9.0, 14.0, "SN400B",
+        400.0, 700.0, 6, 22.0, 2, 40.0, 10.0, 100.0, 2, 500.0, 200.0, 9.0, 14.0,
     );
     let rebar = match &shape {
         SectionShape::SrcRect { rebar, .. } => rebar.clone(),

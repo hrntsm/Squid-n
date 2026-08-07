@@ -345,12 +345,18 @@ pub fn materials_table(ui: &mut egui::Ui, app: &mut App) {
                 });
             }
             row.col(|ui| {
-                let in_use = app
-                    .model
-                    .elements
-                    .iter()
-                    .any(|e| e.material == Some(mat_id));
-                let blocked = in_use.then_some("部材から参照中のため削除できません");
+                // 削除ガード（`squid_n_edit` の `material_in_use`）と数える対象を
+                // 揃える。材料は断面が持つため、断面の 4 つの欄すべてを見る。
+                let in_use = app.model.sections.iter().any(|s| {
+                    [
+                        s.material,
+                        s.rebar_material,
+                        s.shear_rebar_material,
+                        s.steel_material,
+                    ]
+                    .contains(&Some(mat_id))
+                });
+                let blocked = in_use.then_some("断面から参照中のため削除できません");
                 if table_util::delete_cell(ui, "この材料を削除", blocked) {
                     pending_delete = Some(mat_id.0);
                 }

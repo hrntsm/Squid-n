@@ -8,8 +8,9 @@
 //! 持つと、片方だけに項目を足したときに「診断は通ったのに解析が止まる」状態が生まれる。
 //! **解析を妨げる不備の検査を増やすときは、必ず [`model_issues`] へ足すこと。**
 
-use squid_n_core::ids::{ElemId, NodeId};
+use squid_n_core::ids::{ElemId, MaterialId, NodeId};
 use squid_n_core::model::Model;
+use squid_n_core::section_shape::SectionShape;
 use squid_n_math::solver::SolveError;
 
 /// 不備の対象。診断一覧がクリックで 3D 選択・インスペクタへ結びつけるために持つ。
@@ -147,20 +148,84 @@ pub fn model_issues(model: &Model) -> Vec<ModelIssue> {
             "部材タブで断面を割り当ててください。",
         ));
     }
+    // 材料は断面が持つ。断面はあるがその断面に材料がない部材を拾う。
     let no_material: Vec<ElemId> = model
         .elements
         .iter()
         .filter(needs_input)
-        .filter(|e| e.material.is_none())
+        .filter(|e| e.section.is_some() && model.element_material(e).is_none())
         .map(|e| e.id)
         .collect();
     if !no_material.is_empty() {
         issues.push(ModelIssue::members(
-            "材料が未割当の部材があります",
+            "材料が未割当の断面を使う部材があります",
             "ID ",
             no_material,
-            "材料が未割当です",
-            "部材タブで材料を割り当ててください。",
+            "断面に材料が未割当です",
+            "断面タブで材料を割り当ててください。",
+        ));
+    }
+
+    // 配筋を持つ断面は主筋・せん断補強筋の、SRC 断面は内蔵鉄骨の材料が要る。
+    // 未割当のまま進むと許容応力度・終局耐力の σy や F 値が決まらないため、
+    // その断面を使う部材を名指しして止める（診断タブから 3D 選択できるよう、
+    // ほかの不備と同じく部材単位で挙げる）。
+    let uses_shape_with =
+        |e: &squid_n_core::model::ElementData,
+         want: fn(&SectionShape) -> bool,
+         slot: fn(&squid_n_core::model::Section) -> Option<MaterialId>| {
+            model
+                .element_section(e)
+                .is_some_and(|s| s.shape.as_ref().is_some_and(want) && slot(s).is_none())
+        };
+    let has_rebar = |sh: &SectionShape| {
+        matches!(
+            sh,
+            SectionShape::RcRect { .. }
+                | SectionShape::RcCircle { .. }
+                | SectionShape::SrcRect { .. }
+        )
+    };
+    let is_src = |sh: &SectionShape| matches!(sh, SectionShape::SrcRect { .. });
+    let collect_ids =
+        |want: fn(&SectionShape) -> bool,
+         slot: fn(&squid_n_core::model::Section) -> Option<MaterialId>| {
+            model
+                .elements
+                .iter()
+                .filter(needs_input)
+                .filter(|e| uses_shape_with(e, want, slot))
+                .map(|e| e.id)
+                .collect::<Vec<_>>()
+        };
+    let no_rebar = collect_ids(has_rebar, |s| s.rebar_material);
+    if !no_rebar.is_empty() {
+        issues.push(ModelIssue::members(
+            "主筋の材料が未割当の断面を使う部材があります",
+            "ID ",
+            no_rebar,
+            "断面に主筋の材料が未割当です",
+            "断面タブで主筋の材料を割り当ててください。",
+        ));
+    }
+    let no_shear_rebar = collect_ids(has_rebar, |s| s.shear_rebar_material);
+    if !no_shear_rebar.is_empty() {
+        issues.push(ModelIssue::members(
+            "せん断補強筋の材料が未割当の断面を使う部材があります",
+            "ID ",
+            no_shear_rebar,
+            "断面にせん断補強筋の材料が未割当です",
+            "断面タブでせん断補強筋の材料を割り当ててください。",
+        ));
+    }
+    let no_steel = collect_ids(is_src, |s| s.steel_material);
+    if !no_steel.is_empty() {
+        issues.push(ModelIssue::members(
+            "内蔵鉄骨の材料が未割当の SRC 断面を使う部材があります",
+            "ID ",
+            no_steel,
+            "断面に内蔵鉄骨の材料が未割当です",
+            "断面タブで内蔵鉄骨の材料を割り当ててください。",
         ));
     }
 

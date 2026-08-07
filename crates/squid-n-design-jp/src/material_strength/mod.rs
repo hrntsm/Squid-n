@@ -28,8 +28,8 @@ pub use high_strength_hoop::{
     ultimate_hoop_nu0, ultimate_hoop_pw_cap, ultimate_hoop_sigma_wy, HighStrengthGroup,
 };
 pub use rebar::{
-    main_rebar_grade, rebar_allowable_shear, rebar_allowable_tension, rebar_sigma_y,
-    rebar_sigma_y_of, shear_rebar_grade,
+    main_rebar_grade, rebar_allowable_shear, rebar_allowable_tension, rebar_sigma_y_of,
+    shear_rebar_grade,
 };
 pub use steel::{
     big_lambda, plate_thickness, steel_f_value, steel_f_value_prefix, steel_fc, steel_fs, steel_ft,
@@ -121,6 +121,8 @@ mod tests {
         assert!((rebar_allowable_shear("USD685", false) - 590.0).abs() < 1e-9);
     }
 
+    /// σy は断面の主筋材料の `fy` だけから決まる。材料名からの推定は行わない
+    /// （材料名は許容応力度表の引き当てにのみ用いる）。
     #[test]
     fn test_rebar_sigma_y_sources() {
         let mut m = Material {
@@ -136,12 +138,12 @@ mod tests {
             fc: Some(24.0),
             fy: None,
         };
-        assert!((rebar_sigma_y(&m) - 390.0).abs() < 1e-9);
+        // fy が無ければ 0（検定の入口で止まるため耐力算定へは流れない）。
+        assert!(rebar_sigma_y_of(Some(&m)).abs() < 1e-9);
         m.fy = Some(400.0);
-        assert!((rebar_sigma_y(&m) - 400.0).abs() < 1e-9);
-        m.fy = None;
-        m.name = "unknown".to_string();
-        assert!((rebar_sigma_y(&m) - 345.0).abs() < 1e-9);
+        assert!((rebar_sigma_y_of(Some(&m)) - 400.0).abs() < 1e-9);
+        // 主筋の材料が未割当でも 0 とし、既定値をでっち上げない。
+        assert!(rebar_sigma_y_of(None).abs() < 1e-9);
     }
 
     // ------------------------------------------------------------------

@@ -124,9 +124,7 @@ fn section_material<'m>(
     let sec = elem
         .section
         .and_then(|sid| model.sections.get(sid.index()))?;
-    let mat = elem
-        .material
-        .and_then(|mid| model.materials.get(mid.index()))?;
+    let mat = model.element_material(elem)?;
     Some((sec, mat))
 }
 
@@ -490,7 +488,6 @@ mod tests {
                 v
             },
             section: Some(SectionId(0)),
-            material: Some(MaterialId(0)),
             local_axis: LocalAxis {
                 ref_vector: [0.0, 0.0, 1.0],
             },
@@ -518,6 +515,10 @@ mod tests {
             panel_thickness: None,
             thickness: None,
             shape: None,
+            material: Some(MaterialId(0)),
+            rebar_material: None,
+            shear_rebar_material: None,
+            steel_material: None,
         }
     }
 
@@ -606,8 +607,13 @@ mod tests {
         rc.name = "Fc24".to_string();
         rc.young = 20_500.0;
         model.materials.push(rc);
+        // 材料は断面が持つ。梁用に RC の断面を足して差し替える。
+        let mut rc_sec = model.sections[0].clone();
+        rc_sec.id = SectionId(1);
+        rc_sec.material = Some(MaterialId(1));
+        model.sections.push(rc_sec);
         for e in &mut model.elements[1..] {
-            e.material = Some(MaterialId(1));
+            e.section = Some(SectionId(1));
         }
         let k_rc = steel_column_k(&model, &model.elements[0]).unwrap();
         let steel_model = portal_model(4000.0, 8000.0);

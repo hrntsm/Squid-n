@@ -47,6 +47,10 @@ fn two_story_model() -> Model {
         panel_thickness: None,
         thickness: None,
         shape: None,
+        material: Some(MaterialId(0)),
+        rebar_material: None,
+        shear_rebar_material: None,
+        steel_material: None,
     });
     model.materials.push(Material {
         strength_factor: None,
@@ -69,7 +73,6 @@ fn two_story_model() -> Model {
             kind: ElementKind::Beam,
             nodes: [NodeId(*a), NodeId(*b)].into_iter().collect(),
             section: Some(SectionId(0)),
-            material: Some(MaterialId(0)),
             local_axis: LocalAxis {
                 ref_vector: [0.0, 0.0, 1.0],
             },
@@ -361,6 +364,10 @@ fn two_columns_with_dl_model() -> Model {
         panel_thickness: None,
         thickness: None,
         shape: None,
+        material: Some(MaterialId(0)),
+        rebar_material: None,
+        shear_rebar_material: None,
+        steel_material: None,
     });
     model.materials.push(Material {
         strength_factor: None,
@@ -381,7 +388,6 @@ fn two_columns_with_dl_model() -> Model {
             kind: ElementKind::Beam,
             nodes: [NodeId(a), NodeId(b)].into_iter().collect(),
             section: Some(SectionId(0)),
-            material: Some(MaterialId(0)),
             local_axis: LocalAxis {
                 ref_vector: [1.0, 0.0, 0.0],
             },
@@ -536,6 +542,10 @@ fn secondary_joist_model() -> Model {
         panel_thickness: None,
         thickness: None,
         shape: None,
+        material: Some(MaterialId(0)),
+        rebar_material: None,
+        shear_rebar_material: None,
+        steel_material: None,
     });
     model.materials.push(Material {
         strength_factor: None,
@@ -554,7 +564,6 @@ fn secondary_joist_model() -> Model {
         kind: SecondaryMemberKind::Joist,
         nodes: [NodeId(1), NodeId(2)],
         section: Some(SectionId(0)),
-        material: Some(MaterialId(0)),
         name: "G1".into(),
     });
     model
@@ -624,6 +633,10 @@ fn single_beam_model(
         panel_thickness: None,
         thickness: None,
         shape: None,
+        material: Some(MaterialId(0)),
+        rebar_material: None,
+        shear_rebar_material: None,
+        steel_material: None,
     });
     model.materials.push(Material {
         strength_factor: None,
@@ -643,7 +656,6 @@ fn single_beam_model(
         kind: ElementKind::Beam,
         nodes: [NodeId(0), NodeId(1)].into_iter().collect(),
         section: Some(SectionId(0)),
-        material: Some(MaterialId(0)),
         local_axis: LocalAxis {
             ref_vector: [1.0, 0.0, 0.0],
         },
@@ -737,7 +749,6 @@ fn test_member_load_reaction_distribution_end_to_end() {
         kind: ElementKind::Beam,
         nodes: [NodeId(2), NodeId(3)].into_iter().collect(),
         section: None,
-        material: None,
         local_axis: LocalAxis {
             ref_vector: [0.0, 0.0, 1.0],
         },
@@ -850,6 +861,10 @@ fn test_face_reduction_applies_to_horizontal_concrete_beam() {
         panel_thickness: None,
         thickness: None,
         shape: None,
+        material: Some(MaterialId(0)),
+        rebar_material: None,
+        shear_rebar_material: None,
+        steel_material: None,
     });
     model.materials.push(Material {
         strength_factor: None,
@@ -870,7 +885,6 @@ fn test_face_reduction_applies_to_horizontal_concrete_beam() {
         kind: ElementKind::Beam,
         nodes: [NodeId(1), NodeId(2)].into_iter().collect(),
         section: Some(SectionId(0)),
-        material: Some(MaterialId(0)),
         local_axis: LocalAxis {
             ref_vector: [0.0, 0.0, 1.0],
         },
@@ -1004,6 +1018,10 @@ fn wall_model() -> Model {
         panel_thickness: None,
         thickness: Some(150.0),
         shape: None,
+        material: Some(MaterialId(0)),
+        rebar_material: None,
+        shear_rebar_material: None,
+        steel_material: None,
     });
     model.materials.push(Material {
         strength_factor: None,
@@ -1025,7 +1043,6 @@ fn wall_model() -> Model {
             .into_iter()
             .collect(),
         section: Some(SectionId(0)),
-        material: Some(MaterialId(0)),
         local_axis: LocalAxis {
             ref_vector: [0.0, 0.0, 1.0],
         },
@@ -1078,6 +1095,10 @@ fn test_wall_self_weight_uses_clear_dimensions_of_boundary_members() {
         panel_thickness: None,
         thickness: None,
         shape: None,
+        material: Some(MaterialId(0)),
+        rebar_material: None,
+        shear_rebar_material: None,
+        steel_material: None,
     });
     model.sections.push(Section {
         id: SectionId(2),
@@ -1094,13 +1115,16 @@ fn test_wall_self_weight_uses_clear_dimensions_of_boundary_members() {
         panel_thickness: None,
         thickness: None,
         shape: None,
+        material: Some(MaterialId(0)),
+        rebar_material: None,
+        shear_rebar_material: None,
+        steel_material: None,
     });
     let line = |id: u32, sec: u32, n0: u32, n1: u32| ElementData {
         id: ElemId(id),
         kind: ElementKind::Beam,
         nodes: [NodeId(n0), NodeId(n1)].into_iter().collect(),
         section: Some(SectionId(sec)),
-        material: Some(MaterialId(0)),
         local_axis: LocalAxis {
             ref_vector: [0.0, 0.0, 1.0],
         },
@@ -1344,6 +1368,10 @@ fn test_misc_wall_column_transfer_splits_to_column_ends() {
         panel_thickness: None,
         thickness: None,
         shape: None,
+        material: Some(MaterialId(0)),
+        rebar_material: None,
+        shear_rebar_material: None,
+        steel_material: None,
     });
     model.materials.push(Material {
         strength_factor: None,
@@ -1363,7 +1391,6 @@ fn test_misc_wall_column_transfer_splits_to_column_ends() {
         kind: ElementKind::Beam,
         nodes: [NodeId(0), NodeId(1)].into_iter().collect(),
         section: Some(SectionId(0)),
-        material: Some(MaterialId(0)),
         local_axis: LocalAxis {
             ref_vector: [1.0, 0.0, 0.0],
         },
@@ -1520,6 +1547,10 @@ fn test_finish_area_weight_beam_perimeter_three_side() {
         panel_thickness: None,
         thickness: None,
         shape: None,
+        material: Some(MaterialId(0)),
+        rebar_material: None,
+        shear_rebar_material: None,
+        steel_material: None,
     });
     model.materials.push(Material {
         strength_factor: None,
@@ -1539,7 +1570,6 @@ fn test_finish_area_weight_beam_perimeter_three_side() {
         kind: ElementKind::Beam,
         nodes: [NodeId(1), NodeId(2)].into_iter().collect(),
         section: Some(SectionId(0)),
-        material: Some(MaterialId(0)),
         local_axis: LocalAxis {
             ref_vector: [0.0, 0.0, 1.0],
         },
@@ -1612,6 +1642,10 @@ fn test_base_column_without_lower_column_adds_max_beam_depth() {
         panel_thickness: None,
         thickness: None,
         shape: None,
+        material: Some(MaterialId(0)),
+        rebar_material: None,
+        shear_rebar_material: None,
+        steel_material: None,
     });
     model.sections.push(Section {
         id: SectionId(1),
@@ -1628,6 +1662,10 @@ fn test_base_column_without_lower_column_adds_max_beam_depth() {
         panel_thickness: None,
         thickness: None,
         shape: None,
+        material: Some(MaterialId(0)),
+        rebar_material: None,
+        shear_rebar_material: None,
+        steel_material: None,
     });
     model.materials.push(Material {
         strength_factor: None,
@@ -1647,7 +1685,6 @@ fn test_base_column_without_lower_column_adds_max_beam_depth() {
         kind: ElementKind::Beam,
         nodes: [NodeId(0), NodeId(1)].into_iter().collect(),
         section: Some(SectionId(0)),
-        material: Some(MaterialId(0)),
         local_axis: LocalAxis {
             ref_vector: [1.0, 0.0, 0.0],
         },
@@ -1662,7 +1699,6 @@ fn test_base_column_without_lower_column_adds_max_beam_depth() {
         kind: ElementKind::Beam,
         nodes: [NodeId(0), NodeId(2)].into_iter().collect(),
         section: Some(SectionId(1)),
-        material: Some(MaterialId(0)),
         local_axis: LocalAxis {
             ref_vector: [0.0, 0.0, 1.0],
         },
@@ -1733,6 +1769,10 @@ fn test_base_column_with_lower_column_does_not_add_beam_depth() {
         panel_thickness: None,
         thickness: None,
         shape: None,
+        material: Some(MaterialId(0)),
+        rebar_material: None,
+        shear_rebar_material: None,
+        steel_material: None,
     });
     model.sections.push(Section {
         id: SectionId(1),
@@ -1749,6 +1789,10 @@ fn test_base_column_with_lower_column_does_not_add_beam_depth() {
         panel_thickness: None,
         thickness: None,
         shape: None,
+        material: Some(MaterialId(0)),
+        rebar_material: None,
+        shear_rebar_material: None,
+        steel_material: None,
     });
     model.sections.push(Section {
         id: SectionId(2),
@@ -1765,6 +1809,10 @@ fn test_base_column_with_lower_column_does_not_add_beam_depth() {
         panel_thickness: None,
         thickness: None,
         shape: None,
+        material: Some(MaterialId(0)),
+        rebar_material: None,
+        shear_rebar_material: None,
+        steel_material: None,
     });
     model.materials.push(Material {
         strength_factor: None,
@@ -1785,7 +1833,6 @@ fn test_base_column_with_lower_column_does_not_add_beam_depth() {
         kind: ElementKind::Beam,
         nodes: [NodeId(0), NodeId(1)].into_iter().collect(),
         section: Some(SectionId(1)),
-        material: Some(MaterialId(0)),
         local_axis: LocalAxis {
             ref_vector: [1.0, 0.0, 0.0],
         },
@@ -1801,7 +1848,6 @@ fn test_base_column_with_lower_column_does_not_add_beam_depth() {
         kind: ElementKind::Beam,
         nodes: [NodeId(1), NodeId(2)].into_iter().collect(),
         section: Some(SectionId(0)),
-        material: Some(MaterialId(0)),
         local_axis: LocalAxis {
             ref_vector: [1.0, 0.0, 0.0],
         },
@@ -1817,7 +1863,6 @@ fn test_base_column_with_lower_column_does_not_add_beam_depth() {
         kind: ElementKind::Beam,
         nodes: [NodeId(1), NodeId(3)].into_iter().collect(),
         section: Some(SectionId(2)),
-        material: Some(MaterialId(0)),
         local_axis: LocalAxis {
             ref_vector: [0.0, 0.0, 1.0],
         },
@@ -1884,6 +1929,10 @@ fn k_brace_model(rule: KBraceWeightRule) -> Model {
         panel_thickness: None,
         thickness: None,
         shape: None,
+        material: Some(MaterialId(0)),
+        rebar_material: None,
+        shear_rebar_material: None,
+        steel_material: None,
     });
     // ブレース1(node2-node4)
     model.sections.push(Section {
@@ -1901,6 +1950,10 @@ fn k_brace_model(rule: KBraceWeightRule) -> Model {
         panel_thickness: None,
         thickness: None,
         shape: None,
+        material: Some(MaterialId(0)),
+        rebar_material: None,
+        shear_rebar_material: None,
+        steel_material: None,
     });
     // ブレース2(node3-node4): 面積を2倍にして非対称にする
     model.sections.push(Section {
@@ -1918,6 +1971,10 @@ fn k_brace_model(rule: KBraceWeightRule) -> Model {
         panel_thickness: None,
         thickness: None,
         shape: None,
+        material: Some(MaterialId(0)),
+        rebar_material: None,
+        shear_rebar_material: None,
+        steel_material: None,
     });
     model.materials.push(Material {
         strength_factor: None,
@@ -1940,7 +1997,6 @@ fn k_brace_model(rule: KBraceWeightRule) -> Model {
         kind: ElementKind::Beam,
         nodes: [NodeId(0), NodeId(2)].into_iter().collect(),
         section: Some(SectionId(0)),
-        material: Some(MaterialId(0)),
         local_axis: axis,
         end_cond: [EndCondition::Fixed, EndCondition::Fixed],
         force_regime: ForceRegime::Auto,
@@ -1953,7 +2009,6 @@ fn k_brace_model(rule: KBraceWeightRule) -> Model {
         kind: ElementKind::Beam,
         nodes: [NodeId(1), NodeId(3)].into_iter().collect(),
         section: Some(SectionId(0)),
-        material: Some(MaterialId(0)),
         local_axis: axis,
         end_cond: [EndCondition::Fixed, EndCondition::Fixed],
         force_regime: ForceRegime::Auto,
@@ -1968,7 +2023,6 @@ fn k_brace_model(rule: KBraceWeightRule) -> Model {
         },
         nodes: [NodeId(2), NodeId(4)].into_iter().collect(),
         section: Some(SectionId(1)),
-        material: Some(MaterialId(0)),
         local_axis: axis,
         end_cond: [EndCondition::Fixed, EndCondition::Fixed],
         force_regime: ForceRegime::Auto,
@@ -1983,7 +2037,6 @@ fn k_brace_model(rule: KBraceWeightRule) -> Model {
         },
         nodes: [NodeId(3), NodeId(4)].into_iter().collect(),
         section: Some(SectionId(2)),
-        material: Some(MaterialId(0)),
         local_axis: axis,
         end_cond: [EndCondition::Fixed, EndCondition::Fixed],
         force_regime: ForceRegime::Auto,
@@ -2089,12 +2142,10 @@ fn two_story_model_with_shapes(
         } else {
             SectionId(1)
         });
-        e.material = Some(if lower_story {
-            MaterialId(0)
-        } else {
-            MaterialId(1)
-        });
     }
+    // 材料は断面が持つ。断面 0 = 1F、断面 1 = 2F にそれぞれ割り当てる。
+    model.sections[0].material = Some(MaterialId(0));
+    model.sections[1].material = Some(MaterialId(1));
     model
 }
 
@@ -2109,7 +2160,6 @@ fn rc_rect_shape() -> squid_n_core::section_shape::SectionShape {
         b: 600.0,
         d: 600.0,
         rebar: RcRebar {
-            main_grade: None,
             main_x: bars.clone(),
             main_y: bars,
             cover: 40.0,
@@ -2117,7 +2167,6 @@ fn rc_rect_shape() -> squid_n_core::section_shape::SectionShape {
                 dia: 10.0,
                 pitch: 100.0,
                 legs: 2,
-                grade: None,
             },
         },
     }
@@ -2178,7 +2227,9 @@ fn test_generate_story_structure_defaults_to_rc_without_section_and_material() {
     let mut model = two_story_model();
     for e in &mut model.elements {
         e.section = None;
-        e.material = None;
+    }
+    for s in &mut model.sections {
+        s.material = None;
     }
     let gen = generate_stories(&model, Some(LoadCaseId(0))).unwrap();
     assert!(gen

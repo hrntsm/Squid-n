@@ -173,6 +173,10 @@ pub fn rebar_f_value(name: &str) -> Option<f64> {
 
 /// 鉄筋のグレード名から降伏点（基準強度）[N/mm²] を解決する。
 ///
+/// **取り込みの境界専用**。ST-Bridge の `strength_main` などグレード名しか持たない
+/// 入力から材料を起こすときに使う。名称末尾の数値を強度とみなす推定を含むため、
+/// 内部の強度解決には用いない（[`rebar_yield_strength`]）。
+///
 /// [`rebar_f_value`]（異形鉄筋 `SD`・丸鋼 `SR` の接頭辞規則）で解けない名称は、
 /// 大臣認定品の高強度鉄筋として**名称末尾の数値**を強度とみなす
 /// （`USD685` → 685、`KH785`（スーパーフープ）→ 785、`SBPD1275` → 1275 等。
@@ -196,28 +200,26 @@ pub fn rebar_grade_f_value(name: &str) -> Option<f64> {
 
 /// RC 主筋の降伏点 σy [N/mm²] を解決する。
 ///
-/// 断面（配筋）の主筋材質 [`crate::section_shape::RcRebar::main_grade`] を第一に、
-/// なければ部材材料の `fy` を用いる。どちらもない場合は `None` を返し、**既定値で
-/// 埋めない**（未入力のまま既定 345 N/mm² を用いると、SD295 の部材で耐力を過大評価
-/// する＝危険側になるため。非線形解析は `None` を入力不備として停止する）。
-pub fn rebar_yield_strength(
-    main_grade: Option<&str>,
-    mat: Option<&crate::model::Material>,
-) -> Option<f64> {
-    if let Some(v) = main_grade.and_then(rebar_grade_f_value) {
-        return Some(v);
-    }
-    mat.and_then(|m| m.fy).filter(|v| *v > 0.0)
+/// 断面の主筋材料（[`crate::model::Section::rebar_material`]）の `fy` を用いる。
+/// 未割当・`fy` 未設定は `None` を返し、**既定値で埋めない**（未入力のまま既定
+/// 345 N/mm² を用いると、SD295 の部材で耐力を過大評価する＝危険側になるため。
+/// 非線形解析は `None` を入力不備として停止する）。
+///
+/// グレード名から強度を推定するのは**取り込みの境界だけ**の役目とし
+/// （[`rebar_grade_f_value`]）、内部では材料テーブルの値だけを見る。名称の
+/// 打ち間違いがそのまま強度として通ることを構造的に防ぐためである。
+pub fn rebar_yield_strength(rebar_mat: Option<&crate::model::Material>) -> Option<f64> {
+    rebar_mat.and_then(|m| m.fy).filter(|v| *v > 0.0)
 }
 
 /// せん断補強筋の降伏点 σwy [N/mm²] を解決する。
 ///
-/// 断面（配筋）のせん断補強筋材質 [`crate::section_shape::ShearBar::grade`] から
-/// 解決する。未設定は `None` を返し、呼び出し側は普通強度せん断補強筋の
+/// 断面のせん断補強筋材料（[`crate::model::Section::shear_rebar_material`]）の
+/// `fy` を用いる。未設定は `None` を返し、呼び出し側は普通強度せん断補強筋の
 /// SD295 相当（295）を既定とする（規格上の最小グレードであり、実際がより高強度でも
 /// 耐力を過小評価する側＝安全側に外れる）。
-pub fn shear_rebar_yield_strength(grade: Option<&str>) -> Option<f64> {
-    grade.and_then(rebar_grade_f_value)
+pub fn shear_rebar_yield_strength(mat: Option<&crate::model::Material>) -> Option<f64> {
+    mat.and_then(|m| m.fy).filter(|v| *v > 0.0)
 }
 
 /// せん断補強筋の材質が未設定の場合に用いる降伏点 σwy [N/mm²]（SD295 相当）。
@@ -557,41 +559,46 @@ mod tests {
         assert_eq!(rebar_grade_f_value("不明"), None);
     }
 
-    /// 主筋 σy は「断面の主筋材質 → 部材材料の fy」の順で解決し、
-    /// どちらもなければ None（既定値で埋めない）。
-    #[test]
-    fn test_rebar_yield_strength_resolution_order() {
-        let mut mat = crate::model::Material {
+    /// 鉄筋材料の見本（`fy` を指定して作る）。
+    fn rebar_mat(name: &str, fy: Option<f64>) -> crate::model::Material {
+        crate::model::Material {
             strength_factor: None,
             concrete_class: Default::default(),
             id: crate::ids::MaterialId(0),
-            name: "Fc24".into(),
-            category: MaterialCategory::Concrete,
-            young: 23000.0,
-            poisson: 0.2,
+            name: name.into(),
+            category: MaterialCategory::Rebar,
+            young: 205000.0,
+            poisson: 0.3,
             density: 0.0,
             shear: None,
-            fc: Some(24.0),
-            fy: None,
-        };
-        // 断面の主筋材質が最優先。
-        assert_eq!(
-            rebar_yield_strength(Some("SD295A"), Some(&mat)),
-            Some(295.0)
-        );
-        // 材質未設定なら材料の fy。
-        mat.fy = Some(390.0);
-        assert_eq!(rebar_yield_strength(None, Some(&mat)), Some(390.0));
-        // 両方なければ None（呼び出し側が入力不備として扱う）。
-        mat.fy = None;
-        assert_eq!(rebar_yield_strength(None, Some(&mat)), None);
+            fc: None,
+            fy,
+        }
     }
 
-    /// せん断補強筋 σwy は材質から解決し、未設定は None（既定 295 は呼び出し側）。
+    /// 主筋 σy は断面の主筋材料の `fy` だけから決まる。材料が未割当のとき、
+    /// および `fy` が未設定・非正値のときは None（既定値で埋めない）。
+    #[test]
+    fn test_rebar_yield_strength_resolution_order() {
+        let mut mat = rebar_mat("SD295A", Some(295.0));
+        assert_eq!(rebar_yield_strength(Some(&mat)), Some(295.0));
+        // fy 未設定は None（材料名 "SD295A" からは推定しない）。
+        mat.fy = None;
+        assert_eq!(rebar_yield_strength(Some(&mat)), None);
+        // 非正値も未設定と同じ扱いにする。
+        mat.fy = Some(0.0);
+        assert_eq!(rebar_yield_strength(Some(&mat)), None);
+        // 主筋の材料が未割当のときも None（呼び出し側が入力不備として扱う）。
+        assert_eq!(rebar_yield_strength(None), None);
+    }
+
+    /// せん断補強筋 σwy も材料の `fy` から解決し、未設定は None（既定 295 は呼び出し側）。
     #[test]
     fn test_shear_rebar_yield_strength() {
-        assert_eq!(shear_rebar_yield_strength(Some("SD295A")), Some(295.0));
-        assert_eq!(shear_rebar_yield_strength(Some("KH785")), Some(785.0));
+        let mat = rebar_mat("SD295A", Some(295.0));
+        assert_eq!(shear_rebar_yield_strength(Some(&mat)), Some(295.0));
+        let high = rebar_mat("KH785", Some(785.0));
+        assert_eq!(shear_rebar_yield_strength(Some(&high)), Some(785.0));
         assert_eq!(shear_rebar_yield_strength(None), None);
         assert_eq!(SHEAR_REBAR_DEFAULT_FY, 295.0);
     }

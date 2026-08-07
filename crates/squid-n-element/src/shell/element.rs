@@ -48,9 +48,7 @@ impl ShellElement {
         // して顕在化させる（従来は t=100・E=205000 として静かに解析されていた）。
         let t = sec.and_then(|s| s.thickness).unwrap_or(0.0);
 
-        let mat = data
-            .material
-            .and_then(|mid| model.materials.get(mid.index()));
+        let mat = model.element_material(data);
         let e = mat.map(|m| m.young).unwrap_or(0.0);
         let nu = mat.map(|m| m.poisson).unwrap_or(0.3);
 

@@ -40,13 +40,16 @@ fn sample_model() -> Model {
             panel_thickness: None,
             thickness: None,
             shape: None,
+            material: Some(MaterialId(0)),
+            rebar_material: None,
+            shear_rebar_material: None,
+            steel_material: None,
         }],
         elements: vec![ElementData {
             id: ElemId(0),
             kind: ElementKind::Beam,
             nodes: smallvec::smallvec![NodeId(0), NodeId(1)],
             section: Some(SectionId(0)),
-            material: Some(MaterialId(0)),
             local_axis: LocalAxis {
                 ref_vector: [0.0, 1.0, 0.0],
             },
@@ -79,6 +82,23 @@ fn test_query_model_elements_and_sections() {
     let secs = query_model(&m, "section", None);
     assert_eq!(secs.len(), 1);
     assert_eq!(secs[0]["name"], "H-400");
+}
+
+/// 断面の問い合わせは材料 4 欄を出す。材料は断面が持ち、未割当は解析前チェックが
+/// 止めるため、どの断面のどの欄が空かを問い合わせ側から追えるようにする。
+#[test]
+fn test_query_model_sections_expose_materials() {
+    let mut m = sample_model();
+    m.sections[0].rebar_material = None;
+    let secs = query_model(&m, "section", None);
+    assert_eq!(secs[0]["material"], 0, "主材料の ID を出す");
+    assert!(
+        secs[0]["rebar_material"].is_null(),
+        "未割当の欄は null で見分けられる"
+    );
+    for key in ["floor", "shear_rebar_material", "steel_material"] {
+        assert!(secs[0].get(key).is_some(), "{key} の欄がある");
+    }
 }
 
 #[test]
@@ -137,7 +157,6 @@ fn rc_column_model() -> Model {
     use squid_n_core::section_shape::{BarSet, RcRebar, SectionShape, ShearBar};
 
     let rebar = RcRebar {
-        main_grade: None,
         main_x: BarSet {
             count: 8,
             dia: 25.0,
@@ -153,7 +172,6 @@ fn rc_column_model() -> Model {
             dia: 10.0,
             pitch: 100.0,
             legs: 2,
-            grade: None,
         },
     };
     let shape = SectionShape::RcRect {
@@ -180,26 +198,46 @@ fn rc_column_model() -> Model {
                 support_spring: None,
             },
         ],
-        sections: vec![shape.to_section(SectionId(0), "C600".into())],
-        materials: vec![Material {
-            strength_factor: None,
-            concrete_class: Default::default(),
-            id: MaterialId(0),
-            name: "SD345".into(),
-            category: MaterialCategory::Rebar,
-            young: 23000.0,
-            poisson: 0.2,
-            density: 2.4e-9,
-            shear: None,
-            fc: Some(24.0),
-            fy: Some(345.0),
+        // 材料は断面が持つ。RC 断面は主筋・せん断補強筋も要る。
+        sections: vec![Section {
+            material: Some(MaterialId(0)),
+            rebar_material: Some(MaterialId(1)),
+            shear_rebar_material: Some(MaterialId(1)),
+            ..shape.to_section(SectionId(0), "C600".into())
         }],
+        materials: vec![
+            Material {
+                strength_factor: None,
+                concrete_class: Default::default(),
+                id: MaterialId(0),
+                name: "Fc24".into(),
+                category: MaterialCategory::Concrete,
+                young: 23000.0,
+                poisson: 0.2,
+                density: 2.4e-9,
+                shear: None,
+                fc: Some(24.0),
+                fy: None,
+            },
+            Material {
+                strength_factor: None,
+                concrete_class: Default::default(),
+                id: MaterialId(1),
+                name: "SD345".into(),
+                category: MaterialCategory::Rebar,
+                young: 205000.0,
+                poisson: 0.3,
+                density: 7.85e-9,
+                shear: None,
+                fc: None,
+                fy: Some(345.0),
+            },
+        ],
         elements: vec![ElementData {
             id: ElemId(0),
             kind: ElementKind::Beam,
             nodes: smallvec::smallvec![NodeId(0), NodeId(1)],
             section: Some(SectionId(0)),
-            material: Some(MaterialId(0)),
             local_axis: LocalAxis {
                 ref_vector: [1.0, 0.0, 0.0],
             },

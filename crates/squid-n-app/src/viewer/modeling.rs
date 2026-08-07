@@ -1270,7 +1270,6 @@ mod tests {
             kind,
             nodes: smallvec![NodeId(0), NodeId(1)],
             section: None,
-            material: None,
             local_axis: LocalAxis {
                 ref_vector: [0.0, 0.0, 1.0],
             },
@@ -1403,6 +1402,10 @@ mod tests {
             panel_thickness: None,
             thickness: None,
             shape: None,
+            material: Some(MaterialId(0)),
+            rebar_material: None,
+            shear_rebar_material: None,
+            steel_material: None,
         }
     }
 
@@ -1412,7 +1415,6 @@ mod tests {
             kind: ElementKind::Beam,
             nodes: smallvec![NodeId(n0), NodeId(n1)],
             section: Some(SectionId(sec)),
-            material: Some(MaterialId(0)),
             local_axis: LocalAxis {
                 ref_vector: [0.0, 1.0, 0.0],
             },
@@ -1520,7 +1522,6 @@ mod tests {
         let mut wall = elem(ElementKind::Wall, ForceRegime::Auto);
         wall.nodes = smallvec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)];
         wall.section = Some(SectionId(0));
-        wall.material = Some(MaterialId(0));
 
         let edge = |id: u32, n0: u32, n1: u32| {
             let mut e = elem(ElementKind::Beam, ForceRegime::Auto);
@@ -1619,10 +1620,10 @@ mod tests {
             fc: Some(24.0),
             fy: None,
         });
+        // 材料は断面が持つ（`depth_section` が材料 0 を割り当てる）。
         model.sections.push(depth_section(1, 600.0));
         for e in model.elements.iter_mut().filter(|e| e.id != ElemId(0)) {
             e.section = Some(SectionId(1));
-            e.material = Some(MaterialId(0));
         }
 
         let girders: Vec<u32> = model

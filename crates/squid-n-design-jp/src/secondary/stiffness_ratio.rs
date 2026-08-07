@@ -144,7 +144,7 @@ mod tests {
     use super::*;
     use smallvec::SmallVec;
     use squid_n_core::dof::Dof6Mask;
-    use squid_n_core::ids::{ElemId, MaterialId, NodeId, SectionId};
+    use squid_n_core::ids::{ElemId, NodeId, SectionId};
     use squid_n_core::model::{
         ElementData, EndCondition, ForceRegime, LocalAxis, Node, RigidZone, Story,
     };
@@ -190,7 +190,6 @@ mod tests {
                     v
                 },
                 section: Some(SectionId(0)),
-                material: Some(MaterialId(0)),
                 local_axis: LocalAxis {
                     ref_vector: [0.0, 1.0, 0.0],
                 },

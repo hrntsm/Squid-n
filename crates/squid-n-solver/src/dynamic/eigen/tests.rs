@@ -40,7 +40,6 @@ fn make_1dof_spring_model() -> Model {
             kind: ElementKind::Beam,
             nodes: smallvec::smallvec![NodeId(0), NodeId(1)],
             section: Some(SectionId(0)),
-            material: Some(MaterialId(0)),
             local_axis: LocalAxis {
                 ref_vector: [0.0, 0.0, 1.0],
             },
@@ -65,6 +64,10 @@ fn make_1dof_spring_model() -> Model {
             panel_thickness: None,
             thickness: None,
             shape: None,
+            material: Some(MaterialId(0)),
+            rebar_material: None,
+            shear_rebar_material: None,
+            steel_material: None,
         }],
         materials: vec![Material {
             strength_factor: None,
@@ -103,7 +106,6 @@ fn make_shear_2dof_model() -> Model {
         kind: ElementKind::Beam,
         nodes: smallvec::smallvec![NodeId(a), NodeId(b)],
         section: Some(SectionId(0)),
-        material: Some(MaterialId(0)),
         local_axis: LocalAxis {
             ref_vector: [0.0, 0.0, 1.0],
         },
@@ -135,6 +137,10 @@ fn make_shear_2dof_model() -> Model {
             panel_thickness: None,
             thickness: None,
             shape: None,
+            material: Some(MaterialId(0)),
+            rebar_material: None,
+            shear_rebar_material: None,
+            steel_material: None,
         }],
         materials: vec![Material {
             strength_factor: None,
@@ -201,6 +207,10 @@ fn make_portal_frame_like_model(top_mass: f64) -> Model {
         panel_thickness: None,
         thickness: None,
         shape: None,
+        material: Some(MaterialId(0)),
+        rebar_material: None,
+        shear_rebar_material: None,
+        steel_material: None,
     };
     let beam_section = Section {
         id: SectionId(1),
@@ -217,6 +227,10 @@ fn make_portal_frame_like_model(top_mass: f64) -> Model {
         panel_thickness: None,
         thickness: None,
         shape: None,
+        material: Some(MaterialId(0)),
+        rebar_material: None,
+        shear_rebar_material: None,
+        steel_material: None,
     };
     let members = [(0u32, 1u32, 2u32, 0u32), (1, 1, 3, 0), (2, 2, 3, 1)];
     let elements = members
@@ -226,7 +240,6 @@ fn make_portal_frame_like_model(top_mass: f64) -> Model {
             kind: ElementKind::Beam,
             nodes: smallvec::smallvec![NodeId(i), NodeId(j)],
             section: Some(SectionId(sec)),
-            material: Some(MaterialId(0)),
             local_axis: LocalAxis {
                 ref_vector: if sec == 0 {
                     [1.0, 0.0, 0.0]
@@ -507,6 +520,10 @@ fn make_portal_frame_density_mass_model() -> Model {
         panel_thickness: None,
         thickness: None,
         shape: None,
+        material: Some(MaterialId(0)),
+        rebar_material: None,
+        shear_rebar_material: None,
+        steel_material: None,
     };
     let beam_section = Section {
         id: SectionId(1),
@@ -523,6 +540,10 @@ fn make_portal_frame_density_mass_model() -> Model {
         panel_thickness: None,
         thickness: None,
         shape: None,
+        material: Some(MaterialId(0)),
+        rebar_material: None,
+        shear_rebar_material: None,
+        steel_material: None,
     };
     let members = [(0u32, 1u32, 2u32, 0u32), (1, 1, 3, 0), (2, 2, 3, 1)];
     let elements = members
@@ -532,7 +553,6 @@ fn make_portal_frame_density_mass_model() -> Model {
             kind: ElementKind::Beam,
             nodes: smallvec::smallvec![NodeId(i), NodeId(j)],
             section: Some(SectionId(sec)),
-            material: Some(MaterialId(0)),
             local_axis: LocalAxis {
                 ref_vector: if sec == 0 {
                     [1.0, 0.0, 0.0]
@@ -687,6 +707,10 @@ fn make_diaphragm_columns_model(top_mass: f64, rot_mass: f64) -> Model {
         panel_thickness: None,
         thickness: None,
         shape: None,
+        material: Some(MaterialId(0)),
+        rebar_material: None,
+        shear_rebar_material: None,
+        steel_material: None,
     };
     let mut master_restraint = Dof6Mask::FREE;
     master_restraint.set_fixed(Dof::Uz);
@@ -737,7 +761,6 @@ fn make_diaphragm_columns_model(top_mass: f64, rot_mass: f64) -> Model {
                 kind: ElementKind::Beam,
                 nodes: smallvec::smallvec![NodeId(0), NodeId(1)],
                 section: Some(SectionId(0)),
-                material: Some(MaterialId(0)),
                 local_axis: LocalAxis {
                     ref_vector: [1.0, 0.0, 0.0],
                 },
@@ -752,7 +775,6 @@ fn make_diaphragm_columns_model(top_mass: f64, rot_mass: f64) -> Model {
                 kind: ElementKind::Beam,
                 nodes: smallvec::smallvec![NodeId(0), NodeId(3)],
                 section: Some(SectionId(0)),
-                material: Some(MaterialId(0)),
                 local_axis: LocalAxis {
                     ref_vector: [1.0, 0.0, 0.0],
                 },
@@ -901,6 +923,10 @@ fn make_four_column_diaphragm_model(top_mass: f64, rot_mass: f64) -> Model {
         panel_thickness: None,
         thickness: None,
         shape: None,
+        material: Some(MaterialId(0)),
+        rebar_material: None,
+        shear_rebar_material: None,
+        steel_material: None,
     };
     let mut master_restraint = Dof6Mask::FREE;
     master_restraint.set_fixed(Dof::Uz);
@@ -935,7 +961,6 @@ fn make_four_column_diaphragm_model(top_mass: f64, rot_mass: f64) -> Model {
             kind: ElementKind::Beam,
             nodes: smallvec::smallvec![base_id, top_id],
             section: Some(SectionId(0)),
-            material: Some(MaterialId(0)),
             local_axis: LocalAxis {
                 ref_vector: [1.0, 0.0, 0.0],
             },
@@ -1044,7 +1069,6 @@ fn test_2dof_shear_unequal_mass_matches_analytic() {
         kind: ElementKind::Beam,
         nodes: smallvec::smallvec![NodeId(a), NodeId(b)],
         section: Some(SectionId(0)),
-        material: Some(MaterialId(0)),
         local_axis: LocalAxis {
             ref_vector: [0.0, 0.0, 1.0],
         },
@@ -1076,6 +1100,10 @@ fn test_2dof_shear_unequal_mass_matches_analytic() {
             panel_thickness: None,
             thickness: None,
             shape: None,
+            material: Some(MaterialId(0)),
+            rebar_material: None,
+            shear_rebar_material: None,
+            steel_material: None,
         }],
         materials: vec![Material {
             strength_factor: None,
@@ -1149,7 +1177,6 @@ fn test_eigen_subspace_matches_dense_ground_truth_q_lt_n() {
             kind: ElementKind::Beam,
             nodes: smallvec::smallvec![NodeId(i as u32), NodeId(i as u32 + 1)],
             section: Some(SectionId(0)),
-            material: Some(MaterialId(0)),
             local_axis: LocalAxis {
                 ref_vector: [0.0, 0.0, 1.0],
             },
@@ -1178,6 +1205,10 @@ fn test_eigen_subspace_matches_dense_ground_truth_q_lt_n() {
             panel_thickness: None,
             thickness: None,
             shape: None,
+            material: Some(MaterialId(0)),
+            rebar_material: None,
+            shear_rebar_material: None,
+            steel_material: None,
         }],
         materials: vec![Material {
             strength_factor: None,
@@ -1272,13 +1303,16 @@ fn test_eigen_consistent_mass_orientation_invariant() {
             panel_thickness: None,
             thickness: None,
             shape: None,
+            material: Some(MaterialId(0)),
+            rebar_material: None,
+            shear_rebar_material: None,
+            steel_material: None,
         };
         let elements = vec![ElementData {
             id: ElemId(0),
             kind: ElementKind::Beam,
             nodes: smallvec::smallvec![NodeId(0), NodeId(1)],
             section: Some(SectionId(0)),
-            material: Some(MaterialId(0)),
             local_axis: LocalAxis { ref_vector },
             end_cond: [EndCondition::Fixed, EndCondition::Fixed],
             force_regime: ForceRegime::Auto,

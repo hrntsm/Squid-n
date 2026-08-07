@@ -79,8 +79,6 @@ pub(super) fn assemble(parsed: StbParser) -> Result<(Model, ImportReport), StbEr
         &mut guessed_categories,
     );
 
-    let section_material = section_material_map(&model, &pending_secs, &material_index);
-
     let mut notes: Vec<String> = Vec::new();
 
     // 断面 id を整列・連番へ再割当てし、形鋼名を解決してモデルへ格納する。
@@ -89,6 +87,7 @@ pub(super) fn assemble(parsed: StbParser) -> Result<(Model, ImportReport), StbEr
         &mut model,
         pending_secs,
         &steel_lib,
+        &material_index,
         &mut warnings,
         &mut notes,
     );
@@ -100,7 +99,6 @@ pub(super) fn assemble(parsed: StbParser) -> Result<(Model, ImportReport), StbEr
         &node_index,
         &section_index,
         &material_index,
-        &section_material,
         &mut stats,
     );
     let (n_joists, n_posts) = build_secondaries(
@@ -109,7 +107,6 @@ pub(super) fn assemble(parsed: StbParser) -> Result<(Model, ImportReport), StbEr
         &node_index,
         &section_index,
         &material_index,
-        &section_material,
         &mut stats,
     );
     stats.push_warnings(&mut warnings);
@@ -368,27 +365,6 @@ fn build_materials(
 /// ST-Bridge は材料を断面に持つため、部材が id_material を持たない（実 STB 相当の）
 /// 場合に断面の材料を部材へ伝播する。数値 id は material_index、鋼のグレード名は
 /// 同名の材料へ突き合わせる（同名複数は最初の一致）。
-fn section_material_map(
-    model: &Model,
-    pending_secs: &[PendingSec],
-    material_index: &HashMap<u32, u32>,
-) -> HashMap<u32, u32> {
-    let mut name_to_mat: HashMap<&str, u32> = HashMap::new();
-    for mat in &model.materials {
-        name_to_mat.entry(mat.name.as_str()).or_insert(mat.id.0);
-    }
-    pending_secs
-        .iter()
-        .filter_map(|p| {
-            let idx = match p.mat.as_ref()? {
-                SecMatRef::Id(mid) => material_index.get(mid).copied(),
-                SecMatRef::Grade(name) => name_to_mat.get(name.as_str()).copied(),
-            };
-            idx.map(|i| (p.file_id, i))
-        })
-        .collect()
-}
-
 /// 部材・二次部材の参照解決の失敗件数（まとめて警告へ変換するための集計）。
 #[derive(Default)]
 struct LinkStats {
@@ -398,6 +374,8 @@ struct LinkStats {
     dangling_section: u32,
     /// 存在しない材料を参照し材料リンクを外した部材数。
     dangling_material: u32,
+    /// 断面に既に付いている材料と違う材料を指した部材数（先に付いた方を採る）。
+    conflicting_material: u32,
 }
 
 impl LinkStats {
@@ -421,6 +399,14 @@ impl LinkStats {
                 self.dangling_material
             ));
         }
+        if self.conflicting_material > 0 {
+            warnings.push(format!(
+                "同じ断面を参照する部材が別々の材料を指しています（{} 件）。\
+                 材料は断面が持つため先に解決した材料を採りました。\
+                 違う材料を使う部材は断面を分けてください",
+                self.conflicting_material
+            ));
+        }
     }
 }
 
@@ -433,7 +419,6 @@ fn build_members(
     node_index: &HashMap<u32, u32>,
     section_index: &HashMap<u32, u32>,
     material_index: &HashMap<u32, u32>,
-    section_material: &HashMap<u32, u32>,
     stats: &mut LinkStats,
 ) {
     for m in pending_members {
@@ -449,25 +434,27 @@ fn build_members(
                 None
             }
         });
-        // 材料は部材自身の id_material を優先。id_material 属性がない（実 ST-Bridge 相当の）
-        // ときのみ断面の材料を伝播する（属性がある部材の None を上書きしない）。
-        let own_material = m.material.and_then(|fid| match material_index.get(&fid) {
-            Some(&idx) => Some(idx),
-            None => {
-                stats.dangling_material += 1;
-                None
-            }
-        });
-        let material = own_material
-            .or_else(|| {
-                if m.has_material_attr {
-                    None
-                } else {
-                    m.section
-                        .and_then(|sfid| section_material.get(&sfid).copied())
+        // 材料は断面が持つため、部材の `id_material` は断面へ移す。断面がグレード名を
+        // 持たず部材だけが材料を指すファイル（実 ST-Bridge に多い）でも材料が失われない。
+        // 同じ断面を指す部材が別々の材料を指す場合は、最初の 1 件を採る。
+        if let Some(fid) = m.material {
+            match material_index.get(&fid) {
+                Some(&idx) => {
+                    if let Some(sec) = section.and_then(|sid| model.sections.get_mut(sid.index())) {
+                        // 既に別の材料が付いている断面は上書きしない（先勝ち）。
+                        // 黙って捨てると材料の食い違いに気づけないため件数を数える。
+                        match sec.material {
+                            Some(existing) if existing != MaterialId(idx) => {
+                                stats.conflicting_material += 1;
+                            }
+                            Some(_) => {}
+                            None => sec.material = Some(MaterialId(idx)),
+                        }
+                    }
                 }
-            })
-            .map(MaterialId);
+                None => stats.dangling_material += 1,
+            }
+        }
         let id = ElemId(model.elements.len() as u32);
         // 梁・柱は端部接合条件（`condition_*`）を尊重し、ブレースは軸材なので両端ピン。
         let (kind, end_cond) = match m.kind {
@@ -488,7 +475,6 @@ fn build_members(
             kind,
             nodes: smallvec::smallvec![NodeId(ni), NodeId(nj)],
             section,
-            material,
             local_axis: LocalAxis { ref_vector },
             end_cond,
             force_regime: ForceRegime::Auto,
@@ -508,7 +494,6 @@ fn build_secondaries(
     node_index: &HashMap<u32, u32>,
     section_index: &HashMap<u32, u32>,
     material_index: &HashMap<u32, u32>,
-    section_material: &HashMap<u32, u32>,
     stats: &mut LinkStats,
 ) -> (usize, usize) {
     let mut n_joists = 0usize;
@@ -525,23 +510,23 @@ fn build_secondaries(
                 None
             }
         });
-        let own_material = s.material.and_then(|fid| match material_index.get(&fid) {
-            Some(&idx) => Some(idx),
-            None => {
-                stats.dangling_material += 1;
-                None
-            }
-        });
-        let material = own_material
-            .or_else(|| {
-                if s.has_material_attr {
-                    None
-                } else {
-                    s.section
-                        .and_then(|sfid| section_material.get(&sfid).copied())
+        // 材料は断面が持つ。二次部材の `id_material` も部材と同じく断面へ移す。
+        if let Some(fid) = s.material {
+            match material_index.get(&fid) {
+                Some(&idx) => {
+                    if let Some(sec) = section.and_then(|sid| model.sections.get_mut(sid.index())) {
+                        match sec.material {
+                            Some(existing) if existing != MaterialId(idx) => {
+                                stats.conflicting_material += 1;
+                            }
+                            Some(_) => {}
+                            None => sec.material = Some(MaterialId(idx)),
+                        }
+                    }
                 }
-            })
-            .map(MaterialId);
+                None => stats.dangling_material += 1,
+            }
+        }
         match s.kind {
             squid_n_core::model::SecondaryMemberKind::Joist => n_joists += 1,
             squid_n_core::model::SecondaryMemberKind::Post => n_posts += 1,
@@ -552,7 +537,6 @@ fn build_secondaries(
                 kind: s.kind,
                 nodes: [NodeId(ni), NodeId(nj)],
                 section,
-                material,
                 name: s.name,
             });
     }
@@ -698,21 +682,32 @@ fn build_walls(
                     panel_thickness: None,
                     thickness: Some(t),
                     shape: None,
+                    material: None,
+                    rebar_material: None,
+                    shear_rebar_material: None,
+                    steel_material: None,
                 });
                 wall_sections.insert(base, sid);
                 sid
             });
-        let material = rw
+        // 壁の材料も断面が持つ（要素は持たない）。断面側が未設定なら補う。
+        if let Some(mid) = rw
             .material_fid
             .and_then(|fid| material_index.get(&fid).copied())
-            .map(MaterialId);
+            .map(MaterialId)
+        {
+            if let Some(sec) = section.and_then(|sid| model.sections.get_mut(sid.index())) {
+                if sec.material.is_none() {
+                    sec.material = Some(mid);
+                }
+            }
+        }
         let id = ElemId(model.elements.len() as u32);
         model.elements.push(ElementData {
             id,
             kind: ElementKind::Wall,
             nodes: boundary,
             section,
-            material,
             local_axis: LocalAxis {
                 ref_vector: [0.0, 0.0, 1.0],
             },
@@ -954,6 +949,7 @@ fn build_sections(
     model: &mut Model,
     mut pending: Vec<PendingSec>,
     steel_lib: &HashMap<String, SectionShape>,
+    material_index: &HashMap<u32, u32>,
     warnings: &mut Vec<String>,
     notes: &mut Vec<String>,
 ) -> HashMap<u32, u32> {
@@ -993,6 +989,10 @@ fn build_sections(
                 panel_thickness: None,
                 thickness: None,
                 shape: None,
+                material: None,
+                rebar_material: None,
+                shear_rebar_material: None,
+                steel_material: None,
             },
             PendingSecKind::Shape(shape) => shape.to_section(new_id, ps.name),
             PendingSecKind::SteelRef(shape_name) => {
@@ -1045,7 +1045,6 @@ fn build_sections(
                 d,
                 rebar,
                 steel_name,
-                grade,
             } => {
                 // 内蔵鉄骨（H 形鋼）の寸法を解決する。未解決なら 0 とし、形状は保持する。
                 let steel_dims = steel_name
@@ -1074,13 +1073,30 @@ fn build_sections(
                     steel_width: sw,
                     steel_web_thick: sweb,
                     steel_flange_thick: sfl,
-                    steel_grade: grade,
                 }
                 .to_section(new_id, ps.name)
             }
         };
         let mut section = section;
         section.floor = floor;
+        // 材料は断面が持つ。主材料は断面側の参照（数値 id またはグレード名）から、
+        // 配筋・内蔵鉄骨の材質はグレード名から材料テーブルへ解決して結ぶ。
+        section.material = ps
+            .mat
+            .as_ref()
+            .and_then(|r| resolve_sec_material(model, r, material_index));
+        section.rebar_material =
+            ps.grades.main_rebar.as_deref().and_then(|g| {
+                find_or_create_bar_material(model, g, MaterialCategory::Rebar, notes)
+            });
+        section.shear_rebar_material =
+            ps.grades.shear_rebar.as_deref().and_then(|g| {
+                find_or_create_bar_material(model, g, MaterialCategory::Rebar, notes)
+            });
+        section.steel_material =
+            ps.grades.steel.as_deref().and_then(|g| {
+                find_or_create_bar_material(model, g, MaterialCategory::Steel, notes)
+            });
 
         // 符号＋階の衝突を解決してから格納する。
         let idx = match by_key.get(&(section.name.clone(), section.floor.clone())) {
@@ -1162,6 +1178,10 @@ fn zero_section(id: SectionId, name: String) -> Section {
         panel_thickness: None,
         thickness: None,
         shape: None,
+        material: None,
+        rebar_material: None,
+        shear_rebar_material: None,
+        steel_material: None,
     }
 }
 
@@ -1215,4 +1235,72 @@ fn ref_vector_from_rotate(p_i: [f64; 3], p_j: [f64; 3], rotate_deg: f64) -> [f64
         ref0[1] * c + cross[1] * s,
         ref0[2] * c + cross[2] * s,
     ]
+}
+
+/// 断面側の材料参照（数値 id またはグレード名）を `MaterialId` へ解決する。
+fn resolve_sec_material(
+    model: &Model,
+    r: &SecMatRef,
+    material_index: &HashMap<u32, u32>,
+) -> Option<MaterialId> {
+    match r {
+        SecMatRef::Id(mid) => material_index.get(mid).copied().map(MaterialId),
+        SecMatRef::Grade(name) => model
+            .materials
+            .iter()
+            .find(|m| m.name == *name)
+            .map(|m| m.id),
+    }
+}
+
+/// 鉄筋・鉄骨のグレード名から材料を引き、無ければ作る（取り込みの境界）。
+///
+/// ST-Bridge は鉄筋・内蔵鉄骨の材質を**グレード名**で持つのに対し、内部モデルは
+/// 材料テーブルへの参照で持つ。名前が一致する材料があればそれを使い、無ければ
+/// グレード名から基準強度を推定して 1 行作る。推定に用いる規則
+/// （[`squid_n_core::material_grade::rebar_grade_f_value`] ほか）はここでしか
+/// 使わず、内部の強度解決は作られた材料の `fy` だけを見る。
+fn find_or_create_bar_material(
+    model: &mut Model,
+    grade: &str,
+    category: MaterialCategory,
+    notes: &mut Vec<String>,
+) -> Option<MaterialId> {
+    let grade = grade.trim();
+    if grade.is_empty() {
+        return None;
+    }
+    if let Some(m) = model.materials.iter().find(|m| m.name == grade) {
+        return Some(m.id);
+    }
+    let fy = match category {
+        MaterialCategory::Rebar => squid_n_core::material_grade::rebar_grade_f_value(grade),
+        // 鋼材は板厚区分を持つが、断面側の板厚はここでは解決できないため
+        // 40mm 以下の基準強度で作る（板厚別の低減は検定側が板厚から解決する）。
+        _ => squid_n_core::material_grade::steel_f_value_prefix(grade, 40.0),
+    };
+    if fy.is_none() {
+        notes.push(format!(
+            "材質「{grade}」の基準強度を名称から解決できませんでした。材料タブで fy を設定してください"
+        ));
+    }
+    let id = MaterialId(model.materials.len() as u32);
+    // 規格値はプリセット表から引く（名前が一致するものだけ。無ければ鋼系の一般値）。
+    let preset = squid_n_core::material_grade::material_presets()
+        .into_iter()
+        .find(|p| p.name == grade);
+    model.materials.push(Material {
+        id,
+        name: grade.to_string(),
+        category,
+        young: preset.as_ref().map(|p| p.young).unwrap_or(205_000.0),
+        poisson: preset.as_ref().map(|p| p.poisson).unwrap_or(0.3),
+        density: preset.as_ref().map(|p| p.density).unwrap_or(0.0),
+        shear: None,
+        fc: None,
+        fy: fy.or_else(|| preset.as_ref().and_then(|p| p.fy)),
+        concrete_class: Default::default(),
+        strength_factor: None,
+    });
+    Some(id)
 }

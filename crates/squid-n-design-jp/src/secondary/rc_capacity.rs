@@ -12,6 +12,7 @@ pub use squid_n_core::rc_capacity::*;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use squid_n_core::ids::MaterialId;
 
     /// 代表断面: b=400, D=600, at=1935(D25×3程度), d_eff=530, σy=345, Fc=24,
     /// pw=0.002, σwy=295, h0=3000（`squid_n_core::rc_capacity` のテストと同一断面）。
@@ -79,6 +80,10 @@ mod tests {
             panel_thickness: None,
             thickness: None,
             shape: None,
+            material: Some(MaterialId(0)),
+            rebar_material: None,
+            shear_rebar_material: None,
+            steel_material: None,
         };
         // 引張側 z = +(d_eff - D/2)、圧縮側 z = -(d_eff - D/2)（上下対称配置、断面積同一）。
         let z_tension = d_eff - d_total / 2.0;

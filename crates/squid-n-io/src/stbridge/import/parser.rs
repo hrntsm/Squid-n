@@ -43,6 +43,8 @@ pub(super) enum CurSec {
         floor: Option<String>,
         geom: Option<RcGeom>,
         rebar: Option<RcRebar>,
+        /// 配筋の材質（グレード名）。材料は断面が持つため形状には入れない。
+        rebar_grades: super::rebar::RebarGrades,
         /// 配筋コンテナ（`StbSecBarArrangement*`）側に付くかぶり [mm]。実 ST-Bridge は
         /// かぶりをコンテナに、本数・径を子の `*_Same` に持つため別枠で控える。
         rebar_cover: Option<f64>,
@@ -64,6 +66,8 @@ pub(super) enum CurSec {
         floor: Option<String>,
         geom: Option<(f64, f64)>,
         rebar: Option<RcRebar>,
+        /// 配筋の材質（グレード名。[`CurSec::Rc`] と同じ）。
+        rebar_grades: super::rebar::RebarGrades,
         /// 配筋コンテナ側に付くかぶり [mm]（[`CurSec::Rc`] と同じ）。
         rebar_cover: Option<f64>,
         steel_name: Option<String>,
@@ -358,6 +362,7 @@ impl StbParser {
                         width: get_f64(a, "width").unwrap_or(0.0),
                     },
                     mat: None,
+                    grades: Default::default(),
                 });
             }
             // --- 断面: 標準要素（鋼。柱・梁・ブレース） ---
@@ -408,6 +413,7 @@ impl StbParser {
                     floor: floor_of(a),
                     geom: None,
                     rebar: None,
+                    rebar_grades: Default::default(),
                     rebar_cover: None,
                     mat: sec_mat_ref_of(a),
                 };
@@ -459,6 +465,7 @@ impl StbParser {
                     floor: floor_of(a),
                     geom: None,
                     rebar: None,
+                    rebar_grades: Default::default(),
                     rebar_cover: None,
                     steel_name: None,
                     grade: a
@@ -517,8 +524,24 @@ impl StbParser {
             // 配筋（RC / SRC の StbSecBar{Column,Beam}_*_Same 子要素）。現在の断面種別へ格納。
             t if t.starts_with("StbSecBarColumn_") || t.starts_with("StbSecBarBeam_") => {
                 match &mut self.cur {
-                    CurSec::Rc { rebar, .. } if rebar.is_none() => *rebar = Some(parse_rebar(a)),
-                    CurSec::Src { rebar, .. } if rebar.is_none() => *rebar = Some(parse_rebar(a)),
+                    CurSec::Rc {
+                        rebar,
+                        rebar_grades,
+                        ..
+                    } if rebar.is_none() => {
+                        let (r, g) = parse_rebar(a);
+                        *rebar = Some(r);
+                        *rebar_grades = g;
+                    }
+                    CurSec::Src {
+                        rebar,
+                        rebar_grades,
+                        ..
+                    } if rebar.is_none() => {
+                        let (r, g) = parse_rebar(a);
+                        *rebar = Some(r);
+                        *rebar_grades = g;
+                    }
                     _ => {}
                 }
             }
@@ -861,6 +884,7 @@ impl StbParser {
                         floor,
                         kind: PendingSecKind::SteelRef(shape_name),
                         mat: grade.map(SecMatRef::Grade),
+                        grades: Default::default(),
                     });
                 }
             }
@@ -871,6 +895,7 @@ impl StbParser {
                     floor,
                     geom,
                     rebar,
+                    rebar_grades,
                     rebar_cover,
                     mat,
                 } = std::mem::replace(&mut self.cur, CurSec::None)
@@ -895,6 +920,11 @@ impl StbParser {
                                 floor,
                                 kind: PendingSecKind::Shape(shape),
                                 mat,
+                                grades: super::SecGrades {
+                                    main_rebar: rebar_grades.main,
+                                    shear_rebar: rebar_grades.shear,
+                                    steel: None,
+                                },
                             });
                         }
                         None => self.warnings.push(format!(
@@ -918,6 +948,7 @@ impl StbParser {
                         floor,
                         kind: PendingSecKind::CftRef(steel_name),
                         mat,
+                        grades: Default::default(),
                     });
                 }
             }
@@ -928,6 +959,7 @@ impl StbParser {
                     floor,
                     geom,
                     rebar,
+                    rebar_grades,
                     rebar_cover,
                     steel_name,
                     grade,
@@ -947,12 +979,17 @@ impl StbParser {
                                 name,
                                 floor,
                                 mat,
+                                grades: super::SecGrades {
+                                    main_rebar: rebar_grades.main,
+                                    shear_rebar: rebar_grades.shear,
+                                    // SRC の内蔵鉄骨の鋼種。断面の材料として結ぶ。
+                                    steel: (!grade.is_empty()).then(|| grade.clone()),
+                                },
                                 kind: PendingSecKind::SrcRef {
                                     b,
                                     d,
                                     rebar,
                                     steel_name,
-                                    grade,
                                 },
                             });
                         }
@@ -1012,7 +1049,6 @@ fn make_member(
         Some(s) if s >= 0 => Some(s as u32),
         _ => None,
     };
-    let has_material_attr = a.get("id_material").is_some();
     let material = match get_i64(a, "id_material") {
         Some(m) if m >= 0 => Some(m as u32),
         _ => None,
@@ -1030,7 +1066,6 @@ fn make_member(
         n_j,
         section,
         material,
-        has_material_attr,
         rotate,
         end_cond,
     })
@@ -1048,7 +1083,6 @@ fn make_secondary(
         Some(s) if s >= 0 => Some(s as u32),
         _ => None,
     };
-    let has_material_attr = a.get("id_material").is_some();
     let material = match get_i64(a, "id_material") {
         Some(m) if m >= 0 => Some(m as u32),
         _ => None,
@@ -1059,7 +1093,6 @@ fn make_secondary(
         n_j,
         section,
         material,
-        has_material_attr,
         name: a.get("name").cloned().unwrap_or_default(),
     }
 }

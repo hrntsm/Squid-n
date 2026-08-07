@@ -358,7 +358,7 @@ mod tests {
     use crate::steel::test_support::{h_section, mat, rect_section};
     use crate::steel::SteelDesign;
     use crate::{DesignCheck, MemberKind};
-    use squid_n_core::ids::SectionId;
+    use squid_n_core::ids::{MaterialId, SectionId};
 
     // -------------------------------------------------------------
     // 断片が意図した component に配置されていることの確認
@@ -1386,6 +1386,10 @@ mod tests {
             panel_thickness: None,
             thickness: None,
             shape: None,
+            material: Some(MaterialId(0)),
+            rebar_material: None,
+            shear_rebar_material: None,
+            steel_material: None,
         };
         let (n, lambda_y) = steel_required_lateral_bracing_count(235.0, 9000.0, &sec).unwrap();
         assert!((lambda_y - 90.0).abs() < 1e-9, "λy={}", lambda_y);
@@ -1414,6 +1418,10 @@ mod tests {
             panel_thickness: None,
             thickness: None,
             shape: None,
+            material: Some(MaterialId(0)),
+            rebar_material: None,
+            shear_rebar_material: None,
+            steel_material: None,
         };
         assert!(steel_required_lateral_bracing_count(235.0, 0.0, &sec).is_none());
     }
@@ -1476,6 +1484,10 @@ mod tests {
             panel_thickness: None,
             thickness: None,
             shape: None,
+            material: Some(MaterialId(0)),
+            rebar_material: None,
+            shear_rebar_material: None,
+            steel_material: None,
         };
         let material = mat("SN400");
         let material = Material {
@@ -1519,6 +1531,10 @@ mod tests {
             panel_thickness: None,
             thickness: None,
             shape: None,
+            material: Some(MaterialId(0)),
+            rebar_material: None,
+            shear_rebar_material: None,
+            steel_material: None,
         };
         let material = mat("SN400");
         let ctx = DesignCtx {

@@ -199,7 +199,6 @@ fn test_rc_rect() {
         b: 500.0,
         d: 500.0,
         rebar: RcRebar {
-            main_grade: None,
             main_x: BarSet {
                 count: 8,
                 dia: 16.0,
@@ -215,7 +214,6 @@ fn test_rc_rect() {
                 dia: 10.0,
                 pitch: 100.0,
                 legs: 2,
-                grade: None,
             },
         },
     };
@@ -230,7 +228,6 @@ fn test_rc_circle() {
     let shape = SectionShape::RcCircle {
         d: 600.0,
         rebar: RcRebar {
-            main_grade: None,
             main_x: BarSet {
                 count: 12,
                 dia: 22.0,
@@ -246,7 +243,6 @@ fn test_rc_circle() {
                 dia: 6.0,
                 pitch: 80.0,
                 legs: 1,
-                grade: None,
             },
         },
     };
@@ -315,7 +311,6 @@ fn test_rc_rebar_serde_roundtrip() {
         b: 500.0,
         d: 600.0,
         rebar: RcRebar {
-            main_grade: None,
             main_x: BarSet {
                 count: 6,
                 dia: 22.0,
@@ -331,7 +326,6 @@ fn test_rc_rebar_serde_roundtrip() {
                 dia: 10.0,
                 pitch: 100.0,
                 legs: 2,
-                grade: None,
             },
         },
     };
@@ -346,7 +340,6 @@ fn test_rc_rect_area() {
         b: 400.0,
         d: 600.0,
         rebar: RcRebar {
-            main_grade: None,
             main_x: BarSet {
                 count: 6,
                 dia: 19.0,
@@ -362,7 +355,6 @@ fn test_rc_rect_area() {
                 dia: 10.0,
                 pitch: 100.0,
                 legs: 2,
-                grade: None,
             },
         },
     };
@@ -380,7 +372,6 @@ fn test_rc_rect_shear_area_is_gross_over_kappa() {
         b: 500.0,
         d: 500.0,
         rebar: RcRebar {
-            main_grade: None,
             main_x: BarSet {
                 count: 8,
                 dia: 22.0,
@@ -396,7 +387,6 @@ fn test_rc_rect_shear_area_is_gross_over_kappa() {
                 dia: 10.0,
                 pitch: 100.0,
                 legs: 2,
-                grade: None,
             },
         },
     };
@@ -424,7 +414,6 @@ fn test_steel_h_shear_area_is_web_and_flange() {
 fn test_rc_rect_torsion_matches_manual_formula() {
     // J = (b³h/16)[16/3 − 3.36(b/h)(1 − (1/12)(b/h)⁴)]。細長比によらず同一式。
     let rebar = RcRebar {
-        main_grade: None,
         main_x: BarSet {
             count: 4,
             dia: 19.0,
@@ -440,7 +429,6 @@ fn test_rc_rect_torsion_matches_manual_formula() {
             dia: 10.0,
             pitch: 100.0,
             legs: 2,
-            grade: None,
         },
     };
     // 正方形 500×500
@@ -471,7 +459,6 @@ fn test_src_axial_stiffness_area_accumulates_steel() {
         b: 600.0,
         d: 600.0,
         rebar: RcRebar {
-            main_grade: None,
             main_x: BarSet {
                 count: 8,
                 dia: 22.0,
@@ -487,14 +474,12 @@ fn test_src_axial_stiffness_area_accumulates_steel() {
                 dia: 10.0,
                 pitch: 100.0,
                 legs: 2,
-                grade: None,
             },
         },
         steel_height: 400.0,
         steel_width: 200.0,
         steel_web_thick: 9.0,
         steel_flange_thick: 12.0,
-        steel_grade: "SN400B".into(),
     };
     let s_a = 2.0 * 200.0 * 12.0 + (400.0 - 24.0) * 9.0;
     assert!((shape.calc_area() - 360_000.0).abs() < 1e-9);
@@ -512,7 +497,6 @@ fn make_src_600() -> SectionShape {
         b: 600.0,
         d: 600.0,
         rebar: RcRebar {
-            main_grade: None,
             main_x: BarSet {
                 count: 8,
                 dia: 22.0,
@@ -528,14 +512,12 @@ fn make_src_600() -> SectionShape {
                 dia: 10.0,
                 pitch: 100.0,
                 legs: 2,
-                grade: None,
             },
         },
         steel_height: 400.0,
         steel_width: 200.0,
         steel_web_thick: 9.0,
         steel_flange_thick: 12.0,
-        steel_grade: "SN400B".into(),
     }
 }
 
@@ -618,7 +600,6 @@ fn test_rc_circle_area() {
     let shape = SectionShape::RcCircle {
         d: 800.0,
         rebar: RcRebar {
-            main_grade: None,
             main_x: BarSet {
                 count: 16,
                 dia: 25.0,
@@ -634,7 +615,6 @@ fn test_rc_circle_area() {
                 dia: 10.0,
                 pitch: 100.0,
                 legs: 1,
-                grade: None,
             },
         },
     };
@@ -657,7 +637,6 @@ fn no_rebar() -> RcRebar {
         layers: 0,
     };
     RcRebar {
-        main_grade: None,
         main_x: zero.clone(),
         main_y: zero,
         cover: 0.0,
@@ -665,7 +644,6 @@ fn no_rebar() -> RcRebar {
             dia: 0.0,
             pitch: 0.0,
             legs: 0,
-            grade: None,
         },
     }
 }
@@ -778,7 +756,6 @@ fn test_dimension_label_covers_all_shapes() {
                 steel_width: 200.0,
                 steel_web_thick: 8.0,
                 steel_flange_thick: 13.0,
-                steel_grade: "SN400B".into(),
             },
             "SRC-500x800+H-400x200x8x13",
         ),

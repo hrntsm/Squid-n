@@ -23,7 +23,7 @@ fn node(id: u32, x: f64, y: f64, z: f64) -> Node {
     }
 }
 
-fn line_elem(id: u32, n0: u32, n1: u32, sec: u32, mat: u32) -> ElementData {
+fn line_elem(id: u32, n0: u32, n1: u32, sec: u32) -> ElementData {
     ElementData {
         id: ElemId(id),
         kind: ElementKind::Beam,
@@ -34,7 +34,6 @@ fn line_elem(id: u32, n0: u32, n1: u32, sec: u32, mat: u32) -> ElementData {
             v
         },
         section: Some(SectionId(sec)),
-        material: Some(MaterialId(mat)),
         local_axis: LocalAxis {
             ref_vector: [0.0, 0.0, 1.0],
         },
@@ -48,7 +47,6 @@ fn line_elem(id: u32, n0: u32, n1: u32, sec: u32, mat: u32) -> ElementData {
 
 fn rc_rebar() -> RcRebar {
     RcRebar {
-        main_grade: None,
         main_x: BarSet {
             count: 8,
             dia: 25.0,
@@ -64,7 +62,6 @@ fn rc_rebar() -> RcRebar {
             dia: 10.0,
             pitch: 200.0,
             legs: 2,
-            grade: None,
         },
     }
 }
@@ -75,12 +72,36 @@ fn rc_girder_section(id: u32) -> Section {
         d: 800.0,
         rebar: rc_rebar(),
     };
-    shape.to_section(SectionId(id), format!("G{id}"))
+    with_rc_materials(shape.to_section(SectionId(id), format!("G{id}")))
+}
+
+/// 材料は断面が持つ。RC 断面へ主材料（コンクリート 0）と鉄筋（1）を割り当てる。
+fn with_rc_materials(mut sec: Section) -> Section {
+    sec.material = Some(MaterialId(0));
+    sec.rebar_material = Some(MaterialId(1));
+    sec.shear_rebar_material = Some(MaterialId(1));
+    sec
+}
+
+/// 鉄筋の材料（材料名がグレード名、`fy` が降伏点）。
+fn rebar_material(id: u32) -> Material {
+    Material {
+        strength_factor: None,
+        id: MaterialId(id),
+        name: "SD345".to_string(),
+        category: MaterialCategory::Rebar,
+        young: 205_000.0,
+        poisson: 0.3,
+        density: 7.85e-9,
+        shear: None,
+        fc: None,
+        fy: Some(345.0),
+        concrete_class: Default::default(),
+    }
 }
 
 fn rc_column_section(id: u32) -> Section {
     let rebar = RcRebar {
-        main_grade: None,
         main_x: BarSet {
             count: 6,
             dia: 25.0,
@@ -96,7 +117,6 @@ fn rc_column_section(id: u32) -> Section {
             dia: 13.0,
             pitch: 100.0,
             legs: 2,
-            grade: None,
         },
     };
     let shape = SectionShape::RcRect {
@@ -104,7 +124,7 @@ fn rc_column_section(id: u32) -> Section {
         d: 700.0,
         rebar,
     };
-    shape.to_section(SectionId(id), format!("C{id}"))
+    with_rc_materials(shape.to_section(SectionId(id), format!("C{id}")))
 }
 
 fn rc_material(id: u32) -> Material {
@@ -147,23 +167,23 @@ fn rc_portal_model() -> Model {
         node(2, 0.0, 0.0, 3_500.0),
         node(3, 6_000.0, 0.0, 3_500.0),
     ];
-    let mut girder = line_elem(2, 2, 3, 0, 0);
+    let mut girder = line_elem(2, 2, 3, 0);
     girder.rigid_zone.face_i = 350.0;
     girder.rigid_zone.face_j = 350.0;
-    let mut fg = line_elem(3, 0, 1, 0, 0);
+    let mut fg = line_elem(3, 0, 1, 0);
     fg.rigid_zone.face_i = 350.0;
     fg.rigid_zone.face_j = 350.0;
     let elements = vec![
-        line_elem(0, 0, 2, 1, 0), // 柱
-        line_elem(1, 1, 3, 1, 0), // 柱
-        girder,                   // 大梁
-        fg,                       // 基礎梁
+        line_elem(0, 0, 2, 1), // 柱
+        line_elem(1, 1, 3, 1), // 柱
+        girder,                // 大梁
+        fg,                    // 基礎梁
     ];
     Model {
         nodes,
         elements,
         sections: vec![rc_girder_section(0), rc_column_section(1)],
-        materials: vec![rc_material(0)],
+        materials: vec![rc_material(0), rebar_material(1)],
         ..Default::default()
     }
 }
@@ -312,7 +332,7 @@ fn test_joist_by_ratio() {
     let mut model = rc_portal_model();
     model.nodes.push(node(4, 2_000.0, 0.0, 3_500.0));
     model.nodes.push(node(5, 2_000.0, 3_000.0, 3_500.0));
-    model.elements.push(line_elem(4, 4, 5, 0, 0));
+    model.elements.push(line_elem(4, 4, 5, 0));
 
     let q = compute_quantity_takeoff(&model, &QuantityCfg::default());
     let joist = q
@@ -343,12 +363,13 @@ fn test_steel_member_weight() {
         flange_thick: 13.0,
     };
     let a = shape.calc_area();
-    let sec = shape.to_section(SectionId(2), "H-400x200x8x13".to_string());
+    // 材料は断面が持つ。
+    let mut sec = shape.to_section(SectionId(2), "H-400x200x8x13".to_string());
+    sec.material = Some(MaterialId(2));
     model.sections.push(sec);
-    model.materials.push(steel_material(1));
+    model.materials.push(steel_material(2));
     // 大梁を S 断面へ差し替え。
     model.elements[2].section = Some(SectionId(2));
-    model.elements[2].material = Some(MaterialId(1));
 
     let q = compute_quantity_takeoff(&model, &QuantityCfg::default());
     let girder = q
@@ -374,10 +395,12 @@ fn test_brace_length_and_weight() {
         thick: 7.0,
     };
     let a = shape.calc_area();
-    let sec = shape.to_section(SectionId(2), "L-90x90x7".to_string());
+    // 材料は断面が持つ。
+    let mut sec = shape.to_section(SectionId(2), "L-90x90x7".to_string());
+    sec.material = Some(MaterialId(2));
     model.sections.push(sec);
-    model.materials.push(steel_material(1));
-    let mut brace = line_elem(4, 0, 3, 2, 1);
+    model.materials.push(steel_material(2));
+    let mut brace = line_elem(4, 0, 3, 2);
     brace.kind = ElementKind::Brace {
         tension_only: false,
     };
@@ -439,7 +462,7 @@ fn test_wall_quantity_with_opening() {
     };
     let sec = shape.to_section(SectionId(2), "W20".to_string());
     model.sections.push(sec);
-    let mut wall = line_elem(4, 0, 1, 2, 0);
+    let mut wall = line_elem(4, 0, 1, 2);
     wall.kind = ElementKind::Wall;
     wall.nodes = {
         let mut v: SmallVec<[NodeId; 8]> = SmallVec::new();

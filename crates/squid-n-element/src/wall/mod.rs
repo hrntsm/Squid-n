@@ -36,7 +36,6 @@ pub(crate) fn add_surrounding_frame(
             kind: ElementKind::Beam,
             nodes: smallvec::smallvec![a, b],
             section: None,
-            material: None,
             local_axis: LocalAxis {
                 ref_vector: [0.0, 0.0, 1.0],
             },

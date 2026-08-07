@@ -180,20 +180,18 @@ pub(crate) fn src_column_check(
     fc_raw: f64,
 ) -> CheckResult {
     let long_term = ctx.term == LoadTerm::Long;
-    // 主筋の材質は断面（配筋）の属性を第一とし、未設定のときのみ部材材料名を用いる。
-    let grade = main_rebar_grade(rebar, mat);
+    // 主筋の材質は**断面が持つ材料**の名前で決まる（未割当は検定前に弾く）。
+    let grade = main_rebar_grade(ctx.rebar_material.as_ref());
 
     // 軽量コンクリート1種・2種は許容応力度（圧縮・せん断）を 0.9 倍に低減
     // （SRC規準1987。class 対応版を使用）。
     let fc_allow = concrete_allowable_compression_class(fc_raw, mat.concrete_class, long_term);
     let fs = concrete_allowable_shear_class(fc_raw, mat.concrete_class, long_term);
     let n_ratio = young_ratio_n(fc_raw);
-    let shear_grade = rebar
-        .shear
-        .grade
-        .clone()
-        .unwrap_or_else(|| grade.to_string());
-    let w_ft = rebar_allowable_shear(&shear_grade, long_term);
+    let w_ft = rebar_allowable_shear(
+        crate::material_strength::shear_rebar_grade(ctx.shear_rebar_material.as_ref()),
+        long_term,
+    );
 
     let thickness = steel_web_thick.max(steel_flange_thick);
     let f_value = steel_f_value_prefix(steel_grade, thickness).unwrap_or(235.0);
@@ -272,7 +270,7 @@ pub(crate) fn src_column_check(
     // `rc_column_mu_simple`（柱頭・柱脚同一断面・同一設計軸力の仮定）で
     // 算定する。sft は常に短期値を用いる。
     let s_ft_short = steel_ft(f_value, LoadTerm::Short);
-    let sigma_y = rebar_sigma_y_of(rebar, mat);
+    let sigma_y = rebar_sigma_y_of(ctx.rebar_material.as_ref());
     let r_mu_z = rc_column_mu_simple(
         &RcCapacityInput {
             b: props_z.b,
@@ -574,10 +572,10 @@ mod tests {
         // 鉄骨フランジが大きいほど s_pc が大きくなり fc' が低下し、rNc が
         // 減少するはず。
         let shape_small_steel = src_rect_shape(
-            500.0, 500.0, 8, 22.0, 2, 40.0, 10.0, 100.0, 2, 300.0, 150.0, 9.0, 9.0, "SN400B",
+            500.0, 500.0, 8, 22.0, 2, 40.0, 10.0, 100.0, 2, 300.0, 150.0, 9.0, 9.0,
         );
         let shape_large_steel = src_rect_shape(
-            500.0, 500.0, 8, 22.0, 2, 40.0, 10.0, 100.0, 2, 300.0, 300.0, 9.0, 30.0, "SN400B",
+            500.0, 500.0, 8, 22.0, 2, 40.0, 10.0, 100.0, 2, 300.0, 300.0, 9.0, 30.0,
         );
 
         let sec_small = make_section(shape_small_steel);
@@ -640,8 +638,9 @@ mod tests {
         };
         let props_z = src_rect_axis_props(500.0, 500.0, &rebar.main_x, &rebar);
         let as_total = bar_set_area(&rebar.main_x) + bar_set_area(&rebar.main_y);
-        let mat = make_material(24.0, "SD345");
-        let sigma_y = rebar_sigma_y_of(&rebar, &mat);
+        // σy は断面の主筋材料から決まる（検定コンテキストと同じ材料を使う）。
+        let rebar_mat = crate::srrc::tests::make_rebar_material("SD345", 345.0);
+        let sigma_y = rebar_sigma_y_of(Some(&rebar_mat));
         let fc_raw = 24.0;
 
         let mu_at = |n_design: f64| {

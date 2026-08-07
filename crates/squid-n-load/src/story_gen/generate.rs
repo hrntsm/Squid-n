@@ -516,8 +516,9 @@ fn assign_story_structures(model: &Model, node_story: &[Option<StoryId>], storie
         if !matches!(e.kind, ElementKind::Beam) || e.nodes.len() < 2 {
             continue;
         }
-        // 断面も材料も未割当の部材は構造種別を判定できないため集計から除く。
-        if e.section.is_none() && e.material.is_none() {
+        // 断面が未割当の部材は構造種別を判定できないため集計から除く
+        // （材料は断面が持つ）。
+        if e.section.is_none() {
             continue;
         }
         // 材端節点のうち最も高い節点の所属階へ計上する。

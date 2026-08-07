@@ -179,10 +179,7 @@ pub fn wall_column_fiber_lp(data: &ElementData, model: &Model) -> Option<f64> {
     }
     let geom = wall_panel_geometry(data, model)?;
     // コンクリート強度がなければファイバー断面を組めない。
-    data.material
-        .and_then(|mid| model.materials.get(mid.index()))?
-        .fc
-        .filter(|fc| *fc > 0.0)?;
+    model.element_material(data)?.fc.filter(|fc| *fc > 0.0)?;
     let sec = data.section.and_then(|sid| model.sections.get(sid.index()));
     let t = match sec.and_then(|s| s.shape.as_ref()) {
         Some(SectionShape::RcWall { thickness, .. }) => *thickness,
@@ -235,9 +232,7 @@ impl WallPanelElement {
         if t <= 0.0 {
             return None;
         }
-        let mat = data
-            .material
-            .and_then(|mid| model.materials.get(mid.index()))?;
+        let mat = model.element_material(data)?;
 
         // 開口低減率 r（複数開口モード考慮）。r=0 でせん断断面積が 0 になると
         // φ 項が NaN になるため微小値を下限とする。
@@ -353,7 +348,7 @@ impl WallPanelElement {
             torsion_release: [false, false],
             eval_sections: vec![0.0, 0.5, 1.0],
             section: data.section,
-            material: data.material,
+            material: model.element_section(data).and_then(|s| s.material),
             committed_disp: [0.0; 12],
             trial_disp: [0.0; 12],
             local_stiffness_cache: std::sync::OnceLock::new(),
@@ -462,10 +457,7 @@ impl WallPanelElement {
         let Some(geom) = wall_panel_geometry(data, model) else {
             return self;
         };
-        let Some(mat) = data
-            .material
-            .and_then(|mid| model.materials.get(mid.index()))
-        else {
+        let Some(mat) = model.element_material(data) else {
             return self;
         };
         let Some(fc) = mat.fc.filter(|v| *v > 0.0) else {
@@ -502,7 +494,7 @@ impl WallPanelElement {
                 None,
                 Some(fc),
                 mat.young,
-                None,
+                crate::fiber::FiberYield::default(),
                 1.0,
                 1.0,
                 concrete_rule,
@@ -641,10 +633,7 @@ impl WallPanelElement {
         if !crate::misc_wall::is_rc_wall(data, model) {
             return Self::steel_shear_capacity_of(data, model);
         }
-        let fc = data
-            .material
-            .and_then(|mid| model.materials.get(mid.index()))
-            .and_then(|m| m.fc);
+        let fc = model.element_material(data).and_then(|m| m.fc);
         // 側柱（壁の鉛直辺に取り付く柱）の沿壁方向せい・主筋量。
         let edge_pairs = [[geom.bottom[0], geom.top[0]], [geom.bottom[1], geom.top[1]]];
         let mut col_depth_sum = 0.0;
@@ -722,9 +711,8 @@ impl WallPanelElement {
         };
         // 壁形状 `RcWall` は RC 壁専用のため、鋼板壁の板厚は断面の板厚を用いる。
         let t = sec.thickness.unwrap_or(sec.width);
-        let f = data
-            .material
-            .and_then(|mid| model.materials.get(mid.index()))
+        let f = model
+            .element_material(data)
             .and_then(|m| m.fy)
             .unwrap_or(0.0);
         if t <= 0.0 || geom.lw <= 0.0 || f <= 0.0 {
@@ -800,10 +788,7 @@ impl WallPanelElement {
                 data.id.0, sec.name
             ));
         }
-        let Some(mat) = data
-            .material
-            .and_then(|mid| model.materials.get(mid.index()))
-        else {
+        let Some(mat) = model.element_material(data) else {
             return Some(format!(
                 "耐震壁 ID {} に材料が設定されていません。\
                  材料タブで材料を割り当ててください。\
@@ -1558,7 +1543,11 @@ mod tests {
                 make_node(2, [4000.0, 0.0, 3000.0]),
                 make_node(3, [0.0, 0.0, 3000.0]),
             ],
-            sections: vec![shape.to_section(SectionId(0), "W150".into())],
+            // 材料は断面が持つ。
+            sections: vec![squid_n_core::model::Section {
+                material: Some(MaterialId(0)),
+                ..shape.to_section(SectionId(0), "W150".into())
+            }],
             materials: vec![Material {
                 strength_factor: None,
                 concrete_class: Default::default(),
@@ -1579,7 +1568,6 @@ mod tests {
             kind: ElementKind::Wall,
             nodes: smallvec::smallvec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
             section: Some(SectionId(0)),
-            material: Some(MaterialId(0)),
             local_axis: LocalAxis {
                 ref_vector: [0.0, 1.0, 0.0],
             },
@@ -1739,7 +1727,6 @@ mod tests {
             b: 600.0,
             d: 600.0,
             rebar: squid_n_core::section_shape::RcRebar {
-                main_grade: None,
                 main_x: squid_n_core::section_shape::BarSet {
                     count: 8,
                     dia: 22.0,
@@ -1755,7 +1742,6 @@ mod tests {
                     dia: 10.0,
                     pitch: 100.0,
                     legs: 2,
-                    grade: None,
                 },
             },
         };
@@ -1774,7 +1760,6 @@ mod tests {
                 kind: ElementKind::Beam,
                 nodes: smallvec::smallvec![a, b],
                 section: Some(SectionId(1)),
-                material: Some(MaterialId(0)),
                 local_axis: LocalAxis {
                     ref_vector: [1.0, 0.0, 0.0],
                 },
@@ -1869,7 +1854,7 @@ mod tests {
 mod geometry_tests {
     use super::*;
     use squid_n_core::dof::Dof6Mask;
-    use squid_n_core::ids::{ElemId, MaterialId, SectionId};
+    use squid_n_core::ids::{ElemId, SectionId};
     use squid_n_core::model::{ElementKind, EndCondition, ForceRegime, LocalAxis, Node};
     use squid_n_core::section_shape::SectionShape;
 
@@ -1900,7 +1885,6 @@ mod geometry_tests {
             kind: ElementKind::Wall,
             nodes: order.iter().map(|i| NodeId(*i)).collect(),
             section: Some(SectionId(0)),
-            material: Some(MaterialId(0)),
             local_axis: LocalAxis {
                 ref_vector: [0.0, 1.0, 0.0],
             },
@@ -1988,7 +1972,11 @@ mod shear_yield_tests {
                 mk(2, [4000.0, 0.0, 3000.0]),
                 mk(3, [0.0, 0.0, 3000.0]),
             ],
-            sections: vec![shape.to_section(SectionId(0), "W200".into())],
+            // 材料は断面が持つ。
+            sections: vec![squid_n_core::model::Section {
+                material: Some(MaterialId(0)),
+                ..shape.to_section(SectionId(0), "W200".into())
+            }],
             materials: vec![Material {
                 strength_factor: None,
                 concrete_class: Default::default(),
@@ -2009,7 +1997,6 @@ mod shear_yield_tests {
             kind: ElementKind::Wall,
             nodes: smallvec::smallvec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
             section: Some(SectionId(0)),
-            material: Some(MaterialId(0)),
             local_axis: LocalAxis {
                 ref_vector: [0.0, 1.0, 0.0],
             },
@@ -2200,7 +2187,11 @@ mod capacity_issue_tests {
             story: None,
             support_spring: None,
         };
-        let mut sections = vec![shape.to_section(SectionId(0), "W200".into())];
+        // 材料は断面が持つ。
+        let mut sections = vec![Section {
+            material: Some(MaterialId(0)),
+            ..shape.to_section(SectionId(0), "W200".into())
+        }];
         let mut elements = vec![];
         let mut edge = |id: u32, n0: u32, n1: u32, sec: Option<SectionId>| {
             elements.push(ElementData {
@@ -2208,7 +2199,6 @@ mod capacity_issue_tests {
                 kind: ElementKind::Beam,
                 nodes: smallvec::smallvec![NodeId(n0), NodeId(n1)],
                 section: sec,
-                material: Some(MaterialId(0)),
                 local_axis: LocalAxis {
                     ref_vector: [1.0, 0.0, 0.0],
                 },
@@ -2221,6 +2211,9 @@ mod capacity_issue_tests {
         };
         let side_sec = side_col_sec.map(|mut cs| {
             cs.id = SectionId(1);
+            cs.material = Some(MaterialId(0));
+            cs.rebar_material = Some(MaterialId(0));
+            cs.shear_rebar_material = Some(MaterialId(0));
             sections.push(cs);
             SectionId(1)
         });
@@ -2240,7 +2233,6 @@ mod capacity_issue_tests {
             kind: ElementKind::Wall,
             nodes: smallvec::smallvec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
             section: Some(SectionId(0)),
-            material: Some(MaterialId(0)),
             local_axis: LocalAxis {
                 ref_vector: [0.0, 1.0, 0.0],
             },
@@ -2284,7 +2276,6 @@ mod capacity_issue_tests {
                 b: 600.0,
                 d: 600.0,
                 rebar: RcRebar {
-                    main_grade: None,
                     main_x: BarSet {
                         count: 8,
                         dia: 22.0,
@@ -2300,7 +2291,6 @@ mod capacity_issue_tests {
                         dia: 10.0,
                         pitch: 100.0,
                         legs: 2,
-                        grade: None,
                     },
                 },
             }
@@ -2310,7 +2300,6 @@ mod capacity_issue_tests {
                 b: 600.0,
                 d: 600.0,
                 rebar: RcRebar {
-                    main_grade: None,
                     main_x: BarSet {
                         count: 0,
                         dia: 0.0,
@@ -2326,7 +2315,6 @@ mod capacity_issue_tests {
                         dia: 10.0,
                         pitch: 100.0,
                         legs: 2,
-                        grade: None,
                     },
                 },
             }
@@ -2399,11 +2387,11 @@ mod capacity_issue_tests {
         assert_eq!(WallPanelElement::shear_capacity_of(&wall, &model), 0.0);
     }
 
-    /// 材料が割り当てられていない壁も不備とする（Fc を参照できない）。
+    /// 断面に材料が割り当てられていない壁も不備とする（Fc を参照できない）。
     #[test]
     fn test_issue_when_material_missing() {
-        let (model, mut wall) = model_with(None, 0.0025);
-        wall.material = None;
+        let (mut model, wall) = model_with(None, 0.0025);
+        model.sections[0].material = None;
         let issue =
             WallPanelElement::wall_shear_capacity_issue(&wall, &model).expect("材料未設定は不備");
         assert!(issue.contains("材料が設定されていません"), "{}", issue);

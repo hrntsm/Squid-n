@@ -593,7 +593,6 @@ mod tests {
             kind: ElementKind::Brace { tension_only: true },
             nodes: smallvec::smallvec![NodeId(0), NodeId(2)],
             section: None,
-            material: None,
             local_axis: LocalAxis {
                 ref_vector: [0.0, 0.0, 1.0],
             },

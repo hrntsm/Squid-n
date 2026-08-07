@@ -76,6 +76,7 @@ pub fn src_wall_type(shear_failure: bool) -> MemberRank {
 /// SRC 矩形（[`SectionShape::SrcRect`]）以外の形状は `None`。
 pub fn src_column_rank_ratios(
     shape: &SectionShape,
+    steel_grade: &str,
     fc: f64,
     rebar_sy: f64,
     n_ult: f64,
@@ -88,7 +89,6 @@ pub fn src_column_rank_ratios(
         steel_width,
         steel_web_thick,
         steel_flange_thick,
-        steel_grade,
     } = shape
     else {
         return None;
@@ -193,16 +193,13 @@ mod tests {
                     dia: 10.0,
                     pitch: 100.0,
                     legs: 2,
-                    grade: None,
                 },
                 cover: 40.0,
-                main_grade: Some("SD345".into()),
             },
             steel_height: 400.0,
             steel_width: 200.0,
             steel_web_thick: 8.0,
             steel_flange_thick: 13.0,
-            steel_grade: "SN400B".into(),
         }
     }
 
@@ -210,8 +207,8 @@ mod tests {
     #[test]
     fn test_src_column_rank_ratios_hand_calc() {
         let shape = sample_src_shape();
-        let (n_n0, smo_m0) =
-            src_column_rank_ratios(&shape, 24.0, 345.0, 2_000_000.0).expect("SRC 矩形は算定可能");
+        let (n_n0, smo_m0) = src_column_rank_ratios(&shape, "SN400B", 24.0, 345.0, 2_000_000.0)
+            .expect("SRC 矩形は算定可能");
 
         // 手計算（SN400B tf=13 → F=235）:
         // sA = 2·200·13 + (400−26)·8 = 5200 + 2992 = 8192
@@ -239,8 +236,8 @@ mod tests {
     #[test]
     fn test_src_column_rank_ratios_invalid_inputs() {
         let shape = sample_src_shape();
-        assert!(src_column_rank_ratios(&shape, 0.0, 345.0, 0.0).is_none());
-        assert!(src_column_rank_ratios(&shape, 24.0, 0.0, 0.0).is_none());
+        assert!(src_column_rank_ratios(&shape, "SN400B", 0.0, 345.0, 0.0).is_none());
+        assert!(src_column_rank_ratios(&shape, "SN400B", 24.0, 0.0, 0.0).is_none());
         let SectionShape::SrcRect { rebar, .. } = sample_src_shape() else {
             unreachable!()
         };
@@ -249,6 +246,6 @@ mod tests {
             d: 600.0,
             rebar,
         };
-        assert!(src_column_rank_ratios(&rc, 24.0, 345.0, 0.0).is_none());
+        assert!(src_column_rank_ratios(&rc, "SN400B", 24.0, 345.0, 0.0).is_none());
     }
 }

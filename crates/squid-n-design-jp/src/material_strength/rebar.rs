@@ -2,11 +2,10 @@
 //!
 //! - [`rebar_allowable_tension`] — 異形鉄筋の許容引張・圧縮応力度 ft
 //! - [`rebar_allowable_shear`] — せん断補強筋の許容引張応力度 w_ft
-//! - [`rebar_sigma_y`] / [`rebar_sigma_y_of`] — 主筋の降伏点 σy（終局曲げ ΣMy 算定用）
-//! - [`main_rebar_grade`] / [`shear_rebar_grade`] — 断面（配筋）の材質を第一とするグレード名解決
+//! - [`rebar_sigma_y_of`] — 主筋の降伏点 σy（終局曲げ ΣMy 算定用）
+//! - [`main_rebar_grade`] / [`shear_rebar_grade`] — 断面が持つ鉄筋材料からのグレード名解決
 
 use squid_n_core::model::Material;
-use squid_n_core::section_shape::RcRebar;
 
 /// 異形鉄筋の許容引張・圧縮応力度 ft [N/mm²]。
 ///
@@ -80,54 +79,32 @@ pub fn rebar_allowable_shear(grade: &str, long_term: bool) -> f64 {
     }
 }
 
-/// 主筋のグレード名。断面（配筋）の主筋材質 [`RcRebar::main_grade`] を第一とし、
-/// 未設定なら部材材料名を用いる（RC 部材の材料名が鉄筋グレード名を兼ねる従来挙動）。
-pub fn main_rebar_grade<'a>(rebar: &'a RcRebar, mat: &'a Material) -> &'a str {
-    rebar
-        .main_grade
-        .as_deref()
-        .map(str::trim)
-        .filter(|g| !g.is_empty())
-        .unwrap_or(mat.name.as_str())
-}
-
-/// せん断補強筋のグレード名。断面（配筋）のせん断補強筋材質（`ShearBar::grade`）を
-/// 第一とし、未設定なら部材材料名を用いる（従来挙動）。
-pub fn shear_rebar_grade<'a>(rebar: &'a RcRebar, mat: &'a Material) -> &'a str {
-    rebar
-        .shear
-        .grade
-        .as_deref()
-        .map(str::trim)
-        .filter(|g| !g.is_empty())
-        .unwrap_or(mat.name.as_str())
-}
-
-/// 主筋の降伏点 σy [N/mm²]（終局曲げ ΣMy 算定用）。断面（配筋）の主筋材質から
-/// 解決し、未設定なら [`rebar_sigma_y`]（材料の `fy` → 材料名）へフォールバックする。
-pub fn rebar_sigma_y_of(rebar: &RcRebar, mat: &Material) -> f64 {
-    rebar
-        .main_grade
-        .as_deref()
-        .and_then(squid_n_core::material_grade::rebar_grade_f_value)
-        .unwrap_or_else(|| rebar_sigma_y(mat))
-}
-
-/// 主筋の降伏点 σy [N/mm²]（終局曲げ ΣMy 算定用）。
+/// 主筋のグレード名。断面の主筋材料（`Section::rebar_material`）の名前を返す。
 ///
-/// `Material.fy` があればそれを、なければ材料名（鉄筋グレード名）の数値部
-/// （例 "SD345"→345）を、どちらもなければ 345（SD345 相当）を用いる。
-/// 断面に主筋材質が設定されている場合は [`rebar_sigma_y_of`] を用いること。
-pub fn rebar_sigma_y(mat: &Material) -> f64 {
-    if let Some(fy) = mat.fy {
-        if fy > 0.0 {
-            return fy;
-        }
-    }
-    let digits: String = mat.name.chars().filter(|c| c.is_ascii_digit()).collect();
-    digits
-        .parse::<f64>()
-        .ok()
-        .filter(|v| *v > 0.0)
-        .unwrap_or(345.0)
+/// 材料が未割当のときは空文字列を返すが、配筋を持つ断面で主筋の材料が未割当の
+/// モデルは解析前チェック（`squid_n_solver` の `model_issues`）と RC・SRC 検定の
+/// 入口（[`crate::RcDesign`] / [`crate::SrcDesign`]）が止めるため、ここには届かない。
+pub fn main_rebar_grade(rebar_mat: Option<&Material>) -> &str {
+    rebar_mat
+        .map(|m| m.name.trim())
+        .filter(|g| !g.is_empty())
+        .unwrap_or("")
+}
+
+/// せん断補強筋のグレード名。断面のせん断補強筋材料
+/// （`Section::shear_rebar_material`）の名前を返す。未割当時の扱いは
+/// [`main_rebar_grade`] と同じ。
+pub fn shear_rebar_grade(shear_mat: Option<&Material>) -> &str {
+    shear_mat
+        .map(|m| m.name.trim())
+        .filter(|g| !g.is_empty())
+        .unwrap_or("")
+}
+
+/// 主筋の降伏点 σy [N/mm²]（終局曲げ ΣMy 算定用）。断面の主筋材料の `fy` を用いる。
+///
+/// 主筋の材料が未割当、または `fy` が未設定・非正値のときは 0 を返す。この状態の
+/// モデルは検定の入口で止まるため、0 が耐力算定へ流れることはない。
+pub fn rebar_sigma_y_of(rebar_mat: Option<&Material>) -> f64 {
+    squid_n_core::material_grade::rebar_yield_strength(rebar_mat).unwrap_or(0.0)
 }

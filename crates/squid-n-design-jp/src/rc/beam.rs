@@ -103,21 +103,21 @@ pub(crate) fn beam_check(
         _ => unreachable!(),
     };
     let long_term = ctx.term == LoadTerm::Long;
-    // 主筋・せん断補強筋の材質は**断面（配筋）の属性**を第一とし、未設定のときのみ
-    // 部材材料名へフォールバックする（従来挙動）。
-    let grade = main_rebar_grade(rebar, mat);
+    // 主筋・せん断補強筋の材質は**断面が持つ材料**の名前で決まる。
+    // 未割当の断面は [`crate::RcDesign::check`] が検定前に弾く。
+    let grade = main_rebar_grade(ctx.rebar_material.as_ref());
     let mut allow = rc_allow(
         fc_raw,
         mat.concrete_class,
-        shear_rebar_grade(rebar, mat),
+        shear_rebar_grade(ctx.shear_rebar_material.as_ref()),
         long_term,
     );
     // 以降 `shear_grade` は**高強度せん断補強筋のときだけ** Some とする。普通強度
     // （SD*/SR*）を高強度品の表で評価すると w_ft を大幅に過大評価し危険側になる。
-    let shear_grade = rebar
-        .shear
-        .grade
-        .as_deref()
+    let shear_grade = ctx
+        .shear_rebar_material
+        .as_ref()
+        .map(|m| m.name.as_str())
         .filter(|g| is_high_strength_shear_grade(g));
     if let Some(g) = shear_grade {
         // 高強度せん断補強筋: w_ft は製品表から求め直す（主筋グレードとは独立）。
@@ -162,7 +162,7 @@ pub(crate) fn beam_check(
             d: props.d_full,
             at: props.at,
             d_eff: props.d,
-            sigma_y: rebar_sigma_y_of(rebar, mat),
+            sigma_y: rebar_sigma_y_of(ctx.rebar_material.as_ref()),
             fc: fc_raw,
             pw: props.pw,
             sigma_wy: 0.0,
@@ -277,9 +277,7 @@ pub(crate) fn beam_check(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::rc::tests::{
-        ctx_beam, make_material, make_section, rc_rect_shape, rc_rect_shape_with_shear_grade,
-    };
+    use crate::rc::tests::{ctx_beam, make_material, make_section, rc_rect_shape};
     use crate::DesignCheck;
     use squid_n_core::section_shape::SectionShape;
     use squid_n_core::units::ConcreteClass;
@@ -431,11 +429,11 @@ mod tests {
 
     #[test]
     fn test_beam_check_high_strength_grade_reflected_in_detail() {
-        let shape =
-            rc_rect_shape_with_shear_grade(300.0, 600.0, 4, 19.0, 1, 40.0, 10.0, 100.0, 2, "KH785");
+        let shape = rc_rect_shape(300.0, 600.0, 4, 19.0, 1, 40.0, 10.0, 100.0, 2);
         let sec = make_section(shape);
-        let mat = make_material(24.0, "SD345");
-        let ctx = ctx_beam(LoadTerm::Short);
+        let mat = make_material(24.0, "Fc24");
+        // 高強度せん断補強筋は断面のせん断補強筋材料で指定する。
+        let ctx = crate::rc::tests::with_shear_grade(ctx_beam(LoadTerm::Short), "KH785", 785.0);
         let forces = MemberForcesAt {
             pos: 0.5,
             n: 0.0,
@@ -483,14 +481,14 @@ mod tests {
     /// 両者は異なる（回帰）。
     #[test]
     fn test_beam_check_lightweight_high_strength_forces_safety_formula() {
-        let shape =
-            rc_rect_shape_with_shear_grade(300.0, 600.0, 4, 19.0, 1, 40.0, 10.0, 100.0, 2, "KH785");
+        let shape = rc_rect_shape(300.0, 600.0, 4, 19.0, 1, 40.0, 10.0, 100.0, 2);
         let sec = make_section(shape);
-        let mat_l = make_material_class(24.0, "SD345", ConcreteClass::Lightweight1);
-        let mat_n = make_material(24.0, "SD345");
-        let mut ctx_damage = ctx_beam(LoadTerm::Short);
+        let mat_l = make_material_class(24.0, "Fc24", ConcreteClass::Lightweight1);
+        let mat_n = make_material(24.0, "Fc24");
+        let hs = |ctx| crate::rc::tests::with_shear_grade(ctx, "KH785", 785.0);
+        let mut ctx_damage = hs(ctx_beam(LoadTerm::Short));
         ctx_damage.rc_damage_control = true;
-        let mut ctx_safety = ctx_beam(LoadTerm::Short);
+        let mut ctx_safety = hs(ctx_beam(LoadTerm::Short));
         ctx_safety.rc_damage_control = false;
         // せん断支配になるよう大きな qy を与える。
         let forces = MemberForcesAt {

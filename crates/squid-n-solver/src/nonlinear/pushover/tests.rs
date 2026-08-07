@@ -38,7 +38,6 @@ fn single_column_model(fy: f64, seismic_weight: f64) -> Model {
             kind: ElementKind::Fiber,
             nodes: smallvec::smallvec![NodeId(0), NodeId(1)],
             section: Some(SectionId(0)),
-            material: Some(MaterialId(0)),
             local_axis: LocalAxis {
                 ref_vector: [1.0, 0.0, 0.0],
             },
@@ -63,6 +62,10 @@ fn single_column_model(fy: f64, seismic_weight: f64) -> Model {
             panel_thickness: None,
             thickness: None,
             shape: None,
+            material: Some(MaterialId(0)),
+            rebar_material: None,
+            shear_rebar_material: None,
+            steel_material: None,
         }],
         materials: vec![Material {
             strength_factor: None,
@@ -260,15 +263,26 @@ fn test_pushover_stops_when_concrete_strength_unset() {
                 dia: 10.0,
                 pitch: 100.0,
                 legs: 2,
-                grade: Some("SD295A".into()),
             },
-            main_grade: Some("SD345".into()),
         },
     });
     model.materials[0].category = squid_n_core::model::MaterialCategory::Concrete;
     model.materials[0].name = "conc".into();
     model.materials[0].fy = None;
     model.materials[0].fc = None;
+    // 配筋を持つ断面には主筋・せん断補強筋の材料が要る（材料は断面が持つ）。
+    model.materials.push(Material {
+        id: MaterialId(1),
+        name: "SD345".to_string(),
+        category: MaterialCategory::Rebar,
+        young: 205000.0,
+        poisson: 0.3,
+        fc: None,
+        fy: Some(345.0),
+        ..model.materials[0].clone()
+    });
+    model.sections[0].rebar_material = Some(MaterialId(1));
+    model.sections[0].shear_rebar_material = Some(MaterialId(1));
 
     let dofmap = DofMap::build(&model);
     let reducer = Reducer::build(&model, &dofmap);
@@ -361,7 +375,6 @@ fn spring_column_model(kx: f64, support_kx: Option<f64>, seismic_weight: f64) ->
             kind: ElementKind::NodalSpring,
             nodes: smallvec::smallvec![NodeId(0), NodeId(1)],
             section: None,
-            material: None,
             local_axis: LocalAxis {
                 ref_vector: [0.0, 1.0, 0.0],
             },
@@ -577,6 +590,10 @@ fn two_story_model() -> Model {
         panel_thickness: None,
         thickness: None,
         shape: None,
+        material: Some(MaterialId(0)),
+        rebar_material: None,
+        shear_rebar_material: None,
+        steel_material: None,
     };
     let mat = Material {
         strength_factor: None,
@@ -624,7 +641,6 @@ fn two_story_model() -> Model {
                 kind: ElementKind::Fiber,
                 nodes: smallvec::smallvec![NodeId(0), NodeId(1)],
                 section: Some(SectionId(0)),
-                material: Some(MaterialId(0)),
                 local_axis: LocalAxis {
                     ref_vector: [1.0, 0.0, 0.0],
                 },
@@ -639,7 +655,6 @@ fn two_story_model() -> Model {
                 kind: ElementKind::Fiber,
                 nodes: smallvec::smallvec![NodeId(1), NodeId(2)],
                 section: Some(SectionId(0)),
-                material: Some(MaterialId(0)),
                 local_axis: LocalAxis {
                     ref_vector: [1.0, 0.0, 0.0],
                 },
@@ -767,7 +782,6 @@ fn test_compute_static_indeterminacy_indeterminate_portal() {
             kind: ElementKind::Fiber,
             nodes: smallvec::smallvec![NodeId(0), NodeId(1)],
             section: Some(SectionId(0)),
-            material: Some(MaterialId(0)),
             local_axis: LocalAxis {
                 ref_vector: [1.0, 0.0, 0.0],
             },
@@ -782,7 +796,6 @@ fn test_compute_static_indeterminacy_indeterminate_portal() {
             kind: ElementKind::Fiber,
             nodes: smallvec::smallvec![NodeId(1), NodeId(2)],
             section: Some(SectionId(0)),
-            material: Some(MaterialId(0)),
             local_axis: LocalAxis {
                 ref_vector: [1.0, 0.0, 0.0],
             },
@@ -797,7 +810,6 @@ fn test_compute_static_indeterminacy_indeterminate_portal() {
             kind: ElementKind::Fiber,
             nodes: smallvec::smallvec![NodeId(3), NodeId(2)],
             section: Some(SectionId(0)),
-            material: Some(MaterialId(0)),
             local_axis: LocalAxis {
                 ref_vector: [1.0, 0.0, 0.0],
             },
@@ -826,6 +838,10 @@ fn test_compute_static_indeterminacy_indeterminate_portal() {
             panel_thickness: None,
             thickness: None,
             shape: None,
+            material: Some(MaterialId(0)),
+            rebar_material: None,
+            shear_rebar_material: None,
+            steel_material: None,
         }],
         materials: vec![Material {
             strength_factor: None,
@@ -1010,7 +1026,6 @@ fn portal_frame_model(fy: f64, seismic_weight: f64) -> Model {
                 kind: ElementKind::Fiber,
                 nodes: smallvec::smallvec![NodeId(0), NodeId(1)],
                 section: Some(SectionId(0)),
-                material: Some(MaterialId(0)),
                 local_axis: LocalAxis {
                     ref_vector: [1.0, 0.0, 0.0],
                 },
@@ -1025,7 +1040,6 @@ fn portal_frame_model(fy: f64, seismic_weight: f64) -> Model {
                 kind: ElementKind::Fiber,
                 nodes: smallvec::smallvec![NodeId(1), NodeId(2)],
                 section: Some(SectionId(0)),
-                material: Some(MaterialId(0)),
                 local_axis: LocalAxis {
                     ref_vector: [1.0, 0.0, 0.0],
                 },
@@ -1040,7 +1054,6 @@ fn portal_frame_model(fy: f64, seismic_weight: f64) -> Model {
                 kind: ElementKind::Fiber,
                 nodes: smallvec::smallvec![NodeId(3), NodeId(2)],
                 section: Some(SectionId(0)),
-                material: Some(MaterialId(0)),
                 local_axis: LocalAxis {
                     ref_vector: [1.0, 0.0, 0.0],
                 },
@@ -1066,6 +1079,10 @@ fn portal_frame_model(fy: f64, seismic_weight: f64) -> Model {
             panel_thickness: None,
             thickness: None,
             shape: None,
+            material: Some(MaterialId(0)),
+            rebar_material: None,
+            shear_rebar_material: None,
+            steel_material: None,
         }],
         materials: vec![Material {
             strength_factor: None,
@@ -1227,7 +1244,18 @@ fn test_compute_shear_yield_qy_steel() {
         fc: None,
         fy: Some(200.0),
     };
-    let qy = compute_shear_yield_qy(1000.0, Some(&mat), None, ShearDir::Z, 3000.0);
+    let qy = compute_shear_yield_qy(
+        1000.0,
+        SecMaterials {
+            material: Some(&mat),
+            rebar_mat: None,
+            shear_mat: None,
+            steel_mat: None,
+        },
+        None,
+        ShearDir::Z,
+        3000.0,
+    );
     let expected = 1000.0 * 200.0 / 3.0_f64.sqrt();
     assert!(
         (qy - expected).abs() < 1e-6,
@@ -1252,7 +1280,18 @@ fn test_compute_shear_yield_qy_rc_fallback_without_rc_rect_shape() {
         fc: Some(24.0),
         fy: None,
     };
-    let qy = compute_shear_yield_qy(50000.0, Some(&mat), None, ShearDir::Z, 3000.0);
+    let qy = compute_shear_yield_qy(
+        50000.0,
+        SecMaterials {
+            material: Some(&mat),
+            rebar_mat: None,
+            shear_mat: None,
+            steel_mat: None,
+        },
+        None,
+        ShearDir::Z,
+        3000.0,
+    );
     let expected = 50000.0 * 0.7 * 24.0_f64.sqrt();
     assert!(
         (qy - expected).abs() < 1e-6,
@@ -1280,7 +1319,6 @@ fn test_compute_shear_yield_qy_src_is_rc_plus_steel() {
         fy: None,
     };
     let rebar = RcRebar {
-        main_grade: Some("SD345".into()),
         main_x: BarSet {
             count: 8,
             dia: 25.0,
@@ -1296,7 +1334,6 @@ fn test_compute_shear_yield_qy_src_is_rc_plus_steel() {
             dia: 10.0,
             pitch: 100.0,
             legs: 2,
-            grade: None,
         },
     };
     let rc_shape = SectionShape::RcRect {
@@ -1312,14 +1349,57 @@ fn test_compute_shear_yield_qy_src_is_rc_plus_steel() {
         steel_width: 200.0,
         steel_web_thick: 8.0,
         steel_flange_thick: 13.0,
-        steel_grade: "SN400B".into(),
     };
     let rc_sec = rc_shape.to_section(SectionId(0), "rc".into());
     let src_sec = src_shape.to_section(SectionId(1), "src".into());
+    // 材料は断面が持つ。主筋 SD345・せん断補強筋 SD295A・内蔵鉄骨 SN400B。
+    let rebar_mat = Material {
+        id: MaterialId(1),
+        name: "SD345".to_string(),
+        category: MaterialCategory::Rebar,
+        fy: Some(345.0),
+        fc: None,
+        ..mat.clone()
+    };
+    let shear_mat = Material {
+        id: MaterialId(2),
+        name: "SD295A".to_string(),
+        fy: Some(295.0),
+        ..rebar_mat.clone()
+    };
+    let steel_mat = Material {
+        id: MaterialId(3),
+        name: "SN400B".to_string(),
+        category: MaterialCategory::Steel,
+        fy: Some(235.0),
+        ..rebar_mat.clone()
+    };
 
     // 強軸（局所 y）: 鉄骨項 = tw·(H−2tf)·F·1.1/√3（SN400B tf/tw≤40 → F=235）。
-    let qy_rc = compute_shear_yield_qy(1.0, Some(&mat), Some(&rc_sec), ShearDir::Y, 3000.0);
-    let qy_src = compute_shear_yield_qy(1.0, Some(&mat), Some(&src_sec), ShearDir::Y, 3000.0);
+    let qy_rc = compute_shear_yield_qy(
+        1.0,
+        SecMaterials {
+            material: Some(&mat),
+            rebar_mat: Some(&rebar_mat),
+            shear_mat: Some(&shear_mat),
+            steel_mat: Some(&steel_mat),
+        },
+        Some(&rc_sec),
+        ShearDir::Y,
+        3000.0,
+    );
+    let qy_src = compute_shear_yield_qy(
+        1.0,
+        SecMaterials {
+            material: Some(&mat),
+            rebar_mat: Some(&rebar_mat),
+            shear_mat: Some(&shear_mat),
+            steel_mat: Some(&steel_mat),
+        },
+        Some(&src_sec),
+        ShearDir::Y,
+        3000.0,
+    );
     let steel_y = 8.0 * (400.0 - 2.0 * 13.0) * 235.0 * 1.1 / 3.0_f64.sqrt();
     assert!(
         (qy_src - qy_rc - steel_y).abs() < 1e-6,
@@ -1329,8 +1409,30 @@ fn test_compute_shear_yield_qy_src_is_rc_plus_steel() {
     );
 
     // 弱軸（局所 z）: 鉄骨項 = 2·B·tf·F·1.1/√3。
-    let qy_rc_z = compute_shear_yield_qy(1.0, Some(&mat), Some(&rc_sec), ShearDir::Z, 3000.0);
-    let qy_src_z = compute_shear_yield_qy(1.0, Some(&mat), Some(&src_sec), ShearDir::Z, 3000.0);
+    let qy_rc_z = compute_shear_yield_qy(
+        1.0,
+        SecMaterials {
+            material: Some(&mat),
+            rebar_mat: Some(&rebar_mat),
+            shear_mat: Some(&shear_mat),
+            steel_mat: Some(&steel_mat),
+        },
+        Some(&rc_sec),
+        ShearDir::Z,
+        3000.0,
+    );
+    let qy_src_z = compute_shear_yield_qy(
+        1.0,
+        SecMaterials {
+            material: Some(&mat),
+            rebar_mat: Some(&rebar_mat),
+            shear_mat: Some(&shear_mat),
+            steel_mat: Some(&steel_mat),
+        },
+        Some(&src_sec),
+        ShearDir::Z,
+        3000.0,
+    );
     let steel_z = 2.0 * 200.0 * 13.0 * 235.0 * 1.1 / 3.0_f64.sqrt();
     assert!(
         (qy_src_z - qy_rc_z - steel_z).abs() < 1e-6,
@@ -1346,7 +1448,12 @@ fn test_compute_shear_yield_qy_src_is_rc_plus_steel() {
     mat_with_fy.fy = Some(235.0);
     let qy_with_fy = compute_shear_yield_qy(
         1.0e6,
-        Some(&mat_with_fy),
+        SecMaterials {
+            material: Some(&mat_with_fy),
+            rebar_mat: Some(&rebar_mat),
+            shear_mat: Some(&shear_mat),
+            steel_mat: Some(&steel_mat),
+        },
         Some(&src_sec),
         ShearDir::Y,
         3000.0,
@@ -1371,10 +1478,20 @@ fn test_compute_shear_yield_qy_src_is_rc_plus_steel() {
         steel_width: 200.0,
         steel_web_thick: 8.0,
         steel_flange_thick: 45.0,
-        steel_grade: "SN400B".into(),
     };
     let tf_sec = thick_flange.to_section(SectionId(2), "src-tf45".into());
-    let qy_tf_z = compute_shear_yield_qy(1.0, Some(&mat), Some(&tf_sec), ShearDir::Z, 3000.0);
+    let qy_tf_z = compute_shear_yield_qy(
+        1.0,
+        SecMaterials {
+            material: Some(&mat),
+            rebar_mat: Some(&rebar_mat),
+            shear_mat: Some(&shear_mat),
+            steel_mat: Some(&steel_mat),
+        },
+        Some(&tf_sec),
+        ShearDir::Z,
+        3000.0,
+    );
     let steel_tf_z = 2.0 * 200.0 * 45.0 * 215.0 * 1.1 / 3.0_f64.sqrt();
     assert!(
         (qy_tf_z - qy_rc_z - steel_tf_z).abs() < 1e-6,
@@ -1401,12 +1518,34 @@ fn test_compute_shear_yield_qy_zero_as_is_infinite() {
         fy: Some(200.0),
     };
     assert_eq!(
-        compute_shear_yield_qy(0.0, Some(&mat), None, ShearDir::Z, 3000.0),
+        compute_shear_yield_qy(
+            0.0,
+            SecMaterials {
+                material: Some(&mat),
+                rebar_mat: None,
+                shear_mat: None,
+                steel_mat: None,
+            },
+            None,
+            ShearDir::Z,
+            3000.0,
+        ),
         f64::INFINITY
     );
     // 材料未設定でも∞扱い。
     assert_eq!(
-        compute_shear_yield_qy(1000.0, None, None, ShearDir::Z, 3000.0),
+        compute_shear_yield_qy(
+            1000.0,
+            SecMaterials {
+                material: None,
+                rebar_mat: None,
+                shear_mat: None,
+                steel_mat: None,
+            },
+            None,
+            ShearDir::Z,
+            3000.0,
+        ),
         f64::INFINITY
     );
 }
@@ -1418,7 +1557,6 @@ fn test_compute_shear_yield_qy_zero_as_is_infinite() {
 #[test]
 fn test_compute_shear_yield_qy_rc_rect_matches_arakawa_handcalc() {
     let rebar = RcRebar {
-        main_grade: None,
         main_x: BarSet {
             count: 6,
             dia: 25.0,
@@ -1434,7 +1572,6 @@ fn test_compute_shear_yield_qy_rc_rect_matches_arakawa_handcalc() {
             dia: 10.0,
             pitch: 100.0,
             legs: 2,
-            grade: None,
         },
     };
     let (b, d) = (400.0, 600.0);
@@ -1443,7 +1580,11 @@ fn test_compute_shear_yield_qy_rc_rect_matches_arakawa_handcalc() {
         d,
         rebar: rebar.clone(),
     };
-    let sec = shape.to_section(SectionId(0), "RC-400x600".into());
+    // 材料は断面が持つ。主材料 = コンクリート、主筋 SD345・せん断補強筋 SD295A。
+    let mut sec = shape.to_section(SectionId(0), "RC-400x600".into());
+    sec.material = Some(MaterialId(0));
+    sec.rebar_material = Some(MaterialId(1));
+    sec.shear_rebar_material = Some(MaterialId(2));
     let mat = Material {
         strength_factor: None,
         concrete_class: Default::default(),
@@ -1456,6 +1597,23 @@ fn test_compute_shear_yield_qy_rc_rect_matches_arakawa_handcalc() {
         shear: None,
         fc: Some(24.0),
         fy: None,
+    };
+    // 材料は断面が持つ。主筋 SD345・せん断補強筋 SD295A。
+    let rebar_mat = Material {
+        id: MaterialId(1),
+        name: "SD345".to_string(),
+        category: MaterialCategory::Rebar,
+        young: 205000.0,
+        poisson: 0.3,
+        fc: None,
+        fy: Some(345.0),
+        ..mat.clone()
+    };
+    let shear_mat = Material {
+        id: MaterialId(2),
+        name: "SD295A".to_string(),
+        fy: Some(295.0),
+        ..rebar_mat.clone()
     };
     let clear_span = 3000.0;
 
@@ -1477,7 +1635,18 @@ fn test_compute_shear_yield_qy_rc_rect_matches_arakawa_handcalc() {
         clear_span,
         sigma_0: 0.0,
     });
-    let qy_y = compute_shear_yield_qy(sec.as_z, Some(&mat), Some(&sec), ShearDir::Y, clear_span);
+    let qy_y = compute_shear_yield_qy(
+        sec.as_z,
+        SecMaterials {
+            material: Some(&mat),
+            rebar_mat: Some(&rebar_mat),
+            shear_mat: Some(&shear_mat),
+            steel_mat: None,
+        },
+        Some(&sec),
+        ShearDir::Y,
+        clear_span,
+    );
     assert!(
         (qy_y - qsu_y_handcalc).abs() < 1e-6,
         "qy_y={qy_y} should equal rc_qsu_simple handcalc={qsu_y_handcalc}"
@@ -1496,7 +1665,18 @@ fn test_compute_shear_yield_qy_rc_rect_matches_arakawa_handcalc() {
         clear_span,
         sigma_0: 0.0,
     });
-    let qy_z = compute_shear_yield_qy(sec.as_y, Some(&mat), Some(&sec), ShearDir::Z, clear_span);
+    let qy_z = compute_shear_yield_qy(
+        sec.as_y,
+        SecMaterials {
+            material: Some(&mat),
+            rebar_mat: Some(&rebar_mat),
+            shear_mat: Some(&shear_mat),
+            steel_mat: None,
+        },
+        Some(&sec),
+        ShearDir::Z,
+        clear_span,
+    );
     assert!(
         (qy_z - qsu_z_handcalc).abs() < 1e-6,
         "qy_z={qy_z} should equal rc_qsu_simple handcalc={qsu_z_handcalc}"
@@ -1505,17 +1685,16 @@ fn test_compute_shear_yield_qy_rc_rect_matches_arakawa_handcalc() {
     assert!((qy_y - qy_z).abs() > 1.0, "qy_y={qy_y} qy_z={qy_z}");
 }
 
-/// 断面（配筋）に指定した材質が耐力へ反映されること。
+/// 断面に割り当てた鉄筋の材料が耐力へ反映されること。
 ///
-/// - せん断補強筋の材質は荒川式の σwy を通じて Qy を変える（高強度品ほど大きい）。
-/// - 主筋の材質は曲げ降伏 My = 0.9·at·σy·d を通じて曲げヒンジ閾値を変える
-///   （SD295A は既定 345 相当より小さい）。荒川式のせん断終局強度は主筋量 pt に
-///   依存し σy には依らないため、主筋材質は Qy を変えない。
+/// - せん断補強筋の材料は荒川式の σwy を通じて Qy を変える（高強度品ほど大きい）。
+/// - 主筋の材料は曲げ降伏 My = 0.9·at·σy·d を通じて曲げヒンジ閾値を変える
+///   （SD295A は SD345 より小さい）。荒川式のせん断終局強度は主筋量 pt に
+///   依存し σy には依らないため、主筋の材料は Qy を変えない。
 #[test]
-fn test_section_rebar_grades_are_reflected_in_capacities() {
-    let make_section = |main_grade: Option<&str>, shear_grade: Option<&str>| {
+fn test_section_rebar_materials_are_reflected_in_capacities() {
+    let section = || {
         let rebar = RcRebar {
-            main_grade: main_grade.map(str::to_string),
             main_x: BarSet {
                 count: 6,
                 dia: 25.0,
@@ -1531,7 +1710,6 @@ fn test_section_rebar_grades_are_reflected_in_capacities() {
                 dia: 10.0,
                 pitch: 100.0,
                 legs: 2,
-                grade: shear_grade.map(str::to_string),
             },
         };
         SectionShape::RcRect {
@@ -1555,29 +1733,65 @@ fn test_section_rebar_grades_are_reflected_in_capacities() {
         fc: Some(24.0),
         fy: None,
     };
+    let rebar_mat = |grade: &str, fy: f64| Material {
+        id: MaterialId(1),
+        name: grade.to_string(),
+        category: MaterialCategory::Rebar,
+        fy: Some(fy),
+        fc: None,
+        ..mat.clone()
+    };
 
     // --- せん断: σwy が Qy に効く ---
-    let qy = |sec: &squid_n_core::model::Section| {
-        compute_shear_yield_qy(sec.as_z, Some(&mat), Some(sec), ShearDir::Y, 3000.0)
+    let sec = section();
+    let sd295 = rebar_mat("SD295A", 295.0);
+    let kh785 = rebar_mat("KH785", 785.0);
+    let sd345 = rebar_mat("SD345", 345.0);
+    let qy = |shear_mat: &Material| {
+        compute_shear_yield_qy(
+            sec.as_z,
+            SecMaterials {
+                material: Some(&mat),
+                rebar_mat: Some(&sd345),
+                shear_mat: Some(shear_mat),
+                steel_mat: None,
+            },
+            Some(&sec),
+            ShearDir::Y,
+            3000.0,
+        )
     };
-    let sec_normal = make_section(Some("SD345"), Some("SD295A"));
-    let sec_high = make_section(Some("SD345"), Some("KH785"));
     assert!(
-        qy(&sec_high) > qy(&sec_normal),
+        qy(&kh785) > qy(&sd295),
         "高強度せん断補強筋は Qy を上げるはず: {} vs {}",
-        qy(&sec_high),
-        qy(&sec_normal)
+        qy(&kh785),
+        qy(&sd295)
     );
 
     // --- 曲げ: 主筋 σy が My に効く ---
-    let my_of = |sec: squid_n_core::model::Section| {
+    let my_of = |main: Material| {
         let mut model = single_column_model(235.0, 80_000.0);
+        let mut sec = section();
+        // 材料は断面が持つ。主筋・せん断補強筋を割り当てる。
+        sec.material = Some(MaterialId(0));
+        sec.rebar_material = Some(MaterialId(1));
+        sec.shear_rebar_material = Some(MaterialId(2));
         model.sections[0] = sec;
-        model.materials[0] = mat.clone();
+        model.materials = vec![
+            mat.clone(),
+            main,
+            Material {
+                id: MaterialId(2),
+                ..sd295.clone()
+            },
+        ];
         compute_hinge_thresholds(&model)[0].my
     };
-    let my_sd345 = my_of(make_section(Some("SD345"), Some("SD295A")));
-    let my_sd295 = my_of(make_section(Some("SD295A"), Some("SD295A")));
+    let my_sd345 = my_of(sd345.clone());
+    let my_sd295 = my_of(Material {
+        id: MaterialId(1),
+        ..sd295.clone()
+    });
     assert!(
         my_sd295 < my_sd345,
         "SD295A の主筋は My を下げるはず: {my_sd295} vs {my_sd345}"
@@ -1717,7 +1931,6 @@ fn test_effective_clear_span_falls_back_when_non_positive() {
 /// 節点間距離3000mm、`rigid_zone` は呼び出し側で差し替える。
 fn rc_column_model_with_rigid_zone(rigid_zone: RigidZone) -> (Model, RcRebar, f64, f64) {
     let rebar = RcRebar {
-        main_grade: None,
         main_x: BarSet {
             count: 6,
             dia: 25.0,
@@ -1733,7 +1946,6 @@ fn rc_column_model_with_rigid_zone(rigid_zone: RigidZone) -> (Model, RcRebar, f6
             dia: 10.0,
             pitch: 100.0,
             legs: 2,
-            grade: None,
         },
     };
     let (b, d) = (400.0, 600.0);
@@ -1742,7 +1954,11 @@ fn rc_column_model_with_rigid_zone(rigid_zone: RigidZone) -> (Model, RcRebar, f6
         d,
         rebar: rebar.clone(),
     };
-    let sec = shape.to_section(SectionId(0), "RC-400x600".into());
+    // 材料は断面が持つ。主材料 = コンクリート、主筋 SD345・せん断補強筋 SD295A。
+    let mut sec = shape.to_section(SectionId(0), "RC-400x600".into());
+    sec.material = Some(MaterialId(0));
+    sec.rebar_material = Some(MaterialId(1));
+    sec.shear_rebar_material = Some(MaterialId(2));
     let mat = Material {
         strength_factor: None,
         concrete_class: Default::default(),
@@ -1755,6 +1971,22 @@ fn rc_column_model_with_rigid_zone(rigid_zone: RigidZone) -> (Model, RcRebar, f6
         shear: None,
         fc: Some(24.0),
         fy: None,
+    };
+    let rebar_mat = Material {
+        id: MaterialId(1),
+        name: "SD345".to_string(),
+        category: MaterialCategory::Rebar,
+        young: 205000.0,
+        poisson: 0.3,
+        fc: None,
+        fy: Some(345.0),
+        ..mat.clone()
+    };
+    let shear_mat = Material {
+        id: MaterialId(2),
+        name: "SD295A".to_string(),
+        fy: Some(295.0),
+        ..rebar_mat.clone()
     };
     let model = Model {
         nodes: vec![
@@ -1780,7 +2012,6 @@ fn rc_column_model_with_rigid_zone(rigid_zone: RigidZone) -> (Model, RcRebar, f6
             kind: ElementKind::Fiber,
             nodes: smallvec::smallvec![NodeId(0), NodeId(1)],
             section: Some(SectionId(0)),
-            material: Some(MaterialId(0)),
             local_axis: LocalAxis {
                 ref_vector: [1.0, 0.0, 0.0],
             },
@@ -1791,7 +2022,7 @@ fn rc_column_model_with_rigid_zone(rigid_zone: RigidZone) -> (Model, RcRebar, f6
             spring: None,
         }],
         sections: vec![sec],
-        materials: vec![mat],
+        materials: vec![mat, rebar_mat, shear_mat],
         ..Default::default()
     };
     (model, rebar, b, d)
@@ -2103,7 +2334,6 @@ fn steel_hinge_model(name: &str, fy: f64, strength_factor: Option<f64>) -> Model
             kind: ElementKind::Fiber,
             nodes: smallvec::smallvec![NodeId(0), NodeId(1)],
             section: Some(SectionId(0)),
-            material: Some(MaterialId(0)),
             local_axis: LocalAxis {
                 ref_vector: [1.0, 0.0, 0.0],
             },
@@ -2128,6 +2358,10 @@ fn steel_hinge_model(name: &str, fy: f64, strength_factor: Option<f64>) -> Model
             panel_thickness: None,
             thickness: None,
             shape: None,
+            material: Some(MaterialId(0)),
+            rebar_material: None,
+            shear_rebar_material: None,
+            steel_material: None,
         }],
         materials: vec![Material {
             strength_factor,
@@ -2187,7 +2421,6 @@ fn test_compute_hinge_thresholds_direct_strength_factor_overrides_name_lookup() 
 /// RC 矩形断面 + 配筋情報を持つ片持ち柱モデル（fy 未設定＝既定345）を作る。
 fn rc_hinge_model() -> (Model, RcRebar, f64, f64) {
     let rebar = RcRebar {
-        main_grade: None,
         main_x: BarSet {
             count: 6,
             dia: 25.0,
@@ -2203,7 +2436,6 @@ fn rc_hinge_model() -> (Model, RcRebar, f64, f64) {
             dia: 10.0,
             pitch: 100.0,
             legs: 2,
-            grade: None,
         },
     };
     let (b, d) = (400.0, 600.0);
@@ -2212,7 +2444,11 @@ fn rc_hinge_model() -> (Model, RcRebar, f64, f64) {
         d,
         rebar: rebar.clone(),
     };
-    let sec = shape.to_section(SectionId(0), "RC-400x600".into());
+    // 材料は断面が持つ。主材料 = コンクリート、主筋 SD345・せん断補強筋 SD295A。
+    let mut sec = shape.to_section(SectionId(0), "RC-400x600".into());
+    sec.material = Some(MaterialId(0));
+    sec.rebar_material = Some(MaterialId(1));
+    sec.shear_rebar_material = Some(MaterialId(2));
     let mat = Material {
         strength_factor: None,
         concrete_class: Default::default(),
@@ -2225,6 +2461,22 @@ fn rc_hinge_model() -> (Model, RcRebar, f64, f64) {
         shear: None,
         fc: Some(24.0),
         fy: None,
+    };
+    let rebar_mat = Material {
+        id: MaterialId(1),
+        name: "SD345".to_string(),
+        category: MaterialCategory::Rebar,
+        young: 205000.0,
+        poisson: 0.3,
+        fc: None,
+        fy: Some(345.0),
+        ..mat.clone()
+    };
+    let shear_mat = Material {
+        id: MaterialId(2),
+        name: "SD295A".to_string(),
+        fy: Some(295.0),
+        ..rebar_mat.clone()
     };
     let model = Model {
         nodes: vec![
@@ -2250,7 +2502,6 @@ fn rc_hinge_model() -> (Model, RcRebar, f64, f64) {
             kind: ElementKind::Fiber,
             nodes: smallvec::smallvec![NodeId(0), NodeId(1)],
             section: Some(SectionId(0)),
-            material: Some(MaterialId(0)),
             local_axis: LocalAxis {
                 ref_vector: [1.0, 0.0, 0.0],
             },
@@ -2261,7 +2512,7 @@ fn rc_hinge_model() -> (Model, RcRebar, f64, f64) {
             spring: None,
         }],
         sections: vec![sec],
-        materials: vec![mat],
+        materials: vec![mat, rebar_mat, shear_mat],
         ..Default::default()
     };
     (model, rebar, b, d)
@@ -2791,6 +3042,10 @@ fn portal_frame_rigid_zone_model(fy: f64, seismic_weight: f64, rigid: f64) -> Mo
         panel_thickness: None,
         thickness: None,
         shape: None,
+        material: Some(MaterialId(0)),
+        rebar_material: None,
+        shear_rebar_material: None,
+        steel_material: None,
     };
     model.sections.push(strong);
     model.elements[1].section = Some(SectionId(1));
@@ -3142,7 +3397,6 @@ fn wall_story_model_with(lw: f64, seismic_weight: f64) -> Model {
         ps: 0.0025,
     };
     let rebar = RcRebar {
-        main_grade: Some("SD345".into()),
         main_x: BarSet {
             count: 8,
             dia: 22.0,
@@ -3158,7 +3412,6 @@ fn wall_story_model_with(lw: f64, seismic_weight: f64) -> Model {
             dia: 10.0,
             pitch: 100.0,
             legs: 2,
-            grade: None,
         },
     };
     let frame_shape = SectionShape::RcRect {
@@ -3172,7 +3425,6 @@ fn wall_story_model_with(lw: f64, seismic_weight: f64) -> Model {
         kind: ElementKind::Beam,
         nodes: smallvec::smallvec![NodeId(n0), NodeId(n1)],
         section: Some(SectionId(1)),
-        material: Some(MaterialId(0)),
         local_axis: LocalAxis { ref_vector },
         end_cond: [EndCondition::Fixed, EndCondition::Fixed],
         force_regime: ForceRegime::Auto,
@@ -3193,7 +3445,6 @@ fn wall_story_model_with(lw: f64, seismic_weight: f64) -> Model {
                 kind: ElementKind::Wall,
                 nodes: smallvec::smallvec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
                 section: Some(SectionId(0)),
-                material: Some(MaterialId(0)),
                 local_axis: LocalAxis {
                     ref_vector: [0.0, 1.0, 0.0],
                 },
@@ -3208,23 +3459,49 @@ fn wall_story_model_with(lw: f64, seismic_weight: f64) -> Model {
             edge(3, 0, 3, [1.0, 0.0, 0.0]), // 左の鉛直辺（側柱）
             edge(4, 1, 2, [1.0, 0.0, 0.0]), // 右の鉛直辺（側柱）
         ],
+        // 材料は断面が持つ。主材料 = コンクリート、主筋・せん断補強筋 = SD345。
         sections: vec![
-            shape.to_section(SectionId(0), "W150".into()),
-            frame_shape.to_section(SectionId(1), "RC-600x600".into()),
+            Section {
+                material: Some(MaterialId(0)),
+                rebar_material: Some(MaterialId(1)),
+                shear_rebar_material: Some(MaterialId(1)),
+                ..shape.to_section(SectionId(0), "W150".into())
+            },
+            Section {
+                material: Some(MaterialId(0)),
+                rebar_material: Some(MaterialId(1)),
+                shear_rebar_material: Some(MaterialId(1)),
+                ..frame_shape.to_section(SectionId(1), "RC-600x600".into())
+            },
         ],
-        materials: vec![Material {
-            strength_factor: None,
-            concrete_class: Default::default(),
-            id: MaterialId(0),
-            name: "FC24".into(),
-            category: MaterialCategory::Concrete,
-            young: 23000.0,
-            poisson: 0.2,
-            density: 0.0,
-            shear: None,
-            fc: Some(24.0),
-            fy: None,
-        }],
+        materials: vec![
+            Material {
+                strength_factor: None,
+                concrete_class: Default::default(),
+                id: MaterialId(0),
+                name: "FC24".into(),
+                category: MaterialCategory::Concrete,
+                young: 23000.0,
+                poisson: 0.2,
+                density: 0.0,
+                shear: None,
+                fc: Some(24.0),
+                fy: None,
+            },
+            Material {
+                strength_factor: None,
+                concrete_class: Default::default(),
+                id: MaterialId(1),
+                name: "SD345".into(),
+                category: MaterialCategory::Rebar,
+                young: 205000.0,
+                poisson: 0.3,
+                density: 0.0,
+                shear: None,
+                fc: None,
+                fy: Some(345.0),
+            },
+        ],
         stories: vec![Story {
             level_kind: Default::default(),
             structure: Default::default(),
