@@ -572,10 +572,10 @@ fn build_notes(model: &Model) -> Vec<String> {
         "鉄骨継手（部材付帯情報の継手位置）は位置・種別の保持のみで、プレート・ボルト重量は計上しない。".to_string(),
     ];
     if !model.slabs.is_empty() {
-        notes.push(format!(
-            "床厚は全体一律 {:.0}mm（デッキスラブのデッキ高さ控除は未対応）。",
-            model.slab_thickness
-        ));
+        notes.push(
+            "床厚は床ごとに割り当てた断面の板厚による（デッキスラブのデッキ高さ控除は未対応）。"
+                .to_string(),
+        );
         if model.slabs.iter().any(|s| !s.joists.is_empty()) {
             notes.push(
                 "床荷重分配用の小梁ライン（JoistLine）は断面情報がないため集計対象外（部材として配置した小梁のみ集計）。".to_string(),
@@ -1151,7 +1151,9 @@ fn slab_quantity(ctx: &Ctx, slab: &squid_n_core::model::Slab) -> Option<MemberQu
         return None;
     }
     let area = polygon_area_3d(&pts);
-    let t = model.slab_thickness.max(0.0);
+    // スラブごとの板厚は断面から解決する（建物一律の `slab_thickness` は
+    // 剛性計算に見込む厚さであり、実際の板厚とは別概念）。
+    let t = model.slab_thickness_of(slab).unwrap_or(0.0);
     let category = match slab.kind {
         SlabKind::Interior => MemberCategory::Slab,
         SlabKind::Cantilever | SlabKind::Corner => MemberCategory::CantileverSlab,

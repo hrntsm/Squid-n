@@ -211,16 +211,27 @@ pub struct Slab {
     /// `None`（旧スキーマ・未設定）は積載荷重を持たない（`loads` の固定荷重のみ）。
     #[serde(default)]
     pub usage: Option<SlabUsage>,
-    /// スラブ厚さ [mm]。ST-Bridge（`StbSecSlab_RC`）往復で個別スラブごとの厚さを
-    /// 保持するために用いる。`None`（旧スキーマ・未設定）は建物一律の
-    /// `Model::slab_thickness` を用いる従来互換。
+    /// スラブ断面（符号・板厚・コンクリート材料を持つ
+    /// [`Section`](crate::model::Section)）。
+    ///
+    /// **スラブごとの板厚と自重は、この断面から解決する**
+    /// （[`Model::slab_thickness_of`]・[`Model::slab_self_weight_intensity`]）。
+    /// 板厚をスラブと断面の両方に持たせると同じ数値の持ち主が 2 つになるため、
+    /// スラブ側は断面を指すだけとする。
+    ///
+    /// `None` は未割当。板厚も自重も定まらないため、解析前チェックが止める
+    /// （もっともらしい既定厚で補うと、床の自重が過小なまま長期応力が出る）。
     #[serde(default)]
-    pub thickness: Option<f64>,
+    pub section: Option<crate::ids::SectionId>,
 }
 
 impl Slab {
-    /// 固定荷重（DL）の面荷重強度 [N/mm²]。`loads`（仕上げ等）の合算。
-    pub fn dead_intensity(&self) -> f64 {
+    /// 仕上げ等の面荷重強度 [N/mm²]（`loads` の合算）。
+    ///
+    /// **スラブ自身の自重は含まない。** 自重は断面の板厚と材料から算定するため
+    /// （[`Model::slab_self_weight_intensity`]）、固定荷重（DL）の全量が要るときは
+    /// [`Model::slab_dead_intensity`] を使う。
+    pub fn finish_intensity(&self) -> f64 {
         self.loads.iter().map(|l| l.value).sum()
     }
 
@@ -228,11 +239,52 @@ impl Slab {
     pub fn live_intensity(&self, purpose: LoadPurpose) -> f64 {
         self.usage.map(|u| u.live_load(purpose)).unwrap_or(0.0)
     }
+}
+
+impl Model {
+    /// スラブへ割り当てた断面。未割当・ダングリングは `None`。
+    pub fn slab_section(&self, slab: &Slab) -> Option<&Section> {
+        slab.section.and_then(|sid| self.sections.get(sid.index()))
+    }
+
+    /// スラブの板厚 [mm]。断面の [`Section::thickness`] をそのまま返す。
+    ///
+    /// 断面が未割当、または断面が板厚を持たない（板状でない形状を割り当てた）
+    /// 場合は `None`。**建物一律の [`Model::slab_thickness`] へは退かない**。
+    /// あちらは「剛性計算に見込むスラブ厚」であり、既定の 0 は「スラブ協力幅に
+    /// よる梁剛性増大を見込まない」を意味する別概念のためである。
+    pub fn slab_thickness_of(&self, slab: &Slab) -> Option<f64> {
+        self.slab_section(slab)
+            .and_then(|s| s.thickness)
+            .filter(|t| *t > 0.0)
+    }
+
+    /// スラブ自重の面荷重強度 [N/mm²]（板厚 × 断面の主材料の単位体積重量）。
+    ///
+    /// 断面または断面の主材料が未割当のときは `None`。自重を面荷重として
+    /// 焼き込まず毎回算定するのは、板厚や材料を変えたときに自重が追随しないと
+    /// いう食い違いを作らないためである。
+    pub fn slab_self_weight_intensity(&self, slab: &Slab) -> Option<f64> {
+        let t = self.slab_thickness_of(slab)?;
+        let mat = self
+            .slab_section(slab)
+            .and_then(|s| s.material)
+            .and_then(|mid| self.materials.get(mid.index()))?;
+        Some(t * mat.density * crate::units::GRAVITY_MM_S2)
+    }
+
+    /// 固定荷重（DL）の面荷重強度 [N/mm²]（スラブ自重 ＋ 仕上げ等）。
+    ///
+    /// 自重が算定できないスラブ（断面・主材料が未割当）は仕上げ分だけを返す。
+    /// 解析前チェックがこの状態を止めるため、ここでは既定厚で補わない。
+    pub fn slab_dead_intensity(&self, slab: &Slab) -> f64 {
+        self.slab_self_weight_intensity(slab).unwrap_or(0.0) + slab.finish_intensity()
+    }
 
     /// 用途に応じた合成面荷重強度 [N/mm²]（固定 DL ＋ 積載 LL(purpose)）。
     /// 長期骨組解析は `Frame`、地震用重量は `Seismic`、床・小梁設計は `Floor`。
-    pub fn intensity(&self, purpose: LoadPurpose) -> f64 {
-        self.dead_intensity() + self.live_intensity(purpose)
+    pub fn slab_intensity(&self, slab: &Slab, purpose: LoadPurpose) -> f64 {
+        self.slab_dead_intensity(slab) + slab.live_intensity(purpose)
     }
 }
 
@@ -257,7 +309,7 @@ mod tests {
             kind: SlabKind::Interior,
             one_way: None,
             edge_supported: None,
-            thickness: None,
+            section: None,
             usage,
         }
     }
@@ -340,21 +392,56 @@ mod tests {
         assert_eq!(c.live_load(LoadPurpose::Seismic), 1.0e-3);
     }
 
+    /// 断面を割り当てていないスラブは自重を持たず、仕上げ荷重だけが固定荷重になる。
     #[test]
     fn test_slab_intensity_helpers() {
-        // DL のみ（usage None）。
+        let mut model = Model::default();
+        // DL のみ（usage None）。断面が無いので自重は 0。
         let s = slab_with(None, &[1.0e-3, 0.5e-3]);
-        assert!((s.dead_intensity() - 1.5e-3).abs() < 1e-12);
+        assert!((s.finish_intensity() - 1.5e-3).abs() < 1e-12);
         assert_eq!(s.live_intensity(LoadPurpose::Frame), 0.0);
-        assert!((s.intensity(LoadPurpose::Frame) - 1.5e-3).abs() < 1e-12);
+        assert!((model.slab_dead_intensity(&s) - 1.5e-3).abs() < 1e-12);
+        assert!((model.slab_intensity(&s, LoadPurpose::Frame) - 1.5e-3).abs() < 1e-12);
 
         // DL + 用途積載。骨組用の合成 = DL + LL(骨組用)。
         let s = slab_with(Some(SlabUsage::Office), &[1.0e-3]);
         assert!((s.live_intensity(LoadPurpose::Frame) - 1800e-6).abs() < 1e-12);
-        assert!((s.intensity(LoadPurpose::Frame) - (1.0e-3 + 1800e-6)).abs() < 1e-12);
+        assert!((model.slab_intensity(&s, LoadPurpose::Frame) - (1.0e-3 + 1800e-6)).abs() < 1e-12);
         // 地震用は積載が小さい。
-        assert!(s.intensity(LoadPurpose::Seismic) < s.intensity(LoadPurpose::Frame));
-        assert!(s.intensity(LoadPurpose::Frame) < s.intensity(LoadPurpose::Floor));
+        assert!(
+            model.slab_intensity(&s, LoadPurpose::Seismic)
+                < model.slab_intensity(&s, LoadPurpose::Frame)
+        );
+        assert!(
+            model.slab_intensity(&s, LoadPurpose::Frame)
+                < model.slab_intensity(&s, LoadPurpose::Floor)
+        );
+
+        // 断面を割り当てると、自重（板厚 × 単位体積重量）が固定荷重へ加わる。
+        model.materials.push(Material {
+            strength_factor: None,
+            concrete_class: Default::default(),
+            id: crate::ids::MaterialId(0),
+            name: "Fc24".into(),
+            category: MaterialCategory::Concrete,
+            young: 23000.0,
+            poisson: 0.2,
+            density: crate::units::to_internal::mass_density_from_unit_weight_kn_m3(24.0),
+            shear: None,
+            fc: Some(24.0),
+            fy: None,
+        });
+        let mut sec = crate::section_shape::SectionShape::RcSlab { thickness: 150.0 }
+            .to_section(crate::ids::SectionId(0), "S15".into());
+        sec.material = Some(crate::ids::MaterialId(0));
+        model.sections.push(sec);
+        let mut s = slab_with(None, &[1.0e-3]);
+        s.section = Some(crate::ids::SectionId(0));
+        assert_eq!(model.slab_thickness_of(&s), Some(150.0));
+        // 自重 = 150 mm × 24 kN/m³ = 3.6e-3 N/mm²。
+        let w = model.slab_self_weight_intensity(&s).unwrap();
+        assert!((w - 3.6e-3).abs() < 1e-9, "{w}");
+        assert!((model.slab_dead_intensity(&s) - (3.6e-3 + 1.0e-3)).abs() < 1e-9);
     }
 
     /// 旧スキーマ（usage 欄なし）の JSON が読める（後方互換）。

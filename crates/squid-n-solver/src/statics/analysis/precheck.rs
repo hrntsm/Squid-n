@@ -335,6 +335,41 @@ pub fn model_issues(model: &Model) -> Vec<ModelIssue> {
         }
     }
 
+    // 断面が未割当のスラブ・断面の主材料が未割当のスラブ
+    //
+    // スラブの板厚と自重は断面から解決する（`Model::slab_self_weight_intensity`）。
+    // 断面や主材料が無いと自重が算定できず、床の固定荷重が過小なまま長期応力が
+    // 出る（危険側）。既定厚・既定材料で補わず、ここで止める。
+    let slab_ids = |f: fn(&Model, &squid_n_core::model::Slab) -> bool| -> Vec<u32> {
+        model
+            .slabs
+            .iter()
+            .filter(|s| f(model, s))
+            .map(|s| s.id.0)
+            .collect()
+    };
+    let no_slab_section = slab_ids(|m, s| m.slab_section(s).is_none());
+    if !no_slab_section.is_empty() {
+        issues.push(ModelIssue::model(id_list_message(
+            "断面が未割当の床があります",
+            "ID ",
+            &no_slab_section,
+            "床タブで断面を割り当ててください。板厚が定まらないと自重が算定できません。",
+        )));
+    }
+    let no_slab_material = slab_ids(|m, s| {
+        m.slab_section(s)
+            .is_some_and(|sec| sec.material.is_none() || m.slab_thickness_of(s).is_none())
+    });
+    if !no_slab_material.is_empty() {
+        issues.push(ModelIssue::model(id_list_message(
+            "断面の材料または板厚が定まらない床があります",
+            "ID ",
+            &no_slab_material,
+            "断面タブで床の断面へ材料を割り当て、板厚を持つ形状にしてください。",
+        )));
+    }
+
     // 剛床（ダイアフラム）のない階
     //
     // 剛床がない階の水平力は、階に属する節点へ質量比で直接分配される

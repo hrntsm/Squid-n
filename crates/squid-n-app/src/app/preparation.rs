@@ -934,6 +934,7 @@ pub fn section_shape_label(shape: &squid_n_core::section_shape::SectionShape) ->
         SectionShape::RcRect { .. } => "RC 矩形",
         SectionShape::RcCircle { .. } => "RC 円形",
         SectionShape::RcWall { .. } => "RC 壁",
+        SectionShape::RcSlab { .. } => "RC スラブ",
         SectionShape::SrcRect { .. } => "SRC 矩形",
         SectionShape::SteelH { .. } => "H 形鋼",
         SectionShape::SteelBuiltH { .. } => "組立 H 形鋼",

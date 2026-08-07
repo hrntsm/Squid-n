@@ -1745,7 +1745,8 @@ fn steel_max_thickness(shape: &squid_n_core::section_shape::SectionShape) -> f64
         } => steel_web_thick.max(steel_flange_thick),
         SectionShape::RcRect { .. }
         | SectionShape::RcCircle { .. }
-        | SectionShape::RcWall { .. } => 0.0,
+        | SectionShape::RcWall { .. }
+        | SectionShape::RcSlab { .. } => 0.0,
     }
 }
 

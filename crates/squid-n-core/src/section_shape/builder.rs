@@ -143,7 +143,7 @@ impl SectionShape {
                     rc_as + (N_S_EQ - 1.0) * s_web,
                 )
             }
-            SectionShape::RcWall { thickness, .. } => (
+            SectionShape::RcWall { thickness, .. } | SectionShape::RcSlab { thickness } => (
                 1000.0,
                 thickness,
                 1000.0 * thickness / KAPPA_RC,
@@ -153,7 +153,9 @@ impl SectionShape {
         // 板厚系の形状は Section.thickness にも板厚を反映する（検定・表示用）。
         let thickness = match *self {
             SectionShape::CftBox { thick, .. } | SectionShape::CftPipe { thick, .. } => Some(thick),
-            SectionShape::RcWall { thickness, .. } => Some(thickness),
+            SectionShape::RcWall { thickness, .. } | SectionShape::RcSlab { thickness } => {
+                Some(thickness)
+            }
             _ => None,
         };
         Section {

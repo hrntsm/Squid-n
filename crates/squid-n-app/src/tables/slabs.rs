@@ -18,6 +18,8 @@ pub struct SlabDraft {
     pub method: DistributionMethod,
     /// スラブ用途（積載荷重プリセット。`None` は積載寄与なし）。
     pub usage: Option<SlabUsage>,
+    /// スラブ断面（板厚・コンクリート材料を持つ断面。`None` は未割当）。
+    pub section: Option<squid_n_core::ids::SectionId>,
     /// 小梁入力の対象スラブ（小梁編集セクション用）。
     pub joist_target: Option<SlabId>,
     /// 小梁の支持節点（両端。小梁が架かる2節点）。
@@ -36,6 +38,7 @@ impl Default for SlabDraft {
             load_value: "0".to_string(),
             method: DistributionMethod::TriTrapezoid,
             usage: None,
+            section: None,
             joist_target: None,
             joist_supports: [None; 2],
             joist_spacing: "0".to_string(),
@@ -140,6 +143,16 @@ pub fn slabs_table(ui: &mut egui::Ui, app: &mut App) {
     let mut pending_kind: Vec<(SlabId, SlabKind)> = Vec::new();
     let mut pending_one_way: Vec<(SlabId, Option<OneWayDir>)> = Vec::new();
     let mut pending_usage: Vec<(SlabId, Option<SlabUsage>)> = Vec::new();
+    let mut pending_section: Vec<(SlabId, Option<squid_n_core::ids::SectionId>)> = Vec::new();
+    // 板状の断面（板厚を持つ断面）だけを候補にする。板厚が無い断面を割り当てても
+    // 自重・数量が算定できないため、選ばせない。
+    let slab_sections: Vec<(squid_n_core::ids::SectionId, String)> = app
+        .model
+        .sections
+        .iter()
+        .filter(|sec| sec.thickness.is_some_and(|t| t > 0.0))
+        .map(|sec| (sec.id, sec.display_name()))
+        .collect();
 
     table_util::standard_table(
         ui,
@@ -152,6 +165,7 @@ pub fn slabs_table(ui: &mut egui::Ui, app: &mut App) {
             Col::name("種別"),
             Col::name("一方向"),
             Col::text("用途"),
+            Col::text("断面"),
             Col::label("小梁"),
             Col::actions(),
         ],
@@ -237,6 +251,29 @@ pub fn slabs_table(ui: &mut egui::Ui, app: &mut App) {
                 );
             });
             row.col(|ui| {
+                let label = app
+                    .model
+                    .slab_section(slab)
+                    .map(|sec| sec.display_name())
+                    .unwrap_or_else(|| "―".to_string());
+                table_util::cell_combo(ui, ("slab_section", slab.id.0), &label, |ui| {
+                    if ui.selectable_label(slab.section.is_none(), "―").clicked()
+                        && slab.section.is_some()
+                    {
+                        pending_section.push((slab.id, None));
+                    }
+                    for (sid, name) in &slab_sections {
+                        if ui
+                            .selectable_label(slab.section == Some(*sid), name)
+                            .clicked()
+                            && slab.section != Some(*sid)
+                        {
+                            pending_section.push((slab.id, Some(*sid)));
+                        }
+                    }
+                });
+            });
+            row.col(|ui| {
                 let cnt = slab.joists.len();
                 if cnt == 0 {
                     table_util::muted_cell(ui, "―", "小梁が配置されていません");
@@ -255,6 +292,7 @@ pub fn slabs_table(ui: &mut egui::Ui, app: &mut App) {
     let had_pending = !pending_kind.is_empty()
         || !pending_one_way.is_empty()
         || !pending_usage.is_empty()
+        || !pending_section.is_empty()
         || pending_delete.is_some();
     for (id, kind) in pending_kind {
         app.undo
@@ -267,6 +305,12 @@ pub fn slabs_table(ui: &mut egui::Ui, app: &mut App) {
     for (id, usage) in pending_usage {
         app.undo
             .run(&mut app.model, Box::new(SetSlabUsage { id, usage }));
+    }
+    for (id, section) in pending_section {
+        app.undo.run(
+            &mut app.model,
+            Box::new(squid_n_edit::SetSlabSection { id, section }),
+        );
     }
     if let Some(id) = pending_delete {
         app.undo.run(&mut app.model, Box::new(DeleteSlab { id }));
@@ -341,6 +385,34 @@ pub fn slabs_table(ui: &mut egui::Ui, app: &mut App) {
     });
 
     ui.horizontal(|ui| {
+        // 断面（板厚・コンクリート材料）。板厚を持つ断面だけを候補にする。
+        ui.horizontal(|ui| {
+            ui.label("断面:");
+            let label = app
+                .slab_draft
+                .section
+                .and_then(|sid| app.model.sections.get(sid.index()))
+                .map(|sec| sec.display_name())
+                .unwrap_or_else(|| "―".to_string());
+            egui::ComboBox::from_id_salt("slab_draft_section")
+                .selected_text(label)
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(&mut app.slab_draft.section, None, "―");
+                    for sec in &app.model.sections {
+                        if sec.thickness.is_some_and(|t| t > 0.0) {
+                            ui.selectable_value(
+                                &mut app.slab_draft.section,
+                                Some(sec.id),
+                                sec.display_name(),
+                            );
+                        }
+                    }
+                });
+        })
+        .response
+        .on_hover_text(
+            "床の板厚と自重は断面から決まります。断面が未割当の床は解析前チェックで止まります",
+        );
         ui.label("用途（積載荷重）:")
             .on_hover_text("令別表第1 の積載荷重（骨組用）を「LL(架構用)」ケースへ分配します");
         egui::ComboBox::from_id_salt("slab_draft_usage")
@@ -418,6 +490,7 @@ pub fn slabs_table(ui: &mut egui::Ui, app: &mut App) {
                 loads: vec![AreaLoad { kind, value }],
                 method: app.slab_draft.method,
                 usage: app.slab_draft.usage,
+                section: app.slab_draft.section,
             }),
         );
         app.staleness.mark_edited();

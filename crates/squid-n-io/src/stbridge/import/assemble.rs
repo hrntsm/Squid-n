@@ -5,7 +5,7 @@
 //! 支点の自動設定を行い、モデルと [`ImportReport`] を返す。
 
 use super::super::StbError;
-use super::parser::StbParser;
+use super::parser::{RawSlabSection, StbParser};
 use super::{
     material_std, ImportReport, PendingMember, PendingMemberKind, PendingSec, PendingSecKind,
     PendingSecondary, RawAxisGroup, RawLoadCase, RawMaterial, RawNode, RawSlab, RawStory, RawWall,
@@ -34,7 +34,7 @@ pub(super) fn assemble(parsed: StbParser) -> Result<(Model, ImportReport), StbEr
         pending_secondaries,
         steel_lib,
         raw_slabs,
-        slab_sec_thickness,
+        slab_secs,
         raw_walls,
         wall_sec_thickness,
         raw_axis_groups,
@@ -111,10 +111,10 @@ pub(super) fn assemble(parsed: StbParser) -> Result<(Model, ImportReport), StbEr
     );
     stats.push_warnings(&mut warnings);
 
-    let slab_self_weight_count = build_slabs(
+    let slab_section_count = build_slabs(
         &mut model,
         raw_slabs,
-        &slab_sec_thickness,
+        &slab_secs,
         &node_index,
         &mut warnings,
     );
@@ -134,7 +134,7 @@ pub(super) fn assemble(parsed: StbParser) -> Result<(Model, ImportReport), StbEr
         guessed_categories,
         n_joists,
         n_posts,
-        slab_self_weight_count,
+        slab_section_count,
     );
     auto_assign_supports(&mut model, &mut notes);
 
@@ -548,19 +548,23 @@ fn build_secondaries(
 ///
 /// 3 頂点未満・存在しない節点を含むスラブはスキップして報告する。
 ///
-/// ST-Bridge は床荷重（仕上げ・積載）を持たないため、厚さが分かるスラブには
-/// 自重（厚さ × γRC=24kN/m³。デッキ合成もコンクリート主体の近似）を固定荷重
-/// として自動設定する（DL・CMQ・地震用重量へスラブ自重が算入される出発点。
-/// 仕上げ・用途（積載）は荷重タブでの設定が必要。notes で通知する）。
+/// スラブ断面（`StbSecSlab_RC` / `StbSecSlabDeck`）は符号・階・板厚・コンクリート
+/// のグレード名を持つため、内部の [`Section`] として組み立ててスラブへ割り当てる。
+/// **自重は面荷重へ焼き込まない**。板厚と材料が断面にそろっているので、自重は
+/// 使うたびに `Model::slab_self_weight_intensity` が算定する（板厚や材料を
+/// 変えたときに自重が追随しない食い違いを作らないため）。
+/// 仕上げ荷重・用途（積載）は ST-Bridge が持たないため、荷重タブでの設定が要る。
 fn build_slabs(
     model: &mut Model,
     raw_slabs: Vec<RawSlab>,
-    slab_sec_thickness: &HashMap<u32, f64>,
+    slab_secs: &HashMap<u32, RawSlabSection>,
     node_index: &HashMap<u32, u32>,
     warnings: &mut Vec<String>,
 ) -> usize {
     let mut skipped_slabs = 0u32;
-    let mut slab_self_weight_count = 0usize;
+    // ST-Bridge の断面 file id → 内部の断面 ID。同じ断面を指すスラブで使い回す。
+    let mut sec_of_file: HashMap<u32, SectionId> = HashMap::new();
+    let mut slab_section_count = 0usize;
     for rs in raw_slabs {
         let mut boundary = Vec::with_capacity(rs.boundary.len());
         let mut resolved = true;
@@ -577,31 +581,31 @@ fn build_slabs(
             skipped_slabs += 1;
             continue;
         }
-        let thickness = rs
-            .section_fid
-            .and_then(|fid| slab_sec_thickness.get(&fid).copied());
-        let loads = match thickness {
-            Some(t) if t > 0.0 => {
-                slab_self_weight_count += 1;
-                vec![squid_n_core::model::AreaLoad {
-                    kind: "自重(自動)".into(),
-                    value: t * squid_n_core::units::to_internal::unit_weight_kn_per_m3(24.0),
-                }]
+        let section = rs.section_fid.and_then(|fid| {
+            let raw = slab_secs.get(&fid)?;
+            if raw.thickness <= 0.0 {
+                return None;
             }
-            _ => Vec::new(),
-        };
+            if let Some(&sid) = sec_of_file.get(&fid) {
+                return Some(sid);
+            }
+            let sid = push_slab_section(model, fid, raw);
+            sec_of_file.insert(fid, sid);
+            slab_section_count += 1;
+            Some(sid)
+        });
         let new_id = SlabId(model.slabs.len() as u32);
         model.slabs.push(Slab {
             id: new_id,
             boundary,
             joists: Vec::new(),
-            loads,
+            loads: Vec::new(),
             method: DistributionMethod::TriTrapezoid,
             kind: Default::default(),
             one_way: None,
             edge_supported: None,
             usage: None,
-            thickness,
+            section,
         });
     }
     if skipped_slabs > 0 {
@@ -609,7 +613,67 @@ fn build_slabs(
             "境界節点が解決できない、または頂点数が不足するスラブを {skipped_slabs} 件スキップしました"
         ));
     }
-    slab_self_weight_count
+    slab_section_count
+}
+
+/// 取り込んだスラブ断面を内部の [`Section`] として末尾へ追加し、その ID を返す。
+///
+/// 符号は `name` 属性、無ければ `S{file_id}`。階は `floor` 属性をそのまま持つ
+/// （断面の同一性は符号＋階のため）。符号＋階が既存の断面と衝突する場合は
+/// 空いた符号まで連番を送る。コンクリートは `strength_concrete` のグレード名から
+/// 材料を引き当て、無ければ標準材料表から起こして追加する。
+fn push_slab_section(model: &mut Model, file_id: u32, raw: &RawSlabSection) -> SectionId {
+    use squid_n_core::section_shape::SectionShape;
+
+    let base = raw
+        .name
+        .clone()
+        .filter(|n| !n.is_empty())
+        .unwrap_or_else(|| format!("S{file_id}"));
+    let floor = raw.floor.clone();
+    let mut name = base.clone();
+    let mut n = 2u32;
+    while squid_n_core::model::section_key_taken(&model.sections, (&name, floor.as_deref()), None) {
+        name = format!("{base}#{n}");
+        n += 1;
+    }
+    let sid = SectionId(model.sections.len() as u32);
+    let mut sec = SectionShape::RcSlab {
+        thickness: raw.thickness,
+    }
+    .to_section(sid, name);
+    sec.floor = floor;
+    sec.material = raw
+        .concrete
+        .as_deref()
+        .and_then(|grade| ensure_material_by_grade(model, grade));
+    model.sections.push(sec);
+    sid
+}
+
+/// グレード名の材料を探し、無ければ標準材料表から起こして追加する。
+/// 標準表にも無い名前（`Fc21` のような規格名でないもの）は `None`。
+fn ensure_material_by_grade(model: &mut Model, grade: &str) -> Option<MaterialId> {
+    if let Some(m) = model.materials.iter().find(|m| m.name == grade) {
+        return Some(m.id);
+    }
+    let std = material_std::resolve_grade(grade)?;
+    let id = MaterialId(model.materials.len() as u32);
+    model.materials.push(Material {
+        strength_factor: None,
+        concrete_class: Default::default(),
+        id,
+        name: grade.to_string(),
+        category: squid_n_core::material_grade::category_of_grade(grade)
+            .unwrap_or(MaterialCategory::Concrete),
+        young: std.young,
+        poisson: std.poisson,
+        density: std.density,
+        shear: None,
+        fc: std.fc,
+        fy: std.fy,
+    });
+    Some(id)
 }
 
 /// 壁（StbWall）を壁要素（`ElementKind::Wall`）として格納する。
@@ -782,7 +846,7 @@ fn push_import_notes(
     mut guessed_categories: Vec<String>,
     n_joists: usize,
     n_posts: usize,
-    slab_self_weight_count: usize,
+    slab_section_count: usize,
 ) {
     if !guessed_categories.is_empty() {
         guessed_categories.sort();
@@ -799,10 +863,11 @@ fn push_import_notes(
             （全体解析の対象外。床荷重・自重は大梁への集中荷重（CMQ）として伝達します）"
         ));
     }
-    if slab_self_weight_count > 0 {
+    if slab_section_count > 0 {
         notes.push(format!(
-            "スラブ {slab_self_weight_count} 枚に自重（厚さ×24kN/m³）を床荷重として設定しました\
-            （仕上げ荷重・用途（積載）は荷重タブで設定してください）"
+            "スラブ断面 {slab_section_count} 件を取り込み、床へ割り当てました\
+            （自重は断面の板厚と材料から算定します。仕上げ荷重・用途（積載）は\
+            ST-Bridge に含まれないため、荷重タブで設定してください）"
         ));
     }
 }

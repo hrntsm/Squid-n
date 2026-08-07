@@ -44,7 +44,8 @@ fn role_applies(shape: Option<&SectionShape>, role: SectionMaterialRole) -> bool
                 | SectionShape::SrcRect { .. }
                 | SectionShape::RcWall { .. }
         ),
-        // 内蔵鉄骨は SRC のみ。
+        // 内蔵鉄骨は SRC のみ。スラブは配筋も内蔵鉄骨も持たないため、
+        // 主材料（コンクリート）の欄だけが有効になる。
         SectionMaterialRole::Steel => matches!(shape, SectionShape::SrcRect { .. }),
     }
 }

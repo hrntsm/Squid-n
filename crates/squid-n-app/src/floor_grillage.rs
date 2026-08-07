@@ -784,7 +784,7 @@ mod tests {
                 one_way: None,
                 edge_supported: None,
                 usage: None,
-                thickness: None,
+                section: None,
             }],
             ..Default::default()
         };
@@ -891,7 +891,7 @@ mod tests {
                 one_way: None,
                 edge_supported: None,
                 usage: None,
-                thickness: None,
+                section: None,
             }],
             ..Default::default()
         };
@@ -978,7 +978,7 @@ mod tests {
                 one_way: None,
                 edge_supported: None,
                 usage: None,
-                thickness: None,
+                section: None,
             }],
             ..Default::default()
         };
@@ -1039,7 +1039,7 @@ mod tests {
                 one_way: None,
                 edge_supported: None,
                 usage: None,
-                thickness: None,
+                section: None,
             }],
             ..Default::default()
         };

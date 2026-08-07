@@ -336,7 +336,9 @@ pub fn max_dimension(shape: &SectionShape) -> f64 {
         SectionShape::SrcRect { b, d, .. } => b.max(d),
         SectionShape::CftBox { height, width, .. } => height.max(width),
         SectionShape::CftPipe { outer_dia, .. } => outer_dia,
-        SectionShape::RcWall { thickness, .. } => thickness.max(1000.0),
+        SectionShape::RcWall { thickness, .. } | SectionShape::RcSlab { thickness } => {
+            thickness.max(1000.0)
+        }
     }
 }
 
@@ -655,8 +657,8 @@ pub fn plastic_fibers_at(
                 );
             }
         }
-        SectionShape::RcWall { thickness, .. } => {
-            // 名目: 1m 幅の無筋板（壁の MN 曲線は対象外だがパニックさせない）
+        SectionShape::RcWall { thickness, .. } | SectionShape::RcSlab { thickness } => {
+            // 名目: 1m 幅の無筋板（壁・スラブの MN 曲線は対象外だがパニックさせない）
             mesh_rect(&mut fibers, [0.0, 0.0], 1000.0, thickness, target, conc);
         }
     }

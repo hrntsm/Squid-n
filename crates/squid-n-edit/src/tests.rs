@@ -913,7 +913,7 @@ fn test_delete_section_referenced_by_joist() {
         one_way: None,
         edge_supported: None,
         usage: None,
-        thickness: None,
+        section: None,
     });
     let mut stack = UndoStack::new();
 
@@ -1096,6 +1096,52 @@ fn test_set_section_material_on_missing_section_is_noop() {
     );
 }
 
+/// 床が参照する断面は削除できず、断面の削除で床の参照が繰り上がる。
+///
+/// 床は断面から板厚と自重を解決するため、断面が消えると床の重量が算定できなくなる。
+/// 部材・小梁と同じく削除ガードと ID 繰り上げの対象にする。
+#[test]
+fn test_slab_section_reference_is_guarded_and_shifted() {
+    use crate::{AddSlab, DeleteSection};
+    use squid_n_core::model::DistributionMethod;
+
+    let mut model = seeded_model(4, 0);
+    for i in 0..2u32 {
+        model.sections.push(bare_section(SectionId(i), None));
+    }
+    let mut stack = UndoStack::new();
+    assert!(stack.run(
+        &mut model,
+        Box::new(AddSlab {
+            boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
+            joists: Vec::new(),
+            loads: Vec::new(),
+            method: DistributionMethod::TriTrapezoid,
+            usage: None,
+            section: Some(SectionId(1)),
+        }),
+    ));
+
+    // 参照中の断面は削除できない。
+    assert!(
+        !stack.run(&mut model, Box::new(DeleteSection { id: SectionId(1) })),
+        "床が参照する断面は削除できない"
+    );
+
+    // 参照されていない断面を消すと、後続の断面 ID が繰り上がり床の参照も追随する。
+    assert!(stack.run(&mut model, Box::new(DeleteSection { id: SectionId(0) })));
+    assert_eq!(
+        model.slabs[0].section,
+        Some(SectionId(0)),
+        "参照が繰り上がる"
+    );
+    assert!(model.validate().is_ok(), "{:?}", model.validate());
+
+    stack.undo(&mut model);
+    assert_eq!(model.slabs[0].section, Some(SectionId(1)), "undo で戻る");
+    assert!(model.validate().is_ok(), "{:?}", model.validate());
+}
+
 /// 実在しない ID を指す割当は Noop（`Model::validate` が落ちるモデルを作らない）。
 /// 参照の存在は書き込む側で確かめる（`crate::refs` の規約）。
 #[test]
@@ -1207,6 +1253,18 @@ fn test_commands_reject_dangling_references() {
                 loads: Vec::new(),
                 method: DistributionMethod::TriTrapezoid,
                 usage: None,
+                section: None,
+            }),
+        ),
+        (
+            "存在しない断面を指す床",
+            Box::new(AddSlab {
+                boundary: vec![NodeId(0), NodeId(1), NodeId(2)],
+                joists: Vec::new(),
+                loads: Vec::new(),
+                method: DistributionMethod::TriTrapezoid,
+                usage: None,
+                section: Some(SectionId(9)),
             }),
         ),
     ];
@@ -1442,6 +1500,7 @@ fn test_add_delete_slab_roundtrip() {
             loads: vec![],
             method: DistributionMethod::TriTrapezoid,
             usage: None,
+            section: None,
         }),
     );
     assert_eq!(model.slabs.len(), 1);
@@ -1457,6 +1516,7 @@ fn test_add_delete_slab_roundtrip() {
             loads: vec![],
             method: DistributionMethod::OneWay,
             usage: None,
+            section: None,
         }),
     );
     assert_eq!(model.slabs.len(), 2);
@@ -1498,6 +1558,7 @@ fn test_delete_slab_middle_renumbers_and_roundtrips() {
                 }],
                 method: DistributionMethod::TributaryArea,
                 usage: None,
+                section: None,
             }),
         );
     }
@@ -2310,6 +2371,7 @@ fn test_set_slab_kind_and_one_way_roundtrip() {
             loads: vec![],
             method: DistributionMethod::TriTrapezoid,
             usage: None,
+            section: None,
         }),
     );
     assert_eq!(model.slabs[0].kind, SlabKind::Interior);
@@ -2351,6 +2413,7 @@ fn test_set_slab_joists_roundtrip() {
             loads: vec![],
             method: DistributionMethod::TriTrapezoid,
             usage: None,
+            section: None,
         }),
     );
     assert!(model.slabs[0].joists.is_empty());
@@ -2407,6 +2470,7 @@ fn test_materialize_slab_joists_creates_beams() {
             loads: vec![],
             method: DistributionMethod::TriTrapezoid,
             usage: None,
+            section: None,
         }),
     );
     let before = model.elements.len();

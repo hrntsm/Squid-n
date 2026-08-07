@@ -191,7 +191,7 @@ fn build_grid_model(nx: usize, ny: usize, n_stories: usize, with_slabs: bool) ->
                         method: DistributionMethod::TriTrapezoid,
                         usage: None,
                         edge_supported: None,
-                        thickness: None,
+                        section: None,
                         kind: Default::default(),
                         one_way: None,
                     });

@@ -118,6 +118,7 @@ pub enum ShapeKind {
     SteelBuiltH,
     RcRect,
     RcCircle,
+    RcSlab,
 }
 
 impl ShapeKind {
@@ -135,9 +136,10 @@ impl ShapeKind {
             ShapeKind::SteelBuiltH => "鋼 非対称組立H形",
             ShapeKind::RcRect => "RC 矩形",
             ShapeKind::RcCircle => "RC 円形",
+            ShapeKind::RcSlab => "RC スラブ",
         }
     }
-    pub const ALL: [ShapeKind; 12] = [
+    pub const ALL: [ShapeKind; 13] = [
         ShapeKind::SteelH,
         ShapeKind::SteelBox,
         ShapeKind::SteelAngle,
@@ -150,6 +152,7 @@ impl ShapeKind {
         ShapeKind::SteelBuiltH,
         ShapeKind::RcRect,
         ShapeKind::RcCircle,
+        ShapeKind::RcSlab,
     ];
 }
 
@@ -363,6 +366,13 @@ pub fn section_editor_panel(ui: &mut egui::Ui, app: &mut App) {
             }
             ShapeKind::RcCircle => {
                 rc_circle_fields(ui, draft);
+            }
+            ShapeKind::RcSlab => {
+                // スラブは板厚だけを持つ（平面形状は床の境界節点から得る）。
+                ui.horizontal(|ui| {
+                    ui.label("板厚 t [mm]");
+                    ui.add(egui::DragValue::new(&mut draft.thick).speed(1.0));
+                });
             }
         }
 
@@ -829,6 +839,7 @@ fn build_shape(d: &SectionEditorDraft) -> SectionShape {
             d: d.rc_d,
             rebar: build_rebar(d),
         },
+        ShapeKind::RcSlab => SectionShape::RcSlab { thickness: d.thick },
     }
 }
 

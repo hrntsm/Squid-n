@@ -361,7 +361,7 @@ fn section_depth(shape: &SectionShape) -> f64 {
         | SectionShape::SrcRect { d, .. } => d,
         SectionShape::CftBox { height, .. } => height,
         SectionShape::CftPipe { outer_dia, .. } => outer_dia,
-        SectionShape::RcWall { thickness, .. } => thickness,
+        SectionShape::RcWall { thickness, .. } | SectionShape::RcSlab { thickness } => thickness,
     }
 }
 

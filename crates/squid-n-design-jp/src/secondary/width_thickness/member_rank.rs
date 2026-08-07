@@ -380,6 +380,7 @@ pub fn s_member_rank_by_kihon(
         | SectionShape::RcRect { .. }
         | SectionShape::RcCircle { .. }
         | SectionShape::SrcRect { .. }
-        | SectionShape::RcWall { .. } => None,
+        | SectionShape::RcWall { .. }
+        | SectionShape::RcSlab { .. } => None,
     }
 }

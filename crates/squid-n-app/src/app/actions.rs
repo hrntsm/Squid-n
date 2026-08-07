@@ -3101,7 +3101,7 @@ impl App {
 
         for slab in &self.model.slabs {
             // 床設計は床用積載（最大）＋固定荷重を用いる。
-            let w = slab.intensity(LoadPurpose::Floor);
+            let w = self.model.slab_intensity(slab, LoadPurpose::Floor);
 
             let sigma_allow = 235.0 / 1.5; // 鋼の長期許容曲げ応力度 F/1.5（既定 F=235）。
             let z_of = |sid: squid_n_core::ids::SectionId| -> Option<f64> {
@@ -3195,7 +3195,7 @@ impl App {
                     Some(OneWayDir::Y) => ly,
                     None => lx.min(ly),
                 };
-                let thickness = slab.thickness.unwrap_or(self.model.slab_thickness);
+                let thickness = self.model.slab_thickness_of(slab).unwrap_or(0.0);
                 if span > 1e-9 && thickness > 0.0 {
                     // 単純支持相当（coef=8）。連続版はより小さい係数だが安全側に 8 を用いる。
                     let r = fd::design_slab_oneway(
@@ -3236,7 +3236,12 @@ impl App {
             return;
         }
         // CMQ 図表示・従来互換のため `self.beam_loads` には固定荷重（DL）分配を格納する。
-        self.beam_loads = self.slab_beam_loads(|slab| slab.dead_intensity());
+        // 固定荷重 DL＝スラブ自重（断面の板厚×材料）＋仕上げ等。
+        let loads = {
+            let model = &self.model;
+            self.slab_beam_loads(|slab| model.slab_dead_intensity(slab))
+        };
+        self.beam_loads = loads;
         self.beam_loads_hash = Some(hash);
     }
 
@@ -3672,11 +3677,18 @@ impl App {
         // キャッシュキーを経由しない直接書き込みのため `beam_loads_hash` を無効化する
         // （残したままだと、この後モデルを undo で元に戻したとき refresh_beam_loads が
         // 「ハッシュ一致＝最新」と誤認し、編集後の分配を表示し続ける）。
-        self.beam_loads =
-            self.slab_beam_loads_with(|slab| slab.dead_intensity(), &unit_reactions, &beam_map);
+        let dl_loads = {
+            let model = &self.model;
+            self.slab_beam_loads_with(
+                |slab| model.slab_dead_intensity(slab),
+                &unit_reactions,
+                &beam_map,
+            )
+        };
+        self.beam_loads = dl_loads;
         self.beam_loads_hash = None;
 
-        // DL（固定荷重）: スラブ分配（`self.beam_loads` は上で dead_intensity 分配済み）
+        // DL（固定荷重）: スラブ分配（`self.beam_loads` は上で固定荷重分を分配済み）
         // ＋躯体自重。自重には二次部材（小梁・間柱）の分（支持点への節点荷重）が
         // 含まれるため、要素が接続しない節点への荷重を大梁の中間集中荷重（CMQ）へ
         // 変換してから同期する。

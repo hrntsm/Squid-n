@@ -340,6 +340,7 @@ impl App {
                             loads: Vec::new(),
                             method: squid_n_core::model::DistributionMethod::TriTrapezoid,
                             usage: None,
+                            section: None,
                         }),
                     );
                     self.staleness.mark_edited();

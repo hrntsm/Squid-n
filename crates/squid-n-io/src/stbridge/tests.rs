@@ -1879,7 +1879,11 @@ fn test_import_slab_with_node_order_and_thickness() {
         vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
         "境界節点ループが順序どおり"
     );
-    assert_eq!(s.thickness, Some(180.0), "断面参照から厚さを解決");
+    assert_eq!(
+        m.slab_thickness_of(s),
+        Some(180.0),
+        "断面参照から厚さを解決"
+    );
     assert!(report.is_clean(), "警告なし: {:?}", report.warnings);
 }
 
@@ -2129,6 +2133,25 @@ fn test_slab_roundtrip_export_import() {
             support_spring: None,
         });
     }
+    // 板厚 200 mm のスラブ断面。符号・板厚・コンクリート材料が往復する。
+    model.materials.push(squid_n_core::model::Material {
+        strength_factor: None,
+        concrete_class: Default::default(),
+        id: squid_n_core::ids::MaterialId(0),
+        name: "Fc24".into(),
+        category: squid_n_core::model::MaterialCategory::Concrete,
+        young: 23000.0,
+        poisson: 0.2,
+        density: 2.4e-9,
+        shear: None,
+        fc: Some(24.0),
+        fy: None,
+    });
+    let slab_sec = squid_n_core::ids::SectionId(0);
+    let mut sec = squid_n_core::section_shape::SectionShape::RcSlab { thickness: 200.0 }
+        .to_section(slab_sec, "S20".into());
+    sec.material = Some(squid_n_core::ids::MaterialId(0));
+    model.sections.push(sec);
     model.slabs.push(Slab {
         id: SlabId(0),
         boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
@@ -2139,7 +2162,7 @@ fn test_slab_roundtrip_export_import() {
         one_way: None,
         edge_supported: None,
         usage: None,
-        thickness: Some(200.0),
+        section: Some(slab_sec),
     });
     assert!(model.validate().is_ok(), "{:?}", model.validate());
 
@@ -2152,7 +2175,11 @@ fn test_slab_roundtrip_export_import() {
         vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
         "境界が往復"
     );
-    assert_eq!(m2.slabs[0].thickness, Some(200.0), "厚さが往復");
+    assert_eq!(
+        m2.slab_thickness_of(&m2.slabs[0]),
+        Some(200.0),
+        "厚さが往復"
+    );
     assert!(report.is_clean(), "警告なし {:?}", report.warnings);
 }
 
@@ -2583,10 +2610,13 @@ fn test_secondary_members_roundtrip() {
 }
 
 /// 厚さが分かるスラブ（StbSecSlab_RC）には、取り込み時に自重
-/// （厚さ×γRC=24kN/m³）が固定荷重として自動設定される（ST-Bridge は
-/// 床荷重を持たないため、DL・CMQ・地震用重量への算入の出発点にする）。
+/// スラブ断面（`StbSecSlab_RC`）を内部の断面として取り込み、床へ割り当てる。
+///
+/// 自重は面荷重へ焼き込まず、断面の板厚と材料から使うたびに算定する
+/// （`Model::slab_self_weight_intensity`）。板厚や材料を変えたときに自重が
+/// 追随しない食い違いを作らないためである。
 #[test]
-fn test_import_slab_auto_self_weight_from_thickness() {
+fn test_import_slab_section_and_self_weight() {
     let xml = r#"<?xml version="1.0"?>
 <ST_BRIDGE version="2.0.0"><StbModel>
   <StbNodes>
@@ -2596,7 +2626,7 @@ fn test_import_slab_auto_self_weight_from_thickness() {
     <StbNode id="3" X="0" Y="3000" Z="0"/>
   </StbNodes>
   <StbSections>
-    <StbSecSlab_RC id="0" name="S150">
+    <StbSecSlab_RC id="0" name="S150" strength_concrete="Fc24">
       <StbSecFigureSlab_RC><StbSecSlab_RC_Straight depth="150"/></StbSecFigureSlab_RC>
     </StbSecSlab_RC>
   </StbSections>
@@ -2611,21 +2641,27 @@ fn test_import_slab_auto_self_weight_from_thickness() {
     let (m, report) = import_stbridge_with_report(xml).expect("import");
     assert_eq!(m.slabs.len(), 1);
     let slab = &m.slabs[0];
-    assert_eq!(slab.thickness, Some(150.0));
-    assert_eq!(slab.loads.len(), 1, "自重が床荷重として自動設定される");
+    // 断面が作られ、符号は StbSecSlab_RC の name をそのまま採る。
+    let sec = m.slab_section(slab).expect("スラブ断面が割り当たる");
+    assert_eq!(sec.name, "S150");
+    assert_eq!(m.slab_thickness_of(slab), Some(150.0));
+    assert!(slab.loads.is_empty(), "自重は面荷重へ焼き込まない");
     // 150 mm × 24 kN/m³ = 3.6 kN/m² = 3.6e-3 N/mm²
     assert!(
-        (slab.loads[0].value - 3.6e-3).abs() < 1e-12,
-        "value={}",
-        slab.loads[0].value
+        (m.slab_self_weight_intensity(slab)
+            .expect("自重を算定できる")
+            - 3.6e-3)
+            .abs()
+            < 1e-9,
+        "自重の面荷重強度"
     );
     assert!(
-        (slab.dead_intensity() - 3.6e-3).abs() < 1e-12,
+        (m.slab_dead_intensity(slab) - 3.6e-3).abs() < 1e-9,
         "分配強度に自重が乗る"
     );
     assert!(
-        report.notes.iter().any(|n| n.contains("スラブ 1 枚に自重")),
-        "自動設定を通知: {:?}",
+        report.notes.iter().any(|n| n.contains("スラブ断面 1 件")),
+        "取り込みを通知: {:?}",
         report.notes
     );
 }

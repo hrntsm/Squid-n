@@ -258,6 +258,14 @@ impl Model {
                     )));
                 }
             }
+            if let Some(sid) = slab.section {
+                if sid.index() >= self.sections.len() || self.sections[sid.index()].id != sid {
+                    return Err(CoreError::DanglingRef(format!(
+                        "Slab {} -> Section {}",
+                        slab.id.0, sid.0
+                    )));
+                }
+            }
             for (ji, j) in slab.joists.iter().enumerate() {
                 for &nid in &j.support {
                     if nid.index() >= self.nodes.len() || self.nodes[nid.index()].id != nid {
@@ -570,6 +578,9 @@ impl Model {
             }
         }
         for slab in &mut self.slabs {
+            if let Some(sid) = &mut slab.section {
+                f(sid);
+            }
             for j in &mut slab.joists {
                 if let Some(sid) = &mut j.section {
                     f(sid);

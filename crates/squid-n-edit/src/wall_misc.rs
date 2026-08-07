@@ -479,6 +479,36 @@ impl EditCommand for SetSlabUsage {
     }
 }
 
+/// スラブの断面（`section`。板厚・コンクリート材料を持つ断面）変更。
+/// 逆操作は変更前の値への復元。存在しない `SlabId`、および実在しない断面を
+/// 指す割当は Noop（crate::refs の規約）。
+pub struct SetSlabSection {
+    pub id: SlabId,
+    pub section: Option<SectionId>,
+}
+
+impl EditCommand for SetSlabSection {
+    fn apply(&self, model: &mut Model) -> Box<dyn EditCommand> {
+        let idx = self.id.index();
+        if idx >= model.slabs.len() || model.slabs[idx].id != self.id {
+            return Box::new(Noop);
+        }
+        if !crate::refs::section_ref_ok(model, self.section) {
+            return Box::new(Noop);
+        }
+        let old = model.slabs[idx].section;
+        model.slabs[idx].section = self.section;
+        Box::new(SetSlabSection {
+            id: self.id,
+            section: old,
+        })
+    }
+
+    fn label(&self) -> &str {
+        "スラブ断面変更"
+    }
+}
+
 /// スラブの小梁（`joists`。二段階伝達の小梁ライン）を全置換する。逆操作は
 /// 変更前の `joists` への復元（`SetLoadCfg` と同様の値置換パターン）。
 /// 存在しない `SlabId`、および実在しない節点・断面を指す小梁は Noop
