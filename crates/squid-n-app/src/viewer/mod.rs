@@ -1407,9 +1407,11 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
                             // 壁・スラブ等の非線材には部材荷重を載せられない
                             // （`is_member_load_target` と同じ集合に限る）。
                             if member_load_pickable(&app.model, id) {
-                                let model = app.model.clone();
+                                // モデルの不変借用はここで終える（`set_picked_member`
+                                // へはブレースか否かの判定結果だけを渡す）。
+                                let is_brace = crate::load_editor::is_brace(&app.model, id);
                                 if let Some(editor) = app.load_editor.as_mut() {
-                                    editor.set_picked_member(id, &model);
+                                    editor.set_picked_member(id, is_brace);
                                 }
                                 app.nav.focus_member = Some(id);
                                 app.selection.members = vec![id];

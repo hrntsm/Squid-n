@@ -35,6 +35,12 @@ fn load_case_index(model: &Model, lc: LoadCaseId) -> Option<usize> {
 
 /// 節点荷重を荷重ケースへ追加。逆操作は末尾要素の削除。
 /// 1 つの節点に何件でも追加できる（解析では全件が加算される）。
+///
+/// 準備計算が生成する荷重（`LoadSource::Auto`）は追加できない（Noop）。
+/// 自動生成分は [`squid_n_core::model::LoadCase::replace_auto_loads`] が一括で
+/// 入れ替えるものであり、個別のコマンドが触る対象ではない。ここで受け付けると
+/// 逆操作の [`DeleteNodalLoad`] が自動生成分を拒む側の規則と食い違い、
+/// undo が無言で効かなくなる。
 pub struct AddNodalLoad {
     pub lc: LoadCaseId,
     pub load: squid_n_core::model::NodalLoad,
@@ -45,6 +51,9 @@ impl EditCommand for AddNodalLoad {
         let Some(idx) = load_case_index(model, self.lc) else {
             return Box::new(Noop);
         };
+        if self.load.source.is_auto() {
+            return Box::new(Noop);
+        }
         model.load_cases[idx].nodal.push(self.load.clone());
         Box::new(DeleteNodalLoad {
             lc: self.lc,
@@ -146,6 +155,7 @@ impl EditCommand for InsertNodalLoad {
 }
 
 /// 部材（梁）荷重を荷重ケースへ追加。逆操作は末尾要素の削除。
+/// 自動生成分は追加できない（[`AddNodalLoad`] と同じ理由）。
 pub struct AddMemberLoad {
     pub lc: LoadCaseId,
     pub load: squid_n_core::model::MemberLoad,
@@ -156,6 +166,9 @@ impl EditCommand for AddMemberLoad {
         let Some(idx) = load_case_index(model, self.lc) else {
             return Box::new(Noop);
         };
+        if self.load.source.is_auto() {
+            return Box::new(Noop);
+        }
         model.load_cases[idx].member.push(self.load.clone());
         let pos = model.load_cases[idx].member.len() - 1;
         Box::new(DeleteMemberLoad {

@@ -272,20 +272,32 @@ impl App {
                 );
                 self.staleness.mark_edited();
             }
-            LoadTreeAction::DeleteCase(lc) => {
-                self.undo.run(
-                    &mut self.model,
-                    Box::new(squid_n_edit::DeleteLoadCase { id: lc }),
-                );
-                if self.nav.focus_load_case == Some(lc) {
-                    self.nav.focus_load_case = None;
-                }
-                if self.last_static == Some(StaticKey::Case(StaticCaseKey::User(lc))) {
-                    self.last_static = None;
-                }
-                self.staleness.mark_edited();
-            }
+            LoadTreeAction::DeleteCase(lc) => self.delete_load_case_action(lc),
         }
+    }
+
+    /// 荷重ケースを削除する（ツリー・下ドックの表で共通）。
+    ///
+    /// 削除は後続の `LoadCaseId` を繰り上げるため（`shift_load_case_ids`）、開いたままの
+    /// 荷重モーダルが持つケース ID は、削除後に**別のケースを指す**ことがある。
+    /// 存在チェックだけでは素通りして、意図しない荷重ケースへ書き込んでしまうため、
+    /// 削除にあわせてモーダルを閉じる（対象選択の待ち受け中はツリーを操作できるので、
+    /// この組み合わせは実際に起こり得る）。
+    pub(crate) fn delete_load_case_action(&mut self, lc: LoadCaseId) {
+        if !self.undo.run(
+            &mut self.model,
+            Box::new(squid_n_edit::DeleteLoadCase { id: lc }),
+        ) {
+            return;
+        }
+        self.load_editor = None;
+        if self.nav.focus_load_case == Some(lc) {
+            self.nav.focus_load_case = None;
+        }
+        if self.last_static == Some(StaticKey::Case(StaticCaseKey::User(lc))) {
+            self.last_static = None;
+        }
+        self.staleness.mark_edited();
     }
 
     /// 荷重モーダルを開く。3D ビューが出ないタブにいる場合はモデルタブへ移す
@@ -337,5 +349,68 @@ impl LoadGroup {
             LoadGroup::Nodal => 0,
             LoadGroup::Member => 1,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::load_editor::LoadEditor;
+
+    /// 荷重ケースを削除すると、開いたままの荷重モーダルを閉じる。
+    ///
+    /// 削除は後続の `LoadCaseId` を繰り上げるため、閉じずに残すとモーダルが持つ
+    /// ケース ID が別のケースを指す。存在チェックは通ってしまうので、確定操作が
+    /// 意図しない荷重ケースへ書き込む。
+    #[test]
+    fn deleting_a_load_case_closes_the_open_load_editor() {
+        use squid_n_core::model::{LoadCase, LoadCaseKind};
+
+        let mut app = App::default();
+        app.model.load_cases = (0..3)
+            .map(|i| LoadCase {
+                id: LoadCaseId(i),
+                name: format!("LC{i}"),
+                nodal: Vec::new(),
+                member: Vec::new(),
+                kind: LoadCaseKind::Other,
+            })
+            .collect();
+        app.model.combinations.clear();
+
+        // LC2 を対象にモーダルを開いたまま、LC0 を削除する。
+        app.load_editor = Some(LoadEditor::new_nodal(LoadCaseId(2), None));
+        app.delete_load_case_action(LoadCaseId(0));
+
+        assert!(app.load_editor.is_none(), "モーダルは閉じているはず");
+        // 削除で ID が繰り上がり、元の LC2 は LoadCaseId(1) になっている。
+        assert_eq!(app.model.load_cases.len(), 2);
+        assert_eq!(app.model.load_cases[1].name, "LC2");
+        assert_eq!(app.model.load_cases[1].id, LoadCaseId(1));
+    }
+
+    /// 荷重組合せから参照中のケースは削除できず、モーダルも閉じない。
+    #[test]
+    fn blocked_deletion_keeps_the_open_load_editor() {
+        use squid_n_core::model::{LoadCase, LoadCaseKind, LoadCombination};
+
+        let mut app = App::default();
+        app.model.load_cases = vec![LoadCase {
+            id: LoadCaseId(0),
+            name: "LC0".into(),
+            nodal: Vec::new(),
+            member: Vec::new(),
+            kind: LoadCaseKind::Other,
+        }];
+        app.model.combinations = vec![LoadCombination {
+            name: "C".into(),
+            terms: vec![(LoadCaseId(0), 1.0)],
+        }];
+        app.load_editor = Some(LoadEditor::new_nodal(LoadCaseId(0), None));
+
+        app.delete_load_case_action(LoadCaseId(0));
+
+        assert_eq!(app.model.load_cases.len(), 1, "参照中なので削除されない");
+        assert!(app.load_editor.is_some(), "削除されていなければ閉じない");
     }
 }

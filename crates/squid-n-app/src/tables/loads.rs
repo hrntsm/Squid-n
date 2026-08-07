@@ -2,8 +2,8 @@ use crate::app::App;
 use squid_n_core::ids::LoadCaseId;
 use squid_n_core::model::{LoadCaseKind, MemberLoad, MemberLoadKind};
 use squid_n_edit::{
-    AddCombination, AddLoadCase, DeleteCombination, DeleteLoadCase, DeleteMemberLoad,
-    DeleteNodalLoad, SetLoadCaseKind, SetLoadCaseName, SetNodalLoad,
+    AddCombination, AddLoadCase, DeleteCombination, DeleteMemberLoad, DeleteNodalLoad,
+    SetLoadCaseKind, SetLoadCaseName, SetNodalLoad,
 };
 
 /// `LoadCaseKind` の全種別（UI の選択肢一覧・順序を1箇所に集約する）。
@@ -123,7 +123,9 @@ pub fn loads_table(ui: &mut egui::Ui, app: &mut App) {
         },
     );
 
-    let had_name = !pending_name.is_empty() || !pending_kind.is_empty() || pending_delete.is_some();
+    // 削除は `delete_load_case_action` が自前で陳腐化を扱うため、ここには含めない
+    // （組合せから参照中で削除が拒まれた場合に、変更もないのに陳腐化してしまう）。
+    let had_name = !pending_name.is_empty() || !pending_kind.is_empty();
     for (i, name) in pending_name {
         let lc_id = LoadCaseId(app.model.load_cases[i].id.0);
         app.undo.run(
@@ -136,18 +138,9 @@ pub fn loads_table(ui: &mut egui::Ui, app: &mut App) {
             .run(&mut app.model, Box::new(SetLoadCaseKind { id, kind }));
     }
     if let Some(lc_id) = pending_delete {
-        app.undo
-            .run(&mut app.model, Box::new(DeleteLoadCase { id: lc_id }));
-        if app.nav.focus_load_case == Some(lc_id) {
-            app.nav.focus_load_case = None;
-        }
-        if app.last_static
-            == Some(crate::app::StaticKey::Case(
-                crate::app::StaticCaseKey::User(lc_id),
-            ))
-        {
-            app.last_static = None;
-        }
+        // 削除は後続の LoadCaseId を繰り上げるため、開いたままの荷重モーダルを
+        // 閉じる必要がある（`App::delete_load_case_action` に一元化）。
+        app.delete_load_case_action(lc_id);
     }
     if had_name {
         app.staleness.mark_edited();
@@ -279,14 +272,17 @@ pub fn loads_table(ui: &mut egui::Ui, app: &mut App) {
         },
     );
 
-    let had_load =
-        !pending_load.is_empty() || !pending_name_edit.is_empty() || pending_nodal_delete.is_some();
+    // モデルが実際に変わったときだけ解析結果を陳腐化させる。`UndoStack::run` は
+    // コマンドが Noop だった場合に false を返すため、その戻り値で判定する
+    // （入力欄で打ち直して元の値に戻した場合など、値が変わらない確定操作で
+    // 解析結果を無効にしない）。
+    let mut had_load = false;
     // 値・名称の変更は `SetNodalLoad`（要素まるごと差し替え）で行うため、
     // 変更前の内容を読んでから 1 件ずつ発行する。
     for (index, values) in pending_load {
         let mut load = app.model.load_cases[lc_idx].nodal[index].clone();
         load.values = values;
-        app.undo.run(
+        had_load |= app.undo.run(
             &mut app.model,
             Box::new(SetNodalLoad {
                 lc: lc_id,
@@ -301,7 +297,7 @@ pub fn loads_table(ui: &mut egui::Ui, app: &mut App) {
             continue;
         }
         load.name = name;
-        app.undo.run(
+        had_load |= app.undo.run(
             &mut app.model,
             Box::new(SetNodalLoad {
                 lc: lc_id,
@@ -311,7 +307,7 @@ pub fn loads_table(ui: &mut egui::Ui, app: &mut App) {
         );
     }
     if let Some(index) = pending_nodal_delete {
-        app.undo.run(
+        had_load |= app.undo.run(
             &mut app.model,
             Box::new(DeleteNodalLoad { lc: lc_id, index }),
         );

@@ -256,10 +256,13 @@ impl LoadEditor {
     /// 3D でピックした部材を仮選択として反映する（部材荷重のときのみ）。
     /// ブレースを選んだ場合、材軸直交方向の入力は意味を持たないため
     /// 方向を材軸方向へ切り替える（[`brace_axis_dir`] を参照）。
-    pub fn set_picked_member(&mut self, elem: ElemId, model: &Model) {
+    /// `is_brace` はモデルではなく判定結果で受け取る。ビューア側は不変借用を
+    /// 先に終わらせてからエディタを可変借用でき、ピック 1 回ごとにモデルを
+    /// 複製する必要がなくなる（大規模モデルではクリックのたびに大きな確保が走る）。
+    pub fn set_picked_member(&mut self, elem: ElemId, is_brace: bool) {
         if let LoadDraft::Member(d) = &mut self.draft {
             d.elem = Some(elem);
-            if is_brace(model, elem) {
+            if is_brace {
                 d.dir = DIR_ALONG_AXIS;
             } else if d.dir == DIR_ALONG_AXIS {
                 d.dir = 0;
@@ -898,7 +901,7 @@ mod tests {
         }
 
         editor.begin_pick();
-        editor.set_picked_member(ElemId(1), &model); // ブレース
+        editor.set_picked_member(ElemId(1), is_brace(&model, ElemId(1))); // ブレース
         match &editor.draft {
             LoadDraft::Member(d) => {
                 assert_eq!(d.elem, Some(ElemId(1)));

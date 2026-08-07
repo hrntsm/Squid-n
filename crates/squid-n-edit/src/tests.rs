@@ -1751,13 +1751,8 @@ fn test_auto_loads_reject_edit_and_delete() {
     let mut stack = UndoStack::new();
     stack.run(&mut model, Box::new(AddLoadCase { name: "DL".into() }));
     let auto = NodalLoad::auto(NodeId(0), [0.0, 0.0, -10.0, 0.0, 0.0, 0.0]);
-    stack.run(
-        &mut model,
-        Box::new(AddNodalLoad {
-            lc: LoadCaseId(0),
-            load: auto.clone(),
-        }),
-    );
+    // 自動生成分は同期（`replace_auto_loads`）が入れるものなので、そちらで用意する。
+    model.load_cases[0].replace_auto_loads(vec![auto.clone()], Vec::new());
 
     stack.run(
         &mut model,
@@ -1780,7 +1775,23 @@ fn test_auto_loads_reject_edit_and_delete() {
             index: 0,
         }),
     );
-    assert_eq!(model.load_cases[0].nodal, vec![auto], "削除できない");
+    assert_eq!(
+        model.load_cases[0].nodal,
+        vec![auto.clone()],
+        "削除できない"
+    );
+
+    // 追加も拒む。ここで受け付けると、逆操作の削除が拒む側の規則と食い違い、
+    // undo が無言で効かなくなる。
+    let added = stack.run(
+        &mut model,
+        Box::new(AddNodalLoad {
+            lc: LoadCaseId(0),
+            load: NodalLoad::auto(NodeId(1), [0.0, 0.0, -1.0, 0.0, 0.0, 0.0]),
+        }),
+    );
+    assert!(!added, "自動生成分は追加コマンドで積めない");
+    assert_eq!(model.load_cases[0].nodal, vec![auto], "件数が増えない");
 }
 
 #[test]
