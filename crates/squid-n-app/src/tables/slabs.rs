@@ -388,10 +388,18 @@ pub fn slabs_table(ui: &mut egui::Ui, app: &mut App) {
         // 断面（板厚・コンクリート材料）。板厚を持つ断面だけを候補にする。
         ui.horizontal(|ui| {
             ui.label("断面:");
-            let label = app
+            // 下書きの断面が消えている（削除・ID 繰り上げ）場合は未割当へ戻す。
+            // 残したままだと `AddSlab` が参照検証で Noop になり、「追加」を押しても
+            // 何も起きない状態になる。
+            let resolved = app
                 .slab_draft
                 .section
                 .and_then(|sid| app.model.sections.get(sid.index()))
+                .filter(|sec| sec.thickness.is_some_and(|t| t > 0.0));
+            if resolved.is_none() {
+                app.slab_draft.section = None;
+            }
+            let label = resolved
                 .map(|sec| sec.display_name())
                 .unwrap_or_else(|| "―".to_string());
             egui::ComboBox::from_id_salt("slab_draft_section")

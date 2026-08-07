@@ -1096,6 +1096,51 @@ fn test_set_section_material_on_missing_section_is_noop() {
     );
 }
 
+/// 床への断面割当は往復し、実在しない断面の指定は Noop になる。
+#[test]
+fn test_set_slab_section_roundtrip() {
+    use crate::{AddSlab, SetSlabSection};
+    use squid_n_core::model::DistributionMethod;
+
+    let mut model = seeded_model(4, 0);
+    model.sections.push(bare_section(SectionId(0), None));
+    let mut stack = UndoStack::new();
+    assert!(stack.run(
+        &mut model,
+        Box::new(AddSlab {
+            boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
+            joists: Vec::new(),
+            loads: Vec::new(),
+            method: DistributionMethod::TriTrapezoid,
+            usage: None,
+            section: None,
+        }),
+    ));
+    let slab = squid_n_core::ids::SlabId(0);
+
+    assert!(stack.run(
+        &mut model,
+        Box::new(SetSlabSection {
+            id: slab,
+            section: Some(SectionId(0)),
+        }),
+    ));
+    assert_eq!(model.slabs[0].section, Some(SectionId(0)));
+    stack.undo(&mut model);
+    assert_eq!(model.slabs[0].section, None, "undo で未割当へ戻る");
+
+    // 実在しない断面の指定は Noop（モデルを壊さない）。
+    assert!(!stack.run(
+        &mut model,
+        Box::new(SetSlabSection {
+            id: slab,
+            section: Some(SectionId(9)),
+        }),
+    ));
+    assert_eq!(model.slabs[0].section, None);
+    assert!(model.validate().is_ok(), "{:?}", model.validate());
+}
+
 /// 床が参照する断面は削除できず、断面の削除で床の参照が繰り上がる。
 ///
 /// 床は断面から板厚と自重を解決するため、断面が消えると床の重量が算定できなくなる。
