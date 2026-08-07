@@ -157,11 +157,8 @@ pub fn structure_kind_of(
 
 /// 要素の構造種別を判定する。
 pub fn member_structure_kind(model: &Model, elem: &ElementData) -> StructureKind {
-    let sec = elem.section.and_then(|sid| model.sections.get(sid.index()));
-    let category = elem
-        .material
-        .and_then(|mid| model.materials.get(mid.index()))
-        .map(|m| m.category);
+    let sec = model.element_section(elem);
+    let category = model.element_material(elem).map(|m| m.category);
     structure_kind_of(sec, category)
 }
 
@@ -203,19 +200,27 @@ mod tests {
             panel_thickness: None,
             thickness: None,
             shape,
+            material: None,
+            rebar_material: None,
+            shear_rebar_material: None,
+            steel_material: None,
         }
     }
 
     fn model_with(shape: Option<SectionShape>, category: MaterialCategory) -> Model {
+        // 材料は断面が持つ。
+        let sec = Section {
+            material: Some(crate::ids::MaterialId(0)),
+            ..section(shape)
+        };
         Model {
-            sections: vec![section(shape)],
+            sections: vec![sec],
             materials: vec![material(category)],
             elements: vec![ElementData {
                 id: ElemId(0),
                 kind: ElementKind::Beam,
                 nodes: smallvec::smallvec![crate::ids::NodeId(0), crate::ids::NodeId(1)],
                 section: Some(SectionId(0)),
-                material: Some(MaterialId(0)),
                 local_axis: LocalAxis {
                     ref_vector: [0.0, 1.0, 0.0],
                 },
@@ -262,9 +267,7 @@ mod tests {
                 dia: 10.0,
                 pitch: 100.0,
                 legs: 2,
-                grade: None,
             },
-            main_grade: None,
         }
     }
 
@@ -308,7 +311,6 @@ mod tests {
             steel_width: 200.0,
             steel_web_thick: 8.0,
             steel_flange_thick: 13.0,
-            steel_grade: "SN400B".into(),
         };
         let m = model_with(Some(src), MaterialCategory::Steel);
         assert_eq!(
@@ -340,7 +342,7 @@ mod tests {
     #[test]
     fn test_missing_material_falls_back_to_shape() {
         let mut m = model_with(Some(h_shape()), MaterialCategory::Steel);
-        m.elements[0].material = None;
+        m.sections[0].material = None;
         assert_eq!(member_structure_kind(&m, &m.elements[0]), StructureKind::S);
 
         let rc = SectionShape::RcRect {
@@ -349,7 +351,7 @@ mod tests {
             rebar: rc_rebar(),
         };
         let mut m = model_with(Some(rc), MaterialCategory::Steel);
-        m.elements[0].material = None;
+        m.sections[0].material = None;
         assert_eq!(member_structure_kind(&m, &m.elements[0]), StructureKind::Rc);
     }
 
@@ -357,7 +359,7 @@ mod tests {
     #[test]
     fn test_no_section_no_material_is_rc() {
         let mut m = model_with(None, MaterialCategory::Steel);
-        m.elements[0].material = None;
+        m.sections[0].material = None;
         m.elements[0].section = None;
         assert_eq!(member_structure_kind(&m, &m.elements[0]), StructureKind::Rc);
     }

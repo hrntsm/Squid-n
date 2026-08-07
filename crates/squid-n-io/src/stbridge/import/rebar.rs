@@ -3,6 +3,16 @@
 use super::xml::Attrs;
 use squid_n_core::section_shape::{BarSet, RcRebar, ShearBar};
 
+/// 配筋属性に現れる材質のグレード名（主筋・せん断補強筋）。
+///
+/// 材質は断面の材料として持つため（`Section::rebar_material` ほか）、形状には
+/// 入れずここで分けて返す。グレード名から材料を起こすのは取り込みの境界の役目。
+#[derive(Default, Clone, Debug)]
+pub(super) struct RebarGrades {
+    pub main: Option<String>,
+    pub shear: Option<String>,
+}
+
 /// ST-Bridge 標準断面（幾何のみ）から復元する RC 断面の既定配筋（無筋相当）。
 /// 弾性断面性能は b・d のみで決まり配筋に依存しないため、往復での剛性は保たれる。
 /// 配筋検定を要する場合は取り込み後に別途入力する必要がある。
@@ -13,7 +23,6 @@ pub(super) fn default_rebar() -> RcRebar {
         layers: 0,
     };
     RcRebar {
-        main_grade: None,
         main_x: zero.clone(),
         main_y: zero,
         cover: 0.0,
@@ -21,7 +30,6 @@ pub(super) fn default_rebar() -> RcRebar {
             dia: 0.0,
             pitch: 0.0,
             legs: 0,
-            grade: None,
         },
     }
 }
@@ -48,7 +56,7 @@ fn parse_bar_dia(v: &str) -> Option<f64> {
 /// 段別本数（`N_main_X_1st`/`_2nd`/`_3rd`、梁は `N_main_top`/`_bottom` の各段）は合算して
 /// 総本数とし、非ゼロの段数を `layers` に反映する。呼び名→公称径の正確な対応や、梁の
 /// 上端/下端 ↔ 内部 `main_x`/`main_y`（せい/幅方向）の厳密な意味対応は今後の課題。
-pub(super) fn parse_rebar(a: &Attrs) -> RcRebar {
+pub(super) fn parse_rebar(a: &Attrs) -> (RcRebar, RebarGrades) {
     let f = |keys: &[&str]| -> f64 {
         for k in keys {
             if let Some(v) = a.get(k) {
@@ -137,7 +145,7 @@ pub(super) fn parse_rebar(a: &Attrs) -> RcRebar {
         ],
         "count_main_layers_Y",
     );
-    RcRebar {
+    let rebar = RcRebar {
         main_x: BarSet {
             count: count_x,
             dia: dia(&["dia_main_X", "dia_main", "D_main"]),
@@ -160,19 +168,23 @@ pub(super) fn parse_rebar(a: &Attrs) -> RcRebar {
                 "count_stirrup",
                 "count_hoop",
             ]),
-            grade: a
-                .get("strength_band")
-                .or_else(|| a.get("strength_stirrup"))
-                .or_else(|| a.get("strength_bar_band"))
-                .or_else(|| a.get("strength_main_band"))
-                .cloned(),
         },
-        // 主筋の材質（`strength_main`。梁は上端/下端別に持つ実装もあるため代表 1 つを拾う）。
-        main_grade: a
+    };
+    // 材質はグレード名として別に返す（形状には入れない）。主筋は梁で上端/下端別に
+    // 持つ実装もあるため代表 1 つを拾う。
+    let grades = RebarGrades {
+        main: a
             .get("strength_main")
             .or_else(|| a.get("strength_main_X"))
             .or_else(|| a.get("strength_main_top"))
             .or_else(|| a.get("strength_bar_main"))
             .cloned(),
-    }
+        shear: a
+            .get("strength_band")
+            .or_else(|| a.get("strength_stirrup"))
+            .or_else(|| a.get("strength_bar_band"))
+            .or_else(|| a.get("strength_main_band"))
+            .cloned(),
+    };
+    (rebar, grades)
 }

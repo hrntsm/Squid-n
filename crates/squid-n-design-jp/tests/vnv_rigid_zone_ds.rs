@@ -40,7 +40,6 @@ fn fiber_elem(id: u32, i: u32, j: u32, section: u32, rigid: f64) -> ElementData 
         kind: ElementKind::Fiber,
         nodes: smallvec::smallvec![NodeId(i), NodeId(j)],
         section: Some(SectionId(section)),
-        material: Some(MaterialId(0)),
         local_axis: LocalAxis {
             ref_vector: [1.0, 0.0, 0.0],
         },
@@ -77,6 +76,10 @@ fn portal_frame(rigid: f64, seismic_weight: f64) -> Model {
             panel_thickness: None,
             thickness: None,
             shape: None,
+            material: Some(MaterialId(0)),
+            rebar_material: None,
+            shear_rebar_material: None,
+            steel_material: None,
         }
     };
     Model {

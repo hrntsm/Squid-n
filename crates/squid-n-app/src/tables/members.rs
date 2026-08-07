@@ -1,14 +1,13 @@
 use crate::app::App;
 use crate::tables::nodes::{isolator_kind_label, isolator_kind_selector, isolator_props_fields};
-use squid_n_core::ids::{ElemId, MaterialId, NodeId, SectionId};
+use squid_n_core::ids::{ElemId, NodeId, SectionId};
 use squid_n_core::model::{
     DamperDef, DamperKind, DamperProps, ElementData, ElementKind, EndCondition, ForceRegime,
     HysteresisModel, IsolatorProps, LocalAxis,
 };
 use squid_n_edit::{
     AddDamper, AddIsolator, AddMember, DeleteMember, EditCommand, RemoveSupportIsolator,
-    SetDamperProps, SetElementMaterial, SetElementSection, SetMemberHysteresis,
-    SetMemberHysteresisTh,
+    SetDamperProps, SetElementSection, SetMemberHysteresis, SetMemberHysteresisTh,
 };
 
 /// 「+ 免震支承材追加」フォームのドラフト状態（`AddIsolator` の諸元）。
@@ -237,7 +236,6 @@ pub fn members_table(ui: &mut egui::Ui, app: &mut App) {
                     kind: ElementKind::Beam,
                     nodes: [i_node, j_node].into_iter().collect(),
                     section: None,
-                    material: None,
                     local_axis: LocalAxis {
                         ref_vector: [0.0, 0.0, 1.0],
                     },
@@ -261,7 +259,6 @@ pub fn members_table(ui: &mut egui::Ui, app: &mut App) {
                     kind: ElementKind::Isolator,
                     nodes: [i_node, j_node].into_iter().collect(),
                     section: None,
-                    material: None,
                     local_axis: LocalAxis {
                         ref_vector: [1.0, 0.0, 0.0],
                     },
@@ -292,7 +289,6 @@ pub fn members_table(ui: &mut egui::Ui, app: &mut App) {
                     kind: ElementKind::Damper,
                     nodes: [i_node, j_node].into_iter().collect(),
                     section: None,
-                    material: None,
                     local_axis: LocalAxis {
                         ref_vector: [0.0, 0.0, 1.0],
                     },
@@ -318,7 +314,6 @@ pub fn members_table(ui: &mut egui::Ui, app: &mut App) {
 
     let n = app.model.elements.len();
     let mut pending_section: Vec<(usize, u32)> = Vec::new();
-    let mut pending_material: Vec<(usize, u32)> = Vec::new();
     let mut pending_hysteresis: Vec<(usize, HysteresisModel)> = Vec::new();
     let mut pending_hysteresis_th: Vec<(usize, Option<HysteresisModel>)> = Vec::new();
     let mut pending_delete: Option<ElemId> = None;
@@ -380,28 +375,21 @@ pub fn members_table(ui: &mut egui::Ui, app: &mut App) {
                 );
             });
             row.col(|ui| {
-                let selected = elem.material.map(|m| m.0).unwrap_or(u32::MAX);
-                table_util::cell_combo(
-                    ui,
-                    format!("elem_mat_{}", i),
-                    elem.material
-                        .and_then(|m| app.model.materials.get(m.index()))
-                        .map(|m| m.name.clone())
-                        .unwrap_or_else(|| "―".to_string()),
-                    |ui| {
-                        if ui.selectable_label(selected == u32::MAX, "―").clicked() {
-                            pending_material.push((i, u32::MAX));
-                        }
-                        for mat in &app.model.materials {
-                            if ui
-                                .selectable_label(selected == mat.id.0, &mat.name)
-                                .clicked()
-                            {
-                                pending_material.push((i, mat.id.0));
-                            }
-                        }
-                    },
-                );
+                // 材料は断面が持つため、この欄は断面から引いた表示のみとする
+                // （割り当ては断面テーブルで行う）。
+                match app.model.element_material(elem) {
+                    Some(m) => {
+                        let name = m.name.clone();
+                        ui.label(&name).on_hover_text(format!(
+                            "{name}（断面が持つ材料です。変更は断面テーブルで行ってください）"
+                        ));
+                    }
+                    None => table_util::muted_cell(
+                        ui,
+                        "―",
+                        "断面に材料が割り当てられていません（断面テーブルで割り当てます）",
+                    ),
+                }
             });
             row.col(|ui| {
                 // 履歴則（復元力特性、増分解析用）。非線形解析の材端履歴則。
@@ -508,7 +496,6 @@ pub fn members_table(ui: &mut egui::Ui, app: &mut App) {
 
     // 確定処理
     let had_pending = !pending_section.is_empty()
-        || !pending_material.is_empty()
         || !pending_hysteresis.is_empty()
         || !pending_hysteresis_th.is_empty()
         || pending_delete.is_some();
@@ -530,26 +517,6 @@ pub fn members_table(ui: &mut egui::Ui, app: &mut App) {
             Box::new(SetElementSection {
                 elem: elem_id,
                 section,
-            }),
-        );
-    }
-    for (i, mat_id) in pending_material {
-        let elem_id = app.model.elements[i].id;
-        let material = if mat_id == u32::MAX {
-            None
-        } else {
-            let mid = MaterialId(mat_id);
-            if app.model.materials.iter().any(|m| m.id == mid) {
-                Some(mid)
-            } else {
-                None
-            }
-        };
-        app.undo.run(
-            &mut app.model,
-            Box::new(SetElementMaterial {
-                elem: elem_id,
-                material,
             }),
         );
     }

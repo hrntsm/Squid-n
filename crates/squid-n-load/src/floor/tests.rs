@@ -753,7 +753,6 @@ fn test_materialized_joist_uses_span_distributed_load() {
         kind: ElementKind::Beam,
         nodes: [NodeId(a), NodeId(b)].into_iter().collect(),
         section: None,
-        material: None,
         local_axis: LocalAxis {
             ref_vector: [0.0, 0.0, 1.0],
         },

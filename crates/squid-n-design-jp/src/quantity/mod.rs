@@ -589,7 +589,7 @@ fn build_notes(model: &Model) -> Vec<String> {
 fn line_member_quantity(ctx: &Ctx, elem_idx: usize, elem: &ElementData) -> Option<MemberQuantity> {
     let model = ctx.model;
     let sec = model.sections.get(elem.section?.index())?;
-    let mat = model.materials.get(elem.material?.index())?;
+    let mat = model.element_material(elem)?;
     let ni = elem.nodes[0].index();
     let nj = elem.nodes[1].index();
     let (ci, cj) = (model.nodes.get(ni)?.coord, model.nodes.get(nj)?.coord);
@@ -948,7 +948,7 @@ fn beam_quantity(
 fn brace_quantity(ctx: &Ctx, elem: &ElementData) -> Option<MemberQuantity> {
     let model = ctx.model;
     let sec = model.sections.get(elem.section?.index())?;
-    let mat = model.materials.get(elem.material?.index())?;
+    let mat = model.element_material(elem)?;
     let ni = elem.nodes[0].index();
     let nj = elem.nodes[1].index();
     let (ci, cj) = (model.nodes.get(ni)?.coord, model.nodes.get(nj)?.coord);

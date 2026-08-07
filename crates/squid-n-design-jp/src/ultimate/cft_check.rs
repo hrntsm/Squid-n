@@ -89,10 +89,7 @@ pub fn collect_cft_ultimate_checks(
         let Some(sec) = elem.section.and_then(|sid| model.sections.get(sid.index())) else {
             continue;
         };
-        let Some(mat) = elem
-            .material
-            .and_then(|mid| model.materials.get(mid.index()))
-        else {
+        let Some(mat) = model.element_material(elem) else {
             continue;
         };
         let Some(shape) = sec.shape.as_ref() else {

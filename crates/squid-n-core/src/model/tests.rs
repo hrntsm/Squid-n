@@ -80,7 +80,6 @@ fn test_validate_dangling_elem_node() {
             kind: ElementKind::Beam,
             nodes: smallvec::smallvec![NodeId(0), NodeId(5)],
             section: None,
-            material: None,
             local_axis: LocalAxis {
                 ref_vector: [1.0, 0.0, 0.0],
             },
@@ -368,6 +367,10 @@ fn test_section_new_fields_default() {
         panel_thickness: None,
         thickness: None,
         shape: None,
+        material: Some(MaterialId(0)),
+        rebar_material: None,
+        shear_rebar_material: None,
+        steel_material: None,
     };
     assert_eq!(sec.depth, 0.0);
     assert!(sec.panel_thickness.is_none());
@@ -792,6 +795,10 @@ fn named_section(id: u32, name: &str, floor: Option<&str>) -> Section {
         panel_thickness: None,
         thickness: None,
         shape: None,
+        material: Some(MaterialId(0)),
+        rebar_material: None,
+        shear_rebar_material: None,
+        steel_material: None,
     }
 }
 
@@ -834,7 +841,7 @@ fn test_section_key_taken_skips_self() {
     assert!(!section_key_taken(&sections, ("C1", None), None));
 }
 
-/// `properties_eq` は同一性キーを見ず、断面性能・形状だけを比べる。
+/// `properties_eq` は同一性キーを見ず、断面性能・形状・材料を比べる。
 /// 取り込みで符号＋階が衝突した定義を統合してよいかの判定に使う。
 #[test]
 fn test_section_properties_eq_ignores_key() {
@@ -846,6 +853,35 @@ fn test_section_properties_eq_ignores_key() {
     );
     b.iy *= 2.0;
     assert!(!a.properties_eq(&b));
+}
+
+/// 材料だけが違う断面は `properties_eq` で偽になる。
+/// 材料は断面が持つため、統合すると片方の材料が無言で捨てられる。
+#[test]
+fn test_section_properties_eq_compares_materials() {
+    let base = named_section(0, "C1", Some("1"));
+    for (label, mutate) in [
+        (
+            "主材料",
+            (|s: &mut Section| s.material = Some(MaterialId(1))) as fn(&mut Section),
+        ),
+        ("主筋", |s: &mut Section| {
+            s.rebar_material = Some(MaterialId(1))
+        }),
+        ("せん断補強筋", |s: &mut Section| {
+            s.shear_rebar_material = Some(MaterialId(1))
+        }),
+        ("内蔵鉄骨", |s: &mut Section| {
+            s.steel_material = Some(MaterialId(1))
+        }),
+    ] {
+        let mut other = base.clone();
+        mutate(&mut other);
+        assert!(
+            !base.properties_eq(&other),
+            "{label}だけが違う断面は別の断面として扱う"
+        );
+    }
 }
 
 // ---- 階と剛床の分離（階帰属は区間・剛床帰属は床面） ----

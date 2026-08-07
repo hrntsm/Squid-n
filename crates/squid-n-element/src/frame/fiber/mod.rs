@@ -111,22 +111,55 @@ pub(crate) fn concrete_fiber_material(
     }
 }
 
-/// 鋼材領域（形鋼・鋼管・内蔵鉄骨）のファイバ降伏点を解決する。
-///
-/// SRC は断面の内蔵鉄骨鋼種（`steel_grade` の F 値。フランジ厚の板厚区分を考慮）を
-/// 優先し、なければ部材材料の fy を用いる。その他の形状は部材材料の fy。
+/// ファイバ断面の各領域の降伏点 [N/mm²]。**材料は断面が持つ**ため、断面の
+/// 主材料・主筋材料・内蔵鉄骨材料からここで解決し、以降は解決済みの値だけを渡す。
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct FiberYield {
+    /// 主材料の fy（形状を持たない断面の格子に用いる）。
+    pub main: Option<f64>,
+    /// 主筋の σy（RC・SRC 断面）。
+    pub rebar: Option<f64>,
+    /// 鋼材領域の fy（SRC は内蔵鉄骨、それ以外は主材料）。
+    pub steel: Option<f64>,
+}
+
+/// 断面が持つ材料からファイバの降伏点を解決する。
+pub(crate) fn resolve_fiber_yield(
+    model: &squid_n_core::model::Model,
+    data: &squid_n_core::model::ElementData,
+) -> FiberYield {
+    let main = model.element_material(data).and_then(|m| m.fy);
+    let rebar =
+        squid_n_core::material_grade::rebar_yield_strength(model.element_rebar_material(data));
+    let steel = match model.element_section(data).and_then(|s| s.shape.as_ref()) {
+        Some(SectionShape::SrcRect {
+            steel_flange_thick, ..
+        }) => {
+            let thick = *steel_flange_thick;
+            model.element_steel_material(data).and_then(|m| {
+                squid_n_core::material_grade::steel_f_value_prefix(&m.name, thick).or(m.fy)
+            })
+        }
+        _ => main,
+    };
+    FiberYield { main, rebar, steel }
+}
+
 /// 非線形解析の入力チェック（`factory::ensure_nonlinear_input`）と要素生成が
 /// 同じ解決規則を共有する。
 pub(crate) fn resolve_steel_fiber_fy(
     shape: Option<&SectionShape>,
+    steel_mat: Option<&squid_n_core::model::Material>,
     mat_fy: Option<f64>,
 ) -> Option<f64> {
     match shape {
         Some(SectionShape::SrcRect {
-            steel_grade,
-            steel_flange_thick,
-            ..
-        }) => squid_n_core::material_grade::steel_f_value_prefix(steel_grade, *steel_flange_thick)
+            steel_flange_thick, ..
+        }) => steel_mat
+            .and_then(|m| {
+                squid_n_core::material_grade::steel_f_value_prefix(&m.name, *steel_flange_thick)
+                    .or(m.fy)
+            })
             .or(mat_fy),
         _ => mat_fy,
     }
@@ -157,14 +190,14 @@ pub(crate) fn build_gauss_fibers(
     shape: Option<&SectionShape>,
     fc: Option<f64>,
     e: f64,
-    fy: Option<f64>,
+    yield_: FiberYield,
     steel_factor: f64,
     rebar_factor: f64,
     concrete_rule: HysteresisModel,
 ) -> (FiberSection, Vec<Box<dyn UniaxialMaterial>>) {
     let mut result = shape
         .filter(|s| !matches!(s, SectionShape::RcWall { .. }))
-        .map(|s| build_shape_fibers(s, fc, e, fy, steel_factor, rebar_factor, concrete_rule));
+        .map(|s| build_shape_fibers(s, fc, e, yield_, steel_factor, rebar_factor, concrete_rule));
 
     let (mut fibers, mats) = match result.take() {
         Some(r) => r,
@@ -175,7 +208,7 @@ pub(crate) fn build_gauss_fibers(
             let base: Box<dyn UniaxialMaterial> = if fc.is_some() {
                 concrete_fiber_material(fc, concrete_rule)
             } else {
-                steel_fiber_material(e, fy.map(|fy| fy * steel_factor))
+                steel_fiber_material(e, yield_.main.map(|fy| fy * steel_factor))
             };
             let tag = if fc.is_some() { 0 } else { 2 };
             let grid = squid_n_section::fiber::rect_fiber_section(width, depth, nw, nd, tag);
@@ -222,7 +255,7 @@ fn build_shape_fibers(
     shape: &SectionShape,
     fc: Option<f64>,
     e: f64,
-    fy: Option<f64>,
+    yield_: FiberYield,
     steel_factor: f64,
     rebar_factor: f64,
     concrete_rule: HysteresisModel,
@@ -236,13 +269,9 @@ fn build_shape_fibers(
     // 生成しようとすると `steel_fiber_material` が panic する（弾性で無音に代替
     // しない）。該当モデルは [`crate::factory::ensure_nonlinear_input`] が解析前に
     // エラーで停止するため、通常の解析経路では到達しない。
-    let rebar_fy = shape
-        .rebar()
-        .and_then(|r| r.main_grade.as_deref())
-        .and_then(squid_n_core::material_grade::rebar_grade_f_value)
-        .or(fy);
-    // 鋼材領域の降伏点: SRC は断面の内蔵鉄骨鋼種 → 部材材料 fy の順で解決。
-    let steel_fy = resolve_steel_fiber_fy(Some(shape), fy);
+    let rebar_fy = yield_.rebar.or(yield_.main);
+    // 鋼材領域の降伏点: SRC は断面の内蔵鉄骨材料 → 主材料 fy の順で解決済み。
+    let steel_fy = yield_.steel;
     // StrengthParams はファイバの**配置**（形状分割・領域区分）にのみ使い、
     // 材料モデルの強度には入らない（材料は下の各領域テンプレートで構築する）。
     let strength = StrengthParams {
@@ -625,9 +654,7 @@ impl FiberBeam {
         let flex_length = length - rigid_i - rigid_j;
 
         let sec = data.section.and_then(|sid| model.sections.get(sid.index()));
-        let mat_ref = data
-            .material
-            .and_then(|mid| model.materials.get(mid.index()));
+        let mat_ref = model.element_material(data);
         let density = mat_ref.map(|m| m.density).unwrap_or(0.0);
         // 断面・材料の未割当は解析前チェック（solver の precheck_model・
         // factory の ensure_nonlinear_input）で捕捉される前提。ここでの既定は
@@ -668,7 +695,7 @@ impl FiberBeam {
         let nd = 20;
         let shape = sec.and_then(|s| s.shape.as_ref());
         let fc = mat_ref.and_then(|m| m.fc);
-        let fy = mat_ref.and_then(|m| m.fy);
+        let yield_ = resolve_fiber_yield(model, data);
         // 保有水平耐力計算（basis==MaterialStrength）時のみ材料強度割増を適用する
         // （鋼材文脈・RC 主筋文脈で係数が異なる。せん断補強筋は割増対象外）。
         let steel_factor = basis.steel_factor(mat_ref);
@@ -684,7 +711,7 @@ impl FiberBeam {
             shape,
             fc,
             e,
-            fy,
+            yield_,
             steel_factor,
             rebar_factor,
             concrete_rule,
@@ -697,7 +724,7 @@ impl FiberBeam {
             shape,
             fc,
             e,
-            fy,
+            yield_,
             steel_factor,
             rebar_factor,
             concrete_rule,
@@ -966,9 +993,7 @@ impl FiberBeam {
         let lp = clamp_plastic_zone(lp, l);
 
         let sec = data.section.and_then(|sid| model.sections.get(sid.index()));
-        let mat_ref = data
-            .material
-            .and_then(|mid| model.materials.get(mid.index()));
+        let mat_ref = model.element_material(data);
         // 断面・材料の未割当時の既定はゼロ剛性（`Self::new` と同じ方針。
         // 解析前チェックで捕捉される前提で、架空の断面を作らない）。
         let e = mat_ref.map(|m| m.young).unwrap_or(0.0);
@@ -985,7 +1010,7 @@ impl FiberBeam {
         let w_end = 2.0 * lp / l;
         let shape = sec.and_then(|s| s.shape.as_ref());
         let fc = mat_ref.and_then(|m| m.fc);
-        let fy = mat_ref.and_then(|m| m.fy);
+        let yield_ = resolve_fiber_yield(model, data);
         // 保有水平耐力計算（basis==MaterialStrength）時のみ材料強度割増を適用する。
         let steel_factor = basis.steel_factor(mat_ref);
         let rebar_factor = basis.rebar_factor(mat_ref);
@@ -999,7 +1024,7 @@ impl FiberBeam {
             shape,
             fc,
             e,
-            fy,
+            yield_,
             steel_factor,
             rebar_factor,
             concrete_rule,
@@ -1012,7 +1037,7 @@ impl FiberBeam {
             shape,
             fc,
             e,
-            fy,
+            yield_,
             steel_factor,
             rebar_factor,
             concrete_rule,

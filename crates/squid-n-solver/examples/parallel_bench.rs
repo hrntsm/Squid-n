@@ -54,7 +54,6 @@ fn make_frame(nx: usize, ny: usize, nz: usize, n_cases: usize) -> Model {
             kind: ElementKind::Beam,
             nodes: smallvec::smallvec![n0, n1],
             section: Some(SectionId(0)),
-            material: Some(MaterialId(0)),
             local_axis: LocalAxis { ref_vector },
             end_cond: [EndCondition::Fixed, EndCondition::Fixed],
             force_regime: ForceRegime::Auto,
@@ -148,6 +147,10 @@ fn make_frame(nx: usize, ny: usize, nz: usize, n_cases: usize) -> Model {
             panel_thickness: None,
             thickness: None,
             shape: None,
+            material: Some(MaterialId(0)),
+            rebar_material: None,
+            shear_rebar_material: None,
+            steel_material: None,
         }],
         materials: vec![Material {
             strength_factor: None,

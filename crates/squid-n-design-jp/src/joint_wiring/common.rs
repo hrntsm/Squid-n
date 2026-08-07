@@ -12,6 +12,12 @@ pub(super) struct MemberInfo<'a> {
     pub(super) elem: &'a ElementData,
     pub(super) sec: &'a Section,
     pub(super) mat: &'a Material,
+    /// 断面が持つ主筋の材料（RC・SRC のみ。降伏点 σy の解決に用いる）。
+    pub(super) rebar_mat: Option<&'a Material>,
+    /// 断面が持つせん断補強筋の材料（RC・SRC のみ。許容応力度 w_ft の解決に用いる）。
+    pub(super) shear_mat: Option<&'a Material>,
+    /// 断面が持つ内蔵鉄骨の材料（SRC のみ。鋼種名・F 値の解決に用いる）。
+    pub(super) steel_mat: Option<&'a Material>,
     pub(super) forces: ForcesAt<'a>,
     /// 部材の構造種別（断面と材料から解決済み。`squid_n_core::structure_kind`）。
     pub(super) kind: StructureKind,

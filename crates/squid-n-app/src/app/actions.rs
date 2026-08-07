@@ -1362,12 +1362,17 @@ impl App {
                 else {
                     continue;
                 };
-                let Some(mat) = elem
-                    .material
-                    .and_then(|mid| self.model.materials.get(mid.index()))
-                else {
+                let Some(mat) = self.model.element_material(elem) else {
                     continue;
                 };
+                // 主筋・せん断補強筋・内蔵鉄骨の材料も断面が持つ。
+                let rebar_mat = self.model.element_rebar_material(elem);
+                let shear_mat = self.model.element_shear_rebar_material(elem);
+                let steel_grade = self
+                    .model
+                    .element_steel_material(elem)
+                    .map(|m| m.name.clone())
+                    .unwrap_or_default();
                 // 筋かい（軸材）は幅厚比ではなく**有効細長比**で種別を定める
                 // （告示「筋かいの種別」表: BA/BB/BC）。要素種別が Brace のもの、
                 // または斜材として判定されたものを対象とする。従来は柱・梁と同じ
@@ -1428,16 +1433,13 @@ impl App {
                         continue;
                     };
                     let shape = sec.shape.as_ref().expect("SrcRect と判定済み");
-                    let Some(rebar_sy) = shape.rebar().and_then(|r| {
-                        squid_n_core::material_grade::rebar_yield_strength(
-                            r.main_grade.as_deref(),
-                            Some(mat),
-                        )
+                    let Some(rebar_sy) = shape.rebar().and_then(|_| {
+                        squid_n_core::material_grade::rebar_yield_strength(rebar_mat).or(mat.fy)
                     }) else {
                         continue;
                     };
                     let Some((n_n0, smo_m0)) =
-                        src_column_rank_ratios(shape, fc, rebar_sy, resp.axial)
+                        src_column_rank_ratios(shape, &steel_grade, fc, rebar_sy, resp.axial)
                     else {
                         continue;
                     };
@@ -1515,9 +1517,9 @@ impl App {
                     } else {
                         geom_len
                     };
-                    let Some(mut input) =
-                        rc_capacity_input_from_rect(*b, *d, rebar, mat, clear_span)
-                    else {
+                    let Some(mut input) = rc_capacity_input_from_rect(
+                        *b, *d, rebar, mat, rebar_mat, shear_mat, clear_span,
+                    ) else {
                         continue;
                     };
                     // σ0: 長期軸力の簡易近似として先頭荷重ケース(gravity_lc)の
@@ -1778,6 +1780,9 @@ impl App {
             lightweight: self.ultimate_lightweight,
             upper_strength_factor: self.ultimate_upper_factor.max(0.0),
             sigma_wy: 295.0,
+            // せん断補強筋の材質は部材ごとに断面から解決するため、共通オプションでは
+            // 未指定（普通強度扱い）とし、部材ループ側で上書きする。
+            shear_grade: None,
             include_bond: self.ultimate_include_bond,
             mu_method: if self.ultimate_mu_aci {
                 squid_n_design_jp::ultimate::MuMethod::Aci
@@ -2851,10 +2856,7 @@ impl App {
                 .section
                 .and_then(|sid| self.model.sections.get(sid.index()))
                 .filter(|s| s.id == elem.section.unwrap());
-            let mat = elem
-                .material
-                .and_then(|mid| self.model.materials.get(mid.index()))
-                .filter(|m| m.id == elem.material.unwrap());
+            let mat = self.model.element_material(elem);
             let (Some(sec), Some(mat)) = (sec, mat) else {
                 continue;
             };
@@ -2956,6 +2958,10 @@ impl App {
                         }
                     });
             let ctx = DesignCtx {
+                // 材料は断面が持つ（主筋・せん断補強筋・内蔵鉄骨）。
+                rebar_material: self.model.element_rebar_material(elem).cloned(),
+                shear_rebar_material: self.model.element_shear_rebar_material(elem).cloned(),
+                steel_material: self.model.element_steel_material(elem).cloned(),
                 term: self.design_term,
                 kind,
                 length,

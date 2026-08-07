@@ -18,40 +18,29 @@ pub struct BarSet {
 
 /// RC せん断補強筋。
 ///
-/// `dia`: 径 [mm], `pitch`: ピッチ [mm], `legs`: 組数,
-/// `grade`: 材質（None は普通強度＝主筋と同種扱い。高強度せん断補強筋は
-/// 製品名/規格名で指定する。例: "UB785"（ウルボン785）, "KH785"（スーパーフープ）,
-/// "KSS785", "SHD685", "SPR785", "MK785", "SBPD1275" 等）。
+/// `dia`: 径 [mm], `pitch`: ピッチ [mm], `legs`: 組数。
+///
+/// 材質は形状ではなく断面が持つ（`crate::model::Section::shear_rebar_material`）。
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ShearBar {
     pub dia: f64,
     pub pitch: f64,
     pub legs: u32,
-    #[serde(default)]
-    pub grade: Option<String>,
 }
 
 /// RC 配筋情報。
 ///
 /// `main_x`: せい方向（X）主筋, `main_y`: 幅方向（Y）主筋,
-/// `cover`: かぶり [mm], `shear`: せん断補強筋,
-/// `main_grade`: 主筋の材質（グレード名。X/Y 主筋で共通）。
+/// `cover`: かぶり [mm], `shear`: せん断補強筋。
+///
+/// 材質は形状ではなく断面が持つ（`crate::model::Section::rebar_material`・
+/// `crate::model::Section::shear_rebar_material`）。
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct RcRebar {
     pub main_x: BarSet,
     pub main_y: BarSet,
     pub cover: f64,
     pub shear: ShearBar,
-    /// 主筋の材質（グレード名。例: "SD295A"・"SD345"・"SD390"・"SD490"・"USD685"）。
-    ///
-    /// 主筋の強度は**断面（配筋）の属性**として保持する。部材材料はコンクリート
-    /// （`Material::fc`）を表すため、主筋強度を持つ場所が他にない。X 主筋と Y 主筋で
-    /// 材質を変える実務上の必要がないため、断面あたり 1 つとする。
-    ///
-    /// `None` は未設定。耐力算定は部材材料の `fy` へフォールバックし、それもない場合は
-    /// 非線形解析を停止する（`squid_n_element::factory::ensure_nonlinear_input`）。
-    #[serde(default)]
-    pub main_grade: Option<String>,
 }
 
 /// Parametric section shape definition.
@@ -138,8 +127,8 @@ pub enum SectionShape {
     RcCircle { d: f64, rebar: RcRebar },
     /// SRC 矩形断面（RC 矩形 + 内蔵 H 形鉄骨、SRC 規準 1987）。
     ///
-    /// `steel_grade`: 内蔵鉄骨の鋼種（例 "SN400B"）。コンクリート強度は
-    /// `Material.fc`、主筋グレードは `Material.name` を用いる既存慣習を踏襲する。
+    /// 内蔵鉄骨の鋼種・コンクリート強度・主筋の材質は、いずれも断面が材料として
+    /// 持つ（`crate::model::Section` の `steel_material`・`material`・`rebar_material`）。
     ///
     /// 解析用断面性能（`to_section`）は、コンクリート断面にヤング係数比
     /// `N_S_EQ`（=15、暫定既定）による鉄骨の等価換算剛性を加えて算定する。
@@ -152,7 +141,6 @@ pub enum SectionShape {
         steel_width: f64,
         steel_web_thick: f64,
         steel_flange_thick: f64,
-        steel_grade: String,
     },
     /// CFT 角形（角形鋼管 + 充填コンクリート）。
     ///

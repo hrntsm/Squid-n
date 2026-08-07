@@ -449,16 +449,18 @@ fn build_mn_curve_cache(
         .section
         .and_then(|sid| app.model.sections.get(sid.index()))?;
     let shape = sec.shape.clone()?;
-    let mat = elem
-        .material
-        .and_then(|mid| app.model.materials.get(mid.index()));
+    let mat = app.model.element_material(elem);
+    let rebar_mat = app.model.element_rebar_material(elem);
 
     // 保有水平耐力計算（プッシュオーバー）と整合する材料強度割増を適用する
     // （`pushover/hinge.rs::member_moment_thresholds` と同じ規約）。
     let steel_fy = mat.and_then(|m| m.fy).unwrap_or(235.0)
         * mat.map(material_strength_factor_steel).unwrap_or(1.0);
-    let rebar_fy = mat.and_then(|m| m.fy).unwrap_or(345.0)
-        * mat.map(material_strength_factor_rebar).unwrap_or(1.0);
+    // 主筋の σy は断面の主筋材料 → 主材料の fy の順で解決する。
+    let rebar_fy = squid_n_core::material_grade::rebar_yield_strength(rebar_mat)
+        .or_else(|| mat.and_then(|m| m.fy))
+        .unwrap_or(345.0)
+        * rebar_mat.map(material_strength_factor_rebar).unwrap_or(1.0);
     let concrete_fc = mat.and_then(|m| m.fc).unwrap_or(24.0);
     let steel_e = mat.map(|m| m.young).unwrap_or(205000.0);
     let strength = StrengthParams {
@@ -1510,7 +1512,6 @@ mod tests {
             kind: ElementKind::Beam,
             nodes: smallvec![NodeId(0), NodeId(1)],
             section: None,
-            material: None,
             local_axis: LocalAxis {
                 ref_vector: [0.0, 0.0, 1.0],
             },
@@ -1619,7 +1620,7 @@ mod tests {
 
     // --- 断面外形線（ファイバー塑性化マップへの重ね描き）関連のテスト ---
 
-    use squid_n_core::ids::SectionId;
+    use squid_n_core::ids::{MaterialId, SectionId};
     use squid_n_core::section_shape::SectionShape;
     use squid_n_section::mn_surface::plastic_fibers;
 
@@ -1664,6 +1665,10 @@ mod tests {
                 thick: 9.0,
                 corner_r: 0.0,
             }),
+            material: Some(MaterialId(0)),
+            rebar_material: None,
+            shear_rebar_material: None,
+            steel_material: None,
         }
     }
 
@@ -1764,6 +1769,10 @@ mod tests {
                 web_thick: 7.5,
                 flange_thick: 11.0,
             }),
+            material: Some(MaterialId(0)),
+            rebar_material: None,
+            shear_rebar_material: None,
+            steel_material: None,
         };
         let (outer, inner) = fiber_frame_outline(&sec).unwrap();
         assert!(inner.is_none(), "溝形鋼は中実断面のため内側輪郭はない");

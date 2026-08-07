@@ -34,18 +34,13 @@ pub(crate) fn column_check(
     fc_raw: f64,
 ) -> CheckResult {
     let long_term = ctx.term == LoadTerm::Long;
-    // 主筋・せん断補強筋の材質は**断面（配筋）の属性**を第一とし、未設定のときのみ
-    // 部材材料名へフォールバックする（従来挙動）。
-    let rebar_of_shape = shape.rebar();
-    let grade = rebar_of_shape
-        .map(|r| main_rebar_grade(r, mat))
-        .unwrap_or(mat.name.as_str());
+    // 主筋・せん断補強筋の材質は**断面が持つ材料**の名前で決まる。
+    // 未割当の断面は [`crate::RcDesign::check`] が検定前に弾く。
+    let grade = main_rebar_grade(ctx.rebar_material.as_ref());
     let mut allow = rc_allow(
         fc_raw,
         mat.concrete_class,
-        rebar_of_shape
-            .map(|r| shear_rebar_grade(r, mat))
-            .unwrap_or(mat.name.as_str()),
+        shear_rebar_grade(ctx.shear_rebar_material.as_ref()),
         long_term,
     );
 
@@ -55,10 +50,10 @@ pub(crate) fn column_check(
     if let SectionShape::RcCircle { d, rebar } = shape {
         // 高強度せん断補強筋のときだけ Some とする（普通強度を高強度品の表で
         // 評価すると w_ft を過大評価し危険側になるため）。
-        let shear_grade = rebar
-            .shear
-            .grade
-            .as_deref()
+        let shear_grade = ctx
+            .shear_rebar_material
+            .as_ref()
+            .map(|m| m.name.as_str())
             .filter(|g| is_high_strength_shear_grade(g));
         if let Some(g) = shear_grade {
             // 高強度せん断補強筋: w_ft は製品表から求め直す（主筋グレードとは独立）。
@@ -114,7 +109,7 @@ pub(crate) fn column_check(
                 d: d_full,
                 at: axis.props.at,
                 d_eff: axis.props.d,
-                sigma_y: rebar_sigma_y_of(rebar, mat),
+                sigma_y: rebar_sigma_y_of(ctx.rebar_material.as_ref()),
                 fc: fc_raw,
                 pw: axis.props.pw,
                 sigma_wy: 0.0,
@@ -189,10 +184,10 @@ pub(crate) fn column_check(
     };
     // 高強度せん断補強筋のときだけ Some とする（普通強度を高強度品の表で
     // 評価すると w_ft を過大評価し危険側になるため）。
-    let shear_grade = rebar
-        .shear
-        .grade
-        .as_deref()
+    let shear_grade = ctx
+        .shear_rebar_material
+        .as_ref()
+        .map(|m| m.name.as_str())
         .filter(|g| is_high_strength_shear_grade(g));
     if let Some(g) = shear_grade {
         // 高強度せん断補強筋: w_ft は製品表から求め直す（主筋グレードとは独立）。
@@ -267,7 +262,7 @@ pub(crate) fn column_check(
     // （QD1 = ΣcMy/h′、QD2 = QL + n・QE。ctx.seismic_qd が None なら解析値）。
     // ΣcMy は柱頭・柱脚同一断面の仮定で 2・Mu（軸力考慮閉形式）とする。
     let (q_design_y, q_design_z) = if ctx.seismic_qd.is_some() {
-        let sigma_y = rebar_sigma_y_of(rebar, mat);
+        let sigma_y = rebar_sigma_y_of(ctx.rebar_material.as_ref());
         let mu_of = |b: f64, d_full: f64, props: &AxisProps| {
             let mu_inp = squid_n_core::rc_capacity::RcCapacityInput {
                 b,

@@ -61,7 +61,10 @@ impl MultiSpringElement {
                     .map(|f| AxialSpring {
                         y: f.y,
                         z: f.z,
-                        material: data.material.unwrap_or(MaterialId(0)),
+                        material: model
+                            .element_section(data)
+                            .and_then(|s| s.material)
+                            .unwrap_or(MaterialId(0)),
                     })
                     .collect()
             })
@@ -173,7 +176,6 @@ mod tests {
                 kind: ElementKind::MultiSpring,
                 nodes: smallvec::smallvec![NodeId(0), NodeId(1)],
                 section: Some(SectionId(0)),
-                material: Some(MaterialId(0)),
                 local_axis: LocalAxis {
                     ref_vector: [0.0, 1.0, 0.0],
                 },
@@ -198,6 +200,10 @@ mod tests {
                 panel_thickness: None,
                 thickness: None,
                 shape: None,
+                material: Some(MaterialId(0)),
+                rebar_material: None,
+                shear_rebar_material: None,
+                steel_material: None,
             }],
             materials: vec![Material {
                 strength_factor: None,

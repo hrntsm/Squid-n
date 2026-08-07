@@ -28,9 +28,8 @@ pub fn is_rc_wall(data: &ElementData, model: &Model) -> bool {
         .section
         .and_then(|sid| model.sections.get(sid.index()))
         .is_some_and(|s| matches!(s.shape, Some(SectionShape::RcWall { .. })));
-    let mat_is_rc = data
-        .material
-        .and_then(|mid| model.materials.get(mid.index()))
+    let mat_is_rc = model
+        .element_material(data)
         .is_some_and(|m| m.category == MaterialCategory::Concrete);
     sec_is_rc_wall || mat_is_rc
 }
@@ -146,7 +145,7 @@ pub fn wall_frame_category_issue(data: &ElementData, model: &Model) -> Option<St
         {
             continue;
         }
-        let Some(mat) = e.material.and_then(|mid| model.materials.get(mid.index())) else {
+        let Some(mat) = model.element_material(e) else {
             continue;
         };
         if mat.category != want {
@@ -418,7 +417,6 @@ mod tests {
             kind: ElementKind::Wall,
             nodes: smallvec::smallvec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
             section: Some(SectionId(0)),
-            material: Some(MaterialId(0)),
             local_axis: LocalAxis {
                 ref_vector: [0.0, 1.0, 0.0],
             },
@@ -540,11 +538,27 @@ mod tests {
     /// 耐震壁と周辺架構の構造種別が食い違うモデルは入力不備として報告する。
     #[test]
     fn 壁と周辺架構の構造種別の食い違いを報告する() {
-        // RC 壁＋RC 架構は整合（`add_surrounding_frame` は材料を割り当てないため、
-        // 判定が働くよう周辺架構へコンクリートの材料を与える）。
+        // 材料は断面が持つ。`add_surrounding_frame` は断面を割り当てないため、
+        // 判定が働くよう周辺架構用の断面を足してそこへ材料を与える。
+        let frame_section = |model: &mut Model, mat: MaterialId| -> SectionId {
+            let id = SectionId(model.sections.len() as u32);
+            let mut sec = SectionShape::SteelH {
+                height: 400.0,
+                width: 200.0,
+                web_thick: 8.0,
+                flange_thick: 13.0,
+            }
+            .to_section(id, "G".into());
+            sec.material = Some(mat);
+            model.sections.push(sec);
+            id
+        };
+
+        // RC 壁＋RC 架構は整合。
         let (mut model, data) = make_model(150.0);
+        let rc_sec = frame_section(&mut model, MaterialId(0));
         for e in model.elements.iter_mut().filter(|e| e.id != ElemId(0)) {
-            e.material = Some(MaterialId(0));
+            e.section = Some(rc_sec);
         }
         assert!(wall_frame_category_issue(&data, &model).is_none());
 
@@ -563,8 +577,9 @@ mod tests {
             fc: None,
             fy: Some(235.0),
         });
+        let steel_sec = frame_section(&mut model, MaterialId(1));
         for e in model.elements.iter_mut().filter(|e| e.id == ElemId(1)) {
-            e.material = Some(MaterialId(1));
+            e.section = Some(steel_sec);
         }
         let msg = wall_frame_category_issue(&data, &model).expect("食い違いを報告する");
         assert!(msg.contains("構造種別を揃えて"), "是正内容を示す: {msg}");

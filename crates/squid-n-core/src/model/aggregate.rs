@@ -192,12 +192,24 @@ impl Model {
                     )));
                 }
             }
-            if let Some(mid) = elem.material {
-                if mid.index() >= self.materials.len() || self.materials[mid.index()].id != mid {
-                    return Err(CoreError::DanglingRef(format!(
-                        "Elem {} -> Material {}",
-                        elem.id.0, mid.0
-                    )));
+        }
+
+        // 断面が参照する材料が実在すること（材料は断面が持つ）。
+        for sec in &self.sections {
+            for (role, mid) in [
+                ("Material", sec.material),
+                ("RebarMaterial", sec.rebar_material),
+                ("ShearRebarMaterial", sec.shear_rebar_material),
+                ("SteelMaterial", sec.steel_material),
+            ] {
+                if let Some(mid) = mid {
+                    if mid.index() >= self.materials.len() || self.materials[mid.index()].id != mid
+                    {
+                        return Err(CoreError::DanglingRef(format!(
+                            "Section {} -> {role} {}",
+                            sec.id.0, mid.0
+                        )));
+                    }
                 }
             }
         }
@@ -304,14 +316,6 @@ impl Model {
                     return Err(CoreError::DanglingRef(format!(
                         "SecondaryMember {} -> Section {}",
                         i, sid.0
-                    )));
-                }
-            }
-            if let Some(mid) = sm.material {
-                if mid.index() >= self.materials.len() || self.materials[mid.index()].id != mid {
-                    return Err(CoreError::DanglingRef(format!(
-                        "SecondaryMember {} -> Material {}",
-                        i, mid.0
                     )));
                 }
             }
@@ -585,13 +589,17 @@ impl Model {
         for mat in &mut self.materials {
             f(&mut mat.id);
         }
-        for elem in &mut self.elements {
-            if let Some(mid) = &mut elem.material {
-                f(mid);
-            }
-        }
-        for sm in &mut self.secondary_members {
-            if let Some(mid) = &mut sm.material {
+        // 材料参照は断面が持つ（部材・二次部材は持たない）。
+        for sec in &mut self.sections {
+            for mid in [
+                &mut sec.material,
+                &mut sec.rebar_material,
+                &mut sec.shear_rebar_material,
+                &mut sec.steel_material,
+            ]
+            .into_iter()
+            .flatten()
+            {
                 f(mid);
             }
         }

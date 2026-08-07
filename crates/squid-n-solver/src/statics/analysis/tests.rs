@@ -33,7 +33,6 @@ fn make_cantilever_model() -> Model {
             kind: ElementKind::Beam,
             nodes: smallvec::smallvec![NodeId(0), NodeId(1)],
             section: Some(SectionId(0)),
-            material: Some(MaterialId(0)),
             local_axis: LocalAxis {
                 ref_vector: [0.0, 0.0, 1.0],
             },
@@ -58,6 +57,10 @@ fn make_cantilever_model() -> Model {
             panel_thickness: None,
             thickness: None,
             shape: None,
+            material: Some(MaterialId(0)),
+            rebar_material: None,
+            shear_rebar_material: None,
+            steel_material: None,
         }],
         materials: vec![Material {
             strength_factor: None,
@@ -187,11 +190,11 @@ fn test_prepare_missing_section_gives_diagnostic() {
 }
 
 /// 材料だけが未割当でも解析は止まる。断面と材料は別々の不備として報告し、
-/// どちらを直せばよいかがメッセージから分かるようにする。
+/// どちらを直せばよいかがメッセージから分かるようにする。材料は断面が持つ。
 #[test]
 fn test_prepare_missing_material_gives_diagnostic() {
     let mut model = make_cantilever_model();
-    model.elements[0].material = None;
+    model.sections[0].material = None;
     let err = Analysis::prepare(&model).err().unwrap();
     let msg = format!("{}", err);
     assert!(msg.contains("材料が未割当"), "{}", msg);
@@ -204,8 +207,13 @@ fn test_model_issues_collects_every_issue() {
     use super::precheck::{model_issues, IssueTargets};
 
     let mut model = make_cantilever_model();
+    // 材料は断面が持つため、断面未割当と材料未割当は別々の部材でしか同時に起きない。
+    // 部材 1 は断面を持ったまま、その断面の材料だけを外す。
+    let mut second = model.elements[0].clone();
+    second.id = squid_n_core::ids::ElemId(1);
+    model.elements.push(second);
     model.elements[0].section = None;
-    model.elements[0].material = None;
+    model.sections[0].material = None;
     for n in &mut model.nodes {
         n.restraint = Dof6Mask::FREE;
     }
@@ -655,7 +663,6 @@ fn ss_beam_udl(l: f64, w: f64) -> Model {
             kind: ElementKind::Beam,
             nodes: smallvec::smallvec![NodeId(0), NodeId(1)],
             section: Some(SectionId(0)),
-            material: Some(MaterialId(0)),
             local_axis: LocalAxis {
                 ref_vector: [0.0, 0.0, 1.0],
             },
@@ -680,6 +687,10 @@ fn ss_beam_udl(l: f64, w: f64) -> Model {
             panel_thickness: None,
             thickness: None,
             shape: None,
+            material: Some(MaterialId(0)),
+            rebar_material: None,
+            shear_rebar_material: None,
+            steel_material: None,
         }],
         materials: vec![Material {
             strength_factor: None,

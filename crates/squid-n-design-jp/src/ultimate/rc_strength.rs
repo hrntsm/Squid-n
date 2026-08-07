@@ -181,13 +181,13 @@ pub(super) fn ductility_be_ns(b_dir: f64, rebar: &RcRebar) -> (f64, u32) {
 
 /// 部材のせん断補強筋の終局検定用 σwy・ν0 上書き・上限適用後 pw を解決する。
 ///
-/// `ShearBar.grade` が高強度せん断補強筋の既知製品の場合、製品別の
+/// せん断補強筋の材質（`UltimateShearOptions::shear_grade`。断面の
+/// `shear_rebar_material` の名前）が高強度せん断補強筋の既知製品の場合、製品別の
 /// σwy（min(25·Fc, 上限) 等）・ν0（1275 級 0.7(1.0−Fc/140)、785/685 級
 /// 0.7(0.7−Fc/200)）・pw 上限（1.2%、1275 級の柱かつ Fc＜27 は 0.8%）を適用する
 /// （[`crate::material_strength::ultimate_hoop_sigma_wy`] ほか）。
 /// 普通強度・判別不能な製品名は (opts.sigma_wy, None, pw) のまま。
 fn resolve_hoop_ultimate(
-    rebar: &RcRebar,
     fc: f64,
     pw: f64,
     is_column: bool,
@@ -196,7 +196,7 @@ fn resolve_hoop_ultimate(
     use crate::material_strength::{
         ultimate_hoop_nu0, ultimate_hoop_pw_cap, ultimate_hoop_sigma_wy,
     };
-    let grade = rebar.shear.grade.as_deref();
+    let grade = opts.shear_grade.as_deref();
     // 高強度品は製品表（Fc 依存の頭打ち込み）、普通強度（SD*/SR*）は規格の基準強度、
     // 材質未設定のみ既定値へ落とす。
     let sigma_wy = grade
@@ -233,7 +233,7 @@ pub(super) fn member_shear_strength(
     is_column: bool,
     opts: &UltimateShearOptions,
 ) -> f64 {
-    let (sigma_wy, nu0_override, pw) = resolve_hoop_ultimate(rebar, fc, pw, is_column, opts);
+    let (sigma_wy, nu0_override, pw) = resolve_hoop_ultimate(fc, pw, is_column, opts);
     match opts.shear_method {
         ShearMethod::Plastic => rc_shear_qsu_plastic(&RcPlasticShearInput {
             b: b_dir,

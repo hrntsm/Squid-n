@@ -56,20 +56,40 @@ fn wall_model_sized(l: f64, h: f64, thickness: f64, wall_attr: Option<WallAttr>)
             thickness,
             ps: 0.006,
         }),
+        // 材料は断面が持つ。壁筋（縦筋・横筋）は SD345。
+        material: Some(MaterialId(0)),
+        rebar_material: Some(MaterialId(1)),
+        shear_rebar_material: Some(MaterialId(1)),
+        steel_material: None,
     }];
-    let materials = vec![Material {
-        strength_factor: None,
-        concrete_class: Default::default(),
-        id: MaterialId(0),
-        name: "SD345".to_string(),
-        category: MaterialCategory::Rebar,
-        young: 23000.0,
-        poisson: 0.2,
-        density: 2.4e-9,
-        shear: None,
-        fc: Some(24.0),
-        fy: None,
-    }];
+    let materials = vec![
+        Material {
+            strength_factor: None,
+            concrete_class: Default::default(),
+            id: MaterialId(0),
+            name: "Fc24".to_string(),
+            category: MaterialCategory::Concrete,
+            young: 23000.0,
+            poisson: 0.2,
+            density: 2.4e-9,
+            shear: None,
+            fc: Some(24.0),
+            fy: None,
+        },
+        Material {
+            strength_factor: None,
+            concrete_class: Default::default(),
+            id: MaterialId(1),
+            name: "SD345".to_string(),
+            category: MaterialCategory::Rebar,
+            young: 205000.0,
+            poisson: 0.3,
+            density: 7.85e-9,
+            shear: None,
+            fc: None,
+            fy: Some(345.0),
+        },
+    ];
     let frame_member = |id: u32, n0: u32, n1: u32| ElementData {
         id: ElemId(id),
         kind: ElementKind::Beam,
@@ -80,7 +100,6 @@ fn wall_model_sized(l: f64, h: f64, thickness: f64, wall_attr: Option<WallAttr>)
             v
         },
         section: None,
-        material: None,
         local_axis: LocalAxis {
             ref_vector: [0.0, 1.0, 0.0],
         },
@@ -103,7 +122,6 @@ fn wall_model_sized(l: f64, h: f64, thickness: f64, wall_attr: Option<WallAttr>)
                 v
             },
             section: Some(SectionId(0)),
-            material: Some(MaterialId(0)),
             local_axis: LocalAxis {
                 ref_vector: [0.0, 0.0, 1.0],
             },
@@ -480,7 +498,6 @@ fn wall_with_side_columns_emits_nonlinear_shear_trilinear() {
         b: 600.0,
         d: 600.0,
         rebar: RcRebar {
-            main_grade: None,
             main_x: BarSet {
                 count: 8,
                 dia: 22.0,
@@ -496,20 +513,19 @@ fn wall_with_side_columns_emits_nonlinear_shear_trilinear() {
                 dia: 10.0,
                 pitch: 100.0,
                 legs: 2,
-                grade: None,
             },
         },
     };
-    model
-        .sections
-        .push(col_shape.to_section(SectionId(1), "C600".into()));
+    // 材料は断面が持つ。
+    let mut col_sec = col_shape.to_section(SectionId(1), "C600".into());
+    col_sec.material = Some(MaterialId(0));
+    model.sections.push(col_sec);
     for e in model
         .elements
         .iter_mut()
         .filter(|e| e.id == ElemId(3) || e.id == ElemId(4))
     {
         e.section = Some(SectionId(1));
-        e.material = Some(MaterialId(0));
         e.local_axis = LocalAxis {
             ref_vector: [1.0, 0.0, 0.0],
         };
@@ -558,7 +574,6 @@ fn rc_cross_joint_emits_ultimate_check() {
     use squid_n_core::section_shape::{BarSet, RcRebar, ShearBar};
 
     let rebar = |count: u32, dia: f64| RcRebar {
-        main_grade: None,
         main_x: BarSet {
             count,
             dia,
@@ -574,7 +589,6 @@ fn rc_cross_joint_emits_ultimate_check() {
             dia: 10.0,
             pitch: 100.0,
             legs: 2,
-            grade: None,
         },
     };
     let col_shape = SectionShape::RcRect {
@@ -611,23 +625,45 @@ fn rc_cross_joint_emits_ultimate_check() {
             support_spring: None,
         });
     }
+    // 材料は断面が持つ。主材料 = コンクリート、主筋・せん断補強筋 = SD345。
+    let with_mats = |mut sec: Section| {
+        sec.material = Some(MaterialId(0));
+        sec.rebar_material = Some(MaterialId(1));
+        sec.shear_rebar_material = Some(MaterialId(1));
+        sec
+    };
     let sections = vec![
-        col_shape.to_section(SectionId(0), "C600".into()),
-        beam_shape.to_section(SectionId(1), "B400x700".into()),
+        with_mats(col_shape.to_section(SectionId(0), "C600".into())),
+        with_mats(beam_shape.to_section(SectionId(1), "B400x700".into())),
     ];
-    let materials = vec![Material {
-        strength_factor: None,
-        concrete_class: Default::default(),
-        id: MaterialId(0),
-        name: "SD345".to_string(),
-        category: MaterialCategory::Rebar,
-        young: 23000.0,
-        poisson: 0.2,
-        density: 2.4e-9,
-        shear: None,
-        fc: Some(24.0),
-        fy: Some(345.0),
-    }];
+    let materials = vec![
+        Material {
+            strength_factor: None,
+            concrete_class: Default::default(),
+            id: MaterialId(0),
+            name: "Fc24".to_string(),
+            category: MaterialCategory::Concrete,
+            young: 23000.0,
+            poisson: 0.2,
+            density: 2.4e-9,
+            shear: None,
+            fc: Some(24.0),
+            fy: None,
+        },
+        Material {
+            strength_factor: None,
+            concrete_class: Default::default(),
+            id: MaterialId(1),
+            name: "SD345".to_string(),
+            category: MaterialCategory::Rebar,
+            young: 205000.0,
+            poisson: 0.3,
+            density: 7.85e-9,
+            shear: None,
+            fc: None,
+            fy: Some(345.0),
+        },
+    ];
     let make_elem = |id: u32, sec: u32, n0: u32, n1: u32| ElementData {
         id: ElemId(id),
         kind: ElementKind::Beam,
@@ -638,7 +674,6 @@ fn rc_cross_joint_emits_ultimate_check() {
             v
         },
         section: Some(SectionId(sec)),
-        material: Some(MaterialId(0)),
         local_axis: LocalAxis {
             ref_vector: [1.0, 0.0, 0.0],
         },

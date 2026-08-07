@@ -38,7 +38,6 @@ fn simply_supported_udl_midspan_moment() {
             kind: ElementKind::Beam,
             nodes: smallvec::smallvec![NodeId(0), NodeId(1)],
             section: Some(SectionId(0)),
-            material: Some(MaterialId(0)),
             local_axis: LocalAxis {
                 ref_vector: [0.0, 0.0, 1.0],
             },
@@ -63,6 +62,10 @@ fn simply_supported_udl_midspan_moment() {
             panel_thickness: None,
             thickness: None,
             shape: None,
+            material: Some(MaterialId(0)),
+            rebar_material: None,
+            shear_rebar_material: None,
+            steel_material: None,
         }],
         materials: vec![Material {
             strength_factor: None,
@@ -155,7 +158,6 @@ fn ss_beam(l: f64, member: Vec<MemberLoad>) -> Model {
             kind: ElementKind::Beam,
             nodes: smallvec::smallvec![NodeId(0), NodeId(1)],
             section: Some(SectionId(0)),
-            material: Some(MaterialId(0)),
             local_axis: LocalAxis {
                 ref_vector: [0.0, 0.0, 1.0],
             },
@@ -180,6 +182,10 @@ fn ss_beam(l: f64, member: Vec<MemberLoad>) -> Model {
             panel_thickness: None,
             thickness: None,
             shape: None,
+            material: Some(MaterialId(0)),
+            rebar_material: None,
+            shear_rebar_material: None,
+            steel_material: None,
         }],
         materials: vec![Material {
             strength_factor: None,
@@ -303,7 +309,6 @@ fn make_axial_cantilever() -> Model {
             kind: ElementKind::Beam,
             nodes: smallvec::smallvec![NodeId(0), NodeId(1)],
             section: Some(SectionId(0)),
-            material: Some(MaterialId(0)),
             local_axis: LocalAxis {
                 ref_vector: [0.0, 0.0, 1.0],
             },
@@ -328,6 +333,10 @@ fn make_axial_cantilever() -> Model {
             panel_thickness: None,
             thickness: None,
             shape: None,
+            material: Some(MaterialId(0)),
+            rebar_material: None,
+            shear_rebar_material: None,
+            steel_material: None,
         }],
         materials: vec![Material {
             strength_factor: None,
@@ -474,7 +483,6 @@ fn test_linear_static_vertical_cantilever_bending() {
             kind: ElementKind::Beam,
             nodes: smallvec::smallvec![NodeId(0), NodeId(1)],
             section: Some(SectionId(0)),
-            material: Some(MaterialId(0)),
             local_axis: LocalAxis {
                 ref_vector: [1.0, 0.0, 0.0],
             },
@@ -499,6 +507,10 @@ fn test_linear_static_vertical_cantilever_bending() {
             panel_thickness: None,
             thickness: None,
             shape: None,
+            material: Some(MaterialId(0)),
+            rebar_material: None,
+            shear_rebar_material: None,
+            steel_material: None,
         }],
         materials: vec![Material {
             strength_factor: None,
@@ -577,7 +589,6 @@ fn test_linear_static_shell_element() {
             kind: ElementKind::Shell,
             nodes: smallvec::smallvec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
             section: Some(SectionId(0)),
-            material: Some(MaterialId(0)),
             local_axis: LocalAxis {
                 ref_vector: [0.0, 0.0, 1.0],
             },
@@ -602,6 +613,10 @@ fn test_linear_static_shell_element() {
             panel_thickness: None,
             thickness: Some(10.0),
             shape: None,
+            material: Some(MaterialId(0)),
+            rebar_material: None,
+            shear_rebar_material: None,
+            steel_material: None,
         }],
         materials: vec![Material {
             strength_factor: None,
@@ -766,7 +781,6 @@ fn test_shell_membrane_patch_test() {
                 kind: ElementKind::Shell,
                 nodes: smallvec::smallvec![NodeId(0), NodeId(4), NodeId(8), NodeId(7)],
                 section: Some(SectionId(0)),
-                material: Some(MaterialId(0)),
                 local_axis: LocalAxis {
                     ref_vector: [0.0, 0.0, 1.0],
                 },
@@ -781,7 +795,6 @@ fn test_shell_membrane_patch_test() {
                 kind: ElementKind::Shell,
                 nodes: smallvec::smallvec![NodeId(4), NodeId(1), NodeId(5), NodeId(8)],
                 section: Some(SectionId(0)),
-                material: Some(MaterialId(0)),
                 local_axis: LocalAxis {
                     ref_vector: [0.0, 0.0, 1.0],
                 },
@@ -796,7 +809,6 @@ fn test_shell_membrane_patch_test() {
                 kind: ElementKind::Shell,
                 nodes: smallvec::smallvec![NodeId(8), NodeId(5), NodeId(2), NodeId(6)],
                 section: Some(SectionId(0)),
-                material: Some(MaterialId(0)),
                 local_axis: LocalAxis {
                     ref_vector: [0.0, 0.0, 1.0],
                 },
@@ -811,7 +823,6 @@ fn test_shell_membrane_patch_test() {
                 kind: ElementKind::Shell,
                 nodes: smallvec::smallvec![NodeId(7), NodeId(8), NodeId(6), NodeId(3)],
                 section: Some(SectionId(0)),
-                material: Some(MaterialId(0)),
                 local_axis: LocalAxis {
                     ref_vector: [0.0, 0.0, 1.0],
                 },
@@ -837,6 +848,10 @@ fn test_shell_membrane_patch_test() {
             panel_thickness: None,
             thickness: Some(t),
             shape: None,
+            material: Some(MaterialId(0)),
+            rebar_material: None,
+            shear_rebar_material: None,
+            steel_material: None,
         }],
         materials: vec![Material {
             strength_factor: None,
@@ -908,7 +923,6 @@ fn test_shell_membrane_off_no_diaphragm() {
             kind: ElementKind::Shell,
             nodes: smallvec::smallvec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
             section: Some(SectionId(0)),
-            material: Some(MaterialId(0)),
             local_axis: LocalAxis {
                 ref_vector: [0.0, 0.0, 1.0],
             },
@@ -933,6 +947,10 @@ fn test_shell_membrane_off_no_diaphragm() {
             panel_thickness: None,
             thickness: Some(10.0),
             shape: None,
+            material: Some(MaterialId(0)),
+            rebar_material: None,
+            shear_rebar_material: None,
+            steel_material: None,
         }],
         materials: vec![Material {
             strength_factor: None,
@@ -1024,7 +1042,6 @@ fn test_shell_rigid_floor_membrane_off() {
             kind: ElementKind::Shell,
             nodes: smallvec::smallvec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
             section: Some(SectionId(0)),
-            material: Some(MaterialId(0)),
             local_axis: LocalAxis {
                 ref_vector: [0.0, 0.0, 1.0],
             },
@@ -1049,6 +1066,10 @@ fn test_shell_rigid_floor_membrane_off() {
             panel_thickness: None,
             thickness: Some(10.0),
             shape: None,
+            material: Some(MaterialId(0)),
+            rebar_material: None,
+            shear_rebar_material: None,
+            steel_material: None,
         }],
         materials: vec![Material {
             strength_factor: None,
@@ -1146,7 +1167,6 @@ fn make_ss_plate(n: usize, a: f64, t: f64, e: f64, nu: f64, q: f64, clamped: boo
                     NodeId(idx(ix, iy + 1)),
                 ],
                 section: Some(SectionId(0)),
-                material: Some(MaterialId(0)),
                 local_axis: LocalAxis {
                     ref_vector: [0.0, 0.0, 1.0],
                 },
@@ -1190,6 +1210,10 @@ fn make_ss_plate(n: usize, a: f64, t: f64, e: f64, nu: f64, q: f64, clamped: boo
             panel_thickness: None,
             thickness: Some(t),
             shape: None,
+            material: Some(MaterialId(0)),
+            rebar_material: None,
+            shear_rebar_material: None,
+            steel_material: None,
         }],
         materials: vec![Material {
             strength_factor: None,
@@ -1322,6 +1346,10 @@ fn braced_frame(kind: squid_n_core::model::LoadCaseKind) -> Model {
         panel_thickness: None,
         thickness: None,
         shape: None,
+        material: Some(MaterialId(0)),
+        rebar_material: None,
+        shear_rebar_material: None,
+        steel_material: None,
     };
     let mat = Material {
         strength_factor: None,
@@ -1358,7 +1386,6 @@ fn braced_frame(kind: squid_n_core::model::LoadCaseKind) -> Model {
                 kind: ElementKind::Beam,
                 nodes: smallvec::smallvec![NodeId(0), NodeId(2)],
                 section: Some(SectionId(0)),
-                material: Some(MaterialId(0)),
                 local_axis: LocalAxis {
                     ref_vector: [1.0, 0.0, 0.0],
                 },
@@ -1374,7 +1401,6 @@ fn braced_frame(kind: squid_n_core::model::LoadCaseKind) -> Model {
                 kind: ElementKind::Beam,
                 nodes: smallvec::smallvec![NodeId(1), NodeId(3)],
                 section: Some(SectionId(0)),
-                material: Some(MaterialId(0)),
                 local_axis: LocalAxis {
                     ref_vector: [1.0, 0.0, 0.0],
                 },
@@ -1390,7 +1416,6 @@ fn braced_frame(kind: squid_n_core::model::LoadCaseKind) -> Model {
                 kind: ElementKind::Beam,
                 nodes: smallvec::smallvec![NodeId(2), NodeId(3)],
                 section: Some(SectionId(0)),
-                material: Some(MaterialId(0)),
                 local_axis: LocalAxis {
                     ref_vector: [0.0, 0.0, 1.0],
                 },
@@ -1408,7 +1433,6 @@ fn braced_frame(kind: squid_n_core::model::LoadCaseKind) -> Model {
                 },
                 nodes: smallvec::smallvec![NodeId(0), NodeId(3)],
                 section: Some(SectionId(0)),
-                material: Some(MaterialId(0)),
                 local_axis: LocalAxis {
                     ref_vector: [0.0, 0.0, 1.0],
                 },
@@ -1463,6 +1487,10 @@ fn column_with_parallel_vertical_brace() -> Model {
         panel_thickness: None,
         thickness: None,
         shape: None,
+        material: Some(MaterialId(0)),
+        rebar_material: None,
+        shear_rebar_material: None,
+        steel_material: None,
     };
     let mat = Material {
         strength_factor: None,
@@ -1507,7 +1535,6 @@ fn column_with_parallel_vertical_brace() -> Model {
                 kind: ElementKind::Beam,
                 nodes: smallvec::smallvec![NodeId(0), NodeId(1)],
                 section: Some(SectionId(0)),
-                material: Some(MaterialId(0)),
                 local_axis: LocalAxis {
                     ref_vector: [1.0, 0.0, 0.0],
                 },
@@ -1526,7 +1553,6 @@ fn column_with_parallel_vertical_brace() -> Model {
                 },
                 nodes: smallvec::smallvec![NodeId(0), NodeId(1)],
                 section: Some(SectionId(0)),
-                material: Some(MaterialId(0)),
                 local_axis: LocalAxis {
                     ref_vector: [1.0, 0.0, 0.0],
                 },
@@ -1702,7 +1728,6 @@ fn test_axial_cut_applies_to_composite_src_column() {
         b: 600.0,
         d: 600.0,
         rebar: RcRebar {
-            main_grade: None,
             main_x: BarSet {
                 count: 8,
                 dia: 22.0,
@@ -1718,14 +1743,12 @@ fn test_axial_cut_applies_to_composite_src_column() {
                 dia: 10.0,
                 pitch: 100.0,
                 legs: 2,
-                grade: None,
             },
         },
         steel_height: 400.0,
         steel_width: 200.0,
         steel_web_thick: 9.0,
         steel_flange_thick: 12.0,
-        steel_grade: "SN400".into(),
     });
     model.materials[0].fc = Some(24.0);
     model.materials[0].young = 2.27e4; // コンクリートのヤング係数相当
@@ -1796,6 +1819,10 @@ fn tension_only_portal(fx: f64, tension_only: bool) -> Model {
         panel_thickness: None,
         thickness: None,
         shape: None,
+        material: Some(MaterialId(0)),
+        rebar_material: None,
+        shear_rebar_material: None,
+        steel_material: None,
     };
     let mat = Material {
         strength_factor: None,
@@ -1815,7 +1842,6 @@ fn tension_only_portal(fx: f64, tension_only: bool) -> Model {
         kind: ElementKind::Beam,
         nodes: smallvec::smallvec![NodeId(n0), NodeId(n1)],
         section: Some(SectionId(0)),
-        material: Some(MaterialId(0)),
         local_axis: LocalAxis {
             ref_vector: [1.0, 0.0, 0.0],
         },
@@ -1841,7 +1867,6 @@ fn tension_only_portal(fx: f64, tension_only: bool) -> Model {
                 kind: ElementKind::Beam,
                 nodes: smallvec::smallvec![NodeId(2), NodeId(3)],
                 section: Some(SectionId(0)),
-                material: Some(MaterialId(0)),
                 local_axis: LocalAxis {
                     ref_vector: [0.0, 0.0, 1.0],
                 },
@@ -1857,7 +1882,6 @@ fn tension_only_portal(fx: f64, tension_only: bool) -> Model {
                 kind: ElementKind::Brace { tension_only },
                 nodes: smallvec::smallvec![NodeId(0), NodeId(3)],
                 section: Some(SectionId(0)),
-                material: Some(MaterialId(0)),
                 local_axis: LocalAxis {
                     ref_vector: [0.0, 0.0, 1.0],
                 },
@@ -2016,6 +2040,10 @@ fn rigid_floor_portal(with_rigid_floor: bool) -> Model {
             panel_thickness: None,
             thickness: None,
             shape: None,
+            material: Some(MaterialId(0)),
+            rebar_material: None,
+            shear_rebar_material: None,
+            steel_material: None,
         }],
         materials: vec![Material {
             strength_factor: None,
@@ -2054,7 +2082,6 @@ fn rigid_floor_portal(with_rigid_floor: bool) -> Model {
             kind: ElementKind::Beam,
             nodes: smallvec::smallvec![NodeId(i), NodeId(j)],
             section: Some(SectionId(0)),
-            material: Some(MaterialId(0)),
             local_axis: LocalAxis { ref_vector },
             end_cond: [EndCondition::Fixed, EndCondition::Fixed],
             force_regime: ForceRegime::Auto,

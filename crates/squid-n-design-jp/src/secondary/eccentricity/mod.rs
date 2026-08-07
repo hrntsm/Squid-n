@@ -65,6 +65,10 @@ pub(crate) mod test_support {
             panel_thickness: None,
             thickness: None,
             shape: None,
+            material: Some(MaterialId(0)),
+            rebar_material: None,
+            shear_rebar_material: None,
+            steel_material: None,
         };
         // 右側柱用 section（iy を上書き）
         let sec_right = Section {
@@ -90,6 +94,10 @@ pub(crate) mod test_support {
             panel_thickness: None,
             thickness: None,
             shape: None,
+            material: Some(MaterialId(0)),
+            rebar_material: None,
+            shear_rebar_material: None,
+            steel_material: None,
         };
 
         // 材料（共通）
@@ -191,7 +199,6 @@ pub(crate) mod test_support {
                     v
                 },
                 section: Some(col_sec(i)),
-                material: Some(MaterialId(0)),
                 local_axis: col_local_axis,
                 end_cond: end_fixed,
                 force_regime: ForceRegime::Auto,
@@ -216,7 +223,6 @@ pub(crate) mod test_support {
                     v
                 },
                 section: Some(SectionId(2)),
-                material: Some(MaterialId(0)),
                 local_axis: beam_local_axis,
                 end_cond: end_fixed,
                 force_regime: ForceRegime::Auto,

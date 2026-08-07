@@ -11,7 +11,6 @@ use squid_n_core::section_shape::{BarSet, RcRebar, SectionShape, ShearBar};
 /// テスト用の矩形 RC 断面（b×d, main_x=main_y, 帯筋 D10@pitch）。
 fn rc_rect_section(id: u32, b: f64, d: f64, main_dia: f64, main_count: u32, pitch: f64) -> Section {
     let rebar = RcRebar {
-        main_grade: None,
         main_x: BarSet {
             count: main_count,
             dia: main_dia,
@@ -27,7 +26,6 @@ fn rc_rect_section(id: u32, b: f64, d: f64, main_dia: f64, main_count: u32, pitc
             dia: 10.0,
             pitch,
             legs: 2,
-            grade: None,
         },
     };
     Section {
@@ -45,6 +43,11 @@ fn rc_rect_section(id: u32, b: f64, d: f64, main_dia: f64, main_count: u32, pitc
         panel_thickness: None,
         thickness: None,
         shape: Some(SectionShape::RcRect { b, d, rebar }),
+        // 材料は断面が持つ。主筋・せん断補強筋も同じ材料（SD345）とする。
+        material: Some(MaterialId(0)),
+        rebar_material: Some(MaterialId(0)),
+        shear_rebar_material: Some(MaterialId(0)),
+        steel_material: None,
     }
 }
 
@@ -84,7 +87,6 @@ fn frame_element(id: u32, sec: u32, n0: u32, n1: u32) -> ElementData {
         kind: ElementKind::Beam,
         nodes,
         section: Some(SectionId(sec)),
-        material: Some(MaterialId(0)),
         local_axis: LocalAxis {
             ref_vector: [0.0, 0.0, 1.0],
         },
@@ -174,10 +176,16 @@ fn test_ultimate_check_ql_q0_substitution_for_mk785() {
     assert!((beam.shear_margin - (beam.qsu - ql).max(0.0) / beam.qmu).abs() < 1e-9);
 
     // MK785: Q0 控除（σwy も製品値に変わるため Qsu 自体も変化する）。
+    // せん断補強筋の材質は断面が持つ材料の名前で決まる。
     let mut model_mk = column_and_beam_model();
-    if let Some(SectionShape::RcRect { rebar, .. }) = model_mk.sections[1].shape.as_mut() {
-        rebar.shear.grade = Some("MK785".to_string());
-    }
+    model_mk.materials.push(Material {
+        id: MaterialId(model_mk.materials.len() as u32),
+        name: "MK785".to_string(),
+        fy: Some(785.0),
+        ..material()
+    });
+    let mk = MaterialId(model_mk.materials.len() as u32 - 1);
+    model_mk.sections[1].shear_rebar_material = Some(mk);
     let checks_mk = collect_rc_ultimate_checks(&model_mk, &demand, &opts);
     let beam_mk = checks_mk.iter().find(|c| c.elem == ElemId(1)).unwrap();
     assert!((beam_mk.shear_margin - (beam_mk.qsu - q0).max(0.0) / beam_mk.qmu).abs() < 1e-9);
@@ -503,6 +511,10 @@ fn test_collect_cft_ultimate_checks() {
         panel_thickness: None,
         thickness: None,
         shape: Some(cft_shape),
+        material: Some(MaterialId(0)),
+        rebar_material: None,
+        shear_rebar_material: None,
+        steel_material: None,
     };
     let mat = Material {
         strength_factor: None,

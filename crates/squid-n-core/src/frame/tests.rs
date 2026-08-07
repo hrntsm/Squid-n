@@ -28,7 +28,6 @@ fn push_line(m: &mut Model, a: NodeId, b: NodeId) -> ElemId {
         kind: ElementKind::Beam,
         nodes: smallvec::smallvec![a, b],
         section: None,
-        material: None,
         local_axis: LocalAxis {
             ref_vector: [0.0, 0.0, 1.0],
         },

@@ -680,9 +680,8 @@ impl App {
                 .and_then(|sid| model.sections.get(sid.index()))
                 .map(|s| s.j)
                 .unwrap_or(0.0);
-            let g = e
-                .material
-                .and_then(|mid| model.materials.get(mid.index()))
+            let g = model
+                .element_material(e)
                 .map(|m| m.shear_modulus())
                 .unwrap_or(0.0);
             if j <= 0.0 || g <= 0.0 {
@@ -697,22 +696,15 @@ impl App {
         rows
     }
 
-    /// 断面性能を一覧化する。断面ごとに使用部材数と、割り当てられた材料
-    /// （複数あれば代表 1 件＋件数）を添える。
+    /// 断面性能を一覧化する。断面ごとに使用部材数と、断面が持つ主材料を添える。
     fn build_prep_sections(&self) -> Vec<PrepSectionRow> {
         let model = &self.model;
-        // 断面 → (使用部材数, 材料 id の出現順の重複なし列)
-        let mut usage: Vec<(usize, Vec<MaterialId>)> = vec![(0, Vec::new()); model.sections.len()];
+        // 断面 → 使用部材数
+        let mut usage: Vec<usize> = vec![0; model.sections.len()];
         for e in &model.elements {
             let Some(sid) = e.section else { continue };
-            let Some(slot) = usage.get_mut(sid.index()) else {
-                continue;
-            };
-            slot.0 += 1;
-            if let Some(mid) = e.material {
-                if !slot.1.contains(&mid) {
-                    slot.1.push(mid);
-                }
+            if let Some(slot) = usage.get_mut(sid.index()) {
+                *slot += 1;
             }
         }
 
@@ -721,17 +713,11 @@ impl App {
             .iter()
             .enumerate()
             .map(|(i, sec)| {
-                let (n_elements, mats) = usage.get(i).cloned().unwrap_or_else(|| (0, Vec::new()));
-                let first_mat = mats
-                    .first()
+                let n_elements = usage.get(i).copied().unwrap_or(0);
+                let first_mat = sec
+                    .material
                     .and_then(|mid| model.materials.get(mid.index()));
-                let material = first_mat.map(|m| {
-                    if mats.len() > 1 {
-                        format!("{} 他{}", m.name, mats.len() - 1)
-                    } else {
-                        m.name.clone()
-                    }
-                });
+                let material = first_mat.map(|m| m.name.clone());
                 // 断面二次半径 i = √(I/A)。A が 0 の断面（未設定）は 0 とする。
                 let radius = |inertia: f64| {
                     if sec.area > 0.0 && inertia > 0.0 {
@@ -779,13 +765,13 @@ impl App {
             std::collections::HashMap::new();
 
         for e in &model.elements {
-            let (Some(sid), Some(mid)) = (e.section, e.material) else {
+            let Some(sid) = e.section else {
                 continue;
             };
-            let (Some(sec), Some(mat)) = (
-                model.sections.get(sid.index()),
-                model.materials.get(mid.index()),
-            ) else {
+            let Some(sec) = model.sections.get(sid.index()) else {
+                continue;
+            };
+            let (Some(mid), Some(mat)) = (sec.material, model.element_material(e)) else {
                 continue;
             };
             if !super::elem_is_steel(e, model) {
@@ -855,7 +841,7 @@ impl App {
             }
             let (Some(sec), Some(mat)) = (
                 e.section.and_then(|sid| model.sections.get(sid.index())),
-                e.material.and_then(|mid| model.materials.get(mid.index())),
+                model.element_material(e),
             ) else {
                 continue;
             };

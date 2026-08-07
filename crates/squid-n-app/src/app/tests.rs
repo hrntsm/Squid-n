@@ -153,7 +153,7 @@ fn test_load_model_resets_draw_modes() {
 fn test_beam_group_overrides_combines_members() {
     use smallvec::SmallVec;
     use squid_n_core::dof::Dof6Mask;
-    use squid_n_core::ids::{MaterialId, NodeId, SectionId};
+    use squid_n_core::ids::{NodeId, SectionId};
     use squid_n_core::model::{
         ElementData, ElementKind, EndCondition, ForceRegime, LocalAxis, Model, Node, RigidZone,
     };
@@ -177,7 +177,6 @@ fn test_beam_group_overrides_combines_members() {
             v
         },
         section: Some(SectionId(0)),
-        material: Some(MaterialId(0)),
         local_axis: LocalAxis {
             ref_vector: [0.0, 0.0, 1.0],
         },
@@ -282,7 +281,6 @@ fn aligned_portal_frame() -> squid_n_core::model::Model {
     // RC 造ラーメン（S 造は剛域長 0 となるため、
     // 剛域自動算定の配管検証には RC 断面を用いる）。
     let rebar = squid_n_core::section_shape::RcRebar {
-        main_grade: None,
         main_x: squid_n_core::section_shape::BarSet {
             count: 4,
             dia: 22.0,
@@ -298,7 +296,6 @@ fn aligned_portal_frame() -> squid_n_core::model::Model {
             dia: 10.0,
             pitch: 100.0,
             legs: 2,
-            grade: None,
         },
     };
     let col_shape = SectionShape::RcRect {
@@ -331,6 +328,25 @@ fn aligned_portal_frame() -> squid_n_core::model::Model {
         fc: Some(24.0),
         fy: None,
     });
+    model.materials.push(Material {
+        strength_factor: None,
+        concrete_class: Default::default(),
+        id: squid_n_core::ids::MaterialId(1),
+        name: "SD345".into(),
+        category: MaterialCategory::Rebar,
+        young: 205000.0,
+        poisson: 0.3,
+        density: 7.85e-9,
+        shear: None,
+        fc: None,
+        fy: Some(345.0),
+    });
+    // 材料は断面が持つ。RC 断面は主筋・せん断補強筋も要る。
+    for sec in &mut model.sections {
+        sec.material = Some(squid_n_core::ids::MaterialId(0));
+        sec.rebar_material = Some(squid_n_core::ids::MaterialId(1));
+        sec.shear_rebar_material = Some(squid_n_core::ids::MaterialId(1));
+    }
 
     let members = [
         (0u32, 0u32, 1u32, 0u32, [1.0, 0.0, 0.0]),
@@ -343,7 +359,6 @@ fn aligned_portal_frame() -> squid_n_core::model::Model {
             kind: ElementKind::Beam,
             nodes: [NodeId(i), NodeId(j)].into_iter().collect(),
             section: Some(SectionId(sec)),
-            material: Some(squid_n_core::ids::MaterialId(0)),
             local_axis: LocalAxis { ref_vector },
             end_cond: [EndCondition::Fixed, EndCondition::Fixed],
             force_regime: ForceRegime::Auto,
@@ -1005,7 +1020,6 @@ fn shear_2dof_model() -> squid_n_core::model::Model {
         kind: ElementKind::Beam,
         nodes: smallvec::smallvec![NodeId(a), NodeId(b)],
         section: Some(SectionId(0)),
-        material: Some(MaterialId(0)),
         local_axis: LocalAxis {
             ref_vector: [0.0, 0.0, 1.0],
         },
@@ -1037,6 +1051,10 @@ fn shear_2dof_model() -> squid_n_core::model::Model {
             panel_thickness: None,
             thickness: None,
             shape: None,
+            material: Some(MaterialId(0)),
+            rebar_material: None,
+            shear_rebar_material: None,
+            steel_material: None,
         }],
         materials: vec![Material {
             strength_factor: None,
@@ -1271,7 +1289,6 @@ fn test_damper_create_edit_delete_via_undo() {
         kind: ElementKind::Damper,
         nodes: [i_node, j_node].into_iter().collect(),
         section: None,
-        material: None,
         local_axis: LocalAxis {
             ref_vector: [0.0, 0.0, 1.0],
         },
@@ -2129,7 +2146,6 @@ fn test_rc_capacity_input_from_rect_matches_handcalc() {
     let b = 400.0;
     let d = 600.0;
     let rebar = RcRebar {
-        main_grade: None,
         main_x: BarSet {
             count: 8,
             dia: 22.0,
@@ -2145,7 +2161,6 @@ fn test_rc_capacity_input_from_rect_matches_handcalc() {
             dia: 10.0,
             pitch: 150.0,
             legs: 2,
-            grade: Some("SD295A".into()),
         },
     };
     // 材料名は "FC24"（is_steel が false になる、かつ fc 設定あり）を想定。
@@ -2164,7 +2179,7 @@ fn test_rc_capacity_input_from_rect_matches_handcalc() {
     };
     let clear_span = 3000.0;
 
-    let input = rc_capacity_input_from_rect(b, d, &rebar, &mat, clear_span)
+    let input = rc_capacity_input_from_rect(b, d, &rebar, &mat, None, None, clear_span)
         .expect("fc が設定されているので Some のはず");
 
     // 変換規則の確認: at=main_x総断面積の半分、d_eff=d-cover-dia/2、
@@ -2231,7 +2246,6 @@ fn test_holding_capacity_rank_auto_rc_rect_from_shape() {
     use squid_n_design_jp::secondary::holding_capacity::MemberRank;
 
     let rebar = RcRebar {
-        main_grade: Some("SD345".into()),
         main_x: BarSet {
             count: 8,
             dia: 22.0,
@@ -2247,7 +2261,6 @@ fn test_holding_capacity_rank_auto_rc_rect_from_shape() {
             dia: 10.0,
             pitch: 150.0,
             legs: 2,
-            grade: None,
         },
     };
     let rc_shape = SectionShape::RcRect {
@@ -2291,20 +2304,41 @@ fn test_holding_capacity_rank_auto_rc_rect_from_shape() {
                 support_spring: None,
             },
         ],
-        sections: vec![rc_shape.to_section(SectionId(0), "RC-400x600".into())],
-        materials: vec![Material {
-            strength_factor: None,
-            concrete_class: Default::default(),
-            id: MaterialId(0),
-            name: "FC24".into(),
-            category: MaterialCategory::Concrete,
-            young: 23000.0,
-            poisson: 0.2,
-            density: 2.4e-9,
-            shear: None,
-            fc: Some(24.0),
-            fy: None,
+        // 材料は断面が持つ。RC 断面は主筋・せん断補強筋も要る。
+        sections: vec![squid_n_core::model::Section {
+            material: Some(MaterialId(0)),
+            rebar_material: Some(MaterialId(1)),
+            shear_rebar_material: Some(MaterialId(1)),
+            ..rc_shape.to_section(SectionId(0), "RC-400x600".into())
         }],
+        materials: vec![
+            Material {
+                strength_factor: None,
+                concrete_class: Default::default(),
+                id: MaterialId(0),
+                name: "FC24".into(),
+                category: MaterialCategory::Concrete,
+                young: 23000.0,
+                poisson: 0.2,
+                density: 2.4e-9,
+                shear: None,
+                fc: Some(24.0),
+                fy: None,
+            },
+            Material {
+                strength_factor: None,
+                concrete_class: Default::default(),
+                id: MaterialId(1),
+                name: "SD345".into(),
+                category: MaterialCategory::Rebar,
+                young: 205000.0,
+                poisson: 0.3,
+                density: 7.85e-9,
+                shear: None,
+                fc: None,
+                fy: Some(345.0),
+            },
+        ],
         ..Default::default()
     };
     let members = [
@@ -2318,7 +2352,6 @@ fn test_holding_capacity_rank_auto_rc_rect_from_shape() {
             kind: ElementKind::Beam,
             nodes: [NodeId(i), NodeId(j)].into_iter().collect(),
             section: Some(SectionId(0)),
-            material: Some(MaterialId(0)),
             local_axis: LocalAxis { ref_vector },
             end_cond: [EndCondition::Fixed, EndCondition::Fixed],
             force_regime: ForceRegime::Auto,
@@ -2409,7 +2442,7 @@ fn test_holding_capacity_rank_auto_rc_rect_from_shape() {
     let gross = 400.0 * 600.0;
 
     let expected_rank_for = |elem_id: ElemId, clear_span: f64, is_column: bool| {
-        let input = rc_capacity_input_from_rect(400.0, 600.0, &rebar, mat, clear_span)
+        let input = rc_capacity_input_from_rect(400.0, 600.0, &rebar, mat, None, None, clear_span)
             .expect("fc 設定済みなので Some");
         let r = resp.get(&elem_id).expect("終局時応答があるはず");
         let tau_over_fc = (r.shear_strong / gross) / fc;
@@ -2473,7 +2506,6 @@ fn test_rc_sigma_0_from_compression_axial_force() {
     let b = 400.0;
     let d = 600.0;
     let rebar = RcRebar {
-        main_grade: None,
         main_x: BarSet {
             count: 8,
             dia: 22.0,
@@ -2489,7 +2521,6 @@ fn test_rc_sigma_0_from_compression_axial_force() {
             dia: 10.0,
             pitch: 150.0,
             legs: 2,
-            grade: None,
         },
     };
     let rc_shape = SectionShape::RcRect {
@@ -2518,26 +2549,46 @@ fn test_rc_sigma_0_from_compression_axial_force() {
                 support_spring: None,
             },
         ],
-        sections: vec![rc_shape.to_section(SectionId(0), "RC-400x600".into())],
-        materials: vec![Material {
-            strength_factor: None,
-            concrete_class: Default::default(),
-            id: MaterialId(0),
-            name: "FC24".into(),
-            category: MaterialCategory::Concrete,
-            young: 23000.0,
-            poisson: 0.2,
-            density: 2.4e-9,
-            shear: None,
-            fc: Some(24.0),
-            fy: None,
+        // 材料は断面が持つ。RC 断面は主筋・せん断補強筋も要る。
+        sections: vec![squid_n_core::model::Section {
+            material: Some(MaterialId(0)),
+            rebar_material: Some(MaterialId(1)),
+            shear_rebar_material: Some(MaterialId(1)),
+            ..rc_shape.to_section(SectionId(0), "RC-400x600".into())
         }],
+        materials: vec![
+            Material {
+                strength_factor: None,
+                concrete_class: Default::default(),
+                id: MaterialId(0),
+                name: "FC24".into(),
+                category: MaterialCategory::Concrete,
+                young: 23000.0,
+                poisson: 0.2,
+                density: 2.4e-9,
+                shear: None,
+                fc: Some(24.0),
+                fy: None,
+            },
+            Material {
+                strength_factor: None,
+                concrete_class: Default::default(),
+                id: MaterialId(1),
+                name: "SD345".into(),
+                category: MaterialCategory::Rebar,
+                young: 205000.0,
+                poisson: 0.3,
+                density: 7.85e-9,
+                shear: None,
+                fc: None,
+                fy: Some(345.0),
+            },
+        ],
         elements: vec![ElementData {
             id: ElemId(0),
             kind: ElementKind::Beam,
             nodes: [NodeId(0), NodeId(1)].into_iter().collect(),
             section: Some(SectionId(0)),
-            material: Some(MaterialId(0)),
             local_axis: LocalAxis {
                 ref_vector: [1.0, 0.0, 0.0],
             },
@@ -2613,7 +2664,6 @@ fn test_rc_sigma_0_prefers_gravity_load_case_over_last_static() {
     let b = 400.0;
     let d = 600.0;
     let rebar = RcRebar {
-        main_grade: None,
         main_x: BarSet {
             count: 8,
             dia: 22.0,
@@ -2629,7 +2679,6 @@ fn test_rc_sigma_0_prefers_gravity_load_case_over_last_static() {
             dia: 10.0,
             pitch: 150.0,
             legs: 2,
-            grade: None,
         },
     };
     let rc_shape = SectionShape::RcRect {
@@ -2659,26 +2708,46 @@ fn test_rc_sigma_0_prefers_gravity_load_case_over_last_static() {
                 support_spring: None,
             },
         ],
-        sections: vec![rc_shape.to_section(SectionId(0), "RC-400x600".into())],
-        materials: vec![Material {
-            strength_factor: None,
-            concrete_class: Default::default(),
-            id: MaterialId(0),
-            name: "FC24".into(),
-            category: MaterialCategory::Concrete,
-            young: 23000.0,
-            poisson: 0.2,
-            density: 2.4e-9,
-            shear: None,
-            fc: Some(24.0),
-            fy: None,
+        // 材料は断面が持つ。RC 断面は主筋・せん断補強筋も要る。
+        sections: vec![squid_n_core::model::Section {
+            material: Some(MaterialId(0)),
+            rebar_material: Some(MaterialId(1)),
+            shear_rebar_material: Some(MaterialId(1)),
+            ..rc_shape.to_section(SectionId(0), "RC-400x600".into())
         }],
+        materials: vec![
+            Material {
+                strength_factor: None,
+                concrete_class: Default::default(),
+                id: MaterialId(0),
+                name: "FC24".into(),
+                category: MaterialCategory::Concrete,
+                young: 23000.0,
+                poisson: 0.2,
+                density: 2.4e-9,
+                shear: None,
+                fc: Some(24.0),
+                fy: None,
+            },
+            Material {
+                strength_factor: None,
+                concrete_class: Default::default(),
+                id: MaterialId(1),
+                name: "SD345".into(),
+                category: MaterialCategory::Rebar,
+                young: 205000.0,
+                poisson: 0.3,
+                density: 7.85e-9,
+                shear: None,
+                fc: None,
+                fy: Some(345.0),
+            },
+        ],
         elements: vec![ElementData {
             id: ElemId(0),
             kind: ElementKind::Beam,
             nodes: [NodeId(0), NodeId(1)].into_iter().collect(),
             section: Some(SectionId(0)),
-            material: Some(MaterialId(0)),
             local_axis: LocalAxis {
                 ref_vector: [1.0, 0.0, 0.0],
             },
@@ -2772,7 +2841,6 @@ fn make_slab_test_model() -> squid_n_core::model::Model {
         kind: ElementKind::Beam,
         nodes: [NodeId(i), NodeId(j)].into_iter().collect(),
         section: None,
-        material: None,
         local_axis: LocalAxis {
             ref_vector: [0.0, 0.0, 1.0],
         },
@@ -2923,7 +2991,6 @@ fn make_square_slab_test_model() -> squid_n_core::model::Model {
         kind: ElementKind::Beam,
         nodes: [NodeId(i), NodeId(j)].into_iter().collect(),
         section: None,
-        material: None,
         local_axis: LocalAxis {
             ref_vector: [0.0, 0.0, 1.0],
         },
@@ -3133,7 +3200,6 @@ fn test_slab_grillage_node_reactions_total_and_gate() {
         kind: ElementKind::Beam,
         nodes: [NodeId(i), NodeId(j)].into_iter().collect(),
         section: None,
-        material: None,
         local_axis: LocalAxis {
             ref_vector: [0.0, 0.0, 1.0],
         },
@@ -3158,6 +3224,11 @@ fn test_slab_grillage_node_reactions_total_and_gate() {
         panel_thickness: None,
         thickness: None,
         shape: None,
+        // 床格子の解析は断面性能のみを使うため、材料は割り当てない。
+        material: None,
+        rebar_material: None,
+        shear_rebar_material: None,
+        steel_material: None,
     };
     let spacing = 2000.0_f64;
     let slab = Slab {
@@ -3404,6 +3475,11 @@ fn test_floor_design_checks_joist_and_slab() {
         panel_thickness: None,
         thickness: None,
         shape: None,
+        // 床の小梁設計は断面性能のみを使うため、材料は割り当てない。
+        material: None,
+        rebar_material: None,
+        shear_rebar_material: None,
+        steel_material: None,
     });
     // 対辺の中間節点 N4(2000,0)・N5(2000,4000) を追加し、その間に小梁を架ける
     // （境界大梁で直接結ばれていない＝実部材化されていない現実的な小梁）。
@@ -3471,6 +3547,11 @@ fn test_floor_design_skips_materialized_joist() {
         panel_thickness: None,
         thickness: None,
         shape: None,
+        // 床の小梁設計は断面性能のみを使うため、材料は割り当てない。
+        material: None,
+        rebar_material: None,
+        shear_rebar_material: None,
+        steel_material: None,
     });
     let mk_mid = |id: u32, x: f64, y: f64| squid_n_core::model::Node {
         id: NodeId(id),
@@ -3496,7 +3577,6 @@ fn test_floor_design_skips_materialized_joist() {
         kind: ElementKind::Beam,
         nodes: [NodeId(4), NodeId(5)].into_iter().collect(),
         section: Some(SectionId(0)),
-        material: None,
         local_axis: LocalAxis {
             ref_vector: [0.0, 0.0, 1.0],
         },
@@ -3544,6 +3624,11 @@ fn test_floor_design_uses_grillage_for_crossing_joists() {
         panel_thickness: None,
         thickness: None,
         shape: None,
+        // 床の小梁設計は断面性能のみを使うため、材料は割り当てない。
+        material: None,
+        rebar_material: None,
+        shear_rebar_material: None,
+        steel_material: None,
     });
     // 対辺の中点 N4..N7 を追加し、十字に交差する2本の小梁を配置。
     let mk = |id: u32, x: f64, y: f64| squid_n_core::model::Node {
@@ -3928,7 +4013,6 @@ fn test_column_live_load_factors_three_story() {
             kind: ElementKind::Beam,
             nodes: [NodeId(a), NodeId(b)].into_iter().collect(),
             section: None,
-            material: None,
             local_axis: LocalAxis {
                 ref_vector: [1.0, 0.0, 0.0],
             },
@@ -3956,7 +4040,6 @@ fn test_column_live_load_factors_three_story() {
         kind: ElementKind::Beam,
         nodes: [NodeId(3), NodeId(4)].into_iter().collect(),
         section: None,
-        material: None,
         local_axis: LocalAxis {
             ref_vector: [0.0, 0.0, 1.0],
         },
@@ -4205,12 +4288,12 @@ fn test_compute_ultimate_checks_rc_frame() {
     use squid_n_core::ids::MaterialId;
     use squid_n_core::model::{
         ElementData, ElementKind, EndCondition, ForceRegime, LocalAxis, Material, Model, Node,
+        Section,
     };
     use squid_n_core::section_shape::{BarSet, RcRebar, SectionShape, ShearBar};
     use squid_n_design_jp::MemberKind;
 
     let rebar = RcRebar {
-        main_grade: None,
         main_x: BarSet {
             count: 8,
             dia: 25.0,
@@ -4226,7 +4309,6 @@ fn test_compute_ultimate_checks_rc_frame() {
             dia: 10.0,
             pitch: 100.0,
             legs: 2,
-            grade: None,
         },
     };
     let col_shape = SectionShape::RcRect {
@@ -4235,7 +4317,6 @@ fn test_compute_ultimate_checks_rc_frame() {
         rebar: rebar.clone(),
     };
     let beam_rebar = RcRebar {
-        main_grade: None,
         main_x: BarSet {
             count: 6,
             dia: 25.0,
@@ -4276,23 +4357,49 @@ fn test_compute_ultimate_checks_rc_frame() {
                 support_spring: None,
             },
         ],
+        // 材料は断面が持つ。RC 断面は主筋・せん断補強筋も要る。
         sections: vec![
-            col_shape.to_section(SectionId(0), "C600".into()),
-            beam_shape.to_section(SectionId(1), "B400x700".into()),
+            Section {
+                material: Some(MaterialId(0)),
+                rebar_material: Some(MaterialId(1)),
+                shear_rebar_material: Some(MaterialId(1)),
+                ..col_shape.to_section(SectionId(0), "C600".into())
+            },
+            Section {
+                material: Some(MaterialId(0)),
+                rebar_material: Some(MaterialId(1)),
+                shear_rebar_material: Some(MaterialId(1)),
+                ..beam_shape.to_section(SectionId(1), "B400x700".into())
+            },
         ],
-        materials: vec![Material {
-            strength_factor: None,
-            concrete_class: Default::default(),
-            id: MaterialId(0),
-            name: "SD345".into(),
-            category: MaterialCategory::Rebar,
-            young: 23000.0,
-            poisson: 0.2,
-            density: 2.4e-9,
-            shear: None,
-            fc: Some(24.0),
-            fy: Some(345.0),
-        }],
+        materials: vec![
+            Material {
+                strength_factor: None,
+                concrete_class: Default::default(),
+                id: MaterialId(0),
+                name: "FC24".into(),
+                category: MaterialCategory::Concrete,
+                young: 23000.0,
+                poisson: 0.2,
+                density: 2.4e-9,
+                shear: None,
+                fc: Some(24.0),
+                fy: None,
+            },
+            Material {
+                strength_factor: None,
+                concrete_class: Default::default(),
+                id: MaterialId(1),
+                name: "SD345".into(),
+                category: MaterialCategory::Rebar,
+                young: 205000.0,
+                poisson: 0.3,
+                density: 7.85e-9,
+                shear: None,
+                fc: None,
+                fy: Some(345.0),
+            },
+        ],
         ..Default::default()
     };
     let members = [
@@ -4305,7 +4412,6 @@ fn test_compute_ultimate_checks_rc_frame() {
             kind: ElementKind::Beam,
             nodes: [NodeId(i), NodeId(j)].into_iter().collect(),
             section: Some(SectionId(sec)),
-            material: Some(MaterialId(0)),
             local_axis: LocalAxis { ref_vector },
             end_cond: [EndCondition::Fixed, EndCondition::Fixed],
             force_regime: ForceRegime::Auto,
@@ -4341,6 +4447,7 @@ fn test_compute_cft_ultimate_checks() {
     use squid_n_core::ids::MaterialId;
     use squid_n_core::model::{
         ElementData, ElementKind, EndCondition, ForceRegime, LocalAxis, Material, Model, Node,
+        Section,
     };
     use squid_n_core::section_shape::SectionShape;
 
@@ -4368,7 +4475,11 @@ fn test_compute_cft_ultimate_checks() {
                 support_spring: None,
             },
         ],
-        sections: vec![cft_shape.to_section(SectionId(0), "CFT400".into())],
+        // 材料は断面が持つ。
+        sections: vec![Section {
+            material: Some(MaterialId(0)),
+            ..cft_shape.to_section(SectionId(0), "CFT400".into())
+        }],
         materials: vec![Material {
             strength_factor: None,
             concrete_class: Default::default(),
@@ -4389,7 +4500,6 @@ fn test_compute_cft_ultimate_checks() {
         kind: ElementKind::Beam,
         nodes: [NodeId(0), NodeId(1)].into_iter().collect(),
         section: Some(SectionId(0)),
-        material: Some(MaterialId(0)),
         local_axis: LocalAxis {
             ref_vector: [1.0, 0.0, 0.0],
         },
@@ -4478,6 +4588,10 @@ fn test_sync_gravity_dl_includes_self_weight_and_slab() {
         panel_thickness: None,
         thickness: None,
         shape: None,
+        material: Some(MaterialId(0)),
+        rebar_material: None,
+        shear_rebar_material: None,
+        steel_material: None,
     });
     model.materials.push(Material {
         strength_factor: None,
@@ -4494,8 +4608,9 @@ fn test_sync_gravity_dl_includes_self_weight_and_slab() {
     });
     for e in &mut model.elements {
         e.section = Some(SectionId(0));
-        e.material = Some(MaterialId(0));
     }
+    // 材料は断面が持つ。
+    model.sections[0].material = Some(MaterialId(0));
     model
         .validate()
         .expect("テストモデルは validate を通るはず");
@@ -4834,9 +4949,11 @@ fn test_import_stbridge_then_run_dl_succeeds() {
         web_thick: 10.0,
         flange_thick: 15.0,
     };
-    model
-        .sections
-        .push(col_shape.to_section(SectionId(0), "柱".into()));
+    // 材料は断面が持つ。
+    model.sections.push(squid_n_core::model::Section {
+        material: Some(MaterialId(0)),
+        ..col_shape.to_section(SectionId(0), "柱".into())
+    });
     model.materials.push(Material {
         strength_factor: None,
         concrete_class: Default::default(),
@@ -4868,7 +4985,6 @@ fn test_import_stbridge_then_run_dl_succeeds() {
             kind: ElementKind::Beam,
             nodes: [NodeId(*a), NodeId(*b)].into_iter().collect(),
             section: Some(SectionId(0)),
-            material: Some(MaterialId(0)),
             local_axis: LocalAxis {
                 ref_vector: if vertical {
                     [1.0, 0.0, 0.0]
@@ -4974,7 +5090,6 @@ fn test_secondary_joist_panel_slab_dl_cmq_and_solve() {
         kind: ElementKind::Beam,
         nodes: [NodeId(i), NodeId(j)].into_iter().collect(),
         section: Some(SectionId(0)),
-        material: Some(MaterialId(0)),
         local_axis: LocalAxis {
             ref_vector: if i + 4 == j {
                 [1.0, 0.0, 0.0]
@@ -5034,6 +5149,10 @@ fn test_secondary_joist_panel_slab_dl_cmq_and_solve() {
             panel_thickness: None,
             thickness: None,
             shape: None,
+            material: Some(MaterialId(0)),
+            rebar_material: None,
+            shear_rebar_material: None,
+            steel_material: None,
         }],
         materials: vec![Material {
             strength_factor: None,
@@ -5053,7 +5172,6 @@ fn test_secondary_joist_panel_slab_dl_cmq_and_solve() {
             kind: SecondaryMemberKind::Joist,
             nodes: [NodeId(8), NodeId(9)],
             section: Some(SectionId(0)),
-            material: Some(MaterialId(0)),
             name: "B1".into(),
         }],
         // 小梁で区切られた 2 枚のパネルスラブ（計 8000×6000）。
@@ -5195,7 +5313,9 @@ fn test_run_diagnostics_flags_unassigned_section() {
 fn test_run_diagnostics_flags_unassigned_material() {
     let mut model = crate::sample::portal_frame();
     let target_id = model.elements[0].id;
-    model.elements[0].material = None;
+    // 材料は断面が持つ。部材 0 の断面から材料を外す。
+    let sid = model.elements[0].section.expect("断面は割り当て済み");
+    model.sections[sid.index()].material = None;
 
     let mut app = App::default();
     app.load_model(model);
@@ -5221,7 +5341,10 @@ fn test_diagnostics_errors_agree_with_analysis_precheck() {
 
     let broken: [BreakCase; 6] = [
         ("断面未割当", |m| m.elements[0].section = None),
-        ("材料未割当", |m| m.elements[0].material = None),
+        ("材料未割当", |m| {
+            let sid = m.elements[0].section.expect("断面は割り当て済み");
+            m.sections[sid.index()].material = None;
+        }),
         ("As=0", |m| {
             m.sections[0].as_y = 0.0;
             m.sections[0].as_z = 0.0;
@@ -5363,7 +5486,6 @@ mod grid_headless {
             kind: ElementKind::Beam,
             nodes: [NodeId(a), NodeId(b)].into_iter().collect(),
             section: None,
-            material: None,
             local_axis: LocalAxis {
                 ref_vector: [1.0, 0.0, 0.0],
             },
@@ -6200,7 +6322,11 @@ fn test_preparation_member_stiffness_reports_composite_props() {
         width: 400.0,
         thick: 16.0,
     };
-    model.sections[0] = cft.to_section(SectionId(0), "CFT-□400x400x16".into());
+    // 材料は断面が持つ。差し替えた断面へ元の材料を引き継ぐ。
+    model.sections[0] = squid_n_core::model::Section {
+        material: Some(squid_n_core::ids::MaterialId(0)),
+        ..cft.to_section(SectionId(0), "CFT-□400x400x16".into())
+    };
     model.materials[0].fc = Some(36.0);
 
     let mut app = App::default();
@@ -6502,7 +6628,6 @@ fn test_add_isolator_between_two_nodes_via_undo() {
         kind: ElementKind::Isolator,
         nodes: [i_node, j_node].into_iter().collect(),
         section: None,
-        material: None,
         local_axis: LocalAxis {
             ref_vector: [1.0, 0.0, 0.0],
         },
@@ -6641,7 +6766,6 @@ fn test_generate_axes_action_does_not_stale_results() {
             kind: ElementKind::Beam,
             nodes,
             section: None,
-            material: None,
             local_axis: LocalAxis {
                 ref_vector: [1.0, 0.0, 0.0],
             },
@@ -6733,7 +6857,6 @@ fn test_frame_view_filters_members_by_axis_and_story() {
             kind: ElementKind::Beam,
             nodes,
             section: None,
-            material: None,
             local_axis: LocalAxis {
                 ref_vector: [0.0, 0.0, 1.0],
             },
@@ -6902,7 +7025,6 @@ fn test_wall_has_src_boundary_column() {
         });
     }
     let rebar = squid_n_core::section_shape::RcRebar {
-        main_grade: None,
         main_x: squid_n_core::section_shape::BarSet {
             count: 4,
             dia: 22.0,
@@ -6918,7 +7040,6 @@ fn test_wall_has_src_boundary_column() {
             dia: 10.0,
             pitch: 100.0,
             legs: 2,
-            grade: None,
         },
     };
     let wall_shape = SectionShape::RcWall {
@@ -6933,7 +7054,6 @@ fn test_wall_has_src_boundary_column() {
         steel_width: 300.0,
         steel_web_thick: 10.0,
         steel_flange_thick: 15.0,
-        steel_grade: "SN400B".into(),
     };
     let rc_shape = SectionShape::RcRect {
         b: 600.0,
@@ -6955,7 +7075,6 @@ fn test_wall_has_src_boundary_column() {
         kind,
         nodes: nodes.iter().map(|&n| NodeId(n)).collect(),
         section: Some(SectionId(sec)),
-        material: None,
         local_axis: LocalAxis {
             ref_vector: [1.0, 0.0, 0.0],
         },

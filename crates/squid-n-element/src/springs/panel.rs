@@ -167,9 +167,7 @@ fn resolve(model: &Model, node: NodeId) -> Option<ResolvedPanel> {
         return None;
     }
     let col_elem = model.elements.get(joint.column.index())?;
-    let mat = col_elem
-        .material
-        .and_then(|mid| model.materials.get(mid.index()))?;
+    let mat = model.element_material(col_elem)?;
     let sec = col_elem
         .section
         .and_then(|sid| model.sections.get(sid.index()))?;
@@ -809,13 +807,16 @@ mod tests {
             panel_thickness: None,
             thickness: None,
             shape: Some(shape),
+            material: Some(MaterialId(0)),
+            rebar_material: None,
+            shear_rebar_material: None,
+            steel_material: None,
         };
         let member = |id: u32, n0: u32, n1: u32, sec: u32| ElementData {
             id: ElemId(id),
             kind: ElementKind::Beam,
             nodes: smallvec::smallvec![NodeId(n0), NodeId(n1)],
             section: Some(SectionId(sec)),
-            material: Some(MaterialId(0)),
             local_axis: LocalAxis {
                 ref_vector: [0.0, 1.0, 0.0],
             },
@@ -886,7 +887,6 @@ mod tests {
             kind: ElementKind::PanelZone,
             nodes: smallvec::smallvec![NodeId(0), NodeId(1), NodeId(2), NodeId(3), NodeId(4)],
             section: None,
-            material: None,
             local_axis: LocalAxis {
                 ref_vector: [0.0, 1.0, 0.0],
             },

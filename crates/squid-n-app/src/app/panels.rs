@@ -2425,18 +2425,12 @@ impl App {
                     } else {
                         ui.label("断面: 未割当");
                     }
-                    if let Some(mat_id) = e.material {
-                        if let Some(mat) = self
-                            .model
-                            .materials
-                            .get(mat_id.index())
-                            .filter(|m| m.id == mat_id)
-                        {
-                            ui.label(format!("材料: {} ({})", mat.name, mat_id.0));
-                            ui.label(format!("  E = {:.1} N/mm²", mat.young));
-                            if let Some(fc) = mat.fc {
-                                ui.label(format!("  Fc = {:.1} N/mm²", fc));
-                            }
+                    // 材料は断面が持つ。ここでは断面から引いた実効値を表示する。
+                    if let Some(mat) = self.model.element_material(e) {
+                        ui.label(format!("材料: {} ({})", mat.name, mat.id.0));
+                        ui.label(format!("  E = {:.1} N/mm²", mat.young));
+                        if let Some(fc) = mat.fc {
+                            ui.label(format!("  Fc = {:.1} N/mm²", fc));
                         }
                     }
                     ui.separator();

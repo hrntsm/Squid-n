@@ -125,6 +125,10 @@ pub fn to_section(entry: &CatalogEntry, id: SectionId) -> Section {
         panel_thickness: None,
         thickness: None,
         shape: parse_shape_from_name(entry.shape, &entry.name),
+        material: None,
+        rebar_material: None,
+        shear_rebar_material: None,
+        steel_material: None,
     }
 }
 

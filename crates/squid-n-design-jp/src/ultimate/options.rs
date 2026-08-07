@@ -100,7 +100,7 @@ pub enum ShearMethod {
 }
 
 /// 終局検定（塑性理論式）の算定オプション。
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct UltimateShearOptions {
     /// 終局限界状態でのヒンジ領域の回転角 Rp [rad]（ν・cotφ に用いる。既定 0）。
     pub rp: f64,
@@ -108,9 +108,15 @@ pub struct UltimateShearOptions {
     pub lightweight: bool,
     /// 上限強度倍率（Qmu = 上限強度倍率·(Mu上+Mu下)/内法。既定 1.0）。
     pub upper_strength_factor: f64,
-    /// せん断補強筋の降伏強度算定用強度 σwy [N/mm²]（モデルに材質情報がない場合の
-    /// 代表値。既定 295 = SD295 相当）。
+    /// せん断補強筋の降伏強度算定用強度 σwy [N/mm²]（断面に材料が割り当てられて
+    /// いない場合の代表値。既定 295 = SD295 相当）。
     pub sigma_wy: f64,
+    /// せん断補強筋の材質名。高強度せん断補強筋（`MK785`・`SPR785` 等）の製品別
+    /// 規定を適用するかの判定に用いる。`None` は未割当で、普通強度として扱う。
+    ///
+    /// **利用者が指定する欄ではない。** 部材ごとに断面のせん断補強筋材料
+    /// （`Section::shear_rebar_material`）の名前が入る（`rc_check` が載せ替える）。
+    pub shear_grade: Option<String>,
     /// 付着割裂の検定を含める場合 true。
     pub include_bond: bool,
     /// 柱の曲げ終局強度 Mu の算定方法（既定 at 式）。
@@ -136,6 +142,7 @@ impl Default for UltimateShearOptions {
             lightweight: false,
             upper_strength_factor: 1.0,
             sigma_wy: 295.0,
+            shear_grade: None,
             include_bond: true,
             mu_method: MuMethod::default(),
             shear_method: ShearMethod::default(),

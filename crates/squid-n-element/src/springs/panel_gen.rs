@@ -134,9 +134,8 @@ fn panel_at(
         return None;
     }
     let column = model.elements.get(joint.column.index())?;
-    let shear_modulus = column
-        .material
-        .and_then(|mid| model.materials.get(mid.index()))
+    let shear_modulus = model
+        .element_material(column)
         .map(|m| m.shear_modulus())
         .unwrap_or(0.0);
     let k_panel = shear_modulus * joint.ve;
@@ -260,7 +259,6 @@ pub fn apply_auto_panel_zones(model: &mut Model) -> Vec<GeneratedPanel> {
             kind: ElementKind::PanelZone,
             nodes,
             section: None,
-            material: None,
             local_axis: LocalAxis {
                 ref_vector: [0.0, 0.0, 1.0],
             },
@@ -301,9 +299,16 @@ mod tests {
         }
     }
 
+    /// 断面（材料 0 = 鋼材を割り当てる。材料は断面が持つ）。
     fn section(id: u32, shape: SectionShape, depth: f64) -> Section {
+        section_with_mat(id, shape, depth, 0)
+    }
+
+    /// 主材料を指定して断面を作る。
+    fn section_with_mat(id: u32, shape: SectionShape, depth: f64, mat: u32) -> Section {
         Section {
             id: SectionId(id),
+            material: Some(MaterialId(mat)),
             name: String::new(),
             area: 1.0e4,
             iy: 1.0e8,
@@ -317,6 +322,9 @@ mod tests {
             panel_thickness: None,
             thickness: None,
             shape: Some(shape),
+            rebar_material: None,
+            shear_rebar_material: None,
+            steel_material: None,
         }
     }
 
@@ -337,20 +345,12 @@ mod tests {
         }
     }
 
-    /// 材料を指定して部材を作る。
-    fn member_with_mat(id: u32, n0: u32, n1: u32, sec: u32, mat: u32) -> ElementData {
-        let mut e = member(id, n0, n1, sec);
-        e.material = Some(MaterialId(mat));
-        e
-    }
-
     fn member(id: u32, n0: u32, n1: u32, sec: u32) -> ElementData {
         ElementData {
             id: ElemId(id),
             kind: ElementKind::Beam,
             nodes: smallvec::smallvec![NodeId(n0), NodeId(n1)],
             section: Some(SectionId(sec)),
-            material: Some(MaterialId(0)),
             local_axis: LocalAxis {
                 ref_vector: [0.0, 1.0, 0.0],
             },
@@ -507,9 +507,7 @@ mod tests {
                     dia: 10.0,
                     pitch: 100.0,
                     legs: 2,
-                    grade: None,
                 },
-                main_grade: None,
             },
         }
     }
@@ -582,8 +580,8 @@ mod tests {
             rc_shape(400.0, 700.0),
             700.0,
         );
-        // 判定は材料の区分による。梁（要素 0）へコンクリートを割り当てる。
-        model.elements[0].material = Some(MaterialId(1));
+        // 判定は材料の区分による。梁の断面（断面 0）へコンクリートを割り当てる。
+        model.sections[0].material = Some(MaterialId(1));
         let panels = apply_auto_panel_zones(&mut model);
         assert!(panels.is_empty(), "RC 梁の接合部は対象外");
         assert_eq!(model.elements.len(), 2, "パネル要素は生成されない");
@@ -604,9 +602,9 @@ mod tests {
         });
         model
             .sections
-            .push(section(2, rc_shape(400.0, 700.0), 700.0));
-        // 判定は材料の区分による（材料 1 = コンクリート）。
-        model.elements.push(member_with_mat(2, 0, 3, 2, 1));
+            .push(section_with_mat(2, rc_shape(400.0, 700.0), 700.0, 1));
+        // 判定は材料の区分による（断面 2 の材料 1 = コンクリート）。
+        model.elements.push(member(2, 0, 3, 2));
 
         let panels = apply_auto_panel_zones(&mut model);
         assert!(panels.is_empty(), "RC 梁が 1 本でも混じれば対象外");

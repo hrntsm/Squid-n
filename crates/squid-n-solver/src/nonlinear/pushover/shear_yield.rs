@@ -107,12 +107,15 @@ pub(crate) enum ShearDir {
 /// `clear_span`（h0）は [`effective_clear_span`] が剛域長を控除して算定した値を
 /// 渡す（精緻化1。旧実装は剛域控除を省略し節点間長をそのまま用いる簡略化だった）。
 /// `fc` 未設定の場合は None（呼び出し側で慣用値へフォールバックする）。
+#[allow(clippy::too_many_arguments)]
 fn rc_rect_capacity_input(
     b: f64,
     d: f64,
     main: &BarSet,
     rebar: &RcRebar,
     mat: &Material,
+    rebar_mat: Option<&Material>,
+    shear_mat: Option<&Material>,
     clear_span: f64,
 ) -> Option<RcCapacityInput> {
     let fc = mat.fc?;
@@ -136,21 +139,17 @@ fn rc_rect_capacity_input(
         // 未設定のモデルは `ensure_nonlinear_input` が解析前に停止するため、既定値
         // 345 へのフォールバックには到達しない。本モジュールは保有水平耐力計算専用の
         // ため、主筋の材料強度割増（直接入力係数優先、なければ一律1.1）を無条件で乗じる。
-        sigma_y: squid_n_core::material_grade::rebar_yield_strength(
-            rebar.main_grade.as_deref(),
-            Some(mat),
-        )
-        .unwrap_or(345.0)
-            * material_strength_factor_rebar(mat),
+        sigma_y: squid_n_core::material_grade::rebar_yield_strength(rebar_mat)
+            .or(mat.fy)
+            .unwrap_or(345.0)
+            * rebar_mat.map(material_strength_factor_rebar).unwrap_or(1.1),
         fc,
         pw,
         // σwy は断面（配筋）のせん断補強筋材質から解決し、未設定は SD295 相当
         // （規格上の最小グレード＝耐力を過小評価する安全側）を既定とする。
         // せん断補強筋は材料強度割増の対象外（規定上、主筋のみが割増対象）。
-        sigma_wy: squid_n_core::material_grade::shear_rebar_yield_strength(
-            rebar.shear.grade.as_deref(),
-        )
-        .unwrap_or(squid_n_core::material_grade::SHEAR_REBAR_DEFAULT_FY),
+        sigma_wy: squid_n_core::material_grade::shear_rebar_yield_strength(shear_mat)
+            .unwrap_or(squid_n_core::material_grade::SHEAR_REBAR_DEFAULT_FY),
         clear_span,
         sigma_0: 0.0, // プレースホルダ。DirThreshold::qy が軸力から都度上書きする。
     })
@@ -158,6 +157,15 @@ fn rc_rect_capacity_input(
 
 /// 方向別のせん断降伏耐力しきい値（[`DirThreshold`]）を組み立てる。
 ///
+/// 断面が持つ 4 つの材料（主材料・主筋・せん断補強筋・内蔵鉄骨）。
+#[derive(Clone, Copy)]
+pub(crate) struct SecMaterials<'a> {
+    pub material: Option<&'a Material>,
+    pub rebar_mat: Option<&'a Material>,
+    pub shear_mat: Option<&'a Material>,
+    pub steel_mat: Option<&'a Material>,
+}
+
 /// 断面形状から精算できる場合（RC矩形＝荒川式、SRC矩形＝荒川式＋内蔵鉄骨の
 /// 累加）を**材料 `fy` の有無より優先**して [`DirThreshold::RcArakawa`] を採用し、
 /// 各ステップで軸力から動的算定した σ0 を反映する（fy は主筋 σy の解決用に
@@ -172,11 +180,17 @@ fn rc_rect_capacity_input(
 ///   判定対象外として Qy = +∞（その方向のせん断降伏は判定しない）。
 fn build_dir_threshold(
     as_area: f64,
-    material: Option<&Material>,
+    mats: SecMaterials<'_>,
     section: Option<&Section>,
     dir: ShearDir,
     clear_span: f64,
 ) -> DirThreshold {
+    let SecMaterials {
+        material,
+        rebar_mat,
+        shear_mat,
+        steel_mat,
+    } = mats;
     if as_area <= 0.0 {
         return DirThreshold::Static(f64::INFINITY);
     }
@@ -199,8 +213,26 @@ fn build_dir_threshold(
     }) = section
     {
         let input = match dir {
-            ShearDir::Y => rc_rect_capacity_input(*b, *d, &rebar.main_x, rebar, mat, clear_span),
-            ShearDir::Z => rc_rect_capacity_input(*d, *b, &rebar.main_y, rebar, mat, clear_span),
+            ShearDir::Y => rc_rect_capacity_input(
+                *b,
+                *d,
+                &rebar.main_x,
+                rebar,
+                mat,
+                rebar_mat,
+                shear_mat,
+                clear_span,
+            ),
+            ShearDir::Z => rc_rect_capacity_input(
+                *d,
+                *b,
+                &rebar.main_y,
+                rebar,
+                mat,
+                rebar_mat,
+                shear_mat,
+                clear_span,
+            ),
         };
         if let Some(input) = input {
             if rc_qsu_simple(&input) > 0.0 {
@@ -227,14 +259,31 @@ fn build_dir_threshold(
                 steel_width,
                 steel_web_thick,
                 steel_flange_thick,
-                steel_grade,
             }),
         ..
     }) = section
     {
         let input = match dir {
-            ShearDir::Y => rc_rect_capacity_input(*b, *d, &rebar.main_x, rebar, mat, clear_span),
-            ShearDir::Z => rc_rect_capacity_input(*d, *b, &rebar.main_y, rebar, mat, clear_span),
+            ShearDir::Y => rc_rect_capacity_input(
+                *b,
+                *d,
+                &rebar.main_x,
+                rebar,
+                mat,
+                rebar_mat,
+                shear_mat,
+                clear_span,
+            ),
+            ShearDir::Z => rc_rect_capacity_input(
+                *d,
+                *b,
+                &rebar.main_y,
+                rebar,
+                mat,
+                rebar_mat,
+                shear_mat,
+                clear_span,
+            ),
         };
         // 鉄骨のせん断有効断面積: 強軸（局所 y）＝ウェブ内法 tw·(H−2tf)、
         // 弱軸（局所 z）＝上下フランジ 2·B·tf（全塑性評価のため許容応力度検定の
@@ -251,11 +300,16 @@ fn build_dir_threshold(
             ShearDir::Y => ((tw * (sh - 2.0 * tf)).max(0.0), tw),
             ShearDir::Z => ((2.0 * sb * tf).max(0.0), tf),
         };
-        let s_f = squid_n_core::material_grade::steel_f_value_prefix(steel_grade, plate_t)
+        // 内蔵鉄骨の鋼種は断面の材料が持つ（形状は材質を持たない）。
+        let steel_name = steel_mat.map(|m| m.name.as_str()).unwrap_or("");
+        let s_f = squid_n_core::material_grade::steel_f_value_prefix(steel_name, plate_t)
+            .or_else(|| steel_mat.and_then(|m| m.fy))
             .unwrap_or(235.0);
-        let factor = mat.strength_factor.unwrap_or_else(|| {
-            squid_n_core::material_grade::steel_material_strength_factor(steel_grade)
-        });
+        let factor = steel_mat
+            .and_then(|m| m.strength_factor)
+            .unwrap_or_else(|| {
+                squid_n_core::material_grade::steel_material_strength_factor(steel_name)
+            });
         let steel_qy = s_aw * s_f * factor / 3.0_f64.sqrt();
         if let Some(input) = input {
             if rc_qsu_simple(&input) + steel_qy > 0.0 {
@@ -291,12 +345,12 @@ fn build_dir_threshold(
 #[cfg(test)]
 pub(crate) fn compute_shear_yield_qy(
     as_area: f64,
-    material: Option<&Material>,
+    mats: SecMaterials<'_>,
     section: Option<&Section>,
     dir: ShearDir,
     clear_span: f64,
 ) -> f64 {
-    build_dir_threshold(as_area, material, section, dir, clear_span).qy(0.0)
+    build_dir_threshold(as_area, mats, section, dir, clear_span).qy(0.0)
 }
 
 /// 部材長（節点間距離）[mm]。節点参照が欠落・退化（長さ0）の場合は None。
@@ -339,9 +393,13 @@ pub(crate) fn compute_shear_yield_thresholds(model: &Model) -> Vec<ShearThreshol
         .iter()
         .map(|elem| {
             let sec = elem.section.and_then(|sid| model.sections.get(sid.index()));
-            let mat = elem
-                .material
-                .and_then(|mid| model.materials.get(mid.index()));
+            // 主材料・主筋・せん断補強筋・内蔵鉄骨のいずれも断面が持つ。
+            let mats = SecMaterials {
+                material: model.element_material(elem),
+                rebar_mat: model.element_rebar_material(elem),
+                shear_mat: model.element_shear_rebar_material(elem),
+                steel_mat: model.element_steel_material(elem),
+            };
             let (as_y, as_z) = sec.map(|s| (s.as_y, s.as_z)).unwrap_or((0.0, 0.0));
             let raw_length = elem_length(model, elem).unwrap_or(0.0);
             let clear_span = effective_clear_span(raw_length, &elem.rigid_zone);
@@ -349,8 +407,8 @@ pub(crate) fn compute_shear_yield_thresholds(model: &Model) -> Vec<ShearThreshol
             // 局所 y（強軸曲げのせん断）には断面 as_z（ウェブ）、
             // 局所 z（弱軸曲げのせん断）には断面 as_y（フランジ）を用いる。
             ShearThreshold {
-                y: build_dir_threshold(as_z, mat, sec, ShearDir::Y, clear_span),
-                z: build_dir_threshold(as_y, mat, sec, ShearDir::Z, clear_span),
+                y: build_dir_threshold(as_z, mats, sec, ShearDir::Y, clear_span),
+                z: build_dir_threshold(as_y, mats, sec, ShearDir::Z, clear_span),
             }
         })
         .collect()

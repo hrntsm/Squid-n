@@ -848,7 +848,6 @@ mod tests {
             kind,
             nodes: [NodeId(a), NodeId(b)].into_iter().collect(),
             section: None,
-            material: None,
             local_axis: LocalAxis {
                 ref_vector: [0.0, 0.0, 1.0],
             },

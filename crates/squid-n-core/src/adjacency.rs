@@ -94,7 +94,6 @@ mod tests {
             kind,
             nodes: nodes.iter().map(|&n| NodeId(n)).collect(),
             section: Some(SectionId(0)),
-            material: None,
             local_axis: LocalAxis {
                 ref_vector: [0.0, 1.0, 0.0],
             },

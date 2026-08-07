@@ -282,7 +282,6 @@ mod tests {
                 kind: ElementKind::Wall,
                 nodes: smallvec::smallvec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
                 section: Some(SectionId(0)),
-                material: Some(MaterialId(0)),
                 local_axis: LocalAxis {
                     ref_vector: [0.0, 1.0, 0.0],
                 },
@@ -302,7 +301,6 @@ mod tests {
             kind: ElementKind::Beam,
             nodes: smallvec::smallvec![NodeId(nodes[0]), NodeId(nodes[1])],
             section: None,
-            material: None,
             local_axis: LocalAxis {
                 ref_vector: [1.0, 0.0, 0.0],
             },

@@ -157,9 +157,10 @@ pub fn collect_joint_checks_with_long(
         let sec = elem
             .section
             .and_then(|sid| model.sections.iter().find(|s| s.id == sid));
-        let mat = elem
-            .material
-            .and_then(|mid| model.materials.iter().find(|m| m.id == mid));
+        let mat = model.element_material(elem);
+        let rebar_mat = model.element_rebar_material(elem);
+        let shear_mat = model.element_shear_rebar_material(elem);
+        let steel_mat = model.element_steel_material(elem);
         let (Some(sec), Some(mat)) = (sec, mat) else {
             continue;
         };
@@ -178,6 +179,9 @@ pub fn collect_joint_checks_with_long(
             elem,
             sec,
             mat,
+            rebar_mat,
+            shear_mat,
+            steel_mat,
             forces,
             kind: squid_n_core::structure_kind::structure_kind_of(Some(sec), Some(mat.category)),
             ez: (dz / length).abs(),

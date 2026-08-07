@@ -63,10 +63,6 @@ pub struct SectionEditorDraft {
     pub shear_dia: f64,
     pub shear_pitch: f64,
     pub shear_legs: u32,
-    /// 主筋の材質（グレード名）。断面の属性として保持し、耐力算定の σy に用いる。
-    pub main_grade: String,
-    /// せん断補強筋の材質（グレード名）。高強度せん断補強筋もここで指定する。
-    pub shear_grade: String,
 }
 
 impl Default for SectionEditorDraft {
@@ -104,8 +100,6 @@ impl Default for SectionEditorDraft {
             shear_dia: 13.0,
             shear_pitch: 100.0,
             shear_legs: 2,
-            main_grade: "SD345".to_string(),
-            shear_grade: "SD295A".to_string(),
         }
     }
 }
@@ -671,15 +665,9 @@ fn rc_circle_fields(ui: &mut egui::Ui, d: &mut SectionEditorDraft) {
 }
 
 fn rc_rebar_fields(ui: &mut egui::Ui, d: &mut SectionEditorDraft) {
-    use squid_n_core::material_grade::{MAIN_REBAR_GRADES, SHEAR_REBAR_GRADES};
-
     ui.separator();
     ui.strong("配筋");
-    ui.horizontal(|ui| {
-        ui.label("主筋 材質:");
-        grade_field(ui, "sec_main_grade", MAIN_REBAR_GRADES, &mut d.main_grade);
-        ui.label("（σy はこの材質から算定します）");
-    });
+    ui.label("鉄筋・せん断補強筋の材料は断面テーブルで割り当てます");
     ui.horizontal(|ui| {
         ui.label("X主筋 本数:");
         int_field(ui, &mut d.main_x_count);
@@ -701,15 +689,6 @@ fn rc_rebar_fields(ui: &mut egui::Ui, d: &mut SectionEditorDraft) {
         num_field(ui, &mut d.cover);
     });
     ui.horizontal(|ui| {
-        ui.label("せん断補強筋 材質:");
-        grade_field(
-            ui,
-            "sec_shear_grade",
-            SHEAR_REBAR_GRADES,
-            &mut d.shear_grade,
-        );
-    });
-    ui.horizontal(|ui| {
         ui.label("せん断補強筋 径:");
         size_field(ui, "sec_shear_dia", &mut d.shear_dia);
         ui.label("ピッチ:");
@@ -717,20 +696,6 @@ fn rc_rebar_fields(ui: &mut egui::Ui, d: &mut SectionEditorDraft) {
         ui.label("組数:");
         int_field(ui, &mut d.shear_legs);
     });
-}
-
-/// 鉄筋の材質（グレード名）入力。一覧から選ぶほか、認定品名などを直接入力できる。
-fn grade_field(ui: &mut egui::Ui, id: &str, choices: &[&str], val: &mut String) {
-    egui::ComboBox::from_id_salt(id)
-        .selected_text(val.as_str())
-        .show_ui(ui, |ui| {
-            for g in choices {
-                if ui.selectable_label(val == g, *g).clicked() {
-                    *val = (*g).to_string();
-                }
-            }
-        });
-    ui.add(egui::TextEdit::singleline(val).desired_width(80.0));
 }
 
 /// 鉄筋の呼び名サイズ入力（`D10`〜`D41`）。値は呼び名の数値で保持する。
@@ -791,9 +756,7 @@ fn build_rebar(d: &SectionEditorDraft) -> RcRebar {
             dia: d.shear_dia,
             pitch: d.shear_pitch,
             legs: d.shear_legs,
-            grade: non_empty(&d.shear_grade),
         },
-        main_grade: non_empty(&d.main_grade),
     }
 }
 

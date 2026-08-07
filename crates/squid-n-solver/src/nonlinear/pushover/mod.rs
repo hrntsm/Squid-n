@@ -50,7 +50,7 @@ use mechanism::{compute_static_indeterminacy, determine_mechanism};
 #[cfg(test)]
 use shear_yield::{
     compute_shear_yield_qy, compute_shear_yield_thresholds, effective_clear_span,
-    track_shear_yield, DirThreshold, ShearDir,
+    track_shear_yield, DirThreshold, SecMaterials, ShearDir,
 };
 #[cfg(test)]
 use smallvec::SmallVec;

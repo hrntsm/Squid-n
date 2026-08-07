@@ -38,8 +38,14 @@ fn get_section(model: &Model, sid: Option<squid_n_core::ids::SectionId>) -> Sect
         panel_thickness: None,
         thickness: None,
         shape: None,
+        material: None,
+        rebar_material: None,
+        shear_rebar_material: None,
+        steel_material: None,
     })
 }
+
+use crate::frame::truss::sec_material;
 
 fn get_material(model: &Model, mid: Option<squid_n_core::ids::MaterialId>) -> Material {
     mid.and_then(|m| {
@@ -119,7 +125,7 @@ impl BeamElement {
 
         let axis = LocalFrame::from_nodes(p0, p1, data.local_axis.ref_vector);
         let sec = get_section(model, data.section);
-        let mat = get_material(model, data.material);
+        let mat = get_material(model, sec_material(model, data));
         let g = mat.shear_modulus();
 
         // 危険断面位置（§6.2.3、既定は柱フェース＋節点芯＋中央）。
@@ -387,7 +393,7 @@ impl BeamElement {
             torsion_release: [super::torsion::i_end_torsion_release(data, model), false],
             eval_sections,
             section: data.section,
-            material: data.material,
+            material: sec_material(model, data),
             committed_disp: [0.0; 12],
             trial_disp: [0.0; 12],
             local_stiffness_cache: std::sync::OnceLock::new(),

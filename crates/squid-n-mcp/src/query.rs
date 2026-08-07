@@ -38,7 +38,8 @@ pub fn query_model(model: &Model, kind: &str, filter: Option<&str>) -> Vec<serde
                     "kind": format!("{:?}", e.kind),
                     "nodes": e.nodes.iter().map(|n| n.0).collect::<Vec<_>>(),
                     "section": e.section.map(|s| s.0),
-                    "material": e.material.map(|m| m.0),
+                    // 材料は断面が持つ。参照の実体を追えるよう解決済みの ID を出す。
+                    "material": model.element_material(e).map(|m| m.id.0),
                 });
                 // 付帯情報（ハンチ・継手位置。剛性には影響しない）があれば併記する
                 // （側テーブルがない/空の部材は従来どおりのフィールドのみ）。
@@ -78,12 +79,20 @@ pub fn query_model(model: &Model, kind: &str, filter: Option<&str>) -> Vec<serde
             .sections
             .iter()
             .map(|s| {
+                // 材料は断面が持つ。未割当は解析前チェックが止めるため、どの断面の
+                // どの欄が空かを問い合わせ側から追えるよう 4 欄すべてを出す。
+                // 断面の同一性キーは符号＋階なので `floor` も併記する。
                 json!({
                     "id": s.id.0,
                     "name": s.name,
+                    "floor": s.floor,
                     "area": s.area,
                     "iy": s.iy,
                     "iz": s.iz,
+                    "material": s.material.map(|m| m.0),
+                    "rebar_material": s.rebar_material.map(|m| m.0),
+                    "shear_rebar_material": s.shear_rebar_material.map(|m| m.0),
+                    "steel_material": s.steel_material.map(|m| m.0),
                 })
             })
             .collect(),

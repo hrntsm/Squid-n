@@ -75,18 +75,21 @@ fn check_member(
     }
     // 部材別 Rp（プッシュオーバー応答からの直接反映）が与えられていれば UI 一律 Rp を
     // 置き換える。以降 opts.rp を参照する全経路（ν・cotφ・μ・tanθ）に効く。
-    let opts_owned;
-    let opts = if let Some(rp) = demand.rp {
-        opts_owned = UltimateShearOptions {
-            rp: rp.max(0.0),
-            ..*opts
-        };
-        &opts_owned
-    } else {
-        opts
+    // せん断補強筋の材質は断面（`Section::shear_rebar_material`）が持つため、
+    // 部材ごとに解決して opts へ載せ替える。
+    let opts_owned = UltimateShearOptions {
+        rp: demand.rp.map(|rp| rp.max(0.0)).unwrap_or(opts.rp),
+        shear_grade: model
+            .element_shear_rebar_material(elem)
+            .map(|m| m.name.trim().to_string())
+            .filter(|g| !g.is_empty()),
+        ..opts.clone()
     };
+    let opts = &opts_owned;
     let kind = member_kind(elem, model);
-    let sigma_y = mat.fy.unwrap_or(345.0);
+    // 主筋の降伏点は断面の主筋材料から解決する。未割当の断面は算定できない。
+    let sigma_y =
+        squid_n_core::material_grade::rebar_yield_strength(model.element_rebar_material(elem))?;
     let l_clear = clear_span(elem, model);
 
     // 断面諸元（強軸＝せい方向主筋 main_x）。
@@ -211,9 +214,8 @@ fn check_member(
     // （(Qsu−QL)/Qmu・(Qbu−QL)/Qmu ≥ 1.0。QL 未指定は 0 扱い＝従来動作）。
     // せん断補強筋が MK785/SPR785/SPR685 の場合は QL=Q0（長期荷重による
     // 単純梁せん断力）と読み替える（各製品の技術評定の規定。Q0 未算定時は QL）。
-    let use_q_simple = rebar
-        .shear
-        .grade
+    let use_q_simple = opts
+        .shear_grade
         .as_deref()
         .map(|g| {
             let g = g.trim().to_uppercase();
@@ -387,10 +389,7 @@ pub fn collect_rc_ultimate_checks(
         let Some(sec) = elem.section.and_then(|sid| model.sections.get(sid.index())) else {
             continue;
         };
-        let Some(mat) = elem
-            .material
-            .and_then(|mid| model.materials.get(mid.index()))
-        else {
+        let Some(mat) = model.element_material(elem) else {
             continue;
         };
         let demand = demand_by_elem
