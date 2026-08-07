@@ -2180,6 +2180,15 @@ fn test_slab_roundtrip_export_import() {
         Some(200.0),
         "厚さが往復"
     );
+    let sec2 = m2.slab_section(&m2.slabs[0]).expect("断面が往復");
+    assert_eq!(sec2.name, "S20", "符号が往復");
+    assert_eq!(
+        sec2.material
+            .and_then(|mid| m2.materials.get(mid.index()))
+            .map(|mm| mm.name.as_str()),
+        Some("Fc24"),
+        "コンクリート材料が往復"
+    );
     assert!(report.is_clean(), "警告なし {:?}", report.warnings);
 }
 
@@ -2610,6 +2619,74 @@ fn test_secondary_members_roundtrip() {
 }
 
 /// 厚さが分かるスラブ（StbSecSlab_RC）には、取り込み時に自重
+/// 断面を共有する床が複数あっても、往復で断面が増えない。
+///
+/// 書き出しは**内部断面ごと**に `StbSecSlab_RC` を 1 つだけ出す。床ごとに出すと
+/// 同名の断面が枚数分並び、再取り込みのたびに符号が `S15`・`S15#2` … と増殖する。
+#[test]
+fn test_slab_shared_section_does_not_multiply_on_roundtrip() {
+    use squid_n_core::ids::{SectionId, SlabId};
+    use squid_n_core::model::{DistributionMethod, Slab};
+
+    let mut model = Model::default();
+    // 2 スパン分の 6 節点で床 2 枚を作り、同じ断面を共有させる。
+    for (i, (x, y)) in [
+        (0.0, 0.0),
+        (4000.0, 0.0),
+        (8000.0, 0.0),
+        (0.0, 3000.0),
+        (4000.0, 3000.0),
+        (8000.0, 3000.0),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        model.nodes.push(squid_n_core::model::Node {
+            id: NodeId(i as u32),
+            coord: [x, y, 0.0],
+            restraint: Default::default(),
+            mass: None,
+            story: None,
+            support_spring: None,
+        });
+    }
+    let slab_sec = SectionId(0);
+    model.sections.push(
+        squid_n_core::section_shape::SectionShape::RcSlab { thickness: 150.0 }
+            .to_section(slab_sec, "S15".into()),
+    );
+    for (i, b) in [[0, 1, 4, 3], [1, 2, 5, 4]].into_iter().enumerate() {
+        model.slabs.push(Slab {
+            id: SlabId(i as u32),
+            boundary: b.into_iter().map(NodeId).collect(),
+            joists: Vec::new(),
+            loads: Vec::new(),
+            method: DistributionMethod::TriTrapezoid,
+            kind: Default::default(),
+            one_way: None,
+            edge_supported: None,
+            usage: None,
+            section: Some(slab_sec),
+        });
+    }
+    assert!(model.validate().is_ok(), "{:?}", model.validate());
+
+    // 2 往復しても断面は 1 つのまま（符号に連番が付かない）。
+    let mut m = model;
+    for round in 1..=2 {
+        let xml = export_stbridge(&m).expect("export");
+        let (next, _) = import_stbridge_with_report(&xml).expect("import");
+        assert_eq!(next.slabs.len(), 2, "{round} 往復目: 床 2 枚");
+        let names: Vec<&str> = next.sections.iter().map(|sc| sc.name.as_str()).collect();
+        assert_eq!(names, vec!["S15"], "{round} 往復目: 断面は 1 つ {names:?}");
+        assert_eq!(
+            next.slabs[0].section, next.slabs[1].section,
+            "{round} 往復目: 2 枚が同じ断面を共有する"
+        );
+        m = next;
+    }
+}
+
 /// スラブ断面（`StbSecSlab_RC`）を内部の断面として取り込み、床へ割り当てる。
 ///
 /// 自重は面荷重へ焼き込まず、断面の板厚と材料から使うたびに算定する

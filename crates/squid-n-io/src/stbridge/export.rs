@@ -17,6 +17,7 @@
 
 use super::section_std::standard_sections;
 use super::{StbError, STB_VERSION};
+use squid_n_core::ids::{SectionId, SlabId};
 use squid_n_core::model::{
     AxisGroup, AxisGroupKind, ElementKind, EndCondition, Model, StoryLevelKind,
 };
@@ -276,10 +277,11 @@ fn members_body(
     // 要素数の次から採番する（1 始まり。二次部材の後）。
     let slab_member_base = model.elements.len() as u32 + model.secondary_members.len() as u32;
     let slab_sec_base = slab_section_id_base(model, col_map, beam_map);
+    let slab_sec_ids = slab_section_ids(model, slab_sec_base);
     let mut slabs = String::new();
     for slab in &model.slabs {
         let mid = slab_member_base + slab.id.0;
-        let sec = slab_sec_base + slab.id.0;
+        let sec = slab_sec_ids.get(&slab.id).copied().unwrap_or(slab_sec_base);
         let order = slab
             .boundary
             .iter()
@@ -517,16 +519,57 @@ fn normalize(v: [f64; 3]) -> [f64; 3] {
     }
 }
 
-/// スラブ断面（`StbSecSlab_RC`）ブロックを生成する。各スラブに 1 つの断面を出力する。
+/// 各スラブが参照する `StbSecSlab_RC` の id を決める。
 ///
-/// 符号・階・板厚・コンクリート材料はいずれも**スラブへ割り当てた断面**から取る。
+/// **同じ内部断面を指すスラブは 1 つの ST-Bridge 断面を共有する**。スラブごとに
+/// 断面を出すと、断面を共有する床が N 枚あるモデルで同名の断面が N 個並び、
+/// 再取り込みのたびに符号が `S15`・`S15#2`… と増殖する。
+/// 断面が未割当のスラブは、そのスラブ専用の id を後ろへ割り当てる。
+///
+/// 割り当てる id は `base` から連番で、総数はスラブ枚数を超えない
+/// （呼び出し側が `base + slabs.len()` を壁断面の開始値として予約している）。
+/// `StbSections`（断面定義側）と `StbMembers`（スラブの参照側）が同じ採番を
+/// 共有するための単一実装。
+fn slab_section_ids(model: &Model, base: u32) -> std::collections::HashMap<SlabId, u32> {
+    let mut shared: std::collections::HashMap<SectionId, u32> = std::collections::HashMap::new();
+    let mut out: std::collections::HashMap<SlabId, u32> = std::collections::HashMap::new();
+    let mut next = base;
+    for slab in &model.slabs {
+        let id = match slab.section {
+            Some(sec) => *shared.entry(sec).or_insert_with(|| {
+                let v = next;
+                next += 1;
+                v
+            }),
+            None => {
+                let v = next;
+                next += 1;
+                v
+            }
+        };
+        out.insert(slab.id, id);
+    }
+    out
+}
+
+/// スラブ断面（`StbSecSlab_RC`）ブロックを生成する。
+///
+/// 符号・階・板厚・コンクリート材料はいずれも**スラブへ割り当てた断面**から取り、
+/// 同じ断面を指すスラブは 1 つのブロックを共有する（[`slab_section_ids`]）。
 /// 断面が未割当のスラブは符号を `S{スラブID}`、板厚を建物一律の
 /// `model.slab_thickness` として出力する（解析前チェックが止める状態だが、
 /// 書き出し自体は不完全なモデルでも通す）。
 fn slab_sections(model: &Model, base: u32) -> String {
+    let ids = slab_section_ids(model, base);
     let mut body = String::new();
+    let mut written: std::collections::HashSet<u32> = std::collections::HashSet::new();
     for slab in &model.slabs {
-        let s = sid(base + slab.id.0);
+        let Some(&s) = ids.get(&slab.id) else {
+            continue;
+        };
+        if !written.insert(s) {
+            continue;
+        }
         let sec = model.slab_section(slab);
         let t = model
             .slab_thickness_of(slab)
@@ -537,7 +580,7 @@ fn slab_sections(model: &Model, base: u32) -> String {
             .unwrap_or_else(|| format!("S{}", sid(slab.id.0)));
         body.push_str(&format!(
             "      <StbSecSlab_RC id=\"{}\" name=\"{}\"{}{}>\n",
-            s,
+            sid(s),
             esc(&name),
             sec.map(slab_floor_attr).unwrap_or_default(),
             sec.map(|sc| concrete_attr(model, sc)).unwrap_or_default(),

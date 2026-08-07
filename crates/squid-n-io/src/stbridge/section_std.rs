@@ -872,9 +872,45 @@ pub(super) fn standard_sections(model: &Model) -> StandardSections {
         used_by_wall.difference(&used_by_other).copied().collect()
     };
 
+    // 床だけが参照する断面（`SectionShape::RcSlab`）も、スラブ断面ブロック
+    // （`StbSecSlab_RC`、`export::slab_sections`）側で出力されるためここでは出さない。
+    // 壁と同じ理由で、Raw としても二重に出すと再取り込みのたびに
+    // 「Raw 由来の断面＋スラブ断面」が 1 組ずつ増殖する。
+    let slab_only_sections: std::collections::HashSet<u32> = {
+        let mut used_by_slab = std::collections::HashSet::new();
+        let mut used_by_other = std::collections::HashSet::new();
+        for slab in &model.slabs {
+            if let Some(sid) = slab.section {
+                used_by_slab.insert(sid.0);
+            }
+            // 小梁は生の断面 id を書き出すため、Raw 出力から外さない。
+            for j in &slab.joists {
+                if let Some(sid) = j.section {
+                    used_by_other.insert(sid.0);
+                }
+            }
+        }
+        for e in &model.elements {
+            if let Some(sid) = e.section {
+                used_by_other.insert(sid.0);
+            }
+        }
+        for sm in &model.secondary_members {
+            if let Some(sid) = sm.section {
+                used_by_other.insert(sid.0);
+            }
+        }
+        used_by_slab.difference(&used_by_other).copied().collect()
+    };
+
     for sec in &model.sections {
         let base = sec.id.0;
         if wall_only_sections.contains(&base) && sec.thickness.is_some() && sec.shape.is_none() {
+            continue;
+        }
+        if slab_only_sections.contains(&base)
+            && matches!(sec.shape, Some(SectionShape::RcSlab { .. }))
+        {
             continue;
         }
         let (used_col, used_beam) = roles.get(&base).copied().unwrap_or((false, false));
