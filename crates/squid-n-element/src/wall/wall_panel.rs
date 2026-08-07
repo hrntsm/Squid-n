@@ -191,6 +191,36 @@ pub fn wall_column_fiber_lp(data: &ElementData, model: &Model) -> Option<f64> {
     Some(crate::fiber::clamp_plastic_zone(0.5 * geom.lw, geom.h))
 }
 
+/// [`WallPanelElement::shear_capacity`] へ渡す、耐震壁の幾何・配筋・材料。
+///
+/// モデルから読み取った値をそのまま束ねたもので、荒川mean式の入力
+/// （[`squid_n_core::rc_wall_capacity::RcWallShearInput`]）への組み立ては
+/// `shear_capacity` が行う。
+struct WallShearGeometry {
+    /// コンクリート設計基準強度 Fc [N/mm²]（未設定は `None`）
+    fc: Option<f64>,
+    /// 壁厚 t [mm]
+    t: f64,
+    /// 付帯柱中心間距離 lw [mm]
+    lw: f64,
+    /// 壁の上下梁中心間高さ h [mm]
+    h: f64,
+    /// 壁筋比 ps（小数）
+    ps: f64,
+    /// 側柱 1 本あたりの沿壁方向せい Dc [mm]
+    dc_each: f64,
+    /// 引張側柱の主筋断面積 at [mm²]
+    col_main_at: f64,
+    /// 側柱（付帯柱）があるか
+    has_side_column: bool,
+    /// 壁横筋の降伏点 σwh [N/mm²]
+    sigma_wh: f64,
+    /// 壁横筋が高強度せん断補強筋か（Qu 係数 0.053 → 0.068）
+    high_strength_shear_rebar: bool,
+    /// 開口寸法 `(l0, h0)` [mm]（無開口は `None`）
+    opening: Option<(f64, f64)>,
+}
+
 impl WallPanelElement {
     /// 生成。4 節点未満・寸法/断面が不定の場合は None
     /// （呼び出し側は従来の暫定等価梁へフォールバックする）。
@@ -549,23 +579,26 @@ impl WallPanelElement {
     /// - 引張側柱の主筋量 at は側柱（`SectionShape::RcRect`）の `main_x` 総断面積。
     ///   側柱がない／配筋が取れない場合は、壁の縦筋が一様配筋であるとみなして
     ///   `at = ps·te·d`（＝等価引張鉄筋比 pte = 100·ps \[%\]）とする。
-    /// - 横筋比 Pwh は壁筋比 ps（縦横共通とみなす近似）、σwh は SD295 相当 295。
+    /// - 横筋比 Pwh は壁筋比 ps（縦横共通とみなす近似）。σwh は断面のせん断補強筋
+    ///   材料の `fy` とし、未割当のときは SD295 相当 295 を既定とする。
     /// - せん断スパン比 M/(Q·D) は壁の h/D（適用範囲 1.0〜3.0 にクランプ）。
     /// - 軸方向応力度 σ0 は 0（軸力は Qu を増やすため、0 とするのは安全側）。
     ///
     /// 算定できない場合（Fc 未設定など）は 0.0 を返し、呼び出し側は弾性のままとする。
-    #[allow(clippy::too_many_arguments)]
-    fn shear_capacity(
-        fc: Option<f64>,
-        t: f64,
-        lw: f64,
-        h: f64,
-        ps: f64,
-        dc_each: f64,
-        col_main_at: f64,
-        has_side_column: bool,
-        opening: Option<(f64, f64)>,
-    ) -> f64 {
+    fn shear_capacity(inp: &WallShearGeometry) -> f64 {
+        let &WallShearGeometry {
+            fc,
+            t,
+            lw,
+            h,
+            ps,
+            dc_each,
+            col_main_at,
+            has_side_column,
+            sigma_wh,
+            high_strength_shear_rebar,
+            opening,
+        } = inp;
         let Some(fc) = fc else {
             return 0.0;
         };
@@ -602,11 +635,11 @@ impl WallPanelElement {
                 d_wall,
                 dc_compression: dc_each,
                 tension_column_at: at,
-                sigma_wh: 295.0,
+                sigma_wh,
                 pwh_ratio: ps.max(0.0),
                 sigma_0: 0.0,
                 shear_span_ratio: h / d_wall,
-                high_strength_shear_rebar: false,
+                high_strength_shear_rebar,
                 opening: opening.map(|(l0, h0)| (l0, h0, h, lw)),
             },
         )
@@ -673,17 +706,25 @@ impl WallPanelElement {
                 let area: f64 = dims.iter().map(|(l, h)| l * h).sum();
                 (lo > 0.0 && area > 0.0).then_some((lo, area / lo))
             });
-        Self::shear_capacity(
+        // 壁横筋の材質は断面のせん断補強筋材料から引く。未割当のときは規格上の
+        // 最小グレードである SD295 相当（295 N/mm²・普通強度）を既定とする。
+        let shear_mat = model.element_shear_rebar_material(data);
+        let sigma_wh = squid_n_core::material_grade::shear_rebar_yield_strength(shear_mat)
+            .unwrap_or(squid_n_core::material_grade::SHEAR_REBAR_DEFAULT_FY);
+        Self::shear_capacity(&WallShearGeometry {
             fc,
             t,
-            geom.lw,
-            geom.h,
+            lw: geom.lw,
+            h: geom.h,
             ps,
-            col_depth_sum / 2.0,
+            dc_each: col_depth_sum / 2.0,
             col_main_at,
             has_side_column,
+            sigma_wh,
+            high_strength_shear_rebar:
+                squid_n_core::material_grade::is_high_strength_shear_material(shear_mat),
             opening,
-        )
+        })
     }
 
     /// 鋼板耐震壁の面内せん断終局強度 Qy [N]。
@@ -2010,6 +2051,58 @@ mod shear_yield_tests {
         let mut model = model;
         crate::wall::add_surrounding_frame(&mut model, &data);
         (model, data)
+    }
+
+    /// 壁横筋の材料（`SectionShape` によらず断面の `shear_rebar_material`）から
+    /// σwh と高強度判定を解決することを確認する。
+    ///
+    /// - 未割当は SD295 相当（295 N/mm²・普通強度）を既定とする
+    /// - SD295 を明示的に割り当てても未割当と同じ Qu になる
+    /// - SD390 を割り当てると σwh が上がり Qu が増える
+    /// - 高強度品（KH785）は Qu 係数が 0.053 → 0.068 へ切り替わり、さらに増える
+    #[test]
+    fn test_wall_qu_uses_section_shear_rebar_material() {
+        let rebar = |id: u32, name: &str, fy: f64| Material {
+            strength_factor: None,
+            concrete_class: Default::default(),
+            id: MaterialId(id),
+            name: name.into(),
+            category: MaterialCategory::Rebar,
+            young: 205000.0,
+            poisson: 0.3,
+            density: 7.85e-9,
+            shear: None,
+            fc: None,
+            fy: Some(fy),
+        };
+        let (mut model, data) = wall_model();
+        let qu_unassigned = WallPanelElement::shear_capacity_of(&data, &model);
+        assert!(qu_unassigned > 0.0, "Qu が算定できるはず");
+
+        model.materials.push(rebar(1, "SD295A", 295.0));
+        model.materials.push(rebar(2, "SD390", 390.0));
+        model.materials.push(rebar(3, "KH785", 785.0));
+
+        model.sections[0].shear_rebar_material = Some(MaterialId(1));
+        let qu_sd295 = WallPanelElement::shear_capacity_of(&data, &model);
+        assert!(
+            (qu_sd295 - qu_unassigned).abs() < 1e-6,
+            "未割当の既定は SD295 相当のはず: {qu_unassigned:.6e} vs {qu_sd295:.6e}"
+        );
+
+        model.sections[0].shear_rebar_material = Some(MaterialId(2));
+        let qu_sd390 = WallPanelElement::shear_capacity_of(&data, &model);
+        assert!(
+            qu_sd390 > qu_sd295,
+            "SD390 の Qu {qu_sd390:.6e} が SD295 の Qu {qu_sd295:.6e} を超えていない"
+        );
+
+        model.sections[0].shear_rebar_material = Some(MaterialId(3));
+        let qu_kh785 = WallPanelElement::shear_capacity_of(&data, &model);
+        assert!(
+            qu_kh785 > qu_sd390,
+            "高強度せん断補強筋の Qu {qu_kh785:.6e} が SD390 の Qu {qu_sd390:.6e} を超えていない"
+        );
     }
 
     /// 非線形経路（プッシュオーバー）では耐震壁の面内水平力が終局せん断強度 Qu で

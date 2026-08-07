@@ -413,14 +413,14 @@ pub fn build_report_csv(app: &App) -> String {
             po.hinges.len()
         ));
         // 層別データ列（層間変位・層せん断力）を層数分だけヘッダに追加する。
-        // 列名はモデルの階名（`Story::name`）を用い、なければ「1F」形式で補う。
+        // 列名はモデルの階名（`Story::name`）を用い、なければ床基準の既定名で補う。
         let n_stories = model.stories.len();
         let story_name = |i: usize| -> String {
             model
                 .stories
                 .get(i)
                 .map(|s| s.name.clone())
-                .unwrap_or_else(|| format!("{}F", i + 1))
+                .unwrap_or_else(|| squid_n_core::model::default_story_name(i))
         };
         out.push_str("step,頂部変位[mm],ベースシア[kN]");
         for i in 0..n_stories {

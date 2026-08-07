@@ -247,6 +247,40 @@ fn test_model_issues_collects_every_issue() {
     assert!(model_issues(&make_cantilever_model()).is_empty());
 }
 
+/// 剛床のない階は警告として挙げ、解析は止めない。
+///
+/// 剛床がない階の水平力は階の節点へ質量比で直接分配されるため解析は成立する。
+/// 一方、剛床を意図していたのに床が拾えていない場合に気づけないと困るので、
+/// 診断には出す。
+#[test]
+fn test_model_issues_warns_story_without_diaphragm() {
+    use super::precheck::{model_issues, precheck_model, IssueSeverity};
+    use squid_n_core::ids::StoryId;
+    use squid_n_core::model::Story;
+
+    let mut model = make_cantilever_model();
+    model.stories.push(Story {
+        id: StoryId(0),
+        name: "2F".into(),
+        elevation: 3000.0,
+        node_ids: vec![NodeId(1)],
+        seismic_weight: None,
+        weight_override: None,
+        structure: Default::default(),
+        level_kind: Default::default(),
+    });
+
+    let issues = model_issues(&model);
+    let warning = issues
+        .iter()
+        .find(|i| i.message.contains("剛床のない階"))
+        .unwrap_or_else(|| panic!("剛床のない階の警告が出ていない: {:?}", issues.len()));
+    assert_eq!(warning.severity, IssueSeverity::Warning);
+    assert!(warning.message.contains("2F"), "{}", warning.message);
+    // 警告だけなら解析前チェックは通す。
+    assert!(precheck_model(&model).is_ok());
+}
+
 /// 部材が 1 つもないモデルで、全節点を孤立節点として並べない。
 /// 「部材がありません」で同じことを言っており、節点を 1 つずつ挙げても情報が増えない。
 #[test]

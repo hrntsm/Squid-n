@@ -14,12 +14,22 @@ use crate::EditCommand;
 ///
 /// 自動生成（`squid_n_core::axis_gen::generate_axes`）の適用に用いる。通り芯は
 /// 節点・要素と違って ID の繰り上げを伴わないため、全置換で undo が閉じる。
+///
+/// 通りが実在しない節点を指す場合は何もしない（`Noop`。crate::refs の規約）。
 pub struct ReplaceAxes {
     pub axes: Vec<AxisGroup>,
 }
 
 impl EditCommand for ReplaceAxes {
     fn apply(&self, model: &mut Model) -> Box<dyn EditCommand> {
+        let all_nodes_exist = self.axes.iter().all(|g| {
+            g.axes
+                .iter()
+                .all(|a| a.nodes.iter().all(|&n| crate::refs::node_exists(model, n)))
+        });
+        if !all_nodes_exist {
+            return Box::new(crate::Noop);
+        }
         let axes = std::mem::replace(&mut model.axes, self.axes.clone());
         Box::new(ReplaceAxes { axes })
     }

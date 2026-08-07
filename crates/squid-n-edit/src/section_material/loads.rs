@@ -51,7 +51,7 @@ impl EditCommand for AddNodalLoad {
         let Some(idx) = load_case_index(model, self.lc) else {
             return Box::new(Noop);
         };
-        if self.load.source.is_auto() {
+        if self.load.source.is_auto() || !crate::refs::node_exists(model, self.load.node) {
             return Box::new(Noop);
         }
         model.load_cases[idx].nodal.push(self.load.clone());
@@ -80,6 +80,9 @@ impl EditCommand for SetNodalLoad {
         let Some(idx) = load_case_index(model, self.lc) else {
             return Box::new(Noop);
         };
+        if !crate::refs::node_exists(model, self.load.node) {
+            return Box::new(Noop);
+        }
         let nodal = &mut model.load_cases[idx].nodal;
         if self.index >= nodal.len() || nodal[self.index].source.is_auto() {
             return Box::new(Noop);
@@ -166,7 +169,7 @@ impl EditCommand for AddMemberLoad {
         let Some(idx) = load_case_index(model, self.lc) else {
             return Box::new(Noop);
         };
-        if self.load.source.is_auto() {
+        if self.load.source.is_auto() || !crate::refs::elem_exists(model, self.load.elem) {
             return Box::new(Noop);
         }
         model.load_cases[idx].member.push(self.load.clone());
@@ -195,6 +198,9 @@ impl EditCommand for SetMemberLoad {
         let Some(idx) = load_case_index(model, self.lc) else {
             return Box::new(Noop);
         };
+        if !crate::refs::elem_exists(model, self.load.elem) {
+            return Box::new(Noop);
+        }
         let member = &mut model.load_cases[idx].member;
         if self.index >= member.len() || member[self.index].source.is_auto() {
             return Box::new(Noop);

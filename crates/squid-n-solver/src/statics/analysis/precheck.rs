@@ -22,8 +22,24 @@ pub enum IssueTargets {
     Nodes(Vec<NodeId>),
 }
 
-/// 解析を妨げるモデルの不備 1 件。
+/// 不備の重大度。
+///
+/// 診断（[`model_issues`]）は解析を止める不備と、解析は通るが入力の意図を
+/// 確かめたい事柄の両方を返す。判定を 1 か所に持ったまま、解析前チェックが
+/// 止めるのは [`IssueSeverity::Error`] だけに限るために区別する。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IssueSeverity {
+    /// 解析が成立しない不備。解析前チェック（[`precheck_model`]）はこれで止める。
+    Error,
+    /// 解析は成立するが、入力の取り違えである可能性が高いもの。
+    /// 診断タブには警告として並べ、解析は止めない。
+    Warning,
+}
+
+/// モデルの不備 1 件。
 pub struct ModelIssue {
+    /// 解析を止めるか（[`IssueSeverity`]）。
+    pub severity: IssueSeverity,
     /// 対象 ID と是正方法を含む、単体で完結する説明文。
     /// 解析前チェックはこれをそのままエラーメッセージにする。
     pub message: String,
@@ -38,6 +54,7 @@ impl ModelIssue {
     fn model(message: impl Into<String>) -> Self {
         let message = message.into();
         Self {
+            severity: IssueSeverity::Error,
             short: message.clone(),
             message,
             targets: IssueTargets::Model,
@@ -48,6 +65,7 @@ impl ModelIssue {
     fn members(what: &str, label: &str, ids: Vec<ElemId>, short: &str, remedy: &str) -> Self {
         let raw: Vec<u32> = ids.iter().map(|id| id.0).collect();
         Self {
+            severity: IssueSeverity::Error,
             message: id_list_message(what, label, &raw, remedy),
             short: short.to_string(),
             targets: IssueTargets::Members(ids),
@@ -58,10 +76,17 @@ impl ModelIssue {
     fn nodes(what: &str, label: &str, ids: Vec<NodeId>, short: &str, remedy: &str) -> Self {
         let raw: Vec<u32> = ids.iter().map(|id| id.0).collect();
         Self {
+            severity: IssueSeverity::Error,
             message: id_list_message(what, label, &raw, remedy),
             short: short.to_string(),
             targets: IssueTargets::Nodes(ids),
         }
+    }
+
+    /// 解析は止めない警告へ落とす。
+    fn warn(mut self) -> Self {
+        self.severity = IssueSeverity::Warning;
+        self
     }
 }
 
@@ -69,7 +94,12 @@ impl ModelIssue {
 ///
 /// ID は先頭 5 件までを挙げ、残りは件数へまとめる。大規模モデルで同じ不備が
 /// 数百件あってもメッセージが際限なく伸びないようにするため。
-fn id_list_message(what: &str, label: &str, ids: &[u32], remedy: &str) -> String {
+fn id_list_message<T: std::fmt::Display>(
+    what: &str,
+    label: &str,
+    ids: &[T],
+    remedy: &str,
+) -> String {
     const HEAD: usize = 5;
     let head: Vec<String> = ids.iter().take(HEAD).map(|id| id.to_string()).collect();
     let more = if ids.len() > HEAD {
@@ -297,11 +327,37 @@ pub fn model_issues(model: &Model) -> Vec<ModelIssue> {
     for e in &model.elements {
         if let Some(msg) = squid_n_element::misc_wall::wall_frame_category_issue(e, model) {
             issues.push(ModelIssue {
+                severity: IssueSeverity::Error,
                 message: msg,
                 short: "耐震壁と周辺架構の構造種別が食い違っています".to_string(),
                 targets: IssueTargets::Members(vec![e.id]),
             });
         }
+    }
+
+    // 剛床（ダイアフラム）のない階
+    //
+    // 剛床がない階の水平力は、階に属する節点へ質量比で直接分配される
+    // （`distribute_pi_over_diaphragms`）。解析は成立するため止めないが、
+    // 剛床を意図していたのに床が拾えていない・準備計算の再実行で消えた場合に
+    // 気づけるよう警告として挙げる。
+    let no_diaphragm: Vec<String> = model
+        .stories
+        .iter()
+        .filter(|s| model.diaphragms_of(s.id).next().is_none())
+        .map(|s| s.name.clone())
+        .collect();
+    if !no_diaphragm.is_empty() {
+        issues.push(
+            ModelIssue::model(id_list_message(
+                "剛床のない階があります",
+                "",
+                &no_diaphragm,
+                "水平力はその階の節点へ質量比で直接分配されます。\
+                 剛床として扱う階なら、床を張って準備計算を実行し直してください。",
+            ))
+            .warn(),
+        );
     }
 
     issues.extend(node_reference_issues(model));
@@ -411,7 +467,11 @@ fn node_reference_issues(model: &Model) -> Vec<ModelIssue> {
 /// 解析前のモデル静的検証。よくあるモデリングミスを特異行列エラーの前に検出し、
 /// 「何をすれば直るか」を含むメッセージで返す。
 pub(super) fn precheck_model(model: &Model) -> Result<(), SolveError> {
-    match model_issues(model).into_iter().next() {
+    // 止めるのは解析が成立しない不備だけとする（警告は診断タブへ出す）。
+    match model_issues(model)
+        .into_iter()
+        .find(|i| i.severity == IssueSeverity::Error)
+    {
         Some(issue) => Err(SolveError::InvalidInput(issue.message)),
         None => Ok(()),
     }

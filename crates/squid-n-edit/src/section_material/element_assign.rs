@@ -4,6 +4,8 @@ use super::*;
 use squid_n_core::ids::*;
 
 /// 部材の断面割当変更。
+///
+/// 実在しない断面を指定した場合は何もしない（`Noop`。crate::refs の規約）。
 pub struct SetElementSection {
     pub elem: ElemId,
     pub section: Option<SectionId>,
@@ -13,6 +15,9 @@ impl EditCommand for SetElementSection {
     fn apply(&self, model: &mut Model) -> Box<dyn EditCommand> {
         let idx = self.elem.index();
         if idx >= model.elements.len() || model.elements[idx].id != self.elem {
+            return Box::new(Noop);
+        }
+        if !crate::refs::section_ref_ok(model, self.section) {
             return Box::new(Noop);
         }
         let old = model.elements[idx].section;
@@ -32,6 +37,8 @@ impl EditCommand for SetElementSection {
 ///
 /// **材料は断面が持つ**（`Section::material` ほか）。役割ごとに欄が分かれており、
 /// どれを変更するかは [`SectionMaterialRole`] で指定する。
+///
+/// 実在しない材料を指定した場合は何もしない（`Noop`。crate::refs の規約）。
 pub struct SetSectionMaterial {
     pub section: squid_n_core::ids::SectionId,
     pub role: SectionMaterialRole,
@@ -69,6 +76,9 @@ impl EditCommand for SetSectionMaterial {
     fn apply(&self, model: &mut Model) -> Box<dyn EditCommand> {
         let idx = self.section.index();
         if idx >= model.sections.len() || model.sections[idx].id != self.section {
+            return Box::new(Noop);
+        }
+        if !crate::refs::material_ref_ok(model, self.material) {
             return Box::new(Noop);
         }
         let slot = self.role.slot(&mut model.sections[idx]);

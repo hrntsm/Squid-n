@@ -79,20 +79,10 @@ pub fn high_strength_group(grade: &str) -> HighStrengthGroup {
     }
 }
 
-/// grade 文字列が**高強度**せん断補強筋か（普通強度の異形鉄筋・丸鋼は false）。
-///
-/// `ShearBar.grade` は普通強度（`SD295A`・`SD345` 等）の指定にも使えるため、
-/// 「grade が設定されている＝高強度品」とみなしてはならない（普通強度を高強度品の
-/// 表で評価すると w_ft を 590 N/mm² と大幅に過大評価し**危険側**になる）。
-/// JIS の異形棒鋼 `SD*`・丸鋼 `SR*` は普通強度として false を返し、それ以外の
-/// 製品名（`UB785`・`KH785`・`SBPD1275`・`USD685` 等）を高強度として扱う。
-pub fn is_high_strength_shear_grade(grade: &str) -> bool {
-    let g = grade.trim().to_uppercase();
-    if g.is_empty() {
-        return false;
-    }
-    !(g.starts_with("SD") || g.starts_with("SR"))
-}
+/// 高強度せん断補強筋かどうかの判定は
+/// [`squid_n_core::material_grade::is_high_strength_shear_grade`] に一本化している
+/// （耐震壁の終局せん断強度を算定する `squid-n-element` からも同じ判定を使うため）。
+pub use squid_n_core::material_grade::is_high_strength_shear_grade;
 
 /// 高強度せん断補強筋の許容せん断応力度 w_ft [N/mm²]（製品表）。
 ///

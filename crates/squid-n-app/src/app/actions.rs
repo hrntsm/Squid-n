@@ -3933,9 +3933,10 @@ impl App {
         // 同じ `model_issues` を使う。診断と解析前チェックが別々に検査を持つと、
         // 片方だけに項目を足したときに「診断は通ったのに解析が止まる」状態になる。
         //
-        // これらは解析が必ず止まる不備なので Error とする。準備計算の
-        // `PreparationResult::is_ready`（`diag_errors == 0`）が
-        // 「解析前に解消すべきか」の判定にそのまま使えるようにするため。
+        // 重大度は `ModelIssue` が持つ判定をそのまま使う。解析が必ず止まる不備は
+        // Error、解析は通るが入力の意図を確かめたい事柄（剛床のない階など）は
+        // Warning になる。準備計算の `PreparationResult::is_ready`
+        // （`diag_errors == 0`）が「解析前に解消すべきか」の判定にそのまま使える。
         for issue in squid_n_solver::analysis::precheck::model_issues(&self.model) {
             push_issue_diagnostics(&mut diags, issue);
         }
@@ -4071,19 +4072,26 @@ fn simple_beam_q0_by_elem(
 /// 対象が特定できる不備は対象 1 件ごとに行を作り、クリックで 3D 選択へ
 /// 飛べるようにする。大モデルで診断リストが溢れないよう
 /// `MAX_ISSUE_TARGETS` 件で打ち切り、超過分は集約 1 行にまとめる。
+///
+/// 重大度は `ModelIssue` の判定をそのまま引き継ぐ。解析が成立しない不備は
+/// Error、解析は通るが入力の意図を確かめたい事柄は Warning になる。
 fn push_issue_diagnostics(
     diags: &mut Vec<Diagnostic>,
     issue: squid_n_solver::analysis::precheck::ModelIssue,
 ) {
-    use squid_n_solver::analysis::precheck::IssueTargets;
+    use squid_n_solver::analysis::precheck::{IssueSeverity, IssueTargets};
 
     /// 対象単位の行を並べる上限。超過分は集約 1 行にまとめる。
     const MAX_ISSUE_TARGETS: usize = 100;
 
+    let severity = match issue.severity {
+        IssueSeverity::Error => DiagSeverity::Error,
+        IssueSeverity::Warning => DiagSeverity::Warning,
+    };
     let (n_targets, unit) = match &issue.targets {
         IssueTargets::Model => {
             diags.push(Diagnostic {
-                severity: DiagSeverity::Error,
+                severity,
                 message: issue.message,
                 target: None,
             });
@@ -4092,7 +4100,7 @@ fn push_issue_diagnostics(
         IssueTargets::Members(ids) => {
             for id in ids.iter().take(MAX_ISSUE_TARGETS) {
                 diags.push(Diagnostic {
-                    severity: DiagSeverity::Error,
+                    severity,
                     message: format!("部材 #{}: {}", id.0, issue.short),
                     target: Some(DiagTarget::Member(*id)),
                 });
@@ -4102,7 +4110,7 @@ fn push_issue_diagnostics(
         IssueTargets::Nodes(ids) => {
             for id in ids.iter().take(MAX_ISSUE_TARGETS) {
                 diags.push(Diagnostic {
-                    severity: DiagSeverity::Error,
+                    severity,
                     message: format!("節点 #{}: {}", id.0, issue.short),
                     target: Some(DiagTarget::Node(*id)),
                 });
@@ -4112,7 +4120,7 @@ fn push_issue_diagnostics(
     };
     if n_targets > MAX_ISSUE_TARGETS {
         diags.push(Diagnostic {
-            severity: DiagSeverity::Error,
+            severity,
             message: format!(
                 "…他 {} {unit}で{}",
                 n_targets - MAX_ISSUE_TARGETS,

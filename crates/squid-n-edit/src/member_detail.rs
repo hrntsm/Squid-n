@@ -14,6 +14,9 @@ pub struct SetMemberDetailAttr {
 
 impl EditCommand for SetMemberDetailAttr {
     fn apply(&self, model: &mut Model) -> Box<dyn EditCommand> {
+        if !crate::refs::elem_exists(model, self.attr.elem) {
+            return Box::new(Noop);
+        }
         if let Some(pos) = model
             .member_detail_attrs
             .iter()

@@ -10,6 +10,40 @@ fn empty_model() -> Model {
     Model::default()
 }
 
+/// 参照検証（`crate::refs`）を通すための下地モデル。
+/// X 方向 1 m 間隔に節点を `n_nodes` 個並べ、隣どうしを梁 `n_elems` 本でつなぐ。
+/// 節点・部材を指す編集コマンドのテストは、参照先が実在するこのモデルから始める。
+fn seeded_model(n_nodes: u32, n_elems: u32) -> Model {
+    let mut model = empty_model();
+    for i in 0..n_nodes {
+        model.nodes.push(Node {
+            id: NodeId(i),
+            coord: [i as f64 * 1000.0, 0.0, 0.0],
+            restraint: Dof6Mask::FREE,
+            mass: None,
+            story: None,
+            support_spring: None,
+        });
+    }
+    for i in 0..n_elems {
+        model.elements.push(ElementData {
+            id: ElemId(i),
+            kind: ElementKind::Beam,
+            nodes: smallvec![NodeId(i), NodeId(i + 1)],
+            section: None,
+            local_axis: LocalAxis {
+                ref_vector: [1.0, 0.0, 0.0],
+            },
+            end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+            force_regime: ForceRegime::Auto,
+            rigid_zone: Default::default(),
+            plastic_zone: None,
+            spring: None,
+        });
+    }
+    model
+}
+
 #[test]
 fn test_set_node_coord_roundtrip() {
     let mut model = empty_model();
@@ -324,7 +358,7 @@ fn test_delete_node_in_use_is_noop() {
 fn test_add_delete_member_load_roundtrip() {
     use squid_n_core::ids::LoadCaseId;
     use squid_n_core::model::{LoadCase, MemberLoad, MemberLoadKind};
-    let mut model = empty_model();
+    let mut model = seeded_model(2, 1);
     model.load_cases.push(LoadCase {
         kind: Default::default(),
         id: LoadCaseId(0),
@@ -443,7 +477,7 @@ fn test_delete_member_undo_preserves_member_load_order() {
 
 #[test]
 fn test_add_delete_member_roundtrip() {
-    let mut model = empty_model();
+    let mut model = seeded_model(2, 0);
     let mut stack = UndoStack::new();
     let elem = ElementData {
         id: squid_n_core::ids::ElemId(0),
@@ -1060,6 +1094,131 @@ fn test_set_section_material_on_missing_section_is_noop() {
         model.eq_ignoring_dofmap(&before),
         "存在しない断面への割当は無視する"
     );
+}
+
+/// 実在しない ID を指す割当は Noop（`Model::validate` が落ちるモデルを作らない）。
+/// 参照の存在は書き込む側で確かめる（`crate::refs` の規約）。
+#[test]
+fn test_commands_reject_dangling_references() {
+    use crate::{
+        AddMember, AddMemberLoad, AddNodalLoad, AddSlab, SectionMaterialRole, SetElementSection,
+        SetSectionMaterial,
+    };
+    use squid_n_core::ids::LoadCaseId;
+    use squid_n_core::model::{
+        DistributionMethod, LoadCase, LoadCaseKind, MemberLoad, MemberLoadKind, NodalLoad,
+    };
+
+    let mut model = two_member_model();
+    model.sections.push(bare_section(SectionId(0), None));
+    stack_add_material(&mut model, "Fc24");
+    model.load_cases.push(LoadCase {
+        id: LoadCaseId(0),
+        name: "L".into(),
+        kind: LoadCaseKind::Dead,
+        nodal: Vec::new(),
+        member: Vec::new(),
+    });
+    let before = model.clone();
+    let mut stack = UndoStack::new();
+
+    let new_elem = |id: u32, nodes: smallvec::SmallVec<[NodeId; 8]>, section| ElementData {
+        id: ElemId(id),
+        kind: ElementKind::Beam,
+        nodes,
+        section,
+        local_axis: LocalAxis {
+            ref_vector: [1.0, 0.0, 0.0],
+        },
+        end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+        force_regime: ForceRegime::Auto,
+        rigid_zone: Default::default(),
+        plastic_zone: None,
+        spring: None,
+    };
+
+    let cases: Vec<(&str, Box<dyn crate::EditCommand>)> = vec![
+        (
+            "存在しない材料",
+            Box::new(SetSectionMaterial {
+                section: SectionId(0),
+                role: SectionMaterialRole::Main,
+                material: Some(MaterialId(9)),
+            }),
+        ),
+        (
+            "存在しない断面",
+            Box::new(SetElementSection {
+                elem: ElemId(0),
+                section: Some(SectionId(9)),
+            }),
+        ),
+        (
+            "存在しない節点を端部に持つ部材",
+            Box::new(AddMember {
+                elem: new_elem(2, smallvec![NodeId(0), NodeId(9)], None),
+            }),
+        ),
+        (
+            "末尾でない ID の部材",
+            Box::new(AddMember {
+                elem: new_elem(7, smallvec![NodeId(0), NodeId(1)], None),
+            }),
+        ),
+        (
+            "存在しない断面を指す部材",
+            Box::new(AddMember {
+                elem: new_elem(2, smallvec![NodeId(0), NodeId(1)], Some(SectionId(9))),
+            }),
+        ),
+        (
+            "存在しない節点への節点荷重",
+            Box::new(AddNodalLoad {
+                lc: LoadCaseId(0),
+                load: NodalLoad {
+                    node: NodeId(9),
+                    values: [1.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+                    name: String::new(),
+                    source: squid_n_core::model::LoadSource::Manual,
+                },
+            }),
+        ),
+        (
+            "存在しない部材への部材荷重",
+            Box::new(AddMemberLoad {
+                lc: LoadCaseId(0),
+                load: MemberLoad::manual(
+                    ElemId(9),
+                    [0.0, 0.0, -1.0],
+                    MemberLoadKind::Distributed {
+                        a: 0.0,
+                        b: 1000.0,
+                        w1: 1.0,
+                        w2: 1.0,
+                    },
+                ),
+            }),
+        ),
+        (
+            "存在しない節点を境界に持つ床",
+            Box::new(AddSlab {
+                boundary: vec![NodeId(0), NodeId(1), NodeId(9)],
+                joists: Vec::new(),
+                loads: Vec::new(),
+                method: DistributionMethod::TriTrapezoid,
+                usage: None,
+            }),
+        ),
+    ];
+    for (what, cmd) in cases {
+        assert!(!stack.run(&mut model, cmd), "{what}: 適用されてしまった");
+        assert!(
+            model.eq_ignoring_dofmap(&before),
+            "{what}: モデルが変更されている"
+        );
+    }
+    assert!(model.validate().is_ok(), "{:?}", model.validate());
+    assert!(!stack.can_undo(), "Noop は undo 履歴へ積まない");
 }
 
 /// テスト用: 名前だけを指定して材料を足す。
@@ -1690,7 +1849,7 @@ fn test_set_load_case_kind_invalid_id_is_noop() {
 #[test]
 fn test_nodal_loads_are_indexed_and_allow_duplicates_per_node() {
     use squid_n_core::model::{LoadCaseKind, NodalLoad};
-    let mut model = empty_model();
+    let mut model = seeded_model(4, 0);
     let mut stack = UndoStack::new();
     stack.run(&mut model, Box::new(AddLoadCase { name: "LC0".into() }));
 
@@ -1798,7 +1957,7 @@ fn test_auto_loads_reject_edit_and_delete() {
 fn test_sync_slab_loads_to_case_creates_new_case() {
     use squid_n_core::ids::{ElemId, LoadCaseId};
     use squid_n_core::model::{LoadCaseKind, MemberLoad, MemberLoadKind, NodalLoad};
-    let mut model = empty_model();
+    let mut model = seeded_model(2, 1);
     let mut stack = UndoStack::new();
 
     let member = vec![MemberLoad::auto(
@@ -1841,7 +2000,7 @@ fn test_sync_slab_loads_to_case_creates_new_case() {
 fn test_sync_slab_loads_to_case_keeps_manual_and_replaces_auto() {
     use squid_n_core::ids::ElemId;
     use squid_n_core::model::{LoadCaseKind, MemberLoad, MemberLoadKind};
-    let mut model = empty_model();
+    let mut model = seeded_model(3, 2);
     let mut stack = UndoStack::new();
 
     // 既存の同名ケースに、利用者が手で入れた荷重が 1 件ある状態。
@@ -1923,7 +2082,7 @@ fn test_sync_slab_loads_to_case_keeps_manual_and_replaces_auto() {
 fn test_sync_slab_loads_marks_content_as_auto() {
     use squid_n_core::ids::ElemId;
     use squid_n_core::model::{LoadCaseKind, MemberLoad, MemberLoadKind};
-    let mut model = empty_model();
+    let mut model = seeded_model(2, 1);
     let mut stack = UndoStack::new();
 
     let content = vec![MemberLoad::manual(
@@ -1984,7 +2143,7 @@ fn test_set_load_cfg_roundtrip() {
 #[test]
 fn test_set_wall_attr_add_replace_and_remove_roundtrip() {
     use squid_n_core::model::WallAttr;
-    let mut model = empty_model();
+    let mut model = seeded_model(2, 1);
     let mut stack = UndoStack::new();
 
     let attr1 = WallAttr {
@@ -2141,7 +2300,7 @@ fn test_set_story_level_kind_roundtrip() {
 #[test]
 fn test_set_slab_kind_and_one_way_roundtrip() {
     use squid_n_core::model::{DistributionMethod, OneWayDir, SlabKind};
-    let mut model = empty_model();
+    let mut model = seeded_model(4, 0);
     let mut stack = UndoStack::new();
     stack.run(
         &mut model,
@@ -2182,7 +2341,7 @@ fn test_set_slab_kind_and_one_way_roundtrip() {
 #[test]
 fn test_set_slab_joists_roundtrip() {
     use squid_n_core::model::{DistributionMethod, JoistLine};
-    let mut model = empty_model();
+    let mut model = seeded_model(4, 0);
     let mut stack = UndoStack::new();
     stack.run(
         &mut model,
@@ -2232,7 +2391,7 @@ fn test_set_slab_joists_roundtrip() {
 #[test]
 fn test_materialize_slab_joists_creates_beams() {
     use squid_n_core::model::{DistributionMethod, ElementKind, EndCondition, JoistLine};
-    let mut model = empty_model();
+    let mut model = seeded_model(4, 0);
     let mut stack = UndoStack::new();
     stack.run(
         &mut model,
@@ -2964,7 +3123,7 @@ fn test_damper_def_removal_does_not_affect_assigned_member() {
 #[test]
 fn test_set_member_detail_attr_add_replace_and_remove_roundtrip() {
     use squid_n_core::model::{Haunch, JointKind, MemberDetailAttr, MemberJoint};
-    let mut model = empty_model();
+    let mut model = seeded_model(2, 1);
     let mut stack = UndoStack::new();
 
     let attr1 = MemberDetailAttr {
@@ -3044,7 +3203,7 @@ fn test_remove_member_detail_attr_missing_is_noop() {
 #[test]
 fn test_set_steel_design_attr_add_replace_and_remove_roundtrip() {
     use squid_n_core::model::SteelDesignAttr;
-    let mut model = empty_model();
+    let mut model = seeded_model(3, 2);
     let mut stack = UndoStack::new();
 
     let attr1 = SteelDesignAttr {

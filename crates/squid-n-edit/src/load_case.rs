@@ -209,6 +209,15 @@ pub struct AddSlab {
 
 impl EditCommand for AddSlab {
     fn apply(&self, model: &mut Model) -> Box<dyn EditCommand> {
+        // 境界・小梁が実在しない節点や断面を指す床は作らない（crate::refs の規約）。
+        if !self
+            .boundary
+            .iter()
+            .all(|&n| crate::refs::node_exists(model, n))
+            || !crate::refs::joists_ok(model, &self.joists)
+        {
+            return Box::new(Noop);
+        }
         let new_id = SlabId(model.slabs.len() as u32);
         model.slabs.push(squid_n_core::model::Slab {
             edge_supported: None,
