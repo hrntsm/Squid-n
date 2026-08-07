@@ -956,9 +956,14 @@ fn test_shell_membrane_off_no_diaphragm() {
         }],
         ..Default::default()
     };
-    // Put a rigid diaphragm in the story so ShellElement::new sets membrane_active=false,
-    // but do NOT add a model.constraints entry, so the global DOFs remain free.
-    use squid_n_core::model::{DiaphragmDef, Story};
+    // 剛床（`Constraint::RigidDiaphragm`）を置くと ShellElement::new が
+    // membrane_active=false にする。剛床の情報源は拘束のみなので、階と対で登録する。
+    use squid_n_core::model::{Constraint, Story};
+    model.constraints.push(Constraint::rigid_diaphragm(
+        StoryId(0),
+        NodeId(0),
+        vec![NodeId(1), NodeId(2), NodeId(3)],
+    ));
     model.stories.push(Story {
         level_kind: Default::default(),
         structure: Default::default(),
@@ -966,13 +971,6 @@ fn test_shell_membrane_off_no_diaphragm() {
         name: "floor".to_string(),
         elevation: 0.0,
         node_ids: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
-        diaphragms: vec![DiaphragmDef {
-            ci_override: None,
-            weight: None,
-            master: NodeId(0),
-            slaves: vec![NodeId(1), NodeId(2), NodeId(3)],
-            rigid: true,
-        }],
         seismic_weight: None,
         weight_override: None,
     });
@@ -984,7 +982,7 @@ fn test_shell_membrane_off_no_diaphragm() {
 fn test_shell_rigid_floor_membrane_off() {
     // Rigid floor story: master node fully fixed, slaves follow master in-plane via
     // RigidDiaphragm constraint. Shell membrane is off for this story, but bending remains.
-    use squid_n_core::model::{Constraint, DiaphragmDef, Story};
+    use squid_n_core::model::{Constraint, Story};
 
     let model = Model {
         nodes: vec![
@@ -1072,21 +1070,14 @@ fn test_shell_rigid_floor_membrane_off() {
             name: "floor".to_string(),
             elevation: 0.0,
             node_ids: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
-            diaphragms: vec![DiaphragmDef {
-                ci_override: None,
-                weight: None,
-                master: NodeId(0),
-                slaves: vec![NodeId(1), NodeId(2), NodeId(3)],
-                rigid: true,
-            }],
             seismic_weight: None,
             weight_override: None,
         }],
-        constraints: vec![Constraint::RigidDiaphragm {
-            story: StoryId(0),
-            master: NodeId(0),
-            slaves: vec![NodeId(1), NodeId(2), NodeId(3)],
-        }],
+        constraints: vec![Constraint::rigid_diaphragm(
+            StoryId(0),
+            NodeId(0),
+            vec![NodeId(1), NodeId(2), NodeId(3)],
+        )],
         load_cases: vec![LoadCase {
             kind: Default::default(),
             id: LoadCaseId(1),
@@ -1971,7 +1962,7 @@ fn test_tension_only_iteration_flag_off_is_default_full_stiffness() {
 /// 剛床の有無で応力解析の結果が変わってはいけないことの検証に使う
 /// （`ForceRegime::Auto` の剛床判定が線形解析の要素種別へ漏れない）。
 fn rigid_floor_portal(with_rigid_floor: bool) -> Model {
-    use squid_n_core::model::{DiaphragmDef, Story};
+    use squid_n_core::model::Story;
     let l = 6000.0_f64;
     let h = 3500.0_f64;
     let mut model = Model {
@@ -2077,6 +2068,16 @@ fn rigid_floor_portal(with_rigid_floor: bool) -> Model {
     push(2, 2, 3, [0.0, 0.0, 1.0]); // 梁（水平材。Mz が鉛直曲げ）
 
     if with_rigid_floor {
+        // 梁の材端節点が剛床上にあることだけを表す剛床（スレーブなし）。
+        // 自由度は何も拘束しないので、線形解析の結果は剛床の有無で変わらないはず
+        // であり、要素種別が剛床判定に引きずられていないかを切り分けられる。
+        model
+            .constraints
+            .push(squid_n_core::model::Constraint::rigid_diaphragm(
+                StoryId(0),
+                NodeId(2),
+                Vec::new(),
+            ));
         model.stories.push(Story {
             level_kind: Default::default(),
             structure: Default::default(),
@@ -2084,13 +2085,6 @@ fn rigid_floor_portal(with_rigid_floor: bool) -> Model {
             name: "2F".into(),
             elevation: h,
             node_ids: vec![NodeId(2), NodeId(3)],
-            diaphragms: vec![DiaphragmDef {
-                ci_override: None,
-                weight: None,
-                master: NodeId(2),
-                slaves: vec![NodeId(3)],
-                rigid: true,
-            }],
             seismic_weight: None,
             weight_override: None,
         });
@@ -2145,8 +2139,8 @@ fn test_rigid_floor_beam_member_forces_are_recovered() {
     );
 }
 
-/// 自由度を拘束しない剛床定義（階の `diaphragms` のみ）を加えても、線形解析の
-/// 結果が一切変わらないこと。要素種別が `ForceRegime` の剛床判定に依存すると、
+/// 自由度を拘束しない剛床（スレーブなしの `Constraint::RigidDiaphragm`）を加えても、
+/// 線形解析の結果が一切変わらないこと。要素種別が `ForceRegime` の剛床判定に依存すると、
 /// 材端ばねが直列に入って梁の曲げ剛性が落ち、応力・変形が変わってしまう。
 #[test]
 fn test_rigid_floor_definition_does_not_change_linear_result() {

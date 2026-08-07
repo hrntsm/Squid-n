@@ -3,10 +3,8 @@
 //! 略算周期・鉄骨造比、階水平力の剛床への分配（多剛床・副剛床の Ci 直接入力）、
 //! Ai 分布による層せん断力から節点水平力の荷重ケースを構築する。
 
-use std::collections::HashSet;
-
 use squid_n_core::ids::{LoadCaseId, NodeId};
-use squid_n_core::model::{DiaphragmDef, Model, Story, StoryLevelKind, StoryStructure};
+use squid_n_core::model::{DiaphragmRef, Model, Node, Story, StoryLevelKind, StoryStructure};
 use squid_n_math::solver::SolveError;
 
 use super::config::{AiMode, SeismicCfg, SeismicDir};
@@ -15,23 +13,10 @@ use crate::linear::StaticOnce;
 
 /// 建物の基部レベル（elevation の基準 0）を求める。
 ///
-/// 全構造節点（`generated_masters`＝階自動生成が作る剛床代表節点を除く）の
-/// 最小 Z 座標を基部とする（レビュー §1.5・§1.7 が参照する「基部レベル」の
-/// 共通定義。剛床代表節点は慣性力重心に置かれる仮想節点であり、実際の
-/// 構造高さには寄与しないため除外する）。
+/// 定義は [`Model::base_elevation`]（階への帰属区間の下端と同一の基準）に
+/// 一元化してあり、本関数はその薄いラッパーである。
 pub fn base_elevation(model: &Model) -> f64 {
-    let excluded: HashSet<NodeId> = model.generated_masters.iter().copied().collect();
-    let base = model
-        .nodes
-        .iter()
-        .filter(|n| !excluded.contains(&n.id))
-        .map(|n| n.coord[2])
-        .fold(f64::INFINITY, f64::min);
-    if base.is_finite() {
-        base
-    } else {
-        0.0
-    }
+    model.base_elevation()
 }
 
 /// 地盤面（GL）レベル [mm] を求める。
@@ -130,9 +115,9 @@ pub fn steel_height_ratio(model: &Model) -> f64 {
     (steel_h / total_h).clamp(0.0, 1.0)
 }
 
-/// [`distribute_pi_over_diaphragms`] の中核ロジック。剛床定義の列（階全体、
+/// [`distribute_pi_over_diaphragms`] の中核ロジック。剛床の列（階全体、
 /// または主系統サブセットのいずれか）を受け取り Pi を重量比で分配する。
-fn distribute_pi_over_slice(diaphragms: &[DiaphragmDef], pi: f64) -> Vec<(NodeId, f64)> {
+fn distribute_pi_over_slice(diaphragms: &[DiaphragmRef<'_>], pi: f64) -> Vec<(NodeId, f64)> {
     let n = diaphragms.len();
     if n == 0 {
         return Vec::new();
@@ -152,32 +137,71 @@ fn distribute_pi_over_slice(diaphragms: &[DiaphragmDef], pi: f64) -> Vec<(NodeId
     }
 }
 
+/// 剛床を持たない階の水平力 Pi を、階に属する節点へ地震用重量の比で分配する。
+///
+/// 階と剛床は別概念であり（`squid_n_core::model::story`）、階が剛床を持たない
+/// ことがある（床面に節点がない階・面内剛体とみなさないモデル化）。この場合、
+/// 水平力を載せる代表節点が存在しないため、階の節点へ直接分配する。
+///
+/// 重み付けは節点の質点質量（[`Node::mass`] の水平成分）とする。質量が
+/// 設定されていない、または合計が 0 の階では等分割する（載荷位置は決まらない
+/// が、層せん断力の総量は保たれる）。
+fn distribute_pi_over_story_nodes(model: &Model, story: &Story, pi: f64) -> Vec<(NodeId, f64)> {
+    let nodes: Vec<&Node> = story
+        .node_ids
+        .iter()
+        .filter_map(|nid| model.nodes.get(nid.index()))
+        .collect();
+    if nodes.is_empty() {
+        return Vec::new();
+    }
+    let mass_of = |n: &Node| n.mass.map(|m| m[0]).unwrap_or(0.0);
+    let total: f64 = nodes.iter().map(|n| mass_of(n)).sum();
+    if total > 0.0 {
+        nodes
+            .iter()
+            .map(|n| (n.id, pi * mass_of(n) / total))
+            .collect()
+    } else {
+        let share = pi / nodes.len() as f64;
+        nodes.iter().map(|n| (n.id, share)).collect()
+    }
+}
+
 /// 階の水平力 Pi を階内の剛床（ダイアフラム）ごとに分配する
 /// （多剛床の設計用せん断力：水平力を剛床ごとの重量比で分配する）。
 ///
-/// - 剛床が 1 つの階: 従来どおり Pi を全量その剛床へ載せる。
-/// - 剛床が複数の階: `DiaphragmDef.weight` の比で按分する（`None` は 0 扱い）。
+/// - 剛床が 1 つの階: Pi を全量その剛床へ載せる。
+/// - 剛床が複数の階: 剛床の `weight` の比で按分する（`None` は 0 扱い）。
 ///   重量の合計が 0（すべて未設定を含む）の場合は等分割する
 ///   （レビュー §1.6：従来は各剛床へ Pi をそのまま重複して載せており、
 ///   多剛床の階では地震力が剛床数倍に水増しされるバグだった）。
+/// - **剛床がない階**: 階に属する節点へ質量比で直接分配する
+///   （[`distribute_pi_over_story_nodes`]）。
 ///
 /// `ci_override`（副剛床の Ci 直接入力）は考慮しない。風荷重など Ci の
 /// 概念がない荷重ケースはこの関数をそのまま使う。地震荷重は
 /// [`distribute_seismic_forces`] を使う。
-pub(crate) fn distribute_pi_over_diaphragms(story: &Story, pi: f64) -> Vec<(NodeId, f64)> {
-    distribute_pi_over_slice(&story.diaphragms, pi)
+pub(crate) fn distribute_pi_over_diaphragms(
+    model: &Model,
+    story: &Story,
+    pi: f64,
+) -> Vec<(NodeId, f64)> {
+    let diaphragms: Vec<DiaphragmRef<'_>> = model.diaphragms_of(story.id).collect();
+    if diaphragms.is_empty() {
+        return distribute_pi_over_story_nodes(model, story, pi);
+    }
+    distribute_pi_over_slice(&diaphragms, pi)
 }
 
 /// 階の主系統（Ai 分布：昭55建告1793号）に用いる地震用重量（副剛床の Ci を
 /// 直接入力した場合の扱い）。`ci_override` を持つ剛床の重量は主系統の Ai 分布から
 /// 除外する（主剛床は全剛床の Ci に従うが、副剛床は指定 Ci で別途計算するため）。
-/// `ci_override` を持つ剛床がなければ `story.seismic_weight` をそのまま返す
-/// （既存挙動と厳密一致）。
-pub(super) fn main_system_weight(story: &Story) -> f64 {
+/// `ci_override` を持つ剛床がなければ `story.seismic_weight` をそのまま返す。
+pub(super) fn main_system_weight(model: &Model, story: &Story) -> f64 {
     let total = story.seismic_weight.unwrap_or(0.0);
-    let ci_override_weight: f64 = story
-        .diaphragms
-        .iter()
+    let ci_override_weight: f64 = model
+        .diaphragms_of(story.id)
         .filter(|d| d.ci_override.is_some())
         .map(|d| d.weight.unwrap_or(0.0))
         .sum();
@@ -195,18 +219,26 @@ pub(super) fn main_system_weight(story: &Story) -> f64 {
 ///   水平力 = `ci_override` × その剛床の `weight`（`weight=None` なら 0）を
 ///   別途作用させる（等価震度扱い。上階に同一系統の剛床が積み上がらない
 ///   副剛床を想定。副剛床の Ci を直接入力した場合の扱い）。
+/// - 剛床がない階: [`distribute_pi_over_diaphragms`] と同じく階の節点へ直接分配する。
 ///
 /// 全剛床が `ci_override` 無しなら [`distribute_pi_over_diaphragms`] と
 /// 厳密に一致する。
-pub(crate) fn distribute_seismic_forces(story: &Story, pi: f64) -> Vec<(NodeId, f64)> {
-    let main_diaphragms: Vec<DiaphragmDef> = story
-        .diaphragms
+pub(crate) fn distribute_seismic_forces(
+    model: &Model,
+    story: &Story,
+    pi: f64,
+) -> Vec<(NodeId, f64)> {
+    let diaphragms: Vec<DiaphragmRef<'_>> = model.diaphragms_of(story.id).collect();
+    if diaphragms.is_empty() {
+        return distribute_pi_over_story_nodes(model, story, pi);
+    }
+    let main_diaphragms: Vec<DiaphragmRef<'_>> = diaphragms
         .iter()
         .filter(|d| d.ci_override.is_none())
-        .cloned()
+        .copied()
         .collect();
     let mut result = distribute_pi_over_slice(&main_diaphragms, pi);
-    for d in &story.diaphragms {
+    for d in &diaphragms {
         if let Some(ci) = d.ci_override {
             result.push((d.master, ci * d.weight.unwrap_or(0.0)));
         }
@@ -372,7 +404,7 @@ pub fn seismic_distribution_for_model(
     let specs: Vec<squid_n_load::ai::StorySeismicSpec> = stories
         .iter()
         .map(|s| squid_n_load::ai::StorySeismicSpec {
-            weight: main_system_weight(s),
+            weight: main_system_weight(model, s),
             ci_weight: s.seismic_weight.unwrap_or(0.0),
             level_kind: s.level_kind,
         })
@@ -418,7 +450,7 @@ pub fn build_seismic_load_case_from_model(
 
     for (i, story) in stories.iter().enumerate() {
         let pi = ai.pi.get(i).copied().unwrap_or(0.0);
-        for (master, share) in distribute_seismic_forces(story, pi) {
+        for (master, share) in distribute_seismic_forces(model, story, pi) {
             // NaN は `== 0.0` をすり抜けて荷重ケースへ混入し「解析は成功したが
             // 結果が NaN」という壊れ方をするため、非有限値もここで除外する。
             if share == 0.0 || !share.is_finite() {

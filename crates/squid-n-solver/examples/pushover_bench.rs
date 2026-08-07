@@ -20,7 +20,7 @@ use std::time::Instant;
 use squid_n_core::dof::{Dof6Mask, DofMap};
 use squid_n_core::ids::{ElemId, LoadCaseId, MaterialId, NodeId, SectionId, StoryId};
 use squid_n_core::model::{
-    DiaphragmDef, ElementData, ElementKind, EndCondition, ForceRegime, LoadCase, LoadCaseKind,
+    Constraint, ElementData, ElementKind, EndCondition, ForceRegime, LoadCase, LoadCaseKind,
     LocalAxis, Material, MaterialCategory, MemberLoad, MemberLoadKind, Model, Node, Section, Story,
 };
 use squid_n_solver::analysis::SeismicDir;
@@ -155,12 +155,18 @@ fn make_frame(nx: usize, ny: usize, nz: usize) -> Model {
     let beams_per_story = nx * (ny + 1) + ny * (nx + 1);
     let seismic_weight = 10.0 * span * beams_per_story as f64;
     let mut stories = Vec::new();
+    let mut constraints = Vec::new();
     for iz in 1..=nz {
         let node_ids: Vec<NodeId> = (0..=ny)
             .flat_map(|iy| (0..=nx).map(move |ix| node_id(ix, iy, iz)))
             .collect();
         let master = node_ids[0];
         let slaves: Vec<NodeId> = node_ids[1..].to_vec();
+        constraints.push(Constraint::rigid_diaphragm(
+            StoryId((iz - 1) as u32),
+            master,
+            slaves,
+        ));
         stories.push(Story {
             level_kind: Default::default(),
             structure: Default::default(),
@@ -168,13 +174,6 @@ fn make_frame(nx: usize, ny: usize, nz: usize) -> Model {
             name: format!("{iz}F"),
             elevation: iz as f64 * height,
             node_ids,
-            diaphragms: vec![DiaphragmDef {
-                ci_override: None,
-                weight: None,
-                master,
-                slaves,
-                rigid: true,
-            }],
             seismic_weight: Some(seismic_weight),
             weight_override: None,
         });
@@ -232,6 +231,7 @@ fn make_frame(nx: usize, ny: usize, nz: usize) -> Model {
         }],
         load_cases,
         stories,
+        constraints,
         ..Default::default()
     }
 }

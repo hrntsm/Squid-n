@@ -3994,11 +3994,11 @@ mod tests {
         model.elements.push(test_beam(0, 0, 1));
         model
             .constraints
-            .push(squid_n_core::model::Constraint::RigidDiaphragm {
-                story: squid_n_core::ids::StoryId(0),
-                master: NodeId(2),
-                slaves: vec![NodeId(0), NodeId(1)],
-            });
+            .push(squid_n_core::model::Constraint::rigid_diaphragm(
+                squid_n_core::ids::StoryId(0),
+                NodeId(2),
+                vec![NodeId(0), NodeId(1)],
+            ));
 
         let disp = vec![
             [0.0; 6],
@@ -4169,11 +4169,11 @@ mod tests {
         model.nodes.push(test_node(2, [3000.0, 0.0, 3000.0])); // マスター（重心）
         model
             .constraints
-            .push(squid_n_core::model::Constraint::RigidDiaphragm {
-                story: squid_n_core::ids::StoryId(0),
-                master: NodeId(2),
-                slaves: vec![NodeId(0), NodeId(1)],
-            });
+            .push(squid_n_core::model::Constraint::rigid_diaphragm(
+                squid_n_core::ids::StoryId(0),
+                NodeId(2),
+                vec![NodeId(0), NodeId(1)],
+            ));
         let disp = vec![
             [1.0, 0.0, -4.0, 0.0, 0.0, 0.0],
             [1.0, 0.0, -6.0, 0.0, 0.0, 0.0],

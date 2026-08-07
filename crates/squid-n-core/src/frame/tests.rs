@@ -197,7 +197,6 @@ fn story_frame_includes_columns_below() {
         name: "2FL".into(),
         elevation: 4000.0,
         node_ids: vec![top_a, top_b],
-        diaphragms: Vec::new(),
         seismic_weight: None,
         weight_override: None,
         structure: Default::default(),

@@ -288,11 +288,11 @@ mod tests {
             story: None,
             support_spring: None,
         });
-        model.constraints.push(Constraint::RigidDiaphragm {
-            story: StoryId(0),
-            master: NodeId(2),
-            slaves: vec![NodeId(1)],
-        });
+        model.constraints.push(Constraint::rigid_diaphragm(
+            StoryId(0),
+            NodeId(2),
+            vec![NodeId(1)],
+        ));
         model.generated_masters = vec![NodeId(2)];
 
         let dofmap = DofMap::build(&model);

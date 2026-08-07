@@ -1253,7 +1253,6 @@ fn make_story(id: u32, weight: Option<f64>) -> squid_n_core::model::Story {
         name: format!("{}F", id + 1),
         elevation: id as f64 * 3000.0,
         node_ids: vec![],
-        diaphragms: vec![],
         seismic_weight: weight,
         weight_override: None,
     }
@@ -1339,7 +1338,7 @@ fn test_set_story_weight_invalid_id_is_noop() {
 #[test]
 fn test_apply_stories_roundtrip_with_generated_masters() {
     use squid_n_core::dof::Dof;
-    use squid_n_core::model::{Constraint, DiaphragmDef, Story};
+    use squid_n_core::model::{Constraint, Story};
 
     let mut model = empty_model();
     for i in 0..2u32 {
@@ -1375,22 +1374,15 @@ fn test_apply_stories_roundtrip_with_generated_masters() {
             name: "1F".into(),
             elevation: 3000.0,
             node_ids: vec![NodeId(0), NodeId(1)],
-            diaphragms: vec![DiaphragmDef {
-                ci_override: None,
-                weight: None,
-                master: NodeId(2),
-                slaves: vec![NodeId(0), NodeId(1)],
-                rigid: true,
-            }],
             seismic_weight: Some(1000.0),
             weight_override: None,
         }],
         node_story: vec![Some(StoryId(0)), Some(StoryId(0))],
-        constraints: vec![Constraint::RigidDiaphragm {
-            story: StoryId(0),
-            master: NodeId(2),
-            slaves: vec![NodeId(0), NodeId(1)],
-        }],
+        constraints: vec![Constraint::rigid_diaphragm(
+            StoryId(0),
+            NodeId(2),
+            vec![NodeId(0), NodeId(1)],
+        )],
         rep_nodes: vec![rep_node],
         generated_masters: vec![NodeId(2)],
         mass_method: Default::default(),
@@ -3545,4 +3537,179 @@ fn test_add_catalog_section_rejects_duplicate_key() {
 
     stack.undo(&mut model);
     assert_eq!(model.sections.len(), 0);
+}
+
+// ---- 階定義の編集（階名・階レベル・追加・削除） ----
+
+/// 階 `levels` と、標高 `zs` の節点を持つモデル。
+fn story_edit_model(zs: &[f64], levels: &[(&str, f64)]) -> Model {
+    use squid_n_core::dof::Dof6Mask;
+    use squid_n_core::model::{Node, Story};
+
+    Model {
+        nodes: zs
+            .iter()
+            .enumerate()
+            .map(|(i, &z)| Node {
+                id: NodeId(i as u32),
+                coord: [0.0, 0.0, z],
+                restraint: Dof6Mask::FREE,
+                mass: None,
+                story: None,
+                support_spring: None,
+            })
+            .collect(),
+        stories: levels
+            .iter()
+            .enumerate()
+            .map(|(i, &(name, elevation))| Story {
+                id: StoryId(i as u32),
+                name: name.into(),
+                elevation,
+                node_ids: Vec::new(),
+                seismic_weight: None,
+                weight_override: None,
+                structure: Default::default(),
+                level_kind: Default::default(),
+            })
+            .collect(),
+        ..Default::default()
+    }
+}
+
+/// 階の追加は標高昇順の位置へ入り、以降の階の ID が繰り上がる。undo で元に戻る。
+#[test]
+fn test_add_story_inserts_in_elevation_order_and_renumbers() {
+    let mut model = story_edit_model(&[0.0, 4000.0, 11000.0], &[("1F", 4000.0), ("3F", 11000.0)]);
+    model.nodes[2].story = Some(StoryId(1));
+    model
+        .constraints
+        .push(squid_n_core::model::Constraint::rigid_diaphragm(
+            StoryId(1),
+            NodeId(2),
+            vec![],
+        ));
+    let mut undo = UndoStack::new();
+
+    undo.run(
+        &mut model,
+        Box::new(AddStory {
+            name: "2F".into(),
+            elevation: 7500.0,
+        }),
+    );
+
+    let names: Vec<&str> = model.stories.iter().map(|s| s.name.as_str()).collect();
+    assert_eq!(names, vec!["1F", "2F", "3F"], "標高昇順に挿入される");
+    assert!(
+        model
+            .stories
+            .iter()
+            .enumerate()
+            .all(|(i, s)| s.id.index() == i),
+        "StoryId ＝配列位置の不変条件が保たれる"
+    );
+    assert_eq!(
+        model.nodes[2].story,
+        Some(StoryId(2)),
+        "3F の参照が繰り上がる"
+    );
+    assert_eq!(
+        model.diaphragms_of(StoryId(2)).count(),
+        1,
+        "剛床の参照も繰り上がる"
+    );
+    assert!(model.validate().is_ok());
+
+    undo.undo(&mut model);
+    assert_eq!(model.stories.len(), 2);
+    assert_eq!(model.nodes[2].story, Some(StoryId(1)));
+    assert_eq!(model.diaphragms_of(StoryId(1)).count(), 1);
+}
+
+/// 階の削除は階定義だけを消し、節点・部材は残す。削除した階の剛床は取り除かれ、
+/// その階に属していた節点は所属階を失う。上位階の ID は繰り下がる。
+#[test]
+fn test_delete_story_keeps_nodes_and_drops_its_diaphragm() {
+    let mut model = story_edit_model(
+        &[0.0, 4000.0, 7500.0, 11000.0],
+        &[("1F", 4000.0), ("2F", 7500.0), ("3F", 11000.0)],
+    );
+    model.nodes[1].story = Some(StoryId(0));
+    model.nodes[2].story = Some(StoryId(1));
+    model.nodes[3].story = Some(StoryId(2));
+    for (sid, nid) in [(0u32, 1u32), (1, 2), (2, 3)] {
+        model
+            .constraints
+            .push(squid_n_core::model::Constraint::rigid_diaphragm(
+                StoryId(sid),
+                NodeId(nid),
+                vec![],
+            ));
+    }
+    let n_nodes = model.nodes.len();
+    let mut undo = UndoStack::new();
+
+    undo.run(&mut model, Box::new(DeleteStory { story: StoryId(1) }));
+
+    assert_eq!(model.nodes.len(), n_nodes, "節点は消えない");
+    let names: Vec<&str> = model.stories.iter().map(|s| s.name.as_str()).collect();
+    assert_eq!(names, vec!["1F", "3F"]);
+    assert_eq!(model.nodes[2].story, None, "削除した階の節点は所属階を失う");
+    assert_eq!(
+        model.nodes[3].story,
+        Some(StoryId(1)),
+        "上位階の参照が繰り下がる"
+    );
+    assert_eq!(model.constraints.len(), 2, "削除した階の剛床だけが消える");
+    assert_eq!(model.diaphragms_of(StoryId(1)).count(), 1);
+    assert!(model.validate().is_ok());
+
+    undo.undo(&mut model);
+    assert_eq!(model.stories.len(), 3);
+    assert_eq!(model.nodes[2].story, Some(StoryId(1)));
+    assert_eq!(model.constraints.len(), 3);
+}
+
+/// 階レベルの変更で並び順が入れ替わる場合も、標高昇順と ID＝配列位置を保つ。
+#[test]
+fn test_set_story_level_resorts_and_renumbers() {
+    let mut model = story_edit_model(&[0.0, 4000.0, 7500.0], &[("1F", 4000.0), ("2F", 7500.0)]);
+    model.nodes[1].story = Some(StoryId(0));
+    model.nodes[2].story = Some(StoryId(1));
+    let mut undo = UndoStack::new();
+
+    // 1F のレベルを 2F より上へ動かす（入力ミスの是正など）。
+    undo.run(
+        &mut model,
+        Box::new(SetStoryLevel {
+            story: StoryId(0),
+            name: "RF".into(),
+            elevation: 9000.0,
+        }),
+    );
+
+    let names: Vec<&str> = model.stories.iter().map(|s| s.name.as_str()).collect();
+    assert_eq!(names, vec!["2F", "RF"], "標高昇順へ並べ替わる");
+    assert!(model
+        .stories
+        .iter()
+        .enumerate()
+        .all(|(i, s)| s.id.index() == i));
+    assert_eq!(
+        model.nodes[1].story,
+        Some(StoryId(1)),
+        "旧 1F の節点は新 ID を指す"
+    );
+    assert_eq!(
+        model.nodes[2].story,
+        Some(StoryId(0)),
+        "旧 2F の節点も追随する"
+    );
+    assert!(model.validate().is_ok());
+
+    undo.undo(&mut model);
+    let names: Vec<&str> = model.stories.iter().map(|s| s.name.as_str()).collect();
+    assert_eq!(names, vec!["1F", "2F"]);
+    assert_eq!(model.nodes[1].story, Some(StoryId(0)));
 }

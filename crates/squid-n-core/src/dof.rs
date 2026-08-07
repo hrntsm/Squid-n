@@ -441,11 +441,11 @@ mod tests {
         assert!(map.active(2 * DOF_PER_NODE).is_none());
 
         // 剛床マスターに指定すると自由度を持つ（拘束されない DOF 分）。
-        model.constraints.push(Constraint::RigidDiaphragm {
-            story: StoryId(0),
-            master: NodeId(2),
-            slaves: vec![NodeId(0), NodeId(1)],
-        });
+        model.constraints.push(Constraint::rigid_diaphragm(
+            StoryId(0),
+            NodeId(2),
+            vec![NodeId(0), NodeId(1)],
+        ));
         let map = DofMap::build(&model);
         assert_eq!(map.n_active(), 18, "拘束マスターは自由度を持つ");
     }

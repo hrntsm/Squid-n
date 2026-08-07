@@ -481,7 +481,11 @@ impl App {
                     .filter(|n| n.restraint.0 != 0 && !generated.contains(&n.id))
                     .count()
             },
-            n_diaphragms: model.stories.iter().map(|s| s.diaphragms.len()).sum(),
+            n_diaphragms: model
+                .stories
+                .iter()
+                .map(|s| model.diaphragms_of(s.id).count())
+                .sum(),
             ground_elevation: squid_n_solver::analysis::ground_elevation(model),
             height_mm: squid_n_solver::analysis::building_height_mm(model),
             steel_height_ratio: squid_n_solver::analysis::steel_height_ratio(model),
@@ -517,7 +521,7 @@ impl App {
                     elevation: s.elevation,
                     height: s.elevation - below,
                     n_nodes: s.node_ids.len(),
-                    n_diaphragms: s.diaphragms.len(),
+                    n_diaphragms: model.diaphragms_of(s.id).count(),
                     weight: weights[i],
                     cumulative_weight: weights[i..].iter().sum(),
                     structure: s.structure,

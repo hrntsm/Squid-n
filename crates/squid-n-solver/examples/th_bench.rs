@@ -196,7 +196,6 @@ fn make_frame(nx: usize, ny: usize, nz: usize) -> Model {
             name: format!("{iz}F"),
             elevation: iz as f64 * height,
             node_ids,
-            diaphragms: vec![],
             seismic_weight: None,
             weight_override: None,
         });

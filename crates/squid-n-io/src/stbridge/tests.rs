@@ -55,7 +55,6 @@ fn representative_model() -> Model {
         name: "1F".into(),
         elevation: 3000.0,
         node_ids: vec![NodeId(2), NodeId(3)],
-        diaphragms: vec![],
         seismic_weight: None,
         weight_override: None,
     });
@@ -2750,4 +2749,44 @@ fn test_import_reports_attribute_dispositions() {
     });
     assert_eq!(sorted, report.attributes, "報告は整列済み");
     assert!(report.dropped_attributes().count() >= 2);
+}
+
+/// `StbStory` が標高の昇順に並んでいないファイルでも、取り込み後の
+/// `Model.stories` は標高昇順・`StoryId` ＝配列位置になること。
+///
+/// 階への帰属区間は直下階のレベルで決まる（`Model::story_spans`）ため、
+/// 並びが崩れたまま取り込むと節点が無言で別の階へ入る。
+#[test]
+fn test_import_sorts_stories_by_elevation() {
+    let xml = r#"<?xml version="1.0"?>
+<ST_BRIDGE version="2.0.0"><StbModel>
+  <StbNodes>
+    <StbNode id="0" X="0" Y="0" Z="0"/>
+    <StbNode id="1" X="0" Y="0" Z="3000"/>
+    <StbNode id="2" X="0" Y="0" Z="6000"/>
+  </StbNodes>
+  <StbStories>
+    <StbStory id="0" name="RF" height="6000">
+      <StbNodeIdList><StbNodeId id="2"/></StbNodeIdList>
+    </StbStory>
+    <StbStory id="1" name="1F" height="0"/>
+    <StbStory id="2" name="2F" height="3000">
+      <StbNodeIdList><StbNodeId id="1"/></StbNodeIdList>
+    </StbStory>
+  </StbStories>
+</StbModel></ST_BRIDGE>"#;
+    let m = import_stbridge(xml).expect("import");
+    assert!(m.validate().is_ok(), "{:?}", m.validate());
+
+    let names: Vec<&str> = m.stories.iter().map(|s| s.name.as_str()).collect();
+    assert_eq!(names, vec!["1F", "2F", "RF"], "標高昇順へ並べ替わる");
+    assert!(
+        m.stories.iter().enumerate().all(|(i, s)| s.id.index() == i),
+        "StoryId ＝配列位置"
+    );
+    // 所属階の参照も並べ替え後の ID を指す。
+    assert_eq!(m.nodes[1].story, Some(StoryId(1)), "節点1 → 2F");
+    assert_eq!(m.nodes[2].story, Some(StoryId(2)), "節点2 → RF");
+    assert_eq!(m.stories[1].node_ids, vec![NodeId(1)]);
+    assert_eq!(m.stories[2].node_ids, vec![NodeId(2)]);
 }

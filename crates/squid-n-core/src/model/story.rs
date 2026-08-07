@@ -1,27 +1,45 @@
 //! 階（層）関連の型。
 //!
-//! - [`DiaphragmDef`] — 剛床（マスター・スレーブ節点、重量分配）。
+//! **階と剛床は別の概念である。** 階は法規上の層（層間変形角・層せん断力・
+//! 剛性率・偏心率が対象とする区画）であり、剛床は解析上の面内剛体拘束である。
+//! 階が剛床を持たないことも、1 つの階が複数の剛床を持つこと（段差床）もある。
+//! そのため剛床は階の一部としてではなく、拘束
+//! （[`Constraint::RigidDiaphragm`]）として単一の情報源に保持する。
+//! 階から剛床を引くときは [`Model::diaphragms_of`] を使う。
+//!
+//! - [`DiaphragmRef`] — 階に属する剛床の参照ビュー。
 //! - [`StoryStructure`] — 階の主要構造種別。
 //! - [`StoryLevelKind`] — 階の種別（一般／PH／地下）。
 //! - [`Story`] — 階の定義。
 
 use super::*;
 
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct DiaphragmDef {
+/// 剛床のレベル許容差 [mm]。剛床のスレーブ節点は「階のレベルからこの範囲内に
+/// ある節点」とする（[`Model::on_diaphragm_level`]）。
+///
+/// 階への帰属（[`Model::story_of_elevation`]）が**区間**であるのに対し、剛床への
+/// 帰属は**床面**である。中間高さの節点（柱の分割点・階高の途中に取り付く梁）は
+/// 階には属するが剛床には入らない。面内剛体として拘束してよいのは同一床面の
+/// 節点だけであり、中間節点を含めると存在しない水平剛性が生じるためである。
+pub const DIAPHRAGM_LEVEL_TOL_MM: f64 = 1.0;
+
+/// 階に属する剛床の参照ビュー（[`Constraint::RigidDiaphragm`] の内容）。
+///
+/// 剛床の実体は拘束として保持されるため、階から剛床を辿る側は本ビューを介する
+/// （[`Model::diaphragms_of`]）。
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DiaphragmRef<'a> {
+    pub story: StoryId,
     pub master: NodeId,
-    pub slaves: Vec<NodeId>,
-    pub rigid: bool,
+    pub slaves: &'a [NodeId],
     /// この剛床が負担する地震用重量 [N]。多剛床の階では層の水平力 Pi を
     /// 剛床ごとの重量比で分配するために用いる（多剛床の設計用せん断力。
     /// 令88条・昭55建告1793号）。None は未算定（階に単一剛床なら層重量全量）。
-    #[serde(default)]
     pub weight: Option<f64>,
     /// 副剛床の層せん断力係数 Ci の直接入力（令88条・昭55建告1793号の
     /// 層せん断力係数）。Some の剛床は主系統の Ai 分布から
     /// 除外され、水平力 = ci_override × 剛床重量（等価震度扱い。上階に同一系統の
     /// 剛床が積み上がらない副剛床を想定）として作用する。None は主系統（Ai 分布）。
-    #[serde(default)]
     pub ci_override: Option<f64>,
 }
 
@@ -104,13 +122,29 @@ pub enum StoryLevelKind {
     Basement { depth_m: f64 },
 }
 
+/// 階（法規上の層）の定義。
+///
+/// フィールドは**誰が決めるか**で 2 系統に分かれる。
+///
+/// - **利用者が決める**: [`Self::name`]・[`Self::elevation`]・[`Self::level_kind`]・
+///   [`Self::weight_override`]。新規作成時の入力、または ST-Bridge の `StbStory`
+///   から入り、準備計算では書き換えない。
+/// - **準備計算が埋める**: [`Self::node_ids`]・[`Self::seismic_weight`]・
+///   [`Self::structure`]。節点と部材が確定してはじめて決まる派生値であり、
+///   階生成のたびに算定し直す。
+///
+/// [`Model::stories`] は [`Self::elevation`] の**昇順**に並ぶ（階への帰属区間が
+/// 直下階のレベルで決まるため、この並びが崩れると帰属が壊れる）。
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Story {
     pub id: StoryId,
+    /// 階名（`2F`・`PH1` など）。利用者が決める自由文字列で、階の識別に用いる。
     pub name: String,
+    /// 階のレベル [mm]。**その階が代表する床のレベル**であり、階への帰属区間の
+    /// 上端でもある（[`Model::story_of_elevation`]）。
     pub elevation: f64,
+    /// この階に属する節点（準備計算が [`Model::story_of_elevation`] で埋める）。
     pub node_ids: Vec<NodeId>,
-    pub diaphragms: Vec<DiaphragmDef>,
     /// 設計に用いる地震用重量 [N]。準備計算の階生成が自動算定値を書き込むが、
     /// [`Self::weight_override`] が `Some` の場合はその手入力値が入る
     /// （解析・設計側はこのフィールドだけを読めばよい）。
@@ -127,4 +161,119 @@ pub struct Story {
     /// 階の種別（一般/PH/地下）。旧スキーマは一般階扱い。
     #[serde(default)]
     pub level_kind: StoryLevelKind,
+}
+
+impl Model {
+    /// 建物の基部レベル [mm]（階への帰属区間の下端であり、`elevation` の基準 0）。
+    ///
+    /// 全構造節点（`generated_masters` ＝階生成が作る剛床代表節点を除く）の最小 Z
+    /// 座標を基部とする。剛床代表節点は慣性力重心に置かれる仮想節点であり、実際の
+    /// 構造高さには寄与しないため除外する。節点がない場合は 0 を返す。
+    pub fn base_elevation(&self) -> f64 {
+        let excluded: std::collections::HashSet<NodeId> =
+            self.generated_masters.iter().copied().collect();
+        let base = self
+            .nodes
+            .iter()
+            .filter(|n| !excluded.contains(&n.id))
+            .map(|n| n.coord[2])
+            .fold(f64::INFINITY, f64::min);
+        if base.is_finite() {
+            base
+        } else {
+            0.0
+        }
+    }
+
+    /// 各階への帰属区間 `(下端, 上端]` [mm]（[`Self::stories`] と同順・同長）。
+    ///
+    /// 下端は直下階のレベル（最下階は [`Self::base_elevation`]）、上端は当該階の
+    /// レベルである。**下端は含まず上端を含む**ため、基部の節点（支点）はどの階にも
+    /// 属さず、床レベルちょうどの節点はその階に属する。
+    ///
+    /// 区間の算出はここに集約する（[`Self::base_elevation`] が全節点の走査を伴う
+    /// ため、節点ごとに区間を求め直すと二乗の計算量になる）。
+    pub fn story_spans(&self) -> Vec<(f64, f64)> {
+        let base = self.base_elevation();
+        self.stories
+            .iter()
+            .enumerate()
+            .map(|(i, s)| {
+                let bottom = if i == 0 {
+                    base
+                } else {
+                    self.stories[i - 1].elevation
+                };
+                (bottom, s.elevation)
+            })
+            .collect()
+    }
+
+    /// レベル `z` [mm] が属する階を、[`Self::story_spans`] の区間列から引く。
+    ///
+    /// 階への帰属は**区間**である。中間高さの節点や段差床の節点も、区間に入れば
+    /// 当該階に属する。剛床への帰属とは規則が異なる（[`Self::on_diaphragm_level`]）。
+    /// どの区間にも入らない場合は `None`（基部レベル以下、または最上階より上）。
+    pub fn story_at(&self, spans: &[(f64, f64)], z: f64) -> Option<StoryId> {
+        spans
+            .iter()
+            .position(|&(bottom, top)| z > bottom && z <= top)
+            .and_then(|i| self.stories.get(i))
+            .map(|s| s.id)
+    }
+
+    /// 各節点の所属階（[`Self::nodes`] と同順・同長）。
+    ///
+    /// 階への帰属規則（区間）の単一情報源。準備計算の階生成も UI の表示も
+    /// これを用いる。
+    pub fn node_stories(&self) -> Vec<Option<StoryId>> {
+        let spans = self.story_spans();
+        self.nodes
+            .iter()
+            .map(|n| self.story_at(&spans, n.coord[2]))
+            .collect()
+    }
+
+    /// レベル `z` [mm] が階 `story` の床面上にあるか（剛床のスレーブ判定）。
+    ///
+    /// 判定は階のレベルからの差が [`DIAPHRAGM_LEVEL_TOL_MM`] 以内かどうかで、
+    /// 階への帰属（区間）とは規則が異なる。
+    pub fn on_diaphragm_level(&self, story: StoryId, z: f64) -> bool {
+        self.stories
+            .get(story.index())
+            .is_some_and(|s| (z - s.elevation).abs() <= DIAPHRAGM_LEVEL_TOL_MM)
+    }
+
+    /// 階 `story` に属する剛床（[`Constraint::RigidDiaphragm`]）を定義順に返す。
+    ///
+    /// 剛床は階の一部ではなく拘束として保持されるため、「この階の剛床」が要る
+    /// ところは常にこのヘルパーを情報源とする。
+    pub fn diaphragms_of(&self, story: StoryId) -> impl Iterator<Item = DiaphragmRef<'_>> {
+        self.constraints.iter().filter_map(move |c| match c {
+            Constraint::RigidDiaphragm {
+                story: s,
+                master,
+                slaves,
+                weight,
+                ci_override,
+            } if *s == story => Some(DiaphragmRef {
+                story: *s,
+                master: *master,
+                slaves,
+                weight: *weight,
+                ci_override: *ci_override,
+            }),
+            _ => None,
+        })
+    }
+
+    /// 節点 `id` がいずれかの剛床のマスターまたはスレーブか。
+    pub fn node_on_rigid_diaphragm(&self, id: NodeId) -> bool {
+        self.constraints.iter().any(|c| match c {
+            Constraint::RigidDiaphragm { master, slaves, .. } => {
+                *master == id || slaves.contains(&id)
+            }
+            _ => false,
+        })
+    }
 }

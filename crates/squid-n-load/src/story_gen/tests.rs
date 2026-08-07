@@ -102,6 +102,20 @@ fn two_story_model() -> Model {
     model
 }
 
+/// 生成結果の剛床拘束から、階 `story` のスレーブ節点を取り出す。
+/// 剛床は階ではなく `Constraint::RigidDiaphragm` が保持する。
+fn gen_slaves(gen: &StoryGenResult, story: StoryId) -> Vec<NodeId> {
+    gen.constraints
+        .iter()
+        .find_map(|c| match c {
+            Constraint::RigidDiaphragm {
+                story: s, slaves, ..
+            } if *s == story => Some(slaves.clone()),
+            _ => None,
+        })
+        .unwrap_or_default()
+}
+
 #[test]
 fn test_generate_two_stories() {
     let model = two_story_model();
@@ -111,8 +125,8 @@ fn test_generate_two_stories() {
     assert_eq!(gen.stories[1].elevation, 7000.0);
     // 各階 2 節点 → 代表節点(慣性力重心)を新規生成 + スレーブ2（既存節点は全てスレーブ）
     assert_eq!(gen.stories[0].node_ids.len(), 2);
-    assert_eq!(gen.stories[0].diaphragms[0].slaves.len(), 2);
-    assert_eq!(gen.stories[1].diaphragms[0].slaves.len(), 2);
+    assert_eq!(gen_slaves(&gen, StoryId(0)).len(), 2);
+    assert_eq!(gen_slaves(&gen, StoryId(1)).len(), 2);
     assert_eq!(gen.constraints.len(), 2);
     // 基部節点は無所属
     assert_eq!(gen.node_story[0], None);
@@ -221,9 +235,9 @@ fn test_generate_weighted_centroid_matches_hand_calc() {
     // 重量は自重なし・節点荷重のみ: 100kN + 300kN = 400kN
     assert_eq!(story.seismic_weight, Some(400000.0));
     assert_eq!(
-        story.diaphragms[0].slaves.len(),
+        gen_slaves(&gen, StoryId(0)).len(),
         2,
-        "既存節点は全てスレーブ"
+        "床面上の既存節点は全てスレーブ"
     );
 
     // 手計算: Gx = Σ(iW·ix)/ΣiW = (100000*0 + 300000*4000) / 400000 = 3000
@@ -2171,33 +2185,175 @@ fn test_story_structure_majority_tie_breaks_to_safe_side() {
     assert_eq!(StoryStructure::majority(1, 3, 0), StoryStructure::S);
 }
 
-/// 階の再生成では、地震用重量の手入力値と階の種別を標高一致の旧階から引き継ぐ。
-/// 標高が一致しない階（新たに現れた階）は自動算定値のままになる。
+/// 階の再生成では、利用者が決める欄（階名・階レベル・階種別・地震用重量の手入力）を
+/// 既存の階定義からそのまま引き継ぐ。所属節点・算定重量だけが更新される。
 #[test]
-fn test_carry_over_manual_story_settings() {
+fn test_regeneration_keeps_user_defined_story_fields() {
     use squid_n_core::model::StoryLevelKind;
-    let model = two_story_model();
-    let prev = {
-        let mut gen = generate_stories(&model, Some(LoadCaseId(0))).unwrap();
-        gen.stories[0].weight_override = Some(12345.0);
-        gen.stories[0].seismic_weight = Some(12345.0);
-        gen.stories[1].level_kind = StoryLevelKind::Penthouse { k: 0.7 };
-        gen.stories
-    };
+    let mut model = two_story_model();
+    // 1 回目の生成結果をモデルへ適用し、利用者の入力を加える。
+    let gen = generate_stories(&model, Some(LoadCaseId(0))).unwrap();
+    model.stories = gen.stories;
+    model.stories[0].name = "1FL".into();
+    model.stories[0].weight_override = Some(12345.0);
+    model.stories[0].seismic_weight = Some(12345.0);
+    model.stories[1].name = "PH".into();
+    model.stories[1].level_kind = StoryLevelKind::Penthouse { k: 0.7 };
 
-    let mut fresh = generate_stories(&model, Some(LoadCaseId(0)))
+    let fresh = generate_stories(&model, Some(LoadCaseId(0)))
         .unwrap()
         .stories;
-    let auto_weight_1f = fresh[0].seismic_weight;
-    assert_ne!(auto_weight_1f, Some(12345.0), "前提: 自動算定値とは異なる");
-
-    carry_over_manual_story_settings(&prev, &mut fresh);
+    assert_eq!(fresh[0].name, "1FL", "階名を引き継ぐ");
     assert_eq!(fresh[0].weight_override, Some(12345.0));
-    assert_eq!(fresh[0].seismic_weight, Some(12345.0));
+    assert_eq!(
+        fresh[0].seismic_weight,
+        Some(12345.0),
+        "手入力の重量が算定値へ優先する"
+    );
+    assert_eq!(fresh[1].name, "PH");
     assert_eq!(
         fresh[1].level_kind,
         StoryLevelKind::Penthouse { k: 0.7 },
         "階の種別も引き継ぐ"
     );
     assert_eq!(fresh[1].weight_override, None, "手入力のない階はそのまま");
+    assert!(
+        fresh[1].seismic_weight.unwrap() > 50000.0,
+        "手入力のない階は自動算定値"
+    );
+}
+
+// ---- 階定義を正とする割り付け（階と剛床の分離） ----
+
+/// 柱を中間高さで分割した 1 層モデル（各レベル 2 節点、中間に 2 節点）。
+fn split_column_model() -> Model {
+    let mut model = Model::default();
+    let coords = [
+        [0.0, 0.0, 0.0],
+        [6000.0, 0.0, 0.0],
+        [0.0, 0.0, 1750.0],
+        [6000.0, 0.0, 1750.0],
+        [0.0, 0.0, 3500.0],
+        [6000.0, 0.0, 3500.0],
+    ];
+    for (i, c) in coords.iter().enumerate() {
+        model.nodes.push(Node {
+            id: NodeId(i as u32),
+            coord: *c,
+            restraint: if i < 2 {
+                Dof6Mask::FIXED
+            } else {
+                Dof6Mask::FREE
+            },
+            mass: None,
+            story: None,
+            support_spring: None,
+        });
+    }
+    model.stories.push(Story {
+        id: StoryId(0),
+        name: "2FL".into(),
+        elevation: 3500.0,
+        node_ids: Vec::new(),
+        seismic_weight: None,
+        weight_override: None,
+        structure: Default::default(),
+        level_kind: Default::default(),
+    });
+    model
+}
+
+/// 中間高さの節点は階には属する（重量が階へ算入される）が、剛床のスレーブには
+/// ならない。面内剛体として拘束してよいのは同一床面の節点だけであるため。
+#[test]
+fn test_mid_height_nodes_join_story_but_not_diaphragm() {
+    let model = split_column_model();
+    let gen = generate_stories(&model, None).unwrap();
+
+    assert_eq!(gen.stories.len(), 1);
+    // 基部 2 節点を除く 4 節点（中間 2 + 床面 2）が階に属する。
+    assert_eq!(gen.stories[0].node_ids.len(), 4);
+    assert_eq!(gen.node_story[0], None, "基部は階に属さない");
+    assert_eq!(gen.node_story[2], Some(StoryId(0)), "中間節点も階に属する");
+    assert_eq!(gen.node_story[4], Some(StoryId(0)));
+
+    // 剛床のスレーブは床面（z=3500）の 2 節点のみ。
+    let slaves = gen_slaves(&gen, StoryId(0));
+    assert_eq!(
+        slaves,
+        vec![NodeId(4), NodeId(5)],
+        "スレーブは床面の節点だけ"
+    );
+}
+
+/// 利用者が定義した階（階名・階レベル）を正として割り付ける。節点の Z を
+/// クラスタリングし直して階を作り替えることはしない。
+#[test]
+fn test_predefined_stories_drive_the_assignment() {
+    let mut model = two_story_model();
+    // 2 レベル（3500・7000）あるが、階は 7000 の 1 つだけ定義する。
+    model.stories.push(Story {
+        id: StoryId(0),
+        name: "RFL".into(),
+        elevation: 7000.0,
+        node_ids: Vec::new(),
+        seismic_weight: None,
+        weight_override: None,
+        structure: Default::default(),
+        level_kind: Default::default(),
+    });
+
+    let gen = generate_stories(&model, Some(LoadCaseId(0))).unwrap();
+    assert_eq!(gen.stories.len(), 1, "階は定義どおり 1 つのまま");
+    assert_eq!(gen.stories[0].name, "RFL");
+    assert_eq!(gen.stories[0].elevation, 7000.0);
+    // 基部を除く 4 節点すべてが唯一の階の区間 (0, 7000] に入る。
+    assert_eq!(gen.stories[0].node_ids.len(), 4);
+    // 剛床のスレーブは床面（z=7000）の 2 節点のみ。
+    assert_eq!(gen_slaves(&gen, StoryId(0)).len(), 2);
+}
+
+/// 床面（階のレベル）に節点がない階は剛床を持たない。階そのものは残り、
+/// 区間に入る節点は所属するが、面内剛体として拘束する床面がないため
+/// 剛床拘束も代表節点も作られない。
+#[test]
+fn test_story_without_floor_nodes_gets_no_diaphragm() {
+    let mut model = two_story_model();
+    model.stories.push(Story {
+        id: StoryId(0),
+        name: "3F".into(),
+        elevation: 3500.0,
+        node_ids: Vec::new(),
+        seismic_weight: None,
+        weight_override: None,
+        structure: Default::default(),
+        level_kind: Default::default(),
+    });
+    // レベル 10500 には節点がない（区間 (3500, 10500] には z=7000 の節点が入る）。
+    model.stories.push(Story {
+        id: StoryId(1),
+        name: "4F".into(),
+        elevation: 10500.0,
+        node_ids: Vec::new(),
+        seismic_weight: None,
+        weight_override: None,
+        structure: Default::default(),
+        level_kind: Default::default(),
+    });
+
+    let gen = generate_stories(&model, Some(LoadCaseId(0))).unwrap();
+    assert_eq!(gen.stories.len(), 2, "階は定義どおり残る");
+    assert_eq!(gen.stories[1].name, "4F");
+    assert_eq!(
+        gen.stories[1].node_ids.len(),
+        2,
+        "区間に入る節点（z=7000）は階に属する"
+    );
+    assert!(
+        gen.stories[1].seismic_weight.unwrap() > 0.0,
+        "その重量も階へ算入される"
+    );
+    assert_eq!(gen.constraints.len(), 1, "剛床は床面に節点がある階の分だけ");
+    assert!(gen_slaves(&gen, StoryId(1)).is_empty());
+    assert_eq!(gen.rep_nodes.len(), 1, "剛床のない階には代表節点も作らない");
 }

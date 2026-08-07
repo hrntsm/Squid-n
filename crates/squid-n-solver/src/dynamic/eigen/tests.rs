@@ -777,11 +777,11 @@ fn make_diaphragm_columns_model(top_mass: f64, rot_mass: f64) -> Model {
             fc: None,
             fy: Some(235.0),
         }],
-        constraints: vec![Constraint::RigidDiaphragm {
-            story: StoryId(0),
-            master: NodeId(2),
-            slaves: vec![NodeId(1), NodeId(3)],
-        }],
+        constraints: vec![Constraint::rigid_diaphragm(
+            StoryId(0),
+            NodeId(2),
+            vec![NodeId(1), NodeId(3)],
+        )],
         ..Default::default()
     }
 }
@@ -974,11 +974,7 @@ fn make_four_column_diaphragm_model(top_mass: f64, rot_mass: f64) -> Model {
             fc: None,
             fy: Some(235.0),
         }],
-        constraints: vec![Constraint::RigidDiaphragm {
-            story: StoryId(0),
-            master: master_id,
-            slaves,
-        }],
+        constraints: vec![Constraint::rigid_diaphragm(StoryId(0), master_id, slaves)],
         ..Default::default()
     }
 }

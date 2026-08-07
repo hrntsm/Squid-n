@@ -291,8 +291,8 @@ mod tests {
     use squid_n_core::dof::Dof6Mask;
     use squid_n_core::ids::{ElemId, LoadCaseId, MaterialId, NodeId, SectionId, StoryId};
     use squid_n_core::model::{
-        DiaphragmDef, ElementData, ElementKind, EndCondition, ForceRegime, LoadCase, LocalAxis,
-        Material, MaterialCategory, NodalLoad, Node, Section, Story,
+        ElementData, ElementKind, EndCondition, ForceRegime, LoadCase, LocalAxis, Material,
+        MaterialCategory, NodalLoad, Node, Section, Story,
     };
     use std::path::{Path, PathBuf};
     use std::time::Duration;
@@ -494,13 +494,6 @@ mod tests {
                 name: "1F".into(),
                 elevation: 3000.0,
                 node_ids: vec![NodeId(1)],
-                diaphragms: vec![DiaphragmDef {
-                    master: NodeId(1),
-                    slaves: vec![],
-                    rigid: true,
-                    weight: None,
-                    ci_override: None,
-                }],
                 seismic_weight: Some(80_000.0),
                 weight_override: None,
                 structure: Default::default(),

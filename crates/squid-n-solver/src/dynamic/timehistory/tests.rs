@@ -1226,7 +1226,7 @@ fn test_phase_diff_torsion_excites_eccentric_node() {
 // ===== 非線形時刻歴応答解析テスト =====
 
 use squid_n_core::ids::StoryId;
-use squid_n_core::model::{DiaphragmDef, Story};
+use squid_n_core::model::Story;
 
 fn fiber_column_model(fy: f64) -> Model {
     Model {
@@ -1299,13 +1299,6 @@ fn fiber_column_model(fy: f64) -> Model {
             name: "1F".to_string(),
             elevation: 3000.0,
             node_ids: vec![NodeId(1)],
-            diaphragms: vec![DiaphragmDef {
-                ci_override: None,
-                weight: None,
-                master: NodeId(1),
-                slaves: vec![],
-                rigid: true,
-            }],
             seismic_weight: Some(10000.0),
             weight_override: None,
         }],

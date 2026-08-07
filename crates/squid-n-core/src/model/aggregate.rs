@@ -209,6 +209,18 @@ impl Model {
             |s| s.id.index(),
             |s| s.id.0,
         )?;
+        // 階は標高の昇順に並ぶこと。階への帰属区間は直下階のレベルで決まる
+        // （[`Model::story_spans`]）ため、並びが崩れると区間が反転し、節点が
+        // 無言で別の階へ入る・どの階にも入らないという壊れ方をする。
+        for pair in self.stories.windows(2) {
+            if pair[1].elevation < pair[0].elevation {
+                return Err(CoreError::DanglingRef(format!(
+                    "Story {} ({}) の標高 {} が直下の Story {} ({}) の標高 {} より低い（階は標高の昇順に並べる）",
+                    pair[1].id.0, pair[1].name, pair[1].elevation,
+                    pair[0].id.0, pair[0].name, pair[0].elevation,
+                )));
+            }
+        }
         // 通り芯が参照する節点が実在すること（陳腐化した参照の検出）。通り芯は
         // 計算に用いないが、節点の削除で参照が壊れたまま保存されるのを防ぐ。
         for group in &self.axes {
@@ -344,12 +356,7 @@ impl Model {
         self.load_cases
             .iter()
             .any(|lc| lc.nodal.iter().any(|nl| nl.node == id))
-            || self.stories.iter().any(|s| {
-                s.node_ids.contains(&id)
-                    || s.diaphragms
-                        .iter()
-                        .any(|d| d.master == id || d.slaves.contains(&id))
-            })
+            || self.stories.iter().any(|s| s.node_ids.contains(&id))
             || self.slabs.iter().any(|sl| {
                 sl.boundary.contains(&id) || sl.joists.iter().any(|j| j.support.contains(&id))
             })
@@ -479,12 +486,6 @@ impl Model {
             for n in &mut story.node_ids {
                 f(n);
             }
-            for d in &mut story.diaphragms {
-                f(&mut d.master);
-                for s in &mut d.slaves {
-                    f(s);
-                }
-            }
         }
         for group in &mut self.axes {
             for axis in &mut group.axes {
@@ -528,6 +529,27 @@ impl Model {
         for lc in &mut self.load_cases {
             for nl in &mut lc.nodal {
                 f(&mut nl.node);
+            }
+        }
+    }
+
+    /// モデル内の全ての `StoryId` 参照（階自身の ID を含む）へ `f` を適用する
+    /// （[`Model::visit_node_ids`] と同じ規約）。
+    ///
+    /// 階の追加・削除では「ID＝配列位置」の不変条件を保つために ID の繰り上げが
+    /// 必要になる。参照箇所を呼び出し側へ散らさないよう、走査はここに集約する。
+    pub fn visit_story_ids(&mut self, mut f: impl FnMut(&mut StoryId)) {
+        for story in &mut self.stories {
+            f(&mut story.id);
+        }
+        for node in &mut self.nodes {
+            if let Some(sid) = &mut node.story {
+                f(sid);
+            }
+        }
+        for c in &mut self.constraints {
+            if let Constraint::RigidDiaphragm { story, .. } = c {
+                f(story);
             }
         }
     }
