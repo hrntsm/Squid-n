@@ -19,6 +19,9 @@ use squid_n_core::model::{Model, Story, StoryLevelKind};
 /// 標高を変えると並び順の不変条件が崩れうるため、適用後に標高昇順へ並べ替え、
 /// ID を振り直す。逆操作は「変更前の階定義の復元」とする
 /// （並べ替えで他階の ID も動きうるため、1 階分の差分では戻せない）。
+/// index が範囲外（削除済み等で階数が足りない）の場合は Noop。
+/// `StoryId ＝配列位置`が不変条件なので index 位置の階と ID は常に一致し、
+/// その確認は防御的なもの（将来この不変条件が崩れた場合の検出）。
 pub struct SetStoryLevel {
     pub story: StoryId,
     pub name: String,
@@ -76,10 +79,12 @@ fn resort_and_renumber(model: &mut Model) {
 
 impl EditCommand for SetStoryLevel {
     fn apply(&self, model: &mut Model) -> Box<dyn EditCommand> {
-        let before = snapshot(model);
-        let Some(story) = model.stories.get_mut(self.story.index()) else {
+        let idx = self.story.index();
+        if idx >= model.stories.len() || model.stories[idx].id != self.story {
             return Box::new(crate::Noop);
-        };
+        }
+        let before = snapshot(model);
+        let story = &mut model.stories[idx];
         story.name = self.name.clone();
         story.elevation = self.elevation;
         resort_and_renumber(model);
@@ -128,17 +133,20 @@ impl EditCommand for AddStory {
 /// 階は法規上の層の定義であって部材の入れ物ではないため、削除しても構造は
 /// 変わらない。削除した階に属していた節点は所属階を失い、次の階生成で
 /// 直下階の区間へ吸収される。その階の剛床拘束は意味を失うため取り除く。
+/// index が範囲外（削除済み等）の場合は Noop。`StoryId ＝配列位置`が
+/// 不変条件なので index 位置の階と ID は常に一致し、その確認は防御的なもの。
 pub struct DeleteStory {
     pub story: StoryId,
 }
 
 impl EditCommand for DeleteStory {
     fn apply(&self, model: &mut Model) -> Box<dyn EditCommand> {
-        if model.stories.get(self.story.index()).is_none() {
+        let idx = self.story.index();
+        if idx >= model.stories.len() || model.stories[idx].id != self.story {
             return Box::new(crate::Noop);
         }
         let before = snapshot(model);
-        model.stories.remove(self.story.index());
+        model.stories.remove(idx);
         // 削除した階の剛床は載る先を失うため取り除く。
         model.constraints.retain(|c| {
             !matches!(
