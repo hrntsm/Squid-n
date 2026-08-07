@@ -161,15 +161,17 @@ fn make_frame(nx: usize, ny: usize, nz: usize) -> Model {
     // 非線形時刻歴（`NonlinearThCfg::apply_long_term`）の初期載荷に使う。
     let member: Vec<MemberLoad> = beam_ids_for_load
         .iter()
-        .map(|&elem| MemberLoad {
-            elem,
-            dir: [0.0, 0.0, -1.0],
-            kind: MemberLoadKind::Distributed {
-                a: 0.0,
-                b: span,
-                w1: 10.0,
-                w2: 10.0,
-            },
+        .map(|&elem| {
+            MemberLoad::manual(
+                elem,
+                [0.0, 0.0, -1.0],
+                MemberLoadKind::Distributed {
+                    a: 0.0,
+                    b: span,
+                    w1: 10.0,
+                    w2: 10.0,
+                },
+            )
         })
         .collect();
     let load_cases = vec![LoadCase {

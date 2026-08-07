@@ -26,10 +26,7 @@ fn make_model(n_cases: usize) -> Model {
                 kind: Default::default(),
                 id: LoadCaseId(i as u32 + 1),
                 name: format!("case{}", i + 1),
-                nodal: vec![NodalLoad {
-                    node: NodeId(1),
-                    values,
-                }],
+                nodal: vec![NodalLoad::manual(NodeId(1), values)],
                 member: Vec::new(),
             }
         })

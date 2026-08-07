@@ -3,6 +3,7 @@ use squid_n_core::dof::{Dof, DofMap, DOF_PER_NODE};
 use squid_n_core::ids::LoadCaseId;
 use squid_n_core::model::{ElementData, ElementKind, Model};
 use squid_n_element::factory::build_behavior;
+use squid_n_element::member_load::SpanLoadTransfer;
 use squid_n_element::transform::LocalFrame;
 use squid_n_math::sparse::{assemble_csc, Triplet};
 
@@ -171,6 +172,18 @@ pub(crate) fn is_member_load_target(elem: &ElementData) -> bool {
     ) && elem.nodes.len() == 2
 }
 
+/// 部材荷重を材端へ配る方式を要素種別から決める。
+///
+/// ブレース（トラス要素）は軸剛性しか持たないため、材軸直交成分を等価節点力で
+/// 配ると負担できない材端モーメントが節点へ流れ込む。合力と作用位置を保存する
+/// 静定分配へ切り替える（`SpanLoadTransfer` の説明を参照）。
+pub(crate) fn span_load_transfer(elem: &ElementData) -> SpanLoadTransfer {
+    match elem.kind {
+        ElementKind::Brace { .. } => SpanLoadTransfer::StaticallyEquivalent,
+        _ => SpanLoadTransfer::Consistent,
+    }
+}
+
 /// 線材の局所座標系と部材長を返す（部材荷重の等価節点力・固定端内力の共通前処理）。
 /// 非対象要素（[`is_member_load_target`] 参照）・節点参照の欠落・退化長さ（<1e-9mm）
 /// は `None`。
@@ -222,7 +235,12 @@ fn add_member_loads(
         };
         let ni = elem.nodes[0].index();
         let nj = elem.nodes[1].index();
-        let q_local = squid_n_element::member_load::consistent_load_local(loads, &frame, length);
+        let q_local = squid_n_element::member_load::consistent_load_local(
+            loads,
+            &frame,
+            length,
+            span_load_transfer(elem),
+        );
         let q_global = frame.rotate_to_global(&q_local);
         // q_global: [i:0..6, j:6..12] を各節点 DOF へ散布
         for (local_node, &node_idx) in [ni, nj].iter().enumerate() {
@@ -287,10 +305,10 @@ mod tests {
             load_cases: vec![LoadCase {
                 id: LoadCaseId(0),
                 name: "TEST".to_string(),
-                nodal: vec![NodalLoad {
-                    node: NodeId(1),
-                    values: [1000.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-                }],
+                nodal: vec![NodalLoad::manual(
+                    NodeId(1),
+                    [1000.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+                )],
                 member: vec![],
                 kind: Default::default(),
             }],

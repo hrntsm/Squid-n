@@ -110,25 +110,7 @@ impl App {
                 }
             });
 
-            // 荷重ケース
-            let header = egui::CollapsingHeader::new("荷重ケース")
-                .default_open(true)
-                .id_salt("nav_load_cases");
-            header.show(ui, |ui| {
-                for (i, lc) in self.model.load_cases.iter().enumerate() {
-                    let is_sel = self
-                        .nav
-                        .focus_load_case
-                        .map(|id| id == lc.id)
-                        .unwrap_or(false);
-                    if ui
-                        .selectable_label(is_sel, format!("[{}] {}", i, lc.name))
-                        .clicked()
-                    {
-                        self.nav.focus_load_case = Some(lc.id);
-                    }
-                }
-            });
+            self.nav_load_cases(ui);
 
             // 部材リスト（クリックで focus_member を更新 → テーブル/インスペクタに連動）
             let header = egui::CollapsingHeader::new("部材一覧")
@@ -190,8 +172,6 @@ impl App {
                                 StaticCaseKey::Seismic(SeismicDir::Y) => {
                                     "地震静的 (Y方向)".to_string()
                                 }
-                                StaticCaseKey::Wind(SeismicDir::X) => "風静的 (X方向)".to_string(),
-                                StaticCaseKey::Wind(SeismicDir::Y) => "風静的 (Y方向)".to_string(),
                             };
                             let is_sel = self.nav.focus_result == Some(StaticKey::Case(*key));
                             if ui.selectable_label(is_sel, label).clicked() {
@@ -245,6 +225,17 @@ impl App {
     pub(crate) fn draw_tools_panel(&mut self, ui: &mut egui::Ui) {
         ui.strong("作成");
         ui.separator();
+
+        // 荷重の対象ピック中は 3D のクリックをそちらが受け取るため、作成モードを
+        // ON にできると「切り替えたのに反応しない」状態になる。パネルごと無効にする。
+        if self.load_pick_active() {
+            ui.colored_label(
+                crate::theme::BEST_YELLOW,
+                "荷重の対象を選択中は作成モードを使えません。\
+                 3D ビューで対象を選ぶか、Esc で選択を取り消してください。",
+            );
+            return;
+        }
 
         // --- 梁作成モード ---
         // ON 中はクリックで節点を選び、2 点目で梁を生成する（OFF 中は部材クリック=断面割当）。
@@ -492,7 +483,7 @@ impl App {
 
     /// 右ドック「② 解析」パネル：確定した荷重ケース・荷重組合せを解く。
     ///
-    /// 地震力・風圧力も EX/EY・WX/WY の荷重ケースとして扱うため、専用の実行導線は
+    /// 地震力も EX/EY の荷重ケースとして扱うため、専用の実行導線は
     /// 設けない。① は [`App::preparation_panel`]。
     pub(crate) fn analysis_panel(&mut self, ui: &mut egui::Ui) {
         self.right_panel_switcher(ui);
@@ -554,16 +545,16 @@ impl App {
     /// 準備計算（① 解析前の前処理）のセクション一式。
     ///
     /// 実行ボタン・結果ステータスに続けて、準備計算が使う入力
-    /// （地震力の算定諸元・風圧力の算定諸元・計算条件）と、その成果である
-    /// 階の定義を並べる。地震力・風圧力の諸元をここへ置くのは、これらが
-    /// EX/EY・WX/WY の荷重ケースを決める準備計算の入力だからである。
+    /// （地震力の算定諸元・計算条件）と、その成果である
+    /// 階の定義を並べる。地震力の諸元をここへ置くのは、これが
+    /// EX/EY の荷重ケースを決める準備計算の入力だからである。
     fn preparation_section(&mut self, ui: &mut egui::Ui, running: bool) {
         ui.horizontal_wrapped(|ui| {
             if ui
                 .add_enabled(!running, egui::Button::new("🛠 準備計算 実行"))
                 .on_hover_text(
                     "解析前の前処理（階の定義・剛域の算定・床荷重/自重/積載の集計・\
-                     地震力(Ai分布)と風圧力の算定・荷重ケース DL/LL/EX/EY/WX/WY の生成・\
+                     地震力(Ai分布)の算定・荷重ケース DL/LL/EX/EY の生成・\
                      モデル整合性チェック）を実行し、結果を下ドック「準備計算」タブに表示します",
                 )
                 .clicked()
@@ -607,8 +598,6 @@ impl App {
         ui.add_space(6.0);
 
         self.seismic_condition_section(ui);
-        ui.add_space(6.0);
-        self.wind_condition_section(ui);
         ui.add_space(6.0);
         self.member_modeling_section(ui);
         ui.add_space(6.0);
@@ -735,43 +724,6 @@ impl App {
                         egui::DragValue::new(&mut self.analysis_cfg.c0)
                             .speed(0.05)
                             .range(0.05..=1.0),
-                    );
-                });
-            });
-    }
-
-    /// 風圧力の算定諸元。準備計算が WX/WY 荷重ケースを組み立てる入力。
-    fn wind_condition_section(&mut self, ui: &mut egui::Ui) {
-        egui::CollapsingHeader::new("風圧力の条件")
-            .default_open(false)
-            .id_salt("as_wind_cfg")
-            .show(ui, |ui| {
-                ui.colored_label(
-                    crate::theme::GRAY_600,
-                    "準備計算で層水平力を算定し、荷重ケース WX・WY へ反映します。",
-                );
-                ui.horizontal_wrapped(|ui| {
-                    ui.label("V0[m/s]:");
-                    ui.add(
-                        egui::DragValue::new(&mut self.analysis_cfg.v0)
-                            .speed(0.5)
-                            .range(30.0..=46.0),
-                    );
-                    ui.label("粗度区分:");
-                    use squid_n_load::wind::TerrainRoughness;
-                    for (label, r) in [
-                        ("I", TerrainRoughness::I),
-                        ("II", TerrainRoughness::II),
-                        ("III", TerrainRoughness::III),
-                        ("IV", TerrainRoughness::IV),
-                    ] {
-                        ui.selectable_value(&mut self.analysis_cfg.roughness, r, label);
-                    }
-                    ui.label("パラペット[mm]:");
-                    ui.add(
-                        egui::DragValue::new(&mut self.analysis_cfg.parapet_mm)
-                            .speed(10.0)
-                            .range(0.0..=5000.0),
                     );
                 });
             });
@@ -1279,7 +1231,7 @@ impl App {
                 } else {
                     ui.colored_label(
                         crate::theme::GRAY_600,
-                        "EX/EY（地震力）・WX/WY（風圧力）は準備計算が自動生成します。\
+                        "EX/EY（地震力）は準備計算が自動生成します。\
                          荷重組合せは荷重ケース単体の解析結果の線形和として求めます。",
                     );
                 }
@@ -1759,7 +1711,7 @@ impl App {
     }
 
     /// 結果タブの「表示対象」ドロップダウン用の選択肢（キーと表示名）を収集する。
-    /// 静的ケース（ユーザー荷重・地震静的・風静的）に続けて荷重組合せを並べる。
+    /// 静的ケース（ユーザー荷重・地震静的）に続けて荷重組合せを並べる。
     fn result_display_options(&self) -> Vec<(StaticKey, String)> {
         let mut opts = Vec::new();
         if let Some(r) = &self.results {
@@ -1777,8 +1729,6 @@ impl App {
                     }
                     StaticCaseKey::Seismic(SeismicDir::X) => "地震静的 (X方向)".to_string(),
                     StaticCaseKey::Seismic(SeismicDir::Y) => "地震静的 (Y方向)".to_string(),
-                    StaticCaseKey::Wind(SeismicDir::X) => "風静的 (X方向)".to_string(),
-                    StaticCaseKey::Wind(SeismicDir::Y) => "風静的 (Y方向)".to_string(),
                 };
                 opts.push((StaticKey::Case(*key), label));
             }

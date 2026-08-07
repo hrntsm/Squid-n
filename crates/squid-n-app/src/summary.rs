@@ -269,8 +269,6 @@ pub fn build_report_csv(app: &App) -> String {
                 .unwrap_or_else(|| format!("LC {}", lc_id.0)),
             StaticCaseKey::Seismic(SeismicDir::X) => "地震静的 X".to_string(),
             StaticCaseKey::Seismic(SeismicDir::Y) => "地震静的 Y".to_string(),
-            StaticCaseKey::Wind(SeismicDir::X) => "風静的 X".to_string(),
-            StaticCaseKey::Wind(SeismicDir::Y) => "風静的 Y".to_string(),
         };
         let max_d = st
             .disp
@@ -518,7 +516,7 @@ fn push_story_response_table(
 }
 
 /// 準備計算の結果（[`crate::app::PreparationResult`]）を CSV 文字列に整形する
-/// （GUI 非依存）。建物概要・階の分布・地震力(Ai分布)・風圧力・剛域・断面性能・
+/// （GUI 非依存）。建物概要・階の分布・地震力(Ai分布)・剛域・断面性能・
 /// 幅厚比・部材剛性・荷重集計の各セクションを出力する。
 /// 準備計算が未実行なら空文字列を返す。
 pub fn build_preparation_csv(app: &App) -> String {
@@ -612,48 +610,6 @@ pub fn build_preparation_csv(app: &App) -> String {
             out.push_str(&format!("\n[地震力 (Ai分布)]\n算定不可,{}\n", note));
         }
         (None, None) => {}
-    }
-
-    // 速度圧など風向によらない諸元は 1 度だけ、見付面積・層水平力は風向ごとに出す。
-    if let Some(first) = p.wind.first() {
-        out.push_str("\n[風圧力]\n");
-        out.push_str(&format!(
-            "建物高さH[m],{:.3}\n基準風速V0[m/s],{:.1}\n地表面粗度区分,{:?}\n\
-             速度圧q[N/m2],{:.2}\nEr,{:.4}\nGf,{:.4}\nE,{:.4}\n",
-            first.h_mm / 1000.0,
-            first.v0,
-            first.roughness,
-            first.q,
-            first.er,
-            first.gf,
-            first.e,
-        ));
-        for w in &p.wind {
-            out.push_str(&format!(
-                "\n風向,{:?}\n基部せん断力[kN],{:.2}\n",
-                w.dir,
-                kn(w.base_shear)
-            ));
-            out.push_str("階,負担下端[mm],負担上端[mm],見付幅[mm],見付面積[m2],Kz,風圧力[N/m2],層水平力[kN]\n");
-            for r in w.rows.iter().rev() {
-                out.push_str(&format!(
-                    "{},{:.0},{:.0},{:.0},{:.3},{:.4},{:.2},{:.2}\n",
-                    r.name,
-                    r.z_bottom,
-                    r.z_top,
-                    r.width,
-                    r.area * 1e-6,
-                    r.kz,
-                    r.pressure,
-                    kn(r.force),
-                ));
-            }
-        }
-    } else {
-        out.push_str("\n[風圧力]\n");
-    }
-    if let Some(note) = &p.wind_note {
-        out.push_str(&format!("算定不可,{}\n", note));
     }
 
     out.push_str(&format!(

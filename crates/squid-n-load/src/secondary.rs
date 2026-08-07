@@ -148,10 +148,13 @@ pub fn resolve_nodal_to_primary(
             continue;
         };
         match best_span_position(&candidates, node.coord, tol) {
+            // 変換後も元の荷重の素性（名称・生成元）を引き継ぐ。
             Some((elem, a)) => out_member.push(MemberLoad {
                 elem,
                 dir: [f[0] / p, f[1] / p, f[2] / p],
                 kind: MemberLoadKind::Point { a, p },
+                name: nl.name.clone(),
+                source: nl.source,
             }),
             None => out_nodal.push(nl),
         }
@@ -220,14 +223,8 @@ mod tests {
             ..Default::default()
         };
         let nodal = vec![
-            NodalLoad {
-                node: NodeId(2),
-                values: [0.0, 0.0, -5000.0, 0.0, 0.0, 0.0],
-            },
-            NodalLoad {
-                node: NodeId(0),
-                values: [0.0, 0.0, -1000.0, 0.0, 0.0, 0.0],
-            },
+            NodalLoad::manual(NodeId(2), [0.0, 0.0, -5000.0, 0.0, 0.0, 0.0]),
+            NodalLoad::manual(NodeId(0), [0.0, 0.0, -1000.0, 0.0, 0.0, 0.0]),
         ];
         let (out_nodal, out_member) = resolve_nodal_to_primary(&model, nodal, SPAN_TOL_MM);
         assert_eq!(out_nodal.len(), 1);
@@ -279,10 +276,10 @@ mod tests {
             elements: vec![beam(0, 0, 1)],
             ..Default::default()
         };
-        let nodal = vec![NodalLoad {
-            node: NodeId(2),
-            values: [0.0, 0.0, -5000.0, 0.0, 0.0, 0.0],
-        }];
+        let nodal = vec![NodalLoad::manual(
+            NodeId(2),
+            [0.0, 0.0, -5000.0, 0.0, 0.0, 0.0],
+        )];
         let (out_nodal, out_member) = resolve_nodal_to_primary(&model, nodal, SPAN_TOL_MM);
         assert_eq!(out_nodal.len(), 1);
         assert!(out_member.is_empty());

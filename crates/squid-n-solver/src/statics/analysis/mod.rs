@@ -1,8 +1,8 @@
 //! 静的解析のファサード [`Analysis`]。
 //!
 //! `prepare` で DofMap 構築・全体剛性 K の組立・拘束縮約・分解を一度行い、以降は
-//! 分解済み K を再利用して線形静的・荷重組合せ・固有値・時刻歴・地震/風の各解析を
-//! 実行する。地震・風の荷重生成は [`seismic`] / [`wind`]、設定型は [`config`]、
+//! 分解済み K を再利用して線形静的・荷重組合せ・固有値・時刻歴・地震の各解析を
+//! 実行する。地震荷重の生成は [`seismic`]、設定型は [`config`]、
 //! 解析前のモデル検証は [`precheck`] に分離している。
 
 use crate::assemble::{assemble_global_f, assemble_global_k};
@@ -24,16 +24,14 @@ mod combination;
 mod config;
 pub mod precheck;
 mod seismic;
-mod wind;
 
 pub use combination::StaticBatch;
-pub use config::{AiMode, SeismicCfg, SeismicDir, WindStaticCfg};
+pub use config::{AiMode, SeismicCfg, SeismicDir};
 pub(crate) use seismic::distribute_pi_over_diaphragms;
 pub use seismic::{
     base_elevation, build_seismic_load_case_from_model, building_height_mm, ground_elevation,
     seismic_distribution_for_model, steel_height_ratio,
 };
-pub use wind::{build_wind_load_case_from_model, wind_precalc_for_model, WindPrecalc};
 
 /// `model.load_cases` 全件の自由 DOF 荷重ベクトルを1回ずつ計算してマップに詰める
 /// （[`Analysis::f_free_cache`] の構築。`prepare` から使う）。

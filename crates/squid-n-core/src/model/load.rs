@@ -2,10 +2,59 @@
 
 use super::*;
 
+/// 節点に作用する荷重。同一の荷重ケース内で 1 つの節点に何件でも定義できる
+/// （解析では全件が加算される）。
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct NodalLoad {
     pub node: NodeId,
     pub values: [f64; 6],
+    /// 利用者が付けた荷重の名称。空文字は無名（一覧では成分値から作った
+    /// 自動ラベルで表示する）。
+    pub name: String,
+    /// この荷重を作ったのが準備計算か利用者か。準備計算が作った荷重は同期のたびに
+    /// 再生成されるため、利用者は編集・削除できない（[`LoadSource`] を参照）。
+    pub source: LoadSource,
+}
+
+/// 荷重をどこが作ったか。準備計算による自動生成分と利用者の手入力を区別し、
+/// 自動同期が手入力を消さないようにする。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum LoadSource {
+    /// 利用者が入力した荷重。自動同期の対象外で、消えることはない。
+    #[default]
+    Manual,
+    /// 準備計算（床荷重の分配・自重の集計・Ai 分布の水平力）が生成した荷重。
+    /// 同期のたびに全件が作り直される。
+    Auto,
+}
+
+impl LoadSource {
+    /// 準備計算が生成した荷重か。
+    pub fn is_auto(self) -> bool {
+        matches!(self, LoadSource::Auto)
+    }
+}
+
+impl NodalLoad {
+    /// 利用者入力の節点荷重（名称なし）を作る。
+    pub fn manual(node: NodeId, values: [f64; 6]) -> Self {
+        Self {
+            node,
+            values,
+            name: String::new(),
+            source: LoadSource::Manual,
+        }
+    }
+
+    /// 準備計算が生成する節点荷重を作る。
+    pub fn auto(node: NodeId, values: [f64; 6]) -> Self {
+        Self {
+            node,
+            values,
+            name: String::new(),
+            source: LoadSource::Auto,
+        }
+    }
 }
 
 /// 部材（梁）荷重の種別。位置・強度はすべて部材ローカル x 軸（i→j）に沿った
@@ -26,6 +75,34 @@ pub struct MemberLoad {
     pub elem: ElemId,
     pub dir: [f64; 3],
     pub kind: MemberLoadKind,
+    /// 利用者が付けた荷重の名称。空文字は無名（[`NodalLoad::name`] と同じ規約）。
+    pub name: String,
+    /// 準備計算が生成した荷重か（[`NodalLoad::source`] と同じ規約）。
+    pub source: LoadSource,
+}
+
+impl MemberLoad {
+    /// 利用者入力の部材荷重（名称なし）を作る。
+    pub fn manual(elem: ElemId, dir: [f64; 3], kind: MemberLoadKind) -> Self {
+        Self {
+            elem,
+            dir,
+            kind,
+            name: String::new(),
+            source: LoadSource::Manual,
+        }
+    }
+
+    /// 準備計算が生成する部材荷重を作る。
+    pub fn auto(elem: ElemId, dir: [f64; 3], kind: MemberLoadKind) -> Self {
+        Self {
+            elem,
+            dir,
+            kind,
+            name: String::new(),
+            source: LoadSource::Auto,
+        }
+    }
 }
 
 /// 荷重ケースの種別。地震用重量の集計（固定＋地震用積載）や
@@ -77,10 +154,61 @@ pub struct LoadCase {
     pub kind: LoadCaseKind,
 }
 
+impl LoadCase {
+    /// 手入力の節点荷重を「`nodal` 上の添字」付きで列挙する。
+    /// 編集・削除コマンドは添字で対象を指すため、表示側も添字を持ち回る。
+    pub fn manual_nodal(&self) -> impl Iterator<Item = (usize, &NodalLoad)> {
+        self.nodal
+            .iter()
+            .enumerate()
+            .filter(|(_, nl)| !nl.source.is_auto())
+    }
+
+    /// 手入力の部材荷重を「`member` 上の添字」付きで列挙する。
+    pub fn manual_member(&self) -> impl Iterator<Item = (usize, &MemberLoad)> {
+        self.member
+            .iter()
+            .enumerate()
+            .filter(|(_, ml)| !ml.source.is_auto())
+    }
+
+    /// 準備計算が生成した荷重だけを `auto_nodal` / `auto_member` の内容へ入れ替える。
+    /// 手入力の荷重は順序を保ったまま残す。
+    ///
+    /// 渡された荷重の `source` は [`LoadSource::Auto`] に揃える。手入力扱いのまま
+    /// 積むと次回の入れ替えで残ってしまい、同期のたびに荷重が増え続けるため。
+    pub fn replace_auto_loads(&mut self, auto_nodal: Vec<NodalLoad>, auto_member: Vec<MemberLoad>) {
+        self.nodal.retain(|nl| !nl.source.is_auto());
+        self.nodal.extend(auto_nodal.into_iter().map(|mut nl| {
+            nl.source = LoadSource::Auto;
+            nl
+        }));
+        self.member.retain(|ml| !ml.source.is_auto());
+        self.member.extend(auto_member.into_iter().map(|mut ml| {
+            ml.source = LoadSource::Auto;
+            ml
+        }));
+    }
+
+    /// 自動生成分が `auto_nodal` / `auto_member` と一致するか（同期の要否判定）。
+    /// 手入力分は比較に含めない。
+    pub fn auto_loads_match(&self, auto_nodal: &[NodalLoad], auto_member: &[MemberLoad]) -> bool {
+        self.nodal
+            .iter()
+            .filter(|nl| nl.source.is_auto())
+            .eq(auto_nodal.iter())
+            && self
+                .member
+                .iter()
+                .filter(|ml| ml.source.is_auto())
+                .eq(auto_member.iter())
+    }
+}
+
 /// 固定荷重（DL）の標準荷重ケース名。躯体自重（柱・梁・ブレース・壁・ダンパー）と
 /// スラブの固定荷重（仕上げ等）が解析実行前の同期アクションで自動集計される。
-/// このケースの内容は自動計算で全置換されるため、手入力の追加荷重は別ケースに
-/// 定義すること。
+/// 自動集計が入れ替えるのは [`LoadSource::Auto`] の荷重だけなので、このケースへ
+/// 手入力で荷重を足しても消えない。
 pub const DL_CASE_NAME: &str = "DL";
 
 /// 積載荷重（LL・架構用）の標準荷重ケース名。スラブ用途（令別表第1）の
@@ -97,13 +225,6 @@ pub const EX_CASE_NAME: &str = "EX";
 
 /// 地震荷重（Y 方向・Ai 分布）の標準荷重ケース名。[`EX_CASE_NAME`] の Y 方向版。
 pub const EY_CASE_NAME: &str = "EY";
-
-/// 風荷重（X 方向）の標準荷重ケース名。階の定義があるとき、準備計算で
-/// 速度圧から算定した層水平力が自動生成される（令87条・平12建告1454号）。
-pub const WX_CASE_NAME: &str = "WX";
-
-/// 風荷重（Y 方向）の標準荷重ケース名。[`WX_CASE_NAME`] の Y 方向版。
-pub const WY_CASE_NAME: &str = "WY";
 
 /// 新規モデルにデフォルトで用意する標準荷重ケース一式
 /// （DL・LL(架構用)・LL(地震用)・EX・EY。内容は空で、解析実行前の

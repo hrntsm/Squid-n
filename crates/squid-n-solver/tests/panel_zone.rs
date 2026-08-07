@@ -184,11 +184,11 @@ fn l_frame_with(with_panel: bool, rigid_joint: bool) -> Model {
             kind: Default::default(),
             id: LoadCaseId(1),
             name: "P".into(),
-            nodal: vec![NodalLoad {
-                node: NodeId(1),
-                // 梁先端に鉛直下向き荷重（接合部に曲げを与える）
-                values: [0.0, 0.0, -50_000.0, 0.0, 0.0, 0.0],
-            }],
+            // 梁先端に鉛直下向き荷重（接合部に曲げを与える）
+            nodal: vec![NodalLoad::manual(
+                NodeId(1),
+                [0.0, 0.0, -50_000.0, 0.0, 0.0, 0.0],
+            )],
             member: Vec::new(),
         }],
         ..Default::default()

@@ -333,16 +333,16 @@ fn test_add_delete_member_load_roundtrip() {
         member: vec![],
     });
     let mut stack = UndoStack::new();
-    let load = MemberLoad {
-        elem: squid_n_core::ids::ElemId(0),
-        dir: [0.0, 0.0, -1.0],
-        kind: MemberLoadKind::Distributed {
+    let load = MemberLoad::manual(
+        squid_n_core::ids::ElemId(0),
+        [0.0, 0.0, -1.0],
+        MemberLoadKind::Distributed {
             a: 0.0,
             b: 1000.0,
             w1: 2.0,
             w2: 2.0,
         },
-    };
+    );
     stack.run(
         &mut model,
         Box::new(AddMemberLoad {
@@ -391,15 +391,17 @@ fn test_delete_member_undo_preserves_member_load_order() {
         plastic_zone: None,
         spring: None,
     };
-    let mk_load = |elem: u32, w: f64| MemberLoad {
-        elem: squid_n_core::ids::ElemId(elem),
-        dir: [0.0, 0.0, -1.0],
-        kind: MemberLoadKind::Distributed {
-            a: 0.0,
-            b: 1000.0,
-            w1: w,
-            w2: w,
-        },
+    let mk_load = |elem: u32, w: f64| {
+        MemberLoad::manual(
+            squid_n_core::ids::ElemId(elem),
+            [0.0, 0.0, -1.0],
+            MemberLoadKind::Distributed {
+                a: 0.0,
+                b: 1000.0,
+                w1: w,
+                w2: w,
+            },
+        )
     };
     let w1_of = |l: &MemberLoad| match l.kind {
         MemberLoadKind::Distributed { w1, .. } => w1,
@@ -744,16 +746,16 @@ fn test_delete_member_middle_renumbers_and_roundtrips() {
         name: "lc".into(),
         nodal: vec![],
         member: vec![
-            MemberLoad {
-                elem: ElemId(0),
-                dir: [0.0, 0.0, -1.0],
-                kind: MemberLoadKind::Point { a: 500.0, p: 1.0 },
-            },
-            MemberLoad {
-                elem: ElemId(1),
-                dir: [0.0, 0.0, -1.0],
-                kind: MemberLoadKind::Point { a: 500.0, p: 2.0 },
-            },
+            MemberLoad::manual(
+                ElemId(0),
+                [0.0, 0.0, -1.0],
+                MemberLoadKind::Point { a: 500.0, p: 1.0 },
+            ),
+            MemberLoad::manual(
+                ElemId(1),
+                [0.0, 0.0, -1.0],
+                MemberLoadKind::Point { a: 500.0, p: 2.0 },
+            ),
         ],
     });
     let before = model.clone();
@@ -1683,6 +1685,115 @@ fn test_set_load_case_kind_invalid_id_is_noop() {
     assert!(model.load_cases.is_empty());
 }
 
+/// 1 つの節点に複数の節点荷重を定義でき、追加・変更・削除が添字で行える。
+/// undo は追加した順序ごと元へ戻す。
+#[test]
+fn test_nodal_loads_are_indexed_and_allow_duplicates_per_node() {
+    use squid_n_core::model::{LoadCaseKind, NodalLoad};
+    let mut model = empty_model();
+    let mut stack = UndoStack::new();
+    stack.run(&mut model, Box::new(AddLoadCase { name: "LC0".into() }));
+
+    let mut first = NodalLoad::manual(NodeId(3), [100.0, 0.0, 0.0, 0.0, 0.0, 0.0]);
+    first.name = "機器荷重".into();
+    let mut second = NodalLoad::manual(NodeId(3), [0.0, 0.0, -50.0, 0.0, 0.0, 0.0]);
+    second.name = "吊り荷重".into();
+    for load in [first.clone(), second.clone()] {
+        stack.run(
+            &mut model,
+            Box::new(AddNodalLoad {
+                lc: LoadCaseId(0),
+                load,
+            }),
+        );
+    }
+    // 同じ節点でも 2 件が独立して並ぶ（旧仕様は節点キーの upsert で 1 件に潰れた）。
+    assert_eq!(
+        model.load_cases[0].nodal,
+        vec![first.clone(), second.clone()]
+    );
+
+    // 添字指定の変更は対象 1 件だけを差し替える。
+    let mut edited = second.clone();
+    edited.values[2] = -80.0;
+    stack.run(
+        &mut model,
+        Box::new(SetNodalLoad {
+            lc: LoadCaseId(0),
+            index: 1,
+            load: edited.clone(),
+        }),
+    );
+    assert_eq!(model.load_cases[0].nodal, vec![first.clone(), edited]);
+
+    // 削除 → undo で同じ位置へ戻る。
+    stack.run(
+        &mut model,
+        Box::new(DeleteNodalLoad {
+            lc: LoadCaseId(0),
+            index: 0,
+        }),
+    );
+    assert_eq!(model.load_cases[0].nodal.len(), 1);
+    stack.undo(&mut model);
+    assert_eq!(model.load_cases[0].nodal[0], first);
+
+    // 種別は触っていないので既定のまま。
+    assert_eq!(model.load_cases[0].kind, LoadCaseKind::Other);
+}
+
+/// 準備計算が生成した荷重は編集・削除できない（コマンドが Noop を返す）。
+/// UI 側でメニューを出さないだけでなく、コマンド層でも守る。
+#[test]
+fn test_auto_loads_reject_edit_and_delete() {
+    use squid_n_core::model::NodalLoad;
+    let mut model = empty_model();
+    let mut stack = UndoStack::new();
+    stack.run(&mut model, Box::new(AddLoadCase { name: "DL".into() }));
+    let auto = NodalLoad::auto(NodeId(0), [0.0, 0.0, -10.0, 0.0, 0.0, 0.0]);
+    // 自動生成分は同期（`replace_auto_loads`）が入れるものなので、そちらで用意する。
+    model.load_cases[0].replace_auto_loads(vec![auto.clone()], Vec::new());
+
+    stack.run(
+        &mut model,
+        Box::new(SetNodalLoad {
+            lc: LoadCaseId(0),
+            index: 0,
+            load: NodalLoad::manual(NodeId(0), [999.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
+        }),
+    );
+    assert_eq!(
+        model.load_cases[0].nodal,
+        vec![auto.clone()],
+        "変更できない"
+    );
+
+    stack.run(
+        &mut model,
+        Box::new(DeleteNodalLoad {
+            lc: LoadCaseId(0),
+            index: 0,
+        }),
+    );
+    assert_eq!(
+        model.load_cases[0].nodal,
+        vec![auto.clone()],
+        "削除できない"
+    );
+
+    // 追加も拒む。ここで受け付けると、逆操作の削除が拒む側の規則と食い違い、
+    // undo が無言で効かなくなる。
+    let added = stack.run(
+        &mut model,
+        Box::new(AddNodalLoad {
+            lc: LoadCaseId(0),
+            load: NodalLoad::auto(NodeId(1), [0.0, 0.0, -1.0, 0.0, 0.0, 0.0]),
+        }),
+    );
+    assert!(!added, "自動生成分は追加コマンドで積めない");
+    assert_eq!(model.load_cases[0].nodal, vec![auto], "件数が増えない");
+}
+
 #[test]
 fn test_sync_slab_loads_to_case_creates_new_case() {
     use squid_n_core::ids::{ElemId, LoadCaseId};
@@ -1690,20 +1801,17 @@ fn test_sync_slab_loads_to_case_creates_new_case() {
     let mut model = empty_model();
     let mut stack = UndoStack::new();
 
-    let member = vec![MemberLoad {
-        elem: ElemId(0),
-        dir: [0.0, 0.0, -1.0],
-        kind: MemberLoadKind::Distributed {
+    let member = vec![MemberLoad::auto(
+        ElemId(0),
+        [0.0, 0.0, -1.0],
+        MemberLoadKind::Distributed {
             a: 0.0,
             b: 1000.0,
             w1: 1.0,
             w2: 1.0,
         },
-    }];
-    let nodal = vec![NodalLoad {
-        node: NodeId(0),
-        values: [0.0, 0.0, -5.0, 0.0, 0.0, 0.0],
-    }];
+    )];
+    let nodal = vec![NodalLoad::auto(NodeId(0), [0.0, 0.0, -5.0, 0.0, 0.0, 0.0])];
 
     stack.run(
         &mut model,
@@ -1730,79 +1838,121 @@ fn test_sync_slab_loads_to_case_creates_new_case() {
 }
 
 #[test]
-fn test_sync_slab_loads_to_case_replaces_existing_case() {
+fn test_sync_slab_loads_to_case_keeps_manual_and_replaces_auto() {
     use squid_n_core::ids::ElemId;
     use squid_n_core::model::{LoadCaseKind, MemberLoad, MemberLoadKind};
     let mut model = empty_model();
     let mut stack = UndoStack::new();
 
-    // 既存の同名ケース(手動でユーザーが編集した中身を想定)。
+    // 既存の同名ケースに、利用者が手で入れた荷重が 1 件ある状態。
     stack.run(
         &mut model,
         Box::new(AddLoadCase {
             name: "床荷重(自動)".into(),
         }),
     );
+    let manual = MemberLoad::manual(
+        ElemId(0),
+        [0.0, 0.0, -1.0],
+        MemberLoadKind::Distributed {
+            a: 0.0,
+            b: 500.0,
+            w1: 9.0,
+            w2: 9.0,
+        },
+    );
     stack.run(
         &mut model,
         Box::new(AddMemberLoad {
             lc: LoadCaseId(0),
-            load: MemberLoad {
-                elem: ElemId(0),
-                dir: [0.0, 0.0, -1.0],
-                kind: MemberLoadKind::Distributed {
-                    a: 0.0,
-                    b: 500.0,
-                    w1: 9.0,
-                    w2: 9.0,
-                },
-            },
+            load: manual.clone(),
         }),
     );
     let before = model.clone();
     assert_eq!(model.load_cases[0].member.len(), 1);
 
-    let new_member = vec![MemberLoad {
-        elem: ElemId(1),
-        dir: [0.0, 0.0, -1.0],
-        kind: MemberLoadKind::Distributed {
+    let auto_member = vec![MemberLoad::auto(
+        ElemId(1),
+        [0.0, 0.0, -1.0],
+        MemberLoadKind::Distributed {
             a: 0.0,
             b: 2000.0,
             w1: 3.0,
             w2: 3.0,
         },
-    }];
+    )];
     stack.run(
         &mut model,
         Box::new(SyncSlabLoadsToCase {
             name: "床荷重(自動)".into(),
             kind: LoadCaseKind::Dead,
             nodal: Vec::new(),
-            member: new_member.clone(),
+            member: auto_member.clone(),
         }),
     );
-    // 全置換: 個数は増えず(重複せず)、内容が新しい値に入れ替わる。
+    // 手入力は残り、自動生成分が後ろに付く。
     assert_eq!(model.load_cases.len(), 1);
-    assert_eq!(model.load_cases[0].member, new_member);
+    assert_eq!(
+        model.load_cases[0].member,
+        vec![manual.clone(), auto_member[0].clone()]
+    );
     assert_eq!(model.load_cases[0].kind, LoadCaseKind::Dead);
 
-    // 再同期しても個数は変わらない(全置換なので重複しない)。
+    // 再同期しても自動生成分は置き換わるだけで増えない（冪等）。
     stack.run(
         &mut model,
         Box::new(SyncSlabLoadsToCase {
             name: "床荷重(自動)".into(),
             kind: LoadCaseKind::Dead,
             nodal: Vec::new(),
-            member: new_member.clone(),
+            member: auto_member.clone(),
         }),
     );
-    assert_eq!(model.load_cases.len(), 1);
-    assert_eq!(model.load_cases[0].member, new_member);
+    assert_eq!(model.load_cases[0].member.len(), 2);
+    assert_eq!(model.load_cases[0].member[0], manual);
 
-    // undo を2回 → 元の手動入力内容に戻る。
+    // undo を2回 → 元の手動入力だけの状態に戻る。
     stack.undo(&mut model);
     stack.undo(&mut model);
     assert!(model.eq_ignoring_dofmap(&before));
+}
+
+/// 手入力扱いの荷重を同期内容として渡しても、自動生成分として積まれる
+/// （手入力のまま積むと次の同期で消えず、実行のたびに荷重が増え続ける）。
+#[test]
+fn test_sync_slab_loads_marks_content_as_auto() {
+    use squid_n_core::ids::ElemId;
+    use squid_n_core::model::{LoadCaseKind, MemberLoad, MemberLoadKind};
+    let mut model = empty_model();
+    let mut stack = UndoStack::new();
+
+    let content = vec![MemberLoad::manual(
+        ElemId(0),
+        [0.0, 0.0, -1.0],
+        MemberLoadKind::Distributed {
+            a: 0.0,
+            b: 1000.0,
+            w1: 2.0,
+            w2: 2.0,
+        },
+    )];
+    for _ in 0..3 {
+        stack.run(
+            &mut model,
+            Box::new(SyncSlabLoadsToCase {
+                name: "床荷重(自動)".into(),
+                kind: LoadCaseKind::Dead,
+                nodal: Vec::new(),
+                member: content.clone(),
+            }),
+        );
+    }
+    assert_eq!(
+        model.load_cases[0].member.len(),
+        1,
+        "同期のたびに増えてはいけない"
+    );
+    assert!(model.load_cases[0].member[0].source.is_auto());
 }
 
 #[test]

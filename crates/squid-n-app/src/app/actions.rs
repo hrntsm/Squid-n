@@ -708,20 +708,16 @@ impl App {
         }
     }
 
-    /// 準備計算が自動生成する標準ケース（EX/EY・WX/WY）のうち、どれに当たるかを
+    /// 準備計算が自動生成する標準ケース（EX/EY）のうち、どれに当たるかを
     /// 荷重ケース名と種別から判別する。専用の結果キー
-    /// （[`StaticCaseKey::Seismic`]・[`StaticCaseKey::Wind`]）を持つケースであり、
+    /// （[`StaticCaseKey::Seismic`]）を持つケースであり、
     /// 剛心の精算・保有水平耐力の判定などがその結果を参照する。
     pub(crate) fn standard_lateral_case(&self, lc: LoadCaseId) -> Option<StaticCaseKey> {
-        use squid_n_core::model::{
-            LoadCaseKind, EX_CASE_NAME, EY_CASE_NAME, WX_CASE_NAME, WY_CASE_NAME,
-        };
+        use squid_n_core::model::{LoadCaseKind, EX_CASE_NAME, EY_CASE_NAME};
         let case = self.model.load_cases.iter().find(|c| c.id == lc)?;
         match (case.name.as_str(), case.kind) {
             (EX_CASE_NAME, LoadCaseKind::Seismic) => Some(StaticCaseKey::Seismic(SeismicDir::X)),
             (EY_CASE_NAME, LoadCaseKind::Seismic) => Some(StaticCaseKey::Seismic(SeismicDir::Y)),
-            (WX_CASE_NAME, LoadCaseKind::Wind) => Some(StaticCaseKey::Wind(SeismicDir::X)),
-            (WY_CASE_NAME, LoadCaseKind::Wind) => Some(StaticCaseKey::Wind(SeismicDir::Y)),
             _ => None,
         }
     }
@@ -729,15 +725,14 @@ impl App {
     /// 荷重ケース 1 つの静的解析をバックグラウンドで実行する（解析パネルの
     /// 「荷重ケース」実行ボタンの入口）。
     ///
-    /// 標準の水平力ケース（EX/EY・WX/WY）は、Ai 分布・速度圧の算定諸元
+    /// 標準の水平力ケース（EX/EY）は、Ai 分布の算定諸元
     /// （`analysis_cfg`）から水平力を組み立て直して解き、結果を方向別の
-    /// `StaticCaseKey::Seismic`/`Wind` へ格納する（剛心の精算・保有水平耐力の
+    /// `StaticCaseKey::Seismic` へ格納する（剛心の精算・保有水平耐力の
     /// 判定がこのキーを参照するため）。それ以外は線形静的解析として
     /// `StaticCaseKey::User` へ格納する。
     pub fn start_load_case_job(&mut self, lc: LoadCaseId) {
         match self.standard_lateral_case(lc) {
             Some(StaticCaseKey::Seismic(dir)) => self.start_seismic_job(dir),
-            Some(StaticCaseKey::Wind(dir)) => self.start_wind_job(dir),
             _ => self.start_linear_static_job(lc),
         }
     }
@@ -770,13 +765,12 @@ impl App {
     }
 
     /// [`Self::start_static_target_job`] の同期版（解き終わるまで戻らない）。
-    /// 振り分け先は同じで、標準の水平力ケース（EX/EY・WX/WY）は方向別の結果キーへ
+    /// 振り分け先は同じで、標準の水平力ケース（EX/EY）は方向別の結果キーへ
     /// 格納する（`start_load_case_job` と同じ規約）。
     pub fn run_static_target(&mut self, target: StaticTarget) {
         match target {
             StaticTarget::Case(lc) => match self.standard_lateral_case(lc) {
                 Some(StaticCaseKey::Seismic(dir)) => self.run_seismic(dir),
-                Some(StaticCaseKey::Wind(dir)) => self.run_wind(dir),
                 _ => self.run_linear_static(lc),
             },
             StaticTarget::Combo(index) => self.run_combination(index),
@@ -2037,9 +2031,8 @@ impl App {
     /// データであり、再生成では書き換えない（`story_gen` が既存の階定義から
     /// そのまま引き継ぐ）。ここで更新されるのは所属節点・剛床・算定重量である。
     ///
-    /// 階の適用後、地震荷重を「EX」「EY」、風荷重を「WX」「WY」ケースへ同期する
-    /// （Ai 分布の水平力・速度圧による層水平力。これで荷重組合せ G+P±K・G+P±W が
-    /// 実行可能になる）。
+    /// 階の適用後、地震荷重を「EX」「EY」ケースへ同期する
+    /// （Ai 分布の水平力。これで荷重組合せ G+P±K が実行可能になる）。
     ///
     /// 生成結果が現在のモデルと一致する場合は `ApplyStories` を発行しない
     /// （冪等。準備計算は実行のたびに階を作り直すため、モデルが変わっていないのに
@@ -2063,7 +2056,6 @@ impl App {
                     // 階は既に最新。荷重の同期だけ冪等に確認して終える。
                     self.apply_rigid_zones_for_analysis();
                     self.sync_seismic_load_cases_action();
-                    self.sync_wind_load_cases_action();
                     self.auto_load_sync_hash = Some(self.compute_auto_load_sync_hash());
                     return;
                 }
@@ -2083,9 +2075,8 @@ impl App {
                 // 剛域込みの剛性を用いるようにするため）。
                 self.apply_rigid_zones_for_analysis();
                 self.sync_seismic_load_cases_action();
-                self.sync_wind_load_cases_action();
                 // 直後に run_linear_static 等（`sync_auto_load_cases_action`）が
-                // 呼ばれても、いま行った DL/LL/EX/EY/WX/WY の同期を無駄に繰り返さない
+                // 呼ばれても、いま行った DL/LL/EX/EY の同期を無駄に繰り返さない
                 // よう、同期後の状態のハッシュを記録しておく。
                 self.auto_load_sync_hash = Some(self.compute_auto_load_sync_hash());
             }
@@ -2167,71 +2158,19 @@ impl App {
         });
     }
 
-    /// 風荷重の静的解析を実行し、結果を `StaticCaseKey::Wind(dir)` に格納する
-    /// （`run_seismic` と同じパターン。X/Y 双方の結果および他の静的結果と共存できる）。
-    /// 基準風速・地表面粗度区分・パラペット高さは `analysis_cfg` を用いる。
-    pub fn run_wind(&mut self, dir: SeismicDir) {
-        self.begin_analysis();
-        let cfg = squid_n_solver::analysis::WindStaticCfg {
-            dir,
-            v0: self.analysis_cfg.v0,
-            roughness: self.analysis_cfg.roughness,
-            cpi: 0.0,
-            parapet_mm: self.analysis_cfg.parapet_mm,
-        };
-        let res = Self::compute_wind(self.model.clone(), cfg);
-        self.apply_static_case_result(StaticCaseKey::Wind(dir), res);
-    }
-
-    /// 風荷重静的解析の純粋計算部分。所有権を取り `&self` を使わないため、
-    /// バックグラウンドジョブ（`start_wind_job`）からも呼び出せる。
-    fn compute_wind(
-        model: squid_n_core::model::Model,
-        cfg: squid_n_solver::analysis::WindStaticCfg,
-    ) -> Result<squid_n_solver::linear::StaticOnce, String> {
-        match Analysis::prepare(&model) {
-            Ok(analysis) => analysis
-                .wind_static(cfg)
-                .map_err(|e| format!("風荷重解析エラー: {:?}", e)),
-            Err(e) => Err(format!("解析準備エラー: {:?}", e)),
-        }
-    }
-
-    /// 風荷重静的解析をバックグラウンドスレッドで実行する（P8 §5）。
-    /// UI スレッドをブロックしないよう重い解析を逃がす。
-    /// 既にジョブが実行中の場合は何もしない（last_error に案内文を設定）。
-    pub fn start_wind_job(&mut self, dir: SeismicDir) {
-        if !self.begin_analysis_job() {
-            return;
-        }
-        let cfg = squid_n_solver::analysis::WindStaticCfg {
-            dir,
-            v0: self.analysis_cfg.v0,
-            roughness: self.analysis_cfg.roughness,
-            cpi: 0.0,
-            parapet_mm: self.analysis_cfg.parapet_mm,
-        };
-        let model = self.model.clone();
-        self.spawn_analysis_job("風荷重静的解析", move || JobResult::StaticCase {
-            key: StaticCaseKey::Wind(dir),
-            res: Self::run_compute(|| Self::compute_wind(model, cfg)),
-        });
-    }
-
     /// 荷重ケースから標準組合せを生成し、undo 可能に一括追加する
     /// （`squid_n_load::combo::standard_combinations`・`AddCombination` を使用）。
     ///
     /// 固定（Dead）・積載（Live）・積雪（Snow）は種別の先頭 1 件を用いる。
-    /// 方向を持つ地震・風は、準備計算が自動生成する標準ケース名
-    /// （`EX`/`EY`/`WX`/`WY`）で方向を判別する（種別だけでは X・Y を区別できない）。
-    /// 標準名のケースがない場合、風は種別 Wind の先頭 1 件を X 方向として扱い、
-    /// 地震は割り当てない（方向不明の地震ケースを機械的に EX とみなさない）。
+    /// 地震は、準備計算が自動生成する標準ケース名（`EX`/`EY`）で方向を判別する
+    /// （種別だけでは X・Y を区別できない）。標準名のケースがなければ割り当てない
+    /// （方向不明の地震ケースを機械的に EX とみなさない）。
+    ///
+    /// 風荷重は算定・生成の対象外のため、暴風の組合せは生成しない。
     ///
     /// Dead/Live のいずれかが見つからない場合は組合せを生成せず `last_error` を設定する。
     pub fn auto_generate_combinations_action(&mut self) {
-        use squid_n_core::model::{
-            LoadCaseKind, EX_CASE_NAME, EY_CASE_NAME, WX_CASE_NAME, WY_CASE_NAME,
-        };
+        use squid_n_core::model::{LoadCaseKind, EX_CASE_NAME, EY_CASE_NAME};
 
         self.last_error = None;
         self.combo_error = None;
@@ -2258,26 +2197,16 @@ impl App {
             return;
         };
         let snow = find_first(LoadCaseKind::Snow);
-        // 標準名の風ケースが 1 つもないモデルに限り、種別 Wind の先頭 1 件を
-        // X 方向として扱う（WY だけがあるモデルでそれを WX と誤って扱わない）。
-        let mut wind_x = find_named(WX_CASE_NAME, LoadCaseKind::Wind);
-        let wind_y = find_named(WY_CASE_NAME, LoadCaseKind::Wind);
-        if wind_x.is_none() && wind_y.is_none() {
-            wind_x = find_first(LoadCaseKind::Wind);
-        }
 
         let input = squid_n_load::combo::ComboInput {
             dl,
             ll,
             seismic_x: find_named(EX_CASE_NAME, LoadCaseKind::Seismic),
             seismic_y: find_named(EY_CASE_NAME, LoadCaseKind::Seismic),
-            wind_x,
-            wind_y,
             snow,
             heavy_snow_zone: self.analysis_cfg.heavy_snow_zone,
             snow_factors: Some(squid_n_load::combo::SnowFactors {
                 delta1: self.analysis_cfg.snow_delta1,
-                delta2: self.analysis_cfg.snow_delta2,
                 delta3: self.analysis_cfg.snow_delta3,
             }),
         };
@@ -3547,11 +3476,11 @@ impl App {
             if b - a <= 1e-9 {
                 return;
             }
-            member.push(MemberLoad {
+            member.push(MemberLoad::auto(
                 elem,
-                dir: DIR,
-                kind: MemberLoadKind::Distributed { a, b, w1, w2 },
-            });
+                DIR,
+                MemberLoadKind::Distributed { a, b, w1, w2 },
+            ));
         }
 
         // 形状を「部材 `elem` の区間 [a0, a0+len_e]」へ載せる（`a0=0`・`len_e=部材長`
@@ -3579,11 +3508,11 @@ impl App {
                 }
                 LoadShape::Point { p, x } => {
                     let xx = if flip { len_e - x } else { x };
-                    member.push(MemberLoad {
+                    member.push(MemberLoad::auto(
                         elem,
-                        dir: DIR,
-                        kind: MemberLoadKind::Point { a: a0 + xx, p },
-                    });
+                        DIR,
+                        MemberLoadKind::Point { a: a0 + xx, p },
+                    ));
                 }
             }
         }
@@ -3621,10 +3550,7 @@ impl App {
                     let LoadShape::Point { p, .. } = bl.shape else {
                         continue;
                     };
-                    nodal.push(NodalLoad {
-                        node: n,
-                        values: [0.0, 0.0, -p, 0.0, 0.0, 0.0],
-                    });
+                    nodal.push(NodalLoad::auto(n, [0.0, 0.0, -p, 0.0, 0.0, 0.0]));
                 }
                 // Edge（境界大梁）: bl.elem に解決済みの ElemId が入る。
                 LoadTarget::Edge(_) => {
@@ -3679,10 +3605,7 @@ impl App {
                     let (r0, r1) = simple_reactions(&bl.shape, len);
                     for (n, r) in [(n0, r0), (n1, r1)] {
                         if r.abs() > 1e-9 {
-                            nodal.push(NodalLoad {
-                                node: n,
-                                values: [0.0, 0.0, -r, 0.0, 0.0, 0.0],
-                            });
+                            nodal.push(NodalLoad::auto(n, [0.0, 0.0, -r, 0.0, 0.0, 0.0]));
                         }
                     }
                 }
@@ -3883,48 +3806,11 @@ impl App {
         }
     }
 
-    /// 風荷重の標準ケース（WX・WY、kind=Wind）へ層水平力を同期する。
-    ///
-    /// 地震荷重（`sync_seismic_load_cases_action`）と同じ規約で、階が定義されて
-    /// いる場合に風荷重静的解析と同じ載荷（`build_wind_load_case_from_model`。
-    /// 基準風速・粗度区分・パラペット高さは `analysis_cfg`）を WX/WY ケースへ
-    /// 書き込む。これにより荷重組合せ（G+P±W など）が WX/WY を参照して解析できる。
-    ///
-    /// 見付け幅が 0 になる方向（平面的に広がりがないモデル）では、その方向の
-    /// 荷重ケースは構築できないため何もしない（既存ケースは変更しない）。
-    /// 冪等な同期アクション（`sync_gravity_load_cases_action` と同じ規約）。
-    pub fn sync_wind_load_cases_action(&mut self) {
-        use squid_n_core::model::LoadCaseKind;
-        if self.model.stories.is_empty() {
-            return;
-        }
-        let built: Vec<(&'static str, squid_n_core::model::LoadCase)> =
-            [(SeismicDir::X, WX_CASE_NAME), (SeismicDir::Y, WY_CASE_NAME)]
-                .into_iter()
-                .filter_map(|(dir, name)| {
-                    let cfg = squid_n_solver::analysis::WindStaticCfg {
-                        dir,
-                        v0: self.analysis_cfg.v0,
-                        roughness: self.analysis_cfg.roughness,
-                        cpi: 0.0,
-                        parapet_mm: self.analysis_cfg.parapet_mm,
-                    };
-                    squid_n_solver::analysis::build_wind_load_case_from_model(&self.model, cfg)
-                        .ok()
-                        .map(|lc| (name, lc))
-                })
-                .collect();
-        for (name, lc) in built {
-            self.sync_one_auto_case(name, LoadCaseKind::Wind, lc.nodal, lc.member);
-        }
-    }
-
     /// `sync_auto_load_cases_action` が同期の要否判定に使うハッシュを計算する。
     ///
-    /// 荷重同期（DL/LL/EX/EY/WX/WY）の結果に影響し得る入力をすべて含める:
+    /// 荷重同期（DL/LL/EX/EY）の結果に影響し得る入力をすべて含める:
     /// モデル本体（`bincode` でシリアライズしてハッシュ）、地震荷重の
     /// Ai算定法（`ai_mode`）・地域係数 Z・地盤種別・標準せん断力係数 C0、
-    /// 風荷重の基準風速 V0・粗度区分・パラペット高さ、
     /// および SemiPrecise 時は `design_seismic_period` の値（算定できた場合のみ。
     /// `to_bits()` でビット列化してハッシュ。固有値解析が未実行で `Err` の場合は
     /// 含めない＝モデル・設定が同じなら「未実行」状態も同一ハッシュに畳み込む）。
@@ -3938,9 +3824,6 @@ impl App {
         self.analysis_cfg.z.to_bits().hash(&mut hasher);
         (self.analysis_cfg.soil as u8).hash(&mut hasher);
         self.analysis_cfg.c0.to_bits().hash(&mut hasher);
-        self.analysis_cfg.v0.to_bits().hash(&mut hasher);
-        (self.analysis_cfg.roughness as u8).hash(&mut hasher);
-        self.analysis_cfg.parapet_mm.to_bits().hash(&mut hasher);
         if matches!(self.analysis_cfg.ai_mode, AiMode::SemiPrecise) {
             if let Ok(t) = self.design_seismic_period() {
                 t.to_bits().hash(&mut hasher);
@@ -3949,9 +3832,9 @@ impl App {
         hasher.finish()
     }
 
-    /// 剛域の反映と、自重・積載・地震荷重・風荷重の自動同期
-    /// （`sync_gravity_load_cases_action`・`sync_seismic_load_cases_action`・
-    /// `sync_wind_load_cases_action`）をまとめて行う、準備計算
+    /// 剛域の反映と、自重・積載・地震荷重の自動同期
+    /// （`sync_gravity_load_cases_action`・`sync_seismic_load_cases_action`）を
+    /// まとめて行う、準備計算
     /// （`ensure_preparation`・`run_preparation`）のモデル更新部分。
     ///
     /// モデルが交差小梁スラブを含む場合、床荷重分配（DL・LL(架構用)・
@@ -3965,8 +3848,7 @@ impl App {
     ///    剛域込みの剛性を用いるようにするため）。
     /// 2. 現在のハッシュを計算し、前回保存したハッシュと一致すればスキップ。
     /// 3. 不一致なら `sync_gravity_load_cases_action` →
-    ///    `sync_seismic_load_cases_action` → `sync_wind_load_cases_action`
-    ///    の順で実行する。
+    ///    `sync_seismic_load_cases_action` の順で実行する。
     /// 4. 同期後（荷重ケースの内容が書き換わった後）のモデルで再度ハッシュを
     ///    計算して保存する（同期前のハッシュを保存すると、次回呼び出しで
     ///    「同期していないのに一致」と誤判定するため、必ず同期後の状態で保存する）。
@@ -3978,14 +3860,16 @@ impl App {
         }
         self.sync_gravity_load_cases_action();
         self.sync_seismic_load_cases_action();
-        self.sync_wind_load_cases_action();
         self.auto_load_sync_hash = Some(self.compute_auto_load_sync_hash());
     }
 
     /// 名前付き荷重ケースを指定の `kind`・内容へ冪等に同期する
-    /// （`sync_gravity_load_cases_action`／`sync_seismic_load_cases_action`／
-    /// `sync_wind_load_cases_action` の各ケース同期の共通処理）。
-    /// 既存ケースの内容と一致すれば何もしない。
+    /// （`sync_gravity_load_cases_action`／`sync_seismic_load_cases_action`
+    /// の各ケース同期の共通処理）。
+    ///
+    /// 同期の対象は自動生成分（`LoadSource::Auto`）だけで、利用者が同じケースへ
+    /// 手入力した荷重は残す。要否判定も自動生成分どうしの比較で行う
+    /// （手入力を足しただけで同期が走ると、undo 履歴が無意味に伸びる）。
     fn sync_one_auto_case(
         &mut self,
         name: &str,
@@ -3996,7 +3880,7 @@ impl App {
         let existing = self.model.load_cases.iter().find(|lc| lc.name == name);
         let needs_create = existing.is_none() && !(nodal.is_empty() && member.is_empty());
         let needs_update = existing
-            .map(|lc| lc.kind != kind || lc.nodal != nodal || lc.member != member)
+            .map(|lc| lc.kind != kind || !lc.auto_loads_match(&nodal, &member))
             .unwrap_or(false);
         if !needs_create && !needs_update {
             return;

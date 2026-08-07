@@ -27,38 +27,69 @@ impl EditCommand for SetLoadCaseName {
     }
 }
 
-/// 節点荷重値変更（6成分）。
+/// 荷重ケースが存在すれば添字を返す（`id == 添字` 規約の検証込み）。
+fn load_case_index(model: &Model, lc: LoadCaseId) -> Option<usize> {
+    let idx = lc.index();
+    (idx < model.load_cases.len() && model.load_cases[idx].id == lc).then_some(idx)
+}
+
+/// 節点荷重を荷重ケースへ追加。逆操作は末尾要素の削除。
+/// 1 つの節点に何件でも追加できる（解析では全件が加算される）。
+///
+/// 準備計算が生成する荷重（`LoadSource::Auto`）は追加できない（Noop）。
+/// 自動生成分は [`squid_n_core::model::LoadCase::replace_auto_loads`] が一括で
+/// 入れ替えるものであり、個別のコマンドが触る対象ではない。ここで受け付けると
+/// 逆操作の [`DeleteNodalLoad`] が自動生成分を拒む側の規則と食い違い、
+/// undo が無言で効かなくなる。
+pub struct AddNodalLoad {
+    pub lc: LoadCaseId,
+    pub load: squid_n_core::model::NodalLoad,
+}
+
+impl EditCommand for AddNodalLoad {
+    fn apply(&self, model: &mut Model) -> Box<dyn EditCommand> {
+        let Some(idx) = load_case_index(model, self.lc) else {
+            return Box::new(Noop);
+        };
+        if self.load.source.is_auto() {
+            return Box::new(Noop);
+        }
+        model.load_cases[idx].nodal.push(self.load.clone());
+        Box::new(DeleteNodalLoad {
+            lc: self.lc,
+            index: model.load_cases[idx].nodal.len() - 1,
+        })
+    }
+
+    fn label(&self) -> &str {
+        "節点荷重追加"
+    }
+}
+
+/// 節点荷重を index 指定で丸ごと差し替える（対象節点・成分値・名称）。
+/// 準備計算が生成した荷重（`LoadSource::Auto`）は同期のたびに作り直されるため
+/// 変更できない（Noop）。
 pub struct SetNodalLoad {
     pub lc: LoadCaseId,
-    pub node: NodeId,
-    pub values: [f64; 6],
+    pub index: usize,
+    pub load: squid_n_core::model::NodalLoad,
 }
 
 impl EditCommand for SetNodalLoad {
     fn apply(&self, model: &mut Model) -> Box<dyn EditCommand> {
-        let lc_idx = self.lc.index();
-        if lc_idx >= model.load_cases.len() || model.load_cases[lc_idx].id != self.lc {
+        let Some(idx) = load_case_index(model, self.lc) else {
+            return Box::new(Noop);
+        };
+        let nodal = &mut model.load_cases[idx].nodal;
+        if self.index >= nodal.len() || nodal[self.index].source.is_auto() {
             return Box::new(Noop);
         }
-        let nodal = &mut model.load_cases[lc_idx].nodal;
-        if let Some(entry) = nodal.iter_mut().find(|n| n.node == self.node) {
-            let old = entry.values;
-            entry.values = self.values;
-            Box::new(SetNodalLoad {
-                lc: self.lc,
-                node: self.node,
-                values: old,
-            })
-        } else {
-            nodal.push(squid_n_core::model::NodalLoad {
-                node: self.node,
-                values: self.values,
-            });
-            Box::new(DeleteNodalLoad {
-                lc: self.lc,
-                node: self.node,
-            })
-        }
+        let old = std::mem::replace(&mut nodal[self.index], self.load.clone());
+        Box::new(SetNodalLoad {
+            lc: self.lc,
+            index: self.index,
+            load: old,
+        })
     }
 
     fn label(&self) -> &str {
@@ -66,29 +97,28 @@ impl EditCommand for SetNodalLoad {
     }
 }
 
-/// 節点荷重削除。
+/// 節点荷重を index 指定で削除。逆操作は同位置への挿入。
+/// 自動生成分は削除できない（[`SetNodalLoad`] と同じ理由）。
 pub struct DeleteNodalLoad {
     pub lc: LoadCaseId,
-    pub node: NodeId,
+    pub index: usize,
 }
 
 impl EditCommand for DeleteNodalLoad {
     fn apply(&self, model: &mut Model) -> Box<dyn EditCommand> {
-        let lc_idx = self.lc.index();
-        if lc_idx >= model.load_cases.len() || model.load_cases[lc_idx].id != self.lc {
+        let Some(idx) = load_case_index(model, self.lc) else {
+            return Box::new(Noop);
+        };
+        let nodal = &mut model.load_cases[idx].nodal;
+        if self.index >= nodal.len() || nodal[self.index].source.is_auto() {
             return Box::new(Noop);
         }
-        let nodal = &mut model.load_cases[lc_idx].nodal;
-        if let Some(pos) = nodal.iter().position(|n| n.node == self.node) {
-            let removed = nodal.remove(pos);
-            Box::new(SetNodalLoad {
-                lc: self.lc,
-                node: removed.node,
-                values: removed.values,
-            })
-        } else {
-            Box::new(Noop)
-        }
+        let removed = nodal.remove(self.index);
+        Box::new(InsertNodalLoad {
+            lc: self.lc,
+            index: self.index,
+            load: removed,
+        })
     }
 
     fn label(&self) -> &str {
@@ -96,7 +126,36 @@ impl EditCommand for DeleteNodalLoad {
     }
 }
 
+/// 節点荷重を index 位置へ挿入（[`DeleteNodalLoad`] の逆操作）。
+pub struct InsertNodalLoad {
+    pub lc: LoadCaseId,
+    pub index: usize,
+    pub load: squid_n_core::model::NodalLoad,
+}
+
+impl EditCommand for InsertNodalLoad {
+    fn apply(&self, model: &mut Model) -> Box<dyn EditCommand> {
+        let Some(idx) = load_case_index(model, self.lc) else {
+            return Box::new(Noop);
+        };
+        let nodal = &mut model.load_cases[idx].nodal;
+        if self.index > nodal.len() {
+            return Box::new(Noop);
+        }
+        nodal.insert(self.index, self.load.clone());
+        Box::new(DeleteNodalLoad {
+            lc: self.lc,
+            index: self.index,
+        })
+    }
+
+    fn label(&self) -> &str {
+        "節点荷重挿入"
+    }
+}
+
 /// 部材（梁）荷重を荷重ケースへ追加。逆操作は末尾要素の削除。
+/// 自動生成分は追加できない（[`AddNodalLoad`] と同じ理由）。
 pub struct AddMemberLoad {
     pub lc: LoadCaseId,
     pub load: squid_n_core::model::MemberLoad,
@@ -104,8 +163,10 @@ pub struct AddMemberLoad {
 
 impl EditCommand for AddMemberLoad {
     fn apply(&self, model: &mut Model) -> Box<dyn EditCommand> {
-        let idx = self.lc.index();
-        if idx >= model.load_cases.len() || model.load_cases[idx].id != self.lc {
+        let Some(idx) = load_case_index(model, self.lc) else {
+            return Box::new(Noop);
+        };
+        if self.load.source.is_auto() {
             return Box::new(Noop);
         }
         model.load_cases[idx].member.push(self.load.clone());
@@ -121,6 +182,36 @@ impl EditCommand for AddMemberLoad {
     }
 }
 
+/// 部材荷重を index 指定で丸ごと差し替える（対象部材・方向・種別・名称）。
+/// 自動生成分は変更できない（[`SetNodalLoad`] と同じ理由）。
+pub struct SetMemberLoad {
+    pub lc: LoadCaseId,
+    pub index: usize,
+    pub load: squid_n_core::model::MemberLoad,
+}
+
+impl EditCommand for SetMemberLoad {
+    fn apply(&self, model: &mut Model) -> Box<dyn EditCommand> {
+        let Some(idx) = load_case_index(model, self.lc) else {
+            return Box::new(Noop);
+        };
+        let member = &mut model.load_cases[idx].member;
+        if self.index >= member.len() || member[self.index].source.is_auto() {
+            return Box::new(Noop);
+        }
+        let old = std::mem::replace(&mut member[self.index], self.load.clone());
+        Box::new(SetMemberLoad {
+            lc: self.lc,
+            index: self.index,
+            load: old,
+        })
+    }
+
+    fn label(&self) -> &str {
+        "部材荷重変更"
+    }
+}
+
 /// 部材荷重を index 指定で削除。逆操作は同位置への挿入。
 pub struct DeleteMemberLoad {
     pub lc: LoadCaseId,
@@ -129,12 +220,11 @@ pub struct DeleteMemberLoad {
 
 impl EditCommand for DeleteMemberLoad {
     fn apply(&self, model: &mut Model) -> Box<dyn EditCommand> {
-        let idx = self.lc.index();
-        if idx >= model.load_cases.len() || model.load_cases[idx].id != self.lc {
+        let Some(idx) = load_case_index(model, self.lc) else {
             return Box::new(Noop);
-        }
+        };
         let member = &mut model.load_cases[idx].member;
-        if self.index >= member.len() {
+        if self.index >= member.len() || member[self.index].source.is_auto() {
             return Box::new(Noop);
         }
         let removed = member.remove(self.index);
@@ -159,10 +249,9 @@ pub struct InsertMemberLoad {
 
 impl EditCommand for InsertMemberLoad {
     fn apply(&self, model: &mut Model) -> Box<dyn EditCommand> {
-        let idx = self.lc.index();
-        if idx >= model.load_cases.len() || model.load_cases[idx].id != self.lc {
+        let Some(idx) = load_case_index(model, self.lc) else {
             return Box::new(Noop);
-        }
+        };
         let member = &mut model.load_cases[idx].member;
         if self.index > member.len() {
             return Box::new(Noop);

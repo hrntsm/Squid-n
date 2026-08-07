@@ -10,6 +10,8 @@ pub mod damper_def_editor;
 #[cfg(feature = "gui")]
 pub mod design_view;
 #[cfg(feature = "gui")]
+pub mod load_editor;
+#[cfg(feature = "gui")]
 pub mod mn_view;
 #[cfg(feature = "gui")]
 pub mod prep_view;

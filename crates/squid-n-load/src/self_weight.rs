@@ -63,16 +63,16 @@ pub fn self_weight_case_content(
                 }
                 if len > 0.0 {
                     let w = total / len;
-                    member.push(MemberLoad {
-                        elem: elem.id,
-                        dir: DIR_DOWN,
-                        kind: MemberLoadKind::Distributed {
+                    member.push(MemberLoad::auto(
+                        elem.id,
+                        DIR_DOWN,
+                        MemberLoadKind::Distributed {
                             a: 0.0,
                             b: len,
                             w1: w,
                             w2: w,
                         },
-                    });
+                    ));
                 } else {
                     node_force[ni] += total / 2.0;
                     node_force[nj] += total / 2.0;
@@ -106,9 +106,11 @@ pub fn self_weight_case_content(
         .iter()
         .enumerate()
         .filter(|(_, w)| **w > 0.0)
-        .map(|(i, w)| NodalLoad {
-            node: squid_n_core::ids::NodeId(i as u32),
-            values: [0.0, 0.0, -w, 0.0, 0.0, 0.0],
+        .map(|(i, w)| {
+            NodalLoad::auto(
+                squid_n_core::ids::NodeId(i as u32),
+                [0.0, 0.0, -w, 0.0, 0.0, 0.0],
+            )
         })
         .collect();
 

@@ -91,19 +91,49 @@ fn gauss_dist<F: Fn(f64) -> f64>(a: f64, b: f64, w1: f64, w2: f64, f: F) -> f64 
     s * half
 }
 
+/// スパン荷重を材端へ配る方式。曲げ剛性の有無で使い分ける。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SpanLoadTransfer {
+    /// 曲げ剛性を持つ線材（梁・柱・非線形梁）。Hermite 形状関数による等価節点力で、
+    /// 材端モーメント（固定端モーメント）を含む。
+    #[default]
+    Consistent,
+    /// 軸剛性のみの線材（ブレース＝トラス要素）。材軸直交成分は単純梁反力と同じ
+    /// 静定分配で両端へ配り、材端モーメントを生じない。
+    ///
+    /// トラス要素は曲げ・せん断・ねじり剛性を持たないため、固定端モーメントを
+    /// 与えても部材はそれを負担できない。にもかかわらず節点へは外力として
+    /// 撒かれるため、材端モーメントを含む等価節点力を使うと架空のモーメントが
+    /// 周囲の柱梁へ流れ込む。合力と作用位置は保存されるので、建物総重量や
+    /// 支点反力の釣り合いはこの方式でも変わらない。
+    StaticallyEquivalent,
+}
+
 /// 部材の全スパン荷重に対する等価節点力ベクトル（local 12）。
 /// 構造系へは `frame.rotate_to_global(&q)` を加算する。
-pub fn consistent_load_local(loads: &[MemberLoad], frame: &LocalFrame, length: f64) -> [f64; 12] {
+pub fn consistent_load_local(
+    loads: &[MemberLoad],
+    frame: &LocalFrame,
+    length: f64,
+    transfer: SpanLoadTransfer,
+) -> [f64; 12] {
     let l = length.max(1e-9);
     let mut q = [0.0; 12];
     for load in loads {
         let comps = resolve(load, frame);
         for (axis, comp) in comps.iter().enumerate() {
             let Some(comp) = comp else { continue };
-            match axis {
-                0 => add_axial_consistent(&mut q, comp, l),
-                1 => add_bending_consistent(&mut q, comp, l, 1),
-                _ => add_bending_consistent(&mut q, comp, l, 2),
+            match (axis, transfer) {
+                // 軸方向は形状関数が線形で、そもそも静定分配と一致する。
+                (0, _) => add_axial_consistent(&mut q, comp, l),
+                (1, SpanLoadTransfer::Consistent) => add_bending_consistent(&mut q, comp, l, 1),
+                (1, SpanLoadTransfer::StaticallyEquivalent) => {
+                    add_bending_static(&mut q, comp, l, 1)
+                }
+                (_, SpanLoadTransfer::Consistent) => add_bending_consistent(&mut q, comp, l, 2),
+                (_, SpanLoadTransfer::StaticallyEquivalent) => {
+                    add_bending_static(&mut q, comp, l, 2)
+                }
             }
         }
     }
@@ -148,6 +178,35 @@ fn add_bending_consistent(q: &mut [f64; 12], comp: &Comp, l: f64, plane: usize) 
             q[jm] += msign * gauss_dist(a, b, w1, w2, |s| n_tj(s / l, l));
         }
     }
+}
+
+/// 曲げ面成分を材端モーメント無しで両端へ配る（単純梁反力と同じ静定分配）。
+/// 自由度の並び・符号規約は [`add_bending_consistent`] と共通。
+///
+/// i 端まわりのモーメント釣り合いから j 端の分担 `R_j = ∫w(s)·s ds / L` を決め、
+/// 残り `R − R_j` を i 端へ配る。合力と作用位置の 1 次モーメントがともに保存される。
+fn add_bending_static(q: &mut [f64; 12], comp: &Comp, l: f64, plane: usize) {
+    let (iv, jv) = if plane == 1 { (1usize, 7usize) } else { (2, 8) };
+    // 積分区間は荷重自身の定義域とし、材長で切り取らない
+    // （[`add_bending_consistent`] が形状関数を [a,b] 上で積分するのと合わせ、
+    // 両方式で合力が一致するようにする）。
+    let (r, r_j) = match *comp {
+        Comp::Point { a, p } => {
+            // 材端ちょうど（a = L）の集中荷重を落とさないよう、位置は比で扱う。
+            let xi = (a / l).clamp(0.0, 1.0);
+            (p, p * xi)
+        }
+        Comp::Dist { a, b, w1, w2 } => {
+            if b <= a {
+                return;
+            }
+            let r = integ2(a, b, w1, w2, a, b, |_s| 1.0);
+            let first_moment = integ2(a, b, w1, w2, a, b, |s| s);
+            (r, first_moment / l)
+        }
+    };
+    q[iv] += r - r_j;
+    q[jv] += r_j;
 }
 
 /// 区間 [lo,hi] における合力 ∫ w ds（成分荷重 1 つ分）。
@@ -225,16 +284,21 @@ fn integ2<F: Fn(f64) -> f64>(a: f64, b: f64, w1: f64, w2: f64, l: f64, h: f64, f
 /// beam.rs の `recover_forces` の符号規約・i/j 分岐を厳密にミラーする。
 /// `fFEF = -Q`（固定端力 = 等価節点力の符号反転）を端部力として用い、
 /// 分布荷重のスパン自由体項を beam の式形に合わせて加える。
+///
+/// `transfer` が [`SpanLoadTransfer::StaticallyEquivalent`]（ブレース）の場合、
+/// 材軸直交成分は荷重ベクトル側で両端へ流してしまうため部材内には残らない。
+/// 曲げ・せん断・ねじりの固定端内力は零を返し、軸力成分のみを返す。
 pub fn fixed_internal_local(
     loads: &[MemberLoad],
     frame: &LocalFrame,
     length: f64,
     xi: f64,
+    transfer: SpanLoadTransfer,
 ) -> [f64; 6] {
     let l = length.max(1e-9);
     let x = xi * l;
     let xr = (1.0 - xi) * l;
-    let q = consistent_load_local(loads, frame, l);
+    let q = consistent_load_local(loads, frame, l, transfer);
     let ff = q.map(|v| -v); // fFEF = -Q
 
     // 各ローカル軸（y,z,x）の成分荷重を集約
@@ -264,6 +328,11 @@ pub fn fixed_internal_local(
     let mut f = [0.0; 6];
     // 軸力（端部反力の線形内挿。分布軸荷重の中間値は近似）
     f[0] = ff[0] * (1.0 - xi) + ff[6] * xi;
+    // 曲げ剛性のない部材（ブレース）は材軸直交成分を負担しないため、
+    // 軸力以外の固定端内力は生じない。
+    if transfer == SpanLoadTransfer::StaticallyEquivalent {
+        return f;
+    }
     // せん断（i 側自由体の単一式: Q = fFEF_i + ∫₀ˣ w ds）
     f[1] = ff[1] + sy_i;
     f[2] = ff[2] + sz_i;
@@ -297,16 +366,16 @@ mod tests {
 
     fn udl(w: f64, l: f64) -> MemberLoad {
         // 下向き(-Z)等分布。ey=+Z なので成分 cy = dir·ey = -1。
-        MemberLoad {
-            elem: ElemId(0),
-            dir: [0.0, 0.0, -1.0],
-            kind: MemberLoadKind::Distributed {
+        MemberLoad::manual(
+            ElemId(0),
+            [0.0, 0.0, -1.0],
+            MemberLoadKind::Distributed {
                 a: 0.0,
                 b: l,
                 w1: w,
                 w2: w,
             },
-        }
+        )
     }
 
     #[test]
@@ -315,7 +384,7 @@ mod tests {
         let w = 2.0; // N/mm
         let frame = horiz_frame();
         let loads = vec![udl(w, l)];
-        let q = consistent_load_local(&loads, &frame, l);
+        let q = consistent_load_local(&loads, &frame, l, SpanLoadTransfer::Consistent);
         // y 面のせん断（i,j）= wL/2、符号は成分 cy=-1 を反映
         let expected_shear = w * l / 2.0;
         assert!((q[1].abs() - expected_shear).abs() < 1e-6, "q1={}", q[1]);
@@ -332,7 +401,7 @@ mod tests {
         let w = 2.0;
         let frame = horiz_frame();
         let loads = vec![udl(w, l)];
-        let mid = fixed_internal_local(&loads, &frame, l, 0.5);
+        let mid = fixed_internal_local(&loads, &frame, l, 0.5, SpanLoadTransfer::Consistent);
         let expected = w * l * l / 24.0;
         assert!(
             (mid[5].abs() - expected).abs() < 1e-2,
@@ -347,12 +416,12 @@ mod tests {
         let l = 1000.0;
         let p = 100.0;
         let frame = horiz_frame();
-        let loads = vec![MemberLoad {
-            elem: ElemId(0),
-            dir: [0.0, 0.0, -1.0],
-            kind: MemberLoadKind::Point { a: l / 2.0, p },
-        }];
-        let q = consistent_load_local(&loads, &frame, l);
+        let loads = vec![MemberLoad::manual(
+            ElemId(0),
+            [0.0, 0.0, -1.0],
+            MemberLoadKind::Point { a: l / 2.0, p },
+        )];
+        let q = consistent_load_local(&loads, &frame, l, SpanLoadTransfer::Consistent);
         // 中央集中の固定端モーメント = PL/8、せん断 = P/2
         let fem = p * l / 8.0;
         assert!((q[5].abs() - fem).abs() < 1e-6, "q5={} fem={}", q[5], fem);
@@ -372,7 +441,7 @@ mod tests {
         let frame = horiz_frame();
         let loads = vec![udl(w, l)];
         for &xi in &[0.0, 0.25, 0.45, 0.5, 0.55, 0.75, 1.0] {
-            let f = fixed_internal_local(&loads, &frame, l, xi);
+            let f = fixed_internal_local(&loads, &frame, l, xi, SpanLoadTransfer::Consistent);
             let m_expected = w * l * l * (6.0 * xi - 6.0 * xi * xi - 1.0) / 12.0;
             let q_expected = w * l * (1.0 - 2.0 * xi) / 2.0;
             assert!(
@@ -388,6 +457,127 @@ mod tests {
         }
     }
 
+    /// ブレース（トラス要素）の等分布荷重は、材端モーメントを生じずに
+    /// 両端へ半分ずつ配られる。合力は等価節点力方式と一致する
+    /// （建物総重量・支点反力が方式によって変わらないことの確認）。
+    #[test]
+    fn brace_udl_has_no_end_moment_and_preserves_resultant() {
+        let l = 1000.0;
+        let w = 2.0;
+        let frame = horiz_frame();
+        let loads = vec![udl(w, l)];
+        let q = consistent_load_local(&loads, &frame, l, SpanLoadTransfer::StaticallyEquivalent);
+        // 材端モーメントは 0
+        for &k in &[3usize, 4, 5, 9, 10, 11] {
+            assert!(q[k].abs() < 1e-9, "q[{k}]={} は 0 のはず", q[k]);
+        }
+        // 曲げ面せん断は両端 wL/2 ずつ
+        let half = w * l / 2.0;
+        assert!((q[1].abs() - half).abs() < 1e-6, "q1={}", q[1]);
+        assert!((q[7].abs() - half).abs() < 1e-6, "q7={}", q[7]);
+        // 合力は等価節点力方式と一致する
+        let qc = consistent_load_local(&loads, &frame, l, SpanLoadTransfer::Consistent);
+        assert!(
+            ((q[1] + q[7]) - (qc[1] + qc[7])).abs() < 1e-6,
+            "合力が方式で変わってはいけない"
+        );
+    }
+
+    /// 材軸から外れた位置の集中荷重は、単純梁反力と同じ配分（てこの原理）で
+    /// 両端へ分かれる。作用位置の 1 次モーメントが保存される。
+    #[test]
+    fn brace_point_load_splits_by_lever_rule() {
+        let l = 1000.0;
+        let p = 100.0;
+        let a = 250.0;
+        let frame = horiz_frame();
+        let loads = vec![MemberLoad::manual(
+            ElemId(0),
+            [0.0, 0.0, -1.0],
+            MemberLoadKind::Point { a, p },
+        )];
+        let q = consistent_load_local(&loads, &frame, l, SpanLoadTransfer::StaticallyEquivalent);
+        // R_i = P(1−a/L) = 75、R_j = P·a/L = 25
+        assert!((q[1].abs() - p * (1.0 - a / l)).abs() < 1e-6, "q1={}", q[1]);
+        assert!((q[7].abs() - p * a / l).abs() < 1e-6, "q7={}", q[7]);
+        assert!(
+            q[5].abs() < 1e-9 && q[11].abs() < 1e-9,
+            "材端モーメントは 0"
+        );
+    }
+
+    /// 材端ちょうどに載る集中荷重も落とさずに配る。
+    /// 位置 a = L は「材長で切り取る」実装では区間外と判定されて消えるため、
+    /// 静定分配では位置を比で扱っている。
+    #[test]
+    fn brace_point_load_at_far_end_goes_entirely_to_that_end() {
+        let l = 1000.0;
+        let p = 100.0;
+        let frame = horiz_frame();
+        let loads = vec![MemberLoad::manual(
+            ElemId(0),
+            [0.0, 0.0, -1.0],
+            MemberLoadKind::Point { a: l, p },
+        )];
+        let q = consistent_load_local(&loads, &frame, l, SpanLoadTransfer::StaticallyEquivalent);
+        assert!(q[1].abs() < 1e-9, "i 端の分担は 0 のはず q1={}", q[1]);
+        assert!(
+            (q[7].abs() - p).abs() < 1e-6,
+            "j 端が全量を持つ q7={}",
+            q[7]
+        );
+    }
+
+    /// 分布荷重が材長の一部に載る場合も、合力は等価節点力方式と一致する
+    /// （静定分配が積分区間を材長で切り取っていないことの確認）。
+    #[test]
+    fn brace_partial_span_load_preserves_resultant() {
+        let l = 1000.0;
+        let frame = horiz_frame();
+        let loads = vec![MemberLoad::manual(
+            ElemId(0),
+            [0.0, 0.0, -1.0],
+            MemberLoadKind::Distributed {
+                a: 200.0,
+                b: 700.0,
+                w1: 1.0,
+                w2: 4.0,
+            },
+        )];
+        let qs = consistent_load_local(&loads, &frame, l, SpanLoadTransfer::StaticallyEquivalent);
+        let qc = consistent_load_local(&loads, &frame, l, SpanLoadTransfer::Consistent);
+        assert!(
+            ((qs[1] + qs[7]) - (qc[1] + qc[7])).abs() < 1e-6,
+            "合力が方式で変わってはいけない: static={} consistent={}",
+            qs[1] + qs[7],
+            qc[1] + qc[7]
+        );
+        // 台形分布 w1=1→w2=4 を [200,700] に載せた合力は (1+4)/2×500 = 1250
+        assert!(((qs[1] + qs[7]).abs() - 1250.0).abs() < 1e-6);
+    }
+
+    /// ブレースは材軸直交成分を負担しないため、固定端内力はどの断面でも
+    /// 曲げ・せん断が 0 になる（荷重ベクトル側で両端へ流し切っている）。
+    #[test]
+    fn brace_fixed_internal_has_no_bending() {
+        let l = 1000.0;
+        let w = 2.0;
+        let frame = horiz_frame();
+        let loads = vec![udl(w, l)];
+        for &xi in &[0.0, 0.25, 0.5, 0.75, 1.0] {
+            let f = fixed_internal_local(
+                &loads,
+                &frame,
+                l,
+                xi,
+                SpanLoadTransfer::StaticallyEquivalent,
+            );
+            for &k in &[1usize, 2, 3, 4, 5] {
+                assert!(f[k].abs() < 1e-9, "xi={xi} f[{k}]={} は 0 のはず", f[k]);
+            }
+        }
+    }
+
     #[test]
     fn triangle_via_trapezoid_matches_known_fem() {
         // 対称三角形（端 0、中央ピーク）は台形では表せないが、
@@ -396,17 +586,17 @@ mod tests {
         let l = 1000.0;
         let w = 3.0;
         let frame = horiz_frame();
-        let loads = vec![MemberLoad {
-            elem: ElemId(0),
-            dir: [0.0, 0.0, -1.0],
-            kind: MemberLoadKind::Distributed {
+        let loads = vec![MemberLoad::manual(
+            ElemId(0),
+            [0.0, 0.0, -1.0],
+            MemberLoadKind::Distributed {
                 a: 0.0,
                 b: l,
                 w1: 0.0,
                 w2: w,
             },
-        }];
-        let q = consistent_load_local(&loads, &frame, l);
+        )];
+        let q = consistent_load_local(&loads, &frame, l, SpanLoadTransfer::Consistent);
         let fem_i = w * l * l / 30.0;
         let fem_j = w * l * l / 20.0;
         assert!(

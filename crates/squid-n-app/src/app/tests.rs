@@ -373,16 +373,16 @@ fn aligned_portal_frame() -> squid_n_core::model::Model {
         id: LoadCaseId(0),
         name: "長期".into(),
         nodal: Vec::new(),
-        member: vec![MemberLoad {
-            elem: ElemId(1),
-            dir: [0.0, 0.0, -1.0],
-            kind: MemberLoadKind::Distributed {
+        member: vec![MemberLoad::manual(
+            ElemId(1),
+            [0.0, 0.0, -1.0],
+            MemberLoadKind::Distributed {
                 a: 0.0,
                 b: 4000.0,
                 w1: 10.0,
                 w2: 10.0,
             },
-        }],
+        )],
     });
 
     model
@@ -622,16 +622,9 @@ fn test_seismic_flow_requires_then_uses_stories() {
     app.nav.focus_result = Some(StaticKey::Case(StaticCaseKey::Seismic(SeismicDir::X)));
     assert_eq!(app.current_static().unwrap().disp, seismic_disp);
 
-    // undo で WY・EY・EX の同期 → 階定義 → DL(自重)の同期の順に戻る
-    // （generate_stories_action が DL 同期 → 階適用 → EX/EY 同期 → WX/WY 同期の
-    // 順に undo 履歴を積む。平面架構のため X 方向の風は見付け幅 0 で構築されず、
-    // 風は WY の 1 件のみ。以降の解析実行時の同期は冪等で履歴を積まない）
-    app.undo.undo(&mut app.model); // WY
-    assert!(app
-        .model
-        .load_cases
-        .iter()
-        .all(|lc| lc.name != WY_CASE_NAME));
+    // undo で EY・EX の同期 → 階定義 → DL(自重)の同期の順に戻る
+    // （generate_stories_action が DL 同期 → 階適用 → EX/EY 同期の順に
+    // undo 履歴を積む。以降の解析実行時の同期は冪等で履歴を積まない）
     app.undo.undo(&mut app.model); // EY
     app.undo.undo(&mut app.model); // EX
     assert!(app
@@ -731,6 +724,63 @@ fn test_sync_seismic_semiprecise_without_eigen_sets_notice_and_skips() {
     );
 }
 
+/// 準備計算が自動生成する荷重ケース（EX など）へ手で足した荷重は、
+/// 同期を繰り返しても消えない。自動生成分だけが作り直される。
+#[test]
+fn test_manual_load_in_auto_case_survives_sync() {
+    use squid_n_core::model::LoadSource;
+
+    let mut app = App::default();
+    app.load_model(crate::sample::portal_frame());
+    app.generate_stories_action();
+    assert!(app.last_error.is_none(), "{:?}", app.last_error);
+
+    let ex = app
+        .model
+        .load_cases
+        .iter()
+        .find(|lc| lc.name == EX_CASE_NAME)
+        .expect("EXケースが生成されているはず");
+    let ex_id = ex.id;
+    let auto_before = ex.nodal.len();
+    assert!(auto_before > 0, "Ai 分布の水平力が入っているはず");
+
+    // 利用者が EX へ手入力の節点荷重を 1 件足す。
+    let mut manual = squid_n_core::model::NodalLoad::manual(
+        squid_n_core::ids::NodeId(0),
+        [1234.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+    );
+    manual.name = "手入力の水平力".into();
+    app.undo.run(
+        &mut app.model,
+        Box::new(squid_n_edit::AddNodalLoad {
+            lc: ex_id,
+            load: manual.clone(),
+        }),
+    );
+
+    // モデルが変わったので次の同期は実際に走る（ハッシュ不一致）。
+    app.sync_auto_load_cases_action();
+
+    let ex = app
+        .model
+        .load_cases
+        .iter()
+        .find(|lc| lc.id == ex_id)
+        .unwrap();
+    let manual_loads: Vec<_> = ex.manual_nodal().map(|(_, nl)| nl.clone()).collect();
+    assert_eq!(manual_loads, vec![manual], "手入力は同期で消えてはいけない");
+    assert_eq!(
+        ex.nodal.iter().filter(|nl| nl.source.is_auto()).count(),
+        auto_before,
+        "自動生成分は増減せず作り直されるだけ"
+    );
+    assert!(
+        ex.nodal.iter().any(|nl| nl.source == LoadSource::Manual),
+        "手入力の荷重が残っているはず"
+    );
+}
+
 /// 性能修正: `sync_auto_load_cases_action` は前回同期時からモデル・関連設定
 /// （`analysis_cfg` の一部）が変わっていなければ DL/LL/EX/EY の再計算を
 /// 丸ごとスキップする。ハッシュが一致する状態を人為的に作り、既存の
@@ -769,9 +819,6 @@ fn test_sync_auto_load_cases_action_skips_when_hash_unchanged() {
         app.analysis_cfg.z.to_bits().hash(&mut hasher);
         (app.analysis_cfg.soil as u8).hash(&mut hasher);
         app.analysis_cfg.c0.to_bits().hash(&mut hasher);
-        app.analysis_cfg.v0.to_bits().hash(&mut hasher);
-        (app.analysis_cfg.roughness as u8).hash(&mut hasher);
-        app.analysis_cfg.parapet_mm.to_bits().hash(&mut hasher);
         hasher.finish()
     }
     app.auto_load_sync_hash = Some(fake_hash(&app));
@@ -1511,35 +1558,6 @@ fn test_async_seismic_job_flow() {
         Some(StaticKey::Case(StaticCaseKey::Seismic(SeismicDir::X)))
     );
     assert!(!bundle.member_checks.is_empty());
-}
-
-/// `start_wind_job` はバックグラウンドで `run_wind` と同じ結果を与える
-/// （サンプルの門型ラーメンは Y 方向の風のみ見付け幅を持つ。`test_run_wind_static`
-/// と同じ理由）。
-#[test]
-fn test_async_wind_job_flow() {
-    let mut app = App::default();
-    app.load_model(crate::sample::portal_frame());
-    app.generate_stories_action();
-    assert!(app.last_error.is_none(), "{:?}", app.last_error);
-
-    app.start_wind_job(SeismicDir::Y);
-    assert!(app.job.is_some());
-    assert_eq!(app.job.as_ref().unwrap().label, "風荷重静的解析");
-
-    wait_for_job(&mut app);
-
-    assert!(app.last_error.is_none(), "{:?}", app.last_error);
-    assert!(app.job.is_none());
-    let bundle = app.results.as_ref().unwrap();
-    assert!(bundle
-        .statics
-        .iter()
-        .any(|(k, _)| *k == StaticCaseKey::Wind(SeismicDir::Y)));
-    assert_eq!(
-        app.last_static,
-        Some(StaticKey::Case(StaticCaseKey::Wind(SeismicDir::Y)))
-    );
 }
 
 #[test]
@@ -2347,30 +2365,24 @@ fn test_holding_capacity_rank_auto_rc_rect_from_shape() {
         id: LoadCaseId(0),
         name: "長期".into(),
         nodal: Vec::new(),
-        member: vec![MemberLoad {
-            elem: ElemId(2),
-            dir: [0.0, 0.0, -1.0],
-            kind: MemberLoadKind::Distributed {
+        member: vec![MemberLoad::manual(
+            ElemId(2),
+            [0.0, 0.0, -1.0],
+            MemberLoadKind::Distributed {
                 a: 0.0,
                 b: 4000.0,
                 w1: 10.0,
                 w2: 10.0,
             },
-        }],
+        )],
     });
     model.load_cases.push(LoadCase {
         kind: Default::default(),
         id: LoadCaseId(1),
         name: "地震X".into(),
         nodal: vec![
-            NodalLoad {
-                node: NodeId(2),
-                values: [20000.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-            },
-            NodalLoad {
-                node: NodeId(3),
-                values: [20000.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-            },
+            NodalLoad::manual(NodeId(2), [20000.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
+            NodalLoad::manual(NodeId(3), [20000.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
         ],
         member: Vec::new(),
     });
@@ -2590,10 +2602,7 @@ fn test_rc_sigma_0_from_compression_axial_force() {
             kind: Default::default(),
             id: LoadCaseId(0),
             name: "圧縮".into(),
-            nodal: vec![NodalLoad {
-                node: NodeId(1),
-                values: [0.0, 0.0, -p, 0.0, 0.0, 0.0],
-            }],
+            nodal: vec![NodalLoad::manual(NodeId(1), [0.0, 0.0, -p, 0.0, 0.0, 0.0])],
             member: Vec::new(),
         }],
         ..Default::default()
@@ -2753,20 +2762,14 @@ fn test_rc_sigma_0_prefers_gravity_load_case_over_last_static() {
                 kind: Default::default(),
                 id: LoadCaseId(0),
                 name: "長期".into(),
-                nodal: vec![NodalLoad {
-                    node: NodeId(1),
-                    values: [0.0, 0.0, -p1, 0.0, 0.0, 0.0], // 下向き=圧縮
-                }],
+                nodal: vec![NodalLoad::manual(NodeId(1), [0.0, 0.0, -p1, 0.0, 0.0, 0.0])],
                 member: Vec::new(),
             },
             LoadCase {
                 kind: Default::default(),
                 id: LoadCaseId(1),
                 name: "地震".into(),
-                nodal: vec![NodalLoad {
-                    node: NodeId(1),
-                    values: [0.0, 0.0, p2, 0.0, 0.0, 0.0], // 上向き=引張
-                }],
+                nodal: vec![NodalLoad::manual(NodeId(1), [0.0, 0.0, p2, 0.0, 0.0, 0.0])],
                 member: Vec::new(),
             },
         ],
@@ -3843,8 +3846,10 @@ fn kind_lc(
     }
 }
 
-/// 種別から組合せを自動生成: Dead/Live/Snow/Wind の種別を設定したモデルで
-/// 標準組合せ（長期・短期積雪・短期暴風±）が undo 可能に一括生成されること。
+/// 種別から組合せを自動生成: Dead/Live/Snow の種別を設定したモデルで
+/// 標準組合せ（長期・短期積雪）が undo 可能に一括生成されること。
+/// 風荷重は算定・生成の対象外のため、種別 Wind のケースがあっても
+/// 暴風の組合せは作られない。
 #[test]
 fn test_auto_generate_combinations_from_kinds() {
     use squid_n_core::model::LoadCaseKind;
@@ -3860,18 +3865,16 @@ fn test_auto_generate_combinations_from_kinds() {
     app.auto_generate_combinations_action();
     assert!(app.last_error.is_none(), "{:?}", app.last_error);
 
-    // 多雪区域=false: DL+LL(1) + DL+LL+SL(1) + 風±(2) = 4 ケース
-    // （地震(EX/EY)は kind だけでは方向を判別できないため対象外の仕様）。
+    // 多雪区域=false: DL+LL(1) + DL+LL+SL(1) = 2 ケース
+    // （地震(EX/EY)は kind だけでは方向を判別できないため対象外の仕様。
+    // 風は種別 Wind のケースがあっても生成しない）。
     let names: Vec<&str> = app
         .model
         .combinations
         .iter()
         .map(|c| c.name.as_str())
         .collect();
-    assert_eq!(
-        names,
-        vec!["DL + LL", "DL + LL + SL", "DL + LL + WX", "DL + LL - WX"]
-    );
+    assert_eq!(names, vec!["DL + LL", "DL + LL + SL"]);
 
     // DL+LL の中身は Dead(0)+Live(1) を各1.0で参照する。
     assert_eq!(
@@ -3887,7 +3890,7 @@ fn test_auto_generate_combinations_from_kinds() {
 }
 
 /// 多雪区域フラグ（AnalysisSettings::heavy_snow_zone）を立てると
-/// 0.7S・0.35S 系の組合せも生成されること。
+/// 長期の 0.7S 系の組合せも生成されること。
 #[test]
 fn test_auto_generate_combinations_heavy_snow() {
     use squid_n_core::model::LoadCaseKind;
@@ -3911,8 +3914,8 @@ fn test_auto_generate_combinations_heavy_snow() {
         .map(|c| c.name.as_str())
         .collect();
     assert!(names.contains(&"DL + LL + 0.7SL"), "{names:?}");
-    assert!(names.contains(&"DL + LL + 0.35SL + WX"), "{names:?}");
-    assert!(names.contains(&"DL + LL + 0.35SL - WX"), "{names:?}");
+    // 風は生成対象外のため、暴風の組合せは多雪区域でも作られない。
+    assert!(!names.iter().any(|n| n.contains('W')), "{names:?}");
 }
 
 /// Dead ケースがない場合はエラーメッセージが設定され、組合せは生成されないこと。
@@ -4195,47 +4198,8 @@ fn test_run_preparation_regenerates_stories_keeping_manual_input() {
     assert!((app.model.stories[0].seismic_weight.unwrap() - auto_weight).abs() < 1e-6);
 }
 
-/// 準備計算は風圧力も荷重ケース（WX/WY）へ同期する。門型ラーメンは Y 方向の風
-/// （見付け幅 = X 方向の座標範囲）のみ算定できるため WY だけが生成される。
-/// 生成された WY は風荷重静的解析（`run_wind`）と同じ水平力を持つ。
-#[test]
-fn test_run_preparation_syncs_wind_load_cases() {
-    use squid_n_core::model::LoadCaseKind;
-    let mut app = App::default();
-    app.load_model(crate::sample::portal_frame());
-    app.run_preparation();
-    assert!(app.last_error.is_none(), "{:?}", app.last_error);
-
-    let wy = app
-        .model
-        .load_cases
-        .iter()
-        .find(|lc| lc.name == WY_CASE_NAME)
-        .expect("WYケースが生成されるはず");
-    assert_eq!(wy.kind, LoadCaseKind::Wind);
-    assert!(!wy.nodal.is_empty(), "WYに層水平力が入っているはず");
-    assert!(
-        app.model
-            .load_cases
-            .iter()
-            .all(|lc| lc.name != WX_CASE_NAME),
-        "見付け幅 0 の X 方向の風は生成されないはず"
-    );
-
-    // 風荷重静的解析が組み立てる水平力と一致する。
-    let cfg = squid_n_solver::analysis::WindStaticCfg {
-        dir: SeismicDir::Y,
-        v0: app.analysis_cfg.v0,
-        roughness: app.analysis_cfg.roughness,
-        cpi: 0.0,
-        parapet_mm: app.analysis_cfg.parapet_mm,
-    };
-    let built = squid_n_solver::analysis::build_wind_load_case_from_model(&app.model, cfg).unwrap();
-    assert_eq!(wy.nodal, built.nodal);
-}
-
-/// 荷重ケースの実行導線は、標準の水平力ケース（EX/EY・WX/WY）を方向別の結果キーへ
-/// 振り分ける（地震静的・風荷重静的の専用導線を廃し、荷重ケース解析へ統合した）。
+/// 荷重ケースの実行導線は、標準の水平力ケース（EX/EY）を方向別の結果キーへ
+/// 振り分ける（地震静的の専用導線を廃し、荷重ケース解析へ統合した）。
 #[test]
 fn test_load_case_job_routes_standard_lateral_cases() {
     let mut app = App::default();
@@ -4252,15 +4216,10 @@ fn test_load_case_job_routes_standard_lateral_cases() {
             .unwrap()
     };
     let ex = id_of(&app, EX_CASE_NAME);
-    let wy = id_of(&app, WY_CASE_NAME);
     let dl = id_of(&app, DL_CASE_NAME);
     assert_eq!(
         app.standard_lateral_case(ex),
         Some(StaticCaseKey::Seismic(SeismicDir::X))
-    );
-    assert_eq!(
-        app.standard_lateral_case(wy),
-        Some(StaticCaseKey::Wind(SeismicDir::Y))
     );
     assert_eq!(app.standard_lateral_case(dl), None, "DL は通常の線形静的");
 
@@ -4286,7 +4245,8 @@ fn test_load_case_job_routes_standard_lateral_cases() {
 }
 
 /// 種別からの標準組合せ自動生成は、準備計算が生成する標準ケース名で方向を判別し、
-/// 地震（±EX/±EY）・暴風（±WX/±WY）の組合せまで含めて生成する。
+/// 地震（±EX/±EY）の組合せまで含めて生成する。風は自動算定しないため、
+/// 手入力の風荷重ケースがなければ暴風の組合せは生成されない。
 #[test]
 fn test_auto_generate_combinations_uses_standard_case_names() {
     let mut app = App::default();
@@ -4315,47 +4275,8 @@ fn test_auto_generate_combinations_uses_standard_case_names() {
         .collect();
     assert!(names.contains(&"DL + LL + EX"), "{names:?}");
     assert!(names.contains(&"DL + LL - EY"), "{names:?}");
-    // 門型ラーメンでは WY のみ生成されるため、暴風は Y 方向の組合せのみ。
-    assert!(names.contains(&"DL + LL + WY"), "{names:?}");
-    assert!(!names.iter().any(|n| n.contains("WX")), "{names:?}");
-}
-
-/// 風荷重静的解析（run_wind）: 階の定義後に実行でき、結果が
-/// `StaticCaseKey::Wind(dir)` に格納されること。
-///
-/// サンプルの門型ラーメンは XZ 平面内の平面架構のため、Y 方向の風
-/// （見付け幅 = X 方向の座標範囲 4000mm）のみ解析できる。X 方向の風は
-/// 見付け幅（Y 範囲）が 0 のため明示エラーになることも併せて確認する。
-#[test]
-fn test_run_wind_static() {
-    let mut app = App::default();
-    app.load_model(crate::sample::portal_frame());
-
-    // 階なし → 明示エラー
-    app.run_wind(SeismicDir::Y);
-    assert!(app.last_error.is_some());
-
-    app.generate_stories_action();
-    assert!(app.last_error.is_none(), "{:?}", app.last_error);
-
-    // 平面架構の面外（X風）は見付け幅 0 の明示エラー
-    app.run_wind(SeismicDir::X);
-    assert!(app.last_error.is_some());
-
-    app.run_wind(SeismicDir::Y);
-    assert!(app.last_error.is_none(), "{:?}", app.last_error);
-    let r = app.results.as_ref().unwrap();
-    let wind = r
-        .statics
-        .iter()
-        .find(|(k, _)| *k == StaticCaseKey::Wind(SeismicDir::Y))
-        .expect("風静的Yの結果が格納されるはず");
-    // 柱頭が Y 方向へ変位している（風方向の水平力が作用した証拠）
-    assert!(wind.1.disp[2][1].abs() > 1e-9, "{}", wind.1.disp[2][1]);
-    assert_eq!(
-        app.last_static,
-        Some(StaticKey::Case(StaticCaseKey::Wind(SeismicDir::Y)))
-    );
+    // 風荷重ケースを定義していないため、暴風の組合せは生成されない。
+    assert!(!names.iter().any(|n| n.contains('W')), "{names:?}");
 }
 
 /// 終局検定（靭性保証型耐震設計指針）の App 経由の一括算定を検証する。
@@ -5899,18 +5820,6 @@ fn test_run_preparation_populates_result() {
     assert!((sm.base_shear - sm.rows[0].qi).abs() < 1e-9);
     assert!(!sm.clamped_negative_pi);
 
-    // 風圧力は X・Y の両方向を算定する（見付幅が風向で変わるため）。
-    // サンプルは XZ 平面の平面架構なので、X 方向の風（見付幅は Y 方向の
-    // 座標範囲 = 0）は算定できず、理由が `wind_note` に入る。
-    assert_eq!(prep.wind.len(), 1, "{:?}", prep.wind_note);
-    assert_eq!(prep.wind[0].dir, SeismicDir::Y);
-    assert!(prep.wind[0].q > 0.0);
-    assert!(
-        prep.wind_note.as_ref().unwrap().contains("X 方向"),
-        "{:?}",
-        prep.wind_note
-    );
-
     // 荷重集計（DL には自重・床荷重が同期されるので鉛直下向き = 負）。
     let dl = prep
         .load_cases
@@ -6067,8 +5976,8 @@ fn test_preparation_lists_rigid_zones() {
     }
 }
 
-/// 階が未定義のまま準備計算の集計だけを行うと、Ai 分布・風圧力は算定できず
-/// 理由（`*_note`）が入る。集計自体はエラーにならない。
+/// 階が未定義のまま準備計算の集計だけを行うと、Ai 分布は算定できず
+/// 理由（`seismic_note`）が入る。集計自体はエラーにならない。
 #[test]
 fn test_preparation_without_stories_reports_notes() {
     let mut app = App::default();
@@ -6080,8 +5989,6 @@ fn test_preparation_without_stories_reports_notes() {
     assert!(prep.stories.is_empty());
     assert!(prep.seismic.is_none());
     assert!(prep.seismic_note.as_ref().unwrap().contains("階"));
-    assert!(prep.wind.is_empty());
-    assert!(prep.wind_note.is_some());
     // 剛域・荷重集計は階に依存しないので算定される。
     assert!(!prep.rigid_zones.is_empty());
     assert!(!prep.load_cases.is_empty());

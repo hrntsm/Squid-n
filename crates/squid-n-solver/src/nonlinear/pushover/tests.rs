@@ -2869,10 +2869,7 @@ fn test_pushover_long_term_preload_sets_initial_axial_state() {
     model.load_cases.push(LoadCase {
         id: LoadCaseId(0),
         name: "DL".into(),
-        nodal: vec![NodalLoad {
-            node: NodeId(1),
-            values: [0.0, 0.0, -p, 0.0, 0.0, 0.0],
-        }],
+        nodal: vec![NodalLoad::manual(NodeId(1), [0.0, 0.0, -p, 0.0, 0.0, 0.0])],
         member: vec![],
         kind: LoadCaseKind::Dead,
     });

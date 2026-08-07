@@ -1381,7 +1381,45 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
     // --- クリック処理（ViewCube 上のクリックはスナップ済みのため除外） ---
     if response.clicked() && !cube_clicked {
         if let Some(click_pos) = response.interact_pointer_pos() {
-            if app.beam_draw_mode {
+            if app.load_pick_active() {
+                // 荷重の対象ピック待ち：節点荷重なら節点、部材荷重なら部材を仮選択する
+                // （確定は Enter。案内バーは `crate::load_editor`）。
+                let picks_node = app.load_editor.as_ref().is_some_and(|e| e.picks_node());
+                if picks_node {
+                    // 節点ピッキング許容距離（px）
+                    const NODE_PICK_THRESHOLD: f32 = 10.0;
+                    if let Some((i, d)) = pick_nearest_node(&pts, &node_visible, click_pos) {
+                        if d <= NODE_PICK_THRESHOLD {
+                            let node_id = app.model.nodes[i].id;
+                            if let Some(editor) = app.load_editor.as_mut() {
+                                editor.set_picked_node(node_id);
+                            }
+                            app.nav.focus_node = Some(node_id);
+                            app.selection.nodes = vec![node_id];
+                        }
+                    }
+                } else {
+                    // 部材ピッキング許容距離（px）
+                    const PICK_THRESHOLD: f32 = 8.0;
+                    if let Some((id, d)) = pick_nearest_member(&app.model, &pts, click_pos, filter)
+                    {
+                        if d <= PICK_THRESHOLD {
+                            // 壁・スラブ等の非線材には部材荷重を載せられない
+                            // （`is_member_load_target` と同じ集合に限る）。
+                            if member_load_pickable(&app.model, id) {
+                                // モデルの不変借用はここで終える（`set_picked_member`
+                                // へはブレースか否かの判定結果だけを渡す）。
+                                let is_brace = crate::load_editor::is_brace(&app.model, id);
+                                if let Some(editor) = app.load_editor.as_mut() {
+                                    editor.set_picked_member(id, is_brace);
+                                }
+                                app.nav.focus_member = Some(id);
+                                app.selection.members = vec![id];
+                            }
+                        }
+                    }
+                }
+            } else if app.beam_draw_mode {
                 // 梁作成モード：クリック位置に最も近い節点を選ぶ
                 let best = pick_nearest_node(&pts, &node_visible, click_pos);
                 // 節点ピッキング許容距離（px）
@@ -1539,7 +1577,7 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
         );
     }
 
-    // 節点（梁/壁作成モードで選択中の節点は強調表示）。
+    // 節点（梁/壁作成モードで選択中の節点・選択中の節点は強調表示）。
     // 解析対象外の節点は「床・二次部材」トグルに追従して表示・非表示を切り替える。
     for (i, &p) in pts.iter().enumerate() {
         if !node_visible[i] {
@@ -1549,9 +1587,15 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
         let is_first = app.beam_draw_first == Some(node_id);
         let is_wall_pick = app.wall_draw_nodes.contains(&node_id);
         let is_slab_pick = app.slab_draw_nodes.contains(&node_id);
+        // 節点の選択（ナビゲータの荷重ツリー・荷重の対象ピック）。部材の選択
+        // ハイライトと対をなし、どの節点が対象なのかを 3D 上で示す。
+        let is_selected = app.selection.nodes.contains(&node_id);
         let (radius, color) = if is_first || is_wall_pick || is_slab_pick {
             // 作成モードで選択中の節点 = 重要（赤）
             (5.0, theme::PARETO_RED)
+        } else if is_selected {
+            // 選択中の節点 = 結果の強調（ハイライト紫。部材の選択色と揃える）
+            (5.0, theme::HILITE_PURPLE)
         } else {
             // 通常の節点 = データ点（青）
             (3.0, theme::DATA_BLUE)
@@ -2820,6 +2864,26 @@ fn dist_point_to_segment(p: egui::Pos2, a: egui::Pos2, b: egui::Pos2) -> f32 {
     let t = ((ap.x * ab.x + ap.y * ab.y) / len_sq).clamp(0.0, 1.0);
     let proj = egui::pos2(a.x + ab.x * t, a.y + ab.y * t);
     (p - proj).length()
+}
+
+/// 部材荷重を載せられる部材か（荷重のピック対象の判定）。
+///
+/// ソルバが等価節点力を配れる 2 節点の線材に限る
+/// （`squid_n_solver` の `is_member_load_target` と同じ集合）。壁・スラブ等の
+/// 面要素は先頭 2 節点を材端とみなして荷重が誤適用されるため対象外にする。
+fn member_load_pickable(model: &squid_n_core::model::Model, id: squid_n_core::ids::ElemId) -> bool {
+    use squid_n_core::model::ElementKind;
+    model.elements.iter().any(|e| {
+        e.id == id
+            && e.nodes.len() == 2
+            && matches!(
+                e.kind,
+                ElementKind::Beam
+                    | ElementKind::Fiber
+                    | ElementKind::MultiSpring
+                    | ElementKind::Brace { .. }
+            )
+    })
 }
 
 /// スクリーン座標 `pos` に最も近い節点の `(index, 距離px)` を返す（同距離は先勝ち）。

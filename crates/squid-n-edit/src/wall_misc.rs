@@ -93,11 +93,13 @@ impl EditCommand for SetLoadCaseKind {
     }
 }
 
-/// スラブ荷重を専用の荷重ケースへ全置換で同期する（レビュー §1.1: 面荷重→大梁
+/// スラブ荷重を専用の荷重ケースへ同期する（レビュー §1.1: 面荷重→大梁
 /// 分配の結果を応力解析の荷重ケースへ接続する）。
 ///
 /// `name` で既存ケースを探し、見つかれば `kind` を指定値に固定した上で
-/// `nodal`/`member` を丸ごと置き換える（逆操作は置換前の `LoadCase` 全体の
+/// **自動生成分（`LoadSource::Auto`）だけを** `nodal`/`member` で置き換える。
+/// 利用者が同じケースへ手入力した荷重（`LoadSource::Manual`）は順序を保って
+/// 残る（逆操作は置換前の `LoadCase` 全体の
 /// 復元、[`RestoreLoadCaseContent`]）。見つからなければ [`AddLoadCase`] と同じ
 /// 「末尾に `LoadCaseId(len)`」の規則で新規ケースを追加する（逆操作は
 /// 既存の [`DeleteLoadCase`] をそのまま再利用できる）。
@@ -122,18 +124,21 @@ impl EditCommand for SyncSlabLoadsToCase {
         if let Some(idx) = model.load_cases.iter().position(|lc| lc.name == self.name) {
             let old = model.load_cases[idx].clone();
             model.load_cases[idx].kind = self.kind;
-            model.load_cases[idx].nodal = self.nodal.clone();
-            model.load_cases[idx].member = self.member.clone();
+            model.load_cases[idx].replace_auto_loads(self.nodal.clone(), self.member.clone());
             Box::new(RestoreLoadCaseContent { old })
         } else {
             let new_id = LoadCaseId(model.load_cases.len() as u32);
-            model.load_cases.push(LoadCase {
+            let mut case = LoadCase {
                 id: new_id,
                 name: self.name.clone(),
                 kind: self.kind,
-                nodal: self.nodal.clone(),
-                member: self.member.clone(),
-            });
+                nodal: Vec::new(),
+                member: Vec::new(),
+            };
+            // 新規作成でも `replace_auto_loads` を通し、内容を自動生成分として
+            // 積む（直接代入すると手入力扱いのまま残り、次回の同期で消えずに増える）。
+            case.replace_auto_loads(self.nodal.clone(), self.member.clone());
+            model.load_cases.push(case);
             Box::new(DeleteLoadCase { id: new_id })
         }
     }

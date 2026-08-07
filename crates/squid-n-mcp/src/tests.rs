@@ -254,10 +254,10 @@ fn rc_column_model() -> Model {
             kind: Default::default(),
             id: squid_n_core::ids::LoadCaseId(0),
             name: "長期".into(),
-            nodal: vec![NodalLoad {
-                node: NodeId(1),
-                values: [0.0, 0.0, -500_000.0, 0.0, 0.0, 0.0],
-            }],
+            nodal: vec![NodalLoad::manual(
+                NodeId(1),
+                [0.0, 0.0, -500_000.0, 0.0, 0.0, 0.0],
+            )],
             member: Vec::new(),
         }],
         ..Default::default()

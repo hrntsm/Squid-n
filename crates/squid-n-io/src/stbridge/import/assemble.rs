@@ -738,10 +738,9 @@ fn build_load_cases(
             .nodal
             .into_iter()
             .filter_map(|(fid, values)| match node_index.get(&fid) {
-                Some(&ni) => Some(NodalLoad {
-                    node: NodeId(ni),
-                    values,
-                }),
+                // 取り込んだ荷重は利用者の入力として扱う（準備計算の同期対象に
+                // しない。`StbNodalLoad` に名称属性はないため名称は空）。
+                Some(&ni) => Some(NodalLoad::manual(NodeId(ni), values)),
                 None => {
                     dropped_loads += 1;
                     None

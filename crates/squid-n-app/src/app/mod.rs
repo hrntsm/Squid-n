@@ -51,7 +51,7 @@ pub enum BottomTab {
     Loads,
     /// モデル整合性チェック（診断）一覧
     Diagnostics,
-    /// 準備計算の結果（階の分布・剛域・Ai 分布・風圧力・荷重集計）
+    /// 準備計算の結果（階の分布・剛域・Ai 分布・荷重集計）
     Preparation,
 }
 
@@ -74,7 +74,7 @@ pub enum LeftPanel {
 pub enum RightPanel {
     #[default]
     Inspector,
-    /// ① 準備計算（地震力・風圧力の算定諸元・計算条件・階の定義と、その実行）
+    /// ① 準備計算（地震力の算定諸元・計算条件・階の定義と、その実行）
     Preparation,
     /// ② 解析（静的解析・固有値・増分解析・時刻歴応答の実行）
     Analysis,
@@ -126,8 +126,6 @@ pub enum StaticCaseKey {
     User(LoadCaseId),
     /// 地震静的(Ai 分布)。方向別に共存できる
     Seismic(SeismicDir),
-    /// 風荷重静的解析。方向別に共存できる
-    Wind(SeismicDir),
 }
 
 /// 静的解析の実行対象（「単体実行」で選ぶ対象）。
@@ -429,8 +427,6 @@ pub struct AnalysisSettings {
     pub heavy_snow_zone: bool,
     /// 多雪区域の積雪荷重低減係数 δ1（長期 G+P+δ1・S。既定 0.7）。
     pub snow_delta1: f64,
-    /// 同 δ2（暴風時 G+P+δ2・S±W。既定 0.35）。
-    pub snow_delta2: f64,
     /// 同 δ3（地震時 G+P+δ3・S±K。既定 0.35）。
     pub snow_delta3: f64,
     /// RC 短期許容せん断力の「損傷制御のための検討」（false=安全確保のための検討）。
@@ -438,12 +434,6 @@ pub struct AnalysisSettings {
     pub rc_damage_control: bool,
     /// 地震時短期の設計用せん断力 QD の決定方法（QD1/QD2/min）。
     pub qd_method: squid_n_design_jp::QdMethod,
-    /// 風荷重静的解析の基準風速 V0 [m/s]。
-    pub v0: f64,
-    /// 風荷重静的解析の地表面粗度区分。
-    pub roughness: squid_n_load::wind::TerrainRoughness,
-    /// 風荷重静的解析のパラペット高さ [mm]。
-    pub parapet_mm: f64,
     /// 解析の並列スレッド数（0=自動(全コア)、1=単一スレッド(結果の完全再現性を保証)、n=固定）。
     pub threads: usize,
     /// 動的解析（固有値・時刻歴・精算周期）の質量モデルの方式
@@ -529,13 +519,9 @@ impl Default for AnalysisSettings {
             phase_diff_dir_y: false,
             heavy_snow_zone: false,
             snow_delta1: 0.7,
-            snow_delta2: 0.35,
             snow_delta3: 0.35,
             rc_damage_control: true,
             qd_method: squid_n_design_jp::QdMethod::Min,
-            v0: 34.0,
-            roughness: squid_n_load::wind::TerrainRoughness::III,
-            parapet_mm: 0.0,
             threads: 0,
             mass_method: squid_n_core::model::MassMethod::default(),
         }
@@ -563,7 +549,7 @@ pub enum JobResult {
     Modal(Result<squid_n_solver::eigen::ModalResult, String>),
     /// 時刻歴応答解析。`ResponseResult` は詳細記録を含み大きいため Box で運ぶ。
     TimeHistory(Box<Result<squid_n_solver::timehistory::ResponseResult, String>>),
-    /// 線形静的・地震静的(Ai)・風荷重静的解析（`StaticCaseKey` で結果格納先を区別）。
+    /// 線形静的・地震静的(Ai)（`StaticCaseKey` で結果格納先を区別）。
     StaticCase {
         key: StaticCaseKey,
         res: Result<squid_n_solver::linear::StaticOnce, String>,
@@ -693,7 +679,7 @@ pub struct App {
     /// モデル整合性チェック（診断）の結果一覧。`run_diagnostics` で再構築する。
     pub diagnostics: Vec<Diagnostic>,
     /// 準備計算（解析前の前処理）の結果。解析前に階の分布・剛域・Ai 分布・
-    /// 風圧力・荷重集計を確認するために保持する。`run_preparation`／
+    /// 荷重集計を確認するために保持する。`run_preparation`／
     /// 各解析実行時の `ensure_preparation` で再構築する。
     pub preparation: Option<PreparationResult>,
     /// ナビゲータ（左ペイン）状態
@@ -947,6 +933,11 @@ pub struct App {
     /// スラブ作成モードで選択済みの境界節点（外周順。確定で AddSlab しリセット）
     #[cfg(feature = "gui")]
     pub slab_draw_nodes: Vec<squid_n_core::ids::NodeId>,
+    /// 荷重の追加・編集モーダルの状態（開いていなければ `None`）。
+    /// ナビゲータの荷重ツリーから開く。対象を 3D で選ぶ間はモーダルを閉じるため、
+    /// 入力内容はここに保持され続ける（`crate::load_editor`）。
+    #[cfg(feature = "gui")]
+    pub load_editor: Option<crate::load_editor::LoadEditor>,
     /// 現在のプロジェクトファイル（.scz）パス。未保存なら None。
     pub project_path: Option<std::path::PathBuf>,
     /// 解析タブの設定値
@@ -1177,6 +1168,8 @@ impl Default for App {
             #[cfg(feature = "gui")]
             slab_draw_nodes: Vec::new(),
             #[cfg(feature = "gui")]
+            load_editor: None,
+            #[cfg(feature = "gui")]
             wall_draw_mode: false,
             #[cfg(feature = "gui")]
             wall_draw_nodes: Vec::new(),
@@ -1285,11 +1278,8 @@ pub fn install_japanese_fonts(ctx: &egui::Context) {
 ///   用いる（令85条1項・令88条）。
 /// - `EX_CASE_NAME`/`EY_CASE_NAME`（kind=Seismic）:
 ///   `sync_seismic_load_cases_action` が階定義から Ai 分布の水平力を同期する。
-/// - `WX_CASE_NAME`/`WY_CASE_NAME`（kind=Wind）:
-///   `sync_wind_load_cases_action` が階定義から速度圧による層水平力を同期する。
 pub use squid_n_core::model::{
     DL_CASE_NAME, EX_CASE_NAME, EY_CASE_NAME, LL_FRAME_CASE_NAME, LL_SEISMIC_CASE_NAME,
-    WX_CASE_NAME, WY_CASE_NAME,
 };
 
 /// 旧スキーマの自重自動生成ケース名（読込時に DL へ移行される。
@@ -2005,6 +1995,8 @@ mod preparation;
 pub use preparation::*;
 
 #[cfg(feature = "gui")]
+mod nav_loads;
+#[cfg(feature = "gui")]
 mod panels;
 
 /// 保存（Windows/Linux: Ctrl+S、macOS: ⌘S）。
@@ -2461,6 +2453,10 @@ impl eframe::App for App {
             Tab::Design => self.design_tab_panel(ui),
             Tab::Report => self.report_tab_panel(ui),
         });
+
+        // 荷重の追加・編集モーダル（とピック待ちの案内バー）。3D クリックを先に
+        // 処理させるため、ビューアの描画より後に呼ぶ。
+        self.load_editor_ui(ui.ctx());
     }
 }
 
