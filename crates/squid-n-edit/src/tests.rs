@@ -4115,3 +4115,40 @@ fn test_set_story_level_resorts_and_renumbers() {
     assert_eq!(names, vec!["1F", "2F"]);
     assert_eq!(model.nodes[1].story, Some(StoryId(0)));
 }
+
+/// 適用待ちコマンドがモデルの変更（階の削除など）の後に残っても、index が
+/// 範囲外なら Noop になり、誤った階へ適用されない。
+/// 注意: `StoryId ＝配列位置`が不変条件のため、範囲内の古い index は常に
+/// 「その位置に居る階」へ適用されてしまう。範囲外 Noop と UI 側の適用順序
+/// （削除は最後、1 フレーム 1 コマンド）が実際の防御線である。
+#[test]
+fn test_stale_story_commands_are_noop() {
+    let mut model = story_edit_model(&[0.0, 4000.0, 7500.0], &[("1F", 4000.0), ("2F", 7500.0)]);
+    let mut undo = UndoStack::new();
+
+    // 削除後に残った古いコマンド: 編集と削除の index はどちらも範囲外になる。
+    let stale_level = Box::new(SetStoryLevel {
+        story: StoryId(2),
+        name: "RF".into(),
+        elevation: 9000.0,
+    });
+    let stale_delete = Box::new(DeleteStory { story: StoryId(2) });
+
+    // 先に 1F(=StoryId(0)) を削除すると階数が 1 になり、index 2 は範囲外。
+    undo.run(&mut model, Box::new(DeleteStory { story: StoryId(0) }));
+    assert_eq!(model.stories.len(), 1, "1F を削除すると残り 1 階");
+    assert!(undo.can_undo());
+
+    assert!(
+        !undo.run(&mut model, stale_level),
+        "範囲外の SetStoryLevel は Noop"
+    );
+    let names: Vec<&str> = model.stories.iter().map(|s| s.name.as_str()).collect();
+    assert_eq!(names, vec!["2F"], "Noop はモデルを変えない");
+    assert!(
+        !undo.run(&mut model, stale_delete),
+        "範囲外の DeleteStory は Noop（誤った階を消さない）"
+    );
+    assert_eq!(model.stories.len(), 1, "Noop はモデルを変えない");
+    assert!(model.validate().is_ok());
+}

@@ -11,8 +11,7 @@ use squid_n_edit::SetLoadCfg;
 
 /// 荷重計算条件フォームのドラフト状態（GUI 専用）。
 ///
-/// 鉄骨重量割増率は `story_weight_edit` と同じ「操作中は model 値で上書きしない」
-/// パターン（DragValue + active フラグ）。各テーブルの追加フォームは文字列
+/// 鉄骨重量割増率は「操作中は model 値で上書きしない」パターン（DragValue + active フラグ）。各テーブルの追加フォームは文字列
 /// バッファで、「+ 追加」押下時にのみ `SetLoadCfg` を発行するため同期問題はない。
 #[derive(Clone, Debug)]
 pub struct LoadCfgDraft {

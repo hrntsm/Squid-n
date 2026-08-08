@@ -964,21 +964,18 @@ pub struct App {
     /// モデルタブ「スラブ」追加フォームのドラフト状態
     #[cfg(feature = "gui")]
     pub slab_draft: crate::tables::slabs::SlabDraft,
-    /// 解析タブ「階の定義」W[kN] 編集バッファ（kN、model.stories と同じ並び）。
-    /// ドラッグ／フォーカス中でない行のみ model 値で上書きする。
-    #[cfg(feature = "gui")]
-    pub story_weight_edit: Vec<f64>,
-    /// `story_weight_edit` の各行が現在操作中（ドラッグ中またはフォーカス中）か。
-    /// true の間は model 値での上書きを止めて入力中の値を保つ。
-    #[cfg(feature = "gui")]
-    pub story_weight_active: Vec<bool>,
-    /// 階定義（階名・階レベル）の編集中バッファ `(編集中の階, 階名, 階レベル)`。
-    /// 通り芯の改名（`AxisNameDraft`）と同じ「1 行ずつ編集して確定する」方式。
-    #[cfg(feature = "gui")]
-    pub story_def_draft: Option<(squid_n_core::ids::StoryId, String, f64)>,
     /// 階の追加フォームの入力 `(階名, 階レベル [mm])`。
     #[cfg(feature = "gui")]
     pub new_story_draft: (String, f64),
+    /// 解析タブ「階の定義」表で確定した編集コマンドの適用待ちキュー。
+    ///
+    /// 階の削除・標高変更（`DeleteStory` / `SetStoryLevel`）は `StoryId` の
+    /// 繰り上げ・並べ替えを伴うため、モデルへの反映は 1 フレーム 1 コマンドに
+    /// 限定する。同一フレームで複数セルの編集が確定した場合も、このキューへ
+    /// 残し、以降のフレームで 1 コマンドずつ確実に適用する（破棄しない）。
+    /// 新規作成・読込時は `reset_gui_state` で空にする（永続化しない）。
+    #[cfg(feature = "gui")]
+    pub pending_story_cmds: std::collections::VecDeque<Box<dyn squid_n_edit::EditCommand>>,
     /// モデルタブ「壁属性」フォームのドラフト状態
     #[cfg(feature = "gui")]
     pub wall_attr_draft: crate::tables::wall_attrs::WallAttrDraft,
@@ -1185,13 +1182,9 @@ impl Default for App {
             #[cfg(feature = "gui")]
             slab_draft: crate::tables::slabs::SlabDraft::default(),
             #[cfg(feature = "gui")]
-            story_weight_edit: Vec::new(),
-            #[cfg(feature = "gui")]
-            story_weight_active: Vec::new(),
-            #[cfg(feature = "gui")]
-            story_def_draft: None,
-            #[cfg(feature = "gui")]
             new_story_draft: (String::new(), 0.0),
+            #[cfg(feature = "gui")]
+            pending_story_cmds: std::collections::VecDeque::new(),
             #[cfg(feature = "gui")]
             wall_attr_draft: crate::tables::wall_attrs::WallAttrDraft::default(),
             #[cfg(feature = "gui")]
@@ -2020,6 +2013,16 @@ impl eframe::App for App {
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        // 階の定義表で確定した編集の適用待ちを 1 フレーム 1 コマンドで反映する。
+        // 表は右ドックの「② 解析」パネルにしかないが、編集の適用はパネルの表示・
+        // 切替と無関係に毎フレーム行う。パネルを閉じている間にモデルを使う操作
+        // （準備計算の実行・保存など）が、未反映の階編集に基づいて走るのを避ける。
+        // モデルを書き換えても、表の描画は `story_rows`（セクション内で先に複製した
+        // 行データ）を使うため、残りの行が古い ID を指すことはない。
+        if let Some(cmd) = self.pending_story_cmds.pop_front() {
+            self.undo.run(&mut self.model, cmd);
+            self.staleness.mark_edited();
+        }
         // バックグラウンド解析ジョブ（P8 §5）: 完了していれば結果を適用し、
         // 実行中は完了検知のため再描画を要求し続ける。
         if self.job.is_some() {

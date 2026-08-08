@@ -151,10 +151,8 @@ impl App {
             self.damper_def_draft = Default::default();
             self.combo_draft = ComboDraft::default();
             self.slab_draft = Default::default();
-            self.story_weight_edit.clear();
-            self.story_weight_active.clear();
-            self.story_def_draft = None;
             self.new_story_draft = (String::new(), 0.0);
+            self.pending_story_cmds.clear();
             self.wall_attr_draft = Default::default();
             self.misc_wall_draft = Default::default();
             self.axis_name_draft = Default::default();
