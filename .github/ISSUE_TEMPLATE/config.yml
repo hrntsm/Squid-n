@@ -1,0 +1,11 @@
+blank_issues_enabled: true
+contact_links:
+  - name: ドキュメント（docs/）
+    url: https://github.com/hrntsm/Squid-n/tree/main/docs
+    about: 利用者向けの計算根拠・使い方。質問前に確認してください。
+  - name: 開発者向けドキュメント（dev_docs/）
+    url: https://github.com/hrntsm/Squid-n/tree/main/dev_docs
+    about: 開発経緯・V&V・申し送り。開発に関わる質問や貢献前に確認してください。
+  - name: CONTRIBUTING.md
+    url: https://github.com/hrntsm/Squid-n/blob/main/CONTRIBUTING.md
+    about: ビルド・テスト・静的解析・PR の手順。貢献を検討している場合に確認してください。
