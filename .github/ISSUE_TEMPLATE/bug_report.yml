@@ -1,0 +1,63 @@
+name: バグ報告
+description: 期待した動作と異なる挙動、クラッシュ、計算結果が正しくない等の不具合を報告する
+title: "bug: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        不具合報告ありがとうございます。再現手順と期待する挙動を具体的に記載してください。
+        不足している情報はこちらから確認させていただく場合があります。
+  - type: textarea
+    id: summary
+    attributes:
+      label: 不具合の概要
+      description: 何が起きているのかを簡潔に説明してください。エラーメッセージがある場合はそのまま貼り付けてください。
+      placeholder: |
+        例: 梁断面の割り当て時にアプリがクラッシュする。
+        "thread 'main' panicked at ..."
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: 再現手順
+      description: 再現までの操作を番号付きで記載してください。
+      placeholder: |
+        1. 新建物を作成し、`docs/` のチュートリアルに従って階を生成する
+        2. 梁タブで断面を割り当てる
+        3. ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: 期待する挙動
+      description: どのようになるべきだと思われたかを記載してください。計算結果の場合は期待値（手計算・他ソフトの結果等）もお願いします。
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: 実際の挙動
+      description: 実際に起きたことを記載してください。スクリーンショットがあれば貼り付けください。
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: 使用バージョン
+      description: アプリのバージョンまたはコミットハッシュ
+  - type: input
+    id: env
+    attributes:
+      label: 環境
+      description: OS・モデル状況（必須ではありません）。再現に関係しそうな点を記載してください。
+      placeholder: "例: Windows 11 24H2 / 隣接柱がない架構"
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: 確認事項
+      options:
+        - label: 同じ内容を検索し、重複していないことを確認した
+        - label: デベロッパー向けの手順は試した

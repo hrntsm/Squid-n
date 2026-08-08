@@ -1,0 +1,36 @@
+name: 機能要望
+description: 新機能の提案、既存機能の拡張、計算方式の追加等を提案する
+title: "feat: "
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        機能要望ありがとうございます。目的とユースケース（誰が・どう使うか）を具体的に記載してください。
+        参考となる設計規準・公的文書・既存ソフトの挙動がある場合、出典と併記すると検討が進めやすくなります。
+  - type: textarea
+    id: purpose
+    attributes:
+      label: 目的・背景
+      description: この機能が必要な背景と、実現したいことを記載してください。
+    validations:
+      required: true
+  - type: textarea
+    id: behavior
+    attributes:
+      label: 希望する挙動
+      description: 具体的な操作方法や画面イメージを記載してください。分かりづらい場合は箇条書きでも構いません。
+    validations:
+      required: true
+  - type: textarea
+    id: reference
+    attributes:
+      label: 参考情報
+      description: 計算根拠となる設計規準、出版物、同種ソフトの挙動等があれば記載してください。
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: 確認事項
+      options:
+        - label: 同じ内容を検索し、重複していないことを確認した
+        - label: 実現方式や根拠をリポジトリ内（docs/ ・ dev_docs/）で確認した

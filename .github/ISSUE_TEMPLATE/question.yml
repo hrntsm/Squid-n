@@ -1,0 +1,22 @@
+name: 質問
+description: 使い方、仕様、計算根拠、プロジェクト内容に関する質問
+title: "question: "
+labels: [question]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        質問ありがとうございます。まずは [docs/](https://github.com/hrntsm/Squid-n/tree/main/docs) をご確認ください。
+        どの部分が分からなかったかも教えていただけると、ドキュメントの改善に役立ちます。
+  - type: textarea
+    id: question
+    attributes:
+      label: 質問内容
+      description: 何を知りたいのかを具体的に記載してください。状況が分かるように操作や計算結果を添えると回答しやすくなります。
+    validations:
+      required: true
+  - type: textarea
+    id: tried
+    attributes:
+      label: 確認したこと
+      description: 調べた範囲や試した操作を記載してください。不足する部分を回答に反映できます。
