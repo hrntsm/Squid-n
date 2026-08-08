@@ -1,6 +1,6 @@
 name: バグ報告
 description: 期待した動作と異なる挙動、クラッシュ、計算結果が正しくない等の不具合を報告する
-title: "fix: "
+title: "bug: "
 labels: [bug]
 body:
   - type: markdown
@@ -52,7 +52,7 @@ body:
     id: env
     attributes:
       label: 環境
-      description: OS、プロジェクトファイルがある場合はその説明（必須ではありません）
+      description: OS・モデル状況（必須ではありません）。再現に関係しそうな点を記載してください。
       placeholder: "例: Windows 11 24H2 / 隣接柱がない架構"
   - type: checkboxes
     id: checks
