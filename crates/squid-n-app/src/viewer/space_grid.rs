@@ -174,11 +174,15 @@ fn same_coord(a: [f64; 3], b: [f64; 3]) -> bool {
     (0..3).all(|k| (a[k] - b[k]).abs() <= NODE_MERGE_TOL_MM)
 }
 
-/// 2 つのスナップ点から梁を作るコマンドと、生成される部材 ID を組み立てる。
+/// 2 つのスナップ点から部材を作るコマンドと、生成される部材 ID を組み立てる。
 ///
 /// 節点のない格子点にはその場で節点を作り、節点追加と部材追加を 1 つの
 /// [`CompositeCommand`] にまとめる。これにより undo 1 回で節点ごと取り消せる。
 /// 2 点が同じ節点へ解決される場合は長さ 0 の部材になるため `None` を返す。
+///
+/// 局所座標系の基準ベクトルは、材軸が鉛直なら グローバル X、それ以外は
+/// グローバル Z とする（[`squid_n_core::frame_gen`] の柱・大梁と同じ規則）。
+/// 鉛直材へ Z を与えると材軸と平行になり、基準ベクトルとして働かないためである。
 pub fn beam_command(
     model: &Model,
     a: SnapPoint,
@@ -190,6 +194,11 @@ pub fn beam_command(
     if na == nb {
         return None;
     }
+    let ref_vector = if is_vertical(model, &pending, na, nb) {
+        [1.0, 0.0, 0.0]
+    } else {
+        [0.0, 0.0, 1.0]
+    };
     let mut children: Vec<Box<dyn EditCommand>> = pending
         .iter()
         .map(|c| {
@@ -206,9 +215,7 @@ pub fn beam_command(
             kind: ElementKind::Beam,
             nodes: [na, nb].into_iter().collect(),
             section: None,
-            local_axis: LocalAxis {
-                ref_vector: [0.0, 0.0, 1.0],
-            },
+            local_axis: LocalAxis { ref_vector },
             end_cond: [EndCondition::Fixed, EndCondition::Fixed],
             force_regime: ForceRegime::Auto,
             rigid_zone: Default::default(),
@@ -223,6 +230,23 @@ pub fn beam_command(
         },
         elem_id,
     ))
+}
+
+/// 材軸が鉛直か（両端の水平距離が [`NODE_MERGE_TOL_MM`] 未満）。
+///
+/// まだモデルに無い節点は `pending` 側から座標を引く（`AddNode` は末尾へ追加する
+/// ため、`model.nodes.len()` 以降の ID が `pending` の添字に対応する）。
+fn is_vertical(model: &Model, pending: &[[f64; 3]], a: NodeId, b: NodeId) -> bool {
+    let coord = |n: NodeId| -> Option<[f64; 3]> {
+        match model.nodes.get(n.index()) {
+            Some(nd) => Some(nd.coord),
+            None => pending.get(n.index() - model.nodes.len()).copied(),
+        }
+    };
+    let (Some(ca), Some(cb)) = (coord(a), coord(b)) else {
+        return false;
+    };
+    (ca[0] - cb[0]).hypot(ca[1] - cb[1]) < NODE_MERGE_TOL_MM
 }
 
 #[cfg(test)]
@@ -306,6 +330,42 @@ mod tests {
         .is_none());
         let c0 = model.nodes[0].coord;
         assert!(beam_command(&model, SnapPoint::Node(NodeId(0)), SnapPoint::Grid(c0)).is_none());
+    }
+
+    /// 鉛直材の局所座標系の基準ベクトルはグローバル X にする。
+    ///
+    /// 鉛直材へ Z を与えると材軸と平行になり、基準ベクトルとして働かない。
+    /// 格子点スナップでは上下のレベルを結んで柱を引けるため、水平材と同じ
+    /// 基準ベクトルを使い回せない。
+    #[test]
+    fn test_vertical_member_uses_x_reference() {
+        let mut model = frame_model(&FrameSpec::default()).unwrap();
+        // 同じ平面位置で 2F・3F の格子点を結ぶ（＝柱）。
+        let (cmd, id) = beam_command(
+            &model,
+            SnapPoint::Grid([20000.0, 0.0, 4000.0]),
+            SnapPoint::Grid([20000.0, 0.0, 7500.0]),
+        )
+        .unwrap();
+        cmd.apply(&mut model);
+        assert_eq!(
+            model.elements[id.index()].local_axis.ref_vector,
+            [1.0, 0.0, 0.0]
+        );
+
+        // 水平材はこれまでどおりグローバル Z。
+        let (cmd, id) = beam_command(
+            &model,
+            SnapPoint::Grid([20000.0, 0.0, 4000.0]),
+            SnapPoint::Grid([20000.0, 6000.0, 4000.0]),
+        )
+        .unwrap();
+        cmd.apply(&mut model);
+        assert_eq!(
+            model.elements[id.index()].local_axis.ref_vector,
+            [0.0, 0.0, 1.0]
+        );
+        assert!(model.validate().is_ok(), "{:?}", model.validate());
     }
 
     /// 通り芯のないモデルでは格子を描かない。

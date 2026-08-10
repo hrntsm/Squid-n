@@ -917,7 +917,8 @@ impl App {
                              準備計算で再生成しても上書きされません（undo 可）",
                         ),
                         Col::wide_num("種別"),
-                        Col::actions(),
+                        // 階への複製（⧉）と削除（🗑）の 2 つ。
+                        Col::actions_n(2),
                     ],
                     story_rows.len(),
                     |row| {
