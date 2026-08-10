@@ -278,17 +278,7 @@ impl LoadEditor {
 
 /// 部材の材端間距離 [mm]。
 fn elem_length(model: &Model, elem: &squid_n_core::model::ElementData) -> f64 {
-    if elem.nodes.len() < 2 {
-        return 0.0;
-    }
-    let (Some(i), Some(j)) = (
-        model.nodes.get(elem.nodes[0].index()),
-        model.nodes.get(elem.nodes[1].index()),
-    ) else {
-        return 0.0;
-    };
-    let (a, b) = (i.coord, j.coord);
-    ((b[0] - a[0]).powi(2) + (b[1] - a[1]).powi(2) + (b[2] - a[2]).powi(2)).sqrt()
+    model.member_length(elem)
 }
 
 /// 指定部材がブレース（トラス要素）か。

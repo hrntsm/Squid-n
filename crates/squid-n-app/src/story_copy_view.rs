@@ -30,7 +30,6 @@ type PreviewKey = (StoryId, Vec<StoryId>, CopyTargets, bool, u64);
 struct PreviewCache {
     key: PreviewKey,
     report: CopyStoryReport,
-    new_sections: Vec<String>,
 }
 
 /// ダイアログの入力状態。`App` が保持し、ウィンドウを閉じても内容を保つ。
@@ -225,7 +224,9 @@ fn targets_section(ui: &mut egui::Ui, app: &mut App) {
         ui.strong("複製する対象");
         let t = &mut app.story_copy.targets;
         ui.checkbox(&mut t.sections, "断面の割当")
-            .on_hover_text("複製先の階名で断面を複製してから割り当てます（符号は変えません）");
+            .on_hover_text(
+                "部材・床・二次部材の断面を配ります。複製先の階名で断面を複製してから                 割り当てます（符号は変えません）",
+            );
         ui.checkbox(&mut t.loads, "荷重")
             .on_hover_text("手入力の節点荷重・部材荷重と、床の面荷重・用途を配ります");
         ui.checkbox(&mut t.slabs, "床")
@@ -261,7 +262,6 @@ fn refresh_preview(app: &mut App, from: StoryId, to: Vec<StoryId>) -> &PreviewCa
         app.story_copy.preview = Some(PreviewCache {
             key,
             report: cmd.preview(&app.model),
-            new_sections: cmd.new_section_labels(&app.model),
         });
     }
     app.story_copy
@@ -297,11 +297,11 @@ fn preview_section(ui: &mut egui::Ui, app: &mut App) -> bool {
     } else {
         ui.label(format!("見込み: {}", cache.report.summary()));
     }
-    if !cache.new_sections.is_empty() {
+    if !cache.report.created_sections.is_empty() {
         ui.collapsing(
-            format!("新しく作る断面 {} 件", cache.new_sections.len()),
+            format!("新しく作る断面 {} 件", cache.report.created_sections.len()),
             |ui| {
-                for label in &cache.new_sections {
+                for label in &cache.report.created_sections {
                     ui.label(label);
                 }
             },

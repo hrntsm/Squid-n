@@ -1442,7 +1442,10 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
                 // 梁作成モード：クリック位置を既存節点または格子点へスナップする。
                 // グリッド表示が OFF のときは、見えていない格子点を拾わないよう
                 // 既存節点だけを対象にする。
-                let picked = if app.show_space_grid {
+                // 構面表示中は格子を描かないため、スナップの対象からも外す
+                // （正射影で重なった別構面の格子点を拾い、見ていない構面へ
+                // 節点と梁を作ってしまう）。
+                let picked = if app.show_space_grid && frame.is_none() {
                     space_grid::pick(&app.model, &proj, &pts, &node_visible, click_pos)
                 } else {
                     // 節点ピッキング許容距離（px）

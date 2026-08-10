@@ -410,6 +410,56 @@ fn test_model_issues_errors_on_duplicate_story_names() {
     assert!(precheck_model(&model).is_ok());
 }
 
+/// 載荷区間が材長を超える部材荷重はエラーとし、解析前チェックで止める。
+///
+/// 等価節点力の積分が Hermite 形状関数を材外へ外挿するため、節点力と固定端内力が
+/// 黙って誤る。全長載荷（`b = L`）は不備としない。
+#[test]
+fn test_model_issues_errors_on_member_load_beyond_length() {
+    use super::precheck::{model_issues, precheck_model, IssueSeverity};
+    use squid_n_core::model::{MemberLoad, MemberLoadKind};
+
+    let mut model = make_cantilever_model();
+    let elem = model.elements[0].id;
+    let l = model.member_length(&model.elements[0]);
+    assert!(l > 0.0);
+
+    // 全長載荷は不備にしない。
+    model.load_cases[0].member.push(MemberLoad::manual(
+        elem,
+        [0.0, 0.0, -1.0],
+        MemberLoadKind::Distributed {
+            a: 0.0,
+            b: l,
+            w1: 1.0,
+            w2: 1.0,
+        },
+    ));
+    assert!(
+        !model_issues(&model)
+            .iter()
+            .any(|i| i.message.contains("載荷区間")),
+        "全長載荷は不備ではない"
+    );
+
+    // 材長を超える区間はエラー。
+    model.load_cases[0].member.push(MemberLoad::manual(
+        elem,
+        [0.0, 0.0, -1.0],
+        MemberLoadKind::Point {
+            a: l + 100.0,
+            p: 1000.0,
+        },
+    ));
+    let issues = model_issues(&model);
+    let issue = issues
+        .iter()
+        .find(|i| i.message.contains("載荷区間"))
+        .expect("載荷区間の不備が診断に出ていない");
+    assert_eq!(issue.severity, IssueSeverity::Error);
+    assert!(precheck_model(&model).is_err());
+}
+
 /// 部材が 1 つもないモデルで、全節点を孤立節点として並べない。
 /// 「部材がありません」で同じことを言っており、節点を 1 つずつ挙げても情報が増えない。
 #[test]

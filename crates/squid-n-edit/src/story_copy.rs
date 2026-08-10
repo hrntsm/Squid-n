@@ -80,6 +80,8 @@ pub struct CopyStoryReport {
     pub sections_cleared: usize,
     /// 新しく作った断面の数。
     pub sections_created: usize,
+    /// 新しく作った断面の符号＋階（実行前の見込みで一覧に出す）。
+    pub created_sections: Vec<String>,
     /// 既にあった符号＋階の断面をそのまま使った数。
     pub sections_reused: usize,
     /// 使い回した既存断面のうち、寸法・材料が複製元と違うものの符号＋階。
@@ -89,6 +91,8 @@ pub struct CopyStoryReport {
     pub loads_copied: usize,
     /// 複製先から取り除いた荷重の件数（同上）。
     pub loads_removed: usize,
+    /// 載荷区間が複製先の材長に収まらず配れなかった部材荷重の件数。
+    pub loads_unfit: usize,
     /// 新しく作った床の数。
     pub slabs_created: usize,
     /// 既にある床へ属性を上書きした数。
@@ -146,6 +150,12 @@ impl CopyStoryReport {
         if self.loads_removed > 0 {
             parts.push(format!("荷重の削除 {} 件", self.loads_removed));
         }
+        if self.loads_unfit > 0 {
+            parts.push(format!(
+                "材長に収まらず配れなかった荷重 {} 件",
+                self.loads_unfit
+            ));
+        }
         if self.slabs_created + self.slabs_updated > 0 {
             parts.push(format!(
                 "床 {} 枚（新規 {} ・更新 {}）",
@@ -182,12 +192,125 @@ impl CopyStoryReport {
     }
 }
 
-/// 平面位置のキー（[`PLAN_TOL_MM`] で丸めた XY 座標）。
-type PlanKey = (i64, i64);
+/// 1 方向の座標を、許容差以内で 1 つへ畳んだ代表値の列（昇順）。
+///
+/// 座標を [`PLAN_TOL_MM`] で丸めて整数キーにすると、丸めの境目をまたぐ 2 点が
+/// 0.001 mm しか離れていなくても別のキーになる。取り込んだモデルの小数の揺れで
+/// 対応が取れなくなるため、先に座標そのものを代表値へ寄せてからキーを作る。
+/// 畳み方は通り芯の重複の畳み込み（[`squid_n_core::axis_gen`]）と同じで、
+/// 整列してから許容差以内の連なりを 1 つにまとめる。
+struct Axis1d {
+    reps: Vec<f64>,
+}
 
-fn plan_key(coord: [f64; 3]) -> PlanKey {
-    let q = |v: f64| (v / PLAN_TOL_MM).round() as i64;
-    (q(coord[0]), q(coord[1]))
+impl Axis1d {
+    fn build(values: impl Iterator<Item = f64>) -> Self {
+        let mut v: Vec<f64> = values.collect();
+        v.sort_by(f64::total_cmp);
+        let mut reps: Vec<f64> = Vec::new();
+        for x in v {
+            if reps.last().is_none_or(|r| (x - r).abs() > PLAN_TOL_MM) {
+                reps.push(x);
+            }
+        }
+        Self { reps }
+    }
+
+    /// 値が属する代表の番号（許容差以内に代表が無ければ `None`）。
+    fn find(&self, v: f64) -> Option<usize> {
+        if self.reps.is_empty() {
+            return None;
+        }
+        let i = self.reps.partition_point(|r| *r < v);
+        // 挿入位置の前後だけが候補になる（代表は昇順）。
+        [i.checked_sub(1), Some(i)]
+            .into_iter()
+            .flatten()
+            .filter(|&k| k < self.reps.len())
+            .filter(|&k| (self.reps[k] - v).abs() <= PLAN_TOL_MM)
+            .min_by(|&a, &b| {
+                (self.reps[a] - v)
+                    .abs()
+                    .total_cmp(&(self.reps[b] - v).abs())
+            })
+    }
+}
+
+/// 節点座標の正規化と、正規化キーからの逆引き。
+///
+/// 複製は「複製元の節点に対応する複製先の節点」を何度も引くため、そのたびに全節点を
+/// 走査すると節点数の 2 乗に比例する。正規化した座標をキーにした逆引きを 1 度だけ
+/// 作り、以降は定数時間で引く。
+struct CoordIndex {
+    /// 標高の代表値。複製先の節点を標高差から引くときに、値がどの代表へ属するかを
+    /// 探す必要があるため、Z だけは代表列を持ち続ける。
+    z: Axis1d,
+    /// 節点ごとの正規化キー（`model.nodes` と同順）。
+    keys: Vec<(usize, usize, usize)>,
+    /// 正規化キー → 節点（同じ位置に節点が複数あれば先に現れたもの）。
+    by_key: HashMap<(usize, usize, usize), NodeId>,
+}
+
+impl CoordIndex {
+    fn build(model: &Model) -> Self {
+        let x = Axis1d::build(model.nodes.iter().map(|n| n.coord[0]));
+        let y = Axis1d::build(model.nodes.iter().map(|n| n.coord[1]));
+        let z = Axis1d::build(model.nodes.iter().map(|n| n.coord[2]));
+        let mut keys = Vec::with_capacity(model.nodes.len());
+        let mut by_key = HashMap::new();
+        for n in &model.nodes {
+            // 代表列は全節点の座標から作ったので、必ず見つかる。
+            let k = (
+                x.find(n.coord[0]).unwrap_or(0),
+                y.find(n.coord[1]).unwrap_or(0),
+                z.find(n.coord[2]).unwrap_or(0),
+            );
+            keys.push(k);
+            by_key.entry(k).or_insert(n.id);
+        }
+        Self { z, keys, by_key }
+    }
+
+    /// 節点の平面位置（正規化した XY の番号）。
+    fn plan(&self, n: NodeId) -> Option<(usize, usize)> {
+        self.keys.get(n.index()).map(|&(x, y, _)| (x, y))
+    }
+
+    /// 同じ平面位置で標高が `z` の節点。
+    fn at(&self, plan: (usize, usize), z: f64) -> Option<NodeId> {
+        let zi = self.z.find(z)?;
+        self.by_key.get(&(plan.0, plan.1, zi)).copied()
+    }
+}
+
+/// 材端・頂点 1 点分のキー。正規化した XY の番号と、階の中での高さの位置。
+type PointKey = (usize, usize, i64);
+
+/// 部材・床・二次部材の対応付けキー（材端／頂点の並び。順序の違いを吸収するため整列）。
+type PlanKey = Vec<PointKey>;
+
+/// 階の中での高さの位置。直下階のレベルを 0、当該階のレベルを 1000 とし、
+/// あいだは階高に対する比を 1/1000 で量子化する。
+///
+/// 材端の XY だけでキーを作ると、同じ構面に投影される部材を区別できない。
+/// 1FL→2FL のブレースと 2FL の大梁はどちらも XY が `[(0,0), (6000,0)]` になり、
+/// 同じパネルの X ブレース 2 本も互いに区別できない。高さの位置を足すと、
+/// 大梁は両端が 1000、ブレースは 0 と 1000 になり、X ブレースは XY との組が
+/// 入れ替わるため区別できる。
+///
+/// 絶対の高さではなく比で持つのは、階高の違う階へも対応を取るためである。
+fn level_tag(z: f64, bottom: f64, top: f64) -> i64 {
+    if (z - bottom).abs() <= PLAN_TOL_MM {
+        return 0;
+    }
+    if (z - top).abs() <= PLAN_TOL_MM {
+        return 1000;
+    }
+    let h = top - bottom;
+    if h.abs() < 1e-9 {
+        return 500;
+    }
+    (((z - bottom) / h) * 1000.0).round().clamp(1.0, 999.0) as i64
 }
 
 /// 複製元の階から複製先の階へ、選んだ対象を配る。
@@ -210,20 +333,12 @@ pub struct CopyStory {
 
 impl CopyStory {
     /// 複製を試したときの結果を、モデルを変えずに求める（ダイアログの事前表示用）。
+    ///
+    /// 新しく作る断面の一覧も同じ結果（[`CopyStoryReport::created_sections`]）へ含める。
+    /// モデルを丸ごと複製して試算するため、一覧のためだけにもう一度走らせない。
     pub fn preview(&self, model: &Model) -> CopyStoryReport {
         let mut probe = model.clone();
         copy_into(&mut probe, self)
-    }
-
-    /// 複製で新しく作ることになる断面の符号＋階（ダイアログの事前表示用）。
-    pub fn new_section_labels(&self, model: &Model) -> Vec<String> {
-        let mut probe = model.clone();
-        let before = probe.sections.len();
-        copy_into(&mut probe, self);
-        probe.sections[before..]
-            .iter()
-            .map(|s| s.display_name())
-            .collect()
     }
 }
 
@@ -262,21 +377,110 @@ impl EditCommand for RestoreModel {
     }
 }
 
+/// 対応付けの索引。同じキーの相手が 2 つ以上あるキーは、どれを選ぶべきか決められない
+/// ため索引から外し、`ambiguous` へ入れる。
+///
+/// 先に見つかったものを採ると、どれが選ばれるかは要素の並び順しだいになる。
+/// 誤って別の部材へ断面や荷重を配るより、飛ばして件数を報告するほうが安全である。
+struct PlanIndex<T> {
+    map: HashMap<PlanKey, T>,
+    ambiguous: HashSet<PlanKey>,
+}
+
+impl<T> PlanIndex<T> {
+    fn build(items: impl Iterator<Item = (PlanKey, T)>) -> Self {
+        let mut map: HashMap<PlanKey, T> = HashMap::new();
+        let mut ambiguous = HashSet::new();
+        for (k, v) in items {
+            if map.remove(&k).is_some() || ambiguous.contains(&k) {
+                ambiguous.insert(k);
+                continue;
+            }
+            map.insert(k, v);
+        }
+        Self { map, ambiguous }
+    }
+
+    /// キーに対応する相手。曖昧なキーは `None`（呼び出し側は飛ばして数える）。
+    fn get(&self, k: &PlanKey) -> Option<&T> {
+        self.map.get(k)
+    }
+
+    fn is_ambiguous(&self, k: &PlanKey) -> bool {
+        self.ambiguous.contains(k)
+    }
+}
+
+/// 複製 1 回のあいだ使い回す文脈（座標の索引と階の区間）。
+struct Ctx {
+    coords: CoordIndex,
+    /// 階ごとの帰属区間 `(下端, 上端)`（`model.stories` と同順）。
+    spans: Vec<(f64, f64)>,
+}
+
+impl Ctx {
+    fn build(model: &Model) -> Self {
+        Self {
+            coords: CoordIndex::build(model),
+            spans: model.story_spans(),
+        }
+    }
+
+    /// 材端・頂点の並びから対応付けキーを作る（順序の違いを吸収するため整列）。
+    fn key(&self, model: &Model, story: StoryId, nodes: &[NodeId]) -> Option<PlanKey> {
+        let (bottom, top) = *self.spans.get(story.index())?;
+        let mut keys: Vec<PointKey> = nodes
+            .iter()
+            .map(|n| {
+                let plan = self.coords.plan(*n)?;
+                let z = model.nodes.get(n.index())?.coord[2];
+                Some((plan.0, plan.1, level_tag(z, bottom, top)))
+            })
+            .collect::<Option<Vec<_>>>()?;
+        keys.sort_unstable();
+        Some(keys)
+    }
+
+    /// 複製元の節点に対応する複製先の節点（同じ平面位置で標高差 `dz`）。
+    fn mapped_node(&self, model: &Model, src: NodeId, dz: f64) -> Option<NodeId> {
+        let plan = self.coords.plan(src)?;
+        let z = model.nodes.get(src.index())?.coord[2] + dz;
+        self.coords.at(plan, z)
+    }
+
+    /// 複製先の節点が、複製元の階にも対応する節点を持つか。
+    ///
+    /// 削除の判断対象を「複製元の平面の内側」に限るために使う。複製元の平面の外に
+    /// ある床・二次部材は、複製元に「無い」のではなく複製元の範囲外なので消さない。
+    fn maps_back(&self, model: &Model, dst: NodeId, dz: f64) -> bool {
+        self.mapped_node(model, dst, -dz).is_some()
+    }
+}
+
 /// 複製の本体。`model` を書き換えて結果を返す。
 fn copy_into(model: &mut Model, cmd: &CopyStory) -> CopyStoryReport {
     let mut report = CopyStoryReport::default();
+    // 複製は節点を作らず消さないため、座標の索引は 1 度だけ作れば足りる。
+    let ctx = Ctx::build(model);
     for &to in &cmd.to {
         if to == cmd.from {
             continue;
         }
-        copy_one(model, cmd, to, &mut report);
+        copy_one(model, &ctx, cmd, to, &mut report);
     }
     report.mismatched_sections.sort();
     report.mismatched_sections.dedup();
+    report.created_sections.dedup();
     report
 }
 
-fn copy_one(model: &mut Model, cmd: &CopyStory, to: StoryId, report: &mut CopyStoryReport) {
+fn copy_one(
+    model: &mut Model,
+    ctx: &Ctx,
+    cmd: &CopyStory,
+    to: StoryId,
+    report: &mut CopyStoryReport,
+) {
     let from = cmd.from;
     let (Some(src_story), Some(dst_story)) = (
         model.stories.get(from.index()).cloned(),
@@ -286,110 +490,227 @@ fn copy_one(model: &mut Model, cmd: &CopyStory, to: StoryId, report: &mut CopySt
     };
     let dz = dst_story.elevation - src_story.elevation;
 
-    if cmd.targets.sections {
-        copy_sections(model, cmd, to, &dst_story.name, report);
-    }
-    // この位置より後ろの床は、直後の `copy_slabs` が作った新しい床である。
-    // 面荷重を載せたときに「新規」と「更新」を二重に数えないよう境目を控える。
-    let slab_base = model.slabs.len();
-    if cmd.targets.slabs {
-        copy_slabs(model, cmd, to, dz, report);
-    }
+    // 形（床・二次部材）を先に整えてから、断面の割当と荷重を配る。断面の割当は
+    // 部材だけでなく床・二次部材も受け持つため、対象がそろってから走らせる。
+    let created_slabs = if cmd.targets.slabs {
+        copy_slabs(model, ctx, cmd, to, dz, &dst_story.name, report)
+    } else {
+        Vec::new()
+    };
     if cmd.targets.secondary {
-        copy_secondary(model, cmd, to, dz, report);
+        copy_secondary(model, ctx, cmd, to, dz, &dst_story.name, report);
+    }
+    if cmd.targets.sections {
+        copy_sections(model, ctx, cmd, to, &dst_story.name, report);
     }
     if cmd.targets.loads {
-        copy_slab_loads(model, cmd, to, slab_base, report);
-        copy_case_loads(model, cmd, to, dz, report);
+        copy_slab_loads(model, ctx, cmd, to, &created_slabs, report);
+        copy_case_loads(model, ctx, cmd, to, dz, report);
     }
 }
 
-/// 平面位置の並び（部材・床の対応付けキー）。節点順の違いを吸収するため整列する。
-fn plan_keys(model: &Model, nodes: &[NodeId]) -> Option<Vec<PlanKey>> {
-    let mut keys: Vec<PlanKey> = nodes
+/// 階に属する部材を、対応付けキーで引ける索引にする。
+fn members_by_plan(model: &Model, ctx: &Ctx, story: StoryId) -> PlanIndex<ElemId> {
+    PlanIndex::build(model.elements.iter().filter_map(|e| {
+        (model.member_story(e) == Some(story))
+            .then(|| Some((ctx.key(model, story, &e.nodes)?, e.id)))
+            .flatten()
+    }))
+}
+
+/// 階の床を、対応付けキーで引ける索引にする。
+fn slabs_by_plan(model: &Model, ctx: &Ctx, story: StoryId) -> PlanIndex<SlabId> {
+    PlanIndex::build(model.slabs.iter().filter_map(|sl| {
+        (slab_story(model, sl) == Some(story))
+            .then(|| Some((ctx.key(model, story, &sl.boundary)?, sl.id)))
+            .flatten()
+    }))
+}
+
+/// 階の二次部材を、対応付けキーで引ける索引にする（値は配列添字）。
+fn secondary_by_plan(model: &Model, ctx: &Ctx, story: StoryId) -> PlanIndex<usize> {
+    PlanIndex::build(
+        model
+            .secondary_members
+            .iter()
+            .enumerate()
+            .filter_map(|(i, sm)| {
+                (secondary_story(model, sm) == Some(story))
+                    .then(|| Some((ctx.key(model, story, &sm.nodes)?, i)))
+                    .flatten()
+            }),
+    )
+}
+
+/// 床の所属階（境界節点のうちもっとも高い節点の所属階。部材と同じ規則）。
+fn slab_story(model: &Model, slab: &Slab) -> Option<StoryId> {
+    slab.boundary
         .iter()
-        .map(|n| model.nodes.get(n.index()).map(|nd| plan_key(nd.coord)))
-        .collect::<Option<Vec<_>>>()?;
-    keys.sort_unstable();
-    Some(keys)
+        .filter_map(|nid| model.nodes.get(nid.index()))
+        .max_by(|a, b| a.coord[2].total_cmp(&b.coord[2]))
+        .and_then(|n| n.story)
 }
 
-/// 階に属する部材を、平面位置の並びで引ける索引にする。
-fn members_by_plan(model: &Model, story: StoryId) -> HashMap<Vec<PlanKey>, ElemId> {
-    let mut out = HashMap::new();
-    for e in &model.elements {
-        if model.member_story(e) != Some(story) {
-            continue;
-        }
-        if let Some(k) = plan_keys(model, &e.nodes) {
-            out.entry(k).or_insert(e.id);
-        }
-    }
-    out
+/// 二次部材の所属階（材端節点のうちもっとも高い節点の所属階）。
+fn secondary_story(model: &Model, sm: &SecondaryMember) -> Option<StoryId> {
+    sm.nodes
+        .iter()
+        .filter_map(|nid| model.nodes.get(nid.index()))
+        .max_by(|a, b| a.coord[2].total_cmp(&b.coord[2]))
+        .and_then(|n| n.story)
 }
 
-/// 断面の割当を配る。複製先の階名で断面を複製してから割り当てる。
+/// 断面の割当を配る（部材・床・二次部材）。
 ///
-/// 上書きが真のときは、複製元の部材が断面を持たない相手の割当を解除する。
-/// 複製元に相手がいない部材（複製元の平面の外）には触れない。
+/// 上書きが真のときは、複製元が断面を持たない相手の割当を解除する。
+/// 複製元に相手がいないもの（複製元の平面の外）には触れない。
 fn copy_sections(
     model: &mut Model,
+    ctx: &Ctx,
     cmd: &CopyStory,
     to: StoryId,
     dst_story_name: &str,
     report: &mut CopyStoryReport,
 ) {
-    let dst = members_by_plan(model, to);
     // 複製元の断面 → 複製先の断面。同じ組は 1 回だけ作る。
     let mut mapped: HashMap<SectionId, SectionId> = HashMap::new();
-    // 複製元の部材（断面の有無を問わず、平面位置と断面を控える）。
-    let src: Vec<(Vec<PlanKey>, Option<SectionId>)> = model
+
+    // --- 部材 ---
+    let dst = members_by_plan(model, ctx, to);
+    let src: Vec<(PlanKey, Option<SectionId>)> = model
         .elements
         .iter()
         .filter(|e| model.member_story(e) == Some(cmd.from))
-        .filter_map(|e| Some((plan_keys(model, &e.nodes)?, e.section)))
+        .filter_map(|e| Some((ctx.key(model, cmd.from, &e.nodes)?, e.section)))
         .collect();
-
     for (key, src_sec) in src {
         let Some(&elem) = dst.get(&key) else {
             report.skipped += 1;
             continue;
         };
-        let Some(src_sec) = src_sec else {
-            // 複製元が未割当。上書きなら複製先も未割当へそろえる。
-            if cmd.overwrite {
-                if let Some(e) = model.elements.get_mut(elem.index()) {
-                    if e.section.is_some() {
-                        e.section = None;
-                        report.sections_cleared += 1;
-                    }
-                }
-            }
+        let current = model.elements.get(elem.index()).and_then(|e| e.section);
+        let Some(next) = resolve_section(
+            model,
+            cmd,
+            &mut mapped,
+            src_sec,
+            current,
+            dst_story_name,
+            report,
+        ) else {
             continue;
-        };
-        // 上書きしない設定では、既に断面が付いている部材には触れない。
-        if !cmd.overwrite
-            && model
-                .elements
-                .get(elem.index())
-                .is_some_and(|e| e.section.is_some())
-        {
-            continue;
-        }
-        let dst_sec = match mapped.get(&src_sec) {
-            Some(&s) => s,
-            None => {
-                let s = section_for_story(model, src_sec, dst_story_name, report);
-                mapped.insert(src_sec, s);
-                s
-            }
         };
         if let Some(e) = model.elements.get_mut(elem.index()) {
-            if e.section != Some(dst_sec) {
-                e.section = Some(dst_sec);
-                report.sections_assigned += 1;
+            if e.section != next {
+                count_section_change(e.section, next, report);
+                e.section = next;
             }
         }
+    }
+
+    // --- 床 ---
+    let dst_slabs = slabs_by_plan(model, ctx, to);
+    let src: Vec<(PlanKey, Option<SectionId>)> = model
+        .slabs
+        .iter()
+        .filter(|sl| slab_story(model, sl) == Some(cmd.from))
+        .filter_map(|sl| Some((ctx.key(model, cmd.from, &sl.boundary)?, sl.section)))
+        .collect();
+    for (key, src_sec) in src {
+        let Some(&sid) = dst_slabs.get(&key) else {
+            continue;
+        };
+        let current = model.slabs.get(sid.index()).and_then(|sl| sl.section);
+        let Some(next) = resolve_section(
+            model,
+            cmd,
+            &mut mapped,
+            src_sec,
+            current,
+            dst_story_name,
+            report,
+        ) else {
+            continue;
+        };
+        if let Some(sl) = model.slabs.get_mut(sid.index()) {
+            if sl.section != next {
+                count_section_change(sl.section, next, report);
+                sl.section = next;
+            }
+        }
+    }
+
+    // --- 二次部材 ---
+    let dst_sec = secondary_by_plan(model, ctx, to);
+    let src: Vec<(PlanKey, Option<SectionId>)> = model
+        .secondary_members
+        .iter()
+        .filter(|sm| secondary_story(model, sm) == Some(cmd.from))
+        .filter_map(|sm| Some((ctx.key(model, cmd.from, &sm.nodes)?, sm.section)))
+        .collect();
+    for (key, src_sec) in src {
+        let Some(&i) = dst_sec.get(&key) else {
+            continue;
+        };
+        let current = model.secondary_members[i].section;
+        let Some(next) = resolve_section(
+            model,
+            cmd,
+            &mut mapped,
+            src_sec,
+            current,
+            dst_story_name,
+            report,
+        ) else {
+            continue;
+        };
+        if model.secondary_members[i].section != next {
+            count_section_change(model.secondary_members[i].section, next, report);
+            model.secondary_members[i].section = next;
+        }
+    }
+}
+
+/// 複製元の断面参照を、複製先へ割り当てる参照へ読み替える。
+///
+/// 上書きしない設定で複製先に既に断面が付いている場合は `None`（触れない）。
+fn resolve_section(
+    model: &mut Model,
+    cmd: &CopyStory,
+    mapped: &mut HashMap<SectionId, SectionId>,
+    src_sec: Option<SectionId>,
+    current: Option<SectionId>,
+    dst_story_name: &str,
+    report: &mut CopyStoryReport,
+) -> Option<Option<SectionId>> {
+    if !cmd.overwrite && current.is_some() {
+        return None;
+    }
+    let Some(src_sec) = src_sec else {
+        // 複製元が未割当。上書きなら複製先も未割当へそろえる。
+        return cmd.overwrite.then_some(None);
+    };
+    let dst = match mapped.get(&src_sec) {
+        Some(&s) => s,
+        None => {
+            let s = section_for_story(model, src_sec, dst_story_name, report);
+            mapped.insert(src_sec, s);
+            s
+        }
+    };
+    Some(Some(dst))
+}
+
+/// 断面の割当・解除の件数を数える。
+fn count_section_change(
+    before: Option<SectionId>,
+    after: Option<SectionId>,
+    report: &mut CopyStoryReport,
+) {
+    match after {
+        Some(_) => report.sections_assigned += 1,
+        None if before.is_some() => report.sections_cleared += 1,
+        None => {}
     }
 }
 
@@ -426,86 +747,35 @@ fn section_for_story(
         return found.id;
     }
     let id = SectionId(model.sections.len() as u32);
-    model.sections.push(Section {
+    let created = Section {
         id,
         floor: Some(dst_story_name.to_string()),
         ..src_sec
-    });
+    };
+    report.created_sections.push(created.display_name());
+    model.sections.push(created);
     report.sections_created += 1;
     id
 }
 
-/// 階の床を、平面位置の並びで引ける索引にする。
-fn slabs_by_plan(model: &Model, story: StoryId) -> HashMap<Vec<PlanKey>, SlabId> {
-    let mut out = HashMap::new();
-    for sl in &model.slabs {
-        if slab_story(model, sl) != Some(story) {
-            continue;
-        }
-        if let Some(k) = plan_keys(model, &sl.boundary) {
-            out.entry(k).or_insert(sl.id);
-        }
-    }
-    out
-}
-
-/// 床の所属階（境界節点のうちもっとも高い節点の所属階。部材と同じ規則）。
-fn slab_story(model: &Model, slab: &Slab) -> Option<StoryId> {
-    slab.boundary
-        .iter()
-        .filter_map(|nid| model.nodes.get(nid.index()))
-        .max_by(|a, b| a.coord[2].total_cmp(&b.coord[2]))
-        .and_then(|n| n.story)
-}
-
-/// 二次部材の所属階（材端節点のうちもっとも高い節点の所属階）。
-fn secondary_story(model: &Model, sm: &SecondaryMember) -> Option<StoryId> {
-    sm.nodes
-        .iter()
-        .filter_map(|nid| model.nodes.get(nid.index()))
-        .max_by(|a, b| a.coord[2].total_cmp(&b.coord[2]))
-        .and_then(|n| n.story)
-}
-
-/// 複製元の節点に対応する複製先の節点を、平面位置と標高差から引く。
-fn mapped_node(model: &Model, src: NodeId, dz: f64) -> Option<NodeId> {
-    let c = model.nodes.get(src.index())?.coord;
-    let want = [c[0], c[1], c[2] + dz];
-    model
-        .nodes
-        .iter()
-        .find(|n| {
-            (n.coord[0] - want[0]).abs() <= PLAN_TOL_MM
-                && (n.coord[1] - want[1]).abs() <= PLAN_TOL_MM
-                && (n.coord[2] - want[2]).abs() <= PLAN_TOL_MM
-        })
-        .map(|n| n.id)
-}
-
-/// 複製先の節点が、複製元の階にも対応する節点を持つか。
-///
-/// 削除の判断対象を「複製元の平面の内側」に限るために使う。複製元の平面の外に
-/// ある床・二次部材は、複製元に「無い」のではなく複製元の範囲外なので消さない。
-fn maps_back(model: &Model, dst: NodeId, dz: f64) -> bool {
-    mapped_node(model, dst, -dz).is_some()
-}
-
-/// 床（境界の形）を配る。
+/// 床（境界の形）を配る。新しく作った床の ID を返す。
 ///
 /// 上書きが真のときは、複製元に同じ位置の床が無い複製先の床を削除する。ただし
-/// 境界節点すべてが複製元の階へ対応するものに限る（[`maps_back`]）。
+/// 境界節点すべてが複製元の階へ対応するものに限る（[`Ctx::maps_back`]）。
 fn copy_slabs(
     model: &mut Model,
+    ctx: &Ctx,
     cmd: &CopyStory,
     to: StoryId,
     dz: f64,
+    dst_story_name: &str,
     report: &mut CopyStoryReport,
-) {
-    let src_keys: HashSet<Vec<PlanKey>> = model
+) -> Vec<SlabId> {
+    let src_keys: HashSet<PlanKey> = model
         .slabs
         .iter()
         .filter(|sl| slab_story(model, sl) == Some(cmd.from))
-        .filter_map(|sl| plan_keys(model, &sl.boundary))
+        .filter_map(|sl| ctx.key(model, cmd.from, &sl.boundary))
         .collect();
 
     // 先に削除する（複製元に無い床を消してから、複製元の床を作る）。
@@ -515,8 +785,9 @@ fn copy_slabs(
             .iter()
             .filter(|sl| slab_story(model, sl) == Some(to))
             .filter(|sl| {
-                plan_keys(model, &sl.boundary).is_some_and(|k| !src_keys.contains(&k))
-                    && sl.boundary.iter().all(|&n| maps_back(model, n, dz))
+                ctx.key(model, to, &sl.boundary)
+                    .is_some_and(|k| !src_keys.contains(&k))
+                    && sl.boundary.iter().all(|&n| ctx.maps_back(model, n, dz))
             })
             .map(|sl| sl.id)
             .collect();
@@ -530,30 +801,45 @@ fn copy_slabs(
         }
     }
 
-    let existing = slabs_by_plan(model, to);
+    let existing = slabs_by_plan(model, ctx, to);
     let src: Vec<Slab> = model
         .slabs
         .iter()
         .filter(|sl| slab_story(model, sl) == Some(cmd.from))
         .cloned()
         .collect();
+    let mut mapped: HashMap<SectionId, SectionId> = HashMap::new();
+    let mut created = Vec::new();
     for sl in src {
-        let Some(key) = plan_keys(model, &sl.boundary) else {
+        let Some(key) = ctx.key(model, cmd.from, &sl.boundary) else {
             report.skipped += 1;
             continue;
         };
-        if existing.contains_key(&key) {
+        if existing.get(&key).is_some() {
+            continue;
+        }
+        if existing.is_ambiguous(&key) {
+            report.skipped += 1;
             continue;
         }
         let Some(boundary) = sl
             .boundary
             .iter()
-            .map(|n| mapped_node(model, *n, dz))
+            .map(|n| ctx.mapped_node(model, *n, dz))
             .collect::<Option<Vec<_>>>()
         else {
             report.skipped += 1;
             continue;
         };
+        // 断面の参照は複製先の階の断面へ読み替える（符号＋階の識別に合わせる）。
+        let section = sl.section.map(|s| match mapped.get(&s) {
+            Some(&d) => d,
+            None => {
+                let d = section_for_story(model, s, dst_story_name, report);
+                mapped.insert(s, d);
+                d
+            }
+        });
         let id = SlabId(model.slabs.len() as u32);
         model.slabs.push(Slab {
             id,
@@ -561,41 +847,51 @@ fn copy_slabs(
             loads: Vec::new(),
             usage: None,
             joists: Vec::new(),
+            section,
             ..sl
         });
+        created.push(id);
         report.slabs_created += 1;
     }
+    created
 }
 
 /// 床の面荷重・用途を配る（「荷重」の対象。床の形は `copy_slabs` が受け持つ）。
 ///
-/// 複製先の床は 1 段上にあるだけなので、平面位置だけで突き合わせられる。
-/// `slab_base` より後ろの床は同じ操作で作ったばかりの床のため、「更新」には数えない
-/// （数えると 1 枚の床が「新規」と「更新」で二重に報告される）。
+/// `created` は同じ操作で作ったばかりの床のため、「更新」には数えない（数えると
+/// 1 枚の床が「新規」と「更新」で二重に報告される）。床の削除が `SlabId` を
+/// 繰り上げるため、添字の閾値ではなく ID の集合で見分ける。
 fn copy_slab_loads(
     model: &mut Model,
+    ctx: &Ctx,
     cmd: &CopyStory,
     to: StoryId,
-    slab_base: usize,
+    created: &[SlabId],
     report: &mut CopyStoryReport,
 ) {
-    let dst = slabs_by_plan(model, to);
+    let dst = slabs_by_plan(model, ctx, to);
     let src: Vec<(
-        Vec<PlanKey>,
+        PlanKey,
         Vec<squid_n_core::model::AreaLoad>,
         Option<SlabUsage>,
     )> = model
         .slabs
         .iter()
         .filter(|sl| slab_story(model, sl) == Some(cmd.from))
-        .filter_map(|sl| Some((plan_keys(model, &sl.boundary)?, sl.loads.clone(), sl.usage)))
+        .filter_map(|sl| {
+            Some((
+                ctx.key(model, cmd.from, &sl.boundary)?,
+                sl.loads.clone(),
+                sl.usage,
+            ))
+        })
         .collect();
     for (key, loads, usage) in src {
         let Some(&sid) = dst.get(&key) else {
             report.skipped += 1;
             continue;
         };
-        let is_new = sid.index() >= slab_base;
+        let is_new = created.contains(&sid);
         let Some(sl) = model.slabs.get_mut(sid.index()) else {
             continue;
         };
@@ -612,22 +908,24 @@ fn copy_slab_loads(
     }
 }
 
-/// 二次部材（小梁・間柱）を配る。
+/// 二次部材（小梁・間柱）の形を配る。断面は `copy_sections` が受け持つ。
 ///
 /// 上書きが真のときは、複製元に同じ位置の二次部材が無い複製先の二次部材を削除する
 /// （材端節点が複製元の階へ対応するものに限る）。
 fn copy_secondary(
     model: &mut Model,
+    ctx: &Ctx,
     cmd: &CopyStory,
     to: StoryId,
     dz: f64,
+    dst_story_name: &str,
     report: &mut CopyStoryReport,
 ) {
-    let src_keys: HashSet<Vec<PlanKey>> = model
+    let src_keys: HashSet<PlanKey> = model
         .secondary_members
         .iter()
         .filter(|sm| secondary_story(model, sm) == Some(cmd.from))
-        .filter_map(|sm| plan_keys(model, &sm.nodes))
+        .filter_map(|sm| ctx.key(model, cmd.from, &sm.nodes))
         .collect();
 
     if cmd.overwrite {
@@ -639,8 +937,10 @@ fn copy_secondary(
                 if secondary_story(model, sm) != Some(to) {
                     return true;
                 }
-                let unmatched = plan_keys(model, &sm.nodes).is_some_and(|k| !src_keys.contains(&k));
-                let in_src_plan = sm.nodes.iter().all(|&n| maps_back(model, n, dz));
+                let unmatched = ctx
+                    .key(model, to, &sm.nodes)
+                    .is_some_and(|k| !src_keys.contains(&k));
+                let in_src_plan = sm.nodes.iter().all(|&n| ctx.maps_back(model, n, dz));
                 !(unmatched && in_src_plan)
             })
             .cloned()
@@ -649,47 +949,83 @@ fn copy_secondary(
         model.secondary_members = keep;
     }
 
-    let existing: HashMap<Vec<PlanKey>, usize> = model
-        .secondary_members
-        .iter()
-        .enumerate()
-        .filter(|(_, sm)| secondary_story(model, sm) == Some(to))
-        .filter_map(|(i, sm)| Some((plan_keys(model, &sm.nodes)?, i)))
-        .collect();
+    let existing = secondary_by_plan(model, ctx, to);
     let src: Vec<SecondaryMember> = model
         .secondary_members
         .iter()
         .filter(|sm| secondary_story(model, sm) == Some(cmd.from))
         .cloned()
         .collect();
+    let mut mapped: HashMap<SectionId, SectionId> = HashMap::new();
     for sm in src {
-        let Some(key) = plan_keys(model, &sm.nodes) else {
+        let Some(key) = ctx.key(model, cmd.from, &sm.nodes) else {
             report.skipped += 1;
             continue;
         };
-        if let Some(&i) = existing.get(&key) {
-            // 上書きしない設定では、既にある二次部材には触れない。
-            if !cmd.overwrite {
-                continue;
-            }
-            if model.secondary_members[i].section != sm.section {
-                model.secondary_members[i].section = sm.section;
-                report.secondary_updated += 1;
-            }
+        if existing.get(&key).is_some() {
+            // 形は既にある。断面は `copy_sections` が受け持つ。
+            continue;
+        }
+        if existing.is_ambiguous(&key) {
+            report.skipped += 1;
             continue;
         }
         let (Some(a), Some(b)) = (
-            mapped_node(model, sm.nodes[0], dz),
-            mapped_node(model, sm.nodes[1], dz),
+            ctx.mapped_node(model, sm.nodes[0], dz),
+            ctx.mapped_node(model, sm.nodes[1], dz),
         ) else {
             report.skipped += 1;
             continue;
         };
+        let section = sm.section.map(|s| match mapped.get(&s) {
+            Some(&d) => d,
+            None => {
+                let d = section_for_story(model, s, dst_story_name, report);
+                mapped.insert(s, d);
+                d
+            }
+        });
         model.secondary_members.push(SecondaryMember {
             nodes: [a, b],
+            section,
             ..sm
         });
         report.secondary_created += 1;
+    }
+}
+
+/// 部材荷重を複製先の材長へ合わせる。合わせられない場合は `None`（配らない）。
+///
+/// 載荷位置は i 端からの mm の絶対位置である。同じ平面位置で突き合わせるため大梁の
+/// 材長は一致するが、柱は階高が違えば材長も違う。そのまま写すと載荷区間が材長を
+/// 超え、等価節点力の積分が形状関数を材外へ外挿して結果が黙って誤る。
+///
+/// - **全長載荷**（`a≈0` かつ `b≈L`）は複製先の材長へ合わせる。外壁荷重のような
+///   全長等分布は「材長いっぱい」という意図が明確なため。
+/// - **部分載荷・集中荷重**は位置をそのまま写す。i 端から 2 m といった位置には
+///   絶対の意味があり、材長比で按分すると利用者の意図から外れる。
+/// - 新しい材長に**収まらないもの**は配らない。縮めると区間長が黙って変わる。
+fn fit_member_load(
+    kind: squid_n_core::model::MemberLoadKind,
+    src_len: f64,
+    dst_len: f64,
+) -> Option<squid_n_core::model::MemberLoadKind> {
+    use squid_n_core::model::MemberLoadKind;
+    match kind {
+        MemberLoadKind::Point { a, p } => {
+            (a <= dst_len + PLAN_TOL_MM).then_some(MemberLoadKind::Point { a, p })
+        }
+        MemberLoadKind::Distributed { a, b, w1, w2 } => {
+            if a.abs() <= PLAN_TOL_MM && (b - src_len).abs() <= PLAN_TOL_MM {
+                return Some(MemberLoadKind::Distributed {
+                    a: 0.0,
+                    b: dst_len,
+                    w1,
+                    w2,
+                });
+            }
+            (b <= dst_len + PLAN_TOL_MM).then_some(MemberLoadKind::Distributed { a, b, w1, w2 })
+        }
     }
 }
 
@@ -704,12 +1040,13 @@ fn copy_secondary(
 /// 節点・部材の荷重には手を触れない。
 fn copy_case_loads(
     model: &mut Model,
+    ctx: &Ctx,
     cmd: &CopyStory,
     to: StoryId,
     dz: f64,
     report: &mut CopyStoryReport,
 ) {
-    let dst_members = members_by_plan(model, to);
+    let dst_members = members_by_plan(model, ctx, to);
     // 複製元の節点 → 複製先の節点。所属階の判定は部材・床と同じく `Node::story`
     // （準備計算が付ける）に従う。
     let src_nodes: Vec<NodeId> = model
@@ -720,22 +1057,28 @@ fn copy_case_loads(
         .collect();
     let node_map: HashMap<NodeId, NodeId> = src_nodes
         .into_iter()
-        .filter_map(|n| Some((n, mapped_node(model, n, dz)?)))
+        .filter_map(|n| Some((n, ctx.mapped_node(model, n, dz)?)))
         .collect();
-    // 複製元の部材 → 複製先の部材。
-    let elem_map: HashMap<ElemId, ElemId> = model
+    // 複製元の部材 → (複製先の部材, 複製元の材長, 複製先の材長)。
+    let elem_map: HashMap<ElemId, (ElemId, f64, f64)> = model
         .elements
         .iter()
         .filter(|e| model.member_story(e) == Some(cmd.from))
         .filter_map(|e| {
-            let k = plan_keys(model, &e.nodes)?;
-            Some((e.id, *dst_members.get(&k)?))
+            let k = ctx.key(model, cmd.from, &e.nodes)?;
+            let &dst = dst_members.get(&k)?;
+            let dst_elem = model.elements.get(dst.index())?;
+            Some((
+                e.id,
+                (dst, model.member_length(e), model.member_length(dst_elem)),
+            ))
         })
         .collect();
     // 手を触れてよい複製先（複製元に相手がある節点・部材）。
     let dst_nodes: HashSet<NodeId> = node_map.values().copied().collect();
-    let dst_elems: HashSet<ElemId> = elem_map.values().copied().collect();
+    let dst_elems: HashSet<ElemId> = elem_map.values().map(|(e, _, _)| *e).collect();
 
+    let mut unfit = 0usize;
     for lc in &mut model.load_cases {
         let mut add_nodal = Vec::new();
         for nl in lc.nodal.iter().filter(|l| !l.source.is_auto()) {
@@ -748,11 +1091,16 @@ fn copy_case_loads(
         }
         let mut add_member = Vec::new();
         for ml in lc.member.iter().filter(|l| !l.source.is_auto()) {
-            if let Some(&e) = elem_map.get(&ml.elem) {
-                add_member.push(squid_n_core::model::MemberLoad {
+            let Some(&(e, src_len, dst_len)) = elem_map.get(&ml.elem) else {
+                continue;
+            };
+            match fit_member_load(ml.kind.clone(), src_len, dst_len) {
+                Some(kind) => add_member.push(squid_n_core::model::MemberLoad {
                     elem: e,
+                    kind,
                     ..ml.clone()
-                });
+                }),
+                None => unfit += 1,
             }
         }
         if cmd.overwrite {
@@ -784,4 +1132,5 @@ fn copy_case_loads(
         lc.nodal.extend(add_nodal);
         lc.member.extend(add_member);
     }
+    report.loads_unfit += unfit;
 }
