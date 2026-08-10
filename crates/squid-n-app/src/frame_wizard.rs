@@ -36,6 +36,10 @@ impl Default for FrameWizardState {
     }
 }
 
+/// 階の一覧をスクロールに切り替える高さ [px]。1 行およそ 24px で、見出し行を含めて
+/// 10 階前後までがスクロールなしで収まる。
+const STORY_ROWS_MAX_HEIGHT: f32 = 260.0;
+
 /// 用途選択で提示するプリセット（床タブと同じ並びの抜粋）。
 const USAGE_PRESETS: &[(Option<SlabUsage>, &str)] = &[
     (None, "なし"),
@@ -54,51 +58,74 @@ pub fn frame_wizard_window(ctx: &egui::Context, app: &mut App) {
     }
     let mut open = true;
     let mut generate = false;
+    // 各セクションを個別にスクロールさせても合計の高さは小さい画面を超えうるため、
+    // 中身全体も高さで頭打ちにし、あふれた分はここで拾う。これが無いと下端の
+    // 「この内容で作成」が画面外へ出て押せない。
+    //
+    // `Window::vscroll` は使わない。ウィンドウ側のスクロールは縦に縮まない設定
+    // （`auto_shrink(false)`）で作られるため、既定の 3 階でもウィンドウが規定の高さまで
+    // 広がって余白とスクロールバーが出てしまう。ここで `auto_shrink` の縦を有効にした
+    // 自前のスクロールを置けば、中身が収まるうちはウィンドウが中身どおりの高さになる。
+    //
+    // 残りの 15% はタイトルバーとウィンドウの余白の分。
+    //
+    // 同じ高さを `default_height` にも渡す。スクロールを挟むとウィンドウは中身ではなく
+    // 割り当てられた高さまでしか広がらないため、既定の 420px のままでは画面が広くても
+    // そこで頭打ちになってしまう。ウィンドウ自体は中身の高さで描かれるので、中身が短い
+    // ときにここが余白になることはない。
+    let body_max_height = ctx.content_rect().height() * 0.85;
     egui::Window::new("新規（架構ウィザード）")
         .open(&mut open)
         .resizable(true)
         .default_width(520.0)
+        .default_height(body_max_height)
         .show(ctx, |ui| {
-            ui.label(
-                "スパンと階高を入力すると、節点・柱・大梁・柱脚支点・通り芯・階・床を\
+            egui::ScrollArea::vertical()
+                .id_salt("wiz_body")
+                .max_height(body_max_height)
+                .auto_shrink([false, true])
+                .show(ui, |ui| {
+                    ui.label(
+                        "スパンと階高を入力すると、節点・柱・大梁・柱脚支点・通り芯・階・床を\
                  まとめて作ります。断面と材料は作りませんので、生成後に断面タブで\
                  割り当ててください。",
-            );
-            ui.colored_label(
-                crate::theme::BEST_YELLOW,
-                "⚠ 現在のモデルを置き換えます（undo できません）。",
-            );
-            ui.separator();
+                    );
+                    ui.colored_label(
+                        crate::theme::BEST_YELLOW,
+                        "⚠ 現在のモデルを置き換えます（undo できません）。",
+                    );
+                    ui.separator();
 
-            let w = &mut app.frame_wizard;
-            spans_section(ui, "X 方向", &mut w.spec.x_spans, &mut w.bulk_x, "wiz_x");
-            ui.add_space(4.0);
-            spans_section(ui, "Y 方向", &mut w.spec.y_spans, &mut w.bulk_y, "wiz_y");
-            ui.add_space(4.0);
-            stories_section(ui, w);
-            ui.add_space(4.0);
-            options_section(ui, w);
+                    let w = &mut app.frame_wizard;
+                    spans_section(ui, "X 方向", &mut w.spec.x_spans, &mut w.bulk_x, "wiz_x");
+                    ui.add_space(4.0);
+                    spans_section(ui, "Y 方向", &mut w.spec.y_spans, &mut w.bulk_y, "wiz_y");
+                    ui.add_space(4.0);
+                    stories_section(ui, w);
+                    ui.add_space(4.0);
+                    options_section(ui, w);
 
-            ui.separator();
-            let counts = w.spec.counts();
-            match w.spec.validate() {
-                Some(msg) => {
-                    ui.colored_label(crate::theme::ERROR_RED, msg);
-                }
-                None => {
-                    ui.label(format!(
-                        "生成: 節点 {} ・柱 {} 本 ・大梁 {} 本 ・床 {} 枚",
-                        counts.nodes, counts.columns, counts.girders, counts.slabs
-                    ));
-                    if ui
-                        .button("✅ この内容で作成")
-                        .on_hover_text("現在のモデルを置き換えます")
-                        .clicked()
-                    {
-                        generate = true;
+                    ui.separator();
+                    let counts = w.spec.counts();
+                    match w.spec.validate() {
+                        Some(msg) => {
+                            ui.colored_label(crate::theme::ERROR_RED, msg);
+                        }
+                        None => {
+                            ui.label(format!(
+                                "生成: 節点 {} ・柱 {} 本 ・大梁 {} 本 ・床 {} 枚",
+                                counts.nodes, counts.columns, counts.girders, counts.slabs
+                            ));
+                            if ui
+                                .button("✅ この内容で作成")
+                                .on_hover_text("現在のモデルを置き換えます")
+                                .clicked()
+                            {
+                                generate = true;
+                            }
+                        }
                     }
-                }
-            }
+                });
         });
 
     if generate {
@@ -127,35 +154,56 @@ fn spans_section(
     salt: &str,
 ) {
     ui.group(|ui| {
+        // 「＋」はスパン全体の本数を変える操作で、個々のスパンに属する「✖」とは役割が違う。
+        // 列の末尾に置くとスパンが増えるほど右へ流れて押しにくいため、ヘッダ側に固定する。
+        let mut added = false;
         ui.horizontal(|ui| {
             ui.strong(format!("{label}のスパン [mm]"));
             ui.label(format!("（通り {} 本）", spans.len() + 1));
-        });
-        ui.horizontal_wrapped(|ui| {
-            let mut remove = None;
-            for (i, s) in spans.iter_mut().enumerate() {
-                ui.push_id((salt, i), |ui| {
-                    ui.add(egui::DragValue::new(s).speed(100.0).range(1.0..=1.0e5));
-                    if ui
-                        .small_button("✖")
-                        .on_hover_text("このスパンを削除")
-                        .clicked()
-                    {
-                        remove = Some(i);
-                    }
-                });
-            }
             if ui
                 .small_button("＋")
                 .on_hover_text("スパンを追加")
                 .clicked()
             {
                 spans.push(bulk.1);
-            }
-            if let Some(i) = remove {
-                spans.remove(i);
+                added = true;
             }
         });
+        // 折り返さずに 1 列へ並べ、横スクロールで奥を見る。折り返すとウィンドウ幅で段の
+        // 位置が変わり、左から i 番目という並び順と通り番号の対応が読み取りにくくなる。
+        egui::ScrollArea::horizontal()
+            .id_salt(salt)
+            .auto_shrink([false, true])
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    let mut remove = None;
+                    let last = spans.len().saturating_sub(1);
+                    for (i, s) in spans.iter_mut().enumerate() {
+                        ui.push_id((salt, i), |ui| {
+                            let resp =
+                                ui.add(egui::DragValue::new(s).speed(100.0).range(1.0..=1.0e5));
+                            // 追加した欄は列の右端に現れるので、その回だけ右端まで送る。
+                            // `stick_to_right` では利用者が途中までスクロールしている間
+                            // 追従しないため、追加した欄を名指しで送る。縦の指示も同時に
+                            // 立つが、この ScrollArea が両方向とも回収するので外側の
+                            // 縦スクロールは動かない。
+                            if added && i == last {
+                                resp.scroll_to_me(Some(egui::Align::Max));
+                            }
+                            if ui
+                                .small_button("✖")
+                                .on_hover_text("このスパンを削除")
+                                .clicked()
+                            {
+                                remove = Some(i);
+                            }
+                        });
+                    }
+                    if let Some(i) = remove {
+                        spans.remove(i);
+                    }
+                });
+            });
         ui.horizontal(|ui| {
             ui.label("等スパン一括入力:");
             ui.add(egui::DragValue::new(&mut bulk.0).range(0..=50));
@@ -195,28 +243,36 @@ fn stories_section(ui: &mut egui::Ui, w: &mut FrameWizardState) {
         // 階名の既定は `default_story_name`（床基準の連番）。最上階も数字で通す。
         let n = w.spec.story_heights.len();
         w.spec.story_names.resize(n, String::new());
-        egui::Grid::new("wiz_stories")
-            .num_columns(3)
+        // 階は最大 60 まで増やせる。約 10 行分で打ち切り、それを超える分はスクロールで
+        // 見る。階数が少ないうちは縦に縮ませたいので auto_shrink の縦は true。
+        egui::ScrollArea::vertical()
+            .id_salt("wiz_stories_scroll")
+            .max_height(STORY_ROWS_MAX_HEIGHT)
+            .auto_shrink([false, true])
             .show(ui, |ui| {
-                ui.label("階");
-                ui.label("階高 [mm]");
-                ui.label("階名");
-                ui.end_row();
-                for i in (0..n).rev() {
-                    ui.label(format!("{}", i + 1));
-                    ui.add(
-                        egui::DragValue::new(&mut w.spec.story_heights[i])
-                            .speed(100.0)
-                            .range(1.0..=1.0e5),
-                    );
-                    let hint = squid_n_core::model::default_story_name(i);
-                    ui.add(
-                        egui::TextEdit::singleline(&mut w.spec.story_names[i])
-                            .hint_text(hint)
-                            .desired_width(80.0),
-                    );
-                    ui.end_row();
-                }
+                egui::Grid::new("wiz_stories")
+                    .num_columns(3)
+                    .show(ui, |ui| {
+                        ui.label("階");
+                        ui.label("階高 [mm]");
+                        ui.label("階名");
+                        ui.end_row();
+                        for i in (0..n).rev() {
+                            ui.label(format!("{}", i + 1));
+                            ui.add(
+                                egui::DragValue::new(&mut w.spec.story_heights[i])
+                                    .speed(100.0)
+                                    .range(1.0..=1.0e5),
+                            );
+                            let hint = squid_n_core::model::default_story_name(i);
+                            ui.add(
+                                egui::TextEdit::singleline(&mut w.spec.story_names[i])
+                                    .hint_text(hint)
+                                    .desired_width(80.0),
+                            );
+                            ui.end_row();
+                        }
+                    });
             });
     });
 }
