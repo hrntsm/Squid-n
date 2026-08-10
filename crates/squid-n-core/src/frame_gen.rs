@@ -8,23 +8,27 @@
 //! - [`FrameSpec`] / [`generate_frame`] — スパンと階高の入力から、節点・柱・大梁・
 //!   柱脚支点・通り芯・階を一括生成する（架構作成ウィザード）。
 //!
-//! 生成した**部材**の断面は未割当のままとする。断面は利用者が決めるものであり、
+//! 生成した**部材**の断面と材料は未割当のままとする。断面は利用者が決めるものであり、
 //! もっともらしい既定断面を割り当てると、入力し忘れたまま解析が通ってしまう。
 //! 解析前チェックが「断面が未割当の部材があります」で止めるため、割り当て漏れは
-//! 必ず名指しされる。材料も作らない（材料はプリセットから選ぶだけのデータである）。
+//! 必ず名指しされる。断面形状が決まらないかぎり材料だけあっても解析は通らないため、
+//! 材料も与えない。
 //!
-//! **床だけは断面を作る。** 床の板厚と自重は断面からしか解決できず
-//! （[`crate::model::Model::slab_thickness_of`]）、断面が無い床は解析前チェックが
-//! 止めてしまうためである。板厚 150 mm の `S15` を 1 枚だけ作り、全階の床へ
-//! 割り当てる。材料は割り当てないので、利用者がコンクリートを選ぶまで自重は 0 になる。
+//! **床だけは断面と材料を作る。** 床は解析対象の部材ではなく、解析上は荷重
+//! （自重・積載）としてのみ効く二次部材である。板厚さえ決めれば断面が確定し、
+//! 材料は自重を決める入力にすぎないので、部材に既定を与えることの危険とは別問題になる。
+//! 板厚と自重は断面からしか解決できず（[`crate::model::Model::slab_thickness_of`]）、
+//! 断面や材料が無い床は解析前チェックが止めてしまうため、`S15` の断面 1 枚と
+//! [`FrameSpec::slab_concrete`] のコンクリート 1 つを作り、全階の床へ割り当てる。
 
 use crate::dof::{Dof, Dof6Mask};
-use crate::ids::{ElemId, NodeId, StoryId};
+use crate::ids::{ElemId, MaterialId, NodeId, StoryId};
 use crate::ids::{SectionId, SlabId};
+use crate::material_grade::{material_presets, MaterialPreset};
 use crate::model::{
     default_story_name, Axis, AxisGroup, AxisGroupKind, AxisPlanDir, AxisSource,
-    DistributionMethod, ElementData, ElementKind, EndCondition, ForceRegime, LocalAxis, Model,
-    Node, Section, Slab, SlabUsage, Story,
+    DistributionMethod, ElementData, ElementKind, EndCondition, ForceRegime, LocalAxis, Material,
+    Model, Node, Section, Slab, SlabUsage, Story,
 };
 
 /// 同一の格子線とみなす座標差 [mm]（[`crate::axis_gen::AXIS_TOL_MM`] と同値）。
@@ -162,12 +166,15 @@ fn dedup_lines(lines: &mut Vec<GridLine>) {
 }
 
 /// 柱脚（最下レベルの節点）の支持条件。
+///
+/// 既定はピン。固定は基礎梁・基礎による回転拘束を無条件に見込む条件で、
+/// 出発点のモデルとしては危険側に出やすいためである。
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum BaseSupport {
     /// 固定（6 自由度すべて拘束）。
-    #[default]
     Fixed,
     /// ピン（並進 3 自由度のみ拘束）。
+    #[default]
     Pinned,
 }
 
@@ -216,10 +223,16 @@ pub struct FrameSpec {
     pub slab_usage: Option<SlabUsage>,
     /// 床の板厚 [mm]（断面 [`SLAB_SECTION_NAME`] の板厚になる）。
     pub slab_thickness: f64,
+    /// 床のコンクリートのグレード名（[`material_presets`] の名称。既定は
+    /// [`DEFAULT_SLAB_CONCRETE`]）。この材料を 1 つ作り、床の断面へ割り当てる。
+    pub slab_concrete: String,
 }
 
 /// ウィザードが作る床の断面の符号。
 pub const SLAB_SECTION_NAME: &str = "S15";
+
+/// 床のコンクリートの既定グレード。
+pub const DEFAULT_SLAB_CONCRETE: &str = "Fc21";
 
 impl Default for FrameSpec {
     fn default() -> Self {
@@ -232,11 +245,12 @@ impl Default for FrameSpec {
             story_names: Vec::new(),
             x_group_name: "X".to_string(),
             y_group_name: "Y".to_string(),
-            base_support: BaseSupport::Fixed,
+            base_support: BaseSupport::Pinned,
             with_girders: true,
             with_slabs: true,
             slab_usage: Some(SlabUsage::Office),
             slab_thickness: 150.0,
+            slab_concrete: DEFAULT_SLAB_CONCRETE.to_string(),
         }
     }
 }
@@ -274,7 +288,20 @@ impl FrameSpec {
         if self.with_slabs && self.slab_thickness <= 0.0 {
             return Some("床の板厚は正の値で入力してください。".into());
         }
+        if self.with_slabs && self.slab_concrete_preset().is_none() {
+            return Some(format!(
+                "床のコンクリート「{}」は標準材料にありません。",
+                self.slab_concrete
+            ));
+        }
         None
+    }
+
+    /// 床のコンクリートに対応する標準材料プリセット。名称が一致しなければ `None`。
+    fn slab_concrete_preset(&self) -> Option<MaterialPreset> {
+        material_presets()
+            .into_iter()
+            .find(|p| p.name == self.slab_concrete)
     }
 
     /// 生成される節点数・柱本数・大梁本数。ウィザードが実行前に規模を示すために使う。
@@ -330,8 +357,10 @@ pub struct FrameGenResult {
     pub elements: Vec<ElementData>,
     pub axes: Vec<AxisGroup>,
     pub stories: Vec<Story>,
-    /// 床の断面（`with_slabs` のときだけ 1 枚。板厚のみで材料は未割当）。
+    /// 床の断面（`with_slabs` のときだけ 1 枚）。
     pub sections: Vec<Section>,
+    /// 床のコンクリート（`with_slabs` のときだけ 1 つ。断面が参照する）。
+    pub materials: Vec<Material>,
     pub slabs: Vec<Slab>,
 }
 
@@ -355,9 +384,10 @@ pub struct FrameGenResult {
 /// 7. **床**は基部より上の各レベルで、隣り合う通りに囲まれた格子パネルへ 1 枚ずつ
 ///    作る（`with_slabs` が false、または片方向の通りが 1 本のときは作らない）。
 ///    板厚 [`FrameSpec::slab_thickness`] の断面 [`SLAB_SECTION_NAME`] を 1 枚だけ
-///    作り、全階の床で共有する。
+///    作り、全階の床で共有する。断面には [`FrameSpec::slab_concrete`] の
+///    コンクリートを 1 つ作って割り当てる。
 ///
-/// 部材の断面・材料は割り当てない（モジュールドキュメント参照）。
+/// 部材（柱・大梁）の断面・材料は割り当てない（モジュールドキュメント参照）。
 /// 入力が不正な場合（[`FrameSpec::validate`]）はその説明を `Err` で返す。
 pub fn generate_frame(spec: &FrameSpec) -> Result<FrameGenResult, String> {
     if let Some(msg) = spec.validate() {
@@ -507,18 +537,37 @@ pub fn generate_frame(spec: &FrameSpec) -> Result<FrameGenResult, String> {
         .collect();
 
     // 床（基部より上の各レベルで、隣り合う通りに囲まれた格子パネル 1 枚ずつ）。
-    // 板厚と自重は断面からしか解決できないため、床を作るなら断面もあわせて作る。
-    // 材料は割り当てない（利用者がコンクリートを選ぶまで自重は 0 になる）。
+    // 板厚と自重は断面と材料からしか解決できないため、床を作るなら断面とコンクリートも
+    // あわせて作る（モジュールドキュメント参照）。
     let mut sections = Vec::new();
+    let mut materials = Vec::new();
     let mut slabs = Vec::new();
     if spec.with_slabs && nx >= 2 && ny >= 2 {
         let sec_id = SectionId(0);
-        sections.push(
-            crate::section_shape::SectionShape::RcSlab {
-                thickness: spec.slab_thickness,
-            }
-            .to_section(sec_id, SLAB_SECTION_NAME.to_string()),
-        );
+        let mat_id = MaterialId(0);
+        // `validate` が名称を確かめているため、ここでプリセットは必ず見つかる。
+        let preset = spec
+            .slab_concrete_preset()
+            .expect("床のコンクリートは validate で検査済み");
+        materials.push(Material {
+            id: mat_id,
+            name: preset.name.to_string(),
+            category: preset.category,
+            young: preset.young,
+            poisson: preset.poisson,
+            density: preset.density,
+            shear: None,
+            fc: preset.fc,
+            fy: preset.fy,
+            concrete_class: Default::default(),
+            strength_factor: None,
+        });
+        let mut section = crate::section_shape::SectionShape::RcSlab {
+            thickness: spec.slab_thickness,
+        }
+        .to_section(sec_id, SLAB_SECTION_NAME.to_string());
+        section.material = Some(mat_id);
+        sections.push(section);
         for iz in 1..nz {
             for ix in 0..nx - 1 {
                 for iy in 0..ny - 1 {
@@ -551,6 +600,7 @@ pub fn generate_frame(spec: &FrameSpec) -> Result<FrameGenResult, String> {
         axes: vec![x_group, y_group],
         stories,
         sections,
+        materials,
         slabs,
     })
 }
@@ -567,6 +617,7 @@ pub fn frame_model(spec: &FrameSpec) -> Result<Model, String> {
         axes: gen.axes,
         stories: gen.stories,
         sections: gen.sections,
+        materials: gen.materials,
         slabs: gen.slabs,
         ..Model::with_default_load_cases()
     })
@@ -579,7 +630,10 @@ mod tests {
     /// 2×1 スパン・3 階の架構が、格子どおりの節点・柱・大梁と柱脚支点を持つ。
     #[test]
     fn test_generate_frame_counts_and_supports() {
-        let spec = FrameSpec::default();
+        let spec = FrameSpec {
+            base_support: BaseSupport::Fixed,
+            ..FrameSpec::default()
+        };
         let counts = spec.counts();
         let model = frame_model(&spec).unwrap();
 
@@ -611,13 +665,11 @@ mod tests {
         assert!(model.elements.iter().all(|e| e.section.is_none()));
     }
 
-    /// 柱脚をピンにすると並進 3 自由度だけが拘束される。
+    /// 柱脚の既定はピンで、並進 3 自由度だけが拘束される。
     #[test]
-    fn test_pinned_base() {
-        let spec = FrameSpec {
-            base_support: BaseSupport::Pinned,
-            ..FrameSpec::default()
-        };
+    fn test_pinned_base_is_default() {
+        let spec = FrameSpec::default();
+        assert_eq!(spec.base_support, BaseSupport::Pinned);
         let model = frame_model(&spec).unwrap();
         let base = model.nodes.iter().find(|n| n.coord[2] == 0.0).unwrap();
         assert!(base.restraint.is_fixed(Dof::Ux));
@@ -682,12 +734,25 @@ mod tests {
             ..FrameSpec::default()
         };
         assert!(frame_model(&zero_thickness).is_err());
+        // 標準材料にないグレードは、床の材料が決まらないため生成しない。
+        let unknown_concrete = FrameSpec {
+            slab_concrete: "Fc999".into(),
+            ..FrameSpec::default()
+        };
+        assert!(frame_model(&unknown_concrete).is_err());
+        // 床を作らないなら床のコンクリートは使わないので、名称は問わない。
+        let no_slabs = FrameSpec {
+            with_slabs: false,
+            slab_concrete: String::new(),
+            ..FrameSpec::default()
+        };
+        assert!(frame_model(&no_slabs).is_ok());
     }
 
     /// 床は各階の各格子パネルに 1 枚ずつ作り、板厚 150 mm の断面 `S15` を共有する。
     ///
-    /// 床の板厚と自重は断面からしか解決できないため、床を作るなら断面もあわせて作る。
-    /// 材料は割り当てない（利用者がコンクリートを選ぶまで自重は 0 になる）。
+    /// 床の板厚と自重は断面と材料からしか解決できないため、床を作るなら断面と
+    /// コンクリートもあわせて作る。
     #[test]
     fn test_generated_slabs_share_one_section() {
         let spec = FrameSpec::default();
@@ -700,7 +765,7 @@ mod tests {
         assert_eq!(sec.name, SLAB_SECTION_NAME);
         assert_eq!(sec.floor, None, "階を持たない断面として作る");
         assert_eq!(sec.thickness, Some(150.0));
-        assert!(sec.material.is_none(), "材料は利用者が割り当てる");
+        assert_eq!(sec.material, Some(crate::ids::MaterialId(0)));
         assert!(model
             .slabs
             .iter()
@@ -719,7 +784,32 @@ mod tests {
         assert!(model.validate().is_ok(), "{:?}", model.validate());
     }
 
-    /// 床を作らない設定では断面も作らない。
+    /// 床のコンクリートは既定で Fc21 の 1 つだけを作り、標準材料の規格値を持つ。
+    ///
+    /// 床は解析対象外の二次部材で、材料は自重を決める入力である。既定のまま生成しても
+    /// 自重が入り、解析前チェックの「断面に材料が未割当」で止まらない。
+    #[test]
+    fn test_slab_concrete_is_created() {
+        let model = frame_model(&FrameSpec::default()).unwrap();
+        assert_eq!(model.materials.len(), 1, "床のコンクリートだけを作る");
+        let mat = &model.materials[0];
+        assert_eq!(mat.name, DEFAULT_SLAB_CONCRETE);
+        assert_eq!(mat.category, crate::model::MaterialCategory::Concrete);
+        assert_eq!(mat.fc, Some(21.0));
+        assert!(mat.density > 0.0, "自重が 0 にならない");
+        assert!(model.validate().is_ok(), "{:?}", model.validate());
+
+        // グレードを変えれば、その規格値の材料になる。
+        let spec = FrameSpec {
+            slab_concrete: "Fc30".into(),
+            ..FrameSpec::default()
+        };
+        let model = frame_model(&spec).unwrap();
+        assert_eq!(model.materials[0].name, "Fc30");
+        assert_eq!(model.materials[0].fc, Some(30.0));
+    }
+
+    /// 床を作らない設定では断面もコンクリートも作らない。
     #[test]
     fn test_frame_without_slabs() {
         let spec = FrameSpec {
@@ -729,6 +819,7 @@ mod tests {
         let model = frame_model(&spec).unwrap();
         assert!(model.slabs.is_empty());
         assert!(model.sections.is_empty());
+        assert!(model.materials.is_empty());
         assert_eq!(spec.counts().slabs, 0);
     }
 
@@ -742,6 +833,7 @@ mod tests {
         let model = frame_model(&spec).unwrap();
         assert!(model.slabs.is_empty());
         assert!(model.sections.is_empty());
+        assert!(model.materials.is_empty());
     }
 
     /// 生成した架構の通り芯と階から、元の格子が復元できる。
