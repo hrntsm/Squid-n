@@ -135,7 +135,9 @@ fn test_report_error_switches_bottom_tab_to_log() {
 fn test_load_model_resets_draw_modes() {
     let mut app = App::default();
     app.beam_draw_mode = true;
-    app.beam_draw_first = Some(squid_n_core::ids::NodeId(3));
+    app.beam_draw_first = Some(crate::viewer::space_grid::SnapPoint::Node(
+        squid_n_core::ids::NodeId(3),
+    ));
     app.wall_draw_mode = true;
     app.wall_draw_nodes.push(squid_n_core::ids::NodeId(1));
     app.slab_draw_nodes.push(squid_n_core::ids::NodeId(2));

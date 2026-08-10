@@ -370,6 +370,96 @@ fn test_model_issues_warns_story_without_diaphragm() {
     assert!(precheck_model(&model).is_ok());
 }
 
+/// 階名の重複はエラーとし、解析前チェックで止める。
+///
+/// 階名は結果の一覧・CSV の列見出しと断面の符号＋階に使われるため、重複すると
+/// どの階の値なのかを判別できない。前後の空白しか違わない名前も同名として扱う。
+#[test]
+fn test_model_issues_errors_on_duplicate_story_names() {
+    use super::precheck::{model_issues, precheck_model, IssueSeverity};
+    use squid_n_core::ids::StoryId;
+    use squid_n_core::model::Story;
+
+    let mut model = make_cantilever_model();
+    let story = |id: u32, name: &str, elevation: f64| Story {
+        id: StoryId(id),
+        name: name.into(),
+        elevation,
+        node_ids: Vec::new(),
+        seismic_weight: None,
+        weight_override: None,
+        structure: Default::default(),
+        level_kind: Default::default(),
+    };
+    // 見た目で区別できない差（末尾の空白）でも同名として扱う。
+    model.stories.push(story(0, "2F", 3000.0));
+    model.stories.push(story(1, "2F ", 6000.0));
+
+    let issues = model_issues(&model);
+    let issue = issues
+        .iter()
+        .find(|i| i.message.contains("階名が重複"))
+        .expect("階名の重複が診断に出ていない");
+    assert_eq!(issue.severity, IssueSeverity::Error);
+    assert!(issue.message.contains("2F"), "{}", issue.message);
+    // エラーなので解析前チェックが止める。
+    assert!(precheck_model(&model).is_err());
+
+    // 名前を分ければ通る（剛床のない階の警告だけが残る）。
+    model.stories[1].name = "3F".into();
+    assert!(precheck_model(&model).is_ok());
+}
+
+/// 載荷区間が材長を超える部材荷重はエラーとし、解析前チェックで止める。
+///
+/// 等価節点力の積分が Hermite 形状関数を材外へ外挿するため、節点力と固定端内力が
+/// 黙って誤る。全長載荷（`b = L`）は不備としない。
+#[test]
+fn test_model_issues_errors_on_member_load_beyond_length() {
+    use super::precheck::{model_issues, precheck_model, IssueSeverity};
+    use squid_n_core::model::{MemberLoad, MemberLoadKind};
+
+    let mut model = make_cantilever_model();
+    let elem = model.elements[0].id;
+    let l = model.member_length(&model.elements[0]);
+    assert!(l > 0.0);
+
+    // 全長載荷は不備にしない。
+    model.load_cases[0].member.push(MemberLoad::manual(
+        elem,
+        [0.0, 0.0, -1.0],
+        MemberLoadKind::Distributed {
+            a: 0.0,
+            b: l,
+            w1: 1.0,
+            w2: 1.0,
+        },
+    ));
+    assert!(
+        !model_issues(&model)
+            .iter()
+            .any(|i| i.message.contains("載荷区間")),
+        "全長載荷は不備ではない"
+    );
+
+    // 材長を超える区間はエラー。
+    model.load_cases[0].member.push(MemberLoad::manual(
+        elem,
+        [0.0, 0.0, -1.0],
+        MemberLoadKind::Point {
+            a: l + 100.0,
+            p: 1000.0,
+        },
+    ));
+    let issues = model_issues(&model);
+    let issue = issues
+        .iter()
+        .find(|i| i.message.contains("載荷区間"))
+        .expect("載荷区間の不備が診断に出ていない");
+    assert_eq!(issue.severity, IssueSeverity::Error);
+    assert!(precheck_model(&model).is_err());
+}
+
 /// 部材が 1 つもないモデルで、全節点を孤立節点として並べない。
 /// 「部材がありません」で同じことを言っており、節点を 1 つずつ挙げても情報が増えない。
 #[test]

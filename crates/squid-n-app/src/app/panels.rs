@@ -250,10 +250,10 @@ impl App {
             if self.beam_draw_mode {
                 match self.beam_draw_first {
                     None => {
-                        ui.label("始点の節点をクリック");
+                        ui.label("始点をクリック");
                     }
-                    Some(nid) => {
-                        ui.label(format!("始点 N{} 選択中 → 終点の節点をクリック", nid.0));
+                    Some(first) => {
+                        ui.label(format!("始点 {} 選択中 → 終点をクリック", first.label()));
                         if ui.button("キャンセル").clicked() {
                             self.beam_draw_first = None;
                         }
@@ -892,6 +892,9 @@ impl App {
                 // 1 フレーム 1 コマンドずつ行う。同一フレームで複数セルが確定
                 // しても破棄されない（確定 → 適用に 1 フレームの遅延が付く）。
                 let mut pending_delete: Option<squid_n_core::ids::StoryId> = None;
+                // 階への複製ダイアログを開く階（ダイアログは `self` を要するため、
+                // 表ループを抜けてから開く）。
+                let mut pending_copy: Option<squid_n_core::ids::StoryId> = None;
                 let mut pending_level_kind: Option<(squid_n_core::ids::StoryId, StoryLevelKind)> =
                     None;
                 let mut pending_weight: Option<(squid_n_core::ids::StoryId, Option<f64>)> = None;
@@ -914,7 +917,8 @@ impl App {
                              準備計算で再生成しても上書きされません（undo 可）",
                         ),
                         Col::wide_num("種別"),
-                        Col::actions(),
+                        // 階への複製（⧉）と削除（🗑）の 2 つ。
+                        Col::actions_n(2),
                     ],
                     story_rows.len(),
                     |row| {
@@ -1122,8 +1126,18 @@ impl App {
                                 pending_level_kind = Some((story, level_kind_new));
                             }
                         });
-                        // 削除（行削除ボタン）。
+                        // 操作（階への複製・行削除）。
                         row.col(|ui| {
+                            if ui
+                                .small_button("⧉")
+                                .on_hover_text(
+                                    "この階の断面・荷重・床・二次部材を、ほかの階へ\
+                                     複製します（同じ平面位置の相手へ配ります）",
+                                )
+                                .clicked()
+                            {
+                                pending_copy = Some(story);
+                            }
                             if crate::table_util::delete_cell(
                                 ui,
                                 "この階を削除します。所属節点は所属階を失い、次の階生成で\
@@ -1159,6 +1173,9 @@ impl App {
                 if let Some(story) = pending_delete {
                     self.pending_story_cmds
                         .push_back(Box::new(squid_n_edit::DeleteStory { story }));
+                }
+                if let Some(story) = pending_copy {
+                    crate::story_copy_view::open(self, story);
                 }
             });
     }

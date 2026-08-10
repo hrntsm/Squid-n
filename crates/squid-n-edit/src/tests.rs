@@ -4152,3 +4152,852 @@ fn test_stale_story_commands_are_noop() {
     assert_eq!(model.stories.len(), 1, "Noop はモデルを変えない");
     assert!(model.validate().is_ok());
 }
+
+/// 階への複製で使う、準備計算相当の所属階の割り当て（標高で階へ結び付ける）。
+fn assign_node_stories(model: &mut Model) {
+    let stories: Vec<(squid_n_core::ids::StoryId, f64)> =
+        model.stories.iter().map(|s| (s.id, s.elevation)).collect();
+    for n in &mut model.nodes {
+        n.story = stories
+            .iter()
+            .find(|(_, z)| (n.coord[2] - z).abs() <= 1.0)
+            .map(|(id, _)| *id);
+    }
+    for s in &mut model.stories {
+        let ids: Vec<NodeId> = model
+            .nodes
+            .iter()
+            .filter(|n| n.story == Some(s.id))
+            .map(|n| n.id)
+            .collect();
+        s.node_ids = ids;
+    }
+}
+
+/// 階への複製: 断面を複製先の階名で作り直して割り当て、undo で丸ごと戻す。
+///
+/// 階に属するかどうかは `Model::member_story`（材端節点のうちもっとも高い節点の
+/// 所属階）で判定するため、階 `2F` には 1FL→2FL の柱と 2FL の大梁が属する。
+#[test]
+fn test_copy_story_assigns_sections_with_target_floor_name() {
+    use crate::{CopyStory, CopyTargets};
+    use squid_n_core::frame_gen::{frame_model, FrameSpec};
+    use squid_n_core::ids::StoryId;
+
+    let mut model = frame_model(&FrameSpec::default()).unwrap();
+    assign_node_stories(&mut model);
+    // 2F の部材へ、階を持つ断面 C1(2F) を割り当てる。
+    let sec_id = SectionId(model.sections.len() as u32);
+    let mut c1 = bare_section(sec_id, None);
+    c1.name = "C1".into();
+    c1.floor = Some("2F".into());
+    model.sections.push(c1);
+    let targets_2f: Vec<squid_n_core::ids::ElemId> = model
+        .elements
+        .iter()
+        .filter(|e| model.member_story(e) == Some(StoryId(0)))
+        .map(|e| e.id)
+        .collect();
+    assert!(!targets_2f.is_empty());
+    for id in &targets_2f {
+        model.elements[id.index()].section = Some(sec_id);
+    }
+    assert!(model.validate().is_ok(), "{:?}", model.validate());
+
+    let n_sections = model.sections.len();
+    let cmd = CopyStory {
+        from: StoryId(0),
+        to: vec![StoryId(1)],
+        targets: CopyTargets {
+            sections: true,
+            ..Default::default()
+        },
+        overwrite: true,
+    };
+    let report = cmd.preview(&model);
+    assert_eq!(report.sections_created, 1, "3F 用に C1 を 1 枚だけ複製する");
+    assert_eq!(report.created_sections, vec!["C1 (3F)".to_string()]);
+
+    let mut stack = UndoStack::new();
+    assert!(stack.run(&mut model, Box::new(cmd)));
+    let copied = model
+        .sections
+        .iter()
+        .find(|s| s.key() == ("C1", Some("3F")))
+        .expect("C1 (3F) ができる");
+    let assigned: Vec<&squid_n_core::model::ElementData> = model
+        .elements
+        .iter()
+        .filter(|e| model.member_story(e) == Some(StoryId(1)))
+        .collect();
+    assert!(!assigned.is_empty());
+    assert!(assigned.iter().all(|e| e.section == Some(copied.id)));
+    assert!(model.validate().is_ok(), "{:?}", model.validate());
+
+    // undo でモデルが丸ごと戻る。
+    stack.undo(&mut model);
+    assert_eq!(model.sections.len(), n_sections, "複製した断面が消える");
+    assert!(model
+        .elements
+        .iter()
+        .filter(|e| model.member_story(e) == Some(StoryId(1)))
+        .all(|e| e.section.is_none()));
+}
+
+/// 階への複製を 2 回実行しても、荷重が二重にならない（足すのではなく載せ替える）。
+///
+/// 足すだけにすると同じ部材へ同じ荷重が積み上がり、見た目では気づけないまま
+/// 重い設計になる。複製先の手入力荷重を取り除いてから載せるため、2 回目は
+/// 件数が変わらず `loads_replaced` に計上される。
+#[test]
+fn test_copy_story_replaces_loads_instead_of_stacking() {
+    use crate::{CopyStory, CopyTargets};
+    use squid_n_core::frame_gen::{frame_model, FrameSpec};
+    use squid_n_core::ids::StoryId;
+    use squid_n_core::model::{MemberLoad, MemberLoadKind};
+
+    let mut model = frame_model(&FrameSpec::default()).unwrap();
+    assign_node_stories(&mut model);
+    // 2F の大梁を 1 本選び、手入力の等分布荷重を載せる。
+    let girder = model
+        .elements
+        .iter()
+        .find(|e| {
+            model.member_story(e) == Some(StoryId(0))
+                && model.nodes[e.nodes[0].index()].coord[2]
+                    == model.nodes[e.nodes[1].index()].coord[2]
+        })
+        .map(|e| e.id)
+        .expect("2F に大梁がある");
+    model.load_cases[0].member.push(MemberLoad::manual(
+        girder,
+        [0.0, 0.0, -1.0],
+        MemberLoadKind::Distributed {
+            a: 0.0,
+            b: 6000.0,
+            w1: 10.0,
+            w2: 10.0,
+        },
+    ));
+    let base_loads = model.load_cases[0].member.len();
+
+    let cmd = || CopyStory {
+        from: StoryId(0),
+        to: vec![StoryId(1)],
+        targets: CopyTargets {
+            loads: true,
+            ..Default::default()
+        },
+        overwrite: true,
+    };
+    let mut stack = UndoStack::new();
+    assert!(stack.run(&mut model, Box::new(cmd())));
+    assert_eq!(model.load_cases[0].member.len(), base_loads + 1);
+
+    // 2 回目は載せ替えになり、件数は増えない。
+    let report = cmd().preview(&model);
+    assert_eq!(report.loads_copied, 1);
+    assert_eq!(report.loads_removed, 1, "複製先の手入力荷重を取り除く");
+    assert!(stack.run(&mut model, Box::new(cmd())));
+    assert_eq!(
+        model.load_cases[0].member.len(),
+        base_loads + 1,
+        "2 回実行しても荷重は二重にならない"
+    );
+}
+
+/// 床の複製で、同じ床を「新規」と「更新」に二重計上しない。
+#[test]
+fn test_copy_story_counts_new_slabs_once() {
+    use crate::{CopyStory, CopyTargets};
+    use squid_n_core::frame_gen::{frame_model, FrameSpec};
+    use squid_n_core::ids::StoryId;
+    use squid_n_core::model::{AreaLoad, SlabUsage};
+
+    let mut model = frame_model(&FrameSpec::default()).unwrap();
+    // 3F の床を消して、2F から配り直せる状態にする。
+    model.slabs.retain(|sl| {
+        let z = model.nodes[sl.boundary[0].index()].coord[2];
+        !(7000.0..8000.0).contains(&z)
+    });
+    for (i, sl) in model.slabs.iter_mut().enumerate() {
+        sl.id = squid_n_core::ids::SlabId(i as u32);
+    }
+    assign_node_stories(&mut model);
+    for sl in &mut model.slabs {
+        sl.usage = Some(SlabUsage::Office);
+        sl.loads = vec![AreaLoad {
+            kind: "仕上".into(),
+            value: 0.6,
+        }];
+    }
+    assert!(model.validate().is_ok(), "{:?}", model.validate());
+
+    let cmd = CopyStory {
+        from: StoryId(0),
+        to: vec![StoryId(1)],
+        targets: CopyTargets {
+            slabs: true,
+            loads: true,
+            ..Default::default()
+        },
+        overwrite: true,
+    };
+    let report = cmd.preview(&model);
+    assert_eq!(report.slabs_created, 2, "3F へ床を 2 枚作る");
+    assert_eq!(report.slabs_updated, 0, "作ったばかりの床は更新に数えない");
+
+    let mut stack = UndoStack::new();
+    assert!(stack.run(&mut model, Box::new(cmd)));
+    let new_slabs: Vec<&squid_n_core::model::Slab> = model
+        .slabs
+        .iter()
+        .filter(|sl| (model.nodes[sl.boundary[0].index()].coord[2] - 7500.0).abs() < 1.0)
+        .collect();
+    assert_eq!(new_slabs.len(), 2);
+    assert!(new_slabs
+        .iter()
+        .all(|sl| sl.usage == Some(SlabUsage::Office)));
+    assert!(new_slabs.iter().all(|sl| sl.loads.len() == 1));
+    assert!(model.validate().is_ok(), "{:?}", model.validate());
+}
+
+/// 上書きが真なら、複製元の「無い」状態も写す（複製先の余分を削除・解除する）。
+///
+/// 複製は複製元の状態をそのまま写す操作なので、複製元に床が無い位置の床、
+/// 複製元が断面を持たない相手の断面は、複製先から取り除く。
+#[test]
+fn test_copy_story_overwrite_mirrors_absence() {
+    use crate::{CopyStory, CopyTargets};
+    use squid_n_core::frame_gen::{frame_model, FrameSpec};
+    use squid_n_core::ids::StoryId;
+
+    let mut model = frame_model(&FrameSpec::default()).unwrap();
+    assign_node_stories(&mut model);
+    // 2F の床を 1 枚だけ消す（3F には両方ある状態にする）。
+    let doomed = model
+        .slabs
+        .iter()
+        .find(|sl| (model.nodes[sl.boundary[0].index()].coord[2] - 4000.0).abs() < 1.0)
+        .map(|sl| sl.id)
+        .expect("2F に床がある");
+    crate::DeleteSlab { id: doomed }.apply(&mut model);
+    let slabs_3f = |m: &Model| {
+        m.slabs
+            .iter()
+            .filter(|sl| (m.nodes[sl.boundary[0].index()].coord[2] - 7500.0).abs() < 1.0)
+            .count()
+    };
+    assert_eq!(slabs_3f(&model), 2, "3F には床が 2 枚ある");
+    // 3F の部材へ断面を付ける（2F は未割当のまま）。
+    let sec_id = SectionId(model.sections.len() as u32);
+    let mut c1 = bare_section(sec_id, None);
+    c1.name = "C1".into();
+    c1.floor = Some("3F".into());
+    model.sections.push(c1);
+    let members_3f: Vec<squid_n_core::ids::ElemId> = model
+        .elements
+        .iter()
+        .filter(|e| model.member_story(e) == Some(StoryId(1)))
+        .map(|e| e.id)
+        .collect();
+    for id in &members_3f {
+        model.elements[id.index()].section = Some(sec_id);
+    }
+    assert!(model.validate().is_ok(), "{:?}", model.validate());
+
+    let cmd = CopyStory {
+        from: StoryId(0),
+        to: vec![StoryId(1)],
+        targets: CopyTargets {
+            sections: true,
+            slabs: true,
+            ..Default::default()
+        },
+        overwrite: true,
+    };
+    let report = cmd.preview(&model);
+    assert_eq!(report.slabs_deleted, 1, "2F に無い位置の 3F の床を消す");
+    assert_eq!(
+        report.sections_cleared,
+        members_3f.len(),
+        "2F が未割当なので 3F の断面を外す"
+    );
+    assert!(report.removes_input());
+
+    let mut stack = UndoStack::new();
+    assert!(stack.run(&mut model, Box::new(cmd)));
+    assert_eq!(slabs_3f(&model), 1);
+    assert!(members_3f
+        .iter()
+        .all(|id| model.elements[id.index()].section.is_none()));
+    assert!(model.validate().is_ok(), "{:?}", model.validate());
+
+    // undo 1 回で削除・解除ごと戻る。
+    stack.undo(&mut model);
+    assert_eq!(slabs_3f(&model), 2);
+    assert!(members_3f
+        .iter()
+        .all(|id| model.elements[id.index()].section == Some(sec_id)));
+}
+
+/// 上書きが偽なら、複製先の既存には触れない（削除も置換もしない）。
+#[test]
+fn test_copy_story_without_overwrite_keeps_existing() {
+    use crate::{CopyStory, CopyTargets};
+    use squid_n_core::frame_gen::{frame_model, FrameSpec};
+    use squid_n_core::ids::StoryId;
+    use squid_n_core::model::{MemberLoad, MemberLoadKind};
+
+    let mut model = frame_model(&FrameSpec::default()).unwrap();
+    assign_node_stories(&mut model);
+    // 2F・3F の同じ位置の大梁へ、別々の手入力荷重を載せる。
+    let girder_of = |m: &Model, story: StoryId| {
+        m.elements
+            .iter()
+            .find(|e| {
+                m.member_story(e) == Some(story)
+                    && m.nodes[e.nodes[0].index()].coord[2] == m.nodes[e.nodes[1].index()].coord[2]
+                    && m.nodes[e.nodes[0].index()].coord[1] == 0.0
+                    && m.nodes[e.nodes[1].index()].coord[1] == 0.0
+                    && m.nodes[e.nodes[0].index()].coord[0] == 0.0
+            })
+            .map(|e| e.id)
+            .expect("大梁がある")
+    };
+    let load = |elem, w| {
+        MemberLoad::manual(
+            elem,
+            [0.0, 0.0, -1.0],
+            MemberLoadKind::Distributed {
+                a: 0.0,
+                b: 6000.0,
+                w1: w,
+                w2: w,
+            },
+        )
+    };
+    let g2 = girder_of(&model, StoryId(0));
+    let g3 = girder_of(&model, StoryId(1));
+    model.load_cases[0].member.push(load(g2, 10.0));
+    model.load_cases[0].member.push(load(g3, 99.0));
+
+    let cmd = CopyStory {
+        from: StoryId(0),
+        to: vec![StoryId(1)],
+        targets: CopyTargets {
+            loads: true,
+            ..Default::default()
+        },
+        overwrite: false,
+    };
+    let report = cmd.preview(&model);
+    assert_eq!(report.loads_removed, 0, "既存の荷重は消さない");
+    assert_eq!(report.loads_copied, 0, "既に荷重がある相手へは載せない");
+
+    // 3F の荷重は 99.0 のまま残る。
+    let mut stack = UndoStack::new();
+    assert!(!stack.run(&mut model, Box::new(cmd)), "変更がないので Noop");
+    let kept = model.load_cases[0]
+        .member
+        .iter()
+        .find(|l| l.elem == g3)
+        .expect("3F の荷重が残る");
+    assert!(matches!(
+        kept.kind,
+        MemberLoadKind::Distributed { w1, .. } if (w1 - 99.0).abs() < 1e-9
+    ));
+}
+
+/// 上書きが真でも、複製元の平面の外にある複製先の床には手を触れない。
+///
+/// セットバックや張り出しのある建物で、複製元と関係のない場所が消えるのを防ぐ。
+#[test]
+fn test_copy_story_overwrite_keeps_slabs_outside_source_plan() {
+    use crate::{CopyStory, CopyTargets};
+    use squid_n_core::frame_gen::{frame_model, FrameSpec};
+    use squid_n_core::ids::StoryId;
+    use squid_n_core::model::{Node, Slab};
+
+    let mut model = frame_model(&FrameSpec {
+        with_slabs: false,
+        ..FrameSpec::default()
+    })
+    .unwrap();
+    // 3F だけに張り出した平面（2F には節点が無い位置）を足し、そこへ床を張る。
+    let mut extra = Vec::new();
+    for (x, y) in [(0.0, -6000.0), (6000.0, -6000.0)] {
+        let id = NodeId(model.nodes.len() as u32);
+        model.nodes.push(Node {
+            id,
+            coord: [x, y, 7500.0],
+            restraint: Dof6Mask::FREE,
+            mass: None,
+            story: None,
+            support_spring: None,
+        });
+        extra.push(id);
+    }
+    // 既存の 3F の 2 節点と合わせて 4 角形にする。
+    let corner = |x: f64, y: f64| {
+        model
+            .nodes
+            .iter()
+            .find(|n| {
+                (n.coord[0] - x).abs() < 1.0
+                    && (n.coord[1] - y).abs() < 1.0
+                    && (n.coord[2] - 7500.0).abs() < 1.0
+            })
+            .map(|n| n.id)
+            .expect("3F の節点がある")
+    };
+    model.slabs.push(Slab {
+        id: squid_n_core::ids::SlabId(0),
+        boundary: vec![extra[0], extra[1], corner(6000.0, 0.0), corner(0.0, 0.0)],
+        joists: Vec::new(),
+        loads: Vec::new(),
+        method: squid_n_core::model::DistributionMethod::TriTrapezoid,
+        kind: Default::default(),
+        one_way: None,
+        edge_supported: None,
+        usage: None,
+        section: None,
+    });
+    assign_node_stories(&mut model);
+    assert!(model.validate().is_ok(), "{:?}", model.validate());
+
+    let cmd = CopyStory {
+        from: StoryId(0),
+        to: vec![StoryId(1)],
+        targets: CopyTargets {
+            slabs: true,
+            ..Default::default()
+        },
+        overwrite: true,
+    };
+    let report = cmd.preview(&model);
+    assert_eq!(
+        report.slabs_deleted, 0,
+        "複製元の平面の外にある床は消さない"
+    );
+}
+
+/// 同じ符号＋階の断面が既にあれば使い回し、寸法が違えば名指しする。
+#[test]
+fn test_copy_story_reports_mismatched_existing_section() {
+    use crate::{CopyStory, CopyTargets};
+    use squid_n_core::frame_gen::{frame_model, FrameSpec};
+    use squid_n_core::ids::StoryId;
+
+    let mut model = frame_model(&FrameSpec::default()).unwrap();
+    assign_node_stories(&mut model);
+    // C1 (2F) と、寸法の違う C1 (3F) を用意する。
+    let id_2f = SectionId(model.sections.len() as u32);
+    let mut c1_2f = bare_section(id_2f, None);
+    c1_2f.name = "C1".into();
+    c1_2f.floor = Some("2F".into());
+    c1_2f.area = 1000.0;
+    model.sections.push(c1_2f);
+    let id_3f = SectionId(model.sections.len() as u32);
+    let mut c1_3f = bare_section(id_3f, None);
+    c1_3f.name = "C1".into();
+    c1_3f.floor = Some("3F".into());
+    c1_3f.area = 500.0;
+    model.sections.push(c1_3f);
+    for e in model
+        .elements
+        .iter()
+        .filter(|e| model.member_story(e) == Some(StoryId(0)))
+        .map(|e| e.id)
+        .collect::<Vec<_>>()
+    {
+        model.elements[e.index()].section = Some(id_2f);
+    }
+
+    let cmd = CopyStory {
+        from: StoryId(0),
+        to: vec![StoryId(1)],
+        targets: CopyTargets {
+            sections: true,
+            ..Default::default()
+        },
+        overwrite: true,
+    };
+    let report = cmd.preview(&model);
+    assert_eq!(report.sections_created, 0, "既存の C1 (3F) を使い回す");
+    assert_eq!(report.sections_reused, 1);
+    assert_eq!(report.mismatched_sections, vec!["C1 (3F)".to_string()]);
+
+    // 中身は書き換えない（対象範囲の外の部材まで変わってしまうため）。
+    let mut m = model.clone();
+    cmd.apply(&mut m);
+    assert_eq!(m.sections[id_3f.index()].area, 500.0);
+}
+
+/// 材長の違う相手（階高の違う柱）へ部材荷重を配るとき、載荷区間を材長へ合わせる。
+///
+/// 全長載荷は複製先の材長へ合わせ、部分載荷は位置をそのまま写す。収まらないものは
+/// 配らずに数える。そのまま写すと `gauss_dist` が形状関数を材外へ外挿し、等価節点力が
+/// 黙って誤る。
+#[test]
+fn test_copy_story_fits_member_load_to_target_length() {
+    use crate::{CopyStory, CopyTargets};
+    use squid_n_core::frame_gen::{frame_model, FrameSpec};
+    use squid_n_core::ids::StoryId;
+    use squid_n_core::model::{MemberLoad, MemberLoadKind};
+
+    // 2F の階高 4000、3F の階高 3500。
+    let mut model = frame_model(&FrameSpec::default()).unwrap();
+    assign_node_stories(&mut model);
+    let column_of = |m: &Model, story: StoryId| {
+        m.elements
+            .iter()
+            .find(|e| {
+                m.member_story(e) == Some(story)
+                    && m.nodes[e.nodes[0].index()].coord[0] == 0.0
+                    && m.nodes[e.nodes[0].index()].coord[1] == 0.0
+                    && m.nodes[e.nodes[1].index()].coord[0] == 0.0
+                    && m.nodes[e.nodes[1].index()].coord[1] == 0.0
+            })
+            .map(|e| e.id)
+            .expect("柱がある")
+    };
+    let c2 = column_of(&model, StoryId(0));
+    let c3 = column_of(&model, StoryId(1));
+    assert_eq!(model.member_length(&model.elements[c2.index()]), 4000.0);
+    assert_eq!(model.member_length(&model.elements[c3.index()]), 3500.0);
+
+    // 全長載荷・収まる部分載荷・収まらない部分載荷の 3 つを載せる。
+    let lc = &mut model.load_cases[0];
+    lc.member.push(MemberLoad::manual(
+        c2,
+        [1.0, 0.0, 0.0],
+        MemberLoadKind::Distributed {
+            a: 0.0,
+            b: 4000.0,
+            w1: 1.0,
+            w2: 1.0,
+        },
+    ));
+    lc.member.push(MemberLoad::manual(
+        c2,
+        [1.0, 0.0, 0.0],
+        MemberLoadKind::Point {
+            a: 2000.0,
+            p: 100.0,
+        },
+    ));
+    lc.member.push(MemberLoad::manual(
+        c2,
+        [1.0, 0.0, 0.0],
+        MemberLoadKind::Point {
+            a: 3800.0,
+            p: 100.0,
+        },
+    ));
+
+    let cmd = CopyStory {
+        from: StoryId(0),
+        to: vec![StoryId(1)],
+        targets: CopyTargets {
+            loads: true,
+            ..Default::default()
+        },
+        overwrite: true,
+    };
+    let report = cmd.preview(&model);
+    assert_eq!(report.loads_copied, 2, "収まる 2 件だけ配る");
+    assert_eq!(report.loads_unfit, 1, "材長に収まらない 1 件は配らない");
+
+    let mut stack = UndoStack::new();
+    assert!(stack.run(&mut model, Box::new(cmd)));
+    let copied: Vec<&MemberLoad> = model.load_cases[0]
+        .member
+        .iter()
+        .filter(|l| l.elem == c3)
+        .collect();
+    assert_eq!(copied.len(), 2);
+    // 全長載荷は 3500 へ合う。
+    assert!(copied.iter().any(|l| matches!(
+        l.kind,
+        MemberLoadKind::Distributed { a, b, .. } if a == 0.0 && (b - 3500.0).abs() < 1e-9
+    )));
+    // 部分載荷は位置をそのまま。
+    assert!(copied
+        .iter()
+        .any(|l| matches!(l.kind, MemberLoadKind::Point { a, .. } if (a - 2000.0).abs() < 1e-9)));
+    // 載荷区間が材長を超える荷重は残らない。
+    assert!(copied.iter().all(|l| match l.kind {
+        MemberLoadKind::Point { a, .. } => a <= 3500.0 + 1.0,
+        MemberLoadKind::Distributed { b, .. } => b <= 3500.0 + 1.0,
+    }));
+}
+
+/// 同じ構面のブレースと大梁を、材端の XY だけでは区別できない。
+///
+/// 階内の相対高さで区別するため、1FL→2FL のブレースは 2FL の大梁と別のキーになり、
+/// 断面が誤って入れ替わらない。
+#[test]
+fn test_copy_story_distinguishes_brace_from_girder() {
+    use crate::{CopyStory, CopyTargets};
+    use squid_n_core::frame_gen::{frame_model, FrameSpec};
+    use squid_n_core::ids::StoryId;
+    use squid_n_core::model::{ElementKind, EndCondition, ForceRegime, LocalAxis};
+
+    let mut model = frame_model(&FrameSpec::default()).unwrap();
+    // 各階の同じ構面へブレースを 1 本ずつ足す（下階の隅 → 上階の隣の隅）。
+    let node_at = |m: &Model, x: f64, z: f64| {
+        m.nodes
+            .iter()
+            .find(|n| {
+                (n.coord[0] - x).abs() < 1.0 && n.coord[1] == 0.0 && (n.coord[2] - z).abs() < 1.0
+            })
+            .map(|n| n.id)
+            .expect("節点がある")
+    };
+    for (z0, z1) in [(0.0, 4000.0), (4000.0, 7500.0)] {
+        let id = squid_n_core::ids::ElemId(model.elements.len() as u32);
+        model.elements.push(ElementData {
+            id,
+            kind: ElementKind::Brace {
+                tension_only: false,
+            },
+            nodes: smallvec![node_at(&model, 0.0, z0), node_at(&model, 6000.0, z1)],
+            section: None,
+            local_axis: LocalAxis {
+                ref_vector: [0.0, 0.0, 1.0],
+            },
+            end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+            force_regime: ForceRegime::Auto,
+            rigid_zone: Default::default(),
+            plastic_zone: None,
+            spring: None,
+        });
+    }
+    assign_node_stories(&mut model);
+    assert!(model.validate().is_ok(), "{:?}", model.validate());
+
+    // 2F のブレースにだけ断面を付ける（大梁は未割当のまま）。
+    let brace_2f = model
+        .elements
+        .iter()
+        .find(|e| {
+            matches!(e.kind, ElementKind::Brace { .. }) && model.member_story(e) == Some(StoryId(0))
+        })
+        .map(|e| e.id)
+        .expect("2F のブレース");
+    let sec = SectionId(model.sections.len() as u32);
+    let mut br = bare_section(sec, None);
+    br.name = "BR1".into();
+    br.floor = Some("2F".into());
+    model.sections.push(br);
+    model.elements[brace_2f.index()].section = Some(sec);
+
+    let cmd = CopyStory {
+        from: StoryId(0),
+        to: vec![StoryId(1)],
+        targets: CopyTargets {
+            sections: true,
+            ..Default::default()
+        },
+        overwrite: true,
+    };
+    let mut stack = UndoStack::new();
+    assert!(stack.run(&mut model, Box::new(cmd)));
+
+    // 3F のブレースへ BR1 (3F) が付き、3F の大梁は未割当のまま。
+    let brace_3f = model
+        .elements
+        .iter()
+        .find(|e| {
+            matches!(e.kind, ElementKind::Brace { .. }) && model.member_story(e) == Some(StoryId(1))
+        })
+        .expect("3F のブレース");
+    let assigned = brace_3f.section.expect("ブレースへ断面が付く");
+    assert_eq!(model.sections[assigned.index()].name, "BR1");
+    assert_eq!(
+        model.sections[assigned.index()].floor.as_deref(),
+        Some("3F")
+    );
+    let girders_3f: Vec<&ElementData> = model
+        .elements
+        .iter()
+        .filter(|e| {
+            matches!(e.kind, ElementKind::Beam)
+                && model.member_story(e) == Some(StoryId(1))
+                && model.nodes[e.nodes[0].index()].coord[2]
+                    == model.nodes[e.nodes[1].index()].coord[2]
+        })
+        .collect();
+    assert!(!girders_3f.is_empty());
+    assert!(
+        girders_3f.iter().all(|e| e.section.is_none()),
+        "大梁へブレースの断面が入らない"
+    );
+}
+
+/// 床の断面参照が複製先の階の断面へ読み替わる（符号＋階の識別に合わせる）。
+#[test]
+fn test_copy_story_remaps_slab_section_to_target_floor() {
+    use crate::{CopyStory, CopyTargets};
+    use squid_n_core::frame_gen::{frame_model, FrameSpec};
+    use squid_n_core::ids::StoryId;
+
+    let mut model = frame_model(&FrameSpec::default()).unwrap();
+    // 3F の床を消し、2F の床の断面へ階を持たせる。
+    model.slabs.retain(|sl| {
+        let z = model.nodes[sl.boundary[0].index()].coord[2];
+        !(7000.0..8000.0).contains(&z)
+    });
+    for (i, sl) in model.slabs.iter_mut().enumerate() {
+        sl.id = squid_n_core::ids::SlabId(i as u32);
+    }
+    model.sections[0].floor = Some("2F".into());
+    assign_node_stories(&mut model);
+    assert!(model.validate().is_ok(), "{:?}", model.validate());
+
+    let cmd = CopyStory {
+        from: StoryId(0),
+        to: vec![StoryId(1)],
+        targets: CopyTargets {
+            slabs: true,
+            ..Default::default()
+        },
+        overwrite: true,
+    };
+    let mut stack = UndoStack::new();
+    assert!(stack.run(&mut model, Box::new(cmd)));
+
+    let new_slabs: Vec<&squid_n_core::model::Slab> = model
+        .slabs
+        .iter()
+        .filter(|sl| (model.nodes[sl.boundary[0].index()].coord[2] - 7500.0).abs() < 1.0)
+        .collect();
+    assert_eq!(new_slabs.len(), 2);
+    for sl in &new_slabs {
+        let sec = sl.section.expect("床へ断面が付く");
+        assert_eq!(model.sections[sec.index()].floor.as_deref(), Some("3F"));
+        assert_eq!(model.sections[sec.index()].name, "S15");
+    }
+}
+
+/// 床の削除を伴う回でも、新しく作った床を「新規」と「更新」で二重に数えない。
+///
+/// 床の削除は `SlabId` を繰り上げるため、添字の閾値では新旧を見分けられない。
+#[test]
+fn test_copy_story_counts_new_slabs_once_with_deletion() {
+    use crate::{CopyStory, CopyTargets};
+    use squid_n_core::frame_gen::{frame_model, FrameSpec};
+    use squid_n_core::ids::StoryId;
+    use squid_n_core::model::{AreaLoad, SlabUsage};
+
+    let mut model = frame_model(&FrameSpec::default()).unwrap();
+    assign_node_stories(&mut model);
+    // 床の平面位置（境界の最小 X）とレベルで 1 枚を選ぶ。
+    let pick = |m: &Model, z: f64, x0: f64| {
+        m.slabs
+            .iter()
+            .find(|sl| {
+                let zs = m.nodes[sl.boundary[0].index()].coord[2];
+                let xmin = sl
+                    .boundary
+                    .iter()
+                    .map(|n| m.nodes[n.index()].coord[0])
+                    .fold(f64::INFINITY, f64::min);
+                (zs - z).abs() < 1.0 && (xmin - x0).abs() < 1.0
+            })
+            .map(|sl| sl.id)
+            .expect("床がある")
+    };
+    // 2F は左のパネルを、3F は右のパネルを消す。複製で 3F の左が作られ、右が消える。
+    let doomed = pick(&model, 4000.0, 0.0);
+    crate::DeleteSlab { id: doomed }.apply(&mut model);
+    let doomed3 = pick(&model, 7500.0, 6000.0);
+    crate::DeleteSlab { id: doomed3 }.apply(&mut model);
+    for sl in &mut model.slabs {
+        sl.usage = Some(SlabUsage::Office);
+        sl.loads = vec![AreaLoad {
+            kind: "仕上".into(),
+            value: 0.6,
+        }];
+    }
+
+    let cmd = CopyStory {
+        from: StoryId(0),
+        to: vec![StoryId(1)],
+        targets: CopyTargets {
+            slabs: true,
+            loads: true,
+            ..Default::default()
+        },
+        overwrite: true,
+    };
+    let report = cmd.preview(&model);
+    assert_eq!(report.slabs_deleted, 1, "2F に無い位置の 3F の床を消す");
+    assert_eq!(report.slabs_created, 1, "2F にあって 3F に無い床を作る");
+    assert_eq!(
+        report.slabs_updated, 0,
+        "作ったばかりの床は更新に数えない（削除で ID が繰り上がっても）"
+    );
+}
+
+/// 座標が丸めの境目にあっても、許容差 1 mm 以内なら対応が取れる。
+#[test]
+fn test_copy_story_matches_across_rounding_boundary() {
+    use crate::{CopyStory, CopyTargets};
+    use squid_n_core::frame_gen::{frame_model, FrameSpec};
+    use squid_n_core::ids::StoryId;
+
+    let mut model = frame_model(&FrameSpec {
+        with_slabs: false,
+        ..FrameSpec::default()
+    })
+    .unwrap();
+    // 3F の節点をわずかにずらす（丸めれば別バケット、実距離は 0.4 mm）。
+    for n in &mut model.nodes {
+        if (n.coord[2] - 7500.0).abs() < 1.0 && n.coord[0] == 6000.0 {
+            n.coord[0] = 6000.4;
+        }
+    }
+    for n in &mut model.nodes {
+        if (n.coord[2] - 4000.0).abs() < 1.0 && n.coord[0] == 6000.0 {
+            n.coord[0] = 5999.6;
+        }
+    }
+    assign_node_stories(&mut model);
+
+    let sec = SectionId(model.sections.len() as u32);
+    let mut g1 = bare_section(sec, None);
+    g1.name = "G1".into();
+    g1.floor = Some("2F".into());
+    model.sections.push(g1);
+    let girder_2f = model
+        .elements
+        .iter()
+        .find(|e| {
+            model.member_story(e) == Some(StoryId(0))
+                && model.nodes[e.nodes[0].index()].coord[2]
+                    == model.nodes[e.nodes[1].index()].coord[2]
+                && model.nodes[e.nodes[0].index()].coord[1] == 0.0
+                && model.nodes[e.nodes[1].index()].coord[1] == 0.0
+                && model.nodes[e.nodes[0].index()].coord[0] == 0.0
+        })
+        .map(|e| e.id)
+        .expect("2F の大梁");
+    model.elements[girder_2f.index()].section = Some(sec);
+
+    let cmd = CopyStory {
+        from: StoryId(0),
+        to: vec![StoryId(1)],
+        targets: CopyTargets {
+            sections: true,
+            ..Default::default()
+        },
+        overwrite: true,
+    };
+    let report = cmd.preview(&model);
+    assert!(
+        report.sections_assigned > 0,
+        "0.4 mm のずれでも対応が取れる: {report:?}"
+    );
+}

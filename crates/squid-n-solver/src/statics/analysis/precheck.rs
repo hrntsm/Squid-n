@@ -22,6 +22,11 @@ pub enum IssueTargets {
     Nodes(Vec<NodeId>),
 }
 
+/// 載荷区間が材長を超えているとみなす余裕 [mm]。
+///
+/// 全長載荷は `b = L` で入力されるため、丸め誤差で僅かに超えた分は不備としない。
+const LOAD_EXTENT_TOL_MM: f64 = 1.0;
+
 /// 不備の重大度。
 ///
 /// 診断（[`model_issues`]）は解析を止める不備と、解析は通るが入力の意図を
@@ -368,6 +373,75 @@ pub fn model_issues(model: &Model) -> Vec<ModelIssue> {
             &no_slab_material,
             "断面タブで床の断面へ材料を割り当て、板厚を持つ形状にしてください。",
         )));
+    }
+
+    // 載荷区間が材長を超える部材荷重
+    //
+    // 載荷位置は i 端からの mm の絶対位置である。材長を超える区間を与えると、
+    // 等価節点力の積分（`gauss_dist`）が Hermite 形状関数を材外へ外挿するため、
+    // 節点力と固定端内力が黙って誤る。荷重を入れたあとに節点を動かしても作れる
+    // 状態なので、入力時ではなく解析前に検査する。
+    {
+        use squid_n_core::model::MemberLoadKind;
+        let mut over: Vec<u32> = Vec::new();
+        for lc in &model.load_cases {
+            for ml in &lc.member {
+                let Some(elem) = model.elements.get(ml.elem.index()) else {
+                    continue;
+                };
+                let l = model.member_length(elem);
+                if l <= 0.0 {
+                    continue;
+                }
+                let end = match ml.kind {
+                    MemberLoadKind::Point { a, .. } => a,
+                    MemberLoadKind::Distributed { b, .. } => b,
+                };
+                if end > l + LOAD_EXTENT_TOL_MM {
+                    over.push(ml.elem.0);
+                }
+            }
+        }
+        over.sort_unstable();
+        over.dedup();
+        if !over.is_empty() {
+            issues.push(ModelIssue::model(id_list_message(
+                "載荷区間が材長を超える部材荷重があります",
+                "部材 #",
+                &over,
+                "等価節点力の積分が材外へ及び、節点力と固定端内力が誤ります。\
+                 荷重タブで載荷位置を材長の内側へ直してください。",
+            )));
+        }
+    }
+
+    // 階名の重複
+    //
+    // 階名は結果の一覧・CSV の列見出し・断面の識別子（符号＋階）に使われる。
+    // 同じ名前の階が 2 つあると、どの行がどの階かを判別できず結果を読み違え、
+    // 断面の符号＋階も別々の階を同じ断面として指す。解析自体は `StoryId` で
+    // 回るが、結果を正しく読めないモデルでの解析は止める。
+    // 見た目で区別できない差（前後の空白）は同名として扱う。
+    {
+        let mut seen: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+        for s in &model.stories {
+            *seen.entry(s.name.trim()).or_insert(0) += 1;
+        }
+        let mut dup: Vec<String> = seen
+            .into_iter()
+            .filter(|(_, n)| *n > 1)
+            .map(|(name, _)| name.to_string())
+            .collect();
+        dup.sort();
+        if !dup.is_empty() {
+            issues.push(ModelIssue::model(id_list_message(
+                "階名が重複しています",
+                "",
+                &dup,
+                "階名は結果の一覧・CSV の列見出しと、断面の符号＋階に使われます。\
+                 どの階の値なのかを判別できないため、階の定義で名前を分けてください。",
+            )));
+        }
     }
 
     // 剛床（ダイアフラム）のない階
