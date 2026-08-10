@@ -1,6 +1,9 @@
 //! 架構作成ウィザード。スパンと階高を入力して、柱・大梁・柱脚支点・通り芯・階・床を
 //! 一括生成する（`ファイル > 新規（架構ウィザード）…`）。
 //!
+//! 床のコンクリートだけは材料も作る。床は解析対象外の二次部材で、材料は自重を決める
+//! 入力にすぎないためである（柱・大梁の断面・材料は利用者が決める）。
+//!
 //! **新規モデルを作る操作**であり、現在のモデルを置き換える。既存モデルへ架構を
 //! 足す使い方は想定していない（既存節点との突き合わせ規則を決める必要があり、
 //! 3D ビューの格子点スナップで代替できる）。
@@ -10,7 +13,8 @@
 
 use crate::app::App;
 use squid_n_core::frame_gen::{BaseSupport, FrameSpec};
-use squid_n_core::model::SlabUsage;
+use squid_n_core::material_grade::material_presets;
+use squid_n_core::model::{MaterialCategory, SlabUsage};
 
 /// ウィザードの入力状態。`App` が保持し、ウィンドウを閉じても内容を保つ。
 #[derive(Debug, Clone)]
@@ -87,8 +91,8 @@ pub fn frame_wizard_window(ctx: &egui::Context, app: &mut App) {
                 .show(ui, |ui| {
                     ui.label(
                         "スパンと階高を入力すると、節点・柱・大梁・柱脚支点・通り芯・階・床を\
-                 まとめて作ります。断面と材料は作りませんので、生成後に断面タブで\
-                 割り当ててください。",
+                 まとめて作ります。柱・大梁の断面と材料は作りませんので、生成後に\
+                 断面タブで割り当ててください。",
                     );
                     ui.colored_label(
                         crate::theme::BEST_YELLOW,
@@ -287,7 +291,9 @@ fn options_section(ui: &mut egui::Ui, w: &mut FrameWizardState) {
         });
         ui.checkbox(&mut w.spec.with_girders, "大梁を作る");
         ui.checkbox(&mut w.spec.with_slabs, "床を作る")
-            .on_hover_text("各階の各格子パネルに 1 枚ずつ。板厚の断面もあわせて作ります");
+            .on_hover_text(
+                "各階の各格子パネルに 1 枚ずつ。板厚の断面とコンクリートもあわせて作ります",
+            );
         if w.spec.with_slabs {
             ui.horizontal(|ui| {
                 ui.label("板厚 [mm]:");
@@ -310,13 +316,26 @@ fn options_section(ui: &mut egui::Ui, w: &mut FrameWizardState) {
                         }
                     });
             });
-            ui.label(
-                egui::RichText::new(
-                    "床の材料（コンクリート）は割り当てません。断面タブで割り当てるまで\
-                     床の自重は 0 になり、解析前チェックが止めます",
-                )
-                .size(11.0),
-            );
+            ui.horizontal(|ui| {
+                ui.label("コンクリート:");
+                // 選択肢は材料タブと同じ標準材料プリセット（Fc18〜Fc60）。床の自重は
+                // この材料の密度から決まるため、割り当てない選択肢は設けない。
+                egui::ComboBox::from_id_salt("wiz_slab_concrete")
+                    .selected_text(&w.spec.slab_concrete)
+                    .show_ui(ui, |ui| {
+                        for p in material_presets()
+                            .iter()
+                            .filter(|p| p.category == MaterialCategory::Concrete)
+                        {
+                            ui.selectable_value(
+                                &mut w.spec.slab_concrete,
+                                p.name.to_string(),
+                                p.name,
+                            );
+                        }
+                    });
+                ui.label(egui::RichText::new("この材料を作って床の断面へ割り当てます").size(11.0));
+            });
         }
     });
 }
