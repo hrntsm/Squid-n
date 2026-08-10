@@ -337,7 +337,7 @@ pub fn generate_stories_with_opts(
         let prev = model.stories.get(si);
         let name = prev
             .map(|s| s.name.clone())
-            .unwrap_or_else(|| squid_n_core::model::default_story_name(si));
+            .unwrap_or_else(|| squid_n_core::model::default_story_name(si, story_levels.len()));
         let level_kind = prev.map(|s| s.level_kind).unwrap_or_default();
         let weight_override = prev.and_then(|s| s.weight_override);
 

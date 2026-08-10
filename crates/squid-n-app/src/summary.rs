@@ -420,7 +420,7 @@ pub fn build_report_csv(app: &App) -> String {
                 .stories
                 .get(i)
                 .map(|s| s.name.clone())
-                .unwrap_or_else(|| squid_n_core::model::default_story_name(i))
+                .unwrap_or_else(|| squid_n_core::model::default_story_name(i, n_stories))
         };
         out.push_str("step,頂部変位[mm],ベースシア[kN]");
         for i in 0..n_stories {

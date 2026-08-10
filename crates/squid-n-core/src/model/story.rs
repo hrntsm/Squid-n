@@ -29,9 +29,16 @@ pub const DIAPHRAGM_LEVEL_TOL_MM: f64 = 1.0;
 /// 階名も床の呼び名に合わせる。下から `index` 番目（0 始まり）の階は基部の 1 つ上の
 /// 床であり、基部を 1FL とみなして `2F`・`3F` … と付ける。
 ///
+/// 最上階（`index + 1 == total`）だけは `RF` とする。最上階の床は屋根であり、実務でも
+/// 屋根階を階数では呼ばないためである。3 階建て（基部を含めて 4 レベル）であれば
+/// `2F`・`3F`・`RF` になる。
+///
 /// ST-Bridge の `StbStory` も床基準（`1F` の `height` が GL）であるため、
 /// 取り込んだモデルとアプリ内で作ったモデルで階名の意味が一致する。
-pub fn default_story_name(index: usize) -> String {
+pub fn default_story_name(index: usize, total: usize) -> String {
+    if total > 0 && index + 1 == total {
+        return "RF".to_string();
+    }
     format!("{}F", index + 2)
 }
 

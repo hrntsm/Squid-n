@@ -829,6 +829,11 @@ pub struct App {
     /// 点線は節点数が多いと他部材が見づらくなるため、既定は非表示にしている。
     #[cfg(feature = "gui")]
     pub show_diaphragm_master: bool,
+    /// 立体グリッド（通り芯 × 階レベルの平面格子）の表示トグル（既定 ON）。
+    /// モデリングの下敷きとして使うため既定で出し、梁作成モードのスナップ対象も
+    /// このトグルに従わせる（見えていない格子点が選ばれるのを防ぐ）。
+    #[cfg(feature = "gui")]
+    pub show_space_grid: bool,
     /// モデル化図で可視化する解析種別（静解析＝弾性／増分解析＝弾塑性）。
     /// 解析種別によって部材のモデル化（要素定式化）が変わるため切り替える。
     #[cfg(feature = "gui")]
@@ -919,7 +924,7 @@ pub struct App {
     pub beam_draw_mode: bool,
     /// 梁作成モードで選択済みの始点節点（2 点目で梁を生成しリセット）
     #[cfg(feature = "gui")]
-    pub beam_draw_first: Option<squid_n_core::ids::NodeId>,
+    pub beam_draw_first: Option<crate::viewer::space_grid::SnapPoint>,
     /// ビューアの壁作成モード（ON 中はクリックで節点を選び 4 点で壁を作る）
     #[cfg(feature = "gui")]
     pub wall_draw_mode: bool,
@@ -967,6 +972,12 @@ pub struct App {
     /// 階の追加フォームの入力 `(階名, 階レベル [mm])`。
     #[cfg(feature = "gui")]
     pub new_story_draft: (String, f64),
+    /// 架構作成ウィザード（`ファイル > 新規（架構ウィザード）…`）の入力状態。
+    #[cfg(feature = "gui")]
+    pub frame_wizard: crate::frame_wizard::FrameWizardState,
+    /// 階への複製ダイアログ（`① 準備計算 > 階の定義 > ⧉`）の入力状態。
+    #[cfg(feature = "gui")]
+    pub story_copy: crate::story_copy_view::StoryCopyState,
     /// 解析タブ「階の定義」表で確定した編集コマンドの適用待ちキュー。
     ///
     /// 階の削除・標高変更（`DeleteStory` / `SetStoryLevel`）は `StoryId` の
@@ -1114,6 +1125,8 @@ impl Default for App {
             #[cfg(feature = "gui")]
             show_diaphragm_master: false,
             #[cfg(feature = "gui")]
+            show_space_grid: true,
+            #[cfg(feature = "gui")]
             modeling_analysis: crate::viewer::ModelingAnalysis::default(),
             #[cfg(feature = "gui")]
             show_beam_interpolation: true,
@@ -1156,6 +1169,10 @@ impl Default for App {
             isolator_member_draft: crate::tables::members::IsolatorMemberDraft::default(),
             #[cfg(feature = "gui")]
             damper_def_draft: crate::damper_def_editor::DamperDefDraft::default(),
+            #[cfg(feature = "gui")]
+            frame_wizard: crate::frame_wizard::FrameWizardState::default(),
+            #[cfg(feature = "gui")]
+            story_copy: crate::story_copy_view::StoryCopyState::default(),
             #[cfg(feature = "gui")]
             beam_draw_mode: false,
             #[cfg(feature = "gui")]
@@ -2050,6 +2067,10 @@ impl eframe::App for App {
             self.save_project_dialog(false);
         }
 
+        // 架構作成ウィザードと階への複製（どのタブからでも開けるようここで描画する）。
+        crate::frame_wizard::frame_wizard_window(ui.ctx(), self);
+        crate::story_copy_view::story_copy_window(ui.ctx(), self);
+
         // 保存サイズ超過の確認ダイアログ（時刻歴の詳細記録を含めるかの選択）。
         // どのタブからの保存でも表示できるよう、ここで描画する。
         if self.pending_save_recording.is_some() {
@@ -2101,6 +2122,10 @@ impl eframe::App for App {
                         // 新規モデルは標準荷重ケース（DL・LL(架構用)・LL(地震用)・EX・EY）付き。
                         self.load_model(squid_n_core::model::Model::with_default_load_cases());
                         self.project_path = None;
+                        ui.close();
+                    }
+                    if ui.button("📐 新規（架構ウィザード）…").clicked() {
+                        self.frame_wizard.open = true;
                         ui.close();
                     }
                     if ui.button("🏠 サンプル(門型ラーメン)").clicked() {

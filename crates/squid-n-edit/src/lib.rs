@@ -24,6 +24,7 @@ pub struct UndoStack {
     done: Vec<Box<dyn EditCommand>>,
     undone: Vec<Box<dyn EditCommand>>,
     max_undo: usize,
+    revision: u64,
 }
 
 impl UndoStack {
@@ -32,6 +33,7 @@ impl UndoStack {
             done: Vec::new(),
             undone: Vec::new(),
             max_undo: 100,
+            revision: 0,
         }
     }
 
@@ -40,7 +42,18 @@ impl UndoStack {
             done: Vec::new(),
             undone: Vec::new(),
             max_undo,
+            revision: 0,
         }
+    }
+
+    /// モデルを変更するたびに 1 つ増える通し番号。
+    ///
+    /// モデルを複製して試算する事前表示など、変更のたびに作り直したい派生データが
+    /// 毎フレーム計算し直さずに済むよう、キャッシュのキーとして使う。
+    /// undo・redo でも増えるため、このスタックを通した変更であれば、値が同じことが
+    /// モデルが同じことを意味する。
+    pub fn revision(&self) -> u64 {
+        self.revision
     }
 
     /// コマンドを適用し、モデルが変更されたか（適用に成功したか）を返す。
@@ -59,6 +72,7 @@ impl UndoStack {
             self.done.remove(0);
         }
         self.undone.clear();
+        self.revision += 1;
         true
     }
 
@@ -66,6 +80,7 @@ impl UndoStack {
         if let Some(cmd) = self.done.pop() {
             let redo_cmd = cmd.apply(model);
             self.undone.push(redo_cmd);
+            self.revision += 1;
         }
     }
 
@@ -73,6 +88,7 @@ impl UndoStack {
         if let Some(cmd) = self.undone.pop() {
             let undo_cmd = cmd.apply(model);
             self.done.push(undo_cmd);
+            self.revision += 1;
         }
     }
 
@@ -263,6 +279,7 @@ mod refs;
 mod section_material;
 mod steel_design;
 mod story;
+mod story_copy;
 mod wall_misc;
 
 pub use axis::*;
@@ -273,6 +290,7 @@ pub use node_member::*;
 pub use section_material::*;
 pub use steel_design::*;
 pub use story::*;
+pub use story_copy::*;
 pub use wall_misc::*;
 
 #[cfg(test)]

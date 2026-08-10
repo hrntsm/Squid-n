@@ -12,6 +12,9 @@ mod frame_view;
 pub(crate) mod hinge;
 mod modeling;
 mod solid;
+// 立体グリッドのスナップ点（`SnapPoint`）を App の作成モード状態が保持するため、
+// モジュールを crate 内へ公開する。
+pub(crate) mod space_grid;
 mod support_symbols;
 pub(crate) mod th_detail;
 
@@ -870,6 +873,15 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
         if has_diaphragm_constraint {
             ui.toggle_value(&mut app.show_diaphragm_master, "剛床代表点");
         }
+        // 立体グリッド（通り芯 × 階レベル）の表示切替。通り芯と階の両方がある
+        // モデルでしか格子を作れないため、そのときだけ選択肢を出す。
+        if space_grid::has_grid(&app.model) {
+            ui.toggle_value(&mut app.show_space_grid, "通り芯グリッド")
+                .on_hover_text(
+                    "各階レベルに通り芯の平面格子を描きます。\
+                     梁作成モードでは格子点にスナップし、節点が無ければ梁とあわせて作ります",
+                );
+        }
         ui.separator();
         // §3-2 の操作規約をヒント表示（左ドラッグ=回転／スクロール=ズーム）
         ui.add_enabled(
@@ -1280,6 +1292,13 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
         _ => draw_grid_and_axes(&painter, rect, &proj),
     }
 
+    // 立体グリッド（通り芯 × 階レベルの平面格子）。方眼の上・架構の下に描き、
+    // モデリングの下敷きとして見えるようにする。構面表示中は構面の基準線と
+    // 二重になるため描かない。
+    if app.show_space_grid && frame.is_none() {
+        space_grid::draw(&painter, &proj, &app.model);
+    }
+
     // 節点座標（変形・モード時と、応力図の変形重ね表示時は変位を加味）
     let disp = match mode {
         ViewMode::Deformed => app.current_static().map(|s| s.disp.clone()),
@@ -1420,50 +1439,36 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
                     }
                 }
             } else if app.beam_draw_mode {
-                // 梁作成モード：クリック位置に最も近い節点を選ぶ
-                let best = pick_nearest_node(&pts, &node_visible, click_pos);
-                // 節点ピッキング許容距離（px）
-                const NODE_PICK_THRESHOLD: f32 = 10.0;
-                if let Some((i, d)) = best {
-                    if d <= NODE_PICK_THRESHOLD {
-                        let node_id = app.model.nodes[i].id;
-                        match app.beam_draw_first {
-                            None => {
-                                // 1 点目：始点として記憶
-                                app.beam_draw_first = Some(node_id);
+                // 梁作成モード：クリック位置を既存節点または格子点へスナップする。
+                // グリッド表示が OFF のときは、見えていない格子点を拾わないよう
+                // 既存節点だけを対象にする。
+                let picked = if app.show_space_grid {
+                    space_grid::pick(&app.model, &proj, &pts, &node_visible, click_pos)
+                } else {
+                    // 節点ピッキング許容距離（px）
+                    const NODE_PICK_THRESHOLD: f32 = 10.0;
+                    pick_nearest_node(&pts, &node_visible, click_pos)
+                        .filter(|(_, d)| *d <= NODE_PICK_THRESHOLD)
+                        .map(|(i, _)| space_grid::SnapPoint::Node(app.model.nodes[i].id))
+                };
+                if let Some(point) = picked {
+                    match app.beam_draw_first {
+                        None => {
+                            // 1 点目：始点として記憶（この時点ではモデルを変更しない）
+                            app.beam_draw_first = Some(point);
+                        }
+                        Some(first) => {
+                            // 2 点目：始点と異なれば梁を生成。節点のない格子点は
+                            // 節点追加とあわせて 1 回の undo にまとめる。
+                            if let Some((cmd, new_id)) =
+                                space_grid::beam_command(&app.model, first, point)
+                            {
+                                app.undo.run(&mut app.model, Box::new(cmd));
+                                app.staleness.mark_edited();
+                                app.nav.focus_member = Some(new_id);
                             }
-                            Some(first) => {
-                                // 2 点目：始点と異なれば梁を生成。同一節点は無視。
-                                if first != node_id {
-                                    let new_id =
-                                        squid_n_core::ids::ElemId(app.model.elements.len() as u32);
-                                    let elem = squid_n_core::model::ElementData {
-                                        id: new_id,
-                                        kind: squid_n_core::model::ElementKind::Beam,
-                                        nodes: [first, node_id].into_iter().collect(),
-                                        section: None,
-                                        local_axis: squid_n_core::model::LocalAxis {
-                                            ref_vector: [0.0, 0.0, 1.0],
-                                        },
-                                        end_cond: [
-                                            squid_n_core::model::EndCondition::Fixed,
-                                            squid_n_core::model::EndCondition::Fixed,
-                                        ],
-                                        force_regime: squid_n_core::model::ForceRegime::Auto,
-                                        rigid_zone: Default::default(),
-                                        plastic_zone: None,
-                                        spring: None,
-                                    };
-                                    app.undo.run(
-                                        &mut app.model,
-                                        Box::new(squid_n_edit::AddMember { elem }),
-                                    );
-                                    app.staleness.mark_edited();
-                                    app.nav.focus_member = Some(new_id);
-                                }
-                                // 次の梁に備えて始点をリセット
-                                app.beam_draw_first = None;
-                            }
+                            // 次の梁に備えて始点をリセット
+                            app.beam_draw_first = None;
                         }
                     }
                 }
@@ -1584,7 +1589,7 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
             continue;
         }
         let node_id = app.model.nodes[i].id;
-        let is_first = app.beam_draw_first == Some(node_id);
+        let is_first = app.beam_draw_first == Some(space_grid::SnapPoint::Node(node_id));
         let is_wall_pick = app.wall_draw_nodes.contains(&node_id);
         let is_slab_pick = app.slab_draw_nodes.contains(&node_id);
         // 節点の選択（ナビゲータの荷重ツリー・荷重の対象ピック）。部材の選択
@@ -1601,6 +1606,16 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
             (3.0, theme::DATA_BLUE)
         };
         painter.circle_filled(egui::pos2(p[0], p[1]), radius, color);
+    }
+
+    // 梁作成モードの始点が節点のない格子点の場合、まだモデルに節点が無いため
+    // 上のループでは描かれない。選択中であることが分かるよう、同じ色で印を置く。
+    if let Some(space_grid::SnapPoint::Grid(c)) = app.beam_draw_first {
+        painter.circle_stroke(
+            proj.project(c),
+            5.0,
+            egui::Stroke::new(2.0_f32, theme::PARETO_RED),
+        );
     }
 
     // 部材（線）
