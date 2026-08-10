@@ -492,7 +492,7 @@ pub fn generate_frame(spec: &FrameSpec) -> Result<FrameGenResult, String> {
                 .get(si)
                 .map(|s| s.trim().to_string())
                 .filter(|s| !s.is_empty())
-                .unwrap_or_else(|| default_story_name(si, nz - 1));
+                .unwrap_or_else(|| default_story_name(si));
             Story {
                 id: StoryId(si as u32),
                 name,
@@ -640,7 +640,7 @@ mod tests {
         let names: Vec<&str> = model.axes[1].axes.iter().map(|a| a.name.as_str()).collect();
         assert_eq!(names, vec!["Y1", "Y2"]);
 
-        // 階は床基準の既定名で、標高の昇順に並ぶ。最上階は屋根なので RF。
+        // 階は床基準の既定名で、標高の昇順に並ぶ。
         let stories: Vec<(&str, f64)> = model
             .stories
             .iter()
@@ -648,7 +648,7 @@ mod tests {
             .collect();
         assert_eq!(
             stories,
-            vec![("2F", 4000.0), ("3F", 7500.0), ("RF", 11000.0)]
+            vec![("2F", 4000.0), ("3F", 7500.0), ("4F", 11000.0)]
         );
     }
 
@@ -761,7 +761,7 @@ mod tests {
             .collect();
         assert_eq!(
             levels,
-            vec![("GL", 0.0), ("2F", 4000.0), ("3F", 7500.0), ("RF", 11000.0)]
+            vec![("GL", 0.0), ("2F", 4000.0), ("3F", 7500.0), ("4F", 11000.0)]
         );
         // 格子点は 3 × 2 × 4。
         assert_eq!(grid.points().count(), 24);

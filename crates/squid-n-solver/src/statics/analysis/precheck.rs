@@ -370,6 +370,35 @@ pub fn model_issues(model: &Model) -> Vec<ModelIssue> {
         )));
     }
 
+    // 階名の重複
+    //
+    // 階名は結果の一覧・CSV の列見出し・断面の識別子（符号＋階）に使われる。
+    // 同じ名前の階が 2 つあると、どの行がどの階かを判別できず結果を読み違え、
+    // 断面の符号＋階も別々の階を同じ断面として指す。解析自体は `StoryId` で
+    // 回るが、結果を正しく読めないモデルでの解析は止める。
+    // 見た目で区別できない差（前後の空白）は同名として扱う。
+    {
+        let mut seen: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+        for s in &model.stories {
+            *seen.entry(s.name.trim()).or_insert(0) += 1;
+        }
+        let mut dup: Vec<String> = seen
+            .into_iter()
+            .filter(|(_, n)| *n > 1)
+            .map(|(name, _)| name.to_string())
+            .collect();
+        dup.sort();
+        if !dup.is_empty() {
+            issues.push(ModelIssue::model(id_list_message(
+                "階名が重複しています",
+                "",
+                &dup,
+                "階名は結果の一覧・CSV の列見出しと、断面の符号＋階に使われます。\
+                 どの階の値なのかを判別できないため、階の定義で名前を分けてください。",
+            )));
+        }
+    }
+
     // 剛床（ダイアフラム）のない階
     //
     // 剛床がない階の水平力は、階に属する節点へ質量比で直接分配される

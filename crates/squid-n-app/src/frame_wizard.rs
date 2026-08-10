@@ -192,7 +192,7 @@ fn stories_section(ui: &mut egui::Ui, w: &mut FrameWizardState) {
                 w.spec.story_names.clear();
             }
         });
-        // 階名の既定は `default_story_name`（最上は RF、あいだは床基準の連番）。
+        // 階名の既定は `default_story_name`（床基準の連番）。最上階も数字で通す。
         let n = w.spec.story_heights.len();
         w.spec.story_names.resize(n, String::new());
         egui::Grid::new("wiz_stories")
@@ -209,7 +209,7 @@ fn stories_section(ui: &mut egui::Ui, w: &mut FrameWizardState) {
                             .speed(100.0)
                             .range(1.0..=1.0e5),
                     );
-                    let hint = squid_n_core::model::default_story_name(i, n);
+                    let hint = squid_n_core::model::default_story_name(i);
                     ui.add(
                         egui::TextEdit::singleline(&mut w.spec.story_names[i])
                             .hint_text(hint)

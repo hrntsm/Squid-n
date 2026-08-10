@@ -2080,7 +2080,7 @@ impl App {
                 .stories
                 .get(i)
                 .map(|s| s.name.clone())
-                .unwrap_or_else(|| squid_n_core::model::default_story_name(i, n_stories))
+                .unwrap_or_else(|| squid_n_core::model::default_story_name(i))
         };
         let story_qu_kn: Vec<f64> = (0..n_stories)
             .map(|i| {
