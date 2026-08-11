@@ -291,7 +291,7 @@ pub fn is_brace(model: &Model, elem: ElemId) -> bool {
 
 /// ブレースの材軸方向（i→j の単位ベクトル）。求まらない場合は鉛直下向き。
 fn brace_axis_dir(model: &Model, elem: ElemId) -> [f64; 3] {
-    let Some(e) = model.elements.iter().find(|e| e.id == elem) else {
+    let Some(e) = model.element(elem) else {
         return [0.0, 0.0, -1.0];
     };
     if e.nodes.len() < 2 {
@@ -696,7 +696,7 @@ impl App {
                 let Some(elem) = d.elem else {
                     return Err("対象の部材が選ばれていません".to_string());
                 };
-                let Some(element) = self.model.elements.iter().find(|e| e.id == elem) else {
+                let Some(element) = self.model.element(elem) else {
                     return Err(format!("部材 #{} は存在しません", elem.0));
                 };
                 let length = elem_length(&self.model, element);

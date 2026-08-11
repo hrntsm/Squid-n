@@ -45,7 +45,7 @@ pub mod wall_nonlinear;
 // 共有ヘルパ（1 ファイル 1 責務で分割した非公開サブモジュール）。
 mod allowable;
 mod design_shear;
-mod section_props;
+pub(crate) mod section_props;
 mod shear_capacity;
 
 pub use bond::{rc_beam_bond_check, rc_beam_bond_check_1991, Bond1991Result, BondCheckResult};

@@ -3579,7 +3579,7 @@ impl App {
                 }
                 // Edge（境界大梁）: bl.elem に解決済みの ElemId が入る。
                 LoadTarget::Edge(_) => {
-                    let Some(elem) = self.model.elements.iter().find(|e| e.id == bl.elem) else {
+                    let Some(elem) = self.model.element(bl.elem) else {
                         continue;
                     };
                     let l = self.model.member_length(elem);
@@ -3595,7 +3595,7 @@ impl App {
                 // 2. それ以外 → 単純梁の両端反力として節点荷重化
                 //    （節点が大梁スパン上なら後段で中間集中荷重（CMQ）へ変換）
                 LoadTarget::Span([n0, n1]) => {
-                    if let Some(elem) = self.model.elements.iter().find(|e| e.id == bl.elem) {
+                    if let Some(elem) = self.model.element(bl.elem) {
                         let l = self.model.member_length(elem);
                         if l > 1e-9 {
                             emit_shape(&mut member, elem.id, 0.0, l, false, &bl.shape);
@@ -4039,7 +4039,7 @@ fn simple_beam_q0_by_elem(
         return Default::default();
     };
     for ml in &case.member {
-        let Some(elem) = model.elements.iter().find(|e| e.id == ml.elem) else {
+        let Some(elem) = model.element(ml.elem) else {
             continue;
         };
         if elem.nodes.len() < 2 {

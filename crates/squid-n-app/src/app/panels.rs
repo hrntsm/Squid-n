@@ -2513,7 +2513,7 @@ impl App {
 
             // 選択された部材の諸元
             if let Some(elem_id) = self.nav.focus_member {
-                if let Some(e) = self.model.elements.iter().find(|e| e.id == elem_id) {
+                if let Some(e) = self.model.element(elem_id) {
                     ui.label(format!("部材 ID: {}", e.id.0));
                     let n0 = e.nodes.first().map(|n| n.0).unwrap_or(0);
                     let n1 = e.nodes.get(1).map(|n| n.0).unwrap_or(0);
@@ -2626,7 +2626,7 @@ impl App {
             ui.separator();
             // 選択された節点の諸元
             if let Some(node_id) = self.nav.focus_node {
-                if let Some(node) = self.model.nodes.iter().find(|n| n.id == node_id) {
+                if let Some(node) = self.model.node(node_id) {
                     ui.label(format!("節点 ID: {}", node.id.0));
                     ui.label(format!(
                         "座標: ({:.3}, {:.3}, {:.3})",

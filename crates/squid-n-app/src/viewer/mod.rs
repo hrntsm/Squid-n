@@ -1858,7 +1858,7 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
 
     // 選択ハイライト（描き方の規約は `element_draw_shape`）。
     for &elem_id in &app.selection.members {
-        let Some(elem) = app.model.elements.iter().find(|e| e.id == elem_id) else {
+        let Some(elem) = app.model.element(elem_id) else {
             continue;
         };
         let stroke = egui::Stroke::new(4.0_f32, theme::PARETO_RED);
@@ -2404,7 +2404,7 @@ fn group_member_loads_by_elem(app: &App) -> Vec<CmqElemGroup> {
     let mut groups: std::collections::HashMap<squid_n_core::ids::ElemId, CmqElemGroup> =
         std::collections::HashMap::new();
     for ml in member_loads {
-        let Some(elem) = app.model.elements.iter().find(|e| e.id == ml.elem) else {
+        let Some(elem) = app.model.element(ml.elem) else {
             continue;
         };
         if !is_primary_beam_for_cmq(&app.model, elem) {

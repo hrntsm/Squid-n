@@ -1172,7 +1172,7 @@ fn show_wall_modeling_detail(ui: &mut egui::Ui, app: &App, elem: &ElementData) {
 /// モデル化図のホバー詳細ツールチップ。部材の解析モデル分類・端条件・剛域・
 /// 塑性化域などのモデル化情報を表示する。
 pub(super) fn show_modeling_tooltip(ui: &egui::Ui, app: &App, elem_id: squid_n_core::ids::ElemId) {
-    let Some(elem) = app.model.elements.iter().find(|e| e.id == elem_id) else {
+    let Some(elem) = app.model.element(elem_id) else {
         return;
     };
     let class = classify(elem, &app.model, app.modeling_analysis);

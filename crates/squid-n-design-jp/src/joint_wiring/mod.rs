@@ -148,7 +148,7 @@ pub fn collect_joint_checks_with_long(
     // 部材情報の収集（2 節点の梁/柱系要素）
     let mut members: Vec<MemberInfo<'_>> = Vec::new();
     for (eid, forces) in member_forces {
-        let Some(elem) = model.elements.iter().find(|e| e.id == *eid) else {
+        let Some(elem) = model.element(*eid) else {
             continue;
         };
         if elem.nodes.len() < 2 {

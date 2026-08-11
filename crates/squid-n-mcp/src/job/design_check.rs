@@ -79,7 +79,7 @@ pub(crate) fn compute_design_check_job(
             member_force_rows.push((elem_id.0, *pos, *forces));
         }
 
-        let Some(elem) = model.elements.iter().find(|e| e.id == *elem_id) else {
+        let Some(elem) = model.element(*elem_id) else {
             continue;
         };
         let sec = elem

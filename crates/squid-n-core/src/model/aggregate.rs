@@ -345,6 +345,30 @@ impl Model {
         Ok(())
     }
 
+    /// 節点 ID から節点を引く。存在しなければ `None`。
+    ///
+    /// `nodes[i].id == NodeId(i)`（節点の削除・挿入で `squid-n-edit` が維持する
+    /// 不変条件）を利用して添字で引くため O(1)。不変条件が崩れたモデルでも
+    /// 正しく引けるよう、添字の ID が一致しない場合のみ線形探索へ落とす。
+    ///
+    /// **ID から実体を引くところは常にこのメソッドを使う**（各所での線形探索は、
+    /// 不変条件が成り立つのに O(n) を払ううえ、探索規則が散らばる）。
+    pub fn node(&self, id: NodeId) -> Option<&Node> {
+        match self.nodes.get(id.index()) {
+            Some(n) if n.id == id => Some(n),
+            _ => self.nodes.iter().find(|n| n.id == id),
+        }
+    }
+
+    /// 要素 ID から要素を引く。存在しなければ `None`。
+    /// 引き方は [`Model::node`] と同じ（`elements[i].id == ElemId(i)`）。
+    pub fn element(&self, id: ElemId) -> Option<&ElementData> {
+        match self.elements.get(id.index()) {
+            Some(e) if e.id == id => Some(e),
+            _ => self.elements.iter().find(|e| e.id == id),
+        }
+    }
+
     /// 指定した節点が部材・節点荷重・階・床・拘束のいずれかから参照されているかを判定する。
     /// 参照中の節点を削除すると参照が壊れる（ダングリング）ため、削除前にこれで確認する。
     pub fn node_in_use(&self, id: NodeId) -> bool {
@@ -403,8 +427,8 @@ impl Model {
             return None;
         }
         let (n0, n1) = (e.nodes[0], e.nodes[1]);
-        let node0 = self.nodes.iter().find(|n| n.id == n0)?;
-        let node1 = self.nodes.iter().find(|n| n.id == n1)?;
+        let node0 = self.node(n0)?;
+        let node1 = self.node(n1)?;
         if node0.coord != node1.coord {
             return None;
         }

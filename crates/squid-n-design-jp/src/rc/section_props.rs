@@ -45,6 +45,16 @@ pub(crate) fn bar_set_area(bar: &BarSet) -> f64 {
     bar.count as f64 * one_bar_area(bar.dia)
 }
 
+/// 主筋 1 段目の重心位置（引張縁から）k1 = かぶり + せん断補強筋径 + 主筋径/2 [mm]。
+///
+/// [`tension_dt`] の 1 段筋の場合に一致するが、**段数を考慮しない**点が異なる。
+/// 接合部検定（柱梁接合部・SRC パネル・壁脚・PCa 水平接合面）は主筋の段数まで
+/// 与えられない前提で組み立てているため、こちらを用いる。段数を考慮できる
+/// 断面算定側は [`tension_dt`] を使うこと。
+pub(crate) fn first_layer_dt(rebar: &RcRebar) -> f64 {
+    rebar.cover + rebar.shear.dia + rebar.main_x.dia / 2.0
+}
+
 /// 引張縁 → 引張筋重心までの距離 dt [mm]。
 ///
 /// 1 段筋（`layers<=1`）は重心 k1 = cover + shear.dia + main.dia/2。

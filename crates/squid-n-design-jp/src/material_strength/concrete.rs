@@ -82,12 +82,16 @@ pub fn young_ratio_n(fc: f64) -> f64 {
     }
 }
 
-/// コンクリートのヤング係数 Ec [N/mm²]（参考実装）。
+/// コンクリートのヤング係数 Ec [N/mm²]。
 ///
-/// `Ec = 3.35×10⁴・(γ/24)²・(Fc/60)^(1/3)`、γ は単位容積重量 [kN/m³]（既定 23）。
+/// `Ec = 3.35×10⁴・(γ/24)²・(Fc/60)^(1/3)`、γ は単位容積重量 [kN/m³]
+/// （`None` なら既定値 23）。算定の情報源は `squid-n-core` に置く
+/// （断面剛性の算定と同一の Ec を用いるため）。
 pub fn concrete_young_modulus(fc: f64, gamma_kn_m3: Option<f64>) -> f64 {
-    let gamma = gamma_kn_m3.unwrap_or(23.0);
-    3.35e4 * (gamma / 24.0).powi(2) * (fc / 60.0).powf(1.0 / 3.0)
+    match gamma_kn_m3 {
+        Some(gamma) => squid_n_core::section_shape::concrete_young_modulus_gamma(fc, gamma),
+        None => squid_n_core::section_shape::concrete_young_modulus(fc),
+    }
 }
 
 /// コンクリートの付着許容応力度 fa [N/mm²]（異形鉄筋。RC 規準 1991 方式の

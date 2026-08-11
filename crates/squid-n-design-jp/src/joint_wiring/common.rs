@@ -58,6 +58,5 @@ impl MemberInfo<'_> {
 }
 
 /// 主筋 1 段の重心位置（引張縁から）k1 = かぶり + 帯筋径 + 主筋径/2。
-pub(super) fn rc_dt(rebar: &squid_n_core::section_shape::RcRebar) -> f64 {
-    rebar.cover + rebar.shear.dia + rebar.main_x.dia / 2.0
-}
+/// 算定の情報源は [`crate::rc::section_props::first_layer_dt`]。
+pub(super) use crate::rc::section_props::first_layer_dt as rc_dt;

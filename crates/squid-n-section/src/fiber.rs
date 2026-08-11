@@ -53,14 +53,32 @@ pub fn section_response(
         sec.fibers.len(),
         "section_response: mats.len() must equal fibers.len() (per-fiber state)"
     );
+    integrate_fibers(sec, |i, fiber| {
+        let eps = strain.eps0 - strain.kz * fiber.y + strain.ky * fiber.z;
+        mats[i].trial(eps)
+    })
+}
+
+/// ファイバー単位の応力 σ \[N/mm²\] と接線係数 Et \[N/mm²\] から、断面力
+/// （N, My, Mz）と接線断面剛性 D（3×3）を積分する。
+///
+/// `per_fiber` はファイバー添字と当該ファイバーを受け取り `(σ, Et)` を返す。
+/// 断面力・D の積分公式そのものは**この関数だけが持つ**（材料の trial を毎回
+/// 呼ぶ経路と、トライアル状態をキャッシュ済みの経路の双方から使うため、
+/// 積分公式が分かれるとビット一致が崩れて非線形反復の結果が食い違う）。
+///
+/// 符号規約は設計書 §9.2（`My = Σσ·A·z`、`Mz = −Σσ·A·y`）。D は対称。
+pub fn integrate_fibers(
+    sec: &FiberSection,
+    mut per_fiber: impl FnMut(usize, &Fiber) -> (f64, f64),
+) -> (SectionForce, SectionStiffness) {
     let mut n = 0.0;
     let mut my = 0.0;
     let mut mz = 0.0;
     let mut d = [[0.0; 3]; 3];
 
     for (i, fiber) in sec.fibers.iter().enumerate() {
-        let eps = strain.eps0 - strain.kz * fiber.y + strain.ky * fiber.z;
-        let (sigma, et) = mats[i].trial(eps);
+        let (sigma, et) = per_fiber(i, fiber);
         let a = fiber.area;
 
         n += sigma * a;

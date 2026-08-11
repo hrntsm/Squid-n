@@ -19,7 +19,7 @@ pub(super) fn check_walls(
 ) {
     // ── 耐震壁（Wall 要素 × RcWall 形状） ────────────────────────
     for (eid, forces) in member_forces {
-        let Some(elem) = model.elements.iter().find(|e| e.id == *eid) else {
+        let Some(elem) = model.element(*eid) else {
             continue;
         };
         if elem.kind != ElementKind::Wall {

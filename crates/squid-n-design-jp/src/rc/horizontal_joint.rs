@@ -137,19 +137,8 @@ pub fn pca_horizontal_joint_ultimate(
 }
 
 /// 主筋 1 段の重心位置（引張縁から）k1 = かぶり + あばら筋径 + 主筋径/2。
-///
-/// `crate::joint_wiring::rc_dt` と同じ定義だが private のためここで再計算する。
-fn rc_dt(rebar: &squid_n_core::section_shape::RcRebar) -> f64 {
-    rebar.cover + rebar.shear.dia + rebar.main_x.dia / 2.0
-}
-
-/// 引張鉄筋断面積 at [mm²]（主筋 main_x の半数を片側とする仮定。
-/// `crate::rc` の `rect_axis_props` と同じ「count/2 が片側」仮定だが
-/// private のためここで再計算する）。
-fn tension_steel_area(main_x: &squid_n_core::section_shape::BarSet) -> f64 {
-    let one_bar = std::f64::consts::PI / 4.0 * main_x.dia * main_x.dia;
-    main_x.count as f64 * one_bar / 2.0
-}
+/// 算定の情報源は [`super::section_props::first_layer_dt`]。
+use super::section_props::first_layer_dt as rc_dt;
 
 /// 内力リストのうち、評価位置 `pos` に最も近い行を返す。
 fn closest_forces(forces: crate::joint_wiring::ForcesAt<'_>, pos: f64) -> Option<&(f64, [f64; 6])> {
@@ -178,7 +167,7 @@ pub fn collect_pca_checks(
     let mut out = Vec::new();
 
     for attr in &model.pca_attrs {
-        let Some(elem) = model.elements.iter().find(|e| e.id == attr.elem) else {
+        let Some(elem) = model.element(attr.elem) else {
             continue;
         };
         if elem.nodes.len() < 2 {
@@ -216,7 +205,8 @@ pub fn collect_pca_checks(
         }
         let s_y = b * yj * (d - yj) / 2.0;
         let d_eff = d - rc_dt(rebar);
-        let at = tension_steel_area(&rebar.main_x);
+        // 引張鉄筋断面積 at（`rect_axis_props` と同じ「count/2 が片側」仮定）。
+        let at = super::section_props::bar_set_area(&rebar.main_x) / 2.0;
 
         // 部材長 L（節点座標から算定）。
         let (Some(p0), Some(p1)) = (

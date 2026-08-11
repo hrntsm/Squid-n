@@ -329,22 +329,8 @@ use squid_n_core::geom::vec3::dist as dist3;
 /// （仕上げ周長式・雑壁の柱探索・通り芯の自動生成と同一規則）。
 use squid_n_core::geom::is_vertical_pair;
 
-/// 平面多角形（3D 座標）の面積 [mm²]（Newell の公式）。
-fn polygon_area_3d(pts: &[[f64; 3]]) -> f64 {
-    if pts.len() < 3 {
-        return 0.0;
-    }
-    let n = pts.len();
-    let (mut nx, mut ny, mut nz) = (0.0, 0.0, 0.0);
-    for i in 0..n {
-        let p0 = pts[i];
-        let p1 = pts[(i + 1) % n];
-        nx += p0[1] * p1[2] - p0[2] * p1[1];
-        ny += p0[2] * p1[0] - p0[0] * p1[2];
-        nz += p0[0] * p1[1] - p0[1] * p1[0];
-    }
-    0.5 * (nx * nx + ny * ny + nz * nz).sqrt()
-}
+/// 平面多角形（3D 座標）の面積 [mm²]。算定の情報源は `squid-n-core` に置く。
+use squid_n_core::geom::polygon_area_3d;
 
 /// SRC 内蔵 H 形鉄骨の断面積 [mm²]。
 fn src_steel_area(shape: &SectionShape) -> Option<f64> {

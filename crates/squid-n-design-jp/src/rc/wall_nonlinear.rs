@@ -23,8 +23,9 @@
 
 /// 単位換算: 1 kgf/cm² = 0.0980665 N/mm²。N/mm² → kgf/cm² は逆数を乗じる。
 const NMM2_TO_KGFCM2: f64 = 1.0 / 0.0980665;
-/// 単位換算: 1 kgf = 9.80665 N。
-const KGF_TO_N: f64 = 9.80665;
+/// 単位換算: 1 kgf = 1 kg × 標準重力加速度 g [m/s²] = 9.80665 N。
+/// g の情報源は `squid_n_core::units`（内部単位系の mm/s² から m/s² へ換算）。
+const KGF_TO_N: f64 = squid_n_core::units::GRAVITY_MM_S2 / 1000.0;
 
 /// RC 造耐震壁のせん断トリリニア算定の入力。
 ///

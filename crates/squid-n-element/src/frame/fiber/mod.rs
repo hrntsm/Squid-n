@@ -517,32 +517,17 @@ impl GaussPoint {
     }
 
     /// `trial_stress`/`trial_et`（ファイバー単位のトライアル状態）から断面応答
-    /// （force, stiff）の総和を計算してキャッシュへ格納する。ファイバー順・
-    /// 演算式は総和の直接計算と同一（結果はビット一致）。`trial_stress`/
+    /// （force, stiff）の総和を計算してキャッシュへ格納する。積分公式は
+    /// [`squid_n_section::fiber::integrate_fibers`]（材料の `trial` を毎回呼ぶ
+    /// 経路と同一の実体）を用いるため、結果はビット一致する。`trial_stress`/
     /// `trial_et` を書き換える経路（`update_section_trial`・
     /// `update_hinge_section_trial`）は、書き換え直後に必ずこれを呼ぶこと。
     fn refresh_response(&mut self) {
-        let mut force = [0.0; 3];
-        let mut stiff = [[0.0; 3]; 3];
-        for (i, fiber) in self.section.fibers.iter().enumerate() {
-            let a = fiber.area;
-            let sigma = self.trial_stress[i];
-            let et = self.trial_et[i];
-            force[0] += sigma * a;
-            force[1] += sigma * a * fiber.z;
-            force[2] += -sigma * a * fiber.y;
-            stiff[0][0] += et * a;
-            stiff[0][1] += et * a * fiber.z;
-            stiff[0][2] += -et * a * fiber.y;
-            stiff[1][1] += et * a * fiber.z * fiber.z;
-            stiff[1][2] += -et * a * fiber.y * fiber.z;
-            stiff[2][2] += et * a * fiber.y * fiber.y;
-        }
-        stiff[1][0] = stiff[0][1];
-        stiff[2][0] = stiff[0][2];
-        stiff[2][1] = stiff[1][2];
-        self.cached_force = force;
-        self.cached_stiff = stiff;
+        let (stress, et) = (&self.trial_stress, &self.trial_et);
+        let (f, s) =
+            squid_n_section::fiber::integrate_fibers(&self.section, |i, _| (stress[i], et[i]));
+        self.cached_force = [f.n, f.my, f.mz];
+        self.cached_stiff = s.d;
     }
 }
 
@@ -640,10 +625,7 @@ impl FiberBeam {
     ) -> Self {
         let n0 = &model.nodes[data.nodes[0].index()];
         let n1 = &model.nodes[data.nodes[1].index()];
-        let dx = n1.coord[0] - n0.coord[0];
-        let dy = n1.coord[1] - n0.coord[1];
-        let dz = n1.coord[2] - n0.coord[2];
-        let length = (dx * dx + dy * dy + dz * dz).sqrt();
+        let length = squid_n_core::geom::vec3::dist(n0.coord, n1.coord);
         // 剛域長と可撓長。断面積分・B 行列・せん断・幾何剛性はすべて可撓長基準で
         // 組み、可撓端自由度を剛体アームで節点自由度へ写す（弾性梁と同じ扱い）。
         let (rigid_i, rigid_j) = crate::rigid_arm::resolve_lengths(

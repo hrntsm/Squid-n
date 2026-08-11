@@ -24,10 +24,7 @@ use squid_n_core::rc_capacity::{rc_alpha_y_sugano, rc_mu_simple, RcCapacityInput
 /// √Fc 倍（Fc=24 で約 4.9 倍）過大評価する誤りだった。
 /// 不正入力（Fc・Ze のいずれかが 0 以下）は 0.0。
 pub fn rc_beam_crack_moment(fc: f64, ze: f64) -> f64 {
-    if fc <= 0.0 || ze <= 0.0 {
-        return 0.0;
-    }
-    0.56 * fc.sqrt() * ze
+    squid_n_core::rc_capacity::rc_crack_moment(fc, ze)
 }
 
 /// RC 梁のせん断ひび割れ強度 Qc [N]（実務式・トリリニア用。要原典照合）。
@@ -55,8 +52,9 @@ pub struct RcAxial {
 /// RC 梁の軸復元力特性を算定する。`ac`: コンクリート断面積、`at`: 鉄筋断面積、
 /// `sigma_y`: 鉄筋降伏、`fc`: コンクリート強度。
 pub fn rc_beam_axial(fc: f64, ac: f64, at: f64, sigma_y: f64) -> RcAxial {
+    // 引張ひび割れも曲げひび割れと同じ κ·√Fc 系（係数の情報源は core に置く）。
     let nct = if fc > 0.0 && ac > 0.0 {
-        0.56 * fc.sqrt() * ac
+        squid_n_core::rc_capacity::RC_CRACK_COEF * fc.sqrt() * ac
     } else {
         0.0
     };

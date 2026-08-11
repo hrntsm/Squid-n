@@ -72,8 +72,8 @@ fn member_moment_thresholds(elem: &ElementData, model: &Model) -> HingeThreshold
             // `squid_n_element::factory::ensure_nonlinear_input` が解析前に停止する
             // ため、非線形解析ではこのフォールバックに到達しない。
             let fc = mat.and_then(|m| m.fc).unwrap_or(0.0);
-            // 曲げひび割れ Mc = κ·√Fc·Ze（κ=0.56、技術基準解説書 P.621-623）。
-            let mc = 0.56 * fc.max(0.0).sqrt() * ze;
+            // 曲げひび割れ Mc = κ·√Fc·Ze（算定は core に集約）。
+            let mc = squid_n_core::rc_capacity::rc_crack_moment(fc, ze);
             // 曲げ降伏 My = 0.9·at·σy·d（rc_mu_simple）。at は片側引張筋（対称配筋仮定）。
             // σy は**断面（配筋）の主筋材質** → 部材材料の fy の順で解決する。
             // どちらも未設定のモデルは `ensure_nonlinear_input` が解析前に停止するため、
@@ -115,7 +115,7 @@ fn member_moment_thresholds(elem: &ElementData, model: &Model) -> HingeThreshold
             let my = sigma_y_steel * ze;
             let fc = mat.and_then(|m| m.fc).unwrap_or(0.0);
             let mc = if fc > 0.0 {
-                (0.56 * fc.sqrt() * ze).min(my)
+                squid_n_core::rc_capacity::rc_crack_moment(fc, ze).min(my)
             } else {
                 my
             };

@@ -32,7 +32,7 @@ enum HingeLayer {
 /// **基礎梁が 1 本降伏しただけで層崩壊が全体崩壊と判定され、Ds の崩壊機構補正
 /// （1 段階不利側）が外れて必要保有水平耐力が過小になる**ためである。
 fn hinge_layer(model: &Model, h: &HingeEvent) -> HingeLayer {
-    let Some(elem) = model.elements.iter().find(|e| e.id == h.elem) else {
+    let Some(elem) = model.element(h.elem) else {
         return HingeLayer::Unknown;
     };
     if elem.nodes.len() < 2 {

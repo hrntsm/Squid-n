@@ -1807,7 +1807,7 @@ fn beam_group_overrides(
         )> = Vec::with_capacity(group.len());
         let mut ok = true;
         for id in group {
-            let elem = model.elements.iter().find(|e| e.id == *id);
+            let elem = model.element(*id);
             let mf = member_forces
                 .iter()
                 .find(|(mid, _)| mid == id)

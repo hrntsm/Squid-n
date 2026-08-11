@@ -137,7 +137,7 @@ pub(super) fn draw_hinge(
         if !frame_filter.shows(m.elem) {
             continue;
         }
-        let Some(elem) = app.model.elements.iter().find(|e| e.id == m.elem) else {
+        let Some(elem) = app.model.element(m.elem) else {
             continue;
         };
         if elem.nodes.len() < 2 {
@@ -444,7 +444,7 @@ fn build_mn_curve_cache(
     bend_dir_z: bool,
     step_count: usize,
 ) -> Option<MnCurveCache> {
-    let elem = app.model.elements.iter().find(|e| e.id == elem_id)?;
+    let elem = app.model.element(elem_id)?;
     let sec = elem
         .section
         .and_then(|sid| app.model.sections.get(sid.index()))?;

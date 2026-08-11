@@ -158,10 +158,7 @@ impl IsolatorElement {
             .get(n1.index())
             .map(|n| n.coord)
             .unwrap_or([0.0; 3]);
-        let dx = p1[0] - p0[0];
-        let dy = p1[1] - p0[1];
-        let dz = p1[2] - p0[2];
-        let len = (dx * dx + dy * dy + dz * dz).sqrt();
+        let len = squid_n_core::geom::vec3::dist(p0, p1);
         let axis = if len < ZERO_LENGTH_EPS {
             // 零長支承は鉛直（局所 x=全体 z）を既定とする。
             LocalFrame::from_nodes(p0, [p0[0], p0[1], p0[2] + 1.0], data.local_axis.ref_vector)
