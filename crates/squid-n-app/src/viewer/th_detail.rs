@@ -533,7 +533,7 @@ fn draw_flexural_loop(
 
     egui_plot::Plot::new(format!("th_flex_{}", elem_id.0))
         .x_axis_label(format!("θ{axis_label} [rad]"))
-        .y_axis_label(format!("M{axis_label} [kN・m]"))
+        .y_axis_label(format!("M{axis_label} [kN·m]"))
         .legend(egui_plot::Legend::default())
         .height(240.0)
         .show(ui, |plot_ui| {
@@ -564,7 +564,7 @@ fn draw_flexural_loop(
         });
 }
 
-/// フレーム `f` の i端・j端 (θ[rad], M[kN・m]) を求める（強軸/弱軸は `axis_z` で選択）。
+/// フレーム `f` の i端・j端 (θ[rad], M[kN·m]) を求める（強軸/弱軸は `axis_z` で選択）。
 #[allow(clippy::too_many_arguments)]
 fn flexural_points(
     rec: &ThRecording,
@@ -588,7 +588,7 @@ fn flexural_points(
 }
 
 /// `MemberForces::at` から i端（最小 pos）・j端（最大 pos）の材端モーメント
-/// M[N・mm]（強軸Mz/弱軸My、「節点端モーメント」規約）を取り出す（高-1）。
+/// M[N·mm]（強軸Mz/弱軸My、「節点端モーメント」規約）を取り出す（高-1）。
 ///
 /// `MemberForces::at` の値そのものは「断面内力」規約であり、i端（ξ<0.5）側は
 /// `squid_n_element::frame::beam::forces::member_forces_from_end_forces` が

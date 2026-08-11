@@ -16,15 +16,8 @@ use squid_n_core::model::Model;
 use squid_n_core::section_shape::SectionShape;
 use squid_n_edit::{DeleteSection, SectionMaterialRole, SetSectionMaterial};
 
-/// mm² → cm²。
-fn to_cm2(mm2: f64) -> f64 {
-    mm2 * 1e-2
-}
-
-/// mm⁴ → cm⁴。
-fn to_cm4(mm4: f64) -> f64 {
-    mm4 * 1e-4
-}
+/// 断面性能の表示単位（cm 系）への換算。慣例の情報源は `squid-n-core`。
+use squid_n_core::units::to_display::{area_cm2 as to_cm2, inertia_cm4 as to_cm4};
 
 /// 材料の役割ごとに、その断面形状で使う欄かどうかを返す。
 ///
