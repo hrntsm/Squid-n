@@ -565,10 +565,12 @@ impl App {
     /// は `ZoneSource::Auto` の端のみ更新し `Manual` 端を保護するため、
     /// 各解析エントリの先頭で毎回呼んでも冪等で安全。
     fn apply_rigid_zones_for_analysis(&mut self) {
-        squid_n_element::beam::apply_auto_rigid_zones(
-            &mut self.model,
-            &squid_n_element::beam::RigidZoneRule::default(),
-        );
+        // 壁を考慮するか否かはモデルの応力解析設定に従う（既定は考慮する）。
+        let rule = squid_n_element::beam::RigidZoneRule {
+            consider_walls: self.model.stress_cfg.rigid_zone_consider_walls,
+            ..Default::default()
+        };
+        squid_n_element::beam::apply_auto_rigid_zones(&mut self.model, &rule);
         self.apply_panel_zones_for_analysis();
     }
 

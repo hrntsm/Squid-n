@@ -10,12 +10,123 @@ use squid_n_core::structure_kind::member_structure_kind;
 
 pub struct RigidZoneRule {
     pub reduction: f64,
+    /// 部材フェース・部材せいに、取り付く壁を考慮するか（技術基準。既定は考慮する）。
+    ///
+    /// `false` にすると部材の原断面だけで算定する。対象となる壁は
+    /// [`crate::wall::misc_wall::collect_rigid_zone_walls`]（現場打ちコンクリート壁で
+    /// 厚さ 100 mm 以上。耐震壁・雑壁を問わない）。
+    pub consider_walls: bool,
 }
 
 impl Default for RigidZoneRule {
     fn default() -> Self {
-        Self { reduction: 1.0 }
+        Self {
+            reduction: 1.0,
+            consider_walls: true,
+        }
     }
+}
+
+/// 部材に取り付く壁が、部材フェースから張り出す長さ [mm]。
+///
+/// 柱（鉛直材）には袖壁が材軸に直交する水平方向へ、梁（水平材）には腰壁・垂壁が
+/// 鉛直方向へ張り出す。壁の長さ（袖壁長さ・腰壁/垂壁高さ）は部材芯からの距離で
+/// 与えられるため、部材フェースからの張り出しは「壁の長さ − 部材せい/2」となる。
+///
+/// `toward` を与えると、その向きへ張り出す壁だけを対象にする（部材フェース距離
+/// Lf 用。柱の片側だけに袖壁があるとき、フェースが伸びるのは袖壁が張り出して
+/// いる側に取り付く梁だけで、反対側の梁は伸びない）。`None` なら向きを問わず
+/// 最大を採る（部材せい D 用。「両側に取り付く壁の長さが異なる場合は長い方の壁を
+/// 基準にする」）。
+fn wall_protrusion(
+    model: &Model,
+    elem: &squid_n_core::model::ElementData,
+    depth: f64,
+    walls: &[crate::wall::misc_wall::MiscWall],
+    toward: Option<[f64; 3]>,
+) -> f64 {
+    if walls.is_empty() || elem.nodes.len() < 2 {
+        return 0.0;
+    }
+    let (n0, n1) = (elem.nodes[0], elem.nodes[elem.nodes.len() - 1]);
+    let same_pair = |a: squid_n_core::ids::NodeId, b: squid_n_core::ids::NodeId| -> bool {
+        (n0 == a && n1 == b) || (n0 == b && n1 == a)
+    };
+    // 向きの一致判定（`toward` が None なら常に採用）。
+    let accepts = |dir: [f64; 3]| -> bool {
+        match toward {
+            None => true,
+            Some(t) => dir[0] * t[0] + dir[1] * t[1] + dir[2] * t[2] > 1e-9,
+        }
+    };
+
+    let axis = elem_axis(model, elem);
+    let is_vertical = axis[2].abs() > 0.707;
+    let mut out = 0.0_f64;
+
+    for w in walls {
+        if is_vertical {
+            // 柱: 壁の鉛直辺（bottom_pair[s]–top_pair[s]）が自部材と一致する側の袖壁。
+            for s in 0..2 {
+                if !same_pair(w.bottom_pair[s], w.top_pair[s]) {
+                    continue;
+                }
+                // 壁は s=0 側の柱からは +e_wall 方向へ、s=1 側の柱からは −e_wall 方向へ伸びる。
+                let Some(e_wall) = wall_bottom_dir(model, w) else {
+                    continue;
+                };
+                let sign = if s == 0 { 1.0 } else { -1.0 };
+                let dir = [e_wall[0] * sign, e_wall[1] * sign, 0.0];
+                if !accepts(dir) {
+                    continue;
+                }
+                out = out.max((w.wing_length(s) - depth / 2.0).clamp(0.0, w.lw));
+            }
+        } else {
+            // 梁: 下辺が自部材なら壁は上に載る（腰壁）、上辺が自部材なら下に垂れる（垂壁）。
+            for (matched, extent, dir) in [
+                (
+                    same_pair(w.bottom_pair[0], w.bottom_pair[1]),
+                    w.strip_height(false),
+                    [0.0, 0.0, 1.0],
+                ),
+                (
+                    same_pair(w.top_pair[0], w.top_pair[1]),
+                    w.strip_height(true),
+                    [0.0, 0.0, -1.0],
+                ),
+            ] {
+                if !matched || !accepts(dir) {
+                    continue;
+                }
+                out = out.max((extent - depth / 2.0).clamp(0.0, w.h));
+            }
+        }
+    }
+    out
+}
+
+/// 壁下辺の水平単位ベクトル（`bottom_pair[0]` → `bottom_pair[1]`）。
+fn wall_bottom_dir(model: &Model, w: &crate::wall::misc_wall::MiscWall) -> Option<[f64; 3]> {
+    let pa = model.nodes.get(w.bottom_pair[0].index())?.coord;
+    let pb = model.nodes.get(w.bottom_pair[1].index())?.coord;
+    let (dx, dy) = (pb[0] - pa[0], pb[1] - pa[1]);
+    let l = (dx * dx + dy * dy).sqrt();
+    (l > 1e-9).then(|| [dx / l, dy / l, 0.0])
+}
+
+/// 壁を考慮した部材せい D [mm]（原断面せい ＋ 壁の張り出し）。
+fn depth_with_walls(
+    model: &Model,
+    elem: &squid_n_core::model::ElementData,
+    walls: &[crate::wall::misc_wall::MiscWall],
+) -> f64 {
+    let depth = elem
+        .section
+        .and_then(|sid| model.sections.get(sid.index()))
+        .map(|s| s.depth)
+        .unwrap_or(0.0);
+    depth + wall_protrusion(model, elem, depth, walls, None)
 }
 
 fn elem_axis(model: &Model, e: &squid_n_core::model::ElementData) -> [f64; 3] {
@@ -35,40 +146,61 @@ fn elem_axis(model: &Model, e: &squid_n_core::model::ElementData) -> [f64; 3] {
     }
 }
 
-/// `only_rc_src` を true にすると、RC/SRC 系の直交 Beam 要素だけを対象に最大せいを探す
-/// （剛域長 λ 用。仕口部に接続する柱(梁)がすべてＳの場合、剛域長さは0
-/// ＝ S 系直交材は無視することで自然に d_max=0 となる）。false なら種別を問わず全直交
-/// Beam 要素が対象（危険断面位置 face 用。§6.2.3 は幾何量であり種別を区別しない）。
-fn max_orth_depth(
+/// 節点 `node` で対象部材と概ね直交する Beam 要素の最大せい（＝節点から部材
+/// フェースまでの距離 Lf の 2 倍）。構造種別は問わない。
+///
+/// 剛域長 λ・危険断面位置 face のいずれもこの幾何量を用いる。λ 側で種別を
+/// 絞る必要はない。剛域を設けるのは「節点に集合する柱・大梁がすべて RC/SRC」
+/// のときだけで（[`all_rc_src_at`]）、そのとき直交材は定義上すべて RC/SRC に
+/// なるためである。
+fn max_orth_face(
     model: &Model,
     node: squid_n_core::ids::NodeId,
     target_axis: [f64; 3],
     target_elem_idx: usize,
     adjacency: &NodeAdjacency,
-    only_rc_src: bool,
+    walls: &[crate::wall::misc_wall::MiscWall],
+    toward: [f64; 3],
 ) -> f64 {
-    let mut d_max = 0.0;
+    let mut lf_max = 0.0_f64;
     for &ei in adjacency.indices_at(node) {
         if ei == target_elem_idx {
             continue;
         }
         let e = &model.elements[ei];
-        if only_rc_src && member_structure_kind(model, e).is_steel_like() {
-            continue;
-        }
         let axis = elem_axis(model, e);
         let dot =
             (axis[0] * target_axis[0] + axis[1] * target_axis[1] + axis[2] * target_axis[2]).abs();
-        if dot < 0.707 {
-            // 概ね直交（45°以上）
-            if let Some(sec) = e.section.and_then(|sid| model.sections.get(sid.index())) {
-                if sec.depth > d_max {
-                    d_max = sec.depth;
-                }
-            }
+        if dot >= 0.707 {
+            // 概ね平行（45°未満）。直交材ではないので対象外。
+            continue;
         }
+        let Some(sec) = e.section.and_then(|sid| model.sections.get(sid.index())) else {
+            continue;
+        };
+        // 節点→部材フェース = 直交部材せい/2 ＋ 対象部材の側へ張り出す壁の長さ。
+        let lf = sec.depth / 2.0 + wall_protrusion(model, e, sec.depth, walls, Some(toward));
+        lf_max = lf_max.max(lf);
     }
-    d_max
+    lf_max
+}
+
+/// 節点 `node` に集合する柱・大梁（`ElementKind::Beam`）がすべて RC/SRC 系か。
+///
+/// 剛域を設けるのはこの条件が成り立つ節点だけとする（技術基準。1 本でも S 系の
+/// 柱・大梁が集まる仕口では剛域を設けない）。対象部材自身もその節点に集合する
+/// 部材の 1 つなので判定に含める。柱・大梁以外（ブレース・壁・仕口パネル）と、
+/// 解析要素ではない二次部材（小梁・間柱）は判定の対象外。
+fn all_rc_src_at(
+    model: &Model,
+    node: squid_n_core::ids::NodeId,
+    adjacency: &NodeAdjacency,
+) -> bool {
+    adjacency.indices_at(node).iter().all(|&ei| {
+        let e = &model.elements[ei];
+        e.kind != squid_n_core::model::ElementKind::Beam
+            || !member_structure_kind(model, e).is_steel_like()
+    })
 }
 
 /// 剛域算定の本体（隣接マップは呼び出し側が構築して共有する）。
@@ -78,6 +210,7 @@ fn rigid_zone_with_adjacency(
     target_elem_idx: usize,
     adjacency: &NodeAdjacency,
     rule: &RigidZoneRule,
+    walls: &[crate::wall::misc_wall::MiscWall],
 ) -> RigidZone {
     let elem = &model.elements[target_elem_idx];
     let nodes = &elem.nodes;
@@ -88,73 +221,87 @@ fn rigid_zone_with_adjacency(
         };
     }
 
-    let self_sec = elem.section.and_then(|sid| model.sections.get(sid.index()));
-    let d_self = self_sec.map(|s| s.depth).unwrap_or(0.0);
-
     let target_axis = elem_axis(model, elem);
 
-    // face 用: 種別を問わない直交 Beam 要素の最大せい（従来どおりの幾何量）。
-    let d_orth_face_i = max_orth_depth(
-        model,
-        nodes[0],
-        target_axis,
-        target_elem_idx,
-        adjacency,
-        false,
-    );
-    let d_orth_face_j = max_orth_depth(
-        model,
-        nodes[nodes.len() - 1],
-        target_axis,
-        target_elem_idx,
-        adjacency,
-        false,
-    );
-    // λ 用: RC/SRC 系の直交 Beam 要素だけの最大せい。
-    let d_orth_rc_i = max_orth_depth(
-        model,
-        nodes[0],
-        target_axis,
-        target_elem_idx,
-        adjacency,
-        true,
-    );
-    let d_orth_rc_j = max_orth_depth(
-        model,
-        nodes[nodes.len() - 1],
-        target_axis,
-        target_elem_idx,
-        adjacency,
-        true,
+    let node_i = nodes[0];
+    let node_j = nodes[nodes.len() - 1];
+    let (ci, cj) = (
+        model.nodes[node_i.index()].coord,
+        model.nodes[node_j.index()].coord,
     );
 
-    // 剛域長 λ は自部材の構造種別で式を切り替える（技術基準解説書「剛域の計算」）。
-    // - RC/SRC 造: λ = reduction·(D_orth_rc/2 − D_self/4)（従来式。負は 0 クランプ）。
-    // - Ｓ・ＣＦＴ造: λ = D_orth_rc/2（D_self/4 の控除なし・reduction も掛けない。
-    //   RC/SRC 大梁のうち最大せいの梁フェイスまでの長さ＝仕口部を除いた長さ）。
-    //   直交する RC/SRC 系の梁（柱）がなければ D_orth_rc=0 なので λ=0
-    //   （Ｓ造の剛域長さは0となる）。
-    let self_kind = member_structure_kind(model, elem);
-    let lambda = |d_orth_rc: f64| -> f64 {
-        if self_kind.is_steel_like() {
-            d_orth_rc / 2.0
-        } else {
-            (rule.reduction * (d_orth_rc / 2.0 - d_self / 4.0)).max(0.0)
-        }
+    // 壁を考慮した部材せい D（設定で原断面に切り替えられる）。
+    let d_self = if rule.consider_walls {
+        depth_with_walls(model, elem, walls)
+    } else {
+        elem.section
+            .and_then(|sid| model.sections.get(sid.index()))
+            .map(|s| s.depth)
+            .unwrap_or(0.0)
     };
-    // フェイス距離 = D_orth/2 は剛性用剛域の低減率（慣用調整）と無関係な幾何量なので
-    // reduction を掛けない（設計書 §6.2.1「設計位置との区別」）。
-    // λ が負→0 にクランプされる場合でも face はそのまま D_orth/2 を保持する。
-    let face = |d_orth: f64| -> f64 { d_orth / 2.0 };
+    let walls: &[crate::wall::misc_wall::MiscWall] = if rule.consider_walls { walls } else { &[] };
+
+    // 節点から部材フェースまでの距離 Lf = 直交部材せい/2 ＋ 自部材側へ張り出す壁。
+    // 壁は向きを持つため、各端で「その節点から自部材が伸びる向き」を渡す。
+    let dir_i = [cj[0] - ci[0], cj[1] - ci[1], cj[2] - ci[2]];
+    let dir_j = [-dir_i[0], -dir_i[1], -dir_i[2]];
+    let lf_i = max_orth_face(
+        model,
+        node_i,
+        target_axis,
+        target_elem_idx,
+        adjacency,
+        walls,
+        dir_i,
+    );
+    let lf_j = max_orth_face(
+        model,
+        node_j,
+        target_axis,
+        target_elem_idx,
+        adjacency,
+        walls,
+        dir_j,
+    );
+
+    // 剛域長 λ = Lf − D_自身/4（技術基準「剛域の計算」）。
+    // 剛域を設けるのは、その節点に集合する柱・大梁がすべて RC/SRC のときだけで、
+    // 1 本でも S 系があればその端の剛域は 0 とする。S 造の仕口は剛域ではなく
+    // 仕口パネル（`panel_offset_i/j`）でモデル化する。
+    let lambda = |lf: f64, all_rc_src: bool| -> f64 {
+        if !all_rc_src {
+            return 0.0;
+        }
+        (rule.reduction * (lf - d_self / 4.0)).max(0.0)
+    };
+
+    let (mut length_i, mut length_j) = (
+        lambda(lf_i, all_rc_src_at(model, node_i, adjacency)),
+        lambda(lf_j, all_rc_src_at(model, node_j, adjacency)),
+    );
+
+    // 両端の剛域長の合計が材長以上になる場合（壁の張り出しが大きい・短スパンの梁）は、
+    // 材長の中点から部材せいの 1/4 の距離までを剛域とする
+    // （技術基準「剛域長が重なる場合」）。これを行わないと可撓長が 0 以下になり、
+    // 要素が剛性ゼロに退化する。
+    let len = ((cj[0] - ci[0]).powi(2) + (cj[1] - ci[1]).powi(2) + (cj[2] - ci[2]).powi(2)).sqrt();
+    if len > 0.0 && length_i + length_j >= len {
+        let half = (len / 2.0 - d_self / 4.0).max(0.0);
+        length_i = half;
+        length_j = half;
+    }
 
     RigidZone {
-        length_i: lambda(d_orth_rc_i),
-        length_j: lambda(d_orth_rc_j),
+        length_i,
+        length_j,
         source_i: ZoneSource::Auto,
         source_j: ZoneSource::Auto,
         reduction: rule.reduction,
-        face_i: face(d_orth_face_i),
-        face_j: face(d_orth_face_j),
+        // フェース距離は剛性用剛域の低減率（慣用調整）と無関係な幾何量なので
+        // reduction を掛けない（設計書 §6.2.1「設計位置との区別」）。剛域を設けない
+        // 仕口（S 系を含む節点）でも危険断面位置は必要なので、λ とは独立に常に持つ。
+        face_i: lf_i,
+        face_j: lf_j,
         // パネル分のオフセットは剛域算定の対象外（`panel_gen` が別途書き込む）。
         // ここで既定値へ落としても、`recompute_auto_zones` が反映しないため
         // モデル側の値は保たれる。
@@ -178,7 +325,12 @@ pub fn auto_rigid_zones(
         };
     };
     let adjacency = NodeAdjacency::build(model);
-    rigid_zone_with_adjacency(model, target_elem_idx, &adjacency, rule)
+    let walls = if rule.consider_walls {
+        crate::wall::misc_wall::collect_rigid_zone_walls(model)
+    } else {
+        Vec::new()
+    };
+    rigid_zone_with_adjacency(model, target_elem_idx, &adjacency, rule, &walls)
 }
 
 pub fn recompute_auto_zones(zone: &mut RigidZone, recomputed: &RigidZone) {
@@ -210,12 +362,23 @@ pub fn recompute_auto_zones(zone: &mut RigidZone, recomputed: &RigidZone) {
 /// O(E)（辺数比例）で完了する。
 pub fn apply_auto_rigid_zones(model: &mut Model, rule: &RigidZoneRule) {
     let adjacency = NodeAdjacency::build(model);
+    // 壁の収集はモデル全体で 1 回だけ（要素ごとに走査すると O(E·W) になる）。
+    let walls = if rule.consider_walls {
+        crate::wall::misc_wall::collect_rigid_zone_walls(model)
+    } else {
+        Vec::new()
+    };
     let recomputed: Vec<(usize, RigidZone)> = model
         .elements
         .iter()
         .enumerate()
         .filter(|(_, e)| matches!(e.kind, squid_n_core::model::ElementKind::Beam))
-        .map(|(i, _)| (i, rigid_zone_with_adjacency(model, i, &adjacency, rule)))
+        .map(|(i, _)| {
+            (
+                i,
+                rigid_zone_with_adjacency(model, i, &adjacency, rule, &walls),
+            )
+        })
         .collect();
 
     for (i, rz) in recomputed {
