@@ -186,8 +186,8 @@ pub fn pushover_analysis_recording(
     let mut ductility_trackers: Vec<DuctilityTracker> =
         vec![DuctilityTracker::default(); model.elements.len()];
 
-    let stories = &model.stories;
-    if stories.is_empty() {
+    let layers = model.layers();
+    if layers.is_empty() {
         return Err("no stories defined".into());
     }
     // h は建築物の高さ（GL〜PH 階を除く最上階。令88条・告示1793号）。
@@ -200,10 +200,7 @@ pub fn pushover_analysis_recording(
     let tc = squid_n_load::ai::tc_of(squid_n_load::ai::SoilClass::II);
     let rt_val = squid_n_load::ai::rt(t, tc);
     let c0 = 0.2;
-    let story_weights: Vec<f64> = stories
-        .iter()
-        .map(|s| s.seismic_weight.unwrap_or(0.0))
-        .collect();
+    let story_weights: Vec<f64> = layers.iter().map(|l| l.weight.unwrap_or(0.0)).collect();
     if story_weights.iter().all(|&w| w == 0.0) {
         return Err("no seismic weight defined".into());
     }
@@ -214,11 +211,15 @@ pub fn pushover_analysis_recording(
         SeismicDir::Y => [0.0, 1.0, 0.0, 0.0, 0.0, 0.0],
     };
     let mut q = vec![0.0; n_active];
-    for (i, story) in stories.iter().enumerate() {
-        let pi = ai.pi.get(i).copied().unwrap_or(0.0);
+    // 層の水平力 Pi は、その層の質量が集中する**上端の階（床）**の剛床へ作用させる。
+    for layer in &layers {
+        let pi = ai.pi.get(layer.index).copied().unwrap_or(0.0);
         if pi == 0.0 {
             continue;
         }
+        let Some(story) = model.stories.get(layer.top.index()) else {
+            continue;
+        };
         // 多剛床の階では重量比で按分する（レビュー §1.6、analysis.rs と同じ規則。
         // 従来は各剛床へ pi をそのまま重複して載せていた）。
         for (master, share) in distribute_pi_over_diaphragms(model, story, pi) {

@@ -178,18 +178,18 @@ mod tests {
     fn test_floors_supported_by_column_3story() {
         let model = three_story_column_model();
         let gen = generate_stories(&model, None).unwrap();
-        assert_eq!(gen.stories.len(), 3);
+        assert_eq!(gen.stories.len(), 4, "基部の床を含めて 4 階（層は 3 つ）");
 
-        // 最下階の柱(節点0-1、上端は1F=story0): 3層分(1F,2F,3F)を支える。
+        // 最下層の柱(節点0-1、上端は story1): 3 層分の床を支える。
         let bottom = &model.elements[0];
         assert_eq!(
             floors_supported_by_column(&model, bottom, &gen.node_story),
             3
         );
-        // 中間階の柱(節点1-2、上端は2F=story1): 2層分(2F,3F)を支える。
+        // 中間層の柱(節点1-2、上端は story2): 2 層分の床を支える。
         let mid = &model.elements[1];
         assert_eq!(floors_supported_by_column(&model, mid, &gen.node_story), 2);
-        // 最上階の柱(節点2-3、上端は3F=story2): 1層分(3F)のみを支える。
+        // 最上層の柱(節点2-3、上端は story3): 1 層分の床のみを支える。
         let top = &model.elements[2];
         assert_eq!(floors_supported_by_column(&model, top, &gen.node_story), 1);
 

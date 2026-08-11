@@ -582,18 +582,30 @@ fn test_bernoulli_strict_1e9() {
 
 // ---- §1.5 略算周期の鉄骨造比 α ----
 
-/// 3層等階高（各1000mm、基部Z=0）で、指定した各階の `structure` から
+/// 3層等階高（各1000mm、基部Z=0）で、指定した各**層**の `structure` から
 /// `steel_height_ratio` を計算するテスト用モデル。
+///
+/// 階は床であり、先頭は基部の床（`Model::layers` の不変条件）。層 i の構造種別は
+/// その上端の階が持つため、`structures[i]` は `stories[i + 1]` に入る。
 fn make_story_ratio_model(structures: &[StoryStructure]) -> Model {
     let mut nodes = vec![Node {
         id: NodeId(0),
         coord: [0.0, 0.0, 0.0],
         restraint: Dof6Mask::FIXED,
         mass: None,
-        story: None,
+        story: Some(StoryId(0)),
         support_spring: None,
     }];
-    let mut stories = Vec::new();
+    let mut stories = vec![Story {
+        id: StoryId(0),
+        name: "F1".to_string(),
+        elevation: 0.0,
+        node_ids: vec![NodeId(0)],
+        seismic_weight: None,
+        weight_override: None,
+        structure: StoryStructure::default(),
+        level_kind: StoryLevelKind::Normal,
+    }];
     for (i, s) in structures.iter().enumerate() {
         let elev = (i as f64 + 1.0) * 1000.0;
         let nid = NodeId((i + 1) as u32);
@@ -602,12 +614,12 @@ fn make_story_ratio_model(structures: &[StoryStructure]) -> Model {
             coord: [0.0, 0.0, elev],
             restraint: Dof6Mask::FREE,
             mass: None,
-            story: Some(StoryId(i as u32)),
+            story: Some(StoryId((i + 1) as u32)),
             support_spring: None,
         });
         stories.push(Story {
-            id: StoryId(i as u32),
-            name: format!("F{}", i + 1),
+            id: StoryId((i + 1) as u32),
+            name: format!("F{}", i + 2),
             elevation: elev,
             node_ids: vec![nid],
             seismic_weight: Some(1000.0),

@@ -8,6 +8,21 @@ use squid_n_core::model::{
 };
 use squid_n_core::section_shape::ShearBar;
 
+/// 基部の床（階の列の先頭）。階は床であり、その先頭が基部であることは
+/// `Model::layers` が依拠する不変条件のため、テストのモデルにも必ず置く。
+fn base_story(node_ids: Vec<NodeId>) -> Story {
+    Story {
+        level_kind: Default::default(),
+        structure: Default::default(),
+        id: StoryId(0),
+        name: "1F".to_string(),
+        elevation: 0.0,
+        node_ids,
+        seismic_weight: None,
+        weight_override: None,
+    }
+}
+
 /// 1層・鉛直ファイバ柱の片持ちプッシュオーバー（P5 §10 相当の最小統合テスト）。
 /// 配線済み非線形要素（FiberBeam）＋座標変換＋NR 反復＋降伏追跡が
 /// エンドツーエンドで動作することを検証する。
@@ -29,7 +44,7 @@ fn single_column_model(fy: f64, seismic_weight: f64) -> Model {
                 // のみ拘束して特異性を除く。曲げ回転 rx,ry と並進は自由。
                 restraint: Dof6Mask(0b100000),
                 mass: None,
-                story: Some(StoryId(0)),
+                story: Some(StoryId(1)),
                 support_spring: None,
             },
         ],
@@ -80,16 +95,19 @@ fn single_column_model(fy: f64, seismic_weight: f64) -> Model {
             fc: None,
             fy: Some(fy),
         }],
-        stories: vec![Story {
-            level_kind: Default::default(),
-            structure: Default::default(),
-            id: StoryId(0),
-            name: "1F".to_string(),
-            elevation: 3000.0,
-            node_ids: vec![NodeId(1)],
-            seismic_weight: Some(seismic_weight),
-            weight_override: None,
-        }],
+        stories: vec![
+            base_story(vec![]),
+            Story {
+                level_kind: Default::default(),
+                structure: Default::default(),
+                id: StoryId(1),
+                name: "2F".to_string(),
+                elevation: 3000.0,
+                node_ids: vec![NodeId(1)],
+                seismic_weight: Some(seismic_weight),
+                weight_override: None,
+            },
+        ],
         ..Default::default()
     }
 }
@@ -144,7 +162,7 @@ fn test_pushover_single_column_forms_hinge() {
     for s in &result.steps {
         assert_eq!(
             s.story_drifts.len(),
-            model.stories.len(),
+            model.layer_count(),
             "story_drifts length should match number of stories"
         );
     }
@@ -366,7 +384,7 @@ fn spring_column_model(kx: f64, support_kx: Option<f64>, seismic_weight: f64) ->
                 // kx+support_kx の検証を Ux 1 自由度に限定するため。
                 restraint: Dof6Mask(0b111110),
                 mass: None,
-                story: Some(StoryId(0)),
+                story: Some(StoryId(1)),
                 support_spring: support_kx.map(|k| [k, 0.0, 0.0, 0.0, 0.0, 0.0]),
             },
         ],
@@ -384,16 +402,19 @@ fn spring_column_model(kx: f64, support_kx: Option<f64>, seismic_weight: f64) ->
             plastic_zone: None,
             spring: Some([kx, 0.0, 0.0, 0.0, 0.0, 0.0]),
         }],
-        stories: vec![Story {
-            level_kind: Default::default(),
-            structure: Default::default(),
-            id: StoryId(0),
-            name: "1F".to_string(),
-            elevation: 3000.0,
-            node_ids: vec![NodeId(1)],
-            seismic_weight: Some(seismic_weight),
-            weight_override: None,
-        }],
+        stories: vec![
+            base_story(vec![]),
+            Story {
+                level_kind: Default::default(),
+                structure: Default::default(),
+                id: StoryId(1),
+                name: "2F".to_string(),
+                elevation: 3000.0,
+                node_ids: vec![NodeId(1)],
+                seismic_weight: Some(seismic_weight),
+                weight_override: None,
+            },
+        ],
         ..Default::default()
     }
 }
@@ -623,7 +644,7 @@ fn two_story_model() -> Model {
                 coord: [0.0, 0.0, 3000.0],
                 restraint: Dof6Mask::FREE,
                 mass: None,
-                story: Some(StoryId(0)),
+                story: Some(StoryId(1)),
                 support_spring: None,
             },
             Node {
@@ -631,7 +652,7 @@ fn two_story_model() -> Model {
                 coord: [0.0, 0.0, 6000.0],
                 restraint: Dof6Mask::FREE,
                 mass: None,
-                story: Some(StoryId(1)),
+                story: Some(StoryId(2)),
                 support_spring: None,
             },
         ],
@@ -668,11 +689,12 @@ fn two_story_model() -> Model {
         sections: vec![sec],
         materials: vec![mat],
         stories: vec![
+            base_story(vec![]),
             Story {
                 level_kind: Default::default(),
                 structure: Default::default(),
-                id: StoryId(0),
-                name: "1F".to_string(),
+                id: StoryId(1),
+                name: "2F".to_string(),
                 elevation: 3000.0,
                 node_ids: vec![NodeId(1)],
                 seismic_weight: None,
@@ -681,8 +703,8 @@ fn two_story_model() -> Model {
             Story {
                 level_kind: Default::default(),
                 structure: Default::default(),
-                id: StoryId(1),
-                name: "2F".to_string(),
+                id: StoryId(2),
+                name: "3F".to_string(),
                 elevation: 6000.0,
                 node_ids: vec![NodeId(2)],
                 seismic_weight: None,
@@ -720,7 +742,7 @@ fn test_determine_mechanism_single_yield_establishes_mechanism() {
     let model = two_story_model();
     // elem0 端 j (pos=1.0) → node1 = 1F 単独階 → 層崩壊
     match determine_mechanism(&[hinge(0, 1.0, HingeLevel::Yield)], &model, SeismicDir::X) {
-        MechanismType::StoryCollapse { story } => assert_eq!(story, StoryId(0)),
+        MechanismType::StoryCollapse { layer } => assert_eq!(layer, 0),
         other => panic!(
             "expected StoryCollapse{{0}}, got {:?}",
             std::mem::discriminant(&other)
@@ -756,7 +778,7 @@ fn test_compute_static_indeterminacy_indeterminate_portal() {
             coord: [0.0, 0.0, 3000.0],
             restraint: Dof6Mask::FREE,
             mass: None,
-            story: Some(StoryId(0)),
+            story: Some(StoryId(1)),
             support_spring: None,
         },
         Node {
@@ -764,7 +786,7 @@ fn test_compute_static_indeterminacy_indeterminate_portal() {
             coord: [5000.0, 0.0, 3000.0],
             restraint: Dof6Mask::FREE,
             mass: None,
-            story: Some(StoryId(0)),
+            story: Some(StoryId(1)),
             support_spring: None,
         },
         Node {
@@ -856,16 +878,19 @@ fn test_compute_static_indeterminacy_indeterminate_portal() {
             fc: None,
             fy: Some(235.0),
         }],
-        stories: vec![Story {
-            level_kind: Default::default(),
-            structure: Default::default(),
-            id: StoryId(0),
-            name: "1F".to_string(),
-            elevation: 3000.0,
-            node_ids: vec![NodeId(1), NodeId(2)],
-            seismic_weight: None,
-            weight_override: None,
-        }],
+        stories: vec![
+            base_story(vec![]),
+            Story {
+                level_kind: Default::default(),
+                structure: Default::default(),
+                id: StoryId(1),
+                name: "2F".to_string(),
+                elevation: 3000.0,
+                node_ids: vec![NodeId(1), NodeId(2)],
+                seismic_weight: None,
+                weight_override: None,
+            },
+        ],
         ..Default::default()
     };
     assert_eq!(compute_static_indeterminacy(&portal, SeismicDir::X), 3);
@@ -916,14 +941,15 @@ fn test_compute_static_indeterminacy_indeterminate_portal() {
 #[test]
 fn test_determine_mechanism_story_collapse() {
     let model = two_story_model();
-    // 1F柱の両端（elem0 pos1.0 → node1=1F, elem1 pos0.0 → node1=1F）が降伏
-    // → 降伏ヒンジが1F(story0)に集中 → 層崩壊
+    // ヒンジの帰属層は**その部材が属する層**（材端節点のうち高い側の所属階を
+    // 上端とする層）で決まる。elem0 は 1FL→2FL の柱なので、その両端のヒンジは
+    // ともに最下層（layer 0）に集中する → 層崩壊。
     let hinges = vec![
+        hinge(0, 0.0, HingeLevel::Yield),
         hinge(0, 1.0, HingeLevel::Yield),
-        hinge(1, 0.0, HingeLevel::Yield),
     ];
     match determine_mechanism(&hinges, &model, SeismicDir::X) {
-        MechanismType::StoryCollapse { story } => assert_eq!(story, StoryId(0)),
+        MechanismType::StoryCollapse { layer } => assert_eq!(layer, 0),
         other => panic!(
             "expected StoryCollapse{{0}}, got {:?}",
             std::mem::discriminant(&other)
@@ -1000,7 +1026,7 @@ fn portal_frame_model(fy: f64, seismic_weight: f64) -> Model {
                 // FiberBeam はねじり剛性を持たないため Rz を拘束
                 restraint: Dof6Mask(0b100000),
                 mass: None,
-                story: Some(StoryId(0)),
+                story: Some(StoryId(1)),
                 support_spring: None,
             },
             Node {
@@ -1008,7 +1034,7 @@ fn portal_frame_model(fy: f64, seismic_weight: f64) -> Model {
                 coord: [5000.0, 0.0, 3000.0],
                 restraint: Dof6Mask(0b100000),
                 mass: None,
-                story: Some(StoryId(0)),
+                story: Some(StoryId(1)),
                 support_spring: None,
             },
             Node {
@@ -1097,18 +1123,21 @@ fn portal_frame_model(fy: f64, seismic_weight: f64) -> Model {
             fc: None,
             fy: Some(fy),
         }],
-        stories: vec![Story {
-            level_kind: Default::default(),
-            structure: Default::default(),
-            id: StoryId(0),
-            name: "1F".to_string(),
-            elevation: 3000.0,
-            node_ids: vec![NodeId(1), NodeId(2)],
-            seismic_weight: Some(seismic_weight),
-            weight_override: None,
-        }],
+        stories: vec![
+            base_story(vec![]),
+            Story {
+                level_kind: Default::default(),
+                structure: Default::default(),
+                id: StoryId(1),
+                name: "2F".to_string(),
+                elevation: 3000.0,
+                node_ids: vec![NodeId(1), NodeId(2)],
+                seismic_weight: Some(seismic_weight),
+                weight_override: None,
+            },
+        ],
         constraints: vec![Constraint::rigid_diaphragm(
-            StoryId(0),
+            StoryId(1),
             NodeId(1),
             vec![NodeId(2)],
         )],
@@ -2003,7 +2032,7 @@ fn rc_column_model_with_rigid_zone(rigid_zone: RigidZone) -> (Model, RcRebar, f6
                 coord: [0.0, 0.0, 3000.0],
                 restraint: Dof6Mask::FREE,
                 mass: None,
-                story: Some(StoryId(0)),
+                story: Some(StoryId(1)),
                 support_spring: None,
             },
         ],
@@ -3499,18 +3528,21 @@ fn wall_story_model_with(lw: f64, seismic_weight: f64) -> Model {
                 fy: Some(345.0),
             },
         ],
-        stories: vec![Story {
-            level_kind: Default::default(),
-            structure: Default::default(),
-            id: StoryId(0),
-            name: "1F".to_string(),
-            elevation: 3000.0,
-            node_ids: vec![NodeId(2), NodeId(3)],
-            seismic_weight: Some(seismic_weight),
-            weight_override: None,
-        }],
+        stories: vec![
+            base_story(vec![]),
+            Story {
+                level_kind: Default::default(),
+                structure: Default::default(),
+                id: StoryId(1),
+                name: "2F".to_string(),
+                elevation: 3000.0,
+                node_ids: vec![NodeId(2), NodeId(3)],
+                seismic_weight: Some(seismic_weight),
+                weight_override: None,
+            },
+        ],
         constraints: vec![Constraint::rigid_diaphragm(
-            StoryId(0),
+            StoryId(1),
             NodeId(3),
             vec![NodeId(2)],
         )],

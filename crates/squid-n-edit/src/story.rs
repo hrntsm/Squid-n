@@ -22,6 +22,11 @@ use squid_n_core::model::{Model, Story, StoryLevelKind};
 /// index が範囲外（削除済み等で階数が足りない）の場合は Noop。
 /// `StoryId ＝配列位置`が不変条件なので index 位置の階と ID は常に一致し、
 /// その確認は防御的なもの（将来この不変条件が崩れた場合の検出）。
+///
+/// **基部の階（`StoryId(0)`）は階名だけを変え、標高は据え置く**。基部の標高は
+/// 構造の最下端（[`Model::base_elevation`]）そのものであり、階の列の先頭が基部で
+/// あることは [`Model::layers`] が依拠する不変条件だからである。基部を動かすと
+/// 節点のない床レベルができ、最下層の階高が実際と食い違う。
 pub struct SetStoryLevel {
     pub story: StoryId,
     pub name: String,
@@ -86,7 +91,10 @@ impl EditCommand for SetStoryLevel {
         let before = snapshot(model);
         let story = &mut model.stories[idx];
         story.name = self.name.clone();
-        story.elevation = self.elevation;
+        // 基部の階の標高は据え置く（上記の不変条件）。
+        if idx != 0 {
+            story.elevation = self.elevation;
+        }
         resort_and_renumber(model);
         Box::new(before)
     }
@@ -128,12 +136,17 @@ impl EditCommand for AddStory {
     }
 }
 
-/// 階を削除する。**階の定義だけを消し、節点・部材は残す**。
+/// 階（床）を削除する。**階の定義だけを消し、節点・部材は残す**。
 ///
-/// 階は法規上の層の定義であって部材の入れ物ではないため、削除しても構造は
-/// 変わらない。削除した階に属していた節点は所属階を失い、次の階生成で
-/// 直下階の区間へ吸収される。その階の剛床拘束は意味を失うため取り除く。
-/// index が範囲外（削除済み等）の場合は Noop。`StoryId ＝配列位置`が
+/// 階は床の定義であって部材の入れ物ではないため、削除しても構造は変わらない。
+/// ただし**層はなくなる**（層は隣り合う階の間であり、階を 1 つ消せば層も 1 つ減る）。
+/// 削除した階に属していた節点は所属階を失い、次の階生成で直下階の区間へ吸収される。
+/// その階の剛床拘束は意味を失うため取り除く。
+///
+/// **基部の階（`StoryId(0)`）は削除できない**（Noop）。階の列の先頭が基部で
+/// あることは [`Model::layers`] が依拠する不変条件であり、これを消すと最下層が
+/// 層の一覧から静かに落ちるためである。
+/// index が範囲外（削除済み等）の場合も Noop。`StoryId ＝配列位置`が
 /// 不変条件なので index 位置の階と ID は常に一致し、その確認は防御的なもの。
 pub struct DeleteStory {
     pub story: StoryId,
@@ -143,6 +156,9 @@ impl EditCommand for DeleteStory {
     fn apply(&self, model: &mut Model) -> Box<dyn EditCommand> {
         let idx = self.story.index();
         if idx >= model.stories.len() || model.stories[idx].id != self.story {
+            return Box::new(crate::Noop);
+        }
+        if idx == 0 {
             return Box::new(crate::Noop);
         }
         let before = snapshot(model);

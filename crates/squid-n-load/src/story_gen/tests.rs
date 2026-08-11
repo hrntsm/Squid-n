@@ -121,52 +121,62 @@ fn gen_slaves(gen: &StoryGenResult, story: StoryId) -> Vec<NodeId> {
 
 /// 階が未定義のモデルから初期化したときの既定の階名は**床基準**である。
 ///
-/// 最下レベルを基部（1FL）とみなして階にしないため、下から順に `2F`・`3F` … となる。
-/// ST-Bridge の `StbStory` も床基準のため、取り込んだモデルとアプリ内で作った
-/// モデルで階名の意味が一致する。利用者が名前を付けた階は上書きしない。
+/// 階は床であり、最下レベル（基部）も階として作る。したがって下から順に
+/// `1F`・`2F` … となる。ST-Bridge の `StbStory` も床基準のため、取り込んだ
+/// モデルとアプリ内で作ったモデルで階名の意味が一致する。
+/// 利用者が名前を付けた階は上書きしない。
 #[test]
 fn test_generated_story_names_are_floor_based() {
     let model = two_story_model();
     assert!(model.stories.is_empty(), "階が未定義の状態から生成する");
     let gen = generate_stories(&model, Some(LoadCaseId(0))).unwrap();
     let names: Vec<&str> = gen.stories.iter().map(|s| s.name.as_str()).collect();
-    assert_eq!(names, vec!["2F", "3F"]);
+    assert_eq!(names, vec!["1F", "2F", "3F"]);
 
     // 利用者が付けた階名は再生成でも保たれる。
     let mut named = model.clone();
     named.stories = gen.stories.clone();
-    named.stories[0].name = "2FL".into();
+    named.stories[1].name = "2FL".into();
     let regen = generate_stories(&named, Some(LoadCaseId(0))).unwrap();
     let names: Vec<&str> = regen.stories.iter().map(|s| s.name.as_str()).collect();
-    assert_eq!(names, vec!["2FL", "3F"]);
+    assert_eq!(names, vec!["1F", "2FL", "3F"]);
 }
 
+/// 階（床）は基部を含めて 3 つ、層はその間の 2 つ。
 #[test]
 fn test_generate_two_stories() {
     let model = two_story_model();
     let gen = generate_stories(&model, Some(LoadCaseId(0))).unwrap();
-    assert_eq!(gen.stories.len(), 2);
-    assert_eq!(gen.stories[0].elevation, 3500.0);
-    assert_eq!(gen.stories[1].elevation, 7000.0);
+    assert_eq!(gen.stories.len(), 3, "基部の床を含めて 3 階");
+    assert_eq!(gen.stories[0].elevation, 0.0, "先頭は基部の床");
+    assert_eq!(gen.stories[1].elevation, 3500.0);
+    assert_eq!(gen.stories[2].elevation, 7000.0);
     // 各階 2 節点 → 代表節点(慣性力重心)を新規生成 + スレーブ2（既存節点は全てスレーブ）
-    assert_eq!(gen.stories[0].node_ids.len(), 2);
-    assert_eq!(gen_slaves(&gen, StoryId(0)).len(), 2);
+    assert_eq!(gen.stories[1].node_ids.len(), 2);
+    assert_eq!(gen_slaves(&gen, StoryId(0)).len(), 2, "基部の床の剛床");
     assert_eq!(gen_slaves(&gen, StoryId(1)).len(), 2);
-    assert_eq!(gen.constraints.len(), 2);
-    // 基部節点は無所属
-    assert_eq!(gen.node_story[0], None);
-    assert_eq!(gen.node_story[2], Some(StoryId(0)));
-    assert_eq!(gen.node_story[4], Some(StoryId(1)));
+    assert_eq!(gen_slaves(&gen, StoryId(2)).len(), 2);
+    assert_eq!(gen.constraints.len(), 3);
+    // 基部節点は基部の床に属する（柱脚・基礎梁の伏図と数量のため）。
+    assert_eq!(gen.node_story[0], Some(StoryId(0)));
+    assert_eq!(gen.node_story[2], Some(StoryId(1)));
+    assert_eq!(gen.node_story[4], Some(StoryId(2)));
     // 重量: 1F = 梁分布荷重 10 N/mm × 6000 = 60 kN + 自重、2F = 節点荷重 50 kN + 自重
-    let w1 = gen.stories[0].seismic_weight.unwrap();
-    let w2 = gen.stories[1].seismic_weight.unwrap();
+    let w1 = gen.stories[1].seismic_weight.unwrap();
+    let w2 = gen.stories[2].seismic_weight.unwrap();
     assert!(w1 > 60000.0, "w1={}", w1);
     assert!(w2 > 50000.0, "w2={}", w2);
 
-    // 代表節点は新規生成（既存節点数=6 の末尾連番）。
-    assert_eq!(gen.rep_nodes.len(), 2);
-    assert_eq!(gen.generated_masters, vec![NodeId(6), NodeId(7)]);
-    for rep in &gen.rep_nodes {
+    // 代表節点は新規生成（既存節点数=6 の末尾連番）。基部の床の分を含めて 3 つ。
+    assert_eq!(gen.rep_nodes.len(), 3);
+    assert_eq!(gen.generated_masters, vec![NodeId(6), NodeId(7), NodeId(8)]);
+    // 基部の代表節点は水平にも拘束する（柱脚が全て支点で拘束されており、
+    // 剛床を通じて水平剛性が写らないため。自由なままだと特異行列になる）。
+    let base_rep = &gen.rep_nodes[0];
+    assert!(base_rep.restraint.is_fixed(squid_n_core::dof::Dof::Ux));
+    assert!(base_rep.restraint.is_fixed(squid_n_core::dof::Dof::Uy));
+
+    for rep in &gen.rep_nodes[1..] {
         // CorrectedLumped(既定): 柱梁の密度自重は解析の質量行列に部材密度質量として
         // 計上されるため控除され、荷重ケース分（節点・部材荷重）のみが質点質量として残る。
         let mass = rep
@@ -186,19 +196,21 @@ fn test_generate_two_stories() {
     }
     assert_eq!(gen.rep_nodes[0].story, Some(StoryId(0)));
     assert_eq!(gen.rep_nodes[1].story, Some(StoryId(1)));
-    // 1F は左右対称な自重＋分布荷重のみなので慣性力重心の X は中央(3000)になる。
-    assert!((gen.rep_nodes[0].coord[0] - 3000.0).abs() < 1e-6);
-    // 2F は節点荷重(50kN)が NodeId(4)(x=0)側のみに掛かる非対称配置なので、
+    assert_eq!(gen.rep_nodes[2].story, Some(StoryId(2)));
+    // 2FL は左右対称な自重＋分布荷重のみなので慣性力重心の X は中央(3000)になる。
+    assert!((gen.rep_nodes[1].coord[0] - 3000.0).abs() < 1e-6);
+    // 3FL は節点荷重(50kN)が NodeId(4)(x=0)側のみに掛かる非対称配置なので、
     // 慣性力重心は x=0 側へ偏る(単純な幾何重心 3000 とは一致しない)。
     // 手計算(g=9806.65, §1.11): nw4=53656.6546..., nw5=3656.6546...,
     // gx = nw5*6000/(nw4+nw5) = 382.806855936086
     assert!(
-        (gen.rep_nodes[1].coord[0] - 382.806855936086).abs() < 1e-6,
+        (gen.rep_nodes[2].coord[0] - 382.806855936086).abs() < 1e-6,
         "{}",
-        gen.rep_nodes[1].coord[0]
+        gen.rep_nodes[2].coord[0]
     );
-    assert_eq!(gen.rep_nodes[0].coord[2], 3500.0);
-    assert_eq!(gen.rep_nodes[1].coord[2], 7000.0);
+    assert_eq!(gen.rep_nodes[0].coord[2], 0.0);
+    assert_eq!(gen.rep_nodes[1].coord[2], 3500.0);
+    assert_eq!(gen.rep_nodes[2].coord[2], 7000.0);
 }
 
 #[test]
@@ -255,19 +267,20 @@ fn asymmetric_weight_model() -> Model {
 fn test_generate_weighted_centroid_matches_hand_calc() {
     let model = asymmetric_weight_model();
     let gen = generate_stories(&model, Some(LoadCaseId(0))).unwrap();
-    assert_eq!(gen.stories.len(), 1);
-    let story = &gen.stories[0];
+    // 基部の床 + 上の床の 2 階。対象は上の床（StoryId(1)）。
+    assert_eq!(gen.stories.len(), 2);
+    let story = &gen.stories[1];
     // 重量は自重なし・節点荷重のみ: 100kN + 300kN = 400kN
     assert_eq!(story.seismic_weight, Some(400000.0));
     assert_eq!(
-        gen_slaves(&gen, StoryId(0)).len(),
+        gen_slaves(&gen, StoryId(1)).len(),
         2,
         "床面上の既存節点は全てスレーブ"
     );
 
     // 手計算: Gx = Σ(iW·ix)/ΣiW = (100000*0 + 300000*4000) / 400000 = 3000
-    assert_eq!(gen.rep_nodes.len(), 1);
-    let rep = &gen.rep_nodes[0];
+    assert_eq!(gen.rep_nodes.len(), 2);
+    let rep = &gen.rep_nodes[1];
     assert!((rep.coord[0] - 3000.0).abs() < 1e-6, "Gx={}", rep.coord[0]);
     assert!((rep.coord[1] - 0.0).abs() < 1e-6, "Gy={}", rep.coord[1]);
     assert_eq!(rep.coord[2], 3000.0);
@@ -294,15 +307,15 @@ fn test_generate_weighted_centroid_matches_hand_calc() {
         "j={}",
         mass[5]
     );
-    assert_eq!(rep.story, Some(StoryId(0)));
+    assert_eq!(rep.story, Some(StoryId(1)));
     assert!(rep.restraint.is_fixed(Dof::Uz));
     assert!(rep.restraint.is_fixed(Dof::Rx));
     assert!(rep.restraint.is_fixed(Dof::Ry));
     assert!(!rep.restraint.is_fixed(Dof::Ux));
     assert!(!rep.restraint.is_fixed(Dof::Uy));
     assert!(!rep.restraint.is_fixed(Dof::Rz));
-    // 既存節点数=4 の末尾連番で新規生成される。
-    assert_eq!(gen.generated_masters, vec![NodeId(4)]);
+    // 既存節点数=4 の末尾連番で新規生成される（基部の床の分を含めて 2 つ）。
+    assert_eq!(gen.generated_masters, vec![NodeId(4), NodeId(5)]);
 }
 
 #[test]
@@ -330,8 +343,8 @@ fn test_generate_zero_weight_falls_back_to_geometric_centroid() {
         });
     }
     let gen = generate_stories(&model, None).unwrap();
-    assert_eq!(gen.stories[0].seismic_weight, Some(0.0));
-    let rep = &gen.rep_nodes[0];
+    assert_eq!(gen.stories[1].seismic_weight, Some(0.0));
+    let rep = &gen.rep_nodes[1];
     // 幾何重心(単純平均) = (0 + 6000) / 2 = 3000
     assert!((rep.coord[0] - 3000.0).abs() < 1e-6, "Gx={}", rep.coord[0]);
 }
@@ -433,7 +446,7 @@ fn test_master_mass_corrected_lumped_deducts_density_self_weight() {
     let gen =
         generate_stories_with_opts(&model, &[LoadCaseId(0)], true, MassMethod::CorrectedLumped)
             .unwrap();
-    assert_eq!(gen.rep_nodes.len(), 1);
+    assert_eq!(gen.rep_nodes.len(), 2, "基部の床の分を含む");
 
     // 柱の自重（1本あたり。両柱とも同一断面・材料・長さ）。柱は両端(基部+上端)へ
     // 半分ずつ配分されるが、基部は階に含まれないため上端の質量にのみ効く。
@@ -443,7 +456,7 @@ fn test_master_mass_corrected_lumped_deducts_density_self_weight() {
     let w3 = sw_half + 300000.0; // NodeId(3), x=4000
     let gx = (w2 * 0.0 + w3 * 4000.0) / (w2 + w3);
 
-    let rep = &gen.rep_nodes[0];
+    let rep = &gen.rep_nodes[1];
     assert!((rep.coord[0] - gx).abs() < 1e-6, "Gx={}", rep.coord[0]);
 
     // CorrectedLumped: 柱の自重は解析の質量行列に部材密度質量として計上されるため
@@ -478,7 +491,7 @@ fn test_master_mass_lumped_only_keeps_density_self_weight() {
     let model = two_columns_with_dl_model();
     let gen =
         generate_stories_with_opts(&model, &[LoadCaseId(0)], true, MassMethod::LumpedOnly).unwrap();
-    assert_eq!(gen.rep_nodes.len(), 1);
+    assert_eq!(gen.rep_nodes.len(), 2, "基部の床の分を含む");
 
     let sw_per_column = 7.85e-9 * 10000.0 * 3000.0 * GRAVITY_MM_S2;
     let sw_half = sw_per_column / 2.0;
@@ -486,7 +499,7 @@ fn test_master_mass_lumped_only_keeps_density_self_weight() {
     let w3 = sw_half + 300000.0;
     let gx = (w2 * 0.0 + w3 * 4000.0) / (w2 + w3);
 
-    let rep = &gen.rep_nodes[0];
+    let rep = &gen.rep_nodes[1];
     // LumpedOnly: 控除せず、柱の自重を含む地震用重量の全量が質点質量になる。
     let mass = rep
         .mass
@@ -583,12 +596,12 @@ fn secondary_joist_model() -> Model {
 fn test_master_mass_corrected_lumped_does_not_deduct_secondary_member_self_weight() {
     let model = secondary_joist_model();
     let gen = generate_stories_with_opts(&model, &[], true, MassMethod::CorrectedLumped).unwrap();
-    assert_eq!(gen.rep_nodes.len(), 1);
+    assert_eq!(gen.rep_nodes.len(), 2, "基部の床の分を含む");
 
     // 二次部材（小梁）の自重は主架構要素ではなく解析の質量行列（部材密度質量）に
     // 算入されないため、CorrectedLumped でも控除されずそのまま残る。
     let sw = 7.85e-9 * 5000.0 * 2000.0 * GRAVITY_MM_S2;
-    let rep = &gen.rep_nodes[0];
+    let rep = &gen.rep_nodes[1];
     let mass = rep
         .mass
         .expect("二次部材の自重は控除されずそのまま質点質量になる");
@@ -785,7 +798,7 @@ fn test_member_load_reaction_distribution_end_to_end() {
         )],
     });
     let gen = generate_stories(&model, Some(LoadCaseId(0))).unwrap();
-    let rep = &gen.rep_nodes[0];
+    let rep = &gen.rep_nodes[1];
     assert!(
         (rep.coord[0] - 2666.666666666667).abs() < 1e-2,
         "Gx={}",
@@ -913,9 +926,9 @@ fn test_face_reduction_applies_to_horizontal_concrete_beam() {
     let eff_len = len - 400.0 - 400.0;
     let expected = density * area * eff_len * GRAVITY_MM_S2;
     assert!(
-        (gen.stories[0].seismic_weight.unwrap() - expected).abs() < 1e-6,
+        (gen.stories[1].seismic_weight.unwrap() - expected).abs() < 1e-6,
         "w={} expected={}",
-        gen.stories[0].seismic_weight.unwrap(),
+        gen.stories[1].seismic_weight.unwrap(),
         expected
     );
 }
@@ -984,9 +997,9 @@ fn test_extra_line_weight_adds_to_self_weight() {
     let gen = generate_stories(&model, None).unwrap();
     let expected = (density * area * len * GRAVITY_MM_S2 + 5.0 * len) / 2.0;
     assert!(
-        (gen.stories[0].seismic_weight.unwrap() - expected).abs() < 1e-6,
+        (gen.stories[1].seismic_weight.unwrap() - expected).abs() < 1e-6,
         "{}",
-        gen.stories[0].seismic_weight.unwrap()
+        gen.stories[1].seismic_weight.unwrap()
     );
 }
 
@@ -1068,18 +1081,18 @@ fn wall_model() -> Model {
 #[test]
 fn test_wall_self_weight_included_in_story_weight() {
     // §1.2: 壁自重 w=ρ·t·A·g を全頂点に等分配。
-    // 基部(z=0)側 2 節点は階に属さないため、階の地震用重量に算入されるのは
-    // 上端 2 節点分(w/2)のみになる。
+    // 基部(z=0)側 2 節点は基部の床に属し、層の重量には入らない。上の床
+    // （層の上端）の地震用重量に算入されるのは上端 2 節点分(w/2)のみになる。
     let model = wall_model();
     let gen = generate_stories(&model, None).unwrap();
-    assert_eq!(gen.stories.len(), 1);
+    assert_eq!(gen.stories.len(), 2, "基部の床 + 上の床");
     let area = 4000.0 * 3000.0;
     let w_total = 2.4e-9 * 150.0 * area * GRAVITY_MM_S2;
     let expected = w_total / 2.0;
     assert!(
-        (gen.stories[0].seismic_weight.unwrap() - expected).abs() < 1e-6,
+        (gen.stories[1].seismic_weight.unwrap() - expected).abs() < 1e-6,
         "{}",
-        gen.stories[0].seismic_weight.unwrap()
+        gen.stories[1].seismic_weight.unwrap()
     );
 }
 
@@ -1156,9 +1169,9 @@ fn test_wall_self_weight_uses_clear_dimensions_of_boundary_members() {
     let w_total = 2.4e-9 * 150.0 * (l * h * factor) * GRAVITY_MM_S2;
     let expected = w_total / 2.0; // 上端2節点分のみ階重量に算入
     assert!(
-        (gen.stories[0].seismic_weight.unwrap() - expected).abs() < 1e-6,
+        (gen.stories[1].seismic_weight.unwrap() - expected).abs() < 1e-6,
         "got={}, expected={}",
-        gen.stories[0].seismic_weight.unwrap(),
+        gen.stories[1].seismic_weight.unwrap(),
         expected
     );
 }
@@ -1179,12 +1192,12 @@ fn test_generate_stories_multi_sums_multiple_gravity_cases_and_dedupes() {
 
     // DL(400kN) + LL(10kN) = 410kN
     let gen = generate_stories_multi(&model, &[LoadCaseId(0), LoadCaseId(1)]).unwrap();
-    assert_eq!(gen.stories[0].seismic_weight, Some(410000.0));
+    assert_eq!(gen.stories[1].seismic_weight, Some(410000.0));
 
     // 重複 ID は 1 回だけ処理される（二重計上しない）
     let gen_dup =
         generate_stories_multi(&model, &[LoadCaseId(0), LoadCaseId(0), LoadCaseId(1)]).unwrap();
-    assert_eq!(gen_dup.stories[0].seismic_weight, Some(410000.0));
+    assert_eq!(gen_dup.stories[1].seismic_weight, Some(410000.0));
 }
 
 /// `generate_stories_with_opts` の自重算入方法:
@@ -1256,9 +1269,9 @@ fn test_wall_opening_deduction_and_opening_weight() {
     let w_total = (2.4e-9 * 150.0 * net_area * GRAVITY_MM_S2 + 5000.0).max(0.0);
     let expected = w_total / 2.0; // 上端2節点分(4節点等分の半分)
     assert!(
-        (gen.stories[0].seismic_weight.unwrap() - expected).abs() < 1e-6,
+        (gen.stories[1].seismic_weight.unwrap() - expected).abs() < 1e-6,
         "{}",
-        gen.stories[0].seismic_weight.unwrap()
+        gen.stories[1].seismic_weight.unwrap()
     );
 }
 
@@ -1274,7 +1287,7 @@ fn test_wall_opening_deduction_clamped_non_negative() {
         openings: vec![],
     });
     let gen = generate_stories(&model, None).unwrap();
-    assert_eq!(gen.stories[0].seismic_weight, Some(0.0));
+    assert_eq!(gen.stories[1].seismic_weight, Some(0.0));
 }
 
 #[test]
@@ -1295,9 +1308,9 @@ fn test_wall_three_side_slit_transfers_all_to_top_nodes() {
     let area = 4000.0 * 3000.0;
     let w_total = 2.4e-9 * 150.0 * area * GRAVITY_MM_S2;
     assert!(
-        (gen.stories[0].seismic_weight.unwrap() - w_total).abs() < 1e-6,
+        (gen.stories[1].seismic_weight.unwrap() - w_total).abs() < 1e-6,
         "{}",
-        gen.stories[0].seismic_weight.unwrap()
+        gen.stories[1].seismic_weight.unwrap()
     );
 }
 
@@ -1338,9 +1351,9 @@ fn test_misc_wall_beam_transfer_conserves_total_weight() {
     // node0(距離 3000超)より常に近いため、全量が node1(story0)へ集中する。
     let expected = 1.0e-3 * 200.0 * 1200.0; // weight_per_area * height * 壁長
     assert!(
-        (gen.stories[0].seismic_weight.unwrap() - expected).abs() < 1e-6,
+        (gen.stories[1].seismic_weight.unwrap() - expected).abs() < 1e-6,
         "{}",
-        gen.stories[0].seismic_weight.unwrap()
+        gen.stories[1].seismic_weight.unwrap()
     );
 }
 
@@ -1424,9 +1437,9 @@ fn test_misc_wall_column_transfer_splits_to_column_ends() {
     // 階の地震用重量に現れるのは node1 側(w/2)のみ。
     let expected = total / 2.0;
     assert!(
-        (gen.stories[0].seismic_weight.unwrap() - expected).abs() < 1e-6,
+        (gen.stories[1].seismic_weight.unwrap() - expected).abs() < 1e-6,
         "{}",
-        gen.stories[0].seismic_weight.unwrap()
+        gen.stories[1].seismic_weight.unwrap()
     );
 }
 
@@ -1453,9 +1466,9 @@ fn test_damper_weight_replaces_section_self_weight() {
     let w = 20000.0 + 5000.0 * support_len * steel_density_ton_mm3() * GRAVITY_MM_S2;
     let expected = w / 2.0;
     assert!(
-        (gen.stories[0].seismic_weight.unwrap() - expected).abs() < 1e-6,
+        (gen.stories[1].seismic_weight.unwrap() - expected).abs() < 1e-6,
         "{}",
-        gen.stories[0].seismic_weight.unwrap()
+        gen.stories[1].seismic_weight.unwrap()
     );
 }
 
@@ -1479,13 +1492,13 @@ fn test_damper_zero_device_weight_counts_support_only() {
     let w = 8000.0 * support_len * steel_density_ton_mm3() * GRAVITY_MM_S2;
     let expected = w / 2.0;
     assert!(
-        (gen.stories[0].seismic_weight.unwrap() - expected).abs() < 1e-6,
+        (gen.stories[1].seismic_weight.unwrap() - expected).abs() < 1e-6,
         "{}",
-        gen.stories[0].seismic_weight.unwrap()
+        gen.stories[1].seismic_weight.unwrap()
     );
     // 断面自重(ρ·A·L·g)は使われない(桁違いに大きい値とは一致しない)。
     let naive = 7.85e-9 * 90000.0 * len * GRAVITY_MM_S2 / 2.0;
-    assert!((gen.stories[0].seismic_weight.unwrap() - naive).abs() > 1.0);
+    assert!((gen.stories[1].seismic_weight.unwrap() - naive).abs() > 1.0);
 }
 
 // ------------------------------------------------------------------
@@ -1508,9 +1521,9 @@ fn test_finish_area_weight_column_perimeter_four_side() {
     let phi = 2.0 * (300.0 + 300.0);
     let expected = (density * area * len * GRAVITY_MM_S2 + wf * phi * len) / 2.0;
     assert!(
-        (gen.stories[0].seismic_weight.unwrap() - expected).abs() < 1e-6,
+        (gen.stories[1].seismic_weight.unwrap() - expected).abs() < 1e-6,
         "{}",
-        gen.stories[0].seismic_weight.unwrap()
+        gen.stories[1].seismic_weight.unwrap()
     );
 }
 
@@ -1600,9 +1613,9 @@ fn test_finish_area_weight_beam_perimeter_three_side() {
     // 両端(node1, node2)とも z=3000 の同一階に属するため、全量がその階に現れる。
     let expected = 7.85e-9 * 90000.0 * len * GRAVITY_MM_S2 + wf * phi * len;
     assert!(
-        (gen.stories[0].seismic_weight.unwrap() - expected).abs() < 1e-6,
+        (gen.stories[1].seismic_weight.unwrap() - expected).abs() < 1e-6,
         "{}",
-        gen.stories[0].seismic_weight.unwrap()
+        gen.stories[1].seismic_weight.unwrap()
     );
 }
 
@@ -1722,9 +1735,9 @@ fn test_base_column_without_lower_column_adds_max_beam_depth() {
     let eff_len = 3000.0 + 600.0; // 柱長さ + 柱脚に取付く梁の最大せい
     let expected = 2.4e-9 * 90000.0 * eff_len * GRAVITY_MM_S2 / 2.0;
     assert!(
-        (gen.stories[0].seismic_weight.unwrap() - expected).abs() < 1e-6,
+        (gen.stories[1].seismic_weight.unwrap() - expected).abs() < 1e-6,
         "{}",
-        gen.stories[0].seismic_weight.unwrap()
+        gen.stories[1].seismic_weight.unwrap()
     );
 }
 
@@ -1888,9 +1901,9 @@ fn test_base_column_with_lower_column_does_not_add_beam_depth() {
     let w_upper = 2.4e-9 * 90000.0 * 3000.0 * GRAVITY_MM_S2; // 梁せい付加なし(eff_len=3000)
     let expected_story0 = w_upper / 2.0;
     assert!(
-        (gen.stories[0].seismic_weight.unwrap() - expected_story0).abs() < 1e-6,
+        (gen.stories[1].seismic_weight.unwrap() - expected_story0).abs() < 1e-6,
         "{}",
-        gen.stories[0].seismic_weight.unwrap()
+        gen.stories[1].seismic_weight.unwrap()
     );
 }
 
@@ -2073,9 +2086,9 @@ fn test_k_brace_base_nodes_only_shifts_centroid_toward_base_nodes() {
     // 手計算: node2=w1/2(x=0), node3=w2/2(x=4000), node4=(w1+w2)/2(x=2000)
     let expected_internal = (1000.0 * w1 + 3000.0 * w2) / (w1 + w2);
     assert!(
-        (gen_internal.rep_nodes[0].coord[0] - expected_internal).abs() < 1e-2,
+        (gen_internal.rep_nodes[1].coord[0] - expected_internal).abs() < 1e-2,
         "{}",
-        gen_internal.rep_nodes[0].coord[0]
+        gen_internal.rep_nodes[1].coord[0]
     );
 
     let base_only = k_brace_model(KBraceWeightRule::BaseNodesOnly);
@@ -2083,18 +2096,18 @@ fn test_k_brace_base_nodes_only_shifts_centroid_toward_base_nodes() {
     // 手計算: node2=w1(x=0), node3=w2(x=4000), node4=0
     let expected_base = 4000.0 * w2 / (w1 + w2);
     assert!(
-        (gen_base.rep_nodes[0].coord[0] - expected_base).abs() < 1e-2,
+        (gen_base.rep_nodes[1].coord[0] - expected_base).abs() < 1e-2,
         "{}",
-        gen_base.rep_nodes[0].coord[0]
+        gen_base.rep_nodes[1].coord[0]
     );
 
     // 両者は明確に異なる(基準節点側、より重いブレースが繋がる node3 側へ寄る)。
-    assert!(gen_base.rep_nodes[0].coord[0] > gen_internal.rep_nodes[0].coord[0]);
+    assert!(gen_base.rep_nodes[1].coord[0] > gen_internal.rep_nodes[1].coord[0]);
 
     // 総重量(層重量)自体は配分規則によらず保存される。
     assert!(
-        (gen_internal.stories[0].seismic_weight.unwrap()
-            - gen_base.stories[0].seismic_weight.unwrap())
+        (gen_internal.stories[1].seismic_weight.unwrap()
+            - gen_base.stories[1].seismic_weight.unwrap())
         .abs()
             < 1e-6
     );
@@ -2112,9 +2125,9 @@ fn test_k_brace_internal_nodes_default_is_half_half() {
     let w2 = density * 20000.0 * len * GRAVITY_MM_S2;
     let expected = (1000.0 * w1 + 3000.0 * w2) / (w1 + w2);
     assert!(
-        (gen.rep_nodes[0].coord[0] - expected).abs() < 1e-2,
+        (gen.rep_nodes[1].coord[0] - expected).abs() < 1e-2,
         "{}",
-        gen.rep_nodes[0].coord[0]
+        gen.rep_nodes[1].coord[0]
     );
 }
 
@@ -2201,9 +2214,10 @@ fn test_generate_infers_story_structure_from_members() {
         (steel_h_shape(), MaterialCategory::Steel),
     );
     let gen = generate_stories(&model, Some(LoadCaseId(0))).unwrap();
-    assert_eq!(gen.stories.len(), 2);
-    assert_eq!(gen.stories[0].structure, StoryStructure::Rc);
-    assert_eq!(gen.stories[1].structure, StoryStructure::S);
+    assert_eq!(gen.stories.len(), 3, "基部の床を含めて 3 階");
+    // 構造種別は層の属性で、層の上端の階が持つ（下層 RC・上層 S）。
+    assert_eq!(gen.stories[1].structure, StoryStructure::Rc);
+    assert_eq!(gen.stories[2].structure, StoryStructure::S);
 }
 
 /// 構造種別は断面形状ではなく材料の区分で決まる。
@@ -2216,8 +2230,8 @@ fn test_generate_story_structure_follows_material_not_shape() {
         (steel_h_shape(), MaterialCategory::Steel),
     );
     let gen = generate_stories(&model, Some(LoadCaseId(0))).unwrap();
-    assert_eq!(gen.stories[0].structure, StoryStructure::Rc);
-    assert_eq!(gen.stories[1].structure, StoryStructure::S);
+    assert_eq!(gen.stories[1].structure, StoryStructure::Rc);
+    assert_eq!(gen.stories[2].structure, StoryStructure::S);
 }
 
 /// 形状定義を持たない断面（カタログ数値の直入力）でも材料の区分で判定できる。
@@ -2226,7 +2240,10 @@ fn test_generate_story_structure_uses_material_without_shapes() {
     use squid_n_core::model::StoryStructure;
     let model = two_story_model(); // shape: None の断面＋鋼材の材料
     let gen = generate_stories(&model, Some(LoadCaseId(0))).unwrap();
-    assert!(gen.stories.iter().all(|s| s.structure == StoryStructure::S));
+    // 構造種別は層の属性で、層の上端の階が持つ。基部の床はどの層の上端でもない。
+    assert!(gen.stories[1..]
+        .iter()
+        .all(|s| s.structure == StoryStructure::S));
 }
 
 /// 断面も材料も未割当の部材は種別を判定できないため集計から除く。
@@ -2343,15 +2360,19 @@ fn test_mid_height_nodes_join_story_but_not_diaphragm() {
     let model = split_column_model();
     let gen = generate_stories(&model, None).unwrap();
 
-    assert_eq!(gen.stories.len(), 1);
-    // 基部 2 節点を除く 4 節点（中間 2 + 床面 2）が階に属する。
-    assert_eq!(gen.stories[0].node_ids.len(), 4);
-    assert_eq!(gen.node_story[0], None, "基部は階に属さない");
-    assert_eq!(gen.node_story[2], Some(StoryId(0)), "中間節点も階に属する");
-    assert_eq!(gen.node_story[4], Some(StoryId(0)));
+    assert_eq!(gen.stories.len(), 2, "基部の床 + 上の床");
+    // 中間 2 節点 + 床面 2 節点が上の床に属する（基部 2 節点は基部の床）。
+    assert_eq!(gen.stories[1].node_ids.len(), 4);
+    assert_eq!(
+        gen.node_story[0],
+        Some(StoryId(0)),
+        "基部は基部の床に属する"
+    );
+    assert_eq!(gen.node_story[2], Some(StoryId(1)), "中間節点も階に属する");
+    assert_eq!(gen.node_story[4], Some(StoryId(1)));
 
     // 剛床のスレーブは床面（z=3500）の 2 節点のみ。
-    let slaves = gen_slaves(&gen, StoryId(0));
+    let slaves = gen_slaves(&gen, StoryId(1));
     assert_eq!(
         slaves,
         vec![NodeId(4), NodeId(5)],
@@ -2377,13 +2398,15 @@ fn test_predefined_stories_drive_the_assignment() {
     });
 
     let gen = generate_stories(&model, Some(LoadCaseId(0))).unwrap();
-    assert_eq!(gen.stories.len(), 1, "階は定義どおり 1 つのまま");
-    assert_eq!(gen.stories[0].name, "RFL");
-    assert_eq!(gen.stories[0].elevation, 7000.0);
-    // 基部を除く 4 節点すべてが唯一の階の区間 (0, 7000] に入る。
-    assert_eq!(gen.stories[0].node_ids.len(), 4);
+    // 定義した階はそのまま使い、階生成は基部の床だけを先頭に補う。
+    assert_eq!(gen.stories.len(), 2, "定義した RFL + 補われた基部の床");
+    assert_eq!(gen.stories[0].elevation, 0.0, "先頭は基部の床");
+    assert_eq!(gen.stories[1].name, "RFL");
+    assert_eq!(gen.stories[1].elevation, 7000.0);
+    // 基部を除く 4 節点すべてが RFL の区間 (0, 7000] に入る。
+    assert_eq!(gen.stories[1].node_ids.len(), 4);
     // 剛床のスレーブは床面（z=7000）の 2 節点のみ。
-    assert_eq!(gen_slaves(&gen, StoryId(0)).len(), 2);
+    assert_eq!(gen_slaves(&gen, StoryId(1)).len(), 2);
 }
 
 /// 床面（階のレベル）に節点がない階は剛床を持たない。階そのものは残り、
@@ -2415,18 +2438,110 @@ fn test_story_without_floor_nodes_gets_no_diaphragm() {
     });
 
     let gen = generate_stories(&model, Some(LoadCaseId(0))).unwrap();
-    assert_eq!(gen.stories.len(), 2, "階は定義どおり残る");
-    assert_eq!(gen.stories[1].name, "4F");
+    assert_eq!(gen.stories.len(), 3, "定義した 2 階 + 補われた基部の床");
+    assert_eq!(gen.stories[2].name, "4F");
     assert_eq!(
-        gen.stories[1].node_ids.len(),
+        gen.stories[2].node_ids.len(),
         2,
         "区間に入る節点（z=7000）は階に属する"
     );
     assert!(
-        gen.stories[1].seismic_weight.unwrap() > 0.0,
+        gen.stories[2].seismic_weight.unwrap() > 0.0,
         "その重量も階へ算入される"
     );
-    assert_eq!(gen.constraints.len(), 1, "剛床は床面に節点がある階の分だけ");
-    assert!(gen_slaves(&gen, StoryId(1)).is_empty());
-    assert_eq!(gen.rep_nodes.len(), 1, "剛床のない階には代表節点も作らない");
+    // 剛床は床面に節点がある階の分だけ（基部の床 z=0 と 3F の床 z=3500）。
+    // 4F（z=10500）には節点がないため作られない。
+    assert_eq!(gen.constraints.len(), 2);
+    assert!(gen_slaves(&gen, StoryId(2)).is_empty());
+    assert_eq!(gen.rep_nodes.len(), 2, "剛床のない階には代表節点も作らない");
+}
+
+/// 旧形式（層基準＝基部の階を持たない階列）のモデルを準備計算に通すと、
+/// 階生成が基部の床を補って床基準へ揃える。**層の量は新形式と一致する**。
+///
+/// これがないと `Model::layers` が最下層を見落とし、層間変形角・層せん断力から
+/// 静かに 1 層落ちる。移行コードを持たない代わりに、階生成が不変条件を作る
+/// ことでこれを防いでいる（`dev_docs/handoff` の申し送り参照）。
+#[test]
+fn test_layer_quantities_match_between_legacy_and_floor_based_stories() {
+    let base_model = two_story_model();
+
+    // 旧形式: 層の上端の床だけを階として持つ（基部の階がない）。
+    let mut legacy = base_model.clone();
+    legacy.stories = vec![
+        Story {
+            id: StoryId(0),
+            name: "2F".into(),
+            elevation: 3500.0,
+            node_ids: Vec::new(),
+            seismic_weight: None,
+            weight_override: None,
+            structure: Default::default(),
+            level_kind: Default::default(),
+        },
+        Story {
+            id: StoryId(1),
+            name: "3F".into(),
+            elevation: 7000.0,
+            node_ids: Vec::new(),
+            seismic_weight: None,
+            weight_override: None,
+            structure: Default::default(),
+            level_kind: Default::default(),
+        },
+    ];
+
+    // 新形式: 基部の床を先頭に持つ。
+    let mut modern = base_model.clone();
+    modern.stories = vec![
+        Story {
+            id: StoryId(0),
+            name: "1F".into(),
+            elevation: 0.0,
+            node_ids: Vec::new(),
+            seismic_weight: None,
+            weight_override: None,
+            structure: Default::default(),
+            level_kind: Default::default(),
+        },
+        legacy.stories[0].clone(),
+        legacy.stories[1].clone(),
+    ];
+    modern.stories[1].id = StoryId(1);
+    modern.stories[2].id = StoryId(2);
+
+    let apply = |m: &Model| -> Model {
+        let gen = generate_stories(m, Some(LoadCaseId(0))).unwrap();
+        let mut out = m.clone();
+        out.stories = gen.stories;
+        out
+    };
+    let from_legacy = apply(&legacy);
+    let from_modern = apply(&modern);
+
+    // どちらも床基準（先頭が基部）へ揃う。
+    assert_eq!(from_legacy.stories.len(), 3);
+    assert_eq!(
+        from_legacy.stories[0].elevation,
+        from_legacy.base_elevation()
+    );
+    assert_eq!(
+        from_modern.stories[0].elevation,
+        from_modern.base_elevation()
+    );
+
+    // 層の量（名前・階高・重量）が一致する。
+    let layers_of = |m: &Model| -> Vec<(String, f64, Option<f64>)> {
+        m.layers()
+            .into_iter()
+            .map(|l| (l.name, l.height, l.weight))
+            .collect()
+    };
+    let a = layers_of(&from_legacy);
+    let b = layers_of(&from_modern);
+    assert_eq!(a.len(), 2, "3500・7000 の 2 層");
+    assert_eq!(a, b, "旧形式・新形式で層の量が一致する");
+    // 最下層の階高は基部から数える（旧形式でも 0→3500）。
+    assert_eq!(a[0].1, 3500.0);
+    assert_eq!(a[1].1, 3500.0);
 }

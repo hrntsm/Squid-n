@@ -116,7 +116,7 @@ pub fn nonlinear_time_history_analysis(
         return Ok(ResponseResult {
             time: vec![],
             peak_disp: vec![[0.0; 6]; model.nodes.len()],
-            story_drift_angle: vec![0.0; model.stories.len()],
+            story_drift_angle: vec![0.0; model.layer_count()],
             cumulative_ductility: vec![0.0; model.elements.len()],
             history: ResponseHistory::default(),
             recording: None,
@@ -287,7 +287,7 @@ pub fn nonlinear_time_history_analysis(
     for i in 0..n_free {
         peak_disp_free[i] = peak_disp_free[i].max(u_free[i].abs());
     }
-    let mut story_drift_angle = vec![0.0f64; model.stories.len()];
+    let mut story_drift_angle = vec![0.0f64; model.layer_count()];
     update_story_drift(model, dofmap, &u_free, &mut story_drift_angle);
 
     // UI 用の代表応答記録（記録方向は入力加速度の絶対値和が大きい方を自動選択）

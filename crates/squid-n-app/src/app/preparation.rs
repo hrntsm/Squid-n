@@ -471,7 +471,8 @@ impl App {
         PrepSummary {
             n_nodes: model.nodes.len(),
             n_elements: model.elements.len(),
-            n_stories: model.stories.len(),
+            // 「階数」は法規上の層の数（`Model::layers`）を表示する。
+            n_stories: model.layer_count(),
             n_supports: {
                 let generated: std::collections::HashSet<NodeId> =
                     model.generated_masters.iter().copied().collect();
@@ -489,44 +490,31 @@ impl App {
             ground_elevation: squid_n_solver::analysis::ground_elevation(model),
             height_mm: squid_n_solver::analysis::building_height_mm(model),
             steel_height_ratio: squid_n_solver::analysis::steel_height_ratio(model),
-            total_seismic_weight: model
-                .stories
-                .iter()
-                .map(|s| s.seismic_weight.unwrap_or(0.0))
-                .sum(),
+            // 地震用重量の合計は層の重量の総和。基部の階の重量（柱脚・基礎梁）は
+            // 地盤が直接受けて層せん断力を生まないため含めない。
+            total_seismic_weight: model.layers().iter().map(|l| l.weight.unwrap_or(0.0)).sum(),
             mass_method: model.mass_method,
         }
     }
 
+    /// 層（法規上の「i 階」）ごとの分布表。名前は下端の階、重量・所属節点・剛床・
+    /// 階種別は上端の階から採る（`squid_n_core::model::Layer`）。
     fn build_prep_stories(&self) -> Vec<PrepStoryRow> {
         let model = &self.model;
-        let gl = squid_n_solver::analysis::ground_elevation(model);
-        let weights: Vec<f64> = model
-            .stories
+        let layers = model.layers();
+        let weights: Vec<f64> = layers.iter().map(|l| l.weight.unwrap_or(0.0)).collect();
+        layers
             .iter()
-            .map(|s| s.seismic_weight.unwrap_or(0.0))
-            .collect();
-        model
-            .stories
-            .iter()
-            .enumerate()
-            .map(|(i, s)| {
-                let below = if i == 0 {
-                    gl
-                } else {
-                    model.stories[i - 1].elevation
-                };
-                PrepStoryRow {
-                    name: s.name.clone(),
-                    elevation: s.elevation,
-                    height: s.elevation - below,
-                    n_nodes: s.node_ids.len(),
-                    n_diaphragms: model.diaphragms_of(s.id).count(),
-                    weight: weights[i],
-                    cumulative_weight: weights[i..].iter().sum(),
-                    structure: s.structure,
-                    level_kind: s.level_kind,
-                }
+            .map(|l| PrepStoryRow {
+                name: l.name.clone(),
+                elevation: l.top_elevation,
+                height: l.height,
+                n_nodes: l.node_ids.len(),
+                n_diaphragms: model.diaphragms_of(l.top).count(),
+                weight: weights[l.index],
+                cumulative_weight: weights[l.index..].iter().sum(),
+                structure: l.structure,
+                level_kind: l.level_kind,
             })
             .collect()
     }
@@ -562,27 +550,24 @@ impl App {
                 Err(e) => return (None, Some(format!("地震力(Ai分布)の算定エラー: {}", e))),
             };
         let tc = squid_n_load::ai::tc_of(cfg.soil);
-        let weights: Vec<f64> = self
-            .model
-            .stories
+        // Ai 分布は層ごと。名前は下端の階、重量・階種別は上端の階から採る。
+        let layers = self.model.layers();
+        let weights: Vec<f64> = layers.iter().map(|l| l.weight.unwrap_or(0.0)).collect();
+        let rows: Vec<PrepSeismicRow> = layers
             .iter()
-            .map(|s| s.seismic_weight.unwrap_or(0.0))
-            .collect();
-        let rows: Vec<PrepSeismicRow> = self
-            .model
-            .stories
-            .iter()
-            .enumerate()
-            .map(|(i, s)| PrepSeismicRow {
-                name: s.name.clone(),
-                weight: weights[i],
-                cumulative_weight: weights[i..].iter().sum(),
-                alpha: dist.alpha.get(i).copied().unwrap_or(0.0),
-                ai: dist.ai.get(i).copied().unwrap_or(0.0),
-                ci: dist.ci.get(i).copied().unwrap_or(0.0),
-                qi: dist.qi.get(i).copied().unwrap_or(0.0),
-                pi: dist.pi.get(i).copied().unwrap_or(0.0),
-                level_kind: s.level_kind,
+            .map(|l| {
+                let i = l.index;
+                PrepSeismicRow {
+                    name: l.name.clone(),
+                    weight: weights[i],
+                    cumulative_weight: weights[i..].iter().sum(),
+                    alpha: dist.alpha.get(i).copied().unwrap_or(0.0),
+                    ai: dist.ai.get(i).copied().unwrap_or(0.0),
+                    ci: dist.ci.get(i).copied().unwrap_or(0.0),
+                    qi: dist.qi.get(i).copied().unwrap_or(0.0),
+                    pi: dist.pi.get(i).copied().unwrap_or(0.0),
+                    level_kind: l.level_kind,
+                }
             })
             .collect();
         let seismic = PrepSeismic {

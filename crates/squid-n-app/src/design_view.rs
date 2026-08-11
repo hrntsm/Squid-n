@@ -678,11 +678,12 @@ pub fn design_table(ui: &mut egui::Ui, app: &mut App) {
                 |row| {
                     let i = row.index();
                     let s = &result.stories[i];
+                    // 層の呼び名は下端の階名（法令の「i 階」）。
                     let name = app
                         .model
-                        .stories
+                        .layers()
                         .get(i)
-                        .map(|st| st.name.clone())
+                        .map(|l| l.name.clone())
                         .unwrap_or_else(|| format!("{}", s.story.0));
                     row.col(|ui| {
                         crate::table_util::text_cell(ui, &name);
@@ -721,8 +722,15 @@ pub fn design_table(ui: &mut egui::Ui, app: &mut App) {
                 use squid_n_solver::pushover::MechanismType;
                 let (mech, warn) = match &po.mechanism {
                     MechanismType::Overall => ("全体崩壊形".to_string(), false),
-                    MechanismType::StoryCollapse { story } => {
-                        (format!("層崩壊形 (Story {})", story.0), false)
+                    MechanismType::StoryCollapse { layer } => {
+                        // 層の呼び名は下端の階名（法令の「i 階」）。
+                        let name = app
+                            .model
+                            .layers()
+                            .get(*layer)
+                            .map(|l| l.name.clone())
+                            .unwrap_or_else(|| format!("{}", layer + 1));
+                        (format!("層崩壊形 ({name})"), false)
                     }
                     MechanismType::Partial => ("部分崩壊形（機構未形成）".to_string(), true),
                 };

@@ -4076,23 +4076,26 @@ fn test_delete_story_keeps_nodes_and_drops_its_diaphragm() {
 /// 階レベルの変更で並び順が入れ替わる場合も、標高昇順と ID＝配列位置を保つ。
 #[test]
 fn test_set_story_level_resorts_and_renumbers() {
-    let mut model = story_edit_model(&[0.0, 4000.0, 7500.0], &[("1F", 4000.0), ("2F", 7500.0)]);
-    model.nodes[1].story = Some(StoryId(0));
-    model.nodes[2].story = Some(StoryId(1));
+    let mut model = story_edit_model(
+        &[0.0, 4000.0, 7500.0],
+        &[("1F", 0.0), ("2F", 4000.0), ("3F", 7500.0)],
+    );
+    model.nodes[1].story = Some(StoryId(1));
+    model.nodes[2].story = Some(StoryId(2));
     let mut undo = UndoStack::new();
 
-    // 1F のレベルを 2F より上へ動かす（入力ミスの是正など）。
+    // 2F のレベルを 3F より上へ動かす（入力ミスの是正など）。
     undo.run(
         &mut model,
         Box::new(SetStoryLevel {
-            story: StoryId(0),
+            story: StoryId(1),
             name: "RF".into(),
             elevation: 9000.0,
         }),
     );
 
     let names: Vec<&str> = model.stories.iter().map(|s| s.name.as_str()).collect();
-    assert_eq!(names, vec!["2F", "RF"], "標高昇順へ並べ替わる");
+    assert_eq!(names, vec!["1F", "3F", "RF"], "標高昇順へ並べ替わる");
     assert!(model
         .stories
         .iter()
@@ -4100,20 +4103,53 @@ fn test_set_story_level_resorts_and_renumbers() {
         .all(|(i, s)| s.id.index() == i));
     assert_eq!(
         model.nodes[1].story,
-        Some(StoryId(1)),
-        "旧 1F の節点は新 ID を指す"
+        Some(StoryId(2)),
+        "旧 2F の節点は新 ID を指す"
     );
     assert_eq!(
         model.nodes[2].story,
-        Some(StoryId(0)),
-        "旧 2F の節点も追随する"
+        Some(StoryId(1)),
+        "旧 3F の節点も追随する"
     );
     assert!(model.validate().is_ok());
 
     undo.undo(&mut model);
     let names: Vec<&str> = model.stories.iter().map(|s| s.name.as_str()).collect();
-    assert_eq!(names, vec!["1F", "2F"]);
-    assert_eq!(model.nodes[1].story, Some(StoryId(0)));
+    assert_eq!(names, vec!["1F", "2F", "3F"]);
+    assert_eq!(model.nodes[1].story, Some(StoryId(1)));
+}
+
+/// 基部の階（`StoryId(0)`）は標高を変えられず、削除もできない。
+/// 階の列の先頭が基部であることは `Model::layers` が依拠する不変条件であり、
+/// これが崩れると最下層が層の一覧から静かに落ちる。
+#[test]
+fn test_base_story_level_and_deletion_are_guarded() {
+    let mut model = story_edit_model(
+        &[0.0, 4000.0, 7500.0],
+        &[("1F", 0.0), ("2F", 4000.0), ("3F", 7500.0)],
+    );
+    let mut undo = UndoStack::new();
+
+    // 標高は据え置かれるが、階名の変更は通る。
+    undo.run(
+        &mut model,
+        Box::new(SetStoryLevel {
+            story: StoryId(0),
+            name: "GL".into(),
+            elevation: 2000.0,
+        }),
+    );
+    assert_eq!(model.stories[0].elevation, 0.0, "基部の標高は変わらない");
+    assert_eq!(model.stories[0].name, "GL", "階名は変えられる");
+    assert_eq!(model.layer_count(), 2, "層は 2 つのまま");
+
+    // 削除は Noop。
+    assert!(
+        !undo.run(&mut model, Box::new(DeleteStory { story: StoryId(0) })),
+        "基部の階は削除できない"
+    );
+    assert_eq!(model.stories.len(), 3);
+    assert_eq!(model.stories[0].elevation, model.base_elevation());
 }
 
 /// 適用待ちコマンドがモデルの変更（階の削除など）の後に残っても、index が
@@ -4123,20 +4159,23 @@ fn test_set_story_level_resorts_and_renumbers() {
 /// （削除は最後、1 フレーム 1 コマンド）が実際の防御線である。
 #[test]
 fn test_stale_story_commands_are_noop() {
-    let mut model = story_edit_model(&[0.0, 4000.0, 7500.0], &[("1F", 4000.0), ("2F", 7500.0)]);
+    let mut model = story_edit_model(
+        &[0.0, 4000.0, 7500.0],
+        &[("1F", 0.0), ("2F", 4000.0), ("3F", 7500.0)],
+    );
     let mut undo = UndoStack::new();
 
     // 削除後に残った古いコマンド: 編集と削除の index はどちらも範囲外になる。
     let stale_level = Box::new(SetStoryLevel {
-        story: StoryId(2),
+        story: StoryId(3),
         name: "RF".into(),
         elevation: 9000.0,
     });
-    let stale_delete = Box::new(DeleteStory { story: StoryId(2) });
+    let stale_delete = Box::new(DeleteStory { story: StoryId(3) });
 
-    // 先に 1F(=StoryId(0)) を削除すると階数が 1 になり、index 2 は範囲外。
-    undo.run(&mut model, Box::new(DeleteStory { story: StoryId(0) }));
-    assert_eq!(model.stories.len(), 1, "1F を削除すると残り 1 階");
+    // 先に 2F(=StoryId(1)) を削除すると階数が 2 になり、index 3 は範囲外。
+    undo.run(&mut model, Box::new(DeleteStory { story: StoryId(1) }));
+    assert_eq!(model.stories.len(), 2, "2F を削除すると残り 2 階");
     assert!(undo.can_undo());
 
     assert!(
@@ -4144,12 +4183,12 @@ fn test_stale_story_commands_are_noop() {
         "範囲外の SetStoryLevel は Noop"
     );
     let names: Vec<&str> = model.stories.iter().map(|s| s.name.as_str()).collect();
-    assert_eq!(names, vec!["2F"], "Noop はモデルを変えない");
+    assert_eq!(names, vec!["1F", "3F"], "Noop はモデルを変えない");
     assert!(
         !undo.run(&mut model, stale_delete),
         "範囲外の DeleteStory は Noop（誤った階を消さない）"
     );
-    assert_eq!(model.stories.len(), 1, "Noop はモデルを変えない");
+    assert_eq!(model.stories.len(), 2, "Noop はモデルを変えない");
     assert!(model.validate().is_ok());
 }
 
@@ -4195,7 +4234,7 @@ fn test_copy_story_assigns_sections_with_target_floor_name() {
     let targets_2f: Vec<squid_n_core::ids::ElemId> = model
         .elements
         .iter()
-        .filter(|e| model.member_story(e) == Some(StoryId(0)))
+        .filter(|e| model.member_story(e) == Some(StoryId(1)))
         .map(|e| e.id)
         .collect();
     assert!(!targets_2f.is_empty());
@@ -4206,8 +4245,8 @@ fn test_copy_story_assigns_sections_with_target_floor_name() {
 
     let n_sections = model.sections.len();
     let cmd = CopyStory {
-        from: StoryId(0),
-        to: vec![StoryId(1)],
+        from: StoryId(1),
+        to: vec![StoryId(2)],
         targets: CopyTargets {
             sections: true,
             ..Default::default()
@@ -4228,7 +4267,7 @@ fn test_copy_story_assigns_sections_with_target_floor_name() {
     let assigned: Vec<&squid_n_core::model::ElementData> = model
         .elements
         .iter()
-        .filter(|e| model.member_story(e) == Some(StoryId(1)))
+        .filter(|e| model.member_story(e) == Some(StoryId(2)))
         .collect();
     assert!(!assigned.is_empty());
     assert!(assigned.iter().all(|e| e.section == Some(copied.id)));
@@ -4240,7 +4279,7 @@ fn test_copy_story_assigns_sections_with_target_floor_name() {
     assert!(model
         .elements
         .iter()
-        .filter(|e| model.member_story(e) == Some(StoryId(1)))
+        .filter(|e| model.member_story(e) == Some(StoryId(2)))
         .all(|e| e.section.is_none()));
 }
 
@@ -4263,7 +4302,7 @@ fn test_copy_story_replaces_loads_instead_of_stacking() {
         .elements
         .iter()
         .find(|e| {
-            model.member_story(e) == Some(StoryId(0))
+            model.member_story(e) == Some(StoryId(1))
                 && model.nodes[e.nodes[0].index()].coord[2]
                     == model.nodes[e.nodes[1].index()].coord[2]
         })
@@ -4282,8 +4321,8 @@ fn test_copy_story_replaces_loads_instead_of_stacking() {
     let base_loads = model.load_cases[0].member.len();
 
     let cmd = || CopyStory {
-        from: StoryId(0),
-        to: vec![StoryId(1)],
+        from: StoryId(1),
+        to: vec![StoryId(2)],
         targets: CopyTargets {
             loads: true,
             ..Default::default()
@@ -4334,8 +4373,8 @@ fn test_copy_story_counts_new_slabs_once() {
     assert!(model.validate().is_ok(), "{:?}", model.validate());
 
     let cmd = CopyStory {
-        from: StoryId(0),
-        to: vec![StoryId(1)],
+        from: StoryId(1),
+        to: vec![StoryId(2)],
         targets: CopyTargets {
             slabs: true,
             loads: true,
@@ -4398,7 +4437,7 @@ fn test_copy_story_overwrite_mirrors_absence() {
     let members_3f: Vec<squid_n_core::ids::ElemId> = model
         .elements
         .iter()
-        .filter(|e| model.member_story(e) == Some(StoryId(1)))
+        .filter(|e| model.member_story(e) == Some(StoryId(2)))
         .map(|e| e.id)
         .collect();
     for id in &members_3f {
@@ -4407,8 +4446,8 @@ fn test_copy_story_overwrite_mirrors_absence() {
     assert!(model.validate().is_ok(), "{:?}", model.validate());
 
     let cmd = CopyStory {
-        from: StoryId(0),
-        to: vec![StoryId(1)],
+        from: StoryId(1),
+        to: vec![StoryId(2)],
         targets: CopyTargets {
             sections: true,
             slabs: true,
@@ -4477,14 +4516,14 @@ fn test_copy_story_without_overwrite_keeps_existing() {
             },
         )
     };
-    let g2 = girder_of(&model, StoryId(0));
-    let g3 = girder_of(&model, StoryId(1));
+    let g2 = girder_of(&model, StoryId(1));
+    let g3 = girder_of(&model, StoryId(2));
     model.load_cases[0].member.push(load(g2, 10.0));
     model.load_cases[0].member.push(load(g3, 99.0));
 
     let cmd = CopyStory {
-        from: StoryId(0),
-        to: vec![StoryId(1)],
+        from: StoryId(1),
+        to: vec![StoryId(2)],
         targets: CopyTargets {
             loads: true,
             ..Default::default()
@@ -4567,8 +4606,8 @@ fn test_copy_story_overwrite_keeps_slabs_outside_source_plan() {
     assert!(model.validate().is_ok(), "{:?}", model.validate());
 
     let cmd = CopyStory {
-        from: StoryId(0),
-        to: vec![StoryId(1)],
+        from: StoryId(1),
+        to: vec![StoryId(2)],
         targets: CopyTargets {
             slabs: true,
             ..Default::default()
@@ -4607,7 +4646,7 @@ fn test_copy_story_reports_mismatched_existing_section() {
     for e in model
         .elements
         .iter()
-        .filter(|e| model.member_story(e) == Some(StoryId(0)))
+        .filter(|e| model.member_story(e) == Some(StoryId(1)))
         .map(|e| e.id)
         .collect::<Vec<_>>()
     {
@@ -4615,8 +4654,8 @@ fn test_copy_story_reports_mismatched_existing_section() {
     }
 
     let cmd = CopyStory {
-        from: StoryId(0),
-        to: vec![StoryId(1)],
+        from: StoryId(1),
+        to: vec![StoryId(2)],
         targets: CopyTargets {
             sections: true,
             ..Default::default()
@@ -4662,8 +4701,8 @@ fn test_copy_story_fits_member_load_to_target_length() {
             .map(|e| e.id)
             .expect("柱がある")
     };
-    let c2 = column_of(&model, StoryId(0));
-    let c3 = column_of(&model, StoryId(1));
+    let c2 = column_of(&model, StoryId(1));
+    let c3 = column_of(&model, StoryId(2));
     assert_eq!(model.member_length(&model.elements[c2.index()]), 4000.0);
     assert_eq!(model.member_length(&model.elements[c3.index()]), 3500.0);
 
@@ -4697,8 +4736,8 @@ fn test_copy_story_fits_member_load_to_target_length() {
     ));
 
     let cmd = CopyStory {
-        from: StoryId(0),
-        to: vec![StoryId(1)],
+        from: StoryId(1),
+        to: vec![StoryId(2)],
         targets: CopyTargets {
             loads: true,
             ..Default::default()
@@ -4782,7 +4821,7 @@ fn test_copy_story_distinguishes_brace_from_girder() {
         .elements
         .iter()
         .find(|e| {
-            matches!(e.kind, ElementKind::Brace { .. }) && model.member_story(e) == Some(StoryId(0))
+            matches!(e.kind, ElementKind::Brace { .. }) && model.member_story(e) == Some(StoryId(1))
         })
         .map(|e| e.id)
         .expect("2F のブレース");
@@ -4794,8 +4833,8 @@ fn test_copy_story_distinguishes_brace_from_girder() {
     model.elements[brace_2f.index()].section = Some(sec);
 
     let cmd = CopyStory {
-        from: StoryId(0),
-        to: vec![StoryId(1)],
+        from: StoryId(1),
+        to: vec![StoryId(2)],
         targets: CopyTargets {
             sections: true,
             ..Default::default()
@@ -4810,7 +4849,7 @@ fn test_copy_story_distinguishes_brace_from_girder() {
         .elements
         .iter()
         .find(|e| {
-            matches!(e.kind, ElementKind::Brace { .. }) && model.member_story(e) == Some(StoryId(1))
+            matches!(e.kind, ElementKind::Brace { .. }) && model.member_story(e) == Some(StoryId(2))
         })
         .expect("3F のブレース");
     let assigned = brace_3f.section.expect("ブレースへ断面が付く");
@@ -4824,7 +4863,7 @@ fn test_copy_story_distinguishes_brace_from_girder() {
         .iter()
         .filter(|e| {
             matches!(e.kind, ElementKind::Beam)
-                && model.member_story(e) == Some(StoryId(1))
+                && model.member_story(e) == Some(StoryId(2))
                 && model.nodes[e.nodes[0].index()].coord[2]
                     == model.nodes[e.nodes[1].index()].coord[2]
         })
@@ -4857,8 +4896,8 @@ fn test_copy_story_remaps_slab_section_to_target_floor() {
     assert!(model.validate().is_ok(), "{:?}", model.validate());
 
     let cmd = CopyStory {
-        from: StoryId(0),
-        to: vec![StoryId(1)],
+        from: StoryId(1),
+        to: vec![StoryId(2)],
         targets: CopyTargets {
             slabs: true,
             ..Default::default()
@@ -4923,8 +4962,8 @@ fn test_copy_story_counts_new_slabs_once_with_deletion() {
     }
 
     let cmd = CopyStory {
-        from: StoryId(0),
-        to: vec![StoryId(1)],
+        from: StoryId(1),
+        to: vec![StoryId(2)],
         targets: CopyTargets {
             slabs: true,
             loads: true,
@@ -4975,7 +5014,7 @@ fn test_copy_story_matches_across_rounding_boundary() {
         .elements
         .iter()
         .find(|e| {
-            model.member_story(e) == Some(StoryId(0))
+            model.member_story(e) == Some(StoryId(1))
                 && model.nodes[e.nodes[0].index()].coord[2]
                     == model.nodes[e.nodes[1].index()].coord[2]
                 && model.nodes[e.nodes[0].index()].coord[1] == 0.0
@@ -4987,8 +5026,8 @@ fn test_copy_story_matches_across_rounding_boundary() {
     model.elements[girder_2f.index()].section = Some(sec);
 
     let cmd = CopyStory {
-        from: StoryId(0),
-        to: vec![StoryId(1)],
+        from: StoryId(1),
+        to: vec![StoryId(2)],
         targets: CopyTargets {
             sections: true,
             ..Default::default()

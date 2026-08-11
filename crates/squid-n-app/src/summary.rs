@@ -99,7 +99,8 @@ pub fn compute_story_metrics_with(
     dir: SeismicDir,
     ctx: &StoryMetricsCtx<'_>,
 ) -> Vec<StoryMetric> {
-    if model.stories.is_empty() {
+    let layers = model.layers();
+    if layers.is_empty() {
         return Vec::new();
     }
     let d = match dir {
@@ -119,14 +120,8 @@ pub fn compute_story_metrics_with(
     .map(|s| s.disp.as_slice())
     .unwrap_or(disp);
 
-    // 基部レベル: 全節点の最低標高
-    let base_z = model
-        .nodes
-        .iter()
-        .map(|n| n.coord[2])
-        .fold(f64::INFINITY, f64::min);
-
-    // 各階の平均水平変位（柱が拾えない層の層間変位フォールバック用）
+    // 各階（床）の平均水平変位（柱が拾えない層の層間変位フォールバック用）。
+    // 基部の階も含めるため、支点ばねで基礎が動くモデルでも下端が実変位になる。
     let avg_disp: Vec<f64> = model
         .stories
         .iter()
@@ -144,21 +139,18 @@ pub fn compute_story_metrics_with(
         })
         .collect();
 
-    let mut heights = Vec::with_capacity(model.stories.len());
-    let mut drifts = Vec::with_capacity(model.stories.len());
-    for (i, s) in model.stories.iter().enumerate() {
-        let below_elev = if i == 0 {
-            base_z
-        } else {
-            model.stories[i - 1].elevation
-        };
-        heights.push((s.elevation - below_elev).max(1e-9));
-        // 層間変形角の確認用変位: 柱ごとの最大値（1/irs = max(δ)/iH）
-        let drift = match max_column_drift(model, metric_disp, d, s.id) {
+    let mut heights = Vec::with_capacity(layers.len());
+    let mut drifts = Vec::with_capacity(layers.len());
+    for l in &layers {
+        heights.push(l.height.max(1e-9));
+        // 層間変形角の確認用変位: 柱ごとの最大値（1/irs = max(δ)/iH）。
+        // 柱は層の上端の階に取り付く。
+        let drift = match max_column_drift(model, metric_disp, d, l.top) {
             Some(cd) => cd.drift,
             None => {
-                let below_disp = if i == 0 { 0.0 } else { avg_disp[i - 1] };
-                (avg_disp[i] - below_disp).abs()
+                let top = avg_disp.get(l.top.index()).copied().unwrap_or(0.0);
+                let bottom = avg_disp.get(l.bottom.index()).copied().unwrap_or(0.0);
+                (top - bottom).abs()
             }
         };
         drifts.push(drift);
@@ -175,18 +167,18 @@ pub fn compute_story_metrics_with(
         200.0
     };
 
-    model
-        .stories
+    layers
         .iter()
-        .enumerate()
-        .map(|(i, s)| {
+        .map(|l| {
+            let i = l.index;
+            // 偏心率は層の上端の階に取り付く柱・節点から求める。
             let ecc = match (ctx.seismic_x, ctx.seismic_y) {
                 // 精算: 剛心 = 地震時応力解析結果の ki=Qi/δi、重心 = 長期軸力
                 (Some(rx), Some(ry)) => {
-                    story_eccentricity_from_analysis(model, s.id, rx, ry, ctx.long_term)
+                    story_eccentricity_from_analysis(model, l.top, rx, ry, ctx.long_term)
                 }
                 // 略算: D値法
-                _ => story_eccentricity(model, s.id),
+                _ => story_eccentricity(model, l.top),
             };
             let (e_dist, radius) = match dir {
                 SeismicDir::X => (ecc.ey, ecc.rex),
@@ -196,7 +188,7 @@ pub fn compute_story_metrics_with(
             let rs = rs_all.get(i).copied().unwrap_or(1.0);
             let angle = drifts[i] / heights[i];
             StoryMetric {
-                name: s.name.clone(),
+                name: l.name.clone(),
                 height: heights[i],
                 drift: drifts[i],
                 drift_angle: angle,
@@ -413,13 +405,13 @@ pub fn build_report_csv(app: &App) -> String {
             po.hinges.len()
         ));
         // 層別データ列（層間変位・層せん断力）を層数分だけヘッダに追加する。
-        // 列名はモデルの階名（`Story::name`）を用い、なければ床基準の既定名で補う。
-        let n_stories = model.stories.len();
+        // 列名は層の名前（下端の階名＝法令の「i 階」）を用い、なければ既定名で補う。
+        let layers = model.layers();
+        let n_stories = layers.len();
         let story_name = |i: usize| -> String {
-            model
-                .stories
+            layers
                 .get(i)
-                .map(|s| s.name.clone())
+                .map(|l| l.name.clone())
                 .unwrap_or_else(|| squid_n_core::model::default_story_name(i))
         };
         out.push_str("step,頂部変位[mm],ベースシア[kN]");

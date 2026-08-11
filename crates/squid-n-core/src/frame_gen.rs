@@ -167,8 +167,9 @@ fn dedup_lines(lines: &mut Vec<GridLine>) {
 
 /// 柱脚（最下レベルの節点）の支持条件。
 ///
-/// 既定はピン。固定は基礎梁・基礎による回転拘束を無条件に見込む条件で、
-/// 出発点のモデルとしては危険側に出やすいためである。
+/// 既定はピン。基礎梁は部材として生成されるため、それによる柱脚の回転拘束は
+/// 解析が直接評価する。支点に重ねて固定を与えると、基礎そのものの回転拘束を
+/// 無条件に見込むことになり、出発点のモデルとしては危険側に出やすい。
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum BaseSupport {
     /// 固定（6 自由度すべて拘束）。
@@ -204,10 +205,11 @@ pub struct FrameSpec {
     pub x_spans: Vec<f64>,
     /// Y 方向のスパン [mm]（同上）。
     pub y_spans: Vec<f64>,
-    /// 下から順の階高 [mm]（要素数 ＝ 生成する階の数）。
+    /// 下から順の階高 [mm]（要素数 ＝ 生成する**層**の数）。
     pub story_heights: Vec<f64>,
-    /// 階名（`story_heights` と同順・同数）。空文字の要素は
-    /// [`default_story_name`] で補う。
+    /// 階（床）の名前。**要素数は `story_heights` より 1 つ多く**、先頭が基部の
+    /// 床の名前である（階は床であり、床レベルは層より 1 つ多いため）。
+    /// 空文字の要素は [`default_story_name`] で補う。
     pub story_names: Vec<String>,
     /// X 方向グループの名前（通り名の接頭辞）。
     pub x_group_name: String,
@@ -304,24 +306,24 @@ impl FrameSpec {
             .find(|p| p.name == self.slab_concrete)
     }
 
-    /// 生成される節点数・柱本数・大梁本数。ウィザードが実行前に規模を示すために使う。
+    /// 生成される節点数・柱本数・梁本数・床枚数。ウィザードが実行前に規模を示すために使う。
     pub fn counts(&self) -> FrameCounts {
         let nx = self.x_spans.len() + 1;
         let ny = self.y_spans.len() + 1;
         let n_story = self.story_heights.len();
+        // レベル数 ＝ 階高の数 + 1（基部を含む）。
+        let n_level = n_story + 1;
         let columns = nx * ny * n_story;
-        let girders = if self.with_girders {
-            (self.x_spans.len() * ny + self.y_spans.len() * nx) * n_story
-        } else {
-            0
-        };
+        let per_level = self.x_spans.len() * ny + self.y_spans.len() * nx;
+        // 基部レベルの基礎梁は常に生成し、上のレベルの大梁は `with_girders` に従う。
+        let girders = per_level * if self.with_girders { n_level } else { 1 };
         let slabs = if self.with_slabs {
-            self.x_spans.len() * self.y_spans.len() * n_story
+            self.x_spans.len() * self.y_spans.len() * n_level
         } else {
             0
         };
         FrameCounts {
-            nodes: nx * ny * (n_story + 1),
+            nodes: nx * ny * n_level,
             columns,
             girders,
             slabs,
@@ -371,18 +373,22 @@ pub struct FrameGenResult {
 /// 1. **節点**は全格子点（X 通り × Y 通り × レベル）に置く。ID は
 ///    X → Y → レベルの順の連番で、`ID ＝ 配列添字`の不変条件を満たす。
 /// 2. **柱**は各格子点で上下に隣り合うレベルを結ぶ。基部から最上階まで通す。
-/// 3. **大梁**は基部より上の各レベルで、隣り合う通りの間に架ける
+/// 3. **基礎梁**は基部レベルで、隣り合う通りの間に架ける。日本の建築構造では
+///    基礎梁は必ず設けるため、オプションを設けず常に生成する（`with_girders` に
+///    依存しない）。
+/// 4. **大梁**は基部より上の各レベルで、隣り合う通りの間に架ける
 ///    （`with_girders` が false なら作らない）。
-/// 4. **柱脚支点**は最下レベルの節点へ [`FrameSpec::base_support`] の拘束を与える。
-/// 5. **通り芯**は X 方向・Y 方向のグループを新設し、通り名は `{接頭辞}{番号}`
+/// 5. **柱脚支点**は最下レベルの節点へ [`FrameSpec::base_support`] の拘束を与える。
+/// 6. **通り芯**は X 方向・Y 方向のグループを新設し、通り名は `{接頭辞}{番号}`
 ///    （座標の昇順に 1 から）とする。所属節点はその通りの全格子点。出所は
 ///    [`AxisSource::Manual`] とし、あとで柱位置からの自動生成を実行しても
 ///    作り直されないようにする。
-/// 6. **階**は基部より上の各レベルに 1 つずつ作る。階名は入力を優先し、
-///    空なら [`default_story_name`] で補う。所属節点・剛床・地震用重量は
-///    準備計算が算定する派生値のため、ここでは空のままとする。
-/// 7. **床**は基部より上の各レベルで、隣り合う通りに囲まれた格子パネルへ 1 枚ずつ
-///    作る（`with_slabs` が false、または片方向の通りが 1 本のときは作らない）。
+/// 7. **階**は全レベルに 1 つずつ作る（**先頭は基部の床**）。階は床であり、
+///    その列の先頭が基部であることが `squid_n_core::model::story` の不変条件である。
+///    階名は入力を優先し、空なら [`default_story_name`] で補う。所属節点・剛床・
+///    地震用重量は準備計算が算定する派生値のため、ここでは空のままとする。
+/// 8. **床**は全レベルで、隣り合う通りに囲まれた格子パネルへ 1 枚ずつ作る
+///    （`with_slabs` が false、または片方向の通りが 1 本のときは作らない）。
 ///    板厚 [`FrameSpec::slab_thickness`] の断面 [`SLAB_SECTION_NAME`] を 1 枚だけ
 ///    作り、全階の床で共有する。断面には [`FrameSpec::slab_concrete`] の
 ///    コンクリートを 1 つ作って割り当てる。
@@ -454,18 +460,21 @@ pub fn generate_frame(spec: &FrameSpec) -> Result<FrameGenResult, String> {
             }
         }
     }
-    // 大梁（基部より上の各レベルで隣り合う通りを結ぶ）。
-    if spec.with_girders {
-        for iz in 1..nz {
-            for iy in 0..ny {
-                for ix in 0..nx - 1 {
-                    push_member(nid(ix, iy, iz), nid(ix + 1, iy, iz), false, &mut elements);
-                }
+    // 水平材（各レベルで隣り合う通りを結ぶ）。基部レベル（iz == 0）は基礎梁で、
+    // 日本の建築構造では必ず設けるため常に生成する。基部より上の大梁は
+    // `with_girders` に従う。
+    for iz in 0..nz {
+        if iz > 0 && !spec.with_girders {
+            continue;
+        }
+        for iy in 0..ny {
+            for ix in 0..nx - 1 {
+                push_member(nid(ix, iy, iz), nid(ix + 1, iy, iz), false, &mut elements);
             }
-            for ix in 0..nx {
-                for iy in 0..ny - 1 {
-                    push_member(nid(ix, iy, iz), nid(ix, iy + 1, iz), false, &mut elements);
-                }
+        }
+        for ix in 0..nx {
+            for iy in 0..ny - 1 {
+                push_member(nid(ix, iy, iz), nid(ix, iy + 1, iz), false, &mut elements);
             }
         }
     }
@@ -510,13 +519,12 @@ pub fn generate_frame(spec: &FrameSpec) -> Result<FrameGenResult, String> {
             .collect(),
     };
 
-    // 階（基部より上の各レベル）。
+    // 階（全レベル。先頭が基部の床）。階は床であり、基部の床も階として作る
+    // （`squid_n_core::model::story` の不変条件）。
     let stories = zs
         .iter()
         .enumerate()
-        .skip(1)
-        .map(|(iz, z)| {
-            let si = iz - 1;
+        .map(|(si, z)| {
             let name = spec
                 .story_names
                 .get(si)
@@ -536,7 +544,7 @@ pub fn generate_frame(spec: &FrameSpec) -> Result<FrameGenResult, String> {
         })
         .collect();
 
-    // 床（基部より上の各レベルで、隣り合う通りに囲まれた格子パネル 1 枚ずつ）。
+    // 床（全レベルで、隣り合う通りに囲まれた格子パネル 1 枚ずつ）。
     // 板厚と自重は断面と材料からしか解決できないため、床を作るなら断面とコンクリートも
     // あわせて作る（モジュールドキュメント参照）。
     let mut sections = Vec::new();
@@ -568,7 +576,7 @@ pub fn generate_frame(spec: &FrameSpec) -> Result<FrameGenResult, String> {
         .to_section(sec_id, SLAB_SECTION_NAME.to_string());
         section.material = Some(mat_id);
         sections.push(section);
-        for iz in 1..nz {
+        for iz in 0..nz {
             for ix in 0..nx - 1 {
                 for iy in 0..ny - 1 {
                     // 境界は反時計回り（面積算定の巻き方向をそろえる）。
@@ -640,10 +648,24 @@ mod tests {
         // 3 通り × 2 通り × 4 レベル。
         assert_eq!(model.nodes.len(), 3 * 2 * 4);
         assert_eq!(model.nodes.len(), counts.nodes);
-        // 柱 = 格子点 6 × 3 層、大梁 = (2×2 + 1×3) × 3 レベル。
+        // 柱 = 格子点 6 × 3 層。梁 = (2×2 + 1×3) × 4 レベル
+        //（基部レベルの基礎梁を含む。基礎梁は常に生成する）。
         assert_eq!(counts.columns, 6 * 3);
-        assert_eq!(counts.girders, (2 * 2 + 3) * 3);
+        assert_eq!(counts.girders, (2 * 2 + 3) * 4);
         assert_eq!(model.elements.len(), counts.columns + counts.girders);
+
+        // 基礎梁は基部レベルに架かる。
+        let base_beams = model
+            .elements
+            .iter()
+            .filter(|e| {
+                e.nodes.len() == 2
+                    && e.nodes
+                        .iter()
+                        .all(|n| model.nodes[n.index()].coord[2] == 0.0)
+            })
+            .count();
+        assert_eq!(base_beams, 2 * 2 + 3, "基礎梁が基部レベルに架かる");
 
         // 柱脚は基部レベルの 6 節点だけが固定。
         let fixed: Vec<&Node> = model
@@ -692,7 +714,7 @@ mod tests {
         let names: Vec<&str> = model.axes[1].axes.iter().map(|a| a.name.as_str()).collect();
         assert_eq!(names, vec!["Y1", "Y2"]);
 
-        // 階は床基準の既定名で、標高の昇順に並ぶ。
+        // 階は床であり、先頭は基部の床。床基準の既定名で標高の昇順に並ぶ。
         let stories: Vec<(&str, f64)> = model
             .stories
             .iter()
@@ -700,20 +722,37 @@ mod tests {
             .collect();
         assert_eq!(
             stories,
-            vec![("2F", 4000.0), ("3F", 7500.0), ("4F", 11000.0)]
+            vec![("1F", 0.0), ("2F", 4000.0), ("3F", 7500.0), ("4F", 11000.0)]
+        );
+        // 不変条件: 階の列の先頭は基部。
+        assert_eq!(model.stories[0].elevation, model.base_elevation());
+        // 3 階建ての層は 3 つ。名前は下端の階（法令の「i 階」）。
+        let layers: Vec<(String, f64)> = model
+            .layers()
+            .into_iter()
+            .map(|l| (l.name, l.height))
+            .collect();
+        assert_eq!(
+            layers,
+            vec![
+                ("1F".to_string(), 4000.0),
+                ("2F".to_string(), 3500.0),
+                ("3F".to_string(), 3500.0)
+            ]
         );
     }
 
     /// 階名を入力すればそれを使い、空欄は既定名で補う。
+    /// 階名は床ごとなので、階高より 1 つ多く入力できる（先頭が基部の床）。
     #[test]
     fn test_story_names_from_spec() {
         let spec = FrameSpec {
-            story_names: vec!["2FL".into(), "  ".into(), "RFL".into()],
+            story_names: vec!["GL".into(), "2FL".into(), "  ".into(), "RFL".into()],
             ..FrameSpec::default()
         };
         let model = frame_model(&spec).unwrap();
         let names: Vec<&str> = model.stories.iter().map(|s| s.name.as_str()).collect();
-        assert_eq!(names, vec!["2FL", "3F", "RFL"]);
+        assert_eq!(names, vec!["GL", "2FL", "3F", "RFL"]);
     }
 
     /// スパン・階高が 0 以下の入力は、長さ 0 の部材を作らずエラーにする。
@@ -749,7 +788,7 @@ mod tests {
         assert!(frame_model(&no_slabs).is_ok());
     }
 
-    /// 床は各階の各格子パネルに 1 枚ずつ作り、板厚 150 mm の断面 `S15` を共有する。
+    /// 床は各レベルの各格子パネルに 1 枚ずつ作り、板厚 150 mm の断面 `S15` を共有する。
     ///
     /// 床の板厚と自重は断面と材料からしか解決できないため、床を作るなら断面と
     /// コンクリートもあわせて作る。
@@ -757,8 +796,8 @@ mod tests {
     fn test_generated_slabs_share_one_section() {
         let spec = FrameSpec::default();
         let model = frame_model(&spec).unwrap();
-        // 2×1 スパン × 3 階 = 6 枚。
-        assert_eq!(model.slabs.len(), 2 * 3);
+        // 2×1 スパン × 4 レベル（基部を含む）= 8 枚。
+        assert_eq!(model.slabs.len(), 2 * 4);
         assert_eq!(model.slabs.len(), spec.counts().slabs);
         assert_eq!(model.sections.len(), 1, "床の断面は 1 枚だけ");
         let sec = &model.sections[0];
@@ -779,8 +818,14 @@ mod tests {
                 .map(|n| model.nodes[n.index()].coord[2])
                 .collect();
             assert!(zs.windows(2).all(|w| w[0] == w[1]), "床は水平");
-            assert!(zs[0] > 0.0, "基部レベルには床を作らない");
         }
+        assert!(
+            model
+                .slabs
+                .iter()
+                .any(|sl| model.nodes[sl.boundary[0].index()].coord[2] == 0.0),
+            "基部レベルにも床を作る"
+        );
         assert!(model.validate().is_ok(), "{:?}", model.validate());
     }
 
@@ -821,6 +866,79 @@ mod tests {
         assert!(model.sections.is_empty());
         assert!(model.materials.is_empty());
         assert_eq!(spec.counts().slabs, 0);
+    }
+
+    /// 基礎梁は常に生成する（オプションを設けない）。大梁を作らない設定でも残る。
+    ///
+    /// 日本の RC・S 造では基礎梁は必ず設けるため、基礎梁のない架構は出発点の
+    /// モデルとして不正である。
+    #[test]
+    fn test_foundation_girders_are_always_generated() {
+        let spec = FrameSpec {
+            with_girders: false,
+            ..FrameSpec::default()
+        };
+        let model = frame_model(&spec).unwrap();
+        let at_base = |e: &crate::model::ElementData| {
+            e.nodes.len() == 2
+                && e.nodes
+                    .iter()
+                    .all(|n| model.nodes[n.index()].coord[2] == 0.0)
+        };
+        let base_beams = model.elements.iter().filter(|e| at_base(e)).count();
+        assert_eq!(base_beams, 2 * 2 + 3, "大梁 OFF でも基礎梁は作る");
+        assert_eq!(spec.counts().girders, base_beams);
+        // 基部より上には梁がない。
+        let upper = model.elements.iter().filter(|e| {
+            e.nodes.len() == 2 && {
+                let a = model.nodes[e.nodes[0].index()].coord[2];
+                let b = model.nodes[e.nodes[1].index()].coord[2];
+                (a - b).abs() < 1e-9 && a > 0.0
+            }
+        });
+        assert_eq!(upper.count(), 0, "大梁 OFF なら基部より上に梁はない");
+    }
+
+    /// 伏図（階の切り出し）が、準備計算を通していない生成直後のモデルでも成立する。
+    ///
+    /// 帰属は幾何（[`Model::node_stories`]）から引くため、`Node::story` が
+    /// 未設定でも階を指定すれば部材が出る。基部の階には柱脚と基礎梁が属する。
+    #[test]
+    fn test_generated_frame_is_visible_in_story_frames() {
+        let model = frame_model(&FrameSpec::default()).unwrap();
+        assert!(
+            model.nodes.iter().all(|n| n.story.is_none()),
+            "前提: 生成直後は所属階が未設定（準備計算が埋める派生値）"
+        );
+        for story in &model.stories {
+            let frame =
+                crate::frame::build_frame(&model, crate::frame::FrameTarget::Story(story.id))
+                    .expect("階の構面を切り出せる");
+            assert!(
+                frame.elem_count() > 0,
+                "階 {} の伏図に部材が出る",
+                story.name
+            );
+        }
+        // 基部の階には基礎梁が属する。
+        let base = crate::frame::build_frame(
+            &model,
+            crate::frame::FrameTarget::Story(model.stories[0].id),
+        )
+        .unwrap();
+        let base_beams = model
+            .elements
+            .iter()
+            .enumerate()
+            .filter(|(i, e)| {
+                base.elem_on[*i]
+                    && e.nodes.len() == 2
+                    && e.nodes
+                        .iter()
+                        .all(|n| model.nodes[n.index()].coord[2] == 0.0)
+            })
+            .count();
+        assert_eq!(base_beams, 2 * 2 + 3, "基礎伏図に基礎梁が出る");
     }
 
     /// 片方向の通りが 1 本だけなら格子パネルができないため、床は作らない。

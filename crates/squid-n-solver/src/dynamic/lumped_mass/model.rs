@@ -214,9 +214,10 @@ pub fn build_lumped_mass_model(
     model_type: LumpedMassType,
     secant_ratio: f64,
 ) -> LumpedMassModel {
-    let n_story = model.stories.len();
-    let mut sticks = Vec::with_capacity(n_story);
-    for (i, story) in model.stories.iter().enumerate() {
+    let layers = model.layers();
+    let mut sticks = Vec::with_capacity(layers.len());
+    for layer in &layers {
+        let i = layer.index;
         // 層 i の Q-δ 曲線（各キャパシティ点の層せん断・層間変形）。
         let curve: Vec<(f64, f64)> = pushover
             .capacity_curve
@@ -229,10 +230,11 @@ pub fn build_lumped_mass_model(
             .collect();
         let skeleton = fit_story_trilinear(&curve, secant_ratio);
 
-        // 質量 = 地震重量 / g（未設定なら節点質量の合計）。
-        let mass = match story.seismic_weight {
+        // 質量 = 地震重量 / g（未設定なら節点質量の合計）。層の質量は上端の階に
+        // 集中する（`Layer` 参照）。
+        let mass = match layer.weight {
             Some(w) if w > 0.0 => w / GRAVITY_MM_S2,
-            _ => story
+            _ => layer
                 .node_ids
                 .iter()
                 .filter_map(|nid| model.nodes.get(nid.index()))
@@ -240,18 +242,12 @@ pub fn build_lumped_mass_model(
                 .map(|m| m[0].max(m[1]))
                 .sum(),
         };
-        // 階高 = 当該階標高 − 直下階標高（最下階は標高そのもの）。
-        let below = if i > 0 {
-            model.stories[i - 1].elevation
-        } else {
-            0.0
-        };
-        let height = (story.elevation - below).max(0.0);
 
         sticks.push(StoryStick {
-            story: story.id,
+            // 層の識別は下端の階（＝層の呼び名になる床）で行う。
+            story: layer.bottom,
             mass,
-            height,
+            height: layer.height.max(0.0),
             skeleton,
         });
     }

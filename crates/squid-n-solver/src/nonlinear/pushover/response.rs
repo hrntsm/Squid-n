@@ -8,7 +8,7 @@
 //! - [`story_reference_node`] — 階を代表する節点（剛床マスター、なければ最重量節点）
 //! - [`get_roof_disp`] / [`get_roof_dof`] — 屋根（最上階の代表節点）の変位・DOF
 
-use crate::analysis::{base_elevation, SeismicDir};
+use crate::analysis::SeismicDir;
 use squid_n_core::dof::DofMap;
 use squid_n_core::ids::NodeId;
 use squid_n_core::model::{Model, Story};
@@ -45,11 +45,11 @@ pub(crate) fn compute_base_shear(
 
 /// 層せん断力を内力の釣合いから求める（P5 §7.4、P7 の Qu 突合に使用）。
 ///
-/// 第 i 層のせん断力 Q_i = 第 i 層以上の階に属する節点へ作用する
-/// 載荷方向水平内力の合計（上層から累積）。階に属さない中間節点は
-/// 集計対象外（階の自動生成はレベル単位で節点をクラスタリングするため、
-/// 通常のフレームでは全自由節点がいずれかの階に属する）。
-/// stories が空なら空ベクトルを返す。
+/// 第 i 層のせん断力 Q_i = 第 i 層以上の層に属する節点へ作用する
+/// 載荷方向水平内力の合計（上層から累積）。層に属する節点は上端の階（床）の
+/// 所属節点である。基部の床の節点（柱脚）はどの層にも属さず集計対象外で、
+/// その水平力は支点反力＝ベースシアとして現れる。
+/// 層がなければ空ベクトルを返す。
 pub(crate) fn compute_story_shear(
     model: &Model,
     dofmap: &DofMap,
@@ -57,14 +57,15 @@ pub(crate) fn compute_story_shear(
     dir: SeismicDir,
 ) -> Vec<f64> {
     let dir_idx = dir_index(dir);
-    let n = model.stories.len();
+    let layers = model.layers();
+    let n = layers.len();
     let mut level_force = vec![0.0; n];
-    for (i, story) in model.stories.iter().enumerate() {
-        for nid in &story.node_ids {
+    for layer in &layers {
+        for nid in &layer.node_ids {
             let g = nid.index() * 6 + dir_idx;
             if let Some(a) = dofmap.active(g) {
                 if let Some(&v) = f_int.get(a as usize) {
-                    level_force[i] += v;
+                    level_force[layer.index] += v;
                 }
             }
         }
@@ -107,8 +108,12 @@ pub(crate) fn story_reference_node(model: &Model, story: &Story) -> Option<NodeI
 }
 
 /// 層間変位を階の代表節点（[`story_reference_node`]）の水平変位差から求める。
-/// 第 i 層の層間変位 = 代表変位(第 i 層) − 代表変位(1 つ下の階)。
-/// 最下層は基部（変位 0）との差。代表がない／拘束済みの階は変位 0 とみなす。
+/// 第 i 層の層間変位 = 代表変位(上端の階) − 代表変位(下端の階)。
+///
+/// 最下層の下端は基部の階であり、その代表節点の**実変位**を用いる。基部を
+/// 変位 0 と決め打ちしないのは、支点ばね（`Node::support_spring`）で支持された
+/// 基礎が水平に動くモデルで最下層の層間変位を過大に見積もるためである。
+/// 代表がない／拘束済みの階は変位 0 とみなす。
 pub(crate) fn compute_story_drift(
     model: &Model,
     dofmap: &DofMap,
@@ -116,41 +121,31 @@ pub(crate) fn compute_story_drift(
     dir: SeismicDir,
 ) -> Vec<f64> {
     let dir_idx = dir_index(dir);
-    let mut prev = 0.0;
+    let disp_of = |sid: squid_n_core::ids::StoryId| -> f64 {
+        model
+            .stories
+            .get(sid.index())
+            .and_then(|story| story_reference_node(model, story))
+            .and_then(|node| {
+                let g = node.index() * 6 + dir_idx;
+                dofmap
+                    .active(g)
+                    .and_then(|a| total_disp.get(a as usize).copied())
+            })
+            .unwrap_or(0.0)
+    };
     model
-        .stories
+        .layers()
         .iter()
-        .map(|story| {
-            let d = story_reference_node(model, story)
-                .and_then(|node| {
-                    let g = node.index() * 6 + dir_idx;
-                    dofmap
-                        .active(g)
-                        .and_then(|a| total_disp.get(a as usize).copied())
-                })
-                .unwrap_or(0.0);
-            let drift = d - prev;
-            prev = d;
-            drift
-        })
+        .map(|l| disp_of(l.top) - disp_of(l.bottom))
         .collect()
 }
 
-/// 各階の階高 [mm] を階の標高（`Story::elevation`）の隣接差分から求める。
-/// 最下層は最下端節点標高（[`base_elevation`]、生成マスター節点を除く最小 z）との差。
+/// 各層の階高 [mm]（[`squid_n_core::model::Layer::height`]）。
 /// 逆転・重複入力による非正値は 0 とする（層間変形角の算定では 0 除算を避けるため
 /// [`max_story_drift_angle`] 側で高さ 0 の層を判定対象外にする）。
 pub(crate) fn story_heights(model: &Model) -> Vec<f64> {
-    let mut prev = base_elevation(model);
-    model
-        .stories
-        .iter()
-        .map(|s| {
-            let h = (s.elevation - prev).max(0.0);
-            prev = s.elevation;
-            h
-        })
-        .collect()
+    model.layers().iter().map(|l| l.height.max(0.0)).collect()
 }
 
 /// 全層の最大層間変形角 [rad]（|層間変位| / 階高 の最大値）。

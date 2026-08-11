@@ -1256,7 +1256,7 @@ fn fiber_column_model(fy: f64) -> Model {
                 coord: [0.0, 0.0, 3000.0],
                 restraint: Dof6Mask(0b111110),
                 mass: Some([1.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
-                story: Some(StoryId(0)),
+                story: Some(StoryId(1)),
                 support_spring: None,
             },
         ],
@@ -1307,16 +1307,29 @@ fn fiber_column_model(fy: f64) -> Model {
             fc: None,
             fy: Some(fy),
         }],
-        stories: vec![Story {
-            level_kind: Default::default(),
-            structure: Default::default(),
-            id: StoryId(0),
-            name: "1F".to_string(),
-            elevation: 3000.0,
-            node_ids: vec![NodeId(1)],
-            seismic_weight: Some(10000.0),
-            weight_override: None,
-        }],
+        stories: vec![
+            // 階は床であり、先頭は基部の床（`Model::layers` の不変条件）。
+            Story {
+                level_kind: Default::default(),
+                structure: Default::default(),
+                id: StoryId(0),
+                name: "1F".to_string(),
+                elevation: 0.0,
+                node_ids: vec![NodeId(0)],
+                seismic_weight: None,
+                weight_override: None,
+            },
+            Story {
+                level_kind: Default::default(),
+                structure: Default::default(),
+                id: StoryId(1),
+                name: "2F".to_string(),
+                elevation: 3000.0,
+                node_ids: vec![NodeId(1)],
+                seismic_weight: Some(10000.0),
+                weight_override: None,
+            },
+        ],
         ..Default::default()
     }
 }
@@ -1787,9 +1800,9 @@ fn test_linear_recording_frames_and_stories() {
     assert_eq!(recording.node_disp[0].len(), model.nodes.len());
     assert_eq!(recording.member_forces.len(), n_steps + 1);
     assert_eq!(recording.peak_member_forces.len(), model.elements.len());
-    // 階は下→上 1 層（fiber_column_model の Story 定義と同じ並び）。
-    assert_eq!(recording.story_x.stories.len(), model.stories.len());
-    assert_eq!(recording.story_y.stories.len(), model.stories.len());
+    // 記録の単位は**層**（下→上 1 層。fiber_column_model は基部の床 + 1 床）。
+    assert_eq!(recording.story_x.stories.len(), model.layer_count());
+    assert_eq!(recording.story_y.stories.len(), model.layer_count());
     assert_eq!(recording.story_x.story_shear.len(), n_steps + 1);
     assert_eq!(recording.story_x.story_weight[0], 10000.0);
 }

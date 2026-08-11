@@ -8,7 +8,7 @@
 //! - [`PushoverMemberResponse`] — 終局時の部材別応答
 //! - [`PushoverResult`] / [`PushoverStep`] — 解析結果とステップ記録
 
-use squid_n_core::ids::{ElemId, StoryId};
+use squid_n_core::ids::ElemId;
 
 /// 増分解析の終了目標（P5 §7）。有効化した判定のうち**いずれか**に達した時点で
 /// 変位増分を打ち切る。両方 `None` の場合は荷重制御（λ=1）までで終了する。
@@ -203,7 +203,10 @@ pub enum DuctilityMethod {
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub enum MechanismType {
     Overall,
-    StoryCollapse { story: StoryId },
+    /// 層崩壊。`layer` は [`squid_n_core::model::Layer::index`]（下から 0 始まり）。
+    StoryCollapse {
+        layer: usize,
+    },
     Partial,
 }
 

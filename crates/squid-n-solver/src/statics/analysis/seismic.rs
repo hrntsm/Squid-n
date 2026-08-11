@@ -30,10 +30,10 @@ pub fn base_elevation(model: &Model) -> f64 {
 /// （地上部分のみ）は、基部レベルではなくこの GL を基準に測る。
 pub fn ground_elevation(model: &Model) -> f64 {
     let gl = model
-        .stories
+        .layers()
         .iter()
-        .filter_map(|s| match s.level_kind {
-            StoryLevelKind::Basement { depth_m } => Some(s.elevation + depth_m * 1000.0),
+        .filter_map(|l| match l.level_kind {
+            StoryLevelKind::Basement { depth_m } => Some(l.top_elevation + depth_m * 1000.0),
             _ => None,
         })
         .fold(f64::NEG_INFINITY, f64::max);
@@ -53,10 +53,10 @@ pub fn ground_elevation(model: &Model) -> f64 {
 pub fn building_height_mm(model: &Model) -> f64 {
     let gl = ground_elevation(model);
     let top_normal = model
-        .stories
+        .layers()
         .iter()
-        .filter(|s| matches!(s.level_kind, StoryLevelKind::Normal))
-        .map(|s| s.elevation)
+        .filter(|l| matches!(l.level_kind, StoryLevelKind::Normal))
+        .map(|l| l.top_elevation)
         .fold(f64::NEG_INFINITY, f64::max);
     let top = if top_normal.is_finite() {
         top_normal
@@ -74,44 +74,22 @@ pub fn building_height_mm(model: &Model) -> f64 {
 /// 「地階を除く」に従い地下階は分子・分母とも算入しない。PH（塔屋）階も
 /// 建築物の高さに算入しない扱いに合わせて対象外とする。
 ///
-/// 階高 h_i = elevation_i − elevation_{i−1}（最下の地上一般階は GL を
-/// elevation_{-1} とみなす）。階が定義されていない、または建築物の高さが 0 以下の
-/// 場合は 0.0 を返す（レビュー §1.5：従来はこの α を常に 0.0 にハードコード
-/// していたバグの修正。地下階・PH 階の除外は照合レビューによる是正）。
+/// 階高は層の高さ（[`squid_n_core::model::Layer::height`]）そのものである。
+/// 階が定義されていない、または建築物の高さが 0 以下の場合は 0.0 を返す
+/// （レビュー §1.5：従来はこの α を常に 0.0 にハードコードしていたバグの修正。
+/// 地下階・PH 階の除外は照合レビューによる是正）。
 pub fn steel_height_ratio(model: &Model) -> f64 {
-    if model.stories.is_empty() {
-        return 0.0;
-    }
-    let gl = ground_elevation(model);
     let total_h = building_height_mm(model);
     if total_h <= 0.0 {
         return 0.0;
     }
-    // 階高は標高の隣接差分で求めるため、`model.stories` の並び順に依存しない
-    // よう標高昇順に並べ替えてから走査する（並びが乱れた入力では h が負になり
-    // 鉄骨階の高さが無言で欠落していた）。
-    let mut normals: Vec<&Story> = model
-        .stories
+    let steel_h: f64 = model
+        .layers()
         .iter()
-        .filter(|s| matches!(s.level_kind, StoryLevelKind::Normal))
-        .collect();
-    normals.sort_by(|a, b| {
-        a.elevation
-            .partial_cmp(&b.elevation)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
-    let mut prev_elev = gl;
-    let mut steel_h = 0.0;
-    for story in normals {
-        let h = story.elevation - prev_elev;
-        prev_elev = story.elevation;
-        if h <= 0.0 {
-            continue;
-        }
-        if matches!(story.structure, StoryStructure::S) {
-            steel_h += h;
-        }
-    }
+        .filter(|l| matches!(l.level_kind, StoryLevelKind::Normal))
+        .filter(|l| matches!(l.structure, StoryStructure::S))
+        .map(|l| l.height.max(0.0))
+        .sum();
     (steel_h / total_h).clamp(0.0, 1.0)
 }
 
@@ -369,15 +347,15 @@ impl Analysis<'_> {
 ///
 /// [`build_seismic_load_case_from_model`] が水平力の荷重ケースを組み立てる前段の
 /// 算定部分であり、準備計算での確認表示（α・Ai・Ci・Qi・Pi の一覧）にも用いる。
-/// 返り値の各ベクタは `model.stories` と同順（下階→上階）。
+/// 返り値の各ベクタは [`Model::layers`] と同順（下層→上層）。
 pub fn seismic_distribution_for_model(
     model: &Model,
     cfg: SeismicCfg,
     t: f64,
 ) -> Result<squid_n_load::ai::AiDistribution, SolveError> {
     let SeismicCfg { z, soil, c0, .. } = cfg;
-    let stories = &model.stories;
-    if stories.is_empty() {
+    let layers = model.layers();
+    if layers.is_empty() {
         return Err(SolveError::InvalidInput(
                 "階(Story)が定義されていません。地震荷重(Ai分布)には階の定義・地震重量・剛床(ダイアフラム)が必要です。解析タブの「準備計算 実行」を行ってください。".into(),
             ));
@@ -386,10 +364,7 @@ pub fn seismic_distribution_for_model(
     let tc = squid_n_load::ai::tc_of(soil);
     let rt_val = squid_n_load::ai::rt(t, tc);
 
-    if stories
-        .iter()
-        .all(|s| s.seismic_weight.unwrap_or(0.0) == 0.0)
-    {
+    if layers.iter().all(|l| l.weight.unwrap_or(0.0) == 0.0) {
         return Err(SolveError::InvalidInput(
             "階の地震重量(seismic_weight)がすべて 0 です。各階の重量を設定してください。".into(),
         ));
@@ -401,12 +376,17 @@ pub fn seismic_distribution_for_model(
     // 重量を除外する（main_system_weight。§副剛床のCi直接入力）。
     // α・Ai・Ci は「全剛床の場合の Ci」に従うため、副剛床を含む階全体の
     // 重量（ci_weight = seismic_weight）から算定する。
-    let specs: Vec<squid_n_load::ai::StorySeismicSpec> = stories
+    // 層の重量・剛床は上端の階（床）が持つ。
+    let specs: Vec<squid_n_load::ai::StorySeismicSpec> = layers
         .iter()
-        .map(|s| squid_n_load::ai::StorySeismicSpec {
-            weight: main_system_weight(model, s),
-            ci_weight: s.seismic_weight.unwrap_or(0.0),
-            level_kind: s.level_kind,
+        .map(|l| squid_n_load::ai::StorySeismicSpec {
+            weight: model
+                .stories
+                .get(l.top.index())
+                .map(|s| main_system_weight(model, s))
+                .unwrap_or(0.0),
+            ci_weight: l.weight.unwrap_or(0.0),
+            level_kind: l.level_kind,
         })
         .collect();
     Ok(squid_n_load::ai::seismic_shear_distribution(
@@ -427,7 +407,6 @@ pub fn build_seismic_load_case_from_model(
     t: f64,
 ) -> Result<squid_n_core::model::LoadCase, SolveError> {
     let SeismicCfg { dir, mode, .. } = cfg;
-    let stories = &model.stories;
     let ai = seismic_distribution_for_model(model, cfg, t)?;
 
     // Create a load case from the Ai distribution horizontal forces
@@ -448,8 +427,12 @@ pub fn build_seismic_load_case_from_model(
         member: Vec::new(),
     };
 
-    for (i, story) in stories.iter().enumerate() {
-        let pi = ai.pi.get(i).copied().unwrap_or(0.0);
+    // 層の水平力 Pi は、その層の質量が集中する**上端の階（床）**の剛床へ作用させる。
+    for layer in model.layers() {
+        let pi = ai.pi.get(layer.index).copied().unwrap_or(0.0);
+        let Some(story) = model.stories.get(layer.top.index()) else {
+            continue;
+        };
         for (master, share) in distribute_seismic_forces(model, story, pi) {
             // NaN は `== 0.0` をすり抜けて荷重ケースへ混入し「解析は成功したが
             // 結果が NaN」という壊れ方をするため、非有限値もここで除外する。
