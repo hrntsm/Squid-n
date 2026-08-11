@@ -15,7 +15,6 @@ use super::cft::{
 use super::cft_nm::{
     cft_long_medium_column_mu, cft_nk, cft_short_column_mu, CftBendingInput, CftLongMediumInput,
 };
-use super::geometry::geometric_length;
 
 /// 1 CFT 柱の軸終局検定結果。
 #[derive(Clone, Debug)]
@@ -111,7 +110,7 @@ pub fn collect_cft_ultimate_checks(
         let fy = crate::material_strength::steel_f_value_prefix(&mat.name, thick)
             .or(mat.fy)
             .unwrap_or(235.0);
-        let lk = geometric_length(elem, model);
+        let lk = model.member_length(elem);
 
         let inp = cft::CftAxialInput {
             circular,

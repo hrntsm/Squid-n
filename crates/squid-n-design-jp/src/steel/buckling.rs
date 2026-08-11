@@ -179,7 +179,7 @@ fn clear_length(elem: &ElementData, len: f64) -> f64 {
 ///
 /// `G = Σ(E・I/L)_柱 / Σ(E・I/L)_梁`。部材種別は部材軸の鉛直成分による
 /// 幾何判定（|ez| ≥ 0.8 柱、|ez| ≤ 0.2 梁。それ以外＝斜材は無視）で、
-/// `member_kind_of`（app/mcp）と同じ規則。
+/// 判定規則の実体は [`crate::MemberKind::from_ez`]（全クレート共通の単一規約）。
 ///
 /// - 当該柱端の `EndCondition` が `Pinned` の場合は G=10（本実装の既定値）。
 /// - 節点に接する梁がない場合（Σ梁 = 0）は G=10（同上）。
@@ -205,10 +205,11 @@ fn g_ratio_at_with_index(
         let Some(ei_l) = flexural_stiffness(model, other, len) else {
             continue;
         };
-        if ez >= 0.8 {
-            sum_col += ei_l;
-        } else if ez <= 0.2 {
-            sum_beam += ei_l;
+        // 部材種別の判定は `MemberKind` の単一規約に従う（斜材は無視）。
+        match crate::MemberKind::from_ez(ez) {
+            crate::MemberKind::Column => sum_col += ei_l,
+            crate::MemberKind::Beam => sum_beam += ei_l,
+            crate::MemberKind::Brace => {}
         }
     }
 
@@ -237,7 +238,7 @@ pub fn steel_column_k_with_index(
         return None;
     }
     let (_, ez) = line_geometry(model, elem)?;
-    if ez < 0.8 {
+    if crate::MemberKind::from_ez(ez) != crate::MemberKind::Column {
         return None;
     }
     let ga = g_ratio_at_with_index(model, index, elem, 0);
@@ -304,7 +305,9 @@ fn g_ratio_axis_at(
             continue;
         };
         let len = clear_length(other, raw_len);
-        if ez >= 0.8 {
+        // 部材種別の判定は `MemberKind` の単一規約に従う。
+        let other_kind = crate::MemberKind::from_ez(ez);
+        if other_kind == crate::MemberKind::Column {
             let Some((sec, mat)) = section_material(model, other) else {
                 continue;
             };
@@ -321,7 +324,7 @@ fn g_ratio_axis_at(
             };
             let i_eff = iy * cos2 + iz * (1.0 - cos2);
             sum_col += mat.young * i_eff / len;
-        } else if ez <= 0.2 {
+        } else if other_kind == crate::MemberKind::Beam {
             // ピン接合の梁端（当該節点側）は節点回転を拘束しないため不算入。
             if let Some(end_idx) = end_index_at(other, *node_id) {
                 if matches!(other.end_cond.get(end_idx), Some(EndCondition::Pinned)) {
@@ -374,7 +377,7 @@ pub fn steel_column_k_axes_with_index(
     }
     let (p0, p1) = node_coords(model, elem)?;
     let (_, ez_comp) = line_geometry(model, elem)?;
-    if ez_comp < 0.8 {
+    if crate::MemberKind::from_ez(ez_comp) != crate::MemberKind::Column {
         return None;
     }
     let frame = LocalFrame::from_nodes(p0, p1, elem.local_axis.ref_vector);

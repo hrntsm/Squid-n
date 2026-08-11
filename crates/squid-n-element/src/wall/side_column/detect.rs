@@ -4,37 +4,9 @@
 
 use super::ReleaseAxis;
 use crate::transform::LocalFrame;
+use squid_n_core::geom::vec3::{cross, dot, sub, unit};
 use squid_n_core::ids::NodeId;
 use squid_n_core::model::{ElementData, ElementKind, Model};
-
-fn sub(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
-    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
-}
-
-fn dot(a: [f64; 3], b: [f64; 3]) -> f64 {
-    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
-}
-
-fn cross(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
-    [
-        a[1] * b[2] - a[2] * b[1],
-        a[2] * b[0] - a[0] * b[2],
-        a[0] * b[1] - a[1] * b[0],
-    ]
-}
-
-fn norm(a: [f64; 3]) -> f64 {
-    dot(a, a).sqrt()
-}
-
-fn unit(a: [f64; 3]) -> Option<[f64; 3]> {
-    let l = norm(a);
-    if l < 1e-9 {
-        None
-    } else {
-        Some([a[0] / l, a[1] / l, a[2] / l])
-    }
-}
 
 /// 曲げを伝達する線材（柱・梁として扱う要素種別）か。
 ///

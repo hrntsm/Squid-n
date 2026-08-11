@@ -322,16 +322,12 @@ impl QuantityTakeoff {
     }
 }
 
-/// 2 点間距離 [mm]。
-fn dist3(a: [f64; 3], b: [f64; 3]) -> f64 {
-    ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt()
-}
+/// 2 点間距離 [mm]。算定の情報源は `squid-n-core` に置く。
+use squid_n_core::geom::vec3::dist as dist3;
 
-/// 鉛直材（柱）判定。両端の水平距離が 1mm 未満なら鉛直
-/// （`squid-n-load::story_gen` と同じ規則）。
-fn is_vertical_pair(a: [f64; 3], b: [f64; 3]) -> bool {
-    ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2)).sqrt() < 1.0
-}
+/// 鉛直材（柱）判定。判定規則の情報源は `squid-n-core` に置く
+/// （仕上げ周長式・雑壁の柱探索・通り芯の自動生成と同一規則）。
+use squid_n_core::geom::is_vertical_pair;
 
 /// 平面多角形（3D 座標）の面積 [mm²]（Newell の公式）。
 fn polygon_area_3d(pts: &[[f64; 3]]) -> f64 {

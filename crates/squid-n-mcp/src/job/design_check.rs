@@ -1,67 +1,11 @@
 //! 断面検定・接合部検定ジョブの純粋計算。
 //!
 //! - [`compute_design_check_job`] — DesignCheck ジョブの純粋計算部分。
-//! - [`member_kind_of`] — 部材種別判定（priv）。
-//! - [`elem_geometric_length`] — 部材両端節点間の幾何長（priv）。
 //! - [`design_positions`] — 危険断面位置を正規化座標で算定する（priv）。
 //! - [`is_near_design_position`] — `pos` が危険断面位置のいずれかと一致するか判定する（priv）。
 
 use super::{model_with_auto_rigid_zones, resolve_load_case, JobOutcome};
 use squid_n_core::model::Model;
-
-/// 部材種別判定（部材軸の鉛直成分による幾何判定）。
-/// squid-n-app の `member_kind_of`（app.rs）と同じロジック。
-fn member_kind_of(
-    elem: &squid_n_core::model::ElementData,
-    model: &Model,
-) -> squid_n_design_jp::MemberKind {
-    use squid_n_design_jp::MemberKind;
-    let coords: Vec<[f64; 3]> = elem
-        .nodes
-        .iter()
-        .filter_map(|nid| model.nodes.get(nid.index()))
-        .map(|n| n.coord)
-        .take(2)
-        .collect();
-    let (Some(p0), Some(p1)) = (coords.first(), coords.get(1)) else {
-        return MemberKind::Beam;
-    };
-    let dx = p1[0] - p0[0];
-    let dy = p1[1] - p0[1];
-    let dz = p1[2] - p0[2];
-    let len = (dx * dx + dy * dy + dz * dz).sqrt();
-    if len < 1e-9 {
-        return MemberKind::Beam;
-    }
-    let ez = (dz / len).abs();
-    if ez >= 0.8 {
-        MemberKind::Column
-    } else if ez <= 0.2 {
-        MemberKind::Beam
-    } else {
-        MemberKind::Brace
-    }
-}
-
-/// 部材両端節点間の幾何長 \[mm\]（内法補正なしの簡易値。剛域等は考慮しない）。
-/// squid-n-app の `elem_geometric_length`（app.rs）と同じロジック
-/// （squid-n-mcp は squid-n-app に依存しないため複製している）。
-fn elem_geometric_length(elem: &squid_n_core::model::ElementData, model: &Model) -> f64 {
-    let coords: Vec<[f64; 3]> = elem
-        .nodes
-        .iter()
-        .filter_map(|nid| model.nodes.get(nid.index()))
-        .map(|n| n.coord)
-        .take(2)
-        .collect();
-    let (Some(p0), Some(p1)) = (coords.first(), coords.get(1)) else {
-        return 0.0;
-    };
-    let dx = p1[0] - p0[0];
-    let dy = p1[1] - p0[1];
-    let dz = p1[2] - p0[2];
-    (dx * dx + dy * dy + dz * dz).sqrt()
-}
 
 /// 危険断面位置（§6.2.3、既定は柱フェイスと中央）を正規化座標 \[0,1\] で算定する。
 /// `squid_n_element::beam::BeamElement::new` の `eval_sections` 算定と同じ規則
@@ -147,7 +91,7 @@ pub(crate) fn compute_design_check_job(
         };
 
         // 部材種別・部材長・せん断スパン比代表値（app.rs の run_design_check と同じ規則）。
-        let kind = member_kind_of(elem, model);
+        let kind = squid_n_design_jp::MemberKind::of_element(elem, model);
         let length = {
             let coords: Vec<[f64; 3]> = elem
                 .nodes
@@ -247,7 +191,7 @@ pub(crate) fn compute_design_check_job(
         );
         // 危険断面位置（§6.2.3、既定は柱フェイスと中央）の内力のみ検定する。
         // 節点芯は剛域が有る場合は検定対象外（app.rs の run_design_check と同じ規則）。
-        let geom_len = elem_geometric_length(elem, model);
+        let geom_len = model.member_length(elem);
         let positions = design_positions(elem, model, geom_len);
         for (pos, forces) in &mf.at {
             if !is_near_design_position(*pos, &positions) {

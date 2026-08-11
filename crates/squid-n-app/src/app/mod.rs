@@ -1529,43 +1529,6 @@ fn parse_wave_csv(content: &str, dir: ThDir) -> Result<(Vec<f64>, Option<Vec<f64
     }
 }
 
-/// 部材種別判定（部材軸の鉛直成分による幾何判定）。
-///
-/// - |ez| ≥ 0.8: 柱（軸力＋二軸曲げの複合検定）
-/// - |ez| ≤ 0.2: 梁（強軸曲げ＋せん断）
-/// - それ以外: ブレース（軸力検定）
-fn member_kind_of(
-    elem: &squid_n_core::model::ElementData,
-    model: &squid_n_core::model::Model,
-) -> squid_n_design_jp::MemberKind {
-    use squid_n_design_jp::MemberKind;
-    let coords: Vec<[f64; 3]> = elem
-        .nodes
-        .iter()
-        .filter_map(|nid| model.nodes.get(nid.index()))
-        .map(|n| n.coord)
-        .take(2)
-        .collect();
-    let (Some(p0), Some(p1)) = (coords.first(), coords.get(1)) else {
-        return MemberKind::Beam;
-    };
-    let dx = p1[0] - p0[0];
-    let dy = p1[1] - p0[1];
-    let dz = p1[2] - p0[2];
-    let len = (dx * dx + dy * dy + dz * dz).sqrt();
-    if len < 1e-9 {
-        return MemberKind::Beam;
-    }
-    let ez = (dz / len).abs();
-    if ez >= 0.8 {
-        squid_n_design_jp::MemberKind::Column
-    } else if ez <= 0.2 {
-        squid_n_design_jp::MemberKind::Beam
-    } else {
-        squid_n_design_jp::MemberKind::Brace
-    }
-}
-
 /// 壁要素の側柱（壁と**両端の**節点を共有する鉛直線材）に SRC 造の柱があるか。
 ///
 /// SRC 耐震壁（部材種別 WA/WC の判定対象）かどうかの判定に用いる。壁自体の
@@ -1767,7 +1730,7 @@ pub(crate) fn steel_member_use_of(
     model: &squid_n_core::model::Model,
 ) -> squid_n_design_jp::secondary::width_thickness::SteelMemberUse {
     use squid_n_design_jp::secondary::width_thickness::SteelMemberUse;
-    match member_kind_of(elem, model) {
+    match squid_n_design_jp::MemberKind::of_element(elem, model) {
         squid_n_design_jp::MemberKind::Column => SteelMemberUse::Column,
         _ => SteelMemberUse::Beam,
     }
@@ -1794,27 +1757,6 @@ pub(crate) fn steel_width_thickness_rank(
         member_use,
         material_name,
     )
-}
-
-/// 部材両端節点間の幾何長 \[mm\]（内法補正なしの簡易値。剛域等は考慮しない）。
-fn elem_geometric_length(
-    elem: &squid_n_core::model::ElementData,
-    model: &squid_n_core::model::Model,
-) -> f64 {
-    let coords: Vec<[f64; 3]> = elem
-        .nodes
-        .iter()
-        .filter_map(|nid| model.nodes.get(nid.index()))
-        .map(|n| n.coord)
-        .take(2)
-        .collect();
-    let (Some(p0), Some(p1)) = (coords.first(), coords.get(1)) else {
-        return 0.0;
-    };
-    let dx = p1[0] - p0[0];
-    let dy = p1[1] - p0[1];
-    let dz = p1[2] - p0[2];
-    (dx * dx + dy * dy + dz * dz).sqrt()
 }
 
 /// 一本部材グループ 1 本分の検定文脈（断面検定の採用応力。
@@ -1872,7 +1814,7 @@ fn beam_group_overrides(
                 .map(|(_, m)| m);
             match (elem, mf) {
                 (Some(e), Some(m)) if !m.at.is_empty() => {
-                    let l = elem_geometric_length(e, model);
+                    let l = model.member_length(e);
                     if l <= 1e-9 {
                         ok = false;
                         break;

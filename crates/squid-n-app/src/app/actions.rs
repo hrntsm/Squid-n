@@ -1378,13 +1378,13 @@ impl App {
                 // FA と甘く判定して Ds を過小評価する危険側の誤りだった。
                 let is_brace_elem =
                     matches!(elem.kind, squid_n_core::model::ElementKind::Brace { .. })
-                        || member_kind_of(elem, &self.model)
+                        || squid_n_design_jp::MemberKind::of_element(elem, &self.model)
                             == squid_n_design_jp::MemberKind::Brace;
                 let elem_steel = elem_is_steel(elem, &self.model);
                 let rank = if is_brace_elem && elem_steel {
                     // 有効細長比 λ = Lk/i（節点間長を座屈長さ、i=√(Imin/A) とする
                     // ピン支持の軸材モデル）。断面性能がない場合はスキップ。
-                    let len = elem_geometric_length(elem, &self.model);
+                    let len = self.model.member_length(elem);
                     let i_min = sec.iy.min(sec.iz);
                     if sec.area <= 0.0 || i_min <= 0.0 || len <= 0.0 {
                         continue;
@@ -1421,7 +1421,9 @@ impl App {
                     use squid_n_design_jp::secondary::src_rank::{
                         src_column_rank, src_column_rank_ratios,
                     };
-                    if member_kind_of(elem, &self.model) != squid_n_design_jp::MemberKind::Column {
+                    if squid_n_design_jp::MemberKind::of_element(elem, &self.model)
+                        != squid_n_design_jp::MemberKind::Column
+                    {
                         continue;
                     }
                     let Some(fc) = mat.fc.filter(|f| *f > 0.0) else {
@@ -1508,7 +1510,7 @@ impl App {
                     // 剛域長(D_orth/2 − D_self/4)を引いた可撓長さとは別物
                     // （設計書 §6.2.1）。フェイス距離の合計が幾何長以上になる
                     // (不整合な入力)場合は下限0を割り込むため、幾何長のままとする。
-                    let geom_len = elem_geometric_length(elem, &self.model);
+                    let geom_len = self.model.member_length(elem);
                     let face_sum =
                         elem.rigid_zone.face_i_or_zero() + elem.rigid_zone.face_j_or_zero();
                     let clear_span = if geom_len - face_sum > 0.0 {
@@ -1539,7 +1541,7 @@ impl App {
                             )
                         })
                         .unwrap_or(0.0);
-                    let kind = member_kind_of(elem, &self.model);
+                    let kind = squid_n_design_jp::MemberKind::of_element(elem, &self.model);
                     // 告示の部材種別が要求する σ0・τu は「Ds 算定時」＝崩壊機構形成時の
                     // 応力度である。終局時応答が得られない部材は判定不能としてスキップ
                     // し、層は選択ランクへフォールバックする（τu=0 とみなすと FA と
@@ -2878,8 +2880,8 @@ impl App {
                 continue;
             };
 
-            let kind = member_kind_of(elem, &self.model);
-            let length = elem_geometric_length(elem, &self.model);
+            let kind = squid_n_design_jp::MemberKind::of_element(elem, &self.model);
+            let length = self.model.member_length(elem);
             // せん断スパン比 M/(Q·d) の代表値: 加力方向ごとに「モーメントが最大と
             // なる検定位置」の (|M|, |Q|) を採用する（強軸: |Mz|max と対応 |Qy|、
             // 弱軸: |My|max と対応 |Qz|。従来は強軸側の1組を弱軸検定にも流用して
@@ -3477,7 +3479,7 @@ impl App {
     /// - `LoadShape::Point{p,x}` → 中間集中荷重 `MemberLoadKind::Point{a:x,p}`
     /// - `LoadTarget::Node(n)`（小梁反力）→ `NodalLoad{node:n, values:[0,0,-p,0,0,0]}`
     ///
-    /// `L` は対応する部材の節点間距離（`elem_geometric_length`。剛域補正なしの
+    /// `L` は対応する部材の節点間距離（`Model::member_length`。剛域補正なしの
     /// 簡易値。仕様上「部材の節点間距離」を使う規則のため、剛域を考慮する
     /// 設計検定側の `clear_span` とは別物）。
     fn slab_load_case_content(
@@ -3580,7 +3582,7 @@ impl App {
                     let Some(elem) = self.model.elements.iter().find(|e| e.id == bl.elem) else {
                         continue;
                     };
-                    let l = elem_geometric_length(elem, &self.model);
+                    let l = self.model.member_length(elem);
                     if l <= 1e-9 {
                         continue;
                     }
@@ -3594,7 +3596,7 @@ impl App {
                 //    （節点が大梁スパン上なら後段で中間集中荷重（CMQ）へ変換）
                 LoadTarget::Span([n0, n1]) => {
                     if let Some(elem) = self.model.elements.iter().find(|e| e.id == bl.elem) {
-                        let l = elem_geometric_length(elem, &self.model);
+                        let l = self.model.member_length(elem);
                         if l > 1e-9 {
                             emit_shape(&mut member, elem.id, 0.0, l, false, &bl.shape);
                         }

@@ -16,7 +16,7 @@
 //!
 //! 検定の組み立ては `app::actions::run_design_check`（断面・材料に応じた
 //! RC/Steel/SRC/CFT の `DesignCheck` 実装への振り分け）と同じ考え方だが、
-//! 当該関数は `app` モジュール内の非公開関数（`is_steel`/`member_kind_of` 等）に
+//! 当該関数は `app` モジュール内の非公開関数（`is_steel` 等）に
 //! 依存しビューア側からは呼べないため、必要な部分だけ本ファイルへ複製する
 //! （地震時短期 QD の長期内力割増・座屈長さの自動算定・鋼継手欠損・一本部材
 //! グループ合成・BRB 属性差し替えは簡略化のため含まない。あくまで概算検定）。
@@ -96,9 +96,7 @@ pub(super) fn axial_relative_disp(
 }
 
 /// 3 次元ベクトルの内積。
-fn dot3(a: [f64; 3], b: [f64; 3]) -> f64 {
-    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
-}
+use squid_n_core::geom::vec3::dot as dot3;
 
 /// 零長要素（部材長 < 1e-9。免震・節点ばね）の局所座標系（中-2）。
 ///
@@ -231,41 +229,13 @@ fn elem_has_force_recording(rec: &ThRecording, elem_idx: usize) -> bool {
         .any(|frame| frame.get(elem_idx).is_some_and(|o| o.is_some()))
 }
 
-/// 部材種別の幾何判定（`app::member_kind_of` と同じ規則の複製。モジュール間で
-/// private 関数を共有できないため）。鉛直成分比 |ez| により柱／梁／ブレースを
-/// 区別する。
-fn geometric_member_kind(elem: &ElementData, model: &Model) -> MemberKind {
-    let coords: Vec<[f64; 3]> = elem
-        .nodes
-        .iter()
-        .filter_map(|nid| model.nodes.get(nid.index()))
-        .map(|n| n.coord)
-        .take(2)
-        .collect();
-    let (Some(&p0), Some(&p1)) = (coords.first(), coords.get(1)) else {
-        return MemberKind::Beam;
-    };
-    let len = super::member_len3(p0, p1);
-    if len < 1e-9 {
-        return MemberKind::Beam;
-    }
-    let ez = ((p1[2] - p0[2]) / len).abs();
-    if ez >= 0.8 {
-        MemberKind::Column
-    } else if ez <= 0.2 {
-        MemberKind::Beam
-    } else {
-        MemberKind::Brace
-    }
-}
-
 /// 断面検定の対象になる部材種別か（軸力のみの減衰・免震・節点ばね要素、
 /// 壁・シェル・パネルゾーンは対象外）。
 fn design_member_kind(elem: &ElementData, model: &Model) -> Option<MemberKind> {
     match elem.kind {
         ElementKind::Brace { .. } => Some(MemberKind::Brace),
         ElementKind::Beam | ElementKind::Fiber | ElementKind::MultiSpring => {
-            Some(geometric_member_kind(elem, model))
+            Some(MemberKind::of_element(elem, model))
         }
         _ => None,
     }

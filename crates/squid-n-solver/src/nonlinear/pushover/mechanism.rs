@@ -113,14 +113,10 @@ pub(crate) fn compute_static_indeterminacy(model: &Model, dir: SeismicDir) -> us
         let (Some(n0), Some(n1)) = (model.nodes.get(i0), model.nodes.get(i1)) else {
             continue;
         };
-        let d = [
-            n1.coord[0] - n0.coord[0],
-            n1.coord[1] - n0.coord[1],
-            n1.coord[2] - n0.coord[2],
-        ];
-        let len = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
-        // 加力直交方向へ卓越する部材（直交方向の梁など）は載荷平面外とみなす。
-        if len > 1e-9 && (d[orth_axis] / len).abs() > 0.707 {
+        // 加力直交方向へ卓越する部材（直交方向の梁など）は載荷平面外とみなす
+        // （全クレート共通の 45° 余弦基準）。
+        let dir = squid_n_core::geom::vec3::unit_from(n0.coord, n1.coord);
+        if dir.is_some_and(|d| squid_n_core::geom::axis_dominates(d, orth_axis)) {
             continue;
         }
         m += 1;

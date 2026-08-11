@@ -46,7 +46,8 @@ pub fn center_of_mass(model: &Model, story: StoryId) -> [f64; 2] {
 
 /// 当該層の各柱について方向別水平剛性（D値）と平面位置を算定して返す（仕様 §5.1）。
 ///
-/// 柱の判定: `ElementKind::Beam` かつ 2節点、部材軸 ez[2].abs() > 0.707 で鉛直判定。
+/// 柱の判定: `ElementKind::Beam` かつ 2節点、`squid_n_core::geom::is_vertical_axis`
+/// （45° 余弦基準）で鉛直判定。
 /// 層帰属: 上端節点（z 大）の `story == Some(story)` を当該層とする。
 ///
 /// `story` には**層の上端の階**（[`squid_n_core::model::Layer::top`]）を渡すこと。
@@ -163,12 +164,11 @@ pub fn column_stiffnesses(model: &Model, story: StoryId) -> Vec<ColumnStiffness>
                     None => continue,
                 };
                 let kb = beam_i_strong / bl;
-                // X方向に効く梁: 梁軸 bex[0].abs() > 0.707
-                if bex[0].abs() > 0.707 {
+                // 方向別に効く梁の判定（全クレート共通の 45° 余弦基準）。
+                if squid_n_core::geom::axis_dominates(bex, 0) {
                     skbx += kb;
                 }
-                // Y方向に効く梁: 梁軸 bex[1].abs() > 0.707
-                if bex[1].abs() > 0.707 {
+                if squid_n_core::geom::axis_dominates(bex, 1) {
                     skby += kb;
                 }
             }

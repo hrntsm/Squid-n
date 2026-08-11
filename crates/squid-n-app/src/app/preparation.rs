@@ -624,7 +624,7 @@ impl App {
             let clear_length = length - arm_i - arm_j;
             rows.push(PrepRigidZoneRow {
                 elem: e.id,
-                kind: super::member_kind_of(e, model),
+                kind: squid_n_design_jp::MemberKind::of_element(e, model),
                 node_i: e.nodes[0],
                 node_j: e.nodes[1],
                 length,
@@ -678,7 +678,7 @@ impl App {
             }
             rows.push(PrepTorsionSkipRow {
                 elem: e.id,
-                kind: super::member_kind_of(e, model),
+                kind: squid_n_design_jp::MemberKind::of_element(e, model),
                 node,
             });
         }
@@ -864,7 +864,7 @@ impl App {
             }
             rows.push(PrepMemberStiffnessRow {
                 elem: e.id,
-                kind: super::member_kind_of(e, model),
+                kind: squid_n_design_jp::MemberKind::of_element(e, model),
                 section_name: sec.name.clone(),
                 material: mat.name.clone(),
                 slab_factor: factors.slab,

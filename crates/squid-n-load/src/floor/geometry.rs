@@ -15,12 +15,8 @@ pub(crate) fn boundary_coords(model: &Model, slab: &Slab) -> Option<Vec<[f64; 3]
         .collect()
 }
 
-pub(crate) fn dist3(a: [f64; 3], b: [f64; 3]) -> f64 {
-    let dx = a[0] - b[0];
-    let dy = a[1] - b[1];
-    let dz = a[2] - b[2];
-    (dx * dx + dy * dy + dz * dz).sqrt()
-}
+/// 2 点間の距離 [mm]。算定の情報源は `squid-n-core` に置く。
+pub(crate) use squid_n_core::geom::vec3::dist as dist3;
 
 /// スラブ境界が矩形（正確には平行四辺形の閉合条件を満たす4辺形）かどうかを判定しつつ、
 /// 短辺・長辺相当の寸法 `(lx, ly)`（= `boundary[0]-[1]` 間、`boundary[0]-[3]` 間の距離）を返す。

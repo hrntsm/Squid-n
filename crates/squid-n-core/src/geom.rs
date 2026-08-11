@@ -1,7 +1,12 @@
 //! モデル幾何の共通判定。
 //!
 //! 複数のクレート（荷重集計・通り芯生成・GUI の集計表示）が同じ判定規則を
-//! 必要とするものだけを置く。
+//! 必要とするものだけを置く。3 次元ベクトルの基本演算（内積・外積・単位化）は
+//! [`vec3`] に分ける。
+
+pub mod vec3;
+
+use vec3::{cross, unit};
 
 /// 鉛直材（柱）とみなす両端の水平距離の上限 [mm]。
 pub const VERTICAL_TOL_MM: f64 = 1.0;
@@ -28,24 +33,45 @@ pub const VERTICAL_COS_TOL: f64 = 0.707;
 /// [`is_vertical_pair`]（水平距離の実寸トレランス）は「厳密に直立した柱」の
 /// 抽出用でこれも別物。
 pub fn is_vertical_axis(a: [f64; 3], b: [f64; 3]) -> bool {
-    let (dx, dy, dz) = (b[0] - a[0], b[1] - a[1], b[2] - a[2]);
-    let len = (dx * dx + dy * dy + dz * dz).sqrt();
-    len > 1e-12 && (dz / len).abs() > VERTICAL_COS_TOL
+    vec3::unit_from(a, b).is_some_and(|d| axis_dominates(d, 2))
 }
 
-/// ベクトルを正規化する（長さが 0 に近ければ `None`）。
-fn normalize(v: [f64; 3]) -> Option<[f64; 3]> {
-    let n = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
-    (n > 1e-12).then(|| [v[0] / n, v[1] / n, v[2] / n])
+/// 部材軸が座標軸方向へ卓越するとみなす方向余弦の下限（45° 基準）。
+/// 鉛直（Z 軸）に適用したものが [`VERTICAL_COS_TOL`] である。
+pub const AXIS_COS_TOL: f64 = VERTICAL_COS_TOL;
+
+/// 単位方向ベクトル `dir` が座標軸 `axis`（0=X, 1=Y, 2=Z）の方向へ卓越するか。
+/// |方向余弦| > [`AXIS_COS_TOL`]（その軸から 45° 未満）で判定する。
+///
+/// 「X 方向に効く梁」「加力直交方向へ卓越する部材」のように、鉛直に限らない
+/// 軸方向の卓越判定はすべてこの規約に従う（判定の情報源を 1 つに保つ）。
+pub fn axis_dominates(dir: [f64; 3], axis: usize) -> bool {
+    dir.get(axis).is_some_and(|c| c.abs() > AXIS_COS_TOL)
 }
 
-/// 外積。
-fn cross(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
-    [
-        a[1] * b[2] - a[2] * b[1],
-        a[2] * b[0] - a[0] * b[2],
-        a[0] * b[1] - a[1] * b[0],
-    ]
+/// 2 本の部材が概ね直交すると扱う軸内積（方向余弦の内積）の上限。
+///
+/// [`VERTICAL_COS_TOL`] と同じ 45° 基準だが、こちらは**部材どうしの相対角**に
+/// 対する規約（柱フェース距離の直交材探索・剛域算定が用いる）。
+pub const ORTHOGONAL_DOT_MAX: f64 = 0.707;
+
+/// 部材の単位軸ベクトル（始端節点 → 終端節点）。
+///
+/// 節点が 2 つ未満・節点参照が範囲外・長さが縮退している部材は零ベクトルを
+/// 返す（呼び出し側で内積を取ると 0 になり、直交材としても平行材としても
+/// 拾われない）。線材（`ElementKind::Beam`）に用いることを想定し、終端は
+/// `nodes` の**末尾**を採る。
+pub fn element_axis(model: &crate::model::Model, e: &crate::model::ElementData) -> [f64; 3] {
+    if e.nodes.len() < 2 {
+        return [0.0, 0.0, 0.0];
+    }
+    let (Some(n0), Some(n1)) = (
+        model.nodes.get(e.nodes[0].index()),
+        model.nodes.get(e.nodes[e.nodes.len() - 1].index()),
+    ) else {
+        return [0.0, 0.0, 0.0];
+    };
+    vec3::unit_from(n0.coord, n1.coord).unwrap_or([0.0, 0.0, 0.0])
 }
 
 /// 点群に最も当てはまる平面の単位法線を、主成分分析（全最小二乗）で求める。
@@ -92,10 +118,10 @@ pub fn best_fit_plane_normal(pts: &[[f64; 3]]) -> Option<[f64; 3]> {
     if l1 <= 1e-9 * l0 {
         let line = [vecs[0][order[0]], vecs[1][order[0]], vecs[2][order[0]]];
         // その直線と鉛直軸を含む平面の法線 ＝ 直線 × Z。
-        return normalize(cross(line, [0.0, 0.0, 1.0])).or(Some([1.0, 0.0, 0.0]));
+        return unit(cross(line, [0.0, 0.0, 1.0])).or(Some([1.0, 0.0, 0.0]));
     }
     let normal = [vecs[0][order[2]], vecs[1][order[2]], vecs[2][order[2]]];
-    normalize(normal)
+    unit(normal)
 }
 
 /// 3×3 実対称行列の固有値・固有ベクトルを巡回 Jacobi 法で求める。

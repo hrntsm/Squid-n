@@ -1,15 +1,13 @@
 //! 幾何ヘルパ。
 //!
-//! - [`dot3`] — 3 次元ベクトルの内積
+//! - [`dot3`] — 3 次元ベクトルの内積（`squid_n_core::geom::vec3::dot` の別名）
 //! - [`axial_compression`] — 材端力から部材の軸方向圧縮力を算定
 //! - [`member_end_forces_at_face`] — 材端力を局所座標・剛域フェイス位置へ変換
 
 use squid_n_core::model::{ElementData, Model};
 use squid_n_element::transform::LocalFrame;
 
-pub(crate) fn dot3(v: [f64; 3], w: [f64; 3]) -> f64 {
-    v[0] * w[0] + v[1] * w[1] + v[2] * w[2]
-}
+pub(crate) use squid_n_core::geom::vec3::dot as dot3;
 
 /// 材端力（グローバル、i端 `f_i`・j端 `f_j`）と局所 `ex`（i→j 方向単位ベクトル、
 /// グローバル成分）から、部材の軸方向圧縮力 N_compress [N]（圧縮のみ採用、

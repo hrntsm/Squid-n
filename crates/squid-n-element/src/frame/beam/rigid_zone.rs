@@ -59,7 +59,8 @@ fn wall_protrusion(
     };
 
     let axis = elem_axis(model, elem);
-    let is_vertical = axis[2].abs() > 0.707;
+    // 全クレート共通の 45° 余弦基準（|ez| > 0.707）で柱系/梁系を分ける。
+    let is_vertical = axis[2].abs() > squid_n_core::geom::VERTICAL_COS_TOL;
     let mut out = 0.0_f64;
 
     for w in walls {
@@ -127,22 +128,7 @@ fn depth_with_walls(
     depth + wall_protrusion(model, elem, depth, walls, None)
 }
 
-fn elem_axis(model: &Model, e: &squid_n_core::model::ElementData) -> [f64; 3] {
-    if e.nodes.len() < 2 {
-        return [0.0, 0.0, 0.0];
-    }
-    let p0 = model.nodes[e.nodes[0].index()].coord;
-    let p1 = model.nodes[e.nodes[1].index()].coord;
-    let dx = p1[0] - p0[0];
-    let dy = p1[1] - p0[1];
-    let dz = p1[2] - p0[2];
-    let l = (dx * dx + dy * dy + dz * dz).sqrt();
-    if l < 1e-12 {
-        [0.0, 0.0, 0.0]
-    } else {
-        [dx / l, dy / l, dz / l]
-    }
-}
+use squid_n_core::geom::element_axis as elem_axis;
 
 /// 節点 `node` から部材フェースまでの距離 Lf [mm]（剛域長 λ 用。壁を含む）。
 ///
@@ -173,9 +159,9 @@ fn max_orth_face(
             continue;
         }
         let axis = elem_axis(model, e);
-        let dot =
-            (axis[0] * target_axis[0] + axis[1] * target_axis[1] + axis[2] * target_axis[2]).abs();
-        if dot >= 0.707 {
+        if squid_n_core::geom::vec3::dot(axis, target_axis).abs()
+            >= squid_n_core::geom::ORTHOGONAL_DOT_MAX
+        {
             // 概ね平行（45°未満）。直交材ではないので対象外。
             continue;
         }

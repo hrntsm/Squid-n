@@ -1,5 +1,6 @@
 //! joint_wiring サブモジュール共通の部材情報・判定ヘルパ。
 
+use crate::MemberKind;
 use squid_n_core::ids::NodeId;
 use squid_n_core::model::{ElementData, Material, Section};
 use squid_n_core::structure_kind::StructureKind;
@@ -27,11 +28,13 @@ pub(super) struct MemberInfo<'a> {
 }
 
 impl MemberInfo<'_> {
+    /// 柱系の部材か（部材種別の判定は [`MemberKind`] の単一規約に従う）。
     pub(super) fn is_column(&self) -> bool {
-        self.ez >= 0.8
+        MemberKind::from_ez(self.ez) == MemberKind::Column
     }
+    /// 水平な梁系の部材か（同上）。
     pub(super) fn is_beam_horiz(&self) -> bool {
-        self.ez <= 0.2
+        MemberKind::from_ez(self.ez) == MemberKind::Beam
     }
     /// 節点 `nid` 側の端部内力行（pos 0/1 のうち近い方）。
     pub(super) fn end_forces(&self, nid: NodeId) -> Option<&[f64; 6]> {

@@ -23,6 +23,7 @@ use crate::behavior::{Ctx, ElementBehavior, LocalMat, LocalVec, MassOption};
 use crate::transform::LocalFrame;
 use smallvec::SmallVec;
 use squid_n_core::dof::{DofMap, DOF_PER_NODE};
+use squid_n_core::geom::vec3::{dot, midpoint as mid, norm, sub, unit};
 use squid_n_core::ids::NodeId;
 use squid_n_core::model::{ElementData, HysteresisModel, Model};
 use squid_n_core::section_shape::{SectionShape, E_STEEL, KAPPA_RC};
@@ -1515,35 +1516,6 @@ struct WallPanelCheckpoint {
     /// 面内せん断ばねの材料状態（ばね未構築は None。旧形式も None 扱い）。
     #[serde(default)]
     shear_spring: Option<Vec<u8>>,
-}
-
-fn sub(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
-    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
-}
-
-fn mid(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
-    [
-        0.5 * (a[0] + b[0]),
-        0.5 * (a[1] + b[1]),
-        0.5 * (a[2] + b[2]),
-    ]
-}
-
-fn dot(a: [f64; 3], b: [f64; 3]) -> f64 {
-    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
-}
-
-fn norm(a: [f64; 3]) -> f64 {
-    dot(a, a).sqrt()
-}
-
-fn unit(a: [f64; 3]) -> Option<[f64; 3]> {
-    let l = norm(a);
-    if l < 1e-9 {
-        None
-    } else {
-        Some([a[0] / l, a[1] / l, a[2] / l])
-    }
 }
 
 fn levi_civita(i: usize, j: usize, k: usize) -> f64 {
