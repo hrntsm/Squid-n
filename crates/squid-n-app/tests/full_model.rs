@@ -888,19 +888,12 @@ fn time_history_linear_runs() {
 
 /// 非線形時刻歴応答解析（サンプル波）が完走する。
 ///
-/// **現状は失敗する（`#[ignore]`）**。実建物モデル・既定設定（サンプル波
-/// dt=0.01・継続時間 10 秒・減衰 2%・Newmark-β・最大反復 50 回）で
-/// `非線形時刻歴解析エラー: nonlinear time history: step 50 did not converge`
-/// となり、Newton 反復が収束しない。手組みの小規模モデル
-/// （`app/tests.rs` の `test_nonlinear_time_history_flow_records_story_response`）
-/// では通るため、実建物規模で初めて現れる。
-///
-/// 統合テストの追加とバグ修正を切り分けるため、本テストは失敗する状態のまま
-/// `#[ignore]` で残す。調査時は `cargo test -p squid-n-app --test full_model
-/// -- --ignored` で実行する。詳細は
-/// `dev_docs/handoff/実モデル統合テスト_申し送り.md` を参照。
+/// かつては既定設定（サンプル波 dt=0.01・継続時間 10 秒・減衰 2%・Newmark-β）で
+/// step 50 の Newton 反復が収束せず落ちていた。原因は収束判定の基準ノルムで、
+/// 動的外力  だけを基準にしていたため、地動加速度がゼロを横切る時刻
+/// （サンプル波は周期 0.5 秒なので t=0.25・0.50…）で基準が消え、判定が
+/// 「残差 < 1e-6 N」という到達不能な絶対値判定に化けていた。
 #[test]
-#[ignore = "実建物モデルで Newton 反復が収束しない（申し送り参照）"]
 fn time_history_nonlinear_runs() {
     let mut app = prepared();
     app.analysis_cfg.th_dir = ThDir::X;
@@ -1238,6 +1231,26 @@ fn snapshot_key_scalars() {
     );
     for (i, a) in th.story_drift_angle.iter().enumerate() {
         line(&format!("th.drift_angle[{i}]"), sig4(*a));
+    }
+
+    // --- 時刻歴（非線形） ---
+    app.analysis_cfg.th_nonlinear = true;
+    app.run_time_history_sample();
+    clear_error(&mut app);
+    let th = app
+        .results
+        .as_ref()
+        .expect("解析結果")
+        .time_history
+        .as_ref()
+        .expect("時刻歴");
+    line("th_nl.frames", th.time.len().to_string());
+    line(
+        "th_nl.peak_ux",
+        sig4(th.peak_disp.iter().map(|d| d[0].abs()).fold(0.0, f64::max)),
+    );
+    for (i, a) in th.story_drift_angle.iter().enumerate() {
+        line(&format!("th_nl.drift_angle[{i}]"), sig4(*a));
     }
 
     insta::assert_snapshot!(out);
