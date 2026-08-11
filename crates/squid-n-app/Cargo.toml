@@ -22,6 +22,7 @@ squid-n-edit = { path = "../squid-n-edit" }
 squid-n-section = { path = "../squid-n-section" }
 squid-n-load = { path = "../squid-n-load" }
 squid-n-io = { path = "../squid-n-io" }
+squid-n-job = { path = "../squid-n-job" }
 egui = { workspace = true, optional = true }
 eframe = { workspace = true, optional = true }
 egui_extras = { workspace = true, optional = true }

@@ -5332,6 +5332,7 @@ dependencies = [
  "squid-n-edit",
  "squid-n-element",
  "squid-n-io",
+ "squid-n-job",
  "squid-n-load",
  "squid-n-math",
  "squid-n-section",
@@ -5424,6 +5425,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "squid-n-job"
+version = "0.0.1"
+dependencies = [
+ "squid-n-core",
+ "squid-n-design-jp",
+ "squid-n-element",
+ "squid-n-load",
+ "squid-n-math",
+ "squid-n-solver",
+ "thiserror 1.0.69",
+]
+
+[[package]]
 name = "squid-n-load"
 version = "0.0.1"
 dependencies = [
@@ -5468,6 +5482,7 @@ dependencies = [
  "squid-n-edit",
  "squid-n-element",
  "squid-n-io",
+ "squid-n-job",
  "squid-n-solver",
  "tokio",
 ]

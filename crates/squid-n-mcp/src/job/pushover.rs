@@ -7,9 +7,8 @@ use squid_n_core::model::Model;
 use squid_n_solver::pushover::PushoverTarget;
 
 /// Pushover ジョブの純粋計算部分。
-/// squid-n-app の `App::compute_pushover`（app.rs）と同じ流れ
-/// （squid-n-mcp は squid-n-app に依存しないため複製している）。
-/// モデルは所有権を取って複製したものを渡す前提
+/// 前処理・解析条件・純粋計算はいずれも `squid-n-job` の共通実装で、
+/// **GUI と同一**である。モデルは所有権を取って複製したものを渡す前提
 /// （増分解析は非線形状態を模型に書き戻すため）。
 pub(crate) fn compute_pushover_job(
     model: Model,
@@ -17,35 +16,26 @@ pub(crate) fn compute_pushover_job(
     steps: usize,
     target: PushoverTarget,
 ) -> Result<JobOutcome, String> {
+    // 解析前処理（剛域＋仕口パネル）は GUI と同一の実装を通す。
     let mut work = model;
-    // 解析前に剛域を自動算定してモデルへ反映する（設計書 §6.2.1、標準実装）。
-    squid_n_element::beam::apply_auto_rigid_zones(
-        &mut work,
-        &squid_n_element::beam::RigidZoneRule::default(),
-    );
-    squid_n_solver::analysis::Analysis::prepare(&work)
-        .map_err(|e| format!("解析準備エラー: {e}"))?;
-    let dofmap = squid_n_core::dof::DofMap::build(&work);
-    let reducer = squid_n_solver::constraint::Reducer::build(&work, &dofmap);
-    let seismic_dir = match dir {
-        JobDir::X => squid_n_solver::analysis::SeismicDir::X,
-        JobDir::Y => squid_n_solver::analysis::SeismicDir::Y,
+    squid_n_job::prepare::apply_rigid_zones_and_panels(&mut work);
+    // 解析条件は GUI と同じ `AnalysisSettings` を組み立てて共通の純粋計算へ渡す。
+    let cfg = squid_n_job::AnalysisSettings {
+        push_dir: match dir {
+            JobDir::X => squid_n_solver::analysis::SeismicDir::X,
+            JobDir::Y => squid_n_solver::analysis::SeismicDir::Y,
+        },
+        push_steps: steps,
+        push_use_max_disp: target.max_disp.is_some(),
+        push_max_disp: target.max_disp.unwrap_or_default(),
+        push_use_drift_angle: target.max_drift_angle.is_some(),
+        push_drift_denom: target
+            .max_drift_angle
+            .map(|a| 1.0 / a.max(f64::MIN_POSITIVE))
+            .unwrap_or(200.0),
+        ..Default::default()
     };
-    let result = squid_n_solver::pushover::pushover_analysis_recording(
-        &work,
-        &dofmap,
-        &reducer,
-        seismic_dir,
-        steps,
-        target,
-        squid_n_solver::pushover::PushoverControl::default(),
-        true,
-        false,
-        false,
-        0.0,
-        squid_n_solver::pushover::DuctilityMethod::default(),
-    )
-    .map_err(|e| format!("増分解析エラー: {e}"))?;
+    let result = squid_n_job::compute::compute_pushover(work, cfg).map_err(|e| e.to_string())?;
 
     let mechanism = match result.mechanism {
         squid_n_solver::pushover::MechanismType::Overall => "Overall".to_string(),

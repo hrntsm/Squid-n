@@ -5,7 +5,7 @@ members = [
     "crates/squid-n-material", "crates/squid-n-section", "crates/squid-n-element",
     "crates/squid-n-skeleton", "crates/squid-n-load", "crates/squid-n-solver",
     "crates/squid-n-design-jp", "crates/squid-n-gpu", "crates/squid-n-ml",
-    "crates/squid-n-edit", "crates/squid-n-mcp", "crates/squid-n-app",
+    "crates/squid-n-edit", "crates/squid-n-job", "crates/squid-n-mcp", "crates/squid-n-app",
     "xtask",
 ]
 

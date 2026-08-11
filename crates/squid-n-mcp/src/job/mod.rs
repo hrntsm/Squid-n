@@ -182,14 +182,14 @@ pub(crate) fn resolve_load_case(
     }
 }
 
-/// モデルを複製し、標準の自動剛域（設計書 §6.2.1）を反映して返す。
-/// clone → apply_auto_rigid_zones(default) の定型を集約する。`Analysis` は
-/// モデルを借用するため、準備は呼出側で `Analysis::prepare(&model)` を行う。
+/// モデルを複製し、解析前処理（剛域＋仕口パネル。設計書 §6.2.1）を反映して返す。
+/// 前処理の実体は [`squid_n_job::prepare::apply_rigid_zones_and_panels`] で、
+/// **GUI と同一**である。`Analysis` はモデルを借用するため、準備は呼出側で
+/// `Analysis::prepare(&model)` を行う。
 pub(crate) fn model_with_auto_rigid_zones(model: &Model) -> Model {
     let mut model = model.clone();
-    squid_n_element::beam::apply_auto_rigid_zones(
-        &mut model,
-        &squid_n_element::beam::RigidZoneRule::default(),
-    );
+    // 剛域だけでなく**仕口パネルの生成**まで行う（GUI と同一の前処理）。
+    // かつては剛域のみを適用しており、仕口パネルのない剛性で解いていた。
+    squid_n_job::prepare::apply_rigid_zones_and_panels(&mut model);
     model
 }
