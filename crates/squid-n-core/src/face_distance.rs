@@ -105,17 +105,111 @@ pub fn face_distances(model: &Model) -> Vec<[f64; 2]> {
         .collect()
 }
 
-/// 算定した柱フェース距離を `RigidZone::face_i/face_j` へ反映する（冪等）。
-///
-/// 剛域長は変更しない。剛域長もあわせて算定する場合は
-/// `squid_n_element::beam::apply_auto_rigid_zones` を使う。
-pub fn apply_face_distances(model: &mut Model) {
-    let faces = face_distances(model);
-    for (e, f) in model.elements.iter_mut().zip(faces) {
-        if e.kind != ElementKind::Beam {
-            continue;
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ids::{ElemId, MaterialId, NodeId, SectionId};
+    use crate::model::{
+        ElementData, EndCondition, ForceRegime, LocalAxis, Node, RigidZone, Section,
+    };
+
+    fn node(id: u32, c: [f64; 3]) -> Node {
+        Node {
+            id: NodeId(id),
+            coord: c,
+            restraint: Default::default(),
+            mass: None,
+            story: None,
+            support_spring: None,
         }
-        e.rigid_zone.face_i = Some(f[0]);
-        e.rigid_zone.face_j = Some(f[1]);
+    }
+
+    fn section(id: u32, depth: f64) -> Section {
+        Section {
+            id: SectionId(id),
+            name: String::new(),
+            area: 0.0,
+            iy: 0.0,
+            iz: 0.0,
+            j: 0.0,
+            depth,
+            width: 0.0,
+            as_y: 0.0,
+            as_z: 0.0,
+            floor: None,
+            panel_thickness: None,
+            thickness: None,
+            shape: None,
+            material: Some(MaterialId(0)),
+            rebar_material: None,
+            shear_rebar_material: None,
+            steel_material: None,
+        }
+    }
+
+    fn elem(id: u32, kind: ElementKind, a: u32, b: u32, sec: u32) -> ElementData {
+        ElementData {
+            id: ElemId(id),
+            kind,
+            nodes: [NodeId(a), NodeId(b)].into_iter().collect(),
+            section: Some(SectionId(sec)),
+            local_axis: LocalAxis {
+                ref_vector: [0.0, 0.0, 1.0],
+            },
+            end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+            force_regime: ForceRegime::Auto,
+            rigid_zone: RigidZone::default(),
+            plastic_zone: None,
+            spring: None,
+        }
+    }
+
+    /// 柱（せい 600）が取り付く端のフェース距離は柱せいの半分、直交材がない端は 0。
+    #[test]
+    fn 直交材のせいの半分をフェース距離とする() {
+        let model = Model {
+            nodes: vec![
+                node(0, [0.0, 0.0, 0.0]),
+                node(1, [0.0, 0.0, 3000.0]),
+                node(2, [4000.0, 0.0, 3000.0]),
+            ],
+            elements: vec![
+                elem(0, ElementKind::Beam, 0, 1, 0),
+                elem(1, ElementKind::Beam, 1, 2, 1),
+            ],
+            sections: vec![section(0, 600.0), section(1, 700.0)],
+            ..Default::default()
+        };
+        let f = face_distances(&model);
+        // 梁（要素 1）: i 端に柱が取り付くので 600/2、j 端は直交材なしで 0。
+        assert_eq!(f[1], [300.0, 0.0]);
+        // 柱（要素 0）: 上端に梁が取り付くので 700/2、下端は直交材なしで 0。
+        assert_eq!(f[0], [0.0, 350.0]);
+    }
+
+    /// フェース距離を決めるのは柱・大梁だけで、壁は数えない。
+    ///
+    /// 壁を数えると、剛域長を求めるときの「部材フェース」と食い違う。
+    #[test]
+    fn 壁はフェース距離に数えない() {
+        let mut model = Model {
+            nodes: vec![
+                node(0, [0.0, 0.0, 0.0]),
+                node(1, [0.0, 0.0, 3000.0]),
+                node(2, [4000.0, 0.0, 3000.0]),
+            ],
+            elements: vec![elem(0, ElementKind::Beam, 1, 2, 0)],
+            sections: vec![section(0, 700.0), section(1, 9999.0)],
+            ..Default::default()
+        };
+        assert_eq!(face_distances(&model)[0], [0.0, 0.0]);
+
+        // 梁の i 端に直交する壁を足しても変わらない。
+        model.elements.push(elem(1, ElementKind::Wall, 0, 1, 1));
+        assert_eq!(face_distances(&model)[0], [0.0, 0.0]);
+
+        // 同じ位置に柱（Beam）を足すと、そのせいの半分が効く。
+        model.elements.push(elem(2, ElementKind::Beam, 0, 1, 1));
+        assert_eq!(face_distances(&model)[0], [4999.5, 0.0]);
     }
 }

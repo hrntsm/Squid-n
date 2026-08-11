@@ -188,8 +188,11 @@ pub struct RigidZone {
     /// **`None` は「まだ算定していない」を表す**（直交材がなくフェース距離が
     /// 0 の端は `Some(0.0)`）。両者を 0 で混同すると、算定前に読んだ側が
     /// 「フェース距離 0＝節点間長」として計算を進めてしまい、危険断面位置や
-    /// RC/SRC 梁の自重が静かに誤る。算定は
-    /// [`crate::face_distance::apply_face_distances`]（幾何のみ・冪等）。
+    /// RC/SRC 梁の自重が静かに誤る。
+    ///
+    /// 値を埋めるのは `squid_n_element::beam::apply_auto_rigid_zones`（解析の各入口が
+    /// 呼ぶ）。キャッシュを当てにできない場所からは、幾何そのものを返す
+    /// [`crate::face_distance::face_distances`] を直接使うこと。
     ///
     /// 読み出しは [`Self::face_i_or_zero`]（表示用）と
     /// [`Self::clear_span_from`]（計算用）を使うこと。

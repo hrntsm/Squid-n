@@ -144,13 +144,16 @@ fn elem_axis(model: &Model, e: &squid_n_core::model::ElementData) -> [f64; 3] {
     }
 }
 
-/// 節点 `node` で対象部材と概ね直交する Beam 要素の最大せい（＝節点から部材
-/// フェースまでの距離 Lf の 2 倍）。構造種別は問わない。
+/// 節点 `node` から部材フェースまでの距離 Lf [mm]（剛域長 λ 用。壁を含む）。
 ///
-/// 剛域長 λ・危険断面位置 face のいずれもこの幾何量を用いる。λ 側で種別を
-/// 絞る必要はない。剛域を設けるのは「節点に集合する柱・大梁がすべて RC/SRC」
-/// のときだけで（[`all_rc_src_at`]）、そのとき直交材は定義上すべて RC/SRC に
-/// なるためである。
+/// 対象部材と概ね直交する柱・大梁の最大せいの半分に、その部材へ取り付く壁の
+/// 張り出しを加えた値。構造種別は問わない（剛域を設けるか否かの判定は
+/// [`all_rc_src_at`] が別に行う）。
+///
+/// 直交材として数える範囲は、壁を含めない幾何量を求める
+/// [`squid_n_core::face_distance`] と一致させること（柱・大梁 = `ElementKind::Beam`
+/// のみ）。ここだけ壁要素やパネルを数えると、同じ「部材フェース」を指す 2 つの値が
+/// 食い違う。
 fn max_orth_face(
     model: &Model,
     node: squid_n_core::ids::NodeId,
@@ -166,6 +169,9 @@ fn max_orth_face(
             continue;
         }
         let e = &model.elements[ei];
+        if e.kind != squid_n_core::model::ElementKind::Beam {
+            continue;
+        }
         let axis = elem_axis(model, e);
         let dot =
             (axis[0] * target_axis[0] + axis[1] * target_axis[1] + axis[2] * target_axis[2]).abs();
