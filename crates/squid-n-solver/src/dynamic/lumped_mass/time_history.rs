@@ -178,6 +178,8 @@ pub fn lumped_mass_time_history(
     let drift = |u: &[f64], i: usize| if i == 0 { u[0] } else { u[i] - u[i - 1] };
 
     let mut non_converged_steps = 0usize;
+    // 収束判定の基準ノルムの下限に使う、解析中に観測した力のスケールの最大値。
+    let mut peak_force_scale = 0.0_f64;
 
     for (step, &ag) in accel.iter().enumerate() {
         // 外力（地動慣性力）。
@@ -233,7 +235,9 @@ pub fn lumped_mass_time_history(
             // （立体モデルの非線形時刻歴で実際に不収束を起こした。
             // `dev_docs/handoff/非線形時刻歴の収束_申し送り.md`）。
             let ma: Vec<f64> = (0..n).map(|i| mass[i] * a_tr[i]).collect();
-            let ref_norm = crate::newton::dynamic_reference_norm(&p, &ma, &cv);
+            let scale = crate::newton::dynamic_force_scale(&p, &ma, &cv);
+            peak_force_scale = peak_force_scale.max(scale);
+            let ref_norm = crate::newton::dynamic_reference_norm(scale, peak_force_scale);
             if STICK_NEWTON.converged(rnorm.sqrt(), ref_norm) {
                 step_converged = true;
                 break;

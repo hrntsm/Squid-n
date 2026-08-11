@@ -886,6 +886,42 @@ fn time_history_linear_runs() {
     );
 }
 
+/// 長い波形でも、応答が減衰しきった末尾で偽の非収束を出さない。
+///
+/// 収束判定の基準ノルムは動的釣り合いの各項の最大を採るが、それだけでは応答が
+/// 減衰しきった時刻で 3 項すべてが床（1 N）を下回り、判定が到達不能な絶対値判定へ
+/// 化ける。継続時間 120 秒では 202 ステップがこれに当たっていた。解析中に観測した
+/// 力のスケールの最大値に対する下限を設けて解消したことを、既定の 10 秒では
+/// 現れない長さで固定する（`dev_docs/handoff/非線形時刻歴の収束_申し送り.md` 4.1）。
+#[test]
+fn time_history_nonlinear_long_duration_has_no_false_non_convergence() {
+    let mut app = prepared();
+    app.analysis_cfg.th_dir = ThDir::X;
+    app.analysis_cfg.th_nonlinear = true;
+    app.analysis_cfg.th_duration = 120.0;
+    // 刻みは既定より粗くする（この不具合は応答の減衰で決まり、刻みには依らない）。
+    // 既定の 0.01 秒では 12000 ステップになり、テスト時間が 5 倍以上に伸びる。
+    app.analysis_cfg.th_dt = 0.05;
+    app.run_time_history_sample();
+    assert_no_error(&app, "非線形時刻歴応答解析（120 秒）");
+
+    let th = app
+        .results
+        .as_ref()
+        .expect("解析結果")
+        .time_history
+        .as_ref()
+        .expect("時刻歴の結果");
+    assert_eq!(
+        th.non_converged_steps, 0,
+        "減衰しきった末尾で偽の非収束が出ている"
+    );
+    assert!(
+        th.peak_disp.iter().flatten().all(|v| v.is_finite()),
+        "ピーク変位に非有限値がある"
+    );
+}
+
 /// 非線形時刻歴応答解析（サンプル波）が完走する。
 ///
 /// かつては既定設定（サンプル波 dt=0.01・継続時間 10 秒・減衰 2%・Newmark-β）で

@@ -138,6 +138,8 @@ pub fn nonlinear_time_history_analysis(
     // レインフロー法（ASTM E1049-85）・Miner 則による鉄骨梁端部の累積損傷度計算。
     // Newton 反復が上限内に収束しなかったステップ数（打ち切らず参考値として続行する）。
     let mut non_converged_steps = 0usize;
+    // 収束判定の基準ノルムの下限に使う、解析中に観測した力のスケールの最大値。
+    let mut peak_force_scale = 0.0_f64;
     let mut mu_hist: Vec<Vec<f64>> = vec![Vec::new(); model.elements.len()];
 
     // 質量行列（縮約空間）。
@@ -552,7 +554,9 @@ pub fn nonlinear_time_history_analysis(
             // 採れば基準は消えない。長期荷重を除く点は従来どおりで、長期が卓越する
             // モデルで判定が緩む問題も起こさない。
             let r_norm = l2_norm(r_red);
-            let ref_norm = crate::newton::dynamic_reference_norm(p_dyn_red, m_a_red, c_v_red);
+            let scale = crate::newton::dynamic_force_scale(p_dyn_red, m_a_red, c_v_red);
+            peak_force_scale = peak_force_scale.max(scale);
+            let ref_norm = crate::newton::dynamic_reference_norm(scale, peak_force_scale);
             if cfg.newton.converged(r_norm, ref_norm) {
                 converged = true;
                 break;
