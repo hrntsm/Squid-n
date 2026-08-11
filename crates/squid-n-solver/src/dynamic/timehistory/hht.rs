@@ -56,6 +56,8 @@ pub fn linear_hht_alpha_analysis(
     let n_indep = reducer.n_indep;
     if n_indep == 0 {
         return Ok(ResponseResult {
+            // 線形経路は Newton 反復を行わないため常に 0。
+            non_converged_steps: 0,
             time: vec![],
             peak_disp: vec![[0.0; 6]; model.nodes.len()],
             story_drift_angle: vec![0.0; model.layer_count()],
@@ -460,6 +462,8 @@ fn run_steps_hht(
 
     Ok((
         ResponseResult {
+            // 線形経路は Newton 反復を行わないため常に 0。
+            non_converged_steps: 0,
             time,
             peak_disp,
             story_drift_angle,

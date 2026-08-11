@@ -32,6 +32,17 @@ pub struct ResponseResult {
     /// （.scz）にはないフィールドのため、読込時は false で補う。
     #[serde(default)]
     pub applied_long_term: bool,
+    /// Newton 反復が上限内に収束しなかった時刻ステップ数（非線形時刻歴のみ。
+    /// 線形は反復しないため常に 0）。
+    ///
+    /// 0 でない場合、そのステップは残差の収束を確認できないまま確定しており、
+    /// 応答値の信頼性が下がっているため、表示側は利用者へ注記すること。
+    /// 質点系（`crate::lumped_mass::StickResponse::non_converged_steps`）と
+    /// 同じ規約で、途中で解析を打ち切らず参考値として最後まで解く。
+    ///
+    /// 旧プロジェクトファイル（.scz）にはないフィールドのため、読込時は 0 で補う。
+    #[serde(default)]
+    pub non_converged_steps: usize,
 }
 
 /// UI 描画用の代表応答時刻歴（`time` と同じ長さ）。

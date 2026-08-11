@@ -114,6 +114,8 @@ pub fn nonlinear_time_history_analysis(
     let n_indep = reducer.n_indep;
     if n_indep == 0 {
         return Ok(ResponseResult {
+            // 解くべきステップがない退化ケース。
+            non_converged_steps: 0,
             time: vec![],
             peak_disp: vec![[0.0; 6]; model.nodes.len()],
             story_drift_angle: vec![0.0; model.layer_count()],
@@ -134,6 +136,8 @@ pub fn nonlinear_time_history_analysis(
     }
     // 累積損傷度用の塑性率 μ 時刻歴（要素ごと。塑性率プローブを持つ要素のみ収集）。
     // レインフロー法（ASTM E1049-85）・Miner 則による鉄骨梁端部の累積損傷度計算。
+    // Newton 反復が上限内に収束しなかったステップ数（打ち切らず参考値として続行する）。
+    let mut non_converged_steps = 0usize;
     let mut mu_hist: Vec<Vec<f64>> = vec![Vec::new(); model.elements.len()];
 
     // 質量行列（縮約空間）。
@@ -595,7 +599,25 @@ pub fn nonlinear_time_history_analysis(
             apply_du_trial(model, dofmap, &mut behaviors, du_free);
         }
 
-        if converged {
+        if !converged {
+            // 不収束でも解析は打ち切らず、その時点の試行状態で確定して続行する
+            // （質点系 `crate::lumped_mass` と同じ規約）。途中まで解けた応答を
+            // 捨てるより、参考値として最後まで見せたうえで「収束を確認できて
+            // いないステップが何件あるか」を利用者へ伝えるほうが判断材料になる。
+            //
+            // ただし発散して有限でない値になった場合だけは打ち切る。以降の
+            // ステップも結果もすべて NaN に汚染され、参考値にすらならないため。
+            if !du_total.iter().all(|x| x.is_finite()) {
+                revert_all(&mut behaviors);
+                return Err(SolveError::Backend(format!(
+                    "nonlinear time history: step {} で応答が発散しました（変位が有限値ではありません）。                     時間刻み dt を小さくするか、減衰・復元力特性の設定を見直してください",
+                    n
+                )));
+            }
+            non_converged_steps += 1;
+        }
+
+        {
             for i in 0..n_indep {
                 u[i] += du_total[i];
             }
@@ -672,15 +694,6 @@ pub fn nonlinear_time_history_analysis(
                 xg_y_next,
                 &mf_now,
             );
-        } else {
-            // 不収束: rollback（P3: ステップ開始時点は trial==committed のため、
-            // 全要素 revert_state（trial←committed）はスナップショット復元と等価。
-            // 上のコメント参照）。
-            revert_all(&mut behaviors);
-            return Err(SolveError::Backend(format!(
-                "nonlinear time history: step {} did not converge",
-                n
-            )));
         }
     }
 
@@ -704,6 +717,7 @@ pub fn nonlinear_time_history_analysis(
         .collect();
 
     Ok(ResponseResult {
+        non_converged_steps,
         time,
         peak_disp,
         story_drift_angle,

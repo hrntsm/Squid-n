@@ -1602,7 +1602,17 @@ fn test_nonlinear_time_history_cumulative_vs_noncumulative() {
     );
 }
 
-/// 不収束時の restore が動作すること（収束失敗時にステップ開始状態に戻る）。
+/// 反復上限が十分なら収束し、足りなければ**打ち切らず参考値として続行**する。
+///
+/// 以前は最初の不収束で `Err` を返して解析全体を捨てていた。質点系
+/// （`crate::lumped_mass`）は同じ状況でその時点の試行状態で確定して続行し、
+/// 非収束ステップ数を警告表示する設計だったため、扱いが 2 経路で食い違っていた。
+/// 途中まで解けた応答を捨てるより参考値として見せるほうが利用者の判断材料に
+/// なるため、立体モデル側を質点系へ揃えた
+/// （`dev_docs/handoff/非線形時刻歴の収束_申し送り.md`）。
+///
+/// 打ち切るのは発散（変位が有限値でない）した場合だけで、そのときは
+/// ステップ開始状態へ戻してから `Err` を返す。
 #[test]
 fn test_nonlinear_time_history_convergence() {
     let model = fiber_column_model(100.0);
@@ -1651,7 +1661,7 @@ fn test_nonlinear_time_history_convergence() {
     assert!(!result.time.is_empty());
     assert!(result.peak_disp[1][0] > 0.0);
 
-    // 反復回数 1 で同じ問題を解く（収束しないはず → rollback される）
+    // 反復回数 1 で同じ問題を解く（収束しないが、打ち切らず参考値として続行する）。
     let model2 = fiber_column_model(100.0);
     let result2 = nonlinear_time_history_analysis(
         &model2,
@@ -1666,10 +1676,19 @@ fn test_nonlinear_time_history_convergence() {
         NonlinearThCfg::new(1, 1e-6),
     );
 
-    // 収束せずエラーになること（restore が動作していることの間接的証拠）
+    let result2 = result2.expect("不収束でも Err にせず完走するはず");
     assert!(
-        result2.is_err(),
-        "should fail to converge with only 1 iteration"
+        result2.non_converged_steps > 0,
+        "反復上限 1 回では不収束ステップが数えられるはず"
+    );
+    assert_eq!(
+        result2.time.len(),
+        wave.accel_x.len() + 1,
+        "不収束でも全ステップ解く"
+    );
+    assert!(
+        result2.peak_disp.iter().flatten().all(|v| v.is_finite()),
+        "参考値として返す応答は有限値であること"
     );
 }
 
