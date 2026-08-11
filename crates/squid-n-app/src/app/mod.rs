@@ -1907,41 +1907,7 @@ fn beam_group_overrides(
     }
     out
 }
-
-/// 危険断面位置（§6.2.3、既定は柱フェイスと中央）を正規化座標 \[0,1\] で算定する。
-/// `squid_n_element::beam::BeamElement::new` の `eval_sections` 算定と同じ規則
-/// （xi_i は \[0.0, 0.5) へ、xi_j は (0.5, 1.0\] へクランプ）で face_i/face_j から
-/// 求める。face=0（直交材がない端）では節点芯（0.0/1.0）と一致する。
-///
-/// `detail`（`Model::member_detail(elem.id)`）が付帯情報を持つ場合は、その
-/// 追加検定位置（ハンチ端・継手位置。`MemberDetailAttr::extra_check_positions`）
-/// も含める（剛性には影響しない。§6.2.3「位置はユーザが追加・変更可能」）。
-/// `squid_n_element::beam::BeamElement::new` の `eval_sections` と同じ実装を
-/// 使うため、両者の位置一致判定（1e-6）が保証される。
-fn design_positions(
-    elem: &squid_n_core::model::ElementData,
-    geom_len: f64,
-    detail: Option<&squid_n_core::model::MemberDetailAttr>,
-) -> Vec<f64> {
-    let mut xs = if geom_len > 1e-12 {
-        let xi_i = (elem.rigid_zone.face_i_or_zero() / geom_len).clamp(0.0, 0.5 - 1e-9);
-        let xi_j = (1.0 - elem.rigid_zone.face_j_or_zero() / geom_len).clamp(0.5 + 1e-9, 1.0);
-        vec![xi_i, 0.5, xi_j]
-    } else {
-        vec![0.0, 0.5, 1.0]
-    };
-    if let Some(detail) = detail {
-        xs.extend(detail.extra_check_positions(&elem.rigid_zone, geom_len));
-    }
-    xs.sort_by(|a, b| a.total_cmp(b));
-    xs.dedup_by(|a, b| (*a - *b).abs() < 1e-9);
-    xs
-}
-
-/// `pos` が `positions` のいずれかと 1e-6 以内で一致するか判定する。
-fn is_near_design_position(pos: f64, positions: &[f64]) -> bool {
-    positions.iter().any(|p| (p - pos).abs() < 1e-6)
-}
+pub(crate) use squid_n_design_jp::design_position::{design_positions, is_near_design_position};
 
 mod actions;
 pub mod node_grid;

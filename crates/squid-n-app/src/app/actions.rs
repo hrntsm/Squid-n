@@ -3004,8 +3004,7 @@ impl App {
                 squid_n_core::structure_kind::structure_kind_of(Some(sec), Some(mat.category)),
             );
 
-            let detail = self.model.member_detail(*elem_id);
-            let positions = design_positions(elem, length, detail);
+            let positions = design_positions(elem, &self.model, length);
 
             for (pos, forces) in &mf.at {
                 if !is_near_design_position(*pos, &positions) {

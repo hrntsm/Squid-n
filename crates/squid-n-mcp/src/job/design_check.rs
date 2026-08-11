@@ -1,53 +1,25 @@
 //! 断面検定・接合部検定ジョブの純粋計算。
 //!
 //! - [`compute_design_check_job`] — DesignCheck ジョブの純粋計算部分。
-//! - [`design_positions`] — 危険断面位置を正規化座標で算定する（priv）。
-//! - [`is_near_design_position`] — `pos` が危険断面位置のいずれかと一致するか判定する（priv）。
 
 use super::{model_with_auto_rigid_zones, resolve_load_case, JobOutcome};
 use squid_n_core::model::Model;
 
-/// 危険断面位置（§6.2.3、既定は柱フェイスと中央）を正規化座標 \[0,1\] で算定する。
-/// `squid_n_element::beam::BeamElement::new` の `eval_sections` 算定と同じ規則
-/// （xi_i は \[0.0, 0.5) へ、xi_j は (0.5, 1.0\] へクランプ）で face_i/face_j から
-/// 求める。face=0（直交材がない端）では節点芯（0.0/1.0）と一致する。
-/// 部材付帯情報（ハンチ・継手位置。剛性には影響しない）があれば、その追加検定
-/// 位置（`MemberDetailAttr::extra_check_positions`）も加え、ソートして 1e-9
-/// 以内の重複を除去する（`BeamElement::new` の `eval_sections` と同じ規則。
-/// この一致により応力の評価断面と検定位置が揃う）。
-/// squid-n-app の `design_positions`（app.rs）と同じロジック
-/// （squid-n-mcp は squid-n-app に依存しないため複製している）。
-fn design_positions(
-    elem: &squid_n_core::model::ElementData,
-    model: &Model,
-    geom_len: f64,
-) -> Vec<f64> {
-    let mut xs = if geom_len > 1e-12 {
-        let xi_i = (elem.rigid_zone.face_i_or_zero() / geom_len).clamp(0.0, 0.5 - 1e-9);
-        let xi_j = (1.0 - elem.rigid_zone.face_j_or_zero() / geom_len).clamp(0.5 + 1e-9, 1.0);
-        vec![xi_i, 0.5, xi_j]
-    } else {
-        vec![0.0, 0.5, 1.0]
-    };
-    if let Some(detail) = model.member_detail(elem.id) {
-        xs.extend(detail.extra_check_positions(&elem.rigid_zone, geom_len));
-    }
-    xs.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-    xs.dedup_by(|a, b| (*a - *b).abs() < 1e-9);
-    xs
-}
-
-/// `pos` が `positions` のいずれかと 1e-6 以内で一致するか判定する。
-fn is_near_design_position(pos: f64, positions: &[f64]) -> bool {
-    positions.iter().any(|p| (p - pos).abs() < 1e-6)
-}
+use squid_n_design_jp::design_position::{design_positions, is_near_design_position};
 
 /// DesignCheck ジョブの純粋計算部分。
 /// 指定/先頭の荷重ケースで線形静的解析を行い、断面力に対して
 /// squid-n-app の `App::run_design_check`（app.rs）と同じ判定
 /// （構造種別を `squid_n_core::structure_kind` で求め、[`squid_n_design_jp::checker_for`]
-/// で検定器を選ぶ）を行う（squid-n-mcp は squid-n-app に依存しないため複製している）。
+/// で検定器を選ぶ）を行う。
 /// 検定条件（長期/短期）は既定で長期（`LoadTerm::Long`）とする。
+///
+/// 部材種別・部材長・危険断面位置の算定規則は squid-n-design-jp / squid-n-core
+/// の共通実装（[`squid_n_design_jp::MemberKind`]・[`Model::member_length`]・
+/// [`design_positions`]）を用いる。**検定器への配線そのもの**（DesignCtx の
+/// 組み立てと部材ごとの振り分け）だけが app 側と並行実装のまま残っている
+/// （squid-n-mcp は squid-n-app に依存できないため。共通化は dev_docs の
+/// 申し送りを参照）。
 pub(crate) fn compute_design_check_job(
     model: &Model,
     load_case: Option<u32>,

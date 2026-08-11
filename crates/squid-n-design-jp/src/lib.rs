@@ -9,6 +9,8 @@
 //! （部材ランク・層 Ds・保有水平耐力・剛性率・偏心率・主軸）に分離する。
 pub mod brb;
 pub mod cft;
+/// 危険断面位置（断面検定を行う部材軸上の位置）。GUI と MCP が共通で用いる。
+pub mod design_position;
 pub mod floor;
 /// 免震支承材のマルチシアスプリング低減率・摩擦力（各免震部材指針）。
 pub mod isolator;

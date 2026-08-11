@@ -4,7 +4,7 @@
 
 use super::ReleaseAxis;
 use crate::transform::LocalFrame;
-use squid_n_core::geom::vec3::{cross, dot, sub, unit};
+use squid_n_core::geom::vec3::{cross, dot, unit};
 use squid_n_core::ids::NodeId;
 use squid_n_core::model::{ElementData, ElementKind, Model};
 
@@ -127,39 +127,16 @@ fn side_column_candidate(
 type SideEdges = ([(NodeId, NodeId); 2], [f64; 3]);
 
 /// 壁 1 枚の鉛直辺 2 本（下辺a-上辺a・下辺b-上辺b の節点対）と壁面法線を返す。
-/// 四隅を z で下辺 2・上辺 2 に分け、下辺の軸方向への射影で上辺と対応付ける
-/// （`wall_panel.rs::try_new` と同じロジック）。退化した壁（節点欠落・辺長ゼロ・
-/// 法線が定まらない）は `None`。
+///
+/// 四隅の並べ替え（z で下辺 2・上辺 2 に分け、下辺の軸方向への射影で上辺と
+/// 対応付ける）は壁エレメント要素と**同じ幾何**でなければならないため、
+/// [`crate::wall_panel::wall_panel_geometry`] をそのまま用いる。
+/// 退化した壁（節点欠落・辺長ゼロ・法線が定まらない）は `None`。
 fn wall_side_edges(wall: &ElementData, model: &Model) -> Option<SideEdges> {
-    let ids: Vec<NodeId> = wall.nodes.iter().take(4).copied().collect();
-    let coords = ids
-        .iter()
-        .map(|nid| model.nodes.get(nid.index()).map(|n| n.coord))
-        .collect::<Option<Vec<_>>>()?;
-
-    // z で下辺2節点・上辺2節点に分ける（wall_panel.rs::try_new と同じロジック）
-    let mut order: Vec<usize> = (0..4).collect();
-    order.sort_by(|&a, &b| coords[a][2].total_cmp(&coords[b][2]));
-    let (b0, b1, t0, t1) = (order[0], order[1], order[2], order[3]);
-
-    let (pa, pb) = (coords[b0], coords[b1]);
-    let ex_bot = unit(sub(pb, pa))?;
-    // 上辺は下辺の a に近い方を a とする（対応付け）
-    let (ta, tb) = {
-        let d0 = dot(sub(coords[t0], pa), ex_bot).abs();
-        let d1 = dot(sub(coords[t1], pa), ex_bot).abs();
-        if d0 <= d1 {
-            (t0, t1)
-        } else {
-            (t1, t0)
-        }
-    };
-
+    let g = crate::wall_panel::wall_panel_geometry(wall, model)?;
     // 壁面法線 = 下辺方向 × 鉛直
-    let up = [0.0, 0.0, 1.0];
-    let normal = unit(cross(ex_bot, up))?;
-
-    Some(([(ids[b0], ids[ta]), (ids[b1], ids[tb])], normal))
+    let normal = unit(cross(g.ex_bottom, [0.0, 0.0, 1.0]))?;
+    Some(([(g.bottom[0], g.top[0]), (g.bottom[1], g.top[1])], normal))
 }
 
 /// 壁面法線から解放すべき局所曲げ面を定める（回転軸が壁法線に平行な方）。
