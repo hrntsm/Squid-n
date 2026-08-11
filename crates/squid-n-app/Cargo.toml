@@ -32,3 +32,6 @@ squid-n-math = { version = "0.0.1", path = "../squid-n-math" }
 bincode = { workspace = true }
 serde = { workspace = true }
 rmp-serde = { workspace = true }
+
+[dev-dependencies]
+insta = { workspace = true }
