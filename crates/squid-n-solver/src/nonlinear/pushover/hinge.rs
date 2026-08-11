@@ -104,12 +104,16 @@ fn member_moment_thresholds(elem: &ElementData, model: &Model) -> HingeThreshold
         }
         (Some(shape), StructureKind::S) => {
             // 鉄骨: 全塑性モーメント Mp = Zp·σy。ひび割れはないため Mc=My=Mp。
-            // 鉄骨形状はすべて Zp を持つ（`plastic_modulus_strong`）。Zp を持たない
-            // のは複合断面（SRC/CFT）だけで、それらは構造種別が S にならないため
-            // 本分岐へは来ない。万一到達した場合は Ze（形状係数 1.0）へ落とす
-            // ——**材端曲げバネ（`squid_n_element::factory` の `yield_moment`）と
-            // 同じフォールバック**でなければ、要素が降伏していてもヒンジ判定側が
-            // 未降伏と扱う（またはその逆の）食い違いが生じる。
+            //
+            // 鉄骨形状はすべて Zp を持つ（`plastic_modulus_strong`）が、この分岐は
+            // 鉄骨形状に限らない。`structure_kind_of` は**材料の区分が鋼なら形状に
+            // よらず S** を返すため、壁・スラブ断面（`RcWall`/`RcSlab`）へ鋼材料を
+            // 割り当てたモデルもここへ来る（`RcRect`/`RcCircle` は上の分岐で拾う）。
+            // その場合 Zp は None になるため Ze（形状係数 1.0）へ落とす。
+            //
+            // このフォールバック値は**材端曲げバネ（`squid_n_element::factory` の
+            // `yield_moment`）と一致させること**。食い違うと、要素が降伏していても
+            // ヒンジ判定側は未降伏と扱う（またはその逆の）状態が生じる。
             let zp = shape.plastic_modulus_strong().unwrap_or(ze);
             let mp = sigma_y_steel * zp;
             HingeThreshold { mc: mp, my: mp }
