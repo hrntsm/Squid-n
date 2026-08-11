@@ -239,30 +239,31 @@ fn rigid_zone_with_adjacency(
             .map(|s| s.depth)
             .unwrap_or(0.0)
     };
-    let walls: &[crate::wall::misc_wall::MiscWall] = if rule.consider_walls { walls } else { &[] };
 
-    // 節点から部材フェースまでの距離 Lf = 直交部材せい/2 ＋ 自部材側へ張り出す壁。
-    // 壁は向きを持つため、各端で「その節点から自部材が伸びる向き」を渡す。
+    // 節点から部材フェースまでの距離 Lf。壁は向きを持つため、各端で
+    // 「その節点から自部材が伸びる向き」を渡す。
     let dir_i = [cj[0] - ci[0], cj[1] - ci[1], cj[2] - ci[2]];
     let dir_j = [-dir_i[0], -dir_i[1], -dir_i[2]];
-    let lf_i = max_orth_face(
-        model,
-        node_i,
-        target_axis,
-        target_elem_idx,
-        adjacency,
-        walls,
-        dir_i,
-    );
-    let lf_j = max_orth_face(
-        model,
-        node_j,
-        target_axis,
-        target_elem_idx,
-        adjacency,
-        walls,
-        dir_j,
-    );
+    let lf = |node, toward, walls: &[crate::wall::misc_wall::MiscWall]| {
+        max_orth_face(
+            model,
+            node,
+            target_axis,
+            target_elem_idx,
+            adjacency,
+            walls,
+            toward,
+        )
+    };
+    // 剛域長 λ 用は壁込み（技術基準「剛域の計算」）。
+    let lf_i = lf(node_i, dir_i, walls);
+    let lf_j = lf(node_j, dir_j, walls);
+    // 危険断面位置 face 用は原断面のみ。壁の考慮は剛域の規定であって、危険断面位置は
+    // 柱フェース（＝直交部材せい/2）で決まる幾何量である（設計書 §6.2.3）。
+    // face は RC/SRC 梁の自重の内法長（`squid_n_load` の `enumerate_self_weight`）
+    // にも使われるため、ここに壁を混ぜると壁の張り出し分だけ梁の自重が過小になる。
+    let face_i = lf(node_i, dir_i, &[]);
+    let face_j = lf(node_j, dir_j, &[]);
 
     // 剛域長 λ = Lf − D_自身/4（技術基準「剛域の計算」）。
     // 剛域を設けるのは、その節点に集合する柱・大梁がすべて RC/SRC のときだけで、
@@ -300,8 +301,8 @@ fn rigid_zone_with_adjacency(
         // フェース距離は剛性用剛域の低減率（慣用調整）と無関係な幾何量なので
         // reduction を掛けない（設計書 §6.2.1「設計位置との区別」）。剛域を設けない
         // 仕口（S 系を含む節点）でも危険断面位置は必要なので、λ とは独立に常に持つ。
-        face_i: lf_i,
-        face_j: lf_j,
+        face_i,
+        face_j,
         // パネル分のオフセットは剛域算定の対象外（`panel_gen` が別途書き込む）。
         // ここで既定値へ落としても、`recompute_auto_zones` が反映しないため
         // モデル側の値は保たれる。
