@@ -2043,6 +2043,14 @@ impl App {
     pub fn generate_stories_action(&mut self) {
         self.last_error = None;
         self.last_notice = None;
+        // 剛域の反映は自重の同期より先に行う。RC/SRC 梁の自重は柱フェース間の
+        // 内法長で算定するため（`squid_n_load::self_weight`）、剛域が未反映の
+        // まま同期すると節点間距離で算定した過大な自重が DL に入る。以前は
+        // 同期の後に剛域を反映していたため、1 回目の準備計算だけ DL が過大に
+        // なり、2 回目の実行で初めて正しい値へ変わっていた（＝準備計算が
+        // 冪等でなかった）。剛域の算定は部材の幾何と断面のみに依存し、階の
+        // 生成結果には依存しないため、ここで先に反映して差し支えない。
+        self.apply_rigid_zones_for_analysis();
         self.sync_gravity_load_cases_action();
         let gravity_lcs = gravity_cases_for_seismic_weight(&self.model);
         let include_density = density_self_weight_for_stories(&self.model);
