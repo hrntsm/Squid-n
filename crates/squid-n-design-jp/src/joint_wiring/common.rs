@@ -57,6 +57,6 @@ impl MemberInfo<'_> {
     }
 }
 
-/// 主筋 1 段の重心位置（引張縁から）k1 = かぶり + 帯筋径 + 主筋径/2。
-/// 算定の情報源は [`crate::rc::section_props::first_layer_dt`]。
-pub(super) use crate::rc::section_props::first_layer_dt as rc_dt;
+/// 主筋（せい方向 main_x）の引張筋重心位置 dt（多段配筋の段数を考慮する）。
+/// 算定の情報源は [`crate::rc::section_props::rebar_tension_dt`]。
+pub(super) use crate::rc::section_props::rebar_tension_dt as rc_dt;

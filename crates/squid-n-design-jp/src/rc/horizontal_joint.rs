@@ -136,9 +136,9 @@ pub fn pca_horizontal_joint_ultimate(
     finish("終局限界", tau_xy, tau_u)
 }
 
-/// 主筋 1 段の重心位置（引張縁から）k1 = かぶり + あばら筋径 + 主筋径/2。
-/// 算定の情報源は [`super::section_props::first_layer_dt`]。
-use super::section_props::first_layer_dt as rc_dt;
+/// 主筋（せい方向 main_x）の引張筋重心位置 dt（多段配筋の段数を考慮する）。
+/// 算定の情報源は [`super::section_props::rebar_tension_dt`]。
+use super::section_props::rebar_tension_dt as rc_dt;
 
 /// 内力リストのうち、評価位置 `pos` に最も近い行を返す。
 fn closest_forces(forces: crate::joint_wiring::ForcesAt<'_>, pos: f64) -> Option<&(f64, [f64; 6])> {
