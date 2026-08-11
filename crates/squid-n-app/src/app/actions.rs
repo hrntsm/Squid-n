@@ -2043,13 +2043,18 @@ impl App {
     pub fn generate_stories_action(&mut self) {
         self.last_error = None;
         self.last_notice = None;
-        // 剛域の反映は自重の同期より先に行う。RC/SRC 梁の自重は柱フェース間の
-        // 内法長で算定するため（`squid_n_load::self_weight`）、剛域が未反映の
-        // まま同期すると節点間距離で算定した過大な自重が DL に入る。以前は
-        // 同期の後に剛域を反映していたため、1 回目の準備計算だけ DL が過大に
-        // なり、2 回目の実行で初めて正しい値へ変わっていた（＝準備計算が
-        // 冪等でなかった）。剛域の算定は部材の幾何と断面のみに依存し、階の
-        // 生成結果には依存しないため、ここで先に反映して差し支えない。
+        // 柱フェース距離（`RigidZone::face_i/face_j`）の算定は自重の同期より先に
+        // 行う。RC/SRC 梁の自重は柱面間の内法長で算定するため
+        // （`squid_n_load::story_gen::self_weight_calc`）、face が未算定（0）の
+        // まま同期すると節点間距離で算定した過大な自重が DL に入る。以前は同期の
+        // 後に算定していたため、1 回目の準備計算だけ DL が過大になり、2 回目の
+        // 実行で初めて正しい値へ変わっていた（＝準備計算が冪等でなかった）。
+        //
+        // face は接合関係と断面せいから決まる幾何量で、剛域長 `length_i/j` の
+        // Manual/Auto とは独立に常に再算定される（`recompute_auto_zones`）。
+        // ここで呼ぶ `apply_auto_rigid_zones` が剛域長と同時に face も算定する
+        // ため、名前に反して自重の前提でもある。算定は部材の幾何と断面のみに
+        // 依存し階の生成結果には依存しないため、先に呼んで差し支えない。
         self.apply_rigid_zones_for_analysis();
         self.sync_gravity_load_cases_action();
         let gravity_lcs = gravity_cases_for_seismic_weight(&self.model);
