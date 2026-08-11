@@ -926,3 +926,68 @@ fn test_plastic_modulus_covers_all_steel_shapes() {
     .plastic_modulus_strong()
     .is_none());
 }
+
+/// CFT 充填コンクリートの諸元は、剛性側（等価断面性能）と耐力側（軸終局検定）の
+/// 双方が使う単一の実装。内法寸法・A・I・J が閉形式と一致することを確かめる。
+#[test]
+fn test_cft_core_props_matches_closed_form() {
+    let (h, w, t) = (400.0, 300.0, 12.0);
+    let boxed = SectionShape::CftBox {
+        height: h,
+        width: w,
+        thick: t,
+    };
+    let c = boxed.cft_core_props().unwrap();
+    let (bi, hi) = (w - 2.0 * t, h - 2.0 * t);
+    assert!((c.inner_width - bi).abs() < 1e-9);
+    assert!((c.inner_height - hi).abs() < 1e-9);
+    assert!((c.area - bi * hi).abs() < 1e-9);
+    assert!((c.iy - bi * hi.powi(3) / 12.0).abs() < 1e-6);
+    assert!((c.iz - hi * bi.powi(3) / 12.0).abs() < 1e-6);
+
+    let pipe = SectionShape::CftPipe {
+        outer_dia: 400.0,
+        thick: 12.0,
+    };
+    let cp = pipe.cft_core_props().unwrap();
+    let di = 400.0 - 24.0;
+    assert!((cp.area - std::f64::consts::PI * di * di / 4.0).abs() < 1e-6);
+    assert!((cp.iy - std::f64::consts::PI * di.powi(4) / 64.0).abs() < 1e-3);
+    // 円形は強軸・弱軸が同値、ねじり定数は極断面二次モーメント Ip = 2·I。
+    assert!((cp.iy - cp.iz).abs() < 1e-9);
+    assert!((cp.j - 2.0 * cp.iy).abs() < 1e-3);
+
+    // CFT 以外は None。
+    assert!(make_src_600().cft_core_props().is_none());
+}
+
+/// 板厚が過大で内法が消える CFT 断面では、充填コンクリートの断面積が 0 になる。
+///
+/// 呼び出し側が扱いを選べるよう `None` にはしない。剛性側
+/// （`cft_equivalent_props`）は「鋼管のみへフォールバック」として `None` を返し、
+/// 耐力側は「充填ゼロのまま検定を続行」する。どちらも**充填コンクリートが効かない**
+/// という同じ結果になる。
+#[test]
+fn test_cft_core_props_degenerate_gives_zero_area() {
+    // せい 100・板厚 60 → 内法せいが負（クランプして 0）。
+    let degenerate = SectionShape::CftBox {
+        height: 100.0,
+        width: 400.0,
+        thick: 60.0,
+    };
+    let c = degenerate.cft_core_props().unwrap();
+    assert_eq!(c.inner_height, 0.0);
+    assert_eq!(c.area, 0.0);
+    // 剛性側は鋼管のみへフォールバックする。
+    assert!(degenerate
+        .cft_equivalent_props(205000.0, 0.3, 36.0)
+        .is_none());
+
+    // 円形も同様（外径 100・板厚 60）。
+    let dp = SectionShape::CftPipe {
+        outer_dia: 100.0,
+        thick: 60.0,
+    };
+    assert_eq!(dp.cft_core_props().unwrap().area, 0.0);
+    assert!(dp.cft_equivalent_props(205000.0, 0.3, 36.0).is_none());
+}
