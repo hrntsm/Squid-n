@@ -117,7 +117,7 @@ pub fn frame_wizard_window(ctx: &egui::Context, app: &mut App) {
                         }
                         None => {
                             ui.label(format!(
-                                "生成: 節点 {} ・柱 {} 本 ・大梁 {} 本 ・床 {} 枚",
+                                "生成: 節点 {} ・柱 {} 本 ・梁 {} 本（基礎梁を含む）・床 {} 枚",
                                 counts.nodes, counts.columns, counts.girders, counts.slabs
                             ));
                             if ui
@@ -244,9 +244,11 @@ fn stories_section(ui: &mut egui::Ui, w: &mut FrameWizardState) {
                 w.spec.story_names.clear();
             }
         });
+        // 階（床）は層より 1 つ多い。行は床ごとに並べ、階高は「その床とすぐ下の床の
+        // 間」＝層の高さなので、基部の床の行には階高欄を置かない。
         // 階名の既定は `default_story_name`（床基準の連番）。最上階も数字で通す。
         let n = w.spec.story_heights.len();
-        w.spec.story_names.resize(n, String::new());
+        w.spec.story_names.resize(n + 1, String::new());
         // 階は最大 60 まで増やせる。約 10 行分で打ち切り、それを超える分はスクロールで
         // 見る。階数が少ないうちは縦に縮ませたいので auto_shrink の縦は true。
         egui::ScrollArea::vertical()
@@ -261,16 +263,27 @@ fn stories_section(ui: &mut egui::Ui, w: &mut FrameWizardState) {
                         ui.label("階高 [mm]");
                         ui.label("階名");
                         ui.end_row();
-                        for i in (0..n).rev() {
-                            ui.label(format!("{}", i + 1));
+                        // 床 fi（0 = 基部）を上から順に描く。床 fi の階高は
+                        // 層 fi-1 の高さ（`story_heights[fi - 1]`）。
+                        for fi in (0..=n).rev() {
+                            ui.label(format!("{}", fi + 1));
+                            match fi.checked_sub(1) {
+                                Some(li) => {
+                                    ui.add(
+                                        egui::DragValue::new(&mut w.spec.story_heights[li])
+                                            .speed(100.0)
+                                            .range(1.0..=1.0e5),
+                                    );
+                                }
+                                None => {
+                                    ui.label("—").on_hover_text(
+                                        "基部（柱脚・基礎梁のレベル）。階高は上の階が持ちます",
+                                    );
+                                }
+                            }
+                            let hint = squid_n_core::model::default_story_name(fi);
                             ui.add(
-                                egui::DragValue::new(&mut w.spec.story_heights[i])
-                                    .speed(100.0)
-                                    .range(1.0..=1.0e5),
-                            );
-                            let hint = squid_n_core::model::default_story_name(i);
-                            ui.add(
-                                egui::TextEdit::singleline(&mut w.spec.story_names[i])
+                                egui::TextEdit::singleline(&mut w.spec.story_names[fi])
                                     .hint_text(hint)
                                     .desired_width(80.0),
                             );

@@ -48,19 +48,13 @@ pub fn center_of_mass(model: &Model, story: StoryId) -> [f64; 2] {
 ///
 /// 柱の判定: `ElementKind::Beam` かつ 2節点、部材軸 ez[2].abs() > 0.707 で鉛直判定。
 /// 層帰属: 上端節点（z 大）の `story == Some(story)` を当該層とする。
+///
+/// `story` には**層の上端の階**（[`squid_n_core::model::Layer::top`]）を渡すこと。
+/// 層の柱はその上端の床に取り付くためである。
 pub fn column_stiffnesses(model: &Model, story: StoryId) -> Vec<ColumnStiffness> {
-    // 最下層判定: 当該 story の elevation が全 stories 中で最小なら true。
-    let min_elev: f64 = model
-        .stories
-        .iter()
-        .map(|s| s.elevation)
-        .fold(f64::INFINITY, f64::min);
-    let this_elev = model
-        .stories
-        .get(story.index())
-        .map(|s| s.elevation)
-        .unwrap_or(f64::INFINITY);
-    let first_story = (this_elev - min_elev).abs() < 1e-9;
+    // 最下層判定: 当該階が最下層の上端（＝基部の 1 つ上の階）なら true。
+    // D 値法の最下層は柱脚の支持条件が他層と異なるため区別する。
+    let first_story = story.index() == 1;
 
     let mut result = Vec::new();
 

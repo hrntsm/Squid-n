@@ -231,17 +231,17 @@ impl ThRecorder {
         let record_every = record_every
             .unwrap_or_else(|| auto_record_every(n_steps))
             .max(1);
-        let n_story = model.stories.len();
+        let layers = model.layers();
+        let n_story = layers.len();
 
-        // 階の代表 Z 座標（所属節点の平均 Z）。どの階にも属さない節点の慣性力を
-        // 最も近い階へ計上する際に使う。
-        let story_repr_z: Vec<f64> = model
-            .stories
+        // 層の代表 Z 座標（所属節点＝上端の階の所属節点の平均 Z）。どの層にも
+        // 属さない節点の慣性力を最も近い層へ計上する際に使う。
+        let story_repr_z: Vec<f64> = layers
             .iter()
-            .map(|story| {
+            .map(|layer| {
                 let mut sum_z = 0.0;
                 let mut cnt = 0.0f64;
-                for &nid in &story.node_ids {
+                for &nid in &layer.node_ids {
                     if let Some(node) = model.nodes.get(nid.index()) {
                         sum_z += node.coord[2];
                         cnt += 1.0;
@@ -256,12 +256,11 @@ impl ThRecorder {
             .collect();
 
         let build_groups = |dir_idx: usize| -> Vec<StoryDofGroup> {
-            let mut groups: Vec<StoryDofGroup> = model
-                .stories
+            let mut groups: Vec<StoryDofGroup> = layers
                 .iter()
-                .map(|story| {
+                .map(|layer| {
                     let mut g = StoryDofGroup::default();
-                    for &nid in &story.node_ids {
+                    for &nid in &layer.node_ids {
                         let ni = nid.index();
                         let Some(node) = model.nodes.get(ni) else {
                             continue;
@@ -275,14 +274,15 @@ impl ThRecorder {
                     g
                 })
                 .collect();
-            // どの階にも属さない節点（基礎レベルの自由節点など）の当該方向並進 DOF は、
-            // Z 座標が最も近い階の層せん断力に計上する（1 層目〜最上層の慣性力の総和＝
-            // ベースシアという恒等関係を、全並進 DOF を漏れなくいずれかの階へ
-            // 割り当てることで保つ）。階応答の代表値（avg）には含めない。
+            // どの層にも属さない節点（基部の階の節点、最上階より上の節点など）の
+            // 当該方向並進 DOF は、Z 座標が最も近い層の層せん断力に計上する
+            // （1 層目〜最上層の慣性力の総和＝ベースシアという恒等関係を、全並進 DOF を
+            // 漏れなくいずれかの層へ割り当てることで保つ）。層応答の代表値（avg）には
+            // 含めない。
             if !groups.is_empty() {
                 let mut assigned = vec![false; model.nodes.len()];
-                for story in &model.stories {
-                    for &nid in &story.node_ids {
+                for layer in &layers {
+                    for &nid in &layer.node_ids {
                         if let Some(f) = assigned.get_mut(nid.index()) {
                             *f = true;
                         }
@@ -315,11 +315,7 @@ impl ThRecorder {
             groups
         };
 
-        let weights: Vec<f64> = model
-            .stories
-            .iter()
-            .map(|s| s.seismic_weight.unwrap_or(0.0))
-            .collect();
+        let weights: Vec<f64> = layers.iter().map(|l| l.weight.unwrap_or(0.0)).collect();
         // P11: weight_above[i] = Σ_{j=i}^{n-1} weights[j] を末尾から1回の走査で
         // 前計算する（階構成・重量は解析中不変。record_step 側は毎回この結果を
         // 参照するだけになる）。
@@ -335,7 +331,8 @@ impl ThRecorder {
         Self {
             record_every,
             n_steps: n_steps as u64,
-            story_ids: model.stories.iter().map(|s| s.id).collect(),
+            // 層の識別は下端の階（＝層の呼び名になる床）で行う。
+            story_ids: layers.iter().map(|l| l.bottom).collect(),
             weights,
             weight_above,
             groups_x: build_groups(0),
@@ -598,7 +595,7 @@ mod tests {
                     coord: [0.0, 0.0, 3000.0],
                     restraint: free_ux_ry,
                     mass: None,
-                    story: Some(StoryId(0)),
+                    story: Some(StoryId(1)),
                     support_spring: None,
                 },
                 Node {
@@ -606,7 +603,7 @@ mod tests {
                     coord: [0.0, 0.0, 6000.0],
                     restraint: free_ux_ry,
                     mass: None,
-                    story: Some(StoryId(1)),
+                    story: Some(StoryId(2)),
                     support_spring: None,
                 },
             ],
@@ -674,11 +671,22 @@ mod tests {
                 fy: None,
             }],
             stories: vec![
+                // 階は床であり、先頭は基部の床（`Model::layers` の不変条件）。
                 Story {
                     level_kind: Default::default(),
                     structure: Default::default(),
                     id: StoryId(0),
                     name: "1F".into(),
+                    elevation: 0.0,
+                    node_ids: vec![NodeId(0)],
+                    seismic_weight: None,
+                    weight_override: None,
+                },
+                Story {
+                    level_kind: Default::default(),
+                    structure: Default::default(),
+                    id: StoryId(1),
+                    name: "2F".into(),
                     elevation: 3000.0,
                     node_ids: vec![NodeId(1)],
                     seismic_weight: Some(1000.0),
@@ -687,8 +695,8 @@ mod tests {
                 Story {
                     level_kind: Default::default(),
                     structure: Default::default(),
-                    id: StoryId(1),
-                    name: "2F".into(),
+                    id: StoryId(2),
+                    name: "3F".into(),
                     elevation: 6000.0,
                     node_ids: vec![NodeId(2)],
                     seismic_weight: Some(1000.0),

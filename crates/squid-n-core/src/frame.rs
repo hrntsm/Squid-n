@@ -54,11 +54,16 @@ impl Frame {
 /// ないため大梁が丸ごと落ちる。座標だけでは、通りの位置と柱の芯がずれた
 /// **芯ずれ**（ST-Bridge の実ファイルで見られる）の柱が落ちる。両方を拾うため和を採る。
 ///
-/// **階**（伏図）に属する節点は、その階に所属する節点とする。要素は「全材端節点が
-/// その階に属するもの」に加え、**上端節点がその階に属する柱**を含める（柱は上下 2 つの
-/// 階レベルにまたがるため、前者だけでは伏図から柱が消え、梁の支持位置が読めなくなる）。
-/// 柱の所属階の規則は階の主要構造種別の判定と同じ「材端節点のうち最も高い節点の所属階」
-/// （[`Model::member_story`]）。
+/// **階**（伏図）に属する節点は、[`Model::node_stories`]（帰属区間による幾何判定）で
+/// その階に属する節点とする。`Node::story` のキャッシュではなく幾何を見るのは、
+/// キャッシュを埋めるのが準備計算だけであり、架構ウィザードで作った直後のモデルや、
+/// 節点を足した／動かした直後のモデルでは空または古いままだからである。伏図は
+/// 描画対象の絞り込みのみで構造計算には用いないため、幾何から引いてよい。
+///
+/// 要素は「全材端節点がその階に属するもの」に加え、**上端節点がその階に属する柱**を
+/// 含める（柱は上下 2 つの階レベルにまたがるため、前者だけでは伏図から柱が消え、
+/// 梁の支持位置が読めなくなる）。柱の所属階の規則は階の主要構造種別の判定と同じ
+/// 「材端節点のうち最も高い節点の所属階」（[`Model::member_story`]）。
 pub fn build_frame(model: &Model, target: FrameTarget) -> Option<Frame> {
     match target {
         FrameTarget::Axis { group, axis } => build_axis_frame(model, group, axis),
@@ -111,12 +116,8 @@ fn build_axis_frame(model: &Model, gi: usize, ai: usize) -> Option<Frame> {
 
 fn build_story_frame(model: &Model, id: StoryId) -> Option<Frame> {
     let story = model.stories.iter().find(|s| s.id == id)?;
-    let listed: std::collections::HashSet<_> = story.node_ids.iter().copied().collect();
-    let node_on: Vec<bool> = model
-        .nodes
-        .iter()
-        .map(|n| n.story == Some(id) || listed.contains(&n.id))
-        .collect();
+    let node_stories = model.node_stories();
+    let node_on: Vec<bool> = node_stories.iter().map(|s| *s == Some(id)).collect();
 
     let mut elem_on = elements_fully_on(model, &node_on);
     // 上端節点がその階に属する柱を加える（伏図の柱位置）。
@@ -124,7 +125,15 @@ fn build_story_frame(model: &Model, id: StoryId) -> Option<Frame> {
         if elem_on[i] || !is_column(model, e) {
             continue;
         }
-        if model.member_story(e) == Some(id) {
+        // 柱の所属階＝材端節点のうち最も高い節点の所属階（`Model::member_story`
+        // と同じ規則）。ここでも幾何から引いた `node_stories` を情報源とする。
+        let top = e
+            .nodes
+            .iter()
+            .filter_map(|nid| model.nodes.get(nid.index()))
+            .max_by(|a, b| a.coord[2].total_cmp(&b.coord[2]))
+            .and_then(|n| node_stories.get(n.id.index()).copied().flatten());
+        if top == Some(id) {
             elem_on[i] = true;
         }
     }

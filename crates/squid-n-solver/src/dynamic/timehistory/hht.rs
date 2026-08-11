@@ -58,7 +58,7 @@ pub fn linear_hht_alpha_analysis(
         return Ok(ResponseResult {
             time: vec![],
             peak_disp: vec![[0.0; 6]; model.nodes.len()],
-            story_drift_angle: vec![0.0; model.stories.len()],
+            story_drift_angle: vec![0.0; model.layer_count()],
             cumulative_ductility: vec![0.0; model.elements.len()],
             history: ResponseHistory::default(),
             recording: None,
@@ -241,7 +241,7 @@ fn run_steps_hht(
     for i in 0..n_free {
         peak_disp_free[i] = peak_disp_free[i].max(u_free[i].abs());
     }
-    let mut story_drift_angle = vec![0.0f64; model.stories.len()];
+    let mut story_drift_angle = vec![0.0f64; model.layer_count()];
     update_story_drift(model, dofmap, &u_free, &mut story_drift_angle);
 
     let mut time = Vec::with_capacity(wave.accel_x.len() - start_step as usize + 1);

@@ -30,7 +30,8 @@ const INCLINED_PLAN_TOL: f64 = 1.0;
 /// 当該層に帰属する柱を列挙して `f(elem_id, 柱頭節点, 柱脚節点)` を呼ぶ。
 /// 柱の判定: 2 節点 `Beam` かつ全クレート共通の 45° 余弦基準
 /// （[`squid_n_core::geom::is_vertical_axis`]）。
-/// 層帰属: 柱頭（z 大）節点の `story == Some(story)`。
+/// 層帰属: 柱頭（z 大）節点の `story == Some(story)`。`story` には**層の上端の階**
+/// （[`squid_n_core::model::Layer::top`]）を渡すこと。
 fn for_each_story_column(model: &Model, story: StoryId, mut f: impl FnMut(ElemId, &Node, &Node)) {
     for elem in &model.elements {
         if elem.kind != ElementKind::Beam || elem.nodes.len() != 2 {
@@ -119,8 +120,12 @@ pub fn cog_horizontal_disp(model: &Model, disp: &[[f64; 6]], dir: usize, story: 
     }
 }
 
-/// 全層の「重心位置の層間変位」δg [mm]（下階→上階順）。
-/// `iδg = 当該層の重心位置変位 − 直下層の重心位置変位`（最下層は基部変位 0 とみなす）。
+/// 全層の「重心位置の層間変位」δg [mm]（下層→上層順）。
+/// `iδg = 上端の階の重心位置変位 − 下端の階の重心位置変位`。
+///
+/// 最下層の下端は基部の階であり、その**実変位**を用いる。基部を変位 0 と
+/// 決め打ちしないのは、支点ばね（`Node::support_spring`）で支持された基礎が
+/// 水平に動くモデルで最下層の δg を過大に見積もるためである。
 /// 剛性率 Rs の算出（`crate::secondary::holding_capacity::stiffness_ratios`）に
 /// この δg を渡す。
 pub fn cog_story_drifts(model: &Model, disp: &[[f64; 6]], dir: usize) -> Vec<f64> {
@@ -129,12 +134,13 @@ pub fn cog_story_drifts(model: &Model, disp: &[[f64; 6]], dir: usize) -> Vec<f64
         .iter()
         .map(|s| cog_horizontal_disp(model, disp, dir, s.id))
         .collect();
-    disp_g
+    model
+        .layers()
         .iter()
-        .enumerate()
-        .map(|(i, d)| {
-            let below = if i == 0 { 0.0 } else { disp_g[i - 1] };
-            (d - below).abs()
+        .map(|l| {
+            let top = disp_g.get(l.top.index()).copied().unwrap_or(0.0);
+            let bottom = disp_g.get(l.bottom.index()).copied().unwrap_or(0.0);
+            (top - bottom).abs()
         })
         .collect()
 }
@@ -151,8 +157,11 @@ mod tests {
 
     /// 1 層 3 本柱（2 本鉛直・1 本斜め）のテストモデル。
     /// 柱1: (0,0), 柱2: (6000,0), 斜め柱: 脚(3000,0)→頭(3000+1500,0)。
+    /// 1 層モデル。層の上端の階は `StoryId(1)`（`StoryId(0)` は基部の床。
+    /// 階は床であり、その先頭が基部であることが `Model::layers` の不変条件）。
     fn build_model() -> (Model, StoryId) {
-        let s0 = StoryId(0);
+        let base = StoryId(0);
+        let s0 = StoryId(1);
         let mut nodes = Vec::new();
         // 柱脚（z=0, 拘束）
         let feet = [[0.0, 0.0], [6000.0, 0.0], [3000.0, 0.0]];
@@ -162,7 +171,7 @@ mod tests {
                 coord: [x, y, 0.0],
                 restraint: Dof6Mask::FIXED,
                 mass: None,
-                story: None,
+                story: Some(base),
                 support_spring: None,
             });
         }
@@ -200,9 +209,19 @@ mod tests {
                 spring: None,
             })
             .collect();
+        let base_story = Story {
+            id: base,
+            name: "1F".to_string(),
+            elevation: 0.0,
+            node_ids: vec![NodeId(0), NodeId(1), NodeId(2)],
+            seismic_weight: None,
+            weight_override: None,
+            structure: Default::default(),
+            level_kind: Default::default(),
+        };
         let story = Story {
             id: s0,
-            name: "1F".to_string(),
+            name: "2F".to_string(),
             elevation: 3000.0,
             node_ids: vec![NodeId(3), NodeId(4), NodeId(5)],
             seismic_weight: None,
@@ -213,7 +232,7 @@ mod tests {
         let model = Model {
             nodes,
             elements,
-            stories: vec![story],
+            stories: vec![base_story, story],
             ..Default::default()
         };
         (model, s0)

@@ -495,16 +495,29 @@ mod tests {
                 fc: None,
                 fy: Some(235.0),
             }],
-            stories: vec![Story {
-                id: StoryId(0),
-                name: "1F".into(),
-                elevation: 3000.0,
-                node_ids: vec![NodeId(1)],
-                seismic_weight: Some(80_000.0),
-                weight_override: None,
-                structure: Default::default(),
-                level_kind: Default::default(),
-            }],
+            stories: vec![
+                // 階は床であり、先頭は基部の床（`Model::layers` の不変条件）。
+                Story {
+                    id: StoryId(0),
+                    name: "1F".into(),
+                    elevation: 0.0,
+                    node_ids: vec![NodeId(0)],
+                    seismic_weight: None,
+                    weight_override: None,
+                    structure: Default::default(),
+                    level_kind: Default::default(),
+                },
+                Story {
+                    id: StoryId(1),
+                    name: "2F".into(),
+                    elevation: 3000.0,
+                    node_ids: vec![NodeId(1)],
+                    seismic_weight: Some(80_000.0),
+                    weight_override: None,
+                    structure: Default::default(),
+                    level_kind: Default::default(),
+                },
+            ],
             ..Default::default()
         }
     }

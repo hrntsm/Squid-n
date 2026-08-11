@@ -933,6 +933,9 @@ impl App {
                             level_kind,
                         ) = &story_rows[row.index()];
                         let story = *story;
+                        // 基部の階（床レベル列の先頭）。標高の変更・削除を禁じ、
+                        // 層の属性（種別・重量）は上端の階が持つため編集させない。
+                        let is_base = story.index() == 0;
 
                         // 階名（編集可）。空文字は無視する（確定はフォーカス喪失時）。
                         row.col(|ui| {
@@ -955,7 +958,16 @@ impl App {
                             }
                         });
                         // レベル（編集可。ドラッグ中は行ごとの一時値を持ち、終了時に確定）。
+                        // 基部の階だけは表示のみ。基部の標高は構造の最下端そのもので
+                        // あり、階の列の先頭が基部であることは層の算定が依拠する
+                        // 不変条件のため（`squid_n_core::model::story`）。
                         row.col(|ui| {
+                            if is_base {
+                                ui.label(format!("{elevation:.0}")).on_hover_text(
+                                    "基部（柱脚・基礎梁のレベル）。構造の最下端そのものなので変更できません",
+                                );
+                                return;
+                            }
                             let cell_id = egui::Id::new(("story_elevation", story.0));
                             let mut v = ui
                                 .data(|d| d.get_temp::<f64>(cell_id))
@@ -1025,7 +1037,16 @@ impl App {
                             });
                         });
                         // 種別（変更可）。PH の k と地下の深さは数値編集で確定する。
+                        // 種別は**層**の属性で、層の上端の階が持つ。基部の階は
+                        // どの層の上端でもないため編集させない（`Layer` 参照）。
                         row.col(|ui| {
+                            if is_base {
+                                ui.colored_label(crate::theme::GRAY_600, "—").on_hover_text(
+                                    "階種別は層の属性で、層の上端の階が持ちます。\
+                                     基部の階はどの層の上端でもないため設定しません",
+                                );
+                                return;
+                            }
                             let mut new_level_kind: Option<StoryLevelKind> = None;
                             let label = match level_kind {
                                 StoryLevelKind::Normal => "一般".to_string(),
@@ -1138,7 +1159,14 @@ impl App {
                             {
                                 pending_copy = Some(story);
                             }
-                            if crate::table_util::delete_cell(
+                            // 基部の階は削除できない（階の列の先頭が基部であることが
+                            // 層の算定の不変条件。消すと最下層が落ちる）。
+                            if is_base {
+                                ui.add_enabled(false, egui::Button::new("🗑").small())
+                                    .on_disabled_hover_text(
+                                        "基部の階は削除できません（最下層の下端がなくなるため）",
+                                    );
+                            } else if crate::table_util::delete_cell(
                                 ui,
                                 "この階を削除します。所属節点は所属階を失い、次の階生成で\
                                  直下階の区間へ吸収されます（undo 可）",
@@ -2037,8 +2065,15 @@ impl App {
             ui.separator();
             let mech = match &po.mechanism {
                 squid_n_solver::pushover::MechanismType::Overall => "全体崩壊形".to_string(),
-                squid_n_solver::pushover::MechanismType::StoryCollapse { story } => {
-                    format!("層崩壊形 (Story {})", story.0)
+                squid_n_solver::pushover::MechanismType::StoryCollapse { layer } => {
+                    // 層の呼び名は下端の階名（法令の「i 階」）。
+                    let name = self
+                        .model
+                        .layers()
+                        .get(*layer)
+                        .map(|l| l.name.clone())
+                        .unwrap_or_else(|| format!("{}", layer + 1));
+                    format!("層崩壊形 ({name})")
                 }
                 squid_n_solver::pushover::MechanismType::Partial => "部分崩壊形".to_string(),
             };
@@ -2074,12 +2109,12 @@ impl App {
         // 符号を持ちうるため絶対値を取ってから最大値を求める
         // （crates/squid-n-app/src/app/actions.rs の `story_qu` 算定と同じ着眼＝
         // capacity_curve 全点にわたる層せん断力の最大値／βu の分母）。
-        let n_stories = self.model.stories.len();
+        let layers = self.model.layers();
+        let n_stories = layers.len();
         let story_name = |i: usize| -> String {
-            self.model
-                .stories
+            layers
                 .get(i)
-                .map(|s| s.name.clone())
+                .map(|l| l.name.clone())
                 .unwrap_or_else(|| squid_n_core::model::default_story_name(i))
         };
         let story_qu_kn: Vec<f64> = (0..n_stories)

@@ -49,8 +49,8 @@ pub(crate) fn compute_pushover_job(
 
     let mechanism = match result.mechanism {
         squid_n_solver::pushover::MechanismType::Overall => "Overall".to_string(),
-        squid_n_solver::pushover::MechanismType::StoryCollapse { story } => {
-            format!("StoryCollapse(story={})", story.0)
+        squid_n_solver::pushover::MechanismType::StoryCollapse { layer } => {
+            format!("StoryCollapse(layer={layer})")
         }
         squid_n_solver::pushover::MechanismType::Partial => "Partial".to_string(),
     };

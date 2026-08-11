@@ -1278,13 +1278,9 @@ impl App {
             &ctx,
         );
 
-        // 地震重量: 下階→上階順（model.stories は生成時から下階→上階順に格納される）。
-        let weights: Vec<f64> = self
-            .model
-            .stories
-            .iter()
-            .map(|s| s.seismic_weight.unwrap_or(0.0))
-            .collect();
+        // 地震重量: 下層→上層順（層の重量は上端の階が持つ。`Model::layers` 参照）。
+        let layers = self.model.layers();
+        let weights: Vec<f64> = layers.iter().map(|l| l.weight.unwrap_or(0.0)).collect();
         if weights.iter().any(|w| *w <= 0.0) {
             return Err(
                 "地震重量が未設定です。解析タブの「準備計算 実行」を行ってください。".to_string(),
@@ -1608,7 +1604,10 @@ impl App {
                         _ => rc_beam_type(tau_over_fc, brittle),
                     }
                 };
-                // 節点が階を持たない部材（両端とも基部）はスキップ。
+                // 部材が属する層は、材端節点のうち最も高い節点の所属階を上端と
+                // する層（`Model::layers`。層 i の上端は `stories[i + 1]` なので
+                // 層番号は階の添字 − 1）。両端とも基部の階にある部材（基礎梁）は
+                // どの層にも属さないためスキップする。
                 let Some(story_idx) = elem
                     .nodes
                     .iter()
@@ -1618,7 +1617,9 @@ impl App {
                 else {
                     continue;
                 };
-                let idx = story_idx.index();
+                let Some(idx) = story_idx.index().checked_sub(1) else {
+                    continue;
+                };
                 if idx >= n_stories {
                     continue;
                 }
@@ -1704,8 +1705,8 @@ impl App {
                 let mut cb_group =
                     member_group(&cb_members[i]).unwrap_or_else(|| fallback_group(rep_rank));
                 // 崩壊機構補正: 当該層が層崩壊形なら 1 段階不利側へ。
-                if let MechanismType::StoryCollapse { story } = mechanism {
-                    if story.index() == i {
+                if let MechanismType::StoryCollapse { layer } = mechanism {
+                    if *layer == i {
                         cb_group = match cb_group {
                             GroupType::A => GroupType::B,
                             GroupType::B => GroupType::C,

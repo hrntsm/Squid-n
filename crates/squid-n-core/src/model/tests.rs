@@ -921,57 +921,127 @@ fn make_story_model(zs: &[f64], levels: &[(&str, f64)]) -> Model {
     }
 }
 
-/// 階への帰属区間は「直下階のレベル超〜当該階のレベル以下」。最下階の下端は
-/// 基部レベルであり、基部の節点はどの階にも属さない。
+/// 階への帰属区間は「直下階のレベル超〜当該階のレベル以下」。
+/// 最下階（基部の床）だけは下端を含む点区間で、柱脚・基礎梁の節点が属する。
 #[test]
 fn test_story_spans_are_half_open_intervals_above_base() {
-    let m = make_story_model(&[0.0, 4000.0, 7500.0], &[("1F", 4000.0), ("2F", 7500.0)]);
+    let m = make_story_model(
+        &[0.0, 4000.0, 7500.0],
+        &[("1F", 0.0), ("2F", 4000.0), ("3F", 7500.0)],
+    );
     assert_eq!(m.base_elevation(), 0.0);
-    assert_eq!(m.story_spans(), vec![(0.0, 4000.0), (4000.0, 7500.0)]);
+    assert_eq!(
+        m.story_spans(),
+        vec![(0.0, 0.0), (0.0, 4000.0), (4000.0, 7500.0)]
+    );
 
     let spans = m.story_spans();
-    assert_eq!(m.story_at(&spans, 0.0), None, "基部の節点は階に属さない");
+    assert_eq!(
+        m.story_at(&spans, 0.0),
+        Some(StoryId(0)),
+        "基部の節点は基部の階に属する"
+    );
     assert_eq!(
         m.story_at(&spans, 4000.0),
-        Some(StoryId(0)),
+        Some(StoryId(1)),
         "床レベルは当該階"
     );
-    assert_eq!(m.story_at(&spans, 7500.0), Some(StoryId(1)));
+    assert_eq!(m.story_at(&spans, 7500.0), Some(StoryId(2)));
     assert_eq!(m.story_at(&spans, 9000.0), None, "最上階より上は属さない");
+    assert_eq!(m.story_at(&spans, -100.0), None, "基部より下は属さない");
+}
+
+/// 不変条件がまだ成立していないモデル（基部の階を持たない旧形式のファイル）でも、
+/// 最下階の区間は基部から始まり、基部〜最下階の節点がどの階にも属さなくなることはない。
+///
+/// これがないと、階生成を通す前に伏図を開いた時点で最下階が空になる。
+#[test]
+fn test_lowest_span_starts_at_base_when_invariant_not_yet_established() {
+    // 旧形式: 層の上端の床だけを階として持つ（基部の階がない）。
+    let m = make_story_model(&[0.0, 4000.0, 7500.0], &[("2F", 4000.0), ("3F", 7500.0)]);
+    assert_eq!(m.base_elevation(), 0.0);
+    assert_eq!(
+        m.story_spans(),
+        vec![(0.0, 4000.0), (4000.0, 7500.0)],
+        "最下階の下端は基部まで下がる"
+    );
+    let stories = m.node_stories();
+    assert_eq!(stories[0], Some(StoryId(0)), "基部の節点が最下階へ収まる");
+    assert_eq!(stories[1], Some(StoryId(0)));
+    assert_eq!(stories[2], Some(StoryId(1)));
+
+    // 基部から許容差以内だが厳密には上にある階でも、柱脚が無所属にならない。
+    let m = make_story_model(&[0.0, 4000.0], &[("1F", 0.5), ("2F", 4000.0)]);
+    assert_eq!(m.node_stories()[0], Some(StoryId(0)));
+}
+
+/// 層は隣り合う階の間であり、層数は階数より 1 つ少ない。
+/// 名前は下端の階、重量・所属節点・階種別は上端の階から採る。
+#[test]
+fn test_layers_pair_adjacent_stories() {
+    let mut m = make_story_model(
+        &[0.0, 4000.0, 7500.0],
+        &[("1F", 0.0), ("2F", 4000.0), ("3F", 7500.0)],
+    );
+    m.stories[1].seismic_weight = Some(1000.0);
+    m.stories[2].seismic_weight = Some(800.0);
+    m.stories[0].seismic_weight = Some(300.0);
+
+    let layers = m.layers();
+    assert_eq!(m.layer_count(), 2);
+    assert_eq!(layers.len(), 2);
+
+    assert_eq!(layers[0].index, 0);
+    assert_eq!(
+        layers[0].name, "1F",
+        "層の名前は下端の階名（法令の「1 階」）"
+    );
+    assert_eq!(layers[0].bottom, StoryId(0));
+    assert_eq!(layers[0].top, StoryId(1));
+    assert_eq!(layers[0].height, 4000.0);
+    assert_eq!(
+        layers[0].weight,
+        Some(1000.0),
+        "層の重量は上端の階が持つ（基部の重量は層に入らない）"
+    );
+
+    assert_eq!(layers[1].name, "2F");
+    assert_eq!(layers[1].height, 3500.0);
+    assert_eq!(layers[1].weight, Some(800.0));
 }
 
 /// 中間高さの節点（柱の分割点）は階には属するが、剛床の床面には載らない。
 #[test]
 fn test_mid_height_node_belongs_to_story_but_not_to_diaphragm_level() {
-    let m = make_story_model(&[0.0, 2000.0, 4000.0], &[("1F", 4000.0)]);
+    let m = make_story_model(&[0.0, 2000.0, 4000.0], &[("1F", 0.0), ("2F", 4000.0)]);
     let stories = m.node_stories();
-    assert_eq!(stories[0], None, "基部");
-    assert_eq!(stories[1], Some(StoryId(0)), "中間節点も階には属する");
-    assert_eq!(stories[2], Some(StoryId(0)));
+    assert_eq!(stories[0], Some(StoryId(0)), "基部の節点は基部の階");
+    assert_eq!(stories[1], Some(StoryId(1)), "中間節点も階には属する");
+    assert_eq!(stories[2], Some(StoryId(1)));
 
     assert!(
-        !m.on_diaphragm_level(StoryId(0), 2000.0),
+        !m.on_diaphragm_level(StoryId(1), 2000.0),
         "中間節点は床面ではない"
     );
-    assert!(m.on_diaphragm_level(StoryId(0), 4000.0));
+    assert!(m.on_diaphragm_level(StoryId(1), 4000.0));
     // 許容差ちょうどは床面に含める。
-    assert!(m.on_diaphragm_level(StoryId(0), 4000.0 + DIAPHRAGM_LEVEL_TOL_MM));
-    assert!(!m.on_diaphragm_level(StoryId(0), 4000.0 + DIAPHRAGM_LEVEL_TOL_MM * 2.0));
+    assert!(m.on_diaphragm_level(StoryId(1), 4000.0 + DIAPHRAGM_LEVEL_TOL_MM));
+    assert!(!m.on_diaphragm_level(StoryId(1), 4000.0 + DIAPHRAGM_LEVEL_TOL_MM * 2.0));
 }
 
 /// 段差床（同じ階に 2 つのレベル）は同一階に属し、剛床は 2 つに分かれる。
 #[test]
 fn test_split_level_floor_shares_story_with_two_diaphragms() {
-    let mut m = make_story_model(&[0.0, 4000.0, 4500.0], &[("2F", 4500.0)]);
+    let mut m = make_story_model(&[0.0, 4000.0, 4500.0], &[("1F", 0.0), ("2F", 4500.0)]);
     let stories = m.node_stories();
-    assert_eq!(stories[1], Some(StoryId(0)), "段差の下側も同じ階");
-    assert_eq!(stories[2], Some(StoryId(0)));
+    assert_eq!(stories[1], Some(StoryId(1)), "段差の下側も同じ階");
+    assert_eq!(stories[2], Some(StoryId(1)));
 
     m.constraints
-        .push(Constraint::rigid_diaphragm(StoryId(0), NodeId(1), vec![]));
+        .push(Constraint::rigid_diaphragm(StoryId(1), NodeId(1), vec![]));
     m.constraints
-        .push(Constraint::rigid_diaphragm(StoryId(0), NodeId(2), vec![]));
-    assert_eq!(m.diaphragms_of(StoryId(0)).count(), 2);
+        .push(Constraint::rigid_diaphragm(StoryId(1), NodeId(2), vec![]));
+    assert_eq!(m.diaphragms_of(StoryId(1)).count(), 2);
     assert!(m.node_on_rigid_diaphragm(NodeId(1)));
     assert!(!m.node_on_rigid_diaphragm(NodeId(0)));
 }

@@ -46,29 +46,40 @@ pub(crate) fn pick_record_node(
         .map(|n| n.id)
 }
 
-/// 最上階の現在の層間変形角（符号付き、記録方向 `dir_idx`）。階が未定義なら 0。
+/// 層の上端・下端それぞれの代表節点（その階の所属節点の先頭）。
+///
+/// 下端が基部の階であっても同じ規則で引く。基部を「`story == None` の節点」として
+/// 探すのは誤りである（階生成が不活性化した剛床代表節点も `story == None` で残るため、
+/// 基部でない節点を掴みうる）。
+fn layer_end_nodes(
+    model: &Model,
+    layer: &squid_n_core::model::Layer,
+) -> (
+    Option<squid_n_core::ids::NodeId>,
+    Option<squid_n_core::ids::NodeId>,
+) {
+    let first_of = |sid: squid_n_core::ids::StoryId| {
+        model
+            .stories
+            .get(sid.index())
+            .and_then(|s| s.node_ids.first().copied())
+    };
+    (first_of(layer.top), first_of(layer.bottom))
+}
+
+/// 最上層の現在の層間変形角（符号付き、記録方向 `dir_idx`）。層が未定義なら 0。
 fn current_top_drift(model: &Model, dofmap: &DofMap, u_free: &[f64], dir_idx: usize) -> f64 {
-    let Some(si) = model.stories.len().checked_sub(1) else {
+    let layers = model.layers();
+    let Some(layer) = layers.last() else {
         return 0.0;
     };
-    let story = &model.stories[si];
-    let height_mm = if si == 0 {
-        story.elevation
-    } else {
-        story.elevation - model.stories[si - 1].elevation
-    };
-    if height_mm <= 0.0 {
+    if layer.height <= 0.0 {
         return 0.0;
     }
-    let top = story.node_ids.first().copied();
-    let bot = if si == 0 {
-        model.nodes.iter().find(|n| n.story.is_none()).map(|n| n.id)
-    } else {
-        model.stories[si - 1].node_ids.first().copied()
-    };
+    let (top, bot) = layer_end_nodes(model, layer);
     if let (Some(tn), Some(bn)) = (top, bot) {
         (node_disp(u_free, dofmap, tn, dir_idx) - node_disp(u_free, dofmap, bn, dir_idx))
-            / height_mm
+            / layer.height
     } else {
         0.0
     }
@@ -129,32 +140,21 @@ pub(crate) fn update_story_drift(
     u_free: &[f64],
     story_drift_angle: &mut [f64],
 ) {
-    for (si, story) in model.stories.iter().enumerate() {
-        if si >= story_drift_angle.len() {
+    for layer in model.layers() {
+        let Some(slot) = story_drift_angle.get_mut(layer.index) else {
             break;
-        }
-        let height_mm = if si == 0 {
-            story.elevation
-        } else {
-            story.elevation - model.stories[si - 1].elevation
         };
-        if height_mm <= 0.0 {
+        if layer.height <= 0.0 {
             continue;
         }
-        let top = story.node_ids.first().copied();
-        let bot = if si == 0 {
-            // 1層目: 基礎節点（story=None の最初の節点）を下端とする
-            model.nodes.iter().find(|n| n.story.is_none()).map(|n| n.id)
-        } else {
-            model.stories[si - 1].node_ids.first().copied()
-        };
+        let (top, bot) = layer_end_nodes(model, &layer);
         if let (Some(tn), Some(bn)) = (top, bot) {
             // 層間変形角は従来通り X 方向（0）で評価する（ResponseHistory の
             // 記録方向とは独立）。
             let du = (node_disp(u_free, dofmap, tn, 0) - node_disp(u_free, dofmap, bn, 0)).abs();
-            let angle = du / height_mm;
-            if angle > story_drift_angle[si] {
-                story_drift_angle[si] = angle;
+            let angle = du / layer.height;
+            if angle > *slot {
+                *slot = angle;
             }
         }
     }

@@ -63,7 +63,6 @@ pub fn story_ds(ranks: &[MemberRank], frame: FrameType, mechanism: &MechanismTyp
 #[cfg(test)]
 mod tests {
     use super::*;
-    use squid_n_core::ids::StoryId;
 
     // ===== worst_rank テスト =====
 
@@ -95,7 +94,7 @@ mod tests {
         let ds = story_ds(
             &ranks,
             FrameType::RcFrame,
-            &MechanismType::StoryCollapse { story: StoryId(0) },
+            &MechanismType::StoryCollapse { layer: 0 },
         );
         assert!((ds - 0.45).abs() < 1e-9, "expected 0.45, got {}", ds);
     }
@@ -135,7 +134,7 @@ mod tests {
         let ds_collapse = story_ds(
             &ranks,
             FrameType::RcFrame,
-            &MechanismType::StoryCollapse { story: StoryId(0) },
+            &MechanismType::StoryCollapse { layer: 0 },
         );
         // FD は最悪なので補正後も FD のまま
         assert!(

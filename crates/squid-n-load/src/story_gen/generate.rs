@@ -31,14 +31,19 @@ pub struct StoryGenResult {
 ///
 /// **階レベルの正は [`Model::stories`] の `elevation`**（利用者が定義する）であり、
 /// 本関数はそれを書き換えない。階が 1 つも定義されていないモデルに限り、節点の
-/// Z 座標をクラスタリングして階レベルを初期化する（最下レベルは基部＝支点レベルと
-/// みなし階に含めない）。階名・階種別・地震用重量の手入力も既存の階定義から
-/// そのまま引き継ぐ。
+/// Z 座標をクラスタリングして階レベルを初期化する。階名・階種別・地震用重量の
+/// 手入力も既存の階定義からそのまま引き継ぐ。
+///
+/// ただし**基部レベルの階（基部の床）が無ければ先頭に補う**。階が床レベル列であり
+/// その先頭が基部であることは [`Model::layers`] が依拠する不変条件であり、
+/// それを成立させるのは本関数の責務である。
 ///
 /// - **階への帰属は区間**（直下階のレベル超〜当該階のレベル以下）。中間高さの
-///   節点も区間に入る階へ属し、その重量は階の地震用重量へ算入される
+///   節点も区間に入る階へ属し、その重量は階の地震用重量へ算入される。
+///   最下階（基部の床）だけは下端を含む点区間で、柱脚・基礎梁の節点が属する
 /// - **剛床のスレーブは床面のみ**（階のレベル ±[`DIAPHRAGM_LEVEL_TOL_MM`]）。
 ///   床面に節点がない階は剛床を持たない
+/// - 代表節点の拘束は [`master_restraint`] がスレーブの可動性から決める
 /// - 前回生成した剛床代表節点（`model.generated_masters`）は構造節点の
 ///   クラスタリング対象から除外する（再生成時に過去の代表節点を混ぜない）
 /// - 各階の剛床代表節点は、その階の全構造節点の慣性力重心（重量重み付き重心）に
@@ -55,6 +60,51 @@ pub fn generate_stories_multi(
     gravity_lcs: &[LoadCaseId],
 ) -> Result<StoryGenResult, String> {
     generate_stories_with_opts(model, gravity_lcs, true, MassMethod::default())
+}
+
+/// 剛床代表節点（マスター）の拘束を、スレーブが実際にその方向へ動けるかで決める。
+///
+/// マスターは要素の付かない浮遊節点で、水平剛性は剛床を通じてスレーブから写される。
+/// ところが拘束済みのスレーブ自由度には従属関係が張られない
+/// （`squid_n_solver` の拘束変換は非 active なスレーブ自由度を対象外にする）ため、
+/// **全スレーブがその方向へ拘束されている階ではマスターへ剛性が一切写らない**。
+/// 自由なままにすると剛性ゼロの独立自由度が残り、剛性行列が特異になる。
+///
+/// これが起きるのは基部の床（柱脚が固定・ピンで水平拘束される）である。
+/// 一方、支点ばね（[`Node::support_spring`]）で支持された基部は水平に動けるため、
+/// マスターも自由のままとし、基礎の質量が地盤ばねと連成して応答に効くようにする。
+///
+/// **面内回転 Rz はスレーブの並進で決まる**（拘束変換はスレーブの Ux・Uy の行に
+/// マスター Rz を `-dy`・`dx` の係数で入れる）。したがって並進が 1 つも自由でない
+/// 階では、Rz を自由にしても剛床としての剛性は写らず、マスターの回転慣性 j だけが
+/// 残る。柱のねじり剛性 GJ/L しか支えがないため、開断面の鉄骨柱では周期が数十秒に
+/// なる**偽の低次モード**が生じ、精算の設計用固有周期 T を乗っ取って Rt を潰す。
+/// このため Rz は「スレーブの並進が 1 つでも自由なとき」だけ自由にする。
+///
+/// なお Rz を拘束したマスターに対しては、スレーブの Rz は従属先を失って独立自由度の
+/// まま残る（拘束変換はマスター側が非 active の行を張らない）。柱脚のねじりは
+/// 変更前と同じく各節点で独立に扱われる。
+fn master_restraint(model: &Model, common: Dof6Mask, slaves: &[NodeId]) -> Dof6Mask {
+    let free_slave = |dof: Dof| {
+        slaves.iter().any(|n| {
+            model
+                .nodes
+                .get(n.index())
+                .is_some_and(|s| !s.restraint.is_fixed(dof))
+        })
+    };
+    let mut m = common;
+    let (ux_free, uy_free) = (free_slave(Dof::Ux), free_slave(Dof::Uy));
+    if !ux_free {
+        m.set_fixed(Dof::Ux);
+    }
+    if !uy_free {
+        m.set_fixed(Dof::Uy);
+    }
+    if !ux_free && !uy_free {
+        m.set_fixed(Dof::Rz);
+    }
+    m
 }
 
 /// [`generate_stories_multi`] の自重算入方法を選べる版。
@@ -96,11 +146,16 @@ pub fn generate_stories_with_opts(
     }
 
     // --- 1. 階レベルの決定 ---
-    // 階（[`Story`]）は利用者が定義するデータであり、その `elevation` が階レベルの
-    // 正である。階が 1 つも定義されていないモデル（ST-Bridge 以外の取り込み・
-    // 旧いプロジェクト）に限り、節点の Z 座標をクラスタリングして階レベルを
-    // 初期化する。このとき**最下レベルは基部（基礎レベル）とみなして階にしない**。
-    let story_levels: Vec<f64> = if model.stories.is_empty() {
+    // 階（[`Story`]）は床であり、`Model::stories` は基部の床から屋根の床までの
+    // 床レベル列である。その先頭が基部レベルであることが不変条件
+    // （`squid_n_core::model::story` のモジュールドキュメント参照）であり、
+    // **それを成立させるのがここである**。
+    //
+    // 階レベルの正は利用者が定義する `elevation` であり本関数は書き換えないが、
+    // 基部レベルの階が無ければ先頭に補う。階が 1 つも定義されていないモデルに
+    // 限り、節点の Z 座標をクラスタリングして階レベルを初期化する。
+    let base = model.base_elevation();
+    let mut story_levels: Vec<f64> = if model.stories.is_empty() {
         let mut zs: Vec<f64> = struct_nodes.iter().map(|n| n.coord[2]).collect();
         zs.sort_by(|a, b| a.total_cmp(b));
         let mut levels: Vec<f64> = Vec::new();
@@ -117,31 +172,43 @@ pub fn generate_stories_with_opts(
                     .into(),
             );
         }
-        levels[1..].to_vec()
+        levels
     } else {
         model.stories.iter().map(|s| s.elevation).collect()
     };
+    // 基部の床が無ければ補う。これが無いと最下層（基部〜その直上の床）が
+    // `Model::layers` から丸ごと落ち、層間変形角・層せん断力から静かに消える。
+    if story_levels
+        .first()
+        .is_none_or(|&z| z > base + LEVEL_TOL_MM)
+    {
+        story_levels.insert(0, base);
+    }
 
-    // 階への帰属区間 `(下端, 上端]`。下端は直下階のレベル、最下階は基部レベル
-    // （規則は `Model::story_spans` と同一。ここでは生成中の階レベル列に対して
-    // 同じ規則を適用する）。
-    let base = model.base_elevation();
+    // 階への帰属区間。最下階（基部の床）だけ下端を含む点区間、他は
+    // `(直下階のレベル, 当該階のレベル]`（規則は `Model::story_spans` と同一。
+    // ここでは生成中の階レベル列に対して同じ規則を適用する）。
     let spans: Vec<(f64, f64)> = story_levels
         .iter()
         .enumerate()
         .map(|(i, &top)| {
-            let bottom = if i == 0 { base } else { story_levels[i - 1] };
+            let bottom = if i == 0 { top } else { story_levels[i - 1] };
             (bottom, top)
         })
         .collect();
 
     // 各階の所属節点を 1 パスでグルーピングする（階ごとに全節点を
     // 走査し直すと O(節点数×階数²) になるため）。区間に入らない節点
-    // （基部の支点・最上階より上の節点）はどの階にも属さない。
+    // （最上階より上の節点）はどの階にも属さない。基部レベルの節点（柱脚・基礎梁）は
+    // 最下階の点区間に入るため、基部の床に属する。
     let mut nodes_by_story: Vec<Vec<NodeId>> = vec![Vec::new(); story_levels.len()];
     for n in &struct_nodes {
         let z = n.coord[2];
-        if let Some(i) = spans.iter().position(|&(b, t)| z > b && z <= t) {
+        let hit = spans
+            .iter()
+            .enumerate()
+            .position(|(i, &(b, t))| if i == 0 { z >= b } else { z > b } && z <= t);
+        if let Some(i) = hit {
             nodes_by_story[i].push(n.id);
         }
     }
@@ -321,12 +388,13 @@ pub fn generate_stories_with_opts(
     let mut reuse_masters = model.generated_masters.iter().copied();
     let mut next_new_id = model.nodes.len() as u32;
 
-    // 剛床代表節点の拘束: 要素が接続しない浮遊節点のため、剛床が拘束しない
-    // 3 自由度（Uz, Rx, Ry）を固定しないと特異行列になる。Ux, Uy, Rz は自由。
-    let mut rep_restraint = Dof6Mask::FREE;
-    rep_restraint.set_fixed(Dof::Uz);
-    rep_restraint.set_fixed(Dof::Rx);
-    rep_restraint.set_fixed(Dof::Ry);
+    // 剛床代表節点の拘束の共通部分: 要素が接続しない浮遊節点のため、剛床が拘束
+    // しない 3 自由度（Uz, Rx, Ry）を固定しないと特異行列になる。
+    // 残る Ux, Uy, Rz は階ごとに `master_restraint` で決める。
+    let mut rep_restraint_base = Dof6Mask::FREE;
+    rep_restraint_base.set_fixed(Dof::Uz);
+    rep_restraint_base.set_fixed(Dof::Rx);
+    rep_restraint_base.set_fixed(Dof::Ry);
 
     for (si, &elev) in story_levels.iter().enumerate() {
         let story_id = StoryId(si as u32);
@@ -334,7 +402,13 @@ pub fn generate_stories_with_opts(
 
         // 利用者が決める欄（階名・階種別・重量の手入力）は、既存の階定義から
         // そのまま引き継ぐ。階が未定義のモデルから生成した場合のみ既定名を付ける。
-        let prev = model.stories.get(si);
+        //
+        // 引き継ぎ元は**標高で照合する**。基部の床を先頭に補うと添字が 1 つずれ、
+        // 添字で引くと利用者が付けた階名・階種別が 1 つ下の階へずれて付く。
+        let prev = model
+            .stories
+            .iter()
+            .find(|s| (s.elevation - elev).abs() <= LEVEL_TOL_MM);
         let name = prev
             .map(|s| s.name.clone())
             .unwrap_or_else(|| squid_n_core::model::default_story_name(si));
@@ -357,9 +431,9 @@ pub fn generate_stories_with_opts(
             node_story[n.index()] = Some(story_id);
         }
 
-        // 床面に節点がない階（利用者が定義しただけで部材がまだない階、
-        // 基部と同レベルの階など）は剛床を作らない。その階の水平力は階の節点へ
-        // 重量比で直接分配される（分配規則は `squid_n_solver` 側）。
+        // 床面に節点がない階（利用者が定義しただけで部材がまだない階）は剛床を
+        // 作らない。その階の水平力は階の節点へ重量比で直接分配される
+        // （分配規則は `squid_n_solver` 側）。
         if !slaves.is_empty() {
             // 慣性力重心（重量重み付き重心）。重量が算定できない場合は幾何重心へフォールバック。
             let (gx, gy) = if weight > 0.0 {
@@ -431,7 +505,7 @@ pub fn generate_stories_with_opts(
             rep_nodes.push(Node {
                 id: master,
                 coord: [gx, gy, elev],
-                restraint: rep_restraint,
+                restraint: master_restraint(model, rep_restraint_base, &slaves),
                 mass,
                 story: Some(story_id),
                 support_spring: None,

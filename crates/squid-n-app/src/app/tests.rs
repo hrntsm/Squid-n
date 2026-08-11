@@ -575,8 +575,8 @@ fn test_seismic_flow_requires_then_uses_stories() {
     // 階の自動生成 → 地震静的が成功する
     app.generate_stories_action();
     assert!(app.last_error.is_none(), "{:?}", app.last_error);
-    assert_eq!(app.model.stories.len(), 1);
-    assert!(app.model.stories[0].seismic_weight.unwrap() > 0.0);
+    assert_eq!(app.model.stories.len(), 2, "基部の床 + 上の床");
+    assert!(app.model.stories[1].seismic_weight.unwrap() > 0.0);
 
     // ユーザー荷重ケース0("長期")を先に実行しておく。
     app.run_linear_static(LoadCaseId(0));
@@ -847,9 +847,10 @@ fn test_generate_stories_action_reuses_rep_node_on_regenerate() {
     app.generate_stories_action();
     assert!(app.last_error.is_none(), "{:?}", app.last_error);
     let n1 = app.model.nodes.len();
-    assert_eq!(n1, n0 + 1, "剛床代表節点が 1 つ新規生成される");
-    assert_eq!(app.model.generated_masters.len(), 1);
-    let master_after_first = app.model.generated_masters[0];
+    // 階は床であり、基部の床にも剛床代表節点が作られる（基部の床と 2FL の 2 つ）。
+    assert_eq!(n1, n0 + 2, "剛床代表節点が階の数だけ新規生成される");
+    assert_eq!(app.model.generated_masters.len(), 2);
+    let masters_after_first = app.model.generated_masters.clone();
     assert!(app.model.validate().is_ok());
 
     // 再生成しても代表節点は再利用され、節点数は増えない。
@@ -860,7 +861,7 @@ fn test_generate_stories_action_reuses_rep_node_on_regenerate() {
         n1,
         "再生成でノード数が増えてはいけない（代表節点の再利用）"
     );
-    assert_eq!(app.model.generated_masters, vec![master_after_first]);
+    assert_eq!(app.model.generated_masters, masters_after_first);
     assert!(app.model.validate().is_ok());
 
     // 固有値解析・地震静的解析が正常に動作する（生成された剛床を含む縮約の統合確認）。
@@ -1110,8 +1111,8 @@ fn test_nonlinear_time_history_flow_records_story_response() {
         .recording
         .as_ref()
         .expect("非線形時刻歴でも recording が入るはず");
-    assert_eq!(recording.story_x.stories.len(), app.model.stories.len());
-    assert_eq!(recording.story_y.stories.len(), app.model.stories.len());
+    assert_eq!(recording.story_x.stories.len(), app.model.layer_count());
+    assert_eq!(recording.story_y.stories.len(), app.model.layer_count());
     assert_eq!(
         recording.story_x.story_shear.len(),
         recording.frame_time.len()
@@ -1263,7 +1264,7 @@ fn test_lumped_mass_model_from_pushover() {
         app.analysis_cfg.lumped_secant_ratio,
     );
     // 層数分の質点が生成され、各層のトリリニア骨格が妥当（K1>0・折点昇順）。
-    assert_eq!(lm.stories.len(), app.model.stories.len());
+    assert_eq!(lm.stories.len(), app.model.layer_count());
     assert!(!lm.stories.is_empty());
     for stick in &lm.stories {
         let sk = &stick.skeleton;
@@ -4086,11 +4087,16 @@ fn test_run_preparation_generates_stories_and_infers_structure() {
 
     app.run_preparation();
     assert!(app.last_error.is_none(), "{:?}", app.last_error);
-    assert_eq!(app.model.stories.len(), 1, "準備計算が階を生成するはず");
     assert_eq!(
-        app.model.stories[0].structure,
+        app.model.stories.len(),
+        2,
+        "準備計算が階（基部の床 + 上の床）を生成するはず"
+    );
+    // 構造種別は層の属性で、層の上端の階が持つ。
+    assert_eq!(
+        app.model.stories[1].structure,
         StoryStructure::S,
-        "鋼断面の柱梁だけの階は S と判定されるはず"
+        "鋼断面の柱梁だけの層は S と判定されるはず"
     );
     assert!(!app.staleness.preparation_stale);
 }
@@ -4715,8 +4721,9 @@ fn test_generate_stories_seismic_weight_no_double_count() {
         .sum();
     assert!(self_weight_at_story > 0.0, "自重が発生しているはず");
     // サンプル LC0「長期」（kind=Dead）: 梁等分布 10 N/mm × 6000 mm = 60 kN。
+    // 層の重量は上端の階（2FL）が持つ。基部の階には柱脚側の配分が入る。
     let case_loads = 10.0 * 6000.0;
-    let w = app.model.stories[0].seismic_weight.unwrap();
+    let w = app.model.stories[1].seismic_weight.unwrap();
     assert!(
         (w - (self_weight_at_story + case_loads)).abs() < 1e-6,
         "階重量 {w} = 自重(階配分) {self_weight_at_story} + ケース荷重 {case_loads} のはず（二重計上なし）"
@@ -4725,7 +4732,7 @@ fn test_generate_stories_seismic_weight_no_double_count() {
     // 再生成しても増えない（冪等）。
     app.generate_stories_action();
     assert!(app.last_error.is_none(), "{:?}", app.last_error);
-    let w2 = app.model.stories[0].seismic_weight.unwrap();
+    let w2 = app.model.stories[1].seismic_weight.unwrap();
     assert!((w2 - w).abs() < 1e-6, "再生成で階重量が変わってはいけない");
 }
 
@@ -5826,12 +5833,12 @@ fn test_run_preparation_populates_result() {
     assert!(!app.staleness.preparation_stale, "実行後は最新化される");
 
     let prep = app.preparation.as_ref().expect("準備計算の結果があるはず");
-    // 階が未定義だったので自動生成される。
-    assert_eq!(app.model.stories.len(), 1);
-    assert_eq!(prep.stories.len(), 1);
+    // 階が未定義だったので自動生成される（基部の床 + 2FL の 2 階、層は 1 つ）。
+    assert_eq!(app.model.stories.len(), 2);
+    assert_eq!(prep.stories.len(), 1, "分布表の単位は層");
     let story = &prep.stories[0];
     assert!(story.weight > 0.0, "地震用重量が算定される");
-    assert_eq!(story.cumulative_weight, story.weight, "最上階の ΣWj = Wi");
+    assert_eq!(story.cumulative_weight, story.weight, "最上層の ΣWj = Wi");
     // 階高は GL（柱脚レベル 0）から梁レベル 3500mm まで。
     assert!((story.height - 3500.0).abs() < 1e-6, "{}", story.height);
 
@@ -6972,14 +6979,23 @@ fn test_frame_view_filters_members_by_axis_and_story() {
     assert_eq!(f.normal, [0.0, 1.0, 0.0]);
     assert_eq!(f.elem_count(), 3, "Y1 構面には 3 部材すべてが属する");
 
-    // 階（伏図）: 準備計算で階を生成してから切り出す。柱は上端がその階に属する。
+    // 階（伏図）: 階は床であり、先頭は基部の床。梁が架かるのは 2 番目の床。
+    // 柱は上端がその階に属する。
     app.generate_stories_action();
-    let story = app.model.stories.first().expect("階").id;
+    let story = app.model.stories[1].id;
     let f = build_frame(&app.model, FrameTarget::Story(story)).expect("階");
     assert_eq!(f.normal, [0.0, 0.0, 1.0], "伏図の法線は鉛直");
     assert!(f.elem_on[girder.index()], "その階の梁");
     assert!(f.elem_on[col_a.index()], "上端がその階の柱");
     assert!(f.elem_on[col_b.index()], "上端がその階の柱");
+
+    // 基部の床（基礎伏図）: 柱脚の節点が属する。準備計算を通していないモデルでも
+    // 幾何から引くため、伏図は空にならない（`build_story_frame` は
+    // `Model::node_stories` を情報源とする）。
+    let base = app.model.stories[0].id;
+    let fb = build_frame(&app.model, FrameTarget::Story(base)).expect("基部の階");
+    assert!(fb.node_on[a0.index()], "柱脚は基部の床に属する");
+    assert!(fb.node_on[b0.index()]);
 
     // 存在しない通りを指すと構面は解決できない（ビューアは全体表示へ戻す）。
     assert!(build_frame(
