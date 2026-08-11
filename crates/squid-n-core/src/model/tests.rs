@@ -951,6 +951,30 @@ fn test_story_spans_are_half_open_intervals_above_base() {
     assert_eq!(m.story_at(&spans, -100.0), None, "基部より下は属さない");
 }
 
+/// 不変条件がまだ成立していないモデル（基部の階を持たない旧形式のファイル）でも、
+/// 最下階の区間は基部から始まり、基部〜最下階の節点がどの階にも属さなくなることはない。
+///
+/// これがないと、階生成を通す前に伏図を開いた時点で最下階が空になる。
+#[test]
+fn test_lowest_span_starts_at_base_when_invariant_not_yet_established() {
+    // 旧形式: 層の上端の床だけを階として持つ（基部の階がない）。
+    let m = make_story_model(&[0.0, 4000.0, 7500.0], &[("2F", 4000.0), ("3F", 7500.0)]);
+    assert_eq!(m.base_elevation(), 0.0);
+    assert_eq!(
+        m.story_spans(),
+        vec![(0.0, 4000.0), (4000.0, 7500.0)],
+        "最下階の下端は基部まで下がる"
+    );
+    let stories = m.node_stories();
+    assert_eq!(stories[0], Some(StoryId(0)), "基部の節点が最下階へ収まる");
+    assert_eq!(stories[1], Some(StoryId(0)));
+    assert_eq!(stories[2], Some(StoryId(1)));
+
+    // 基部から許容差以内だが厳密には上にある階でも、柱脚が無所属にならない。
+    let m = make_story_model(&[0.0, 4000.0], &[("1F", 0.5), ("2F", 4000.0)]);
+    assert_eq!(m.node_stories()[0], Some(StoryId(0)));
+}
+
 /// 層は隣り合う階の間であり、層数は階数より 1 つ少ない。
 /// 名前は下端の階、重量・所属節点・階種別は上端の階から採る。
 #[test]

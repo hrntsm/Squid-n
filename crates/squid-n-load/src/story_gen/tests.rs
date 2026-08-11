@@ -172,9 +172,12 @@ fn test_generate_two_stories() {
     assert_eq!(gen.generated_masters, vec![NodeId(6), NodeId(7), NodeId(8)]);
     // 基部の代表節点は水平にも拘束する（柱脚が全て支点で拘束されており、
     // 剛床を通じて水平剛性が写らないため。自由なままだと特異行列になる）。
+    // 面内回転 Rz も拘束する。並進が写らない以上、剛床としての剛性は Rz にも
+    // 写らず、回転慣性 j だけを持つ自由度が残って偽の低次モードを生むため。
     let base_rep = &gen.rep_nodes[0];
     assert!(base_rep.restraint.is_fixed(squid_n_core::dof::Dof::Ux));
     assert!(base_rep.restraint.is_fixed(squid_n_core::dof::Dof::Uy));
+    assert!(base_rep.restraint.is_fixed(squid_n_core::dof::Dof::Rz));
 
     for rep in &gen.rep_nodes[1..] {
         // CorrectedLumped(既定): 柱梁の密度自重は解析の質量行列に部材密度質量として
@@ -211,6 +214,29 @@ fn test_generate_two_stories() {
     assert_eq!(gen.rep_nodes[0].coord[2], 0.0);
     assert_eq!(gen.rep_nodes[1].coord[2], 3500.0);
     assert_eq!(gen.rep_nodes[2].coord[2], 7000.0);
+}
+
+/// 支点ばねで水平に動ける基部では、代表節点を自由のままにする。
+/// 基礎の質量が地盤ばねと連成して応答に効くようにするため。
+#[test]
+fn test_base_master_stays_free_when_supported_by_springs() {
+    let mut model = two_story_model();
+    // 柱脚を支点ばね支持へ変える（鉛直だけ拘束し、水平はばねで受ける）。
+    let mut vertical_only = Dof6Mask::FREE;
+    vertical_only.set_fixed(squid_n_core::dof::Dof::Uz);
+    for n in model.nodes.iter_mut().take(2) {
+        n.restraint = vertical_only;
+        n.support_spring = Some([1.0e5, 1.0e5, 0.0, 0.0, 0.0, 0.0]);
+    }
+
+    let gen = generate_stories(&model, Some(LoadCaseId(0))).unwrap();
+    let base_rep = &gen.rep_nodes[0];
+    assert!(!base_rep.restraint.is_fixed(squid_n_core::dof::Dof::Ux));
+    assert!(!base_rep.restraint.is_fixed(squid_n_core::dof::Dof::Uy));
+    assert!(
+        !base_rep.restraint.is_fixed(squid_n_core::dof::Dof::Rz),
+        "並進が動ける階では面内回転も剛床が担う"
+    );
 }
 
 #[test]

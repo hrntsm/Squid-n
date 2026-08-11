@@ -7,17 +7,36 @@ use super::types::{HingeEvent, HingeLevel, MechanismType};
 use crate::analysis::SeismicDir;
 use squid_n_core::model::Model;
 
-/// 部材端ヒンジが属する**層**の番号（[`squid_n_core::model::Layer::index`]）を返す。
+/// ヒンジの層への帰属。
+enum HingeLayer {
+    /// 第 `.0` 層（[`squid_n_core::model::Layer::index`]）のヒンジ。
+    In(usize),
+    /// どの層にも属さない部材のヒンジ。基部の階に収まる部材（基礎梁）が該当する。
+    /// 層の分布には数えないが、**判定を妨げもしない**。
+    OutsideLayers,
+    /// 所属階が分からないヒンジ（節点の所属階が未設定）。層の分布が信用できない
+    /// ため、層崩壊の判定を保留させる。
+    Unknown,
+}
+
+/// 部材端ヒンジが属する**層**を返す。
 ///
 /// 層は上端の階（床）で識別できる（層 i の上端は `stories[i+1]`）。ヒンジ位置側と
 /// 相手端の節点のうち**高い側**の所属階を採り、その階を上端とする層に帰属させる。
 /// 柱脚のヒンジは基部の階に属するが、それが表すのは最下層の柱脚であり、
 /// 高い側（柱頭）を採ることで最下層へ正しく帰属する。
-/// 最下の階（基部の床）を上端とする層は存在しないため、その場合は `None`。
-fn hinge_layer(model: &Model, h: &HingeEvent) -> Option<usize> {
-    let elem = model.elements.iter().find(|e| e.id == h.elem)?;
+///
+/// 高い側も基部の階なら、その部材は基部の階に収まる基礎梁である。基礎梁はどの層にも
+/// 属さないので [`HingeLayer::OutsideLayers`] とし、層崩壊の判定から除く。
+/// [`HingeLayer::Unknown`]（所属階が引けない）と区別するのは、前者で判定を保留すると
+/// **基礎梁が 1 本降伏しただけで層崩壊が全体崩壊と判定され、Ds の崩壊機構補正
+/// （1 段階不利側）が外れて必要保有水平耐力が過小になる**ためである。
+fn hinge_layer(model: &Model, h: &HingeEvent) -> HingeLayer {
+    let Some(elem) = model.elements.iter().find(|e| e.id == h.elem) else {
+        return HingeLayer::Unknown;
+    };
     if elem.nodes.len() < 2 {
-        return None;
+        return HingeLayer::Unknown;
     }
     let (near, far) = if h.pos < 0.5 {
         (elem.nodes[0], elem.nodes[1])
@@ -34,11 +53,17 @@ fn hinge_layer(model: &Model, h: &HingeEvent) -> Option<usize> {
             .unwrap_or(f64::NEG_INFINITY)
     };
     let top_side = if z_of(far) > z_of(near) { far } else { near };
-    let sid = story_of(top_side)
+    let Some(sid) = story_of(top_side)
         .or_else(|| story_of(near))
-        .or_else(|| story_of(far))?;
+        .or_else(|| story_of(far))
+    else {
+        return HingeLayer::Unknown;
+    };
     // 上端の階が `stories[i+1]` である層の番号は `i = index - 1`。
-    sid.index().checked_sub(1)
+    match sid.index().checked_sub(1) {
+        Some(i) => HingeLayer::In(i),
+        None => HingeLayer::OutsideLayers,
+    }
 }
 
 /// 平面骨組の静的不静定次数 r = 3m − 3n + r_support を算出する（P5 §11.5）。
@@ -153,8 +178,10 @@ pub(crate) fn determine_mechanism(
     let mut unmapped = 0usize;
     for h in &yielded {
         match hinge_layer(model, h) {
-            Some(l) => *per_story.entry(l).or_default() += 1,
-            None => unmapped += 1,
+            HingeLayer::In(l) => *per_story.entry(l).or_default() += 1,
+            // 基礎梁のように層に属さない部材のヒンジは、分布にも保留にも数えない。
+            HingeLayer::OutsideLayers => {}
+            HingeLayer::Unknown => unmapped += 1,
         }
     }
 

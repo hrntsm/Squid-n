@@ -314,17 +314,26 @@ impl Model {
     /// そのまま当てはめると空区間になって柱脚・基礎梁の節点がどの階にも属さなくなる
     /// ためである。
     ///
-    /// 区間の算出はここに集約する。不変条件（`stories[0].elevation == base_elevation()`）
-    /// があるため [`Self::base_elevation`] を呼ぶ必要はなく、全節点の走査は生じない。
+    /// 区間の算出はここに集約する。
+    ///
+    /// 最下階の下端は `stories[0].elevation` と [`Self::base_elevation`] の**小さい方**
+    /// とする。不変条件が成立していれば両者は一致するので通常は前者そのものだが、
+    /// 不変条件がまだ成立していないモデル（階生成を通していない旧形式のファイル、
+    /// 基部の階を持たない取り込みデータ）では基部側が下端になり、基部〜最下階の
+    /// 節点が最下階へ収まる。これがないと、そうしたモデルで最下階の伏図が空になり、
+    /// 節点が丸ごとどの階にも属さなくなる。
     pub fn story_spans(&self) -> Vec<(f64, f64)> {
+        let first_bottom = self
+            .stories
+            .first()
+            .map(|s| s.elevation.min(self.base_elevation()));
         self.stories
             .iter()
             .enumerate()
             .map(|(i, s)| {
-                let bottom = if i == 0 {
-                    s.elevation
-                } else {
-                    self.stories[i - 1].elevation
+                let bottom = match i {
+                    0 => first_bottom.unwrap_or(s.elevation),
+                    _ => self.stories[i - 1].elevation,
                 };
                 (bottom, s.elevation)
             })

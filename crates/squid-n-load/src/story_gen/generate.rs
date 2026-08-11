@@ -73,18 +73,36 @@ pub fn generate_stories_multi(
 /// これが起きるのは基部の床（柱脚が固定・ピンで水平拘束される）である。
 /// 一方、支点ばね（[`Node::support_spring`]）で支持された基部は水平に動けるため、
 /// マスターも自由のままとし、基礎の質量が地盤ばねと連成して応答に効くようにする。
+///
+/// **面内回転 Rz はスレーブの並進で決まる**（拘束変換はスレーブの Ux・Uy の行に
+/// マスター Rz を `-dy`・`dx` の係数で入れる）。したがって並進が 1 つも自由でない
+/// 階では、Rz を自由にしても剛床としての剛性は写らず、マスターの回転慣性 j だけが
+/// 残る。柱のねじり剛性 GJ/L しか支えがないため、開断面の鉄骨柱では周期が数十秒に
+/// なる**偽の低次モード**が生じ、精算の設計用固有周期 T を乗っ取って Rt を潰す。
+/// このため Rz は「スレーブの並進が 1 つでも自由なとき」だけ自由にする。
+///
+/// なお Rz を拘束したマスターに対しては、スレーブの Rz は従属先を失って独立自由度の
+/// まま残る（拘束変換はマスター側が非 active の行を張らない）。柱脚のねじりは
+/// 変更前と同じく各節点で独立に扱われる。
 fn master_restraint(model: &Model, common: Dof6Mask, slaves: &[NodeId]) -> Dof6Mask {
-    let mut m = common;
-    for dof in [Dof::Ux, Dof::Uy, Dof::Rz] {
-        let any_free = slaves.iter().any(|n| {
+    let free_slave = |dof: Dof| {
+        slaves.iter().any(|n| {
             model
                 .nodes
                 .get(n.index())
                 .is_some_and(|s| !s.restraint.is_fixed(dof))
-        });
-        if !any_free {
-            m.set_fixed(dof);
-        }
+        })
+    };
+    let mut m = common;
+    let (ux_free, uy_free) = (free_slave(Dof::Ux), free_slave(Dof::Uy));
+    if !ux_free {
+        m.set_fixed(Dof::Ux);
+    }
+    if !uy_free {
+        m.set_fixed(Dof::Uy);
+    }
+    if !ux_free && !uy_free {
+        m.set_fixed(Dof::Rz);
     }
     m
 }

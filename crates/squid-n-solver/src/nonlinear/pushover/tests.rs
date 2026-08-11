@@ -957,6 +957,49 @@ fn test_determine_mechanism_story_collapse() {
     }
 }
 
+/// 基礎梁（基部の階に収まる部材）の降伏ヒンジは、層崩壊の判定を妨げない。
+///
+/// 基礎梁はどの層にも属さないため層の分布には数えないが、「所属階が分からない」
+/// 扱いにして判定を保留すると、基礎梁が 1 本降伏しただけで層崩壊が全体崩壊と
+/// 判定され、Ds の崩壊機構補正（1 段階不利側）が外れてしまう。
+#[test]
+fn test_foundation_girder_hinge_does_not_veto_story_collapse() {
+    let mut model = two_story_model();
+    // 基部の階に収まる部材（基礎梁に相当）を 1 本足す。
+    let base_beam = ElemId(model.elements.len() as u32);
+    // 支点を増やすと静的不静定次数が上がり、機構成立のゲートが本筋と関係なく
+    // 厳しくなるため、相手端は自由節点にする。
+    model.nodes.push(Node {
+        id: NodeId(3),
+        coord: [6000.0, 0.0, 0.0],
+        restraint: Dof6Mask::FREE,
+        mass: None,
+        story: Some(StoryId(0)),
+        support_spring: None,
+    });
+    model.nodes[0].story = Some(StoryId(0));
+    let template = model.elements[0].clone();
+    model.elements.push(ElementData {
+        id: base_beam,
+        nodes: smallvec::smallvec![NodeId(0), NodeId(3)],
+        ..template
+    });
+
+    // 最下層の柱（elem0）の両端が降伏し、あわせて基礎梁も降伏している。
+    let hinges = vec![
+        hinge(0, 0.0, HingeLevel::Yield),
+        hinge(0, 1.0, HingeLevel::Yield),
+        hinge(base_beam.0, 0.0, HingeLevel::Yield),
+    ];
+    match determine_mechanism(&hinges, &model, SeismicDir::X) {
+        MechanismType::StoryCollapse { layer } => assert_eq!(layer, 0),
+        other => panic!(
+            "基礎梁の降伏で層崩壊の判定が落ちてはいけない: {:?}",
+            std::mem::discriminant(&other)
+        ),
+    }
+}
+
 #[test]
 fn test_determine_mechanism_overall() {
     let model = two_story_model();
