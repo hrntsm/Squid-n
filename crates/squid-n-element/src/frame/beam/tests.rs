@@ -840,7 +840,11 @@ fn test_auto_rigid_zone_standard_formula() {
     let zone = auto_rigid_zones(&model, ElemId(1), &RigidZoneRule::default());
     assert!((zone.length_i - 125.0).abs() < 1e-9);
     // フェイス距離 face_i = D_orth/2 = 柱せい/2 = 300（低減率は掛けない）。
-    assert!((zone.face_i - 300.0).abs() < 1e-9, "face_i={}", zone.face_i);
+    assert!(
+        (zone.face_i_or_zero() - 300.0).abs() < 1e-9,
+        "face_i={}",
+        zone.face_i_or_zero()
+    );
 }
 
 /// apply_auto_rigid_zones が ElementData::rigid_zone に反映され、
@@ -931,7 +935,7 @@ fn test_apply_auto_rigid_zones_and_manual_protection() {
     // 手動端は再適用で保護される。
     model.elements[1].rigid_zone.source_i = ZoneSource::Manual;
     model.elements[1].rigid_zone.length_i = 999.0;
-    model.elements[1].rigid_zone.face_i = 0.0;
+    model.elements[1].rigid_zone.face_i = Some(0.0);
     apply_auto_rigid_zones(&mut model, &RigidZoneRule::default());
     assert_eq!(
         model.elements[1].rigid_zone.length_i, 999.0,
@@ -940,9 +944,9 @@ fn test_apply_auto_rigid_zones_and_manual_protection() {
     // face_i は剛域長の Manual/Auto フラグとは無関係な幾何量なので、
     // Manual 端でも常に再算定される（設計書 §6.2.1）。
     assert!(
-        (model.elements[1].rigid_zone.face_i - 300.0).abs() < 1e-9,
+        (model.elements[1].rigid_zone.face_i_or_zero() - 300.0).abs() < 1e-9,
         "Manual 端でも face_i は再算定されるべき: face_i={}",
-        model.elements[1].rigid_zone.face_i
+        model.elements[1].rigid_zone.face_i_or_zero()
     );
 }
 
@@ -1016,8 +1020,8 @@ fn test_eval_sections_from_face_distance() {
             end_cond: [EndCondition::Fixed, EndCondition::Fixed],
             force_regime: squid_n_core::model::ForceRegime::Auto,
             rigid_zone: RigidZone {
-                face_i: 300.0,
-                face_j: 250.0,
+                face_i: Some(300.0),
+                face_j: Some(250.0),
                 ..Default::default()
             },
             plastic_zone: None,
@@ -1334,9 +1338,9 @@ fn test_auto_rigid_zone_steel_beam_rc_column() {
     );
     // 危険断面位置のフェース距離は構造種別を問わない幾何量なので残る。
     assert!(
-        (zone.face_i - 300.0).abs() < 1e-9,
+        (zone.face_i_or_zero() - 300.0).abs() < 1e-9,
         "face_i={} (期待値=柱せい/2=300)",
-        zone.face_i
+        zone.face_i_or_zero()
     );
 }
 
@@ -1631,9 +1635,9 @@ fn test_auto_rigid_zone_wall_does_not_affect_orthogonal_search() {
         zone.length_i
     );
     assert!(
-        (zone.face_i - 300.0).abs() < 1e-9,
+        (zone.face_i_or_zero() - 300.0).abs() < 1e-9,
         "壁のせいが紛れ込んでいないはず: face_i={}",
-        zone.face_i
+        zone.face_i_or_zero()
     );
 }
 
@@ -3210,9 +3214,9 @@ fn test_auto_rigid_zone_only_when_all_members_are_rc() {
     let zone = auto_rigid_zones(&steel_col, ElemId(1), &RigidZoneRule::default());
     assert_eq!(zone.length_i, 0.0, "S 柱が集まる節点では剛域を設けない");
     assert!(
-        (zone.face_i - 300.0).abs() < 1e-9,
+        (zone.face_i_or_zero() - 300.0).abs() < 1e-9,
         "剛域が 0 でもフェース距離は付く: {}",
-        zone.face_i
+        zone.face_i_or_zero()
     );
 
     // 梁が S・柱が RC（混在節点）: 梁側の剛域も 0。
@@ -3379,9 +3383,9 @@ fn test_auto_rigid_zone_considers_attached_wall() {
         zone.length_i
     );
     assert!(
-        (zone.face_i - 300.0).abs() < 1e-9,
+        (zone.face_i_or_zero() - 300.0).abs() < 1e-9,
         "フェース距離に壁を含めない: face_i={}（期待値 300）",
-        zone.face_i
+        zone.face_i_or_zero()
     );
 
     // 壁は柱 A の右側にしかないので、反対端（柱 B）は原断面のまま。
@@ -3390,7 +3394,11 @@ fn test_auto_rigid_zone_considers_attached_wall() {
         "壁のない側の λ_j={}（期待値 125）",
         zone.length_j
     );
-    assert!((zone.face_j - 300.0).abs() < 1e-9, "face_j={}", zone.face_j);
+    assert!(
+        (zone.face_j_or_zero() - 300.0).abs() < 1e-9,
+        "face_j={}",
+        zone.face_j_or_zero()
+    );
 }
 
 /// 壁厚が 100 mm 未満の壁は剛域算定の対象外（技術基準の「壁」は現場打ち
@@ -3416,7 +3424,6 @@ fn test_auto_rigid_zone_wall_consideration_can_be_disabled() {
     let model = portal_with_wing_wall(600.0, 700.0, 150.0);
     let rule = RigidZoneRule {
         consider_walls: false,
-        ..Default::default()
     };
     let zone = auto_rigid_zones(&model, ElemId(1), &rule);
     assert!(
@@ -3424,5 +3431,9 @@ fn test_auto_rigid_zone_wall_consideration_can_be_disabled() {
         "原断面のみ: λ_i={}（期待値 125）",
         zone.length_i
     );
-    assert!((zone.face_i - 300.0).abs() < 1e-9, "face_i={}", zone.face_i);
+    assert!(
+        (zone.face_i_or_zero() - 300.0).abs() < 1e-9,
+        "face_i={}",
+        zone.face_i_or_zero()
+    );
 }

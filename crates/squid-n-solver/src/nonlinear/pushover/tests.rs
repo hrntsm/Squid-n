@@ -3124,8 +3124,8 @@ fn portal_frame_rigid_zone_model(fy: f64, seismic_weight: f64, rigid: f64) -> Mo
             model.elements[idx].rigid_zone = RigidZone {
                 length_i: rigid,
                 length_j: rigid,
-                face_i: rigid,
-                face_j: rigid,
+                face_i: Some(rigid),
+                face_j: Some(rigid),
                 ..Default::default()
             };
         }

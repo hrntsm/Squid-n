@@ -52,12 +52,13 @@ pub(super) fn geometric_length(elem: &ElementData, model: &Model) -> f64 {
 
 /// 内法長さ [mm] = 幾何長 − 両端フェイス距離。フェイス合計が幾何長以上の
 /// 不整合入力では幾何長のままとする（app の rank-auto と同規則）。
+///
+/// フェース距離が未算定（`RigidZone::face_i/face_j` が `None`）の場合も幾何長を
+/// 返す。終局耐力は解析後に算定するため、その時点では剛域算定が済んでいる。
 pub(super) fn clear_span(elem: &ElementData, model: &Model) -> f64 {
     let geom = geometric_length(elem, model);
-    let face_sum = elem.rigid_zone.face_i + elem.rigid_zone.face_j;
-    if geom - face_sum > 0.0 {
-        geom - face_sum
-    } else {
-        geom
+    match elem.rigid_zone.clear_span_from(geom) {
+        Some(lo) if lo > 0.0 => lo,
+        _ => geom,
     }
 }

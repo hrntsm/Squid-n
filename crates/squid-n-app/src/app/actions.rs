@@ -568,7 +568,6 @@ impl App {
         // 壁を考慮するか否かはモデルの応力解析設定に従う（既定は考慮する）。
         let rule = squid_n_element::beam::RigidZoneRule {
             consider_walls: self.model.stress_cfg.rigid_zone_consider_walls,
-            ..Default::default()
         };
         squid_n_element::beam::apply_auto_rigid_zones(&mut self.model, &rule);
         self.apply_panel_zones_for_analysis();
@@ -1510,7 +1509,8 @@ impl App {
                     // （設計書 §6.2.1）。フェイス距離の合計が幾何長以上になる
                     // (不整合な入力)場合は下限0を割り込むため、幾何長のままとする。
                     let geom_len = elem_geometric_length(elem, &self.model);
-                    let face_sum = elem.rigid_zone.face_i + elem.rigid_zone.face_j;
+                    let face_sum =
+                        elem.rigid_zone.face_i_or_zero() + elem.rigid_zone.face_j_or_zero();
                     let clear_span = if geom_len - face_sum > 0.0 {
                         geom_len - face_sum
                     } else {
@@ -2959,7 +2959,8 @@ impl App {
                     .as_ref()
                     .and_then(|map| map.get(elem_id))
                     .map(|mf_long| {
-                        let face_sum = elem.rigid_zone.face_i + elem.rigid_zone.face_j;
+                        let face_sum =
+                            elem.rigid_zone.face_i_or_zero() + elem.rigid_zone.face_j_or_zero();
                         let clear_length = match group {
                             // 一本部材は両外端の剛域控除後のグループ内法長。
                             Some(g) => g.clear_length,

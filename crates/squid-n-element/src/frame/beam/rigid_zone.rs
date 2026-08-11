@@ -9,7 +9,6 @@ use squid_n_core::model::{Model, RigidZone, ZoneSource};
 use squid_n_core::structure_kind::member_structure_kind;
 
 pub struct RigidZoneRule {
-    pub reduction: f64,
     /// 部材フェース・部材せいに、取り付く壁を考慮するか（技術基準。既定は考慮する）。
     ///
     /// `false` にすると部材の原断面だけで算定する。対象となる壁は
@@ -21,7 +20,6 @@ pub struct RigidZoneRule {
 impl Default for RigidZoneRule {
     fn default() -> Self {
         Self {
-            reduction: 1.0,
             consider_walls: true,
         }
     }
@@ -211,14 +209,12 @@ fn rigid_zone_with_adjacency(
     adjacency: &NodeAdjacency,
     rule: &RigidZoneRule,
     walls: &[crate::wall::misc_wall::MiscWall],
+    face: [f64; 2],
 ) -> RigidZone {
     let elem = &model.elements[target_elem_idx];
     let nodes = &elem.nodes;
     if nodes.len() < 2 {
-        return RigidZone {
-            reduction: rule.reduction,
-            ..Default::default()
-        };
+        return RigidZone::default();
     }
 
     let target_axis = elem_axis(model, elem);
@@ -258,12 +254,12 @@ fn rigid_zone_with_adjacency(
     // 剛域長 λ 用は壁込み（技術基準「剛域の計算」）。
     let lf_i = lf(node_i, dir_i, walls);
     let lf_j = lf(node_j, dir_j, walls);
-    // 危険断面位置 face 用は原断面のみ。壁の考慮は剛域の規定であって、危険断面位置は
-    // 柱フェース（＝直交部材せい/2）で決まる幾何量である（設計書 §6.2.3）。
-    // face は RC/SRC 梁の自重の内法長（`squid_n_load` の `enumerate_self_weight`）
-    // にも使われるため、ここに壁を混ぜると壁の張り出し分だけ梁の自重が過小になる。
-    let face_i = lf(node_i, dir_i, &[]);
-    let face_j = lf(node_j, dir_j, &[]);
+    // 危険断面位置 face は壁を含めない幾何量で、算定は core の単一実装
+    // （`squid_n_core::face_distance`）に一元化してある。壁の考慮は剛域の規定で
+    // あって、危険断面位置は柱フェース（＝直交部材せい/2）で決まる（設計書 §6.2.3）。
+    // face は RC/SRC 梁の自重の内法長にも使われるため、ここに壁を混ぜると
+    // 壁の張り出し分だけ梁の自重が過小になる。
+    let [face_i, face_j] = face;
 
     // 剛域長 λ = Lf − D_自身/4（技術基準「剛域の計算」）。
     // 剛域を設けるのは、その節点に集合する柱・大梁がすべて RC/SRC のときだけで、
@@ -273,7 +269,7 @@ fn rigid_zone_with_adjacency(
         if !all_rc_src {
             return 0.0;
         }
-        (rule.reduction * (lf - d_self / 4.0)).max(0.0)
+        (lf - d_self / 4.0).max(0.0)
     };
 
     let (mut length_i, mut length_j) = (
@@ -297,12 +293,10 @@ fn rigid_zone_with_adjacency(
         length_j,
         source_i: ZoneSource::Auto,
         source_j: ZoneSource::Auto,
-        reduction: rule.reduction,
-        // フェース距離は剛性用剛域の低減率（慣用調整）と無関係な幾何量なので
-        // reduction を掛けない（設計書 §6.2.1「設計位置との区別」）。剛域を設けない
-        // 仕口（S 系を含む節点）でも危険断面位置は必要なので、λ とは独立に常に持つ。
-        face_i,
-        face_j,
+        // 剛域を設けない仕口（S 系を含む節点）でも危険断面位置は必要なので、
+        // フェース距離は λ とは独立に常に持つ。
+        face_i: Some(face_i),
+        face_j: Some(face_j),
         // パネル分のオフセットは剛域算定の対象外（`panel_gen` が別途書き込む）。
         // ここで既定値へ落としても、`recompute_auto_zones` が反映しないため
         // モデル側の値は保たれる。
@@ -320,10 +314,7 @@ pub fn auto_rigid_zones(
     rule: &RigidZoneRule,
 ) -> RigidZone {
     let Some(target_elem_idx) = model.elements.iter().position(|e| e.id == elem_id) else {
-        return RigidZone {
-            reduction: rule.reduction,
-            ..Default::default()
-        };
+        return RigidZone::default();
     };
     let adjacency = NodeAdjacency::build(model);
     let walls = if rule.consider_walls {
@@ -331,7 +322,8 @@ pub fn auto_rigid_zones(
     } else {
         Vec::new()
     };
-    rigid_zone_with_adjacency(model, target_elem_idx, &adjacency, rule, &walls)
+    let face = squid_n_core::face_distance::face_distances(model)[target_elem_idx];
+    rigid_zone_with_adjacency(model, target_elem_idx, &adjacency, rule, &walls, face)
 }
 
 pub fn recompute_auto_zones(zone: &mut RigidZone, recomputed: &RigidZone) {
@@ -369,6 +361,8 @@ pub fn apply_auto_rigid_zones(model: &mut Model, rule: &RigidZoneRule) {
     } else {
         Vec::new()
     };
+    // 危険断面位置のフェース距離は core の単一実装から一括で得る（O(要素数)）。
+    let faces = squid_n_core::face_distance::face_distances(model);
     let recomputed: Vec<(usize, RigidZone)> = model
         .elements
         .iter()
@@ -377,15 +371,12 @@ pub fn apply_auto_rigid_zones(model: &mut Model, rule: &RigidZoneRule) {
         .map(|(i, _)| {
             (
                 i,
-                rigid_zone_with_adjacency(model, i, &adjacency, rule, &walls),
+                rigid_zone_with_adjacency(model, i, &adjacency, rule, &walls, faces[i]),
             )
         })
         .collect();
 
     for (i, rz) in recomputed {
-        let zone = &mut model.elements[i].rigid_zone;
-        recompute_auto_zones(zone, &rz);
-        // reduction も Auto 算定値を反映（手動端の length は保持済み）。
-        zone.reduction = rz.reduction;
+        recompute_auto_zones(&mut model.elements[i].rigid_zone, &rz);
     }
 }

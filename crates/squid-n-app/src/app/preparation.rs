@@ -601,7 +601,11 @@ impl App {
             }
             candidates += 1;
             let rz = e.rigid_zone;
-            if rz.length_i <= 0.0 && rz.length_j <= 0.0 && rz.face_i <= 0.0 && rz.face_j <= 0.0 {
+            if rz.length_i <= 0.0
+                && rz.length_j <= 0.0
+                && rz.face_i_or_zero() <= 0.0
+                && rz.face_j_or_zero() <= 0.0
+            {
                 continue;
             }
             let (Some(ni), Some(nj)) = (
@@ -628,8 +632,8 @@ impl App {
                 zone_j: rz.length_j,
                 source_i: rz.source_i,
                 source_j: rz.source_j,
-                face_i: rz.face_i,
-                face_j: rz.face_j,
+                face_i: rz.face_i_or_zero(),
+                face_j: rz.face_j_or_zero(),
                 panel_offset_i: rz.panel_offset_i,
                 panel_offset_j: rz.panel_offset_j,
                 clear_length,

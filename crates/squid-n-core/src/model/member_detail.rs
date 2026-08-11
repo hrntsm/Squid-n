@@ -105,12 +105,16 @@ impl MemberDetailAttr {
         let mut xs = Vec::new();
         if let Some(h) = &self.haunch_i {
             if h.length > 0.0 {
-                xs.push(((rigid_zone.face_i + h.length) / geom_len).clamp(0.0, 0.5 - 1e-9));
+                // ハンチ長は柱フェースから測る。フェース距離が未算定の端は
+                // 節点位置から測る（従来の 0 と同じ扱い）。
+                let base = rigid_zone.face_i_or_zero();
+                xs.push(((base + h.length) / geom_len).clamp(0.0, 0.5 - 1e-9));
             }
         }
         if let Some(h) = &self.haunch_j {
             if h.length > 0.0 {
-                xs.push((1.0 - (rigid_zone.face_j + h.length) / geom_len).clamp(0.5 + 1e-9, 1.0));
+                let base = rigid_zone.face_j_or_zero();
+                xs.push((1.0 - (base + h.length) / geom_len).clamp(0.5 + 1e-9, 1.0));
             }
         }
         for j in &self.joints {
@@ -129,8 +133,8 @@ mod tests {
 
     fn rigid(face_i: f64, face_j: f64) -> RigidZone {
         RigidZone {
-            face_i,
-            face_j,
+            face_i: Some(face_i),
+            face_j: Some(face_j),
             ..Default::default()
         }
     }

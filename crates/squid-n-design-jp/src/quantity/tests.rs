@@ -168,11 +168,11 @@ fn rc_portal_model() -> Model {
         node(3, 6_000.0, 0.0, 3_500.0),
     ];
     let mut girder = line_elem(2, 2, 3, 0);
-    girder.rigid_zone.face_i = 350.0;
-    girder.rigid_zone.face_j = 350.0;
+    girder.rigid_zone.face_i = Some(350.0);
+    girder.rigid_zone.face_j = Some(350.0);
     let mut fg = line_elem(3, 0, 1, 0);
-    fg.rigid_zone.face_i = 350.0;
-    fg.rigid_zone.face_j = 350.0;
+    fg.rigid_zone.face_i = Some(350.0);
+    fg.rigid_zone.face_j = Some(350.0);
     let elements = vec![
         line_elem(0, 0, 2, 1), // 柱
         line_elem(1, 1, 3, 1), // 柱

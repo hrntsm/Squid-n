@@ -1755,8 +1755,8 @@ fn build_rigid_zone_model(li: f64, lj: f64) -> Model {
     model.elements[0].rigid_zone = squid_n_core::model::RigidZone {
         length_i: li,
         length_j: lj,
-        face_i: li,
-        face_j: lj,
+        face_i: Some(li),
+        face_j: Some(lj),
         ..Default::default()
     };
     model
@@ -2246,8 +2246,8 @@ fn 材端解放ありでも接線剛性が内力の勾配と一致する() {
         model.elements[0].rigid_zone = squid_n_core::model::RigidZone {
             length_i: 400.0,
             length_j: 250.0,
-            face_i: 400.0,
-            face_j: 250.0,
+            face_i: Some(400.0),
+            face_j: Some(250.0),
             ..Default::default()
         };
         let ctx = Ctx { model: &model };

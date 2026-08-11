@@ -100,7 +100,7 @@ pub(crate) enum SelfWeightItem {
 ///
 /// - 線材（柱・梁・ブレース, `ElementKind::Beam`/`Brace`）: ρ·A·L·g。
 ///   §1.8: 自重算定長 L は、コンクリート材（`mat.fc` あり = RC/SRC）の水平材（梁）は
-///   柱面間距離（`len - face_i - face_j`、負にならない範囲）、鉛直材（柱）は
+///   柱面間距離（`len` から両端の柱フェース距離を引いた、負にならない範囲）、鉛直材（柱）は
 ///   床上面から床上面まで（＝節点間距離。フェイス控除しない）、鋼材（S 梁・柱）は
 ///   節点間距離（RC/SRC 大梁は柱面間距離、
 ///   RC/SRC 柱は床上面から床上面、S 梁・柱は節点間距離）。
@@ -135,6 +135,11 @@ pub(crate) fn enumerate_self_weight(model: &Model, load_cfg: &LoadCfg) -> Vec<Se
     // 主ループの前に 1 回だけ構築する（性能。走査順・判定条件は変更しない）。
     let node_adj = node_adjacency(model);
     let beam_pairs = beam_pair_map(model);
+    // 柱フェース距離は `RigidZone::face_i/face_j` のキャッシュを当てにせず、
+    // 幾何から直接求める。キャッシュは剛域の自動算定が走るまで未算定（None）で、
+    // 以前はそれを 0 とみなして節点間距離で自重を算定していたため、準備計算の
+    // 1 回目だけ固定荷重が 9.6% 過大になっていた（申し送り「実モデル統合テスト」4.1）。
+    let faces = squid_n_core::face_distance::face_distances(model);
     for (elem_idx, elem) in model.elements.iter().enumerate() {
         // ダンパー自重（§ダンパー自重）: 対象部材は断面からの自重計算をスキップし、
         // 装置重量＋支持部断面積×(節点間距離−装置長さ)×鋼材単位体積重量で置き換える。
@@ -170,7 +175,8 @@ pub(crate) fn enumerate_self_weight(model: &Model, load_cfg: &LoadCfg) -> Vec<Se
                 // §1.8: 柱面間距離の控除は水平材（梁）のみ。鉛直材（柱）は
                 // 床上面から床上面（＝節点間距離）で算定する。
                 let mut eff_len = if is_concrete && !is_vertical {
-                    (len - elem.rigid_zone.face_i - elem.rigid_zone.face_j).max(0.0)
+                    let [fi, fj] = faces[elem_idx];
+                    (len - fi - fj).max(0.0)
                 } else {
                     len
                 };
