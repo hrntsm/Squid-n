@@ -686,6 +686,28 @@ impl App {
                     "OFF にすると接合部を剛節点として扱います（パネルのせん断変形を\
                      考慮しません）。柱梁接合部の断面算定は、この設定によらず常に行います。",
                 );
+
+                ui.add_space(6.0);
+                let mut consider = self.model.stress_cfg.rigid_zone_consider_walls;
+                let resp = ui
+                    .checkbox(&mut consider, "剛域の算定で壁を考慮する")
+                    .on_hover_text(
+                        "剛域長 λ = 節点から部材フェースまでの距離 − 部材せい/4 の\
+                     「部材フェース」「部材せい」に、取り付く壁を含めた寸法を用います\
+                     （柱には袖壁、梁には腰壁・垂壁）。両側に取り付く壁の長さが異なる\
+                     場合は長い方を基準にします。対象は現場打ちコンクリート壁で厚さ\
+                     100mm 以上のもので、耐震壁・雑壁を問いません。",
+                    );
+                if resp.changed() {
+                    self.model.stress_cfg.rigid_zone_consider_walls = consider;
+                    self.staleness.mark_edited();
+                }
+                ui.colored_label(
+                    crate::theme::GRAY_600,
+                    "OFF にすると部材の原断面だけで剛域を算定します。\
+                     剛域を設けるのは、その節点に集まる柱・大梁がすべて RC/SRC の\
+                     ときだけです（S 造の仕口は仕口パネルでモデル化します）。",
+                );
             });
     }
 

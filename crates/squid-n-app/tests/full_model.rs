@@ -174,6 +174,16 @@ fn dl_case_id(app: &App) -> squid_n_core::ids::LoadCaseId {
         .id
 }
 
+/// 名前で荷重ケースを取り出す（内容の比較用）。
+fn auto_case(app: &App, name: &str) -> squid_n_core::model::LoadCase {
+    app.model
+        .load_cases
+        .iter()
+        .find(|lc| lc.name == name)
+        .unwrap_or_else(|| panic!("荷重ケース「{name}」が見つからない"))
+        .clone()
+}
+
 /// 柱脚（支点に取り付く鉛直部材の支点側材端）の軸力 [N] を集める。
 ///
 /// 鉛直荷重の伝達経路が壊れた（剛床・二次部材の CMQ 変換・スラブ分配のいずれかが
@@ -346,100 +356,42 @@ fn preparation_computes_stories_and_seismic_forces() {
     );
 }
 
-/// 準備計算は 2 回目以降、何度実行しても階・地震用重量・固定荷重が変わらない。
+/// 準備計算は 1 回目から冪等である（何度実行しても階・地震用重量・固定荷重が同じ）。
 ///
-/// 1 回目と 2 回目の間には差がある（[`preparation_is_idempotent_from_first_run`]
-/// 参照）ため、ここでは 2 回目以降の安定性のみを固定する。
+/// RC/SRC 梁の自重は柱面間の内法長（節点間長 − 両端の柱フェース距離
+/// `RigidZone::face_i/face_j`）で算定するため、自重の同期は
+/// フェース距離の算定より後に行わなければならない。かつては
+/// `generate_stories_action` が同期を先に行っており、1 回目の準備計算だけ
+/// フェース距離が未算定（0）のまま節点間距離で算定した過大な自重が DL に入り、
+/// 2 回目の実行で初めて正しい値へ変わっていた。準備計算は各解析の実行前にも
+/// 自動で走るため、「準備計算を実行した回数」で柱脚軸力・断面検定が変わる
+/// 状態だった。
 #[test]
-fn preparation_is_idempotent_after_second_run() {
+fn preparation_is_idempotent() {
     let mut app = prepared();
-    app.run_preparation();
-    assert_no_error(&app, "準備計算（2 回目）");
-
     let stories = app.model.stories.len();
     let weights: Vec<Option<f64>> = app.model.stories.iter().map(|s| s.seismic_weight).collect();
-    let dl = app
-        .model
-        .load_cases
-        .iter()
-        .find(|lc| lc.name == DL_CASE_NAME)
-        .cloned()
-        .expect("DL");
+    let dl = auto_case(&app, DL_CASE_NAME);
 
-    app.run_preparation();
-    assert_no_error(&app, "準備計算（3 回目）");
-    assert_eq!(app.model.stories.len(), stories, "階数が変わらない");
-    assert_eq!(
-        app.model
-            .stories
-            .iter()
-            .map(|s| s.seismic_weight)
-            .collect::<Vec<_>>(),
-        weights,
-        "地震用重量が変わらない"
-    );
-    assert_eq!(
-        *app.model
-            .load_cases
-            .iter()
-            .find(|lc| lc.name == DL_CASE_NAME)
-            .expect("DL"),
-        dl,
-        "固定荷重 DL の内容が変わらない"
-    );
-}
-
-/// 準備計算は 1 回目から冪等である（何回実行しても固定荷重・地震用重量が同じ）。
-///
-/// **現状は失敗する（`#[ignore]`）**。実建物モデルでは 1 回目と 2 回目で
-/// 固定荷重 DL の内容が変わる。
-///
-/// - 床から梁へ分配される部材荷重 702 件のうち **17 件の強度が下がる**
-///   （例: 材長 4000 mm の梁で w=21.6 → 11.88 N/mm）
-/// - その結果、DL の総鉛直外力が **6,889,465 N → 6,228,505 N**（−660,960 N、
-///   全体の約 9.6%）へ減る
-/// - 階の地震用重量もこれに追随し、最下階（1FL）の重量が
-///   3,702,394 N → 3,041,434 N へ減る
-/// - 3 回目以降は 2 回目と同値で安定する
-///
-/// 準備計算は各解析の実行前にも自動で走るため、**「準備計算ボタンを押した回数」で
-/// 解析結果（柱脚軸力・断面検定）が変わる**。地震力算定に使う ΣW は最下階を
-/// 含まないため、地震静的解析・保有水平耐力への影響はない。
-///
-/// 詳細は `dev_docs/handoff/実モデル統合テスト_申し送り.md` を参照。
-#[test]
-#[ignore = "1 回目と 2 回目で固定荷重が 9.6% 変わる（申し送り参照）"]
-fn preparation_is_idempotent_from_first_run() {
-    let mut app = prepared();
-    let weights: Vec<Option<f64>> = app.model.stories.iter().map(|s| s.seismic_weight).collect();
-    let dl = app
-        .model
-        .load_cases
-        .iter()
-        .find(|lc| lc.name == DL_CASE_NAME)
-        .cloned()
-        .expect("DL");
-
-    app.run_preparation();
-    assert_no_error(&app, "準備計算（2 回目）");
-    assert_eq!(
-        *app.model
-            .load_cases
-            .iter()
-            .find(|lc| lc.name == DL_CASE_NAME)
-            .expect("DL"),
-        dl,
-        "固定荷重 DL の内容が変わらない"
-    );
-    assert_eq!(
-        app.model
-            .stories
-            .iter()
-            .map(|s| s.seismic_weight)
-            .collect::<Vec<_>>(),
-        weights,
-        "地震用重量が変わらない"
-    );
+    for n in 2..=3 {
+        app.run_preparation();
+        assert_no_error(&app, &format!("準備計算（{n} 回目）"));
+        assert_eq!(app.model.stories.len(), stories, "{n} 回目で階数が変わった");
+        assert_eq!(
+            app.model
+                .stories
+                .iter()
+                .map(|s| s.seismic_weight)
+                .collect::<Vec<_>>(),
+            weights,
+            "{n} 回目で地震用重量が変わった"
+        );
+        assert_eq!(
+            auto_case(&app, DL_CASE_NAME),
+            dl,
+            "{n} 回目で固定荷重 DL の内容が変わった"
+        );
+    }
 }
 
 // ===================== 3. 診断 =====================

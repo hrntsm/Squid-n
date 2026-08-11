@@ -32,6 +32,18 @@ pub struct StressAnalysisCfg {
     /// 圧縮ブレースは軸力を負担しない）。
     #[serde(default)]
     pub tension_only_iteration: bool,
+    /// 剛域の算定で、部材フェース・部材せいに取り付く壁を考慮するか（技術基準
+    /// 「剛域の計算」。既定は考慮する）。
+    ///
+    /// `true`（既定）: 柱には袖壁、梁には腰壁・垂壁を含めた寸法で算定する。
+    /// 対象は現場打ちコンクリート壁で厚さ 100 mm 以上のもの（耐震壁・雑壁を問わない）。
+    /// `false`: 部材の原断面だけで算定する。
+    #[serde(default = "default_rigid_zone_consider_walls")]
+    pub rigid_zone_consider_walls: bool,
+}
+
+fn default_rigid_zone_consider_walls() -> bool {
+    true
 }
 
 fn default_drift_limit_denom() -> f64 {
@@ -46,6 +58,7 @@ impl Default for StressAnalysisCfg {
             misc_wall_n: None,
             drift_limit_denom: default_drift_limit_denom(),
             tension_only_iteration: false,
+            rigid_zone_consider_walls: default_rigid_zone_consider_walls(),
         }
     }
 }

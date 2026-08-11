@@ -287,16 +287,42 @@ impl MiscWall {
     }
 }
 
+/// 剛域算定で「壁を考慮した部材フェース・部材せい」に用いる壁の最小板厚 [mm]。
+///
+/// 技術基準の「壁」は現場打ちコンクリート壁で厚さ 100 mm 以上のものを指す。
+/// 耐震壁の成立条件の板厚 120 mm（[`wall_is_seismic`]）とは別の閾値である。
+pub(crate) const RIGID_ZONE_WALL_MIN_THICKNESS_MM: f64 = 100.0;
+
 /// モデル中の全フレーム内雑壁（耐震壁不成立の Wall 要素）を収集する。
 /// 三方スリットの壁は周辺部材と縁が切れているため剛性算入の対象外とする
 /// （自重は荷重側で別途評価される）。
 pub(crate) fn collect_misc_walls(model: &Model) -> Vec<MiscWall> {
+    collect_walls_where(model, |data, model, _t| !wall_is_seismic(data, model))
+}
+
+/// 剛域算定に用いる壁を収集する（技術基準「剛域の計算」）。
+///
+/// [`collect_misc_walls`] と違い**耐震壁も含む**。剛域の規定でいう「壁」は
+/// 現場打ちコンクリート壁で厚さ [`RIGID_ZONE_WALL_MIN_THICKNESS_MM`] 以上の
+/// ものを指し、耐震壁として成立するか否かを問わないためである。
+/// 三方スリット壁は周辺部材と縁が切れているため除く（[`collect_walls_where`]）。
+pub(crate) fn collect_rigid_zone_walls(model: &Model) -> Vec<MiscWall> {
+    collect_walls_where(model, |data, model, t| {
+        is_rc_wall(data, model) && t >= RIGID_ZONE_WALL_MIN_THICKNESS_MM
+    })
+}
+
+/// Wall 要素を走査し、`accept` が true を返したものだけ壁ローカル座標系の
+/// 幾何情報（[`MiscWall`]）へ変換して集める。
+///
+/// 三方スリットの壁は、いずれの用途でも周辺部材と縁が切れているため一律に除く。
+fn collect_walls_where(
+    model: &Model,
+    accept: impl Fn(&ElementData, &Model, f64) -> bool,
+) -> Vec<MiscWall> {
     let mut out = Vec::new();
     for data in &model.elements {
         if !matches!(data.kind, ElementKind::Wall) || data.nodes.len() < 4 {
-            continue;
-        }
-        if wall_is_seismic(data, model) {
             continue;
         }
         let attr = model.wall_attrs.iter().find(|w| w.elem == data.id);
@@ -306,6 +332,9 @@ pub(crate) fn collect_misc_walls(model: &Model) -> Vec<MiscWall> {
         let Some(t) = wall_thickness(data, model) else {
             continue;
         };
+        if !accept(data, model, t) {
+            continue;
+        }
 
         // 壁ローカル座標系の構築（wall_panel::try_new と同じ並べ替え）
         let ids: Vec<NodeId> = data.nodes.iter().take(4).copied().collect();

@@ -1212,8 +1212,12 @@ fn test_auto_rigid_zone_steel_joint_is_zero() {
     );
 }
 
-/// S梁 + RC柱: Ｓ・ＣＦＴ柱の場合はＲＣ・ＳＲＣ大梁のうち最大せいの梁
-/// フェイスまでの長さとなり、λ = 柱せい/2（D/4控除なし・reductionも掛けない）。
+/// S梁 + RC柱（混在節点）: 剛域は設けない。
+///
+/// 剛域を設けるのは節点に集合する柱・大梁がすべて RC/SRC のときだけで
+/// （技術基準「剛域の計算」）、S 梁が 1 本でも集まる仕口は対象外である。
+/// S 造の仕口は剛域ではなく仕口パネル（`RigidZone::panel_offset_i/j`）で
+/// モデル化するため、ここで剛域を与えると二重に剛くなる。
 #[test]
 fn test_auto_rigid_zone_steel_beam_rc_column() {
     use squid_n_core::ids::{ElemId, MaterialId, NodeId, SectionId};
@@ -1323,10 +1327,16 @@ fn test_auto_rigid_zone_steel_beam_rc_column() {
     };
 
     let zone = auto_rigid_zones(&model, ElemId(1), &RigidZoneRule::default());
-    assert!(
-        (zone.length_i - 300.0).abs() < 1e-9,
-        "S梁+RC柱: λ_i={} (期待値=柱せい/2=300)",
+    assert_eq!(
+        zone.length_i, 0.0,
+        "S梁が集まる仕口では剛域を設けない: λ_i={}",
         zone.length_i
+    );
+    // 危険断面位置のフェース距離は構造種別を問わない幾何量なので残る。
+    assert!(
+        (zone.face_i - 300.0).abs() < 1e-9,
+        "face_i={} (期待値=柱せい/2=300)",
+        zone.face_i
     );
 }
 
@@ -3086,4 +3096,333 @@ fn test_pinned_ends_without_torsion_keep_finite_stiffness() {
     }
     // ねじり剛性がないので rx 行・列は元から 0（解放の有無に依らない）。
     assert_eq!(k.get(3, 3), 0.0);
+}
+
+/// 剛域の適用条件・重なり処理のテスト用に、柱 2 本＋梁 1 本の門型を作る。
+///
+/// 節点 0(0,0,0)→1(0,0,3000) と 3(span,0,0)→2(span,0,3000) が柱、1→2 が梁。
+/// 梁の両端に柱が付くので、両端の剛域長が算定される。材種は断面ごとに与える
+/// 材料の区分で決まる（`squid_n_core::structure_kind`）。
+fn t_joint_model(
+    col_depth: f64,
+    beam_depth: f64,
+    span: f64,
+    col_is_steel: bool,
+    beam_is_steel: bool,
+) -> Model {
+    use squid_n_core::ids::{MaterialId, SectionId};
+
+    let mk_mat = |id: u32, steel: bool| Material {
+        strength_factor: None,
+        concrete_class: Default::default(),
+        id: MaterialId(id),
+        name: String::new(),
+        category: if steel {
+            MaterialCategory::Steel
+        } else {
+            MaterialCategory::Concrete
+        },
+        young: 205000.0,
+        poisson: 0.3,
+        density: 0.0,
+        shear: None,
+        fc: None,
+        fy: None,
+    };
+    let mk_sec = |id: u32, depth: f64, mat: u32| Section {
+        id: SectionId(id),
+        name: String::new(),
+        area: 0.0,
+        iy: 0.0,
+        iz: 0.0,
+        j: 0.0,
+        depth,
+        width: 0.0,
+        as_y: 0.0,
+        as_z: 0.0,
+        floor: None,
+        panel_thickness: None,
+        thickness: None,
+        shape: None,
+        material: Some(MaterialId(mat)),
+        rebar_material: None,
+        shear_rebar_material: None,
+        steel_material: None,
+    };
+    let mk_node = |id: u32, c: [f64; 3]| Node {
+        id: NodeId(id),
+        coord: c,
+        restraint: Default::default(),
+        mass: None,
+        story: None,
+        support_spring: None,
+    };
+    let mk_elem = |id: u32, a: u32, b: u32, sec: u32| ElementData {
+        id: ElemId(id),
+        kind: ElementKind::Beam,
+        nodes: smallvec::smallvec![NodeId(a), NodeId(b)],
+        section: Some(SectionId(sec)),
+        local_axis: LocalAxis {
+            ref_vector: [0.0, 0.0, 1.0],
+        },
+        end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+        force_regime: squid_n_core::model::ForceRegime::Auto,
+        rigid_zone: Default::default(),
+        plastic_zone: None,
+        spring: None,
+    };
+
+    Model {
+        nodes: vec![
+            mk_node(0, [0.0, 0.0, 0.0]),
+            mk_node(1, [0.0, 0.0, 3000.0]),
+            mk_node(2, [span, 0.0, 3000.0]),
+            mk_node(3, [span, 0.0, 0.0]),
+        ],
+        elements: vec![
+            mk_elem(0, 0, 1, 0),
+            mk_elem(1, 1, 2, 1),
+            mk_elem(2, 3, 2, 0),
+        ],
+        sections: vec![mk_sec(0, col_depth, 0), mk_sec(1, beam_depth, 1)],
+        materials: vec![mk_mat(0, col_is_steel), mk_mat(1, beam_is_steel)],
+        ..Default::default()
+    }
+}
+
+/// 剛域を設けるのは、節点に集合する柱・大梁が**すべて** RC/SRC のときだけ
+/// （技術基準「剛域の計算」）。1 本でも S 系があればその端の剛域は 0 になる。
+///
+/// S 造の仕口は剛域ではなく仕口パネルでモデル化するため、剛域を与えると
+/// 二重に剛くなる。危険断面位置のフェース距離は幾何量なので、剛域が 0 でも
+/// 常に付く。
+#[test]
+fn test_auto_rigid_zone_only_when_all_members_are_rc() {
+    use squid_n_core::ids::ElemId;
+
+    // 柱・梁とも RC: λ = 柱せい/2 − 梁せい/4 = 300 − 175 = 125
+    let all_rc = t_joint_model(600.0, 700.0, 4000.0, false, false);
+    let zone = auto_rigid_zones(&all_rc, ElemId(1), &RigidZoneRule::default());
+    assert!((zone.length_i - 125.0).abs() < 1e-9, "λ={}", zone.length_i);
+
+    // 柱が S・梁が RC（混在節点）: 剛域は 0。フェース距離は幾何量なので残る。
+    let steel_col = t_joint_model(600.0, 700.0, 4000.0, true, false);
+    let zone = auto_rigid_zones(&steel_col, ElemId(1), &RigidZoneRule::default());
+    assert_eq!(zone.length_i, 0.0, "S 柱が集まる節点では剛域を設けない");
+    assert!(
+        (zone.face_i - 300.0).abs() < 1e-9,
+        "剛域が 0 でもフェース距離は付く: {}",
+        zone.face_i
+    );
+
+    // 梁が S・柱が RC（混在節点）: 梁側の剛域も 0。
+    let steel_beam = t_joint_model(600.0, 700.0, 4000.0, false, true);
+    let zone = auto_rigid_zones(&steel_beam, ElemId(1), &RigidZoneRule::default());
+    assert_eq!(zone.length_i, 0.0, "S 梁自身にも剛域を設けない");
+
+    // 柱・梁とも S: 当然 0。
+    let all_steel = t_joint_model(600.0, 700.0, 4000.0, true, true);
+    let zone = auto_rigid_zones(&all_steel, ElemId(1), &RigidZoneRule::default());
+    assert_eq!(zone.length_i, 0.0);
+}
+
+/// 両端の剛域長の合計が材長以上になる短い部材は、材長の中点から部材せいの
+/// 1/4 の距離までを剛域とする（技術基準「剛域長が重なる場合」）。
+///
+/// これを行わないと可撓長が 0 以下になり、要素が剛性ゼロに退化する。
+#[test]
+fn test_auto_rigid_zone_clamps_when_zones_overlap() {
+    use squid_n_core::ids::ElemId;
+
+    // 柱せい 2000・梁せい 400・スパン 1000。
+    // クランプ前の λ = 1000 − 100 = 900 で、両端の合計 1800 が材長 1000 を超える。
+    // クランプ後は λ = 材長/2 − 梁せい/4 = 500 − 100 = 400（両端とも）。
+    let model = t_joint_model(2000.0, 400.0, 1000.0, false, false);
+    let zone = auto_rigid_zones(&model, ElemId(1), &RigidZoneRule::default());
+    assert!(
+        (zone.length_i - 400.0).abs() < 1e-9 && (zone.length_j - 400.0).abs() < 1e-9,
+        "λi={} λj={}",
+        zone.length_i,
+        zone.length_j
+    );
+    // 可撓長が正に保たれる（要素が退化しない）。
+    assert!(zone.length_i + zone.length_j < 1000.0);
+
+    // 部材せいが材長に対して大きすぎる場合は 0 へ丸める（負にしない）。
+    let deep = t_joint_model(2000.0, 4000.0, 1000.0, false, false);
+    let zone = auto_rigid_zones(&deep, ElemId(1), &RigidZoneRule::default());
+    assert_eq!(zone.length_i, 0.0);
+    assert_eq!(zone.length_j, 0.0);
+}
+
+/// 柱に袖壁が取り付く門型（柱 A の右側だけに壁）。
+///
+/// 節点 0(0,0,0)–1(0,0,3000) が柱 A、3(4000,0,0)–2(4000,0,3000) が柱 B、
+/// 1–2 が梁。壁は柱 A から +X 方向へ 1000 mm 伸びる（節点 4/5 を追加）。
+/// 柱・梁・壁ともコンクリート系。
+fn portal_with_wing_wall(col_depth: f64, beam_depth: f64, wall_thickness: f64) -> Model {
+    use squid_n_core::ids::{MaterialId, SectionId};
+
+    let mat = Material {
+        strength_factor: None,
+        concrete_class: Default::default(),
+        id: MaterialId(0),
+        name: String::new(),
+        category: MaterialCategory::Concrete,
+        young: 205000.0,
+        poisson: 0.3,
+        density: 0.0,
+        shear: None,
+        fc: None,
+        fy: None,
+    };
+    let mk_sec = |id: u32, depth: f64, thickness: Option<f64>| Section {
+        id: SectionId(id),
+        name: String::new(),
+        area: 0.0,
+        iy: 0.0,
+        iz: 0.0,
+        j: 0.0,
+        depth,
+        width: 0.0,
+        as_y: 0.0,
+        as_z: 0.0,
+        floor: None,
+        panel_thickness: None,
+        thickness,
+        shape: None,
+        material: Some(MaterialId(0)),
+        rebar_material: None,
+        shear_rebar_material: None,
+        steel_material: None,
+    };
+    let mk_node = |id: u32, c: [f64; 3]| Node {
+        id: NodeId(id),
+        coord: c,
+        restraint: Default::default(),
+        mass: None,
+        story: None,
+        support_spring: None,
+    };
+    let mk_beam = |id: u32, a: u32, b: u32, sec: u32| ElementData {
+        id: ElemId(id),
+        kind: ElementKind::Beam,
+        nodes: smallvec::smallvec![NodeId(a), NodeId(b)],
+        section: Some(SectionId(sec)),
+        local_axis: LocalAxis {
+            ref_vector: [0.0, 0.0, 1.0],
+        },
+        end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+        force_regime: squid_n_core::model::ForceRegime::Auto,
+        rigid_zone: Default::default(),
+        plastic_zone: None,
+        spring: None,
+    };
+
+    Model {
+        nodes: vec![
+            mk_node(0, [0.0, 0.0, 0.0]),
+            mk_node(1, [0.0, 0.0, 3000.0]),
+            mk_node(2, [4000.0, 0.0, 3000.0]),
+            mk_node(3, [4000.0, 0.0, 0.0]),
+            mk_node(4, [1000.0, 0.0, 0.0]),
+            mk_node(5, [1000.0, 0.0, 3000.0]),
+        ],
+        elements: vec![
+            mk_beam(0, 0, 1, 0),
+            mk_beam(1, 1, 2, 1),
+            mk_beam(2, 3, 2, 0),
+            ElementData {
+                id: ElemId(3),
+                kind: ElementKind::Wall,
+                nodes: smallvec::smallvec![NodeId(0), NodeId(4), NodeId(5), NodeId(1)],
+                section: Some(SectionId(2)),
+                local_axis: LocalAxis {
+                    ref_vector: [0.0, 0.0, 1.0],
+                },
+                end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+                force_regime: squid_n_core::model::ForceRegime::Auto,
+                rigid_zone: Default::default(),
+                plastic_zone: None,
+                spring: None,
+            },
+        ],
+        sections: vec![
+            mk_sec(0, col_depth, None),
+            mk_sec(1, beam_depth, None),
+            mk_sec(2, 0.0, Some(wall_thickness)),
+        ],
+        materials: vec![mat],
+        ..Default::default()
+    }
+}
+
+/// 剛域長は、取り付く壁の分だけ長くなる（技術基準「剛域の計算」）。
+///
+/// 柱せい 600・梁せい 700・柱 A の右に長さ 1000 の袖壁（開口なしなので柱で折半し
+/// 500）。柱フェースからの張り出しは 500 − 600/2 = 200 なので
+/// Lf = 300 + 200 = 500、λ = 500 − 700/4 = 325 となる（壁を考慮しなければ 125）。
+///
+/// 一方、危険断面位置のフェース距離には壁を含めない。壁の考慮は剛域の規定で
+/// あって、危険断面位置は柱フェースで決まる幾何量だからである。フェース距離は
+/// RC/SRC 梁の自重の内法長にも使われるため、ここに壁を混ぜると壁の張り出し分
+/// だけ梁の自重が過小になる。
+#[test]
+fn test_auto_rigid_zone_considers_attached_wall() {
+    use squid_n_core::ids::ElemId;
+
+    let model = portal_with_wing_wall(600.0, 700.0, 150.0);
+    let zone = auto_rigid_zones(&model, ElemId(1), &RigidZoneRule::default());
+    assert!(
+        (zone.length_i - 325.0).abs() < 1e-9,
+        "袖壁側の λ_i={}（期待値 325）",
+        zone.length_i
+    );
+    assert!(
+        (zone.face_i - 300.0).abs() < 1e-9,
+        "フェース距離に壁を含めない: face_i={}（期待値 300）",
+        zone.face_i
+    );
+
+    // 壁は柱 A の右側にしかないので、反対端（柱 B）は原断面のまま。
+    assert!(
+        (zone.length_j - 125.0).abs() < 1e-9,
+        "壁のない側の λ_j={}（期待値 125）",
+        zone.length_j
+    );
+    assert!((zone.face_j - 300.0).abs() < 1e-9, "face_j={}", zone.face_j);
+}
+
+/// 壁厚が 100 mm 未満の壁は剛域算定の対象外（技術基準の「壁」は現場打ち
+/// コンクリート壁で厚さ 100 mm 以上）。
+#[test]
+fn test_auto_rigid_zone_ignores_thin_wall() {
+    use squid_n_core::ids::ElemId;
+
+    let model = portal_with_wing_wall(600.0, 700.0, 90.0);
+    let zone = auto_rigid_zones(&model, ElemId(1), &RigidZoneRule::default());
+    assert!(
+        (zone.length_i - 125.0).abs() < 1e-9,
+        "厚さ 90mm の壁は考慮しない: λ_i={}",
+        zone.length_i
+    );
+}
+
+/// 「壁を考慮する」を無効にすると原断面だけで算定する（設定は既定で有効）。
+#[test]
+fn test_auto_rigid_zone_wall_consideration_can_be_disabled() {
+    use squid_n_core::ids::ElemId;
+
+    let model = portal_with_wing_wall(600.0, 700.0, 150.0);
+    let rule = RigidZoneRule {
+        consider_walls: false,
+        ..Default::default()
+    };
+    let zone = auto_rigid_zones(&model, ElemId(1), &rule);
+    assert!(
+        (zone.length_i - 125.0).abs() < 1e-9,
+        "原断面のみ: λ_i={}（期待値 125）",
+        zone.length_i
+    );
+    assert!((zone.face_i - 300.0).abs() < 1e-9, "face_i={}", zone.face_i);
 }
