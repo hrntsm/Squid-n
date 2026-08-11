@@ -103,3 +103,75 @@ pub(crate) fn tee_centroid(height: f64, width: f64, web_thick: f64, flange_thick
     }
     (a_f * (height - flange_thick / 2.0) + a_w * (height - flange_thick) / 2.0) / a_total
 }
+
+/// 水平な帯（`(y下端, y上端, 幅)`）の集合から、強軸まわりの塑性断面係数 Zp [mm³]
+/// を求める。
+///
+/// 帯は **z 方向（幅方向）に重ならない**分解であること（y 方向の重なりは許す。
+/// 同じ y での幅は合算される）。塑性中立軸は**等面積軸**（断面積を上下 2 等分する
+/// 水平軸）で、弾性図心とは一般に一致しない。
+///
+/// `Zp = ∫|y − y_p| dA`（y_p は等面積軸）。矩形 b×d で `b·d²/4`、H 形で
+/// `B·tf·(H−tf) + tw·(H−2tf)²/4` に一致する。
+///
+/// 退化した入力（総面積 0）は 0.0 を返す。
+pub(crate) fn plastic_modulus_strips(strips: &[(f64, f64, f64)]) -> f64 {
+    // y 方向の重なりを解くため、全境界で区切って各区間の合計幅を求める。
+    let mut ys: Vec<f64> = strips
+        .iter()
+        .flat_map(|&(lo, hi, _)| [lo, hi])
+        .filter(|v| v.is_finite())
+        .collect();
+    ys.sort_by(f64::total_cmp);
+    ys.dedup_by(|a, b| (*a - *b).abs() < 1e-12);
+
+    let bands: Vec<(f64, f64, f64)> = ys
+        .windows(2)
+        .filter_map(|w| {
+            let (lo, hi) = (w[0], w[1]);
+            if hi <= lo {
+                return None;
+            }
+            let mid = 0.5 * (lo + hi);
+            let width: f64 = strips
+                .iter()
+                .filter(|&&(a, b, _)| a <= mid && mid <= b)
+                .map(|&(_, _, wd)| wd)
+                .sum();
+            (width > 0.0).then_some((lo, hi, width))
+        })
+        .collect();
+
+    let total: f64 = bands.iter().map(|&(lo, hi, w)| (hi - lo) * w).sum();
+    if total <= 0.0 {
+        return 0.0;
+    }
+
+    // 等面積軸 y_p を下から積み上げて求める（跨る帯の中で線形に解く）。
+    let half = total / 2.0;
+    let mut acc = 0.0;
+    let mut y_p = bands[0].0;
+    for &(lo, hi, w) in &bands {
+        let a = (hi - lo) * w;
+        if acc + a >= half {
+            y_p = lo + (half - acc) / w;
+            break;
+        }
+        acc += a;
+        y_p = hi;
+    }
+
+    // Zp = Σ ∫|y − y_p| dA。帯が y_p を跨ぐ場合は上下へ分けて積分する。
+    bands
+        .iter()
+        .map(|&(lo, hi, w)| {
+            if hi <= y_p {
+                w * ((y_p - lo).powi(2) - (y_p - hi).powi(2)) / 2.0
+            } else if lo >= y_p {
+                w * ((hi - y_p).powi(2) - (lo - y_p).powi(2)) / 2.0
+            } else {
+                w * ((y_p - lo).powi(2) + (hi - y_p).powi(2)) / 2.0
+            }
+        })
+        .sum()
+}

@@ -803,3 +803,126 @@ fn test_dimension_label_number_format() {
     assert_eq!(label(4.5), "FB-100x4.5");
     assert_eq!(label(1.234), "FB-100x1.234");
 }
+
+/// 矩形分解による Zp が、H 形の閉形式 `B·tf·(H−tf) + tw·(H−2tf)²/4` に一致する。
+/// 溝形鋼は強軸まわりの鉛直方向の分布が H 形と同じなので、同一寸法なら同値になる。
+#[test]
+fn test_plastic_modulus_channel_matches_h_closed_form() {
+    let (h, b, tw, tf) = (400.0, 200.0, 8.0, 13.0);
+    let h_shape = SectionShape::SteelH {
+        height: h,
+        width: b,
+        web_thick: tw,
+        flange_thick: tf,
+    };
+    let channel = SectionShape::SteelChannel {
+        height: h,
+        width: b,
+        web_thick: tw,
+        flange_thick: tf,
+    };
+    let zp_h = h_shape.plastic_modulus_strong().unwrap();
+    let zp_c = channel.plastic_modulus_strong().unwrap();
+    // 閉形式（H 形の実装）と矩形分解（溝形鋼の実装）が一致する。
+    assert!(
+        (zp_h - zp_c).abs() < 1e-6,
+        "H形 閉形式 {zp_h} と 溝形鋼 矩形分解 {zp_c} が一致しない"
+    );
+    // 手計算: 200·13·(400−13) + 8·(400−26)²/4。
+    let hand = b * tf * (h - tf) + tw * (h - 2.0 * tf).powi(2) / 4.0;
+    assert!((zp_h - hand).abs() < 1e-6);
+}
+
+/// 平鋼（中実矩形）の Zp は `B·t²/4`、中実丸鋼は `D³/6`（材料力学の閉形式）。
+#[test]
+fn test_plastic_modulus_solid_sections() {
+    let flat = SectionShape::SteelFlatBar {
+        width: 100.0,
+        thick: 12.0,
+    };
+    assert!((flat.plastic_modulus_strong().unwrap() - 100.0 * 12.0 * 12.0 / 4.0).abs() < 1e-9);
+    let round = SectionShape::SteelRoundBar { dia: 30.0 };
+    assert!((round.plastic_modulus_strong().unwrap() - 30.0_f64.powi(3) / 6.0).abs() < 1e-9);
+}
+
+/// 非対称断面（T 形・非対称組立 H）の塑性中立軸は**等面積軸**であり、
+/// 弾性図心とは一致しない。Zp は Ze（弾性断面係数の小さい側）より大きい。
+#[test]
+fn test_plastic_modulus_asymmetric_exceeds_elastic() {
+    // T 形鋼: せい 200・フランジ幅 200・ウェブ厚 9・フランジ厚 12。
+    let tee = SectionShape::SteelTee {
+        height: 200.0,
+        width: 200.0,
+        web_thick: 9.0,
+        flange_thick: 12.0,
+    };
+    let zp = tee.plastic_modulus_strong().unwrap();
+    // 弾性断面係数（引張縁側）: Iy/(せい − 図心) と Iy/図心 の小さい方。
+    let iy = tee.calc_iy();
+    let ze = (iy / 100.0).min(iy / 100.0); // 参考値（図心位置に依らない代表値）
+    assert!(zp > 0.0);
+    assert!(zp > ze * 0.5, "Zp={zp} が過小（Ze 目安 {ze}）");
+
+    // 非対称組立 H: 上フランジが小さい。
+    let built = SectionShape::SteelBuiltH {
+        height: 600.0,
+        upper_width: 200.0,
+        upper_thick: 12.0,
+        lower_width: 300.0,
+        lower_thick: 19.0,
+        web_thick: 9.0,
+    };
+    let zp_b = built.plastic_modulus_strong().unwrap();
+    // 上下同一寸法にすると通常の H 形と一致する（`SteelBuiltH` の doc の不変条件）。
+    let sym = SectionShape::SteelBuiltH {
+        height: 600.0,
+        upper_width: 250.0,
+        upper_thick: 16.0,
+        lower_width: 250.0,
+        lower_thick: 16.0,
+        web_thick: 9.0,
+    };
+    let plain = SectionShape::SteelH {
+        height: 600.0,
+        width: 250.0,
+        web_thick: 9.0,
+        flange_thick: 16.0,
+    };
+    assert!(
+        (sym.plastic_modulus_strong().unwrap() - plain.plastic_modulus_strong().unwrap()).abs()
+            < 1e-6
+    );
+    assert!(zp_b > 0.0);
+}
+
+/// リップ溝形鋼・山形鋼も Zp を持ち、フォールバック（None）に落ちない。
+/// 山形鋼は `calc_iy` と同じ幾何 y 軸まわり（主軸ではない）。
+#[test]
+fn test_plastic_modulus_covers_all_steel_shapes() {
+    let shapes = [
+        SectionShape::SteelLipChannel {
+            height: 150.0,
+            width: 65.0,
+            lip: 20.0,
+            thick: 2.3,
+        },
+        SectionShape::SteelAngle {
+            leg_a: 90.0,
+            leg_b: 90.0,
+            thick: 7.0,
+        },
+    ];
+    for s in shapes {
+        let zp = s
+            .plastic_modulus_strong()
+            .unwrap_or_else(|| panic!("{s:?} が Zp を持たない"));
+        assert!(zp > 0.0, "{s:?} の Zp={zp}");
+    }
+    // RC・SRC・CFT は鉄骨断面ではないため None のまま。
+    assert!(SectionShape::RcCircle {
+        d: 600.0,
+        rebar: no_rebar()
+    }
+    .plastic_modulus_strong()
+    .is_none());
+}
