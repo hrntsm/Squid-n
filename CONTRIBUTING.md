@@ -65,6 +65,34 @@ cargo run -p xtask -- check-deps
 依存方向は上層から下層のみです。新しいクレート間依存を追加した場合は
 `check-deps` が通ることを必ず確認してください。
 
+### 実モデルの統合テスト
+
+`crates/squid-n-app/tests/full_model.rs` は、実建物の ST-Bridge
+（`crates/squid-n-app/tests/fixtures/model.stb`。4 層＋PH の S 造・一部 RC、
+節点 166・解析要素 115・小梁 56・スラブ 82）を読み込み、GUI のボタンが呼ぶのと
+同じ入口（`App` の `run_*` / `compute_*`）で全解析を通します。手組みの小規模
+モデルでは現れない、実建物特有の構成（剛床・二次部材・多数のスラブ）に起因する
+退行を検出することが目的です。
+
+```bash
+cargo test -p squid-n-app --test full_model
+
+# 既知の不具合として #[ignore] にしているテストを実行する
+cargo test -p squid-n-app --test full_model -- --ignored
+
+# スナップショット（代表スカラ）の差分を承認する
+cargo insta review
+```
+
+**`App` に解析エントリ（`run_*` / `compute_*`）を追加したら、このファイルにも
+テストを追加してください。** 追加を怠ると、その機能だけが回帰検出の対象外に
+なります。既定で無効な機能や利用頻度の低い経路ほど、この漏れによって静かに
+壊れます。
+
+現在 `#[ignore]` にしている既知の不具合と、その原因・再開手順は
+[dev_docs/handoff/実モデル統合テスト_申し送り.md](dev_docs/handoff/実モデル統合テスト_申し送り.md)
+にまとめています。
+
 ## 静的解析
 
 **コミット前には必ず確認してください。** CI と同条件で実行します
