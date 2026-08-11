@@ -1602,7 +1602,17 @@ fn test_nonlinear_time_history_cumulative_vs_noncumulative() {
     );
 }
 
-/// 不収束時の restore が動作すること（収束失敗時にステップ開始状態に戻る）。
+/// 反復上限が十分なら収束し、足りなければ**打ち切らず参考値として続行**する。
+///
+/// 以前は最初の不収束で `Err` を返して解析全体を捨てていた。質点系
+/// （`crate::lumped_mass`）は同じ状況でその時点の試行状態で確定して続行し、
+/// 非収束ステップ数を警告表示する設計だったため、扱いが 2 経路で食い違っていた。
+/// 途中まで解けた応答を捨てるより参考値として見せるほうが利用者の判断材料に
+/// なるため、立体モデル側を質点系へ揃えた
+/// （`dev_docs/handoff/非線形時刻歴の収束_申し送り.md`）。
+///
+/// 打ち切るのは発散（変位が有限値でない）した場合だけで、そのときは
+/// ステップ開始状態へ戻してから `Err` を返す。
 #[test]
 fn test_nonlinear_time_history_convergence() {
     let model = fiber_column_model(100.0);
@@ -1651,7 +1661,7 @@ fn test_nonlinear_time_history_convergence() {
     assert!(!result.time.is_empty());
     assert!(result.peak_disp[1][0] > 0.0);
 
-    // 反復回数 1 で同じ問題を解く（収束しないはず → rollback される）
+    // 反復回数 1 で同じ問題を解く（収束しないが、打ち切らず参考値として続行する）。
     let model2 = fiber_column_model(100.0);
     let result2 = nonlinear_time_history_analysis(
         &model2,
@@ -1666,10 +1676,19 @@ fn test_nonlinear_time_history_convergence() {
         NonlinearThCfg::new(1, 1e-6),
     );
 
-    // 収束せずエラーになること（restore が動作していることの間接的証拠）
+    let result2 = result2.expect("不収束でも Err にせず完走するはず");
     assert!(
-        result2.is_err(),
-        "should fail to converge with only 1 iteration"
+        result2.non_converged_steps > 0,
+        "反復上限 1 回では不収束ステップが数えられるはず"
+    );
+    assert_eq!(
+        result2.time.len(),
+        wave.accel_x.len() + 1,
+        "不収束でも全ステップ解く"
+    );
+    assert!(
+        result2.peak_disp.iter().flatten().all(|v| v.is_finite()),
+        "参考値として返す応答は有限値であること"
     );
 }
 
@@ -2797,5 +2816,77 @@ fn test_nonlinear_time_history_tangent_damping_deterministic_guard() {
         bincode::serialize(&r1).expect("serialize r1"),
         bincode::serialize(&r2).expect("serialize r2"),
         "nonlinear time history (tangent damping) should be bit-identical across repeated runs"
+    );
+}
+
+/// 地動加速度がゼロの自由振動区間でも解析が完走する。
+///
+/// **このテストだけでは基準ノルムの不具合は再現しない。**実際の不収束は、悪条件な
+/// 有効剛性の線形解が持つ残差（概ね `条件数 × ε × 力のスケール`）が絶対判定の
+/// 閾値を超えることで起きるため、再現には多自由度の実規模モデルが要る。本体の
+/// 回帰ガードは基準ノルムの単体テスト（[`crate::newton`] の
+/// `dynamic_reference_norm`）と、実建物での統合テスト
+/// （`squid-n-app` の `time_history_nonlinear_runs`）である。
+///
+/// ここでは API レベルの素直な確認として、加振後に入力を 0 にした区間を含む
+/// 解析が最後まで走ることを見る（`dev_docs/handoff/非線形時刻歴の収束_申し送り.md`）。
+#[test]
+fn test_nonlinear_time_history_converges_when_ground_accel_is_zero() {
+    let model = fiber_column_model(1e10);
+    let dofmap = DofMap::build(&model);
+    let reducer = Reducer::build(&model, &dofmap);
+
+    let m_free = assemble_global_m(&model, &dofmap, MassOption::Consistent);
+    let k_free = assemble_global_k(&model, &dofmap);
+    let k_val = *reducer.reduce_k(&k_free).get(0, 0).unwrap_or(&0.0);
+    let m_val = *reducer.reduce_k(&m_free).get(0, 0).unwrap_or(&0.0);
+    let omega = (k_val / m_val).sqrt();
+    let damping = Damping::StiffnessProportional {
+        h: 0.02,
+        omega,
+        basis: StiffnessKind::Initial,
+    };
+
+    // 前半 20 ステップだけ加振し、後半 200 ステップは入力 0（自由振動）とする。
+    let dt = 0.001;
+    let mut accel = vec![0.0; 220];
+    for (i, a) in accel.iter_mut().enumerate().take(20) {
+        *a = 1.0e4 * (i as f64 * 0.3).sin();
+    }
+    let wave = GroundMotion {
+        dt,
+        accel_x: accel,
+        accel_y: None,
+        accel_theta: None,
+    };
+    let newmark = NewmarkCfg {
+        beta: 0.25,
+        gamma: 0.5,
+        dt,
+    };
+
+    let result = nonlinear_time_history_analysis(
+        &model,
+        &dofmap,
+        &reducer,
+        &wave,
+        &newmark,
+        &damping,
+        DampingAccumulation::NonCumulative,
+        &[1.0],
+        &[0.0],
+        NonlinearThCfg::new(20, 1e-6),
+    )
+    .expect("入力が 0 の自由振動区間でも収束するはず");
+
+    // 全ステップ解けている（不収束なら Err で返るので、長さで完走を確認する。
+    // 記録は初期時刻 t=0 を含むため入力サンプル数 +1 になる）。
+    assert_eq!(result.time.len(), wave.accel_x.len() + 1);
+    // 加振により実際に動いていること（動いていなければ残差 0 で自明に収束し、
+    // 判定の検証にならない）。
+    assert!(
+        result.peak_disp[1][0].abs() > 1e-6,
+        "自由振動を検証するには応答が必要: peak={}",
+        result.peak_disp[1][0]
     );
 }

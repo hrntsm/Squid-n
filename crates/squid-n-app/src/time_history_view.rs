@@ -49,6 +49,26 @@ pub fn time_history_panel(ui: &mut egui::Ui, app: &mut App) {
         );
     });
     ui.separator();
+
+    // 非収束ステップの注記は**表示モードによらず**出す（質点系の表示と同じ規約）。
+    // 収束を確認できていないステップを含む応答が参考値であることは、波形を見て
+    // いても層応答分布を見ていても同じく伝わる必要がある。
+    let non_converged = app
+        .results
+        .as_ref()
+        .and_then(|r| r.time_history.as_ref())
+        .map(|res| res.non_converged_steps)
+        .unwrap_or(0);
+    if non_converged > 0 {
+        ui.colored_label(
+            crate::theme::SECONDARY_AMBER,
+            format!(
+                "⚠ Newton 反復が {non_converged} ステップで収束しませんでした。\
+                 応答値は参考値です（時間刻み dt を小さくすると改善する場合があります）。"
+            ),
+        );
+    }
+
     match app.time_history_view_mode {
         TimeHistoryViewMode::Waveform => waveform_panel(ui, app),
         TimeHistoryViewMode::StoryResponse => story_response_panel(ui, app),

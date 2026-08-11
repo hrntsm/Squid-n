@@ -114,6 +114,8 @@ pub fn nonlinear_time_history_analysis(
     let n_indep = reducer.n_indep;
     if n_indep == 0 {
         return Ok(ResponseResult {
+            // 解くべきステップがない退化ケース。
+            non_converged_steps: 0,
             time: vec![],
             peak_disp: vec![[0.0; 6]; model.nodes.len()],
             story_drift_angle: vec![0.0; model.layer_count()],
@@ -134,6 +136,10 @@ pub fn nonlinear_time_history_analysis(
     }
     // 累積損傷度用の塑性率 μ 時刻歴（要素ごと。塑性率プローブを持つ要素のみ収集）。
     // レインフロー法（ASTM E1049-85）・Miner 則による鉄骨梁端部の累積損傷度計算。
+    // Newton 反復が上限内に収束しなかったステップ数（打ち切らず参考値として続行する）。
+    let mut non_converged_steps = 0usize;
+    // 収束判定の基準ノルムの下限に使う、解析中に観測した力のスケールの最大値。
+    let mut peak_force_scale = 0.0_f64;
     let mut mu_hist: Vec<Vec<f64>> = vec![Vec::new(); model.elements.len()];
 
     // 質量行列（縮約空間）。
@@ -533,11 +539,25 @@ pub fn nonlinear_time_history_analysis(
             }
             let r_red = &r_red_buf;
 
-            // 収束判定（分母は長期荷重 f0 を除いた動的外力ノルムと 1.0 の大きい方。
-            // f0 を含めると長期荷重が大きいモデルで判定が過度に緩む）。
+            // 収束判定。基準ノルムは**動的釣り合いの各項の最大**とする
+            // （`p = f_int + C·v + M·a` のうち動的な 3 項。長期荷重 f0 は含めない）。
+            //
+            // 動的外力 `p_dyn` だけを基準にすると、地動加速度がゼロを横切る時刻で
+            // 基準が消えて `1.0`（N）の床まで落ち、判定が「残差 < tol×1 N」という
+            // 絶対値判定に化ける。実建物では内力・慣性力が 1e7 N 規模あり、その
+            // 丸め誤差（倍精度で 1e-9 N 程度／自由度、全自由度で 1e-2 N 規模）が
+            // 1e-6 N を超えるため、**原理的に到達できない閾値**になっていた。
+            // 正弦波なら毎周期 2 回、実波形でも頻繁に起きるありふれた時刻で
+            // 不収束になる（`dev_docs/handoff/非線形時刻歴の収束_申し送り.md`）。
+            //
+            // 地動が 0 でも構造は動いており慣性力・減衰力は大きいので、3 項の最大を
+            // 採れば基準は消えない。長期荷重を除く点は従来どおりで、長期が卓越する
+            // モデルで判定が緩む問題も起こさない。
             let r_norm = l2_norm(r_red);
-            let p_norm = l2_norm(p_dyn_red);
-            if cfg.newton.converged(r_norm, p_norm.max(1.0)) {
+            let scale = crate::newton::dynamic_force_scale(p_dyn_red, m_a_red, c_v_red);
+            peak_force_scale = peak_force_scale.max(scale);
+            let ref_norm = crate::newton::dynamic_reference_norm(scale, peak_force_scale);
+            if cfg.newton.converged(r_norm, ref_norm) {
                 converged = true;
                 break;
             }
@@ -583,7 +603,25 @@ pub fn nonlinear_time_history_analysis(
             apply_du_trial(model, dofmap, &mut behaviors, du_free);
         }
 
-        if converged {
+        if !converged {
+            // 不収束でも解析は打ち切らず、その時点の試行状態で確定して続行する
+            // （質点系 `crate::lumped_mass` と同じ規約）。途中まで解けた応答を
+            // 捨てるより、参考値として最後まで見せたうえで「収束を確認できて
+            // いないステップが何件あるか」を利用者へ伝えるほうが判断材料になる。
+            //
+            // ただし発散して有限でない値になった場合だけは打ち切る。以降の
+            // ステップも結果もすべて NaN に汚染され、参考値にすらならないため。
+            if !du_total.iter().all(|x| x.is_finite()) {
+                revert_all(&mut behaviors);
+                return Err(SolveError::Backend(format!(
+                    "nonlinear time history: step {} で応答が発散しました（変位が有限値ではありません）。                     時間刻み dt を小さくするか、減衰・復元力特性の設定を見直してください",
+                    n
+                )));
+            }
+            non_converged_steps += 1;
+        }
+
+        {
             for i in 0..n_indep {
                 u[i] += du_total[i];
             }
@@ -660,15 +698,6 @@ pub fn nonlinear_time_history_analysis(
                 xg_y_next,
                 &mf_now,
             );
-        } else {
-            // 不収束: rollback（P3: ステップ開始時点は trial==committed のため、
-            // 全要素 revert_state（trial←committed）はスナップショット復元と等価。
-            // 上のコメント参照）。
-            revert_all(&mut behaviors);
-            return Err(SolveError::Backend(format!(
-                "nonlinear time history: step {} did not converge",
-                n
-            )));
         }
     }
 
@@ -692,6 +721,7 @@ pub fn nonlinear_time_history_analysis(
         .collect();
 
     Ok(ResponseResult {
+        non_converged_steps,
         time,
         peak_disp,
         story_drift_angle,
