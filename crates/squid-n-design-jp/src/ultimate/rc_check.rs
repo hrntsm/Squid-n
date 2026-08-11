@@ -118,7 +118,7 @@ fn check_member(
         sigma_0: 0.0,
     };
     let mu = match kind {
-        MemberKind::Column => column_mu(b, d, dt, at, ag, sigma_y, fc, n_axial, opts.mu_method),
+        MemberKind::Column => column_mu(b, d, dt, at, ag, sigma_y, fc, n_axial),
         _ => rc_mu_simple(&cap),
     };
 
@@ -284,7 +284,7 @@ fn check_member(
         let dt_y = rebar.cover + rebar.shear.dia + rebar.main_y.dia / 2.0;
         let at_y = bar_set_area(&rebar.main_y) / 2.0;
         let mux = mu;
-        let muy = column_mu(d, b, dt_y, at_y, ag, sigma_y, fc, n_axial, opts.mu_method);
+        let muy = column_mu(d, b, dt_y, at_y, ag, sigma_y, fc, n_axial);
         let rx = if mux > 0.0 {
             demand.mz.abs() / mux
         } else if demand.mz.abs() > 0.0 {

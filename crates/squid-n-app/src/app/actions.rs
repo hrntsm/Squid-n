@@ -1790,11 +1790,6 @@ impl App {
             // 未指定（普通強度扱い）とし、部材ループ側で上書きする。
             shear_grade: None,
             include_bond: self.ultimate_include_bond,
-            mu_method: if self.ultimate_mu_aci {
-                squid_n_design_jp::ultimate::MuMethod::Aci
-            } else {
-                squid_n_design_jp::ultimate::MuMethod::AtFormula
-            },
             shear_method: if self.ultimate_shear_ductility {
                 squid_n_design_jp::ultimate::ShearMethod::Ductility
             } else {

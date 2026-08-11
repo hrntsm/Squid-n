@@ -76,7 +76,7 @@
 | 22 | MCP サーバ（rmcp） | squid-n-mcp | lib.rs | — | P8 | ❌ |
 | 23 | ST-Bridge 入出力 | squid-n-io | stbridge.rs | `test_roundtrip_*` | P8 | 🔶 |
 | 24 | 編集トランザクション（EditCommand/Undo） | squid-n-edit | lib.rs | `test_*` | P3/P8 | ✅ |
-| 25 | 終局検定（塑性 Qsu・付着 Qbu・軸 Nuc/Nut・2軸せん断・接合部 Vju/Qdu・CFT 軸終局+N-M・柱 Mu の ACI） | squid-n-design-jp | ultimate/{rc_shear,rc_axial,joint,cft,cft_nm,rc_column_aci,mod}.rs | `test_rc_shear_qsu_plastic_*`/`test_rc_joint_ultimate_*`/`test_cft_*`/`test_cft_short_column_mu_*`/`test_rc_column_mu_aci_*`/`test_biaxial_*`/`test_collect_*_ultimate_checks_*` | P7 | 🔶 |
+| 25 | 終局検定（塑性 Qsu・付着 Qbu・軸 Nuc/Nut・2軸せん断・接合部 Vju/Qdu・CFT 軸終局+N-M） | squid-n-design-jp | ultimate/{rc_shear,rc_axial,joint,cft,cft_nm,mod}.rs | `test_rc_shear_qsu_plastic_*`/`test_rc_joint_ultimate_*`/`test_cft_*`/`test_cft_short_column_mu_*`/`test_biaxial_*`/`test_collect_*_ultimate_checks_*` | P7 | 🔶 |
 | 26 | 数量積算（部位別のコンクリート・型枠・鉄筋・鉄骨・継手個所） | squid-n-design-jp | quantity/{mod,member,rebar}.rs | `quantity::member::tests::*`（手計算照合）/`quantity::tests::*`（走査・分類）/`summary::tests::test_quantity_csv_from_sample_model`（CSV 一気通貫）/`test_quantity_takeoff_json_column`（MCP） | 横断 | 🔶 |
 | 27 | 材料グレード対応表（F 値・鉄筋・Fc・プリセット） | squid-n-core | material_grade.rs | `material_grade::tests::*`（告示値一致） | 横断 | ✅ |
 
@@ -145,9 +145,9 @@
 > （`Qsu = b·jt·pw·σwy·cotφ + k1·(1−k2)·b·D·ν·Fc`、トラス＋アーチ機構）と**付着割裂耐力 Qbu**、
 > 柱の**軸終局耐力 Nuc/Nut**、**RC 柱梁接合部の終局耐力 Vju/Qdu**（`Vju=κ·φ·Fj·bj·Dj`）、
 > **CFT 柱の軸終局耐力**（CFT 指針の短柱/中柱/長柱＋座屈耐力、Ncu/Ntu）と**N-M 相互作用**
-> （短柱・中柱・長柱、円形・角形の Mu(N)）、**柱 Mu の ACI 規準**（平面保持・等価応力度ブロック法）を新規実装。部材別のせん断/付着/軸余裕度（Qsu/Qmu 等）を
+> （短柱・中柱・長柱、円形・角形の Mu(N)）を新規実装。部材別のせん断/付着/軸余裕度（Qsu/Qmu 等）を
 > 算定するドライバ `collect_rc_ultimate_checks`・`collect_cft_ultimate_checks` と設計タブ
-> 「終局検定」ビュー（`ultimate_view.rs`、柱 Mu の at 式/ACI 切替・2 軸せん断切替つき）、
+> 「終局検定」ビュー（`ultimate_view.rs`、2 軸せん断切替つき）、
 > 接合部終局は `joint_wiring` 経由で既存の接合部検定表・MCP へ配線した。柱の **2 軸せん断
 > 余裕度**（採用応力 `1/((Qmx/Qux)²+(Qmy/Quy)²)^(1/2)`）も実装。
 > 詳細・未実装項目（靭性指針式 Vu・二軸曲げ余裕度・プッシュオーバー応答の直接反映）は

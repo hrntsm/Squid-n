@@ -720,8 +720,6 @@ pub struct App {
     pub ultimate_include_bond: bool,
     /// 終局検定の上限強度倍率（Qmu = 上限強度倍率·2·Mu/内法。既定 1.0）。
     pub ultimate_upper_factor: f64,
-    /// 終局検定で柱の Mu を ACI 規準（平面保持）で算定するか（false は at 式）。
-    pub ultimate_mu_aci: bool,
     /// 終局検定の終局せん断強度に靭性指針式 Vu を用いるか（false=塑性理論式 Qsu）。
     pub ultimate_shear_ductility: bool,
     /// 終局検定で柱のせん断を 2 軸せん断として検定するか（RC 柱の 2 軸せん断余裕度）。
@@ -1062,7 +1060,6 @@ impl Default for App {
             ultimate_lightweight: false,
             ultimate_include_bond: true,
             ultimate_upper_factor: 1.0,
-            ultimate_mu_aci: false,
             ultimate_shear_ductility: false,
             ultimate_biaxial_shear: false,
             ultimate_biaxial_bending: false,
