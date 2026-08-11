@@ -104,7 +104,7 @@ fn check_member(
     let pw = hoop_pw(rebar, b);
     let n_axial = demand.n_axial;
 
-    // 曲げ終局強度 Mu（柱は軸力考慮・mu_method 対応、梁は軸力なし）。
+    // 曲げ終局強度 Mu（柱は軸力を考慮した at 式、梁は軸力なし）。
     let cap = RcCapacityInput {
         b,
         d,

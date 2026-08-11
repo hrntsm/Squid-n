@@ -4,6 +4,7 @@
 
 use super::{JobDir, JobOutcome};
 use squid_n_core::model::Model;
+use squid_n_job::JobError;
 use squid_n_solver::pushover::PushoverTarget;
 
 /// Pushover ジョブの純粋計算部分。
@@ -15,7 +16,7 @@ pub(crate) fn compute_pushover_job(
     dir: JobDir,
     steps: usize,
     target: PushoverTarget,
-) -> Result<JobOutcome, String> {
+) -> Result<JobOutcome, JobError> {
     // 解析前処理（剛域＋仕口パネル）は GUI と同一の実装を通す。
     let mut work = model;
     squid_n_job::prepare::apply_rigid_zones_and_panels(&mut work);
@@ -35,7 +36,7 @@ pub(crate) fn compute_pushover_job(
             .unwrap_or(200.0),
         ..Default::default()
     };
-    let result = squid_n_job::compute::compute_pushover(work, cfg).map_err(|e| e.to_string())?;
+    let result = squid_n_job::compute::compute_pushover(work, cfg)?;
 
     let mechanism = match result.mechanism {
         squid_n_solver::pushover::MechanismType::Overall => "Overall".to_string(),

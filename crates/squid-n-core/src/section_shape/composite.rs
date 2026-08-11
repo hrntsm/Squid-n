@@ -97,10 +97,12 @@ impl SectionShape {
             SectionShape::CftBox { thick: t, .. } => {
                 (2.0 * t * core.inner_width, 2.0 * t * core.inner_height)
             }
-            _ => {
+            SectionShape::CftPipe { .. } => {
                 let a = self.calc_area() / 2.0;
                 (a, a)
             }
+            // `cft_core_props` が Some を返すのは CFT 断面のみ。
+            _ => unreachable!("cft_core_props が Some を返した非 CFT 断面"),
         };
         Some(CompositeProps {
             area_ax: self.calc_area() + core.area / n,

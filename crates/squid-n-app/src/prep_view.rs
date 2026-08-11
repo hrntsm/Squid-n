@@ -677,19 +677,23 @@ fn sections_section(ui: &mut egui::Ui, prep: &PreparationResult) {
             });
             // 断面性能は cm 系で表示する（慣例の情報源は `squid_n_core::units`）。
             row.col(|ui| {
-                ui.label(format!("{:.1}", area_cm2(r.area)));
+                ui.label(crate::table_util::fmt_section_prop(area_cm2(r.area)));
             });
             row.col(|ui| {
-                ui.label(format!("{:.0}", inertia_cm4(r.iy)));
+                ui.label(crate::table_util::fmt_section_prop(inertia_cm4(r.iy)));
             });
             row.col(|ui| {
-                ui.label(format!("{:.0}", inertia_cm4(r.iz)));
+                ui.label(crate::table_util::fmt_section_prop(inertia_cm4(r.iz)));
             });
             row.col(|ui| {
-                ui.label(format!("{:.0}", inertia_cm4(r.j)));
+                ui.label(crate::table_util::fmt_section_prop(inertia_cm4(r.j)));
             });
             row.col(|ui| {
-                ui.label(format!("{:.1} / {:.1}", area_cm2(r.as_y), area_cm2(r.as_z)));
+                ui.label(format!(
+                    "{} / {}",
+                    crate::table_util::fmt_section_prop(area_cm2(r.as_y)),
+                    crate::table_util::fmt_section_prop(area_cm2(r.as_z))
+                ));
             });
             row.col(|ui| {
                 ui.label(format!("{:.1} / {:.1}", r.ry, r.rz));

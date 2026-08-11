@@ -4,17 +4,17 @@
 
 use super::{model_with_auto_rigid_zones, resolve_load_case, JobOutcome};
 use squid_n_core::model::Model;
+use squid_n_job::JobError;
 
 /// LinearStatic ジョブの純粋計算部分。
 pub(crate) fn compute_linear_static_job(
     model: &Model,
     load_case: Option<u32>,
-) -> Result<JobOutcome, String> {
+) -> Result<JobOutcome, JobError> {
     let work = model_with_auto_rigid_zones(model);
     let lc_id = resolve_load_case(&work, load_case)?.id;
     // 解析の実体は GUI と共通（`squid-n-job`）。
-    let result = squid_n_job::compute::compute_linear_static(work.clone(), lc_id)
-        .map_err(|e| e.to_string())?;
+    let result = squid_n_job::compute::compute_linear_static(work.clone(), lc_id)?;
     let model = &work;
     let lc_id = lc_id.0;
 

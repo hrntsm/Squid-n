@@ -347,9 +347,47 @@ pub(crate) fn cell_combo<R>(
         .show_ui(ui, contents)
 }
 
+/// 断面性能（cm 系）の表示文字列。値の大きさで小数桁を切り替える。
+///
+/// 断面性能は φ16 丸鋼の I=0.32 cm⁴ から大梁の I=20000 cm⁴ 超まで 5 桁以上に
+/// 散らばる。固定桁で表示すると、小さい断面が「0」になって剛性がないように
+/// 見えるか、大きい断面が無意味な小数を並べるかのどちらかになる。
+///
+/// 有効数字がおおむね 3〜6 桁残るよう、桁数に応じて小数を減らす。
+pub fn fmt_section_prop(v: f64) -> String {
+    let a = v.abs();
+    if a >= 100.0 {
+        format!("{v:.0}")
+    } else if a >= 10.0 {
+        format!("{v:.1}")
+    } else if a >= 1.0 {
+        format!("{v:.2}")
+    } else {
+        format!("{v:.3}")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 断面性能の表示は、小さい断面でも有効数字を失わない。
+    ///
+    /// φ16 丸鋼の \\( I_y = \pi \cdot 16^4/64 = 3217 \\) mm² は 0.32 cm⁴ で、
+    /// 固定小数 0 桁だと「0」と表示されて剛性がないように見えてしまう。
+    #[test]
+    fn test_fmt_section_prop_keeps_significant_digits() {
+        // φ16 丸鋼（0.3217 cm⁴）・50×6 平鋼の弱軸（6.25 cm⁴）。
+        assert_eq!(fmt_section_prop(0.3217), "0.322");
+        assert_eq!(fmt_section_prop(6.25), "6.25");
+        // 中間（H 形のせん断有効断面積など）。
+        assert_eq!(fmt_section_prop(51.84), "51.8");
+        // 大梁の断面二次モーメント（22965 cm⁴）は小数を出さない。
+        assert_eq!(fmt_section_prop(22964.87), "22965");
+        // 負値・ゼロでも破綻しない。
+        assert_eq!(fmt_section_prop(0.0), "0.000");
+        assert_eq!(fmt_section_prop(-0.5), "-0.500");
+    }
 
     /// フォントを読み込んだテスト用 `Ui` でクロージャを実行する。
     ///

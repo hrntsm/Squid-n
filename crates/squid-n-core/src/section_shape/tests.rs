@@ -857,11 +857,25 @@ fn test_plastic_modulus_asymmetric_exceeds_elastic() {
         flange_thick: 12.0,
     };
     let zp = tee.plastic_modulus_strong().unwrap();
-    // 弾性断面係数（引張縁側）: Iy/(せい − 図心) と Iy/図心 の小さい方。
+    // 弾性断面係数 Ze は引張縁側（図心から遠いほう）で決まる。
+    // T 形はフランジが上端のみのため、図心は上寄りで下縁までの距離が大きい。
     let iy = tee.calc_iy();
-    let ze = (iy / 100.0).min(iy / 100.0); // 参考値（図心位置に依らない代表値）
-    assert!(zp > 0.0);
-    assert!(zp > ze * 0.5, "Zp={zp} が過小（Ze 目安 {ze}）");
+    let a_f: f64 = 200.0 * 12.0;
+    let a_w = (200.0 - 12.0) * 9.0;
+    let y_bar = (a_f * (200.0 - 12.0 / 2.0) + a_w * (200.0 - 12.0) / 2.0) / (a_f + a_w);
+    let ze = iy / y_bar.max(200.0 - y_bar);
+    // 塑性断面係数は弾性断面係数より大きい（形状係数 Zp/Ze > 1）。
+    // 非対称断面では等面積軸が図心より圧縮側へ寄るため、その差は大きくなる。
+    assert!(
+        zp > ze,
+        "Zp={zp} は Ze={ze} を上回るはず（形状係数 {}）",
+        zp / ze
+    );
+    assert!(
+        zp / ze < 3.0,
+        "形状係数 {} が過大（分解か軸の取り方の誤り）",
+        zp / ze
+    );
 
     // 非対称組立 H: 上フランジが小さい。
     let built = SectionShape::SteelBuiltH {

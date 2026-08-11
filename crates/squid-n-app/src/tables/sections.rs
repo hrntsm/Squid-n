@@ -235,19 +235,23 @@ pub fn sections_table(ui: &mut egui::Ui, app: &mut App) {
                 ui.label(format!("{:.0} × {:.0}", sec.depth, sec.width));
             });
             row.col(|ui| {
-                ui.label(format!("{:.1}", to_cm2(sec.area)));
+                ui.label(table_util::fmt_section_prop(to_cm2(sec.area)));
             });
             row.col(|ui| {
-                ui.label(format!("{:.0}", to_cm4(sec.iy)));
+                ui.label(table_util::fmt_section_prop(to_cm4(sec.iy)));
             });
             row.col(|ui| {
-                ui.label(format!("{:.0}", to_cm4(sec.iz)));
+                ui.label(table_util::fmt_section_prop(to_cm4(sec.iz)));
             });
             row.col(|ui| {
-                ui.label(format!("{:.0}", to_cm4(sec.j)));
+                ui.label(table_util::fmt_section_prop(to_cm4(sec.j)));
             });
             row.col(|ui| {
-                ui.label(format!("{:.1} / {:.1}", to_cm2(sec.as_y), to_cm2(sec.as_z)));
+                ui.label(format!(
+                    "{} / {}",
+                    table_util::fmt_section_prop(to_cm2(sec.as_y)),
+                    table_util::fmt_section_prop(to_cm2(sec.as_z))
+                ));
             });
             row.col(|ui| {
                 let sec_id = sec.id;

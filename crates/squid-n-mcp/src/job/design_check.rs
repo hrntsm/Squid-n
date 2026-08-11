@@ -4,6 +4,7 @@
 
 use super::{model_with_auto_rigid_zones, resolve_load_case, JobOutcome};
 use squid_n_core::model::Model;
+use squid_n_job::JobError;
 
 use squid_n_design_jp::design_position::{design_positions, is_near_design_position};
 
@@ -23,17 +24,14 @@ use squid_n_design_jp::design_position::{design_positions, is_near_design_positi
 pub(crate) fn compute_design_check_job(
     model: &Model,
     load_case: Option<u32>,
-) -> Result<JobOutcome, String> {
+) -> Result<JobOutcome, JobError> {
     // 剛域自動算定は face_i/face_j による危険断面位置（§6.2.3）の算定にも使う。
-    let model = model_with_auto_rigid_zones(model);
-    let model = &model;
-    let analysis = squid_n_solver::analysis::Analysis::prepare(model)
-        .map_err(|e| format!("prepare failed: {e}"))?;
-    let lc = resolve_load_case(model, load_case)?;
-    let lc_id = lc.id.0;
-    let result = analysis
-        .linear_static(lc.id)
-        .map_err(|e| format!("solve failed: {e}"))?;
+    let work = model_with_auto_rigid_zones(model);
+    let lc_id = resolve_load_case(&work, load_case)?.id;
+    // 解析の実体は GUI と共通（`squid-n-job`）。エラー文言も共通の `JobError`。
+    let result = squid_n_job::compute::compute_linear_static(work.clone(), lc_id)?;
+    let model = &work;
+    let lc_id = lc_id.0;
 
     let mut member_force_rows: Vec<(u32, f64, [f64; 6])> = Vec::new();
     let mut n_checks = 0usize;

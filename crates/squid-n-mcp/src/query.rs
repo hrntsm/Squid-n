@@ -205,21 +205,14 @@ pub fn quantity_takeoff_json(model: &Model, group_by: Option<&str>) -> serde_jso
 pub fn analyze_model(model: &Model) -> Result<String, String> {
     // 解析前に剛域を自動算定してモデルへ反映する（設計書 §6.2.1「剛域」は標準実装）。
     let mut model = model.clone();
-    squid_n_element::beam::apply_auto_rigid_zones(
-        &mut model,
-        &squid_n_element::beam::RigidZoneRule::default(),
-    );
-    let model = &model;
-    let analysis = squid_n_solver::analysis::Analysis::prepare(model)
-        .map_err(|e| format!("prepare failed: {e}"))?;
-    if let Some(lc) = model.load_cases.first() {
-        let result = analysis
-            .linear_static(lc.id)
-            .map_err(|e| format!("solve failed: {e}"))?;
-        Ok(serde_json::to_string(&result.disp).unwrap_or_default())
-    } else {
-        Err("no load cases".into())
-    }
+    // 前処理（剛域＋仕口パネル）と解析の実体は GUI と共通（`squid-n-job`）。
+    squid_n_job::prepare::apply_rigid_zones_and_panels(&mut model);
+    let Some(lc_id) = model.load_cases.first().map(|lc| lc.id) else {
+        return Err("荷重ケースがありません".into());
+    };
+    let result =
+        squid_n_job::compute::compute_linear_static(model, lc_id).map_err(|e| e.to_string())?;
+    Ok(serde_json::to_string(&result.disp).unwrap_or_default())
 }
 
 /// `analyze_model` の `ServerState` 経由の薄いラッパ（後方互換用）。

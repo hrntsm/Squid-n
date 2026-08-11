@@ -106,13 +106,23 @@ impl SquidNServer {
                             &job_id,
                             JobStatus::Failed {
                                 error: format!("解析は完了しましたが結果の保存に失敗しました: {e}"),
+                                kind: "internal".to_string(),
                             },
                         ),
                     }
                 }
                 Ok(Err(e)) => {
                     let mut st = state.lock().await;
-                    st.jobs.update(&job_id, JobStatus::Failed { error: e });
+                    // 種別コードは `JobError::kind()` をそのまま載せる。文言は
+                    // 利用者向けに変わり得るが、コードで分岐したいクライアントは
+                    // こちらを見る。
+                    st.jobs.update(
+                        &job_id,
+                        JobStatus::Failed {
+                            error: e.to_string(),
+                            kind: e.kind().to_string(),
+                        },
+                    );
                 }
                 // spawn_blocking 内で panic した場合。JoinError を利用者向けメッセージに変換する。
                 Err(join_err) => {
@@ -121,6 +131,7 @@ impl SquidNServer {
                         &job_id,
                         JobStatus::Failed {
                             error: format!("解析タスクが異常終了しました: {join_err}"),
+                            kind: "internal".to_string(),
                         },
                     );
                 }
@@ -407,7 +418,7 @@ mod tests {
     }
 
     /// 上と同じモデルから荷重ケースだけを抜いたもの（LinearStatic ジョブが
-    /// "no load cases" で失敗する経路を確認するため）。
+    /// `JobError::LoadCaseNotFound` で失敗する経路を確認するため）。
     fn cantilever_without_load_case() -> Model {
         Model {
             load_cases: vec![],
@@ -608,8 +619,10 @@ mod tests {
         let job_id = extract_job_id(&result);
         let status = wait_for_terminal(&server, &job_id).await;
         match status {
-            JobStatus::Failed { error } => {
-                assert!(error.contains("no load cases"), "unexpected error: {error}");
+            JobStatus::Failed { error, kind } => {
+                // 文言は利用者向けの日本語、種別コードは機械可読な安定値。
+                assert!(error.contains("荷重ケース"), "unexpected error: {error}");
+                assert_eq!(kind, "load_case_not_found");
             }
             other => panic!("expected Failed, got {other:?}"),
         }

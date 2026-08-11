@@ -1,6 +1,7 @@
 //! `App` の egui パネル描画メソッド。
 
 use super::*;
+use crate::table_util::fmt_section_prop;
 use crate::table_util::Col;
 use squid_n_core::units::to_display::{area_cm2, inertia_cm4};
 
@@ -2527,9 +2528,18 @@ impl App {
                             .filter(|s| s.id == sec_id)
                         {
                             ui.label(format!("断面: {} ({})", sec.name, sec_id.0));
-                            ui.label(format!("  A = {:.1} cm²", area_cm2(sec.area)));
-                            ui.label(format!("  Iy= {:.0} cm⁴", inertia_cm4(sec.iy)));
-                            ui.label(format!("  Iz= {:.0} cm⁴", inertia_cm4(sec.iz)));
+                            ui.label(format!(
+                                "  A = {} cm²",
+                                fmt_section_prop(area_cm2(sec.area))
+                            ));
+                            ui.label(format!(
+                                "  Iy= {} cm⁴",
+                                fmt_section_prop(inertia_cm4(sec.iy))
+                            ));
+                            ui.label(format!(
+                                "  Iz= {} cm⁴",
+                                fmt_section_prop(inertia_cm4(sec.iz))
+                            ));
                             // 影響数: 同一断面を使う部材数
                             let n_used = self
                                 .model
@@ -2607,9 +2617,18 @@ impl App {
                     ui.separator();
                     ui.strong("断面（選択中）");
                     ui.label(format!("名前: {} ({})", sec.name, sec_id.0));
-                    ui.label(format!("  A = {:.1} cm²", area_cm2(sec.area)));
-                    ui.label(format!("  Iy= {:.0} cm⁴", inertia_cm4(sec.iy)));
-                    ui.label(format!("  Iz= {:.0} cm⁴", inertia_cm4(sec.iz)));
+                    ui.label(format!(
+                        "  A = {} cm²",
+                        fmt_section_prop(area_cm2(sec.area))
+                    ));
+                    ui.label(format!(
+                        "  Iy= {} cm⁴",
+                        fmt_section_prop(inertia_cm4(sec.iy))
+                    ));
+                    ui.label(format!(
+                        "  Iz= {} cm⁴",
+                        fmt_section_prop(inertia_cm4(sec.iz))
+                    ));
                     let used: Vec<ElemId> = self
                         .model
                         .elements

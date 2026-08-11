@@ -4,6 +4,7 @@
 
 use super::{model_with_auto_rigid_zones, resolve_load_case, JobOutcome};
 use squid_n_core::model::Model;
+use squid_n_job::JobError;
 
 /// 終局検定ジョブ（靭性保証型耐震設計指針）。RC 矩形部材の塑性理論式による
 /// 終局せん断強度 Qsu・付着割裂耐力 Qbu・軸終局耐力に対する余裕度を算定する。
@@ -13,17 +14,14 @@ use squid_n_core::model::Model;
 pub(crate) fn compute_ultimate_check_job(
     model: &Model,
     load_case: Option<u32>,
-) -> Result<JobOutcome, String> {
+) -> Result<JobOutcome, JobError> {
     // 剛域（face_i/j）を内法長さに反映するため自動剛域を適用（冪等）。
-    let model = model_with_auto_rigid_zones(model);
-    let model = &model;
-    let analysis = squid_n_solver::analysis::Analysis::prepare(model)
-        .map_err(|e| format!("prepare failed: {e}"))?;
-    let lc = resolve_load_case(model, load_case)?;
-    let lc_id = lc.id.0;
-    let result = analysis
-        .linear_static(lc.id)
-        .map_err(|e| format!("solve failed: {e}"))?;
+    let work = model_with_auto_rigid_zones(model);
+    let lc_id = resolve_load_case(&work, load_case)?.id;
+    // 解析の実体は GUI と共通（`squid-n-job`）。エラー文言も共通の `JobError`。
+    let result = squid_n_job::compute::compute_linear_static(work.clone(), lc_id)?;
+    let model = &work;
+    let lc_id = lc_id.0;
 
     // 部材需要（軸力[圧縮正、始端]・強軸/弱軸の設計用曲げ[部材内最大絶対値]）。
     let demand: Vec<(

@@ -4,12 +4,13 @@
 
 use super::{model_with_auto_rigid_zones, JobOutcome};
 use squid_n_core::model::Model;
+use squid_n_job::JobError;
 
 /// Eigen ジョブの純粋計算部分。
-pub(crate) fn compute_eigen_job(model: &Model, n_modes: usize) -> Result<JobOutcome, String> {
+pub(crate) fn compute_eigen_job(model: &Model, n_modes: usize) -> Result<JobOutcome, JobError> {
     let model = model_with_auto_rigid_zones(model);
     // 解析の実体は GUI と共通（`squid-n-job`）。
-    let modal = squid_n_job::compute::compute_eigen(model, n_modes).map_err(|e| e.to_string())?;
+    let modal = squid_n_job::compute::compute_eigen(model, n_modes)?;
     let summary = serde_json::json!({
         "kind": "Eigen",
         "n_modes": modal.period.len(),
