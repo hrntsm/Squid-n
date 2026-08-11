@@ -74,6 +74,19 @@ pub fn generate_stories_multi(
 /// 一方、支点ばね（[`Node::support_spring`]）で支持された基部は水平に動けるため、
 /// マスターも自由のままとし、基礎の質量が地盤ばねと連成して応答に効くようにする。
 ///
+/// # 剛性を写すのは「構造節点」のスレーブだけ
+///
+/// 動けるかどうかは [`Node::restraint`] だけでは決まらない。床の境界・小梁の支持点
+/// のように**要素が 1 つも接続しない節点は非構造節点**であり、
+/// [`squid_n_core::dof::structural_nodes`] の判定によって解析自由度そのものを
+/// 持たない。拘束が無いので `restraint` の上では自由に見えるが、剛性は写らない。
+///
+/// 1FL が基部にある建物（柱脚がピン・固定）で 1FL の床に小梁があると、基部の階の
+/// スレーブは「水平拘束された柱脚」と「拘束の無い小梁支持点」の混在になる。
+/// `restraint` だけで判定するとマスターの Ux・Uy を自由と決めてしまい、剛性ゼロの
+/// 独立自由度が残って剛性行列が特異になる。このため**構造節点のスレーブだけ**を
+/// 可動性の判定対象とする。
+///
 /// **面内回転 Rz はスレーブの並進で決まる**（拘束変換はスレーブの Ux・Uy の行に
 /// マスター Rz を `-dy`・`dx` の係数で入れる）。したがって並進が 1 つも自由でない
 /// 階では、Rz を自由にしても剛床としての剛性は写らず、マスターの回転慣性 j だけが
@@ -84,13 +97,19 @@ pub fn generate_stories_multi(
 /// なお Rz を拘束したマスターに対しては、スレーブの Rz は従属先を失って独立自由度の
 /// まま残る（拘束変換はマスター側が非 active の行を張らない）。柱脚のねじりは
 /// 変更前と同じく各節点で独立に扱われる。
-fn master_restraint(model: &Model, common: Dof6Mask, slaves: &[NodeId]) -> Dof6Mask {
+fn master_restraint(
+    model: &Model,
+    common: Dof6Mask,
+    slaves: &[NodeId],
+    structural: &[bool],
+) -> Dof6Mask {
     let free_slave = |dof: Dof| {
         slaves.iter().any(|n| {
-            model
-                .nodes
-                .get(n.index())
-                .is_some_and(|s| !s.restraint.is_fixed(dof))
+            structural.get(n.index()).copied().unwrap_or(false)
+                && model
+                    .nodes
+                    .get(n.index())
+                    .is_some_and(|s| !s.restraint.is_fixed(dof))
         })
     };
     let mut m = common;
@@ -144,6 +163,11 @@ pub fn generate_stories_with_opts(
     if struct_nodes.is_empty() {
         return Err("節点がありません".into());
     }
+
+    // 解析自由度を持つ節点（[`master_restraint`] が剛床の可動性を判定するのに使う）。
+    // 剛床のスレーブに含まれる床の境界・小梁の支持点は要素が接続しないため
+    // 非構造節点で、拘束が無くても剛性を写さない。
+    let structural = squid_n_core::dof::structural_nodes(model);
 
     // --- 1. 階レベルの決定 ---
     // 階（[`Story`]）は床であり、`Model::stories` は基部の床から屋根の床までの
@@ -505,7 +529,7 @@ pub fn generate_stories_with_opts(
             rep_nodes.push(Node {
                 id: master,
                 coord: [gx, gy, elev],
-                restraint: master_restraint(model, rep_restraint_base, &slaves),
+                restraint: master_restraint(model, rep_restraint_base, &slaves, &structural),
                 mass,
                 story: Some(story_id),
                 support_spring: None,

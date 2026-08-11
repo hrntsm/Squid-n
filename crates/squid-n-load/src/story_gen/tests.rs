@@ -216,6 +216,44 @@ fn test_generate_two_stories() {
     assert_eq!(gen.rep_nodes[2].coord[2], 7000.0);
 }
 
+/// 非構造節点（要素が接続しない床・小梁の節点）は、剛床のスレーブに含まれていても
+/// 代表節点の可動性の判定に数えない。
+///
+/// 1FL が基部にある建物で 1FL の床に小梁があると、基部の剛床は「水平拘束された柱脚」と
+/// 「拘束の無い小梁支持点」の混在になる。後者は解析自由度を持たない（剛性を写さない）
+/// ため、これを自由と数えると代表節点の Ux・Uy が剛性ゼロの独立自由度として残り、
+/// 剛性行列が特異になる。
+#[test]
+fn test_base_master_ignores_non_structural_slaves() {
+    let mut model = two_story_model();
+    // 基部レベルに小梁の支持点を足す（要素は接続しない＝非構造節点、拘束なし）。
+    let free_id = NodeId(model.nodes.len() as u32);
+    model.nodes.push(Node {
+        id: free_id,
+        coord: [3000.0, 0.0, 0.0],
+        restraint: Dof6Mask::FREE,
+        mass: None,
+        story: None,
+        support_spring: None,
+    });
+    model.secondary_members.push(SecondaryMember {
+        kind: SecondaryMemberKind::Joist,
+        nodes: [NodeId(0), free_id],
+        section: Some(SectionId(0)),
+        name: "B1".into(),
+    });
+
+    let gen = generate_stories(&model, Some(LoadCaseId(0))).unwrap();
+    assert!(
+        gen_slaves(&gen, StoryId(0)).contains(&free_id),
+        "床面にある以上スレーブには入る"
+    );
+    let base_rep = &gen.rep_nodes[0];
+    assert!(base_rep.restraint.is_fixed(squid_n_core::dof::Dof::Ux));
+    assert!(base_rep.restraint.is_fixed(squid_n_core::dof::Dof::Uy));
+    assert!(base_rep.restraint.is_fixed(squid_n_core::dof::Dof::Rz));
+}
+
 /// 支点ばねで水平に動ける基部では、代表節点を自由のままにする。
 /// 基礎の質量が地盤ばねと連成して応答に効くようにするため。
 #[test]
@@ -337,9 +375,13 @@ fn test_generate_weighted_centroid_matches_hand_calc() {
     assert!(rep.restraint.is_fixed(Dof::Uz));
     assert!(rep.restraint.is_fixed(Dof::Rx));
     assert!(rep.restraint.is_fixed(Dof::Ry));
-    assert!(!rep.restraint.is_fixed(Dof::Ux));
-    assert!(!rep.restraint.is_fixed(Dof::Uy));
-    assert!(!rep.restraint.is_fixed(Dof::Rz));
+    // このモデルは重心の手計算だけを見るため要素を持たず、全節点が非構造節点である。
+    // 剛床を通じて写る剛性が無いので、代表節点は面内 3 成分とも拘束される
+    // （可動性の判定規則は `master_restraint`）。上の階の代表節点が自由に残ること自体は
+    // 要素を持つ `two_story_model` の `test_generate_two_stories` が確かめている。
+    assert!(rep.restraint.is_fixed(Dof::Ux));
+    assert!(rep.restraint.is_fixed(Dof::Uy));
+    assert!(rep.restraint.is_fixed(Dof::Rz));
     // 既存節点数=4 の末尾連番で新規生成される（基部の床の分を含めて 2 つ）。
     assert_eq!(gen.generated_masters, vec![NodeId(4), NodeId(5)]);
 }
