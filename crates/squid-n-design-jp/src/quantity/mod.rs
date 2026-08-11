@@ -811,8 +811,8 @@ fn beam_quantity(
         return item;
     }
 
-    // RC/SRC: 内法長さ（柱フェイス間）で算定。
-    let lo = (len - elem.rigid_zone.face_i - elem.rigid_zone.face_j).max(0.0);
+    // RC/SRC: 内法長さ（柱フェイス間）で算定。フェース距離が未算定なら節点間長。
+    let lo = elem.rigid_zone.clear_span_from(len).unwrap_or(len);
     let (b, d, rebar): (f64, f64, Option<&RcRebar>) = match sec.shape.as_ref() {
         Some(SectionShape::RcRect { b, d, rebar }) => (*b, *d, Some(rebar)),
         Some(SectionShape::SrcRect { b, d, rebar, .. }) => (*b, *d, Some(rebar)),
@@ -898,10 +898,11 @@ fn beam_quantity(
                     elem_idx,
                     ni,
                     [-dir_xy[0], -dir_xy[1]],
-                    elem.rigid_zone.face_i,
+                    elem.rigid_zone.face_i_or_zero(),
                     l2,
                 );
-                let end_j = ctx.beam_bar_end(elem_idx, nj, dir_xy, elem.rigid_zone.face_j, l2);
+                let end_j =
+                    ctx.beam_bar_end(elem_idx, nj, dir_xy, elem.rigid_zone.face_j_or_zero(), l2);
                 let bar_len = member::girder_main_bar_length(lo, end_i, end_j);
                 let total_len = bs.count as f64 * bar_len;
                 item.rebar.push(RebarItem {

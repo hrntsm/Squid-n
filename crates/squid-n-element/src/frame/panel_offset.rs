@@ -367,8 +367,8 @@ mod tests {
         let rigid = RigidZone {
             length_i: offset,
             length_j: offset,
-            face_i: offset * 2.0,
-            face_j: offset * 2.0,
+            face_i: Some(offset * 2.0),
+            face_j: Some(offset * 2.0),
             ..Default::default()
         };
         Model {
@@ -435,8 +435,8 @@ mod tests {
 
         let mut moved = base.clone();
         for e in &mut moved.elements {
-            e.rigid_zone.face_i = 9999.0;
-            e.rigid_zone.face_j = 0.0;
+            e.rigid_zone.face_i = Some(9999.0);
+            e.rigid_zone.face_j = Some(0.0);
         }
         let moved_ends = resolve(&moved.elements[0], &moved).expect("梁");
         assert_eq!(

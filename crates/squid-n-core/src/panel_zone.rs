@@ -858,8 +858,8 @@ mod tests {
     fn test_panel_half_extent_uses_member_depths() {
         let mut m = joint_model(h_beam(), 600.0, h_col());
         for e in &mut m.elements {
-            e.rigid_zone.face_i = 9999.0;
-            e.rigid_zone.face_j = 9999.0;
+            e.rigid_zone.face_i = Some(9999.0);
+            e.rigid_zone.face_j = Some(9999.0);
         }
         let extent = panel_half_extent(&m, NodeId(0), &m.elements);
         assert!((extent.column_half - 200.0).abs() < 1e-9);

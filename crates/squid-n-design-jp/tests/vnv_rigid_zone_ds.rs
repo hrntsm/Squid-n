@@ -48,8 +48,8 @@ fn fiber_elem(id: u32, i: u32, j: u32, section: u32, rigid: f64) -> ElementData 
         rigid_zone: RigidZone {
             length_i: rigid,
             length_j: rigid,
-            face_i: rigid,
-            face_j: rigid,
+            face_i: Some(rigid),
+            face_j: Some(rigid),
             ..Default::default()
         },
         plastic_zone: None,

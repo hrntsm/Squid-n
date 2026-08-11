@@ -401,7 +401,7 @@ fn test_run_linear_static_applies_auto_rigid_zones() {
 
     // 適用前は既定の 0（apply_auto_rigid_zones 未実行）。
     assert_eq!(app.model.elements[1].rigid_zone.length_i, 0.0);
-    assert_eq!(app.model.elements[1].rigid_zone.face_i, 0.0);
+    assert_eq!(app.model.elements[1].rigid_zone.face_i_or_zero(), 0.0);
 
     app.run_linear_static(LoadCaseId(0));
     assert!(app.last_error.is_none(), "{:?}", app.last_error);
@@ -416,9 +416,9 @@ fn test_run_linear_static_applies_auto_rigid_zones() {
         beam.rigid_zone.length_i
     );
     assert!(
-        (beam.rigid_zone.face_i - 150.0).abs() < 1e-9,
+        (beam.rigid_zone.face_i_or_zero() - 150.0).abs() < 1e-9,
         "face_i={}",
-        beam.rigid_zone.face_i
+        beam.rigid_zone.face_i_or_zero()
     );
 
     // 柱(id=0)の j端(node1, 梁と直交)。
@@ -431,12 +431,12 @@ fn test_run_linear_static_applies_auto_rigid_zones() {
         col.rigid_zone.length_j
     );
     assert!(
-        (col.rigid_zone.face_j - 200.0).abs() < 1e-9,
+        (col.rigid_zone.face_j_or_zero() - 200.0).abs() < 1e-9,
         "face_j={}",
-        col.rigid_zone.face_j
+        col.rigid_zone.face_j_or_zero()
     );
     // 柱脚(node0)は他要素と接続しないため face_i は 0 のまま。
-    assert_eq!(col.rigid_zone.face_i, 0.0);
+    assert_eq!(col.rigid_zone.face_i_or_zero(), 0.0);
 }
 
 /// `run_design_check` が危険断面位置（§6.2.3、既定は柱フェイスと中央）のみを

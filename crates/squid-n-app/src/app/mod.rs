@@ -1944,7 +1944,8 @@ fn beam_group_overrides(
             .map(|(_, f)| (f[5].abs(), f[1].abs()))
             .max_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
 
-        let face_sum = parts[0].0.rigid_zone.face_i + parts[parts.len() - 1].0.rigid_zone.face_j;
+        let face_sum = parts[0].0.rigid_zone.face_i_or_zero()
+            + parts[parts.len() - 1].0.rigid_zone.face_j_or_zero();
         let clear_length = if total - face_sum > 0.0 {
             total - face_sum
         } else {
@@ -1981,8 +1982,8 @@ fn design_positions(
     detail: Option<&squid_n_core::model::MemberDetailAttr>,
 ) -> Vec<f64> {
     let mut xs = if geom_len > 1e-12 {
-        let xi_i = (elem.rigid_zone.face_i / geom_len).clamp(0.0, 0.5 - 1e-9);
-        let xi_j = (1.0 - elem.rigid_zone.face_j / geom_len).clamp(0.5 + 1e-9, 1.0);
+        let xi_i = (elem.rigid_zone.face_i_or_zero() / geom_len).clamp(0.0, 0.5 - 1e-9);
+        let xi_j = (1.0 - elem.rigid_zone.face_j_or_zero() / geom_len).clamp(0.5 + 1e-9, 1.0);
         vec![xi_i, 0.5, xi_j]
     } else {
         vec![0.0, 0.5, 1.0]

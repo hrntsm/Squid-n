@@ -168,13 +168,12 @@ pub enum ZoneSource {
 /// 力学計算は sc-element 側。ここではモデルに保持・永続化するデータ。
 ///
 /// **次の 3 つは別概念**（設計書 §6.2.1、計算根拠 4.1.4・4.1.5）。
-/// - `length_i/j`: 剛域の自動算定・手動指定による剛域長
-///   `λ = D_orth/2 − D_self/4`（低減率 `reduction` を含む）。
+/// - `length_i/j`: 剛域の自動算定・手動指定による剛域長 `λ = Lf − D_self/4`。
+///   壁の考慮など、モデル化の設定によって変わりうる。
 /// - `panel_offset_i/j`: 仕口パネルを設けた接合部で、部材がパネル面まで離れて
 ///   接合することによるオフセット。部材配置から決まる幾何量。
 /// - `face_i/j`: 断面算定・危険断面位置（§6.2.3）に使う柱フェース距離 `D_orth/2`。
-///   剛域長のような低減率調整は行わない幾何量であり、節点から接合する直交部材せいの
-///   半分までの距離をそのまま保持する。
+///   接合関係と断面せいだけで一意に決まる幾何量で、剛域長の設定には左右されない。
 ///
 /// 剛性計算に効く**剛体アームの長さ**は [`Self::rigid_length_i`] /
 /// [`Self::rigid_length_j`] で取る。剛域長とパネルオフセットの大きい方になる。
@@ -184,14 +183,24 @@ pub struct RigidZone {
     pub length_j: f64,
     pub source_i: ZoneSource,
     pub source_j: ZoneSource,
-    pub reduction: f64,
     /// 柱フェース距離 [mm]（節点→フェース、= 接合する直交部材せい/2）。
-    /// 直交材がない端は 0。断面算定の既定危険断面位置に用いる（§6.2.3）。
+    ///
+    /// **`None` は「まだ算定していない」を表す**（直交材がなくフェース距離が
+    /// 0 の端は `Some(0.0)`）。両者を 0 で混同すると、算定前に読んだ側が
+    /// 「フェース距離 0＝節点間長」として計算を進めてしまい、危険断面位置や
+    /// RC/SRC 梁の自重が静かに誤る。
+    ///
+    /// 値を埋めるのは `squid_n_element::beam::apply_auto_rigid_zones`（解析の各入口が
+    /// 呼ぶ）。キャッシュを当てにできない場所からは、幾何そのものを返す
+    /// [`crate::face_distance::face_distances`] を直接使うこと。
+    ///
+    /// 読み出しは [`Self::face_i_or_zero`]（表示用）と
+    /// [`Self::clear_span_from`]（計算用）を使うこと。
     #[serde(default)]
-    pub face_i: f64,
+    pub face_i: Option<f64>,
     /// 柱フェース距離 [mm]（j端）。意味は `face_i` と同様。
     #[serde(default)]
-    pub face_j: f64,
+    pub face_j: Option<f64>,
     /// 仕口パネル分のオフセット [mm]（i 端）。パネルがない端は 0。
     ///
     /// 剛域長 `length_i` とは**別に保持する**。剛域の自動算定
@@ -211,9 +220,8 @@ impl Default for RigidZone {
             length_j: 0.0,
             source_i: ZoneSource::Auto,
             source_j: ZoneSource::Auto,
-            reduction: 1.0,
-            face_i: 0.0,
-            face_j: 0.0,
+            face_i: None,
+            face_j: None,
             panel_offset_i: 0.0,
             panel_offset_j: 0.0,
         }
@@ -221,6 +229,34 @@ impl Default for RigidZone {
 }
 
 impl RigidZone {
+    /// i 端の柱フェース距離 [mm]。**未算定は 0 として扱う**。
+    ///
+    /// 一覧表示・図など、未算定でも破綻しない用途にだけ使うこと。計算には
+    /// [`Self::clear_span_from`] を使い、未算定を検出できるようにする。
+    pub fn face_i_or_zero(&self) -> f64 {
+        self.face_i.unwrap_or(0.0)
+    }
+
+    /// j 端の柱フェース距離 [mm]。意味は [`Self::face_i_or_zero`] と同様。
+    pub fn face_j_or_zero(&self) -> f64 {
+        self.face_j.unwrap_or(0.0)
+    }
+
+    /// 節点間長 `geom_len` から両端の柱フェース距離を差し引いた**内法長** [mm]。
+    ///
+    /// 両端とも算定済みのときだけ `Some` を返す。未算定（`None`）のまま
+    /// 節点間長で代用すると、RC/SRC 梁の自重・数量・終局耐力が過大になるため、
+    /// 呼び出し側に未算定を気づかせる。負にはならないよう 0 で下限を切る。
+    pub fn clear_span_from(&self, geom_len: f64) -> Option<f64> {
+        let (fi, fj) = (self.face_i?, self.face_j?);
+        Some((geom_len - fi - fj).max(0.0))
+    }
+
+    /// 柱フェース距離が両端とも算定済みか。
+    pub fn faces_computed(&self) -> bool {
+        self.face_i.is_some() && self.face_j.is_some()
+    }
+
     /// i 端の剛体アーム長 [mm]（剛域長と仕口パネル分オフセットの大きい方）。
     ///
     /// 可撓長の控除・剛域変換・幾何剛性・せん断降伏の内法高さ・座屈長さの剛度比は、

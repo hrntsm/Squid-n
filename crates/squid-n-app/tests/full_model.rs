@@ -394,6 +394,38 @@ fn preparation_is_idempotent() {
     }
 }
 
+/// 固定荷重の算定は、剛域の自動算定を先に走らせたかどうかに依存しない。
+///
+/// RC/SRC 梁の自重は柱面間の内法長で算定する。柱フェース距離はかつて剛域の
+/// 自動算定（`apply_auto_rigid_zones`）だけが埋めるキャッシュで、算定前に読むと
+/// 0 になり、節点間距離で自重を算定してしまっていた（申し送り
+/// 「実モデル統合テスト」4.1）。現在は幾何から直接求めるため順序に依存しない。
+///
+/// 「取り込んだ直後に自重を同期した DL」と「準備計算まで済ませた DL」が
+/// 一致することで、この順序非依存を固定する。
+#[test]
+fn dead_load_does_not_depend_on_rigid_zone_timing() {
+    let mut early = imported();
+    early.sync_gravity_load_cases_action();
+    let dl_early = auto_case(&early, DL_CASE_NAME);
+
+    let prepared = prepared();
+    let dl_prepared = auto_case(&prepared, DL_CASE_NAME);
+
+    assert_eq!(
+        dl_early.member.len(),
+        dl_prepared.member.len(),
+        "部材荷重の件数が一致しない"
+    );
+    for (a, b) in dl_early.member.iter().zip(dl_prepared.member.iter()) {
+        assert_eq!(
+            a.kind, b.kind,
+            "部材 {:?} の固定荷重が剛域算定の前後で変わる",
+            a.elem
+        );
+    }
+}
+
 // ===================== 3. 診断 =====================
 
 /// 実建物モデルの整合性チェックがエラー・警告ともに 0 件である。

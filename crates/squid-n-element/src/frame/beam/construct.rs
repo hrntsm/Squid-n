@@ -93,8 +93,11 @@ pub(crate) fn eval_sections_of(
     if length <= 1e-12 {
         return vec![0.0, 0.5, 1.0];
     }
-    let xi_i = (data.rigid_zone.face_i / length).clamp(0.0, 0.5 - 1e-9);
-    let xi_j = (1.0 - data.rigid_zone.face_j / length).clamp(0.5 + 1e-9, 1.0);
+    // 危険断面位置は要素組立のたびに全部材ぶん引かれるため、ここではキャッシュを
+    // 読む（未算定の端は節点芯に落ちる）。キャッシュは解析前に
+    // `apply_auto_rigid_zones` が埋める。
+    let xi_i = (data.rigid_zone.face_i_or_zero() / length).clamp(0.0, 0.5 - 1e-9);
+    let xi_j = (1.0 - data.rigid_zone.face_j_or_zero() / length).clamp(0.5 + 1e-9, 1.0);
     let mut xs = vec![0.0, xi_i, 0.5, xi_j, 1.0];
     if let Some(detail) = model.member_detail(data.id) {
         xs.extend(detail.extra_check_positions(&data.rigid_zone, length));

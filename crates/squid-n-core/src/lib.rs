@@ -2,6 +2,7 @@ pub mod adjacency;
 pub mod axis_gen;
 pub mod dof;
 pub mod error;
+pub mod face_distance;
 pub mod frame;
 pub mod frame_gen;
 pub mod geom;

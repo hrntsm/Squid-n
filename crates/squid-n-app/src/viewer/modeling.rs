@@ -1706,8 +1706,8 @@ mod tests {
         e.rigid_zone = RigidZone {
             length_i: 400.0,
             length_j: 200.0,
-            face_i: 400.0,
-            face_j: 200.0,
+            face_i: Some(400.0),
+            face_j: Some(200.0),
             ..Default::default()
         };
         let (s_i, s_j, l_flex) = flexible_span(&e, 3000.0);

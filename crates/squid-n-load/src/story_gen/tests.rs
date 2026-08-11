@@ -883,8 +883,8 @@ fn test_face_reduction_applies_only_to_concrete() {
     let area = 90000.0;
     let density = 2.4e-9;
     let rz = RigidZone {
-        face_i: 300.0,
-        face_j: 300.0,
+        face_i: Some(300.0),
+        face_j: Some(300.0),
         ..Default::default()
     };
 
@@ -970,6 +970,29 @@ fn test_face_reduction_applies_to_horizontal_concrete_beam() {
         fc: Some(24.0),
         fy: None,
     });
+    // 柱フェース距離は幾何（取り付く直交材のせい/2）から決まるため、せい 800 の
+    // 柱を両端に立ててフェイス控除 400 を作る。柱の断面積は 0 にして自重を
+    // 生じさせず、水平梁の自重だけを検証対象にする。
+    model.sections.push(Section {
+        id: SectionId(1),
+        name: "柱(重量なし)".into(),
+        area: 0.0,
+        iy: 1.0e8,
+        iz: 1.0e8,
+        j: 1.0e8,
+        depth: 800.0,
+        width: 800.0,
+        as_y: 0.0,
+        as_z: 0.0,
+        floor: None,
+        panel_thickness: None,
+        thickness: None,
+        shape: None,
+        material: Some(MaterialId(0)),
+        rebar_material: None,
+        shear_rebar_material: None,
+        steel_material: None,
+    });
     // 水平梁（節点1→2）のみ断面・材料を持たせ、フェイス控除を検証する。
     model.elements.push(ElementData {
         id: ElemId(0),
@@ -981,14 +1004,26 @@ fn test_face_reduction_applies_to_horizontal_concrete_beam() {
         },
         end_cond: [EndCondition::Fixed, EndCondition::Fixed],
         force_regime: ForceRegime::Auto,
-        rigid_zone: RigidZone {
-            face_i: 400.0,
-            face_j: 400.0,
-            ..Default::default()
-        },
+        rigid_zone: RigidZone::default(),
         plastic_zone: None,
         spring: None,
     });
+    for (id, a, b) in [(1u32, 0u32, 1u32), (2, 3, 2)] {
+        model.elements.push(ElementData {
+            id: ElemId(id),
+            kind: ElementKind::Beam,
+            nodes: [NodeId(a), NodeId(b)].into_iter().collect(),
+            section: Some(SectionId(1)),
+            local_axis: LocalAxis {
+                ref_vector: [1.0, 0.0, 0.0],
+            },
+            end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+            force_regime: ForceRegime::Auto,
+            rigid_zone: RigidZone::default(),
+            plastic_zone: None,
+            spring: None,
+        });
+    }
 
     let gen = generate_stories(&model, None).unwrap();
     let eff_len = len - 400.0 - 400.0;

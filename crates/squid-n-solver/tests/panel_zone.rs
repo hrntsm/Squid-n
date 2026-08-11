@@ -117,14 +117,14 @@ fn l_frame(with_panel: bool) -> Model {
 /// 手組みすると実際のモデル化と食い違うためである。
 fn l_frame_with(with_panel: bool, rigid_joint: bool) -> Model {
     let rigid = RigidZone {
-        face_i: FACE_BEAM,
-        face_j: 0.0,
+        face_i: Some(FACE_BEAM),
+        face_j: Some(0.0),
         length_i: if rigid_joint { FACE_BEAM } else { 0.0 },
         ..Default::default()
     };
     let col_rigid = RigidZone {
-        face_i: 0.0,
-        face_j: FACE_COL,
+        face_i: Some(0.0),
+        face_j: Some(FACE_COL),
         length_j: if rigid_joint { FACE_COL } else { 0.0 },
         ..Default::default()
     };
