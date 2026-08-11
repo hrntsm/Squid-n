@@ -563,6 +563,66 @@ fn test_tab_default_is_model() {
     assert_eq!(Tab::Model, Tab::default());
 }
 
+/// 基部の床に小梁の支持点（要素が接続しない非構造節点）があっても解析が成立する。
+///
+/// 1FL が基部にある建物では、基部の剛床のスレーブが「水平拘束された柱脚」と
+/// 「拘束の無い小梁支持点」の混在になる。後者は解析自由度を持たず剛性を写さないため、
+/// これを可動と数えると剛床代表節点の Ux・Uy が剛性ゼロの独立自由度として残り、
+/// 剛性行列が特異になる（ST-Bridge 取り込みモデルで解析が止まった不具合）。
+#[test]
+fn test_analysis_runs_with_non_structural_nodes_on_base_floor() {
+    use squid_n_core::dof::Dof6Mask;
+    use squid_n_core::ids::StoryId;
+    use squid_n_core::model::{SecondaryMember, SecondaryMemberKind};
+
+    let mut model = crate::sample::portal_frame();
+    // 基部レベル（柱脚と同じ Z）へ小梁の支持点を足す。
+    let free_id = NodeId(model.nodes.len() as u32);
+    model.nodes.push(squid_n_core::model::Node {
+        id: free_id,
+        coord: [3000.0, 0.0, 0.0],
+        restraint: Dof6Mask::FREE,
+        mass: None,
+        story: None,
+        support_spring: None,
+    });
+    model.secondary_members.push(SecondaryMember {
+        kind: SecondaryMemberKind::Joist,
+        nodes: [NodeId(0), free_id],
+        section: Some(SectionId(1)),
+        name: "B1".into(),
+    });
+
+    let mut app = App::default();
+    app.load_model(model);
+    app.run_preparation();
+    assert!(app.last_error.is_none(), "{:?}", app.last_error);
+
+    // 基部の剛床代表節点は面内 3 成分とも拘束される（剛性が写らないため）。
+    let base_master = app
+        .model
+        .constraints
+        .iter()
+        .find_map(|c| match c {
+            squid_n_core::model::Constraint::RigidDiaphragm { story, master, .. }
+                if *story == StoryId(0) =>
+            {
+                Some(*master)
+            }
+            _ => None,
+        })
+        .expect("基部の床にも剛床がある");
+    let r = app.model.nodes[base_master.index()].restraint;
+    assert!(r.is_fixed(squid_n_core::dof::Dof::Ux));
+    assert!(r.is_fixed(squid_n_core::dof::Dof::Uy));
+    assert!(r.is_fixed(squid_n_core::dof::Dof::Rz));
+
+    app.run_linear_static(LoadCaseId(0));
+    assert!(app.last_error.is_none(), "{:?}", app.last_error);
+    app.run_seismic(SeismicDir::X);
+    assert!(app.last_error.is_none(), "{:?}", app.last_error);
+}
+
 #[test]
 fn test_seismic_flow_requires_then_uses_stories() {
     let mut app = App::default();
