@@ -2,7 +2,7 @@
 //!
 //! - [`compute_time_history_job`] — TimeHistory ジョブの純粋計算部分。
 
-use super::{model_prepared_for_analysis, JobDir, JobOutcome};
+use super::{model_prepared_for_analysis, JobDir, JobOutcome, JobParams};
 use squid_n_core::model::Model;
 use squid_n_job::{settings::ThDir, JobError};
 
@@ -12,20 +12,16 @@ use squid_n_job::{settings::ThDir, JobError};
 /// 用いる。MCP からは減衰モデル・積分法・非線形の切り替えを受け付けていない。
 pub(crate) fn compute_time_history_job(
     model: &Model,
-    dir: JobDir,
-    dt: f64,
-    duration: f64,
-    period: f64,
-    amp: f64,
+    params: &JobParams,
 ) -> Result<JobOutcome, JobError> {
-    let work = model_prepared_for_analysis(model);
+    let work = model_prepared_for_analysis(model, params);
 
     let cfg = squid_n_job::AnalysisSettings {
-        th_dt: dt,
-        th_duration: duration,
-        th_period: period,
-        th_amp: amp,
-        th_dir: match dir {
+        th_dt: params.dt,
+        th_duration: params.duration,
+        th_period: params.period,
+        th_amp: params.amp,
+        th_dir: match params.dir {
             JobDir::X => ThDir::X,
             JobDir::Y => ThDir::Y,
         },

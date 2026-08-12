@@ -5483,6 +5483,7 @@ dependencies = [
  "squid-n-element",
  "squid-n-io",
  "squid-n-job",
+ "squid-n-load",
  "squid-n-solver",
  "tokio",
 ]

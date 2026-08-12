@@ -25,6 +25,7 @@ squid-n-edit = { path = "../squid-n-edit" }
 # DesignCheck ジョブ（鋼/RC 許容応力度検定）用。p7 は design-jp の default feature。
 squid-n-design-jp = { path = "../squid-n-design-jp" }
 squid-n-job = { path = "../squid-n-job" }
+squid-n-load = { path = "../squid-n-load" }
 rmcp = { workspace = true, optional = true }
 serde_json = { workspace = true }
 # result_get ツールで RecordBatch を JSON 行配列へ変換するために使う

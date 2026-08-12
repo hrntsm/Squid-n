@@ -2,15 +2,15 @@
 //!
 //! - [`compute_eigen_job`] — Eigen ジョブの純粋計算部分。
 
-use super::{model_prepared_for_analysis, JobOutcome};
+use super::{model_prepared_for_analysis, JobOutcome, JobParams};
 use squid_n_core::model::Model;
 use squid_n_job::JobError;
 
 /// Eigen ジョブの純粋計算部分。
-pub(crate) fn compute_eigen_job(model: &Model, n_modes: usize) -> Result<JobOutcome, JobError> {
-    let model = model_prepared_for_analysis(model);
+pub(crate) fn compute_eigen_job(model: &Model, params: &JobParams) -> Result<JobOutcome, JobError> {
+    let model = model_prepared_for_analysis(model, params);
     // 解析の実体は GUI と共通（`squid-n-job`）。
-    let modal = squid_n_job::compute::compute_eigen(model, n_modes)?;
+    let modal = squid_n_job::compute::compute_eigen(model, params.n_modes)?;
     let summary = serde_json::json!({
         "kind": "Eigen",
         "n_modes": modal.period.len(),

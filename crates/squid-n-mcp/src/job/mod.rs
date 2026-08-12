@@ -9,7 +9,9 @@
 //! - [`ultimate`] — UltimateCheck ジョブ（終局検定）の純粋計算部分。
 
 use super::*;
-use squid_n_job::JobError;
+use squid_n_job::{AnalysisSettings, JobError};
+use squid_n_load::ai::SoilClass;
+use squid_n_solver::analysis::AiMode;
 
 mod design_check;
 mod eigen;
@@ -51,26 +53,53 @@ pub struct JobParams {
     pub period: f64,
     /// TimeHistory: サンプル波の振幅 [mm/s²]。
     pub amp: f64,
+    /// 荷重自動同期: 地域係数 Z（令88条）。
+    pub z: f64,
+    /// 荷重自動同期: 地盤種別（Tc の決定に使用）。
+    pub soil: SoilClass,
+    /// 荷重自動同期: 標準せん断力係数 C0。
+    pub c0: f64,
+    /// 荷重自動同期: Ai 算定法（略算 / 精算）。
+    pub ai_mode: AiMode,
+    /// 荷重自動同期: 精算時の設計用基本周期 T [s]。`SemiPrecise` かつ未指定なら EX/EY を同期しない。
+    pub design_period: Option<f64>,
 }
 
 impl Default for JobParams {
     fn default() -> Self {
+        let s = AnalysisSettings::default();
         Self {
             load_case: None,
-            n_modes: 3,
+            n_modes: s.n_modes,
             dir: JobDir::X,
-            steps: 50,
+            steps: s.push_steps,
             max_disp: None,
             max_drift_denom: None,
-            dt: 0.01,
+            dt: s.th_dt,
             duration: 2.0,
-            period: 0.5,
-            amp: 1000.0,
+            period: s.th_period,
+            amp: s.th_amp,
+            z: s.z,
+            soil: s.soil,
+            c0: s.c0,
+            ai_mode: s.ai_mode,
+            design_period: None,
         }
     }
 }
 
 impl JobParams {
+    /// 解析前処理（荷重自動同期）に渡す `AnalysisSettings` を組み立てる。
+    pub(crate) fn analysis_settings_for_prepare(&self) -> AnalysisSettings {
+        AnalysisSettings {
+            ai_mode: self.ai_mode,
+            z: self.z,
+            soil: self.soil,
+            c0: self.c0,
+            ..Default::default()
+        }
+    }
+
     /// `max_disp`/`max_drift_denom` から `squid_n_solver::pushover::PushoverTarget` を
     /// 組み立てる。
     ///
@@ -146,24 +175,12 @@ pub fn compute_job(
     params: &JobParams,
 ) -> Result<JobOutcome, JobError> {
     match kind {
-        JobKind::LinearStatic => compute_linear_static_job(model, params.load_case),
-        JobKind::Eigen => compute_eigen_job(model, params.n_modes),
-        JobKind::Pushover => compute_pushover_job(
-            model.clone(),
-            params.dir,
-            params.steps,
-            params.pushover_target(),
-        ),
-        JobKind::TimeHistory => compute_time_history_job(
-            model,
-            params.dir,
-            params.dt,
-            params.duration,
-            params.period,
-            params.amp,
-        ),
-        JobKind::DesignCheck => compute_design_check_job(model, params.load_case),
-        JobKind::UltimateCheck => compute_ultimate_check_job(model, params.load_case),
+        JobKind::LinearStatic => compute_linear_static_job(model, params),
+        JobKind::Eigen => compute_eigen_job(model, params),
+        JobKind::Pushover => compute_pushover_job(model.clone(), params),
+        JobKind::TimeHistory => compute_time_history_job(model, params),
+        JobKind::DesignCheck => compute_design_check_job(model, params),
+        JobKind::UltimateCheck => compute_ultimate_check_job(model, params),
     }
 }
 
@@ -206,9 +223,9 @@ pub(crate) fn resolve_load_case(
 /// 前処理の実体は [`squid_n_job::prepare::prepare_model_for_analysis`] で、
 /// **GUI と同一**である。`Analysis` はモデルを借用するため、準備は呼出側で
 /// `Analysis::prepare(&model)` を行う。
-pub(crate) fn model_prepared_for_analysis(model: &Model) -> Model {
+pub(crate) fn model_prepared_for_analysis(model: &Model, params: &JobParams) -> Model {
     let mut model = model.clone();
-    let settings = squid_n_job::AnalysisSettings::default();
-    squid_n_job::prepare::prepare_model_for_analysis(&mut model, &settings, None);
+    let settings = params.analysis_settings_for_prepare();
+    squid_n_job::prepare::prepare_model_for_analysis(&mut model, &settings, params.design_period);
     model
 }
