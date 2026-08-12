@@ -14,7 +14,9 @@ use squid_n_job::JobError;
 /// [`squid_n_design_jp::run_member_design_checks`] による許容応力度検定を行う。
 ///
 /// 検定条件は荷重ケース種別から決める（`Seismic`/`Wind` → 短期、それ以外 → 長期）。
-/// 地震時短期では重力ケースを別途解析して QD / 柱メカニズム用の長期内力と Q0 を渡す。
+/// 地震時短期では重力ケースを別途解析し、長期内力と地震ケース内力を線形加算した
+/// 組合せ内力で検定する（GUI の `DL+LL±EX` に相当）。QD / 柱メカニズム用の
+/// 長期内力と Q0 も同時に渡す。
 pub(crate) fn compute_design_check_job(
     model: &Model,
     load_case: Option<u32>,
@@ -35,13 +37,12 @@ pub(crate) fn compute_design_check_job(
 
     // 地震時短期: 重力ケースを線形解析して長期内力を重ね、Q0 も算定する。
     // 風時短期は QD 割増の対象外（長期内力は渡さない）。
-    let (long_member_forces, q0_by_elem) = if lc.kind == LoadCaseKind::Seismic {
+    let (long_member_forces, q0_by_elem, check_forces) = if lc.kind == LoadCaseKind::Seismic {
         let gravity_ids = squid_n_job::gravity_case_ids_for_seismic_weight(model);
         let mut gravity_results = Vec::new();
         for gid in &gravity_ids {
+            // 重力 ID が対象 Seismic と一致することは通常ない（到達時はスキップ）。
             if *gid == lc_id {
-                // 対象ケース自身が重力のときは、その結果を長期として流用する。
-                gravity_results.push(result.member_forces.clone());
                 continue;
             }
             let g = squid_n_job::compute::compute_linear_static(work.clone(), *gid)?;
@@ -53,16 +54,22 @@ pub(crate) fn compute_design_check_job(
             Some(squid_n_job::sum_member_forces_lists(&gravity_results))
         };
         let q0 = squid_n_job::simple_beam_q0_by_gravity_cases(model);
-        (long, q0)
+        // 検定に渡す内力は「長期 ⊕ 地震」の組合せ（QE = |Q − QL| が成立するため）。
+        let combo = if let Some(ref lf) = long {
+            squid_n_job::sum_member_forces_lists(&[lf.clone(), result.member_forces.clone()])
+        } else {
+            result.member_forces.clone()
+        };
+        (long, q0, combo)
     } else {
-        (None, Default::default())
+        (None, Default::default(), result.member_forces.clone())
     };
 
-    let member_force_rows = flatten_member_force_rows(&result.member_forces);
+    let member_force_rows = flatten_member_force_rows(&check_forces);
 
     let report = squid_n_design_jp::run_member_design_checks(
         model,
-        &result.member_forces,
+        &check_forces,
         &result.panel_moments,
         &MemberDesignCheckOptions {
             term,

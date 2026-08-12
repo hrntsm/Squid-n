@@ -629,8 +629,8 @@ fn draw_peak_check(
     ui.label(
         egui::RichText::new(
             "簡易検定です（座屈長さ＝部材長として評価。継手欠損・一本部材合成は考慮しません）。\
-             長期静的結果がある場合は地震時 QD / 柱メカニズムを可能な範囲で配線しますが、\
-             包絡ピークと長期内力の時刻は一致しません。\
+             非線形時刻歴で長期を重ねた解析のときのみ、地震時 QD / 柱メカニズムを配線します\
+             （線形時刻歴や長期未重畳では、包絡ピークと静的長期の合成が危険側になり得るため無効です）。\
              各成分（N・Qy・Qz・My・Mz）の最大値は全ステップ包絡のため、同一時刻に生じたとは限りません\
              （実際には同時に生じない組合せを検定している可能性があり、安全側ですが過大評価になり得ます）。",
         )
@@ -699,18 +699,24 @@ fn draw_peak_check(
         .map(|(_, f)| (f[4].abs(), f[2].abs()))
         .max_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
 
-    // 長期静的結果があれば QD / 柱メカニズムを部分配線する（包絡ピークとの時刻不一致に注意）。
-    let long_mf = app.results.as_ref().and_then(|r| {
-        r.combos
-            .iter()
-            .find(|(n, _)| n == "DL + LL")
-            .or_else(|| {
+    // 非線形 TH かつ長期重畳済みのときのみ QD / 柱メカニズムを配線する。
+    // 線形 TH の包絡ピークに静的長期を足すと、組合せ内力の前提が崩れ危険側になり得る。
+    let wire_qd = th_nonlinear && th_applied_long_term;
+    let long_mf = wire_qd
+        .then(|| {
+            app.results.as_ref().and_then(|r| {
                 r.combos
                     .iter()
-                    .find(|(n, _)| !squid_n_load::combo::is_short_term_combo(n))
+                    .find(|(n, _)| n == "DL + LL")
+                    .or_else(|| {
+                        r.combos
+                            .iter()
+                            .find(|(n, _)| !squid_n_load::combo::is_short_term_combo(n))
+                    })
+                    .map(|(_, st)| &st.member_forces)
             })
-            .map(|(_, st)| &st.member_forces)
-    });
+        })
+        .flatten();
     let seismic_qd = long_mf.and_then(|list| {
         list.iter()
             .find(|(id, _)| *id == elem.id)

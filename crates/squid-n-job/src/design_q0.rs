@@ -133,35 +133,62 @@ pub fn simple_beam_q0_by_gravity_cases(model: &Model) -> HashMap<ElemId, f64> {
 
 /// 複数ケースの部材内力を位置ごとに加算する（線形重ね合わせ）。
 ///
-/// 同一 `ElemId`・同一正規化位置の成分を足し合わせる。位置集合が一致しない
-/// 場合は、出現した全位置を保持し、欠ける側は 0 とみなす。
+/// 同一 `ElemId`・近傍の正規化位置（絶対差 1e-9 以内）の成分を足し合わせる。
+/// 位置集合が一致しない場合は、出現した全位置を保持し、欠ける側は 0 とみなす。
 pub fn sum_member_forces_lists(
     lists: &[Vec<(ElemId, MemberForces)>],
 ) -> Vec<(ElemId, MemberForces)> {
-    let mut by_elem: HashMap<ElemId, HashMap<u64, [f64; 6]>> = HashMap::new();
-    let key = |p: f64| -> u64 { p.to_bits() };
+    let mut by_elem: HashMap<ElemId, Vec<(f64, [f64; 6])>> = HashMap::new();
+    const POS_EPS: f64 = 1e-9;
     for list in lists {
         for (id, mf) in list {
             let entry = by_elem.entry(*id).or_default();
             for (p, f) in &mf.at {
-                let slot = entry.entry(key(*p)).or_insert([0.0; 6]);
-                for i in 0..6 {
-                    slot[i] += f[i];
+                if let Some((_, acc)) = entry
+                    .iter_mut()
+                    .find(|(q, _)| (*q - *p).abs() <= POS_EPS)
+                {
+                    for i in 0..6 {
+                        acc[i] += f[i];
+                    }
+                } else {
+                    entry.push((*p, *f));
                 }
             }
         }
     }
     let mut out: Vec<(ElemId, MemberForces)> = by_elem
         .into_iter()
-        .map(|(id, positions)| {
-            let mut at: Vec<(f64, [f64; 6])> = positions
-                .into_iter()
-                .map(|(bits, f)| (f64::from_bits(bits), f))
-                .collect();
+        .map(|(id, mut at)| {
             at.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
             (id, MemberForces { at })
         })
         .collect();
     out.sort_by_key(|(id, _)| id.0);
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sum_member_forces_merges_near_positions() {
+        let a = vec![(
+            ElemId(1),
+            MemberForces {
+                at: vec![(0.0, [1.0, 0.0, 0.0, 0.0, 0.0, 0.0])],
+            },
+        )];
+        let b = vec![(
+            ElemId(1),
+            MemberForces {
+                at: vec![(1e-12, [2.0, 0.0, 0.0, 0.0, 0.0, 0.0])],
+            },
+        )];
+        let sum = sum_member_forces_lists(&[a, b]);
+        assert_eq!(sum.len(), 1);
+        assert_eq!(sum[0].1.at.len(), 1);
+        assert!((sum[0].1.at[0].1[0] - 3.0).abs() < 1e-12);
+    }
 }
