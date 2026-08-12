@@ -66,7 +66,8 @@ impl App {
                 .or(long_from_combo.map(|v| v.as_slice()));
         // 一本部材指定（Model.beam_groups）: グループ単位の採用応力を合成し、
         // 所属部材の検定文脈（部材長・端部/中央モーメント等）を上書きする。
-        let group_overrides = beam_group_overrides(&self.model, &results.member_forces);
+        let group_overrides =
+            squid_n_design_jp::beam_group_overrides(&self.model, &results.member_forces);
         // 梁 QD1 用の単純梁せん断 Q0（Dead+LiveSeismic 加算の長期相当）。
         let q0_by_elem = if long_member_forces.is_some() {
             squid_n_job::simple_beam_q0_by_gravity_cases(&self.model)
