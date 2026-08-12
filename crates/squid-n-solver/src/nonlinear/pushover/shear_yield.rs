@@ -12,8 +12,7 @@ use squid_n_core::material_grade::{
     material_strength_factor_rebar, material_strength_factor_steel,
 };
 use squid_n_core::model::{ElementData, Material, Model, RigidZone, Section};
-use squid_n_core::rc_capacity::{rc_qsu_simple, RcCapacityInput};
-use squid_n_core::rc_rebar_geom::tension_effective_depth;
+use squid_n_core::rc_capacity::{rc_capacity_input_from_rect, rc_qsu_simple, RcCapacityInput};
 use squid_n_core::section_shape::{BarSet, RcRebar, SectionShape};
 use squid_n_element::behavior::{Ctx, ElementBehavior};
 use squid_n_element::transform::LocalFrame;
@@ -99,9 +98,11 @@ pub(crate) enum ShearDir {
 /// σ0 は 0.0 のプレースホルダとし、[`DirThreshold::qy`] が各ステップの軸力から
 /// 動的に上書きする（精緻化2。旧実装は σ0=0 固定の安全側簡略化だった）。
 ///
-/// 変換規則は `squid-n-app::app::rc_capacity_input_from_rect` と同一の規約
-/// （上下対称配筋を仮定・at=引張側総断面積の半分、σy は主筋材質 or 材料 fy、
-/// σwy はせん断補強筋材質 or SD295 相当、せん断補強筋は legs 組数を考慮）に合わせる:
+/// 幾何・配筋・σy 基本値の組み立ては
+/// [`squid_n_core::rc_capacity::rc_capacity_input_from_rect`] に委譲する。
+/// 本関数は保有水平耐力専用のため、主筋の材料強度割増（直接入力係数優先、
+/// なければ一律 1.1）を後掛けする。
+///
 /// - 強軸（局所 y 方向せん断、`dir=Y`）: b=幅, d=せい、引張鉄筋は `rebar.main_x`。
 /// - 弱軸（局所 z 方向せん断、`dir=Z`）: b と d を入れ替え、引張鉄筋は `rebar.main_y`。
 ///
@@ -119,42 +120,12 @@ fn rc_rect_capacity_input(
     shear_mat: Option<&Material>,
     clear_span: f64,
 ) -> Option<RcCapacityInput> {
-    let fc = mat.fc?;
-    let bar_area = |bs: &BarSet| bs.count as f64 * std::f64::consts::PI / 4.0 * bs.dia * bs.dia;
-    // 上下対称配筋を仮定し、引張側主筋量は総断面積の半分。
-    let at = bar_area(main) / 2.0;
-    // d_eff は断面検定と同規約（帯筋径・多段配筋を考慮した dt）。
-    let d_eff = tension_effective_depth(d, rebar.cover, rebar.shear.dia, main);
-    let shear_area =
-        std::f64::consts::PI / 4.0 * rebar.shear.dia * rebar.shear.dia * rebar.shear.legs as f64;
-    let pw = if rebar.shear.pitch > 0.0 {
-        shear_area / (b * rebar.shear.pitch)
-    } else {
-        0.0
-    };
-    Some(RcCapacityInput {
-        b,
-        d,
-        at,
-        d_eff,
-        // σy は断面（配筋）の主筋材質 → 部材材料の fy の順で解決する。どちらも
-        // 未設定のモデルは `ensure_nonlinear_input` が解析前に停止するため、既定値
-        // 345 へのフォールバックには到達しない。本モジュールは保有水平耐力計算専用の
-        // ため、主筋の材料強度割増（直接入力係数優先、なければ一律1.1）を無条件で乗じる。
-        sigma_y: squid_n_core::material_grade::rebar_yield_strength(rebar_mat)
-            .or(mat.fy)
-            .unwrap_or(345.0)
-            * rebar_mat.map(material_strength_factor_rebar).unwrap_or(1.1),
-        fc,
-        pw,
-        // σwy は断面（配筋）のせん断補強筋材質から解決し、未設定は SD295 相当
-        // （規格上の最小グレード＝耐力を過小評価する安全側）を既定とする。
-        // せん断補強筋は材料強度割増の対象外（規定上、主筋のみが割増対象）。
-        sigma_wy: squid_n_core::material_grade::shear_rebar_yield_strength(shear_mat)
-            .unwrap_or(squid_n_core::material_grade::SHEAR_REBAR_DEFAULT_FY),
-        clear_span,
-        sigma_0: 0.0, // プレースホルダ。DirThreshold::qy が軸力から都度上書きする。
-    })
+    let mut input =
+        rc_capacity_input_from_rect(b, d, main, rebar, mat, rebar_mat, shear_mat, clear_span)?;
+    // 未設定のモデルは `ensure_nonlinear_input` が解析前に停止するため、
+    // 割増の既定 1.1 へのフォールバックには到達しない。
+    input.sigma_y *= rebar_mat.map(material_strength_factor_rebar).unwrap_or(1.1);
+    Some(input)
 }
 
 /// 方向別のせん断降伏耐力しきい値（[`DirThreshold`]）を組み立てる。

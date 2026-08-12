@@ -1380,37 +1380,17 @@ fn rc_capacity_input_from_rect(
     shear_mat: Option<&squid_n_core::model::Material>,
     clear_span: f64,
 ) -> Option<squid_n_design_jp::secondary::rc_capacity::RcCapacityInput> {
-    let fc = mat.fc?;
-    let bar_area = |bs: &squid_n_core::section_shape::BarSet| -> f64 {
-        bs.count as f64 * std::f64::consts::PI / 4.0 * bs.dia * bs.dia
-    };
-    // 上下対称配筋を仮定し、引張側主筋量は main_x 総断面積の半分。
-    let at = bar_area(&rebar.main_x) / 2.0;
-    let d_eff = squid_n_core::rc_rebar_geom::rebar_effective_depth(d, rebar);
-    let shear_area =
-        std::f64::consts::PI / 4.0 * rebar.shear.dia * rebar.shear.dia * rebar.shear.legs as f64;
-    let pw = if rebar.shear.pitch > 0.0 {
-        shear_area / (b * rebar.shear.pitch)
-    } else {
-        0.0
-    };
-    Some(squid_n_design_jp::secondary::rc_capacity::RcCapacityInput {
+    // 組み立て本体は core。app の保有水平耐力入口は強軸（main_x）のみ。
+    squid_n_core::rc_capacity::rc_capacity_input_from_rect(
         b,
         d,
-        at,
-        d_eff,
-        sigma_y: squid_n_core::material_grade::rebar_yield_strength(rebar_mat)
-            .or(mat.fy)
-            .unwrap_or(345.0), // SD345 相当、要・原典照合
-        fc,
-        pw,
-        sigma_wy: squid_n_core::material_grade::shear_rebar_yield_strength(shear_mat)
-            .unwrap_or(squid_n_core::material_grade::SHEAR_REBAR_DEFAULT_FY),
+        &rebar.main_x,
+        rebar,
+        mat,
+        rebar_mat,
+        shear_mat,
         clear_span,
-        // 軸方向圧縮応力度は呼び出し側(compute_holding_capacity)が既知の場合に上書きする。
-        // ここでは既定値 0(軸力なし・安全側)とする。
-        sigma_0: 0.0,
-    })
+    )
 }
 
 /// 長期軸力の簡易近似として先頭荷重ケース(`model.load_cases.first()`)の結果を優先し、

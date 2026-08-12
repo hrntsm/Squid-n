@@ -469,7 +469,6 @@ mod tests {
         assert!(!wall_is_seismic(&data, &model));
     }
 
-
     /// 台形壁では旧包絡寸法（節点間の最大水平距離）と
     /// [`crate::wall_panel::wall_panel_geometry`] の壁長（上下辺平均）が食い違う。
     /// 開口周比 r0 は後者を単一情報源とする。
