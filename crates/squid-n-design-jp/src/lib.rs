@@ -7,6 +7,7 @@
 //!
 //! 二次設計（保有水平耐力計算）は `p7` フィーチャ配下の [`secondary`] モジュール
 //! （部材ランク・層 Ds・保有水平耐力・剛性率・偏心率・主軸）に分離する。
+pub mod beam_group;
 pub mod brb;
 pub mod cft;
 /// 危険断面位置（断面検定を行う部材軸上の位置）。GUI と MCP が共通で用いる。
@@ -34,6 +35,7 @@ pub mod wall_opening;
 #[cfg(feature = "p7")]
 pub mod secondary;
 
+pub use beam_group::beam_group_overrides;
 pub use cft::CftDesign;
 pub use material_strength::{steel_f_value, steel_f_value_prefix};
 pub use member_design_check::{

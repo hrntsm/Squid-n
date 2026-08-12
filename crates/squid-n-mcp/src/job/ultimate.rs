@@ -26,27 +26,8 @@ pub(crate) fn compute_ultimate_check_job(
     let lc_id = lc_id.0;
 
     // 部材需要（軸力[圧縮正、始端]・強軸/弱軸の設計用曲げ[部材内最大絶対値]）。
-    let demand: Vec<(
-        squid_n_core::ids::ElemId,
-        squid_n_design_jp::ultimate::MemberDemand,
-    )> = result
-        .member_forces
-        .iter()
-        .filter_map(|(id, mf)| {
-            let n_axial = mf.at.first().map(|(_, f)| f[0])?;
-            let mz = mf.at.iter().map(|(_, f)| f[5].abs()).fold(0.0, f64::max);
-            let my = mf.at.iter().map(|(_, f)| f[4].abs()).fold(0.0, f64::max);
-            Some((
-                *id,
-                squid_n_design_jp::ultimate::MemberDemand {
-                    n_axial,
-                    mz,
-                    my,
-                    ..Default::default()
-                },
-            ))
-        })
-        .collect();
+    // QL/Q0 は MCP では未設定（従来どおり）。
+    let demand = squid_n_job::member_demand_from_static_forces(&result.member_forces, None, None);
     // CFT の軸終局検定は軸力のみを用いる。
     let axial: Vec<(squid_n_core::ids::ElemId, f64)> =
         demand.iter().map(|(id, d)| (*id, d.n_axial)).collect();

@@ -1,4 +1,4 @@
-use super::super::*;
+﻿use super::super::*;
 
 impl App {
     /// 終局検定（靭性保証型耐震設計指針）: RC 矩形部材の終局せん断強度（塑性
@@ -72,7 +72,6 @@ impl App {
     /// 曲げは部材内の最大絶対値、Qmu は両端ヒンジ 2·Mu/内法、Rp は UI 一律指定）。
     /// いずれの応答もなければ空（＝需要 0）。
     fn ultimate_demand_by_elem(&self) -> Vec<(ElemId, squid_n_design_jp::ultimate::MemberDemand)> {
-        use squid_n_design_jp::ultimate::MemberDemand;
         // 増分解析応答からの直接反映（優先、指定時かつ応答があれば）。
         if self.ultimate_use_pushover {
             if let Some(demand) = self.ultimate_demand_from_pushover() {
@@ -105,27 +104,12 @@ impl App {
                     .unwrap_or(r.member_forces.as_slice());
                 let member_forces: &[(ElemId, squid_n_element::beam::MemberForces)] =
                     gravity_long.as_deref().unwrap_or(fallback);
-                member_forces
-                    .iter()
-                    .filter_map(|(id, mf)| {
-                        let n_axial = mf.at.first().map(|(_, f)| f[0])?;
-                        let mz = mf.at.iter().map(|(_, f)| f[5].abs()).fold(0.0, f64::max);
-                        let my = mf.at.iter().map(|(_, f)| f[4].abs()).fold(0.0, f64::max);
-                        // 長期せん断力 QL（余裕率の分子控除 (Qsu−QL)/Qmu 用）。
-                        let ql = mf.at.iter().map(|(_, f)| f[1].abs()).fold(0.0, f64::max);
-                        Some((
-                            *id,
-                            MemberDemand {
-                                n_axial,
-                                mz,
-                                my,
-                                q_long: Some(ql),
-                                q_simple: q0_map.get(id).copied(),
-                                ..Default::default()
-                            },
-                        ))
-                    })
-                    .collect::<Vec<_>>()
+                let ql_map = squid_n_job::q_long_map_from_member_forces(member_forces);
+                squid_n_job::member_demand_from_static_forces(
+                    member_forces,
+                    Some(&ql_map),
+                    Some(&q0_map),
+                )
             })
             .unwrap_or_default()
     }
@@ -139,11 +123,7 @@ impl App {
     fn ultimate_demand_from_pushover(
         &self,
     ) -> Option<Vec<(ElemId, squid_n_design_jp::ultimate::MemberDemand)>> {
-        use squid_n_design_jp::ultimate::MemberDemand;
         let po = self.results.as_ref()?.pushover.as_ref()?;
-        if po.member_response.is_empty() {
-            return None;
-        }
         // 長期せん断力 QL（余裕率の分子控除用）を重力ケース集合の静的結果から引く
         // （Q0 と同じ Dead+LiveSeismic／Live 集合。先頭ケースのみだと積載がずれる）。
         let gravity_long = self.results.as_ref().and_then(|res| {
@@ -154,33 +134,24 @@ impl App {
                     .map(|(_, s)| s.member_forces.clone())
             })
         });
-        let ql_of = |elem: ElemId| -> Option<f64> {
-            gravity_long
-                .as_ref()?
-                .iter()
-                .find(|(id, _)| *id == elem)
-                .map(|(_, mf)| mf.at.iter().map(|(_, f)| f[1].abs()).fold(0.0, f64::max))
-        };
+        let ql_by_elem: Option<std::collections::HashMap<ElemId, f64>> =
+            gravity_long.as_ref().map(|gl| {
+                gl.iter()
+                    .map(|(id, mf)| {
+                        (
+                            *id,
+                            mf.at.iter().map(|(_, f)| f[1].abs()).fold(0.0, f64::max),
+                        )
+                    })
+                    .collect()
+            });
         // 単純梁せん断 Q0（MK785/SPR785/SPR685 使用部材の QL=Q0 読み替え用）。
         // Dead+LiveSeismic（なければ Live）を加算した長期相当。
         let q0_map = squid_n_job::simple_beam_q0_by_gravity_cases(&self.model);
-        Some(
-            po.member_response
-                .iter()
-                .map(|r| {
-                    let mut d = MemberDemand::from_pushover(
-                        r.axial,
-                        r.m_strong,
-                        r.m_weak,
-                        r.shear_strong,
-                        r.shear_weak,
-                        r.rp,
-                    );
-                    d.q_long = ql_of(r.elem);
-                    d.q_simple = q0_map.get(&r.elem).copied();
-                    (r.elem, d)
-                })
-                .collect(),
+        squid_n_job::member_demand_from_pushover(
+            &po.member_response,
+            ql_by_elem.as_ref(),
+            Some(&q0_map),
         )
     }
 

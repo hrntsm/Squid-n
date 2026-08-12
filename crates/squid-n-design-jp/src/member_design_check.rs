@@ -29,8 +29,7 @@ use crate::{
 /// 一本部材グループ合成値（断面検定の採用応力上書き用）。
 ///
 /// `Model.beam_groups` から合成した部材長・端部/中央モーメント等を、
-/// 所属する分割梁要素の検定文脈へ上書きする。合成ロジック自体は
-/// 呼び出し側（現状 `squid-n-app`）が担う。
+/// 所属する分割梁要素の検定文脈へ上書きする。合成ロジックは [`crate::beam_group::beam_group_overrides`]。
 #[derive(Clone, Debug, PartialEq)]
 pub struct BeamGroupContextOverride {
     /// 一本部材の全長 L [mm]（分割部材長の総和）。
