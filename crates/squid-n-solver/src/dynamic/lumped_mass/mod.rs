@@ -156,6 +156,117 @@ mod tests {
         );
     }
 
+    /// `build_lumped_mass_model` は、長期荷重のみを載荷した初期点（λ=0、
+    /// `push_apply_long_term` 有効時に capacity_curve 先頭へ記録される）の
+    /// (δ,Q) を層 Q-δ 曲線の原点として差し引くこと。
+    ///
+    /// `total_disp` は長期載荷フェーズから水平力増分フェーズへそのまま
+    /// 引き継がれるため、以降の各点の層間変形にはこの残留分（丸め誤差では
+    /// なくミリメートル級になり得る）が乗ったまま記録される。原点補正せずに
+    /// 絶対値を取ると、この残留変形だけを持つ λ=0 点（Q≈0）が変位最小点として
+    /// 誤って拾われ K1=Q/δ≈0（層がほぼ無抵抗）に縮退していた（実モデルで
+    /// 確認された不具合の再現）。原点補正すれば、残留変形が残っていても
+    /// K1 は純粋な水平方向の弾性剛性に一致する。
+    #[test]
+    fn test_build_lumped_mass_model_corrects_long_term_origin() {
+        use squid_n_core::model::{Model, Story};
+
+        let model = Model {
+            stories: vec![
+                Story {
+                    id: StoryId(0),
+                    name: "1F".to_string(),
+                    elevation: 0.0,
+                    node_ids: Vec::new(),
+                    seismic_weight: None,
+                    weight_override: None,
+                    level_kind: Default::default(),
+                    structure: Default::default(),
+                },
+                Story {
+                    id: StoryId(1),
+                    name: "2F".to_string(),
+                    elevation: 3000.0,
+                    node_ids: Vec::new(),
+                    seismic_weight: Some(1.0e6),
+                    weight_override: None,
+                    level_kind: Default::default(),
+                    structure: Default::default(),
+                },
+            ],
+            ..Default::default()
+        };
+
+        // 層0の Q-δ 曲線: λ=0（長期のみ、水平力ゼロ）で残留変形 -0.2mm。以降の
+        // 各点は「残留変形 -0.2mm + K=100000 N/mm の弾性直線」の累積値
+        // （`total_disp` が長期・水平力増分の両フェーズを通じて累積するのと同じ
+        // 構成）とし、原点補正後に純粋な弾性直線（K=100000）へ戻ることを見る。
+        let capacity_curve = vec![
+            crate::pushover::CapacityPoint {
+                step: 0,
+                roof_disp: -0.1,
+                base_shear: 0.0,
+                story_shear: vec![1e-11],
+                story_drift: vec![-0.2],
+            },
+            crate::pushover::CapacityPoint {
+                step: 1,
+                roof_disp: 5.0,
+                base_shear: 500_000.0,
+                story_shear: vec![500_000.0],
+                story_drift: vec![-0.2 + 5.0],
+            },
+            crate::pushover::CapacityPoint {
+                step: 2,
+                roof_disp: 10.0,
+                base_shear: 1_000_000.0,
+                story_shear: vec![1_000_000.0],
+                story_drift: vec![-0.2 + 10.0],
+            },
+        ];
+        let steps = vec![
+            crate::pushover::PushoverStep {
+                load_factor: 0.0,
+                top_disp: -0.1,
+                base_shear: 0.0,
+                story_drifts: vec![-0.2],
+            },
+            crate::pushover::PushoverStep {
+                load_factor: 0.5,
+                top_disp: 5.0,
+                base_shear: 500_000.0,
+                story_drifts: vec![-0.2 + 5.0],
+            },
+            crate::pushover::PushoverStep {
+                load_factor: 1.0,
+                top_disp: 10.0,
+                base_shear: 1_000_000.0,
+                story_drifts: vec![-0.2 + 10.0],
+            },
+        ];
+        let pushover = crate::pushover::PushoverResult {
+            steps,
+            capacity_curve,
+            hinges: Vec::new(),
+            shear_yields: Vec::new(),
+            mechanism: crate::pushover::MechanismType::Overall,
+            qu: 1_000_000.0,
+            member_response: Vec::new(),
+            control: crate::pushover::PushoverControl::default(),
+            member_history: Vec::new(),
+            fiber_states: Vec::new(),
+            termination: crate::pushover::PushoverTermination::TargetReached,
+        };
+
+        let lm = build_lumped_mass_model(&model, &pushover, LumpedMassType::EquivalentShear, 0.75);
+        assert_eq!(lm.stories.len(), 1);
+        let k1 = lm.stories[0].skeleton.k1;
+        assert!(
+            (k1 - 100_000.0).abs() < 1.0,
+            "長期のみ載荷点の残留変形を原点補正した純粋な弾性剛性になっていること: k1={k1}"
+        );
+    }
+
     #[test]
     fn test_fundamental_omega_sdof() {
         // 1 質点: ω1=√(k/m)。
