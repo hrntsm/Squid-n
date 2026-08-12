@@ -50,6 +50,12 @@ impl App {
         self.stick_response = None;
         self.combo_error = None;
         self.generated_panels.clear();
+        // 波形ライブラリの選択も旧モデル由来の状態なので破棄する（そうしないと、
+        // 波形を選択したプロジェクトAの後に別プロジェクトBを開いた際、Bでは
+        // 一度も選んでいない波形がAの選択のまま持ち越され、Bを保存すると
+        // 実際には使っていない波形がB側に記録されてしまう）。
+        self.wave_library_selection = None;
+        self.wave_library_selected_sha256 = None;
         #[cfg(feature = "gui")]
         {
             self.frame_target = None;
@@ -167,8 +173,13 @@ impl App {
         }
         // 解析タブの設定値は、モデルの新陳（staleness）と無関係に常に同梱する
         // （結果を生成した条件そのものであり、結果が古くても・結果がなくても
-        // 現在の設定は保存する意味がある）。
-        let analysis_settings = Some(rmp_serde::to_vec(&self.analysis_cfg));
+        // 現在の設定は保存する意味がある）。波形ライブラリの選択（ファイル名・
+        // 実行時点のハッシュ）も同じエントリに含める。
+        let analysis_settings = Some(rmp_serde::to_vec(&SavedAnalysisSettings {
+            cfg: self.analysis_cfg,
+            wave_name: self.wave_library_selection.clone(),
+            wave_sha256: self.wave_library_selected_sha256.clone(),
+        }));
         let prep_bytes = self.encoded_or_notice(prep, "準備計算の結果");
         let results_bytes = self.encoded_or_notice(results, "解析結果");
         let analysis_settings_bytes = self.encoded_or_notice(analysis_settings, "解析タブの設定値");
@@ -255,11 +266,11 @@ impl App {
                     return;
                 }
                 self.load_model(contents.model);
-                if let Some(cfg) = self.decode_on_load::<squid_n_job::AnalysisSettings>(
+                if let Some(saved) = self.decode_on_load::<SavedAnalysisSettings>(
                     contents.analysis_settings,
                     "解析タブの設定値",
                 ) {
-                    self.analysis_cfg = cfg;
+                    self.analysis_cfg = saved.cfg;
                     // 質量モデルの方式は `Model::mass_method` が単一情報源（階の
                     // 自動生成の実行時に `analysis_cfg.mass_method` からモデルへ
                     // 反映される片方向の関係）。保存時点で両者が食い違っていた
@@ -268,6 +279,7 @@ impl App {
                     // とモデルが実際に使う方式が食い違ったまま気づけなくなる。
                     // モデル側の値で上書きし、単一情報源の原則を保つ。
                     self.analysis_cfg.mass_method = self.model.mass_method;
+                    self.restore_wave_library_selection(saved.wave_name, saved.wave_sha256);
                 }
                 if let Some(prep) =
                     self.decode_on_load::<PreparationResult>(contents.preparation, "準備計算の結果")

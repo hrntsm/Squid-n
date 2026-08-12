@@ -6121,10 +6121,20 @@ fn test_load_model_resets_model_derived_state() {
         app.th_frame = 42;
         app.th_playing = true;
     }
+    // 波形ライブラリの選択も旧モデル由来の状態。ここが漏れていると、
+    // プロジェクトAで選んだ波形が、一度も選んでいないプロジェクトBへ
+    // 持ち越されたまま保存されてしまう。
+    app.wave_library_selection = Some("elcentro.csv".to_string());
+    app.wave_library_selected_sha256 = Some("deadbeef".to_string());
 
     app.load_model(crate::sample::portal_frame());
     assert!(app.stick_response.is_none());
     assert!(app.generated_panels.is_empty());
+    assert!(
+        app.wave_library_selection.is_none(),
+        "波形ライブラリの選択が旧モデルから持ち越されている"
+    );
+    assert!(app.wave_library_selected_sha256.is_none());
     #[cfg(feature = "gui")]
     {
         assert!(app.hinge_detail_elem.is_none());

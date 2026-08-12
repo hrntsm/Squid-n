@@ -4,12 +4,14 @@
 //! - [`design`] — 許容・終局・保有水平耐力・床内検定
 //! - [`io`] — プロジェクト／ST-Bridge 入出力とモデル読込
 //! - [`loads`] — 荷重ケース自動同期・床荷重分配
+//! - [`wave_library`] — 時刻歴応答解析の波形ライブラリ（登録・選択実行）
 
 use super::*;
 
 mod design;
 mod io;
 mod loads;
+mod wave_library;
 
 #[cfg(test)]
 pub(crate) use io::{needs_recording_confirm, SAVE_RECORDING_CONFIRM_BYTES};

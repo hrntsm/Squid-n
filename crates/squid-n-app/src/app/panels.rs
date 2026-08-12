@@ -1783,6 +1783,45 @@ impl App {
                         ui.spinner();
                     }
                 });
+                // 波形ライブラリ（「🌊 波形を保存…」で登録した波形。ファイルメニュー参照）
+                // から選んで実行する。ライブラリ内容は軽量なので毎フレーム再スキャンする。
+                ui.horizontal_wrapped(|ui| {
+                    ui.label("波形ライブラリ:");
+                    let lib_dir = squid_n_io::wave_library::wave_library_dir();
+                    let names: Vec<String> = lib_dir
+                        .as_deref()
+                        .and_then(|d| squid_n_io::wave_library::list_wave_library(d).ok())
+                        .unwrap_or_default();
+                    if names.is_empty() {
+                        ui.colored_label(crate::theme::GRAY_600, "登録された波形がありません");
+                    } else {
+                        let selected_text = self
+                            .wave_library_selection
+                            .clone()
+                            .unwrap_or_else(|| "(選択してください)".to_string());
+                        egui::ComboBox::from_id_salt("wave_library_select")
+                            .selected_text(selected_text)
+                            .show_ui(ui, |ui| {
+                                for name in &names {
+                                    ui.selectable_value(
+                                        &mut self.wave_library_selection,
+                                        Some(name.clone()),
+                                        name,
+                                    );
+                                }
+                            });
+                    }
+                    if ui
+                        .add_enabled(
+                            !running && self.wave_library_selection.is_some(),
+                            egui::Button::new("▶ 選択した波形で実行"),
+                        )
+                        .on_hover_text("dt は上の設定値を使用します")
+                        .clicked()
+                    {
+                        self.run_time_history_from_library();
+                    }
+                });
                 ui.label(
                     egui::RichText::new("応答グラフは入力の大きい方向を記録")
                         .small()
@@ -1807,28 +1846,12 @@ impl App {
                 return;
             }
         };
-        let dir = self.analysis_cfg.th_dir;
-        let (col1, col2) = match parse_wave_csv(&content, dir) {
-            Ok(v) => v,
+        let wave = match ground_motion_from_wave_content(&self.analysis_cfg, &content) {
+            Ok(w) => w,
             Err(e) => {
                 self.report_error(e);
                 return;
             }
-        };
-        let wave = match dir {
-            // X/Y は単一列を方向へ振り分ける（従来仕様、job::build_ground_motion 共用）。
-            ThDir::X | ThDir::Y => {
-                squid_n_job::build_ground_motion(self.analysis_cfg.th_dt, dir, col1)
-            }
-            // X+Y は CSV の 2 列がそのまま X・Y の入力になる
-            // （build_ground_motion の Xy 分岐は「同一波形を複製」する仕様のため、
-            // 別波形の 2 列読込はここで直接 GroundMotion を組み立てる）。
-            ThDir::Xy => squid_n_solver::timehistory::GroundMotion {
-                dt: self.analysis_cfg.th_dt,
-                accel_x: col1,
-                accel_y: col2,
-                accel_theta: None,
-            },
         };
         self.start_time_history_job(wave);
     }
