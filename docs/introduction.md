@@ -4,7 +4,7 @@
 
 このサイトは、Squid-n を利用する方に向けたドキュメントです。
 
-- **[アーキテクチャ](./architecture.md)**：15 クレートから成る階層型構成の全体像
+- **[アーキテクチャ](./architecture.md)**：16 クレートから成る階層型構成の全体像
 - **[モデル入出力（ファイル形式）](./model_io/README.md)**：ネイティブの `.scz` 形式と
   ST-Bridge（`.stb`）形式でモデルを保存・読込・書出する入出力経路と、その対応範囲
 - **[MCP サーバ](./mcp_server/README.md)**：AI エージェントからモデル照会・解析実行・結果取得を行う
@@ -59,8 +59,8 @@ Squid-n は、国土交通大臣の認定を受けた構造計算プログラム
 これらは [dev_docs/](https://github.com/hrntsm/squid-n/tree/main/dev_docs) に集約しており、リポジトリの以下を参照してください。
 
 - [dev_docs/specs/](https://github.com/hrntsm/squid-n/tree/main/dev_docs/specs)：フェーズ単位の実装仕様書と原典（法令・規準）照合リスト
-- [dev_docs/v_and_v/](https://github.com/hrntsm/squid-n/tree/main/dev_docs/v_and_v)：各要素・各設計式の Verification & Validation レポート
-- [dev_docs/handoff/ROADMAP.md](https://github.com/hrntsm/squid-n/blob/main/dev_docs/handoff/ROADMAP.md)・[dev_docs/handoff/](https://github.com/hrntsm/squid-n/tree/main/dev_docs/handoff)：完了済みロードマップ、申し送り、UI 関連ドキュメント
+- [dev_docs/v_and_v/](https://github.com/hrntsm/squid-n/tree/main/dev_docs/v_and_v)：各要素・各設計式の Verification & Validation レポート（[未検証一覧](https://github.com/hrntsm/squid-n/blob/main/dev_docs/v_and_v/未検証一覧.md)）
+- [dev_docs/handoff/](https://github.com/hrntsm/squid-n/tree/main/dev_docs/handoff)：申し送り目録（[残課題一覧](https://github.com/hrntsm/squid-n/blob/main/dev_docs/handoff/残課題一覧.md)）。[ROADMAP.md](https://github.com/hrntsm/squid-n/blob/main/dev_docs/handoff/ROADMAP.md) は 2026-07 完了済みの歴史的記録
 
 ## リポジトリ
 
