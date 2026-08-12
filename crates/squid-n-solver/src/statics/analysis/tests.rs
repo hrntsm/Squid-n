@@ -410,6 +410,175 @@ fn test_model_issues_errors_on_duplicate_story_names() {
     assert!(precheck_model(&model).is_ok());
 }
 
+/// 剛床マスターの水平拘束検査用の 2 階モデル。
+///
+/// `story_index` の階に剛床を 1 つ置き、マスター節点の拘束と地震用重量を指定する。
+fn make_two_story_diaphragm_model(
+    story_index: usize,
+    master_restraint: Dof6Mask,
+    seismic_weight: Option<f64>,
+    diaphragm_weight: Option<f64>,
+) -> Model {
+    let master = NodeId(story_index as u32);
+    let mut nodes = vec![
+        Node {
+            id: NodeId(0),
+            coord: [0.0, 0.0, 0.0],
+            restraint: Dof6Mask::FIXED,
+            mass: None,
+            story: Some(StoryId(0)),
+            support_spring: None,
+        },
+        Node {
+            id: NodeId(1),
+            coord: [0.0, 0.0, 3000.0],
+            restraint: Dof6Mask::FREE,
+            mass: None,
+            story: Some(StoryId(1)),
+            support_spring: None,
+        },
+    ];
+    nodes[master.index()].restraint = master_restraint;
+    Model {
+        nodes,
+        stories: vec![
+            Story {
+                id: StoryId(0),
+                name: "1F".into(),
+                elevation: 0.0,
+                node_ids: vec![NodeId(0)],
+                seismic_weight: Some(500.0),
+                weight_override: None,
+                structure: StoryStructure::Rc,
+                level_kind: StoryLevelKind::Normal,
+            },
+            Story {
+                id: StoryId(1),
+                name: "2F".into(),
+                elevation: 3000.0,
+                node_ids: vec![NodeId(1)],
+                seismic_weight,
+                weight_override: None,
+                structure: StoryStructure::Rc,
+                level_kind: StoryLevelKind::Normal,
+            },
+        ],
+        elements: vec![ElementData {
+            id: ElemId(0),
+            kind: ElementKind::Beam,
+            nodes: smallvec::smallvec![NodeId(0), NodeId(1)],
+            section: Some(SectionId(0)),
+            local_axis: LocalAxis {
+                ref_vector: [0.0, 0.0, 1.0],
+            },
+            end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+            force_regime: ForceRegime::Auto,
+            rigid_zone: Default::default(),
+            plastic_zone: None,
+            spring: None,
+        }],
+        sections: vec![Section {
+            id: SectionId(0),
+            name: "col".into(),
+            area: 100.0,
+            iy: 833.33,
+            iz: 833.33,
+            j: 100.0,
+            depth: 10.0,
+            width: 10.0,
+            as_y: 83.33,
+            as_z: 83.33,
+            floor: None,
+            panel_thickness: None,
+            thickness: None,
+            shape: None,
+            material: Some(MaterialId(0)),
+            rebar_material: None,
+            shear_rebar_material: None,
+            steel_material: None,
+        }],
+        materials: vec![Material {
+            strength_factor: None,
+            concrete_class: Default::default(),
+            id: MaterialId(0),
+            name: "mat".into(),
+            category: MaterialCategory::Steel,
+            young: 20000.0,
+            poisson: 0.3,
+            density: 0.0,
+            shear: None,
+            fc: None,
+            fy: None,
+        }],
+        constraints: vec![Constraint::RigidDiaphragm {
+            story: StoryId(story_index as u32),
+            master,
+            slaves: Vec::new(),
+            weight: diaphragm_weight,
+            ci_override: None,
+        }],
+        ..Default::default()
+    }
+}
+
+fn has_restrained_diaphragm_master_issue(model: &Model) -> bool {
+    use super::precheck::model_issues;
+    model_issues(model)
+        .iter()
+        .any(|i| i.message.contains("剛床マスターが水平拘束"))
+}
+
+/// 基部の剛床マスターが水平拘束されていてもエラーにしない（柱脚固定は正常）。
+#[test]
+fn test_model_issues_allows_base_diaphragm_master_horizontal_restraint() {
+    use squid_n_core::dof::Dof;
+
+    let mut r = Dof6Mask::FREE;
+    r.set_fixed(Dof::Ux);
+    r.set_fixed(Dof::Uy);
+    r.set_fixed(Dof::Rz);
+    let model = make_two_story_diaphragm_model(0, r, Some(800.0), Some(800.0));
+    assert!(
+        !has_restrained_diaphragm_master_issue(&model),
+        "基部の水平拘束は許容される"
+    );
+}
+
+/// 上階の剛床マスターが水平拘束され、地震用重量が正ならエラー。
+#[test]
+fn test_model_issues_errors_on_upper_diaphragm_master_horizontal_restraint() {
+    use super::precheck::{model_issues, precheck_model, IssueSeverity, IssueTargets};
+    use squid_n_core::dof::Dof;
+
+    let mut r = Dof6Mask::FREE;
+    r.set_fixed(Dof::Ux);
+    let model = make_two_story_diaphragm_model(1, r, Some(800.0), None);
+    assert!(has_restrained_diaphragm_master_issue(&model));
+    assert!(precheck_model(&model).is_err());
+
+    let issue = model_issues(&model)
+        .into_iter()
+        .find(|i| i.message.contains("剛床マスターが水平拘束"))
+        .expect("水平拘束の不備が出ていない");
+    assert_eq!(issue.severity, IssueSeverity::Error);
+    assert!(issue.message.contains("2F"), "{}", issue.message);
+    assert_eq!(issue.targets, IssueTargets::Nodes(vec![NodeId(1)]));
+}
+
+/// 上階の剛床マスターが水平拘束でも、地震用重量が 0 ならエラーにしない。
+#[test]
+fn test_model_issues_allows_upper_diaphragm_master_restraint_without_weight() {
+    use squid_n_core::dof::Dof;
+
+    let mut r = Dof6Mask::FREE;
+    r.set_fixed(Dof::Uy);
+    let model = make_two_story_diaphragm_model(1, r, Some(0.0), Some(0.0));
+    assert!(
+        !has_restrained_diaphragm_master_issue(&model),
+        "重量 0 の階は対象外"
+    );
+}
+
 /// 載荷区間が材長を超える部材荷重はエラーとし、解析前チェックで止める。
 ///
 /// 等価節点力の積分が Hermite 形状関数を材外へ外挿するため、節点力と固定端内力が

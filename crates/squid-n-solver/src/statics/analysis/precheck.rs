@@ -469,8 +469,62 @@ pub fn model_issues(model: &Model) -> Vec<ModelIssue> {
         );
     }
 
+    // 基部以外で水平拘束された剛床マスターへ地震力が載ると、拘束自由度へ入って
+    // 無言で消える（危険側）。地震用重量が正の階だけをエラーにする。
+    {
+        use squid_n_core::dof::Dof;
+
+        for story in model.stories.iter().skip(1) {
+            let diaphragms: Vec<_> = model.diaphragms_of(story.id).collect();
+            let single = diaphragms.len() == 1;
+            for dia in diaphragms {
+                let Some(master) = model.nodes.get(dia.master.index()) else {
+                    continue;
+                };
+                let horiz_restrained =
+                    master.restraint.is_fixed(Dof::Ux) || master.restraint.is_fixed(Dof::Uy);
+                if !horiz_restrained {
+                    continue;
+                }
+                let weight = diaphragm_seismic_weight(story, &dia, single);
+                if weight <= 0.0 {
+                    continue;
+                }
+                issues.push(ModelIssue::nodes(
+                    &format!(
+                        "{}の剛床マスターが水平拘束されているため、その階の地震力が解析に載りません",
+                        story.name
+                    ),
+                    "節点 ID ",
+                    vec![dia.master],
+                    "剛床マスターが水平拘束されています",
+                    "床面に構造部材（柱・大梁）が取り付くか、剛床の設定を見直してください。",
+                ));
+            }
+        }
+    }
+
     issues.extend(node_reference_issues(model));
     issues
+}
+
+/// 剛床が負担する地震用重量 [N]。
+///
+/// `RigidDiaphragm::weight` が `Some` ならその値。`None` で階に単一剛床なら
+/// 層重量（[`squid_n_core::model::Story::seismic_weight`]）全量。多剛床で未算定は 0。
+fn diaphragm_seismic_weight(
+    story: &squid_n_core::model::Story,
+    dia: &squid_n_core::model::DiaphragmRef<'_>,
+    single_on_story: bool,
+) -> f64 {
+    if let Some(w) = dia.weight {
+        return w;
+    }
+    if single_on_story {
+        story.seismic_weight.unwrap_or(0.0)
+    } else {
+        0.0
+    }
 }
 
 /// 節点参照の不整合（ダングリング参照・孤立節点）を集める。
