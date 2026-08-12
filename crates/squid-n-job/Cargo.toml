@@ -11,4 +11,5 @@ squid-n-load = { path = "../squid-n-load" }
 squid-n-solver = { path = "../squid-n-solver" }
 squid-n-design-jp = { path = "../squid-n-design-jp" }
 squid-n-math = { path = "../squid-n-math" }
+serde = { workspace = true }
 thiserror = { workspace = true }

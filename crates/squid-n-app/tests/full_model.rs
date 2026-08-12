@@ -39,7 +39,7 @@
 //! （CONTRIBUTING.md「実モデルの統合テスト」参照）。追加を怠ると、その機能だけが
 //! 回帰検出の対象外になる。
 
-use squid_n_app::app::{App, StaticCaseKey, ThDir, DL_CASE_NAME};
+use squid_n_app::app::{App, StaticCaseKey, ThDampingModel, ThDir, DL_CASE_NAME};
 use squid_n_core::dof::Dof6Mask;
 use squid_n_core::model::ElementKind;
 use squid_n_solver::analysis::SeismicDir;
@@ -959,6 +959,10 @@ fn scz_roundtrip_preserves_model_and_results() {
     let mut app = analyzed();
     app.run_design_check();
     clear_error(&mut app);
+    // 既定値から変えておき、往復で「既定値に戻ってしまう」誤りを検出できるようにする。
+    app.analysis_cfg.th_damping = 0.037;
+    app.analysis_cfg.th_damping_model = ThDampingModel::Rayleigh;
+    app.analysis_cfg.n_modes = 5;
 
     let path = test_tmp().join("full_model_roundtrip.scz");
     app.save_project_to(path.clone());
@@ -999,6 +1003,21 @@ fn scz_roundtrip_preserves_model_and_results() {
     assert_eq!(after.statics.len(), before.statics.len(), "静的結果の件数");
     assert_eq!(after.combos.len(), before.combos.len(), "組合せ結果の件数");
     assert!(after.modal.is_some(), "固有値解析の結果が復元される");
+
+    // 解析タブの設定値（結果を生成した条件）も往復で保たれる。既定値と異なる値に
+    // しておいたので、既定値へ戻ってしまう回帰（設定が保存されない）を検出できる。
+    assert_eq!(
+        reopened.analysis_cfg.th_damping, app.analysis_cfg.th_damping,
+        "時刻歴の減衰比"
+    );
+    assert_eq!(
+        reopened.analysis_cfg.th_damping_model, app.analysis_cfg.th_damping_model,
+        "時刻歴の減衰モデル"
+    );
+    assert_eq!(
+        reopened.analysis_cfg.n_modes, app.analysis_cfg.n_modes,
+        "固有値解析のモード数"
+    );
 
     std::fs::remove_file(&path).ok();
 }

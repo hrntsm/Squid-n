@@ -62,7 +62,7 @@ pub struct StoryStick {
 }
 
 /// モデル化タイプ（せん断型多質点系、構造力学）。
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub enum LumpedMassType {
     /// 等価せん断型（曲げ剛性を剛とする）。
     #[default]
@@ -218,13 +218,35 @@ pub fn build_lumped_mass_model(
     let mut sticks = Vec::with_capacity(layers.len());
     for layer in &layers {
         let i = layer.index;
-        // 層 i の Q-δ 曲線（各キャパシティ点の層せん断・層間変形）。
+        // 長期荷重のみを載荷した初期点（λ=0、`push_apply_long_term` 有効時に
+        // capacity_curve 先頭へ記録される）を層 Q-δ 曲線の原点とする。この点は
+        // 水平力ゼロの状態だが、非対称な長期荷重により層にわずかな残留水平変形を
+        // 持つことがある（丸め誤差ではなくミリメートル級になり得る）。総変位
+        // （`total_disp`）は長期載荷フェーズから水平力増分フェーズへそのまま
+        // 引き継がれるため、以降の各点の層間変形にもこの残留分が乗ったままであり、
+        // 差し引かないと層剛性の相対分布（＝串団子モデルの振動モード）が歪む。
+        // capacity_curve と steps は生成元で常に同じ並び・同じ長さで積まれる
+        // （driver.rs の各 push 箇所参照）ので、対応するインデックスで拾える。
+        let baseline: (f64, f64) = pushover
+            .capacity_curve
+            .iter()
+            .zip(pushover.steps.iter())
+            .find(|(_, step)| step.load_factor == 0.0)
+            .and_then(|(cp, _)| {
+                let d0 = cp.story_drift.get(i).copied()?;
+                let q0 = cp.story_shear.get(i).copied()?;
+                Some((d0, q0))
+            })
+            .unwrap_or((0.0, 0.0));
+        // 層 i の Q-δ 曲線（各キャパシティ点の層せん断・層間変形。原点補正後）。
+        // 補正後の長期のみ載荷点は (0, 0) に潰れ、`fit_story_trilinear` 側の
+        // ゼロ点フィルタ（δ > 丸め許容差）でそのまま除外される。
         let curve: Vec<(f64, f64)> = pushover
             .capacity_curve
             .iter()
             .filter_map(|cp| {
-                let d = cp.story_drift.get(i).copied()?.abs();
-                let q = cp.story_shear.get(i).copied()?.abs();
+                let d = (cp.story_drift.get(i).copied()? - baseline.0).abs();
+                let q = (cp.story_shear.get(i).copied()? - baseline.1).abs();
                 Some((d, q))
             })
             .collect();

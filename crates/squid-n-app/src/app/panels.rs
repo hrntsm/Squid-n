@@ -1783,6 +1783,48 @@ impl App {
                         ui.spinner();
                     }
                 });
+                // 波形ライブラリ（「🌊 波形を保存…」で登録した波形。ファイルメニュー参照）
+                // から選んで実行する。ライブラリ内容は軽量なので毎フレーム再スキャンする。
+                ui.horizontal_wrapped(|ui| {
+                    ui.label("波形ライブラリ:");
+                    let lib_dir = squid_n_io::wave_library::wave_library_dir();
+                    let names: Vec<String> = lib_dir
+                        .as_deref()
+                        .and_then(|d| squid_n_io::wave_library::list_wave_library(d).ok())
+                        .unwrap_or_default();
+                    if names.is_empty() {
+                        ui.colored_label(crate::theme::GRAY_600, "登録された波形がありません");
+                    } else {
+                        let selected_text = self
+                            .wave_library_selection
+                            .clone()
+                            .unwrap_or_else(|| "(選択してください)".to_string());
+                        // ドロップダウンでの選び直しは、まだ実行していない＝
+                        // 「実行時点のハッシュ」を持たない状態に戻る
+                        // （`set_wave_library_selection` 参照）。`self` を直接
+                        // `selectable_value` へ渡すとこの破棄処理を経由できない
+                        // ため、いったんローカル変数で受ける。
+                        let mut picked = self.wave_library_selection.clone();
+                        egui::ComboBox::from_id_salt("wave_library_select")
+                            .selected_text(selected_text)
+                            .show_ui(ui, |ui| {
+                                for name in &names {
+                                    ui.selectable_value(&mut picked, Some(name.clone()), name);
+                                }
+                            });
+                        self.set_wave_library_selection(picked);
+                    }
+                    if ui
+                        .add_enabled(
+                            !running && self.wave_library_selection.is_some(),
+                            egui::Button::new("▶ 選択した波形で実行"),
+                        )
+                        .on_hover_text("dt は上の設定値を使用します")
+                        .clicked()
+                    {
+                        self.run_time_history_from_library();
+                    }
+                });
                 ui.label(
                     egui::RichText::new("応答グラフは入力の大きい方向を記録")
                         .small()
@@ -1807,28 +1849,12 @@ impl App {
                 return;
             }
         };
-        let dir = self.analysis_cfg.th_dir;
-        let (col1, col2) = match parse_wave_csv(&content, dir) {
-            Ok(v) => v,
+        let wave = match ground_motion_from_wave_content(&self.analysis_cfg, &content) {
+            Ok(w) => w,
             Err(e) => {
                 self.report_error(e);
                 return;
             }
-        };
-        let wave = match dir {
-            // X/Y は単一列を方向へ振り分ける（従来仕様、job::build_ground_motion 共用）。
-            ThDir::X | ThDir::Y => {
-                squid_n_job::build_ground_motion(self.analysis_cfg.th_dt, dir, col1)
-            }
-            // X+Y は CSV の 2 列がそのまま X・Y の入力になる
-            // （build_ground_motion の Xy 分岐は「同一波形を複製」する仕様のため、
-            // 別波形の 2 列読込はここで直接 GroundMotion を組み立てる）。
-            ThDir::Xy => squid_n_solver::timehistory::GroundMotion {
-                dt: self.analysis_cfg.th_dt,
-                accel_x: col1,
-                accel_y: col2,
-                accel_theta: None,
-            },
         };
         self.start_time_history_job(wave);
     }
@@ -2362,6 +2388,61 @@ impl App {
                  等包絡面積則でトリリニア縮約したもの。",
             );
         });
+
+        // ── 質点系（せん断型）固有値解析 ────────────────────────────
+        // 初期剛性 K1 ベースのせん断型多質点系（立体モデルの解析タブ「① 準備計算」
+        // 「固有値解析」と同じモード数設定 `n_modes` を使う）。立体モデルとの
+        // 周期の比較検証を主目的とし、モード形状の値どうしは正規化基準が異なるため
+        // 比較しない（下の注記参照）。
+        ui.separator();
+        ui.label("固有値解析（せん断型・K1 ベース）");
+        match squid_n_solver::lumped_mass::lumped_mass_eigen(&lm, self.analysis_cfg.n_modes) {
+            Ok(modal) if !modal.period.is_empty() => {
+                crate::table_util::standard_table(
+                    ui,
+                    "lumped_mass_modal",
+                    &[
+                        Col::label("次数"),
+                        Col::num("周期 T[s]"),
+                        Col::wide_num("モード形状（下層→上層）"),
+                    ],
+                    modal.period.len(),
+                    |row| {
+                        let j = row.index();
+                        row.col(|ui| {
+                            ui.label(format!("{}", j + 1));
+                        });
+                        row.col(|ui| {
+                            ui.label(format!("{:.4}", modal.period[j]));
+                        });
+                        row.col(|ui| {
+                            let shape = modal.shapes[j]
+                                .iter()
+                                .map(|v| format!("{v:.2}"))
+                                .collect::<Vec<_>>()
+                                .join(", ");
+                            crate::table_util::text_cell(ui, &shape);
+                        });
+                    },
+                );
+                ui.add_space(4.0);
+                ui.colored_label(
+                    crate::theme::GRAY_600,
+                    "モード形状は最上階を 1.0 に正規化。立体モデルの固有値解析結果\
+                     （M 正規化・別の自由度空間）とは正規化基準が異なるため、\
+                     モード形状の値どうしは比較せず、周期のみを比較すること。",
+                );
+            }
+            Ok(_) => {
+                ui.colored_label(crate::theme::GRAY_600, "層がありません。");
+            }
+            Err(e) => {
+                ui.colored_label(
+                    crate::theme::SECONDARY_AMBER,
+                    format!("固有値解析できません: {e}"),
+                );
+            }
+        }
 
         // ── 質点系（せん断型）時刻歴応答解析 ──────────────────────────
         ui.separator();

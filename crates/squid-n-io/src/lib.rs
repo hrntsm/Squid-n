@@ -4,6 +4,7 @@ pub mod migrate;
 pub mod results;
 pub mod scz;
 pub mod stbridge;
+pub mod wave_library;
 
 /// テスト用の共有ユーティリティ。
 #[cfg(test)]

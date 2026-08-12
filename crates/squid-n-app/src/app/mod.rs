@@ -327,6 +327,22 @@ pub struct SavedResults {
     pub last_run: Option<SystemTime>,
 }
 
+/// プロジェクトファイル（.scz）へ保存する解析タブの設定値一式。
+///
+/// `AnalysisSettings` は `to_job_params`・`compute_job` 等へ値渡しされる箇所が
+/// 多く `Copy` に依存しているため、`String` を持つ波形ライブラリの選択状態は
+/// `AnalysisSettings` 本体には加えず、この保存専用のラッパーで包む
+/// （`analysis_settings.msgpack` のエントリ本体）。
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct SavedAnalysisSettings {
+    pub cfg: AnalysisSettings,
+    /// 波形ライブラリ（`squid_n_io::wave_library`）で選択中の波形ファイル名。
+    pub wave_name: Option<String>,
+    /// `wave_name` を実行／保存した時点のライブラリ内ファイルの SHA-256。
+    /// 読込側は、ライブラリ側のファイルが差し替えられていないかの検証に使う。
+    pub wave_sha256: Option<String>,
+}
+
 #[derive(Default, Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct ResultsBundle {
     pub statics: Vec<(StaticCaseKey, squid_n_solver::linear::StaticOnce)>,
@@ -770,6 +786,20 @@ pub struct App {
     pub project_path: Option<std::path::PathBuf>,
     /// 解析タブの設定値
     pub analysis_cfg: AnalysisSettings,
+    /// 波形ライブラリ（`squid_n_io::wave_library`）で選択中の波形ファイル名。
+    /// 「▶ 選択した波形で実行」で使う波形を指し、`.scz` にも同梱する
+    /// （次回開いたときに自動で同じ波形を参照できるようにするため。
+    /// `SavedAnalysisSettings::wave_name`）。
+    pub wave_library_selection: Option<String>,
+    /// `wave_library_selection` を最後に実行／読込復元した時点のライブラリ内
+    /// ファイルの SHA-256。プロジェクト読込時、ライブラリ側のファイルが同名の
+    /// まま差し替えられていないかを検証するために使う
+    /// （`SavedAnalysisSettings::wave_sha256`）。
+    pub wave_library_selected_sha256: Option<String>,
+    /// 「🌊 波形を保存…」で選んだファイルが波形ライブラリに同名で既に存在し、
+    /// 上書き確認ダイアログの表示待ちであることを示す（パスは登録元）。
+    #[cfg(feature = "gui")]
+    pub pending_wave_register: Option<std::path::PathBuf>,
     /// 自動荷重同期（`sync_auto_load_cases_action`）が最後に行われた時点の
     /// モデル＋関連設定のハッシュ。次回呼び出し時に現在のハッシュと一致すれば
     /// DL/LL/EX/EY の再計算（床格子サブFEM解析等）を丸ごとスキップする。
@@ -1011,6 +1041,10 @@ impl Default for App {
             wall_draw_nodes: Vec::new(),
             project_path: None,
             analysis_cfg: AnalysisSettings::default(),
+            wave_library_selection: None,
+            wave_library_selected_sha256: None,
+            #[cfg(feature = "gui")]
+            pending_wave_register: None,
             auto_load_sync_hash: None,
             generated_panels: Vec::new(),
             #[cfg(feature = "gui")]
@@ -1313,6 +1347,30 @@ fn parse_wave_csv(content: &str, dir: ThDir) -> Result<(Vec<f64>, Option<Vec<f64
             Ok((xs, Some(ys)))
         }
     }
+}
+
+/// 波形 CSV の内容から `GroundMotion` を組み立てる（`cfg.th_dir`・`cfg.th_dt` を使用）。
+/// ファイル選択（`run_time_history_from_csv`）・波形ライブラリからの選択実行
+/// （`run_time_history_from_library`）の双方で共有する。
+#[cfg(feature = "gui")]
+fn ground_motion_from_wave_content(
+    cfg: &AnalysisSettings,
+    content: &str,
+) -> Result<squid_n_solver::timehistory::GroundMotion, String> {
+    let (col1, col2) = parse_wave_csv(content, cfg.th_dir)?;
+    Ok(match cfg.th_dir {
+        // X/Y は単一列を方向へ振り分ける（従来仕様、job::build_ground_motion 共用）。
+        ThDir::X | ThDir::Y => squid_n_job::build_ground_motion(cfg.th_dt, cfg.th_dir, col1),
+        // X+Y は CSV の 2 列がそのまま X・Y の入力になる
+        // （build_ground_motion の Xy 分岐は「同一波形を複製」する仕様のため、
+        // 別波形の 2 列読込はここで直接 GroundMotion を組み立てる）。
+        ThDir::Xy => squid_n_solver::timehistory::GroundMotion {
+            dt: cfg.th_dt,
+            accel_x: col1,
+            accel_y: col2,
+            accel_theta: None,
+        },
+    })
 }
 
 /// 壁要素の側柱（壁と**両端の**節点を共有する鉛直線材）に SRC 造の柱があるか。
@@ -1628,6 +1686,44 @@ impl eframe::App for App {
             }
         }
 
+        // 波形ライブラリ登録の上書き確認ダイアログ（「🌊 波形を保存…」で同名の
+        // 波形が既にある場合）。どのタブからでも表示できるよう、ここで描画する。
+        if self.pending_wave_register.is_some() {
+            let mut do_confirm = false;
+            let mut do_cancel = false;
+            let mut open = true;
+            let file_name = self
+                .pending_wave_register
+                .as_ref()
+                .and_then(|p| p.file_name())
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            egui::Window::new("波形ライブラリの上書き確認")
+                .title_bar(true)
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .open(&mut open)
+                .show(ui.ctx(), |ui| {
+                    ui.label(format!(
+                        "波形ライブラリに同名の波形「{file_name}」が既にあります。上書きしますか？"
+                    ));
+                    ui.horizontal(|ui| {
+                        if ui.button("上書きする").clicked() {
+                            do_confirm = true;
+                        }
+                        if ui.button("キャンセル").clicked() {
+                            do_cancel = true;
+                        }
+                    });
+                });
+            if !open || do_cancel {
+                self.cancel_register_wave();
+            } else if do_confirm {
+                self.confirm_register_wave();
+            }
+        }
+
         // 上部ツールバー: ファイルメニュー + 工程タブ（自由遷移）+ Undo/Redo
         egui::Panel::top("top_toolbar").show_inside(ui, |ui| {
             ui.horizontal(|ui| {
@@ -1683,6 +1779,18 @@ impl eframe::App for App {
                         .clicked()
                     {
                         self.export_stbridge_dialog();
+                        ui.close();
+                    }
+                    ui.separator();
+                    if ui
+                        .button("🌊 波形を保存…")
+                        .on_hover_text(
+                            "時刻歴応答解析の入力波形（CSV）を波形ライブラリへコピーします。\
+                             プロジェクトをまたいで使い回せます（.scz には波形の実体は含まれません）",
+                        )
+                        .clicked()
+                    {
+                        self.register_wave_to_library_dialog();
                         ui.close();
                     }
                 });

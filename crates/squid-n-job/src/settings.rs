@@ -7,7 +7,11 @@
 use squid_n_solver::analysis::{AiMode, SeismicDir};
 
 /// 解析タブの設定値（GUI 非依存。テストからも使う）。
-#[derive(Clone, Copy, Debug)]
+///
+/// `.scz`（`squid-n-io` の `SczExtras::analysis_settings`）へ同梱される。
+/// モデルから導出できない独立した設定値であり、同梱しないと解析結果を
+/// 生成した条件が失われ、結果の再現性が保てないため。
+#[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
 pub struct AnalysisSettings {
     /// 固有値解析のモード数
     pub n_modes: usize,
@@ -104,7 +108,7 @@ pub struct AnalysisSettings {
 /// 時刻歴の入力方向選択（UI 用）。X・Y に加え、同一波形を両方向へ同時入力する
 /// 「X+Y」を持つ（`SeismicDir` は静的地震荷重・増分解析共用のため
 /// 拡張せず、時刻歴専用にこの型を新設する）。
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ThDir {
     X,
     Y,
@@ -112,7 +116,7 @@ pub enum ThDir {
 }
 
 /// 時刻歴の減衰モデル選択（UI 用）。構造動力学の減衰マトリクス。
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ThDampingModel {
     /// 初期剛性比例（C=2h/ω1·Ke）。
     StiffnessProportional,
@@ -127,7 +131,7 @@ pub enum ThDampingModel {
 }
 
 /// 時刻歴の積分法選択（UI 用）。
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ThIntegrator {
     NewmarkBeta,
     HhtAlpha,

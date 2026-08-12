@@ -75,28 +75,40 @@ pub const PREPARATION_ENTRY: &str = "preparation.msgpack";
 /// 解析結果を格納する zip エントリ名（任意エントリ）。
 pub const RESULTS_ENTRY: &str = "results.msgpack";
 
-/// モデル以外に .scz へ同梱する派生データ（いずれもモデルから再計算できるが、
-/// 再計算が高価なため保存して復元するもの）。
+/// 解析タブの設定値（`AnalysisSettings`）を格納する zip エントリ名（任意エントリ）。
+pub const ANALYSIS_SETTINGS_ENTRY: &str = "analysis_settings.msgpack";
+
+/// モデル以外に .scz へ同梱する付随データ。
+///
+/// - `preparation`・`results` はモデルから再計算できるが、再計算が高価なため
+///   保存して復元するもの。
+/// - `analysis_settings` はモデルから導出できない独立した設定値（時刻歴の
+///   波形パラメータ・減衰モデル、固有値解析のモード数など）。同梱しないと
+///   `results` を生成した条件が失われ、結果の再現性が保てない。
 ///
 /// 中身は呼び出し側（アプリ）が msgpack へ直列化したバイト列であり、io 層は
-/// 内容を解釈しない（準備計算・解析結果の型はアプリ層にあるため）。`None` の
-/// 項目はエントリを書かない。書く項目は manifest に列挙してハッシュ検証の
-/// 対象にする。
+/// 内容を解釈しない（各データの型はアプリ層にあるため）。`None` の項目は
+/// エントリを書かない。書く項目は manifest に列挙してハッシュ検証の対象にする。
 #[derive(Default, Clone, Copy)]
 pub struct SczExtras<'a> {
     /// 準備計算の結果。
     pub preparation: Option<&'a [u8]>,
     /// 解析結果。
     pub results: Option<&'a [u8]>,
+    /// 解析タブの設定値（`results` を生成した条件。`squid_n_job::AnalysisSettings`）。
+    pub analysis_settings: Option<&'a [u8]>,
 }
 
-/// [`load_scz`] の返り値。モデルと、同梱されていれば派生データ。
+/// [`load_scz`] の返り値。モデルと、同梱されていれば付随データ。
 pub struct SczContents {
     pub model: Model,
     /// 準備計算の結果（同梱がなければ `None`）。
     pub preparation: Option<Vec<u8>>,
     /// 解析結果（同梱がなければ `None`）。
     pub results: Option<Vec<u8>>,
+    /// 解析タブの設定値（同梱がなければ `None`。旧プロジェクトファイルには
+    /// ないため、読込側は `None` を既定値で補うこと）。
+    pub analysis_settings: Option<Vec<u8>>,
 }
 
 /// モデルと派生データを .scz へ保存する。
@@ -126,6 +138,7 @@ pub fn save_scz(path: &Path, model: &Model, extras: SczExtras<'_>) -> Result<(),
     for (name, data) in [
         (PREPARATION_ENTRY, extras.preparation),
         (RESULTS_ENTRY, extras.results),
+        (ANALYSIS_SETTINGS_ENTRY, extras.analysis_settings),
     ] {
         if let Some(data) = data {
             entries.push(crate::manifest::EntryHash {
@@ -166,6 +179,7 @@ pub fn save_scz(path: &Path, model: &Model, extras: SczExtras<'_>) -> Result<(),
         for (name, data) in [
             (PREPARATION_ENTRY, extras.preparation),
             (RESULTS_ENTRY, extras.results),
+            (ANALYSIS_SETTINGS_ENTRY, extras.analysis_settings),
         ] {
             if let Some(data) = data {
                 zip.start_file(name, opts)
@@ -201,9 +215,10 @@ fn sync_parent_dir(_path: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-/// モデルと、同梱されていれば派生データ（準備計算の結果・解析結果）を読み込む。
-/// 該当エントリを持たないファイル（それらが最新でない状態で保存したプロジェクト）
-/// では [`SczContents`] の該当項目が `None` になる。
+/// モデルと、同梱されていれば付随データ（準備計算の結果・解析結果・解析タブの
+/// 設定値）を読み込む。該当エントリを持たないファイル（それらが最新でない状態で
+/// 保存したプロジェクト、または解析タブの設定値を含まない旧プロジェクト）では
+/// [`SczContents`] の該当項目が `None` になる。
 pub fn load_scz(path: &Path) -> Result<SczContents, IoError> {
     let f = std::fs::File::open(path)?;
     let mut archive = zip::ZipArchive::new(f).map_err(|e| IoError::Zip(e.to_string()))?;
@@ -228,6 +243,7 @@ pub fn load_scz(path: &Path) -> Result<SczContents, IoError> {
     let mut model_data = None;
     let mut preparation = None;
     let mut results = None;
+    let mut analysis_settings = None;
     for entry in &manifest.entries {
         let data = read_entry_capped(&mut archive, &entry.name)?;
         let actual_hash = sha256_of(&data);
@@ -238,6 +254,7 @@ pub fn load_scz(path: &Path) -> Result<SczContents, IoError> {
             "model.msgpack" => model_data = Some(data),
             PREPARATION_ENTRY => preparation = Some(data),
             RESULTS_ENTRY => results = Some(data),
+            ANALYSIS_SETTINGS_ENTRY => analysis_settings = Some(data),
             _ => {}
         }
     }
@@ -254,6 +271,7 @@ pub fn load_scz(path: &Path) -> Result<SczContents, IoError> {
         model,
         preparation,
         results,
+        analysis_settings,
     })
 }
 
@@ -580,6 +598,62 @@ mod tests {
         let (back, back_prep) = (loaded.model, loaded.preparation);
         assert!(model.eq_ignoring_dofmap(&back));
         assert!(back_prep.is_none());
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// 解析タブの設定値（アプリ層が直列化した任意バイト列）が保存→読込で往復し、
+    /// manifest のハッシュ検証対象になること。`results` を生成した条件（波形
+    /// パラメータ・減衰モデル等）が保存されないと再現性が保てないための同梱。
+    #[test]
+    fn test_roundtrip_preserves_analysis_settings_entry() {
+        let model = make_3node_model();
+        let dir = crate::test_util::test_tmp();
+        let path = dir.join("p_analysis_settings_roundtrip.scz");
+        let cfg = b"analysis settings payload".to_vec();
+        save_scz(
+            &path,
+            &model,
+            SczExtras {
+                analysis_settings: Some(&cfg),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        let loaded = load_scz(&path).unwrap();
+        assert_eq!(loaded.analysis_settings.as_deref(), Some(cfg.as_slice()));
+
+        let manifest: Manifest = {
+            let f = std::fs::File::open(&path).unwrap();
+            let mut ar = zip::ZipArchive::new(f).unwrap();
+            let mut mb = Vec::new();
+            ar.by_name("manifest.json")
+                .unwrap()
+                .read_to_end(&mut mb)
+                .unwrap();
+            serde_json::from_slice(&mb).unwrap()
+        };
+        let entry = manifest
+            .entries
+            .iter()
+            .find(|e| e.name == ANALYSIS_SETTINGS_ENTRY)
+            .expect("解析タブの設定値エントリが manifest にあるはず");
+        assert_eq!(entry.sha256, sha256_of(&cfg));
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// 解析タブの設定値を同梱しないで保存したファイル（旧プロジェクトファイル
+    /// 相当）は、解析タブの設定値が `None` として読める。
+    #[test]
+    fn test_load_without_analysis_settings_entry() {
+        let model = make_3node_model();
+        let dir = crate::test_util::test_tmp();
+        let path = dir.join("p_analysis_settings_absent.scz");
+        save_scz(&path, &model, SczExtras::default()).unwrap();
+
+        let loaded = load_scz(&path).unwrap();
+        assert!(loaded.analysis_settings.is_none());
         let _ = std::fs::remove_file(&path);
     }
 

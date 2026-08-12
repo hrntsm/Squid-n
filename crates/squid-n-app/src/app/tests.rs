@@ -6121,10 +6121,20 @@ fn test_load_model_resets_model_derived_state() {
         app.th_frame = 42;
         app.th_playing = true;
     }
+    // 波形ライブラリの選択も旧モデル由来の状態。ここが漏れていると、
+    // プロジェクトAで選んだ波形が、一度も選んでいないプロジェクトBへ
+    // 持ち越されたまま保存されてしまう。
+    app.wave_library_selection = Some("elcentro.csv".to_string());
+    app.wave_library_selected_sha256 = Some("deadbeef".to_string());
 
     app.load_model(crate::sample::portal_frame());
     assert!(app.stick_response.is_none());
     assert!(app.generated_panels.is_empty());
+    assert!(
+        app.wave_library_selection.is_none(),
+        "波形ライブラリの選択が旧モデルから持ち越されている"
+    );
+    assert!(app.wave_library_selected_sha256.is_none());
     #[cfg(feature = "gui")]
     {
         assert!(app.hinge_detail_elem.is_none());
@@ -6132,6 +6142,64 @@ fn test_load_model_resets_model_derived_state() {
         assert_eq!(app.th_frame, 0);
         assert!(!app.th_playing);
     }
+}
+
+/// `set_wave_library_selection`（波形ライブラリのドロップダウン用）は、選択が
+/// 実際に変わったときだけ実行時点のハッシュを破棄する。破棄しないと、実行済み
+/// の波形 A のハッシュを持ったまま波形 B へ選び直して保存でき、一度も実行して
+/// いない name-hash の組が `.scz` に残ってしまう。
+#[test]
+#[allow(clippy::field_reassign_with_default)]
+fn test_set_wave_library_selection_clears_hash_only_on_change() {
+    let mut app = App::default();
+    app.wave_library_selection = Some("a.csv".to_string());
+    app.wave_library_selected_sha256 = Some("hash_a".to_string());
+
+    // 同じ値を選び直してもハッシュは維持する（実行済みの状態は壊さない）。
+    app.set_wave_library_selection(Some("a.csv".to_string()));
+    assert_eq!(app.wave_library_selected_sha256.as_deref(), Some("hash_a"));
+
+    // 別の波形へ選び直すと、まだ実行していないためハッシュを破棄する。
+    app.set_wave_library_selection(Some("b.csv".to_string()));
+    assert_eq!(app.wave_library_selection.as_deref(), Some("b.csv"));
+    assert!(app.wave_library_selected_sha256.is_none());
+}
+
+/// 質量モデルの方式（`mass_method`）は、解析タブの設定値
+/// （`analysis_settings.msgpack`）の同梱有無によらず、常にモデル側の値へ
+/// 同期される。本機能追加前に保存された旧形式の `.scz`（同エントリを持たない
+/// ファイル）を開いても、`analysis_cfg.mass_method` が読込前の値のまま
+/// 取り残されてはいけない（取り残されると、気づかず「階の自動生成」を実行
+/// した際に古い方式がモデルへ書き戻され、解析結果が静かに変わる）。
+#[test]
+fn test_open_legacy_project_without_analysis_settings_syncs_mass_method() {
+    use squid_n_core::model::MassMethod;
+
+    let dir = test_tmp();
+    let path = dir.join("squid_n_legacy_mass_method_test.scz");
+    let _ = std::fs::remove_file(&path);
+
+    let mut model = crate::sample::portal_frame();
+    model.mass_method = MassMethod::LumpedOnly;
+    // analysis_settings を同梱しない、本機能追加前の .scz を模擬する。
+    squid_n_io::scz::save_scz(&path, &model, squid_n_io::scz::SczExtras::default())
+        .expect("legacy .scz の保存");
+
+    let mut reopened = App::default();
+    assert_eq!(
+        reopened.analysis_cfg.mass_method,
+        MassMethod::CorrectedLumped,
+        "既定値（前提の確認）"
+    );
+    reopened.open_project_from(path.clone());
+    assert!(reopened.last_error.is_none(), "{:?}", reopened.last_error);
+    assert_eq!(
+        reopened.analysis_cfg.mass_method,
+        MassMethod::LumpedOnly,
+        "analysis_settings を持たない旧形式の .scz でも mass_method はモデル側に同期されるはず"
+    );
+
+    let _ = std::fs::remove_file(&path);
 }
 
 /// 準備計算の CSV には階の分布・Ai 分布・剛域・荷重集計の各セクションが出る。
