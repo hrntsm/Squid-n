@@ -2363,6 +2363,61 @@ impl App {
             );
         });
 
+        // ── 質点系（せん断型）固有値解析 ────────────────────────────
+        // 初期剛性 K1 ベースのせん断型多質点系（立体モデルの解析タブ「① 準備計算」
+        // 「固有値解析」と同じモード数設定 `n_modes` を使う）。立体モデルとの
+        // 周期の比較検証を主目的とし、モード形状の値どうしは正規化基準が異なるため
+        // 比較しない（下の注記参照）。
+        ui.separator();
+        ui.label("固有値解析（せん断型・K1 ベース）");
+        match squid_n_solver::lumped_mass::lumped_mass_eigen(&lm, self.analysis_cfg.n_modes) {
+            Ok(modal) if !modal.period.is_empty() => {
+                crate::table_util::standard_table(
+                    ui,
+                    "lumped_mass_modal",
+                    &[
+                        Col::label("次数"),
+                        Col::num("周期 T[s]"),
+                        Col::wide_num("モード形状（下層→上層）"),
+                    ],
+                    modal.period.len(),
+                    |row| {
+                        let j = row.index();
+                        row.col(|ui| {
+                            ui.label(format!("{}", j + 1));
+                        });
+                        row.col(|ui| {
+                            ui.label(format!("{:.4}", modal.period[j]));
+                        });
+                        row.col(|ui| {
+                            let shape = modal.shapes[j]
+                                .iter()
+                                .map(|v| format!("{v:.2}"))
+                                .collect::<Vec<_>>()
+                                .join(", ");
+                            crate::table_util::text_cell(ui, &shape);
+                        });
+                    },
+                );
+                ui.add_space(4.0);
+                ui.colored_label(
+                    crate::theme::GRAY_600,
+                    "モード形状は最上階を 1.0 に正規化。立体モデルの固有値解析結果\
+                     （M 正規化・別の自由度空間）とは正規化基準が異なるため、\
+                     モード形状の値どうしは比較せず、周期のみを比較すること。",
+                );
+            }
+            Ok(_) => {
+                ui.colored_label(crate::theme::GRAY_600, "層がありません。");
+            }
+            Err(e) => {
+                ui.colored_label(
+                    crate::theme::SECONDARY_AMBER,
+                    format!("固有値解析できません: {e}"),
+                );
+            }
+        }
+
         // ── 質点系（せん断型）時刻歴応答解析 ──────────────────────────
         ui.separator();
         let mut run_stick = false;

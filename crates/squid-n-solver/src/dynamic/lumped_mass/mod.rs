@@ -13,9 +13,11 @@
 //! 詳細なルール1/2/3の分岐（降伏部材比率等）は簡略化しており、第1折点の判定は
 //! 割線剛性比率（`secant_ratio`）で行う。
 
+mod eigen;
 mod model;
 mod time_history;
 
+pub use eigen::{lumped_mass_eigen, LumpedMassModal};
 pub use model::{
     build_lumped_mass_model, fit_story_trilinear, LumpedMassModel, LumpedMassType, StoryStick,
     StoryTrilinear,
@@ -24,6 +26,8 @@ pub use time_history::{lumped_mass_time_history, StickResponse, STICK_NEWTON};
 
 // tests は両サブモジュールの非公開項目（`pub(crate)`）を `super::*` で参照するため、
 // テストビルド時のみ mod.rs 名前空間へ取り込む。
+#[cfg(test)]
+use eigen::stick_omega1;
 #[cfg(test)]
 use model::envelope_area;
 #[cfg(test)]
@@ -272,6 +276,130 @@ mod tests {
         // 1 質点: ω1=√(k/m)。
         let w = fundamental_omega(&[2.0], &[800.0]);
         assert!((w - (800.0_f64 / 2.0).sqrt()).abs() < 1e-6, "w={w}");
+    }
+
+    /// `lumped_mass_eigen` の解析解検証（構造力学）: 2 質点・等質量 m・等剛性 k の
+    /// せん断型 [[2k,-k],[-k,k]] は特性方程式 λ²-3λ+1=0（λ=ω²/(k/m)）より
+    /// λ=(3∓√5)/2 = 0.381966… / 2.618034…。faer の固有値が昇順であることと
+    /// 数値の妥当性の両方を同時に検証する。
+    #[test]
+    fn test_lumped_mass_eigen_two_dof_analytic() {
+        let lm = LumpedMassModel {
+            model_type: LumpedMassType::EquivalentShear,
+            stories: vec![
+                stick(1.0, 1.0, 0.1, 0.3, 0.7, 1.0, 0.8),
+                stick(1.0, 1.0, 0.1, 0.3, 0.7, 1.0, 0.8),
+            ],
+        };
+        let modal = lumped_mass_eigen(&lm, 2).expect("固有値分解に成功する");
+        assert_eq!(modal.omega2.len(), 2);
+        let expected = [(3.0 - 5.0_f64.sqrt()) / 2.0, (3.0 + 5.0_f64.sqrt()) / 2.0];
+        assert!(
+            (modal.omega2[0] - expected[0]).abs() < 1e-9,
+            "1次: {} vs {}",
+            modal.omega2[0],
+            expected[0]
+        );
+        assert!(
+            (modal.omega2[1] - expected[1]).abs() < 1e-9,
+            "2次: {} vs {}",
+            modal.omega2[1],
+            expected[1]
+        );
+        // 昇順（1次 < 2次）。
+        assert!(modal.omega2[0] < modal.omega2[1]);
+        // 周期は ω=√ω² から算定される（T=2π/ω）。
+        assert!(
+            (modal.period[0] - 2.0 * std::f64::consts::PI / modal.omega2[0].sqrt()).abs() < 1e-9
+        );
+    }
+
+    /// `lumped_mass_eigen` の1次モードと、既存の逆反復法 `fundamental_omega` が
+    /// 同じ入力で近い値を返すこと（減衰用 ω1 の一本化＝`stick_omega1` が
+    /// 新しい厳密解法へ差し替わっても、従来の概算と乖離しないことの確認）。
+    #[test]
+    fn test_lumped_mass_eigen_matches_power_iteration_omega1() {
+        let lm = LumpedMassModel {
+            model_type: LumpedMassType::EquivalentShear,
+            stories: vec![
+                stick(2.0, 2000.0, 0.1, 0.3, 250.0, 1.0, 300.0),
+                stick(1.5, 1500.0, 0.1, 0.3, 200.0, 1.0, 260.0),
+                stick(1.0, 900.0, 0.1, 0.3, 150.0, 1.0, 200.0),
+            ],
+        };
+        let modal = lumped_mass_eigen(&lm, 1).expect("固有値分解に成功する");
+        let mass: Vec<f64> = lm.stories.iter().map(|s| s.mass).collect();
+        let k1: Vec<f64> = lm.stories.iter().map(|s| s.skeleton.k1).collect();
+        let w_power = fundamental_omega(&mass, &k1);
+        let w_eigen = modal.omega2[0].sqrt();
+        assert!(
+            (w_eigen - w_power).abs() < 1e-6 * w_power,
+            "eigen={w_eigen}, power_iteration={w_power}"
+        );
+    }
+
+    /// 質量が 0 以下の層があると `SolveError::InvalidInput` を返す（実体のない
+    /// 極端な高周波モードを紛れ込ませず、明示的にエラー報告する）。
+    #[test]
+    fn test_lumped_mass_eigen_rejects_non_positive_mass() {
+        let lm = LumpedMassModel {
+            model_type: LumpedMassType::EquivalentShear,
+            stories: vec![stick(0.0, 1000.0, 0.1, 0.3, 250.0, 1.0, 300.0)],
+        };
+        let err = lumped_mass_eigen(&lm, 1).unwrap_err();
+        assert!(matches!(
+            err,
+            squid_n_math::solver::SolveError::InvalidInput(_)
+        ));
+    }
+
+    /// `stick_omega1`（減衰算定用）は、質量 0 以下の層があっても ω1 を
+    /// 桁違いに大きくしない。`.max(1e-9)` でそのまま解くと ω1=√(k/1e-9) が
+    /// 巨大になり、`a1=2h/ω1` が実質ゼロへ潰れて無音で無減衰になっていた
+    /// （非安全側の破綻）。他層の質量平均で置き換えて解くため、質量ゼロ層が
+    /// なかった場合の ω1 と同程度のオーダーに収まることを確認する。
+    #[test]
+    fn test_stick_omega1_survives_zero_mass_story_without_blowing_up() {
+        let healthy = LumpedMassModel {
+            model_type: LumpedMassType::EquivalentShear,
+            stories: vec![
+                stick(2.0, 2000.0, 0.1, 0.3, 250.0, 1.0, 300.0),
+                stick(1.5, 1500.0, 0.1, 0.3, 200.0, 1.0, 260.0),
+            ],
+        };
+        let w_healthy = stick_omega1(&healthy);
+
+        let with_zero_mass_story = LumpedMassModel {
+            model_type: LumpedMassType::EquivalentShear,
+            stories: vec![
+                stick(2.0, 2000.0, 0.1, 0.3, 250.0, 1.0, 300.0),
+                stick(0.0, 1500.0, 0.1, 0.3, 200.0, 1.0, 260.0),
+            ],
+        };
+        let w_zero_mass = stick_omega1(&with_zero_mass_story);
+
+        assert!(w_zero_mass.is_finite() && w_zero_mass > 0.0);
+        // .max(1e-9) でそのまま解いた場合（旧来のバグ）は ω1 が 1e4 倍以上に
+        // 跳ね上がる。健全なケースと同程度のオーダー（1桁以内）に収まること。
+        assert!(
+            w_zero_mass < w_healthy * 10.0,
+            "ω1 が異常に大きい（無減衰化の兆候）: zero_mass={w_zero_mass}, healthy={w_healthy}"
+        );
+    }
+
+    /// n_modes が層数を超える場合、返るモード数は層数まで切り詰められる
+    /// （立体モデルの `solve_eigen` と同じ規約）。
+    #[test]
+    fn test_lumped_mass_eigen_truncates_to_story_count() {
+        let lm = LumpedMassModel {
+            model_type: LumpedMassType::EquivalentShear,
+            stories: vec![stick(1.0, 1000.0, 0.1, 0.3, 250.0, 1.0, 300.0)],
+        };
+        let modal = lumped_mass_eigen(&lm, 5).expect("固有値分解に成功する");
+        assert_eq!(modal.omega2.len(), 1);
+        assert_eq!(modal.shapes.len(), 1);
+        // 単一質点のモード形状は最上階=1.0 に正規化される。
+        assert!((modal.shapes[0][0] - 1.0).abs() < 1e-12);
     }
 
     #[test]
