@@ -1799,17 +1799,20 @@ impl App {
                             .wave_library_selection
                             .clone()
                             .unwrap_or_else(|| "(選択してください)".to_string());
+                        // ドロップダウンでの選び直しは、まだ実行していない＝
+                        // 「実行時点のハッシュ」を持たない状態に戻る
+                        // （`set_wave_library_selection` 参照）。`self` を直接
+                        // `selectable_value` へ渡すとこの破棄処理を経由できない
+                        // ため、いったんローカル変数で受ける。
+                        let mut picked = self.wave_library_selection.clone();
                         egui::ComboBox::from_id_salt("wave_library_select")
                             .selected_text(selected_text)
                             .show_ui(ui, |ui| {
                                 for name in &names {
-                                    ui.selectable_value(
-                                        &mut self.wave_library_selection,
-                                        Some(name.clone()),
-                                        name,
-                                    );
+                                    ui.selectable_value(&mut picked, Some(name.clone()), name);
                                 }
                             });
+                        self.set_wave_library_selection(picked);
                     }
                     if ui
                         .add_enabled(

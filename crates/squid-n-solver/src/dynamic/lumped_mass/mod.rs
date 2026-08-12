@@ -387,6 +387,44 @@ mod tests {
         );
     }
 
+    /// `stick_omega1` は、質量ではなく層剛性 K1 が 0 の層があっても ω1 を
+    /// 0 に潰さない。`fit_story_trilinear` は退化した Q-δ 曲線に対し正当な
+    /// 分岐として K1=0.0 を返しうる（別テスト対象の長期荷重残留変形バグとは
+    /// 独立に起こりうる縮退）。K1=0 の層があると 1 次モードの ω²=0（特異）に
+    /// なり、質量側の補修だけでは救えず、旧来の逆反復法（クランプ付き）へ
+    /// フォールバックしないと a1=2h/ω1 が無条件にゼロへ潰れて無音無減衰になる
+    /// （質量 0 以下のケースと同じ失敗形が剛性側からも起こりうることの確認）。
+    #[test]
+    fn test_stick_omega1_survives_zero_stiffness_story_without_blowing_up() {
+        let healthy = LumpedMassModel {
+            model_type: LumpedMassType::EquivalentShear,
+            stories: vec![
+                stick(2.0, 2000.0, 0.1, 0.3, 250.0, 1.0, 300.0),
+                stick(1.5, 1500.0, 0.1, 0.3, 200.0, 1.0, 260.0),
+            ],
+        };
+        let w_healthy = stick_omega1(&healthy);
+
+        let with_zero_stiffness_story = LumpedMassModel {
+            model_type: LumpedMassType::EquivalentShear,
+            stories: vec![
+                stick(2.0, 0.0, 0.1, 0.3, 250.0, 1.0, 300.0),
+                stick(1.5, 1500.0, 0.1, 0.3, 200.0, 1.0, 260.0),
+            ],
+        };
+        let w_zero_k1 = stick_omega1(&with_zero_stiffness_story);
+
+        assert!(
+            w_zero_k1.is_finite() && w_zero_k1 > 0.0,
+            "K1=0 の層があると ω1 が 0 に潰れ、a1=2h/ω1 が無条件にゼロになる: w_zero_k1={w_zero_k1}"
+        );
+        assert!(
+            w_zero_k1 < w_healthy * 10.0,
+            "ω1 が異常に大きい（クランプ後の逆反復法へのフォールバックが桁違いになっていないか）: \
+             zero_k1={w_zero_k1}, healthy={w_healthy}"
+        );
+    }
+
     /// n_modes が層数を超える場合、返るモード数は層数まで切り詰められる
     /// （立体モデルの `solve_eigen` と同じ規約）。
     #[test]

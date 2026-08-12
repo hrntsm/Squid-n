@@ -8,6 +8,28 @@
 use super::*;
 
 impl App {
+    /// 波形ライブラリの選択を変更する（ドロップダウン UI 用）。選択が実際に
+    /// 変わった場合のみ、実行時点のハッシュ（`wave_library_selected_sha256`）を
+    /// 破棄する。
+    ///
+    /// `wave_library_selection` を経由せず直接書き換えると、波形 A を実行した
+    /// あとにドロップダウンで波形 B へ選び直しただけで、A のハッシュを持った
+    /// まま B が保存できてしまう（一度も実行していない name-hash の組が
+    /// `.scz` に残り、再読込時に「内容が変わっている」という事実と異なる
+    /// 通知が出る）。ハッシュは [`Self::run_time_history_from_library`] で
+    /// 実行したときにだけ結び直す。
+    ///
+    /// 呼び出し元（波形ライブラリのドロップダウン）は gui 機能配下にしかないため、
+    /// gui 機能を無効にしたビルドでは未使用になる。テストからは呼べるよう
+    /// `cfg(any(test, feature = "gui"))` とする。
+    #[cfg(any(test, feature = "gui"))]
+    pub(crate) fn set_wave_library_selection(&mut self, name: Option<String>) {
+        if name != self.wave_library_selection {
+            self.wave_library_selection = name;
+            self.wave_library_selected_sha256 = None;
+        }
+    }
+
     /// プロジェクト読込時、保存されていた波形ライブラリの選択を復元する。
     ///
     /// - ライブラリの場所が特定できない、またはライブラリに同名のファイルが

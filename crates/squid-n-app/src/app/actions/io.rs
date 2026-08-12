@@ -256,7 +256,9 @@ impl App {
     /// 対して最新である）。準備計算・解析結果は、同梱がない・復号に失敗した場合は
     /// 未実行のままとし、解析実行時または「準備計算 実行」で再計算する。解析タブの
     /// 設定値は、同梱がない・復号に失敗した場合は現状（既定値）のまま変更しない
-    /// （旧プロジェクトファイルには含まれないため）。
+    /// （旧プロジェクトファイルには含まれないため）。ただし質量モデルの方式
+    /// （`mass_method`）だけは、解析タブの設定値の同梱有無によらず、読み込んだ
+    /// モデル側の値へ必ず同期する（単一情報源の原則。詳細は本体側のコメント参照）。
     pub fn open_project_from(&mut self, path: std::path::PathBuf) {
         self.last_error = None;
         match squid_n_io::scz::load_scz(&path) {
@@ -271,16 +273,18 @@ impl App {
                     "解析タブの設定値",
                 ) {
                     self.analysis_cfg = saved.cfg;
-                    // 質量モデルの方式は `Model::mass_method` が単一情報源（階の
-                    // 自動生成の実行時に `analysis_cfg.mass_method` からモデルへ
-                    // 反映される片方向の関係）。保存時点で両者が食い違っていた
-                    // 場合（＝設定を変えた後に階の自動生成を再実行せず保存した
-                    // 場合）、解析タブの設定値をそのまま復元すると、パネル表示
-                    // とモデルが実際に使う方式が食い違ったまま気づけなくなる。
-                    // モデル側の値で上書きし、単一情報源の原則を保つ。
-                    self.analysis_cfg.mass_method = self.model.mass_method;
                     self.restore_wave_library_selection(saved.wave_name, saved.wave_sha256);
                 }
+                // 質量モデルの方式は `Model::mass_method` が単一情報源（階の
+                // 自動生成の実行時に `analysis_cfg.mass_method` からモデルへ
+                // 反映される片方向の関係）。解析タブの設定値が同梱されていた
+                // 場合はその復元値と、同梱されていない旧プロジェクトファイルの
+                // 場合は読込前の値（前のプロジェクトや既定値）と、それぞれ食い違い
+                // うる。この行を上の if 節の中に置くと後者（同梱なし）で
+                // スキップされ、パネル表示とモデルが実際に使う方式が食い違ったまま
+                // 気づけなくなるため、同梱の有無によらず必ずモデル側の値で
+                // 上書きする（単一情報源の原則）。
+                self.analysis_cfg.mass_method = self.model.mass_method;
                 if let Some(prep) =
                     self.decode_on_load::<PreparationResult>(contents.preparation, "準備計算の結果")
                 {
