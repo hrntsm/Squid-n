@@ -15,6 +15,7 @@ use crate::theme;
 use squid_n_core::dof::{Dof, Dof6Mask};
 use squid_n_core::ids::ElemId;
 use squid_n_core::model::{ElementKind, IsolatorProps, Model};
+use squid_n_core::units::to_display::force_kn;
 
 use super::Projector;
 
@@ -354,7 +355,7 @@ pub(super) fn show_isolator_tooltip(ui: &egui::Ui, elem_id: ElemId, props: &Isol
                 "K1={:.0}N/mm K2={:.0}N/mm Qd={:.1}kN Kv={:.0}N/mm μ={:.3}",
                 props.k1,
                 props.k2,
-                props.qd / 1000.0,
+                force_kn(props.qd),
                 props.kv,
                 props.mu
             ));

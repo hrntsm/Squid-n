@@ -44,6 +44,7 @@ use squid_n_core::adjacency::NodeAdjacency;
 use squid_n_core::geom::vec3;
 use squid_n_core::ids::NodeId;
 use squid_n_core::model::{ElementData, ElementKind, EndCondition, Model};
+use squid_n_core::units::to_display::force_kn;
 use squid_n_element::factory::{resolve_force_regime, ResolvedRegime};
 use squid_n_element::misc_wall::wall_is_seismic;
 use squid_n_element::side_column::{wall_side_column_release, SideColumnEdges};
@@ -1149,7 +1150,7 @@ fn show_wall_modeling_detail(ui: &mut egui::Ui, app: &App, elem: &ElementData) {
     }
     let qu = squid_n_element::wall_panel::WallPanelElement::shear_capacity_of(elem, &app.model);
     if qu > 0.0 {
-        ui.label(format!("面内せん断: Qu={:.0} kN で頭打ち", qu / 1.0e3));
+        ui.label(format!("面内せん断: Qu={:.0} kN で頭打ち", force_kn(qu)));
     } else {
         ui.label("面内せん断: 弾性（Qu を算定できない）");
     }

@@ -15,6 +15,7 @@ use crate::app::App;
 use crate::theme;
 use crate::viewer::{project, CameraState};
 use squid_n_core::section_shape::SectionShape;
+use squid_n_core::units::to_display::{force_kn, moment_kn_m};
 use squid_n_section::mn_surface::{
     build_simple_spring_surface, build_surface, m_phi_curve, m_theta_curve, plastic_fibers,
     slice_at_n, MnSurface, PlasticFiber, StrengthParams, YieldModelKind,
@@ -333,10 +334,10 @@ fn summary_table(ui: &mut egui::Ui, cache: &MnCache) {
 
             for surf in [&cache.simple, &cache.ms, &cache.fiber] {
                 ui.colored_label(model_color(surf.kind), surf.kind.label());
-                ui.label(format!("{:.1}", surf.n_comp / 1e3));
-                ui.label(format!("{:.1}", surf.n_tens / 1e3));
-                ui.label(format!("{:.1}", surf.mp_y / 1e6));
-                ui.label(format!("{:.1}", surf.mp_z / 1e6));
+                ui.label(format!("{:.1}", force_kn(surf.n_comp)));
+                ui.label(format!("{:.1}", force_kn(surf.n_tens)));
+                ui.label(format!("{:.1}", moment_kn_m(surf.mp_y)));
+                ui.label(format!("{:.1}", moment_kn_m(surf.mp_z)));
                 ui.end_row();
             }
         });
@@ -726,7 +727,7 @@ fn draw_slice_plane(
     painter.text(
         egui::pos2(label_pos[0], label_pos[1]),
         egui::Align2::LEFT_CENTER,
-        format!("N = {:.1} kN", n_target / 1e3),
+        format!("N = {:.1} kN", force_kn(n_target)),
         egui::FontId::proportional(12.0),
         theme::HILITE_PURPLE,
     );
@@ -753,8 +754,8 @@ fn draw_slice_plot(ui: &mut egui::Ui, cache: &MnCache, show: [bool; 3], n_target
                 };
                 let m_scale = 1.0 - n_target.abs() / n_ref;
                 if m_scale > 0.0 {
-                    let my = m_scale * cache.simple.mp_y / 1e6;
-                    let mz = m_scale * cache.simple.mp_z / 1e6;
+                    let my = m_scale * moment_kn_m(cache.simple.mp_y);
+                    let mz = m_scale * moment_kn_m(cache.simple.mp_z);
                     let pts: Vec<[f64; 2]> = (0..=SLICE_PTS)
                         .map(|k| {
                             let th = 2.0 * std::f64::consts::PI * k as f64 / SLICE_PTS as f64;
@@ -801,7 +802,10 @@ fn plot_slice_curve(
     if pts.is_empty() {
         return;
     }
-    let mut xy: Vec<[f64; 2]> = pts.iter().map(|p| [p[0] / 1e6, p[1] / 1e6]).collect();
+    let mut xy: Vec<[f64; 2]> = pts
+        .iter()
+        .map(|p| [moment_kn_m(p[0]), moment_kn_m(p[1])])
+        .collect();
     xy.push(xy[0]); // 始点を末尾に複製して閉じる
     plot_ui.line(
         egui_plot::Line::new(kind.label(), egui_plot::PlotPoints::from(xy))
@@ -845,7 +849,10 @@ fn plot_m_theta_line(plot_ui: &mut egui_plot::PlotUi<'_>, pts: &[[f64; 2]], kind
     if pts.is_empty() {
         return;
     }
-    let xy: Vec<[f64; 2]> = pts.iter().map(|p| [p[0] * 1e3, p[1] / 1e6]).collect();
+    let xy: Vec<[f64; 2]> = pts
+        .iter()
+        .map(|p| [p[0] * 1e3, moment_kn_m(p[1])])
+        .collect();
     plot_ui.line(
         egui_plot::Line::new(kind.label(), egui_plot::PlotPoints::from(xy))
             .color(model_color(kind))

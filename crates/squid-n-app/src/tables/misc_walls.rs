@@ -8,6 +8,8 @@
 
 use crate::app::App;
 use squid_n_core::model::{MiscWall, MiscWallTransfer};
+use squid_n_core::units::to_display::area_load_kn_per_m2;
+use squid_n_core::units::to_internal;
 use squid_n_edit::{AddMiscWall, DeleteMiscWall, SetMiscWall};
 
 /// 雑壁追加/編集フォームのドラフト状態（GUI 専用）。
@@ -124,7 +126,7 @@ pub fn misc_walls_table(ui: &mut egui::Ui, app: &mut App) {
                     w.end[1],
                     w.end[2],
                     w.height,
-                    w.weight_per_area * 1e3,
+                    area_load_kn_per_m2(w.weight_per_area),
                     w.thickness
                         .map(|t| format!("{t:.0}mm"))
                         .unwrap_or_else(|| "―".to_string()),
@@ -150,7 +152,8 @@ pub fn misc_walls_table(ui: &mut egui::Ui, app: &mut App) {
                 app.misc_wall_draft.end[k] = format!("{:.0}", w.end[k]);
             }
             app.misc_wall_draft.height = format!("{:.0}", w.height);
-            app.misc_wall_draft.weight_kn_m2 = format!("{:.3}", w.weight_per_area * 1e3);
+            app.misc_wall_draft.weight_kn_m2 =
+                format!("{:.3}", area_load_kn_per_m2(w.weight_per_area));
             app.misc_wall_draft.thickness =
                 w.thickness.map(|t| format!("{t:.0}")).unwrap_or_default();
             app.misc_wall_draft.transfer = w.transfer;
@@ -226,8 +229,7 @@ pub fn misc_walls_table(ui: &mut egui::Ui, app: &mut App) {
         .trim()
         .parse::<f64>()
         .ok()
-        // kN/m² → N/mm²（内部単位系）
-        .map(|w| w * 1e-3);
+        .map(to_internal::area_load_kn_per_m2);
     let thickness = parse_optional_f64(&app.misc_wall_draft.thickness);
     let can_commit = start.is_some()
         && end.is_some()

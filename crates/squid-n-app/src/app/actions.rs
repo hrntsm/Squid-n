@@ -1,6 +1,7 @@
 //! `App` のアクション（解析実行・ファイル入出力・モデル操作）メソッド。
 
 use super::*;
+use squid_n_core::units::to_display::length_m;
 
 /// 保存確認を出す解析結果サイズの閾値 [byte]。直列化した解析結果（時刻歴の
 /// 詳細記録を含む）がこれを超える場合、詳細記録を保存に含めるかを確認する。
@@ -1259,7 +1260,7 @@ impl App {
             .and_then(|r| r.modal.as_ref())
             .and_then(|m| m.period.first().copied())
             .unwrap_or_else(|| {
-                let height_m = squid_n_solver::analysis::building_height_mm(&self.model) / 1000.0;
+                let height_m = length_m(squid_n_solver::analysis::building_height_mm(&self.model));
                 let steel_ratio = squid_n_solver::analysis::steel_height_ratio(&self.model);
                 squid_n_load::ai::approx_t(height_m, steel_ratio)
             });
@@ -2753,7 +2754,7 @@ impl App {
     pub(crate) fn design_seismic_period(&self) -> Result<f64, String> {
         match self.analysis_cfg.ai_mode {
             AiMode::Approx => {
-                let height_m = squid_n_solver::analysis::building_height_mm(&self.model) / 1000.0;
+                let height_m = length_m(squid_n_solver::analysis::building_height_mm(&self.model));
                 let steel_ratio = squid_n_solver::analysis::steel_height_ratio(&self.model);
                 Ok(squid_n_load::ai::approx_t(height_m, steel_ratio))
             }

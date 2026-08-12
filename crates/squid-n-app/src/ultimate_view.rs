@@ -7,6 +7,7 @@
 
 use crate::app::{member_kind_label, App};
 use crate::table_util::Col;
+use squid_n_core::units::to_display::{force_kn, moment_kn_m};
 
 /// 余裕度セルの色（1.0 未満＝せん断先行で NG を赤系に）。
 fn margin_color(margin: f64) -> egui::Color32 {
@@ -159,13 +160,13 @@ pub fn ultimate_table(ui: &mut egui::Ui, app: &mut App) {
                         ui.label(member_kind_label(c.kind));
                     });
                     row.col(|ui| {
-                        ui.label(format!("{:.1}", c.mu / 1.0e6));
+                        ui.label(format!("{:.1}", moment_kn_m(c.mu)));
                     });
                     row.col(|ui| {
-                        ui.label(format!("{:.1}", c.qmu / 1000.0));
+                        ui.label(format!("{:.1}", force_kn(c.qmu)));
                     });
                     row.col(|ui| {
-                        ui.label(format!("{:.1}", c.qsu / 1000.0));
+                        ui.label(format!("{:.1}", force_kn(c.qsu)));
                     });
                     row.col(|ui| {
                         // 2 軸せん断指定時は合成余裕度を表示（柱のみ Some）。
@@ -174,7 +175,7 @@ pub fn ultimate_table(ui: &mut egui::Ui, app: &mut App) {
                     });
                     row.col(|ui| {
                         if bond {
-                            ui.label(format!("{:.1}", c.qbu / 1000.0));
+                            ui.label(format!("{:.1}", force_kn(c.qbu)));
                         } else {
                             ui.label("-");
                         }
@@ -274,16 +275,16 @@ pub fn ultimate_table(ui: &mut egui::Ui, app: &mut App) {
                         ui.label(cft_class_label(c.class));
                     });
                     row.col(|ui| {
-                        ui.label(format!("{:.0}", c.ncu / 1000.0));
+                        ui.label(format!("{:.0}", force_kn(c.ncu)));
                     });
                     row.col(|ui| {
-                        ui.label(format!("{:.0}", c.ntu / 1000.0));
+                        ui.label(format!("{:.0}", force_kn(c.ntu)));
                     });
                     row.col(|ui| {
-                        ui.label(format!("{:.1}", c.mu_nm / 1.0e6));
+                        ui.label(format!("{:.1}", moment_kn_m(c.mu_nm)));
                     });
                     row.col(|ui| {
-                        ui.label(format!("{:.0}", c.n_design / 1000.0));
+                        ui.label(format!("{:.0}", force_kn(c.n_design)));
                     });
                     row.col(|ui| {
                         ui.colored_label(

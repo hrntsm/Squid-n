@@ -25,6 +25,7 @@ use crate::app::App;
 use crate::theme;
 use squid_n_core::ids::ElemId;
 use squid_n_core::model::{ElementData, ElementKind, Model};
+use squid_n_core::units::to_display::{force_kn, moment_kn_m};
 use squid_n_design_jp::{
     CheckOutcome, DesignCheck, DesignCtx, LoadTerm, MemberForcesAt, MemberKind,
 };
@@ -475,7 +476,7 @@ fn axial_point(
     f: usize,
 ) -> Option<[f64; 2]> {
     let mf = rec.member_forces.get(f)?.get(elem_idx)?.as_ref()?;
-    let force_kn = mf.at.first()?.1[component.axis_index()] / 1e3;
+    let force = force_kn(mf.at.first()?.1[component.axis_index()]);
     let disp_frame = rec.node_disp.get(f)?;
     let d_i = *disp_frame.get(n0)?;
     let d_j = *disp_frame.get(n1)?;
@@ -484,7 +485,7 @@ fn axial_point(
     } else {
         axial_relative_disp(p_i, p_j, d_i, d_j)
     };
-    Some([delta, force_kn])
+    Some([delta, force])
 }
 
 /// 梁・柱の M-θ ループ（i端・j端、強軸/弱軸切替可能）。
@@ -584,7 +585,7 @@ fn flexural_points(
     let d_j = *disp_frame.get(n1)?;
     let (ry_i, rz_i, ry_j, rz_j) = beam_end_rotations(p_i, p_j, ref_vector, d_i, d_j);
     let (theta_i, theta_j) = if axis_z { (rz_i, rz_j) } else { (ry_i, ry_j) };
-    Some(([theta_i, mi / 1e6], [theta_j, mj / 1e6]))
+    Some(([theta_i, moment_kn_m(mi)], [theta_j, moment_kn_m(mj)]))
 }
 
 /// `MemberForces::at` から i端（最小 pos）・j端（最大 pos）の材端モーメント

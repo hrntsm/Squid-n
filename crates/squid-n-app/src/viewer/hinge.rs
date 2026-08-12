@@ -24,6 +24,7 @@ use squid_n_core::material_grade::{
     material_strength_factor_rebar, material_strength_factor_steel,
 };
 use squid_n_core::model::{ElementData, ElementKind, Model, Section};
+use squid_n_core::units::to_display::{force_kn, moment_kn_m};
 use squid_n_element::behavior::{FiberSectionState, FiberStateSample};
 use squid_n_section::mn_surface::{build_surface, plastic_fibers, StrengthParams, YieldModelKind};
 use squid_n_solver::pushover::{HingeEvent, HingeLevel, MemberStepState};
@@ -341,7 +342,7 @@ pub(super) fn n_m_response_path(records: &[MemberStepState], bend_dir_z: bool) -
             (r.my_i, r.my_j)
         };
         let m = if mi.abs() >= mj.abs() { mi } else { mj };
-        [m as f64 / 1e6, r.n as f64 / 1e3]
+        [moment_kn_m(m as f64), force_kn(r.n as f64)]
     }));
     path
 }
@@ -392,7 +393,7 @@ pub(super) fn extract_mn_meridian(
     let m_index = if bend_dir_z { 2 } else { 1 };
     grid.iter()
         .filter_map(|row| row.get(beta_col))
-        .map(|p| [p[m_index] / 1e6, -p[0] / 1e3])
+        .map(|p| [moment_kn_m(p[m_index]), -force_kn(p[0])])
         .collect()
 }
 
@@ -678,7 +679,7 @@ fn plot_m_theta_end(
     if pts.is_empty() {
         return;
     }
-    let xy: Vec<[f64; 2]> = pts.iter().map(|p| [p[0], p[1] / 1e6]).collect();
+    let xy: Vec<[f64; 2]> = pts.iter().map(|p| [p[0], moment_kn_m(p[1])]).collect();
     plot_ui.line(
         egui_plot::Line::new(name, egui_plot::PlotPoints::from(xy.clone()))
             .color(color)
@@ -1200,6 +1201,7 @@ fn draw_fiber_scatter(plot_ui: &mut egui_plot::PlotUi<'_>, fibers: &[FiberStateS
 #[cfg(test)]
 mod tests {
     use super::*;
+    use squid_n_core::units::to_display::moment_kn_m;
 
     /// テスト用のヒンジ発生イベントを組み立てる。
     fn event(elem: u32, pos: f64, level: HingeLevel, ductility: f64, step: u32) -> HingeEvent {
@@ -1392,8 +1394,8 @@ mod tests {
         let records = vec![step(-80.0, 30.0, 0.0, 0.0, 1000.0)];
         let path = n_m_response_path(&records, true);
         assert_eq!(path.len(), 2);
-        // -80 N·mm -> -80/1e6 kN·m、n=1000N -> 1kN。原点の次（[1]）が実データ点。
-        assert!((path[1][0] - (-80.0 / 1e6)).abs() < 1e-12);
+        // -80 N·mm -> kN·m、n=1000N -> 1kN。原点の次（[1]）が実データ点。
+        assert!((path[1][0] - moment_kn_m(-80.0)).abs() < 1e-12);
         assert!((path[1][1] - 1.0).abs() < 1e-9);
     }
 
@@ -1402,7 +1404,7 @@ mod tests {
     fn n_m_response_path_uses_weak_axis_when_selected() {
         let records = vec![step(0.0, 0.0, 40.0, -90.0, 0.0)];
         let path = n_m_response_path(&records, false);
-        assert!((path[1][0] - (-90.0 / 1e6)).abs() < 1e-12);
+        assert!((path[1][0] - moment_kn_m(-90.0)).abs() < 1e-12);
     }
 
     /// 空入力でも原点 1 点だけは返る。
@@ -1466,7 +1468,7 @@ mod tests {
         let grid = vec![vec![[0.0, 100.0, 200.0]]];
         let pts = extract_mn_meridian(&grid, 0, true);
         assert_eq!(pts.len(), 1);
-        assert!((pts[0][0] - 200.0 / 1e6).abs() < 1e-12);
+        assert!((pts[0][0] - moment_kn_m(200.0)).abs() < 1e-12);
     }
 
     /// 列が範囲外の行は無視する（`row.get` が `None` を返す行はスキップ）。

@@ -1,4 +1,7 @@
 use crate::app::App;
+use squid_n_core::units::to_display::{
+    area_load_kn_per_m2, force_kn, moment_kn_m, moment_kn_m_per_m,
+};
 
 /// 柱の積載荷重低減（令85条2項）の参考表示。
 /// `Model.load_cfg.live_load_reduction == true` のときのみ表示する。
@@ -406,7 +409,7 @@ pub fn design_table(ui: &mut egui::Ui, app: &mut App) {
                         kind_label,
                         p.k1,
                         p.k2,
-                        p.qd / 1000.0,
+                        force_kn(p.qd),
                         p.kv,
                         keq,
                         heq,
@@ -416,8 +419,10 @@ pub fn design_table(ui: &mut egui::Ui, app: &mut App) {
                 IsolatorKind::ElasticSliding => format!(
                     "弾性すべり μ={:.3} N={:.0}kN Qmax={:.0}kN Kv={:.0}",
                     p.mu,
-                    p.n_long / 1000.0,
-                    squid_n_design_jp::isolator::friction_max_force(p.mu, p.n_long) / 1000.0,
+                    force_kn(p.n_long),
+                    force_kn(squid_n_design_jp::isolator::friction_max_force(
+                        p.mu, p.n_long
+                    )),
                     p.kv
                 ),
             };
@@ -689,10 +694,10 @@ pub fn design_table(ui: &mut egui::Ui, app: &mut App) {
                         crate::table_util::text_cell(ui, &name);
                     });
                     row.col(|ui| {
-                        ui.label(format!("{:.1}", s.qu / 1000.0));
+                        ui.label(format!("{:.1}", force_kn(s.qu)));
                     });
                     row.col(|ui| {
-                        ui.label(format!("{:.1}", s.qud / 1000.0));
+                        ui.label(format!("{:.1}", force_kn(s.qud)));
                     });
                     row.col(|ui| {
                         ui.label(format!("{:.2}", s.ds));
@@ -701,7 +706,7 @@ pub fn design_table(ui: &mut egui::Ui, app: &mut App) {
                         ui.label(format!("{:.2}", s.fes));
                     });
                     row.col(|ui| {
-                        ui.label(format!("{:.1}", s.qun / 1000.0));
+                        ui.label(format!("{:.1}", force_kn(s.qun)));
                     });
                     row.col(|ui| {
                         if s.ok {
@@ -855,10 +860,10 @@ fn floor_design_section(ui: &mut egui::Ui, app: &App) {
                     ui.label(format!("{:.0}", jr.span));
                 });
                 row.col(|ui| {
-                    ui.label(format!("{:.2}", jr.m_max * 1e-6));
+                    ui.label(format!("{:.2}", moment_kn_m(jr.m_max)));
                 });
                 row.col(|ui| {
-                    ui.label(format!("{:.2}", jr.q_max * 1e-3));
+                    ui.label(format!("{:.2}", force_kn(jr.q_max)));
                 });
                 row.col(|ui| {
                     ui.label(format!("{:.2} (δ/L=1/{:.0})", jr.deflection, {
@@ -910,12 +915,10 @@ fn floor_design_section(ui: &mut egui::Ui, app: &App) {
                     ui.label(format!("{:.0}", sr.span));
                 });
                 row.col(|ui| {
-                    // w[N/mm²] → kN/m²（×1e3）。
-                    ui.label(format!("{:.2}", sr.w * 1e3));
+                    ui.label(format!("{:.2}", area_load_kn_per_m2(sr.w)));
                 });
                 row.col(|ui| {
-                    // M[N·mm/mm] → kN·m/m（×1e-3）。
-                    ui.label(format!("{:.2}", sr.moment * 1e-3));
+                    ui.label(format!("{:.2}", moment_kn_m_per_m(sr.moment)));
                 });
                 row.col(|ui| {
                     ui.label(format!("{:.0}", sr.thickness));

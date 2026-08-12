@@ -58,9 +58,9 @@ pub fn mm_s2_to_gal(a: f64) -> f64 {
     a / 10.0
 }
 
-/// mm/s → m/s
+/// mm/s → m/s（表示用。[`squid_n_core::units::to_display::length_m`] への委譲）。
 pub fn mm_s_to_m_s(v: f64) -> f64 {
-    v / 1000.0
+    squid_n_core::units::to_display::length_m(v)
 }
 
 /// 層応答分布グラフの表示項目（横軸に取る量）。
