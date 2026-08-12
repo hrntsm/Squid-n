@@ -5,11 +5,13 @@
 
 use super::{
     circle_axis_props, effective_damage_control, high_strength_w_ft, is_high_strength_shear_grade,
-    main_rebar_grade, rc_allow, rc_beam_bond_check, rebar_allowable_tension, rebar_sigma_y_of,
-    rect_axis_props_strong, seismic_design_shear, shear_alpha, shear_capacity_for,
-    shear_rebar_grade, AxisProps,
+    main_rebar_grade, rc_allow, rc_beam_bond_check, rc_beam_bond_check_1991,
+    rebar_allowable_tension, rebar_sigma_y_of, rect_axis_props_strong, seismic_design_shear,
+    shear_alpha, shear_capacity_for, shear_rebar_grade, AxisProps,
 };
-use crate::{CheckComponent, CheckKind, CheckResult, DesignCtx, LoadTerm, MemberForcesAt};
+use crate::{
+    BondMethod, CheckComponent, CheckKind, CheckResult, DesignCtx, LoadTerm, MemberForcesAt,
+};
 use squid_n_core::model::{Material, Section};
 use squid_n_core::section_shape::SectionShape;
 
@@ -131,12 +133,15 @@ pub(crate) fn beam_check(
     };
     let ft = rebar_allowable_tension(grade, rebar.main_x.dia, long_term);
 
+    // 中央部かつスラブ取付きかつ正曲げ（mz>0＝床スラブ側圧縮）:
+    // マニュアル 2.5.2 の Ma = at·ft·j（T 形引張支配略算）。
+    // 負曲げではスラブが引張側になり T 形略算が成り立たないため、
+    // 長方形複筋の min(MAt, MAc) を用いる。
+    let at_mid = (forces.pos - 0.5).abs() < 1e-6;
     let bm = beam_moment_capacity(&props, ft, allow.fc, allow.n_ratio);
-    let ratio_m = if bm.ma > 0.0 {
-        forces.mz.abs() / bm.ma
-    } else {
-        0.0
-    };
+    let use_t_flange = at_mid && ctx.beam_has_slab && forces.mz > 0.0;
+    let ma = if use_t_flange { bm.ma_t } else { bm.ma };
+    let ratio_m = if ma > 0.0 { forces.mz.abs() / ma } else { 0.0 };
 
     let (m_for_alpha, q_for_alpha) = ctx.shear_span.unwrap_or((forces.mz.abs(), forces.qy.abs()));
     let alpha = shear_alpha(m_for_alpha, q_for_alpha, props.d, 2.0);
@@ -152,10 +157,10 @@ pub(crate) fn beam_check(
         shear_grade,
         fc_raw,
     );
-    // 地震時短期は設計用せん断力 QD = min(QL+ΣBMy/l′, QL+n・QE) を用いる
+    // 地震時短期は設計用せん断力 QD = min(Q0+n_mech·ΣBMy/l′, QL+n·QE) を用いる
     // （ctx.seismic_qd が None のときは解析せん断力のまま）。
     // ΣBMy は両端とも同一断面・対称配筋（at=ac）の仮定で 2・Mu とする。
-    // Mu にスラブ筋は考慮しない。
+    // Mu にスラブ筋は考慮しない。Q0 未算定時は QL で代替。
     let q_design = if ctx.seismic_qd.is_some() {
         let mu_inp = squid_n_core::rc_capacity::RcCapacityInput {
             b: props.b,
@@ -176,53 +181,89 @@ pub(crate) fn beam_check(
     };
     let ratio_q = if qa > 0.0 { q_design / qa } else { 0.0 };
 
-    // (B) RC 梁付着の断面検定（RC 規準1999、通し筋・カットオフ無しを仮定）。
-    let bond = rc_beam_bond_check(
-        forces.pos,
-        ctx.length,
-        props.b,
-        props.d,
-        props.j,
-        props.at,
-        forces.mz.abs(),
-        &rebar.main_x,
-        rebar,
-        fc_raw,
-        long_term,
-    );
-    let ratio_bond = bond.as_ref().map(|b| b.ratio).unwrap_or(0.0);
+    // RC 梁付着の断面検定（方式は `ctx.bond_method`。既定は 1999）。
+    let (ratio_bond, bond_detail) = match ctx.bond_method {
+        BondMethod::Rc1999 => {
+            let bond = rc_beam_bond_check(
+                forces.pos,
+                ctx.length,
+                props.b,
+                props.d,
+                props.j,
+                props.at,
+                forces.mz.abs(),
+                &rebar.main_x,
+                rebar,
+                fc_raw,
+                long_term,
+            );
+            let ratio = bond.as_ref().map(|b| b.ratio).unwrap_or(0.0);
+            let detail = bond.as_ref().map(|b| {
+                format!(
+                    "1999: ld={:.1} mm, ldb={:.1} mm, K={:.3}, W={:.3} mm, fb={:.3} N/mm², \
+                     σt={:.1} N/mm², 付着検定比={:.3}（{}）",
+                    b.ld,
+                    b.ldb,
+                    b.k,
+                    b.w,
+                    b.fb,
+                    b.sigma_t,
+                    b.ratio,
+                    if b.is_end {
+                        "端部・上端筋"
+                    } else {
+                        "中央・下端筋"
+                    }
+                )
+            });
+            (ratio, detail)
+        }
+        BondMethod::Rc1991 => {
+            // 引張側本数は対称複筋仮定で main.count/2（1 本未満は 1）。
+            let n_t = ((rebar.main_x.count as f64) / 2.0).max(1.0);
+            let phi = n_t * std::f64::consts::PI * rebar.main_x.dia;
+            let is_end = !(0.25 < forces.pos && forces.pos < 0.75);
+            let bond = rc_beam_bond_check_1991(
+                q_design, props.j, phi, fc_raw,
+                is_end, // 端部＝上端筋（低減）、中央＝下端筋
+                long_term,
+            );
+            let ratio = bond.as_ref().map(|b| b.ratio).unwrap_or(0.0);
+            let detail = bond.as_ref().map(|b| {
+                format!(
+                    "1991: τa={:.3} N/mm², fa={:.3} N/mm², ψ={:.1} mm, \
+                     Q={:.1} N, 付着検定比={:.3}（{}）",
+                    b.tau,
+                    b.fa,
+                    phi,
+                    q_design,
+                    b.ratio,
+                    if is_end {
+                        "端部・上端筋"
+                    } else {
+                        "中央・下端筋"
+                    }
+                )
+            });
+            (ratio, detail)
+        }
+    };
 
     let basis = "RC 規準13条（梁の曲げ・せん断・付着）".to_string();
-    // 付着検定を実施できた場合はその detail を Bond component に持たせる。
-    // 実施できない（bond=None）場合は Bond component 自体が存在しないため、
-    // 省略の旨は共通 detail の末尾に置く。
-    let bond_detail = bond.as_ref().map(|b| {
-        format!(
-            "ld={:.1} mm, ldb={:.1} mm, K={:.3}, W={:.3} mm, fb={:.3} N/mm², \
-             σt={:.1} N/mm², 付着検定比={:.3}（{}）",
-            b.ld,
-            b.ldb,
-            b.k,
-            b.w,
-            b.fb,
-            b.sigma_t,
-            b.ratio,
-            if b.is_end {
-                "端部・上端筋"
-            } else {
-                "中央・下端筋"
-            }
-        )
-    });
     // 高強度せん断補強筋: w_ft の根拠はせん断検定固有の係数のため Shear へ。
     let shear_grade_detail = match shear_grade {
         Some(g) => format!(", 高強度せん断補強筋={g}, w_ft={:.1} N/mm²", allow.w_ft),
         None => String::new(),
     };
     // Bending 固有: 許容曲げモーメント（引張・圧縮支配それぞれ）と作用モーメント。
+    let mid_slab_note = if use_t_flange {
+        ", 中央+スラブ正曲げ: MA=at·ft·j"
+    } else {
+        ""
+    };
     let bending_detail = format!(
-        "MA_t={:.1} N·mm, MA_c={:.1} N·mm, MA={:.1} N·mm, |mz|={:.1} N·mm",
-        bm.ma_t, bm.ma_c, bm.ma, forces.mz,
+        "MA_t={:.1} N·mm, MA_c={:.1} N·mm, MA={:.1} N·mm, |mz|={:.1} N·mm{}",
+        bm.ma_t, bm.ma_c, ma, forces.mz, mid_slab_note,
     );
     // Shear 固有: 許容せん断力・作用せん断力・せん断スパン比 α・
     // せん断補強筋比 pw（いずれもせん断式の係数）。
@@ -236,10 +277,10 @@ pub(crate) fn beam_check(
         props.at,
         props.d,
         props.j,
-        if bond.is_some() {
+        if bond_detail.is_some() {
             ""
         } else {
-            ", 付着検定: 部材長(柱面間距離)が未設定のため省略"
+            ", 付着検定: 部材長(柱面間距離)が未設定、または入力不足のため省略"
         },
     );
 
@@ -261,6 +302,39 @@ pub(crate) fn beam_check(
             ratio: ratio_bond,
             detail: bond_detail,
         });
+    }
+
+    // 構造規定・長期たわみは部材レベル（中央 pos≈0.5 で一度だけ付記し重複を避ける）。
+    let mut detail = detail;
+    if super::provisions::is_member_level_station(forces.pos) {
+        // 引張鉄筋下限の存在応力は、端部・中央の |Mz| の最大を用いる。
+        let mz_for_at = {
+            let mut m = forces.mz.abs();
+            if let Some((mi, mj)) = ctx.end_moments_z {
+                m = m.max(mi.abs()).max(mj.abs());
+            }
+            if let Some(mc) = ctx.mid_moment_z {
+                m = m.max(mc.abs());
+            }
+            m
+        };
+        let prov = super::provisions::beam_provisions(
+            props.d_full,
+            &props,
+            rebar,
+            long_term,
+            mz_for_at,
+            ft,
+        );
+        if let Some(c) = prov.provision_component() {
+            components.push(c);
+        }
+        detail.push_str(&prov.warning_suffix());
+        if let Some(c) =
+            super::provisions::beam_deflection_component(ctx, props.b, props.d_full, mat.young)
+        {
+            components.push(c);
+        }
     }
 
     CheckResult {
@@ -319,6 +393,8 @@ mod tests {
             seismic_qd: Some(SeismicQd {
                 long_at: vec![(0.0, [0.0, 20_000.0, 0.0, 0.0, 0.0, 0.0])],
                 n_factor: 1.5,
+                n_mechanism: 1.0,
+                q_simple: None,
                 clear_length: 6000.0,
                 method: QdMethod::Qd2,
             }),
@@ -375,6 +451,55 @@ mod tests {
 
         assert!(bm.ma_c < bm.ma_t, "過大配筋では MA_c が支配するはず");
         assert!((bm.ma - bm.ma_c).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_beam_mid_with_slab_uses_ma_t_only() {
+        // 過大配筋で MA_c < MA_t のとき、中央+スラブは MA_t のみ → 検定比が下がる。
+        let shape = rc_rect_shape(300.0, 600.0, 20, 32.0, 4, 40.0, 10.0, 100.0, 2);
+        let sec = make_section(shape.clone());
+        let mat = make_material(24.0, "SD345");
+        let forces = MemberForcesAt {
+            pos: 0.5,
+            n: 0.0,
+            qy: 1_000.0, // 曲げ支配にするためせん断を小さく
+            qz: 0.0,
+            my: 0.0,
+            mz: 50_000_000.0,
+        };
+        let ctx_plain = DesignCtx {
+            term: LoadTerm::Long,
+            kind: crate::MemberKind::Beam,
+            length: 6000.0,
+            beam_has_slab: false,
+            ..Default::default()
+        };
+        let ctx_slab = DesignCtx {
+            term: LoadTerm::Long,
+            kind: crate::MemberKind::Beam,
+            length: 6000.0,
+            beam_has_slab: true,
+            ..Default::default()
+        };
+        let r0 = beam_check(&forces, &sec, &mat, &ctx_plain, &shape, 24.0);
+        let r1 = beam_check(&forces, &sec, &mat, &ctx_slab, &shape, 24.0);
+        let bend0 = r0
+            .components
+            .iter()
+            .find(|c| c.kind == crate::CheckKind::Bending)
+            .unwrap()
+            .ratio;
+        let bend1 = r1
+            .components
+            .iter()
+            .find(|c| c.kind == crate::CheckKind::Bending)
+            .unwrap()
+            .ratio;
+        assert!(
+            bend1 < bend0 - 1e-9,
+            "中央+スラブは MA_t 採用で検定比が下がるはず: plain={bend0}, slab={bend1}"
+        );
+        assert!(r1.components[0].detail.contains("中央+スラブ"));
     }
 
     #[test]
@@ -530,6 +655,108 @@ mod tests {
     // (B) RC 梁付着の断面検定（beam_check 経由の統合確認、詳細は
     // rc/bond.rs のテストを参照）
     // ------------------------------------------------------------------
+
+    #[test]
+    fn test_beam_check_provision_error_on_cover() {
+        // かぶり 20 mm → 構造規定エラー（中央で付記）。
+        let shape = rc_rect_shape(300.0, 600.0, 4, 19.0, 1, 20.0, 10.0, 100.0, 2);
+        let sec = make_section(shape);
+        let mat = make_material(24.0, "SD345");
+        let ctx = ctx_beam(LoadTerm::Long);
+        let forces = MemberForcesAt {
+            pos: 0.5,
+            n: 0.0,
+            qy: 0.0,
+            qz: 0.0,
+            my: 0.0,
+            mz: 1_000_000.0,
+        };
+        let result = crate::rc::RcDesign
+            .check(&forces, &sec, &mat, &ctx)
+            .unwrap_checked();
+        assert!(result
+            .components
+            .iter()
+            .any(|c| c.kind == crate::CheckKind::Provision));
+        assert!(!result.ok());
+    }
+
+    #[test]
+    fn test_beam_check_long_deflection_component() {
+        let shape = rc_rect_shape(300.0, 600.0, 4, 19.0, 1, 40.0, 10.0, 100.0, 2);
+        let sec = make_section(shape);
+        let mut mat = make_material(24.0, "SD345");
+        mat.young = 21_000.0;
+        let mut ctx = ctx_beam(LoadTerm::Long);
+        ctx.length = 6000.0;
+        ctx.end_moments_z = Some((0.0, 0.0));
+        ctx.mid_moment_z = Some(10.0 * 6000.0_f64.powi(2) / 8.0); // w=10 N/mm
+        let forces = MemberForcesAt {
+            pos: 0.5,
+            n: 0.0,
+            qy: 0.0,
+            qz: 0.0,
+            my: 0.0,
+            mz: 0.0,
+        };
+        let result = crate::rc::RcDesign
+            .check(&forces, &sec, &mat, &ctx)
+            .unwrap_checked();
+        let defl = result
+            .components
+            .iter()
+            .find(|c| c.kind == crate::CheckKind::Deflection)
+            .expect("長期たわみ component");
+        assert!(defl.ratio > 0.0);
+    }
+
+    #[test]
+    fn test_beam_mid_negative_with_slab_keeps_min_ma() {
+        // 中央+スラブでも負曲げ（mz≤0）は T 形略算せず min(MAt,MAc)。
+        let shape = rc_rect_shape(300.0, 600.0, 20, 32.0, 4, 40.0, 10.0, 100.0, 2);
+        let sec = make_section(shape.clone());
+        let mat = make_material(24.0, "SD345");
+        let forces = MemberForcesAt {
+            pos: 0.5,
+            n: 0.0,
+            qy: 1_000.0,
+            qz: 0.0,
+            my: 0.0,
+            mz: -50_000_000.0,
+        };
+        let ctx_plain = DesignCtx {
+            term: LoadTerm::Long,
+            kind: crate::MemberKind::Beam,
+            length: 6000.0,
+            beam_has_slab: false,
+            ..Default::default()
+        };
+        let ctx_slab = DesignCtx {
+            term: LoadTerm::Long,
+            kind: crate::MemberKind::Beam,
+            length: 6000.0,
+            beam_has_slab: true,
+            ..Default::default()
+        };
+        let r0 = beam_check(&forces, &sec, &mat, &ctx_plain, &shape, 24.0);
+        let r1 = beam_check(&forces, &sec, &mat, &ctx_slab, &shape, 24.0);
+        let bend0 = r0
+            .components
+            .iter()
+            .find(|c| c.kind == crate::CheckKind::Bending)
+            .unwrap()
+            .ratio;
+        let bend1 = r1
+            .components
+            .iter()
+            .find(|c| c.kind == crate::CheckKind::Bending)
+            .unwrap()
+            .ratio;
+        assert!(
+            (bend0 - bend1).abs() < 1e-12,
+            "負曲げではスラブの有無で曲げ検定比が変わらないはず: {bend0} vs {bend1}"
+        );
+    }
 
     #[test]
     fn test_beam_check_via_design_check_trait_includes_bond_detail() {

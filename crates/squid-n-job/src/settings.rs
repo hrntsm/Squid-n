@@ -91,6 +91,8 @@ pub struct AnalysisSettings {
     pub rc_damage_control: bool,
     /// 地震時短期の設計用せん断力 QD の決定方法（QD1/QD2/min）。
     pub qd_method: squid_n_design_jp::QdMethod,
+    /// RC 梁付着検定の方式（1999 / 1991。既定 1999）。
+    pub bond_method: squid_n_design_jp::BondMethod,
     /// 解析の並列スレッド数（0=自動(全コア)、1=単一スレッド(結果の完全再現性を保証)、n=固定）。
     pub threads: usize,
     /// 動的解析（固有値・時刻歴・精算周期）の質量モデルの方式
@@ -179,6 +181,7 @@ impl Default for AnalysisSettings {
             snow_delta3: 0.35,
             rc_damage_control: true,
             qd_method: squid_n_design_jp::QdMethod::Min,
+            bond_method: squid_n_design_jp::BondMethod::Rc1999,
             threads: 0,
             mass_method: squid_n_core::model::MassMethod::default(),
         }

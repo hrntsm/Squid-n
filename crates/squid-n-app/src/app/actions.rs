@@ -1806,9 +1806,8 @@ impl App {
             .first()
             .copied();
         // 単純梁せん断 Q0（MK785/SPR785/SPR685 使用部材の QL=Q0 読み替え用）。
-        let q0_map = gravity_lc
-            .map(|lc| simple_beam_q0_by_elem(&self.model, lc))
-            .unwrap_or_default();
+        // Dead+Live（地震用）を加算した長期相当。
+        let q0_map = simple_beam_q0_by_gravity_cases(&self.model);
         self.results
             .as_ref()
             .map(|r| {
@@ -1882,9 +1881,8 @@ impl App {
                 .map(|(_, mf)| mf.at.iter().map(|(_, f)| f[1].abs()).fold(0.0, f64::max))
         };
         // 単純梁せん断 Q0（MK785/SPR785/SPR685 使用部材の QL=Q0 読み替え用）。
-        let q0_map = gravity_lc
-            .map(|lc| simple_beam_q0_by_elem(&self.model, lc))
-            .unwrap_or_default();
+        // Dead+Live（地震用）を加算した長期相当。
+        let q0_map = simple_beam_q0_by_gravity_cases(&self.model);
         Some(
             po.member_response
                 .iter()
@@ -2503,6 +2501,12 @@ impl App {
         // 一本部材指定（Model.beam_groups）: グループ単位の採用応力を合成し、
         // 所属部材の検定文脈（部材長・端部/中央モーメント等）を上書きする。
         let group_overrides = beam_group_overrides(&self.model, &results.member_forces);
+        // 梁 QD1 用の単純梁せん断 Q0（Dead+Live 加算の長期相当）。
+        let q0_by_elem = if long_member_forces.is_some() {
+            simple_beam_q0_by_gravity_cases(&self.model)
+        } else {
+            Default::default()
+        };
         let report = squid_n_design_jp::run_member_design_checks(
             &self.model,
             &results.member_forces,
@@ -2510,8 +2514,10 @@ impl App {
             &squid_n_design_jp::MemberDesignCheckOptions {
                 term: self.design_term,
                 rc_damage_control: self.analysis_cfg.rc_damage_control,
+                bond_method: self.analysis_cfg.bond_method,
                 qd_method: self.analysis_cfg.qd_method,
                 long_member_forces: long_member_forces.map(|v| v.as_slice()),
+                q_simple_by_elem: Some(&q0_by_elem),
                 beam_group_overrides: Some(&group_overrides),
             },
         );
@@ -3088,6 +3094,20 @@ fn simple_beam_q0_by_elem(
     acc.into_iter()
         .map(|(k, (ri, rj))| (k, ri.max(rj)))
         .collect()
+}
+
+/// [`gravity_cases_for_seismic_weight`] の全ケースについて [`simple_beam_q0_by_elem`]
+/// を加算する（Dead + LiveSeismic/Live＝長期 G+P 相当の Q0）。
+fn simple_beam_q0_by_gravity_cases(
+    model: &squid_n_core::model::Model,
+) -> std::collections::HashMap<ElemId, f64> {
+    let mut map: std::collections::HashMap<ElemId, f64> = Default::default();
+    for lc in gravity_cases_for_seismic_weight(model) {
+        for (id, q) in simple_beam_q0_by_elem(model, lc) {
+            *map.entry(id).or_insert(0.0) += q;
+        }
+    }
+    map
 }
 
 /// 解析前チェックの不備 1 件を診断行へ展開する。

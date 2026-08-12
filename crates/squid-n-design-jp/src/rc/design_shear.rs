@@ -6,7 +6,8 @@ use crate::DesignCtx;
 
 /// 地震時短期の設計用せん断力 QD [N]。
 ///
-/// - 梁: `QD1 = QL + ΣBMy/l′`、柱: `QD1 = ΣcMy/h′`
+/// - 梁: `QD1 = Q0 + n_mech・ΣBMy/l′`（`Q0` 未算定時は `QL` で代替）、
+///   柱: `QD1 = n_mech・ΣcMy/h′`
 /// - `QD2 = QL + n・QE`（`QE` = 当該組合せのせん断力 − 長期せん断力）
 /// - `QD = min(QD1, QD2)`（[`crate::QdMethod`] により QD1/QD2 単独も選択可）
 ///
@@ -39,11 +40,19 @@ pub(crate) fn seismic_design_shear(
     let ql = ql_signed.abs();
     let qe = (q_signed - ql_signed).abs();
     let qd2 = ql + qd.n_factor * qe;
+    let n_mech = if qd.n_mechanism > 0.0 {
+        qd.n_mechanism
+    } else {
+        1.0
+    };
     let qd1 = if qd.clear_length > 0.0 && sum_mu > 0.0 {
+        let mech = n_mech * sum_mu / qd.clear_length;
         if is_column {
-            sum_mu / qd.clear_length
+            mech
         } else {
-            ql + sum_mu / qd.clear_length
+            // 梁: Q0（両端支持せん断）+ n_mech·ΣMy/L0。Q0 未算定時は QL で代替。
+            let q0 = qd.q_simple.unwrap_or(ql).abs();
+            q0 + mech
         }
     } else {
         f64::INFINITY

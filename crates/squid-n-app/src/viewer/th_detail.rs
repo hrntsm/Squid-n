@@ -696,6 +696,7 @@ fn draw_peak_check(
         shear_span,
         shear_span_y,
         rc_damage_control: app.analysis_cfg.rc_damage_control,
+        bond_method: app.analysis_cfg.bond_method,
         end_moments_z,
         mid_moment_z: m_at(0.5),
         // 材料は断面が持つ。RC・SRC の検定は主筋・せん断補強筋・内蔵鉄骨の材料を
@@ -703,6 +704,9 @@ fn draw_peak_check(
         rebar_material: app.model.element_rebar_material(elem).cloned(),
         shear_rebar_material: app.model.element_shear_rebar_material(elem).cloned(),
         steel_material: app.model.element_steel_material(elem).cloned(),
+        beam_has_slab: kind == MemberKind::Beam
+            && squid_n_design_jp::beam_has_attached_slab(&app.model, elem),
+        // 時刻歴ピークは長期内力を持たないため seismic_qd / column_sum_my は未配線。
         ..Default::default()
     };
     // 検定器の選択は構造種別による（`squid_n_core::structure_kind`。

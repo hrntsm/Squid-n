@@ -54,10 +54,11 @@ pub struct RcWallShearInput {
 /// r2 = 1 − max(r0, l0/lw, h0/h),   r0 = √(h0·l0/(h·lw))
 /// ```
 ///
-/// 平19国交告第594号第1 の「耐力壁のせん断耐力の低減率」。**剛性**の低減率
-/// `r1 = 1 − 1.25·r0`（`squid_n_element::factory::wall_opening_reduction`）とは
-/// **別式**であり、取り違えてはならない（耐力側に r1 を使うと開口の影響を
-/// 過小評価する＝危険側）。
+/// 平19国交告第594号第1 の「耐力壁のせん断耐力の低減率」。一次設計（許容応力度）
+/// の開口低減にも同一式を用いる（参照実装マニュアルの係数 1.1 は採らない）。
+/// **剛性**の低減率 `r1 = 1 − 1.25·r0`
+/// （`squid_n_element::factory::wall_opening_reduction`）とは**別式**であり、
+/// 取り違えてはならない（耐力側に r1 を使うと開口の影響を過小評価する＝危険側）。
 ///
 /// 無開口（`opening == None`）は 1.0。極端な開口では 0 にクランプする。
 pub fn wall_opening_reduction_strength(opening: Option<(f64, f64, f64, f64)>) -> f64 {

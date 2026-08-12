@@ -9,14 +9,11 @@
 //!
 //! 準拠する規準: 日本建築学会「鉄筋コンクリート構造計算規準・同解説」15条
 //!
-//! # 式の再構成・簡略化について（重要）
-//! 元テキストは PDF/MathML からの抽出であり、分数式や上付き添字が
-//! 崩れている箇所がある。以下は本モジュールで再構成・簡略化した式であり、
-//! 各関数のドキュメントに個別に明記する:
-//! - RC 接合部の有効幅 bj: `bai = max(bi/2, D/4)`。原典図
-//!   （2026-07-11 照合）が「bi/2 または D/4 の**大きい方**」と明記しているため
-//!   `max` を採用する（RC 規準本文の一般的な
-//!   `min` 解釈より有効幅を大きく＝許容せん断力を大きく見積もる点に注意）。
+//! # 式について
+//! - RC 接合部の有効幅 bj: `bai = min(bi/2, D/4)`（参照実装マニュアル
+//!   「bi/2 または D/4 の**小さい方**」、および RC 規準 15 条の一般的解釈）。
+//!   2026-07-11 照合で一時的に `max` としていたが、マニュアル再照合
+//!   （2026-08-12）で `min` に戻した。
 
 use crate::{CheckComponent, CheckKind, CheckResult};
 
@@ -71,15 +68,13 @@ pub struct RcJointInput {
 /// - `fs`: コンクリートの**短期**許容せん断応力度
 ///   （[`crate::rc::concrete_allowable_shear`]`(fc, false)`）
 /// - `bj = bb + ba1 + ba2`（接合部有効幅）。
-///   `bai = max(bi/2, D/4)`、`bi = (col_width − beam_width) / 2`。
+///   `bai = min(bi/2, D/4)`、`bi = (col_width − beam_width) / 2`。
 ///   梁が柱断面の中心に取り付き、柱幅と梁幅の差が両側に均等に振り分けられる
 ///   （`bi` が両側で共通）と仮定している。
 ///
-///   **原典照合済み（2026-07-11）**: 原典の図
-///   （ユーザー提供）が `bai = bi/2 または D/4 の大きい方` と明記しているため
-///   `max` を採用する。`max` は有効幅を大きく＝許容せん断力を大きく見積もる
-///   （RC 規準本文の一般的な `min` 解釈より非安全側）が、原典図の明記に
-///   従うことを優先する。
+///   **原典照合済み（2026-08-12）**: 参照実装マニュアルが
+///   `bai = bi/2 または D/4 の小さい方` と明記。終局検定側
+///   （`ultimate`）と同じ `min` に揃える。
 ///
 /// ## 設計用せん断力
 /// `Qdj = min(Qdj1, Qdj2)`
@@ -105,9 +100,9 @@ pub fn rc_joint_shear_check(inp: &RcJointInput) -> CheckResult {
     let fs = crate::rc::concrete_allowable_shear(inp.fc, false);
 
     // 接合部有効幅 bj = bb + ba1 + ba2（両側均等仮定）。
-    // bai = max(bi/2, D/4)（原典「大きい方」、2026-07-11 照合）。
+    // bai = min(bi/2, D/4)（マニュアル「小さい方」、2026-08-12 照合）。
     let bi = (inp.col_width - inp.beam_width) / 2.0;
-    let bai = (bi / 2.0).max(inp.col_depth / 4.0).max(0.0);
+    let bai = (bi / 2.0).min(inp.col_depth / 4.0).max(0.0);
     let bj = inp.beam_width + 2.0 * bai;
 
     let qaj = kappa_a * (fs - 0.5) * bj * inp.col_depth;
@@ -173,8 +168,8 @@ mod tests {
     fn rc_joint_kappa_a_by_shape() {
         // fs(短期) = concrete_allowable_shear(24.0,false)
         let fs = crate::rc::concrete_allowable_shear(24.0, false);
-        // bi=(600-300)/2=150, bai=max(bi/2=75, D/4=150)=150, bj=300+2*150=600
-        let bj = 600.0;
+        // bi=(600-300)/2=150, bai=min(bi/2=75, D/4=150)=75, bj=300+2*75=450
+        let bj = 450.0;
         let d = 600.0;
         for (shape, kappa_a) in [
             (JointShape::Cross, 10.0),
@@ -198,27 +193,25 @@ mod tests {
     }
 
     #[test]
-    fn rc_joint_bj_uses_max_of_bi_half_and_d_quarter() {
-        // 原典「bi/2 または D/4 の大きい方」に従い max を採用する
-        // （2026-07-11 原典照合）。col_width が大きく (bi/2) > D/4 となるケースで
-        // max=bi/2 が選ばれることを確認。
-        // bi = (1200-300)/2 = 450, bi/2=225, D/4=600/4=150 -> bai=max(225,150)=225
-        // bj = 300 + 2*225 = 750 (もし min なら bj = 300+2*150=600 になり異なる)
+    fn rc_joint_bj_uses_min_of_bi_half_and_d_quarter() {
+        // マニュアル「bi/2 または D/4 の小さい方」（2026-08-12 照合）。
+        // col_width が大きく (bi/2) > D/4 となるケースで min=D/4 が選ばれること。
+        // bi = (1200-300)/2 = 450, bi/2=225, D/4=150 -> bai=min=150
+        // bj = 300 + 2*150 = 600（もし max なら bj = 300+2*225=750）
         let mut inp = base_joint_input(JointShape::Cross);
         inp.col_width = 1200.0;
         let res = rc_joint_shear_check(&inp);
         let fs = crate::rc::concrete_allowable_shear(inp.fc, false);
         let kappa_a = 10.0;
-        let bj_max = 750.0;
         let bj_min = 600.0;
-        let qaj_max = kappa_a * (fs - 0.5) * bj_max * inp.col_depth;
+        let bj_max = 750.0;
         let qaj_min = kappa_a * (fs - 0.5) * bj_min * inp.col_depth;
-        let qdj = res.ratio() * qaj_max;
-        // max 採用時の ratio と、もし min を採用していた場合の ratio は異なるはず。
-        let ratio_if_min = qdj / qaj_min;
-        assert!((res.ratio() - ratio_if_min).abs() > 1e-9);
-        // max の方が bj が大きく QAj も大きいので ratio は min のケースより小さい。
-        assert!(res.ratio() < ratio_if_min);
+        let qaj_max = kappa_a * (fs - 0.5) * bj_max * inp.col_depth;
+        let qdj = res.ratio() * qaj_min;
+        let ratio_if_max = qdj / qaj_max;
+        assert!((res.ratio() - ratio_if_max).abs() > 1e-9);
+        // min の方が bj・QAj が小さく、ratio は max 仮定より大きい（安全側）。
+        assert!(res.ratio() > ratio_if_max);
     }
 
     #[test]
@@ -235,7 +228,7 @@ mod tests {
         let res = rc_joint_shear_check(&inp);
         let fs = crate::rc::concrete_allowable_shear(inp.fc, false);
         let bi = (inp.col_width - inp.beam_width) / 2.0;
-        let bai = (bi / 2.0_f64).max(inp.col_depth / 4.0);
+        let bai = (bi / 2.0_f64).min(inp.col_depth / 4.0);
         let bj = inp.beam_width + 2.0 * bai;
         let qaj = 10.0 * (fs - 0.5) * bj * inp.col_depth;
         let expected_ratio = expected_qdj / qaj;
@@ -252,7 +245,7 @@ mod tests {
         let expected_qdj1 = inp.sum_beam_moments / inp.beam_j;
         let fs = crate::rc::concrete_allowable_shear(inp.fc, false);
         let bi = (inp.col_width - inp.beam_width) / 2.0;
-        let bai = (bi / 2.0_f64).max(inp.col_depth / 4.0);
+        let bai = (bi / 2.0_f64).min(inp.col_depth / 4.0);
         let bj = inp.beam_width + 2.0 * bai;
         let qaj = 10.0 * (fs - 0.5) * bj * inp.col_depth;
         let expected_ratio = expected_qdj1 / qaj;
