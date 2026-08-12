@@ -239,9 +239,9 @@ impl ForceComponent {
 
 /// 応力図で表示中の成分の組（6 成分の ON/OFF）。
 ///
-/// 既定は M 図プリセット（My・Mz）。複数成分を同時に表示でき、成分ごとに
-/// 独立の最大値で正規化して描く（N[kN] と M[kN·m] は桁が異なるため、
-/// 1 つの最大値を共有できない）。
+/// 既定は M 図プリセット（My・Mz）。複数成分を同時に表示でき、同単位の成分
+/// （力 kN: N・Qy・Qz、モーメント kN·m: Mx・My・Mz）は共有 max で正規化して
+/// 描く。力とモーメントは単位が異なるためグループ間では共有しない。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ForceComponents([bool; 6]);
 
