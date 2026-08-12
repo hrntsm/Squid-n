@@ -74,7 +74,7 @@ struct MThetaKey {
     bend_dir_z: bool,
 }
 
-/// M-θ プロット用の計算結果（モデル別の [θ(rad), M(N・mm)] 点列。軸力範囲外は `None`）。
+/// M-θ プロット用の計算結果（モデル別の [θ(rad), M(N·mm)] 点列。軸力範囲外は `None`）。
 struct MThetaData {
     fiber: Option<Vec<[f64; 2]>>,
     ms: Option<Vec<[f64; 2]>>,
@@ -737,8 +737,8 @@ fn draw_slice_plot(ui: &mut egui::Ui, cache: &MnCache, show: [bool; 3], n_target
     let height = ui.available_height();
     egui_plot::Plot::new("mn_slice")
         .data_aspect(1.0)
-        .x_axis_label("My [kN・m]")
-        .y_axis_label("Mz [kN・m]")
+        .x_axis_label("My [kN·m]")
+        .y_axis_label("Mz [kN·m]")
         .legend(egui_plot::Legend::default())
         .height(height)
         .show(ui, |plot_ui| {
@@ -818,7 +818,7 @@ fn draw_m_theta_plot(ui: &mut egui::Ui, data: &MThetaData, show: [bool; 3]) {
     let height = ui.available_height();
     egui_plot::Plot::new("mn_m_theta")
         .x_axis_label("θ [×10⁻³ rad]")
-        .y_axis_label("M [kN・m]")
+        .y_axis_label("M [kN·m]")
         .legend(egui_plot::Legend::default())
         .height(height)
         .show(ui, |plot_ui| {
@@ -840,7 +840,7 @@ fn draw_m_theta_plot(ui: &mut egui::Ui, data: &MThetaData, show: [bool; 3]) {
         });
 }
 
-/// [θ(rad), M(N・mm)] 点列を表示単位（θ:×10⁻³rad, M:kN・m）へ換算して Line を描く。
+/// [θ(rad), M(N·mm)] 点列を表示単位（θ:×10⁻³rad, M:kN·m）へ換算して Line を描く。
 fn plot_m_theta_line(plot_ui: &mut egui_plot::PlotUi<'_>, pts: &[[f64; 2]], kind: YieldModelKind) {
     if pts.is_empty() {
         return;

@@ -121,10 +121,7 @@ impl BeamElement {
         } else {
             [0.0; 3]
         };
-        let dx = p1[0] - p0[0];
-        let dy = p1[1] - p0[1];
-        let dz = p1[2] - p0[2];
-        let len = (dx * dx + dy * dy + dz * dz).sqrt();
+        let len = squid_n_core::geom::vec3::dist(p0, p1);
 
         let axis = LocalFrame::from_nodes(p0, p1, data.local_axis.ref_vector);
         let sec = get_section(model, data.section);
@@ -189,8 +186,8 @@ impl BeamElement {
         //   水平とみなす）かつ両端節点が四隅を持つ Wall 要素の節点集合に含まれる場合。
         //   剛性用の値（a, iy, iz, j, as_y, as_z）にのみ乗じ、質量用 a_mass は
         //   幾何断面のまま変更しない。
-        let lp = (dx * dx + dy * dy).sqrt();
-        let is_horizontal = lp > 1e-9 && dz.abs() <= 0.05 * lp;
+        let lp = ((p1[0] - p0[0]).powi(2) + (p1[1] - p0[1]).powi(2)).sqrt();
+        let is_horizontal = lp > 1e-9 && (p1[2] - p0[2]).abs() <= 0.05 * lp;
         let factors = breakdown_with(model, data, &sec, mat.young, is_horizontal);
         let iz = iz * factors.slab;
 

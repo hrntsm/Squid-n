@@ -257,41 +257,27 @@ pub struct LoadCombination {
 /// （長期 1 + 短期地震 4 の計 5 組合せ）。
 ///
 /// [`default_load_cases`] が生成する標準ケースの並び
-/// （0:DL、1:LL(架構用)、2:LL(地震用)、3:EX、4:EY）を前提に、以下を生成する。
-/// 組合せ名は分かりやすさのため荷重ケースの直接的な名前（DL・LL・EX・EY）で表す
-/// （LL は架構用の積載 [`LL_FRAME_CASE_NAME`] の略）。
+/// （0:DL、1:LL(架構用)、2:LL(地震用)、3:EX、4:EY）を前提に、
+/// [`crate::load_combo::standard_combinations`] を積雪なし・非多雪区域で呼ぶ。
 ///
 /// - 長期: `DL + LL`
-/// - 短期地震: `DL + LL + EX`／`DL + LL - EX`
-/// - 短期地震: `DL + LL + EY`／`DL + LL - EY`
+/// - 短期地震: `DL + LL + EX`／`DL + LL - EX`／`DL + LL + EY`／`DL + LL - EY`
 ///
-/// 長期には架構用の積載（令85条1項の長期骨組解析用）を用いる。命名・係数構成とも
-/// `squid_n_load::combo::auto_combinations`（DL/LL/EX/EY 指定）と一致する。長短期の
-/// 判別は `is_short_term_combo` が名前から行い、地震ケース名の "E" を含む短期4件が
-/// 短期、`DL + LL` が長期となる。
+/// 長期には架構用の積載（令85条1項の長期骨組解析用）を用いる。
+/// 生成規則そのものは令82条の一般実装と**同一の関数**であり、両者が食い違う
+/// 余地はない（かつては本関数が組合せを手書きしており、一致はテストによる
+/// 手動同期でのみ担保していた）。
 pub fn default_combinations() -> Vec<LoadCombination> {
     // ID は default_load_cases() の並びに対応する。
-    let dl = LoadCaseId(0);
-    let ll = LoadCaseId(1);
-    let ex = LoadCaseId(3);
-    let ey = LoadCaseId(4);
-    // DL + LL に地震ケース case（係数 ±1.0）を加えた短期地震組合せ。
-    let seismic = |case: LoadCaseId, coef: f64, name: &str| LoadCombination {
-        name: name.to_string(),
-        terms: vec![(dl, 1.0), (ll, 1.0), (case, coef)],
-    };
-    vec![
-        // 長期: DL + LL
-        LoadCombination {
-            name: "DL + LL".into(),
-            terms: vec![(dl, 1.0), (ll, 1.0)],
-        },
-        // 短期地震: DL + LL ± EX / ± EY
-        seismic(ex, 1.0, "DL + LL + EX"),
-        seismic(ex, -1.0, "DL + LL - EX"),
-        seismic(ey, 1.0, "DL + LL + EY"),
-        seismic(ey, -1.0, "DL + LL - EY"),
-    ]
+    crate::load_combo::standard_combinations(&crate::load_combo::ComboInput {
+        dl: LoadCaseId(0),
+        ll: LoadCaseId(1),
+        seismic_x: Some(LoadCaseId(3)),
+        seismic_y: Some(LoadCaseId(4)),
+        snow: None,
+        heavy_snow_zone: false,
+        snow_factors: None,
+    })
 }
 
 /// ダンパー装置の自重諸元（固定荷重）。

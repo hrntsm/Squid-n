@@ -71,10 +71,7 @@ impl NodalSpringElement {
         } else {
             [0.0; 3]
         };
-        let dx = p1[0] - p0[0];
-        let dy = p1[1] - p0[1];
-        let dz = p1[2] - p0[2];
-        let len = (dx * dx + dy * dy + dz * dz).sqrt();
+        let len = squid_n_core::geom::vec3::dist(p0, p1);
 
         // 零長バネ（2 節点が同一座標）は方向ベクトルが定義できないため、
         // 全体座標系＝局所座標系（単位回転）とする。

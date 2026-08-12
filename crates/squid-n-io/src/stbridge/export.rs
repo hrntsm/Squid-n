@@ -510,13 +510,10 @@ fn rotate_of(e: &squid_n_core::model::ElementData, p_i: [f64; 3], p_j: [f64; 3])
     sin.atan2(cos).to_degrees()
 }
 
+/// 単位ベクトル。縮退したベクトル（長さ 0）は方向を決められないため、
+/// ST-Bridge の既定の参照方向として鉛直上向きを返す。
 fn normalize(v: [f64; 3]) -> [f64; 3] {
-    let l = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
-    if l < 1e-9 {
-        [0.0, 0.0, 1.0]
-    } else {
-        [v[0] / l, v[1] / l, v[2] / l]
-    }
+    squid_n_core::geom::vec3::unit(v).unwrap_or([0.0, 0.0, 1.0])
 }
 
 /// 各スラブが参照する `StbSecSlab_RC` の id を決める。

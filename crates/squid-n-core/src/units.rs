@@ -100,6 +100,78 @@ pub mod to_internal {
     }
 }
 
+/// 内部単位系（N-mm）から表示用の単位への換算と、その単位ラベル。
+///
+/// **どの量をどの単位で見せるか**は日本の構造設計の慣例で決まっており（力は kN、
+/// 断面性能は cm 系、応力度は N/mm² など）、量ごとに異なる。その慣例をここに 1 つ
+/// だけ置き、画面ごとに違う単位で同じ量を表示することを防ぐ。
+///
+/// 値の関数とラベル定数は**分離**している。軸ラベル（`"層せん断力 [kN]"`）だけ
+/// 要る場面と、値だけ要る場面の双方があるためである。小数桁は規約化しない
+/// （一覧表では `{:.0}`、詳細表示では `{:.2}` のような使い分けが正当なため）。
+pub mod to_display {
+    /// 力の表示単位ラベル。
+    pub const LABEL_FORCE: &str = "kN";
+    /// モーメントの表示単位ラベル。
+    pub const LABEL_MOMENT: &str = "kN·m";
+    /// 長さ（階高・建物高さ・スパン）の表示単位ラベル。
+    pub const LABEL_LENGTH: &str = "m";
+    /// 断面寸法・鉄筋径・変位の表示単位ラベル（内部単位のまま）。
+    pub const LABEL_LENGTH_MM: &str = "mm";
+    /// 応力度・材料強度の表示単位ラベル（内部単位のまま）。
+    pub const LABEL_STRESS: &str = "N/mm²";
+    /// 断面積の表示単位ラベル。
+    pub const LABEL_AREA: &str = "cm²";
+    /// 断面二次モーメント・ねじり定数の表示単位ラベル。
+    pub const LABEL_INERTIA: &str = "cm⁴";
+    /// 断面係数の表示単位ラベル。
+    pub const LABEL_MODULUS: &str = "cm³";
+    /// 断面二次半径の表示単位ラベル。
+    pub const LABEL_RADIUS: &str = "cm";
+    /// 線剛性・バネ定数の表示単位ラベル。
+    pub const LABEL_STIFFNESS: &str = "kN/mm";
+
+    /// 力 N → kN。重量・せん断力・軸力に用いる。
+    pub fn force_kn(n: f64) -> f64 {
+        n / 1_000.0
+    }
+
+    /// モーメント N·mm → kN·m。
+    pub fn moment_kn_m(n_mm: f64) -> f64 {
+        n_mm / 1.0e6
+    }
+
+    /// 長さ mm → m。階高・建物高さ・スパンに用いる。
+    pub fn length_m(mm: f64) -> f64 {
+        mm / 1_000.0
+    }
+
+    /// バネ定数 N/mm → kN/mm。
+    pub fn stiffness_kn_per_mm(n_per_mm: f64) -> f64 {
+        n_per_mm / 1_000.0
+    }
+
+    /// 断面積 mm² → cm²（JIS 形鋼表の慣例）。
+    pub fn area_cm2(mm2: f64) -> f64 {
+        mm2 / 1.0e2
+    }
+
+    /// 断面二次モーメント・ねじり定数 mm⁴ → cm⁴（同上）。
+    pub fn inertia_cm4(mm4: f64) -> f64 {
+        mm4 / 1.0e4
+    }
+
+    /// 断面係数（弾性・塑性）mm³ → cm³（同上）。
+    pub fn modulus_cm3(mm3: f64) -> f64 {
+        mm3 / 1.0e3
+    }
+
+    /// 断面二次半径 mm → cm（同上）。
+    pub fn radius_cm(mm: f64) -> f64 {
+        mm / 1.0e1
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

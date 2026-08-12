@@ -569,14 +569,8 @@ pub(crate) fn project(
     [pos.x, pos.y]
 }
 
-/// 3D ベクトルの外積。
-fn cross3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
-    [
-        a[1] * b[2] - a[2] * b[1],
-        a[2] * b[0] - a[0] * b[2],
-        a[0] * b[1] - a[1] * b[0],
-    ]
-}
+/// 3D ベクトルの外積（算定の情報源は `squid-n-core`）。
+use squid_n_core::geom::vec3::cross as cross3;
 
 /// スクリーン座標上の矢印（線分＋矢頭）を描く。
 fn draw_arrow(painter: &egui::Painter, from: egui::Pos2, to: egui::Pos2, color: egui::Color32) {
@@ -1864,7 +1858,7 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
 
     // 選択ハイライト（描き方の規約は `element_draw_shape`）。
     for &elem_id in &app.selection.members {
-        let Some(elem) = app.model.elements.iter().find(|e| e.id == elem_id) else {
+        let Some(elem) = app.model.element(elem_id) else {
             continue;
         };
         let stroke = egui::Stroke::new(4.0_f32, theme::PARETO_RED);
@@ -2182,9 +2176,7 @@ fn element_draw_shape(kind: squid_n_core::model::ElementKind) -> DrawShape {
 }
 
 /// 部材両端間のワールド距離。ゼロ長部材（材軸が定まらない）の除外判定に使う。
-fn member_len3(p_i: [f64; 3], p_j: [f64; 3]) -> f64 {
-    ((p_j[0] - p_i[0]).powi(2) + (p_j[1] - p_i[1]).powi(2) + (p_j[2] - p_i[2]).powi(2)).sqrt()
-}
+use squid_n_core::geom::vec3::dist as member_len3;
 
 /// 時刻歴アニメーションの再生経過時刻を実時間 `dt_real`[s]×速度 `speed` だけ進める。
 /// `duration`（最終フレーム時刻）を超えたら先頭へループする（`rem_euclid` で周回）。
@@ -2412,7 +2404,7 @@ fn group_member_loads_by_elem(app: &App) -> Vec<CmqElemGroup> {
     let mut groups: std::collections::HashMap<squid_n_core::ids::ElemId, CmqElemGroup> =
         std::collections::HashMap::new();
     for ml in member_loads {
-        let Some(elem) = app.model.elements.iter().find(|e| e.id == ml.elem) else {
+        let Some(elem) = app.model.element(ml.elem) else {
             continue;
         };
         if !is_primary_beam_for_cmq(&app.model, elem) {

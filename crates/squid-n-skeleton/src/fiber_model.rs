@@ -5,7 +5,9 @@
 //! [`crate::deformation`] / [`crate::builder`] が担う。
 
 use squid_n_material::{Bilinear, Concrete, UniaxialMaterial};
-use squid_n_section::fiber::{section_response, Fiber, FiberSection, SectionStrain};
+use squid_n_section::fiber::{
+    rect_fiber_section, section_response, Fiber, FiberSection, SectionStrain,
+};
 
 use crate::Reinforcement;
 
@@ -170,23 +172,11 @@ pub(crate) fn build_rc_fiber_section(
     let mut mats: Vec<Box<dyn UniaxialMaterial>> = Vec::with_capacity(capacity);
     let mut roles = Vec::with_capacity(capacity);
 
-    // コンクリート格子
-    let dw = width / nw as f64;
-    let dd = depth / nd as f64;
-    let area = dw * dd;
-    for i in 0..nw {
-        let y = (i as f64 + 0.5) * dw - width / 2.0;
-        for j in 0..nd {
-            let z = (j as f64 + 0.5) * dd - depth / 2.0;
-            fibers.push(Fiber {
-                y,
-                z,
-                area,
-                material: 0,
-            });
-            mats.push(concrete.clone_box());
-            roles.push(FiberRole::Concrete);
-        }
+    // コンクリート格子（分割規則の情報源は `squid_n_section::fiber`）。
+    for fiber in rect_fiber_section(width, depth, nw, nd, 0).fibers {
+        fibers.push(fiber);
+        mats.push(concrete.clone_box());
+        roles.push(FiberRole::Concrete);
     }
     // 主筋（点ファイバ）
     for &(y, z, area) in &reinforcement.main_bars {

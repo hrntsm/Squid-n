@@ -75,7 +75,7 @@
 //!   柱断面形状が `SrcRect` の節点で検定する。梁の上下主筋間距離 mBd・柱の
 //!   左右主筋間距離 mCd は、既存の RC 接合部配線（`beam_j` に
 //!   `d − rc_dt(rebar)` を用いる近似）に合わせ、「梁せい／柱幅 −
-//!   2・rc_dt(rebar)」（`rc_dt` はかぶり＋帯筋径＋主筋径/2）で近似する
+//!   2・rc_dt(rebar)」（`rc_dt` は引張筋重心位置。多段配筋の段数を考慮する）で近似する
 //!   （鉄筋位置の実配置ではなく主筋かぶり情報からの近似）。梁が S 造の
 //!   場合は mBd の代わりに sBd（フランジ板厚中心間距離、S パネルゾーンの
 //!   `db` 算定と同じ近似）を用いる。柱鉄骨のフランジ重心間距離 sCd は
@@ -148,7 +148,7 @@ pub fn collect_joint_checks_with_long(
     // 部材情報の収集（2 節点の梁/柱系要素）
     let mut members: Vec<MemberInfo<'_>> = Vec::new();
     for (eid, forces) in member_forces {
-        let Some(elem) = model.elements.iter().find(|e| e.id == *eid) else {
+        let Some(elem) = model.element(*eid) else {
             continue;
         };
         if elem.nodes.len() < 2 {

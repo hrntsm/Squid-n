@@ -173,6 +173,26 @@ pub fn rc_alpha_y_sugano(pt: f64, a_over_d: f64, d_over_full: f64, n: f64) -> f6
     (base * d_over_full * d_over_full).max(0.0)
 }
 
+/// ひび割れ強度の係数 κ（技術基準解説書 P.621-623）。
+///
+/// 曲げひび割れ `Mc = κ·√Fc·Ze`、引張ひび割れ `Nct = κ·√Fc·Ac` の双方に用いる。
+pub const RC_CRACK_COEF: f64 = 0.56;
+
+/// RC 断面の曲げひび割れモーメント Mc \[N·mm\]（技術基準解説書 P.621-623）。
+///
+/// `Mc = κ·√Fc·Ze`（κ=[`RC_CRACK_COEF`]、Fc \[N/mm²\]、Ze=引張側断面係数 \[mm³\]）。
+/// 不正入力（Fc・Ze のいずれかが 0 以下）は 0.0 を返す。
+///
+/// 材端曲げバネ・プッシュオーバーのヒンジ閾値・RC 梁のトリリニア骨格が
+/// 共通で用いる（算定の情報源を 1 つに保つ）。Mc を降伏モーメント My との
+/// 関係でクランプするかどうかは用途ごとに異なるため、**呼び出し側**で行う。
+pub fn rc_crack_moment(fc: f64, ze: f64) -> f64 {
+    if fc <= 0.0 || ze <= 0.0 {
+        return 0.0;
+    }
+    RC_CRACK_COEF * fc.sqrt() * ze
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

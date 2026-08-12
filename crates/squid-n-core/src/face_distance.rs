@@ -18,34 +18,8 @@
 //! [`face_distances`] で直接求められるようにしている。
 
 use crate::adjacency::NodeAdjacency;
+use crate::geom::{element_axis as elem_axis, vec3, ORTHOGONAL_DOT_MAX};
 use crate::model::{ElementKind, Model};
-
-/// 直交とみなす軸内積の上限（概ね 45°以上で直交扱い）。
-const ORTHOGONAL_DOT_MAX: f64 = 0.707;
-
-/// 部材の単位軸ベクトル。長さ 0 の部材は零ベクトルを返す。
-fn elem_axis(model: &Model, e: &crate::model::ElementData) -> [f64; 3] {
-    if e.nodes.len() < 2 {
-        return [0.0, 0.0, 0.0];
-    }
-    let (Some(n0), Some(n1)) = (
-        model.nodes.get(e.nodes[0].index()),
-        model.nodes.get(e.nodes[e.nodes.len() - 1].index()),
-    ) else {
-        return [0.0, 0.0, 0.0];
-    };
-    let d = [
-        n1.coord[0] - n0.coord[0],
-        n1.coord[1] - n0.coord[1],
-        n1.coord[2] - n0.coord[2],
-    ];
-    let l = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
-    if l < 1e-12 {
-        [0.0, 0.0, 0.0]
-    } else {
-        [d[0] / l, d[1] / l, d[2] / l]
-    }
-}
 
 /// 節点 `node` で対象部材と概ね直交する Beam 要素の最大せいの半分 [mm]。
 /// 直交材がない端は 0.0。構造種別は問わない（幾何量のため）。
@@ -66,9 +40,7 @@ fn face_at(
             continue;
         }
         let axis = elem_axis(model, e);
-        let dot =
-            (axis[0] * target_axis[0] + axis[1] * target_axis[1] + axis[2] * target_axis[2]).abs();
-        if dot >= ORTHOGONAL_DOT_MAX {
+        if vec3::dot(axis, target_axis).abs() >= ORTHOGONAL_DOT_MAX {
             continue;
         }
         if let Some(sec) = e.section.and_then(|sid| model.sections.get(sid.index())) {

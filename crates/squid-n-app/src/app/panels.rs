@@ -1,7 +1,9 @@
 //! `App` の egui パネル描画メソッド。
 
 use super::*;
+use crate::table_util::fmt_section_prop;
 use crate::table_util::Col;
+use squid_n_core::units::to_display::{area_cm2, inertia_cm4};
 
 /// ステータスバーのドック/パネル切替アイコンの共通クリック挙動（Zed 風）。
 /// 対象ドックが開いていて対象パネルが既にアクティブなら閉じて `false` を返す。
@@ -2513,7 +2515,7 @@ impl App {
 
             // 選択された部材の諸元
             if let Some(elem_id) = self.nav.focus_member {
-                if let Some(e) = self.model.elements.iter().find(|e| e.id == elem_id) {
+                if let Some(e) = self.model.element(elem_id) {
                     ui.label(format!("部材 ID: {}", e.id.0));
                     let n0 = e.nodes.first().map(|n| n.0).unwrap_or(0);
                     let n1 = e.nodes.get(1).map(|n| n.0).unwrap_or(0);
@@ -2526,9 +2528,18 @@ impl App {
                             .filter(|s| s.id == sec_id)
                         {
                             ui.label(format!("断面: {} ({})", sec.name, sec_id.0));
-                            ui.label(format!("  A = {:.3e} mm²", sec.area));
-                            ui.label(format!("  Iy= {:.3e} mm⁴", sec.iy));
-                            ui.label(format!("  Iz= {:.3e} mm⁴", sec.iz));
+                            ui.label(format!(
+                                "  A = {} cm²",
+                                fmt_section_prop(area_cm2(sec.area))
+                            ));
+                            ui.label(format!(
+                                "  Iy= {} cm⁴",
+                                fmt_section_prop(inertia_cm4(sec.iy))
+                            ));
+                            ui.label(format!(
+                                "  Iz= {} cm⁴",
+                                fmt_section_prop(inertia_cm4(sec.iz))
+                            ));
                             // 影響数: 同一断面を使う部材数
                             let n_used = self
                                 .model
@@ -2606,9 +2617,18 @@ impl App {
                     ui.separator();
                     ui.strong("断面（選択中）");
                     ui.label(format!("名前: {} ({})", sec.name, sec_id.0));
-                    ui.label(format!("  A = {:.3e} mm²", sec.area));
-                    ui.label(format!("  Iy= {:.3e} mm⁴", sec.iy));
-                    ui.label(format!("  Iz= {:.3e} mm⁴", sec.iz));
+                    ui.label(format!(
+                        "  A = {} cm²",
+                        fmt_section_prop(area_cm2(sec.area))
+                    ));
+                    ui.label(format!(
+                        "  Iy= {} cm⁴",
+                        fmt_section_prop(inertia_cm4(sec.iy))
+                    ));
+                    ui.label(format!(
+                        "  Iz= {} cm⁴",
+                        fmt_section_prop(inertia_cm4(sec.iz))
+                    ));
                     let used: Vec<ElemId> = self
                         .model
                         .elements
@@ -2626,7 +2646,7 @@ impl App {
             ui.separator();
             // 選択された節点の諸元
             if let Some(node_id) = self.nav.focus_node {
-                if let Some(node) = self.model.nodes.iter().find(|n| n.id == node_id) {
+                if let Some(node) = self.model.node(node_id) {
                     ui.label(format!("節点 ID: {}", node.id.0));
                     ui.label(format!(
                         "座標: ({:.3}, {:.3}, {:.3})",

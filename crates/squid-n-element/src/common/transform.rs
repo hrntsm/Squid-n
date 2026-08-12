@@ -7,13 +7,13 @@ pub struct LocalFrame {
 
 impl LocalFrame {
     pub fn from_nodes(p_i: [f64; 3], p_j: [f64; 3], ref_vec: [f64; 3]) -> Self {
-        let dx = p_j[0] - p_i[0];
-        let dy = p_j[1] - p_i[1];
-        let dz = p_j[2] - p_i[2];
-        let l = (dx * dx + dy * dy + dz * dz).sqrt();
+        let d = squid_n_core::geom::vec3::sub(p_j, p_i);
+        // 零長要素（2 節点が同一座標）は材軸方向を定義できないため、長さ 1 の
+        // 退化しないスケールに置き換えて ex を全体 X 方向へ倒す。
+        let l = squid_n_core::geom::vec3::norm(d);
         let l = if l < 1e-12 { 1.0 } else { l };
 
-        let ex = [dx / l, dy / l, dz / l];
+        let ex = squid_n_core::geom::vec3::scale(d, 1.0 / l);
 
         let rdot = ref_vec[0] * ex[0] + ref_vec[1] * ex[1] + ref_vec[2] * ex[2];
         let mut ey = [

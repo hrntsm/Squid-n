@@ -803,3 +803,205 @@ fn test_dimension_label_number_format() {
     assert_eq!(label(4.5), "FB-100x4.5");
     assert_eq!(label(1.234), "FB-100x1.234");
 }
+
+/// 矩形分解による Zp が、H 形の閉形式 `B·tf·(H−tf) + tw·(H−2tf)²/4` に一致する。
+/// 溝形鋼は強軸まわりの鉛直方向の分布が H 形と同じなので、同一寸法なら同値になる。
+#[test]
+fn test_plastic_modulus_channel_matches_h_closed_form() {
+    let (h, b, tw, tf) = (400.0, 200.0, 8.0, 13.0);
+    let h_shape = SectionShape::SteelH {
+        height: h,
+        width: b,
+        web_thick: tw,
+        flange_thick: tf,
+    };
+    let channel = SectionShape::SteelChannel {
+        height: h,
+        width: b,
+        web_thick: tw,
+        flange_thick: tf,
+    };
+    let zp_h = h_shape.plastic_modulus_strong().unwrap();
+    let zp_c = channel.plastic_modulus_strong().unwrap();
+    // 閉形式（H 形の実装）と矩形分解（溝形鋼の実装）が一致する。
+    assert!(
+        (zp_h - zp_c).abs() < 1e-6,
+        "H形 閉形式 {zp_h} と 溝形鋼 矩形分解 {zp_c} が一致しない"
+    );
+    // 手計算: 200·13·(400−13) + 8·(400−26)²/4。
+    let hand = b * tf * (h - tf) + tw * (h - 2.0 * tf).powi(2) / 4.0;
+    assert!((zp_h - hand).abs() < 1e-6);
+}
+
+/// 平鋼（中実矩形）の Zp は `B·t²/4`、中実丸鋼は `D³/6`（材料力学の閉形式）。
+#[test]
+fn test_plastic_modulus_solid_sections() {
+    let flat = SectionShape::SteelFlatBar {
+        width: 100.0,
+        thick: 12.0,
+    };
+    assert!((flat.plastic_modulus_strong().unwrap() - 100.0 * 12.0 * 12.0 / 4.0).abs() < 1e-9);
+    let round = SectionShape::SteelRoundBar { dia: 30.0 };
+    assert!((round.plastic_modulus_strong().unwrap() - 30.0_f64.powi(3) / 6.0).abs() < 1e-9);
+}
+
+/// 非対称断面（T 形・非対称組立 H）の塑性中立軸は**等面積軸**であり、
+/// 弾性図心とは一致しない。Zp は Ze（弾性断面係数の小さい側）より大きい。
+#[test]
+fn test_plastic_modulus_asymmetric_exceeds_elastic() {
+    // T 形鋼: せい 200・フランジ幅 200・ウェブ厚 9・フランジ厚 12。
+    let tee = SectionShape::SteelTee {
+        height: 200.0,
+        width: 200.0,
+        web_thick: 9.0,
+        flange_thick: 12.0,
+    };
+    let zp = tee.plastic_modulus_strong().unwrap();
+    // 弾性断面係数 Ze は引張縁側（図心から遠いほう）で決まる。
+    // T 形はフランジが上端のみのため、図心は上寄りで下縁までの距離が大きい。
+    let iy = tee.calc_iy();
+    let a_f: f64 = 200.0 * 12.0;
+    let a_w = (200.0 - 12.0) * 9.0;
+    let y_bar = (a_f * (200.0 - 12.0 / 2.0) + a_w * (200.0 - 12.0) / 2.0) / (a_f + a_w);
+    let ze = iy / y_bar.max(200.0 - y_bar);
+    // 塑性断面係数は弾性断面係数より大きい（形状係数 Zp/Ze > 1）。
+    // 非対称断面では等面積軸が図心より圧縮側へ寄るため、その差は大きくなる。
+    assert!(
+        zp > ze,
+        "Zp={zp} は Ze={ze} を上回るはず（形状係数 {}）",
+        zp / ze
+    );
+    assert!(
+        zp / ze < 3.0,
+        "形状係数 {} が過大（分解か軸の取り方の誤り）",
+        zp / ze
+    );
+
+    // 非対称組立 H: 上フランジが小さい。
+    let built = SectionShape::SteelBuiltH {
+        height: 600.0,
+        upper_width: 200.0,
+        upper_thick: 12.0,
+        lower_width: 300.0,
+        lower_thick: 19.0,
+        web_thick: 9.0,
+    };
+    let zp_b = built.plastic_modulus_strong().unwrap();
+    // 上下同一寸法にすると通常の H 形と一致する（`SteelBuiltH` の doc の不変条件）。
+    let sym = SectionShape::SteelBuiltH {
+        height: 600.0,
+        upper_width: 250.0,
+        upper_thick: 16.0,
+        lower_width: 250.0,
+        lower_thick: 16.0,
+        web_thick: 9.0,
+    };
+    let plain = SectionShape::SteelH {
+        height: 600.0,
+        width: 250.0,
+        web_thick: 9.0,
+        flange_thick: 16.0,
+    };
+    assert!(
+        (sym.plastic_modulus_strong().unwrap() - plain.plastic_modulus_strong().unwrap()).abs()
+            < 1e-6
+    );
+    assert!(zp_b > 0.0);
+}
+
+/// リップ溝形鋼・山形鋼も Zp を持ち、フォールバック（None）に落ちない。
+/// 山形鋼は `calc_iy` と同じ幾何 y 軸まわり（主軸ではない）。
+#[test]
+fn test_plastic_modulus_covers_all_steel_shapes() {
+    let shapes = [
+        SectionShape::SteelLipChannel {
+            height: 150.0,
+            width: 65.0,
+            lip: 20.0,
+            thick: 2.3,
+        },
+        SectionShape::SteelAngle {
+            leg_a: 90.0,
+            leg_b: 90.0,
+            thick: 7.0,
+        },
+    ];
+    for s in shapes {
+        let zp = s
+            .plastic_modulus_strong()
+            .unwrap_or_else(|| panic!("{s:?} が Zp を持たない"));
+        assert!(zp > 0.0, "{s:?} の Zp={zp}");
+    }
+    // RC・SRC・CFT は鉄骨断面ではないため None のまま。
+    assert!(SectionShape::RcCircle {
+        d: 600.0,
+        rebar: no_rebar()
+    }
+    .plastic_modulus_strong()
+    .is_none());
+}
+
+/// CFT 充填コンクリートの諸元は、剛性側（等価断面性能）と耐力側（軸終局検定）の
+/// 双方が使う単一の実装。内法寸法・A・I・J が閉形式と一致することを確かめる。
+#[test]
+fn test_cft_core_props_matches_closed_form() {
+    let (h, w, t) = (400.0, 300.0, 12.0);
+    let boxed = SectionShape::CftBox {
+        height: h,
+        width: w,
+        thick: t,
+    };
+    let c = boxed.cft_core_props().unwrap();
+    let (bi, hi) = (w - 2.0 * t, h - 2.0 * t);
+    assert!((c.inner_width - bi).abs() < 1e-9);
+    assert!((c.inner_height - hi).abs() < 1e-9);
+    assert!((c.area - bi * hi).abs() < 1e-9);
+    assert!((c.iy - bi * hi.powi(3) / 12.0).abs() < 1e-6);
+    assert!((c.iz - hi * bi.powi(3) / 12.0).abs() < 1e-6);
+
+    let pipe = SectionShape::CftPipe {
+        outer_dia: 400.0,
+        thick: 12.0,
+    };
+    let cp = pipe.cft_core_props().unwrap();
+    let di = 400.0 - 24.0;
+    assert!((cp.area - std::f64::consts::PI * di * di / 4.0).abs() < 1e-6);
+    assert!((cp.iy - std::f64::consts::PI * di.powi(4) / 64.0).abs() < 1e-3);
+    // 円形は強軸・弱軸が同値、ねじり定数は極断面二次モーメント Ip = 2·I。
+    assert!((cp.iy - cp.iz).abs() < 1e-9);
+    assert!((cp.j - 2.0 * cp.iy).abs() < 1e-3);
+
+    // CFT 以外は None。
+    assert!(make_src_600().cft_core_props().is_none());
+}
+
+/// 板厚が過大で内法が消える CFT 断面では、充填コンクリートの断面積が 0 になる。
+///
+/// 呼び出し側が扱いを選べるよう `None` にはしない。剛性側
+/// （`cft_equivalent_props`）は「鋼管のみへフォールバック」として `None` を返し、
+/// 耐力側は「充填ゼロのまま検定を続行」する。どちらも**充填コンクリートが効かない**
+/// という同じ結果になる。
+#[test]
+fn test_cft_core_props_degenerate_gives_zero_area() {
+    // せい 100・板厚 60 → 内法せいが負（クランプして 0）。
+    let degenerate = SectionShape::CftBox {
+        height: 100.0,
+        width: 400.0,
+        thick: 60.0,
+    };
+    let c = degenerate.cft_core_props().unwrap();
+    assert_eq!(c.inner_height, 0.0);
+    assert_eq!(c.area, 0.0);
+    // 剛性側は鋼管のみへフォールバックする。
+    assert!(degenerate
+        .cft_equivalent_props(205000.0, 0.3, 36.0)
+        .is_none());
+
+    // 円形も同様（外径 100・板厚 60）。
+    let dp = SectionShape::CftPipe {
+        outer_dia: 100.0,
+        thick: 60.0,
+    };
+    assert_eq!(dp.cft_core_props().unwrap().area, 0.0);
+    assert!(dp.cft_equivalent_props(205000.0, 0.3, 36.0).is_none());
+}

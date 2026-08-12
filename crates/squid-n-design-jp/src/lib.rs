@@ -9,6 +9,8 @@
 //! （部材ランク・層 Ds・保有水平耐力・剛性率・偏心率・主軸）に分離する。
 pub mod brb;
 pub mod cft;
+/// 危険断面位置（断面検定を行う部材軸上の位置）。GUI と MCP が共通で用いる。
+pub mod design_position;
 pub mod floor;
 /// 免震支承材のマルチシアスプリング低減率・摩擦力（各免震部材指針）。
 pub mod isolator;
@@ -237,6 +239,62 @@ pub enum MemberKind {
     Beam,
     Column,
     Brace,
+}
+
+/// 部材種別を柱とみなす部材軸の鉛直成分 |ez| の下限。
+///
+/// `squid_n_core::geom::VERTICAL_COS_TOL`（45° 余弦基準）とは**別目的の規約**で、
+/// あちらは層せん断集計・変形角定義のための「柱系か梁系か」の 2 分、こちらは
+/// 検定式（柱式／梁式／軸力材式）の選択のための 3 区分である。
+pub const MEMBER_COLUMN_EZ_MIN: f64 = 0.8;
+
+/// 部材種別を梁とみなす部材軸の鉛直成分 |ez| の上限。
+/// [`MEMBER_COLUMN_EZ_MIN`] を参照。
+pub const MEMBER_BEAM_EZ_MAX: f64 = 0.2;
+
+impl MemberKind {
+    /// 部材軸の鉛直成分 |ez| から部材種別を判定する。
+    ///
+    /// |ez| ≥ [`MEMBER_COLUMN_EZ_MIN`] を柱、|ez| ≤ [`MEMBER_BEAM_EZ_MAX`] を梁、
+    /// その中間（斜材）をブレースとする。長さ 0 に縮退した部材軸は梁とみなす。
+    ///
+    /// 断面検定・接合部検定・終局検定・MCP ジョブ・GUI の部材種別表示が
+    /// **共通で用いる単一の規約**（判定の情報源を 1 つに保つ）。
+    pub fn from_axis(p0: [f64; 3], p1: [f64; 3]) -> Self {
+        let d = [p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2]];
+        let len = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+        if len < 1e-9 {
+            return MemberKind::Beam;
+        }
+        Self::from_ez((d[2] / len).abs())
+    }
+
+    /// 部材軸の鉛直成分 |ez| から部材種別を判定する（|ez| を既に持つ場合）。
+    /// 判定境界は [`MemberKind::from_axis`] と同一。
+    pub fn from_ez(ez: f64) -> Self {
+        if ez >= MEMBER_COLUMN_EZ_MIN {
+            MemberKind::Column
+        } else if ez <= MEMBER_BEAM_EZ_MAX {
+            MemberKind::Beam
+        } else {
+            MemberKind::Brace
+        }
+    }
+
+    /// モデル上の線材（材端 2 節点）の部材種別。2 節点に満たない要素・
+    /// 節点参照が範囲外の要素は梁とみなす。判定規則は [`MemberKind::from_axis`]。
+    pub fn of_element(
+        elem: &squid_n_core::model::ElementData,
+        model: &squid_n_core::model::Model,
+    ) -> Self {
+        let (Some(i), Some(j)) = (
+            elem.nodes.first().and_then(|n| model.nodes.get(n.index())),
+            elem.nodes.get(1).and_then(|n| model.nodes.get(n.index())),
+        ) else {
+            return MemberKind::Beam;
+        };
+        Self::from_axis(i.coord, j.coord)
+    }
 }
 
 /// 検定コンテキスト（部材単位で一定の情報）。

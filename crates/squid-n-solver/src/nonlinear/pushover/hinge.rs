@@ -72,8 +72,8 @@ fn member_moment_thresholds(elem: &ElementData, model: &Model) -> HingeThreshold
             // `squid_n_element::factory::ensure_nonlinear_input` が解析前に停止する
             // ため、非線形解析ではこのフォールバックに到達しない。
             let fc = mat.and_then(|m| m.fc).unwrap_or(0.0);
-            // 曲げひび割れ Mc = κ·√Fc·Ze（κ=0.56、技術基準解説書 P.621-623）。
-            let mc = 0.56 * fc.max(0.0).sqrt() * ze;
+            // 曲げひび割れ Mc = κ·√Fc·Ze（算定は core に集約）。
+            let mc = squid_n_core::rc_capacity::rc_crack_moment(fc, ze);
             // 曲げ降伏 My = 0.9·at·σy·d（rc_mu_simple）。at は片側引張筋（対称配筋仮定）。
             // σy は**断面（配筋）の主筋材質** → 部材材料の fy の順で解決する。
             // どちらも未設定のモデルは `ensure_nonlinear_input` が解析前に停止するため、
@@ -104,8 +104,17 @@ fn member_moment_thresholds(elem: &ElementData, model: &Model) -> HingeThreshold
         }
         (Some(shape), StructureKind::S) => {
             // 鉄骨: 全塑性モーメント Mp = Zp·σy。ひび割れはないため Mc=My=Mp。
-            // 塑性断面係数を持たない形状は 1.12·Ze で近似する。
-            let zp = shape.plastic_modulus_strong().unwrap_or(1.12 * ze);
+            //
+            // 鉄骨形状はすべて Zp を持つ（`plastic_modulus_strong`）が、この分岐は
+            // 鉄骨形状に限らない。`structure_kind_of` は**材料の区分が鋼なら形状に
+            // よらず S** を返すため、壁・スラブ断面（`RcWall`/`RcSlab`）へ鋼材料を
+            // 割り当てたモデルもここへ来る（`RcRect`/`RcCircle` は上の分岐で拾う）。
+            // その場合 Zp は None になるため Ze（形状係数 1.0）へ落とす。
+            //
+            // このフォールバック値は**材端曲げバネ（`squid_n_element::factory` の
+            // `yield_moment`）と一致させること**。食い違うと、要素が降伏していても
+            // ヒンジ判定側は未降伏と扱う（またはその逆の）状態が生じる。
+            let zp = shape.plastic_modulus_strong().unwrap_or(ze);
             let mp = sigma_y_steel * zp;
             HingeThreshold { mc: mp, my: mp }
         }
@@ -115,7 +124,7 @@ fn member_moment_thresholds(elem: &ElementData, model: &Model) -> HingeThreshold
             let my = sigma_y_steel * ze;
             let fc = mat.and_then(|m| m.fc).unwrap_or(0.0);
             let mc = if fc > 0.0 {
-                (0.56 * fc.sqrt() * ze).min(my)
+                squid_n_core::rc_capacity::rc_crack_moment(fc, ze).min(my)
             } else {
                 my
             };

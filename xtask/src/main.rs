@@ -22,6 +22,9 @@ fn main() -> anyhow::Result<()> {
         &["squid-n-element"],
         &["squid-n-solver", "squid-n-io"],
         &["squid-n-design-jp"],
+        // 解析ジョブ（前処理・解析条件・純粋計算）。GUI（app）と MCP サーバの
+        // 双方が同じ前処理・同じ解析条件で解くための共通層。
+        &["squid-n-job"],
         &["squid-n-mcp", "squid-n-app"],
     ];
 

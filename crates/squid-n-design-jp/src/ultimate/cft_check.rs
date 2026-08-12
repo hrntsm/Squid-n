@@ -15,7 +15,6 @@ use super::cft::{
 use super::cft_nm::{
     cft_long_medium_column_mu, cft_nk, cft_short_column_mu, CftBendingInput, CftLongMediumInput,
 };
-use super::geometry::geometric_length;
 
 /// 1 CFT 柱の軸終局検定結果。
 #[derive(Clone, Debug)]
@@ -43,32 +42,23 @@ pub struct CftUltimateCheck {
 
 /// CFT 断面（角型/円形）の (円形か, 断面せい D, cA, sA, cI(弱軸), sI(弱軸)) を返す。
 fn cft_section_props(shape: &SectionShape) -> Option<(bool, f64, f64, f64, f64, f64)> {
+    // 充填コンクリートの断面積・断面二次モーメントは剛性側（等価断面性能の累加）と
+    // 共通の実装を用いる（`squid_n_core::section_shape::SectionShape::cft_core_props`）。
+    let core = shape.cft_core_props()?;
+    let s_area = shape.calc_area();
+    // 弱軸（せい/幅の小さい方まわり）の断面二次モーメントを座屈用に採用する。
+    // 円形は iy = iz のため min でも同値になる。
+    let s_inertia = shape.calc_iy().min(shape.calc_iz());
+    let c_inertia = core.iy.min(core.iz);
     match *shape {
-        SectionShape::CftBox {
-            height,
-            width,
-            thick,
-        } => {
-            let ch = (height - 2.0 * thick).max(0.0);
-            let cw = (width - 2.0 * thick).max(0.0);
-            let s_area = shape.calc_area();
-            let c_area = ch * cw;
-            // 弱軸（せい/幅の小さい方まわり）の断面二次モーメントを座屈用に採用。
-            let s_inertia = shape.calc_iy().min(shape.calc_iz());
-            let c_iy = cw * ch.powi(3) / 12.0;
-            let c_iz = ch * cw.powi(3) / 12.0;
-            let c_inertia = c_iy.min(c_iz);
+        SectionShape::CftBox { height, width, .. } => {
             let d = height.min(width); // 弱軸方向のせい
-            Some((false, d, c_area, s_area, c_inertia, s_inertia))
+            Some((false, d, core.area, s_area, c_inertia, s_inertia))
         }
-        SectionShape::CftPipe { outer_dia, thick } => {
-            let di = (outer_dia - 2.0 * thick).max(0.0);
-            let s_area = shape.calc_area();
-            let c_area = std::f64::consts::PI * di * di / 4.0;
-            let s_inertia = shape.calc_iy();
-            let c_inertia = std::f64::consts::PI * di.powi(4) / 64.0;
-            Some((true, outer_dia, c_area, s_area, c_inertia, s_inertia))
+        SectionShape::CftPipe { outer_dia, .. } => {
+            Some((true, outer_dia, core.area, s_area, c_inertia, s_inertia))
         }
+        // `cft_core_props` が Some を返すのは CFT 断面のみ。
         _ => None,
     }
 }
@@ -111,7 +101,7 @@ pub fn collect_cft_ultimate_checks(
         let fy = crate::material_strength::steel_f_value_prefix(&mat.name, thick)
             .or(mat.fy)
             .unwrap_or(235.0);
-        let lk = geometric_length(elem, model);
+        let lk = model.member_length(elem);
 
         let inp = cft::CftAxialInput {
             circular,

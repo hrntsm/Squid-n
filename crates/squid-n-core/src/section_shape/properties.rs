@@ -2,7 +2,8 @@
 
 use super::constants::N_S_EQ;
 use super::geometry::{
-    angle_centroid, built_h_centroid_y, lip_channel_centroid_z, rect_torsion_j, tee_centroid,
+    angle_centroid, built_h_centroid_y, lip_channel_centroid_z, plastic_modulus_strips,
+    rect_torsion_j, tee_centroid,
 };
 use super::types::SectionShape;
 
@@ -94,9 +95,14 @@ impl SectionShape {
         }
     }
 
-    /// 鉄骨断面の塑性断面係数 Zp [mm³]（強軸）。H・箱・パイプは閉形式、
-    /// それ以外（RC・SRC・CFT・不明形状）は None を返す（鉄骨梁の全塑性
-    /// モーメント Mp=Zp·σy の算定に用いる。材料力学）。
+    /// 鉄骨断面の塑性断面係数 Zp [mm³]（強軸）。RC・SRC・CFT・不明形状は `None`
+    /// を返す（鉄骨梁の全塑性モーメント Mp=Zp·σy の算定に用いる。材料力学）。
+    ///
+    /// H・箱・パイプ・中実丸鋼は閉形式、それ以外は矩形分解から等面積軸まわりで
+    /// 積分する（[`plastic_modulus_strips`]）。軸は [`calc_iy`](Self::calc_iy) と
+    /// **同一**（山形鋼は図心を通る幾何軸で、主軸ではない。Ze と軸を揃えるため
+    /// 意図的にこの定義を採る。主軸まわりで扱うには断面相乗モーメント Iyz を
+    /// 断面データに持たせて二軸連成を解く必要がある）。
     pub fn plastic_modulus_strong(&self) -> Option<f64> {
         match *self {
             SectionShape::SteelH {
@@ -120,6 +126,68 @@ impl SectionShape {
             SectionShape::SteelPipe { outer_dia, thick } => {
                 Some((outer_dia.powi(3) - (outer_dia - 2.0 * thick).powi(3)) / 6.0)
             }
+            // 中実丸鋼: Zp = D³/6。
+            SectionShape::SteelRoundBar { dia } => Some(dia.powi(3) / 6.0),
+            // 平鋼: せい t の中実矩形。Zp = B·t²/4。
+            SectionShape::SteelFlatBar { width, thick } => Some(width * thick * thick / 4.0),
+            // 溝形鋼: 強軸まわりの鉛直方向の分布は H 形と同じ（上下対称）。
+            SectionShape::SteelChannel {
+                height,
+                width,
+                web_thick,
+                flange_thick,
+            } => Some(plastic_modulus_strips(&[
+                (0.0, flange_thick, width),
+                (flange_thick, height - flange_thick, web_thick),
+                (height - flange_thick, height, width),
+            ])),
+            // T 形鋼: フランジが上端のみの非対称断面（`calc_iy` と同じ配置）。
+            SectionShape::SteelTee {
+                height,
+                width,
+                web_thick,
+                flange_thick,
+            } => Some(plastic_modulus_strips(&[
+                (0.0, height - flange_thick, web_thick),
+                (height - flange_thick, height, width),
+            ])),
+            // 非対称組立 H 形: 上下フランジの寸法が異なる。
+            SectionShape::SteelBuiltH {
+                height,
+                upper_width,
+                upper_thick,
+                lower_width,
+                lower_thick,
+                web_thick,
+            } => Some(plastic_modulus_strips(&[
+                (0.0, lower_thick, lower_width),
+                (lower_thick, height - upper_thick, web_thick),
+                (height - upper_thick, height, upper_width),
+            ])),
+            // リップ溝形鋼: ウェブ／上下フランジ／上下リップの 5 枚（上下対称）。
+            // 分解は `lip_channel_centroid_z` の doc と同一。
+            SectionShape::SteelLipChannel {
+                height,
+                width,
+                lip,
+                thick,
+            } => Some(plastic_modulus_strips(&[
+                (0.0, height, thick),
+                (0.0, thick, width - thick),
+                (height - thick, height, width - thick),
+                (thick, lip, thick),
+                (height - lip, height - thick, thick),
+            ])),
+            // 山形鋼: 鉛直脚（幅 t×せい leg_a）＋水平脚（幅 leg_b−t×せい t）。
+            // `calc_iy` と同じ幾何 y 軸まわり（主軸ではない）。
+            SectionShape::SteelAngle {
+                leg_a,
+                leg_b,
+                thick,
+            } => Some(plastic_modulus_strips(&[
+                (0.0, leg_a, thick),
+                (0.0, thick, leg_b - thick),
+            ])),
             _ => None,
         }
     }

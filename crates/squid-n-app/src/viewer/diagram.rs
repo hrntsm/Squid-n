@@ -336,7 +336,7 @@ fn draw_component(
         if !frame_filter.shows(*elem_id) {
             continue;
         }
-        let elem = app.model.elements.iter().find(|e| e.id == *elem_id);
+        let elem = app.model.element(*elem_id);
         let Some(elem) = elem else { continue };
         if elem.nodes.len() < 2 {
             continue;

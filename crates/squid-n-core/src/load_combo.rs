@@ -1,5 +1,5 @@
-use squid_n_core::ids::LoadCaseId;
-use squid_n_core::model::LoadCombination;
+use crate::ids::LoadCaseId;
+use crate::model::LoadCombination;
 
 /// 多雪区域の積雪荷重低減係数（令86条 多雪区域の荷重組合せ）。
 ///
@@ -423,9 +423,13 @@ mod tests {
 
     #[test]
     fn test_default_combinations_matches_auto_combinations() {
-        // squid-n-core の default_combinations（新規モデルの既定）は、標準ケースの
-        // 並び（0:DL, 1:LL(架構用), 3:EX, 4:EY）に対する auto_combinations と
-        // 完全一致する（名前・係数構成とも）。両者の命名規約がずれていないことを保証する。
+        // default_combinations（新規モデルの既定）は standard_combinations の
+        // 固定引数版として実装されているため、生成規則そのものは一致が保証されている。
+        // 本テストが確かめるのは**ケース ID の割り当て**（標準ケースの並び
+        // 0:DL, 1:LL(架構用), 3:EX, 4:EY を正しく渡しているか）と、生成された
+        // 名前で長短期の判別が機能することの 2 点。
+        // （かつて default_combinations は組合せを手書きしており、本テストが
+        // 唯一の同期手段だった。実装を共有した現在は割り当ての検査に役割が変わる。）
         let expected = auto_combinations(
             LoadCaseId(0),
             LoadCaseId(1),
@@ -433,7 +437,7 @@ mod tests {
             Some(LoadCaseId(4)),
             None,
         );
-        let actual = squid_n_core::model::default_combinations();
+        let actual = crate::model::default_combinations();
         assert_eq!(
             actual, expected,
             "default_combinations が auto_combinations（DL/LL/EX/EY）と一致していない"

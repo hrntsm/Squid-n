@@ -13,9 +13,8 @@
 //!
 //! # 曲げ終局強度 Mu
 //! 梁は [`squid_n_core::rc_capacity::rc_mu_simple`]（構造規定 at 式）を用いる。
-//! 柱は [`MuMethod`] により、軸力を考慮した構造規定 at 式
-//! （[`squid_n_core::rc_capacity::rc_column_mu_simple`]）または ACI 規準の平面保持
-//! 解析（[`rc_column_aci::rc_column_mu_aci`]）を選択できる。
+//! 柱は軸力を考慮した構造規定 at 式
+//! （[`squid_n_core::rc_capacity::rc_column_mu_simple`]）を用いる。
 //!
 //! # 適用範囲・簡略化（doc 兼申し送り）
 //! - RC 部材の検定対象は `SectionShape::RcRect`（矩形 RC 断面）のみ。円形柱・SRC・鋼は
@@ -35,7 +34,6 @@ pub mod cft;
 pub mod cft_nm;
 pub mod joint;
 pub mod rc_axial;
-pub mod rc_column_aci;
 pub mod rc_shear;
 pub mod rc_shear_ductility;
 
@@ -58,7 +56,6 @@ pub use joint::{
     joint_fj, joint_kappa, rc_joint_ultimate, RcJointUltimateInput, RcJointUltimateResult,
 };
 pub use rc_axial::{rc_axial_margin, rc_column_axial_ultimate, RcAxialUltimate};
-pub use rc_column_aci::{aci_beta1, rc_column_mu_aci, AciColumnInput};
 pub use rc_shear::{
     bond_reliable_strength_deformed, bond_split_ratio, plastic_cot_phi, plastic_k1, plastic_k2,
     plastic_nu, plastic_nu0, rc_shear_qbu_bond, rc_shear_qsu_plastic, BondStrengthInput,
@@ -70,7 +67,7 @@ pub use rc_shear_ductility::{
 };
 
 pub use cft_check::{cft_mu_nm, collect_cft_ultimate_checks, CftUltimateCheck};
-pub use options::{MemberDemand, MuMethod, ShearMethod, UltimateShearOptions};
+pub use options::{MemberDemand, ShearMethod, UltimateShearOptions};
 pub use rc_check::{collect_rc_ultimate_checks, UltimateCheck};
 pub use rc_strength::biaxial_margin;
 

@@ -83,46 +83,96 @@ impl SectionShape {
         if ec <= 0.0 || es <= 0.0 {
             return None;
         }
+        let core = self.cft_core_props()?;
+        // 内法が消える（板厚が過大な）断面は充填コンクリートを累加できないため、
+        // 鋼管のみの既定値へフォールバックする。
+        if core.area <= 0.0 {
+            return None;
+        }
         let n = es / ec;
         let ngs = n * (1.0 + NU_CONCRETE) / (1.0 + nu_s);
+        // 鋼管のせん断有効断面積: 角形は加力方向に平行な 2 枚の板、
+        // 円形は全断面の 1/2（薄肉円管の慣用）。
+        let (s_as_y, s_as_z) = match *self {
+            SectionShape::CftBox { thick: t, .. } => {
+                (2.0 * t * core.inner_width, 2.0 * t * core.inner_height)
+            }
+            SectionShape::CftPipe { .. } => {
+                let a = self.calc_area() / 2.0;
+                (a, a)
+            }
+            // `cft_core_props` が Some を返すのは CFT 断面のみ。
+            _ => unreachable!("cft_core_props が Some を返した非 CFT 断面"),
+        };
+        Some(CompositeProps {
+            area_ax: self.calc_area() + core.area / n,
+            iy: self.calc_iy() + core.iy / n,
+            iz: self.calc_iz() + core.iz / n,
+            j: self.calc_j() + core.j / ngs,
+            as_y: s_as_y + core.area / KAPPA_RC / ngs,
+            as_z: s_as_z + core.area / KAPPA_RC / ngs,
+        })
+    }
+}
+
+/// CFT 断面の**充填コンクリート部分**（鋼管の内法で囲まれる部分）の諸元。
+///
+/// 剛性側（[`SectionShape::cft_equivalent_props`]。等価断面性能の累加）と
+/// 耐力側（`squid-n-design-jp` の CFT 軸終局検定）が同じ値を使うために切り出す。
+/// 片方だけ式を直せば静かに食い違うため、算定はここ 1 か所に置く。
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CftCoreProps {
+    /// 内法幅 [mm]（角形は `幅 − 2t`、円形は内法径 `外径 − 2t`）。
+    pub inner_width: f64,
+    /// 内法せい [mm]（角形は `せい − 2t`、円形は内法径）。
+    pub inner_height: f64,
+    /// 充填コンクリートの断面積 [mm²]。
+    pub area: f64,
+    /// 強軸（せい方向まわり）の断面二次モーメント [mm⁴]。
+    pub iy: f64,
+    /// 弱軸（幅方向まわり）の断面二次モーメント [mm⁴]。円形は `iy` と同値。
+    pub iz: f64,
+    /// St.Venant ねじり定数 [mm⁴]。
+    pub j: f64,
+}
+
+impl SectionShape {
+    /// CFT 断面（`CftBox`/`CftPipe`）の充填コンクリート部分の諸元。
+    /// CFT 以外の形状は `None`。
+    ///
+    /// 内法寸法は 0 で下限クランプするため、板厚が過大で内法が消える断面では
+    /// `area` が 0 になる（＝充填コンクリートが効かない）。呼び出し側が
+    /// 「鋼管のみへフォールバックする」か「充填ゼロのまま続行する」かを選べるよう、
+    /// ここでは `None` にせず 0 を返す。
+    pub fn cft_core_props(&self) -> Option<CftCoreProps> {
         match *self {
             SectionShape::CftBox {
                 height: h,
                 width: w,
                 thick: t,
             } => {
-                let (bi, hi) = (w - 2.0 * t, h - 2.0 * t);
-                if bi <= 0.0 || hi <= 0.0 {
-                    return None;
-                }
-                let c_a = bi * hi;
-                let s_as_z = 2.0 * t * hi;
-                let s_as_y = 2.0 * t * bi;
-                Some(CompositeProps {
-                    area_ax: self.calc_area() + c_a / n,
-                    iy: self.calc_iy() + bi * hi.powi(3) / 12.0 / n,
-                    iz: self.calc_iz() + hi * bi.powi(3) / 12.0 / n,
-                    j: self.calc_j() + rect_torsion_j(bi, hi) / ngs,
-                    as_y: s_as_y + c_a / KAPPA_RC / ngs,
-                    as_z: s_as_z + c_a / KAPPA_RC / ngs,
+                let bi = (w - 2.0 * t).max(0.0);
+                let hi = (h - 2.0 * t).max(0.0);
+                Some(CftCoreProps {
+                    inner_width: bi,
+                    inner_height: hi,
+                    area: bi * hi,
+                    iy: bi * hi.powi(3) / 12.0,
+                    iz: hi * bi.powi(3) / 12.0,
+                    j: rect_torsion_j(bi, hi),
                 })
             }
             SectionShape::CftPipe { outer_dia, thick } => {
-                let di = outer_dia - 2.0 * thick;
-                if di <= 0.0 {
-                    return None;
-                }
-                let c_a = std::f64::consts::PI * di * di / 4.0;
-                let c_i = std::f64::consts::PI * di.powi(4) / 64.0;
-                let c_j = std::f64::consts::PI * di.powi(4) / 32.0;
-                let s_as = self.calc_area() / 2.0;
-                Some(CompositeProps {
-                    area_ax: self.calc_area() + c_a / n,
-                    iy: self.calc_iy() + c_i / n,
-                    iz: self.calc_iz() + c_i / n,
-                    j: self.calc_j() + c_j / ngs,
-                    as_y: s_as + c_a / KAPPA_RC / ngs,
-                    as_z: s_as + c_a / KAPPA_RC / ngs,
+                let di = (outer_dia - 2.0 * thick).max(0.0);
+                let i = std::f64::consts::PI * di.powi(4) / 64.0;
+                Some(CftCoreProps {
+                    inner_width: di,
+                    inner_height: di,
+                    area: std::f64::consts::PI * di * di / 4.0,
+                    iy: i,
+                    iz: i,
+                    // 中実円のねじり定数は極断面二次モーメント Ip = 2·I。
+                    j: std::f64::consts::PI * di.powi(4) / 32.0,
                 })
             }
             _ => None,

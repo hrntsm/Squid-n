@@ -9,6 +9,7 @@
 //! - [`ultimate`] — UltimateCheck ジョブ（終局検定）の純粋計算部分。
 
 use super::*;
+use squid_n_job::JobError;
 
 mod design_check;
 mod eigen;
@@ -139,7 +140,11 @@ pub enum JobOutcome {
 }
 
 /// `kind` に応じて対応する compute_* 関数へ振り分ける。
-pub fn compute_job(model: &Model, kind: JobKind, params: &JobParams) -> Result<JobOutcome, String> {
+pub fn compute_job(
+    model: &Model,
+    kind: JobKind,
+    params: &JobParams,
+) -> Result<JobOutcome, JobError> {
     match kind {
         JobKind::LinearStatic => compute_linear_static_job(model, params.load_case),
         JobKind::Eigen => compute_eigen_job(model, params.n_modes),
@@ -163,33 +168,32 @@ pub fn compute_job(model: &Model, kind: JobKind, params: &JobParams) -> Result<J
 }
 
 /// `load_case` 指定があればそれを、なければ先頭の荷重ケースを返す。
-/// 荷重ケースが1つもないモデルでは "no load cases" を返す
-/// （既存の `analyze_model` と同じ文言。P8 のテストが this を確認している）。
+/// 荷重ケースが 1 つもないモデルは [`JobError::LoadCaseNotFound`] を返す。
 pub(crate) fn resolve_load_case(
     model: &Model,
     load_case: Option<u32>,
-) -> Result<&squid_n_core::model::LoadCase, String> {
+) -> Result<&squid_n_core::model::LoadCase, JobError> {
     match load_case {
         Some(id) => model
             .load_cases
             .iter()
             .find(|c| c.id.0 == id)
-            .ok_or_else(|| format!("荷重ケース {id} が存在しません")),
+            .ok_or_else(|| JobError::LoadCaseNotFound(format!("{id} が存在しません"))),
         None => model
             .load_cases
             .first()
-            .ok_or_else(|| "no load cases".to_string()),
+            .ok_or_else(|| JobError::LoadCaseNotFound("モデルに 1 つもありません".to_string())),
     }
 }
 
-/// モデルを複製し、標準の自動剛域（設計書 §6.2.1）を反映して返す。
-/// clone → apply_auto_rigid_zones(default) の定型を集約する。`Analysis` は
-/// モデルを借用するため、準備は呼出側で `Analysis::prepare(&model)` を行う。
+/// モデルを複製し、解析前処理（剛域＋仕口パネル。設計書 §6.2.1）を反映して返す。
+/// 前処理の実体は [`squid_n_job::prepare::apply_rigid_zones_and_panels`] で、
+/// **GUI と同一**である。`Analysis` はモデルを借用するため、準備は呼出側で
+/// `Analysis::prepare(&model)` を行う。
 pub(crate) fn model_with_auto_rigid_zones(model: &Model) -> Model {
     let mut model = model.clone();
-    squid_n_element::beam::apply_auto_rigid_zones(
-        &mut model,
-        &squid_n_element::beam::RigidZoneRule::default(),
-    );
+    // 剛域だけでなく**仕口パネルの生成**まで行う（GUI と同一の前処理）。
+    // かつては剛域のみを適用しており、仕口パネルのない剛性で解いていた。
+    squid_n_job::prepare::apply_rigid_zones_and_panels(&mut model);
     model
 }

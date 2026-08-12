@@ -1,7 +1,6 @@
 //! 終局検定の入力・算定オプション。
 //!
 //! - [`MemberDemand`] — 部材の設計用需要（軸力・二軸曲げ・せん断・Rp 等）。
-//! - [`MuMethod`] — 柱の曲げ終局強度 Mu の算定方法（at 式 / ACI）。
 //! - [`ShearMethod`] — 終局せん断強度の算定方法（塑性理論式 / 靭性指針式）。
 //! - [`UltimateShearOptions`] — 終局検定（塑性理論式）の算定オプション。
 
@@ -79,16 +78,6 @@ impl MemberDemand {
     }
 }
 
-/// 柱の曲げ終局強度 Mu の算定方法（技術基準解説書 at 式 / ACI318）。
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
-pub enum MuMethod {
-    /// 構造規定式（at 式、軸力考慮の閉形式略算）。
-    #[default]
-    AtFormula,
-    /// ACI 規準による平面保持解析（等価応力度ブロック法）。
-    Aci,
-}
-
 /// 終局せん断強度の算定方法（塑性理論式／靭性指針式の選択に対応）。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum ShearMethod {
@@ -119,8 +108,6 @@ pub struct UltimateShearOptions {
     pub shear_grade: Option<String>,
     /// 付着割裂の検定を含める場合 true。
     pub include_bond: bool,
-    /// 柱の曲げ終局強度 Mu の算定方法（既定 at 式）。
-    pub mu_method: MuMethod,
     /// 終局せん断強度の算定方法（既定 塑性理論式）。靭性指針式を選ぶと Qsu 列に
     /// Vu=min(Vu1,Vu2,Vu3)（[`rc_shear_ductility`]）を用いる。
     pub shear_method: ShearMethod,
@@ -144,7 +131,6 @@ impl Default for UltimateShearOptions {
             sigma_wy: 295.0,
             shear_grade: None,
             include_bond: true,
-            mu_method: MuMethod::default(),
             shear_method: ShearMethod::default(),
             biaxial_shear: false,
             biaxial_bending: false,

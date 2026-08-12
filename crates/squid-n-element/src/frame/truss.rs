@@ -109,10 +109,7 @@ impl TrussElement {
         } else {
             [0.0; 3]
         };
-        let dx = p1[0] - p0[0];
-        let dy = p1[1] - p0[1];
-        let dz = p1[2] - p0[2];
-        let len = (dx * dx + dy * dy + dz * dz).sqrt();
+        let len = squid_n_core::geom::vec3::dist(p0, p1);
 
         let axis = LocalFrame::from_nodes(p0, p1, data.local_axis.ref_vector);
         let sec = get_section(model, data.section);

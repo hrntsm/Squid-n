@@ -1,0 +1,14 @@
+[package]
+name = "squid-n-job"
+version = "0.0.1"
+edition = "2021"
+license = "MIT"
+
+[dependencies]
+squid-n-core = { path = "../squid-n-core" }
+squid-n-element = { path = "../squid-n-element" }
+squid-n-load = { path = "../squid-n-load" }
+squid-n-solver = { path = "../squid-n-solver" }
+squid-n-design-jp = { path = "../squid-n-design-jp" }
+squid-n-math = { path = "../squid-n-math" }
+thiserror = { workspace = true }

@@ -7,6 +7,8 @@ pub mod frame;
 pub mod frame_gen;
 pub mod geom;
 pub mod ids;
+/// 標準荷重組合せ（建築基準法施行令82条）の生成と長短期の判別。
+pub mod load_combo;
 pub mod material_grade;
 pub mod model;
 pub mod panel_zone;

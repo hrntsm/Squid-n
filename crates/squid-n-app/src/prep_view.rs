@@ -6,6 +6,8 @@
 
 use crate::table_util::Col;
 
+use squid_n_core::units::to_display::{area_cm2, inertia_cm4};
+
 use crate::app::{
     ai_mode_label, load_case_kind_label, member_kind_label, member_rank_label, soil_class_label,
     steel_member_use_label, story_level_kind_label, story_structure_label, zone_source_label, App,
@@ -673,21 +675,25 @@ fn sections_section(ui: &mut egui::Ui, prep: &PreparationResult) {
             row.col(|ui| {
                 ui.label(format!("{:.0} × {:.0}", r.depth, r.width));
             });
-            // cm 系へ換算して表示する（mm 系のままでは桁が大きく比較しづらい）。
+            // 断面性能は cm 系で表示する（慣例の情報源は `squid_n_core::units`）。
             row.col(|ui| {
-                ui.label(format!("{:.1}", r.area * 1e-2));
+                ui.label(crate::table_util::fmt_section_prop(area_cm2(r.area)));
             });
             row.col(|ui| {
-                ui.label(format!("{:.0}", r.iy * 1e-4));
+                ui.label(crate::table_util::fmt_section_prop(inertia_cm4(r.iy)));
             });
             row.col(|ui| {
-                ui.label(format!("{:.0}", r.iz * 1e-4));
+                ui.label(crate::table_util::fmt_section_prop(inertia_cm4(r.iz)));
             });
             row.col(|ui| {
-                ui.label(format!("{:.0}", r.j * 1e-4));
+                ui.label(crate::table_util::fmt_section_prop(inertia_cm4(r.j)));
             });
             row.col(|ui| {
-                ui.label(format!("{:.1} / {:.1}", r.as_y * 1e-2, r.as_z * 1e-2));
+                ui.label(format!(
+                    "{} / {}",
+                    crate::table_util::fmt_section_prop(area_cm2(r.as_y)),
+                    crate::table_util::fmt_section_prop(area_cm2(r.as_z))
+                ));
             });
             row.col(|ui| {
                 ui.label(format!("{:.1} / {:.1}", r.ry, r.rz));

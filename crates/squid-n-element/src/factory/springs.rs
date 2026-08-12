@@ -277,7 +277,9 @@ fn crack_moment(data: &ElementData, model: &Model, my: f64) -> f64 {
     let ze = if depth > 0.0 { iz / (depth / 2.0) } else { 0.0 };
     match (is_rc_like_section(data, model), mat.and_then(|m| m.fc)) {
         (true, Some(fc)) if fc > 0.0 && ze > 0.0 => {
-            (0.56 * fc.sqrt() * ze).clamp(my * 0.1, my * 0.9)
+            // 算定は core に集約。My 比によるクランプは材端バネ固有の扱い
+            // （Mc が My を跨いでバネの折れ点が逆転するのを防ぐ）。
+            squid_n_core::rc_capacity::rc_crack_moment(fc, ze).clamp(my * 0.1, my * 0.9)
         }
         _ => my / 3.0,
     }

@@ -4,12 +4,15 @@
 
 use super::{model_with_auto_rigid_zones, JobDir, JobOutcome};
 use squid_n_core::model::Model;
+use squid_n_job::JobError;
 
 /// TimeHistory ジョブの純粋計算部分。
-/// サンプル波の生成式は squid-n-app の `App::sample_wave`/`build_ground_motion`
-/// （app.rs）と同一（squid-n-mcp は squid-n-app に依存しないため複製している）。
-/// 減衰は剛性比例減衰 h=0.02（1次固有円振動数を使用）固定
-/// （`App::compute_time_history` の `ThDampingModel::StiffnessProportional` 経路と同じ）。
+/// 前処理・解析条件・解析の実体は `squid-n-job` の共通実装で、**GUI と同一**である。
+/// 解析条件は `AnalysisSettings` の既定（剛性比例減衰 h=0.02・Newmark-β・線形）を
+/// 用いる。MCP からは減衰モデル・積分法・非線形の切り替えを受け付けていない。
+///
+/// サンプル波の生成式は squid-n-app の `App::sample_wave` と同一
+/// （squid-n-mcp は squid-n-app に依存しないため複製している）。
 pub(crate) fn compute_time_history_job(
     model: &Model,
     dir: JobDir,
@@ -17,11 +20,8 @@ pub(crate) fn compute_time_history_job(
     duration: f64,
     period: f64,
     amp: f64,
-) -> Result<JobOutcome, String> {
-    let model = model_with_auto_rigid_zones(model);
-    let model = &model;
-    let analysis = squid_n_solver::analysis::Analysis::prepare(model)
-        .map_err(|e| format!("解析準備エラー: {e}"))?;
+) -> Result<JobOutcome, JobError> {
+    let work = model_with_auto_rigid_zones(model);
 
     let n = ((duration / dt).ceil() as usize).max(2);
     let omega = 2.0 * std::f64::consts::PI / period.max(1e-6);
@@ -49,24 +49,10 @@ pub(crate) fn compute_time_history_job(
         }
     };
 
-    let omega1 = match analysis.eigen(1) {
-        Ok(modal) => match modal.omega2.first() {
-            Some(&w2) if w2 > 0.0 => w2.sqrt(),
-            _ => return Err("固有値が得られず減衰を設定できません。".to_string()),
-        },
-        Err(e) => return Err(format!("固有値解析エラー: {e}")),
-    };
-    let damping = squid_n_solver::damping::Damping::StiffnessProportional {
-        h: 0.02,
-        omega: omega1,
-        basis: squid_n_solver::damping::StiffnessKind::Initial,
-    };
-    let newmark = squid_n_solver::timehistory::NewmarkCfg::average_accel();
-    // record_every は squid-n-mcp からは未指定（None=自動決定）。UI（squid-n-app）側の
-    // 設定は本ジョブでは扱っていない。
-    let result = analysis
-        .time_history(&wave, newmark, damping, None)
-        .map_err(|e| format!("時刻歴解析エラー: {e}"))?;
+    // 解析条件は GUI と同じ `AnalysisSettings` で与える。既定は剛性比例減衰
+    // h=0.02・Newmark-β・線形で、従来 MCP 側に固定値で書かれていた条件と一致する。
+    let cfg = squid_n_job::AnalysisSettings::default();
+    let result = squid_n_job::compute::compute_time_history(work, cfg, wave)?;
 
     let peak_disp = result
         .history

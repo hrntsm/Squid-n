@@ -379,7 +379,7 @@ pub fn boundary_condition_panel(ui: &mut egui::Ui, app: &mut App) {
     ui.separator();
 
     let selected = app.nav.focus_node.unwrap_or(selected);
-    let Some(node) = app.model.nodes.iter().find(|n| n.id == selected) else {
+    let Some(node) = app.model.node(selected) else {
         return;
     };
     let r = node.restraint;
@@ -442,7 +442,7 @@ fn support_spring_section(ui: &mut egui::Ui, app: &mut App, node_id: NodeId) {
         .default_open(false)
         .id_salt("bc_spring_section")
         .show(ui, |ui| {
-            let Some(node) = app.model.nodes.iter().find(|n| n.id == node_id) else {
+            let Some(node) = app.model.node(node_id) else {
                 return;
             };
             let restraint = node.restraint;

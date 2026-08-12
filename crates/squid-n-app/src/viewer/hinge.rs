@@ -137,7 +137,7 @@ pub(super) fn draw_hinge(
         if !frame_filter.shows(m.elem) {
             continue;
         }
-        let Some(elem) = app.model.elements.iter().find(|e| e.id == m.elem) else {
+        let Some(elem) = app.model.element(m.elem) else {
             continue;
         };
         if elem.nodes.len() < 2 {
@@ -268,7 +268,7 @@ pub struct MnCurveCache {
     /// 通常はステップ数も変わるため、同一部材のまま結果だけ更新された場合の
     /// 取りこぼしをある程度防げる）。
     step_count: usize,
-    /// 正曲げ側（β 方向）の N-M 曲線 [M(kN・m, 符号付き), N(kN, 圧縮正)]。
+    /// 正曲げ側（β 方向）の N-M 曲線 [M(kN·m, 符号付き), N(kN, 圧縮正)]。
     pos: Vec<[f64; 2]>,
     /// 負曲げ側（β+π 方向）の N-M 曲線。
     neg: Vec<[f64; 2]>,
@@ -323,7 +323,7 @@ pub(super) fn m_theta_series(
 }
 
 /// 採用軸の端最大 |M|（絶対値が大きい方の端の符号付き値）と軸力から、
-/// 応答経路 [M(kN・m), N(kN、圧縮正)] を全ステップ抽出する（純粋関数）。
+/// 応答経路 [M(kN·m), N(kN、圧縮正)] を全ステップ抽出する（純粋関数）。
 /// `member_history` の軸力は既に圧縮正のため、N-M 曲線側の符号変換のみで
 /// 済む（[`extract_mn_meridian`] 参照）。
 ///
@@ -345,7 +345,7 @@ pub(super) fn n_m_response_path(records: &[MemberStepState], bend_dir_z: bool) -
     path
 }
 
-/// 3D 表示用の応答経路 [My(N・mm,符号付き), Mz(N・mm,符号付き), N(N,引張正)] を
+/// 3D 表示用の応答経路 [My(N·mm,符号付き), Mz(N·mm,符号付き), N(N,引張正)] を
 /// 全ステップ抽出する（純粋関数）。各ステップで i端・j端のうち合成曲げ
 /// （√(My²+Mz²)）が大きい方の端を採用する（[`n_m_response_path`] は採用軸
 /// 1 成分のみを追うのに対し、3D 表示は My・Mz の両成分をそのまま使える）。
@@ -382,7 +382,7 @@ pub(super) fn mn_beta_columns(n_beta: usize, bend_dir_z: bool) -> (usize, usize)
 /// 列 `beta_col` から、曲げ方向 `bend_dir_z` の N-M 経線を抽出する（純粋関数）。
 ///
 /// `MnSurface` は引張正の N 規約だが、応答（`MemberStepState::n`）は圧縮正の
-/// ため符号を反転して揃える。単位は表示用に [kN・m]・[kN] へ換算する。
+/// ため符号を反転して揃える。単位は表示用に [kN·m]・[kN] へ換算する。
 pub(super) fn extract_mn_meridian(
     grid: &[Vec<[f64; 3]>],
     beta_col: usize,
@@ -444,7 +444,7 @@ fn build_mn_curve_cache(
     bend_dir_z: bool,
     step_count: usize,
 ) -> Option<MnCurveCache> {
-    let elem = app.model.elements.iter().find(|e| e.id == elem_id)?;
+    let elem = app.model.element(elem_id)?;
     let sec = elem
         .section
         .and_then(|sid| app.model.sections.get(sid.index()))?;
@@ -656,7 +656,7 @@ fn draw_m_theta_plot(
     let has_j = mine.iter().any(|m| m.end_j);
     egui_plot::Plot::new(format!("hinge_m_theta_{}", elem_id.0))
         .x_axis_label("|θ| [rad]")
-        .y_axis_label("|M| [kN・m]")
+        .y_axis_label("|M| [kN·m]")
         .legend(egui_plot::Legend::default())
         .height(220.0)
         .show(ui, |plot_ui| {
@@ -669,7 +669,7 @@ fn draw_m_theta_plot(
         });
 }
 
-/// [θ(rad), M(N・mm)] 点列を [θ(rad), M(kN・m)] へ換算して描き、最終点を
+/// [θ(rad), M(N·mm)] 点列を [θ(rad), M(kN·m)] へ換算して描き、最終点を
 /// マーカーで強調する（点と折れ線は同名で登録し凡例エントリを共有する）。
 fn plot_m_theta_end(
     plot_ui: &mut egui_plot::PlotUi<'_>,
@@ -895,7 +895,7 @@ fn draw_mn_plot_2d(
 ) {
     let response_path = n_m_response_path(records, bend_dir_z);
     egui_plot::Plot::new(format!("hinge_mn_{}", elem_id.0))
-        .x_axis_label("M [kN・m]")
+        .x_axis_label("M [kN·m]")
         .y_axis_label("N [kN]（圧縮正）")
         .legend(egui_plot::Legend::default())
         .height(220.0)
@@ -1455,7 +1455,7 @@ mod tests {
         ];
         let pts = extract_mn_meridian(&grid, 0, false);
         assert_eq!(pts.len(), 2);
-        // M[kN・m] = My/1e6, N[kN] = -N/1e3（圧縮正へ変換）。
+        // M[kN·m] = My/1e6, N[kN] = -N/1e3（圧縮正へ変換）。
         assert!((pts[0][0] - 2.0).abs() < 1e-9);
         assert!((pts[0][1] - (-1.0e3)).abs() < 1e-6);
         assert!((pts[1][0] - 4.0).abs() < 1e-9);

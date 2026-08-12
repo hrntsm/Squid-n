@@ -12,9 +12,20 @@ pub type JobId = String;
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub enum JobStatus {
     Queued,
-    Running { progress: f32 },
-    Done { result_ref: String },
-    Failed { error: String },
+    Running {
+        progress: f32,
+    },
+    Done {
+        result_ref: String,
+    },
+    /// 失敗。`error` は利用者向けの日本語メッセージ、`kind` は機械可読な種別コード
+    /// （[`squid_n_job::JobError::kind`] と、それ以外の失敗を表す `"internal"`）。
+    /// 文言は変わり得るが**種別コードは安定**とするため、クライアントは `kind` で
+    /// 分岐すること。
+    Failed {
+        error: String,
+        kind: String,
+    },
 }
 
 #[derive(

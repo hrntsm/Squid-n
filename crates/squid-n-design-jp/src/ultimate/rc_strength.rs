@@ -2,12 +2,11 @@
 //!
 //! - [`biaxial_margin`] — 2 軸相互作用の余裕度。
 //! - [`column_axis_shear`] — 指定軸方向の柱の Qsu・Qmu（2 軸せん断用）。
-//! - [`column_mu`] — 柱の曲げ終局強度 Mu（at 式 / ACI）。
+//! - [`column_mu`] — 柱の曲げ終局強度 Mu（構造規定 at 式）。
 //! - [`member_shear_strength`] — 選択式に応じた終局せん断強度 Qsu/Vu。
 //! - [`ductility_be_ns`] — 靭性指針式のトラス機構有効幅 be・中子筋本数 Ns。
 
-use super::options::{MuMethod, ShearMethod, UltimateShearOptions};
-use super::rc_column_aci::{rc_column_mu_aci, AciColumnInput};
+use super::options::{ShearMethod, UltimateShearOptions};
 use super::rc_section::{bar_set_area, hoop_pw};
 use super::rc_shear::{rc_shear_qsu_plastic, RcPlasticShearInput};
 use super::rc_shear_ductility::{rc_shear_vu_ductility, RcDuctilityShearInput};
@@ -80,7 +79,7 @@ pub(super) fn column_axis_shear(
     (qsu, qmu)
 }
 
-/// 柱の曲げ終局強度 Mu [N·mm]（`mu_method` に応じて at 式 / ACI 平面保持）。
+/// 柱の曲げ終局強度 Mu [N·mm]（構造規定 at 式、軸力考慮）。
 /// `b_dir`=幅, `d_dir`=せい, `dt`=引張縁〜引張筋距離, `at`=引張側主筋, `ag`=全主筋。
 #[allow(clippy::too_many_arguments)]
 pub(super) fn column_mu(
@@ -92,39 +91,20 @@ pub(super) fn column_mu(
     sigma_y: f64,
     fc: f64,
     n_axial: f64,
-    mu_method: MuMethod,
 ) -> f64 {
-    match mu_method {
-        MuMethod::Aci => {
-            let layers = [(dt, at), (d_dir - dt, at)];
-            rc_column_mu_aci(
-                &AciColumnInput {
-                    b: b_dir,
-                    d_full: d_dir,
-                    fc,
-                    sigma_y,
-                    es: 205000.0,
-                },
-                &layers,
-                n_axial,
-            )
-        }
-        MuMethod::AtFormula => {
-            let cap = RcCapacityInput {
-                b: b_dir,
-                d: d_dir,
-                at,
-                d_eff: (d_dir - dt).max(1.0),
-                sigma_y,
-                fc,
-                pw: 0.0,
-                sigma_wy: 0.0,
-                clear_span: 1.0,
-                sigma_0: 0.0,
-            };
-            rc_column_mu_simple(&cap, ag, n_axial)
-        }
-    }
+    let cap = RcCapacityInput {
+        b: b_dir,
+        d: d_dir,
+        at,
+        d_eff: (d_dir - dt).max(1.0),
+        sigma_y,
+        fc,
+        pw: 0.0,
+        sigma_wy: 0.0,
+        clear_span: 1.0,
+        sigma_0: 0.0,
+    };
+    rc_column_mu_simple(&cap, ag, n_axial)
 }
 
 /// 靭性指針式による終局せん断信頼強度 `Vu` [N]（[`rc_shear_ductility`]）を断面諸元から

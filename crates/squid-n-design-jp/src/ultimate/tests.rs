@@ -333,33 +333,6 @@ fn test_ultimate_check_biaxial_bending() {
     assert!(beam_bi.biaxial_bending_margin.is_none());
 }
 
-/// 柱の Mu を ACI 規準（平面保持）で算定するオプションが機能する。
-#[test]
-fn test_ultimate_check_mu_method_aci() {
-    let model = column_and_beam_model();
-    // 圧縮軸力を与えて柱の Mu を評価（ACI と at 式で共に正、健全域で近い桁）。
-    let axial = vec![(ElemId(0), MemberDemand::axial(2_000_000.0))];
-    let at = collect_rc_ultimate_checks(&model, &axial, &UltimateShearOptions::default());
-    let aci = collect_rc_ultimate_checks(
-        &model,
-        &axial,
-        &UltimateShearOptions {
-            mu_method: MuMethod::Aci,
-            ..Default::default()
-        },
-    );
-    let col_at = at.iter().find(|c| c.elem == ElemId(0)).unwrap();
-    let col_aci = aci.iter().find(|c| c.elem == ElemId(0)).unwrap();
-    assert!(col_aci.mu > 0.0 && col_at.mu > 0.0);
-    // 梁は Mu 算定方法の影響を受けない（ACI は柱のみ）。
-    let beam_at = at.iter().find(|c| c.elem == ElemId(1)).unwrap();
-    let beam_aci = aci.iter().find(|c| c.elem == ElemId(1)).unwrap();
-    assert!((beam_at.mu - beam_aci.mu).abs() < 1e-6);
-    // 両手法の柱 Mu は同桁（0.4〜2.5 倍）に収まる。
-    let ratio = col_aci.mu / col_at.mu;
-    assert!(ratio > 0.4 && ratio < 2.5, "Mu(ACI)/Mu(at)={ratio}");
-}
-
 /// 終局せん断強度に靭性指針式 Vu を選択するオプションが機能する。
 #[test]
 fn test_ultimate_check_shear_method_ductility() {

@@ -9,7 +9,7 @@ use squid_n_core::model::{ElementData, Material, Model, Section};
 use squid_n_core::rc_capacity::{rc_mu_simple, RcCapacityInput};
 use squid_n_core::section_shape::SectionShape;
 
-use super::geometry::{clear_span, member_kind};
+use super::geometry::clear_span;
 use super::options::{MemberDemand, ShearMethod, UltimateShearOptions};
 use super::rc_axial::{rc_column_axial_ultimate, RcAxialUltimate};
 use super::rc_section::{bar_set_area, hoop_pw};
@@ -86,7 +86,7 @@ fn check_member(
         ..opts.clone()
     };
     let opts = &opts_owned;
-    let kind = member_kind(elem, model);
+    let kind = MemberKind::of_element(elem, model);
     // 主筋の降伏点は断面の主筋材料から解決する。未割当の断面は算定できない。
     let sigma_y =
         squid_n_core::material_grade::rebar_yield_strength(model.element_rebar_material(elem))?;
@@ -104,7 +104,7 @@ fn check_member(
     let pw = hoop_pw(rebar, b);
     let n_axial = demand.n_axial;
 
-    // 曲げ終局強度 Mu（柱は軸力考慮・mu_method 対応、梁は軸力なし）。
+    // 曲げ終局強度 Mu（柱は軸力を考慮した at 式、梁は軸力なし）。
     let cap = RcCapacityInput {
         b,
         d,
@@ -118,7 +118,7 @@ fn check_member(
         sigma_0: 0.0,
     };
     let mu = match kind {
-        MemberKind::Column => column_mu(b, d, dt, at, ag, sigma_y, fc, n_axial, opts.mu_method),
+        MemberKind::Column => column_mu(b, d, dt, at, ag, sigma_y, fc, n_axial),
         _ => rc_mu_simple(&cap),
     };
 
@@ -284,7 +284,7 @@ fn check_member(
         let dt_y = rebar.cover + rebar.shear.dia + rebar.main_y.dia / 2.0;
         let at_y = bar_set_area(&rebar.main_y) / 2.0;
         let mux = mu;
-        let muy = column_mu(d, b, dt_y, at_y, ag, sigma_y, fc, n_axial, opts.mu_method);
+        let muy = column_mu(d, b, dt_y, at_y, ag, sigma_y, fc, n_axial);
         let rx = if mux > 0.0 {
             demand.mz.abs() / mux
         } else if demand.mz.abs() > 0.0 {

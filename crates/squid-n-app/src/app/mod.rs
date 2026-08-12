@@ -5,6 +5,9 @@ use squid_n_design_jp::{DesignCheck, DesignCtx, LoadTerm, MemberForcesAt};
 use squid_n_edit::UndoStack;
 use squid_n_solver::analysis::{AiMode, Analysis, SeismicDir};
 
+/// 解析条件。実体は [`squid_n_job::settings`]（GUI と MCP で同一の条件を使う）。
+pub use squid_n_job::settings::{AnalysisSettings, ThDampingModel, ThDir, ThIntegrator};
+
 /// 工程タブ（UI設計 §1.1）。進行ロックしない。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum Tab {
@@ -349,185 +352,6 @@ pub struct ResultsBundle {
     pub time_history: Option<squid_n_solver::timehistory::ResponseResult>,
 }
 
-/// 解析タブの設定値（GUI 非依存。テストからも使う）。
-#[derive(Clone, Copy, Debug)]
-pub struct AnalysisSettings {
-    /// 固有値解析のモード数
-    pub n_modes: usize,
-    /// 地震静的(Ai)の方向・Ai算定法・地域係数・地盤種別・標準せん断力係数
-    pub seismic_dir: SeismicDir,
-    pub ai_mode: AiMode,
-    pub z: f64,
-    pub soil: squid_n_load::ai::SoilClass,
-    pub c0: f64,
-    /// 増分解析（プッシュオーバー）: 方向・最大ステップ・目標変位 [mm]
-    pub push_dir: SeismicDir,
-    pub push_steps: usize,
-    pub push_max_disp: f64,
-    /// 増分解析: 目標変位[mm]による終了判定を使うか。
-    pub push_use_max_disp: bool,
-    /// 増分解析: 目標最大層間変形角による終了判定を使うか。
-    pub push_use_drift_angle: bool,
-    /// 増分解析: 目標最大層間変形角の分母 n（角度は 1/n [rad]）。
-    pub push_drift_denom: f64,
-    /// 増分解析: 塑性率（ductility）の算定方式（構造力学）。
-    pub ductility_method: squid_n_solver::pushover::DuctilityMethod,
-    /// 増分解析: 制御方式（段階制御／荷重増分のみ）。
-    pub push_control: squid_n_solver::pushover::PushoverControl,
-    /// 増分解析: 長期系荷重ケース（固定・積載等）を水平力増分の前に初期載荷するか。
-    /// 長期荷重ケースがないモデルでは無視される（ソルバ側の対応実装に依存）。
-    pub push_apply_long_term: bool,
-    /// 質点系モデル生成: モデル化タイプ（等価せん断型など）。
-    pub lumped_mass_type: squid_n_solver::lumped_mass::LumpedMassType,
-    /// 質点系モデル生成: 第1折点判定の割線剛性比（0..1、既定 0.75）。
-    pub lumped_secant_ratio: f64,
-    /// 時刻歴: 減衰比・サンプル波の刻み/継続時間/周期/振幅 [mm/s²]
-    pub th_damping: f64,
-    pub th_dt: f64,
-    pub th_duration: f64,
-    pub th_period: f64,
-    pub th_amp: f64,
-    /// 時刻歴の入力方向(サンプル波・CSV波形の作用方向)
-    pub th_dir: ThDir,
-    /// 時刻歴の減衰モデル
-    pub th_damping_model: ThDampingModel,
-    /// Rayleigh の2次モード減衰比(1次は th_damping を使用)
-    pub th_h2: f64,
-    /// 時刻歴の積分法
-    pub th_integrator: ThIntegrator,
-    /// 時刻歴を非線形（各部材の復元力特性を考慮した Newton 反復）で解析するか。
-    /// ON のとき積分法は Newmark-β 固定（HHT-α は選択不可）。
-    pub th_nonlinear: bool,
-    /// 非線形時刻歴: 長期系荷重ケース（固定・積載等）を時刻歴開始前に静的載荷し、
-    /// その応力状態を初期条件とするか。線形時刻歴は重ね合わせ運用のため対象外
-    /// （`th_nonlinear` が true のときのみ意味を持つ）。
-    pub th_apply_long_term: bool,
-    /// 非線形時刻歴: 各時刻ステップの Newton 反復の最大回数
-    /// （既定は増分解析＝プッシュオーバーの内部反復回数と同じ 50）。
-    pub th_max_iter: usize,
-    /// 非線形時刻歴: Newton 収束判定の相対許容誤差。
-    pub th_tol: f64,
-    /// 時刻歴の詳細記録（3D アニメーション・層応答グラフ・部材履歴用）の
-    /// フレーム間引き係数（線形・HHT-α・非線形の 3 経路共通）。
-    /// 0 は自動決定（記録フレーム数が概ね 1000 になるよう調整）。
-    /// ピーク値（`peak_disp`・`peak_member_forces`・`peak_shear_coeff`）は
-    /// 間引きの影響を受けず全ステップで更新される。
-    pub th_record_every: usize,
-    /// 位相差入力（ねじれ加振）を考慮する（構造動力学）。
-    pub phase_diff_enabled: bool,
-    /// せん断波速度 Vs [m/s]。
-    pub phase_diff_vs: f64,
-    /// 矩形基礎長さ L [m]（位相遅れ方向の辺長）。
-    pub phase_diff_length_m: f64,
-    /// 入射角 θ [°]。
-    pub phase_diff_incidence_deg: f64,
-    /// 位相遅れ方向が Y なら true（X なら false）。基準の並進波もこの方向を用いる。
-    pub phase_diff_dir_y: bool,
-    /// 荷重組合せ自動生成（種別ベース）の多雪区域フラグ（施行令86条・82条）。
-    pub heavy_snow_zone: bool,
-    /// 多雪区域の積雪荷重低減係数 δ1（長期 G+P+δ1・S。既定 0.7）。
-    pub snow_delta1: f64,
-    /// 同 δ3（地震時 G+P+δ3・S±K。既定 0.35）。
-    pub snow_delta3: f64,
-    /// RC 短期許容せん断力の「損傷制御のための検討」（false=安全確保のための検討）。
-    /// RC規準・令82条（断面算定条件 RC造）に対応。
-    pub rc_damage_control: bool,
-    /// 地震時短期の設計用せん断力 QD の決定方法（QD1/QD2/min）。
-    pub qd_method: squid_n_design_jp::QdMethod,
-    /// 解析の並列スレッド数（0=自動(全コア)、1=単一スレッド(結果の完全再現性を保証)、n=固定）。
-    pub threads: usize,
-    /// 動的解析（固有値・時刻歴・精算周期）の質量モデルの方式
-    /// （[`squid_n_core::model::MassMethod`]）。階の自動生成の実行時にモデルへ
-    /// 反映される（`generate_stories_action`）。
-    pub mass_method: squid_n_core::model::MassMethod,
-}
-
-/// 時刻歴の入力方向選択（UI 用）。X・Y に加え、同一波形を両方向へ同時入力する
-/// 「X+Y」を持つ（`SeismicDir` は静的地震荷重・増分解析共用のため
-/// 拡張せず、時刻歴専用にこの型を新設する）。
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ThDir {
-    X,
-    Y,
-    Xy,
-}
-
-/// 時刻歴の減衰モデル選択（UI 用）。構造動力学の減衰マトリクス。
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ThDampingModel {
-    /// 初期剛性比例（C=2h/ω1·Ke）。
-    StiffnessProportional,
-    /// Rayleigh 減衰（1次・2次で目標減衰比）。
-    Rayleigh,
-    /// モード別減衰（各モードに減衰比 h を与える。非線形では初期剛性モード）。
-    Modal,
-    /// 瞬間（接線）剛性比例・α1 一定（C=2h/ω1e·Kt を毎ステップ再構成）。
-    TangentAlpha1,
-    /// 瞬間（接線）剛性比例・h1 一定（ω1 を毎ステップ更新して減衰比 h1 を保つ）。
-    TangentH1,
-}
-
-/// 時刻歴の積分法選択（UI 用）。
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ThIntegrator {
-    NewmarkBeta,
-    HhtAlpha,
-}
-
-impl Default for AnalysisSettings {
-    fn default() -> Self {
-        Self {
-            n_modes: 3,
-            seismic_dir: SeismicDir::X,
-            // 既定は略算周期 T = h(0.02+0.01α)（令88条・昭55建告1793号）。
-            // 固有値解析を要しないため、地震荷重の同期が暗黙の解析を伴わない。
-            // 精算（SemiPrecise）は固有値解析の明示実行を前提とするオプトインで、
-            // 必要な場合に UI（解析タブ「T算定」）で選択する。
-            ai_mode: AiMode::Approx,
-            z: 1.0,
-            soil: squid_n_load::ai::SoilClass::II,
-            c0: 0.2,
-            push_dir: SeismicDir::X,
-            push_steps: 50,
-            push_max_disp: 500.0,
-            push_use_max_disp: false,
-            push_use_drift_angle: true,
-            push_drift_denom: 150.0,
-            ductility_method: squid_n_solver::pushover::DuctilityMethod::default(),
-            push_control: squid_n_solver::pushover::PushoverControl::default(),
-            push_apply_long_term: true,
-            lumped_mass_type: squid_n_solver::lumped_mass::LumpedMassType::default(),
-            lumped_secant_ratio: 0.75,
-            th_damping: 0.02,
-            th_dt: 0.01,
-            th_duration: 10.0,
-            th_period: 0.5,
-            th_amp: 1000.0,
-            th_dir: ThDir::X,
-            th_damping_model: ThDampingModel::StiffnessProportional,
-            th_h2: 0.02,
-            th_integrator: ThIntegrator::NewmarkBeta,
-            th_nonlinear: false,
-            th_apply_long_term: false,
-            th_max_iter: 50,
-            th_tol: 1e-6,
-            th_record_every: 0,
-            phase_diff_enabled: false,
-            phase_diff_vs: 200.0,
-            phase_diff_length_m: 20.0,
-            phase_diff_incidence_deg: 30.0,
-            phase_diff_dir_y: false,
-            heavy_snow_zone: false,
-            snow_delta1: 0.7,
-            snow_delta3: 0.35,
-            rc_damage_control: true,
-            qd_method: squid_n_design_jp::QdMethod::Min,
-            threads: 0,
-            mass_method: squid_n_core::model::MassMethod::default(),
-        }
-    }
-}
-
 /// 一括解析（`App::run_static_all`）の計算結果。荷重ケース単体と、その線形和で
 /// 得た荷重組合せの両方を運ぶ。
 #[derive(Default)]
@@ -720,8 +544,6 @@ pub struct App {
     pub ultimate_include_bond: bool,
     /// 終局検定の上限強度倍率（Qmu = 上限強度倍率·2·Mu/内法。既定 1.0）。
     pub ultimate_upper_factor: f64,
-    /// 終局検定で柱の Mu を ACI 規準（平面保持）で算定するか（false は at 式）。
-    pub ultimate_mu_aci: bool,
     /// 終局検定の終局せん断強度に靭性指針式 Vu を用いるか（false=塑性理論式 Qsu）。
     pub ultimate_shear_ductility: bool,
     /// 終局検定で柱のせん断を 2 軸せん断として検定するか（RC 柱の 2 軸せん断余裕度）。
@@ -1062,7 +884,6 @@ impl Default for App {
             ultimate_lightweight: false,
             ultimate_include_bond: true,
             ultimate_upper_factor: 1.0,
-            ultimate_mu_aci: false,
             ultimate_shear_ductility: false,
             ultimate_biaxial_shear: false,
             ultimate_biaxial_bending: false,
@@ -1529,43 +1350,6 @@ fn parse_wave_csv(content: &str, dir: ThDir) -> Result<(Vec<f64>, Option<Vec<f64
     }
 }
 
-/// 部材種別判定（部材軸の鉛直成分による幾何判定）。
-///
-/// - |ez| ≥ 0.8: 柱（軸力＋二軸曲げの複合検定）
-/// - |ez| ≤ 0.2: 梁（強軸曲げ＋せん断）
-/// - それ以外: ブレース（軸力検定）
-fn member_kind_of(
-    elem: &squid_n_core::model::ElementData,
-    model: &squid_n_core::model::Model,
-) -> squid_n_design_jp::MemberKind {
-    use squid_n_design_jp::MemberKind;
-    let coords: Vec<[f64; 3]> = elem
-        .nodes
-        .iter()
-        .filter_map(|nid| model.nodes.get(nid.index()))
-        .map(|n| n.coord)
-        .take(2)
-        .collect();
-    let (Some(p0), Some(p1)) = (coords.first(), coords.get(1)) else {
-        return MemberKind::Beam;
-    };
-    let dx = p1[0] - p0[0];
-    let dy = p1[1] - p0[1];
-    let dz = p1[2] - p0[2];
-    let len = (dx * dx + dy * dy + dz * dz).sqrt();
-    if len < 1e-9 {
-        return MemberKind::Beam;
-    }
-    let ez = (dz / len).abs();
-    if ez >= 0.8 {
-        squid_n_design_jp::MemberKind::Column
-    } else if ez <= 0.2 {
-        squid_n_design_jp::MemberKind::Beam
-    } else {
-        squid_n_design_jp::MemberKind::Brace
-    }
-}
-
 /// 壁要素の側柱（壁と**両端の**節点を共有する鉛直線材）に SRC 造の柱があるか。
 ///
 /// SRC 耐震壁（部材種別 WA/WC の判定対象）かどうかの判定に用いる。壁自体の
@@ -1767,7 +1551,7 @@ pub(crate) fn steel_member_use_of(
     model: &squid_n_core::model::Model,
 ) -> squid_n_design_jp::secondary::width_thickness::SteelMemberUse {
     use squid_n_design_jp::secondary::width_thickness::SteelMemberUse;
-    match member_kind_of(elem, model) {
+    match squid_n_design_jp::MemberKind::of_element(elem, model) {
         squid_n_design_jp::MemberKind::Column => SteelMemberUse::Column,
         _ => SteelMemberUse::Beam,
     }
@@ -1794,27 +1578,6 @@ pub(crate) fn steel_width_thickness_rank(
         member_use,
         material_name,
     )
-}
-
-/// 部材両端節点間の幾何長 \[mm\]（内法補正なしの簡易値。剛域等は考慮しない）。
-fn elem_geometric_length(
-    elem: &squid_n_core::model::ElementData,
-    model: &squid_n_core::model::Model,
-) -> f64 {
-    let coords: Vec<[f64; 3]> = elem
-        .nodes
-        .iter()
-        .filter_map(|nid| model.nodes.get(nid.index()))
-        .map(|n| n.coord)
-        .take(2)
-        .collect();
-    let (Some(p0), Some(p1)) = (coords.first(), coords.get(1)) else {
-        return 0.0;
-    };
-    let dx = p1[0] - p0[0];
-    let dy = p1[1] - p0[1];
-    let dz = p1[2] - p0[2];
-    (dx * dx + dy * dy + dz * dz).sqrt()
 }
 
 /// 一本部材グループ 1 本分の検定文脈（断面検定の採用応力。
@@ -1865,14 +1628,14 @@ fn beam_group_overrides(
         )> = Vec::with_capacity(group.len());
         let mut ok = true;
         for id in group {
-            let elem = model.elements.iter().find(|e| e.id == *id);
+            let elem = model.element(*id);
             let mf = member_forces
                 .iter()
                 .find(|(mid, _)| mid == id)
                 .map(|(_, m)| m);
             match (elem, mf) {
                 (Some(e), Some(m)) if !m.at.is_empty() => {
-                    let l = elem_geometric_length(e, model);
+                    let l = model.member_length(e);
                     if l <= 1e-9 {
                         ok = false;
                         break;
@@ -1965,41 +1728,7 @@ fn beam_group_overrides(
     }
     out
 }
-
-/// 危険断面位置（§6.2.3、既定は柱フェイスと中央）を正規化座標 \[0,1\] で算定する。
-/// `squid_n_element::beam::BeamElement::new` の `eval_sections` 算定と同じ規則
-/// （xi_i は \[0.0, 0.5) へ、xi_j は (0.5, 1.0\] へクランプ）で face_i/face_j から
-/// 求める。face=0（直交材がない端）では節点芯（0.0/1.0）と一致する。
-///
-/// `detail`（`Model::member_detail(elem.id)`）が付帯情報を持つ場合は、その
-/// 追加検定位置（ハンチ端・継手位置。`MemberDetailAttr::extra_check_positions`）
-/// も含める（剛性には影響しない。§6.2.3「位置はユーザが追加・変更可能」）。
-/// `squid_n_element::beam::BeamElement::new` の `eval_sections` と同じ実装を
-/// 使うため、両者の位置一致判定（1e-6）が保証される。
-fn design_positions(
-    elem: &squid_n_core::model::ElementData,
-    geom_len: f64,
-    detail: Option<&squid_n_core::model::MemberDetailAttr>,
-) -> Vec<f64> {
-    let mut xs = if geom_len > 1e-12 {
-        let xi_i = (elem.rigid_zone.face_i_or_zero() / geom_len).clamp(0.0, 0.5 - 1e-9);
-        let xi_j = (1.0 - elem.rigid_zone.face_j_or_zero() / geom_len).clamp(0.5 + 1e-9, 1.0);
-        vec![xi_i, 0.5, xi_j]
-    } else {
-        vec![0.0, 0.5, 1.0]
-    };
-    if let Some(detail) = detail {
-        xs.extend(detail.extra_check_positions(&elem.rigid_zone, geom_len));
-    }
-    xs.sort_by(|a, b| a.total_cmp(b));
-    xs.dedup_by(|a, b| (*a - *b).abs() < 1e-9);
-    xs
-}
-
-/// `pos` が `positions` のいずれかと 1e-6 以内で一致するか判定する。
-fn is_near_design_position(pos: f64, positions: &[f64]) -> bool {
-    positions.iter().any(|p| (p - pos).abs() < 1e-6)
-}
+pub(crate) use squid_n_design_jp::design_position::{design_positions, is_near_design_position};
 
 mod actions;
 pub mod node_grid;

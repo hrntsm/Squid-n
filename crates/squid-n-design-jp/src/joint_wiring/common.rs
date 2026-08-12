@@ -1,5 +1,6 @@
 //! joint_wiring サブモジュール共通の部材情報・判定ヘルパ。
 
+use crate::MemberKind;
 use squid_n_core::ids::NodeId;
 use squid_n_core::model::{ElementData, Material, Section};
 use squid_n_core::structure_kind::StructureKind;
@@ -27,11 +28,13 @@ pub(super) struct MemberInfo<'a> {
 }
 
 impl MemberInfo<'_> {
+    /// 柱系の部材か（部材種別の判定は [`MemberKind`] の単一規約に従う）。
     pub(super) fn is_column(&self) -> bool {
-        self.ez >= 0.8
+        MemberKind::from_ez(self.ez) == MemberKind::Column
     }
+    /// 水平な梁系の部材か（同上）。
     pub(super) fn is_beam_horiz(&self) -> bool {
-        self.ez <= 0.2
+        MemberKind::from_ez(self.ez) == MemberKind::Beam
     }
     /// 節点 `nid` 側の端部内力行（pos 0/1 のうち近い方）。
     pub(super) fn end_forces(&self, nid: NodeId) -> Option<&[f64; 6]> {
@@ -54,7 +57,6 @@ impl MemberInfo<'_> {
     }
 }
 
-/// 主筋 1 段の重心位置（引張縁から）k1 = かぶり + 帯筋径 + 主筋径/2。
-pub(super) fn rc_dt(rebar: &squid_n_core::section_shape::RcRebar) -> f64 {
-    rebar.cover + rebar.shear.dia + rebar.main_x.dia / 2.0
-}
+/// 主筋（せい方向 main_x）の引張筋重心位置 dt（多段配筋の段数を考慮する）。
+/// 算定の情報源は [`crate::rc::section_props::rebar_tension_dt`]。
+pub(super) use crate::rc::section_props::rebar_tension_dt as rc_dt;

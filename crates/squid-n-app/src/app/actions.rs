@@ -565,24 +565,9 @@ impl App {
     /// は `ZoneSource::Auto` の端のみ更新し `Manual` 端を保護するため、
     /// 各解析エントリの先頭で毎回呼んでも冪等で安全。
     fn apply_rigid_zones_for_analysis(&mut self) {
-        // 壁を考慮するか否かはモデルの応力解析設定に従う（既定は考慮する）。
-        let rule = squid_n_element::beam::RigidZoneRule {
-            consider_walls: self.model.stress_cfg.rigid_zone_consider_walls,
-        };
-        squid_n_element::beam::apply_auto_rigid_zones(&mut self.model, &rule);
-        self.apply_panel_zones_for_analysis();
-    }
-
-    /// 解析前に仕口パネル要素を再生成してモデルへ反映する。
-    ///
-    /// `Model::panel_zone` が有効なら S 造（CFT を除く）の柱梁接合節点へパネルを
-    /// 設け、無効なら既存のパネルを取り除く。あわせて部材の
-    /// `RigidZone::panel_offset_i/j` を現在のパネル配置から求め直す。
-    ///
-    /// 剛域の自動算定と同じく冪等で、書き込み先が剛域長 `length_i/j` とは別の
-    /// フィールドのため、剛域算定との呼び出し順にも依存しない。
-    fn apply_panel_zones_for_analysis(&mut self) {
-        self.generated_panels = squid_n_element::panel_gen::apply_auto_panel_zones(&mut self.model);
+        // 剛域・仕口パネルの算定規則は MCP サーバと共有する
+        // （`squid_n_job::prepare`。前処理が食い違うと同じモデルでも剛性が変わる）。
+        self.generated_panels = squid_n_job::prepare::apply_rigid_zones_and_panels(&mut self.model);
     }
 
     /// `analysis_cfg.threads` を並列度設定（プロセスグローバル）へ反映する。
@@ -658,24 +643,9 @@ impl App {
     /// 変わっていなければ荷重の再計算は丸ごとスキップする）。
     pub fn run_linear_static(&mut self, lc: LoadCaseId) {
         self.begin_analysis();
-        let res = Self::compute_linear_static(self.model.clone(), lc);
+        let res = squid_n_job::compute::compute_linear_static(self.model.clone(), lc)
+            .map_err(|e| e.to_string());
         self.apply_static_case_result(StaticCaseKey::User(lc), res);
-    }
-
-    /// 線形静的解析の純粋計算部分。所有権を取り `&self` を使わないため、
-    /// バックグラウンドジョブ（`start_linear_static_job`）からも呼び出せる。
-    /// 剛域は呼び出し側（`ensure_preparation`）で適用済みのモデルを
-    /// 渡す前提のため、ここでは再適用しない（二重適用を避ける）。
-    fn compute_linear_static(
-        model: squid_n_core::model::Model,
-        lc: LoadCaseId,
-    ) -> Result<squid_n_solver::linear::StaticOnce, String> {
-        match Analysis::prepare(&model) {
-            Ok(analysis) => analysis
-                .linear_static(lc)
-                .map_err(|e| format!("線形静的解析エラー: {:?}", e)),
-            Err(e) => Err(format!("解析準備エラー: {:?}", e)),
-        }
     }
 
     /// `compute_linear_static`/`compute_seismic`/`compute_wind` に共通の結果適用
@@ -749,7 +719,9 @@ impl App {
         let model = self.model.clone();
         self.spawn_analysis_job("線形静的解析", move || JobResult::StaticCase {
             key: StaticCaseKey::User(lc),
-            res: Self::run_compute(|| Self::compute_linear_static(model, lc)),
+            res: Self::run_compute(|| {
+                squid_n_job::compute::compute_linear_static(model, lc).map_err(|e| e.to_string())
+            }),
         });
     }
 
@@ -1378,13 +1350,13 @@ impl App {
                 // FA と甘く判定して Ds を過小評価する危険側の誤りだった。
                 let is_brace_elem =
                     matches!(elem.kind, squid_n_core::model::ElementKind::Brace { .. })
-                        || member_kind_of(elem, &self.model)
+                        || squid_n_design_jp::MemberKind::of_element(elem, &self.model)
                             == squid_n_design_jp::MemberKind::Brace;
                 let elem_steel = elem_is_steel(elem, &self.model);
                 let rank = if is_brace_elem && elem_steel {
                     // 有効細長比 λ = Lk/i（節点間長を座屈長さ、i=√(Imin/A) とする
                     // ピン支持の軸材モデル）。断面性能がない場合はスキップ。
-                    let len = elem_geometric_length(elem, &self.model);
+                    let len = self.model.member_length(elem);
                     let i_min = sec.iy.min(sec.iz);
                     if sec.area <= 0.0 || i_min <= 0.0 || len <= 0.0 {
                         continue;
@@ -1421,7 +1393,9 @@ impl App {
                     use squid_n_design_jp::secondary::src_rank::{
                         src_column_rank, src_column_rank_ratios,
                     };
-                    if member_kind_of(elem, &self.model) != squid_n_design_jp::MemberKind::Column {
+                    if squid_n_design_jp::MemberKind::of_element(elem, &self.model)
+                        != squid_n_design_jp::MemberKind::Column
+                    {
                         continue;
                     }
                     let Some(fc) = mat.fc.filter(|f| *f > 0.0) else {
@@ -1508,7 +1482,7 @@ impl App {
                     // 剛域長(D_orth/2 − D_self/4)を引いた可撓長さとは別物
                     // （設計書 §6.2.1）。フェイス距離の合計が幾何長以上になる
                     // (不整合な入力)場合は下限0を割り込むため、幾何長のままとする。
-                    let geom_len = elem_geometric_length(elem, &self.model);
+                    let geom_len = self.model.member_length(elem);
                     let face_sum =
                         elem.rigid_zone.face_i_or_zero() + elem.rigid_zone.face_j_or_zero();
                     let clear_span = if geom_len - face_sum > 0.0 {
@@ -1539,7 +1513,7 @@ impl App {
                             )
                         })
                         .unwrap_or(0.0);
-                    let kind = member_kind_of(elem, &self.model);
+                    let kind = squid_n_design_jp::MemberKind::of_element(elem, &self.model);
                     // 告示の部材種別が要求する σ0・τu は「Ds 算定時」＝崩壊機構形成時の
                     // 応力度である。終局時応答が得られない部材は判定不能としてスキップ
                     // し、層は選択ランクへフォールバックする（τu=0 とみなすと FA と
@@ -1788,11 +1762,6 @@ impl App {
             // 未指定（普通強度扱い）とし、部材ループ側で上書きする。
             shear_grade: None,
             include_bond: self.ultimate_include_bond,
-            mu_method: if self.ultimate_mu_aci {
-                squid_n_design_jp::ultimate::MuMethod::Aci
-            } else {
-                squid_n_design_jp::ultimate::MuMethod::AtFormula
-            },
             shear_method: if self.ultimate_shear_ductility {
                 squid_n_design_jp::ultimate::ShearMethod::Ductility
             } else {
@@ -1975,7 +1944,8 @@ impl App {
     /// T3: 固有値解析を実行し、結果を `self.results` に格納する（同期）。
     pub fn run_eigen(&mut self, n_modes: usize) {
         self.begin_analysis();
-        let res = Self::compute_eigen(self.model.clone(), n_modes);
+        let res = squid_n_job::compute::compute_eigen(self.model.clone(), n_modes)
+            .map_err(|e| e.to_string());
         self.apply_eigen_result(res);
     }
 
@@ -1988,22 +1958,10 @@ impl App {
         }
         let model = self.model.clone();
         self.spawn_analysis_job("固有値解析", move || {
-            JobResult::Modal(Self::run_compute(|| Self::compute_eigen(model, n_modes)))
+            JobResult::Modal(Self::run_compute(|| {
+                squid_n_job::compute::compute_eigen(model, n_modes).map_err(|e| e.to_string())
+            }))
         });
-    }
-
-    /// 固有値解析の純粋計算部分。所有権を取り `&self` を使わないため、
-    /// バックグラウンドジョブ（`start_eigen_job`）からも呼び出せる。
-    fn compute_eigen(
-        model: squid_n_core::model::Model,
-        n_modes: usize,
-    ) -> Result<squid_n_solver::eigen::ModalResult, String> {
-        match Analysis::prepare(&model) {
-            Ok(analysis) => analysis
-                .eigen(n_modes)
-                .map_err(|e| format!("固有値解析エラー: {:?}", e)),
-            Err(e) => Err(format!("解析準備エラー: {:?}", e)),
-        }
     }
 
     /// `compute_eigen` の結果を適用する（bundle 格納・最終実行時刻更新）。
@@ -2128,23 +2086,9 @@ impl App {
             soil: self.analysis_cfg.soil,
             c0: self.analysis_cfg.c0,
         };
-        let res = Self::compute_seismic(self.model.clone(), cfg, t);
+        let res = squid_n_job::compute::compute_seismic(self.model.clone(), cfg, t)
+            .map_err(|e| e.to_string());
         self.apply_static_case_result(StaticCaseKey::Seismic(dir), res);
-    }
-
-    /// 地震静的(Ai分布)解析の純粋計算部分。所有権を取り `&self` を使わないため、
-    /// バックグラウンドジョブ（`start_seismic_job`）からも呼び出せる。
-    fn compute_seismic(
-        model: squid_n_core::model::Model,
-        cfg: squid_n_solver::analysis::SeismicCfg,
-        t: f64,
-    ) -> Result<squid_n_solver::linear::StaticOnce, String> {
-        match Analysis::prepare(&model) {
-            Ok(analysis) => analysis
-                .seismic_static_with_period(cfg, t)
-                .map_err(|e| format!("地震解析エラー: {:?}", e)),
-            Err(e) => Err(format!("解析準備エラー: {:?}", e)),
-        }
     }
 
     /// 地震静的解析をバックグラウンドスレッドで実行する（P8 §5）。
@@ -2171,7 +2115,9 @@ impl App {
         let model = self.model.clone();
         self.spawn_analysis_job("地震静的解析", move || JobResult::StaticCase {
             key: StaticCaseKey::Seismic(dir),
-            res: Self::run_compute(|| Self::compute_seismic(model, cfg, t)),
+            res: Self::run_compute(|| {
+                squid_n_job::compute::compute_seismic(model, cfg, t).map_err(|e| e.to_string())
+            }),
         });
     }
 
@@ -2237,46 +2183,6 @@ impl App {
         self.staleness.mark_edited();
     }
 
-    /// 増分解析（プッシュオーバー）の純粋計算部分。所有権を取り `&self` を使わないため、
-    /// バックグラウンドジョブ（`start_pushover_job`）からも呼び出せる。
-    /// モデルは呼び出し側で複製したものを渡す
-    /// （非線形状態の副作用を GUI 上のモデルへ残さないため）。
-    /// 増分解析の純粋計算部分。剛域・仕口パネル・荷重同期は呼び出し側
-    /// （`begin_analysis` → `ensure_preparation`）で適用済みのモデルを渡す前提
-    /// （静的解析と同じ規約。かつてはここで剛域だけをインライン適用しており、
-    /// 仕口パネルの生成が省かれて静的解析と剛性の異なるモデルを解いていた）。
-    fn compute_pushover(
-        model: squid_n_core::model::Model,
-        cfg: AnalysisSettings,
-    ) -> Result<squid_n_solver::pushover::PushoverResult, String> {
-        let work = model;
-        Analysis::prepare(&work).map_err(|e| format!("解析準備エラー: {}", e))?;
-        let dofmap = squid_n_core::dof::DofMap::build(&work);
-        let reducer = squid_n_solver::constraint::Reducer::build(&work, &dofmap);
-        // 終了目標（目標変位・目標最大層間変形角）。両方無効なら荷重制御 λ=1 まで解析する。
-        let target = squid_n_solver::pushover::PushoverTarget {
-            max_disp: cfg.push_use_max_disp.then_some(cfg.push_max_disp),
-            max_drift_angle: cfg
-                .push_use_drift_angle
-                .then_some(1.0 / cfg.push_drift_denom.max(1.0)),
-        };
-        squid_n_solver::pushover::pushover_analysis_recording(
-            &work,
-            &dofmap,
-            &reducer,
-            cfg.push_dir,
-            cfg.push_steps,
-            target,
-            cfg.push_control,
-            cfg.push_apply_long_term,
-            false,
-            false,
-            0.0,
-            cfg.ductility_method,
-        )
-        .map_err(|e| format!("増分解析エラー: {}", e))
-    }
-
     /// `compute_pushover` の結果を適用する（bundle 格納・最終実行時刻更新・エラー設定）。
     fn apply_pushover_result(
         &mut self,
@@ -2338,7 +2244,8 @@ impl App {
     pub fn run_pushover(&mut self) {
         self.begin_analysis();
         self.notice_steel_seismic_walls();
-        let res = Self::compute_pushover(self.model.clone(), self.analysis_cfg);
+        let res = squid_n_job::compute::compute_pushover(self.model.clone(), self.analysis_cfg)
+            .map_err(|e| e.to_string());
         self.apply_pushover_result(res);
     }
 
@@ -2353,206 +2260,14 @@ impl App {
         let model = self.model.clone();
         let cfg = self.analysis_cfg;
         self.spawn_analysis_job("増分解析", move || {
-            JobResult::Pushover(Self::run_compute(|| Self::compute_pushover(model, cfg)))
+            JobResult::Pushover(Self::run_compute(|| {
+                squid_n_job::compute::compute_pushover(model, cfg).map_err(|e| e.to_string())
+            }))
         });
         #[cfg(feature = "gui")]
         if let Some(job) = self.job.as_mut() {
             job.jump_on_success = Some((Tab::Results, ResultsView::Pushover));
         }
-    }
-
-    /// 線形時刻歴応答解析の純粋計算部分。所有権を取り `&self` を使わないため、
-    /// バックグラウンドジョブ（`start_time_history_job`）からも呼び出せる。
-    /// 減衰モデル・積分法は `cfg` に従う（剛性比例／Rayleigh、Newmark-β／HHT-α）。
-    /// 位相差入力（ねじれ加振）を `wave` へ付加する（構造動力学の位相差入力解析）。
-    /// `phase_diff_enabled` が false なら `wave` をそのまま返す。位相遅れ時間
-    /// `t=(L·sinθ)/Vs` を求め、位相遅れ方向の並進波からねじれ地動加速度を生成する。
-    fn apply_phase_diff(
-        cfg: &AnalysisSettings,
-        mut wave: squid_n_solver::timehistory::GroundMotion,
-    ) -> squid_n_solver::timehistory::GroundMotion {
-        if !cfg.phase_diff_enabled {
-            return wave;
-        }
-        use squid_n_solver::phase_diff::{phase_lag_time, torsional_accel_series};
-        let lag = phase_lag_time(
-            cfg.phase_diff_length_m,
-            cfg.phase_diff_incidence_deg,
-            cfg.phase_diff_vs,
-        );
-        // 位相遅れ方向の並進加速度を基準波とする。
-        let base: Vec<f64> = if cfg.phase_diff_dir_y {
-            wave.accel_y.clone().unwrap_or_else(|| wave.accel_x.clone())
-        } else {
-            wave.accel_x.clone()
-        };
-        let l_mm = (cfg.phase_diff_length_m * 1000.0).max(1.0);
-        let theta = torsional_accel_series(&base, wave.dt, lag, l_mm);
-        wave.accel_theta = Some(theta);
-        wave
-    }
-
-    /// 時刻歴応答解析の純粋計算部分。剛域・仕口パネル・荷重同期は呼び出し側
-    /// （`begin_analysis` → `ensure_preparation`）で適用済みのモデルを渡す前提
-    /// （静的解析と同じ規約。かつてはここで剛域だけをインライン適用しており、
-    /// 仕口パネルの生成が省かれて静的解析と剛性の異なるモデルを解いていた）。
-    fn compute_time_history(
-        model: squid_n_core::model::Model,
-        cfg: AnalysisSettings,
-        wave: squid_n_solver::timehistory::GroundMotion,
-    ) -> Result<squid_n_solver::timehistory::ResponseResult, String> {
-        // 位相差入力（ねじれ加振）を指定時に付加する（構造動力学の位相差入力解析）。
-        let wave = Self::apply_phase_diff(&cfg, wave);
-        let analysis = Analysis::prepare(&model).map_err(|e| format!("解析準備エラー: {}", e))?;
-        let damping = match cfg.th_damping_model {
-            ThDampingModel::StiffnessProportional => {
-                // 1 次固有円振動数（減衰の基準）
-                let omega1 = match analysis.eigen(1) {
-                    Ok(modal) => match modal.omega2.first() {
-                        Some(&w2) if w2 > 0.0 => w2.sqrt(),
-                        _ => return Err("固有値が得られず減衰を設定できません。".to_string()),
-                    },
-                    Err(e) => return Err(format!("固有値解析エラー: {}", e)),
-                };
-                squid_n_solver::damping::Damping::StiffnessProportional {
-                    h: cfg.th_damping,
-                    omega: omega1,
-                    basis: squid_n_solver::damping::StiffnessKind::Initial,
-                }
-            }
-            ThDampingModel::Rayleigh => {
-                // 1次・2次の固有円振動数（Rayleigh 減衰の基準）
-                let modal = match analysis.eigen(2) {
-                    Ok(m) => m,
-                    Err(e) => return Err(format!("固有値解析エラー: {}", e)),
-                };
-                let (w1, w2) = match (modal.omega2.first(), modal.omega2.get(1)) {
-                    (Some(&a), Some(&b)) if a > 0.0 && b > 0.0 => (a.sqrt(), b.sqrt()),
-                    _ => {
-                        return Err(
-                            "Rayleigh 減衰には 2 次までの固有値が必要です（モード数を確保できませんでした）。"
-                                .to_string(),
-                        );
-                    }
-                };
-                squid_n_solver::damping::Damping::Rayleigh {
-                    h1: cfg.th_damping,
-                    w1,
-                    h2: cfg.th_h2,
-                    w2,
-                }
-            }
-            ThDampingModel::Modal => {
-                // モード別減衰: 得られる低次モードに一律の減衰比 h を与える。
-                // 要求モード数はモデルの質量ランクに合わせ 6→1 の順に試行する。
-                let mut modal = None;
-                for k in (1..=6).rev() {
-                    if let Ok(m) = analysis.eigen(k) {
-                        if !m.shapes.is_empty() {
-                            modal = Some(m);
-                            break;
-                        }
-                    }
-                }
-                let modal = modal.ok_or("固有値が得られず減衰を設定できません。".to_string())?;
-                let omegas: Vec<f64> = modal
-                    .omega2
-                    .iter()
-                    .map(|&w2| if w2 > 0.0 { w2.sqrt() } else { 0.0 })
-                    .collect();
-                let ratios = vec![cfg.th_damping; modal.shapes.len()];
-                squid_n_solver::damping::Damping::modal(&modal.shapes, &omegas, &ratios)
-            }
-            ThDampingModel::TangentAlpha1 | ThDampingModel::TangentH1 => {
-                // 瞬間（接線）剛性比例。基準は初期剛性の 1 次固有円振動数。
-                let omega1 = match analysis.eigen(1) {
-                    Ok(modal) => match modal.omega2.first() {
-                        Some(&w2) if w2 > 0.0 => w2.sqrt(),
-                        _ => return Err("固有値が得られず減衰を設定できません。".to_string()),
-                    },
-                    Err(e) => return Err(format!("固有値解析エラー: {}", e)),
-                };
-                if cfg.th_damping_model == ThDampingModel::TangentAlpha1 {
-                    squid_n_solver::damping::Damping::StiffnessProportional {
-                        h: cfg.th_damping,
-                        omega: omega1,
-                        basis: squid_n_solver::damping::StiffnessKind::Tangent,
-                    }
-                } else {
-                    squid_n_solver::damping::Damping::TangentStiffnessConstantH {
-                        h1: cfg.th_damping,
-                        omega1e: omega1,
-                    }
-                }
-            }
-        };
-        // 非線形時刻歴は `model` への可変借用が要る（Newton 反復で要素状態を
-        // commit/rollback するため）。`analysis` はここまでで最後の利用（damping の
-        // 固有値算定）なので、以降は使わず `model` への不変借用を終わらせる。
-        if cfg.th_nonlinear {
-            return Self::compute_nonlinear_time_history(model, cfg, wave, damping);
-        }
-        // 0 は「自動決定」の意（`ThRecorder`/`recording.rs::auto_record_every` に委ねる）。
-        let record_every = (cfg.th_record_every > 0).then_some(cfg.th_record_every);
-        let result = match cfg.th_integrator {
-            ThIntegrator::NewmarkBeta => {
-                let newmark = squid_n_solver::timehistory::NewmarkCfg::average_accel();
-                analysis.time_history(&wave, newmark, damping, record_every)
-            }
-            ThIntegrator::HhtAlpha => {
-                let hht = squid_n_solver::timehistory::HhtCfg::new(wave.dt);
-                analysis.time_history_hht(&wave, hht, damping, record_every)
-            }
-        };
-        result.map_err(|e| format!("時刻歴解析エラー: {}", e))
-    }
-
-    /// 非線形時刻歴応答解析の純粋計算部分（`compute_time_history` の非線形分岐）。
-    /// dofmap/reducer の組み立ては `compute_pushover` と同じ経路
-    /// （`Analysis::prepare` は damping 算定用の固有値解析のみに使い、解の本体は
-    /// `DofMap::build` / `Reducer::build` を直接呼んで組み立てる）。
-    /// `use_kg`（幾何剛性）は増分解析 UI に対応する設定がないため、増分解析の
-    /// 既定と同じ `false` を用いる。減衰の累積方式（`DampingAccumulation`）も
-    /// UI 設定がないため既定（非累積型）を用いる。
-    fn compute_nonlinear_time_history(
-        model: squid_n_core::model::Model,
-        cfg: AnalysisSettings,
-        wave: squid_n_solver::timehistory::GroundMotion,
-        damping: squid_n_solver::damping::Damping,
-    ) -> Result<squid_n_solver::timehistory::ResponseResult, String> {
-        let model = model;
-        squid_n_element::factory::ensure_nonlinear_input(&model).map_err(|e| {
-            format!(
-                "非線形時刻歴の入力エラー（部材耐力を算定できません）:\n{}",
-                e
-            )
-        })?;
-        let dofmap = squid_n_core::dof::DofMap::build(&model);
-        let reducer = squid_n_solver::constraint::Reducer::build(&model, &dofmap);
-        let n_indep = reducer.n_indep;
-        let init = vec![0.0; n_indep];
-        let newmark = squid_n_solver::timehistory::NewmarkCfg::average_accel();
-        // 0 は「自動決定」の意（`ThRecorder`/`recording.rs::auto_record_every` に委ねる）。
-        let record_every = (cfg.th_record_every > 0).then_some(cfg.th_record_every);
-        let nl_cfg = squid_n_solver::timehistory::NonlinearThCfg {
-            newton: squid_n_solver::newton::NewtonCriteria::new(cfg.th_max_iter, cfg.th_tol),
-            use_kg: false,
-            apply_long_term: cfg.th_apply_long_term,
-            record_every,
-        };
-        squid_n_solver::timehistory::nonlinear_time_history_analysis(
-            &model,
-            &dofmap,
-            &reducer,
-            &wave,
-            &newmark,
-            &damping,
-            squid_n_solver::damping::DampingAccumulation::default(),
-            &init,
-            &init,
-            nl_cfg,
-        )
-        .map_err(|e| format!("非線形時刻歴解析エラー: {}", e))
     }
 
     /// `compute_time_history` の結果を適用する
@@ -2591,7 +2306,9 @@ impl App {
     /// （剛性比例／Rayleigh、Newmark-β／HHT-α）。
     pub fn run_time_history(&mut self, wave: squid_n_solver::timehistory::GroundMotion) {
         self.begin_analysis();
-        let res = Self::compute_time_history(self.model.clone(), self.analysis_cfg, wave);
+        let res =
+            squid_n_job::compute::compute_time_history(self.model.clone(), self.analysis_cfg, wave)
+                .map_err(|e| e.to_string());
         self.apply_time_history_result(res);
     }
 
@@ -2612,7 +2329,8 @@ impl App {
         };
         self.spawn_analysis_job(label, move || {
             JobResult::TimeHistory(Box::new(Self::run_compute(|| {
-                Self::compute_time_history(model, cfg, wave)
+                squid_n_job::compute::compute_time_history(model, cfg, wave)
+                    .map_err(|e| e.to_string())
             })))
         });
         #[cfg(feature = "gui")]
@@ -2878,8 +2596,8 @@ impl App {
                 continue;
             };
 
-            let kind = member_kind_of(elem, &self.model);
-            let length = elem_geometric_length(elem, &self.model);
+            let kind = squid_n_design_jp::MemberKind::of_element(elem, &self.model);
+            let length = self.model.member_length(elem);
             // せん断スパン比 M/(Q·d) の代表値: 加力方向ごとに「モーメントが最大と
             // なる検定位置」の (|M|, |Q|) を採用する（強軸: |Mz|max と対応 |Qy|、
             // 弱軸: |My|max と対応 |Qz|。従来は強軸側の1組を弱軸検定にも流用して
@@ -3002,8 +2720,7 @@ impl App {
                 squid_n_core::structure_kind::structure_kind_of(Some(sec), Some(mat.category)),
             );
 
-            let detail = self.model.member_detail(*elem_id);
-            let positions = design_positions(elem, length, detail);
+            let positions = design_positions(elem, &self.model, length);
 
             for (pos, forces) in &mf.at {
                 if !is_near_design_position(*pos, &positions) {
@@ -3477,7 +3194,7 @@ impl App {
     /// - `LoadShape::Point{p,x}` → 中間集中荷重 `MemberLoadKind::Point{a:x,p}`
     /// - `LoadTarget::Node(n)`（小梁反力）→ `NodalLoad{node:n, values:[0,0,-p,0,0,0]}`
     ///
-    /// `L` は対応する部材の節点間距離（`elem_geometric_length`。剛域補正なしの
+    /// `L` は対応する部材の節点間距離（`Model::member_length`。剛域補正なしの
     /// 簡易値。仕様上「部材の節点間距離」を使う規則のため、剛域を考慮する
     /// 設計検定側の `clear_span` とは別物）。
     fn slab_load_case_content(
@@ -3577,10 +3294,10 @@ impl App {
                 }
                 // Edge（境界大梁）: bl.elem に解決済みの ElemId が入る。
                 LoadTarget::Edge(_) => {
-                    let Some(elem) = self.model.elements.iter().find(|e| e.id == bl.elem) else {
+                    let Some(elem) = self.model.element(bl.elem) else {
                         continue;
                     };
-                    let l = elem_geometric_length(elem, &self.model);
+                    let l = self.model.member_length(elem);
                     if l <= 1e-9 {
                         continue;
                     }
@@ -3593,8 +3310,8 @@ impl App {
                 // 2. それ以外 → 単純梁の両端反力として節点荷重化
                 //    （節点が大梁スパン上なら後段で中間集中荷重（CMQ）へ変換）
                 LoadTarget::Span([n0, n1]) => {
-                    if let Some(elem) = self.model.elements.iter().find(|e| e.id == bl.elem) {
-                        let l = elem_geometric_length(elem, &self.model);
+                    if let Some(elem) = self.model.element(bl.elem) {
+                        let l = self.model.member_length(elem);
                         if l > 1e-9 {
                             emit_shape(&mut member, elem.id, 0.0, l, false, &bl.shape);
                         }
@@ -4037,7 +3754,7 @@ fn simple_beam_q0_by_elem(
         return Default::default();
     };
     for ml in &case.member {
-        let Some(elem) = model.elements.iter().find(|e| e.id == ml.elem) else {
+        let Some(elem) = model.element(ml.elem) else {
             continue;
         };
         if elem.nodes.len() < 2 {
