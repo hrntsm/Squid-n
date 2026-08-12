@@ -30,9 +30,7 @@ pub fn rebar_unit_mass_kg_per_m(dia: f64) -> f64 {
             return m;
         }
     }
-    std::f64::consts::PI / 4.0
-        * dia
-        * dia
+    squid_n_core::section_shape::one_bar_area(dia)
         * (squid_n_core::units::STEEL_UNIT_WEIGHT_TAKEOFF_T_M3 * 1e-3)
 }
 

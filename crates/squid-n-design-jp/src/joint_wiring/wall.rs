@@ -181,13 +181,7 @@ pub(super) fn check_walls(
                 continue;
             };
             let dt = rc_dt(rebar);
-            let pw = if rebar.shear.pitch > 0.0 {
-                rebar.shear.legs as f64 * std::f64::consts::PI * rebar.shear.dia * rebar.shear.dia
-                    / 4.0
-                    / (b * rebar.shear.pitch)
-            } else {
-                0.0
-            };
+            let pw = squid_n_core::rc_rebar_geom::pw_ratio(&rebar.shear, b);
             side_columns.push(WallSideColumn {
                 b,
                 d_eff: d - dt,

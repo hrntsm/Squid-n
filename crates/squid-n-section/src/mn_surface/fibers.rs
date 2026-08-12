@@ -190,8 +190,9 @@ fn rebar_fibers_rect(
     young: f64,
 ) {
     use squid_n_core::rc_rebar_geom::rebar_layer_depth_from_edge;
+    use squid_n_core::section_shape::one_bar_area;
 
-    let bar = |set: &BarSet| -> f64 { std::f64::consts::PI * set.dia * set.dia / 4.0 };
+    let bar = |set: &BarSet| -> f64 { one_bar_area(set.dia) };
 
     // せい方向主筋（上下面）
     let set = &rebar.main_x;
@@ -267,7 +268,7 @@ fn rebar_fibers_circle(
     } else {
         rebar.main_y.dia
     };
-    let a = std::f64::consts::PI * dia * dia / 4.0;
+    let a = squid_n_core::section_shape::one_bar_area(dia);
     let depth = rebar.cover + rebar.shear.dia + dia / 2.0;
     let r = (d / 2.0 - depth).max(0.0);
     for i in 0..total {
