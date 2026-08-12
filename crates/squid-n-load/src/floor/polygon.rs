@@ -23,7 +23,12 @@ fn bbox2(poly: &[[f64; 2]]) -> (f64, f64, f64, f64) {
     (min_x, max_x, min_y, max_y)
 }
 
+/// 辺上（頂点を含む）とみなす距離 [mm]。床レベルの公差と同じ 1 mm。
+const ON_BOUNDARY_TOL_MM: f64 = 1.0;
+
 /// 点が多角形内部にあるか（レイキャスト法／偶奇則）。XY 平面投影用。
+///
+/// 辺上の点は内側にならない。境界を含めるときは [`point_on_polygon_boundary`] と併用する。
 pub(crate) fn point_in_polygon(p: [f64; 2], poly: &[[f64; 2]]) -> bool {
     let n = poly.len();
     let mut inside = false;
@@ -40,6 +45,21 @@ pub(crate) fn point_in_polygon(p: [f64; 2], poly: &[[f64; 2]]) -> bool {
         j = i;
     }
     inside
+}
+
+/// 点が多角形の辺上（頂点を含む）にあるか。距離 [`ON_BOUNDARY_TOL_MM`] 以内を辺上とする。
+pub(crate) fn point_on_polygon_boundary(p: [f64; 2], poly: &[[f64; 2]]) -> bool {
+    let n = poly.len();
+    if n < 2 {
+        return false;
+    }
+    let tol2 = ON_BOUNDARY_TOL_MM * ON_BOUNDARY_TOL_MM;
+    for i in 0..n {
+        if point_segment_dist2(p, poly[i], poly[(i + 1) % n]) <= tol2 {
+            return true;
+        }
+    }
+    false
 }
 
 fn point_segment_dist2(p: [f64; 2], a: [f64; 2], b: [f64; 2]) -> f64 {

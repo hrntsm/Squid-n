@@ -3730,6 +3730,61 @@ fn test_floor_design_checks_secondary_member_joist() {
     assert!((jr.m_max - w_udl * 4000.0 * 4000.0 / 8.0).abs() < 1.0);
 }
 
+/// 中点がスラブ辺上にある二次部材小梁も床設計の対象になる。
+#[test]
+fn test_floor_design_checks_secondary_joist_on_slab_edge() {
+    use squid_n_core::ids::SectionId;
+    use squid_n_core::model::{SecondaryMember, SecondaryMemberKind, Section, SlabUsage};
+
+    let mut model = make_square_slab_test_model();
+    model.slabs[0].usage = Some(SlabUsage::Office);
+    model.sections.push(Section {
+        id: SectionId(0),
+        name: "H-400".into(),
+        area: 10000.0,
+        iy: 1.0e8,
+        iz: 1.0e7,
+        j: 1.0e6,
+        depth: 400.0,
+        width: 200.0,
+        as_y: 0.0,
+        as_z: 0.0,
+        floor: None,
+        panel_thickness: None,
+        thickness: None,
+        shape: None,
+        material: None,
+        rebar_material: None,
+        shear_rebar_material: None,
+        steel_material: None,
+    });
+    let mk_mid = |id: u32, x: f64, y: f64| squid_n_core::model::Node {
+        id: NodeId(id),
+        coord: [x, y, 0.0],
+        restraint: Default::default(),
+        mass: None,
+        story: None,
+        support_spring: None,
+    };
+    // 左辺上（x=0）の中点を持つ小梁。大梁とは両端節点が異なる。
+    model.nodes.push(mk_mid(4, 0.0, 1000.0));
+    model.nodes.push(mk_mid(5, 0.0, 3000.0));
+    model.secondary_members.push(SecondaryMember {
+        kind: SecondaryMemberKind::Joist,
+        nodes: [NodeId(4), NodeId(5)],
+        section: Some(SectionId(0)),
+        name: "J-edge".into(),
+    });
+    model.validate().expect("validate");
+    let app = App {
+        model,
+        ..App::default()
+    };
+
+    let (joists, _slabs) = app.floor_design_checks();
+    assert_eq!(joists.len(), 1, "辺上の二次部材小梁が1件設計される");
+}
+
 /// 床 Phase E レビュー指摘: スラブ設計のスパンは一方向指定に一致する
 /// （長辺方向へ一方向指定した場合、短辺ではなく長辺で設計する）。
 #[test]

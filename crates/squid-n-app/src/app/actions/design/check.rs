@@ -259,7 +259,7 @@ impl App {
     /// `Model::secondary_members` の小梁を単純支持梁として検定する。
     ///
     /// `Slab::joists` に同じ両端を持つ小梁は GUI 定義済みとしてスキップする。
-    /// 中点が属するスラブを XY 多角形判定で決め、平行小梁群から負担幅を算定する。
+    /// 中点が属するスラブを XY 多角形判定（内部または辺上）で決め、平行小梁群から負担幅を算定する。
     fn design_secondary_joist_checks(
         &self,
         joist_checks: &mut Vec<crate::app::JoistCheck>,

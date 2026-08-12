@@ -1176,3 +1176,12 @@ fn test_edge_supported_no_true_falls_back_to_all_edges() {
         .iter()
         .all(|l| matches!(l.target, LoadTarget::Edge(_))));
 }
+
+#[test]
+fn test_point_in_slab_boundary_includes_edges() {
+    let (model, slab) = make_square_slab_model(4000.0, DistributionMethod::TriTrapezoid, 0.01);
+    assert!(point_in_slab_boundary(&model, &slab, [2000.0, 2000.0]));
+    assert!(point_in_slab_boundary(&model, &slab, [0.0, 2000.0]));
+    assert!(point_in_slab_boundary(&model, &slab, [0.0, 0.0]));
+    assert!(!point_in_slab_boundary(&model, &slab, [-10.0, 2000.0]));
+}

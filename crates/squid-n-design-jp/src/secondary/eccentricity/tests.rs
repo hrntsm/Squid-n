@@ -306,3 +306,66 @@ fn test_append_misc_wall_stiffnesses() {
     append_misc_wall_stiffnesses(&model2, s0, &mut cols2);
     assert_eq!(cols2.len(), 4);
 }
+
+/// 中間節点で 2 分割した柱は、未分割の柱と同じ D 値になる（h は層高）。
+#[test]
+fn test_column_stiffnesses_merges_split_column() {
+    use squid_n_core::dof::Dof6Mask;
+    use squid_n_core::ids::{ElemId, NodeId};
+    use squid_n_core::model::Node;
+
+    let (mut model, s0) = build_symmetric_frame(None);
+    let before = column_stiffnesses(&model, s0);
+    assert_eq!(before.len(), 4);
+    let d0 = before
+        .iter()
+        .find(|c| c.pos[0].abs() < 1.0 && c.pos[1].abs() < 1.0)
+        .expect("原点の柱");
+
+    model.nodes.push(Node {
+        id: NodeId(8),
+        coord: [0.0, 0.0, 1500.0],
+        restraint: Dof6Mask::FREE,
+        mass: None,
+        story: None,
+        support_spring: None,
+    });
+    let mut bot_seg = model
+        .elements
+        .iter()
+        .find(|e| e.id == ElemId(0))
+        .expect("柱 0")
+        .clone();
+    let top_seg = model
+        .elements
+        .iter_mut()
+        .find(|e| e.id == ElemId(0))
+        .expect("柱 0");
+    top_seg.nodes.clear();
+    top_seg.nodes.push(NodeId(8));
+    top_seg.nodes.push(NodeId(4));
+    bot_seg.id = ElemId(8);
+    bot_seg.nodes.clear();
+    bot_seg.nodes.push(NodeId(0));
+    bot_seg.nodes.push(NodeId(8));
+    model.elements.push(bot_seg);
+
+    let after = column_stiffnesses(&model, s0);
+    assert_eq!(after.len(), 4, "分割柱は 1 本のまま");
+    let d1 = after
+        .iter()
+        .find(|c| c.pos[0].abs() < 1.0 && c.pos[1].abs() < 1.0)
+        .expect("原点の柱");
+    assert!(
+        (d1.dx - d0.dx).abs() / d0.dx < 1e-9,
+        "分割後の Dx が変わる: before={} after={}",
+        d0.dx,
+        d1.dx
+    );
+    assert!(
+        (d1.dy - d0.dy).abs() / d0.dy < 1e-9,
+        "分割後の Dy が変わる: before={} after={}",
+        d0.dy,
+        d1.dy
+    );
+}
