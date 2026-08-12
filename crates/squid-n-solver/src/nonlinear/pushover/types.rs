@@ -184,7 +184,7 @@ pub enum HingeLevel {
 
 /// 塑性率（ductility）の算定方式（ファイバーモデル（構造力学）の
 /// 塑性率）。ユーザーが 3 方式から選択する。
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub enum DuctilityMethod {
     /// (1) 塑性率基点歪みにより計算する方法（既定）。いずれかのセグメントの
     /// ひずみが塑性率基点ひずみ（RC: 引張 0.01・圧縮 0.005、鉄骨: 0.01）を

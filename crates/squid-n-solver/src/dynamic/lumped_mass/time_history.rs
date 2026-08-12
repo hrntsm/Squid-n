@@ -155,8 +155,10 @@ pub fn lumped_mass_time_history(
         .map(|s| story_spring(&s.skeleton))
         .collect();
 
-    // 初期剛性比例減衰係数 a1=2h/ω1。
-    let omega1 = fundamental_omega(&mass, &k_init);
+    // 初期剛性比例減衰係数 a1=2h/ω1。ω1 は固有値解析（faer、
+    // `super::eigen::lumped_mass_eigen`）の1次モードを優先し、失敗時のみ
+    // 本関数（逆反復法）へフォールバックする（`super::eigen::stick_omega1`）。
+    let omega1 = super::eigen::stick_omega1(lm);
     let a1 = if omega1 > 0.0 { 2.0 * h / omega1 } else { 0.0 };
 
     // Newmark 平均加速度（β=1/4, γ=1/2）。
