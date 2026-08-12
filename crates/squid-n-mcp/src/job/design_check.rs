@@ -3,7 +3,7 @@
 //! - [`compute_design_check_job`] — DesignCheck ジョブの純粋計算部分。
 
 use super::{
-    flatten_member_force_rows, model_with_auto_rigid_zones, resolve_load_case, JobOutcome,
+    flatten_member_force_rows, model_prepared_for_analysis, resolve_load_case, JobOutcome,
 };
 use squid_n_core::model::Model;
 use squid_n_job::JobError;
@@ -17,7 +17,7 @@ pub(crate) fn compute_design_check_job(
     load_case: Option<u32>,
 ) -> Result<JobOutcome, JobError> {
     // 剛域自動算定は face_i/face_j による危険断面位置（§6.2.3）の算定にも使う。
-    let work = model_with_auto_rigid_zones(model);
+    let work = model_prepared_for_analysis(model);
     let lc_id = resolve_load_case(&work, load_case)?.id;
     // 解析の実体は GUI と共通（`squid-n-job`）。エラー文言も共通の `JobError`。
     let result = squid_n_job::compute::compute_linear_static(work.clone(), lc_id)?;

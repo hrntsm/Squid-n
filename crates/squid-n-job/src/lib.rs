@@ -8,6 +8,7 @@
 //!
 //! 本クレートは両者の共通下層として、
 //!
+//! - [`auto_loads`] — 荷重ケースの自動生成（DL/LL/EX/EY。モデルは書き換えない）
 //! - [`prepare`] — 解析前処理（剛域・仕口パネル・荷重ケースの自動同期）
 //! - [`settings`] — 解析条件（[`settings::AnalysisSettings`]）
 //! - [`compute`] — 各解析の純粋計算（所有モデル＋解析条件 → 結果）
@@ -17,12 +18,20 @@
 //! を持つ。結果の整形（MCP の JSON・GUI の表示）は各クレートに残す
 //! （両者の要件が結合するのを避けるため）。
 
+pub mod auto_loads;
 pub mod compute;
 pub mod error;
+pub mod floor_grillage;
 pub mod prepare;
 pub mod sample_wave;
 pub mod settings;
 
+pub use auto_loads::{
+    apply_auto_load_cases, compute_auto_load_cases, compute_dl_beam_loads,
+    compute_gravity_auto_load_cases, compute_seismic_auto_load_cases, AutoLoadCaseContent,
+    AutoLoadComputeResult,
+};
 pub use error::{JobError, JobResult};
+pub use prepare::{apply_rigid_zones_and_panels, prepare_model_for_analysis, PrepareReport};
 pub use sample_wave::{build_ground_motion, sample_ground_motion};
 pub use settings::AnalysisSettings;

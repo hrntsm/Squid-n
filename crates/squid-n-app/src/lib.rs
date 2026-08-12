@@ -1,5 +1,4 @@
 pub mod app;
-pub mod floor_grillage;
 pub mod grid;
 pub mod sample;
 pub mod story_response;

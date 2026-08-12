@@ -2,7 +2,7 @@
 //!
 //! - [`compute_time_history_job`] — TimeHistory ジョブの純粋計算部分。
 
-use super::{model_with_auto_rigid_zones, JobDir, JobOutcome};
+use super::{model_prepared_for_analysis, JobDir, JobOutcome};
 use squid_n_core::model::Model;
 use squid_n_job::{settings::ThDir, JobError};
 
@@ -18,7 +18,7 @@ pub(crate) fn compute_time_history_job(
     period: f64,
     amp: f64,
 ) -> Result<JobOutcome, JobError> {
-    let work = model_with_auto_rigid_zones(model);
+    let work = model_prepared_for_analysis(model);
 
     let cfg = squid_n_job::AnalysisSettings {
         th_dt: dt,

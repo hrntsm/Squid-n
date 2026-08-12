@@ -3352,10 +3352,14 @@ fn test_slab_grillage_node_reactions_total_and_gate() {
     };
 
     let w = 0.005_f64;
-    let beam_map = app.beam_elem_map();
-    let reactions = app
-        .slab_grillage_node_reactions(&app.model.slabs[0], w, &beam_map)
-        .expect("交差格子の支点反力が得られるはず");
+    let beam_map = squid_n_job::auto_loads::beam_elem_map(&app.model);
+    let reactions = squid_n_job::auto_loads::slab_grillage_node_reactions(
+        &app.model,
+        &app.model.slabs[0],
+        w,
+        &beam_map,
+    )
+    .expect("交差格子の支点反力が得られるはず");
     // 4 支点（N4..N7）へ配分。
     assert_eq!(reactions.len(), 4, "支点は4節点");
     let total: f64 = reactions.iter().map(|(_, r)| r).sum();
@@ -3367,10 +3371,15 @@ fn test_slab_grillage_node_reactions_total_and_gate() {
 
     // 実部材化された小梁を含むと二重計上回避のため None（本体 FEM が伝達）。
     app.model.elements.push(mk_beam(4, 4, 5)); // N4-N5 に実 Beam
-    let beam_map = app.beam_elem_map();
+    let beam_map = squid_n_job::auto_loads::beam_elem_map(&app.model);
     assert!(
-        app.slab_grillage_node_reactions(&app.model.slabs[0], w, &beam_map)
-            .is_none(),
+        squid_n_job::auto_loads::slab_grillage_node_reactions(
+            &app.model,
+            &app.model.slabs[0],
+            w,
+            &beam_map,
+        )
+        .is_none(),
         "実部材化小梁を含むスラブは格子荷重の対象外（None）"
     );
 
@@ -3379,10 +3388,15 @@ fn test_slab_grillage_node_reactions_total_and_gate() {
     // 二重計上になる。この場合は None（既存挙動を維持）でなければならない。
     app.model.elements.pop(); // 実 Beam を戻す（他条件は満たす）。
     app.model.slabs[0].method = DistributionMethod::TributaryArea;
-    let beam_map = app.beam_elem_map();
+    let beam_map = squid_n_job::auto_loads::beam_elem_map(&app.model);
     assert!(
-        app.slab_grillage_node_reactions(&app.model.slabs[0], w, &beam_map)
-            .is_none(),
+        squid_n_job::auto_loads::slab_grillage_node_reactions(
+            &app.model,
+            &app.model.slabs[0],
+            w,
+            &beam_map,
+        )
+        .is_none(),
         "分配法が三角/一方向でないスラブは格子荷重の対象外（二重計上回避）"
     );
 }
