@@ -60,7 +60,7 @@ Squid-n は、国土交通大臣の認定を受けた構造計算プログラム
 
 - [dev_docs/specs/](https://github.com/hrntsm/squid-n/tree/main/dev_docs/specs)：フェーズ単位の実装仕様書と原典（法令・規準）照合リスト
 - [dev_docs/v_and_v/](https://github.com/hrntsm/squid-n/tree/main/dev_docs/v_and_v)：各要素・各設計式の Verification & Validation レポート
-- [dev_docs/ROADMAP.md](https://github.com/hrntsm/squid-n/blob/main/dev_docs/ROADMAP.md)・[dev_docs/handoff/](https://github.com/hrntsm/squid-n/tree/main/dev_docs/handoff)：ロードマップ、申し送り、UI 関連ドキュメント
+- [dev_docs/handoff/ROADMAP.md](https://github.com/hrntsm/squid-n/blob/main/dev_docs/handoff/ROADMAP.md)・[dev_docs/handoff/](https://github.com/hrntsm/squid-n/tree/main/dev_docs/handoff)：完了済みロードマップ、申し送り、UI 関連ドキュメント
 
 ## リポジトリ
 

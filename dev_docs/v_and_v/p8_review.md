@@ -79,3 +79,36 @@ ST-Bridge は国内一貫プログラム/BIM 連携の要だが**完全未実装
 
 > 現状: ST-Bridge は subset で意味的往復 🔶。MCP はコンパイル不能のまま（DoD §8.1〜§8.2 未達 ❌）。
 > P8 全体としては「ST-Bridge subset 達成・MCP 未達」。
+
+---
+
+## 7. 追記（2026-08-12。§1〜6 は 2026-06 監査時点の記録）
+
+**結論（現状）:** MCP は **`--features mcp` でコンパイル・CI 検証済み**（rmcp 1.7 API 追従、`Send` 問題解消）。
+公開ツール 5 件は実装済みだが、**モデル編集・保存・レポート出力は未公開**のため 🔶。
+ST-Bridge は §5 の subset 往復のまま 🔶。
+
+### 7.1 MCP ツール（現状）
+
+| ツール | 仕様（P8） | 現状 | 判定 |
+|--------|-----------|------|------|
+| `model_query` | model.query | 節点・部材・断面検索（フィルタ付き） | ✅ |
+| `quantity_takeoff` | — | 数量積算 JSON（V&V #26 テストあり） | ✅ |
+| `analysis_run` | 非同期ジョブ | `spawn_blocking` + `tokio::spawn` で実行・永続化。線形静・固有値・PO・TH・DesignCheck・UltimateCheck | ✅ |
+| `result_get` | result.get | 結果ストアから JSON 取得 | ✅ |
+| `analysis_status` | 進捗 | ジョブ状態（Queued/Running/Done/Failed） | 🔶（progress 更新は粗い） |
+| `model.load` / `model.edit` / `model.save` | 単一ライタ | **未実装**（起動時の in-memory モデルのみ） | ❌ |
+| `design.check` / `report.export` | 専用ツール | DesignCheck は `analysis_run` 経由。report は未 | 🔶 |
+
+検証: `cargo test -p squid-n-mcp --features mcp`（CI 3 本目）。起動: `cargo run -p squid-n-mcp --features mcp`。
+利用方法は `docs/mcp_server/` を参照。
+
+### 7.2 ST-Bridge（現状）
+
+§5 の subset 往復は維持 🔶。形鋼ライブラリ参照・床/ブレース・完全相互運用は未。
+
+### 7.3 V&V 索引との対応
+
+- **#22 MCP**: ❌ → **🔶**（本追記に合わせ [`README.md`](README.md) 索引を更新）
+- **#23 ST-Bridge**: 🔶 のまま
+- **#24 EditCommand**: 実装 ✅、**MCP からの利用は未配線** 🔶

@@ -42,7 +42,7 @@ cargo build --workspace
 
 開発者向けドキュメントは `dev_docs/` に集約している（ドキュメントサイトには含めない）。
 設計仕様は `dev_docs/specs/`、各要素・設計式の検証状況は `dev_docs/v_and_v/README.md`、
-ロードマップ・申し送りは `dev_docs/ROADMAP.md`・`dev_docs/handoff/` を参照。
+ロードマップ・申し送りは `dev_docs/handoff/`（[`ROADMAP.md`](dev_docs/handoff/ROADMAP.md) は 2026-07 完了済み）を参照。
 
 ## ライセンス
 
