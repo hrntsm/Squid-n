@@ -62,7 +62,7 @@ pub struct StoryStick {
 }
 
 /// モデル化タイプ（せん断型多質点系、構造力学）。
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub enum LumpedMassType {
     /// 等価せん断型（曲げ剛性を剛とする）。
     #[default]

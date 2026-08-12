@@ -5427,6 +5427,7 @@ dependencies = [
 name = "squid-n-job"
 version = "0.0.1"
 dependencies = [
+ "serde",
  "squid-n-core",
  "squid-n-design-jp",
  "squid-n-element",

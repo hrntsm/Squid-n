@@ -18,15 +18,35 @@ Squid-n ネイティブの保存形式です。内部モデルをそのまま格
 
 ## ファイル構造
 
-`.scz` は 3 つのエントリを持つ ZIP 書庫です。
+`.scz` は ZIP 書庫です。`manifest.json`・`model.msgpack`・`settings.json` は必須エントリ、
+残りは任意エントリ（同梱がなければ読込側の該当項目が `None` になる）です。
 
-| エントリ | 内容 |
-|---|---|
-| `manifest.json` | スキーマ版、単位系、各エントリの SHA-256 ハッシュ |
-| `model.msgpack` | 内部モデル本体（MessagePack でシリアライズ） |
-| `settings.json` | 設計コード等の設定 |
+| エントリ | 必須 | 内容 |
+|---|---|---|
+| `manifest.json` | ○ | スキーマ版、単位系、各エントリの SHA-256 ハッシュ |
+| `model.msgpack` | ○ | 内部モデル本体（MessagePack でシリアライズ） |
+| `settings.json` | ○ | 設計コード等の設定 |
+| `preparation.msgpack` | - | 準備計算の結果（モデルに対して最新の場合のみ同梱） |
+| `results.msgpack` | - | 解析結果（モデルに対して最新の場合のみ同梱） |
+| `analysis_settings.msgpack` | - | 解析タブの設定値（時刻歴の波形パラメータ・減衰モデル、固有値解析のモード数など） |
 
 内部モデルには節点・部材・断面・材料・荷重・層に加え、断面形状（`SectionShape`）や部材付帯情報（ハンチ・継手位置）まで含まれ、これらは保存・読込で保持されます。
+
+`preparation.msgpack`・`results.msgpack` はモデルから再計算できる派生データですが、再計算が
+高価なため保存して復元します。モデル編集後に再実行していない（＝最新でない）場合は保存されず、
+再読込後は未実行として扱われます。
+
+`analysis_settings.msgpack` はモデルから導出できない独立した設定値（時刻歴の波形パラメータ・
+減衰モデル、固有値解析のモード数など）で、解析結果を生成した条件そのものです。モデルの新陳とは
+無関係に、保存のたびに現在の設定値を常に同梱します。このエントリを持たないファイルを読み込んだ
+場合、解析タブの設定値は変更しません（既定値のまま、または直前の値を保持します）。
+
+質量モデルの方式（`mass_method`）は例外で、モデル本体（`model.msgpack`）が持つ値を単一情報源
+とします。`analysis_settings.msgpack` にも同じ項目がありますが、読込後は常にモデル側の値で
+上書きします。
+
+なお、時刻歴応答解析の入力波形（CSV読込波）そのものは `.scz` に含まれません。CSV読込波で
+実行した結果を再現するには、同じ波形ファイルを別途保持しておく必要があります。
 
 ## 整合性・安全性
 
@@ -39,12 +59,18 @@ Squid-n ネイティブの保存形式です。内部モデルをそのまま格
 ## ライブラリからの利用
 
 ```rust
-use squid_n_io::scz::{save_scz, load_scz};
+use squid_n_io::scz::{save_scz, load_scz, SczExtras};
 use std::path::Path;
 
-// 保存: 内部モデル → .scz
-save_scz(Path::new("model.scz"), &model)?;
+// 保存: 内部モデル＋任意エントリ（各バイト列は呼び出し側が事前に
+// MessagePack へ直列化したもの。io 層は中身を解釈しない）→ .scz
+save_scz(Path::new("model.scz"), &model, SczExtras {
+    preparation: Some(&preparation_bytes),
+    results: Some(&results_bytes),
+    analysis_settings: Some(&analysis_settings_bytes),
+})?;
 
-// 読込: .scz → 内部モデル
-let model = load_scz(Path::new("model.scz"))?;
+// 読込: .scz → 内部モデル＋同梱されていれば各任意エントリ
+let contents = load_scz(Path::new("model.scz"))?;
+let model = contents.model;
 ```

@@ -165,8 +165,13 @@ impl App {
                 th.recording = Some(recording);
             }
         }
+        // 解析タブの設定値は、モデルの新陳（staleness）と無関係に常に同梱する
+        // （結果を生成した条件そのものであり、結果が古くても・結果がなくても
+        // 現在の設定は保存する意味がある）。
+        let analysis_settings = Some(rmp_serde::to_vec(&self.analysis_cfg));
         let prep_bytes = self.encoded_or_notice(prep, "準備計算の結果");
         let results_bytes = self.encoded_or_notice(results, "解析結果");
+        let analysis_settings_bytes = self.encoded_or_notice(analysis_settings, "解析タブの設定値");
 
         // サイズ超過の確認（未確認の初回のみ）。詳細記録を含む結果が閾値を
         // 超える場合は保存せず、確認ダイアログの表示を要求して戻る。
@@ -187,6 +192,7 @@ impl App {
         let extras = squid_n_io::scz::SczExtras {
             preparation: prep_bytes.as_deref(),
             results: results_bytes.as_deref(),
+            analysis_settings: analysis_settings_bytes.as_deref(),
         };
         match squid_n_io::scz::save_scz(&path, &self.model, extras) {
             Ok(()) => {
@@ -234,10 +240,12 @@ impl App {
 
     /// プロジェクトを指定パスから読み込む。成功時はモデルを差し替える。
     ///
-    /// 準備計算の結果・解析結果が同梱されていれば復元し、実行済み扱いにする
-    /// （保存側が最新のときだけ書き出すため、同梱＝そのモデルに対して最新である）。
-    /// 同梱がない・復号に失敗した場合は未実行のままとし、解析実行時または
-    /// 「準備計算 実行」で再計算する。
+    /// 準備計算の結果・解析結果・解析タブの設定値が同梱されていれば復元し、
+    /// 実行済み扱いにする（保存側が最新のときだけ書き出すため、同梱＝そのモデルに
+    /// 対して最新である）。準備計算・解析結果は、同梱がない・復号に失敗した場合は
+    /// 未実行のままとし、解析実行時または「準備計算 実行」で再計算する。解析タブの
+    /// 設定値は、同梱がない・復号に失敗した場合は現状（既定値）のまま変更しない
+    /// （旧プロジェクトファイルには含まれないため）。
     pub fn open_project_from(&mut self, path: std::path::PathBuf) {
         self.last_error = None;
         match squid_n_io::scz::load_scz(&path) {
@@ -247,6 +255,20 @@ impl App {
                     return;
                 }
                 self.load_model(contents.model);
+                if let Some(cfg) = self.decode_on_load::<squid_n_job::AnalysisSettings>(
+                    contents.analysis_settings,
+                    "解析タブの設定値",
+                ) {
+                    self.analysis_cfg = cfg;
+                    // 質量モデルの方式は `Model::mass_method` が単一情報源（階の
+                    // 自動生成の実行時に `analysis_cfg.mass_method` からモデルへ
+                    // 反映される片方向の関係）。保存時点で両者が食い違っていた
+                    // 場合（＝設定を変えた後に階の自動生成を再実行せず保存した
+                    // 場合）、解析タブの設定値をそのまま復元すると、パネル表示
+                    // とモデルが実際に使う方式が食い違ったまま気づけなくなる。
+                    // モデル側の値で上書きし、単一情報源の原則を保つ。
+                    self.analysis_cfg.mass_method = self.model.mass_method;
+                }
                 if let Some(prep) =
                     self.decode_on_load::<PreparationResult>(contents.preparation, "準備計算の結果")
                 {

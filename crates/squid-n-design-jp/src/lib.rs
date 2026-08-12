@@ -61,7 +61,7 @@ pub enum SteelFbRule {
 }
 
 /// RC 梁付着検定の方式。
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub enum BondMethod {
     /// RC 規準1999 方式（必要付着長さ ldb と付着長さ ld の比。既定）。
     #[default]
@@ -72,7 +72,7 @@ pub enum BondMethod {
 
 /// 地震時短期の設計用せん断力 QD の決定方法（RC規準。
 /// ユーザー選択により QD1・QD2 のいずれか、または小さいほう）。
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub enum QdMethod {
     /// QD1（部材両端の終局曲げモーメントによる値）のみ。
     Qd1,
