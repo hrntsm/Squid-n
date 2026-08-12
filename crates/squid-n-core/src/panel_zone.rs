@@ -61,15 +61,11 @@
 //! 通しダイアフラムがせん断挙動に関与し、鋼管のみの実効体積による弾性せん断パネル
 //! `G・Ve` では剛性を表せないため、接合部を剛節点として扱う。
 
+use crate::geom::{self, MemberAxisClass};
 use crate::ids::{ElemId, NodeId};
 use crate::model::{ElementData, ElementKind, Model, Section};
 use crate::section_shape::SectionShape;
 use crate::structure_kind::member_structure_kind;
-
-/// 部材軸の鉛直成分がこの値以上なら柱（鉛直材）とみなす。
-const COLUMN_EZ: f64 = 0.8;
-/// 部材軸の鉛直成分がこの値以下なら梁（水平材）とみなす。
-const BEAM_EZ: f64 = 0.2;
 
 /// 仕口パネルに対する部材の向き。
 ///
@@ -90,20 +86,16 @@ pub fn member_unit_axis(model: &Model, elem: &ElementData) -> Option<[f64; 3]> {
     }
     let p0 = model.nodes.get(elem.nodes[0].index())?.coord;
     let p1 = model.nodes.get(elem.nodes[1].index())?.coord;
-    let d = [p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2]];
-    let l = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
-    (l >= 1e-12).then(|| [d[0] / l, d[1] / l, d[2] / l])
+    geom::vec3::unit_from(p0, p1)
 }
 
 /// 要素の材軸の鉛直成分から柱・はりを判定する。線材以外・退化長さは `None`。
 pub fn member_orientation(model: &Model, elem: &ElementData) -> Option<MemberOrientation> {
     let ez = member_unit_axis(model, elem)?[2].abs();
-    if ez >= COLUMN_EZ {
-        Some(MemberOrientation::Column)
-    } else if ez <= BEAM_EZ {
-        Some(MemberOrientation::Beam)
-    } else {
-        None
+    match geom::classify_member_ez(ez) {
+        MemberAxisClass::Column => Some(MemberOrientation::Column),
+        MemberAxisClass::Beam => Some(MemberOrientation::Beam),
+        MemberAxisClass::Diagonal => None,
     }
 }
 

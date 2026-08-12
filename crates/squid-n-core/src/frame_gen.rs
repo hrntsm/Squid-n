@@ -22,6 +22,7 @@
 //! [`FrameSpec::slab_concrete`] のコンクリート 1 つを作り、全階の床へ割り当てる。
 
 use crate::dof::{Dof, Dof6Mask};
+use crate::geom::default_local_ref_vector;
 use crate::ids::{ElemId, MaterialId, NodeId, StoryId};
 use crate::ids::{SectionId, SlabId};
 use crate::material_grade::{material_presets, MaterialPreset};
@@ -437,11 +438,7 @@ pub fn generate_frame(spec: &FrameSpec) -> Result<FrameGenResult, String> {
             // 柱はグローバル X、梁はグローバル Z を基準とする（線材の局所座標系の
             // 一般的な取り方）。
             local_axis: LocalAxis {
-                ref_vector: if vertical {
-                    [1.0, 0.0, 0.0]
-                } else {
-                    [0.0, 0.0, 1.0]
-                },
+                ref_vector: default_local_ref_vector(vertical),
             },
             section: None,
             end_cond: [EndCondition::Fixed, EndCondition::Fixed],

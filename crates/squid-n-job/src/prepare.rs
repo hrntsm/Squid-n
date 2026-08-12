@@ -6,6 +6,17 @@
 
 use squid_n_core::model::Model;
 
+use crate::auto_loads::{apply_auto_load_cases, compute_auto_load_cases};
+use crate::settings::AnalysisSettings;
+
+/// 解析前処理（剛域・仕口パネル・荷重自動同期）の報告。
+pub struct PrepareReport {
+    /// 生成した仕口パネル（GUI の準備計算表が表示する）。
+    pub panels: Vec<squid_n_element::panel_gen::GeneratedPanel>,
+    /// 荷重同期で発生した注意事項（SemiPrecise で固有周期未算定など）。
+    pub notices: Vec<String>,
+}
+
 /// 剛域と仕口パネルを自動算定してモデルへ反映する。
 ///
 /// - 剛域: `Model::stress_cfg.rigid_zone_consider_walls` に従って壁を考慮する
@@ -23,4 +34,21 @@ pub fn apply_rigid_zones_and_panels(
     };
     squid_n_element::beam::apply_auto_rigid_zones(model, &rule);
     squid_n_element::panel_gen::apply_auto_panel_zones(model)
+}
+
+/// 解析前処理を一括で行う（剛域・仕口パネル・荷重ケースの自動同期）。
+///
+/// 剛域と仕口パネルのみが必要な場合は [`apply_rigid_zones_and_panels`] を使う。
+pub fn prepare_model_for_analysis(
+    model: &mut Model,
+    settings: &AnalysisSettings,
+    design_period: Option<f64>,
+) -> PrepareReport {
+    let panels = apply_rigid_zones_and_panels(model);
+    let computed = compute_auto_load_cases(model, settings, design_period);
+    apply_auto_load_cases(model, &computed.cases);
+    PrepareReport {
+        panels,
+        notices: computed.notices,
+    }
 }

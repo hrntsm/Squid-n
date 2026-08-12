@@ -19,6 +19,8 @@ pub mod joint_wiring;
 /// 許容応力度・材料定数を集約する。構成則モデルの `squid-n-material`
 /// クレートとは別物（本モジュールは設計規準の許容応力度）。
 pub mod material_strength;
+/// 部材断面検定の共通オーケストレーション（GUI・MCP 共用）。
+pub mod member_design_check;
 /// 数量積算（部位別の概算数量集計）。
 pub mod quantity;
 pub mod rc;
@@ -34,6 +36,10 @@ pub mod secondary;
 
 pub use cft::CftDesign;
 pub use material_strength::{steel_f_value, steel_f_value_prefix};
+pub use member_design_check::{
+    run_member_design_checks, BeamGroupContextOverride, MemberDesignCheckOptions,
+    MemberDesignCheckReport,
+};
 pub use rc::RcDesign;
 pub use srrc::SrcDesign;
 pub use steel::SteelDesign;
@@ -223,8 +229,9 @@ pub enum CheckOutcome {
     },
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum LoadTerm {
+    #[default]
     Long,
     Short,
 }
@@ -242,15 +249,14 @@ pub enum MemberKind {
 }
 
 /// 部材種別を柱とみなす部材軸の鉛直成分 |ez| の下限。
-///
-/// `squid_n_core::geom::VERTICAL_COS_TOL`（45° 余弦基準）とは**別目的の規約**で、
-/// あちらは層せん断集計・変形角定義のための「柱系か梁系か」の 2 分、こちらは
-/// 検定式（柱式／梁式／軸力材式）の選択のための 3 区分である。
-pub const MEMBER_COLUMN_EZ_MIN: f64 = 0.8;
+/// 定義の情報源は [`squid_n_core::geom::MEMBER_COLUMN_EZ_MIN`]。
+#[doc(inline)]
+pub use squid_n_core::geom::MEMBER_COLUMN_EZ_MIN;
 
 /// 部材種別を梁とみなす部材軸の鉛直成分 |ez| の上限。
-/// [`MEMBER_COLUMN_EZ_MIN`] を参照。
-pub const MEMBER_BEAM_EZ_MAX: f64 = 0.2;
+/// 定義の情報源は [`squid_n_core::geom::MEMBER_BEAM_EZ_MAX`]。
+#[doc(inline)]
+pub use squid_n_core::geom::MEMBER_BEAM_EZ_MAX;
 
 impl MemberKind {
     /// 部材軸の鉛直成分 |ez| から部材種別を判定する。
@@ -261,23 +267,19 @@ impl MemberKind {
     /// 断面検定・接合部検定・終局検定・MCP ジョブ・GUI の部材種別表示が
     /// **共通で用いる単一の規約**（判定の情報源を 1 つに保つ）。
     pub fn from_axis(p0: [f64; 3], p1: [f64; 3]) -> Self {
-        let d = [p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2]];
-        let len = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
-        if len < 1e-9 {
+        let Some(d) = squid_n_core::geom::vec3::unit_from(p0, p1) else {
             return MemberKind::Beam;
-        }
-        Self::from_ez((d[2] / len).abs())
+        };
+        Self::from_ez(d[2].abs())
     }
 
     /// 部材軸の鉛直成分 |ez| から部材種別を判定する（|ez| を既に持つ場合）。
     /// 判定境界は [`MemberKind::from_axis`] と同一。
     pub fn from_ez(ez: f64) -> Self {
-        if ez >= MEMBER_COLUMN_EZ_MIN {
-            MemberKind::Column
-        } else if ez <= MEMBER_BEAM_EZ_MAX {
-            MemberKind::Beam
-        } else {
-            MemberKind::Brace
+        match squid_n_core::geom::classify_member_ez(ez) {
+            squid_n_core::geom::MemberAxisClass::Column => MemberKind::Column,
+            squid_n_core::geom::MemberAxisClass::Beam => MemberKind::Beam,
+            squid_n_core::geom::MemberAxisClass::Diagonal => MemberKind::Brace,
         }
     }
 

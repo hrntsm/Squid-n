@@ -41,6 +41,7 @@
 use crate::app::App;
 use crate::theme;
 use squid_n_core::adjacency::NodeAdjacency;
+use squid_n_core::geom::vec3;
 use squid_n_core::ids::NodeId;
 use squid_n_core::model::{ElementData, ElementKind, EndCondition, Model};
 use squid_n_element::factory::{resolve_force_regime, ResolvedRegime};
@@ -195,24 +196,6 @@ pub(super) fn classify_with(
 /// スクリーン座標の線形補間。
 fn lerp(a: egui::Pos2, b: egui::Pos2, t: f32) -> egui::Pos2 {
     egui::pos2(a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t)
-}
-
-/// 3D 2 点間の距離。
-fn len3(a: [f64; 3], b: [f64; 3]) -> f64 {
-    ((b[0] - a[0]).powi(2) + (b[1] - a[1]).powi(2) + (b[2] - a[2]).powi(2)).sqrt()
-}
-
-/// 3D 点 `p` を、単位ベクトル `u` の方向へ `s` だけ動かす。
-/// 壁エレメントの剛梁を壁の内側へ寄せるなど、ワールド座標での平行移動に使う。
-fn shift3(p: [f64; 3], u: [f64; 3], s: f64) -> [f64; 3] {
-    [p[0] + u[0] * s, p[1] + u[1] * s, p[2] + u[2] * s]
-}
-
-/// 3D ベクトル `a`→`b` の単位ベクトル（退化時は `None`）。
-fn unit3(a: [f64; 3], b: [f64; 3]) -> Option<[f64; 3]> {
-    let d = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
-    let l = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
-    (l > 1e-9).then(|| [d[0] / l, d[1] / l, d[2] / l])
 }
 
 /// マーカー中心（節点/材端から材軸方向へ少し内側へ寄せた点）。
@@ -598,7 +581,7 @@ fn draw_line_member(
         return;
     }
     let (p0, p1) = (pts[n0], pts[n1]);
-    let l = len3(coords3[n0], coords3[n1]);
+    let l = vec3::dist(coords3[n0], coords3[n1]);
     let color = class.color();
 
     // 可とう区間（剛域フェイス間）。すべての線材モデルが剛域を可撓長から控除し、
@@ -722,7 +705,7 @@ fn draw_wall_element(
     }
     // 壁面内の直交 2 方向。ex は下辺 a→b、ez は下辺中点→上辺中点。
     let ex = g.ex_bottom;
-    let Some(ez) = unit3(g.bottom_center, g.top_center) else {
+    let Some(ez) = vec3::unit_from(g.bottom_center, g.top_center) else {
         draw_wall_polygon(painter, pts, elem, color, false);
         return;
     };
@@ -734,7 +717,10 @@ fn draw_wall_element(
     // 剛梁の四隅（四辺とも内側へ寄せた位置）。a 側は +ex、b 側は −ex、
     // 下辺は +ez、上辺は −ez へ動かす。
     let corner = |p: [f64; 3], sx: f64, sz: f64| {
-        proj.project(shift3(shift3(p, ex, sx * inset), ez, sz * inset))
+        proj.project(vec3::add(
+            vec3::add(p, vec3::scale(ex, sx * inset)),
+            vec3::scale(ez, sz * inset),
+        ))
     };
     let (sb0, sb1) = (
         corner(coords3[b0], 1.0, 1.0),
@@ -764,8 +750,8 @@ fn draw_wall_element(
 
     // 壁柱（上下剛梁の中点を結ぶ仮想中央柱）。増分解析でファイバー化される壁柱は
     // 端部 Lp だけが塑性化するため、その比率を可撓長（＝壁高さ h）基準で求めて渡す。
-    let bc = proj.project(shift3(g.bottom_center, ez, inset));
-    let tc = proj.project(shift3(g.top_center, ez, -inset));
+    let bc = proj.project(vec3::add(g.bottom_center, vec3::scale(ez, inset)));
+    let tc = proj.project(vec3::add(g.top_center, vec3::scale(ez, -inset)));
     let lp_ratio = if analysis == ModelingAnalysis::Incremental && g.h > 1e-9 {
         squid_n_element::wall_panel::wall_column_fiber_lp(elem, model).map(|lp| (lp / g.h) as f32)
     } else {
@@ -1235,7 +1221,7 @@ pub(super) fn show_modeling_tooltip(ui: &egui::Ui, app: &App, elem_id: squid_n_c
                     .and_then(|(i, j)| {
                         let a = app.model.nodes.get(i.index())?;
                         let b = app.model.nodes.get(j.index())?;
-                        Some(len3(a.coord, b.coord))
+                        Some(vec3::dist(a.coord, b.coord))
                     })
                     .unwrap_or(0.0);
                 let (_, _, l_flex) = flexible_span(elem, l);

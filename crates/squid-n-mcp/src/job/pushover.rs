@@ -17,9 +17,10 @@ pub(crate) fn compute_pushover_job(
     steps: usize,
     target: PushoverTarget,
 ) -> Result<JobOutcome, JobError> {
-    // 解析前処理（剛域＋仕口パネル）は GUI と同一の実装を通す。
+    // 解析前処理（剛域＋仕口パネル＋荷重自動同期）は GUI と同一の実装を通す。
     let mut work = model;
-    squid_n_job::prepare::apply_rigid_zones_and_panels(&mut work);
+    let settings = squid_n_job::AnalysisSettings::default();
+    squid_n_job::prepare::prepare_model_for_analysis(&mut work, &settings, None);
     // 解析条件は GUI と同じ `AnalysisSettings` を組み立てて共通の純粋計算へ渡す。
     let cfg = squid_n_job::AnalysisSettings {
         push_dir: match dir {

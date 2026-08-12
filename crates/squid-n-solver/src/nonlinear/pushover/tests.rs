@@ -1699,7 +1699,12 @@ fn test_compute_shear_yield_qy_rc_rect_matches_arakawa_handcalc() {
         b,
         d,
         at: bar_area(&rebar.main_x) / 2.0,
-        d_eff: d - rebar.cover - rebar.main_x.dia / 2.0,
+        d_eff: squid_n_core::rc_rebar_geom::tension_effective_depth(
+            d,
+            rebar.cover,
+            rebar.shear.dia,
+            &rebar.main_x,
+        ),
         sigma_y: 345.0 * 1.1,
         fc: 24.0,
         pw: (std::f64::consts::PI / 4.0 * 10.0 * 10.0 * 2.0) / (b * 100.0),
@@ -1729,7 +1734,12 @@ fn test_compute_shear_yield_qy_rc_rect_matches_arakawa_handcalc() {
         b: d,
         d: b,
         at: bar_area(&rebar.main_y) / 2.0,
-        d_eff: b - rebar.cover - rebar.main_y.dia / 2.0,
+        d_eff: squid_n_core::rc_rebar_geom::tension_effective_depth(
+            b,
+            rebar.cover,
+            rebar.shear.dia,
+            &rebar.main_y,
+        ),
         sigma_y: 345.0 * 1.1,
         fc: 24.0,
         pw: (std::f64::consts::PI / 4.0 * 10.0 * 10.0 * 2.0) / (d * 100.0),
@@ -2122,7 +2132,12 @@ fn test_compute_shear_yield_thresholds_rc_rect_uses_rigid_zone_reduced_clear_spa
         b,
         d,
         at: bar_area(&rebar.main_x) / 2.0,
-        d_eff: d - rebar.cover - rebar.main_x.dia / 2.0,
+        d_eff: squid_n_core::rc_rebar_geom::tension_effective_depth(
+            d,
+            rebar.cover,
+            rebar.shear.dia,
+            &rebar.main_x,
+        ),
         sigma_y: 345.0 * 1.1,
         fc: 24.0,
         pw: (std::f64::consts::PI / 4.0 * 10.0 * 10.0 * 2.0) / (b * 100.0),
@@ -2170,7 +2185,12 @@ fn test_compute_shear_yield_thresholds_rc_rect_falls_back_when_rigid_zone_exceed
         b,
         d,
         at: bar_area(&rebar.main_x) / 2.0,
-        d_eff: d - rebar.cover - rebar.main_x.dia / 2.0,
+        d_eff: squid_n_core::rc_rebar_geom::tension_effective_depth(
+            d,
+            rebar.cover,
+            rebar.shear.dia,
+            &rebar.main_x,
+        ),
         // 主筋の材料強度係数（一律1.1）を乗じた 345×1.1。
         sigma_y: 345.0 * 1.1,
         fc: 24.0,
@@ -2600,7 +2620,8 @@ fn test_compute_hinge_thresholds_rc_rebar_uses_material_strength_factor() {
 
     let bar_area = |bs: &BarSet| bs.count as f64 * std::f64::consts::PI / 4.0 * bs.dia * bs.dia;
     let at = bar_area(&rebar.main_x) / 2.0;
-    let d_eff = (d - rebar.cover - rebar.main_x.dia / 2.0).max(0.0);
+    // d_eff は断面検定と同規約（帯筋径を含む dt）。
+    let d_eff = squid_n_core::rc_rebar_geom::rebar_effective_depth(d, &rebar);
     let expected_my = rc_mu_simple(&RcCapacityInput {
         b: 1.0,
         d,

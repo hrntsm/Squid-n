@@ -52,59 +52,16 @@ pub(super) fn build_fiber(
 /// それ以外（複合断面・形状不明）は σy·Z弾性でフォールバックする。
 /// 従来の材端バネは σy·Z弾性を用いていたが、規準の曲げ終局強度へ改良する。
 fn flexural_yield_moment(data: &ElementData, model: &Model, basis: StrengthBasis) -> f64 {
-    use squid_n_core::section_shape::SectionShape;
-    let sec = data.section.and_then(|sid| model.sections.get(sid.index()));
     let mat = model.element_material(data);
-    let depth = sec.map(|s| s.depth.max(s.width)).unwrap_or(100.0);
-    let iz = sec.map(|s| s.iz.max(s.iy)).unwrap_or(1.0e6);
-    let ze = if depth > 0.0 { iz / (depth / 2.0) } else { 0.0 };
-    let fy = mat.and_then(|m| m.fy);
-    match sec.and_then(|s| s.shape.as_ref()) {
-        Some(SectionShape::RcRect { rebar, d, .. }) | Some(SectionShape::RcCircle { rebar, d }) => {
-            // RC 主筋: σy は断面（配筋）の主筋材質 → 部材材料の fy の順で解決する。
-            // 保有水平耐力計算では σy に主筋の材料強度係数を乗じる
-            // （せん断補強筋は対象外。本分岐は曲げ主筋のみを扱う）。
-            let rebar_mat = model.element_rebar_material(data);
-            let sy = squid_n_core::material_grade::rebar_yield_strength(rebar_mat)
-                .or_else(|| mat.and_then(|m| m.fy))
-                .unwrap_or(345.0)
-                * basis.rebar_factor(rebar_mat);
-            // Fc 未設定は [`super::ensure_nonlinear_input`] が解析前に停止するため、
-            // 非線形解析ではこのフォールバック（0）に到達しない。
-            let fc = mat.and_then(|m| m.fc).unwrap_or(0.0);
-            let at = squid_n_core::section_shape::bar_set_area(&rebar.main_x) / 2.0;
-            let d_eff = (d - rebar.cover - rebar.main_x.dia / 2.0).max(0.0);
-            let my = squid_n_core::rc_capacity::rc_mu_simple(
-                &squid_n_core::rc_capacity::RcCapacityInput {
-                    b: 1.0,
-                    d: *d,
-                    at,
-                    d_eff,
-                    sigma_y: sy,
-                    fc: fc.max(1e-9),
-                    pw: 0.0,
-                    sigma_wy: 0.0,
-                    clear_span: 1.0,
-                    sigma_0: 0.0,
-                },
-            );
-            if my > 0.0 {
-                my
-            } else {
-                sy * ze
-            }
-        }
-        Some(shape) => {
-            // 鋼材: 保有水平耐力計算では σy に鋼材の材料強度係数を乗じる。
-            let sy = fy.unwrap_or(235.0) * basis.steel_factor(mat);
-            match shape.plastic_modulus_strong() {
-                Some(zp) => sy * zp,
-                None => sy * ze,
-            }
-        }
-        // 複合断面・形状不明: 鋼材文脈として扱う。
-        None => fy.unwrap_or(235.0) * basis.steel_factor(mat) * ze,
-    }
+    let rebar_mat = model.element_rebar_material(data);
+    squid_n_core::flexural_strength::member_flexural_yield_moment(
+        data,
+        model,
+        squid_n_core::flexural_strength::FlexuralStrengthFactors {
+            steel: basis.steel_factor(mat),
+            rebar: basis.rebar_factor(rebar_mat),
+        },
+    )
 }
 
 /// 集中バネの降伏モーメント My0 と軸許容耐力 N許容 = σy·A（MN 相関用）。
@@ -123,18 +80,8 @@ pub(super) fn yield_moment_and_axial(
 
 /// 部材の可撓長さ [mm]（= 節点間長 − 両端剛域長。剛域控除後が非正なら全長）。
 fn flexible_length(data: &ElementData, model: &Model) -> f64 {
-    let n0 = &model.nodes[data.nodes[0].index()];
-    let n1 = &model.nodes[data.nodes[1].index()];
-    let l = ((n1.coord[0] - n0.coord[0]).powi(2)
-        + (n1.coord[1] - n0.coord[1]).powi(2)
-        + (n1.coord[2] - n0.coord[2]).powi(2))
-    .sqrt();
-    let l_flex = l - data.rigid_zone.rigid_length_i() - data.rigid_zone.rigid_length_j();
-    if l_flex > 0.0 {
-        l_flex
-    } else {
-        l
-    }
+    data.rigid_zone
+        .flexible_length_from(model.member_length(data))
 }
 
 /// 材端曲げバネの初期回転剛性 k_rot [N·mm/rad] と降伏モーメント My [N·mm]。
@@ -313,7 +260,8 @@ pub(super) fn flexural_alpha_y(data: &ElementData, model: &Model) -> f64 {
     }
     let at = squid_n_core::section_shape::bar_set_area(&rebar.main_x) / 2.0;
     let pt = at / (b * d);
-    let d_eff = (d - rebar.cover - rebar.main_x.dia / 2.0).max(0.0);
+    // d_eff は断面検定と同規約（帯筋径・多段配筋を考慮した dt）。
+    let d_eff = squid_n_core::rc_rebar_geom::rebar_effective_depth(*d, rebar);
     let ec = model.element_material(data).map(|m| m.young).unwrap_or(0.0);
     let n = if ec > 0.0 {
         squid_n_core::section_shape::E_STEEL / ec

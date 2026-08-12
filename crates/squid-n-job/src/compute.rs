@@ -4,12 +4,9 @@
 //! （`squid-n-app`）はバックグラウンドスレッドから、MCP サーバ（`squid-n-mcp`）は
 //! ジョブから、**同じ関数**を同じ解析条件で呼ぶ。
 //!
-//! 渡すモデルは [`crate::prepare`] で前処理済み（剛域・仕口パネル）であること。
-//! 前処理を経ないモデルを解くと、仕口パネルのない剛性で解くことになる。
-//!
-//! 荷重ケースの自動同期（DL/LL/EX/EY）は [`crate::prepare`] には**含まれない**。
-//! GUI 側（`squid-n-app` の `ensure_preparation`）だけが行っており、共通化は
-//! 今後の課題（`dev_docs/handoff/クレート横断の重複統合_申し送り.md`）。
+//! 渡すモデルは [`crate::prepare::prepare_model_for_analysis`] または
+//! GUI の `ensure_preparation` で前処理済み（剛域・仕口パネル・DL/LL/EX/EY 同期）
+//! であること。荷重同期だけが必要な場合は [`crate::auto_loads`] を直接使う。
 
 use crate::error::{JobError, JobResult};
 use crate::settings::{AnalysisSettings, ThDampingModel, ThIntegrator};

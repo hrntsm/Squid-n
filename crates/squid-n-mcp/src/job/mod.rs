@@ -167,6 +167,22 @@ pub fn compute_job(
     }
 }
 
+/// 線形静的解析結果の部材力を `(elem_id, pos, forces)` 行へ平坦化する。
+pub(crate) fn flatten_member_force_rows(
+    member_forces: &[(
+        squid_n_core::ids::ElemId,
+        squid_n_element::beam::MemberForces,
+    )],
+) -> Vec<(u32, f64, [f64; 6])> {
+    let mut rows = Vec::new();
+    for (elem_id, mf) in member_forces {
+        for (pos, forces) in &mf.at {
+            rows.push((elem_id.0, *pos, *forces));
+        }
+    }
+    rows
+}
+
 /// `load_case` 指定があればそれを、なければ先頭の荷重ケースを返す。
 /// 荷重ケースが 1 つもないモデルは [`JobError::LoadCaseNotFound`] を返す。
 pub(crate) fn resolve_load_case(
@@ -186,14 +202,13 @@ pub(crate) fn resolve_load_case(
     }
 }
 
-/// モデルを複製し、解析前処理（剛域＋仕口パネル。設計書 §6.2.1）を反映して返す。
-/// 前処理の実体は [`squid_n_job::prepare::apply_rigid_zones_and_panels`] で、
+/// モデルを複製し、解析前処理（剛域・仕口パネル・荷重自動同期）を反映して返す。
+/// 前処理の実体は [`squid_n_job::prepare::prepare_model_for_analysis`] で、
 /// **GUI と同一**である。`Analysis` はモデルを借用するため、準備は呼出側で
 /// `Analysis::prepare(&model)` を行う。
-pub(crate) fn model_with_auto_rigid_zones(model: &Model) -> Model {
+pub(crate) fn model_prepared_for_analysis(model: &Model) -> Model {
     let mut model = model.clone();
-    // 剛域だけでなく**仕口パネルの生成**まで行う（GUI と同一の前処理）。
-    // かつては剛域のみを適用しており、仕口パネルのない剛性で解いていた。
-    squid_n_job::prepare::apply_rigid_zones_and_panels(&mut model);
+    let settings = squid_n_job::AnalysisSettings::default();
+    squid_n_job::prepare::prepare_model_for_analysis(&mut model, &settings, None);
     model
 }

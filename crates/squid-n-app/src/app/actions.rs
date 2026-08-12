@@ -2,9 +2,6 @@
 
 use super::*;
 
-/// 節点対の順不同キー（`(min,max)`）。`beam_elem_map`（節点対→実 `Beam` 要素索引）と
-/// `slab_grillage_node_reactions`（実部材化判定）で、ノード順に依存しない同じキーを
-/// 使うための共通ヘルパー。
 /// 保存確認を出す解析結果サイズの閾値 [byte]。直列化した解析結果（時刻歴の
 /// 詳細記録を含む）がこれを超える場合、詳細記録を保存に含めるかを確認する。
 /// 読込側の上限（`squid_n_io::scz`、4 GiB）より十分小さい値とする。
@@ -14,14 +11,6 @@ pub(crate) const SAVE_RECORDING_CONFIRM_BYTES: usize = 512 * 1024 * 1024;
 /// 時刻歴の詳細記録を含む場合のみ）。
 pub(crate) fn needs_recording_confirm(results_bytes: usize, has_recording: bool) -> bool {
     has_recording && results_bytes > SAVE_RECORDING_CONFIRM_BYTES
-}
-
-fn beam_key(a: NodeId, b: NodeId) -> (NodeId, NodeId) {
-    if a.0 <= b.0 {
-        (a, b)
-    } else {
-        (b, a)
-    }
 }
 
 /// 水平力の荷重ケース（種別が地震・風）なのに荷重が入っていないか。
@@ -2452,15 +2441,7 @@ impl App {
     /// 正弦減衰のサンプル地震波を `cfg` から組み立てる
     /// （外部波形ファイルなしで機能を試せる導線。同期実行・ジョブ実行の双方で使う）。
     pub(crate) fn sample_wave(cfg: &AnalysisSettings) -> squid_n_solver::timehistory::GroundMotion {
-        let n = ((cfg.th_duration / cfg.th_dt).ceil() as usize).max(2);
-        let omega = 2.0 * std::f64::consts::PI / cfg.th_period.max(1e-6);
-        let accel: Vec<f64> = (0..n)
-            .map(|i| {
-                let t = i as f64 * cfg.th_dt;
-                cfg.th_amp * (omega * t).sin() * (-0.3 * t).exp()
-            })
-            .collect();
-        Self::build_ground_motion(cfg.th_dt, cfg.th_dir, accel)
+        squid_n_job::sample_ground_motion(cfg)
     }
 
     /// 正弦減衰のサンプル地震波を生成して時刻歴解析を実行する（同期）。
@@ -2468,42 +2449,6 @@ impl App {
         self.apply_parallelism_setting();
         let wave = Self::sample_wave(&self.analysis_cfg);
         self.run_time_history(wave);
-    }
-
-    /// 方向 `dir` に加速度列 `accel` を割り当てた `GroundMotion` を組み立てる。
-    /// X なら accel_x、Y なら accel_y に入れ、他方はゼロ列にする。
-    /// Xy（X+Y 同時入力）は同一波形を accel_x・accel_y の両方にそのまま入れる
-    /// 簡易仕様（位相差・別波形の指定はサポートしない。CSV 2 列入力は
-    /// `parse_wave_csv` が別々の列を返すため、その場合は本関数を経由せず
-    /// 直接 `GroundMotion` を組み立てる）。
-    pub(crate) fn build_ground_motion(
-        dt: f64,
-        dir: ThDir,
-        accel: Vec<f64>,
-    ) -> squid_n_solver::timehistory::GroundMotion {
-        match dir {
-            ThDir::X => squid_n_solver::timehistory::GroundMotion {
-                dt,
-                accel_x: accel,
-                accel_y: None,
-                accel_theta: None,
-            },
-            ThDir::Y => {
-                let n = accel.len();
-                squid_n_solver::timehistory::GroundMotion {
-                    dt,
-                    accel_x: vec![0.0; n],
-                    accel_y: Some(accel),
-                    accel_theta: None,
-                }
-            }
-            ThDir::Xy => squid_n_solver::timehistory::GroundMotion {
-                dt,
-                accel_x: accel.clone(),
-                accel_y: Some(accel),
-                accel_theta: None,
-            },
-        }
     }
 
     /// T7: 解析結果の member_forces から検定結果を生成する。
@@ -2558,247 +2503,31 @@ impl App {
         // 一本部材指定（Model.beam_groups）: グループ単位の採用応力を合成し、
         // 所属部材の検定文脈（部材長・端部/中央モーメント等）を上書きする。
         let group_overrides = beam_group_overrides(&self.model, &results.member_forces);
-        // 部材ID→要素の索引（旧: ループ内で `elements.iter().find` していたため
-        // O(部材数²) だった）。ループ前に一度だけ構築する。同一IDが重複した場合に
-        // `find`（先頭一致）と同じ結果になるよう、forward 走査 + `entry().or_insert`
-        // で「先勝ち」にする（`or_insert` は既に埋まっていれば上書きしない）。
-        let mut elem_by_id: std::collections::HashMap<ElemId, &squid_n_core::model::ElementData> =
-            std::collections::HashMap::with_capacity(self.model.elements.len());
-        for e in &self.model.elements {
-            elem_by_id.entry(e.id).or_insert(e);
-        }
-        // 地震時短期 QD 用の長期内力索引（旧: 部材ごとに `list.iter().find` して
-        // いたため O(部材数²)）。同上の「先勝ち」ルールで構築する。
-        let long_mf_by_id: Option<
-            std::collections::HashMap<ElemId, &squid_n_element::beam::MemberForces>,
-        > = long_member_forces.map(|list| {
-            let mut m = std::collections::HashMap::with_capacity(list.len());
-            for (id, mf) in list {
-                m.entry(*id).or_insert(mf);
-            }
-            m
-        });
-        // 柱の座屈長さ係数 K 用の節点まわり梁索引（`buckling::g_ratio_at` の全要素
-        // 走査を避けるため、ループ前に 1 回だけ構築して使い回す）。
-        let column_k_index = squid_n_core::adjacency::NodeAdjacency::build(&self.model);
-        let mut checks: Vec<(ElemId, f64, squid_n_design_jp::CheckOutcome)> = Vec::new();
-        for (elem_id, mf) in &results.member_forces {
-            let elem = elem_by_id.get(elem_id).copied();
-            let Some(elem) = elem else {
-                continue;
-            };
-            let sec = elem
-                .section
-                .and_then(|sid| self.model.sections.get(sid.index()))
-                .filter(|s| s.id == elem.section.unwrap());
-            let mat = self.model.element_material(elem);
-            let (Some(sec), Some(mat)) = (sec, mat) else {
-                continue;
-            };
-
-            let kind = squid_n_design_jp::MemberKind::of_element(elem, &self.model);
-            let length = self.model.member_length(elem);
-            // せん断スパン比 M/(Q·d) の代表値: 加力方向ごとに「モーメントが最大と
-            // なる検定位置」の (|M|, |Q|) を採用する（強軸: |Mz|max と対応 |Qy|、
-            // 弱軸: |My|max と対応 |Qz|。従来は強軸側の1組を弱軸検定にも流用して
-            // おり、弱軸曲げ卓越の柱で α を過大評価していた）。
-            let shear_span = mf
-                .at
-                .iter()
-                .map(|(_, f)| (f[5].abs(), f[1].abs()))
-                .max_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
-            let shear_span_y = mf
-                .at
-                .iter()
-                .map(|(_, f)| (f[4].abs(), f[2].abs()))
-                .max_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
-            // 端部・中央の強軸曲げ（横座屈 C 係数・たわみ検定用）。
-            let m_at = |target: f64| {
-                mf.at
-                    .iter()
-                    .find(|(p, _)| (p - target).abs() < 1e-9)
-                    .map(|(_, f)| f[5])
-            };
-            let end_moments_z = match (m_at(0.0), m_at(1.0)) {
-                (Some(a), Some(b)) => Some((a, b)),
-                _ => None,
-            };
-            // S 造部材の断面検定属性（欠損率・横座屈長さ・座屈長さ直接入力）。
-            // 座屈長さ lk_y/lk_z の解決（直接入力 > 柱の自動算定 > 部材長）で
-            // 直接入力を先に参照するため、lk 自動算定より前に取得しておく。
-            let steel_attr = self
-                .model
-                .steel_design_attrs
-                .iter()
-                .find(|a| a.elem == *elem_id)
-                .cloned();
-            // 柱の座屈長さ lk_y/lk_z = K_y・h／K_z・h（鋼構造塑性設計指針、水平移動が
-            // 拘束されない場合。K は局所軸の強軸・弱軸たわみ方向ごとに節点まわり
-            // 剛度比 G から算定。[`steel_column_k_axes_with_index`]）。柱以外は
-            // None（lk=部材長）。RC 柱の検定は lk を使わないため、柱一律で
-            // 設定して問題ない。SteelDesignAttr の直接入力があればそちらを優先する
-            // （柱以外の部材でも直接入力は有効。柱の自動算定は柱のみ）。
-            let (lk_y_auto, lk_z_auto) = if kind == squid_n_design_jp::MemberKind::Column {
-                match squid_n_design_jp::steel::buckling::steel_column_k_axes_with_index(
-                    &self.model,
-                    &column_k_index,
-                    elem,
-                ) {
-                    Some((k_y, k_z)) => (Some(k_y * length), Some(k_z * length)),
-                    None => (None, None),
-                }
-            } else {
-                (None, None)
-            };
-            let lk_y = steel_attr
-                .as_ref()
-                .and_then(|a| a.lk_y_direct)
-                .or(lk_y_auto);
-            let lk_z = steel_attr
-                .as_ref()
-                .and_then(|a| a.lk_z_direct)
-                .or(lk_z_auto);
-            // 一本部材グループに属する梁は、部材長・端部/中央モーメント・せん断
-            // スパン比代表値をグループ合成値に置き換える（断面検定の採用応力。
-            // 一本部材指定時の採用応力）。
-            let group = if kind == squid_n_design_jp::MemberKind::Beam {
-                group_overrides.get(elem_id)
-            } else {
-                None
-            };
-            let (length, shear_span, end_moments_z, mid_moment_z) = match group {
-                Some(g) => (g.length, g.shear_span, g.end_moments_z, g.mid_moment_z),
-                None => (length, shear_span, end_moments_z, m_at(0.5)),
-            };
-            // 地震時短期の設計用せん断力 QD の文脈（長期内力・割増係数 n・内法長）。
-            // 内法長 l′/h′ は剛域（フェイス距離）控除後の長さとする。
-            let seismic_qd =
-                long_mf_by_id
-                    .as_ref()
-                    .and_then(|map| map.get(elem_id))
-                    .map(|mf_long| {
-                        let face_sum =
-                            elem.rigid_zone.face_i_or_zero() + elem.rigid_zone.face_j_or_zero();
-                        let clear_length = match group {
-                            // 一本部材は両外端の剛域控除後のグループ内法長。
-                            Some(g) => g.clear_length,
-                            None if length - face_sum > 0.0 => length - face_sum,
-                            None => length,
-                        };
-                        squid_n_design_jp::SeismicQd {
-                            long_at: mf_long.at.clone(),
-                            // 割増係数 n（柱は 1.5 以上）。梁・柱とも 1.5。
-                            n_factor: 1.5,
-                            clear_length,
-                            method: self.analysis_cfg.qd_method,
-                        }
-                    });
-            let ctx = DesignCtx {
-                // 材料は断面が持つ（主筋・せん断補強筋・内蔵鉄骨）。
-                rebar_material: self.model.element_rebar_material(elem).cloned(),
-                shear_rebar_material: self.model.element_shear_rebar_material(elem).cloned(),
-                steel_material: self.model.element_steel_material(elem).cloned(),
-                term: self.design_term,
-                kind,
-                length,
-                lb: None,
-                lk_y,
-                lk_z,
-                shear_span,
-                shear_span_y,
-                rc_damage_control: self.analysis_cfg.rc_damage_control,
-                end_moments_z,
-                mid_moment_z,
-                seismic_qd,
-                steel_attr,
-                steel_fb_rule: Default::default(),
-            };
-
-            // 検定器の選択は構造種別による（`squid_n_core::structure_kind`）。
-            // 複合断面（SRC/CFT）は断面形状で、それ以外は材料の区分で決まる。
-            let checker: Box<dyn DesignCheck> = squid_n_design_jp::checker_for(
-                squid_n_core::structure_kind::structure_kind_of(Some(sec), Some(mat.category)),
-            );
-
-            let positions = design_positions(elem, &self.model, length);
-
-            for (pos, forces) in &mf.at {
-                if !is_near_design_position(*pos, &positions) {
-                    continue;
-                }
-                // [N, Qy, Qz, Mx, My, Mz] -> MemberForcesAt（N は引張正の部材内力）
-                let mfa = MemberForcesAt {
-                    pos: *pos,
-                    n: forces[0],
-                    qy: forces[1],
-                    qz: forces[2],
-                    my: forces[4],
-                    mz: forces[5],
-                };
-                // BRB 属性が登録された部材はメーカー許容値による BRB 検定に
-                // 差し替える（座屈補剛ブレースの断面検定）。BRB 検定は退化ケース
-                // を持たないため常に Checked。
-                let outcome =
-                    if let Some(brb) = self.model.brb_attrs.iter().find(|a| a.elem == *elem_id) {
-                        squid_n_design_jp::CheckOutcome::Checked(squid_n_design_jp::brb::brb_check(
-                            brb,
-                            mfa.n,
-                            length,
-                            self.design_term == LoadTerm::Long,
-                        ))
-                    } else {
-                        checker.check(&mfa, sec, mat, &ctx)
-                    };
-                checks.push((*elem_id, *pos, outcome));
-            }
-        }
-        // 節点単位の検定（RC 柱梁接合部・S/SRC パネルゾーン・冷間成形耐力比・耐震壁）。
-        // 冷間成形の存在軸力 N = NL + 1.5・NE のため、地震時は長期内力も渡す。
-        let mf_slices: Vec<(ElemId, squid_n_design_jp::joint_wiring::ForcesAt)> = results
-            .member_forces
-            .iter()
-            .map(|(id, mf)| (*id, mf.at.as_slice()))
-            .collect();
-        let long_slices: Option<Vec<(ElemId, squid_n_design_jp::joint_wiring::ForcesAt)>> =
-            long_member_forces.map(|list| {
-                list.iter()
-                    .map(|(id, mf)| (*id, mf.at.as_slice()))
-                    .collect()
-            });
-        // 節点単位の検定は退化ケースを持たない（該当なしの節点はそもそも push
-        // されない）ため、常に Checked として扱う。
-        // 仕口パネルをモデル化した接合部は、解析出力のせん断モーメントを設計用
-        // パネルモーメントに用いる（モデル化していない接合部は従来の手組み式）。
-        let panel_moments = results.panel_moments.clone();
-        let joint_checks = squid_n_design_jp::joint_wiring::collect_joint_checks_with_long(
+        let report = squid_n_design_jp::run_member_design_checks(
             &self.model,
-            &mf_slices,
-            long_slices.as_deref(),
-            &panel_moments,
-            self.design_term,
-        )
-        .into_iter()
-        .map(|(node, label, cr)| JointCheck {
-            node,
-            label,
-            outcome: squid_n_design_jp::CheckOutcome::Checked(cr),
-        })
-        .collect();
-        // PCa 水平接合面の検定（PcaBeamAttr が登録された梁のみ。使用限界・終局限界）。
-        // 同じく退化ケースを持たないため常に Checked。
-        checks.extend(
-            squid_n_design_jp::rc::horizontal_joint::collect_pca_checks(
-                &self.model,
-                &mf_slices,
-                self.design_term == LoadTerm::Long,
-            )
-            .into_iter()
-            .map(|(id, pos, cr)| (id, pos, squid_n_design_jp::CheckOutcome::Checked(cr))),
+            &results.member_forces,
+            &results.panel_moments,
+            &squid_n_design_jp::MemberDesignCheckOptions {
+                term: self.design_term,
+                rc_damage_control: self.analysis_cfg.rc_damage_control,
+                qd_method: self.analysis_cfg.qd_method,
+                long_member_forces: long_member_forces.map(|v| v.as_slice()),
+                beam_group_overrides: Some(&group_overrides),
+            },
         );
+        let joint_checks = report
+            .joint_checks
+            .into_iter()
+            .map(|(node, label, cr)| JointCheck {
+                node,
+                label,
+                outcome: squid_n_design_jp::CheckOutcome::Checked(cr),
+            })
+            .collect();
         // 床の中での小梁・スラブ設計（全体 FEM から独立。小梁は大梁を分割しない）。
         let (joist_checks, slab_checks) = self.floor_design_checks();
 
-        let member_checks = group_member_checks(checks);
+        let member_checks = group_member_checks(report.member_checks);
 
         if let Some(bundle) = self.results.as_mut() {
             bundle.member_checks = member_checks;
@@ -2850,15 +2579,16 @@ impl App {
             };
 
             // --- 小梁: 交差があれば床格子サブモデル（二方向）で、なければ単純支持梁で検定 ---
-            let grillage = crate::floor_grillage::build_slab_grillage(&self.model, slab, w)
+            let grillage = squid_n_job::floor_grillage::build_slab_grillage(&self.model, slab, w)
                 .and_then(|g| {
-                    crate::floor_grillage::solve_grillage(&g.model, LoadCaseId(0))
+                    squid_n_job::floor_grillage::solve_grillage(&g.model, LoadCaseId(0))
                         .ok()
                         .map(|sol| (g, sol))
                 });
             if let Some((g, sol)) = grillage {
                 // 格子 FEM の部材力・たわみで各小梁を検定（十字梁の二方向挙動を反映）。
-                for (jidx, span, m, q, defl) in crate::floor_grillage::joist_design_forces(&g, &sol)
+                for (jidx, span, m, q, defl) in
+                    squid_n_job::floor_grillage::joist_design_forces(&g, &sol)
                 {
                     let Some(j) = slab.joists.get(jidx) else {
                         continue;
@@ -2962,415 +2692,18 @@ impl App {
     /// `NodalLoad` へ変換する。CMQ 図描画側は `elem` で梁を引くため、この番兵は
     /// 単に描画対象外になるだけで安全）。
     pub fn refresh_beam_loads(&mut self) {
-        // CMQ 図表示中は毎フレーム呼ばれるため、前回算定時からモデル・関連設定が
-        // 変わっていなければスキップする（交差小梁スラブでは床格子サブ FEM 解析を
-        // 含む重い処理になり得る）。ハッシュは荷重同期のキャッシュと同じ
-        // `compute_auto_load_sync_hash`（モデル全体＋荷重関連設定）を用いる。
         let hash = self.compute_auto_load_sync_hash();
         if self.beam_loads_hash == Some(hash) {
             return;
         }
-        // CMQ 図表示・従来互換のため `self.beam_loads` には固定荷重（DL）分配を格納する。
-        // 固定荷重 DL＝スラブ自重（断面の板厚×材料）＋仕上げ等。
-        let loads = {
-            let model = &self.model;
-            self.slab_beam_loads(|slab| model.slab_dead_intensity(slab))
-        };
-        self.beam_loads = loads;
+        self.beam_loads = squid_n_job::auto_loads::compute_dl_beam_loads(&self.model);
         self.beam_loads_hash = Some(hash);
     }
 
-    /// 交差小梁スラブについて、床格子サブモデル（二方向）の**支点反力**を大梁接続点
-    /// への集中荷重（下向き）として返す（床 Phase F-3b）。`None` の場合は呼び出し側が
-    /// 既存の平行小梁モデル（`distribute_rect_with_joists` の点反力）を用いる。
-    ///
-    /// 反力は面荷重強度 `w` に線形なので各荷重ケースの `w` で解き直す。格子の各小梁は
-    /// 平行モデルと同じ `w·spacing` を負担するため、支点反力の総和は平行モデルの小梁
-    /// 反力総和（`w·Σ spacing·L`）と厳密に一致する（総和保存）。相違は交点での荷重
-    /// 分担の精度のみ。実部材化された小梁を含むスラブは、実 Beam が本体 FEM で荷重を
-    /// 伝達し二重計上になるため対象外（`None`）とする。
-    ///
-    /// `beam_map` は節点対（`(min,max)` 順）→実 `Beam` 要素 `ElemId` の索引
-    /// （`beam_elem_map` で構築）。実部材化判定をスラブ全要素走査から `HashMap` 参照に
-    /// 落とし、呼び出し側（`slab_beam_loads`／`slab_grillage_unit_reactions`）で 1 回
-    /// 構築したものを使い回す（性能）。
-    pub(crate) fn slab_grillage_node_reactions(
-        &self,
-        slab: &squid_n_core::model::Slab,
-        w: f64,
-        beam_map: &std::collections::HashMap<(NodeId, NodeId), ElemId>,
-    ) -> Option<Vec<(NodeId, f64)>> {
-        // `distribute_slab_w` が小梁二段階伝達（点反力 Node＋境界 Edge）を採るスラブに
-        // 限定する。隅・片持ち・辺支持・非矩形・分配法が三角/一方向以外のスラブは
-        // 小梁が使われず全面積が Edge/隅集中で分配されるため、格子反力を上乗せすると
-        // 二重計上（または隅集中荷重の取りこぼし）になる。
-        if !squid_n_load::floor::uses_joist_distribution(&self.model, slab) {
-            return None;
-        }
-        // 実部材化された小梁を含む場合は対象外（本体 FEM と二重計上を避ける）。
-        if slab
-            .joists
-            .iter()
-            .any(|j| beam_map.contains_key(&beam_key(j.support[0], j.support[1])))
-        {
-            return None;
-        }
-        let g = crate::floor_grillage::build_slab_grillage(&self.model, slab, w)?;
-        let sol = crate::floor_grillage::solve_grillage(&g.model, LoadCaseId(0)).ok()?;
-        // 支点反力 Fz（上向き正）＝大梁が受け取る下向き荷重の大きさ。
-        Some(
-            g.support_origin
-                .iter()
-                .map(|(n, id)| (*id, sol.reactions[*n][2]))
-                .collect(),
-        )
-    }
-
-    /// 全スラブの床格子**単位**（`w=1.0`）支点反力を 1 回だけ解いて返す
-    /// （`SlabId` → 支点反力列）。反力は面荷重強度 `w` に線形（`build_slab_grillage`
-    /// の等分布荷重が `w·spacing` で唯一 `w` に依存し、以降の剛性解析は `w` に
-    /// 無関係）なため、各荷重ケースはこの単位反力を `w` 倍するだけでよく、
-    /// 交差小梁スラブ毎の格子 FEM 組立・求解を `sync_gravity_load_cases_action` の
-    /// DL/LL(架構用)/LL(地震用) 3 ケースで使い回せる（従来は 3 回solve_grillageを
-    /// 実行していた）。格子非対象（`None`）のスラブはキーが存在しない。
-    fn slab_grillage_unit_reactions(
-        &self,
-        beam_map: &std::collections::HashMap<(NodeId, NodeId), ElemId>,
-    ) -> std::collections::HashMap<squid_n_core::ids::SlabId, Vec<(NodeId, f64)>> {
-        let mut out = std::collections::HashMap::new();
-        for slab in &self.model.slabs {
-            if let Some(reactions) = self.slab_grillage_node_reactions(slab, 1.0, beam_map) {
-                out.insert(slab.id, reactions);
-            }
-        }
-        out
-    }
-
-    /// 節点対 (min,max) → 実 `Beam`（2 節点）要素の `ElemId` を引く索引を構築する
-    /// （`slab_beam_loads` の辺→部材対応付け・`slab_grillage_node_reactions` の
-    /// 実部材化判定で共有。従来は各スラブ・各辺・各交差小梁ごとに `elements.iter().find`
-    /// していたため O(スラブ数×辺数×要素数) だったのを、`sync_gravity_load_cases_action`
-    /// 1 回あたり O(要素数) の構築＋ O(1) 参照に削減する）。同一節点対に複数の実梁が
-    /// ある場合（通常は起きない）は要素順で最初に見つかったものを採用する
-    /// （`.find` の挙動を保つため `entry().or_insert` を使う）。
-    pub(crate) fn beam_elem_map(&self) -> std::collections::HashMap<(NodeId, NodeId), ElemId> {
-        let mut map = std::collections::HashMap::new();
-        for e in &self.model.elements {
-            if e.kind == squid_n_core::model::ElementKind::Beam && e.nodes.len() == 2 {
-                map.entry(beam_key(e.nodes[0], e.nodes[1])).or_insert(e.id);
-            }
-        }
-        map
-    }
-
-    /// 各スラブについて面荷重強度 `w_of(slab)`（N/mm²）を境界へ分配し、
-    /// `LoadTarget::Edge` を実 `ElemId` に対応付けた `BeamLoad` 列を返す。
-    /// 対応する梁がない辺の荷重は捨てる。`refresh_beam_loads`（DL）と
-    /// `sync_gravity_load_cases_action`（LL）の共通経路（令85条1項の DL/LL 分離）。
-    ///
-    /// 交差小梁スラブ（軸平行・全仮想）は、平行小梁モデルの小梁点反力
-    /// （`LoadTarget::Node`）を床格子サブモデルの支点反力で置換する（床 Phase F-3b。
-    /// 総和は保存し、交点での荷重分担のみ高精度化）。境界大梁の残り負担
-    /// （`LoadTarget::Edge`）や実部材化小梁（`LoadTarget::Span`）はそのまま。
-    ///
-    /// 単発呼び出し向けの簡便版。節点対索引・格子単位反力をこの呼び出し内だけで
-    /// 構築するため、`sync_gravity_load_cases_action` のように同一モデルに対して
-    /// 複数回（DL/LL(架構用)/LL(地震用)）呼ぶ場合は、事前に構築したものを
-    /// `slab_beam_loads_with` へ渡して使い回すこと（格子 FEM の重複組立・求解を防ぐ）。
-    fn slab_beam_loads(
-        &self,
-        w_of: impl Fn(&squid_n_core::model::Slab) -> f64,
-    ) -> Vec<squid_n_load::floor::BeamLoad> {
-        let beam_map = self.beam_elem_map();
-        let unit_reactions = self.slab_grillage_unit_reactions(&beam_map);
-        self.slab_beam_loads_with(w_of, &unit_reactions, &beam_map)
-    }
-
-    /// `slab_beam_loads` の本体。`beam_map`（節点対→実 `ElemId` 索引）と
-    /// `unit_reactions`（`slab_grillage_unit_reactions` が返す `w=1` 支点反力。
-    /// 反力は `w` に線形なのでここで `w` 倍して使う）を呼び出し側から受け取ることで、
-    /// `sync_gravity_load_cases_action` の DL/LL(架構用)/LL(地震用) 3 ケースが
-    /// 実要素索引の構築・格子 FEM の組立/求解を 1 回だけ共有できる。
-    fn slab_beam_loads_with(
-        &self,
-        w_of: impl Fn(&squid_n_core::model::Slab) -> f64,
-        unit_reactions: &std::collections::HashMap<squid_n_core::ids::SlabId, Vec<(NodeId, f64)>>,
-        beam_map: &std::collections::HashMap<(NodeId, NodeId), ElemId>,
-    ) -> Vec<squid_n_load::floor::BeamLoad> {
-        let mut beam_loads = Vec::new();
-        for slab in &self.model.slabs {
-            let n = slab.boundary.len();
-            if n < 3 {
-                continue;
-            }
-            // 節点対 (n0,n1) を両端に持つ実 Beam 要素の ElemId を引く（ノード順不問）。
-            let find_beam = |n0: NodeId, n1: NodeId| -> Option<ElemId> {
-                beam_map.get(&beam_key(n0, n1)).copied()
-            };
-            let w = w_of(slab);
-            // 交差小梁スラブは格子サブモデルの支点反力（単位反力を w 倍）で
-            // 小梁点反力を置換する（F-3b）。反力は w に線形（build_slab_grillage の
-            // コメント参照）なので、格子 FEM を w ごとに解き直す必要はない。
-            let grillage_reactions: Option<Vec<(NodeId, f64)>> = unit_reactions
-                .get(&slab.id)
-                .map(|rs| rs.iter().map(|(node, r)| (*node, r * w)).collect());
-            for mut bl in squid_n_load::floor::distribute_slab_w(&self.model, slab, w) {
-                match bl.target {
-                    squid_n_load::floor::LoadTarget::Node(_) => {
-                        // 格子が有効なら平行小梁モデルの点反力は捨てる（格子反力で置換）。
-                        if grillage_reactions.is_none() {
-                            beam_loads.push(bl);
-                        }
-                    }
-                    squid_n_load::floor::LoadTarget::Edge(k) => {
-                        if k >= n {
-                            continue;
-                        }
-                        let n0 = slab.boundary[k];
-                        let n1 = slab.boundary[(k + 1) % n];
-                        match find_beam(n0, n1) {
-                            Some(elem) => {
-                                bl.elem = elem;
-                                beam_loads.push(bl);
-                            }
-                            None => {
-                                // 対応する実梁がない辺（二次部材（小梁）上の辺・大梁の
-                                // 中間区間など）は節点対を保持して渡し、
-                                // `slab_load_case_content` が主架構へ変換する
-                                // （大梁の部分分布 or 単純梁反力→CMQ）。
-                                // Edge の `elem` は辺番号が入っているため、実部材と
-                                // 誤解されないよう番兵へ明示的に戻す。
-                                bl.elem = ElemId(u32::MAX);
-                                bl.target = squid_n_load::floor::LoadTarget::Span([n0, n1]);
-                                beam_loads.push(bl);
-                            }
-                        }
-                    }
-                    // 実部材化された小梁: 節点対から実 Beam の ElemId を解決して載せる。
-                    // 解決できない節点対はそのまま渡し、`slab_load_case_content` が
-                    // 主架構へ変換する。
-                    squid_n_load::floor::LoadTarget::Span([n0, n1]) => {
-                        if let Some(elem) = find_beam(n0, n1) {
-                            bl.elem = elem;
-                        }
-                        beam_loads.push(bl);
-                    }
-                }
-            }
-            // 格子反力を大梁接続点への下向き集中荷重として追加（点反力の置換）。
-            if let Some(reactions) = grillage_reactions {
-                for (node, r) in reactions {
-                    if r.abs() <= 1e-9 {
-                        continue;
-                    }
-                    beam_loads.push(squid_n_load::floor::BeamLoad {
-                        elem: ElemId(u32::MAX),
-                        target: squid_n_load::floor::LoadTarget::Node(node),
-                        shape: squid_n_load::floor::LoadShape::Point { p: r, x: 0.0 },
-                        cmq: squid_n_load::floor::Cmq {
-                            c_i: 0.0,
-                            c_j: 0.0,
-                            q_i: r,
-                            q_j: 0.0,
-                        },
-                    });
-                }
-            }
-        }
-        beam_loads
-    }
-
-    /// `self.beam_loads`（`refresh_beam_loads` 適用後の値）を荷重ケースへ書き込める
-    /// `NodalLoad`/`MemberLoad` へ変換する（レビュー §1.1）。作用方向は常に
-    /// 鉛直下向き `[0,0,-1]`（面荷重は重力方向のみを扱う既存の前提を踏襲）。
-    ///
-    /// - `LoadShape::Uniform{w}` → 全長等分布 `Distributed{a:0,b:L,w1:w,w2:w}`
-    /// - `LoadShape::Triangle{w0}`（中央 `L/2` で頂点を持つ左右対称三角形）→
-    ///   2 区間の線形分布`[0,L/2]: 0→w0` / `[L/2,L]: w0→0` に分割
-    ///   （`MemberLoadKind::Distributed` は線形区間しか表現できないため）
-    /// - `LoadShape::Trapezoid{w0,a,b}`（両端で `a` ずつ立ち上がり、中央 `b` が
-    ///   フラット、`2a+b=L`）→ 3 区間 `[0,a]:0→w0` / `[a,a+b]:w0→w0` /
-    ///   `[a+b,L]:w0→0`
-    /// - `LoadShape::Point{p,x}` → 中間集中荷重 `MemberLoadKind::Point{a:x,p}`
-    /// - `LoadTarget::Node(n)`（小梁反力）→ `NodalLoad{node:n, values:[0,0,-p,0,0,0]}`
-    ///
-    /// `L` は対応する部材の節点間距離（`Model::member_length`。剛域補正なしの
-    /// 簡易値。仕様上「部材の節点間距離」を使う規則のため、剛域を考慮する
-    /// 設計検定側の `clear_span` とは別物）。
-    fn slab_load_case_content(
-        &self,
-        beam_loads: &[squid_n_load::floor::BeamLoad],
-    ) -> (
-        Vec<squid_n_core::model::NodalLoad>,
-        Vec<squid_n_core::model::MemberLoad>,
-    ) {
-        use squid_n_core::model::{MemberLoad, MemberLoadKind, NodalLoad};
-        use squid_n_load::floor::{LoadShape, LoadTarget};
-        use squid_n_load::secondary::{beam_span_position, SPAN_TOL_MM};
-
-        const DIR: [f64; 3] = [0.0, 0.0, -1.0];
-        let mut nodal = Vec::new();
-        let mut member = Vec::new();
-
-        fn push_dist(member: &mut Vec<MemberLoad>, elem: ElemId, a: f64, b: f64, w1: f64, w2: f64) {
-            if b - a <= 1e-9 {
-                return;
-            }
-            member.push(MemberLoad::auto(
-                elem,
-                DIR,
-                MemberLoadKind::Distributed { a, b, w1, w2 },
-            ));
-        }
-
-        // 形状を「部材 `elem` の区間 [a0, a0+len_e]」へ載せる（`a0=0`・`len_e=部材長`
-        // なら従来の全長スパン）。`flip` は載荷区間の向きが部材軸と逆
-        // （n0 が j 端側）の場合に Point の位置を反転する（分布形状は対称なので不変）。
-        fn emit_shape(
-            member: &mut Vec<MemberLoad>,
-            elem: ElemId,
-            a0: f64,
-            len_e: f64,
-            flip: bool,
-            shape: &LoadShape,
-        ) {
-            match *shape {
-                LoadShape::Uniform { w } => push_dist(member, elem, a0, a0 + len_e, w, w),
-                LoadShape::Triangle { w0 } => {
-                    let mid = len_e / 2.0;
-                    push_dist(member, elem, a0, a0 + mid, 0.0, w0);
-                    push_dist(member, elem, a0 + mid, a0 + len_e, w0, 0.0);
-                }
-                LoadShape::Trapezoid { w0, a, b } => {
-                    push_dist(member, elem, a0, a0 + a, 0.0, w0);
-                    push_dist(member, elem, a0 + a, a0 + a + b, w0, w0);
-                    push_dist(member, elem, a0 + a + b, a0 + len_e, w0, 0.0);
-                }
-                LoadShape::Point { p, x } => {
-                    let xx = if flip { len_e - x } else { x };
-                    member.push(MemberLoad::auto(
-                        elem,
-                        DIR,
-                        MemberLoadKind::Point { a: a0 + xx, p },
-                    ));
-                }
-            }
-        }
-
-        // 形状の合計荷重と、単純梁とみなした場合の両端反力 (R0, R1)。
-        // 分布形状は対称なので折半、Point は載荷位置に応じて按分する。
-        fn simple_reactions(shape: &LoadShape, len: f64) -> (f64, f64) {
-            match *shape {
-                LoadShape::Uniform { w } => {
-                    let total = w * len;
-                    (total / 2.0, total / 2.0)
-                }
-                LoadShape::Triangle { w0 } => {
-                    let total = w0 * len / 2.0;
-                    (total / 2.0, total / 2.0)
-                }
-                LoadShape::Trapezoid { w0, a, b } => {
-                    let total = w0 * (a + b);
-                    (total / 2.0, total / 2.0)
-                }
-                LoadShape::Point { p, x } => {
-                    if len <= 1e-9 {
-                        (p / 2.0, p / 2.0)
-                    } else {
-                        let t = (x / len).clamp(0.0, 1.0);
-                        (p * (1.0 - t), p * t)
-                    }
-                }
-            }
-        }
-
-        for bl in beam_loads {
-            match bl.target {
-                LoadTarget::Node(n) => {
-                    let LoadShape::Point { p, .. } = bl.shape else {
-                        continue;
-                    };
-                    nodal.push(NodalLoad::auto(n, [0.0, 0.0, -p, 0.0, 0.0, 0.0]));
-                }
-                // Edge（境界大梁）: bl.elem に解決済みの ElemId が入る。
-                LoadTarget::Edge(_) => {
-                    let Some(elem) = self.model.element(bl.elem) else {
-                        continue;
-                    };
-                    let l = self.model.member_length(elem);
-                    if l <= 1e-9 {
-                        continue;
-                    }
-                    emit_shape(&mut member, elem.id, 0.0, l, false, &bl.shape);
-                }
-                // Span（節点対）: 実部材化小梁（解決済み ElemId）はそのまま全長へ。
-                // 実梁がない節点対（二次部材（小梁）上の辺・大梁の中間区間）は
-                // 主架構へ変換する:
-                // 1. 両節点が同一の大梁スパン上 → その大梁の**部分区間**分布へ
-                // 2. それ以外 → 単純梁の両端反力として節点荷重化
-                //    （節点が大梁スパン上なら後段で中間集中荷重（CMQ）へ変換）
-                LoadTarget::Span([n0, n1]) => {
-                    if let Some(elem) = self.model.element(bl.elem) {
-                        let l = self.model.member_length(elem);
-                        if l > 1e-9 {
-                            emit_shape(&mut member, elem.id, 0.0, l, false, &bl.shape);
-                        }
-                        continue;
-                    }
-                    let (Some(node0), Some(node1)) = (
-                        self.model.nodes.get(n0.index()),
-                        self.model.nodes.get(n1.index()),
-                    ) else {
-                        continue;
-                    };
-                    let hit0 = beam_span_position(&self.model, node0.coord, SPAN_TOL_MM);
-                    let hit1 = beam_span_position(&self.model, node1.coord, SPAN_TOL_MM);
-                    if let (Some((e0, a0)), Some((e1, a1))) = (hit0, hit1) {
-                        if e0 == e1 {
-                            // 大梁の中間区間に載る辺: 部分区間の分布荷重へ。
-                            let start = a0.min(a1);
-                            let len_e = (a1 - a0).abs();
-                            if len_e > 1e-9 {
-                                emit_shape(&mut member, e0, start, len_e, a0 > a1, &bl.shape);
-                            }
-                            continue;
-                        }
-                    }
-                    // 二次部材（小梁）上の辺など: 単純梁反力として両端節点へ。
-                    let len = {
-                        let (a, b) = (node0.coord, node1.coord);
-                        ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2))
-                            .sqrt()
-                    };
-                    let (r0, r1) = simple_reactions(&bl.shape, len);
-                    for (n, r) in [(n0, r0), (n1, r1)] {
-                        if r.abs() > 1e-9 {
-                            nodal.push(NodalLoad::auto(n, [0.0, 0.0, -r, 0.0, 0.0, 0.0]));
-                        }
-                    }
-                }
-            }
-        }
-
-        // 要素が接続しない節点への荷重（小梁反力・小梁支持点など）を、載っている
-        // 大梁の中間集中荷重（CMQ）へ変換する（二次部材の荷重伝達）。
-        let (nodal, extra_member) =
-            squid_n_load::secondary::resolve_nodal_to_primary(&self.model, nodal, SPAN_TOL_MM);
-        member.extend(extra_member);
-
-        (nodal, member)
-    }
-
-    /// CMQ 図（ビューア）の描画ソース: `self.beam_loads`（`refresh_beam_loads` 適用後の
-    /// 固定荷重（DL）分配）を `slab_load_case_content` で主架構の部材荷重へ変換し、
-    /// `MemberLoad` 側だけを返す（`NodalLoad`＝柱節点などは CMQ 図の描画対象外）。
-    /// これにより、小梁の点反力・大梁中間区間の部分分布荷重が主架構の大梁へ集約された
-    /// 状態（大梁1本=部材荷重の集合）で描画でき、実部材化された小梁やスラブは
-    /// 自然に描画対象から外れる（小梁・柱には `MemberLoad` が付かないため）。
-    /// 呼び出し元（ビューア）が gui フィーチャ限定のため、gui 無効時は dead_code になる。
+    /// CMQ 図（ビューア）の描画ソース。
     #[cfg(feature = "gui")]
     pub(crate) fn cmq_display_member_loads(&self) -> Vec<squid_n_core::model::MemberLoad> {
-        self.slab_load_case_content(&self.beam_loads).1
+        squid_n_job::auto_loads::slab_load_case_content(&self.model, &self.beam_loads).1
     }
 
     /// 重力系の標準荷重ケース（DL・LL(架構用)・LL(地震用)）へ自動計算値を同期する
@@ -3398,72 +2731,12 @@ impl App {
     /// 解析実行系（`sync_auto_load_cases_action` 経由）・`generate_stories_action`
     /// の入口で毎回呼ぶことを想定した冪等な同期アクション。
     pub fn sync_gravity_load_cases_action(&mut self) {
-        use squid_n_core::model::{LoadCaseKind, LoadPurpose};
-
-        // 節点対→実 Beam 索引・床格子の単位（w=1）支点反力を 1 回だけ構築し、
-        // DL/LL(架構用)/LL(地震用) の 3 ケースで使い回す（性能。反力は面荷重強度
-        // `w` に線形なので格子 FEM を w ごとに解き直す必要はない）。
-        let beam_map = self.beam_elem_map();
-        let unit_reactions = self.slab_grillage_unit_reactions(&beam_map);
-
-        // CMQ 図表示・従来互換のため `self.beam_loads` には固定荷重（DL）分配を
-        // 格納する（`refresh_beam_loads` と同じ結果。ここでは共有済みの
-        // `beam_map`/`unit_reactions` を使い回すため直接 `slab_beam_loads_with` を呼ぶ）。
-        // キャッシュキーを経由しない直接書き込みのため `beam_loads_hash` を無効化する
-        // （残したままだと、この後モデルを undo で元に戻したとき refresh_beam_loads が
-        // 「ハッシュ一致＝最新」と誤認し、編集後の分配を表示し続ける）。
-        let dl_loads = {
-            let model = &self.model;
-            self.slab_beam_loads_with(
-                |slab| model.slab_dead_intensity(slab),
-                &unit_reactions,
-                &beam_map,
-            )
-        };
-        self.beam_loads = dl_loads;
+        let result = squid_n_job::auto_loads::compute_gravity_auto_load_cases(&self.model);
+        self.beam_loads = result.dl_beam_loads;
         self.beam_loads_hash = None;
-
-        // DL（固定荷重）: スラブ分配（`self.beam_loads` は上で固定荷重分を分配済み）
-        // ＋躯体自重。自重には二次部材（小梁・間柱）の分（支持点への節点荷重）が
-        // 含まれるため、要素が接続しない節点への荷重を大梁の中間集中荷重（CMQ）へ
-        // 変換してから同期する。
-        let dl_beam_loads = self.beam_loads.clone();
-        let (mut dl_nodal, mut dl_member) = self.slab_load_case_content(&dl_beam_loads);
-        let load_cfg = self.model.load_cfg.clone().unwrap_or_default();
-        let (sw_nodal, sw_member) =
-            squid_n_load::self_weight::self_weight_case_content(&self.model, &load_cfg);
-        dl_nodal.extend(sw_nodal);
-        dl_member.extend(sw_member);
-        let (dl_nodal, extra_member) = squid_n_load::secondary::resolve_nodal_to_primary(
-            &self.model,
-            dl_nodal,
-            squid_n_load::secondary::SPAN_TOL_MM,
-        );
-        dl_member.extend(extra_member);
-        self.sync_one_auto_case(DL_CASE_NAME, LoadCaseKind::Dead, dl_nodal, dl_member);
-
-        // LL（積載荷重・骨組用）: スラブ用途から令別表第1 の骨組用積載を分配。
-        let ll_beam_loads = self.slab_beam_loads_with(
-            |slab| slab.live_intensity(LoadPurpose::Frame),
-            &unit_reactions,
-            &beam_map,
-        );
-        let (ll_nodal, ll_member) = self.slab_load_case_content(&ll_beam_loads);
-        self.sync_one_auto_case(LL_FRAME_CASE_NAME, LoadCaseKind::Live, ll_nodal, ll_member);
-
-        // LL（積載荷重・地震用）: スラブ用途から令別表第1 の地震用積載を分配。
-        let ls_beam_loads = self.slab_beam_loads_with(
-            |slab| slab.live_intensity(LoadPurpose::Seismic),
-            &unit_reactions,
-            &beam_map,
-        );
-        let (ls_nodal, ls_member) = self.slab_load_case_content(&ls_beam_loads);
-        self.sync_one_auto_case(
-            LL_SEISMIC_CASE_NAME,
-            LoadCaseKind::LiveSeismic,
-            ls_nodal,
-            ls_member,
-        );
+        for case in result.cases {
+            self.sync_one_auto_case(case.name, case.kind, case.nodal, case.member);
+        }
     }
 
     /// 地震荷重(Ai分布)の設計用固有周期 T[s] を、暗黙の解析なしで決定する。
@@ -3517,39 +2790,26 @@ impl App {
     /// （`last_error` とは別枠。解析自体は継続してよい注意事項のため）。
     /// 冪等な同期アクション（`sync_gravity_load_cases_action` と同じ規約）。
     pub fn sync_seismic_load_cases_action(&mut self) {
-        use squid_n_core::model::LoadCaseKind;
-        if self.model.stories.is_empty() {
-            return;
-        }
-        let t = match self.design_seismic_period() {
-            Ok(t) => t,
-            Err(msg) => {
-                self.report_notice(msg);
-                return;
-            }
+        let design_period = match self.analysis_cfg.ai_mode {
+            AiMode::SemiPrecise => match self.design_seismic_period() {
+                Ok(t) => Some(t),
+                Err(msg) => {
+                    self.report_notice(msg);
+                    return;
+                }
+            },
+            AiMode::Approx => None,
         };
-        let built: Vec<(&'static str, squid_n_core::model::LoadCase)> =
-            [(SeismicDir::X, EX_CASE_NAME), (SeismicDir::Y, EY_CASE_NAME)]
-                .into_iter()
-                .filter_map(|(dir, name)| {
-                    let cfg = squid_n_solver::analysis::SeismicCfg {
-                        dir,
-                        mode: self.analysis_cfg.ai_mode,
-                        z: self.analysis_cfg.z,
-                        soil: self.analysis_cfg.soil,
-                        c0: self.analysis_cfg.c0,
-                    };
-                    squid_n_solver::analysis::build_seismic_load_case_from_model(
-                        &self.model,
-                        cfg,
-                        t,
-                    )
-                    .ok()
-                    .map(|lc| (name, lc))
-                })
-                .collect();
-        for (name, lc) in built {
-            self.sync_one_auto_case(name, LoadCaseKind::Seismic, lc.nodal, lc.member);
+        let result = squid_n_job::auto_loads::compute_seismic_auto_load_cases(
+            &self.model,
+            &self.analysis_cfg,
+            design_period,
+        );
+        for notice in result.notices {
+            self.report_notice(notice);
+        }
+        for case in result.cases {
+            self.sync_one_auto_case(case.name, case.kind, case.nodal, case.member);
         }
     }
 
@@ -3605,8 +2865,24 @@ impl App {
         if self.auto_load_sync_hash == Some(current) {
             return;
         }
-        self.sync_gravity_load_cases_action();
-        self.sync_seismic_load_cases_action();
+        let design_period = if matches!(self.analysis_cfg.ai_mode, AiMode::SemiPrecise) {
+            self.design_seismic_period().ok()
+        } else {
+            None
+        };
+        let result = squid_n_job::auto_loads::compute_auto_load_cases(
+            &self.model,
+            &self.analysis_cfg,
+            design_period,
+        );
+        self.beam_loads = result.dl_beam_loads;
+        self.beam_loads_hash = None;
+        for notice in result.notices {
+            self.report_notice(notice);
+        }
+        for case in result.cases {
+            self.sync_one_auto_case(case.name, case.kind, case.nodal, case.member);
+        }
         self.auto_load_sync_hash = Some(self.compute_auto_load_sync_hash());
     }
 

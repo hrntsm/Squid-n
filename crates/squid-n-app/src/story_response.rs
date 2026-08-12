@@ -48,9 +48,9 @@ pub fn story_display_names(
         .collect()
 }
 
-/// N → kN
+/// N → kN（表示用。[`squid_n_core::units::to_display::force_kn`] への委譲）。
 pub fn n_to_kn(n: f64) -> f64 {
-    n / 1000.0
+    squid_n_core::units::to_display::force_kn(n)
 }
 
 /// mm/s² → gal（1 gal = 1 cm/s² = 10 mm/s²）

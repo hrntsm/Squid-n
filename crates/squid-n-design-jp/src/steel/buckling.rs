@@ -107,13 +107,15 @@ fn node_coords(model: &Model, elem: &ElementData) -> Option<([f64; 3], [f64; 3])
 
 /// 線材（`ElementKind::Beam`）の幾何学的長さと軸方向余弦の鉛直成分 |ez|。
 fn line_geometry(model: &Model, elem: &ElementData) -> Option<(f64, f64)> {
-    let (p0, p1) = node_coords(model, elem)?;
-    let (dx, dy, dz) = (p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2]);
-    let len = (dx * dx + dy * dy + dz * dz).sqrt();
+    let len = model.member_length(elem);
     if len < 1e-9 {
         return None;
     }
-    Some((len, (dz / len).abs()))
+    let axis = squid_n_core::geom::element_axis(model, elem);
+    if axis == [0.0, 0.0, 0.0] {
+        return None;
+    }
+    Some((len, axis[2].abs()))
 }
 
 /// 部材の断面・材料 `(Section, Material)`。いずれか解決できない場合 None。
@@ -164,15 +166,10 @@ fn end_index_at(elem: &ElementData, node_id: NodeId) -> Option<usize> {
 }
 
 /// 剛域控除後の内法長 `L' = len − rigid_zone.length_i − rigid_zone.length_j`
-/// （squid_n_element の可とう長と同じ式）。`L' ≤ 0` になる場合は
-/// 幾何学的長さ `len` にフォールバックする。
+/// （squid_n_element の可とう長と同じ式）。[`RigidZone::flexible_length_from`]
+/// へ委譲する。
 fn clear_length(elem: &ElementData, len: f64) -> f64 {
-    let l = len - elem.rigid_zone.rigid_length_i() - elem.rigid_zone.rigid_length_j();
-    if l > 0.0 {
-        l
-    } else {
-        len
-    }
+    elem.rigid_zone.flexible_length_from(len)
 }
 
 /// 節点 `node_idx`（`elem.nodes` の 0/1）まわりの剛度比 G を求める（インデックス版）。

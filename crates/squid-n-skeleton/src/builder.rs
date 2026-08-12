@@ -44,6 +44,8 @@ pub fn build_rc_member_skeleton(
     let e0_conc = 2.0 * concrete.fc / concrete.ec0.abs();
     let eps_cr = concrete.ft / e0_conc;
     let eps_y = steel.fy / steel.e;
+    // TODO: `Reinforcement.main_bars` はファイバー座標の点配筋であり `RcRebar` ではない。
+    // `squid_n_core::rc_rebar_geom` へ統一するには BarSet への変換が必要。
     let d_eff = section.depth
         - reinforcement
             .main_bars

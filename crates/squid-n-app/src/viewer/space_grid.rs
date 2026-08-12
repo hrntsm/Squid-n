@@ -18,6 +18,7 @@
 
 use squid_n_core::dof::Dof6Mask;
 use squid_n_core::frame_gen::{space_grid, GridLine, SpaceGrid};
+use squid_n_core::geom::{default_local_ref_vector, is_vertical_pair};
 use squid_n_core::ids::{ElemId, NodeId};
 use squid_n_core::model::{ElementData, ElementKind, EndCondition, ForceRegime, LocalAxis, Model};
 use squid_n_edit::{AddMember, AddNode, CompositeCommand, EditCommand};
@@ -194,11 +195,7 @@ pub fn beam_command(
     if na == nb {
         return None;
     }
-    let ref_vector = if is_vertical(model, &pending, na, nb) {
-        [1.0, 0.0, 0.0]
-    } else {
-        [0.0, 0.0, 1.0]
-    };
+    let ref_vector = default_local_ref_vector(is_vertical(model, &pending, na, nb));
     let mut children: Vec<Box<dyn EditCommand>> = pending
         .iter()
         .map(|c| {
@@ -232,7 +229,7 @@ pub fn beam_command(
     ))
 }
 
-/// 材軸が鉛直か（両端の水平距離が [`NODE_MERGE_TOL_MM`] 未満）。
+/// 材軸が鉛直か（[`is_vertical_pair`] と同規約）。
 ///
 /// まだモデルに無い節点は `pending` 側から座標を引く（`AddNode` は末尾へ追加する
 /// ため、`model.nodes.len()` 以降の ID が `pending` の添字に対応する）。
@@ -246,7 +243,7 @@ fn is_vertical(model: &Model, pending: &[[f64; 3]], a: NodeId, b: NodeId) -> boo
     let (Some(ca), Some(cb)) = (coord(a), coord(b)) else {
         return false;
     };
-    (ca[0] - cb[0]).hypot(ca[1] - cb[1]) < NODE_MERGE_TOL_MM
+    is_vertical_pair(ca, cb)
 }
 
 #[cfg(test)]

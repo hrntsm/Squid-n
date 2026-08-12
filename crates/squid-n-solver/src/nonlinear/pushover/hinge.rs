@@ -6,12 +6,14 @@
 
 use super::geom::member_end_forces_at_face;
 use super::types::{HingeEvent, HingeLevel};
+use squid_n_core::flexural_strength::{
+    member_flexural_yield_moment, section_elastic_modulus, FlexuralStrengthFactors,
+};
 use squid_n_core::material_grade::{
     material_strength_factor_rebar, material_strength_factor_steel,
 };
 use squid_n_core::model::{ElementData, Model};
-use squid_n_core::rc_capacity::{rc_mu_simple, RcCapacityInput};
-use squid_n_core::section_shape::{bar_set_area, SectionShape};
+use squid_n_core::section_shape::SectionShape;
 use squid_n_core::structure_kind::StructureKind;
 use squid_n_element::behavior::{Ctx, ElementBehavior};
 
@@ -44,18 +46,12 @@ fn member_moment_thresholds(elem: &ElementData, model: &Model) -> HingeThreshold
         return HingeThreshold { mc: 0.0, my: 0.0 };
     };
     let mat = model.element_material(elem);
-    let depth = sec.depth.max(sec.width);
-    let i_gross = sec.iz.max(sec.iy);
-    let ze = if depth > 0.0 {
-        i_gross / (depth / 2.0)
-    } else {
-        0.0
+    let rebar_mat = model.element_rebar_material(elem);
+    let factors = FlexuralStrengthFactors {
+        steel: mat.map(material_strength_factor_steel).unwrap_or(1.0),
+        rebar: rebar_mat.map(material_strength_factor_rebar).unwrap_or(1.0),
     };
-    // 降伏応力は部材材料の fy を優先。未設定なら鋼材既定 235 N/mm²（SN400 級）。
-    // 保有水平耐力計算のため材料強度割増を乗じる（mat がなければ係数 1.0）。
-    let sigma_y_steel = mat.and_then(|m| m.fy).unwrap_or(235.0)
-        * mat.map(material_strength_factor_steel).unwrap_or(1.0);
-
+    let ze = section_elastic_modulus(sec);
     // 分岐は構造種別による（`squid_n_core::structure_kind`）。断面形状ではなく
     // 材料の区分で決まるため、H 形のコンクリート部材・矩形断面の鋼部材も
     // 正しい式へ振り分けられる。
@@ -64,45 +60,17 @@ fn member_moment_thresholds(elem: &ElementData, model: &Model) -> HingeThreshold
         // 配筋を持つ形状は材料の区分に依らず RC の式で評価する。鋼の Mp 式は
         // 配筋を無視した素の断面係数を使うため、RC 断面へ当てると My が桁で
         // 過大になり、増分解析で曲げヒンジが検出されなくなる。
-        (
-            Some(SectionShape::RcRect { rebar, d, .. }) | Some(SectionShape::RcCircle { rebar, d }),
-            _,
-        ) => {
+        (Some(SectionShape::RcRect { .. }) | Some(SectionShape::RcCircle { .. }), _) => {
             // Fc 未設定（fc=0 → Mc=0 でヒンジが一切検出されない）のモデルは
             // `squid_n_element::factory::ensure_nonlinear_input` が解析前に停止する
             // ため、非線形解析ではこのフォールバックに到達しない。
             let fc = mat.and_then(|m| m.fc).unwrap_or(0.0);
             // 曲げひび割れ Mc = κ·√Fc·Ze（算定は core に集約）。
             let mc = squid_n_core::rc_capacity::rc_crack_moment(fc, ze);
-            // 曲げ降伏 My = 0.9·at·σy·d（rc_mu_simple）。at は片側引張筋（対称配筋仮定）。
-            // σy は**断面（配筋）の主筋材質** → 部材材料の fy の順で解決する。
-            // どちらも未設定のモデルは `ensure_nonlinear_input` が解析前に停止するため、
-            // 既定値 345 へのフォールバックには到達しない。
-            // 保有水平耐力計算のため主筋の材料強度割増を乗じる（せん断補強筋は対象外）。
-            let rebar_mat = model.element_rebar_material(elem);
-            let sigma_y_rebar = squid_n_core::material_grade::rebar_yield_strength(rebar_mat)
-                .or_else(|| mat.and_then(|m| m.fy))
-                .unwrap_or(345.0)
-                * rebar_mat.map(material_strength_factor_rebar).unwrap_or(1.0);
-            let at = bar_set_area(&rebar.main_x) / 2.0;
-            let d_eff = (d - rebar.cover - rebar.main_x.dia / 2.0).max(0.0);
-            let inp = RcCapacityInput {
-                b: 1.0,
-                d: *d,
-                at,
-                d_eff,
-                sigma_y: sigma_y_rebar,
-                fc: fc.max(1e-9),
-                pw: 0.0,
-                sigma_wy: 0.0,
-                clear_span: 1.0,
-                sigma_0: 0.0,
-            };
-            let my = rc_mu_simple(&inp);
-            let my = if my > 0.0 { my } else { sigma_y_rebar * ze };
+            let my = member_flexural_yield_moment(elem, model, factors);
             HingeThreshold { mc: mc.min(my), my }
         }
-        (Some(shape), StructureKind::S) => {
+        (Some(_shape), StructureKind::S) => {
             // 鉄骨: 全塑性モーメント Mp = Zp·σy。ひび割れはないため Mc=My=Mp。
             //
             // 鉄骨形状はすべて Zp を持つ（`plastic_modulus_strong`）が、この分岐は
@@ -111,17 +79,14 @@ fn member_moment_thresholds(elem: &ElementData, model: &Model) -> HingeThreshold
             // 割り当てたモデルもここへ来る（`RcRect`/`RcCircle` は上の分岐で拾う）。
             // その場合 Zp は None になるため Ze（形状係数 1.0）へ落とす。
             //
-            // このフォールバック値は**材端曲げバネ（`squid_n_element::factory` の
-            // `yield_moment`）と一致させること**。食い違うと、要素が降伏していても
-            // ヒンジ判定側は未降伏と扱う（またはその逆の）状態が生じる。
-            let zp = shape.plastic_modulus_strong().unwrap_or(ze);
-            let mp = sigma_y_steel * zp;
-            HingeThreshold { mc: mp, my: mp }
+            // My は材端曲げバネと同じ [`member_flexural_yield_moment`] を情報源とする。
+            let my = member_flexural_yield_moment(elem, model, factors);
+            HingeThreshold { mc: my, my }
         }
         _ => {
             // 複合断面(SRC/CFT)・形状不明・配筋を持たない RC 断面:
             // σy·Ze を降伏、コンクリを含むなら κ·Fc·Ze をひび割れとする改良簡易値。
-            let my = sigma_y_steel * ze;
+            let my = member_flexural_yield_moment(elem, model, factors);
             let fc = mat.and_then(|m| m.fc).unwrap_or(0.0);
             let mc = if fc > 0.0 {
                 squid_n_core::rc_capacity::rc_crack_moment(fc, ze).min(my)

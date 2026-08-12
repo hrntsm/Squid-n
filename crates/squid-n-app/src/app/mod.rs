@@ -1,7 +1,7 @@
 use std::time::SystemTime;
 
 use squid_n_core::ids::{ElemId, LoadCaseId, NodeId, SectionId};
-use squid_n_design_jp::{DesignCheck, DesignCtx, LoadTerm, MemberForcesAt};
+use squid_n_design_jp::LoadTerm;
 use squid_n_edit::UndoStack;
 use squid_n_solver::analysis::{AiMode, Analysis, SeismicDir};
 
@@ -1395,7 +1395,7 @@ fn wall_has_src_boundary_column(
 /// # 変換規則
 /// - 曲げ・せん断は強軸（せい=d）まわりを想定する。引張側主筋量 `at` は上下対称配筋を
 ///   仮定し、`main_x`（せい方向主筋）の総断面積の半分とする（非対称配筋の場合は別途検討）。
-/// - `d_eff` = d - かぶり - 主筋径/2。
+/// - `d_eff` = [`squid_n_core::rc_rebar_geom::rebar_effective_depth`]（帯筋径・多段配筋を考慮した dt）。
 /// - `pw` = せん断補強筋 1 組の断面積(π/4・dia²)×組数 / (b・ピッチ)。ピッチが 0 以下なら 0。
 /// - `sigma_y`: 断面の主筋材料（`Section::rebar_material`）の `fy` → 断面の主材料の
 ///   `fy` の順で解決し、どちらも未設定なら 345 N/mm²（SD345 相当）。配筋を持つ断面で
@@ -1421,7 +1421,7 @@ fn rc_capacity_input_from_rect(
     };
     // 上下対称配筋を仮定し、引張側主筋量は main_x 総断面積の半分。
     let at = bar_area(&rebar.main_x) / 2.0;
-    let d_eff = d - rebar.cover - rebar.main_x.dia / 2.0;
+    let d_eff = squid_n_core::rc_rebar_geom::rebar_effective_depth(d, rebar);
     let shear_area =
         std::f64::consts::PI / 4.0 * rebar.shear.dia * rebar.shear.dia * rebar.shear.legs as f64;
     let pw = if rebar.shear.pitch > 0.0 {
@@ -1580,22 +1580,6 @@ pub(crate) fn steel_width_thickness_rank(
     )
 }
 
-/// 一本部材グループ 1 本分の検定文脈（断面検定の採用応力。
-/// 一本部材指定時の採用応力）。
-struct BeamGroupOverride {
-    /// 一本部材の全長 L [mm]（分割部材長の総和）。
-    length: f64,
-    /// 一本部材両端の強軸曲げ (M_i端, M_j端) [N·mm]。
-    end_moments_z: Option<(f64, f64)>,
-    /// 一本部材中央の強軸曲げ Mc [N·mm]。A 式（M0=(Q1+Q2)L/8 による復元値）と
-    /// B 式（中央に位置する分割部材の内力）の大きい方を採用する。
-    mid_moment_z: Option<f64>,
-    /// グループ内 |Mz| 最大位置の (|M|, |Q|)（せん断スパン比の代表値）。
-    shear_span: Option<(f64, f64)>,
-    /// 一本部材の内法長（両外端の剛域控除後）[mm]。
-    clear_length: f64,
-}
-
 /// `Model.beam_groups` の各グループについて検定文脈の合成値を求め、
 /// 所属要素 ID → 合成値の対応表を返す。
 ///
@@ -1611,10 +1595,9 @@ struct BeamGroupOverride {
 fn beam_group_overrides(
     model: &squid_n_core::model::Model,
     member_forces: &[(ElemId, squid_n_element::beam::MemberForces)],
-) -> std::collections::HashMap<ElemId, std::rc::Rc<BeamGroupOverride>> {
+) -> std::collections::HashMap<ElemId, squid_n_design_jp::BeamGroupContextOverride> {
     use std::collections::HashMap;
-    use std::rc::Rc;
-    let mut out: HashMap<ElemId, Rc<BeamGroupOverride>> = HashMap::new();
+    let mut out: HashMap<ElemId, squid_n_design_jp::BeamGroupContextOverride> = HashMap::new();
 
     for group in &model.beam_groups {
         if group.len() < 2 {
@@ -1715,21 +1698,19 @@ fn beam_group_overrides(
             total
         };
 
-        let ov = Rc::new(BeamGroupOverride {
+        let ov = squid_n_design_jp::BeamGroupContextOverride {
             length: total,
             end_moments_z,
             mid_moment_z,
             shear_span,
             clear_length,
-        });
+        };
         for (e, _, _) in &parts {
             out.insert(e.id, ov.clone());
         }
     }
     out
 }
-pub(crate) use squid_n_design_jp::design_position::{design_positions, is_near_design_position};
-
 mod actions;
 pub mod node_grid;
 mod preparation;

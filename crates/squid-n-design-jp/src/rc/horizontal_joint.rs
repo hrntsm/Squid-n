@@ -137,8 +137,8 @@ pub fn pca_horizontal_joint_ultimate(
 }
 
 /// 主筋（せい方向 main_x）の引張筋重心位置 dt（多段配筋の段数を考慮する）。
-/// 算定の情報源は [`super::section_props::rebar_tension_dt`]。
-use super::section_props::rebar_tension_dt as rc_dt;
+/// 算定の情報源は [`squid_n_core::rc_rebar_geom::rebar_tension_dt`]。
+use squid_n_core::rc_rebar_geom::rebar_tension_dt as rc_dt;
 
 /// 内力リストのうち、評価位置 `pos` に最も近い行を返す。
 fn closest_forces(forces: crate::joint_wiring::ForcesAt<'_>, pos: f64) -> Option<&(f64, [f64; 6])> {
@@ -206,7 +206,7 @@ pub fn collect_pca_checks(
         let s_y = b * yj * (d - yj) / 2.0;
         let d_eff = d - rc_dt(rebar);
         // 引張鉄筋断面積 at（`rect_axis_props` と同じ「count/2 が片側」仮定）。
-        let at = super::section_props::bar_set_area(&rebar.main_x) / 2.0;
+        let at = squid_n_core::section_shape::bar_set_area(&rebar.main_x) / 2.0;
 
         // 部材長 L（節点座標から算定）。
         let (Some(p0), Some(p1)) = (

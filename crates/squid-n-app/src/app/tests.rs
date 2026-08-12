@@ -222,7 +222,7 @@ fn test_beam_group_overrides_combines_members() {
     let overrides = beam_group_overrides(&model, &member_forces);
     let ov = overrides.get(&ElemId(0)).expect("グループ所属");
     // 両要素が同じ合成値を共有する。
-    assert!(std::rc::Rc::ptr_eq(ov, overrides.get(&ElemId(1)).unwrap()));
+    assert_eq!(ov, overrides.get(&ElemId(1)).unwrap());
     // 全長 = 3000+3000。
     assert!((ov.length - 6000.0).abs() < 1e-9);
     // 端部モーメントは外端（要素0の pos0、要素1の pos1）。
@@ -971,11 +971,11 @@ fn test_build_ground_motion_routes_by_direction() {
     // wave 構築のみを検証する純粋関数のテスト（th_dir=Y でも accel_x 側に
     // 誤って入らないことを確認する）。
     let accel = vec![1.0, 2.0, 3.0];
-    let wave_x = App::build_ground_motion(0.01, ThDir::X, accel.clone());
+    let wave_x = squid_n_job::build_ground_motion(0.01, ThDir::X, accel.clone());
     assert_eq!(wave_x.accel_x, accel);
     assert!(wave_x.accel_y.is_none());
 
-    let wave_y = App::build_ground_motion(0.01, ThDir::Y, accel.clone());
+    let wave_y = squid_n_job::build_ground_motion(0.01, ThDir::Y, accel.clone());
     assert_eq!(wave_y.accel_x, vec![0.0; accel.len()]);
     assert_eq!(wave_y.accel_y, Some(accel.clone()));
 }
@@ -984,7 +984,7 @@ fn test_build_ground_motion_routes_by_direction() {
 #[test]
 fn test_build_ground_motion_xy_duplicates_wave() {
     let accel = vec![1.0, 2.0, 3.0];
-    let wave = App::build_ground_motion(0.01, ThDir::Xy, accel.clone());
+    let wave = squid_n_job::build_ground_motion(0.01, ThDir::Xy, accel.clone());
     assert_eq!(wave.accel_x, accel);
     assert_eq!(wave.accel_y, Some(accel));
 }
@@ -2245,12 +2245,12 @@ fn test_rc_capacity_input_from_rect_matches_handcalc() {
     let input = rc_capacity_input_from_rect(b, d, &rebar, &mat, None, None, clear_span)
         .expect("fc が設定されているので Some のはず");
 
-    // 変換規則の確認: at=main_x総断面積の半分、d_eff=d-cover-dia/2、
+    // 変換規則の確認: at=main_x総断面積の半分、d_eff=rc_rebar_geom 規約（帯筋径・多段配筋）、
     // pw=せん断補強筋断面積・組数/(b・ピッチ)、sigma_y は fy 未設定なので 345 固定、
     // sigma_wy は常に 295 固定。
     let main_area = 8.0 * std::f64::consts::PI / 4.0 * 22.0 * 22.0;
     let at_expected = main_area / 2.0;
-    let d_eff_expected = 600.0 - 40.0 - 22.0 / 2.0;
+    let d_eff_expected = squid_n_core::rc_rebar_geom::rebar_effective_depth(d, &rebar);
     let shear_area = std::f64::consts::PI / 4.0 * 10.0 * 10.0 * 2.0;
     let pw_expected = shear_area / (400.0 * 150.0);
     assert!((input.at - at_expected).abs() < 1e-9);
@@ -3352,10 +3352,14 @@ fn test_slab_grillage_node_reactions_total_and_gate() {
     };
 
     let w = 0.005_f64;
-    let beam_map = app.beam_elem_map();
-    let reactions = app
-        .slab_grillage_node_reactions(&app.model.slabs[0], w, &beam_map)
-        .expect("交差格子の支点反力が得られるはず");
+    let beam_map = squid_n_job::auto_loads::beam_elem_map(&app.model);
+    let reactions = squid_n_job::auto_loads::slab_grillage_node_reactions(
+        &app.model,
+        &app.model.slabs[0],
+        w,
+        &beam_map,
+    )
+    .expect("交差格子の支点反力が得られるはず");
     // 4 支点（N4..N7）へ配分。
     assert_eq!(reactions.len(), 4, "支点は4節点");
     let total: f64 = reactions.iter().map(|(_, r)| r).sum();
@@ -3367,10 +3371,15 @@ fn test_slab_grillage_node_reactions_total_and_gate() {
 
     // 実部材化された小梁を含むと二重計上回避のため None（本体 FEM が伝達）。
     app.model.elements.push(mk_beam(4, 4, 5)); // N4-N5 に実 Beam
-    let beam_map = app.beam_elem_map();
+    let beam_map = squid_n_job::auto_loads::beam_elem_map(&app.model);
     assert!(
-        app.slab_grillage_node_reactions(&app.model.slabs[0], w, &beam_map)
-            .is_none(),
+        squid_n_job::auto_loads::slab_grillage_node_reactions(
+            &app.model,
+            &app.model.slabs[0],
+            w,
+            &beam_map,
+        )
+        .is_none(),
         "実部材化小梁を含むスラブは格子荷重の対象外（None）"
     );
 
@@ -3379,10 +3388,15 @@ fn test_slab_grillage_node_reactions_total_and_gate() {
     // 二重計上になる。この場合は None（既存挙動を維持）でなければならない。
     app.model.elements.pop(); // 実 Beam を戻す（他条件は満たす）。
     app.model.slabs[0].method = DistributionMethod::TributaryArea;
-    let beam_map = app.beam_elem_map();
+    let beam_map = squid_n_job::auto_loads::beam_elem_map(&app.model);
     assert!(
-        app.slab_grillage_node_reactions(&app.model.slabs[0], w, &beam_map)
-            .is_none(),
+        squid_n_job::auto_loads::slab_grillage_node_reactions(
+            &app.model,
+            &app.model.slabs[0],
+            w,
+            &beam_map,
+        )
+        .is_none(),
         "分配法が三角/一方向でないスラブは格子荷重の対象外（二重計上回避）"
     );
 }
