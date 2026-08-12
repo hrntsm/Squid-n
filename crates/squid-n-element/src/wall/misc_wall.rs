@@ -42,7 +42,9 @@ pub fn is_rc_wall(data: &ElementData, model: &Model) -> bool {
 /// RC 壁（[`is_rc_wall`]）にのみ課す条件（RC規準・耐震壁の判定）:
 /// - スリット（三方スリット）がないこと
 /// - 壁厚が 120mm 以上であること
-/// - 開口周比 r0=√(開口面積/(l·h)) ≤ 0.4（複数開口モード適用後の面積）
+/// - 開口周比 r0=√(開口面積/(l·h)) ≤ 0.4（複数開口モード適用後の面積）。
+///   `l`・`h` は [`crate::wall_panel::wall_panel_geometry`] の壁長・高さ
+///   （台形壁では上下辺長さの平均を壁長とする）
 ///
 /// 壁厚が特定できない（断面未設定の暫定壁）場合は、四周条件さえ満たせば
 /// 成立扱い（true）とする。RC 固有の 3 条件の原典実装は
@@ -54,7 +56,11 @@ pub fn is_rc_wall(data: &ElementData, model: &Model) -> bool {
 /// 描くか、周辺部材へ剛性算入されるフレーム内雑壁として描くかの判定に用いるため
 /// 公開する。
 pub fn wall_is_seismic(data: &ElementData, model: &Model) -> bool {
-    if !wall_is_framed(data, model) {
+    // 四周判定と開口周比で同じ幾何を共有する（包絡寸法との二重系統を残さない）。
+    let Some(g) = crate::wall_panel::wall_panel_geometry(data, model) else {
+        return false;
+    };
+    if !wall_is_framed_with(&g, model) {
         return false;
     }
     // 以降は RC 規準の耐震壁規定。鋼板耐震壁には課さない。
@@ -77,13 +83,10 @@ pub fn wall_is_seismic(data: &ElementData, model: &Model) -> bool {
     if opening_area <= 0.0 {
         return true;
     }
-    let Some((lw, h)) = wall_extent(data, model) else {
-        return true;
-    };
-    if lw <= 0.0 || h <= 0.0 {
+    if g.lw <= 0.0 || g.h <= 0.0 {
         return true;
     }
-    let r0 = (opening_area / (lw * h)).max(0.0).sqrt();
+    let r0 = (opening_area / (g.lw * g.h)).max(0.0).sqrt();
     r0 <= 0.4
 }
 
@@ -106,6 +109,11 @@ pub fn wall_is_framed(data: &ElementData, model: &Model) -> bool {
     let Some(g) = crate::wall_panel::wall_panel_geometry(data, model) else {
         return false;
     };
+    wall_is_framed_with(&g, model)
+}
+
+/// [`crate::wall_panel::wall_panel_geometry`] 済みの幾何に対する四周判定。
+fn wall_is_framed_with(g: &crate::wall_panel::WallPanelGeometry, model: &Model) -> bool {
     has_girder(model, g.bottom[0], g.bottom[1]) && has_girder(model, g.top[0], g.top[1])
 }
 
@@ -205,30 +213,6 @@ fn wall_thickness(data: &ElementData, model: &Model) -> Option<f64> {
         _ => sec.thickness.unwrap_or(sec.width),
     };
     (t > 0.0).then_some(t)
-}
-
-/// 壁の包絡寸法（最大水平距離 lw × 鉛直高さ h）。
-fn wall_extent(data: &ElementData, model: &Model) -> Option<(f64, f64)> {
-    let coords: Vec<[f64; 3]> = data
-        .nodes
-        .iter()
-        .filter_map(|nid| model.nodes.get(nid.index()))
-        .map(|n| n.coord)
-        .collect();
-    if coords.len() < 3 {
-        return None;
-    }
-    let mut l = 0.0_f64;
-    for i in 0..coords.len() {
-        for j in (i + 1)..coords.len() {
-            let dx = coords[i][0] - coords[j][0];
-            let dy = coords[i][1] - coords[j][1];
-            l = l.max((dx * dx + dy * dy).sqrt());
-        }
-    }
-    let zmax = coords.iter().map(|c| c[2]).fold(f64::MIN, f64::max);
-    let zmin = coords.iter().map(|c| c[2]).fold(f64::MAX, f64::min);
-    Some((l, zmax - zmin))
 }
 
 /// フレーム内雑壁 1 枚分の幾何情報（壁ローカル座標: 原点=下辺 a 節点、
@@ -483,6 +467,93 @@ mod tests {
         model.wall_attrs[0].opening_area = 0.0;
         model.wall_attrs[0].three_side_slit = true;
         assert!(!wall_is_seismic(&data, &model));
+    }
+
+    /// 台形壁では旧包絡寸法（節点間の最大水平距離）と
+    /// [`crate::wall_panel::wall_panel_geometry`] の壁長（上下辺平均）が食い違う。
+    /// 開口周比 r0 は後者を単一情報源とする。
+    #[test]
+    fn 台形壁の開口周比は壁パネル幾何の壁長を用いる() {
+        use squid_n_core::model::WallAttr;
+
+        // 下辺 4000・上辺 3000 → 幾何 lw=3500、包絡 max 水平距離=4000。
+        let make_node = |id: u32, coord: [f64; 3]| Node {
+            id: NodeId(id),
+            coord,
+            restraint: Dof6Mask::FREE,
+            mass: None,
+            story: None,
+            support_spring: None,
+        };
+        let shape = SectionShape::RcWall {
+            thickness: 150.0,
+            ps: 0.0025,
+        };
+        let mut model = Model {
+            nodes: vec![
+                make_node(0, [0.0, 0.0, 0.0]),
+                make_node(1, [4000.0, 0.0, 0.0]),
+                make_node(2, [3500.0, 0.0, 3000.0]),
+                make_node(3, [500.0, 0.0, 3000.0]),
+            ],
+            sections: vec![shape.to_section(SectionId(0), "W".into())],
+            materials: vec![Material {
+                strength_factor: None,
+                concrete_class: Default::default(),
+                id: MaterialId(0),
+                name: "FC24".into(),
+                category: MaterialCategory::Concrete,
+                young: 23000.0,
+                poisson: 0.2,
+                density: 2.4e-9,
+                shear: None,
+                fc: Some(24.0),
+                fy: None,
+            }],
+            ..Default::default()
+        };
+        let data = ElementData {
+            id: ElemId(0),
+            kind: ElementKind::Wall,
+            nodes: smallvec::smallvec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
+            section: Some(SectionId(0)),
+            local_axis: LocalAxis {
+                ref_vector: [0.0, 1.0, 0.0],
+            },
+            end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+            force_regime: ForceRegime::Auto,
+            rigid_zone: Default::default(),
+            plastic_zone: None,
+            spring: None,
+        };
+        crate::wall::add_surrounding_frame(&mut model, &data);
+        model.elements.push(data.clone());
+
+        let g = crate::wall_panel::wall_panel_geometry(&data, &model).expect("幾何");
+        assert!((g.lw_bottom - 4000.0).abs() < 1e-9);
+        assert!((g.lw_top - 3000.0).abs() < 1e-9);
+        assert!((g.lw - 3500.0).abs() < 1e-9);
+        assert!((g.h - 3000.0).abs() < 1e-9);
+
+        // 旧包絡 lw=4000 なら A=1.8e6 で r0=√(1.8/12)≈0.387≤0.4（成立）。
+        // 新 lw=3500 では r0=√(1.8/10.5)≈0.414>0.4（不成立）。
+        let opening_area = 1.8e6_f64;
+        let r0_extent = (opening_area / (4000.0 * 3000.0)).sqrt();
+        let r0_geom = (opening_area / (g.lw * g.h)).sqrt();
+        assert!(r0_extent <= 0.4, "旧包絡では成立側: {r0_extent}");
+        assert!(r0_geom > 0.4, "幾何壁長では不成立側: {r0_geom}");
+
+        model.wall_attrs.push(WallAttr {
+            elem: ElemId(0),
+            opening_area,
+            opening_weight: 0.0,
+            three_side_slit: false,
+            openings: vec![],
+        });
+        assert!(
+            !wall_is_seismic(&data, &model),
+            "台形壁の r0 は壁パネル幾何の壁長で評価する"
+        );
     }
 
     /// 耐震壁は上下辺が大梁で囲まれた壁のみを対象とする。上下辺のいずれかが欠けた壁は

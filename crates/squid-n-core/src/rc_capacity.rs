@@ -193,9 +193,54 @@ pub fn rc_crack_moment(fc: f64, ze: f64) -> f64 {
     RC_CRACK_COEF * fc.sqrt() * ze
 }
 
+/// `SectionShape::RcRect` 相当の配筋から [`RcCapacityInput`] を組み立てる。
+///
+/// - `main`: 引張側として用いる主筋セット（強軸なら `main_x`、弱軸なら `main_y`）
+/// - `rebar`: かぶり・帯筋（`d_eff`・`pw` 用）。`main` と別軸の主筋は見ない
+/// - σy は主筋材質 → 材料 `fy` → 345（SD345 相当）の順。**材料強度割増は掛けない**
+///   （保有水平耐力など割増が要る呼び出し側が後掛けする）
+/// - σwy はせん断補強筋材質 → SD295 相当既定。割増対象外
+/// - σ0 は 0（プレースホルダ）。軸力反映は呼び出し側
+/// - `fc` 未設定なら `None`
+#[allow(clippy::too_many_arguments)]
+pub fn rc_capacity_input_from_rect(
+    b: f64,
+    d: f64,
+    main: &crate::section_shape::BarSet,
+    rebar: &crate::section_shape::RcRebar,
+    mat: &crate::model::Material,
+    rebar_mat: Option<&crate::model::Material>,
+    shear_mat: Option<&crate::model::Material>,
+    clear_span: f64,
+) -> Option<RcCapacityInput> {
+    let fc = mat.fc?;
+    let at = crate::section_shape::bar_set_area(main) / 2.0;
+    let d_eff =
+        crate::rc_rebar_geom::tension_effective_depth(d, rebar.cover, rebar.shear.dia, main);
+    let pw = crate::rc_rebar_geom::pw_ratio(&rebar.shear, b);
+    Some(RcCapacityInput {
+        b,
+        d,
+        at,
+        d_eff,
+        sigma_y: crate::material_grade::rebar_yield_strength(rebar_mat)
+            .or(mat.fy)
+            .unwrap_or(345.0),
+        fc,
+        pw,
+        sigma_wy: crate::material_grade::shear_rebar_yield_strength(shear_mat)
+            .unwrap_or(crate::material_grade::SHEAR_REBAR_DEFAULT_FY),
+        clear_span,
+        sigma_0: 0.0,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ids::MaterialId;
+    use crate::model::{Material, MaterialCategory};
+    use crate::section_shape::{BarSet, RcRebar, ShearBar};
 
     /// 代表断面: b=400, D=600, at=1935(D25×3程度), d_eff=530, σy=345, Fc=24,
     /// pw=0.002, σwy=295, h0=3000。
@@ -212,6 +257,59 @@ mod tests {
             clear_span: 3000.0,
             sigma_0: 0.0,
         }
+    }
+
+    #[test]
+    fn rc_capacity_input_from_rect_matches_handcalc_without_strength_factor() {
+        let rebar = RcRebar {
+            main_x: BarSet {
+                count: 8,
+                dia: 22.0,
+                layers: 1,
+            },
+            main_y: BarSet {
+                count: 4,
+                dia: 22.0,
+                layers: 1,
+            },
+            cover: 40.0,
+            shear: ShearBar {
+                dia: 10.0,
+                pitch: 150.0,
+                legs: 2,
+            },
+        };
+        let mat = Material {
+            strength_factor: None,
+            concrete_class: Default::default(),
+            id: MaterialId(0),
+            name: "FC24".into(),
+            category: MaterialCategory::Concrete,
+            young: 23000.0,
+            poisson: 0.2,
+            density: 2.4e-9,
+            shear: None,
+            fc: Some(24.0),
+            fy: None,
+        };
+        let input = rc_capacity_input_from_rect(
+            400.0,
+            600.0,
+            &rebar.main_x,
+            &rebar,
+            &mat,
+            None,
+            None,
+            3000.0,
+        )
+        .expect("fc set");
+        let at_expected = crate::section_shape::bar_set_area(&rebar.main_x) / 2.0;
+        let d_eff_expected =
+            crate::rc_rebar_geom::tension_effective_depth(600.0, 40.0, 10.0, &rebar.main_x);
+        assert!((input.at - at_expected).abs() < 1e-9);
+        assert!((input.d_eff - d_eff_expected).abs() < 1e-9);
+        assert_eq!(input.sigma_y, 345.0);
+        assert_eq!(input.sigma_wy, 295.0);
     }
 
     #[test]
