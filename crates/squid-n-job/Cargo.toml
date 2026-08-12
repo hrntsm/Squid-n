@@ -2,6 +2,7 @@
 name = "squid-n-job"
 version = "0.0.1"
 edition = "2021"
+license = "MIT"
 
 [dependencies]
 squid-n-core = { path = "../squid-n-core" }
