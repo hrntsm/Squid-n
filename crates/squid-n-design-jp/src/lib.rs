@@ -372,8 +372,9 @@ pub struct DesignCtx {
     /// None の場合は解析せん断力をそのまま用いる（従来動作）。
     pub seismic_qd: Option<SeismicQd>,
     /// RC 柱のメカニズム ΣMy `(強軸=qy 用, 弱軸=qz 用)` [N·mm]。
-    /// 各方向は `Some(ΣMy)` または `None`（その方向は `2·Mu` で代替）。
-    /// 外側の `None` はメカニズム未算定（両方向とも `2·Mu`）。
+    /// 各方向は `Some(ΣMy)`（梁 My 欠落時は端軸力の `Mu_i+Mu_j`）または
+    /// `None`（柱 My 未算定で、その方向は検定位置の `2·Mu` で代替）。
+    /// 外側の `None` はメカニズム未算定（両方向とも検定位置の `2·Mu`）。
     /// [`rc::column_mechanism::compute_column_mechanism_sum_my`] の結果。
     pub column_sum_my: Option<(Option<f64>, Option<f64>)>,
     /// 梁にスラブが取り付くか（両端節点がいずれかのスラブ境界に含まれる）。

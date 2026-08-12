@@ -88,10 +88,27 @@ fn horizontal_unit(v: [f64; 3]) -> Option<[f64; 2]> {
     }
 }
 
-fn aligns_with(load_h: [f64; 2], axis_h: [f64; 2]) -> bool {
-    // |cos θ| ≥ √0.5（45° 以内）なら同一加力方向の梁とみなす。
+fn alignment_score(load_h: [f64; 2], axis_h: [f64; 2]) -> f64 {
     let cos = load_h[0] * axis_h[0] + load_h[1] * axis_h[1];
-    cos * cos >= 0.5
+    cos * cos
+}
+
+/// 梁を強軸/弱軸のどちらか一方にだけ割り当てる。
+///
+/// 45° 付近で両方向にヒットしないよう、スコアが大きい方を採用する。
+/// 同点（ちょうど 45°）は `prefer_on_tie` が true の方向（強軸）に寄せる。
+fn aligns_exclusively(
+    load_h: [f64; 2],
+    peer_h: [f64; 2],
+    axis_h: [f64; 2],
+    prefer_on_tie: bool,
+) -> bool {
+    let s = alignment_score(load_h, axis_h);
+    if s < 0.5 {
+        return false;
+    }
+    let sp = alignment_score(peer_h, axis_h);
+    s > sp + 1e-12 || ((s - sp).abs() <= 1e-12 && prefer_on_tie)
 }
 
 fn beam_my_simple(model: &Model, elem: &ElementData) -> Option<f64> {
@@ -194,6 +211,8 @@ fn sum_beam_my_at_node(
     adjacency: &NodeAdjacency,
     node: squid_n_core::ids::NodeId,
     load_h: [f64; 2],
+    peer_h: [f64; 2],
+    prefer_on_tie: bool,
 ) -> Result<f64, ()> {
     let mut sum = 0.0;
     for other in adjacency.elements_at(model, node) {
@@ -217,11 +236,12 @@ fn sum_beam_my_at_node(
         let Some(axis_h) = horizontal_unit(axis) else {
             continue;
         };
-        if !aligns_with(load_h, axis_h) {
+        if !aligns_exclusively(load_h, peer_h, axis_h, prefer_on_tie) {
             continue;
         }
         // 加力方向に梁はあるが My が取れない（SRC・円形・入力不足等）→
-        // 梁無し扱いにすると ΣMy が過小になり得るため、この方向のメカニズムを放棄する。
+        // 梁無し扱いにすると ΣMy が過小になり得るため Err とし、呼び出し側で
+        // 端軸力ベースの柱 Mu 和（2·Mu 相当）へ落とす。
         let Some(my) = beam_my_simple(model, other) else {
             return Err(());
         };
@@ -232,7 +252,9 @@ fn sum_beam_my_at_node(
 
 /// 柱のメカニズム ΣMy。戻り値は `(強軸=qy 用, 弱軸=qz 用)`。
 ///
-/// 各方向は `Some(ΣMy)` または `None`（その方向は呼び出し側が `2·Mu` で代替）。
+/// 各方向は通常 `Some(ΣMy)`。柱 My 自体が取れないときだけその方向は `None`
+/// （呼び出し側が検定位置軸力の `2·Mu` で代替）。
+/// 梁 My が欠落した方向は、端の設計軸力による柱 Mu 和（`Mu_i+Mu_j`）を返す。
 /// 外側の `None` は柱でない・幾何が取れない場合。
 ///
 /// `n_*` は引張正。`n_axial_factor` はマニュアルの n（ルート 2-3 で 2.0、それ以外 1.0）。
@@ -273,25 +295,34 @@ pub fn compute_column_mechanism_sum_my(
     let n_j = design_axial_for_mechanism(n_long_j, n_combo_j, n_axial_factor);
     let i_is_bottom = p_i[2] <= p_j[2];
 
-    let sum_for = |strong: bool, load_h: [f64; 2]| -> Option<f64> {
+    let sum_for = |strong: bool, load_h: [f64; 2], peer_h: [f64; 2]| -> Option<f64> {
         let col_i = column_my_at_n(model, column, n_i, strong)?;
         let col_j = column_my_at_n(model, column, n_j, strong)?;
-        let beam_i = sum_beam_my_at_node(model, adjacency, ni, load_h).ok()?;
-        let beam_j = sum_beam_my_at_node(model, adjacency, nj, load_h).ok()?;
-        let hi = resolve_column_end_hinge(col_i, beam_i, false);
-        let hj = resolve_column_end_hinge(col_j, beam_j, false);
-        Some(sum_my_from_end_hinges(
-            hi,
-            hj,
-            col_i,
-            col_j,
-            beam_i,
-            beam_j,
-            i_is_bottom,
-        ))
+        let beam_i = sum_beam_my_at_node(model, adjacency, ni, load_h, peer_h, strong);
+        let beam_j = sum_beam_my_at_node(model, adjacency, nj, load_h, peer_h, strong);
+        match (beam_i, beam_j) {
+            (Ok(bi), Ok(bj)) => {
+                let hi = resolve_column_end_hinge(col_i, bi, false);
+                let hj = resolve_column_end_hinge(col_j, bj, false);
+                Some(sum_my_from_end_hinges(
+                    hi,
+                    hj,
+                    col_i,
+                    col_j,
+                    bi,
+                    bj,
+                    i_is_bottom,
+                ))
+            }
+            // 梁 My 欠落 → 端軸力ベースの柱 Mu 和（2·Mu 相当）で確定。
+            _ => Some(col_i + col_j),
+        }
     };
 
-    Some((sum_for(true, load_strong), sum_for(false, load_weak)))
+    Some((
+        sum_for(true, load_strong, load_weak),
+        sum_for(false, load_weak, load_strong),
+    ))
 }
 
 #[cfg(test)]
@@ -489,7 +520,24 @@ mod tests {
             1.0,
         )
         .expect("柱として算定できる");
-        assert!(sum.0.is_none(), "SRC 梁付き方向はメカニズム破棄: {sum:?}");
+        assert!(
+            sum.0.is_some(),
+            "SRC 梁付き方向は端軸力の Mu_i+Mu_j で確定: {sum:?}"
+        );
         assert!(sum.1.is_some(), "梁無し方向は柱ヒンジで Some: {sum:?}");
+        // 両方向とも柱 Mu 和になるため同値（正方形柱）。
+        assert!(
+            (sum.0.unwrap() - sum.1.unwrap()).abs() / sum.0.unwrap() < 1e-9,
+            "sum={sum:?}"
+        );
+    }
+
+    #[test]
+    fn diagonal_beam_assigns_to_one_direction_only() {
+        let axis = [1.0_f64 / 2.0_f64.sqrt(), 1.0 / 2.0_f64.sqrt()];
+        let strong = [1.0, 0.0];
+        let weak = [0.0, 1.0];
+        assert!(aligns_exclusively(strong, weak, axis, true));
+        assert!(!aligns_exclusively(weak, strong, axis, false));
     }
 }
