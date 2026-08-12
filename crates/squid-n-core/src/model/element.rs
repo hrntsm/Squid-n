@@ -257,6 +257,23 @@ impl RigidZone {
         self.face_i.is_some() && self.face_j.is_some()
     }
 
+    /// 節点間長 `geom_len` から両端剛体アーム長を控除した**可撓長** [mm]。
+    ///
+    /// `geom_len − rigid_length_i − rigid_length_j`。控除後が実質 0 以下
+    /// （1e-6 mm 以下）の異常入力では `geom_len` へフォールバックする
+    /// （剛域長の過大指定で可撓長が 0 付近に縮退するのを防ぐ）。
+    ///
+    /// 座屈の内法長・プッシュオーバーせん断の内法スパン・材端バネの可撓長が
+    /// 共通で用いる（剛域フェイス距離 [`Self::clear_span_from`] とは別物）。
+    pub fn flexible_length_from(&self, geom_len: f64) -> f64 {
+        let net = geom_len - self.rigid_length_i() - self.rigid_length_j();
+        if net > 1e-6 {
+            net
+        } else {
+            geom_len
+        }
+    }
+
     /// i 端の剛体アーム長 [mm]（剛域長と仕口パネル分オフセットの大きい方）。
     ///
     /// 可撓長の控除・剛域変換・幾何剛性・せん断降伏の内法高さ・座屈長さの剛度比は、

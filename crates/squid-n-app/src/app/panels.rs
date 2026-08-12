@@ -1815,8 +1815,10 @@ impl App {
             }
         };
         let wave = match dir {
-            // X/Y は単一列を方向へ振り分ける（従来仕様、build_ground_motion 共用）。
-            ThDir::X | ThDir::Y => Self::build_ground_motion(self.analysis_cfg.th_dt, dir, col1),
+            // X/Y は単一列を方向へ振り分ける（従来仕様、job::build_ground_motion 共用）。
+            ThDir::X | ThDir::Y => {
+                squid_n_job::build_ground_motion(self.analysis_cfg.th_dt, dir, col1)
+            }
             // X+Y は CSV の 2 列がそのまま X・Y の入力になる
             // （build_ground_motion の Xy 分岐は「同一波形を複製」する仕様のため、
             // 別波形の 2 列読込はここで直接 GroundMotion を組み立てる）。

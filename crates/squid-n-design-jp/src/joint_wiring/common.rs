@@ -58,5 +58,5 @@ impl MemberInfo<'_> {
 }
 
 /// 主筋（せい方向 main_x）の引張筋重心位置 dt（多段配筋の段数を考慮する）。
-/// 算定の情報源は [`crate::rc::section_props::rebar_tension_dt`]。
-pub(super) use crate::rc::section_props::rebar_tension_dt as rc_dt;
+/// 算定の情報源は [`squid_n_core::rc_rebar_geom::rebar_tension_dt`]。
+pub(super) use squid_n_core::rc_rebar_geom::rebar_tension_dt as rc_dt;

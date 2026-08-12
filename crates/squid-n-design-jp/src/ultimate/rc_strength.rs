@@ -7,11 +7,11 @@
 //! - [`ductility_be_ns`] — 靭性指針式のトラス機構有効幅 be・中子筋本数 Ns。
 
 use super::options::{ShearMethod, UltimateShearOptions};
-use super::rc_section::{bar_set_area, hoop_pw};
 use super::rc_shear::{rc_shear_qsu_plastic, RcPlasticShearInput};
 use super::rc_shear_ductility::{rc_shear_vu_ductility, RcDuctilityShearInput};
 use squid_n_core::rc_capacity::{rc_column_mu_simple, RcCapacityInput};
-use squid_n_core::section_shape::{BarSet, RcRebar};
+use squid_n_core::rc_rebar_geom::{pw_ratio, tension_dt};
+use squid_n_core::section_shape::{bar_set_area, BarSet, RcRebar};
 
 /// 2 軸相互作用の余裕度 `1/((rx)^α + (ry)^α)^(1/α)`（採用応力）。
 ///
@@ -47,14 +47,14 @@ pub(super) fn column_axis_shear(
     l_clear: f64,
     opts: &UltimateShearOptions,
 ) -> (f64, f64) {
-    let dt = rebar.cover + rebar.shear.dia + main.dia / 2.0;
+    let dt = tension_dt(rebar.cover, rebar.shear.dia, main);
     let d_eff = d_dir - dt;
     if d_eff <= 0.0 {
         return (0.0, 0.0);
     }
     let jt = 7.0 * d_eff / 8.0;
     let at = bar_set_area(main) / 2.0;
-    let pw = hoop_pw(rebar, b_dir);
+    let pw = pw_ratio(&rebar.shear, b_dir);
     let qsu = member_shear_strength(
         b_dir, d_dir, jt, pw, rebar, fc, n_axial, l_clear, true, opts,
     );

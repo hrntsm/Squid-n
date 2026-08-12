@@ -41,7 +41,6 @@ mod cft_check;
 mod geometry;
 mod options;
 mod rc_check;
-mod rc_section;
 mod rc_strength;
 
 pub use cft::{

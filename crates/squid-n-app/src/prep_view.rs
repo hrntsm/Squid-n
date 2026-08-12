@@ -6,7 +6,7 @@
 
 use crate::table_util::Col;
 
-use squid_n_core::units::to_display::{area_cm2, inertia_cm4};
+use squid_n_core::units::to_display::{area_cm2, force_kn, inertia_cm4};
 
 use crate::app::{
     ai_mode_label, load_case_kind_label, member_kind_label, member_rank_label, soil_class_label,
@@ -42,11 +42,6 @@ pub enum PrepView {
 #[derive(Clone, Copy, Debug, Default)]
 pub struct PrepViewState {
     pub view: PrepView,
-}
-
-/// N → kN。表は kN 表示に統一する（モデル内部の力の単位は N）。
-fn kn(n: f64) -> f64 {
-    n / 1000.0
 }
 
 /// 準備計算パネルの描画（下ドック）。
@@ -175,7 +170,7 @@ fn stories_section(ui: &mut egui::Ui, prep: &PreparationResult) {
             ui.label(format!("{:.3}", s.steel_height_ratio));
             ui.end_row();
             ui.label("地震用重量 ΣW [kN]");
-            ui.label(format!("{:.1}", kn(s.total_seismic_weight)));
+            ui.label(format!("{:.1}", force_kn(s.total_seismic_weight)));
             ui.label("質量モデル");
             ui.label(match s.mass_method {
                 squid_n_core::model::MassMethod::CorrectedLumped => "補正質点",
@@ -238,11 +233,11 @@ fn stories_section(ui: &mut egui::Ui, prep: &PreparationResult) {
                 if r.weight <= 0.0 {
                     ui.colored_label(crate::theme::BEST_YELLOW, "0.0");
                 } else {
-                    ui.label(format!("{:.1}", kn(r.weight)));
+                    ui.label(format!("{:.1}", force_kn(r.weight)));
                 }
             });
             row.col(|ui| {
-                ui.label(format!("{:.1}", kn(r.cumulative_weight)));
+                ui.label(format!("{:.1}", force_kn(r.cumulative_weight)));
             });
             row.col(|ui| {
                 ui.label(story_structure_label(r.structure));
@@ -286,7 +281,7 @@ fn seismic_section(ui: &mut egui::Ui, prep: &PreparationResult) {
             ui.label(format!("{:.2}", sm.c0));
             ui.end_row();
             ui.label("基部せん断力 Q1 [kN]");
-            ui.label(format!("{:.1}", kn(sm.base_shear)));
+            ui.label(format!("{:.1}", force_kn(sm.base_shear)));
             ui.label("ベースシア係数 Q1/ΣW");
             let total = prep.summary.total_seismic_weight;
             ui.label(if total > 0.0 {
@@ -329,10 +324,10 @@ fn seismic_section(ui: &mut egui::Ui, prep: &PreparationResult) {
                 crate::table_util::text_cell(ui, &r.name);
             });
             row.col(|ui| {
-                ui.label(format!("{:.1}", kn(r.weight)));
+                ui.label(format!("{:.1}", force_kn(r.weight)));
             });
             row.col(|ui| {
-                ui.label(format!("{:.1}", kn(r.cumulative_weight)));
+                ui.label(format!("{:.1}", force_kn(r.cumulative_weight)));
             });
             row.col(|ui| {
                 ui.label(if normal {
@@ -352,10 +347,10 @@ fn seismic_section(ui: &mut egui::Ui, prep: &PreparationResult) {
                 ui.label(format!("{:.4}", r.ci));
             });
             row.col(|ui| {
-                ui.label(format!("{:.1}", kn(r.qi)));
+                ui.label(format!("{:.1}", force_kn(r.qi)));
             });
             row.col(|ui| {
-                ui.label(format!("{:.1}", kn(r.pi)));
+                ui.label(format!("{:.1}", force_kn(r.pi)));
             });
             row.col(|ui| {
                 ui.label(story_level_kind_label(r.level_kind));
@@ -930,7 +925,7 @@ fn loads_section(ui: &mut egui::Ui, prep: &PreparationResult) {
             });
             for k in 0..3 {
                 row.col(|ui| {
-                    let text = format!("{:.1}", kn(r.sum_force[k]));
+                    let text = format!("{:.1}", force_kn(r.sum_force[k]));
                     if empty {
                         ui.colored_label(crate::theme::GRAY_600, text);
                     } else {

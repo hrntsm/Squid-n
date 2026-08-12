@@ -11,6 +11,7 @@
 //! - [`prepare`] — 解析前処理（剛域・仕口パネル・荷重ケースの自動同期）
 //! - [`settings`] — 解析条件（[`settings::AnalysisSettings`]）
 //! - [`compute`] — 各解析の純粋計算（所有モデル＋解析条件 → 結果）
+//! - [`sample_wave`] — 正弦減衰のサンプル地震波（[`sample_wave::sample_ground_motion`]）
 //! - [`error`] — ジョブのエラー型（[`error::JobError`]）
 //!
 //! を持つ。結果の整形（MCP の JSON・GUI の表示）は各クレートに残す
@@ -19,7 +20,9 @@
 pub mod compute;
 pub mod error;
 pub mod prepare;
+pub mod sample_wave;
 pub mod settings;
 
 pub use error::{JobError, JobResult};
+pub use sample_wave::{build_ground_motion, sample_ground_motion};
 pub use settings::AnalysisSettings;

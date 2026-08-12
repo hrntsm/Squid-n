@@ -29,7 +29,7 @@ pub struct RcCapacityInput {
     pub d: f64,
     /// 引張側主筋の総断面積 at \[mm²\]（片側）
     pub at: f64,
-    /// 有効せい d_e \[mm\]（= D - かぶり - 主筋径/2 程度）
+    /// 有効せい d_e \[mm\]（= D − dt。dt は [`crate::rc_rebar_geom::tension_dt`] と同規約）
     pub d_eff: f64,
     /// 主筋降伏強度 σy \[N/mm²\]
     pub sigma_y: f64,

@@ -2452,15 +2452,7 @@ impl App {
     /// 正弦減衰のサンプル地震波を `cfg` から組み立てる
     /// （外部波形ファイルなしで機能を試せる導線。同期実行・ジョブ実行の双方で使う）。
     pub(crate) fn sample_wave(cfg: &AnalysisSettings) -> squid_n_solver::timehistory::GroundMotion {
-        let n = ((cfg.th_duration / cfg.th_dt).ceil() as usize).max(2);
-        let omega = 2.0 * std::f64::consts::PI / cfg.th_period.max(1e-6);
-        let accel: Vec<f64> = (0..n)
-            .map(|i| {
-                let t = i as f64 * cfg.th_dt;
-                cfg.th_amp * (omega * t).sin() * (-0.3 * t).exp()
-            })
-            .collect();
-        Self::build_ground_motion(cfg.th_dt, cfg.th_dir, accel)
+        squid_n_job::sample_ground_motion(cfg)
     }
 
     /// 正弦減衰のサンプル地震波を生成して時刻歴解析を実行する（同期）。
@@ -2468,42 +2460,6 @@ impl App {
         self.apply_parallelism_setting();
         let wave = Self::sample_wave(&self.analysis_cfg);
         self.run_time_history(wave);
-    }
-
-    /// 方向 `dir` に加速度列 `accel` を割り当てた `GroundMotion` を組み立てる。
-    /// X なら accel_x、Y なら accel_y に入れ、他方はゼロ列にする。
-    /// Xy（X+Y 同時入力）は同一波形を accel_x・accel_y の両方にそのまま入れる
-    /// 簡易仕様（位相差・別波形の指定はサポートしない。CSV 2 列入力は
-    /// `parse_wave_csv` が別々の列を返すため、その場合は本関数を経由せず
-    /// 直接 `GroundMotion` を組み立てる）。
-    pub(crate) fn build_ground_motion(
-        dt: f64,
-        dir: ThDir,
-        accel: Vec<f64>,
-    ) -> squid_n_solver::timehistory::GroundMotion {
-        match dir {
-            ThDir::X => squid_n_solver::timehistory::GroundMotion {
-                dt,
-                accel_x: accel,
-                accel_y: None,
-                accel_theta: None,
-            },
-            ThDir::Y => {
-                let n = accel.len();
-                squid_n_solver::timehistory::GroundMotion {
-                    dt,
-                    accel_x: vec![0.0; n],
-                    accel_y: Some(accel),
-                    accel_theta: None,
-                }
-            }
-            ThDir::Xy => squid_n_solver::timehistory::GroundMotion {
-                dt,
-                accel_x: accel.clone(),
-                accel_y: Some(accel),
-                accel_theta: None,
-            },
-        }
     }
 
     /// T7: 解析結果の member_forces から検定結果を生成する。
@@ -2558,247 +2514,31 @@ impl App {
         // 一本部材指定（Model.beam_groups）: グループ単位の採用応力を合成し、
         // 所属部材の検定文脈（部材長・端部/中央モーメント等）を上書きする。
         let group_overrides = beam_group_overrides(&self.model, &results.member_forces);
-        // 部材ID→要素の索引（旧: ループ内で `elements.iter().find` していたため
-        // O(部材数²) だった）。ループ前に一度だけ構築する。同一IDが重複した場合に
-        // `find`（先頭一致）と同じ結果になるよう、forward 走査 + `entry().or_insert`
-        // で「先勝ち」にする（`or_insert` は既に埋まっていれば上書きしない）。
-        let mut elem_by_id: std::collections::HashMap<ElemId, &squid_n_core::model::ElementData> =
-            std::collections::HashMap::with_capacity(self.model.elements.len());
-        for e in &self.model.elements {
-            elem_by_id.entry(e.id).or_insert(e);
-        }
-        // 地震時短期 QD 用の長期内力索引（旧: 部材ごとに `list.iter().find` して
-        // いたため O(部材数²)）。同上の「先勝ち」ルールで構築する。
-        let long_mf_by_id: Option<
-            std::collections::HashMap<ElemId, &squid_n_element::beam::MemberForces>,
-        > = long_member_forces.map(|list| {
-            let mut m = std::collections::HashMap::with_capacity(list.len());
-            for (id, mf) in list {
-                m.entry(*id).or_insert(mf);
-            }
-            m
-        });
-        // 柱の座屈長さ係数 K 用の節点まわり梁索引（`buckling::g_ratio_at` の全要素
-        // 走査を避けるため、ループ前に 1 回だけ構築して使い回す）。
-        let column_k_index = squid_n_core::adjacency::NodeAdjacency::build(&self.model);
-        let mut checks: Vec<(ElemId, f64, squid_n_design_jp::CheckOutcome)> = Vec::new();
-        for (elem_id, mf) in &results.member_forces {
-            let elem = elem_by_id.get(elem_id).copied();
-            let Some(elem) = elem else {
-                continue;
-            };
-            let sec = elem
-                .section
-                .and_then(|sid| self.model.sections.get(sid.index()))
-                .filter(|s| s.id == elem.section.unwrap());
-            let mat = self.model.element_material(elem);
-            let (Some(sec), Some(mat)) = (sec, mat) else {
-                continue;
-            };
-
-            let kind = squid_n_design_jp::MemberKind::of_element(elem, &self.model);
-            let length = self.model.member_length(elem);
-            // せん断スパン比 M/(Q·d) の代表値: 加力方向ごとに「モーメントが最大と
-            // なる検定位置」の (|M|, |Q|) を採用する（強軸: |Mz|max と対応 |Qy|、
-            // 弱軸: |My|max と対応 |Qz|。従来は強軸側の1組を弱軸検定にも流用して
-            // おり、弱軸曲げ卓越の柱で α を過大評価していた）。
-            let shear_span = mf
-                .at
-                .iter()
-                .map(|(_, f)| (f[5].abs(), f[1].abs()))
-                .max_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
-            let shear_span_y = mf
-                .at
-                .iter()
-                .map(|(_, f)| (f[4].abs(), f[2].abs()))
-                .max_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
-            // 端部・中央の強軸曲げ（横座屈 C 係数・たわみ検定用）。
-            let m_at = |target: f64| {
-                mf.at
-                    .iter()
-                    .find(|(p, _)| (p - target).abs() < 1e-9)
-                    .map(|(_, f)| f[5])
-            };
-            let end_moments_z = match (m_at(0.0), m_at(1.0)) {
-                (Some(a), Some(b)) => Some((a, b)),
-                _ => None,
-            };
-            // S 造部材の断面検定属性（欠損率・横座屈長さ・座屈長さ直接入力）。
-            // 座屈長さ lk_y/lk_z の解決（直接入力 > 柱の自動算定 > 部材長）で
-            // 直接入力を先に参照するため、lk 自動算定より前に取得しておく。
-            let steel_attr = self
-                .model
-                .steel_design_attrs
-                .iter()
-                .find(|a| a.elem == *elem_id)
-                .cloned();
-            // 柱の座屈長さ lk_y/lk_z = K_y・h／K_z・h（鋼構造塑性設計指針、水平移動が
-            // 拘束されない場合。K は局所軸の強軸・弱軸たわみ方向ごとに節点まわり
-            // 剛度比 G から算定。[`steel_column_k_axes_with_index`]）。柱以外は
-            // None（lk=部材長）。RC 柱の検定は lk を使わないため、柱一律で
-            // 設定して問題ない。SteelDesignAttr の直接入力があればそちらを優先する
-            // （柱以外の部材でも直接入力は有効。柱の自動算定は柱のみ）。
-            let (lk_y_auto, lk_z_auto) = if kind == squid_n_design_jp::MemberKind::Column {
-                match squid_n_design_jp::steel::buckling::steel_column_k_axes_with_index(
-                    &self.model,
-                    &column_k_index,
-                    elem,
-                ) {
-                    Some((k_y, k_z)) => (Some(k_y * length), Some(k_z * length)),
-                    None => (None, None),
-                }
-            } else {
-                (None, None)
-            };
-            let lk_y = steel_attr
-                .as_ref()
-                .and_then(|a| a.lk_y_direct)
-                .or(lk_y_auto);
-            let lk_z = steel_attr
-                .as_ref()
-                .and_then(|a| a.lk_z_direct)
-                .or(lk_z_auto);
-            // 一本部材グループに属する梁は、部材長・端部/中央モーメント・せん断
-            // スパン比代表値をグループ合成値に置き換える（断面検定の採用応力。
-            // 一本部材指定時の採用応力）。
-            let group = if kind == squid_n_design_jp::MemberKind::Beam {
-                group_overrides.get(elem_id)
-            } else {
-                None
-            };
-            let (length, shear_span, end_moments_z, mid_moment_z) = match group {
-                Some(g) => (g.length, g.shear_span, g.end_moments_z, g.mid_moment_z),
-                None => (length, shear_span, end_moments_z, m_at(0.5)),
-            };
-            // 地震時短期の設計用せん断力 QD の文脈（長期内力・割増係数 n・内法長）。
-            // 内法長 l′/h′ は剛域（フェイス距離）控除後の長さとする。
-            let seismic_qd =
-                long_mf_by_id
-                    .as_ref()
-                    .and_then(|map| map.get(elem_id))
-                    .map(|mf_long| {
-                        let face_sum =
-                            elem.rigid_zone.face_i_or_zero() + elem.rigid_zone.face_j_or_zero();
-                        let clear_length = match group {
-                            // 一本部材は両外端の剛域控除後のグループ内法長。
-                            Some(g) => g.clear_length,
-                            None if length - face_sum > 0.0 => length - face_sum,
-                            None => length,
-                        };
-                        squid_n_design_jp::SeismicQd {
-                            long_at: mf_long.at.clone(),
-                            // 割増係数 n（柱は 1.5 以上）。梁・柱とも 1.5。
-                            n_factor: 1.5,
-                            clear_length,
-                            method: self.analysis_cfg.qd_method,
-                        }
-                    });
-            let ctx = DesignCtx {
-                // 材料は断面が持つ（主筋・せん断補強筋・内蔵鉄骨）。
-                rebar_material: self.model.element_rebar_material(elem).cloned(),
-                shear_rebar_material: self.model.element_shear_rebar_material(elem).cloned(),
-                steel_material: self.model.element_steel_material(elem).cloned(),
-                term: self.design_term,
-                kind,
-                length,
-                lb: None,
-                lk_y,
-                lk_z,
-                shear_span,
-                shear_span_y,
-                rc_damage_control: self.analysis_cfg.rc_damage_control,
-                end_moments_z,
-                mid_moment_z,
-                seismic_qd,
-                steel_attr,
-                steel_fb_rule: Default::default(),
-            };
-
-            // 検定器の選択は構造種別による（`squid_n_core::structure_kind`）。
-            // 複合断面（SRC/CFT）は断面形状で、それ以外は材料の区分で決まる。
-            let checker: Box<dyn DesignCheck> = squid_n_design_jp::checker_for(
-                squid_n_core::structure_kind::structure_kind_of(Some(sec), Some(mat.category)),
-            );
-
-            let positions = design_positions(elem, &self.model, length);
-
-            for (pos, forces) in &mf.at {
-                if !is_near_design_position(*pos, &positions) {
-                    continue;
-                }
-                // [N, Qy, Qz, Mx, My, Mz] -> MemberForcesAt（N は引張正の部材内力）
-                let mfa = MemberForcesAt {
-                    pos: *pos,
-                    n: forces[0],
-                    qy: forces[1],
-                    qz: forces[2],
-                    my: forces[4],
-                    mz: forces[5],
-                };
-                // BRB 属性が登録された部材はメーカー許容値による BRB 検定に
-                // 差し替える（座屈補剛ブレースの断面検定）。BRB 検定は退化ケース
-                // を持たないため常に Checked。
-                let outcome =
-                    if let Some(brb) = self.model.brb_attrs.iter().find(|a| a.elem == *elem_id) {
-                        squid_n_design_jp::CheckOutcome::Checked(squid_n_design_jp::brb::brb_check(
-                            brb,
-                            mfa.n,
-                            length,
-                            self.design_term == LoadTerm::Long,
-                        ))
-                    } else {
-                        checker.check(&mfa, sec, mat, &ctx)
-                    };
-                checks.push((*elem_id, *pos, outcome));
-            }
-        }
-        // 節点単位の検定（RC 柱梁接合部・S/SRC パネルゾーン・冷間成形耐力比・耐震壁）。
-        // 冷間成形の存在軸力 N = NL + 1.5・NE のため、地震時は長期内力も渡す。
-        let mf_slices: Vec<(ElemId, squid_n_design_jp::joint_wiring::ForcesAt)> = results
-            .member_forces
-            .iter()
-            .map(|(id, mf)| (*id, mf.at.as_slice()))
-            .collect();
-        let long_slices: Option<Vec<(ElemId, squid_n_design_jp::joint_wiring::ForcesAt)>> =
-            long_member_forces.map(|list| {
-                list.iter()
-                    .map(|(id, mf)| (*id, mf.at.as_slice()))
-                    .collect()
-            });
-        // 節点単位の検定は退化ケースを持たない（該当なしの節点はそもそも push
-        // されない）ため、常に Checked として扱う。
-        // 仕口パネルをモデル化した接合部は、解析出力のせん断モーメントを設計用
-        // パネルモーメントに用いる（モデル化していない接合部は従来の手組み式）。
-        let panel_moments = results.panel_moments.clone();
-        let joint_checks = squid_n_design_jp::joint_wiring::collect_joint_checks_with_long(
+        let report = squid_n_design_jp::run_member_design_checks(
             &self.model,
-            &mf_slices,
-            long_slices.as_deref(),
-            &panel_moments,
-            self.design_term,
-        )
-        .into_iter()
-        .map(|(node, label, cr)| JointCheck {
-            node,
-            label,
-            outcome: squid_n_design_jp::CheckOutcome::Checked(cr),
-        })
-        .collect();
-        // PCa 水平接合面の検定（PcaBeamAttr が登録された梁のみ。使用限界・終局限界）。
-        // 同じく退化ケースを持たないため常に Checked。
-        checks.extend(
-            squid_n_design_jp::rc::horizontal_joint::collect_pca_checks(
-                &self.model,
-                &mf_slices,
-                self.design_term == LoadTerm::Long,
-            )
-            .into_iter()
-            .map(|(id, pos, cr)| (id, pos, squid_n_design_jp::CheckOutcome::Checked(cr))),
+            &results.member_forces,
+            &results.panel_moments,
+            &squid_n_design_jp::MemberDesignCheckOptions {
+                term: self.design_term,
+                rc_damage_control: self.analysis_cfg.rc_damage_control,
+                qd_method: self.analysis_cfg.qd_method,
+                long_member_forces: long_member_forces.map(|v| v.as_slice()),
+                beam_group_overrides: Some(&group_overrides),
+            },
         );
+        let joint_checks = report
+            .joint_checks
+            .into_iter()
+            .map(|(node, label, cr)| JointCheck {
+                node,
+                label,
+                outcome: squid_n_design_jp::CheckOutcome::Checked(cr),
+            })
+            .collect();
         // 床の中での小梁・スラブ設計（全体 FEM から独立。小梁は大梁を分割しない）。
         let (joist_checks, slab_checks) = self.floor_design_checks();
 
-        let member_checks = group_member_checks(checks);
+        let member_checks = group_member_checks(report.member_checks);
 
         if let Some(bundle) = self.results.as_mut() {
             bundle.member_checks = member_checks;

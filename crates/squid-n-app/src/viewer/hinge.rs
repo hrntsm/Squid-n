@@ -18,6 +18,7 @@ use std::collections::HashMap;
 
 use crate::app::App;
 use crate::theme;
+use squid_n_core::geom::is_vertical_pair;
 use squid_n_core::ids::ElemId;
 use squid_n_core::material_grade::{
     material_strength_factor_rebar, material_strength_factor_steel,
@@ -396,8 +397,7 @@ pub(super) fn extract_mn_meridian(
 }
 
 /// 部材が軸力を受ける（N-M 相関図の対象となる）か判定する（純粋関数）。
-/// 鉛直材（柱。両端節点の水平距離が 1mm 未満。`app::is_vertical_pair` と
-/// 同じ判定規則をここで再実装する）、またはファイバー系
+/// 鉛直材（柱。[`is_vertical_pair`] で判定）、またはファイバー系
 /// （Fiber／MultiSpring／Brace）要素種別を対象とする。
 pub(super) fn is_axial_bending_member(elem: &ElementData, model: &Model) -> bool {
     if matches!(
@@ -412,9 +412,7 @@ pub(super) fn is_axial_bending_member(elem: &ElementData, model: &Model) -> bool
     let (Some(a), Some(b)) = (model.nodes.get(n0.index()), model.nodes.get(n1.index())) else {
         return false;
     };
-    let dx = a.coord[0] - b.coord[0];
-    let dy = a.coord[1] - b.coord[1];
-    (dx * dx + dy * dy).sqrt() < 1.0
+    is_vertical_pair(a.coord, b.coord)
 }
 
 /// `sections`（ある部材のファイバー断面状態。xi 昇順とは限らない）から、

@@ -28,8 +28,8 @@ pub const VERTICAL_COS_TOL: f64 = 0.707;
 ///
 /// 力学レジーム選択・プッシュオーバーの変形角定義・層せん断集計・
 /// 偏心率/剛性率・ST-Bridge 入出力が共通で用いる**単一規約**。
-/// 設計検定の部材種別（柱 |ez|≥0.8／梁 ≤0.2／中間ブレースの 3 区分）は
-/// 検定式の選択という別目的の規約であり、本判定へは統合しない。
+/// 設計検定の部材種別（柱 [`MEMBER_COLUMN_EZ_MIN`] 以上／梁 [`MEMBER_BEAM_EZ_MAX`] 以下／
+/// 中間斜材の 3 区分）は検定式の選択という別目的の規約であり、本判定へは統合しない。
 /// [`is_vertical_pair`]（水平距離の実寸トレランス）は「厳密に直立した柱」の
 /// 抽出用でこれも別物。
 pub fn is_vertical_axis(a: [f64; 3], b: [f64; 3]) -> bool {
@@ -54,6 +54,62 @@ pub fn axis_dominates(dir: [f64; 3], axis: usize) -> bool {
 /// [`VERTICAL_COS_TOL`] と同じ 45° 基準だが、こちらは**部材どうしの相対角**に
 /// 対する規約（柱フェース距離の直交材探索・剛域算定が用いる）。
 pub const ORTHOGONAL_DOT_MAX: f64 = 0.707;
+
+/// 設計検定・パネルゾーンで部材を柱とみなす部材軸の鉛直成分 |ez| の下限。
+///
+/// |ez| ≥ 本定数を柱、[`MEMBER_BEAM_EZ_MAX`] 以下を梁、その中間を斜材（ブレース／
+/// 未分類）とする **3 区分**の規約。検定式の選択・仕口パネルの向き判定が共通で
+/// 用いる（判定の情報源を 1 つに保つ）。
+///
+/// [`VERTICAL_COS_TOL`]（45° 余弦基準）とは**別目的**である。あちらは層せん断集計・
+/// 変形角定義など「柱系か梁系か」の 2 分、こちらは検定式選択の 3 区分。
+pub const MEMBER_COLUMN_EZ_MIN: f64 = 0.8;
+
+/// 設計検定・パネルゾーンで部材を梁とみなす部材軸の鉛直成分 |ez| の上限。
+/// 判定の詳細は [`MEMBER_COLUMN_EZ_MIN`] を参照。
+pub const MEMBER_BEAM_EZ_MAX: f64 = 0.2;
+
+/// 部材軸の鉛直成分 |ez| による 3 区分（柱／梁／斜材）。
+///
+/// 境界値は [`MEMBER_COLUMN_EZ_MIN`]・[`MEMBER_BEAM_EZ_MAX`] に従う。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MemberAxisClass {
+    /// 柱（鉛直材）。|ez| ≥ [`MEMBER_COLUMN_EZ_MIN`]。
+    Column,
+    /// 梁（水平材）。|ez| ≤ [`MEMBER_BEAM_EZ_MAX`]。
+    Beam,
+    /// 斜材（中間角）。上記 2 区分に該当しない。
+    Diagonal,
+}
+
+/// 部材軸の鉛直成分 |ez|（絶対値）から [`MemberAxisClass`] を返す。
+pub fn classify_member_ez(ez: f64) -> MemberAxisClass {
+    if ez >= MEMBER_COLUMN_EZ_MIN {
+        MemberAxisClass::Column
+    } else if ez <= MEMBER_BEAM_EZ_MAX {
+        MemberAxisClass::Beam
+    } else {
+        MemberAxisClass::Diagonal
+    }
+}
+
+/// 線材の局所座標系 `LocalFrame` 用の既定 ref_vector。
+///
+/// 柱（鉛直材）は材軸が鉛直なので ref_vector に鉛直（Z）を使えない。
+/// **柱はグローバル X、梁はグローバル Z** を基準とする（架構生成・格子スナップが
+/// 共通で用いる線材の一般的な取り方）。
+pub fn default_local_ref_vector(vertical: bool) -> [f64; 3] {
+    if vertical {
+        [1.0, 0.0, 0.0]
+    } else {
+        [0.0, 0.0, 1.0]
+    }
+}
+
+/// 節点ペア [`is_vertical_pair`] に応じた既定 ref_vector。
+pub fn default_local_ref_vector_for_pair(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
+    default_local_ref_vector(is_vertical_pair(a, b))
+}
 
 /// 部材の単位軸ベクトル（始端節点 → 終端節点）。
 ///

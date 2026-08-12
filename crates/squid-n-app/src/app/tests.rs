@@ -222,7 +222,7 @@ fn test_beam_group_overrides_combines_members() {
     let overrides = beam_group_overrides(&model, &member_forces);
     let ov = overrides.get(&ElemId(0)).expect("グループ所属");
     // 両要素が同じ合成値を共有する。
-    assert!(std::rc::Rc::ptr_eq(ov, overrides.get(&ElemId(1)).unwrap()));
+    assert_eq!(ov, overrides.get(&ElemId(1)).unwrap());
     // 全長 = 3000+3000。
     assert!((ov.length - 6000.0).abs() < 1e-9);
     // 端部モーメントは外端（要素0の pos0、要素1の pos1）。
@@ -971,11 +971,11 @@ fn test_build_ground_motion_routes_by_direction() {
     // wave 構築のみを検証する純粋関数のテスト（th_dir=Y でも accel_x 側に
     // 誤って入らないことを確認する）。
     let accel = vec![1.0, 2.0, 3.0];
-    let wave_x = App::build_ground_motion(0.01, ThDir::X, accel.clone());
+    let wave_x = squid_n_job::build_ground_motion(0.01, ThDir::X, accel.clone());
     assert_eq!(wave_x.accel_x, accel);
     assert!(wave_x.accel_y.is_none());
 
-    let wave_y = App::build_ground_motion(0.01, ThDir::Y, accel.clone());
+    let wave_y = squid_n_job::build_ground_motion(0.01, ThDir::Y, accel.clone());
     assert_eq!(wave_y.accel_x, vec![0.0; accel.len()]);
     assert_eq!(wave_y.accel_y, Some(accel.clone()));
 }
@@ -984,7 +984,7 @@ fn test_build_ground_motion_routes_by_direction() {
 #[test]
 fn test_build_ground_motion_xy_duplicates_wave() {
     let accel = vec![1.0, 2.0, 3.0];
-    let wave = App::build_ground_motion(0.01, ThDir::Xy, accel.clone());
+    let wave = squid_n_job::build_ground_motion(0.01, ThDir::Xy, accel.clone());
     assert_eq!(wave.accel_x, accel);
     assert_eq!(wave.accel_y, Some(accel));
 }
@@ -2245,12 +2245,12 @@ fn test_rc_capacity_input_from_rect_matches_handcalc() {
     let input = rc_capacity_input_from_rect(b, d, &rebar, &mat, None, None, clear_span)
         .expect("fc が設定されているので Some のはず");
 
-    // 変換規則の確認: at=main_x総断面積の半分、d_eff=d-cover-dia/2、
+    // 変換規則の確認: at=main_x総断面積の半分、d_eff=rc_rebar_geom 規約（帯筋径・多段配筋）、
     // pw=せん断補強筋断面積・組数/(b・ピッチ)、sigma_y は fy 未設定なので 345 固定、
     // sigma_wy は常に 295 固定。
     let main_area = 8.0 * std::f64::consts::PI / 4.0 * 22.0 * 22.0;
     let at_expected = main_area / 2.0;
-    let d_eff_expected = 600.0 - 40.0 - 22.0 / 2.0;
+    let d_eff_expected = squid_n_core::rc_rebar_geom::rebar_effective_depth(d, &rebar);
     let shear_area = std::f64::consts::PI / 4.0 * 10.0 * 10.0 * 2.0;
     let pw_expected = shear_area / (400.0 * 150.0);
     assert!((input.at - at_expected).abs() < 1e-9);

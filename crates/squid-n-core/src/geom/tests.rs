@@ -142,3 +142,42 @@ fn vertical_axis_uses_45deg_cosine() {
     // 長さ 0
     assert!(!is_vertical_axis([1.0, 2.0, 3.0], [1.0, 2.0, 3.0]));
 }
+
+/// 設計検定・パネルゾーンの 3 区分（0.8 / 0.2）と 45° 余弦基準は別規約。
+#[test]
+fn member_axis_class_uses_design_thresholds() {
+    use super::{classify_member_ez, MemberAxisClass, MEMBER_BEAM_EZ_MAX, MEMBER_COLUMN_EZ_MIN};
+
+    assert_eq!(
+        classify_member_ez(MEMBER_COLUMN_EZ_MIN),
+        MemberAxisClass::Column
+    );
+    assert_eq!(classify_member_ez(0.9), MemberAxisClass::Column);
+    assert_eq!(
+        classify_member_ez(MEMBER_BEAM_EZ_MAX),
+        MemberAxisClass::Beam
+    );
+    assert_eq!(classify_member_ez(0.1), MemberAxisClass::Beam);
+    assert_eq!(classify_member_ez(0.5), MemberAxisClass::Diagonal);
+    // 45° 余弦（0.707）は 3 区分では斜材（柱 0.8 未満）。
+    assert_eq!(classify_member_ez(0.707), MemberAxisClass::Diagonal);
+    // 同じ角度でも 45° 余弦 2 分では非鉛直（42° の既存テストと整合）。
+    assert!(!is_vertical_axis([0.0, 0.0, 0.0], [1000.0, 0.0, 900.0]));
+}
+
+/// 柱は X・梁は Z を ref_vector の既定とする。
+#[test]
+fn default_local_ref_vector_follows_vertical_rule() {
+    use super::{default_local_ref_vector, default_local_ref_vector_for_pair};
+
+    assert_eq!(default_local_ref_vector(true), [1.0, 0.0, 0.0]);
+    assert_eq!(default_local_ref_vector(false), [0.0, 0.0, 1.0]);
+    assert_eq!(
+        default_local_ref_vector_for_pair([0.0, 0.0, 0.0], [0.0, 0.0, 4000.0]),
+        [1.0, 0.0, 0.0]
+    );
+    assert_eq!(
+        default_local_ref_vector_for_pair([0.0, 0.0, 0.0], [6000.0, 0.0, 0.0]),
+        [0.0, 0.0, 1.0]
+    );
+}

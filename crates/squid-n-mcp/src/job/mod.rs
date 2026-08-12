@@ -167,6 +167,22 @@ pub fn compute_job(
     }
 }
 
+/// 線形静的解析結果の部材力を `(elem_id, pos, forces)` 行へ平坦化する。
+pub(crate) fn flatten_member_force_rows(
+    member_forces: &[(
+        squid_n_core::ids::ElemId,
+        squid_n_element::beam::MemberForces,
+    )],
+) -> Vec<(u32, f64, [f64; 6])> {
+    let mut rows = Vec::new();
+    for (elem_id, mf) in member_forces {
+        for (pos, forces) in &mf.at {
+            rows.push((elem_id.0, *pos, *forces));
+        }
+    }
+    rows
+}
+
 /// `load_case` 指定があればそれを、なければ先頭の荷重ケースを返す。
 /// 荷重ケースが 1 つもないモデルは [`JobError::LoadCaseNotFound`] を返す。
 pub(crate) fn resolve_load_case(

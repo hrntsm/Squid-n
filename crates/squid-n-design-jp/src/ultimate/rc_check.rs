@@ -7,12 +7,12 @@ use crate::MemberKind;
 use squid_n_core::ids::ElemId;
 use squid_n_core::model::{ElementData, Material, Model, Section};
 use squid_n_core::rc_capacity::{rc_mu_simple, RcCapacityInput};
-use squid_n_core::section_shape::SectionShape;
+use squid_n_core::rc_rebar_geom::{pw_ratio, rebar_tension_dt};
+use squid_n_core::section_shape::{bar_set_area, SectionShape};
 
 use super::geometry::clear_span;
 use super::options::{MemberDemand, ShearMethod, UltimateShearOptions};
 use super::rc_axial::{rc_column_axial_ultimate, RcAxialUltimate};
-use super::rc_section::{bar_set_area, hoop_pw};
 use super::rc_shear::{
     bond_reliable_strength_deformed, rc_shear_qbu_bond, BondStrengthInput, RcBondSplitInput,
 };
@@ -92,8 +92,8 @@ fn check_member(
         squid_n_core::material_grade::rebar_yield_strength(model.element_rebar_material(elem))?;
     let l_clear = clear_span(elem, model);
 
-    // 断面諸元（強軸＝せい方向主筋 main_x）。
-    let dt = rebar.cover + rebar.shear.dia + rebar.main_x.dia / 2.0;
+    // 断面諸元（強軸＝せい方向主筋 main_x）。dt/d_eff は core の単一規約。
+    let dt = rebar_tension_dt(rebar);
     let d_eff = d - dt;
     if d_eff <= 0.0 {
         return None;
@@ -101,7 +101,7 @@ fn check_member(
     let jt = 7.0 * d_eff / 8.0;
     let at = bar_set_area(&rebar.main_x) / 2.0;
     let ag = bar_set_area(&rebar.main_x) + bar_set_area(&rebar.main_y);
-    let pw = hoop_pw(rebar, b);
+    let pw = pw_ratio(&rebar.shear, b);
     let n_axial = demand.n_axial;
 
     // 曲げ終局強度 Mu（柱は軸力を考慮した at 式、梁は軸力なし）。

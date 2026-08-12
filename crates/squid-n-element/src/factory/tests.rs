@@ -886,37 +886,36 @@ fn test_flexural_alpha_y_sugano_for_rc_beam() {
 
     // RC 矩形梁（水平材）→ 菅野式。b=400, D=700, 4-D22（at=半分）, かぶり50,
     // L=5000（a=2500, a/D≈3.57）, Ec=20000 → n=10.25。
+    let rebar = RcRebar {
+        main_x: BarSet {
+            count: 4,
+            dia: 22.0,
+            layers: 1,
+        },
+        main_y: BarSet {
+            count: 4,
+            dia: 22.0,
+            layers: 1,
+        },
+        cover: 50.0,
+        shear: ShearBar {
+            dia: 10.0,
+            pitch: 100.0,
+            legs: 2,
+        },
+    };
     model.sections[0].shape = Some(SectionShape::RcRect {
         b: 400.0,
         d: 700.0,
-        rebar: RcRebar {
-            main_x: BarSet {
-                count: 4,
-                dia: 22.0,
-                layers: 1,
-            },
-            main_y: BarSet {
-                count: 4,
-                dia: 22.0,
-                layers: 1,
-            },
-            cover: 50.0,
-            shear: ShearBar {
-                dia: 10.0,
-                pitch: 100.0,
-                legs: 2,
-            },
-        },
+        rebar: rebar.clone(),
     });
-    let at = squid_n_core::section_shape::bar_set_area(&BarSet {
-        count: 4,
-        dia: 22.0,
-        layers: 1,
-    }) / 2.0;
+    let at = squid_n_core::section_shape::bar_set_area(&rebar.main_x) / 2.0;
+    // d_eff は断面検定と同規約（帯筋径を含む dt）。
+    let d_eff = squid_n_core::rc_rebar_geom::rebar_effective_depth(700.0, &rebar);
     let expected = squid_n_core::rc_capacity::rc_alpha_y_sugano(
         at / (400.0 * 700.0),
         2500.0 / 700.0,
-        (700.0 - 50.0 - 11.0) / 700.0,
+        d_eff / 700.0,
         205000.0 / 20000.0,
     );
     let got = flexural_alpha_y(&beam, &model);

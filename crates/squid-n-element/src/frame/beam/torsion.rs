@@ -76,9 +76,7 @@ fn axis_of(data: &ElementData, model: &Model) -> Option<[f64; 3]> {
     }
     let p0 = model.nodes.get(data.nodes[0].index())?.coord;
     let p1 = model.nodes.get(data.nodes[1].index())?.coord;
-    let d = [p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2]];
-    let l = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
-    (l > 1e-9).then(|| [d[0] / l, d[1] / l, d[2] / l])
+    squid_n_core::geom::vec3::unit_from(p0, p1)
 }
 
 /// 単位ベクトル 2 本が平行（向きの反転を含む）か。

@@ -13,6 +13,7 @@ use squid_n_core::material_grade::{
 };
 use squid_n_core::model::{ElementData, Material, Model, RigidZone, Section};
 use squid_n_core::rc_capacity::{rc_qsu_simple, RcCapacityInput};
+use squid_n_core::rc_rebar_geom::tension_effective_depth;
 use squid_n_core::section_shape::{BarSet, RcRebar, SectionShape};
 use squid_n_element::behavior::{Ctx, ElementBehavior};
 use squid_n_element::transform::LocalFrame;
@@ -122,7 +123,8 @@ fn rc_rect_capacity_input(
     let bar_area = |bs: &BarSet| bs.count as f64 * std::f64::consts::PI / 4.0 * bs.dia * bs.dia;
     // 上下対称配筋を仮定し、引張側主筋量は総断面積の半分。
     let at = bar_area(main) / 2.0;
-    let d_eff = d - rebar.cover - main.dia / 2.0;
+    // d_eff は断面検定と同規約（帯筋径・多段配筋を考慮した dt）。
+    let d_eff = tension_effective_depth(d, rebar.cover, rebar.shear.dia, main);
     let shear_area =
         std::f64::consts::PI / 4.0 * rebar.shear.dia * rebar.shear.dia * rebar.shear.legs as f64;
     let pw = if rebar.shear.pitch > 0.0 {
@@ -354,37 +356,18 @@ pub(crate) fn compute_shear_yield_qy(
 }
 
 /// 部材長（節点間距離）[mm]。節点参照が欠落・退化（長さ0）の場合は None。
-/// RC のせん断降伏耐力算定における内法スパン h0 は、この節点間長から
-/// [`effective_clear_span`] が剛域長を控除して求める（精緻化1）。
+/// RC のせん断降伏耐力算定における内法スパン h0 は、[`Model::member_length`] から
+/// [`RigidZone::flexible_length_from`] が剛域長を控除して求める（精緻化1）。
 fn elem_length(model: &Model, elem: &ElementData) -> Option<f64> {
-    if elem.nodes.len() < 2 {
-        return None;
-    }
-    let pi = model.nodes.get(elem.nodes[0].index())?;
-    let pj = model.nodes.get(elem.nodes[1].index())?;
-    let dx = pj.coord[0] - pi.coord[0];
-    let dy = pj.coord[1] - pi.coord[1];
-    let dz = pj.coord[2] - pi.coord[2];
-    let len = (dx * dx + dy * dy + dz * dz).sqrt();
+    let len = model.member_length(elem);
     (len > 0.0).then_some(len)
 }
 
 /// 剛域控除後の内法スパン h0 [mm]（荒川式のせん断スパン比算定に用いる、精緻化1）。
 ///
-/// h0 = 節点間長（`raw_length`） − (`rigid_zone.length_i` + `rigid_zone.length_j`)。
-/// 控除後が 0 以下（浮動小数点誤差により実質 0 とみなせる極小値を含む、
-/// 1e-6mm 以下）になる異常な剛域指定（剛域長の入力誤りで節点間長を超過する等）
-/// では、h0 を過小評価しないよう節点間長そのものへフォールバックする
-/// （`rc_qsu_simple` 側でもせん断スパン比 h0/(2d_e) は 1.0〜3.0 にクランプされる
-/// ため過大な Qsu には至らないが、異常値の握り潰しではなくフォールバックとして
-/// 明示する）。
+/// [`RigidZone::flexible_length_from`] へ委譲（算定規約の情報源を 1 つに保つ）。
 pub(crate) fn effective_clear_span(raw_length: f64, rigid_zone: &RigidZone) -> f64 {
-    let net = raw_length - rigid_zone.rigid_length_i() - rigid_zone.rigid_length_j();
-    if net > 1e-6 {
-        net
-    } else {
-        raw_length
-    }
+    rigid_zone.flexible_length_from(raw_length)
 }
 
 pub(crate) fn compute_shear_yield_thresholds(model: &Model) -> Vec<ShearThreshold> {
