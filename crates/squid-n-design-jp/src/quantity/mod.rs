@@ -1103,13 +1103,13 @@ fn wall_quantity(ctx: &Ctx, elem: &ElementData) -> Option<MemberQuantity> {
     if ps > 0.0 && l_clear > 0.0 && h_clear > 0.0 {
         let dia = ctx.cfg.assumed_wall_bar_dia;
         let s = ctx.cfg.anchorage_dia_factor * dia;
-        let one_bar_area = std::f64::consts::PI / 4.0 * dia * dia;
+        let one = squid_n_core::section_shape::one_bar_area(dia);
         for (usage, span, other) in [
             (RebarUsage::WallHorizontal, l_clear, h_clear),
             (RebarUsage::WallVertical, h_clear, l_clear),
         ] {
             // 本数 = ps×t×直交方向長さ / 1本断面積（配筋列数を含む等価本数）。
-            let count = ps * t * other / one_bar_area;
+            let count = ps * t * other / one;
             let total_len = member::wall_bar_length(span, s, count);
             item.rebar.push(RebarItem {
                 usage,

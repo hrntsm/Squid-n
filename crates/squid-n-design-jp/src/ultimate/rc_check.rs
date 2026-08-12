@@ -160,9 +160,7 @@ fn check_member(
             n_bars: n_tension.round() as u32,
             cover_side: rebar.cover,
             cover_bottom: rebar.cover,
-            hoop_area: rebar.shear.legs as f64 * std::f64::consts::PI / 4.0
-                * rebar.shear.dia
-                * rebar.shear.dia,
+            hoop_area: squid_n_core::section_shape::shear_legs_area(&rebar.shear),
             hoop_pitch: rebar.shear.pitch,
             pw,
             top_bar: false,

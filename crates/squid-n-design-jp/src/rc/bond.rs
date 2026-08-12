@@ -159,8 +159,7 @@ pub fn rc_beam_bond_check(
     let c = clear_spacing.min(3.0 * rebar.cover).min(5.0 * db);
 
     // W = min(20・Ast/(s・N), 2.5・db)。Ast は 1 組のせん断補強筋全断面積。
-    let ast =
-        rebar.shear.legs as f64 * std::f64::consts::PI / 4.0 * rebar.shear.dia * rebar.shear.dia;
+    let ast = squid_n_core::section_shape::shear_legs_area(&rebar.shear);
     let w = if rebar.shear.pitch > 0.0 {
         (20.0 * ast / (rebar.shear.pitch * n1)).min(2.5 * db)
     } else {

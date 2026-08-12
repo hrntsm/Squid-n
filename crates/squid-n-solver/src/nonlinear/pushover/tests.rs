@@ -6,7 +6,7 @@ use squid_n_core::model::{
     Constraint, ElementData, ElementKind, EndCondition, ForceRegime, LocalAxis, Material,
     MaterialCategory, Node, Section, Story,
 };
-use squid_n_core::section_shape::ShearBar;
+use squid_n_core::section_shape::{bar_set_area, ShearBar};
 
 /// 基部の床（階の列の先頭）。階は床であり、その先頭が基部であることは
 /// `Model::layers` が依拠する不変条件のため、テストのモデルにも必ず置く。
@@ -1694,11 +1694,10 @@ fn test_compute_shear_yield_qy_rc_rect_matches_arakawa_handcalc() {
     // 本モジュール（shear_yield.rs）は保有水平耐力計算専用のため、主筋 σy には
     // 材料強度係数（直接入力係数優先、なければ一律1.1）を無条件で乗じる
     // （`material_strength_factor_rebar`）。せん断補強筋 σwy=295 は割増対象外。
-    let bar_area = |bs: &BarSet| bs.count as f64 * std::f64::consts::PI / 4.0 * bs.dia * bs.dia;
     let qsu_y_handcalc = rc_qsu_simple(&RcCapacityInput {
         b,
         d,
-        at: bar_area(&rebar.main_x) / 2.0,
+        at: bar_set_area(&rebar.main_x) / 2.0,
         d_eff: squid_n_core::rc_rebar_geom::tension_effective_depth(
             d,
             rebar.cover,
@@ -1733,7 +1732,7 @@ fn test_compute_shear_yield_qy_rc_rect_matches_arakawa_handcalc() {
     let qsu_z_handcalc = rc_qsu_simple(&RcCapacityInput {
         b: d,
         d: b,
-        at: bar_area(&rebar.main_y) / 2.0,
+        at: bar_set_area(&rebar.main_y) / 2.0,
         d_eff: squid_n_core::rc_rebar_geom::tension_effective_depth(
             b,
             rebar.cover,
@@ -2122,7 +2121,6 @@ fn test_compute_shear_yield_thresholds_rc_rect_uses_rigid_zone_reduced_clear_spa
     let thresholds = compute_shear_yield_thresholds(&model);
     let th = &thresholds[0];
 
-    let bar_area = |bs: &BarSet| bs.count as f64 * std::f64::consts::PI / 4.0 * bs.dia * bs.dia;
     let expected_clear_span = 2400.0;
 
     // y方向（強軸・main_x。クロス変換で局所 y が強軸側）: RcArakawa を採用し、
@@ -2131,7 +2129,7 @@ fn test_compute_shear_yield_thresholds_rc_rect_uses_rigid_zone_reduced_clear_spa
     let qsu_y_handcalc = rc_qsu_simple(&RcCapacityInput {
         b,
         d,
-        at: bar_area(&rebar.main_x) / 2.0,
+        at: bar_set_area(&rebar.main_x) / 2.0,
         d_eff: squid_n_core::rc_rebar_geom::tension_effective_depth(
             d,
             rebar.cover,
@@ -2180,11 +2178,10 @@ fn test_compute_shear_yield_thresholds_rc_rect_falls_back_when_rigid_zone_exceed
     let thresholds = compute_shear_yield_thresholds(&model);
     let th = &thresholds[0];
 
-    let bar_area = |bs: &BarSet| bs.count as f64 * std::f64::consts::PI / 4.0 * bs.dia * bs.dia;
     let qsu_y_handcalc = rc_qsu_simple(&RcCapacityInput {
         b,
         d,
-        at: bar_area(&rebar.main_x) / 2.0,
+        at: bar_set_area(&rebar.main_x) / 2.0,
         d_eff: squid_n_core::rc_rebar_geom::tension_effective_depth(
             d,
             rebar.cover,
@@ -2618,8 +2615,7 @@ fn test_compute_hinge_thresholds_rc_rebar_uses_material_strength_factor() {
     let (model, rebar, _b, d) = rc_hinge_model();
     let thresholds = compute_hinge_thresholds(&model);
 
-    let bar_area = |bs: &BarSet| bs.count as f64 * std::f64::consts::PI / 4.0 * bs.dia * bs.dia;
-    let at = bar_area(&rebar.main_x) / 2.0;
+    let at = bar_set_area(&rebar.main_x) / 2.0;
     // d_eff は断面検定と同規約（帯筋径を含む dt）。
     let d_eff = squid_n_core::rc_rebar_geom::rebar_effective_depth(d, &rebar);
     let expected_my = rc_mu_simple(&RcCapacityInput {

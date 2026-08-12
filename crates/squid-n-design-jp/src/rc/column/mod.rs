@@ -6,9 +6,9 @@
 
 use super::{
     bar_set_area, circle_axis_props, effective_damage_control, high_strength_w_ft,
-    is_high_strength_shear_grade, main_rebar_grade, one_bar_area, rc_allow,
-    rebar_allowable_tension, rebar_sigma_y_of, rect_axis_props_strong, rect_axis_props_weak,
-    seismic_design_shear, shear_alpha, shear_capacity_for, shear_rebar_grade, AxisProps,
+    is_high_strength_shear_grade, main_rebar_grade, rc_allow, rebar_allowable_tension,
+    rebar_sigma_y_of, rect_axis_props_strong, rect_axis_props_weak, seismic_design_shear,
+    shear_alpha, shear_capacity_for, shear_rebar_grade, AxisProps,
 };
 use crate::{CheckComponent, CheckKind, CheckResult, DesignCtx, LoadTerm, MemberForcesAt};
 use squid_n_core::model::{Material, Section};
@@ -66,7 +66,7 @@ pub(crate) fn column_check(
         let ft = rebar_allowable_tension(grade, rebar.main_x.dia, long_term);
 
         let gross_area = std::f64::consts::PI * d_full * d_full / 4.0;
-        let as_total = rebar.main_x.count as f64 * one_bar_area(rebar.main_x.dia);
+        let as_total = bar_set_area(&rebar.main_x);
         let na = column_axial_capacity(gross_area, as_total, allow.fc, ft, allow.n_ratio);
 
         let axis = ColumnAxis {

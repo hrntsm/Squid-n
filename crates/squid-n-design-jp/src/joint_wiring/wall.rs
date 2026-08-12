@@ -181,13 +181,7 @@ pub(super) fn check_walls(
                 continue;
             };
             let dt = rc_dt(rebar);
-            let pw = if rebar.shear.pitch > 0.0 {
-                rebar.shear.legs as f64 * std::f64::consts::PI * rebar.shear.dia * rebar.shear.dia
-                    / 4.0
-                    / (b * rebar.shear.pitch)
-            } else {
-                0.0
-            };
+            let pw = squid_n_core::rc_rebar_geom::pw_ratio(&rebar.shear, b);
             side_columns.push(WallSideColumn {
                 b,
                 d_eff: d - dt,
@@ -203,10 +197,8 @@ pub(super) fn check_walls(
             // 非線形トリリニア用: 側柱の全断面積・主筋量・せいを集計。
             col_gross_area += b * d;
             dc_max = dc_max.max(d);
-            let bar_area = |bs: &squid_n_core::section_shape::BarSet| -> f64 {
-                bs.count as f64 * std::f64::consts::PI / 4.0 * bs.dia * bs.dia
-            };
-            let main_area = bar_area(&rebar.main_x) + bar_area(&rebar.main_y);
+            let main_area = squid_n_core::section_shape::bar_set_area(&rebar.main_x)
+                + squid_n_core::section_shape::bar_set_area(&rebar.main_y);
             col_main_area_max = col_main_area_max.max(main_area);
         }
         let l_clear = (l - sum_col_depth / 2.0).max(0.1 * l);

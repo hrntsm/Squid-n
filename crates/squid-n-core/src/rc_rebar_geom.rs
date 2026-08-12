@@ -68,8 +68,7 @@ pub fn pw_ratio(shear: &ShearBar, b: f64) -> f64 {
     if shear.pitch <= 0.0 || b <= 0.0 {
         return 0.0;
     }
-    let aw = shear.legs as f64 * std::f64::consts::PI / 4.0 * shear.dia * shear.dia;
-    aw / (b * shear.pitch)
+    crate::section_shape::shear_legs_area(shear) / (b * shear.pitch)
 }
 
 #[cfg(test)]

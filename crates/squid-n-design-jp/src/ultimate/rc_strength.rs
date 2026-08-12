@@ -131,8 +131,7 @@ fn member_vu_ductility(
 ) -> f64 {
     let (be, n_s) = ductility_be_ns(b_dir, rebar);
     let s = rebar.shear.pitch;
-    let aw =
-        rebar.shear.legs as f64 * std::f64::consts::PI / 4.0 * rebar.shear.dia * rebar.shear.dia;
+    let aw = squid_n_core::section_shape::shear_legs_area(&rebar.shear);
     let pwe = if s > 0.0 { aw / (be * s) } else { 0.0 };
     rc_shear_vu_ductility(&RcDuctilityShearInput {
         b: b_dir,
