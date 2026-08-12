@@ -9,14 +9,12 @@
 
 ## 1. 新規に明示した実装課題
 
-### 1.1 保有水平耐力 τu への開口低減 r2 未配線（危険側）
+### 1.1 保有水平耐力 τu への開口低減 r2 未配線（危険側）— **修正済み**
 
-- **内容**: `holding.rs` が `area = thickness * wall_len` のまま τu を算定し、
-  `wall_opening_reduction_strength`（r2）を分母に乗じていない。
-- **影響**: 開口付き耐力壁で τu を過小評価し、WA〜WC 判定が甘くなる。
-- **出典の整理**: [耐震壁_保有水平耐力連携_申し送り.md](耐震壁_保有水平耐力連携_申し送り.md) §1。
-  以前の「r2 対応済み」は Qu 経路のみを指していた表記揺れを、同申し送りで訂正済み。
-- **利用者 docs**: `docs/calc_basis/07_二次設計/03_部材ランク.md` に現状を明記済み。
+- **内容**: `holding.rs` が `area = thickness * wall_len * r2` で τu を算定する。
+  r2 は `WallPanelElement::opening_strength_reduction`（Qu と同一の開口寸法）。
+- **出典**: [耐震壁_保有水平耐力連携_申し送り.md](耐震壁_保有水平耐力連携_申し送り.md) §1。
+- **利用者 docs**: `docs/calc_basis/07_二次設計/03_部材ランク.md` を現仕様に更新済み。
 
 ### 1.2 壁式構造列の情報源が二重
 
@@ -24,14 +22,15 @@
   別系統。保有水平耐力は前者のみ参照。
 - **出典**: 同申し送り §2（更新済み）。
 
-### 1.3 ST-Bridge 取り込み後の `Slab::joists` 未設定
+### 1.3 ST-Bridge 取り込み後の `Slab::joists` 未設定 — **修正済み**
 
-- **内容**: 小梁要素自体は取り込むが、床スラブの `joists` メタデータが埋まらないため、
-  小梁設計・検定のカバー範囲から外れる。
+- **内容**: 小梁要素自体は取り込むが、床スラブの `joists` メタデータは空のまま
+  （床荷重二重計上を避ける）。`floor_design_checks` が `secondary_members` の
+  小梁を断面検定するよう修正した。
 - **根拠**: `crates/squid-n-app/tests/full_model.rs` の
-  `joist_design_checks_cover_imported_secondary_members`（`#[ignore]`）。
+  `joist_design_checks_cover_imported_secondary_members`。
 - **出典**: [実モデル統合テスト_申し送り.md](実モデル統合テスト_申し送り.md) §4.3。
-- **利用者 docs**: `docs/model_io/03_ST-Bridge_要素別変換状況.md` に注意を追記済み。
+- **利用者 docs**: `docs/model_io/03_ST-Bridge_要素別変換状況.md` を現仕様に更新済み。
 
 ### 1.4 準備計算 CSV と画面の差
 
@@ -40,24 +39,19 @@
 - **対応方針候補**: CSV 拡張、または画面専用であることの docs 明記（後者は
   `docs/preparation/11_出力と保存.md` で対応済み）。実装拡張は任意。
 
-### 1.5 診断 stale と準備計算サマリ件数
+### 1.5 診断 stale と準備計算サマリ件数 — **修正済み**
 
-- **内容**: `refresh_preparation` は `diagnostics_stale == true` のときだけ
-  `run_diagnostics` を呼ぶ。モデル未編集で診断タブを開かないと、準備計算タブの
-  診断件数表示が古いまま残る可能性がある（解析実行時の precheck 自体は都度最新）。
-- **出典候補**: [診断と解析前チェックの判定共通化_申し送り.md](診断と解析前チェックの判定共通化_申し送り.md)
-  への追記、または本ファイルを参照。
+- **内容**: `refresh_preparation` は `diagnostics_stale` に依らず `run_diagnostics` を呼ぶ。
+  準備計算タブの診断件数は常に再集計される。
 
 ## 2. 既存申し送りどおり未着手（監査で再確認）
 
 | 項目 | 出典 |
 |------|------|
-| 耐力壁 WD（脆性）判定未配線 | 耐震壁 §3 |
-| 層間変位 δ の中間節点過小評価 | 階を床レベル基準 §残 |
-| 非構造節点のみの床で剛床マスターが水平拘束 | 同 |
-| ST-Bridge `Node::story` が準備計算で上書き | 同 |
-| 壁 Qu の σwh=295 固定 | 材料を断面へ移す §残 |
-| `SetSectionMaterial` の材料存在検証なし | 同 |
+| 壁式構造列の情報源が二重 | 耐震壁 §2 |
+| ST-Bridge `Node::story` が準備計算で上書き | 階を床レベル基準 §残 |
+| 壁 Qu の σwh=295 固定 | 材料を断面へ移す §残（実装はせん断補強筋材料を参照。未割当時のみ 295） |
+| `SetSectionMaterial` の材料存在検証なし | 同（`material_ref_ok` で検証済み） |
 | `Model::slab_thickness` 廃止 | スラブへ断面 §残 |
 | CMQ 図のデータ供給（`beam_loads` 未接続） | 申し送り.md / 残課題一覧 |
 | H 形 κ 不一致・shear_area_2d・山形鋼 Iyz・SRC mCd | クレート横断 §残 |
