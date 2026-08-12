@@ -223,9 +223,30 @@ pub(crate) fn resolve_load_case(
 /// 前処理の実体は [`squid_n_job::prepare::prepare_model_for_analysis`] で、
 /// **GUI と同一**である。`Analysis` はモデルを借用するため、準備は呼出側で
 /// `Analysis::prepare(&model)` を行う。
-pub(crate) fn model_prepared_for_analysis(model: &Model, params: &JobParams) -> Model {
+///
+/// 戻り値の第 2 要素は前処理の注意事項（精算周期未指定で EX/EY を同期しない等）。
+/// 呼び出し側はサマリ JSON の `notices` へ載せて、GUI の `report_notice` と同等に
+/// 呼び出し側へ見えるようにする。
+pub(crate) fn model_prepared_for_analysis(
+    model: &Model,
+    params: &JobParams,
+) -> (Model, Vec<String>) {
     let mut model = model.clone();
     let settings = params.analysis_settings_for_prepare();
-    squid_n_job::prepare::prepare_model_for_analysis(&mut model, &settings, params.design_period);
-    model
+    let report = squid_n_job::prepare::prepare_model_for_analysis(
+        &mut model,
+        &settings,
+        params.design_period,
+    );
+    (model, report.notices)
+}
+
+/// サマリ JSON へ前処理の注意事項を載せる（空なら何もしない）。
+pub(crate) fn attach_prepare_notices(summary: &mut serde_json::Value, notices: Vec<String>) {
+    if notices.is_empty() {
+        return;
+    }
+    if let serde_json::Value::Object(map) = summary {
+        map.insert("notices".to_string(), serde_json::json!(notices));
+    }
 }

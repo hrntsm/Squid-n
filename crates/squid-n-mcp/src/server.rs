@@ -839,19 +839,46 @@ mod tests {
         assert_eq!(params.design_period, None);
     }
 
+    #[test]
+    fn test_prepare_notices_for_semi_precise_without_design_period() {
+        // 階が無いと地震同期パスに入らず notices が空になる。
+        let params = JobParams {
+            ai_mode: squid_n_solver::analysis::AiMode::SemiPrecise,
+            design_period: None,
+            ..Default::default()
+        };
+        let (_model, notices) = crate::job::model_prepared_for_analysis(&pushover_model(), &params);
+        assert!(
+            notices.iter().any(|s| s.contains("EX/EY")),
+            "精算周期未指定時は EX/EY 未同期の注意が出ること: {notices:?}"
+        );
+    }
+
     #[tokio::test]
     async fn test_analysis_run_semi_precise_without_design_period_completes() {
+        // ジョブは完了し、サマリ JSON に notices が載ることを確認する。
         let dir = test_store_dir("semi_precise_no_t");
-        let server = SquidNServer::new(make_state(cantilever_with_load_case(), &dir));
-        let mut args = run_args(JobKind::LinearStatic);
+        let server = SquidNServer::new(make_state(pushover_model(), &dir));
+        let mut args = run_args(JobKind::Pushover);
+        args.steps = Some(10);
+        args.max_disp = Some(30.0);
         args.ai_mode = Some("SemiPrecise".to_string());
         args.design_period = None;
         let result = server.analysis_run(Parameters(args)).await.unwrap();
         let job_id = extract_job_id(&result);
         let status = wait_for_terminal(&server, &job_id).await;
+        let JobStatus::Done { result_ref } = status else {
+            panic!("SemiPrecise without design_period should still complete: {status:?}");
+        };
+        let summary: serde_json::Value = serde_json::from_str(&result_ref).expect("summary JSON");
+        let notices = summary["notices"]
+            .as_array()
+            .expect("notices がサマリに載ること");
         assert!(
-            matches!(status, JobStatus::Done { .. }),
-            "SemiPrecise without design_period should still complete: {status:?}"
+            notices
+                .iter()
+                .any(|n| n.as_str().is_some_and(|s| s.contains("EX/EY"))),
+            "notices に EX/EY 未更新の旨が含まれること: {notices:?}"
         );
     }
 }

@@ -2,7 +2,9 @@
 //!
 //! - [`compute_ultimate_check_job`] — 終局検定ジョブ（靭性保証型耐震設計指針）。
 
-use super::{model_prepared_for_analysis, resolve_load_case, JobOutcome, JobParams};
+use super::{
+    attach_prepare_notices, model_prepared_for_analysis, resolve_load_case, JobOutcome, JobParams,
+};
 use squid_n_core::model::Model;
 use squid_n_job::JobError;
 
@@ -16,7 +18,7 @@ pub(crate) fn compute_ultimate_check_job(
     params: &JobParams,
 ) -> Result<JobOutcome, JobError> {
     // 剛域（face_i/j）を内法長さに反映するため自動剛域を適用（冪等）。
-    let work = model_prepared_for_analysis(model, params);
+    let (work, notices) = model_prepared_for_analysis(model, params);
     let lc_id = resolve_load_case(&work, params.load_case)?.id;
     // 解析の実体は GUI と共通（`squid-n-job`）。エラー文言も共通の `JobError`。
     let result = squid_n_job::compute::compute_linear_static(work.clone(), lc_id)?;
@@ -94,7 +96,7 @@ pub(crate) fn compute_ultimate_check_job(
         })
         .collect();
 
-    let summary = serde_json::json!({
+    let mut summary = serde_json::json!({
         "kind": "UltimateCheck",
         "case": lc_id,
         "n_checks": n_checks,
@@ -105,5 +107,6 @@ pub(crate) fn compute_ultimate_check_job(
         "n_cft_ng": cft_checks.iter().filter(|c| !c.ok).count(),
         "cft_members": cft_members,
     });
+    attach_prepare_notices(&mut summary, notices);
     Ok(JobOutcome::UltimateCheck { summary })
 }

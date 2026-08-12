@@ -1,6 +1,6 @@
 use crate::app::App;
 use squid_n_core::units::to_display::{
-    area_load_kn_per_m2, force_kn, moment_kn_m, moment_kn_m_per_m,
+    area_load_kn_per_m2, force_kn, moment_kn_m, moment_kn_m_per_m, stiffness_kn_per_mm,
 };
 
 /// 柱の積載荷重低減（令85条2項）の参考表示。
@@ -405,25 +405,25 @@ pub fn design_table(ui: &mut egui::Ui, app: &mut App) {
                         String::new()
                     };
                     format!(
-                        "{} K1={:.0} K2={:.0} Qd={:.0}kN Kv={:.0} ／ δ=200mm時 keq={:.1} Heq={:.3} {}",
+                        "{} K1={:.0}kN/mm K2={:.0}kN/mm Qd={:.0}kN Kv={:.0}kN/mm ／ δ=200mm時 keq={:.1}kN/mm Heq={:.3} {}",
                         kind_label,
-                        p.k1,
-                        p.k2,
+                        stiffness_kn_per_mm(p.k1),
+                        stiffness_kn_per_mm(p.k2),
                         force_kn(p.qd),
-                        p.kv,
-                        keq,
+                        stiffness_kn_per_mm(p.kv),
+                        stiffness_kn_per_mm(keq),
                         heq,
                         strain_dep
                     )
                 }
                 IsolatorKind::ElasticSliding => format!(
-                    "弾性すべり μ={:.3} N={:.0}kN Qmax={:.0}kN Kv={:.0}",
+                    "弾性すべり μ={:.3} N={:.0}kN Qmax={:.0}kN Kv={:.0}kN/mm",
                     p.mu,
                     force_kn(p.n_long),
                     force_kn(squid_n_design_jp::isolator::friction_max_force(
                         p.mu, p.n_long
                     )),
-                    p.kv
+                    stiffness_kn_per_mm(p.kv)
                 ),
             };
             ui.label(format!(

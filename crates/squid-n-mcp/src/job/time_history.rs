@@ -2,7 +2,7 @@
 //!
 //! - [`compute_time_history_job`] — TimeHistory ジョブの純粋計算部分。
 
-use super::{model_prepared_for_analysis, JobDir, JobOutcome, JobParams};
+use super::{attach_prepare_notices, model_prepared_for_analysis, JobDir, JobOutcome, JobParams};
 use squid_n_core::model::Model;
 use squid_n_job::{settings::ThDir, JobError};
 
@@ -14,7 +14,7 @@ pub(crate) fn compute_time_history_job(
     model: &Model,
     params: &JobParams,
 ) -> Result<JobOutcome, JobError> {
-    let work = model_prepared_for_analysis(model, params);
+    let (work, notices) = model_prepared_for_analysis(model, params);
 
     let cfg = squid_n_job::AnalysisSettings {
         th_dt: params.dt,
@@ -38,11 +38,12 @@ pub(crate) fn compute_time_history_job(
         .node_disp
         .iter()
         .fold(0.0_f64, |m, v| m.max(v.abs()));
-    let summary = serde_json::json!({
+    let mut summary = serde_json::json!({
         "kind": "TimeHistory",
         "peak_disp": peak_disp,
         "record_dir_y": result.history.record_dir_y,
         "n_steps": result.time.len(),
     });
+    attach_prepare_notices(&mut summary, notices);
     Ok(JobOutcome::TimeHistory { summary })
 }
