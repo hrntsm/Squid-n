@@ -717,6 +717,7 @@ fn draw_peak_check(
             })
         })
         .flatten();
+    let q0_by_elem = wire_qd.then(|| squid_n_job::simple_beam_q0_by_gravity_cases(&app.model));
     let seismic_qd = long_mf.and_then(|list| {
         list.iter()
             .find(|(id, _)| *id == elem.id)
@@ -724,7 +725,7 @@ fn draw_peak_check(
                 long_at: mf.at.clone(),
                 n_factor: 1.5,
                 n_mechanism: 1.0,
-                q_simple: None,
+                q_simple: q0_by_elem.as_ref().and_then(|m| m.get(&elem.id).copied()),
                 clear_length: clear_span,
                 method: app.analysis_cfg.qd_method,
             })

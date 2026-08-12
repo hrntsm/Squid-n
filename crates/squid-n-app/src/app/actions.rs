@@ -1802,23 +1802,32 @@ impl App {
                 return demand;
             }
         }
-        let gravity_lc = gravity_cases_for_seismic_weight(&self.model)
-            .first()
-            .copied();
         // 単純梁せん断 Q0（MK785/SPR785/SPR685 使用部材の QL=Q0 読み替え用）。
-        // Dead+Live（地震用）を加算した長期相当。
+        // Dead+LiveSeismic（なければ Live）を加算した長期相当。
         let q0_map = squid_n_job::simple_beam_q0_by_gravity_cases(&self.model);
+        // QL も同じ重力ケース集合の解析内力を加算する（先頭ケースのみだと Q0 と積載がずれる）。
+        let gravity_long = self.results.as_ref().and_then(|r| {
+            squid_n_job::sum_analyzed_gravity_member_forces(&self.model, |lc| {
+                r.statics
+                    .iter()
+                    .find(|(id, _)| *id == StaticCaseKey::User(lc))
+                    .map(|(_, s)| s.member_forces.clone())
+            })
+        });
         self.results
             .as_ref()
             .map(|r| {
-                let member_forces: &[(ElemId, squid_n_element::beam::MemberForces)] = gravity_lc
+                let fallback = gravity_cases_for_seismic_weight(&self.model)
+                    .first()
                     .and_then(|lc| {
                         r.statics
                             .iter()
-                            .find(|(id, _)| *id == StaticCaseKey::User(lc))
+                            .find(|(id, _)| *id == StaticCaseKey::User(*lc))
                     })
                     .map(|(_, s)| s.member_forces.as_slice())
                     .unwrap_or(r.member_forces.as_slice());
+                let member_forces: &[(ElemId, squid_n_element::beam::MemberForces)] =
+                    gravity_long.as_deref().unwrap_or(fallback);
                 member_forces
                     .iter()
                     .filter_map(|(id, mf)| {
@@ -1826,7 +1835,6 @@ impl App {
                         let mz = mf.at.iter().map(|(_, f)| f[5].abs()).fold(0.0, f64::max);
                         let my = mf.at.iter().map(|(_, f)| f[4].abs()).fold(0.0, f64::max);
                         // 長期せん断力 QL（余裕率の分子控除 (Qsu−QL)/Qmu 用）。
-                        // このケース自体が重力（長期）ケースのため、そのまま採用する。
                         let ql = mf.at.iter().map(|(_, f)| f[1].abs()).fold(0.0, f64::max);
                         Some((
                             *id,
@@ -1859,29 +1867,25 @@ impl App {
         if po.member_response.is_empty() {
             return None;
         }
-        // 長期せん断力 QL（余裕率の分子控除用）を重力ケースの静的結果から引く。
-        let gravity_lc = gravity_cases_for_seismic_weight(&self.model)
-            .first()
-            .copied();
-        let long_forces: Option<&[(ElemId, squid_n_element::beam::MemberForces)]> = self
-            .results
-            .as_ref()
-            .and_then(|res| {
-                gravity_lc.and_then(|lc| {
-                    res.statics
-                        .iter()
-                        .find(|(id, _)| *id == StaticCaseKey::User(lc))
-                })
+        // 長期せん断力 QL（余裕率の分子控除用）を重力ケース集合の静的結果から引く
+        // （Q0 と同じ Dead+LiveSeismic／Live 集合。先頭ケースのみだと積載がずれる）。
+        let gravity_long = self.results.as_ref().and_then(|res| {
+            squid_n_job::sum_analyzed_gravity_member_forces(&self.model, |lc| {
+                res.statics
+                    .iter()
+                    .find(|(id, _)| *id == StaticCaseKey::User(lc))
+                    .map(|(_, s)| s.member_forces.clone())
             })
-            .map(|(_, s)| s.member_forces.as_slice());
+        });
         let ql_of = |elem: ElemId| -> Option<f64> {
-            long_forces?
+            gravity_long
+                .as_ref()?
                 .iter()
                 .find(|(id, _)| *id == elem)
                 .map(|(_, mf)| mf.at.iter().map(|(_, f)| f[1].abs()).fold(0.0, f64::max))
         };
         // 単純梁せん断 Q0（MK785/SPR785/SPR685 使用部材の QL=Q0 読み替え用）。
-        // Dead+Live（地震用）を加算した長期相当。
+        // Dead+LiveSeismic（なければ Live）を加算した長期相当。
         let q0_map = squid_n_job::simple_beam_q0_by_gravity_cases(&self.model);
         Some(
             po.member_response
@@ -2467,9 +2471,8 @@ impl App {
         let Some(results) = &self.results else {
             return;
         };
-        // 地震時短期の設計用せん断力 QD = min(QD1, QD2) 用の長期(DL+LL)内力。
-        // 現在の結果が地震時組合せ（名前に K/E を含む）かつ短期のときのみ、
-        // 解析済みの長期組合せ（"DL + LL" 優先、なければ長期判定の組合せ）を引く。
+        // 地震時短期の設計用せん断力 QD 用の長期内力。
+        // 優先: Q0 と同じ重力ケース集合の解析内力加算。なければ組合せ "DL + LL"。
         // 長期が未解析なら None（QD 割増なし＝従来動作）。
         let is_seismic_combo = match self.last_static {
             Some(StaticKey::Combo(idx)) => results
@@ -2482,7 +2485,18 @@ impl App {
                 .unwrap_or(false),
             _ => false,
         };
-        let long_member_forces: Option<&Vec<(ElemId, squid_n_element::beam::MemberForces)>> =
+        let gravity_long_owned = if is_seismic_combo && self.design_term == LoadTerm::Short {
+            squid_n_job::sum_analyzed_gravity_member_forces(&self.model, |lc| {
+                results
+                    .statics
+                    .iter()
+                    .find(|(id, _)| *id == StaticCaseKey::User(lc))
+                    .map(|(_, s)| s.member_forces.clone())
+            })
+        } else {
+            None
+        };
+        let long_from_combo: Option<&Vec<(ElemId, squid_n_element::beam::MemberForces)>> =
             if is_seismic_combo && self.design_term == LoadTerm::Short {
                 results
                     .combos
@@ -2498,10 +2512,14 @@ impl App {
             } else {
                 None
             };
+        let long_member_forces: Option<&[(ElemId, squid_n_element::beam::MemberForces)]> =
+            gravity_long_owned
+                .as_deref()
+                .or(long_from_combo.map(|v| v.as_slice()));
         // 一本部材指定（Model.beam_groups）: グループ単位の採用応力を合成し、
         // 所属部材の検定文脈（部材長・端部/中央モーメント等）を上書きする。
         let group_overrides = beam_group_overrides(&self.model, &results.member_forces);
-        // 梁 QD1 用の単純梁せん断 Q0（Dead+Live 加算の長期相当）。
+        // 梁 QD1 用の単純梁せん断 Q0（Dead+LiveSeismic 加算の長期相当）。
         let q0_by_elem = if long_member_forces.is_some() {
             squid_n_job::simple_beam_q0_by_gravity_cases(&self.model)
         } else {
@@ -2516,7 +2534,7 @@ impl App {
                 rc_damage_control: self.analysis_cfg.rc_damage_control,
                 bond_method: self.analysis_cfg.bond_method,
                 qd_method: self.analysis_cfg.qd_method,
-                long_member_forces: long_member_forces.map(|v| v.as_slice()),
+                long_member_forces,
                 q_simple_by_elem: Some(&q0_by_elem),
                 beam_group_overrides: Some(&group_overrides),
             },

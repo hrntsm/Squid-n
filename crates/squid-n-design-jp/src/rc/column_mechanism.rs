@@ -104,7 +104,8 @@ fn aligns_exclusively(
     prefer_on_tie: bool,
 ) -> bool {
     let s = alignment_score(load_h, axis_h);
-    if s < 0.5 {
+    // ちょうど 45° では cos²≈0.5。浮動小数でわずかに下回っても除外しない。
+    if s + 1e-12 < 0.5 {
         return false;
     }
     let sp = alignment_score(peer_h, axis_h);

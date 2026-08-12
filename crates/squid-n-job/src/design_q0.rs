@@ -144,10 +144,7 @@ pub fn sum_member_forces_lists(
         for (id, mf) in list {
             let entry = by_elem.entry(*id).or_default();
             for (p, f) in &mf.at {
-                if let Some((_, acc)) = entry
-                    .iter_mut()
-                    .find(|(q, _)| (*q - *p).abs() <= POS_EPS)
-                {
+                if let Some((_, acc)) = entry.iter_mut().find(|(q, _)| (*q - *p).abs() <= POS_EPS) {
                     for i in 0..6 {
                         acc[i] += f[i];
                     }
@@ -166,6 +163,28 @@ pub fn sum_member_forces_lists(
         .collect();
     out.sort_by_key(|(id, _)| id.0);
     out
+}
+
+/// [`gravity_case_ids_for_seismic_weight`] と同じ集合の解析済み内力を加算する。
+///
+/// `force_of` が `None` を返すケースは飛ばす。1 件も取れなければ `None`。
+/// 終局検定の QL や一次設計の長期内力を、Q0 と同じ重力ケース集合に揃えるために使う。
+pub fn sum_analyzed_gravity_member_forces<F>(
+    model: &Model,
+    mut force_of: F,
+) -> Option<Vec<(ElemId, MemberForces)>>
+where
+    F: FnMut(LoadCaseId) -> Option<Vec<(ElemId, MemberForces)>>,
+{
+    let lists: Vec<_> = gravity_case_ids_for_seismic_weight(model)
+        .into_iter()
+        .filter_map(&mut force_of)
+        .collect();
+    if lists.is_empty() {
+        None
+    } else {
+        Some(sum_member_forces_lists(&lists))
+    }
 }
 
 #[cfg(test)]

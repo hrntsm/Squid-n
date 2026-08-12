@@ -6,7 +6,7 @@ use super::{
     flatten_member_force_rows, model_prepared_for_analysis, resolve_load_case, JobOutcome,
 };
 use squid_n_core::model::{LoadCaseKind, Model};
-use squid_n_design_jp::{LoadTerm, MemberDesignCheckOptions};
+use squid_n_design_jp::{BondMethod, LoadTerm, MemberDesignCheckOptions, QdMethod};
 use squid_n_job::JobError;
 
 /// DesignCheck ジョブの純粋計算部分。
@@ -17,6 +17,9 @@ use squid_n_job::JobError;
 /// 地震時短期では重力ケースを別途解析し、長期内力と地震ケース内力を線形加算した
 /// 組合せ内力で検定する（GUI の `DL+LL±EX` に相当）。QD / 柱メカニズム用の
 /// 長期内力と Q0 も同時に渡す。
+///
+/// 重力ケースの再解析が一部失敗してもジョブ全体は落とさず、成功分だけで長期を組む
+/// （`summary.gravity_failed` に失敗件数を載せる）。
 pub(crate) fn compute_design_check_job(
     model: &Model,
     load_case: Option<u32>,
@@ -37,6 +40,7 @@ pub(crate) fn compute_design_check_job(
 
     // 地震時短期: 重力ケースを線形解析して長期内力を重ね、Q0 も算定する。
     // 風時短期は QD 割増の対象外（長期内力は渡さない）。
+    let mut gravity_failed = 0usize;
     let (long_member_forces, q0_by_elem, check_forces) = if lc.kind == LoadCaseKind::Seismic {
         let gravity_ids = squid_n_job::gravity_case_ids_for_seismic_weight(model);
         let mut gravity_results = Vec::new();
@@ -45,8 +49,10 @@ pub(crate) fn compute_design_check_job(
             if *gid == lc_id {
                 continue;
             }
-            let g = squid_n_job::compute::compute_linear_static(work.clone(), *gid)?;
-            gravity_results.push(g.member_forces);
+            match squid_n_job::compute::compute_linear_static(work.clone(), *gid) {
+                Ok(g) => gravity_results.push(g.member_forces),
+                Err(_) => gravity_failed += 1,
+            }
         }
         let long = if gravity_results.is_empty() {
             None
@@ -67,6 +73,8 @@ pub(crate) fn compute_design_check_job(
 
     let member_force_rows = flatten_member_force_rows(&check_forces);
 
+    // MCP は GUI の analysis_cfg を持たないため、付着・QD 方式はクレート既定
+    // （BondMethod::Rc1999、QdMethod 既定）を明示する。一本部材は未配線。
     let report = squid_n_design_jp::run_member_design_checks(
         model,
         &check_forces,
@@ -74,8 +82,8 @@ pub(crate) fn compute_design_check_job(
         &MemberDesignCheckOptions {
             term,
             rc_damage_control: true,
-            bond_method: Default::default(),
-            qd_method: Default::default(),
+            bond_method: BondMethod::default(),
+            qd_method: QdMethod::default(),
             long_member_forces: long_member_forces.as_deref(),
             q_simple_by_elem: Some(&q0_by_elem),
             beam_group_overrides: None,
@@ -130,6 +138,7 @@ pub(crate) fn compute_design_check_job(
         "n_joint_ng": n_joint_ng,
         "max_ratio": max_ratio,
         "qd_wired": long_member_forces.is_some(),
+        "gravity_failed": gravity_failed,
     });
     Ok(JobOutcome::DesignCheck {
         case: lc_id_u32,
