@@ -1,6 +1,7 @@
 //! 層指標（二次設計チェック）とレポート文字列の生成。GUI 非依存。
 
 use squid_n_core::model::Model;
+use squid_n_core::units::to_display::{force_kn, length_m};
 use squid_n_design_jp::secondary::eccentricity::story_eccentricity;
 use squid_n_design_jp::secondary::eccentricity_analysis::story_eccentricity_from_analysis;
 use squid_n_design_jp::secondary::holding_capacity::{eccentricity_ratio, fes, stiffness_ratios};
@@ -228,7 +229,7 @@ pub fn build_report_csv(app: &App) -> String {
                 "{},{:.0},{:.2}\n",
                 s.name,
                 s.elevation,
-                s.seismic_weight.unwrap_or(0.0) / 1000.0
+                force_kn(s.seismic_weight.unwrap_or(0.0))
             ));
         }
     }
@@ -401,7 +402,7 @@ pub fn build_report_csv(app: &App) -> String {
         out.push_str(&format!(
             "\n[増分解析]\n増分方式,{}\n保有水平耐力Qu[kN],{:.2}\nヒンジ数,{}\n",
             control,
-            po.qu / 1000.0,
+            force_kn(po.qu),
             po.hinges.len()
         ));
         // 層別データ列（層間変位・層せん断力）を層数分だけヘッダに追加する。
@@ -427,11 +428,11 @@ pub fn build_report_csv(app: &App) -> String {
                 "{},{:.3},{:.2}",
                 p.step,
                 p.roof_disp,
-                p.base_shear / 1000.0
+                force_kn(p.base_shear)
             ));
             for i in 0..n_stories {
                 let drift = p.story_drift.get(i).copied().unwrap_or(0.0);
-                let shear = p.story_shear.get(i).copied().unwrap_or(0.0) / 1000.0;
+                let shear = force_kn(p.story_shear.get(i).copied().unwrap_or(0.0));
                 out.push_str(&format!(",{:.3},{:.2}", drift, shear));
             }
             out.push('\n');
@@ -521,7 +522,7 @@ pub fn build_preparation_csv(app: &App) -> String {
     let Some(p) = app.preparation.as_ref() else {
         return String::new();
     };
-    let kn = |n: f64| n / 1000.0;
+    let kn = force_kn;
     let mut out = String::new();
 
     out.push_str("# Squid-n 準備計算\n");
@@ -537,7 +538,7 @@ pub fn build_preparation_csv(app: &App) -> String {
         s.n_stories,
         s.n_diaphragms,
         s.ground_elevation,
-        s.height_mm / 1000.0,
+        length_m(s.height_mm),
         s.steel_height_ratio,
         kn(s.total_seismic_weight),
     ));

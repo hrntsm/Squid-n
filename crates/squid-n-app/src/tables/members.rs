@@ -5,6 +5,8 @@ use squid_n_core::model::{
     DamperDef, DamperKind, DamperProps, ElementData, ElementKind, EndCondition, ForceRegime,
     HysteresisModel, IsolatorProps, LocalAxis,
 };
+use squid_n_core::units::to_display::{force_kn, stiffness_kn_per_mm, viscous_c0_kn};
+use squid_n_core::units::to_internal;
 use squid_n_edit::{
     AddDamper, AddIsolator, AddMember, DeleteMember, EditCommand, RemoveSupportIsolator,
     SetDamperProps, SetElementSection, SetMemberHysteresis, SetMemberHysteresisTh,
@@ -698,7 +700,7 @@ fn dampers_table(ui: &mut egui::Ui, app: &mut App) {
             });
             // Kd（両種別で使用。kN/mm 単位で編集）。
             row.col(|ui| {
-                let mut kd_kn = props.kd / 1000.0;
+                let mut kd_kn = stiffness_kn_per_mm(props.kd);
                 let resp = table_util::cell_drag_value(
                     ui,
                     true,
@@ -707,13 +709,13 @@ fn dampers_table(ui: &mut egui::Ui, app: &mut App) {
                         .range(0.0..=1.0e9),
                 );
                 if resp.changed() {
-                    props.kd = kd_kn * 1000.0;
+                    props.kd = to_internal::stiffness_kn_per_mm(kd_kn);
                     pending_props.push((elem_id, props));
                 }
             });
             // C0（マクスウェルのみ）。
             row.col(|ui| {
-                let mut c0_kn = props.c0 / 1000.0;
+                let mut c0_kn = viscous_c0_kn(props.c0);
                 let resp = table_util::cell_drag_value(
                     ui,
                     is_maxwell,
@@ -722,7 +724,7 @@ fn dampers_table(ui: &mut egui::Ui, app: &mut App) {
                         .range(0.0..=1.0e9),
                 );
                 if resp.changed() {
-                    props.c0 = c0_kn * 1000.0;
+                    props.c0 = to_internal::viscous_c0_kn(c0_kn);
                     pending_props.push((elem_id, props));
                 }
             });
@@ -741,7 +743,7 @@ fn dampers_table(ui: &mut egui::Ui, app: &mut App) {
             });
             // Qy（履歴型のみ。kN 単位）。
             row.col(|ui| {
-                let mut qy_kn = props.qy / 1000.0;
+                let mut qy_kn = force_kn(props.qy);
                 let resp = table_util::cell_drag_value(
                     ui,
                     !is_maxwell,
@@ -750,7 +752,7 @@ fn dampers_table(ui: &mut egui::Ui, app: &mut App) {
                         .range(0.0..=1.0e9),
                 );
                 if resp.changed() {
-                    props.qy = qy_kn * 1000.0;
+                    props.qy = to_internal::force_kn(qy_kn);
                     pending_props.push((elem_id, props));
                 }
             });
@@ -905,7 +907,7 @@ fn isolators_table(ui: &mut egui::Ui, app: &mut App) {
             // 大量消費防止）。表示用の変換自体は毎フレーム行い、ドラッグ中の
             // ライブ表示は維持する。
             row.col(|ui| {
-                let mut k1_kn = props.k1 / 1000.0;
+                let mut k1_kn = stiffness_kn_per_mm(props.k1);
                 let resp = table_util::cell_drag_value(
                     ui,
                     true,
@@ -913,14 +915,14 @@ fn isolators_table(ui: &mut egui::Ui, app: &mut App) {
                         .speed(1.0)
                         .range(0.0..=1.0e6),
                 );
-                props.k1 = k1_kn * 1000.0;
+                props.k1 = to_internal::stiffness_kn_per_mm(k1_kn);
                 if resp.drag_stopped() || resp.lost_focus() {
                     pending_props.push((elem_id, props));
                 }
             });
             // K2（積層ゴム系のみ）。
             row.col(|ui| {
-                let mut k2_kn = props.k2 / 1000.0;
+                let mut k2_kn = stiffness_kn_per_mm(props.k2);
                 let resp = table_util::cell_drag_value(
                     ui,
                     !is_sliding,
@@ -928,14 +930,14 @@ fn isolators_table(ui: &mut egui::Ui, app: &mut App) {
                         .speed(1.0)
                         .range(0.0..=1.0e6),
                 );
-                props.k2 = k2_kn * 1000.0;
+                props.k2 = to_internal::stiffness_kn_per_mm(k2_kn);
                 if resp.drag_stopped() || resp.lost_focus() {
                     pending_props.push((elem_id, props));
                 }
             });
             // Qd（積層ゴム系のみ。kN 単位）。
             row.col(|ui| {
-                let mut qd_kn = props.qd / 1000.0;
+                let mut qd_kn = force_kn(props.qd);
                 let resp = table_util::cell_drag_value(
                     ui,
                     !is_sliding,
@@ -943,14 +945,14 @@ fn isolators_table(ui: &mut egui::Ui, app: &mut App) {
                         .speed(1.0)
                         .range(0.0..=1.0e6),
                 );
-                props.qd = qd_kn * 1000.0;
+                props.qd = to_internal::force_kn(qd_kn);
                 if resp.drag_stopped() || resp.lost_focus() {
                     pending_props.push((elem_id, props));
                 }
             });
             // Kv（両種別で使用。kN/mm 単位）。
             row.col(|ui| {
-                let mut kv_kn = props.kv / 1000.0;
+                let mut kv_kn = stiffness_kn_per_mm(props.kv);
                 let resp = table_util::cell_drag_value(
                     ui,
                     true,
@@ -958,7 +960,7 @@ fn isolators_table(ui: &mut egui::Ui, app: &mut App) {
                         .speed(10.0)
                         .range(0.0..=1.0e9),
                 );
-                props.kv = kv_kn * 1000.0;
+                props.kv = to_internal::stiffness_kn_per_mm(kv_kn);
                 if resp.drag_stopped() || resp.lost_focus() {
                     pending_props.push((elem_id, props));
                 }

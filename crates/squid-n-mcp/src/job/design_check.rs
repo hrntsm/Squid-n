@@ -3,7 +3,8 @@
 //! - [`compute_design_check_job`] — DesignCheck ジョブの純粋計算部分。
 
 use super::{
-    flatten_member_force_rows, model_prepared_for_analysis, resolve_load_case, JobOutcome,
+    attach_prepare_notices, flatten_member_force_rows, model_prepared_for_analysis,
+    resolve_load_case, JobOutcome, JobParams,
 };
 use squid_n_core::model::{LoadCaseKind, Model};
 use squid_n_design_jp::{BondMethod, LoadTerm, MemberDesignCheckOptions, QdMethod};
@@ -22,11 +23,11 @@ use squid_n_job::JobError;
 /// （`summary.gravity_failed` に失敗件数を載せる）。
 pub(crate) fn compute_design_check_job(
     model: &Model,
-    load_case: Option<u32>,
+    params: &JobParams,
 ) -> Result<JobOutcome, JobError> {
     // 剛域自動算定は face_i/face_j による危険断面位置（§6.2.3）の算定にも使う。
-    let work = model_prepared_for_analysis(model);
-    let lc = resolve_load_case(&work, load_case)?;
+    let (work, notices) = model_prepared_for_analysis(model, params);
+    let lc = resolve_load_case(&work, params.load_case)?;
     let lc_id = lc.id;
     // 解析の実体は GUI と共通（`squid-n-job`）。エラー文言も共通の `JobError`。
     let result = squid_n_job::compute::compute_linear_static(work.clone(), lc_id)?;
@@ -124,7 +125,7 @@ pub(crate) fn compute_design_check_job(
         }
     }
 
-    let summary = serde_json::json!({
+    let mut summary = serde_json::json!({
         "kind": "DesignCheck",
         "case": lc_id_u32,
         "term": match term {
@@ -140,6 +141,7 @@ pub(crate) fn compute_design_check_job(
         "qd_wired": long_member_forces.is_some(),
         "gravity_failed": gravity_failed,
     });
+    attach_prepare_notices(&mut summary, notices);
     Ok(JobOutcome::DesignCheck {
         case: lc_id_u32,
         member_force_rows,

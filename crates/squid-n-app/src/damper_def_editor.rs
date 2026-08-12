@@ -11,6 +11,8 @@
 
 use crate::app::App;
 use squid_n_core::model::{DamperDef, DamperKind, DamperProps};
+use squid_n_core::units::to_display::{force_kn, stiffness_kn_per_mm, viscous_c0_kn};
+use squid_n_core::units::to_internal;
 use squid_n_edit::{AddDamperDef, RemoveDamperDef, UpdateDamperDef};
 
 /// 制振要素定義フォームのドラフト状態。
@@ -80,16 +82,16 @@ pub fn damper_summary(props: &DamperProps) -> String {
             };
             format!(
                 "Kd={:.0}kN/mm C0={:.1}kN·(s/mm)^α α={:.2}{}",
-                props.kd / 1000.0,
-                props.c0 / 1000.0,
+                stiffness_kn_per_mm(props.kd),
+                viscous_c0_kn(props.c0),
                 props.alpha,
                 relief
             )
         }
         DamperKind::HystereticBilinear => format!(
             "Kd={:.0}kN/mm Qy={:.0}kN k2/k1={:.3}",
-            props.kd / 1000.0,
-            props.qy / 1000.0,
+            stiffness_kn_per_mm(props.kd),
+            force_kn(props.qy),
             props.k2_ratio
         ),
     }
@@ -282,7 +284,7 @@ pub fn damper_def_panel(ui: &mut egui::Ui, app: &mut App) {
 fn maxwell_fields(ui: &mut egui::Ui, props: &mut DamperProps) {
     ui.horizontal_wrapped(|ui| {
         ui.label("Kd[kN/mm]（バネ剛性）:");
-        let mut kd_kn = props.kd / 1000.0;
+        let mut kd_kn = stiffness_kn_per_mm(props.kd);
         if ui
             .add(
                 egui::DragValue::new(&mut kd_kn)
@@ -291,10 +293,10 @@ fn maxwell_fields(ui: &mut egui::Ui, props: &mut DamperProps) {
             )
             .changed()
         {
-            props.kd = kd_kn * 1000.0;
+            props.kd = to_internal::stiffness_kn_per_mm(kd_kn);
         }
         ui.label("C0[kN·(s/mm)^α]（粘性係数）:");
-        let mut c0_kn = props.c0 / 1000.0;
+        let mut c0_kn = viscous_c0_kn(props.c0);
         if ui
             .add(
                 egui::DragValue::new(&mut c0_kn)
@@ -303,7 +305,7 @@ fn maxwell_fields(ui: &mut egui::Ui, props: &mut DamperProps) {
             )
             .changed()
         {
-            props.c0 = c0_kn * 1000.0;
+            props.c0 = to_internal::viscous_c0_kn(c0_kn);
         }
         ui.label("α（速度指数。1.0で線形粘性）:");
         ui.add(
@@ -355,7 +357,7 @@ fn maxwell_fields(ui: &mut egui::Ui, props: &mut DamperProps) {
 fn hysteretic_fields(ui: &mut egui::Ui, props: &mut DamperProps) {
     ui.horizontal_wrapped(|ui| {
         ui.label("Kd=k1[kN/mm]（初期軸剛性）:");
-        let mut kd_kn = props.kd / 1000.0;
+        let mut kd_kn = stiffness_kn_per_mm(props.kd);
         if ui
             .add(
                 egui::DragValue::new(&mut kd_kn)
@@ -364,10 +366,10 @@ fn hysteretic_fields(ui: &mut egui::Ui, props: &mut DamperProps) {
             )
             .changed()
         {
-            props.kd = kd_kn * 1000.0;
+            props.kd = to_internal::stiffness_kn_per_mm(kd_kn);
         }
         ui.label("Qy[kN]（降伏軸力）:");
-        let mut qy_kn = props.qy / 1000.0;
+        let mut qy_kn = force_kn(props.qy);
         if ui
             .add(
                 egui::DragValue::new(&mut qy_kn)
@@ -376,7 +378,7 @@ fn hysteretic_fields(ui: &mut egui::Ui, props: &mut DamperProps) {
             )
             .changed()
         {
-            props.qy = qy_kn * 1000.0;
+            props.qy = to_internal::force_kn(qy_kn);
         }
         ui.label("k2/k1（第2剛性比）:");
         ui.add(

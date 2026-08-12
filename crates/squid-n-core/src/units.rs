@@ -75,6 +75,14 @@ pub mod to_internal {
     pub fn force_kn(kn: f64) -> f64 {
         kn * 1_000.0
     }
+    /// バネ定数 kN/mm → N/mm。
+    pub fn stiffness_kn_per_mm(kn_per_mm: f64) -> f64 {
+        kn_per_mm * 1_000.0
+    }
+    /// 粘性係数 C0 [kN·(s/mm)^α] → [N·(s/mm)^α]。
+    pub fn viscous_c0_kn(c0_kn: f64) -> f64 {
+        c0_kn * 1_000.0
+    }
     pub fn line_load_kn_per_m(v: f64) -> f64 {
         v
     }
@@ -130,6 +138,12 @@ pub mod to_display {
     pub const LABEL_RADIUS: &str = "cm";
     /// 線剛性・バネ定数の表示単位ラベル。
     pub const LABEL_STIFFNESS: &str = "kN/mm";
+    /// 面荷重（床・雑壁）の表示単位ラベル。
+    pub const LABEL_AREA_LOAD: &str = "kN/m²";
+    /// 単位幅あたりモーメント（スラブ検定など）の表示単位ラベル。
+    pub const LABEL_MOMENT_PER_WIDTH: &str = "kN·m/m";
+    /// 粘性係数 C0 の表示単位ラベル（マクスウェルダンパー）。
+    pub const LABEL_VISCOUS_C0: &str = "kN·(s/mm)^α";
 
     /// 力 N → kN。重量・せん断力・軸力に用いる。
     pub fn force_kn(n: f64) -> f64 {
@@ -149,6 +163,21 @@ pub mod to_display {
     /// バネ定数 N/mm → kN/mm。
     pub fn stiffness_kn_per_mm(n_per_mm: f64) -> f64 {
         n_per_mm / 1_000.0
+    }
+
+    /// 面荷重 N/mm² → kN/m²。
+    pub fn area_load_kn_per_m2(n_per_mm2: f64) -> f64 {
+        n_per_mm2 * 1_000.0
+    }
+
+    /// 単位幅あたりモーメント N·mm/mm → kN·m/m。
+    pub fn moment_kn_m_per_m(n_mm_per_mm: f64) -> f64 {
+        n_mm_per_mm / 1_000.0
+    }
+
+    /// 粘性係数 C0 N·(s/mm)^α → kN·(s/mm)^α。
+    pub fn viscous_c0_kn(c0_n: f64) -> f64 {
+        c0_n / 1_000.0
     }
 
     /// 断面積 mm² → cm²（JIS 形鋼表の慣例）。
@@ -186,6 +215,37 @@ mod tests {
             max_relative = 1e-12
         );
         assert_relative_eq!(to_internal::force_kn(50.0), 50000.0, max_relative = 1e-12);
+        assert_relative_eq!(
+            to_internal::stiffness_kn_per_mm(10.0),
+            10000.0,
+            max_relative = 1e-12
+        );
+        assert_relative_eq!(
+            to_display::stiffness_kn_per_mm(10000.0),
+            10.0,
+            max_relative = 1e-12
+        );
+        assert_relative_eq!(
+            to_display::area_load_kn_per_m2(0.0029),
+            2.9,
+            max_relative = 1e-12
+        );
+        assert_relative_eq!(
+            to_internal::area_load_kn_per_m2(2.9),
+            0.0029,
+            max_relative = 1e-12
+        );
+        assert_relative_eq!(
+            to_display::moment_kn_m_per_m(5000.0),
+            5.0,
+            max_relative = 1e-12
+        );
+        assert_relative_eq!(to_display::viscous_c0_kn(1000.0), 1.0, max_relative = 1e-12);
+        assert_relative_eq!(
+            to_internal::viscous_c0_kn(1.0),
+            1000.0,
+            max_relative = 1e-12
+        );
         assert_relative_eq!(
             to_internal::stress_n_per_mm2(24.0),
             24.0,

@@ -3,7 +3,8 @@
 use super::*;
 use crate::table_util::fmt_section_prop;
 use crate::table_util::Col;
-use squid_n_core::units::to_display::{area_cm2, inertia_cm4};
+use squid_n_core::units::to_display::{area_cm2, force_kn, inertia_cm4, stiffness_kn_per_mm};
+use squid_n_core::units::to_internal;
 
 /// ステータスバーのドック/パネル切替アイコンの共通クリック挙動（Zed 風）。
 /// 対象ドックが開いていて対象パネルが既にアクティブなら閉じて `false` を返す。
@@ -214,7 +215,7 @@ impl App {
                             "{}  Z={:.0}mm  W={:.1}kN",
                             s.name,
                             s.elevation,
-                            s.seismic_weight.unwrap_or(0.0) / 1000.0
+                            force_kn(s.seismic_weight.unwrap_or(0.0))
                         ));
                     }
                 }
@@ -1025,7 +1026,7 @@ impl App {
                             let cell_id = egui::Id::new(("story_weight", story.0));
                             let mut w = ui
                                 .data(|d| d.get_temp::<f64>(cell_id))
-                                .unwrap_or(weight.unwrap_or(0.0) / 1000.0);
+                                .unwrap_or(force_kn(weight.unwrap_or(0.0)));
                             ui.horizontal_wrapped(|ui| {
                                 let resp = ui
                                     .add(
@@ -1039,7 +1040,7 @@ impl App {
                                 if resp.has_focus() || resp.dragged() {
                                     ui.data_mut(|d| d.insert_temp(cell_id, w));
                                 } else if resp.drag_stopped() || resp.lost_focus() {
-                                    let new_weight = w * 1000.0;
+                                    let new_weight = to_internal::force_kn(w);
                                     if (new_weight - weight.unwrap_or(0.0)).abs() > 1e-6 {
                                         pending_weight = Some((story, Some(new_weight)));
                                     }
@@ -2087,7 +2088,7 @@ impl App {
         ui.separator();
 
         ui.horizontal(|ui| {
-            ui.label(format!("保有水平耐力 Qu = {:.1} kN", po.qu / 1000.0));
+            ui.label(format!("保有水平耐力 Qu = {:.1} kN", force_kn(po.qu)));
             ui.separator();
             let mech = match &po.mechanism {
                 squid_n_solver::pushover::MechanismType::Overall => "全体崩壊形".to_string(),
@@ -2145,12 +2146,13 @@ impl App {
         };
         let story_qu_kn: Vec<f64> = (0..n_stories)
             .map(|i| {
-                po.capacity_curve
-                    .iter()
-                    .filter_map(|p| p.story_shear.get(i).copied())
-                    .map(f64::abs)
-                    .fold(0.0_f64, f64::max)
-                    / 1000.0
+                force_kn(
+                    po.capacity_curve
+                        .iter()
+                        .filter_map(|p| p.story_shear.get(i).copied())
+                        .map(f64::abs)
+                        .fold(0.0_f64, f64::max),
+                )
             })
             .collect();
         if !story_qu_kn.is_empty() {
@@ -2187,7 +2189,8 @@ impl App {
                         .iter()
                         .map(|p| {
                             let drift = p.story_drift.get(i).copied().unwrap_or(0.0).abs();
-                            let shear = p.story_shear.get(i).copied().unwrap_or(0.0).abs() / 1000.0;
+                            let shear =
+                                force_kn(p.story_shear.get(i).copied().unwrap_or(0.0).abs());
                             [drift, shear]
                         })
                         .collect();
@@ -2332,22 +2335,22 @@ impl App {
                         ui.label(format!("{:.0}", stick.height));
                     });
                     row.col(|ui| {
-                        ui.label(format!("{:.1}", sk.k1 / 1000.0));
+                        ui.label(format!("{:.1}", stiffness_kn_per_mm(sk.k1)));
                     });
                     row.col(|ui| {
-                        ui.label(format!("{:.1}", sk.k2() / 1000.0));
+                        ui.label(format!("{:.1}", stiffness_kn_per_mm(sk.k2())));
                     });
                     row.col(|ui| {
-                        ui.label(format!("{:.1}", sk.k3() / 1000.0));
+                        ui.label(format!("{:.1}", stiffness_kn_per_mm(sk.k3())));
                     });
                     row.col(|ui| {
-                        ui.label(format!("{:.2} / {:.0}", sk.d1, sk.q1 / 1000.0));
+                        ui.label(format!("{:.2} / {:.0}", sk.d1, force_kn(sk.q1)));
                     });
                     row.col(|ui| {
-                        ui.label(format!("{:.2} / {:.0}", sk.d2, sk.q2 / 1000.0));
+                        ui.label(format!("{:.2} / {:.0}", sk.d2, force_kn(sk.q2)));
                     });
                     row.col(|ui| {
-                        ui.label(format!("{:.2} / {:.0}", sk.d3, sk.q3 / 1000.0));
+                        ui.label(format!("{:.2} / {:.0}", sk.d3, force_kn(sk.q3)));
                     });
                 },
             );
@@ -2441,7 +2444,7 @@ impl App {
                         ui.label(format!("{:.2}", res.story_peak_drift[i]));
                     });
                     row.col(|ui| {
-                        ui.label(format!("{:.0}", res.story_peak_shear[i] / 1000.0));
+                        ui.label(format!("{:.0}", force_kn(res.story_peak_shear[i])));
                     });
                     row.col(|ui| {
                         ui.label(format!("{:.2}", res.story_ductility[i]));

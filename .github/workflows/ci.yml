@@ -71,22 +71,25 @@ jobs:
   audit:
     name: 脆弱性確認
     runs-on: ubuntu-latest
-    # rustsec/audit-check は脆弱性が0件でも unmaintained 等の警告を
-    # Check Run として書き込むため checks: write が必須。GitHub の新規リポジトリは
-    # デフォルトで GITHUB_TOKEN が read-only になり、権限不足でジョブ自体が失敗する
-    # （"Resource not accessible by integration"）。最小権限でここに明示する。
+    # rustsec/audit-check は警告を Check Run API で書き込むが、権限不足や
+    # "Not Found" でジョブ自体が落ちることがある。CLI の cargo audit なら
+    # 脆弱性の有無だけで exit code が決まり、警告（unmaintained 等）では落ちない。
     permissions:
       contents: read
-      checks: write
     steps:
       - uses: actions/checkout@v4
-      - uses: rustsec/audit-check@v2.0.0
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@v2
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+          tool: cargo-audit
+      - name: cargo audit
+        run: |
           # quick-xml の DoS 脆弱性。直接依存は 0.41 に更新済みだが、
           # wayland-scanner / zbus_xml（eframe 経由の推移的依存）が
           # まだ quick-xml ^0.39 を要求しているため、上流の更新待ち。
-          ignore: RUSTSEC-2026-0194,RUSTSEC-2026-0195
+          cargo audit \
+            --ignore RUSTSEC-2026-0194 \
+            --ignore RUSTSEC-2026-0195
 
   dependency-check:
     name: 依存性チェック

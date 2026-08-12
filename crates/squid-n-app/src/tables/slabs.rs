@@ -3,6 +3,8 @@ use squid_n_core::ids::{NodeId, SlabId};
 use squid_n_core::model::{
     AreaLoad, DistributionMethod, JoistLine, OneWayDir, SlabKind, SlabUsage,
 };
+use squid_n_core::units::to_display::area_load_kn_per_m2;
+use squid_n_core::units::to_internal;
 use squid_n_edit::{AddSlab, DeleteSlab, SetSlabJoists, SetSlabKind, SetSlabOneWay, SetSlabUsage};
 
 /// スラブ追加フォームのドラフト状態（GUI 専用）。
@@ -13,7 +15,7 @@ pub struct SlabDraft {
     pub nodes: Vec<Option<NodeId>>,
     /// 荷重種別（既定 "DL"）
     pub load_kind: String,
-    /// 荷重値の入力文字列。**UI 表示は kN/m²**（内部格納は ×1e-3 した N/mm²）。
+    /// 荷重値の入力文字列。**UI 表示は kN/m²**（内部は `to_internal::area_load_kn_per_m2`）。
     pub load_value: String,
     pub method: DistributionMethod,
     /// スラブ用途（積載荷重プリセット。`None` は積載寄与なし）。
@@ -189,7 +191,7 @@ pub fn slabs_table(ui: &mut egui::Ui, app: &mut App) {
                 let s = slab
                     .loads
                     .iter()
-                    .map(|l| format!("{} {:.2}kN/m²", l.kind, l.value * 1e3))
+                    .map(|l| format!("{} {:.2}kN/m²", l.kind, area_load_kn_per_m2(l.value)))
                     .collect::<Vec<_>>()
                     .join(", ");
                 if s.is_empty() {
@@ -432,12 +434,12 @@ pub fn slabs_table(ui: &mut egui::Ui, app: &mut App) {
             });
         if let Some(u) = app.slab_draft.usage {
             use squid_n_core::model::LoadPurpose;
-            // 表示は kN/m²（内部 N/mm² を ×1e3）。
+            // 表示は kN/m²。
             ui.label(format!(
                 "床用 {:.2} / 骨組用 {:.2} / 地震用 {:.2} kN/m²",
-                u.live_load(LoadPurpose::Floor) * 1e3,
-                u.live_load(LoadPurpose::Frame) * 1e3,
-                u.live_load(LoadPurpose::Seismic) * 1e3,
+                area_load_kn_per_m2(u.live_load(LoadPurpose::Floor)),
+                area_load_kn_per_m2(u.live_load(LoadPurpose::Frame)),
+                area_load_kn_per_m2(u.live_load(LoadPurpose::Seismic)),
             ));
         }
     });
@@ -486,8 +488,7 @@ pub fn slabs_table(ui: &mut egui::Ui, app: &mut App) {
             .trim()
             .parse::<f64>()
             .unwrap_or(0.0);
-        // kN/m² → N/mm²（内部単位系）。1 kN/m² = 1e-3 N/mm²。
-        let value = value_kn_m2 * 1e-3;
+        let value = to_internal::area_load_kn_per_m2(value_kn_m2);
         let kind = app.slab_draft.load_kind.trim();
         let kind = if kind.is_empty() { "DL" } else { kind }.to_string();
         app.undo.run(

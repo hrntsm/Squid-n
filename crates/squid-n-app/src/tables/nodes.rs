@@ -3,6 +3,8 @@ use crate::app::{App, LogLevel};
 use squid_n_core::dof::Dof6Mask;
 use squid_n_core::ids::NodeId;
 use squid_n_core::model::{IsolatorKind, IsolatorProps};
+use squid_n_core::units::to_display::{force_kn, stiffness_kn_per_mm};
+use squid_n_core::units::to_internal;
 use squid_n_edit::{
     AddNode, PlaceSupportIsolator, RemoveSupportIsolator, SetNodeRestraint, SetNodeSupportSpring,
 };
@@ -52,12 +54,12 @@ pub fn isolator_kind_selector(ui: &mut egui::Ui, kind: &mut IsolatorKind) {
 /// 呼ばれるため）。
 ///
 /// 入力表示は K1/K2/Kv=kN/mm・Qd=kN（免震一覧 `tables::members::isolators_table`
-/// と統一）。`IsolatorProps` 自体は N/mm・N 単位で保持するため、表示のたびに
-/// 1000 で除算・確定時に 1000 を乗算して変換する。
+/// と統一）。`IsolatorProps` 自体は N/mm・N 単位で保持するため、
+/// `to_display` / `to_internal` で換算する。
 pub fn isolator_props_fields(ui: &mut egui::Ui, id_source: &str, props: &mut IsolatorProps) {
     ui.horizontal_wrapped(|ui| {
         ui.label("Kv 鉛直剛性[kN/mm]:");
-        let mut kv_kn = props.kv / 1000.0;
+        let mut kv_kn = stiffness_kn_per_mm(props.kv);
         if ui
             .add(
                 egui::DragValue::new(&mut kv_kn)
@@ -66,14 +68,14 @@ pub fn isolator_props_fields(ui: &mut egui::Ui, id_source: &str, props: &mut Iso
             )
             .changed()
         {
-            props.kv = kv_kn * 1000.0;
+            props.kv = to_internal::stiffness_kn_per_mm(kv_kn);
         }
     });
     match props.kind {
         IsolatorKind::ElasticSliding => {
             ui.horizontal_wrapped(|ui| {
                 ui.label("K1 すべり前剛性[kN/mm]:");
-                let mut k1_kn = props.k1 / 1000.0;
+                let mut k1_kn = stiffness_kn_per_mm(props.k1);
                 if ui
                     .add(
                         egui::DragValue::new(&mut k1_kn)
@@ -82,7 +84,7 @@ pub fn isolator_props_fields(ui: &mut egui::Ui, id_source: &str, props: &mut Iso
                     )
                     .changed()
                 {
-                    props.k1 = k1_kn * 1000.0;
+                    props.k1 = to_internal::stiffness_kn_per_mm(k1_kn);
                 }
                 ui.label("μ 摩擦係数:");
                 ui.add(
@@ -91,7 +93,7 @@ pub fn isolator_props_fields(ui: &mut egui::Ui, id_source: &str, props: &mut Iso
                         .range(0.0..=2.0),
                 );
                 ui.label("N 長期軸力[kN]（圧縮正、摩擦力算定用）:");
-                let mut n_kn = props.n_long / 1000.0;
+                let mut n_kn = force_kn(props.n_long);
                 if ui
                     .add(
                         egui::DragValue::new(&mut n_kn)
@@ -100,7 +102,7 @@ pub fn isolator_props_fields(ui: &mut egui::Ui, id_source: &str, props: &mut Iso
                     )
                     .changed()
                 {
-                    props.n_long = n_kn * 1000.0;
+                    props.n_long = to_internal::force_kn(n_kn);
                 }
             });
         }
@@ -109,7 +111,7 @@ pub fn isolator_props_fields(ui: &mut egui::Ui, id_source: &str, props: &mut Iso
         | IsolatorKind::HighDampingRubber => {
             ui.horizontal_wrapped(|ui| {
                 ui.label("K1 初期(弾性)剛性[kN/mm]:");
-                let mut k1_kn = props.k1 / 1000.0;
+                let mut k1_kn = stiffness_kn_per_mm(props.k1);
                 if ui
                     .add(
                         egui::DragValue::new(&mut k1_kn)
@@ -118,10 +120,10 @@ pub fn isolator_props_fields(ui: &mut egui::Ui, id_source: &str, props: &mut Iso
                     )
                     .changed()
                 {
-                    props.k1 = k1_kn * 1000.0;
+                    props.k1 = to_internal::stiffness_kn_per_mm(k1_kn);
                 }
                 ui.label("K2 二次剛性[kN/mm]:");
-                let mut k2_kn = props.k2 / 1000.0;
+                let mut k2_kn = stiffness_kn_per_mm(props.k2);
                 if ui
                     .add(
                         egui::DragValue::new(&mut k2_kn)
@@ -130,10 +132,10 @@ pub fn isolator_props_fields(ui: &mut egui::Ui, id_source: &str, props: &mut Iso
                     )
                     .changed()
                 {
-                    props.k2 = k2_kn * 1000.0;
+                    props.k2 = to_internal::stiffness_kn_per_mm(k2_kn);
                 }
                 ui.label("Qd 特性耐力[kN]:");
-                let mut qd_kn = props.qd / 1000.0;
+                let mut qd_kn = force_kn(props.qd);
                 if ui
                     .add(
                         egui::DragValue::new(&mut qd_kn)
@@ -142,7 +144,7 @@ pub fn isolator_props_fields(ui: &mut egui::Ui, id_source: &str, props: &mut Iso
                     )
                     .changed()
                 {
-                    props.qd = qd_kn * 1000.0;
+                    props.qd = to_internal::force_kn(qd_kn);
                 }
             });
             ui.horizontal_wrapped(|ui| {
@@ -539,10 +541,10 @@ fn isolator_support_section(ui: &mut egui::Ui, app: &mut App, node_id: NodeId) {
                                  Qd={:.1}kN Kv={:.0}kN/mm μ={:.3}",
                                 elem_id.0,
                                 isolator_kind_label(p.kind),
-                                p.k1 / 1000.0,
-                                p.k2 / 1000.0,
-                                p.qd / 1000.0,
-                                p.kv / 1000.0,
+                                stiffness_kn_per_mm(p.k1),
+                                stiffness_kn_per_mm(p.k2),
+                                force_kn(p.qd),
+                                stiffness_kn_per_mm(p.kv),
                                 p.mu
                             ),
                         );

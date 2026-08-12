@@ -6,7 +6,7 @@
 
 use crate::table_util::Col;
 
-use squid_n_core::units::to_display::{area_cm2, force_kn, inertia_cm4};
+use squid_n_core::units::to_display::{area_cm2, force_kn, inertia_cm4, length_m, moment_kn_m};
 
 use crate::app::{
     ai_mode_label, load_case_kind_label, member_kind_label, member_rank_label, soil_class_label,
@@ -165,7 +165,7 @@ fn stories_section(ui: &mut egui::Ui, prep: &PreparationResult) {
             ui.label(format!("{:.0}", s.ground_elevation));
             ui.end_row();
             ui.label("建物高さ h [m]");
-            ui.label(format!("{:.2}", s.height_mm / 1000.0));
+            ui.label(format!("{:.2}", length_m(s.height_mm)));
             ui.label("鉄骨造高さ比 α");
             ui.label(format!("{:.3}", s.steel_height_ratio));
             ui.end_row();
@@ -497,8 +497,8 @@ fn panel_zone_section(ui: &mut egui::Ui, prep: &PreparationResult) {
                 ui.label(format!("{:.3e}", r.ve));
             });
             row.col(|ui| {
-                // N·mm/rad → kN·m/rad
-                ui.label(format!("{:.3e}", r.k_panel / 1.0e6));
+                // N·mm/rad → kN·m/rad（回転剛性。換算係数はモーメント表示と同じ）
+                ui.label(format!("{:.3e}", moment_kn_m(r.k_panel)));
             });
         },
     );

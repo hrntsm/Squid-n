@@ -243,11 +243,22 @@ pub struct AnalysisRunArgs {
     pub period: Option<f64>,
     /// TimeHistory: サンプル波の振幅 [mm/s²]（既定 1000）。
     pub amp: Option<f64>,
+    /// 荷重自動同期: 地域係数 Z（令88条）（既定 1.0）。
+    pub z: Option<f64>,
+    /// 荷重自動同期: 地盤種別 `"I"`/`"II"`/`"III"`（既定 `"II"`）。
+    pub soil: Option<String>,
+    /// 荷重自動同期: 標準せん断力係数 C0（既定 0.2）。
+    pub c0: Option<f64>,
+    /// 荷重自動同期: Ai 算定法 `"Approx"`/`"SemiPrecise"`（既定 `"Approx"`）。
+    pub ai_mode: Option<String>,
+    /// 荷重自動同期: 精算時の設計用基本周期 T [s]。`SemiPrecise` かつ未指定なら EX/EY を同期しない。
+    pub design_period: Option<f64>,
 }
 
 impl AnalysisRunArgs {
     /// 任意パラメータを `super::JobParams`（既定値込み）へ変換する。
-    /// `dir` に "X"/"Y" 以外の文字列が指定された場合のみエラーを返す
+    /// `dir` に "X"/"Y" 以外、`soil` に "I"/"II"/"III" 以外、
+    /// `ai_mode` に "Approx"/"SemiPrecise" 以外の文字列が指定された場合のみエラーを返す
     /// （ジョブ登録前に検証することで、失敗が確定しているジョブを作らない）。
     fn to_job_params(&self) -> Result<super::JobParams, String> {
         let dir = match self.dir.as_deref() {
@@ -256,6 +267,27 @@ impl AnalysisRunArgs {
             Some("Y") => super::JobDir::Y,
             Some(other) => {
                 return Err(format!("不明な方向: {other}（\"X\" または \"Y\"）"));
+            }
+        };
+        let soil = match self.soil.as_deref() {
+            None => None,
+            Some("I") => Some(squid_n_load::ai::SoilClass::I),
+            Some("II") => Some(squid_n_load::ai::SoilClass::II),
+            Some("III") => Some(squid_n_load::ai::SoilClass::III),
+            Some(other) => {
+                return Err(format!(
+                    "不明な地盤種別: {other}（\"I\"、\"II\"、または \"III\"）"
+                ));
+            }
+        };
+        let ai_mode = match self.ai_mode.as_deref() {
+            None => None,
+            Some("Approx") => Some(squid_n_solver::analysis::AiMode::Approx),
+            Some("SemiPrecise") => Some(squid_n_solver::analysis::AiMode::SemiPrecise),
+            Some(other) => {
+                return Err(format!(
+                    "不明な Ai 算定法: {other}（\"Approx\" または \"SemiPrecise\"）"
+                ));
             }
         };
         let d = super::JobParams::default();
@@ -270,6 +302,11 @@ impl AnalysisRunArgs {
             duration: self.duration.unwrap_or(d.duration),
             period: self.period.unwrap_or(d.period),
             amp: self.amp.unwrap_or(d.amp),
+            z: self.z.unwrap_or(d.z),
+            soil: soil.unwrap_or(d.soil),
+            c0: self.c0.unwrap_or(d.c0),
+            ai_mode: ai_mode.unwrap_or(d.ai_mode),
+            design_period: self.design_period,
         })
     }
 }
@@ -548,6 +585,11 @@ mod tests {
             duration: None,
             period: None,
             amp: None,
+            z: None,
+            soil: None,
+            c0: None,
+            ai_mode: None,
+            design_period: None,
         }
     }
 
@@ -755,7 +797,7 @@ mod tests {
         );
     }
 
-    /// result_get: 存在しない case を指定すると invalid_params エラーになる。
+    /// `result_get`: 存在しない case を指定すると invalid_params エラーになる。
     #[tokio::test]
     async fn test_result_get_missing_case_is_invalid_params() {
         let dir = test_store_dir("result_get_missing");
@@ -773,6 +815,70 @@ mod tests {
         assert!(
             err.message.contains("結果がありません"),
             "エラーメッセージに『結果がありません』が含まれるはず: {err:?}"
+        );
+    }
+
+    #[test]
+    fn test_to_job_params_parses_seismic_settings() {
+        let mut args = run_args(JobKind::LinearStatic);
+        args.z = Some(1.2);
+        args.soil = Some("III".to_string());
+        args.c0 = Some(0.25);
+        args.ai_mode = Some("SemiPrecise".to_string());
+        args.design_period = None;
+        let params = args
+            .to_job_params()
+            .expect("SemiPrecise without design_period");
+        assert!((params.z - 1.2).abs() < 1e-12);
+        assert_eq!(params.soil, squid_n_load::ai::SoilClass::III);
+        assert!((params.c0 - 0.25).abs() < 1e-12);
+        assert_eq!(
+            params.ai_mode,
+            squid_n_solver::analysis::AiMode::SemiPrecise
+        );
+        assert_eq!(params.design_period, None);
+    }
+
+    #[test]
+    fn test_prepare_notices_for_semi_precise_without_design_period() {
+        // 階が無いと地震同期パスに入らず notices が空になる。
+        let params = JobParams {
+            ai_mode: squid_n_solver::analysis::AiMode::SemiPrecise,
+            design_period: None,
+            ..Default::default()
+        };
+        let (_model, notices) = crate::job::model_prepared_for_analysis(&pushover_model(), &params);
+        assert!(
+            notices.iter().any(|s| s.contains("EX/EY")),
+            "精算周期未指定時は EX/EY 未同期の注意が出ること: {notices:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_analysis_run_semi_precise_without_design_period_completes() {
+        // ジョブは完了し、サマリ JSON に notices が載ることを確認する。
+        let dir = test_store_dir("semi_precise_no_t");
+        let server = SquidNServer::new(make_state(pushover_model(), &dir));
+        let mut args = run_args(JobKind::Pushover);
+        args.steps = Some(10);
+        args.max_disp = Some(30.0);
+        args.ai_mode = Some("SemiPrecise".to_string());
+        args.design_period = None;
+        let result = server.analysis_run(Parameters(args)).await.unwrap();
+        let job_id = extract_job_id(&result);
+        let status = wait_for_terminal(&server, &job_id).await;
+        let JobStatus::Done { result_ref } = status else {
+            panic!("SemiPrecise without design_period should still complete: {status:?}");
+        };
+        let summary: serde_json::Value = serde_json::from_str(&result_ref).expect("summary JSON");
+        let notices = summary["notices"]
+            .as_array()
+            .expect("notices がサマリに載ること");
+        assert!(
+            notices
+                .iter()
+                .any(|n| n.as_str().is_some_and(|s| s.contains("EX/EY"))),
+            "notices に EX/EY 未更新の旨が含まれること: {notices:?}"
         );
     }
 }
