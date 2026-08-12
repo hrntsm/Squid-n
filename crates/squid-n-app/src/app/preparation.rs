@@ -416,9 +416,11 @@ impl App {
         // 剛域の自動算定と DL/LL/EX/EY の同期（内部で冪等・ハッシュによる
         // スキップ判定あり）。
         self.sync_auto_load_cases_action();
-        if self.staleness.diagnostics_stale {
-            self.run_diagnostics();
-        }
+        // 準備計算タブの診断件数は `build_preparation_result` が
+        // `diagnostics_counts` を読む。stale のときだけ更新すると、モデル未編集の
+        // まま診断タブを開かずに準備計算だけ再実行したときに件数が古いまま残る。
+        // 解析実行時の precheck は都度最新だが、画面上の件数は準備計算の結果に載る。
+        self.run_diagnostics();
         self.preparation = Some(self.build_preparation_result());
         // 荷重同期が `mark_edited`（＝preparation_stale = true）を呼びうるため、
         // フラグのクリアは必ず集計の後に行う。
