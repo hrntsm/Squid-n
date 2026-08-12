@@ -5,6 +5,8 @@
 //! - [`RcRebar`] — RC 配筋情報
 //! - [`SectionShape`] — パラメトリック断面形状の列挙
 //! - [`bar_set_area`] — 主筋セットの総断面積
+//! - [`one_bar_area`] — 主筋 1 本あたりの断面積
+//! - [`shear_legs_area`] — せん断補強筋 1 組の断面積
 
 /// RC 配筋の主筋セット（方向別）。
 ///
@@ -200,8 +202,18 @@ impl SectionShape {
     }
 }
 
+/// 主筋 1 本あたりの断面積 [mm²]（πr²）。
+pub fn one_bar_area(dia: f64) -> f64 {
+    let r = dia / 2.0;
+    std::f64::consts::PI * r * r
+}
+
 /// 主筋セットの総断面積 [mm²]（本数×πr²。配筋検定・ファイバー生成用）。
 pub fn bar_set_area(bs: &BarSet) -> f64 {
-    let r = bs.dia / 2.0;
-    bs.count as f64 * std::f64::consts::PI * r * r
+    bs.count as f64 * one_bar_area(bs.dia)
+}
+
+/// せん断補強筋 1 組（`legs` 本）の断面積 [mm²]。
+pub fn shear_legs_area(shear: &ShearBar) -> f64 {
+    shear.legs as f64 * one_bar_area(shear.dia)
 }

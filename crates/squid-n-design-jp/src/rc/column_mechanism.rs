@@ -180,8 +180,7 @@ fn column_my_at_n(
         }
         Some(SectionShape::RcCircle { d, rebar }) => {
             let props = super::section_props::circle_axis_props(*d, rebar);
-            let as_total =
-                rebar.main_x.count as f64 * super::section_props::one_bar_area(rebar.main_x.dia);
+            let as_total = bar_set_area(&rebar.main_x);
             let b_eq = std::f64::consts::PI * d * d / 4.0 / d;
             (rebar, props, b_eq, *d, as_total)
         }

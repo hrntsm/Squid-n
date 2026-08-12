@@ -1,18 +1,18 @@
 //! RC 断面諸元の抽出（検討方向 1 軸分の断面諸元と、その素となる鉄筋量の算定）。
 //!
 //! [`AxisProps`] — 検討方向 1 軸分の断面諸元。
-//! [`one_bar_area`] — 主筋 1 本あたりの断面積。
+//! [`one_bar_area`] — 主筋 1 本あたりの断面積（core の再エクスポート）。
 //! [`rect_axis_props`] — 矩形断面 1 軸分の断面諸元。
 //! [`rect_axis_props_strong`] — 強軸曲げ（mz）用の断面諸元。
 //! [`rect_axis_props_weak`] — 弱軸曲げ（my）用の断面諸元。
 //! [`circle_axis_props`] — 円形柱の等価矩形断面諸元。
 //!
 //! 主筋断面積・dt・pw は [`squid_n_core::rc_rebar_geom`] /
-//! [`squid_n_core::section_shape::bar_set_area`] を単一情報源とする。
+//! [`squid_n_core::section_shape::{one_bar_area, bar_set_area}`] を単一情報源とする。
 
 use squid_n_core::model::Section;
 pub(crate) use squid_n_core::rc_rebar_geom::{pw_ratio, tension_dt};
-pub(crate) use squid_n_core::section_shape::bar_set_area;
+pub(crate) use squid_n_core::section_shape::{bar_set_area, one_bar_area};
 use squid_n_core::section_shape::{BarSet, RcRebar};
 
 /// 検討方向 1 軸分の断面諸元。
@@ -34,12 +34,6 @@ pub(crate) struct AxisProps {
     pub(crate) j: f64,
     /// せん断補強筋比 pw。
     pub(crate) pw: f64,
-}
-
-/// 主筋 1 本あたりの断面積 [mm²]。
-pub(crate) fn one_bar_area(dia: f64) -> f64 {
-    let r = dia / 2.0;
-    std::f64::consts::PI * r * r
 }
 
 /// 矩形断面 1 軸分の断面諸元を算定する。
