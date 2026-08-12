@@ -1179,42 +1179,7 @@ pub fn column_live_load_factors(model: &squid_n_core::model::Model) -> Vec<(Elem
 ///   場合は、旧スキーマ・後方互換のため先頭ケースのみを返す
 ///   （並び順に依存する旧規約。新規モデルは kind 設定を推奨）。
 fn gravity_cases_for_seismic_weight(model: &squid_n_core::model::Model) -> Vec<LoadCaseId> {
-    use squid_n_core::model::LoadCaseKind;
-
-    let any_kind_set = model
-        .load_cases
-        .iter()
-        .any(|lc| lc.kind != LoadCaseKind::Other);
-    if !any_kind_set {
-        return model.load_cases.first().map(|c| c.id).into_iter().collect();
-    }
-
-    let mut result: Vec<LoadCaseId> = model
-        .load_cases
-        .iter()
-        .filter(|lc| lc.kind == LoadCaseKind::Dead && lc.name != SELF_WEIGHT_AUTO_LOAD_CASE_NAME)
-        .map(|lc| lc.id)
-        .collect();
-
-    let live_seismic: Vec<LoadCaseId> = model
-        .load_cases
-        .iter()
-        .filter(|lc| lc.kind == LoadCaseKind::LiveSeismic)
-        .map(|lc| lc.id)
-        .collect();
-    if !live_seismic.is_empty() {
-        result.extend(live_seismic);
-    } else {
-        result.extend(
-            model
-                .load_cases
-                .iter()
-                .filter(|lc| lc.kind == LoadCaseKind::Live && lc.name != LL_FRAME_CASE_NAME)
-                .map(|lc| lc.id),
-        );
-    }
-
-    result
+    squid_n_job::gravity_case_ids_for_seismic_weight(model)
 }
 
 /// 階の自動生成で自重を材料密度から直接算入すべきか（地震用重量の二重計上防止）。

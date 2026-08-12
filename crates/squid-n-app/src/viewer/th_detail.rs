@@ -17,9 +17,10 @@
 //! 検定の組み立ては `app::actions::run_design_check`（断面・材料に応じた
 //! RC/Steel/SRC/CFT の `DesignCheck` 実装への振り分け）と同じ考え方だが、
 //! 当該関数は `app` モジュール内の非公開関数（`is_steel` 等）に
-//! 依存しビューア側からは呼べないため、必要な部分だけ本ファイルへ複製する
-//! （地震時短期 QD の長期内力割増・座屈長さの自動算定・鋼継手欠損・一本部材
-//! グループ合成・BRB 属性差し替えは簡略化のため含まない。あくまで概算検定）。
+//! 依存しビューア側からは呼べないため、必要な部分だけ本ファイルへ複製する。
+//! 長期静的結果がある場合は地震時 QD / 柱メカニズムを部分配線する。
+//! 座屈長さの自動算定・鋼継手欠損・一本部材グループ合成・BRB 属性差し替え・
+//! Q0（単純梁せん断）は簡略化のため含まない（概算検定）。
 
 use crate::app::App;
 use crate::theme;
@@ -627,7 +628,9 @@ fn draw_peak_check(
     draw_long_term_note(ui, th_nonlinear, th_applied_long_term);
     ui.label(
         egui::RichText::new(
-            "簡易検定です（座屈長さ＝部材長として評価。継手欠損・一本部材合成・地震時QDの長期割増は考慮しません）。\
+            "簡易検定です（座屈長さ＝部材長として評価。継手欠損・一本部材合成は考慮しません）。\
+             長期静的結果がある場合は地震時 QD / 柱メカニズムを可能な範囲で配線しますが、\
+             包絡ピークと長期内力の時刻は一致しません。\
              各成分（N・Qy・Qz・My・Mz）の最大値は全ステップ包絡のため、同一時刻に生じたとは限りません\
              （実際には同時に生じない組合せを検定している可能性があり、安全側ですが過大評価になり得ます）。",
         )
@@ -669,6 +672,12 @@ fn draw_peak_check(
         app.model.nodes[elem.nodes[0].index()].coord,
         app.model.nodes[elem.nodes[1].index()].coord,
     );
+    let face_sum = elem.rigid_zone.face_i_or_zero() + elem.rigid_zone.face_j_or_zero();
+    let clear_span = if length - face_sum > 0.0 {
+        length - face_sum
+    } else {
+        length
+    };
     let m_at = |target: f64| {
         peak.at
             .iter()
@@ -689,10 +698,58 @@ fn draw_peak_check(
         .iter()
         .map(|(_, f)| (f[4].abs(), f[2].abs()))
         .max_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+
+    // 長期静的結果があれば QD / 柱メカニズムを部分配線する（包絡ピークとの時刻不一致に注意）。
+    let long_mf = app.results.as_ref().and_then(|r| {
+        r.combos
+            .iter()
+            .find(|(n, _)| n == "DL + LL")
+            .or_else(|| {
+                r.combos
+                    .iter()
+                    .find(|(n, _)| !squid_n_load::combo::is_short_term_combo(n))
+            })
+            .map(|(_, st)| &st.member_forces)
+    });
+    let seismic_qd = long_mf.and_then(|list| {
+        list.iter()
+            .find(|(id, _)| *id == elem.id)
+            .map(|(_, mf)| squid_n_design_jp::SeismicQd {
+                long_at: mf.at.clone(),
+                n_factor: 1.5,
+                n_mechanism: 1.0,
+                q_simple: None,
+                clear_length: clear_span,
+                method: app.analysis_cfg.qd_method,
+            })
+    });
+    let column_sum_my = if kind == MemberKind::Column && seismic_qd.is_some() {
+        let n_at = |mf: &MemberForces, end: usize| {
+            let target = if end == 0 { 0.0 } else { 1.0 };
+            mf.at
+                .iter()
+                .min_by(|a, b| (a.0 - target).abs().total_cmp(&(b.0 - target).abs()))
+                .map(|(_, f)| f[0])
+                .unwrap_or(0.0)
+        };
+        let (n_combo_i, n_combo_j) = (n_at(peak, 0), n_at(peak, 1));
+        let (n_long_i, n_long_j) = long_mf
+            .and_then(|list| list.iter().find(|(id, _)| *id == elem.id))
+            .map(|(_, mf)| (n_at(mf, 0), n_at(mf, 1)))
+            .unwrap_or((n_combo_i, n_combo_j));
+        let adj = squid_n_core::adjacency::NodeAdjacency::build(&app.model);
+        squid_n_design_jp::rc::compute_column_mechanism_sum_my(
+            &app.model, &adj, elem, n_long_i, n_long_j, n_combo_i, n_combo_j, 1.0,
+        )
+    } else {
+        None
+    };
+
     let ctx = DesignCtx {
         term: LoadTerm::Short,
         kind,
         length,
+        clear_length: Some(clear_span),
         shear_span,
         shear_span_y,
         rc_damage_control: app.analysis_cfg.rc_damage_control,
@@ -706,7 +763,8 @@ fn draw_peak_check(
         steel_material: app.model.element_steel_material(elem).cloned(),
         beam_has_slab: kind == MemberKind::Beam
             && squid_n_design_jp::beam_has_attached_slab(&app.model, elem),
-        // 時刻歴ピークは長期内力を持たないため seismic_qd / column_sum_my は未配線。
+        seismic_qd,
+        column_sum_my,
         ..Default::default()
     };
     // 検定器の選択は構造種別による（`squid_n_core::structure_kind`。

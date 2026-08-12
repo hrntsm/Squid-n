@@ -1807,7 +1807,7 @@ impl App {
             .copied();
         // 単純梁せん断 Q0（MK785/SPR785/SPR685 使用部材の QL=Q0 読み替え用）。
         // Dead+Live（地震用）を加算した長期相当。
-        let q0_map = simple_beam_q0_by_gravity_cases(&self.model);
+        let q0_map = squid_n_job::simple_beam_q0_by_gravity_cases(&self.model);
         self.results
             .as_ref()
             .map(|r| {
@@ -1882,7 +1882,7 @@ impl App {
         };
         // 単純梁せん断 Q0（MK785/SPR785/SPR685 使用部材の QL=Q0 読み替え用）。
         // Dead+Live（地震用）を加算した長期相当。
-        let q0_map = simple_beam_q0_by_gravity_cases(&self.model);
+        let q0_map = squid_n_job::simple_beam_q0_by_gravity_cases(&self.model);
         Some(
             po.member_response
                 .iter()
@@ -2503,7 +2503,7 @@ impl App {
         let group_overrides = beam_group_overrides(&self.model, &results.member_forces);
         // 梁 QD1 用の単純梁せん断 Q0（Dead+Live 加算の長期相当）。
         let q0_by_elem = if long_member_forces.is_some() {
-            simple_beam_q0_by_gravity_cases(&self.model)
+            squid_n_job::simple_beam_q0_by_gravity_cases(&self.model)
         } else {
             Default::default()
         };
@@ -3016,98 +3016,6 @@ impl App {
             .count();
         (errors, warnings)
     }
-}
-
-/// 長期（重力）ケースの部材荷重から、各部材を単純梁支持とした場合の端部
-/// せん断力 Q0 [N] を算定する。
-///
-/// せん断補強筋に MK785/SPR785/SPR685 を使用した部材の終局余裕率では、
-/// QL 控除を `QL=Q0` と読み替える（各製品の技術評定の規定。
-/// [`squid_n_design_jp::ultimate::MemberDemand`] の `q_simple`）。荷重は部材軸
-/// 直交成分の大きさで評価し、Q0 は単純梁の両端反力の大きい方とする。
-/// 対象ケースは QL と同じ先頭重力ケース（そのケースに載る部材荷重のみ集計）。
-fn simple_beam_q0_by_elem(
-    model: &squid_n_core::model::Model,
-    lc: LoadCaseId,
-) -> std::collections::HashMap<ElemId, f64> {
-    use squid_n_core::model::MemberLoadKind;
-    let mut acc: std::collections::HashMap<ElemId, (f64, f64)> = Default::default();
-    let Some(case) = model.load_cases.iter().find(|c| c.id == lc) else {
-        return Default::default();
-    };
-    for ml in &case.member {
-        let Some(elem) = model.element(ml.elem) else {
-            continue;
-        };
-        if elem.nodes.len() < 2 {
-            continue;
-        }
-        let (Some(n0), Some(n1)) = (
-            model.nodes.get(elem.nodes[0].index()),
-            model.nodes.get(elem.nodes[elem.nodes.len() - 1].index()),
-        ) else {
-            continue;
-        };
-        let dx = [
-            n1.coord[0] - n0.coord[0],
-            n1.coord[1] - n0.coord[1],
-            n1.coord[2] - n0.coord[2],
-        ];
-        let l = (dx[0] * dx[0] + dx[1] * dx[1] + dx[2] * dx[2]).sqrt();
-        if l <= 0.0 {
-            continue;
-        }
-        let e = [dx[0] / l, dx[1] / l, dx[2] / l];
-        let dn = (ml.dir[0] * ml.dir[0] + ml.dir[1] * ml.dir[1] + ml.dir[2] * ml.dir[2]).sqrt();
-        if dn <= 0.0 {
-            continue;
-        }
-        let d = [ml.dir[0] / dn, ml.dir[1] / dn, ml.dir[2] / dn];
-        // 部材軸直交成分の大きさ（重力荷重×水平梁なら 1.0）。
-        let ax = d[0] * e[0] + d[1] * e[1] + d[2] * e[2];
-        let trans = (1.0 - ax * ax).max(0.0).sqrt();
-        if trans <= 1e-12 {
-            continue;
-        }
-        let (w_total, x_bar) = match ml.kind {
-            MemberLoadKind::Point { a, p } => (p.abs(), a.clamp(0.0, l)),
-            MemberLoadKind::Distributed { a, b, w1, w2 } => {
-                let (a, b) = (a.clamp(0.0, l), b.clamp(0.0, l));
-                if b <= a {
-                    continue;
-                }
-                let w_sum = w1 + w2;
-                let total = w_sum / 2.0 * (b - a);
-                // 台形分布の重心（w_sum≈0 の反対称分布は区間中央で代表）。
-                let xb = if w_sum.abs() > 1e-12 {
-                    a + (b - a) * (w1 + 2.0 * w2) / (3.0 * w_sum)
-                } else {
-                    (a + b) / 2.0
-                };
-                (total.abs(), xb)
-            }
-        };
-        let entry = acc.entry(ml.elem).or_insert((0.0, 0.0));
-        entry.0 += trans * w_total * (l - x_bar) / l; // 単純梁反力 Ri
-        entry.1 += trans * w_total * x_bar / l; // 単純梁反力 Rj
-    }
-    acc.into_iter()
-        .map(|(k, (ri, rj))| (k, ri.max(rj)))
-        .collect()
-}
-
-/// [`gravity_cases_for_seismic_weight`] の全ケースについて [`simple_beam_q0_by_elem`]
-/// を加算する（Dead + LiveSeismic/Live＝長期 G+P 相当の Q0）。
-fn simple_beam_q0_by_gravity_cases(
-    model: &squid_n_core::model::Model,
-) -> std::collections::HashMap<ElemId, f64> {
-    let mut map: std::collections::HashMap<ElemId, f64> = Default::default();
-    for lc in gravity_cases_for_seismic_weight(model) {
-        for (id, q) in simple_beam_q0_by_elem(model, lc) {
-            *map.entry(id).or_insert(0.0) += q;
-        }
-    }
-    map
 }
 
 /// 解析前チェックの不備 1 件を診断行へ展開する。
