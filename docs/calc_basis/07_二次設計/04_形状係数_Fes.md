@@ -14,6 +14,8 @@
 
 **実装**：`holding_capacity::{stiffness_ratios, fs}` が算定し、剛性率用の層間変位には重心変位 δg
 （`secondary::stiffness_ratio::cog_story_drifts`）を用います。
+各層の δg は、当該層の上下端床レベル上の節点のみから求めた重心位置の水平変位差です。
+中間節点で分割された鉛直材は、上下端を結ぶ連なりとして 1 本の柱とみなします。
 
 ## 7.4.2 偏心率 Re・Fe
 

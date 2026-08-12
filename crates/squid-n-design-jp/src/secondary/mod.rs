@@ -28,4 +28,5 @@ pub mod principal_axis;
 pub mod rc_capacity;
 pub mod src_rank;
 pub mod stiffness_ratio;
+pub mod story_columns;
 pub mod width_thickness;

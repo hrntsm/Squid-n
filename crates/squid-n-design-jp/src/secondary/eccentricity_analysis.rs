@@ -8,7 +8,9 @@
 //! をそのまま再利用する。
 
 use squid_n_core::ids::StoryId;
-use squid_n_core::model::{ElementKind, Model};
+use squid_n_core::model::Model;
+
+use super::story_columns::story_columns;
 use squid_n_element::transform::LocalFrame;
 use squid_n_solver::linear::StaticOnce;
 
@@ -17,9 +19,9 @@ use super::eccentricity::{
     ColumnStiffness, Eccentricity,
 };
 
-/// 当該層に帰属する柱（鉛直 2 節点 Beam、柱頭節点の story が当該層）を列挙して
-/// `f(elem, 柱頭節点, 柱脚節点)` を呼ぶ。判定は `eccentricity::column_stiffnesses` と同一。
+/// 当該層に帰属する柱を列挙して `f(elem, 柱頭節点, 柱脚節点)` を呼ぶ。
 ///
+/// 中間節点で分割された鉛直材は連なりとして 1 本とみなす（[`super::story_columns`]）。
 /// `crate::secondary::eccentricity::sum_column_area`（雑壁剛性評価が必要とする
 /// 柱断面積の集計）からも共用するため `pub(super)`（`secondary` 配下に公開）。
 pub(super) fn for_each_story_column(
@@ -31,24 +33,12 @@ pub(super) fn for_each_story_column(
         &squid_n_core::model::Node,
     ),
 ) {
-    for elem in &model.elements {
-        if elem.kind != ElementKind::Beam || elem.nodes.len() != 2 {
+    for col in story_columns(model, story) {
+        let Some(elem) = model.elements.iter().find(|e| e.id == col.top_elem) else {
             continue;
-        }
-        let n0 = &model.nodes[elem.nodes[0].index()];
-        let n1 = &model.nodes[elem.nodes[1].index()];
-        // 鉛直部材（柱）判定（全クレート共通の 45° 余弦基準）。
-        if !squid_n_core::geom::is_vertical_axis(n0.coord, n1.coord) {
-            continue;
-        }
-        let (top, bot) = if n0.coord[2] < n1.coord[2] {
-            (n1, n0)
-        } else {
-            (n0, n1)
         };
-        if top.story != Some(story) {
-            continue;
-        }
+        let top = &model.nodes[col.top.index()];
+        let bot = &model.nodes[col.bottom.index()];
         f(elem, top, bot);
     }
 }
@@ -309,5 +299,119 @@ mod tests {
         );
         let rey = (kr_expect / 800.0_f64).sqrt();
         assert!((ecc.re_y - 1500.0 / rey).abs() < 1e-9, "Rey={}", ecc.re_y);
+    }
+
+    /// 中間節点で分割された柱は 1 本として数えること。
+    #[test]
+    fn test_column_stiffnesses_count_split_column_once() {
+        use smallvec::SmallVec;
+        use squid_n_core::dof::Dof6Mask;
+        use squid_n_core::ids::{NodeId, SectionId};
+        use squid_n_core::model::{
+            ElementData, ElementKind, EndCondition, ForceRegime, LocalAxis, Node, RigidZone, Story,
+        };
+
+        let base = StoryId(0);
+        let top = StoryId(1);
+        let nodes = vec![
+            Node {
+                id: NodeId(0),
+                coord: [0.0, 0.0, 0.0],
+                restraint: Dof6Mask::FIXED,
+                mass: None,
+                story: Some(base),
+                support_spring: None,
+            },
+            Node {
+                id: NodeId(1),
+                coord: [0.0, 0.0, 2000.0],
+                restraint: Dof6Mask::FREE,
+                mass: None,
+                story: Some(top),
+                support_spring: None,
+            },
+            Node {
+                id: NodeId(2),
+                coord: [0.0, 0.0, 4000.0],
+                restraint: Dof6Mask::FREE,
+                mass: None,
+                story: Some(top),
+                support_spring: None,
+            },
+        ];
+        let mk_elem = |id: u32, n0: u32, n1: u32| ElementData {
+            id: ElemId(id),
+            kind: ElementKind::Beam,
+            nodes: {
+                let mut v: SmallVec<[NodeId; 8]> = SmallVec::new();
+                v.push(NodeId(n0));
+                v.push(NodeId(n1));
+                v
+            },
+            section: Some(SectionId(0)),
+            local_axis: LocalAxis {
+                ref_vector: [0.0, 1.0, 0.0],
+            },
+            end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+            force_regime: ForceRegime::Auto,
+            rigid_zone: RigidZone::default(),
+            plastic_zone: None,
+            spring: None,
+        };
+        let model = Model {
+            nodes,
+            elements: vec![mk_elem(0, 1, 2), mk_elem(1, 0, 1)],
+            stories: vec![
+                Story {
+                    id: base,
+                    name: "1F".to_string(),
+                    elevation: 0.0,
+                    node_ids: vec![NodeId(0)],
+                    seismic_weight: None,
+                    weight_override: None,
+                    structure: Default::default(),
+                    level_kind: Default::default(),
+                },
+                Story {
+                    id: top,
+                    name: "2F".to_string(),
+                    elevation: 4000.0,
+                    node_ids: vec![NodeId(2)],
+                    seismic_weight: None,
+                    weight_override: None,
+                    structure: Default::default(),
+                    level_kind: Default::default(),
+                },
+            ],
+            ..Default::default()
+        };
+        let mut disp_x = vec![[0.0; 6]; 3];
+        disp_x[2][0] = 10.0; // 上端
+        disp_x[0][0] = 0.0; // 下端
+        let res_x = StaticOnce {
+            disp: disp_x,
+            member_forces: vec![(
+                ElemId(0),
+                MemberForces {
+                    at: vec![(0.0, [0.0, 0.0, 1000.0, 0.0, 0.0, 0.0])],
+                },
+            )],
+            panel_moments: Vec::new(),
+        };
+        let mut disp_y = vec![[0.0; 6]; 3];
+        disp_y[2][1] = 10.0;
+        let res_y = StaticOnce {
+            disp: disp_y,
+            member_forces: vec![(
+                ElemId(0),
+                MemberForces {
+                    at: vec![(0.0, [0.0, 1000.0, 0.0, 0.0, 0.0, 0.0])],
+                },
+            )],
+            panel_moments: Vec::new(),
+        };
+        let cols = column_stiffnesses_from_analysis(&model, top, &res_x, &res_y);
+        assert_eq!(cols.len(), 1, "分割柱は 1 本と数える");
+        assert!((cols[0].dx - 100.0).abs() < 1e-9);
     }
 }
