@@ -8,6 +8,8 @@
 
 use squid_n_core::model::{Model, Slab};
 
+use super::polygon::point_in_polygon;
+
 pub(crate) fn boundary_coords(model: &Model, slab: &Slab) -> Option<Vec<[f64; 3]>> {
     slab.boundary
         .iter()
@@ -64,6 +66,20 @@ pub(crate) fn edge_len(coords: &[[f64; 3]], i: usize) -> f64 {
 
 /// 平面多角形の面積（ニュートンの公式＝シューレース公式）。全体座標 XY 平面へ投影して
 /// 計算する（床スラブは水平面内にある＝Z一定という前提）。
+/// 点がスラブ境界多角形（XY 平面投影）の内部にあるか。
+///
+/// 床スラブは水平（Z 一定）を仮定し、境界節点の XY 座標のみで判定する。
+pub fn point_in_slab_boundary(model: &Model, slab: &Slab, p: [f64; 2]) -> bool {
+    let Some(coords) = boundary_coords(model, slab) else {
+        return false;
+    };
+    if coords.len() < 3 {
+        return false;
+    }
+    let poly: Vec<[f64; 2]> = coords.iter().map(|c| [c[0], c[1]]).collect();
+    point_in_polygon(p, &poly)
+}
+
 pub fn polygon_area(coords: &[[f64; 3]]) -> f64 {
     let n = coords.len();
     if n < 3 {

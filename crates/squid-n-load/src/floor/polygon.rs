@@ -23,8 +23,8 @@ fn bbox2(poly: &[[f64; 2]]) -> (f64, f64, f64, f64) {
     (min_x, max_x, min_y, max_y)
 }
 
-/// 点が多角形内部にあるか（レイキャスト法／偶奇則）。
-fn point_in_polygon(p: [f64; 2], poly: &[[f64; 2]]) -> bool {
+/// 点が多角形内部にあるか（レイキャスト法／偶奇則）。XY 平面投影用。
+pub(crate) fn point_in_polygon(p: [f64; 2], poly: &[[f64; 2]]) -> bool {
     let n = poly.len();
     let mut inside = false;
     let mut j = n - 1;

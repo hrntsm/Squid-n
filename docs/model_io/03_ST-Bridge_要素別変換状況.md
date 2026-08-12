@@ -30,7 +30,7 @@ ST-Bridge の主要要素ごとの変換状況です。
 |---|:--:|:--:|---|
 | `StbColumn`（柱） | ✅ | ✅ | 鉛直材として往復。`rotate`・`condition_bottom`/`_top` を読む。端部の偏心 `offset_*` は対象外 |
 | `StbGirder`（大梁） | ✅ | ✅ | 水平材として往復。`rotate`・`condition_start`/`_end` を読む。端部の偏心 `offset_*` は対象外 |
-| `StbBeam`（小梁） | ✅ | ✅ | 二次部材の小梁として往復。全体解析の対象外で、床荷重・自重は大梁への集中荷重（CMQ）として伝える。取り込み時は小梁要素自体は復元するが、床スラブの `Slab::joists`（どの床がどの小梁を抱えるかの対応）は現状埋めないため、小梁設計・検定の対象から外れる場合がある |
+| `StbBeam`（小梁） | ✅ | ✅ | 二次部材の小梁として往復。全体解析の対象外で、床荷重・自重は大梁への集中荷重（CMQ）として伝える。取り込み後も床スラブの `Slab::joists` は空のまま（床荷重の二重計上を避ける）。小梁の断面検定は `Model::secondary_members` を参照し、中点のスラブ帰属と負担幅から単純支持梁として算定する |
 | `StbPost`（間柱） | ✅ | ✅ | 二次部材の間柱として往復。節点は `id_node_bottom`/`_top`（`id_node_start`/`_end` も可） |
 | `StbBrace`（ブレース） | ✅ | ✅ | `feature_brace` を読み、`TENSIONANDCOMPRESSION` 以外は引張専用とする。両端ピンで取り込む |
 | `StbSlab`（スラブ） | ✅ | ✅ | 境界節点ループ（`StbNodeIdOrder` のテキスト・CDATA・子要素 `StbNodeId` のいずれも可）＋断面参照。`kind_slab` は書き出しのみ。仕上げ荷重・用途（積載）・分配法は対象外 |

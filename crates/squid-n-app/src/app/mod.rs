@@ -250,10 +250,19 @@ pub struct Selection {
     pub members: Vec<squid_n_core::ids::ElemId>,
 }
 
-/// 床の中での小梁設計結果1件（`(スラブ id, 小梁インデックス, 設計結果)`）。
+/// 小梁設計結果の対象（`Slab::joists` の添字、または `secondary_members` の添字）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum JoistCheckTarget {
+    /// `Slab::joists` 内の添字。
+    SlabJoist(usize),
+    /// `Model::secondary_members` 内の添字（ST-Bridge 取り込み小梁など）。
+    SecondaryMember(usize),
+}
+
+/// 床の中での小梁設計結果1件（`(スラブ id, 対象, 設計結果)`）。
 pub type JoistCheck = (
     squid_n_core::ids::SlabId,
-    usize,
+    JoistCheckTarget,
     squid_n_design_jp::floor::JoistDesignResult,
 );
 /// スラブ（床）設計結果1件（`(スラブ id, 設計結果)`）。
