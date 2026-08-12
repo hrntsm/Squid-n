@@ -17,9 +17,10 @@
 //! 検定の組み立ては `app::actions::run_design_check`（断面・材料に応じた
 //! RC/Steel/SRC/CFT の `DesignCheck` 実装への振り分け）と同じ考え方だが、
 //! 当該関数は `app` モジュール内の非公開関数（`is_steel` 等）に
-//! 依存しビューア側からは呼べないため、必要な部分だけ本ファイルへ複製する
-//! （地震時短期 QD の長期内力割増・座屈長さの自動算定・鋼継手欠損・一本部材
-//! グループ合成・BRB 属性差し替えは簡略化のため含まない。あくまで概算検定）。
+//! 依存しビューア側からは呼べないため、必要な部分だけ本ファイルへ複製する。
+//! 長期静的結果がある場合は地震時 QD / 柱メカニズムを部分配線する。
+//! 座屈長さの自動算定・鋼継手欠損・一本部材グループ合成・BRB 属性差し替え・
+//! Q0（単純梁せん断）は簡略化のため含まない（概算検定）。
 
 use crate::app::App;
 use crate::theme;
@@ -628,7 +629,9 @@ fn draw_peak_check(
     draw_long_term_note(ui, th_nonlinear, th_applied_long_term);
     ui.label(
         egui::RichText::new(
-            "簡易検定です（座屈長さ＝部材長として評価。継手欠損・一本部材合成・地震時QDの長期割増は考慮しません）。\
+            "簡易検定です（座屈長さ＝部材長として評価。継手欠損・一本部材合成は考慮しません）。\
+             非線形時刻歴で長期を重ねた解析のときのみ、地震時 QD / 柱メカニズムを配線します\
+             （線形時刻歴や長期未重畳では、包絡ピークと静的長期の合成が危険側になり得るため無効です）。\
              各成分（N・Qy・Qz・My・Mz）の最大値は全ステップ包絡のため、同一時刻に生じたとは限りません\
              （実際には同時に生じない組合せを検定している可能性があり、安全側ですが過大評価になり得ます）。",
         )
@@ -670,6 +673,12 @@ fn draw_peak_check(
         app.model.nodes[elem.nodes[0].index()].coord,
         app.model.nodes[elem.nodes[1].index()].coord,
     );
+    let face_sum = elem.rigid_zone.face_i_or_zero() + elem.rigid_zone.face_j_or_zero();
+    let clear_span = if length - face_sum > 0.0 {
+        length - face_sum
+    } else {
+        length
+    };
     let m_at = |target: f64| {
         peak.at
             .iter()
@@ -690,13 +699,69 @@ fn draw_peak_check(
         .iter()
         .map(|(_, f)| (f[4].abs(), f[2].abs()))
         .max_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+
+    // 非線形 TH かつ長期重畳済みのときのみ QD / 柱メカニズムを配線する。
+    // 線形 TH の包絡ピークに静的長期を足すと、組合せ内力の前提が崩れ危険側になり得る。
+    let wire_qd = th_nonlinear && th_applied_long_term;
+    let long_mf = wire_qd
+        .then(|| {
+            app.results.as_ref().and_then(|r| {
+                r.combos
+                    .iter()
+                    .find(|(n, _)| n == "DL + LL")
+                    .or_else(|| {
+                        r.combos
+                            .iter()
+                            .find(|(n, _)| !squid_n_load::combo::is_short_term_combo(n))
+                    })
+                    .map(|(_, st)| &st.member_forces)
+            })
+        })
+        .flatten();
+    let q0_by_elem = wire_qd.then(|| squid_n_job::simple_beam_q0_by_gravity_cases(&app.model));
+    let seismic_qd = long_mf.and_then(|list| {
+        list.iter()
+            .find(|(id, _)| *id == elem.id)
+            .map(|(_, mf)| squid_n_design_jp::SeismicQd {
+                long_at: mf.at.clone(),
+                n_factor: 1.5,
+                n_mechanism: 1.0,
+                q_simple: q0_by_elem.as_ref().and_then(|m| m.get(&elem.id).copied()),
+                clear_length: clear_span,
+                method: app.analysis_cfg.qd_method,
+            })
+    });
+    let column_sum_my = if kind == MemberKind::Column && seismic_qd.is_some() {
+        let n_at = |mf: &MemberForces, end: usize| {
+            let target = if end == 0 { 0.0 } else { 1.0 };
+            mf.at
+                .iter()
+                .min_by(|a, b| (a.0 - target).abs().total_cmp(&(b.0 - target).abs()))
+                .map(|(_, f)| f[0])
+                .unwrap_or(0.0)
+        };
+        let (n_combo_i, n_combo_j) = (n_at(peak, 0), n_at(peak, 1));
+        let (n_long_i, n_long_j) = long_mf
+            .and_then(|list| list.iter().find(|(id, _)| *id == elem.id))
+            .map(|(_, mf)| (n_at(mf, 0), n_at(mf, 1)))
+            .unwrap_or((n_combo_i, n_combo_j));
+        let adj = squid_n_core::adjacency::NodeAdjacency::build(&app.model);
+        squid_n_design_jp::rc::compute_column_mechanism_sum_my(
+            &app.model, &adj, elem, n_long_i, n_long_j, n_combo_i, n_combo_j, 1.0,
+        )
+    } else {
+        None
+    };
+
     let ctx = DesignCtx {
         term: LoadTerm::Short,
         kind,
         length,
+        clear_length: Some(clear_span),
         shear_span,
         shear_span_y,
         rc_damage_control: app.analysis_cfg.rc_damage_control,
+        bond_method: app.analysis_cfg.bond_method,
         end_moments_z,
         mid_moment_z: m_at(0.5),
         // 材料は断面が持つ。RC・SRC の検定は主筋・せん断補強筋・内蔵鉄骨の材料を
@@ -704,6 +769,10 @@ fn draw_peak_check(
         rebar_material: app.model.element_rebar_material(elem).cloned(),
         shear_rebar_material: app.model.element_shear_rebar_material(elem).cloned(),
         steel_material: app.model.element_steel_material(elem).cloned(),
+        beam_has_slab: kind == MemberKind::Beam
+            && squid_n_design_jp::beam_has_attached_slab(&app.model, elem),
+        seismic_qd,
+        column_sum_my,
         ..Default::default()
     };
     // 検定器の選択は構造種別による（`squid_n_core::structure_kind`。

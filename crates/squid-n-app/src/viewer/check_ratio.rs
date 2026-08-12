@@ -31,15 +31,16 @@ use super::CheckRatioFilter;
 /// （[`theme::check_ratio_color`]）だけで余裕度を示す。
 pub(super) const LABEL_MIN_RATIO: f64 = 0.8;
 
-/// `CheckKind` の定義順（Bending→Shear→Bond→AxialBending→Axial→Deflection）で
+/// `CheckKind` の定義順（Bending→…→Deflection→Provision）で
 /// 固定した全種一覧。フィルタ選択肢・ツールチップの列順を安定させるために使う。
-const ALL_KINDS: [CheckKind; 6] = [
+const ALL_KINDS: [CheckKind; 7] = [
     CheckKind::Bending,
     CheckKind::Shear,
     CheckKind::Bond,
     CheckKind::AxialBending,
     CheckKind::Axial,
     CheckKind::Deflection,
+    CheckKind::Provision,
 ];
 
 /// フィルタ `filter` を検定結果 `outcome` に適用した結果（検定比, OK か）を

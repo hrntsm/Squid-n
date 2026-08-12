@@ -77,6 +77,22 @@ pub fn design_table(ui: &mut egui::Ui, app: &mut App) {
                 changed = true;
             }
         }
+        ui.label("付着:");
+        for (m, label) in [
+            (squid_n_design_jp::BondMethod::Rc1999, "1999"),
+            (squid_n_design_jp::BondMethod::Rc1991, "1991"),
+        ] {
+            if ui
+                .selectable_label(app.analysis_cfg.bond_method == m, label)
+                .on_hover_text(
+                    "RC 梁付着検定の方式。1999=必要付着長さ、1991=τa=Q/(ψ·j)。既定は 1999",
+                )
+                .clicked()
+            {
+                app.analysis_cfg.bond_method = m;
+                changed = true;
+            }
+        }
         if changed {
             app.run_design_check();
         }

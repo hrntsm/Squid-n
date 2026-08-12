@@ -1803,24 +1803,32 @@ impl App {
                 return demand;
             }
         }
-        let gravity_lc = gravity_cases_for_seismic_weight(&self.model)
-            .first()
-            .copied();
         // 単純梁せん断 Q0（MK785/SPR785/SPR685 使用部材の QL=Q0 読み替え用）。
-        let q0_map = gravity_lc
-            .map(|lc| simple_beam_q0_by_elem(&self.model, lc))
-            .unwrap_or_default();
+        // Dead+LiveSeismic（なければ Live）を加算した長期相当。
+        let q0_map = squid_n_job::simple_beam_q0_by_gravity_cases(&self.model);
+        // QL も同じ重力ケース集合の解析内力を加算する（先頭ケースのみだと Q0 と積載がずれる）。
+        let gravity_long = self.results.as_ref().and_then(|r| {
+            squid_n_job::sum_analyzed_gravity_member_forces(&self.model, |lc| {
+                r.statics
+                    .iter()
+                    .find(|(id, _)| *id == StaticCaseKey::User(lc))
+                    .map(|(_, s)| s.member_forces.clone())
+            })
+        });
         self.results
             .as_ref()
             .map(|r| {
-                let member_forces: &[(ElemId, squid_n_element::beam::MemberForces)] = gravity_lc
+                let fallback = gravity_cases_for_seismic_weight(&self.model)
+                    .first()
                     .and_then(|lc| {
                         r.statics
                             .iter()
-                            .find(|(id, _)| *id == StaticCaseKey::User(lc))
+                            .find(|(id, _)| *id == StaticCaseKey::User(*lc))
                     })
                     .map(|(_, s)| s.member_forces.as_slice())
                     .unwrap_or(r.member_forces.as_slice());
+                let member_forces: &[(ElemId, squid_n_element::beam::MemberForces)] =
+                    gravity_long.as_deref().unwrap_or(fallback);
                 member_forces
                     .iter()
                     .filter_map(|(id, mf)| {
@@ -1828,7 +1836,6 @@ impl App {
                         let mz = mf.at.iter().map(|(_, f)| f[5].abs()).fold(0.0, f64::max);
                         let my = mf.at.iter().map(|(_, f)| f[4].abs()).fold(0.0, f64::max);
                         // 長期せん断力 QL（余裕率の分子控除 (Qsu−QL)/Qmu 用）。
-                        // このケース自体が重力（長期）ケースのため、そのまま採用する。
                         let ql = mf.at.iter().map(|(_, f)| f[1].abs()).fold(0.0, f64::max);
                         Some((
                             *id,
@@ -1861,31 +1868,26 @@ impl App {
         if po.member_response.is_empty() {
             return None;
         }
-        // 長期せん断力 QL（余裕率の分子控除用）を重力ケースの静的結果から引く。
-        let gravity_lc = gravity_cases_for_seismic_weight(&self.model)
-            .first()
-            .copied();
-        let long_forces: Option<&[(ElemId, squid_n_element::beam::MemberForces)]> = self
-            .results
-            .as_ref()
-            .and_then(|res| {
-                gravity_lc.and_then(|lc| {
-                    res.statics
-                        .iter()
-                        .find(|(id, _)| *id == StaticCaseKey::User(lc))
-                })
+        // 長期せん断力 QL（余裕率の分子控除用）を重力ケース集合の静的結果から引く
+        // （Q0 と同じ Dead+LiveSeismic／Live 集合。先頭ケースのみだと積載がずれる）。
+        let gravity_long = self.results.as_ref().and_then(|res| {
+            squid_n_job::sum_analyzed_gravity_member_forces(&self.model, |lc| {
+                res.statics
+                    .iter()
+                    .find(|(id, _)| *id == StaticCaseKey::User(lc))
+                    .map(|(_, s)| s.member_forces.clone())
             })
-            .map(|(_, s)| s.member_forces.as_slice());
+        });
         let ql_of = |elem: ElemId| -> Option<f64> {
-            long_forces?
+            gravity_long
+                .as_ref()?
                 .iter()
                 .find(|(id, _)| *id == elem)
                 .map(|(_, mf)| mf.at.iter().map(|(_, f)| f[1].abs()).fold(0.0, f64::max))
         };
         // 単純梁せん断 Q0（MK785/SPR785/SPR685 使用部材の QL=Q0 読み替え用）。
-        let q0_map = gravity_lc
-            .map(|lc| simple_beam_q0_by_elem(&self.model, lc))
-            .unwrap_or_default();
+        // Dead+LiveSeismic（なければ Live）を加算した長期相当。
+        let q0_map = squid_n_job::simple_beam_q0_by_gravity_cases(&self.model);
         Some(
             po.member_response
                 .iter()
@@ -2470,9 +2472,8 @@ impl App {
         let Some(results) = &self.results else {
             return;
         };
-        // 地震時短期の設計用せん断力 QD = min(QD1, QD2) 用の長期(DL+LL)内力。
-        // 現在の結果が地震時組合せ（名前に K/E を含む）かつ短期のときのみ、
-        // 解析済みの長期組合せ（"DL + LL" 優先、なければ長期判定の組合せ）を引く。
+        // 地震時短期の設計用せん断力 QD 用の長期内力。
+        // 優先: Q0 と同じ重力ケース集合の解析内力加算。なければ組合せ "DL + LL"。
         // 長期が未解析なら None（QD 割増なし＝従来動作）。
         let is_seismic_combo = match self.last_static {
             Some(StaticKey::Combo(idx)) => results
@@ -2485,7 +2486,18 @@ impl App {
                 .unwrap_or(false),
             _ => false,
         };
-        let long_member_forces: Option<&Vec<(ElemId, squid_n_element::beam::MemberForces)>> =
+        let gravity_long_owned = if is_seismic_combo && self.design_term == LoadTerm::Short {
+            squid_n_job::sum_analyzed_gravity_member_forces(&self.model, |lc| {
+                results
+                    .statics
+                    .iter()
+                    .find(|(id, _)| *id == StaticCaseKey::User(lc))
+                    .map(|(_, s)| s.member_forces.clone())
+            })
+        } else {
+            None
+        };
+        let long_from_combo: Option<&Vec<(ElemId, squid_n_element::beam::MemberForces)>> =
             if is_seismic_combo && self.design_term == LoadTerm::Short {
                 results
                     .combos
@@ -2501,9 +2513,19 @@ impl App {
             } else {
                 None
             };
+        let long_member_forces: Option<&[(ElemId, squid_n_element::beam::MemberForces)]> =
+            gravity_long_owned
+                .as_deref()
+                .or(long_from_combo.map(|v| v.as_slice()));
         // 一本部材指定（Model.beam_groups）: グループ単位の採用応力を合成し、
         // 所属部材の検定文脈（部材長・端部/中央モーメント等）を上書きする。
         let group_overrides = beam_group_overrides(&self.model, &results.member_forces);
+        // 梁 QD1 用の単純梁せん断 Q0（Dead+LiveSeismic 加算の長期相当）。
+        let q0_by_elem = if long_member_forces.is_some() {
+            squid_n_job::simple_beam_q0_by_gravity_cases(&self.model)
+        } else {
+            Default::default()
+        };
         let report = squid_n_design_jp::run_member_design_checks(
             &self.model,
             &results.member_forces,
@@ -2511,8 +2533,10 @@ impl App {
             &squid_n_design_jp::MemberDesignCheckOptions {
                 term: self.design_term,
                 rc_damage_control: self.analysis_cfg.rc_damage_control,
+                bond_method: self.analysis_cfg.bond_method,
                 qd_method: self.analysis_cfg.qd_method,
-                long_member_forces: long_member_forces.map(|v| v.as_slice()),
+                long_member_forces,
+                q_simple_by_elem: Some(&q0_by_elem),
                 beam_group_overrides: Some(&group_overrides),
             },
         );
@@ -3011,84 +3035,6 @@ impl App {
             .count();
         (errors, warnings)
     }
-}
-
-/// 長期（重力）ケースの部材荷重から、各部材を単純梁支持とした場合の端部
-/// せん断力 Q0 [N] を算定する。
-///
-/// せん断補強筋に MK785/SPR785/SPR685 を使用した部材の終局余裕率では、
-/// QL 控除を `QL=Q0` と読み替える（各製品の技術評定の規定。
-/// [`squid_n_design_jp::ultimate::MemberDemand`] の `q_simple`）。荷重は部材軸
-/// 直交成分の大きさで評価し、Q0 は単純梁の両端反力の大きい方とする。
-/// 対象ケースは QL と同じ先頭重力ケース（そのケースに載る部材荷重のみ集計）。
-fn simple_beam_q0_by_elem(
-    model: &squid_n_core::model::Model,
-    lc: LoadCaseId,
-) -> std::collections::HashMap<ElemId, f64> {
-    use squid_n_core::model::MemberLoadKind;
-    let mut acc: std::collections::HashMap<ElemId, (f64, f64)> = Default::default();
-    let Some(case) = model.load_cases.iter().find(|c| c.id == lc) else {
-        return Default::default();
-    };
-    for ml in &case.member {
-        let Some(elem) = model.element(ml.elem) else {
-            continue;
-        };
-        if elem.nodes.len() < 2 {
-            continue;
-        }
-        let (Some(n0), Some(n1)) = (
-            model.nodes.get(elem.nodes[0].index()),
-            model.nodes.get(elem.nodes[elem.nodes.len() - 1].index()),
-        ) else {
-            continue;
-        };
-        let dx = [
-            n1.coord[0] - n0.coord[0],
-            n1.coord[1] - n0.coord[1],
-            n1.coord[2] - n0.coord[2],
-        ];
-        let l = (dx[0] * dx[0] + dx[1] * dx[1] + dx[2] * dx[2]).sqrt();
-        if l <= 0.0 {
-            continue;
-        }
-        let e = [dx[0] / l, dx[1] / l, dx[2] / l];
-        let dn = (ml.dir[0] * ml.dir[0] + ml.dir[1] * ml.dir[1] + ml.dir[2] * ml.dir[2]).sqrt();
-        if dn <= 0.0 {
-            continue;
-        }
-        let d = [ml.dir[0] / dn, ml.dir[1] / dn, ml.dir[2] / dn];
-        // 部材軸直交成分の大きさ（重力荷重×水平梁なら 1.0）。
-        let ax = d[0] * e[0] + d[1] * e[1] + d[2] * e[2];
-        let trans = (1.0 - ax * ax).max(0.0).sqrt();
-        if trans <= 1e-12 {
-            continue;
-        }
-        let (w_total, x_bar) = match ml.kind {
-            MemberLoadKind::Point { a, p } => (p.abs(), a.clamp(0.0, l)),
-            MemberLoadKind::Distributed { a, b, w1, w2 } => {
-                let (a, b) = (a.clamp(0.0, l), b.clamp(0.0, l));
-                if b <= a {
-                    continue;
-                }
-                let w_sum = w1 + w2;
-                let total = w_sum / 2.0 * (b - a);
-                // 台形分布の重心（w_sum≈0 の反対称分布は区間中央で代表）。
-                let xb = if w_sum.abs() > 1e-12 {
-                    a + (b - a) * (w1 + 2.0 * w2) / (3.0 * w_sum)
-                } else {
-                    (a + b) / 2.0
-                };
-                (total.abs(), xb)
-            }
-        };
-        let entry = acc.entry(ml.elem).or_insert((0.0, 0.0));
-        entry.0 += trans * w_total * (l - x_bar) / l; // 単純梁反力 Ri
-        entry.1 += trans * w_total * x_bar / l; // 単純梁反力 Rj
-    }
-    acc.into_iter()
-        .map(|(k, (ri, rj))| (k, ri.max(rj)))
-        .collect()
 }
 
 /// 解析前チェックの不備 1 件を診断行へ展開する。

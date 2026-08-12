@@ -20,6 +20,7 @@
 
 pub mod auto_loads;
 pub mod compute;
+pub mod design_q0;
 pub mod error;
 pub mod floor_grillage;
 pub mod prepare;
@@ -30,6 +31,10 @@ pub use auto_loads::{
     apply_auto_load_cases, compute_auto_load_cases, compute_dl_beam_loads,
     compute_gravity_auto_load_cases, compute_seismic_auto_load_cases, AutoLoadCaseContent,
     AutoLoadComputeResult,
+};
+pub use design_q0::{
+    gravity_case_ids_for_seismic_weight, simple_beam_q0_by_elem, simple_beam_q0_by_gravity_cases,
+    sum_analyzed_gravity_member_forces, sum_member_forces_lists,
 };
 pub use error::{JobError, JobResult};
 pub use prepare::{apply_rigid_zones_and_panels, prepare_model_for_analysis, PrepareReport};

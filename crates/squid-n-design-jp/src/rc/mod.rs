@@ -34,9 +34,12 @@ mod beam;
 pub mod beam_nonlinear;
 mod bond;
 mod column;
+/// RC 柱の短期設計せん断力用 ΣMy（崩壊メカニズム判定）。
+pub mod column_mechanism;
 /// 鉄筋コンクリート造水平接合面の検討（PCa 打継ぎ面のせん断検定）。
 pub mod horizontal_joint;
 pub mod joint;
+mod provisions;
 pub mod wall;
 /// 鉄筋コンクリート造耐震壁のせん断非線形特性（トリリニア Qc/βu/Qu）。
 /// 非線形解析のせん断ばね骨格に用いる（技術基準解説書「耐震壁のせん断非線形特性」）。
@@ -49,6 +52,10 @@ pub(crate) mod section_props;
 mod shear_capacity;
 
 pub use bond::{rc_beam_bond_check, rc_beam_bond_check_1991, Bond1991Result, BondCheckResult};
+pub use column_mechanism::{
+    compute_column_mechanism_sum_my, design_axial_for_mechanism, resolve_column_end_hinge,
+    sum_my_from_end_hinges, ColumnEndHinge,
+};
 pub use wall_nonlinear::{
     wall_shear_beta_u, wall_shear_crack, wall_shear_trilinear, wall_shear_ultimate,
     WallShearTrilinear, WallShearTrilinearInput,

@@ -101,8 +101,8 @@ pub(crate) fn column_check(
             shear_grade,
             fc_raw,
         );
-        // 地震時短期は設計用せん断力 QD = min(ΣcMy/h′, QL+n・QE) を用いる。
-        // 円形柱の ΣcMy は等価幅 b_eq = A/D の矩形として柱 Mu 閉形式で近似する。
+        // 地震時短期は設計用せん断力 QD = min(n_mech·ΣMy/h′, QL+n・QE) を用いる。
+        // ΣMy はメカニズム判定結果を優先。未配線・方向欠落時は等価矩形の 2·Mu で代替。
         let (q_design_y, q_design_z) = if ctx.seismic_qd.is_some() {
             let mu_inp = squid_n_core::rc_capacity::RcCapacityInput {
                 b: gross_area / d_full,
@@ -116,11 +116,15 @@ pub(crate) fn column_check(
                 clear_span: 0.0,
                 sigma_0: 0.0,
             };
-            let sum_mu =
+            let sum_mu_fallback =
                 2.0 * squid_n_core::rc_capacity::rc_column_mu_simple(&mu_inp, as_total, n_design);
+            let (sum_mu_z, sum_mu_y) = match ctx.column_sum_my {
+                Some((sz, sy)) => (sz.unwrap_or(sum_mu_fallback), sy.unwrap_or(sum_mu_fallback)),
+                None => (sum_mu_fallback, sum_mu_fallback),
+            };
             (
-                seismic_design_shear(ctx, forces.pos, forces.qy, 1, sum_mu, true),
-                seismic_design_shear(ctx, forces.pos, forces.qz, 2, sum_mu, true),
+                seismic_design_shear(ctx, forces.pos, forces.qy, 1, sum_mu_z, true),
+                seismic_design_shear(ctx, forces.pos, forces.qz, 2, sum_mu_y, true),
             )
         } else {
             (forces.qy.abs(), forces.qz.abs())
@@ -156,9 +160,9 @@ pub(crate) fn column_check(
         );
         // 共通: 軸+曲げ（N-M 相関曲線）・せん断の双方で用いる断面諸元
         // （円形柱は強軸・弱軸で axis.props を共有するため）。
-        let detail = format!("at={:.1} mm², d={:.1} mm", axis.props.at, axis.props.d);
+        let mut detail = format!("at={:.1} mm², d={:.1} mm", axis.props.at, axis.props.d);
 
-        let components = vec![
+        let mut components = vec![
             CheckComponent {
                 kind: CheckKind::AxialBending,
                 ratio: ratio_axial.max(ratio_moment),
@@ -170,6 +174,25 @@ pub(crate) fn column_check(
                 detail: shear_detail,
             },
         ];
+
+        if crate::rc::provisions::is_member_level_station(forces.pos) {
+            let prov = crate::rc::provisions::column_provisions(
+                shape,
+                rebar,
+                d_full,
+                ctx.clear_length.filter(|&l| l > 1e-9).unwrap_or(ctx.length),
+                mat.concrete_class,
+                long_term,
+                gross_area,
+                as_total,
+                n_design.max(0.0),
+                fc_raw,
+            );
+            if let Some(c) = prov.provision_component() {
+                components.push(c);
+            }
+            detail.push_str(&prov.warning_suffix());
+        }
 
         return CheckResult {
             basis,
@@ -259,8 +282,8 @@ pub(crate) fn column_check(
         fc_raw,
     );
     // 地震時短期は設計用せん断力 QD = min(QD1, QD2) を用いる
-    // （QD1 = ΣcMy/h′、QD2 = QL + n・QE。ctx.seismic_qd が None なら解析値）。
-    // ΣcMy は柱頭・柱脚同一断面の仮定で 2・Mu（軸力考慮閉形式）とする。
+    // （QD1 = n_mech·ΣMy/h′、QD2 = QL + n・QE。ctx.seismic_qd が None なら解析値）。
+    // ΣMy は崩壊メカニズム判定の結果を優先し、未配線・方向欠落時は 2·Mu で代替する。
     let (q_design_y, q_design_z) = if ctx.seismic_qd.is_some() {
         let sigma_y = rebar_sigma_y_of(ctx.rebar_material.as_ref());
         let mu_of = |b: f64, d_full: f64, props: &AxisProps| {
@@ -278,8 +301,12 @@ pub(crate) fn column_check(
             };
             squid_n_core::rc_capacity::rc_column_mu_simple(&mu_inp, as_total, n_design)
         };
-        let sum_mu_z = 2.0 * mu_of(sec.width, sec.depth, &axis_z.props);
-        let sum_mu_y = 2.0 * mu_of(sec.depth, sec.width, &axis_y.props);
+        let fallback_z = 2.0 * mu_of(sec.width, sec.depth, &axis_z.props);
+        let fallback_y = 2.0 * mu_of(sec.depth, sec.width, &axis_y.props);
+        let (sum_mu_z, sum_mu_y) = match ctx.column_sum_my {
+            Some((sz, sy)) => (sz.unwrap_or(fallback_z), sy.unwrap_or(fallback_y)),
+            None => (fallback_z, fallback_y),
+        };
         (
             seismic_design_shear(ctx, forces.pos, forces.qy, 1, sum_mu_z, true),
             seismic_design_shear(ctx, forces.pos, forces.qz, 2, sum_mu_y, true),
@@ -318,9 +345,9 @@ pub(crate) fn column_check(
         qay, qaz, alpha_y, alpha_z, axis_z.props.pw, axis_y.props.pw
     );
     // 矩形柱は強軸・弱軸で断面諸元を共有しないため共通 detail は空文字列とする。
-    let detail = String::new();
+    let mut detail = String::new();
 
-    let components = vec![
+    let mut components = vec![
         CheckComponent {
             kind: CheckKind::AxialBending,
             ratio: ratio_axial.max(ratio_moment),
@@ -332,6 +359,26 @@ pub(crate) fn column_check(
             detail: shear_detail,
         },
     ];
+
+    if crate::rc::provisions::is_member_level_station(forces.pos) {
+        let d_min = sec.width.min(sec.depth);
+        let prov = crate::rc::provisions::column_provisions(
+            shape,
+            rebar,
+            d_min,
+            ctx.clear_length.filter(|&l| l > 1e-9).unwrap_or(ctx.length),
+            mat.concrete_class,
+            long_term,
+            gross_area,
+            as_total,
+            n_design.max(0.0),
+            fc_raw,
+        );
+        if let Some(c) = prov.provision_component() {
+            components.push(c);
+        }
+        detail.push_str(&prov.warning_suffix());
+    }
 
     CheckResult {
         basis,
@@ -531,5 +578,63 @@ mod tests {
             .components
             .iter()
             .any(|c| c.kind == crate::CheckKind::Shear));
+    }
+
+    /// メカニズム方向欠落（内側 None）は外側未算定と同じく 2·Mu フォールバック。
+    #[test]
+    fn test_column_sum_my_missing_direction_uses_2mu_fallback() {
+        use crate::{QdMethod, SeismicQd};
+        let shape = rc_rect_shape(400.0, 400.0, 8, 22.0, 2, 40.0, 10.0, 100.0, 2);
+        let sec = make_section(shape);
+        let mat = make_material(24.0, "SD345");
+        let forces = MemberForcesAt {
+            pos: 0.0,
+            n: -500_000.0,
+            qy: 150_000.0,
+            qz: 80_000.0,
+            my: 40.0e6,
+            mz: 60.0e6,
+        };
+        let mut ctx_outer_none = ctx_column(LoadTerm::Short);
+        ctx_outer_none.seismic_qd = Some(SeismicQd {
+            long_at: vec![(0.0, [forces.n, 40_000.0, 20_000.0, 0.0, 0.0, 0.0])],
+            n_factor: 1.5,
+            n_mechanism: 1.0,
+            q_simple: None,
+            clear_length: 3500.0,
+            method: QdMethod::Qd1,
+        });
+        ctx_outer_none.column_sum_my = None;
+        let mut ctx_dirs_missing = ctx_column(LoadTerm::Short);
+        ctx_dirs_missing.seismic_qd = Some(SeismicQd {
+            long_at: vec![(0.0, [forces.n, 40_000.0, 20_000.0, 0.0, 0.0, 0.0])],
+            n_factor: 1.5,
+            n_mechanism: 1.0,
+            q_simple: None,
+            clear_length: 3500.0,
+            method: QdMethod::Qd1,
+        });
+        ctx_dirs_missing.column_sum_my = Some((None, None));
+
+        let design = crate::rc::RcDesign;
+        let r0 = design
+            .check(&forces, &sec, &mat, &ctx_outer_none)
+            .unwrap_checked();
+        let r1 = design
+            .check(&forces, &sec, &mat, &ctx_dirs_missing)
+            .unwrap_checked();
+        let shear = |r: &crate::CheckResult| {
+            r.components
+                .iter()
+                .find(|c| c.kind == crate::CheckKind::Shear)
+                .map(|c| c.ratio)
+                .unwrap()
+        };
+        assert!(
+            (shear(&r0) - shear(&r1)).abs() < 1e-9,
+            "外側 None と内側 (None,None) は同じ 2·Mu: {} vs {}",
+            shear(&r0),
+            shear(&r1)
+        );
     }
 }

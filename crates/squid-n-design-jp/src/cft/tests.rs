@@ -391,6 +391,8 @@ fn test_cft_box_seismic_qd2_scales_shear_ratio_by_n() {
         seismic_qd: Some(SeismicQd {
             long_at: vec![(0.0, [0.0, 0.0, 0.0, 0.0, 0.0, 0.0])], // QL=0
             n_factor,
+            n_mechanism: 1.0,
+            q_simple: None,
             clear_length: 4000.0,
             method: QdMethod::Qd2,
         }),
@@ -440,6 +442,8 @@ fn test_cft_box_seismic_qd1_governs_when_smaller() {
         seismic_qd: Some(SeismicQd {
             long_at: vec![(0.0, [0.0, 0.0, 0.0, 0.0, 0.0, 0.0])], // QL=0
             n_factor,
+            n_mechanism: 1.0,
+            q_simple: None,
             clear_length: h_clear,
             method: QdMethod::Min,
         }),
