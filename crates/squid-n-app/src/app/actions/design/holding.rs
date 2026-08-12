@@ -20,7 +20,7 @@ impl App {
         use squid_n_core::section_shape::SectionShape;
         use squid_n_design_jp::secondary::ds_group::{
             ds_rc, ds_steel, member_group, rank_index_for_group, rc_beam_type, rc_column_type,
-            rc_wall_type, steel_brace_type, GroupType,
+            rc_wall_shear_brittle, rc_wall_tau_over_fc, rc_wall_type, steel_brace_type, GroupType,
         };
         use squid_n_design_jp::secondary::holding_capacity::{
             check_holding_capacity, qud_by_story, MemberRank,
@@ -255,7 +255,7 @@ impl App {
                     } else {
                         // RC 耐力壁: 告示「耐力壁の種別」表（τu/Fc により WA〜WD）。
                         // τu は Ds 算定時（増分解析＝プッシュオーバー終局時）に壁断面に生じる
-                        // 平均せん断応力度 = 負担水平力 /(壁厚・壁長)。
+                        // 平均せん断応力度 = 負担水平力 /(壁厚·壁長·r2)。r2 は耐力用開口低減。
                         let Some(fc) = mat.fc else {
                             continue;
                         };
@@ -272,14 +272,28 @@ impl App {
                             continue;
                         };
                         let wall_len = wgeom.lw;
-                        let area = thickness * wall_len;
-                        if area <= 0.0 || fc <= 0.0 {
+                        let r2 = squid_n_element::wall_panel::WallPanelElement::opening_strength_reduction(
+                            elem,
+                            &self.model,
+                        );
+                        let Some(tau_over_fc) = rc_wall_tau_over_fc(
+                            resp.horizontal_force,
+                            *thickness,
+                            wall_len,
+                            r2,
+                            fc,
+                        ) else {
                             continue;
-                        }
+                        };
+                        let qu = squid_n_element::wall_panel::WallPanelElement::shear_capacity_of(
+                            elem,
+                            &self.model,
+                        );
+                        let brittle = rc_wall_shear_brittle(resp.horizontal_force, qu);
                         // 壁式構造か否かは設計設定（設計タブのチェックボックス）による。
                         // 告示「耐力壁の種別」表は壁式構造で限界値が厳しくなる。
                         let wall_structure = self.wall_structure;
-                        rc_wall_type((resp.horizontal_force / area) / fc, wall_structure, false)
+                        rc_wall_type(tau_over_fc, wall_structure, brittle)
                     }
                 } else {
                     // RC 部材: RcRect のみ対応。RcCircle・形状未設定・
