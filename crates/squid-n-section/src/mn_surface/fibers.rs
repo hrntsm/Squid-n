@@ -176,10 +176,11 @@ fn mesh_box_plates(
 
 /// 主筋1セット分のバネを追加する。
 ///
-/// - `main_x`（せい方向主筋）: 上下面（z = ±(d/2 − cover)）に各 `count` 本を幅方向へ等配。
-/// - `main_y`（幅方向主筋）: 側面（y = ±(b/2 − cover)）に各 `count` 本をせい方向の
-///   内側区間へ等配（隅角部は main_x 側に含める）。
-/// - `layers`: 2段目以降は 2.5×径 ずつ内側へ配置する。
+/// - `main_x`（せい方向主筋）: 上下面に各 `count` 本を幅方向へ等配。
+/// - `main_y`（幅方向主筋）: 側面に各 `count` 本をせい方向の内側区間へ等配
+///   （隅角部は main_x 側に含める）。
+/// - 各段の中心位置は [`squid_n_core::rc_rebar_geom::rebar_layer_depth_from_edge`]
+///   （かぶり＋帯筋径＋主筋半径、段間隔は配筋指針のあき規約）と同一。
 fn rebar_fibers_rect(
     fibers: &mut Vec<PlasticFiber>,
     rebar: &RcRebar,
@@ -188,6 +189,8 @@ fn rebar_fibers_rect(
     fy: f64,
     young: f64,
 ) {
+    use squid_n_core::rc_rebar_geom::rebar_layer_depth_from_edge;
+
     let bar = |set: &BarSet| -> f64 { std::f64::consts::PI * set.dia * set.dia / 4.0 };
 
     // せい方向主筋（上下面）
@@ -195,7 +198,8 @@ fn rebar_fibers_rect(
     if set.count > 0 {
         let a = bar(set);
         for layer in 0..set.layers.max(1) {
-            let z0 = d / 2.0 - rebar.cover - layer as f64 * 2.5 * set.dia;
+            let depth = rebar_layer_depth_from_edge(rebar.cover, rebar.shear.dia, set, layer);
+            let z0 = d / 2.0 - depth;
             let span = b - 2.0 * rebar.cover;
             for i in 0..set.count {
                 let y = if set.count == 1 {
@@ -223,7 +227,8 @@ fn rebar_fibers_rect(
     if set.count > 0 {
         let a = bar(set);
         for layer in 0..set.layers.max(1) {
-            let y0 = b / 2.0 - rebar.cover - layer as f64 * 2.5 * set.dia;
+            let depth = rebar_layer_depth_from_edge(rebar.cover, rebar.shear.dia, set, layer);
+            let y0 = b / 2.0 - depth;
             let span = d - 2.0 * rebar.cover;
             for i in 0..set.count {
                 // 端点（隅角部）を除いた内分点に配置
@@ -245,6 +250,7 @@ fn rebar_fibers_rect(
 }
 
 /// RC 円形断面の主筋バネ（main_x + main_y の合計本数を円周上へ等配）。
+/// 配置半径は矩形 1 段目と同じ縁からの距離（cover + shear.dia + φ/2）。
 fn rebar_fibers_circle(
     fibers: &mut Vec<PlasticFiber>,
     rebar: &RcRebar,
@@ -262,7 +268,8 @@ fn rebar_fibers_circle(
         rebar.main_y.dia
     };
     let a = std::f64::consts::PI * dia * dia / 4.0;
-    let r = d / 2.0 - rebar.cover;
+    let depth = rebar.cover + rebar.shear.dia + dia / 2.0;
+    let r = (d / 2.0 - depth).max(0.0);
     for i in 0..total {
         let th = 2.0 * std::f64::consts::PI * i as f64 / total as f64;
         fibers.push(PlasticFiber {
