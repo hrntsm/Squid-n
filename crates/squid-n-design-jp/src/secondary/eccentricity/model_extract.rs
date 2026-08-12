@@ -46,9 +46,9 @@ pub fn center_of_mass(model: &Model, story: StoryId) -> [f64; 2] {
 
 /// 当該層の各柱について方向別水平剛性（D値）と平面位置を算定して返す（仕様 §5.1）。
 ///
-/// 柱の判定: `ElementKind::Beam` かつ 2節点、`squid_n_core::geom::is_vertical_axis`
-/// （45° 余弦基準）で鉛直判定。
-/// 層帰属: 上端節点（z 大）の `story == Some(story)` を当該層とする。
+/// 中間節点で分割された鉛直材は連なりとして 1 本とみなす（[`crate::secondary::story_columns`]）。
+/// \( h \) は層の上下端床の標高差であり、セグメントの材長ではない。
+/// 断面・材料・局所軸は最上側セグメント（`StoryColumn::top_elem`）から取る。
 ///
 /// `story` には**層の上端の階**（[`squid_n_core::model::Layer::top`]）を渡すこと。
 /// 層の柱はその上端の床に取り付くためである。
@@ -59,42 +59,19 @@ pub fn column_stiffnesses(model: &Model, story: StoryId) -> Vec<ColumnStiffness>
 
     let mut result = Vec::new();
 
-    for elem in &model.elements {
-        // 2節点 Beam のみ対象。
+    for col in crate::secondary::story_columns::story_columns(model, story) {
+        let Some(elem) = model.elements.iter().find(|e| e.id == col.top_elem) else {
+            continue;
+        };
         if elem.kind != ElementKind::Beam || elem.nodes.len() != 2 {
             continue;
         }
-        let nid0 = elem.nodes[0];
-        let nid1 = elem.nodes[1];
-        let n0 = &model.nodes[nid0.index()];
-        let n1 = &model.nodes[nid1.index()];
-        let p0 = n0.coord;
-        let p1 = n1.coord;
-
-        // 部材軸単位ベクトル（i→j）。
-        let dx = p1[0] - p0[0];
-        let dy = p1[1] - p0[1];
-        let dz = p1[2] - p0[2];
-        let l = (dx * dx + dy * dy + dz * dz).sqrt();
-        if l < 1e-12 {
-            continue;
-        }
-        // 鉛直部材（柱）判定（全クレート共通の 45° 余弦基準）。
-        if !squid_n_core::geom::is_vertical_axis(p0, p1) {
-            continue;
-        }
-
-        // 上端節点（z が大きい方）。
-        let (n_top, n_bot, p_top, p_bot) = if p0[2] < p1[2] {
-            (n1, n0, p1, p0)
-        } else {
-            (n0, n1, p0, p1)
-        };
-
-        // 層帰属: 上端節点の story が当該層。
-        if n_top.story != Some(story) {
-            continue;
-        }
+        let n_top = &model.nodes[col.top.index()];
+        let n_bot = &model.nodes[col.bottom.index()];
+        let p_top = n_top.coord;
+        let p_bot = n_bot.coord;
+        let p0 = model.nodes[elem.nodes[0].index()].coord;
+        let p1 = model.nodes[elem.nodes[1].index()].coord;
 
         // material / section が必須。
         let Some(mat) = model.element_material(elem) else {

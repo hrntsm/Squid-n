@@ -1081,21 +1081,7 @@ fn stbridge_roundtrip_is_reanalyzable() {
 // ===================== 既知の欠落 =====================
 
 /// ST-Bridge から取り込んだ小梁が、床の小梁設計で検定される。
-///
-/// **現状は失敗する（`#[ignore]`）**。ST-Bridge 取り込みは小梁を
-/// `Model::secondary_members` へ入れる（`squid-n-io` の
-/// `stbridge/import/assemble.rs`）が、床の `Slab::joists` は空のまま作る。
-/// 一方、小梁の断面検定 `App::floor_design_checks` は `Slab::joists` だけを
-/// 見るため、取り込んだ 56 本の小梁は一度も検定されない。`Slab::joists` を
-/// 埋めるのは GUI の床テーブル編集（`tables/slabs.rs`）のみ。
-///
-/// なお、小梁の**荷重伝達**（大梁への CMQ 変換）と**自重の計上**は
-/// `secondary_members` を見る別経路のため正しく動作しており、解析結果自体は
-/// 妥当である。欠落しているのは小梁自身の断面検定のみ。
-///
-/// 詳細は `dev_docs/handoff/実モデル統合テスト_申し送り.md` を参照。
 #[test]
-#[ignore = "ST-Bridge 取り込みが Slab::joists を埋めないため小梁が未検定（申し送り参照）"]
 fn joist_design_checks_cover_imported_secondary_members() {
     let mut app = analyzed();
     app.run_design_check();

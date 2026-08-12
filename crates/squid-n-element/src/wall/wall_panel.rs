@@ -192,6 +192,25 @@ pub fn wall_column_fiber_lp(data: &ElementData, model: &Model) -> Option<f64> {
     Some(crate::fiber::clamp_plastic_zone(0.5 * geom.lw, geom.h))
 }
 
+/// 壁要素の面積等価開口寸法 `(l0, h0)` [mm]。
+///
+/// 複数開口は**面積等価**の 1 開口へまとめる（技術基準解説書:
+/// lo = Σli、ho = Σ(li·hi)/lo）。モード別の開口列の作り方
+/// （包絡／面積等価／自動）は `opening_dims_for` に従う。
+/// 個別寸法が取れない・開口なしのときは `None`。
+fn wall_opening_equiv_dims(data: &ElementData, model: &Model) -> Option<(f64, f64)> {
+    model
+        .wall_attrs
+        .iter()
+        .find(|w| w.elem == data.id)
+        .and_then(|a| a.opening_dims_for(model.multi_opening_mode))
+        .and_then(|dims| {
+            let lo: f64 = dims.iter().map(|(l, _)| *l).sum();
+            let area: f64 = dims.iter().map(|(l, h)| l * h).sum();
+            (lo > 0.0 && area > 0.0).then_some((lo, area / lo))
+        })
+}
+
 /// [`WallPanelElement::shear_capacity`] へ渡す、耐震壁の幾何・配筋・材料。
 ///
 /// モデルから読み取った値をそのまま束ねたもので、荒川mean式の入力
@@ -646,6 +665,20 @@ impl WallPanelElement {
         )
     }
 
+    /// 耐力用開口低減率 r2（無開口は 1.0）。
+    ///
+    /// [`shear_capacity_of`] の Qu 算定と同じ開口寸法・式
+    /// （[`squid_n_core::rc_wall_capacity::wall_opening_reduction_strength`]）を用いる。
+    /// 保有水平耐力の τu 種別判定の分母 `t·lw` にも本率を乗じる。
+    pub fn opening_strength_reduction(data: &ElementData, model: &Model) -> f64 {
+        let Some(geom) = wall_panel_geometry(data, model) else {
+            return 1.0;
+        };
+        let opening =
+            wall_opening_equiv_dims(data, model).map(|(l0, h0)| (l0, h0, geom.h, geom.lw));
+        squid_n_core::rc_wall_capacity::wall_opening_reduction_strength(opening)
+    }
+
     /// この壁の面内せん断終局強度 Qu [N] を、要素と同じ幾何・配筋から算定する
     /// （非線形経路が [`Self::with_shear_capacity`] へ渡す値）。
     ///
@@ -693,20 +726,7 @@ impl WallPanelElement {
                 }
             }
         }
-        // 開口寸法。複数開口は**面積等価**の 1 開口へまとめる（技術基準解説書:
-        // 全開口面積と等しい面積を有し、全開口の幅の和と等しい幅を有する開口と
-        // みなす → lo = Σli、ho = Σ(li·hi)/lo）。モード別の開口列の作り方
-        // （包絡／面積等価／自動）は `opening_dims_for` に従う。
-        let opening = model
-            .wall_attrs
-            .iter()
-            .find(|w| w.elem == data.id)
-            .and_then(|a| a.opening_dims_for(model.multi_opening_mode))
-            .and_then(|dims| {
-                let lo: f64 = dims.iter().map(|(l, _)| *l).sum();
-                let area: f64 = dims.iter().map(|(l, h)| l * h).sum();
-                (lo > 0.0 && area > 0.0).then_some((lo, area / lo))
-            });
+        let opening = wall_opening_equiv_dims(data, model);
         // 壁横筋の材質は断面のせん断補強筋材料から引く。未割当のときは規格上の
         // 最小グレードである SD295 相当（295 N/mm²・普通強度）を既定とする。
         let shear_mat = model.element_shear_rebar_material(data);
@@ -1688,6 +1708,37 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn test_opening_strength_reduction_no_opening_is_one() {
+        let (model, data) = make_wall_model();
+        assert!((WallPanelElement::opening_strength_reduction(&data, &model) - 1.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn test_opening_strength_reduction_with_opening() {
+        use squid_n_core::model::{WallAttr, WallOpening};
+
+        let (mut model, data) = make_wall_model();
+        model.wall_attrs.push(WallAttr {
+            elem: ElemId(0),
+            opening_area: 0.0,
+            opening_weight: 0.0,
+            three_side_slit: false,
+            openings: vec![WallOpening {
+                width: 2000.0,
+                height: 1500.0,
+                offset: None,
+            }],
+        });
+        let r2 = WallPanelElement::opening_strength_reduction(&data, &model);
+        let expected = squid_n_core::rc_wall_capacity::wall_opening_reduction_strength(Some((
+            2000.0, 1500.0, 3000.0, 4000.0,
+        )));
+        assert!((r2 - expected).abs() < 1e-12);
+        assert!(r2 < 1.0);
+        assert!((r2 - 0.5).abs() < 1e-12);
     }
 
     #[test]

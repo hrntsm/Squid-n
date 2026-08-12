@@ -8,6 +8,8 @@
 
 use squid_n_core::model::{Model, Slab};
 
+use super::polygon::{point_in_polygon, point_on_polygon_boundary};
+
 pub(crate) fn boundary_coords(model: &Model, slab: &Slab) -> Option<Vec<[f64; 3]>> {
     slab.boundary
         .iter()
@@ -60,6 +62,22 @@ pub fn slab_dimensions(model: &Model, slab: &Slab) -> Option<(f64, f64)> {
 pub(crate) fn edge_len(coords: &[[f64; 3]], i: usize) -> f64 {
     let n = coords.len();
     dist3(coords[i], coords[(i + 1) % n])
+}
+
+/// 点がスラブ境界多角形（XY 平面投影）の内部または辺上にあるか。
+///
+/// 床スラブは水平（Z 一定）を仮定し、境界節点の XY 座標のみで判定する。
+/// レイキャストは辺上の点を内側にしないため、辺からの距離が 1 mm 以内なら辺上として含める。
+/// 小梁中点がスラブ縁に乗っているとき、検定対象から落ちないようにするためである。
+pub fn point_in_slab_boundary(model: &Model, slab: &Slab, p: [f64; 2]) -> bool {
+    let Some(coords) = boundary_coords(model, slab) else {
+        return false;
+    };
+    if coords.len() < 3 {
+        return false;
+    }
+    let poly: Vec<[f64; 2]> = coords.iter().map(|c| [c[0], c[1]]).collect();
+    point_in_polygon(p, &poly) || point_on_polygon_boundary(p, &poly)
 }
 
 /// 平面多角形の面積（ニュートンの公式＝シューレース公式）。全体座標 XY 平面へ投影して

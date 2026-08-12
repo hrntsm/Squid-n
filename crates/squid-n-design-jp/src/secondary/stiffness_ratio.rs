@@ -2,7 +2,8 @@
 //!
 //! - **層間変形角（確認用）:** 立体解析のため層間変形角は位置ごとに異なる。
 //!   その階の**柱の層間変形角の最大値**を用いて確認する（斜め柱は除外）:
-//!   `1/irs = max(δ1, δ2, …, δn) / iH`（δ: 柱頭の変位−柱脚の変位（加力方向の水平変位））
+//!   `1/irs = max(δ1, δ2, …, δn) / iH`（δ: 当該層の上下端床レベル間の加力方向水平変位差。
+//!   中間節点で分割された柱は連なりとして 1 本とみなす）
 //! - **剛性率算出用の層間変形角:** 重心位置の層間変位 δg を用いる:
 //!   `1/irs = iδg / iH`, `Rs = rs / r̄s ≧ 0.6`（r̄s は相加平均）
 //!
@@ -11,7 +12,9 @@
 //! 本モジュールは「δ に何を使うか」を上記の実務的取扱いに沿って揃える層である。
 
 use squid_n_core::ids::{ElemId, StoryId};
-use squid_n_core::model::{ElementKind, Model, Node};
+use squid_n_core::model::{Model, Node};
+
+use super::story_columns::story_columns;
 
 /// 柱 1 本の層間変位（加力方向）。
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -19,7 +22,7 @@ pub struct ColumnDrift {
     pub elem: ElemId,
     /// 柱頭の平面位置 (x, y) [mm]。
     pub pos: [f64; 2],
-    /// 層間変位 δ = |柱頭変位 − 柱脚変位| [mm]（加力方向の水平成分）。
+    /// 層間変位 δ = |上端床変位 − 下端床変位| [mm]（加力方向の水平成分）。
     pub drift: f64,
 }
 
@@ -28,29 +31,14 @@ pub struct ColumnDrift {
 const INCLINED_PLAN_TOL: f64 = 1.0;
 
 /// 当該層に帰属する柱を列挙して `f(elem_id, 柱頭節点, 柱脚節点)` を呼ぶ。
-/// 柱の判定: 2 節点 `Beam` かつ全クレート共通の 45° 余弦基準
-/// （[`squid_n_core::geom::is_vertical_axis`]）。
-/// 層帰属: 柱頭（z 大）節点の `story == Some(story)`。`story` には**層の上端の階**
-/// （[`squid_n_core::model::Layer::top`]）を渡すこと。
+///
+/// 中間節点で分割された鉛直材は連なりとして 1 本とみなす（[`super::story_columns`]）。
+/// `story` には**層の上端の階**（[`squid_n_core::model::Layer::top`]）を渡すこと。
 fn for_each_story_column(model: &Model, story: StoryId, mut f: impl FnMut(ElemId, &Node, &Node)) {
-    for elem in &model.elements {
-        if elem.kind != ElementKind::Beam || elem.nodes.len() != 2 {
-            continue;
-        }
-        let n0 = &model.nodes[elem.nodes[0].index()];
-        let n1 = &model.nodes[elem.nodes[1].index()];
-        if !squid_n_core::geom::is_vertical_axis(n0.coord, n1.coord) {
-            continue;
-        }
-        let (top, bot) = if n0.coord[2] < n1.coord[2] {
-            (n1, n0)
-        } else {
-            (n0, n1)
-        };
-        if top.story != Some(story) {
-            continue;
-        }
-        f(elem.id, top, bot);
+    for col in story_columns(model, story) {
+        let top = &model.nodes[col.top.index()];
+        let bot = &model.nodes[col.bottom.index()];
+        f(col.top_elem, top, bot);
     }
 }
 
@@ -105,7 +93,7 @@ pub fn cog_horizontal_disp(model: &Model, disp: &[[f64; 6]], dir: usize, story: 
     let nodes: Vec<&Node> = model
         .nodes
         .iter()
-        .filter(|n| n.story == Some(story))
+        .filter(|n| n.story == Some(story) && model.on_diaphragm_level(story, n.coord[2]))
         .collect();
     if nodes.is_empty() {
         return 0.0;
@@ -152,7 +140,7 @@ mod tests {
     use squid_n_core::dof::Dof6Mask;
     use squid_n_core::ids::{ElemId, NodeId, SectionId};
     use squid_n_core::model::{
-        ElementData, EndCondition, ForceRegime, LocalAxis, Node, RigidZone, Story,
+        ElementData, ElementKind, EndCondition, ForceRegime, LocalAxis, Node, RigidZone, Story,
     };
 
     /// 1 層 3 本柱（2 本鉛直・1 本斜め）のテストモデル。
@@ -280,5 +268,127 @@ mod tests {
         let disp = disp_field();
         let dg = cog_horizontal_disp(&model, &disp, 0, s0);
         assert!((dg - 15.0).abs() < 1e-12, "単純平均 (10+20+15)/3, got {dg}");
+    }
+
+    /// 中間節点（z=2000）で 2 分割された 1 本柱（z=0, 2000, 4000）。
+    fn build_split_column_model() -> (Model, StoryId) {
+        let base = StoryId(0);
+        let top_story = StoryId(1);
+        let nodes = vec![
+            Node {
+                id: NodeId(0),
+                coord: [0.0, 0.0, 0.0],
+                restraint: Dof6Mask::FIXED,
+                mass: None,
+                story: Some(base),
+                support_spring: None,
+            },
+            Node {
+                id: NodeId(1),
+                coord: [0.0, 0.0, 2000.0],
+                restraint: Dof6Mask::FREE,
+                mass: Some([1.0, 1.0, 1.0, 0.0, 0.0, 0.0]),
+                story: Some(top_story),
+                support_spring: None,
+            },
+            Node {
+                id: NodeId(2),
+                coord: [0.0, 0.0, 4000.0],
+                restraint: Dof6Mask::FREE,
+                mass: Some([1.0, 1.0, 1.0, 0.0, 0.0, 0.0]),
+                story: Some(top_story),
+                support_spring: None,
+            },
+        ];
+        let mk_elem = |id: u32, n0: u32, n1: u32| ElementData {
+            id: ElemId(id),
+            kind: ElementKind::Beam,
+            nodes: {
+                let mut v: SmallVec<[NodeId; 8]> = SmallVec::new();
+                v.push(NodeId(n0));
+                v.push(NodeId(n1));
+                v
+            },
+            section: Some(SectionId(0)),
+            local_axis: LocalAxis {
+                ref_vector: [0.0, 1.0, 0.0],
+            },
+            end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+            force_regime: ForceRegime::Auto,
+            rigid_zone: RigidZone::default(),
+            plastic_zone: None,
+            spring: None,
+        };
+        let elements = vec![mk_elem(0, 1, 2), mk_elem(1, 0, 1)];
+        let base_story = Story {
+            id: base,
+            name: "1F".to_string(),
+            elevation: 0.0,
+            node_ids: vec![NodeId(0)],
+            seismic_weight: None,
+            weight_override: None,
+            structure: Default::default(),
+            level_kind: Default::default(),
+        };
+        let top = Story {
+            id: top_story,
+            name: "2F".to_string(),
+            elevation: 4000.0,
+            node_ids: vec![NodeId(2)],
+            seismic_weight: None,
+            weight_override: None,
+            structure: Default::default(),
+            level_kind: Default::default(),
+        };
+        let model = Model {
+            nodes,
+            elements,
+            stories: vec![base_story, top],
+            ..Default::default()
+        };
+        (model, top_story)
+    }
+
+    /// 分割柱の層間変位は上下端床節点間 |u(上端)−u(下端)| であること。
+    #[test]
+    fn test_column_drift_uses_full_story_height_for_split_column() {
+        let (model, top) = build_split_column_model();
+        let mut disp = vec![[0.0; 6]; 3];
+        disp[0][0] = 0.0; // 下端 z=0
+        disp[1][0] = 6.0; // 中間 z=2000（セグメント δ=4 や 6 ではない）
+        disp[2][0] = 10.0; // 上端 z=4000
+        let drifts = column_drifts(&model, &disp, 0, top);
+        assert_eq!(drifts.len(), 1);
+        assert!(
+            (drifts[0].drift - 10.0).abs() < 1e-12,
+            "層間変位は |10−0|=10、got {}",
+            drifts[0].drift
+        );
+    }
+
+    /// 分割なしの柱では従来どおり 1 本として数える（退行防止）。
+    #[test]
+    fn test_column_drift_unsplit_column_unchanged() {
+        let (model, s0) = build_model();
+        let disp = disp_field();
+        let drifts = column_drifts(&model, &disp, 0, s0);
+        assert_eq!(drifts.len(), 2);
+        let max = max_column_drift(&model, &disp, 0, s0).unwrap();
+        assert!((max.drift - 20.0).abs() < 1e-12);
+    }
+
+    /// 重心変位は中間節点（床レベル外）の変位を混ぜないこと。
+    #[test]
+    fn test_cog_disp_excludes_mid_height_nodes() {
+        let (model, top) = build_split_column_model();
+        let mut disp = vec![[0.0; 6]; 3];
+        disp[0][0] = 0.0;
+        disp[1][0] = 100.0; // 中間: 床レベル外なので除外
+        disp[2][0] = 10.0; // 上端床
+        let dg = cog_horizontal_disp(&model, &disp, 0, top);
+        assert!(
+            (dg - 10.0).abs() < 1e-12,
+            "床レベル節点のみの平均 10、got {dg}"
+        );
     }
 }

@@ -136,20 +136,20 @@ impl App {
             })
         };
 
+        let sigma_allow = 235.0 / 1.5; // 鋼の長期許容曲げ応力度 F/1.5（既定 F=235）。
+        let z_of = |sid: squid_n_core::ids::SectionId| -> Option<f64> {
+            let sec = self.model.sections.get(sid.index())?;
+            // 強軸断面係数 Z = Iy / (depth/2)。
+            Some(if sec.depth > 0.0 {
+                sec.iy / (sec.depth / 2.0)
+            } else {
+                0.0
+            })
+        };
+
         for slab in &self.model.slabs {
             // 床設計は床用積載（最大）＋固定荷重を用いる。
             let w = self.model.slab_intensity(slab, LoadPurpose::Floor);
-
-            let sigma_allow = 235.0 / 1.5; // 鋼の長期許容曲げ応力度 F/1.5（既定 F=235）。
-            let z_of = |sid: squid_n_core::ids::SectionId| -> Option<f64> {
-                let sec = self.model.sections.get(sid.index())?;
-                // 強軸断面係数 Z = Iy / (depth/2)。
-                Some(if sec.depth > 0.0 {
-                    sec.iy / (sec.depth / 2.0)
-                } else {
-                    0.0
-                })
-            };
 
             // --- 小梁: 交差があれば床格子サブモデル（二方向）で、なければ単純支持梁で検定 ---
             let grillage = squid_n_job::floor_grillage::build_slab_grillage(&self.model, slab, w)
@@ -178,7 +178,7 @@ impl App {
                         sigma_allow,
                         fd::DEFLECTION_LIMIT_DENOM,
                     );
-                    joist_checks.push((slab.id, jidx, r));
+                    joist_checks.push((slab.id, crate::app::JoistCheckTarget::SlabJoist(jidx), r));
                 }
             } else {
                 // 交差なし: 各小梁を独立した単純支持梁として検定。
@@ -219,7 +219,7 @@ impl App {
                         sigma_allow,
                         fd::DEFLECTION_LIMIT_DENOM,
                     );
-                    joist_checks.push((slab.id, ji, r));
+                    joist_checks.push((slab.id, crate::app::JoistCheckTarget::SlabJoist(ji), r));
                 }
             }
 
@@ -249,6 +249,221 @@ impl App {
                 }
             }
         }
+
+        // --- 二次部材（小梁）: ST-Bridge 取り込み等 `Slab::joists` に載らない小梁 ---
+        self.design_secondary_joist_checks(&mut joist_checks, &beam_between, sigma_allow, &z_of);
+
         (joist_checks, slab_checks)
+    }
+
+    /// `Model::secondary_members` の小梁を単純支持梁として検定する。
+    ///
+    /// `Slab::joists` に同じ両端を持つ小梁は GUI 定義済みとしてスキップする。
+    /// 中点が属するスラブを XY 多角形判定（内部または辺上）で決め、平行小梁群から負担幅を算定する。
+    fn design_secondary_joist_checks(
+        &self,
+        joist_checks: &mut Vec<crate::app::JoistCheck>,
+        beam_between: &impl Fn(squid_n_core::ids::NodeId, squid_n_core::ids::NodeId) -> bool,
+        sigma_allow: f64,
+        z_of: &impl Fn(squid_n_core::ids::SectionId) -> Option<f64>,
+    ) {
+        use squid_n_core::ids::{SectionId, SlabId};
+        use squid_n_core::model::{LoadPurpose, SecondaryMemberKind};
+        use squid_n_design_jp::floor as fd;
+        use std::collections::{HashMap, HashSet};
+
+        let mut joist_supports = HashSet::new();
+        for slab in &self.model.slabs {
+            for j in &slab.joists {
+                let (a, b) = (j.support[0], j.support[1]);
+                if a != b {
+                    let key = if a.0 <= b.0 { (a, b) } else { (b, a) };
+                    joist_supports.insert(key);
+                }
+            }
+        }
+
+        struct Cand {
+            sm_idx: usize,
+            slab_id: SlabId,
+            slab_idx: usize,
+            span: f64,
+            perp_coord: f64,
+            dir: [f64; 2],
+            section: SectionId,
+        }
+
+        let mut candidates = Vec::new();
+
+        for (smi, sm) in self.model.secondary_members.iter().enumerate() {
+            if sm.kind != SecondaryMemberKind::Joist {
+                continue;
+            }
+            let Some(sid) = sm.section else { continue };
+            if z_of(sid).is_none() {
+                continue;
+            }
+
+            let (a, b) = (sm.nodes[0], sm.nodes[1]);
+            if a == b || beam_between(a, b) {
+                continue;
+            }
+            let key = if a.0 <= b.0 { (a, b) } else { (b, a) };
+            if joist_supports.contains(&key) {
+                continue;
+            }
+
+            let (Some(na), Some(nb)) = (
+                self.model.nodes.get(a.index()),
+                self.model.nodes.get(b.index()),
+            ) else {
+                continue;
+            };
+
+            let dx = nb.coord[0] - na.coord[0];
+            let dy = nb.coord[1] - na.coord[1];
+            let span = (dx * dx + dy * dy).sqrt();
+            if span <= 1e-9 {
+                continue;
+            }
+            let dir = [dx / span, dy / span];
+            let mid = [
+                (na.coord[0] + nb.coord[0]) / 2.0,
+                (na.coord[1] + nb.coord[1]) / 2.0,
+            ];
+
+            let Some((slab_idx, slab)) =
+                self.model.slabs.iter().enumerate().find(|(_, s)| {
+                    squid_n_load::floor::point_in_slab_boundary(&self.model, s, mid)
+                })
+            else {
+                continue;
+            };
+
+            let perp = [-dir[1], dir[0]];
+            let perp_coord = mid[0] * perp[0] + mid[1] * perp[1];
+
+            candidates.push(Cand {
+                sm_idx: smi,
+                slab_id: slab.id,
+                slab_idx,
+                span,
+                perp_coord,
+                dir,
+                section: sid,
+            });
+        }
+
+        fn dir_key(d: [f64; 2]) -> (i64, i64) {
+            let mut dx = d[0];
+            let mut dy = d[1];
+            if dx < 0.0 || (dx.abs() < 1e-9 && dy < 0.0) {
+                dx = -dx;
+                dy = -dy;
+            }
+            ((dx * 1000.0).round() as i64, (dy * 1000.0).round() as i64)
+        }
+
+        let mut groups: HashMap<(usize, (i64, i64)), Vec<usize>> = HashMap::new();
+        for (ci, c) in candidates.iter().enumerate() {
+            groups
+                .entry((c.slab_idx, dir_key(c.dir)))
+                .or_default()
+                .push(ci);
+        }
+
+        for (_, mut sorted) in groups {
+            sorted.sort_by(|&a, &b| {
+                candidates[a]
+                    .perp_coord
+                    .total_cmp(&candidates[b].perp_coord)
+            });
+
+            let slab = &self.model.slabs[candidates[sorted[0]].slab_idx];
+            let perp = [-candidates[sorted[0]].dir[1], candidates[sorted[0]].dir[0]];
+            let (pmin, pmax) = slab_perp_extent(&self.model, slab, perp);
+            let n = sorted.len();
+
+            for (ri, &ci) in sorted.iter().enumerate() {
+                let c = &candidates[ci];
+                let spacing = if n == 1 {
+                    single_secondary_joist_spacing(&self.model, slab, c.dir, pmax - pmin)
+                } else {
+                    let left = if ri == 0 {
+                        c.perp_coord - pmin
+                    } else {
+                        (c.perp_coord - candidates[sorted[ri - 1]].perp_coord) / 2.0
+                    };
+                    let right = if ri == n - 1 {
+                        pmax - c.perp_coord
+                    } else {
+                        (candidates[sorted[ri + 1]].perp_coord - c.perp_coord) / 2.0
+                    };
+                    left + right
+                };
+                if spacing <= 1e-9 {
+                    continue;
+                }
+
+                let Some(z) = z_of(c.section) else { continue };
+                let Some(sec) = self.model.sections.get(c.section.index()) else {
+                    continue;
+                };
+                let w = self
+                    .model
+                    .slab_intensity(&self.model.slabs[c.slab_idx], LoadPurpose::Floor);
+                let r = fd::design_joist_simple(
+                    c.span,
+                    w * spacing,
+                    z,
+                    sec.iy,
+                    fd::STEEL_YOUNG,
+                    sigma_allow,
+                    fd::DEFLECTION_LIMIT_DENOM,
+                );
+                joist_checks.push((
+                    c.slab_id,
+                    crate::app::JoistCheckTarget::SecondaryMember(c.sm_idx),
+                    r,
+                ));
+            }
+        }
+    }
+}
+
+/// スラブ境界の直交軸座標の最小・最大（負担幅算定用）。
+fn slab_perp_extent(
+    model: &squid_n_core::model::Model,
+    slab: &squid_n_core::model::Slab,
+    perp: [f64; 2],
+) -> (f64, f64) {
+    let mut min = f64::INFINITY;
+    let mut max = f64::NEG_INFINITY;
+    for nid in &slab.boundary {
+        let Some(n) = model.nodes.get(nid.index()) else {
+            continue;
+        };
+        let t = n.coord[0] * perp[0] + n.coord[1] * perp[1];
+        min = min.min(t);
+        max = max.max(t);
+    }
+    (min, max)
+}
+
+/// 単独小梁の負担幅。矩形スラブは `slab_dimensions` の軸直交寸法、それ以外は境界 bbox。
+fn single_secondary_joist_spacing(
+    model: &squid_n_core::model::Model,
+    slab: &squid_n_core::model::Slab,
+    dir: [f64; 2],
+    bbox_extent: f64,
+) -> f64 {
+    if let Some((lx, ly)) = squid_n_load::floor::slab_dimensions(model, slab) {
+        if dir[0].abs() >= dir[1].abs() {
+            ly
+        } else {
+            lx
+        }
+    } else {
+        bbox_extent
     }
 }

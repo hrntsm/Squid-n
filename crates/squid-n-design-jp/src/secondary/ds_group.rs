@@ -4,6 +4,7 @@
 //! - [`member_group`] — 耐力比 γA/γC による部材群種別の判定
 //! - [`rc_member_type`] / [`rc_beam_type`] — RC 柱・はりの部材種別（多変数表）
 //! - [`rc_wall_type`] — RC 耐力壁の種別（WA〜WD）
+//! - [`rc_wall_tau_over_fc`] / [`rc_wall_shear_brittle`] — τu/Fc と WD 判定の補助
 //! - [`steel_brace_type`] — 鉄骨筋かいの種別（BA〜BC）
 //! - [`ds_rc`] / [`ds_steel`] — 各階の Ds（壁／筋かい群種別 × βu × 柱はり群種別）
 
@@ -231,6 +232,36 @@ pub fn rc_beam_type(tau_over_fc: f64, brittle: bool) -> MemberRank {
     }
 }
 
+/// RC 耐力壁のせん断頭打ち（脆性破壊）判定閾値。終局時負担水平力が Qu のこの比率以上なら WD。
+pub const RC_WALL_SHEAR_BRITTLE_RATIO: f64 = 0.99;
+
+/// RC 耐力壁のせん断頭打ち到達（脆性）判定。
+///
+/// 増分解析の壁要素は面内せん断を終局せん断強度 Qu で頭打ちにする弾完全塑性のため、
+/// 終局時の負担水平力が Qu に達していれば「せん断破壊」とみなす。
+/// Qu が算定不能（0 以下）のときは false（判定不能を WD としない）。
+pub fn rc_wall_shear_brittle(horizontal_force: f64, qu: f64) -> bool {
+    qu > 0.0 && horizontal_force >= RC_WALL_SHEAR_BRITTLE_RATIO * qu
+}
+
+/// RC 耐力壁の平均せん断応力度比 τu/Fc。
+///
+/// `thickness`・`wall_len` から壁板断面積 t·lw [mm²] を組み立て、耐力用開口低減 r2 を
+/// 乗じた有効断面で算定する。有効断面または fc が 0 以下のときは None（判定不能）。
+pub fn rc_wall_tau_over_fc(
+    horizontal_force: f64,
+    thickness: f64,
+    wall_len: f64,
+    r2: f64,
+    fc: f64,
+) -> Option<f64> {
+    let area = thickness * wall_len * r2;
+    if area <= 0.0 || fc <= 0.0 {
+        return None;
+    }
+    Some((horizontal_force / area) / fc)
+}
+
 /// RC 耐力壁の種別（告示「耐力壁の種別」表）。WA/WB/WC/WD を
 /// [`MemberRank`] の FA/FB/FC/FD に対応させて返す。
 ///
@@ -399,6 +430,29 @@ mod tests {
         assert_eq!(rc_wall_type(0.125, true, false), MemberRank::FB);
         assert_eq!(rc_wall_type(0.15, true, false), MemberRank::FC);
         assert_eq!(rc_wall_type(0.16, true, false), MemberRank::FD);
+    }
+
+    #[test]
+    fn test_rc_wall_shear_brittle() {
+        let qu = 1_000_000.0;
+        assert!(!rc_wall_shear_brittle(0.98 * qu, qu));
+        assert!(rc_wall_shear_brittle(RC_WALL_SHEAR_BRITTLE_RATIO * qu, qu));
+        assert!(rc_wall_shear_brittle(qu, qu));
+        assert!(!rc_wall_shear_brittle(qu, 0.0));
+        // せん断頭打ち到達時は τu に関わらず WD
+        assert_eq!(rc_wall_type(0.20, false, true), MemberRank::FD);
+    }
+
+    #[test]
+    fn test_rc_wall_tau_over_fc_with_r2() {
+        let h = 1_000_000.0;
+        let t = 150.0;
+        let lw = 4000.0;
+        let fc = 24.0;
+        let tau_no = rc_wall_tau_over_fc(h, t, lw, 1.0, fc).unwrap();
+        let tau_r2 = rc_wall_tau_over_fc(h, t, lw, 0.5, fc).unwrap();
+        assert!((tau_r2 - 2.0 * tau_no).abs() < 1e-9);
+        assert!(rc_wall_tau_over_fc(h, t, lw, 0.0, fc).is_none());
     }
 
     // ===== 筋かいの種別 =====

@@ -870,7 +870,22 @@ fn floor_design_section(ui: &mut egui::Ui, app: &App) {
                     ui.label(format!("#{}", sid.0));
                 });
                 row.col(|ui| {
-                    ui.label(format!("{ji}"));
+                    let label = match ji {
+                        crate::app::JoistCheckTarget::SlabJoist(i) => format!("{i}"),
+                        crate::app::JoistCheckTarget::SecondaryMember(i) => app
+                            .model
+                            .secondary_members
+                            .get(*i)
+                            .map(|sm| {
+                                if sm.name.is_empty() {
+                                    format!("SM{i}")
+                                } else {
+                                    sm.name.clone()
+                                }
+                            })
+                            .unwrap_or_else(|| format!("SM{i}")),
+                    };
+                    ui.label(label);
                 });
                 row.col(|ui| {
                     ui.label(format!("{:.0}", jr.span));
