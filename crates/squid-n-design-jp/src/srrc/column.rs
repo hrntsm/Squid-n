@@ -675,6 +675,8 @@ mod tests {
             seismic_qd: Some(SeismicQd {
                 long_at: vec![(0.0, [0.0, ql, 0.0, 0.0, 0.0, 0.0])],
                 n_factor: 1.5,
+                n_mechanism: 1.0,
+                q_simple: None,
                 clear_length,
                 method: QdMethod::Qd1,
             }),

@@ -119,16 +119,26 @@ fn test_seismic_design_shear_min_of_qd1_qd2() {
         seismic_qd: Some(SeismicQd {
             long_at: vec![(0.0, [0.0, 50_000.0, 0.0, 0.0, 0.0, 0.0])],
             n_factor: 1.5,
+            n_mechanism: 1.0,
+            q_simple: None, // 未算定 → QL で代替
             clear_length: 4000.0,
             method: QdMethod::Min,
         }),
         ..Default::default()
     };
     // 当該組合せ Q=150kN、QL=50kN → QE=100kN、QD2 = 50+1.5×100 = 200kN。
-    // ΣMy=400kN·m → 梁 QD1 = 50+400e6/4000 = 150kN → min = 150kN。
+    // ΣMy=400kN·m、Q0 未算定 → 梁 QD1 = QL+ΣMy/l′ = 50+400e6/4000 = 150kN → min = 150kN。
     let q_beam = seismic_design_shear(&ctx, 0.0, 150_000.0, 1, 400.0e6, false);
     assert!((q_beam - 150_000.0).abs() < 1e-6, "q_beam={q_beam}");
-    // 柱 QD1 = ΣcMy/h′ = 100kN（QL を加算しない）→ min(100, 200) = 100kN。
+    // Q0=80kN を与えると梁 QD1 = 80+100 = 180kN → min(180, 200) = 180kN。
+    ctx.seismic_qd.as_mut().unwrap().q_simple = Some(80_000.0);
+    let q_beam_q0 = seismic_design_shear(&ctx, 0.0, 150_000.0, 1, 400.0e6, false);
+    assert!(
+        (q_beam_q0 - 180_000.0).abs() < 1e-6,
+        "q_beam_q0={q_beam_q0}"
+    );
+    ctx.seismic_qd.as_mut().unwrap().q_simple = None;
+    // 柱 QD1 = ΣcMy/h′ = 100kN（Q0/QL を加算しない）→ min(100, 200) = 100kN。
     let q_col = seismic_design_shear(&ctx, 0.0, 150_000.0, 1, 400.0e6, true);
     assert!((q_col - 100_000.0).abs() < 1e-6, "q_col={q_col}");
     // QD2 単独選択。

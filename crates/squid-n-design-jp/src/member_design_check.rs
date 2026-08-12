@@ -22,8 +22,8 @@ use squid_n_element::beam::MemberForces;
 
 use crate::design_position::{design_positions, is_near_design_position};
 use crate::{
-    checker_for, CheckOutcome, CheckResult, DesignCheck, DesignCtx, LoadTerm, MemberForcesAt,
-    MemberKind, QdMethod, SeismicQd,
+    beam_has_attached_slab, checker_for, BondMethod, CheckOutcome, CheckResult, DesignCheck,
+    DesignCtx, LoadTerm, MemberForcesAt, MemberKind, QdMethod, SeismicQd,
 };
 
 /// 一本部材グループ合成値（断面検定の採用応力上書き用）。
@@ -52,10 +52,14 @@ pub struct MemberDesignCheckOptions<'a> {
     pub term: LoadTerm,
     /// RC 短期許容せん断力で損傷制御式（2/3·α）を使うか。
     pub rc_damage_control: bool,
+    /// RC 梁付着検定の方式（既定は 1999）。
+    pub bond_method: BondMethod,
     /// 地震時短期 QD の決定方法（`long_member_forces` が与えられた場合のみ有効）。
     pub qd_method: QdMethod,
     /// 地震時短期 QD 用の長期（DL+LL 等）内力。None なら QD 割増なし。
     pub long_member_forces: Option<&'a [(ElemId, MemberForces)]>,
+    /// 梁 QD1 用の単純梁せん断 Q0 [N]（部材 ID → 絶対値）。None なら QL で代替。
+    pub q_simple_by_elem: Option<&'a HashMap<ElemId, f64>>,
     /// 一本部材グループの検定文脈上書き（梁のみ適用）。None なら部材単体の値を用いる。
     pub beam_group_overrides: Option<&'a HashMap<ElemId, BeamGroupContextOverride>>,
 }
@@ -169,23 +173,59 @@ pub fn run_member_design_checks(
             None => (length, shear_span, end_moments_z, m_at(0.5)),
         };
 
+        let face_sum = elem.rigid_zone.face_i_or_zero() + elem.rigid_zone.face_j_or_zero();
+        let clear_span = match group {
+            Some(g) => g.clear_length,
+            None if length - face_sum > 0.0 => length - face_sum,
+            None => length,
+        };
+
         let seismic_qd = long_mf_by_id
             .as_ref()
             .and_then(|map| map.get(elem_id))
-            .map(|mf_long| {
-                let face_sum = elem.rigid_zone.face_i_or_zero() + elem.rigid_zone.face_j_or_zero();
-                let clear_length = match group {
-                    Some(g) => g.clear_length,
-                    None if length - face_sum > 0.0 => length - face_sum,
-                    None => length,
-                };
-                SeismicQd {
-                    long_at: mf_long.at.clone(),
-                    n_factor: 1.5,
-                    clear_length,
-                    method: options.qd_method,
-                }
+            .map(|mf_long| SeismicQd {
+                long_at: mf_long.at.clone(),
+                // 割増係数 n（柱は 1.5 以上）。梁・柱とも 1.5。QD2 用。
+                n_factor: 1.5,
+                // メカニズム側 n_mech（マニュアル n2）。ルート連動前は 1.0。
+                n_mechanism: 1.0,
+                q_simple: options
+                    .q_simple_by_elem
+                    .and_then(|m| m.get(elem_id).copied()),
+                clear_length: clear_span,
+                method: options.qd_method,
             });
+
+        // RC 柱のメカニズム ΣMy（梁降伏/柱降伏）。地震時短期かつ長期内力が
+        // あるときだけ算定する。部分スリット壁の強制柱ヒンジはモデル未対応。
+        let column_sum_my = if kind == MemberKind::Column && seismic_qd.is_some() {
+            let n_at = |mf: &MemberForces, end: usize| {
+                let target = if end == 0 { 0.0 } else { 1.0 };
+                mf.at
+                    .iter()
+                    .min_by(|a, b| (a.0 - target).abs().total_cmp(&(b.0 - target).abs()))
+                    .map(|(_, f)| f[0])
+                    .unwrap_or(0.0)
+            };
+            let (n_combo_i, n_combo_j) = (n_at(mf, 0), n_at(mf, 1));
+            let (n_long_i, n_long_j) = long_mf_by_id
+                .as_ref()
+                .and_then(|m| m.get(elem_id))
+                .map(|mf_l| (n_at(mf_l, 0), n_at(mf_l, 1)))
+                .unwrap_or((n_combo_i, n_combo_j));
+            crate::rc::compute_column_mechanism_sum_my(
+                model,
+                &column_k_index,
+                elem,
+                n_long_i,
+                n_long_j,
+                n_combo_i,
+                n_combo_j,
+                1.0, // ルート連動前の n（ルート2-3 なら 2.0）
+            )
+        } else {
+            None
+        };
 
         let ctx = DesignCtx {
             rebar_material: model.element_rebar_material(elem).cloned(),
@@ -194,15 +234,19 @@ pub fn run_member_design_checks(
             term: options.term,
             kind,
             length,
+            clear_length: Some(clear_span),
             lb: None,
             lk_y,
             lk_z,
             shear_span,
             shear_span_y,
             rc_damage_control: options.rc_damage_control,
+            bond_method: options.bond_method,
             end_moments_z,
             mid_moment_z,
             seismic_qd,
+            column_sum_my,
+            beam_has_slab: kind == MemberKind::Beam && beam_has_attached_slab(model, elem),
             steel_attr,
             steel_fb_rule: Default::default(),
         };

@@ -477,6 +477,8 @@ fn test_src_beam_seismic_qd2_handcalc() {
         seismic_qd: Some(SeismicQd {
             long_at: vec![(0.0, [0.0, ql, 0.0, 0.0, 0.0, 0.0])],
             n_factor,
+            n_mechanism: 1.0,
+            q_simple: None,
             clear_length,
             method: QdMethod::Qd2,
         }),
@@ -576,6 +578,8 @@ fn test_src_beam_seismic_qd1_handcalc() {
         seismic_qd: Some(SeismicQd {
             long_at: vec![(0.0, [0.0, ql, 0.0, 0.0, 0.0, 0.0])],
             n_factor,
+            n_mechanism: 1.0,
+            q_simple: None,
             clear_length,
             method: QdMethod::Qd1,
         }),

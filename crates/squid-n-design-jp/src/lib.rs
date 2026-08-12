@@ -58,6 +58,16 @@ pub enum SteelFbRule {
     New,
 }
 
+/// RC 梁付着検定の方式。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum BondMethod {
+    /// RC 規準1999 方式（必要付着長さ ldb と付着長さ ld の比。既定）。
+    #[default]
+    Rc1999,
+    /// RC 規準1991 方式（τa = Q/(ψ·j) ≦ fa）。
+    Rc1991,
+}
+
 /// 地震時短期の設計用せん断力 QD の決定方法（RC規準。
 /// ユーザー選択により QD1・QD2 のいずれか、または小さいほう）。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -104,8 +114,12 @@ pub(crate) fn ratio_or_large(m: f64, ma: f64) -> f64 {
 /// 地震時短期の設計用せん断力 QD = min(QD1, QD2) の算定に用いる文脈
 /// （RC規準、RC 梁・柱）。
 ///
-/// - 梁: `QD1 = QL + ΣBMy/l′`、柱: `QD1 = ΣcMy/h′`
+/// - 梁: `QD1 = Q0 + n_mech・ΣBMy/l′`（`Q0` は両端支持とした長期せん断。
+///   未算定時は `QL` で代替）、柱: `QD1 = n_mech・ΣcMy/h′`
 /// - `QD2 = QL + n・QE`（`QE` = 当該組合せのせん断力 − 長期せん断力）
+///
+/// 記号 QD1/QD2 は UI・既存コードの呼称（メカニズム側＝QD1、割増 QE 側＝QD2）。
+/// 参照実装マニュアルの Qd1/Qd2 とは番号が入れ替わっている点に注意。
 ///
 /// `None`（長期・積雪時・暴風時、または長期結果が未解析）の場合は
 /// 解析せん断力をそのまま設計用せん断力とする。積雪時・暴風時の
@@ -115,8 +129,13 @@ pub struct SeismicQd {
     /// 長期（G+P）の部材内力（評価位置, [N,Qy,Qz,Mx,My,Mz]）。
     /// 当該部材の長期組合せ解析結果をそのまま渡す。
     pub long_at: Vec<(f64, [f64; 6])>,
-    /// 水平荷重時せん断力の割増係数 n（柱は 1.5 以上。既定 1.5）。
+    /// 水平荷重時せん断力の割増係数 n（柱は 1.5 以上。既定 1.5）。QD2 用。
     pub n_factor: f64,
+    /// メカニズム側（QD1）の割増係数 n_mech（マニュアルの n2。既定 1.0）。
+    pub n_mechanism: f64,
+    /// 両端支持とした長期せん断力 Q0 [N]（絶対値）。梁の QD1 に用いる。
+    /// `None` のときは `QL` で代替する。
+    pub q_simple: Option<f64>,
     /// 内法長さ l′／h′（剛域控除後）[mm]。0 以下なら QD1 は省略する。
     pub clear_length: f64,
     /// QD の決定方法。
@@ -158,6 +177,8 @@ pub enum CheckKind {
     Axial,
     /// たわみ
     Deflection,
+    /// 構造規定（かぶり・補強筋間隔等の入力エラー）
+    Provision,
 }
 
 impl CheckKind {
@@ -170,6 +191,7 @@ impl CheckKind {
             CheckKind::AxialBending => "軸+曲げ",
             CheckKind::Axial => "軸",
             CheckKind::Deflection => "たわみ",
+            CheckKind::Provision => "構造規定",
         }
     }
 }
@@ -313,6 +335,9 @@ pub struct DesignCtx {
     pub kind: MemberKind,
     /// 部材長 [mm]。座屈長さ lk・横座屈長さ lb の既定値として用いる。
     pub length: f64,
+    /// 剛域（フェイス）控除後の内法長 [mm]。RC 梁の長期たわみスパン L に用いる。
+    /// None のときは [`Self::length`]（幾何長）で代替する。
+    pub clear_length: Option<f64>,
     /// 圧縮フランジの支点間距離（横座屈長さ）lb [mm]。None なら `length`。
     pub lb: Option<f64>,
     /// 強軸まわり座屈長さ lk_y [mm]（断面二次半径 i_y=√(Iy/A) と対）。
@@ -333,6 +358,8 @@ pub struct DesignCtx {
     /// RC 短期許容せん断力で「損傷制御のための検討」式（2/3·α）を使うか。
     /// false の場合は「安全確保のための検討」式。
     pub rc_damage_control: bool,
+    /// RC 梁付着検定の方式（既定は 1999）。
+    pub bond_method: BondMethod,
     /// 部材両端の強軸まわり曲げモーメント `(M_i端, M_j端)` [N·mm]（符号付き）。
     /// 鋼の横座屈修正係数 C（複曲率正/単曲率負）とたわみ検定に用いる。
     /// None の場合は C=1.0（安全側）となり、たわみ検定は省略される。
@@ -344,6 +371,15 @@ pub struct DesignCtx {
     /// 地震時短期の設計用せん断力 QD = min(QD1, QD2) の算定文脈（RC）。
     /// None の場合は解析せん断力をそのまま用いる（従来動作）。
     pub seismic_qd: Option<SeismicQd>,
+    /// RC 柱のメカニズム ΣMy `(強軸=qy 用, 弱軸=qz 用)` [N·mm]。
+    /// 各方向は `Some(ΣMy)`（梁 My 欠落時は端軸力の `Mu_i+Mu_j`）または
+    /// `None`（柱 My 未算定で、その方向は検定位置の `2·Mu` で代替）。
+    /// 外側の `None` はメカニズム未算定（両方向とも検定位置の `2·Mu`）。
+    /// [`rc::column_mechanism::compute_column_mechanism_sum_my`] の結果。
+    pub column_sum_my: Option<(Option<f64>, Option<f64>)>,
+    /// 梁にスラブが取り付くか（両端節点がいずれかのスラブ境界に含まれる）。
+    /// 中央部の許容曲げを `Ma = at·ft·j` のみとする判定に用いる。
+    pub beam_has_slab: bool,
     /// S 造部材の断面検定属性（継手・スカラップ欠損率、横座屈長さ入力）。
     /// `Model::steel_design_attrs` 由来。None は欠損なし・lb 自動。
     pub steel_attr: Option<SteelDesignAttr>,
@@ -361,19 +397,43 @@ impl Default for DesignCtx {
             term: LoadTerm::Long,
             kind: MemberKind::Beam,
             length: 0.0,
+            clear_length: None,
             lb: None,
             lk_y: None,
             lk_z: None,
             shear_span: None,
             shear_span_y: None,
             rc_damage_control: true,
+            bond_method: BondMethod::default(),
             end_moments_z: None,
             mid_moment_z: None,
             seismic_qd: None,
+            column_sum_my: None,
+            beam_has_slab: false,
             steel_attr: None,
             steel_fb_rule: SteelFbRule::default(),
         }
     }
+}
+
+/// 梁の両端節点がいずれかのスラブ境界に含まれるか（スラブ取付き判定）。
+///
+/// 剛性側のスラブ協力幅（`squid_n_element` の協力幅算定）と同じ幾何条件。
+/// 剛性計算用スラブ厚が 0 でも、モデル上スラブが境界に乗っていれば true
+/// （許容曲げの中央 T 形略算はスラブの有無で切り替える）。
+pub fn beam_has_attached_slab(
+    model: &squid_n_core::model::Model,
+    elem: &squid_n_core::model::ElementData,
+) -> bool {
+    if elem.nodes.len() < 2 || model.slabs.is_empty() {
+        return false;
+    }
+    let n0 = elem.nodes[0];
+    let n1 = elem.nodes[elem.nodes.len() - 1];
+    model
+        .slabs
+        .iter()
+        .any(|s| s.boundary.contains(&n0) && s.boundary.contains(&n1))
 }
 
 /// 強軸・弱軸の座屈長さを個別に扱った有効細長比 λ の算定
