@@ -8,11 +8,14 @@
 //! ローカル y 面、弱軸側（Qz・My）はローカル z 面へ出るため、6 成分同時でも
 //! 直交 2 面に分かれて重なりが減る。
 //!
-//! ## 成分ごとの独立正規化と符号
+//! ## 同単位での共有正規化と符号
 //!
-//! N[N] と M[N·mm] は桁も単位も異なるため、正規化（60px 相当の最大値）・
-//! カラーバー・数値ラベルは**成分ごとに独立**に扱う。凡例・ラベルの表示単位は
-//! kN・kN·m とする。
+//! 正規化（60px 相当の最大値）・カラーバー・数値ラベルは、**同じ単位の成分同士で
+//! 共有**する。力グループ（kN）: N・Qy・Qz、モーメントグループ（kN·m）: Mx・My・Mz。
+//! 共有 max は表示中かつ実質ゼロでない（[`is_significant`]）同単位成分の
+//! モデル全体最大絶対値の最大。N[kN] と M[kN·m] は単位が異なるためグループ間では
+//! 共有しない。単独成分表示時はその成分自身の max（画面を使い切る）。凡例・ラベルの
+//! 表示単位は kN・kN·m とする。
 //!
 //! 断面力の符号規約は `Qy = dMz/dx`・`Qz = −dMy/dx` で My だけせん断との関係が
 //! 反転しているため、「正のモーメントを引張側へ張り出す」規約を保つには My の
@@ -211,33 +214,76 @@ pub(crate) fn contour_color(t: f64, map: theme::ColorMap) -> egui::Color32 {
 
 /// 成分ごとの最大絶対値のうち、「実質ゼロ」ではなく図を描く意味がある成分か。
 ///
-/// 応力図は**成分ごとに独立正規化**する（60px ＝ その成分のモデル全体最大）ため、
-/// 全部材で理論上ゼロの成分は、残った丸め誤差がそのまま最大値になり
-/// **誤差が画面いっぱいの図として描かれる**。実際、i 端ねじれを解放したモデルの
-/// Mx は理論上どの部材も 0 だが、静縮約 \\( K^* = K_{aa} - K_{ab}K_{bb}^{-1}K_{ba} \\)
-/// の桁落ちで \\( 10^{-12}\,\mathrm{N\cdot mm} \\) 程度が残る。この値は絶対値の
-/// しきい値では他成分と共通に判別できない（モデルの単位系・規模で何桁も変わる）。
+/// 応力図は同単位で共有正規化する（60px ＝ 表示中かつ有意な同単位成分の max）。
+/// 全部材で理論上ゼロの成分は、残った丸め誤差が共有 max の候補や正規化基準に
+/// 混ざると**誤差が画面いっぱいの図として描かれる**。実際、i 端ねじれを解放した
+/// モデルの Mx は理論上どの部材も 0 だが、静縮約
+/// \\( K^* = K_{aa} - K_{ab}K_{bb}^{-1}K_{ba} \\) の桁落ちで
+/// \\( 10^{-12}\,\mathrm{N\cdot mm} \\) 程度が残る。この値は絶対値のしきい値では
+/// 他成分と共通に判別できない（モデルの単位系・規模で何桁も変わる）。
 ///
 /// そこで**同じ次元の成分の最大値**（力 `[N, Qy, Qz]` ／ モーメント `[Mx, My, Mz]`）を
 /// 基準にした相対値で判定する。丸め誤差は基準に対して \\( 10^{-12} \\) 以下の桁に
 /// 収まる一方、設計上意味を持つ内力は最小でも \\( 10^{-6} \\) 程度の比を持つため、
 /// しきい値 \\( 10^{-9} \\) は両者を安全に分離する。同次元の成分がすべてゼロの
-/// モデル（無載荷など）では何も描かない。
+/// モデル（無載荷など）では何も描かない。有意でない成分は共有 max の候補からも
+/// 除外する（[`display_scales_for_selection`]）。
 fn is_significant(maxes: &[f64; 6], c: ForceComponent) -> bool {
     /// 同次元成分の最大値に対する相対しきい値。
     const REL_TOL: f64 = 1e-9;
     let idx = c.force_index();
     // 内力ベクトルの並び `[N, Qy, Qz, Mx, My, Mz]`: 前半が力、後半がモーメント。
-    let group = if idx < 3 { &maxes[0..3] } else { &maxes[3..6] };
+    let group = if c.is_moment() {
+        &maxes[3..6]
+    } else {
+        &maxes[0..3]
+    };
     let ref_max = group.iter().fold(0.0_f64, |m, v| m.max(*v));
     ref_max > 0.0 && maxes[idx] > ref_max * REL_TOL
 }
 
+/// 選択中成分の描画用 max（正規化スケール）を、同単位グループ内で共有して求める。
+///
+/// 力 `[N, Qy, Qz]` とモーメント `[Mx, My, Mz]` はそれぞれ独立。各グループの
+/// shared max は、選択中かつ [`is_significant`] な成分の `maxes[idx]` の最大。
+/// significant でない選択成分は 0.0（描かない）。未選択成分の添字も 0.0。
+fn display_scales_for_selection(maxes: &[f64; 6], components: ForceComponents) -> [f64; 6] {
+    let mut scales = [0.0_f64; 6];
+
+    let group_shared = |moment: bool| -> f64 {
+        ForceComponent::ALL
+            .into_iter()
+            .filter(|&c| c.is_moment() == moment)
+            .filter(|&c| components.is_on(c) && is_significant(maxes, c))
+            .map(|c| maxes[c.force_index()])
+            .fold(0.0_f64, f64::max)
+    };
+
+    let force_shared = group_shared(false);
+    let moment_shared = group_shared(true);
+
+    for c in ForceComponent::ALL {
+        if !components.is_on(c) {
+            continue;
+        }
+        scales[c.force_index()] = if is_significant(maxes, c) {
+            if c.is_moment() {
+                moment_shared
+            } else {
+                force_shared
+            }
+        } else {
+            0.0
+        };
+    }
+    scales
+}
+
 /// 部材ローカルに沿って応力図を描く。
 ///
-/// `components` が ON にした成分をすべて重ねて描き、成分ごとに
-/// **独立の最大値で正規化**する（N[N] と M[N·mm] は桁が異なるため 1 つの最大値を
-/// 共有できない）。張り出し面は成分で決まり（[`ForceComponent::plane`]）、
+/// `components` が ON にした成分をすべて重ねて描き、**同単位の成分は共有 max で
+/// 正規化**する（力 kN グループとモーメント kN·m グループは独立）。張り出し面は
+/// 成分で決まり（[`ForceComponent::plane`]）、
 /// 強軸側（N・Qy・Mx・Mz）は局所 ey 面、弱軸側（Qz・My）は局所 ez 面へ出るため、
 /// 6 成分同時でも直交 2 面に分かれて重なりが減る。理論上ゼロの成分は描かない
 /// （[`is_significant`]）。
@@ -256,7 +302,8 @@ pub(super) fn draw_force_diagram(
     let Some(results) = &app.results else {
         return;
     };
-    // 成分ごとの最大絶対値（正規化・凡例・数値ラベルの間引きに共通で使う）。
+    // 成分ごとのモデル全体最大絶対値（共有スケール算出の入力。描画・凡例には
+    // [`display_scales_for_selection`] の戻り値を使う）。
     let mut maxes = [0.0_f64; 6];
     for (_, mf) in &results.member_forces {
         for (_, f) in &mf.at {
@@ -266,18 +313,15 @@ pub(super) fn draw_force_diagram(
         }
     }
 
+    let display_scales = display_scales_for_selection(&maxes, components);
     let mut legend_rows: Vec<(ForceComponent, f64)> = Vec::new();
     for c in components.selected() {
         // 実質ゼロの成分（例: 平面フレームの Qz、i 端ねじれ解放時の Mx）は図を
         // 描けない。丸め誤差を最大値として正規化すると誤差が画面いっぱいに
-        // 描かれてしまうため、最大値も 0 に丸めて凡例へ渡す（[`is_significant`]）。
+        // 描かれてしまうため、スケールも 0 に丸めて凡例へ渡す（[`is_significant`]）。
         // 成分が選択中であること自体は凡例で示す（「選んだのに何も出ない」理由が
         // 分かるようにする）。
-        let max_abs = if is_significant(&maxes, c) {
-            maxes[c.force_index()]
-        } else {
-            0.0
-        };
+        let max_abs = display_scales[c.force_index()];
         if max_abs > 0.0 {
             draw_component(
                 painter,
@@ -541,8 +585,8 @@ fn draw_value_labels(
 /// ビュー左上に応力図の凡例を描く。
 ///
 /// 表示中の成分ごとに「色見本＋成分名＋最大値（kN・kN·m）」を 1 行ずつ並べ、
-/// コンター表示中は各行の下にその成分のカラーバー（成分ごとの独立正規化）を
-/// 添える。成分で単位も桁も異なるため、最大値・カラーバーは必ず成分ごとに出す。
+/// コンター表示中は各行の下にその成分のカラーバー（同単位グループの共有 max で
+/// 正規化）を添える。凡例の max は描画と同じ共有スケールを示す。
 fn draw_force_legend(
     painter: &egui::Painter,
     rows: &[(ForceComponent, f64)],
@@ -857,7 +901,7 @@ mod tests {
 #[cfg(test)]
 mod component_tests {
     use super::super::{DiagramPlane, ForceComponent, ForceComponents};
-    use super::is_significant;
+    use super::{display_scales_for_selection, is_significant};
 
     /// 列挙順が部材内力ベクトル `[N, Qy, Qz, Mx, My, Mz]` の添字と一致する。
     /// 添字がずれると別成分の値で図を描いてしまう（無言の誤表示）。
@@ -936,8 +980,8 @@ mod component_tests {
 
     /// 理論上ゼロの成分に残った丸め誤差を「描くに値する」と判定しない。
     ///
-    /// 応力図は成分ごとに独立正規化する（60px ＝ その成分の最大値）ため、
-    /// 全部材ゼロの成分を描いてしまうと**丸め誤差が画面いっぱいの図になる**。
+    /// 実質ゼロの成分は共有 max の候補からも除外する。全部材ゼロの成分を描いて
+    /// しまうと**丸め誤差が画面いっぱいの図になる**。
     /// i 端ねじれ解放時の Mx が実測でこの状態になる（静縮約の桁落ちで
     /// 10⁻¹²N·mm 程度が残り、他成分は 10⁸N·mm 級）。
     #[test]
@@ -978,5 +1022,59 @@ mod component_tests {
         let labels: Vec<&'static str> = s.selected().map(|c| c.label()).collect();
         assert_eq!(labels, vec!["N", "Mz"]);
         assert!(s.is_on(ForceComponent::N) && !s.is_on(ForceComponent::My));
+    }
+
+    /// My=100, Mz=20 が両方 ON → 両方 100（モーメントグループで共有）。
+    #[test]
+    fn shared_scale_moment_group_uses_max_of_selected() {
+        let maxes = [0.0, 0.0, 0.0, 0.0, 100.0, 20.0];
+        let scales = display_scales_for_selection(&maxes, ForceComponents::PRESET_M);
+        assert_eq!(scales[ForceComponent::My.force_index()], 100.0);
+        assert_eq!(scales[ForceComponent::Mz.force_index()], 100.0);
+    }
+
+    /// Qy=80, Qz=30 が両方 ON → 両方 80（力グループで共有）。
+    #[test]
+    fn shared_scale_force_group_uses_max_of_selected() {
+        let maxes = [10.0, 80.0, 30.0, 0.0, 0.0, 0.0];
+        let scales = display_scales_for_selection(&maxes, ForceComponents::PRESET_Q);
+        assert_eq!(scales[ForceComponent::Qy.force_index()], 80.0);
+        assert_eq!(scales[ForceComponent::Qz.force_index()], 80.0);
+        assert_eq!(scales[ForceComponent::N.force_index()], 0.0);
+    }
+
+    /// Mz のみ ON → 20（単独成分は自身の max）。
+    #[test]
+    fn shared_scale_single_component_uses_own_max() {
+        let maxes = [0.0, 0.0, 0.0, 0.0, 100.0, 20.0];
+        let mut sel = ForceComponents::default();
+        *sel.flag_mut(ForceComponent::My) = false;
+        let scales = display_scales_for_selection(&maxes, sel);
+        assert_eq!(scales[ForceComponent::Mz.force_index()], 20.0);
+        assert_eq!(scales[ForceComponent::My.force_index()], 0.0);
+    }
+
+    /// N=50, Mz=20 が ON（My もプリセットで ON だがピーク 0）→ 単位違いで非共有。
+    #[test]
+    fn shared_scale_different_unit_groups_are_independent() {
+        let maxes = [50.0, 0.0, 0.0, 0.0, 0.0, 20.0];
+        let mut sel = ForceComponents::PRESET_M;
+        *sel.flag_mut(ForceComponent::N) = true;
+        let scales = display_scales_for_selection(&maxes, sel);
+        assert_eq!(scales[ForceComponent::N.force_index()], 50.0);
+        assert_eq!(scales[ForceComponent::My.force_index()], 0.0);
+        assert_eq!(scales[ForceComponent::Mz.force_index()], 20.0);
+    }
+
+    /// Qy が insignificant（丸め誤差）で My/Mz が ON → モーメント側のみ共有、Qy は 0。
+    #[test]
+    fn shared_scale_insignificant_force_component_gets_zero() {
+        let maxes = [1.3e5, 1e-12, 2.5e3, 0.0, 5.4e6, 2.3e8];
+        let mut sel = ForceComponents::PRESET_M;
+        *sel.flag_mut(ForceComponent::Qy) = true;
+        let scales = display_scales_for_selection(&maxes, sel);
+        assert_eq!(scales[ForceComponent::Qy.force_index()], 0.0);
+        assert_eq!(scales[ForceComponent::My.force_index()], 2.3e8);
+        assert_eq!(scales[ForceComponent::Mz.force_index()], 2.3e8);
     }
 }
