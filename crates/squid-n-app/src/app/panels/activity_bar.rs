@@ -98,7 +98,7 @@ pub(crate) fn activity_bar_frame() -> egui::Frame {
     egui::Frame::new()
         .inner_margin(0)
         .fill(crate::theme::BLUE_200)
-        .stroke(egui::Stroke::new(1.0, crate::theme::BLUE_300))
+        .stroke(egui::Stroke::new(1.0_f32, crate::theme::BLUE_300))
 }
 
 /// 正方形スロット 1 辺の長さ（アイコン＋上下余白）。
