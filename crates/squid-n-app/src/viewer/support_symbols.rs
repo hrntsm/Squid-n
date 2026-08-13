@@ -1,6 +1,6 @@
 //! 支点ばね・免震支承の 3D シンボル描画。
 //!
-//! 従来の支持記号（矢印＝並進固定・円弧＝回転固定、[`super::draw_support_symbol`]）とは
+//! 従来の支持記号（矢印＝並進固定・円弧＝回転固定、[`super::support::draw_support_symbol`]）とは
 //! 別種の支持条件を区別できるよう、専用の記号を追加する。
 //! - 支点ばね（[`squid_n_core::model::Node::support_spring`]）: 並進はジグザグ（コイル）線、
 //!   回転は渦巻線。拘束（`restraint`）で固定済みの成分は従来どおり矢印・円弧のまま
@@ -116,7 +116,7 @@ pub(super) fn draw_spiral_icon_2d(
 }
 
 /// 回転ばねの渦巻線を 3D 空間（節点まわり、`axis` に直交する面内）に描く。
-/// 基底の作り方は [`super::draw_rotation_arc`] と同じ（[`super::axis_basis`]）。
+/// 基底の作り方は [`super::support::draw_rotation_arc`] と同じ（[`super::support::axis_basis`]）。
 pub(super) fn draw_rotational_spring(
     painter: &egui::Painter,
     proj: &Projector,
@@ -125,7 +125,7 @@ pub(super) fn draw_rotational_spring(
     radius_world: f64,
     color: egui::Color32,
 ) {
-    let Some((u, v)) = super::axis_basis(axis) else {
+    let Some((u, v)) = super::support::axis_basis(axis) else {
         return;
     };
     let stroke = egui::Stroke::new(1.5_f32, color);
@@ -151,7 +151,7 @@ pub(super) fn draw_rotational_spring(
 ///
 /// 拘束（`restraint`）で固定済みの成分は従来の矢印・円弧表示に委ねるため、
 /// ここでは非固定かつばね値が非ゼロの成分のみジグザグ・渦巻を描く。
-/// 軸色は X=赤 / Y=緑 / Z=青（TONMANUAL §3-2）で [`super::draw_support_symbol`] と揃える。
+/// 軸色は X=赤 / Y=緑 / Z=青（TONMANUAL §3-2）で [`super::support::draw_support_symbol`] と揃える。
 pub(super) fn draw_spring_symbol(
     painter: &egui::Painter,
     proj: &Projector,

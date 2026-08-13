@@ -38,8 +38,8 @@ pub(super) fn view_direction(normal: [f64; 3]) -> [f32; 3] {
         let mut cam = CameraState::default();
         cam.snap_to_direction(cand);
         // グローバル X・Y が画面横方向のどちら向きに写るか（画面右が正）。
-        let rx = super::q_rotate(cam.rot, [1.0, 0.0, 0.0])[0];
-        let ry = super::q_rotate(cam.rot, [0.0, 1.0, 0.0])[0];
+        let rx = super::camera::q_rotate(cam.rot, [1.0, 0.0, 0.0])[0];
+        let ry = super::camera::q_rotate(cam.rot, [0.0, 1.0, 0.0])[0];
         // X が構面内にあれば X の向きで、なければ Y の向きで判定する。
         let score = if rx.abs() > 0.5 { rx } else { ry };
         if score > best_score {
