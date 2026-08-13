@@ -63,7 +63,8 @@ actions/
 - 壁幾何や耐力入力組み立てなど、クレート横断の式の単一化
 - `viewer` の親モジュール分割（
   [`app_viewerハブ薄化_申し送り.md`](app_viewerハブ薄化_申し送り.md) で実施）
-- `actions/mod.rs` に残る解析ジョブのさらなる分割
+- `actions/mod.rs` に残る解析ジョブの分割（
+  [`app_actions解析種別分割_申し送り.md`](app_actions解析種別分割_申し送り.md) で実施）
 - 薄い再エクスポートの削除、`floor_grillage` の所属移動
 
 ## 検証
