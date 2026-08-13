@@ -25,7 +25,7 @@ squid-n-io = { path = "../squid-n-io" }
 squid-n-job = { path = "../squid-n-job" }
 egui = { workspace = true, optional = true }
 eframe = { workspace = true, optional = true }
-egui_extras = { workspace = true, optional = true }
+egui_extras = { workspace = true, optional = true, features = ["svg"] }
 egui_plot = { workspace = true, optional = true }
 smallvec = { workspace = true }
 rfd = { version = "0.17", optional = true }

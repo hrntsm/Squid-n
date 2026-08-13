@@ -66,11 +66,18 @@ impl App {
         self.last_error = Some(msg);
         #[cfg(feature = "gui")]
         {
-            // 別タブ（診断・テーブル）が表示中でもエラー本文が見えるよう、
-            // ドックを開くだけでなくログタブへ切り替える。
-            self.bottom_dock_open = true;
-            self.bottom_tab = BottomTab::Log;
+            self.open_log_dock();
         }
+    }
+
+    /// 下ドックを開き、ログタブを前面にする。
+    ///
+    /// ステータスバーのエラー行クリックと [`Self::report_error`] が同じ導線を使う。
+    /// 別タブ（診断・テーブル）が表示中でもエラー本文が見えるようにする。
+    #[cfg(feature = "gui")]
+    pub(crate) fn open_log_dock(&mut self) {
+        self.bottom_dock_open = true;
+        self.bottom_tab = BottomTab::Log;
     }
 
     /// エラーではないが利用者に知らせたい注意事項を `last_notice` とログの
@@ -461,7 +468,7 @@ impl App {
             Tab::Analysis => {
                 self.right_dock_open = true;
                 // 一貫計算の手順どおり ①（準備計算）から入れるようにする。
-                // ② 解析へはパネル先頭の切替行、またはステータスバーの ⚙ から移る。
+                // 各解析パネルへは右アイコン列から移る。
                 self.right_panel = RightPanel::Preparation;
                 self.bottom_tab = BottomTab::Log;
             }

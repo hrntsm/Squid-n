@@ -6,45 +6,45 @@
 
 use egui::{Color32, CornerRadius, FontFamily, FontId, Stroke, TextStyle};
 
-// ===== §2 プライマリ（ブランドブルー） =====
-/// ナビゲーション／ツールバー背景
-pub const BLUE_200: Color32 = Color32::from_rgb(0xBF, 0xDB, 0xFE);
-/// 選択ハイライト、ボタンホバー、ヘッダー
-pub const BLUE_300: Color32 = Color32::from_rgb(0x93, 0xC5, 0xFD);
-/// アナウンスバー背景
-pub const BLUE_400: Color32 = Color32::from_rgb(0x60, 0xA5, 0xFA);
-/// メインアクセント。アクティブボタン・枠線・インジケーター
-pub const BLUE_500: Color32 = Color32::from_rgb(0x3B, 0x82, 0xF6);
+// ===== §2 プライマリ（スチールブルー。工学系デスクトップのクローム） =====
+/// ツールバー／アクティビティバー背景
+pub const BLUE_200: Color32 = Color32::from_rgb(0xC8, 0xD9, 0xED);
+/// 選択ハイライト、ボタンホバー、ヘッダー帯
+pub const BLUE_300: Color32 = Color32::from_rgb(0x8E, 0xB9, 0xE5);
+/// ステータスバー背景
+pub const BLUE_400: Color32 = Color32::from_rgb(0x4A, 0x7A, 0xB5);
+/// メインアクセント。アクティブボタン・枠線・インジケーター・ツールアイコン
+pub const BLUE_500: Color32 = Color32::from_rgb(0x21, 0x71, 0xC1);
 /// アクセントのホバー濃色
-pub const BLUE_600: Color32 = Color32::from_rgb(0x25, 0x63, 0xEB);
+pub const BLUE_600: Color32 = Color32::from_rgb(0x18, 0x5A, 0x9E);
 
-// ===== §2 セカンダリ（グレースケール） =====
+// ===== §2 セカンダリ（青みのあるグレー） =====
 /// 見出し・主要テキスト
-pub const GRAY_900: Color32 = Color32::from_rgb(0x11, 0x18, 0x27);
+pub const GRAY_900: Color32 = Color32::from_rgb(0x1A, 0x23, 0x32);
 /// ナビゲーションテキスト・サブテキスト
-pub const GRAY_700: Color32 = Color32::from_rgb(0x37, 0x41, 0x51);
+pub const GRAY_700: Color32 = Color32::from_rgb(0x2D, 0x3A, 0x4A);
 /// 本文テキスト
-pub const GRAY_600: Color32 = Color32::from_rgb(0x4B, 0x55, 0x63);
+pub const GRAY_600: Color32 = Color32::from_rgb(0x4A, 0x55, 0x68);
 /// キャンバスのドットグリッド
-pub const GRAY_300: Color32 = Color32::from_rgb(0xD1, 0xD5, 0xDB);
-/// ボーダー・入力欄枠線・ホバー背景・テーブルストライプ
-pub const GRAY_200: Color32 = Color32::from_rgb(0xE5, 0xE7, 0xEB);
-/// パネル背景・ウィジェット背景・入力欄背景
-pub const GRAY_100: Color32 = Color32::from_rgb(0xF3, 0xF4, 0xF6);
-/// メインキャンバス・チャートセル背景
+pub const GRAY_300: Color32 = Color32::from_rgb(0xA8, 0xB4, 0xC4);
+/// ボーダー・入力欄枠線・テーブルストライプ
+pub const GRAY_200: Color32 = Color32::from_rgb(0xC5, 0xD0, 0xDE);
+/// ドック／パネル内部（ツールバーより一段淡い）
+pub const GRAY_100: Color32 = Color32::from_rgb(0xE6, 0xEC, 0xF5);
+/// 入力欄・2D グラフ・中央キャンバス（3D ビュー）背景
 pub const WHITE: Color32 = Color32::WHITE;
 
 // ===== §2 アクション／セマンティック =====
-/// 重要操作（実行・確定）アクション
-pub const GREEN_500: Color32 = Color32::from_rgb(0x22, 0xC5, 0x5E);
+/// 重要操作（解析実行・確定）および進捗
+pub const GREEN_500: Color32 = Color32::from_rgb(0x00, 0xB0, 0x50);
 /// アクションのホバー
-pub const GREEN_600: Color32 = Color32::from_rgb(0x16, 0xA3, 0x4A);
+pub const GREEN_600: Color32 = Color32::from_rgb(0x00, 0x8F, 0x40);
 /// エラー表示（ブランド対象外の固定色）
 pub const ERROR_RED: Color32 = Color32::from_rgb(0xEA, 0x43, 0x35);
 
 // ===== §3 データビジュアライゼーション配色 =====
 /// 標準・既定（既定の線・要素・変位、グラフの基準系列）
-pub const DATA_BLUE: Color32 = Color32::from_rgb(0x42, 0x85, 0xF4);
+pub const DATA_BLUE: Color32 = Color32::from_rgb(0x2B, 0x95, 0xFF);
 /// 超過・危険側（検定比 > 1.0＝NG・応力集中・負方向の量・崩壊ヒンジ）
 pub const PARETO_RED: Color32 = Color32::from_rgb(0xEA, 0x43, 0x35);
 /// 注意・中間（検定比 0.8〜1.0・中間状態・予測値）
@@ -56,10 +56,12 @@ pub const HILITE_PURPLE: Color32 = Color32::from_rgb(0x7C, 0x4D, 0xFF);
 /// 二次部材（小梁・間柱）= 解析対象外の実在部材の線・輪郭
 /// （スラブの BEST_YELLOW と同族の暖色。線の視認性のため濃いめのアンバー）
 pub const SECONDARY_AMBER: Color32 = Color32::from_rgb(0xD9, 0x77, 0x06);
+/// 淡色パネル上の注意ラベル（⚠ stale 等）。BEST_YELLOW はグラフ塗り用で文字には薄い。
+pub const WARN_TEXT: Color32 = SECONDARY_AMBER;
 
 // ===== §3-2 3D ビュー =====
-/// 3D 背景（2D の白とは異なり淡いグレー。立体感のため意図的に白を避ける）
-pub const VIEW_BG: Color32 = Color32::from_rgb(0xF0, 0xF2, 0xF5);
+/// 3D 背景（中央キャンバス。ドックより淡く、2D グラフと同じ白）
+pub const VIEW_BG: Color32 = Color32::WHITE;
 /// X 軸（赤系）
 pub const AXIS_X: Color32 = Color32::from_rgb(0xD2, 0x64, 0x64);
 /// Y 軸（緑系）
@@ -266,7 +268,7 @@ impl ColorMap {
     }
 }
 
-/// TONMANUAL に沿ったテーマ（ライト基準・ブルークローム・角丸 4/6px・タイポスケール）を
+/// TONMANUAL に沿ったテーマ（ライト基準・スチールブルーのクローム・角丸 4/6px・タイポスケール）を
 /// egui コンテキストへ適用する。アプリ起動時に一度だけ呼ぶ。
 pub fn apply_theme(ctx: &egui::Context) {
     // eframe がダークテーマで起動する場合を防ぐため、
@@ -276,11 +278,13 @@ pub fn apply_theme(ctx: &egui::Context) {
     let mut style = (*ctx.global_style()).clone();
     let mut v = egui::Visuals::light();
 
-    // 背景の階層（§2）: パネル＝gray-100、入力欄＝gray-100、ストライプ＝gray-200
+    // 背景の階層（§2）: ドック内部＝gray-100（ツールバーより淡い）。入力欄だけ白。
     v.panel_fill = GRAY_100;
     v.window_fill = GRAY_100;
-    v.extreme_bg_color = GRAY_100;
+    v.extreme_bg_color = GRAY_200;
+    v.text_edit_bg_color = Some(WHITE);
     v.faint_bg_color = GRAY_200;
+    v.code_bg_color = WHITE;
     v.hyperlink_color = BLUE_500;
 
     // 選択ハイライト（§6 アクティブ）= blue-500 背景 + 白文字
@@ -300,18 +304,20 @@ pub fn apply_theme(ctx: &egui::Context) {
     v.widgets.noninteractive.fg_stroke = Stroke::new(1.0_f32, GRAY_700);
     v.widgets.noninteractive.corner_radius = r6;
 
-    // ボタン（rest）: 透明背景・gray-700 文字・gray-200 枠（入力欄/コンボ兼用）
-    v.widgets.inactive.bg_fill = Color32::TRANSPARENT;
+    // ボタン／選択ラベル（rest）: 塗りなし（パネル色が見える）。枠 gray-200。
+    // weak_bg_fill を白にすると selectable_label が幅いっぱいに白カードになる。
+    // チェックボックス等の中身だけ白（bg_fill）。
+    v.widgets.inactive.bg_fill = WHITE;
     v.widgets.inactive.weak_bg_fill = Color32::TRANSPARENT;
     v.widgets.inactive.bg_stroke = Stroke::new(1.0_f32, GRAY_200);
     v.widgets.inactive.fg_stroke = Stroke::new(1.0_f32, GRAY_700);
     v.widgets.inactive.corner_radius = r4;
 
-    // ホバー: blue-300 背景 + 白文字
+    // ホバー: 淡いスチールブルー + 暗い文字（淡色の上に白文字はコントラスト不足）
     v.widgets.hovered.bg_fill = BLUE_300;
     v.widgets.hovered.weak_bg_fill = BLUE_300;
-    v.widgets.hovered.bg_stroke = Stroke::new(1.0_f32, BLUE_300);
-    v.widgets.hovered.fg_stroke = Stroke::new(1.5_f32, WHITE);
+    v.widgets.hovered.bg_stroke = Stroke::new(1.0_f32, BLUE_500);
+    v.widgets.hovered.fg_stroke = Stroke::new(1.0_f32, GRAY_900);
     v.widgets.hovered.corner_radius = r4;
 
     // アクティブ（押下・選択）: blue-500 背景 + 白文字
@@ -321,9 +327,9 @@ pub fn apply_theme(ctx: &egui::Context) {
     v.widgets.active.fg_stroke = Stroke::new(1.5_f32, WHITE);
     v.widgets.active.corner_radius = r4;
 
-    // コンボボックス展開トリガ: 入力欄相当（gray-100 / gray-200 枠）
-    v.widgets.open.bg_fill = GRAY_100;
-    v.widgets.open.weak_bg_fill = GRAY_100;
+    // コンボボックス展開トリガ: 入力欄相当（白 / gray-200 枠）
+    v.widgets.open.bg_fill = WHITE;
+    v.widgets.open.weak_bg_fill = WHITE;
     v.widgets.open.bg_stroke = Stroke::new(1.0_f32, GRAY_200);
     v.widgets.open.fg_stroke = Stroke::new(1.0_f32, GRAY_700);
     v.widgets.open.corner_radius = r4;
@@ -353,6 +359,61 @@ pub fn apply_theme(ctx: &egui::Context) {
     .into();
 
     ctx.set_global_style(style);
+}
+
+/// 上部ツールバーのパネル枠（スチールブルー）。
+pub fn toolbar_frame() -> egui::Frame {
+    egui::Frame::new()
+        .inner_margin(8)
+        .fill(BLUE_200)
+        .stroke(Stroke::new(1.0_f32, BLUE_300))
+}
+
+/// 左右ドックの枠。ツールバーより淡いブルーグレー。
+pub fn content_panel_frame() -> egui::Frame {
+    egui::Frame::new()
+        .inner_margin(8)
+        .fill(GRAY_100)
+        .stroke(Stroke::new(1.0_f32, GRAY_200))
+}
+
+/// 中央キャンバスおよび下ドックの枠（白）。
+pub fn central_panel_frame() -> egui::Frame {
+    egui::Frame::new()
+        .inner_margin(8)
+        .fill(WHITE)
+        .stroke(Stroke::new(1.0_f32, GRAY_200))
+}
+
+/// 下部ステータスバーのパネル枠（一段濃いスチールブルー。文字は白）。
+pub fn status_bar_frame() -> egui::Frame {
+    egui::Frame::new()
+        .inner_margin(4)
+        .fill(BLUE_400)
+        .stroke(Stroke::new(1.0_f32, BLUE_500))
+}
+
+/// ステータスバー内の文字・セパレータを白基調にする（青地の上で読むため）。
+///
+/// `override_text_color` は使わない。セマンティック色は下ドック／ログ側に残し、
+/// バー上の文字（実行中・stale・エラー・注意）はすべて白にする。
+pub fn apply_status_bar_visuals(ui: &mut egui::Ui) {
+    let v = ui.visuals_mut();
+    v.widgets.noninteractive.fg_stroke = Stroke::new(1.0_f32, WHITE);
+    v.widgets.noninteractive.bg_stroke = Stroke::new(1.0_f32, BLUE_300);
+    v.widgets.inactive.fg_stroke = Stroke::new(1.0_f32, WHITE);
+    v.widgets.inactive.bg_fill = Color32::TRANSPARENT;
+    v.widgets.inactive.weak_bg_fill = Color32::TRANSPARENT;
+    v.widgets.inactive.bg_stroke = Stroke::NONE;
+    v.widgets.hovered.fg_stroke = Stroke::new(1.0_f32, GRAY_900);
+    v.widgets.hovered.bg_fill = BLUE_300;
+    v.widgets.hovered.weak_bg_fill = BLUE_300;
+    v.widgets.hovered.bg_stroke = Stroke::NONE;
+    v.widgets.active.fg_stroke = Stroke::new(1.5_f32, WHITE);
+    v.widgets.active.bg_fill = BLUE_500;
+    v.widgets.active.weak_bg_fill = BLUE_500;
+    v.selection.bg_fill = BLUE_500;
+    v.selection.stroke = Stroke::new(1.0_f32, WHITE);
 }
 
 #[cfg(test)]

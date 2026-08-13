@@ -119,7 +119,7 @@ pub fn story_copy_window(ctx: &egui::Context, app: &mut App) {
             // 所属階は準備計算が付けるため、未実行だと配る相手を 1 つも見つけられない。
             if !app.model.nodes.iter().any(|nd| nd.story.is_some()) {
                 ui.colored_label(
-                    crate::theme::BEST_YELLOW,
+                    crate::theme::WARN_TEXT,
                     "⚠ 節点の所属階が未設定です。先に準備計算を実行してください\
                      （所属階が無いと複製する相手を見つけられません）。",
                 );
@@ -291,7 +291,7 @@ fn preview_section(ui: &mut egui::Ui, app: &mut App) -> bool {
     if cache.report.removes_input() {
         // 削除・解除を含む実行は、要約に紛れないよう独立した行で強調する。
         ui.colored_label(
-            crate::theme::BEST_YELLOW,
+            crate::theme::WARN_TEXT,
             format!("⚠ 入力が減ります — 見込み: {}", cache.report.summary()),
         );
     } else {

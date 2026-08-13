@@ -825,7 +825,7 @@ fn draw_legend(
             egui::Align2::LEFT_TOP,
             "⚠ モデルが編集されています。解析を再実行してください。",
             egui::FontId::proportional(12.0),
-            theme::BEST_YELLOW,
+            theme::WARN_TEXT,
         );
     }
 }

@@ -376,7 +376,7 @@ impl App {
             .show(ctx, |ui| {
                 ui.horizontal_wrapped(|ui| {
                     ui.colored_label(
-                        crate::theme::BEST_YELLOW,
+                        crate::theme::WARN_TEXT,
                         if picks_node {
                             "荷重の対象を選択中：3D ビューで節点をクリック"
                         } else {
@@ -473,7 +473,7 @@ impl App {
                                 ui.label(coord);
                             }
                             None => {
-                                ui.colored_label(crate::theme::BEST_YELLOW, "未選択");
+                                ui.colored_label(crate::theme::WARN_TEXT, "未選択");
                             }
                         }
                         begin_pick |= ui
@@ -527,7 +527,7 @@ impl App {
                                 ui.label(format!("#{} ({})", e.0, kind));
                             }
                             None => {
-                                ui.colored_label(crate::theme::BEST_YELLOW, "未選択");
+                                ui.colored_label(crate::theme::WARN_TEXT, "未選択");
                             }
                         }
                         begin_pick |= ui

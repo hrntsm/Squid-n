@@ -667,7 +667,7 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
             // 表示する恐れがあるため、再解析するまで変形アニメーション・部材クリックを
             // 無効化する（フレームスライダー自体も表示しない）。
             ui.colored_label(
-                theme::BEST_YELLOW,
+                theme::WARN_TEXT,
                 "⚠ モデルが編集されています。解析を再実行してください\
                  （変形アニメーション・部材クリックは無効化しています）。",
             );
@@ -855,7 +855,7 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
     }
 
     let painter = ui.painter_at(rect);
-    // §3-2: 3D 背景は白を避け淡いグレー（立体感・奥行きのため）
+    // §3-2: 3D 背景は白（ドックより淡く、モデルを主役にする）
     painter.rect_filled(rect, 0.0, theme::VIEW_BG);
 
     let center = [rect.center().x, rect.center().y];

@@ -7471,3 +7471,102 @@ fn test_sync_gravity_invalidates_beam_loads_hash() {
         "M1 へ戻したのだから M1 の分配が表示されるべき"
     );
 }
+
+#[cfg(feature = "gui")]
+#[test]
+fn toggle_dock_icon_closes_when_active_opens_otherwise() {
+    use crate::app::panels::toggle_dock_icon;
+
+    let mut open = true;
+    // 開いていて対象パネルがアクティブ → 閉じて false
+    assert!(!toggle_dock_icon(&mut open, true));
+    assert!(!open);
+
+    // 閉じている → 開いて true
+    assert!(toggle_dock_icon(&mut open, false));
+    assert!(open);
+
+    // 開いているが別パネル → 開いたまま true
+    assert!(toggle_dock_icon(&mut open, false));
+    assert!(open);
+
+    // 開いていて対象パネルがアクティブ → 閉じて false
+    assert!(!toggle_dock_icon(&mut open, true));
+    assert!(!open);
+}
+
+/// ステータスバーのエラー行と同じ導線。別タブ表示中でもログを前面にする。
+#[cfg(feature = "gui")]
+#[test]
+fn open_log_dock_switches_to_log_tab() {
+    let mut app = App {
+        bottom_dock_open: false,
+        bottom_tab: BottomTab::Model,
+        ..Default::default()
+    };
+    app.open_log_dock();
+    assert!(app.bottom_dock_open);
+    assert_eq!(app.bottom_tab, BottomTab::Log);
+}
+
+/// 工程タブ「解析」のプリセットは ① 準備計算から入る。
+#[cfg(feature = "gui")]
+#[test]
+fn analysis_tab_preset_opens_preparation() {
+    let mut app = App {
+        right_panel: RightPanel::Inspector,
+        right_dock_open: false,
+        ..Default::default()
+    };
+    app.apply_tab_preset(Tab::Analysis);
+    assert!(app.right_dock_open);
+    assert_eq!(app.right_panel, RightPanel::Preparation);
+}
+
+/// アクティビティバーの SVG がラスタライズできる（壊れたコメント等で 0 サイズにならない）。
+#[cfg(feature = "gui")]
+#[test]
+fn activity_svgs_rasterize() {
+    let files: &[(&str, &[u8])] = &[
+        (
+            "navigator",
+            include_bytes!("../../assets/icons/navigator.svg"),
+        ),
+        (
+            "draw_tools",
+            include_bytes!("../../assets/icons/draw_tools.svg"),
+        ),
+        (
+            "inspector",
+            include_bytes!("../../assets/icons/inspector.svg"),
+        ),
+        (
+            "preparation",
+            include_bytes!("../../assets/icons/preparation.svg"),
+        ),
+        ("static", include_bytes!("../../assets/icons/static.svg")),
+        ("eigen", include_bytes!("../../assets/icons/eigen.svg")),
+        (
+            "pushover",
+            include_bytes!("../../assets/icons/pushover.svg"),
+        ),
+        (
+            "time_history",
+            include_bytes!("../../assets/icons/time_history.svg"),
+        ),
+    ];
+    for (name, bytes) in files {
+        let img = egui_extras::image::load_svg_bytes_with_size(
+            bytes,
+            egui::load::SizeHint::Size {
+                width: 48,
+                height: 48,
+                maintain_aspect_ratio: true,
+            },
+            &Default::default(),
+        );
+        assert!(img.is_ok(), "{name}: {:?}", img.err());
+        let img = img.unwrap();
+        assert!(img.width() > 0 && img.height() > 0, "{name} が空");
+    }
+}

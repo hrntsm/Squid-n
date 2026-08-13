@@ -99,7 +99,7 @@ pub fn design_table(ui: &mut egui::Ui, app: &mut App) {
     });
     if app.staleness.design_stale {
         ui.colored_label(
-            crate::theme::BEST_YELLOW,
+            crate::theme::WARN_TEXT,
             "⚠ モデルが編集されました。解析を再実行してください。",
         );
     }

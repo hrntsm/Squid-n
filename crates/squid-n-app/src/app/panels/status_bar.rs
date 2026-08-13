@@ -1,22 +1,10 @@
 //! ステータスバー。
 //!
 //! `panels` からの構造分割。アルゴリズム変更は行わない。
+//! 下ドックの切替アイコンとファイル名・ジョブ・stale・エラー表示を担う。
+//! 左右ドックの切替は [`super::activity_bar`] が担う。
 
 use super::*;
-
-/// ステータスバーのドック/パネル切替アイコンの共通クリック挙動（Zed 風）。
-/// 対象ドックが開いていて対象パネルが既にアクティブなら閉じて `false` を返す。
-/// それ以外はドックを開いて `true` を返す（呼び出し側は `true` のときのみ
-/// 対象パネル/タブをアクティブにする）。
-fn toggle_dock_icon(dock_open: &mut bool, is_active: bool) -> bool {
-    if *dock_open && is_active {
-        *dock_open = false;
-        false
-    } else {
-        *dock_open = true;
-        true
-    }
-}
 
 impl App {
     /// 下部ステータスバー。
@@ -38,23 +26,13 @@ impl App {
         let body_font = egui::TextStyle::Body.resolve(ui.style());
         let summary_width = ui
             .painter()
-            .layout_no_wrap(summary.clone(), body_font.clone(), crate::theme::GRAY_700)
+            .layout_no_wrap(summary.clone(), body_font, crate::theme::WHITE)
             .size()
             .x;
-        // 右ゾーンはサマリに加えて右ドックのパネル切替アイコン（🔍・⚙）も描くため、
-        // アイコン2個分の幅＋ボタン余白＋アイコン間の間隔ぶんを確保幅に含める
-        // （不足すると左ゾーンと重なる）。
-        let icon_width = ui
-            .painter()
-            .layout_no_wrap("🔍".to_string(), body_font, crate::theme::GRAY_700)
-            .size()
-            .x
-            + ui.spacing().button_padding.x * 2.0;
-        let toggle_width = icon_width * 2.0 + ui.spacing().item_spacing.x;
 
         let row_rect = ui.available_rect_before_wrap();
         let gap = ui.spacing().item_spacing.x;
-        let right_width = summary_width + gap + toggle_width;
+        let right_width = summary_width + gap;
         let right_rect = egui::Rect::from_min_max(
             egui::pos2(
                 (row_rect.max.x - right_width - gap).max(row_rect.min.x),
@@ -70,29 +48,8 @@ impl App {
         #[allow(deprecated)]
         ui.allocate_ui_at_rect(left_rect, |ui| {
             ui.horizontal(|ui| {
-                // ドック/パネル切替アイコン（Zed 風）。対象ドックが開いていて対象パネルが
-                // アクティブなら閉じる。それ以外は開いてそのパネルをアクティブにする。
-                let is_nav_active = self.left_dock_open && self.left_panel == LeftPanel::Navigator;
-                if ui
-                    .selectable_label(is_nav_active, "🗂")
-                    .on_hover_text("ナビゲータ")
-                    .clicked()
-                    && toggle_dock_icon(&mut self.left_dock_open, is_nav_active)
-                {
-                    self.left_panel = LeftPanel::Navigator;
-                }
-                let is_draw_active = self.left_dock_open && self.left_panel == LeftPanel::DrawTools;
-                if ui
-                    .selectable_label(is_draw_active, "✏")
-                    .on_hover_text("作成パレット")
-                    .clicked()
-                    && toggle_dock_icon(&mut self.left_dock_open, is_draw_active)
-                {
-                    self.left_panel = LeftPanel::DrawTools;
-                }
-                // 左ドック用と下ドック用のアイコン群の間に区切りを入れ、
-                // どのアイコンがどの領域を操作するのかを見分けられるようにする。
-                ui.separator();
+                // 下ドック切替アイコン。対象ドックが開いていて対象タブが
+                // アクティブなら閉じる。それ以外は開いてそのタブをアクティブにする。
                 let is_log_active = self.bottom_dock_open && self.bottom_tab == BottomTab::Log;
                 if ui
                     .selectable_label(is_log_active, "📜")
@@ -159,32 +116,32 @@ impl App {
                 if let Some(job) = &self.job {
                     let elapsed = job.started.elapsed().unwrap_or_default().as_secs_f64();
                     ui.colored_label(
-                        crate::theme::GOOD_GREEN,
+                        crate::theme::WHITE,
                         format!("⏳ {} 実行中… {:.0}s", job.label, elapsed),
                     );
                     ui.separator();
                 }
-                // stale アイコン
+                // stale アイコン。意味色は下ドック／ログ側。青地のバー上は白。
                 if self.staleness.results_stale {
-                    ui.colored_label(crate::theme::BEST_YELLOW, "⚠ stale");
+                    ui.colored_label(crate::theme::WHITE, "⚠ stale");
                 } else if self.results.is_some() {
-                    ui.colored_label(crate::theme::GOOD_GREEN, "✓ 最新");
+                    ui.colored_label(crate::theme::WHITE, "✓ 最新");
                 } else {
-                    ui.colored_label(crate::theme::GRAY_600, "▷ 未実行");
+                    ui.colored_label(crate::theme::WHITE, "▷ 未実行");
                 }
                 if let Some(err) = &self.last_error {
                     ui.separator();
                     // ST-Bridge 取込警告（複数件を \n 区切りで連結）など改行を含む
                     // メッセージは1行に畳んでから truncate する（\n はレイアウト上
                     // 明示的な改行として扱われ、行の高さ・幅の見積りが崩れるため）。
-                    // 全文はホバーで表示する。クリックでログパネルを開けるようにする
+                    // 全文はホバーで表示する。クリックでログタブを前面にする
                     // （エラーの詳細な経緯はログに残っているため）。
                     let one_line = err.replace('\n', " ");
                     let clicked = ui
                         .add(
                             egui::Label::new(
                                 egui::RichText::new(format!("⚠ {}", one_line))
-                                    .color(crate::theme::ERROR_RED),
+                                    .color(crate::theme::WHITE),
                             )
                             .truncate()
                             .sense(egui::Sense::click()),
@@ -192,19 +149,19 @@ impl App {
                         .on_hover_text(format!("{}\n\nクリックでログを開く", err))
                         .clicked();
                     if clicked {
-                        self.bottom_dock_open = true;
+                        self.open_log_dock();
                     }
                 }
-                // last_error（赤・処理を止める）とは別枠の注意事項（例: 精算周期
+                // last_error（処理を止める）とは別枠の注意事項（例: 精算周期
                 // (SemiPrecise)選択時に固有値解析が未実行で EX/EY が未更新である旨）。
-                // 情報色（BEST_YELLOW）で表示し、解析自体は継続してよいことを示す。
+                // バー上は白。意味色（黄）はログ側。解析自体は継続してよい。
                 if let Some(notice) = &self.last_notice {
                     ui.separator();
                     let one_line = notice.replace('\n', " ");
                     ui.add(
                         egui::Label::new(
                             egui::RichText::new(format!("ℹ {}", one_line))
-                                .color(crate::theme::BEST_YELLOW),
+                                .color(crate::theme::WHITE),
                         )
                         .truncate(),
                     )
@@ -216,39 +173,6 @@ impl App {
         #[allow(deprecated)]
         ui.allocate_ui_at_rect(right_rect, |ui| {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                // サマリの右に配置（right_to_left のため先に追加する）。左ゾーンと同じ
-                // toggle_dock_icon 方式（アクティブなら閉じる／それ以外は開いてそのパネルを
-                // アクティブにする）で右ドックのパネルを切り替える。
-                let is_analysis_active =
-                    self.right_dock_open && self.right_panel == RightPanel::Analysis;
-                if ui
-                    .selectable_label(is_analysis_active, "⚙")
-                    .on_hover_text("② 解析（実行）")
-                    .clicked()
-                    && toggle_dock_icon(&mut self.right_dock_open, is_analysis_active)
-                {
-                    self.right_panel = RightPanel::Analysis;
-                }
-                let is_prep_panel_active =
-                    self.right_dock_open && self.right_panel == RightPanel::Preparation;
-                if ui
-                    .selectable_label(is_prep_panel_active, "🛠")
-                    .on_hover_text("① 準備計算（解析条件の入力・実行）")
-                    .clicked()
-                    && toggle_dock_icon(&mut self.right_dock_open, is_prep_panel_active)
-                {
-                    self.right_panel = RightPanel::Preparation;
-                }
-                let is_inspector_active =
-                    self.right_dock_open && self.right_panel == RightPanel::Inspector;
-                if ui
-                    .selectable_label(is_inspector_active, "🔍")
-                    .on_hover_text("インスペクタ")
-                    .clicked()
-                    && toggle_dock_icon(&mut self.right_dock_open, is_inspector_active)
-                {
-                    self.right_panel = RightPanel::Inspector;
-                }
                 ui.label(summary);
             });
         });

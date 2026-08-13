@@ -15,7 +15,7 @@ impl App {
         // ON にできると「切り替えたのに反応しない」状態になる。パネルごと無効にする。
         if self.load_pick_active() {
             ui.colored_label(
-                crate::theme::BEST_YELLOW,
+                crate::theme::WARN_TEXT,
                 "荷重の対象を選択中は作成モードを使えません。\
                  3D ビューで対象を選ぶか、Esc で選択を取り消してください。",
             );
