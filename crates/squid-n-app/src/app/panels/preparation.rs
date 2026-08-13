@@ -12,9 +12,8 @@ impl App {
     ///
     /// 一貫計算の手順（① 解析入力を確定 → ② 解く）のうち ① を担う。実行すると
     /// 階の定義・剛域・荷重ケース（DL/LL/EX/EY/WX/WY）が確定する。② は
-    /// [`App::analysis_panel`]。
+    /// [`App::static_panel`] ほか各解析パネル。
     pub(crate) fn preparation_panel(&mut self, ui: &mut egui::Ui) {
-        self.right_panel_switcher(ui);
         ui.heading("① 準備計算");
         ui.separator();
 
@@ -54,7 +53,7 @@ impl App {
         });
         match self.preparation.as_ref() {
             _ if self.staleness.preparation_stale => ui.colored_label(
-                crate::theme::BEST_YELLOW,
+                crate::theme::WARN_TEXT,
                 "⚠ 準備計算が未実行、またはモデル編集により古くなっています。",
             ),
             Some(p) if !p.is_ready() => ui.colored_label(

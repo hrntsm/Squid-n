@@ -95,7 +95,7 @@ pub fn frame_wizard_window(ctx: &egui::Context, app: &mut App) {
                  断面タブで割り当ててください。",
                     );
                     ui.colored_label(
-                        crate::theme::BEST_YELLOW,
+                        crate::theme::WARN_TEXT,
                         "⚠ 現在のモデルを置き換えます（undo できません）。",
                     );
                     ui.separator();

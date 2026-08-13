@@ -1,10 +1,12 @@
 //! `App` の egui パネル描画メソッド。
 //!
 //! サブモジュール: `navigator`（左ナビ）、`draw_tools`（作成パレット）、
-//! `preparation`（①準備計算）、`analysis`（②解析実行）、`results`（結果タブ）、
+//! `preparation`（①準備計算）、`analysis`（静的・固有値・増分・時刻歴の各解析実行）、
+//! `activity_bar`（左右アイコン列）、`results`（結果タブ）、
 //! `inspector`（インスペクタ）、`status_bar`（ステータスバー）。
 //! 薄いタブスイッチャー・ファイルダイアログは本モジュール（ハブ）に残す。
 
+mod activity_bar;
 mod analysis;
 mod draw_tools;
 mod inspector;
@@ -14,6 +16,30 @@ mod results;
 mod status_bar;
 
 use super::*;
+
+/// ドック/パネル切替アイコンの共通クリック挙動。
+/// 対象ドックが開いていて対象パネルが既にアクティブなら閉じて `false` を返す。
+/// それ以外はドックを開いて `true` を返す（呼び出し側は `true` のときのみ
+/// 対象パネル/タブをアクティブにする）。
+pub(crate) fn toggle_dock_icon(dock_open: &mut bool, is_active: bool) -> bool {
+    if *dock_open && is_active {
+        *dock_open = false;
+        false
+    } else {
+        *dock_open = true;
+        true
+    }
+}
+
+/// 左右アクティビティバーの幅（スロット＋外側アクセント線）。
+pub(crate) fn activity_bar_width() -> f32 {
+    activity_bar::activity_bar_width()
+}
+
+/// 左右アクティビティバーのパネル枠（blue-200）。
+pub(crate) fn activity_bar_frame() -> egui::Frame {
+    activity_bar::activity_bar_frame()
+}
 
 impl App {
     /// 「開く…」ダイアログを表示して読み込む。
@@ -113,27 +139,6 @@ impl App {
             ModelTab::SteelAttrs => crate::tables::steel_attrs::steel_attrs_table(ui, self),
             ModelTab::Axes => crate::tables::axes::axes_table(ui, self),
         }
-    }
-    /// 「① 準備計算」「② 解析」を行き来する切替行（両パネルの先頭に置く）。
-    ///
-    /// ステータスバーのアイコンからも切り替えられるが、① と ② は一貫計算の手順として
-    /// 連続しているため、パネル内からも直接移動できるようにする。
-    fn right_panel_switcher(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal_wrapped(|ui| {
-            if ui
-                .selectable_label(self.right_panel == RightPanel::Preparation, "① 準備計算")
-                .clicked()
-            {
-                self.right_panel = RightPanel::Preparation;
-            }
-            if ui
-                .selectable_label(self.right_panel == RightPanel::Analysis, "② 解析")
-                .clicked()
-            {
-                self.right_panel = RightPanel::Analysis;
-            }
-        });
-        ui.add_space(2.0);
     }
     /// 結果タブの「表示対象」ドロップダウン用の選択肢（キーと表示名）を収集する。
     /// 静的ケース（ユーザー荷重・地震静的）に続けて荷重組合せを並べる。

@@ -275,7 +275,7 @@ fn draw_th_detail_content(ui: &mut egui::Ui, app: &mut App, elem_id: ElemId) {
     // 別部材のデータを表示する恐れがあるため、プロット・検定を出さず警告のみ表示する。
     if app.staleness.results_stale {
         ui.colored_label(
-            theme::BEST_YELLOW,
+            theme::WARN_TEXT,
             "⚠ モデルが編集されています。解析を再実行してください\
              （プロット・検定は前回解析時点のままのため非表示にしています）。",
         );

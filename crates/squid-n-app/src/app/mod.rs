@@ -58,7 +58,7 @@ pub enum BottomTab {
     Preparation,
 }
 
-/// 左ドックのパネル。Zed のように下部バーのアイコンで切り替える。
+/// 左ドックのパネル。左右のアイコン列で切り替える。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum LeftPanel {
     #[default]
@@ -67,11 +67,11 @@ pub enum LeftPanel {
     DrawTools,
 }
 
-/// 右ドックのパネル。Zed のように下部バーのアイコンで切り替える。
+/// 右ドックのパネル。右のアイコン列で切り替える。
 ///
-/// 一貫計算の手順（① 解析入力を確定する準備計算 → ② 解く）はそれぞれ扱う情報量が
-/// 多いため、独立したパネルに分ける（1 枚に積むと縦に長くなり、いま何をしている
-/// 段階なのかが読み取りにくい）。どちらのパネルも 3D を見ながら設定・実行できる
+/// 一貫計算の手順は ① 準備計算（解析入力の確定）と、静的・固有値・増分・時刻歴の
+/// 各解析パネルに分ける。① と各解析の並びは右アイコン列（上から準備計算の次に
+/// 静的・固有値・増分・時刻歴）で示す。どのパネルも 3D を見ながら設定・実行できる
 /// よう右ドックに置く。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum RightPanel {
@@ -79,8 +79,14 @@ pub enum RightPanel {
     Inspector,
     /// ① 準備計算（地震力の算定諸元・計算条件・階の定義と、その実行）
     Preparation,
-    /// ② 解析（静的解析・固有値・増分解析・時刻歴応答の実行）
-    Analysis,
+    /// 静的解析（荷重ケース・荷重組合せの実行）
+    Static,
+    /// 固有値解析
+    Eigen,
+    /// 増分解析（プッシュオーバー）
+    Pushover,
+    /// 時刻歴応答解析
+    TimeHistory,
 }
 
 /// 結果タブ内の切替（3D 各種図・時刻歴グラフ・増分解析曲線）。
@@ -501,7 +507,8 @@ pub struct App {
     pub last_error: Option<String>,
     /// 解析実行中の注意メッセージ（エラーではないが利用者に知らせたい事項。
     /// 例: 精算周期(SemiPrecise)選択時に固有値解析が未実行で EX/EY の地震荷重が
-    /// 更新されなかった旨）。`last_error`（赤）とは別枠で情報色表示する。
+    /// 更新されなかった旨）。ステータスバーは白文字、ログ側で情報色を付ける。
+    /// `last_error` とは別枠。
     pub last_notice: Option<String>,
     /// セッション内イベントログ（下ドックのログパネルに表示）。
     pub log: EventLog,
@@ -1605,16 +1612,16 @@ pub(crate) const SHORTCUT_SAVE_AS: egui::KeyboardShortcut = egui::KeyboardShortc
 
 #[cfg(feature = "gui")]
 impl eframe::App for App {
-    // eframe のデフォルトは (12,12,12) ≒ 黒なので、テーマに合わせた白灰色で上書きする
+    // eframe のデフォルトは (12,12,12) ≒ 黒なので、パネル間の隙間もクローム色にする
     fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
-        crate::theme::GRAY_100.to_normalized_gamma_f32()
+        crate::theme::BLUE_200.to_normalized_gamma_f32()
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         // 階の定義表で確定した編集の適用待ちを 1 フレーム 1 コマンドで反映する。
-        // 表は右ドックの「② 解析」パネルにしかないが、編集の適用はパネルの表示・
-        // 切替と無関係に毎フレーム行う。パネルを閉じている間にモデルを使う操作
-        // （準備計算の実行・保存など）が、未反映の階編集に基づいて走るのを避ける。
+        // 表は右ドックの「① 準備計算」パネル（`preparation.rs`）にしかないが、
+        // 編集の適用はパネルの表示・切替と無関係に毎フレーム行う。パネルを閉じている間に
+        // モデルを使う操作（準備計算の実行・保存など）が、未反映の階編集に基づいて走るのを避ける。
         // モデルを書き換えても、表の描画は `story_rows`（セクション内で先に複製した
         // 行データ）を使うため、残りの行が古い ID を指すことはない。
         if let Some(cmd) = self.pending_story_cmds.pop_front() {
@@ -1734,7 +1741,9 @@ impl eframe::App for App {
         }
 
         // 上部ツールバー: ファイルメニュー + 工程タブ（自由遷移）+ Undo/Redo
-        egui::Panel::top("top_toolbar").show_inside(ui, |ui| {
+        egui::Panel::top("top_toolbar")
+            .frame(crate::theme::toolbar_frame())
+            .show_inside(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.menu_button("ファイル", |ui| {
                     if ui.button("📄 新規").clicked() {
@@ -1856,17 +1865,39 @@ impl eframe::App for App {
         // 内部の区切り線・矩形分割は不要になった）
         egui::Panel::bottom("status_bar")
             .exact_size(ui.text_style_height(&egui::TextStyle::Body) + 8.0)
+            .frame(crate::theme::status_bar_frame())
             .show_inside(ui, |ui| {
+                crate::theme::apply_status_bar_visuals(ui);
                 self.status_bar(ui);
             });
 
-        // 左：パネル切替式（ナビゲータ／作成パレット）。Zed のようにステータスバーの
-        // アイコンで切り替える（切替自体は status_bar が行う）。
+        // 左：アクティビティバー（常時表示。ナビゲータ／作成パレットの切替）
+        let left_bar_width = panels::activity_bar_width();
+        egui::Panel::left("left_activity_bar")
+            .resizable(false)
+            .exact_size(left_bar_width)
+            .frame(panels::activity_bar_frame())
+            .show_inside(ui, |ui| {
+                self.left_activity_bar(ui);
+            });
+
+        // 右：アクティビティバー（常時表示。インスペクタ・準備計算・各解析パネルの切替）
+        let right_bar_width = panels::activity_bar_width();
+        egui::Panel::right("right_activity_bar")
+            .resizable(false)
+            .exact_size(right_bar_width)
+            .frame(panels::activity_bar_frame())
+            .show_inside(ui, |ui| {
+                self.right_activity_bar(ui);
+            });
+
+        // 左：パネル切替式（ナビゲータ／作成パレット）。アイコン列で切り替える。
         if self.left_dock_open {
             egui::Panel::left("left_dock")
                 .resizable(true)
                 .default_size(280.0)
                 .size_range(180.0..=520.0)
+                .frame(crate::theme::content_panel_frame())
                 .show_inside(ui, |ui| {
                     egui::ScrollArea::both()
                         .auto_shrink([false, false])
@@ -1877,22 +1908,25 @@ impl eframe::App for App {
                 });
         }
 
-        // 右：パネル切替式（インスペクタ／準備計算／解析）。Zed のようにステータス
-        // バーのアイコンで切り替える（切替自体は status_bar が行う）。準備計算・解析は
-        // 3D ビューを見ながら設定・実行できるようここに置くため、他パネルより
-        // 縦に長くなりがちで、右ドック全体をスクロール可能にする。
+        // 右：パネル切替式（インスペクタ／準備計算／各解析パネル）。アイコン列で
+        // 切り替える。準備計算・解析は 3D ビューを見ながら設定・実行できるようここに
+        // 置くため、他パネルより縦に長くなりがちで、右ドック全体をスクロール可能にする。
         if self.right_dock_open {
             egui::Panel::right("right_dock")
                 .resizable(true)
                 .default_size(320.0)
                 .size_range(220.0..=560.0)
+                .frame(crate::theme::content_panel_frame())
                 .show_inside(ui, |ui| {
                     egui::ScrollArea::vertical()
                         .auto_shrink([false, false])
                         .show(ui, |ui| match self.right_panel {
                             RightPanel::Inspector => self.inspector_panel(ui),
                             RightPanel::Preparation => self.preparation_panel(ui),
-                            RightPanel::Analysis => self.analysis_panel(ui),
+                            RightPanel::Static => self.static_panel(ui),
+                            RightPanel::Eigen => self.eigen_panel(ui),
+                            RightPanel::Pushover => self.pushover_panel(ui),
+                            RightPanel::TimeHistory => self.time_history_panel(ui),
                         });
                 });
         }
@@ -1906,6 +1940,7 @@ impl eframe::App for App {
                 .resizable(true)
                 .default_size(200.0)
                 .size_range(80.0..=520.0)
+                .frame(crate::theme::central_panel_frame())
                 .show_inside(ui, |ui| {
                     // egui の上下パネルは「中身の高さ＝パネルの高さ」となり、その高さが
                     // PanelState として保存される。中身の短いタブ（準備計算の未実行時・
@@ -1997,7 +2032,7 @@ impl eframe::App for App {
                                         for entry in &self.log.entries {
                                             let color = match entry.level {
                                                 LogLevel::Error => crate::theme::ERROR_RED,
-                                                LogLevel::Notice => crate::theme::BEST_YELLOW,
+                                                LogLevel::Notice => crate::theme::WARN_TEXT,
                                                 LogLevel::Info => crate::theme::GRAY_700,
                                             };
                                             // 長いメッセージはパネル幅で折り返して全文を表示する
@@ -2058,7 +2093,7 @@ impl eframe::App for App {
                                                 let color = match d.severity {
                                                     DiagSeverity::Error => crate::theme::ERROR_RED,
                                                     DiagSeverity::Warning => {
-                                                        crate::theme::BEST_YELLOW
+                                                        crate::theme::WARN_TEXT
                                                     }
                                                     DiagSeverity::Info => crate::theme::GRAY_700,
                                                 };
@@ -2107,12 +2142,14 @@ impl eframe::App for App {
         // 中央：モデル/荷重/解析タブでは常に3Dビュー（作成状況・モデルを見ながら
         // 設定・実行できるようにする。解析の設定フォームは右ドック側にある）。
         // それ以外の工程タブは各内容を表示する。
-        egui::CentralPanel::default().show_inside(ui, |ui| match self.active_tab {
-            Tab::Model | Tab::Loads | Tab::Analysis => crate::viewer::viewer_panel(ui, self),
-            Tab::Results => self.results_tab_panel(ui),
-            Tab::Design => self.design_tab_panel(ui),
-            Tab::Report => self.report_tab_panel(ui),
-        });
+        egui::CentralPanel::default()
+            .frame(crate::theme::central_panel_frame())
+            .show_inside(ui, |ui| match self.active_tab {
+                Tab::Model | Tab::Loads | Tab::Analysis => crate::viewer::viewer_panel(ui, self),
+                Tab::Results => self.results_tab_panel(ui),
+                Tab::Design => self.design_tab_panel(ui),
+                Tab::Report => self.report_tab_panel(ui),
+            });
 
         // 荷重の追加・編集モーダル（とピック待ちの案内バー）。3D クリックを先に
         // 処理させるため、ビューアの描画より後に呼ぶ。

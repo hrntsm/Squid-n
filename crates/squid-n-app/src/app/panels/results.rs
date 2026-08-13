@@ -74,12 +74,12 @@ impl App {
         match self.results_view {
             ResultsView::Spatial => crate::viewer::viewer_panel(ui, self),
             ResultsView::TimeHistory => crate::time_history_view::time_history_panel(ui, self),
-            ResultsView::Pushover => self.pushover_panel(ui),
+            ResultsView::Pushover => self.pushover_results_panel(ui),
             ResultsView::LumpedMass => self.lumped_mass_panel(ui),
         }
     }
     /// 増分解析結果（性能曲線・ヒンジ・崩壊機構）の表示。
-    pub(crate) fn pushover_panel(&mut self, ui: &mut egui::Ui) {
+    pub(crate) fn pushover_results_panel(&mut self, ui: &mut egui::Ui) {
         if self
             .results
             .as_ref()

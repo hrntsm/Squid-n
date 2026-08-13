@@ -59,7 +59,7 @@ pub fn preparation_panel(ui: &mut egui::Ui, app: &mut App) {
         }
         if app.staleness.preparation_stale {
             ui.colored_label(
-                crate::theme::BEST_YELLOW,
+                crate::theme::WARN_TEXT,
                 "⚠ モデルが編集されました。準備計算は再実行が必要です。",
             );
         } else if let Some(elapsed) = app
@@ -101,7 +101,7 @@ pub fn preparation_panel(ui: &mut egui::Ui, app: &mut App) {
         );
     } else if prep.diag_warnings > 0 {
         ui.colored_label(
-            crate::theme::BEST_YELLOW,
+            crate::theme::WARN_TEXT,
             format!("⚠ 整合性チェック: 警告 {} 件", prep.diag_warnings),
         );
     } else {
@@ -253,7 +253,7 @@ fn stories_section(ui: &mut egui::Ui, prep: &PreparationResult) {
 fn seismic_section(ui: &mut egui::Ui, prep: &PreparationResult) {
     let Some(sm) = prep.seismic.as_ref() else {
         ui.colored_label(
-            crate::theme::BEST_YELLOW,
+            crate::theme::WARN_TEXT,
             prep.seismic_note
                 .clone()
                 .unwrap_or_else(|| "地震力(Ai分布)を算定できませんでした".to_string()),
