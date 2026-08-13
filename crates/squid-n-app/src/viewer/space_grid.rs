@@ -129,7 +129,7 @@ pub fn pick(
     node_visible: &[bool],
     click: egui::Pos2,
 ) -> Option<SnapPoint> {
-    if let Some((i, d)) = super::pick_nearest_node(pts, node_visible, click) {
+    if let Some((i, d)) = super::pick::pick_nearest_node(pts, node_visible, click) {
         if d <= GRID_PICK_THRESHOLD {
             return Some(SnapPoint::Node(model.nodes[i].id));
         }

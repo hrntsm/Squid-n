@@ -35,7 +35,7 @@
 //! 1 つの閉じたポリゴン（Stroke 付き）にする方式だと、値が極小の部材で図形が
 //! 材軸上にほぼ潰れ、材軸と張り出し線が浅い角度で接する折り返し点で epaint の
 //! マイター結合が発散し、部材軸方向へ画面外まで伸びるスパイク描画になる
-//! （CMQ 図の [`super::paint_diagram_polygon`] と同じ問題・同じ対策）。
+//! （CMQ 図の [`super::cmq::paint_diagram_polygon`] と同じ問題・同じ対策）。
 //!
 //! ## M 図の曲線補間
 //!
@@ -48,8 +48,11 @@ use crate::app::App;
 use crate::theme;
 
 use super::{
-    diagram_offset_dir, member_len3, BeamDeflection, ForceComponent, ForceComponents, Projector,
+    deform::BeamDeflection,
+    scene::{diagram_offset_dir, in_plane_offset_dir},
+    ForceComponent, ForceComponents, Projector,
 };
+use squid_n_core::geom::vec3::dist as member_len3;
 
 /// 張り出しピークがこの px 未満の図形は描かない。60px 正規化に対して値が
 /// 相対的に極小の部材（ほぼ潰れた図形）は、輪郭の折り返し点で epaint のマイター
@@ -399,7 +402,7 @@ fn draw_component(
         let ey = diagram_offset_dir(p_i, p_j, ref_vec, component.plane());
         // 構面表示では張り出しを構面内へ倒す（面外成分が線に潰れるのを防ぐ）。
         let ey = match frame_normal {
-            Some(n) => super::in_plane_offset_dir(ey, p_i, p_j, n),
+            Some(n) => in_plane_offset_dir(ey, p_i, p_j, n),
             None => ey,
         };
         // 内部たわみ表示が有効な梁は、張り出しの基準線を変形後の Hermite 曲線に

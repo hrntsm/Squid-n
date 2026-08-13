@@ -5,7 +5,7 @@
 //! 投影・当たり判定は egui の描画コンテキストに依存しない純粋計算で、ヘッドレスで
 //! テスト可能。描画（`draw`）のみ `egui::Painter` を使う。
 
-use super::{q_rotate, CameraState};
+use super::{camera::q_rotate, CameraState};
 use crate::theme;
 
 /// 立方体の 6 面（外向き法線, ラベル）。

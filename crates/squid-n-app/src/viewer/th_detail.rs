@@ -24,6 +24,7 @@
 
 use crate::app::App;
 use crate::theme;
+use squid_n_core::geom::vec3::dist as member_len3;
 use squid_n_core::ids::ElemId;
 use squid_n_core::model::{ElementData, ElementKind, Model};
 use squid_n_core::units::to_display::{force_kn, moment_kn_m};
@@ -84,7 +85,7 @@ pub(super) fn axial_relative_disp(
     d_i: [f64; 6],
     d_j: [f64; 6],
 ) -> f64 {
-    let len = super::member_len3(p_i, p_j);
+    let len = member_len3(p_i, p_j);
     if len < 1e-9 {
         return 0.0;
     }
@@ -203,7 +204,7 @@ pub(super) fn beam_end_rotations(
     d_i: [f64; 6],
     d_j: [f64; 6],
 ) -> (f64, f64, f64, f64) {
-    let length = super::member_len3(p_i, p_j);
+    let length = member_len3(p_i, p_j);
     if length < 1e-9 {
         return (0.0, 0.0, 0.0, 0.0);
     }
@@ -409,7 +410,7 @@ fn draw_axial_loop(
         ui.colored_label(theme::GRAY_600, "この部材の内力は記録されていません。");
         return;
     }
-    let zero_length = super::member_len3(p_i, p_j) < 1e-9;
+    let zero_length = member_len3(p_i, p_j) < 1e-9;
     if zero_length {
         ui.horizontal(|ui| {
             ui.label("成分:");
@@ -481,7 +482,7 @@ fn axial_point(
     let disp_frame = rec.node_disp.get(f)?;
     let d_i = *disp_frame.get(n0)?;
     let d_j = *disp_frame.get(n1)?;
-    let delta = if super::member_len3(p_i, p_j) < 1e-9 {
+    let delta = if member_len3(p_i, p_j) < 1e-9 {
         zero_length_relative_disp(elem_kind, p_i, ref_vector, d_i, d_j, component)
     } else {
         axial_relative_disp(p_i, p_j, d_i, d_j)
@@ -669,7 +670,7 @@ fn draw_peak_check(
         return;
     };
 
-    let length = super::member_len3(
+    let length = member_len3(
         app.model.nodes[elem.nodes[0].index()].coord,
         app.model.nodes[elem.nodes[1].index()].coord,
     );

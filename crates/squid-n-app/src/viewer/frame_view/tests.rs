@@ -8,7 +8,7 @@ fn screen_axes(dir: [f32; 3]) -> [(f32, f32); 3] {
     let mut cam = CameraState::default();
     cam.snap_to_direction(dir);
     [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]].map(|w| {
-        let r = super::super::q_rotate(cam.rot, w);
+        let r = super::super::camera::q_rotate(cam.rot, w);
         (r[0], r[1])
     })
 }
