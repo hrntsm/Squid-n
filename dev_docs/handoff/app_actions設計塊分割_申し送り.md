@@ -61,7 +61,8 @@ actions/
 
 - app／MCP の設計入口を `squid-n-job` へ寄せる（機能統合）
 - 壁幾何や耐力入力組み立てなど、クレート横断の式の単一化
-- `viewer/mod.rs` / `panels.rs` の分割
+- `viewer/mod.rs` のハブ薄化（`panels` 分割は
+  [`app_panels画面分割_申し送り.md`](app_panels画面分割_申し送り.md) で実施）
 - `actions/mod.rs` に残る解析ジョブのさらなる分割
 - 薄い再エクスポートの削除、`floor_grillage` の所属移動
 
