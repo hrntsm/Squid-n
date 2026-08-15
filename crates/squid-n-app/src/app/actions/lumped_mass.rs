@@ -1,6 +1,7 @@
 //! 質点系解析。
 
 use super::*;
+use crate::app::vibration::{lumped_vibration_dim_from_stick, lumped_vibration_dir_from_seismic};
 use squid_n_solver::lumped_mass::LumpedMassResult;
 
 impl App {
@@ -67,11 +68,29 @@ impl App {
     pub(super) fn apply_lumped_mass_result(&mut self, res: Result<LumpedMassResult, String>) {
         match res {
             Ok(result) => {
-                self.stick_response = result.response.clone();
                 let mut bundle = self.results.take().unwrap_or_default();
-                bundle.lumped = Some(result);
-                self.results = Some(bundle);
-                self.staleness.last_run = Some(SystemTime::now());
+                if result.response.is_some() {
+                    let wave_name = self.lumped_th_wave_name();
+                    let dir = lumped_vibration_dir_from_seismic(self.analysis_cfg.lumped_dir);
+                    let dim = lumped_vibration_dim_from_stick(result.model.dim);
+                    let case_id = self.model.upsert_lumped_vibration_case(
+                        wave_name,
+                        dir,
+                        self.analysis_cfg.lumped_nonlinear,
+                        dim,
+                    );
+                    bundle.upsert_lumped_result(case_id, result.clone());
+                    self.results = Some(bundle);
+                    self.set_lumped_mass_view(Some(case_id), &result);
+                    self.staleness.mark_non_calc_edited();
+                    self.staleness.mark_fresh();
+                } else {
+                    bundle.lumped = Some(result);
+                    self.results = Some(bundle);
+                    self.staleness.mark_non_calc_edited();
+                    self.staleness.last_run = Some(SystemTime::now());
+                }
+                self.last_error = None;
             }
             Err(e) => self.report_error(e),
         }

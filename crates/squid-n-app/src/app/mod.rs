@@ -1,6 +1,8 @@
 use std::time::SystemTime;
 
-use squid_n_core::ids::{ElemId, LoadCaseId, NodeId, SectionId};
+use squid_n_core::ids::{
+    ElemId, LoadCaseId, LumpedVibrationCaseId, NodeId, SectionId, VibrationCaseId,
+};
 use squid_n_design_jp::LoadTerm;
 use squid_n_edit::UndoStack;
 use squid_n_solver::analysis::{AiMode, Analysis, SeismicDir};
@@ -127,6 +129,10 @@ pub struct Navigator {
     pub focus_load_case: Option<LoadCaseId>,
     /// ナビゲータで選択中の結果表示対象（静的ケース／荷重組合せ）
     pub focus_result: Option<StaticKey>,
+    /// ナビゲータで選択中の立体振動ケース
+    pub focus_vibration_case: Option<VibrationCaseId>,
+    /// ナビゲータで選択中の質点系振動ケース
+    pub focus_lumped_vibration_case: Option<LumpedVibrationCaseId>,
 }
 
 /// 静的解析結果の格納キー。ユーザー荷重ケースと地震静的(Ai)を型で区別し、
@@ -340,6 +346,12 @@ pub struct SavedResults {
     pub bundle: ResultsBundle,
     /// 表示対象の静的解析結果。
     pub last_static: Option<StaticKey>,
+    /// 表示中の立体時刻歴振動ケース。
+    #[serde(default)]
+    pub view_vibration_case: Option<VibrationCaseId>,
+    /// 表示中の質点系振動ケース。
+    #[serde(default)]
+    pub view_lumped_vibration_case: Option<LumpedVibrationCaseId>,
     /// 解析の最終実行時刻。
     pub last_run: Option<SystemTime>,
 }
@@ -395,9 +407,18 @@ pub struct ResultsBundle {
     #[serde(default)]
     pub pushover_y: Option<squid_n_solver::pushover::PushoverResult>,
     pub time_history: Option<squid_n_solver::timehistory::ResponseResult>,
-    /// 質点系解析結果（モデル・固有値・時刻歴）。
+    /// 立体時刻歴結果（振動ケース ID 別）。
+    #[serde(default)]
+    pub time_histories: Vec<(VibrationCaseId, squid_n_solver::timehistory::ResponseResult)>,
+    /// 質点系解析結果（モデル・固有値・時刻歴）。表示中の窓口。
     #[serde(default)]
     pub lumped: Option<squid_n_solver::lumped_mass::LumpedMassResult>,
+    /// 質点系結果（振動ケース ID 別）。
+    #[serde(default)]
+    pub lumped_results: Vec<(
+        LumpedVibrationCaseId,
+        squid_n_solver::lumped_mass::LumpedMassResult,
+    )>,
 }
 
 impl ResultsBundle {
@@ -576,6 +597,10 @@ impl EventLog {
 pub struct App {
     pub model: squid_n_core::model::Model,
     pub results: Option<ResultsBundle>,
+    /// 表示中の立体時刻歴振動ケース ID。
+    pub view_vibration_case: Option<VibrationCaseId>,
+    /// 表示中の質点系振動ケース ID。
+    pub view_lumped_vibration_case: Option<LumpedVibrationCaseId>,
     pub selection: Selection,
     pub undo: UndoStack,
     pub active_tab: Tab,
@@ -990,6 +1015,8 @@ impl Default for App {
         Self {
             model: squid_n_core::model::Model::default(),
             results: None,
+            view_vibration_case: None,
+            view_lumped_vibration_case: None,
             selection: Selection::default(),
             undo: UndoStack::new(),
             active_tab: Tab::Model,
@@ -1694,8 +1721,13 @@ pub use preparation::*;
 
 #[cfg(feature = "gui")]
 mod nav_loads;
+#[cfg(any(test, feature = "gui"))]
+mod nav_results;
+#[cfg(feature = "gui")]
+mod nav_vibration;
 #[cfg(feature = "gui")]
 mod panels;
+mod vibration;
 
 /// 保存（Windows/Linux: Ctrl+S、macOS: ⌘S）。
 #[cfg(feature = "gui")]

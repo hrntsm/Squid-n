@@ -161,6 +161,8 @@ impl App {
             .map(|bundle| SavedResults {
                 bundle: bundle.clone(),
                 last_static: self.last_static,
+                view_vibration_case: self.view_vibration_case,
+                view_lumped_vibration_case: self.view_lumped_vibration_case,
                 last_run: self.staleness.last_run,
             })
             .as_ref()
@@ -305,6 +307,22 @@ impl App {
                 {
                     let mut bundle = saved.bundle;
                     bundle.migrate_legacy_pushover(self.analysis_cfg.push_dir);
+                    bundle.migrate_legacy_time_history(
+                        &mut self.model,
+                        crate::app::vibration::vibration_th_dir_from_th(self.analysis_cfg.th_dir),
+                        self.analysis_cfg.th_nonlinear,
+                    );
+                    bundle.migrate_legacy_lumped(
+                        &mut self.model,
+                        "サンプル",
+                        crate::app::vibration::lumped_vibration_dir_from_seismic(
+                            self.analysis_cfg.lumped_dir,
+                        ),
+                        self.analysis_cfg.lumped_nonlinear,
+                        crate::app::vibration::lumped_vibration_dim_from_stick(
+                            self.analysis_cfg.lumped_dim,
+                        ),
+                    );
                     self.pushover_view_dir =
                         bundle.infer_pushover_view_dir(self.analysis_cfg.push_dir);
                     bundle.pushover = bundle.pushover_for_dir(self.pushover_view_dir).cloned();
@@ -315,6 +333,8 @@ impl App {
                         .and_then(|r| r.lumped.as_ref())
                         .and_then(|l| l.response.clone());
                     self.last_static = saved.last_static;
+                    self.view_vibration_case = saved.view_vibration_case;
+                    self.view_lumped_vibration_case = saved.view_lumped_vibration_case;
                     self.staleness.last_run = saved.last_run;
                     // 保存側が最新のときだけ書き出すため、復元できた結果は
                     // モデルと整合している（断面検定の結果も同梱されている）。

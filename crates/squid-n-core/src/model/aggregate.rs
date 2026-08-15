@@ -35,6 +35,12 @@ pub struct Model {
     pub constraints: Vec<Constraint>,
     pub load_cases: Vec<LoadCase>,
     pub combinations: Vec<LoadCombination>,
+    /// 立体時刻歴応答解析の振動ケース（実行時に upsert。静的荷重ケースとは別）。
+    #[serde(default)]
+    pub vibration_cases: Vec<VibrationCase>,
+    /// 質点系時刻歴応答解析の振動ケース。
+    #[serde(default)]
+    pub lumped_vibration_cases: Vec<LumpedVibrationCase>,
     /// 階の自動生成が作る剛床代表節点（慣性力重心に置く仮想節点）の ID。
     /// 構造節点と区別するために保持し、再生成時に再利用する。
     #[serde(default)]
@@ -454,6 +460,8 @@ impl Model {
             && self.constraints == other.constraints
             && self.load_cases == other.load_cases
             && self.combinations == other.combinations
+            && self.vibration_cases == other.vibration_cases
+            && self.lumped_vibration_cases == other.lumped_vibration_cases
             && self.generated_masters == other.generated_masters
             && self.mass_method == other.mass_method
             && self.load_cfg == other.load_cfg

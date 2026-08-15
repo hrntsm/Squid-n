@@ -3,33 +3,26 @@
 //! `actions` からの構造分割。アルゴリズム変更は行わない。
 
 use super::*;
+use crate::app::vibration::vibration_th_dir_from_th;
 
 impl App {
     /// `compute_time_history` の結果を適用する
-    /// （bundle 格納・time_history_data 更新(gui)・最終実行時刻更新・エラー設定）。
+    /// （振動ケース upsert・結果スロット更新・表示窓口更新）。
     pub(super) fn apply_time_history_result(
         &mut self,
         res: Result<squid_n_solver::timehistory::ResponseResult, String>,
     ) {
         match res {
             Ok(res) => {
-                #[cfg(feature = "gui")]
-                {
-                    self.time_history_data = crate::time_history_view::TimeHistoryData {
-                        time: res.time.clone(),
-                        node_disp: res.history.node_disp.clone(),
-                        story_shear: res.history.base_shear.clone(),
-                        story_drift_angle: res.history.top_drift_angle.clone(),
-                        node: res.history.node,
-                    };
-                }
+                let wave_name = self.spatial_th_wave_name();
+                let dir = vibration_th_dir_from_th(self.analysis_cfg.th_dir);
+                let nonlinear = self.analysis_cfg.th_nonlinear;
+                let case_id = self.model.upsert_vibration_case(wave_name, dir, nonlinear);
                 let mut bundle = self.results.take().unwrap_or_default();
-                bundle.time_history = Some(res);
+                bundle.upsert_time_history(case_id, res.clone());
                 self.results = Some(bundle);
-                // mark_fresh で stale を解消する（`apply_pushover_result` と同じ理由。
-                // last_run の更新だけでは、編集後に時刻歴だけを実行しても
-                // アニメーション・部材クリック・詳細ウィンドウが stale 判定で
-                // 無効化されたまま復帰しなかった）。
+                self.set_spatial_time_history_view(case_id, &res);
+                self.staleness.mark_non_calc_edited();
                 self.staleness.mark_fresh();
                 self.last_error = None;
             }
