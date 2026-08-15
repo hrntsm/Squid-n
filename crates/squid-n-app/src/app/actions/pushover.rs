@@ -31,7 +31,9 @@ impl App {
         }
         self.pushover_view_dir = dir;
         if let Some(bundle) = self.results.as_mut() {
-            bundle.pushover = bundle.pushover_for_dir(dir).cloned();
+            if let Some(po) = bundle.pushover_for_dir(dir).cloned() {
+                bundle.pushover = Some(po);
+            }
         }
     }
 

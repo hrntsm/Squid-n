@@ -6324,9 +6324,13 @@ fn test_load_model_resets_model_derived_state() {
     // 持ち越されたまま保存されてしまう。
     app.wave_library_selection = Some("elcentro.csv".to_string());
     app.wave_library_selected_sha256 = Some("deadbeef".to_string());
+    app.view_vibration_case = Some(squid_n_core::ids::VibrationCaseId(99));
+    app.view_lumped_vibration_case = Some(squid_n_core::ids::LumpedVibrationCaseId(99));
 
     app.load_model(crate::sample::portal_frame());
     assert!(app.stick_response.is_none());
+    assert!(app.view_vibration_case.is_none());
+    assert!(app.view_lumped_vibration_case.is_none());
     assert!(app.generated_panels.is_empty());
     assert!(
         app.wave_library_selection.is_none(),
@@ -7638,6 +7642,50 @@ fn dummy_static_once() -> squid_n_solver::linear::StaticOnce {
     }
 }
 
+fn dummy_pushover(qu: f64) -> squid_n_solver::pushover::PushoverResult {
+    squid_n_solver::pushover::PushoverResult {
+        steps: vec![],
+        capacity_curve: vec![],
+        hinges: vec![],
+        shear_yields: vec![],
+        mechanism: squid_n_solver::pushover::MechanismType::Partial,
+        qu,
+        member_response: vec![],
+        control: Default::default(),
+        member_history: vec![],
+        fiber_states: vec![],
+        termination: Default::default(),
+    }
+}
+
+fn dummy_lumped(period: f64, with_response: bool) -> squid_n_solver::lumped_mass::LumpedMassResult {
+    squid_n_solver::lumped_mass::LumpedMassResult {
+        model: squid_n_solver::lumped_mass::LumpedMassModel::from_stories(
+            squid_n_solver::lumped_mass::LumpedMassType::EquivalentShear,
+            vec![],
+        ),
+        modal: squid_n_solver::lumped_mass::LumpedMassModal {
+            period: vec![period],
+            ..Default::default()
+        },
+        response: with_response.then(squid_n_solver::lumped_mass::StickResponse::default),
+    }
+}
+
+fn dummy_th(time: Vec<f64>) -> squid_n_solver::timehistory::ResponseResult {
+    squid_n_solver::timehistory::ResponseResult {
+        time,
+        peak_disp: vec![],
+        story_drift_angle: vec![],
+        cumulative_ductility: vec![],
+        history: Default::default(),
+        recording: None,
+        nonlinear: false,
+        applied_long_term: false,
+        non_converged_steps: 0,
+    }
+}
+
 /// 解析結果ツリー: 結果がなければ空。
 #[test]
 fn test_build_result_tree_empty_without_results() {
@@ -7776,11 +7824,27 @@ fn test_migrate_legacy_time_history_only() {
         }),
         ..Default::default()
     };
-    bundle.migrate_legacy_time_history(&mut model, VibrationThDir::X, false);
+    bundle.migrate_legacy_time_history(&mut model, "サンプル", VibrationThDir::X, false);
     assert_eq!(model.vibration_cases.len(), 1);
     assert_eq!(model.vibration_cases[0].name, "サンプル X (線形)");
     assert_eq!(bundle.time_histories.len(), 1);
     assert!(bundle.time_history.is_some());
+}
+
+/// 旧立体時刻歴の移行は、渡した波形名でケースを作る。
+#[test]
+fn test_migrate_legacy_time_history_uses_wave_name() {
+    use squid_n_core::model::VibrationThDir;
+
+    let mut model = squid_n_core::model::Model::default();
+    let mut bundle = ResultsBundle {
+        time_history: Some(dummy_th(vec![0.0])),
+        ..Default::default()
+    };
+    bundle.migrate_legacy_time_history(&mut model, "elcentro", VibrationThDir::Y, true);
+    assert_eq!(model.vibration_cases.len(), 1);
+    assert_eq!(model.vibration_cases[0].name, "elcentro Y (非線形)");
+    assert_eq!(bundle.time_histories.len(), 1);
 }
 
 /// 同名 upsert で ID が維持され結果が置き換わる。
@@ -7905,4 +7969,209 @@ fn test_build_result_tree_static_only() {
     assert!(tree.pushover_dirs.is_empty());
     assert!(tree.time_history_cases.is_empty());
     assert!(!tree.has_lumped_section());
+}
+
+/// 旧 `pushover` 窓口だけがある結果でも、増分解析ノードを出す。
+#[test]
+fn test_build_result_tree_legacy_pushover_only() {
+    use squid_n_solver::analysis::SeismicDir;
+
+    let bundle = ResultsBundle {
+        pushover: Some(dummy_pushover(1.0)),
+        ..Default::default()
+    };
+    let model = squid_n_core::model::Model::default();
+    let tree = super::nav_results::build_result_tree(Some(&bundle), &model, |_| String::new());
+    assert_eq!(tree.pushover_dirs, vec![SeismicDir::X]);
+}
+
+/// 増分解析の表示方向切替は、相手方向のスロットが空でも窓口を消さない。
+#[test]
+fn test_set_pushover_view_dir_keeps_window_when_slot_missing() {
+    use squid_n_solver::analysis::SeismicDir;
+
+    let po = dummy_pushover(12.0);
+    let mut app = App {
+        results: Some(ResultsBundle {
+            pushover_x: Some(po.clone()),
+            pushover: Some(po),
+            ..Default::default()
+        }),
+        pushover_view_dir: SeismicDir::X,
+        ..Default::default()
+    };
+    app.set_pushover_view_dir(SeismicDir::Y);
+    assert_eq!(app.pushover_view_dir, SeismicDir::Y);
+    assert!(
+        app.results.as_ref().unwrap().pushover.is_some(),
+        "相手方向スロットが空でも表示中の増分結果を消してはいけない"
+    );
+}
+
+/// 質点系固有値のみの再実行は、旧時刻歴の `stick_response` を残さない。
+#[test]
+fn test_lumped_eigen_only_clears_stick_response() {
+    let mut app = App {
+        stick_response: Some(squid_n_solver::lumped_mass::StickResponse::default()),
+        results: Some(ResultsBundle {
+            lumped: Some(dummy_lumped(0.5, true)),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    app.apply_lumped_mass_result(Ok(dummy_lumped(0.4, false)));
+    assert!(app.stick_response.is_none());
+    assert!(app
+        .results
+        .as_ref()
+        .unwrap()
+        .lumped
+        .as_ref()
+        .unwrap()
+        .response
+        .is_none());
+}
+
+/// 旧質点系結果（時刻歴あり）の移行は、渡した波形名でケースを作る。
+#[test]
+fn test_migrate_legacy_lumped_uses_wave_name() {
+    use squid_n_core::model::{LumpedVibrationDim, LumpedVibrationDir};
+
+    let mut model = squid_n_core::model::Model::default();
+    let mut bundle = ResultsBundle {
+        lumped: Some(dummy_lumped(0.5, true)),
+        ..Default::default()
+    };
+    bundle.migrate_legacy_lumped(
+        &mut model,
+        "elcentro",
+        LumpedVibrationDir::Y,
+        true,
+        LumpedVibrationDim::Spatial,
+    );
+    assert_eq!(model.lumped_vibration_cases.len(), 1);
+    assert_eq!(
+        model.lumped_vibration_cases[0].name,
+        "elcentro Y (非線形・3次元)"
+    );
+    assert_eq!(bundle.lumped_results.len(), 1);
+    assert!(bundle.lumped.is_some());
+}
+
+/// ナビから質点系固有値を選ぶと、3D ビューアの質点モードへ切り替わる。
+#[test]
+fn test_select_lumped_eigen_mode_switches_spatial_view() {
+    let mut app = App {
+        nav: Navigator {
+            focus_result: Some(StaticKey::Case(StaticCaseKey::User(LoadCaseId(0)))),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    app.select_lumped_eigen_mode(1);
+    assert!(app.nav.focus_result.is_none());
+    assert_eq!(app.active_tab, Tab::Results);
+    #[cfg(feature = "gui")]
+    {
+        assert_eq!(app.results_view, ResultsView::Spatial);
+        assert_eq!(app.view_mode, crate::viewer::ViewMode::LumpedMode);
+        assert_eq!(app.view_mode_idx, 1);
+    }
+}
+
+/// 結果スロットが無い振動ケースはモデルから除く。
+#[test]
+fn test_prune_orphan_vibration_cases_without_results() {
+    use squid_n_core::model::VibrationThDir;
+
+    let mut app = App::default();
+    app.model
+        .upsert_vibration_case("サンプル".into(), VibrationThDir::X, false);
+    assert_eq!(app.model.vibration_cases.len(), 1);
+    app.prune_orphan_vibration_cases();
+    assert!(app.model.vibration_cases.is_empty());
+}
+
+/// 結果スロットがある振動ケースは残す。
+#[test]
+fn test_prune_orphan_vibration_cases_keeps_matched() {
+    use squid_n_core::model::VibrationThDir;
+
+    let mut model = squid_n_core::model::Model::default();
+    let id = model.upsert_vibration_case("サンプル".into(), VibrationThDir::X, false);
+    let mut app = App {
+        model,
+        results: Some(ResultsBundle {
+            time_histories: vec![(id, dummy_th(vec![0.0]))],
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    app.prune_orphan_vibration_cases();
+    assert_eq!(app.model.vibration_cases.len(), 1);
+}
+
+/// 古い結果のまま保存すると、振動ケースもファイルへ書かない。
+#[test]
+fn test_stale_save_omits_vibration_cases() {
+    let dir = test_tmp();
+    let path = dir.join("squid_n_stale_vibration_cases.scz");
+    let _ = std::fs::remove_file(&path);
+
+    let mut app = App::default();
+    app.load_model(crate::sample::portal_frame());
+    app.generate_stories_action();
+    app.analysis_cfg.th_duration = 0.5;
+    app.run_time_history_sample();
+    assert!(app.last_error.is_none(), "{:?}", app.last_error);
+    assert_eq!(app.model.vibration_cases.len(), 1);
+
+    app.staleness.mark_edited();
+    app.save_project_to(path.clone());
+    assert!(app.last_error.is_none(), "{:?}", app.last_error);
+    assert_eq!(
+        app.model.vibration_cases.len(),
+        1,
+        "保存後もメモリ上のケースは残る"
+    );
+
+    let contents = squid_n_io::scz::load_scz(&path).expect("保存した .scz を読める");
+    assert!(contents.results.is_none());
+    assert!(contents.model.vibration_cases.is_empty());
+    assert!(contents.model.lumped_vibration_cases.is_empty());
+
+    let mut reopened = App::default();
+    reopened.open_project_from(path.clone());
+    assert!(reopened.last_error.is_none(), "{:?}", reopened.last_error);
+    assert!(reopened.results.is_none());
+    assert!(reopened.model.vibration_cases.is_empty());
+
+    let _ = std::fs::remove_file(&path);
+}
+
+/// プロジェクト再開で、保存時の振動ケース表示と時刻歴グラフデータを戻す。
+#[test]
+fn test_hydrate_saved_vibration_views_fills_graph_data() {
+    use squid_n_core::model::VibrationThDir;
+
+    let mut model = squid_n_core::model::Model::default();
+    let id = model.upsert_vibration_case("サンプル".into(), VibrationThDir::X, false);
+    let th = dummy_th(vec![0.0, 0.1, 0.2]);
+    let mut app = App {
+        model,
+        results: Some(ResultsBundle {
+            time_histories: vec![(id, th.clone())],
+            time_history: Some(th),
+            lumped: Some(dummy_lumped(0.4, true)),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    app.hydrate_saved_vibration_views(Some(id), None);
+    assert_eq!(app.view_vibration_case, Some(id));
+    assert!(app.stick_response.is_some());
+    #[cfg(feature = "gui")]
+    {
+        assert_eq!(app.time_history_data.time, vec![0.0, 0.1, 0.2]);
+    }
 }

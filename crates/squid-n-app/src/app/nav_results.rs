@@ -126,6 +126,9 @@ pub(crate) fn build_result_tree(
     if r.pushover_y.is_some() {
         pushover_dirs.push(SeismicDir::Y);
     }
+    if pushover_dirs.is_empty() && r.pushover.is_some() {
+        pushover_dirs.push(r.infer_pushover_view_dir(SeismicDir::X));
+    }
 
     let time_history_cases: Vec<_> = r
         .time_histories
@@ -196,7 +199,7 @@ fn is_time_history_case_selected(app: &App, id: VibrationCaseId) -> bool {
 
 #[cfg(feature = "gui")]
 fn is_lumped_eigen_mode_selected(app: &App, mode_idx: usize) -> bool {
-    app.results_view == ResultsView::LumpedMass
+    app.results_view == ResultsView::Spatial
         && app.view_mode == crate::viewer::ViewMode::LumpedMode
         && app.view_mode_idx == mode_idx
 }
@@ -393,12 +396,14 @@ impl App {
                 self.results_view = ResultsView::Spatial;
             }
             ResultTreeAction::EigenMode(i) => {
+                self.nav.focus_result = None;
                 self.active_tab = Tab::Results;
                 self.results_view = ResultsView::Spatial;
                 self.view_mode = crate::viewer::ViewMode::Mode;
                 self.view_mode_idx = i;
             }
             ResultTreeAction::Pushover(dir) => {
+                self.nav.focus_result = None;
                 self.set_pushover_view_dir(dir);
                 self.active_tab = Tab::Results;
                 self.results_view = ResultsView::Pushover;
@@ -410,6 +415,7 @@ impl App {
                     .and_then(|b| b.time_history_for(id))
                     .cloned()
                 {
+                    self.nav.focus_result = None;
                     self.set_spatial_time_history_view(id, &res);
                     self.active_tab = Tab::Results;
                     self.results_view = ResultsView::TimeHistory;
@@ -417,10 +423,7 @@ impl App {
                 }
             }
             ResultTreeAction::LumpedEigenMode(i) => {
-                self.active_tab = Tab::Results;
-                self.results_view = ResultsView::LumpedMass;
-                self.view_mode = crate::viewer::ViewMode::LumpedMode;
-                self.view_mode_idx = i;
+                self.select_lumped_eigen_mode(i);
             }
             ResultTreeAction::LumpedTimeHistoryCase(id) => {
                 if let Some(res) = self
@@ -429,6 +432,7 @@ impl App {
                     .and_then(|b| b.lumped_result_for(id))
                     .cloned()
                 {
+                    self.nav.focus_result = None;
                     self.set_lumped_mass_view(Some(id), &res);
                     self.active_tab = Tab::Results;
                     self.results_view = ResultsView::LumpedMass;

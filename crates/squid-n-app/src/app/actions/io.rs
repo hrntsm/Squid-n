@@ -48,6 +48,8 @@ impl App {
         // 新モデルを保存してしまうのを防ぐ）。
         self.pending_save_recording = None;
         self.pushover_view_dir = SeismicDir::X;
+        self.view_vibration_case = None;
+        self.view_lumped_vibration_case = None;
         self.stick_response = None;
         self.combo_error = None;
         self.generated_panels.clear();
@@ -113,6 +115,8 @@ impl App {
     /// 準備計算の結果・解析結果は、いずれも**最新（モデル編集後に再実行済み）の
     /// 場合のみ**同梱する（`preparation_stale` / `results_stale` なら保存しない）。
     /// 読込側が「保存されている＝そのモデルに対して最新」と扱えるようにするため。
+    /// 解析結果を同梱しないときは、振動荷重ケースもモデルから外して書く
+    /// （結果のない空ケースがナビに残らないようにする。メモリ上のケースは残す）。
     ///
     /// 解析結果の直列化サイズが [`SAVE_RECORDING_CONFIRM_BYTES`] を超え、かつ
     /// 時刻歴の詳細記録（`ThRecording`）を含む場合は、保存せずに確認保留
@@ -154,10 +158,11 @@ impl App {
         } else {
             None
         };
+        let persist_results = self.results.is_some() && !self.staleness.results_stale;
         let results = self
             .results
             .as_ref()
-            .filter(|_| !self.staleness.results_stale)
+            .filter(|_| persist_results)
             .map(|bundle| SavedResults {
                 bundle: bundle.clone(),
                 last_static: self.last_static,
@@ -212,7 +217,23 @@ impl App {
             results: results_bytes.as_deref(),
             analysis_settings: analysis_settings_bytes.as_deref(),
         };
-        match squid_n_io::scz::save_scz(&path, &self.model, extras) {
+        // 解析結果を同梱しないときは振動ケースもモデルから外して書く。
+        // 結果なしのケースがナビに残ると、未実行なのに実行済みに見える。
+        // メモリ上のケースは保存後も残す（画面上の結果はまだあるため）。
+        let taken_vibration_cases = if persist_results {
+            None
+        } else {
+            Some((
+                std::mem::take(&mut self.model.vibration_cases),
+                std::mem::take(&mut self.model.lumped_vibration_cases),
+            ))
+        };
+        let save_result = squid_n_io::scz::save_scz(&path, &self.model, extras);
+        if let Some((spatial, lumped)) = taken_vibration_cases {
+            self.model.vibration_cases = spatial;
+            self.model.lumped_vibration_cases = lumped;
+        }
+        match save_result {
             Ok(()) => {
                 // ショートカット保存はダイアログも出ず無反応になるため、
                 // 成功をステータスバーとログで明示する。
@@ -309,12 +330,15 @@ impl App {
                     bundle.migrate_legacy_pushover(self.analysis_cfg.push_dir);
                     bundle.migrate_legacy_time_history(
                         &mut self.model,
+                        self.wave_library_selection.as_deref().unwrap_or("サンプル"),
                         crate::app::vibration::vibration_th_dir_from_th(self.analysis_cfg.th_dir),
                         self.analysis_cfg.th_nonlinear,
                     );
                     bundle.migrate_legacy_lumped(
                         &mut self.model,
-                        "サンプル",
+                        self.lumped_wave_library_selection
+                            .as_deref()
+                            .unwrap_or("サンプル"),
                         crate::app::vibration::lumped_vibration_dir_from_seismic(
                             self.analysis_cfg.lumped_dir,
                         ),
@@ -327,20 +351,18 @@ impl App {
                         bundle.infer_pushover_view_dir(self.analysis_cfg.push_dir);
                     bundle.pushover = bundle.pushover_for_dir(self.pushover_view_dir).cloned();
                     self.results = Some(bundle);
-                    self.stick_response = self
-                        .results
-                        .as_ref()
-                        .and_then(|r| r.lumped.as_ref())
-                        .and_then(|l| l.response.clone());
                     self.last_static = saved.last_static;
-                    self.view_vibration_case = saved.view_vibration_case;
-                    self.view_lumped_vibration_case = saved.view_lumped_vibration_case;
+                    self.hydrate_saved_vibration_views(
+                        saved.view_vibration_case,
+                        saved.view_lumped_vibration_case,
+                    );
                     self.staleness.last_run = saved.last_run;
                     // 保存側が最新のときだけ書き出すため、復元できた結果は
                     // モデルと整合している（断面検定の結果も同梱されている）。
                     self.staleness.results_stale = false;
                     self.staleness.design_stale = false;
                 }
+                self.prune_orphan_vibration_cases();
                 self.project_path = Some(path);
             }
             Err(e) => self.report_error(format!("読込エラー: {}", e)),

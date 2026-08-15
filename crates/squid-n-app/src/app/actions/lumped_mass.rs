@@ -65,7 +65,7 @@ impl App {
         }
     }
 
-    pub(super) fn apply_lumped_mass_result(&mut self, res: Result<LumpedMassResult, String>) {
+    pub(crate) fn apply_lumped_mass_result(&mut self, res: Result<LumpedMassResult, String>) {
         match res {
             Ok(result) => {
                 let mut bundle = self.results.take().unwrap_or_default();
@@ -85,14 +85,34 @@ impl App {
                     self.staleness.mark_non_calc_edited();
                     self.staleness.mark_fresh();
                 } else {
-                    bundle.lumped = Some(result);
+                    // 固有値のみ。時刻歴ケースは作らず、表示中モデルだけ更新する。
+                    // `stick_response` を残すと、結果パネルが旧時刻歴のピークを
+                    // `lumped.response.or(stick_response)` で拾ってしまう。
                     self.results = Some(bundle);
+                    self.set_lumped_mass_view(None, &result);
                     self.staleness.mark_non_calc_edited();
                     self.staleness.last_run = Some(SystemTime::now());
                 }
                 self.last_error = None;
             }
             Err(e) => self.report_error(e),
+        }
+    }
+
+    /// 質点系の固有モードを 3D ビューアの「質点モード」で表示する。
+    ///
+    /// 結果タブの「質点系」は表とグラフなので、そこに切り替えるとモード形が
+    /// 見えない。立体の固有値と同じく、3D ビューア側の表示モードを切り替える。
+    #[cfg(any(test, feature = "gui"))]
+    #[cfg_attr(not(feature = "gui"), allow(unused_variables))]
+    pub(crate) fn select_lumped_eigen_mode(&mut self, mode_idx: usize) {
+        self.nav.focus_result = None;
+        self.active_tab = Tab::Results;
+        #[cfg(feature = "gui")]
+        {
+            self.results_view = ResultsView::Spatial;
+            self.view_mode = crate::viewer::ViewMode::LumpedMode;
+            self.view_mode_idx = mode_idx;
         }
     }
 

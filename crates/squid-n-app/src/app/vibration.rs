@@ -52,6 +52,10 @@ impl App {
         if let Some(bundle) = &mut self.results {
             bundle.time_history = Some(res.clone());
         }
+        self.fill_time_history_data(res);
+    }
+
+    fn fill_time_history_data(&mut self, res: &squid_n_solver::timehistory::ResponseResult) {
         #[cfg(feature = "gui")]
         {
             self.time_history_data = crate::time_history_view::TimeHistoryData {
@@ -62,6 +66,89 @@ impl App {
                 node: res.history.node,
             };
         }
+        #[cfg(not(feature = "gui"))]
+        let _ = res;
+    }
+
+    fn fill_time_history_from_window(&mut self) {
+        let Some(res) = self.results.as_ref().and_then(|b| b.time_history.clone()) else {
+            #[cfg(feature = "gui")]
+            {
+                self.time_history_data = crate::time_history_view::TimeHistoryData::default();
+            }
+            return;
+        };
+        self.fill_time_history_data(&res);
+    }
+
+    /// 保存済みの表示ケース ID から、時刻歴グラフと質点系窓口を復元する。
+    pub(crate) fn hydrate_saved_vibration_views(
+        &mut self,
+        view_vibration_case: Option<VibrationCaseId>,
+        view_lumped_vibration_case: Option<LumpedVibrationCaseId>,
+    ) {
+        match view_vibration_case {
+            Some(id) => {
+                if let Some(res) = self
+                    .results
+                    .as_ref()
+                    .and_then(|b| b.time_history_for(id))
+                    .cloned()
+                {
+                    self.set_spatial_time_history_view(id, &res);
+                } else {
+                    self.view_vibration_case = None;
+                    self.fill_time_history_from_window();
+                }
+            }
+            None => self.fill_time_history_from_window(),
+        }
+
+        match view_lumped_vibration_case {
+            Some(id) => {
+                if let Some(res) = self
+                    .results
+                    .as_ref()
+                    .and_then(|b| b.lumped_result_for(id))
+                    .cloned()
+                {
+                    self.set_lumped_mass_view(Some(id), &res);
+                } else if let Some(res) = self.results.as_ref().and_then(|b| b.lumped.clone()) {
+                    self.set_lumped_mass_view(None, &res);
+                } else {
+                    self.view_lumped_vibration_case = None;
+                    self.stick_response = None;
+                }
+            }
+            None => {
+                if let Some(res) = self.results.as_ref().and_then(|b| b.lumped.clone()) {
+                    self.set_lumped_mass_view(None, &res);
+                }
+            }
+        }
+    }
+
+    /// 結果スロットが無い振動ケースをモデルから除く。
+    ///
+    /// 解析結果を同梱せずに保存した `.scz` を開いたとき、ナビに空ケースが
+    /// 残らないようにする。未実行の空ケースは作らない、という規約に合わせる。
+    pub(crate) fn prune_orphan_vibration_cases(&mut self) {
+        let spatial: std::collections::HashSet<_> = self
+            .results
+            .as_ref()
+            .map(|b| b.time_histories.iter().map(|(id, _)| *id).collect())
+            .unwrap_or_default();
+        let lumped: std::collections::HashSet<_> = self
+            .results
+            .as_ref()
+            .map(|b| b.lumped_results.iter().map(|(id, _)| *id).collect())
+            .unwrap_or_default();
+        self.model
+            .vibration_cases
+            .retain(|c| spatial.contains(&c.id));
+        self.model
+            .lumped_vibration_cases
+            .retain(|c| lumped.contains(&c.id));
     }
 
     /// 質点系結果の表示窓口を切り替える。
@@ -172,6 +259,7 @@ impl ResultsBundle {
     pub fn migrate_legacy_time_history(
         &mut self,
         model: &mut squid_n_core::model::Model,
+        wave_name: &str,
         dir: VibrationThDir,
         nonlinear: bool,
     ) {
@@ -186,7 +274,7 @@ impl ResultsBundle {
         let Some(th) = self.time_history.take() else {
             return;
         };
-        let id = model.upsert_vibration_case("サンプル".into(), dir, nonlinear);
+        let id = model.upsert_vibration_case(wave_name.to_string(), dir, nonlinear);
         self.time_histories.push((id, th.clone()));
         self.time_history = Some(th);
     }
