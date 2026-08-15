@@ -6856,6 +6856,16 @@ fn test_time_history_recording_saved_and_optional_exclusion() {
         excl_th.recording.is_none(),
         "除外して保存した場合は recording を含まないはず"
     );
+    assert!(
+        reopened_excl
+            .results
+            .as_ref()
+            .unwrap()
+            .time_histories
+            .iter()
+            .all(|(_, th)| th.recording.is_none()),
+        "ケース別スロットにも recording を残してはいけない"
+    );
     assert!(!excl_th.peak_disp.is_empty());
 
     let _ = std::fs::remove_file(&path);

@@ -150,11 +150,10 @@ impl App {
         // ときは `take()` で一時的に取り除いて直列化し、直後に戻す
         // （記録本体の複製コストを避ける。保存はメモリ上の結果に対し非破壊）。
         let exclude_recording = include_recording == Some(false);
-        let taken_recording = if exclude_recording {
+        let taken_recordings = if exclude_recording {
             self.results
                 .as_mut()
-                .and_then(|bundle| bundle.time_history.as_mut())
-                .and_then(|th| th.recording.take())
+                .map(|bundle| bundle.take_th_recordings())
         } else {
             None
         };
@@ -172,13 +171,9 @@ impl App {
             })
             .as_ref()
             .map(rmp_serde::to_vec);
-        if let Some(recording) = taken_recording {
-            if let Some(th) = self
-                .results
-                .as_mut()
-                .and_then(|bundle| bundle.time_history.as_mut())
-            {
-                th.recording = Some(recording);
+        if let Some(taken) = taken_recordings {
+            if let Some(bundle) = self.results.as_mut() {
+                bundle.restore_th_recordings(taken);
             }
         }
         // 解析タブの設定値は、モデルの新陳（staleness）と無関係に常に同梱する
@@ -202,9 +197,8 @@ impl App {
             let has_recording = self
                 .results
                 .as_ref()
-                .filter(|_| !self.staleness.results_stale)
-                .and_then(|b| b.time_history.as_ref())
-                .is_some_and(|th| th.recording.is_some());
+                .filter(|_| persist_results)
+                .is_some_and(|b| b.has_th_recording());
             let size = results_bytes.as_ref().map(|b| b.len()).unwrap_or(0);
             if needs_recording_confirm(size, has_recording) {
                 self.pending_save_recording = Some((path, size as u64 / (1024 * 1024)));

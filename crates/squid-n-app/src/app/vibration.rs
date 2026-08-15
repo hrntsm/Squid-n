@@ -208,6 +208,12 @@ impl App {
     }
 }
 
+/// 除外保存のために一時的に取り出した時刻歴の詳細記録。
+pub(crate) struct TakenThRecordings {
+    window: Option<squid_n_solver::timehistory::ThRecording>,
+    slots: Vec<(usize, squid_n_solver::timehistory::ThRecording)>,
+}
+
 impl ResultsBundle {
     /// 立体時刻歴結果をケース ID で upsert する。
     pub fn upsert_time_history(
@@ -253,6 +259,45 @@ impl ResultsBundle {
             .iter()
             .find(|(i, _)| *i == id)
             .map(|(_, r)| r)
+    }
+
+    /// 表示窓口またはケース別スロットに時刻歴の詳細記録があるか。
+    pub(crate) fn has_th_recording(&self) -> bool {
+        self.time_history
+            .as_ref()
+            .is_some_and(|th| th.recording.is_some())
+            || self
+                .time_histories
+                .iter()
+                .any(|(_, th)| th.recording.is_some())
+    }
+
+    /// 詳細記録を一時的に外す（除外保存用。直後に [`Self::restore_th_recordings`]）。
+    pub(crate) fn take_th_recordings(&mut self) -> TakenThRecordings {
+        let window = self
+            .time_history
+            .as_mut()
+            .and_then(|th| th.recording.take());
+        let slots = self
+            .time_histories
+            .iter_mut()
+            .enumerate()
+            .filter_map(|(i, (_, th))| th.recording.take().map(|r| (i, r)))
+            .collect();
+        TakenThRecordings { window, slots }
+    }
+
+    pub(crate) fn restore_th_recordings(&mut self, taken: TakenThRecordings) {
+        if let Some(rec) = taken.window {
+            if let Some(th) = self.time_history.as_mut() {
+                th.recording = Some(rec);
+            }
+        }
+        for (i, rec) in taken.slots {
+            if let Some((_, th)) = self.time_histories.get_mut(i) {
+                th.recording = Some(rec);
+            }
+        }
     }
 
     /// 旧 `.scz`（`time_history` のみ）を振動ケース＋スロットへ移す。
