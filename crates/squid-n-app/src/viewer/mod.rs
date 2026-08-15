@@ -433,7 +433,9 @@ use scene::{
     element_draw_shape, order_wall_nodes, DrawShape,
 };
 use squid_n_core::geom::vec3::dist as member_len3;
-use support::{draw_support_legend, draw_support_symbol, support_kind, SupportKind};
+use support::{
+    draw_support_legend, draw_support_symbol, support_kind, supports_visible, SupportKind,
+};
 
 pub use camera::CameraState;
 pub use deform::TimeHistoryScaleCache;
@@ -479,6 +481,11 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
         // 床（スラブ・小梁）・二次部材の表示切替（全モードと併用可。
         // CMQ 図は主架構の図のため設定によらず常に非表示）
         ui.toggle_value(&mut app.show_floor_secondary, "床・二次部材");
+        // 支点記号。質点ビューでは立体の柱脚拘束は関係ないので選択肢自体を出さない。
+        if !lumped::is_lumped_view(mode) {
+            ui.toggle_value(&mut app.show_supports, "支点")
+                .on_hover_text("拘束された節点の矢印・円弧、支点ばね、免震マーカー");
+        }
         // 剛床代表点（重心マスター）の表示切替。剛床がある場合のみ選択肢を出す。
         // ON にすると代表点マーカー・面内拘束マーク・スレーブへの点線を描く。
         let has_diaphragm_constraint = app
@@ -1669,6 +1676,10 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
     // 部材・応力図の上に重ねて描き、支持方向を一目で判別できるようにする。
     // スクリーン上で矢印 18px・円弧半径 12px になるようワールド長を逆算する。
     //
+    // 質点モード・質点時刻歴では立体の柱脚拘束は串に関係ないので出さない。
+    // ほかの表示はツールバー「支点」トグル（既定 ON）に従う。剛床代表点の面内拘束
+    // マークは「剛床代表点」トグル側で、支点トグルとは独立に出す。
+    //
     // 剛床（RigidDiaphragm）マスター節点は特別扱いする。マスターに設定される
     // 拘束（Uz/Rx/Ry）は零剛性自由度による特異行列を避けるための数値上の
     // ダミー拘束であり、剛床が物理的に拘束するのは面内自由度（Ux/Uy/Rz）。
@@ -1677,6 +1688,8 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
     // 自由度を表示していた）。
     const SUPPORT_ARROW_PX: f32 = 18.0;
     const SUPPORT_ARC_PX: f32 = 12.0;
+    let lumped_view = lumped::is_lumped_view(mode);
+    let draw_supports = supports_visible(lumped_view, app.show_supports);
     // 剛床マスター節点の index 集合。
     let diaphragm_masters: std::collections::HashSet<usize> = app
         .model
@@ -1697,41 +1710,46 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
     };
     let mut has_support = false;
     let mut has_diaphragm = false;
-    for (i, node) in app.model.nodes.iter().enumerate() {
-        if !filter.shows_node(i) {
-            continue;
+    if !lumped_view {
+        for (i, node) in app.model.nodes.iter().enumerate() {
+            if !filter.shows_node(i) {
+                continue;
+            }
+            let is_master = diaphragm_masters.contains(&i);
+            // 剛床マスターの面内拘束マークは代表点トグル ON 時のみ描く（既定は非表示に
+            // して他部材を見やすくする。点線・マーカーと表示を一致させる）。
+            if is_master && !app.show_diaphragm_master {
+                continue;
+            }
+            if !is_master && !draw_supports {
+                continue;
+            }
+            // 表示する拘束: 剛床マスターは面内拘束（Ux/Uy/Rz）、それ以外は節点拘束。
+            let restraint = if is_master {
+                diaphragm_mask
+            } else {
+                node.restraint
+            };
+            if support_kind(restraint) == SupportKind::Free {
+                continue;
+            }
+            // 支点シンボルは変形後座標に描く。実支点は変位ゼロで原位置に留まり、
+            // 剛床マスターは床の面内変形に追従する（剛床の重心マークが変形へ移動する）。
+            let coord = coords3.get(i).copied().unwrap_or(node.coord);
+            if is_master {
+                has_diaphragm = true;
+            } else {
+                has_support = true;
+            }
+            draw_support_symbol(
+                &painter,
+                &proj,
+                coord,
+                restraint,
+                SUPPORT_ARROW_PX,
+                SUPPORT_ARC_PX,
+            );
         }
-        let is_master = diaphragm_masters.contains(&i);
-        // 剛床マスターの面内拘束マークは代表点トグル ON 時のみ描く（既定は非表示に
-        // して他部材を見やすくする。点線・マーカーと表示を一致させる）。
-        if is_master && !app.show_diaphragm_master {
-            continue;
-        }
-        // 表示する拘束: 剛床マスターは面内拘束（Ux/Uy/Rz）、それ以外は節点拘束。
-        let restraint = if is_master {
-            diaphragm_mask
-        } else {
-            node.restraint
-        };
-        if support_kind(restraint) == SupportKind::Free {
-            continue;
-        }
-        // 支点シンボルは変形後座標に描く。実支点は変位ゼロで原位置に留まり、
-        // 剛床マスターは床の面内変形に追従する（剛床の重心マークが変形へ移動する）。
-        let coord = coords3.get(i).copied().unwrap_or(node.coord);
-        if is_master {
-            has_diaphragm = true;
-        } else {
-            has_support = true;
-        }
-        draw_support_symbol(
-            &painter,
-            &proj,
-            coord,
-            restraint,
-            SUPPORT_ARROW_PX,
-            SUPPORT_ARC_PX,
-        );
     }
 
     // --- 支点ばね記号 ---
@@ -1739,30 +1757,36 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
     // ここでは非固定かつばね値が非ゼロの成分にのみジグザグ（並進）・渦巻（回転）を描く。
     // 剛床マスター節点はダミー拘束の仮想節点でありばね支持を持たないため対象外。
     let mut has_spring = false;
-    for (i, node) in app.model.nodes.iter().enumerate() {
-        if diaphragm_masters.contains(&i) || !filter.shows_node(i) {
-            continue;
+    if draw_supports {
+        for (i, node) in app.model.nodes.iter().enumerate() {
+            if diaphragm_masters.contains(&i) || !filter.shows_node(i) {
+                continue;
+            }
+            let Some(spring) = node.support_spring else {
+                continue;
+            };
+            let coord = coords3.get(i).copied().unwrap_or(node.coord);
+            has_spring = true;
+            support_symbols::draw_spring_symbol(
+                &painter,
+                &proj,
+                coord,
+                node.restraint,
+                &spring,
+                SUPPORT_ARROW_PX,
+                SUPPORT_ARC_PX,
+            );
         }
-        let Some(spring) = node.support_spring else {
-            continue;
-        };
-        let coord = coords3.get(i).copied().unwrap_or(node.coord);
-        has_spring = true;
-        support_symbols::draw_spring_symbol(
-            &painter,
-            &proj,
-            coord,
-            node.restraint,
-            &spring,
-            SUPPORT_ARROW_PX,
-            SUPPORT_ARC_PX,
-        );
     }
 
     // --- 免震支承マーカー ---
     // 支点配置は「接地節点（restraint=FIXED）と対象節点の間の零長 Isolator 要素」
     // （`support_symbols::support_isolators` が判定）。対象節点側にマーカーを描く。
-    let support_isolators = support_symbols::support_isolators(&app.model);
+    let support_isolators = if draw_supports {
+        support_symbols::support_isolators(&app.model)
+    } else {
+        Vec::new()
+    };
     let has_isolator = !support_isolators.is_empty();
     for &(idx, _elem_id, _props) in support_isolators
         .iter()

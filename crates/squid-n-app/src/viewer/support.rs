@@ -6,6 +6,11 @@ use crate::theme;
 
 use super::{support_symbols, Projector};
 
+/// 立体の支点記号を描くか。質点ビューでは常に出さない。
+pub(super) fn supports_visible(lumped_view: bool, show_supports: bool) -> bool {
+    !lumped_view && show_supports
+}
+
 /// 3D ビュー上での支持条件の分類。`Dof6Mask` のビットパターンを意味的にまとめる。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum SupportKind {
@@ -294,4 +299,21 @@ pub(super) fn draw_support_legend(
         egui::FontId::proportional(11.0),
         theme::GRAY_600,
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::supports_visible;
+
+    #[test]
+    fn supports_hidden_in_lumped_view_even_when_toggle_on() {
+        assert!(!supports_visible(true, true));
+        assert!(!supports_visible(true, false));
+    }
+
+    #[test]
+    fn supports_follow_toggle_in_frame_view() {
+        assert!(supports_visible(false, true));
+        assert!(!supports_visible(false, false));
+    }
 }

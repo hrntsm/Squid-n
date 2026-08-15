@@ -763,6 +763,10 @@ pub struct App {
     /// 点線は節点数が多いと他部材が見づらくなるため、既定は非表示にしている。
     #[cfg(feature = "gui")]
     pub show_diaphragm_master: bool,
+    /// 支点記号（矢印・円弧・支点ばね・免震マーカー）の表示トグル（既定 ON）。
+    /// 質点モード・質点時刻歴では立体の支点は関係ないので、この値に依らず出さない。
+    #[cfg(feature = "gui")]
+    pub show_supports: bool,
     /// 立体グリッド（通り芯 × 階レベルの平面格子）の表示トグル（既定 ON）。
     /// モデリングの下敷きとして使うため既定で出す。梁作成モードのスナップ対象は
     /// 「格子を描いているときだけ」とし、このトグルと構面表示の両方に従わせる
@@ -1080,6 +1084,8 @@ impl Default for App {
             deform_scale_factor: 1.0,
             #[cfg(feature = "gui")]
             show_diaphragm_master: false,
+            #[cfg(feature = "gui")]
+            show_supports: true,
             #[cfg(feature = "gui")]
             show_space_grid: true,
             #[cfg(feature = "gui")]
