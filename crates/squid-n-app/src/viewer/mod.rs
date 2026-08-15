@@ -429,8 +429,8 @@ use deform::{
 use pick::{member_load_pickable, pick_nearest_member, pick_nearest_node};
 use playback::{advance_play_time, frame_at_time};
 use scene::{
-    draw_axis_gadget, draw_grid_and_axes, draw_mode_rest_ghost, draw_slabs_and_joists, draws_as_line,
-    element_draw_shape, order_wall_nodes, DrawShape,
+    draw_axis_gadget, draw_grid_and_axes, draw_mode_rest_ghost, draw_slabs_and_joists,
+    draws_as_line, element_draw_shape, order_wall_nodes, DrawShape,
 };
 use squid_n_core::geom::vec3::dist as member_len3;
 use support::{

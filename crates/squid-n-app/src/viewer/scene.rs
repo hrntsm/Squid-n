@@ -178,7 +178,7 @@ pub(super) fn draw_mode_rest_ghost(
     const LINE_A: u8 = 90;
     const FILL_A: u8 = 55;
     let line = theme::translucent(theme::HILITE_PURPLE, LINE_A);
-    let stroke_w = if show_sections { 1.0 } else { 1.5 };
+    let stroke_w = if show_sections { 1.0_f32 } else { 1.5_f32 };
     let stroke = egui::Stroke::new(stroke_w, line);
 
     for (i, &p) in pts_rest.iter().enumerate() {
@@ -231,7 +231,7 @@ pub(super) fn draw_mode_rest_ghost(
 
     if show_secondary {
         let sec = egui::Stroke::new(
-            if show_sections { 1.0 } else { 1.5 },
+            if show_sections { 1.0_f32 } else { 1.5_f32 },
             theme::translucent(theme::SECONDARY_AMBER, LINE_A),
         );
         for sm in &app.model.secondary_members {

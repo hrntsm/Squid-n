@@ -175,10 +175,7 @@ fn draw_stick_springs(
     if dashed {
         for seg in segs {
             painter.extend(egui::Shape::dashed_line(
-                &seg,
-                stroke,
-                GHOST_DASH,
-                GHOST_GAP,
+                &seg, stroke, GHOST_DASH, GHOST_GAP,
             ));
         }
     } else {
@@ -257,7 +254,7 @@ pub(super) fn draw(
             painter,
             &rest_pts,
             base,
-            egui::Stroke::new(1.5, theme::translucent(spring, GHOST_LINE_ALPHA)),
+            egui::Stroke::new(1.5_f32, theme::translucent(spring, GHOST_LINE_ALPHA)),
             true,
         );
         draw_stick_masses(
@@ -265,7 +262,10 @@ pub(super) fn draw(
             &rest_pts,
             &radii,
             theme::translucent(mass_color, GHOST_FILL_ALPHA),
-            egui::Stroke::new(1.0, theme::translucent(theme::GRAY_900, GHOST_LINE_ALPHA)),
+            egui::Stroke::new(
+                1.0_f32,
+                theme::translucent(theme::GRAY_900, GHOST_LINE_ALPHA),
+            ),
         );
     }
 
@@ -273,7 +273,7 @@ pub(super) fn draw(
         painter,
         &pts,
         base,
-        egui::Stroke::new(2.5, theme::translucent(spring, 220)),
+        egui::Stroke::new(2.5_f32, theme::translucent(spring, 220)),
         false,
     );
     draw_stick_masses(
@@ -281,7 +281,7 @@ pub(super) fn draw(
         &pts,
         &radii,
         mass_color,
-        egui::Stroke::new(1.0, theme::GRAY_900),
+        egui::Stroke::new(1.0_f32, theme::GRAY_900),
     );
     if result.model.is_spatial() {
         for (i, &p) in pts.iter().enumerate() {
@@ -289,7 +289,10 @@ pub(super) fn draw(
             let d = disp.get(i).copied().unwrap_or([0.0; 3]);
             let ang = d[2] * scale * 0.25;
             let tick = egui::vec2(ang.cos() as f32, -ang.sin() as f32) * (r * 1.7);
-            painter.line_segment([p, p + tick], egui::Stroke::new(1.5, theme::BEST_YELLOW));
+            painter.line_segment(
+                [p, p + tick],
+                egui::Stroke::new(1.5_f32, theme::BEST_YELLOW),
+            );
         }
     }
 }
