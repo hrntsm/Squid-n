@@ -4,31 +4,143 @@
 //! 非線形時刻歴応答を解く。減衰は初期剛性比例。
 //!
 //! - [`StickResponse`] — 質点系（せん断型）時刻歴応答解析の結果。
+//! - [`StickDirPeaks`] — 層ピークの方向内訳（X / Y / 45°）。
 //! - [`lumped_mass_time_history`] — 質点系モデルの非線形時刻歴応答解析。
 
 use super::model::{LumpedMassModel, StoryTrilinear};
 use crate::common::newton::NewtonCriteria;
 use squid_n_material::{HysteresisMaterial, HysteresisRule, UniaxialMaterial};
 
+/// 層ピークの方向内訳（下層→上層）。長さは層数。旧プロジェクトでは空。
+///
+/// - **X / Y**: 剛心位置の並進成分の時刻歴最大絶対値
+/// - **45°**: 単位ベクトル `(1,1)/√2` と `(1,−1)/√2`（135°）への投影絶対値の大きい方
+///
+/// 水平合成 √(vx²+vy²) の最大は [`StickResponse::story_peak_drift`] 等に入れる。
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
+pub struct StickDirPeaks {
+    #[serde(default)]
+    pub x: Vec<f64>,
+    #[serde(default)]
+    pub y: Vec<f64>,
+    #[serde(default)]
+    pub deg45: Vec<f64>,
+}
+
+impl StickDirPeaks {
+    pub fn zeros(n: usize) -> Self {
+        Self {
+            x: vec![0.0; n],
+            y: vec![0.0; n],
+            deg45: vec![0.0; n],
+        }
+    }
+
+    /// 方向内訳がある（現行の解析結果）なら真。旧 `.scz` は空。
+    pub fn has_values(&self) -> bool {
+        !self.x.is_empty()
+    }
+
+    /// `(vx, vy)` の X / Y / 45° ピークを更新し、水平合成 √(vx²+vy²) を返す。
+    pub(crate) fn accumulate(&mut self, i: usize, vx: f64, vy: f64) -> f64 {
+        self.x[i] = self.x[i].max(vx.abs());
+        self.y[i] = self.y[i].max(vy.abs());
+        let s = std::f64::consts::FRAC_1_SQRT_2;
+        let p45 = ((vx + vy) * s).abs();
+        let p135 = ((vx - vy) * s).abs();
+        self.deg45[i] = self.deg45[i].max(p45).max(p135);
+        (vx * vx + vy * vy).sqrt()
+    }
+}
+
+fn peak_ratio(num: f64, den: f64) -> f64 {
+    if den > 1e-9 {
+        num / den
+    } else {
+        0.0
+    }
+}
+
+/// 層間ピークから方向別塑性率を作る。欠けた方向の δ1 は `+∞` で μ=0。
+/// 45° の δ1 は軸平行の降伏矩形に沿う斜め距離 `√2 · min(δ1x, δ1y)`。
+pub(crate) fn dir_ductility(drift: &StickDirPeaks, d1x: &[f64], d1y: &[f64]) -> StickDirPeaks {
+    let n = drift.x.len();
+    let mut out = StickDirPeaks::zeros(n);
+    for i in 0..n {
+        let dx1 = d1x.get(i).copied().unwrap_or(f64::INFINITY);
+        let dy1 = d1y.get(i).copied().unwrap_or(f64::INFINITY);
+        out.x[i] = peak_ratio(drift.x[i], dx1);
+        out.y[i] = peak_ratio(drift.y[i], dy1);
+        let d1_45 = std::f64::consts::SQRT_2 * dx1.min(dy1);
+        out.deg45[i] = peak_ratio(drift.deg45[i], d1_45);
+    }
+    out
+}
+
 /// 質点系（せん断型）時刻歴応答解析の結果。
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct StickResponse {
     /// 時刻列 [s]。
     pub time: Vec<f64>,
-    /// 最上階（頂部）質点の絶対変位時刻歴 [mm]。
+    /// 最上階（頂部）質点の加振方向変位時刻歴 [mm]（質量重心）。
     pub roof_disp: Vec<f64>,
-    /// 各層の最大層間変形 [mm]（下層→上層）。
+    /// 各層の最大層間変形 [mm]（下層→上層）。水平合成 √(δx²+δy²) の時刻歴最大。
     pub story_peak_drift: Vec<f64>,
-    /// 各層の最大層せん断力 [N]。
+    /// 各層の最大層せん断力 [N]。水平合成 √(Qx²+Qy²) の時刻歴最大。
     pub story_peak_shear: Vec<f64>,
-    /// 各層の最大塑性率 μ = δmax/δ1（δ1=第1折点変形。δ1≤0 は 0）。
+    /// 各層の最大塑性率。並進ばねが経験した `max(μx, μy)`（δ1≤0 の方向は 0）。
     pub story_ductility: Vec<f64>,
     /// Newton 反復が上限（[`STICK_NEWTON`]）内に収束しなかった時刻ステップ数。
-    /// 0 でない場合、そのステップは残差の収束を確認できないまま確定しており
-    /// （残差判定は各反復の修正前に行うため、最終反復の修正で許容内に達した
-    /// 場合も数える）、応答値の信頼性が下がっているため、表示側は利用者へ
-    /// 注記すること（従来は非収束をどこにも表さず無音で確定していた）。
     pub non_converged_steps: usize,
+    /// 各時刻の層変位 [Ux, Uy, θz]（下層→上層）。3D 再生と 2D の加力方向変位に使う。
+    #[serde(default)]
+    pub floor_disp: Vec<Vec<[f64; 3]>>,
+    /// 層間変形の方向内訳 [mm]。
+    #[serde(default)]
+    pub drift_dir: StickDirPeaks,
+    /// 層せん断の方向内訳 [N]。
+    #[serde(default)]
+    pub shear_dir: StickDirPeaks,
+    /// 塑性率の方向内訳。
+    #[serde(default)]
+    pub ductility_dir: StickDirPeaks,
+}
+
+impl StickResponse {
+    pub(crate) fn empty(n: usize) -> Self {
+        Self {
+            time: Vec::new(),
+            roof_disp: Vec::new(),
+            story_peak_drift: vec![0.0; n],
+            story_peak_shear: vec![0.0; n],
+            story_ductility: vec![0.0; n],
+            non_converged_steps: 0,
+            floor_disp: Vec::new(),
+            drift_dir: StickDirPeaks::zeros(n),
+            shear_dir: StickDirPeaks::zeros(n),
+            ductility_dir: StickDirPeaks::zeros(n),
+        }
+    }
+
+    /// 頂部（最上階質量重心）の方向別最大変位 [mm]。
+    /// `floor_disp` が空の旧結果では、加振方向時刻歴の絶対最大だけを「最大」に入れる。
+    pub fn roof_dir_peaks(&self) -> (f64, f64, f64, f64) {
+        let mut p = StickDirPeaks::zeros(1);
+        let mut max = 0.0_f64;
+        let mut any = false;
+        for frame in &self.floor_disp {
+            if let Some(u) = frame.last() {
+                any = true;
+                max = max.max(p.accumulate(0, u[0], u[1]));
+            }
+        }
+        if any {
+            (p.x[0], p.y[0], p.deg45[0], max)
+        } else {
+            let r = self.roof_disp.iter().fold(0.0f64, |m, v| m.max(v.abs()));
+            (0.0, 0.0, 0.0, r)
+        }
+    }
 }
 
 /// 各時刻ステップの Newton 反復の収束規約。基準ノルムは動的釣り合いの各項の最大
@@ -114,7 +226,7 @@ pub(crate) fn fundamental_omega(m: &[f64], k: &[f64]) -> f64 {
 }
 
 /// 層のトリリニア骨格から最大点指向型（Clough 系トリリニア）の履歴材料を作る。
-fn story_spring(sk: &StoryTrilinear) -> HysteresisMaterial {
+pub(crate) fn story_spring(sk: &StoryTrilinear) -> HysteresisMaterial {
     HysteresisMaterial::new(HysteresisRule::MaxPointOriented {
         crack: (sk.q1.max(1.0), sk.d1.max(1e-6)),
         yield_point: (sk.q2.max(sk.q1 + 1.0), sk.d2.max(sk.d1 * 1.0001)),
@@ -138,14 +250,10 @@ pub fn lumped_mass_time_history(
 ) -> StickResponse {
     let n = lm.stories.len();
     if n == 0 || dt <= 0.0 || accel.is_empty() {
-        return StickResponse {
-            time: Vec::new(),
-            roof_disp: Vec::new(),
-            story_peak_drift: vec![0.0; n],
-            story_peak_shear: vec![0.0; n],
-            story_ductility: vec![0.0; n],
-            non_converged_steps: 0,
-        };
+        return StickResponse::empty(n);
+    }
+    if lm.is_spatial() {
+        return super::spatial::lumped_mass_time_history_spatial(lm, accel, dt, h);
     }
     let mass: Vec<f64> = lm.stories.iter().map(|s| s.mass.max(1e-9)).collect();
     let k_init: Vec<f64> = lm.stories.iter().map(|s| s.skeleton.k1.max(1e-9)).collect();
@@ -173,8 +281,11 @@ pub fn lumped_mass_time_history(
 
     let mut time: Vec<f64> = Vec::with_capacity(accel.len());
     let mut roof: Vec<f64> = Vec::with_capacity(accel.len());
+    let mut floor_disp: Vec<Vec<[f64; 3]>> = Vec::with_capacity(accel.len());
     let mut peak_drift: Vec<f64> = vec![0.0; n];
     let mut peak_shear: Vec<f64> = vec![0.0; n];
+    let mut drift_dir = StickDirPeaks::zeros(n);
+    let mut shear_dir = StickDirPeaks::zeros(n);
 
     // 層ドリフト δ_i = u_i − u_{i-1}（u_0=base=0）。
     let drift = |u: &[f64], i: usize| if i == 0 { u[0] } else { u[i] - u[i - 1] };
@@ -277,31 +388,45 @@ pub fn lumped_mass_time_history(
         v = v_new;
         a = a_new;
 
-        // 応答の記録。
+        // 応答の記録。2 次元は加振方向成分だけが非ゼロ。
         for i in 0..n {
-            let d = drift(&u, i).abs();
-            peak_drift[i] = peak_drift[i].max(d);
+            let d_signed = drift(&u, i);
             let (qi, _) = {
                 let mut sp = springs[i].clone();
-                sp.trial(drift(&u, i))
+                sp.trial(d_signed)
             };
-            peak_shear[i] = peak_shear[i].max(qi.abs());
+            let (dx, dy, qx, qy) = match lm.dir {
+                crate::analysis::SeismicDir::X => (d_signed, 0.0, qi, 0.0),
+                crate::analysis::SeismicDir::Y => (0.0, d_signed, 0.0, qi),
+            };
+            peak_drift[i] = peak_drift[i].max(drift_dir.accumulate(i, dx, dy));
+            peak_shear[i] = peak_shear[i].max(shear_dir.accumulate(i, qx, qy));
         }
         time.push(step as f64 * dt);
         roof.push(u[n - 1]);
+        let mut frame = vec![[0.0; 3]; n];
+        for (i, slot) in frame.iter_mut().enumerate() {
+            match lm.dir {
+                crate::analysis::SeismicDir::X => slot[0] = u[i],
+                crate::analysis::SeismicDir::Y => slot[1] = u[i],
+            }
+        }
+        floor_disp.push(frame);
     }
 
-    let ductility: Vec<f64> = lm
-        .stories
-        .iter()
-        .zip(peak_drift.iter())
-        .map(|(s, &d)| {
-            if s.skeleton.d1 > 1e-9 {
-                d / s.skeleton.d1
-            } else {
-                0.0
-            }
-        })
+    let (d1x, d1y): (Vec<f64>, Vec<f64>) = match lm.dir {
+        crate::analysis::SeismicDir::X => (
+            lm.stories.iter().map(|s| s.skeleton.d1).collect(),
+            vec![f64::INFINITY; n],
+        ),
+        crate::analysis::SeismicDir::Y => (
+            vec![f64::INFINITY; n],
+            lm.stories.iter().map(|s| s.skeleton.d1).collect(),
+        ),
+    };
+    let ductility_dir = dir_ductility(&drift_dir, &d1x, &d1y);
+    let ductility: Vec<f64> = (0..n)
+        .map(|i| ductility_dir.x[i].max(ductility_dir.y[i]))
         .collect();
 
     StickResponse {
@@ -311,6 +436,10 @@ pub fn lumped_mass_time_history(
         story_peak_shear: peak_shear,
         story_ductility: ductility,
         non_converged_steps,
+        floor_disp,
+        drift_dir,
+        shear_dir,
+        ductility_dir,
     }
 }
 
@@ -406,5 +535,36 @@ mod damping_tests {
         let cv = tridiag_stiffness_matvec(&k, &v, a1);
         // 行0: a1·((1+1)·1 − 1·0) = 0.5·2 = 1.0、行1: a1·(−1·1) = −0.5。
         assert!((cv[0] - 1.0).abs() < 1e-12 && (cv[1] + 0.5).abs() < 1e-12);
+    }
+}
+
+#[cfg(test)]
+mod dir_peaks_tests {
+    use super::{dir_ductility, StickDirPeaks};
+
+    #[test]
+    fn accumulate_splits_xy_diagonal_and_resultant() {
+        let mut p = StickDirPeaks::zeros(1);
+        let max = p.accumulate(0, 3.0, 4.0);
+        assert!((max - 5.0).abs() < 1e-12);
+        assert!((p.x[0] - 3.0).abs() < 1e-12);
+        assert!((p.y[0] - 4.0).abs() < 1e-12);
+        let want45 = 7.0 * std::f64::consts::FRAC_1_SQRT_2;
+        assert!((p.deg45[0] - want45).abs() < 1e-12);
+        // 135° 側の軌道でも 45° 欄は同じ斜め包絡になる。
+        let mut q = StickDirPeaks::zeros(1);
+        q.accumulate(0, 3.0, -4.0);
+        assert!((q.deg45[0] - want45).abs() < 1e-12);
+    }
+
+    #[test]
+    fn dir_ductility_uses_axis_and_diagonal_yield() {
+        let mut drift = StickDirPeaks::zeros(1);
+        drift.accumulate(0, 3.0, 4.0);
+        let mu = dir_ductility(&drift, &[1.0], &[1.0]);
+        assert!((mu.x[0] - 3.0).abs() < 1e-12);
+        assert!((mu.y[0] - 4.0).abs() < 1e-12);
+        // δ45 / (√2 · min δ1) = (7/√2) / √2 = 3.5
+        assert!((mu.deg45[0] - 3.5).abs() < 1e-12);
     }
 }

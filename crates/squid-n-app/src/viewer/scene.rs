@@ -162,6 +162,96 @@ pub(super) fn draw_slabs_and_joists(
     }
 }
 
+/// モード形の変形前架構（破線・高透過）。変形後の紫実線の下に描き、基準位置からの変化を読む。
+/// 質点モードの変形前串と同じ破線（6 pt / 隙間 4 pt）とアルファ（線 90、塗り 55）。
+pub(super) fn draw_mode_rest_ghost(
+    painter: &egui::Painter,
+    app: &App,
+    pts_rest: &[egui::Pos2],
+    node_visible: &[bool],
+    filter: FrameFilter,
+    show_secondary: bool,
+    show_sections: bool,
+) {
+    const DASH: f32 = 6.0;
+    const GAP: f32 = 4.0;
+    const LINE_A: u8 = 90;
+    const FILL_A: u8 = 55;
+    let line = theme::translucent(theme::HILITE_PURPLE, LINE_A);
+    let stroke_w = if show_sections { 1.0 } else { 1.5 };
+    let stroke = egui::Stroke::new(stroke_w, line);
+
+    for (i, &p) in pts_rest.iter().enumerate() {
+        if !node_visible.get(i).copied().unwrap_or(false) {
+            continue;
+        }
+        painter.circle_filled(p, 3.0, theme::translucent(theme::DATA_BLUE, FILL_A));
+    }
+
+    for elem in &app.model.elements {
+        if !filter.shows(elem.id) {
+            continue;
+        }
+        if element_draw_shape(elem.kind) == DrawShape::Polygon && elem.nodes.len() >= 3 {
+            let poly: Vec<egui::Pos2> = elem
+                .nodes
+                .iter()
+                .filter_map(|n| {
+                    let idx = n.index();
+                    (idx < pts_rest.len()).then(|| pts_rest[idx])
+                })
+                .collect();
+            if poly.len() == elem.nodes.len() {
+                painter.add(egui::Shape::convex_polygon(
+                    poly.clone(),
+                    theme::translucent(theme::DATA_BLUE, FILL_A),
+                    egui::Stroke::NONE,
+                ));
+                let mut closed = poly;
+                closed.push(closed[0]);
+                painter.extend(egui::Shape::dashed_line(&closed, stroke, DASH, GAP));
+            }
+            continue;
+        }
+        if !draws_as_line(elem.kind) || elem.nodes.len() < 2 {
+            continue;
+        }
+        let n0 = elem.nodes[0].index();
+        let n1 = elem.nodes[1].index();
+        if n0 >= pts_rest.len() || n1 >= pts_rest.len() {
+            continue;
+        }
+        painter.extend(egui::Shape::dashed_line(
+            &[pts_rest[n0], pts_rest[n1]],
+            stroke,
+            DASH,
+            GAP,
+        ));
+    }
+
+    if show_secondary {
+        let sec = egui::Stroke::new(
+            if show_sections { 1.0 } else { 1.5 },
+            theme::translucent(theme::SECONDARY_AMBER, LINE_A),
+        );
+        for sm in &app.model.secondary_members {
+            let n0 = sm.nodes[0].index();
+            let n1 = sm.nodes[1].index();
+            if !filter.shows_node(n0) || !filter.shows_node(n1) {
+                continue;
+            }
+            if n0 < pts_rest.len() && n1 < pts_rest.len() {
+                painter.extend(egui::Shape::dashed_line(
+                    &[pts_rest[n0], pts_rest[n1]],
+                    sec,
+                    DASH,
+                    GAP,
+                ));
+            }
+        }
+    }
+}
+
 pub(super) fn order_wall_nodes(
     model: &squid_n_core::model::Model,
     node_ids: &[squid_n_core::ids::NodeId],

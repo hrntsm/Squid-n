@@ -79,6 +79,46 @@ impl App {
         }
     }
 
+    /// 質点系用の波形ライブラリ選択を復元する（立体時刻歴とは独立）。
+    pub(crate) fn restore_lumped_wave_library_selection(
+        &mut self,
+        wave_name: Option<String>,
+        wave_sha256: Option<String>,
+    ) {
+        let Some(name) = wave_name else {
+            self.lumped_wave_library_selection = None;
+            self.lumped_wave_library_selected_sha256 = None;
+            return;
+        };
+        let Some(dir) = squid_n_io::wave_library::wave_library_dir() else {
+            self.report_notice(format!(
+                "波形ライブラリの場所を特定できないため、質点系の波形「{name}」を復元できません。"
+            ));
+            self.lumped_wave_library_selection = None;
+            self.lumped_wave_library_selected_sha256 = None;
+            return;
+        };
+        if !squid_n_io::wave_library::wave_exists(&dir, &name) {
+            self.report_notice(format!(
+                "波形ライブラリに質点系の波形「{name}」が見つかりません。"
+            ));
+            self.lumped_wave_library_selection = None;
+            self.lumped_wave_library_selected_sha256 = None;
+            return;
+        }
+        self.lumped_wave_library_selection = Some(name.clone());
+        self.lumped_wave_library_selected_sha256 = wave_sha256.clone();
+        if let Some(saved_hash) = wave_sha256 {
+            if let Ok(current_hash) = squid_n_io::wave_library::wave_sha256(&dir, &name) {
+                if saved_hash != current_hash {
+                    self.report_notice(format!(
+                        "質点系の波形「{name}」の内容が保存時から変わっています。"
+                    ));
+                }
+            }
+        }
+    }
+
     /// 「🌊 波形を保存…」: ファイル選択ダイアログで CSV を選び、波形ライブラリへ
     /// コピーする（実行はしない）。同名の波形が既にあれば、上書き確認ダイアログの
     /// 表示待ちにする（`pending_wave_register`。確定は [`Self::confirm_register_wave`]）。

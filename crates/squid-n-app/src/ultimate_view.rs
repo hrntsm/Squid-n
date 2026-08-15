@@ -91,9 +91,7 @@ pub fn ultimate_table(ui: &mut egui::Ui, app: &mut App) {
         );
         if app.ultimate_use_pushover {
             let has_po = app
-                .results
-                .as_ref()
-                .and_then(|r| r.pushover.as_ref())
+                .displayed_pushover()
                 .map(|p| !p.member_response.is_empty())
                 .unwrap_or(false);
             if has_po {
@@ -211,9 +209,7 @@ pub fn ultimate_table(ui: &mut egui::Ui, app: &mut App) {
             };
             let using_po = app.ultimate_use_pushover
                 && app
-                    .results
-                    .as_ref()
-                    .and_then(|r| r.pushover.as_ref())
+                    .displayed_pushover()
                     .map(|p| !p.member_response.is_empty())
                     .unwrap_or(false);
             let demand_note = if using_po {

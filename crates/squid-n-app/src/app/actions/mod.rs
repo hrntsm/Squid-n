@@ -17,6 +17,7 @@ mod eigen;
 mod io;
 mod linear_static;
 mod loads;
+mod lumped_mass;
 mod pushover;
 mod time_history;
 mod wave_library;
@@ -413,6 +414,7 @@ impl App {
                     JobResult::Pushover(res) => self.apply_pushover_result(res),
                     JobResult::Modal(res) => self.apply_eigen_result(res),
                     JobResult::TimeHistory(res) => self.apply_time_history_result(*res),
+                    JobResult::LumpedMass(res) => self.apply_lumped_mass_result(*res),
                     JobResult::StaticCase { key, res } => self.apply_static_case_result(key, res),
                     JobResult::Combo { name, res } => self.apply_combo_result(name, res),
                     JobResult::StaticAll {

@@ -103,6 +103,55 @@ pub struct AnalysisSettings {
     /// （[`squid_n_core::model::MassMethod`]）。階の自動生成の実行時にモデルへ
     /// 反映される（`generate_stories_action`）。
     pub mass_method: squid_n_core::model::MassMethod,
+    /// 質点系の次元（2 次元せん断串 / 3 次元 Ux,Uy,θz）。
+    #[serde(default)]
+    pub lumped_dim: squid_n_solver::lumped_mass::StickDim,
+    /// 層並進剛性の定義（層 Q/δ または柱 ki）。
+    #[serde(default)]
+    pub lumped_stiffness: squid_n_solver::lumped_mass::LumpedStiffnessSource,
+    /// 質点系を非線形（トリリニア骨格）で解くか。線形は地震静的 EX/EY が前提。
+    #[serde(default)]
+    pub lumped_nonlinear: bool,
+    /// 質点系の加振・解析方向（2 次元では剛性方向と一致。3 次元でも地動は 1 方向）。
+    #[serde(default)]
+    pub lumped_dir: SeismicDir,
+    /// 質点系固有値のモード数（立体固有値の `n_modes` とは独立。既定 3）。
+    #[serde(default = "default_lumped_n_modes")]
+    pub lumped_n_modes: usize,
+    /// 質点系時刻歴の減衰比（立体時刻歴とは独立。既定 0.02）。
+    #[serde(default = "default_lumped_th_damping")]
+    pub lumped_th_damping: f64,
+    /// 質点系時刻歴のサンプル波刻み [s]（既定 0.01）。
+    #[serde(default = "default_lumped_th_dt")]
+    pub lumped_th_dt: f64,
+    /// 質点系時刻歴のサンプル波継続時間 [s]（既定 10）。
+    #[serde(default = "default_lumped_th_duration")]
+    pub lumped_th_duration: f64,
+    /// 質点系時刻歴のサンプル波周期 [s]（既定 0.5）。
+    #[serde(default = "default_lumped_th_period")]
+    pub lumped_th_period: f64,
+    /// 質点系時刻歴のサンプル波振幅 [mm/s²]（既定 1000）。
+    #[serde(default = "default_lumped_th_amp")]
+    pub lumped_th_amp: f64,
+}
+
+fn default_lumped_n_modes() -> usize {
+    3
+}
+fn default_lumped_th_damping() -> f64 {
+    0.02
+}
+fn default_lumped_th_dt() -> f64 {
+    0.01
+}
+fn default_lumped_th_duration() -> f64 {
+    10.0
+}
+fn default_lumped_th_period() -> f64 {
+    0.5
+}
+fn default_lumped_th_amp() -> f64 {
+    1000.0
 }
 
 /// 時刻歴の入力方向選択（UI 用）。X・Y に加え、同一波形を両方向へ同時入力する
@@ -188,6 +237,16 @@ impl Default for AnalysisSettings {
             bond_method: squid_n_design_jp::BondMethod::Rc1999,
             threads: 0,
             mass_method: squid_n_core::model::MassMethod::default(),
+            lumped_dim: squid_n_solver::lumped_mass::StickDim::default(),
+            lumped_stiffness: squid_n_solver::lumped_mass::LumpedStiffnessSource::default(),
+            lumped_nonlinear: false,
+            lumped_dir: SeismicDir::X,
+            lumped_n_modes: 3,
+            lumped_th_damping: 0.02,
+            lumped_th_dt: 0.01,
+            lumped_th_duration: 10.0,
+            lumped_th_period: 0.5,
+            lumped_th_amp: 1000.0,
         }
     }
 }

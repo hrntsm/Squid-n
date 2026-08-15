@@ -28,7 +28,7 @@ impl App {
             if ui.selectable_label(sel_po, "増分解析").clicked() {
                 self.results_view = ResultsView::Pushover;
             }
-            if ui.selectable_label(sel_lm, "質点系モデル").clicked() {
+            if ui.selectable_label(sel_lm, "質点系").clicked() {
                 self.results_view = ResultsView::LumpedMass;
             }
             ui.separator();
@@ -80,12 +80,7 @@ impl App {
     }
     /// 増分解析結果（性能曲線・ヒンジ・崩壊機構）の表示。
     pub(crate) fn pushover_results_panel(&mut self, ui: &mut egui::Ui) {
-        if self
-            .results
-            .as_ref()
-            .and_then(|r| r.pushover.as_ref())
-            .is_none()
-        {
+        if self.displayed_pushover().is_none() {
             ui.colored_label(
                 crate::theme::GRAY_600,
                 "増分解析結果がありません。解析タブから実行してください。",
@@ -93,17 +88,39 @@ impl App {
             return;
         }
 
+        // X/Y 方向切替（結果のない方向は disabled）。
+        let has_x = self.pushover_for(SeismicDir::X).is_some();
+        let has_y = self.pushover_for(SeismicDir::Y).is_some();
+        ui.horizontal(|ui| {
+            ui.label("表示方向:");
+            if ui
+                .add_enabled(
+                    has_x,
+                    egui::Button::selectable(self.pushover_view_dir == SeismicDir::X, "X"),
+                )
+                .clicked()
+            {
+                self.set_pushover_view_dir(SeismicDir::X);
+            }
+            if ui
+                .add_enabled(
+                    has_y,
+                    egui::Button::selectable(self.pushover_view_dir == SeismicDir::Y, "Y"),
+                )
+                .clicked()
+            {
+                self.set_pushover_view_dir(SeismicDir::Y);
+            }
+        });
+        ui.separator();
+
         // 必要保有水平耐力の総合判定（Qu ≥ Qun = Ds·Fes·Qud）を先に算定する。
         // 実行ボタン→結果画面でそのまま OK/NG を確認できるよう、性能曲線より前に
         // バナー表示する。`compute_holding_capacity` は &mut self を要するため、
         // 以降の `po` 借用より前にここで所有権付きの結果へ落とす。
         let hc_verdict = self.compute_holding_capacity().ok();
 
-        let po = self
-            .results
-            .as_ref()
-            .and_then(|r| r.pushover.as_ref())
-            .expect("checked above");
+        let po = self.displayed_pushover().expect("checked above");
 
         // ── 必要保有水平耐力 判定バナー ──────────────────────────────
         match &hc_verdict {
@@ -312,53 +329,18 @@ impl App {
         });
     }
 
-    /// 質点系（串団子）モデルの表示。増分解析結果から層 Q-δ を
-    /// トリリニア縮約し、層ごとの質量・階高・復元力特性を一覧する
-    /// （構造動力学の質点系解析モデル）。
+    /// 質点系の結果表示（実行は右バー「質点系」パネル）。
     pub(crate) fn lumped_mass_panel(&mut self, ui: &mut egui::Ui) {
-        use squid_n_solver::lumped_mass::{build_lumped_mass_model, LumpedMassType};
-
-        let Some(po) = self.results.as_ref().and_then(|r| r.pushover.as_ref()) else {
+        let Some(lm_res) = self.results.as_ref().and_then(|r| r.lumped.as_ref()) else {
             ui.colored_label(
                 crate::theme::GRAY_600,
-                "増分解析結果がありません。質点系モデルは\
-                 増分解析結果から生成します。解析タブから実行してください。",
+                "質点系の結果がありません。右バー「質点系」から実行してください。",
             );
             return;
         };
-
-        // モデル化タイプ・第1折点判定の割線剛性比を選択。
-        ui.horizontal(|ui| {
-            ui.label("モデル化タイプ:");
-            let cur = self.analysis_cfg.lumped_mass_type;
-            egui::ComboBox::from_id_salt("lumped_mass_type")
-                .selected_text(cur.label())
-                .show_ui(ui, |ui| {
-                    for t in [
-                        LumpedMassType::EquivalentShear,
-                        LumpedMassType::EquivalentBendingShear,
-                        LumpedMassType::BendingShearSeparated,
-                    ] {
-                        ui.selectable_value(&mut self.analysis_cfg.lumped_mass_type, t, t.label());
-                    }
-                });
-            ui.separator();
-            ui.label("第1折点 割線比:");
-            ui.add(
-                egui::DragValue::new(&mut self.analysis_cfg.lumped_secant_ratio)
-                    .speed(0.01)
-                    .range(0.3..=0.95),
-            );
-        });
-        ui.separator();
-
-        // 増分解析から串団子モデルを生成（軽量なので毎フレーム再構成）。
-        let lm = build_lumped_mass_model(
-            &self.model,
-            po,
-            self.analysis_cfg.lumped_mass_type,
-            self.analysis_cfg.lumped_secant_ratio,
-        );
+        let lm = &lm_res.model;
+        let modal = &lm_res.modal;
+        let spatial = lm.is_spatial();
 
         let total_mass: f64 = lm.stories.iter().map(|s| s.mass).sum();
         ui.horizontal(|ui| {
@@ -366,15 +348,72 @@ impl App {
             ui.separator();
             ui.label(format!("総質量: {:.1} t", total_mass));
             ui.separator();
-            ui.label(format!("モデル: {}", lm.model_type.label()));
+            ui.label(lm.dim.label());
+            ui.separator();
+            ui.label(if lm.nonlinear { "非線形" } else { "線形" });
+            if !lm.nonlinear {
+                ui.separator();
+                ui.label(lm.stiffness_source.label());
+            }
         });
         ui.separator();
 
-        // 層ごとの質点・復元力特性（トリリニア）を一覧。上層から順に表示。
-        egui::ScrollArea::vertical().show(ui, |ui| {
-            // model.stories と stick は同順（build_lumped_mass_model が順に生成）。
-            // 上層から順に見せるため、表示順は逆順にした索引で引く。
-            let order: Vec<usize> = (0..lm.stories.len()).rev().collect();
+        let order: Vec<usize> = (0..lm.stories.len()).rev().collect();
+        if spatial {
+            crate::table_util::standard_table(
+                ui,
+                "lumped_mass_stories_3d",
+                &[
+                    Col::label("階"),
+                    Col::num("質量[t]"),
+                    Col::num("J[t·mm²]").hover("回転慣性（剛床マスターの RZ 質量）"),
+                    Col::num("Kx[kN/mm]"),
+                    Col::num("Ky[kN/mm]"),
+                    Col::num("KR[N·mm/rad]").hover("剛心まわりのねじり剛性"),
+                    Col::wide_num("重心 x,y"),
+                    Col::wide_num("剛心 x,y"),
+                ],
+                order.len(),
+                |row| {
+                    let i = order[row.index()];
+                    let stick = &lm.stories[i];
+                    let sp = &lm.spatial[i];
+                    let name = self
+                        .model
+                        .layers()
+                        .get(i)
+                        .map(|l| l.name.clone())
+                        .unwrap_or_else(|| "-".to_string());
+                    row.col(|ui| {
+                        crate::table_util::text_cell(ui, &name);
+                    });
+                    row.col(|ui| {
+                        ui.label(format!("{:.2}", stick.mass));
+                    });
+                    row.col(|ui| {
+                        ui.label(format!("{:.3e}", sp.j));
+                    });
+                    row.col(|ui| {
+                        ui.label(format!("{:.1}", stiffness_kn_per_mm(sp.k1_x)));
+                    });
+                    row.col(|ui| {
+                        ui.label(format!("{:.1}", stiffness_kn_per_mm(sp.k1_y)));
+                    });
+                    row.col(|ui| {
+                        ui.label(format!("{:.3e}", sp.kr));
+                    });
+                    row.col(|ui| {
+                        ui.label(format!("{:.0}, {:.0}", sp.mass_xy[0], sp.mass_xy[1]));
+                    });
+                    row.col(|ui| {
+                        ui.label(format!(
+                            "{:.0}, {:.0}",
+                            sp.rigidity_xy[0], sp.rigidity_xy[1]
+                        ));
+                    });
+                },
+            );
+        } else {
             crate::table_util::standard_table(
                 ui,
                 "lumped_mass_stories",
@@ -395,13 +434,13 @@ impl App {
                     let stick = &lm.stories[i];
                     let name = self
                         .model
-                        .stories
+                        .layers()
                         .get(i)
-                        .map(|s| s.name.as_str())
-                        .unwrap_or("-");
+                        .map(|l| l.name.clone())
+                        .unwrap_or_else(|| "-".to_string());
                     let sk = &stick.skeleton;
                     row.col(|ui| {
-                        crate::table_util::text_cell(ui, name);
+                        crate::table_util::text_cell(ui, &name);
                     });
                     row.col(|ui| {
                         ui.label(format!("{:.2}", stick.mass));
@@ -429,158 +468,173 @@ impl App {
                     });
                 },
             );
+        }
 
-            ui.add_space(6.0);
-            ui.colored_label(
-                crate::theme::GRAY_600,
-                "K は [kN/mm]、Q は [kN]、δ は [mm]。骨格は増分解析の層 Q-δ を\
-                 等包絡面積則でトリリニア縮約したもの。",
-            );
-        });
-
-        // ── 質点系（せん断型）固有値解析 ────────────────────────────
-        // 初期剛性 K1 ベースのせん断型多質点系（立体モデルの解析タブ「① 準備計算」
-        // 「固有値解析」と同じモード数設定 `n_modes` を使う）。立体モデルとの
-        // 周期の比較検証を主目的とし、モード形状の値どうしは正規化基準が異なるため
-        // 比較しない（下の注記参照）。
         ui.separator();
-        ui.label("固有値解析（せん断型・K1 ベース）");
-        match squid_n_solver::lumped_mass::lumped_mass_eigen(&lm, self.analysis_cfg.n_modes) {
-            Ok(modal) if !modal.period.is_empty() => {
-                crate::table_util::standard_table(
-                    ui,
-                    "lumped_mass_modal",
-                    &[
-                        Col::label("次数"),
-                        Col::num("周期 T[s]"),
-                        Col::wide_num("モード形状（下層→上層）"),
-                    ],
-                    modal.period.len(),
-                    |row| {
-                        let j = row.index();
-                        row.col(|ui| {
-                            ui.label(format!("{}", j + 1));
-                        });
-                        row.col(|ui| {
-                            ui.label(format!("{:.4}", modal.period[j]));
-                        });
-                        row.col(|ui| {
-                            let shape = modal.shapes[j]
+        ui.label("固有値");
+        if modal.period.is_empty() {
+            ui.colored_label(crate::theme::GRAY_600, "モードがありません。");
+        } else {
+            crate::table_util::standard_table(
+                ui,
+                "lumped_mass_modal",
+                &[
+                    Col::label("次数"),
+                    Col::num("周期 T[s]"),
+                    Col::wide_num("モード形状（下層→上層）"),
+                ],
+                modal.period.len(),
+                |row| {
+                    let j = row.index();
+                    row.col(|ui| {
+                        ui.label(format!("{}", j + 1));
+                    });
+                    row.col(|ui| {
+                        ui.label(format!("{:.4}", modal.period[j]));
+                    });
+                    row.col(|ui| {
+                        let shape = if spatial && j < modal.shapes_xyz.len() {
+                            modal.shapes_xyz[j]
+                                .iter()
+                                .map(|v| format!("({:.2},{:.2},{:.3})", v[0], v[1], v[2]))
+                                .collect::<Vec<_>>()
+                                .join(" ")
+                        } else {
+                            modal.shapes[j]
                                 .iter()
                                 .map(|v| format!("{v:.2}"))
                                 .collect::<Vec<_>>()
-                                .join(", ");
-                            crate::table_util::text_cell(ui, &shape);
-                        });
-                    },
-                );
-                ui.add_space(4.0);
-                ui.colored_label(
-                    crate::theme::GRAY_600,
-                    "モード形状は最上階を 1.0 に正規化。立体モデルの固有値解析結果\
-                     （M 正規化・別の自由度空間）とは正規化基準が異なるため、\
-                     モード形状の値どうしは比較せず、周期のみを比較すること。",
-                );
-            }
-            Ok(_) => {
-                ui.colored_label(crate::theme::GRAY_600, "層がありません。");
-            }
-            Err(e) => {
-                ui.colored_label(
-                    crate::theme::SECONDARY_AMBER,
-                    format!("固有値解析できません: {e}"),
-                );
-            }
+                                .join(", ")
+                        };
+                        crate::table_util::text_cell(ui, &shape);
+                    });
+                },
+            );
         }
 
-        // ── 質点系（せん断型）時刻歴応答解析 ──────────────────────────
         ui.separator();
-        let mut run_stick = false;
-        let mut clear_stick = false;
-        ui.horizontal(|ui| {
-            if ui
-                .button("▶ 質点系時刻歴を実行")
-                .on_hover_text(
-                    "サンプル波（「時刻歴応答」の dt/継続/周期/振幅・減衰比）で串団子モデルの\
-                     非線形時刻歴（Newmark-β、各層トリリニア）を実行します",
-                )
-                .clicked()
-            {
-                run_stick = true;
-            }
-            if self.stick_response.is_some() && ui.button("結果クリア").clicked() {
-                clear_stick = true;
-            }
-        });
-        if run_stick {
-            let accel = Self::sample_wave(&self.analysis_cfg).accel_x;
-            let res = squid_n_solver::lumped_mass::lumped_mass_time_history(
-                &lm,
-                &accel,
-                self.analysis_cfg.th_dt,
-                self.analysis_cfg.th_damping,
-            );
-            self.stick_response = Some(res);
-        }
-        if clear_stick {
-            self.stick_response = None;
-        }
-        if let Some(res) = &self.stick_response {
-            let roof_peak = res
-                .roof_disp
+        if let Some(res) = lm_res.response.as_ref().or(self.stick_response.as_ref()) {
+            let names: Vec<String> = (0..res.story_peak_drift.len())
+                .map(|i| {
+                    self.model
+                        .layers()
+                        .get(i)
+                        .map(|l| l.name.clone())
+                        .unwrap_or_else(|| "-".to_string())
+                })
+                .collect();
+            let (roof_x, roof_y, roof_45, roof_max) = res.roof_dir_peaks();
+            let mu_x = res.ductility_dir.x.iter().cloned().fold(0.0f64, f64::max);
+            let mu_y = res.ductility_dir.y.iter().cloned().fold(0.0f64, f64::max);
+            let mu_45 = res
+                .ductility_dir
+                .deg45
                 .iter()
                 .cloned()
-                .fold(0.0f64, |m, v| m.max(v.abs()));
+                .fold(0.0f64, f64::max);
             let mu_max = res.story_ductility.iter().cloned().fold(0.0f64, f64::max);
-            ui.horizontal(|ui| {
-                ui.label(format!("頂部最大変位: {:.2} mm", roof_peak));
-                ui.separator();
-                ui.label(format!("最大層塑性率 μ: {:.2}", mu_max));
-            });
+            if res.drift_dir.has_values() {
+                ui.label(format!(
+                    "頂部最大変位 [mm]  X: {:.2}  Y: {:.2}  45°: {:.2}  最大: {:.2}",
+                    roof_x, roof_y, roof_45, roof_max
+                ));
+                ui.label(format!(
+                    "最大層塑性率 μ  X: {:.2}  Y: {:.2}  45°: {:.2}  最大: {:.2}",
+                    mu_x, mu_y, mu_45, mu_max
+                ));
+            } else {
+                ui.horizontal(|ui| {
+                    ui.label(format!("頂部最大変位: {:.2} mm", roof_max));
+                    ui.separator();
+                    ui.label(format!("最大層塑性率 μ: {:.2}", mu_max));
+                });
+            }
             if res.non_converged_steps > 0 {
                 ui.colored_label(
                     crate::theme::SECONDARY_AMBER,
                     format!(
-                        "⚠ Newton 反復が {} ステップで収束しませんでした。\
-                         応答値は参考値です（dt を小さくすると改善する場合があります）。",
+                        "⚠ Newton 反復が {} ステップで収束しませんでした。応答値は参考値です。",
                         res.non_converged_steps
                     ),
                 );
             }
-            // 上層から順に見せるため、表示順は逆順にした索引で引く。
             let order: Vec<usize> = (0..res.story_peak_drift.len()).rev().collect();
-            crate::table_util::standard_table(
-                ui,
-                "stick_th_result",
-                &[
-                    Col::label("階"),
-                    Col::num("最大層間変形[mm]"),
-                    Col::num("最大層せん断[kN]"),
-                    Col::num("塑性率μ"),
-                ],
-                order.len(),
-                |row| {
-                    let i = order[row.index()];
-                    let name = self
-                        .model
-                        .stories
-                        .get(i)
-                        .map(|s| s.name.as_str())
-                        .unwrap_or("-");
-                    row.col(|ui| {
-                        crate::table_util::text_cell(ui, name);
-                    });
-                    row.col(|ui| {
-                        ui.label(format!("{:.2}", res.story_peak_drift[i]));
-                    });
-                    row.col(|ui| {
-                        ui.label(format!("{:.0}", force_kn(res.story_peak_shear[i])));
-                    });
-                    row.col(|ui| {
-                        ui.label(format!("{:.2}", res.story_ductility[i]));
-                    });
-                },
-            );
+            if res.drift_dir.has_values() {
+                lumped_dir_peak_table(
+                    ui,
+                    &LumpedDirTable {
+                        salt: "stick_th_drift",
+                        title: "最大層間変形 [mm]",
+                        hover:
+                            "剛心位置の層間。45° は 45° と 135° の投影の大きい方。最大は水平合成。",
+                        order: &order,
+                        names: &names,
+                        x: &res.drift_dir.x,
+                        y: &res.drift_dir.y,
+                        deg45: &res.drift_dir.deg45,
+                        maxv: &res.story_peak_drift,
+                    },
+                    |v| format!("{v:.2}"),
+                );
+                lumped_dir_peak_table(
+                    ui,
+                    &LumpedDirTable {
+                        salt: "stick_th_shear",
+                        title: "最大層せん断 [kN]",
+                        hover: "層ばね力。45° は 45° と 135° の投影の大きい方。最大は水平合成。",
+                        order: &order,
+                        names: &names,
+                        x: &res.shear_dir.x,
+                        y: &res.shear_dir.y,
+                        deg45: &res.shear_dir.deg45,
+                        maxv: &res.story_peak_shear,
+                    },
+                    |v| format!("{:.0}", force_kn(v)),
+                );
+                lumped_dir_peak_table(
+                    ui,
+                    &LumpedDirTable {
+                        salt: "stick_th_mu",
+                        title: "塑性率 μ",
+                        hover:
+                            "μX=δX/δ1x、μY=δY/δ1y、μ45=δ45/(√2 min(δ1x,δ1y))。最大は max(μX, μY)。",
+                        order: &order,
+                        names: &names,
+                        x: &res.ductility_dir.x,
+                        y: &res.ductility_dir.y,
+                        deg45: &res.ductility_dir.deg45,
+                        maxv: &res.story_ductility,
+                    },
+                    |v| format!("{v:.2}"),
+                );
+            } else {
+                crate::table_util::standard_table(
+                    ui,
+                    "stick_th_result",
+                    &[
+                        Col::label("階"),
+                        Col::num("最大層間変形[mm]"),
+                        Col::num("最大層せん断[kN]"),
+                        Col::num("塑性率μ"),
+                    ],
+                    order.len(),
+                    |row| {
+                        let i = order[row.index()];
+                        row.col(|ui| {
+                            crate::table_util::text_cell(ui, &names[i]);
+                        });
+                        row.col(|ui| {
+                            ui.label(format!("{:.2}", res.story_peak_drift[i]));
+                        });
+                        row.col(|ui| {
+                            ui.label(format!("{:.0}", force_kn(res.story_peak_shear[i])));
+                        });
+                        row.col(|ui| {
+                            ui.label(format!("{:.2}", res.story_ductility[i]));
+                        });
+                    },
+                );
+            }
             let pts: Vec<[f64; 2]> = res
                 .time
                 .iter()
@@ -597,6 +651,60 @@ impl App {
                             .color(crate::theme::DATA_BLUE),
                     );
                 });
+        } else {
+            ui.colored_label(
+                crate::theme::GRAY_600,
+                "時刻歴は未実行です。右バー「質点系」から実行できます。",
+            );
         }
     }
+}
+
+fn lumped_dir_peak_table(
+    ui: &mut egui::Ui,
+    spec: &LumpedDirTable<'_>,
+    fmt: impl Fn(f64) -> String,
+) {
+    ui.add_space(4.0);
+    ui.label(spec.title);
+    crate::table_util::standard_table(
+        ui,
+        spec.salt,
+        &[
+            Col::label("階"),
+            Col::num("X").hover(spec.hover),
+            Col::num("Y").hover(spec.hover),
+            Col::num("45°").hover(spec.hover),
+            Col::num("最大").hover(spec.hover),
+        ],
+        spec.order.len(),
+        |row| {
+            let i = spec.order[row.index()];
+            let cell = |ui: &mut egui::Ui, v: &[f64]| {
+                ui.label(fmt(v.get(i).copied().unwrap_or(0.0)));
+            };
+            row.col(|ui| {
+                crate::table_util::text_cell(
+                    ui,
+                    spec.names.get(i).map(String::as_str).unwrap_or("-"),
+                );
+            });
+            row.col(|ui| cell(ui, spec.x));
+            row.col(|ui| cell(ui, spec.y));
+            row.col(|ui| cell(ui, spec.deg45));
+            row.col(|ui| cell(ui, spec.maxv));
+        },
+    );
+}
+
+struct LumpedDirTable<'a> {
+    salt: &'a str,
+    title: &'a str,
+    hover: &'a str,
+    order: &'a [usize],
+    names: &'a [String],
+    x: &'a [f64],
+    y: &'a [f64],
+    deg45: &'a [f64],
+    maxv: &'a [f64],
 }

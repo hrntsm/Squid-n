@@ -69,9 +69,9 @@ pub enum LeftPanel {
 
 /// 右ドックのパネル。右のアイコン列で切り替える。
 ///
-/// 一貫計算の手順は ① 準備計算（解析入力の確定）と、静的・固有値・増分・時刻歴の
-/// 各解析パネルに分ける。① と各解析の並びは右アイコン列（上から準備計算の次に
-/// 静的・固有値・増分・時刻歴）で示す。どのパネルも 3D を見ながら設定・実行できる
+/// 一貫計算の手順は ① 準備計算（解析入力の確定）と、静的・固有値・増分・時刻歴・
+/// 質点系の各解析パネルに分ける。① と各解析の並びは右アイコン列（上から準備計算の次に
+/// 静的・固有値・増分・時刻歴・質点系）で示す。どのパネルも 3D を見ながら設定・実行できる
 /// よう右ドックに置く。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum RightPanel {
@@ -87,6 +87,8 @@ pub enum RightPanel {
     Pushover,
     /// 時刻歴応答解析
     TimeHistory,
+    /// 質点系（せん断串）
+    LumpedMass,
 }
 
 /// 結果タブ内の切替（3D 各種図・時刻歴グラフ・増分解析曲線）。
@@ -356,6 +358,11 @@ pub struct SavedAnalysisSettings {
     /// `wave_name` を実行／保存した時点のライブラリ内ファイルの SHA-256。
     /// 読込側は、ライブラリ側のファイルが差し替えられていないかの検証に使う。
     pub wave_sha256: Option<String>,
+    /// 質点系時刻歴の波形ライブラリ選択（立体時刻歴とは独立）。
+    #[serde(default)]
+    pub lumped_wave_name: Option<String>,
+    #[serde(default)]
+    pub lumped_wave_sha256: Option<String>,
 }
 
 #[derive(Default, Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -379,8 +386,79 @@ pub struct ResultsBundle {
     pub joist_checks: Vec<JoistCheck>,
     /// スラブ（床）の設計（一方向曲げ）。
     pub slab_checks: Vec<SlabCheck>,
+    /// 表示中の増分解析結果（互換・既存参照の窓口）。
     pub pushover: Option<squid_n_solver::pushover::PushoverResult>,
+    /// X 方向の増分解析結果。
+    #[serde(default)]
+    pub pushover_x: Option<squid_n_solver::pushover::PushoverResult>,
+    /// Y 方向の増分解析結果。
+    #[serde(default)]
+    pub pushover_y: Option<squid_n_solver::pushover::PushoverResult>,
     pub time_history: Option<squid_n_solver::timehistory::ResponseResult>,
+    /// 質点系解析結果（モデル・固有値・時刻歴）。
+    #[serde(default)]
+    pub lumped: Option<squid_n_solver::lumped_mass::LumpedMassResult>,
+}
+
+impl ResultsBundle {
+    /// 方向別スロットの増分解析結果を返す。
+    pub fn pushover_for_dir(
+        &self,
+        dir: SeismicDir,
+    ) -> Option<&squid_n_solver::pushover::PushoverResult> {
+        match dir {
+            SeismicDir::X => self.pushover_x.as_ref(),
+            SeismicDir::Y => self.pushover_y.as_ref(),
+        }
+    }
+
+    /// 地震静的（EX/EY）の結果。
+    pub fn seismic(&self, dir: SeismicDir) -> Option<&squid_n_solver::linear::StaticOnce> {
+        self.statics
+            .iter()
+            .find(|(k, _)| *k == StaticCaseKey::Seismic(dir))
+            .map(|(_, s)| s)
+    }
+
+    /// 旧 `.scz`（`pushover` のみ）を `push_dir` のスロットへ移す。
+    pub fn migrate_legacy_pushover(&mut self, push_dir: SeismicDir) {
+        if self.pushover_x.is_none() && self.pushover_y.is_none() {
+            if let Some(po) = self.pushover.clone() {
+                match push_dir {
+                    SeismicDir::X => self.pushover_x = Some(po),
+                    SeismicDir::Y => self.pushover_y = Some(po),
+                }
+            }
+        }
+    }
+
+    /// 保存済み `pushover` がどちらの方向のスロットか推定する（一致しなければ `fallback`）。
+    pub fn infer_pushover_view_dir(&self, fallback: SeismicDir) -> SeismicDir {
+        match (self.pushover_x.is_some(), self.pushover_y.is_some()) {
+            (true, false) => SeismicDir::X,
+            (false, true) => SeismicDir::Y,
+            _ => {
+                let Some(po) = &self.pushover else {
+                    return fallback;
+                };
+                if self
+                    .pushover_x
+                    .as_ref()
+                    .is_some_and(|x| (x.qu - po.qu).abs() < 1e-3)
+                {
+                    SeismicDir::X
+                } else if self
+                    .pushover_y
+                    .as_ref()
+                    .is_some_and(|y| (y.qu - po.qu).abs() < 1e-3)
+                {
+                    SeismicDir::Y
+                } else {
+                    fallback
+                }
+            }
+        }
+    }
 }
 
 /// 一括解析（`App::run_static_all`）の計算結果。荷重ケース単体と、その線形和で
@@ -404,6 +482,8 @@ pub enum JobResult {
     Modal(Result<squid_n_solver::eigen::ModalResult, String>),
     /// 時刻歴応答解析。`ResponseResult` は詳細記録を含み大きいため Box で運ぶ。
     TimeHistory(Box<Result<squid_n_solver::timehistory::ResponseResult, String>>),
+    /// 質点系（固有値・時刻歴）。方向別ピークを含み大きいため Box で運ぶ。
+    LumpedMass(Box<Result<squid_n_solver::lumped_mass::LumpedMassResult, String>>),
     /// 線形静的・地震静的(Ai)（`StaticCaseKey` で結果格納先を区別）。
     StaticCase {
         key: StaticCaseKey,
@@ -757,8 +837,14 @@ pub struct App {
     /// 層応答分布グラフの方向選択（記録済みの X・Y いずれか）
     #[cfg(feature = "gui")]
     pub story_response_dir: crate::story_response::StoryRespDir,
-    /// 質点系（串団子）時刻歴応答の結果（結果タブ「質点系モデル」で実行・表示）。
+    /// 質点系（串団子）時刻歴応答の結果（結果タブ「質点系」で表示。bundle と同内容）。
     pub stick_response: Option<squid_n_solver::lumped_mass::StickResponse>,
+    /// 質点系時刻歴の波形ライブラリ選択（立体時刻歴とは独立）。
+    pub lumped_wave_library_selection: Option<String>,
+    pub lumped_wave_library_selected_sha256: Option<String>,
+    /// 3D で質点系を骨組に重ねて描く（OFF で質点・ばねのみ）。
+    #[cfg(feature = "gui")]
+    pub lumped_show_frame: bool,
     /// 断面作成UI のドラフト（UI-3）
     #[cfg(feature = "gui")]
     pub section_draft: crate::section_editor::SectionEditorDraft,
@@ -802,6 +888,8 @@ pub struct App {
     pub project_path: Option<std::path::PathBuf>,
     /// 解析タブの設定値
     pub analysis_cfg: AnalysisSettings,
+    /// 結果タブ・設計タブで表示中の増分解析方向（既定 X）。
+    pub pushover_view_dir: SeismicDir,
     /// 波形ライブラリ（`squid_n_io::wave_library`）で選択中の波形ファイル名。
     /// 「▶ 選択した波形で実行」で使う波形を指し、`.scz` にも同梱する
     /// （次回開いたときに自動で同じ波形を参照できるようにするため。
@@ -1027,6 +1115,10 @@ impl Default for App {
             #[cfg(feature = "gui")]
             story_response_dir: crate::story_response::StoryRespDir::default(),
             stick_response: None,
+            lumped_wave_library_selection: None,
+            lumped_wave_library_selected_sha256: None,
+            #[cfg(feature = "gui")]
+            lumped_show_frame: true,
             #[cfg(feature = "gui")]
             section_draft: crate::section_editor::SectionEditorDraft::default(),
             #[cfg(feature = "gui")]
@@ -1057,6 +1149,7 @@ impl Default for App {
             wall_draw_nodes: Vec::new(),
             project_path: None,
             analysis_cfg: AnalysisSettings::default(),
+            pushover_view_dir: SeismicDir::X,
             wave_library_selection: None,
             wave_library_selected_sha256: None,
             #[cfg(feature = "gui")]
@@ -1927,6 +2020,7 @@ impl eframe::App for App {
                             RightPanel::Eigen => self.eigen_panel(ui),
                             RightPanel::Pushover => self.pushover_panel(ui),
                             RightPanel::TimeHistory => self.time_history_panel(ui),
+                            RightPanel::LumpedMass => self.lumped_mass_analysis_panel(ui),
                         });
                 });
         }

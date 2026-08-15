@@ -287,3 +287,64 @@ fn compute_nonlinear_time_history(
     )
     .map_err(|e| JobError::Convergence(e.to_string()))
 }
+
+/// 質点系（固有値。`accel` があれば時刻歴も）。
+///
+/// モデル生成は [`crate::lumped_mass::build_lumped_mass`]。線形は地震静的 EX/EY、
+/// 非線形は増分解析結果が前提。3 次元は EX と EY の両方が必須。
+pub fn compute_lumped_mass(
+    model: squid_n_core::model::Model,
+    cfg: AnalysisSettings,
+    res_x: Option<squid_n_solver::linear::StaticOnce>,
+    res_y: Option<squid_n_solver::linear::StaticOnce>,
+    po_x: Option<squid_n_solver::pushover::PushoverResult>,
+    po_y: Option<squid_n_solver::pushover::PushoverResult>,
+    accel: Option<&[f64]>,
+) -> JobResult<squid_n_solver::lumped_mass::LumpedMassResult> {
+    let lm = crate::lumped_mass::build_lumped_mass(crate::lumped_mass::LumpedMassBuildInput {
+        model: &model,
+        dim: cfg.lumped_dim,
+        source: cfg.lumped_stiffness,
+        dir: cfg.lumped_dir,
+        nonlinear: cfg.lumped_nonlinear,
+        secant_ratio: cfg.lumped_secant_ratio,
+        res_x: res_x.as_ref(),
+        res_y: res_y.as_ref(),
+        po_x: po_x.as_ref(),
+        po_y: po_y.as_ref(),
+    })?;
+    let n_modes = cfg.lumped_n_modes.max(1);
+    let modal = squid_n_solver::lumped_mass::lumped_mass_eigen(&lm, n_modes)
+        .map_err(|e| JobError::Solve(e.to_string()))?;
+    let response = if let Some(a) = accel {
+        if a.is_empty() {
+            return Err(JobError::InvalidInput(
+                "質点系時刻歴の地動加速度が空です".into(),
+            ));
+        }
+        if cfg.lumped_th_dt <= 0.0 {
+            return Err(JobError::InvalidInput(
+                "質点系時刻歴の時間刻み dt が 0 以下です".into(),
+            ));
+        }
+        let resp = squid_n_solver::lumped_mass::lumped_mass_time_history(
+            &lm,
+            a,
+            cfg.lumped_th_dt,
+            cfg.lumped_th_damping,
+        );
+        if !lm.stories.is_empty() && resp.time.is_empty() {
+            return Err(JobError::Solve(
+                "質点系時刻歴を解けませんでした。質量または回転慣性を確認してください".into(),
+            ));
+        }
+        Some(resp)
+    } else {
+        None
+    };
+    Ok(squid_n_solver::lumped_mass::LumpedMassResult {
+        model: lm,
+        modal,
+        response,
+    })
+}

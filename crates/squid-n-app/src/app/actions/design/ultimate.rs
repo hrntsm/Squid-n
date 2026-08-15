@@ -123,7 +123,7 @@ impl App {
     fn ultimate_demand_from_pushover(
         &self,
     ) -> Option<Vec<(ElemId, squid_n_design_jp::ultimate::MemberDemand)>> {
-        let po = self.results.as_ref()?.pushover.as_ref()?;
+        let po = self.displayed_pushover()?;
         // 長期せん断力 QL（余裕率の分子控除用）を重力ケース集合の静的結果から引く
         // （Q0 と同じ Dead+LiveSeismic／Live 集合。先頭ケースのみだと積載がずれる）。
         let gravity_long = self.results.as_ref().and_then(|res| {

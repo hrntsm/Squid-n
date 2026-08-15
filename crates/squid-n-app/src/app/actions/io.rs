@@ -47,6 +47,7 @@ impl App {
         // 保存確認ダイアログの保留も破棄する（旧モデル用に選んだパスへ
         // 新モデルを保存してしまうのを防ぐ）。
         self.pending_save_recording = None;
+        self.pushover_view_dir = SeismicDir::X;
         self.stick_response = None;
         self.combo_error = None;
         self.generated_panels.clear();
@@ -131,6 +132,8 @@ impl App {
         include_recording: Option<bool>,
     ) {
         self.last_error = None;
+        // 保存直前に表示中方向の増分解析結果を `pushover` 窓口へ同期する。
+        self.sync_pushover_for_save();
         // self を可変借用する `encoded_or_notice` の前に、直列化まで済ませておく。
         let prep = self
             .preparation
@@ -179,6 +182,8 @@ impl App {
             cfg: self.analysis_cfg,
             wave_name: self.wave_library_selection.clone(),
             wave_sha256: self.wave_library_selected_sha256.clone(),
+            lumped_wave_name: self.lumped_wave_library_selection.clone(),
+            lumped_wave_sha256: self.lumped_wave_library_selected_sha256.clone(),
         }));
         let prep_bytes = self.encoded_or_notice(prep, "準備計算の結果");
         let results_bytes = self.encoded_or_notice(results, "解析結果");
@@ -274,6 +279,10 @@ impl App {
                 ) {
                     self.analysis_cfg = saved.cfg;
                     self.restore_wave_library_selection(saved.wave_name, saved.wave_sha256);
+                    self.restore_lumped_wave_library_selection(
+                        saved.lumped_wave_name,
+                        saved.lumped_wave_sha256,
+                    );
                 }
                 // 質量モデルの方式は `Model::mass_method` が単一情報源（階の
                 // 自動生成の実行時に `analysis_cfg.mass_method` からモデルへ
@@ -294,7 +303,17 @@ impl App {
                 if let Some(saved) =
                     self.decode_on_load::<SavedResults>(contents.results, "解析結果")
                 {
-                    self.results = Some(saved.bundle);
+                    let mut bundle = saved.bundle;
+                    bundle.migrate_legacy_pushover(self.analysis_cfg.push_dir);
+                    self.pushover_view_dir =
+                        bundle.infer_pushover_view_dir(self.analysis_cfg.push_dir);
+                    bundle.pushover = bundle.pushover_for_dir(self.pushover_view_dir).cloned();
+                    self.results = Some(bundle);
+                    self.stick_response = self
+                        .results
+                        .as_ref()
+                        .and_then(|r| r.lumped.as_ref())
+                        .and_then(|l| l.response.clone());
                     self.last_static = saved.last_static;
                     self.staleness.last_run = saved.last_run;
                     // 保存側が最新のときだけ書き出すため、復元できた結果は

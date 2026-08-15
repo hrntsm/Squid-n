@@ -9,13 +9,73 @@
 //! - [`fit_story_trilinear`] — 層 Q-δ 曲線を等包絡面積則でトリリニアへ縮約する。
 //! - [`build_lumped_mass_model`] — プッシュオーバー結果から串団子モデルを生成する。
 
+use crate::analysis::SeismicDir;
 use crate::pushover::PushoverResult;
 use squid_n_core::ids::StoryId;
 use squid_n_core::model::Model;
 use squid_n_core::units::GRAVITY_MM_S2;
 
+/// 質点系の次元。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+pub enum StickDim {
+    /// 2 次元（加力方向 1 本のせん断串）。
+    #[default]
+    Planar,
+    /// 3 次元（各階 Ux, Uy, θz）。
+    Spatial,
+}
+
+impl StickDim {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Planar => "2次元",
+            Self::Spatial => "3次元",
+        }
+    }
+}
+
+/// 層並進剛性の定義。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+pub enum LumpedStiffnessSource {
+    /// 地震静 EX/EY の層せん断 Q と層間変位 δ から K = Q/δ。
+    #[default]
+    StoryQd,
+    /// 柱の ki = Qi/δi の合計（偏心率精算と同じ）。
+    ColumnKi,
+}
+
+impl LumpedStiffnessSource {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::StoryQd => "層 Q/δ（EX/EY）",
+            Self::ColumnKi => "柱 ki",
+        }
+    }
+}
+
+/// 3 次元質点の層データ（剛心・ねじり・方向別骨格）。
+#[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
+pub struct StorySpatial {
+    /// 回転慣性 J [t·mm²]（剛床マスターの RZ 質量）。
+    pub j: f64,
+    /// 質量重心 (x, y) [mm]。
+    pub mass_xy: [f64; 2],
+    /// 剛心 (x, y) [mm]。
+    pub rigidity_xy: [f64; 2],
+    /// X 方向初期剛性 [N/mm]。
+    pub k1_x: f64,
+    /// Y 方向初期剛性 [N/mm]。
+    pub k1_y: f64,
+    /// 剛心まわりのねじり剛性 KR [N·mm/rad]。
+    pub kr: f64,
+    /// X 方向トリリニア（非線形時。線形なら弾性相当）。
+    pub skeleton_x: StoryTrilinear,
+    /// Y 方向トリリニア。
+    pub skeleton_y: StoryTrilinear,
+}
+
 /// 層のトリリニア骨格（Q-δ）。
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct StoryTrilinear {
     /// 初期剛性 K1 [N/mm]。
     pub k1: f64,
@@ -47,10 +107,26 @@ impl StoryTrilinear {
             0.0
         }
     }
+
+    /// 線形ばね相当（折点を十分遠くに置いた弾性トリリニア）。
+    pub fn elastic(k1: f64) -> Self {
+        let k = k1.max(0.0);
+        let d = 1.0e9;
+        let q = k * d;
+        Self {
+            k1: k,
+            d1: d,
+            q1: q,
+            d2: d,
+            q2: q,
+            d3: d,
+            q3: q,
+        }
+    }
 }
 
 /// 串団子モデルの1質点（層）。
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
 pub struct StoryStick {
     pub story: StoryId,
     /// 質量 [t]（= 地震重量 W / g）。
@@ -84,9 +160,41 @@ impl LumpedMassType {
 }
 
 /// 串団子モデル。層ごとの質点と復元力特性を保持する。
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct LumpedMassModel {
     pub model_type: LumpedMassType,
     pub stories: Vec<StoryStick>,
+    #[serde(default)]
+    pub dim: StickDim,
+    #[serde(default)]
+    pub stiffness_source: LumpedStiffnessSource,
+    #[serde(default)]
+    pub dir: SeismicDir,
+    /// 非線形骨格（トリリニア）を使うか。false なら初期剛性の線形ばね。
+    #[serde(default)]
+    pub nonlinear: bool,
+    /// 3 次元の層データ（`dim == Spatial` のとき `stories` と同順・同長）。
+    #[serde(default)]
+    pub spatial: Vec<StorySpatial>,
+}
+
+impl LumpedMassModel {
+    /// 2 次元せん断串（既存テスト・増分 1 方向からの生成）。
+    pub fn from_stories(model_type: LumpedMassType, stories: Vec<StoryStick>) -> Self {
+        Self {
+            model_type,
+            stories,
+            dim: StickDim::Planar,
+            stiffness_source: LumpedStiffnessSource::StoryQd,
+            dir: SeismicDir::X,
+            nonlinear: true,
+            spatial: Vec::new(),
+        }
+    }
+
+    pub fn is_spatial(&self) -> bool {
+        self.dim == StickDim::Spatial && self.spatial.len() == self.stories.len()
+    }
 }
 
 /// 台形則で (0,0) から曲線終端までの包絡面積を求める。
@@ -273,8 +381,5 @@ pub fn build_lumped_mass_model(
             skeleton,
         });
     }
-    LumpedMassModel {
-        model_type,
-        stories: sticks,
-    }
+    LumpedMassModel::from_stories(model_type, sticks)
 }

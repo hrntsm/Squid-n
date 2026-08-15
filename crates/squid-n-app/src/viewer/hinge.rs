@@ -126,7 +126,7 @@ pub(super) fn draw_hinge(
     pts: &[egui::Pos2],
     frame_filter: super::FrameFilter,
 ) {
-    let Some(po) = app.results.as_ref().and_then(|r| r.pushover.as_ref()) else {
+    let Some(po) = app.displayed_pushover() else {
         draw_no_result_legend(painter);
         return;
     };
@@ -172,7 +172,7 @@ pub(super) fn draw_hinge(
 /// i端／j端それぞれの最高レベル・最大塑性率・初出 step を表示する。
 /// ヒンジのない部材は何も表示しない。
 pub(super) fn show_hinge_tooltip(ui: &egui::Ui, app: &App, elem_id: ElemId) {
-    let Some(po) = app.results.as_ref().and_then(|r| r.pushover.as_ref()) else {
+    let Some(po) = app.displayed_pushover() else {
         return;
     };
     let markers = aggregate_hinges(&po.hinges);
@@ -526,7 +526,7 @@ pub(crate) fn show_hinge_detail_window(ui: &egui::Ui, app: &mut App) {
 /// M-θ カーブ（常時）・N-M 相関図（軸力を受ける部材のみ）・ファイバー断面の
 /// 塑性化マップ（ファイバー要素のみ）を該当するものだけ縦に並べる。
 fn draw_hinge_detail_content(ui: &mut egui::Ui, app: &mut App, elem_id: ElemId) {
-    let Some(po) = app.results.as_ref().and_then(|r| r.pushover.as_ref()) else {
+    let Some(po) = app.displayed_pushover() else {
         ui.colored_label(theme::GRAY_600, "増分解析が未実行です。");
         return;
     };

@@ -739,7 +739,7 @@ pub fn design_table(ui: &mut egui::Ui, app: &mut App) {
             // 崩壊機構（増分解析判定）を表示する。Ds は部材ランクに加えて
             // この崩壊機構を層別に反映する（層崩壊形の層は1段階不利、部分崩壊形は
             // 機構未確定として補正なし＝暫定値、全体崩壊形は標準）。
-            if let Some(po) = app.results.as_ref().and_then(|r| r.pushover.as_ref()) {
+            if let Some(po) = app.displayed_pushover() {
                 use squid_n_solver::pushover::MechanismType;
                 let (mech, warn) = match &po.mechanism {
                     MechanismType::Overall => ("全体崩壊形".to_string(), false),

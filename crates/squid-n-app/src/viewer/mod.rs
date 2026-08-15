@@ -10,6 +10,7 @@ mod frame_view;
 // ヒンジ詳細ウィンドウのキャッシュ型（`MnCurveCache`）を App から参照できるよう
 // モジュール自体を crate 内に公開する（型自体は pub(crate)）。
 pub(crate) mod hinge;
+mod lumped;
 mod modeling;
 mod solid;
 // 立体グリッドのスナップ点（`SnapPoint`）を App の作成モード状態が保持するため、
@@ -48,6 +49,10 @@ pub enum ViewMode {
     Hinge,
     /// 時刻歴アニメーション（時刻歴応答解析の詳細記録 `ThRecording` を再生表示）
     TimeHistory,
+    /// 質点系の固有値モード（球・ばね）
+    LumpedMode,
+    /// 質点系の時刻歴再生（球・ばね）
+    LumpedTimeHistory,
 }
 
 /// モデル化図で可視化する解析種別。
@@ -424,8 +429,8 @@ use deform::{
 use pick::{member_load_pickable, pick_nearest_member, pick_nearest_node};
 use playback::{advance_play_time, frame_at_time};
 use scene::{
-    draw_axis_gadget, draw_grid_and_axes, draw_slabs_and_joists, draws_as_line, element_draw_shape,
-    order_wall_nodes, DrawShape,
+    draw_axis_gadget, draw_grid_and_axes, draw_mode_rest_ghost, draw_slabs_and_joists, draws_as_line,
+    element_draw_shape, order_wall_nodes, DrawShape,
 };
 use squid_n_core::geom::vec3::dist as member_len3;
 use support::{draw_support_legend, draw_support_symbol, support_kind, SupportKind};
@@ -463,6 +468,10 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
         ui.selectable_value(&mut mode, ViewMode::Modeling, "モデル化");
         if has_th_recording {
             ui.selectable_value(&mut mode, ViewMode::TimeHistory, "時刻歴");
+        }
+        if lumped::has_lumped(app) {
+            ui.selectable_value(&mut mode, ViewMode::LumpedMode, "質点モード");
+            ui.selectable_value(&mut mode, ViewMode::LumpedTimeHistory, "質点時刻歴");
         }
         ui.separator();
         // 断面表示: 部材を断面形状の押し出しソリッドで立体表示（全モードと併用可）
@@ -658,6 +667,35 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
             });
         }
     }
+    if mode == ViewMode::LumpedMode {
+        let n_modes = app
+            .results
+            .as_ref()
+            .and_then(|r| r.lumped.as_ref())
+            .map(|m| m.modal.period.len())
+            .unwrap_or(0);
+        if n_modes > 0 {
+            ui.horizontal(|ui| {
+                ui.label("モード:");
+                let mut idx = mode_idx.min(n_modes - 1);
+                ui.add(egui::Slider::new(&mut idx, 0..=n_modes - 1).text(""));
+                mode_idx = idx;
+                if let Some(t) = app
+                    .results
+                    .as_ref()
+                    .and_then(|r| r.lumped.as_ref())
+                    .and_then(|m| m.modal.period.get(idx))
+                {
+                    ui.label(format!("T={:.3} s", t));
+                }
+            });
+        }
+    }
+    if lumped::is_lumped_view(mode) {
+        ui.horizontal(|ui| {
+            ui.checkbox(&mut app.lumped_show_frame, "骨組を重ねる");
+        });
+    }
     // 時刻歴モード: フレームスライダー・再生制御（§実装内容1）。
     // 現在フレームは `app.th_frame`、再生経過時刻は `app.th_play_time`
     // （`frame_time` に基づき現在フレームへ写像。末尾でループ）で管理する。
@@ -720,13 +758,59 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
             ui.label("時刻歴の詳細記録がありません（再解析すると記録されます）。");
         }
     }
+    if mode == ViewMode::LumpedTimeHistory {
+        if let Some(th) = app
+            .results
+            .as_ref()
+            .and_then(|r| r.lumped.as_ref())
+            .and_then(|l| l.response.as_ref())
+        {
+            let n_frames = th.time.len();
+            if n_frames > 0 {
+                let duration = th.time.last().copied().unwrap_or(0.0);
+                app.th_frame = app.th_frame.min(n_frames - 1);
+                ui.horizontal_wrapped(|ui| {
+                    if ui.button(if app.th_playing { "⏸" } else { "▶" }).clicked() {
+                        app.th_playing = !app.th_playing;
+                    }
+                    ui.label("速度:");
+                    for s in [0.25_f32, 0.5, 1.0, 2.0] {
+                        ui.selectable_value(&mut app.th_speed, s, format!("×{s}"));
+                    }
+                    let mut frame = app.th_frame;
+                    if ui
+                        .add(egui::Slider::new(&mut frame, 0..=n_frames - 1).text(""))
+                        .changed()
+                    {
+                        app.th_frame = frame;
+                        app.th_play_time = th.time.get(frame).copied().unwrap_or(0.0);
+                        app.th_playing = false;
+                    }
+                    ui.label(format!("t={:.3} s", app.th_play_time));
+                });
+                if app.th_playing {
+                    let dt = ui.input(|i| i.stable_dt);
+                    app.th_play_time =
+                        playback::advance_play_time(app.th_play_time, dt, app.th_speed, duration);
+                    app.th_frame = playback::frame_at_time(&th.time, app.th_play_time);
+                    ui.ctx().request_repaint();
+                }
+            }
+        } else {
+            ui.colored_label(theme::GRAY_600, "質点系時刻歴の結果がありません。");
+        }
+    }
     // 変形表示オプション行: 変形を表示するモード（変形・モード・応力図の変形重ね）で
     // 表示する。「内部たわみ」トグルで梁の Hermite 曲線表示（＋床・二次部材の曲線
     // 追従）と直線表示（全体の変形）を切り替え、変形倍率スライダーで自動算定倍率への
     // 手動係数を対数調整（「リセット」で 1.0）する。
     let show_deform_options = matches!(
         mode,
-        ViewMode::Deformed | ViewMode::Mode | ViewMode::TimeHistory
+        ViewMode::Deformed
+            | ViewMode::Mode
+            | ViewMode::TimeHistory
+            | ViewMode::LumpedMode
+            | ViewMode::LumpedTimeHistory
     ) || (mode == ViewMode::Force && app.overlay_deform);
     if show_deform_options {
         ui.horizontal(|ui| {
@@ -1173,7 +1257,8 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
     // 床・二次部材（スラブ・小梁・間柱）の表示可否は、中心線と断面ソリッドで共通の
     // 判定とする（断面表示だけがトグルを無視して小梁を描いてしまわないよう、判定を
     // ここで 1 つの変数に集約して各描画へ渡す）。
-    let show_secondary = mode != ViewMode::Cmq && app.show_floor_secondary;
+    let lumped_only = lumped::is_lumped_view(mode) && !app.lumped_show_frame;
+    let show_secondary = !lumped_only && mode != ViewMode::Cmq && app.show_floor_secondary;
     if show_secondary {
         draw_slabs_and_joists(&painter, app, &pts, filter);
     }
@@ -1181,7 +1266,7 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
     // --- 断面ソリッド ---
     // 節点・部材線より先に描き、線・シンボル類は上に重ねる（材軸が見えるように）。
     let mut solids_skipped = 0usize;
-    if app.show_sections {
+    if app.show_sections && !lumped_only {
         solids_skipped = solid::draw_section_solids(
             &painter,
             &app.model,
@@ -1192,136 +1277,163 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
         );
     }
 
-    // 節点（梁/壁作成モードで選択中の節点・選択中の節点は強調表示）。
-    // 解析対象外の節点は「床・二次部材」トグルに追従して表示・非表示を切り替える。
-    for (i, &p) in pts.iter().enumerate() {
-        if !node_visible[i] {
-            continue;
-        }
-        let node_id = app.model.nodes[i].id;
-        let is_first = app.beam_draw_first == Some(space_grid::SnapPoint::Node(node_id));
-        let is_wall_pick = app.wall_draw_nodes.contains(&node_id);
-        let is_slab_pick = app.slab_draw_nodes.contains(&node_id);
-        // 節点の選択（ナビゲータの荷重ツリー・荷重の対象ピック）。部材の選択
-        // ハイライトと対をなし、どの節点が対象なのかを 3D 上で示す。
-        let is_selected = app.selection.nodes.contains(&node_id);
-        let (radius, color) = if is_first || is_wall_pick || is_slab_pick {
-            // 作成モードで選択中の節点 = 重要（赤）
-            (5.0, theme::PARETO_RED)
-        } else if is_selected {
-            // 選択中の節点 = 結果の強調（ハイライト紫。部材の選択色と揃える）
-            (5.0, theme::HILITE_PURPLE)
-        } else {
-            // 通常の節点 = データ点（青）
-            (3.0, theme::DATA_BLUE)
-        };
-        painter.circle_filled(egui::pos2(p[0], p[1]), radius, color);
-    }
-
-    // 梁作成モードの始点が節点のない格子点の場合、まだモデルに節点が無いため
-    // 上のループでは描かれない。選択中であることが分かるよう、同じ色で印を置く。
-    if let Some(space_grid::SnapPoint::Grid(c)) = app.beam_draw_first {
-        painter.circle_stroke(
-            proj.project(c),
-            5.0,
-            egui::Stroke::new(2.0_f32, theme::PARETO_RED),
+    // モード形は変形前を破線・高透過で先に描き、基準位置からの変化が読めるようにする。
+    // 質点モードの変形前串と同じ規約（破線 6/4 pt、線アルファ 90）。
+    if !lumped_only && mode == ViewMode::Mode && deform_scale_actual > 1e-12 {
+        let pts_rest: Vec<egui::Pos2> = app
+            .model
+            .nodes
+            .iter()
+            .map(|n| proj.project(n.coord))
+            .collect();
+        draw_mode_rest_ghost(
+            &painter,
+            app,
+            &pts_rest,
+            &node_visible,
+            filter,
+            show_secondary,
+            app.show_sections,
         );
     }
 
-    // 部材（線）
-    let line_color = if matches!(mode, ViewMode::Deformed | ViewMode::Mode) {
-        // 変形図・モード形 = 結果の強調（ハイライト紫）
-        theme::HILITE_PURPLE
-    } else {
-        // 通常の部材 = 沈めたニュートラル（gray-700）
-        theme::GRAY_700
-    };
-    // 断面表示中は中心線を細く淡くし、ソリッドの上に材軸として薄く重ねる
-    let line_stroke = if app.show_sections {
-        egui::Stroke::new(1.0_f32, theme::translucent(line_color, 110))
-    } else {
-        egui::Stroke::new(2.0_f32, line_color)
-    };
-    for elem in &app.model.elements {
-        if !filter.shows(elem.id) {
-            continue;
-        }
-        // 壁・シェル（面要素）は半透明ポリゴンで描画
-        if element_draw_shape(elem.kind) == DrawShape::Polygon && elem.nodes.len() >= 3 {
-            let poly: Vec<egui::Pos2> = elem
-                .nodes
-                .iter()
-                .filter_map(|n| {
-                    let idx = n.index();
-                    (idx < pts.len()).then(|| pts[idx])
-                })
-                .collect();
-            if poly.len() == elem.nodes.len() {
-                painter.add(egui::Shape::convex_polygon(
-                    poly,
-                    theme::translucent(theme::DATA_BLUE, 50),
-                    egui::Stroke::new(1.5_f32, theme::DATA_BLUE),
-                ));
-            }
-            continue;
-        }
-        // 線材でない要素（面要素・仕口パネル）は材軸を持たないため線で描かない
-        // （`draws_as_line`）。特に仕口パネルの節点列は「接合部の節点 ＋ 取り付く
-        // 部材の他端」なので、先頭 2 節点を結ぶと取り付く柱・梁とまったく同じ線分に
-        // なる。全部材を直線で描くうちは実部材と重なって見えないが、内部たわみ表示で
-        // 梁・柱を曲線にすると弦の直線だけが残り、部材が二重に描かれて見えてしまう。
-        if !draws_as_line(elem.kind) || elem.nodes.len() < 2 {
-            continue;
-        }
-        let n0 = elem.nodes[0].index();
-        let n1 = elem.nodes[1].index();
-        if n0 >= pts.len() || n1 >= pts.len() {
-            continue;
-        }
-
-        // 変形を表示する全モード（変形図・モード形・応力図の変形重ね）で、「内部
-        // たわみ」トグルが ON のとき、梁は端部の並進・回転から Hermite 3 次で曲げ
-        // 変形を内挿して曲線描画する（節点間の直線ではたわみが見えないため）。
-        // トグル OFF では梁も直線で描き、全体の変形だけを素直に見る。変形を表示
-        // していない（`disp` が None）モードでは常に直線。
-        let curved_beam =
-            app.show_beam_interpolation && elem.kind == squid_n_core::model::ElementKind::Beam;
-        if let (true, Some(d)) = (curved_beam, &disp) {
-            let p_i = app.model.nodes[n0].coord;
-            let p_j = app.model.nodes[n1].coord;
-            if member_len3(p_i, p_j) > 1e-9 {
-                let poly3 = BeamDeflection::new(p_i, p_j, d[n0], d[n1], elem.local_axis.ref_vector)
-                    .polyline(deform_scale_actual, DEFORM_CURVE_SEGMENTS);
-                let screen: Vec<egui::Pos2> = poly3.iter().map(|&p| proj.project(p)).collect();
-                painter.add(egui::Shape::line(screen, line_stroke));
+    // 節点（梁/壁作成モードで選択中の節点・選択中の節点は強調表示）。
+    // 解析対象外の節点は「床・二次部材」トグルに追従して表示・非表示を切り替える。
+    if !lumped_only {
+        for (i, &p) in pts.iter().enumerate() {
+            if !node_visible[i] {
                 continue;
             }
+            let node_id = app.model.nodes[i].id;
+            let is_first = app.beam_draw_first == Some(space_grid::SnapPoint::Node(node_id));
+            let is_wall_pick = app.wall_draw_nodes.contains(&node_id);
+            let is_slab_pick = app.slab_draw_nodes.contains(&node_id);
+            // 節点の選択（ナビゲータの荷重ツリー・荷重の対象ピック）。部材の選択
+            // ハイライトと対をなし、どの節点が対象なのかを 3D 上で示す。
+            let is_selected = app.selection.nodes.contains(&node_id);
+            let (radius, color) = if is_first || is_wall_pick || is_slab_pick {
+                // 作成モードで選択中の節点 = 重要（赤）
+                (5.0, theme::PARETO_RED)
+            } else if is_selected {
+                // 選択中の節点 = 結果の強調（ハイライト紫。部材の選択色と揃える）
+                (5.0, theme::HILITE_PURPLE)
+            } else {
+                // 通常の節点 = データ点（青）
+                (3.0, theme::DATA_BLUE)
+            };
+            painter.circle_filled(egui::pos2(p[0], p[1]), radius, color);
         }
 
-        // 通常（未変形・その他要素・ゼロ長梁）は節点間を直線で結ぶ。
-        painter.line_segment([pts[n0], pts[n1]], line_stroke);
+        // 梁作成モードの始点が節点のない格子点の場合、まだモデルに節点が無いため
+        // 上のループでは描かれない。選択中であることが分かるよう、同じ色で印を置く。
+        if let Some(space_grid::SnapPoint::Grid(c)) = app.beam_draw_first {
+            painter.circle_stroke(
+                proj.project(c),
+                5.0,
+                egui::Stroke::new(2.0_f32, theme::PARETO_RED),
+            );
+        }
+
+        // 部材（線）
+        let line_color = if matches!(mode, ViewMode::Deformed | ViewMode::Mode) {
+            // 変形図・モード形 = 結果の強調（ハイライト紫）
+            theme::HILITE_PURPLE
+        } else {
+            // 通常の部材 = 沈めたニュートラル（gray-700）
+            theme::GRAY_700
+        };
+        // 断面表示中は中心線を細く淡くし、ソリッドの上に材軸として薄く重ねる
+        let line_stroke = if app.show_sections {
+            egui::Stroke::new(1.0_f32, theme::translucent(line_color, 110))
+        } else {
+            egui::Stroke::new(2.0_f32, line_color)
+        };
+        for elem in &app.model.elements {
+            if !filter.shows(elem.id) {
+                continue;
+            }
+            // 壁・シェル（面要素）は半透明ポリゴンで描画
+            if element_draw_shape(elem.kind) == DrawShape::Polygon && elem.nodes.len() >= 3 {
+                let poly: Vec<egui::Pos2> = elem
+                    .nodes
+                    .iter()
+                    .filter_map(|n| {
+                        let idx = n.index();
+                        (idx < pts.len()).then(|| pts[idx])
+                    })
+                    .collect();
+                if poly.len() == elem.nodes.len() {
+                    painter.add(egui::Shape::convex_polygon(
+                        poly,
+                        theme::translucent(theme::DATA_BLUE, 50),
+                        egui::Stroke::new(1.5_f32, theme::DATA_BLUE),
+                    ));
+                }
+                continue;
+            }
+            // 線材でない要素（面要素・仕口パネル）は材軸を持たないため線で描かない
+            // （`draws_as_line`）。特に仕口パネルの節点列は「接合部の節点 ＋ 取り付く
+            // 部材の他端」なので、先頭 2 節点を結ぶと取り付く柱・梁とまったく同じ線分に
+            // なる。全部材を直線で描くうちは実部材と重なって見えないが、内部たわみ表示で
+            // 梁・柱を曲線にすると弦の直線だけが残り、部材が二重に描かれて見えてしまう。
+            if !draws_as_line(elem.kind) || elem.nodes.len() < 2 {
+                continue;
+            }
+            let n0 = elem.nodes[0].index();
+            let n1 = elem.nodes[1].index();
+            if n0 >= pts.len() || n1 >= pts.len() {
+                continue;
+            }
+
+            // 変形を表示する全モード（変形図・モード形・応力図の変形重ね）で、「内部
+            // たわみ」トグルが ON のとき、梁は端部の並進・回転から Hermite 3 次で曲げ
+            // 変形を内挿して曲線描画する（節点間の直線ではたわみが見えないため）。
+            // トグル OFF では梁も直線で描き、全体の変形だけを素直に見る。変形を表示
+            // していない（`disp` が None）モードでは常に直線。
+            let curved_beam =
+                app.show_beam_interpolation && elem.kind == squid_n_core::model::ElementKind::Beam;
+            if let (true, Some(d)) = (curved_beam, &disp) {
+                let p_i = app.model.nodes[n0].coord;
+                let p_j = app.model.nodes[n1].coord;
+                if member_len3(p_i, p_j) > 1e-9 {
+                    let poly3 =
+                        BeamDeflection::new(p_i, p_j, d[n0], d[n1], elem.local_axis.ref_vector)
+                            .polyline(deform_scale_actual, DEFORM_CURVE_SEGMENTS);
+                    let screen: Vec<egui::Pos2> = poly3.iter().map(|&p| proj.project(p)).collect();
+                    painter.add(egui::Shape::line(screen, line_stroke));
+                    continue;
+                }
+            }
+
+            // 通常（未変形・その他要素・ゼロ長梁）は節点間を直線で結ぶ。
+            painter.line_segment([pts[n0], pts[n1]], line_stroke);
+        }
+
+        // 二次部材（小梁・間柱）: 解析対象外だが実在部材なので実線で描く
+        // （解析対象外を示す暖色アンバー。スラブの暖色と同族で、主架構の
+        // 青/グレーと弁別。断面表示中はソリッドが上に描かれているため
+        // 材軸線として薄く重ねる）。
+        if show_secondary {
+            let secondary_stroke = if app.show_sections {
+                egui::Stroke::new(1.0_f32, theme::translucent(theme::SECONDARY_AMBER, 110))
+            } else {
+                egui::Stroke::new(1.5_f32, theme::SECONDARY_AMBER)
+            };
+            for sm in &app.model.secondary_members {
+                let n0 = sm.nodes[0].index();
+                let n1 = sm.nodes[1].index();
+                if !filter.shows_node(n0) || !filter.shows_node(n1) {
+                    continue;
+                }
+                if n0 < pts.len() && n1 < pts.len() {
+                    painter.line_segment([pts[n0], pts[n1]], secondary_stroke);
+                }
+            }
+        }
     }
 
-    // 二次部材（小梁・間柱）: 解析対象外だが実在部材なので実線で描く
-    // （解析対象外を示す暖色アンバー。スラブの暖色と同族で、主架構の
-    // 青/グレーと弁別。断面表示中はソリッドが上に描かれているため
-    // 材軸線として薄く重ねる）。
-    if show_secondary {
-        let secondary_stroke = if app.show_sections {
-            egui::Stroke::new(1.0_f32, theme::translucent(theme::SECONDARY_AMBER, 110))
-        } else {
-            egui::Stroke::new(1.5_f32, theme::SECONDARY_AMBER)
-        };
-        for sm in &app.model.secondary_members {
-            let n0 = sm.nodes[0].index();
-            let n1 = sm.nodes[1].index();
-            if !filter.shows_node(n0) || !filter.shows_node(n1) {
-                continue;
-            }
-            if n0 < pts.len() && n1 < pts.len() {
-                painter.line_segment([pts[n0], pts[n1]], secondary_stroke);
-            }
-        }
+    if lumped::is_lumped_view(mode) {
+        lumped::draw(&painter, app, &proj, mode, mode_idx, model_size);
     }
 
     // 構面に部材が 1 本もない場合の注記。ST-Bridge から取り込んだ、所属節点を
@@ -1439,8 +1551,16 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
 
     // 変形の実効倍率（自動倍率 × 手動係数）の注記。
     // 実変位を表示している時のみ描く（モード形は固有ベクトルの規模が任意のため
-    // 倍率に物理的な意味がなく、表示しない）。
-    if deform_scale_actual > 0.0 && mode != ViewMode::Mode {
+    // 倍率に物理的な意味がなく、表示しない）。質点時刻歴は質点変位のピークから
+    // 別に算定した倍率を使う。
+    let scale_note = if mode == ViewMode::LumpedTimeHistory {
+        lumped::display_scale(app, mode, mode_idx, model_size)
+    } else if deform_scale_actual > 0.0 && mode != ViewMode::Mode {
+        deform_scale_actual
+    } else {
+        0.0
+    };
+    if scale_note > 0.0 {
         // N/Q/M 図の凡例（min.y+10）・コンターバー＋ラベル（min.y+30〜56 程度）と
         // 重ならない位置へ
         let y = match mode {
@@ -1450,11 +1570,11 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
         };
         // 手動係数が 1.0 のときは「自動」、それ以外は「自動×係数」を併記する。
         let note = if (app.deform_scale_factor - 1.0).abs() < 1e-3 {
-            format!("変形倍率 ×{:.0}（自動）", deform_scale_actual)
+            format!("変形倍率 ×{:.0}（自動）", scale_note)
         } else {
             format!(
                 "変形倍率 ×{:.0}（自動×{:.2}）",
-                deform_scale_actual, app.deform_scale_factor
+                scale_note, app.deform_scale_factor
             )
         };
         painter.text(
