@@ -15,17 +15,18 @@ use faer::Side;
 use squid_n_math::solver::SolveError;
 
 /// 串団子モデルの固有値解析結果。
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct LumpedMassModal {
     /// 固有値 ω²（昇順、1次から）。
     pub omega2: Vec<f64>,
     /// 固有周期 T=2π/ω [s]（昇順、1次から）。
     pub period: Vec<f64>,
     /// モード形状（各層の相対変位、下層→上層。最上階の値を 1.0 に正規化）。
-    /// 立体モデルの `ModalResult::shapes`（M 正規化・別の自由度空間）とは
-    /// 正規化の基準が異なるため、形状の値どうしを直接比較しないこと
-    /// （比較できるのは周期のみ）。
+    /// 2 次元は加力方向変位。3 次元は頂部水平ノルムで正規化した水平合成。
     pub shapes: Vec<Vec<f64>>,
+    /// 3 次元のモード形状（各層 [Ux, Uy, θz]。2 次元では空）。
+    #[serde(default)]
+    pub shapes_xyz: Vec<Vec<[f64; 3]>>,
 }
 
 /// 串団子モデルの固有値解析（せん断型多質点系）。
@@ -48,6 +49,10 @@ pub fn lumped_mass_eigen(
             "層 {:?} の質量が 0 以下のため固有値解析できません",
             bad.story
         )));
+    }
+
+    if lm.is_spatial() {
+        return super::spatial::lumped_mass_eigen_spatial(lm, n_modes);
     }
 
     let mass: Vec<f64> = lm.stories.iter().map(|s| s.mass).collect();
@@ -115,6 +120,7 @@ fn eigen_from_arrays(
         omega2,
         period,
         shapes,
+        shapes_xyz: Vec::new(),
     })
 }
 
@@ -132,6 +138,16 @@ fn eigen_from_arrays(
 /// 特異（ω²=0。層剛性 K1=0 の層がある場合等）のときのみ、旧来の逆反復法
 /// （[`super::time_history::fundamental_omega`]）へフォールバックする。
 pub(crate) fn stick_omega1(lm: &LumpedMassModel) -> f64 {
+    if lm.is_spatial() {
+        if let Ok(modal) = super::spatial::lumped_mass_eigen_spatial(lm, 1) {
+            if let Some(&w2) = modal.omega2.first() {
+                if w2 > 0.0 {
+                    return w2.sqrt();
+                }
+            }
+        }
+    }
+
     let mass: Vec<f64> = lm.stories.iter().map(|s| s.mass).collect();
     let k1: Vec<f64> = lm.stories.iter().map(|s| s.skeleton.k1.max(0.0)).collect();
 

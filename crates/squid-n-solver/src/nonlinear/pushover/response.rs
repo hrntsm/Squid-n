@@ -89,7 +89,7 @@ pub(crate) fn compute_story_shear(
 /// **節点 ID の最小のもの**を採る。ここが不定だと、同じモデル・同じ解析でも
 /// 層間変位と変位制御の基準点が入れ替わり、結果が再現しなくなる。
 /// 代表を採れない階（所属節点がない階）は `None`。
-pub(crate) fn story_reference_node(model: &Model, story: &Story) -> Option<NodeId> {
+pub fn story_reference_node(model: &Model, story: &Story) -> Option<NodeId> {
     if let Some(dia) = model.diaphragms_of(story.id).next() {
         return Some(dia.master);
     }

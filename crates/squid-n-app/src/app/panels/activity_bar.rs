@@ -34,6 +34,7 @@ enum ActivityGlyph {
     Eigen,
     Pushover,
     TimeHistory,
+    LumpedMass,
 }
 
 impl ActivityGlyph {
@@ -47,6 +48,7 @@ impl ActivityGlyph {
             Self::Eigen => "activity_icon_eigen",
             Self::Pushover => "activity_icon_pushover",
             Self::TimeHistory => "activity_icon_time_history",
+            Self::LumpedMass => "activity_icon_lumped_mass",
         }
     }
 
@@ -60,6 +62,7 @@ impl ActivityGlyph {
             Self::Eigen => include_bytes!("../../../assets/icons/eigen.svg"),
             Self::Pushover => include_bytes!("../../../assets/icons/pushover.svg"),
             Self::TimeHistory => include_bytes!("../../../assets/icons/time_history.svg"),
+            Self::LumpedMass => include_bytes!("../../../assets/icons/lumped_mass.svg"),
         }
     }
 }
@@ -281,6 +284,19 @@ impl App {
                 && toggle_dock_icon(&mut self.right_dock_open, is_th_active)
             {
                 self.right_panel = RightPanel::TimeHistory;
+            }
+            let is_lm_active = self.right_dock_open && self.right_panel == RightPanel::LumpedMass;
+            if activity_icon_button(
+                ui,
+                ActivityGlyph::LumpedMass,
+                is_lm_active,
+                ActivityAccentEdge::Right,
+                "質点系",
+            )
+            .clicked()
+                && toggle_dock_icon(&mut self.right_dock_open, is_lm_active)
+            {
+                self.right_panel = RightPanel::LumpedMass;
             }
         });
     }

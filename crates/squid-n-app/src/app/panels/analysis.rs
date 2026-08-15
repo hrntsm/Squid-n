@@ -649,4 +649,231 @@ impl App {
         };
         self.start_time_history_job(wave);
     }
+
+    /// 右ドック「質点系」パネル。
+    pub(crate) fn lumped_mass_analysis_panel(&mut self, ui: &mut egui::Ui) {
+        use squid_n_solver::lumped_mass::{LumpedStiffnessSource, StickDim};
+
+        ui.heading("質点系");
+        ui.separator();
+        self.analysis_status_header(ui);
+        ui.separator();
+        let running = self.job.is_some();
+
+        ui.horizontal_wrapped(|ui| {
+            ui.label("次元:");
+            ui.selectable_value(&mut self.analysis_cfg.lumped_dim, StickDim::Planar, "2次元");
+            ui.selectable_value(
+                &mut self.analysis_cfg.lumped_dim,
+                StickDim::Spatial,
+                "3次元",
+            );
+            ui.separator();
+            ui.checkbox(&mut self.analysis_cfg.lumped_nonlinear, "非線形");
+        });
+        ui.horizontal_wrapped(|ui| {
+            ui.label("方向:");
+            ui.selectable_value(&mut self.analysis_cfg.lumped_dir, SeismicDir::X, "X");
+            ui.selectable_value(&mut self.analysis_cfg.lumped_dir, SeismicDir::Y, "Y");
+            ui.separator();
+            ui.label("剛性:");
+            let stiff_enabled = !self.analysis_cfg.lumped_nonlinear;
+            ui.add_enabled_ui(stiff_enabled, |ui| {
+                egui::ComboBox::from_id_salt("lumped_stiffness")
+                    .selected_text(self.analysis_cfg.lumped_stiffness.label())
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(
+                            &mut self.analysis_cfg.lumped_stiffness,
+                            LumpedStiffnessSource::StoryQd,
+                            LumpedStiffnessSource::StoryQd.label(),
+                        );
+                        ui.selectable_value(
+                            &mut self.analysis_cfg.lumped_stiffness,
+                            LumpedStiffnessSource::ColumnKi,
+                            LumpedStiffnessSource::ColumnKi.label(),
+                        );
+                    });
+            });
+            if !stiff_enabled {
+                ui.colored_label(
+                    crate::theme::GRAY_600,
+                    "非線形時の並進剛性は増分の初期剛性です",
+                );
+            }
+        });
+        ui.horizontal_wrapped(|ui| {
+            ui.label("モード数:");
+            ui.add(egui::DragValue::new(&mut self.analysis_cfg.lumped_n_modes).range(1..=30));
+            if self.analysis_cfg.lumped_nonlinear {
+                ui.separator();
+                ui.label("第1折点 割線比:");
+                ui.add(
+                    egui::DragValue::new(&mut self.analysis_cfg.lumped_secant_ratio)
+                        .speed(0.01)
+                        .range(0.3..=0.95),
+                );
+            }
+        });
+
+        let has_ex = self
+            .results
+            .as_ref()
+            .and_then(|r| r.seismic(SeismicDir::X))
+            .is_some();
+        let has_ey = self
+            .results
+            .as_ref()
+            .and_then(|r| r.seismic(SeismicDir::Y))
+            .is_some();
+        let has_px = self
+            .results
+            .as_ref()
+            .and_then(|r| r.pushover_x.as_ref())
+            .is_some();
+        let has_py = self
+            .results
+            .as_ref()
+            .and_then(|r| r.pushover_y.as_ref())
+            .is_some();
+        let spatial = self.analysis_cfg.lumped_dim == StickDim::Spatial;
+        let nl = self.analysis_cfg.lumped_nonlinear;
+
+        if !nl {
+            let need = if spatial {
+                "線形の 3 次元質点系には地震静的 EX と EY の両方が必要です。"
+            } else if self.analysis_cfg.lumped_dir == SeismicDir::X {
+                "線形の 2 次元質点系には地震静的 EX が必要です。"
+            } else {
+                "線形の 2 次元質点系には地震静的 EY が必要です。"
+            };
+            let ok = if spatial {
+                has_ex && has_ey
+            } else if self.analysis_cfg.lumped_dir == SeismicDir::X {
+                has_ex
+            } else {
+                has_ey
+            };
+            if !ok {
+                ui.colored_label(crate::theme::WARN_TEXT, need);
+            }
+        } else {
+            let need = if spatial {
+                "非線形の 3 次元質点系には X・Y 両方の増分解析と、ねじり剛性のための EX/EY が必要です。"
+            } else if self.analysis_cfg.lumped_dir == SeismicDir::X {
+                "非線形の 2 次元質点系には X 方向の増分解析が必要です。"
+            } else {
+                "非線形の 2 次元質点系には Y 方向の増分解析が必要です。"
+            };
+            let ok = if spatial {
+                has_px && has_py && has_ex && has_ey
+            } else if self.analysis_cfg.lumped_dir == SeismicDir::X {
+                has_px
+            } else {
+                has_py
+            };
+            if !ok {
+                ui.colored_label(crate::theme::WARN_TEXT, need);
+            }
+        }
+        if spatial {
+            ui.colored_label(
+                crate::theme::GRAY_600,
+                "3 次元のねじりばね（KR）は常に線形です。",
+            );
+        }
+
+        ui.separator();
+        ui.label("時刻歴（立体時刻歴とは独立）");
+        ui.horizontal_wrapped(|ui| {
+            ui.label("減衰比 h:");
+            ui.add(
+                egui::DragValue::new(&mut self.analysis_cfg.lumped_th_damping)
+                    .speed(0.005)
+                    .range(0.0..=0.2),
+            );
+            ui.label("dt[s]");
+            ui.add(
+                egui::DragValue::new(&mut self.analysis_cfg.lumped_th_dt)
+                    .speed(0.001)
+                    .range(0.001..=0.1),
+            );
+            ui.label("継続[s]");
+            ui.add(
+                egui::DragValue::new(&mut self.analysis_cfg.lumped_th_duration)
+                    .speed(0.5)
+                    .range(0.1..=60.0),
+            );
+        });
+        ui.horizontal_wrapped(|ui| {
+            ui.label("サンプル周期[s]");
+            ui.add(
+                egui::DragValue::new(&mut self.analysis_cfg.lumped_th_period)
+                    .speed(0.05)
+                    .range(0.05..=5.0),
+            );
+            ui.label("振幅[mm/s²]");
+            ui.add(
+                egui::DragValue::new(&mut self.analysis_cfg.lumped_th_amp)
+                    .speed(50.0)
+                    .range(1.0..=20000.0),
+            );
+        });
+
+        ui.horizontal_wrapped(|ui| {
+            if ui
+                .add_enabled(!running, egui::Button::new("▶ 固有値を実行"))
+                .clicked()
+            {
+                self.start_lumped_mass_eigen_job();
+            }
+            if ui
+                .add_enabled(!running, egui::Button::new("▶ サンプル波で時刻歴"))
+                .clicked()
+            {
+                self.start_lumped_mass_sample_th_job();
+            }
+            if self
+                .job
+                .as_ref()
+                .is_some_and(|j| j.label.starts_with("質点系"))
+            {
+                ui.spinner();
+            }
+        });
+
+        ui.horizontal_wrapped(|ui| {
+            ui.label("波形ライブラリ:");
+            let lib_dir = squid_n_io::wave_library::wave_library_dir();
+            let names: Vec<String> = lib_dir
+                .as_deref()
+                .and_then(|d| squid_n_io::wave_library::list_wave_library(d).ok())
+                .unwrap_or_default();
+            if names.is_empty() {
+                ui.colored_label(crate::theme::GRAY_600, "登録された波形がありません");
+            } else {
+                let selected_text = self
+                    .lumped_wave_library_selection
+                    .clone()
+                    .unwrap_or_else(|| "(選択してください)".to_string());
+                let mut picked = self.lumped_wave_library_selection.clone();
+                egui::ComboBox::from_id_salt("lumped_wave_library_select")
+                    .selected_text(selected_text)
+                    .show_ui(ui, |ui| {
+                        for name in &names {
+                            ui.selectable_value(&mut picked, Some(name.clone()), name);
+                        }
+                    });
+                self.set_lumped_wave_library_selection(picked);
+            }
+            if ui
+                .add_enabled(
+                    !running && self.lumped_wave_library_selection.is_some(),
+                    egui::Button::new("▶ 選択波形で時刻歴"),
+                )
+                .clicked()
+            {
+                self.start_lumped_mass_library_th_job();
+            }
+        });
+    }
 }

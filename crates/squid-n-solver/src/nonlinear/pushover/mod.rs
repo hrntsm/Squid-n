@@ -25,6 +25,7 @@ mod shear_yield;
 mod types;
 
 pub use driver::{pushover_analysis, pushover_analysis_recording};
+pub use response::story_reference_node;
 pub use types::{
     CapacityPoint, DuctilityMethod, HingeEvent, HingeLevel, MechanismType, MemberHistory,
     MemberStepState, PushoverControl, PushoverMemberResponse, PushoverResult, PushoverStep,

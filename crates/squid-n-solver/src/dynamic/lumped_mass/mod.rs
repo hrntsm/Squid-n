@@ -15,14 +15,24 @@
 
 mod eigen;
 mod model;
+mod spatial;
 mod time_history;
 
 pub use eigen::{lumped_mass_eigen, LumpedMassModal};
 pub use model::{
-    build_lumped_mass_model, fit_story_trilinear, LumpedMassModel, LumpedMassType, StoryStick,
-    StoryTrilinear,
+    build_lumped_mass_model, fit_story_trilinear, LumpedMassModel, LumpedMassType,
+    LumpedStiffnessSource, StickDim, StorySpatial, StoryStick, StoryTrilinear,
 };
-pub use time_history::{lumped_mass_time_history, StickResponse, STICK_NEWTON};
+pub use time_history::{lumped_mass_time_history, StickDirPeaks, StickResponse, STICK_NEWTON};
+
+/// 質点系解析の保存用結果（モデル・固有値・時刻歴）。
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct LumpedMassResult {
+    pub model: LumpedMassModel,
+    pub modal: LumpedMassModal,
+    #[serde(default)]
+    pub response: Option<StickResponse>,
+}
 
 // tests は両サブモジュールの非公開項目（`pub(crate)`）を `super::*` で参照するため、
 // テストビルド時のみ mod.rs 名前空間へ取り込む。
@@ -38,6 +48,7 @@ use time_history::{fundamental_omega, solve_tridiagonal};
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::analysis::SeismicDir;
 
     #[test]
     fn test_fit_trilinear_equal_area_and_endpoints() {
@@ -286,6 +297,11 @@ mod tests {
     fn test_lumped_mass_eigen_two_dof_analytic() {
         let lm = LumpedMassModel {
             model_type: LumpedMassType::EquivalentShear,
+            dim: StickDim::Planar,
+            stiffness_source: LumpedStiffnessSource::StoryQd,
+            dir: SeismicDir::X,
+            nonlinear: true,
+            spatial: Vec::new(),
             stories: vec![
                 stick(1.0, 1.0, 0.1, 0.3, 0.7, 1.0, 0.8),
                 stick(1.0, 1.0, 0.1, 0.3, 0.7, 1.0, 0.8),
@@ -321,6 +337,11 @@ mod tests {
     fn test_lumped_mass_eigen_matches_power_iteration_omega1() {
         let lm = LumpedMassModel {
             model_type: LumpedMassType::EquivalentShear,
+            dim: StickDim::Planar,
+            stiffness_source: LumpedStiffnessSource::StoryQd,
+            dir: SeismicDir::X,
+            nonlinear: true,
+            spatial: Vec::new(),
             stories: vec![
                 stick(2.0, 2000.0, 0.1, 0.3, 250.0, 1.0, 300.0),
                 stick(1.5, 1500.0, 0.1, 0.3, 200.0, 1.0, 260.0),
@@ -344,6 +365,11 @@ mod tests {
     fn test_lumped_mass_eigen_rejects_non_positive_mass() {
         let lm = LumpedMassModel {
             model_type: LumpedMassType::EquivalentShear,
+            dim: StickDim::Planar,
+            stiffness_source: LumpedStiffnessSource::StoryQd,
+            dir: SeismicDir::X,
+            nonlinear: true,
+            spatial: Vec::new(),
             stories: vec![stick(0.0, 1000.0, 0.1, 0.3, 250.0, 1.0, 300.0)],
         };
         let err = lumped_mass_eigen(&lm, 1).unwrap_err();
@@ -362,6 +388,11 @@ mod tests {
     fn test_stick_omega1_survives_zero_mass_story_without_blowing_up() {
         let healthy = LumpedMassModel {
             model_type: LumpedMassType::EquivalentShear,
+            dim: StickDim::Planar,
+            stiffness_source: LumpedStiffnessSource::StoryQd,
+            dir: SeismicDir::X,
+            nonlinear: true,
+            spatial: Vec::new(),
             stories: vec![
                 stick(2.0, 2000.0, 0.1, 0.3, 250.0, 1.0, 300.0),
                 stick(1.5, 1500.0, 0.1, 0.3, 200.0, 1.0, 260.0),
@@ -371,6 +402,11 @@ mod tests {
 
         let with_zero_mass_story = LumpedMassModel {
             model_type: LumpedMassType::EquivalentShear,
+            dim: StickDim::Planar,
+            stiffness_source: LumpedStiffnessSource::StoryQd,
+            dir: SeismicDir::X,
+            nonlinear: true,
+            spatial: Vec::new(),
             stories: vec![
                 stick(2.0, 2000.0, 0.1, 0.3, 250.0, 1.0, 300.0),
                 stick(0.0, 1500.0, 0.1, 0.3, 200.0, 1.0, 260.0),
@@ -398,6 +434,11 @@ mod tests {
     fn test_stick_omega1_survives_zero_stiffness_story_without_blowing_up() {
         let healthy = LumpedMassModel {
             model_type: LumpedMassType::EquivalentShear,
+            dim: StickDim::Planar,
+            stiffness_source: LumpedStiffnessSource::StoryQd,
+            dir: SeismicDir::X,
+            nonlinear: true,
+            spatial: Vec::new(),
             stories: vec![
                 stick(2.0, 2000.0, 0.1, 0.3, 250.0, 1.0, 300.0),
                 stick(1.5, 1500.0, 0.1, 0.3, 200.0, 1.0, 260.0),
@@ -407,6 +448,11 @@ mod tests {
 
         let with_zero_stiffness_story = LumpedMassModel {
             model_type: LumpedMassType::EquivalentShear,
+            dim: StickDim::Planar,
+            stiffness_source: LumpedStiffnessSource::StoryQd,
+            dir: SeismicDir::X,
+            nonlinear: true,
+            spatial: Vec::new(),
             stories: vec![
                 stick(2.0, 0.0, 0.1, 0.3, 250.0, 1.0, 300.0),
                 stick(1.5, 1500.0, 0.1, 0.3, 200.0, 1.0, 260.0),
@@ -431,6 +477,11 @@ mod tests {
     fn test_lumped_mass_eigen_truncates_to_story_count() {
         let lm = LumpedMassModel {
             model_type: LumpedMassType::EquivalentShear,
+            dim: StickDim::Planar,
+            stiffness_source: LumpedStiffnessSource::StoryQd,
+            dir: SeismicDir::X,
+            nonlinear: true,
+            spatial: Vec::new(),
             stories: vec![stick(1.0, 1000.0, 0.1, 0.3, 250.0, 1.0, 300.0)],
         };
         let modal = lumped_mass_eigen(&lm, 5).expect("固有値分解に成功する");
@@ -444,6 +495,11 @@ mod tests {
     fn test_stick_th_zero_input_zero_response() {
         let lm = LumpedMassModel {
             model_type: LumpedMassType::EquivalentShear,
+            dim: StickDim::Planar,
+            stiffness_source: LumpedStiffnessSource::StoryQd,
+            dir: SeismicDir::X,
+            nonlinear: true,
+            spatial: Vec::new(),
             stories: vec![stick(1.0, 1000.0, 0.1, 0.3, 140.0, 1.0, 160.0)],
         };
         let res = lumped_mass_time_history(&lm, &vec![0.0; 200], 0.01, 0.02);
@@ -456,6 +512,11 @@ mod tests {
         // 正弦地動で応答が非ゼロかつ有限。
         let lm = LumpedMassModel {
             model_type: LumpedMassType::EquivalentShear,
+            dim: StickDim::Planar,
+            stiffness_source: LumpedStiffnessSource::StoryQd,
+            dir: SeismicDir::X,
+            nonlinear: true,
+            spatial: Vec::new(),
             stories: vec![
                 stick(1.0, 2000.0, 0.1, 0.3, 250.0, 1.0, 300.0),
                 stick(1.0, 1500.0, 0.1, 0.3, 200.0, 1.0, 260.0),
@@ -473,6 +534,14 @@ mod tests {
             "should show nonzero roof response"
         );
         assert_eq!(res.story_peak_drift.len(), 2);
+        assert_eq!(res.drift_dir.x.len(), 2);
+        assert!(
+            (res.drift_dir.x[0] - res.story_peak_drift[0]).abs() < 1e-12
+                && res.drift_dir.y[0].abs() < 1e-12,
+            "2 次元 X 加振の層間は X=最大・Y=0"
+        );
+        let s2 = std::f64::consts::FRAC_1_SQRT_2;
+        assert!((res.drift_dir.deg45[0] - res.story_peak_drift[0] * s2).abs() < 1e-9);
     }
 
     #[test]
@@ -480,6 +549,11 @@ mod tests {
         // 強い地動で層が降伏（塑性率 μ>1）。
         let lm = LumpedMassModel {
             model_type: LumpedMassType::EquivalentShear,
+            dim: StickDim::Planar,
+            stiffness_source: LumpedStiffnessSource::StoryQd,
+            dir: SeismicDir::X,
+            nonlinear: true,
+            spatial: Vec::new(),
             stories: vec![stick(2.0, 1000.0, 0.5, 2.0, 700.0, 8.0, 800.0)],
         };
         let dt = 0.01;

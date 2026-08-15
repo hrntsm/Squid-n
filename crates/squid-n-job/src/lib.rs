@@ -24,6 +24,7 @@ pub mod compute;
 pub mod design_q0;
 pub mod error;
 pub mod floor_grillage;
+pub mod lumped_mass;
 pub mod prepare;
 pub mod sample_wave;
 pub mod settings;
@@ -39,8 +40,11 @@ pub use design_q0::{
     sum_analyzed_gravity_member_forces, sum_member_forces_lists,
 };
 pub use error::{JobError, JobResult};
+pub use lumped_mass::{build_lumped_mass, LumpedMassBuildInput};
 pub use prepare::{apply_rigid_zones_and_panels, prepare_model_for_analysis, PrepareReport};
-pub use sample_wave::{build_ground_motion, sample_ground_motion};
+pub use sample_wave::{
+    build_ground_motion, lumped_accel_from_wave, sample_ground_motion, sample_lumped_ground_motion,
+};
 pub use settings::AnalysisSettings;
 pub use ultimate_demand::{
     member_demand_from_pushover, member_demand_from_static_forces, q_long_map_from_member_forces,

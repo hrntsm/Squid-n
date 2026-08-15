@@ -41,10 +41,11 @@ impl App {
                 "階が未定義です。解析タブの「準備計算 実行」を行ってください。".to_string(),
             );
         }
+        let view_dir = self.pushover_view_dir;
         let po = self
             .results
             .as_ref()
-            .and_then(|r| r.pushover.as_ref())
+            .and_then(|r| r.pushover_for_dir(view_dir).or(r.pushover.as_ref()))
             .ok_or_else(|| {
                 "増分解析未実行です。解析タブから増分解析を実行してください。".to_string()
             })?;

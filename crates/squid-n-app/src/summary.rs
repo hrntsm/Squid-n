@@ -394,7 +394,7 @@ pub fn build_report_csv(app: &App) -> String {
         }
     }
 
-    if let Some(po) = &results.pushover {
+    if let Some(po) = app.displayed_pushover() {
         let control = match po.control {
             squid_n_solver::pushover::PushoverControl::Phased => "段階制御",
             squid_n_solver::pushover::PushoverControl::LoadOnly => "荷重増分のみ",
@@ -844,7 +844,10 @@ pub fn has_report_content(results: &Option<ResultsBundle>) -> bool {
             !r.statics.is_empty()
                 || r.modal.is_some()
                 || r.pushover.is_some()
+                || r.pushover_x.is_some()
+                || r.pushover_y.is_some()
                 || r.time_history.is_some()
+                || r.lumped.is_some()
         })
         .unwrap_or(false)
 }

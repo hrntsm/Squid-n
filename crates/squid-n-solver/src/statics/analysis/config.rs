@@ -1,7 +1,8 @@
 //! 地震・風の静的解析の設定型。
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub enum SeismicDir {
+    #[default]
     X,
     Y,
 }

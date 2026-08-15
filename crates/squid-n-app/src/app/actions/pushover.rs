@@ -5,6 +5,43 @@
 use super::*;
 
 impl App {
+    /// 方向別スロットの増分解析結果を返す。
+    pub fn pushover_for(
+        &self,
+        dir: SeismicDir,
+    ) -> Option<&squid_n_solver::pushover::PushoverResult> {
+        let results = self.results.as_ref()?;
+        results.pushover_for_dir(dir)
+    }
+
+    /// 結果タブ・設計タブで表示中の増分解析結果を返す。
+    pub fn displayed_pushover(&self) -> Option<&squid_n_solver::pushover::PushoverResult> {
+        let view_dir = self.pushover_view_dir;
+        let results = self.results.as_ref()?;
+        results
+            .pushover_for_dir(view_dir)
+            .or(results.pushover.as_ref())
+    }
+
+    /// 結果タブの増分解析表示方向を切り替え、`pushover` 窓口も同期する。
+    #[cfg(any(test, feature = "gui"))]
+    pub(crate) fn set_pushover_view_dir(&mut self, dir: SeismicDir) {
+        if self.pushover_view_dir == dir {
+            return;
+        }
+        self.pushover_view_dir = dir;
+        if let Some(bundle) = self.results.as_mut() {
+            bundle.pushover = bundle.pushover_for_dir(dir).cloned();
+        }
+    }
+
+    /// 保存直前に `pushover` 窓口を表示中方向へ同期する。
+    pub(crate) fn sync_pushover_for_save(&mut self) {
+        if let Some(bundle) = self.results.as_mut() {
+            bundle.pushover = bundle.pushover_for_dir(self.pushover_view_dir).cloned();
+        }
+    }
+
     /// `compute_pushover` の結果を適用する（bundle 格納・最終実行時刻更新・エラー設定）。
     pub(super) fn apply_pushover_result(
         &mut self,
@@ -20,9 +57,15 @@ impl App {
                         result.termination.describe()
                     ));
                 }
+                let dir = self.analysis_cfg.push_dir;
                 let mut bundle = self.results.take().unwrap_or_default();
+                match dir {
+                    SeismicDir::X => bundle.pushover_x = Some(result.clone()),
+                    SeismicDir::Y => bundle.pushover_y = Some(result.clone()),
+                }
                 bundle.pushover = Some(result);
                 self.results = Some(bundle);
+                self.pushover_view_dir = dir;
                 // mark_fresh で stale を解消する（`apply_static_case_result` と同じ扱い）。
                 // last_run の更新だけでは results_stale が立ったままになり、編集後に
                 // 増分解析だけを実行してもビューアが「再実行してください」表示のまま

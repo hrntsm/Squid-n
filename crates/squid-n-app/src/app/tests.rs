@@ -1210,6 +1210,65 @@ fn test_pushover_flow() {
     assert!(app.last_error.is_none(), "{:?}", app.last_error);
     let po = app.results.as_ref().unwrap().pushover.as_ref().unwrap();
     assert!(!po.capacity_curve.is_empty());
+    assert!(app.results.as_ref().unwrap().pushover_x.is_some());
+}
+
+/// 旧 `.scz` 形式（`pushover` のみ）が `push_dir` のスロットへ移行されること。
+#[test]
+fn test_legacy_pushover_deserialize_migrates_to_slot() {
+    use squid_n_solver::analysis::SeismicDir;
+
+    let legacy = ResultsBundle {
+        pushover: Some(squid_n_solver::pushover::PushoverResult {
+            steps: vec![],
+            capacity_curve: vec![],
+            hinges: vec![],
+            shear_yields: vec![],
+            mechanism: squid_n_solver::pushover::MechanismType::Partial,
+            qu: 123.0,
+            member_response: vec![],
+            control: Default::default(),
+            member_history: vec![],
+            fiber_states: vec![],
+            termination: Default::default(),
+        }),
+        ..Default::default()
+    };
+    let bytes = rmp_serde::to_vec(&legacy).unwrap();
+    let mut bundle: ResultsBundle = rmp_serde::from_slice(&bytes).unwrap();
+    bundle.migrate_legacy_pushover(SeismicDir::X);
+    assert!(bundle.pushover_x.is_some());
+    assert_eq!(bundle.pushover_x.as_ref().unwrap().qu, 123.0);
+    assert!(bundle.pushover_y.is_none());
+}
+
+/// X/Y 方向を別スロットに格納し、表示方向切替で `pushover` 窓口が同期されること。
+#[test]
+fn test_pushover_x_y_slots_and_view_dir() {
+    use squid_n_solver::analysis::SeismicDir;
+
+    let mut app = App::default();
+    app.load_model(crate::sample::portal_frame());
+    app.generate_stories_action();
+    app.analysis_cfg.push_steps = 5;
+
+    app.analysis_cfg.push_dir = SeismicDir::X;
+    app.run_pushover();
+    let qu_x = app.displayed_pushover().unwrap().qu;
+
+    app.analysis_cfg.push_dir = SeismicDir::Y;
+    app.run_pushover();
+    let qu_y = app.displayed_pushover().unwrap().qu;
+
+    assert!(app.results.as_ref().unwrap().pushover_x.is_some());
+    assert!(app.results.as_ref().unwrap().pushover_y.is_some());
+    assert_eq!(app.pushover_view_dir, SeismicDir::Y);
+
+    app.set_pushover_view_dir(SeismicDir::X);
+    assert_eq!(app.pushover_view_dir, SeismicDir::X);
+    assert!((app.displayed_pushover().unwrap().qu - qu_x).abs() < 1e-6);
+    app.set_pushover_view_dir(SeismicDir::Y);
+    assert!((app.displayed_pushover().unwrap().qu - qu_y).abs() < 1e-6);
 }
 
 /// プッシュオーバー結果から質点系（串団子）モデルを生成する配線の end-to-end 確認。
@@ -6241,7 +6300,7 @@ fn test_load_model_resets_model_derived_state() {
         story_peak_drift: vec![0.0],
         story_peak_shear: vec![0.0],
         story_ductility: vec![0.0],
-        non_converged_steps: 0,
+        ..Default::default()
     });
     app.generated_panels
         .push(squid_n_element::panel_gen::GeneratedPanel {
