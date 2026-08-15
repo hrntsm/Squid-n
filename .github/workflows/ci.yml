@@ -1,13 +1,11 @@
 name: CI
 
 on:
-  push:
-    branches: [main]
   pull_request:
     branches: [main]
 
-# 同一ブランチ/PRへの新しい push 時に、進行中の古い実行をキャンセルする。
-# main への push は通常 1 件のため実害なく、PR の待ち時間とランナー消費を削減する。
+# 同一 PR への新しい push 時に、進行中の古い実行をキャンセルする。
+# 品質ゲートは PR マージ前のみ。main へのマージ後は docs デプロイ（docs.yml）のみ実行する。
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
