@@ -1,6 +1,7 @@
 //! 質点系解析。
 
 use super::*;
+use crate::app::vibration::{lumped_vibration_dim_from_stick, lumped_vibration_dir_from_seismic};
 use squid_n_solver::lumped_mass::LumpedMassResult;
 
 impl App {
@@ -64,16 +65,54 @@ impl App {
         }
     }
 
-    pub(super) fn apply_lumped_mass_result(&mut self, res: Result<LumpedMassResult, String>) {
+    pub(crate) fn apply_lumped_mass_result(&mut self, res: Result<LumpedMassResult, String>) {
         match res {
             Ok(result) => {
-                self.stick_response = result.response.clone();
                 let mut bundle = self.results.take().unwrap_or_default();
-                bundle.lumped = Some(result);
-                self.results = Some(bundle);
-                self.staleness.last_run = Some(SystemTime::now());
+                if result.response.is_some() {
+                    let wave_name = self.lumped_th_wave_name();
+                    let dir = lumped_vibration_dir_from_seismic(self.analysis_cfg.lumped_dir);
+                    let dim = lumped_vibration_dim_from_stick(result.model.dim);
+                    let case_id = self.model.upsert_lumped_vibration_case(
+                        wave_name,
+                        dir,
+                        self.analysis_cfg.lumped_nonlinear,
+                        dim,
+                    );
+                    bundle.upsert_lumped_result(case_id, result.clone());
+                    self.results = Some(bundle);
+                    self.set_lumped_mass_view(Some(case_id), &result);
+                    self.staleness.mark_non_calc_edited();
+                    self.staleness.mark_fresh();
+                } else {
+                    // 固有値のみ。時刻歴ケースは作らず、表示中モデルだけ更新する。
+                    // `stick_response` を残すと、結果パネルが旧時刻歴のピークを
+                    // `lumped.response.or(stick_response)` で拾ってしまう。
+                    self.results = Some(bundle);
+                    self.set_lumped_mass_view(None, &result);
+                    self.staleness.mark_non_calc_edited();
+                    self.staleness.last_run = Some(SystemTime::now());
+                }
+                self.last_error = None;
             }
             Err(e) => self.report_error(e),
+        }
+    }
+
+    /// 質点系の固有モードを 3D ビューアの「質点モード」で表示する。
+    ///
+    /// 結果タブの「質点系」は表とグラフなので、そこに切り替えるとモード形が
+    /// 見えない。立体の固有値と同じく、3D ビューア側の表示モードを切り替える。
+    #[cfg(any(test, feature = "gui"))]
+    #[cfg_attr(not(feature = "gui"), allow(unused_variables))]
+    pub(crate) fn select_lumped_eigen_mode(&mut self, mode_idx: usize) {
+        self.nav.focus_result = None;
+        self.active_tab = Tab::Results;
+        #[cfg(feature = "gui")]
+        {
+            self.results_view = ResultsView::Spatial;
+            self.view_mode = crate::viewer::ViewMode::LumpedMode;
+            self.view_mode_idx = mode_idx;
         }
     }
 

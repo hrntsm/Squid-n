@@ -18,6 +18,62 @@ impl App {
             ui.strong("インスペクタ");
             ui.separator();
 
+            if let Some(id) = self.nav.focus_vibration_case {
+                if let Some(case) = self.model.vibration_cases.iter().find(|c| c.id == id) {
+                    ui.strong("立体振動ケース（選択中）");
+                    ui.label(format!("名称: {}", case.name));
+                    ui.label(format!("波形: {}", case.wave_name));
+                    ui.label(format!(
+                        "方向: {}",
+                        match case.dir {
+                            squid_n_core::model::VibrationThDir::X => "X",
+                            squid_n_core::model::VibrationThDir::Y => "Y",
+                            squid_n_core::model::VibrationThDir::Xy => "X+Y",
+                        }
+                    ));
+                    ui.label(format!(
+                        "解析: {}",
+                        if case.nonlinear {
+                            "非線形"
+                        } else {
+                            "線形"
+                        }
+                    ));
+                    ui.separator();
+                }
+            } else if let Some(id) = self.nav.focus_lumped_vibration_case {
+                if let Some(case) = self
+                    .model
+                    .lumped_vibration_cases
+                    .iter()
+                    .find(|c| c.id == id)
+                {
+                    ui.strong("質点系振動ケース（選択中）");
+                    ui.label(format!("名称: {}", case.name));
+                    ui.label(format!("波形: {}", case.wave_name));
+                    ui.label(format!(
+                        "方向: {}",
+                        match case.dir {
+                            squid_n_core::model::LumpedVibrationDir::X => "X",
+                            squid_n_core::model::LumpedVibrationDir::Y => "Y",
+                        }
+                    ));
+                    ui.label(format!(
+                        "解析: {}・{}",
+                        if case.nonlinear {
+                            "非線形"
+                        } else {
+                            "線形"
+                        },
+                        match case.dim {
+                            squid_n_core::model::LumpedVibrationDim::Planar => "2次元",
+                            squid_n_core::model::LumpedVibrationDim::Spatial => "3次元",
+                        }
+                    ));
+                    ui.separator();
+                }
+            }
+
             // 選択された部材の諸元
             if let Some(elem_id) = self.nav.focus_member {
                 if let Some(e) = self.model.element(elem_id) {

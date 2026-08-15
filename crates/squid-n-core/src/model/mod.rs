@@ -16,6 +16,7 @@ mod section;
 mod slab;
 mod story;
 mod stress_cfg;
+mod vibration;
 mod wall;
 
 pub use aggregate::*;
@@ -32,6 +33,7 @@ pub use section::*;
 pub use slab::*;
 pub use story::*;
 pub use stress_cfg::*;
+pub use vibration::*;
 pub use wall::*;
 
 #[cfg(test)]

@@ -142,6 +142,7 @@ impl App {
     }
     /// 結果タブの「表示対象」ドロップダウン用の選択肢（キーと表示名）を収集する。
     /// 静的ケース（ユーザー荷重・地震静的）に続けて荷重組合せを並べる。
+    /// ラベルはナビゲータの葉ノードと揃える（[`super::nav_results`]）。
     fn result_display_options(&self) -> Vec<(StaticKey, String)> {
         let mut opts = Vec::new();
         if let Some(r) = &self.results {
@@ -155,10 +156,11 @@ impl App {
                             .find(|lc| lc.id == *id)
                             .map(|lc| lc.name.as_str())
                             .unwrap_or("");
-                        format!("LC {} {}", id.0, nm)
+                        super::nav_results::user_static_label(nm)
                     }
-                    StaticCaseKey::Seismic(SeismicDir::X) => "地震静的 (X方向)".to_string(),
-                    StaticCaseKey::Seismic(SeismicDir::Y) => "地震静的 (Y方向)".to_string(),
+                    StaticCaseKey::Seismic(dir) => {
+                        super::nav_results::seismic_static_label(*dir).to_string()
+                    }
                 };
                 opts.push((StaticKey::Case(*key), label));
             }

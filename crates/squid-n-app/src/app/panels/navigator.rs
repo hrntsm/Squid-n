@@ -51,6 +51,8 @@ impl App {
 
             self.nav_load_cases(ui);
 
+            self.nav_vibration_cases(ui);
+
             // 部材リスト（クリックで focus_member を更新 → テーブル/インスペクタに連動）
             let header = egui::CollapsingHeader::new("部材一覧")
                 .default_open(false)
@@ -80,63 +82,7 @@ impl App {
                 );
             });
 
-            // 結果ケース：静的解析結果／荷重組合せ結果をクリックで表示対象に選択できる。
-            // 選択は変位図だけでなく応力図・断面検定（長期/短期）まで切り替える
-            // （`select_displayed_result`）。クロージャ内では self を可変借用できないため、
-            // クリックされたキーを一旦退避し、クロージャの外で適用する。
-            let mut nav_selected: Option<StaticKey> = None;
-            let header = egui::CollapsingHeader::new("結果ケース")
-                .default_open(true)
-                .id_salt("nav_result_cases");
-            header.show(ui, |ui| {
-                if let Some(r) = &self.results {
-                    if r.statics.is_empty() && r.combos.is_empty() && r.modal.is_none() {
-                        ui.label("（未実行）");
-                    } else {
-                        for (key, _) in r.statics.iter() {
-                            let label = match key {
-                                StaticCaseKey::User(id) => {
-                                    let lc_name = self
-                                        .model
-                                        .load_cases
-                                        .iter()
-                                        .find(|lc| lc.id == *id)
-                                        .map(|lc| lc.name.as_str())
-                                        .unwrap_or("");
-                                    format!("静的 LC {} {}", id.0, lc_name)
-                                }
-                                StaticCaseKey::Seismic(SeismicDir::X) => {
-                                    "地震静的 (X方向)".to_string()
-                                }
-                                StaticCaseKey::Seismic(SeismicDir::Y) => {
-                                    "地震静的 (Y方向)".to_string()
-                                }
-                            };
-                            let is_sel = self.nav.focus_result == Some(StaticKey::Case(*key));
-                            if ui.selectable_label(is_sel, label).clicked() {
-                                nav_selected = Some(StaticKey::Case(*key));
-                            }
-                        }
-                        for (i, (name, _)) in r.combos.iter().enumerate() {
-                            let is_sel = self.nav.focus_result == Some(StaticKey::Combo(i));
-                            if ui
-                                .selectable_label(is_sel, format!("組合せ {}", name))
-                                .clicked()
-                            {
-                                nav_selected = Some(StaticKey::Combo(i));
-                            }
-                        }
-                        if r.modal.is_some() {
-                            ui.label("固有値");
-                        }
-                    }
-                } else {
-                    ui.label("（未実行）");
-                }
-            });
-            if let Some(key) = nav_selected {
-                self.select_displayed_result(key);
-            }
+            self.nav_result_cases(ui);
 
             // 階/レベル（準備計算が生成した階を上階→下階順に表示）
             let _ = ui.collapsing("階/レベル", |ui| {
