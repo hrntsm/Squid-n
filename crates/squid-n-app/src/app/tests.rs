@@ -102,6 +102,16 @@ fn test_event_log_caps_entries() {
     assert_eq!(log.entries.last().unwrap().message, "msg1000");
 }
 
+/// 文頭ラベルは日本語で、Error が最長（描画時の列幅の基準）。
+#[test]
+fn test_log_level_label() {
+    assert_eq!(LogLevel::Info.label(), "情報");
+    assert_eq!(LogLevel::Notice.label(), "注意");
+    assert_eq!(LogLevel::Error.label(), "エラー");
+    assert!(LogLevel::Error.label().chars().count() > LogLevel::Info.label().chars().count());
+    assert!(LogLevel::Error.label().chars().count() > LogLevel::Notice.label().chars().count());
+}
+
 /// `report_error` が `last_error` とログの両方へ反映されることを確認する。
 #[test]
 fn test_report_error_updates_last_error_and_log() {

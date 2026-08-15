@@ -537,12 +537,33 @@ pub struct AnalysisJob {
     pub jump_on_success: Option<(Tab, ResultsView)>,
 }
 
-/// ログの重要度。下ドック（ログパネル）での色分けに使う。
+/// ログの重要度。下ドック（ログパネル）での色分けと文頭ラベルに使う。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LogLevel {
     Info,
     Notice,
     Error,
+}
+
+impl LogLevel {
+    /// ログ文頭に出す日本語ラベル。幅は「エラー」が最長なので、描画側でその幅に揃える。
+    pub fn label(self) -> &'static str {
+        match self {
+            LogLevel::Info => "情報",
+            LogLevel::Notice => "注意",
+            LogLevel::Error => "エラー",
+        }
+    }
+
+    /// レベル色。文頭ラベル・時刻・本文のすべてに付ける。
+    #[cfg(feature = "gui")]
+    pub fn color(self) -> egui::Color32 {
+        match self {
+            LogLevel::Error => crate::theme::ERROR_RED,
+            LogLevel::Notice => crate::theme::WARN_TEXT,
+            LogLevel::Info => crate::theme::GRAY_700,
+        }
+    }
 }
 
 /// セッション内イベントログの1件。時刻はアプリ起動からの経過時間で持つ
@@ -591,6 +612,78 @@ impl EventLog {
             let overflow = self.entries.len() - Self::MAX_ENTRIES;
             self.entries.drain(..overflow);
         }
+    }
+
+    /// 下ドックのログ一覧。件ごとにゼブラし、レベル列は「エラー」幅で固定する。
+    #[cfg(feature = "gui")]
+    pub fn show(&self, ui: &mut egui::Ui) {
+        if self.entries.is_empty() {
+            ui.colored_label(crate::theme::GRAY_600, "ログはまだありません");
+            return;
+        }
+
+        let font_id = egui::TextStyle::Body.resolve(ui.style());
+        let measure = |text: &str| {
+            ui.painter()
+                .layout_no_wrap(text.to_owned(), font_id.clone(), egui::Color32::WHITE)
+                .size()
+                .x
+        };
+        // レベル列は最長ラベル「エラー」に合わせ、時刻列は 3 桁分まで桁が増えても揃う幅にする。
+        let level_w = measure(LogLevel::Error.label());
+        let time_w = measure("[000:00]");
+        let line_h = ui.text_style_height(&egui::TextStyle::Body);
+
+        // id_salt: 下ドックの 5 タブは同一パネル内で切り替わるため、明示しないと
+        // ScrollArea の Id が衝突しスクロール位置がタブ間で共有される。
+        egui::ScrollArea::vertical()
+            .id_salt("bottom_log")
+            .auto_shrink([false, false])
+            .stick_to_bottom(true)
+            .show(ui, |ui| {
+                // 件と件の隙間をなくし、ゼブラが連続した帯になるようにする。
+                ui.spacing_mut().item_spacing.y = 0.0;
+                for (i, entry) in self.entries.iter().enumerate() {
+                    let bg = if i % 2 == 1 {
+                        // gray-100 でもログには濃い。パレット外の色は足さず白へ寄せる。
+                        crate::theme::lighten(crate::theme::GRAY_100, 0.6)
+                    } else {
+                        crate::theme::WHITE
+                    };
+                    let color = entry.level.color();
+                    egui::Frame::new()
+                        .fill(bg)
+                        .inner_margin(egui::Margin::symmetric(4, 2))
+                        .show(ui, |ui| {
+                            ui.set_min_width(ui.available_width());
+                            // レベル・時刻は 1 行、本文は残り幅で折り返す（続き行はメッセージ列から）。
+                            ui.horizontal_top(|ui| {
+                                // allocate_ui は使い分だけ確保するため、短い「情報」「注意」だと
+                                // 列が縮み時刻の開始位置がずれる。min_width で「エラー」幅を保つ。
+                                ui.allocate_ui(egui::vec2(level_w, line_h), |ui| {
+                                    ui.set_min_width(level_w);
+                                    ui.label(egui::RichText::new(entry.level.label()).color(color));
+                                });
+                                ui.allocate_ui(egui::vec2(time_w, line_h), |ui| {
+                                    ui.set_min_width(time_w);
+                                    ui.label(
+                                        egui::RichText::new(format!(
+                                            "[{}]",
+                                            entry.timestamp_label()
+                                        ))
+                                        .color(color),
+                                    );
+                                });
+                                ui.add(
+                                    egui::Label::new(
+                                        egui::RichText::new(&entry.message).color(color),
+                                    )
+                                    .wrap(),
+                                );
+                            });
+                        });
+                }
+            });
     }
 }
 
@@ -2151,39 +2244,7 @@ impl eframe::App for App {
                     }
                     match self.bottom_tab {
                         BottomTab::Log => {
-                            if self.log.entries.is_empty() {
-                                ui.colored_label(crate::theme::GRAY_600, "ログはまだありません");
-                            } else {
-                                // id_salt: 4タブは同一パネル内で切り替わるため、明示しないと
-                                // ScrollArea の Id が衝突しスクロール位置がタブ間で共有される。
-                                egui::ScrollArea::vertical()
-                                    .id_salt("bottom_log")
-                                    .auto_shrink([false, false])
-                                    .stick_to_bottom(true)
-                                    .show(ui, |ui| {
-                                        for entry in &self.log.entries {
-                                            let color = match entry.level {
-                                                LogLevel::Error => crate::theme::ERROR_RED,
-                                                LogLevel::Notice => crate::theme::WARN_TEXT,
-                                                LogLevel::Info => crate::theme::GRAY_700,
-                                            };
-                                            // 長いメッセージはパネル幅で折り返して全文を表示する
-                                            // （見切れるとホバーしないと内容が分からないため）。
-                                            // メッセージ自身が含む改行もそのまま活かす。
-                                            ui.add(
-                                                egui::Label::new(
-                                                    egui::RichText::new(format!(
-                                                        "[{}] {}",
-                                                        entry.timestamp_label(),
-                                                        entry.message
-                                                    ))
-                                                    .color(color),
-                                                )
-                                                .wrap(),
-                                            );
-                                        }
-                                    });
-                            }
+                            self.log.show(ui);
                         }
                         BottomTab::Model => {
                             // 横スクロールは表ごとに `table_util::standard_table` が
