@@ -132,7 +132,10 @@ cargo clippy --version
 CI は `dtolnay/rust-toolchain@stable` で**その時点の最新 stable** を取得します。clippy の
 lint は stable の更新で追加・拡張されるため、手元のツールチェインが古いと手元では通って
 CI だけが落ちます。実際に、手元の 1.94 では通ったコードが CI の 1.97 で
-`explicit_counter_loop` に引っかかった例があります。
+`explicit_counter_loop` に引っかかった例があります。また、手元の 1.96/1.97 では通ったコードが
+CI の 1.98 で `needless_late_init` に引っかかった例もあります。**2026-08-22 時点で
+CI が使う stable は 1.98 以上のため、手元のツールチェインは少なくとも 1.98 以上に
+更新してください。**
 
 `--locked` が固定するのは `Cargo.lock` による依存の解決だけで、ツールチェインの
 バージョンは固定されません。既存の開発環境や、ツールチェインが同梱されたコンテナを

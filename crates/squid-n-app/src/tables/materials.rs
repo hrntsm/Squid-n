@@ -251,6 +251,7 @@ pub fn materials_table(ui: &mut egui::Ui, app: &mut App) {
     let mut pending_category: Option<(u32, MaterialCategory)> = None;
     let mut pending_field: Option<(u32, MaterialField, Option<f64>)> = None;
     let mut pending_delete: Option<u32> = None;
+    let mut pending_focus: Option<squid_n_core::ids::MaterialId> = None;
 
     table_util::standard_table(
         ui,
@@ -279,7 +280,10 @@ pub fn materials_table(ui: &mut egui::Ui, app: &mut App) {
             let mat = &app.model.materials[idx];
             let mat_id = mat.id;
             row.col(|ui| {
-                table_util::id_label(ui, mat_id.0);
+                let is_sel = app.nav.focus_material == Some(mat_id);
+                if table_util::id_cell(ui, is_sel, mat_id.0, "クリックで選択") {
+                    pending_focus = Some(mat_id);
+                }
             });
             row.col(|ui| {
                 let mut name = mat.name.clone();
@@ -404,7 +408,13 @@ pub fn materials_table(ui: &mut egui::Ui, app: &mut App) {
                 id: squid_n_core::ids::MaterialId(id),
             }),
         );
+        if app.nav.focus_material == Some(squid_n_core::ids::MaterialId(id)) {
+            app.nav.focus_material = None;
+        }
         edited = true;
+    }
+    if let Some(mid) = pending_focus {
+        app.nav.focus_material = Some(mid);
     }
     if edited {
         app.staleness.mark_edited();
