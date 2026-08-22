@@ -1,6 +1,6 @@
 use super::*;
 use squid_n_core::dof::Dof6Mask;
-use squid_n_core::ids::{ElemId, MaterialId, SectionId};
+use squid_n_core::ids::{ElemId, MaterialId, SecondaryMemberId, SectionId};
 use squid_n_core::model::{
     DamperSpec, ElementData, EndCondition, ForceRegime, LoadCase, LoadCaseKind, LoadCfg, LocalAxis,
     Material, MaterialCategory, MemberLoad, MiscWall, MiscWallTransfer, NodalLoad, Node, RigidZone,
@@ -237,6 +237,7 @@ fn test_base_master_ignores_non_structural_slaves() {
         support_spring: None,
     });
     model.secondary_members.push(SecondaryMember {
+        id: SecondaryMemberId(model.secondary_members.len() as u32),
         kind: SecondaryMemberKind::Joist,
         nodes: [NodeId(0), free_id],
         section: Some(SectionId(0)),
@@ -652,6 +653,7 @@ fn secondary_joist_model() -> Model {
         fy: None,
     });
     model.secondary_members.push(SecondaryMember {
+        id: SecondaryMemberId(model.secondary_members.len() as u32),
         kind: SecondaryMemberKind::Joist,
         nodes: [NodeId(1), NodeId(2)],
         section: Some(SectionId(0)),

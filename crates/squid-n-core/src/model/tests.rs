@@ -118,6 +118,7 @@ fn test_validate_dangling_slab_boundary() {
             edge_supported: None,
             usage: None,
             section: None,
+            secondary_joist_ids: vec![],
         }],
         ..Default::default()
     };

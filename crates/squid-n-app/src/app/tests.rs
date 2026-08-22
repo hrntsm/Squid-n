@@ -488,7 +488,7 @@ fn test_tab_default_is_model() {
 #[test]
 fn test_analysis_runs_with_non_structural_nodes_on_base_floor() {
     use squid_n_core::dof::Dof6Mask;
-    use squid_n_core::ids::StoryId;
+    use squid_n_core::ids::{SecondaryMemberId, StoryId};
     use squid_n_core::model::{SecondaryMember, SecondaryMemberKind};
 
     let mut model = crate::sample::portal_frame();
@@ -503,6 +503,7 @@ fn test_analysis_runs_with_non_structural_nodes_on_base_floor() {
         support_spring: None,
     });
     model.secondary_members.push(SecondaryMember {
+        id: SecondaryMemberId(model.secondary_members.len() as u32),
         kind: SecondaryMemberKind::Joist,
         nodes: [NodeId(0), free_id],
         section: Some(SectionId(1)),
@@ -2908,6 +2909,7 @@ fn make_slab_test_model() -> squid_n_core::model::Model {
             value: 0.005,
         }],
         method: DistributionMethod::TriTrapezoid,
+        secondary_joist_ids: vec![],
     };
     squid_n_core::model::Model {
         nodes,
@@ -3058,6 +3060,7 @@ fn make_square_slab_test_model() -> squid_n_core::model::Model {
             value: 0.005,
         }],
         method: DistributionMethod::TriTrapezoid,
+        secondary_joist_ids: vec![],
     };
     squid_n_core::model::Model {
         nodes,
@@ -3298,6 +3301,7 @@ fn test_slab_grillage_node_reactions_total_and_gate() {
             value: 0.005,
         }],
         method: DistributionMethod::TriTrapezoid,
+        secondary_joist_ids: vec![],
     };
     let model = squid_n_core::model::Model {
         nodes: vec![
@@ -3740,7 +3744,7 @@ fn test_floor_design_uses_grillage_for_crossing_joists() {
 /// 二次部材（小梁）1 本が `Slab::joists` なしで床設計の対象になる。
 #[test]
 fn test_floor_design_checks_secondary_member_joist() {
-    use squid_n_core::ids::SectionId;
+    use squid_n_core::ids::{SecondaryMemberId, SectionId};
     use squid_n_core::model::{SecondaryMember, SecondaryMemberKind, Section, SlabUsage};
 
     let mut model = make_square_slab_test_model();
@@ -3776,6 +3780,7 @@ fn test_floor_design_checks_secondary_member_joist() {
     model.nodes.push(mk_mid(4, 2000.0, 0.0));
     model.nodes.push(mk_mid(5, 2000.0, 4000.0));
     model.secondary_members.push(SecondaryMember {
+        id: SecondaryMemberId(model.secondary_members.len() as u32),
         kind: SecondaryMemberKind::Joist,
         nodes: [NodeId(4), NodeId(5)],
         section: Some(SectionId(0)),
@@ -3802,7 +3807,7 @@ fn test_floor_design_checks_secondary_member_joist() {
 /// 中点がスラブ辺上にある二次部材小梁も床設計の対象になる。
 #[test]
 fn test_floor_design_checks_secondary_joist_on_slab_edge() {
-    use squid_n_core::ids::SectionId;
+    use squid_n_core::ids::{SecondaryMemberId, SectionId};
     use squid_n_core::model::{SecondaryMember, SecondaryMemberKind, Section, SlabUsage};
 
     let mut model = make_square_slab_test_model();
@@ -3839,6 +3844,7 @@ fn test_floor_design_checks_secondary_joist_on_slab_edge() {
     model.nodes.push(mk_mid(4, 0.0, 1000.0));
     model.nodes.push(mk_mid(5, 0.0, 3000.0));
     model.secondary_members.push(SecondaryMember {
+        id: SecondaryMemberId(model.secondary_members.len() as u32),
         kind: SecondaryMemberKind::Joist,
         nodes: [NodeId(4), NodeId(5)],
         section: Some(SectionId(0)),
@@ -3885,6 +3891,7 @@ fn test_slab_design_span_respects_one_way() {
         usage: None,
         // 板厚はスラブ断面が持つ（設計にはこの厚さを使う）。
         section: Some(squid_n_core::ids::SectionId(0)),
+        secondary_joist_ids: vec![],
     };
     let mk_model = |one_way: Option<OneWayDir>| squid_n_core::model::Model {
         nodes: vec![
@@ -5240,7 +5247,7 @@ fn test_import_stbridge_then_run_dl_succeeds() {
 /// - そのまま線形静的解析が成功する（小梁支持節点は解析自由度から除外）。
 #[test]
 fn test_secondary_joist_panel_slab_dl_cmq_and_solve() {
-    use squid_n_core::ids::{MaterialId, SectionId, SlabId};
+    use squid_n_core::ids::{MaterialId, SecondaryMemberId, SectionId, SlabId};
     use squid_n_core::model::{
         AreaLoad, DistributionMethod, ElementData, ElementKind, EndCondition, ForceRegime,
         LocalAxis, Material, MemberLoadKind, Model, Node, SecondaryMember, SecondaryMemberKind,
@@ -5315,6 +5322,7 @@ fn test_secondary_joist_panel_slab_dl_cmq_and_solve() {
         section: Some(SectionId(1)),
         kind: Default::default(),
         one_way: None,
+        secondary_joist_ids: vec![],
     };
     let model = Model {
         nodes,
@@ -5366,6 +5374,7 @@ fn test_secondary_joist_panel_slab_dl_cmq_and_solve() {
         }],
         // 小梁: 大梁 y=0 の中間 (4000,0) と大梁 y=6000 の中間 (4000,6000) を結ぶ。
         secondary_members: vec![SecondaryMember {
+            id: SecondaryMemberId(0),
             kind: SecondaryMemberKind::Joist,
             nodes: [NodeId(8), NodeId(9)],
             section: Some(SectionId(0)),
@@ -6466,6 +6475,7 @@ fn test_prep_sections_count_slab_reference() {
         edge_supported: None,
         usage: None,
         section: Some(slab_sec),
+        secondary_joist_ids: Vec::new(),
     });
     assert!(model.validate().is_ok(), "{:?}", model.validate());
 

@@ -25,6 +25,11 @@ pub enum SecondaryMemberKind {
 /// ドキュメント参照）。
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct SecondaryMember {
+    /// 二次部材 ID（`secondary_members` の配列インデックスと一致すること）。
+    /// 旧スキーマは `#[serde(default)]` で `SecondaryMemberId(0)` として読まれるため、
+    /// 読込後に [`Model::migrate_secondary_member_ids`] で補正すること。
+    #[serde(default)]
+    pub id: SecondaryMemberId,
     pub kind: SecondaryMemberKind,
     /// 両端節点（小梁: 始端→終端、間柱: 下端→上端の順を推奨。順序に依存しない）。
     pub nodes: [NodeId; 2],

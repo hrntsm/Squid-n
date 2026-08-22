@@ -534,6 +534,7 @@ fn build_secondaries(
         model
             .secondary_members
             .push(squid_n_core::model::SecondaryMember {
+                id: squid_n_core::ids::SecondaryMemberId(model.secondary_members.len() as u32),
                 kind: s.kind,
                 nodes: [NodeId(ni), NodeId(nj)],
                 section,
@@ -606,6 +607,7 @@ fn build_slabs(
             edge_supported: None,
             usage: None,
             section,
+            secondary_joist_ids: Vec::new(),
         });
     }
     if skipped_slabs > 0 {

@@ -914,6 +914,7 @@ fn test_delete_section_referenced_by_joist() {
         edge_supported: None,
         usage: None,
         section: None,
+        secondary_joist_ids: vec![],
     });
     let mut stack = UndoStack::new();
 
@@ -3592,8 +3593,9 @@ fn test_composite_delete_nodes_descending_roundtrip() {
 // 二次部材（小梁・間柱）・一本部材指定（beam_groups）の参照整合
 // ============================================================================
 
-fn sample_secondary(n0: u32, n1: u32) -> squid_n_core::model::SecondaryMember {
+fn sample_secondary(id: u32, n0: u32, n1: u32) -> squid_n_core::model::SecondaryMember {
     squid_n_core::model::SecondaryMember {
+        id: squid_n_core::ids::SecondaryMemberId(id),
         kind: squid_n_core::model::SecondaryMemberKind::Joist,
         nodes: [NodeId(n0), NodeId(n1)],
         section: None,
@@ -3618,7 +3620,7 @@ fn test_delete_node_shifts_secondary_member_nodes() {
             support_spring: None,
         });
     }
-    model.secondary_members.push(sample_secondary(1, 2));
+    model.secondary_members.push(sample_secondary(0, 1, 2));
     let before = model.clone();
     let mut stack = UndoStack::new();
 
@@ -3647,7 +3649,7 @@ fn test_delete_node_used_by_secondary_member_is_noop() {
             support_spring: None,
         });
     }
-    model.secondary_members.push(sample_secondary(0, 1));
+    model.secondary_members.push(sample_secondary(0, 0, 1));
     let mut stack = UndoStack::new();
     stack.run(&mut model, Box::new(DeleteNode { id: NodeId(0) }));
     assert_eq!(model.nodes.len(), 2, "二次部材が参照する節点は削除できない");
@@ -3703,7 +3705,7 @@ fn test_delete_section_material_shift_and_guard_secondary_refs() {
             strength_factor: None,
         });
     }
-    let mut sm = sample_secondary(0, 1);
+    let mut sm = sample_secondary(0, 0, 1);
     sm.section = Some(SectionId(1));
     model.secondary_members.push(sm);
     let mut stack = UndoStack::new();
@@ -4601,6 +4603,7 @@ fn test_copy_story_overwrite_keeps_slabs_outside_source_plan() {
         edge_supported: None,
         usage: None,
         section: None,
+        secondary_joist_ids: Vec::new(),
     });
     assign_node_stories(&mut model);
     assert!(model.validate().is_ok(), "{:?}", model.validate());

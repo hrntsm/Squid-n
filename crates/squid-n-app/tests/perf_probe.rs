@@ -194,6 +194,7 @@ fn build_grid_model(nx: usize, ny: usize, n_stories: usize, with_slabs: bool) ->
                         section: None,
                         kind: Default::default(),
                         one_way: None,
+                        secondary_joist_ids: vec![],
                     });
                     slab_id += 1;
                 }

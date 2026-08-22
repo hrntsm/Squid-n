@@ -2,7 +2,7 @@
 
 use super::*;
 use smallvec::smallvec;
-use squid_n_core::ids::{ElemId, MaterialId, NodeId, SectionId, StoryId};
+use squid_n_core::ids::{ElemId, MaterialId, NodeId, SecondaryMemberId, SectionId, StoryId};
 use squid_n_core::model::{
     AxisGroupKind, AxisSource, ElementData, ElementKind, EndCondition, ForceRegime, LocalAxis,
     Material, MaterialCategory, Model, Node, Section, Story,
@@ -2163,6 +2163,7 @@ fn test_slab_roundtrip_export_import() {
         edge_supported: None,
         usage: None,
         section: Some(slab_sec),
+        secondary_joist_ids: Vec::new(),
     });
     assert!(model.validate().is_ok(), "{:?}", model.validate());
 
@@ -2592,12 +2593,14 @@ fn test_secondary_members_roundtrip() {
     m.elements.push(member(0, false, 0));
     // 小梁と間柱を 1 本ずつ（節点は既存節点を使う）。
     m.secondary_members.push(SecondaryMember {
+        id: SecondaryMemberId(0),
         kind: SecondaryMemberKind::Joist,
         nodes: [NodeId(0), NodeId(1)],
         section: Some(SectionId(0)),
         name: "B1".into(),
     });
     m.secondary_members.push(SecondaryMember {
+        id: SecondaryMemberId(1),
         kind: SecondaryMemberKind::Post,
         nodes: [NodeId(0), NodeId(2)],
         section: Some(SectionId(0)),
@@ -2667,6 +2670,7 @@ fn test_slab_shared_section_does_not_multiply_on_roundtrip() {
             edge_supported: None,
             usage: None,
             section: Some(slab_sec),
+            secondary_joist_ids: Vec::new(),
         });
     }
     assert!(model.validate().is_ok(), "{:?}", model.validate());

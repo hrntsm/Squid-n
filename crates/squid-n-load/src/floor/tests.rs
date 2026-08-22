@@ -348,6 +348,7 @@ fn make_rect_slab_model(lx: f64, ly: f64, method: DistributionMethod, w: f64) ->
             value: w,
         }],
         method,
+        secondary_joist_ids: vec![],
     };
     (model, slab)
 }
@@ -487,6 +488,7 @@ fn polygon_slab_model(pts: &[(f64, f64)], method: DistributionMethod, w: f64) ->
             value: w,
         }],
         method,
+        secondary_joist_ids: vec![],
     };
     (model, slab)
 }
@@ -606,6 +608,7 @@ fn test_cantilever_conservation() {
             value: w,
         }],
         method: DistributionMethod::TriTrapezoid,
+        secondary_joist_ids: vec![],
     };
     let loads = distribute_slab(&model, &slab);
     assert_eq!(loads.len(), 1);
@@ -683,6 +686,7 @@ fn test_joist_two_stage_transfer_conservation() {
             value: w,
         }],
         method: DistributionMethod::TriTrapezoid,
+        secondary_joist_ids: vec![],
     };
     let loads = distribute_slab(&model, &slab);
 
@@ -797,6 +801,7 @@ fn test_materialized_joist_uses_span_distributed_load() {
             value: w,
         }],
         method: DistributionMethod::TriTrapezoid,
+        secondary_joist_ids: vec![],
     };
     let loads = distribute_slab(&model, &slab);
 
@@ -1011,6 +1016,7 @@ fn test_corner_slab_all_load_to_column_node() {
             value: w,
         }],
         method: DistributionMethod::TriTrapezoid,
+        secondary_joist_ids: vec![],
     };
     let loads = distribute_slab(&model, &slab);
     // 全荷重が単一の節点荷重（boundary[0] = NodeId(0)）としてのみ現れる。
@@ -1062,6 +1068,7 @@ fn test_corner_slab_ignores_one_way_and_edge_supported() {
             value: w,
         }],
         method: DistributionMethod::OneWay,
+        secondary_joist_ids: vec![],
     };
     let loads = distribute_slab(&model, &slab);
     assert_eq!(loads.len(), 1);
@@ -1105,6 +1112,7 @@ fn test_cantilever_edge_supported_three_of_four_conservation() {
             value: w,
         }],
         method: DistributionMethod::TriTrapezoid,
+        secondary_joist_ids: vec![],
     };
     let loads = distribute_slab(&model, &slab);
     assert!(!loads.is_empty());

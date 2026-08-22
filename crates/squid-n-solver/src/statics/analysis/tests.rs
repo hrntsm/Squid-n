@@ -284,6 +284,7 @@ fn test_model_issues_rejects_slab_without_section() {
         edge_supported: None,
         usage: None,
         section: None,
+        secondary_joist_ids: Vec::new(),
     });
 
     // 断面が未割当。

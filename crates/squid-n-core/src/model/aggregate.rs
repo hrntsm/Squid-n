@@ -128,6 +128,9 @@ pub struct Model {
     /// パネルをモデル化した状態で開く。
     #[serde(default)]
     pub panel_zone: PanelZoneMode,
+    /// 壁領域（壁版と付属間柱のグループ）。旧スキーマは空として補完。
+    #[serde(default)]
+    pub wall_regions: Vec<WallRegion>,
     #[serde(skip)]
     pub dof_map: crate::dof::DofMap,
 }
@@ -316,6 +319,13 @@ impl Model {
         )?;
 
         // 二次部材（小梁・間柱）の参照整合。
+        check_id_consistency(
+            &self.secondary_members,
+            "secondary_members",
+            "SecondaryMemberId",
+            |sm| sm.id.index(),
+            |sm| sm.id.0,
+        )?;
         for (i, sm) in self.secondary_members.iter().enumerate() {
             for &nid in &sm.nodes {
                 if nid.index() >= self.nodes.len() || self.nodes[nid.index()].id != nid {
@@ -331,6 +341,58 @@ impl Model {
                         "SecondaryMember {} -> Section {}",
                         i, sid.0
                     )));
+                }
+            }
+        }
+
+        // スラブの secondary_joist_ids の参照整合（存在かつ Joist 種別であること）。
+        for slab in &self.slabs {
+            for &smid in &slab.secondary_joist_ids {
+                match self.secondary_members.get(smid.index()) {
+                    Some(sm) if sm.id == smid => {
+                        if sm.kind != SecondaryMemberKind::Joist {
+                            return Err(CoreError::DanglingRef(format!(
+                                "Slab {} secondary_joist_ids -> SecondaryMember {} は Joist でない",
+                                slab.id.0, smid.0
+                            )));
+                        }
+                    }
+                    _ => {
+                        return Err(CoreError::DanglingRef(format!(
+                            "Slab {} secondary_joist_ids -> SecondaryMember {}",
+                            slab.id.0, smid.0
+                        )));
+                    }
+                }
+            }
+        }
+
+        // 壁領域の参照整合。
+        for (wi, wr) in self.wall_regions.iter().enumerate() {
+            if let Some(eid) = wr.wall {
+                if eid.index() >= self.elements.len() || self.elements[eid.index()].id != eid {
+                    return Err(CoreError::DanglingRef(format!(
+                        "WallRegion {} wall -> Elem {}",
+                        wi, eid.0
+                    )));
+                }
+            }
+            for &smid in &wr.post_ids {
+                match self.secondary_members.get(smid.index()) {
+                    Some(sm) if sm.id == smid => {
+                        if sm.kind != SecondaryMemberKind::Post {
+                            return Err(CoreError::DanglingRef(format!(
+                                "WallRegion {} post_ids -> SecondaryMember {} は Post でない",
+                                wi, smid.0
+                            )));
+                        }
+                    }
+                    _ => {
+                        return Err(CoreError::DanglingRef(format!(
+                            "WallRegion {} post_ids -> SecondaryMember {}",
+                            wi, smid.0
+                        )));
+                    }
                 }
             }
         }
@@ -481,6 +543,7 @@ impl Model {
             && self.member_detail_attrs == other.member_detail_attrs
             && self.beam_torsion == other.beam_torsion
             && self.panel_zone == other.panel_zone
+            && self.wall_regions == other.wall_regions
     }
 
     /// ダンパー要素の特性を返す（`Model::damper_attrs` から要素 ID で検索）。
@@ -657,6 +720,11 @@ impl Model {
         for lc in &mut self.load_cases {
             for ml in &mut lc.member {
                 f(&mut ml.elem);
+            }
+        }
+        for wr in &mut self.wall_regions {
+            if let Some(eid) = &mut wr.wall {
+                f(eid);
             }
         }
         self.shift_elem_attr_refs(&mut f);
@@ -855,6 +923,35 @@ impl Model {
             load_cases: default_load_cases(),
             combinations: default_combinations(),
             ..Model::default()
+        }
+    }
+
+    /// モデル内の全ての `SecondaryMemberId` 参照（二次部材自身の ID・スラブの
+    /// `secondary_joist_ids`・壁領域の `post_ids`）へ `f` を適用する
+    /// （[`Model::visit_node_ids`] と同じ規約）。
+    ///
+    /// **`SecondaryMemberId` を持つフィールドを `Model` へ追加したら必ずここへ追随すること**。
+    pub fn visit_secondary_member_ids(&mut self, mut f: impl FnMut(&mut SecondaryMemberId)) {
+        for sm in &mut self.secondary_members {
+            f(&mut sm.id);
+        }
+        for slab in &mut self.slabs {
+            for smid in &mut slab.secondary_joist_ids {
+                f(smid);
+            }
+        }
+        for wr in &mut self.wall_regions {
+            for smid in &mut wr.post_ids {
+                f(smid);
+            }
+        }
+    }
+
+    /// 旧スキーマから読み込んだとき（`SecondaryMember.id` が全て 0）に
+    /// `id == index` 不変条件を復元するためのマイグレーション。
+    pub fn migrate_secondary_member_ids(&mut self) {
+        for (i, sm) in self.secondary_members.iter_mut().enumerate() {
+            sm.id = SecondaryMemberId(i as u32);
         }
     }
 
