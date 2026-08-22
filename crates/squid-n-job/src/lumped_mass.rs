@@ -80,31 +80,33 @@ fn build_spatial(inp: LumpedMassBuildInput<'_>) -> JobResult<LumpedMassModel> {
         JobError::InvalidInput("3次元質点系には地震静的 EY の結果が必要です".into())
     })?;
 
-    let sk_x;
-    let sk_y;
-    if inp.nonlinear {
+    let (sk_x, sk_y) = if inp.nonlinear {
         let po_x = inp.po_x.ok_or_else(|| {
             JobError::InvalidInput("3次元の非線形質点系には X 方向の増分解析結果が必要です".into())
         })?;
         let po_y = inp.po_y.ok_or_else(|| {
             JobError::InvalidInput("3次元の非線形質点系には Y 方向の増分解析結果が必要です".into())
         })?;
-        sk_x = build_lumped_mass_model(
-            inp.model,
-            po_x,
-            LumpedMassType::EquivalentShear,
-            inp.secant_ratio,
-        );
-        sk_y = build_lumped_mass_model(
-            inp.model,
-            po_y,
-            LumpedMassType::EquivalentShear,
-            inp.secant_ratio,
-        );
+        (
+            build_lumped_mass_model(
+                inp.model,
+                po_x,
+                LumpedMassType::EquivalentShear,
+                inp.secant_ratio,
+            ),
+            build_lumped_mass_model(
+                inp.model,
+                po_y,
+                LumpedMassType::EquivalentShear,
+                inp.secant_ratio,
+            ),
+        )
     } else {
-        sk_x = LumpedMassModel::from_stories(LumpedMassType::EquivalentShear, Vec::new());
-        sk_y = LumpedMassModel::from_stories(LumpedMassType::EquivalentShear, Vec::new());
-    }
+        (
+            LumpedMassModel::from_stories(LumpedMassType::EquivalentShear, Vec::new()),
+            LumpedMassModel::from_stories(LumpedMassType::EquivalentShear, Vec::new()),
+        )
+    };
 
     let layers = inp.model.layers();
     let qx = story_shears(inp.model, res_x, SeismicDir::X);
