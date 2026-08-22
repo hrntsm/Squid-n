@@ -42,7 +42,7 @@
 //! 場合は [`CopyStoryReport::mismatched_sections`] で名指しし、利用者が判断する。
 
 use super::*;
-use squid_n_core::ids::{ElemId, NodeId, SectionId, SlabId, StoryId};
+use squid_n_core::ids::{ElemId, NodeId, SecondaryMemberId, SectionId, SlabId, StoryId};
 use squid_n_core::model::{SecondaryMember, Section, Slab, SlabUsage};
 use std::collections::{HashMap, HashSet};
 
@@ -847,6 +847,10 @@ fn copy_slabs(
             loads: Vec::new(),
             usage: None,
             joists: Vec::new(),
+            // 小梁の所属は複製元の床のもの。写すと 2 つの階の床が同じ小梁を
+            // 自分の子として抱え、床荷重を二重に拾う。`copy_secondary` が
+            // 複製先の小梁を作るため、所属付けはそちらへ委ねて空で作る。
+            secondary_joist_ids: Vec::new(),
             section,
             ..sl
         });
@@ -930,10 +934,12 @@ fn copy_secondary(
 
     if cmd.overwrite {
         let before = model.secondary_members.len();
-        let keep: Vec<SecondaryMember> = model
+        // 残す部材を先に決める。`retain_secondary_members` へ渡す述語は
+        // `&Model` を借りられないため、判定結果を ID 順の表にしておく。
+        let keep_flags: Vec<bool> = model
             .secondary_members
             .iter()
-            .filter(|sm| {
+            .map(|sm| {
                 if secondary_story(model, sm) != Some(to) {
                     return true;
                 }
@@ -943,10 +949,16 @@ fn copy_secondary(
                 let in_src_plan = sm.nodes.iter().all(|&n| ctx.maps_back(model, n, dz));
                 !(unmatched && in_src_plan)
             })
-            .cloned()
             .collect();
-        report.secondary_deleted += before - keep.len();
-        model.secondary_members = keep;
+        // 素の差し替えでは後続の `id` が添字とずれ、床・壁領域の参照が別の部材を
+        // 指す。core 側の再採番つき間引きを通す。
+        let mut i = 0usize;
+        model.retain_secondary_members(|_| {
+            let k = keep_flags[i];
+            i += 1;
+            k
+        });
+        report.secondary_deleted += before - model.secondary_members.len();
     }
 
     let existing = secondary_by_plan(model, ctx, to);
@@ -985,7 +997,9 @@ fn copy_secondary(
                 d
             }
         });
+        // `..sm` は複製元の `id` まで写す。`id == index` が破れるため明示で振り直す。
         model.secondary_members.push(SecondaryMember {
+            id: SecondaryMemberId(model.secondary_members.len() as u32),
             nodes: [a, b],
             section,
             ..sm

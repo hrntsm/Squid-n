@@ -264,12 +264,8 @@ pub fn load_scz(path: &Path) -> Result<SczContents, IoError> {
 
     let model_data = migrate(manifest.schema_version, model_data)?;
 
-    let mut model: Model =
+    let model: Model =
         rmp_serde::from_slice(&model_data).map_err(|e| IoError::Decode(e.to_string()))?;
-    // 旧スキーマでは `SecondaryMember.id` が欠落しており、`id == index` の不変条件が
-    // 破れている。読み込み直後に補正して、`secondary_members` / `Slab.secondary_joist_ids`
-    // / `WallRegion.post_ids` の参照が現行の ID 空間と整合するようにする。
-    model.migrate_secondary_member_ids();
 
     Ok(SczContents {
         model,

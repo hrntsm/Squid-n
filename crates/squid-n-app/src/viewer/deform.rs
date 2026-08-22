@@ -602,8 +602,9 @@ mod tests {
     }
 
     /// 補間テスト用の二次部材（小梁）を作る。
-    fn test_secondary(i: u32, j: u32) -> SecondaryMember {
+    fn test_secondary(id: u32, i: u32, j: u32) -> SecondaryMember {
         SecondaryMember {
+            id: squid_n_core::ids::SecondaryMemberId(id),
             kind: SecondaryMemberKind::Joist,
             nodes: [NodeId(i), NodeId(j)],
             section: None,
@@ -892,7 +893,7 @@ mod tests {
         model.nodes.push(test_node(5, [8000.0, 5000.0, 0.0])); // G2 端
         model.elements.push(test_beam(0, 0, 1)); // G1
         model.elements.push(test_beam(1, 4, 5)); // G2
-        model.secondary_members.push(test_secondary(2, 3)); // 二次部材 2-3
+        model.secondary_members.push(test_secondary(0, 2, 3)); // 二次部材 2-3
 
         // G1 は大きく水平移動、G2 は変位ゼロ。
         let disp = vec![
@@ -924,8 +925,8 @@ mod tests {
         model.nodes.push(test_node(5, [8000.0, 5000.0, 0.0])); // G2 端
         model.elements.push(test_beam(0, 0, 1)); // G1
         model.elements.push(test_beam(1, 4, 5)); // G2（変位ゼロ）
-        model.secondary_members.push(test_secondary(1, 2));
-        model.secondary_members.push(test_secondary(2, 3));
+        model.secondary_members.push(test_secondary(0, 1, 2));
+        model.secondary_members.push(test_secondary(1, 2, 3));
 
         let disp = vec![
             [8.0, 0.0, 0.0, 0.0, 0.0, 0.0], // 0

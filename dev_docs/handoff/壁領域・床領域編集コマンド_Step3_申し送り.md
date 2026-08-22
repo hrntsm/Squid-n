@@ -8,7 +8,11 @@
 ## 概要
 
 `squid-n-edit` クレートに、二次部材（小梁・間柱）と壁領域を操作する編集コマンドを追加した。
-undo/redo 対応・バリデーション・カスケード削除を含む 9 コマンドを実装し、テスト 6 件を追加している。
+undo/redo 対応・バリデーション・カスケード削除を含む 9 コマンドを実装した。
+
+あわせて、この構造を入れたことで壊れた既存経路（階への複製・部材削除）をレビューで洗い出して修正している。
+詳細は下記「レビューで見つかった不具合」を参照すること。
+データモデルの設計意図は [`specs/床領域と壁領域.md`](../specs/床領域と壁領域.md) にまとめた。
 
 ---
 
@@ -60,9 +64,32 @@ undo/redo 対応・バリデーション・カスケード削除を含む 9 コ�
 
 ---
 
+## レビューで見つかった不具合
+
+`SecondaryMember.id == 配列添字` という不変条件と、その `validate` 検証を新たに入れた。
+ところが追随を確認したのは新規コマンドだけで、既存の `secondary_members` 変更箇所を見落としていた。
+そのため次の 3 件が壊れており、いずれも再現テストを添えて修正した。
+
+| 箇所 | 症状 |
+|------|------|
+| `story_copy.rs` `copy_secondary` | `..sm` が複製元の `id` まで写し、`validate` が `IndexMismatch`。二次部材を持つモデルで階への複製が通らない |
+| `story_copy.rs` `copy_slabs` | `..sl` が `secondary_joist_ids` を写し、複製先の床が複製元の小梁を子として抱える。`validate` は床をまたいだ重複を見ないため黙って通る |
+| `node_member.rs` `DeleteMember` | 削除した壁を指す `WallRegion.wall` を放置。ID 繰り上げ後に隣の要素を指し、それが壁だと検証も通って別の壁へ付け替わる |
+
+`copy_secondary` の上書き経路にあった `model.secondary_members = keep;` も、
+ID の再採番と領域側の参照の張り替えを行う `Model::retain_secondary_members` へ置き換えた。
+
+**教訓として、`id == index` のような不変条件を新設したときは、その型を変更する既存箇所を全数で洗うこと。**
+今回は `grep` で `secondary_members` の変更箇所（`push` / `remove` / `retain` / 代入）を数えたところ、
+非テストの箇所は 4 つしかなく、そのうち 2 つが壊れていた。
+
+なお、`cargo clippy -p squid-n-app --features gui` を通していなかったため、
+`viewer/deform.rs` のテストヘルパーが `id` 未指定でコンパイルできない状態のままだった。
+CONTRIBUTING.md の静的解析コマンドは、既定機能だけでなく `gui` / `mcp` も必ず実行すること。
+
 ## テスト
 
-`crates/squid-n-edit/src/tests.rs` に 6 件追加した。
+`crates/squid-n-edit/src/tests.rs` に 13 件、`crates/squid-n-core/src/model/tests.rs` に 3 件追加した。
 
 | テスト名 | 確認内容 |
 |----------|----------|
@@ -72,6 +99,16 @@ undo/redo 対応・バリデーション・カスケード削除を含む 9 コ�
 | `undo_delete_secondary_member` | undo で元位置・参照（slab_refs / region_refs）が復元される |
 | `add_delete_wall_region` | 壁領域の追加・削除・undo |
 | `set_slab_secondary_joist_ids_validation` | Joist でない ID を渡すと Noop（バリデーション確認） |
+| `test_set_secondary_member_section_roundtrip` | 断面変更・undo・redo・実在しない断面は Noop |
+| `test_set_wall_region_roundtrip` | 壁領域の全置換・undo・範囲外 index は Noop |
+| `test_add_wall_region_rejects_non_wall_elem` | Wall でない要素を `wall` に指定すると Noop |
+| `test_set_slab_secondary_joist_ids_roundtrip` | 小梁 ID リストの置換・undo・redo |
+| `test_copy_story_secondary_keeps_id_index_invariant` | 階への複製で `id == index` が保たれる（再現テスト） |
+| `test_copy_story_slab_does_not_inherit_source_joist_ids` | 複製先の床が複製元の小梁を抱えない（再現テスト） |
+| `test_delete_member_clears_wall_region_wall` | 壁削除で壁領域が版なしへ戻り、undo で復元される（再現テスト） |
+| `test_validate_duplicate_slab_secondary_joist_ids` | 床の小梁 ID の重複を弾く |
+| `test_validate_duplicate_wall_region_post_ids` | 壁領域の間柱 ID の重複を弾く |
+| `test_retain_secondary_members_remaps_region_refs` | 間引き時の ID 再採番と領域側の参照の張り替え |
 
 ---
 
@@ -82,6 +119,8 @@ undo/redo 対応・バリデーション・カスケード削除を含む 9 コ�
 | ☐ | `squid-n-app` のナビゲータへ二次部材・壁領域の編集 UI を接続する |
 | ☐ | `squid-n-mcp` に二次部材・壁領域操作のツールを追加する |
 | ☐ | 床領域・壁領域を「版を任意、小梁／間柱は領域の子」とするナビ階層化（詳細は[残課題一覧 §2](残課題一覧.md)） |
+| ☐ | 荷重分配・CMQ 変換を所属関係に対応させ、同時に床をまたいだ小梁の重複検証を追加する |
+| ☐ | 利用者向け `docs/` への節の追加（UI と荷重分配ができてから。設計は[specs/床領域と壁領域](../specs/床領域と壁領域.md)） |
 
 ---
 

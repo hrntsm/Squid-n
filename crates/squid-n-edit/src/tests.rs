@@ -5578,3 +5578,169 @@ fn test_set_slab_secondary_joist_ids_roundtrip() {
     );
     assert!(model.validate().is_ok(), "{:?}", model.validate());
 }
+
+// ─── 階への複製・部材削除と二次部材／壁領域の参照整合 ──────────────────────────
+
+/// 階への複製（二次部材）で `SecondaryMember.id == index` の不変条件が保たれること。
+///
+/// `..sm` で複製元の `id` を写すと複製先の部材が同じ ID を名乗り、`validate` が
+/// `IndexMismatch` を返す（＝二次部材を持つモデルでは階への複製が通らない）。
+#[test]
+fn test_copy_story_secondary_keeps_id_index_invariant() {
+    use crate::{CopyStory, CopyTargets};
+    use squid_n_core::frame_gen::{frame_model, FrameSpec};
+    use squid_n_core::ids::StoryId;
+
+    let mut model = frame_model(&FrameSpec::default()).unwrap();
+    assign_node_stories(&mut model);
+    let n2f: Vec<NodeId> = model
+        .nodes
+        .iter()
+        .filter(|n| n.story == Some(StoryId(1)))
+        .map(|n| n.id)
+        .collect();
+    assert!(n2f.len() >= 2);
+    model
+        .secondary_members
+        .push(squid_n_core::model::SecondaryMember {
+            id: SecondaryMemberId(0),
+            kind: squid_n_core::model::SecondaryMemberKind::Joist,
+            nodes: [n2f[0], n2f[1]],
+            section: None,
+            name: "J1".into(),
+        });
+    assert!(model.validate().is_ok(), "前提: {:?}", model.validate());
+
+    let mut stack = UndoStack::new();
+    assert!(stack.run(
+        &mut model,
+        Box::new(CopyStory {
+            from: StoryId(1),
+            to: vec![StoryId(2)],
+            targets: CopyTargets {
+                secondary: true,
+                ..Default::default()
+            },
+            overwrite: true,
+        }),
+    ));
+    assert_eq!(model.secondary_members.len(), 2, "3F へ 1 本複製される");
+    for (i, sm) in model.secondary_members.iter().enumerate() {
+        assert_eq!(sm.id, SecondaryMemberId(i as u32), "id は添字と一致する");
+    }
+    assert!(
+        model.validate().is_ok(),
+        "複製後の validate: {:?}",
+        model.validate()
+    );
+
+    stack.undo(&mut model);
+    assert_eq!(model.secondary_members.len(), 1);
+    assert!(model.validate().is_ok());
+}
+
+/// 階への複製（床）で、複製先の床が複製元の小梁を自分の子として抱え込まないこと。
+///
+/// 写すと 2 つの階の床が同じ小梁 ID を持ち、床荷重を二重に拾う。`validate` は
+/// 床をまたいだ重複を見ないため、黙って誤ったモデルになる。
+#[test]
+fn test_copy_story_slab_does_not_inherit_source_joist_ids() {
+    use crate::{CopyStory, CopyTargets};
+    use squid_n_core::frame_gen::{frame_model, FrameSpec};
+    use squid_n_core::ids::StoryId;
+
+    let mut model = frame_model(&FrameSpec::default()).unwrap();
+    assign_node_stories(&mut model);
+    let n2f: Vec<NodeId> = model
+        .nodes
+        .iter()
+        .filter(|n| n.story == Some(StoryId(1)))
+        .map(|n| n.id)
+        .collect();
+    let n3f: Vec<NodeId> = model
+        .nodes
+        .iter()
+        .filter(|n| n.story == Some(StoryId(2)))
+        .map(|n| n.id)
+        .collect();
+    model
+        .secondary_members
+        .push(squid_n_core::model::SecondaryMember {
+            id: SecondaryMemberId(0),
+            kind: squid_n_core::model::SecondaryMemberKind::Joist,
+            nodes: [n2f[0], n2f[1]],
+            section: None,
+            name: "J1".into(),
+        });
+    // 2F の床へ小梁 SM0 を登録する。
+    let src = model
+        .slabs
+        .iter()
+        .position(|sl| sl.boundary.iter().all(|n| n2f.contains(n)))
+        .expect("2F に床がある");
+    model.slabs[src].secondary_joist_ids = vec![SecondaryMemberId(0)];
+    // 3F の床を消して、複製で「新規作成」が起きる状況にする。
+    model
+        .slabs
+        .retain(|sl| !sl.boundary.iter().all(|n| n3f.contains(n)));
+    for (i, sl) in model.slabs.iter_mut().enumerate() {
+        sl.id = squid_n_core::ids::SlabId(i as u32);
+    }
+    assert!(model.validate().is_ok(), "前提: {:?}", model.validate());
+    let before = model.slabs.len();
+
+    let mut stack = UndoStack::new();
+    assert!(stack.run(
+        &mut model,
+        Box::new(CopyStory {
+            from: StoryId(1),
+            to: vec![StoryId(2)],
+            targets: CopyTargets {
+                slabs: true,
+                ..Default::default()
+            },
+            overwrite: true,
+        }),
+    ));
+    assert!(model.slabs.len() > before, "3F の床が作られる");
+    for sl in &model.slabs[before..] {
+        assert!(
+            sl.secondary_joist_ids.is_empty(),
+            "複製先の床が複製元の小梁を参照している: {:?}",
+            sl.secondary_joist_ids
+        );
+    }
+    assert!(model.validate().is_ok(), "{:?}", model.validate());
+}
+
+/// 壁部材を削除したとき、その壁版を指す壁領域が「版なし」へ戻り、
+/// 繰り上げで別の壁へ黙って付け替わらないこと。undo で壁版が戻ること。
+#[test]
+fn test_delete_member_clears_wall_region_wall() {
+    let mut model = seeded_model(4, 3);
+    for e in &mut model.elements {
+        e.kind = ElementKind::Wall;
+    }
+    // ElemId(1) を指す壁領域。削除で繰り上がると ElemId(2) だった壁を指してしまう。
+    model.wall_regions.push(squid_n_core::model::WallRegion {
+        wall: Some(ElemId(1)),
+        post_ids: vec![],
+    });
+    assert!(model.validate().is_ok(), "前提: {:?}", model.validate());
+
+    let mut stack = UndoStack::new();
+    assert!(stack.run(&mut model, Box::new(DeleteMember { id: ElemId(1) })));
+    assert_eq!(
+        model.wall_regions[0].wall, None,
+        "削除した壁を指す壁領域は版なしへ戻る"
+    );
+    assert!(model.validate().is_ok(), "{:?}", model.validate());
+
+    stack.undo(&mut model);
+    assert_eq!(
+        model.wall_regions[0].wall,
+        Some(ElemId(1)),
+        "undo で壁版の参照が戻る"
+    );
+    assert!(model.validate().is_ok(), "{:?}", model.validate());
+}

@@ -971,11 +971,53 @@ impl Model {
         }
     }
 
-    /// 旧スキーマから読み込んだとき（`SecondaryMember.id` が全て 0）に
-    /// `id == index` 不変条件を復元するためのマイグレーション。
-    pub fn migrate_secondary_member_ids(&mut self) {
+    /// `keep` が `false` を返す二次部材を取り除き、`id == index` の不変条件を
+    /// 復元したうえで、`Slab.secondary_joist_ids` と `WallRegion.post_ids` の
+    /// 参照を新しい ID へ張り替える（取り除かれた部材への参照は削除する）。
+    ///
+    /// 二次部材をまとめて間引く処理は必ずこれを通すこと。素の `retain` で消すと
+    /// 後続の `id` が添字とずれ、領域側の参照が黙って別の部材を指す。
+    pub fn retain_secondary_members(&mut self, mut keep: impl FnMut(&SecondaryMember) -> bool) {
+        // 旧 ID → 新 ID（`None` は削除された部材）。
+        let mut remap: Vec<Option<SecondaryMemberId>> =
+            Vec::with_capacity(self.secondary_members.len());
+        let mut next = 0u32;
+        for sm in &self.secondary_members {
+            if keep(sm) {
+                remap.push(Some(SecondaryMemberId(next)));
+                next += 1;
+            } else {
+                remap.push(None);
+            }
+        }
+        if remap.iter().all(|r| r.is_some()) {
+            return;
+        }
+
+        let mut i = 0usize;
+        self.secondary_members.retain(|_| {
+            let k = remap[i].is_some();
+            i += 1;
+            k
+        });
         for (i, sm) in self.secondary_members.iter_mut().enumerate() {
             sm.id = SecondaryMemberId(i as u32);
+        }
+
+        let remap_list = |ids: &mut Vec<SecondaryMemberId>| {
+            ids.retain_mut(|id| match remap.get(id.index()).copied().flatten() {
+                Some(new_id) => {
+                    *id = new_id;
+                    true
+                }
+                None => false,
+            });
+        };
+        for slab in &mut self.slabs {
+            remap_list(&mut slab.secondary_joist_ids);
+        }
+        for wr in &mut self.wall_regions {
+            remap_list(&mut wr.post_ids);
         }
     }
 

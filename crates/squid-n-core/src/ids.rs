@@ -31,11 +31,3 @@ id_newtype!(LoadCaseId);
 id_newtype!(VibrationCaseId);
 id_newtype!(LumpedVibrationCaseId);
 id_newtype!(SecondaryMemberId);
-
-impl Default for SecondaryMemberId {
-    /// 旧スキーマからの読込時に `#[serde(default)]` で補完される値（0 固定）。
-    /// `Model::migrate_secondary_member_ids` でインデックスと整合させること。
-    fn default() -> Self {
-        SecondaryMemberId(0)
-    }
-}

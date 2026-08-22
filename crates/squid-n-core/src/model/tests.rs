@@ -1134,3 +1134,54 @@ fn test_validate_rejects_stories_out_of_elevation_order() {
     let msg = format!("{err}");
     assert!(msg.contains("昇順"), "{msg}");
 }
+
+#[test]
+fn test_retain_secondary_members_remaps_region_refs() {
+    let sm = |i: u32, kind| SecondaryMember {
+        id: SecondaryMemberId(i),
+        kind,
+        nodes: [NodeId(0), NodeId(1)],
+        section: None,
+        name: format!("SM{i}"),
+    };
+    let mut model = Model {
+        secondary_members: vec![
+            sm(0, SecondaryMemberKind::Joist),
+            sm(1, SecondaryMemberKind::Post),
+            sm(2, SecondaryMemberKind::Joist),
+        ],
+        slabs: vec![Slab {
+            id: crate::ids::SlabId(0),
+            boundary: vec![],
+            joists: vec![],
+            loads: vec![],
+            method: DistributionMethod::OneWay,
+            kind: Default::default(),
+            one_way: None,
+            edge_supported: None,
+            usage: None,
+            section: None,
+            secondary_joist_ids: vec![SecondaryMemberId(0), SecondaryMemberId(2)],
+        }],
+        wall_regions: vec![crate::model::WallRegion {
+            wall: None,
+            post_ids: vec![SecondaryMemberId(1)],
+        }],
+        ..Default::default()
+    };
+
+    // SM0（Joist）を落とす。SM1→0, SM2→1 へ繰り上がる。
+    model.retain_secondary_members(|sm| sm.id != SecondaryMemberId(0));
+
+    assert_eq!(model.secondary_members.len(), 2);
+    for (i, sm) in model.secondary_members.iter().enumerate() {
+        assert_eq!(sm.id, SecondaryMemberId(i as u32));
+    }
+    // 落とした SM0 への参照は消え、SM2 への参照は新 ID 1 へ張り替わる。
+    assert_eq!(
+        model.slabs[0].secondary_joist_ids,
+        vec![SecondaryMemberId(1)]
+    );
+    // 壁領域の SM1 への参照は新 ID 0 へ張り替わる。
+    assert_eq!(model.wall_regions[0].post_ids, vec![SecondaryMemberId(0)]);
+}

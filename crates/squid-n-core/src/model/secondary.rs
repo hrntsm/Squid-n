@@ -32,10 +32,7 @@ pub struct SecondaryMember {
     pub section: Option<SectionId>,
     /// 表示名（ST-Bridge の name 等）。
     pub name: String,
-    /// 二次部材 ID（`secondary_members` の配列インデックスと一致すること）。
-    /// 旧スキーマ（4 要素: `kind, nodes, section, name`）は `#[serde(default)]` で
-    /// `SecondaryMemberId(0)` として読まれるため、読込後に
-    /// [`Model::migrate_secondary_member_ids`] で補正すること。
-    #[serde(default)]
+    /// 二次部材 ID（`secondary_members` の配列インデックスと一致すること。
+    /// `Model::validate` が確認する）。
     pub id: SecondaryMemberId,
 }
