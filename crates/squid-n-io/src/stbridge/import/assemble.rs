@@ -563,6 +563,10 @@ fn build_slabs(
     warnings: &mut Vec<String>,
 ) -> usize {
     let mut skipped_slabs = 0u32;
+    // ST-Bridge の XML には「スラブと小梁の親子関係」を明示する要素がない。
+    // そのため `Slab.secondary_joist_ids` は現行 importer では空配列のままにし、
+    // ここでは関連付けを行わない（旧スキーマの自動補正と区別してスキップ）。
+    // ST-Bridge の将来拡張で、親子関係が明示されればそのときに収集する。
     // ST-Bridge の断面 file id → 内部の断面 ID。同じ断面を指すスラブで使い回す。
     let mut sec_of_file: HashMap<u32, SectionId> = HashMap::new();
     let mut slab_section_count = 0usize;
@@ -693,6 +697,10 @@ fn build_walls(
     material_index: &HashMap<u32, u32>,
     warnings: &mut Vec<String>,
 ) {
+    // ST-Bridge の XML には「壁と間柱の親子関係」を明示する要素がない。
+    // 壁要素単体では `WallRegion` の `wall` と `post_ids` を紐づけられず、
+    // そのため `wall_regions` は空配列のままにする（現行 importer ではスキップ）。
+    // 将来、親子関係を表す要素が見つかればここで `WallRegion` を生成する。
     let mut skipped_walls = 0u32;
     // 壁厚 → 生成済みの厚さ専用断面。同じ厚さの壁で断面を使い回すための索引。
     // f64 は Hash を持たないため、符号（`Wall t180`）そのものをキーにする。

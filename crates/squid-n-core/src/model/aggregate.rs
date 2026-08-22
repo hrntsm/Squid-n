@@ -345,9 +345,16 @@ impl Model {
             }
         }
 
-        // スラブの secondary_joist_ids の参照整合（存在かつ Joist 種別であること）。
+        // スラブの secondary_joist_ids は重複を許さず、参照先が実在し Joist であること。
         for slab in &self.slabs {
+            let mut seen_joists = std::collections::HashSet::new();
             for &smid in &slab.secondary_joist_ids {
+                if !seen_joists.insert(smid) {
+                    return Err(CoreError::DuplicateId(format!(
+                        "Slab {} secondary_joist_ids has SecondaryMemberId({})",
+                        slab.id.0, smid.0
+                    )));
+                }
                 match self.secondary_members.get(smid.index()) {
                     Some(sm) if sm.id == smid => {
                         if sm.kind != SecondaryMemberKind::Joist {
@@ -367,17 +374,34 @@ impl Model {
             }
         }
 
-        // 壁領域の参照整合。
+        // 壁領域の post_ids は重複を許さず、参照先が実在し Post であること。
         for (wi, wr) in self.wall_regions.iter().enumerate() {
             if let Some(eid) = wr.wall {
-                if eid.index() >= self.elements.len() || self.elements[eid.index()].id != eid {
-                    return Err(CoreError::DanglingRef(format!(
-                        "WallRegion {} wall -> Elem {}",
-                        wi, eid.0
-                    )));
+                let e = self.elements.get(eid.index()).filter(|e| e.id == eid);
+                match e {
+                    None => {
+                        return Err(CoreError::DanglingRef(format!(
+                            "WallRegion {} wall -> Elem {}",
+                            wi, eid.0
+                        )));
+                    }
+                    Some(e) if e.kind != ElementKind::Wall => {
+                        return Err(CoreError::DanglingRef(format!(
+                            "WallRegion {} wall -> Elem {} は Wall でない（{:?}）",
+                            wi, eid.0, e.kind
+                        )));
+                    }
+                    _ => {}
                 }
             }
+            let mut seen_posts = std::collections::HashSet::new();
             for &smid in &wr.post_ids {
+                if !seen_posts.insert(smid) {
+                    return Err(CoreError::DuplicateId(format!(
+                        "WallRegion {} post_ids has SecondaryMemberId({})",
+                        wi, smid.0
+                    )));
+                }
                 match self.secondary_members.get(smid.index()) {
                     Some(sm) if sm.id == smid => {
                         if sm.kind != SecondaryMemberKind::Post {

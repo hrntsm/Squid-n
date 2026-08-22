@@ -129,6 +129,53 @@ fn test_validate_dangling_slab_boundary() {
 }
 
 #[test]
+fn test_validate_duplicate_slab_secondary_joist_ids() {
+    let model = Model {
+        secondary_members: vec![SecondaryMember {
+            id: SecondaryMemberId(0),
+            kind: SecondaryMemberKind::Joist,
+            nodes: [NodeId(0), NodeId(1)],
+            section: None,
+            name: "J0".to_string(),
+        }],
+        slabs: vec![Slab {
+            id: crate::ids::SlabId(0),
+            boundary: vec![],
+            joists: vec![],
+            loads: vec![],
+            method: DistributionMethod::OneWay,
+            kind: Default::default(),
+            one_way: None,
+            edge_supported: None,
+            usage: None,
+            section: None,
+            secondary_joist_ids: vec![SecondaryMemberId(0), SecondaryMemberId(0)],
+        }],
+        ..Default::default()
+    };
+    assert!(model.validate().is_err());
+}
+
+#[test]
+fn test_validate_duplicate_wall_region_post_ids() {
+    let model = Model {
+        secondary_members: vec![SecondaryMember {
+            id: SecondaryMemberId(0),
+            kind: SecondaryMemberKind::Post,
+            nodes: [NodeId(0), NodeId(1)],
+            section: None,
+            name: "P0".to_string(),
+        }],
+        wall_regions: vec![crate::model::WallRegion {
+            wall: None,
+            post_ids: vec![SecondaryMemberId(0), SecondaryMemberId(0)],
+        }],
+        ..Default::default()
+    };
+    assert!(model.validate().is_err());
+}
+
+#[test]
 fn test_shear_modulus_explicit() {
     let mat = Material {
         concrete_class: Default::default(),

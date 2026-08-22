@@ -2,7 +2,7 @@
 
 use super::*;
 use squid_n_core::ids::*;
-use squid_n_core::model::{SecondaryMember, SecondaryMemberKind, WallRegion};
+use squid_n_core::model::{ElementKind, SecondaryMember, SecondaryMemberKind, WallRegion};
 
 // ─── ヘルパー関数 ─────────────────────────────────────
 
@@ -366,14 +366,24 @@ fn secondary_joist_ids_ok(model: &Model, ids: &[SecondaryMemberId]) -> bool {
 /// 壁領域の参照が妥当か確認する。
 /// `wall` が `Some` の場合は実在する部材 ID か、`post_ids` が全て実在する Post 種別か。
 fn wall_region_refs_ok(model: &Model, region: &WallRegion) -> bool {
-    // 壁版の存在チェック
+    // 壁版の存在チェックと種別チェック
     if let Some(elem_id) = region.wall {
-        if !crate::refs::elem_exists(model, elem_id) {
+        let is_wall = model
+            .elements
+            .get(elem_id.index())
+            .filter(|e| e.id == elem_id)
+            .map(|e| e.kind == ElementKind::Wall)
+            .unwrap_or(false);
+        if !is_wall {
             return false;
         }
     }
-    // 間柱 ID が全て実在し Post 種別であること
+    // 重複チェック・間柱 ID が全て実在し Post 種別であること
+    let mut seen = std::collections::HashSet::new();
     for &smid in &region.post_ids {
+        if !seen.insert(smid) {
+            return false;
+        }
         let idx = smid.index();
         match model.secondary_members.get(idx) {
             Some(sm) if sm.id == smid && sm.kind == SecondaryMemberKind::Post => {}
