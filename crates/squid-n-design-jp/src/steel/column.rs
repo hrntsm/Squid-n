@@ -83,14 +83,10 @@ pub(crate) fn check_column(
     // 円形鋼管は二軸曲げを合成した σb に一本化: σb = √(mz²+my²)/Z強軸。
     let sigma_b_pipe = (forces.mz.powi(2) + forces.my.powi(2)).sqrt() / z_strong;
 
-    let axial_stress;
-    let ratio_axial_bend;
-    let axial_basis;
-    if forces.n < 0.0 {
+    let (axial_stress, ratio_axial_bend, axial_basis) = if forces.n < 0.0 {
         // 圧縮+曲げ: σc/fc(座屈考慮) + ΣσB/fb ≤ 1.0。
         let sigma_c = forces.n.abs() / area;
-        axial_stress = sigma_c;
-        ratio_axial_bend = match shape {
+        let ratio = match shape {
             ShapeCategory::Pipe => {
                 sigma_c / safe_denom(fc_val) + sigma_b_pipe / safe_denom(fb_strong)
             }
@@ -100,12 +96,11 @@ pub(crate) fn check_column(
                     + sigma_by / safe_denom(fb_weak)
             }
         };
-        axial_basis = "圧縮+曲げ: σc/fc(座屈考慮)+ΣσB/fb";
+        (sigma_c, ratio, "圧縮+曲げ: σc/fc(座屈考慮)+ΣσB/fb")
     } else {
         // 引張+曲げ: σt/ft + ΣσB/fb ≤ 1.0。
         let sigma_t = forces.n / area;
-        axial_stress = sigma_t;
-        ratio_axial_bend = match shape {
+        let ratio = match shape {
             ShapeCategory::Pipe => {
                 sigma_t / safe_denom(ft_val) + sigma_b_pipe / safe_denom(fb_strong)
             }
@@ -115,8 +110,8 @@ pub(crate) fn check_column(
                     + sigma_by / safe_denom(fb_weak)
             }
         };
-        axial_basis = "引張+曲げ: σt/ft+ΣσB/fb";
-    }
+        (sigma_t, ratio, "引張+曲げ: σt/ft+ΣσB/fb")
+    };
 
     // せん断: せん断有効断面積は梁と共用の単一定義（`shear_area_2d`。
     // H形はウェブ内法 tw·(H−2tf)、角形は角部円弧考慮）。H形・角形は
