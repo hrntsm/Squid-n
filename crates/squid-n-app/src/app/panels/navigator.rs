@@ -6,7 +6,7 @@ use super::*;
 use squid_n_core::units::to_display::force_kn;
 
 impl App {
-    /// 左ペイン：ナビゲータ（階/部材群/荷重ケース/結果ケースのツリー）。
+    /// 左ペイン：ナビゲータ（階/部材群/断面・材料/荷重ケース/結果ケースのツリー）。
     pub(crate) fn navigator_panel(&mut self, ui: &mut egui::Ui) {
         ui.group(|ui| {
             ui.strong("ナビゲータ");
@@ -81,6 +81,9 @@ impl App {
                     },
                 );
             });
+
+            self.nav_sections(ui);
+            self.nav_materials(ui);
 
             self.nav_result_cases(ui);
 

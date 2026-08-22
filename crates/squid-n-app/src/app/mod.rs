@@ -1,7 +1,7 @@
 use std::time::SystemTime;
 
 use squid_n_core::ids::{
-    ElemId, LoadCaseId, LumpedVibrationCaseId, NodeId, SectionId, VibrationCaseId,
+    ElemId, LoadCaseId, LumpedVibrationCaseId, MaterialId, NodeId, SectionId, VibrationCaseId,
 };
 use squid_n_design_jp::LoadTerm;
 use squid_n_edit::UndoStack;
@@ -126,6 +126,7 @@ pub struct Navigator {
     pub focus_node: Option<NodeId>,
     pub focus_member: Option<ElemId>,
     pub focus_section: Option<SectionId>,
+    pub focus_material: Option<MaterialId>,
     pub focus_load_case: Option<LoadCaseId>,
     /// ナビゲータで選択中の結果表示対象（静的ケース／荷重組合せ）
     pub focus_result: Option<StaticKey>,
@@ -1814,6 +1815,8 @@ pub use preparation::*;
 
 #[cfg(feature = "gui")]
 mod nav_loads;
+#[cfg(any(test, feature = "gui"))]
+mod nav_model;
 #[cfg(any(test, feature = "gui"))]
 mod nav_results;
 #[cfg(feature = "gui")]
