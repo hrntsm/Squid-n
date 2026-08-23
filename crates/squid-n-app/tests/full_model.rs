@@ -1137,6 +1137,58 @@ fn joist_design_checks_cover_imported_secondary_members() {
     );
 }
 
+/// 主架構の面走査（`region_gen`）が、大梁で囲まれたパネルをレベルごとに検出する。
+///
+/// 床領域は「大梁で囲まれた領域ごとに 1 つ」と定めるため、その検出が実建物で
+/// 期待どおりの数になることを固定する。期待値は Euler の公式（内部面数 `F = E − V + C`）
+/// で独立に検算した値である。
+#[test]
+fn region_gen_finds_beam_bounded_panels() {
+    use squid_n_core::region_gen::generate_floor_panels;
+    use std::collections::BTreeMap;
+
+    let app = imported();
+    let panels = generate_floor_panels(&app.model);
+
+    let mut per_level: BTreeMap<i64, (usize, f64)> = BTreeMap::new();
+    for p in &panels {
+        let e = per_level.entry(p.level.round() as i64).or_insert((0, 0.0));
+        e.0 += 1;
+        e.1 += p.area(&app.model);
+    }
+    let counts: Vec<(i64, usize)> = per_level.iter().map(|(z, (n, _))| (*z, *n)).collect();
+    assert_eq!(
+        counts,
+        vec![(200, 6), (4700, 6), (8700, 6), (12700, 7), (16500, 1)],
+        "レベル別のパネル数（Euler の公式による検算値と一致すること）"
+    );
+    assert_eq!(panels.len(), 26, "パネル総数");
+
+    // パネルの面積の合計は、そのレベルのスラブ面積の合計と一致する
+    // （スラブは小梁で細分されているが、覆う範囲はパネルと同じ）。
+    let mut slab_area: BTreeMap<i64, f64> = BTreeMap::new();
+    for s in &app.model.slabs {
+        let coords: Vec<[f64; 3]> = s
+            .boundary
+            .iter()
+            .filter_map(|n| app.model.nodes.get(n.index()))
+            .map(|n| n.coord)
+            .collect();
+        if coords.len() < 3 {
+            continue;
+        }
+        *slab_area.entry(coords[0][2].round() as i64).or_default() +=
+            squid_n_load::floor::polygon_area(&coords);
+    }
+    for (z, (_, area)) in &per_level {
+        let s = slab_area.get(z).copied().unwrap_or(0.0);
+        assert!(
+            (area - s).abs() / s < 1e-6,
+            "Z={z}: パネル面積 {area} とスラブ面積 {s} が一致しない"
+        );
+    }
+}
+
 // ===================== スナップショット =====================
 
 /// 全解析の代表スカラをスナップショットで固定する。
