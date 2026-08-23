@@ -1,11 +1,5 @@
 use super::super::*;
 
-/// 小梁が載るスラブを決めるときの、レベル一致とみなす Z の差の上限 [mm]。
-///
-/// スラブ境界と二次部材はモデルの同じ節点を参照するため、同じ階なら Z は一致する。
-/// 丸め誤差だけを吸収する幅とし、段差床は別レベルとして扱う（＝該当なしになる）。
-const SLAB_LEVEL_TOL: f64 = 1.0;
-
 impl App {
     /// T7: 解析結果の member_forces から検定結果を生成する。
     /// 危険断面位置（§6.2.3、既定は柱フェイスと中央）の内力に対し、
@@ -346,6 +340,8 @@ impl App {
             // 中点を含み、かつ**同じレベルにある**スラブを集める。XY だけで判定すると
             // 上下階のスラブは平面上で重なるため、別階のスラブを掴み、別階の板厚・室用途・
             // 境界寸法で検定してしまう（エラーは出ないまま結果だけが誤る）。
+            // レベルの許容差は面走査によるパネル検出と同じ `geom::LEVEL_TOL_MM` を用いる
+            // （丸め誤差だけを吸収する幅。段差床は別レベルとして扱う＝該当なしになる）。
             let matched: Vec<(usize, &squid_n_core::model::Slab)> = self
                 .model
                 .slabs
@@ -353,7 +349,7 @@ impl App {
                 .enumerate()
                 .filter(|(_, s)| {
                     squid_n_load::floor::slab_level(&self.model, s)
-                        .is_some_and(|z| (z - mid_z).abs() <= SLAB_LEVEL_TOL)
+                        .is_some_and(|z| (z - mid_z).abs() <= squid_n_core::geom::LEVEL_TOL_MM)
                         && squid_n_load::floor::point_in_slab_boundary(&self.model, s, mid)
                 })
                 .collect();

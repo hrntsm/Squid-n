@@ -1189,6 +1189,76 @@ fn region_gen_finds_beam_bounded_panels() {
     }
 }
 
+/// 取り込んだスラブ片が、大梁で囲まれたパネルへ過不足なく収まる。
+///
+/// 床領域はパネル単位で 1 枚の版を持つ設計のため、パネル内で板厚（断面）や室用途が
+/// 混在すると 1 枚に畳めない。実建物でそれが起きないことを固定する。
+#[test]
+fn slabs_fold_into_panels_without_mixing() {
+    use squid_n_core::region_gen::scan_floor_panels;
+    use std::collections::{BTreeMap, BTreeSet};
+
+    let app = imported();
+    let scan = scan_floor_panels(&app.model);
+    assert_eq!(scan.unclosed, 0, "閉じない面走査はない");
+    assert!(
+        scan.crossings.is_empty(),
+        "節点を共有せずに交差する大梁がある: {:?}",
+        scan.crossings
+    );
+
+    let mut by_panel: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
+    let mut unassigned = Vec::new();
+    for (si, slab) in app.model.slabs.iter().enumerate() {
+        let coords: Vec<[f64; 3]> = slab
+            .boundary
+            .iter()
+            .filter_map(|n| app.model.nodes.get(n.index()))
+            .map(|n| n.coord)
+            .collect();
+        if coords.len() < 3 {
+            continue;
+        }
+        let n = coords.len() as f64;
+        let centroid = [
+            coords.iter().map(|p| p[0]).sum::<f64>() / n,
+            coords.iter().map(|p| p[1]).sum::<f64>() / n,
+        ];
+        let z = coords[0][2];
+        match scan
+            .panels
+            .iter()
+            .position(|p| p.is_same_level(z) && p.contains(&app.model, centroid))
+        {
+            Some(pi) => by_panel.entry(pi).or_default().push(si),
+            None => unassigned.push(si),
+        }
+    }
+
+    assert!(
+        unassigned.is_empty(),
+        "どのパネルにも収まらないスラブ: {unassigned:?}"
+    );
+    assert_eq!(
+        by_panel.len(),
+        scan.panels.len(),
+        "版を持たないパネルはない"
+    );
+
+    for (pi, slabs) in &by_panel {
+        let sections: BTreeSet<_> = slabs
+            .iter()
+            .map(|&i| app.model.slabs[i].section.map(|s| s.0))
+            .collect();
+        let usages: BTreeSet<String> = slabs
+            .iter()
+            .map(|&i| format!("{:?}", app.model.slabs[i].usage))
+            .collect();
+        assert_eq!(sections.len(), 1, "パネル {pi} で断面が混在: {sections:?}");
+        assert_eq!(usages.len(), 1, "パネル {pi} で室用途が混在: {usages:?}");
+    }
+}
+
 // ===================== スナップショット =====================
 
 /// 全解析の代表スカラをスナップショットで固定する。

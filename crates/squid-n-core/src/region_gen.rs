@@ -7,9 +7,9 @@
 //! # 生成規則
 //!
 //! 1. **対象**は水平な 2 節点の梁要素（[`ElementKind::Beam`]）のみ。両端の Z 差が
-//!    [`LEVEL_TOL_MM`] 以内のものを水平とみなす。柱・ブレース・壁・二次部材は対象にしない
+//!    [`crate::geom::LEVEL_TOL_MM`] 以内のものを水平とみなす。柱・ブレース・壁・二次部材は対象にしない
 //!    （床領域の境界は大梁であるという定義による）。
-//! 2. **レベルごと**に分けて面を求める。同じ Z（[`LEVEL_TOL_MM`] 以内）の梁を 1 つの
+//! 2. **レベルごと**に分けて面を求める。同じ Z（[`crate::geom::LEVEL_TOL_MM`] 以内）の梁を 1 つの
 //!    平面グラフとして扱う。
 //! 3. **面走査**は半辺（有向辺）をたどる定型手法による。各節点で接続辺を方位角順に並べ、
 //!    半辺 `u→v` の次を「`v` のまわりで `v→u` の 1 つ手前（時計回りに次）」とすると、
@@ -19,6 +19,13 @@
 //! 5. **行き止まりの辺**（片持ち梁など、片端が他の梁と繋がらない梁）は、面走査が
 //!    往復してその場に戻るため面を作らない。往復ぶんは外周面に吸収される。
 //!
+//! # 平面グラフであることの前提
+//!
+//! 面走査は、辺どうしが節点でのみ接することを前提とする。節点を共有せずに交差する梁が
+//! あると、検出される区画は実際とずれるが、走査自体はエラーにならず黙って通る。
+//! [`scan_floor_panels`] はその組を [`PanelScan::crossings`] として報告する
+//! （検出は続行する。モデルの不備として利用者へ知らせるための情報である）。
+//!
 //! # 扱わないもの
 //!
 //! - **穴（中庭）を持つ面**。グラフが非連結で、ある閉路の内側に独立した閉路がある場合、
@@ -27,13 +34,10 @@
 //! - **段差床**。レベルで分けるため、同じ階でもレベルが違えば別の平面グラフになる。
 //!   段差部の梁は両方のレベルのどちらにも属さない（両端の Z が違うため水平とみなされない）。
 
-use crate::geom::vec3;
+use crate::geom::{vec3, LEVEL_TOL_MM};
 use crate::ids::{ElemId, NodeId};
 use crate::model::{ElementKind, Model};
 use std::collections::HashMap;
-
-/// 同じレベル・同じ高さとみなす Z の差 [mm]。
-pub const LEVEL_TOL_MM: f64 = 1.0;
 
 /// 面走査の対象とする梁の最小長さ [mm]。これ未満は方位角が定まらないため除外する。
 const MIN_EDGE_LEN_MM: f64 = 1.0;
@@ -50,16 +54,76 @@ pub struct Panel {
 }
 
 impl Panel {
+    /// 境界節点の XY 座標列。節点が引けない場合は `None`。
+    fn polygon(&self, model: &Model) -> Option<Vec<[f64; 2]>> {
+        self.boundary
+            .iter()
+            .map(|n| model.nodes.get(n.index()).map(|n| [n.coord[0], n.coord[1]]))
+            .collect()
+    }
+
     /// 平面多角形の面積 [mm²]（シューレース公式）。
     pub fn area(&self, model: &Model) -> f64 {
-        let pts: Vec<[f64; 2]> = self
-            .boundary
-            .iter()
-            .filter_map(|n| model.nodes.get(n.index()))
-            .map(|n| [n.coord[0], n.coord[1]])
-            .collect();
-        signed_area(&pts).abs()
+        self.polygon(model)
+            .map(|pts| signed_area(&pts).abs())
+            .unwrap_or(0.0)
     }
+
+    /// 点 `p`（XY）がこのパネルの内部にあるか。**辺上（[`BOUNDARY_TOL_MM`] 以内）は含めない。**
+    ///
+    /// 版や二次部材をパネルへ割り当てる用途を想定する。辺上の点は隣接パネルの双方に
+    /// 該当してしまうため含めない（所属を一意に決められるようにする）。
+    ///
+    /// レイキャストは辺上の点の扱いが定まらない（辺の向きしだいで内側にも外側にもなる）ため、
+    /// 辺までの距離による判定を先に行う。
+    pub fn contains(&self, model: &Model, p: [f64; 2]) -> bool {
+        let Some(poly) = self.polygon(model) else {
+            return false;
+        };
+        let n = poly.len();
+        if n < 3 {
+            return false;
+        }
+        for i in 0..n {
+            if point_segment_dist(p, poly[i], poly[(i + 1) % n]) <= BOUNDARY_TOL_MM {
+                return false;
+            }
+        }
+        let mut inside = false;
+        let mut j = n - 1;
+        for i in 0..n {
+            let (a, b) = (poly[i], poly[j]);
+            if (a[1] > p[1]) != (b[1] > p[1]) {
+                let x = (b[0] - a[0]) * (p[1] - a[1]) / (b[1] - a[1]) + a[0];
+                if p[0] < x {
+                    inside = !inside;
+                }
+            }
+            j = i;
+        }
+        inside
+    }
+
+    /// このパネルと同じレベルか（[`crate::geom::LEVEL_TOL_MM`] 以内）。
+    pub fn is_same_level(&self, z: f64) -> bool {
+        (self.level - z).abs() <= LEVEL_TOL_MM
+    }
+}
+
+/// 辺上とみなす点から辺までの距離の上限 [mm]。
+pub const BOUNDARY_TOL_MM: f64 = 1.0;
+
+/// 点から線分までの距離 [mm]（XY 平面）。
+fn point_segment_dist(p: [f64; 2], a: [f64; 2], b: [f64; 2]) -> f64 {
+    let ab = [b[0] - a[0], b[1] - a[1]];
+    let len2 = ab[0] * ab[0] + ab[1] * ab[1];
+    let t = if len2 <= f64::EPSILON {
+        0.0
+    } else {
+        (((p[0] - a[0]) * ab[0] + (p[1] - a[1]) * ab[1]) / len2).clamp(0.0, 1.0)
+    };
+    let q = [a[0] + t * ab[0], a[1] + t * ab[1]];
+    ((p[0] - q[0]).powi(2) + (p[1] - q[1]).powi(2)).sqrt()
 }
 
 /// 多角形の符号付き面積（反時計回りが正）。
@@ -84,17 +148,92 @@ struct Edge {
     elem: ElemId,
 }
 
+/// 面走査の結果。パネルに加え、平面グラフとして矛盾がある兆候を持ち帰る。
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct PanelScan {
+    /// 検出したパネル。レベルの昇順、同一レベル内は面積の降順。
+    pub panels: Vec<Panel>,
+    /// 節点を共有せずに交差している水平梁の組。
+    ///
+    /// 面走査は平面グラフ（辺どうしが節点でのみ接する）を前提とする。交差する梁があると
+    /// 検出されるパネルは実際の区画とずれるが、走査自体はエラーにならず黙って通る。
+    /// **モデルの不備として利用者へ知らせるための情報であり、パネルの検出は続行する。**
+    pub crossings: Vec<(ElemId, ElemId)>,
+    /// 閉じずに終わった面走査の数。
+    ///
+    /// 各半辺の後続は一意に定まるため、正しく組めていれば必ず 0 になる（不変条件の番人）。
+    /// 0 でない場合は面走査の実装かグラフの構築に誤りがある。
+    pub unclosed: usize,
+}
+
 /// 主架構（水平な大梁）が囲む閉領域を、レベルごとに検出する。
 ///
 /// モデルは変更しない。生成規則はモジュールドキュメントを参照。
-/// 返り値はレベルの昇順、同一レベル内は面積の降順とする（呼び出しごとに順序が変わらない）。
-pub fn generate_floor_panels(model: &Model) -> Vec<Panel> {
-    let mut out = Vec::new();
+/// 平面グラフとして矛盾がある兆候（交差する梁など）も併せて返す。
+pub fn scan_floor_panels(model: &Model) -> PanelScan {
+    let mut scan = PanelScan::default();
     for (level, edges) in horizontal_beams_by_level(model) {
-        out.extend(faces_of_level(model, level, &edges));
+        scan.crossings.extend(crossing_pairs(model, &edges));
+        let (panels, unclosed) = faces_of_level(model, level, &edges);
+        scan.panels.extend(panels);
+        scan.unclosed += unclosed;
+    }
+    scan
+}
+
+/// [`scan_floor_panels`] のパネルだけを取り出す薄いラッパ。
+pub fn generate_floor_panels(model: &Model) -> Vec<Panel> {
+    scan_floor_panels(model).panels
+}
+
+/// 同一レベルの梁のうち、節点を共有せずに交差している組を返す。
+///
+/// 端点で接する（T 字・十字に節点を共有する）ものは交差としない。
+/// 一方の端点が他方の内部に載る（節点を共有しない T 字）場合も交差として報告する。
+/// 面走査がその節点を分岐として扱えず、区画がつながってしまうためである。
+fn crossing_pairs(model: &Model, edges: &[Edge]) -> Vec<(ElemId, ElemId)> {
+    let coords = |n: NodeId| model.nodes.get(n.index()).map(|x| [x.coord[0], x.coord[1]]);
+    let mut out = Vec::new();
+    for (i, e1) in edges.iter().enumerate() {
+        for e2 in edges.iter().skip(i + 1) {
+            if e1.a == e2.a || e1.a == e2.b || e1.b == e2.a || e1.b == e2.b {
+                continue; // 節点を共有する組は交差ではない。
+            }
+            let (Some(p1), Some(p2), Some(q1), Some(q2)) =
+                (coords(e1.a), coords(e1.b), coords(e2.a), coords(e2.b))
+            else {
+                continue;
+            };
+            if segments_touch(p1, p2, q1, q2) {
+                out.push((e1.elem, e2.elem));
+            }
+        }
     }
     out
 }
+
+/// 2 線分が交わるか（端点どうしの共有は上位で除外済み）。
+fn segments_touch(p1: [f64; 2], p2: [f64; 2], q1: [f64; 2], q2: [f64; 2]) -> bool {
+    let d = |a: [f64; 2], b: [f64; 2], c: [f64; 2]| {
+        (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])
+    };
+    let on = |a: [f64; 2], b: [f64; 2], c: [f64; 2]| {
+        d(a, b, c).abs() <= AREA_EPS
+            && c[0] >= a[0].min(b[0]) - LEVEL_TOL_MM
+            && c[0] <= a[0].max(b[0]) + LEVEL_TOL_MM
+            && c[1] >= a[1].min(b[1]) - LEVEL_TOL_MM
+            && c[1] <= a[1].max(b[1]) + LEVEL_TOL_MM
+    };
+    let (d1, d2, d3, d4) = (d(p1, p2, q1), d(p1, p2, q2), d(q1, q2, p1), d(q1, q2, p2));
+    if ((d1 > 0.0) != (d2 > 0.0)) && ((d3 > 0.0) != (d4 > 0.0)) {
+        return true;
+    }
+    // 端点が相手の線分上に載る（節点を共有しない T 字・重なり）。
+    on(p1, p2, q1) || on(p1, p2, q2) || on(q1, q2, p1) || on(q1, q2, p2)
+}
+
+/// 外積が 0 とみなせる上限 [mm²]。長さ 1mm の食い違いを許す幅とする。
+const AREA_EPS: f64 = 1.0;
 
 /// 水平な 2 節点梁を、レベルごとに集める。返り値はレベルの昇順。
 fn horizontal_beams_by_level(model: &Model) -> Vec<(f64, Vec<Edge>)> {
@@ -133,8 +272,8 @@ fn horizontal_beams_by_level(model: &Model) -> Vec<(f64, Vec<Edge>)> {
     buckets
 }
 
-/// 1 レベルぶんの平面グラフから内部面を取り出す。
-fn faces_of_level(model: &Model, level: f64, edges: &[Edge]) -> Vec<Panel> {
+/// 1 レベルぶんの平面グラフから内部面を取り出す。返り値は（面, 閉じなかった走査の数）。
+fn faces_of_level(model: &Model, level: f64, edges: &[Edge]) -> (Vec<Panel>, usize) {
     // 半辺（有向辺）の一覧。同じ節点対に複数の梁があっても、最初の 1 本だけを採る
     // （重複部材は面を増やさない）。
     let mut half: HashMap<(NodeId, NodeId), ElemId> = HashMap::new();
@@ -163,6 +302,7 @@ fn faces_of_level(model: &Model, level: f64, edges: &[Edge]) -> Vec<Panel> {
 
     let mut visited: HashMap<(NodeId, NodeId), bool> = HashMap::new();
     let mut panels = Vec::new();
+    let mut unclosed = 0;
     let mut starts: Vec<(NodeId, NodeId)> = half.keys().copied().collect();
     // 走査順を安定させる（HashMap の反復順に依存しない）。
     starts.sort_by_key(|(a, b)| (a.0, b.0));
@@ -174,6 +314,7 @@ fn faces_of_level(model: &Model, level: f64, edges: &[Edge]) -> Vec<Panel> {
         let mut boundary = Vec::new();
         let mut face_edges = Vec::new();
         let mut cur = start;
+        let mut closed = false;
         // 閉路をたどる。半辺の総数を超えたら異常として打ち切る（無限ループ防止）。
         for _ in 0..=half.len() {
             if visited.insert(cur, true).is_some() {
@@ -186,8 +327,14 @@ fn faces_of_level(model: &Model, level: f64, edges: &[Edge]) -> Vec<Panel> {
             };
             cur = next;
             if cur == start {
+                closed = true;
                 break;
             }
+        }
+        if !closed {
+            // 各半辺の後続は一意なので、ここへ来るのはグラフの構築に誤りがある場合だけ。
+            unclosed += 1;
+            continue;
         }
         if boundary.len() < 3 {
             continue;
@@ -212,7 +359,7 @@ fn faces_of_level(model: &Model, level: f64, edges: &[Edge]) -> Vec<Panel> {
     }
 
     panels.sort_by(|a, b| b.area(model).total_cmp(&a.area(model)));
-    panels
+    (panels, unclosed)
 }
 
 /// `origin` から節点 `to` を見た方位角（-π..π）。節点が引けない場合は端に寄せる。
@@ -385,6 +532,62 @@ mod tests {
         model.nodes.push(node(5, 4000.0, 0.0, 2000.0));
         model.elements.push(beam(eid + 1, 1, 5));
         assert_eq!(generate_floor_panels(&model).len(), 1);
+    }
+
+    /// 節点を共有せずに交差する梁は、モデルの不備として報告する。
+    #[test]
+    fn test_crossing_beams_are_reported() {
+        let mut model = grid(1, 1, 4000.0, 0.0);
+        // 区画の内側を斜めに横切る 2 本。互いに交差し、外周とも節点を共有しない。
+        model.nodes.push(node(4, 1000.0, 1000.0, 0.0));
+        model.nodes.push(node(5, 3000.0, 3000.0, 0.0));
+        model.nodes.push(node(6, 1000.0, 3000.0, 0.0));
+        model.nodes.push(node(7, 3000.0, 1000.0, 0.0));
+        let eid = model.elements.len() as u32;
+        model.elements.push(beam(eid, 4, 5));
+        model.elements.push(beam(eid + 1, 6, 7));
+
+        let scan = scan_floor_panels(&model);
+        assert_eq!(scan.crossings.len(), 1, "交差する 1 組を報告する");
+        assert_eq!(scan.unclosed, 0, "走査自体は閉じる");
+        // 交差があってもパネルの検出は続行する（外周の 1 面は取れる）。
+        assert_eq!(scan.panels.len(), 1);
+    }
+
+    /// 節点を共有せずに一方の端点が他方の途中へ載る梁（T 字）も報告する。
+    #[test]
+    fn test_touching_beam_without_shared_node_is_reported() {
+        let mut model = grid(1, 1, 4000.0, 0.0);
+        // 辺 0-1（y=0）の中間へ、節点を共有せずに突き当たる梁。
+        model.nodes.push(node(4, 2000.0, 0.0, 0.0));
+        model.nodes.push(node(5, 2000.0, 2000.0, 0.0));
+        let eid = model.elements.len() as u32;
+        model.elements.push(beam(eid, 4, 5));
+
+        let scan = scan_floor_panels(&model);
+        assert_eq!(scan.crossings.len(), 1);
+    }
+
+    /// 節点を共有する組（十字に交わる格子）は交差として報告しない。
+    #[test]
+    fn test_shared_node_is_not_a_crossing() {
+        let model = grid(2, 2, 3000.0, 0.0);
+        let scan = scan_floor_panels(&model);
+        assert!(scan.crossings.is_empty(), "{:?}", scan.crossings);
+        assert_eq!(scan.panels.len(), 4);
+        assert_eq!(scan.unclosed, 0);
+    }
+
+    /// パネルの内外判定（辺上は内部に含めない）。
+    #[test]
+    fn test_panel_contains() {
+        let model = grid(1, 1, 4000.0, 0.0);
+        let p = &generate_floor_panels(&model)[0];
+        assert!(p.contains(&model, [2000.0, 2000.0]), "内部");
+        assert!(!p.contains(&model, [5000.0, 2000.0]), "外部");
+        assert!(!p.contains(&model, [2000.0, 0.0]), "辺上は含めない");
+        assert!(p.is_same_level(0.0));
+        assert!(!p.is_same_level(4000.0));
     }
 
     /// L 形（凹多角形）の面も 1 つの面として取れる。
