@@ -1190,3 +1190,67 @@ fn test_retain_secondary_members_remaps_region_refs() {
     // 壁領域の SM1 への参照は新 ID 0 へ張り替わる。
     assert_eq!(model.wall_regions[0].post_ids, vec![SecondaryMemberId(0)]);
 }
+
+/// 同じ境界を持つ囲まれた床領域が 2 つあると弾く（1 閉領域 1 領域の不変条件）。
+#[test]
+fn test_validate_duplicate_enclosed_region_boundary() {
+    let mut model = Model::default();
+    for i in 0..4u32 {
+        model.nodes.push(Node {
+            id: NodeId(i),
+            coord: [i as f64 * 1000.0, 0.0, 0.0],
+            restraint: Dof6Mask::FREE,
+            mass: None,
+            story: None,
+            support_spring: None,
+        });
+    }
+    let boundary = vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)];
+    model
+        .floor_regions
+        .push(FloorRegion::enclosed(FloorRegionId(0), boundary.clone()));
+    assert!(model.validate().is_ok());
+    // 同じ閉領域を指す 2 枚目。荷重が二重に分配されるため弾く。
+    model
+        .floor_regions
+        .push(FloorRegion::enclosed(FloorRegionId(1), boundary));
+    assert!(
+        model.validate().is_err(),
+        "同じ境界の床領域が 2 つある状態は検出されるはず"
+    );
+}
+
+/// 取付き線の部分区間は、荷重を載せる経路ができるまで弾く。
+#[test]
+fn test_validate_rejects_partial_anchor_span() {
+    use crate::model::{LoadTransfer, RegionAnchor, RegionShape};
+    let mut model = Model::default();
+    for i in 0..2u32 {
+        model.nodes.push(Node {
+            id: NodeId(i),
+            coord: [i as f64 * 4000.0, 0.0, 0.0],
+            restraint: Dof6Mask::FREE,
+            mass: None,
+            story: None,
+            support_spring: None,
+        });
+    }
+    let mk = |span: [f64; 2]| FloorRegion {
+        id: FloorRegionId(0),
+        name: String::new(),
+        shape: RegionShape::Attached {
+            anchor: RegionAnchor::Line {
+                nodes: [NodeId(0), NodeId(1)],
+                span,
+            },
+            extent: [1000.0, 1000.0],
+            transfer: LoadTransfer::Anchor,
+        },
+        plate: None,
+        secondary_joist_ids: vec![],
+    };
+    model.floor_regions = vec![mk([0.0, 1.0])];
+    assert!(model.validate().is_ok(), "全長の取り付きは通る");
+    model.floor_regions = vec![mk([0.25, 0.75])];
+    assert!(model.validate().is_err(), "部分区間は未対応として弾く");
+}

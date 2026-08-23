@@ -1073,3 +1073,85 @@ fn test_point_in_slab_boundary_includes_edges() {
     assert!(point_in_slab_boundary(&model, &slab, [0.0, 0.0]));
     assert!(!point_in_slab_boundary(&model, &slab, [-10.0, 2000.0]));
 }
+
+// ------------------------------------------------------------------
+// 版なし床領域・取り付き領域（線＋柱へ集中）
+// ------------------------------------------------------------------
+
+/// 版なし床領域（吹抜けの繋ぎ小梁など）は床荷重を発生させない。
+#[test]
+fn test_plateless_region_distributes_nothing() {
+    use squid_n_core::ids::{FloorRegionId, NodeId};
+    let nodes = vec![
+        mk_node(0, 0.0, 0.0),
+        mk_node(1, 4000.0, 0.0),
+        mk_node(2, 4000.0, 4000.0),
+        mk_node(3, 0.0, 4000.0),
+    ];
+    let model = Model {
+        nodes,
+        ..Default::default()
+    };
+    let region = FloorRegion::enclosed(
+        FloorRegionId(0),
+        vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
+    );
+    assert_eq!(model.region_dead_intensity(&region), 0.0);
+    assert!(
+        distribute_slab(&model, &region).is_empty(),
+        "版がなければ分配は起きない"
+    );
+}
+
+/// 取付き線に載る領域で「両端の柱へ集中」を選ぶと、全荷重が両端へ半分ずつ渡る。
+#[test]
+fn test_attached_line_to_columns_splits_half() {
+    use squid_n_core::ids::{FloorRegionId, NodeId};
+    use squid_n_core::model::AreaLoad;
+    let (l, d, w) = (4000.0_f64, 1500.0_f64, 0.003_f64);
+    let nodes = vec![mk_node(0, 0.0, 0.0), mk_node(1, l, 0.0)];
+    let model = Model {
+        nodes,
+        ..Default::default()
+    };
+    let region = FloorRegion {
+        id: FloorRegionId(0),
+        name: String::new(),
+        shape: RegionShape::Attached {
+            anchor: RegionAnchor::Line {
+                nodes: [NodeId(0), NodeId(1)],
+                span: [0.0, 1.0],
+            },
+            extent: [d, d],
+            transfer: LoadTransfer::Columns,
+        },
+        plate: Some(SlabPlate {
+            loads: vec![AreaLoad {
+                kind: "DL".into(),
+                value: w,
+            }],
+            ..Default::default()
+        }),
+        secondary_joist_ids: vec![],
+    };
+    let loads = distribute_slab(&model, &region);
+    assert_eq!(loads.len(), 2, "両端の 2 節点へ渡る");
+    let total: f64 = loads
+        .iter()
+        .map(|bl| match bl.shape {
+            LoadShape::Point { p, .. } => p,
+            _ => 0.0,
+        })
+        .sum();
+    // 総和保存: w × 面積（= 取付き長さ × 跳ね出し）。
+    assert!((total - w * l * d).abs() / (w * l * d) < 1e-9, "{total}");
+    for bl in &loads {
+        assert!(matches!(bl.target, LoadTarget::Node(_)));
+        if let LoadShape::Point { p, .. } = bl.shape {
+            assert!(
+                (p - w * l * d / 2.0).abs() / (w * l * d / 2.0) < 1e-9,
+                "半分ずつ"
+            );
+        }
+    }
+}
