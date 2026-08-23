@@ -427,15 +427,15 @@ pub fn beam_has_attached_slab(
     model: &squid_n_core::model::Model,
     elem: &squid_n_core::model::ElementData,
 ) -> bool {
-    if elem.nodes.len() < 2 || model.slabs.is_empty() {
+    if elem.nodes.len() < 2 || model.floor_regions.is_empty() {
         return false;
     }
     let n0 = elem.nodes[0];
     let n1 = elem.nodes[elem.nodes.len() - 1];
-    model
-        .slabs
-        .iter()
-        .any(|s| s.boundary.contains(&n0) && s.boundary.contains(&n1))
+    model.floor_regions.iter().any(|s| {
+        s.boundary_nodes()
+            .is_some_and(|b| b.contains(&n0) && b.contains(&n1))
+    })
 }
 
 /// 強軸・弱軸の座屈長さを個別に扱った有効細長比 λ の算定

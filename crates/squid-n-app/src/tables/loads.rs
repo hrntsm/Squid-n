@@ -25,7 +25,7 @@ pub fn loads_table(ui: &mut egui::Ui, app: &mut App) {
     // --- スラブ荷重（床荷重）への案内 ---
     ui.label(format!(
         "スラブ: {} 枚（モデルタブの「スラブ」で床荷重を追加できます。分配結果は結果タブ/モデルタブの3Dビューで表示モード「CMQ図」を選ぶと確認できます）",
-        app.model.slabs.len()
+        app.model.floor_regions.len()
     ));
     ui.add_space(4.0);
 

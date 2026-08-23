@@ -6,10 +6,11 @@
 
 use std::collections::HashMap;
 
-use squid_n_core::ids::{ElemId, LoadCaseId, NodeId, SlabId};
+use squid_n_core::ids::{ElemId, FloorRegionId, LoadCaseId, NodeId};
 use squid_n_core::model::{
-    ElementKind, LoadCase, LoadCaseKind, LoadPurpose, MemberLoad, MemberLoadKind, Model, NodalLoad,
-    Slab, DL_CASE_NAME, EX_CASE_NAME, EY_CASE_NAME, LL_FRAME_CASE_NAME, LL_SEISMIC_CASE_NAME,
+    ElementKind, FloorRegion, LoadCase, LoadCaseKind, LoadPurpose, MemberLoad, MemberLoadKind,
+    Model, NodalLoad, DL_CASE_NAME, EX_CASE_NAME, EY_CASE_NAME, LL_FRAME_CASE_NAME,
+    LL_SEISMIC_CASE_NAME,
 };
 use squid_n_load::floor::{self, BeamLoad, LoadShape, LoadTarget};
 use squid_n_load::secondary::{beam_span_position, resolve_nodal_to_primary, SPAN_TOL_MM};
@@ -56,7 +57,7 @@ pub fn beam_elem_map(model: &Model) -> HashMap<(NodeId, NodeId), ElemId> {
 /// 交差小梁スラブについて、床格子サブモデルの支点反力を大梁接続点への集中荷重として返す。
 pub fn slab_grillage_node_reactions(
     model: &Model,
-    slab: &Slab,
+    slab: &FloorRegion,
     w: f64,
     beam_map: &HashMap<(NodeId, NodeId), ElemId>,
 ) -> Option<Vec<(NodeId, f64)>> {
@@ -64,7 +65,7 @@ pub fn slab_grillage_node_reactions(
         return None;
     }
     if slab
-        .joists
+        .joist_lines()
         .iter()
         .any(|j| beam_map.contains_key(&beam_key(j.support[0], j.support[1])))
     {
@@ -83,9 +84,9 @@ pub fn slab_grillage_node_reactions(
 fn slab_grillage_unit_reactions(
     model: &Model,
     beam_map: &HashMap<(NodeId, NodeId), ElemId>,
-) -> HashMap<SlabId, Vec<(NodeId, f64)>> {
+) -> HashMap<FloorRegionId, Vec<(NodeId, f64)>> {
     let mut out = HashMap::new();
-    for slab in &model.slabs {
+    for slab in &model.floor_regions {
         if let Some(reactions) = slab_grillage_node_reactions(model, slab, 1.0, beam_map) {
             out.insert(slab.id, reactions);
         }
@@ -96,16 +97,12 @@ fn slab_grillage_unit_reactions(
 /// 各スラブについて面荷重強度 `w_of(slab)` を境界へ分配し、`BeamLoad` 列を返す。
 pub fn slab_beam_loads_with(
     model: &Model,
-    w_of: impl Fn(&Slab) -> f64,
-    unit_reactions: &HashMap<SlabId, Vec<(NodeId, f64)>>,
+    w_of: impl Fn(&FloorRegion) -> f64,
+    unit_reactions: &HashMap<FloorRegionId, Vec<(NodeId, f64)>>,
     beam_map: &HashMap<(NodeId, NodeId), ElemId>,
 ) -> Vec<BeamLoad> {
     let mut beam_loads = Vec::new();
-    for slab in &model.slabs {
-        let n = slab.boundary.len();
-        if n < 3 {
-            continue;
-        }
+    for slab in &model.floor_regions {
         let find_beam =
             |n0: NodeId, n1: NodeId| -> Option<ElemId> { beam_map.get(&beam_key(n0, n1)).copied() };
         let w = w_of(slab);
@@ -120,11 +117,10 @@ pub fn slab_beam_loads_with(
                     }
                 }
                 LoadTarget::Edge(k) => {
-                    if k >= n {
+                    // 辺 k の両端節点。取り付き領域は辺 0（取付き線）だけが受け手を持つ。
+                    let Some([n0, n1]) = slab.edge_nodes(k) else {
                         continue;
-                    }
-                    let n0 = slab.boundary[k];
-                    let n1 = slab.boundary[(k + 1) % n];
+                    };
                     match find_beam(n0, n1) {
                         Some(elem) => {
                             bl.elem = elem;
@@ -311,7 +307,7 @@ pub fn compute_dl_beam_loads(model: &Model) -> Vec<BeamLoad> {
     let unit_reactions = slab_grillage_unit_reactions(model, &beam_map);
     slab_beam_loads_with(
         model,
-        |slab| model.slab_dead_intensity(slab),
+        |slab| model.region_dead_intensity(slab),
         &unit_reactions,
         &beam_map,
     )
@@ -495,11 +491,12 @@ pub fn apply_auto_load_cases(model: &mut Model, cases: &[AutoLoadCaseContent]) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use squid_n_core::ids::{NodeId, SlabId};
+    use squid_n_core::ids::{FloorRegionId, NodeId};
     use squid_n_core::model::{
         AreaLoad, DistributionMethod, ElementData, ElementKind, EndCondition, ForceRegime,
-        LocalAxis, Node, Slab,
+        LocalAxis, Node,
     };
+    use squid_n_core::model::{RegionShape, SlabPlate};
 
     fn make_square_slab_model() -> Model {
         let mk_node = |id: u32, x: f64, y: f64| Node {
@@ -536,26 +533,29 @@ mod tests {
             mk_beam(2, 2, 3),
             mk_beam(3, 3, 0),
         ];
-        let slab = Slab {
-            usage: None,
-            edge_supported: None,
-            section: None,
-            kind: Default::default(),
-            one_way: None,
-            id: SlabId(0),
-            boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
-            joists: vec![],
-            loads: vec![AreaLoad {
-                kind: "DL".into(),
-                value: 0.005,
-            }],
-            method: DistributionMethod::TriTrapezoid,
+        let slab = FloorRegion {
+            id: FloorRegionId(0),
+            name: String::new(),
+            shape: RegionShape::Enclosed {
+                boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
+            },
+            plate: Some(SlabPlate {
+                section: None,
+                loads: vec![AreaLoad {
+                    kind: "DL".into(),
+                    value: 0.005,
+                }],
+                usage: None,
+                method: DistributionMethod::TriTrapezoid,
+                one_way: None,
+                joists: vec![],
+            }),
             secondary_joist_ids: vec![],
         };
         Model {
             nodes,
             elements,
-            slabs: vec![slab],
+            floor_regions: vec![slab],
             ..Default::default()
         }
     }

@@ -116,11 +116,11 @@ pub fn sections_table(ui: &mut egui::Ui, app: &mut App) {
     for e in &app.model.elements {
         count(e.section, &mut n_elements);
     }
-    for s in &app.model.slabs {
+    for s in &app.model.floor_regions {
         // 床も断面を参照する（板厚・自重の情報源）。削除ガードが数える対象と
         // そろえないと、使用部材数 0 の行で削除ボタンが押せるのに Noop になる。
-        count(s.section, &mut n_elements);
-        for j in &s.joists {
+        count(s.section(), &mut n_elements);
+        for j in s.joist_lines() {
             count(j.section, &mut n_elements);
         }
     }

@@ -250,7 +250,7 @@ fn import_builds_expected_model() {
     assert_eq!(m.nodes.len(), 166, "節点数");
     assert_eq!(m.elements.len(), 115, "解析要素数（柱 40・大梁 75）");
     assert_eq!(m.secondary_members.len(), 56, "二次部材（小梁）");
-    assert_eq!(m.slabs.len(), 82, "スラブ");
+    assert_eq!(m.floor_regions.len(), 82, "スラブ");
     assert_eq!(m.stories.len(), 5, "階（1FL/2FL/3FL/RFL/PHRFL）");
 
     // 荷重は ST-Bridge に含まれないため標準荷重ケースが自動生成される。
@@ -985,8 +985,8 @@ fn scz_roundtrip_preserves_model_and_results() {
         "二次部材数"
     );
     assert_eq!(
-        reopened.model.slabs.len(),
-        app.model.slabs.len(),
+        reopened.model.floor_regions.len(),
+        app.model.floor_regions.len(),
         "スラブ数"
     );
     assert_eq!(
@@ -1065,8 +1065,8 @@ fn stbridge_roundtrip_is_reanalyzable() {
         "往復で二次部材数が変わる"
     );
     assert_eq!(
-        reimported.model.slabs.len(),
-        app.model.slabs.len(),
+        reimported.model.floor_regions.len(),
+        app.model.floor_regions.len(),
         "往復でスラブ数が変わる"
     );
 
@@ -1120,11 +1120,11 @@ fn joist_design_checks_cover_imported_secondary_members() {
             / 2.0;
         let slab = app
             .model
-            .slabs
+            .floor_regions
             .iter()
             .find(|s| s.id == *slab_id)
             .expect("検定結果のスラブが実在する");
-        let z_slab = squid_n_load::floor::slab_level(&app.model, slab).expect("スラブのレベル");
+        let z_slab = slab.level(&app.model).expect("床領域のレベル");
         assert!(
             (z_slab - z_joist).abs() <= 1.0,
             "小梁 {smi}（Z={z_joist}）が別レベルのスラブ {:?}（Z={z_slab}）で検定されている",
@@ -1167,13 +1167,10 @@ fn region_gen_finds_beam_bounded_panels() {
     // パネルの面積の合計は、そのレベルのスラブ面積の合計と一致する
     // （スラブは小梁で細分されているが、覆う範囲はパネルと同じ）。
     let mut slab_area: BTreeMap<i64, f64> = BTreeMap::new();
-    for s in &app.model.slabs {
-        let coords: Vec<[f64; 3]> = s
-            .boundary
-            .iter()
-            .filter_map(|n| app.model.nodes.get(n.index()))
-            .map(|n| n.coord)
-            .collect();
+    for s in &app.model.floor_regions {
+        let Some(coords) = s.boundary_coords(&app.model) else {
+            continue;
+        };
         if coords.len() < 3 {
             continue;
         }
@@ -1209,13 +1206,10 @@ fn slabs_fold_into_panels_without_mixing() {
 
     let mut by_panel: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
     let mut unassigned = Vec::new();
-    for (si, slab) in app.model.slabs.iter().enumerate() {
-        let coords: Vec<[f64; 3]> = slab
-            .boundary
-            .iter()
-            .filter_map(|n| app.model.nodes.get(n.index()))
-            .map(|n| n.coord)
-            .collect();
+    for (si, slab) in app.model.floor_regions.iter().enumerate() {
+        let Some(coords) = slab.boundary_coords(&app.model) else {
+            continue;
+        };
         if coords.len() < 3 {
             continue;
         }
@@ -1248,11 +1242,11 @@ fn slabs_fold_into_panels_without_mixing() {
     for (pi, slabs) in &by_panel {
         let sections: BTreeSet<_> = slabs
             .iter()
-            .map(|&i| app.model.slabs[i].section.map(|s| s.0))
+            .map(|&i| app.model.floor_regions[i].section().map(|s| s.0))
             .collect();
         let usages: BTreeSet<String> = slabs
             .iter()
-            .map(|&i| format!("{:?}", app.model.slabs[i].usage))
+            .map(|&i| format!("{:?}", app.model.floor_regions[i].usage()))
             .collect();
         assert_eq!(sections.len(), 1, "パネル {pi} で断面が混在: {sections:?}");
         assert_eq!(usages.len(), 1, "パネル {pi} で室用途が混在: {usages:?}");
@@ -1290,7 +1284,10 @@ fn snapshot_key_scalars() {
         "model.secondary_members",
         app.model.secondary_members.len().to_string(),
     );
-    line("model.slabs", app.model.slabs.len().to_string());
+    line(
+        "model.floor_regions",
+        app.model.floor_regions.len().to_string(),
+    );
     line("model.stories", app.model.stories.len().to_string());
 
     // --- 準備計算 ---

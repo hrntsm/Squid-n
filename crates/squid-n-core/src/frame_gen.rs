@@ -24,12 +24,12 @@
 use crate::dof::{Dof, Dof6Mask};
 use crate::geom::default_local_ref_vector;
 use crate::ids::{ElemId, MaterialId, NodeId, StoryId};
-use crate::ids::{SectionId, SlabId};
+use crate::ids::{FloorRegionId, SectionId};
 use crate::material_grade::{material_presets, MaterialPreset};
 use crate::model::{
-    default_story_name, Axis, AxisGroup, AxisGroupKind, AxisPlanDir, AxisSource,
-    DistributionMethod, ElementData, ElementKind, EndCondition, ForceRegime, LocalAxis, Material,
-    Model, Node, Section, Slab, SlabUsage, Story,
+    default_story_name, Axis, AxisGroup, AxisGroupKind, AxisPlanDir, AxisSource, ElementData,
+    ElementKind, EndCondition, FloorRegion, ForceRegime, LocalAxis, Material, Model, Node, Section,
+    SlabPlate, SlabUsage, Story,
 };
 
 /// 同一の格子線とみなす座標差 [mm]（[`crate::axis_gen::AXIS_TOL_MM`] と同値）。
@@ -364,7 +364,7 @@ pub struct FrameGenResult {
     pub sections: Vec<Section>,
     /// 床のコンクリート（`with_slabs` のときだけ 1 つ。断面が参照する）。
     pub materials: Vec<Material>,
-    pub slabs: Vec<Slab>,
+    pub slabs: Vec<FloorRegion>,
 }
 
 /// スパンと階高から架構（節点・柱・大梁・柱脚支点・通り芯・階）を生成する。
@@ -577,24 +577,22 @@ pub fn generate_frame(spec: &FrameSpec) -> Result<FrameGenResult, String> {
             for ix in 0..nx - 1 {
                 for iy in 0..ny - 1 {
                     // 境界は反時計回り（面積算定の巻き方向をそろえる）。
-                    slabs.push(Slab {
-                        id: SlabId(slabs.len() as u32),
-                        boundary: vec![
-                            nid(ix, iy, iz),
-                            nid(ix + 1, iy, iz),
-                            nid(ix + 1, iy + 1, iz),
-                            nid(ix, iy + 1, iz),
-                        ],
-                        joists: Vec::new(),
-                        loads: Vec::new(),
-                        method: DistributionMethod::TriTrapezoid,
-                        kind: Default::default(),
-                        one_way: None,
-                        edge_supported: None,
-                        usage: spec.slab_usage,
-                        section: Some(sec_id),
-                        secondary_joist_ids: Vec::new(),
-                    });
+                    slabs.push(
+                        FloorRegion::enclosed(
+                            FloorRegionId(slabs.len() as u32),
+                            vec![
+                                nid(ix, iy, iz),
+                                nid(ix + 1, iy, iz),
+                                nid(ix + 1, iy + 1, iz),
+                                nid(ix, iy + 1, iz),
+                            ],
+                        )
+                        .with_plate(SlabPlate {
+                            section: Some(sec_id),
+                            usage: spec.slab_usage,
+                            ..Default::default()
+                        }),
+                    );
                 }
             }
         }
@@ -624,7 +622,7 @@ pub fn frame_model(spec: &FrameSpec) -> Result<Model, String> {
         stories: gen.stories,
         sections: gen.sections,
         materials: gen.materials,
-        slabs: gen.slabs,
+        floor_regions: gen.slabs,
         ..Model::with_default_load_cases()
     })
 }
@@ -795,8 +793,8 @@ mod tests {
         let spec = FrameSpec::default();
         let model = frame_model(&spec).unwrap();
         // 2×1 スパン × 4 レベル（基部を含む）= 8 枚。
-        assert_eq!(model.slabs.len(), 2 * 4);
-        assert_eq!(model.slabs.len(), spec.counts().slabs);
+        assert_eq!(model.floor_regions.len(), 2 * 4);
+        assert_eq!(model.floor_regions.len(), spec.counts().slabs);
         assert_eq!(model.sections.len(), 1, "床の断面は 1 枚だけ");
         let sec = &model.sections[0];
         assert_eq!(sec.name, SLAB_SECTION_NAME);
@@ -804,14 +802,17 @@ mod tests {
         assert_eq!(sec.thickness, Some(150.0));
         assert_eq!(sec.material, Some(crate::ids::MaterialId(0)));
         assert!(model
-            .slabs
+            .floor_regions
             .iter()
-            .all(|sl| sl.section == Some(crate::ids::SectionId(0))));
-        assert!(model.slabs.iter().all(|sl| sl.usage == spec.slab_usage));
-        for sl in &model.slabs {
-            assert_eq!(sl.boundary.len(), 4);
-            let zs: Vec<f64> = sl
-                .boundary
+            .all(|sl| sl.section() == Some(crate::ids::SectionId(0))));
+        assert!(model
+            .floor_regions
+            .iter()
+            .all(|sl| sl.usage() == spec.slab_usage));
+        for sl in &model.floor_regions {
+            let boundary = sl.boundary_nodes().expect("囲まれた領域");
+            assert_eq!(boundary.len(), 4);
+            let zs: Vec<f64> = boundary
                 .iter()
                 .map(|n| model.nodes[n.index()].coord[2])
                 .collect();
@@ -819,9 +820,9 @@ mod tests {
         }
         assert!(
             model
-                .slabs
+                .floor_regions
                 .iter()
-                .any(|sl| model.nodes[sl.boundary[0].index()].coord[2] == 0.0),
+                .any(|sl| sl.level(&model) == Some(0.0)),
             "基部レベルにも床を作る"
         );
         assert!(model.validate().is_ok(), "{:?}", model.validate());
@@ -860,7 +861,7 @@ mod tests {
             ..FrameSpec::default()
         };
         let model = frame_model(&spec).unwrap();
-        assert!(model.slabs.is_empty());
+        assert!(model.floor_regions.is_empty());
         assert!(model.sections.is_empty());
         assert!(model.materials.is_empty());
         assert_eq!(spec.counts().slabs, 0);
@@ -947,7 +948,7 @@ mod tests {
             ..FrameSpec::default()
         };
         let model = frame_model(&spec).unwrap();
-        assert!(model.slabs.is_empty());
+        assert!(model.floor_regions.is_empty());
         assert!(model.sections.is_empty());
         assert!(model.materials.is_empty());
     }

@@ -345,15 +345,16 @@ pub fn model_issues(model: &Model) -> Vec<ModelIssue> {
     // スラブの板厚と自重は断面から解決する（`Model::slab_self_weight_intensity`）。
     // 断面や主材料が無いと自重が算定できず、床の固定荷重が過小なまま長期応力が
     // 出る（危険側）。既定厚・既定材料で補わず、ここで止める。
-    let slab_ids = |f: fn(&Model, &squid_n_core::model::Slab) -> bool| -> Vec<u32> {
+    let slab_ids = |f: fn(&Model, &squid_n_core::model::FloorRegion) -> bool| -> Vec<u32> {
         model
-            .slabs
+            .floor_regions
             .iter()
-            .filter(|s| f(model, s))
+            // 版なし床領域（吹抜け等）は床荷重を持たないため、断面の未割当を問わない。
+            .filter(|s| s.plate.is_some() && f(model, s))
             .map(|s| s.id.0)
             .collect()
     };
-    let no_slab_section = slab_ids(|m, s| m.slab_section(s).is_none());
+    let no_slab_section = slab_ids(|m, s| m.region_section(s).is_none());
     if !no_slab_section.is_empty() {
         issues.push(ModelIssue::model(id_list_message(
             "断面が未割当の床があります",
@@ -363,8 +364,8 @@ pub fn model_issues(model: &Model) -> Vec<ModelIssue> {
         )));
     }
     let no_slab_material = slab_ids(|m, s| {
-        m.slab_section(s)
-            .is_some_and(|sec| sec.material.is_none() || m.slab_thickness_of(s).is_none())
+        m.region_section(s)
+            .is_some_and(|sec| sec.material.is_none() || m.region_thickness(s).is_none())
     });
     if !no_slab_material.is_empty() {
         issues.push(ModelIssue::model(id_list_message(
@@ -570,11 +571,11 @@ fn node_reference_issues(model: &Model) -> Vec<ModelIssue> {
         // 要素が接続しなくても意図的な幾何節点（荷重伝達点）なので孤立扱いしない。
         // これらは `DofMap::build` が解析自由度から自動的に除外するため、
         // 零剛性の自由度にはならない。
-        for slab in &model.slabs {
-            for n in &slab.boundary {
+        for region in &model.floor_regions {
+            for n in region.boundary_nodes().unwrap_or_default() {
                 mark(*n);
             }
-            for j in &slab.joists {
+            for j in region.joist_lines() {
                 for n in &j.support {
                     mark(*n);
                 }

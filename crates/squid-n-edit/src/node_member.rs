@@ -266,21 +266,21 @@ impl EditCommand for AddMember {
 /// たわみ検定の対象となる。逆操作は生成した部材の末尾からの除去
 /// （[`PopTailMembers`]。生成直後の undo のため末尾＝生成分）。
 pub struct MaterializeSlabJoists {
-    pub slab: SlabId,
+    pub slab: FloorRegionId,
 }
 
 impl EditCommand for MaterializeSlabJoists {
     fn apply(&self, model: &mut Model) -> Box<dyn EditCommand> {
         use squid_n_core::model::{ElementData, ElementKind, EndCondition, ForceRegime, LocalAxis};
         let Some(slab) = model
-            .slabs
+            .floor_regions
             .get(self.slab.index())
             .filter(|s| s.id == self.slab)
         else {
             return Box::new(Noop);
         };
         // 支持節点対は借用を切るため先に複製する。
-        let supports: Vec<[NodeId; 2]> = slab.joists.iter().map(|j| j.support).collect();
+        let supports: Vec<[NodeId; 2]> = slab.joist_lines().iter().map(|j| j.support).collect();
 
         let beam_exists = |model: &Model, created: &[ElementData], a: NodeId, b: NodeId| -> bool {
             model.elements.iter().chain(created.iter()).any(|e| {

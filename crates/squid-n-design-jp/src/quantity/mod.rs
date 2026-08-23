@@ -27,8 +27,8 @@ mod tests;
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
-use squid_n_core::ids::{ElemId, SlabId};
-use squid_n_core::model::{ElementData, ElementKind, Model, SlabKind};
+use squid_n_core::ids::{ElemId, FloorRegionId};
+use squid_n_core::model::{ElementData, ElementKind, FloorRegion, Model};
 use squid_n_core::section_shape::{RcRebar, SectionShape};
 
 use member::{BeamBarEnd, Haunch};
@@ -180,7 +180,7 @@ pub struct MemberQuantity {
     /// 対象要素（スラブ・雑壁は None）。
     pub elem: Option<ElemId>,
     /// 対象スラブ（部材・雑壁は None）。
-    pub slab: Option<SlabId>,
+    pub slab: Option<FloorRegionId>,
     /// 符号（断面名等）。
     pub label: String,
     /// 所属階名（未設定は "-"）。
@@ -465,14 +465,18 @@ pub fn compute_quantity_takeoff(model: &Model, cfg: &QuantityCfg) -> QuantityTak
     }
 
     let mut slab_edges: HashMap<(u32, u32), u32> = HashMap::new();
-    for slab in &model.slabs {
-        let n = slab.boundary.len();
+    for slab in &model.floor_regions {
+        // 辺の共有は節点で見るため、境界節点を持つ領域（囲まれた領域）だけを対象とする。
+        let Some(boundary) = slab.boundary_nodes() else {
+            continue;
+        };
+        let n = boundary.len();
         if n < 3 {
             continue;
         }
         for i in 0..n {
-            let a = slab.boundary[i].index() as u32;
-            let b = slab.boundary[(i + 1) % n].index() as u32;
+            let a = boundary[i].index() as u32;
+            let b = boundary[(i + 1) % n].index() as u32;
             *slab_edges.entry((a.min(b), a.max(b))).or_default() += 1;
         }
     }
@@ -509,7 +513,7 @@ pub fn compute_quantity_takeoff(model: &Model, cfg: &QuantityCfg) -> QuantityTak
         }
     }
 
-    for slab in &model.slabs {
+    for slab in &model.floor_regions {
         if let Some(item) = slab_quantity(&ctx, slab) {
             out.items.push(item);
         }
@@ -553,12 +557,16 @@ fn build_notes(model: &Model) -> Vec<String> {
         "鉄筋継手は個所数（圧接個所数）として集計する（梁 0.5 個所/本＋5m 毎 0.5、柱 1 個所/本＋7m 毎 1）。".to_string(),
         "鉄骨継手（部材付帯情報の継手位置）は位置・種別の保持のみで、プレート・ボルト重量は計上しない。".to_string(),
     ];
-    if !model.slabs.is_empty() {
+    if !model.floor_regions.is_empty() {
         notes.push(
             "床厚は床ごとに割り当てた断面の板厚による（デッキスラブのデッキ高さ控除は未対応）。"
                 .to_string(),
         );
-        if model.slabs.iter().any(|s| !s.joists.is_empty()) {
+        if model
+            .floor_regions
+            .iter()
+            .any(|s| !s.joist_lines().is_empty())
+        {
             notes.push(
                 "床荷重分配用の小梁ライン（JoistLine）は断面情報がないため集計対象外（部材として配置した小梁のみ集計）。".to_string(),
             );
@@ -841,7 +849,7 @@ fn beam_quantity(
         item.concrete_m3 = vol * 1e-9;
 
         // 型枠のスラブ厚控除: 隣接スラブ数（0/1/2）で側面せいを決める。
-        let t_slab = if model.slabs.is_empty() {
+        let t_slab = if model.floor_regions.is_empty() {
             0.0
         } else {
             model.slab_thickness.clamp(0.0, d)
@@ -1123,23 +1131,23 @@ fn wall_quantity(ctx: &Ctx, elem: &ElementData) -> Option<MemberQuantity> {
 }
 
 /// 床（一般・片持ち・出隅・入隅）の数量。
-fn slab_quantity(ctx: &Ctx, slab: &squid_n_core::model::Slab) -> Option<MemberQuantity> {
+fn slab_quantity(ctx: &Ctx, slab: &FloorRegion) -> Option<MemberQuantity> {
     let model = ctx.model;
-    let pts: Vec<[f64; 3]> = slab
-        .boundary
-        .iter()
-        .filter_map(|n| model.nodes.get(n.index()).map(|nd| nd.coord))
-        .collect();
+    // 版なし床領域（吹抜け・繋ぎ小梁だけの領域）はコンクリート数量を持たない。
+    slab.plate.as_ref()?;
+    let pts: Vec<[f64; 3]> = slab.boundary_coords(model)?;
     if pts.len() < 3 {
         return None;
     }
     let area = polygon_area_3d(&pts);
-    // スラブごとの板厚は断面から解決する（建物一律の `slab_thickness` は
+    // 領域ごとの板厚は断面から解決する（建物一律の `slab_thickness` は
     // 剛性計算に見込む厚さであり、実際の板厚とは別概念）。
-    let t = model.slab_thickness_of(slab).unwrap_or(0.0);
-    let category = match slab.kind {
-        SlabKind::Interior => MemberCategory::Slab,
-        SlabKind::Cantilever | SlabKind::Corner => MemberCategory::CantileverSlab,
+    let t = model.region_thickness(slab).unwrap_or(0.0);
+    // 主架構に取り付く領域（片持ち・バルコニー・出隅）は片持ち床として拾う。
+    let category = if slab.is_attached() {
+        MemberCategory::CantileverSlab
+    } else {
+        MemberCategory::Slab
     };
     let vol = area * t;
     let vol_m3 = vol * 1e-9;
@@ -1148,7 +1156,10 @@ fn slab_quantity(ctx: &Ctx, slab: &squid_n_core::model::Slab) -> Option<MemberQu
         elem: None,
         slab: Some(slab.id),
         label: format!("S{}", slab.id.0),
-        story: ctx.story_name(slab.boundary[0].index()),
+        story: slab
+            .reference_node()
+            .map(|n| ctx.story_name(n.index()))
+            .unwrap_or_else(|| "-".to_string()),
         category,
         structure: StructureKind::Rc,
         concrete_m3: vol_m3,

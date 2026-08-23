@@ -359,11 +359,11 @@ fn shift_section_ids(model: &mut Model, f: impl FnMut(&mut SectionId)) {
 /// 指定断面を参照している要素・スラブ・小梁・二次部材が存在するか（削除ガード用）。
 fn section_in_use(model: &Model, id: SectionId) -> bool {
     model.elements.iter().any(|e| e.section == Some(id))
-        || model.slabs.iter().any(|s| s.section == Some(id))
+        || model.floor_regions.iter().any(|s| s.section() == Some(id))
         || model
-            .slabs
+            .floor_regions
             .iter()
-            .any(|s| s.joists.iter().any(|j| j.section == Some(id)))
+            .any(|s| s.joist_lines().iter().any(|j| j.section == Some(id)))
         || model
             .secondary_members
             .iter()

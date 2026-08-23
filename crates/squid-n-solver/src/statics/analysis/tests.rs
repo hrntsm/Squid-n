@@ -7,6 +7,7 @@ use squid_n_core::model::{
     LocalAxis, Material, MaterialCategory, MemberLoad, MemberLoadKind, NodalLoad, Node, Section,
     Story, StoryLevelKind, StoryStructure,
 };
+use squid_n_core::model::{FloorRegion, RegionShape, SlabPlate};
 
 fn make_cantilever_model() -> Model {
     Model {
@@ -254,8 +255,8 @@ fn test_model_issues_collects_every_issue() {
 #[test]
 fn test_model_issues_rejects_slab_without_section() {
     use super::precheck::{model_issues, precheck_model};
-    use squid_n_core::ids::{SectionId, SlabId};
-    use squid_n_core::model::{DistributionMethod, Slab};
+    use squid_n_core::ids::{FloorRegionId, SectionId};
+    use squid_n_core::model::DistributionMethod;
 
     let mut model = make_cantilever_model();
     // 境界節点は 3 点必要なので、床用の節点を足す。
@@ -273,17 +274,20 @@ fn test_model_issues_rejects_slab_without_section() {
             support_spring: None,
         });
     }
-    model.slabs.push(Slab {
-        id: SlabId(0),
-        boundary: vec![NodeId(0), NodeId(1), NodeId(n + 1), NodeId(n)],
-        joists: Vec::new(),
-        loads: Vec::new(),
-        method: DistributionMethod::TriTrapezoid,
-        kind: Default::default(),
-        one_way: None,
-        edge_supported: None,
-        usage: None,
-        section: None,
+    model.floor_regions.push(FloorRegion {
+        id: FloorRegionId(0),
+        name: String::new(),
+        shape: RegionShape::Enclosed {
+            boundary: vec![NodeId(0), NodeId(1), NodeId(n + 1), NodeId(n)],
+        },
+        plate: Some(SlabPlate {
+            section: None,
+            loads: Vec::new(),
+            usage: None,
+            method: DistributionMethod::TriTrapezoid,
+            one_way: None,
+            joists: Vec::new(),
+        }),
         secondary_joist_ids: Vec::new(),
     });
 
@@ -304,7 +308,7 @@ fn test_model_issues_rejects_slab_without_section() {
         squid_n_core::section_shape::SectionShape::RcSlab { thickness: 150.0 }
             .to_section(sid, "S15".into()),
     );
-    model.slabs[0].section = Some(sid);
+    model.floor_regions[0].plate.as_mut().unwrap().section = Some(sid);
     let msgs: Vec<String> = model_issues(&model)
         .into_iter()
         .map(|i| i.message)

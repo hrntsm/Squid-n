@@ -20,134 +20,141 @@ mod rigid_zone;
 mod types;
 
 pub use fem::{fixed_end_moments, simple_beam_moment_at, simple_reactions};
-pub use geometry::{point_in_slab_boundary, polygon_area, slab_dimensions, slab_level};
+pub use geometry::{point_in_slab_boundary, polygon_area, slab_dimensions, slab_dimensions_of};
 pub use rigid_zone::{cmq_with_rigid_zone, RigidZoneCmqMode, RigidZoneCmqResult};
 pub use types::{BeamLoad, Cmq, LoadShape, LoadTarget};
 
-use cantilever::{distribute_cantilever, distribute_corner};
+use cantilever::{distribute_cantilever, distribute_to_node};
 use geometry::boundary_coords;
-use polygon::{distribute_polygon, distribute_polygon_supported};
+use polygon::distribute_polygon;
 use rect::{distribute_rect, distribute_rect_with_joists};
-use squid_n_core::model::{DistributionMethod, Model, Slab, SlabKind};
+use squid_n_core::model::{
+    DistributionMethod, FloorRegion, LoadTransfer, Model, RegionAnchor, RegionShape,
+};
 
 #[cfg(test)]
 use fem::{fem_trapezoid, fem_triangle, fem_uniform};
 
-/// スラブの面荷重を大梁（および小梁経由の節点反力）へ分配する。
+/// 床領域の面荷重を境界（および二次部材経由の節点荷重）へ分配する。
 ///
-/// 分岐は次の優先順で決まる:
-/// 1. `slab.kind == Corner` → 出隅の片持ちスラブ経路（[`distribute_corner`]）。
-///    荷重伝達方向・片持ち梁の取付きに関わらず、全荷重を柱（`boundary[0]` の節点）への
-///    単一の節点荷重として返す。
-/// 2. `slab.kind == Cantilever` → 片持ちスラブ経路。
-///    - `slab.edge_supported` が `None`（既定）→ 4頂点を想定し、境界辺 0
-///      （`boundary[0]`→`boundary[1]`）を取付き辺とする単純な等分布伝達
-///      （[`distribute_cantilever`]。従来互換）。
-///    - `slab.edge_supported` が `Some` → 片持ち梁・先端リブ小梁の取付きに応じて
-///      指定された支持辺のみへ、最近接辺グリッドサンプリングで分割伝達する
-///      （[`distribute_polygon_supported`]）。
-/// 3. `slab.kind == Interior` かつ `slab.edge_supported` が `Some` → 指定された支持辺
-///    のみへの最近接辺グリッドサンプリング経路（[`distribute_polygon_supported`]）。
-///    開口際などで一部の辺が非支持となる一般スラブの分配に用いる。
-/// 4. 境界が矩形（[`slab_dimensions`] が `Some` を返す）かつ `slab.joists` が
-///    非空で `method` が `TriTrapezoid`/`OneWay` → 小梁二段階伝達経路
-///    （[`distribute_rect_with_joists`]）。
-/// 5. 境界が矩形 → 従来の矩形床経路（[`distribute_rect`]）。`slab.one_way` が
-///    `Some` の場合は指定方向（全体座標 X/Y）に伝達し、`None` は従来互換
-///    （境界辺 0・2 が負担）。
-/// 6. それ以外（矩形でない凸/凹多角形。三角形・台形・五角形など） →
-///    多角形の負担面積法経路（[`distribute_polygon`]）。`one_way` 指定があっても
-///    非矩形の場合はこの経路にフォールバックする。
+/// 分岐は領域の形で決まる:
+///
+/// 1. **取り付き領域**（[`RegionShape::Attached`]）→ [`distribute_attached`]。
+///    - 取付き先が点（出隅）: 全荷重をその節点（柱）へ集中する。荷重伝達方向にも
+///      片持ち梁の取付きにも依らない（出隅の片持ちスラブの床荷重分配）。
+///    - 取付き先が線 ＋ [`LoadTransfer::Anchor`]: 取付き辺へ等分布する
+///      （[`distribute_cantilever`]）。
+///    - 取付き先が線 ＋ [`LoadTransfer::Columns`]: 取付き線の両端へ半分ずつ集中する。
+/// 2. **囲まれた領域**（[`RegionShape::Enclosed`]）
+///    - 境界が矩形（[`slab_dimensions`] が `Some` を返す）かつ小梁ラインがあり
+///      分配方法が `TriTrapezoid`/`OneWay` → 小梁二段階伝達
+///      （[`distribute_rect_with_joists`]）。
+///    - 境界が矩形 → 矩形床の分配（[`distribute_rect`]）。一方向の指定があれば
+///      その方向（全体座標 X/Y）へ、なければ境界辺 0・2 が負担する。
+///    - それ以外（三角形・台形・五角形などの多角形）→ 多角形の負担面積法
+///      （[`distribute_polygon`]）。一方向の指定があってもこの経路へ落ちる。
 ///
 /// いずれの経路も総和保存（Σ大梁荷重 (+Σ小梁反力・Σ柱集中荷重) = w×面積）を満たすよう
-/// 設計している（床スラブは全体座標 XY 平面内（Z一定）にあることを仮定する）。
+/// 設計している（床は全体座標 XY 平面内（Z一定）にあることを仮定する）。
 /// 入隅の片持ちスラブは本実装では未対応。
-pub fn distribute_slab(model: &Model, slab: &Slab) -> Vec<BeamLoad> {
-    // 固定荷重 DL（スラブ自重＋仕上げ等）の総和を分配する。自重は断面の板厚と
-    // 材料から算定する（`Model::slab_dead_intensity`）。
-    distribute_slab_w(model, slab, model.slab_dead_intensity(slab))
+///
+/// **版なし床領域は面荷重が 0 のため、何も出力しない。**
+pub fn distribute_slab(model: &Model, region: &FloorRegion) -> Vec<BeamLoad> {
+    // 固定荷重 DL（版の自重＋仕上げ等）の総和を分配する。自重は断面の板厚と
+    // 材料から算定する（`Model::region_dead_intensity`）。
+    distribute_slab_w(model, region, model.region_dead_intensity(region))
 }
 
-/// [`distribute_slab_w`] がこのスラブで**小梁二段階伝達**（`distribute_rect_with_joists`。
+/// [`distribute_slab_w`] がこの床領域で**小梁二段階伝達**（`distribute_rect_with_joists`。
 /// 小梁点反力 `LoadTarget::Node` ＋境界残り `LoadTarget::Edge` を出力）を採る条件を返す。
 ///
 /// 呼び出し側（床格子サブモデルで小梁点反力を置換したい層）が、平行小梁モデルの
 /// 出力形状（Node ＋ remainder Edge）を前提にできるかを判定するために公開する。
-/// この条件を満たさないスラブ（隅・片持ち・辺支持・非矩形・分配法が三角/一方向以外）
-/// では小梁は使われず全面積が Edge/隅集中で分配されるため、格子反力を上乗せすると
+/// この条件を満たさない領域（取り付き領域・非矩形・分配法が三角/一方向以外）では
+/// 小梁は使われず全面積が Edge/集中で分配されるため、格子反力を上乗せすると
 /// 二重計上になる。分岐は [`distribute_slab_w`] と厳密に一致させること。
-pub fn uses_joist_distribution(model: &Model, slab: &Slab) -> bool {
-    if slab.boundary.len() < 3 || slab.joists.is_empty() {
+pub fn uses_joist_distribution(model: &Model, region: &FloorRegion) -> bool {
+    if region.is_attached() || region.joist_lines().is_empty() {
         return false;
     }
-    if slab.kind != SlabKind::Interior {
-        return false;
-    }
-    if slab.edge_supported.is_some() {
-        return false;
-    }
-    if slab_dimensions(model, slab).is_none() {
+    if slab_dimensions(model, region).is_none() {
         return false; // 非矩形（多角形経路）。
     }
     matches!(
-        slab.method,
+        region.method(),
         DistributionMethod::TriTrapezoid | DistributionMethod::OneWay
     )
 }
 
-/// 指定した面荷重強度 `w`（N/mm²）のみをスラブ境界へ分配する。
+/// 指定した面荷重強度 `w`（N/mm²）のみを床領域の境界へ分配する。
 ///
 /// 分岐ロジックは [`distribute_slab`] と同一で、荷重源だけを引数 `w` に差し替える。
 /// これにより DL（固定荷重）と LL（積載荷重）を別々の荷重ケースへ分配できる
 /// （令85条1項の床用/骨組用/地震用の使い分けや、荷重組合せでの DL/LL 係数分けに用いる）。
 /// `w == 0.0` の場合は空の分配結果を返す。
-pub fn distribute_slab_w(model: &Model, slab: &Slab, w: f64) -> Vec<BeamLoad> {
+pub fn distribute_slab_w(model: &Model, region: &FloorRegion, w: f64) -> Vec<BeamLoad> {
     let mut loads = Vec::new();
-    if slab.boundary.len() < 3 || w == 0.0 {
+    if w == 0.0 {
         return loads;
     }
-    let Some(coords) = boundary_coords(model, slab) else {
+    let Some(coords) = boundary_coords(model, region) else {
         return loads;
     };
-
-    let rect_dims = slab_dimensions(model, slab);
-
-    match slab.kind {
-        SlabKind::Corner => {
-            distribute_corner(slab, &coords, w, &mut loads);
-            return loads;
-        }
-        SlabKind::Cantilever => {
-            match &slab.edge_supported {
-                Some(supported) => distribute_polygon_supported(&coords, w, &mut loads, supported),
-                None => distribute_cantilever(&coords, w, &mut loads),
-            }
-            return loads;
-        }
-        SlabKind::Interior => {
-            if let Some(supported) = &slab.edge_supported {
-                distribute_polygon_supported(&coords, w, &mut loads, supported);
-                return loads;
-            }
-        }
+    if coords.len() < 3 {
+        return loads;
     }
-    match rect_dims {
+
+    match &region.shape {
+        RegionShape::Attached {
+            anchor, transfer, ..
+        } => {
+            distribute_attached(&coords, w, *anchor, *transfer, &mut loads);
+            return loads;
+        }
+        RegionShape::Enclosed { .. } => {}
+    }
+
+    match slab_dimensions_of(&coords) {
         Some((lx, ly)) => {
-            let use_joists = !slab.joists.is_empty()
+            let use_joists = !region.joist_lines().is_empty()
                 && matches!(
-                    slab.method,
+                    region.method(),
                     DistributionMethod::TriTrapezoid | DistributionMethod::OneWay
                 );
             if use_joists {
-                distribute_rect_with_joists(model, slab, &coords, w, &mut loads);
+                distribute_rect_with_joists(model, region, &coords, w, &mut loads);
             } else {
-                distribute_rect(slab, &coords, lx, ly, w, &mut loads);
+                distribute_rect(region, &coords, lx, ly, w, &mut loads);
             }
         }
         None => distribute_polygon(&coords, w, &mut loads),
     }
 
     loads
+}
+
+/// 取り付き領域（片持ちスラブ・バルコニー・出隅）の分配。
+///
+/// - 取付き先が点（出隅）: 全荷重をその節点（柱）へ集中する。
+/// - 取付き先が線 ＋ [`LoadTransfer::Anchor`]: 取付き辺（境界の辺 0）へ等分布する。
+/// - 取付き先が線 ＋ [`LoadTransfer::Columns`]: 全荷重を取付き線の両端へ半分ずつ集中する。
+fn distribute_attached(
+    coords: &[[f64; 3]],
+    w: f64,
+    anchor: RegionAnchor,
+    transfer: LoadTransfer,
+    loads: &mut Vec<BeamLoad>,
+) {
+    match anchor {
+        RegionAnchor::Point(node) => distribute_to_node(node, coords, w, 1.0, loads),
+        RegionAnchor::Line { nodes, .. } => match transfer {
+            LoadTransfer::Anchor => distribute_cantilever(coords, w, loads),
+            LoadTransfer::Columns => {
+                distribute_to_node(nodes[0], coords, w, 0.5, loads);
+                distribute_to_node(nodes[1], coords, w, 0.5, loads);
+            }
+        },
+    }
 }
 
 #[cfg(test)]

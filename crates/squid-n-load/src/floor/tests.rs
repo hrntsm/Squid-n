@@ -1,5 +1,7 @@
 use super::*;
-use squid_n_core::model::MemberLoadKind;
+use squid_n_core::model::{
+    FloorRegion, LoadTransfer, MemberLoadKind, RegionAnchor, RegionShape, SlabPlate,
+};
 
 #[test]
 fn test_fem_uniform() {
@@ -310,12 +312,17 @@ fn test_simple_beam_moment_at_symmetric_pair_of_asymmetric_points() {
     assert!(simple_beam_moment_at(&loads, l, l).abs() < 1e-6);
 }
 
-fn make_square_slab_model(side: f64, method: DistributionMethod, w: f64) -> (Model, Slab) {
+fn make_square_slab_model(side: f64, method: DistributionMethod, w: f64) -> (Model, FloorRegion) {
     make_rect_slab_model(side, side, method, w)
 }
 
-fn make_rect_slab_model(lx: f64, ly: f64, method: DistributionMethod, w: f64) -> (Model, Slab) {
-    use squid_n_core::ids::{NodeId, SlabId};
+fn make_rect_slab_model(
+    lx: f64,
+    ly: f64,
+    method: DistributionMethod,
+    w: f64,
+) -> (Model, FloorRegion) {
+    use squid_n_core::ids::{FloorRegionId, NodeId};
     use squid_n_core::model::{AreaLoad, Node};
     let mk = |id: u32, x: f64, y: f64| Node {
         id: NodeId(id),
@@ -334,20 +341,23 @@ fn make_rect_slab_model(lx: f64, ly: f64, method: DistributionMethod, w: f64) ->
         ],
         ..Default::default()
     };
-    let slab = Slab {
-        usage: None,
-        edge_supported: None,
-        section: None,
-        kind: Default::default(),
-        one_way: None,
-        id: SlabId(0),
-        boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
-        joists: vec![],
-        loads: vec![AreaLoad {
-            kind: "DL".into(),
-            value: w,
-        }],
-        method,
+    let slab = FloorRegion {
+        id: FloorRegionId(0),
+        name: String::new(),
+        shape: RegionShape::Enclosed {
+            boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
+        },
+        plate: Some(SlabPlate {
+            section: None,
+            loads: vec![AreaLoad {
+                kind: "DL".into(),
+                value: w,
+            }],
+            usage: None,
+            method,
+            one_way: None,
+            joists: vec![],
+        }),
         secondary_joist_ids: vec![],
     };
     (model, slab)
@@ -417,7 +427,7 @@ fn test_one_way_direction_x_and_y() {
 
     // one_way=Y: 伝達方向Yに直交する辺0・2（X方向の辺、長さlx）が負担。従来互換と同じ結果。
     let (model, mut slab) = make_rect_slab_model(lx, ly, DistributionMethod::OneWay, w);
-    slab.one_way = Some(OneWayDir::Y);
+    slab.plate.as_mut().unwrap().one_way = Some(OneWayDir::Y);
     let loads_y = distribute_slab(&model, &slab);
     assert!((total_load(&loads_y) - expected).abs() / expected < 1e-9);
     for l in &loads_y {
@@ -431,7 +441,7 @@ fn test_one_way_direction_x_and_y() {
     }
 
     // one_way=X: 伝達方向Xに直交する辺1・3（Y方向の辺、長さly）が負担。
-    slab.one_way = Some(OneWayDir::X);
+    slab.plate.as_mut().unwrap().one_way = Some(OneWayDir::X);
     let loads_x = distribute_slab(&model, &slab);
     assert!((total_load(&loads_x) - expected).abs() / expected < 1e-9);
     for l in &loads_x {
@@ -461,8 +471,12 @@ fn mk_node(id: u32, x: f64, y: f64) -> squid_n_core::model::Node {
     }
 }
 
-fn polygon_slab_model(pts: &[(f64, f64)], method: DistributionMethod, w: f64) -> (Model, Slab) {
-    use squid_n_core::ids::{NodeId, SlabId};
+fn polygon_slab_model(
+    pts: &[(f64, f64)],
+    method: DistributionMethod,
+    w: f64,
+) -> (Model, FloorRegion) {
+    use squid_n_core::ids::{FloorRegionId, NodeId};
     use squid_n_core::model::AreaLoad;
     let nodes: Vec<_> = pts
         .iter()
@@ -474,20 +488,21 @@ fn polygon_slab_model(pts: &[(f64, f64)], method: DistributionMethod, w: f64) ->
         nodes,
         ..Default::default()
     };
-    let slab = Slab {
-        usage: None,
-        edge_supported: None,
-        section: None,
-        kind: Default::default(),
-        one_way: None,
-        id: SlabId(0),
-        boundary,
-        joists: vec![],
-        loads: vec![AreaLoad {
-            kind: "DL".into(),
-            value: w,
-        }],
-        method,
+    let slab = FloorRegion {
+        id: FloorRegionId(0),
+        name: String::new(),
+        shape: RegionShape::Enclosed { boundary },
+        plate: Some(SlabPlate {
+            section: None,
+            loads: vec![AreaLoad {
+                kind: "DL".into(),
+                value: w,
+            }],
+            usage: None,
+            method,
+            one_way: None,
+            joists: vec![],
+        }),
         secondary_joist_ids: vec![],
     };
     (model, slab)
@@ -566,7 +581,7 @@ fn test_polygon_one_way_fallback() {
     ];
     let w = 0.002_f64;
     let (model, mut slab) = polygon_slab_model(&pts, DistributionMethod::OneWay, w);
-    slab.one_way = Some(OneWayDir::X);
+    slab.plate.as_mut().unwrap().one_way = Some(OneWayDir::X);
     let loads = distribute_slab(&model, &slab);
     let coords: Vec<[f64; 3]> = pts.iter().map(|(x, y)| [*x, *y, 0.0]).collect();
     let sampled_area = total_load(&loads) / w;
@@ -580,8 +595,8 @@ fn test_polygon_one_way_fallback() {
 
 #[test]
 fn test_cantilever_conservation() {
-    use squid_n_core::ids::{NodeId, SlabId};
-    use squid_n_core::model::{AreaLoad, SlabKind};
+    use squid_n_core::ids::{FloorRegionId, NodeId};
+    use squid_n_core::model::AreaLoad;
     let (l_attach, depth) = (4000.0_f64, 1500.0_f64);
     let w = 0.003_f64;
     let nodes = vec![
@@ -594,20 +609,25 @@ fn test_cantilever_conservation() {
         nodes,
         ..Default::default()
     };
-    let slab = Slab {
-        usage: None,
-        edge_supported: None,
-        section: None,
-        kind: SlabKind::Cantilever,
-        one_way: None,
-        id: SlabId(0),
-        boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
-        joists: vec![],
-        loads: vec![AreaLoad {
-            kind: "DL".into(),
-            value: w,
-        }],
-        method: DistributionMethod::TriTrapezoid,
+    // 取付き線 0→1 の左（+Y）側へ `depth` 跳ね出す片持ち領域。
+    let slab = FloorRegion {
+        id: FloorRegionId(0),
+        name: String::new(),
+        shape: RegionShape::Attached {
+            anchor: RegionAnchor::Line {
+                nodes: [NodeId(0), NodeId(1)],
+                span: [0.0, 1.0],
+            },
+            extent: [depth, depth],
+            transfer: LoadTransfer::Anchor,
+        },
+        plate: Some(SlabPlate {
+            loads: vec![AreaLoad {
+                kind: "DL".into(),
+                value: w,
+            }],
+            ..Default::default()
+        }),
         secondary_joist_ids: vec![],
     };
     let loads = distribute_slab(&model, &slab);
@@ -634,7 +654,7 @@ fn test_cantilever_conservation() {
 
 #[test]
 fn test_joist_two_stage_transfer_conservation() {
-    use squid_n_core::ids::{NodeId, SlabId};
+    use squid_n_core::ids::{FloorRegionId, NodeId};
     use squid_n_core::model::{AreaLoad, JoistLine};
     // 幅方向(X) 9000mm、小梁はY方向に架かり(L_joist=ly=4000)、spacing=3000で
     // 境界から半間隔ずつ離れた2本の小梁（3000,6000）を配置(9000=3*3000)。
@@ -672,20 +692,23 @@ fn test_joist_two_stage_transfer_conservation() {
             pinned_onto: None,
         },
     ];
-    let slab = Slab {
-        usage: None,
-        edge_supported: None,
-        section: None,
-        kind: Default::default(),
-        one_way: None,
-        id: SlabId(0),
-        boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
-        joists,
-        loads: vec![AreaLoad {
-            kind: "DL".into(),
-            value: w,
-        }],
-        method: DistributionMethod::TriTrapezoid,
+    let slab = FloorRegion {
+        id: FloorRegionId(0),
+        name: String::new(),
+        shape: RegionShape::Enclosed {
+            boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
+        },
+        plate: Some(SlabPlate {
+            section: None,
+            loads: vec![AreaLoad {
+                kind: "DL".into(),
+                value: w,
+            }],
+            usage: None,
+            method: DistributionMethod::TriTrapezoid,
+            one_way: None,
+            joists,
+        }),
         secondary_joist_ids: vec![],
     };
     let loads = distribute_slab(&model, &slab);
@@ -734,7 +757,7 @@ fn test_joist_two_stage_transfer_conservation() {
 /// 総和は保存し、Node 点反力は生じない。
 #[test]
 fn test_materialized_joist_uses_span_distributed_load() {
-    use squid_n_core::ids::{ElemId, NodeId, SlabId};
+    use squid_n_core::ids::{ElemId, FloorRegionId, NodeId};
     use squid_n_core::model::{
         AreaLoad, ElementData, ElementKind, EndCondition, ForceRegime, JoistLine, LocalAxis,
     };
@@ -787,20 +810,23 @@ fn test_materialized_joist_uses_span_distributed_load() {
             pinned_onto: None,
         },
     ];
-    let slab = Slab {
-        usage: None,
-        edge_supported: None,
-        section: None,
-        kind: Default::default(),
-        one_way: None,
-        id: SlabId(0),
-        boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
-        joists,
-        loads: vec![AreaLoad {
-            kind: "DL".into(),
-            value: w,
-        }],
-        method: DistributionMethod::TriTrapezoid,
+    let slab = FloorRegion {
+        id: FloorRegionId(0),
+        name: String::new(),
+        shape: RegionShape::Enclosed {
+            boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
+        },
+        plate: Some(SlabPlate {
+            section: None,
+            loads: vec![AreaLoad {
+                kind: "DL".into(),
+                value: w,
+            }],
+            usage: None,
+            method: DistributionMethod::TriTrapezoid,
+            one_way: None,
+            joists,
+        }),
         secondary_joist_ids: vec![],
     };
     let loads = distribute_slab(&model, &slab);
@@ -983,13 +1009,13 @@ fn test_rigid_zone_mode_conservation() {
 }
 
 // ------------------------------------------------------------------
-// 出隅の片持ちスラブ（SlabKind::Corner）
+// 出隅の片持ちスラブ（点に取り付く領域）
 // ------------------------------------------------------------------
 
 #[test]
 fn test_corner_slab_all_load_to_column_node() {
-    use squid_n_core::ids::{NodeId, SlabId};
-    use squid_n_core::model::{AreaLoad, SlabKind};
+    use squid_n_core::ids::{FloorRegionId, NodeId};
+    use squid_n_core::model::AreaLoad;
     let (lx, ly) = (3000.0_f64, 2000.0_f64);
     let w = 0.004_f64;
     let nodes = vec![
@@ -1002,20 +1028,22 @@ fn test_corner_slab_all_load_to_column_node() {
         nodes,
         ..Default::default()
     };
-    let slab = Slab {
-        usage: None,
-        edge_supported: None,
-        section: None,
-        kind: SlabKind::Corner,
-        one_way: None,
-        id: SlabId(0),
-        boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
-        joists: vec![],
-        loads: vec![AreaLoad {
-            kind: "DL".into(),
-            value: w,
-        }],
-        method: DistributionMethod::TriTrapezoid,
+    // 柱（節点 0）に取り付き、X へ lx・Y へ ly 張り出す出隅の片持ち領域。
+    let slab = FloorRegion {
+        id: FloorRegionId(0),
+        name: String::new(),
+        shape: RegionShape::Attached {
+            anchor: RegionAnchor::Point(NodeId(0)),
+            extent: [lx, ly],
+            transfer: LoadTransfer::Columns,
+        },
+        plate: Some(SlabPlate {
+            loads: vec![AreaLoad {
+                kind: "DL".into(),
+                value: w,
+            }],
+            ..Default::default()
+        }),
         secondary_joist_ids: vec![],
     };
     let loads = distribute_slab(&model, &slab);
@@ -1035,154 +1063,6 @@ fn test_corner_slab_all_load_to_column_node() {
     } else {
         panic!("expected point load");
     }
-}
-
-#[test]
-fn test_corner_slab_ignores_one_way_and_edge_supported() {
-    // 出隅の片持ちスラブは伝達方向・片持ち梁の取付きに関わらず全て節点荷重。
-    use squid_n_core::ids::{NodeId, SlabId};
-    use squid_n_core::model::{AreaLoad, OneWayDir, SlabKind};
-    let (lx, ly) = (2500.0_f64, 1800.0_f64);
-    let w = 0.0035_f64;
-    let nodes = vec![
-        mk_node(0, 0.0, 0.0),
-        mk_node(1, lx, 0.0),
-        mk_node(2, lx, ly),
-        mk_node(3, 0.0, ly),
-    ];
-    let model = Model {
-        nodes,
-        ..Default::default()
-    };
-    let slab = Slab {
-        usage: None,
-        edge_supported: Some(vec![true, true, true, true]),
-        section: None,
-        kind: SlabKind::Corner,
-        one_way: Some(OneWayDir::X),
-        id: SlabId(0),
-        boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
-        joists: vec![],
-        loads: vec![AreaLoad {
-            kind: "DL".into(),
-            value: w,
-        }],
-        method: DistributionMethod::OneWay,
-        secondary_joist_ids: vec![],
-    };
-    let loads = distribute_slab(&model, &slab);
-    assert_eq!(loads.len(), 1);
-    assert_eq!(loads[0].target, LoadTarget::Node(NodeId(0)));
-    let expected_total = w * lx * ly;
-    assert!((total_load(&loads) - expected_total).abs() / expected_total < 1e-9);
-}
-
-// ------------------------------------------------------------------
-// 支持辺指定付き片持ちスラブ（edge_supported、片持ち梁・先端リブ小梁の分割伝達）
-// ------------------------------------------------------------------
-
-#[test]
-fn test_cantilever_edge_supported_three_of_four_conservation() {
-    // 辺0(取付き大梁)・辺1・辺3(片持ち梁)を支持、辺2(先端)は非支持。
-    use squid_n_core::ids::{NodeId, SlabId};
-    use squid_n_core::model::{AreaLoad, SlabKind};
-    let (l_attach, depth) = (4000.0_f64, 1500.0_f64);
-    let w = 0.003_f64;
-    let nodes = vec![
-        mk_node(0, 0.0, 0.0),
-        mk_node(1, l_attach, 0.0),
-        mk_node(2, l_attach, depth),
-        mk_node(3, 0.0, depth),
-    ];
-    let model = Model {
-        nodes,
-        ..Default::default()
-    };
-    let slab = Slab {
-        usage: None,
-        edge_supported: Some(vec![true, true, false, true]),
-        section: None,
-        kind: SlabKind::Cantilever,
-        one_way: None,
-        id: SlabId(0),
-        boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
-        joists: vec![],
-        loads: vec![AreaLoad {
-            kind: "DL".into(),
-            value: w,
-        }],
-        method: DistributionMethod::TriTrapezoid,
-        secondary_joist_ids: vec![],
-    };
-    let loads = distribute_slab(&model, &slab);
-    assert!(!loads.is_empty());
-    let expected_total = w * l_attach * depth;
-    assert!(
-        (total_load(&loads) - expected_total).abs() / expected_total < 1e-6,
-        "総和={} expected={}",
-        total_load(&loads),
-        expected_total
-    );
-    // 非支持辺(辺2)には荷重が付かない。
-    for l in &loads {
-        assert!(!matches!(l.target, LoadTarget::Edge(2)));
-    }
-    // 支持辺のみ(辺0・1・3)に付く。
-    for l in &loads {
-        match l.target {
-            LoadTarget::Edge(e) => assert!(e == 0 || e == 1 || e == 3),
-            LoadTarget::Node(_) => {
-                panic!("edge-supported cantilever should not emit node targets")
-            }
-            LoadTarget::Span(_) => {
-                panic!("edge-supported cantilever should not emit span targets")
-            }
-        }
-    }
-}
-
-#[test]
-fn test_interior_edge_supported_partial_conservation() {
-    // 一般スラブ(Interior)でも edge_supported 指定時は開口際等の非支持辺を除いて分配する。
-    let (lx, ly) = (5000.0_f64, 4000.0_f64);
-    let w = 0.0025_f64;
-    let (model, mut slab) = make_rect_slab_model(lx, ly, DistributionMethod::TriTrapezoid, w);
-    // 辺3(開口際等を想定)を非支持とする。
-    slab.edge_supported = Some(vec![true, true, true, false]);
-    let loads = distribute_slab(&model, &slab);
-    assert!(!loads.is_empty());
-    let expected_total = w * lx * ly;
-    assert!(
-        (total_load(&loads) - expected_total).abs() / expected_total < 1e-6,
-        "総和={} expected={}",
-        total_load(&loads),
-        expected_total
-    );
-    for l in &loads {
-        assert!(!matches!(l.target, LoadTarget::Edge(3)));
-    }
-}
-
-#[test]
-fn test_edge_supported_no_true_falls_back_to_all_edges() {
-    // 支持辺が1つもない指定(全false)は全辺支持へフォールバックする。
-    let (lx, ly) = (4000.0_f64, 3000.0_f64);
-    let w = 0.002_f64;
-    let (model, mut slab) = make_rect_slab_model(lx, ly, DistributionMethod::TriTrapezoid, w);
-    slab.edge_supported = Some(vec![false, false, false, false]);
-    let loads = distribute_slab(&model, &slab);
-    assert!(!loads.is_empty());
-    let expected_total = w * lx * ly;
-    assert!(
-        (total_load(&loads) - expected_total).abs() / expected_total < 1e-6,
-        "総和={} expected={}",
-        total_load(&loads),
-        expected_total
-    );
-    // フォールバックにより4辺全てに荷重が付き得る(少なくとも1辺は非ゼロ)。
-    assert!(loads
-        .iter()
-        .all(|l| matches!(l.target, LoadTarget::Edge(_))));
 }
 
 #[test]

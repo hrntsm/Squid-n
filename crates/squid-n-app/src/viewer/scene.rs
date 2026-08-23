@@ -114,20 +114,22 @@ pub(super) fn draw_slabs_and_joists(
     const DASH: f32 = 6.0;
     const GAP: f32 = 4.0;
 
-    for slab in &app.model.slabs {
-        // 構面表示では、境界節点がすべて構面上にあるスラブだけを描く。
-        if !slab.boundary.iter().all(|n| filter.shows_node(n.index())) {
+    for slab in &app.model.floor_regions {
+        // 構面表示では、境界節点がすべて構面上にある床領域だけを描く。
+        // 取り付き領域（片持ち・バルコニー）は自由端に節点を持たないため、
+        // 取付き先の節点で判定する。
+        let boundary = slab.boundary_nodes().unwrap_or_default();
+        if !boundary.iter().all(|n| filter.shows_node(n.index())) {
             continue;
         }
-        let poly: Vec<egui::Pos2> = slab
-            .boundary
+        let poly: Vec<egui::Pos2> = boundary
             .iter()
             .filter_map(|n| {
                 let idx = n.index();
                 (idx < pts.len()).then(|| pts[idx])
             })
             .collect();
-        if poly.len() == slab.boundary.len() && poly.len() >= 3 {
+        if poly.len() == boundary.len() && poly.len() >= 3 {
             // 面: 淡い半透明の暖色フィル（壁の青と弁別）
             painter.add(egui::Shape::convex_polygon(
                 poly.clone(),
@@ -146,7 +148,7 @@ pub(super) fn draw_slabs_and_joists(
         }
 
         // 小梁: support 節点間の破線（ニュートラル色。スラブ輪郭の暖色とも弁別）
-        for joist in &slab.joists {
+        for joist in slab.joist_lines() {
             let i0 = joist.support[0].index();
             let i1 = joist.support[1].index();
             if i0 >= pts.len() || i1 >= pts.len() {

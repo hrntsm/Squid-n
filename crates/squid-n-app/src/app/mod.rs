@@ -276,13 +276,13 @@ pub enum JoistCheckTarget {
 
 /// 床の中での小梁設計結果1件（`(スラブ id, 対象, 設計結果)`）。
 pub type JoistCheck = (
-    squid_n_core::ids::SlabId,
+    squid_n_core::ids::FloorRegionId,
     JoistCheckTarget,
     squid_n_design_jp::floor::JoistDesignResult,
 );
 /// スラブ（床）設計結果1件（`(スラブ id, 設計結果)`）。
 pub type SlabCheck = (
-    squid_n_core::ids::SlabId,
+    squid_n_core::ids::FloorRegionId,
     squid_n_design_jp::floor::SlabDesignResult,
 );
 

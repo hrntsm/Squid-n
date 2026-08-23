@@ -1,7 +1,6 @@
 //! 多角形床の分配戦略（最近接辺グリッドサンプリングによる負担面積法）。
 //!
 //! - [`distribute_polygon`] — 矩形でない凸/凹多角形床の分配（全辺負担）
-//! - [`distribute_polygon_supported`] — 支持辺指定付きの分配（非支持辺は負担しない）
 
 use super::fem::fem_uniform;
 use super::geometry::edge_len;
@@ -102,10 +101,11 @@ pub(crate) fn distribute_polygon(coords: &[[f64; 3]], w: f64, loads: &mut Vec<Be
 }
 
 /// 多角形の各辺への負担面積を、格子サンプリングで求める（[`distribute_polygon`] と
-/// [`distribute_polygon_supported`] の共通処理）。各セル中心が多角形内部なら、
+/// 共通処理）。各セル中心が多角形内部なら、
 /// `candidate_edges` の中で最も近い辺（線分）へセル面積を加算する。
 /// `candidate_edges` に全辺（`0..n`）を渡せば [`distribute_polygon`] と同じ挙動になり、
-/// 部分集合を渡せば非候補の辺には荷重が帰属しなくなる（[`distribute_polygon_supported`]）。
+/// 部分集合を渡せば非候補の辺には荷重が帰属しなくなる（片持ち梁・先端リブ小梁がある
+/// 取り付き領域の分割伝達で用いる予定。申し送りの Step 4）。
 fn polygon_edge_areas(coords: &[[f64; 3]], candidate_edges: &[usize]) -> Vec<f64> {
     let n = coords.len();
     let mut edge_area = vec![0.0_f64; n];
@@ -165,41 +165,4 @@ fn emit_edge_loads(coords: &[[f64; 3]], w: f64, edge_area: &[f64], loads: &mut V
             fem_uniform(w_line, l_e),
         );
     }
-}
-
-/// 支持辺指定付きの最近接辺グリッドサンプリング帰属（レビュー残課題「片持ち梁・先端リブ
-/// 小梁の分割伝達」「一般スラブの部分支持（開口際等）」対応。片持ち梁がある
-/// 場合はスラブと同様のルールにより分割して荷重伝達する扱い）。
-///
-/// [`distribute_polygon`] と同じ格子サンプリング法（[`polygon_edge_areas`]）だが、各サンプル
-/// 点を「支持辺（`supported[i] == true` の辺）のみ」の中から最近接の辺に帰属させる。
-/// 非支持辺（`supported[i] == false`）には荷重が帰属しない。
-///
-/// 呼び出し元（[`distribute_slab`]）の用途は2通り:
-/// - `SlabKind::Cantilever` + `edge_supported`: 取付き大梁（辺0）に加え、片持ち梁・先端
-///   リブ小梁が取り付く辺を支持辺として指定する（例: 辺0・1・3 支持＝両側に片持ち梁、
-///   辺2 も支持に含めれば先端リブ小梁あり）。
-/// - `SlabKind::Interior` + `edge_supported`: 開口際などで一部の辺が大梁・小梁に
-///   取り付かない一般スラブの分配に用いる（非支持辺には荷重を負担させない一般化）。
-///
-/// `supported` の長さが `coords.len()` と一致しない、または支持辺が1つもない
-/// （全要素 `false`）場合は、指定が無意味なため安全側（総荷重を捨てない）に倒して
-/// 全辺支持へフォールバックする（＝ [`distribute_polygon`] と同じ結果になる）。
-pub(crate) fn distribute_polygon_supported(
-    coords: &[[f64; 3]],
-    w: f64,
-    loads: &mut Vec<BeamLoad>,
-    supported: &[bool],
-) {
-    let n = coords.len();
-    if n < 3 {
-        return;
-    }
-    let candidate_edges: Vec<usize> = if supported.len() == n && supported.iter().any(|&b| b) {
-        (0..n).filter(|&i| supported[i]).collect()
-    } else {
-        (0..n).collect()
-    };
-    let edge_area = polygon_edge_areas(coords, &candidate_edges);
-    emit_edge_loads(coords, w, &edge_area, loads);
 }

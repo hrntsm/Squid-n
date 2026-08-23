@@ -5,7 +5,7 @@ expression: out
 model.nodes = 171
 model.elements = 157
 model.secondary_members = 56
-model.slabs = 82
+model.floor_regions = 82
 model.stories = 5
 prep.total_seismic_weight = 3.187e6
 prep.height = 1.630e4

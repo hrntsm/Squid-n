@@ -96,7 +96,7 @@ fn test_validate_dangling_elem_node() {
 
 #[test]
 fn test_validate_dangling_slab_boundary() {
-    use crate::model::{DistributionMethod, Slab};
+    use crate::model::{DistributionMethod, FloorRegion, RegionShape, SlabPlate};
     let model = Model {
         nodes: vec![Node {
             id: NodeId(0),
@@ -106,25 +106,28 @@ fn test_validate_dangling_slab_boundary() {
             story: None,
             support_spring: None,
         }],
-        slabs: vec![Slab {
-            id: crate::ids::SlabId(0),
+        floor_regions: vec![FloorRegion {
+            id: FloorRegionId(0),
+            name: String::new(),
             // 存在しない節点 5 を境界に含む（陳腐化した参照）。
-            boundary: vec![NodeId(0), NodeId(5)],
-            joists: vec![],
-            loads: vec![],
-            method: DistributionMethod::TriTrapezoid,
-            kind: Default::default(),
-            one_way: None,
-            edge_supported: None,
-            usage: None,
-            section: None,
+            shape: RegionShape::Enclosed {
+                boundary: vec![NodeId(0), NodeId(5)],
+            },
+            plate: Some(SlabPlate {
+                section: None,
+                loads: vec![],
+                usage: None,
+                method: DistributionMethod::TriTrapezoid,
+                one_way: None,
+                joists: vec![],
+            }),
             secondary_joist_ids: vec![],
         }],
         ..Default::default()
     };
     assert!(
         model.validate().is_err(),
-        "存在しない節点を参照するスラブ境界は検出されるはず"
+        "存在しない節点を参照する床領域の境界は検出されるはず"
     );
 }
 
@@ -138,17 +141,18 @@ fn test_validate_duplicate_slab_secondary_joist_ids() {
             section: None,
             name: "J0".to_string(),
         }],
-        slabs: vec![Slab {
-            id: crate::ids::SlabId(0),
-            boundary: vec![],
-            joists: vec![],
-            loads: vec![],
-            method: DistributionMethod::OneWay,
-            kind: Default::default(),
-            one_way: None,
-            edge_supported: None,
-            usage: None,
-            section: None,
+        floor_regions: vec![FloorRegion {
+            id: FloorRegionId(0),
+            name: String::new(),
+            shape: RegionShape::Enclosed { boundary: vec![] },
+            plate: Some(SlabPlate {
+                section: None,
+                loads: vec![],
+                usage: None,
+                method: DistributionMethod::OneWay,
+                one_way: None,
+                joists: vec![],
+            }),
             secondary_joist_ids: vec![SecondaryMemberId(0), SecondaryMemberId(0)],
         }],
         ..Default::default()
@@ -468,7 +472,7 @@ fn test_model_stress_cfg_default_missing_field() {
     // 旧スキーマ（stress_cfg フィールドがない JSON）からの互換性を確認する。
     let json = r#"{
             "nodes": [], "elements": [], "sections": [], "materials": [],
-            "stories": [], "slabs": [], "constraints": [], "load_cases": [],
+            "stories": [], "floor_regions": [], "constraints": [], "load_cases": [],
             "combinations": []
         }"#;
     let model: Model = serde_json::from_str(json).unwrap();
@@ -515,7 +519,7 @@ fn test_damper_props_relief_default_missing_field() {
 fn test_model_damper_defs_default_missing_field() {
     let json = r#"{
             "nodes": [], "elements": [], "sections": [], "materials": [],
-            "stories": [], "slabs": [], "constraints": [], "load_cases": [],
+            "stories": [], "floor_regions": [], "constraints": [], "load_cases": [],
             "combinations": []
         }"#;
     let model: Model = serde_json::from_str(json).unwrap();
@@ -1150,17 +1154,18 @@ fn test_retain_secondary_members_remaps_region_refs() {
             sm(1, SecondaryMemberKind::Post),
             sm(2, SecondaryMemberKind::Joist),
         ],
-        slabs: vec![Slab {
-            id: crate::ids::SlabId(0),
-            boundary: vec![],
-            joists: vec![],
-            loads: vec![],
-            method: DistributionMethod::OneWay,
-            kind: Default::default(),
-            one_way: None,
-            edge_supported: None,
-            usage: None,
-            section: None,
+        floor_regions: vec![FloorRegion {
+            id: FloorRegionId(0),
+            name: String::new(),
+            shape: RegionShape::Enclosed { boundary: vec![] },
+            plate: Some(SlabPlate {
+                section: None,
+                loads: vec![],
+                usage: None,
+                method: DistributionMethod::OneWay,
+                one_way: None,
+                joists: vec![],
+            }),
             secondary_joist_ids: vec![SecondaryMemberId(0), SecondaryMemberId(2)],
         }],
         wall_regions: vec![crate::model::WallRegion {
@@ -1179,7 +1184,7 @@ fn test_retain_secondary_members_remaps_region_refs() {
     }
     // 落とした SM0 への参照は消え、SM2 への参照は新 ID 1 へ張り替わる。
     assert_eq!(
-        model.slabs[0].secondary_joist_ids,
+        model.floor_regions[0].secondary_joist_ids,
         vec![SecondaryMemberId(1)]
     );
     // 壁領域の SM1 への参照は新 ID 0 へ張り替わる。

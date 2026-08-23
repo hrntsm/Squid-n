@@ -147,9 +147,9 @@ impl App {
             })
         };
 
-        for slab in &self.model.slabs {
+        for slab in &self.model.floor_regions {
             // 床設計は床用積載（最大）＋固定荷重を用いる。
-            let w = self.model.slab_intensity(slab, LoadPurpose::Floor);
+            let w = self.model.region_intensity(slab, LoadPurpose::Floor);
 
             // --- 小梁: 交差があれば床格子サブモデル（二方向）で、なければ単純支持梁で検定 ---
             let grillage = squid_n_job::floor_grillage::build_slab_grillage(&self.model, slab, w)
@@ -163,7 +163,7 @@ impl App {
                 for (jidx, span, m, q, defl) in
                     squid_n_job::floor_grillage::joist_design_forces(&g, &sol)
                 {
-                    let Some(j) = slab.joists.get(jidx) else {
+                    let Some(j) = slab.joist_lines().get(jidx) else {
                         continue;
                     };
                     let Some(sid) = j.section else { continue };
@@ -182,7 +182,7 @@ impl App {
                 }
             } else {
                 // 交差なし: 各小梁を独立した単純支持梁として検定。
-                for (ji, j) in slab.joists.iter().enumerate() {
+                for (ji, j) in slab.joist_lines().iter().enumerate() {
                     let (a, b) = (j.support[0], j.support[1]);
                     if a == b || beam_between(a, b) {
                         // 実部材化済み or 退化した小梁は床設計の対象外。
@@ -228,12 +228,12 @@ impl App {
                 use squid_n_core::model::OneWayDir;
                 // 設計スパンは伝達方向に一致させる（分配エンジンと同じ規約: X→lx, Y→ly）。
                 // 一方向指定がない（両方向）場合は安全側に短辺で設計する。
-                let span = match slab.one_way {
+                let span = match slab.one_way() {
                     Some(OneWayDir::X) => lx,
                     Some(OneWayDir::Y) => ly,
                     None => lx.min(ly),
                 };
-                let thickness = self.model.slab_thickness_of(slab).unwrap_or(0.0);
+                let thickness = self.model.region_thickness(slab).unwrap_or(0.0);
                 if span > 1e-9 && thickness > 0.0 {
                     // 単純支持相当（coef=8）。連続版はより小さい係数だが安全側に 8 を用いる。
                     let r = fd::design_slab_oneway(
@@ -268,14 +268,14 @@ impl App {
         sigma_allow: f64,
         z_of: &impl Fn(squid_n_core::ids::SectionId) -> Option<f64>,
     ) {
-        use squid_n_core::ids::{SectionId, SlabId};
+        use squid_n_core::ids::{FloorRegionId, SectionId};
         use squid_n_core::model::{LoadPurpose, SecondaryMemberKind};
         use squid_n_design_jp::floor as fd;
         use std::collections::{HashMap, HashSet};
 
         let mut joist_supports = HashSet::new();
-        for slab in &self.model.slabs {
-            for j in &slab.joists {
+        for slab in &self.model.floor_regions {
+            for j in slab.joist_lines() {
                 let (a, b) = (j.support[0], j.support[1]);
                 if a != b {
                     let key = if a.0 <= b.0 { (a, b) } else { (b, a) };
@@ -286,7 +286,7 @@ impl App {
 
         struct Cand {
             sm_idx: usize,
-            slab_id: SlabId,
+            slab_id: FloorRegionId,
             slab_idx: usize,
             span: f64,
             perp_coord: f64,
@@ -342,13 +342,13 @@ impl App {
             // 境界寸法で検定してしまう（エラーは出ないまま結果だけが誤る）。
             // レベルの許容差は面走査によるパネル検出と同じ `geom::LEVEL_TOL_MM` を用いる
             // （丸め誤差だけを吸収する幅。段差床は別レベルとして扱う＝該当なしになる）。
-            let matched: Vec<(usize, &squid_n_core::model::Slab)> = self
+            let matched: Vec<(usize, &squid_n_core::model::FloorRegion)> = self
                 .model
-                .slabs
+                .floor_regions
                 .iter()
                 .enumerate()
                 .filter(|(_, s)| {
-                    squid_n_load::floor::slab_level(&self.model, s)
+                    s.level(&self.model)
                         .is_some_and(|z| (z - mid_z).abs() <= squid_n_core::geom::LEVEL_TOL_MM)
                         && squid_n_load::floor::point_in_slab_boundary(&self.model, s, mid)
                 })
@@ -419,7 +419,7 @@ impl App {
                     .total_cmp(&candidates[b].perp_coord)
             });
 
-            let slab = &self.model.slabs[candidates[sorted[0]].slab_idx];
+            let slab = &self.model.floor_regions[candidates[sorted[0]].slab_idx];
             let perp = [-candidates[sorted[0]].dir[1], candidates[sorted[0]].dir[0]];
             let (pmin, pmax) = slab_perp_extent(&self.model, slab, perp);
             let n = sorted.len();
@@ -455,7 +455,7 @@ impl App {
                 };
                 let w = self
                     .model
-                    .slab_intensity(&self.model.slabs[c.slab_idx], LoadPurpose::Floor);
+                    .region_intensity(&self.model.floor_regions[c.slab_idx], LoadPurpose::Floor);
                 let r = fd::design_joist_simple(
                     c.span,
                     w * spacing,
@@ -475,19 +475,16 @@ impl App {
     }
 }
 
-/// スラブ境界の直交軸座標の最小・最大（負担幅算定用）。
+/// 床領域の境界の直交軸座標の最小・最大（負担幅算定用）。
 fn slab_perp_extent(
     model: &squid_n_core::model::Model,
-    slab: &squid_n_core::model::Slab,
+    slab: &squid_n_core::model::FloorRegion,
     perp: [f64; 2],
 ) -> (f64, f64) {
     let mut min = f64::INFINITY;
     let mut max = f64::NEG_INFINITY;
-    for nid in &slab.boundary {
-        let Some(n) = model.nodes.get(nid.index()) else {
-            continue;
-        };
-        let t = n.coord[0] * perp[0] + n.coord[1] * perp[1];
+    for c in slab.boundary_coords(model).unwrap_or_default() {
+        let t = c[0] * perp[0] + c[1] * perp[1];
         min = min.min(t);
         max = max.max(t);
     }
@@ -501,7 +498,7 @@ fn slab_perp_extent(
 /// スラブの境界辺に載る小梁では、載っている各スラブについて求めて平均する。
 fn slab_width_across(
     model: &squid_n_core::model::Model,
-    slab: &squid_n_core::model::Slab,
+    slab: &squid_n_core::model::FloorRegion,
     dir: [f64; 2],
     bbox_extent: f64,
 ) -> f64 {

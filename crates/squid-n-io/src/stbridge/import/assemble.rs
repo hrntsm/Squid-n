@@ -11,10 +11,12 @@ use super::{
     PendingSecondary, RawAxisGroup, RawLoadCase, RawMaterial, RawNode, RawSlab, RawStory, RawWall,
     SecMatRef,
 };
-use squid_n_core::ids::{ElemId, LoadCaseId, MaterialId, NodeId, SectionId, SlabId, StoryId};
+use squid_n_core::ids::{
+    ElemId, FloorRegionId, LoadCaseId, MaterialId, NodeId, SectionId, StoryId,
+};
 use squid_n_core::model::{
-    DistributionMethod, ElementData, ElementKind, EndCondition, ForceRegime, LoadCase, LocalAxis,
-    Material, MaterialCategory, Model, NodalLoad, Node, Section, Slab, Story,
+    DistributionMethod, ElementData, ElementKind, EndCondition, FloorRegion, ForceRegime, LoadCase,
+    LocalAxis, Material, MaterialCategory, Model, NodalLoad, Node, Section, SlabPlate, Story,
 };
 use squid_n_core::section_shape::SectionShape;
 use std::collections::HashMap;
@@ -599,20 +601,16 @@ fn build_slabs(
             slab_section_count += 1;
             Some(sid)
         });
-        let new_id = SlabId(model.slabs.len() as u32);
-        model.slabs.push(Slab {
-            id: new_id,
-            boundary,
-            joists: Vec::new(),
-            loads: Vec::new(),
-            method: DistributionMethod::TriTrapezoid,
-            kind: Default::default(),
-            one_way: None,
-            edge_supported: None,
-            usage: None,
-            section,
-            secondary_joist_ids: Vec::new(),
-        });
+        let new_id = FloorRegionId(model.floor_regions.len() as u32);
+        // 取り込んだ版はいったん囲まれた領域として作る。大梁が囲むパネルへの統合と、
+        // パネルに収まらない版の片持ち判定は、取り込み後の変換で行う（申し送りの Step 3）。
+        model.floor_regions.push(
+            FloorRegion::enclosed(new_id, boundary).with_plate(SlabPlate {
+                section,
+                method: DistributionMethod::TriTrapezoid,
+                ..Default::default()
+            }),
+        );
     }
     if skipped_slabs > 0 {
         warnings.push(format!(

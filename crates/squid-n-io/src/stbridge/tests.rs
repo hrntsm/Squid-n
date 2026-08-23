@@ -7,6 +7,7 @@ use squid_n_core::model::{
     AxisGroupKind, AxisSource, ElementData, ElementKind, EndCondition, ForceRegime, LocalAxis,
     Material, MaterialCategory, Model, Node, Section, Story,
 };
+use squid_n_core::model::{FloorRegion, RegionShape, SlabPlate};
 use squid_n_core::section_shape::SectionShape;
 
 /// 標準グレード名 `SN400B` の材料（物性は `material_std` の標準表と一致させる）。
@@ -1872,18 +1873,14 @@ fn test_import_slab_with_node_order_and_thickness() {
 </StbModel></ST_BRIDGE>"#;
     let (m, report) = import_stbridge_with_report(xml).expect("import");
     assert!(m.validate().is_ok(), "{:?}", m.validate());
-    assert_eq!(m.slabs.len(), 1, "スラブを1件取り込む");
-    let s = &m.slabs[0];
+    assert_eq!(m.floor_regions.len(), 1, "スラブを1件取り込む");
+    let s = &m.floor_regions[0];
     assert_eq!(
-        s.boundary,
+        s.boundary_nodes().unwrap(),
         vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
         "境界節点ループが順序どおり"
     );
-    assert_eq!(
-        m.slab_thickness_of(s),
-        Some(180.0),
-        "断面参照から厚さを解決"
-    );
+    assert_eq!(m.region_thickness(s), Some(180.0), "断面参照から厚さを解決");
     assert!(report.is_clean(), "警告なし: {:?}", report.warnings);
 }
 
@@ -1906,9 +1903,9 @@ fn test_import_slab_node_order_cdata() {
 </StbModel></ST_BRIDGE>"#;
     let (m, _report) = import_stbridge_with_report(xml).expect("import");
     assert!(m.validate().is_ok(), "{:?}", m.validate());
-    assert_eq!(m.slabs.len(), 1, "CDATA の節点ループを取り込む");
+    assert_eq!(m.floor_regions.len(), 1, "CDATA の節点ループを取り込む");
     assert_eq!(
-        m.slabs[0].boundary,
+        m.floor_regions[0].boundary_nodes().unwrap(),
         vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)]
     );
 }
@@ -1935,10 +1932,10 @@ fn test_import_slab_self_closing_node_order_does_not_capture_stray_text() {
 </StbModel></ST_BRIDGE>"#;
     let (m, _report) = import_stbridge_with_report(xml).expect("import");
     assert!(m.validate().is_ok(), "{:?}", m.validate());
-    assert_eq!(m.slabs.len(), 1);
+    assert_eq!(m.floor_regions.len(), 1);
     // 999 が混入せず、実 StbNodeIdOrder の 0 1 2 3 のみになる。
     assert_eq!(
-        m.slabs[0].boundary,
+        m.floor_regions[0].boundary_nodes().unwrap(),
         vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
         "自己終了タグ後の無関係テキストを取り込まない"
     );
@@ -2117,8 +2114,8 @@ fn test_wall_roundtrip_export_import() {
 /// スラブ（境界＋厚さ）を含むモデルが export→import で往復すること。
 #[test]
 fn test_slab_roundtrip_export_import() {
-    use squid_n_core::ids::SlabId;
-    use squid_n_core::model::{DistributionMethod, Slab};
+    use squid_n_core::ids::FloorRegionId;
+    use squid_n_core::model::DistributionMethod;
     let mut model = Model::default();
     for (i, (x, y)) in [(0.0, 0.0), (4000.0, 0.0), (4000.0, 3000.0), (0.0, 3000.0)]
         .into_iter()
@@ -2152,17 +2149,20 @@ fn test_slab_roundtrip_export_import() {
         .to_section(slab_sec, "S20".into());
     sec.material = Some(squid_n_core::ids::MaterialId(0));
     model.sections.push(sec);
-    model.slabs.push(Slab {
-        id: SlabId(0),
-        boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
-        joists: Vec::new(),
-        loads: Vec::new(),
-        method: DistributionMethod::TriTrapezoid,
-        kind: Default::default(),
-        one_way: None,
-        edge_supported: None,
-        usage: None,
-        section: Some(slab_sec),
+    model.floor_regions.push(FloorRegion {
+        id: FloorRegionId(0),
+        name: String::new(),
+        shape: RegionShape::Enclosed {
+            boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
+        },
+        plate: Some(SlabPlate {
+            section: Some(slab_sec),
+            loads: Vec::new(),
+            usage: None,
+            method: DistributionMethod::TriTrapezoid,
+            one_way: None,
+            joists: Vec::new(),
+        }),
         secondary_joist_ids: Vec::new(),
     });
     assert!(model.validate().is_ok(), "{:?}", model.validate());
@@ -2170,18 +2170,18 @@ fn test_slab_roundtrip_export_import() {
     let xml = export_stbridge(&model).expect("export");
     let (m2, report) = import_stbridge_with_report(&xml).expect("import");
     assert!(m2.validate().is_ok(), "{:?}", m2.validate());
-    assert_eq!(m2.slabs.len(), 1, "スラブ1件");
+    assert_eq!(m2.floor_regions.len(), 1, "スラブ1件");
     assert_eq!(
-        m2.slabs[0].boundary,
+        m2.floor_regions[0].boundary_nodes().unwrap(),
         vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
         "境界が往復"
     );
     assert_eq!(
-        m2.slab_thickness_of(&m2.slabs[0]),
+        m2.region_thickness(&m2.floor_regions[0]),
         Some(200.0),
         "厚さが往復"
     );
-    let sec2 = m2.slab_section(&m2.slabs[0]).expect("断面が往復");
+    let sec2 = m2.region_section(&m2.floor_regions[0]).expect("断面が往復");
     assert_eq!(sec2.name, "S20", "符号が往復");
     assert_eq!(
         sec2.material
@@ -2628,8 +2628,8 @@ fn test_secondary_members_roundtrip() {
 /// 同名の断面が枚数分並び、再取り込みのたびに符号が `S15`・`S15#2` … と増殖する。
 #[test]
 fn test_slab_shared_section_does_not_multiply_on_roundtrip() {
-    use squid_n_core::ids::{SectionId, SlabId};
-    use squid_n_core::model::{DistributionMethod, Slab};
+    use squid_n_core::ids::{FloorRegionId, SectionId};
+    use squid_n_core::model::DistributionMethod;
 
     let mut model = Model::default();
     // 2 スパン分の 6 節点で床 2 枚を作り、同じ断面を共有させる。
@@ -2659,17 +2659,20 @@ fn test_slab_shared_section_does_not_multiply_on_roundtrip() {
             .to_section(slab_sec, "S15".into()),
     );
     for (i, b) in [[0, 1, 4, 3], [1, 2, 5, 4]].into_iter().enumerate() {
-        model.slabs.push(Slab {
-            id: SlabId(i as u32),
-            boundary: b.into_iter().map(NodeId).collect(),
-            joists: Vec::new(),
-            loads: Vec::new(),
-            method: DistributionMethod::TriTrapezoid,
-            kind: Default::default(),
-            one_way: None,
-            edge_supported: None,
-            usage: None,
-            section: Some(slab_sec),
+        model.floor_regions.push(FloorRegion {
+            id: FloorRegionId(i as u32),
+            name: String::new(),
+            shape: RegionShape::Enclosed {
+                boundary: b.into_iter().map(NodeId).collect(),
+            },
+            plate: Some(SlabPlate {
+                section: Some(slab_sec),
+                loads: Vec::new(),
+                usage: None,
+                method: DistributionMethod::TriTrapezoid,
+                one_way: None,
+                joists: Vec::new(),
+            }),
             secondary_joist_ids: Vec::new(),
         });
     }
@@ -2680,11 +2683,12 @@ fn test_slab_shared_section_does_not_multiply_on_roundtrip() {
     for round in 1..=2 {
         let xml = export_stbridge(&m).expect("export");
         let (next, _) = import_stbridge_with_report(&xml).expect("import");
-        assert_eq!(next.slabs.len(), 2, "{round} 往復目: 床 2 枚");
+        assert_eq!(next.floor_regions.len(), 2, "{round} 往復目: 床 2 枚");
         let names: Vec<&str> = next.sections.iter().map(|sc| sc.name.as_str()).collect();
         assert_eq!(names, vec!["S15"], "{round} 往復目: 断面は 1 つ {names:?}");
         assert_eq!(
-            next.slabs[0].section, next.slabs[1].section,
+            next.floor_regions[0].section(),
+            next.floor_regions[1].section(),
             "{round} 往復目: 2 枚が同じ断面を共有する"
         );
         m = next;
@@ -2720,16 +2724,19 @@ fn test_import_slab_section_and_self_weight() {
   </StbMembers>
 </StbModel></ST_BRIDGE>"#;
     let (m, report) = import_stbridge_with_report(xml).expect("import");
-    assert_eq!(m.slabs.len(), 1);
-    let slab = &m.slabs[0];
+    assert_eq!(m.floor_regions.len(), 1);
+    let slab = &m.floor_regions[0];
     // 断面が作られ、符号は StbSecSlab_RC の name をそのまま採る。
-    let sec = m.slab_section(slab).expect("スラブ断面が割り当たる");
+    let sec = m.region_section(slab).expect("スラブ断面が割り当たる");
     assert_eq!(sec.name, "S150");
-    assert_eq!(m.slab_thickness_of(slab), Some(150.0));
-    assert!(slab.loads.is_empty(), "自重は面荷重へ焼き込まない");
+    assert_eq!(m.region_thickness(slab), Some(150.0));
+    assert!(
+        slab.plate.as_ref().unwrap().loads.is_empty(),
+        "自重は面荷重へ焼き込まない"
+    );
     // 150 mm × 24 kN/m³ = 3.6 kN/m² = 3.6e-3 N/mm²
     assert!(
-        (m.slab_self_weight_intensity(slab)
+        (m.region_self_weight_intensity(slab)
             .expect("自重を算定できる")
             - 3.6e-3)
             .abs()
@@ -2737,7 +2744,7 @@ fn test_import_slab_section_and_self_weight() {
         "自重の面荷重強度"
     );
     assert!(
-        (m.slab_dead_intensity(slab) - 3.6e-3).abs() < 1e-9,
+        (m.region_dead_intensity(slab) - 3.6e-3).abs() < 1e-9,
         "分配強度に自重が乗る"
     );
     assert!(

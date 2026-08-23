@@ -1,38 +1,40 @@
 //! 片持ちスラブ・出隅スラブの分配戦略。
 //!
-//! - [`distribute_corner`] — 出隅の片持ちスラブ（全荷重を柱節点へ集中）
+//! - [`distribute_to_node`] — 取り付き領域の荷重を節点（柱）へ集中
 //! - [`distribute_cantilever`] — 片持ちスラブ（取付き大梁への等分布集約）
 
 use squid_n_core::ids::ElemId;
-use squid_n_core::model::Slab;
+use squid_n_core::ids::NodeId;
 
 use super::fem::fem_uniform;
 use super::geometry::{dist3, edge_len, polygon_area};
 use super::types::{push_edge, BeamLoad, Cmq, LoadShape, LoadTarget};
 
-/// 出隅の片持ちスラブの分配（`SlabKind::Corner`）。
+/// 取り付き領域の荷重を節点（柱）へ集中させる分配。
 ///
-/// 出隅の片持ちスラブの荷重は、荷重伝達方向および片持ち梁の取付きに関わらず、節点荷重
-/// としてすべて柱に伝達する。本実装ではこれに従い、荷重伝達方向（`one_way`）や
-/// `slab.edge_supported`（片持ち梁の有無）を一切参照せず、全荷重
-/// `W = w × 多角形面積`（[`polygon_area`]。構造芯から出隅先端までの長方形
-/// ＝境界そのものの面積）を柱（`boundary[0]` の節点）への
-/// 単一の集中荷重として返す。小梁反力・[`distribute_rect_with_joists`] の柱集中荷重と
-/// 同じ `LoadTarget::Node` + `LoadShape::Point`（`q_i = W`、`q_j = 0`）の機構を再利用する。
-pub(crate) fn distribute_corner(
-    slab: &Slab,
+/// 出隅の片持ちスラブは、荷重伝達方向および片持ち梁の取付きに関わらず、節点荷重として
+/// すべて柱に伝達する。本実装ではこれに従い、全荷重 `W = w × 多角形面積`
+/// （[`polygon_area`]。構造芯から出隅先端までの長方形＝境界そのものの面積）に
+/// `ratio` を掛けた分を、`node` への単一の集中荷重として返す。
+/// 小梁反力・`distribute_rect_with_joists` の柱集中荷重と同じ
+/// `LoadTarget::Node` + `LoadShape::Point`（`q_i = W`、`q_j = 0`）の機構を再利用する。
+///
+/// `ratio` は取付き線の両端へ半分ずつ渡す場合（[`LoadTransfer::Columns`]）に 0.5 を用いる。
+pub(crate) fn distribute_to_node(
+    node: NodeId,
     coords: &[[f64; 3]],
     w: f64,
+    ratio: f64,
     loads: &mut Vec<BeamLoad>,
 ) {
     let area = polygon_area(coords);
     if area <= 0.0 {
         return;
     }
-    let total = w * area;
+    let total = w * area * ratio;
     loads.push(BeamLoad {
         elem: ElemId(u32::MAX),
-        target: LoadTarget::Node(slab.boundary[0]),
+        target: LoadTarget::Node(node),
         shape: LoadShape::Point { p: total, x: 0.0 },
         cmq: Cmq {
             c_i: 0.0,
@@ -62,7 +64,7 @@ fn point_line_dist(p: [f64; 3], a: [f64; 3], b: [f64; 3]) -> f64 {
 /// 集約する（`LoadShape::Uniform` + `fem_uniform`）。
 ///
 /// 片持ち梁・先端リブ小梁がある場合の分割伝達は `slab.edge_supported` を指定することで
-/// [`distribute_polygon_supported`] 経路（[`distribute_slab`] 側で分岐）が担う。
+/// 領域が持つ二次部材から支持辺を導く経路（申し送りの Step 4）が担う予定である。
 /// 出隅の片持ちスラブは `SlabKind::Corner`（[`distribute_corner`]）が別途担う。
 ///
 /// **未対応（残課題）**: 入隅の片持ちスラブ（本実装では非対応）。

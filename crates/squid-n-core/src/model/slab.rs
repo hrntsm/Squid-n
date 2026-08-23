@@ -1,18 +1,20 @@
-//! スラブ（床）関連の型。
+//! 床版（スラブ）に関わる値の型。
+//!
+//! 版そのもの（[`SlabPlate`]）と床領域（[`FloorRegion`]）は [`super::region`] にある。
 //!
 //! - [`DistributionMethod`] — 床荷重の分配方法。
 //! - [`JoistLine`] — 小梁ライン。
 //! - [`AreaLoad`] — 面荷重。
-//! - [`SlabKind`] — スラブ種別（一般／片持ち／出隅）。
 //! - [`OneWayDir`] — 一方向スラブの伝達方向。
 //! - [`LoadPurpose`] — 積載荷重の用途（床用／骨組用／地震用。令85条1項）。
 //! - [`SlabUsage`] — 室用途（令別表第1 の積載荷重プリセット）。
-//! - [`Slab`] — スラブの定義。
 
 use super::*;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+/// 床荷重の分配方法。既定は三角形・台形分配。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum DistributionMethod {
+    #[default]
     TriTrapezoid,
     OneWay,
     TributaryArea,
@@ -165,19 +167,6 @@ pub struct AreaLoad {
     pub value: f64,
 }
 
-/// スラブの種別。片持ちスラブは境界の辺 0（`boundary[0]`→`boundary[1]`）を
-/// 取付き辺（大梁側）とし、荷重は取付き辺へ伝達する（片持ちスラブの床荷重分配）。
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub enum SlabKind {
-    #[default]
-    Interior,
-    Cantilever,
-    /// 出隅の片持ちスラブ。荷重は伝達方向・片持ち梁の有無に関わらず
-    /// 全て節点荷重として柱（`boundary[0]` の節点）へ伝達する
-    /// （出隅の片持ちスラブの床荷重分配）。
-    Corner,
-}
-
 /// 一方向スラブの荷重伝達方向（床ごとに指定。床荷重の分配における伝達方向〔X〕〔Y〕）。
 /// `X` は全体座標 X 方向へ伝達（＝X 方向両側の辺が負担）、`Y` は Y 方向へ伝達。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -186,138 +175,9 @@ pub enum OneWayDir {
     Y,
 }
 
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct Slab {
-    pub id: SlabId,
-    pub boundary: Vec<NodeId>,
-    pub joists: Vec<JoistLine>,
-    pub loads: Vec<AreaLoad>,
-    pub method: DistributionMethod,
-    /// スラブ種別（一般/片持ち）。旧スキーマは一般スラブ扱い。
-    #[serde(default)]
-    pub kind: SlabKind,
-    /// 一方向スラブの伝達方向。`None` は従来互換
-    /// （境界辺 0・2 が負担＝辺 1 方向スパン）の暗黙規則。
-    #[serde(default)]
-    pub one_way: Option<OneWayDir>,
-    /// 境界辺ごとの支持有無（`boundary` の辺数と同長）。`None` は既定
-    /// （Interior は全辺支持、Cantilever は辺 0 のみ支持）。片持ちスラブに
-    /// 片持ち梁・先端リブ小梁が取り付く場合、支持辺を追加指定すると
-    /// スラブと同様のルール（最近接支持辺の負担面積）で分割伝達される
-    /// （片持ちスラブに片持ち梁あり/先端リブ小梁ありの場合の床荷重分配）。
-    #[serde(default)]
-    pub edge_supported: Option<Vec<bool>>,
-    /// 室用途（令別表第1）。`Some` のとき積載荷重（LL）を用途別に自動算定する。
-    /// `None`（旧スキーマ・未設定）は積載荷重を持たない（`loads` の固定荷重のみ）。
-    #[serde(default)]
-    pub usage: Option<SlabUsage>,
-    /// スラブ断面（符号・板厚・コンクリート材料を持つ
-    /// [`Section`](crate::model::Section)）。
-    ///
-    /// **スラブごとの板厚と自重は、この断面から解決する**
-    /// （[`Model::slab_thickness_of`]・[`Model::slab_self_weight_intensity`]）。
-    /// 板厚をスラブと断面の両方に持たせると同じ数値の持ち主が 2 つになるため、
-    /// スラブ側は断面を指すだけとする。
-    ///
-    /// `None` は未割当。板厚も自重も定まらないため、解析前チェックが止める
-    /// （もっともらしい既定厚で補うと、床の自重が過小なまま長期応力が出る）。
-    #[serde(default)]
-    pub section: Option<crate::ids::SectionId>,
-    /// この床領域に属する小梁（`SecondaryMember::Joist`）の ID リスト。
-    /// リスト内の順序は任意。重複は許可しない（validate が確認）。
-    #[serde(default)]
-    pub secondary_joist_ids: Vec<SecondaryMemberId>,
-}
-
-impl Slab {
-    /// 仕上げ等の面荷重強度 [N/mm²]（`loads` の合算）。
-    ///
-    /// **スラブ自身の自重は含まない。** 自重は断面の板厚と材料から算定するため
-    /// （[`Model::slab_self_weight_intensity`]）、固定荷重（DL）の全量が要るときは
-    /// [`Model::slab_dead_intensity`] を使う。
-    pub fn finish_intensity(&self) -> f64 {
-        self.loads.iter().map(|l| l.value).sum()
-    }
-
-    /// 用途別の積載荷重（LL）の面荷重強度 [N/mm²]。`usage` 未設定なら 0。
-    pub fn live_intensity(&self, purpose: LoadPurpose) -> f64 {
-        self.usage.map(|u| u.live_load(purpose)).unwrap_or(0.0)
-    }
-}
-
-impl Model {
-    /// スラブへ割り当てた断面。未割当・ダングリングは `None`。
-    pub fn slab_section(&self, slab: &Slab) -> Option<&Section> {
-        slab.section.and_then(|sid| self.sections.get(sid.index()))
-    }
-
-    /// スラブの板厚 [mm]。断面の [`Section::thickness`] をそのまま返す。
-    ///
-    /// 断面が未割当、または断面が板厚を持たない（板状でない形状を割り当てた）
-    /// 場合は `None`。**建物一律の [`Model::slab_thickness`] へは退かない**。
-    /// あちらは「剛性計算に見込むスラブ厚」であり、既定の 0 は「スラブ協力幅に
-    /// よる梁剛性増大を見込まない」を意味する別概念のためである。
-    pub fn slab_thickness_of(&self, slab: &Slab) -> Option<f64> {
-        self.slab_section(slab)
-            .and_then(|s| s.thickness)
-            .filter(|t| *t > 0.0)
-    }
-
-    /// スラブ自重の面荷重強度 [N/mm²]（板厚 × 断面の主材料の単位体積重量）。
-    ///
-    /// 断面または断面の主材料が未割当のときは `None`。自重を面荷重として
-    /// 焼き込まず毎回算定するのは、板厚や材料を変えたときに自重が追随しないと
-    /// いう食い違いを作らないためである。
-    pub fn slab_self_weight_intensity(&self, slab: &Slab) -> Option<f64> {
-        let t = self.slab_thickness_of(slab)?;
-        let mat = self
-            .slab_section(slab)
-            .and_then(|s| s.material)
-            .and_then(|mid| self.materials.get(mid.index()))?;
-        Some(t * mat.density * crate::units::GRAVITY_MM_S2)
-    }
-
-    /// 固定荷重（DL）の面荷重強度 [N/mm²]（スラブ自重 ＋ 仕上げ等）。
-    ///
-    /// 自重が算定できないスラブ（断面・主材料が未割当）は仕上げ分だけを返す。
-    /// 解析前チェックがこの状態を止めるため、ここでは既定厚で補わない。
-    pub fn slab_dead_intensity(&self, slab: &Slab) -> f64 {
-        self.slab_self_weight_intensity(slab).unwrap_or(0.0) + slab.finish_intensity()
-    }
-
-    /// 用途に応じた合成面荷重強度 [N/mm²]（固定 DL ＋ 積載 LL(purpose)）。
-    /// 長期骨組解析は `Frame`、地震用重量は `Seismic`、床・小梁設計は `Floor`。
-    pub fn slab_intensity(&self, slab: &Slab, purpose: LoadPurpose) -> f64 {
-        self.slab_dead_intensity(slab) + slab.live_intensity(purpose)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ids::{NodeId, SlabId};
-
-    fn slab_with(usage: Option<SlabUsage>, dead_loads: &[f64]) -> Slab {
-        Slab {
-            id: SlabId(0),
-            boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
-            joists: vec![],
-            loads: dead_loads
-                .iter()
-                .map(|&v| AreaLoad {
-                    kind: "DL".into(),
-                    value: v,
-                })
-                .collect(),
-            method: DistributionMethod::TriTrapezoid,
-            kind: SlabKind::Interior,
-            one_way: None,
-            edge_supported: None,
-            section: None,
-            usage,
-            secondary_joist_ids: vec![],
-        }
-    }
 
     #[test]
     fn test_usage_table_values_n_per_mm2() {
@@ -395,66 +255,5 @@ mod tests {
         assert_eq!(c.live_load(LoadPurpose::Floor), 3.0e-3);
         assert_eq!(c.live_load(LoadPurpose::Frame), 2.0e-3);
         assert_eq!(c.live_load(LoadPurpose::Seismic), 1.0e-3);
-    }
-
-    /// 断面を割り当てていないスラブは自重を持たず、仕上げ荷重だけが固定荷重になる。
-    #[test]
-    fn test_slab_intensity_helpers() {
-        let mut model = Model::default();
-        // DL のみ（usage None）。断面が無いので自重は 0。
-        let s = slab_with(None, &[1.0e-3, 0.5e-3]);
-        assert!((s.finish_intensity() - 1.5e-3).abs() < 1e-12);
-        assert_eq!(s.live_intensity(LoadPurpose::Frame), 0.0);
-        assert!((model.slab_dead_intensity(&s) - 1.5e-3).abs() < 1e-12);
-        assert!((model.slab_intensity(&s, LoadPurpose::Frame) - 1.5e-3).abs() < 1e-12);
-
-        // DL + 用途積載。骨組用の合成 = DL + LL(骨組用)。
-        let s = slab_with(Some(SlabUsage::Office), &[1.0e-3]);
-        assert!((s.live_intensity(LoadPurpose::Frame) - 1800e-6).abs() < 1e-12);
-        assert!((model.slab_intensity(&s, LoadPurpose::Frame) - (1.0e-3 + 1800e-6)).abs() < 1e-12);
-        // 地震用は積載が小さい。
-        assert!(
-            model.slab_intensity(&s, LoadPurpose::Seismic)
-                < model.slab_intensity(&s, LoadPurpose::Frame)
-        );
-        assert!(
-            model.slab_intensity(&s, LoadPurpose::Frame)
-                < model.slab_intensity(&s, LoadPurpose::Floor)
-        );
-
-        // 断面を割り当てると、自重（板厚 × 単位体積重量）が固定荷重へ加わる。
-        model.materials.push(Material {
-            strength_factor: None,
-            concrete_class: Default::default(),
-            id: crate::ids::MaterialId(0),
-            name: "Fc24".into(),
-            category: MaterialCategory::Concrete,
-            young: 23000.0,
-            poisson: 0.2,
-            density: crate::units::to_internal::mass_density_from_unit_weight_kn_m3(24.0),
-            shear: None,
-            fc: Some(24.0),
-            fy: None,
-        });
-        let mut sec = crate::section_shape::SectionShape::RcSlab { thickness: 150.0 }
-            .to_section(crate::ids::SectionId(0), "S15".into());
-        sec.material = Some(crate::ids::MaterialId(0));
-        model.sections.push(sec);
-        let mut s = slab_with(None, &[1.0e-3]);
-        s.section = Some(crate::ids::SectionId(0));
-        assert_eq!(model.slab_thickness_of(&s), Some(150.0));
-        // 自重 = 150 mm × 24 kN/m³ = 3.6e-3 N/mm²。
-        let w = model.slab_self_weight_intensity(&s).unwrap();
-        assert!((w - 3.6e-3).abs() < 1e-9, "{w}");
-        assert!((model.slab_dead_intensity(&s) - (3.6e-3 + 1.0e-3)).abs() < 1e-9);
-    }
-
-    /// 旧スキーマ（usage 欄なし）の JSON が読める（後方互換）。
-    #[test]
-    fn test_slab_serde_backward_compat_no_usage() {
-        let json =
-            r#"{"id":0,"boundary":[0,1,2,3],"joists":[],"loads":[],"method":"TriTrapezoid"}"#;
-        let s: Slab = serde_json::from_str(json).expect("旧スキーマを読める");
-        assert_eq!(s.usage, None);
     }
 }

@@ -20,8 +20,8 @@ fn is_primary_beam_for_cmq(
         return false;
     }
     let (n0, n1) = (elem.nodes[0], elem.nodes[1]);
-    let is_materialized_joist = model.slabs.iter().any(|slab| {
-        slab.joists.iter().any(|j| {
+    let is_materialized_joist = model.floor_regions.iter().any(|slab| {
+        slab.joist_lines().iter().any(|j| {
             (j.support[0] == n0 && j.support[1] == n1) || (j.support[0] == n1 && j.support[1] == n0)
         })
     });
@@ -155,7 +155,7 @@ pub(super) fn draw_cmq_diagram(
     let scale = proj.scale();
     if app.beam_loads.is_empty() {
         // スラブ自体がないのか、スラブはあるが床荷重（強度）が 0 なのかを区別して案内する。
-        let msg = if app.model.slabs.is_empty() {
+        let msg = if app.model.floor_regions.is_empty() {
             "スラブが未定義です。モデルタブの「スラブ」でスラブと床荷重を定義すると CMQ 図を表示できます"
         } else {
             "スラブの床荷重が 0 です。荷重タブ（スラブ）で固定荷重・用途（積載）を設定すると CMQ 図を表示できます"

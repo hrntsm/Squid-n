@@ -702,8 +702,8 @@ impl App {
         }
         // 床も断面を参照する（板厚・自重の情報源）。数えないと、床だけが使う断面が
         // 「使用部材数 0」として淡色表示され、未使用の断面と見分けられなくなる。
-        for s in &model.slabs {
-            count(s.section);
+        for s in &model.floor_regions {
+            count(s.section());
         }
 
         model
@@ -816,7 +816,7 @@ impl App {
             .count();
 
         // 事前判定: どれか 1 つでも該当しうる場合のみ部材ごとの算定へ進む。
-        let slab_stiffness_enabled = model.slab_thickness > 0.0 && !model.slabs.is_empty();
+        let slab_stiffness_enabled = model.slab_thickness > 0.0 && !model.floor_regions.is_empty();
         let has_wall_element = model
             .elements
             .iter()

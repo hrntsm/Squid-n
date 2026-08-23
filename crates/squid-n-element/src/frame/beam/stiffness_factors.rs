@@ -21,7 +21,7 @@ fn slab_cooperating_width(
     b: f64,
 ) -> Option<f64> {
     let t = model.slab_thickness;
-    if t <= 0.0 || b <= 0.0 || data.nodes.len() < 2 || model.slabs.is_empty() {
+    if t <= 0.0 || b <= 0.0 || data.nodes.len() < 2 || model.floor_regions.is_empty() {
         return None;
     }
     let n0 = data.nodes[0];
@@ -45,36 +45,38 @@ fn slab_cooperating_width(
 
     // スラブ境界内で自梁と平行な向かい側の梁（距離 target_s）の幅を探す。
     // 見つからなければ自梁と同幅とみなす（同一符号の梁が並ぶ床組の慣用近似）。
-    let far_beam_width = |slab: &squid_n_core::model::Slab, target_s: f64, sign: f64| -> f64 {
-        const TOL_MM: f64 = 1.0;
-        for e in &model.elements {
-            if !matches!(e.kind, squid_n_core::model::ElementKind::Beam) || e.nodes.len() < 2 {
-                continue;
-            }
-            let (m0, m1) = (e.nodes[0], e.nodes[e.nodes.len() - 1]);
-            if m0 == n0 && m1 == n1 || m0 == n1 && m1 == n0 {
-                continue;
-            }
-            if !(slab.boundary.contains(&m0) && slab.boundary.contains(&m1)) {
-                continue;
-            }
-            let (Some(q0), Some(q1)) = (model.nodes.get(m0.index()), model.nodes.get(m1.index()))
-            else {
-                continue;
-            };
-            let s0 = signed_dist(q0.coord) * sign;
-            let s1 = signed_dist(q1.coord) * sign;
-            if (s0 - target_s).abs() > TOL_MM || (s1 - target_s).abs() > TOL_MM {
-                continue;
-            }
-            if let Some(sec) = e.section.and_then(|sid| model.sections.get(sid.index())) {
-                if sec.width > 0.0 {
-                    return sec.width;
+    let far_beam_width =
+        |boundary: &[squid_n_core::ids::NodeId], target_s: f64, sign: f64| -> f64 {
+            const TOL_MM: f64 = 1.0;
+            for e in &model.elements {
+                if !matches!(e.kind, squid_n_core::model::ElementKind::Beam) || e.nodes.len() < 2 {
+                    continue;
+                }
+                let (m0, m1) = (e.nodes[0], e.nodes[e.nodes.len() - 1]);
+                if m0 == n0 && m1 == n1 || m0 == n1 && m1 == n0 {
+                    continue;
+                }
+                if !(boundary.contains(&m0) && boundary.contains(&m1)) {
+                    continue;
+                }
+                let (Some(q0), Some(q1)) =
+                    (model.nodes.get(m0.index()), model.nodes.get(m1.index()))
+                else {
+                    continue;
+                };
+                let s0 = signed_dist(q0.coord) * sign;
+                let s1 = signed_dist(q1.coord) * sign;
+                if (s0 - target_s).abs() > TOL_MM || (s1 - target_s).abs() > TOL_MM {
+                    continue;
+                }
+                if let Some(sec) = e.section.and_then(|sid| model.sections.get(sid.index())) {
+                    if sec.width > 0.0 {
+                        return sec.width;
+                    }
                 }
             }
-        }
-        b
-    };
+            b
+        };
 
     // 梁軸の左右それぞれの隣接平行梁との内法距離 a（複数スラブは大きい方を採用）。
     // 軸間距離（スラブ境界節点の最大直交距離）から、自梁の幅/2 と相手梁の幅/2 を
@@ -82,13 +84,18 @@ fn slab_cooperating_width(
     // 協力幅を過大評価していた）。
     let mut a_pos: f64 = 0.0;
     let mut a_neg: f64 = 0.0;
-    for slab in &model.slabs {
-        if !(slab.boundary.contains(&n0) && slab.boundary.contains(&n1)) {
+    for region in &model.floor_regions {
+        // 協力幅は「梁を境界に含む囲まれた領域」から測る。取り付き領域（片持ち）は
+        // 境界節点を持たないため対象外。
+        let Some(boundary) = region.boundary_nodes() else {
+            continue;
+        };
+        if !(boundary.contains(&n0) && boundary.contains(&n1)) {
             continue;
         }
         let mut s_pos: f64 = 0.0;
         let mut s_neg: f64 = 0.0;
-        for nid in &slab.boundary {
+        for nid in boundary {
             let Some(q) = model.nodes.get(nid.index()) else {
                 continue;
             };
@@ -97,11 +104,11 @@ fn slab_cooperating_width(
             s_neg = s_neg.max(-s);
         }
         if s_pos > 0.0 {
-            let far_w = far_beam_width(slab, s_pos, 1.0);
+            let far_w = far_beam_width(boundary, s_pos, 1.0);
             a_pos = a_pos.max((s_pos - b / 2.0 - far_w / 2.0).max(0.0));
         }
         if s_neg > 0.0 {
-            let far_w = far_beam_width(slab, s_neg, -1.0);
+            let far_w = far_beam_width(boundary, s_neg, -1.0);
             a_neg = a_neg.max((s_neg - b / 2.0 - far_w / 2.0).max(0.0));
         }
     }

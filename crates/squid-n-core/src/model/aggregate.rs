@@ -31,7 +31,7 @@ pub struct Model {
     /// 用いない**表示・識別専用のデータで、解析結果・設計結果には影響しない。
     #[serde(default)]
     pub axes: Vec<AxisGroup>,
-    pub slabs: Vec<Slab>,
+    pub floor_regions: Vec<FloorRegion>,
     pub constraints: Vec<Constraint>,
     pub load_cases: Vec<LoadCase>,
     pub combinations: Vec<LoadCombination>,
@@ -165,6 +165,19 @@ fn check_id_consistency<T>(
     Ok(())
 }
 
+/// 床領域が参照する節点（境界節点、または取付き先の節点）。
+///
+/// 取り付き領域は自由端に節点を持たないため、取付き先の節点だけを返す。
+fn region_node_refs(region: &FloorRegion) -> Vec<NodeId> {
+    match &region.shape {
+        RegionShape::Enclosed { boundary } => boundary.clone(),
+        RegionShape::Attached { anchor, .. } => match anchor {
+            RegionAnchor::Line { nodes, .. } => nodes.to_vec(),
+            RegionAnchor::Point(n) => vec![*n],
+        },
+    }
+}
+
 impl Model {
     pub fn validate(&self) -> Result<(), crate::error::CoreError> {
         use crate::error::CoreError;
@@ -256,30 +269,36 @@ impl Model {
                 }
             }
         }
-        check_id_consistency(&self.slabs, "slabs", "SlabId", |s| s.id.index(), |s| s.id.0)?;
-        // スラブの境界・小梁が参照する節点が実在すること（陳腐化した参照の検出）。
-        for slab in &self.slabs {
-            for &nid in &slab.boundary {
+        check_id_consistency(
+            &self.floor_regions,
+            "floor_regions",
+            "FloorRegionId",
+            |s| s.id.index(),
+            |s| s.id.0,
+        )?;
+        // 床領域の境界・取付き先・小梁が参照する節点が実在すること（陳腐化した参照の検出）。
+        for slab in &self.floor_regions {
+            for nid in region_node_refs(slab) {
                 if nid.index() >= self.nodes.len() || self.nodes[nid.index()].id != nid {
                     return Err(CoreError::DanglingRef(format!(
-                        "Slab {} boundary -> Node {}",
+                        "FloorRegion {} -> Node {}",
                         slab.id.0, nid.0
                     )));
                 }
             }
-            if let Some(sid) = slab.section {
+            if let Some(sid) = slab.section() {
                 if sid.index() >= self.sections.len() || self.sections[sid.index()].id != sid {
                     return Err(CoreError::DanglingRef(format!(
-                        "Slab {} -> Section {}",
+                        "FloorRegion {} -> Section {}",
                         slab.id.0, sid.0
                     )));
                 }
             }
-            for (ji, j) in slab.joists.iter().enumerate() {
+            for (ji, j) in slab.joist_lines().iter().enumerate() {
                 for &nid in &j.support {
                     if nid.index() >= self.nodes.len() || self.nodes[nid.index()].id != nid {
                         return Err(CoreError::DanglingRef(format!(
-                            "Slab {} joist support -> Node {}",
+                            "FloorRegion {} joist support -> Node {}",
                             slab.id.0, nid.0
                         )));
                     }
@@ -287,16 +306,16 @@ impl Model {
                 if let Some(sid) = j.section {
                     if sid.index() >= self.sections.len() || self.sections[sid.index()].id != sid {
                         return Err(CoreError::DanglingRef(format!(
-                            "Slab {} joist -> Section {}",
+                            "FloorRegion {} joist -> Section {}",
                             slab.id.0, sid.0
                         )));
                     }
                 }
                 // ピン受け/架けの相手小梁インデックスは同一スラブ内の別小梁を指す。
                 if let Some(c) = j.pinned_onto {
-                    if c >= slab.joists.len() || c == ji {
+                    if c >= slab.joist_lines().len() || c == ji {
                         return Err(CoreError::DanglingRef(format!(
-                            "Slab {} joist {} pinned_onto -> joist {}",
+                            "FloorRegion {} joist {} pinned_onto -> joist {}",
                             slab.id.0, ji, c
                         )));
                     }
@@ -345,13 +364,54 @@ impl Model {
             }
         }
 
-        // スラブの secondary_joist_ids は重複を許さず、参照先が実在し Joist であること。
-        for slab in &self.slabs {
+        // 取付き線の部分区間（`span != [0, 1]`）は、荷重をその区間だけへ載せる経路が
+        // まだない（床領域単位の分配＝申し送りの Step 4 で対応する）。データとしては
+        // 表せるが、黙って全長へ載せると荷重の位置が実際とずれるため、ここで止める。
+        for region in &self.floor_regions {
+            if let RegionShape::Attached {
+                anchor: RegionAnchor::Line { span, .. },
+                ..
+            } = &region.shape
+            {
+                if (span[0] - 0.0).abs() > 1e-9 || (span[1] - 1.0).abs() > 1e-9 {
+                    return Err(CoreError::DanglingRef(format!(
+                        "FloorRegion {} の取付き線の部分区間は未対応（全長 [0, 1] のみ）",
+                        region.id.0
+                    )));
+                }
+            }
+        }
+
+        // 囲まれた床領域は、1 つの閉領域につき 1 つ（D1）。同じ境界節点の集合を持つ領域が
+        // 2 つあると、その区画の荷重が二重に分配される。
+        {
+            let mut seen: std::collections::HashSet<Vec<u32>> = std::collections::HashSet::new();
+            for region in &self.floor_regions {
+                let RegionShape::Enclosed { boundary } = &region.shape else {
+                    continue; // 取り付き領域は数の制限を置かない。
+                };
+                if boundary.is_empty() {
+                    continue;
+                }
+                let mut key: Vec<u32> = boundary.iter().map(|n| n.0).collect();
+                key.sort_unstable();
+                key.dedup();
+                if !seen.insert(key) {
+                    return Err(CoreError::DuplicateId(format!(
+                        "FloorRegion {} は他の領域と同じ境界を持つ",
+                        region.id.0
+                    )));
+                }
+            }
+        }
+
+        // 床領域の secondary_joist_ids は重複を許さず、参照先が実在し Joist であること。
+        for slab in &self.floor_regions {
             let mut seen_joists = std::collections::HashSet::new();
             for &smid in &slab.secondary_joist_ids {
                 if !seen_joists.insert(smid) {
                     return Err(CoreError::DuplicateId(format!(
-                        "Slab {} secondary_joist_ids has SecondaryMemberId({})",
+                        "FloorRegion {} secondary_joist_ids has SecondaryMemberId({})",
                         slab.id.0, smid.0
                     )));
                 }
@@ -359,14 +419,14 @@ impl Model {
                     Some(sm) if sm.id == smid => {
                         if sm.kind != SecondaryMemberKind::Joist {
                             return Err(CoreError::DanglingRef(format!(
-                                "Slab {} secondary_joist_ids -> SecondaryMember {} は Joist でない",
+                                "FloorRegion {} secondary_joist_ids -> SecondaryMember {} は Joist でない",
                                 slab.id.0, smid.0
                             )));
                         }
                     }
                     _ => {
                         return Err(CoreError::DanglingRef(format!(
-                            "Slab {} secondary_joist_ids -> SecondaryMember {}",
+                            "FloorRegion {} secondary_joist_ids -> SecondaryMember {}",
                             slab.id.0, smid.0
                         )));
                     }
@@ -485,8 +545,9 @@ impl Model {
             .iter()
             .any(|lc| lc.nodal.iter().any(|nl| nl.node == id))
             || self.stories.iter().any(|s| s.node_ids.contains(&id))
-            || self.slabs.iter().any(|sl| {
-                sl.boundary.contains(&id) || sl.joists.iter().any(|j| j.support.contains(&id))
+            || self.floor_regions.iter().any(|sl| {
+                region_node_refs(sl).contains(&id)
+                    || sl.joist_lines().iter().any(|j| j.support.contains(&id))
             })
             || self
                 .secondary_members
@@ -542,7 +603,7 @@ impl Model {
             && self.sections == other.sections
             && self.materials == other.materials
             && self.stories == other.stories
-            && self.slabs == other.slabs
+            && self.floor_regions == other.floor_regions
             && self.constraints == other.constraints
             && self.load_cases == other.load_cases
             && self.combinations == other.combinations
@@ -625,13 +686,27 @@ impl Model {
                 }
             }
         }
-        for slab in &mut self.slabs {
-            for n in &mut slab.boundary {
-                f(n);
+        for region in &mut self.floor_regions {
+            match &mut region.shape {
+                RegionShape::Enclosed { boundary } => {
+                    for n in boundary {
+                        f(n);
+                    }
+                }
+                RegionShape::Attached { anchor, .. } => match anchor {
+                    RegionAnchor::Line { nodes, .. } => {
+                        for n in nodes {
+                            f(n);
+                        }
+                    }
+                    RegionAnchor::Point(n) => f(n),
+                },
             }
-            for j in &mut slab.joists {
-                for n in &mut j.support {
-                    f(n);
+            if let Some(plate) = &mut region.plate {
+                for j in &mut plate.joists {
+                    for n in &mut j.support {
+                        f(n);
+                    }
                 }
             }
         }
@@ -696,7 +771,10 @@ impl Model {
                 f(sid);
             }
         }
-        for slab in &mut self.slabs {
+        for region in &mut self.floor_regions {
+            let Some(slab) = &mut region.plate else {
+                continue;
+            };
             if let Some(sid) = &mut slab.section {
                 f(sid);
             }
@@ -959,8 +1037,8 @@ impl Model {
         for sm in &mut self.secondary_members {
             f(&mut sm.id);
         }
-        for slab in &mut self.slabs {
-            for smid in &mut slab.secondary_joist_ids {
+        for region in &mut self.floor_regions {
+            for smid in &mut region.secondary_joist_ids {
                 f(smid);
             }
         }
@@ -1013,8 +1091,8 @@ impl Model {
                 None => false,
             });
         };
-        for slab in &mut self.slabs {
-            remap_list(&mut slab.secondary_joist_ids);
+        for region in &mut self.floor_regions {
+            remap_list(&mut region.secondary_joist_ids);
         }
         for wr in &mut self.wall_regions {
             remap_list(&mut wr.post_ids);

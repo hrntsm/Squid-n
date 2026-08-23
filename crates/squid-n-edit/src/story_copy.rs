@@ -42,8 +42,8 @@
 //! 場合は [`CopyStoryReport::mismatched_sections`] で名指しし、利用者が判断する。
 
 use super::*;
-use squid_n_core::ids::{ElemId, NodeId, SecondaryMemberId, SectionId, SlabId, StoryId};
-use squid_n_core::model::{SecondaryMember, Section, Slab, SlabUsage};
+use squid_n_core::ids::{ElemId, FloorRegionId, NodeId, SecondaryMemberId, SectionId, StoryId};
+use squid_n_core::model::{FloorRegion, SecondaryMember, Section, SlabPlate, SlabUsage};
 use std::collections::{HashMap, HashSet};
 
 /// 同じ平面位置とみなす座標差 [mm]。
@@ -519,10 +519,10 @@ fn members_by_plan(model: &Model, ctx: &Ctx, story: StoryId) -> PlanIndex<ElemId
 }
 
 /// 階の床を、対応付けキーで引ける索引にする。
-fn slabs_by_plan(model: &Model, ctx: &Ctx, story: StoryId) -> PlanIndex<SlabId> {
-    PlanIndex::build(model.slabs.iter().filter_map(|sl| {
+fn slabs_by_plan(model: &Model, ctx: &Ctx, story: StoryId) -> PlanIndex<FloorRegionId> {
+    PlanIndex::build(model.floor_regions.iter().filter_map(|sl| {
         (slab_story(model, sl) == Some(story))
-            .then(|| Some((ctx.key(model, story, &sl.boundary)?, sl.id)))
+            .then(|| Some((ctx.key(model, story, sl.boundary_nodes()?)?, sl.id)))
             .flatten()
     }))
 }
@@ -542,9 +542,10 @@ fn secondary_by_plan(model: &Model, ctx: &Ctx, story: StoryId) -> PlanIndex<usiz
     )
 }
 
-/// 床の所属階（境界節点のうちもっとも高い節点の所属階。部材と同じ規則）。
-fn slab_story(model: &Model, slab: &Slab) -> Option<StoryId> {
-    slab.boundary
+/// 床領域の所属階（参照する節点のうちもっとも高い節点の所属階。部材と同じ規則）。
+fn slab_story(model: &Model, slab: &FloorRegion) -> Option<StoryId> {
+    slab.boundary_nodes()
+        .unwrap_or_default()
         .iter()
         .filter_map(|nid| model.nodes.get(nid.index()))
         .max_by(|a, b| a.coord[2].total_cmp(&b.coord[2]))
@@ -611,16 +612,24 @@ fn copy_sections(
     // --- 床 ---
     let dst_slabs = slabs_by_plan(model, ctx, to);
     let src: Vec<(PlanKey, Option<SectionId>)> = model
-        .slabs
+        .floor_regions
         .iter()
         .filter(|sl| slab_story(model, sl) == Some(cmd.from))
-        .filter_map(|sl| Some((ctx.key(model, cmd.from, &sl.boundary)?, sl.section)))
+        .filter_map(|sl| {
+            Some((
+                ctx.key(model, cmd.from, sl.boundary_nodes()?)?,
+                sl.section(),
+            ))
+        })
         .collect();
     for (key, src_sec) in src {
         let Some(&sid) = dst_slabs.get(&key) else {
             continue;
         };
-        let current = model.slabs.get(sid.index()).and_then(|sl| sl.section);
+        let current = model
+            .floor_regions
+            .get(sid.index())
+            .and_then(|sl| sl.section());
         let Some(next) = resolve_section(
             model,
             cmd,
@@ -632,10 +641,14 @@ fn copy_sections(
         ) else {
             continue;
         };
-        if let Some(sl) = model.slabs.get_mut(sid.index()) {
-            if sl.section != next {
-                count_section_change(sl.section, next, report);
-                sl.section = next;
+        if let Some(plate) = model
+            .floor_regions
+            .get_mut(sid.index())
+            .and_then(|sl| sl.plate.as_mut())
+        {
+            if plate.section != next {
+                count_section_change(plate.section, next, report);
+                plate.section = next;
             }
         }
     }
@@ -770,28 +783,31 @@ fn copy_slabs(
     dz: f64,
     dst_story_name: &str,
     report: &mut CopyStoryReport,
-) -> Vec<SlabId> {
+) -> Vec<FloorRegionId> {
     let src_keys: HashSet<PlanKey> = model
-        .slabs
+        .floor_regions
         .iter()
         .filter(|sl| slab_story(model, sl) == Some(cmd.from))
-        .filter_map(|sl| ctx.key(model, cmd.from, &sl.boundary))
+        .filter_map(|sl| ctx.key(model, cmd.from, sl.boundary_nodes()?))
         .collect();
 
     // 先に削除する（複製元に無い床を消してから、複製元の床を作る）。
     if cmd.overwrite {
-        let doomed: Vec<SlabId> = model
-            .slabs
+        let doomed: Vec<FloorRegionId> = model
+            .floor_regions
             .iter()
             .filter(|sl| slab_story(model, sl) == Some(to))
             .filter(|sl| {
-                ctx.key(model, to, &sl.boundary)
+                let Some(boundary) = sl.boundary_nodes() else {
+                    return false; // 取り付き領域は平面キーで対応付けない（複製の対象外）。
+                };
+                ctx.key(model, to, boundary)
                     .is_some_and(|k| !src_keys.contains(&k))
-                    && sl.boundary.iter().all(|&n| ctx.maps_back(model, n, dz))
+                    && boundary.iter().all(|&n| ctx.maps_back(model, n, dz))
             })
             .map(|sl| sl.id)
             .collect();
-        // 床の削除は後続の `SlabId` を繰り上げるため、降順に消す
+        // 床の削除は後続の `FloorRegionId` を繰り上げるため、降順に消す
         // （先に消した床より小さい ID は動かないので、控えた ID がずれない）。
         for id in doomed.into_iter().rev() {
             let inverse = crate::DeleteSlab { id }.apply(model);
@@ -802,8 +818,8 @@ fn copy_slabs(
     }
 
     let existing = slabs_by_plan(model, ctx, to);
-    let src: Vec<Slab> = model
-        .slabs
+    let src: Vec<FloorRegion> = model
+        .floor_regions
         .iter()
         .filter(|sl| slab_story(model, sl) == Some(cmd.from))
         .cloned()
@@ -811,7 +827,12 @@ fn copy_slabs(
     let mut mapped: HashMap<SectionId, SectionId> = HashMap::new();
     let mut created = Vec::new();
     for sl in src {
-        let Some(key) = ctx.key(model, cmd.from, &sl.boundary) else {
+        let Some(src_boundary) = sl.boundary_nodes().map(|b| b.to_vec()) else {
+            // 取り付き領域（片持ち・バルコニー）は平面キーで対応付けられないため複製しない。
+            report.skipped += 1;
+            continue;
+        };
+        let Some(key) = ctx.key(model, cmd.from, &src_boundary) else {
             report.skipped += 1;
             continue;
         };
@@ -822,8 +843,7 @@ fn copy_slabs(
             report.skipped += 1;
             continue;
         }
-        let Some(boundary) = sl
-            .boundary
+        let Some(boundary) = src_boundary
             .iter()
             .map(|n| ctx.mapped_node(model, *n, dz))
             .collect::<Option<Vec<_>>>()
@@ -832,7 +852,7 @@ fn copy_slabs(
             continue;
         };
         // 断面の参照は複製先の階の断面へ読み替える（符号＋階の識別に合わせる）。
-        let section = sl.section.map(|s| match mapped.get(&s) {
+        let section = sl.section().map(|s| match mapped.get(&s) {
             Some(&d) => d,
             None => {
                 let d = section_for_story(model, s, dst_story_name, report);
@@ -840,20 +860,18 @@ fn copy_slabs(
                 d
             }
         });
-        let id = SlabId(model.slabs.len() as u32);
-        model.slabs.push(Slab {
-            id,
-            boundary,
-            loads: Vec::new(),
-            usage: None,
-            joists: Vec::new(),
-            // 小梁の所属は複製元の床のもの。写すと 2 つの階の床が同じ小梁を
-            // 自分の子として抱え、床荷重を二重に拾う。`copy_secondary` が
-            // 複製先の小梁を作るため、所属付けはそちらへ委ねて空で作る。
-            secondary_joist_ids: Vec::new(),
-            section,
-            ..sl
-        });
+        let id = FloorRegionId(model.floor_regions.len() as u32);
+        // 小梁の所属は複製元の床のもの。写すと 2 つの階の床が同じ小梁を自分の子として
+        // 抱え、床荷重を二重に拾う。`copy_secondary` が複製先の小梁を作るため、
+        // 所属付けはそちらへ委ねて空で作る（`FloorRegion::enclosed` は空で作る）。
+        model
+            .floor_regions
+            .push(FloorRegion::enclosed(id, boundary).with_plate(SlabPlate {
+                section,
+                method: sl.method(),
+                one_way: sl.one_way(),
+                ..Default::default()
+            }));
         created.push(id);
         report.slabs_created += 1;
     }
@@ -863,14 +881,14 @@ fn copy_slabs(
 /// 床の面荷重・用途を配る（「荷重」の対象。床の形は `copy_slabs` が受け持つ）。
 ///
 /// `created` は同じ操作で作ったばかりの床のため、「更新」には数えない（数えると
-/// 1 枚の床が「新規」と「更新」で二重に報告される）。床の削除が `SlabId` を
+/// 1 枚の床が「新規」と「更新」で二重に報告される）。床の削除が `FloorRegionId` を
 /// 繰り上げるため、添字の閾値ではなく ID の集合で見分ける。
 fn copy_slab_loads(
     model: &mut Model,
     ctx: &Ctx,
     cmd: &CopyStory,
     to: StoryId,
-    created: &[SlabId],
+    created: &[FloorRegionId],
     report: &mut CopyStoryReport,
 ) {
     let dst = slabs_by_plan(model, ctx, to);
@@ -879,14 +897,15 @@ fn copy_slab_loads(
         Vec<squid_n_core::model::AreaLoad>,
         Option<SlabUsage>,
     )> = model
-        .slabs
+        .floor_regions
         .iter()
         .filter(|sl| slab_story(model, sl) == Some(cmd.from))
         .filter_map(|sl| {
+            let plate = sl.plate.as_ref()?;
             Some((
-                ctx.key(model, cmd.from, &sl.boundary)?,
-                sl.loads.clone(),
-                sl.usage,
+                ctx.key(model, cmd.from, sl.boundary_nodes()?)?,
+                plate.loads.clone(),
+                plate.usage,
             ))
         })
         .collect();
@@ -896,16 +915,20 @@ fn copy_slab_loads(
             continue;
         };
         let is_new = created.contains(&sid);
-        let Some(sl) = model.slabs.get_mut(sid.index()) else {
+        let Some(plate) = model
+            .floor_regions
+            .get_mut(sid.index())
+            .and_then(|sl| sl.plate.as_mut())
+        else {
             continue;
         };
         // 上書きしない設定では、既に面荷重・用途が入っている床には触れない。
-        if !cmd.overwrite && !is_new && (!sl.loads.is_empty() || sl.usage.is_some()) {
+        if !cmd.overwrite && !is_new && (!plate.loads.is_empty() || plate.usage.is_some()) {
             continue;
         }
-        let changed = sl.loads != loads || sl.usage != usage;
-        sl.loads = loads;
-        sl.usage = usage;
+        let changed = plate.loads != loads || plate.usage != usage;
+        plate.loads = loads;
+        plate.usage = usage;
         if changed && !is_new {
             report.slabs_updated += 1;
         }

@@ -24,7 +24,7 @@ macro_rules! id_newtype {
 id_newtype!(NodeId);
 id_newtype!(ElemId);
 id_newtype!(StoryId);
-id_newtype!(SlabId);
+id_newtype!(FloorRegionId);
 id_newtype!(SectionId);
 id_newtype!(MaterialId);
 id_newtype!(LoadCaseId);

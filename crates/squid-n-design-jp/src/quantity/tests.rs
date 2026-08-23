@@ -1,12 +1,13 @@
 //! 数量積算のモデル走査テスト。
 
 use smallvec::SmallVec;
+use squid_n_core::model::{FloorRegion, RegionShape, SlabPlate};
 
 use squid_n_core::dof::Dof6Mask;
-use squid_n_core::ids::{ElemId, MaterialId, NodeId, SectionId, SlabId};
+use squid_n_core::ids::{ElemId, FloorRegionId, MaterialId, NodeId, SectionId};
 use squid_n_core::model::{
     DistributionMethod, ElementData, ElementKind, EndCondition, ForceRegime, LocalAxis, Material,
-    MaterialCategory, Model, Node, RigidZone, Section, Slab, SlabKind,
+    MaterialCategory, Model, Node, RigidZone, Section,
 };
 use squid_n_core::section_shape::{BarSet, RcRebar, SectionShape, ShearBar};
 
@@ -301,17 +302,20 @@ fn test_girder_formwork_slab_deduction() {
     model.nodes.push(node(6, 0.0, -5_000.0, 3_500.0));
     model.nodes.push(node(7, 6_000.0, -5_000.0, 3_500.0));
     for (sid, (a, b)) in [(0u32, (5u32, 4u32)), (1u32, (6u32, 7u32))] {
-        model.slabs.push(Slab {
-            usage: None,
-            id: SlabId(sid),
-            boundary: vec![NodeId(2), NodeId(3), NodeId(a), NodeId(b)],
-            joists: vec![],
-            loads: vec![],
-            method: DistributionMethod::TriTrapezoid,
-            kind: SlabKind::Interior,
-            one_way: None,
-            edge_supported: None,
-            section: None,
+        model.floor_regions.push(FloorRegion {
+            id: FloorRegionId(sid),
+            name: String::new(),
+            shape: RegionShape::Enclosed {
+                boundary: vec![NodeId(2), NodeId(3), NodeId(a), NodeId(b)],
+            },
+            plate: Some(SlabPlate {
+                section: None,
+                loads: vec![],
+                usage: None,
+                method: DistributionMethod::TriTrapezoid,
+                one_way: None,
+                joists: vec![],
+            }),
             secondary_joist_ids: vec![],
         });
     }
@@ -431,17 +435,20 @@ fn test_slab_quantity() {
         squid_n_core::section_shape::SectionShape::RcSlab { thickness: 150.0 }
             .to_section(slab_sec, "S15".into()),
     );
-    model.slabs.push(Slab {
-        usage: None,
-        id: SlabId(0),
-        boundary: vec![NodeId(2), NodeId(3), NodeId(5), NodeId(4)],
-        joists: vec![],
-        loads: vec![],
-        method: DistributionMethod::TriTrapezoid,
-        kind: SlabKind::Interior,
-        one_way: None,
-        edge_supported: None,
-        section: Some(slab_sec),
+    model.floor_regions.push(FloorRegion {
+        id: FloorRegionId(0),
+        name: String::new(),
+        shape: RegionShape::Enclosed {
+            boundary: vec![NodeId(2), NodeId(3), NodeId(5), NodeId(4)],
+        },
+        plate: Some(SlabPlate {
+            section: Some(slab_sec),
+            loads: vec![],
+            usage: None,
+            method: DistributionMethod::TriTrapezoid,
+            one_way: None,
+            joists: vec![],
+        }),
         secondary_joist_ids: vec![],
     });
 

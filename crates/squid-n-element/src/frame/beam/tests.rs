@@ -1,6 +1,7 @@
 use super::*;
 use crate::transform::LocalFrame;
 use squid_n_core::ids::{ElemId, NodeId};
+use squid_n_core::model::RegionShape;
 use squid_n_core::model::{
     ElementData, ElementKind, EndCondition, LocalAxis, Material, MaterialCategory, Model, Node,
     RigidZone, Section,
@@ -183,9 +184,9 @@ fn test_beam_new_src_cft_composite_props() {
 #[test]
 fn test_beam_new_slab_cooperation_width_amplifies_iy() {
     use squid_n_core::dof::Dof6Mask;
-    use squid_n_core::ids::{MaterialId, SectionId, SlabId};
+    use squid_n_core::ids::{FloorRegionId, MaterialId, SectionId};
     use squid_n_core::model::{
-        DistributionMethod, EndCondition, ForceRegime, LocalAxis, Model, Slab,
+        DistributionMethod, EndCondition, FloorRegion, ForceRegime, LocalAxis, Model, SlabPlate,
     };
     use squid_n_core::section_shape::{BarSet, RcRebar, SectionShape, ShearBar};
 
@@ -240,17 +241,20 @@ fn test_beam_new_slab_cooperation_width_amplifies_iy() {
             fc: Some(24.0),
             fy: None,
         }],
-        slabs: vec![Slab {
-            usage: None,
-            id: SlabId(0),
-            boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
-            joists: vec![],
-            loads: vec![],
-            method: DistributionMethod::TriTrapezoid,
-            kind: Default::default(),
-            one_way: None,
-            edge_supported: None,
-            section: None,
+        floor_regions: vec![FloorRegion {
+            id: FloorRegionId(0),
+            name: String::new(),
+            shape: RegionShape::Enclosed {
+                boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
+            },
+            plate: Some(SlabPlate {
+                section: None,
+                loads: vec![],
+                usage: None,
+                method: DistributionMethod::TriTrapezoid,
+                one_way: None,
+                joists: vec![],
+            }),
             secondary_joist_ids: vec![],
         }],
         slab_thickness: 150.0,
@@ -311,9 +315,9 @@ fn test_beam_new_slab_cooperation_width_amplifies_iy() {
 #[test]
 fn test_beam_new_composite_steel_beam_averages_stiffness() {
     use squid_n_core::dof::Dof6Mask;
-    use squid_n_core::ids::{MaterialId, SectionId, SlabId};
+    use squid_n_core::ids::{FloorRegionId, MaterialId, SectionId};
     use squid_n_core::model::{
-        DistributionMethod, EndCondition, ForceRegime, LocalAxis, Model, Slab,
+        DistributionMethod, EndCondition, FloorRegion, ForceRegime, LocalAxis, Model, SlabPlate,
     };
     use squid_n_core::section_shape::SectionShape;
 
@@ -356,17 +360,20 @@ fn test_beam_new_composite_steel_beam_averages_stiffness() {
             fc: None,
             fy: Some(235.0),
         }],
-        slabs: vec![Slab {
-            usage: None,
-            id: SlabId(0),
-            boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
-            joists: vec![],
-            loads: vec![],
-            method: DistributionMethod::TriTrapezoid,
-            kind: Default::default(),
-            one_way: None,
-            edge_supported: None,
-            section: None,
+        floor_regions: vec![FloorRegion {
+            id: FloorRegionId(0),
+            name: String::new(),
+            shape: RegionShape::Enclosed {
+                boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
+            },
+            plate: Some(SlabPlate {
+                section: None,
+                loads: vec![],
+                usage: None,
+                method: DistributionMethod::TriTrapezoid,
+                one_way: None,
+                joists: vec![],
+            }),
             secondary_joist_ids: vec![],
         }],
         slab_thickness: 150.0,
