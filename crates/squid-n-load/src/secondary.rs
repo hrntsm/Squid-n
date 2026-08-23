@@ -240,7 +240,10 @@ pub fn resolve_nodal_to_primary(
 }
 
 /// 節点→梁スパン変換の既定許容差 [mm]（大梁芯からのずれの許容）。
-pub const SPAN_TOL_MM: f64 = 10.0;
+///
+/// 判定規則の情報源を 1 つに保つため、値は [`squid_n_core::geom::MEMBER_AXIS_TOL_MM`]
+/// を用いる（節点を共有せずに交差・接触する梁の診断も同じ許容差で判定する）。
+pub const SPAN_TOL_MM: f64 = squid_n_core::geom::MEMBER_AXIS_TOL_MM;
 
 #[cfg(test)]
 mod tests {

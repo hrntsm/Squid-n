@@ -34,7 +34,7 @@
 //! - **段差床**。レベルで分けるため、同じ階でもレベルが違えば別の平面グラフになる。
 //!   段差部の梁は両方のレベルのどちらにも属さない（両端の Z が違うため水平とみなされない）。
 
-use crate::geom::{vec3, LEVEL_TOL_MM};
+use crate::geom::{vec3, LEVEL_TOL_MM, MEMBER_AXIS_TOL_MM};
 use crate::ids::{ElemId, NodeId};
 use crate::model::{ElementKind, Model};
 use std::collections::HashMap;
@@ -208,9 +208,44 @@ pub fn crossing_beams(model: &Model) -> Vec<(ElemId, ElemId)> {
 /// 面走査がその節点を分岐として扱えず、区画がつながってしまうためである。
 fn crossing_pairs(model: &Model, edges: &[Edge]) -> Vec<(ElemId, ElemId)> {
     let coords = |n: NodeId| model.nodes.get(n.index()).map(|x| [x.coord[0], x.coord[1]]);
+
+    // 総当たりは梁の本数の 2 乗になる（実測で 32,800 本・約 530ms）。準備計算と
+    // 解析前チェックの両方から毎回呼ばれるため、まず境界矩形が重なる組だけに絞る。
+    // X の下限で並べ、X 区間が離れた時点で内側の走査を打ち切る（走査線法）。
+    struct Box {
+        idx: usize,
+        min: [f64; 2],
+        max: [f64; 2],
+    }
+    let mut boxes: Vec<Box> = Vec::with_capacity(edges.len());
+    for (idx, e) in edges.iter().enumerate() {
+        let (Some(a), Some(b)) = (coords(e.a), coords(e.b)) else {
+            continue;
+        };
+        boxes.push(Box {
+            idx,
+            min: [
+                a[0].min(b[0]) - MEMBER_AXIS_TOL_MM,
+                a[1].min(b[1]) - MEMBER_AXIS_TOL_MM,
+            ],
+            max: [
+                a[0].max(b[0]) + MEMBER_AXIS_TOL_MM,
+                a[1].max(b[1]) + MEMBER_AXIS_TOL_MM,
+            ],
+        });
+    }
+    boxes.sort_by(|x, y| x.min[0].total_cmp(&y.min[0]));
+
     let mut out = Vec::new();
-    for (i, e1) in edges.iter().enumerate() {
-        for e2 in edges.iter().skip(i + 1) {
+    for (i, bi) in boxes.iter().enumerate() {
+        for bj in boxes.iter().skip(i + 1) {
+            if bj.min[0] > bi.max[0] {
+                break; // 以降は X 区間が離れる（下限の昇順に並んでいる）。
+            }
+            if bj.min[1] > bi.max[1] || bi.min[1] > bj.max[1] {
+                continue; // Y 区間が離れている。
+            }
+            let (e1, e2) = (&edges[bi.idx], &edges[bj.idx]);
             if e1.a == e2.a || e1.a == e2.b || e1.b == e2.a || e1.b == e2.b {
                 continue; // 節点を共有する組は交差ではない。
             }
@@ -224,31 +259,29 @@ fn crossing_pairs(model: &Model, edges: &[Edge]) -> Vec<(ElemId, ElemId)> {
             }
         }
     }
+    out.sort_by_key(|(a, b)| (a.0, b.0));
     out
 }
 
 /// 2 線分が交わるか（端点どうしの共有は上位で除外済み）。
+///
+/// 一方の端点が相手の材軸上に載る（節点を共有しない T 字）判定には、
+/// [`crate::geom::MEMBER_AXIS_TOL_MM`] を用いる。荷重を梁へ割り付ける側が拾う近さと
+/// そろえるためで、外積のしきい値で見ると長い部材ほど厳しくなり、
+/// 「荷重は載るのに診断には出ない」ずれが生じる。
 fn segments_touch(p1: [f64; 2], p2: [f64; 2], q1: [f64; 2], q2: [f64; 2]) -> bool {
     let d = |a: [f64; 2], b: [f64; 2], c: [f64; 2]| {
         (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])
-    };
-    let on = |a: [f64; 2], b: [f64; 2], c: [f64; 2]| {
-        d(a, b, c).abs() <= AREA_EPS
-            && c[0] >= a[0].min(b[0]) - LEVEL_TOL_MM
-            && c[0] <= a[0].max(b[0]) + LEVEL_TOL_MM
-            && c[1] >= a[1].min(b[1]) - LEVEL_TOL_MM
-            && c[1] <= a[1].max(b[1]) + LEVEL_TOL_MM
     };
     let (d1, d2, d3, d4) = (d(p1, p2, q1), d(p1, p2, q2), d(q1, q2, p1), d(q1, q2, p2));
     if ((d1 > 0.0) != (d2 > 0.0)) && ((d3 > 0.0) != (d4 > 0.0)) {
         return true;
     }
     // 端点が相手の線分上に載る（節点を共有しない T 字・重なり）。
+    let on =
+        |a: [f64; 2], b: [f64; 2], c: [f64; 2]| point_segment_dist(c, a, b) <= MEMBER_AXIS_TOL_MM;
     on(p1, p2, q1) || on(p1, p2, q2) || on(q1, q2, p1) || on(q1, q2, p2)
 }
-
-/// 外積が 0 とみなせる上限 [mm²]。長さ 1mm の食い違いを許す幅とする。
-const AREA_EPS: f64 = 1.0;
 
 /// 水平な 2 節点梁を、レベルごとに集める。返り値はレベルの昇順。
 fn horizontal_beams_by_level(model: &Model) -> Vec<(f64, Vec<Edge>)> {
@@ -591,6 +624,29 @@ mod tests {
         assert!(scan.crossings.is_empty(), "{:?}", scan.crossings);
         assert_eq!(scan.panels.len(), 4);
         assert_eq!(scan.unclosed, 0);
+    }
+
+    /// 材軸からわずかにずれて突き当たる梁も、交差として報告する。
+    ///
+    /// 荷重の割り付けは `MEMBER_AXIS_TOL_MM` 以内のずれを「梁に載っている」と扱うため、
+    /// 診断も同じ近さで知らせないと「荷重は載るのに診断には出ない」状態になる。
+    #[test]
+    fn test_near_collinear_touch_is_reported() {
+        let mut model = grid(1, 1, 4000.0, 0.0);
+        // 辺 0-1（y=0）の中間へ、5mm 手前で止まる梁（節点は共有しない）。
+        model.nodes.push(node(4, 2000.0, 5.0, 0.0));
+        model.nodes.push(node(5, 2000.0, 2000.0, 0.0));
+        let eid = model.elements.len() as u32;
+        model.elements.push(beam(eid, 4, 5));
+        assert_eq!(
+            scan_floor_panels(&model).crossings.len(),
+            1,
+            "5mm のずれは交差として報告する"
+        );
+
+        // 100mm 離れていれば、突き当たっているとはみなさない。
+        model.nodes[4].coord[1] = 100.0;
+        assert!(scan_floor_panels(&model).crossings.is_empty());
     }
 
     /// パネルの内外判定（辺上は内部に含めない）。
