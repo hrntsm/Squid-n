@@ -72,6 +72,8 @@ pub(crate) fn section_floor_groups(
         groups.push((SectionGroupKey::Floor(floor_name), ids));
     }
 
+    // 床領域・壁領域への登録の有無では絞らない。登録を持つモデルをまだ作れないため
+    // （UI 未接続・ST-Bridge も親子関係を持たない）、絞ると本グループが常に空になる。
     let secondary_referenced_ids: HashSet<_> = secondary_members
         .iter()
         .filter_map(|member| member.section)
@@ -275,6 +277,7 @@ mod tests {
 
     fn secondary_member(id: u32, section: Option<SectionId>) -> SecondaryMember {
         SecondaryMember {
+            id: squid_n_core::ids::SecondaryMemberId(id),
             kind: SecondaryMemberKind::Joist,
             nodes: [squid_n_core::ids::NodeId(0), squid_n_core::ids::NodeId(1)],
             section,
@@ -298,6 +301,7 @@ mod tests {
             edge_supported: None,
             usage: None,
             section,
+            secondary_joist_ids: vec![],
         }
     }
 
@@ -488,6 +492,7 @@ mod tests {
         let stories = vec![];
         let sections = vec![section(0, "A", None), section(1, "B", None)];
         let secondary_members = vec![SecondaryMember {
+            id: squid_n_core::ids::SecondaryMemberId(0),
             kind: SecondaryMemberKind::Post,
             nodes: [squid_n_core::ids::NodeId(0), squid_n_core::ids::NodeId(1)],
             section: Some(SectionId(0)),

@@ -593,6 +593,7 @@ pub fn generate_frame(spec: &FrameSpec) -> Result<FrameGenResult, String> {
                         edge_supported: None,
                         usage: spec.slab_usage,
                         section: Some(sec_id),
+                        secondary_joist_ids: Vec::new(),
                     });
                 }
             }

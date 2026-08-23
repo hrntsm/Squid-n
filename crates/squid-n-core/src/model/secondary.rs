@@ -32,4 +32,7 @@ pub struct SecondaryMember {
     pub section: Option<SectionId>,
     /// 表示名（ST-Bridge の name 等）。
     pub name: String,
+    /// 二次部材 ID（`secondary_members` の配列インデックスと一致すること。
+    /// `Model::validate` が確認する）。
+    pub id: SecondaryMemberId,
 }

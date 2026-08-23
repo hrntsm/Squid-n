@@ -233,6 +233,7 @@ impl EditCommand for AddSlab {
             joists: self.joists.clone(),
             loads: self.loads.clone(),
             method: self.method,
+            secondary_joist_ids: Vec::new(),
         });
         Box::new(DeleteSlab { id: new_id })
     }

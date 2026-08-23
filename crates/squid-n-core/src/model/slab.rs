@@ -223,6 +223,10 @@ pub struct Slab {
     /// （もっともらしい既定厚で補うと、床の自重が過小なまま長期応力が出る）。
     #[serde(default)]
     pub section: Option<crate::ids::SectionId>,
+    /// この床領域に属する小梁（`SecondaryMember::Joist`）の ID リスト。
+    /// リスト内の順序は任意。重複は許可しない（validate が確認）。
+    #[serde(default)]
+    pub secondary_joist_ids: Vec<SecondaryMemberId>,
 }
 
 impl Slab {
@@ -311,6 +315,7 @@ mod tests {
             edge_supported: None,
             section: None,
             usage,
+            secondary_joist_ids: vec![],
         }
     }
 

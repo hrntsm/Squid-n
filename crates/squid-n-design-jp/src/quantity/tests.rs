@@ -312,6 +312,7 @@ fn test_girder_formwork_slab_deduction() {
             one_way: None,
             edge_supported: None,
             section: None,
+            secondary_joist_ids: vec![],
         });
     }
 
@@ -441,6 +442,7 @@ fn test_slab_quantity() {
         one_way: None,
         edge_supported: None,
         section: Some(slab_sec),
+        secondary_joist_ids: vec![],
     });
 
     let q = compute_quantity_takeoff(&model, &QuantityCfg::default());

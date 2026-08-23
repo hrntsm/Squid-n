@@ -550,6 +550,7 @@ mod tests {
                 value: 0.005,
             }],
             method: DistributionMethod::TriTrapezoid,
+            secondary_joist_ids: vec![],
         };
         Model {
             nodes,

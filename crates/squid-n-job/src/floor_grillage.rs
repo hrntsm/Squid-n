@@ -785,6 +785,7 @@ mod tests {
                 edge_supported: None,
                 usage: None,
                 section: None,
+                secondary_joist_ids: vec![],
             }],
             ..Default::default()
         };
@@ -892,9 +893,11 @@ mod tests {
                 edge_supported: None,
                 usage: None,
                 section: None,
+                secondary_joist_ids: vec![],
             }],
             ..Default::default()
         };
+
         let w = 0.005_f64;
 
         // (a) 剛接十字（pinned_onto=None）。
@@ -979,6 +982,7 @@ mod tests {
                 edge_supported: None,
                 usage: None,
                 section: None,
+                secondary_joist_ids: vec![],
             }],
             ..Default::default()
         };
@@ -1040,6 +1044,7 @@ mod tests {
                 edge_supported: None,
                 usage: None,
                 section: None,
+                secondary_joist_ids: vec![],
             }],
             ..Default::default()
         };

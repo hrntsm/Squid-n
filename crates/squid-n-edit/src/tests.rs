@@ -914,6 +914,7 @@ fn test_delete_section_referenced_by_joist() {
         edge_supported: None,
         usage: None,
         section: None,
+        secondary_joist_ids: vec![],
     });
     let mut stack = UndoStack::new();
 
@@ -3592,8 +3593,9 @@ fn test_composite_delete_nodes_descending_roundtrip() {
 // 二次部材（小梁・間柱）・一本部材指定（beam_groups）の参照整合
 // ============================================================================
 
-fn sample_secondary(n0: u32, n1: u32) -> squid_n_core::model::SecondaryMember {
+fn sample_secondary(id: u32, n0: u32, n1: u32) -> squid_n_core::model::SecondaryMember {
     squid_n_core::model::SecondaryMember {
+        id: squid_n_core::ids::SecondaryMemberId(id),
         kind: squid_n_core::model::SecondaryMemberKind::Joist,
         nodes: [NodeId(n0), NodeId(n1)],
         section: None,
@@ -3618,7 +3620,7 @@ fn test_delete_node_shifts_secondary_member_nodes() {
             support_spring: None,
         });
     }
-    model.secondary_members.push(sample_secondary(1, 2));
+    model.secondary_members.push(sample_secondary(0, 1, 2));
     let before = model.clone();
     let mut stack = UndoStack::new();
 
@@ -3647,7 +3649,7 @@ fn test_delete_node_used_by_secondary_member_is_noop() {
             support_spring: None,
         });
     }
-    model.secondary_members.push(sample_secondary(0, 1));
+    model.secondary_members.push(sample_secondary(0, 0, 1));
     let mut stack = UndoStack::new();
     stack.run(&mut model, Box::new(DeleteNode { id: NodeId(0) }));
     assert_eq!(model.nodes.len(), 2, "二次部材が参照する節点は削除できない");
@@ -3703,7 +3705,7 @@ fn test_delete_section_material_shift_and_guard_secondary_refs() {
             strength_factor: None,
         });
     }
-    let mut sm = sample_secondary(0, 1);
+    let mut sm = sample_secondary(0, 0, 1);
     sm.section = Some(SectionId(1));
     model.secondary_members.push(sm);
     let mut stack = UndoStack::new();
@@ -4601,6 +4603,7 @@ fn test_copy_story_overwrite_keeps_slabs_outside_source_plan() {
         edge_supported: None,
         usage: None,
         section: None,
+        secondary_joist_ids: Vec::new(),
     });
     assign_node_stories(&mut model);
     assert!(model.validate().is_ok(), "{:?}", model.validate());
@@ -5039,4 +5042,705 @@ fn test_copy_story_matches_across_rounding_boundary() {
         report.sections_assigned > 0,
         "0.4 mm のずれでも対応が取れる: {report:?}"
     );
+}
+
+// ─── 二次部材・壁領域のテスト ────────────────────────────────────────────────
+
+/// 二次部材用の最小モデル（節点 2 個）を作る。
+fn sm_base_model() -> Model {
+    use squid_n_core::dof::Dof6Mask;
+    let mut model = empty_model();
+    for i in 0..2u32 {
+        model.nodes.push(Node {
+            id: NodeId(i),
+            coord: [i as f64 * 1000.0, 0.0, 0.0],
+            restraint: Dof6Mask::FREE,
+            mass: None,
+            story: None,
+            support_spring: None,
+        });
+    }
+    model
+}
+
+/// `kind` で小梁または間柱の `SecondaryMember` を生成する（テスト用ヘルパー）。
+fn make_sm(
+    id: u32,
+    kind: squid_n_core::model::SecondaryMemberKind,
+) -> squid_n_core::model::SecondaryMember {
+    squid_n_core::model::SecondaryMember {
+        id: SecondaryMemberId(id),
+        kind,
+        nodes: [NodeId(0), NodeId(1)],
+        section: None,
+        name: format!("SM{id}"),
+    }
+}
+
+/// 二次部材の追加・削除・ID 繰り上げを確認する。
+#[test]
+fn add_delete_secondary_member() {
+    use squid_n_core::model::SecondaryMemberKind;
+    let mut model = sm_base_model();
+    let mut stack = UndoStack::new();
+
+    // 小梁 SM0・SM1 を追加する。
+    stack.run(
+        &mut model,
+        Box::new(AddSecondaryMember {
+            sm: make_sm(0, SecondaryMemberKind::Joist),
+        }),
+    );
+    stack.run(
+        &mut model,
+        Box::new(AddSecondaryMember {
+            sm: make_sm(1, SecondaryMemberKind::Joist),
+        }),
+    );
+    assert_eq!(model.secondary_members.len(), 2);
+    assert_eq!(model.secondary_members[0].id, SecondaryMemberId(0));
+    assert_eq!(model.secondary_members[1].id, SecondaryMemberId(1));
+
+    // 先頭（SM0）を削除 → 後続 SM1 が SM0 に繰り上がる。
+    stack.run(
+        &mut model,
+        Box::new(DeleteSecondaryMember {
+            id: SecondaryMemberId(0),
+        }),
+    );
+    assert_eq!(model.secondary_members.len(), 1);
+    assert_eq!(model.secondary_members[0].id, SecondaryMemberId(0));
+    assert_eq!(model.secondary_members[0].name, "SM1");
+    assert!(model.validate().is_ok());
+
+    // undo で元の 2 本に戻る。
+    stack.undo(&mut model);
+    assert_eq!(model.secondary_members.len(), 2);
+    assert_eq!(model.secondary_members[0].id, SecondaryMemberId(0));
+    assert_eq!(model.secondary_members[1].id, SecondaryMemberId(1));
+    assert!(model.validate().is_ok());
+}
+
+/// 二次部材削除時に `Slab.secondary_joist_ids` から除去されること。
+#[test]
+fn delete_secondary_member_cascade_slab() {
+    use squid_n_core::model::{DistributionMethod, SecondaryMemberKind};
+    let mut model = sm_base_model();
+    let mut stack = UndoStack::new();
+
+    // SM0（Joist）を追加してスラブに登録する。
+    stack.run(
+        &mut model,
+        Box::new(AddSecondaryMember {
+            sm: make_sm(0, SecondaryMemberKind::Joist),
+        }),
+    );
+    // 節点を 2 つ追加してスラブの境界とする。
+    use squid_n_core::dof::Dof6Mask;
+    for i in 2..4u32 {
+        model.nodes.push(Node {
+            id: NodeId(i),
+            coord: [i as f64 * 1000.0, 1000.0, 0.0],
+            restraint: Dof6Mask::FREE,
+            mass: None,
+            story: None,
+            support_spring: None,
+        });
+    }
+    stack.run(
+        &mut model,
+        Box::new(AddSlab {
+            boundary: vec![NodeId(0), NodeId(1), NodeId(3), NodeId(2)],
+            joists: vec![],
+            loads: vec![],
+            method: DistributionMethod::TriTrapezoid,
+            usage: None,
+            section: None,
+        }),
+    );
+    stack.run(
+        &mut model,
+        Box::new(SetSlabSecondaryJoistIds {
+            slab: SlabId(0),
+            ids: vec![SecondaryMemberId(0)],
+        }),
+    );
+    assert_eq!(
+        model.slabs[0].secondary_joist_ids,
+        vec![SecondaryMemberId(0)]
+    );
+
+    // SM0 を削除 → スラブの secondary_joist_ids からも除去される。
+    stack.run(
+        &mut model,
+        Box::new(DeleteSecondaryMember {
+            id: SecondaryMemberId(0),
+        }),
+    );
+    assert!(model.slabs[0].secondary_joist_ids.is_empty());
+    assert!(model.validate().is_ok());
+}
+
+/// 二次部材削除時に `WallRegion.post_ids` から除去されること。
+#[test]
+fn delete_secondary_member_cascade_wall_region() {
+    use squid_n_core::model::{SecondaryMemberKind, WallRegion};
+    let mut model = sm_base_model();
+    let mut stack = UndoStack::new();
+
+    // 間柱 SM0 を追加して壁領域に登録する。
+    stack.run(
+        &mut model,
+        Box::new(AddSecondaryMember {
+            sm: make_sm(0, SecondaryMemberKind::Post),
+        }),
+    );
+    stack.run(
+        &mut model,
+        Box::new(AddWallRegion {
+            region: WallRegion {
+                wall: None,
+                post_ids: vec![SecondaryMemberId(0)],
+            },
+        }),
+    );
+    assert_eq!(model.wall_regions[0].post_ids, vec![SecondaryMemberId(0)]);
+
+    // SM0 を削除 → 壁領域の post_ids からも除去される。
+    stack.run(
+        &mut model,
+        Box::new(DeleteSecondaryMember {
+            id: SecondaryMemberId(0),
+        }),
+    );
+    assert!(model.wall_regions[0].post_ids.is_empty());
+    assert!(model.validate().is_ok());
+}
+
+/// undo で削除した二次部材が元の位置・参照と共に復元されること。
+#[test]
+fn undo_delete_secondary_member() {
+    use squid_n_core::model::{DistributionMethod, SecondaryMemberKind, WallRegion};
+    let mut model = sm_base_model();
+    let mut stack = UndoStack::new();
+
+    // SM0（Joist）・SM1（Post）・SM2（Joist）を追加する。
+    for (i, kind) in [
+        SecondaryMemberKind::Joist,
+        SecondaryMemberKind::Post,
+        SecondaryMemberKind::Joist,
+    ]
+    .iter()
+    .enumerate()
+    {
+        stack.run(
+            &mut model,
+            Box::new(AddSecondaryMember {
+                sm: make_sm(i as u32, *kind),
+            }),
+        );
+    }
+
+    // スラブを追加して SM0・SM2 を登録する。
+    use squid_n_core::dof::Dof6Mask;
+    for i in 2..4u32 {
+        model.nodes.push(Node {
+            id: NodeId(i),
+            coord: [i as f64 * 1000.0, 1000.0, 0.0],
+            restraint: Dof6Mask::FREE,
+            mass: None,
+            story: None,
+            support_spring: None,
+        });
+    }
+    stack.run(
+        &mut model,
+        Box::new(AddSlab {
+            boundary: vec![NodeId(0), NodeId(1), NodeId(3), NodeId(2)],
+            joists: vec![],
+            loads: vec![],
+            method: DistributionMethod::TriTrapezoid,
+            usage: None,
+            section: None,
+        }),
+    );
+    stack.run(
+        &mut model,
+        Box::new(SetSlabSecondaryJoistIds {
+            slab: SlabId(0),
+            ids: vec![SecondaryMemberId(0), SecondaryMemberId(2)],
+        }),
+    );
+
+    // 壁領域を追加して SM1 を登録する。
+    stack.run(
+        &mut model,
+        Box::new(AddWallRegion {
+            region: WallRegion {
+                wall: None,
+                post_ids: vec![SecondaryMemberId(1)],
+            },
+        }),
+    );
+
+    let before = model.clone();
+
+    // SM1（Post, index=1）を削除する。
+    stack.run(
+        &mut model,
+        Box::new(DeleteSecondaryMember {
+            id: SecondaryMemberId(1),
+        }),
+    );
+    assert_eq!(model.secondary_members.len(), 2);
+    // SM2 が SM1 に繰り上がり、スラブの secondary_joist_ids も追随する。
+    assert_eq!(
+        model.slabs[0].secondary_joist_ids,
+        vec![SecondaryMemberId(0), SecondaryMemberId(1)]
+    );
+    // 壁領域の post_ids から SM1 が除去される。
+    assert!(model.wall_regions[0].post_ids.is_empty());
+    assert!(model.validate().is_ok());
+
+    // undo で元の状態に完全復元される。
+    stack.undo(&mut model);
+    assert!(model.eq_ignoring_dofmap(&before));
+    assert!(model.validate().is_ok());
+}
+
+/// 壁領域の追加・削除・undo を確認する。
+#[test]
+fn add_delete_wall_region() {
+    use squid_n_core::model::WallRegion;
+    let mut model = empty_model();
+    let mut stack = UndoStack::new();
+
+    let region = WallRegion {
+        wall: None,
+        post_ids: vec![],
+    };
+
+    // 追加
+    stack.run(
+        &mut model,
+        Box::new(AddWallRegion {
+            region: region.clone(),
+        }),
+    );
+    assert_eq!(model.wall_regions.len(), 1);
+
+    // 削除
+    stack.run(&mut model, Box::new(DeleteWallRegion { index: 0 }));
+    assert_eq!(model.wall_regions.len(), 0);
+    assert!(model.validate().is_ok());
+
+    // undo で復元
+    stack.undo(&mut model);
+    assert_eq!(model.wall_regions.len(), 1);
+    assert!(model.validate().is_ok());
+}
+
+/// `SetSlabSecondaryJoistIds` で Joist でない ID を渡すとエラー（Noop）になること。
+#[test]
+fn set_slab_secondary_joist_ids_validation() {
+    use squid_n_core::model::{DistributionMethod, SecondaryMemberKind};
+    let mut model = sm_base_model();
+    let mut stack = UndoStack::new();
+
+    // 間柱（Post）を追加する（Joist ではない）。
+    stack.run(
+        &mut model,
+        Box::new(AddSecondaryMember {
+            sm: make_sm(0, SecondaryMemberKind::Post),
+        }),
+    );
+
+    // スラブを用意する。
+    use squid_n_core::dof::Dof6Mask;
+    for i in 2..4u32 {
+        model.nodes.push(Node {
+            id: NodeId(i),
+            coord: [i as f64 * 1000.0, 1000.0, 0.0],
+            restraint: Dof6Mask::FREE,
+            mass: None,
+            story: None,
+            support_spring: None,
+        });
+    }
+    stack.run(
+        &mut model,
+        Box::new(AddSlab {
+            boundary: vec![NodeId(0), NodeId(1), NodeId(3), NodeId(2)],
+            joists: vec![],
+            loads: vec![],
+            method: DistributionMethod::TriTrapezoid,
+            usage: None,
+            section: None,
+        }),
+    );
+
+    // Post（SM0）を secondary_joist_ids に設定しようとしても Noop になる。
+    let changed = stack.run(
+        &mut model,
+        Box::new(SetSlabSecondaryJoistIds {
+            slab: SlabId(0),
+            ids: vec![SecondaryMemberId(0)],
+        }),
+    );
+    assert!(!changed, "Joist でない ID を渡すと Noop");
+    assert!(model.slabs[0].secondary_joist_ids.is_empty());
+    assert!(model.validate().is_ok());
+}
+
+/// SetSecondaryMemberSection: 断面変更・undo・存在しない断面は Noop。
+#[test]
+fn test_set_secondary_member_section_roundtrip() {
+    use squid_n_core::model::SecondaryMemberKind;
+    let mut model = seeded_model(2, 0);
+    model.sections.push(bare_section(SectionId(0), None));
+    let sm = squid_n_core::model::SecondaryMember {
+        id: squid_n_core::ids::SecondaryMemberId(0),
+        kind: SecondaryMemberKind::Joist,
+        nodes: [NodeId(0), NodeId(1)],
+        section: None,
+        name: "J1".into(),
+    };
+    model.secondary_members.push(sm);
+    let mut stack = UndoStack::new();
+
+    // 断面を割り当てる
+    assert!(stack.run(
+        &mut model,
+        Box::new(SetSecondaryMemberSection {
+            id: squid_n_core::ids::SecondaryMemberId(0),
+            section: Some(SectionId(0)),
+        }),
+    ));
+    assert_eq!(model.secondary_members[0].section, Some(SectionId(0)));
+
+    // undo で元に戻る
+    stack.undo(&mut model);
+    assert_eq!(model.secondary_members[0].section, None);
+
+    stack.redo(&mut model);
+    assert_eq!(model.secondary_members[0].section, Some(SectionId(0)));
+
+    // 実在しない断面は Noop
+    let before = model.clone();
+    assert!(!stack.run(
+        &mut model,
+        Box::new(SetSecondaryMemberSection {
+            id: squid_n_core::ids::SecondaryMemberId(0),
+            section: Some(SectionId(99)),
+        }),
+    ));
+    assert!(model.eq_ignoring_dofmap(&before));
+    assert!(model.validate().is_ok());
+}
+
+/// SetWallRegion: 全置換・undo・範囲外 index は Noop。
+#[test]
+fn test_set_wall_region_roundtrip() {
+    use squid_n_core::model::{SecondaryMemberKind, WallRegion};
+    let mut model = seeded_model(2, 1);
+    // Post 種別の二次部材を追加
+    model
+        .secondary_members
+        .push(squid_n_core::model::SecondaryMember {
+            id: squid_n_core::ids::SecondaryMemberId(0),
+            kind: SecondaryMemberKind::Post,
+            nodes: [NodeId(0), NodeId(1)],
+            section: None,
+            name: "P1".into(),
+        });
+    // ElemId(0) を Wall 種別に変更する
+    model.elements[0].kind = ElementKind::Wall;
+    let region_a = WallRegion {
+        wall: Some(ElemId(0)),
+        post_ids: vec![],
+    };
+    let region_b = WallRegion {
+        wall: Some(ElemId(0)),
+        post_ids: vec![squid_n_core::ids::SecondaryMemberId(0)],
+    };
+    model.wall_regions.push(region_a.clone());
+    let mut stack = UndoStack::new();
+
+    // 置換
+    assert!(stack.run(
+        &mut model,
+        Box::new(SetWallRegion {
+            index: 0,
+            region: region_b.clone(),
+        }),
+    ));
+    assert_eq!(model.wall_regions[0], region_b);
+
+    // undo
+    stack.undo(&mut model);
+    assert_eq!(model.wall_regions[0], region_a);
+
+    // 範囲外 index は Noop
+    assert!(!stack.run(
+        &mut model,
+        Box::new(SetWallRegion {
+            index: 99,
+            region: region_b,
+        }),
+    ));
+    assert_eq!(model.wall_regions.len(), 1);
+    assert!(model.validate().is_ok());
+}
+
+/// AddWallRegion: wall フィールドに Wall 種別でない要素 ID を渡すと Noop。
+#[test]
+fn test_add_wall_region_rejects_non_wall_elem() {
+    use squid_n_core::model::WallRegion;
+    // seeded_model(2,1) は Beam 要素を 1 本持つ
+    let mut model = seeded_model(2, 1);
+    let before = model.clone();
+    let mut stack = UndoStack::new();
+
+    // ElemId(0) は Beam なので Wall ではない → Noop
+    assert!(!stack.run(
+        &mut model,
+        Box::new(AddWallRegion {
+            region: WallRegion {
+                wall: Some(ElemId(0)),
+                post_ids: vec![],
+            },
+        }),
+    ));
+    assert!(
+        model.eq_ignoring_dofmap(&before),
+        "Beam を wall に指定した AddWallRegion は Noop のはず"
+    );
+    assert!(model.validate().is_ok(), "{:?}", model.validate());
+}
+
+/// SetSlabSecondaryJoistIds: undo で元リストに戻ること。
+#[test]
+fn test_set_slab_secondary_joist_ids_roundtrip() {
+    use squid_n_core::model::{DistributionMethod, SecondaryMemberKind};
+    let mut model = seeded_model(4, 0);
+    // 小梁（Joist）を 2 本追加
+    for i in 0..2u32 {
+        model
+            .secondary_members
+            .push(squid_n_core::model::SecondaryMember {
+                id: squid_n_core::ids::SecondaryMemberId(i),
+                kind: SecondaryMemberKind::Joist,
+                nodes: [NodeId(0), NodeId(1)],
+                section: None,
+                name: format!("J{}", i),
+            });
+    }
+    // 床を追加（secondary_joist_ids = [SmId(0)]）
+    model.slabs.push(squid_n_core::model::Slab {
+        id: squid_n_core::ids::SlabId(0),
+        boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
+        joists: vec![],
+        loads: vec![],
+        method: DistributionMethod::TriTrapezoid,
+        kind: Default::default(),
+        one_way: None,
+        edge_supported: None,
+        usage: None,
+        section: None,
+        secondary_joist_ids: vec![squid_n_core::ids::SecondaryMemberId(0)],
+    });
+    let mut stack = UndoStack::new();
+
+    // [SmId(1)] に置換
+    assert!(stack.run(
+        &mut model,
+        Box::new(SetSlabSecondaryJoistIds {
+            slab: squid_n_core::ids::SlabId(0),
+            ids: vec![squid_n_core::ids::SecondaryMemberId(1)],
+        }),
+    ));
+    assert_eq!(
+        model.slabs[0].secondary_joist_ids,
+        vec![squid_n_core::ids::SecondaryMemberId(1)]
+    );
+
+    // undo で元の [SmId(0)] へ戻る
+    stack.undo(&mut model);
+    assert_eq!(
+        model.slabs[0].secondary_joist_ids,
+        vec![squid_n_core::ids::SecondaryMemberId(0)]
+    );
+
+    stack.redo(&mut model);
+    assert_eq!(
+        model.slabs[0].secondary_joist_ids,
+        vec![squid_n_core::ids::SecondaryMemberId(1)]
+    );
+    assert!(model.validate().is_ok(), "{:?}", model.validate());
+}
+
+// ─── 階への複製・部材削除と二次部材／壁領域の参照整合 ──────────────────────────
+
+/// 階への複製（二次部材）で `SecondaryMember.id == index` の不変条件が保たれること。
+///
+/// `..sm` で複製元の `id` を写すと複製先の部材が同じ ID を名乗り、`validate` が
+/// `IndexMismatch` を返す（＝二次部材を持つモデルでは階への複製が通らない）。
+#[test]
+fn test_copy_story_secondary_keeps_id_index_invariant() {
+    use crate::{CopyStory, CopyTargets};
+    use squid_n_core::frame_gen::{frame_model, FrameSpec};
+    use squid_n_core::ids::StoryId;
+
+    let mut model = frame_model(&FrameSpec::default()).unwrap();
+    assign_node_stories(&mut model);
+    let n2f: Vec<NodeId> = model
+        .nodes
+        .iter()
+        .filter(|n| n.story == Some(StoryId(1)))
+        .map(|n| n.id)
+        .collect();
+    assert!(n2f.len() >= 2);
+    model
+        .secondary_members
+        .push(squid_n_core::model::SecondaryMember {
+            id: SecondaryMemberId(0),
+            kind: squid_n_core::model::SecondaryMemberKind::Joist,
+            nodes: [n2f[0], n2f[1]],
+            section: None,
+            name: "J1".into(),
+        });
+    assert!(model.validate().is_ok(), "前提: {:?}", model.validate());
+
+    let mut stack = UndoStack::new();
+    assert!(stack.run(
+        &mut model,
+        Box::new(CopyStory {
+            from: StoryId(1),
+            to: vec![StoryId(2)],
+            targets: CopyTargets {
+                secondary: true,
+                ..Default::default()
+            },
+            overwrite: true,
+        }),
+    ));
+    assert_eq!(model.secondary_members.len(), 2, "3F へ 1 本複製される");
+    for (i, sm) in model.secondary_members.iter().enumerate() {
+        assert_eq!(sm.id, SecondaryMemberId(i as u32), "id は添字と一致する");
+    }
+    assert!(
+        model.validate().is_ok(),
+        "複製後の validate: {:?}",
+        model.validate()
+    );
+
+    stack.undo(&mut model);
+    assert_eq!(model.secondary_members.len(), 1);
+    assert!(model.validate().is_ok());
+}
+
+/// 階への複製（床）で、複製先の床が複製元の小梁を自分の子として抱え込まないこと。
+///
+/// 写すと 2 つの階の床が同じ小梁 ID を持ち、床荷重を二重に拾う。`validate` は
+/// 床をまたいだ重複を見ないため、黙って誤ったモデルになる。
+#[test]
+fn test_copy_story_slab_does_not_inherit_source_joist_ids() {
+    use crate::{CopyStory, CopyTargets};
+    use squid_n_core::frame_gen::{frame_model, FrameSpec};
+    use squid_n_core::ids::StoryId;
+
+    let mut model = frame_model(&FrameSpec::default()).unwrap();
+    assign_node_stories(&mut model);
+    let n2f: Vec<NodeId> = model
+        .nodes
+        .iter()
+        .filter(|n| n.story == Some(StoryId(1)))
+        .map(|n| n.id)
+        .collect();
+    let n3f: Vec<NodeId> = model
+        .nodes
+        .iter()
+        .filter(|n| n.story == Some(StoryId(2)))
+        .map(|n| n.id)
+        .collect();
+    model
+        .secondary_members
+        .push(squid_n_core::model::SecondaryMember {
+            id: SecondaryMemberId(0),
+            kind: squid_n_core::model::SecondaryMemberKind::Joist,
+            nodes: [n2f[0], n2f[1]],
+            section: None,
+            name: "J1".into(),
+        });
+    // 2F の床へ小梁 SM0 を登録する。
+    let src = model
+        .slabs
+        .iter()
+        .position(|sl| sl.boundary.iter().all(|n| n2f.contains(n)))
+        .expect("2F に床がある");
+    model.slabs[src].secondary_joist_ids = vec![SecondaryMemberId(0)];
+    // 3F の床を消して、複製で「新規作成」が起きる状況にする。
+    model
+        .slabs
+        .retain(|sl| !sl.boundary.iter().all(|n| n3f.contains(n)));
+    for (i, sl) in model.slabs.iter_mut().enumerate() {
+        sl.id = squid_n_core::ids::SlabId(i as u32);
+    }
+    assert!(model.validate().is_ok(), "前提: {:?}", model.validate());
+    let before = model.slabs.len();
+
+    let mut stack = UndoStack::new();
+    assert!(stack.run(
+        &mut model,
+        Box::new(CopyStory {
+            from: StoryId(1),
+            to: vec![StoryId(2)],
+            targets: CopyTargets {
+                slabs: true,
+                ..Default::default()
+            },
+            overwrite: true,
+        }),
+    ));
+    assert!(model.slabs.len() > before, "3F の床が作られる");
+    for sl in &model.slabs[before..] {
+        assert!(
+            sl.secondary_joist_ids.is_empty(),
+            "複製先の床が複製元の小梁を参照している: {:?}",
+            sl.secondary_joist_ids
+        );
+    }
+    assert!(model.validate().is_ok(), "{:?}", model.validate());
+}
+
+/// 壁部材を削除したとき、その壁版を指す壁領域が「版なし」へ戻り、
+/// 繰り上げで別の壁へ黙って付け替わらないこと。undo で壁版が戻ること。
+#[test]
+fn test_delete_member_clears_wall_region_wall() {
+    let mut model = seeded_model(4, 3);
+    for e in &mut model.elements {
+        e.kind = ElementKind::Wall;
+    }
+    // ElemId(1) を指す壁領域。削除で繰り上がると ElemId(2) だった壁を指してしまう。
+    model.wall_regions.push(squid_n_core::model::WallRegion {
+        wall: Some(ElemId(1)),
+        post_ids: vec![],
+    });
+    assert!(model.validate().is_ok(), "前提: {:?}", model.validate());
+
+    let mut stack = UndoStack::new();
+    assert!(stack.run(&mut model, Box::new(DeleteMember { id: ElemId(1) })));
+    assert_eq!(
+        model.wall_regions[0].wall, None,
+        "削除した壁を指す壁領域は版なしへ戻る"
+    );
+    assert!(model.validate().is_ok(), "{:?}", model.validate());
+
+    stack.undo(&mut model);
+    assert_eq!(
+        model.wall_regions[0].wall,
+        Some(ElemId(1)),
+        "undo で壁版の参照が戻る"
+    );
+    assert!(model.validate().is_ok(), "{:?}", model.validate());
 }
