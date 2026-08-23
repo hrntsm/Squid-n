@@ -1371,3 +1371,137 @@ fn test_crossing_beams_reported_as_warning() {
         crossing.message
     );
 }
+
+/// どの床領域にも属さない小梁は警告し、解析は止めない。
+#[test]
+fn test_model_issues_warns_unassigned_joist() {
+    use super::precheck::{model_issues, precheck_model, IssueSeverity};
+    use squid_n_core::ids::SecondaryMemberId;
+    use squid_n_core::model::{SecondaryMember, SecondaryMemberKind};
+
+    let mut model = make_cantilever_model();
+    let n = model.nodes.len() as u32;
+    model.nodes.push(Node {
+        id: NodeId(n),
+        coord: [10000.0, 0.0, 0.0],
+        restraint: Dof6Mask::FREE,
+        mass: None,
+        story: None,
+        support_spring: None,
+    });
+    model.nodes.push(Node {
+        id: NodeId(n + 1),
+        coord: [10000.0, 4000.0, 0.0],
+        restraint: Dof6Mask::FREE,
+        mass: None,
+        story: None,
+        support_spring: None,
+    });
+    model.secondary_members.push(SecondaryMember {
+        kind: SecondaryMemberKind::Joist,
+        nodes: [NodeId(n), NodeId(n + 1)],
+        section: Some(SectionId(0)),
+        name: "孤立小梁".into(),
+        id: SecondaryMemberId(0),
+    });
+
+    let issues = model_issues(&model);
+    let warning = issues
+        .iter()
+        .find(|i| {
+            i.severity == IssueSeverity::Warning
+                && (i.message.contains("小梁") || i.short.contains("小梁"))
+                && (i.message.contains("所属")
+                    || i.message.contains("割り当て")
+                    || i.short.contains("所属")
+                    || i.short.contains("割り当て"))
+        })
+        .unwrap_or_else(|| {
+            let msgs: Vec<_> = issues.iter().map(|i| i.message.as_str()).collect();
+            panic!("所属なし小梁の警告がない: {msgs:?}")
+        });
+    assert_eq!(warning.severity, IssueSeverity::Warning);
+    assert!(precheck_model(&model).is_ok(), "解析は止めない");
+}
+
+/// 大梁パネルに載らない浮き版は警告し、解析は止めない。
+#[test]
+fn test_model_issues_warns_floating_plate() {
+    use super::precheck::{model_issues, precheck_model, IssueSeverity};
+    use squid_n_core::ids::{FloorRegionId, MaterialId};
+    use squid_n_core::model::{DistributionMethod, Material, MaterialCategory};
+
+    let mut model = make_cantilever_model();
+    let n = model.nodes.len() as u32;
+    for (i, c) in [
+        [8000.0, 8000.0, 0.0],
+        [12000.0, 8000.0, 0.0],
+        [12000.0, 11000.0, 0.0],
+        [8000.0, 11000.0, 0.0],
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        model.nodes.push(Node {
+            id: NodeId(n + i as u32),
+            coord: c,
+            restraint: Dof6Mask::FREE,
+            mass: None,
+            story: None,
+            support_spring: None,
+        });
+    }
+    let sid = SectionId(model.sections.len() as u32);
+    let mid = MaterialId(model.materials.len() as u32);
+    model.materials.push(Material {
+        strength_factor: None,
+        concrete_class: Default::default(),
+        id: mid,
+        name: "Fc24".into(),
+        category: MaterialCategory::Concrete,
+        young: 23000.0,
+        poisson: 0.2,
+        density: 2.4e-9,
+        shear: None,
+        fc: Some(24.0),
+        fy: None,
+    });
+    let mut sec = squid_n_core::section_shape::SectionShape::RcSlab { thickness: 150.0 }
+        .to_section(sid, "S15".into());
+    sec.material = Some(mid);
+    model.sections.push(sec);
+    model.floor_regions.push(FloorRegion {
+        id: FloorRegionId(0),
+        name: String::new(),
+        shape: RegionShape::Enclosed {
+            boundary: vec![NodeId(n), NodeId(n + 1), NodeId(n + 2), NodeId(n + 3)],
+        },
+        plate: Some(SlabPlate {
+            section: Some(sid),
+            loads: Vec::new(),
+            usage: None,
+            method: DistributionMethod::TriTrapezoid,
+            one_way: None,
+            joists: Vec::new(),
+        }),
+        secondary_joist_ids: Vec::new(),
+    });
+
+    let issues = model_issues(&model);
+    let warning = issues
+        .iter()
+        .find(|i| {
+            i.severity == IssueSeverity::Warning
+                && (i.message.contains("版") || i.short.contains("版"))
+                && (i.message.contains("割り当て")
+                    || i.message.contains("浮")
+                    || i.short.contains("割り当て")
+                    || i.short.contains("浮"))
+        })
+        .unwrap_or_else(|| {
+            let msgs: Vec<_> = issues.iter().map(|i| i.message.as_str()).collect();
+            panic!("浮き版の警告がない: {msgs:?}")
+        });
+    assert_eq!(warning.severity, IssueSeverity::Warning);
+    assert!(precheck_model(&model).is_ok(), "解析は止めない");
+}

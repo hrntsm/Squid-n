@@ -1881,7 +1881,14 @@ fn test_import_slab_with_node_order_and_thickness() {
         "境界節点ループが順序どおり"
     );
     assert_eq!(m.region_thickness(s), Some(180.0), "断面参照から厚さを解決");
-    assert!(report.is_clean(), "警告なし: {:?}", report.warnings);
+    assert!(
+        report
+            .warnings
+            .iter()
+            .any(|w| w.contains("版") && w.contains("割り当て")),
+        "大梁なしの浮き版は警告: {:?}",
+        report.warnings
+    );
 }
 
 /// StbNodeIdOrder が CDATA 形式でも境界を取り込めること。
@@ -3156,4 +3163,88 @@ fn test_export_skips_plateless_and_attached_orphan_sections() {
     let n_sec = xml.matches("<StbSecSlab_RC ").count();
     assert_eq!(n_slab, 1, "囲まれ版ありだけ StbSlab\n{xml}");
     assert_eq!(n_sec, 1, "書き出したスラブの断面だけ StbSecSlab_RC\n{xml}");
+}
+
+/// 大梁閉路 1 + StbSlab 1 の最小ラーメン。取り込み後は囲まれ 1・小梁 0。
+#[test]
+fn test_import_enclosed_frame_with_slab_folds_to_one_region() {
+    let xml = r#"<?xml version="1.0"?>
+<ST_BRIDGE version="2.0.0"><StbModel>
+  <StbNodes>
+    <StbNode id="0" X="0" Y="0" Z="0"/>
+    <StbNode id="1" X="4000" Y="0" Z="0"/>
+    <StbNode id="2" X="4000" Y="4000" Z="0"/>
+    <StbNode id="3" X="0" Y="4000" Z="0"/>
+  </StbNodes>
+  <StbSections>
+    <StbSecBeam_S id="0" name="G">
+      <StbSecSteelFigureBeam_S><StbSecSteelBeam_S_Straight shape="H1" strength_main="SN400B"/></StbSecSteelFigureBeam_S>
+    </StbSecBeam_S>
+    <StbSecSteel>
+      <StbSecRoll-H name="H1" A="300" B="150" t1="6.5" t2="9"/>
+    </StbSecSteel>
+    <StbSecSlab_RC id="7" name="S1">
+      <StbSecFigureSlab_RC>
+        <StbSecSlab_RC_Straight thickness="150"/>
+      </StbSecFigureSlab_RC>
+    </StbSecSlab_RC>
+  </StbSections>
+  <StbMembers>
+    <StbGirders>
+      <StbGirder id="0" id_node_start="0" id_node_end="1" id_section="0"/>
+      <StbGirder id="1" id_node_start="1" id_node_end="2" id_section="0"/>
+      <StbGirder id="2" id_node_start="2" id_node_end="3" id_section="0"/>
+      <StbGirder id="3" id_node_start="3" id_node_end="0" id_section="0"/>
+    </StbGirders>
+    <StbSlab id="0" name="S1" id_section="7" kind_structure="RC">
+      <StbNodeIdOrder>0 1 2 3</StbNodeIdOrder>
+    </StbSlab>
+  </StbMembers>
+</StbModel></ST_BRIDGE>"#;
+    let (m, _) = import_stbridge_with_report(xml).expect("import");
+    assert_eq!(m.floor_regions.len(), 1);
+    assert!(!m.floor_regions[0].is_attached(), "囲まれ領域");
+    assert!(m.floor_regions[0].plate.is_some());
+    assert_eq!(m.secondary_members.len(), 0, "小梁 0");
+}
+
+/// 大梁 1 本 + 跳ね出し StbSlab は取り付き領域になる。
+#[test]
+fn test_import_cantilever_slab_becomes_attached() {
+    let xml = r#"<?xml version="1.0"?>
+<ST_BRIDGE version="2.0.0"><StbModel>
+  <StbNodes>
+    <StbNode id="0" X="0" Y="0" Z="0"/>
+    <StbNode id="1" X="4000" Y="0" Z="0"/>
+    <StbNode id="2" X="4000" Y="1500" Z="0"/>
+    <StbNode id="3" X="0" Y="1500" Z="0"/>
+  </StbNodes>
+  <StbSections>
+    <StbSecBeam_S id="0" name="G">
+      <StbSecSteelFigureBeam_S><StbSecSteelBeam_S_Straight shape="H1" strength_main="SN400B"/></StbSecSteelFigureBeam_S>
+    </StbSecBeam_S>
+    <StbSecSteel>
+      <StbSecRoll-H name="H1" A="300" B="150" t1="6.5" t2="9"/>
+    </StbSecSteel>
+    <StbSecSlab_RC id="7" name="S1">
+      <StbSecFigureSlab_RC>
+        <StbSecSlab_RC_Straight thickness="150"/>
+      </StbSecFigureSlab_RC>
+    </StbSecSlab_RC>
+  </StbSections>
+  <StbMembers>
+    <StbGirders>
+      <StbGirder id="0" id_node_start="0" id_node_end="1" id_section="0"/>
+    </StbGirders>
+    <StbSlab id="0" name="S1" id_section="7" kind_structure="RC">
+      <StbNodeIdOrder>0 1 2 3</StbNodeIdOrder>
+    </StbSlab>
+  </StbMembers>
+</StbModel></ST_BRIDGE>"#;
+    let (m, _) = import_stbridge_with_report(xml).expect("import");
+    assert!(
+        m.floor_regions.iter().any(|r| r.is_attached()),
+        "片持ち相当は is_attached: {:?}",
+        m.floor_regions.iter().map(|r| &r.shape).collect::<Vec<_>>()
+    );
 }

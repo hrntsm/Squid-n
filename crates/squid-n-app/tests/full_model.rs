@@ -11,7 +11,7 @@
 //! # モデル（`tests/fixtures/model.stb`）
 //!
 //! 4 層＋PH の S 造（一部 RC）。節点 166・解析要素 115（柱 40・大梁 75）・
-//! 二次部材 56（小梁）・スラブ 82・階 5（Z=200/4700/8700/12700/16500）。
+//! 二次部材 56（小梁）・床領域 26（大梁パネル単位）・階 5（Z=200/4700/8700/12700/16500）。
 //! 荷重は ST-Bridge に含まれないため、取り込み時に標準荷重ケース
 //! （DL・LL(架構用)・LL(地震用)・EX・EY）が自動生成される。支点情報も
 //! 含まれないため、最下レベルの柱脚 12 箇所がピン支点として自動設定される。
@@ -250,8 +250,58 @@ fn import_builds_expected_model() {
     assert_eq!(m.nodes.len(), 166, "節点数");
     assert_eq!(m.elements.len(), 115, "解析要素数（柱 40・大梁 75）");
     assert_eq!(m.secondary_members.len(), 56, "二次部材（小梁）");
-    assert_eq!(m.floor_regions.len(), 82, "スラブ");
+    assert_eq!(m.floor_regions.len(), 26, "床領域（大梁パネル単位）");
     assert_eq!(m.stories.len(), 5, "階（1FL/2FL/3FL/RFL/PHRFL）");
+
+    use squid_n_core::model::SecondaryMemberKind;
+    use squid_n_core::region_gen::generate_floor_panels;
+    use std::collections::HashMap;
+    assert!(
+        m.floor_regions
+            .iter()
+            .all(|r| !r.is_attached() && r.plate.is_some()),
+        "すべて Enclosed かつ版あり"
+    );
+    let mut joist_owner: HashMap<u32, usize> = HashMap::new();
+    for (ri, r) in m.floor_regions.iter().enumerate() {
+        for jid in &r.secondary_joist_ids {
+            assert!(
+                joist_owner.insert(jid.0, ri).is_none(),
+                "小梁 {} が複数領域に属する",
+                jid.0
+            );
+        }
+    }
+    let panels = generate_floor_panels(m);
+    for sm in m
+        .secondary_members
+        .iter()
+        .filter(|sm| sm.kind == SecondaryMemberKind::Joist)
+    {
+        let ri = *joist_owner
+            .get(&sm.id.0)
+            .unwrap_or_else(|| panic!("小梁 {} がどの領域にも属さない", sm.id.0));
+        let r = &m.floor_regions[ri];
+        let coords = r.boundary_coords(m).expect("領域境界");
+        let n = coords.len() as f64;
+        let centroid = [
+            coords.iter().map(|p| p[0]).sum::<f64>() / n,
+            coords.iter().map(|p| p[1]).sum::<f64>() / n,
+        ];
+        let z = coords[0][2];
+        let panel = panels
+            .iter()
+            .find(|p| p.is_same_level(z) && p.contains(m, centroid))
+            .expect("領域がパネルに載る");
+        let a = m.nodes[sm.nodes[0].index()].coord;
+        let b = m.nodes[sm.nodes[1].index()].coord;
+        let mid = [(a[0] + b[0]) / 2.0, (a[1] + b[1]) / 2.0];
+        assert!(
+            panel.contains(m, mid),
+            "小梁 {} の中点が所属領域に入らない",
+            sm.id.0
+        );
+    }
 
     // 荷重は ST-Bridge に含まれないため標準荷重ケースが自動生成される。
     let names: Vec<&str> = m.load_cases.iter().map(|lc| lc.name.as_str()).collect();
@@ -369,6 +419,7 @@ fn preparation_computes_stories_and_seismic_forces() {
 #[test]
 fn preparation_is_idempotent() {
     let mut app = prepared();
+    assert_eq!(app.model.floor_regions.len(), 26, "準備計算後も床領域は 26");
     let stories = app.model.stories.len();
     let weights: Vec<Option<f64>> = app.model.stories.iter().map(|s| s.seismic_weight).collect();
     let dl = auto_case(&app, DL_CASE_NAME);
@@ -1069,8 +1120,19 @@ fn stbridge_roundtrip_is_reanalyzable() {
         app.model.floor_regions.len(),
         "往復でスラブ数が変わる"
     );
+    assert_eq!(
+        app.model.floor_regions.len(),
+        26,
+        "STB 再取り込みで小片 82 に戻らない"
+    );
+    assert_eq!(reimported.model.floor_regions.len(), 26);
 
     reimported.run_preparation();
+    assert_eq!(
+        reimported.model.floor_regions.len(),
+        26,
+        "準備計算で 26 のまま"
+    );
     assert_no_error(&reimported, "往復後の準備計算");
     reimported.run_static_all();
     assert_no_error(&reimported, "往復後の静的解析");
@@ -1163,6 +1225,11 @@ fn region_gen_finds_beam_bounded_panels() {
         "レベル別のパネル数（Euler の公式による検算値と一致すること）"
     );
     assert_eq!(panels.len(), 26, "パネル総数");
+    assert_eq!(
+        app.model.floor_regions.len(),
+        panels.len(),
+        "取り込み後の領域数はパネル数 26"
+    );
 
     // パネルの面積の合計は、そのレベルのスラブ面積の合計と一致する
     // （スラブは小梁で細分されているが、覆う範囲はパネルと同じ）。
@@ -1233,6 +1300,12 @@ fn slabs_fold_into_panels_without_mixing() {
         unassigned.is_empty(),
         "どのパネルにも収まらないスラブ: {unassigned:?}"
     );
+    assert_eq!(unassigned.len(), 0, "未割当 0");
+    assert_eq!(
+        app.model.floor_regions.len(),
+        scan.panels.len(),
+        "領域数＝パネル数 26"
+    );
     assert_eq!(
         by_panel.len(),
         scan.panels.len(),
@@ -1283,6 +1356,11 @@ fn snapshot_key_scalars() {
     line(
         "model.secondary_members",
         app.model.secondary_members.len().to_string(),
+    );
+    assert_eq!(
+        app.model.floor_regions.len(),
+        26,
+        "スナップショット対象の床領域数"
     );
     line(
         "model.floor_regions",

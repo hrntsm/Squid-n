@@ -18,6 +18,7 @@ use squid_n_core::model::{
     DistributionMethod, ElementData, ElementKind, EndCondition, FloorRegion, ForceRegime, LoadCase,
     LocalAxis, Material, MaterialCategory, Model, NodalLoad, Node, Section, SlabPlate, Story,
 };
+use squid_n_core::region_rebuild::rebuild_floor_regions;
 use squid_n_core::section_shape::SectionShape;
 use std::collections::HashMap;
 
@@ -128,6 +129,31 @@ pub(super) fn assemble(parsed: StbParser) -> Result<(Model, ImportReport), StbEr
         &material_index,
         &mut warnings,
     );
+    let rebuild = rebuild_floor_regions(&mut model);
+    if rebuild.unassigned_plates != 0 {
+        warnings.push(format!(
+            "床領域の作り直しで版 {} 枚が領域に割り当てられなかった",
+            rebuild.unassigned_plates
+        ));
+    }
+    if rebuild.unassigned_joists != 0 {
+        warnings.push(format!(
+            "床領域の作り直しで小梁 {} 本が領域に割り当てられなかった",
+            rebuild.unassigned_joists
+        ));
+    }
+    if rebuild.mixed_plate_panels != 0 {
+        warnings.push(format!(
+            "床領域の作り直しで版が混在するパネルが {} 件あった",
+            rebuild.mixed_plate_panels
+        ));
+    }
+    if rebuild.unmatched_old_enclosed != 0 {
+        warnings.push(format!(
+            "床領域の作り直しで照合できなかった旧囲まれ領域が {} 件あった",
+            rebuild.unmatched_old_enclosed
+        ));
+    }
     build_load_cases(&mut model, raw_load_cases, &node_index, &mut warnings);
     warn_unsupported(&unsupported, &mut warnings);
 

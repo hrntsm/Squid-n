@@ -80,28 +80,7 @@ impl Panel {
         let Some(poly) = self.polygon(model) else {
             return false;
         };
-        let n = poly.len();
-        if n < 3 {
-            return false;
-        }
-        for i in 0..n {
-            if point_segment_dist(p, poly[i], poly[(i + 1) % n]) <= BOUNDARY_TOL_MM {
-                return false;
-            }
-        }
-        let mut inside = false;
-        let mut j = n - 1;
-        for i in 0..n {
-            let (a, b) = (poly[i], poly[j]);
-            if (a[1] > p[1]) != (b[1] > p[1]) {
-                let x = (b[0] - a[0]) * (p[1] - a[1]) / (b[1] - a[1]) + a[0];
-                if p[0] < x {
-                    inside = !inside;
-                }
-            }
-            j = i;
-        }
-        inside
+        polygon_contains_strict(&poly, p)
     }
 
     /// このパネルと同じレベルか（[`crate::geom::LEVEL_TOL_MM`] 以内）。
@@ -112,6 +91,34 @@ impl Panel {
 
 /// 辺上とみなす点から辺までの距離の上限 [mm]。
 pub const BOUNDARY_TOL_MM: f64 = 1.0;
+
+/// 点 `p`（XY）が多角形の内部にあるか。**辺上（[`BOUNDARY_TOL_MM`] 以内）は含めない。**
+///
+/// [`Panel::contains`] と同じ規則。床領域の境界多角形へ小梁中点を載せる判定でも使う。
+pub fn polygon_contains_strict(poly: &[[f64; 2]], p: [f64; 2]) -> bool {
+    let n = poly.len();
+    if n < 3 {
+        return false;
+    }
+    for i in 0..n {
+        if point_segment_dist(p, poly[i], poly[(i + 1) % n]) <= BOUNDARY_TOL_MM {
+            return false;
+        }
+    }
+    let mut inside = false;
+    let mut j = n - 1;
+    for i in 0..n {
+        let (a, b) = (poly[i], poly[j]);
+        if (a[1] > p[1]) != (b[1] > p[1]) {
+            let x = (b[0] - a[0]) * (p[1] - a[1]) / (b[1] - a[1]) + a[0];
+            if p[0] < x {
+                inside = !inside;
+            }
+        }
+        j = i;
+    }
+    inside
+}
 
 /// 点から線分までの距離 [mm]（XY 平面）。
 fn point_segment_dist(p: [f64; 2], a: [f64; 2], b: [f64; 2]) -> f64 {

@@ -369,6 +369,33 @@ pub fn model_issues(model: &Model) -> Vec<ModelIssue> {
         }
     }
 
+    // 床領域に属さない小梁・大梁パネルに載らない浮き版。
+    //
+    // 作り直し前の現状の床領域／パネルで判定する（診断はモデルを書き換えない）。
+    // 解析は成立するため警告に留め、割り当てを確かめてもらう。
+    {
+        let n = squid_n_core::region_rebuild::unassigned_joist_count(model);
+        if n != 0 {
+            issues.push(
+                ModelIssue::model(format!(
+                    "どの床領域にも所属しない小梁が {n} 本あります。\
+                     小梁の配置または床領域の境界を確認してください。"
+                ))
+                .warn(),
+            );
+        }
+        let n = squid_n_core::region_rebuild::floating_plate_count(model);
+        if n != 0 {
+            issues.push(
+                ModelIssue::model(format!(
+                    "大梁パネルに載らず割り当てられない版が {n} 枚あります。\
+                     浮き版になっていないか、境界と大梁を確認してください。"
+                ))
+                .warn(),
+            );
+        }
+    }
+
     // 断面が未割当のスラブ・断面の主材料が未割当のスラブ
     //
     // スラブの板厚と自重は断面から解決する（`Model::slab_self_weight_intensity`）。
