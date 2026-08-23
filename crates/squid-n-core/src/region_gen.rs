@@ -186,6 +186,21 @@ pub fn generate_floor_panels(model: &Model) -> Vec<Panel> {
     scan_floor_panels(model).panels
 }
 
+/// 節点を共有せずに交差している水平大梁の組を、レベルごとに集めて返す。
+///
+/// 面走査は平面グラフ（辺どうしが節点でのみ接する）を前提とするため、交差する梁があると
+/// 検出される区画が実際とずれる。**モデルの不備として利用者へ知らせるための情報**であり、
+/// パネルの検出自体は続行する（[`scan_floor_panels`] 参照）。
+///
+/// パネルを組まずに交差だけを知りたい場合（診断など）は、面走査を伴わないこちらを使う。
+pub fn crossing_beams(model: &Model) -> Vec<(ElemId, ElemId)> {
+    let mut out = Vec::new();
+    for (_, edges) in horizontal_beams_by_level(model) {
+        out.extend(crossing_pairs(model, &edges));
+    }
+    out
+}
+
 /// 同一レベルの梁のうち、節点を共有せずに交差している組を返す。
 ///
 /// 端点で接する（T 字・十字に節点を共有する）ものは交差としない。

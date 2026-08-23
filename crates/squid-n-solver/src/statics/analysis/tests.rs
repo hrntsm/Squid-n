@@ -1316,3 +1316,58 @@ fn analysis_linear_combination_matches_assembled_load_case() {
         }
     }
 }
+
+/// 節点を共有せずに交差する大梁は、解析を止めない警告として診断に出る。
+///
+/// 床領域は大梁で囲まれた区画として面走査で求めるため、交差があると区画が実際とずれる。
+/// 解析自体は通るので、エラーではなく警告で利用者へ確かめる。
+#[test]
+fn test_crossing_beams_reported_as_warning() {
+    use crate::analysis::precheck::{model_issues, IssueSeverity};
+    use squid_n_core::ids::{ElemId, NodeId};
+    use squid_n_core::model::{
+        ElementData, ElementKind, EndCondition, ForceRegime, LocalAxis, Node,
+    };
+
+    let mut model = Model::default();
+    let pts = [(0.0, 0.0), (4000.0, 4000.0), (0.0, 4000.0), (4000.0, 0.0)];
+    for (i, (x, y)) in pts.iter().enumerate() {
+        model.nodes.push(Node {
+            id: NodeId(i as u32),
+            coord: [*x, *y, 0.0],
+            restraint: Default::default(),
+            mass: None,
+            story: None,
+            support_spring: None,
+        });
+    }
+    // 節点を共有せずに X 字に交わる 2 本。
+    for (k, (i, j)) in [(0u32, 1u32), (2, 3)].into_iter().enumerate() {
+        model.elements.push(ElementData {
+            id: ElemId(k as u32),
+            kind: ElementKind::Beam,
+            nodes: [NodeId(i), NodeId(j)].into_iter().collect(),
+            section: None,
+            local_axis: LocalAxis {
+                ref_vector: [0.0, 0.0, 1.0],
+            },
+            end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+            force_regime: ForceRegime::Auto,
+            rigid_zone: Default::default(),
+            plastic_zone: None,
+            spring: None,
+        });
+    }
+
+    let issues = model_issues(&model);
+    let crossing = issues
+        .iter()
+        .find(|i| i.message.contains("交差する大梁"))
+        .expect("交差の診断が出る");
+    assert_eq!(crossing.severity, IssueSeverity::Warning);
+    assert!(
+        crossing.message.contains("部材 0, 1"),
+        "{}",
+        crossing.message
+    );
+}
