@@ -1,5 +1,11 @@
 use super::super::*;
 
+/// 小梁が載るスラブを決めるときの、レベル一致とみなす Z の差の上限 [mm]。
+///
+/// スラブ境界と二次部材はモデルの同じ節点を参照するため、同じ階なら Z は一致する。
+/// 丸め誤差だけを吸収する幅とし、段差床は別レベルとして扱う（＝該当なしになる）。
+const SLAB_LEVEL_TOL: f64 = 1.0;
+
 impl App {
     /// T7: 解析結果の member_forces から検定結果を生成する。
     /// 危険断面位置（§6.2.3、既定は柱フェイスと中央）の内力に対し、
@@ -259,7 +265,8 @@ impl App {
     /// `Model::secondary_members` の小梁を単純支持梁として検定する。
     ///
     /// `Slab::joists` に同じ両端を持つ小梁は GUI 定義済みとしてスキップする。
-    /// 中点が属するスラブを XY 多角形判定（内部または辺上）で決め、平行小梁群から負担幅を算定する。
+    /// 中点が属するスラブを XY 多角形判定（内部または辺上）**かつ同じレベル**で決め、
+    /// 平行小梁群から負担幅を算定する。
     fn design_secondary_joist_checks(
         &self,
         joist_checks: &mut Vec<crate::app::JoistCheck>,
@@ -331,12 +338,21 @@ impl App {
                 (na.coord[0] + nb.coord[0]) / 2.0,
                 (na.coord[1] + nb.coord[1]) / 2.0,
             ];
+            let mid_z = (na.coord[2] + nb.coord[2]) / 2.0;
 
-            let Some((slab_idx, slab)) =
-                self.model.slabs.iter().enumerate().find(|(_, s)| {
-                    squid_n_load::floor::point_in_slab_boundary(&self.model, s, mid)
-                })
-            else {
+            // 中点を含み、かつ**同じレベルにある**スラブを採る。XY だけで判定すると
+            // 上下階のスラブは平面上で重なるため、別階のスラブを掴み、別階の板厚・室用途・
+            // 境界寸法で検定してしまう（エラーは出ないまま結果だけが誤る）。
+            //
+            // 同レベル内では複数のスラブが該当する。取り込みモデルのスラブは小梁で分割されて
+            // おり、小梁は必ず 2〜3 枚のスラブの辺上に載るためである。ここでは並び順の先頭を
+            // 採る。負担幅を辺上の小梁に対して正しく出すには、床領域（大梁で囲まれた領域）を
+            // 単位とする分配へ移す必要があり、それはこの関数ごと置き換える範囲の変更になる。
+            let Some((slab_idx, slab)) = self.model.slabs.iter().enumerate().find(|(_, s)| {
+                squid_n_load::floor::slab_level(&self.model, s)
+                    .is_some_and(|z| (z - mid_z).abs() <= SLAB_LEVEL_TOL)
+                    && squid_n_load::floor::point_in_slab_boundary(&self.model, s, mid)
+            }) else {
                 continue;
             };
 

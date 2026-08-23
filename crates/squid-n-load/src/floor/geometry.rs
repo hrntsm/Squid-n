@@ -4,6 +4,8 @@
 //! - [`dist3`] — 3次元2点間のユークリッド距離
 //! - [`slab_dimensions`] — 矩形（平行四辺形）判定と短辺・長辺寸法 `(lx, ly)`
 //! - [`edge_len`] — 多角形の辺 i の長さ
+//! - [`point_in_slab_boundary`] — 点がスラブ境界多角形の内部または辺上にあるか
+//! - [`slab_level`] — スラブ面のレベル Z
 //! - [`polygon_area`] — 平面多角形の面積（シューレース公式）
 
 use squid_n_core::model::{Model, Slab};
@@ -78,6 +80,17 @@ pub fn point_in_slab_boundary(model: &Model, slab: &Slab, p: [f64; 2]) -> bool {
     }
     let poly: Vec<[f64; 2]> = coords.iter().map(|c| [c[0], c[1]]).collect();
     point_in_polygon(p, &poly) || point_on_polygon_boundary(p, &poly)
+}
+
+/// スラブ面のレベル Z [mm]（境界節点の Z の平均）。境界節点が解決できなければ `None`。
+///
+/// 床スラブは水平（Z 一定）を仮定しているため、平均は代表値としてそのままレベルを表す。
+pub fn slab_level(model: &Model, slab: &Slab) -> Option<f64> {
+    let coords = boundary_coords(model, slab)?;
+    if coords.is_empty() {
+        return None;
+    }
+    Some(coords.iter().map(|c| c[2]).sum::<f64>() / coords.len() as f64)
 }
 
 /// 平面多角形の面積（ニュートンの公式＝シューレース公式）。全体座標 XY 平面へ投影して

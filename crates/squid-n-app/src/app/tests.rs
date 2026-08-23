@@ -3804,6 +3804,91 @@ fn test_floor_design_checks_secondary_member_joist() {
     assert!((jr.m_max - w_udl * 4000.0 * 4000.0 / 8.0).abs() < 1.0);
 }
 
+/// 二次部材小梁は、平面が重なる上下階のスラブのうち**同じレベル**のスラブで検定される。
+///
+/// スラブの内包判定は XY 平面へ投影して行うため、レベルを見ないと下階のスラブが先に
+/// 該当し、下階の板厚・室用途で検定されてしまう（エラーは出ずに結果だけが誤る）。
+#[test]
+fn test_floor_design_checks_secondary_joist_uses_same_level_slab() {
+    use squid_n_core::ids::{SecondaryMemberId, SectionId, SlabId};
+    use squid_n_core::model::{
+        Node, SecondaryMember, SecondaryMemberKind, Section, Slab, SlabUsage,
+    };
+
+    const Z_UPPER: f64 = 4000.0;
+
+    let mut model = make_square_slab_test_model();
+    model.sections.push(Section {
+        id: SectionId(0),
+        name: "H-400".into(),
+        area: 10000.0,
+        iy: 1.0e8,
+        iz: 1.0e7,
+        j: 1.0e6,
+        depth: 400.0,
+        width: 200.0,
+        as_y: 0.0,
+        as_z: 0.0,
+        floor: None,
+        panel_thickness: None,
+        thickness: None,
+        shape: None,
+        material: None,
+        rebar_material: None,
+        shear_rebar_material: None,
+        steel_material: None,
+    });
+    // 下階スラブ（Z=0、室用途なし）は既にモデルにある。同じ平面形の上階スラブを足す。
+    let mk_node = |id: u32, x: f64, y: f64, z: f64| Node {
+        id: NodeId(id),
+        coord: [x, y, z],
+        restraint: Default::default(),
+        mass: None,
+        story: None,
+        support_spring: None,
+    };
+    for (i, (x, y)) in [(0.0, 0.0), (4000.0, 0.0), (4000.0, 4000.0), (0.0, 4000.0)]
+        .into_iter()
+        .enumerate()
+    {
+        model.nodes.push(mk_node(4 + i as u32, x, y, Z_UPPER));
+    }
+    let upper = Slab {
+        id: SlabId(model.slabs.len() as u32),
+        boundary: vec![NodeId(4), NodeId(5), NodeId(6), NodeId(7)],
+        usage: Some(SlabUsage::Office),
+        ..model.slabs[0].clone()
+    };
+    model.slabs.push(upper);
+    // 上階スラブの中央を通る小梁。
+    model.nodes.push(mk_node(8, 2000.0, 0.0, Z_UPPER));
+    model.nodes.push(mk_node(9, 2000.0, 4000.0, Z_UPPER));
+    model.secondary_members.push(SecondaryMember {
+        id: SecondaryMemberId(model.secondary_members.len() as u32),
+        kind: SecondaryMemberKind::Joist,
+        nodes: [NodeId(8), NodeId(9)],
+        section: Some(SectionId(0)),
+        name: "J1".into(),
+    });
+    model.validate().expect("validate");
+    let app = App {
+        model,
+        ..App::default()
+    };
+
+    let (joists, _slabs) = app.floor_design_checks();
+    assert_eq!(joists.len(), 1, "二次部材小梁が1件設計される");
+    let (sid, _target, jr) = &joists[0];
+    assert_eq!(*sid, SlabId(1), "同じレベル（上階）のスラブで検定される");
+    // 上階は室用途 Office（床用 2900 N/m²）を持つため、下階を掴むと w が小さくなる。
+    let w_udl = (0.005 + 2.9e-3) * 4000.0;
+    assert!(
+        (jr.w - w_udl).abs() / w_udl < 1e-9,
+        "下階スラブの荷重で検定されている: w={}",
+        jr.w
+    );
+}
+
 /// 中点がスラブ辺上にある二次部材小梁も床設計の対象になる。
 #[test]
 fn test_floor_design_checks_secondary_joist_on_slab_edge() {

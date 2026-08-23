@@ -1081,17 +1081,59 @@ fn stbridge_roundtrip_is_reanalyzable() {
 // ===================== 既知の欠落 =====================
 
 /// ST-Bridge から取り込んだ小梁が、床の小梁設計で検定される。
+///
+/// あわせて、各小梁が**自分と同じレベルのスラブ**で検定されていることを確認する。
+/// スラブの内包判定は XY 平面へ投影して行うため、レベルを見ないと上下階のスラブが
+/// すべて該当し、別階の板厚・室用途・境界寸法で検定されてしまう（エラーは出ない）。
 #[test]
 fn joist_design_checks_cover_imported_secondary_members() {
+    use squid_n_core::model::SecondaryMemberKind;
+
     let mut app = analyzed();
     app.run_design_check();
     assert_no_error(&app, "断面検定");
 
     let results = app.results.as_ref().expect("解析結果");
+    let n_joists = app
+        .model
+        .secondary_members
+        .iter()
+        .filter(|sm| sm.kind == SecondaryMemberKind::Joist)
+        .count();
     assert!(
         !results.joist_checks.is_empty(),
-        "小梁 {} 本が 1 件も検定されていない",
-        app.model.secondary_members.len()
+        "小梁 {n_joists} 本が 1 件も検定されていない"
+    );
+
+    let mut checked = 0;
+    for (slab_id, target, _) in &results.joist_checks {
+        let squid_n_app::app::JoistCheckTarget::SecondaryMember(smi) = target else {
+            continue;
+        };
+        checked += 1;
+        let sm = &app.model.secondary_members[*smi];
+        let z_joist = sm
+            .nodes
+            .iter()
+            .map(|n| app.model.nodes[n.index()].coord[2])
+            .sum::<f64>()
+            / 2.0;
+        let slab = app
+            .model
+            .slabs
+            .iter()
+            .find(|s| s.id == *slab_id)
+            .expect("検定結果のスラブが実在する");
+        let z_slab = squid_n_load::floor::slab_level(&app.model, slab).expect("スラブのレベル");
+        assert!(
+            (z_slab - z_joist).abs() <= 1.0,
+            "小梁 {smi}（Z={z_joist}）が別レベルのスラブ {:?}（Z={z_slab}）で検定されている",
+            slab_id
+        );
+    }
+    assert_eq!(
+        checked, n_joists,
+        "取り込んだ小梁がすべて検定されていない（{checked}/{n_joists}）"
     );
 }
 
@@ -1209,6 +1251,14 @@ fn snapshot_key_scalars() {
         })
         .fold(0.0_f64, f64::max);
     line("design.max_ratio", sig4(max_ratio));
+    // 小梁の最大検定比。件数だけでは「どのスラブで検定したか」の変化を捉えられないため、
+    // 値そのものも固定する（負担幅・床荷重強度の取り違えはここに現れる）。
+    let joist_max_ratio = results
+        .joist_checks
+        .iter()
+        .map(|(_, _, r)| r.ratio)
+        .fold(0.0_f64, f64::max);
+    line("design.joist_max_ratio", sig4(joist_max_ratio));
 
     // --- 層指標 ---
     let ctx = squid_n_app::summary::metrics_ctx_from_results(Some(results));
