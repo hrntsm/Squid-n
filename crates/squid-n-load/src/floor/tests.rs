@@ -1154,3 +1154,56 @@ fn test_attached_line_to_columns_splits_half() {
         }
     }
 }
+
+/// 取り付き領域は小梁があっても二段階分配を使わない。
+#[test]
+fn test_uses_joist_distribution_false_for_attached() {
+    use squid_n_core::ids::{FloorRegionId, NodeId, SectionId};
+    use squid_n_core::model::{
+        FloorRegion, JoistLine, LoadTransfer, RegionAnchor, RegionShape, SlabPlate,
+    };
+
+    let mut model = Model::default();
+    for (i, c) in [
+        [0.0, 0.0, 0.0],
+        [4000.0, 0.0, 0.0],
+        [4000.0, 4000.0, 0.0],
+        [0.0, 4000.0, 0.0],
+    ]
+    .iter()
+    .enumerate()
+    {
+        model.nodes.push(squid_n_core::model::Node {
+            id: NodeId(i as u32),
+            coord: *c,
+            restraint: Default::default(),
+            mass: None,
+            story: None,
+            support_spring: None,
+        });
+    }
+    let region = FloorRegion {
+        id: FloorRegionId(0),
+        name: String::new(),
+        shape: RegionShape::Attached {
+            anchor: RegionAnchor::Line {
+                nodes: [NodeId(0), NodeId(1)],
+                span: [0.0, 1.0],
+                transfer: LoadTransfer::Anchor,
+            },
+            extent: [1500.0, 1500.0],
+        },
+        plate: Some(SlabPlate {
+            joists: vec![JoistLine {
+                dir: [0.0, 1.0],
+                spacing: 2000.0,
+                support: [NodeId(0), NodeId(1)],
+                section: Some(SectionId(0)),
+                pinned_onto: None,
+            }],
+            ..Default::default()
+        }),
+        secondary_joist_ids: vec![],
+    };
+    assert!(!super::uses_joist_distribution(&model, &region));
+}

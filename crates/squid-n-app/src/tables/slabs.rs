@@ -1,10 +1,12 @@
 use crate::app::App;
 use squid_n_core::ids::{FloorRegionId, NodeId};
 use squid_n_core::model::{AreaLoad, DistributionMethod, JoistLine, OneWayDir, SlabUsage};
+use squid_n_core::model::{RegionAnchor, RegionShape};
 use squid_n_core::units::to_display::area_load_kn_per_m2;
 use squid_n_core::units::to_internal;
 use squid_n_edit::{
-    AddSlab, DeleteSlab, SetFloorRegionName, SetSlabJoists, SetSlabOneWay, SetSlabUsage,
+    AddSlab, DeleteSlab, SetAttachedAnchor, SetAttachedExtent, SetFloorRegionName, SetSlabJoists,
+    SetSlabOneWay, SetSlabUsage,
 };
 
 /// スラブ追加フォームのドラフト状態（GUI 専用）。
@@ -150,7 +152,7 @@ pub fn slabs_table(ui: &mut egui::Ui, app: &mut App) {
     use crate::table_util::{self, Col};
 
     ui.label(
-        "スラブは境界4節点・外周の梁があって初めて機能します（結果タブ/モデルタブの3Dビューで表示モード「CMQ図」を選ぶと分配結果を確認できます）。",
+        "床領域は、主架構が囲む閉領域（境界節点）と、主架構に取り付く領域（取付き線または点と張り出し量）の 2 種です。版（スラブ断面）は任意です。版がなければ床荷重・スラブ検定・協力幅は生じません（結果タブ/モデルタブの3Dビューで表示モード「CMQ図」を選ぶと分配結果を確認できます）。",
     );
     ui.separator();
 
@@ -162,6 +164,9 @@ pub fn slabs_table(ui: &mut egui::Ui, app: &mut App) {
     let mut pending_usage: Vec<(FloorRegionId, Option<SlabUsage>)> = Vec::new();
     let mut pending_section: Vec<(FloorRegionId, Option<squid_n_core::ids::SectionId>)> =
         Vec::new();
+    let mut pending_extent: Vec<(FloorRegionId, [f64; 2])> = Vec::new();
+    let mut pending_anchor: Vec<(FloorRegionId, RegionAnchor)> = Vec::new();
+    let node_ids: Vec<NodeId> = app.model.nodes.iter().map(|n| n.id).collect();
     // 板状の断面（板厚を持つ断面）だけを候補にする。板厚が無い断面を割り当てても
     // 自重・数量が算定できないため、選ばせない。
     let slab_sections: Vec<(squid_n_core::ids::SectionId, String)> = app
@@ -204,15 +209,26 @@ pub fn slabs_table(ui: &mut egui::Ui, app: &mut App) {
                     pending_name.push((slab.id, name));
                 }
             });
-            row.col(|ui| {
-                let s = slab
-                    .boundary_nodes()
-                    .unwrap_or_default()
-                    .iter()
-                    .map(|n| n.0.to_string())
-                    .collect::<Vec<_>>()
-                    .join("-");
-                table_util::text_cell(ui, &s);
+            row.col(|ui| match &slab.shape {
+                RegionShape::Enclosed { boundary } => {
+                    let s = boundary
+                        .iter()
+                        .map(|n| n.0.to_string())
+                        .collect::<Vec<_>>()
+                        .join("-");
+                    table_util::text_cell(ui, &s);
+                }
+                RegionShape::Attached { anchor, extent } => {
+                    attached_boundary_cell(
+                        ui,
+                        slab.id,
+                        *anchor,
+                        *extent,
+                        &node_ids,
+                        &mut pending_extent,
+                        &mut pending_anchor,
+                    );
+                }
             });
             row.col(|ui| {
                 let s = slab
@@ -317,6 +333,8 @@ pub fn slabs_table(ui: &mut egui::Ui, app: &mut App) {
         || !pending_one_way.is_empty()
         || !pending_usage.is_empty()
         || !pending_section.is_empty()
+        || !pending_extent.is_empty()
+        || !pending_anchor.is_empty()
         || pending_delete.is_some();
     for (id, name) in pending_name {
         app.undo
@@ -335,6 +353,14 @@ pub fn slabs_table(ui: &mut egui::Ui, app: &mut App) {
             &mut app.model,
             Box::new(squid_n_edit::SetSlabSection { id, section }),
         );
+    }
+    for (id, extent) in pending_extent {
+        app.undo
+            .run(&mut app.model, Box::new(SetAttachedExtent { id, extent }));
+    }
+    for (id, anchor) in pending_anchor {
+        app.undo
+            .run(&mut app.model, Box::new(SetAttachedAnchor { id, anchor }));
     }
     if let Some(id) = pending_delete {
         app.undo.run(&mut app.model, Box::new(DeleteSlab { id }));
@@ -641,7 +667,7 @@ fn attached_section(ui: &mut egui::Ui, app: &mut App) {
                     anchor,
                     extent,
                     // 版の仕様（断面・仕上荷重・室用途）は、追加後に一覧表から与える。
-                    plate: Some(Default::default()),
+                    plate: None,
                 }),
             );
             app.staleness.mark_edited();
@@ -668,7 +694,18 @@ fn joists_section(ui: &mut egui::Ui, app: &mut App) {
     }
 
     // 対象スラブ選択。
-    let slab_ids: Vec<FloorRegionId> = app.model.floor_regions.iter().map(|s| s.id).collect();
+    // 小梁 UI の対象は囲まれた領域のみ（取り付きは二段階伝達の対象外）。
+    let slab_ids: Vec<FloorRegionId> = app
+        .model
+        .floor_regions
+        .iter()
+        .filter(|s| !s.is_attached())
+        .map(|s| s.id)
+        .collect();
+    if slab_ids.is_empty() {
+        ui.label("囲まれたスラブがありません（小梁は囲まれた領域のみ）");
+        return;
+    }
     if app
         .slab_draft
         .joist_target
@@ -905,4 +942,70 @@ fn joists_section(ui: &mut egui::Ui, app: &mut App) {
         );
         app.staleness.mark_edited();
     }
+}
+
+fn attached_boundary_cell(
+    ui: &mut egui::Ui,
+    id: FloorRegionId,
+    anchor: RegionAnchor,
+    extent: [f64; 2],
+    node_ids: &[NodeId],
+    pending_extent: &mut Vec<(FloorRegionId, [f64; 2])>,
+    pending_anchor: &mut Vec<(FloorRegionId, RegionAnchor)>,
+) {
+    ui.vertical(|ui| {
+        match anchor {
+            RegionAnchor::Line {
+                nodes,
+                span,
+                transfer,
+            } => {
+                ui.horizontal(|ui| {
+                    for k in 0..2 {
+                        let mut sel = nodes[k];
+                        egui::ComboBox::from_id_salt(("att_anc", id.0, k))
+                            .selected_text(format!("N{}", sel.0))
+                            .show_ui(ui, |ui| {
+                                for &nid in node_ids {
+                                    ui.selectable_value(&mut sel, nid, format!("N{}", nid.0));
+                                }
+                            });
+                        if sel != nodes[k] && sel != nodes[1 - k] {
+                            let mut n = nodes;
+                            n[k] = sel;
+                            pending_anchor.push((
+                                id,
+                                RegionAnchor::Line {
+                                    nodes: n,
+                                    span,
+                                    transfer,
+                                },
+                            ));
+                        }
+                    }
+                });
+            }
+            RegionAnchor::Point(n) => {
+                let mut sel = n;
+                egui::ComboBox::from_id_salt(("att_pt", id.0))
+                    .selected_text(format!("N{}", sel.0))
+                    .show_ui(ui, |ui| {
+                        for &nid in node_ids {
+                            ui.selectable_value(&mut sel, nid, format!("N{}", nid.0));
+                        }
+                    });
+                if sel != n {
+                    pending_anchor.push((id, RegionAnchor::Point(sel)));
+                }
+            }
+        }
+        ui.horizontal(|ui| {
+            let mut e = extent;
+            ui.add(egui::DragValue::new(&mut e[0]).suffix(" mm"));
+            ui.add(egui::DragValue::new(&mut e[1]).suffix(" mm"));
+            if e != extent && e[0].is_finite() && e[1].is_finite() {
+                pending_extent.push((id, e));
+            }
+        });
+    });
 }

@@ -19,9 +19,8 @@ fn slab_cooperating_width(
     model: &Model,
     data: &squid_n_core::model::ElementData,
     b: f64,
-) -> Option<f64> {
-    let t = model.slab_thickness;
-    if t <= 0.0 || b <= 0.0 || data.nodes.len() < 2 || model.floor_regions.is_empty() {
+) -> Option<(f64, f64)> {
+    if b <= 0.0 || data.nodes.len() < 2 || model.floor_regions.is_empty() {
         return None;
     }
     let n0 = data.nodes[0];
@@ -84,14 +83,25 @@ fn slab_cooperating_width(
     // 協力幅を過大評価していた）。
     let mut a_pos: f64 = 0.0;
     let mut a_neg: f64 = 0.0;
+    let mut t_used: f64 = 0.0;
+    let mut matched = false;
     for region in &model.floor_regions {
-        // 協力幅は「梁を境界に含む囲まれた領域」から測る。取り付き領域（片持ち）は
-        // 境界節点を持たないため対象外。
+        // 協力幅は囲まれ＋版ありだけ（`region_has_slab`）。版なし・断面未割当はスキップ。
+        // 取り付きは boundary_nodes が無く ba 新式なし → 倍率 1.0。
+        // 板厚は対象領域の `region_thickness` の最大。建物一律 `slab_thickness` で
+        // 版なし領域を復活させない。
+        if !model.region_has_slab(region) {
+            continue;
+        }
         let Some(boundary) = region.boundary_nodes() else {
             continue;
         };
         if !(boundary.contains(&n0) && boundary.contains(&n1)) {
             continue;
+        }
+        matched = true;
+        if let Some(rt) = model.region_thickness(region) {
+            t_used = t_used.max(rt);
         }
         let mut s_pos: f64 = 0.0;
         let mut s_neg: f64 = 0.0;
@@ -124,17 +134,27 @@ fn slab_cooperating_width(
         }
     };
     let bf = b + ba(a_pos) + ba(a_neg);
-    if bf <= b {
+    if !matched || bf <= b {
         return None;
     }
-    Some(bf)
+    // region_has_slab 通過後は thickness が必ず Some。欠落時のみ建物一律へ控える。
+    let t = if t_used > 0.0 {
+        t_used
+    } else {
+        model.slab_thickness
+    };
+    if t <= 0.0 {
+        return None;
+    }
+    Some((bf, t))
 }
 
 /// スラブ協力幅による強軸曲げ剛性の増大率（協力幅は RC規準 8 条
 /// = [`slab_cooperating_width`] による）。
 ///
-/// 対象は水平な RC 矩形梁のみ。スラブ（厚さ t=`Model::slab_thickness`、
-/// 建物一律・上端は梁上端と同面）を考慮した中立軸による T 形断面の Ie を
+/// 対象は水平な RC 矩形梁のみ。囲まれかつ版あり（`region_has_slab`）の領域に限り、
+/// スラブ厚さ t（対象領域の `region_thickness` の最大。欠落時のみ
+/// `Model::slab_thickness`。上端は梁上端と同面）を考慮した中立軸による T 形断面の Ie を
 /// 元断面 I0=b·D³/12 で除した値を返す。適用不能時は 1.0（増大なし）。
 pub(super) fn slab_stiffness_factor(
     model: &Model,
@@ -145,11 +165,10 @@ pub(super) fn slab_stiffness_factor(
     if d <= 0.0 {
         return 1.0;
     }
-    let Some(bf) = slab_cooperating_width(model, data, b) else {
+    let Some((bf, t)) = slab_cooperating_width(model, data, b) else {
         return 1.0;
     };
     // スラブを考慮した中立軸による T 形断面の Ie
-    let t = model.slab_thickness;
     let tf = t.min(d);
     let aw = b * d;
     let af = (bf - b) * tf;
@@ -196,10 +215,9 @@ pub(super) fn composite_beam_stiffness_factor(
     if sa <= 0.0 || si <= 0.0 || sh <= 0.0 || es <= 0.0 {
         return 1.0;
     }
-    let Some(bf) = slab_cooperating_width(model, data, sec.width.max(1.0)) else {
+    let Some((bf, t)) = slab_cooperating_width(model, data, sec.width.max(1.0)) else {
         return 1.0;
     };
-    let t = model.slab_thickness;
     let ec = squid_n_core::section_shape::concrete_young_modulus(COMPOSITE_SLAB_FC);
     let hd = 0.0; // デッキ高さ（未対応=0）
     let ca = bf * t;

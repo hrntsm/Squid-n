@@ -418,11 +418,13 @@ impl Default for DesignCtx {
     }
 }
 
-/// 梁の両端節点がいずれかのスラブ境界に含まれるか（スラブ取付き判定）。
+/// 梁の両端節点が、版のある床領域の支持辺に乗るか（スラブ取付き判定）。
 ///
-/// 剛性側のスラブ協力幅（`squid_n_element` の協力幅算定）と同じ幾何条件。
-/// 剛性計算用スラブ厚が 0 でも、モデル上スラブが境界に乗っていれば true
-/// （許容曲げの中央 T 形略算はスラブの有無で切り替える）。
+/// 「版がある」は [`Model::region_has_slab`]（plate ありかつ板厚が正）。
+/// 囲まれた領域は両端が `boundary_nodes` に含まれること、取り付き領域は
+/// `edge_nodes(0)`（取付き線）が梁の両端と一致すること（順不同）。
+/// 点取り付き・版なし囲まれは false。剛性側の協力幅は囲まれ＋版ありだけを
+/// 増大対象とするが、許容曲げの中央 T 形略算は取り付き版ありの支持梁も true とする。
 pub fn beam_has_attached_slab(
     model: &squid_n_core::model::Model,
     elem: &squid_n_core::model::ElementData,
@@ -433,8 +435,16 @@ pub fn beam_has_attached_slab(
     let n0 = elem.nodes[0];
     let n1 = elem.nodes[elem.nodes.len() - 1];
     model.floor_regions.iter().any(|s| {
-        s.boundary_nodes()
-            .is_some_and(|b| b.contains(&n0) && b.contains(&n1))
+        if !model.region_has_slab(s) {
+            return false;
+        }
+        if let Some(b) = s.boundary_nodes() {
+            b.contains(&n0) && b.contains(&n1)
+        } else if let Some([a, b]) = s.edge_nodes(0) {
+            (a == n0 && b == n1) || (a == n1 && b == n0)
+        } else {
+            false
+        }
     })
 }
 

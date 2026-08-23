@@ -5839,6 +5839,175 @@ fn test_add_attached_floor_region_roundtrip() {
     };
 }
 
+/// plate: None、extent 1000,1000 の取り付き追加が往復する。
+#[test]
+fn test_add_attached_plateless_extent_1000_roundtrip() {
+    use squid_n_core::ids::NodeId;
+    use squid_n_core::model::{LoadTransfer, RegionAnchor, RegionShape};
+
+    let mut model = Model::default();
+    for i in 0..2u32 {
+        model.nodes.push(squid_n_core::model::Node {
+            id: NodeId(i),
+            coord: [i as f64 * 4000.0, 0.0, 0.0],
+            restraint: Default::default(),
+            mass: None,
+            story: None,
+            support_spring: None,
+        });
+    }
+    let mut undo = UndoStack::default();
+    assert!(undo.run(
+        &mut model,
+        Box::new(crate::AddAttachedFloorRegion {
+            name: String::new(),
+            anchor: RegionAnchor::Line {
+                nodes: [NodeId(0), NodeId(1)],
+                span: [0.0, 1.0],
+                transfer: LoadTransfer::Anchor,
+            },
+            extent: [1000.0, 1000.0],
+            plate: None,
+        })
+    ));
+    assert_eq!(model.floor_regions.len(), 1);
+    assert!(model.floor_regions[0].plate.is_none());
+    match &model.floor_regions[0].shape {
+        RegionShape::Attached { extent, .. } => assert_eq!(*extent, [1000.0, 1000.0]),
+        other => panic!("{other:?}"),
+    }
+    undo.undo(&mut model);
+    assert!(model.floor_regions.is_empty());
+}
+
+/// SetAttachedExtent / SetAttachedAnchor の Noop。
+#[test]
+fn test_set_attached_extent_and_anchor_noop() {
+    use squid_n_core::ids::{FloorRegionId, NodeId};
+    use squid_n_core::model::{LoadTransfer, RegionAnchor};
+
+    let mut model = seeded_model(4, 0);
+    model.floor_regions.push(FloorRegion::enclosed(
+        FloorRegionId(0),
+        vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
+    ));
+    let mut undo = UndoStack::default();
+    assert!(
+        !undo.run(
+            &mut model,
+            Box::new(crate::SetAttachedExtent {
+                id: FloorRegionId(0),
+                extent: [1500.0, 1500.0],
+            })
+        ),
+        "囲まれ領域への張り出し変更は Noop"
+    );
+    assert!(
+        !undo.run(
+            &mut model,
+            Box::new(crate::SetAttachedExtent {
+                id: FloorRegionId(9),
+                extent: [1500.0, 1500.0],
+            })
+        ),
+        "存在しない ID は Noop"
+    );
+
+    assert!(undo.run(
+        &mut model,
+        Box::new(crate::AddAttachedFloorRegion {
+            name: String::new(),
+            anchor: RegionAnchor::Line {
+                nodes: [NodeId(0), NodeId(1)],
+                span: [0.0, 1.0],
+                transfer: LoadTransfer::Anchor,
+            },
+            extent: [1000.0, 1000.0],
+            plate: None,
+        })
+    ));
+    let aid = model.floor_regions.last().unwrap().id;
+    assert!(
+        !undo.run(
+            &mut model,
+            Box::new(crate::SetAttachedExtent {
+                id: aid,
+                extent: [f64::INFINITY, 1000.0],
+            })
+        ),
+        "非有限の張り出しは Noop"
+    );
+    assert!(
+        !undo.run(
+            &mut model,
+            Box::new(crate::SetAttachedAnchor {
+                id: FloorRegionId(0),
+                anchor: RegionAnchor::Point(NodeId(0)),
+            })
+        ),
+        "囲まれ領域への取付き先変更は Noop"
+    );
+    assert!(
+        !undo.run(
+            &mut model,
+            Box::new(crate::SetAttachedAnchor {
+                id: aid,
+                anchor: RegionAnchor::Point(NodeId(99)),
+            })
+        ),
+        "欠ける節点は Noop"
+    );
+    assert!(
+        !undo.run(
+            &mut model,
+            Box::new(crate::SetAttachedAnchor {
+                id: aid,
+                anchor: RegionAnchor::Line {
+                    nodes: [NodeId(0), NodeId(1)],
+                    span: [0.0, 0.5],
+                    transfer: LoadTransfer::Anchor,
+                },
+            })
+        ),
+        "部分区間は Noop"
+    );
+}
+
+/// SetSlabSection は版なしに plate を付け、None で plate を外す。
+#[test]
+fn test_set_slab_section_adds_and_removes_plate() {
+    use squid_n_core::ids::{FloorRegionId, SectionId};
+
+    let mut model = seeded_model(4, 0);
+    model.sections.push(bare_section(SectionId(0), None));
+    model.floor_regions.push(FloorRegion::enclosed(
+        FloorRegionId(0),
+        vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
+    ));
+    assert!(model.floor_regions[0].plate.is_none());
+    let mut undo = UndoStack::default();
+    assert!(
+        undo.run(
+            &mut model,
+            Box::new(crate::SetSlabSection {
+                id: FloorRegionId(0),
+                section: Some(SectionId(0)),
+            })
+        ),
+        "版なしへ断面を付ける"
+    );
+    assert!(model.floor_regions[0].plate.is_some());
+    assert_eq!(model.floor_regions[0].section(), Some(SectionId(0)));
+    assert!(undo.run(
+        &mut model,
+        Box::new(crate::SetSlabSection {
+            id: FloorRegionId(0),
+            section: None,
+        })
+    ));
+    assert!(model.floor_regions[0].plate.is_none(), "None で版が外れる");
+}
+
 /// 床領域の名前を変更し、undo で戻る。同じ名前・存在しない ID は Noop。
 #[test]
 fn test_set_floor_region_name_roundtrip() {
@@ -5971,4 +6140,63 @@ fn test_copy_story_carries_region_name_and_skips_attached() {
         "取り付き領域は複製しない"
     );
     assert!(model.validate().is_ok(), "{:?}", model.validate());
+}
+
+/// 版なし enclosed は複製先でも plate.is_none() のまま。
+#[test]
+fn test_copy_story_keeps_plateless_enclosed() {
+    use crate::{CopyStory, CopyTargets};
+    use squid_n_core::frame_gen::{frame_model, FrameSpec};
+    use squid_n_core::ids::StoryId;
+
+    let mut model = frame_model(&FrameSpec::default()).unwrap();
+    assign_node_stories(&mut model);
+    let src_z = model.stories[1].elevation;
+    let src = model
+        .floor_regions
+        .iter()
+        .position(|r| {
+            r.boundary_nodes()
+                .is_some_and(|b| (model.nodes[b[0].index()].coord[2] - src_z).abs() < 1.0)
+        })
+        .expect("2F の床領域");
+    model.floor_regions[src].plate = None;
+    model.floor_regions[src].name = "吹抜け".into();
+    let to_z = model.stories[2].elevation;
+    let doomed: Vec<squid_n_core::ids::FloorRegionId> = model
+        .floor_regions
+        .iter()
+        .filter(|r| {
+            r.boundary_nodes()
+                .is_some_and(|b| (model.nodes[b[0].index()].coord[2] - to_z).abs() < 1.0)
+        })
+        .map(|r| r.id)
+        .collect();
+    for id in doomed.into_iter().rev() {
+        crate::DeleteSlab { id }.apply(&mut model);
+    }
+
+    let mut undo = UndoStack::default();
+    assert!(undo.run(
+        &mut model,
+        Box::new(CopyStory {
+            from: StoryId(1),
+            to: vec![StoryId(2)],
+            targets: CopyTargets {
+                slabs: true,
+                ..Default::default()
+            },
+            overwrite: false,
+        })
+    ));
+    let copied: Vec<_> = model
+        .floor_regions
+        .iter()
+        .filter(|r| r.name == "吹抜け")
+        .collect();
+    assert!(copied.len() >= 2, "複製先にも吹抜けがある");
+    assert!(
+        copied.iter().all(|r| r.plate.is_none()),
+        "版なし enclosed は plate が付かない"
+    );
 }

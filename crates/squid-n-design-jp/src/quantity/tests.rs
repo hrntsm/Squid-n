@@ -296,6 +296,10 @@ fn test_girder_formwork_slab_deduction() {
     // 大梁の両側にスラブが取り付く場合、側面せいからスラブ厚を控除する。
     let mut model = rc_portal_model();
     model.slab_thickness = 150.0;
+    let mut slab_sec =
+        SectionShape::RcSlab { thickness: 150.0 }.to_section(SectionId(2), "S15".into());
+    slab_sec.material = Some(MaterialId(0));
+    model.sections.push(slab_sec);
     // 大梁（節点 2-3）の両側（y=+5000 と y=−5000）に床パネルを配置する。
     model.nodes.push(node(4, 0.0, 5_000.0, 3_500.0));
     model.nodes.push(node(5, 6_000.0, 5_000.0, 3_500.0));
@@ -309,7 +313,7 @@ fn test_girder_formwork_slab_deduction() {
                 boundary: vec![NodeId(2), NodeId(3), NodeId(a), NodeId(b)],
             },
             plate: Some(SlabPlate {
-                section: None,
+                section: Some(SectionId(2)),
                 loads: vec![],
                 usage: None,
                 method: DistributionMethod::TriTrapezoid,
@@ -599,4 +603,65 @@ fn test_foundation_girder_haunch_from_member_detail() {
     let base_m2 = 1.2 * 5.3;
     let haunch_m2 = (1_100.0 - 800.0) / 2.0 * 800.0 * 2.0 * 1e-6;
     assert!((fg.formwork_m2 - (base_m2 + haunch_m2)).abs() < 1e-9);
+}
+
+fn girder_formwork(model: &Model) -> f64 {
+    compute_quantity_takeoff(model, &QuantityCfg::default())
+        .items
+        .iter()
+        .find(|i| i.elem == Some(ElemId(2)) && i.category == MemberCategory::Girder)
+        .map(|i| i.formwork_m2)
+        .expect("大梁型枠")
+}
+
+/// 版なし囲まれは型枠控除なし。取り付き版ありは取付き線の大梁が n_adj≥1。
+#[test]
+fn test_formwork_plateless_no_deduction_attached_deducts() {
+    use squid_n_core::model::{LoadTransfer, RegionAnchor, SlabPlate};
+    use squid_n_core::section_shape::SectionShape;
+
+    let empty = rc_portal_model();
+    let form_empty = girder_formwork(&empty);
+
+    let mut plateless = rc_portal_model();
+    plateless.slab_thickness = 150.0;
+    plateless.nodes.push(node(4, 0.0, 5_000.0, 3_500.0));
+    plateless.nodes.push(node(5, 6_000.0, 5_000.0, 3_500.0));
+    plateless.floor_regions.push(FloorRegion::enclosed(
+        FloorRegionId(0),
+        vec![NodeId(2), NodeId(3), NodeId(5), NodeId(4)],
+    ));
+    let form_plateless = girder_formwork(&plateless);
+    assert!(
+        (form_plateless - form_empty).abs() < 1e-9,
+        "版なし囲まれは控除なし empty={form_empty} plateless={form_plateless}"
+    );
+
+    let mut attached = rc_portal_model();
+    let mut slab_sec =
+        SectionShape::RcSlab { thickness: 150.0 }.to_section(SectionId(2), "S15".into());
+    slab_sec.material = Some(MaterialId(0));
+    attached.sections.push(slab_sec);
+    attached.floor_regions.push(FloorRegion {
+        id: FloorRegionId(0),
+        name: "バルコニー".into(),
+        shape: RegionShape::Attached {
+            anchor: RegionAnchor::Line {
+                nodes: [NodeId(2), NodeId(3)],
+                span: [0.0, 1.0],
+                transfer: LoadTransfer::Anchor,
+            },
+            extent: [-1500.0, -1500.0],
+        },
+        plate: Some(SlabPlate {
+            section: Some(SectionId(2)),
+            ..Default::default()
+        }),
+        secondary_joist_ids: vec![],
+    });
+    let form_att = girder_formwork(&attached);
+    assert!(
+        form_att < form_empty - 1e-6,
+        "取り付き版ありは型枠が減る empty={form_empty} att={form_att}"
+    );
 }

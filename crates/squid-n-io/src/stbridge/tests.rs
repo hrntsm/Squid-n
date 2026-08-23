@@ -3076,3 +3076,84 @@ fn test_import_sorts_stories_by_elevation() {
     assert_eq!(m.stories[1].node_ids, vec![NodeId(1)]);
     assert_eq!(m.stories[2].node_ids, vec![NodeId(2)]);
 }
+
+/// StbSlab は囲まれ版ありのみ。StbSecSlab_RC は書き出したスラブの断面だけ。
+#[test]
+fn test_export_skips_plateless_and_attached_orphan_sections() {
+    use squid_n_core::dof::Dof6Mask;
+    use squid_n_core::ids::FloorRegionId;
+    use squid_n_core::model::{LoadTransfer, RegionAnchor};
+
+    fn nd(id: u32, c: [f64; 3]) -> Node {
+        Node {
+            id: NodeId(id),
+            coord: c,
+            restraint: Dof6Mask::FREE,
+            mass: None,
+            story: None,
+            support_spring: None,
+        }
+    }
+    let mut slab_sec =
+        SectionShape::RcSlab { thickness: 150.0 }.to_section(SectionId(0), "S15".into());
+    slab_sec.material = Some(MaterialId(0));
+    let mut m = Model {
+        nodes: vec![
+            nd(0, [0.0, 0.0, 3000.0]),
+            nd(1, [6000.0, 0.0, 3000.0]),
+            nd(2, [6000.0, 2500.0, 3000.0]),
+            nd(3, [0.0, 2500.0, 3000.0]),
+        ],
+        sections: vec![slab_sec],
+        materials: vec![Material {
+            strength_factor: None,
+            concrete_class: Default::default(),
+            id: MaterialId(0),
+            name: "FC24".into(),
+            category: MaterialCategory::Concrete,
+            young: 23000.0,
+            poisson: 0.2,
+            density: 2.4e-9,
+            shear: None,
+            fc: Some(24.0),
+            fy: None,
+        }],
+        ..Default::default()
+    };
+    m.floor_regions = vec![
+        FloorRegion::enclosed(
+            FloorRegionId(0),
+            vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
+        )
+        .with_plate(SlabPlate {
+            section: Some(SectionId(0)),
+            ..Default::default()
+        }),
+        FloorRegion::enclosed(
+            FloorRegionId(1),
+            vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
+        ),
+        FloorRegion {
+            id: FloorRegionId(2),
+            name: "バルコニー".into(),
+            shape: RegionShape::Attached {
+                anchor: RegionAnchor::Line {
+                    nodes: [NodeId(0), NodeId(1)],
+                    span: [0.0, 1.0],
+                    transfer: LoadTransfer::Anchor,
+                },
+                extent: [-1500.0, -1500.0],
+            },
+            plate: Some(SlabPlate {
+                section: Some(SectionId(0)),
+                ..Default::default()
+            }),
+            secondary_joist_ids: vec![],
+        },
+    ];
+    let xml = export_stbridge(&m).expect("export");
+    let n_slab = xml.matches("<StbSlab ").count();
+    let n_sec = xml.matches("<StbSecSlab_RC ").count();
+    assert_eq!(n_slab, 1, "囲まれ版ありだけ StbSlab\n{xml}");
+    assert_eq!(n_sec, 1, "書き出したスラブの断面だけ StbSecSlab_RC\n{xml}");
+}

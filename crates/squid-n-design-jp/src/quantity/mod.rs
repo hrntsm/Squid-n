@@ -373,8 +373,8 @@ struct Ctx<'a> {
     cfg: &'a QuantityCfg,
     /// 鉛直材（柱）が取り付く節点集合（大梁/小梁の分類用）。
     column_nodes: HashSet<usize>,
-    /// スラブ境界辺 (節点対, 昇順) → 隣接スラブ数（梁側面のスラブ厚控除用）。
-    slab_edges: HashMap<(u32, u32), u32>,
+    /// スラブ境界辺 (節点対, 昇順) → (隣接スラブ数, 控除厚の max [mm])。
+    slab_edges: HashMap<(u32, u32), (u32, f64)>,
     /// 節点 index → その節点に取り付く水平梁（elem index, 節点から見た
     /// 梁の伸びる向きの単位ベクトル xy）。主筋の外端・内端判定
     /// （梁の連続性）に用いる。
@@ -425,7 +425,19 @@ impl Ctx<'_> {
     /// 一致するスラブの数を数える。
     fn adjacent_slab_count(&self, ni: usize, nj: usize) -> u32 {
         let key = ((ni as u32).min(nj as u32), (ni as u32).max(nj as u32));
-        self.slab_edges.get(&key).copied().unwrap_or(0).min(2)
+        self.slab_edges
+            .get(&key)
+            .map(|(n, _)| *n)
+            .unwrap_or(0)
+            .min(2)
+    }
+
+    /// 梁側面のスラブ厚控除に使う厚さ [mm]（隣接版あり領域の `region_thickness`
+    /// の max。辺が無ければ 0。梁せい d でクランプ）。
+    fn adjacent_slab_t(&self, ni: usize, nj: usize, d: f64) -> f64 {
+        let key = ((ni as u32).min(nj as u32), (ni as u32).max(nj as u32));
+        let t = self.slab_edges.get(&key).map(|(_, t)| *t).unwrap_or(0.0);
+        t.clamp(0.0, d)
     }
 }
 
@@ -464,20 +476,35 @@ pub fn compute_quantity_takeoff(model: &Model, cfg: &QuantityCfg) -> QuantityTak
         }
     }
 
-    let mut slab_edges: HashMap<(u32, u32), u32> = HashMap::new();
+    let mut slab_edges: HashMap<(u32, u32), (u32, f64)> = HashMap::new();
     for slab in &model.floor_regions {
-        // 辺の共有は節点で見るため、境界節点を持つ領域（囲まれた領域）だけを対象とする。
-        let Some(boundary) = slab.boundary_nodes() else {
-            continue;
-        };
-        let n = boundary.len();
-        if n < 3 {
+        // 型枠控除は版あり領域（`region_has_slab`）の辺だけ。版なし・断面未割当は控除しない。
+        // 厚さは `region_thickness`。欠落時のみ建物一律 `slab_thickness`（通常は到達しない）。
+        if !model.region_has_slab(slab) {
             continue;
         }
-        for i in 0..n {
-            let a = boundary[i].index() as u32;
-            let b = boundary[(i + 1) % n].index() as u32;
-            *slab_edges.entry((a.min(b), a.max(b))).or_default() += 1;
+        let t = model
+            .region_thickness(slab)
+            .unwrap_or(model.slab_thickness)
+            .max(0.0);
+        let mut add_edge = |a: u32, b: u32| {
+            let e = slab_edges.entry((a.min(b), a.max(b))).or_insert((0, 0.0));
+            e.0 += 1;
+            e.1 = e.1.max(t);
+        };
+        if let Some(boundary) = slab.boundary_nodes() {
+            let n = boundary.len();
+            if n < 3 {
+                continue;
+            }
+            for i in 0..n {
+                add_edge(
+                    boundary[i].index() as u32,
+                    boundary[(i + 1) % n].index() as u32,
+                );
+            }
+        } else if let Some([a, b]) = slab.edge_nodes(0) {
+            add_edge(a.index() as u32, b.index() as u32);
         }
     }
 
@@ -848,13 +875,13 @@ fn beam_quantity(
         let vol = member::girder_concrete_volume(b, d, lo, haunch_i, haunch_j);
         item.concrete_m3 = vol * 1e-9;
 
-        // 型枠のスラブ厚控除: 隣接スラブ数（0/1/2）で側面せいを決める。
-        let t_slab = if model.floor_regions.is_empty() {
+        // 型枠のスラブ厚控除: 隣接スラブ数（0/1/2）と隣接版厚で側面せいを決める。
+        let n_adj = ctx.adjacent_slab_count(ni, nj);
+        let t_slab = if n_adj == 0 {
             0.0
         } else {
-            model.slab_thickness.clamp(0.0, d)
+            ctx.adjacent_slab_t(ni, nj, d)
         };
-        let n_adj = ctx.adjacent_slab_count(ni, nj);
         let form = if category == MemberCategory::FoundationGirder {
             // 基礎梁: 側面 1 面＋底面（スラブ＝耐圧版があれば側面せいから控除）。
             let d_side = if n_adj >= 1 { d - t_slab } else { d };

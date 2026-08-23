@@ -875,12 +875,15 @@ fn copy_slabs(
         // 小梁の所属は複製元の床のもの。写すと 2 つの階の床が同じ小梁を自分の子として
         // 抱え、床荷重を二重に拾う。`copy_secondary` が複製先の小梁を作るため、
         // 所属付けはそちらへ委ねて空で作る（`FloorRegion::enclosed` は空で作る）。
-        let mut region = FloorRegion::enclosed(id, boundary).with_plate(SlabPlate {
-            section,
-            method: sl.method(),
-            one_way: sl.one_way(),
-            ..Default::default()
-        });
+        let mut region = FloorRegion::enclosed(id, boundary);
+        if sl.plate.is_some() {
+            region = region.with_plate(SlabPlate {
+                section,
+                method: sl.method(),
+                one_way: sl.one_way(),
+                ..Default::default()
+            });
+        }
         // 表示名は複製元から引き継ぐ（「階段室」「吹抜け」のように、階をまたいで
         // 同じ位置にある領域は同じ呼び名で通ることが多い）。
         region.name = sl.name.clone();

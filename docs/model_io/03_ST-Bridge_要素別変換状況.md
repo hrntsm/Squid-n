@@ -33,7 +33,7 @@ ST-Bridge の主要要素ごとの変換状況です。
 | `StbBeam`（小梁） | ✅ | ✅ | 二次部材として往復する。全体解析の対象外で、床荷重と自重は大梁への集中荷重（CMQ）として伝える。床スラブの小梁一覧には載せない。断面検定は [1.4.3 交差小梁の床格子](../calc_basis/01_荷重/03_床荷重の分配.md#143-交差小梁の床格子サブストラクチャ解析床-phase-f) |
 | `StbPost`（間柱） | ✅ | ✅ | 二次部材の間柱として往復。節点は `id_node_bottom`/`_top`（`id_node_start`/`_end` も可） |
 | `StbBrace`（ブレース） | ✅ | ✅ | `feature_brace` を読み、`TENSIONANDCOMPRESSION` 以外は引張専用とする。両端ピンで取り込む |
-| `StbSlab`（スラブ） | ✅ | ✅ | 境界節点ループ（`StbNodeIdOrder` のテキスト・CDATA・子要素 `StbNodeId` のいずれも可）＋断面参照。`kind_slab` は書き出しのみ。仕上げ荷重・用途（積載）・分配法は対象外 |
+| `StbSlab`（スラブ） | ✅ | ✅ | 境界節点ループ（`StbNodeIdOrder` のテキスト・CDATA・子要素 `StbNodeId` のいずれも可）＋断面参照。取り込みは常に囲まれた領域（`kind_slab` は読まない）。書き出しは囲まれかつ版がある領域だけ。仕上げ荷重・用途（積載）・分配法は対象外 |
 | `StbWall`（壁） | ✅ | ✅ | 境界節点ループ＋断面参照（厚さ）。`id_material` は断面へ移す。開口（`StbOpen`）は対象外 |
 | 部材の符号（`name`） | ⚠️ | ⚠️ | 取り込みで符号を保つのは二次部材（小梁・間柱）のみ。書き出しは `C1`・`G1`・`BR1` のような自動命名になるため、符号は往復しない |
 | `StbFooting` / `StbPile` / `StbFoundationColumn` / `StbStripFooting`（基礎系） | ❌ | ❌ | 取り込み時に警告 |
@@ -99,7 +99,7 @@ ST-Bridge の主筋径は `D_main` の 1 種類だけなので、X 方向と Y �
 
 | ST-Bridge 要素 | 取り込み | 書き出し | 往復・備考 |
 |---|:--:|:--:|---|
-| `StbSecSlab_RC`（厚さ・符号・階・コンクリート） | ✅ | ✅ | 厚さ（`depth`）は図形要素（`StbSecFigureSlab_RC` > `StbSecSlab_RC_Straight`）から取る。符号 `name`・階 `floor`・`strength_concrete` も断面として取り込む |
+| `StbSecSlab_RC`（厚さ・符号・階・コンクリート） | ✅ | ✅ | 厚さ（`depth`）は図形要素（`StbSecFigureSlab_RC` > `StbSecSlab_RC_Straight`）から取る。符号 `name`・階 `floor`・`strength_concrete` も断面として取り込む。書き出すのは `StbSlab` を出した領域が参照する断面だけ（版なし・取り付きの孤立断面は出さない） |
 | `StbSecSlabDeck`（デッキ合成） | ✅ | ⚠️ | 図形（`StbSecSlabDeckStraight`）からコンクリート部せいを厚さとして取る。書き出しは `StbSecSlab_RC` 相当 |
 | `StbSecWall_RC`（厚さ） | ⚠️ | ✅ | 取り込むのは厚さのみで、符号・階・`strength_concrete` は読まない。書き出しは壁要素ごとに 1 件、符号は `W1` のような自動命名 |
 | `StbSecSlab_S`（鋼スラブ） | ❌ | ❌ | 取り込み時に警告 |

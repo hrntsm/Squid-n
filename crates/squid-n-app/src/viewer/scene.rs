@@ -109,27 +109,21 @@ pub(super) fn draw_slabs_and_joists(
     app: &App,
     pts: &[egui::Pos2],
     filter: FrameFilter,
+    proj: &Projector,
 ) {
     /// 破線パターン（描画長 / 間隔, px）
     const DASH: f32 = 6.0;
     const GAP: f32 = 4.0;
 
     for slab in &app.model.floor_regions {
-        // 構面表示では、境界節点がすべて構面上にある床領域だけを描く。
-        // 取り付き領域（片持ち・バルコニー）は自由端に節点を持たないため、
-        // 取付き先の節点で判定する。
-        let boundary = slab.boundary_nodes().unwrap_or_default();
-        if !boundary.iter().all(|n| filter.shows_node(n.index())) {
+        if !region_visible_on_frame(slab, filter) {
             continue;
         }
-        let poly: Vec<egui::Pos2> = boundary
-            .iter()
-            .filter_map(|n| {
-                let idx = n.index();
-                (idx < pts.len()).then(|| pts[idx])
-            })
-            .collect();
-        if poly.len() == boundary.len() && poly.len() >= 3 {
+        let Some(coords) = slab.boundary_coords(&app.model) else {
+            continue;
+        };
+        let poly: Vec<egui::Pos2> = coords.iter().copied().map(|c| proj.project(c)).collect();
+        if poly.len() >= 3 {
             // 面: 淡い半透明の暖色フィル（壁の青と弁別）
             painter.add(egui::Shape::convex_polygon(
                 poly.clone(),
@@ -161,6 +155,17 @@ pub(super) fn draw_slabs_and_joists(
                 GAP,
             ));
         }
+    }
+}
+
+fn region_visible_on_frame(slab: &squid_n_core::model::FloorRegion, filter: FrameFilter) -> bool {
+    use squid_n_core::model::{RegionAnchor, RegionShape};
+    match &slab.shape {
+        RegionShape::Enclosed { boundary } => boundary.iter().all(|n| filter.shows_node(n.index())),
+        RegionShape::Attached { anchor, .. } => match anchor {
+            RegionAnchor::Line { nodes, .. } => nodes.iter().any(|n| filter.shows_node(n.index())),
+            RegionAnchor::Point(n) => filter.shows_node(n.index()),
+        },
     }
 }
 

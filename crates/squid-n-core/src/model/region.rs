@@ -301,6 +301,19 @@ impl FloorRegion {
     pub fn usage(&self) -> Option<SlabUsage> {
         self.plate.as_ref().and_then(|p| p.usage)
     }
+
+    /// 取り付き領域の設計スパン [mm]（張り出し量の絶対値の大きい方）。
+    ///
+    /// 囲まれた領域、値が非有限、または 0 以下のときは `None`。
+    pub fn attached_design_span(&self) -> Option<f64> {
+        match &self.shape {
+            RegionShape::Enclosed { .. } => None,
+            RegionShape::Attached { extent, .. } => {
+                let span = extent[0].abs().max(extent[1].abs());
+                (span.is_finite() && span > 0.0).then_some(span)
+            }
+        }
+    }
 }
 
 impl Model {
@@ -321,6 +334,14 @@ impl Model {
         self.region_section(region)
             .and_then(|s| s.thickness)
             .filter(|t| *t > 0.0)
+    }
+
+    /// 床領域が版（スラブ）を持つか。
+    ///
+    /// 版があり、かつ板厚が定まる（断面が板厚を持つ）とき真。版なし、断面未割当、
+    /// 板厚が定まらない断面は偽。
+    pub fn region_has_slab(&self, region: &FloorRegion) -> bool {
+        region.plate.is_some() && self.region_thickness(region).is_some()
     }
 
     /// 版の自重の面荷重強度 [N/mm²]（板厚 × 断面の主材料の単位体積重量）。
@@ -522,5 +543,64 @@ mod tests {
         assert!((m.region_dead_intensity(&r) - 4.6e-3).abs() < 1e-9);
         // 骨組用の積載 1800 N/m² が加わる。
         assert!((m.region_intensity(&r, LoadPurpose::Frame) - (4.6e-3 + 1800e-6)).abs() < 1e-9);
+    }
+
+    fn attached(extent: [f64; 2]) -> FloorRegion {
+        FloorRegion {
+            id: FloorRegionId(0),
+            name: String::new(),
+            shape: RegionShape::Attached {
+                anchor: RegionAnchor::Line {
+                    nodes: [NodeId(0), NodeId(1)],
+                    span: [0.0, 1.0],
+                    transfer: LoadTransfer::Anchor,
+                },
+                extent,
+            },
+            plate: None,
+            secondary_joist_ids: Vec::new(),
+        }
+    }
+
+    /// 設計スパンは張り出し量の絶対値の大きい方。0 や異符号でも正の側を採用する。
+    #[test]
+    fn test_attached_design_span_max_abs() {
+        assert_eq!(attached([0.0, 1500.0]).attached_design_span(), Some(1500.0));
+        assert_eq!(
+            attached([1000.0, -1500.0]).attached_design_span(),
+            Some(1500.0)
+        );
+        assert_eq!(
+            attached([1500.0, 1500.0]).attached_design_span(),
+            Some(1500.0)
+        );
+        assert_eq!(
+            attached([f64::NAN, f64::NAN]).attached_design_span(),
+            None,
+            "非有限は採用しない"
+        );
+        assert_eq!(
+            FloorRegion::enclosed(FloorRegionId(0), vec![]).attached_design_span(),
+            None
+        );
+    }
+
+    /// 版なし・断面未割当はスラブを持たない。板厚付き断面を持つ版だけが真。
+    #[test]
+    fn test_region_has_slab_requires_plate_and_thickness() {
+        let mut m = Model::default();
+        let mut sec = crate::section_shape::SectionShape::RcSlab { thickness: 150.0 }
+            .to_section(SectionId(0), "S15".into());
+        sec.material = Some(MaterialId(0));
+        m.sections.push(sec);
+        let plateless = FloorRegion::enclosed(FloorRegionId(0), vec![]);
+        assert!(!m.region_has_slab(&plateless));
+        let plate_no_sec = plateless.clone().with_plate(SlabPlate::default());
+        assert!(!m.region_has_slab(&plate_no_sec));
+        let with_t = plateless.with_plate(SlabPlate {
+            section: Some(SectionId(0)),
+            ..Default::default()
+        });
+        assert!(m.region_has_slab(&with_t));
     }
 }

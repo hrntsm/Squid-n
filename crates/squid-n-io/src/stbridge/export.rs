@@ -519,6 +519,11 @@ fn normalize(v: [f64; 3]) -> [f64; 3] {
     squid_n_core::geom::vec3::unit(v).unwrap_or([0.0, 0.0, 1.0])
 }
 
+fn exports_stb_slab(slab: &squid_n_core::model::FloorRegion) -> bool {
+    // StbSlab は囲まれ＋版ありだけ。取り付き・版なしは部材も孤立断面も出さない。
+    slab.boundary_nodes().is_some() && slab.plate.is_some()
+}
+
 /// 各スラブが参照する `StbSecSlab_RC` の id を決める。
 ///
 /// **同じ内部断面を指すスラブは 1 つの ST-Bridge 断面を共有する**。スラブごとに
@@ -535,6 +540,9 @@ fn slab_section_ids(model: &Model, base: u32) -> std::collections::HashMap<Floor
     let mut out: std::collections::HashMap<FloorRegionId, u32> = std::collections::HashMap::new();
     let mut next = base;
     for slab in &model.floor_regions {
+        if !exports_stb_slab(slab) {
+            continue;
+        }
         let id = match slab.section() {
             Some(sec) => *shared.entry(sec).or_insert_with(|| {
                 let v = next;
@@ -564,6 +572,9 @@ fn slab_sections(model: &Model, base: u32) -> String {
     let mut body = String::new();
     let mut written: std::collections::HashSet<u32> = std::collections::HashSet::new();
     for slab in &model.floor_regions {
+        if !exports_stb_slab(slab) {
+            continue;
+        }
         let Some(&s) = ids.get(&slab.id) else {
             continue;
         };

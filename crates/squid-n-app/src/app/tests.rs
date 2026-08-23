@@ -4138,6 +4138,178 @@ fn test_slab_design_span_respects_one_way() {
     );
 }
 
+fn rc_slab_plate(section: squid_n_core::ids::SectionId) -> SlabPlate {
+    use squid_n_core::model::{AreaLoad, DistributionMethod};
+    SlabPlate {
+        section: Some(section),
+        loads: vec![AreaLoad {
+            kind: "DL".into(),
+            value: 0.005,
+        }],
+        usage: None,
+        method: DistributionMethod::TriTrapezoid,
+        one_way: None,
+        joists: vec![],
+    }
+}
+
+/// 片持ち（線取り付き・矩形）は coef=2（M=wL²/2）。囲まれ矩形は従来どおり 8。
+#[test]
+fn test_attached_cantilever_slab_check_coef_2() {
+    use squid_n_core::ids::{FloorRegionId, SectionId};
+    use squid_n_core::model::{LoadPurpose, LoadTransfer, RegionAnchor, RegionShape};
+    use squid_n_core::section_shape::SectionShape;
+
+    let mut model = make_square_slab_test_model();
+    let sid = SectionId(model.sections.len() as u32);
+    model
+        .sections
+        .push(SectionShape::RcSlab { thickness: 150.0 }.to_section(sid, "S15".into()));
+    model.floor_regions[0].plate = Some(rc_slab_plate(sid));
+    let attached_id = FloorRegionId(1);
+    model.floor_regions.push(FloorRegion {
+        id: attached_id,
+        name: "バルコニー".into(),
+        shape: RegionShape::Attached {
+            anchor: RegionAnchor::Line {
+                nodes: [NodeId(0), NodeId(1)],
+                span: [0.0, 1.0],
+                transfer: LoadTransfer::Anchor,
+            },
+            extent: [1500.0, 1500.0],
+        },
+        plate: Some(rc_slab_plate(sid)),
+        secondary_joist_ids: vec![],
+    });
+    model.validate().expect("validate");
+    let app = App {
+        model,
+        ..App::default()
+    };
+    let (_j, slabs) = app.floor_design_checks();
+    let enclosed = slabs
+        .iter()
+        .find(|(id, _)| *id == FloorRegionId(0))
+        .expect("囲まれ矩形");
+    let attached = slabs
+        .iter()
+        .find(|(id, _)| *id == attached_id)
+        .expect("取り付きが床検定に載る");
+    let w_e = app
+        .model
+        .region_intensity(&app.model.floor_regions[0], LoadPurpose::Floor);
+    let w_a = app
+        .model
+        .region_intensity(&app.model.floor_regions[1], LoadPurpose::Floor);
+    assert!(
+        (enclosed.1.moment - w_e * 4000.0 * 4000.0 / 8.0).abs() < 1.0,
+        "囲まれは coef=8 M={} w={}",
+        enclosed.1.moment,
+        w_e
+    );
+    assert!(
+        (attached.1.span - 1500.0).abs() < 1e-6,
+        "片持ちスパン {}",
+        attached.1.span
+    );
+    assert!(
+        (attached.1.moment - w_a * 1500.0 * 1500.0 / 2.0).abs() < 1.0,
+        "片持ちは M=wL²/2 got={} w={}",
+        attached.1.moment,
+        w_a
+    );
+}
+
+/// 台形取り付きは slab_dimensions が None でも床検定から落ちない。
+#[test]
+fn test_attached_trapezoid_slab_check_survives_none_dimensions() {
+    use squid_n_core::ids::{FloorRegionId, SectionId};
+    use squid_n_core::model::{LoadPurpose, LoadTransfer, RegionAnchor, RegionShape};
+    use squid_n_core::section_shape::SectionShape;
+
+    let mut model = make_square_slab_test_model();
+    let sid = SectionId(model.sections.len() as u32);
+    model
+        .sections
+        .push(SectionShape::RcSlab { thickness: 150.0 }.to_section(sid, "S15".into()));
+    model.floor_regions.clear();
+    model.floor_regions.push(FloorRegion {
+        id: FloorRegionId(0),
+        name: "台形片持ち".into(),
+        shape: RegionShape::Attached {
+            anchor: RegionAnchor::Line {
+                nodes: [NodeId(0), NodeId(1)],
+                span: [0.0, 1.0],
+                transfer: LoadTransfer::Anchor,
+            },
+            extent: [1000.0, 2000.0],
+        },
+        plate: Some(rc_slab_plate(sid)),
+        secondary_joist_ids: vec![],
+    });
+    let dims = squid_n_load::floor::slab_dimensions(&model, &model.floor_regions[0]);
+    assert!(dims.is_none(), "台形は矩形寸法を持たない: {dims:?}");
+    model.validate().expect("validate");
+    let app = App {
+        model,
+        ..App::default()
+    };
+    let (_j, slabs) = app.floor_design_checks();
+    assert_eq!(slabs.len(), 1, "slab_dimensions が None でも検定する");
+    let w = app
+        .model
+        .region_intensity(&app.model.floor_regions[0], LoadPurpose::Floor);
+    let sr = &slabs[0].1;
+    assert!((sr.span - 2000.0).abs() < 1e-6, "スパン={}", sr.span);
+    assert!(
+        (sr.moment - w * 2000.0 * 2000.0 / 2.0).abs() < 1.0,
+        "coef=2 M={}",
+        sr.moment
+    );
+}
+
+/// 点取り付きは大きい方の張り出しをスパンとし、coef=2。
+#[test]
+fn test_attached_point_slab_check_coef_2() {
+    use squid_n_core::ids::{FloorRegionId, SectionId};
+    use squid_n_core::model::{LoadPurpose, RegionAnchor, RegionShape};
+    use squid_n_core::section_shape::SectionShape;
+
+    let mut model = make_square_slab_test_model();
+    let sid = SectionId(model.sections.len() as u32);
+    model
+        .sections
+        .push(SectionShape::RcSlab { thickness: 150.0 }.to_section(sid, "S15".into()));
+    model.floor_regions.clear();
+    model.floor_regions.push(FloorRegion {
+        id: FloorRegionId(0),
+        name: "出隅".into(),
+        shape: RegionShape::Attached {
+            anchor: RegionAnchor::Point(NodeId(0)),
+            extent: [800.0, 1500.0],
+        },
+        plate: Some(rc_slab_plate(sid)),
+        secondary_joist_ids: vec![],
+    });
+    model.validate().expect("validate");
+    let app = App {
+        model,
+        ..App::default()
+    };
+    let (_j, slabs) = app.floor_design_checks();
+    assert_eq!(slabs.len(), 1);
+    let w = app
+        .model
+        .region_intensity(&app.model.floor_regions[0], LoadPurpose::Floor);
+    let sr = &slabs[0].1;
+    assert!((sr.span - 1500.0).abs() < 1e-6, "スパン={}", sr.span);
+    assert!(
+        (sr.moment - w * 1500.0 * 1500.0 / 2.0).abs() < 1.0,
+        "M={}",
+        sr.moment
+    );
+}
+
 /// レビュー §1.7: 地震用重量に使う荷重ケースの選択が、並び順ではなく
 /// `LoadCaseKind` に基づくことを確認する（Dead+LiveSeismic 優先、
 /// LiveSeismic がなければ Dead+Live、種別が一つも設定されていなければ

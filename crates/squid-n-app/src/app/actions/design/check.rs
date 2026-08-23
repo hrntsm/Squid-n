@@ -224,28 +224,49 @@ impl App {
             }
 
             // --- スラブ（一方向版） ---
-            if let Some((lx, ly)) = squid_n_load::floor::slab_dimensions(&self.model, slab) {
-                use squid_n_core::model::OneWayDir;
-                // 設計スパンは伝達方向に一致させる（分配エンジンと同じ規約: X→lx, Y→ly）。
-                // 一方向指定がない（両方向）場合は安全側に短辺で設計する。
-                let span = match slab.one_way() {
-                    Some(OneWayDir::X) => lx,
-                    Some(OneWayDir::Y) => ly,
-                    None => lx.min(ly),
-                };
+            // 「版がある」= `region_has_slab`（plate ありかつ板厚が正）。版なし・厚さ 0 は出さない。
+            if self.model.region_has_slab(slab) {
                 let thickness = self.model.region_thickness(slab).unwrap_or(0.0);
-                if span > 1e-9 && thickness > 0.0 {
-                    // 単純支持相当（coef=8）。連続版はより小さい係数だが安全側に 8 を用いる。
-                    let r = fd::design_slab_oneway(
-                        span,
-                        w,
-                        8.0,
-                        thickness,
-                        fd::SLAB_DEFAULT_COVER,
-                        fd::REBAR_FT_LONG_SD295,
-                        fd::SLAB_J_RATIO,
-                    );
-                    slab_checks.push((slab.id, r));
+                if thickness > 0.0 {
+                    if slab.is_attached() {
+                        // 取り付き＋版あり: 片持ち M=wL²/2（coef=2）。
+                        // スパンは張り出し量の絶対値の大きい方。slab_dimensions が
+                        // None（台形など）でも出す。
+                        if let Some(span) = slab.attached_design_span() {
+                            let r = fd::design_slab_oneway(
+                                span,
+                                w,
+                                2.0,
+                                thickness,
+                                fd::SLAB_DEFAULT_COVER,
+                                fd::REBAR_FT_LONG_SD295,
+                                fd::SLAB_J_RATIO,
+                            );
+                            slab_checks.push((slab.id, r));
+                        }
+                    } else if let Some((lx, ly)) =
+                        squid_n_load::floor::slab_dimensions(&self.model, slab)
+                    {
+                        use squid_n_core::model::OneWayDir;
+                        // 囲まれ＋版あり＋矩形: 従来どおり単純支持相当（coef=8）。
+                        let span = match slab.one_way() {
+                            Some(OneWayDir::X) => lx,
+                            Some(OneWayDir::Y) => ly,
+                            None => lx.min(ly),
+                        };
+                        if span > 1e-9 {
+                            let r = fd::design_slab_oneway(
+                                span,
+                                w,
+                                8.0,
+                                thickness,
+                                fd::SLAB_DEFAULT_COVER,
+                                fd::REBAR_FT_LONG_SD295,
+                                fd::SLAB_J_RATIO,
+                            );
+                            slab_checks.push((slab.id, r));
+                        }
+                    }
                 }
             }
         }
