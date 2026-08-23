@@ -288,13 +288,26 @@ pub fn slab_load_case_content(
             return false;
         }
         // 覆いが全長に届かない（隙間がある・端が余る）場合は割り付けない。
-        let covered: f64 = cover.iter().map(|c| c.seg[1] - c.seg[0]).sum();
-        if (len - covered).abs() > SPAN_TOL_MM {
+        // 被覆区間どうしが重なっている場合（重複部材・部分的に重なる梁）も割り付けない。
+        // 単純な合計で判定すると、重なりのぶんだけ長さが水増しされ、隙間があっても
+        // 「全長を覆えた」と誤判定する（前半へ二重に載り、後半が無荷重になる）。
+        let mut union = 0.0_f64;
+        let mut reach = 0.0_f64;
+        let mut sum = 0.0_f64;
+        for c in &cover {
+            sum += c.seg[1] - c.seg[0];
+            union += (c.seg[1] - c.seg[0].max(reach)).max(0.0);
+            reach = reach.max(c.seg[1]);
+        }
+        if (len - union).abs() > SPAN_TOL_MM || (sum - union).abs() > SPAN_TOL_MM {
             return false;
         }
 
         let mut breaks = shape_breakpoints(shape, len);
         breaks.retain(|x| *x > 0.0 && *x < len);
+        // 集中荷重が被覆区間の境目にちょうど載る場合、両側の区間が同じ位置を含むため、
+        // 1 度載せたら以降の区間では載せない（二重計上を防ぐ）。
+        let mut point_placed = false;
         for c in &cover {
             // 覆い区間を折れ点で割り、各片を線形分布として梁へ載せる。
             let mut cuts = vec![c.seg[0], c.seg[1]];
@@ -314,12 +327,13 @@ pub fn slab_load_case_content(
                 }
             };
             if let LoadShape::Point { p, x } = *shape {
-                if x >= c.seg[0] && x <= c.seg[1] {
+                if !point_placed && x >= c.seg[0] && x <= c.seg[1] {
                     member.push(MemberLoad::auto(
                         c.elem,
                         DIR,
                         MemberLoadKind::Point { a: to_elem(x), p },
                     ));
+                    point_placed = true;
                 }
                 continue;
             }
@@ -850,5 +864,91 @@ mod attached_anchor_tests {
         }
         // 総和保存: w × 取付き長さ × 跳ね出し量。
         assert!((total - W * L * D).abs() / (W * L * D) < 1e-9, "{total}");
+    }
+
+    /// 重複部材（同じ区間を覆う梁が 2 本）があるときは幾何割付を使わない。
+    ///
+    /// 被覆長の単純合計で判定すると、重なりのぶんだけ長さが水増しされ、隙間があっても
+    /// 全長を覆えたと誤判定する。前半へ二重に載り、後半が無荷重になるため、
+    /// 従来どおり両端節点へ振り分ける。
+    #[test]
+    fn test_overlapping_beams_fall_back_to_nodes() {
+        const L: f64 = 4000.0;
+        const D: f64 = 1500.0;
+        const W: f64 = 0.003;
+
+        let mut model = Model {
+            // 0—1（半分だけ）に重複した梁 2 本。1—2 には梁が無い。
+            nodes: vec![node(0, 0.0), node(1, L / 2.0), node(2, L)],
+            elements: vec![beam(0, 0, 1), beam(1, 0, 1)],
+            ..Default::default()
+        };
+        model.floor_regions = vec![FloorRegion {
+            id: FloorRegionId(0),
+            name: String::new(),
+            shape: RegionShape::Attached {
+                anchor: RegionAnchor::Line {
+                    nodes: [NodeId(0), NodeId(2)],
+                    span: [0.0, 1.0],
+                },
+                extent: [D, D],
+                transfer: LoadTransfer::Anchor,
+            },
+            plate: Some(SlabPlate {
+                loads: vec![AreaLoad {
+                    kind: "DL".into(),
+                    value: W,
+                }],
+                ..Default::default()
+            }),
+            secondary_joist_ids: vec![],
+        }];
+
+        let beam_map = beam_elem_map(&model);
+        let beam_loads = slab_beam_loads_with(
+            &model,
+            |r| model.region_dead_intensity(r),
+            &Default::default(),
+            &beam_map,
+        );
+        let (nodal, member) = slab_load_case_content(&model, &beam_loads);
+        assert!(
+            member.is_empty(),
+            "重なりがあるときは梁へ割り付けない: {member:?}"
+        );
+        let total: f64 = nodal.iter().map(|nl| -nl.values[2]).sum();
+        assert!(
+            (total - W * L * D).abs() / (W * L * D) < 1e-9,
+            "総和は保たれる: {total}"
+        );
+    }
+
+    /// 集中荷重が被覆区間の境目に載っても、二重に計上しない。
+    #[test]
+    fn test_point_load_on_coverage_boundary_is_placed_once() {
+        const L: f64 = 4000.0;
+        let model = Model {
+            nodes: vec![node(0, 0.0), node(1, L / 2.0), node(2, L)],
+            elements: vec![beam(0, 0, 1), beam(1, 1, 2)],
+            ..Default::default()
+        };
+        // 2 本の梁の境目（線分の中央）へ集中荷重を載せる。
+        let bl = squid_n_load::floor::BeamLoad {
+            elem: ElemId(u32::MAX),
+            target: LoadTarget::Span([NodeId(0), NodeId(2)]),
+            shape: squid_n_load::floor::LoadShape::Point {
+                p: 1000.0,
+                x: L / 2.0,
+            },
+            cmq: squid_n_load::floor::Cmq {
+                c_i: 0.0,
+                c_j: 0.0,
+                q_i: 0.0,
+                q_j: 0.0,
+            },
+        };
+        let (nodal, member) = slab_load_case_content(&model, &[bl]);
+        assert!(nodal.is_empty());
+        assert_eq!(member.len(), 1, "1 本の梁へ 1 度だけ載る: {member:?}");
     }
 }
