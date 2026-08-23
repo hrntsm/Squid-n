@@ -430,6 +430,89 @@ impl EditCommand for SetSlabOneWay {
     }
 }
 
+/// 床領域の表示名変更。逆操作は変更前の名前への復元。
+/// 存在しない `FloorRegionId` は Noop。
+pub struct SetFloorRegionName {
+    pub id: FloorRegionId,
+    pub name: String,
+}
+
+impl EditCommand for SetFloorRegionName {
+    fn apply(&self, model: &mut Model) -> Box<dyn EditCommand> {
+        let idx = self.id.index();
+        if idx >= model.floor_regions.len() || model.floor_regions[idx].id != self.id {
+            return Box::new(Noop);
+        }
+        let old = std::mem::replace(&mut model.floor_regions[idx].name, self.name.clone());
+        if old == self.name {
+            return Box::new(Noop);
+        }
+        Box::new(SetFloorRegionName {
+            id: self.id,
+            name: old,
+        })
+    }
+
+    fn label(&self) -> &str {
+        "床領域名変更"
+    }
+}
+
+/// 取り付き領域（片持ちスラブ・バルコニー・出隅）の追加。末尾に追加する。
+/// 逆操作は末尾の床領域削除（[`DeleteSlab`]）。
+///
+/// 取付き線・取付き点が実在しない節点を指す場合は Noop。取付き線の張り出し量は
+/// 符号つきで、取付き線 `nodes[0]`→`nodes[1]` の左側を正とする。
+pub struct AddAttachedFloorRegion {
+    pub name: String,
+    pub anchor: squid_n_core::model::RegionAnchor,
+    pub extent: [f64; 2],
+    pub plate: Option<squid_n_core::model::SlabPlate>,
+}
+
+impl EditCommand for AddAttachedFloorRegion {
+    fn apply(&self, model: &mut Model) -> Box<dyn EditCommand> {
+        use squid_n_core::model::{FloorRegion, RegionAnchor, RegionShape};
+
+        let nodes_ok = match self.anchor {
+            RegionAnchor::Line { nodes, span, .. } => {
+                // 部分区間は荷重を載せる経路がないため受け付けない（`Model::validate` と同じ規約）。
+                if (span[0] - 0.0).abs() > 1e-9 || (span[1] - 1.0).abs() > 1e-9 {
+                    return Box::new(Noop);
+                }
+                nodes[0] != nodes[1] && nodes.iter().all(|&n| crate::refs::node_exists(model, n))
+            }
+            RegionAnchor::Point(n) => crate::refs::node_exists(model, n),
+        };
+        if !nodes_ok {
+            return Box::new(Noop);
+        }
+        if let Some(plate) = &self.plate {
+            if !crate::refs::section_ref_ok(model, plate.section)
+                || !crate::refs::joists_ok(model, &plate.joists)
+            {
+                return Box::new(Noop);
+            }
+        }
+        let id = FloorRegionId(model.floor_regions.len() as u32);
+        model.floor_regions.push(FloorRegion {
+            id,
+            name: self.name.clone(),
+            shape: RegionShape::Attached {
+                anchor: self.anchor,
+                extent: self.extent,
+            },
+            plate: self.plate.clone(),
+            secondary_joist_ids: Vec::new(),
+        });
+        Box::new(crate::DeleteSlab { id })
+    }
+
+    fn label(&self) -> &str {
+        "取り付き領域追加"
+    }
+}
+
 /// スラブの用途（`usage`。積載荷重プリセット）変更。逆操作は変更前の値への復元。
 /// 存在しない `FloorRegionId` は Noop。
 pub struct SetSlabUsage {

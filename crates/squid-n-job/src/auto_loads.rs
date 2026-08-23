@@ -826,9 +826,9 @@ mod attached_anchor_tests {
                 anchor: RegionAnchor::Line {
                     nodes: [NodeId(0), NodeId(2)],
                     span: [0.0, 1.0],
+                    transfer: LoadTransfer::Anchor,
                 },
                 extent: [D, D],
-                transfer: LoadTransfer::Anchor,
             },
             plate: Some(SlabPlate {
                 loads: vec![AreaLoad {
@@ -890,9 +890,9 @@ mod attached_anchor_tests {
                 anchor: RegionAnchor::Line {
                     nodes: [NodeId(0), NodeId(2)],
                     span: [0.0, 1.0],
+                    transfer: LoadTransfer::Anchor,
                 },
                 extent: [D, D],
-                transfer: LoadTransfer::Anchor,
             },
             plate: Some(SlabPlate {
                 loads: vec![AreaLoad {

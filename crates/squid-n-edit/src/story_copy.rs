@@ -543,10 +543,16 @@ fn secondary_by_plan(model: &Model, ctx: &Ctx, story: StoryId) -> PlanIndex<usiz
 }
 
 /// 床領域の所属階（参照する節点のうちもっとも高い節点の所属階。部材と同じ規則）。
+///
+/// 取り付き領域は自由端に節点を持たないため、取付き先の節点で判定する。
+/// ここで `None` を返すと複製の対象からも見送り件数からも外れ、利用者からは
+/// 「複製したのに床が足りない」理由が見えなくなる。
 fn slab_story(model: &Model, slab: &FloorRegion) -> Option<StoryId> {
-    slab.boundary_nodes()
-        .unwrap_or_default()
-        .iter()
+    let refs: Vec<squid_n_core::ids::NodeId> = match slab.boundary_nodes() {
+        Some(b) => b.to_vec(),
+        None => slab.reference_node().into_iter().collect(),
+    };
+    refs.iter()
         .filter_map(|nid| model.nodes.get(nid.index()))
         .max_by(|a, b| a.coord[2].total_cmp(&b.coord[2]))
         .and_then(|n| n.story)
@@ -828,7 +834,12 @@ fn copy_slabs(
     let mut created = Vec::new();
     for sl in src {
         let Some(src_boundary) = sl.boundary_nodes().map(|b| b.to_vec()) else {
-            // 取り付き領域（片持ち・バルコニー）は平面キーで対応付けられないため複製しない。
+            // 取り付き領域（片持ち・バルコニー・出隅）は複製しない。
+            //
+            // 対応付けは境界節点の平面キーで行うが、取り付き領域は自由端に節点を持たず、
+            // 取付き先の節点だけでは同じ形の領域を作れない（張り出し量・区間・荷重の
+            // 出口まで写す必要がある）。**黙って落とすと複製先で床荷重が欠ける**ため、
+            // 見送った件数として報告へ数える。
             report.skipped += 1;
             continue;
         };
@@ -864,14 +875,16 @@ fn copy_slabs(
         // 小梁の所属は複製元の床のもの。写すと 2 つの階の床が同じ小梁を自分の子として
         // 抱え、床荷重を二重に拾う。`copy_secondary` が複製先の小梁を作るため、
         // 所属付けはそちらへ委ねて空で作る（`FloorRegion::enclosed` は空で作る）。
-        model
-            .floor_regions
-            .push(FloorRegion::enclosed(id, boundary).with_plate(SlabPlate {
-                section,
-                method: sl.method(),
-                one_way: sl.one_way(),
-                ..Default::default()
-            }));
+        let mut region = FloorRegion::enclosed(id, boundary).with_plate(SlabPlate {
+            section,
+            method: sl.method(),
+            one_way: sl.one_way(),
+            ..Default::default()
+        });
+        // 表示名は複製元から引き継ぐ（「階段室」「吹抜け」のように、階をまたいで
+        // 同じ位置にある領域は同じ呼び名で通ることが多い）。
+        region.name = sl.name.clone();
+        model.floor_regions.push(region);
         created.push(id);
         report.slabs_created += 1;
     }

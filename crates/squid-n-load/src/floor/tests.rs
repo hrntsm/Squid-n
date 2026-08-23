@@ -617,9 +617,9 @@ fn test_cantilever_conservation() {
             anchor: RegionAnchor::Line {
                 nodes: [NodeId(0), NodeId(1)],
                 span: [0.0, 1.0],
+                transfer: LoadTransfer::Anchor,
             },
             extent: [depth, depth],
-            transfer: LoadTransfer::Anchor,
         },
         plate: Some(SlabPlate {
             loads: vec![AreaLoad {
@@ -1035,7 +1035,6 @@ fn test_corner_slab_all_load_to_column_node() {
         shape: RegionShape::Attached {
             anchor: RegionAnchor::Point(NodeId(0)),
             extent: [lx, ly],
-            transfer: LoadTransfer::Columns,
         },
         plate: Some(SlabPlate {
             loads: vec![AreaLoad {
@@ -1121,9 +1120,9 @@ fn test_attached_line_to_columns_splits_half() {
             anchor: RegionAnchor::Line {
                 nodes: [NodeId(0), NodeId(1)],
                 span: [0.0, 1.0],
+                transfer: LoadTransfer::Columns,
             },
             extent: [d, d],
-            transfer: LoadTransfer::Columns,
         },
         plate: Some(SlabPlate {
             loads: vec![AreaLoad {

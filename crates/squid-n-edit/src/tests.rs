@@ -5773,3 +5773,202 @@ fn test_delete_member_clears_wall_region_wall() {
     );
     assert!(model.validate().is_ok(), "{:?}", model.validate());
 }
+
+/// 取り付き領域を追加し、undo で消える。取付き先が実在しない節点なら Noop。
+#[test]
+fn test_add_attached_floor_region_roundtrip() {
+    use squid_n_core::ids::NodeId;
+    use squid_n_core::model::{LoadTransfer, RegionAnchor, RegionShape};
+
+    let mut model = Model::default();
+    for i in 0..2u32 {
+        model.nodes.push(squid_n_core::model::Node {
+            id: NodeId(i),
+            coord: [i as f64 * 4000.0, 0.0, 0.0],
+            restraint: Default::default(),
+            mass: None,
+            story: None,
+            support_spring: None,
+        });
+    }
+    let mut undo = UndoStack::default();
+
+    let cmd = crate::AddAttachedFloorRegion {
+        name: "バルコニー".into(),
+        anchor: RegionAnchor::Line {
+            nodes: [NodeId(0), NodeId(1)],
+            span: [0.0, 1.0],
+            transfer: LoadTransfer::Anchor,
+        },
+        extent: [1500.0, 1500.0],
+        plate: None,
+    };
+    assert!(undo.run(&mut model, Box::new(cmd)));
+    assert_eq!(model.floor_regions.len(), 1);
+    assert_eq!(model.floor_regions[0].name, "バルコニー");
+    assert!(model.floor_regions[0].is_attached());
+    assert!(model.validate().is_ok(), "{:?}", model.validate());
+
+    undo.undo(&mut model);
+    assert!(model.floor_regions.is_empty(), "undo で消える");
+
+    // 実在しない節点を指す取り付き領域は作らない。
+    let bad = crate::AddAttachedFloorRegion {
+        name: String::new(),
+        anchor: RegionAnchor::Point(NodeId(9)),
+        extent: [1000.0, 1000.0],
+        plate: None,
+    };
+    assert!(!undo.run(&mut model, Box::new(bad)));
+    assert!(model.floor_regions.is_empty());
+
+    // 部分区間は荷重を載せる経路がないため受け付けない。
+    let partial = crate::AddAttachedFloorRegion {
+        name: String::new(),
+        anchor: RegionAnchor::Line {
+            nodes: [NodeId(0), NodeId(1)],
+            span: [0.25, 0.75],
+            transfer: LoadTransfer::Anchor,
+        },
+        extent: [1000.0, 1000.0],
+        plate: None,
+    };
+    assert!(!undo.run(&mut model, Box::new(partial)));
+    let _ = RegionShape::Enclosed {
+        boundary: Vec::new(),
+    };
+}
+
+/// 床領域の名前を変更し、undo で戻る。同じ名前・存在しない ID は Noop。
+#[test]
+fn test_set_floor_region_name_roundtrip() {
+    use squid_n_core::ids::FloorRegionId;
+    use squid_n_core::model::FloorRegion;
+
+    let mut model = Model::default();
+    model
+        .floor_regions
+        .push(FloorRegion::enclosed(FloorRegionId(0), Vec::new()));
+    let mut undo = UndoStack::default();
+
+    assert!(undo.run(
+        &mut model,
+        Box::new(crate::SetFloorRegionName {
+            id: FloorRegionId(0),
+            name: "階段室".into(),
+        })
+    ));
+    assert_eq!(model.floor_regions[0].name, "階段室");
+    undo.undo(&mut model);
+    assert_eq!(model.floor_regions[0].name, "");
+
+    // 同じ名前・存在しない ID は Noop。
+    assert!(!undo.run(
+        &mut model,
+        Box::new(crate::SetFloorRegionName {
+            id: FloorRegionId(0),
+            name: String::new(),
+        })
+    ));
+    assert!(!undo.run(
+        &mut model,
+        Box::new(crate::SetFloorRegionName {
+            id: FloorRegionId(9),
+            name: "x".into(),
+        })
+    ));
+}
+
+/// 階複製は床領域の表示名を引き継ぎ、取り付き領域は複製せず見送り件数へ数える。
+#[test]
+fn test_copy_story_carries_region_name_and_skips_attached() {
+    use crate::{CopyStory, CopyTargets};
+    use squid_n_core::frame_gen::{frame_model, FrameSpec};
+    use squid_n_core::ids::StoryId;
+    use squid_n_core::model::{LoadTransfer, RegionAnchor};
+
+    let mut model = frame_model(&FrameSpec::default()).unwrap();
+    // 3F の床を消して、2F から配り直せる状態にする。
+    model.floor_regions.retain(|sl| {
+        let z = model.nodes[sl.boundary_nodes().unwrap()[0].index()].coord[2];
+        !(7000.0..8000.0).contains(&z)
+    });
+    for (i, sl) in model.floor_regions.iter_mut().enumerate() {
+        sl.id = squid_n_core::ids::FloorRegionId(i as u32);
+    }
+    assign_node_stories(&mut model);
+
+    // 2F の床領域に名前を付け、同じ階に取り付き領域（バルコニー）を足す。
+    let src = model
+        .floor_regions
+        .iter()
+        .position(|sl| {
+            let z = model.nodes[sl.boundary_nodes().unwrap()[0].index()].coord[2];
+            (3000.0..5000.0).contains(&z)
+        })
+        .expect("2F の床領域");
+    model.floor_regions[src].name = "階段室".into();
+    let anchor_nodes = {
+        let b = model.floor_regions[src].boundary_nodes().unwrap();
+        [b[0], b[1]]
+    };
+    let mut undo = UndoStack::default();
+    assert!(undo.run(
+        &mut model,
+        Box::new(crate::AddAttachedFloorRegion {
+            name: "バルコニー".into(),
+            anchor: RegionAnchor::Line {
+                nodes: anchor_nodes,
+                span: [0.0, 1.0],
+                transfer: LoadTransfer::Anchor,
+            },
+            extent: [1500.0, 1500.0],
+            plate: None,
+        })
+    ));
+    assert!(model.validate().is_ok(), "{:?}", model.validate());
+
+    let attached_before = model
+        .floor_regions
+        .iter()
+        .filter(|r| r.is_attached())
+        .count();
+    let named_before = model
+        .floor_regions
+        .iter()
+        .filter(|r| r.name == "階段室")
+        .count();
+
+    let cmd = CopyStory {
+        from: StoryId(1),
+        to: vec![StoryId(2)],
+        targets: CopyTargets {
+            slabs: true,
+            ..Default::default()
+        },
+        overwrite: true,
+    };
+    let report = cmd.preview(&model);
+    assert!(report.skipped > 0, "取り付き領域を見送り件数へ数える");
+
+    undo.run(&mut model, Box::new(cmd));
+    assert!(
+        model
+            .floor_regions
+            .iter()
+            .filter(|r| r.name == "階段室")
+            .count()
+            > named_before,
+        "名前を引き継いだ床領域が複製先にもできる"
+    );
+    assert_eq!(
+        model
+            .floor_regions
+            .iter()
+            .filter(|r| r.is_attached())
+            .count(),
+        attached_before,
+        "取り付き領域は複製しない"
+    );
+    assert!(model.validate().is_ok(), "{:?}", model.validate());
+}

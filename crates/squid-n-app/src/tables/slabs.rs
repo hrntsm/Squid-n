@@ -3,7 +3,9 @@ use squid_n_core::ids::{FloorRegionId, NodeId};
 use squid_n_core::model::{AreaLoad, DistributionMethod, JoistLine, OneWayDir, SlabUsage};
 use squid_n_core::units::to_display::area_load_kn_per_m2;
 use squid_n_core::units::to_internal;
-use squid_n_edit::{AddSlab, DeleteSlab, SetSlabJoists, SetSlabOneWay, SetSlabUsage};
+use squid_n_edit::{
+    AddSlab, DeleteSlab, SetFloorRegionName, SetSlabJoists, SetSlabOneWay, SetSlabUsage,
+};
 
 /// スラブ追加フォームのドラフト状態（GUI 専用）。
 /// `nodes` は境界4節点（頂点0→1→2→3→0 の順で外周を辿る）の選択状態。
@@ -28,6 +30,16 @@ pub struct SlabDraft {
     pub joist_spacing: String,
     /// 小梁の断面（床の中での小梁設計用。`None` は断面未割当）。
     pub joist_section: Option<squid_n_core::ids::SectionId>,
+    /// 取り付き領域の名前。
+    pub attached_name: String,
+    /// 取り付き領域の取付き先の節点（線なら両端、点なら 1 つ目だけを使う）。
+    pub attached_nodes: [Option<NodeId>; 2],
+    /// 取り付き先を点（柱）にするか。false は線（取付き線）。
+    pub attached_point: bool,
+    /// 張り出し量の入力文字列 [mm]（線: 始端側・終端側、点: X 方向・Y 方向）。
+    pub attached_extent: [String; 2],
+    /// 取付き線に載る領域の荷重の出口。
+    pub attached_transfer: squid_n_core::model::LoadTransfer,
 }
 
 impl Default for SlabDraft {
@@ -43,6 +55,11 @@ impl Default for SlabDraft {
             joist_supports: [None; 2],
             joist_spacing: "0".to_string(),
             joist_section: None,
+            attached_name: String::new(),
+            attached_nodes: [None; 2],
+            attached_point: false,
+            attached_extent: ["1000".to_string(), "1000".to_string()],
+            attached_transfer: squid_n_core::model::LoadTransfer::Anchor,
         }
     }
 }
@@ -140,6 +157,7 @@ pub fn slabs_table(ui: &mut egui::Ui, app: &mut App) {
     // ── 一覧表 ──────────────────────────────────────────
     let n = app.model.floor_regions.len();
     let mut pending_delete: Option<FloorRegionId> = None;
+    let mut pending_name: Vec<(FloorRegionId, String)> = Vec::new();
     let mut pending_one_way: Vec<(FloorRegionId, Option<OneWayDir>)> = Vec::new();
     let mut pending_usage: Vec<(FloorRegionId, Option<SlabUsage>)> = Vec::new();
     let mut pending_section: Vec<(FloorRegionId, Option<squid_n_core::ids::SectionId>)> =
@@ -159,6 +177,7 @@ pub fn slabs_table(ui: &mut egui::Ui, app: &mut App) {
         "slabs_tbl",
         &[
             Col::id(),
+            Col::name("名前"),
             Col::text("境界節点"),
             Col::text("荷重"),
             Col::name("分配法"),
@@ -175,6 +194,15 @@ pub fn slabs_table(ui: &mut egui::Ui, app: &mut App) {
             let slab = &app.model.floor_regions[i];
             row.col(|ui| {
                 table_util::id_label(ui, slab.id.0);
+            });
+            row.col(|ui| {
+                // 名前は領域を指し示すための表示用（「階段室」「吹抜け」など）。
+                // 空欄のままでも構わないので、未設定は淡色のプレースホルダにする。
+                let mut name = slab.name.clone();
+                let resp = table_util::cell_text_edit(ui, &mut name);
+                if resp.changed() {
+                    pending_name.push((slab.id, name));
+                }
             });
             row.col(|ui| {
                 let s = slab
@@ -285,10 +313,15 @@ pub fn slabs_table(ui: &mut egui::Ui, app: &mut App) {
         },
     );
 
-    let had_pending = !pending_one_way.is_empty()
+    let had_pending = !pending_name.is_empty()
+        || !pending_one_way.is_empty()
         || !pending_usage.is_empty()
         || !pending_section.is_empty()
         || pending_delete.is_some();
+    for (id, name) in pending_name {
+        app.undo
+            .run(&mut app.model, Box::new(SetFloorRegionName { id, name }));
+    }
     for (id, one_way) in pending_one_way {
         app.undo
             .run(&mut app.model, Box::new(SetSlabOneWay { id, one_way }));
@@ -494,7 +527,126 @@ pub fn slabs_table(ui: &mut egui::Ui, app: &mut App) {
         app.staleness.mark_edited();
     }
 
+    attached_section(ui, app);
     joists_section(ui, app);
+}
+
+/// 取り付き領域（片持ちスラブ・バルコニー・出隅）の入力セクション。
+///
+/// 主架構に囲まれていない床は、囲まれた領域（大梁が囲むパネル）と違って境界を
+/// 節点で描けない。取付き先（大梁の 2 節点、または柱の 1 節点）と張り出し量で作る。
+/// 張り出し量の符号は、線なら取付き線 1→2 の**左側が正**、点なら全体座標の X/Y の向き。
+fn attached_section(ui: &mut egui::Ui, app: &mut App) {
+    use squid_n_core::model::{LoadTransfer, RegionAnchor};
+
+    ui.separator();
+    ui.strong("取り付き領域を追加（片持ち・バルコニー・出隅）");
+    ui.label(
+        "主架構に囲まれない床です。取付き先（大梁の2節点、または柱の1節点）と張り出し量で作ります。張り出し量の符号は、線なら取付き線 1→2 の左が正、点なら全体座標 X/Y の向きです。",
+    );
+
+    ui.horizontal(|ui| {
+        ui.label("名前:");
+        ui.add(egui::TextEdit::singleline(&mut app.slab_draft.attached_name).desired_width(120.0));
+        ui.label("取付き先:");
+        ui.selectable_value(&mut app.slab_draft.attached_point, false, "線（大梁）");
+        ui.selectable_value(&mut app.slab_draft.attached_point, true, "点（柱）");
+    });
+
+    let node_ids: Vec<NodeId> = app.model.nodes.iter().map(|n| n.id).collect();
+    let n_slots = if app.slab_draft.attached_point { 1 } else { 2 };
+    ui.horizontal(|ui| {
+        for k in 0..n_slots {
+            ui.label(format!("節点{}:", k + 1));
+            let label = app.slab_draft.attached_nodes[k]
+                .map(|n| n.0.to_string())
+                .unwrap_or_else(|| "―".to_string());
+            egui::ComboBox::from_id_salt(("attached_node", k))
+                .selected_text(label)
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(&mut app.slab_draft.attached_nodes[k], None, "―");
+                    for id in &node_ids {
+                        ui.selectable_value(
+                            &mut app.slab_draft.attached_nodes[k],
+                            Some(*id),
+                            id.0.to_string(),
+                        );
+                    }
+                });
+        }
+    });
+
+    ui.horizontal(|ui| {
+        let labels = if app.slab_draft.attached_point {
+            ["X 方向 [mm]:", "Y 方向 [mm]:"]
+        } else {
+            ["始端側 [mm]:", "終端側 [mm]:"]
+        };
+        for (label, value) in labels.iter().zip(app.slab_draft.attached_extent.iter_mut()) {
+            ui.label(*label);
+            ui.add(egui::TextEdit::singleline(value).desired_width(70.0));
+        }
+    });
+
+    if !app.slab_draft.attached_point {
+        ui.horizontal(|ui| {
+            ui.label("荷重の出口:");
+            ui.selectable_value(
+                &mut app.slab_draft.attached_transfer,
+                LoadTransfer::Anchor,
+                "取付き線へ分布",
+            );
+            ui.selectable_value(
+                &mut app.slab_draft.attached_transfer,
+                LoadTransfer::Columns,
+                "両端の柱へ集中",
+            );
+        });
+    }
+
+    let extent: Option<[f64; 2]> = {
+        let a = app.slab_draft.attached_extent[0].trim().parse::<f64>().ok();
+        let b = app.slab_draft.attached_extent[1].trim().parse::<f64>().ok();
+        a.zip(b).map(|(a, b)| [a, b])
+    };
+    let anchor: Option<RegionAnchor> = if app.slab_draft.attached_point {
+        app.slab_draft.attached_nodes[0].map(RegionAnchor::Point)
+    } else {
+        match (
+            app.slab_draft.attached_nodes[0],
+            app.slab_draft.attached_nodes[1],
+        ) {
+            (Some(a), Some(b)) if a != b => Some(RegionAnchor::Line {
+                nodes: [a, b],
+                span: [0.0, 1.0],
+                transfer: app.slab_draft.attached_transfer,
+            }),
+            _ => None,
+        }
+    };
+
+    let ready = anchor.is_some() && extent.is_some();
+    if !ready {
+        ui.label("取付き先の節点と張り出し量を指定してください");
+    }
+    if ui
+        .add_enabled(ready, egui::Button::new("取り付き領域を追加"))
+        .clicked()
+    {
+        if let (Some(anchor), Some(extent)) = (anchor, extent) {
+            app.undo.run(
+                &mut app.model,
+                Box::new(squid_n_edit::AddAttachedFloorRegion {
+                    name: app.slab_draft.attached_name.trim().to_string(),
+                    anchor,
+                    extent,
+                    // 版の仕様（断面・仕上荷重・室用途）は、追加後に一覧表から与える。
+                    plate: Some(Default::default()),
+                }),
+            );
+            app.staleness.mark_edited();
+        }
+    }
 }
 
 /// 小梁（`JoistLine`）の入力セクション。対象スラブを選び、支持2節点＋負担幅

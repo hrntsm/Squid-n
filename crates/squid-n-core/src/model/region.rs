@@ -27,12 +27,10 @@ pub enum RegionShape {
     Enclosed { boundary: Vec<NodeId> },
     /// 主架構に取り付く領域（片持ち・バルコニー・出隅）。
     Attached {
-        /// 取付き先。
+        /// 取付き先。荷重の出口は取付き先の種類ごとに決まる（[`RegionAnchor`] 参照）。
         anchor: RegionAnchor,
         /// 張り出し量 [mm]。意味は取付き先の種類で決まる（[`RegionAnchor`] 参照）。
         extent: [f64; 2],
-        /// 荷重の出口。
-        transfer: LoadTransfer,
     },
 }
 
@@ -49,16 +47,22 @@ pub enum RegionAnchor {
     ///
     /// 張り出し量 `extent` は `[d_i, d_j]`（区間の始端側・終端側）で、
     /// **符号は取付き線 `nodes[0]`→`nodes[1]` の左側を正とする**。
-    Line { nodes: [NodeId; 2], span: [f64; 2] },
-    /// 点（柱）に取り付く（出隅の片持ちスラブ）。
+    ///
+    /// 荷重の出口（`transfer`）を選べるのはこの形だけである。点に取り付く領域は
+    /// その節点への集中しかありえないため、値を持たせると無意味な組み合わせを
+    /// 表現できてしまう。
+    Line {
+        nodes: [NodeId; 2],
+        span: [f64; 2],
+        transfer: LoadTransfer,
+    },
+    /// 点（柱）に取り付く（出隅の片持ちスラブ）。荷重はその節点へ集中する。
     ///
     /// 張り出し量 `extent` は全体座標の `[X 方向, Y 方向]` で、符号が向きを表す。
     Point(NodeId),
 }
 
-/// 取り付き領域の荷重の出口。
-///
-/// 取付き先が [`RegionAnchor::Point`] の場合は集中の一択のため、この値は参照しない。
+/// 取り付き線に載る領域の荷重の出口（[`RegionAnchor::Line`] が持つ）。
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum LoadTransfer {
     /// 取付き線へ分布させる（既定。片持ちスラブ・梁に載るパラペット）。
@@ -178,8 +182,8 @@ impl FloorRegion {
                 .iter()
                 .map(|n| model.nodes.get(n.index()).map(|n| n.coord))
                 .collect(),
-            RegionShape::Attached { anchor, extent, .. } => match anchor {
-                RegionAnchor::Line { nodes, span } => {
+            RegionShape::Attached { anchor, extent } => match anchor {
+                RegionAnchor::Line { nodes, span, .. } => {
                     let a = model.nodes.get(nodes[0].index())?.coord;
                     let b = model.nodes.get(nodes[1].index())?.coord;
                     let lerp = |t: f64| {
@@ -404,10 +408,10 @@ mod tests {
                 anchor: RegionAnchor::Line {
                     nodes: [NodeId(0), NodeId(1)],
                     span: [0.25, 0.75],
+                    transfer: LoadTransfer::Anchor,
                 },
                 // 取付き線 0→1（+X 向き）の左＝ +Y 側へ 1500 跳ね出す。
                 extent: [1500.0, 1500.0],
-                transfer: LoadTransfer::Anchor,
             },
             plate: None,
             secondary_joist_ids: Vec::new(),
@@ -436,9 +440,9 @@ mod tests {
                 anchor: RegionAnchor::Line {
                     nodes: [NodeId(0), NodeId(1)],
                     span: [0.0, 1.0],
+                    transfer: LoadTransfer::Anchor,
                 },
                 extent,
-                transfer: LoadTransfer::Anchor,
             },
             plate: None,
             secondary_joist_ids: Vec::new(),
@@ -459,7 +463,6 @@ mod tests {
             shape: RegionShape::Attached {
                 anchor: RegionAnchor::Point(NodeId(0)),
                 extent: [1000.0, -800.0],
-                transfer: LoadTransfer::Columns,
             },
             plate: None,
             secondary_joist_ids: Vec::new(),

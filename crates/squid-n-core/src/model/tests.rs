@@ -1242,9 +1242,9 @@ fn test_validate_rejects_partial_anchor_span() {
             anchor: RegionAnchor::Line {
                 nodes: [NodeId(0), NodeId(1)],
                 span,
+                transfer: LoadTransfer::Anchor,
             },
             extent: [1000.0, 1000.0],
-            transfer: LoadTransfer::Anchor,
         },
         plate: None,
         secondary_joist_ids: vec![],

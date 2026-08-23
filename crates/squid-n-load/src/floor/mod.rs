@@ -105,10 +105,8 @@ pub fn distribute_slab_w(model: &Model, region: &FloorRegion, w: f64) -> Vec<Bea
     }
 
     match &region.shape {
-        RegionShape::Attached {
-            anchor, transfer, ..
-        } => {
-            distribute_attached(&coords, w, *anchor, *transfer, &mut loads);
+        RegionShape::Attached { anchor, .. } => {
+            distribute_attached(&coords, w, *anchor, &mut loads);
             return loads;
         }
         RegionShape::Enclosed { .. } => {}
@@ -142,12 +140,13 @@ fn distribute_attached(
     coords: &[[f64; 3]],
     w: f64,
     anchor: RegionAnchor,
-    transfer: LoadTransfer,
     loads: &mut Vec<BeamLoad>,
 ) {
     match anchor {
         RegionAnchor::Point(node) => distribute_to_node(node, coords, w, 1.0, loads),
-        RegionAnchor::Line { nodes, .. } => match transfer {
+        RegionAnchor::Line {
+            nodes, transfer, ..
+        } => match transfer {
             LoadTransfer::Anchor => distribute_cantilever(coords, w, loads),
             LoadTransfer::Columns => {
                 distribute_to_node(nodes[0], coords, w, 0.5, loads);
