@@ -214,6 +214,135 @@ pub fn slab_load_case_content(
         }
     }
 
+    /// 線分に沿った荷重強度 [N/mm]（線分始点からの距離 `x`）。`Point` は強度を持たない。
+    fn line_intensity(shape: &LoadShape, len: f64, x: f64) -> f64 {
+        match *shape {
+            LoadShape::Uniform { w } => w,
+            LoadShape::Triangle { w0 } => {
+                let mid = len / 2.0;
+                if x <= mid {
+                    if mid <= 1e-9 {
+                        0.0
+                    } else {
+                        w0 * (x / mid)
+                    }
+                } else if len - mid <= 1e-9 {
+                    0.0
+                } else {
+                    w0 * ((len - x) / (len - mid))
+                }
+            }
+            LoadShape::Trapezoid { w0, a, b } => {
+                if x < a {
+                    if a <= 1e-9 {
+                        w0
+                    } else {
+                        w0 * (x / a)
+                    }
+                } else if x <= a + b {
+                    w0
+                } else {
+                    let tail = len - (a + b);
+                    if tail <= 1e-9 {
+                        w0
+                    } else {
+                        w0 * ((len - x) / tail)
+                    }
+                }
+            }
+            LoadShape::Point { .. } => 0.0,
+        }
+    }
+
+    /// 荷重強度が折れる位置（線分始点からの距離）。区間をここで割ると各片が線形になる。
+    fn shape_breakpoints(shape: &LoadShape, len: f64) -> Vec<f64> {
+        match *shape {
+            LoadShape::Uniform { .. } => Vec::new(),
+            LoadShape::Triangle { .. } => vec![len / 2.0],
+            LoadShape::Trapezoid { a, b, .. } => vec![a, a + b],
+            LoadShape::Point { x, .. } => vec![x],
+        }
+    }
+
+    /// 線分 `p0`→`p1` に載る荷重を、それを覆う大梁へ割り付ける。
+    ///
+    /// 取付き線が張る大梁が中間節点で分割されていても、幾何で覆いを求めるため外れない。
+    /// 線分の全長を覆えなかった場合は `false` を返し、呼び出し側の従来経路（両端節点への
+    /// 振り分け）へ委ねる（覆えないぶんの荷重を落とさないため）。
+    fn emit_along_segment(
+        model: &Model,
+        member: &mut Vec<MemberLoad>,
+        p0: [f64; 3],
+        p1: [f64; 3],
+        shape: &LoadShape,
+    ) -> bool {
+        let len = {
+            let d = [p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2]];
+            (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt()
+        };
+        if len <= 1e-9 {
+            return false;
+        }
+        let cover = squid_n_load::secondary::beams_along_segment(model, p0, p1, SPAN_TOL_MM);
+        if cover.is_empty() {
+            return false;
+        }
+        // 覆いが全長に届かない（隙間がある・端が余る）場合は割り付けない。
+        let covered: f64 = cover.iter().map(|c| c.seg[1] - c.seg[0]).sum();
+        if (len - covered).abs() > SPAN_TOL_MM {
+            return false;
+        }
+
+        let mut breaks = shape_breakpoints(shape, len);
+        breaks.retain(|x| *x > 0.0 && *x < len);
+        for c in &cover {
+            // 覆い区間を折れ点で割り、各片を線形分布として梁へ載せる。
+            let mut cuts = vec![c.seg[0], c.seg[1]];
+            cuts.extend(
+                breaks
+                    .iter()
+                    .copied()
+                    .filter(|x| *x > c.seg[0] && *x < c.seg[1]),
+            );
+            cuts.sort_by(f64::total_cmp);
+            let span = c.seg[1] - c.seg[0];
+            let to_elem = |x: f64| -> f64 {
+                if span <= 1e-9 {
+                    c.elem_pos[0]
+                } else {
+                    c.elem_pos[0] + (x - c.seg[0]) / span * (c.elem_pos[1] - c.elem_pos[0])
+                }
+            };
+            if let LoadShape::Point { p, x } = *shape {
+                if x >= c.seg[0] && x <= c.seg[1] {
+                    member.push(MemberLoad::auto(
+                        c.elem,
+                        DIR,
+                        MemberLoadKind::Point { a: to_elem(x), p },
+                    ));
+                }
+                continue;
+            }
+            for w in cuts.windows(2) {
+                let (x0, x1) = (w[0], w[1]);
+                if x1 - x0 <= 1e-9 {
+                    continue;
+                }
+                let (mut a, mut b) = (to_elem(x0), to_elem(x1));
+                let (mut w1, mut w2) = (
+                    line_intensity(shape, len, x0),
+                    line_intensity(shape, len, x1),
+                );
+                if a > b {
+                    std::mem::swap(&mut a, &mut b);
+                    std::mem::swap(&mut w1, &mut w2);
+                }
+                push_dist(member, c.elem, a, b, w1, w2);
+            }
+        }
+        true
+    }
+
     fn simple_reactions(shape: &LoadShape, len: f64) -> (f64, f64) {
         match *shape {
             LoadShape::Uniform { w } => {
@@ -281,6 +410,13 @@ pub fn slab_load_case_content(
                         }
                         continue;
                     }
+                }
+                // 線分が複数の大梁にまたがる場合（取付き線の下の大梁が中間節点で
+                // 分割されている等）は、覆っている梁へ幾何で割り付ける。節点対の
+                // 完全一致に頼ると、この場合に両端節点への振り分けへ落ちてしまい、
+                // 等分布が集中荷重に化けて梁のモーメントが過小になる。
+                if emit_along_segment(model, &mut member, node0.coord, node1.coord, &bl.shape) {
+                    continue;
                 }
                 let len = {
                     let (a, b) = (node0.coord, node1.coord);
@@ -614,5 +750,105 @@ mod tests {
         let result = compute_seismic_auto_load_cases(&model, &settings, None);
         assert!(result.cases.is_empty());
         assert_eq!(result.notices.len(), 1);
+    }
+}
+
+#[cfg(test)]
+mod attached_anchor_tests {
+    //! 取り付き領域の取付き線が、分割された大梁に載る場合の荷重の割り付け。
+
+    use super::*;
+    use squid_n_core::ids::{FloorRegionId, SectionId};
+    use squid_n_core::model::{
+        AreaLoad, ElementData, ElementKind, EndCondition, FloorRegion, ForceRegime, LoadTransfer,
+        LocalAxis, MemberLoadKind, Node, RegionAnchor, RegionShape, SlabPlate,
+    };
+
+    fn node(id: u32, x: f64) -> Node {
+        Node {
+            id: NodeId(id),
+            coord: [x, 0.0, 0.0],
+            restraint: Default::default(),
+            mass: None,
+            story: None,
+            support_spring: None,
+        }
+    }
+
+    fn beam(id: u32, i: u32, j: u32) -> ElementData {
+        ElementData {
+            id: ElemId(id),
+            kind: ElementKind::Beam,
+            nodes: [NodeId(i), NodeId(j)].into_iter().collect(),
+            section: Some(SectionId(0)),
+            local_axis: LocalAxis {
+                ref_vector: [0.0, 0.0, 1.0],
+            },
+            end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+            force_regime: ForceRegime::Auto,
+            rigid_zone: Default::default(),
+            plastic_zone: None,
+            spring: None,
+        }
+    }
+
+    /// 取付き線 A—B の下の大梁が A—M—B の 2 本に分割されていても、片持ちの等分布は
+    /// 両方の梁へ分布荷重として載る（節点への集中荷重に化けない）。
+    #[test]
+    fn test_attached_anchor_spans_subdivided_beams() {
+        const L: f64 = 4000.0;
+        const D: f64 = 1500.0;
+        const W: f64 = 0.003;
+
+        let mut model = Model {
+            nodes: vec![node(0, 0.0), node(1, L / 2.0), node(2, L)],
+            elements: vec![beam(0, 0, 1), beam(1, 1, 2)],
+            ..Default::default()
+        };
+        model.floor_regions = vec![FloorRegion {
+            id: FloorRegionId(0),
+            name: String::new(),
+            shape: RegionShape::Attached {
+                anchor: RegionAnchor::Line {
+                    nodes: [NodeId(0), NodeId(2)],
+                    span: [0.0, 1.0],
+                },
+                extent: [D, D],
+                transfer: LoadTransfer::Anchor,
+            },
+            plate: Some(SlabPlate {
+                loads: vec![AreaLoad {
+                    kind: "DL".into(),
+                    value: W,
+                }],
+                ..Default::default()
+            }),
+            secondary_joist_ids: vec![],
+        }];
+
+        let beam_map = beam_elem_map(&model);
+        let beam_loads = slab_beam_loads_with(
+            &model,
+            |r| model.region_dead_intensity(r),
+            &Default::default(),
+            &beam_map,
+        );
+        let (nodal, member) = slab_load_case_content(&model, &beam_loads);
+
+        assert!(nodal.is_empty(), "節点荷重へ落ちない: {nodal:?}");
+        assert_eq!(member.len(), 2, "2 本の梁へ分布荷重が載る: {member:?}");
+
+        let mut total = 0.0;
+        for ml in &member {
+            let MemberLoadKind::Distributed { a, b, w1, w2 } = ml.kind else {
+                panic!("分布荷重でない: {ml:?}");
+            };
+            // 片持ちの等分布なので、どの区間も強度は w×跳ね出し量で一定。
+            assert!((w1 - W * D).abs() < 1e-12 && (w2 - W * D).abs() < 1e-12);
+            assert!((b - a - L / 2.0).abs() < 1e-9, "梁の全長に載る");
+            total += (b - a) * (w1 + w2) / 2.0;
+        }
+        // 総和保存: w × 取付き長さ × 跳ね出し量。
+        assert!((total - W * L * D).abs() / (W * L * D) < 1e-9, "{total}");
     }
 }
