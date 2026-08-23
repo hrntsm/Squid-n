@@ -4076,6 +4076,7 @@ fn test_slab_design_span_respects_one_way() {
             boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
         },
         plate: Some(SlabPlate {
+            // 板厚はスラブ断面が持つ（設計にはこの厚さを使う）。
             section: Some(squid_n_core::ids::SectionId(0)),
             loads: vec![AreaLoad {
                 kind: "DL".into(),
@@ -5509,6 +5510,7 @@ fn test_secondary_joist_panel_slab_dl_cmq_and_solve() {
             boundary: boundary.into_iter().map(NodeId).collect(),
         },
         plate: Some(SlabPlate {
+            // 板厚と自重はスラブ断面（`SectionId(1)`）から解決する。
             section: Some(SectionId(1)),
             loads: vec![AreaLoad {
                 kind: "DL".into(),
