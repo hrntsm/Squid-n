@@ -3889,6 +3889,87 @@ fn test_floor_design_checks_secondary_joist_uses_same_level_slab() {
     );
 }
 
+/// 幅の違う 2 枚のスラブの境界辺に載る小梁は、両者の平均を負担幅とする。
+///
+/// どちらか 1 枚の幅をそのまま採ると、スラブの並び順しだいで負担幅が過大にも過小にもなる。
+/// 境界辺に載る小梁の負担幅は「両隣の半分ずつの和」＝2 枚の幅の平均である。
+#[test]
+fn test_floor_design_checks_secondary_joist_on_shared_edge_averages_width() {
+    use squid_n_core::ids::{SecondaryMemberId, SectionId, SlabId};
+    use squid_n_core::model::{Node, SecondaryMember, SecondaryMemberKind, Section, Slab};
+
+    let mut model = make_square_slab_test_model();
+    model.sections.push(Section {
+        id: SectionId(0),
+        name: "H-400".into(),
+        area: 10000.0,
+        iy: 1.0e8,
+        iz: 1.0e7,
+        j: 1.0e6,
+        depth: 400.0,
+        width: 200.0,
+        as_y: 0.0,
+        as_z: 0.0,
+        floor: None,
+        panel_thickness: None,
+        thickness: None,
+        shape: None,
+        material: None,
+        rebar_material: None,
+        shear_rebar_material: None,
+        steel_material: None,
+    });
+    let mk = |id: u32, x: f64, y: f64| Node {
+        id: NodeId(id),
+        coord: [x, y, 0.0],
+        restraint: Default::default(),
+        mass: None,
+        story: None,
+        support_spring: None,
+    };
+    // 幅 2000 の帯と幅 4000 の帯を、x=2000 の辺で隣り合わせる。
+    model.nodes.push(mk(4, 2000.0, 0.0));
+    model.nodes.push(mk(5, 2000.0, 4000.0));
+    model.nodes.push(mk(6, 6000.0, 0.0));
+    model.nodes.push(mk(7, 6000.0, 4000.0));
+    let template = model.slabs[0].clone();
+    model.slabs = vec![
+        Slab {
+            id: SlabId(0),
+            boundary: vec![NodeId(0), NodeId(4), NodeId(5), NodeId(3)],
+            ..template.clone()
+        },
+        Slab {
+            id: SlabId(1),
+            boundary: vec![NodeId(4), NodeId(6), NodeId(7), NodeId(5)],
+            ..template
+        },
+    ];
+    // 2 枚の境界辺（x=2000）に載る小梁。
+    model.secondary_members.push(SecondaryMember {
+        id: SecondaryMemberId(model.secondary_members.len() as u32),
+        kind: SecondaryMemberKind::Joist,
+        nodes: [NodeId(4), NodeId(5)],
+        section: Some(SectionId(0)),
+        name: "J1".into(),
+    });
+    model.validate().expect("validate");
+    let app = App {
+        model,
+        ..App::default()
+    };
+
+    let (joists, _slabs) = app.floor_design_checks();
+    assert_eq!(joists.len(), 1, "境界辺の小梁が1件設計される");
+    // 負担幅 = (2000 + 4000) / 2 = 3000。片方だけを採ると 2000 か 4000 になる。
+    let w_udl = 0.005 * 3000.0;
+    assert!(
+        (joists[0].2.w - w_udl).abs() / w_udl < 1e-9,
+        "負担幅が 2 枚の平均になっていない: w={}",
+        joists[0].2.w
+    );
+}
+
 /// 中点がスラブ辺上にある二次部材小梁も床設計の対象になる。
 #[test]
 fn test_floor_design_checks_secondary_joist_on_slab_edge() {

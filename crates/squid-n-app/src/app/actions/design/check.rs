@@ -298,6 +298,9 @@ impl App {
             perp_coord: f64,
             dir: [f64; 2],
             section: SectionId,
+            /// 複数のスラブの辺に載る小梁の負担幅（載っているスラブの幅の平均）。
+            /// `None` は 1 枚のスラブの内部にある小梁で、平行小梁群から負担幅を出す。
+            edge_width: Option<f64>,
         }
 
         let mut candidates = Vec::new();
@@ -340,24 +343,48 @@ impl App {
             ];
             let mid_z = (na.coord[2] + nb.coord[2]) / 2.0;
 
-            // 中点を含み、かつ**同じレベルにある**スラブを採る。XY だけで判定すると
+            // 中点を含み、かつ**同じレベルにある**スラブを集める。XY だけで判定すると
             // 上下階のスラブは平面上で重なるため、別階のスラブを掴み、別階の板厚・室用途・
             // 境界寸法で検定してしまう（エラーは出ないまま結果だけが誤る）。
-            //
-            // 同レベル内では複数のスラブが該当する。取り込みモデルのスラブは小梁で分割されて
-            // おり、小梁は必ず 2〜3 枚のスラブの辺上に載るためである。ここでは並び順の先頭を
-            // 採る。負担幅を辺上の小梁に対して正しく出すには、床領域（大梁で囲まれた領域）を
-            // 単位とする分配へ移す必要があり、それはこの関数ごと置き換える範囲の変更になる。
-            let Some((slab_idx, slab)) = self.model.slabs.iter().enumerate().find(|(_, s)| {
-                squid_n_load::floor::slab_level(&self.model, s)
-                    .is_some_and(|z| (z - mid_z).abs() <= SLAB_LEVEL_TOL)
-                    && squid_n_load::floor::point_in_slab_boundary(&self.model, s, mid)
-            }) else {
+            let matched: Vec<(usize, &squid_n_core::model::Slab)> = self
+                .model
+                .slabs
+                .iter()
+                .enumerate()
+                .filter(|(_, s)| {
+                    squid_n_load::floor::slab_level(&self.model, s)
+                        .is_some_and(|z| (z - mid_z).abs() <= SLAB_LEVEL_TOL)
+                        && squid_n_load::floor::point_in_slab_boundary(&self.model, s, mid)
+                })
+                .collect();
+            let Some(&(slab_idx, slab)) = matched.first() else {
                 continue;
             };
 
             let perp = [-dir[1], dir[0]];
             let perp_coord = mid[0] * perp[0] + mid[1] * perp[1];
+
+            // 複数のスラブに載る小梁の負担幅は、載っているスラブの幅の平均とする。
+            // 取り込みモデルのスラブは小梁で分割されており、小梁は隣り合う 2 枚の
+            // 帯（ストリップ）の境界辺に載る。このとき負担幅は「両隣の半分ずつの和」
+            // ＝2 枚の幅の平均であり、どちらか 1 枚の幅を採ると（並び順しだいで）
+            // 過大にも過小にもなる。
+            //
+            // T 字取り付きで 3 枚に載る場合、平均は近似になる（片側が 2 枚に割れており、
+            // 厳密には割れた側の合計幅の半分を採るべき）。床領域（大梁で囲まれた領域）を
+            // 単位とする分配へ移せば、負担幅は分配計算そのものから出るため近似は不要になる。
+            let edge_width = (matched.len() >= 2).then(|| {
+                let sum: f64 = matched
+                    .iter()
+                    .map(|(_, s)| {
+                        slab_width_across(&self.model, s, dir, {
+                            let (mn, mx) = slab_perp_extent(&self.model, s, perp);
+                            mx - mn
+                        })
+                    })
+                    .sum();
+                sum / matched.len() as f64
+            });
 
             candidates.push(Cand {
                 sm_idx: smi,
@@ -367,6 +394,7 @@ impl App {
                 perp_coord,
                 dir,
                 section: sid,
+                edge_width,
             });
         }
 
@@ -402,8 +430,12 @@ impl App {
 
             for (ri, &ci) in sorted.iter().enumerate() {
                 let c = &candidates[ci];
-                let spacing = if n == 1 {
-                    single_secondary_joist_spacing(&self.model, slab, c.dir, pmax - pmin)
+                let spacing = if let Some(w) = c.edge_width {
+                    // 複数スラブの辺に載る小梁。負担幅は載っているスラブの幅の平均で、
+                    // どのスラブを代表に選んだかに依存しない。
+                    w
+                } else if n == 1 {
+                    slab_width_across(&self.model, slab, c.dir, pmax - pmin)
                 } else {
                     let left = if ri == 0 {
                         c.perp_coord - pmin
@@ -466,8 +498,12 @@ fn slab_perp_extent(
     (min, max)
 }
 
-/// 単独小梁の負担幅。矩形スラブは `slab_dimensions` の軸直交寸法、それ以外は境界 bbox。
-fn single_secondary_joist_spacing(
+/// 小梁の向き `dir` に直交する方向のスラブ幅。矩形スラブは `slab_dimensions` の
+/// 軸直交寸法、それ以外は境界 bbox の `bbox_extent` を用いる。
+///
+/// スラブ 1 枚の内部にある単独小梁ではこれがそのまま負担幅になり、
+/// スラブの境界辺に載る小梁では、載っている各スラブについて求めて平均する。
+fn slab_width_across(
     model: &squid_n_core::model::Model,
     slab: &squid_n_core::model::Slab,
     dir: [f64; 2],
