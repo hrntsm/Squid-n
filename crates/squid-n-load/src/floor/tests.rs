@@ -539,7 +539,7 @@ fn test_polygon_pentagon_conservation() {
         match l.target {
             LoadTarget::Edge(e) => assert!(e < 5),
             LoadTarget::Node(_) => panic!("polygon path should not emit node targets"),
-            LoadTarget::Span(_) => panic!("polygon path should not emit span targets"),
+            LoadTarget::Span { .. } => panic!("polygon path should not emit span targets"),
         }
     }
 
@@ -727,13 +727,19 @@ fn test_joist_two_stage_transfer_conservation() {
     }
 
     // 境界辺(辺1・3、小梁と平行)は remainder=lx-2*spacing=3000 を折半 → 各1500 = spacing/2
-    // `distribute_region` は Edge を Span([n0,n1]) へ解決済み（辺1=N1-N2、辺3=N3-N0）。
+    // `distribute_region` は Edge を Span{nodes:[n0,n1], ..} へ解決済み（辺1=N1-N2、辺3=N3-N0）。
     let edge_entries: Vec<_> = loads
         .iter()
         .filter(|l| {
             matches!(
                 l.target,
-                LoadTarget::Span([NodeId(1), NodeId(2)]) | LoadTarget::Span([NodeId(3), NodeId(0)])
+                LoadTarget::Span {
+                    nodes: [NodeId(1), NodeId(2)],
+                    ..
+                } | LoadTarget::Span {
+                    nodes: [NodeId(3), NodeId(0)],
+                    ..
+                }
             )
         })
         .collect();
@@ -858,7 +864,13 @@ fn test_materialized_joist_uses_span_distributed_load() {
         .filter(|l| {
             matches!(
                 l.target,
-                LoadTarget::Span([NodeId(4), NodeId(5)]) | LoadTarget::Span([NodeId(6), NodeId(7)])
+                LoadTarget::Span {
+                    nodes: [NodeId(4), NodeId(5)],
+                    ..
+                } | LoadTarget::Span {
+                    nodes: [NodeId(6), NodeId(7)],
+                    ..
+                }
             )
         })
         .collect();

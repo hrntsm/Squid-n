@@ -127,12 +127,19 @@ fn distribute_attached(
     match anchor {
         RegionAnchor::Point(node) => distribute_to_node(node, coords, w, 1.0, loads),
         RegionAnchor::Line {
-            nodes, transfer, ..
+            nodes,
+            span,
+            transfer,
         } => match transfer {
             LoadTransfer::Anchor => distribute_cantilever(coords, w, loads),
             LoadTransfer::Columns => {
-                distribute_to_node(nodes[0], coords, w, 0.5, loads);
-                distribute_to_node(nodes[1], coords, w, 0.5, loads);
+                // 部分区間（span != [0, 1]）では、総荷重の作用点は取付き線上の区間中点
+                // （無次元位置 t_mid）にある。単純梁の集中荷重の反力公式
+                // （R0 = P(1-t), R1 = P・t）で両端の柱へ按分する。全長（t_mid=0.5）では
+                // 従来どおり半分ずつになる。
+                let t_mid = 0.5 * (span[0] + span[1]);
+                distribute_to_node(nodes[0], coords, w, 1.0 - t_mid, loads);
+                distribute_to_node(nodes[1], coords, w, t_mid, loads);
             }
         },
     }
@@ -169,13 +176,25 @@ pub fn uses_joist_distribution(model: &Model, region: &FloorRegion) -> bool {
 /// `Span` へ解決する。床領域は複数の床板を束ねるため、`Edge(k)` の `k` は
 /// どの床板を指すかによって別々の辺を意味する。呼び出し側（`squid-n-job`）へ
 /// 渡す前に、ここで床板の文脈ごと解決してしまう（`Node`/`Span` だけにする）。
+///
+/// 取り付く床板（[`SlabShape::Attached`]）の辺 0（取付き線）は、取付き先が持つ
+/// 無次元区間 `span`（[`RegionAnchor::Line::span`]）をそのまま `Span::t` へ引き継ぐ。
+/// 大梁または小梁で囲まれた床板の境界辺は常に全長（`t = [0.0, 1.0]`）である。
 fn resolve_edges_to_span(slab: &Slab, loads: Vec<BeamLoad>) -> Vec<BeamLoad> {
+    let anchor_t = match &slab.shape {
+        SlabShape::Attached {
+            anchor: RegionAnchor::Line { span, .. },
+            ..
+        } => *span,
+        _ => [0.0, 1.0],
+    };
     loads
         .into_iter()
         .filter_map(|mut bl| match bl.target {
             LoadTarget::Edge(k) => {
                 let [n0, n1] = slab.edge_nodes(k)?;
-                bl.target = LoadTarget::Span([n0, n1]);
+                let t = if k == 0 { anchor_t } else { [0.0, 1.0] };
+                bl.target = LoadTarget::Span { nodes: [n0, n1], t };
                 // `push_edge` は `elem` に辺インデックスを入れている（実要素とは無関係）。
                 // 番兵 `ElemId(u32::MAX)` に戻し、呼び出し側の `find_beam`／幾何割付に
                 // 解決させる（さもないと辺インデックスが偶然実在する ElemId と衝突し、

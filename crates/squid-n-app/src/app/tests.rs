@@ -2965,7 +2965,7 @@ fn test_refresh_beam_loads_maps_edges_to_members() {
         .beam_loads
         .iter()
         .filter(|bl| {
-            matches!(bl.target, squid_n_load::floor::LoadTarget::Span(_))
+            matches!(bl.target, squid_n_load::floor::LoadTarget::Span { .. })
                 && bl.elem == ElemId(u32::MAX)
         })
         .collect();

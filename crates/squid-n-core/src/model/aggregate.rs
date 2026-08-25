@@ -434,18 +434,24 @@ impl Model {
             }
         }
 
-        // 取付き線の部分区間（`span != [0, 1]`）は、荷重をその区間だけへ載せる経路が
-        // まだない（床板単位の分配＝申し送りの Step 4 で対応する）。データとしては
-        // 表せるが、黙って全長へ載せると荷重の位置が実際とずれるため、ここで止める。
+        // 取付き線の無次元区間 `span`（[t_i, t_j]）は 0.0〜1.0 の範囲で始端 < 終端でなければ
+        // ならない。荷重は `squid_n_load::floor::distribute_cantilever` が `span` から引いた
+        // 部分区間へ幾何解決で載せる（`squid_n_load::floor::LoadTarget::Span::t`）。
+        // 逆順・範囲外・非有限は取付き線上に定義できないため弾く。
         for slab in &self.slabs {
             if let SlabShape::Attached {
                 anchor: RegionAnchor::Line { span, .. },
                 ..
             } = &slab.shape
             {
-                if (span[0] - 0.0).abs() > 1e-9 || (span[1] - 1.0).abs() > 1e-9 {
+                let valid = span[0].is_finite()
+                    && span[1].is_finite()
+                    && span[0] >= -1e-9
+                    && span[1] <= 1.0 + 1e-9
+                    && span[1] - span[0] > 1e-9;
+                if !valid {
                     return Err(CoreError::DanglingRef(format!(
-                        "Slab {} の取付き線の部分区間は未対応（全長 [0, 1] のみ）",
+                        "Slab {} の取付き線の区間 span が不正（0.0 <= t_i < t_j <= 1.0 であること）",
                         slab.id.0
                     )));
                 }

@@ -116,7 +116,9 @@ fn push_resolved_loads(
                 // `distribute_region`/`distribute_slab_resolved` は Edge を残さず Span へ解決済み。
                 continue;
             }
-            LoadTarget::Span([n0, n1]) => {
+            LoadTarget::Span {
+                nodes: [n0, n1], ..
+            } => {
                 if let Some(elem) = find_beam(n0, n1) {
                     bl.elem = elem;
                 }
@@ -430,21 +432,46 @@ pub fn slab_load_case_content(
                 }
                 emit_shape(&mut member, elem.id, 0.0, l, false, &bl.shape);
             }
-            LoadTarget::Span([n0, n1]) => {
-                if let Some(elem) = model.element(bl.elem) {
-                    let l = model.member_length(elem);
-                    if l > 1e-9 {
-                        emit_shape(&mut member, elem.id, 0.0, l, false, &bl.shape);
+            LoadTarget::Span { nodes: [n0, n1], t } => {
+                // `t == [0, 1]`（既定。荷重が nodes 間の全長を覆う）は従来どおり
+                // `bl.elem`（`push_resolved_loads` が直接ヒットさせた要素）への
+                // 高速経路を使う。部分区間（取付き線の一部だけに載る取り付き領域）は
+                // `bl.elem` の局所 x 軸の向きを検証していないため、この経路には乗せず
+                // 下の座標ベースの幾何解決へ回す（件数が少なく性能への影響もない）。
+                let full = (t[0] - 0.0).abs() <= 1e-9 && (t[1] - 1.0).abs() <= 1e-9;
+                if full {
+                    if let Some(elem) = model.element(bl.elem) {
+                        let l = model.member_length(elem);
+                        if l > 1e-9 {
+                            emit_shape(&mut member, elem.id, 0.0, l, false, &bl.shape);
+                        }
+                        continue;
                     }
-                    continue;
                 }
                 let (Some(node0), Some(node1)) =
                     (model.nodes.get(n0.index()), model.nodes.get(n1.index()))
                 else {
                     continue;
                 };
-                let hit0 = beam_span_position(model, node0.coord, SPAN_TOL_MM);
-                let hit1 = beam_span_position(model, node1.coord, SPAN_TOL_MM);
+                // 荷重が実際に載る区間の端点。全長（t=[0,1]）なら nodes そのもの、
+                // 部分区間なら nodes 間を t で線形補間した点（実節点ではない）。
+                let lerp = |c0: [f64; 3], c1: [f64; 3], f: f64| {
+                    [
+                        c0[0] + (c1[0] - c0[0]) * f,
+                        c0[1] + (c1[1] - c0[1]) * f,
+                        c0[2] + (c1[2] - c0[2]) * f,
+                    ]
+                };
+                let (p0, p1) = if full {
+                    (node0.coord, node1.coord)
+                } else {
+                    (
+                        lerp(node0.coord, node1.coord, t[0]),
+                        lerp(node0.coord, node1.coord, t[1]),
+                    )
+                };
+                let hit0 = beam_span_position(model, p0, SPAN_TOL_MM);
+                let hit1 = beam_span_position(model, p1, SPAN_TOL_MM);
                 if let (Some((e0, a0)), Some((e1, a1))) = (hit0, hit1) {
                     if e0 == e1 {
                         let start = a0.min(a1);
@@ -459,11 +486,15 @@ pub fn slab_load_case_content(
                 // 分割されている等）は、覆っている梁へ幾何で割り付ける。節点対の
                 // 完全一致に頼ると、この場合に両端節点への振り分けへ落ちてしまい、
                 // 等分布が集中荷重に化けて梁のモーメントが過小になる。
-                if emit_along_segment(model, &mut member, node0.coord, node1.coord, &bl.shape) {
+                if emit_along_segment(model, &mut member, p0, p1, &bl.shape) {
                     continue;
                 }
+                // どの大梁も区間を覆えなかった場合、荷重を落とさず nodes（取付き線の
+                // 実節点＝柱）へ単純梁反力として振り分ける。部分区間ではその反力は
+                // 本来 p0・p1（nodes 間の内側）に生じるが、そこに実節点はないため、
+                // 総和を保つ最善の代替として nodes 自身へ寄せる（位置はわずかにずれる）。
                 let len = {
-                    let (a, b) = (node0.coord, node1.coord);
+                    let (a, b) = (p0, p1);
                     ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt()
                 };
                 let (r0, r1) = simple_reactions(&bl.shape, len);
@@ -895,6 +926,267 @@ mod attached_anchor_tests {
         assert!((total - W * L * D).abs() / (W * L * D) < 1e-9, "{total}");
     }
 
+    /// 取付き線の部分区間（`span != [0, 1]`）は、区間が覆う長さだけへ載る
+    /// （取付き線の全長ではない）。区間の両端は実節点ではなく大梁のスパン中間に
+    /// 幾何解決される。
+    #[test]
+    fn test_attached_anchor_partial_span_loads_only_covered_segment() {
+        const L: f64 = 4000.0;
+        const D: f64 = 1500.0;
+        const W: f64 = 0.003;
+        const T: [f64; 2] = [0.25, 0.75]; // 覆う区間: x=1000..3000
+
+        let mut model = Model {
+            nodes: vec![node(0, 0.0), node(1, L)],
+            elements: vec![beam(0, 0, 1)],
+            ..Default::default()
+        };
+        model.slabs = vec![Slab {
+            id: SlabId(0),
+            shape: SlabShape::Attached {
+                anchor: RegionAnchor::Line {
+                    nodes: [NodeId(0), NodeId(1)],
+                    span: T,
+                    transfer: LoadTransfer::Anchor,
+                },
+                extent: [D, D],
+            },
+            plate: SlabPlate {
+                loads: vec![AreaLoad {
+                    kind: "DL".into(),
+                    value: W,
+                }],
+                ..Default::default()
+            },
+        }];
+
+        let beam_map = beam_elem_map(&model);
+        let beam_loads = slab_beam_loads_with(
+            &model,
+            |s| model.slab_dead_intensity(s),
+            &Default::default(),
+            &beam_map,
+        );
+        let (nodal, member) = slab_load_case_content(&model, &beam_loads);
+
+        assert!(nodal.is_empty(), "節点荷重へ落ちない: {nodal:?}");
+        assert_eq!(member.len(), 1, "区間全体が1本の梁に載る: {member:?}");
+
+        let MemberLoadKind::Distributed { a, b, w1, w2 } = member[0].kind else {
+            panic!("分布荷重でない: {:?}", member[0]);
+        };
+        let (a_expected, b_expected) = (L * T[0], L * T[1]);
+        assert!((a - a_expected).abs() < 1e-6, "a={a} expected={a_expected}");
+        assert!((b - b_expected).abs() < 1e-6, "b={b} expected={b_expected}");
+        assert!((w1 - W * D).abs() < 1e-12 && (w2 - W * D).abs() < 1e-12);
+
+        // 総和保存: w × 覆う区間の長さ × 跳ね出し量（取付き線の全長ではない）。
+        let covered_len = b_expected - a_expected;
+        let total = (b - a) * (w1 + w2) / 2.0;
+        assert!(
+            (total - W * covered_len * D).abs() / (W * covered_len * D) < 1e-9,
+            "{total}"
+        );
+    }
+
+    /// 区間の始端が取付き線の始端節点にちょうど一致する場合（`t = [0.0, 0.5]`）。
+    /// `beam_span_position` は節点近傍（`tol` 以内）の点を「梁のスパン中間」から除外するため、
+    /// 区間の始端では `hit0` が得られず、`emit_along_segment` の幾何割付側へ落ちる。
+    /// その経路でも正しい区間へ載ることを確認する（節点ちょうどに一致するケースの回帰）。
+    #[test]
+    fn test_attached_anchor_partial_span_touches_start_node() {
+        const L: f64 = 4000.0;
+        const D: f64 = 1500.0;
+        const W: f64 = 0.003;
+        const T: [f64; 2] = [0.0, 0.5]; // 覆う区間: x=0..2000（始端が節点0に一致）
+
+        let mut model = Model {
+            nodes: vec![node(0, 0.0), node(1, L)],
+            elements: vec![beam(0, 0, 1)],
+            ..Default::default()
+        };
+        model.slabs = vec![Slab {
+            id: SlabId(0),
+            shape: SlabShape::Attached {
+                anchor: RegionAnchor::Line {
+                    nodes: [NodeId(0), NodeId(1)],
+                    span: T,
+                    transfer: LoadTransfer::Anchor,
+                },
+                extent: [D, D],
+            },
+            plate: SlabPlate {
+                loads: vec![AreaLoad {
+                    kind: "DL".into(),
+                    value: W,
+                }],
+                ..Default::default()
+            },
+        }];
+
+        let beam_map = beam_elem_map(&model);
+        let beam_loads = slab_beam_loads_with(
+            &model,
+            |s| model.slab_dead_intensity(s),
+            &Default::default(),
+            &beam_map,
+        );
+        let (nodal, member) = slab_load_case_content(&model, &beam_loads);
+
+        assert!(nodal.is_empty(), "節点荷重へ落ちない: {nodal:?}");
+        assert_eq!(member.len(), 1, "区間全体が1本の梁に載る: {member:?}");
+
+        let MemberLoadKind::Distributed { a, b, w1, w2 } = member[0].kind else {
+            panic!("分布荷重でない: {:?}", member[0]);
+        };
+        let (a_expected, b_expected) = (L * T[0], L * T[1]);
+        assert!((a - a_expected).abs() < 1e-6, "a={a} expected={a_expected}");
+        assert!((b - b_expected).abs() < 1e-6, "b={b} expected={b_expected}");
+        assert!((w1 - W * D).abs() < 1e-12 && (w2 - W * D).abs() < 1e-12);
+
+        let covered_len = b_expected - a_expected;
+        let total = (b - a) * (w1 + w2) / 2.0;
+        assert!(
+            (total - W * covered_len * D).abs() / (W * covered_len * D) < 1e-9,
+            "{total}"
+        );
+    }
+
+    /// `LoadTransfer::Columns`（出隅・雑壁の柱伝達に相当）で部分区間を使う場合、
+    /// 総荷重の作用点は区間の中点（無次元位置 `t_mid`）にあるため、単純梁の
+    /// 集中荷重反力公式（R0 = P(1-t)、R1 = P・t）で両端の柱へ按分する。
+    /// 全長（`t = [0, 1]`、`t_mid = 0.5`）なら従来どおり半分ずつになる。
+    #[test]
+    fn test_attached_anchor_columns_transfer_partial_span_splits_by_lever_arm() {
+        const L: f64 = 4000.0;
+        const D: f64 = 1500.0;
+        const W: f64 = 0.003;
+        const T: [f64; 2] = [0.75, 1.0]; // 覆う区間: x=3000..4000、区間中点 t_mid=0.875
+
+        let mut model = Model {
+            nodes: vec![node(0, 0.0), node(1, L)],
+            elements: vec![beam(0, 0, 1)],
+            ..Default::default()
+        };
+        model.slabs = vec![Slab {
+            id: SlabId(0),
+            shape: SlabShape::Attached {
+                anchor: RegionAnchor::Line {
+                    nodes: [NodeId(0), NodeId(1)],
+                    span: T,
+                    transfer: LoadTransfer::Columns,
+                },
+                extent: [D, D],
+            },
+            plate: SlabPlate {
+                loads: vec![AreaLoad {
+                    kind: "DL".into(),
+                    value: W,
+                }],
+                ..Default::default()
+            },
+        }];
+
+        let beam_map = beam_elem_map(&model);
+        let beam_loads = slab_beam_loads_with(
+            &model,
+            |s| model.slab_dead_intensity(s),
+            &Default::default(),
+            &beam_map,
+        );
+        let (nodal, member) = slab_load_case_content(&model, &beam_loads);
+
+        assert!(
+            member.is_empty(),
+            "柱集中荷重は分布荷重を生じない: {member:?}"
+        );
+        assert_eq!(nodal.len(), 2, "両端の柱へ集中: {nodal:?}");
+
+        let covered_len = L * (T[1] - T[0]);
+        let total_w = W * D * covered_len;
+        let t_mid = 0.5 * (T[0] + T[1]);
+        let r0 = nodal
+            .iter()
+            .find(|nl| nl.node == NodeId(0))
+            .map(|nl| -nl.values[2])
+            .unwrap_or(0.0);
+        let r1 = nodal
+            .iter()
+            .find(|nl| nl.node == NodeId(1))
+            .map(|nl| -nl.values[2])
+            .unwrap_or(0.0);
+        assert!(
+            (r0 - total_w * (1.0 - t_mid)).abs() / total_w < 1e-9,
+            "r0={r0}"
+        );
+        assert!((r1 - total_w * t_mid).abs() / total_w < 1e-9, "r1={r1}");
+        assert!(
+            ((r0 + r1) - total_w).abs() / total_w < 1e-9,
+            "総和保存: {}",
+            r0 + r1
+        );
+    }
+
+    /// 取付き線の部分区間が、下の大梁の分割点（中間節点）をまたいでいても、
+    /// 覆っている両方の梁へ正しく分割して載る。
+    #[test]
+    fn test_attached_anchor_partial_span_crosses_beam_split() {
+        const L: f64 = 4000.0;
+        const D: f64 = 1500.0;
+        const W: f64 = 0.003;
+        const T: [f64; 2] = [0.25, 0.75]; // 覆う区間: x=1000..3000（分割点 x=2000 をまたぐ）
+
+        let mut model = Model {
+            nodes: vec![node(0, 0.0), node(1, L / 2.0), node(2, L)],
+            elements: vec![beam(0, 0, 1), beam(1, 1, 2)],
+            ..Default::default()
+        };
+        model.slabs = vec![Slab {
+            id: SlabId(0),
+            shape: SlabShape::Attached {
+                anchor: RegionAnchor::Line {
+                    nodes: [NodeId(0), NodeId(2)],
+                    span: T,
+                    transfer: LoadTransfer::Anchor,
+                },
+                extent: [D, D],
+            },
+            plate: SlabPlate {
+                loads: vec![AreaLoad {
+                    kind: "DL".into(),
+                    value: W,
+                }],
+                ..Default::default()
+            },
+        }];
+
+        let beam_map = beam_elem_map(&model);
+        let beam_loads = slab_beam_loads_with(
+            &model,
+            |s| model.slab_dead_intensity(s),
+            &Default::default(),
+            &beam_map,
+        );
+        let (nodal, member) = slab_load_case_content(&model, &beam_loads);
+
+        assert!(nodal.is_empty(), "節点荷重へ落ちない: {nodal:?}");
+        assert_eq!(member.len(), 2, "分割点の両側それぞれへ載る: {member:?}");
+
+        let mut total = 0.0;
+        for ml in &member {
+            let MemberLoadKind::Distributed { a, b, w1, w2 } = ml.kind else {
+                panic!("分布荷重でない: {ml:?}");
+            };
+            assert!((w1 - W * D).abs() < 1e-12 && (w2 - W * D).abs() < 1e-12);
+            total += (b - a) * (w1 + w2) / 2.0;
+        }
+        let covered_len = L * (T[1] - T[0]);
+        assert!(
+            (total - W * covered_len * D).abs() / (W * covered_len * D) < 1e-9,
+            "{total}"
+        );
+    }
+
     /// 重複部材（同じ区間を覆う梁が 2 本）があるときは幾何割付を使わない。
     ///
     /// 被覆長の単純合計で判定すると、重なりのぶんだけ長さが水増しされ、隙間があっても
@@ -962,7 +1254,10 @@ mod attached_anchor_tests {
         // 2 本の梁の境目（線分の中央）へ集中荷重を載せる。
         let bl = squid_n_load::floor::BeamLoad {
             elem: ElemId(u32::MAX),
-            target: LoadTarget::Span([NodeId(0), NodeId(2)]),
+            target: LoadTarget::Span {
+                nodes: [NodeId(0), NodeId(2)],
+                t: [0.0, 1.0],
+            },
             shape: squid_n_load::floor::LoadShape::Point {
                 p: 1000.0,
                 x: L / 2.0,
