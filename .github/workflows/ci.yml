@@ -100,3 +100,16 @@ jobs:
         uses: EmbarkStudios/cargo-deny-action@v2
         with:
           command: check
+
+  terms:
+    name: 用語チェック
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # dev_docs/specs/用語集.md が定める禁止語（「パネル」の床・壁領域への誤用等）の
+      # 再発を機械的に止める。「気づいたら用語集に追記する」という運用（AGENTS.md）
+      # だけでは、離れた場所への再発を防げないため CI ゲートにする。
+      - name: 用語チェック実行
+        run: cargo run -p xtask -- check-terms

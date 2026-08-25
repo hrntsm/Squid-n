@@ -5,7 +5,7 @@
 use super::*;
 
 impl App {
-    /// 左ドック「作成」パネル：梁・壁・スラブ作成モードの切替と断面割当 UI。
+    /// 左ドック「作成」パネル：梁・壁・スラブ作成モードの切替と断面割当 UI。xtask:allow-panel
     /// いずれもビューア（3D クリック）と連動する状態（`beam_draw_mode` 等）を操作する。
     pub(crate) fn draw_tools_panel(&mut self, ui: &mut egui::Ui) {
         ui.strong("作成");
