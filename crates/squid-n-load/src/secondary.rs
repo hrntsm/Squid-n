@@ -198,7 +198,7 @@ pub fn joist_edge_tributary_width(model: &Model, a: NodeId, b: NodeId) -> Option
     }
     let dir = [dx / len, dy / len];
     let perp = [-dir[1], dir[0]];
-    let tol = crate::secondary::SPAN_TOL_MM;
+    let tol = SPAN_TOL_MM;
     let mid_z = (na.coord[2] + nb.coord[2]) / 2.0;
 
     let mut sum = 0.0_f64;
@@ -242,7 +242,10 @@ pub fn joist_edge_tributary_width(model: &Model, a: NodeId, b: NodeId) -> Option
             let tp = (p[0] - na.coord[0]) * dir[0] + (p[1] - na.coord[1]) * dir[1];
             let tq = (q[0] - na.coord[0]) * dir[0] + (q[1] - na.coord[1]) * dir[1];
             let edge_len = (tq - tp).abs();
-            if edge_len > len + tol {
+            // 退化した（ほぼ長さ 0 の）辺は除く。`edge_len - tol` が負になり、
+            // 区間 [0, len] の外（クランプで t0 == t1 になる位置）でも
+            // 「収まっている」と誤判定してしまうため。
+            if edge_len <= tol || edge_len > len + tol {
                 return false; // 小梁より長い辺は別の床板の境界とみなす。
             }
             let t0 = tp.min(tq).clamp(0.0, len);
@@ -680,5 +683,32 @@ mod joist_tributary_tests {
 
         let w = joist_edge_tributary_width(&model, NodeId(4), NodeId(5));
         assert_eq!(w, None);
+    }
+
+    /// 小梁の直線上（同じ Y）だが遠く離れた、退化した（ほぼ長さ 0 の）辺を持つ
+    /// 無関係な床板は拾わない。クランプ後の区間が [len, len]（幅 0）になっても、
+    /// 辺自身が短ければ「収まっている」と誤判定しないことの回帰テスト。
+    #[test]
+    fn test_far_degenerate_edge_on_same_line_is_not_matched() {
+        let mut model = Model {
+            nodes: vec![
+                node(0, 0.0, 0.0),
+                node(1, 4000.0, 0.0),
+                node(2, 4000.0, 3000.0),
+                node(3, 0.0, 3000.0),
+                // 遠く離れた、無関係な床板（ほぼ長さ 0 の辺 4-5 を持つ）。
+                node(4, 50000.0, 0.0),
+                node(5, 50005.0, 0.0),
+                node(6, 50005.0, 1000.0),
+                node(7, 50000.0, 1000.0),
+            ],
+            ..Default::default()
+        };
+        model.slabs.push(rect_slab(1, [4, 5, 6, 7]));
+
+        // 片側にしか床板がない小梁として、正しい答え（1500）だけが返ることを確認する。
+        model.slabs.push(rect_slab(0, [0, 1, 2, 3]));
+        let w = joist_edge_tributary_width(&model, NodeId(0), NodeId(1));
+        assert!(matches!(w, Some(x) if (x - 1500.0).abs() < 1e-6), "{w:?}");
     }
 }
