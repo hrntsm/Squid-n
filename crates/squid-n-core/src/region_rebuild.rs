@@ -482,6 +482,11 @@ fn assign_joists(model: &mut Model) -> usize {
     unassigned
 }
 
+/// 節点 `id` が部材・二次部材・床領域・床板・拘束・節点荷重・支点（固定・ばね）・
+/// 質量・剛床マスターのいずれかから参照されているか。
+///
+/// 階の節点一覧（`Story::node_ids`）と通り芯（`AxisGroup`）は含めない
+/// （[`delete_unref_nodes`] の呼び出し側で扱う節点削除の判定にのみ用いるため）。
 fn node_has_structural_ref(model: &Model, id: NodeId) -> bool {
     if model.elements.iter().any(|e| e.nodes.contains(&id)) {
         return true;
@@ -501,16 +506,12 @@ fn node_has_structural_ref(model: &Model, id: NodeId) -> bool {
     if model.slabs.iter().any(|s| slab_refs_node(s, id)) {
         return true;
     }
-    if model.stories.iter().any(|s| s.node_ids.contains(&id)) {
-        return true;
-    }
-    if model
-        .axes
-        .iter()
-        .any(|g| g.axes.iter().any(|a| a.nodes.contains(&id)))
-    {
-        return true;
-    }
+    // 階の節点一覧（`Story::node_ids`）と通り芯（`AxisGroup`）は構造参照に数えない
+    // （ドキュメント参照）。階の節点一覧は準備計算のたびに階に属する全節点で
+    // 埋め直されるため、これを参照とみなすと削除対象の節点がほぼ必ず「参照あり」に
+    // なってしまい、この関数自体が実質的に無効化される（ST-Bridge 取り込みは
+    // 節点の階所属を先に確定させてから `rebuild_floor_regions` を呼ぶため、実運用の
+    // モデルでは必ずこの状態になる）。通り芯も構造計算に用いない表示専用データである。
     if model.constraints.iter().any(|c| match c {
         Constraint::RigidDiaphragm { master, slaves, .. }
         | Constraint::RigidLink { master, slaves, .. } => *master == id || slaves.contains(&id),
@@ -528,7 +529,8 @@ fn node_has_structural_ref(model: &Model, id: NodeId) -> bool {
         return true;
     }
     if let Some(node) = model.nodes.get(id.index()) {
-        if node.restraint != Dof6Mask::FREE || node.mass.is_some() {
+        if node.restraint != Dof6Mask::FREE || node.mass.is_some() || node.support_spring.is_some()
+        {
             return true;
         }
     }
@@ -997,5 +999,38 @@ mod tests {
         );
         assert!(!has_xy(&shared, 0.0, 1500.0), "参照 0 の先端だけ消える");
         assert!(report.slabs_converted_to_attached >= 1);
+    }
+
+    /// 階の節点一覧（`Story::node_ids`）に載っているだけでは参照とみなさない。
+    ///
+    /// ST-Bridge 取り込みは `rebuild_floor_regions` を呼ぶ前に全節点の階所属を
+    /// 確定させ、`Story::node_ids` へ登録する。ここを参照とみなすと、削除対象の
+    /// 節点がほぼ必ず「参照あり」になり、片持ち変換の先端節点削除が実運用の
+    /// モデルでは常に無効化されてしまう。
+    #[test]
+    fn test_story_node_list_membership_does_not_block_deletion() {
+        use crate::model::Story;
+
+        let mut model = cantilever_rect();
+        model.stories.push(Story {
+            id: crate::ids::StoryId(0),
+            name: "1F".into(),
+            elevation: 0.0,
+            node_ids: model.nodes.iter().map(|n| n.id).collect(),
+            seismic_weight: None,
+            weight_override: None,
+            structure: Default::default(),
+            level_kind: Default::default(),
+        });
+
+        let report = rebuild_floor_regions(&mut model);
+        assert!(!has_xy(&model, 4000.0, 1500.0), "先端は消える");
+        assert!(!has_xy(&model, 0.0, 1500.0), "先端は消える");
+        assert!(report.deleted_nodes >= 2);
+        // 削除した節点は Story::node_ids からも落ちている（ダングリング防止）。
+        assert!(model.stories[0]
+            .node_ids
+            .iter()
+            .all(|id| model.nodes.iter().any(|n| n.id == *id)));
     }
 }
