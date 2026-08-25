@@ -305,7 +305,7 @@ fn options_section(ui: &mut egui::Ui, w: &mut FrameWizardState) {
         ui.checkbox(&mut w.spec.with_girders, "大梁を作る");
         ui.checkbox(&mut w.spec.with_slabs, "床を作る")
             .on_hover_text(
-                "各階の各格子パネルに 1 枚ずつ。板厚の断面とコンクリートもあわせて作ります",
+                "各階の各格子区画に 1 枚ずつ。板厚の断面とコンクリートもあわせて作ります",
             );
         if w.spec.with_slabs {
             ui.horizontal(|ui| {

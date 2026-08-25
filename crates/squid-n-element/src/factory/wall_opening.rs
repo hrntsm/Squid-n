@@ -21,12 +21,12 @@ pub(crate) fn wall_opening_reduction(data: &ElementData, model: &Model) -> f64 {
     if opening_area <= 0.0 {
         return 1.0;
     }
-    // 壁面積の分母は**壁エレメント要素と同じ幾何**（`wall_panel_geometry`）を用いる。
+    // 壁面積の分母は**壁エレメント要素と同じ幾何**（`wall_element_geometry`）を用いる。
     // 壁長 lw は上下辺長さの平均（台形壁対応）、高さ h は上下辺中点間距離。
     // 従来は「全節点対の水平距離の最大（＝下辺長）」×「z の全幅」で近似しており、
     // 台形壁で開口周比の分母とせん断断面の壁長が食い違っていた。
     // 4 節点でない壁（フォールバック等価梁経路）は従来の包絡寸法で近似する。
-    let (l, h) = match crate::wall_panel::wall_panel_geometry(data, model) {
+    let (l, h) = match crate::wall_element::wall_element_geometry(data, model) {
         Some(g) => (g.lw, g.h),
         None => {
             let coords: Vec<[f64; 3]> = data

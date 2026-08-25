@@ -14,8 +14,9 @@ use super::{
 use squid_n_core::ids::{ElemId, LoadCaseId, MaterialId, NodeId, SectionId, SlabId, StoryId};
 use squid_n_core::model::{
     DistributionMethod, ElementData, ElementKind, EndCondition, ForceRegime, LoadCase, LocalAxis,
-    Material, MaterialCategory, Model, NodalLoad, Node, Section, Slab, Story,
+    Material, MaterialCategory, Model, NodalLoad, Node, Section, Slab, SlabPlate, SlabShape, Story,
 };
+use squid_n_core::region_rebuild::rebuild_floor_regions;
 use squid_n_core::section_shape::SectionShape;
 use std::collections::HashMap;
 
@@ -126,6 +127,25 @@ pub(super) fn assemble(parsed: StbParser) -> Result<(Model, ImportReport), StbEr
         &material_index,
         &mut warnings,
     );
+    let rebuild = rebuild_floor_regions(&mut model);
+    if rebuild.unassigned_slabs != 0 {
+        warnings.push(format!(
+            "床領域の作り直しで床板 {} 枚が領域に割り当てられなかった",
+            rebuild.unassigned_slabs
+        ));
+    }
+    if rebuild.unassigned_joists != 0 {
+        warnings.push(format!(
+            "床領域の作り直しで小梁 {} 本が領域に割り当てられなかった",
+            rebuild.unassigned_joists
+        ));
+    }
+    if rebuild.unmatched_old_regions != 0 {
+        warnings.push(format!(
+            "床領域の作り直しで照合できなかった旧床領域が {} 件あった",
+            rebuild.unmatched_old_regions
+        ));
+    }
     build_load_cases(&mut model, raw_load_cases, &node_index, &mut warnings);
     warn_unsupported(&unsupported, &mut warnings);
 
@@ -600,18 +620,17 @@ fn build_slabs(
             Some(sid)
         });
         let new_id = SlabId(model.slabs.len() as u32);
+        // 取り込んだ版はいったん大梁または小梁で囲まれた床板として作る。床領域
+        // （大梁の区画）への帰属付けと、区画に収まらない版の片持ち判定は、
+        // 取り込み後の変換（`rebuild_floor_regions`）で行う（申し送りの Step 3）。
         model.slabs.push(Slab {
             id: new_id,
-            boundary,
-            joists: Vec::new(),
-            loads: Vec::new(),
-            method: DistributionMethod::TriTrapezoid,
-            kind: Default::default(),
-            one_way: None,
-            edge_supported: None,
-            usage: None,
-            section,
-            secondary_joist_ids: Vec::new(),
+            shape: SlabShape::Enclosed { boundary },
+            plate: SlabPlate {
+                section,
+                method: DistributionMethod::TriTrapezoid,
+                ..Default::default()
+            },
         });
     }
     if skipped_slabs > 0 {

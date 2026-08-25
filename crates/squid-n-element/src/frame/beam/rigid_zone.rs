@@ -138,7 +138,7 @@ use squid_n_core::geom::element_axis as elem_axis;
 ///
 /// 直交材として数える範囲は、壁を含めない幾何量を求める
 /// [`squid_n_core::face_distance`] と一致させること（柱・大梁 = `ElementKind::Beam`
-/// のみ）。ここだけ壁要素やパネルを数えると、同じ「部材フェース」を指す 2 つの値が
+/// のみ）。ここだけ壁要素や `PanelZone` を数えると、同じ「部材フェース」を指す 2 つの値が
 /// 食い違う。
 fn max_orth_face(
     model: &Model,

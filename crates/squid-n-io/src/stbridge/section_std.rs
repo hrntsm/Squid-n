@@ -880,11 +880,13 @@ pub(super) fn standard_sections(model: &Model) -> StandardSections {
         let mut used_by_slab = std::collections::HashSet::new();
         let mut used_by_other = std::collections::HashSet::new();
         for slab in &model.slabs {
-            if let Some(sid) = slab.section {
+            if let Some(sid) = slab.section() {
                 used_by_slab.insert(sid.0);
             }
-            // 小梁は生の断面 id を書き出すため、Raw 出力から外さない。
-            for j in &slab.joists {
+        }
+        // 小梁は生の断面 id を書き出すため、Raw 出力から外さない。
+        for region in &model.floor_regions {
+            for j in region.joist_lines() {
                 if let Some(sid) = j.section {
                     used_by_other.insert(sid.0);
                 }

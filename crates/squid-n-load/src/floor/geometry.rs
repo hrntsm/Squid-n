@@ -4,6 +4,7 @@
 //! - [`dist3`] — 3次元2点間のユークリッド距離
 //! - [`slab_dimensions`] — 矩形（平行四辺形）判定と短辺・長辺寸法 `(lx, ly)`
 //! - [`edge_len`] — 多角形の辺 i の長さ
+//! - [`point_in_slab_boundary`] — 点がスラブ境界多角形の内部または辺上にあるか
 //! - [`polygon_area`] — 平面多角形の面積（シューレース公式）
 
 use squid_n_core::model::{Model, Slab};
@@ -11,10 +12,7 @@ use squid_n_core::model::{Model, Slab};
 use super::polygon::{point_in_polygon, point_on_polygon_boundary};
 
 pub(crate) fn boundary_coords(model: &Model, slab: &Slab) -> Option<Vec<[f64; 3]>> {
-    slab.boundary
-        .iter()
-        .map(|nid| model.nodes.get(nid.index()).map(|n| n.coord))
-        .collect()
+    slab.boundary_coords(model)
 }
 
 /// 2 点間の距離 [mm]。算定の情報源は `squid-n-core` に置く。
@@ -32,13 +30,15 @@ pub(crate) use squid_n_core::geom::vec3::dist as dist3;
 /// 直交性（90°）までは検証しない。実運用では境界は軸直交の矩形である前提のため、
 /// 既存の TriTrapezoid/OneWay/TributaryArea の面積計算（`lx*ly`）はその前提の下でのみ厳密。
 pub fn slab_dimensions(model: &Model, slab: &Slab) -> Option<(f64, f64)> {
-    if slab.boundary.len() != 4 {
+    slab_dimensions_of(&slab.boundary_coords(model)?)
+}
+
+/// [`slab_dimensions`] の座標列版（境界座標が手元にある場合はこちらを使う）。
+pub fn slab_dimensions_of(coords: &[[f64; 3]]) -> Option<(f64, f64)> {
+    if coords.len() != 4 {
         return None;
     }
-    let p0 = model.nodes.get(slab.boundary[0].index())?.coord;
-    let p1 = model.nodes.get(slab.boundary[1].index())?.coord;
-    let p2 = model.nodes.get(slab.boundary[2].index())?.coord;
-    let p3 = model.nodes.get(slab.boundary[3].index())?.coord;
+    let (p0, p1, p2, p3) = (coords[0], coords[1], coords[2], coords[3]);
 
     let lx = dist3(p0, p1);
     let ly = dist3(p0, p3);

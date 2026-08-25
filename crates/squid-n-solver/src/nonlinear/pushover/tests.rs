@@ -3615,7 +3615,7 @@ fn wall_story_model_with(lw: f64, seismic_weight: f64) -> Model {
 /// 打ち切られること。λ=1 のベースシア（0.2W=20kN）は壁の Qu を大きく下回る
 /// 重量とし、頭打ちは変位制御側で起こす。
 #[test]
-fn test_pushover_drift_angle_target_runs_with_wall_panel() {
+fn test_pushover_drift_angle_target_runs_with_wall_element() {
     let model = wall_story_model(100_000.0);
     let dofmap = DofMap::build(&model);
     let reducer = Reducer::build(&model, &dofmap);

@@ -43,7 +43,7 @@ pub fn is_rc_wall(data: &ElementData, model: &Model) -> bool {
 /// - スリット（三方スリット）がないこと
 /// - 壁厚が 120mm 以上であること
 /// - 開口周比 r0=√(開口面積/(l·h)) ≤ 0.4（複数開口モード適用後の面積）。
-///   `l`・`h` は [`crate::wall_panel::wall_panel_geometry`] の壁長・高さ
+///   `l`・`h` は [`crate::wall_element::wall_element_geometry`] の壁長・高さ
 ///   （台形壁では上下辺長さの平均を壁長とする）
 ///
 /// 壁厚が特定できない（断面未設定の暫定壁）場合は、四周条件さえ満たせば
@@ -57,7 +57,7 @@ pub fn is_rc_wall(data: &ElementData, model: &Model) -> bool {
 /// 公開する。
 pub fn wall_is_seismic(data: &ElementData, model: &Model) -> bool {
     // 四周判定と開口周比で同じ幾何を共有する（包絡寸法との二重系統を残さない）。
-    let Some(g) = crate::wall_panel::wall_panel_geometry(data, model) else {
+    let Some(g) = crate::wall_element::wall_element_geometry(data, model) else {
         return false;
     };
     if !wall_is_framed_with(&g, model) {
@@ -99,21 +99,21 @@ pub fn wall_is_seismic(data: &ElementData, model: &Model) -> bool {
 ///
 /// 左右の鉛直辺（側柱）は要求しない。側柱を持たない耐震壁は、壁の縦筋が一様配筋
 /// であるとみなして等価引張鉄筋比を pte=100·ps とする正規の対象であり
-/// （[`crate::wall_panel::WallPanelElement::shear_capacity_of`]）、側柱を必須にすると
+/// （[`crate::wall_element::WallElement::shear_capacity_of`]）、側柱を必須にすると
 /// この経路へ到達できなくなる。
 ///
 /// 辺と部材の対応は節点の一致で判定する。壁の四隅とは別の節点を使う部材は、
 /// 壁エレメントの剛梁が拾えない（四隅の並進しか伝達しない）ため対象外である。
 pub fn wall_is_framed(data: &ElementData, model: &Model) -> bool {
     // 幾何を取れない壁（4 節点未満・退化）は辺を定義できないため不成立。
-    let Some(g) = crate::wall_panel::wall_panel_geometry(data, model) else {
+    let Some(g) = crate::wall_element::wall_element_geometry(data, model) else {
         return false;
     };
     wall_is_framed_with(&g, model)
 }
 
-/// [`crate::wall_panel::wall_panel_geometry`] 済みの幾何に対する四周判定。
-fn wall_is_framed_with(g: &crate::wall_panel::WallPanelGeometry, model: &Model) -> bool {
+/// [`crate::wall_element::wall_element_geometry`] 済みの幾何に対する四周判定。
+fn wall_is_framed_with(g: &crate::wall_element::WallElementGeometry, model: &Model) -> bool {
     has_girder(model, g.bottom[0], g.bottom[1]) && has_girder(model, g.top[0], g.top[1])
 }
 
@@ -130,7 +130,7 @@ pub fn wall_frame_category_issue(data: &ElementData, model: &Model) -> Option<St
     if !matches!(data.kind, ElementKind::Wall) || !wall_is_seismic(data, model) {
         return None;
     }
-    let g = crate::wall_panel::wall_panel_geometry(data, model)?;
+    let g = crate::wall_element::wall_element_geometry(data, model)?;
     let (wall_label, want) = if is_rc_wall(data, model) {
         ("RC 造", MaterialCategory::Concrete)
     } else {
@@ -320,7 +320,7 @@ fn collect_walls_where(
             continue;
         }
 
-        // 壁ローカル座標系の構築（wall_panel::try_new と同じ並べ替え）
+        // 壁ローカル座標系の構築（wall_element::try_new と同じ並べ替え）
         let ids: Vec<NodeId> = data.nodes.iter().take(4).copied().collect();
         let Some(coords) = ids
             .iter()
@@ -470,10 +470,10 @@ mod tests {
     }
 
     /// 台形壁では旧包絡寸法（節点間の最大水平距離）と
-    /// [`crate::wall_panel::wall_panel_geometry`] の壁長（上下辺平均）が食い違う。
+    /// [`crate::wall_element::wall_element_geometry`] の壁長（上下辺平均）が食い違う。
     /// 開口周比 r0 は後者を単一情報源とする。
     #[test]
-    fn 台形壁の開口周比は壁パネル幾何の壁長を用いる() {
+    fn 台形壁の開口周比は壁エレメント幾何の壁長を用いる() {
         use squid_n_core::model::WallAttr;
 
         // 下辺 4000・上辺 3000 → 幾何 lw=3500、包絡 max 水平距離=4000。
@@ -529,7 +529,7 @@ mod tests {
         crate::wall::add_surrounding_frame(&mut model, &data);
         model.elements.push(data.clone());
 
-        let g = crate::wall_panel::wall_panel_geometry(&data, &model).expect("幾何");
+        let g = crate::wall_element::wall_element_geometry(&data, &model).expect("幾何");
         assert!((g.lw_bottom - 4000.0).abs() < 1e-9);
         assert!((g.lw_top - 3000.0).abs() < 1e-9);
         assert!((g.lw - 3500.0).abs() < 1e-9);
@@ -552,7 +552,7 @@ mod tests {
         });
         assert!(
             !wall_is_seismic(&data, &model),
-            "台形壁の r0 は壁パネル幾何の壁長で評価する"
+            "台形壁の r0 は壁エレメント幾何の壁長で評価する"
         );
     }
 

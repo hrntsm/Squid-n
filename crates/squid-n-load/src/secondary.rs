@@ -1,6 +1,6 @@
 //! 二次部材（小梁・間柱）経由の荷重を主架構へ変換する（CMQ 経路）。
 //!
-//! 二次部材の支持点や床パネルの角は、主架構の梁（大梁）のスパン中間に
+//! 二次部材の支持点や床板の角は、主架構の梁（大梁）のスパン中間に
 //! 節点共有なしで載ることがある（ST-Bridge 取り込みモデルの典型）。
 //! そのような「要素が接続しない節点」への集中荷重は解析に載らないため
 //! （`DofMap::build` が自由度から除外する）、載っている梁の
@@ -94,6 +94,83 @@ pub fn beam_span_position(model: &Model, coord: [f64; 3], tol: f64) -> Option<(E
     best_span_position(&candidates, coord, tol)
 }
 
+/// 線分が載る大梁の 1 区間（[`beams_along_segment`] の結果）。
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SegmentCoverage {
+    /// 覆っている梁要素。
+    pub elem: ElemId,
+    /// 線分上の被覆区間（線分の始点からの距離 [mm]）。
+    pub seg: [f64; 2],
+    /// 梁の i 端からの距離で表した被覆区間 [mm]（`seg` と同じ向きに並ぶ）。
+    pub elem_pos: [f64; 2],
+}
+
+/// 線分 `p0`→`p1` を覆う大梁の区間を、線分に沿った順で返す。
+///
+/// 取り付き領域の取付き線のように、**主架構の上に載る線分**を実際の梁へ割り付けるために使う。
+/// 取付き線の両端は領域が参照する節点だが、その間の大梁が中間節点で分割されていると、
+/// 節点対の完全一致では梁が見つからない。ここでは幾何で覆いを求めるため、分割の有無に依らない。
+///
+/// 判定は次のとおり。梁の両端が線分の直線上（直交距離 `tol` 以内）にあり、線分方向への
+/// 射影が線分と重なる梁を集め、重なり区間を返す。線分に載っていない梁・重なりが
+/// `tol` 以下の梁は返さない。返り値は線分の始点側から並ぶ。
+///
+/// **覆いが線分の全長に満たない場合もそのまま返す**（呼び出し側が全長を覆えたかを判断し、
+/// 覆えないぶんの荷重の行き先を決める）。
+pub fn beams_along_segment(
+    model: &Model,
+    p0: [f64; 3],
+    p1: [f64; 3],
+    tol: f64,
+) -> Vec<SegmentCoverage> {
+    let d = [p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2]];
+    let len = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+    if len <= tol {
+        return Vec::new();
+    }
+    let u = [d[0] / len, d[1] / len, d[2] / len];
+    // 線分の直線からの直交距離。
+    let perp_dist = |q: [f64; 3]| -> f64 {
+        let v = [q[0] - p0[0], q[1] - p0[1], q[2] - p0[2]];
+        let t = v[0] * u[0] + v[1] * u[1] + v[2] * u[2];
+        let w = [v[0] - t * u[0], v[1] - t * u[1], v[2] - t * u[2]];
+        (w[0] * w[0] + w[1] * w[1] + w[2] * w[2]).sqrt()
+    };
+    let along = |q: [f64; 3]| -> f64 {
+        (q[0] - p0[0]) * u[0] + (q[1] - p0[1]) * u[1] + (q[2] - p0[2]) * u[2]
+    };
+
+    let mut out = Vec::new();
+    for c in beam_span_candidates(model) {
+        if perp_dist(c.a) > tol || perp_dist(c.b) > tol {
+            continue; // 線分の直線上にない梁。
+        }
+        let (ta, tb) = (along(c.a), along(c.b));
+        let (lo, hi) = (ta.min(tb), ta.max(tb));
+        let s0 = lo.max(0.0);
+        let s1 = hi.min(len);
+        if s1 - s0 <= tol {
+            continue; // 重なっていない（端点で接するだけを含む）。
+        }
+        // 梁の i 端からの距離へ写す（梁が線分と逆向きでも `seg` と同じ並びにする）。
+        let elem_len = (tb - ta).abs();
+        let to_elem = |t: f64| -> f64 {
+            if tb >= ta {
+                (t - ta).clamp(0.0, elem_len)
+            } else {
+                (ta - t).clamp(0.0, elem_len)
+            }
+        };
+        out.push(SegmentCoverage {
+            elem: c.id,
+            seg: [s0, s1],
+            elem_pos: [to_elem(s0), to_elem(s1)],
+        });
+    }
+    out.sort_by(|a, b| a.seg[0].total_cmp(&b.seg[0]));
+    out
+}
+
 /// 各節点に要素（解析部材）が接続しているかを返す。
 pub fn node_connected_flags(model: &Model) -> Vec<bool> {
     let mut connected = vec![false; model.nodes.len()];
@@ -163,7 +240,10 @@ pub fn resolve_nodal_to_primary(
 }
 
 /// 節点→梁スパン変換の既定許容差 [mm]（大梁芯からのずれの許容）。
-pub const SPAN_TOL_MM: f64 = 10.0;
+///
+/// 判定規則の情報源を 1 つに保つため、値は [`squid_n_core::geom::MEMBER_AXIS_TOL_MM`]
+/// を用いる（節点を共有せずに交差・接触する梁の診断も同じ許容差で判定する）。
+pub const SPAN_TOL_MM: f64 = squid_n_core::geom::MEMBER_AXIS_TOL_MM;
 
 #[cfg(test)]
 mod tests {
@@ -284,5 +364,90 @@ mod tests {
         let (out_nodal, out_member) = resolve_nodal_to_primary(&model, nodal, SPAN_TOL_MM);
         assert_eq!(out_nodal.len(), 1);
         assert!(out_member.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod segment_tests {
+    use super::*;
+    use squid_n_core::ids::{NodeId, SectionId};
+    use squid_n_core::model::{
+        ElementData, ElementKind, EndCondition, ForceRegime, LocalAxis, Node,
+    };
+
+    fn model_with(xs: &[f64], beams: &[(u32, u32)]) -> Model {
+        let mut m = Model::default();
+        for (i, x) in xs.iter().enumerate() {
+            m.nodes.push(Node {
+                id: NodeId(i as u32),
+                coord: [*x, 0.0, 0.0],
+                restraint: Default::default(),
+                mass: None,
+                story: None,
+                support_spring: None,
+            });
+        }
+        for (k, (i, j)) in beams.iter().enumerate() {
+            m.elements.push(ElementData {
+                id: ElemId(k as u32),
+                kind: ElementKind::Beam,
+                nodes: [NodeId(*i), NodeId(*j)].into_iter().collect(),
+                section: Some(SectionId(0)),
+                local_axis: LocalAxis {
+                    ref_vector: [0.0, 0.0, 1.0],
+                },
+                end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+                force_regime: ForceRegime::Auto,
+                rigid_zone: Default::default(),
+                plastic_zone: None,
+                spring: None,
+            });
+        }
+        m
+    }
+
+    /// 分割された大梁（A—M—B）を線分 A→B が覆う。区間は線分の始点側から並ぶ。
+    #[test]
+    fn test_covers_subdivided_beams_in_order() {
+        let m = model_with(&[0.0, 2000.0, 4000.0], &[(0, 1), (1, 2)]);
+        let cover = beams_along_segment(&m, [0.0, 0.0, 0.0], [4000.0, 0.0, 0.0], SPAN_TOL_MM);
+        assert_eq!(cover.len(), 2);
+        assert_eq!(cover[0].elem, ElemId(0));
+        assert_eq!(cover[0].seg, [0.0, 2000.0]);
+        assert_eq!(cover[1].elem, ElemId(1));
+        assert_eq!(cover[1].seg, [2000.0, 4000.0]);
+        let covered: f64 = cover.iter().map(|c| c.seg[1] - c.seg[0]).sum();
+        assert!((covered - 4000.0).abs() < 1e-9, "全長を覆う");
+    }
+
+    /// 梁が線分と逆向きでも、梁上の位置は線分の向きに合わせて返す。
+    #[test]
+    fn test_reversed_beam_positions_follow_segment() {
+        let m = model_with(&[0.0, 4000.0], &[(1, 0)]);
+        let cover = beams_along_segment(&m, [0.0, 0.0, 0.0], [4000.0, 0.0, 0.0], SPAN_TOL_MM);
+        assert_eq!(cover.len(), 1);
+        // 梁の i 端は x=4000 側なので、線分始点（x=0）は梁の 4000 の位置に当たる。
+        assert!((cover[0].elem_pos[0] - 4000.0).abs() < 1e-9);
+        assert!((cover[0].elem_pos[1] - 0.0).abs() < 1e-9);
+    }
+
+    /// 線分の一部にしか梁がない場合は、その区間だけを返す（覆えたかは呼び出し側が判断する）。
+    #[test]
+    fn test_partial_coverage_is_reported_as_is() {
+        let m = model_with(&[0.0, 2000.0], &[(0, 1)]);
+        let cover = beams_along_segment(&m, [0.0, 0.0, 0.0], [4000.0, 0.0, 0.0], SPAN_TOL_MM);
+        assert_eq!(cover.len(), 1);
+        assert_eq!(cover[0].seg, [0.0, 2000.0]);
+    }
+
+    /// 線分から外れた（平行だが離れた）梁は覆いに数えない。
+    #[test]
+    fn test_offset_beam_is_not_covered() {
+        let mut m = model_with(&[0.0, 4000.0], &[(0, 1)]);
+        for n in &mut m.nodes {
+            n.coord[1] = 1000.0; // 線分から 1m ずらす
+        }
+        let cover = beams_along_segment(&m, [0.0, 0.0, 0.0], [4000.0, 0.0, 0.0], SPAN_TOL_MM);
+        assert!(cover.is_empty());
     }
 }

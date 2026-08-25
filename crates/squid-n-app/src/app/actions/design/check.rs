@@ -147,12 +147,17 @@ impl App {
             })
         };
 
-        for slab in &self.model.slabs {
-            // 床設計は床用積載（最大）＋固定荷重を用いる。
-            let w = self.model.slab_intensity(slab, LoadPurpose::Floor);
+        // --- 床領域（大梁の区画）ごとの手入力小梁ライン ---
+        // 交差があれば床格子サブモデル（二方向）で、なければ単純支持梁で検定する。
+        // 積載は区画の代表床板（`slab_ids` の先頭。squid-n-load の `distribute_region`
+        // と同じ規約）から求める。区画が床板を持たない場合は検定対象外。
+        for region in &self.model.floor_regions {
+            let Some(rep_slab) = region.slab_ids.first().and_then(|&id| self.model.slab(id)) else {
+                continue;
+            };
+            let w = self.model.slab_intensity(rep_slab, LoadPurpose::Floor);
 
-            // --- 小梁: 交差があれば床格子サブモデル（二方向）で、なければ単純支持梁で検定 ---
-            let grillage = squid_n_job::floor_grillage::build_slab_grillage(&self.model, slab, w)
+            let grillage = squid_n_job::floor_grillage::build_slab_grillage(&self.model, region, w)
                 .and_then(|g| {
                     squid_n_job::floor_grillage::solve_grillage(&g.model, LoadCaseId(0))
                         .ok()
@@ -163,7 +168,7 @@ impl App {
                 for (jidx, span, m, q, defl) in
                     squid_n_job::floor_grillage::joist_design_forces(&g, &sol)
                 {
-                    let Some(j) = slab.joists.get(jidx) else {
+                    let Some(j) = region.joist_lines().get(jidx) else {
                         continue;
                     };
                     let Some(sid) = j.section else { continue };
@@ -178,11 +183,15 @@ impl App {
                         sigma_allow,
                         fd::DEFLECTION_LIMIT_DENOM,
                     );
-                    joist_checks.push((slab.id, crate::app::JoistCheckTarget::SlabJoist(jidx), r));
+                    joist_checks.push((
+                        rep_slab.id,
+                        crate::app::JoistCheckTarget::SlabJoist(jidx),
+                        r,
+                    ));
                 }
             } else {
                 // 交差なし: 各小梁を独立した単純支持梁として検定。
-                for (ji, j) in slab.joists.iter().enumerate() {
+                for (ji, j) in region.joist_lines().iter().enumerate() {
                     let (a, b) = (j.support[0], j.support[1]);
                     if a == b || beam_between(a, b) {
                         // 実部材化済み or 退化した小梁は床設計の対象外。
@@ -219,23 +228,48 @@ impl App {
                         sigma_allow,
                         fd::DEFLECTION_LIMIT_DENOM,
                     );
-                    joist_checks.push((slab.id, crate::app::JoistCheckTarget::SlabJoist(ji), r));
+                    joist_checks.push((
+                        rep_slab.id,
+                        crate::app::JoistCheckTarget::SlabJoist(ji),
+                        r,
+                    ));
                 }
             }
+        }
 
-            // --- スラブ（一方向版） ---
-            if let Some((lx, ly)) = squid_n_load::floor::slab_dimensions(&self.model, slab) {
+        // --- 床板（一方向版）ごとの検定 ---
+        // 「版がある」= 断面割当があり板厚が正（`slab_plate_thickness` が `Some` を返す）。
+        // 版なし・厚さ 0 は出さない。
+        for slab in &self.model.slabs {
+            let Some(thickness) = self.model.slab_plate_thickness(slab) else {
+                continue;
+            };
+            let w = self.model.slab_intensity(slab, LoadPurpose::Floor);
+            if slab.is_attached() {
+                // 取り付き＋版あり: 片持ち M=wL²/2（coef=2）。
+                // スパンは張り出し量の絶対値の大きい方。slab_dimensions が
+                // None（台形など）でも出す。
+                if let Some(span) = slab.attached_design_span() {
+                    let r = fd::design_slab_oneway(
+                        span,
+                        w,
+                        2.0,
+                        thickness,
+                        fd::SLAB_DEFAULT_COVER,
+                        fd::REBAR_FT_LONG_SD295,
+                        fd::SLAB_J_RATIO,
+                    );
+                    slab_checks.push((slab.id, r));
+                }
+            } else if let Some((lx, ly)) = squid_n_load::floor::slab_dimensions(&self.model, slab) {
                 use squid_n_core::model::OneWayDir;
-                // 設計スパンは伝達方向に一致させる（分配エンジンと同じ規約: X→lx, Y→ly）。
-                // 一方向指定がない（両方向）場合は安全側に短辺で設計する。
-                let span = match slab.one_way {
+                // 囲まれ＋版あり＋矩形: 従来どおり単純支持相当（coef=8）。
+                let span = match slab.one_way() {
                     Some(OneWayDir::X) => lx,
                     Some(OneWayDir::Y) => ly,
                     None => lx.min(ly),
                 };
-                let thickness = self.model.slab_thickness_of(slab).unwrap_or(0.0);
-                if span > 1e-9 && thickness > 0.0 {
-                    // 単純支持相当（coef=8）。連続版はより小さい係数だが安全側に 8 を用いる。
+                if span > 1e-9 {
                     let r = fd::design_slab_oneway(
                         span,
                         w,
@@ -258,8 +292,9 @@ impl App {
 
     /// `Model::secondary_members` の小梁を単純支持梁として検定する。
     ///
-    /// `Slab::joists` に同じ両端を持つ小梁は GUI 定義済みとしてスキップする。
-    /// 中点が属するスラブを XY 多角形判定（内部または辺上）で決め、平行小梁群から負担幅を算定する。
+    /// `FloorRegion::joists` に同じ両端を持つ小梁は GUI 定義済みとしてスキップする。
+    /// 中点が属する床板を XY 多角形判定（内部または辺上）**かつ同じレベル**で決め、
+    /// 平行小梁群から負担幅を算定する。
     fn design_secondary_joist_checks(
         &self,
         joist_checks: &mut Vec<crate::app::JoistCheck>,
@@ -273,8 +308,8 @@ impl App {
         use std::collections::{HashMap, HashSet};
 
         let mut joist_supports = HashSet::new();
-        for slab in &self.model.slabs {
-            for j in &slab.joists {
+        for region in &self.model.floor_regions {
+            for j in region.joist_lines() {
                 let (a, b) = (j.support[0], j.support[1]);
                 if a != b {
                     let key = if a.0 <= b.0 { (a, b) } else { (b, a) };
@@ -291,6 +326,9 @@ impl App {
             perp_coord: f64,
             dir: [f64; 2],
             section: SectionId,
+            /// 複数の床板の辺に載る小梁の負担幅（載っている床板の幅の平均）。
+            /// `None` は 1 枚の床板の内部にある小梁で、平行小梁群から負担幅を出す。
+            edge_width: Option<f64>,
         }
 
         let mut candidates = Vec::new();
@@ -331,17 +369,52 @@ impl App {
                 (na.coord[0] + nb.coord[0]) / 2.0,
                 (na.coord[1] + nb.coord[1]) / 2.0,
             ];
+            let mid_z = (na.coord[2] + nb.coord[2]) / 2.0;
 
-            let Some((slab_idx, slab)) =
-                self.model.slabs.iter().enumerate().find(|(_, s)| {
-                    squid_n_load::floor::point_in_slab_boundary(&self.model, s, mid)
+            // 中点を含み、かつ**同じレベルにある**床板を集める。XY だけで判定すると
+            // 上下階の床板は平面上で重なるため、別階の床板を掴み、別階の板厚・室用途・
+            // 境界寸法で検定してしまう（エラーは出ないまま結果だけが誤る）。
+            // レベルの許容差は面走査による領域境界検出と同じ `geom::LEVEL_TOL_MM` を用いる
+            // （丸め誤差だけを吸収する幅。段差床は別レベルとして扱う＝該当なしになる）。
+            let matched: Vec<(usize, &squid_n_core::model::Slab)> = self
+                .model
+                .slabs
+                .iter()
+                .enumerate()
+                .filter(|(_, s)| {
+                    s.level(&self.model)
+                        .is_some_and(|z| (z - mid_z).abs() <= squid_n_core::geom::LEVEL_TOL_MM)
+                        && squid_n_load::floor::point_in_slab_boundary(&self.model, s, mid)
                 })
-            else {
+                .collect();
+            let Some(&(slab_idx, slab)) = matched.first() else {
                 continue;
             };
 
             let perp = [-dir[1], dir[0]];
             let perp_coord = mid[0] * perp[0] + mid[1] * perp[1];
+
+            // 複数のスラブに載る小梁の負担幅は、載っているスラブの幅の平均とする。
+            // 取り込みモデルのスラブは小梁で分割されており、小梁は隣り合う 2 枚の
+            // 帯（ストリップ）の境界辺に載る。このとき負担幅は「両隣の半分ずつの和」
+            // ＝2 枚の幅の平均であり、どちらか 1 枚の幅を採ると（並び順しだいで）
+            // 過大にも過小にもなる。
+            //
+            // T 字取り付きで 3 枚に載る場合、平均は近似になる（片側が 2 枚に割れており、
+            // 厳密には割れた側の合計幅の半分を採るべき）。床領域（大梁で囲まれた領域）を
+            // 単位とする分配へ移せば、負担幅は分配計算そのものから出るため近似は不要になる。
+            let edge_width = (matched.len() >= 2).then(|| {
+                let sum: f64 = matched
+                    .iter()
+                    .map(|(_, s)| {
+                        slab_width_across(&self.model, s, dir, {
+                            let (mn, mx) = slab_perp_extent(&self.model, s, perp);
+                            mx - mn
+                        })
+                    })
+                    .sum();
+                sum / matched.len() as f64
+            });
 
             candidates.push(Cand {
                 sm_idx: smi,
@@ -351,6 +424,7 @@ impl App {
                 perp_coord,
                 dir,
                 section: sid,
+                edge_width,
             });
         }
 
@@ -386,8 +460,12 @@ impl App {
 
             for (ri, &ci) in sorted.iter().enumerate() {
                 let c = &candidates[ci];
-                let spacing = if n == 1 {
-                    single_secondary_joist_spacing(&self.model, slab, c.dir, pmax - pmin)
+                let spacing = if let Some(w) = c.edge_width {
+                    // 複数スラブの辺に載る小梁。負担幅は載っているスラブの幅の平均で、
+                    // どのスラブを代表に選んだかに依存しない。
+                    w
+                } else if n == 1 {
+                    slab_width_across(&self.model, slab, c.dir, pmax - pmin)
                 } else {
                     let left = if ri == 0 {
                         c.perp_coord - pmin
@@ -431,7 +509,7 @@ impl App {
     }
 }
 
-/// スラブ境界の直交軸座標の最小・最大（負担幅算定用）。
+/// 床板の境界の直交軸座標の最小・最大（負担幅算定用）。
 fn slab_perp_extent(
     model: &squid_n_core::model::Model,
     slab: &squid_n_core::model::Slab,
@@ -439,19 +517,20 @@ fn slab_perp_extent(
 ) -> (f64, f64) {
     let mut min = f64::INFINITY;
     let mut max = f64::NEG_INFINITY;
-    for nid in &slab.boundary {
-        let Some(n) = model.nodes.get(nid.index()) else {
-            continue;
-        };
-        let t = n.coord[0] * perp[0] + n.coord[1] * perp[1];
+    for c in slab.boundary_coords(model).unwrap_or_default() {
+        let t = c[0] * perp[0] + c[1] * perp[1];
         min = min.min(t);
         max = max.max(t);
     }
     (min, max)
 }
 
-/// 単独小梁の負担幅。矩形スラブは `slab_dimensions` の軸直交寸法、それ以外は境界 bbox。
-fn single_secondary_joist_spacing(
+/// 小梁の向き `dir` に直交する方向のスラブ幅。矩形スラブは `slab_dimensions` の
+/// 軸直交寸法、それ以外は境界 bbox の `bbox_extent` を用いる。
+///
+/// スラブ 1 枚の内部にある単独小梁ではこれがそのまま負担幅になり、
+/// スラブの境界辺に載る小梁では、載っている各スラブについて求めて平均する。
+fn slab_width_across(
     model: &squid_n_core::model::Model,
     slab: &squid_n_core::model::Slab,
     dir: [f64; 2],

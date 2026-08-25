@@ -28,7 +28,7 @@ mod tests;
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use squid_n_core::ids::{ElemId, SlabId};
-use squid_n_core::model::{ElementData, ElementKind, Model, SlabKind};
+use squid_n_core::model::{ElementData, ElementKind, Model, Slab};
 use squid_n_core::section_shape::{RcRebar, SectionShape};
 
 use member::{BeamBarEnd, Haunch};
@@ -179,7 +179,7 @@ pub struct SteelItem {
 pub struct MemberQuantity {
     /// 対象要素（スラブ・雑壁は None）。
     pub elem: Option<ElemId>,
-    /// 対象スラブ（部材・雑壁は None）。
+    /// 対象床板（部材・雑壁は None）。
     pub slab: Option<SlabId>,
     /// 符号（断面名等）。
     pub label: String,
@@ -373,8 +373,8 @@ struct Ctx<'a> {
     cfg: &'a QuantityCfg,
     /// 鉛直材（柱）が取り付く節点集合（大梁/小梁の分類用）。
     column_nodes: HashSet<usize>,
-    /// スラブ境界辺 (節点対, 昇順) → 隣接スラブ数（梁側面のスラブ厚控除用）。
-    slab_edges: HashMap<(u32, u32), u32>,
+    /// スラブ境界辺 (節点対, 昇順) → (隣接スラブ数, 控除厚の max [mm])。
+    slab_edges: HashMap<(u32, u32), (u32, f64)>,
     /// 節点 index → その節点に取り付く水平梁（elem index, 節点から見た
     /// 梁の伸びる向きの単位ベクトル xy）。主筋の外端・内端判定
     /// （梁の連続性）に用いる。
@@ -425,7 +425,19 @@ impl Ctx<'_> {
     /// 一致するスラブの数を数える。
     fn adjacent_slab_count(&self, ni: usize, nj: usize) -> u32 {
         let key = ((ni as u32).min(nj as u32), (ni as u32).max(nj as u32));
-        self.slab_edges.get(&key).copied().unwrap_or(0).min(2)
+        self.slab_edges
+            .get(&key)
+            .map(|(n, _)| *n)
+            .unwrap_or(0)
+            .min(2)
+    }
+
+    /// 梁側面のスラブ厚控除に使う厚さ [mm]（隣接版あり領域の `region_thickness`
+    /// の max。辺が無ければ 0。梁せい d でクランプ）。
+    fn adjacent_slab_t(&self, ni: usize, nj: usize, d: f64) -> f64 {
+        let key = ((ni as u32).min(nj as u32), (ni as u32).max(nj as u32));
+        let t = self.slab_edges.get(&key).map(|(_, t)| *t).unwrap_or(0.0);
+        t.clamp(0.0, d)
     }
 }
 
@@ -464,16 +476,32 @@ pub fn compute_quantity_takeoff(model: &Model, cfg: &QuantityCfg) -> QuantityTak
         }
     }
 
-    let mut slab_edges: HashMap<(u32, u32), u32> = HashMap::new();
+    let mut slab_edges: HashMap<(u32, u32), (u32, f64)> = HashMap::new();
     for slab in &model.slabs {
-        let n = slab.boundary.len();
-        if n < 3 {
+        // 型枠控除は板厚が定まる床板（`slab_plate_thickness`）の辺だけ。断面未割当は控除しない。
+        // 厚さは `slab_plate_thickness`。欠落時のみ建物一律 `slab_thickness`（通常は到達しない）。
+        let Some(t) = model.slab_plate_thickness(slab) else {
             continue;
-        }
-        for i in 0..n {
-            let a = slab.boundary[i].index() as u32;
-            let b = slab.boundary[(i + 1) % n].index() as u32;
-            *slab_edges.entry((a.min(b), a.max(b))).or_default() += 1;
+        };
+        let t = t.max(0.0);
+        let mut add_edge = |a: u32, b: u32| {
+            let e = slab_edges.entry((a.min(b), a.max(b))).or_insert((0, 0.0));
+            e.0 += 1;
+            e.1 = e.1.max(t);
+        };
+        if let Some(boundary) = slab.boundary_nodes() {
+            let n = boundary.len();
+            if n < 3 {
+                continue;
+            }
+            for i in 0..n {
+                add_edge(
+                    boundary[i].index() as u32,
+                    boundary[(i + 1) % n].index() as u32,
+                );
+            }
+        } else if let Some([a, b]) = slab.edge_nodes(0) {
+            add_edge(a.index() as u32, b.index() as u32);
         }
     }
 
@@ -558,7 +586,11 @@ fn build_notes(model: &Model) -> Vec<String> {
             "床厚は床ごとに割り当てた断面の板厚による（デッキスラブのデッキ高さ控除は未対応）。"
                 .to_string(),
         );
-        if model.slabs.iter().any(|s| !s.joists.is_empty()) {
+        if model
+            .floor_regions
+            .iter()
+            .any(|s| !s.joist_lines().is_empty())
+        {
             notes.push(
                 "床荷重分配用の小梁ライン（JoistLine）は断面情報がないため集計対象外（部材として配置した小梁のみ集計）。".to_string(),
             );
@@ -840,13 +872,13 @@ fn beam_quantity(
         let vol = member::girder_concrete_volume(b, d, lo, haunch_i, haunch_j);
         item.concrete_m3 = vol * 1e-9;
 
-        // 型枠のスラブ厚控除: 隣接スラブ数（0/1/2）で側面せいを決める。
-        let t_slab = if model.slabs.is_empty() {
+        // 型枠のスラブ厚控除: 隣接スラブ数（0/1/2）と隣接版厚で側面せいを決める。
+        let n_adj = ctx.adjacent_slab_count(ni, nj);
+        let t_slab = if n_adj == 0 {
             0.0
         } else {
-            model.slab_thickness.clamp(0.0, d)
+            ctx.adjacent_slab_t(ni, nj, d)
         };
-        let n_adj = ctx.adjacent_slab_count(ni, nj);
         let form = if category == MemberCategory::FoundationGirder {
             // 基礎梁: 側面 1 面＋底面（スラブ＝耐圧版があれば側面せいから控除）。
             let d_side = if n_adj >= 1 { d - t_slab } else { d };
@@ -1123,23 +1155,21 @@ fn wall_quantity(ctx: &Ctx, elem: &ElementData) -> Option<MemberQuantity> {
 }
 
 /// 床（一般・片持ち・出隅・入隅）の数量。
-fn slab_quantity(ctx: &Ctx, slab: &squid_n_core::model::Slab) -> Option<MemberQuantity> {
+fn slab_quantity(ctx: &Ctx, slab: &Slab) -> Option<MemberQuantity> {
     let model = ctx.model;
-    let pts: Vec<[f64; 3]> = slab
-        .boundary
-        .iter()
-        .filter_map(|n| model.nodes.get(n.index()).map(|nd| nd.coord))
-        .collect();
+    let pts: Vec<[f64; 3]> = slab.boundary_coords(model)?;
     if pts.len() < 3 {
         return None;
     }
     let area = polygon_area_3d(&pts);
-    // スラブごとの板厚は断面から解決する（建物一律の `slab_thickness` は
+    // 床板ごとの板厚は断面から解決する（建物一律の `slab_thickness` は
     // 剛性計算に見込む厚さであり、実際の板厚とは別概念）。
-    let t = model.slab_thickness_of(slab).unwrap_or(0.0);
-    let category = match slab.kind {
-        SlabKind::Interior => MemberCategory::Slab,
-        SlabKind::Cantilever | SlabKind::Corner => MemberCategory::CantileverSlab,
+    let t = model.slab_plate_thickness(slab).unwrap_or(0.0);
+    // 主架構に取り付く領域（片持ち・バルコニー・出隅）は片持ち床として拾う。
+    let category = if slab.is_attached() {
+        MemberCategory::CantileverSlab
+    } else {
+        MemberCategory::Slab
     };
     let vol = area * t;
     let vol_m3 = vol * 1e-9;
@@ -1148,7 +1178,10 @@ fn slab_quantity(ctx: &Ctx, slab: &squid_n_core::model::Slab) -> Option<MemberQu
         elem: None,
         slab: Some(slab.id),
         label: format!("S{}", slab.id.0),
-        story: ctx.story_name(slab.boundary[0].index()),
+        story: slab
+            .reference_node()
+            .map(|n| ctx.story_name(n.index()))
+            .unwrap_or_else(|| "-".to_string()),
         category,
         structure: StructureKind::Rc,
         concrete_m3: vol_m3,

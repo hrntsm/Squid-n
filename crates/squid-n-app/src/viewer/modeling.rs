@@ -28,7 +28,7 @@
 //!   剛梁ではないため線種は分類色のまま保ち、壁エレメント色の細い平行線を添えて
 //!   付帯梁であることを示す。
 //! - **仕口パネル**: モデル化されていれば、接合部が占める領域（幅＝柱せい、
-//!   高さ＝梁せい）を梁の構面ごとに四角形で描く。パネルへ接合する部材は
+//!   高さ＝梁せい）を梁の構面ごとに四角形で描く。仕口パネルへ接合する部材は
 //!   パネル分のオフセットが剛域長へ書き込まれている（`panel_gen`）ため、同じ区間に
 //!   剛域のブロックも重なって描かれる。四角形は「この接合部にせん断変形角の
 //!   自由度を持つパネル要素がある」ことを、ハッチは「その部材のこの区間が剛体
@@ -48,7 +48,7 @@ use squid_n_core::units::to_display::force_kn;
 use squid_n_element::factory::{resolve_force_regime, ResolvedRegime};
 use squid_n_element::misc_wall::wall_is_seismic;
 use squid_n_element::side_column::{wall_side_column_release, SideColumnEdges};
-use squid_n_element::wall_panel::wall_panel_geometry;
+use squid_n_element::wall_element::wall_element_geometry;
 
 use super::{ModelingAnalysis, Projector};
 
@@ -694,7 +694,7 @@ fn draw_wall_element(
     color: egui::Color32,
     sym: &mut Symbols,
 ) {
-    let Some(g) = wall_panel_geometry(elem, model) else {
+    let Some(g) = wall_element_geometry(elem, model) else {
         draw_wall_polygon(painter, pts, elem, color, false);
         return;
     };
@@ -754,7 +754,7 @@ fn draw_wall_element(
     let bc = proj.project(vec3::add(g.bottom_center, vec3::scale(ez, inset)));
     let tc = proj.project(vec3::add(g.top_center, vec3::scale(ez, -inset)));
     let lp_ratio = if analysis == ModelingAnalysis::Incremental && g.h > 1e-9 {
-        squid_n_element::wall_panel::wall_column_fiber_lp(elem, model).map(|lp| (lp / g.h) as f32)
+        squid_n_element::wall_element::wall_column_fiber_lp(elem, model).map(|lp| (lp / g.h) as f32)
     } else {
         None
     };
@@ -762,7 +762,7 @@ fn draw_wall_element(
 
     // 面内せん断ばね（Qu 頭打ち）。壁柱が全長で持つ 1 自由度のため材軸に沿わせる。
     if analysis == ModelingAnalysis::Incremental
-        && squid_n_element::wall_panel::WallPanelElement::shear_capacity_of(elem, model) > 0.0
+        && squid_n_element::wall_element::WallElement::shear_capacity_of(elem, model) > 0.0
     {
         draw_shear_spring(painter, bc, tc, PARALLEL_OFFSET, color);
         sym.wall_shear = true;
@@ -1131,7 +1131,7 @@ fn draw_legend(
 /// 2 機構からなる。図では前者を壁柱端部の Lp、後者を壁柱に沿うジグザグで示すため、
 /// ここではその根拠となる数値を並べる。
 fn show_wall_modeling_detail(ui: &mut egui::Ui, app: &App, elem: &ElementData) {
-    let Some(g) = squid_n_element::wall_panel::wall_panel_geometry(elem, &app.model) else {
+    let Some(g) = squid_n_element::wall_element::wall_element_geometry(elem, &app.model) else {
         ui.label("幾何を取得できないため半透明ポリゴンで表示");
         return;
     };
@@ -1139,7 +1139,7 @@ fn show_wall_modeling_detail(ui: &mut egui::Ui, app: &App, elem: &ElementData) {
     if app.modeling_analysis != ModelingAnalysis::Incremental {
         return;
     }
-    match squid_n_element::wall_panel::wall_column_fiber_lp(elem, &app.model) {
+    match squid_n_element::wall_element::wall_column_fiber_lp(elem, &app.model) {
         Some(lp) => {
             ui.label("ファイバー断面: 壁柱の材端 2 箇所（積分点 ξ=∓1）");
             ui.label(format!("塑性化域 Lp={lp:.0} mm（0.5·lw）／中央弾性"));
@@ -1148,7 +1148,7 @@ fn show_wall_modeling_detail(ui: &mut egui::Ui, app: &App, elem: &ElementData) {
             ui.label("軸・曲げ: 弾性（ファイバー断面を組めない）");
         }
     }
-    let qu = squid_n_element::wall_panel::WallPanelElement::shear_capacity_of(elem, &app.model);
+    let qu = squid_n_element::wall_element::WallElement::shear_capacity_of(elem, &app.model);
     if qu > 0.0 {
         ui.label(format!("面内せん断: Qu={:.0} kN で頭打ち", force_kn(qu)));
     } else {

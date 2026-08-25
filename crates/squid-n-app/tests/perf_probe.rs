@@ -35,10 +35,11 @@ use std::time::Instant;
 
 use squid_n_app::app::{App, DL_CASE_NAME, LL_FRAME_CASE_NAME, SELF_WEIGHT_AUTO_LOAD_CASE_NAME};
 use squid_n_core::dof::Dof6Mask;
-use squid_n_core::ids::{ElemId, LoadCaseId, MaterialId, NodeId, SectionId, SlabId};
+use squid_n_core::ids::{ElemId, FloorRegionId, LoadCaseId, MaterialId, NodeId, SectionId, SlabId};
 use squid_n_core::model::{
-    AreaLoad, DistributionMethod, ElementData, ElementKind, EndCondition, ForceRegime,
-    LoadCaseKind, LocalAxis, Material, MaterialCategory, Model, Node, Section, Slab,
+    AreaLoad, DistributionMethod, ElementData, ElementKind, EndCondition, FloorRegion, ForceRegime,
+    LoadCaseKind, LocalAxis, Material, MaterialCategory, Model, Node, Section, Slab, SlabPlate,
+    SlabShape,
 };
 use squid_n_element::beam::{apply_auto_rigid_zones, RigidZoneRule};
 
@@ -180,22 +181,26 @@ fn build_grid_model(nx: usize, ny: usize, n_stories: usize, with_slabs: bool) ->
                     let n10 = node_id(level, i + 1, j);
                     let n11 = node_id(level, i + 1, j + 1);
                     let n01 = node_id(level, i, j + 1);
+                    let boundary = vec![NodeId(n00), NodeId(n10), NodeId(n11), NodeId(n01)];
                     model.slabs.push(Slab {
                         id: SlabId(slab_id),
-                        boundary: vec![NodeId(n00), NodeId(n10), NodeId(n11), NodeId(n01)],
-                        joists: vec![],
-                        loads: vec![AreaLoad {
-                            kind: "DL".into(),
-                            value: 0.005,
-                        }],
-                        method: DistributionMethod::TriTrapezoid,
-                        usage: None,
-                        edge_supported: None,
-                        section: None,
-                        kind: Default::default(),
-                        one_way: None,
-                        secondary_joist_ids: vec![],
+                        shape: SlabShape::Enclosed {
+                            boundary: boundary.clone(),
+                        },
+                        plate: SlabPlate {
+                            section: None,
+                            loads: vec![AreaLoad {
+                                kind: "DL".into(),
+                                value: 0.005,
+                            }],
+                            usage: None,
+                            method: DistributionMethod::TriTrapezoid,
+                            one_way: None,
+                        },
                     });
+                    let mut region = FloorRegion::new(FloorRegionId(slab_id), boundary);
+                    region.slab_ids.push(SlabId(slab_id));
+                    model.floor_regions.push(region);
                     slab_id += 1;
                 }
             }
@@ -363,7 +368,7 @@ fn run_case(label: &str, nx: usize, ny: usize, n_stories: usize, with_slabs: boo
     let model = build_grid_model(nx, ny, n_stories, with_slabs);
     let n_nodes = model.nodes.len();
     let n_elems = model.elements.len();
-    let n_slabs = model.slabs.len();
+    let n_slabs = model.floor_regions.len();
 
     let mut app = App::default();
     let t_load0 = Instant::now();

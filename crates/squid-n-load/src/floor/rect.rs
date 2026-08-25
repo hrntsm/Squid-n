@@ -5,7 +5,7 @@
 //! - [`distribute_rect_with_joists`] — 小梁による二段階伝達（矩形スラブ）
 
 use squid_n_core::ids::{ElemId, NodeId};
-use squid_n_core::model::{DistributionMethod, ElementKind, Model, OneWayDir, Slab};
+use squid_n_core::model::{DistributionMethod, ElementKind, FloorRegion, Model, OneWayDir, Slab};
 
 use super::fem::{fem_trapezoid, fem_triangle, fem_uniform};
 use super::geometry::{dist3, edge_len};
@@ -52,7 +52,7 @@ pub(crate) fn distribute_rect(
     w: f64,
     loads: &mut Vec<BeamLoad>,
 ) {
-    match slab.method {
+    match slab.method() {
         DistributionMethod::TriTrapezoid => {
             let is_square = (lx - ly).abs() < 1e-6;
             if is_square {
@@ -85,7 +85,7 @@ pub(crate) fn distribute_rect(
             }
         }
         DistributionMethod::OneWay => {
-            if let Some(dir) = slab.one_way {
+            if let Some(dir) = slab.one_way() {
                 distribute_one_way_dir(coords, dir, w, loads);
             } else {
                 // 従来互換（`one_way` 未指定）: 辺0・2負担（＝辺1方向スパン）。
@@ -126,7 +126,7 @@ pub(crate) fn distribute_rect(
     }
 }
 
-/// 一方向スラブの荷重伝達方向指定（`slab.one_way = Some(dir)`）に基づく分配（レビュー §1.13）。
+/// 一方向スラブの荷重伝達方向指定（`region.one_way() = Some(dir)`）に基づく分配（レビュー §1.13）。
 ///
 /// `dir` に対応する全体座標軸（X→[1,0]、Y→[0,1]）を「伝達方向」とし、伝達方向に
 /// **直交する**2辺（＝伝達方向と垂直に走る2辺）を負担辺とする。負担辺の線荷重は
@@ -156,7 +156,7 @@ pub(crate) fn distribute_one_way_dir(
     }
 }
 
-/// 小梁 (`slab.joists`) による二段階伝達（矩形スラブのみ。仕様書 §5.1「2段階」）。
+/// 小梁 (`region.joist_lines()`) による二段階伝達（矩形スラブのみ。仕様書 §5.1「2段階」）。
 ///
 /// **簡易モデルの仮定**（本実装の割り切り。厳密な二方向効果は考慮しない）:
 /// - 各 `JoistLine` は1本の物理的な小梁を表し、`dir` 方向に架かり、`spacing` 分の
@@ -173,15 +173,15 @@ pub(crate) fn distribute_one_way_dir(
 /// - 小梁位置・本数の実際の配置（`JoistLine.support` の座標）はモデルからそのまま用いる。
 pub(crate) fn distribute_rect_with_joists(
     model: &Model,
-    slab: &Slab,
+    region: &FloorRegion,
     coords: &[[f64; 3]],
     w: f64,
     loads: &mut Vec<BeamLoad>,
 ) {
-    if slab.joists.is_empty() {
+    if region.joist_lines().is_empty() {
         return;
     }
-    let dir = slab.joists[0].dir;
+    let dir = region.joist_lines()[0].dir;
     let dn = (dir[0] * dir[0] + dir[1] * dir[1]).sqrt();
     let axis = if dn > 1e-12 {
         [dir[0] / dn, dir[1] / dn]
@@ -192,7 +192,7 @@ pub(crate) fn distribute_rect_with_joists(
     let width_total = edge_len(coords, perp_edges[0]);
 
     let mut spacing_sum = 0.0;
-    for j in &slab.joists {
+    for j in region.joist_lines() {
         let (Some(n0), Some(n1)) = (
             model.nodes.get(j.support[0].index()),
             model.nodes.get(j.support[1].index()),

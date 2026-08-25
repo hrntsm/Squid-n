@@ -29,7 +29,7 @@ use squid_n_core::model::{ElementData, HysteresisModel, Model};
 use squid_n_core::section_shape::{SectionShape, E_STEEL, KAPPA_RC};
 
 /// 耐震壁（壁エレメントモデル）。
-pub struct WallPanelElement {
+pub struct WallElement {
     /// [下辺a, 下辺b, 上辺a, 上辺b]（a→b が剛梁の軸方向。上下で対応付け済み）
     nodes: [NodeId; 4],
     /// 壁柱（仮想中央柱。上下剛梁の中点を結ぶ）
@@ -51,7 +51,7 @@ pub struct WallPanelElement {
     qu_shear: f64,
     /// 面内せん断モードベクトル p（24 自由度）。上辺 2 節点の並進を壁面内水平方向
     /// `ex_bottom` へ 1.0 ずつ与えたもの。`pᵀ·f` は上辺が伝達する面内水平力に等しく、
-    /// `u − γp·p` で塑性すべりを差し引く（下記 [`WallPanelElement::shear_return_map`]）。
+    /// `u − γp·p` で塑性すべりを差し引く（下記 [`WallElement::shear_return_map`]）。
     shear_mode: [f64; 24],
     /// 確定塑性せん断すべり γp [mm]。
     committed_slip: f64,
@@ -87,7 +87,7 @@ pub struct WallPanelElement {
 /// 一方の辺だけでは代表長さにならない）。耐力壁の平均せん断応力度
 /// τu = Q/(t·lw) など、壁の断面量を要する算定は本構造体を用いて要素実装と同じ
 /// 幾何を共有する。
-pub struct WallPanelGeometry {
+pub struct WallElementGeometry {
     /// 下辺の 2 節点（a→b）
     pub bottom: [NodeId; 2],
     /// 上辺の 2 節点（下辺 a に対応する側が先）
@@ -108,10 +108,10 @@ pub struct WallPanelGeometry {
     pub top_center: [f64; 3],
 }
 
-/// 壁エレメント（4 節点）の幾何を算定する（[`WallPanelGeometry`]）。
+/// 壁エレメント（4 節点）の幾何を算定する（[`WallElementGeometry`]）。
 ///
 /// 4 節点未満・節点参照が欠落・退化（辺長や高さが 0）の場合は `None`。
-pub fn wall_panel_geometry(data: &ElementData, model: &Model) -> Option<WallPanelGeometry> {
+pub fn wall_element_geometry(data: &ElementData, model: &Model) -> Option<WallElementGeometry> {
     if data.nodes.len() < 4 {
         return None;
     }
@@ -148,7 +148,7 @@ pub fn wall_panel_geometry(data: &ElementData, model: &Model) -> Option<WallPane
     if lw_bot <= 0.0 || lw_top <= 0.0 || h <= 0.0 {
         return None;
     }
-    Some(WallPanelGeometry {
+    Some(WallElementGeometry {
         bottom: [ids[b0], ids[b1]],
         top: [ids[ta], ids[tb]],
         lw_bottom: lw_bot,
@@ -166,7 +166,7 @@ pub fn wall_panel_geometry(data: &ElementData, model: &Model) -> Option<WallPane
 /// ファイバー化されない壁（耐震壁不成立・Qu を算定できない・Fc 未設定など）は `None`。
 ///
 /// 判定条件・Lp の値ともに要素生成（[`crate::factory::build_nonlinear_behavior`] と
-/// [`WallPanelElement::with_fiber_flexure`]）と同一のため、モデル化図の表示は解析の
+/// [`WallElement::with_fiber_flexure`]）と同一のため、モデル化図の表示は解析の
 /// モデル化と一致する。Lp は壁長の 0.5 倍を壁高さ h の 45% でクランプした値で、
 /// 断面せい基準（0.5D）の柱・梁とは基準が異なる。
 pub fn wall_column_fiber_lp(data: &ElementData, model: &Model) -> Option<f64> {
@@ -175,10 +175,10 @@ pub fn wall_column_fiber_lp(data: &ElementData, model: &Model) -> Option<f64> {
         return None;
     }
     // Qu を算定できない壁は、非線形経路が弾性要素へフォールバックする。
-    if WallPanelElement::shear_capacity_of(data, model) <= 0.0 {
+    if WallElement::shear_capacity_of(data, model) <= 0.0 {
         return None;
     }
-    let geom = wall_panel_geometry(data, model)?;
+    let geom = wall_element_geometry(data, model)?;
     // コンクリート強度がなければファイバー断面を組めない。
     model.element_material(data)?.fc.filter(|fc| *fc > 0.0)?;
     let sec = data.section.and_then(|sid| model.sections.get(sid.index()));
@@ -211,7 +211,7 @@ fn wall_opening_equiv_dims(data: &ElementData, model: &Model) -> Option<(f64, f6
         })
 }
 
-/// [`WallPanelElement::shear_capacity`] へ渡す、耐震壁の幾何・配筋・材料。
+/// [`WallElement::shear_capacity`] へ渡す、耐震壁の幾何・配筋・材料。
 ///
 /// モデルから読み取った値をそのまま束ねたもので、荒川mean式の入力
 /// （[`squid_n_core::rc_wall_capacity::RcWallShearInput`]）への組み立ては
@@ -241,7 +241,7 @@ struct WallShearGeometry {
     opening: Option<(f64, f64)>,
 }
 
-impl WallPanelElement {
+impl WallElement {
     /// 生成。4 節点未満・寸法/断面が不定の場合は None
     /// （呼び出し側は従来の暫定等価梁へフォールバックする）。
     pub fn try_new(data: &ElementData, model: &Model) -> Option<Self> {
@@ -258,9 +258,9 @@ impl WallPanelElement {
         stiffness_scale: f64,
     ) -> Option<Self> {
         // 幾何（下辺・上辺の対応付け、壁長 lw＝上下辺の平均、高さ h）は
-        // [`wall_panel_geometry`] に集約する（保有水平耐力の τu 算定など要素外の
+        // [`wall_element_geometry`] に集約する（保有水平耐力の τu 算定など要素外の
         // 利用と同一の幾何を共有し、定義が食い違わないようにする）。
-        let geom = wall_panel_geometry(data, model)?;
+        let geom = wall_element_geometry(data, model)?;
         let (ids_b0, ids_b1) = (geom.bottom[0], geom.bottom[1]);
         let (ids_ta, ids_tb) = (geom.top[0], geom.top[1]);
         let coord_of =
@@ -504,7 +504,7 @@ impl WallPanelElement {
         basis: crate::factory::StrengthBasis,
         kind: squid_n_core::model::AnalysisKind,
     ) -> Self {
-        let Some(geom) = wall_panel_geometry(data, model) else {
+        let Some(geom) = wall_element_geometry(data, model) else {
             return self;
         };
         let Some(mat) = model.element_material(data) else {
@@ -671,7 +671,7 @@ impl WallPanelElement {
     /// （[`squid_n_core::rc_wall_capacity::wall_opening_reduction_strength`]）を用いる。
     /// 保有水平耐力の τu 種別判定の分母 `t·lw` にも本率を乗じる。
     pub fn opening_strength_reduction(data: &ElementData, model: &Model) -> f64 {
-        let Some(geom) = wall_panel_geometry(data, model) else {
+        let Some(geom) = wall_element_geometry(data, model) else {
             return 1.0;
         };
         let opening =
@@ -685,7 +685,7 @@ impl WallPanelElement {
     /// モデル化図（`squid-n-app`）が、面内せん断を Qu で頭打ちにする壁かどうかの
     /// 判定と表示値に用いるため公開する。
     pub fn shear_capacity_of(data: &ElementData, model: &Model) -> f64 {
-        let Some(geom) = wall_panel_geometry(data, model) else {
+        let Some(geom) = wall_element_geometry(data, model) else {
             return 0.0;
         };
         let Some(sec) = data.section.and_then(|sid| model.sections.get(sid.index())) else {
@@ -765,7 +765,7 @@ impl WallPanelElement {
     /// その旨を情報表示する（`squid-n-app` の解析実行）。座屈耐力の評価は原典の
     /// 入手後に対応する。
     pub fn steel_shear_capacity_of(data: &ElementData, model: &Model) -> f64 {
-        let Some(geom) = wall_panel_geometry(data, model) else {
+        let Some(geom) = wall_element_geometry(data, model) else {
             return 0.0;
         };
         let Some(sec) = data.section.and_then(|sid| model.sections.get(sid.index())) else {
@@ -814,7 +814,7 @@ impl WallPanelElement {
         // 退化した座標）は、耐震壁の四周条件を判定できず雑壁へ落ちる。雑壁としての
         // 剛性算入も 4 節点の幾何を要するため、剛性も耐力も持たないまま無音で消える。
         // 入力不備として報告する。
-        let geom = match wall_panel_geometry(data, model) {
+        let geom = match wall_element_geometry(data, model) {
             Some(g) => g,
             None if data.nodes.len() >= 4 => {
                 return Some(format!(
@@ -1198,7 +1198,7 @@ impl WallPanelElement {
     }
 }
 
-impl ElementBehavior for WallPanelElement {
+impl ElementBehavior for WallElement {
     fn n_dof(&self) -> usize {
         24
     }
@@ -1425,7 +1425,7 @@ impl ElementBehavior for WallPanelElement {
             Option<Vec<u8>>,
         );
         let (committed, trial, cslip, tslip, fsnap, u12t, u12c, spring) =
-            crate::behavior::downcast_snapshot::<Snapshot>("WallPanelElement", state);
+            crate::behavior::downcast_snapshot::<Snapshot>("WallElement", state);
         self.committed_disp = *committed;
         self.trial_disp = *trial;
         self.committed_slip = *cslip;
@@ -1444,7 +1444,7 @@ impl ElementBehavior for WallPanelElement {
     }
 
     fn serialize_checkpoint(&self) -> Vec<u8> {
-        let cp = WallPanelCheckpoint {
+        let cp = WallElementCheckpoint {
             committed_disp: self.committed_disp,
             trial_disp: self.trial_disp,
             committed_slip: self.committed_slip,
@@ -1465,7 +1465,7 @@ impl ElementBehavior for WallPanelElement {
         if data.is_empty() {
             return Ok(());
         }
-        if let Ok(cp) = bincode::deserialize::<WallPanelCheckpoint>(data) {
+        if let Ok(cp) = bincode::deserialize::<WallElementCheckpoint>(data) {
             self.committed_disp = cp.committed_disp;
             self.trial_disp = cp.trial_disp;
             self.committed_slip = cp.committed_slip;
@@ -1521,10 +1521,10 @@ impl ElementBehavior for WallPanelElement {
     }
 }
 
-/// [`WallPanelElement`] のチェックポイント形式（現行）。
+/// [`WallElement`] のチェックポイント形式（現行）。
 /// 旧形式（`(committed_disp, trial_disp)` のみ）は読み込み時にフォールバックする。
 #[derive(serde::Serialize, serde::Deserialize)]
-struct WallPanelCheckpoint {
+struct WallElementCheckpoint {
     committed_disp: [f64; 24],
     trial_disp: [f64; 24],
     committed_slip: f64,
@@ -1627,9 +1627,9 @@ mod tests {
     }
 
     #[test]
-    fn test_wall_panel_rigid_translation_zero_force() {
+    fn test_wall_element_rigid_translation_zero_force() {
         let (model, data) = make_wall_model();
-        let wall = WallPanelElement::try_new(&data, &model).unwrap();
+        let wall = WallElement::try_new(&data, &model).unwrap();
         let ctx = Ctx { model: &model };
         let k = wall.stiffness_24(&ctx);
         // 全節点に同一並進（剛体移動）→ 力ゼロ
@@ -1649,9 +1649,9 @@ mod tests {
     }
 
     #[test]
-    fn test_wall_panel_inplane_shear_matches_column() {
+    fn test_wall_element_inplane_shear_matches_column() {
         let (model, data) = make_wall_model();
-        let wall = WallPanelElement::try_new(&data, &model).unwrap();
+        let wall = WallElement::try_new(&data, &model).unwrap();
         let ctx = Ctx { model: &model };
         let k = wall.stiffness_24(&ctx);
         // 上辺 2 節点を面内水平(X)に単位変位（下辺固定・上辺回転 0 = 両端固定柱の
@@ -1672,9 +1672,9 @@ mod tests {
     }
 
     #[test]
-    fn test_wall_panel_vertical_matches_axial() {
+    fn test_wall_element_vertical_matches_axial() {
         let (model, data) = make_wall_model();
-        let wall = WallPanelElement::try_new(&data, &model).unwrap();
+        let wall = WallElement::try_new(&data, &model).unwrap();
         let ctx = Ctx { model: &model };
         let k = wall.stiffness_24(&ctx);
         // 上辺 2 節点を鉛直に単位変位 → EA/h
@@ -1691,9 +1691,9 @@ mod tests {
     }
 
     #[test]
-    fn test_wall_panel_corner_rotations_are_pinned() {
+    fn test_wall_element_corner_rotations_are_pinned() {
         let (model, data) = make_wall_model();
-        let wall = WallPanelElement::try_new(&data, &model).unwrap();
+        let wall = WallElement::try_new(&data, &model).unwrap();
         let ctx = Ctx { model: &model };
         let k = wall.stiffness_24(&ctx);
         // 四隅の回転自由度は剛性を持たない（剛梁両端ピン）
@@ -1713,7 +1713,7 @@ mod tests {
     #[test]
     fn test_opening_strength_reduction_no_opening_is_one() {
         let (model, data) = make_wall_model();
-        assert!((WallPanelElement::opening_strength_reduction(&data, &model) - 1.0).abs() < 1e-12);
+        assert!((WallElement::opening_strength_reduction(&data, &model) - 1.0).abs() < 1e-12);
     }
 
     #[test]
@@ -1732,7 +1732,7 @@ mod tests {
                 offset: None,
             }],
         });
-        let r2 = WallPanelElement::opening_strength_reduction(&data, &model);
+        let r2 = WallElement::opening_strength_reduction(&data, &model);
         let expected = squid_n_core::rc_wall_capacity::wall_opening_reduction_strength(Some((
             2000.0, 1500.0, 3000.0, 4000.0,
         )));
@@ -1742,9 +1742,9 @@ mod tests {
     }
 
     #[test]
-    fn test_wall_panel_opening_reduces_inplane_shear() {
+    fn test_wall_element_opening_reduces_inplane_shear() {
         let (mut model, data) = make_wall_model();
-        let wall = WallPanelElement::try_new(&data, &model).unwrap();
+        let wall = WallElement::try_new(&data, &model).unwrap();
         let k_no = {
             let ctx = Ctx { model: &model };
             wall.stiffness_24(&ctx)
@@ -1756,7 +1756,7 @@ mod tests {
             three_side_slit: false,
             openings: vec![],
         });
-        let wall_o = WallPanelElement::try_new(&data, &model).unwrap();
+        let wall_o = WallElement::try_new(&data, &model).unwrap();
         let ctx = Ctx { model: &model };
         let k_o = wall_o.stiffness_24(&ctx);
         let mut u = [0.0; 24];
@@ -1770,9 +1770,9 @@ mod tests {
 
     /// 鉄筋剛性の考慮: a = t·lw·(1+(n−1)·ps)、n=Es/Ec。
     #[test]
-    fn test_wall_panel_rebar_factor() {
+    fn test_wall_element_rebar_factor() {
         let (model, data) = make_wall_model();
-        let wall = WallPanelElement::try_new(&data, &model).unwrap();
+        let wall = WallElement::try_new(&data, &model).unwrap();
         let n = squid_n_core::section_shape::E_STEEL / 23000.0;
         let expected = 150.0 * 4000.0 * (1.0 + (n - 1.0) * 0.0025);
         assert!((wall.column.a - expected).abs() < 1e-6);
@@ -1782,9 +1782,9 @@ mod tests {
 
     /// 側柱があるとせん断断面に算入され、I 形の形状係数 κ が用いられる。
     #[test]
-    fn test_wall_panel_side_columns_increase_shear_area() {
+    fn test_wall_element_side_columns_increase_shear_area() {
         let (mut model, data) = make_wall_model();
-        let wall_plain = WallPanelElement::try_new(&data, &model).unwrap();
+        let wall_plain = WallElement::try_new(&data, &model).unwrap();
 
         // 両側の鉛直辺(節点0-3・1-2)に 600×600 の側柱を追加
         let col_shape = SectionShape::RcRect {
@@ -1834,7 +1834,7 @@ mod tests {
                 spring: None,
             });
         }
-        let wall_cols = WallPanelElement::try_new(&data, &model).unwrap();
+        let wall_cols = WallElement::try_new(&data, &model).unwrap();
         // (壁板+側柱2本)/κ(I形) > 壁板/1.2
         assert!(
             wall_cols.column.as_y > wall_plain.column.as_y,
@@ -1852,11 +1852,11 @@ mod tests {
     }
 
     #[test]
-    fn test_wall_panel_try_new_fallbacks() {
+    fn test_wall_element_try_new_fallbacks() {
         let (model, mut data) = make_wall_model();
         // 2 節点しかない場合は None（従来の暫定等価梁へ）
         data.nodes = smallvec::smallvec![NodeId(0), NodeId(2)];
-        assert!(WallPanelElement::try_new(&data, &model).is_none());
+        assert!(WallElement::try_new(&data, &model).is_none());
     }
 
     /// トライアル追従の回帰テスト: update_state(du, commit=false) が internal_force に
@@ -1866,13 +1866,13 @@ mod tests {
     ///
     /// 本テストの K·u 比較は「internal_force と tangent_stiffness が将来ズレない」
     /// ことの回帰ガードであり、K24 の値そのものの正しさは独立の解析解と照合する
-    /// `test_wall_panel_inplane_shear_matches_column`（12EI/((1+φ)h³)）が担保する
+    /// `test_wall_element_inplane_shear_matches_column`（12EI/((1+φ)h³)）が担保する
     /// （両者を合わせて非循環な検証となる）。
     #[test]
-    fn test_wall_panel_trial_displacement_tracking() {
+    fn test_wall_element_trial_displacement_tracking() {
         use crate::behavior::{Ctx, ElementBehavior, LocalVec};
         let (model, data) = make_wall_model();
-        let mut wall = WallPanelElement::try_new(&data, &model).unwrap();
+        let mut wall = WallElement::try_new(&data, &model).unwrap();
         let ctx = Ctx { model: &model };
 
         // 上辺 2 節点へ面内水平変位（両端固定柱のせん断変形モード）
@@ -1972,7 +1972,7 @@ mod geometry_tests {
             [1000.0, 0.0, 3000.0],
         ];
         let (model, data) = wall_with(coords, [0, 1, 2, 3]);
-        let g = wall_panel_geometry(&data, &model).expect("Some");
+        let g = wall_element_geometry(&data, &model).expect("Some");
         assert!((g.lw_bottom - 4000.0).abs() < 1e-6, "{}", g.lw_bottom);
         assert!((g.lw_top - 2000.0).abs() < 1e-6, "{}", g.lw_top);
         assert!(
@@ -1996,7 +1996,7 @@ mod geometry_tests {
         ];
         // 先頭 2 節点が鉛直辺（節点0=下、節点3=上）になる並び。
         let (model, data) = wall_with(coords, [0, 3, 1, 2]);
-        let g = wall_panel_geometry(&data, &model).expect("Some");
+        let g = wall_element_geometry(&data, &model).expect("Some");
         assert!(
             (g.lw - 4000.0).abs() < 1e-6,
             "節点順に依らず壁長 4000（壁高さ 3000 ではない）。got {}",
@@ -2099,7 +2099,7 @@ mod shear_yield_tests {
             fy: Some(fy),
         };
         let (mut model, data) = wall_model();
-        let qu_unassigned = WallPanelElement::shear_capacity_of(&data, &model);
+        let qu_unassigned = WallElement::shear_capacity_of(&data, &model);
         assert!(qu_unassigned > 0.0, "Qu が算定できるはず");
 
         model.materials.push(rebar(1, "SD295A", 295.0));
@@ -2107,21 +2107,21 @@ mod shear_yield_tests {
         model.materials.push(rebar(3, "KH785", 785.0));
 
         model.sections[0].shear_rebar_material = Some(MaterialId(1));
-        let qu_sd295 = WallPanelElement::shear_capacity_of(&data, &model);
+        let qu_sd295 = WallElement::shear_capacity_of(&data, &model);
         assert!(
             (qu_sd295 - qu_unassigned).abs() < 1e-6,
             "未割当の既定は SD295 相当のはず: {qu_unassigned:.6e} vs {qu_sd295:.6e}"
         );
 
         model.sections[0].shear_rebar_material = Some(MaterialId(2));
-        let qu_sd390 = WallPanelElement::shear_capacity_of(&data, &model);
+        let qu_sd390 = WallElement::shear_capacity_of(&data, &model);
         assert!(
             qu_sd390 > qu_sd295,
             "SD390 の Qu {qu_sd390:.6e} が SD295 の Qu {qu_sd295:.6e} を超えていない"
         );
 
         model.sections[0].shear_rebar_material = Some(MaterialId(3));
-        let qu_kh785 = WallPanelElement::shear_capacity_of(&data, &model);
+        let qu_kh785 = WallElement::shear_capacity_of(&data, &model);
         assert!(
             qu_kh785 > qu_sd390,
             "高強度せん断補強筋の Qu {qu_kh785:.6e} が SD390 の Qu {qu_sd390:.6e} を超えていない"
@@ -2135,7 +2135,7 @@ mod shear_yield_tests {
     #[test]
     fn test_wall_shear_yields_at_ultimate_strength() {
         let (model, data) = wall_model();
-        let qu = WallPanelElement::shear_capacity_of(&data, &model);
+        let qu = WallElement::shear_capacity_of(&data, &model);
         assert!(qu > 0.0, "Qu が算定できるはず");
 
         let mut b = crate::factory::build_nonlinear_behavior(
@@ -2180,7 +2180,7 @@ mod shear_yield_tests {
     #[test]
     fn test_wall_shear_hysteresis_is_max_point_oriented() {
         let (model, data) = wall_model();
-        let qu = WallPanelElement::shear_capacity_of(&data, &model);
+        let qu = WallElement::shear_capacity_of(&data, &model);
         assert!(qu > 0.0);
         let mut b = crate::factory::build_nonlinear_behavior(
             &data,
@@ -2442,40 +2442,34 @@ mod capacity_issue_tests {
     #[test]
     fn test_no_issue_when_side_column_rebar_available() {
         let (model, wall) = model_with(Some(rc_col(true)), 0.0025);
-        assert_eq!(
-            WallPanelElement::wall_shear_capacity_issue(&wall, &model),
-            None
-        );
-        assert!(WallPanelElement::shear_capacity_of(&wall, &model) > 0.0);
+        assert_eq!(WallElement::wall_shear_capacity_issue(&wall, &model), None);
+        assert!(WallElement::shear_capacity_of(&wall, &model) > 0.0);
     }
 
     /// 側柱はあるのに主筋が取得できない＝断面設定の不備。壁筋比で代替せずエラーとする。
     #[test]
     fn test_issue_when_side_column_has_no_main_rebar() {
         let (model, wall) = model_with(Some(rc_col(false)), 0.0025);
-        let issue = WallPanelElement::wall_shear_capacity_issue(&wall, &model)
+        let issue = WallElement::wall_shear_capacity_issue(&wall, &model)
             .expect("側柱主筋がなければ不備として検出されるべき");
         assert!(issue.contains("側柱"), "{}", issue);
         // 壁筋比 ps があっても代替しない（Qu=0 のまま）。
-        assert_eq!(WallPanelElement::shear_capacity_of(&wall, &model), 0.0);
+        assert_eq!(WallElement::shear_capacity_of(&wall, &model), 0.0);
     }
 
     /// 側柱がない壁（壁のみの耐震壁）は不備ではなく、壁筋比から pte を算定する。
     #[test]
     fn test_no_side_column_uses_wall_rebar_ratio() {
         let (model, wall) = model_with(None, 0.0025);
-        assert_eq!(
-            WallPanelElement::wall_shear_capacity_issue(&wall, &model),
-            None
-        );
-        assert!(WallPanelElement::shear_capacity_of(&wall, &model) > 0.0);
+        assert_eq!(WallElement::wall_shear_capacity_issue(&wall, &model), None);
+        assert!(WallElement::shear_capacity_of(&wall, &model) > 0.0);
     }
 
     /// 側柱も壁筋比もなければ pte を算定できないため不備とする。
     #[test]
     fn test_issue_when_no_side_column_and_no_wall_rebar() {
         let (model, wall) = model_with(None, 0.0);
-        let issue = WallPanelElement::wall_shear_capacity_issue(&wall, &model)
+        let issue = WallElement::wall_shear_capacity_issue(&wall, &model)
             .expect("側柱も壁筋もなければ不備");
         assert!(issue.contains("壁筋比"), "{}", issue);
     }
@@ -2486,10 +2480,9 @@ mod capacity_issue_tests {
     fn test_issue_when_fc_unset() {
         let (mut model, wall) = model_with(None, 0.0025);
         model.materials[0].fc = None;
-        let issue =
-            WallPanelElement::wall_shear_capacity_issue(&wall, &model).expect("Fc 未設定は不備");
+        let issue = WallElement::wall_shear_capacity_issue(&wall, &model).expect("Fc 未設定は不備");
         assert!(issue.contains("Fc"), "{}", issue);
-        assert_eq!(WallPanelElement::shear_capacity_of(&wall, &model), 0.0);
+        assert_eq!(WallElement::shear_capacity_of(&wall, &model), 0.0);
     }
 
     /// Fc が 0 以下でも Qu を算定できないため不備とする（未設定と同じ扱い）。
@@ -2497,10 +2490,9 @@ mod capacity_issue_tests {
     fn test_issue_when_fc_not_positive() {
         let (mut model, wall) = model_with(None, 0.0025);
         model.materials[0].fc = Some(0.0);
-        let issue =
-            WallPanelElement::wall_shear_capacity_issue(&wall, &model).expect("Fc<=0 は不備");
+        let issue = WallElement::wall_shear_capacity_issue(&wall, &model).expect("Fc<=0 は不備");
         assert!(issue.contains("Fc"), "{}", issue);
-        assert_eq!(WallPanelElement::shear_capacity_of(&wall, &model), 0.0);
+        assert_eq!(WallElement::shear_capacity_of(&wall, &model), 0.0);
     }
 
     /// 断面に材料が割り当てられていない壁も不備とする（Fc を参照できない）。
@@ -2509,9 +2501,9 @@ mod capacity_issue_tests {
         let (mut model, wall) = model_with(None, 0.0025);
         model.sections[0].material = None;
         let issue =
-            WallPanelElement::wall_shear_capacity_issue(&wall, &model).expect("材料未設定は不備");
+            WallElement::wall_shear_capacity_issue(&wall, &model).expect("材料未設定は不備");
         assert!(issue.contains("材料が設定されていません"), "{}", issue);
-        assert_eq!(WallPanelElement::shear_capacity_of(&wall, &model), 0.0);
+        assert_eq!(WallElement::shear_capacity_of(&wall, &model), 0.0);
     }
 
     /// 断面が割り当てられていない壁も不備とする（壁厚・壁筋比を参照できない）。
@@ -2520,18 +2512,18 @@ mod capacity_issue_tests {
         let (model, mut wall) = model_with(None, 0.0025);
         wall.section = None;
         let issue =
-            WallPanelElement::wall_shear_capacity_issue(&wall, &model).expect("断面未設定は不備");
+            WallElement::wall_shear_capacity_issue(&wall, &model).expect("断面未設定は不備");
         assert!(issue.contains("断面が設定されていません"), "{}", issue);
-        assert_eq!(WallPanelElement::shear_capacity_of(&wall, &model), 0.0);
+        assert_eq!(WallElement::shear_capacity_of(&wall, &model), 0.0);
     }
 
     /// 4 節点を与えているのに幾何が退化した壁（下辺の 2 節点が同一座標）は、
     /// 壁エレメントも雑壁も組めず剛性・耐力を持たないまま消えるため不備として検出する。
     #[test]
-    fn test_issue_when_wall_panel_cannot_be_built() {
+    fn test_issue_when_wall_element_cannot_be_built() {
         let (mut model, wall) = model_with(None, 0.0025);
         model.nodes[1].coord = model.nodes[0].coord;
-        let issue = WallPanelElement::wall_shear_capacity_issue(&wall, &model)
+        let issue = WallElement::wall_shear_capacity_issue(&wall, &model)
             .expect("壁エレメントを構築できない壁は不備");
         assert!(
             issue.contains("壁エレメントとして構築できません"),

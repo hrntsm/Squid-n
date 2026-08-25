@@ -340,6 +340,62 @@ pub fn model_issues(model: &Model) -> Vec<ModelIssue> {
         }
     }
 
+    // 節点を共有せずに交差する水平大梁。
+    //
+    // 床領域は「大梁で囲まれた区画」として面走査で求める（`region_gen`）。この走査は
+    // 辺どうしが節点でのみ接する平面グラフを前提とするため、交差する梁があると区画が
+    // 実際とずれる。解析そのものは通る（交差点で力は伝わらないというモデル化として
+    // 成立する）ため警告に留め、意図した入力かを利用者へ確かめる。
+    {
+        let crossings = squid_n_core::region_gen::crossing_beams(model);
+        if !crossings.is_empty() {
+            let mut ids: Vec<squid_n_core::ids::ElemId> = crossings
+                .iter()
+                .flat_map(|(a, b)| [*a, *b])
+                .collect::<std::collections::BTreeSet<_>>()
+                .into_iter()
+                .collect();
+            ids.sort_unstable_by_key(|e| e.0);
+            issues.push(
+                ModelIssue::members(
+                    "節点を共有せずに交差する大梁があります",
+                    "部材 ",
+                    ids,
+                    "交差する大梁（節点を共有していません）",
+                    "交点に節点を作って梁を分割してください。                     このままでは床領域（大梁で囲まれた区画）の検出が実際の区画とずれます。",
+                )
+                .warn(),
+            );
+        }
+    }
+
+    // 床領域に属さない小梁・大梁の区画に載らない浮き床板。
+    //
+    // 作り直し前の現状の床領域で判定する（診断はモデルを書き換えない）。
+    // 解析は成立するため警告に留め、割り当てを確かめてもらう。
+    {
+        let n = squid_n_core::region_rebuild::unassigned_joist_count(model);
+        if n != 0 {
+            issues.push(
+                ModelIssue::model(format!(
+                    "どの床領域にも所属しない小梁が {n} 本あります。\
+                     小梁の配置または床領域の境界を確認してください。"
+                ))
+                .warn(),
+            );
+        }
+        let n = squid_n_core::region_rebuild::floating_slab_count(model);
+        if n != 0 {
+            issues.push(
+                ModelIssue::model(format!(
+                    "大梁の区画に載らず割り当てられない床板が {n} 枚あります。\
+                     浮き床板になっていないか、境界と大梁を確認してください。"
+                ))
+                .warn(),
+            );
+        }
+    }
+
     // 断面が未割当のスラブ・断面の主材料が未割当のスラブ
     //
     // スラブの板厚と自重は断面から解決する（`Model::slab_self_weight_intensity`）。
@@ -364,7 +420,7 @@ pub fn model_issues(model: &Model) -> Vec<ModelIssue> {
     }
     let no_slab_material = slab_ids(|m, s| {
         m.slab_section(s)
-            .is_some_and(|sec| sec.material.is_none() || m.slab_thickness_of(s).is_none())
+            .is_some_and(|sec| sec.material.is_none() || m.slab_plate_thickness(s).is_none())
     });
     if !no_slab_material.is_empty() {
         issues.push(ModelIssue::model(id_list_message(
@@ -570,14 +626,31 @@ fn node_reference_issues(model: &Model) -> Vec<ModelIssue> {
         // 要素が接続しなくても意図的な幾何節点（荷重伝達点）なので孤立扱いしない。
         // これらは `DofMap::build` が解析自由度から自動的に除外するため、
         // 零剛性の自由度にはならない。
-        for slab in &model.slabs {
-            for n in &slab.boundary {
+        for region in &model.floor_regions {
+            for n in &region.boundary {
                 mark(*n);
             }
-            for j in &slab.joists {
+            for j in region.joist_lines() {
                 for n in &j.support {
                     mark(*n);
                 }
+            }
+        }
+        for slab in &model.slabs {
+            match &slab.shape {
+                squid_n_core::model::SlabShape::Enclosed { boundary } => {
+                    for n in boundary {
+                        mark(*n);
+                    }
+                }
+                squid_n_core::model::SlabShape::Attached { anchor, .. } => match anchor {
+                    squid_n_core::model::RegionAnchor::Line { nodes, .. } => {
+                        for n in nodes {
+                            mark(*n);
+                        }
+                    }
+                    squid_n_core::model::RegionAnchor::Point(n) => mark(*n),
+                },
             }
         }
         for sm in &model.secondary_members {

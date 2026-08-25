@@ -16,6 +16,8 @@ pub mod panel_zone;
 pub mod rc_capacity;
 pub mod rc_rebar_geom;
 pub mod rc_wall_capacity;
+pub mod region_gen;
+pub mod region_rebuild;
 pub mod section_shape;
 pub mod structure_kind;
 pub mod units;

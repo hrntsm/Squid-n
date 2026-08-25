@@ -84,7 +84,7 @@ impl App {
     /// 鋼板耐震壁を含むモデルの増分解析で、せん断座屈を考慮していない旨を知らせる。
     ///
     /// 鋼板耐震壁の面内せん断終局強度は鋼板のせん断降伏 Qy=t·lw·F/√3 で評価している
-    /// （`squid_n_element::wall_panel::WallPanelElement::steel_shear_capacity_of`）。
+    /// （`squid_n_element::wall_element::WallElement::steel_shear_capacity_of`）。
     /// 幅厚比の大きい無補剛の鋼板は降伏前に面外へせん断座屈するため、その場合は
     /// 耐力を過大評価する（危険側）。解析は継続してよい事項のため注意事項として扱う。
     fn notice_steel_seismic_walls(&mut self) {

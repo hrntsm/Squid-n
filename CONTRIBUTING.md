@@ -69,7 +69,7 @@ cargo run -p xtask -- check-deps
 
 `crates/squid-n-app/tests/full_model.rs` は、実建物の ST-Bridge
 （`crates/squid-n-app/tests/fixtures/model.stb`。4 層＋PH の S 造・一部 RC、
-節点 166・解析要素 115・小梁 56・スラブ 82）を読み込み、GUI のボタンが呼ぶのと
+節点 166・解析要素 115・小梁 56。ST-Bridge 上のスラブ片 82 枚は取り込み時に大梁の区画（床領域）26 へ帰属を割り当てる）を読み込み、GUI のボタンが呼ぶのと
 同じ入口（`App` の `run_*` / `compute_*`）で全解析を通します。手組みの小規模
 モデルでは現れない、実建物特有の構成（剛床・二次部材・多数のスラブ）に起因する
 退行を検出することが目的です。

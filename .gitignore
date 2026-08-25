@@ -30,3 +30,4 @@ opencode.json
 
 # Claude Code のエージェント作業用 worktree（一時的・追跡対象外）
 /.claude/
+.cursor/

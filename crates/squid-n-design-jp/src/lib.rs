@@ -418,24 +418,55 @@ impl Default for DesignCtx {
     }
 }
 
-/// 梁の両端節点がいずれかのスラブ境界に含まれるか（スラブ取付き判定）。
+/// 梁の両端節点が、板厚の定まる床板の支持辺に乗るか（スラブ取付き判定）。
 ///
-/// 剛性側のスラブ協力幅（`squid_n_element` の協力幅算定）と同じ幾何条件。
-/// 剛性計算用スラブ厚が 0 でも、モデル上スラブが境界に乗っていれば true
-/// （許容曲げの中央 T 形略算はスラブの有無で切り替える）。
+/// 「板厚が定まる」は [`squid_n_core::model::Model::slab_plate_thickness`]。
+/// 大梁または小梁で囲まれた床板は、その床板が属する**床領域の外周**
+/// （`FloorRegion::boundary`。小梁による細分によらず常に大梁の1区画を表す）に
+/// 両端が含まれること（区画内のどれか 1 枚でも板厚が定まればよい）。どの床領域にも
+/// 属さない床板は自身の `boundary_nodes` で判定する。取り付く床板は
+/// `edge_nodes(0)`（取付き線）が梁の両端と一致すること（順不同）。
+/// 点取り付き・板厚未定の床板は false。剛性側の協力幅
+/// （`squid_n_element::beam::stiffness_factors::slab_cooperating_width`）と同じ
+/// 判定規則（区画の外周を優先し、細分された床板の境界だけでは判定しない）。
+/// 許容曲げの中央 T 形略算は取り付く床板がある支持梁も true とする。
 pub fn beam_has_attached_slab(
     model: &squid_n_core::model::Model,
     elem: &squid_n_core::model::ElementData,
 ) -> bool {
-    if elem.nodes.len() < 2 || model.slabs.is_empty() {
+    if elem.nodes.len() < 2 || (model.floor_regions.is_empty() && model.slabs.is_empty()) {
         return false;
     }
     let n0 = elem.nodes[0];
     let n1 = elem.nodes[elem.nodes.len() - 1];
-    model
-        .slabs
-        .iter()
-        .any(|s| s.boundary.contains(&n0) && s.boundary.contains(&n1))
+
+    let mut referenced = std::collections::HashSet::new();
+    for region in &model.floor_regions {
+        referenced.extend(region.slab_ids.iter().copied());
+        let has_thickness = region
+            .slab_ids
+            .iter()
+            .filter_map(|&id| model.slab(id))
+            .any(|s| model.slab_plate_thickness(s).is_some());
+        if has_thickness && region.boundary.contains(&n0) && region.boundary.contains(&n1) {
+            return true;
+        }
+    }
+    model.slabs.iter().any(|s| {
+        if referenced.contains(&s.id) {
+            return false;
+        }
+        if model.slab_plate_thickness(s).is_none() {
+            return false;
+        }
+        if let Some(b) = s.boundary_nodes() {
+            b.contains(&n0) && b.contains(&n1)
+        } else if let Some([a, b]) = s.edge_nodes(0) {
+            (a == n0 && b == n1) || (a == n1 && b == n0)
+        } else {
+            false
+        }
+    })
 }
 
 /// 強軸・弱軸の座屈長さを個別に扱った有効細長比 λ の算定

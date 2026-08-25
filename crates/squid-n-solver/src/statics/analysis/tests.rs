@@ -7,6 +7,7 @@ use squid_n_core::model::{
     LocalAxis, Material, MaterialCategory, MemberLoad, MemberLoadKind, NodalLoad, Node, Section,
     Story, StoryLevelKind, StoryStructure,
 };
+use squid_n_core::model::{FloorRegion, SlabPlate};
 
 fn make_cantilever_model() -> Model {
     Model {
@@ -254,8 +255,8 @@ fn test_model_issues_collects_every_issue() {
 #[test]
 fn test_model_issues_rejects_slab_without_section() {
     use super::precheck::{model_issues, precheck_model};
-    use squid_n_core::ids::{SectionId, SlabId};
-    use squid_n_core::model::{DistributionMethod, Slab};
+    use squid_n_core::ids::{FloorRegionId, SectionId, SlabId};
+    use squid_n_core::model::{DistributionMethod, Slab, SlabShape};
 
     let mut model = make_cantilever_model();
     // 境界節点は 3 点必要なので、床用の節点を足す。
@@ -273,18 +274,38 @@ fn test_model_issues_rejects_slab_without_section() {
             support_spring: None,
         });
     }
+    let boundary = vec![NodeId(0), NodeId(1), NodeId(n + 1), NodeId(n)];
+    // 大梁で境界を閉じる（1 本は `make_cantilever_model` が既に持つ 0→1）。
+    // 閉じていないと「大梁の区画に載らない浮き床板」として扱われてしまう。
+    for (i, j) in [(1, n + 1), (n + 1, n), (n, 0)] {
+        model.elements.push(ElementData {
+            id: ElemId(model.elements.len() as u32),
+            kind: ElementKind::Beam,
+            nodes: smallvec::smallvec![NodeId(i), NodeId(j)],
+            section: Some(SectionId(0)),
+            local_axis: LocalAxis {
+                ref_vector: [0.0, 0.0, 1.0],
+            },
+            end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+            force_regime: ForceRegime::Auto,
+            rigid_zone: Default::default(),
+            plastic_zone: None,
+            spring: None,
+        });
+    }
+    let mut region = FloorRegion::new(FloorRegionId(0), boundary.clone());
+    region.slab_ids.push(SlabId(0));
+    model.floor_regions.push(region);
     model.slabs.push(Slab {
         id: SlabId(0),
-        boundary: vec![NodeId(0), NodeId(1), NodeId(n + 1), NodeId(n)],
-        joists: Vec::new(),
-        loads: Vec::new(),
-        method: DistributionMethod::TriTrapezoid,
-        kind: Default::default(),
-        one_way: None,
-        edge_supported: None,
-        usage: None,
-        section: None,
-        secondary_joist_ids: Vec::new(),
+        shape: SlabShape::Enclosed { boundary },
+        plate: SlabPlate {
+            section: None,
+            loads: Vec::new(),
+            usage: None,
+            method: DistributionMethod::TriTrapezoid,
+            one_way: None,
+        },
     });
 
     // 断面が未割当。
@@ -304,7 +325,7 @@ fn test_model_issues_rejects_slab_without_section() {
         squid_n_core::section_shape::SectionShape::RcSlab { thickness: 150.0 }
             .to_section(sid, "S15".into()),
     );
-    model.slabs[0].section = Some(sid);
+    model.slabs[0].plate.section = Some(sid);
     let msgs: Vec<String> = model_issues(&model)
         .into_iter()
         .map(|i| i.message)
@@ -1311,4 +1332,190 @@ fn analysis_linear_combination_matches_assembled_load_case() {
             }
         }
     }
+}
+
+/// 節点を共有せずに交差する大梁は、解析を止めない警告として診断に出る。
+///
+/// 床領域は大梁で囲まれた区画として面走査で求めるため、交差があると区画が実際とずれる。
+/// 解析自体は通るので、エラーではなく警告で利用者へ確かめる。
+#[test]
+fn test_crossing_beams_reported_as_warning() {
+    use crate::analysis::precheck::{model_issues, IssueSeverity};
+    use squid_n_core::ids::{ElemId, NodeId};
+    use squid_n_core::model::{
+        ElementData, ElementKind, EndCondition, ForceRegime, LocalAxis, Node,
+    };
+
+    let mut model = Model::default();
+    let pts = [(0.0, 0.0), (4000.0, 4000.0), (0.0, 4000.0), (4000.0, 0.0)];
+    for (i, (x, y)) in pts.iter().enumerate() {
+        model.nodes.push(Node {
+            id: NodeId(i as u32),
+            coord: [*x, *y, 0.0],
+            restraint: Default::default(),
+            mass: None,
+            story: None,
+            support_spring: None,
+        });
+    }
+    // 節点を共有せずに X 字に交わる 2 本。
+    for (k, (i, j)) in [(0u32, 1u32), (2, 3)].into_iter().enumerate() {
+        model.elements.push(ElementData {
+            id: ElemId(k as u32),
+            kind: ElementKind::Beam,
+            nodes: [NodeId(i), NodeId(j)].into_iter().collect(),
+            section: None,
+            local_axis: LocalAxis {
+                ref_vector: [0.0, 0.0, 1.0],
+            },
+            end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+            force_regime: ForceRegime::Auto,
+            rigid_zone: Default::default(),
+            plastic_zone: None,
+            spring: None,
+        });
+    }
+
+    let issues = model_issues(&model);
+    let crossing = issues
+        .iter()
+        .find(|i| i.message.contains("交差する大梁"))
+        .expect("交差の診断が出る");
+    assert_eq!(crossing.severity, IssueSeverity::Warning);
+    assert!(
+        crossing.message.contains("部材 0, 1"),
+        "{}",
+        crossing.message
+    );
+}
+
+/// どの床領域にも属さない小梁は警告し、解析は止めない。
+#[test]
+fn test_model_issues_warns_unassigned_joist() {
+    use super::precheck::{model_issues, precheck_model, IssueSeverity};
+    use squid_n_core::ids::SecondaryMemberId;
+    use squid_n_core::model::{SecondaryMember, SecondaryMemberKind};
+
+    let mut model = make_cantilever_model();
+    let n = model.nodes.len() as u32;
+    model.nodes.push(Node {
+        id: NodeId(n),
+        coord: [10000.0, 0.0, 0.0],
+        restraint: Dof6Mask::FREE,
+        mass: None,
+        story: None,
+        support_spring: None,
+    });
+    model.nodes.push(Node {
+        id: NodeId(n + 1),
+        coord: [10000.0, 4000.0, 0.0],
+        restraint: Dof6Mask::FREE,
+        mass: None,
+        story: None,
+        support_spring: None,
+    });
+    model.secondary_members.push(SecondaryMember {
+        kind: SecondaryMemberKind::Joist,
+        nodes: [NodeId(n), NodeId(n + 1)],
+        section: Some(SectionId(0)),
+        name: "孤立小梁".into(),
+        id: SecondaryMemberId(0),
+    });
+
+    let issues = model_issues(&model);
+    let warning = issues
+        .iter()
+        .find(|i| {
+            i.severity == IssueSeverity::Warning
+                && (i.message.contains("小梁") || i.short.contains("小梁"))
+                && (i.message.contains("所属")
+                    || i.message.contains("割り当て")
+                    || i.short.contains("所属")
+                    || i.short.contains("割り当て"))
+        })
+        .unwrap_or_else(|| {
+            let msgs: Vec<_> = issues.iter().map(|i| i.message.as_str()).collect();
+            panic!("所属なし小梁の警告がない: {msgs:?}")
+        });
+    assert_eq!(warning.severity, IssueSeverity::Warning);
+    assert!(precheck_model(&model).is_ok(), "解析は止めない");
+}
+
+/// 大梁の区画に載らない浮き床板は警告し、解析は止めない。
+#[test]
+fn test_model_issues_warns_floating_plate() {
+    use super::precheck::{model_issues, precheck_model, IssueSeverity};
+    use squid_n_core::ids::{MaterialId, SlabId};
+    use squid_n_core::model::{DistributionMethod, Material, MaterialCategory, Slab, SlabShape};
+
+    let mut model = make_cantilever_model();
+    let n = model.nodes.len() as u32;
+    for (i, c) in [
+        [8000.0, 8000.0, 0.0],
+        [12000.0, 8000.0, 0.0],
+        [12000.0, 11000.0, 0.0],
+        [8000.0, 11000.0, 0.0],
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        model.nodes.push(Node {
+            id: NodeId(n + i as u32),
+            coord: c,
+            restraint: Dof6Mask::FREE,
+            mass: None,
+            story: None,
+            support_spring: None,
+        });
+    }
+    let sid = SectionId(model.sections.len() as u32);
+    let mid = MaterialId(model.materials.len() as u32);
+    model.materials.push(Material {
+        strength_factor: None,
+        concrete_class: Default::default(),
+        id: mid,
+        name: "Fc24".into(),
+        category: MaterialCategory::Concrete,
+        young: 23000.0,
+        poisson: 0.2,
+        density: 2.4e-9,
+        shear: None,
+        fc: Some(24.0),
+        fy: None,
+    });
+    let mut sec = squid_n_core::section_shape::SectionShape::RcSlab { thickness: 150.0 }
+        .to_section(sid, "S15".into());
+    sec.material = Some(mid);
+    model.sections.push(sec);
+    model.slabs.push(Slab {
+        id: SlabId(0),
+        shape: SlabShape::Enclosed {
+            boundary: vec![NodeId(n), NodeId(n + 1), NodeId(n + 2), NodeId(n + 3)],
+        },
+        plate: SlabPlate {
+            section: Some(sid),
+            loads: Vec::new(),
+            usage: None,
+            method: DistributionMethod::TriTrapezoid,
+            one_way: None,
+        },
+    });
+
+    let issues = model_issues(&model);
+    let warning = issues
+        .iter()
+        .find(|i| {
+            i.severity == IssueSeverity::Warning
+                && (i.message.contains("床板") || i.short.contains("床板"))
+                && (i.message.contains("割り当て")
+                    || i.message.contains("浮")
+                    || i.short.contains("割り当て")
+                    || i.short.contains("浮"))
+        })
+        .unwrap_or_else(|| {
+            let msgs: Vec<_> = issues.iter().map(|i| i.message.as_str()).collect();
+            panic!("浮き床板の警告がない: {msgs:?}")
+        });
+    assert_eq!(warning.severity, IssueSeverity::Warning);
+    assert!(precheck_model(&model).is_ok(), "解析は止めない");
 }

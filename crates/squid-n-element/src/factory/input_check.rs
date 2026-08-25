@@ -33,7 +33,7 @@ fn shape_has_steel_fiber_region(shape: &SectionShape) -> bool {
 ///
 /// 検査対象は、非線形解析で降伏を扱う要素に限る:
 /// - 耐震壁（`Wall`）: 面内せん断の終局強度 Qu
-///   （[`crate::wall_panel::WallPanelElement::wall_shear_capacity_issue`]）
+///   （[`crate::wall_element::WallElement::wall_shear_capacity_issue`]）
 /// - 線材（`Beam` / `Fiber` / `MultiSpring`）: 曲げ・せん断の終局耐力に要する材料強度
 ///
 /// 弾性としてモデル化することが仕様である要素（`Shell` / `PanelZone` / `NodalSpring`、
@@ -43,7 +43,7 @@ pub fn nonlinear_input_issues(model: &Model) -> Vec<String> {
     for elem in &model.elements {
         let issue = match elem.kind {
             ElementKind::Wall => {
-                crate::wall_panel::WallPanelElement::wall_shear_capacity_issue(elem, model)
+                crate::wall_element::WallElement::wall_shear_capacity_issue(elem, model)
             }
             ElementKind::Beam | ElementKind::Fiber | ElementKind::MultiSpring => {
                 member_strength_issue(elem, model)

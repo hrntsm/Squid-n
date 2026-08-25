@@ -140,7 +140,7 @@ fn master_restraint(
 /// `mass_method`: 剛床代表節点（マスター）へ与える質点質量（[`Node::mass`]）の
 /// 算定方式（[`MassMethod`]）。`include_density_self_weight` の真偽によらず、
 /// `CorrectedLumped` は解析の質量行列に部材密度質量として計上される自重
-/// （主架構線材・壁パネル）を地震用重量から控除した残りを、`LumpedOnly` は
+/// （主架構線材・壁エレメント）を地震用重量から控除した残りを、`LumpedOnly` は
 /// 地震用重量の全量をマスターの質点質量とする。
 pub fn generate_stories_with_opts(
     model: &Model,
@@ -279,11 +279,11 @@ pub fn generate_stories_with_opts(
     // - 壁・シェル: 頂点配分（三方スリットは最上位標高の頂点へ全量）。
     //
     // CorrectedLumped のマスター補正質点算定（後段）が「解析の質量行列に部材密度
-    // 質量として計上される自重（線材・壁パネル）」の節点配分を必要とするため、
+    // 質量として計上される自重（線材・壁エレメント）」の節点配分を必要とするため、
     // `include_density_self_weight` の真偽によらず列挙自体は常に行う。
     let self_weight_items = enumerate_self_weight(model, &load_cfg);
 
-    // 線材（柱梁・ブレース）・壁パネルの自重を対象 Vec へ配分する（K型ブレースの
+    // 線材（柱梁・ブレース）・壁エレメントの自重を対象 Vec へ配分する（K型ブレースの
     // 再配分規則込み）。node_weight（地震用重量の合算）と node_self_weight
     // （解析質量行列に部材密度質量として計上される自重の控除用）の双方で使う。
     let distribute_line_panel = |target: &mut Vec<f64>, item: &SelfWeightItem| match item {
@@ -309,7 +309,7 @@ pub fn generate_stories_with_opts(
     };
 
     // §CorrectedLumped の控除対象: 解析の質量行列に部材密度質量として計上される
-    // 要素（主架構の線材・壁パネル）の自重のみ。ダンパー・二次部材（小梁・間柱）・
+    // 要素（主架構の線材・壁エレメント）の自重のみ。ダンパー・二次部材（小梁・間柱）・
     // フレーム外雑壁は解析質量に算入されない（assemble_global_m がダンパーの
     // mass_matrix を零で返し、二次部材・雑壁は model.elements にすら現れない）
     // ため控除しない。
@@ -496,7 +496,7 @@ pub fn generate_stories_with_opts(
             // マスターへ与える質点質量（mass_method による。§CorrectedLumped/LumpedOnly）。
             // 控除後重量 net_i:
             // - CorrectedLumped: 地震用重量から、解析の質量行列に部材密度質量として
-            //   計上される自重（線材・壁パネル）を控除した残り（負にはしない）。
+            //   計上される自重（線材・壁エレメント）を控除した残り（負にはしない）。
             // - LumpedOnly: 控除せず地震用重量そのもの。
             let net_i = |idx: usize| -> f64 {
                 match mass_method {

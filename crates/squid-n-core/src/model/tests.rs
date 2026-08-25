@@ -96,7 +96,7 @@ fn test_validate_dangling_elem_node() {
 
 #[test]
 fn test_validate_dangling_slab_boundary() {
-    use crate::model::{DistributionMethod, Slab};
+    use crate::model::FloorRegion;
     let model = Model {
         nodes: vec![Node {
             id: NodeId(0),
@@ -106,25 +106,20 @@ fn test_validate_dangling_slab_boundary() {
             story: None,
             support_spring: None,
         }],
-        slabs: vec![Slab {
-            id: crate::ids::SlabId(0),
+        floor_regions: vec![FloorRegion {
+            id: FloorRegionId(0),
+            name: String::new(),
             // 存在しない節点 5 を境界に含む（陳腐化した参照）。
             boundary: vec![NodeId(0), NodeId(5)],
-            joists: vec![],
-            loads: vec![],
-            method: DistributionMethod::TriTrapezoid,
-            kind: Default::default(),
-            one_way: None,
-            edge_supported: None,
-            usage: None,
-            section: None,
             secondary_joist_ids: vec![],
+            slab_ids: vec![],
+            joists: vec![],
         }],
         ..Default::default()
     };
     assert!(
         model.validate().is_err(),
-        "存在しない節点を参照するスラブ境界は検出されるはず"
+        "存在しない節点を参照する床領域の境界は検出されるはず"
     );
 }
 
@@ -138,18 +133,13 @@ fn test_validate_duplicate_slab_secondary_joist_ids() {
             section: None,
             name: "J0".to_string(),
         }],
-        slabs: vec![Slab {
-            id: crate::ids::SlabId(0),
+        floor_regions: vec![FloorRegion {
+            id: FloorRegionId(0),
+            name: String::new(),
             boundary: vec![],
-            joists: vec![],
-            loads: vec![],
-            method: DistributionMethod::OneWay,
-            kind: Default::default(),
-            one_way: None,
-            edge_supported: None,
-            usage: None,
-            section: None,
             secondary_joist_ids: vec![SecondaryMemberId(0), SecondaryMemberId(0)],
+            slab_ids: vec![],
+            joists: vec![],
         }],
         ..Default::default()
     };
@@ -468,7 +458,7 @@ fn test_model_stress_cfg_default_missing_field() {
     // 旧スキーマ（stress_cfg フィールドがない JSON）からの互換性を確認する。
     let json = r#"{
             "nodes": [], "elements": [], "sections": [], "materials": [],
-            "stories": [], "slabs": [], "constraints": [], "load_cases": [],
+            "stories": [], "floor_regions": [], "constraints": [], "load_cases": [],
             "combinations": []
         }"#;
     let model: Model = serde_json::from_str(json).unwrap();
@@ -515,7 +505,7 @@ fn test_damper_props_relief_default_missing_field() {
 fn test_model_damper_defs_default_missing_field() {
     let json = r#"{
             "nodes": [], "elements": [], "sections": [], "materials": [],
-            "stories": [], "slabs": [], "constraints": [], "load_cases": [],
+            "stories": [], "floor_regions": [], "constraints": [], "load_cases": [],
             "combinations": []
         }"#;
     let model: Model = serde_json::from_str(json).unwrap();
@@ -1150,18 +1140,13 @@ fn test_retain_secondary_members_remaps_region_refs() {
             sm(1, SecondaryMemberKind::Post),
             sm(2, SecondaryMemberKind::Joist),
         ],
-        slabs: vec![Slab {
-            id: crate::ids::SlabId(0),
+        floor_regions: vec![FloorRegion {
+            id: FloorRegionId(0),
+            name: String::new(),
             boundary: vec![],
-            joists: vec![],
-            loads: vec![],
-            method: DistributionMethod::OneWay,
-            kind: Default::default(),
-            one_way: None,
-            edge_supported: None,
-            usage: None,
-            section: None,
             secondary_joist_ids: vec![SecondaryMemberId(0), SecondaryMemberId(2)],
+            slab_ids: vec![],
+            joists: vec![],
         }],
         wall_regions: vec![crate::model::WallRegion {
             wall: None,
@@ -1179,9 +1164,102 @@ fn test_retain_secondary_members_remaps_region_refs() {
     }
     // 落とした SM0 への参照は消え、SM2 への参照は新 ID 1 へ張り替わる。
     assert_eq!(
-        model.slabs[0].secondary_joist_ids,
+        model.floor_regions[0].secondary_joist_ids,
         vec![SecondaryMemberId(1)]
     );
     // 壁領域の SM1 への参照は新 ID 0 へ張り替わる。
     assert_eq!(model.wall_regions[0].post_ids, vec![SecondaryMemberId(0)]);
+}
+
+/// 同じ境界を持つ床領域が 2 つあると弾く（1 閉領域 1 領域の不変条件。D1）。
+#[test]
+fn test_validate_duplicate_floor_region_boundary() {
+    let mut model = Model::default();
+    for i in 0..4u32 {
+        model.nodes.push(Node {
+            id: NodeId(i),
+            coord: [i as f64 * 1000.0, 0.0, 0.0],
+            restraint: Dof6Mask::FREE,
+            mass: None,
+            story: None,
+            support_spring: None,
+        });
+    }
+    let boundary = vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)];
+    model
+        .floor_regions
+        .push(FloorRegion::new(FloorRegionId(0), boundary.clone()));
+    assert!(model.validate().is_ok());
+    // 同じ区画を指す 2 枚目。小梁・床板の帰属が二重になるため弾く。
+    model
+        .floor_regions
+        .push(FloorRegion::new(FloorRegionId(1), boundary));
+    assert!(
+        model.validate().is_err(),
+        "同じ境界の床領域が 2 つある状態は検出されるはず"
+    );
+}
+
+/// 同じ境界を持つ大梁または小梁で囲まれた床板が 2 つあると弾く（1 閉領域 1 床板の不変条件）。
+#[test]
+fn test_validate_duplicate_enclosed_slab_boundary() {
+    use crate::model::{Slab, SlabShape};
+    let mut model = Model::default();
+    for i in 0..4u32 {
+        model.nodes.push(Node {
+            id: NodeId(i),
+            coord: [i as f64 * 1000.0, 0.0, 0.0],
+            restraint: Dof6Mask::FREE,
+            mass: None,
+            story: None,
+            support_spring: None,
+        });
+    }
+    let boundary = vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)];
+    let mk = |id: u32, boundary: Vec<NodeId>| Slab {
+        id: SlabId(id),
+        shape: SlabShape::Enclosed { boundary },
+        plate: SlabPlate::default(),
+    };
+    model.slabs.push(mk(0, boundary.clone()));
+    assert!(model.validate().is_ok());
+    // 同じ閉領域を指す 2 枚目。荷重が二重に分配されるため弾く。
+    model.slabs.push(mk(1, boundary));
+    assert!(
+        model.validate().is_err(),
+        "同じ境界の床板が 2 つある状態は検出されるはず"
+    );
+}
+
+/// 取付き線の部分区間は、荷重を載せる経路ができるまで弾く。
+#[test]
+fn test_validate_rejects_partial_anchor_span() {
+    use crate::model::{LoadTransfer, RegionAnchor, Slab, SlabShape};
+    let mut model = Model::default();
+    for i in 0..2u32 {
+        model.nodes.push(Node {
+            id: NodeId(i),
+            coord: [i as f64 * 4000.0, 0.0, 0.0],
+            restraint: Dof6Mask::FREE,
+            mass: None,
+            story: None,
+            support_spring: None,
+        });
+    }
+    let mk = |span: [f64; 2]| Slab {
+        id: SlabId(0),
+        shape: SlabShape::Attached {
+            anchor: RegionAnchor::Line {
+                nodes: [NodeId(0), NodeId(1)],
+                span,
+                transfer: LoadTransfer::Anchor,
+            },
+            extent: [1000.0, 1000.0],
+        },
+        plate: SlabPlate::default(),
+    };
+    model.slabs = vec![mk([0.0, 1.0])];
+    assert!(model.validate().is_ok(), "全長の取り付きは通る");
+    model.slabs = vec![mk([0.25, 0.75])];
+    assert!(model.validate().is_err(), "部分区間は未対応として弾く");
 }

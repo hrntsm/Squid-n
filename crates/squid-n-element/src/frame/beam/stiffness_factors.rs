@@ -8,10 +8,12 @@ use squid_n_core::model::Model;
 
 /// RC規準8条によるスラブ協力幅 bf = b + ba(左) + ba(右) [mm]。
 ///
-/// 梁の両端節点をともに境界節点に含むスラブを「梁に取り付く床」とみなし、
-/// 隣接する平行梁との**内法距離** a（軸間距離から自梁・相手梁の幅の半分ずつを
-/// 控除。RC規準8条の図の a）を求めて ba=(0.5−0.6·a/l)·a（a≥l/2 のとき 0.1·l）
-/// で片側協力幅を算定する。対象は水平材（勾配 5% までは水平とみなす）のみ。
+/// 梁の両端節点をともに境界節点に含む床領域（[`squid_n_core::model::FloorRegion::boundary`]。
+/// 小梁による細分によらず常に大梁の1区画を表す）またはどの床領域にも属さない
+/// 床板を「梁に取り付く床」とみなし、隣接する平行梁との**内法距離** a（軸間距離
+/// から自梁・相手梁の幅の半分ずつを控除。RC規準8条の図の a）を求めて
+/// ba=(0.5−0.6·a/l)·a（a≥l/2 のとき 0.1·l）で片側協力幅を算定する。
+/// 対象は水平材（勾配 5% までは水平とみなす）のみ。
 /// 適用不能（スラブ厚 t≤0・非水平・取り付く床なし・bf≤b）は None。
 /// 連続梁の λ・吹抜け補正・二重スラブ/片持ちスラブの区別は未対応（v1。
 /// dev_docs/v_and_v/剛性計算_参照実装照合.md 参照）。
@@ -19,9 +21,11 @@ fn slab_cooperating_width(
     model: &Model,
     data: &squid_n_core::model::ElementData,
     b: f64,
-) -> Option<f64> {
-    let t = model.slab_thickness;
-    if t <= 0.0 || b <= 0.0 || data.nodes.len() < 2 || model.slabs.is_empty() {
+) -> Option<(f64, f64)> {
+    if b <= 0.0
+        || data.nodes.len() < 2
+        || (model.floor_regions.is_empty() && model.slabs.is_empty())
+    {
         return None;
     }
     let n0 = data.nodes[0];
@@ -45,36 +49,38 @@ fn slab_cooperating_width(
 
     // スラブ境界内で自梁と平行な向かい側の梁（距離 target_s）の幅を探す。
     // 見つからなければ自梁と同幅とみなす（同一符号の梁が並ぶ床組の慣用近似）。
-    let far_beam_width = |slab: &squid_n_core::model::Slab, target_s: f64, sign: f64| -> f64 {
-        const TOL_MM: f64 = 1.0;
-        for e in &model.elements {
-            if !matches!(e.kind, squid_n_core::model::ElementKind::Beam) || e.nodes.len() < 2 {
-                continue;
-            }
-            let (m0, m1) = (e.nodes[0], e.nodes[e.nodes.len() - 1]);
-            if m0 == n0 && m1 == n1 || m0 == n1 && m1 == n0 {
-                continue;
-            }
-            if !(slab.boundary.contains(&m0) && slab.boundary.contains(&m1)) {
-                continue;
-            }
-            let (Some(q0), Some(q1)) = (model.nodes.get(m0.index()), model.nodes.get(m1.index()))
-            else {
-                continue;
-            };
-            let s0 = signed_dist(q0.coord) * sign;
-            let s1 = signed_dist(q1.coord) * sign;
-            if (s0 - target_s).abs() > TOL_MM || (s1 - target_s).abs() > TOL_MM {
-                continue;
-            }
-            if let Some(sec) = e.section.and_then(|sid| model.sections.get(sid.index())) {
-                if sec.width > 0.0 {
-                    return sec.width;
+    let far_beam_width =
+        |boundary: &[squid_n_core::ids::NodeId], target_s: f64, sign: f64| -> f64 {
+            const TOL_MM: f64 = 1.0;
+            for e in &model.elements {
+                if !matches!(e.kind, squid_n_core::model::ElementKind::Beam) || e.nodes.len() < 2 {
+                    continue;
+                }
+                let (m0, m1) = (e.nodes[0], e.nodes[e.nodes.len() - 1]);
+                if m0 == n0 && m1 == n1 || m0 == n1 && m1 == n0 {
+                    continue;
+                }
+                if !(boundary.contains(&m0) && boundary.contains(&m1)) {
+                    continue;
+                }
+                let (Some(q0), Some(q1)) =
+                    (model.nodes.get(m0.index()), model.nodes.get(m1.index()))
+                else {
+                    continue;
+                };
+                let s0 = signed_dist(q0.coord) * sign;
+                let s1 = signed_dist(q1.coord) * sign;
+                if (s0 - target_s).abs() > TOL_MM || (s1 - target_s).abs() > TOL_MM {
+                    continue;
+                }
+                if let Some(sec) = e.section.and_then(|sid| model.sections.get(sid.index())) {
+                    if sec.width > 0.0 {
+                        return sec.width;
+                    }
                 }
             }
-        }
-        b
-    };
+            b
+        };
 
     // 梁軸の左右それぞれの隣接平行梁との内法距離 a（複数スラブは大きい方を採用）。
     // 軸間距離（スラブ境界節点の最大直交距離）から、自梁の幅/2 と相手梁の幅/2 を
@@ -82,13 +88,55 @@ fn slab_cooperating_width(
     // 協力幅を過大評価していた）。
     let mut a_pos: f64 = 0.0;
     let mut a_neg: f64 = 0.0;
+    let mut t_used: f64 = 0.0;
+    let mut matched = false;
+
+    // 梁の両端節点をともに含む境界と、そこでの板厚を候補として集める。
+    //
+    // 床領域（大梁の1区画）は小梁で複数の床板（`Slab`）へ細分されうるため、
+    // 個々の床板の境界だけを見ると、区画の外周を走る大梁の両端（区画の対角）を
+    // 1 枚の床板だけでは含めなくなる（内部の小梁で分割されているため）。
+    // そこで区画の外周そのもの（`FloorRegion::boundary`。小梁の分割によらず
+    // 常に大梁の1区画を表す）を優先候補とし、板厚は区画内の床板
+    // （`region.slab_ids`）の `slab_plate_thickness` の最大を用いる。
+    // どの床領域にも属さない床板（警告対象。帰属なしでも実在するスラブとして
+    // 効かせる）は、床板自身の境界を候補として別途加える。
+    let mut referenced = std::collections::HashSet::new();
+    let mut candidates: Vec<(&[NodeId], f64)> = Vec::new();
+    for region in &model.floor_regions {
+        referenced.extend(region.slab_ids.iter().copied());
+        let t = region
+            .slab_ids
+            .iter()
+            .filter_map(|&id| model.slab(id))
+            .filter_map(|s| model.slab_plate_thickness(s))
+            .fold(0.0_f64, f64::max);
+        if t > 0.0 {
+            candidates.push((&region.boundary, t));
+        }
+    }
     for slab in &model.slabs {
-        if !(slab.boundary.contains(&n0) && slab.boundary.contains(&n1)) {
+        if referenced.contains(&slab.id) {
             continue;
         }
+        let Some(boundary) = slab.boundary_nodes() else {
+            continue;
+        };
+        let Some(t) = model.slab_plate_thickness(slab) else {
+            continue;
+        };
+        candidates.push((boundary, t));
+    }
+
+    for (boundary, t) in candidates {
+        if !(boundary.contains(&n0) && boundary.contains(&n1)) {
+            continue;
+        }
+        matched = true;
+        t_used = t_used.max(t);
         let mut s_pos: f64 = 0.0;
         let mut s_neg: f64 = 0.0;
-        for nid in &slab.boundary {
+        for nid in boundary {
             let Some(q) = model.nodes.get(nid.index()) else {
                 continue;
             };
@@ -97,11 +145,11 @@ fn slab_cooperating_width(
             s_neg = s_neg.max(-s);
         }
         if s_pos > 0.0 {
-            let far_w = far_beam_width(slab, s_pos, 1.0);
+            let far_w = far_beam_width(boundary, s_pos, 1.0);
             a_pos = a_pos.max((s_pos - b / 2.0 - far_w / 2.0).max(0.0));
         }
         if s_neg > 0.0 {
-            let far_w = far_beam_width(slab, s_neg, -1.0);
+            let far_w = far_beam_width(boundary, s_neg, -1.0);
             a_neg = a_neg.max((s_neg - b / 2.0 - far_w / 2.0).max(0.0));
         }
     }
@@ -117,17 +165,28 @@ fn slab_cooperating_width(
         }
     };
     let bf = b + ba(a_pos) + ba(a_neg);
-    if bf <= b {
+    if !matched || bf <= b {
         return None;
     }
-    Some(bf)
+    // 板厚が定まる床板が 1 枚でも一致すれば t_used > 0。欠落時のみ建物一律へ控える。
+    let t = if t_used > 0.0 {
+        t_used
+    } else {
+        model.slab_thickness
+    };
+    if t <= 0.0 {
+        return None;
+    }
+    Some((bf, t))
 }
 
 /// スラブ協力幅による強軸曲げ剛性の増大率（協力幅は RC規準 8 条
 /// = [`slab_cooperating_width`] による）。
 ///
-/// 対象は水平な RC 矩形梁のみ。スラブ（厚さ t=`Model::slab_thickness`、
-/// 建物一律・上端は梁上端と同面）を考慮した中立軸による T 形断面の Ie を
+/// 対象は水平な RC 矩形梁のみ。梁の両端節点を境界に含み、板厚が定まる床板
+/// （`Model::slab_plate_thickness`）に限り、スラブ厚さ t（一致する床板の
+/// `slab_plate_thickness` の最大。欠落時のみ `Model::slab_thickness`。
+/// 上端は梁上端と同面）を考慮した中立軸による T 形断面の Ie を
 /// 元断面 I0=b·D³/12 で除した値を返す。適用不能時は 1.0（増大なし）。
 pub(super) fn slab_stiffness_factor(
     model: &Model,
@@ -138,11 +197,10 @@ pub(super) fn slab_stiffness_factor(
     if d <= 0.0 {
         return 1.0;
     }
-    let Some(bf) = slab_cooperating_width(model, data, b) else {
+    let Some((bf, t)) = slab_cooperating_width(model, data, b) else {
         return 1.0;
     };
     // スラブを考慮した中立軸による T 形断面の Ie
-    let t = model.slab_thickness;
     let tf = t.min(d);
     let aw = b * d;
     let af = (bf - b) * tf;
@@ -189,10 +247,9 @@ pub(super) fn composite_beam_stiffness_factor(
     if sa <= 0.0 || si <= 0.0 || sh <= 0.0 || es <= 0.0 {
         return 1.0;
     }
-    let Some(bf) = slab_cooperating_width(model, data, sec.width.max(1.0)) else {
+    let Some((bf, t)) = slab_cooperating_width(model, data, sec.width.max(1.0)) else {
         return 1.0;
     };
-    let t = model.slab_thickness;
     let ec = squid_n_core::section_shape::concrete_young_modulus(COMPOSITE_SLAB_FC);
     let hd = 0.0; // デッキ高さ（未対応=0）
     let ca = bf * t;

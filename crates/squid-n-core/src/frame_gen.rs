@@ -24,12 +24,12 @@
 use crate::dof::{Dof, Dof6Mask};
 use crate::geom::default_local_ref_vector;
 use crate::ids::{ElemId, MaterialId, NodeId, StoryId};
-use crate::ids::{SectionId, SlabId};
+use crate::ids::{FloorRegionId, SectionId, SlabId};
 use crate::material_grade::{material_presets, MaterialPreset};
 use crate::model::{
-    default_story_name, Axis, AxisGroup, AxisGroupKind, AxisPlanDir, AxisSource,
-    DistributionMethod, ElementData, ElementKind, EndCondition, ForceRegime, LocalAxis, Material,
-    Model, Node, Section, Slab, SlabUsage, Story,
+    default_story_name, Axis, AxisGroup, AxisGroupKind, AxisPlanDir, AxisSource, ElementData,
+    ElementKind, EndCondition, FloorRegion, ForceRegime, LocalAxis, Material, Model, Node, Section,
+    Slab, SlabPlate, SlabShape, SlabUsage, Story,
 };
 
 /// 同一の格子線とみなす座標差 [mm]（[`crate::axis_gen::AXIS_TOL_MM`] と同値）。
@@ -220,7 +220,7 @@ pub struct FrameSpec {
     pub base_support: BaseSupport,
     /// 大梁を生成するか。
     pub with_girders: bool,
-    /// 床を生成するか。各階の各格子パネル（隣り合う通りで囲まれた矩形）に 1 枚ずつ。
+    /// 床を生成するか。各階の各格子区画（隣り合う通りで囲まれた矩形）に 1 枚ずつ。
     pub with_slabs: bool,
     /// 床の室用途（積載荷重プリセット）。
     pub slab_usage: Option<SlabUsage>,
@@ -364,6 +364,9 @@ pub struct FrameGenResult {
     pub sections: Vec<Section>,
     /// 床のコンクリート（`with_slabs` のときだけ 1 つ。断面が参照する）。
     pub materials: Vec<Material>,
+    /// 床領域（大梁の 1 スパン区画。格子状の 1 マスにつき 1 つずつ）。
+    pub floor_regions: Vec<FloorRegion>,
+    /// 床板（`with_slabs` のときだけ、床領域 1 つにつき 1 枚）。
     pub slabs: Vec<Slab>,
 }
 
@@ -388,7 +391,7 @@ pub struct FrameGenResult {
 ///    その列の先頭が基部であることが `squid_n_core::model::story` の不変条件である。
 ///    階名は入力を優先し、空なら [`default_story_name`] で補う。所属節点・剛床・
 ///    地震用重量は準備計算が算定する派生値のため、ここでは空のままとする。
-/// 8. **床**は全レベルで、隣り合う通りに囲まれた格子パネルへ 1 枚ずつ作る
+/// 8. **床**は全レベルで、隣り合う通りに囲まれた格子区画へ 1 枚ずつ作る
 ///    （`with_slabs` が false、または片方向の通りが 1 本のときは作らない）。
 ///    板厚 [`FrameSpec::slab_thickness`] の断面 [`SLAB_SECTION_NAME`] を 1 枚だけ
 ///    作り、全階の床で共有する。断面には [`FrameSpec::slab_concrete`] の
@@ -541,11 +544,12 @@ pub fn generate_frame(spec: &FrameSpec) -> Result<FrameGenResult, String> {
         })
         .collect();
 
-    // 床（全レベルで、隣り合う通りに囲まれた格子パネル 1 枚ずつ）。
+    // 床（全レベルで、隣り合う通りに囲まれた格子区画 1 枚ずつ）。
     // 板厚と自重は断面と材料からしか解決できないため、床を作るなら断面とコンクリートも
     // あわせて作る（モジュールドキュメント参照）。
     let mut sections = Vec::new();
     let mut materials = Vec::new();
+    let mut floor_regions = Vec::new();
     let mut slabs = Vec::new();
     if spec.with_slabs && nx >= 2 && ny >= 2 {
         let sec_id = SectionId(0);
@@ -577,24 +581,28 @@ pub fn generate_frame(spec: &FrameSpec) -> Result<FrameGenResult, String> {
             for ix in 0..nx - 1 {
                 for iy in 0..ny - 1 {
                     // 境界は反時計回り（面積算定の巻き方向をそろえる）。
+                    let boundary = vec![
+                        nid(ix, iy, iz),
+                        nid(ix + 1, iy, iz),
+                        nid(ix + 1, iy + 1, iz),
+                        nid(ix, iy + 1, iz),
+                    ];
+                    let region_id = FloorRegionId(floor_regions.len() as u32);
+                    let slab_id = SlabId(slabs.len() as u32);
                     slabs.push(Slab {
-                        id: SlabId(slabs.len() as u32),
-                        boundary: vec![
-                            nid(ix, iy, iz),
-                            nid(ix + 1, iy, iz),
-                            nid(ix + 1, iy + 1, iz),
-                            nid(ix, iy + 1, iz),
-                        ],
-                        joists: Vec::new(),
-                        loads: Vec::new(),
-                        method: DistributionMethod::TriTrapezoid,
-                        kind: Default::default(),
-                        one_way: None,
-                        edge_supported: None,
-                        usage: spec.slab_usage,
-                        section: Some(sec_id),
-                        secondary_joist_ids: Vec::new(),
+                        id: slab_id,
+                        shape: SlabShape::Enclosed {
+                            boundary: boundary.clone(),
+                        },
+                        plate: SlabPlate {
+                            section: Some(sec_id),
+                            usage: spec.slab_usage,
+                            ..Default::default()
+                        },
                     });
+                    let mut region = FloorRegion::new(region_id, boundary);
+                    region.slab_ids.push(slab_id);
+                    floor_regions.push(region);
                 }
             }
         }
@@ -607,6 +615,7 @@ pub fn generate_frame(spec: &FrameSpec) -> Result<FrameGenResult, String> {
         stories,
         sections,
         materials,
+        floor_regions,
         slabs,
     })
 }
@@ -624,6 +633,7 @@ pub fn frame_model(spec: &FrameSpec) -> Result<Model, String> {
         stories: gen.stories,
         sections: gen.sections,
         materials: gen.materials,
+        floor_regions: gen.floor_regions,
         slabs: gen.slabs,
         ..Model::with_default_load_cases()
     })
@@ -786,7 +796,7 @@ mod tests {
         assert!(frame_model(&no_slabs).is_ok());
     }
 
-    /// 床は各レベルの各格子パネルに 1 枚ずつ作り、板厚 150 mm の断面 `S15` を共有する。
+    /// 床は各レベルの各格子区画に 1 枚ずつ作り、板厚 150 mm の断面 `S15` を共有する。
     ///
     /// 床の板厚と自重は断面と材料からしか解決できないため、床を作るなら断面と
     /// コンクリートもあわせて作る。
@@ -795,23 +805,28 @@ mod tests {
         let spec = FrameSpec::default();
         let model = frame_model(&spec).unwrap();
         // 2×1 スパン × 4 レベル（基部を含む）= 8 枚。
-        assert_eq!(model.slabs.len(), 2 * 4);
-        assert_eq!(model.slabs.len(), spec.counts().slabs);
+        assert_eq!(model.floor_regions.len(), 2 * 4);
+        assert_eq!(model.floor_regions.len(), spec.counts().slabs);
         assert_eq!(model.sections.len(), 1, "床の断面は 1 枚だけ");
         let sec = &model.sections[0];
         assert_eq!(sec.name, SLAB_SECTION_NAME);
         assert_eq!(sec.floor, None, "階を持たない断面として作る");
         assert_eq!(sec.thickness, Some(150.0));
         assert_eq!(sec.material, Some(crate::ids::MaterialId(0)));
+        assert_eq!(
+            model.slabs.len(),
+            model.floor_regions.len(),
+            "床領域ごとに床板 1 枚"
+        );
         assert!(model
             .slabs
             .iter()
-            .all(|sl| sl.section == Some(crate::ids::SectionId(0))));
-        assert!(model.slabs.iter().all(|sl| sl.usage == spec.slab_usage));
-        for sl in &model.slabs {
-            assert_eq!(sl.boundary.len(), 4);
-            let zs: Vec<f64> = sl
-                .boundary
+            .all(|sl| sl.section() == Some(crate::ids::SectionId(0))));
+        assert!(model.slabs.iter().all(|sl| sl.usage() == spec.slab_usage));
+        for sl in &model.floor_regions {
+            let boundary = &sl.boundary;
+            assert_eq!(boundary.len(), 4);
+            let zs: Vec<f64> = boundary
                 .iter()
                 .map(|n| model.nodes[n.index()].coord[2])
                 .collect();
@@ -819,9 +834,9 @@ mod tests {
         }
         assert!(
             model
-                .slabs
+                .floor_regions
                 .iter()
-                .any(|sl| model.nodes[sl.boundary[0].index()].coord[2] == 0.0),
+                .any(|sl| sl.level(&model) == Some(0.0)),
             "基部レベルにも床を作る"
         );
         assert!(model.validate().is_ok(), "{:?}", model.validate());
@@ -860,7 +875,7 @@ mod tests {
             ..FrameSpec::default()
         };
         let model = frame_model(&spec).unwrap();
-        assert!(model.slabs.is_empty());
+        assert!(model.floor_regions.is_empty());
         assert!(model.sections.is_empty());
         assert!(model.materials.is_empty());
         assert_eq!(spec.counts().slabs, 0);
@@ -939,15 +954,15 @@ mod tests {
         assert_eq!(base_beams, 2 * 2 + 3, "基礎伏図に基礎梁が出る");
     }
 
-    /// 片方向の通りが 1 本だけなら格子パネルができないため、床は作らない。
+    /// 片方向の通りが 1 本だけなら格子区画ができないため、床は作らない。
     #[test]
-    fn test_no_slabs_without_panel() {
+    fn test_no_slabs_without_grid_region() {
         let spec = FrameSpec {
             y_spans: Vec::new(),
             ..FrameSpec::default()
         };
         let model = frame_model(&spec).unwrap();
-        assert!(model.slabs.is_empty());
+        assert!(model.floor_regions.is_empty());
         assert!(model.sections.is_empty());
         assert!(model.materials.is_empty());
     }

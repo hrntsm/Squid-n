@@ -1,12 +1,13 @@
 //! 数量積算のモデル走査テスト。
 
 use smallvec::SmallVec;
+use squid_n_core::model::{FloorRegion, Slab, SlabPlate, SlabShape};
 
 use squid_n_core::dof::Dof6Mask;
-use squid_n_core::ids::{ElemId, MaterialId, NodeId, SectionId, SlabId};
+use squid_n_core::ids::{ElemId, FloorRegionId, MaterialId, NodeId, SectionId, SlabId};
 use squid_n_core::model::{
     DistributionMethod, ElementData, ElementKind, EndCondition, ForceRegime, LocalAxis, Material,
-    MaterialCategory, Model, Node, RigidZone, Section, Slab, SlabKind,
+    MaterialCategory, Model, Node, RigidZone, Section,
 };
 use squid_n_core::section_shape::{BarSet, RcRebar, SectionShape, ShearBar};
 
@@ -295,24 +296,28 @@ fn test_girder_formwork_slab_deduction() {
     // 大梁の両側にスラブが取り付く場合、側面せいからスラブ厚を控除する。
     let mut model = rc_portal_model();
     model.slab_thickness = 150.0;
-    // 大梁（節点 2-3）の両側（y=+5000 と y=−5000）に床パネルを配置する。
+    let mut slab_sec =
+        SectionShape::RcSlab { thickness: 150.0 }.to_section(SectionId(2), "S15".into());
+    slab_sec.material = Some(MaterialId(0));
+    model.sections.push(slab_sec);
+    // 大梁（節点 2-3）の両側（y=+5000 と y=−5000）に床板を配置する。
     model.nodes.push(node(4, 0.0, 5_000.0, 3_500.0));
     model.nodes.push(node(5, 6_000.0, 5_000.0, 3_500.0));
     model.nodes.push(node(6, 0.0, -5_000.0, 3_500.0));
     model.nodes.push(node(7, 6_000.0, -5_000.0, 3_500.0));
     for (sid, (a, b)) in [(0u32, (5u32, 4u32)), (1u32, (6u32, 7u32))] {
         model.slabs.push(Slab {
-            usage: None,
             id: SlabId(sid),
-            boundary: vec![NodeId(2), NodeId(3), NodeId(a), NodeId(b)],
-            joists: vec![],
-            loads: vec![],
-            method: DistributionMethod::TriTrapezoid,
-            kind: SlabKind::Interior,
-            one_way: None,
-            edge_supported: None,
-            section: None,
-            secondary_joist_ids: vec![],
+            shape: SlabShape::Enclosed {
+                boundary: vec![NodeId(2), NodeId(3), NodeId(a), NodeId(b)],
+            },
+            plate: SlabPlate {
+                section: Some(SectionId(2)),
+                loads: vec![],
+                usage: None,
+                method: DistributionMethod::TriTrapezoid,
+                one_way: None,
+            },
         });
     }
 
@@ -422,7 +427,7 @@ fn test_brace_length_and_weight() {
 #[test]
 fn test_slab_quantity() {
     let mut model = rc_portal_model();
-    // 6m×5m の床パネル。板厚はスラブ断面が持つ（建物一律の `slab_thickness` は
+    // 6m×5m の床板。板厚はスラブ断面が持つ（建物一律の `slab_thickness` は
     // 剛性計算に見込む厚さであり、数量には使わない）。
     model.nodes.push(node(4, 0.0, 5_000.0, 3_500.0));
     model.nodes.push(node(5, 6_000.0, 5_000.0, 3_500.0));
@@ -432,17 +437,17 @@ fn test_slab_quantity() {
             .to_section(slab_sec, "S15".into()),
     );
     model.slabs.push(Slab {
-        usage: None,
         id: SlabId(0),
-        boundary: vec![NodeId(2), NodeId(3), NodeId(5), NodeId(4)],
-        joists: vec![],
-        loads: vec![],
-        method: DistributionMethod::TriTrapezoid,
-        kind: SlabKind::Interior,
-        one_way: None,
-        edge_supported: None,
-        section: Some(slab_sec),
-        secondary_joist_ids: vec![],
+        shape: SlabShape::Enclosed {
+            boundary: vec![NodeId(2), NodeId(3), NodeId(5), NodeId(4)],
+        },
+        plate: SlabPlate {
+            section: Some(slab_sec),
+            loads: vec![],
+            usage: None,
+            method: DistributionMethod::TriTrapezoid,
+            one_way: None,
+        },
     });
 
     let q = compute_quantity_takeoff(&model, &QuantityCfg::default());
@@ -592,4 +597,63 @@ fn test_foundation_girder_haunch_from_member_detail() {
     let base_m2 = 1.2 * 5.3;
     let haunch_m2 = (1_100.0 - 800.0) / 2.0 * 800.0 * 2.0 * 1e-6;
     assert!((fg.formwork_m2 - (base_m2 + haunch_m2)).abs() < 1e-9);
+}
+
+fn girder_formwork(model: &Model) -> f64 {
+    compute_quantity_takeoff(model, &QuantityCfg::default())
+        .items
+        .iter()
+        .find(|i| i.elem == Some(ElemId(2)) && i.category == MemberCategory::Girder)
+        .map(|i| i.formwork_m2)
+        .expect("大梁型枠")
+}
+
+/// 床板のない囲まれた床領域は型枠控除なし。取り付く床板ありは取付き線の大梁が n_adj≥1。
+#[test]
+fn test_formwork_plateless_no_deduction_attached_deducts() {
+    use squid_n_core::model::{LoadTransfer, RegionAnchor};
+    use squid_n_core::section_shape::SectionShape;
+
+    let empty = rc_portal_model();
+    let form_empty = girder_formwork(&empty);
+
+    let mut plateless = rc_portal_model();
+    plateless.slab_thickness = 150.0;
+    plateless.nodes.push(node(4, 0.0, 5_000.0, 3_500.0));
+    plateless.nodes.push(node(5, 6_000.0, 5_000.0, 3_500.0));
+    plateless.floor_regions.push(FloorRegion::new(
+        FloorRegionId(0),
+        vec![NodeId(2), NodeId(3), NodeId(5), NodeId(4)],
+    ));
+    let form_plateless = girder_formwork(&plateless);
+    assert!(
+        (form_plateless - form_empty).abs() < 1e-9,
+        "床板のない囲まれは控除なし empty={form_empty} plateless={form_plateless}"
+    );
+
+    let mut attached = rc_portal_model();
+    let mut slab_sec =
+        SectionShape::RcSlab { thickness: 150.0 }.to_section(SectionId(2), "S15".into());
+    slab_sec.material = Some(MaterialId(0));
+    attached.sections.push(slab_sec);
+    attached.slabs.push(Slab {
+        id: SlabId(0),
+        shape: SlabShape::Attached {
+            anchor: RegionAnchor::Line {
+                nodes: [NodeId(2), NodeId(3)],
+                span: [0.0, 1.0],
+                transfer: LoadTransfer::Anchor,
+            },
+            extent: [-1500.0, -1500.0],
+        },
+        plate: SlabPlate {
+            section: Some(SectionId(2)),
+            ..Default::default()
+        },
+    });
+    let form_att = girder_formwork(&attached);
+    assert!(
+        form_att < form_empty - 1e-6,
+        "取り付く床板ありは型枠が減る empty={form_empty} att={form_att}"
+    );
 }

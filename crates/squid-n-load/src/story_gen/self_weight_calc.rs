@@ -240,7 +240,7 @@ pub(crate) fn enumerate_self_weight(model: &Model, load_cfg: &LoadCfg) -> Vec<Se
                 let self_weight_area = if is_concrete
                     && !is_vertical
                     && model.slab_thickness > 0.0
-                    && !model.slabs.is_empty()
+                    && !model.floor_regions.is_empty()
                 {
                     (sec.area - sec.width * model.slab_thickness.min(sec.depth)).max(0.0)
                 } else {

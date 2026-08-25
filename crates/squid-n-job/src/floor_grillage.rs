@@ -11,7 +11,7 @@
 //! **鉛直 Uz のみ**を `RigidLink` で結合（曲げは伝えず鉛直せん断のみ）で表現する。
 
 use squid_n_core::ids::{ElemId, LoadCaseId, NodeId};
-use squid_n_core::model::{MaterialCategory, Model, Slab};
+use squid_n_core::model::{FloorRegion, MaterialCategory, Model};
 use squid_n_element::beam::MemberForces;
 
 /// 床格子サブモデルと、支点（大梁接続点）→本体モデルの原節点 id の対応。
@@ -87,7 +87,7 @@ impl NodeRegistry {
 ///   （＝格子でない）場合は `None`（呼び出し側は既存の単純梁設計へフォールバック）。
 ///
 /// `w` は面荷重強度 [N/mm²]（床用）。返り値の荷重ケースは `LoadCaseId(0)`。
-pub fn build_slab_grillage(model: &Model, slab: &Slab, w: f64) -> Option<SlabGrillage> {
+pub fn build_slab_grillage(model: &Model, slab: &FloorRegion, w: f64) -> Option<SlabGrillage> {
     use squid_n_core::dof::{Dof, Dof6Mask};
     use squid_n_core::ids::{MaterialId, SectionId};
     use squid_n_core::model::{
@@ -95,7 +95,7 @@ pub fn build_slab_grillage(model: &Model, slab: &Slab, w: f64) -> Option<SlabGri
         Material, MemberLoad, MemberLoadKind, Node, Section,
     };
 
-    if slab.joists.is_empty() {
+    if slab.joist_lines().is_empty() {
         return None;
     }
     // 小梁の幾何（端点座標・原節点 id・負担幅・原断面 id）を収集。全小梁に断面必須。
@@ -109,7 +109,7 @@ pub fn build_slab_grillage(model: &Model, slab: &Slab, w: f64) -> Option<SlabGri
         idx: usize,
     }
     let mut js: Vec<J> = Vec::new();
-    for (idx, j) in slab.joists.iter().enumerate() {
+    for (idx, j) in slab.joist_lines().iter().enumerate() {
         let a = model.nodes.get(j.support[0].index())?;
         let b = model.nodes.get(j.support[1].index())?;
         let sec = j.section?;
@@ -202,8 +202,8 @@ pub fn build_slab_grillage(model: &Model, slab: &Slab, w: f64) -> Option<SlabGri
                 // 相互ピン（i→k かつ k→i）の場合は両側が別節点を持つと共有節点が
                 // どの部材にも接続されず特異になるため、原インデックスの小さい側だけを
                 // 架け（別節点）とし、他方は共有節点を使う受け梁として破綻を防ぐ。
-                let i_pins_k = slab.joists[js[i].idx].pinned_onto == Some(js[k].idx);
-                let k_pins_i = slab.joists[js[k].idx].pinned_onto == Some(js[i].idx);
+                let i_pins_k = slab.joist_lines()[js[i].idx].pinned_onto == Some(js[k].idx);
+                let k_pins_i = slab.joist_lines()[js[k].idx].pinned_onto == Some(js[i].idx);
                 let i_is_carried = i_pins_k && (!k_pins_i || js[i].idx < js[k].idx);
                 let node_i = if i_is_carried {
                     let fresh = reg.add_distinct(p);
@@ -736,8 +736,8 @@ mod tests {
     /// 対称な十字小梁: 格子を構築して解き、支点反力の総和＝全載荷、4支点が対称。
     #[test]
     fn test_build_and_solve_symmetric_cross() {
-        use squid_n_core::ids::SlabId;
-        use squid_n_core::model::{DistributionMethod, JoistLine, Slab};
+        use squid_n_core::ids::FloorRegionId;
+        use squid_n_core::model::JoistLine;
 
         let mk = |id: u32, x: f64, y: f64| Node {
             id: NodeId(id),
@@ -759,9 +759,12 @@ mod tests {
                 mk(7, 4000.0, 2000.0), // mid-right
             ],
             sections: vec![beam_section(0)],
-            slabs: vec![Slab {
-                id: SlabId(0),
+            floor_regions: vec![FloorRegion {
+                id: FloorRegionId(0),
+                name: String::new(),
                 boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
+                secondary_joist_ids: vec![],
+                slab_ids: vec![],
                 joists: vec![
                     JoistLine {
                         dir: [0.0, 1.0],
@@ -778,20 +781,12 @@ mod tests {
                         pinned_onto: None,
                     },
                 ],
-                loads: vec![],
-                method: DistributionMethod::TriTrapezoid,
-                kind: Default::default(),
-                one_way: None,
-                edge_supported: None,
-                usage: None,
-                section: None,
-                secondary_joist_ids: vec![],
             }],
             ..Default::default()
         };
 
         let w = 0.005_f64; // N/mm²
-        let g = build_slab_grillage(&model, &model.slabs[0], w).expect("格子構築");
+        let g = build_slab_grillage(&model, &model.floor_regions[0], w).expect("格子構築");
         // 交点（2000,2000）で分割 → 各小梁2区間・計4要素、節点は端点4＋交点1＝5。
         assert_eq!(g.model.nodes.len(), 5);
         assert_eq!(g.model.elements.len(), 4);
@@ -826,8 +821,8 @@ mod tests {
     /// で解き、架け梁（小梁0）の交点での曲げが解放されて設計曲げが変わることを見る。
     #[test]
     fn test_pin_vs_rigid_cross_differ() {
-        use squid_n_core::ids::SlabId;
-        use squid_n_core::model::{DistributionMethod, JoistLine, Slab};
+        use squid_n_core::ids::FloorRegionId;
+        use squid_n_core::model::JoistLine;
 
         let mk = |id: u32, x: f64, y: f64| Node {
             id: NodeId(id),
@@ -867,9 +862,12 @@ mod tests {
         let make_model = |pinned_onto: Option<usize>| Model {
             nodes: base_nodes.clone(),
             sections: vec![beam_section(0), stiff.clone()],
-            slabs: vec![Slab {
-                id: SlabId(0),
+            floor_regions: vec![FloorRegion {
+                id: FloorRegionId(0),
+                name: String::new(),
                 boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
+                secondary_joist_ids: vec![],
+                slab_ids: vec![],
                 joists: vec![
                     JoistLine {
                         dir: [0.0, 1.0],
@@ -886,14 +884,6 @@ mod tests {
                         pinned_onto: None,
                     },
                 ],
-                loads: vec![],
-                method: DistributionMethod::TriTrapezoid,
-                kind: Default::default(),
-                one_way: None,
-                edge_supported: None,
-                usage: None,
-                section: None,
-                secondary_joist_ids: vec![],
             }],
             ..Default::default()
         };
@@ -902,13 +892,14 @@ mod tests {
 
         // (a) 剛接十字（pinned_onto=None）。
         let m_rigid = make_model(None);
-        let g_rigid = build_slab_grillage(&m_rigid, &m_rigid.slabs[0], w).expect("剛接構築");
+        let g_rigid =
+            build_slab_grillage(&m_rigid, &m_rigid.floor_regions[0], w).expect("剛接構築");
         let s_rigid = solve_grillage(&g_rigid.model, LoadCaseId(0)).expect("剛接解");
         let f_rigid = joist_design_forces(&g_rigid, &s_rigid);
 
         // (b) ピン受け/架け（小梁0 を小梁1 にピン接合）。
         let m_pin = make_model(Some(1));
-        let g_pin = build_slab_grillage(&m_pin, &m_pin.slabs[0], w).expect("ピン構築");
+        let g_pin = build_slab_grillage(&m_pin, &m_pin.floor_regions[0], w).expect("ピン構築");
         let s_pin = solve_grillage(&g_pin.model, LoadCaseId(0)).expect("ピン解");
         let f_pin = joist_design_forces(&g_pin, &s_pin);
 
@@ -935,8 +926,8 @@ mod tests {
     /// 斜め小梁（軸非平行）を含む床は格子解析を行わず None（安全側の単純梁へ）。
     #[test]
     fn test_skew_joist_falls_back_to_none() {
-        use squid_n_core::ids::SlabId;
-        use squid_n_core::model::{DistributionMethod, JoistLine, Slab};
+        use squid_n_core::ids::FloorRegionId;
+        use squid_n_core::model::JoistLine;
 
         let mk = |id: u32, x: f64, y: f64| Node {
             id: NodeId(id),
@@ -956,9 +947,12 @@ mod tests {
                 mk(5, 2000.0, 4000.0),
             ],
             sections: vec![beam_section(0)],
-            slabs: vec![Slab {
-                id: SlabId(0),
+            floor_regions: vec![FloorRegion {
+                id: FloorRegionId(0),
+                name: String::new(),
                 boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
+                secondary_joist_ids: vec![],
+                slab_ids: vec![],
                 joists: vec![
                     JoistLine {
                         dir: [0.0, 1.0],
@@ -975,19 +969,11 @@ mod tests {
                         pinned_onto: None,
                     },
                 ],
-                loads: vec![],
-                method: DistributionMethod::TriTrapezoid,
-                kind: Default::default(),
-                one_way: None,
-                edge_supported: None,
-                usage: None,
-                section: None,
-                secondary_joist_ids: vec![],
             }],
             ..Default::default()
         };
         assert!(
-            build_slab_grillage(&model, &model.slabs[0], 0.005).is_none(),
+            build_slab_grillage(&model, &model.floor_regions[0], 0.005).is_none(),
             "斜め小梁があるのに格子を構築した（過小評価の恐れ）"
         );
     }
@@ -995,8 +981,8 @@ mod tests {
     /// 相互ピン（i→k かつ k→i）でも特異にならず解ける（低インデックス側だけ架け）。
     #[test]
     fn test_mutual_pin_does_not_singular() {
-        use squid_n_core::ids::SlabId;
-        use squid_n_core::model::{DistributionMethod, JoistLine, Slab};
+        use squid_n_core::ids::FloorRegionId;
+        use squid_n_core::model::JoistLine;
 
         let mk = |id: u32, x: f64, y: f64| Node {
             id: NodeId(id),
@@ -1018,9 +1004,12 @@ mod tests {
                 mk(7, 4000.0, 2000.0),
             ],
             sections: vec![beam_section(0)],
-            slabs: vec![Slab {
-                id: SlabId(0),
+            floor_regions: vec![FloorRegion {
+                id: FloorRegionId(0),
+                name: String::new(),
                 boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
+                secondary_joist_ids: vec![],
+                slab_ids: vec![],
                 joists: vec![
                     JoistLine {
                         dir: [0.0, 1.0],
@@ -1037,19 +1026,11 @@ mod tests {
                         pinned_onto: Some(0), // 相互ピン
                     },
                 ],
-                loads: vec![],
-                method: DistributionMethod::TriTrapezoid,
-                kind: Default::default(),
-                one_way: None,
-                edge_supported: None,
-                usage: None,
-                section: None,
-                secondary_joist_ids: vec![],
             }],
             ..Default::default()
         };
         let w = 0.005_f64;
-        let g = build_slab_grillage(&model, &model.slabs[0], w).expect("相互ピンでも構築");
+        let g = build_slab_grillage(&model, &model.floor_regions[0], w).expect("相互ピンでも構築");
         let sol = solve_grillage(&g.model, LoadCaseId(0)).expect("相互ピンでも特異にならず解ける");
         let total = w * 2000.0 * 4000.0 * 2.0;
         let sum: f64 = g

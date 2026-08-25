@@ -196,14 +196,17 @@ impl EditCommand for RestoreStories {
     }
 }
 
-/// 床追加。末尾に `SlabId(len)` で追加する（ID＝配列インデックスの不変条件を維持）。
-/// 逆操作は床削除。
+/// 床板の追加。末尾に `SlabId(len)` で追加する（ID＝配列インデックスの不変条件を維持）。
+/// 逆操作は床板の削除。
+///
+/// ここで作るのは**大梁または小梁で囲まれた床板**である。所属する床領域
+/// （大梁の区画）は次の準備計算（`rebuild_floor_regions`）が自動で結びつける。
+/// 取り付く床板（片持ち・バルコニー・出隅）の追加コマンドは [`crate::AddAttachedSlab`]。
 pub struct AddSlab {
     pub boundary: Vec<NodeId>,
-    pub joists: Vec<squid_n_core::model::JoistLine>,
     pub loads: Vec<squid_n_core::model::AreaLoad>,
     pub method: squid_n_core::model::DistributionMethod,
-    /// スラブ用途（積載荷重プリセット。`None` は積載寄与なし）。
+    /// 室用途（積載荷重プリセット。`None` は積載寄与なし）。
     pub usage: Option<squid_n_core::model::SlabUsage>,
     /// スラブ断面（板厚・コンクリート材料を持つ断面）。`None` は未割当。
     pub section: Option<SectionId>,
@@ -211,29 +214,28 @@ pub struct AddSlab {
 
 impl EditCommand for AddSlab {
     fn apply(&self, model: &mut Model) -> Box<dyn EditCommand> {
-        // 境界・小梁が実在しない節点や断面を指す床は作らない（crate::refs の規約）。
+        // 境界が実在しない節点や断面を指す床は作らない（crate::refs の規約）。
         if !self
             .boundary
             .iter()
             .all(|&n| crate::refs::node_exists(model, n))
-            || !crate::refs::joists_ok(model, &self.joists)
             || !crate::refs::section_ref_ok(model, self.section)
         {
             return Box::new(Noop);
         }
         let new_id = SlabId(model.slabs.len() as u32);
         model.slabs.push(squid_n_core::model::Slab {
-            edge_supported: None,
-            kind: Default::default(),
-            one_way: None,
-            usage: self.usage,
-            section: self.section,
             id: new_id,
-            boundary: self.boundary.clone(),
-            joists: self.joists.clone(),
-            loads: self.loads.clone(),
-            method: self.method,
-            secondary_joist_ids: Vec::new(),
+            shape: squid_n_core::model::SlabShape::Enclosed {
+                boundary: self.boundary.clone(),
+            },
+            plate: squid_n_core::model::SlabPlate {
+                section: self.section,
+                loads: self.loads.clone(),
+                usage: self.usage,
+                method: self.method,
+                one_way: None,
+            },
         });
         Box::new(DeleteSlab { id: new_id })
     }
@@ -243,27 +245,101 @@ impl EditCommand for AddSlab {
     }
 }
 
-id_indexed_delete_insert!(
-    /// 床削除（中間の床も可）。逆操作は [`InsertSlab`]。
-    ///
-    /// ID＝配列インデックスの不変条件を保つため、削除後は当該床より後ろの
-    /// 床 ID を 1 つずつ繰り上げる。`SlabId` は床自身の ID 以外からは参照されない
-    /// （`crates` 全体で grep 済み）ため、他データへの追従は不要。
-    DeleteSlab,
-    /// 指定インデックスへ床を再挿入する（[`DeleteSlab`] の逆操作専用）。
-    InsertSlab,
-    id = SlabId,
-    entity = squid_n_core::model::Slab,
-    vec = slabs,
-    shift = shift_slab_ids,
-    guard = |_: &Model, _| false,
-    del_label = "床削除",
-    ins_label = "床削除の取り消し",
-);
+/// 床板の削除（中間の床板も可）。逆操作は [`InsertSlab`]。
+///
+/// ID＝配列インデックスの不変条件を保つため、削除後は当該床板より後ろの
+/// ID を 1 つずつ繰り上げる。削除前に `FloorRegion.slab_ids` から該当 ID を
+/// 除去する（カスケード削除。[`crate::DeleteSecondaryMember`] と同じ理由。
+/// 素通しで繰り上げるだけだと、繰り上がった別の床板の ID と衝突し
+/// 「複数の床領域から参照されている」不整合を生む）。
+pub struct DeleteSlab {
+    pub id: SlabId,
+}
 
-/// モデル内の全ての `SlabId` 参照（床自身の ID を含む）に `f` を適用する。
-fn shift_slab_ids(model: &mut Model, mut f: impl FnMut(&mut SlabId)) {
-    for slab in &mut model.slabs {
-        f(&mut slab.id);
+impl EditCommand for DeleteSlab {
+    fn apply(&self, model: &mut Model) -> Box<dyn EditCommand> {
+        let idx = self.id.index();
+        if idx >= model.slabs.len() || model.slabs[idx].id != self.id {
+            return Box::new(Noop);
+        }
+
+        // カスケード: 床領域の slab_ids から除去し、位置を退避
+        // (床領域添字, リスト内位置) を昇順で記録する（InsertSlab での復元用）。
+        let mut region_refs: Vec<(usize, usize)> = Vec::new();
+        for (ri, region) in model.floor_regions.iter_mut().enumerate() {
+            let mut pos = 0;
+            while pos < region.slab_ids.len() {
+                if region.slab_ids[pos] == self.id {
+                    region.slab_ids.remove(pos);
+                    region_refs.push((ri, pos));
+                } else {
+                    pos += 1;
+                }
+            }
+        }
+
+        let removed = model.slabs.remove(idx);
+        let target = self.id.0;
+        shift_slab_ids(model, |id| {
+            if id.0 > target {
+                id.0 -= 1;
+            }
+        });
+
+        Box::new(InsertSlab {
+            index: idx,
+            slab: removed,
+            region_refs,
+        })
     }
+
+    fn label(&self) -> &str {
+        "床削除"
+    }
+}
+
+/// 指定インデックスへ床板を再挿入し、後続 ID と参照を繰り下げ、床領域の
+/// `slab_ids` も元の位置へ復元する（[`DeleteSlab`] の逆操作専用）。
+pub struct InsertSlab {
+    pub index: usize,
+    pub slab: squid_n_core::model::Slab,
+    /// 削除時に床領域の `slab_ids` から除去した参照の (床領域添字, リスト内位置)。
+    /// 昇順で記録されているため逆順で挿入して元の並びを復元する。
+    pub region_refs: Vec<(usize, usize)>,
+}
+
+impl EditCommand for InsertSlab {
+    fn apply(&self, model: &mut Model) -> Box<dyn EditCommand> {
+        if self.index > model.slabs.len() {
+            return Box::new(Noop);
+        }
+        let id = SlabId(self.index as u32);
+        shift_slab_ids(model, |x| {
+            if x.0 >= id.0 {
+                x.0 += 1;
+            }
+        });
+        let mut slab = self.slab.clone();
+        slab.id = id;
+        model.slabs.insert(self.index, slab);
+
+        // 床領域の slab_ids を元の位置へ復元（逆順挿入で昇順復元）。
+        for &(ri, pos) in self.region_refs.iter().rev() {
+            if let Some(region) = model.floor_regions.get_mut(ri) {
+                let insert_pos = pos.min(region.slab_ids.len());
+                region.slab_ids.insert(insert_pos, id);
+            }
+        }
+
+        Box::new(DeleteSlab { id })
+    }
+
+    fn label(&self) -> &str {
+        "床削除の取り消し"
+    }
+}
+
+/// モデル内の全ての `SlabId` 参照（床板自身の ID・床領域の `slab_ids`）に `f` を適用する。
+fn shift_slab_ids(model: &mut Model, f: impl FnMut(&mut SlabId)) {
+    model.visit_slab_ids(f);
 }

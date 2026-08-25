@@ -1267,7 +1267,7 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
     let lumped_only = lumped::is_lumped_view(mode) && !app.lumped_show_frame;
     let show_secondary = !lumped_only && mode != ViewMode::Cmq && app.show_floor_secondary;
     if show_secondary {
-        draw_slabs_and_joists(&painter, app, &pts, filter);
+        draw_slabs_and_joists(&painter, app, &pts, filter, &proj);
     }
 
     // --- 断面ソリッド ---

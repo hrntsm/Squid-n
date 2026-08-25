@@ -11,7 +11,7 @@
 //! # モデル（`tests/fixtures/model.stb`）
 //!
 //! 4 層＋PH の S 造（一部 RC）。節点 166・解析要素 115（柱 40・大梁 75）・
-//! 二次部材 56（小梁）・スラブ 82・階 5（Z=200/4700/8700/12700/16500）。
+//! 二次部材 56（小梁）・床領域 26（大梁1区画単位）・階 5（Z=200/4700/8700/12700/16500）。
 //! 荷重は ST-Bridge に含まれないため、取り込み時に標準荷重ケース
 //! （DL・LL(架構用)・LL(地震用)・EX・EY）が自動生成される。支点情報も
 //! 含まれないため、最下レベルの柱脚 12 箇所がピン支点として自動設定される。
@@ -250,8 +250,58 @@ fn import_builds_expected_model() {
     assert_eq!(m.nodes.len(), 166, "節点数");
     assert_eq!(m.elements.len(), 115, "解析要素数（柱 40・大梁 75）");
     assert_eq!(m.secondary_members.len(), 56, "二次部材（小梁）");
-    assert_eq!(m.slabs.len(), 82, "スラブ");
+    assert_eq!(m.floor_regions.len(), 26, "床領域（大梁1区画単位）");
     assert_eq!(m.stories.len(), 5, "階（1FL/2FL/3FL/RFL/PHRFL）");
+
+    use squid_n_core::model::SecondaryMemberKind;
+    use squid_n_core::region_gen::generate_region_boundaries;
+    use std::collections::HashMap;
+    assert!(
+        m.slabs
+            .iter()
+            .all(|s| !s.is_attached() && s.section().is_some()),
+        "すべて Enclosed かつ版あり"
+    );
+    let mut joist_owner: HashMap<u32, usize> = HashMap::new();
+    for (ri, r) in m.floor_regions.iter().enumerate() {
+        for jid in &r.secondary_joist_ids {
+            assert!(
+                joist_owner.insert(jid.0, ri).is_none(),
+                "小梁 {} が複数領域に属する",
+                jid.0
+            );
+        }
+    }
+    let boundaries = generate_region_boundaries(m);
+    for sm in m
+        .secondary_members
+        .iter()
+        .filter(|sm| sm.kind == SecondaryMemberKind::Joist)
+    {
+        let ri = *joist_owner
+            .get(&sm.id.0)
+            .unwrap_or_else(|| panic!("小梁 {} がどの領域にも属さない", sm.id.0));
+        let r = &m.floor_regions[ri];
+        let coords = r.boundary_coords(m).expect("領域境界");
+        let n = coords.len() as f64;
+        let centroid = [
+            coords.iter().map(|p| p[0]).sum::<f64>() / n,
+            coords.iter().map(|p| p[1]).sum::<f64>() / n,
+        ];
+        let z = coords[0][2];
+        let boundary = boundaries
+            .iter()
+            .find(|b| b.is_same_level(z) && b.contains(m, centroid))
+            .expect("領域が大梁の境界に載る");
+        let a = m.nodes[sm.nodes[0].index()].coord;
+        let b = m.nodes[sm.nodes[1].index()].coord;
+        let mid = [(a[0] + b[0]) / 2.0, (a[1] + b[1]) / 2.0];
+        assert!(
+            boundary.contains(m, mid),
+            "小梁 {} の中点が所属領域に入らない",
+            sm.id.0
+        );
+    }
 
     // 荷重は ST-Bridge に含まれないため標準荷重ケースが自動生成される。
     let names: Vec<&str> = m.load_cases.iter().map(|lc| lc.name.as_str()).collect();
@@ -369,6 +419,7 @@ fn preparation_computes_stories_and_seismic_forces() {
 #[test]
 fn preparation_is_idempotent() {
     let mut app = prepared();
+    assert_eq!(app.model.floor_regions.len(), 26, "準備計算後も床領域は 26");
     let stories = app.model.stories.len();
     let weights: Vec<Option<f64>> = app.model.stories.iter().map(|s| s.seismic_weight).collect();
     let dl = auto_case(&app, DL_CASE_NAME);
@@ -985,8 +1036,8 @@ fn scz_roundtrip_preserves_model_and_results() {
         "二次部材数"
     );
     assert_eq!(
-        reopened.model.slabs.len(),
-        app.model.slabs.len(),
+        reopened.model.floor_regions.len(),
+        app.model.floor_regions.len(),
         "スラブ数"
     );
     assert_eq!(
@@ -1065,12 +1116,23 @@ fn stbridge_roundtrip_is_reanalyzable() {
         "往復で二次部材数が変わる"
     );
     assert_eq!(
-        reimported.model.slabs.len(),
-        app.model.slabs.len(),
+        reimported.model.floor_regions.len(),
+        app.model.floor_regions.len(),
         "往復でスラブ数が変わる"
     );
+    assert_eq!(
+        app.model.floor_regions.len(),
+        26,
+        "STB 再取り込みで小片 82 に戻らない"
+    );
+    assert_eq!(reimported.model.floor_regions.len(), 26);
 
     reimported.run_preparation();
+    assert_eq!(
+        reimported.model.floor_regions.len(),
+        26,
+        "準備計算で 26 のまま"
+    );
     assert_no_error(&reimported, "往復後の準備計算");
     reimported.run_static_all();
     assert_no_error(&reimported, "往復後の静的解析");
@@ -1081,17 +1143,174 @@ fn stbridge_roundtrip_is_reanalyzable() {
 // ===================== 既知の欠落 =====================
 
 /// ST-Bridge から取り込んだ小梁が、床の小梁設計で検定される。
+///
+/// あわせて、各小梁が**自分と同じレベルのスラブ**で検定されていることを確認する。
+/// スラブの内包判定は XY 平面へ投影して行うため、レベルを見ないと上下階のスラブが
+/// すべて該当し、別階の板厚・室用途・境界寸法で検定されてしまう（エラーは出ない）。
 #[test]
 fn joist_design_checks_cover_imported_secondary_members() {
+    use squid_n_core::model::SecondaryMemberKind;
+
     let mut app = analyzed();
     app.run_design_check();
     assert_no_error(&app, "断面検定");
 
     let results = app.results.as_ref().expect("解析結果");
+    let n_joists = app
+        .model
+        .secondary_members
+        .iter()
+        .filter(|sm| sm.kind == SecondaryMemberKind::Joist)
+        .count();
     assert!(
         !results.joist_checks.is_empty(),
-        "小梁 {} 本が 1 件も検定されていない",
-        app.model.secondary_members.len()
+        "小梁 {n_joists} 本が 1 件も検定されていない"
+    );
+
+    let mut checked = 0;
+    for (slab_id, target, _) in &results.joist_checks {
+        let squid_n_app::app::JoistCheckTarget::SecondaryMember(smi) = target else {
+            continue;
+        };
+        checked += 1;
+        let sm = &app.model.secondary_members[*smi];
+        let z_joist = sm
+            .nodes
+            .iter()
+            .map(|n| app.model.nodes[n.index()].coord[2])
+            .sum::<f64>()
+            / 2.0;
+        let slab = app
+            .model
+            .slabs
+            .iter()
+            .find(|s| s.id == *slab_id)
+            .expect("検定結果の床板が実在する");
+        let z_slab = slab.level(&app.model).expect("床板のレベル");
+        assert!(
+            (z_slab - z_joist).abs() <= 1.0,
+            "小梁 {smi}（Z={z_joist}）が別レベルのスラブ {:?}（Z={z_slab}）で検定されている",
+            slab_id
+        );
+    }
+    assert_eq!(
+        checked, n_joists,
+        "取り込んだ小梁がすべて検定されていない（{checked}/{n_joists}）"
+    );
+}
+
+/// 主架構の面走査（`region_gen`）が、大梁で囲まれた区画をレベルごとに検出する。
+///
+/// 床領域は「大梁で囲まれた領域ごとに 1 つ」と定めるため（D1）、その検出が実建物で
+/// 期待どおりの数になることを固定する。期待値は Euler の公式（内部面数 `F = E − V + C`）
+/// で独立に検算した値である。
+#[test]
+fn region_gen_finds_beam_bounded_regions() {
+    use squid_n_core::region_gen::generate_region_boundaries;
+    use std::collections::BTreeMap;
+
+    let app = imported();
+    let boundaries = generate_region_boundaries(&app.model);
+
+    let mut per_level: BTreeMap<i64, (usize, f64)> = BTreeMap::new();
+    for b in &boundaries {
+        let e = per_level.entry(b.level.round() as i64).or_insert((0, 0.0));
+        e.0 += 1;
+        e.1 += b.area(&app.model);
+    }
+    let counts: Vec<(i64, usize)> = per_level.iter().map(|(z, (n, _))| (*z, *n)).collect();
+    assert_eq!(
+        counts,
+        vec![(200, 6), (4700, 6), (8700, 6), (12700, 7), (16500, 1)],
+        "レベル別の区画数（Euler の公式による検算値と一致すること）"
+    );
+    assert_eq!(boundaries.len(), 26, "区画総数");
+    assert_eq!(
+        app.model.floor_regions.len(),
+        boundaries.len(),
+        "取り込み後の床領域数は区画数 26"
+    );
+
+    // 区画の面積の合計は、そのレベルの床板面積の合計と一致する
+    // （床板は小梁で細分されているが、覆う範囲は区画と同じ）。
+    let mut slab_area: BTreeMap<i64, f64> = BTreeMap::new();
+    for s in &app.model.slabs {
+        let Some(coords) = s.boundary_coords(&app.model) else {
+            continue;
+        };
+        if coords.len() < 3 {
+            continue;
+        }
+        *slab_area.entry(coords[0][2].round() as i64).or_default() +=
+            squid_n_load::floor::polygon_area(&coords);
+    }
+    for (z, (_, area)) in &per_level {
+        let s = slab_area.get(z).copied().unwrap_or(0.0);
+        assert!(
+            (area - s).abs() / s < 1e-6,
+            "Z={z}: 区画面積 {area} と床板面積 {s} が一致しない"
+        );
+    }
+}
+
+/// 取り込んだ床板が、大梁で囲まれた床領域の境界へ過不足なく収まる。
+///
+/// 大梁が囲む区画（床領域）は 1 つの境界につき 1 つ（D1）。区画内の床板
+/// （小梁でさらに細分された打設単位）は重複・欠落なく、ちょうど 1 つの
+/// 区画へ割り当たることを固定する。
+#[test]
+fn slabs_fold_into_regions_without_gaps() {
+    use squid_n_core::region_gen::scan_region_boundaries;
+    use std::collections::BTreeMap;
+
+    let app = imported();
+    let scan = scan_region_boundaries(&app.model);
+    assert_eq!(scan.unclosed, 0, "閉じない面走査はない");
+    assert!(
+        scan.crossings.is_empty(),
+        "節点を共有せずに交差する大梁がある: {:?}",
+        scan.crossings
+    );
+
+    let mut by_region: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
+    let mut unassigned = Vec::new();
+    for (si, slab) in app.model.slabs.iter().enumerate() {
+        let Some(coords) = slab.boundary_coords(&app.model) else {
+            continue;
+        };
+        if coords.len() < 3 {
+            continue;
+        }
+        let n = coords.len() as f64;
+        let centroid = [
+            coords.iter().map(|p| p[0]).sum::<f64>() / n,
+            coords.iter().map(|p| p[1]).sum::<f64>() / n,
+        ];
+        let z = coords[0][2];
+        match scan
+            .boundaries
+            .iter()
+            .position(|b| b.is_same_level(z) && b.contains(&app.model, centroid))
+        {
+            Some(bi) => by_region.entry(bi).or_default().push(si),
+            None => unassigned.push(si),
+        }
+    }
+
+    assert!(
+        unassigned.is_empty(),
+        "どの区画にも収まらない床板: {unassigned:?}"
+    );
+    assert_eq!(unassigned.len(), 0, "未割当 0");
+    assert_eq!(
+        app.model.floor_regions.len(),
+        scan.boundaries.len(),
+        "床領域数＝区画数 26"
+    );
+    assert_eq!(
+        by_region.len(),
+        scan.boundaries.len(),
+        "床板を持たない区画はない"
     );
 }
 
@@ -1126,7 +1345,15 @@ fn snapshot_key_scalars() {
         "model.secondary_members",
         app.model.secondary_members.len().to_string(),
     );
-    line("model.slabs", app.model.slabs.len().to_string());
+    assert_eq!(
+        app.model.floor_regions.len(),
+        26,
+        "スナップショット対象の床領域数"
+    );
+    line(
+        "model.floor_regions",
+        app.model.floor_regions.len().to_string(),
+    );
     line("model.stories", app.model.stories.len().to_string());
 
     // --- 準備計算 ---
@@ -1209,6 +1436,14 @@ fn snapshot_key_scalars() {
         })
         .fold(0.0_f64, f64::max);
     line("design.max_ratio", sig4(max_ratio));
+    // 小梁の最大検定比。件数だけでは「どのスラブで検定したか」の変化を捉えられないため、
+    // 値そのものも固定する（負担幅・床荷重強度の取り違えはここに現れる）。
+    let joist_max_ratio = results
+        .joist_checks
+        .iter()
+        .map(|(_, _, r)| r.ratio)
+        .fold(0.0_f64, f64::max);
+    line("design.joist_max_ratio", sig4(joist_max_ratio));
 
     // --- 層指標 ---
     let ctx = squid_n_app::summary::metrics_ctx_from_results(Some(results));

@@ -73,7 +73,7 @@ impl EditCommand for DeleteSecondaryMember {
         // カスケード: スラブの secondary_joist_ids から除去し、位置を退避
         // (スラブ添字, リスト内位置) を昇順で記録する（InsertSecondaryMember での復元用）。
         let mut slab_refs: Vec<(usize, usize)> = Vec::new();
-        for (si, slab) in model.slabs.iter_mut().enumerate() {
+        for (si, slab) in model.floor_regions.iter_mut().enumerate() {
             let mut pos = 0;
             while pos < slab.secondary_joist_ids.len() {
                 if slab.secondary_joist_ids[pos] == self.id {
@@ -153,7 +153,7 @@ impl EditCommand for InsertSecondaryMember {
 
         // スラブの secondary_joist_ids を元の位置へ復元（逆順挿入で昇順復元）
         for &(si, pos) in self.slab_refs.iter().rev() {
-            if let Some(slab) = model.slabs.get_mut(si) {
+            if let Some(slab) = model.floor_regions.get_mut(si) {
                 let insert_pos = pos.min(slab.secondary_joist_ids.len());
                 slab.secondary_joist_ids.insert(insert_pos, id);
             }
@@ -215,21 +215,24 @@ impl EditCommand for SetSecondaryMemberSection {
 ///
 /// 逆操作は元のリストへ戻す `SetSlabSecondaryJoistIds`。
 pub struct SetSlabSecondaryJoistIds {
-    pub slab: SlabId,
+    pub slab: FloorRegionId,
     pub ids: Vec<SecondaryMemberId>,
 }
 
 impl EditCommand for SetSlabSecondaryJoistIds {
     fn apply(&self, model: &mut Model) -> Box<dyn EditCommand> {
         let idx = self.slab.index();
-        if idx >= model.slabs.len() || model.slabs[idx].id != self.slab {
+        if idx >= model.floor_regions.len() || model.floor_regions[idx].id != self.slab {
             return Box::new(Noop);
         }
         // 全 ID が実在し Joist 種別であること、重複がないことを確認する。
         if !secondary_joist_ids_ok(model, &self.ids) {
             return Box::new(Noop);
         }
-        let old = std::mem::replace(&mut model.slabs[idx].secondary_joist_ids, self.ids.clone());
+        let old = std::mem::replace(
+            &mut model.floor_regions[idx].secondary_joist_ids,
+            self.ids.clone(),
+        );
         Box::new(SetSlabSecondaryJoistIds {
             slab: self.slab,
             ids: old,
