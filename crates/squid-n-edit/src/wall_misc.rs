@@ -401,24 +401,21 @@ impl EditCommand for SetStoryLevelKind {
     }
 }
 
-/// スラブの一方向伝達方向（`one_way`）変更。逆操作は変更前の値への復元。
-/// 存在しない `FloorRegionId` は Noop。
+/// 床板の一方向伝達方向（`one_way`）変更。逆操作は変更前の値への復元。
+/// 存在しない `SlabId` は Noop。
 pub struct SetSlabOneWay {
-    pub id: FloorRegionId,
+    pub id: SlabId,
     pub one_way: Option<squid_n_core::model::OneWayDir>,
 }
 
 impl EditCommand for SetSlabOneWay {
     fn apply(&self, model: &mut Model) -> Box<dyn EditCommand> {
         let idx = self.id.index();
-        if idx >= model.floor_regions.len() || model.floor_regions[idx].id != self.id {
+        if idx >= model.slabs.len() || model.slabs[idx].id != self.id {
             return Box::new(Noop);
         }
-        let Some(plate) = model.floor_regions[idx].plate.as_mut() else {
-            return Box::new(Noop); // 版なし床領域は分配方向を持たない。
-        };
-        let old = plate.one_way;
-        plate.one_way = self.one_way;
+        let old = model.slabs[idx].plate.one_way;
+        model.slabs[idx].plate.one_way = self.one_way;
         Box::new(SetSlabOneWay {
             id: self.id,
             one_way: old,
@@ -426,7 +423,7 @@ impl EditCommand for SetSlabOneWay {
     }
 
     fn label(&self) -> &str {
-        "スラブ伝達方向変更"
+        "床板伝達方向変更"
     }
 }
 
@@ -458,21 +455,20 @@ impl EditCommand for SetFloorRegionName {
     }
 }
 
-/// 取り付き領域（片持ちスラブ・バルコニー・出隅）の追加。末尾に追加する。
-/// 逆操作は末尾の床領域削除（[`DeleteSlab`]）。
+/// 取り付く床板（片持ちスラブ・バルコニー・出隅）の追加。末尾に追加する。
+/// 逆操作は末尾の床板削除（[`DeleteSlabEntity`]）。
 ///
 /// 取付き線・取付き点が実在しない節点を指す場合は Noop。取付き線の張り出し量は
 /// 符号つきで、取付き線 `nodes[0]`→`nodes[1]` の左側を正とする。
-pub struct AddAttachedFloorRegion {
-    pub name: String,
+pub struct AddAttachedSlab {
     pub anchor: squid_n_core::model::RegionAnchor,
     pub extent: [f64; 2],
-    pub plate: Option<squid_n_core::model::SlabPlate>,
+    pub plate: squid_n_core::model::SlabPlate,
 }
 
-impl EditCommand for AddAttachedFloorRegion {
+impl EditCommand for AddAttachedSlab {
     fn apply(&self, model: &mut Model) -> Box<dyn EditCommand> {
-        use squid_n_core::model::{FloorRegion, RegionAnchor, RegionShape};
+        use squid_n_core::model::{RegionAnchor, Slab, SlabShape};
 
         let nodes_ok = match self.anchor {
             RegionAnchor::Line { nodes, span, .. } => {
@@ -490,51 +486,45 @@ impl EditCommand for AddAttachedFloorRegion {
         if !self.extent[0].is_finite() || !self.extent[1].is_finite() {
             return Box::new(Noop);
         }
-        if let Some(plate) = &self.plate {
-            if !crate::refs::section_ref_ok(model, plate.section)
-                || !crate::refs::joists_ok(model, &plate.joists)
-            {
-                return Box::new(Noop);
-            }
+        if !crate::refs::section_ref_ok(model, self.plate.section) {
+            return Box::new(Noop);
         }
-        let id = FloorRegionId(model.floor_regions.len() as u32);
-        model.floor_regions.push(FloorRegion {
+        let id = SlabId(model.slabs.len() as u32);
+        model.slabs.push(Slab {
             id,
-            name: self.name.clone(),
-            shape: RegionShape::Attached {
+            shape: SlabShape::Attached {
                 anchor: self.anchor,
                 extent: self.extent,
             },
             plate: self.plate.clone(),
-            secondary_joist_ids: Vec::new(),
         });
         Box::new(crate::DeleteSlab { id })
     }
 
     fn label(&self) -> &str {
-        "取り付き領域追加"
+        "取り付く床板追加"
     }
 }
 
-/// 取り付き領域の張り出し量（`extent`）変更。逆操作は変更前の値への復元。
-/// 対象が取り付き領域でない、存在しない `FloorRegionId`、または非有限の張り出し量は Noop。
+/// 取り付く床板の張り出し量（`extent`）変更。逆操作は変更前の値への復元。
+/// 対象が取り付く床板でない、存在しない `SlabId`、または非有限の張り出し量は Noop。
 pub struct SetAttachedExtent {
-    pub id: FloorRegionId,
+    pub id: SlabId,
     pub extent: [f64; 2],
 }
 
 impl EditCommand for SetAttachedExtent {
     fn apply(&self, model: &mut Model) -> Box<dyn EditCommand> {
-        use squid_n_core::model::RegionShape;
+        use squid_n_core::model::SlabShape;
 
         let idx = self.id.index();
-        if idx >= model.floor_regions.len() || model.floor_regions[idx].id != self.id {
+        if idx >= model.slabs.len() || model.slabs[idx].id != self.id {
             return Box::new(Noop);
         }
         if !self.extent[0].is_finite() || !self.extent[1].is_finite() {
             return Box::new(Noop);
         }
-        let RegionShape::Attached { extent, .. } = &mut model.floor_regions[idx].shape else {
+        let SlabShape::Attached { extent, .. } = &mut model.slabs[idx].shape else {
             return Box::new(Noop);
         };
         let old = *extent;
@@ -550,23 +540,23 @@ impl EditCommand for SetAttachedExtent {
     }
 }
 
-/// 取り付き領域の取付き先（`anchor`）変更。逆操作は変更前の値への復元。
-/// 対象が取り付き領域でない、存在しない `FloorRegionId`、および
-/// [`AddAttachedFloorRegion`] と同じ取付き先検証に落ちる場合は Noop。
+/// 取り付く床板の取付き先（`anchor`）変更。逆操作は変更前の値への復元。
+/// 対象が取り付く床板でない、存在しない `SlabId`、および
+/// [`AddAttachedSlab`] と同じ取付き先検証に落ちる場合は Noop。
 pub struct SetAttachedAnchor {
-    pub id: FloorRegionId,
+    pub id: SlabId,
     pub anchor: squid_n_core::model::RegionAnchor,
 }
 
 impl EditCommand for SetAttachedAnchor {
     fn apply(&self, model: &mut Model) -> Box<dyn EditCommand> {
-        use squid_n_core::model::{RegionAnchor, RegionShape};
+        use squid_n_core::model::{RegionAnchor, SlabShape};
 
         let idx = self.id.index();
-        if idx >= model.floor_regions.len() || model.floor_regions[idx].id != self.id {
+        if idx >= model.slabs.len() || model.slabs[idx].id != self.id {
             return Box::new(Noop);
         }
-        if !matches!(model.floor_regions[idx].shape, RegionShape::Attached { .. }) {
+        if !matches!(model.slabs[idx].shape, SlabShape::Attached { .. }) {
             return Box::new(Noop);
         }
         let nodes_ok = match self.anchor {
@@ -581,7 +571,7 @@ impl EditCommand for SetAttachedAnchor {
         if !nodes_ok {
             return Box::new(Noop);
         }
-        let RegionShape::Attached { anchor, .. } = &mut model.floor_regions[idx].shape else {
+        let SlabShape::Attached { anchor, .. } = &mut model.slabs[idx].shape else {
             return Box::new(Noop);
         };
         let old = *anchor;
@@ -597,24 +587,21 @@ impl EditCommand for SetAttachedAnchor {
     }
 }
 
-/// スラブの用途（`usage`。積載荷重プリセット）変更。逆操作は変更前の値への復元。
-/// 存在しない `FloorRegionId` は Noop。
+/// 床板の用途（`usage`。積載荷重プリセット）変更。逆操作は変更前の値への復元。
+/// 存在しない `SlabId` は Noop。
 pub struct SetSlabUsage {
-    pub id: FloorRegionId,
+    pub id: SlabId,
     pub usage: Option<squid_n_core::model::SlabUsage>,
 }
 
 impl EditCommand for SetSlabUsage {
     fn apply(&self, model: &mut Model) -> Box<dyn EditCommand> {
         let idx = self.id.index();
-        if idx >= model.floor_regions.len() || model.floor_regions[idx].id != self.id {
+        if idx >= model.slabs.len() || model.slabs[idx].id != self.id {
             return Box::new(Noop);
         }
-        let Some(plate) = model.floor_regions[idx].plate.as_mut() else {
-            return Box::new(Noop); // 版なし床領域は室用途を持たない。
-        };
-        let old = plate.usage;
-        plate.usage = self.usage;
+        let old = model.slabs[idx].plate.usage;
+        model.slabs[idx].plate.usage = self.usage;
         Box::new(SetSlabUsage {
             id: self.id,
             usage: old,
@@ -622,50 +609,29 @@ impl EditCommand for SetSlabUsage {
     }
 
     fn label(&self) -> &str {
-        "スラブ用途変更"
+        "床板用途変更"
     }
 }
 
-/// スラブの断面（`section`。板厚・コンクリート材料を持つ断面）変更。
-/// `section = Some` で版が無ければ [`SlabPlate`] を挿入する。`section = None` は
-/// `plate = None`（版を外す）。逆操作は変更前の値への復元。存在しない
-/// `FloorRegionId`、および実在しない断面を指す割当は Noop（crate::refs の規約）。
+/// 床板の断面（`section`。板厚・コンクリート材料を持つ断面）変更。
+/// 逆操作は変更前の値への復元。存在しない `SlabId`、および実在しない断面を
+/// 指す割当は Noop（crate::refs の規約）。
 pub struct SetSlabSection {
-    pub id: FloorRegionId,
+    pub id: SlabId,
     pub section: Option<SectionId>,
 }
 
 impl EditCommand for SetSlabSection {
     fn apply(&self, model: &mut Model) -> Box<dyn EditCommand> {
         let idx = self.id.index();
-        if idx >= model.floor_regions.len() || model.floor_regions[idx].id != self.id {
+        if idx >= model.slabs.len() || model.slabs[idx].id != self.id {
             return Box::new(Noop);
         }
         if !crate::refs::section_ref_ok(model, self.section) {
             return Box::new(Noop);
         }
-        if model.floor_regions[idx].plate.is_none() {
-            if self.section.is_none() {
-                return Box::new(Noop);
-            }
-            model.floor_regions[idx].plate = Some(squid_n_core::model::SlabPlate {
-                section: self.section,
-                ..Default::default()
-            });
-            return Box::new(SetSlabSection {
-                id: self.id,
-                section: None,
-            });
-        }
-        let old = model.floor_regions[idx]
-            .plate
-            .as_ref()
-            .and_then(|p| p.section);
-        if self.section.is_none() {
-            model.floor_regions[idx].plate = None;
-        } else if let Some(plate) = model.floor_regions[idx].plate.as_mut() {
-            plate.section = self.section;
-        }
+        let old = model.slabs[idx].plate.section;
+        model.slabs[idx].plate.section = self.section;
         Box::new(SetSlabSection {
             id: self.id,
             section: old,
@@ -673,20 +639,20 @@ impl EditCommand for SetSlabSection {
     }
 
     fn label(&self) -> &str {
-        "スラブ断面変更"
+        "床板断面変更"
     }
 }
 
-/// スラブの小梁（`joists`。二段階伝達の小梁ライン）を全置換する。逆操作は
-/// 変更前の `joists` への復元（`SetLoadCfg` と同様の値置換パターン）。
-/// 存在しない `FloorRegionId`、および実在しない節点・断面を指す小梁は Noop
-/// （crate::refs の規約）。
-pub struct SetSlabJoists {
+/// 床領域の小梁ライン（`joists`。交差小梁の格子解析・二段階伝達用の手入力）を
+/// 全置換する。逆操作は変更前の `joists` への復元（`SetLoadCfg` と同様の値置換
+/// パターン）。存在しない `FloorRegionId`、および実在しない節点・断面を指す
+/// 小梁は Noop（crate::refs の規約）。
+pub struct SetFloorRegionJoists {
     pub id: FloorRegionId,
     pub joists: Vec<squid_n_core::model::JoistLine>,
 }
 
-impl EditCommand for SetSlabJoists {
+impl EditCommand for SetFloorRegionJoists {
     fn apply(&self, model: &mut Model) -> Box<dyn EditCommand> {
         let idx = self.id.index();
         if idx >= model.floor_regions.len() || model.floor_regions[idx].id != self.id {
@@ -695,17 +661,14 @@ impl EditCommand for SetSlabJoists {
         if !crate::refs::joists_ok(model, &self.joists) {
             return Box::new(Noop);
         }
-        let Some(plate) = model.floor_regions[idx].plate.as_mut() else {
-            return Box::new(Noop); // 版なし床領域は小梁ラインを持たない。
-        };
-        let old = std::mem::replace(&mut plate.joists, self.joists.clone());
-        Box::new(SetSlabJoists {
+        let old = std::mem::replace(&mut model.floor_regions[idx].joists, self.joists.clone());
+        Box::new(SetFloorRegionJoists {
             id: self.id,
             joists: old,
         })
     }
 
     fn label(&self) -> &str {
-        "スラブ小梁変更"
+        "床領域小梁ライン変更"
     }
 }

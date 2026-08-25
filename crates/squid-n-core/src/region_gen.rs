@@ -1,4 +1,4 @@
-//! 主架構が囲む閉領域（パネル）の検出。
+//! 主架構が囲む閉領域（床領域の境界）の検出。
 //!
 //! 床領域は「大梁で囲まれた領域ごとに 1 つ」と定める。本モジュールは、その閉領域を
 //! 主架構のトポロジーから求める。壁領域（柱と梁が囲む構面内の閉領域）も同じ面走査で
@@ -23,7 +23,7 @@
 //!
 //! 面走査は、辺どうしが節点でのみ接することを前提とする。節点を共有せずに交差する梁が
 //! あると、検出される区画は実際とずれるが、走査自体はエラーにならず黙って通る。
-//! [`scan_floor_panels`] はその組を [`PanelScan::crossings`] として報告する
+//! [`scan_region_boundaries`] はその組を [`RegionBoundaryScan::crossings`] として報告する
 //! （検出は続行する。モデルの不備として利用者へ知らせるための情報である）。
 //!
 //! # 扱わないもの
@@ -42,9 +42,9 @@ use std::collections::HashMap;
 /// 面走査の対象とする梁の最小長さ [mm]。これ未満は方位角が定まらないため除外する。
 const MIN_EDGE_LEN_MM: f64 = 1.0;
 
-/// 主架構が囲む閉領域（パネル）1 つ。
+/// 主架構が囲む閉領域（床領域の境界）1 つ。
 #[derive(Clone, Debug, PartialEq)]
-pub struct Panel {
+pub struct RegionBoundary {
     /// 面のレベル Z [mm]（構成する節点の Z の平均）。
     pub level: f64,
     /// 境界の節点列（反時計回り。始点は繰り返さない）。
@@ -53,7 +53,7 @@ pub struct Panel {
     pub edges: Vec<ElemId>,
 }
 
-impl Panel {
+impl RegionBoundary {
     /// 境界節点の XY 座標列。節点が引けない場合は `None`。
     fn polygon(&self, model: &Model) -> Option<Vec<[f64; 2]>> {
         self.boundary
@@ -69,9 +69,9 @@ impl Panel {
             .unwrap_or(0.0)
     }
 
-    /// 点 `p`（XY）がこのパネルの内部にあるか。**辺上（[`BOUNDARY_TOL_MM`] 以内）は含めない。**
+    /// 点 `p`（XY）がこの境界の内部にあるか。**辺上（[`BOUNDARY_TOL_MM`] 以内）は含めない。**
     ///
-    /// 版や二次部材をパネルへ割り当てる用途を想定する。辺上の点は隣接パネルの双方に
+    /// 版や二次部材をこの境界へ割り当てる用途を想定する。辺上の点は隣接する境界の双方に
     /// 該当してしまうため含めない（所属を一意に決められるようにする）。
     ///
     /// レイキャストは辺上の点の扱いが定まらない（辺の向きしだいで内側にも外側にもなる）ため、
@@ -83,7 +83,7 @@ impl Panel {
         polygon_contains_strict(&poly, p)
     }
 
-    /// このパネルと同じレベルか（[`crate::geom::LEVEL_TOL_MM`] 以内）。
+    /// この境界と同じレベルか（[`crate::geom::LEVEL_TOL_MM`] 以内）。
     pub fn is_same_level(&self, z: f64) -> bool {
         (self.level - z).abs() <= LEVEL_TOL_MM
     }
@@ -94,7 +94,7 @@ pub const BOUNDARY_TOL_MM: f64 = 1.0;
 
 /// 点 `p`（XY）が多角形の内部にあるか。**辺上（[`BOUNDARY_TOL_MM`] 以内）は含めない。**
 ///
-/// [`Panel::contains`] と同じ規則。床領域の境界多角形へ小梁中点を載せる判定でも使う。
+/// [`RegionBoundary::contains`] と同じ規則。床領域の境界多角形へ小梁中点を載せる判定でも使う。
 pub fn polygon_contains_strict(poly: &[[f64; 2]], p: [f64; 2]) -> bool {
     let n = poly.len();
     if n < 3 {
@@ -155,16 +155,16 @@ struct Edge {
     elem: ElemId,
 }
 
-/// 面走査の結果。パネルに加え、平面グラフとして矛盾がある兆候を持ち帰る。
+/// 面走査の結果。床領域の境界に加え、平面グラフとして矛盾がある兆候を持ち帰る。
 #[derive(Clone, Debug, Default, PartialEq)]
-pub struct PanelScan {
-    /// 検出したパネル。レベルの昇順、同一レベル内は面積の降順。
-    pub panels: Vec<Panel>,
+pub struct RegionBoundaryScan {
+    /// 検出した床領域の境界。レベルの昇順、同一レベル内は面積の降順。
+    pub boundaries: Vec<RegionBoundary>,
     /// 節点を共有せずに交差している水平梁の組。
     ///
     /// 面走査は平面グラフ（辺どうしが節点でのみ接する）を前提とする。交差する梁があると
-    /// 検出されるパネルは実際の区画とずれるが、走査自体はエラーにならず黙って通る。
-    /// **モデルの不備として利用者へ知らせるための情報であり、パネルの検出は続行する。**
+    /// 検出される境界は実際の区画とずれるが、走査自体はエラーにならず黙って通る。
+    /// **モデルの不備として利用者へ知らせるための情報であり、境界の検出は続行する。**
     pub crossings: Vec<(ElemId, ElemId)>,
     /// 閉じずに終わった面走査の数。
     ///
@@ -177,29 +177,29 @@ pub struct PanelScan {
 ///
 /// モデルは変更しない。生成規則はモジュールドキュメントを参照。
 /// 平面グラフとして矛盾がある兆候（交差する梁など）も併せて返す。
-pub fn scan_floor_panels(model: &Model) -> PanelScan {
-    let mut scan = PanelScan::default();
+pub fn scan_region_boundaries(model: &Model) -> RegionBoundaryScan {
+    let mut scan = RegionBoundaryScan::default();
     for (level, edges) in horizontal_beams_by_level(model) {
         scan.crossings.extend(crossing_pairs(model, &edges));
-        let (panels, unclosed) = faces_of_level(model, level, &edges);
-        scan.panels.extend(panels);
+        let (boundaries, unclosed) = faces_of_level(model, level, &edges);
+        scan.boundaries.extend(boundaries);
         scan.unclosed += unclosed;
     }
     scan
 }
 
-/// [`scan_floor_panels`] のパネルだけを取り出す薄いラッパ。
-pub fn generate_floor_panels(model: &Model) -> Vec<Panel> {
-    scan_floor_panels(model).panels
+/// [`scan_region_boundaries`] の境界だけを取り出す薄いラッパ。
+pub fn generate_region_boundaries(model: &Model) -> Vec<RegionBoundary> {
+    scan_region_boundaries(model).boundaries
 }
 
 /// 節点を共有せずに交差している水平大梁の組を、レベルごとに集めて返す。
 ///
 /// 面走査は平面グラフ（辺どうしが節点でのみ接する）を前提とするため、交差する梁があると
 /// 検出される区画が実際とずれる。**モデルの不備として利用者へ知らせるための情報**であり、
-/// パネルの検出自体は続行する（[`scan_floor_panels`] 参照）。
+/// 境界の検出自体は続行する（[`scan_region_boundaries`] 参照）。
 ///
-/// パネルを組まずに交差だけを知りたい場合（診断など）は、面走査を伴わないこちらを使う。
+/// 境界を組まずに交差だけを知りたい場合（診断など）は、面走査を伴わないこちらを使う。
 pub fn crossing_beams(model: &Model) -> Vec<(ElemId, ElemId)> {
     let mut out = Vec::new();
     for (_, edges) in horizontal_beams_by_level(model) {
@@ -328,7 +328,7 @@ fn horizontal_beams_by_level(model: &Model) -> Vec<(f64, Vec<Edge>)> {
 }
 
 /// 1 レベルぶんの平面グラフから内部面を取り出す。返り値は（面, 閉じなかった走査の数）。
-fn faces_of_level(model: &Model, level: f64, edges: &[Edge]) -> (Vec<Panel>, usize) {
+fn faces_of_level(model: &Model, level: f64, edges: &[Edge]) -> (Vec<RegionBoundary>, usize) {
     // 半辺（有向辺）の一覧。同じ節点対に複数の梁があっても、最初の 1 本だけを採る
     // （重複部材は面を増やさない）。
     let mut half: HashMap<(NodeId, NodeId), ElemId> = HashMap::new();
@@ -356,7 +356,7 @@ fn faces_of_level(model: &Model, level: f64, edges: &[Edge]) -> (Vec<Panel>, usi
     }
 
     let mut visited: HashMap<(NodeId, NodeId), bool> = HashMap::new();
-    let mut panels = Vec::new();
+    let mut boundaries = Vec::new();
     let mut unclosed = 0;
     let mut starts: Vec<(NodeId, NodeId)> = half.keys().copied().collect();
     // 走査順を安定させる（HashMap の反復順に依存しない）。
@@ -406,15 +406,15 @@ fn faces_of_level(model: &Model, level: f64, edges: &[Edge]) -> (Vec<Panel>, usi
         if signed_area(&pts) <= 0.0 {
             continue;
         }
-        panels.push(Panel {
+        boundaries.push(RegionBoundary {
             level,
             boundary,
             edges: face_edges,
         });
     }
 
-    panels.sort_by(|a, b| b.area(model).total_cmp(&a.area(model)));
-    (panels, unclosed)
+    boundaries.sort_by(|a, b| b.area(model).total_cmp(&a.area(model)));
+    (boundaries, unclosed)
 }
 
 /// `origin` から節点 `to` を見た方位角（-π..π）。節点が引けない場合は端に寄せる。
@@ -498,22 +498,22 @@ mod tests {
     }
 
     #[test]
-    fn test_single_panel() {
+    fn test_single_boundary() {
         let model = grid(1, 1, 4000.0, 0.0);
-        let panels = generate_floor_panels(&model);
-        assert_eq!(panels.len(), 1, "1 区画なら面は 1 つ");
-        assert_eq!(panels[0].boundary.len(), 4);
-        assert!((panels[0].area(&model) - 4000.0 * 4000.0).abs() < 1.0);
-        assert!((panels[0].level - 0.0).abs() < 1e-9);
-        assert_eq!(panels[0].edges.len(), 4, "境界の梁が辺と同数");
+        let boundaries = generate_region_boundaries(&model);
+        assert_eq!(boundaries.len(), 1, "1 区画なら面は 1 つ");
+        assert_eq!(boundaries[0].boundary.len(), 4);
+        assert!((boundaries[0].area(&model) - 4000.0 * 4000.0).abs() < 1.0);
+        assert!((boundaries[0].level - 0.0).abs() < 1e-9);
+        assert_eq!(boundaries[0].edges.len(), 4, "境界の梁が辺と同数");
     }
 
     #[test]
-    fn test_grid_panels() {
+    fn test_grid_boundaries() {
         let model = grid(3, 2, 3000.0, 4000.0);
-        let panels = generate_floor_panels(&model);
-        assert_eq!(panels.len(), 6, "3×2 の格子は 6 面");
-        for p in &panels {
+        let boundaries = generate_region_boundaries(&model);
+        assert_eq!(boundaries.len(), 6, "3×2 の格子は 6 面");
+        for p in &boundaries {
             assert!((p.area(&model) - 3000.0 * 3000.0).abs() < 1.0);
             assert!((p.level - 4000.0).abs() < 1e-9);
         }
@@ -523,7 +523,7 @@ mod tests {
     #[test]
     fn test_boundary_is_counter_clockwise() {
         let model = grid(1, 1, 4000.0, 0.0);
-        let p = &generate_floor_panels(&model)[0];
+        let p = &generate_region_boundaries(&model)[0];
         let pts: Vec<[f64; 2]> = p
             .boundary
             .iter()
@@ -537,14 +537,14 @@ mod tests {
 
     /// 片持ち梁（行き止まりの辺）は面を作らず、囲まれた面の数も変えない。
     #[test]
-    fn test_dangling_beam_makes_no_panel() {
+    fn test_dangling_beam_makes_no_boundary() {
         let mut model = grid(1, 1, 4000.0, 0.0);
         model.nodes.push(node(4, 6000.0, 0.0, 0.0));
         let eid = model.elements.len() as u32;
         model.elements.push(beam(eid, 1, 4)); // 節点 1 から外へ跳ね出す片持ち梁
-        let panels = generate_floor_panels(&model);
-        assert_eq!(panels.len(), 1, "片持ち梁は面を作らない");
-        assert!((panels[0].area(&model) - 4000.0 * 4000.0).abs() < 1.0);
+        let boundaries = generate_region_boundaries(&model);
+        assert_eq!(boundaries.len(), 1, "片持ち梁は面を作らない");
+        assert!((boundaries[0].area(&model) - 4000.0 * 4000.0).abs() < 1.0);
     }
 
     /// レベルが違う梁は別の平面グラフとして扱う。
@@ -569,10 +569,13 @@ mod tests {
                 base_nodes + e.nodes[1].0,
             ));
         }
-        let panels = generate_floor_panels(&model);
-        assert_eq!(panels.len(), 2, "レベルごとに 1 面ずつ");
-        assert!((panels[0].level - 0.0).abs() < 1e-9, "レベルの昇順で返る");
-        assert!((panels[1].level - 4000.0).abs() < 1e-9);
+        let boundaries = generate_region_boundaries(&model);
+        assert_eq!(boundaries.len(), 2, "レベルごとに 1 面ずつ");
+        assert!(
+            (boundaries[0].level - 0.0).abs() < 1e-9,
+            "レベルの昇順で返る"
+        );
+        assert!((boundaries[1].level - 4000.0).abs() < 1e-9);
     }
 
     /// 柱・ブレース・傾斜梁は境界に使わない。
@@ -586,7 +589,7 @@ mod tests {
         // 傾斜梁（両端の Z が違う）。
         model.nodes.push(node(5, 4000.0, 0.0, 2000.0));
         model.elements.push(beam(eid + 1, 1, 5));
-        assert_eq!(generate_floor_panels(&model).len(), 1);
+        assert_eq!(generate_region_boundaries(&model).len(), 1);
     }
 
     /// 節点を共有せずに交差する梁は、モデルの不備として報告する。
@@ -602,11 +605,11 @@ mod tests {
         model.elements.push(beam(eid, 4, 5));
         model.elements.push(beam(eid + 1, 6, 7));
 
-        let scan = scan_floor_panels(&model);
+        let scan = scan_region_boundaries(&model);
         assert_eq!(scan.crossings.len(), 1, "交差する 1 組を報告する");
         assert_eq!(scan.unclosed, 0, "走査自体は閉じる");
-        // 交差があってもパネルの検出は続行する（外周の 1 面は取れる）。
-        assert_eq!(scan.panels.len(), 1);
+        // 交差があっても境界の検出は続行する（外周の 1 面は取れる）。
+        assert_eq!(scan.boundaries.len(), 1);
     }
 
     /// 節点を共有せずに一方の端点が他方の途中へ載る梁（T 字）も報告する。
@@ -619,7 +622,7 @@ mod tests {
         let eid = model.elements.len() as u32;
         model.elements.push(beam(eid, 4, 5));
 
-        let scan = scan_floor_panels(&model);
+        let scan = scan_region_boundaries(&model);
         assert_eq!(scan.crossings.len(), 1);
     }
 
@@ -627,9 +630,9 @@ mod tests {
     #[test]
     fn test_shared_node_is_not_a_crossing() {
         let model = grid(2, 2, 3000.0, 0.0);
-        let scan = scan_floor_panels(&model);
+        let scan = scan_region_boundaries(&model);
         assert!(scan.crossings.is_empty(), "{:?}", scan.crossings);
-        assert_eq!(scan.panels.len(), 4);
+        assert_eq!(scan.boundaries.len(), 4);
         assert_eq!(scan.unclosed, 0);
     }
 
@@ -646,21 +649,21 @@ mod tests {
         let eid = model.elements.len() as u32;
         model.elements.push(beam(eid, 4, 5));
         assert_eq!(
-            scan_floor_panels(&model).crossings.len(),
+            scan_region_boundaries(&model).crossings.len(),
             1,
             "5mm のずれは交差として報告する"
         );
 
         // 100mm 離れていれば、突き当たっているとはみなさない。
         model.nodes[4].coord[1] = 100.0;
-        assert!(scan_floor_panels(&model).crossings.is_empty());
+        assert!(scan_region_boundaries(&model).crossings.is_empty());
     }
 
-    /// パネルの内外判定（辺上は内部に含めない）。
+    /// 境界の内外判定（辺上は内部に含めない）。
     #[test]
-    fn test_panel_contains() {
+    fn test_region_boundary_contains() {
         let model = grid(1, 1, 4000.0, 0.0);
-        let p = &generate_floor_panels(&model)[0];
+        let p = &generate_region_boundaries(&model)[0];
         assert!(p.contains(&model, [2000.0, 2000.0]), "内部");
         assert!(!p.contains(&model, [5000.0, 2000.0]), "外部");
         assert!(!p.contains(&model, [2000.0, 0.0]), "辺上は含めない");
@@ -670,7 +673,7 @@ mod tests {
 
     /// L 形（凹多角形）の面も 1 つの面として取れる。
     #[test]
-    fn test_concave_panel() {
+    fn test_concave_boundary() {
         // 2×2 の格子から 1 区画ぶんの梁を落として L 形の面を作る。
         let mut model = Model::default();
         let pts = [
@@ -691,10 +694,10 @@ mod tests {
         for (k, (i, j)) in ring.iter().enumerate() {
             model.elements.push(beam(k as u32, *i, *j));
         }
-        let panels = generate_floor_panels(&model);
-        assert_eq!(panels.len(), 1, "L 形でも面は 1 つ");
+        let boundaries = generate_region_boundaries(&model);
+        assert_eq!(boundaries.len(), 1, "L 形でも面は 1 つ");
         // 面積 = 8000×4000 + 4000×4000 = 48,000,000 mm²
-        assert!((panels[0].area(&model) - 48.0e6).abs() < 1.0);
-        assert_eq!(panels[0].boundary.len(), 7);
+        assert!((boundaries[0].area(&model) - 48.0e6).abs() < 1.0);
+        assert_eq!(boundaries[0].boundary.len(), 7);
     }
 }

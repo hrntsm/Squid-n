@@ -1,15 +1,283 @@
-//! 床版（スラブ）に関わる値の型。
+//! 床板（スラブ）。
 //!
-//! 版そのもの（[`SlabPlate`]）と床領域（[`FloorRegion`]）は [`super::region`] にある。
+//! 床領域（[`FloorRegion`]、[`super::region`]）は大梁の 1 スパン区画そのもので、
+//! 版の仕様は持たない。版の仕様（厚さ・材料・仕上げ荷重・室用途）は本モジュールの
+//! [`Slab`] が持つ。1 つの床領域は、区画内が小梁でさらに細かい打設単位に
+//! 分かれていれば複数の [`Slab`] を持ちうる（[`FloorRegion::slab_ids`]）。
+//! 片持ちスラブ・バルコニー・出隅はどの床領域からも参照されない、独立した [`Slab`]
+//! として存在する。
 //!
+//! - [`Slab`] — 床板本体（形状＋版仕様）。
+//! - [`SlabShape`] — 床板の形（大梁または小梁で囲まれた領域 / 主架構に取り付く領域）。
+//! - [`SlabPlate`] — 版の仕様（断面・仕上げ荷重・室用途・分配方法）。
 //! - [`DistributionMethod`] — 床荷重の分配方法。
-//! - [`JoistLine`] — 小梁ライン。
+//! - [`JoistLine`] — 交差小梁の格子解析用の小梁ライン（[`FloorRegion::joists`] が持つ）。
 //! - [`AreaLoad`] — 面荷重。
 //! - [`OneWayDir`] — 一方向スラブの伝達方向。
 //! - [`LoadPurpose`] — 積載荷重の用途（床用／骨組用／地震用。令85条1項）。
 //! - [`SlabUsage`] — 室用途（令別表第1 の積載荷重プリセット）。
 
 use super::*;
+
+/// 床板の版（仕様）。
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct SlabPlate {
+    /// スラブ断面（符号・板厚・コンクリート材料）。
+    ///
+    /// **板厚と自重はこの断面から解決する**（[`Model::slab_plate_thickness`]・
+    /// [`Model::slab_self_weight_intensity`]）。板厚を床板と断面の両方に持たせると
+    /// 同じ数値の持ち主が 2 つになるため、床板側は断面を指すだけとする。
+    ///
+    /// `None` は未割当。板厚も自重も定まらないため、解析前チェックが止める
+    /// （もっともらしい既定厚で補うと、床の自重が過小なまま長期応力が出る）。
+    #[serde(default)]
+    pub section: Option<crate::ids::SectionId>,
+    /// 仕上げ等の面荷重。
+    #[serde(default)]
+    pub loads: Vec<AreaLoad>,
+    /// 室用途（令別表第1）。`Some` のとき積載荷重（LL）を用途別に自動算定する。
+    /// `None` は積載荷重を持たない（`loads` の固定荷重のみ）。
+    #[serde(default)]
+    pub usage: Option<SlabUsage>,
+    /// 床荷重の分配方法。
+    pub method: DistributionMethod,
+    /// 一方向スラブの伝達方向。`None` は境界辺 0・2 が負担する既定。
+    #[serde(default)]
+    pub one_way: Option<OneWayDir>,
+}
+
+impl SlabPlate {
+    /// 仕上げ等の面荷重強度 [N/mm²]（`loads` の合算）。**版自身の自重は含まない。**
+    pub fn finish_intensity(&self) -> f64 {
+        self.loads.iter().map(|l| l.value).sum()
+    }
+
+    /// 用途別の積載荷重（LL）の面荷重強度 [N/mm²]。`usage` 未設定なら 0。
+    pub fn live_intensity(&self, purpose: LoadPurpose) -> f64 {
+        self.usage.map(|u| u.live_load(purpose)).unwrap_or(0.0)
+    }
+}
+
+/// 床板の形。
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub enum SlabShape {
+    /// 大梁または小梁で囲まれた領域。境界は反時計回りの節点列（始点は繰り返さない）。
+    Enclosed { boundary: Vec<NodeId> },
+    /// 主架構に取り付く領域（片持ち・バルコニー・出隅）。
+    Attached {
+        /// 取付き先。荷重の出口は取付き先の種類ごとに決まる（[`RegionAnchor`] 参照）。
+        anchor: RegionAnchor,
+        /// 張り出し量 [mm]。意味は取付き先の種類で決まる（[`RegionAnchor`] 参照）。
+        extent: [f64; 2],
+    },
+}
+
+/// 床板。大梁または小梁で囲まれた版、または主架構に取り付く版
+/// （片持ち・バルコニー・出隅）ごとに 1 つ。
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct Slab {
+    /// 床板 ID（`Model::slabs` の配列インデックスと一致すること）。
+    pub id: SlabId,
+    pub shape: SlabShape,
+    pub plate: SlabPlate,
+}
+
+impl Slab {
+    /// 取り付く床板か。
+    pub fn is_attached(&self) -> bool {
+        matches!(self.shape, SlabShape::Attached { .. })
+    }
+
+    /// 境界の節点列。**大梁または小梁で囲まれた床板のみ**（取り付く床板は
+    /// 自由端に節点を持たないため `None`）。
+    pub fn boundary_nodes(&self) -> Option<&[NodeId]> {
+        match &self.shape {
+            SlabShape::Enclosed { boundary } => Some(boundary),
+            SlabShape::Attached { .. } => None,
+        }
+    }
+
+    /// 境界多角形の座標列 [mm]。取り付く床板は取付き先と張り出し量から算出する。
+    /// 節点が引けない（陳腐化した参照）場合は `None`。
+    pub fn boundary_coords(&self, model: &Model) -> Option<Vec<[f64; 3]>> {
+        match &self.shape {
+            SlabShape::Enclosed { boundary } => boundary
+                .iter()
+                .map(|n| model.nodes.get(n.index()).map(|n| n.coord))
+                .collect(),
+            SlabShape::Attached { anchor, extent } => match anchor {
+                RegionAnchor::Line { nodes, span, .. } => {
+                    let a = model.nodes.get(nodes[0].index())?.coord;
+                    let b = model.nodes.get(nodes[1].index())?.coord;
+                    let lerp = |t: f64| {
+                        [
+                            a[0] + (b[0] - a[0]) * t,
+                            a[1] + (b[1] - a[1]) * t,
+                            a[2] + (b[2] - a[2]) * t,
+                        ]
+                    };
+                    let p0 = lerp(span[0]);
+                    let p1 = lerp(span[1]);
+                    let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+                    let len = (dx * dx + dy * dy).sqrt();
+                    if len <= f64::EPSILON {
+                        return None;
+                    }
+                    // 取付き線の左向き単位法線（符号つき張り出し量の正の向き）。
+                    let n = [-dy / len, dx / len];
+                    Some(vec![
+                        p0,
+                        p1,
+                        [p1[0] + n[0] * extent[1], p1[1] + n[1] * extent[1], p1[2]],
+                        [p0[0] + n[0] * extent[0], p0[1] + n[1] * extent[0], p0[2]],
+                    ])
+                }
+                RegionAnchor::Point(nid) => {
+                    let p = model.nodes.get(nid.index())?.coord;
+                    Some(vec![
+                        p,
+                        [p[0] + extent[0], p[1], p[2]],
+                        [p[0] + extent[0], p[1] + extent[1], p[2]],
+                        [p[0], p[1] + extent[1], p[2]],
+                    ])
+                }
+            },
+        }
+    }
+
+    /// 境界の辺 `k` の両端節点。荷重分配の結果（`LoadTarget::Edge`）を主架構の梁へ
+    /// 結びつけるために使う。
+    ///
+    /// 大梁または小梁で囲まれた床板は `boundary[k]`→`boundary[k+1]`、取り付く床板
+    /// （線）は辺 0 が取付き線そのもの（それ以外の辺は自由端なので `None`）。
+    /// 取り付く床板（点）は辺を持たない。
+    pub fn edge_nodes(&self, k: usize) -> Option<[NodeId; 2]> {
+        match &self.shape {
+            SlabShape::Enclosed { boundary } => {
+                let n = boundary.len();
+                (n >= 3 && k < n).then(|| [boundary[k], boundary[(k + 1) % n]])
+            }
+            SlabShape::Attached { anchor, .. } => match anchor {
+                RegionAnchor::Line { nodes, .. } if k == 0 => Some(*nodes),
+                _ => None,
+            },
+        }
+    }
+
+    /// 床板を代表する節点。大梁または小梁で囲まれた床板は境界の先頭、
+    /// 取り付く床板は取付き先の節点。
+    pub fn reference_node(&self) -> Option<NodeId> {
+        match &self.shape {
+            SlabShape::Enclosed { boundary } => boundary.first().copied(),
+            SlabShape::Attached { anchor, .. } => Some(match anchor {
+                RegionAnchor::Line { nodes, .. } => nodes[0],
+                RegionAnchor::Point(n) => *n,
+            }),
+        }
+    }
+
+    /// 床板のレベル Z [mm]（境界座標の Z の平均）。境界が引けなければ `None`。
+    pub fn level(&self, model: &Model) -> Option<f64> {
+        let coords = self.boundary_coords(model)?;
+        if coords.is_empty() {
+            return None;
+        }
+        Some(coords.iter().map(|c| c[2]).sum::<f64>() / coords.len() as f64)
+    }
+
+    /// 分配方法。
+    pub fn method(&self) -> DistributionMethod {
+        self.plate.method
+    }
+
+    /// 一方向スラブの伝達方向。
+    pub fn one_way(&self) -> Option<OneWayDir> {
+        self.plate.one_way
+    }
+
+    /// 用途別の積載荷重（LL）の面荷重強度 [N/mm²]。用途未設定は 0。
+    pub fn live_intensity(&self, purpose: LoadPurpose) -> f64 {
+        self.plate.live_intensity(purpose)
+    }
+
+    /// 版の断面（未割当は `None`）。
+    pub fn section(&self) -> Option<crate::ids::SectionId> {
+        self.plate.section
+    }
+
+    /// 室用途（未設定は `None`）。
+    pub fn usage(&self) -> Option<SlabUsage> {
+        self.plate.usage
+    }
+
+    /// 取り付く床板の設計スパン [mm]（張り出し量の絶対値の大きい方）。
+    /// 大梁または小梁で囲まれた床板、値が非有限、または 0 以下のときは `None`。
+    pub fn attached_design_span(&self) -> Option<f64> {
+        match &self.shape {
+            SlabShape::Enclosed { .. } => None,
+            SlabShape::Attached { extent, .. } => {
+                let span = extent[0].abs().max(extent[1].abs());
+                (span.is_finite() && span > 0.0).then_some(span)
+            }
+        }
+    }
+}
+
+impl Model {
+    /// 床板 ID から床板を引く。存在しなければ `None`。
+    pub fn slab(&self, id: SlabId) -> Option<&Slab> {
+        match self.slabs.get(id.index()) {
+            Some(s) if s.id == id => Some(s),
+            _ => self.slabs.iter().find(|s| s.id == id),
+        }
+    }
+
+    /// 床板の版へ割り当てた断面。未割当・ダングリングは `None`。
+    pub fn slab_section(&self, slab: &Slab) -> Option<&Section> {
+        slab.section()
+            .and_then(|sid| self.sections.get(sid.index()))
+    }
+
+    /// 版の板厚 [mm]。断面の [`Section::thickness`] をそのまま返す。
+    ///
+    /// 断面が未割当、または断面が板厚を持たない（板状でない形状を割り当てた）場合は `None`。
+    /// **建物一律の [`Model::slab_thickness`] へは退かない**。あちらは「剛性計算に見込む
+    /// スラブ厚」であり、既定の 0 は「スラブ協力幅による梁剛性増大を見込まない」を意味する
+    /// 別概念のためである。
+    pub fn slab_plate_thickness(&self, slab: &Slab) -> Option<f64> {
+        self.slab_section(slab)
+            .and_then(|s| s.thickness)
+            .filter(|t| *t > 0.0)
+    }
+
+    /// 版の自重の面荷重強度 [N/mm²]（板厚 × 断面の主材料の単位体積重量）。
+    ///
+    /// 断面または断面の主材料が未割当のときは `None`。自重を面荷重として焼き込まず
+    /// 毎回算定するのは、板厚や材料を変えたときに自重が追随しないという食い違いを
+    /// 作らないためである。
+    pub fn slab_self_weight_intensity(&self, slab: &Slab) -> Option<f64> {
+        let t = self.slab_plate_thickness(slab)?;
+        let mat = self
+            .slab_section(slab)
+            .and_then(|s| s.material)
+            .and_then(|mid| self.materials.get(mid.index()))?;
+        Some(t * mat.density * crate::units::GRAVITY_MM_S2)
+    }
+
+    /// 固定荷重（DL）の面荷重強度 [N/mm²]（版の自重 ＋ 仕上げ等）。
+    ///
+    /// 自重が算定できない版（断面・主材料が未割当）は仕上げ分だけを返す。
+    /// 解析前チェックがこの状態を止めるため、ここでは既定厚で補わない。
+    pub fn slab_dead_intensity(&self, slab: &Slab) -> f64 {
+        self.slab_self_weight_intensity(slab).unwrap_or(0.0) + slab.plate.finish_intensity()
+    }
+
+    /// 用途に応じた合成面荷重強度 [N/mm²]（固定 DL ＋ 積載 LL(purpose)）。
+    /// 長期骨組解析は `Frame`、地震用重量は `Seismic`、床・小梁設計は `Floor`。
+    pub fn slab_intensity(&self, slab: &Slab, purpose: LoadPurpose) -> f64 {
+        self.slab_dead_intensity(slab) + slab.plate.live_intensity(purpose)
+    }
+}
 
 /// 床荷重の分配方法。既定は三角形・台形分配。
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]

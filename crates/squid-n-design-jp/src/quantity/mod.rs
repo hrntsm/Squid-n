@@ -27,8 +27,8 @@ mod tests;
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
-use squid_n_core::ids::{ElemId, FloorRegionId};
-use squid_n_core::model::{ElementData, ElementKind, FloorRegion, Model};
+use squid_n_core::ids::{ElemId, SlabId};
+use squid_n_core::model::{ElementData, ElementKind, Model, Slab};
 use squid_n_core::section_shape::{RcRebar, SectionShape};
 
 use member::{BeamBarEnd, Haunch};
@@ -179,8 +179,8 @@ pub struct SteelItem {
 pub struct MemberQuantity {
     /// 対象要素（スラブ・雑壁は None）。
     pub elem: Option<ElemId>,
-    /// 対象スラブ（部材・雑壁は None）。
-    pub slab: Option<FloorRegionId>,
+    /// 対象床板（部材・雑壁は None）。
+    pub slab: Option<SlabId>,
     /// 符号（断面名等）。
     pub label: String,
     /// 所属階名（未設定は "-"）。
@@ -477,16 +477,13 @@ pub fn compute_quantity_takeoff(model: &Model, cfg: &QuantityCfg) -> QuantityTak
     }
 
     let mut slab_edges: HashMap<(u32, u32), (u32, f64)> = HashMap::new();
-    for slab in &model.floor_regions {
-        // 型枠控除は版あり領域（`region_has_slab`）の辺だけ。版なし・断面未割当は控除しない。
-        // 厚さは `region_thickness`。欠落時のみ建物一律 `slab_thickness`（通常は到達しない）。
-        if !model.region_has_slab(slab) {
+    for slab in &model.slabs {
+        // 型枠控除は板厚が定まる床板（`slab_plate_thickness`）の辺だけ。断面未割当は控除しない。
+        // 厚さは `slab_plate_thickness`。欠落時のみ建物一律 `slab_thickness`（通常は到達しない）。
+        let Some(t) = model.slab_plate_thickness(slab) else {
             continue;
-        }
-        let t = model
-            .region_thickness(slab)
-            .unwrap_or(model.slab_thickness)
-            .max(0.0);
+        };
+        let t = t.max(0.0);
         let mut add_edge = |a: u32, b: u32| {
             let e = slab_edges.entry((a.min(b), a.max(b))).or_insert((0, 0.0));
             e.0 += 1;
@@ -540,7 +537,7 @@ pub fn compute_quantity_takeoff(model: &Model, cfg: &QuantityCfg) -> QuantityTak
         }
     }
 
-    for slab in &model.floor_regions {
+    for slab in &model.slabs {
         if let Some(item) = slab_quantity(&ctx, slab) {
             out.items.push(item);
         }
@@ -584,7 +581,7 @@ fn build_notes(model: &Model) -> Vec<String> {
         "鉄筋継手は個所数（圧接個所数）として集計する（梁 0.5 個所/本＋5m 毎 0.5、柱 1 個所/本＋7m 毎 1）。".to_string(),
         "鉄骨継手（部材付帯情報の継手位置）は位置・種別の保持のみで、プレート・ボルト重量は計上しない。".to_string(),
     ];
-    if !model.floor_regions.is_empty() {
+    if !model.slabs.is_empty() {
         notes.push(
             "床厚は床ごとに割り当てた断面の板厚による（デッキスラブのデッキ高さ控除は未対応）。"
                 .to_string(),
@@ -1158,18 +1155,16 @@ fn wall_quantity(ctx: &Ctx, elem: &ElementData) -> Option<MemberQuantity> {
 }
 
 /// 床（一般・片持ち・出隅・入隅）の数量。
-fn slab_quantity(ctx: &Ctx, slab: &FloorRegion) -> Option<MemberQuantity> {
+fn slab_quantity(ctx: &Ctx, slab: &Slab) -> Option<MemberQuantity> {
     let model = ctx.model;
-    // 版なし床領域（吹抜け・繋ぎ小梁だけの領域）はコンクリート数量を持たない。
-    slab.plate.as_ref()?;
     let pts: Vec<[f64; 3]> = slab.boundary_coords(model)?;
     if pts.len() < 3 {
         return None;
     }
     let area = polygon_area_3d(&pts);
-    // 領域ごとの板厚は断面から解決する（建物一律の `slab_thickness` は
+    // 床板ごとの板厚は断面から解決する（建物一律の `slab_thickness` は
     // 剛性計算に見込む厚さであり、実際の板厚とは別概念）。
-    let t = model.region_thickness(slab).unwrap_or(0.0);
+    let t = model.slab_plate_thickness(slab).unwrap_or(0.0);
     // 主架構に取り付く領域（片持ち・バルコニー・出隅）は片持ち床として拾う。
     let category = if slab.is_attached() {
         MemberCategory::CantileverSlab

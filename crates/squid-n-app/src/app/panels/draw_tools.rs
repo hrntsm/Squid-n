@@ -130,7 +130,6 @@ impl App {
                         &mut self.model,
                         Box::new(squid_n_edit::AddSlab {
                             boundary,
-                            joists: Vec::new(),
                             loads: Vec::new(),
                             method: squid_n_core::model::DistributionMethod::TriTrapezoid,
                             usage: self.slab_draft.usage,

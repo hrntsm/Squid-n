@@ -31,3 +31,4 @@ id_newtype!(LoadCaseId);
 id_newtype!(VibrationCaseId);
 id_newtype!(LumpedVibrationCaseId);
 id_newtype!(SecondaryMemberId);
+id_newtype!(SlabId);

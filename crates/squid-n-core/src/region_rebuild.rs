@@ -1,170 +1,156 @@
 //! 床領域の作り直し（取り込み後・解析前・荷重同期前）。
 //!
-//! 大梁パネルから囲まれ領域を再生成し、版・名前を引き継ぎ、片持ちを変換し、
-//! 小梁を D7 で入れ直し、参照 0 の節点を削除する（申し送り Step 3 / D7 D10 D20 D21）。
-//! Attached 領域は消さない。
+//! 大梁の区画（[`crate::region_gen::RegionBoundary`]）から床領域（[`FloorRegion`]、
+//! 大梁の 1 スパン区画）を再生成し、既存の床領域と重心・レベルで対応付けて
+//! 名前・格子解析用の小梁ラインを引き継ぐ。**床板（[`Slab`]）は畳まない**。
+//! 各床板の帰属（どの床領域に属すか）を、床板の重心が入る床領域へ付け替えるだけである
+//! （申し送り Step 3 改訂 / D7・D10・D20・D21）。取り付く床板（片持ち・バルコニー等）は
+//! どの床領域からも参照されない独立した床板のまま、素通しする。
 
 use crate::dof::Dof6Mask;
 use crate::geom::{LEVEL_TOL_MM, MEMBER_AXIS_TOL_MM};
 use crate::ids::{FloorRegionId, NodeId};
 use crate::model::{
-    Constraint, ElementKind, FloorRegion, LoadTransfer, Model, RegionAnchor, RegionShape,
-    SecondaryMemberKind,
+    Constraint, ElementKind, FloorRegion, LoadTransfer, Model, RegionAnchor, SecondaryMemberKind,
+    Slab, SlabShape,
 };
 use crate::region_gen::{
-    generate_floor_panels, polygon_contains_strict, scan_floor_panels, BOUNDARY_TOL_MM,
+    generate_region_boundaries, polygon_contains_strict, scan_region_boundaries, BOUNDARY_TOL_MM,
 };
 
-/// 重心照合で面積が近いとみなす相対許容（新旧パネルの面積比）。
+/// 重心照合で面積が近いとみなす相対許容（新旧区画の面積比）。
 pub const CENTROID_MATCH_AREA_REL: f64 = 1e-3;
 
 /// [`rebuild_floor_regions`] の件数報告。
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct FloorRegionRebuildReport {
-    pub enclosed: usize,
-    pub attached_kept: usize,
-    pub attached_converted: usize,
+    /// 検出した床領域（大梁の区画）の数。
+    pub regions: usize,
+    /// 旧床領域から名前・小梁ラインを引き継いだ数。
     pub inherited: usize,
-    pub folded_panels: usize,
-    pub new_plateless: usize,
-    pub unmatched_old_enclosed: usize,
-    pub mixed_plate_panels: usize,
-    pub unassigned_plates: usize,
+    /// 対応する旧床領域が見つからなかった新規区画の数。
+    pub new_regions: usize,
+    /// 重心が新しい区画に入らなかった旧床領域（名前・小梁ラインを引き継げなかった）の数。
+    pub unmatched_old_regions: usize,
+    /// 床領域へ帰属し直した床板の数。
+    pub slabs_assigned: usize,
+    /// どの床領域にも収まらず、取り付く床板へ変換した数。
+    pub slabs_converted_to_attached: usize,
+    /// どの床領域にも収まらず、変換もできなかった床板の数（警告対象。削除しない）。
+    pub unassigned_slabs: usize,
+    /// 中点がちょうど 1 つの床領域に厳密内包されなかった小梁の本数。
     pub unassigned_joists: usize,
+    /// 参照が 0 になり削除した節点の数。
     pub deleted_nodes: usize,
 }
 
-/// 囲まれ領域をパネルから作り直し、版・名前を引き継ぎ、片持ち変換し、
-/// 小梁を D7 で入れ直し、参照 0 節点を削除する。Attached は消さない。
+/// 床領域を大梁の区画から作り直し、名前・小梁ラインを引き継ぎ、床板の帰属を
+/// 付け替え、小梁を D7 で入れ直し、参照 0 節点を削除する。
+///
+/// 床板そのもの（`model.slabs`）は畳まない。どの床領域にも収まらない床板は、
+/// 1 辺が大梁に全長覆われていれば取り付く床板へ変換し（D20）、それもできなければ
+/// 帰属なしのまま残す（警告。落とさない）。
 pub fn rebuild_floor_regions(model: &mut Model) -> FloorRegionRebuildReport {
-    let scan = scan_floor_panels(model);
+    let scan = scan_region_boundaries(model);
     let old_regions = std::mem::take(&mut model.floor_regions);
-    let mut old_attached = Vec::new();
-    let mut old_enclosed = Vec::new();
-    for r in old_regions {
-        match &r.shape {
-            RegionShape::Attached { .. } => old_attached.push(r),
-            RegionShape::Enclosed { .. } => old_enclosed.push(r),
-        }
-    }
-    let attached_kept = old_attached.len();
+    let mut report = FloorRegionRebuildReport::default();
 
-    let mut owned: Vec<Vec<usize>> = vec![Vec::new(); scan.panels.len()];
-    let mut assigned = vec![false; old_enclosed.len()];
-    for (oi, old) in old_enclosed.iter().enumerate() {
-        let Some((cxy, z, _)) = enclosed_centroid(model, old) else {
-            continue;
-        };
-        if let Some(pi) = scan
-            .panels
+    // 1. 新しい床領域を区画ごとに作り、旧床領域と重心・レベルで対応付けて
+    //    名前・小梁ラインを引き継ぐ（D10）。
+    let mut matched_old = vec![false; old_regions.len()];
+    let mut new_regions: Vec<FloorRegion> = Vec::with_capacity(scan.boundaries.len());
+    for rb in &scan.boundaries {
+        let mut region = FloorRegion::new(FloorRegionId(0), rb.boundary.clone());
+        let rb_area = rb.area(model);
+        if let Some((oi, old_area)) = old_regions
             .iter()
             .enumerate()
-            .filter(|(_, p)| p.is_same_level(z) && p.contains(model, cxy))
-            .min_by(|(ia, pa), (ib, pb)| {
-                pa.area(model)
-                    .total_cmp(&pb.area(model))
-                    .then_with(|| ia.cmp(ib))
+            .filter(|(oi, _)| !matched_old[*oi])
+            .filter_map(|(oi, old)| {
+                let (cxy, z, area) = boundary_centroid_area(model, &old.boundary)?;
+                (rb.is_same_level(z) && rb.contains(model, cxy)).then_some((oi, area))
             })
-            .map(|(i, _)| i)
+            .min_by(|(_, a), (_, b)| a.total_cmp(b))
         {
-            owned[pi].push(oi);
-            assigned[oi] = true;
-        }
-    }
-
-    let mut report = FloorRegionRebuildReport {
-        attached_kept,
-        ..FloorRegionRebuildReport::default()
-    };
-
-    let mut new_regions = Vec::new();
-    for (pi, panel) in scan.panels.iter().enumerate() {
-        let mut region = FloorRegion::enclosed(FloorRegionId(0), panel.boundary.clone());
-        match owned[pi].as_slice() {
-            [] => {
-                report.new_plateless += 1;
+            matched_old[oi] = true;
+            let denom = rb_area.abs().max(f64::EPSILON);
+            if (old_area - rb_area).abs() / denom < CENTROID_MATCH_AREA_REL {
+                region.name = old_regions[oi].name.clone();
+                region.joists = old_regions[oi].joists.clone();
+                report.inherited += 1;
+            } else {
+                report.new_regions += 1;
             }
-            [only] => {
-                let old = &old_enclosed[*only];
-                region.plate = old.plate.clone();
-                region.name = old.name.clone();
-                let panel_a = panel.area(model);
-                let old_a = enclosed_centroid(model, old)
-                    .map(|(_, _, a)| a)
-                    .unwrap_or(0.0);
-                let denom = panel_a.abs().max(f64::EPSILON);
-                if (old_a - panel_a).abs() / denom < CENTROID_MATCH_AREA_REL {
-                    report.inherited += 1;
-                } else {
-                    report.unmatched_old_enclosed += 1;
-                }
-            }
-            many => {
-                let plates: Vec<_> = many
-                    .iter()
-                    .map(|&i| old_enclosed[i].plate.clone())
-                    .collect();
-                let all_eq = plates.windows(2).all(|w| w[0] == w[1]);
-                if all_eq {
-                    region.plate = plates.into_iter().next().flatten();
-                    report.folded_panels += 1;
-                    let names: Vec<&str> = many
-                        .iter()
-                        .map(|&i| old_enclosed[i].name.as_str())
-                        .collect();
-                    if names.iter().all(|n| !n.is_empty() && *n == names[0]) {
-                        region.name = names[0].to_string();
-                    }
-                } else {
-                    region.plate = None;
-                    report.mixed_plate_panels += 1;
-                }
-            }
+        } else {
+            report.new_regions += 1;
         }
         new_regions.push(region);
     }
+    report.regions = new_regions.len();
+    report.unmatched_old_regions = matched_old.iter().filter(|m| !**m).count();
 
-    let mut converted = Vec::new();
-    let mut leftover = Vec::new();
+    // 2. 床板の帰属を、重心が入る床領域へ付け替える。収まらない床板は、1 辺が大梁に
+    //    全長覆われていれば取り付く床板へ変換し（D20）、それもできなければ帰属なしのまま残す。
     let beams = horizontal_girders(model);
-    for (oi, old) in old_enclosed.into_iter().enumerate() {
-        if assigned[oi] {
+    let mut owner: Vec<Option<usize>> = vec![None; model.slabs.len()];
+    for (si, slab) in model.slabs.iter().enumerate() {
+        let SlabShape::Enclosed { boundary } = &slab.shape else {
+            continue; // 取り付く床板は素通し（どの床領域にも属さない）。
+        };
+        let Some((cxy, z, _)) = boundary_centroid_area(model, boundary) else {
+            continue;
+        };
+        if let Some((ri, _)) = new_regions
+            .iter()
+            .enumerate()
+            .filter(|(_, r)| region_is_same_level(model, r, z) && region_contains(model, r, cxy))
+            .min_by(|(_, a), (_, b)| region_area(model, a).total_cmp(&region_area(model, b)))
+        {
+            owner[si] = Some(ri);
+            report.slabs_assigned += 1;
+        }
+    }
+    let mut converted = Vec::new();
+    // 片持ちへ変換すると、旧境界の先端節点が Attached の取付き線 2 点だけに
+    // 縮む（D15）。参照 0 になりうるのはこの縮んだぶんの節点だけであり、
+    // それ以外（他の理由で未使用の既存節点）まで削除対象にしてはならない（D21）。
+    let mut discarded_by_conversion: Vec<NodeId> = Vec::new();
+    for (si, slab) in model.slabs.iter().enumerate() {
+        if owner[si].is_some() || slab.is_attached() {
             continue;
         }
-        if let Some(attached) = try_convert_cantilever(model, &old, &beams) {
-            converted.push(attached);
-            report.attached_converted += 1;
+        let SlabShape::Enclosed { boundary } = &slab.shape else {
+            continue;
+        };
+        if let Some(attached) = try_convert_cantilever(model, boundary, &beams) {
+            discarded_by_conversion.extend(boundary.iter().copied());
+            converted.push((si, attached));
+            report.slabs_converted_to_attached += 1;
         } else {
-            if old.plate.is_some() {
-                report.unassigned_plates += 1;
-            }
-            leftover.push(old);
+            report.unassigned_slabs += 1;
         }
     }
-
-    for mut r in old_attached {
-        r.secondary_joist_ids.clear();
-        new_regions.push(r);
+    for (si, shape) in converted {
+        model.slabs[si].shape = shape;
     }
-    new_regions.append(&mut converted);
-    for mut r in leftover {
-        r.secondary_joist_ids.clear();
-        new_regions.push(r);
+    for (si, ri) in owner.into_iter().enumerate() {
+        if let Some(ri) = ri {
+            new_regions[ri].slab_ids.push(model.slabs[si].id);
+        }
     }
 
     for (i, r) in new_regions.iter_mut().enumerate() {
         r.id = FloorRegionId(i as u32);
-        r.secondary_joist_ids.clear();
     }
-
-    report.unassigned_joists = assign_joists(model, &mut new_regions);
-    report.enclosed = new_regions
-        .iter()
-        .filter(|r| matches!(r.shape, RegionShape::Enclosed { .. }))
-        .count();
-
     model.floor_regions = new_regions;
-    report.deleted_nodes = delete_unref_nodes(model);
+
+    // 3. 小梁を D7（中点の厳密内包＋レベル一致）で入れ直す。
+    report.unassigned_joists = assign_joists(model);
+
+    // 4. 片持ち変換で縮んだ境界の先端節点のうち、参照が 0 になったものを削除する
+    // （D21）。それ以外の既存節点は、たとえ現状どこからも参照されていなくても
+    // このリビルドの対象外（利用者が別の理由で置いた節点かもしれない）。
+    report.deleted_nodes = delete_unref_nodes(model, &discarded_by_conversion);
 
     report
 }
@@ -184,29 +170,29 @@ pub fn unassigned_joist_count(model: &Model) -> usize {
         .count()
 }
 
-/// 囲まれ＋版ありで、重心がどの大梁パネルにも入らないものの件数。
-pub fn floating_plate_count(model: &Model) -> usize {
-    let panels = generate_floor_panels(model);
+/// 大梁または小梁で囲まれた床板（`Enclosed`）で、重心がどの床領域にも入らないものの件数。
+pub fn floating_slab_count(model: &Model) -> usize {
+    let regions = generate_region_boundaries(model);
     model
-        .floor_regions
+        .slabs
         .iter()
-        .filter(|r| r.plate.is_some())
-        .filter(|r| matches!(r.shape, RegionShape::Enclosed { .. }))
-        .filter(|r| {
-            let Some((cxy, z, _)) = enclosed_centroid(model, r) else {
+        .filter(|s| matches!(s.shape, SlabShape::Enclosed { .. }))
+        .filter(|s| {
+            let Some((cxy, z, _)) = s
+                .boundary_nodes()
+                .and_then(|b| boundary_centroid_area(model, b))
+            else {
                 return true;
             };
-            !panels
+            !regions
                 .iter()
-                .any(|p| p.is_same_level(z) && p.contains(model, cxy))
+                .any(|r| r.is_same_level(z) && r.contains(model, cxy))
         })
         .count()
 }
 
-fn enclosed_centroid(model: &Model, region: &FloorRegion) -> Option<([f64; 2], f64, f64)> {
-    let RegionShape::Enclosed { boundary } = &region.shape else {
-        return None;
-    };
+/// 節点列（境界）の XY 重心・レベル Z・面積を返す。3 点未満は `None`。
+fn boundary_centroid_area(model: &Model, boundary: &[NodeId]) -> Option<([f64; 2], f64, f64)> {
     let mut pts = Vec::with_capacity(boundary.len());
     let mut z_sum = 0.0;
     for id in boundary {
@@ -221,6 +207,26 @@ fn enclosed_centroid(model: &Model, region: &FloorRegion) -> Option<([f64; 2], f
     let cxy = shoelace_centroid(&pts, area);
     let z = z_sum / pts.len() as f64;
     Some((cxy, z, area.abs()))
+}
+
+fn region_is_same_level(model: &Model, region: &FloorRegion, z: f64) -> bool {
+    region
+        .level(model)
+        .is_some_and(|rz| (rz - z).abs() <= LEVEL_TOL_MM)
+}
+
+fn region_contains(model: &Model, region: &FloorRegion, p: [f64; 2]) -> bool {
+    let Some(coords) = region.boundary_coords(model) else {
+        return false;
+    };
+    let poly: Vec<[f64; 2]> = coords.iter().map(|c| [c[0], c[1]]).collect();
+    polygon_contains_strict(&poly, p)
+}
+
+fn region_area(model: &Model, region: &FloorRegion) -> f64 {
+    boundary_centroid_area(model, &region.boundary)
+        .map(|(_, _, a)| a)
+        .unwrap_or(f64::MAX)
 }
 
 fn shoelace_area(pts: &[[f64; 2]]) -> f64 {
@@ -288,14 +294,13 @@ fn horizontal_girders(model: &Model) -> Vec<GirderSeg> {
     out
 }
 
+/// 大梁または小梁で囲まれた床板の境界のうち、1 辺だけが大梁に全長覆われていれば、
+/// その辺を取付き線とする取り付く床板の形へ変換する（D20）。変換できなければ `None`。
 fn try_convert_cantilever(
     model: &Model,
-    old: &FloorRegion,
+    boundary: &[NodeId],
     beams: &[GirderSeg],
-) -> Option<FloorRegion> {
-    let RegionShape::Enclosed { boundary } = &old.shape else {
-        return None;
-    };
+) -> Option<SlabShape> {
     if boundary.len() < 3 {
         return None;
     }
@@ -357,19 +362,13 @@ fn try_convert_cantilever(
         _ => return None,
     };
 
-    Some(FloorRegion {
-        id: FloorRegionId(0),
-        name: old.name.clone(),
-        shape: RegionShape::Attached {
-            anchor: RegionAnchor::Line {
-                nodes: [n0, n1],
-                span: [0.0, 1.0],
-                transfer: LoadTransfer::Anchor,
-            },
-            extent,
+    Some(SlabShape::Attached {
+        anchor: RegionAnchor::Line {
+            nodes: [n0, n1],
+            span: [0.0, 1.0],
+            transfer: LoadTransfer::Anchor,
         },
-        plate: old.plate.clone(),
-        secondary_joist_ids: Vec::new(),
+        extent,
     })
 }
 
@@ -443,48 +442,39 @@ fn joist_midpoint(model: &Model, nodes: [NodeId; 2]) -> Option<([f64; 2], f64)> 
     ))
 }
 
-fn region_xy_poly(model: &Model, region: &FloorRegion) -> Option<(Vec<[f64; 2]>, f64)> {
-    let coords = region.boundary_coords(model)?;
-    if coords.len() < 3 {
-        return None;
-    }
-    let z = coords.iter().map(|c| c[2]).sum::<f64>() / coords.len() as f64;
-    let xy = coords.iter().map(|c| [c[0], c[1]]).collect();
-    Some((xy, z))
-}
-
 fn regions_containing(model: &Model, regions: &[FloorRegion], xy: [f64; 2], z: f64) -> Vec<usize> {
     let mut hits = Vec::new();
     for (i, r) in regions.iter().enumerate() {
-        let Some((poly, rz)) = region_xy_poly(model, r) else {
-            continue;
-        };
-        if (rz - z).abs() > LEVEL_TOL_MM {
+        if !region_is_same_level(model, r, z) {
             continue;
         }
-        if polygon_contains_strict(&poly, xy) {
+        if region_contains(model, r, xy) {
             hits.push(i);
         }
     }
     hits
 }
 
-fn assign_joists(model: &Model, regions: &mut [FloorRegion]) -> usize {
+fn assign_joists(model: &mut Model) -> usize {
     let mut joists: Vec<_> = model
         .secondary_members
         .iter()
         .filter(|sm| sm.kind == SecondaryMemberKind::Joist)
+        .map(|sm| (sm.id, sm.nodes))
         .collect();
-    joists.sort_by_key(|sm| sm.id);
+    joists.sort_by_key(|(id, _)| *id);
+    for r in &mut model.floor_regions {
+        r.secondary_joist_ids.clear();
+    }
     let mut unassigned = 0;
-    for sm in joists {
-        let Some((xy, z)) = joist_midpoint(model, sm.nodes) else {
+    for (id, nodes) in joists {
+        let Some((xy, z)) = joist_midpoint(model, nodes) else {
             unassigned += 1;
             continue;
         };
-        let hits = regions_containing(model, regions, xy, z);
+        let hits = regions_containing(model, &model.floor_regions, xy, z);
         if hits.len() == 1 {
-            regions[hits[0]].secondary_joist_ids.push(sm.id);
+            model.floor_regions[hits[0]].secondary_joist_ids.push(id);
         } else {
             unassigned += 1;
         }
@@ -503,7 +493,22 @@ fn node_has_structural_ref(model: &Model, id: NodeId) -> bool {
     {
         return true;
     }
-    if model.floor_regions.iter().any(|r| region_refs_node(r, id)) {
+    if model.floor_regions.iter().any(|r| {
+        r.boundary.contains(&id) || r.joist_lines().iter().any(|j| j.support.contains(&id))
+    }) {
+        return true;
+    }
+    if model.slabs.iter().any(|s| slab_refs_node(s, id)) {
+        return true;
+    }
+    if model.stories.iter().any(|s| s.node_ids.contains(&id)) {
+        return true;
+    }
+    if model
+        .axes
+        .iter()
+        .any(|g| g.axes.iter().any(|a| a.nodes.contains(&id)))
+    {
         return true;
     }
     if model.constraints.iter().any(|c| match c {
@@ -533,28 +538,32 @@ fn node_has_structural_ref(model: &Model, id: NodeId) -> bool {
     false
 }
 
-fn region_refs_node(region: &FloorRegion, id: NodeId) -> bool {
-    let in_shape = match &region.shape {
-        RegionShape::Enclosed { boundary } => boundary.contains(&id),
-        RegionShape::Attached { anchor, .. } => match anchor {
+fn slab_refs_node(slab: &Slab, id: NodeId) -> bool {
+    match &slab.shape {
+        SlabShape::Enclosed { boundary } => boundary.contains(&id),
+        SlabShape::Attached { anchor, .. } => match anchor {
             RegionAnchor::Line { nodes, .. } => nodes[0] == id || nodes[1] == id,
             RegionAnchor::Point(n) => *n == id,
         },
-    };
-    in_shape
-        || region
-            .plate
-            .as_ref()
-            .is_some_and(|p| p.joists.iter().any(|j| j.support.contains(&id)))
+    }
 }
 
-fn delete_unref_nodes(model: &mut Model) -> usize {
+/// `candidates` に挙がった節点のうち、参照が 0 になったものだけを削除する。
+///
+/// `candidates` 以外の節点は、たとえ現状どこからも参照されていなくても対象外とする
+/// （D21。このリビルドが縮めた境界の先端節点だけを削除し、利用者が別の理由で
+/// 置いた既存の未使用節点まで巻き込まない）。
+fn delete_unref_nodes(model: &mut Model, candidates: &[NodeId]) -> usize {
     let n = model.nodes.len();
     if n == 0 {
         return 0;
     }
+    let candidate_set: std::collections::HashSet<NodeId> = candidates.iter().copied().collect();
     let keep: Vec<bool> = (0..n)
-        .map(|i| node_has_structural_ref(model, NodeId(i as u32)))
+        .map(|i| {
+            let id = NodeId(i as u32);
+            !candidate_set.contains(&id) || node_has_structural_ref(model, id)
+        })
         .collect();
     let deleted = keep.iter().filter(|k| !*k).count();
     if deleted == 0 {
@@ -599,13 +608,12 @@ fn delete_unref_nodes(model: &mut Model) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ids::{ElemId, FloorRegionId, NodeId, SecondaryMemberId, SectionId};
+    use crate::ids::{ElemId, FloorRegionId, NodeId, SecondaryMemberId, SectionId, SlabId};
     use crate::model::{
         AreaLoad, DistributionMethod, ElementData, ElementKind, EndCondition, ForceRegime,
-        LoadTransfer, LocalAxis, Node, RegionAnchor, RegionShape, SecondaryMember,
-        SecondaryMemberKind, SlabPlate,
+        LocalAxis, Node, RegionAnchor, SecondaryMember, SecondaryMemberKind, SlabPlate,
     };
-    use crate::region_gen::generate_floor_panels;
+    use crate::region_gen::generate_region_boundaries;
     use crate::section_shape::SectionShape;
 
     fn node(id: u32, x: f64, y: f64, z: f64) -> Node {
@@ -643,21 +651,17 @@ mod tests {
             usage: None,
             method: DistributionMethod::TriTrapezoid,
             one_way: None,
-            joists: Vec::new(),
         }
     }
 
-    fn enclosed(
-        id: u32,
-        boundary: Vec<u32>,
-        plate: Option<SlabPlate>,
-    ) -> crate::model::FloorRegion {
-        let mut r = crate::model::FloorRegion::enclosed(
-            FloorRegionId(id),
-            boundary.into_iter().map(NodeId).collect(),
-        );
-        r.plate = plate;
-        r
+    fn enclosed_slab(id: u32, boundary: Vec<u32>, plate: SlabPlate) -> Slab {
+        Slab {
+            id: SlabId(id),
+            shape: SlabShape::Enclosed {
+                boundary: boundary.into_iter().map(NodeId).collect(),
+            },
+            plate,
+        }
     }
 
     fn push_slab_section(model: &mut Model, thickness: f64) -> SectionId {
@@ -686,7 +690,7 @@ mod tests {
         })
     }
 
-    /// 4 辺の大梁で閉じた 1 面。上下辺の中間節点に小梁 1 本、スラブ片 2。
+    /// 4 辺の大梁で閉じた 1 面。上下辺の中間節点に小梁 1 本、床板 2 枚（両方とも保たれる）。
     fn two_piece_square() -> Model {
         let mut model = Model::default();
         for (i, (x, y)) in [
@@ -711,15 +715,15 @@ mod tests {
             beam(5, 5, 0),
         ]);
         let sid = push_slab_section(&mut model, 150.0);
-        model.floor_regions.push(enclosed(
+        model.slabs.push(enclosed_slab(
             0,
             vec![0, 1, 4, 5],
-            Some(plate(Some(sid), Vec::new())),
+            plate(Some(sid), Vec::new()),
         ));
-        model.floor_regions.push(enclosed(
+        model.slabs.push(enclosed_slab(
             1,
             vec![1, 2, 3, 4],
-            Some(plate(Some(sid), Vec::new())),
+            plate(Some(sid), Vec::new()),
         ));
         model.secondary_members.push(joist(0, 1, 4));
         model
@@ -733,33 +737,33 @@ mod tests {
         model.nodes.push(node(3, 0.0, 1500.0, 0.0));
         model.elements.push(beam(0, 0, 1));
         let sid = push_slab_section(&mut model, 150.0);
-        model.floor_regions.push(enclosed(
+        model.slabs.push(enclosed_slab(
             0,
             vec![0, 1, 2, 3],
-            Some(plate(Some(sid), Vec::new())),
+            plate(Some(sid), Vec::new()),
         ));
         model
     }
 
     #[test]
-    fn test_two_by_two_folds_two_plates_and_one_joist() {
+    fn test_two_piece_square_keeps_both_slabs_in_one_region() {
         let mut model = two_piece_square();
-        assert_eq!(generate_floor_panels(&model).len(), 1);
+        assert_eq!(generate_region_boundaries(&model).len(), 1);
         let report = rebuild_floor_regions(&mut model);
-        let enclosed: Vec<_> = model
-            .floor_regions
-            .iter()
-            .filter(|r| matches!(r.shape, RegionShape::Enclosed { .. }))
-            .collect();
-        assert_eq!(enclosed.len(), 1, "囲まれは 1 面");
-        assert!(enclosed[0].plate.is_some(), "版を継承する");
+        assert_eq!(model.floor_regions.len(), 1, "床領域は 1 つ");
+        assert_eq!(model.slabs.len(), 2, "床板は畳まず 2 枚のまま");
         assert_eq!(
-            enclosed[0].secondary_joist_ids,
+            model.floor_regions[0].slab_ids.len(),
+            2,
+            "2 枚とも同じ床領域へ帰属"
+        );
+        assert_eq!(
+            model.floor_regions[0].secondary_joist_ids,
             vec![SecondaryMemberId(0)],
             "中央小梁が属する"
         );
-        assert_eq!(enclosed[0].section(), Some(SectionId(0)), "片の断面が残る");
-        assert_eq!(report.enclosed, 1);
+        assert_eq!(report.regions, 1);
+        assert_eq!(report.slabs_assigned, 2);
     }
 
     #[test]
@@ -767,14 +771,16 @@ mod tests {
         let mut model = two_piece_square();
         rebuild_floor_regions(&mut model);
         let first_regions = model.floor_regions.clone();
+        let first_slabs = model.slabs.clone();
         let first_nodes = model.nodes.len();
         rebuild_floor_regions(&mut model);
         assert_eq!(model.floor_regions, first_regions);
+        assert_eq!(model.slabs, first_slabs);
         assert_eq!(model.nodes.len(), first_nodes);
     }
 
     #[test]
-    fn test_courtyard_two_internal_faces_no_outer_region() {
+    fn test_courtyard_two_internal_regions_no_outer_region() {
         let mut model = Model::default();
         let outer = [(0.0, 0.0), (8000.0, 0.0), (8000.0, 8000.0), (0.0, 8000.0)];
         let inner = [
@@ -799,144 +805,11 @@ mod tests {
             beam(6, 6, 7),
             beam(7, 7, 4),
         ]);
-        let panels = generate_floor_panels(&model);
-        assert_eq!(panels.len(), 2, "内部面は外周と中庭の 2 つ");
+        let regions = generate_region_boundaries(&model);
+        assert_eq!(regions.len(), 2, "内部面は外周と中庭の 2 つ");
         let report = rebuild_floor_regions(&mut model);
-        assert_eq!(
-            model.floor_regions.len(),
-            panels.len(),
-            "領域数はパネル数と一致（外周面を領域にしない）"
-        );
-        assert!(
-            model
-                .floor_regions
-                .iter()
-                .all(|r| matches!(r.shape, RegionShape::Enclosed { .. })),
-            "内部面はどちらも Enclosed"
-        );
-        let poly_area = |r: &crate::model::FloorRegion| -> f64 {
-            let Some(coords) = r.boundary_coords(&model) else {
-                return f64::MAX;
-            };
-            let n = coords.len();
-            if n < 3 {
-                return f64::MAX;
-            }
-            let mut sum = 0.0;
-            for i in 0..n {
-                let a = coords[i];
-                let b = coords[(i + 1) % n];
-                sum += a[0] * b[1] - b[0] * a[1];
-            }
-            (sum / 2.0).abs()
-        };
-        let courtyard = model
-            .floor_regions
-            .iter()
-            .min_by(|a, b| poly_area(a).partial_cmp(&poly_area(b)).unwrap())
-            .expect("中庭");
-        assert!(courtyard.plate.is_none(), "中庭は版なし");
-        assert_eq!(report.enclosed, panels.len());
-    }
-
-    fn courtyard_girder_loops() -> Model {
-        let mut model = Model::default();
-        let outer = [(0.0, 0.0), (8000.0, 0.0), (8000.0, 8000.0), (0.0, 8000.0)];
-        let inner = [
-            (2000.0, 2000.0),
-            (6000.0, 2000.0),
-            (6000.0, 6000.0),
-            (2000.0, 6000.0),
-        ];
-        for (i, (x, y)) in outer.into_iter().enumerate() {
-            model.nodes.push(node(i as u32, x, y, 0.0));
-        }
-        for (i, (x, y)) in inner.into_iter().enumerate() {
-            model.nodes.push(node(4 + i as u32, x, y, 0.0));
-        }
-        model.elements.extend([
-            beam(0, 0, 1),
-            beam(1, 1, 2),
-            beam(2, 2, 3),
-            beam(3, 3, 0),
-            beam(4, 4, 5),
-            beam(5, 5, 6),
-            beam(6, 6, 7),
-            beam(7, 7, 4),
-        ]);
-        model
-    }
-
-    fn region_poly_area(model: &Model, r: &crate::model::FloorRegion) -> f64 {
-        let Some(coords) = r.boundary_coords(model) else {
-            return f64::MAX;
-        };
-        let n = coords.len();
-        if n < 3 {
-            return f64::MAX;
-        }
-        let mut sum = 0.0;
-        for i in 0..n {
-            let a = coords[i];
-            let b = coords[(i + 1) % n];
-            sum += a[0] * b[1] - b[0] * a[1];
-        }
-        (sum / 2.0).abs()
-    }
-
-    #[test]
-    fn test_courtyard_inner_plate_goes_to_smaller_panel() {
-        let mut model = courtyard_girder_loops();
-        let sid = push_slab_section(&mut model, 150.0);
-        model.floor_regions.push(enclosed(
-            0,
-            vec![4, 5, 6, 7],
-            Some(plate(Some(sid), Vec::new())),
-        ));
-        rebuild_floor_regions(&mut model);
-        let enclosed: Vec<_> = model
-            .floor_regions
-            .iter()
-            .filter(|r| matches!(r.shape, RegionShape::Enclosed { .. }))
-            .collect();
-        assert_eq!(enclosed.len(), 2, "領域は 2 つの Enclosed のまま");
-        let (smaller, larger) =
-            if region_poly_area(&model, enclosed[0]) <= region_poly_area(&model, enclosed[1]) {
-                (enclosed[0], enclosed[1])
-            } else {
-                (enclosed[1], enclosed[0])
-            };
-        assert!(
-            smaller.plate.is_some(),
-            "中庭（面積が小さい領域）が版を持つ"
-        );
-        assert!(larger.plate.is_none(), "面積が大きい領域は版を持たない");
-    }
-
-    #[test]
-    fn test_ring_plate_goes_to_outer_panel() {
-        let mut model = courtyard_girder_loops();
-        let sid = push_slab_section(&mut model, 150.0);
-        model.floor_regions.push(enclosed(
-            0,
-            vec![0, 1, 5, 4],
-            Some(plate(Some(sid), Vec::new())),
-        ));
-        rebuild_floor_regions(&mut model);
-        let enclosed: Vec<_> = model
-            .floor_regions
-            .iter()
-            .filter(|r| matches!(r.shape, RegionShape::Enclosed { .. }))
-            .collect();
-        assert_eq!(enclosed.len(), 2, "領域は 2 つの Enclosed のまま");
-        let (smaller, larger) =
-            if region_poly_area(&model, enclosed[0]) <= region_poly_area(&model, enclosed[1]) {
-                (enclosed[0], enclosed[1])
-            } else {
-                (enclosed[1], enclosed[0])
-            };
-        assert!(larger.plate.is_some(), "面積が大きい領域が版を持つ");
-        assert!(smaller.plate.is_none(), "中庭（小さい方）は版を持たない");
+        assert_eq!(model.floor_regions.len(), regions.len());
+        assert_eq!(report.regions, regions.len());
     }
 
     #[test]
@@ -947,41 +820,18 @@ mod tests {
         for (i, n) in model.nodes.iter().enumerate() {
             assert_eq!(n.id, NodeId(i as u32), "nodes[{i}].id");
         }
-        let mut refs = Vec::new();
-        for r in &model.floor_regions {
-            match &r.shape {
-                RegionShape::Enclosed { boundary } => refs.extend(boundary.iter().copied()),
-                RegionShape::Attached { anchor, .. } => match anchor {
-                    RegionAnchor::Line { nodes, .. } => refs.extend(nodes.iter().copied()),
-                    RegionAnchor::Point(n) => refs.push(*n),
-                },
-            }
-        }
-        for e in &model.elements {
-            refs.extend(e.nodes.iter().copied());
-        }
-        for id in refs {
-            assert!(
-                id.index() < model.nodes.len(),
-                "参照 NodeId({id:?}) が nodes.len() 以上"
-            );
-            assert_eq!(
-                model.nodes[id.index()].id,
-                id,
-                "参照 NodeId({id:?}) が nodes[index] と不一致（消した ID が 0 に化けていないこと）"
-            );
-        }
     }
 
     #[test]
     fn test_cantilever_rect_converts_to_attached_line() {
         let mut model = cantilever_rect();
         let report = rebuild_floor_regions(&mut model);
-        assert_eq!(model.floor_regions.len(), 1);
-        let r = &model.floor_regions[0];
-        assert!(r.is_attached());
-        match &r.shape {
-            RegionShape::Attached {
+        assert_eq!(model.floor_regions.len(), 0, "囲む大梁がないため床領域は 0");
+        assert_eq!(model.slabs.len(), 1);
+        let s = &model.slabs[0];
+        assert!(s.is_attached());
+        match &s.shape {
+            SlabShape::Attached {
                 anchor:
                     RegionAnchor::Line {
                         nodes,
@@ -1006,39 +856,12 @@ mod tests {
         assert!(has_xy(&model, 4000.0, 0.0));
         assert!(!has_xy(&model, 4000.0, 1500.0), "先端節点は削除");
         assert!(!has_xy(&model, 0.0, 1500.0), "先端節点は削除");
-        assert!(report.attached_converted >= 1);
+        assert!(report.slabs_converted_to_attached >= 1);
         assert!(report.deleted_nodes >= 2);
     }
 
     #[test]
-    fn test_cantilever_triangle_extent_equal() {
-        let mut model = Model::default();
-        model.nodes.push(node(0, 0.0, 0.0, 0.0));
-        model.nodes.push(node(1, 4000.0, 0.0, 0.0));
-        model.nodes.push(node(2, 2000.0, 1500.0, 0.0));
-        model.elements.push(beam(0, 0, 1));
-        let sid = push_slab_section(&mut model, 150.0);
-        model.floor_regions.push(enclosed(
-            0,
-            vec![0, 1, 2],
-            Some(plate(Some(sid), Vec::new())),
-        ));
-        rebuild_floor_regions(&mut model);
-        let r = &model.floor_regions[0];
-        assert!(r.is_attached());
-        match &r.shape {
-            RegionShape::Attached { extent, .. } => {
-                assert!(
-                    (extent[0] - extent[1]).abs() < 1e-6,
-                    "頂点距離で両端が等しい: {extent:?}"
-                );
-            }
-            other => panic!("{other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_inherits_name_and_finish_loads_when_boundary_nodes_change() {
+    fn test_inherits_name_and_joists_when_boundary_nodes_change() {
         let mut model = Model::default();
         for (i, (x, y)) in [(0.0, 0.0), (4000.0, 0.0), (4000.0, 4000.0), (0.0, 4000.0)]
             .into_iter()
@@ -1050,16 +873,20 @@ mod tests {
             .elements
             .extend([beam(0, 0, 1), beam(1, 1, 2), beam(2, 2, 3), beam(3, 3, 0)]);
         let sid = push_slab_section(&mut model, 150.0);
-        let mut r = enclosed(
+        model.slabs.push(enclosed_slab(
             0,
             vec![0, 1, 2, 3],
-            Some(plate(
+            plate(
                 Some(sid),
                 vec![AreaLoad {
                     kind: "仕上げ".into(),
                     value: 0.001,
                 }],
-            )),
+            ),
+        ));
+        let mut r = FloorRegion::new(
+            FloorRegionId(0),
+            vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
         );
         r.name = "階段室".into();
         model.floor_regions.push(r);
@@ -1067,91 +894,18 @@ mod tests {
         model.nodes.push(node(4, 2000.0, 0.0, 0.0));
         model.elements[0] = beam(0, 0, 4);
         model.elements.push(beam(4, 4, 1));
-        if let RegionShape::Enclosed { boundary } = &mut model.floor_regions[0].shape {
-            *boundary = vec![NodeId(0), NodeId(4), NodeId(1), NodeId(2), NodeId(3)];
-        }
 
         rebuild_floor_regions(&mut model);
-        let r = model
-            .floor_regions
-            .iter()
-            .find(|r| matches!(r.shape, RegionShape::Enclosed { .. }))
-            .expect("囲まれが残る");
-        assert_eq!(r.name, "階段室");
+        assert_eq!(model.floor_regions.len(), 1);
+        assert_eq!(model.floor_regions[0].name, "階段室");
+        assert_eq!(model.slabs.len(), 1, "床板は畳まずそのまま残る");
         assert_eq!(
-            r.plate.as_ref().map(|p| p.loads.as_slice()),
-            Some(
-                [AreaLoad {
-                    kind: "仕上げ".into(),
-                    value: 0.001,
-                }]
-                .as_slice()
-            )
+            model.slabs[0].plate.loads,
+            vec![AreaLoad {
+                kind: "仕上げ".into(),
+                value: 0.001,
+            }]
         );
-    }
-
-    #[test]
-    fn test_split_panel_inherits_plate_only_on_centroid_side() {
-        let mut model = Model::default();
-        for (i, (x, y)) in [(0.0, 0.0), (4000.0, 0.0), (4000.0, 4000.0), (0.0, 4000.0)]
-            .into_iter()
-            .enumerate()
-        {
-            model.nodes.push(node(i as u32, x, y, 0.0));
-        }
-        model
-            .elements
-            .extend([beam(0, 0, 1), beam(1, 1, 2), beam(2, 2, 3), beam(3, 3, 0)]);
-        let sid = push_slab_section(&mut model, 150.0);
-        model.floor_regions.push(enclosed(
-            0,
-            vec![0, 1, 2, 3],
-            Some(plate(Some(sid), Vec::new())),
-        ));
-
-        model.nodes.push(node(4, 1000.0, 0.0, 0.0));
-        model.nodes.push(node(5, 1000.0, 4000.0, 0.0));
-        model.elements[0] = beam(0, 0, 4);
-        model.elements.push(beam(4, 4, 1));
-        model.elements[2] = beam(2, 2, 5);
-        model.elements.push(beam(5, 5, 3));
-        model.elements.push(beam(6, 4, 5));
-
-        let report = rebuild_floor_regions(&mut model);
-        let panels = generate_floor_panels(&model);
-        assert_eq!(panels.len(), 2);
-        assert_eq!(model.floor_regions.len(), 2);
-        let old_centroid = [2000.0, 2000.0];
-        let with_plate = model
-            .floor_regions
-            .iter()
-            .filter(|r| r.plate.is_some())
-            .count();
-        assert_eq!(with_plate, 1, "重心が入る側だけ版を継承");
-        let inherited = model
-            .floor_regions
-            .iter()
-            .find(|r| r.plate.is_some())
-            .unwrap();
-        let coords = inherited.boundary_coords(&model).unwrap();
-        let n = coords.len() as f64;
-        let c = [
-            coords.iter().map(|p| p[0]).sum::<f64>() / n,
-            coords.iter().map(|p| p[1]).sum::<f64>() / n,
-        ];
-        assert!(
-            (c[0] - old_centroid[0]).abs() < 1500.0,
-            "継承側の重心が旧重心側: {c:?}"
-        );
-        let inherit_panel = panels
-            .iter()
-            .find(|p| p.contains(&model, old_centroid))
-            .expect("旧重心が入るパネル");
-        assert!(
-            inherit_panel.contains(&model, c),
-            "版つき領域は旧重心側のパネル"
-        );
-        assert!(report.unmatched_old_enclosed >= 1);
     }
 
     #[test]
@@ -1173,44 +927,7 @@ mod tests {
     }
 
     #[test]
-    fn test_mixed_plate_sections_drop_plate() {
-        let mut model = Model::default();
-        for (i, (x, y)) in [(0.0, 0.0), (4000.0, 0.0), (4000.0, 4000.0), (0.0, 4000.0)]
-            .into_iter()
-            .enumerate()
-        {
-            model.nodes.push(node(i as u32, x, y, 0.0));
-        }
-        model.nodes.push(node(4, 2000.0, 0.0, 0.0));
-        model.nodes.push(node(5, 2000.0, 4000.0, 0.0));
-        model.elements.extend([
-            beam(0, 0, 4),
-            beam(1, 4, 1),
-            beam(2, 1, 2),
-            beam(3, 2, 5),
-            beam(4, 5, 3),
-            beam(5, 3, 0),
-        ]);
-        let s1 = push_slab_section(&mut model, 150.0);
-        let s2 = push_slab_section(&mut model, 200.0);
-        model.floor_regions.push(enclosed(
-            0,
-            vec![0, 4, 5, 3],
-            Some(plate(Some(s1), Vec::new())),
-        ));
-        model.floor_regions.push(enclosed(
-            1,
-            vec![4, 1, 2, 5],
-            Some(plate(Some(s2), Vec::new())),
-        ));
-        let report = rebuild_floor_regions(&mut model);
-        assert_eq!(model.floor_regions.len(), 1);
-        assert!(model.floor_regions[0].plate.is_none());
-        assert_eq!(report.mixed_plate_panels, 1);
-    }
-
-    #[test]
-    fn test_floating_plate_stays_enclosed_and_unassigned() {
+    fn test_floating_slab_stays_enclosed_and_unassigned() {
         let mut model = Model::default();
         for (i, (x, y)) in [(0.0, 0.0), (4000.0, 0.0), (4000.0, 4000.0), (0.0, 4000.0)]
             .into_iter()
@@ -1219,26 +936,25 @@ mod tests {
             model.nodes.push(node(i as u32, x, y, 0.0));
         }
         let sid = push_slab_section(&mut model, 150.0);
-        model.floor_regions.push(enclosed(
+        model.slabs.push(enclosed_slab(
             0,
             vec![0, 1, 2, 3],
-            Some(plate(Some(sid), Vec::new())),
+            plate(Some(sid), Vec::new()),
         ));
-        let n_before = model.floor_regions.len();
         let report = rebuild_floor_regions(&mut model);
-        assert!(model.floor_regions.len() >= n_before, "領域数は減らない");
-        assert_eq!(report.unassigned_plates, 1);
+        assert_eq!(model.floor_regions.len(), 0, "囲む大梁がないため床領域は 0");
+        assert_eq!(model.slabs.len(), 1, "床板は削除しない");
         assert!(
-            model
-                .floor_regions
-                .iter()
-                .any(|r| matches!(r.shape, RegionShape::Enclosed { .. }) && r.plate.is_some()),
-            "版は Enclosed のまま残る"
+            model.slabs[0].shape
+                == SlabShape::Enclosed {
+                    boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
+                }
         );
+        assert_eq!(report.unassigned_slabs, 1);
     }
 
     #[test]
-    fn test_plate_on_two_girder_edges_stays_enclosed() {
+    fn test_slab_on_two_girder_edges_stays_enclosed_and_unassigned() {
         let mut model = Model::default();
         model.nodes.push(node(0, 0.0, 0.0, 0.0));
         model.nodes.push(node(1, 4000.0, 0.0, 0.0));
@@ -1247,18 +963,19 @@ mod tests {
         model.elements.push(beam(0, 0, 1));
         model.elements.push(beam(1, 0, 3));
         let sid = push_slab_section(&mut model, 150.0);
-        model.floor_regions.push(enclosed(
+        model.slabs.push(enclosed_slab(
             0,
             vec![0, 1, 2, 3],
-            Some(plate(Some(sid), Vec::new())),
+            plate(Some(sid), Vec::new()),
         ));
         let report = rebuild_floor_regions(&mut model);
-        assert_eq!(model.floor_regions.len(), 1);
+        assert_eq!(model.slabs.len(), 1);
         assert!(
-            matches!(model.floor_regions[0].shape, RegionShape::Enclosed { .. }),
+            matches!(model.slabs[0].shape, SlabShape::Enclosed { .. }),
             "出隅相当は Enclosed のまま"
         );
-        assert_eq!(report.attached_converted, 0);
+        assert_eq!(report.slabs_converted_to_attached, 0);
+        assert_eq!(report.unassigned_slabs, 1);
     }
 
     #[test]
@@ -1279,6 +996,6 @@ mod tests {
             "別の大梁端でもある先端は残る"
         );
         assert!(!has_xy(&shared, 0.0, 1500.0), "参照 0 の先端だけ消える");
-        assert!(report.attached_converted >= 1);
+        assert!(report.slabs_converted_to_attached >= 1);
     }
 }

@@ -91,8 +91,7 @@ pub fn build_behavior(data: &ElementData, model: &Model) -> Box<dyn ElementBehav
             } else {
                 1e-9
             };
-            match crate::wall_panel::WallPanelElement::try_new_scaled(data, model, stiffness_scale)
-            {
+            match crate::wall_element::WallElement::try_new_scaled(data, model, stiffness_scale) {
                 Some(panel) => Box::new(panel),
                 None => {
                     let mut elem = crate::beam::BeamElement::new(data, model);
@@ -201,7 +200,7 @@ pub fn build_nonlinear_behavior(
     match data.kind {
         // 耐震壁の側柱は面内曲げ面の端部回転を静的縮約する（線形パスと同じ扱い）。
         // これがないと、一次設計は「側柱＝面内両端ピン」、保有水平耐力は
-        // 「側柱＝両端剛接」という別モデルになり、さらに壁パネルが
+        // 「側柱＝両端剛接」という別モデルになり、さらに壁エレメントが
         // `as_gross = 壁板 + 側柱断面` で側柱分を既に負担しているため、
         // 非線形解析で側柱の面内せん断が二重計上され保有水平耐力を過大評価する
         // （危険側）。
@@ -264,7 +263,7 @@ pub fn build_nonlinear_behavior(
             // 線形パスへフォールバックする。従来は先に build_behavior で線形の
             // 壁エレメントを無条件に構築してから非線形用をもう一度構築しており、
             // 非線形要素 1 枚につき壁エレメントが 2 回組まれていた。
-            let qu = crate::wall_panel::WallPanelElement::shear_capacity_of(data, model);
+            let qu = crate::wall_element::WallElement::shear_capacity_of(data, model);
             if qu <= 0.0 {
                 return build_behavior(data, model);
             }
@@ -273,8 +272,7 @@ pub fn build_nonlinear_behavior(
             } else {
                 1e-9
             };
-            match crate::wall_panel::WallPanelElement::try_new_scaled(data, model, stiffness_scale)
-            {
+            match crate::wall_element::WallElement::try_new_scaled(data, model, stiffness_scale) {
                 Some(panel) => {
                     // 面内せん断は Qu 頭打ちの弾完全塑性骨格＋履歴則設定による
                     // 除荷・再載荷則（既定: 最大点指向型）。

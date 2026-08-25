@@ -615,7 +615,6 @@ mod tests {
         ElementData, ElementKind, EndCondition, ForceRegime, LoadCase, LoadCaseKind, LocalAxis,
         Material, MemberLoad, MemberLoadKind, Node, Section,
     };
-    use squid_n_core::model::{RegionShape, SlabPlate};
 
     fn beam_section(id: u32) -> Section {
         Section {
@@ -738,7 +737,7 @@ mod tests {
     #[test]
     fn test_build_and_solve_symmetric_cross() {
         use squid_n_core::ids::FloorRegionId;
-        use squid_n_core::model::{DistributionMethod, JoistLine};
+        use squid_n_core::model::JoistLine;
 
         let mk = |id: u32, x: f64, y: f64| Node {
             id: NodeId(id),
@@ -763,33 +762,25 @@ mod tests {
             floor_regions: vec![FloorRegion {
                 id: FloorRegionId(0),
                 name: String::new(),
-                shape: RegionShape::Enclosed {
-                    boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
-                },
-                plate: Some(SlabPlate {
-                    section: None,
-                    loads: vec![],
-                    usage: None,
-                    method: DistributionMethod::TriTrapezoid,
-                    one_way: None,
-                    joists: vec![
-                        JoistLine {
-                            dir: [0.0, 1.0],
-                            spacing: 2000.0,
-                            support: [NodeId(4), NodeId(5)], // 縦（x=2000）
-                            section: Some(SectionId(0)),
-                            pinned_onto: None,
-                        },
-                        JoistLine {
-                            dir: [1.0, 0.0],
-                            spacing: 2000.0,
-                            support: [NodeId(6), NodeId(7)], // 横（y=2000）
-                            section: Some(SectionId(0)),
-                            pinned_onto: None,
-                        },
-                    ],
-                }),
+                boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
                 secondary_joist_ids: vec![],
+                slab_ids: vec![],
+                joists: vec![
+                    JoistLine {
+                        dir: [0.0, 1.0],
+                        spacing: 2000.0,
+                        support: [NodeId(4), NodeId(5)], // 縦（x=2000）
+                        section: Some(SectionId(0)),
+                        pinned_onto: None,
+                    },
+                    JoistLine {
+                        dir: [1.0, 0.0],
+                        spacing: 2000.0,
+                        support: [NodeId(6), NodeId(7)], // 横（y=2000）
+                        section: Some(SectionId(0)),
+                        pinned_onto: None,
+                    },
+                ],
             }],
             ..Default::default()
         };
@@ -831,7 +822,7 @@ mod tests {
     #[test]
     fn test_pin_vs_rigid_cross_differ() {
         use squid_n_core::ids::FloorRegionId;
-        use squid_n_core::model::{DistributionMethod, JoistLine};
+        use squid_n_core::model::JoistLine;
 
         let mk = |id: u32, x: f64, y: f64| Node {
             id: NodeId(id),
@@ -874,33 +865,25 @@ mod tests {
             floor_regions: vec![FloorRegion {
                 id: FloorRegionId(0),
                 name: String::new(),
-                shape: RegionShape::Enclosed {
-                    boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
-                },
-                plate: Some(SlabPlate {
-                    section: None,
-                    loads: vec![],
-                    usage: None,
-                    method: DistributionMethod::TriTrapezoid,
-                    one_way: None,
-                    joists: vec![
-                        JoistLine {
-                            dir: [0.0, 1.0],
-                            spacing: 2000.0,
-                            support: [NodeId(4), NodeId(5)],
-                            section: Some(SectionId(0)),
-                            pinned_onto, // 小梁0 を小梁1 にピン（架け）
-                        },
-                        JoistLine {
-                            dir: [1.0, 0.0],
-                            spacing: 2000.0,
-                            support: [NodeId(6), NodeId(7)],
-                            section: Some(SectionId(1)),
-                            pinned_onto: None,
-                        },
-                    ],
-                }),
+                boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
                 secondary_joist_ids: vec![],
+                slab_ids: vec![],
+                joists: vec![
+                    JoistLine {
+                        dir: [0.0, 1.0],
+                        spacing: 2000.0,
+                        support: [NodeId(4), NodeId(5)],
+                        section: Some(SectionId(0)),
+                        pinned_onto, // 小梁0 を小梁1 にピン（架け）
+                    },
+                    JoistLine {
+                        dir: [1.0, 0.0],
+                        spacing: 2000.0,
+                        support: [NodeId(6), NodeId(7)],
+                        section: Some(SectionId(1)),
+                        pinned_onto: None,
+                    },
+                ],
             }],
             ..Default::default()
         };
@@ -944,7 +927,7 @@ mod tests {
     #[test]
     fn test_skew_joist_falls_back_to_none() {
         use squid_n_core::ids::FloorRegionId;
-        use squid_n_core::model::{DistributionMethod, JoistLine};
+        use squid_n_core::model::JoistLine;
 
         let mk = |id: u32, x: f64, y: f64| Node {
             id: NodeId(id),
@@ -967,33 +950,25 @@ mod tests {
             floor_regions: vec![FloorRegion {
                 id: FloorRegionId(0),
                 name: String::new(),
-                shape: RegionShape::Enclosed {
-                    boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
-                },
-                plate: Some(SlabPlate {
-                    section: None,
-                    loads: vec![],
-                    usage: None,
-                    method: DistributionMethod::TriTrapezoid,
-                    one_way: None,
-                    joists: vec![
-                        JoistLine {
-                            dir: [0.0, 1.0],
-                            spacing: 2000.0,
-                            support: [NodeId(4), NodeId(5)], // 縦
-                            section: Some(SectionId(0)),
-                            pinned_onto: None,
-                        },
-                        JoistLine {
-                            dir: [1.0, 1.0],
-                            spacing: 2000.0,
-                            support: [NodeId(0), NodeId(2)], // 斜め（対角）
-                            section: Some(SectionId(0)),
-                            pinned_onto: None,
-                        },
-                    ],
-                }),
+                boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
                 secondary_joist_ids: vec![],
+                slab_ids: vec![],
+                joists: vec![
+                    JoistLine {
+                        dir: [0.0, 1.0],
+                        spacing: 2000.0,
+                        support: [NodeId(4), NodeId(5)], // 縦
+                        section: Some(SectionId(0)),
+                        pinned_onto: None,
+                    },
+                    JoistLine {
+                        dir: [1.0, 1.0],
+                        spacing: 2000.0,
+                        support: [NodeId(0), NodeId(2)], // 斜め（対角）
+                        section: Some(SectionId(0)),
+                        pinned_onto: None,
+                    },
+                ],
             }],
             ..Default::default()
         };
@@ -1007,7 +982,7 @@ mod tests {
     #[test]
     fn test_mutual_pin_does_not_singular() {
         use squid_n_core::ids::FloorRegionId;
-        use squid_n_core::model::{DistributionMethod, JoistLine};
+        use squid_n_core::model::JoistLine;
 
         let mk = |id: u32, x: f64, y: f64| Node {
             id: NodeId(id),
@@ -1032,33 +1007,25 @@ mod tests {
             floor_regions: vec![FloorRegion {
                 id: FloorRegionId(0),
                 name: String::new(),
-                shape: RegionShape::Enclosed {
-                    boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
-                },
-                plate: Some(SlabPlate {
-                    section: None,
-                    loads: vec![],
-                    usage: None,
-                    method: DistributionMethod::TriTrapezoid,
-                    one_way: None,
-                    joists: vec![
-                        JoistLine {
-                            dir: [0.0, 1.0],
-                            spacing: 2000.0,
-                            support: [NodeId(4), NodeId(5)],
-                            section: Some(SectionId(0)),
-                            pinned_onto: Some(1), // 相互ピン
-                        },
-                        JoistLine {
-                            dir: [1.0, 0.0],
-                            spacing: 2000.0,
-                            support: [NodeId(6), NodeId(7)],
-                            section: Some(SectionId(0)),
-                            pinned_onto: Some(0), // 相互ピン
-                        },
-                    ],
-                }),
+                boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
                 secondary_joist_ids: vec![],
+                slab_ids: vec![],
+                joists: vec![
+                    JoistLine {
+                        dir: [0.0, 1.0],
+                        spacing: 2000.0,
+                        support: [NodeId(4), NodeId(5)],
+                        section: Some(SectionId(0)),
+                        pinned_onto: Some(1), // 相互ピン
+                    },
+                    JoistLine {
+                        dir: [1.0, 0.0],
+                        spacing: 2000.0,
+                        support: [NodeId(6), NodeId(7)],
+                        section: Some(SectionId(0)),
+                        pinned_onto: Some(0), // 相互ピン
+                    },
+                ],
             }],
             ..Default::default()
         };

@@ -8,10 +8,12 @@ use squid_n_core::model::Model;
 
 /// RC規準8条によるスラブ協力幅 bf = b + ba(左) + ba(右) [mm]。
 ///
-/// 梁の両端節点をともに境界節点に含むスラブを「梁に取り付く床」とみなし、
-/// 隣接する平行梁との**内法距離** a（軸間距離から自梁・相手梁の幅の半分ずつを
-/// 控除。RC規準8条の図の a）を求めて ba=(0.5−0.6·a/l)·a（a≥l/2 のとき 0.1·l）
-/// で片側協力幅を算定する。対象は水平材（勾配 5% までは水平とみなす）のみ。
+/// 梁の両端節点をともに境界節点に含む床領域（[`squid_n_core::model::FloorRegion::boundary`]。
+/// 小梁による細分によらず常に大梁の1区画を表す）またはどの床領域にも属さない
+/// 床板を「梁に取り付く床」とみなし、隣接する平行梁との**内法距離** a（軸間距離
+/// から自梁・相手梁の幅の半分ずつを控除。RC規準8条の図の a）を求めて
+/// ba=(0.5−0.6·a/l)·a（a≥l/2 のとき 0.1·l）で片側協力幅を算定する。
+/// 対象は水平材（勾配 5% までは水平とみなす）のみ。
 /// 適用不能（スラブ厚 t≤0・非水平・取り付く床なし・bf≤b）は None。
 /// 連続梁の λ・吹抜け補正・二重スラブ/片持ちスラブの区別は未対応（v1。
 /// dev_docs/v_and_v/剛性計算_参照実装照合.md 参照）。
@@ -20,7 +22,10 @@ fn slab_cooperating_width(
     data: &squid_n_core::model::ElementData,
     b: f64,
 ) -> Option<(f64, f64)> {
-    if b <= 0.0 || data.nodes.len() < 2 || model.floor_regions.is_empty() {
+    if b <= 0.0
+        || data.nodes.len() < 2
+        || (model.floor_regions.is_empty() && model.slabs.is_empty())
+    {
         return None;
     }
     let n0 = data.nodes[0];
@@ -85,24 +90,50 @@ fn slab_cooperating_width(
     let mut a_neg: f64 = 0.0;
     let mut t_used: f64 = 0.0;
     let mut matched = false;
+
+    // 梁の両端節点をともに含む境界と、そこでの板厚を候補として集める。
+    //
+    // 床領域（大梁の1区画）は小梁で複数の床板（`Slab`）へ細分されうるため、
+    // 個々の床板の境界だけを見ると、区画の外周を走る大梁の両端（区画の対角）を
+    // 1 枚の床板だけでは含めなくなる（内部の小梁で分割されているため）。
+    // そこで区画の外周そのもの（`FloorRegion::boundary`。小梁の分割によらず
+    // 常に大梁の1区画を表す）を優先候補とし、板厚は区画内の床板
+    // （`region.slab_ids`）の `slab_plate_thickness` の最大を用いる。
+    // どの床領域にも属さない床板（警告対象。帰属なしでも実在するスラブとして
+    // 効かせる）は、床板自身の境界を候補として別途加える。
+    let mut referenced = std::collections::HashSet::new();
+    let mut candidates: Vec<(&[NodeId], f64)> = Vec::new();
     for region in &model.floor_regions {
-        // 協力幅は囲まれ＋版ありだけ（`region_has_slab`）。版なし・断面未割当はスキップ。
-        // 取り付きは boundary_nodes が無く ba 新式なし → 倍率 1.0。
-        // 板厚は対象領域の `region_thickness` の最大。建物一律 `slab_thickness` で
-        // 版なし領域を復活させない。
-        if !model.region_has_slab(region) {
+        referenced.extend(region.slab_ids.iter().copied());
+        let t = region
+            .slab_ids
+            .iter()
+            .filter_map(|&id| model.slab(id))
+            .filter_map(|s| model.slab_plate_thickness(s))
+            .fold(0.0_f64, f64::max);
+        if t > 0.0 {
+            candidates.push((&region.boundary, t));
+        }
+    }
+    for slab in &model.slabs {
+        if referenced.contains(&slab.id) {
             continue;
         }
-        let Some(boundary) = region.boundary_nodes() else {
+        let Some(boundary) = slab.boundary_nodes() else {
             continue;
         };
+        let Some(t) = model.slab_plate_thickness(slab) else {
+            continue;
+        };
+        candidates.push((boundary, t));
+    }
+
+    for (boundary, t) in candidates {
         if !(boundary.contains(&n0) && boundary.contains(&n1)) {
             continue;
         }
         matched = true;
-        if let Some(rt) = model.region_thickness(region) {
-            t_used = t_used.max(rt);
-        }
+        t_used = t_used.max(t);
         let mut s_pos: f64 = 0.0;
         let mut s_neg: f64 = 0.0;
         for nid in boundary {
@@ -137,7 +168,7 @@ fn slab_cooperating_width(
     if !matched || bf <= b {
         return None;
     }
-    // region_has_slab 通過後は thickness が必ず Some。欠落時のみ建物一律へ控える。
+    // 板厚が定まる床板が 1 枚でも一致すれば t_used > 0。欠落時のみ建物一律へ控える。
     let t = if t_used > 0.0 {
         t_used
     } else {
@@ -152,9 +183,10 @@ fn slab_cooperating_width(
 /// スラブ協力幅による強軸曲げ剛性の増大率（協力幅は RC規準 8 条
 /// = [`slab_cooperating_width`] による）。
 ///
-/// 対象は水平な RC 矩形梁のみ。囲まれかつ版あり（`region_has_slab`）の領域に限り、
-/// スラブ厚さ t（対象領域の `region_thickness` の最大。欠落時のみ
-/// `Model::slab_thickness`。上端は梁上端と同面）を考慮した中立軸による T 形断面の Ie を
+/// 対象は水平な RC 矩形梁のみ。梁の両端節点を境界に含み、板厚が定まる床板
+/// （`Model::slab_plate_thickness`）に限り、スラブ厚さ t（一致する床板の
+/// `slab_plate_thickness` の最大。欠落時のみ `Model::slab_thickness`。
+/// 上端は梁上端と同面）を考慮した中立軸による T 形断面の Ie を
 /// 元断面 I0=b·D³/12 で除した値を返す。適用不能時は 1.0（増大なし）。
 pub(super) fn slab_stiffness_factor(
     model: &Model,

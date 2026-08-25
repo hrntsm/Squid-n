@@ -5,7 +5,7 @@ use squid_n_core::ids::NodeId;
 use squid_n_core::ids::*;
 use squid_n_core::model::MaterialCategory;
 use squid_n_core::model::{ElementData, ElementKind, EndCondition, ForceRegime, LocalAxis, Node};
-use squid_n_core::model::{FloorRegion, RegionShape, SlabPlate};
+use squid_n_core::model::{FloorRegion, Slab, SlabPlate, SlabShape};
 
 fn empty_model() -> Model {
     Model::default()
@@ -862,7 +862,7 @@ fn test_delete_section_in_use_is_noop_and_renumbers() {
 /// 参照が繰り上がって追随する（床設計用の断面参照が陳腐化しない。レビュー指摘）。
 #[test]
 fn test_delete_section_referenced_by_joist() {
-    use squid_n_core::model::{DistributionMethod, JoistLine, Node, Section};
+    use squid_n_core::model::{JoistLine, Node, Section};
     let mut model = empty_model();
     for i in 0..4u32 {
         model.nodes.push(Node {
@@ -897,29 +897,19 @@ fn test_delete_section_referenced_by_joist() {
             steel_material: None,
         });
     }
-    // 小梁が断面 1 のみを参照するスラブ（要素は断面を参照しない）。
-    model.floor_regions.push(squid_n_core::model::FloorRegion {
-        id: FloorRegionId(0),
-        name: String::new(),
-        shape: RegionShape::Enclosed {
-            boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
-        },
-        plate: Some(SlabPlate {
-            section: None,
-            loads: vec![],
-            usage: None,
-            method: DistributionMethod::TriTrapezoid,
-            one_way: None,
-            joists: vec![JoistLine {
-                dir: [1.0, 0.0],
-                spacing: 900.0,
-                support: [NodeId(0), NodeId(1)],
-                section: Some(SectionId(1)),
-                pinned_onto: None,
-            }],
-        }),
-        secondary_joist_ids: vec![],
-    });
+    // 小梁ラインが断面 1 のみを参照する床領域（要素は断面を参照しない）。
+    let mut region = squid_n_core::model::FloorRegion::new(
+        FloorRegionId(0),
+        vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
+    );
+    region.joists = vec![JoistLine {
+        dir: [1.0, 0.0],
+        spacing: 900.0,
+        support: [NodeId(0), NodeId(1)],
+        section: Some(SectionId(1)),
+        pinned_onto: None,
+    }];
+    model.floor_regions.push(region);
     let mut stack = UndoStack::new();
 
     // 小梁が参照中の断面 1 は削除できない（要素だけでなく小梁も参照チェック対象）。
@@ -930,7 +920,7 @@ fn test_delete_section_referenced_by_joist() {
     stack.run(&mut model, Box::new(DeleteSection { id: SectionId(0) }));
     assert_eq!(model.sections.len(), 1);
     assert_eq!(
-        model.floor_regions[0].plate.as_ref().unwrap().joists[0].section,
+        model.floor_regions[0].joists[0].section,
         Some(SectionId(0)),
         "小梁の断面参照が繰り上がりに追随"
     );
@@ -1114,14 +1104,13 @@ fn test_set_slab_section_roundtrip() {
         &mut model,
         Box::new(AddSlab {
             boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
-            joists: Vec::new(),
             loads: Vec::new(),
             method: DistributionMethod::TriTrapezoid,
             usage: None,
             section: None,
         }),
     ));
-    let slab = squid_n_core::ids::FloorRegionId(0);
+    let slab = squid_n_core::ids::SlabId(0);
 
     assert!(stack.run(
         &mut model,
@@ -1130,13 +1119,9 @@ fn test_set_slab_section_roundtrip() {
             section: Some(SectionId(0)),
         }),
     ));
-    assert_eq!(model.floor_regions[0].section(), Some(SectionId(0)));
+    assert_eq!(model.slabs[0].section(), Some(SectionId(0)));
     stack.undo(&mut model);
-    assert_eq!(
-        model.floor_regions[0].section(),
-        None,
-        "undo で未割当へ戻る"
-    );
+    assert_eq!(model.slabs[0].section(), None, "undo で未割当へ戻る");
 
     // 実在しない断面の指定は Noop（モデルを壊さない）。
     assert!(!stack.run(
@@ -1146,7 +1131,7 @@ fn test_set_slab_section_roundtrip() {
             section: Some(SectionId(9)),
         }),
     ));
-    assert_eq!(model.floor_regions[0].section(), None);
+    assert_eq!(model.slabs[0].section(), None);
     assert!(model.validate().is_ok(), "{:?}", model.validate());
 }
 
@@ -1168,7 +1153,6 @@ fn test_slab_section_reference_is_guarded_and_shifted() {
         &mut model,
         Box::new(AddSlab {
             boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
-            joists: Vec::new(),
             loads: Vec::new(),
             method: DistributionMethod::TriTrapezoid,
             usage: None,
@@ -1185,18 +1169,14 @@ fn test_slab_section_reference_is_guarded_and_shifted() {
     // 参照されていない断面を消すと、後続の断面 ID が繰り上がり床の参照も追随する。
     assert!(stack.run(&mut model, Box::new(DeleteSection { id: SectionId(0) })));
     assert_eq!(
-        model.floor_regions[0].section(),
+        model.slabs[0].section(),
         Some(SectionId(0)),
         "参照が繰り上がる"
     );
     assert!(model.validate().is_ok(), "{:?}", model.validate());
 
     stack.undo(&mut model);
-    assert_eq!(
-        model.floor_regions[0].section(),
-        Some(SectionId(1)),
-        "undo で戻る"
-    );
+    assert_eq!(model.slabs[0].section(), Some(SectionId(1)), "undo で戻る");
     assert!(model.validate().is_ok(), "{:?}", model.validate());
 }
 
@@ -1307,7 +1287,6 @@ fn test_commands_reject_dangling_references() {
             "存在しない節点を境界に持つ床",
             Box::new(AddSlab {
                 boundary: vec![NodeId(0), NodeId(1), NodeId(9)],
-                joists: Vec::new(),
                 loads: Vec::new(),
                 method: DistributionMethod::TriTrapezoid,
                 usage: None,
@@ -1318,7 +1297,6 @@ fn test_commands_reject_dangling_references() {
             "存在しない断面を指す床",
             Box::new(AddSlab {
                 boundary: vec![NodeId(0), NodeId(1), NodeId(2)],
-                joists: Vec::new(),
                 loads: Vec::new(),
                 method: DistributionMethod::TriTrapezoid,
                 usage: None,
@@ -1554,39 +1532,37 @@ fn test_add_delete_slab_roundtrip() {
         &mut model,
         Box::new(AddSlab {
             boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
-            joists: vec![],
             loads: vec![],
             method: DistributionMethod::TriTrapezoid,
             usage: None,
             section: None,
         }),
     );
-    assert_eq!(model.floor_regions.len(), 1);
-    assert_eq!(model.floor_regions[0].id, FloorRegionId(0));
+    assert_eq!(model.slabs.len(), 1);
+    assert_eq!(model.slabs[0].id, SlabId(0));
     assert!(model.validate().is_ok());
 
-    // 採番の確認：2 枚目は FloorRegionId(1)
+    // 採番の確認：2 枚目は SlabId(1)
     stack.run(
         &mut model,
         Box::new(AddSlab {
             boundary: vec![NodeId(0), NodeId(1)],
-            joists: vec![],
             loads: vec![],
             method: DistributionMethod::OneWay,
             usage: None,
             section: None,
         }),
     );
-    assert_eq!(model.floor_regions.len(), 2);
-    assert_eq!(model.floor_regions[1].id, FloorRegionId(1));
+    assert_eq!(model.slabs.len(), 2);
+    assert_eq!(model.slabs[1].id, SlabId(1));
 
     stack.undo(&mut model);
-    assert_eq!(model.floor_regions.len(), 1);
-    assert_eq!(model.floor_regions[0].id, FloorRegionId(0));
+    assert_eq!(model.slabs.len(), 1);
+    assert_eq!(model.slabs[0].id, SlabId(0));
 
     stack.redo(&mut model);
-    assert_eq!(model.floor_regions.len(), 2);
-    assert_eq!(model.floor_regions[1].id, FloorRegionId(1));
+    assert_eq!(model.slabs.len(), 2);
+    assert_eq!(model.slabs[1].id, SlabId(1));
 }
 
 #[test]
@@ -1609,7 +1585,6 @@ fn test_delete_slab_middle_renumbers_and_roundtrips() {
             &mut model,
             Box::new(AddSlab {
                 boundary: vec![NodeId(i as u32)],
-                joists: vec![],
                 loads: vec![AreaLoad {
                     kind: kind.to_string(),
                     value: 1.0,
@@ -1620,27 +1595,16 @@ fn test_delete_slab_middle_renumbers_and_roundtrips() {
             }),
         );
     }
-    assert_eq!(model.floor_regions.len(), 3);
+    assert_eq!(model.slabs.len(), 3);
     let before = model.clone();
 
-    // 中間（FloorRegionId(1) = "B"）を削除 → 後続 ID が繰り上がる
-    stack.run(
-        &mut model,
-        Box::new(DeleteSlab {
-            id: FloorRegionId(1),
-        }),
-    );
-    assert_eq!(model.floor_regions.len(), 2);
-    assert_eq!(model.floor_regions[0].id, FloorRegionId(0));
-    assert_eq!(
-        model.floor_regions[0].plate.as_ref().unwrap().loads[0].kind,
-        "A"
-    );
-    assert_eq!(model.floor_regions[1].id, FloorRegionId(1));
-    assert_eq!(
-        model.floor_regions[1].plate.as_ref().unwrap().loads[0].kind,
-        "C"
-    );
+    // 中間（SlabId(1) = "B"）を削除 → 後続 ID が繰り上がる
+    stack.run(&mut model, Box::new(DeleteSlab { id: SlabId(1) }));
+    assert_eq!(model.slabs.len(), 2);
+    assert_eq!(model.slabs[0].id, SlabId(0));
+    assert_eq!(model.slabs[0].plate.loads[0].kind, "A");
+    assert_eq!(model.slabs[1].id, SlabId(1));
+    assert_eq!(model.slabs[1].plate.loads[0].kind, "C");
     assert!(model.validate().is_ok());
 
     // undo で完全復元
@@ -1649,27 +1613,19 @@ fn test_delete_slab_middle_renumbers_and_roundtrips() {
     assert!(model.validate().is_ok());
 
     stack.redo(&mut model);
-    assert_eq!(model.floor_regions.len(), 2);
-    assert_eq!(
-        model.floor_regions[1].plate.as_ref().unwrap().loads[0].kind,
-        "C"
-    );
+    assert_eq!(model.slabs.len(), 2);
+    assert_eq!(model.slabs[1].plate.loads[0].kind, "C");
 }
 
 #[test]
 fn test_delete_slab_out_of_range_is_noop() {
     let mut model = empty_model();
     let mut stack = UndoStack::new();
-    stack.run(
-        &mut model,
-        Box::new(DeleteSlab {
-            id: FloorRegionId(0),
-        }),
-    );
-    assert!(model.floor_regions.is_empty());
+    stack.run(&mut model, Box::new(DeleteSlab { id: SlabId(0) }));
+    assert!(model.slabs.is_empty());
     // 失敗したコマンド（Noop）は undo 履歴に積まれない。
     assert!(!stack.can_undo());
-    assert!(model.floor_regions.is_empty());
+    assert!(model.slabs.is_empty());
 }
 
 fn make_story(id: u32, weight: Option<f64>) -> squid_n_core::model::Story {
@@ -2437,26 +2393,16 @@ fn test_set_story_level_kind_roundtrip() {
 
 #[test]
 fn test_set_slab_joists_roundtrip() {
-    use squid_n_core::model::{DistributionMethod, JoistLine};
+    use squid_n_core::model::JoistLine;
     let mut model = seeded_model(4, 0);
+    model
+        .floor_regions
+        .push(squid_n_core::model::FloorRegion::new(
+            FloorRegionId(0),
+            vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
+        ));
     let mut stack = UndoStack::new();
-    stack.run(
-        &mut model,
-        Box::new(AddSlab {
-            boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
-            joists: vec![],
-            loads: vec![],
-            method: DistributionMethod::TriTrapezoid,
-            usage: None,
-            section: None,
-        }),
-    );
-    assert!(model.floor_regions[0]
-        .plate
-        .as_ref()
-        .unwrap()
-        .joists
-        .is_empty());
+    assert!(model.floor_regions[0].joists.is_empty());
 
     let joists = vec![JoistLine {
         dir: [0.0, 1.0],
@@ -2467,66 +2413,47 @@ fn test_set_slab_joists_roundtrip() {
     }];
     stack.run(
         &mut model,
-        Box::new(SetSlabJoists {
+        Box::new(SetFloorRegionJoists {
             id: FloorRegionId(0),
             joists: joists.clone(),
         }),
     );
-    assert_eq!(
-        model.floor_regions[0].plate.as_ref().unwrap().joists,
-        joists
-    );
+    assert_eq!(model.floor_regions[0].joists, joists);
 
     // undo で元の空 joists に戻る（対称逆操作）。
     stack.undo(&mut model);
-    assert!(model.floor_regions[0]
-        .plate
-        .as_ref()
-        .unwrap()
-        .joists
-        .is_empty());
+    assert!(model.floor_regions[0].joists.is_empty());
     stack.redo(&mut model);
-    assert_eq!(
-        model.floor_regions[0].plate.as_ref().unwrap().joists,
-        joists
-    );
+    assert_eq!(model.floor_regions[0].joists, joists);
 
     // 存在しない FloorRegionId は Noop（モデル不変・undo スタックも安全）。
     stack.run(
         &mut model,
-        Box::new(SetSlabJoists {
+        Box::new(SetFloorRegionJoists {
             id: FloorRegionId(99),
             joists: vec![],
         }),
     );
-    assert_eq!(
-        model.floor_regions[0].plate.as_ref().unwrap().joists,
-        joists
-    );
+    assert_eq!(model.floor_regions[0].joists, joists);
 }
 
 #[test]
 fn test_materialize_slab_joists_creates_beams() {
-    use squid_n_core::model::{DistributionMethod, ElementKind, EndCondition, JoistLine};
+    use squid_n_core::model::{ElementKind, EndCondition, JoistLine};
     let mut model = seeded_model(4, 0);
-    let mut stack = UndoStack::new();
-    stack.run(
-        &mut model,
-        Box::new(AddSlab {
-            boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
-            joists: vec![JoistLine {
-                dir: [0.0, 1.0],
-                spacing: 900.0,
-                support: [NodeId(0), NodeId(3)],
-                section: None,
-                pinned_onto: None,
-            }],
-            loads: vec![],
-            method: DistributionMethod::TriTrapezoid,
-            usage: None,
-            section: None,
-        }),
+    let mut region = squid_n_core::model::FloorRegion::new(
+        FloorRegionId(0),
+        vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
     );
+    region.joists = vec![JoistLine {
+        dir: [0.0, 1.0],
+        spacing: 900.0,
+        support: [NodeId(0), NodeId(3)],
+        section: None,
+        pinned_onto: None,
+    }];
+    model.floor_regions.push(region);
+    let mut stack = UndoStack::new();
     let before = model.elements.len();
 
     stack.run(
@@ -4369,17 +4296,18 @@ fn test_copy_story_counts_new_slabs_once() {
 
     let mut model = frame_model(&FrameSpec::default()).unwrap();
     // 3F の床を消して、2F から配り直せる状態にする。
-    model.floor_regions.retain(|sl| {
+    model.slabs.retain(|sl| {
         let z = model.nodes[sl.boundary_nodes().unwrap()[0].index()].coord[2];
         !(7000.0..8000.0).contains(&z)
     });
-    for (i, sl) in model.floor_regions.iter_mut().enumerate() {
-        sl.id = squid_n_core::ids::FloorRegionId(i as u32);
+    for (i, sl) in model.slabs.iter_mut().enumerate() {
+        sl.id = squid_n_core::ids::SlabId(i as u32);
     }
+    model.floor_regions.clear();
     assign_node_stories(&mut model);
-    for sl in &mut model.floor_regions {
-        sl.plate.as_mut().unwrap().usage = Some(SlabUsage::Office);
-        sl.plate.as_mut().unwrap().loads = vec![AreaLoad {
+    for sl in &mut model.slabs {
+        sl.plate.usage = Some(SlabUsage::Office);
+        sl.plate.loads = vec![AreaLoad {
             kind: "仕上".into(),
             value: 0.6,
         }];
@@ -4402,8 +4330,8 @@ fn test_copy_story_counts_new_slabs_once() {
 
     let mut stack = UndoStack::new();
     assert!(stack.run(&mut model, Box::new(cmd)));
-    let new_slabs: Vec<&squid_n_core::model::FloorRegion> = model
-        .floor_regions
+    let new_slabs: Vec<&squid_n_core::model::Slab> = model
+        .slabs
         .iter()
         .filter(|sl| {
             (model.nodes[sl.boundary_nodes().unwrap()[0].index()].coord[2] - 7500.0).abs() < 1.0
@@ -4412,10 +4340,8 @@ fn test_copy_story_counts_new_slabs_once() {
     assert_eq!(new_slabs.len(), 2);
     assert!(new_slabs
         .iter()
-        .all(|sl| sl.plate.as_ref().unwrap().usage == Some(SlabUsage::Office)));
-    assert!(new_slabs
-        .iter()
-        .all(|sl| sl.plate.as_ref().unwrap().loads.len() == 1));
+        .all(|sl| sl.plate.usage == Some(SlabUsage::Office)));
+    assert!(new_slabs.iter().all(|sl| sl.plate.loads.len() == 1));
     assert!(model.validate().is_ok(), "{:?}", model.validate());
 }
 
@@ -4433,7 +4359,7 @@ fn test_copy_story_overwrite_mirrors_absence() {
     assign_node_stories(&mut model);
     // 2F の床を 1 枚だけ消す（3F には両方ある状態にする）。
     let doomed = model
-        .floor_regions
+        .slabs
         .iter()
         .find(|sl| {
             (model.nodes[sl.boundary_nodes().unwrap()[0].index()].coord[2] - 4000.0).abs() < 1.0
@@ -4442,7 +4368,7 @@ fn test_copy_story_overwrite_mirrors_absence() {
         .expect("2F に床がある");
     crate::DeleteSlab { id: doomed }.apply(&mut model);
     let slabs_3f = |m: &Model| {
-        m.floor_regions
+        m.slabs
             .iter()
             .filter(|sl| {
                 (m.nodes[sl.boundary_nodes().unwrap()[0].index()].coord[2] - 7500.0).abs() < 1.0
@@ -4612,21 +4538,18 @@ fn test_copy_story_overwrite_keeps_slabs_outside_source_plan() {
             .map(|n| n.id)
             .expect("3F の節点がある")
     };
-    model.floor_regions.push(FloorRegion {
-        id: FloorRegionId(0),
-        name: String::new(),
-        shape: RegionShape::Enclosed {
+    model.slabs.push(Slab {
+        id: SlabId(0),
+        shape: SlabShape::Enclosed {
             boundary: vec![extra[0], extra[1], corner(6000.0, 0.0), corner(0.0, 0.0)],
         },
-        plate: Some(SlabPlate {
+        plate: SlabPlate {
             section: None,
             loads: Vec::new(),
             usage: None,
             method: squid_n_core::model::DistributionMethod::TriTrapezoid,
             one_way: None,
-            joists: Vec::new(),
-        }),
-        secondary_joist_ids: Vec::new(),
+        },
     });
     assign_node_stories(&mut model);
     assert!(model.validate().is_ok(), "{:?}", model.validate());
@@ -4910,13 +4833,14 @@ fn test_copy_story_remaps_slab_section_to_target_floor() {
 
     let mut model = frame_model(&FrameSpec::default()).unwrap();
     // 3F の床を消し、2F の床の断面へ階を持たせる。
-    model.floor_regions.retain(|sl| {
+    model.slabs.retain(|sl| {
         let z = model.nodes[sl.boundary_nodes().unwrap()[0].index()].coord[2];
         !(7000.0..8000.0).contains(&z)
     });
-    for (i, sl) in model.floor_regions.iter_mut().enumerate() {
-        sl.id = squid_n_core::ids::FloorRegionId(i as u32);
+    for (i, sl) in model.slabs.iter_mut().enumerate() {
+        sl.id = squid_n_core::ids::SlabId(i as u32);
     }
+    model.floor_regions.clear();
     model.sections[0].floor = Some("2F".into());
     assign_node_stories(&mut model);
     assert!(model.validate().is_ok(), "{:?}", model.validate());
@@ -4933,8 +4857,8 @@ fn test_copy_story_remaps_slab_section_to_target_floor() {
     let mut stack = UndoStack::new();
     assert!(stack.run(&mut model, Box::new(cmd)));
 
-    let new_slabs: Vec<&squid_n_core::model::FloorRegion> = model
-        .floor_regions
+    let new_slabs: Vec<&squid_n_core::model::Slab> = model
+        .slabs
         .iter()
         .filter(|sl| {
             (model.nodes[sl.boundary_nodes().unwrap()[0].index()].coord[2] - 7500.0).abs() < 1.0
@@ -4962,7 +4886,7 @@ fn test_copy_story_counts_new_slabs_once_with_deletion() {
     assign_node_stories(&mut model);
     // 床の平面位置（境界の最小 X）とレベルで 1 枚を選ぶ。
     let pick = |m: &Model, z: f64, x0: f64| {
-        m.floor_regions
+        m.slabs
             .iter()
             .find(|sl| {
                 let zs = m.nodes[sl.boundary_nodes().unwrap()[0].index()].coord[2];
@@ -4977,14 +4901,14 @@ fn test_copy_story_counts_new_slabs_once_with_deletion() {
             .map(|sl| sl.id)
             .expect("床がある")
     };
-    // 2F は左のパネルを、3F は右のパネルを消す。複製で 3F の左が作られ、右が消える。
+    // 2F は左の床板を、3F は右の床板を消す。複製で 3F の左が作られ、右が消える。
     let doomed = pick(&model, 4000.0, 0.0);
     crate::DeleteSlab { id: doomed }.apply(&mut model);
     let doomed3 = pick(&model, 7500.0, 6000.0);
     crate::DeleteSlab { id: doomed3 }.apply(&mut model);
-    for sl in &mut model.floor_regions {
-        sl.plate.as_mut().unwrap().usage = Some(SlabUsage::Office);
-        sl.plate.as_mut().unwrap().loads = vec![AreaLoad {
+    for sl in &mut model.slabs {
+        sl.plate.usage = Some(SlabUsage::Office);
+        sl.plate.loads = vec![AreaLoad {
             kind: "仕上".into(),
             value: 0.6,
         }];
@@ -5150,7 +5074,7 @@ fn add_delete_secondary_member() {
 /// 二次部材削除時に `Slab.secondary_joist_ids` から除去されること。
 #[test]
 fn delete_secondary_member_cascade_slab() {
-    use squid_n_core::model::{DistributionMethod, SecondaryMemberKind};
+    use squid_n_core::model::SecondaryMemberKind;
     let mut model = sm_base_model();
     let mut stack = UndoStack::new();
 
@@ -5173,17 +5097,12 @@ fn delete_secondary_member_cascade_slab() {
             support_spring: None,
         });
     }
-    stack.run(
-        &mut model,
-        Box::new(AddSlab {
-            boundary: vec![NodeId(0), NodeId(1), NodeId(3), NodeId(2)],
-            joists: vec![],
-            loads: vec![],
-            method: DistributionMethod::TriTrapezoid,
-            usage: None,
-            section: None,
-        }),
-    );
+    // 二次部材が属す床領域（大梁の区画）。区画そのものは自動生成対象だが、
+    // このテストは `secondary_joist_ids` の追随だけを見るため直接組み立てる。
+    model.floor_regions.push(FloorRegion::new(
+        FloorRegionId(0),
+        vec![NodeId(0), NodeId(1), NodeId(3), NodeId(2)],
+    ));
     stack.run(
         &mut model,
         Box::new(SetSlabSecondaryJoistIds {
@@ -5246,7 +5165,7 @@ fn delete_secondary_member_cascade_wall_region() {
 /// undo で削除した二次部材が元の位置・参照と共に復元されること。
 #[test]
 fn undo_delete_secondary_member() {
-    use squid_n_core::model::{DistributionMethod, SecondaryMemberKind, WallRegion};
+    use squid_n_core::model::{SecondaryMemberKind, WallRegion};
     let mut model = sm_base_model();
     let mut stack = UndoStack::new();
 
@@ -5279,17 +5198,10 @@ fn undo_delete_secondary_member() {
             support_spring: None,
         });
     }
-    stack.run(
-        &mut model,
-        Box::new(AddSlab {
-            boundary: vec![NodeId(0), NodeId(1), NodeId(3), NodeId(2)],
-            joists: vec![],
-            loads: vec![],
-            method: DistributionMethod::TriTrapezoid,
-            usage: None,
-            section: None,
-        }),
-    );
+    model.floor_regions.push(FloorRegion::new(
+        FloorRegionId(0),
+        vec![NodeId(0), NodeId(1), NodeId(3), NodeId(2)],
+    ));
     stack.run(
         &mut model,
         Box::new(SetSlabSecondaryJoistIds {
@@ -5369,7 +5281,7 @@ fn add_delete_wall_region() {
 /// `SetSlabSecondaryJoistIds` で Joist でない ID を渡すとエラー（Noop）になること。
 #[test]
 fn set_slab_secondary_joist_ids_validation() {
-    use squid_n_core::model::{DistributionMethod, SecondaryMemberKind};
+    use squid_n_core::model::SecondaryMemberKind;
     let mut model = sm_base_model();
     let mut stack = UndoStack::new();
 
@@ -5393,17 +5305,10 @@ fn set_slab_secondary_joist_ids_validation() {
             support_spring: None,
         });
     }
-    stack.run(
-        &mut model,
-        Box::new(AddSlab {
-            boundary: vec![NodeId(0), NodeId(1), NodeId(3), NodeId(2)],
-            joists: vec![],
-            loads: vec![],
-            method: DistributionMethod::TriTrapezoid,
-            usage: None,
-            section: None,
-        }),
-    );
+    model.floor_regions.push(FloorRegion::new(
+        FloorRegionId(0),
+        vec![NodeId(0), NodeId(1), NodeId(3), NodeId(2)],
+    ));
 
     // Post（SM0）を secondary_joist_ids に設定しようとしても Noop になる。
     let changed = stack.run(
@@ -5547,7 +5452,7 @@ fn test_add_wall_region_rejects_non_wall_elem() {
 /// SetSlabSecondaryJoistIds: undo で元リストに戻ること。
 #[test]
 fn test_set_slab_secondary_joist_ids_roundtrip() {
-    use squid_n_core::model::{DistributionMethod, SecondaryMemberKind};
+    use squid_n_core::model::SecondaryMemberKind;
     let mut model = seeded_model(4, 0);
     // 小梁（Joist）を 2 本追加
     for i in 0..2u32 {
@@ -5561,23 +5466,13 @@ fn test_set_slab_secondary_joist_ids_roundtrip() {
                 name: format!("J{}", i),
             });
     }
-    // 床を追加（secondary_joist_ids = [SmId(0)]）
-    model.floor_regions.push(squid_n_core::model::FloorRegion {
-        id: FloorRegionId(0),
-        name: String::new(),
-        shape: RegionShape::Enclosed {
-            boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
-        },
-        plate: Some(SlabPlate {
-            section: None,
-            loads: vec![],
-            usage: None,
-            method: DistributionMethod::TriTrapezoid,
-            one_way: None,
-            joists: vec![],
-        }),
-        secondary_joist_ids: vec![squid_n_core::ids::SecondaryMemberId(0)],
-    });
+    // 床領域を追加（secondary_joist_ids = [SmId(0)]）
+    let mut region = FloorRegion::new(
+        FloorRegionId(0),
+        vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
+    );
+    region.secondary_joist_ids = vec![squid_n_core::ids::SecondaryMemberId(0)];
+    model.floor_regions.push(region);
     let mut stack = UndoStack::new();
 
     // [SmId(1)] に置換
@@ -5668,12 +5563,14 @@ fn test_copy_story_secondary_keeps_id_index_invariant() {
     assert!(model.validate().is_ok());
 }
 
-/// 階への複製（床）で、複製先の床が複製元の小梁を自分の子として抱え込まないこと。
+/// 階への複製（床）は床板（`Slab`）だけを写し、床領域（`FloorRegion`）の
+/// 小梁登録には触れないこと。
 ///
-/// 写すと 2 つの階の床が同じ小梁 ID を持ち、床荷重を二重に拾う。`validate` は
-/// 床をまたいだ重複を見ないため、黙って誤ったモデルになる。
+/// 床領域は大梁の区画（`rebuild_floor_regions` が結び直す）であり、床板の
+/// 複製操作の対象外。もし複製が床領域へ誤って波及すると、2F の小梁登録が
+/// 3F の床領域にも紛れ込み、床荷重を二重に拾う。
 #[test]
-fn test_copy_story_slab_does_not_inherit_source_joist_ids() {
+fn test_copy_story_slab_copy_does_not_touch_floor_regions() {
     use crate::{CopyStory, CopyTargets};
     use squid_n_core::frame_gen::{frame_model, FrameSpec};
     use squid_n_core::ids::StoryId;
@@ -5686,12 +5583,6 @@ fn test_copy_story_slab_does_not_inherit_source_joist_ids() {
         .filter(|n| n.story == Some(StoryId(1)))
         .map(|n| n.id)
         .collect();
-    let n3f: Vec<NodeId> = model
-        .nodes
-        .iter()
-        .filter(|n| n.story == Some(StoryId(2)))
-        .map(|n| n.id)
-        .collect();
     model
         .secondary_members
         .push(squid_n_core::model::SecondaryMember {
@@ -5701,22 +5592,28 @@ fn test_copy_story_slab_does_not_inherit_source_joist_ids() {
             section: None,
             name: "J1".into(),
         });
-    // 2F の床へ小梁 SM0 を登録する。
+    // 2F の床領域へ小梁 SM0 を登録する。
     let src = model
         .floor_regions
         .iter()
-        .position(|sl| sl.boundary_nodes().unwrap().iter().all(|n| n2f.contains(n)))
-        .expect("2F に床がある");
+        .position(|fr| fr.boundary.iter().all(|n| n2f.contains(n)))
+        .expect("2F に床領域がある");
     model.floor_regions[src].secondary_joist_ids = vec![SecondaryMemberId(0)];
-    // 3F の床を消して、複製で「新規作成」が起きる状況にする。
-    model
-        .floor_regions
-        .retain(|sl| !sl.boundary_nodes().unwrap().iter().all(|n| n3f.contains(n)));
-    for (i, sl) in model.floor_regions.iter_mut().enumerate() {
-        sl.id = squid_n_core::ids::FloorRegionId(i as u32);
-    }
+    // 3F の床板を消して、複製で「新規作成」が起きる状況にする
+    // （`retain_slabs` で床領域の `slab_ids` からの参照も一緒に落とす）。
+    let n3f: Vec<NodeId> = model
+        .nodes
+        .iter()
+        .filter(|n| n.story == Some(StoryId(2)))
+        .map(|n| n.id)
+        .collect();
+    model.retain_slabs(|sl| {
+        !sl.boundary_nodes()
+            .is_some_and(|b| b.iter().all(|n| n3f.contains(n)))
+    });
     assert!(model.validate().is_ok(), "前提: {:?}", model.validate());
-    let before = model.floor_regions.len();
+    let regions_before = model.floor_regions.clone();
+    let slabs_before = model.slabs.len();
 
     let mut stack = UndoStack::new();
     assert!(stack.run(
@@ -5731,14 +5628,11 @@ fn test_copy_story_slab_does_not_inherit_source_joist_ids() {
             overwrite: true,
         }),
     ));
-    assert!(model.floor_regions.len() > before, "3F の床が作られる");
-    for sl in &model.floor_regions[before..] {
-        assert!(
-            sl.secondary_joist_ids.is_empty(),
-            "複製先の床が複製元の小梁を参照している: {:?}",
-            sl.secondary_joist_ids
-        );
-    }
+    assert!(model.slabs.len() > slabs_before, "3F の床板が作られる");
+    assert_eq!(
+        model.floor_regions, regions_before,
+        "床板の複製は床領域（小梁登録を含む）に触れない"
+    );
     assert!(model.validate().is_ok(), "{:?}", model.validate());
 }
 
@@ -5774,11 +5668,11 @@ fn test_delete_member_clears_wall_region_wall() {
     assert!(model.validate().is_ok(), "{:?}", model.validate());
 }
 
-/// 取り付き領域を追加し、undo で消える。取付き先が実在しない節点なら Noop。
+/// 取り付く床板を追加し、undo で消える。取付き先が実在しない節点なら Noop。
 #[test]
-fn test_add_attached_floor_region_roundtrip() {
+fn test_add_attached_slab_roundtrip() {
     use squid_n_core::ids::NodeId;
-    use squid_n_core::model::{LoadTransfer, RegionAnchor, RegionShape};
+    use squid_n_core::model::{LoadTransfer, RegionAnchor, SlabPlate};
 
     let mut model = Model::default();
     for i in 0..2u32 {
@@ -5793,57 +5687,50 @@ fn test_add_attached_floor_region_roundtrip() {
     }
     let mut undo = UndoStack::default();
 
-    let cmd = crate::AddAttachedFloorRegion {
-        name: "バルコニー".into(),
+    let cmd = crate::AddAttachedSlab {
         anchor: RegionAnchor::Line {
             nodes: [NodeId(0), NodeId(1)],
             span: [0.0, 1.0],
             transfer: LoadTransfer::Anchor,
         },
         extent: [1500.0, 1500.0],
-        plate: None,
+        plate: SlabPlate::default(),
     };
     assert!(undo.run(&mut model, Box::new(cmd)));
-    assert_eq!(model.floor_regions.len(), 1);
-    assert_eq!(model.floor_regions[0].name, "バルコニー");
-    assert!(model.floor_regions[0].is_attached());
+    assert_eq!(model.slabs.len(), 1);
+    assert!(model.slabs[0].is_attached());
     assert!(model.validate().is_ok(), "{:?}", model.validate());
 
     undo.undo(&mut model);
-    assert!(model.floor_regions.is_empty(), "undo で消える");
+    assert!(model.slabs.is_empty(), "undo で消える");
 
-    // 実在しない節点を指す取り付き領域は作らない。
-    let bad = crate::AddAttachedFloorRegion {
-        name: String::new(),
+    // 実在しない節点を指す取り付く床板は作らない。
+    let bad = crate::AddAttachedSlab {
         anchor: RegionAnchor::Point(NodeId(9)),
         extent: [1000.0, 1000.0],
-        plate: None,
+        plate: SlabPlate::default(),
     };
     assert!(!undo.run(&mut model, Box::new(bad)));
-    assert!(model.floor_regions.is_empty());
+    assert!(model.slabs.is_empty());
 
     // 部分区間は荷重を載せる経路がないため受け付けない。
-    let partial = crate::AddAttachedFloorRegion {
-        name: String::new(),
+    let partial = crate::AddAttachedSlab {
         anchor: RegionAnchor::Line {
             nodes: [NodeId(0), NodeId(1)],
             span: [0.25, 0.75],
             transfer: LoadTransfer::Anchor,
         },
         extent: [1000.0, 1000.0],
-        plate: None,
+        plate: SlabPlate::default(),
     };
     assert!(!undo.run(&mut model, Box::new(partial)));
-    let _ = RegionShape::Enclosed {
-        boundary: Vec::new(),
-    };
 }
 
-/// plate: None、extent 1000,1000 の取り付き追加が往復する。
+/// 断面未割当、extent 1000,1000 の取り付く床板の追加が往復する。
 #[test]
-fn test_add_attached_plateless_extent_1000_roundtrip() {
+fn test_add_attached_slab_sectionless_extent_1000_roundtrip() {
     use squid_n_core::ids::NodeId;
-    use squid_n_core::model::{LoadTransfer, RegionAnchor, RegionShape};
+    use squid_n_core::model::{LoadTransfer, RegionAnchor, SlabPlate, SlabShape};
 
     let mut model = Model::default();
     for i in 0..2u32 {
@@ -5859,54 +5746,56 @@ fn test_add_attached_plateless_extent_1000_roundtrip() {
     let mut undo = UndoStack::default();
     assert!(undo.run(
         &mut model,
-        Box::new(crate::AddAttachedFloorRegion {
-            name: String::new(),
+        Box::new(crate::AddAttachedSlab {
             anchor: RegionAnchor::Line {
                 nodes: [NodeId(0), NodeId(1)],
                 span: [0.0, 1.0],
                 transfer: LoadTransfer::Anchor,
             },
             extent: [1000.0, 1000.0],
-            plate: None,
+            plate: SlabPlate::default(),
         })
     ));
-    assert_eq!(model.floor_regions.len(), 1);
-    assert!(model.floor_regions[0].plate.is_none());
-    match &model.floor_regions[0].shape {
-        RegionShape::Attached { extent, .. } => assert_eq!(*extent, [1000.0, 1000.0]),
+    assert_eq!(model.slabs.len(), 1);
+    assert!(model.slabs[0].plate.section.is_none());
+    match &model.slabs[0].shape {
+        SlabShape::Attached { extent, .. } => assert_eq!(*extent, [1000.0, 1000.0]),
         other => panic!("{other:?}"),
     }
     undo.undo(&mut model);
-    assert!(model.floor_regions.is_empty());
+    assert!(model.slabs.is_empty());
 }
 
 /// SetAttachedExtent / SetAttachedAnchor の Noop。
 #[test]
 fn test_set_attached_extent_and_anchor_noop() {
-    use squid_n_core::ids::{FloorRegionId, NodeId};
-    use squid_n_core::model::{LoadTransfer, RegionAnchor};
+    use squid_n_core::ids::{NodeId, SlabId};
+    use squid_n_core::model::{LoadTransfer, RegionAnchor, Slab, SlabPlate, SlabShape};
 
     let mut model = seeded_model(4, 0);
-    model.floor_regions.push(FloorRegion::enclosed(
-        FloorRegionId(0),
-        vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
-    ));
+    model.slabs.push(Slab {
+        id: SlabId(0),
+        shape: SlabShape::Enclosed {
+            boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
+        },
+        plate: SlabPlate::default(),
+    });
     let mut undo = UndoStack::default();
     assert!(
         !undo.run(
             &mut model,
             Box::new(crate::SetAttachedExtent {
-                id: FloorRegionId(0),
+                id: SlabId(0),
                 extent: [1500.0, 1500.0],
             })
         ),
-        "囲まれ領域への張り出し変更は Noop"
+        "囲まれ床板への張り出し変更は Noop"
     );
     assert!(
         !undo.run(
             &mut model,
             Box::new(crate::SetAttachedExtent {
-                id: FloorRegionId(9),
+                id: SlabId(9),
                 extent: [1500.0, 1500.0],
             })
         ),
@@ -5915,18 +5804,17 @@ fn test_set_attached_extent_and_anchor_noop() {
 
     assert!(undo.run(
         &mut model,
-        Box::new(crate::AddAttachedFloorRegion {
-            name: String::new(),
+        Box::new(crate::AddAttachedSlab {
             anchor: RegionAnchor::Line {
                 nodes: [NodeId(0), NodeId(1)],
                 span: [0.0, 1.0],
                 transfer: LoadTransfer::Anchor,
             },
             extent: [1000.0, 1000.0],
-            plate: None,
+            plate: SlabPlate::default(),
         })
     ));
-    let aid = model.floor_regions.last().unwrap().id;
+    let aid = model.slabs.last().unwrap().id;
     assert!(
         !undo.run(
             &mut model,
@@ -5941,11 +5829,11 @@ fn test_set_attached_extent_and_anchor_noop() {
         !undo.run(
             &mut model,
             Box::new(crate::SetAttachedAnchor {
-                id: FloorRegionId(0),
+                id: SlabId(0),
                 anchor: RegionAnchor::Point(NodeId(0)),
             })
         ),
-        "囲まれ領域への取付き先変更は Noop"
+        "囲まれ床板への取付き先変更は Noop"
     );
     assert!(
         !undo.run(
@@ -5973,39 +5861,45 @@ fn test_set_attached_extent_and_anchor_noop() {
     );
 }
 
-/// SetSlabSection は版なしに plate を付け、None で plate を外す。
+/// SetSlabSection は断面未割当の床板に断面を付け、None で断面を外す。
 #[test]
-fn test_set_slab_section_adds_and_removes_plate() {
-    use squid_n_core::ids::{FloorRegionId, SectionId};
+fn test_set_slab_section_sets_and_clears_section() {
+    use squid_n_core::ids::{SectionId, SlabId};
+    use squid_n_core::model::{Slab, SlabPlate, SlabShape};
 
     let mut model = seeded_model(4, 0);
     model.sections.push(bare_section(SectionId(0), None));
-    model.floor_regions.push(FloorRegion::enclosed(
-        FloorRegionId(0),
-        vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
-    ));
-    assert!(model.floor_regions[0].plate.is_none());
+    model.slabs.push(Slab {
+        id: SlabId(0),
+        shape: SlabShape::Enclosed {
+            boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
+        },
+        plate: SlabPlate::default(),
+    });
+    assert!(model.slabs[0].plate.section.is_none());
     let mut undo = UndoStack::default();
     assert!(
         undo.run(
             &mut model,
             Box::new(crate::SetSlabSection {
-                id: FloorRegionId(0),
+                id: SlabId(0),
                 section: Some(SectionId(0)),
             })
         ),
-        "版なしへ断面を付ける"
+        "断面未割当へ断面を付ける"
     );
-    assert!(model.floor_regions[0].plate.is_some());
-    assert_eq!(model.floor_regions[0].section(), Some(SectionId(0)));
+    assert_eq!(model.slabs[0].section(), Some(SectionId(0)));
     assert!(undo.run(
         &mut model,
         Box::new(crate::SetSlabSection {
-            id: FloorRegionId(0),
+            id: SlabId(0),
             section: None,
         })
     ));
-    assert!(model.floor_regions[0].plate.is_none(), "None で版が外れる");
+    assert!(
+        model.slabs[0].plate.section.is_none(),
+        "None で断面が外れる"
+    );
 }
 
 /// 床領域の名前を変更し、undo で戻る。同じ名前・存在しない ID は Noop。
@@ -6017,7 +5911,7 @@ fn test_set_floor_region_name_roundtrip() {
     let mut model = Model::default();
     model
         .floor_regions
-        .push(FloorRegion::enclosed(FloorRegionId(0), Vec::new()));
+        .push(FloorRegion::new(FloorRegionId(0), Vec::new()));
     let mut undo = UndoStack::default();
 
     assert!(undo.run(
@@ -6048,65 +5942,49 @@ fn test_set_floor_region_name_roundtrip() {
     ));
 }
 
-/// 階複製は床領域の表示名を引き継ぎ、取り付き領域は複製せず見送り件数へ数える。
+/// 階複製（床板）は取り付く床板を複製せず見送り件数へ数える。
+///
+/// 床領域（大梁の区画）は `CopyStory` の対象外（`rebuild_floor_regions` が
+/// 別途結び直す）。ここでは床板（`Slab`）の複製だけを見る。
 #[test]
-fn test_copy_story_carries_region_name_and_skips_attached() {
+fn test_copy_story_skips_attached_slabs() {
     use crate::{CopyStory, CopyTargets};
     use squid_n_core::frame_gen::{frame_model, FrameSpec};
     use squid_n_core::ids::StoryId;
-    use squid_n_core::model::{LoadTransfer, RegionAnchor};
+    use squid_n_core::model::{LoadTransfer, RegionAnchor, SlabPlate};
 
     let mut model = frame_model(&FrameSpec::default()).unwrap();
-    // 3F の床を消して、2F から配り直せる状態にする。
-    model.floor_regions.retain(|sl| {
-        let z = model.nodes[sl.boundary_nodes().unwrap()[0].index()].coord[2];
-        !(7000.0..8000.0).contains(&z)
-    });
-    for (i, sl) in model.floor_regions.iter_mut().enumerate() {
-        sl.id = squid_n_core::ids::FloorRegionId(i as u32);
-    }
     assign_node_stories(&mut model);
 
-    // 2F の床領域に名前を付け、同じ階に取り付き領域（バルコニー）を足す。
+    // 2F に取り付く床板（バルコニー）を足す。
     let src = model
-        .floor_regions
+        .slabs
         .iter()
         .position(|sl| {
             let z = model.nodes[sl.boundary_nodes().unwrap()[0].index()].coord[2];
             (3000.0..5000.0).contains(&z)
         })
-        .expect("2F の床領域");
-    model.floor_regions[src].name = "階段室".into();
+        .expect("2F の床板");
     let anchor_nodes = {
-        let b = model.floor_regions[src].boundary_nodes().unwrap();
+        let b = model.slabs[src].boundary_nodes().unwrap();
         [b[0], b[1]]
     };
     let mut undo = UndoStack::default();
     assert!(undo.run(
         &mut model,
-        Box::new(crate::AddAttachedFloorRegion {
-            name: "バルコニー".into(),
+        Box::new(crate::AddAttachedSlab {
             anchor: RegionAnchor::Line {
                 nodes: anchor_nodes,
                 span: [0.0, 1.0],
                 transfer: LoadTransfer::Anchor,
             },
             extent: [1500.0, 1500.0],
-            plate: None,
+            plate: SlabPlate::default(),
         })
     ));
     assert!(model.validate().is_ok(), "{:?}", model.validate());
 
-    let attached_before = model
-        .floor_regions
-        .iter()
-        .filter(|r| r.is_attached())
-        .count();
-    let named_before = model
-        .floor_regions
-        .iter()
-        .filter(|r| r.name == "階段室")
-        .count();
+    let attached_before = model.slabs.iter().filter(|s| s.is_attached()).count();
 
     let cmd = CopyStory {
         from: StoryId(1),
@@ -6118,33 +5996,20 @@ fn test_copy_story_carries_region_name_and_skips_attached() {
         overwrite: true,
     };
     let report = cmd.preview(&model);
-    assert!(report.skipped > 0, "取り付き領域を見送り件数へ数える");
+    assert!(report.skipped > 0, "取り付く床板を見送り件数へ数える");
 
     undo.run(&mut model, Box::new(cmd));
-    assert!(
-        model
-            .floor_regions
-            .iter()
-            .filter(|r| r.name == "階段室")
-            .count()
-            > named_before,
-        "名前を引き継いだ床領域が複製先にもできる"
-    );
     assert_eq!(
-        model
-            .floor_regions
-            .iter()
-            .filter(|r| r.is_attached())
-            .count(),
+        model.slabs.iter().filter(|s| s.is_attached()).count(),
         attached_before,
-        "取り付き領域は複製しない"
+        "取り付く床板は複製しない"
     );
     assert!(model.validate().is_ok(), "{:?}", model.validate());
 }
 
-/// 版なし enclosed は複製先でも plate.is_none() のまま。
+/// 断面未割当の enclosed 床板は複製先でも断面未割当のまま。
 #[test]
-fn test_copy_story_keeps_plateless_enclosed() {
+fn test_copy_story_keeps_sectionless_enclosed_slab() {
     use crate::{CopyStory, CopyTargets};
     use squid_n_core::frame_gen::{frame_model, FrameSpec};
     use squid_n_core::ids::StoryId;
@@ -6153,24 +6018,23 @@ fn test_copy_story_keeps_plateless_enclosed() {
     assign_node_stories(&mut model);
     let src_z = model.stories[1].elevation;
     let src = model
-        .floor_regions
+        .slabs
         .iter()
-        .position(|r| {
-            r.boundary_nodes()
+        .position(|sl| {
+            sl.boundary_nodes()
                 .is_some_and(|b| (model.nodes[b[0].index()].coord[2] - src_z).abs() < 1.0)
         })
-        .expect("2F の床領域");
-    model.floor_regions[src].plate = None;
-    model.floor_regions[src].name = "吹抜け".into();
+        .expect("2F の床板");
+    model.slabs[src].plate.section = None;
     let to_z = model.stories[2].elevation;
-    let doomed: Vec<squid_n_core::ids::FloorRegionId> = model
-        .floor_regions
+    let doomed: Vec<squid_n_core::ids::SlabId> = model
+        .slabs
         .iter()
-        .filter(|r| {
-            r.boundary_nodes()
+        .filter(|sl| {
+            sl.boundary_nodes()
                 .is_some_and(|b| (model.nodes[b[0].index()].coord[2] - to_z).abs() < 1.0)
         })
-        .map(|r| r.id)
+        .map(|sl| sl.id)
         .collect();
     for id in doomed.into_iter().rev() {
         crate::DeleteSlab { id }.apply(&mut model);
@@ -6190,13 +6054,20 @@ fn test_copy_story_keeps_plateless_enclosed() {
         })
     ));
     let copied: Vec<_> = model
-        .floor_regions
+        .slabs
         .iter()
-        .filter(|r| r.name == "吹抜け")
+        .filter(|sl| {
+            sl.boundary_nodes()
+                .is_some_and(|b| (model.nodes[b[0].index()].coord[2] - to_z).abs() < 1.0)
+        })
         .collect();
-    assert!(copied.len() >= 2, "複製先にも吹抜けがある");
-    assert!(
-        copied.iter().all(|r| r.plate.is_none()),
-        "版なし enclosed は plate が付かない"
+    assert!(copied.len() >= 2, "複製先にも床板ができる");
+    assert_eq!(
+        copied
+            .iter()
+            .filter(|sl| sl.plate.section.is_none())
+            .count(),
+        1,
+        "断面未割当の enclosed 床板は断面が付かないまま複製される"
     );
 }

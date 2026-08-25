@@ -5,7 +5,7 @@
 //! - [`distribute_rect_with_joists`] — 小梁による二段階伝達（矩形スラブ）
 
 use squid_n_core::ids::{ElemId, NodeId};
-use squid_n_core::model::{DistributionMethod, ElementKind, FloorRegion, Model, OneWayDir};
+use squid_n_core::model::{DistributionMethod, ElementKind, FloorRegion, Model, OneWayDir, Slab};
 
 use super::fem::{fem_trapezoid, fem_triangle, fem_uniform};
 use super::geometry::{dist3, edge_len};
@@ -45,14 +45,14 @@ fn classify_rect_edges_by_axis(coords: &[[f64; 3]], axis: [f64; 2]) -> ([usize; 
 
 /// 矩形床の分配（三角形・台形（45°）／一方向／負担面積法）。`coords` は境界4頂点の座標。
 pub(crate) fn distribute_rect(
-    region: &FloorRegion,
+    slab: &Slab,
     coords: &[[f64; 3]],
     lx: f64,
     ly: f64,
     w: f64,
     loads: &mut Vec<BeamLoad>,
 ) {
-    match region.method() {
+    match slab.method() {
         DistributionMethod::TriTrapezoid => {
             let is_square = (lx - ly).abs() < 1e-6;
             if is_square {
@@ -85,7 +85,7 @@ pub(crate) fn distribute_rect(
             }
         }
         DistributionMethod::OneWay => {
-            if let Some(dir) = region.one_way() {
+            if let Some(dir) = slab.one_way() {
                 distribute_one_way_dir(coords, dir, w, loads);
             } else {
                 // 従来互換（`one_way` 未指定）: 辺0・2負担（＝辺1方向スパン）。

@@ -1,7 +1,6 @@
 use super::*;
 use crate::transform::LocalFrame;
 use squid_n_core::ids::{ElemId, NodeId};
-use squid_n_core::model::RegionShape;
 use squid_n_core::model::{
     ElementData, ElementKind, EndCondition, LocalAxis, Material, MaterialCategory, Model, Node,
     RigidZone, Section,
@@ -184,9 +183,10 @@ fn test_beam_new_src_cft_composite_props() {
 #[test]
 fn test_beam_new_slab_cooperation_width_amplifies_iy() {
     use squid_n_core::dof::Dof6Mask;
-    use squid_n_core::ids::{FloorRegionId, MaterialId, SectionId};
+    use squid_n_core::ids::{FloorRegionId, MaterialId, SectionId, SlabId};
     use squid_n_core::model::{
-        DistributionMethod, EndCondition, FloorRegion, ForceRegime, LocalAxis, Model, SlabPlate,
+        DistributionMethod, EndCondition, FloorRegion, ForceRegime, LocalAxis, Model, Slab,
+        SlabPlate, SlabShape,
     };
     use squid_n_core::section_shape::{BarSet, RcRebar, SectionShape, ShearBar};
 
@@ -244,21 +244,22 @@ fn test_beam_new_slab_cooperation_width_amplifies_iy() {
             fc: Some(24.0),
             fy: None,
         }],
-        floor_regions: vec![FloorRegion {
-            id: FloorRegionId(0),
-            name: String::new(),
-            shape: RegionShape::Enclosed {
+        floor_regions: vec![FloorRegion::new(
+            FloorRegionId(0),
+            vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
+        )],
+        slabs: vec![Slab {
+            id: SlabId(0),
+            shape: SlabShape::Enclosed {
                 boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
             },
-            plate: Some(SlabPlate {
+            plate: SlabPlate {
                 section: Some(SectionId(1)),
                 loads: vec![],
                 usage: None,
                 method: DistributionMethod::TriTrapezoid,
                 one_way: None,
-                joists: vec![],
-            }),
-            secondary_joist_ids: vec![],
+            },
         }],
         slab_thickness: 150.0,
         ..Default::default()
@@ -308,15 +309,153 @@ fn test_beam_new_slab_cooperation_width_amplifies_iy() {
     assert!((beam.iy - model.sections[0].iz).abs() < 1e-9);
 
     // 版を外すと増大しない（建物一律の `slab_thickness` は判定に使わない）
-    model.floor_regions[0].plate = None;
+    model.slabs.clear();
     let beam0 = BeamElement::new(&elem, &model);
     assert!((beam0.iz - i0).abs() < 1e-9);
 }
 
+/// 床領域（大梁の1区画）が小梁で複数の床板（`Slab`）へ細分されていても、
+/// 区画の外周を走る大梁のスラブ協力幅は効く（境界の判定は `FloorRegion::boundary`
+/// を優先するため。個々の床板の境界だけで判定すると、大梁の両端が別々の床板
+/// にまたがり、どちらの床板にも「両端を含む境界」が無くなって増大が消える
+/// 回帰が起きる）。
+#[test]
+fn test_beam_new_slab_cooperation_width_survives_joist_subdivided_region() {
+    use squid_n_core::dof::Dof6Mask;
+    use squid_n_core::ids::{FloorRegionId, MaterialId, SectionId, SlabId};
+    use squid_n_core::model::{
+        DistributionMethod, EndCondition, FloorRegion, ForceRegime, LocalAxis, Model, Slab,
+        SlabPlate, SlabShape,
+    };
+    use squid_n_core::section_shape::{BarSet, RcRebar, SectionShape, ShearBar};
+
+    let make_node = |id: u32, coord: [f64; 3]| Node {
+        id: NodeId(id),
+        coord,
+        restraint: Dof6Mask::FREE,
+        mass: None,
+        story: None,
+        support_spring: None,
+    };
+    let shape = SectionShape::RcRect {
+        b: 300.0,
+        d: 600.0,
+        rebar: RcRebar {
+            main_x: BarSet {
+                count: 4,
+                dia: 22.0,
+                layers: 1,
+            },
+            main_y: BarSet {
+                count: 4,
+                dia: 22.0,
+                layers: 1,
+            },
+            cover: 40.0,
+            shear: ShearBar {
+                dia: 10.0,
+                pitch: 100.0,
+                legs: 2,
+            },
+        },
+    };
+    // 区画は 6000×5000 の矩形（節点 0-1-2-3）。中央の小梁（節点 4-5）が
+    // これを 2 枚の床板（0: y=0..2500, 1: y=2500..5000）へ細分する。
+    let model = Model {
+        nodes: vec![
+            make_node(0, [0.0, 0.0, 3000.0]),
+            make_node(1, [6000.0, 0.0, 3000.0]),
+            make_node(2, [6000.0, 5000.0, 3000.0]),
+            make_node(3, [0.0, 5000.0, 3000.0]),
+            make_node(4, [6000.0, 2500.0, 3000.0]),
+            make_node(5, [0.0, 2500.0, 3000.0]),
+        ],
+        sections: vec![
+            shape.to_section(SectionId(0), "RC-300x600".into()),
+            SectionShape::RcSlab { thickness: 150.0 }.to_section(SectionId(1), "S15".into()),
+        ],
+        materials: vec![Material {
+            strength_factor: None,
+            concrete_class: Default::default(),
+            id: MaterialId(0),
+            name: "FC24".into(),
+            category: MaterialCategory::Concrete,
+            young: 23000.0,
+            poisson: 0.2,
+            density: 2.4e-9,
+            shear: None,
+            fc: Some(24.0),
+            fy: None,
+        }],
+        floor_regions: vec![FloorRegion {
+            slab_ids: vec![SlabId(0), SlabId(1)],
+            ..FloorRegion::new(
+                FloorRegionId(0),
+                vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
+            )
+        }],
+        slabs: vec![
+            Slab {
+                id: SlabId(0),
+                shape: SlabShape::Enclosed {
+                    boundary: vec![NodeId(0), NodeId(1), NodeId(4), NodeId(5)],
+                },
+                plate: SlabPlate {
+                    section: Some(SectionId(1)),
+                    loads: vec![],
+                    usage: None,
+                    method: DistributionMethod::TriTrapezoid,
+                    one_way: None,
+                },
+            },
+            Slab {
+                id: SlabId(1),
+                shape: SlabShape::Enclosed {
+                    boundary: vec![NodeId(5), NodeId(4), NodeId(2), NodeId(3)],
+                },
+                plate: SlabPlate {
+                    section: Some(SectionId(1)),
+                    loads: vec![],
+                    usage: None,
+                    method: DistributionMethod::TriTrapezoid,
+                    one_way: None,
+                },
+            },
+        ],
+        slab_thickness: 150.0,
+        ..Default::default()
+    };
+    // 区画の外周を走る大梁（節点 0→1。区画の対角にあたるため、細分後の
+    // どちらの床板の境界にも両端は同時に含まれない）。
+    let elem = ElementData {
+        id: ElemId(0),
+        kind: ElementKind::Beam,
+        nodes: smallvec::smallvec![NodeId(0), NodeId(1)],
+        section: Some(SectionId(0)),
+        local_axis: LocalAxis {
+            ref_vector: [0.0, 1.0, 0.0],
+        },
+        end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+        force_regime: ForceRegime::Auto,
+        rigid_zone: Default::default(),
+        plastic_zone: None,
+        spring: None,
+    };
+
+    let (b, d) = (300.0_f64, 600.0_f64);
+    let i0 = b * d.powi(3) / 12.0;
+    let beam = BeamElement::new(&elem, &model);
+    assert!(
+        beam.iz / i0 > 1.0,
+        "区画が細分されていても大梁のスラブ協力幅は増大するはず: iz/i0={}",
+        beam.iz / i0
+    );
+}
+
 fn rc_beam_for_slab_factor(plate: Option<squid_n_core::model::SlabPlate>) -> (Model, ElementData) {
     use squid_n_core::dof::Dof6Mask;
-    use squid_n_core::ids::{FloorRegionId, MaterialId, SectionId};
-    use squid_n_core::model::{EndCondition, FloorRegion, ForceRegime, LocalAxis};
+    use squid_n_core::ids::{FloorRegionId, MaterialId, SectionId, SlabId};
+    use squid_n_core::model::{EndCondition, FloorRegion, ForceRegime, LocalAxis, Slab, SlabShape};
     use squid_n_core::section_shape::{BarSet, RcRebar, SectionShape, ShearBar};
     let make_node = |id: u32, coord: [f64; 3]| Node {
         id: NodeId(id),
@@ -353,6 +492,17 @@ fn rc_beam_for_slab_factor(plate: Option<squid_n_core::model::SlabPlate>) -> (Mo
     let mut slab_sec =
         SectionShape::RcSlab { thickness: 150.0 }.to_section(SectionId(1), "S15".into());
     slab_sec.material = Some(MaterialId(0));
+    let boundary = vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)];
+    let slabs = match plate {
+        Some(plate) => vec![Slab {
+            id: SlabId(0),
+            shape: SlabShape::Enclosed {
+                boundary: boundary.clone(),
+            },
+            plate,
+        }],
+        None => vec![],
+    };
     let model = Model {
         nodes: vec![
             make_node(0, [0.0, 0.0, 3000.0]),
@@ -374,15 +524,8 @@ fn rc_beam_for_slab_factor(plate: Option<squid_n_core::model::SlabPlate>) -> (Mo
             fc: Some(24.0),
             fy: None,
         }],
-        floor_regions: vec![FloorRegion {
-            id: FloorRegionId(0),
-            name: String::new(),
-            shape: RegionShape::Enclosed {
-                boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
-            },
-            plate,
-            secondary_joist_ids: vec![],
-        }],
+        floor_regions: vec![FloorRegion::new(FloorRegionId(0), boundary)],
+        slabs,
         slab_thickness: 150.0,
         ..Default::default()
     };
@@ -430,13 +573,12 @@ fn test_plateless_region_does_not_increase_slab_stiffness() {
 /// 取り付き版ありは協力幅の対象外（囲まれた版だけが増大する）。
 #[test]
 fn test_attached_plate_does_not_increase_slab_stiffness() {
-    use squid_n_core::ids::FloorRegionId;
-    use squid_n_core::model::{FloorRegion, LoadTransfer, RegionAnchor, RegionShape, SlabPlate};
+    use squid_n_core::ids::SlabId;
+    use squid_n_core::model::{LoadTransfer, RegionAnchor, Slab, SlabPlate, SlabShape};
     let (mut m, e) = rc_beam_for_slab_factor(None);
-    m.floor_regions = vec![FloorRegion {
-        id: FloorRegionId(0),
-        name: String::new(),
-        shape: RegionShape::Attached {
+    m.slabs = vec![Slab {
+        id: SlabId(0),
+        shape: SlabShape::Attached {
             anchor: RegionAnchor::Line {
                 nodes: [NodeId(0), NodeId(1)],
                 span: [0.0, 1.0],
@@ -444,16 +586,15 @@ fn test_attached_plate_does_not_increase_slab_stiffness() {
             },
             extent: [1500.0, 1500.0],
         },
-        plate: Some(SlabPlate {
+        plate: SlabPlate {
             section: Some(squid_n_core::ids::SectionId(1)),
             ..Default::default()
-        }),
-        secondary_joist_ids: vec![],
+        },
     }];
     let b = stiffness_breakdown(&m, &e);
     assert!(
         (b.slab - 1.0).abs() < 1e-12,
-        "取り付き版は協力幅 1.0、got {}",
+        "取り付く床板は協力幅 1.0、got {}",
         b.slab
     );
 }
@@ -463,9 +604,10 @@ fn test_attached_plate_does_not_increase_slab_stiffness() {
 #[test]
 fn test_beam_new_composite_steel_beam_averages_stiffness() {
     use squid_n_core::dof::Dof6Mask;
-    use squid_n_core::ids::{FloorRegionId, MaterialId, SectionId};
+    use squid_n_core::ids::{FloorRegionId, MaterialId, SectionId, SlabId};
     use squid_n_core::model::{
-        DistributionMethod, EndCondition, FloorRegion, ForceRegime, LocalAxis, Model, SlabPlate,
+        DistributionMethod, EndCondition, FloorRegion, ForceRegime, LocalAxis, Model, Slab,
+        SlabPlate, SlabShape,
     };
     use squid_n_core::section_shape::SectionShape;
 
@@ -490,7 +632,7 @@ fn test_beam_new_composite_steel_beam_averages_stiffness() {
             make_node(2, [6000.0, 2500.0, 3000.0]),
             make_node(3, [0.0, 2500.0, 3000.0]),
         ],
-        // 材料は断面が持つ。断面 1 は版の板厚（協力幅判定は `region_has_slab`）。
+        // 材料は断面が持つ。断面 1 は版の板厚（協力幅判定は `slab_plate_thickness`）。
         sections: vec![
             Section {
                 material: Some(MaterialId(0)),
@@ -511,21 +653,22 @@ fn test_beam_new_composite_steel_beam_averages_stiffness() {
             fc: None,
             fy: Some(235.0),
         }],
-        floor_regions: vec![FloorRegion {
-            id: FloorRegionId(0),
-            name: String::new(),
-            shape: RegionShape::Enclosed {
+        floor_regions: vec![FloorRegion::new(
+            FloorRegionId(0),
+            vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
+        )],
+        slabs: vec![Slab {
+            id: SlabId(0),
+            shape: SlabShape::Enclosed {
                 boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
             },
-            plate: Some(SlabPlate {
+            plate: SlabPlate {
                 section: Some(SectionId(1)),
                 loads: vec![],
                 usage: None,
                 method: DistributionMethod::TriTrapezoid,
                 one_way: None,
-                joists: vec![],
-            }),
-            secondary_joist_ids: vec![],
+            },
         }],
         slab_thickness: 150.0,
         ..Default::default()
@@ -577,7 +720,7 @@ fn test_beam_new_composite_steel_beam_averages_stiffness() {
     assert!((beam.iy - model.sections[0].iz).abs() < 1e-9);
 
     // 版を外すと鉄骨単独のまま
-    model.floor_regions[0].plate = None;
+    model.slabs.clear();
     let beam0 = BeamElement::new(&elem, &model);
     assert!((beam0.iz - si).abs() < 1e-9);
 }

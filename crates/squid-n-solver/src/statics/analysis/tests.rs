@@ -7,7 +7,7 @@ use squid_n_core::model::{
     LocalAxis, Material, MaterialCategory, MemberLoad, MemberLoadKind, NodalLoad, Node, Section,
     Story, StoryLevelKind, StoryStructure,
 };
-use squid_n_core::model::{FloorRegion, RegionShape, SlabPlate};
+use squid_n_core::model::{FloorRegion, SlabPlate};
 
 fn make_cantilever_model() -> Model {
     Model {
@@ -255,8 +255,8 @@ fn test_model_issues_collects_every_issue() {
 #[test]
 fn test_model_issues_rejects_slab_without_section() {
     use super::precheck::{model_issues, precheck_model};
-    use squid_n_core::ids::{FloorRegionId, SectionId};
-    use squid_n_core::model::DistributionMethod;
+    use squid_n_core::ids::{FloorRegionId, SectionId, SlabId};
+    use squid_n_core::model::{DistributionMethod, Slab, SlabShape};
 
     let mut model = make_cantilever_model();
     // 境界節点は 3 点必要なので、床用の節点を足す。
@@ -274,21 +274,38 @@ fn test_model_issues_rejects_slab_without_section() {
             support_spring: None,
         });
     }
-    model.floor_regions.push(FloorRegion {
-        id: FloorRegionId(0),
-        name: String::new(),
-        shape: RegionShape::Enclosed {
-            boundary: vec![NodeId(0), NodeId(1), NodeId(n + 1), NodeId(n)],
-        },
-        plate: Some(SlabPlate {
+    let boundary = vec![NodeId(0), NodeId(1), NodeId(n + 1), NodeId(n)];
+    // 大梁で境界を閉じる（1 本は `make_cantilever_model` が既に持つ 0→1）。
+    // 閉じていないと「大梁の区画に載らない浮き床板」として扱われてしまう。
+    for (i, j) in [(1, n + 1), (n + 1, n), (n, 0)] {
+        model.elements.push(ElementData {
+            id: ElemId(model.elements.len() as u32),
+            kind: ElementKind::Beam,
+            nodes: smallvec::smallvec![NodeId(i), NodeId(j)],
+            section: Some(SectionId(0)),
+            local_axis: LocalAxis {
+                ref_vector: [0.0, 0.0, 1.0],
+            },
+            end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+            force_regime: ForceRegime::Auto,
+            rigid_zone: Default::default(),
+            plastic_zone: None,
+            spring: None,
+        });
+    }
+    let mut region = FloorRegion::new(FloorRegionId(0), boundary.clone());
+    region.slab_ids.push(SlabId(0));
+    model.floor_regions.push(region);
+    model.slabs.push(Slab {
+        id: SlabId(0),
+        shape: SlabShape::Enclosed { boundary },
+        plate: SlabPlate {
             section: None,
             loads: Vec::new(),
             usage: None,
             method: DistributionMethod::TriTrapezoid,
             one_way: None,
-            joists: Vec::new(),
-        }),
-        secondary_joist_ids: Vec::new(),
+        },
     });
 
     // 断面が未割当。
@@ -308,7 +325,7 @@ fn test_model_issues_rejects_slab_without_section() {
         squid_n_core::section_shape::SectionShape::RcSlab { thickness: 150.0 }
             .to_section(sid, "S15".into()),
     );
-    model.floor_regions[0].plate.as_mut().unwrap().section = Some(sid);
+    model.slabs[0].plate.section = Some(sid);
     let msgs: Vec<String> = model_issues(&model)
         .into_iter()
         .map(|i| i.message)
@@ -1424,12 +1441,12 @@ fn test_model_issues_warns_unassigned_joist() {
     assert!(precheck_model(&model).is_ok(), "解析は止めない");
 }
 
-/// 大梁パネルに載らない浮き版は警告し、解析は止めない。
+/// 大梁の区画に載らない浮き床板は警告し、解析は止めない。
 #[test]
 fn test_model_issues_warns_floating_plate() {
     use super::precheck::{model_issues, precheck_model, IssueSeverity};
-    use squid_n_core::ids::{FloorRegionId, MaterialId};
-    use squid_n_core::model::{DistributionMethod, Material, MaterialCategory};
+    use squid_n_core::ids::{MaterialId, SlabId};
+    use squid_n_core::model::{DistributionMethod, Material, MaterialCategory, Slab, SlabShape};
 
     let mut model = make_cantilever_model();
     let n = model.nodes.len() as u32;
@@ -1470,21 +1487,18 @@ fn test_model_issues_warns_floating_plate() {
         .to_section(sid, "S15".into());
     sec.material = Some(mid);
     model.sections.push(sec);
-    model.floor_regions.push(FloorRegion {
-        id: FloorRegionId(0),
-        name: String::new(),
-        shape: RegionShape::Enclosed {
+    model.slabs.push(Slab {
+        id: SlabId(0),
+        shape: SlabShape::Enclosed {
             boundary: vec![NodeId(n), NodeId(n + 1), NodeId(n + 2), NodeId(n + 3)],
         },
-        plate: Some(SlabPlate {
+        plate: SlabPlate {
             section: Some(sid),
             loads: Vec::new(),
             usage: None,
             method: DistributionMethod::TriTrapezoid,
             one_way: None,
-            joists: Vec::new(),
-        }),
-        secondary_joist_ids: Vec::new(),
+        },
     });
 
     let issues = model_issues(&model);
@@ -1492,7 +1506,7 @@ fn test_model_issues_warns_floating_plate() {
         .iter()
         .find(|i| {
             i.severity == IssueSeverity::Warning
-                && (i.message.contains("版") || i.short.contains("版"))
+                && (i.message.contains("床板") || i.short.contains("床板"))
                 && (i.message.contains("割り当て")
                     || i.message.contains("浮")
                     || i.short.contains("割り当て")
@@ -1500,7 +1514,7 @@ fn test_model_issues_warns_floating_plate() {
         })
         .unwrap_or_else(|| {
             let msgs: Vec<_> = issues.iter().map(|i| i.message.as_str()).collect();
-            panic!("浮き版の警告がない: {msgs:?}")
+            panic!("浮き床板の警告がない: {msgs:?}")
         });
     assert_eq!(warning.severity, IssueSeverity::Warning);
     assert!(precheck_model(&model).is_ok(), "解析は止めない");

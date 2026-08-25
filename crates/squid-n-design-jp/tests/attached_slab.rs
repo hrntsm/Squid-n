@@ -1,10 +1,10 @@
-//! 取り付き版・版なし囲まれに対する梁のスラブ取付き判定。
+//! 取り付く床板・床板のない囲まれた床領域に対する梁のスラブ取付き判定。
 use smallvec::SmallVec;
 use squid_n_core::dof::Dof6Mask;
-use squid_n_core::ids::{ElemId, FloorRegionId, MaterialId, NodeId, SectionId};
+use squid_n_core::ids::{ElemId, MaterialId, NodeId, SectionId, SlabId};
 use squid_n_core::model::{
-    ElementData, ElementKind, EndCondition, FloorRegion, ForceRegime, LoadTransfer, LocalAxis,
-    Material, MaterialCategory, Model, Node, RegionAnchor, RegionShape, SlabPlate,
+    ElementData, ElementKind, EndCondition, ForceRegime, LoadTransfer, LocalAxis, Material,
+    MaterialCategory, Model, Node, RegionAnchor, Slab, SlabPlate, SlabShape,
 };
 use squid_n_core::section_shape::{BarSet, RcRebar, SectionShape, ShearBar};
 use squid_n_design_jp::beam_has_attached_slab;
@@ -42,7 +42,7 @@ fn beam(id: u32, a: u32, b: u32) -> ElementData {
     }
 }
 
-fn t_shape_model(regions: Vec<FloorRegion>) -> Model {
+fn t_shape_model(slabs: Vec<Slab>) -> Model {
     let shape = SectionShape::RcRect {
         b: 300.0,
         d: 600.0,
@@ -91,19 +91,18 @@ fn t_shape_model(regions: Vec<FloorRegion>) -> Model {
             fc: Some(24.0),
             fy: None,
         }],
-        floor_regions: regions,
+        slabs,
         slab_thickness: 150.0,
         ..Default::default()
     }
 }
 
-/// 取り付き版ありは辺 0 の梁 true、直交梁 false。版なし囲まれは false。
+/// 取り付く床板ありは辺 0 の梁 true、直交梁 false。床板のない囲まれは false。
 #[test]
 fn test_beam_has_attached_slab_t_shape_and_plateless() {
-    let attached = t_shape_model(vec![FloorRegion {
-        id: FloorRegionId(0),
-        name: "バルコニー".into(),
-        shape: RegionShape::Attached {
+    let attached = t_shape_model(vec![Slab {
+        id: SlabId(0),
+        shape: SlabShape::Attached {
             anchor: RegionAnchor::Line {
                 nodes: [NodeId(0), NodeId(1)],
                 span: [0.0, 1.0],
@@ -111,11 +110,10 @@ fn test_beam_has_attached_slab_t_shape_and_plateless() {
             },
             extent: [1500.0, 1500.0],
         },
-        plate: Some(SlabPlate {
+        plate: SlabPlate {
             section: Some(SectionId(1)),
             ..Default::default()
-        }),
-        secondary_joist_ids: vec![],
+        },
     }]);
     assert!(
         beam_has_attached_slab(&attached, &attached.elements[0]),
@@ -126,12 +124,9 @@ fn test_beam_has_attached_slab_t_shape_and_plateless() {
         "直交梁"
     );
 
-    let plateless = t_shape_model(vec![FloorRegion::enclosed(
-        FloorRegionId(0),
-        vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
-    )]);
+    let plateless = t_shape_model(vec![]);
     assert!(
         !beam_has_attached_slab(&plateless, &plateless.elements[0]),
-        "版なし囲まれ"
+        "床板のない囲まれ"
     );
 }

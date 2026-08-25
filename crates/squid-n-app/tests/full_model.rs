@@ -11,7 +11,7 @@
 //! # モデル（`tests/fixtures/model.stb`）
 //!
 //! 4 層＋PH の S 造（一部 RC）。節点 166・解析要素 115（柱 40・大梁 75）・
-//! 二次部材 56（小梁）・床領域 26（大梁パネル単位）・階 5（Z=200/4700/8700/12700/16500）。
+//! 二次部材 56（小梁）・床領域 26（大梁1区画単位）・階 5（Z=200/4700/8700/12700/16500）。
 //! 荷重は ST-Bridge に含まれないため、取り込み時に標準荷重ケース
 //! （DL・LL(架構用)・LL(地震用)・EX・EY）が自動生成される。支点情報も
 //! 含まれないため、最下レベルの柱脚 12 箇所がピン支点として自動設定される。
@@ -250,16 +250,16 @@ fn import_builds_expected_model() {
     assert_eq!(m.nodes.len(), 166, "節点数");
     assert_eq!(m.elements.len(), 115, "解析要素数（柱 40・大梁 75）");
     assert_eq!(m.secondary_members.len(), 56, "二次部材（小梁）");
-    assert_eq!(m.floor_regions.len(), 26, "床領域（大梁パネル単位）");
+    assert_eq!(m.floor_regions.len(), 26, "床領域（大梁1区画単位）");
     assert_eq!(m.stories.len(), 5, "階（1FL/2FL/3FL/RFL/PHRFL）");
 
     use squid_n_core::model::SecondaryMemberKind;
-    use squid_n_core::region_gen::generate_floor_panels;
+    use squid_n_core::region_gen::generate_region_boundaries;
     use std::collections::HashMap;
     assert!(
-        m.floor_regions
+        m.slabs
             .iter()
-            .all(|r| !r.is_attached() && r.plate.is_some()),
+            .all(|s| !s.is_attached() && s.section().is_some()),
         "すべて Enclosed かつ版あり"
     );
     let mut joist_owner: HashMap<u32, usize> = HashMap::new();
@@ -272,7 +272,7 @@ fn import_builds_expected_model() {
             );
         }
     }
-    let panels = generate_floor_panels(m);
+    let boundaries = generate_region_boundaries(m);
     for sm in m
         .secondary_members
         .iter()
@@ -289,15 +289,15 @@ fn import_builds_expected_model() {
             coords.iter().map(|p| p[1]).sum::<f64>() / n,
         ];
         let z = coords[0][2];
-        let panel = panels
+        let boundary = boundaries
             .iter()
-            .find(|p| p.is_same_level(z) && p.contains(m, centroid))
-            .expect("領域がパネルに載る");
+            .find(|b| b.is_same_level(z) && b.contains(m, centroid))
+            .expect("領域が大梁の境界に載る");
         let a = m.nodes[sm.nodes[0].index()].coord;
         let b = m.nodes[sm.nodes[1].index()].coord;
         let mid = [(a[0] + b[0]) / 2.0, (a[1] + b[1]) / 2.0];
         assert!(
-            panel.contains(m, mid),
+            boundary.contains(m, mid),
             "小梁 {} の中点が所属領域に入らない",
             sm.id.0
         );
@@ -1182,11 +1182,11 @@ fn joist_design_checks_cover_imported_secondary_members() {
             / 2.0;
         let slab = app
             .model
-            .floor_regions
+            .slabs
             .iter()
             .find(|s| s.id == *slab_id)
-            .expect("検定結果のスラブが実在する");
-        let z_slab = slab.level(&app.model).expect("床領域のレベル");
+            .expect("検定結果の床板が実在する");
+        let z_slab = slab.level(&app.model).expect("床板のレベル");
         assert!(
             (z_slab - z_joist).abs() <= 1.0,
             "小梁 {smi}（Z={z_joist}）が別レベルのスラブ {:?}（Z={z_slab}）で検定されている",
@@ -1199,42 +1199,42 @@ fn joist_design_checks_cover_imported_secondary_members() {
     );
 }
 
-/// 主架構の面走査（`region_gen`）が、大梁で囲まれたパネルをレベルごとに検出する。
+/// 主架構の面走査（`region_gen`）が、大梁で囲まれた区画をレベルごとに検出する。
 ///
-/// 床領域は「大梁で囲まれた領域ごとに 1 つ」と定めるため、その検出が実建物で
+/// 床領域は「大梁で囲まれた領域ごとに 1 つ」と定めるため（D1）、その検出が実建物で
 /// 期待どおりの数になることを固定する。期待値は Euler の公式（内部面数 `F = E − V + C`）
 /// で独立に検算した値である。
 #[test]
-fn region_gen_finds_beam_bounded_panels() {
-    use squid_n_core::region_gen::generate_floor_panels;
+fn region_gen_finds_beam_bounded_regions() {
+    use squid_n_core::region_gen::generate_region_boundaries;
     use std::collections::BTreeMap;
 
     let app = imported();
-    let panels = generate_floor_panels(&app.model);
+    let boundaries = generate_region_boundaries(&app.model);
 
     let mut per_level: BTreeMap<i64, (usize, f64)> = BTreeMap::new();
-    for p in &panels {
-        let e = per_level.entry(p.level.round() as i64).or_insert((0, 0.0));
+    for b in &boundaries {
+        let e = per_level.entry(b.level.round() as i64).or_insert((0, 0.0));
         e.0 += 1;
-        e.1 += p.area(&app.model);
+        e.1 += b.area(&app.model);
     }
     let counts: Vec<(i64, usize)> = per_level.iter().map(|(z, (n, _))| (*z, *n)).collect();
     assert_eq!(
         counts,
         vec![(200, 6), (4700, 6), (8700, 6), (12700, 7), (16500, 1)],
-        "レベル別のパネル数（Euler の公式による検算値と一致すること）"
+        "レベル別の区画数（Euler の公式による検算値と一致すること）"
     );
-    assert_eq!(panels.len(), 26, "パネル総数");
+    assert_eq!(boundaries.len(), 26, "区画総数");
     assert_eq!(
         app.model.floor_regions.len(),
-        panels.len(),
-        "取り込み後の領域数はパネル数 26"
+        boundaries.len(),
+        "取り込み後の床領域数は区画数 26"
     );
 
-    // パネルの面積の合計は、そのレベルのスラブ面積の合計と一致する
-    // （スラブは小梁で細分されているが、覆う範囲はパネルと同じ）。
+    // 区画の面積の合計は、そのレベルの床板面積の合計と一致する
+    // （床板は小梁で細分されているが、覆う範囲は区画と同じ）。
     let mut slab_area: BTreeMap<i64, f64> = BTreeMap::new();
-    for s in &app.model.floor_regions {
+    for s in &app.model.slabs {
         let Some(coords) = s.boundary_coords(&app.model) else {
             continue;
         };
@@ -1248,22 +1248,23 @@ fn region_gen_finds_beam_bounded_panels() {
         let s = slab_area.get(z).copied().unwrap_or(0.0);
         assert!(
             (area - s).abs() / s < 1e-6,
-            "Z={z}: パネル面積 {area} とスラブ面積 {s} が一致しない"
+            "Z={z}: 区画面積 {area} と床板面積 {s} が一致しない"
         );
     }
 }
 
-/// 取り込んだスラブ片が、大梁で囲まれたパネルへ過不足なく収まる。
+/// 取り込んだ床板が、大梁で囲まれた床領域の境界へ過不足なく収まる。
 ///
-/// 床領域はパネル単位で 1 枚の版を持つ設計のため、パネル内で板厚（断面）や室用途が
-/// 混在すると 1 枚に畳めない。実建物でそれが起きないことを固定する。
+/// 大梁が囲む区画（床領域）は 1 つの境界につき 1 つ（D1）。区画内の床板
+/// （小梁でさらに細分された打設単位）は重複・欠落なく、ちょうど 1 つの
+/// 区画へ割り当たることを固定する。
 #[test]
-fn slabs_fold_into_panels_without_mixing() {
-    use squid_n_core::region_gen::scan_floor_panels;
-    use std::collections::{BTreeMap, BTreeSet};
+fn slabs_fold_into_regions_without_gaps() {
+    use squid_n_core::region_gen::scan_region_boundaries;
+    use std::collections::BTreeMap;
 
     let app = imported();
-    let scan = scan_floor_panels(&app.model);
+    let scan = scan_region_boundaries(&app.model);
     assert_eq!(scan.unclosed, 0, "閉じない面走査はない");
     assert!(
         scan.crossings.is_empty(),
@@ -1271,9 +1272,9 @@ fn slabs_fold_into_panels_without_mixing() {
         scan.crossings
     );
 
-    let mut by_panel: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
+    let mut by_region: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
     let mut unassigned = Vec::new();
-    for (si, slab) in app.model.floor_regions.iter().enumerate() {
+    for (si, slab) in app.model.slabs.iter().enumerate() {
         let Some(coords) = slab.boundary_coords(&app.model) else {
             continue;
         };
@@ -1287,43 +1288,30 @@ fn slabs_fold_into_panels_without_mixing() {
         ];
         let z = coords[0][2];
         match scan
-            .panels
+            .boundaries
             .iter()
-            .position(|p| p.is_same_level(z) && p.contains(&app.model, centroid))
+            .position(|b| b.is_same_level(z) && b.contains(&app.model, centroid))
         {
-            Some(pi) => by_panel.entry(pi).or_default().push(si),
+            Some(bi) => by_region.entry(bi).or_default().push(si),
             None => unassigned.push(si),
         }
     }
 
     assert!(
         unassigned.is_empty(),
-        "どのパネルにも収まらないスラブ: {unassigned:?}"
+        "どの区画にも収まらない床板: {unassigned:?}"
     );
     assert_eq!(unassigned.len(), 0, "未割当 0");
     assert_eq!(
         app.model.floor_regions.len(),
-        scan.panels.len(),
-        "領域数＝パネル数 26"
+        scan.boundaries.len(),
+        "床領域数＝区画数 26"
     );
     assert_eq!(
-        by_panel.len(),
-        scan.panels.len(),
-        "版を持たないパネルはない"
+        by_region.len(),
+        scan.boundaries.len(),
+        "床板を持たない区画はない"
     );
-
-    for (pi, slabs) in &by_panel {
-        let sections: BTreeSet<_> = slabs
-            .iter()
-            .map(|&i| app.model.floor_regions[i].section().map(|s| s.0))
-            .collect();
-        let usages: BTreeSet<String> = slabs
-            .iter()
-            .map(|&i| format!("{:?}", app.model.floor_regions[i].usage()))
-            .collect();
-        assert_eq!(sections.len(), 1, "パネル {pi} で断面が混在: {sections:?}");
-        assert_eq!(usages.len(), 1, "パネル {pi} で室用途が混在: {usages:?}");
-    }
 }
 
 // ===================== スナップショット =====================

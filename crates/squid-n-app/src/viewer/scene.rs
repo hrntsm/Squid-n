@@ -115,8 +115,9 @@ pub(super) fn draw_slabs_and_joists(
     const DASH: f32 = 6.0;
     const GAP: f32 = 4.0;
 
-    for slab in &app.model.floor_regions {
-        if !region_visible_on_frame(slab, filter) {
+    // 床板（版）の輪郭・塗り。大梁または小梁で囲まれた床板と、取り付く床板の両方を描く。
+    for slab in &app.model.slabs {
+        if !slab_visible_on_frame(slab, filter) {
             continue;
         }
         let Some(coords) = slab.boundary_coords(&app.model) else {
@@ -140,9 +141,15 @@ pub(super) fn draw_slabs_and_joists(
                 GAP,
             ));
         }
+    }
 
-        // 小梁: support 節点間の破線（ニュートラル色。スラブ輪郭の暖色とも弁別）
-        for joist in slab.joist_lines() {
+    // 床領域の手入力小梁ライン（交差小梁の格子解析用）: support 節点間の破線
+    // （ニュートラル色。スラブ輪郭の暖色とも弁別）。
+    for region in &app.model.floor_regions {
+        if !region.boundary.iter().all(|n| filter.shows_node(n.index())) {
+            continue;
+        }
+        for joist in region.joist_lines() {
             let i0 = joist.support[0].index();
             let i1 = joist.support[1].index();
             if i0 >= pts.len() || i1 >= pts.len() {
@@ -158,11 +165,11 @@ pub(super) fn draw_slabs_and_joists(
     }
 }
 
-fn region_visible_on_frame(slab: &squid_n_core::model::FloorRegion, filter: FrameFilter) -> bool {
-    use squid_n_core::model::{RegionAnchor, RegionShape};
+fn slab_visible_on_frame(slab: &squid_n_core::model::Slab, filter: FrameFilter) -> bool {
+    use squid_n_core::model::{RegionAnchor, SlabShape};
     match &slab.shape {
-        RegionShape::Enclosed { boundary } => boundary.iter().all(|n| filter.shows_node(n.index())),
-        RegionShape::Attached { anchor, .. } => match anchor {
+        SlabShape::Enclosed { boundary } => boundary.iter().all(|n| filter.shows_node(n.index())),
+        SlabShape::Attached { anchor, .. } => match anchor {
             RegionAnchor::Line { nodes, .. } => nodes.iter().any(|n| filter.shows_node(n.index())),
             RegionAnchor::Point(n) => filter.shows_node(n.index()),
         },

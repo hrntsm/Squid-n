@@ -1,6 +1,6 @@
 use super::*;
 use squid_n_core::model::MaterialCategory;
-use squid_n_core::model::{FloorRegion, RegionShape, SlabPlate};
+use squid_n_core::model::{FloorRegion, Slab, SlabPlate, SlabShape};
 
 /// テストが書き込む一時ディレクトリ（プロセス ID 入り）。
 /// `std::env::temp_dir()` 直下へ固定名で書き込むと、同一マシンで並行する
@@ -2896,13 +2896,13 @@ fn make_slab_test_model() -> squid_n_core::model::Model {
         mk_beam(2, 2, 3),
         mk_beam(3, 3, 0),
     ];
-    let slab = FloorRegion {
-        id: FloorRegionId(0),
-        name: String::new(),
-        shape: RegionShape::Enclosed {
-            boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
+    let boundary = vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)];
+    let slab = Slab {
+        id: squid_n_core::ids::SlabId(0),
+        shape: SlabShape::Enclosed {
+            boundary: boundary.clone(),
         },
-        plate: Some(SlabPlate {
+        plate: SlabPlate {
             section: None,
             loads: vec![AreaLoad {
                 kind: "DL".into(),
@@ -2911,14 +2911,15 @@ fn make_slab_test_model() -> squid_n_core::model::Model {
             usage: None,
             method: DistributionMethod::TriTrapezoid,
             one_way: None,
-            joists: vec![],
-        }),
-        secondary_joist_ids: vec![],
+        },
     };
+    let mut region = FloorRegion::new(FloorRegionId(0), boundary);
+    region.slab_ids.push(squid_n_core::ids::SlabId(0));
     squid_n_core::model::Model {
         nodes,
         elements,
-        floor_regions: vec![slab],
+        floor_regions: vec![region],
+        slabs: vec![slab],
         ..Default::default()
     }
 }
@@ -2996,10 +2997,8 @@ fn test_refresh_beam_loads_caches_by_model_hash() {
     );
 
     // モデルを編集するとハッシュが変わり再計算される。
-    app.model.floor_regions[0]
+    app.model.slabs[0]
         .plate
-        .as_mut()
-        .unwrap()
         .loads
         .push(squid_n_core::model::AreaLoad {
             kind: "追加仕上げ".into(),
@@ -3053,13 +3052,13 @@ fn make_square_slab_test_model() -> squid_n_core::model::Model {
         mk_beam(2, 2, 3),
         mk_beam(3, 3, 0),
     ];
-    let slab = FloorRegion {
-        id: FloorRegionId(0),
-        name: String::new(),
-        shape: RegionShape::Enclosed {
-            boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
+    let boundary = vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)];
+    let slab = Slab {
+        id: squid_n_core::ids::SlabId(0),
+        shape: SlabShape::Enclosed {
+            boundary: boundary.clone(),
         },
-        plate: Some(SlabPlate {
+        plate: SlabPlate {
             section: None,
             loads: vec![AreaLoad {
                 kind: "DL".into(),
@@ -3068,14 +3067,15 @@ fn make_square_slab_test_model() -> squid_n_core::model::Model {
             usage: None,
             method: DistributionMethod::TriTrapezoid,
             one_way: None,
-            joists: vec![],
-        }),
-        secondary_joist_ids: vec![],
+        },
     };
+    let mut region = FloorRegion::new(FloorRegionId(0), boundary);
+    region.slab_ids.push(squid_n_core::ids::SlabId(0));
     squid_n_core::model::Model {
         nodes,
         elements,
-        floor_regions: vec![slab],
+        floor_regions: vec![region],
+        slabs: vec![slab],
         ..Default::default()
     }
 }
@@ -3169,7 +3169,7 @@ fn test_sync_gravity_load_cases_action_separates_dead_and_live() {
 
     let mut model = make_square_slab_test_model();
     // 事務室用途を設定（骨組用 LL = 1800 N/m² = 1.8e-3 N/mm²）。
-    model.floor_regions[0].plate.as_mut().unwrap().usage = Some(SlabUsage::Office);
+    model.slabs[0].plate.usage = Some(SlabUsage::Office);
     model
         .validate()
         .expect("テストモデルは validate を通るはず");
@@ -3219,7 +3219,7 @@ fn test_sync_gravity_load_cases_action_separates_dead_and_live() {
     assert!((sum_vertical(&app.model, LL_FRAME_CASE_NAME) - 1.8e-3 * area).abs() < 1e-6);
 
     // 用途を外すと LL ケースは空同期され、寄与がなくなる（新規なら作られない）。
-    app.model.floor_regions[0].plate.as_mut().unwrap().usage = None;
+    app.model.slabs[0].plate.usage = None;
     app.sync_gravity_load_cases_action();
     assert!(
         (sum_vertical(&app.model, LL_FRAME_CASE_NAME)).abs() < 1e-12,
@@ -3282,13 +3282,13 @@ fn test_slab_grillage_node_reactions_total_and_gate() {
         steel_material: None,
     };
     let spacing = 2000.0_f64;
-    let slab = FloorRegion {
-        id: FloorRegionId(0),
-        name: String::new(),
-        shape: RegionShape::Enclosed {
-            boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
+    let boundary = vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)];
+    let slab = Slab {
+        id: squid_n_core::ids::SlabId(0),
+        shape: SlabShape::Enclosed {
+            boundary: boundary.clone(),
         },
-        plate: Some(SlabPlate {
+        plate: SlabPlate {
             section: None,
             loads: vec![AreaLoad {
                 kind: "DL".into(),
@@ -3297,25 +3297,26 @@ fn test_slab_grillage_node_reactions_total_and_gate() {
             usage: None,
             method: DistributionMethod::TriTrapezoid,
             one_way: None,
-            joists: vec![
-                JoistLine {
-                    dir: [0.0, 1.0],
-                    spacing,
-                    support: [NodeId(4), NodeId(5)], // 縦（x=2000）
-                    section: Some(SectionId(0)),
-                    pinned_onto: None,
-                },
-                JoistLine {
-                    dir: [1.0, 0.0],
-                    spacing,
-                    support: [NodeId(6), NodeId(7)], // 横（y=2000）
-                    section: Some(SectionId(0)),
-                    pinned_onto: None,
-                },
-            ],
-        }),
-        secondary_joist_ids: vec![],
+        },
     };
+    let mut region = FloorRegion::new(FloorRegionId(0), boundary);
+    region.slab_ids.push(squid_n_core::ids::SlabId(0));
+    region.joists = vec![
+        JoistLine {
+            dir: [0.0, 1.0],
+            spacing,
+            support: [NodeId(4), NodeId(5)], // 縦（x=2000）
+            section: Some(SectionId(0)),
+            pinned_onto: None,
+        },
+        JoistLine {
+            dir: [1.0, 0.0],
+            spacing,
+            support: [NodeId(6), NodeId(7)], // 横（y=2000）
+            section: Some(SectionId(0)),
+            pinned_onto: None,
+        },
+    ];
     let model = squid_n_core::model::Model {
         nodes: vec![
             mk_node(0, 0.0, 0.0),
@@ -3334,7 +3335,8 @@ fn test_slab_grillage_node_reactions_total_and_gate() {
             mk_beam(3, 3, 0),
         ],
         sections: vec![section],
-        floor_regions: vec![slab],
+        floor_regions: vec![region],
+        slabs: vec![slab],
         ..Default::default()
     };
     model.validate().expect("交差小梁モデルは validate を通る");
@@ -3379,7 +3381,7 @@ fn test_slab_grillage_node_reactions_total_and_gate() {
     // 小梁点反力を出さず全面積を境界へ Edge 分配するため、格子反力を上乗せすると
     // 二重計上になる。この場合は None（既存挙動を維持）でなければならない。
     app.model.elements.pop(); // 実 Beam を戻す（他条件は満たす）。
-    app.model.floor_regions[0].plate.as_mut().unwrap().method = DistributionMethod::TributaryArea;
+    app.model.slabs[0].plate.method = DistributionMethod::TributaryArea;
     let beam_map = squid_n_job::auto_loads::beam_elem_map(&app.model);
     assert!(
         squid_n_job::auto_loads::slab_grillage_node_reactions(
@@ -3402,7 +3404,7 @@ fn test_sync_gravity_load_cases_action_seismic_live_case() {
     use squid_n_core::model::{LoadCaseKind, MemberLoadKind, SlabUsage};
 
     let mut model = make_square_slab_test_model();
-    model.floor_regions[0].plate.as_mut().unwrap().usage = Some(SlabUsage::Office);
+    model.slabs[0].plate.usage = Some(SlabUsage::Office);
     model
         .validate()
         .expect("テストモデルは validate を通るはず");
@@ -3479,7 +3481,7 @@ fn test_gravity_cases_excludes_auto_frame_live_when_no_seismic() {
 
     let mut model = make_square_slab_test_model();
     // 骨組用のみ正・地震用 0 の用途（serde 由来を想定した異常系）。
-    model.floor_regions[0].plate.as_mut().unwrap().usage = Some(SlabUsage::Custom {
+    model.slabs[0].plate.usage = Some(SlabUsage::Custom {
         floor: 3e-3,
         frame: 2e-3,
         seismic: 0.0,
@@ -3526,7 +3528,7 @@ fn test_floor_design_checks_joist_and_slab() {
 
     let mut model = make_square_slab_test_model();
     // 事務室用途（床用積載 2900 N/m² = 2.9e-3 N/mm²）＋固定荷重 0.005。
-    model.floor_regions[0].plate.as_mut().unwrap().usage = Some(SlabUsage::Office);
+    model.slabs[0].plate.usage = Some(SlabUsage::Office);
     // 鋼小梁の断面（Iy=1e8 mm⁴, せい 400mm → Z=5e5 mm³）。
     model.sections.push(Section {
         id: SectionId(0),
@@ -3562,25 +3564,20 @@ fn test_floor_design_checks_joist_and_slab() {
     model.nodes.push(mk_mid(4, 2000.0, 0.0));
     model.nodes.push(mk_mid(5, 2000.0, 4000.0));
     // 支持 N4(2000,0)–N5(2000,4000)、スパン 4000、負担幅 2000、断面 S0。
-    model.floor_regions[0]
-        .plate
-        .as_mut()
-        .unwrap()
-        .joists
-        .push(JoistLine {
-            dir: [0.0, 1.0],
-            spacing: 2000.0,
-            support: [NodeId(4), NodeId(5)],
-            section: Some(SectionId(0)),
-            pinned_onto: None,
-        });
+    model.floor_regions[0].joists.push(JoistLine {
+        dir: [0.0, 1.0],
+        spacing: 2000.0,
+        support: [NodeId(4), NodeId(5)],
+        section: Some(SectionId(0)),
+        pinned_onto: None,
+    });
     // 板厚はスラブ断面が持つ（材料は割り当てないので自重は算定されない）。
     let slab_sec_id = SectionId(model.sections.len() as u32);
     model.sections.push(
         squid_n_core::section_shape::SectionShape::RcSlab { thickness: 150.0 }
             .to_section(slab_sec_id, "S15".into()),
     );
-    model.floor_regions[0].plate.as_mut().unwrap().section = Some(slab_sec_id);
+    model.slabs[0].plate.section = Some(slab_sec_id);
     model.validate().expect("validate");
     let app = App {
         model,
@@ -3643,18 +3640,13 @@ fn test_floor_design_skips_materialized_joist() {
     };
     model.nodes.push(mk_mid(4, 2000.0, 0.0));
     model.nodes.push(mk_mid(5, 2000.0, 4000.0));
-    model.floor_regions[0]
-        .plate
-        .as_mut()
-        .unwrap()
-        .joists
-        .push(JoistLine {
-            dir: [0.0, 1.0],
-            spacing: 2000.0,
-            support: [NodeId(4), NodeId(5)],
-            section: Some(SectionId(0)),
-            pinned_onto: None,
-        });
+    model.floor_regions[0].joists.push(JoistLine {
+        dir: [0.0, 1.0],
+        spacing: 2000.0,
+        support: [NodeId(4), NodeId(5)],
+        section: Some(SectionId(0)),
+        pinned_onto: None,
+    });
     // 支持 N4–N5 を両端に持つ実 Beam を追加（実部材化相当）。
     let next = model.elements.len() as u32;
     model.elements.push(ElementData {
@@ -3692,7 +3684,7 @@ fn test_floor_design_uses_grillage_for_crossing_joists() {
     use squid_n_core::model::{JoistLine, Section, SlabUsage};
 
     let mut model = make_square_slab_test_model();
-    model.floor_regions[0].plate.as_mut().unwrap().usage = Some(SlabUsage::Office);
+    model.slabs[0].plate.usage = Some(SlabUsage::Office);
     // 鋼小梁断面。
     model.sections.push(Section {
         id: SectionId(0),
@@ -3728,7 +3720,7 @@ fn test_floor_design_uses_grillage_for_crossing_joists() {
     model.nodes.push(mk(5, 2000.0, 4000.0));
     model.nodes.push(mk(6, 0.0, 2000.0));
     model.nodes.push(mk(7, 4000.0, 2000.0));
-    model.floor_regions[0].plate.as_mut().unwrap().joists = vec![
+    model.floor_regions[0].joists = vec![
         JoistLine {
             dir: [0.0, 1.0],
             spacing: 2000.0,
@@ -3771,7 +3763,7 @@ fn test_floor_design_checks_secondary_member_joist() {
     use squid_n_core::model::{SecondaryMember, SecondaryMemberKind, Section, SlabUsage};
 
     let mut model = make_square_slab_test_model();
-    model.floor_regions[0].plate.as_mut().unwrap().usage = Some(SlabUsage::Office);
+    model.slabs[0].plate.usage = Some(SlabUsage::Office);
     model.sections.push(Section {
         id: SectionId(0),
         name: "H-400".into(),
@@ -3833,7 +3825,7 @@ fn test_floor_design_checks_secondary_member_joist() {
 /// 該当し、下階の板厚・室用途で検定されてしまう（エラーは出ずに結果だけが誤る）。
 #[test]
 fn test_floor_design_checks_secondary_joist_uses_same_level_slab() {
-    use squid_n_core::ids::{FloorRegionId, SecondaryMemberId, SectionId};
+    use squid_n_core::ids::{SecondaryMemberId, SectionId};
     use squid_n_core::model::{Node, SecondaryMember, SecondaryMemberKind, Section, SlabUsage};
 
     const Z_UPPER: f64 = 4000.0;
@@ -3875,14 +3867,16 @@ fn test_floor_design_checks_secondary_joist_uses_same_level_slab() {
         model.nodes.push(mk_node(4 + i as u32, x, y, Z_UPPER));
     }
     // 下階と同じ仕上げ荷重を持たせ、室用途だけ変えて上下を区別する。
-    let mut plate = model.floor_regions[0].plate.clone().expect("下階の版");
+    let mut plate = model.slabs[0].plate.clone();
     plate.usage = Some(SlabUsage::Office);
-    let upper = FloorRegion::enclosed(
-        FloorRegionId(model.floor_regions.len() as u32),
-        vec![NodeId(4), NodeId(5), NodeId(6), NodeId(7)],
-    )
-    .with_plate(plate);
-    model.floor_regions.push(upper);
+    let upper = Slab {
+        id: squid_n_core::ids::SlabId(model.slabs.len() as u32),
+        shape: SlabShape::Enclosed {
+            boundary: vec![NodeId(4), NodeId(5), NodeId(6), NodeId(7)],
+        },
+        plate,
+    };
+    model.slabs.push(upper);
     // 上階スラブの中央を通る小梁。
     model.nodes.push(mk_node(8, 2000.0, 0.0, Z_UPPER));
     model.nodes.push(mk_node(9, 2000.0, 4000.0, Z_UPPER));
@@ -3904,7 +3898,7 @@ fn test_floor_design_checks_secondary_joist_uses_same_level_slab() {
     let (sid, _target, jr) = &joists[0];
     assert_eq!(
         *sid,
-        FloorRegionId(1),
+        squid_n_core::ids::SlabId(1),
         "同じレベル（上階）のスラブで検定される"
     );
     // 上階は室用途 Office（床用 2900 N/m²）を持つため、下階を掴むと w が小さくなる。
@@ -3922,7 +3916,7 @@ fn test_floor_design_checks_secondary_joist_uses_same_level_slab() {
 /// 境界辺に載る小梁の負担幅は「両隣の半分ずつの和」＝2 枚の幅の平均である。
 #[test]
 fn test_floor_design_checks_secondary_joist_on_shared_edge_averages_width() {
-    use squid_n_core::ids::{FloorRegionId, SecondaryMemberId, SectionId};
+    use squid_n_core::ids::{SecondaryMemberId, SectionId};
     use squid_n_core::model::{Node, SecondaryMember, SecondaryMemberKind, Section};
 
     let mut model = make_square_slab_test_model();
@@ -3959,18 +3953,23 @@ fn test_floor_design_checks_secondary_joist_on_shared_edge_averages_width() {
     model.nodes.push(mk(5, 2000.0, 4000.0));
     model.nodes.push(mk(6, 6000.0, 0.0));
     model.nodes.push(mk(7, 6000.0, 4000.0));
-    let plate = model.floor_regions[0].plate.clone().expect("版");
-    model.floor_regions = vec![
-        FloorRegion::enclosed(
-            FloorRegionId(0),
-            vec![NodeId(0), NodeId(4), NodeId(5), NodeId(3)],
-        )
-        .with_plate(plate.clone()),
-        FloorRegion::enclosed(
-            FloorRegionId(1),
-            vec![NodeId(4), NodeId(6), NodeId(7), NodeId(5)],
-        )
-        .with_plate(plate),
+    let plate = model.slabs[0].plate.clone();
+    model.floor_regions.clear();
+    model.slabs = vec![
+        Slab {
+            id: squid_n_core::ids::SlabId(0),
+            shape: SlabShape::Enclosed {
+                boundary: vec![NodeId(0), NodeId(4), NodeId(5), NodeId(3)],
+            },
+            plate: plate.clone(),
+        },
+        Slab {
+            id: squid_n_core::ids::SlabId(1),
+            shape: SlabShape::Enclosed {
+                boundary: vec![NodeId(4), NodeId(6), NodeId(7), NodeId(5)],
+            },
+            plate,
+        },
     ];
     // 2 枚の境界辺（x=2000）に載る小梁。
     model.secondary_members.push(SecondaryMember {
@@ -4004,7 +4003,7 @@ fn test_floor_design_checks_secondary_joist_on_slab_edge() {
     use squid_n_core::model::{SecondaryMember, SecondaryMemberKind, Section, SlabUsage};
 
     let mut model = make_square_slab_test_model();
-    model.floor_regions[0].plate.as_mut().unwrap().usage = Some(SlabUsage::Office);
+    model.slabs[0].plate.usage = Some(SlabUsage::Office);
     model.sections.push(Section {
         id: SectionId(0),
         name: "H-400".into(),
@@ -4057,7 +4056,6 @@ fn test_floor_design_checks_secondary_joist_on_slab_edge() {
 /// （長辺方向へ一方向指定した場合、短辺ではなく長辺で設計する）。
 #[test]
 fn test_slab_design_span_respects_one_way() {
-    use squid_n_core::ids::FloorRegionId;
     use squid_n_core::model::{AreaLoad, DistributionMethod, OneWayDir};
 
     // lx=6000（辺0方向, X）、ly=3000（辺3方向, Y）の矩形スラブ。
@@ -4069,13 +4067,12 @@ fn test_slab_design_span_respects_one_way() {
         story: None,
         support_spring: None,
     };
-    let base_slab = |one_way: Option<OneWayDir>| FloorRegion {
-        id: FloorRegionId(0),
-        name: String::new(),
-        shape: RegionShape::Enclosed {
+    let base_slab = |one_way: Option<OneWayDir>| Slab {
+        id: squid_n_core::ids::SlabId(0),
+        shape: SlabShape::Enclosed {
             boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
         },
-        plate: Some(SlabPlate {
+        plate: SlabPlate {
             // 板厚はスラブ断面が持つ（設計にはこの厚さを使う）。
             section: Some(squid_n_core::ids::SectionId(0)),
             loads: vec![AreaLoad {
@@ -4085,9 +4082,7 @@ fn test_slab_design_span_respects_one_way() {
             usage: None,
             method: DistributionMethod::OneWay,
             one_way,
-            joists: vec![],
-        }),
-        secondary_joist_ids: vec![],
+        },
     };
     let mk_model = |one_way: Option<OneWayDir>| squid_n_core::model::Model {
         nodes: vec![
@@ -4100,7 +4095,7 @@ fn test_slab_design_span_respects_one_way() {
             squid_n_core::section_shape::SectionShape::RcSlab { thickness: 150.0 }
                 .to_section(squid_n_core::ids::SectionId(0), "S15".into()),
         ],
-        floor_regions: vec![base_slab(one_way)],
+        slabs: vec![base_slab(one_way)],
         ..Default::default()
     };
 
@@ -4149,15 +4144,14 @@ fn rc_slab_plate(section: squid_n_core::ids::SectionId) -> SlabPlate {
         usage: None,
         method: DistributionMethod::TriTrapezoid,
         one_way: None,
-        joists: vec![],
     }
 }
 
 /// 片持ち（線取り付き・矩形）は coef=2（M=wL²/2）。囲まれ矩形は従来どおり 8。
 #[test]
 fn test_attached_cantilever_slab_check_coef_2() {
-    use squid_n_core::ids::{FloorRegionId, SectionId};
-    use squid_n_core::model::{LoadPurpose, LoadTransfer, RegionAnchor, RegionShape};
+    use squid_n_core::ids::{SectionId, SlabId};
+    use squid_n_core::model::{LoadPurpose, LoadTransfer, RegionAnchor};
     use squid_n_core::section_shape::SectionShape;
 
     let mut model = make_square_slab_test_model();
@@ -4165,12 +4159,11 @@ fn test_attached_cantilever_slab_check_coef_2() {
     model
         .sections
         .push(SectionShape::RcSlab { thickness: 150.0 }.to_section(sid, "S15".into()));
-    model.floor_regions[0].plate = Some(rc_slab_plate(sid));
-    let attached_id = FloorRegionId(1);
-    model.floor_regions.push(FloorRegion {
+    model.slabs[0].plate = rc_slab_plate(sid);
+    let attached_id = SlabId(1);
+    model.slabs.push(Slab {
         id: attached_id,
-        name: "バルコニー".into(),
-        shape: RegionShape::Attached {
+        shape: SlabShape::Attached {
             anchor: RegionAnchor::Line {
                 nodes: [NodeId(0), NodeId(1)],
                 span: [0.0, 1.0],
@@ -4178,8 +4171,7 @@ fn test_attached_cantilever_slab_check_coef_2() {
             },
             extent: [1500.0, 1500.0],
         },
-        plate: Some(rc_slab_plate(sid)),
-        secondary_joist_ids: vec![],
+        plate: rc_slab_plate(sid),
     });
     model.validate().expect("validate");
     let app = App {
@@ -4189,7 +4181,7 @@ fn test_attached_cantilever_slab_check_coef_2() {
     let (_j, slabs) = app.floor_design_checks();
     let enclosed = slabs
         .iter()
-        .find(|(id, _)| *id == FloorRegionId(0))
+        .find(|(id, _)| *id == SlabId(0))
         .expect("囲まれ矩形");
     let attached = slabs
         .iter()
@@ -4197,10 +4189,10 @@ fn test_attached_cantilever_slab_check_coef_2() {
         .expect("取り付きが床検定に載る");
     let w_e = app
         .model
-        .region_intensity(&app.model.floor_regions[0], LoadPurpose::Floor);
+        .slab_intensity(&app.model.slabs[0], LoadPurpose::Floor);
     let w_a = app
         .model
-        .region_intensity(&app.model.floor_regions[1], LoadPurpose::Floor);
+        .slab_intensity(&app.model.slabs[1], LoadPurpose::Floor);
     assert!(
         (enclosed.1.moment - w_e * 4000.0 * 4000.0 / 8.0).abs() < 1.0,
         "囲まれは coef=8 M={} w={}",
@@ -4223,8 +4215,8 @@ fn test_attached_cantilever_slab_check_coef_2() {
 /// 台形取り付きは slab_dimensions が None でも床検定から落ちない。
 #[test]
 fn test_attached_trapezoid_slab_check_survives_none_dimensions() {
-    use squid_n_core::ids::{FloorRegionId, SectionId};
-    use squid_n_core::model::{LoadPurpose, LoadTransfer, RegionAnchor, RegionShape};
+    use squid_n_core::ids::{SectionId, SlabId};
+    use squid_n_core::model::{LoadPurpose, LoadTransfer, RegionAnchor};
     use squid_n_core::section_shape::SectionShape;
 
     let mut model = make_square_slab_test_model();
@@ -4233,10 +4225,10 @@ fn test_attached_trapezoid_slab_check_survives_none_dimensions() {
         .sections
         .push(SectionShape::RcSlab { thickness: 150.0 }.to_section(sid, "S15".into()));
     model.floor_regions.clear();
-    model.floor_regions.push(FloorRegion {
-        id: FloorRegionId(0),
-        name: "台形片持ち".into(),
-        shape: RegionShape::Attached {
+    model.slabs.clear();
+    model.slabs.push(Slab {
+        id: SlabId(0),
+        shape: SlabShape::Attached {
             anchor: RegionAnchor::Line {
                 nodes: [NodeId(0), NodeId(1)],
                 span: [0.0, 1.0],
@@ -4244,10 +4236,9 @@ fn test_attached_trapezoid_slab_check_survives_none_dimensions() {
             },
             extent: [1000.0, 2000.0],
         },
-        plate: Some(rc_slab_plate(sid)),
-        secondary_joist_ids: vec![],
+        plate: rc_slab_plate(sid),
     });
-    let dims = squid_n_load::floor::slab_dimensions(&model, &model.floor_regions[0]);
+    let dims = squid_n_load::floor::slab_dimensions(&model, &model.slabs[0]);
     assert!(dims.is_none(), "台形は矩形寸法を持たない: {dims:?}");
     model.validate().expect("validate");
     let app = App {
@@ -4258,7 +4249,7 @@ fn test_attached_trapezoid_slab_check_survives_none_dimensions() {
     assert_eq!(slabs.len(), 1, "slab_dimensions が None でも検定する");
     let w = app
         .model
-        .region_intensity(&app.model.floor_regions[0], LoadPurpose::Floor);
+        .slab_intensity(&app.model.slabs[0], LoadPurpose::Floor);
     let sr = &slabs[0].1;
     assert!((sr.span - 2000.0).abs() < 1e-6, "スパン={}", sr.span);
     assert!(
@@ -4271,8 +4262,8 @@ fn test_attached_trapezoid_slab_check_survives_none_dimensions() {
 /// 点取り付きは大きい方の張り出しをスパンとし、coef=2。
 #[test]
 fn test_attached_point_slab_check_coef_2() {
-    use squid_n_core::ids::{FloorRegionId, SectionId};
-    use squid_n_core::model::{LoadPurpose, RegionAnchor, RegionShape};
+    use squid_n_core::ids::{SectionId, SlabId};
+    use squid_n_core::model::{LoadPurpose, RegionAnchor};
     use squid_n_core::section_shape::SectionShape;
 
     let mut model = make_square_slab_test_model();
@@ -4281,15 +4272,14 @@ fn test_attached_point_slab_check_coef_2() {
         .sections
         .push(SectionShape::RcSlab { thickness: 150.0 }.to_section(sid, "S15".into()));
     model.floor_regions.clear();
-    model.floor_regions.push(FloorRegion {
-        id: FloorRegionId(0),
-        name: "出隅".into(),
-        shape: RegionShape::Attached {
+    model.slabs.clear();
+    model.slabs.push(Slab {
+        id: SlabId(0),
+        shape: SlabShape::Attached {
             anchor: RegionAnchor::Point(NodeId(0)),
             extent: [800.0, 1500.0],
         },
-        plate: Some(rc_slab_plate(sid)),
-        secondary_joist_ids: vec![],
+        plate: rc_slab_plate(sid),
     });
     model.validate().expect("validate");
     let app = App {
@@ -4300,7 +4290,7 @@ fn test_attached_point_slab_check_coef_2() {
     assert_eq!(slabs.len(), 1);
     let w = app
         .model
-        .region_intensity(&app.model.floor_regions[0], LoadPurpose::Floor);
+        .slab_intensity(&app.model.slabs[0], LoadPurpose::Floor);
     let sr = &slabs[0].1;
     assert!((sr.span - 1500.0).abs() < 1e-6, "スパン={}", sr.span);
     assert!(
@@ -5605,7 +5595,7 @@ fn test_import_stbridge_then_run_dl_succeeds() {
     std::fs::remove_file(&path).ok();
 }
 
-/// 二次部材（小梁）と、その節点で区切られたパネルスラブを持つモデル
+/// 二次部材（小梁）と、その節点で区切られた床板（`Slab`）を持つモデル
 /// （ST-Bridge 取り込みの典型形）の DL 同期と解析:
 ///
 /// - 小梁は解析要素ではなく、その支持節点（大梁スパン中間・要素非接続）に
@@ -5614,7 +5604,7 @@ fn test_import_stbridge_then_run_dl_succeeds() {
 ///   主架構へ伝達され、鉛直荷重の総和が保存される。
 /// - そのまま線形静的解析が成功する（小梁支持節点は解析自由度から除外）。
 #[test]
-fn test_secondary_joist_panel_slab_dl_cmq_and_solve() {
+fn test_secondary_joist_subdivided_slab_dl_cmq_and_solve() {
     use squid_n_core::ids::{FloorRegionId, MaterialId, SecondaryMemberId, SectionId};
     use squid_n_core::model::{
         AreaLoad, DistributionMethod, ElementData, ElementKind, EndCondition, ForceRegime,
@@ -5675,13 +5665,12 @@ fn test_secondary_joist_panel_slab_dl_cmq_and_solve() {
         mk_beam(6, 6, 7),
         mk_beam(7, 7, 4),
     ];
-    let mk_slab = |id: u32, boundary: Vec<u32>| FloorRegion {
-        id: FloorRegionId(id),
-        name: String::new(),
-        shape: RegionShape::Enclosed {
+    let mk_slab = |id: u32, boundary: Vec<u32>| Slab {
+        id: squid_n_core::ids::SlabId(id),
+        shape: SlabShape::Enclosed {
             boundary: boundary.into_iter().map(NodeId).collect(),
         },
-        plate: Some(SlabPlate {
+        plate: SlabPlate {
             // 板厚と自重はスラブ断面（`SectionId(1)`）から解決する。
             section: Some(SectionId(1)),
             loads: vec![AreaLoad {
@@ -5691,9 +5680,7 @@ fn test_secondary_joist_panel_slab_dl_cmq_and_solve() {
             usage: None,
             method: DistributionMethod::TriTrapezoid,
             one_way: None,
-            joists: vec![],
-        }),
-        secondary_joist_ids: vec![],
+        },
     };
     let model = Model {
         nodes,
@@ -5751,8 +5738,17 @@ fn test_secondary_joist_panel_slab_dl_cmq_and_solve() {
             section: Some(SectionId(0)),
             name: "B1".into(),
         }],
-        // 小梁で区切られた 2 枚のパネルスラブ（計 8000×6000）。
-        floor_regions: vec![mk_slab(0, vec![4, 8, 9, 7]), mk_slab(1, vec![8, 5, 6, 9])],
+        // 床領域は大梁 1 区画（8000×6000）。小梁で区切られた 2 枚の床板を持つ。
+        floor_regions: vec![{
+            let mut region = FloorRegion::new(
+                FloorRegionId(0),
+                vec![NodeId(4), NodeId(5), NodeId(6), NodeId(7)],
+            );
+            region.secondary_joist_ids = vec![SecondaryMemberId(0)];
+            region.slab_ids = vec![squid_n_core::ids::SlabId(0), squid_n_core::ids::SlabId(1)];
+            region
+        }],
+        slabs: vec![mk_slab(0, vec![4, 8, 9, 7]), mk_slab(1, vec![8, 5, 6, 9])],
         ..Default::default()
     };
     model
@@ -5797,9 +5793,9 @@ fn test_secondary_joist_panel_slab_dl_cmq_and_solve() {
     let slab_area = 8000.0 * 6000.0;
     let slab_w: f64 = app
         .model
-        .floor_regions
+        .slabs
         .iter()
-        .map(|sl| app.model.region_dead_intensity(sl))
+        .map(|sl| app.model.slab_dead_intensity(sl))
         .next()
         .expect("スラブがある");
     let slab_dl = slab_w * slab_area;
@@ -6825,7 +6821,7 @@ fn test_build_preparation_csv() {
 /// そろえる必要があり、片方だけ数え漏らすと削除ボタンが押せるのに Noop になる。
 #[test]
 fn test_prep_sections_count_slab_reference() {
-    use squid_n_core::ids::{FloorRegionId, SectionId};
+    use squid_n_core::ids::{SectionId, SlabId};
     use squid_n_core::model::DistributionMethod;
 
     let mut model = crate::sample::portal_frame();
@@ -6834,22 +6830,19 @@ fn test_prep_sections_count_slab_reference() {
         squid_n_core::section_shape::SectionShape::RcSlab { thickness: 150.0 }
             .to_section(slab_sec, "S15".into()),
     );
-    // 門型ラーメンの 4 節点を境界にした床を 1 枚置く。
-    model.floor_regions.push(FloorRegion {
-        id: FloorRegionId(0),
-        name: String::new(),
-        shape: RegionShape::Enclosed {
+    // 門型ラーメンの 4 節点を境界にした床板を 1 枚置く。
+    model.slabs.push(Slab {
+        id: SlabId(0),
+        shape: SlabShape::Enclosed {
             boundary: vec![NodeId(0), NodeId(1), NodeId(3), NodeId(2)],
         },
-        plate: Some(SlabPlate {
+        plate: SlabPlate {
             section: Some(slab_sec),
             loads: Vec::new(),
             usage: None,
             method: DistributionMethod::TriTrapezoid,
             one_way: None,
-            joists: Vec::new(),
-        }),
-        secondary_joist_ids: Vec::new(),
+        },
     });
     assert!(model.validate().is_ok(), "{:?}", model.validate());
 
@@ -7755,7 +7748,7 @@ fn test_wall_has_src_boundary_column() {
     use squid_n_core::section_shape::SectionShape;
 
     let mut model = squid_n_core::model::Model::default();
-    // 壁パネル: n0(0,0,0)-n1(2000,0,0)-n2(2000,0,3000)-n3(0,0,3000)。
+    // 壁エレメント: n0(0,0,0)-n1(2000,0,0)-n2(2000,0,3000)-n3(0,0,3000)。
     // 柱は x=0 の辺（n0-n3）を共有する鉛直材。
     for (i, c) in [
         [0.0, 0.0, 0.0],
@@ -7908,10 +7901,8 @@ fn test_sync_gravity_invalidates_beam_loads_hash() {
     let b1 = app.beam_loads.clone();
 
     // スラブ荷重を編集（M2）。
-    app.model.floor_regions[0]
+    app.model.slabs[0]
         .plate
-        .as_mut()
-        .unwrap()
         .loads
         .push(squid_n_core::model::AreaLoad {
             kind: "追加仕上げ".into(),
@@ -7931,12 +7922,7 @@ fn test_sync_gravity_invalidates_beam_loads_hash() {
     );
 
     // 編集を戻す（モデルは M1 とバイト同一へ）。
-    app.model.floor_regions[0]
-        .plate
-        .as_mut()
-        .unwrap()
-        .loads
-        .pop();
+    app.model.slabs[0].plate.loads.pop();
 
     // CMQ 表示を再開 → キーが無効なので再計算され、M1 の分配へ戻る。
     app.refresh_beam_loads();

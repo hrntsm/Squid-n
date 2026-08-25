@@ -1,12 +1,12 @@
 use crate::app::App;
-use squid_n_core::ids::{FloorRegionId, NodeId};
+use squid_n_core::ids::{FloorRegionId, NodeId, SlabId};
 use squid_n_core::model::{AreaLoad, DistributionMethod, JoistLine, OneWayDir, SlabUsage};
-use squid_n_core::model::{RegionAnchor, RegionShape};
+use squid_n_core::model::{RegionAnchor, SlabShape};
 use squid_n_core::units::to_display::area_load_kn_per_m2;
 use squid_n_core::units::to_internal;
 use squid_n_edit::{
-    AddSlab, DeleteSlab, SetAttachedAnchor, SetAttachedExtent, SetFloorRegionName, SetSlabJoists,
-    SetSlabOneWay, SetSlabUsage,
+    AddSlab, DeleteSlab, SetAttachedAnchor, SetAttachedExtent, SetFloorRegionJoists,
+    SetFloorRegionName, SetSlabOneWay, SetSlabUsage,
 };
 
 /// スラブ追加フォームのドラフト状態（GUI 専用）。
@@ -32,8 +32,6 @@ pub struct SlabDraft {
     pub joist_spacing: String,
     /// 小梁の断面（床の中での小梁設計用。`None` は断面未割当）。
     pub joist_section: Option<squid_n_core::ids::SectionId>,
-    /// 取り付き領域の名前。
-    pub attached_name: String,
     /// 取り付き領域の取付き先の節点（線なら両端、点なら 1 つ目だけを使う）。
     pub attached_nodes: [Option<NodeId>; 2],
     /// 取り付き先を点（柱）にするか。false は線（取付き線）。
@@ -57,7 +55,6 @@ impl Default for SlabDraft {
             joist_supports: [None; 2],
             joist_spacing: "0".to_string(),
             joist_section: None,
-            attached_name: String::new(),
             attached_nodes: [None; 2],
             attached_point: false,
             attached_extent: ["1000".to_string(), "1000".to_string()],
@@ -132,8 +129,8 @@ fn method_label(m: DistributionMethod) -> &'static str {
     }
 }
 
-fn kind_label(region: &squid_n_core::model::FloorRegion) -> &'static str {
-    if region.is_attached() {
+fn kind_label(slab: &squid_n_core::model::Slab) -> &'static str {
+    if slab.is_attached() {
         "取り付き"
     } else {
         "囲まれ"
@@ -152,20 +149,85 @@ pub fn slabs_table(ui: &mut egui::Ui, app: &mut App) {
     use crate::table_util::{self, Col};
 
     ui.label(
-        "床領域は、主架構が囲む閉領域（境界節点）と、主架構に取り付く領域（取付き線または点と張り出し量）の 2 種です。版（スラブ断面）は任意です。版がなければ床荷重・スラブ検定・協力幅は生じません（結果タブ/モデルタブの3Dビューで表示モード「CMQ図」を選ぶと分配結果を確認できます）。",
+        "床領域は大梁が囲む1区画です（名前と手入力小梁ラインだけを持ちます）。床板（スラブ）は、\
+         大梁または小梁で囲まれた版、または主架構に取り付く版（片持ち・バルコニー・出隅）です。\
+         版の仕様（断面・荷重・用途・分配法）は床板が持ちます。断面が未割当の床板には床荷重・\
+         スラブ検定・協力幅は生じません（結果タブ/モデルタブの3Dビューで表示モード「CMQ図」を\
+         選ぶと分配結果を確認できます）。",
     );
     ui.separator();
 
+    // ── 床領域一覧（表示名の編集のみ） ──────────────────────
+    ui.strong("床領域（大梁の区画）");
+    let mut pending_region_name: Vec<(FloorRegionId, String)> = Vec::new();
+    table_util::standard_table(
+        ui,
+        "floor_regions_tbl",
+        &[
+            Col::id(),
+            Col::name("名前"),
+            Col::text("境界節点"),
+            Col::label("床板"),
+            Col::label("小梁"),
+        ],
+        app.model.floor_regions.len(),
+        |row| {
+            let i = row.index();
+            let region = &app.model.floor_regions[i];
+            row.col(|ui| {
+                table_util::id_label(ui, region.id.0);
+            });
+            row.col(|ui| {
+                let mut name = region.name.clone();
+                let resp = table_util::cell_text_edit(ui, &mut name);
+                if resp.changed() {
+                    pending_region_name.push((region.id, name));
+                }
+            });
+            row.col(|ui| {
+                let s = region
+                    .boundary
+                    .iter()
+                    .map(|n| n.0.to_string())
+                    .collect::<Vec<_>>()
+                    .join("-");
+                table_util::text_cell(ui, &s);
+            });
+            row.col(|ui| {
+                let cnt = region.slab_ids.len();
+                if cnt == 0 {
+                    table_util::muted_cell(ui, "―", "床板が割り当たっていません");
+                } else {
+                    ui.label(format!("{cnt}枚"));
+                }
+            });
+            row.col(|ui| {
+                let cnt = region.joist_lines().len();
+                if cnt == 0 {
+                    table_util::muted_cell(ui, "―", "小梁が配置されていません");
+                } else {
+                    ui.label(format!("{cnt}本"));
+                }
+            });
+        },
+    );
+    for (id, name) in pending_region_name {
+        app.undo
+            .run(&mut app.model, Box::new(SetFloorRegionName { id, name }));
+        app.staleness.mark_edited();
+    }
+
+    ui.add_space(8.0);
+    ui.strong("床板（スラブ）");
+
     // ── 一覧表 ──────────────────────────────────────────
-    let n = app.model.floor_regions.len();
-    let mut pending_delete: Option<FloorRegionId> = None;
-    let mut pending_name: Vec<(FloorRegionId, String)> = Vec::new();
-    let mut pending_one_way: Vec<(FloorRegionId, Option<OneWayDir>)> = Vec::new();
-    let mut pending_usage: Vec<(FloorRegionId, Option<SlabUsage>)> = Vec::new();
-    let mut pending_section: Vec<(FloorRegionId, Option<squid_n_core::ids::SectionId>)> =
-        Vec::new();
-    let mut pending_extent: Vec<(FloorRegionId, [f64; 2])> = Vec::new();
-    let mut pending_anchor: Vec<(FloorRegionId, RegionAnchor)> = Vec::new();
+    let n = app.model.slabs.len();
+    let mut pending_delete: Option<SlabId> = None;
+    let mut pending_one_way: Vec<(SlabId, Option<OneWayDir>)> = Vec::new();
+    let mut pending_usage: Vec<(SlabId, Option<SlabUsage>)> = Vec::new();
+    let mut pending_section: Vec<(SlabId, Option<squid_n_core::ids::SectionId>)> = Vec::new();
+    let mut pending_extent: Vec<(SlabId, [f64; 2])> = Vec::new();
+    let mut pending_anchor: Vec<(SlabId, RegionAnchor)> = Vec::new();
     let node_ids: Vec<NodeId> = app.model.nodes.iter().map(|n| n.id).collect();
     // 板状の断面（板厚を持つ断面）だけを候補にする。板厚が無い断面を割り当てても
     // 自重・数量が算定できないため、選ばせない。
@@ -182,7 +244,7 @@ pub fn slabs_table(ui: &mut egui::Ui, app: &mut App) {
         "slabs_tbl",
         &[
             Col::id(),
-            Col::name("名前"),
+            Col::text("所属床領域"),
             Col::text("境界節点"),
             Col::text("荷重"),
             Col::name("分配法"),
@@ -190,27 +252,31 @@ pub fn slabs_table(ui: &mut egui::Ui, app: &mut App) {
             Col::name("一方向"),
             Col::text("用途"),
             Col::text("断面"),
-            Col::label("小梁"),
             Col::actions(),
         ],
         n,
         |row| {
             let i = row.index();
-            let slab = &app.model.floor_regions[i];
+            let slab = &app.model.slabs[i];
             row.col(|ui| {
                 table_util::id_label(ui, slab.id.0);
             });
             row.col(|ui| {
-                // 名前は領域を指し示すための表示用（「階段室」「吹抜け」など）。
-                // 空欄のままでも構わないので、未設定は淡色のプレースホルダにする。
-                let mut name = slab.name.clone();
-                let resp = table_util::cell_text_edit(ui, &mut name);
-                if resp.changed() {
-                    pending_name.push((slab.id, name));
+                // どの床領域（大梁の区画）に属するかは `slab_ids` から逆引きする
+                // （取り付く床板・浮き床板はどの床領域からも参照されない）。
+                let owner = app
+                    .model
+                    .floor_regions
+                    .iter()
+                    .find(|r| r.slab_ids.contains(&slab.id));
+                match owner {
+                    Some(r) if !r.name.is_empty() => table_util::text_cell(ui, &r.name),
+                    Some(r) => table_util::text_cell(ui, &format!("#{}", r.id.0)),
+                    None => table_util::muted_cell(ui, "―", "どの床領域からも参照されていません"),
                 }
             });
             row.col(|ui| match &slab.shape {
-                RegionShape::Enclosed { boundary } => {
+                SlabShape::Enclosed { boundary } => {
                     let s = boundary
                         .iter()
                         .map(|n| n.0.to_string())
@@ -218,7 +284,7 @@ pub fn slabs_table(ui: &mut egui::Ui, app: &mut App) {
                         .join("-");
                     table_util::text_cell(ui, &s);
                 }
-                RegionShape::Attached { anchor, extent } => {
+                SlabShape::Attached { anchor, extent } => {
                     attached_boundary_cell(
                         ui,
                         slab.id,
@@ -233,9 +299,7 @@ pub fn slabs_table(ui: &mut egui::Ui, app: &mut App) {
             row.col(|ui| {
                 let s = slab
                     .plate
-                    .as_ref()
-                    .map(|p| p.loads.as_slice())
-                    .unwrap_or_default()
+                    .loads
                     .iter()
                     .map(|l| format!("{} {:.2}kN/m²", l.kind, area_load_kn_per_m2(l.value)))
                     .collect::<Vec<_>>()
@@ -250,7 +314,7 @@ pub fn slabs_table(ui: &mut egui::Ui, app: &mut App) {
                 table_util::text_cell(ui, method_label(slab.method()));
             });
             row.col(|ui| {
-                // 領域の種別（囲まれた領域か取り付き領域か）は形そのものなので、
+                // 床板の種別（囲まれた床板か取り付く床板か）は形そのものなので、
                 // 表からは変更しない（作図・取り込みで決まる）。
                 table_util::text_cell(ui, kind_label(slab));
             });
@@ -293,7 +357,7 @@ pub fn slabs_table(ui: &mut egui::Ui, app: &mut App) {
             row.col(|ui| {
                 let label = app
                     .model
-                    .region_section(slab)
+                    .slab_section(slab)
                     .map(|sec| sec.display_name())
                     .unwrap_or_else(|| "―".to_string());
                 table_util::cell_combo(ui, ("slab_section", slab.id.0), &label, |ui| {
@@ -314,32 +378,19 @@ pub fn slabs_table(ui: &mut egui::Ui, app: &mut App) {
                 });
             });
             row.col(|ui| {
-                let cnt = slab.joist_lines().len();
-                if cnt == 0 {
-                    table_util::muted_cell(ui, "―", "小梁が配置されていません");
-                } else {
-                    ui.label(format!("{cnt}本"));
-                }
-            });
-            row.col(|ui| {
-                if table_util::delete_cell(ui, "このスラブを削除", None) {
+                if table_util::delete_cell(ui, "この床板を削除", None) {
                     pending_delete = Some(slab.id);
                 }
             });
         },
     );
 
-    let had_pending = !pending_name.is_empty()
-        || !pending_one_way.is_empty()
+    let had_pending = !pending_one_way.is_empty()
         || !pending_usage.is_empty()
         || !pending_section.is_empty()
         || !pending_extent.is_empty()
         || !pending_anchor.is_empty()
         || pending_delete.is_some();
-    for (id, name) in pending_name {
-        app.undo
-            .run(&mut app.model, Box::new(SetFloorRegionName { id, name }));
-    }
     for (id, one_way) in pending_one_way {
         app.undo
             .run(&mut app.model, Box::new(SetSlabOneWay { id, one_way }));
@@ -370,11 +421,11 @@ pub fn slabs_table(ui: &mut egui::Ui, app: &mut App) {
     }
 
     ui.separator();
-    // ── スラブ追加フォーム ──────────────────────────────────
-    ui.strong("スラブを追加");
+    // ── 床板追加フォーム ──────────────────────────────────
+    ui.strong("床板を追加");
 
     if app.model.nodes.len() < 3 {
-        ui.label("スラブを追加するには節点が3つ以上必要です");
+        ui.label("床板を追加するには節点が3つ以上必要です");
         return;
     }
 
@@ -543,7 +594,6 @@ pub fn slabs_table(ui: &mut egui::Ui, app: &mut App) {
             &mut app.model,
             Box::new(AddSlab {
                 boundary,
-                joists: Vec::new(),
                 loads: vec![AreaLoad { kind, value }],
                 method: app.slab_draft.method,
                 usage: app.slab_draft.usage,
@@ -559,21 +609,20 @@ pub fn slabs_table(ui: &mut egui::Ui, app: &mut App) {
 
 /// 取り付き領域（片持ちスラブ・バルコニー・出隅）の入力セクション。
 ///
-/// 主架構に囲まれていない床は、囲まれた領域（大梁が囲むパネル）と違って境界を
-/// 節点で描けない。取付き先（大梁の 2 節点、または柱の 1 節点）と張り出し量で作る。
+/// 主架構に囲まれていない床板は、囲まれた床板と違って境界を節点で描けない。
+/// 取付き先（大梁の 2 節点、または柱の 1 節点）と張り出し量で作る。取り付く床板は
+/// どの床領域からも参照されない独立した床板であり、名前は持たない。
 /// 張り出し量の符号は、線なら取付き線 1→2 の**左側が正**、点なら全体座標の X/Y の向き。
 fn attached_section(ui: &mut egui::Ui, app: &mut App) {
     use squid_n_core::model::{LoadTransfer, RegionAnchor};
 
     ui.separator();
-    ui.strong("取り付き領域を追加（片持ち・バルコニー・出隅）");
+    ui.strong("取り付く床板を追加（片持ち・バルコニー・出隅）");
     ui.label(
-        "主架構に囲まれない床です。取付き先（大梁の2節点、または柱の1節点）と張り出し量で作ります。張り出し量の符号は、線なら取付き線 1→2 の左が正、点なら全体座標 X/Y の向きです。",
+        "主架構に囲まれない床板です。取付き先（大梁の2節点、または柱の1節点）と張り出し量で作ります。張り出し量の符号は、線なら取付き線 1→2 の左が正、点なら全体座標 X/Y の向きです。",
     );
 
     ui.horizontal(|ui| {
-        ui.label("名前:");
-        ui.add(egui::TextEdit::singleline(&mut app.slab_draft.attached_name).desired_width(120.0));
         ui.label("取付き先:");
         ui.selectable_value(&mut app.slab_draft.attached_point, false, "線（大梁）");
         ui.selectable_value(&mut app.slab_draft.attached_point, true, "点（柱）");
@@ -656,18 +705,17 @@ fn attached_section(ui: &mut egui::Ui, app: &mut App) {
         ui.label("取付き先の節点と張り出し量を指定してください");
     }
     if ui
-        .add_enabled(ready, egui::Button::new("取り付き領域を追加"))
+        .add_enabled(ready, egui::Button::new("取り付く床板を追加"))
         .clicked()
     {
         if let (Some(anchor), Some(extent)) = (anchor, extent) {
             app.undo.run(
                 &mut app.model,
-                Box::new(squid_n_edit::AddAttachedFloorRegion {
-                    name: app.slab_draft.attached_name.trim().to_string(),
+                Box::new(squid_n_edit::AddAttachedSlab {
                     anchor,
                     extent,
                     // 版の仕様（断面・仕上荷重・室用途）は、追加後に一覧表から与える。
-                    plate: None,
+                    plate: squid_n_core::model::SlabPlate::default(),
                 }),
             );
             app.staleness.mark_edited();
@@ -675,57 +723,46 @@ fn attached_section(ui: &mut egui::Ui, app: &mut App) {
     }
 }
 
-/// 小梁（`JoistLine`）の入力セクション。対象スラブを選び、支持2節点＋負担幅
-/// `spacing` で小梁を追加/削除する。小梁は矩形スラブの二段階伝達
-/// （`distribute_rect_with_joists`）でのみ使われ、分配法が「三角/台形」または
-/// 「一方向」のとき有効になる（それ以外の分配法では無視される）。
+/// 手入力小梁ライン（`FloorRegion::joists`）の入力セクション。対象の床領域を選び、
+/// 支持2節点＋負担幅 `spacing` で小梁を追加/削除する。交差小梁の格子解析、および
+/// 矩形床板の二段階伝達（`distribute_rect_with_joists`）でのみ使われ、代表床板の
+/// 分配法が「三角/台形」または「一方向」のとき有効になる（それ以外の分配法では無視される）。
 ///
 /// 小梁の架かる方向 `dir` は支持2節点の平面（XY）ベクトルから自動算定する。
 fn joists_section(ui: &mut egui::Ui, app: &mut App) {
     ui.separator();
-    ui.strong("小梁を入力（矩形スラブの二段階伝達）");
+    ui.strong("小梁を入力（床領域の交差小梁・二段階伝達）");
     ui.label(
-        "対象スラブを選び、小梁が架かる支持2節点と負担幅を指定します。分配法が「三角/台形」または「一方向」のときに有効です。",
+        "対象の床領域を選び、小梁が架かる支持2節点と負担幅を指定します。分配法が「三角/台形」または「一方向」のときに有効です。",
     );
 
     if app.model.floor_regions.is_empty() {
-        ui.label("スラブがありません");
+        ui.label("床領域がありません");
         return;
     }
 
-    // 対象スラブ選択。
-    // 小梁 UI の対象は囲まれた領域のみ（取り付きは二段階伝達の対象外）。
-    let slab_ids: Vec<FloorRegionId> = app
-        .model
-        .floor_regions
-        .iter()
-        .filter(|s| !s.is_attached())
-        .map(|s| s.id)
-        .collect();
-    if slab_ids.is_empty() {
-        ui.label("囲まれたスラブがありません（小梁は囲まれた領域のみ）");
-        return;
-    }
+    // 対象の床領域選択。
+    let region_ids: Vec<FloorRegionId> = app.model.floor_regions.iter().map(|r| r.id).collect();
     if app
         .slab_draft
         .joist_target
-        .is_none_or(|t| !slab_ids.contains(&t))
+        .is_none_or(|t| !region_ids.contains(&t))
     {
-        app.slab_draft.joist_target = slab_ids.first().copied();
+        app.slab_draft.joist_target = region_ids.first().copied();
     }
     egui::ComboBox::from_id_salt("joist_target_slab")
         .selected_text(
             app.slab_draft
                 .joist_target
-                .map(|t| format!("スラブ #{}", t.0))
+                .map(|t| format!("床領域 #{}", t.0))
                 .unwrap_or_else(|| "―".to_string()),
         )
         .show_ui(ui, |ui| {
-            for &sid in &slab_ids {
+            for &rid in &region_ids {
                 ui.selectable_value(
                     &mut app.slab_draft.joist_target,
-                    Some(sid),
-                    format!("スラブ #{}", sid.0),
+                    Some(rid),
+                    format!("床領域 #{}", rid.0),
                 );
             }
         });
@@ -733,15 +770,15 @@ fn joists_section(ui: &mut egui::Ui, app: &mut App) {
     let Some(target) = app.slab_draft.joist_target else {
         return;
     };
-    let Some(slab_idx) = app.model.floor_regions.iter().position(|s| s.id == target) else {
+    let Some(region_idx) = app.model.floor_regions.iter().position(|r| r.id == target) else {
         return;
     };
 
-    // 変更は借用衝突を避けるため、UI 走査後に SetSlabJoists で一括反映する。
+    // 変更は借用衝突を避けるため、UI 走査後に SetFloorRegionJoists で一括反映する。
     let mut new_joists: Option<Vec<JoistLine>> = None;
 
     // 既存小梁の一覧（削除ボタン付き）。
-    let joists = app.model.floor_regions[slab_idx].joist_lines().to_vec();
+    let joists = app.model.floor_regions[region_idx].joist_lines().to_vec();
     if joists.is_empty() {
         ui.label("この床には小梁がありません");
     } else {
@@ -935,7 +972,7 @@ fn joists_section(ui: &mut egui::Ui, app: &mut App) {
     if let Some(v) = new_joists {
         app.undo.run(
             &mut app.model,
-            Box::new(SetSlabJoists {
+            Box::new(SetFloorRegionJoists {
                 id: target,
                 joists: v,
             }),
@@ -946,12 +983,12 @@ fn joists_section(ui: &mut egui::Ui, app: &mut App) {
 
 fn attached_boundary_cell(
     ui: &mut egui::Ui,
-    id: FloorRegionId,
+    id: SlabId,
     anchor: RegionAnchor,
     extent: [f64; 2],
     node_ids: &[NodeId],
-    pending_extent: &mut Vec<(FloorRegionId, [f64; 2])>,
-    pending_anchor: &mut Vec<(FloorRegionId, RegionAnchor)>,
+    pending_extent: &mut Vec<(SlabId, [f64; 2])>,
+    pending_anchor: &mut Vec<(SlabId, RegionAnchor)>,
 ) {
     ui.vertical(|ui| {
         match anchor {

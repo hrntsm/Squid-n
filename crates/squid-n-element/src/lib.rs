@@ -29,7 +29,7 @@ pub use frame::{
     beam, concentrated, fiber, member_load, multi_spring, panel_offset, rigid_arm, truss,
 };
 pub use springs::{damper, isolator, panel, panel_gen, spring};
-pub use wall::{misc_wall, side_column, wall_panel};
+pub use wall::{misc_wall, side_column, wall_element};
 
 pub use behavior::*;
 pub use factory::*;

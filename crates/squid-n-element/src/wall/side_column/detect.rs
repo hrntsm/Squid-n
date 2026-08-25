@@ -52,7 +52,7 @@ pub fn is_side_column_member(kind: ElementKind) -> bool {
 /// 2. `model.elements` 中に節点数4以上の `ElementKind::Wall` があり、それが耐震壁として
 ///    成立すること（[`crate::misc_wall::wall_is_seismic`]）。
 /// 3. その壁の四隅を z で下辺2・上辺2 に分け、下辺の軸方向への射影で上辺と対応付けた
-///    （`wall_panel.rs::try_new` と同じロジック）とき、自部材の両端節点が
+///    （`wall_element.rs::try_new` と同じロジック）とき、自部材の両端節点が
 ///    「下辺a-上辺a」または「下辺b-上辺b」のいずれかの鉛直辺の2節点と一致すること。
 ///
 /// 側柱を面内両端ピンとするのは、面内せん断を壁エレメントが全部負担するモデルにおいて
@@ -130,10 +130,10 @@ type SideEdges = ([(NodeId, NodeId); 2], [f64; 3]);
 ///
 /// 四隅の並べ替え（z で下辺 2・上辺 2 に分け、下辺の軸方向への射影で上辺と
 /// 対応付ける）は壁エレメント要素と**同じ幾何**でなければならないため、
-/// [`crate::wall_panel::wall_panel_geometry`] をそのまま用いる。
+/// [`crate::wall_element::wall_element_geometry`] をそのまま用いる。
 /// 退化した壁（節点欠落・辺長ゼロ・法線が定まらない）は `None`。
 fn wall_side_edges(wall: &ElementData, model: &Model) -> Option<SideEdges> {
-    let g = crate::wall_panel::wall_panel_geometry(wall, model)?;
+    let g = crate::wall_element::wall_element_geometry(wall, model)?;
     // 壁面法線 = 下辺方向 × 鉛直
     let normal = unit(cross(g.ex_bottom, [0.0, 0.0, 1.0]))?;
     Some(([(g.bottom[0], g.top[0]), (g.bottom[1], g.top[1])], normal))

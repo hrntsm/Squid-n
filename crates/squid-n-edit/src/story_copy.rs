@@ -42,8 +42,8 @@
 //! 場合は [`CopyStoryReport::mismatched_sections`] で名指しし、利用者が判断する。
 
 use super::*;
-use squid_n_core::ids::{ElemId, FloorRegionId, NodeId, SecondaryMemberId, SectionId, StoryId};
-use squid_n_core::model::{FloorRegion, SecondaryMember, Section, SlabPlate, SlabUsage};
+use squid_n_core::ids::{ElemId, NodeId, SecondaryMemberId, SectionId, SlabId, StoryId};
+use squid_n_core::model::{SecondaryMember, Section, Slab, SlabPlate, SlabShape, SlabUsage};
 use std::collections::{HashMap, HashSet};
 
 /// 同じ平面位置とみなす座標差 [mm]。
@@ -294,7 +294,7 @@ type PlanKey = Vec<PointKey>;
 ///
 /// 材端の XY だけでキーを作ると、同じ構面に投影される部材を区別できない。
 /// 1FL→2FL のブレースと 2FL の大梁はどちらも XY が `[(0,0), (6000,0)]` になり、
-/// 同じパネルの X ブレース 2 本も互いに区別できない。高さの位置を足すと、
+/// 同じ構面の X ブレース 2 本も互いに区別できない。高さの位置を足すと、
 /// 大梁は両端が 1000、ブレースは 0 と 1000 になり、X ブレースは XY との組が
 /// 入れ替わるため区別できる。
 ///
@@ -518,9 +518,9 @@ fn members_by_plan(model: &Model, ctx: &Ctx, story: StoryId) -> PlanIndex<ElemId
     }))
 }
 
-/// 階の床を、対応付けキーで引ける索引にする。
-fn slabs_by_plan(model: &Model, ctx: &Ctx, story: StoryId) -> PlanIndex<FloorRegionId> {
-    PlanIndex::build(model.floor_regions.iter().filter_map(|sl| {
+/// 階の床板を、対応付けキーで引ける索引にする。
+fn slabs_by_plan(model: &Model, ctx: &Ctx, story: StoryId) -> PlanIndex<SlabId> {
+    PlanIndex::build(model.slabs.iter().filter_map(|sl| {
         (slab_story(model, sl) == Some(story))
             .then(|| Some((ctx.key(model, story, sl.boundary_nodes()?)?, sl.id)))
             .flatten()
@@ -542,12 +542,12 @@ fn secondary_by_plan(model: &Model, ctx: &Ctx, story: StoryId) -> PlanIndex<usiz
     )
 }
 
-/// 床領域の所属階（参照する節点のうちもっとも高い節点の所属階。部材と同じ規則）。
+/// 床板の所属階（参照する節点のうちもっとも高い節点の所属階。部材と同じ規則）。
 ///
-/// 取り付き領域は自由端に節点を持たないため、取付き先の節点で判定する。
+/// 取り付く床板は自由端に節点を持たないため、取付き先の節点で判定する。
 /// ここで `None` を返すと複製の対象からも見送り件数からも外れ、利用者からは
 /// 「複製したのに床が足りない」理由が見えなくなる。
-fn slab_story(model: &Model, slab: &FloorRegion) -> Option<StoryId> {
+fn slab_story(model: &Model, slab: &Slab) -> Option<StoryId> {
     let refs: Vec<squid_n_core::ids::NodeId> = match slab.boundary_nodes() {
         Some(b) => b.to_vec(),
         None => slab.reference_node().into_iter().collect(),
@@ -618,7 +618,7 @@ fn copy_sections(
     // --- 床 ---
     let dst_slabs = slabs_by_plan(model, ctx, to);
     let src: Vec<(PlanKey, Option<SectionId>)> = model
-        .floor_regions
+        .slabs
         .iter()
         .filter(|sl| slab_story(model, sl) == Some(cmd.from))
         .filter_map(|sl| {
@@ -632,10 +632,7 @@ fn copy_sections(
         let Some(&sid) = dst_slabs.get(&key) else {
             continue;
         };
-        let current = model
-            .floor_regions
-            .get(sid.index())
-            .and_then(|sl| sl.section());
+        let current = model.slabs.get(sid.index()).and_then(|sl| sl.section());
         let Some(next) = resolve_section(
             model,
             cmd,
@@ -647,14 +644,10 @@ fn copy_sections(
         ) else {
             continue;
         };
-        if let Some(plate) = model
-            .floor_regions
-            .get_mut(sid.index())
-            .and_then(|sl| sl.plate.as_mut())
-        {
-            if plate.section != next {
-                count_section_change(plate.section, next, report);
-                plate.section = next;
+        if let Some(sl) = model.slabs.get_mut(sid.index()) {
+            if sl.plate.section != next {
+                count_section_change(sl.plate.section, next, report);
+                sl.plate.section = next;
             }
         }
     }
@@ -777,10 +770,12 @@ fn section_for_story(
     id
 }
 
-/// 床（境界の形）を配る。新しく作った床の ID を返す。
+/// 床板（境界の形）を配る。新しく作った床板の ID を返す。
 ///
-/// 上書きが真のときは、複製元に同じ位置の床が無い複製先の床を削除する。ただし
+/// 上書きが真のときは、複製元に同じ位置の床板が無い複製先の床板を削除する。ただし
 /// 境界節点すべてが複製元の階へ対応するものに限る（[`Ctx::maps_back`]）。
+/// 所属する床領域（大梁の区画）は次の準備計算（`rebuild_floor_regions`）が
+/// 自動で結びつけるため、ここでは床板だけを配る。
 fn copy_slabs(
     model: &mut Model,
     ctx: &Ctx,
@@ -789,9 +784,9 @@ fn copy_slabs(
     dz: f64,
     dst_story_name: &str,
     report: &mut CopyStoryReport,
-) -> Vec<FloorRegionId> {
+) -> Vec<SlabId> {
     let src_keys: HashSet<PlanKey> = model
-        .floor_regions
+        .slabs
         .iter()
         .filter(|sl| slab_story(model, sl) == Some(cmd.from))
         .filter_map(|sl| ctx.key(model, cmd.from, sl.boundary_nodes()?))
@@ -799,13 +794,13 @@ fn copy_slabs(
 
     // 先に削除する（複製元に無い床を消してから、複製元の床を作る）。
     if cmd.overwrite {
-        let doomed: Vec<FloorRegionId> = model
-            .floor_regions
+        let doomed: Vec<SlabId> = model
+            .slabs
             .iter()
             .filter(|sl| slab_story(model, sl) == Some(to))
             .filter(|sl| {
                 let Some(boundary) = sl.boundary_nodes() else {
-                    return false; // 取り付き領域は平面キーで対応付けない（複製の対象外）。
+                    return false; // 取り付く床板は平面キーで対応付けない（複製の対象外）。
                 };
                 ctx.key(model, to, boundary)
                     .is_some_and(|k| !src_keys.contains(&k))
@@ -813,7 +808,7 @@ fn copy_slabs(
             })
             .map(|sl| sl.id)
             .collect();
-        // 床の削除は後続の `FloorRegionId` を繰り上げるため、降順に消す
+        // 床の削除は後続の `SlabId` を繰り上げるため、降順に消す
         // （先に消した床より小さい ID は動かないので、控えた ID がずれない）。
         for id in doomed.into_iter().rev() {
             let inverse = crate::DeleteSlab { id }.apply(model);
@@ -824,8 +819,8 @@ fn copy_slabs(
     }
 
     let existing = slabs_by_plan(model, ctx, to);
-    let src: Vec<FloorRegion> = model
-        .floor_regions
+    let src: Vec<Slab> = model
+        .slabs
         .iter()
         .filter(|sl| slab_story(model, sl) == Some(cmd.from))
         .cloned()
@@ -834,10 +829,10 @@ fn copy_slabs(
     let mut created = Vec::new();
     for sl in src {
         let Some(src_boundary) = sl.boundary_nodes().map(|b| b.to_vec()) else {
-            // 取り付き領域（片持ち・バルコニー・出隅）は複製しない。
+            // 取り付く床板（片持ち・バルコニー・出隅）は複製しない。
             //
-            // 対応付けは境界節点の平面キーで行うが、取り付き領域は自由端に節点を持たず、
-            // 取付き先の節点だけでは同じ形の領域を作れない（張り出し量・区間・荷重の
+            // 対応付けは境界節点の平面キーで行うが、取り付く床板は自由端に節点を持たず、
+            // 取付き先の節点だけでは同じ形の床板を作れない（張り出し量・区間・荷重の
             // 出口まで写す必要がある）。**黙って落とすと複製先で床荷重が欠ける**ため、
             // 見送った件数として報告へ数える。
             report.skipped += 1;
@@ -871,40 +866,34 @@ fn copy_slabs(
                 d
             }
         });
-        let id = FloorRegionId(model.floor_regions.len() as u32);
-        // 小梁の所属は複製元の床のもの。写すと 2 つの階の床が同じ小梁を自分の子として
-        // 抱え、床荷重を二重に拾う。`copy_secondary` が複製先の小梁を作るため、
-        // 所属付けはそちらへ委ねて空で作る（`FloorRegion::enclosed` は空で作る）。
-        let mut region = FloorRegion::enclosed(id, boundary);
-        if sl.plate.is_some() {
-            region = region.with_plate(SlabPlate {
+        let id = SlabId(model.slabs.len() as u32);
+        model.slabs.push(Slab {
+            id,
+            shape: SlabShape::Enclosed { boundary },
+            plate: SlabPlate {
                 section,
                 method: sl.method(),
                 one_way: sl.one_way(),
                 ..Default::default()
-            });
-        }
-        // 表示名は複製元から引き継ぐ（「階段室」「吹抜け」のように、階をまたいで
-        // 同じ位置にある領域は同じ呼び名で通ることが多い）。
-        region.name = sl.name.clone();
-        model.floor_regions.push(region);
+            },
+        });
         created.push(id);
         report.slabs_created += 1;
     }
     created
 }
 
-/// 床の面荷重・用途を配る（「荷重」の対象。床の形は `copy_slabs` が受け持つ）。
+/// 床の面荷重・用途を配る（「荷重」の対象。床板の形は `copy_slabs` が受け持つ）。
 ///
-/// `created` は同じ操作で作ったばかりの床のため、「更新」には数えない（数えると
-/// 1 枚の床が「新規」と「更新」で二重に報告される）。床の削除が `FloorRegionId` を
+/// `created` は同じ操作で作ったばかりの床板のため、「更新」には数えない（数えると
+/// 1 枚の床板が「新規」と「更新」で二重に報告される）。床板の削除が `SlabId` を
 /// 繰り上げるため、添字の閾値ではなく ID の集合で見分ける。
 fn copy_slab_loads(
     model: &mut Model,
     ctx: &Ctx,
     cmd: &CopyStory,
     to: StoryId,
-    created: &[FloorRegionId],
+    created: &[SlabId],
     report: &mut CopyStoryReport,
 ) {
     let dst = slabs_by_plan(model, ctx, to);
@@ -913,15 +902,14 @@ fn copy_slab_loads(
         Vec<squid_n_core::model::AreaLoad>,
         Option<SlabUsage>,
     )> = model
-        .floor_regions
+        .slabs
         .iter()
         .filter(|sl| slab_story(model, sl) == Some(cmd.from))
         .filter_map(|sl| {
-            let plate = sl.plate.as_ref()?;
             Some((
                 ctx.key(model, cmd.from, sl.boundary_nodes()?)?,
-                plate.loads.clone(),
-                plate.usage,
+                sl.plate.loads.clone(),
+                sl.plate.usage,
             ))
         })
         .collect();
@@ -931,13 +919,10 @@ fn copy_slab_loads(
             continue;
         };
         let is_new = created.contains(&sid);
-        let Some(plate) = model
-            .floor_regions
-            .get_mut(sid.index())
-            .and_then(|sl| sl.plate.as_mut())
-        else {
+        let Some(sl) = model.slabs.get_mut(sid.index()) else {
             continue;
         };
+        let plate = &mut sl.plate;
         // 上書きしない設定では、既に面荷重・用途が入っている床には触れない。
         if !cmd.overwrite && !is_new && (!plate.loads.is_empty() || plate.usage.is_some()) {
             continue;

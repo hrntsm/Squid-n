@@ -11,12 +11,10 @@ use super::{
     PendingSecondary, RawAxisGroup, RawLoadCase, RawMaterial, RawNode, RawSlab, RawStory, RawWall,
     SecMatRef,
 };
-use squid_n_core::ids::{
-    ElemId, FloorRegionId, LoadCaseId, MaterialId, NodeId, SectionId, StoryId,
-};
+use squid_n_core::ids::{ElemId, LoadCaseId, MaterialId, NodeId, SectionId, SlabId, StoryId};
 use squid_n_core::model::{
-    DistributionMethod, ElementData, ElementKind, EndCondition, FloorRegion, ForceRegime, LoadCase,
-    LocalAxis, Material, MaterialCategory, Model, NodalLoad, Node, Section, SlabPlate, Story,
+    DistributionMethod, ElementData, ElementKind, EndCondition, ForceRegime, LoadCase, LocalAxis,
+    Material, MaterialCategory, Model, NodalLoad, Node, Section, Slab, SlabPlate, SlabShape, Story,
 };
 use squid_n_core::region_rebuild::rebuild_floor_regions;
 use squid_n_core::section_shape::SectionShape;
@@ -130,10 +128,10 @@ pub(super) fn assemble(parsed: StbParser) -> Result<(Model, ImportReport), StbEr
         &mut warnings,
     );
     let rebuild = rebuild_floor_regions(&mut model);
-    if rebuild.unassigned_plates != 0 {
+    if rebuild.unassigned_slabs != 0 {
         warnings.push(format!(
-            "床領域の作り直しで版 {} 枚が領域に割り当てられなかった",
-            rebuild.unassigned_plates
+            "床領域の作り直しで床板 {} 枚が領域に割り当てられなかった",
+            rebuild.unassigned_slabs
         ));
     }
     if rebuild.unassigned_joists != 0 {
@@ -142,16 +140,10 @@ pub(super) fn assemble(parsed: StbParser) -> Result<(Model, ImportReport), StbEr
             rebuild.unassigned_joists
         ));
     }
-    if rebuild.mixed_plate_panels != 0 {
+    if rebuild.unmatched_old_regions != 0 {
         warnings.push(format!(
-            "床領域の作り直しで版が混在するパネルが {} 件あった",
-            rebuild.mixed_plate_panels
-        ));
-    }
-    if rebuild.unmatched_old_enclosed != 0 {
-        warnings.push(format!(
-            "床領域の作り直しで照合できなかった旧囲まれ領域が {} 件あった",
-            rebuild.unmatched_old_enclosed
+            "床領域の作り直しで照合できなかった旧床領域が {} 件あった",
+            rebuild.unmatched_old_regions
         ));
     }
     build_load_cases(&mut model, raw_load_cases, &node_index, &mut warnings);
@@ -627,16 +619,19 @@ fn build_slabs(
             slab_section_count += 1;
             Some(sid)
         });
-        let new_id = FloorRegionId(model.floor_regions.len() as u32);
-        // 取り込んだ版はいったん囲まれた領域として作る。大梁が囲むパネルへの統合と、
-        // パネルに収まらない版の片持ち判定は、取り込み後の変換で行う（申し送りの Step 3）。
-        model.floor_regions.push(
-            FloorRegion::enclosed(new_id, boundary).with_plate(SlabPlate {
+        let new_id = SlabId(model.slabs.len() as u32);
+        // 取り込んだ版はいったん大梁または小梁で囲まれた床板として作る。床領域
+        // （大梁の区画）への帰属付けと、区画に収まらない版の片持ち判定は、
+        // 取り込み後の変換（`rebuild_floor_regions`）で行う（申し送りの Step 3）。
+        model.slabs.push(Slab {
+            id: new_id,
+            shape: SlabShape::Enclosed { boundary },
+            plate: SlabPlate {
                 section,
                 method: DistributionMethod::TriTrapezoid,
                 ..Default::default()
-            }),
-        );
+            },
+        });
     }
     if skipped_slabs > 0 {
         warnings.push(format!(

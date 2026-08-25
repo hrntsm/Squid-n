@@ -384,12 +384,12 @@ pub fn model_issues(model: &Model) -> Vec<ModelIssue> {
                 .warn(),
             );
         }
-        let n = squid_n_core::region_rebuild::floating_plate_count(model);
+        let n = squid_n_core::region_rebuild::floating_slab_count(model);
         if n != 0 {
             issues.push(
                 ModelIssue::model(format!(
-                    "大梁パネルに載らず割り当てられない版が {n} 枚あります。\
-                     浮き版になっていないか、境界と大梁を確認してください。"
+                    "大梁の区画に載らず割り当てられない床板が {n} 枚あります。\
+                     浮き床板になっていないか、境界と大梁を確認してください。"
                 ))
                 .warn(),
             );
@@ -401,16 +401,15 @@ pub fn model_issues(model: &Model) -> Vec<ModelIssue> {
     // スラブの板厚と自重は断面から解決する（`Model::slab_self_weight_intensity`）。
     // 断面や主材料が無いと自重が算定できず、床の固定荷重が過小なまま長期応力が
     // 出る（危険側）。既定厚・既定材料で補わず、ここで止める。
-    let slab_ids = |f: fn(&Model, &squid_n_core::model::FloorRegion) -> bool| -> Vec<u32> {
+    let slab_ids = |f: fn(&Model, &squid_n_core::model::Slab) -> bool| -> Vec<u32> {
         model
-            .floor_regions
+            .slabs
             .iter()
-            // 版なし床領域（吹抜け等）は床荷重を持たないため、断面の未割当を問わない。
-            .filter(|s| s.plate.is_some() && f(model, s))
+            .filter(|s| f(model, s))
             .map(|s| s.id.0)
             .collect()
     };
-    let no_slab_section = slab_ids(|m, s| m.region_section(s).is_none());
+    let no_slab_section = slab_ids(|m, s| m.slab_section(s).is_none());
     if !no_slab_section.is_empty() {
         issues.push(ModelIssue::model(id_list_message(
             "断面が未割当の床があります",
@@ -420,8 +419,8 @@ pub fn model_issues(model: &Model) -> Vec<ModelIssue> {
         )));
     }
     let no_slab_material = slab_ids(|m, s| {
-        m.region_section(s)
-            .is_some_and(|sec| sec.material.is_none() || m.region_thickness(s).is_none())
+        m.slab_section(s)
+            .is_some_and(|sec| sec.material.is_none() || m.slab_plate_thickness(s).is_none())
     });
     if !no_slab_material.is_empty() {
         issues.push(ModelIssue::model(id_list_message(
@@ -628,13 +627,30 @@ fn node_reference_issues(model: &Model) -> Vec<ModelIssue> {
         // これらは `DofMap::build` が解析自由度から自動的に除外するため、
         // 零剛性の自由度にはならない。
         for region in &model.floor_regions {
-            for n in region.boundary_nodes().unwrap_or_default() {
+            for n in &region.boundary {
                 mark(*n);
             }
             for j in region.joist_lines() {
                 for n in &j.support {
                     mark(*n);
                 }
+            }
+        }
+        for slab in &model.slabs {
+            match &slab.shape {
+                squid_n_core::model::SlabShape::Enclosed { boundary } => {
+                    for n in boundary {
+                        mark(*n);
+                    }
+                }
+                squid_n_core::model::SlabShape::Attached { anchor, .. } => match anchor {
+                    squid_n_core::model::RegionAnchor::Line { nodes, .. } => {
+                        for n in nodes {
+                            mark(*n);
+                        }
+                    }
+                    squid_n_core::model::RegionAnchor::Point(n) => mark(*n),
+                },
             }
         }
         for sm in &model.secondary_members {

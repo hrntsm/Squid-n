@@ -700,9 +700,9 @@ impl App {
         for e in &model.elements {
             count(e.section);
         }
-        // 床も断面を参照する（板厚・自重の情報源）。数えないと、床だけが使う断面が
+        // 床板も断面を参照する（板厚・自重の情報源）。数えないと、床だけが使う断面が
         // 「使用部材数 0」として淡色表示され、未使用の断面と見分けられなくなる。
-        for s in &model.floor_regions {
+        for s in &model.slabs {
             count(s.section());
         }
 
@@ -816,7 +816,17 @@ impl App {
             .count();
 
         // 事前判定: どれか 1 つでも該当しうる場合のみ部材ごとの算定へ進む。
-        let slab_stiffness_enabled = model.slab_thickness > 0.0 && !model.floor_regions.is_empty();
+        // スラブ協力幅・合成梁の板厚は「該当する床板の `slab_plate_thickness`
+        // （複数なら最大）、取れないときの控えが建物一律 `slab_thickness`」の順で
+        // 決まる（`squid_n_element::beam::stiffness_factors`）。事前判定もこれに
+        // 揃え、建物一律だけでなく個々の床板の板厚も見る（さもないと `slab_thickness`
+        // 未設定＝既定 0 のモデルで、実際は割増しが効く床板があっても表が空になる）。
+        let slab_stiffness_enabled = (!model.floor_regions.is_empty() || !model.slabs.is_empty())
+            && (model.slab_thickness > 0.0
+                || model
+                    .slabs
+                    .iter()
+                    .any(|s| model.slab_plate_thickness(s).is_some()));
         let has_wall_element = model
             .elements
             .iter()

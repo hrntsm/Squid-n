@@ -418,24 +418,25 @@ impl Default for DesignCtx {
     }
 }
 
-/// 梁の両端節点が、版のある床領域の支持辺に乗るか（スラブ取付き判定）。
+/// 梁の両端節点が、板厚の定まる床板の支持辺に乗るか（スラブ取付き判定）。
 ///
-/// 「版がある」は [`Model::region_has_slab`]（plate ありかつ板厚が正）。
-/// 囲まれた領域は両端が `boundary_nodes` に含まれること、取り付き領域は
-/// `edge_nodes(0)`（取付き線）が梁の両端と一致すること（順不同）。
-/// 点取り付き・版なし囲まれは false。剛性側の協力幅は囲まれ＋版ありだけを
-/// 増大対象とするが、許容曲げの中央 T 形略算は取り付き版ありの支持梁も true とする。
+/// 「板厚が定まる」は [`squid_n_core::model::Model::slab_plate_thickness`]。
+/// 大梁または小梁で囲まれた床板は両端が `boundary_nodes` に含まれること、
+/// 取り付く床板は `edge_nodes(0)`（取付き線）が梁の両端と一致すること（順不同）。
+/// 点取り付き・板厚未定の床板は false。剛性側の協力幅は囲まれ＋板厚定まる
+/// 床板だけを増大対象とするが、許容曲げの中央 T 形略算は取り付く床板がある
+/// 支持梁も true とする。
 pub fn beam_has_attached_slab(
     model: &squid_n_core::model::Model,
     elem: &squid_n_core::model::ElementData,
 ) -> bool {
-    if elem.nodes.len() < 2 || model.floor_regions.is_empty() {
+    if elem.nodes.len() < 2 || model.slabs.is_empty() {
         return false;
     }
     let n0 = elem.nodes[0];
     let n1 = elem.nodes[elem.nodes.len() - 1];
-    model.floor_regions.iter().any(|s| {
-        if !model.region_has_slab(s) {
+    model.slabs.iter().any(|s| {
+        if model.slab_plate_thickness(s).is_none() {
             return false;
         }
         if let Some(b) = s.boundary_nodes() {

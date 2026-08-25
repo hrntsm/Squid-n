@@ -17,7 +17,7 @@
 
 use super::section_std::standard_sections;
 use super::{StbError, STB_VERSION};
-use squid_n_core::ids::{FloorRegionId, SectionId};
+use squid_n_core::ids::{SectionId, SlabId};
 use squid_n_core::model::{
     AxisGroup, AxisGroupKind, ElementKind, EndCondition, Model, StoryLevelKind,
 };
@@ -279,12 +279,12 @@ fn members_body(
     let slab_sec_base = slab_section_id_base(model, col_map, beam_map);
     let slab_sec_ids = slab_section_ids(model, slab_sec_base);
     let mut slabs = String::new();
-    for slab in &model.floor_regions {
-        // ST-Bridge の StbSlab は境界節点の並びで版を表すため、**囲まれた領域だけを出力する**。
-        // 取り付き領域（片持ち・バルコニー・出隅）は自由端に節点を持たず、版なし床領域は
-        // そもそも版がないため、いずれも書き出せない（往復互換性より正しいデータ構造を
+    for slab in &model.slabs {
+        // ST-Bridge の StbSlab は境界節点の並びで版を表すため、**大梁または小梁で
+        // 囲まれた床板だけを出力する**。取り付く床板（片持ち・バルコニー・出隅）は
+        // 自由端に節点を持たず書き出せない（往復互換性より正しいデータ構造を
         // 優先するという方針による。申し送りの D12）。
-        let (Some(boundary), Some(_)) = (slab.boundary_nodes(), slab.plate.as_ref()) else {
+        let Some(boundary) = slab.boundary_nodes() else {
             continue;
         };
         let mid = slab_member_base + slab.id.0;
@@ -309,7 +309,7 @@ fn members_body(
     }
 
     // 壁（StbWall）。壁要素（Wall/Shell、境界 3〜N 節点）の節点ループ＋断面参照。
-    let wall_sec_base = slab_sec_base + model.floor_regions.len() as u32;
+    let wall_sec_base = slab_sec_base + model.slabs.len() as u32;
     let mut walls = String::new();
     let mut wall_idx = 0u32;
     for e in &model.elements {
@@ -519,9 +519,9 @@ fn normalize(v: [f64; 3]) -> [f64; 3] {
     squid_n_core::geom::vec3::unit(v).unwrap_or([0.0, 0.0, 1.0])
 }
 
-fn exports_stb_slab(slab: &squid_n_core::model::FloorRegion) -> bool {
-    // StbSlab は囲まれ＋版ありだけ。取り付き・版なしは部材も孤立断面も出さない。
-    slab.boundary_nodes().is_some() && slab.plate.is_some()
+fn exports_stb_slab(slab: &squid_n_core::model::Slab) -> bool {
+    // StbSlab は大梁または小梁で囲まれた床板だけ。取り付く床板は部材も孤立断面も出さない。
+    slab.boundary_nodes().is_some()
 }
 
 /// 各スラブが参照する `StbSecSlab_RC` の id を決める。
@@ -535,11 +535,11 @@ fn exports_stb_slab(slab: &squid_n_core::model::FloorRegion) -> bool {
 /// （呼び出し側が `base + slabs.len()` を壁断面の開始値として予約している）。
 /// `StbSections`（断面定義側）と `StbMembers`（スラブの参照側）が同じ採番を
 /// 共有するための単一実装。
-fn slab_section_ids(model: &Model, base: u32) -> std::collections::HashMap<FloorRegionId, u32> {
+fn slab_section_ids(model: &Model, base: u32) -> std::collections::HashMap<SlabId, u32> {
     let mut shared: std::collections::HashMap<SectionId, u32> = std::collections::HashMap::new();
-    let mut out: std::collections::HashMap<FloorRegionId, u32> = std::collections::HashMap::new();
+    let mut out: std::collections::HashMap<SlabId, u32> = std::collections::HashMap::new();
     let mut next = base;
-    for slab in &model.floor_regions {
+    for slab in &model.slabs {
         if !exports_stb_slab(slab) {
             continue;
         }
@@ -571,7 +571,7 @@ fn slab_sections(model: &Model, base: u32) -> String {
     let ids = slab_section_ids(model, base);
     let mut body = String::new();
     let mut written: std::collections::HashSet<u32> = std::collections::HashSet::new();
-    for slab in &model.floor_regions {
+    for slab in &model.slabs {
         if !exports_stb_slab(slab) {
             continue;
         }
@@ -581,8 +581,10 @@ fn slab_sections(model: &Model, base: u32) -> String {
         if !written.insert(s) {
             continue;
         }
-        let sec = model.region_section(slab);
-        let t = model.region_thickness(slab).unwrap_or(model.slab_thickness);
+        let sec = model.slab_section(slab);
+        let t = model
+            .slab_plate_thickness(slab)
+            .unwrap_or(model.slab_thickness);
         let name = sec
             .map(|sc| sc.name.clone())
             .filter(|n| !n.is_empty())

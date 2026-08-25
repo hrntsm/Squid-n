@@ -1,11 +1,11 @@
 //! 壁要素。
 //!
-//! - [`wall_panel`] —  耐震壁（壁エレメントモデル）要素
+//! - [`wall_element`] —  耐震壁（壁エレメントモデル）要素
 //! - [`misc_wall`] —   フレーム内雑壁の判定・幾何
 //! - [`side_column`] — 耐震壁の側柱
 pub mod misc_wall;
 pub mod side_column;
-pub mod wall_panel;
+pub mod wall_element;
 
 /// 壁の上下辺へ大梁を追加する（テスト用）。
 ///
@@ -25,7 +25,7 @@ pub(crate) fn add_surrounding_frame(
     use squid_n_core::ids::ElemId;
     use squid_n_core::model::{ElementData, ElementKind, EndCondition, ForceRegime, LocalAxis};
 
-    let g = wall_panel::wall_panel_geometry(wall, model).expect("壁の幾何を取得できない");
+    let g = wall_element::wall_element_geometry(wall, model).expect("壁の幾何を取得できない");
     let base = model.elements.iter().map(|e| e.id.0).max().unwrap_or(0) + 1;
     for (i, (a, b)) in [(g.bottom[0], g.bottom[1]), (g.top[0], g.top[1])]
         .into_iter()

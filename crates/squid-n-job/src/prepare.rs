@@ -58,10 +58,10 @@ pub fn prepare_model_for_analysis(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use squid_n_core::ids::{ElemId, FloorRegionId, NodeId, SectionId};
+    use squid_n_core::ids::{ElemId, NodeId, SectionId, SlabId};
     use squid_n_core::model::{
         DistributionMethod, ElementData, ElementKind, EndCondition, ForceRegime, LocalAxis, Node,
-        RegionShape, SlabPlate,
+        SlabPlate, SlabShape,
     };
     use squid_n_core::section_shape::SectionShape;
 
@@ -93,9 +93,10 @@ mod tests {
         }
     }
 
-    /// 閉路 1 + スラブ片 2。荷重同期の前に 1 領域へ畳まる。
+    /// 閉路 1 + 床板 2 枚。荷重同期の前に、大梁の区画（床領域）1 つへ帰属し直す
+    /// （床板そのものは畳まない。申し送り「床領域・壁領域の再設計」参照）。
     #[test]
-    fn prepare_folds_two_plates_into_one_region_before_loads() {
+    fn prepare_groups_two_slabs_into_one_region_before_loads() {
         let mut model = Model::default();
         for (i, (x, y)) in [
             (0.0, 0.0),
@@ -123,30 +124,32 @@ mod tests {
             .sections
             .push(SectionShape::RcSlab { thickness: 150.0 }.to_section(sid, "S150".into()));
         for (i, b) in [vec![0, 1, 4, 5], vec![1, 2, 3, 4]].into_iter().enumerate() {
-            model.floor_regions.push(squid_n_core::model::FloorRegion {
-                id: FloorRegionId(i as u32),
-                name: String::new(),
-                shape: RegionShape::Enclosed {
+            model.slabs.push(squid_n_core::model::Slab {
+                id: SlabId(i as u32),
+                shape: SlabShape::Enclosed {
                     boundary: b.into_iter().map(NodeId).collect(),
                 },
-                plate: Some(SlabPlate {
+                plate: SlabPlate {
                     section: Some(sid),
                     loads: Vec::new(),
                     usage: None,
                     method: DistributionMethod::TriTrapezoid,
                     one_way: None,
-                    joists: Vec::new(),
-                }),
-                secondary_joist_ids: Vec::new(),
+                },
             });
         }
-        assert_eq!(model.floor_regions.len(), 2);
+        assert_eq!(model.slabs.len(), 2);
         prepare_model_for_analysis(&mut model, &AnalysisSettings::default(), None);
+        assert_eq!(model.slabs.len(), 2, "床板は畳まずそのまま残る");
         assert_eq!(
             model.floor_regions.len(),
             1,
-            "荷重同期前に小片 2 が 1 領域へ畳まる"
+            "大梁が囲む区画は 1 つなので床領域も 1 つ"
         );
-        assert!(model.floor_regions[0].plate.is_some());
+        assert_eq!(
+            model.floor_regions[0].slab_ids.len(),
+            2,
+            "2 枚とも同じ床領域へ帰属"
+        );
     }
 }

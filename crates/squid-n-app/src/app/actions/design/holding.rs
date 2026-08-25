@@ -239,7 +239,7 @@ impl App {
                         // 壁要素はそちらでは検出できない。Qu を算定できない壁
                         // （耐震壁不成立等）と終局時応答がない壁は判定不能として
                         // スキップ（層の選択ランクへフォールバック）。
-                        let qu = squid_n_element::wall_panel::WallPanelElement::shear_capacity_of(
+                        let qu = squid_n_element::wall_element::WallElement::shear_capacity_of(
                             elem,
                             &self.model,
                         );
@@ -263,20 +263,21 @@ impl App {
                         let Some(resp) = resp_by_elem.get(&elem.id) else {
                             continue;
                         };
-                        // 壁長 lw は壁エレメント要素と同じ幾何（`wall_panel_geometry`）を
+                        // 壁長 lw は壁エレメント要素と同じ幾何（`wall_element_geometry`）を
                         // 用いる。節点は標高 z で下辺・上辺に分けられ（`ElementData::nodes` の
                         // 並び順には依存しない）、lw は**上下辺長さの平均**となる
                         // （台形壁では上下辺長が異なるため一方の辺では代表長さにならない）。
                         let Some(wgeom) =
-                            squid_n_element::wall_panel::wall_panel_geometry(elem, &self.model)
+                            squid_n_element::wall_element::wall_element_geometry(elem, &self.model)
                         else {
                             continue;
                         };
                         let wall_len = wgeom.lw;
-                        let r2 = squid_n_element::wall_panel::WallPanelElement::opening_strength_reduction(
-                            elem,
-                            &self.model,
-                        );
+                        let r2 =
+                            squid_n_element::wall_element::WallElement::opening_strength_reduction(
+                                elem,
+                                &self.model,
+                            );
                         let Some(tau_over_fc) = rc_wall_tau_over_fc(
                             resp.horizontal_force,
                             *thickness,
@@ -286,7 +287,7 @@ impl App {
                         ) else {
                             continue;
                         };
-                        let qu = squid_n_element::wall_panel::WallPanelElement::shear_capacity_of(
+                        let qu = squid_n_element::wall_element::WallElement::shear_capacity_of(
                             elem,
                             &self.model,
                         );
