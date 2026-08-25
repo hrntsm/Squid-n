@@ -19,7 +19,9 @@ use super::types::{push_edge, BeamLoad, Cmq, LoadShape, LoadTarget};
 /// 小梁反力・`distribute_rect_with_joists` の柱集中荷重と同じ
 /// `LoadTarget::Node` + `LoadShape::Point`（`q_i = W`、`q_j = 0`）の機構を再利用する。
 ///
-/// `ratio` は取付き線の両端へ半分ずつ渡す場合（[`LoadTransfer::Columns`]）に 0.5 を用いる。
+/// `ratio` は呼び出し側が渡す按分比。[`LoadTransfer::Columns`] は取付き線の区間中点
+/// `t_mid` から `1.0 - t_mid`／`t_mid` を渡す（全長 `[0, 1]` なら `t_mid = 0.5` で
+/// 両端とも 0.5）。出隅（[`RegionAnchor::Point`]）は全荷重を渡すため 1.0 を用いる。
 pub(crate) fn distribute_to_node(
     node: NodeId,
     coords: &[[f64; 3]],

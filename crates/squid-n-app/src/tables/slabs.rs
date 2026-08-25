@@ -702,7 +702,12 @@ fn attached_section(ui: &mut egui::Ui, app: &mut App) {
         a.zip(b).map(|(a, b)| [a, b])
     };
     let span = app.slab_draft.attached_span;
-    let span_ok = span[0].is_finite() && span[1].is_finite() && span[1] - span[0] > 1e-9;
+    // `Model::validate`（squid-n-core）・`AddAttachedSlab`（squid-n-edit）と同じ範囲。
+    let span_ok = span[0].is_finite()
+        && span[1].is_finite()
+        && span[0] >= 0.0
+        && span[1] <= 1.0
+        && span[1] - span[0] > 1e-9;
     let anchor: Option<RegionAnchor> = if app.slab_draft.attached_point {
         app.slab_draft.attached_nodes[0].map(RegionAnchor::Point)
     } else {
@@ -1049,7 +1054,13 @@ fn attached_boundary_cell(
                     ui.add(egui::DragValue::new(&mut s[0]).range(0.0..=1.0).speed(0.01));
                     ui.label("〜");
                     ui.add(egui::DragValue::new(&mut s[1]).range(0.0..=1.0).speed(0.01));
-                    if s != span && s[1] - s[0] > 1e-9 {
+                    // `Model::validate`（squid-n-core）・`SetAttachedAnchor`（squid-n-edit）と同じ範囲。
+                    let s_ok = s[0].is_finite()
+                        && s[1].is_finite()
+                        && s[0] >= 0.0
+                        && s[1] <= 1.0
+                        && s[1] - s[0] > 1e-9;
+                    if s != span && s_ok {
                         pending_anchor.push((
                             id,
                             RegionAnchor::Line {

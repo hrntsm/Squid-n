@@ -62,7 +62,9 @@ use fem::{fem_trapezoid, fem_triangle, fem_uniform};
 ///      片持ち梁の取付きにも依らない（出隅の片持ちスラブの床荷重分配）。
 ///    - 取付き先が線 ＋ [`LoadTransfer::Anchor`]: 取付き辺へ等分布する
 ///      （[`distribute_cantilever`]）。
-///    - 取付き先が線 ＋ [`LoadTransfer::Columns`]: 取付き線の両端へ半分ずつ集中する。
+///    - 取付き先が線 ＋ [`LoadTransfer::Columns`]: 取付き線の区間中点（無次元位置
+///      `t_mid = (t_i+t_j)/2`）に集中したとみなし、単純梁の反力公式で両端の柱へ按分する
+///      （全長 `[0, 1]` なら `t_mid = 0.5` で半分ずつ）。
 /// 2. **大梁または小梁で囲まれた床板**（[`SlabShape::Enclosed`]）
 ///    - 境界が矩形（[`slab_dimensions`] が `Some` を返す）→ 矩形床の分配
 ///      （[`distribute_rect`]）。一方向の指定があればその方向（全体座標 X/Y）へ、
@@ -117,7 +119,14 @@ pub fn distribute_slab_w(model: &Model, slab: &Slab, w: f64) -> Vec<BeamLoad> {
 ///
 /// - 取付き先が点（出隅）: 全荷重をその節点（柱）へ集中する。
 /// - 取付き先が線 ＋ [`LoadTransfer::Anchor`]: 取付き辺（境界の辺 0）へ等分布する。
-/// - 取付き先が線 ＋ [`LoadTransfer::Columns`]: 全荷重を取付き線の両端へ半分ずつ集中する。
+/// - 取付き先が線 ＋ [`LoadTransfer::Columns`]: 取付き線の区間中点（無次元位置
+///   `t_mid = (t_i+t_j)/2`）に集中したとみなし、単純梁の集中荷重反力公式
+///   （`R0 = W(1-t_mid)`、`R1 = W・t_mid`）で両端の柱へ按分する。全長
+///   （`span = [0, 1]`）なら `t_mid = 0.5` で半分ずつになる。**この按分は
+///   `extent[0] == extent[1]`（張り出し量が区間の両端で等しい）のときに限り
+///   厳密である。** 張り出し量が異なる（台形の footprint。D15）場合、真の面積重心は
+///   区間中点から張り出しの大きい側へずれるが、その差は見ていない
+///   （span=[0,1] のみを扱っていた旧実装も同じ近似を持っていた）。
 fn distribute_attached(
     coords: &[[f64; 3]],
     w: f64,

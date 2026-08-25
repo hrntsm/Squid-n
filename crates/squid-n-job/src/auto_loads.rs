@@ -1052,6 +1052,68 @@ mod attached_anchor_tests {
         );
     }
 
+    /// 区間の終端が取付き線の終端節点にちょうど一致する場合（`t = [0.5, 1.0]`）。
+    /// `test_attached_anchor_partial_span_touches_start_node` の対称ケース。処理コードは
+    /// `p0`／`p1` を対称に扱うため通るはずだが、始端側しか確認していなかったため追加する。
+    #[test]
+    fn test_attached_anchor_partial_span_touches_end_node() {
+        const L: f64 = 4000.0;
+        const D: f64 = 1500.0;
+        const W: f64 = 0.003;
+        const T: [f64; 2] = [0.5, 1.0]; // 覆う区間: x=2000..4000（終端が節点1に一致）
+
+        let mut model = Model {
+            nodes: vec![node(0, 0.0), node(1, L)],
+            elements: vec![beam(0, 0, 1)],
+            ..Default::default()
+        };
+        model.slabs = vec![Slab {
+            id: SlabId(0),
+            shape: SlabShape::Attached {
+                anchor: RegionAnchor::Line {
+                    nodes: [NodeId(0), NodeId(1)],
+                    span: T,
+                    transfer: LoadTransfer::Anchor,
+                },
+                extent: [D, D],
+            },
+            plate: SlabPlate {
+                loads: vec![AreaLoad {
+                    kind: "DL".into(),
+                    value: W,
+                }],
+                ..Default::default()
+            },
+        }];
+
+        let beam_map = beam_elem_map(&model);
+        let beam_loads = slab_beam_loads_with(
+            &model,
+            |s| model.slab_dead_intensity(s),
+            &Default::default(),
+            &beam_map,
+        );
+        let (nodal, member) = slab_load_case_content(&model, &beam_loads);
+
+        assert!(nodal.is_empty(), "節点荷重へ落ちない: {nodal:?}");
+        assert_eq!(member.len(), 1, "区間全体が1本の梁に載る: {member:?}");
+
+        let MemberLoadKind::Distributed { a, b, w1, w2 } = member[0].kind else {
+            panic!("分布荷重でない: {:?}", member[0]);
+        };
+        let (a_expected, b_expected) = (L * T[0], L * T[1]);
+        assert!((a - a_expected).abs() < 1e-6, "a={a} expected={a_expected}");
+        assert!((b - b_expected).abs() < 1e-6, "b={b} expected={b_expected}");
+        assert!((w1 - W * D).abs() < 1e-12 && (w2 - W * D).abs() < 1e-12);
+
+        let covered_len = b_expected - a_expected;
+        let total = (b - a) * (w1 + w2) / 2.0;
+        assert!(
+            (total - W * covered_len * D).abs() / (W * covered_len * D) < 1e-9,
+            "{total}"
+        );
+    }
+
     /// `LoadTransfer::Columns`（出隅・雑壁の柱伝達に相当）で部分区間を使う場合、
     /// 総荷重の作用点は区間の中点（無次元位置 `t_mid`）にあるため、単純梁の
     /// 集中荷重反力公式（R0 = P(1-t)、R1 = P・t）で両端の柱へ按分する。
