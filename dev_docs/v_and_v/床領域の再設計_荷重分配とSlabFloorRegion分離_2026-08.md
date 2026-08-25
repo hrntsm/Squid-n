@@ -26,7 +26,7 @@
 `crates/squid-n-app/tests/fixtures/model.stb`（4 層＋PH の S 造。取り込み後は
 節点 166・解析要素 115・二次部材 56・床領域 26・床板 82）。
 
-## 実装中に見つけて直した既存バグ 4 件
+## 実装中に見つけて直した既存バグ 5 件
 
 型の再分離とは独立に見つかった不具合。詳細は申し送り §5.4 を参照。
 
@@ -66,6 +66,17 @@
    落とすよう修正した。再発防止テスト
    `test_uses_joist_distribution_false_for_multiple_slabs`
    （`crates/squid-n-load/src/floor/tests.rs`）を追加した。
+5. **`squid_n_design_jp::beam_has_attached_slab`（RC 梁の中央 T 形断面略算・スラブ厚控除の
+   スラブ取付き判定）が、3 件目と同じ理由で区画が細分されると判定できなくなっていた
+   （型の再分離作業でこの関数を `model.floor_regions.iter()` から `model.slabs.iter()` へ
+   機械的に移し替えた際、床板ではなく床領域の境界で判定するべきという点を見落としていた。
+   コミット後のレビューで発見）。** 3 件目（`slab_cooperating_width`）と同じ「床領域の
+   外周を優先し、区画内のどれか 1 枚でも版があればよい」判定へ直した。フィクスチャでは
+   スナップショットの変化は観測されなかった（対象になる RC 梁が本フィクスチャにないか、
+   影響が丸め桁未満）が、実務モデルでは中央 T 形略算・数量積算のスラブ厚控除が誤って
+   効かなくなる回帰だった。再発防止テスト
+   `test_beam_has_attached_slab_survives_joist_subdivided_region`
+   （`crates/squid-n-design-jp/tests/attached_slab.rs`）を追加した。
 
 この 3 件目は、`snapshot_key_scalars` の初回計測（本レポート初版）で
 `design.slab_checks`（25→81）以外の値がすべて動いたことの主因だった。特に剛性が
