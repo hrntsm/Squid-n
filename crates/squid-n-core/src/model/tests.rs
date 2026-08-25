@@ -1231,9 +1231,9 @@ fn test_validate_duplicate_enclosed_slab_boundary() {
     );
 }
 
-/// 取付き線の部分区間は、荷重を載せる経路ができるまで弾く。
+/// 取付き線の区間 `span` は 0.0〜1.0 の範囲で始端 < 終端の場合だけ通る。
 #[test]
-fn test_validate_rejects_partial_anchor_span() {
+fn test_validate_checks_anchor_span_bounds() {
     use crate::model::{LoadTransfer, RegionAnchor, Slab, SlabShape};
     let mut model = Model::default();
     for i in 0..2u32 {
@@ -1261,5 +1261,16 @@ fn test_validate_rejects_partial_anchor_span() {
     model.slabs = vec![mk([0.0, 1.0])];
     assert!(model.validate().is_ok(), "全長の取り付きは通る");
     model.slabs = vec![mk([0.25, 0.75])];
-    assert!(model.validate().is_err(), "部分区間は未対応として弾く");
+    assert!(
+        model.validate().is_ok(),
+        "部分区間は通る（取付き線上の一部だけに載る）"
+    );
+    model.slabs = vec![mk([0.75, 0.25])];
+    assert!(model.validate().is_err(), "始端 >= 終端は弾く");
+    model.slabs = vec![mk([-0.1, 0.5])];
+    assert!(model.validate().is_err(), "範囲外（0 未満）は弾く");
+    model.slabs = vec![mk([0.5, 1.1])];
+    assert!(model.validate().is_err(), "範囲外（1 超）は弾く");
+    model.slabs = vec![mk([f64::NAN, 0.5])];
+    assert!(model.validate().is_err(), "非有限は弾く");
 }

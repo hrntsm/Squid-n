@@ -62,7 +62,9 @@ use fem::{fem_trapezoid, fem_triangle, fem_uniform};
 ///      片持ち梁の取付きにも依らない（出隅の片持ちスラブの床荷重分配）。
 ///    - 取付き先が線 ＋ [`LoadTransfer::Anchor`]: 取付き辺へ等分布する
 ///      （[`distribute_cantilever`]）。
-///    - 取付き先が線 ＋ [`LoadTransfer::Columns`]: 取付き線の両端へ半分ずつ集中する。
+///    - 取付き先が線 ＋ [`LoadTransfer::Columns`]: 取付き線の区間中点（無次元位置
+///      `t_mid = (t_i+t_j)/2`）に集中したとみなし、単純梁の反力公式で両端の柱へ按分する
+///      （全長 `[0, 1]` なら `t_mid = 0.5` で半分ずつ）。
 /// 2. **大梁または小梁で囲まれた床板**（[`SlabShape::Enclosed`]）
 ///    - 境界が矩形（[`slab_dimensions`] が `Some` を返す）→ 矩形床の分配
 ///      （[`distribute_rect`]）。一方向の指定があればその方向（全体座標 X/Y）へ、
@@ -117,7 +119,14 @@ pub fn distribute_slab_w(model: &Model, slab: &Slab, w: f64) -> Vec<BeamLoad> {
 ///
 /// - 取付き先が点（出隅）: 全荷重をその節点（柱）へ集中する。
 /// - 取付き先が線 ＋ [`LoadTransfer::Anchor`]: 取付き辺（境界の辺 0）へ等分布する。
-/// - 取付き先が線 ＋ [`LoadTransfer::Columns`]: 全荷重を取付き線の両端へ半分ずつ集中する。
+/// - 取付き先が線 ＋ [`LoadTransfer::Columns`]: 取付き線の区間中点（無次元位置
+///   `t_mid = (t_i+t_j)/2`）に集中したとみなし、単純梁の集中荷重反力公式
+///   （`R0 = W(1-t_mid)`、`R1 = W・t_mid`）で両端の柱へ按分する。全長
+///   （`span = [0, 1]`）なら `t_mid = 0.5` で半分ずつになる。**この按分は
+///   `extent[0] == extent[1]`（張り出し量が区間の両端で等しい）のときに限り
+///   厳密である。** 張り出し量が異なる（台形の footprint。D15）場合、真の面積重心は
+///   区間中点から張り出しの大きい側へずれるが、その差は見ていない
+///   （span=[0,1] のみを扱っていた旧実装も同じ近似を持っていた）。
 fn distribute_attached(
     coords: &[[f64; 3]],
     w: f64,
@@ -127,12 +136,19 @@ fn distribute_attached(
     match anchor {
         RegionAnchor::Point(node) => distribute_to_node(node, coords, w, 1.0, loads),
         RegionAnchor::Line {
-            nodes, transfer, ..
+            nodes,
+            span,
+            transfer,
         } => match transfer {
             LoadTransfer::Anchor => distribute_cantilever(coords, w, loads),
             LoadTransfer::Columns => {
-                distribute_to_node(nodes[0], coords, w, 0.5, loads);
-                distribute_to_node(nodes[1], coords, w, 0.5, loads);
+                // 部分区間（span != [0, 1]）では、総荷重の作用点は取付き線上の区間中点
+                // （無次元位置 t_mid）にある。単純梁の集中荷重の反力公式
+                // （R0 = P(1-t), R1 = P・t）で両端の柱へ按分する。全長（t_mid=0.5）では
+                // 従来どおり半分ずつになる。
+                let t_mid = 0.5 * (span[0] + span[1]);
+                distribute_to_node(nodes[0], coords, w, 1.0 - t_mid, loads);
+                distribute_to_node(nodes[1], coords, w, t_mid, loads);
             }
         },
     }
@@ -169,13 +185,25 @@ pub fn uses_joist_distribution(model: &Model, region: &FloorRegion) -> bool {
 /// `Span` へ解決する。床領域は複数の床板を束ねるため、`Edge(k)` の `k` は
 /// どの床板を指すかによって別々の辺を意味する。呼び出し側（`squid-n-job`）へ
 /// 渡す前に、ここで床板の文脈ごと解決してしまう（`Node`/`Span` だけにする）。
+///
+/// 取り付く床板（[`SlabShape::Attached`]）の辺 0（取付き線）は、取付き先が持つ
+/// 無次元区間 `span`（[`RegionAnchor::Line::span`]）をそのまま `Span::t` へ引き継ぐ。
+/// 大梁または小梁で囲まれた床板の境界辺は常に全長（`t = [0.0, 1.0]`）である。
 fn resolve_edges_to_span(slab: &Slab, loads: Vec<BeamLoad>) -> Vec<BeamLoad> {
+    let anchor_t = match &slab.shape {
+        SlabShape::Attached {
+            anchor: RegionAnchor::Line { span, .. },
+            ..
+        } => *span,
+        _ => [0.0, 1.0],
+    };
     loads
         .into_iter()
         .filter_map(|mut bl| match bl.target {
             LoadTarget::Edge(k) => {
                 let [n0, n1] = slab.edge_nodes(k)?;
-                bl.target = LoadTarget::Span([n0, n1]);
+                let t = if k == 0 { anchor_t } else { [0.0, 1.0] };
+                bl.target = LoadTarget::Span { nodes: [n0, n1], t };
                 // `push_edge` は `elem` に辺インデックスを入れている（実要素とは無関係）。
                 // 番兵 `ElemId(u32::MAX)` に戻し、呼び出し側の `find_beam`／幾何割付に
                 // 解決させる（さもないと辺インデックスが偶然実在する ElemId と衝突し、

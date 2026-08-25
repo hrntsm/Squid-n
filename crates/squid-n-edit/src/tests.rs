@@ -5713,7 +5713,7 @@ fn test_add_attached_slab_roundtrip() {
     assert!(!undo.run(&mut model, Box::new(bad)));
     assert!(model.slabs.is_empty());
 
-    // 部分区間は荷重を載せる経路がないため受け付けない。
+    // 部分区間（0.0 <= t_i < t_j <= 1.0）は受け付ける。
     let partial = crate::AddAttachedSlab {
         anchor: RegionAnchor::Line {
             nodes: [NodeId(0), NodeId(1)],
@@ -5723,7 +5723,22 @@ fn test_add_attached_slab_roundtrip() {
         extent: [1000.0, 1000.0],
         plate: SlabPlate::default(),
     };
-    assert!(!undo.run(&mut model, Box::new(partial)));
+    assert!(undo.run(&mut model, Box::new(partial)));
+    assert!(model.validate().is_ok(), "{:?}", model.validate());
+
+    // 区間が逆順（始端 >= 終端）は受け付けない。
+    let reversed = crate::AddAttachedSlab {
+        anchor: RegionAnchor::Line {
+            nodes: [NodeId(0), NodeId(1)],
+            span: [0.75, 0.25],
+            transfer: LoadTransfer::Anchor,
+        },
+        extent: [1000.0, 1000.0],
+        plate: SlabPlate::default(),
+    };
+    let before = model.slabs.len();
+    assert!(!undo.run(&mut model, Box::new(reversed)));
+    assert_eq!(model.slabs.len(), before, "逆順の区間は追加されない");
 }
 
 /// 断面未割当、extent 1000,1000 の取り付く床板の追加が往復する。
@@ -5846,7 +5861,7 @@ fn test_set_attached_extent_and_anchor_noop() {
         "欠ける節点は Noop"
     );
     assert!(
-        !undo.run(
+        undo.run(
             &mut model,
             Box::new(crate::SetAttachedAnchor {
                 id: aid,
@@ -5857,7 +5872,22 @@ fn test_set_attached_extent_and_anchor_noop() {
                 },
             })
         ),
-        "部分区間は Noop"
+        "部分区間は受け付ける"
+    );
+    assert!(model.validate().is_ok(), "{:?}", model.validate());
+    assert!(
+        !undo.run(
+            &mut model,
+            Box::new(crate::SetAttachedAnchor {
+                id: aid,
+                anchor: RegionAnchor::Line {
+                    nodes: [NodeId(0), NodeId(1)],
+                    span: [0.5, 0.5],
+                    transfer: LoadTransfer::Anchor,
+                },
+            })
+        ),
+        "始端 == 終端（幅0）は Noop"
     );
 }
 

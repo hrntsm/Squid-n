@@ -206,7 +206,10 @@ pub(crate) fn distribute_rect_with_joists(
             let w_udl = w * j.spacing;
             loads.push(BeamLoad {
                 elem: ElemId(u32::MAX),
-                target: LoadTarget::Span([j.support[0], j.support[1]]),
+                target: LoadTarget::Span {
+                    nodes: [j.support[0], j.support[1]],
+                    t: [0.0, 1.0],
+                },
                 shape: LoadShape::Uniform { w: w_udl },
                 cmq: fem_uniform(w_udl, l_joist),
             });

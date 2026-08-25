@@ -472,8 +472,13 @@ impl EditCommand for AddAttachedSlab {
 
         let nodes_ok = match self.anchor {
             RegionAnchor::Line { nodes, span, .. } => {
-                // 部分区間は荷重を載せる経路がないため受け付けない（`Model::validate` と同じ規約）。
-                if (span[0] - 0.0).abs() > 1e-9 || (span[1] - 1.0).abs() > 1e-9 {
+                // span の範囲は `Model::validate` と同じ規約（0.0 <= t_i < t_j <= 1.0）。
+                let span_ok = span[0].is_finite()
+                    && span[1].is_finite()
+                    && span[0] >= -1e-9
+                    && span[1] <= 1.0 + 1e-9
+                    && span[1] - span[0] > 1e-9;
+                if !span_ok {
                     return Box::new(Noop);
                 }
                 nodes[0] != nodes[1] && nodes.iter().all(|&n| crate::refs::node_exists(model, n))
@@ -561,7 +566,13 @@ impl EditCommand for SetAttachedAnchor {
         }
         let nodes_ok = match self.anchor {
             RegionAnchor::Line { nodes, span, .. } => {
-                if (span[0] - 0.0).abs() > 1e-9 || (span[1] - 1.0).abs() > 1e-9 {
+                // span の範囲は `Model::validate` と同じ規約（0.0 <= t_i < t_j <= 1.0）。
+                let span_ok = span[0].is_finite()
+                    && span[1].is_finite()
+                    && span[0] >= -1e-9
+                    && span[1] <= 1.0 + 1e-9
+                    && span[1] - span[0] > 1e-9;
+                if !span_ok {
                     return Box::new(Noop);
                 }
                 nodes[0] != nodes[1] && nodes.iter().all(|&n| crate::refs::node_exists(model, n))

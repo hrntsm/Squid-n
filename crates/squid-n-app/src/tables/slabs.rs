@@ -40,6 +40,8 @@ pub struct SlabDraft {
     pub attached_extent: [String; 2],
     /// 取付き線に載る領域の荷重の出口。
     pub attached_transfer: squid_n_core::model::LoadTransfer,
+    /// 取付き線上の無次元区間 `[t_i, t_j]`（0.0〜1.0）。全長は `[0.0, 1.0]`。点取付きでは使わない。
+    pub attached_span: [f64; 2],
 }
 
 impl Default for SlabDraft {
@@ -59,6 +61,7 @@ impl Default for SlabDraft {
             attached_point: false,
             attached_extent: ["1000".to_string(), "1000".to_string()],
             attached_transfer: squid_n_core::model::LoadTransfer::Anchor,
+            attached_span: [0.0, 1.0],
         }
     }
 }
@@ -677,6 +680,20 @@ fn attached_section(ui: &mut egui::Ui, app: &mut App) {
                 "両端の柱へ集中",
             );
         });
+        ui.horizontal(|ui| {
+            ui.label("取付き線の区間 [0, 1]（既定は全長）:");
+            ui.add(
+                egui::DragValue::new(&mut app.slab_draft.attached_span[0])
+                    .range(0.0..=1.0)
+                    .speed(0.01),
+            );
+            ui.label("〜");
+            ui.add(
+                egui::DragValue::new(&mut app.slab_draft.attached_span[1])
+                    .range(0.0..=1.0)
+                    .speed(0.01),
+            );
+        });
     }
 
     let extent: Option<[f64; 2]> = {
@@ -684,6 +701,13 @@ fn attached_section(ui: &mut egui::Ui, app: &mut App) {
         let b = app.slab_draft.attached_extent[1].trim().parse::<f64>().ok();
         a.zip(b).map(|(a, b)| [a, b])
     };
+    let span = app.slab_draft.attached_span;
+    // `Model::validate`（squid-n-core）・`AddAttachedSlab`（squid-n-edit）と同じ範囲。
+    let span_ok = span[0].is_finite()
+        && span[1].is_finite()
+        && span[0] >= 0.0
+        && span[1] <= 1.0
+        && span[1] - span[0] > 1e-9;
     let anchor: Option<RegionAnchor> = if app.slab_draft.attached_point {
         app.slab_draft.attached_nodes[0].map(RegionAnchor::Point)
     } else {
@@ -691,15 +715,18 @@ fn attached_section(ui: &mut egui::Ui, app: &mut App) {
             app.slab_draft.attached_nodes[0],
             app.slab_draft.attached_nodes[1],
         ) {
-            (Some(a), Some(b)) if a != b => Some(RegionAnchor::Line {
+            (Some(a), Some(b)) if a != b && span_ok => Some(RegionAnchor::Line {
                 nodes: [a, b],
-                span: [0.0, 1.0],
+                span,
                 transfer: app.slab_draft.attached_transfer,
             }),
             _ => None,
         }
     };
 
+    if !app.slab_draft.attached_point && !span_ok {
+        ui.label("取付き線の区間は始端 < 終端にしてください");
+    }
     let ready = anchor.is_some() && extent.is_some();
     if !ready {
         ui.label("取付き先の節点と張り出し量を指定してください");
@@ -1019,6 +1046,29 @@ fn attached_boundary_cell(
                                 },
                             ));
                         }
+                    }
+                });
+                ui.horizontal(|ui| {
+                    ui.label("区間:");
+                    let mut s = span;
+                    ui.add(egui::DragValue::new(&mut s[0]).range(0.0..=1.0).speed(0.01));
+                    ui.label("〜");
+                    ui.add(egui::DragValue::new(&mut s[1]).range(0.0..=1.0).speed(0.01));
+                    // `Model::validate`（squid-n-core）・`SetAttachedAnchor`（squid-n-edit）と同じ範囲。
+                    let s_ok = s[0].is_finite()
+                        && s[1].is_finite()
+                        && s[0] >= 0.0
+                        && s[1] <= 1.0
+                        && s[1] - s[0] > 1e-9;
+                    if s != span && s_ok {
+                        pending_anchor.push((
+                            id,
+                            RegionAnchor::Line {
+                                nodes,
+                                span: s,
+                                transfer,
+                            },
+                        ));
                     }
                 });
             }
