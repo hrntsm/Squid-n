@@ -1,4 +1,4 @@
-//! フレーム外雑壁（`Model.misc_walls` = `MiscWall`）の編集 UI。
+//! フレーム外雑壁（`Model.misc_walls` = `OutOfFrameMiscWall`）の編集 UI。
 //! 始点・終点・高さ・面重量・壁厚・伝達タイプの追加/編集/削除を提供する。
 //! 編集は `squid_n_edit::{AddMiscWall, DeleteMiscWall, SetMiscWall}` 経由（undo 対応）。
 //!
@@ -7,7 +7,7 @@
 //! 存在しないため、他の類似設定と同様に `app.model` へ直接代入する（undo 非対応）。
 
 use crate::app::App;
-use squid_n_core::model::{MiscWall, MiscWallTransfer};
+use squid_n_core::model::{MiscWallTransfer, OutOfFrameMiscWall};
 use squid_n_core::units::to_display::area_load_kn_per_m2;
 use squid_n_core::units::to_internal;
 use squid_n_edit::{AddMiscWall, DeleteMiscWall, SetMiscWall};
@@ -250,7 +250,7 @@ pub fn misc_walls_table(ui: &mut egui::Ui, app: &mut App) {
             if let (Some(start), Some(end), Some(height), Some(weight_per_area), Some(thickness)) =
                 (start, end, height, weight, thickness)
             {
-                let wall = MiscWall {
+                let wall = OutOfFrameMiscWall {
                     start,
                     end,
                     height,

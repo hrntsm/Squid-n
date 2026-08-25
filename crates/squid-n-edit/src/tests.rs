@@ -2293,8 +2293,8 @@ fn test_remove_wall_attr_missing_is_noop() {
     assert!(model.wall_attrs.is_empty());
 }
 
-fn sample_misc_wall(weight: f64) -> squid_n_core::model::MiscWall {
-    squid_n_core::model::MiscWall {
+fn sample_misc_wall(weight: f64) -> squid_n_core::model::OutOfFrameMiscWall {
+    squid_n_core::model::OutOfFrameMiscWall {
         start: [0.0, 0.0, 0.0],
         end: [3000.0, 0.0, 0.0],
         height: 3000.0,

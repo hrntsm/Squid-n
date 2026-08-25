@@ -480,7 +480,7 @@ pub enum MiscWallTransfer {
 /// フレーム外雑壁（部材としてモデル化しない壁）。始点→終点の直線区間に
 /// 高さ・面重量を持ち、0.5m 分割規則で近傍の節点へ重量を集計する。
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct MiscWall {
+pub struct OutOfFrameMiscWall {
     /// 壁下端の始点座標 [mm]。
     pub start: [f64; 3],
     /// 壁下端の終点座標 [mm]。

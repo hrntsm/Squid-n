@@ -4,11 +4,11 @@
 //!
 //! `dev_docs/handoff/床領域・壁領域の再設計_申し送り.md` §3.2 E8 で決めたとおり、
 //! 実フィクスチャ（`tests/fixtures/model.stb`、`full_model.rs`）には壁要素が 0 件で、
-//! 壁関連の機能（`WallAttr` の開口低減・自重、`MiscWall` の 0.5m 分割集計）は
+//! 壁関連の機能（`WallAttr` の開口低減・自重、`OutOfFrameMiscWall` の 0.5m 分割集計）は
 //! いずれも単体テストでしか検証されていない。`Model.floor_regions`（26 件）を
 //! 巻き込まない**独立した壁専用フィクスチャ**として、耐震壁 1 パネル＋フレーム外雑壁
 //! 1 本を含む最小の立体架構を用意し、`App` の全解析入口を通した代表スカラを
-//! ピン止めする。`WallRegion`/`WallAttr`/`MiscWall` の型を作り替える Step 7+8 の
+//! ピン止めする。`WallRegion`/`WallAttr`/`OutOfFrameMiscWall` の型を作り替える Step 7+8 の
 //! 着手時、このテストの差分が「型変更が計算結果を変えていないか」の一次判定になる。
 //!
 //! # モデル
@@ -24,7 +24,7 @@ use squid_n_core::dof::Dof6Mask;
 use squid_n_core::ids::{ElemId, MaterialId, NodeId, SectionId};
 use squid_n_core::model::{
     ElementData, ElementKind, EndCondition, ForceRegime, LocalAxis, Material, MaterialCategory,
-    MiscWall, MiscWallTransfer, Model, Node, RigidZone, Section, WallAttr, WallOpening,
+    MiscWallTransfer, Model, Node, OutOfFrameMiscWall, RigidZone, Section, WallAttr, WallOpening,
 };
 use squid_n_section::shape::SectionShape;
 use squid_n_solver::analysis::SeismicDir;
@@ -216,7 +216,7 @@ fn wall_bay_model() -> Model {
 
     // フレーム外雑壁 1 本（Y=3000 面の梁 6-7 上端に沿うパラペット想定。
     // height=900・Column 伝達で節点 6・7 へ集計される）。
-    model.misc_walls.push(MiscWall {
+    model.misc_walls.push(OutOfFrameMiscWall {
         start: [4000.0, 3000.0, 3000.0],
         end: [0.0, 3000.0, 3000.0],
         height: 900.0,
@@ -286,7 +286,7 @@ fn test_wall_bay_model_runs_full_pipeline() {
 /// 代表スカラのスナップショット（有効数字 4 桁）。
 ///
 /// `full_model.rs::snapshot_key_scalars` と同じ趣旨。壁関連の型（`WallRegion`・
-/// `WallAttr`・`MiscWall`）を作り替える際、この値の変化を V&V の対象とすること。
+/// `WallAttr`・`OutOfFrameMiscWall`）を作り替える際、この値の変化を V&V の対象とすること。
 #[test]
 fn snapshot_wall_bay_scalars() {
     let mut app = wall_bay_app();

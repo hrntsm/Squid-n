@@ -321,9 +321,9 @@ impl EditCommand for RemoveWallAttr {
     }
 }
 
-/// フレーム外雑壁（`MiscWall`）を追加。末尾に追加する。逆操作は末尾の雑壁削除。
+/// フレーム外雑壁（`OutOfFrameMiscWall`）を追加。末尾に追加する。逆操作は末尾の雑壁削除。
 pub struct AddMiscWall {
-    pub wall: squid_n_core::model::MiscWall,
+    pub wall: squid_n_core::model::OutOfFrameMiscWall,
 }
 
 impl EditCommand for AddMiscWall {
@@ -340,11 +340,11 @@ impl EditCommand for AddMiscWall {
 
 indexed_delete_insert!(
     /// 雑壁を index 指定で削除。逆操作は [`InsertMiscWall`]（同じ位置への復元）。
-    /// `MiscWall` は他データから参照されないため ID 再採番は不要。index が範囲外なら Noop。
+    /// `OutOfFrameMiscWall` は他データから参照されないため ID 再採番は不要。index が範囲外なら Noop。
     DeleteMiscWall,
     /// 指定インデックスへ雑壁を再挿入する（[`DeleteMiscWall`] の逆操作専用）。
     InsertMiscWall,
-    entity = squid_n_core::model::MiscWall,
+    entity = squid_n_core::model::OutOfFrameMiscWall,
     vec = misc_walls,
     field = wall,
     del_label = "雑壁削除",
@@ -355,7 +355,7 @@ indexed_delete_insert!(
 /// 内容への復元。index が範囲外なら Noop。
 pub struct SetMiscWall {
     pub index: usize,
-    pub wall: squid_n_core::model::MiscWall,
+    pub wall: squid_n_core::model::OutOfFrameMiscWall,
 }
 
 impl EditCommand for SetMiscWall {
