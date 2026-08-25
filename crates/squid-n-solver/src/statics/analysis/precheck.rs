@@ -369,9 +369,9 @@ pub fn model_issues(model: &Model) -> Vec<ModelIssue> {
         }
     }
 
-    // 床領域に属さない小梁・大梁の区画に載らない浮き床板。
+    // 床領域に属さない小梁・大梁パネルに載らない浮き版。
     //
-    // 作り直し前の現状の床領域で判定する（診断はモデルを書き換えない）。
+    // 作り直し前の現状の床領域／パネルで判定する（診断はモデルを書き換えない）。
     // 解析は成立するため警告に留め、割り当てを確かめてもらう。
     {
         let n = squid_n_core::region_rebuild::unassigned_joist_count(model);

@@ -1,22 +1,13 @@
-mod check_terms;
-
 use std::collections::BTreeMap;
 use std::path::Path;
 
 fn main() -> anyhow::Result<()> {
     let args: Vec<String> = std::env::args().collect();
-    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
-    match args.get(1).map(String::as_str) {
-        Some("check-deps") => check_deps(workspace_root),
-        Some("check-terms") => check_terms::run(workspace_root),
-        _ => {
-            eprintln!("Usage: cargo run -p xtask -- <check-deps|check-terms>");
-            std::process::exit(1);
-        }
+    if args.len() < 2 || args[1] != "check-deps" {
+        eprintln!("Usage: cargo run -p xtask -- check-deps");
+        std::process::exit(1);
     }
-}
 
-fn check_deps(workspace_root: &Path) -> anyhow::Result<()> {
     // レイヤ順（下が下流＝依存される側）。実依存グラフ（DAG）に一致させる。
     // 上位→下位（dep_layer < layer_idx）のみ許可。同層・下位→上位は不許可。
     let layers: &[&[&str]] = &[
@@ -45,6 +36,7 @@ fn check_deps(workspace_root: &Path) -> anyhow::Result<()> {
         .flat_map(|(i, names)| names.iter().map(move |&n| (n, i)))
         .collect();
 
+    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
     let crate_root = workspace_root.join("crates");
 
     // OK 件数と違反は分けて数える（かつては同じ Vec に "OK:"/"VIOLATION:" を

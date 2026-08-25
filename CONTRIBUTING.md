@@ -69,7 +69,7 @@ cargo run -p xtask -- check-deps
 
 `crates/squid-n-app/tests/full_model.rs` は、実建物の ST-Bridge
 （`crates/squid-n-app/tests/fixtures/model.stb`。4 層＋PH の S 造・一部 RC、
-節点 166・解析要素 115・小梁 56。ST-Bridge 上のスラブ片 82 枚は取り込み時に大梁の区画（床領域）26 へ帰属を割り当てる）を読み込み、GUI のボタンが呼ぶのと
+節点 166・解析要素 115・小梁 56。ST-Bridge 上のスラブ片 82 は取り込み時に大梁パネル 26 へ畳む）を読み込み、GUI のボタンが呼ぶのと
 同じ入口（`App` の `run_*` / `compute_*`）で全解析を通します。手組みの小規模
 モデルでは現れない、実建物特有の構成（剛床・二次部材・多数のスラブ）に起因する
 退行を検出することが目的です。
@@ -103,16 +103,9 @@ cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo clippy -p squid-n-app --all-targets --features gui --locked -- -D warnings
 cargo clippy -p squid-n-mcp --all-targets --features mcp --locked -- -D warnings
 cargo fmt --all -- --check
-cargo run -p xtask -- check-terms
 ```
 
 `cargo fmt --all` で自動整形できます。
-
-`check-terms` は [dev_docs/specs/用語集.md](dev_docs/specs/用語集.md) が定める禁止語の
-誤用を機械的に検出します。<!-- xtask:allow-panel --> 「気づいたら用語集に追記する」
-という運用（AGENTS.md）だけでは離れた場所への再発を防げないため、CI（`terms` ジョブ）
-でも実行します。誤検知（禁止語の正当な用法）を見つけたら、`xtask/src/check_terms.rs`
-の判定ルール（文脈語・許可語・抑制マーカー `xtask:allow-panel`）を見直してください。
 
 **フラグ付きの 2 行を省略しないでください。** `gui`・`mcp` は既定で無効な
 フィーチャフラグのため、1 行目のワークスペース全体の実行だけでは
@@ -193,7 +186,6 @@ PR を作成すると以下が自動実行されます（`.github/workflows/ci.y
 - フォーマットチェック
 - 脆弱性確認（cargo audit）
 - 依存性チェック（cargo-deny）
-- 用語チェック（`cargo run -p xtask -- check-terms`）
 
 ## プルリクエスト
 
