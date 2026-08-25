@@ -217,7 +217,7 @@ fn wall_thickness(data: &ElementData, model: &Model) -> Option<f64> {
 
 /// フレーム内雑壁 1 枚分の幾何情報（壁ローカル座標: 原点=下辺 a 節点、
 /// x=下辺方向 0..lw、z=鉛直 0..h）。
-pub(crate) struct MiscWall {
+pub(crate) struct InFrameMiscWallGeometry {
     pub elem: ElemId,
     /// 壁板厚 [mm]
     pub t: f64,
@@ -234,7 +234,7 @@ pub(crate) struct MiscWall {
     pub envelope: Option<[f64; 4]>,
 }
 
-impl MiscWall {
+impl InFrameMiscWallGeometry {
     /// 柱（side=0: a 側 x=0 の鉛直辺、side=1: b 側 x=lw）に取り付く
     /// 袖壁長さ [mm]（構造階高の 1/2 位置における包絡開口までの距離。
     /// 開口が h/2 を跨がない・位置不明の場合は壁を両側柱で折半 lw/2）。
@@ -280,7 +280,7 @@ pub(crate) const RIGID_ZONE_WALL_MIN_THICKNESS_MM: f64 = 100.0;
 /// モデル中の全フレーム内雑壁（耐震壁不成立の Wall 要素）を収集する。
 /// 三方スリットの壁は周辺部材と縁が切れているため剛性算入の対象外とする
 /// （自重は荷重側で別途評価される）。
-pub(crate) fn collect_misc_walls(model: &Model) -> Vec<MiscWall> {
+pub(crate) fn collect_misc_walls(model: &Model) -> Vec<InFrameMiscWallGeometry> {
     collect_walls_where(model, |data, model, _t| !wall_is_seismic(data, model))
 }
 
@@ -290,20 +290,20 @@ pub(crate) fn collect_misc_walls(model: &Model) -> Vec<MiscWall> {
 /// 現場打ちコンクリート壁で厚さ [`RIGID_ZONE_WALL_MIN_THICKNESS_MM`] 以上の
 /// ものを指し、耐震壁として成立するか否かを問わないためである。
 /// 三方スリット壁は周辺部材と縁が切れているため除く（[`collect_walls_where`]）。
-pub(crate) fn collect_rigid_zone_walls(model: &Model) -> Vec<MiscWall> {
+pub(crate) fn collect_rigid_zone_walls(model: &Model) -> Vec<InFrameMiscWallGeometry> {
     collect_walls_where(model, |data, model, t| {
         is_rc_wall(data, model) && t >= RIGID_ZONE_WALL_MIN_THICKNESS_MM
     })
 }
 
 /// Wall 要素を走査し、`accept` が true を返したものだけ壁ローカル座標系の
-/// 幾何情報（[`MiscWall`]）へ変換して集める。
+/// 幾何情報（[`InFrameMiscWallGeometry`]）へ変換して集める。
 ///
 /// 三方スリットの壁は、いずれの用途でも周辺部材と縁が切れているため一律に除く。
 fn collect_walls_where(
     model: &Model,
     accept: impl Fn(&ElementData, &Model, f64) -> bool,
-) -> Vec<MiscWall> {
+) -> Vec<InFrameMiscWallGeometry> {
     let mut out = Vec::new();
     for data in &model.elements {
         if !matches!(data.kind, ElementKind::Wall) || data.nodes.len() < 4 {
@@ -365,7 +365,7 @@ fn collect_walls_where(
             rect
         });
 
-        out.push(MiscWall {
+        out.push(InFrameMiscWallGeometry {
             elem: data.id,
             t,
             lw,

@@ -40,7 +40,7 @@ fn wall_protrusion(
     model: &Model,
     elem: &squid_n_core::model::ElementData,
     depth: f64,
-    walls: &[crate::wall::misc_wall::MiscWall],
+    walls: &[crate::wall::misc_wall::InFrameMiscWallGeometry],
     toward: Option<[f64; 3]>,
 ) -> f64 {
     if walls.is_empty() || elem.nodes.len() < 2 {
@@ -106,7 +106,10 @@ fn wall_protrusion(
 }
 
 /// 壁下辺の水平単位ベクトル（`bottom_pair[0]` → `bottom_pair[1]`）。
-fn wall_bottom_dir(model: &Model, w: &crate::wall::misc_wall::MiscWall) -> Option<[f64; 3]> {
+fn wall_bottom_dir(
+    model: &Model,
+    w: &crate::wall::misc_wall::InFrameMiscWallGeometry,
+) -> Option<[f64; 3]> {
     let pa = model.nodes.get(w.bottom_pair[0].index())?.coord;
     let pb = model.nodes.get(w.bottom_pair[1].index())?.coord;
     let (dx, dy) = (pb[0] - pa[0], pb[1] - pa[1]);
@@ -118,7 +121,7 @@ fn wall_bottom_dir(model: &Model, w: &crate::wall::misc_wall::MiscWall) -> Optio
 fn depth_with_walls(
     model: &Model,
     elem: &squid_n_core::model::ElementData,
-    walls: &[crate::wall::misc_wall::MiscWall],
+    walls: &[crate::wall::misc_wall::InFrameMiscWallGeometry],
 ) -> f64 {
     let depth = elem
         .section
@@ -146,7 +149,7 @@ fn max_orth_face(
     target_axis: [f64; 3],
     target_elem_idx: usize,
     adjacency: &NodeAdjacency,
-    walls: &[crate::wall::misc_wall::MiscWall],
+    walls: &[crate::wall::misc_wall::InFrameMiscWallGeometry],
     toward: [f64; 3],
 ) -> f64 {
     let mut lf_max = 0.0_f64;
@@ -200,7 +203,7 @@ fn rigid_zone_with_adjacency(
     target_elem_idx: usize,
     adjacency: &NodeAdjacency,
     rule: &RigidZoneRule,
-    walls: &[crate::wall::misc_wall::MiscWall],
+    walls: &[crate::wall::misc_wall::InFrameMiscWallGeometry],
     face: [f64; 2],
 ) -> RigidZone {
     let elem = &model.elements[target_elem_idx];
@@ -232,7 +235,7 @@ fn rigid_zone_with_adjacency(
     // 「その節点から自部材が伸びる向き」を渡す。
     let dir_i = [cj[0] - ci[0], cj[1] - ci[1], cj[2] - ci[2]];
     let dir_j = [-dir_i[0], -dir_i[1], -dir_i[2]];
-    let lf = |node, toward, walls: &[crate::wall::misc_wall::MiscWall]| {
+    let lf = |node, toward, walls: &[crate::wall::misc_wall::InFrameMiscWallGeometry]| {
         max_orth_face(
             model,
             node,
