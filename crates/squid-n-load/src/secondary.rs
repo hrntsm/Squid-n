@@ -6,8 +6,8 @@
 //! （`DofMap::build` が自由度から除外する）、載っている梁の
 //! **中間集中荷重**（`MemberLoadKind::Point`。大梁の CMQ）へ変換する。
 
-use squid_n_core::ids::ElemId;
-use squid_n_core::model::{ElementKind, MemberLoad, MemberLoadKind, Model, NodalLoad};
+use squid_n_core::ids::{ElemId, NodeId};
+use squid_n_core::model::{ElementKind, MemberLoad, MemberLoadKind, Model, NodalLoad, SlabShape};
 
 /// `beam_span_position`/`resolve_nodal_to_primary` が候補とする 2 節点 `Beam` 要素
 /// （要素独立な幾何のみ。ダングリング参照は除外済み）。`resolve_nodal_to_primary` が
@@ -169,6 +169,114 @@ pub fn beams_along_segment(
     }
     out.sort_by(|a, b| a.seg[0].total_cmp(&b.seg[0]));
     out
+}
+
+/// 小梁（両端 `a`・`b`）の負担幅 [mm] を、その辺に沿う床板の幾何から求める。
+///
+/// ST-Bridge 取り込みの床板は小梁で細分された小片として入ってくるため、小梁の
+/// 辺は隣接する床板の境界辺と重なる。**同じレベル**の床板の中から、この辺に沿う
+/// 境界辺を持つ床板を探し（T 字取り付き等で、隣の床板の境界がこの辺の途中の
+/// 節点で分割されている場合も、節点対の完全一致ではなく直線への重なりで判定
+/// するため取りこぼさない。レベルを見ないと、上下階で平面が繰り返される建物では
+/// 別階の床板を拾ってしまう）、見つかった床板の直交方向の幅の合計を半分にして返す
+/// （大梁-小梁-大梁の標準的な負担幅規則。片側 1 枚を代表に選ぶ・全体を
+/// 床板の枚数で単純平均するといった近似はしない。「合計の半分」は、この
+/// 小梁の左右どちらに何枚の床板があっても、側ごとの合計の半分を足し合わせた
+/// ものと数学的に等しい）。
+///
+/// 小梁がどの床板の境界にも沿わない（床板の内部を通る、対応する床板がない、
+/// 取り付く床板しかない等）場合は `None`。呼び出し側は幾何的な近似（平行な
+/// 小梁どうしの間隔等）へフォールバックすること。
+pub fn joist_edge_tributary_width(model: &Model, a: NodeId, b: NodeId) -> Option<f64> {
+    let na = model.nodes.get(a.index())?;
+    let nb = model.nodes.get(b.index())?;
+    let dx = nb.coord[0] - na.coord[0];
+    let dy = nb.coord[1] - na.coord[1];
+    let len = (dx * dx + dy * dy).sqrt();
+    if len <= 1e-9 {
+        return None;
+    }
+    let dir = [dx / len, dy / len];
+    let perp = [-dir[1], dir[0]];
+    let tol = SPAN_TOL_MM;
+    let mid_z = (na.coord[2] + nb.coord[2]) / 2.0;
+
+    let mut sum = 0.0_f64;
+    let mut found = false;
+
+    for slab in &model.slabs {
+        let SlabShape::Enclosed { boundary } = &slab.shape else {
+            continue; // 取り付く床板は境界辺を持たない。
+        };
+        let n = boundary.len();
+        if n < 3 {
+            continue;
+        }
+        // 同じレベルの床板だけを対象にする。XY だけで判定すると、上下階で
+        // 平面が繰り返される建物では別階の床板を誤って拾う。
+        if !slab
+            .level(model)
+            .is_some_and(|z| (z - mid_z).abs() <= squid_n_core::geom::LEVEL_TOL_MM)
+        {
+            continue;
+        }
+        let Some(coords) = slab.boundary_coords(model) else {
+            continue;
+        };
+        // 境界辺のいずれかが、小梁の直線に載り（直交距離 tol 以内）、かつ辺自身が
+        // 小梁の区間 [0, len] にほぼ収まるか（1 辺で全長を覆う必要はない。隣が
+        // 複数枚に割れていれば、それぞれ収まるぶんで検出できればよい）。
+        //
+        // 「辺自身が収まる」まで求めるのは、同じ通り芯上にある無関係な遠くの辺
+        // （この小梁の延長線上だが別スパンの床板の境界）を誤って拾わないため。
+        // 区間の交差が非零というだけの判定では、小梁の [0, len] を大きく越えて
+        // 延びる辺（無関係な床板）まで「重なりあり」になってしまう。
+        let overlaps = (0..n).any(|k| {
+            let p = coords[k];
+            let q = coords[(k + 1) % n];
+            let dp = (p[0] - na.coord[0]) * perp[0] + (p[1] - na.coord[1]) * perp[1];
+            let dq = (q[0] - na.coord[0]) * perp[0] + (q[1] - na.coord[1]) * perp[1];
+            if dp.abs() > tol || dq.abs() > tol {
+                return false;
+            }
+            let tp = (p[0] - na.coord[0]) * dir[0] + (p[1] - na.coord[1]) * dir[1];
+            let tq = (q[0] - na.coord[0]) * dir[0] + (q[1] - na.coord[1]) * dir[1];
+            let edge_len = (tq - tp).abs();
+            // 退化した（ほぼ長さ 0 の）辺は除く。`edge_len - tol` が負になり、
+            // 区間 [0, len] の外（クランプで t0 == t1 になる位置）でも
+            // 「収まっている」と誤判定してしまうため。
+            if edge_len <= tol || edge_len > len + tol {
+                return false; // 小梁より長い辺は別の床板の境界とみなす。
+            }
+            let t0 = tp.min(tq).clamp(0.0, len);
+            let t1 = tp.max(tq).clamp(0.0, len);
+            t1 - t0 >= edge_len - tol
+        });
+        if !overlaps {
+            continue;
+        }
+
+        let width = if let Some((lx, ly)) = crate::floor::slab_dimensions(model, slab) {
+            if dir[0].abs() >= dir[1].abs() {
+                ly
+            } else {
+                lx
+            }
+        } else {
+            let (mut mn, mut mx) = (f64::INFINITY, f64::NEG_INFINITY);
+            for c in &coords {
+                let t = c[0] * perp[0] + c[1] * perp[1];
+                mn = mn.min(t);
+                mx = mx.max(t);
+            }
+            mx - mn
+        };
+
+        found = true;
+        sum += width;
+    }
+
+    found.then_some(sum / 2.0)
 }
 
 /// 各節点に要素（解析部材）が接続しているかを返す。
@@ -449,5 +557,158 @@ mod segment_tests {
         }
         let cover = beams_along_segment(&m, [0.0, 0.0, 0.0], [4000.0, 0.0, 0.0], SPAN_TOL_MM);
         assert!(cover.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod joist_tributary_tests {
+    use super::*;
+    use squid_n_core::ids::SlabId;
+    use squid_n_core::model::{DistributionMethod, Node, Slab, SlabPlate};
+
+    fn node(id: u32, x: f64, y: f64) -> Node {
+        Node {
+            id: NodeId(id),
+            coord: [x, y, 0.0],
+            restraint: Default::default(),
+            mass: None,
+            story: None,
+            support_spring: None,
+        }
+    }
+
+    fn rect_slab(id: u32, corners: [u32; 4]) -> Slab {
+        Slab {
+            id: SlabId(id),
+            shape: SlabShape::Enclosed {
+                boundary: corners.into_iter().map(NodeId).collect(),
+            },
+            plate: SlabPlate {
+                section: None,
+                loads: Vec::new(),
+                usage: None,
+                method: DistributionMethod::TriTrapezoid,
+                one_way: None,
+            },
+        }
+    }
+
+    /// 4000×3000 と 4000×3000 の 2 枚が joist（節点 3-2）を挟んで隣り合う。
+    /// 負担幅は両側の半分の和＝(3000/2)+(3000/2)=3000（joist 1 本だけで
+    /// 6000 幅の間を分け合う、単純梁の負担幅と同じ値）。
+    #[test]
+    fn test_two_sided_pieces_split_evenly() {
+        let mut model = Model {
+            nodes: vec![
+                node(0, 0.0, 0.0),
+                node(1, 4000.0, 0.0),
+                node(2, 4000.0, 3000.0),
+                node(3, 0.0, 3000.0),
+                node(4, 4000.0, 6000.0),
+                node(5, 0.0, 6000.0),
+            ],
+            ..Default::default()
+        };
+        model.slabs.push(rect_slab(0, [0, 1, 2, 3]));
+        model.slabs.push(rect_slab(1, [3, 2, 4, 5]));
+
+        let w = joist_edge_tributary_width(&model, NodeId(3), NodeId(2));
+        assert!(matches!(w, Some(x) if (x - 3000.0).abs() < 1e-6), "{w:?}");
+        // 端点の順序を入れ替えても同じ結果（辺の向きに依存しない）。
+        let w_rev = joist_edge_tributary_width(&model, NodeId(2), NodeId(3));
+        assert_eq!(w, w_rev);
+    }
+
+    /// 建物の外周に載る joist（片側にしか床板がない）は、その片側の幅の半分。
+    #[test]
+    fn test_perimeter_joist_uses_single_side_half_width() {
+        let mut model = Model {
+            nodes: vec![
+                node(0, 0.0, 0.0),
+                node(1, 4000.0, 0.0),
+                node(2, 4000.0, 3000.0),
+                node(3, 0.0, 3000.0),
+            ],
+            ..Default::default()
+        };
+        model.slabs.push(rect_slab(0, [0, 1, 2, 3]));
+
+        let w = joist_edge_tributary_width(&model, NodeId(0), NodeId(1));
+        assert!(matches!(w, Some(x) if (x - 1500.0).abs() < 1e-6), "{w:?}");
+    }
+
+    /// T 字取り付き: 片側は 1 枚（幅 3000）、反対側は途中の節点で 2 枚に割れている
+    /// （幅 3000 の帯が 2 枚。それぞれの境界はこの小梁の一部区間としか重ならない）。
+    /// 負担幅は「割れた側の合計幅の半分」＋「割れていない側の幅の半分」
+    /// ＝ (3000+3000)/2 + 3000/2 = 4500（3 枚の単純平均 3000 ではない）。
+    #[test]
+    fn test_t_junction_sums_split_side_before_halving() {
+        let mut model = Model {
+            nodes: vec![
+                node(0, 0.0, 0.0),
+                node(1, 4000.0, 0.0),
+                node(2, 4000.0, 3000.0),
+                node(3, 0.0, 3000.0),
+                node(4, 4000.0, 6000.0),
+                node(5, 0.0, 6000.0),
+                node(6, 2000.0, 3000.0), // 反対側を割る、joist 辺の途中の節点
+                node(7, 2000.0, 6000.0),
+            ],
+            ..Default::default()
+        };
+        model.slabs.push(rect_slab(0, [0, 1, 2, 3])); // 割れていない側
+        model.slabs.push(rect_slab(1, [3, 6, 7, 5])); // 割れた側・左半分
+        model.slabs.push(rect_slab(2, [6, 2, 4, 7])); // 割れた側・右半分
+
+        let w = joist_edge_tributary_width(&model, NodeId(3), NodeId(2));
+        assert!(matches!(w, Some(x) if (x - 4500.0).abs() < 1e-6), "{w:?}");
+    }
+
+    /// どの床板の境界辺にも載らない（床板の内部を貫く）小梁は None。
+    /// 呼び出し側はここで別の幾何近似へフォールバックすること。
+    #[test]
+    fn test_interior_joist_returns_none() {
+        let mut model = Model {
+            nodes: vec![
+                node(0, 0.0, 0.0),
+                node(1, 4000.0, 0.0),
+                node(2, 4000.0, 6000.0),
+                node(3, 0.0, 6000.0),
+                node(4, 0.0, 3000.0),
+                node(5, 4000.0, 3000.0),
+            ],
+            ..Default::default()
+        };
+        model.slabs.push(rect_slab(0, [0, 1, 2, 3]));
+
+        let w = joist_edge_tributary_width(&model, NodeId(4), NodeId(5));
+        assert_eq!(w, None);
+    }
+
+    /// 小梁の直線上（同じ Y）だが遠く離れた、退化した（ほぼ長さ 0 の）辺を持つ
+    /// 無関係な床板は拾わない。クランプ後の区間が [len, len]（幅 0）になっても、
+    /// 辺自身が短ければ「収まっている」と誤判定しないことの回帰テスト。
+    #[test]
+    fn test_far_degenerate_edge_on_same_line_is_not_matched() {
+        let mut model = Model {
+            nodes: vec![
+                node(0, 0.0, 0.0),
+                node(1, 4000.0, 0.0),
+                node(2, 4000.0, 3000.0),
+                node(3, 0.0, 3000.0),
+                // 遠く離れた、無関係な床板（ほぼ長さ 0 の辺 4-5 を持つ）。
+                node(4, 50000.0, 0.0),
+                node(5, 50005.0, 0.0),
+                node(6, 50005.0, 1000.0),
+                node(7, 50000.0, 1000.0),
+            ],
+            ..Default::default()
+        };
+        model.slabs.push(rect_slab(1, [4, 5, 6, 7]));
+
+        // 片側にしか床板がない小梁として、正しい答え（1500）だけが返ることを確認する。
+        model.slabs.push(rect_slab(0, [0, 1, 2, 3]));
+        let w = joist_edge_tributary_width(&model, NodeId(0), NodeId(1));
+        assert!(matches!(w, Some(x) if (x - 1500.0).abs() < 1e-6), "{w:?}");
     }
 }

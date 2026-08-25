@@ -293,8 +293,10 @@ impl App {
     /// `Model::secondary_members` の小梁を単純支持梁として検定する。
     ///
     /// `FloorRegion::joists` に同じ両端を持つ小梁は GUI 定義済みとしてスキップする。
-    /// 中点が属する床板を XY 多角形判定（内部または辺上）**かつ同じレベル**で決め、
-    /// 平行小梁群から負担幅を算定する。
+    /// 積載強度は中点が属する床板を XY 多角形判定（内部または辺上）**かつ同じレベル**で
+    /// 決める。負担幅は小梁の辺を境界に持つ床板の幾何から求め
+    /// （`squid_n_load::secondary::joist_edge_tributary_width`）、どの床板の境界にも
+    /// 載らない小梁だけ平行小梁群から算定する（フォールバック）。
     fn design_secondary_joist_checks(
         &self,
         joist_checks: &mut Vec<crate::app::JoistCheck>,
@@ -326,8 +328,10 @@ impl App {
             perp_coord: f64,
             dir: [f64; 2],
             section: SectionId,
-            /// 複数の床板の辺に載る小梁の負担幅（載っている床板の幅の平均）。
-            /// `None` は 1 枚の床板の内部にある小梁で、平行小梁群から負担幅を出す。
+            /// 小梁の辺を境界に持つ床板の幾何から求めた負担幅
+            /// （`joist_edge_tributary_width`）。`None` はどの床板の境界にも
+            /// 載らない小梁（1 枚の床板の内部にある等）で、平行小梁群から
+            /// 負担幅を出す。
             edge_width: Option<f64>,
         }
 
@@ -394,27 +398,15 @@ impl App {
             let perp = [-dir[1], dir[0]];
             let perp_coord = mid[0] * perp[0] + mid[1] * perp[1];
 
-            // 複数のスラブに載る小梁の負担幅は、載っているスラブの幅の平均とする。
-            // 取り込みモデルのスラブは小梁で分割されており、小梁は隣り合う 2 枚の
-            // 帯（ストリップ）の境界辺に載る。このとき負担幅は「両隣の半分ずつの和」
-            // ＝2 枚の幅の平均であり、どちらか 1 枚の幅を採ると（並び順しだいで）
-            // 過大にも過小にもなる。
-            //
-            // T 字取り付きで 3 枚に載る場合、平均は近似になる（片側が 2 枚に割れており、
-            // 厳密には割れた側の合計幅の半分を採るべき）。床領域（大梁で囲まれた領域）を
-            // 単位とする分配へ移せば、負担幅は分配計算そのものから出るため近似は不要になる。
-            let edge_width = (matched.len() >= 2).then(|| {
-                let sum: f64 = matched
-                    .iter()
-                    .map(|(_, s)| {
-                        slab_width_across(&self.model, s, dir, {
-                            let (mn, mx) = slab_perp_extent(&self.model, s, perp);
-                            mx - mn
-                        })
-                    })
-                    .sum();
-                sum / matched.len() as f64
-            });
+            // 負担幅は、小梁の辺を境界に持つ床板の幾何から求める
+            // （`squid_n_load::secondary::joist_edge_tributary_width`）。ST-Bridge
+            // 取り込みの床板は小梁で分割された小片として入ってくるため、通常は
+            // これで一意に決まる（片側が複数枚に割れている T 字取り付きも、側ごとの
+            // 合計幅の半分として正しく扱う。片側 1 枚を代表に選ぶ・全体を単純平均
+            // するといった近似はしない）。どの床板の境界にも載らない小梁（1 枚の
+            // 床板の内部を通る等）は `None` になるため、そのときだけ下の平行小梁群
+            // からの近似（`n == 1` 経路）へフォールバックする。
+            let edge_width = squid_n_load::secondary::joist_edge_tributary_width(&self.model, a, b);
 
             candidates.push(Cand {
                 sm_idx: smi,
@@ -461,8 +453,7 @@ impl App {
             for (ri, &ci) in sorted.iter().enumerate() {
                 let c = &candidates[ci];
                 let spacing = if let Some(w) = c.edge_width {
-                    // 複数スラブの辺に載る小梁。負担幅は載っているスラブの幅の平均で、
-                    // どのスラブを代表に選んだかに依存しない。
+                    // 床板の境界の幾何から求めた負担幅（`joist_edge_tributary_width`）。
                     w
                 } else if n == 1 {
                     slab_width_across(&self.model, slab, c.dir, pmax - pmin)
@@ -528,8 +519,8 @@ fn slab_perp_extent(
 /// 小梁の向き `dir` に直交する方向のスラブ幅。矩形スラブは `slab_dimensions` の
 /// 軸直交寸法、それ以外は境界 bbox の `bbox_extent` を用いる。
 ///
-/// スラブ 1 枚の内部にある単独小梁ではこれがそのまま負担幅になり、
-/// スラブの境界辺に載る小梁では、載っている各スラブについて求めて平均する。
+/// どの床板の境界にも載らない小梁（床板の内部にある等）向けのフォールバック専用。
+/// 境界に載る小梁の負担幅は `joist_edge_tributary_width` が求める。
 fn slab_width_across(
     model: &squid_n_core::model::Model,
     slab: &squid_n_core::model::Slab,
