@@ -717,9 +717,10 @@ fn build_walls(
     warnings: &mut Vec<String>,
 ) {
     // ST-Bridge の XML には「壁と間柱の親子関係」を明示する要素がない。
-    // 壁要素単体では `WallRegion` の `wall` と `post_ids` を紐づけられず、
-    // そのため `wall_regions` は空配列のままにする（現行 importer ではスキップ）。
-    // 将来、親子関係を表す要素が見つかればここで `WallRegion` を生成する。
+    // 現行 importer は `ElementKind::Wall` 要素と `WallAttr` を直接生成するのみで、
+    // `WallRegion`/`WallPlate` は組み立てない（`wall_regions`/`wall_plates` は
+    // 空配列のまま）。取り込み経路の `WallPlate` への移行は Step 7+8 本体で行う
+    // （`dev_docs/handoff/床領域・壁領域の再設計_申し送り.md` §5.8）。
     let mut skipped_walls = 0u32;
     // 壁厚 → 生成済みの厚さ専用断面。同じ厚さの壁で断面を使い回すための索引。
     // f64 は Hash を持たないため、符号（`Wall t180`）そのものをキーにする。

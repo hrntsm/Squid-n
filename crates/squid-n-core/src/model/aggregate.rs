@@ -376,8 +376,8 @@ impl Model {
         }
         // 床板 ID は「配列添字と一致」かつ「複数の床領域から共有されない」こと。
         check_id_consistency(&self.slabs, "slabs", "SlabId", |s| s.id.index(), |s| s.id.0)?;
-        // 壁版 ID は「配列添字と一致」こと。「複数の壁領域から共有されない」検証は
-        // WallRegion.wall_plate_ids の実装（Step 7+8 本体）とあわせて追加する。
+        // 壁版 ID は「配列添字と一致」かつ「複数の壁領域から共有されない」こと
+        // （床板と同じ規約）。
         check_id_consistency(
             &self.wall_plates,
             "wall_plates",
@@ -385,6 +385,73 @@ impl Model {
             |p| p.id.index(),
             |p| p.id.0,
         )?;
+        check_id_consistency(
+            &self.wall_regions,
+            "wall_regions",
+            "WallRegionId",
+            |r| r.id.index(),
+            |r| r.id.0,
+        )?;
+        {
+            let mut owner: std::collections::HashMap<u32, u32> = std::collections::HashMap::new();
+            for region in &self.wall_regions {
+                let mut seen_here = std::collections::HashSet::new();
+                for &pid in &region.wall_plate_ids {
+                    if !seen_here.insert(pid) {
+                        return Err(CoreError::DuplicateId(format!(
+                            "WallRegion {} wall_plate_ids has WallPlateId({})",
+                            region.id.0, pid.0
+                        )));
+                    }
+                    if pid.index() >= self.wall_plates.len()
+                        || self.wall_plates[pid.index()].id != pid
+                    {
+                        return Err(CoreError::DanglingRef(format!(
+                            "WallRegion {} -> WallPlate {}",
+                            region.id.0, pid.0
+                        )));
+                    }
+                    if let Some(&other) = owner.get(&pid.0) {
+                        if other != region.id.0 {
+                            return Err(CoreError::DuplicateId(format!(
+                                "WallPlate {} は複数の WallRegion（{}・{}）から参照されている",
+                                pid.0, other, region.id.0
+                            )));
+                        }
+                    }
+                    owner.insert(pid.0, region.id.0);
+                }
+            }
+        }
+        // 壁領域の境界・小梁ラインが参照する節点が実在すること（陳腐化した参照の検出）。
+        for region in &self.wall_regions {
+            for &nid in &region.boundary {
+                if nid.index() >= self.nodes.len() || self.nodes[nid.index()].id != nid {
+                    return Err(CoreError::DanglingRef(format!(
+                        "WallRegion {} -> Node {}",
+                        region.id.0, nid.0
+                    )));
+                }
+            }
+        }
+        // 壁領域は、同じ境界（柱・梁の閉路）を持つものが 2 つあってはならない（D1）。
+        {
+            let mut seen: std::collections::HashSet<Vec<u32>> = std::collections::HashSet::new();
+            for region in &self.wall_regions {
+                if region.boundary.is_empty() {
+                    continue;
+                }
+                let mut key: Vec<u32> = region.boundary.iter().map(|n| n.0).collect();
+                key.sort_unstable();
+                key.dedup();
+                if !seen.insert(key) {
+                    return Err(CoreError::DuplicateId(format!(
+                        "WallRegion {} は他の領域と同じ境界を持つ",
+                        region.id.0
+                    )));
+                }
+            }
+        }
         {
             let mut owner: std::collections::HashMap<u32, u32> = std::collections::HashMap::new();
             for region in &self.floor_regions {
@@ -621,31 +688,13 @@ impl Model {
         }
 
         // 壁領域の post_ids は重複を許さず、参照先が実在し Post であること。
-        for (wi, wr) in self.wall_regions.iter().enumerate() {
-            if let Some(eid) = wr.wall {
-                let e = self.elements.get(eid.index()).filter(|e| e.id == eid);
-                match e {
-                    None => {
-                        return Err(CoreError::DanglingRef(format!(
-                            "WallRegion {} wall -> Elem {}",
-                            wi, eid.0
-                        )));
-                    }
-                    Some(e) if e.kind != ElementKind::Wall => {
-                        return Err(CoreError::DanglingRef(format!(
-                            "WallRegion {} wall -> Elem {} は Wall でない（{:?}）",
-                            wi, eid.0, e.kind
-                        )));
-                    }
-                    _ => {}
-                }
-            }
+        for wr in &self.wall_regions {
             let mut seen_posts = std::collections::HashSet::new();
             for &smid in &wr.post_ids {
                 if !seen_posts.insert(smid) {
                     return Err(CoreError::DuplicateId(format!(
                         "WallRegion {} post_ids has SecondaryMemberId({})",
-                        wi, smid.0
+                        wr.id.0, smid.0
                     )));
                 }
                 match self.secondary_members.get(smid.index()) {
@@ -653,14 +702,14 @@ impl Model {
                         if sm.kind != SecondaryMemberKind::Post {
                             return Err(CoreError::DanglingRef(format!(
                                 "WallRegion {} post_ids -> SecondaryMember {} は Post でない",
-                                wi, smid.0
+                                wr.id.0, smid.0
                             )));
                         }
                     }
                     _ => {
                         return Err(CoreError::DanglingRef(format!(
                             "WallRegion {} post_ids -> SecondaryMember {}",
-                            wi, smid.0
+                            wr.id.0, smid.0
                         )));
                     }
                 }
@@ -1047,11 +1096,8 @@ impl Model {
                 f(&mut ml.elem);
             }
         }
-        for wr in &mut self.wall_regions {
-            if let Some(eid) = &mut wr.wall {
-                f(eid);
-            }
-        }
+        // WallRegion/WallPlate は ElemId を持たない（壁の解析要素は準備計算からの
+        // 生成物であり、モデルには残さない。D4・D5）。
         self.shift_elem_attr_refs(&mut f);
     }
 
@@ -1333,6 +1379,21 @@ impl Model {
         for region in &mut self.floor_regions {
             for sid in &mut region.slab_ids {
                 f(sid);
+            }
+        }
+    }
+
+    /// モデル内の全ての `WallPlateId` 参照（壁版自身の ID・壁領域の `wall_plate_ids`）へ
+    /// `f` を適用する（[`Model::visit_slab_ids`] と同じ規約の壁側版）。
+    ///
+    /// **`WallPlateId` を持つフィールドを `Model` へ追加したら必ずここへ追随すること**。
+    pub fn visit_wall_plate_ids(&mut self, mut f: impl FnMut(&mut WallPlateId)) {
+        for plate in &mut self.wall_plates {
+            f(&mut plate.id);
+        }
+        for region in &mut self.wall_regions {
+            for pid in &mut region.wall_plate_ids {
+                f(pid);
             }
         }
     }

@@ -157,7 +157,10 @@ fn test_validate_duplicate_wall_region_post_ids() {
             name: "P0".to_string(),
         }],
         wall_regions: vec![crate::model::WallRegion {
-            wall: None,
+            id: WallRegionId(0),
+            name: String::new(),
+            boundary: vec![],
+            wall_plate_ids: vec![],
             post_ids: vec![SecondaryMemberId(0), SecondaryMemberId(0)],
         }],
         ..Default::default()
@@ -1149,7 +1152,10 @@ fn test_retain_secondary_members_remaps_region_refs() {
             joists: vec![],
         }],
         wall_regions: vec![crate::model::WallRegion {
-            wall: None,
+            id: WallRegionId(0),
+            name: String::new(),
+            boundary: vec![],
+            wall_plate_ids: vec![],
             post_ids: vec![SecondaryMemberId(1)],
         }],
         ..Default::default()
@@ -1411,4 +1417,72 @@ fn test_validate_dangling_wall_plate_floor_region_anchor() {
     // 床領域を実在させれば通る。
     model.floor_regions = vec![FloorRegion::new(FloorRegionId(0), vec![])];
     assert!(model.validate().is_ok());
+}
+
+/// 壁領域は「配列添字と一致」かつ「同じ境界を持つものが 2 つあってはならない」
+/// （D1。床領域と同じ規約）。
+#[test]
+fn test_validate_duplicate_wall_region_boundary() {
+    use crate::model::WallRegion;
+    let mut model = Model::default();
+    for i in 0..4u32 {
+        model.nodes.push(Node {
+            id: NodeId(i),
+            coord: [i as f64 * 1000.0, 0.0, 0.0],
+            restraint: Dof6Mask::FREE,
+            mass: None,
+            story: None,
+            support_spring: None,
+        });
+    }
+    let boundary = vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)];
+    model.wall_regions = vec![WallRegion::new(WallRegionId(0), boundary.clone())];
+    assert!(model.validate().is_ok());
+    model
+        .wall_regions
+        .push(WallRegion::new(WallRegionId(1), boundary));
+    assert!(
+        model.validate().is_err(),
+        "同じ境界の壁領域が 2 つある状態は検出されるはず"
+    );
+}
+
+/// 壁版は複数の壁領域から共有されてはならない（床板と同じ規約）。
+#[test]
+fn test_validate_wall_plate_shared_by_two_wall_regions() {
+    use crate::model::{WallPlate, WallPlateShape, WallRegion};
+    let mut model = Model::default();
+    for i in 0..4u32 {
+        model.nodes.push(Node {
+            id: NodeId(i),
+            coord: [i as f64 * 1000.0, 0.0, 0.0],
+            restraint: Dof6Mask::FREE,
+            mass: None,
+            story: None,
+            support_spring: None,
+        });
+    }
+    model.wall_plates = vec![WallPlate {
+        id: WallPlateId(0),
+        shape: WallPlateShape::Enclosed {
+            boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
+        },
+        section: None,
+        openings: vec![],
+        three_side_slit: false,
+    }];
+    model.wall_regions = vec![
+        WallRegion {
+            wall_plate_ids: vec![WallPlateId(0)],
+            ..WallRegion::new(WallRegionId(0), vec![])
+        },
+        WallRegion {
+            wall_plate_ids: vec![WallPlateId(0)],
+            ..WallRegion::new(WallRegionId(1), vec![])
+        },
+    ];
+    assert!(
+        model.validate().is_err(),
+        "壁版が複数の壁領域から参照されている状態は検出されるはず"
+    );
 }

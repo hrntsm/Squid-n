@@ -2,7 +2,7 @@
 
 use super::*;
 use squid_n_core::ids::*;
-use squid_n_core::model::{ElementKind, SecondaryMember, SecondaryMemberKind, WallRegion};
+use squid_n_core::model::{SecondaryMember, SecondaryMemberKind};
 
 // ─── ヘルパー関数 ─────────────────────────────────────
 
@@ -244,105 +244,73 @@ impl EditCommand for SetSlabSecondaryJoistIds {
     }
 }
 
-// ─── グループC: 壁領域の CRUD ────────────────────────────
+// ─── グループC: 壁領域 ────────────────────────────────────
+//
+// 壁領域（`WallRegion`）は床領域（`FloorRegion`）と同じく主架構から再検出・
+// 再構成される派生的な入力の持ち主であり（D10）、利用者が任意の境界を与えて
+// 追加・削除する対象ではない（`region_gen::wall`/`wall_region_rebuild` が組み立てる）。
+// そのため床領域と同じく、利用者が変更できるのは表示名と間柱の割当だけである
+// （`FloorRegion` に `AddFloorRegion`/`DeleteFloorRegion` が存在しないのと同じ理由）。
 
-/// 壁領域追加。`wall_regions` の末尾に追加する。
+/// 壁領域の表示名変更。逆操作は変更前の名前への復元。
+/// 対象が存在しない、または変更前後で同じ名前なら Noop。
+pub struct SetWallRegionName {
+    pub id: WallRegionId,
+    pub name: String,
+}
+
+impl EditCommand for SetWallRegionName {
+    fn apply(&self, model: &mut Model) -> Box<dyn EditCommand> {
+        let idx = self.id.index();
+        if idx >= model.wall_regions.len() || model.wall_regions[idx].id != self.id {
+            return Box::new(Noop);
+        }
+        let old = std::mem::replace(&mut model.wall_regions[idx].name, self.name.clone());
+        if old == self.name {
+            return Box::new(Noop);
+        }
+        Box::new(SetWallRegionName {
+            id: self.id,
+            name: old,
+        })
+    }
+
+    fn label(&self) -> &str {
+        "壁領域名変更"
+    }
+}
+
+/// 壁領域に属する間柱（`post_ids`）の一括変更。
 ///
 /// バリデーション:
-/// - `wall` が `Some` の場合、実在する `ElemId` であること
-/// - `post_ids` の全 ID が実在し `kind == Post` であること
+/// - 壁領域が実在すること
+/// - 全 ID が `secondary_members` に実在し、かつ `kind == Post` であること
+/// - ID に重複がないこと
 ///
-/// 逆操作は末尾の壁領域削除（`DeleteWallRegion`）。
-pub struct AddWallRegion {
-    pub region: WallRegion,
+/// 逆操作は元のリストへ戻す `SetWallRegionPostIds`。
+pub struct SetWallRegionPostIds {
+    pub region: WallRegionId,
+    pub ids: Vec<SecondaryMemberId>,
 }
 
-impl EditCommand for AddWallRegion {
+impl EditCommand for SetWallRegionPostIds {
     fn apply(&self, model: &mut Model) -> Box<dyn EditCommand> {
-        if !wall_region_refs_ok(model, &self.region) {
+        let idx = self.region.index();
+        if idx >= model.wall_regions.len() || model.wall_regions[idx].id != self.region {
             return Box::new(Noop);
         }
-        model.wall_regions.push(self.region.clone());
-        Box::new(DeleteWallRegion {
-            index: model.wall_regions.len() - 1,
+        if !secondary_post_ids_ok(model, &self.ids) {
+            return Box::new(Noop);
+        }
+        let old = std::mem::replace(&mut model.wall_regions[idx].post_ids, self.ids.clone());
+        Box::new(SetWallRegionPostIds {
+            region: self.region,
+            ids: old,
         })
     }
 
     fn label(&self) -> &str {
-        "壁領域追加"
-    }
-}
-
-/// 壁領域削除（`index` 指定）。逆操作は [`InsertWallRegion`]（元の位置に復元）。
-/// index が範囲外なら Noop。
-pub struct DeleteWallRegion {
-    pub index: usize,
-}
-
-impl EditCommand for DeleteWallRegion {
-    fn apply(&self, model: &mut Model) -> Box<dyn EditCommand> {
-        if self.index >= model.wall_regions.len() {
-            return Box::new(Noop);
-        }
-        let removed = model.wall_regions.remove(self.index);
-        Box::new(InsertWallRegion {
-            index: self.index,
-            region: removed,
-        })
-    }
-
-    fn label(&self) -> &str {
-        "壁領域削除"
-    }
-}
-
-/// 指定インデックスへ壁領域を再挿入する（[`DeleteWallRegion`] の逆操作専用）。
-/// index が範囲外（`> len`）なら Noop。
-pub struct InsertWallRegion {
-    pub index: usize,
-    pub region: WallRegion,
-}
-
-impl EditCommand for InsertWallRegion {
-    fn apply(&self, model: &mut Model) -> Box<dyn EditCommand> {
-        if self.index > model.wall_regions.len() {
-            return Box::new(Noop);
-        }
-        model.wall_regions.insert(self.index, self.region.clone());
-        Box::new(DeleteWallRegion { index: self.index })
-    }
-
-    fn label(&self) -> &str {
-        "壁領域削除の取り消し"
-    }
-}
-
-/// 壁領域の内容を `index` 指定で全置換する。
-///
-/// バリデーション: `AddWallRegion` と同じ（`wall`・`post_ids` の参照存在チェック）。
-/// 逆操作は変更前の内容への復元。index が範囲外なら Noop。
-pub struct SetWallRegion {
-    pub index: usize,
-    pub region: WallRegion,
-}
-
-impl EditCommand for SetWallRegion {
-    fn apply(&self, model: &mut Model) -> Box<dyn EditCommand> {
-        if self.index >= model.wall_regions.len() {
-            return Box::new(Noop);
-        }
-        if !wall_region_refs_ok(model, &self.region) {
-            return Box::new(Noop);
-        }
-        let old = std::mem::replace(&mut model.wall_regions[self.index], self.region.clone());
-        Box::new(SetWallRegion {
-            index: self.index,
-            region: old,
-        })
-    }
-
-    fn label(&self) -> &str {
-        "壁領域変更"
+        "壁領域間柱IDリスト変更"
     }
 }
 
@@ -366,30 +334,16 @@ fn secondary_joist_ids_ok(model: &Model, ids: &[SecondaryMemberId]) -> bool {
     true
 }
 
-/// 壁領域の参照が妥当か確認する。
-/// `wall` が `Some` の場合は実在する部材 ID か、`post_ids` が全て実在する Post 種別か。
-fn wall_region_refs_ok(model: &Model, region: &WallRegion) -> bool {
-    // 壁版の存在チェックと種別チェック
-    if let Some(elem_id) = region.wall {
-        let is_wall = model
-            .elements
-            .get(elem_id.index())
-            .filter(|e| e.id == elem_id)
-            .map(|e| e.kind == ElementKind::Wall)
-            .unwrap_or(false);
-        if !is_wall {
-            return false;
-        }
-    }
-    // 重複チェック・間柱 ID が全て実在し Post 種別であること
+/// 間柱 ID リストが妥当か確認する（[`secondary_joist_ids_ok`] の Post 版）。
+fn secondary_post_ids_ok(model: &Model, ids: &[SecondaryMemberId]) -> bool {
     let mut seen = std::collections::HashSet::new();
-    for &smid in &region.post_ids {
-        if !seen.insert(smid) {
+    for &id in ids {
+        if !seen.insert(id) {
             return false;
         }
-        let idx = smid.index();
+        let idx = id.index();
         match model.secondary_members.get(idx) {
-            Some(sm) if sm.id == smid && sm.kind == SecondaryMemberKind::Post => {}
+            Some(sm) if sm.id == id && sm.kind == SecondaryMemberKind::Post => {}
             _ => return false,
         }
     }

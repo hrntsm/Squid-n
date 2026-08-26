@@ -20,6 +20,7 @@ mod stress_cfg;
 mod vibration;
 mod wall;
 mod wall_plate;
+mod wall_region;
 
 pub use aggregate::*;
 pub use axis::*;
@@ -39,6 +40,7 @@ pub use stress_cfg::*;
 pub use vibration::*;
 pub use wall::*;
 pub use wall_plate::*;
+pub use wall_region::*;
 
 #[cfg(test)]
 mod tests;
