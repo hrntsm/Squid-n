@@ -59,9 +59,19 @@ pub struct WallPlate {
     /// チェックが止める。モジュール doc 参照）。
     #[serde(default)]
     pub section: Option<SectionId>,
+    /// 開口面積の合計 [mm²]（[`super::WallAttr::opening_area`] の後継）。
+    /// `openings`（個別開口）が非空の場合はそちらの面積和を優先し、本フィールドは
+    /// 無視される（[`WallPlate::total_opening_area`] 参照）。
+    #[serde(default)]
+    pub opening_area: f64,
+    /// 開口部（サッシ等）の重量 [N]（[`super::WallAttr::opening_weight`] の後継）。
+    /// 開口面積控除後の自重に加算する。
+    #[serde(default)]
+    pub opening_weight: f64,
     /// 個別開口の寸法リスト（[`super::WallOpening`]）。自重控除・開口周比・
     /// 耐震壁検定の開口供給に使う。構造壁でない壁版（n倍法・重量のみ）でも、
-    /// 自重控除には意味を持つため共通で持たせる。
+    /// 自重控除には意味を持つため共通で持たせる。非空の場合は面積評価を
+    /// 優先する（`opening_area` へのフォールバック規約は `WallAttr` と同じ）。
     #[serde(default)]
     pub openings: Vec<WallOpening>,
     /// 三方スリット。true の場合、自重は上下分配せず全て上部の節点へ伝達する。
@@ -146,9 +156,15 @@ impl WallPlate {
             .unwrap_or(0.0)
     }
 
-    /// 開口の合計面積 [mm²]（[`WallOpening::area`] の和）。
+    /// 開口の合計面積 [mm²]。個別開口 `openings` が非空ならその面積和、
+    /// 空なら `opening_area` を返す（`WallAttr::total_opening_area` と同じ規約。
+    /// 全消費側はこのメソッドを経由すること）。
     pub fn total_opening_area(&self) -> f64 {
-        self.openings.iter().map(WallOpening::area).sum()
+        if self.openings.is_empty() {
+            self.opening_area.max(0.0)
+        } else {
+            self.openings.iter().map(WallOpening::area).sum()
+        }
     }
 }
 
@@ -181,7 +197,8 @@ impl Model {
             .and_then(|mid| self.materials.get(mid.index()))
     }
 
-    /// 壁版の自重 [N]（開口控除後の正味面積 × 板厚 × 主材料の密度 × 重力加速度）。
+    /// 壁版の自重 [N]（開口控除後の正味面積 × 板厚 × 主材料の密度 × 重力加速度
+    /// ＋ 開口部（サッシ等）の重量。`WallAttr` の自重算定式と同じ）。
     ///
     /// 断面または主材料が未割当のときは `None`（[`Model::slab_self_weight_intensity`]
     /// と同じ規約。既定厚で補わない）。開口面積が正味面積を超える場合は 0 に丸める。
@@ -190,7 +207,8 @@ impl Model {
         let mat = self.wall_plate_material(plate)?;
         let area = plate.area(model_for_area);
         let net_area = (area - plate.total_opening_area()).max(0.0);
-        Some(t * mat.density * net_area * crate::units::GRAVITY_MM_S2)
+        let w = mat.density * t * net_area * crate::units::GRAVITY_MM_S2 + plate.opening_weight;
+        Some(w.max(0.0))
     }
 }
 
@@ -228,6 +246,8 @@ mod tests {
                 boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
             },
             section: None,
+            opening_area: 0.0,
+            opening_weight: 0.0,
             openings: Vec::new(),
             three_side_slit: false,
         };
@@ -252,6 +272,8 @@ mod tests {
                 extent: [900.0, 900.0],
             },
             section: None,
+            opening_area: 0.0,
+            opening_weight: 0.0,
             openings: Vec::new(),
             three_side_slit: false,
         };
@@ -280,6 +302,8 @@ mod tests {
                 extent: [2500.0, 2500.0],
             },
             section: None,
+            opening_area: 0.0,
+            opening_weight: 0.0,
             openings: Vec::new(),
             three_side_slit: false,
         };
@@ -297,6 +321,8 @@ mod tests {
                 extent: [900.0, 900.0],
             },
             section: None,
+            opening_area: 0.0,
+            opening_weight: 0.0,
             openings: Vec::new(),
             three_side_slit: false,
         };
@@ -318,6 +344,8 @@ mod tests {
                 boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
             },
             section: None,
+            opening_area: 0.0,
+            opening_weight: 0.0,
             openings: Vec::new(),
             three_side_slit: false,
         };
@@ -371,6 +399,8 @@ mod tests {
                 boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
             },
             section: Some(SectionId(0)),
+            opening_area: 0.0,
+            opening_weight: 0.0,
             openings: vec![WallOpening {
                 width: 900.0,
                 height: 1200.0,
@@ -381,6 +411,92 @@ mod tests {
         let gross_area = 4000.0 * 3000.0;
         let opening_area = 900.0 * 1200.0;
         let expected = 150.0 * 2.4e-9 * (gross_area - opening_area) * crate::units::GRAVITY_MM_S2;
+        let w = m.wall_plate_self_weight(&p, &m).expect("自重が求まる");
+        assert!(
+            (w - expected).abs() / expected < 1e-9,
+            "自重 {w}（期待値 {expected}）"
+        );
+    }
+
+    fn model_with_wall_section() -> Model {
+        let mut m = model_with_nodes(&[
+            [0.0, 0.0, 0.0],
+            [4000.0, 0.0, 0.0],
+            [4000.0, 0.0, 3000.0],
+            [0.0, 0.0, 3000.0],
+        ]);
+        m.materials.push(Material {
+            strength_factor: None,
+            concrete_class: Default::default(),
+            id: MaterialId(0),
+            name: "Fc24".into(),
+            category: MaterialCategory::Concrete,
+            young: 23000.0,
+            poisson: 0.2,
+            density: 2.4e-9,
+            shear: None,
+            fc: Some(24.0),
+            fy: None,
+        });
+        m.sections.push(Section {
+            id: SectionId(0),
+            name: "壁 t150".into(),
+            area: 150.0 * 3000.0,
+            iy: 1.0,
+            iz: 1.0,
+            j: 1.0,
+            depth: 3000.0,
+            width: 150.0,
+            as_y: 1.0,
+            as_z: 1.0,
+            floor: None,
+            panel_thickness: None,
+            thickness: Some(150.0),
+            shape: None,
+            material: Some(MaterialId(0)),
+            rebar_material: None,
+            shear_rebar_material: None,
+            steel_material: None,
+        });
+        m
+    }
+
+    /// `openings`（個別開口）が空の場合は `opening_area`（合計面積のみ入力）に
+    /// フォールバックする（`WallAttr::total_opening_area` と同じ規約）。
+    #[test]
+    fn test_total_opening_area_falls_back_to_opening_area_field() {
+        let p = WallPlate {
+            id: WallPlateId(0),
+            shape: WallPlateShape::Enclosed {
+                boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
+            },
+            section: None,
+            opening_area: 999.0,
+            opening_weight: 0.0,
+            openings: Vec::new(),
+            three_side_slit: false,
+        };
+        assert!((p.total_opening_area() - 999.0).abs() < 1e-9);
+    }
+
+    /// 開口部（サッシ等）の重量は、開口面積控除後の自重に加算する。
+    #[test]
+    fn test_self_weight_adds_opening_weight() {
+        let m = model_with_wall_section();
+        let p = WallPlate {
+            id: WallPlateId(0),
+            shape: WallPlateShape::Enclosed {
+                boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
+            },
+            section: Some(SectionId(0)),
+            opening_area: 0.0,
+            opening_weight: 1234.0,
+            openings: Vec::new(),
+            three_side_slit: false,
+        };
+        let gross_area = 4000.0 * 3000.0;
+        let base = 150.0 * 2.4e-9 * gross_area * crate::units::GRAVITY_MM_S2;
+        let expected = base + 1234.0;
         let w = m.wall_plate_self_weight(&p, &m).expect("自重が求まる");
         assert!(
             (w - expected).abs() / expected < 1e-9,

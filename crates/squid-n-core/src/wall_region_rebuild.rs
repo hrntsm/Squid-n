@@ -267,6 +267,8 @@ mod tests {
                 boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
             },
             section: None,
+            opening_area: 0.0,
+            opening_weight: 0.0,
             openings: vec![],
             three_side_slit: false,
         });
@@ -293,6 +295,8 @@ mod tests {
                 boundary: vec![NodeId(4), NodeId(5), NodeId(6), NodeId(7)],
             },
             section: None,
+            opening_area: 0.0,
+            opening_weight: 0.0,
             openings: vec![],
             three_side_slit: false,
         });

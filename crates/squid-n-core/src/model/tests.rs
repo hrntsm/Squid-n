@@ -1300,6 +1300,8 @@ fn test_validate_dangling_wall_plate_boundary() {
                 boundary: vec![NodeId(0), NodeId(5)],
             },
             section: None,
+            opening_area: 0.0,
+            opening_weight: 0.0,
             openings: vec![],
             three_side_slit: false,
         }],
@@ -1331,6 +1333,8 @@ fn test_validate_duplicate_enclosed_wall_plate_boundary() {
         id: WallPlateId(id),
         shape: WallPlateShape::Enclosed { boundary },
         section: None,
+        opening_area: 0.0,
+        opening_weight: 0.0,
         openings: vec![],
         three_side_slit: false,
     };
@@ -1370,6 +1374,8 @@ fn test_validate_checks_wall_plate_anchor_span_bounds() {
             extent: [900.0, 900.0],
         },
         section: None,
+        opening_area: 0.0,
+        opening_weight: 0.0,
         openings: vec![],
         three_side_slit: false,
     };
@@ -1405,6 +1411,8 @@ fn test_validate_dangling_wall_plate_floor_region_anchor() {
             extent: [2500.0, 2500.0],
         },
         section: None,
+        opening_area: 0.0,
+        opening_weight: 0.0,
         openings: vec![],
         three_side_slit: false,
     };
@@ -1468,6 +1476,8 @@ fn test_validate_wall_plate_shared_by_two_wall_regions() {
             boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
         },
         section: None,
+        opening_area: 0.0,
+        opening_weight: 0.0,
         openings: vec![],
         three_side_slit: false,
     }];
