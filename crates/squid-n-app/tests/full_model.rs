@@ -1261,6 +1261,60 @@ fn region_gen_finds_beam_bounded_regions() {
     }
 }
 
+/// 柱・梁が実建物データで壁側の鉛直構面をどれだけ検出できるかを実測して固定する。
+///
+/// `crates/squid-n-app/tests/wall_model.rs`（壁 1 パネル・雑壁 1 本の最小フィクスチャ）は
+/// 頂部にしか梁がなく（`柱脚 4 節点は固定支点`、梁は「頂部で閉路」の 4 本のみ）、
+/// 各鉛直構面が「柱 2 本＋頂部の梁 1 本」という開いた U 字にしかならないため、
+/// `region_gen::wall` の境界検出を一切通らない（面が 0 件になる）。壁領域検出の
+/// 実データによる検証は、本テストが唯一の経路である（`region_gen::wall` は
+/// `ElementKind::Wall` の有無を見ず、柱・梁の幾何だけで構面を検出するため、
+/// 壁要素が 0 件のこの実フィクスチャでも検出は成立する）。
+#[test]
+fn region_gen_finds_wall_bounded_regions() {
+    use squid_n_core::region_gen::scan_wall_region_boundaries;
+    use std::collections::HashSet;
+
+    let app = imported();
+    let scan = scan_wall_region_boundaries(&app.model);
+    assert_eq!(scan.unclosed, 0, "半辺の後続は一意に定まるはず");
+
+    // 単一の観測値（境界数・合計面積）だけでは、直線の重複統合に不具合があって
+    // 同じ構面を 2 回検出していても気づけない。境界どうしが節点集合として
+    // 重複していないこと（構面の重複統合ミスの検出）と、面積が必ず正であること
+    // （外周面の判別・ニューエル面積算定の破綻の検出）を独立の不変条件として確認する。
+    // 本フィクスチャは直交グリッドの S 造建物であり（`import_builds_expected_model` 等
+    // 参照）、正の面積を持つ壁境界の構面はすべて軸方向（X または Y）のはずである。
+    // 斜め方向の構面に正の面積を持つ境界が現れた場合、`wall_planes` が実際には
+    // つながっていない柱の組を誤って直線候補として拾い、構造的に無意味な面を
+    // 検出している疑いが強い（列挙した候補直線ごとに面走査をかけるため、
+    // 実在しない斜めの「構面」でも部材がたまたま条件を満たせば面ができうる）。
+    let mut seen: HashSet<Vec<u32>> = HashSet::new();
+    for b in &scan.boundaries {
+        let area = b.area(&app.model);
+        assert!(area > 0.0, "境界の面積は必ず正: {area}");
+        let axis_aligned = b.plane_direction[0].abs() < 1e-6 || b.plane_direction[1].abs() < 1e-6;
+        assert!(
+            axis_aligned,
+            "直交グリッド建物のはずが斜め構面に正の面積を持つ境界がある（構造的に無意味な面の疑い）: {:?}",
+            b.plane_direction
+        );
+        let mut nodes: Vec<u32> = b.boundary.iter().map(|n| n.0).collect();
+        nodes.sort_unstable();
+        assert!(
+            seen.insert(nodes.clone()),
+            "同じ節点集合を持つ境界が重複している（構面の重複統合ミスの疑い）: {nodes:?}"
+        );
+    }
+
+    let total_area: f64 = scan.boundaries.iter().map(|b| b.area(&app.model)).sum();
+    assert_eq!(scan.boundaries.len(), 55, "壁側の鉛直構面の境界数");
+    assert!(
+        (total_area - 1_427_640_000.0).abs() / total_area < 1e-6,
+        "境界の合計面積（ニューエルの公式） {total_area}"
+    );
+}
+
 /// 取り込んだ床板が、大梁で囲まれた床領域の境界へ過不足なく収まる。
 ///
 /// 大梁が囲む区画（床領域）は 1 つの境界につき 1 つ（D1）。区画内の床板

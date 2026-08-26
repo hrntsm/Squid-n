@@ -1,8 +1,8 @@
-//! 主架構が囲む閉領域（床領域の境界）の検出。
+//! 主架構（水平な大梁）が囲む閉領域（床領域の境界）の検出。
 //!
 //! 床領域は「大梁で囲まれた領域ごとに 1 つ」と定める。本モジュールは、その閉領域を
-//! 主架構のトポロジーから求める。壁領域（柱と梁が囲む構面内の閉領域）も同じ面走査で
-//! 求められるが、構面の切り出し規則が未決のため、現時点では床（水平面）のみを扱う。
+//! 主架構のトポロジーから求める。壁領域（柱と梁が囲む鉛直構面内の閉領域）は
+//! [`super::wall`] が同じ面走査エンジン（[`super::scan_faces`]）を使って求める。
 //!
 //! # 生成規則
 //!
@@ -11,9 +11,7 @@
 //!    （床領域の境界は大梁であるという定義による）。
 //! 2. **レベルごと**に分けて面を求める。同じ Z（[`crate::geom::LEVEL_TOL_MM`] 以内）の梁を 1 つの
 //!    平面グラフとして扱う。
-//! 3. **面走査**は半辺（有向辺）をたどる定型手法による。各節点で接続辺を方位角順に並べ、
-//!    半辺 `u→v` の次を「`v` のまわりで `v→u` の 1 つ手前（時計回りに次）」とすると、
-//!    内部を左に見て一周する閉路が得られる。
+//! 3. **面走査**は半辺（有向辺）をたどる定型手法による（[`super::scan_faces`]）。
 //! 4. **外周面は符号付き面積が負**になるため、これを捨てる。面積の大小では判別しない
 //!    （中庭のある建物では、面積最大の内部面が外周面より大きくなりうる）。
 //! 5. **行き止まりの辺**（片持ち梁など、片端が他の梁と繋がらない梁）は、面走査が
@@ -34,10 +32,10 @@
 //! - **段差床**。レベルで分けるため、同じ階でもレベルが違えば別の平面グラフになる。
 //!   段差部の梁は両方のレベルのどちらにも属さない（両端の Z が違うため水平とみなされない）。
 
+use super::{point_segment_dist, polygon_contains_strict, scan_faces, signed_area, Edge};
 use crate::geom::{vec3, LEVEL_TOL_MM, MEMBER_AXIS_TOL_MM};
 use crate::ids::{ElemId, NodeId};
 use crate::model::{ElementKind, Model};
-use std::collections::HashMap;
 
 /// 面走査の対象とする梁の最小長さ [mm]。これ未満は方位角が定まらないため除外する。
 const MIN_EDGE_LEN_MM: f64 = 1.0;
@@ -69,7 +67,7 @@ impl RegionBoundary {
             .unwrap_or(0.0)
     }
 
-    /// 点 `p`（XY）がこの境界の内部にあるか。**辺上（[`BOUNDARY_TOL_MM`] 以内）は含めない。**
+    /// 点 `p`（XY）がこの境界の内部にあるか。**辺上（[`super::BOUNDARY_TOL_MM`] 以内）は含めない。**
     ///
     /// 版や二次部材をこの境界へ割り当てる用途を想定する。辺上の点は隣接する境界の双方に
     /// 該当してしまうため含めない（所属を一意に決められるようにする）。
@@ -87,72 +85,6 @@ impl RegionBoundary {
     pub fn is_same_level(&self, z: f64) -> bool {
         (self.level - z).abs() <= LEVEL_TOL_MM
     }
-}
-
-/// 辺上とみなす点から辺までの距離の上限 [mm]。
-pub const BOUNDARY_TOL_MM: f64 = 1.0;
-
-/// 点 `p`（XY）が多角形の内部にあるか。**辺上（[`BOUNDARY_TOL_MM`] 以内）は含めない。**
-///
-/// [`RegionBoundary::contains`] と同じ規則。床領域の境界多角形へ小梁中点を載せる判定でも使う。
-pub fn polygon_contains_strict(poly: &[[f64; 2]], p: [f64; 2]) -> bool {
-    let n = poly.len();
-    if n < 3 {
-        return false;
-    }
-    for i in 0..n {
-        if point_segment_dist(p, poly[i], poly[(i + 1) % n]) <= BOUNDARY_TOL_MM {
-            return false;
-        }
-    }
-    let mut inside = false;
-    let mut j = n - 1;
-    for i in 0..n {
-        let (a, b) = (poly[i], poly[j]);
-        if (a[1] > p[1]) != (b[1] > p[1]) {
-            let x = (b[0] - a[0]) * (p[1] - a[1]) / (b[1] - a[1]) + a[0];
-            if p[0] < x {
-                inside = !inside;
-            }
-        }
-        j = i;
-    }
-    inside
-}
-
-/// 点から線分までの距離 [mm]（XY 平面）。
-fn point_segment_dist(p: [f64; 2], a: [f64; 2], b: [f64; 2]) -> f64 {
-    let ab = [b[0] - a[0], b[1] - a[1]];
-    let len2 = ab[0] * ab[0] + ab[1] * ab[1];
-    let t = if len2 <= f64::EPSILON {
-        0.0
-    } else {
-        (((p[0] - a[0]) * ab[0] + (p[1] - a[1]) * ab[1]) / len2).clamp(0.0, 1.0)
-    };
-    let q = [a[0] + t * ab[0], a[1] + t * ab[1]];
-    ((p[0] - q[0]).powi(2) + (p[1] - q[1]).powi(2)).sqrt()
-}
-
-/// 多角形の符号付き面積（反時計回りが正）。
-fn signed_area(pts: &[[f64; 2]]) -> f64 {
-    let n = pts.len();
-    if n < 3 {
-        return 0.0;
-    }
-    let mut sum = 0.0;
-    for i in 0..n {
-        let a = pts[i];
-        let b = pts[(i + 1) % n];
-        sum += a[0] * b[1] - b[0] * a[1];
-    }
-    sum / 2.0
-}
-
-/// 水平な大梁の 1 区間（面走査の入力）。
-struct Edge {
-    a: NodeId,
-    b: NodeId,
-    elem: ElemId,
 }
 
 /// 面走査の結果。床領域の境界に加え、平面グラフとして矛盾がある兆候を持ち帰る。
@@ -329,112 +261,27 @@ fn horizontal_beams_by_level(model: &Model) -> Vec<(f64, Vec<Edge>)> {
 
 /// 1 レベルぶんの平面グラフから内部面を取り出す。返り値は（面, 閉じなかった走査の数）。
 fn faces_of_level(model: &Model, level: f64, edges: &[Edge]) -> (Vec<RegionBoundary>, usize) {
-    // 半辺（有向辺）の一覧。同じ節点対に複数の梁があっても、最初の 1 本だけを採る
-    // （重複部材は面を増やさない）。
-    let mut half: HashMap<(NodeId, NodeId), ElemId> = HashMap::new();
-    for e in edges {
-        if e.a == e.b {
-            continue;
-        }
-        half.entry((e.a, e.b)).or_insert(e.elem);
-        half.entry((e.b, e.a)).or_insert(e.elem);
-    }
+    let proj = |n: NodeId| {
+        model
+            .nodes
+            .get(n.index())
+            .map(|nd| [nd.coord[0], nd.coord[1]])
+    };
+    let (faces, unclosed) = scan_faces(edges, proj);
 
-    // 各節点まわりの接続先を方位角の昇順に並べる。
-    let mut around: HashMap<NodeId, Vec<NodeId>> = HashMap::new();
-    for &(from, to) in half.keys() {
-        around.entry(from).or_default().push(to);
-    }
-    for (from, list) in around.iter_mut() {
-        let Some(origin) = model.nodes.get(from.index()) else {
-            continue;
-        };
-        list.sort_by(|x, y| {
-            angle_at(model, origin.coord, *x).total_cmp(&angle_at(model, origin.coord, *y))
-        });
-        list.dedup();
-    }
-
-    let mut visited: HashMap<(NodeId, NodeId), bool> = HashMap::new();
-    let mut boundaries = Vec::new();
-    let mut unclosed = 0;
-    let mut starts: Vec<(NodeId, NodeId)> = half.keys().copied().collect();
-    // 走査順を安定させる（HashMap の反復順に依存しない）。
-    starts.sort_by_key(|(a, b)| (a.0, b.0));
-
-    for start in starts {
-        if visited.contains_key(&start) {
-            continue;
-        }
-        let mut boundary = Vec::new();
-        let mut face_edges = Vec::new();
-        let mut cur = start;
-        let mut closed = false;
-        // 閉路をたどる。半辺の総数を超えたら異常として打ち切る（無限ループ防止）。
-        for _ in 0..=half.len() {
-            if visited.insert(cur, true).is_some() {
-                break;
-            }
-            boundary.push(cur.0);
-            face_edges.push(half[&cur]);
-            let Some(next) = next_half_edge(&around, cur) else {
-                break;
-            };
-            cur = next;
-            if cur == start {
-                closed = true;
-                break;
-            }
-        }
-        if !closed {
-            // 各半辺の後続は一意なので、ここへ来るのはグラフの構築に誤りがある場合だけ。
-            unclosed += 1;
-            continue;
-        }
-        if boundary.len() < 3 {
-            continue;
-        }
-        let pts: Vec<[f64; 2]> = boundary
-            .iter()
-            .filter_map(|n| model.nodes.get(n.index()))
-            .map(|n| [n.coord[0], n.coord[1]])
-            .collect();
-        if pts.len() != boundary.len() {
-            continue;
-        }
-        // 外周面は符号付き面積が負になる。行き止まりの辺だけを往復した閉路は面積 0。
-        if signed_area(&pts) <= 0.0 {
-            continue;
-        }
-        boundaries.push(RegionBoundary {
+    // 外周面は符号付き面積が負になる。行き止まりの辺だけを往復した閉路は面積 0。
+    let mut boundaries: Vec<RegionBoundary> = faces
+        .into_iter()
+        .filter(|f| f.signed_area > 0.0)
+        .map(|f| RegionBoundary {
             level,
-            boundary,
-            edges: face_edges,
-        });
-    }
+            boundary: f.boundary,
+            edges: f.edges,
+        })
+        .collect();
 
     boundaries.sort_by(|a, b| b.area(model).total_cmp(&a.area(model)));
     (boundaries, unclosed)
-}
-
-/// `origin` から節点 `to` を見た方位角（-π..π）。節点が引けない場合は端に寄せる。
-fn angle_at(model: &Model, origin: [f64; 3], to: NodeId) -> f64 {
-    let Some(n) = model.nodes.get(to.index()) else {
-        return f64::MAX;
-    };
-    (n.coord[1] - origin[1]).atan2(n.coord[0] - origin[0])
-}
-
-/// 半辺 `u→v` の次の半辺。`v` のまわりで `v→u` の 1 つ手前（時計回りに次）を選ぶと、
-/// 内部を左に見て一周する閉路になる。
-fn next_half_edge(
-    around: &HashMap<NodeId, Vec<NodeId>>,
-    (u, v): (NodeId, NodeId),
-) -> Option<(NodeId, NodeId)> {
-    let list = around.get(&v)?;
-    let pos = list.iter().position(|&w| w == u)?;
-    let prev = if pos == 0 { list.len() - 1 } else { pos - 1 };
-    Some((v, list[prev]))
 }
 
 #[cfg(test)]
