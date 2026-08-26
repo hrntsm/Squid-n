@@ -1273,13 +1273,30 @@ fn region_gen_finds_beam_bounded_regions() {
 #[test]
 fn region_gen_finds_wall_bounded_regions() {
     use squid_n_core::region_gen::scan_wall_region_boundaries;
+    use std::collections::HashSet;
 
     let app = imported();
     let scan = scan_wall_region_boundaries(&app.model);
     assert_eq!(scan.unclosed, 0, "半辺の後続は一意に定まるはず");
 
+    // 単一の観測値（境界数・合計面積）だけでは、直線の重複統合に不具合があって
+    // 同じ構面を 2 回検出していても気づけない。境界どうしが節点集合として
+    // 重複していないこと（構面の重複統合ミスの検出）と、面積が必ず正であること
+    // （外周面の判別・ニューエル面積算定の破綻の検出）を独立の不変条件として確認する。
+    let mut seen: HashSet<Vec<u32>> = HashSet::new();
+    for b in &scan.boundaries {
+        let area = b.area(&app.model);
+        assert!(area > 0.0, "境界の面積は必ず正: {area}");
+        let mut nodes: Vec<u32> = b.boundary.iter().map(|n| n.0).collect();
+        nodes.sort_unstable();
+        assert!(
+            seen.insert(nodes.clone()),
+            "同じ節点集合を持つ境界が重複している（構面の重複統合ミスの疑い）: {nodes:?}"
+        );
+    }
+
     let total_area: f64 = scan.boundaries.iter().map(|b| b.area(&app.model)).sum();
-    assert_eq!(scan.boundaries.len(), 67, "壁側の鉛直構面の境界数");
+    assert_eq!(scan.boundaries.len(), 55, "壁側の鉛直構面の境界数");
     assert!(
         (total_area - 1_427_640_000.0).abs() / total_area < 1e-6,
         "境界の合計面積（ニューエルの公式） {total_area}"

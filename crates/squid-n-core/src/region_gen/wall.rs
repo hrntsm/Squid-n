@@ -64,7 +64,33 @@ use std::collections::HashMap;
 
 /// 局所座標 `(s, z)` での部材の最小長さ [mm]。3 次元長さではなく射影後の長さで判定する
 /// （構面にほぼ垂直な短い部材が射影で長さ 0 に潰れ、方位角の並べ替えを乱すのを防ぐ）。
+///
+/// **この経路（構面上にはあるが射影後の長さがほぼ 0 の部材が、既存の辺と近い方位角に
+/// 紛れ込んで並べ替えを乱す具体的なケース）は、まだテストで再現できていない。**
+/// `test_perpendicular_beam_does_not_change_face_count` は「構面から離れた部材が
+/// 距離判定で除外される」経路を確認しているだけで、本フィルタ（射影後の長さ）が
+/// 実際に効く経路とは異なる。角度の近接を意図的に作るテストは、部材端点の座標を
+/// 高い精度で作り込む必要があり複雑になるため見送った（`dev_docs/handoff/
+/// 床領域・壁領域の再設計_申し送り.md` §5.7）。
 const MIN_PROJECTED_EDGE_LEN_MM: f64 = 1.0;
+
+/// 外周面（行き止まりの部材が往復して戻る退化した閉路を含む）を判別する際の
+/// 面積のしきい値 [mm²]。**`0.0` ではなく正の値にする必要がある。**
+///
+/// 建物の柱は複数階にわたって節点が分割されるため、同一の柱に属する節点は
+/// XY が完全に一致する（Z のみ異なる）。行き止まりの柱（この構面上で他のどの
+/// 部材とも接続しない孤立した柱）を面走査がたどると、往復閉路の射影後の座標
+/// `(s, z)` は全節点で `s` が完全に一致し、理論上の符号付き面積は厳密に 0 になる。
+/// しかし `s`（`v・direction`）の計算に使う実座標の値が大きい（実測で 1〜2 万 mm）と、
+/// シューレース公式の丸め誤差が `1e-8`〜`1e-7` mm² 程度残り、`> 0.0` の判定では
+/// この浮動小数点の残差をそのまま「正の面積」として拾ってしまう
+/// （実建物データで実際に発生し、`crates/squid-n-app/tests/full_model.rs::
+/// region_gen_finds_wall_bounded_regions` の面積正値チェックで検出した）。
+///
+/// `MEMBER_AXIS_TOL_MM²`（100 mm²）を採用したのは、既存の許容差定数を再利用しつつ、
+/// 観測された丸め誤差（`1e-8` 程度）より 9 桁以上大きく、実在の壁面積
+/// （小さくても数百万 mm² オーダー）より 4 桁以上小さいためである。
+const MIN_FACE_AREA_MM2: f64 = MEMBER_AXIS_TOL_MM * MEMBER_AXIS_TOL_MM;
 
 /// 柱・梁が囲む鉛直構面内の閉領域（壁領域の境界）1 つ。
 #[derive(Clone, Debug, PartialEq)]
@@ -127,7 +153,7 @@ pub fn scan_wall_region_boundaries(model: &Model) -> WallRegionBoundaryScan {
 
         let mut boundaries: Vec<WallRegionBoundary> = faces
             .into_iter()
-            .filter(|f| f.signed_area > 0.0)
+            .filter(|f| f.signed_area > MIN_FACE_AREA_MM2)
             .map(|f| WallRegionBoundary {
                 plane_origin: origin,
                 plane_direction: direction,
@@ -265,6 +291,12 @@ fn centroid(pts: &[[f64; 2]]) -> [f64; 2] {
 }
 
 /// 柱の柱脚位置（XY）を [`crate::geom::MEMBER_AXIS_TOL_MM`] 以内で重複排除して集める。
+///
+/// **重複排除は `model.elements` の並び順に依存する（先勝ち）。** 例えば 3 本の柱が
+/// 8mm 間隔で一直線に並ぶ場合、生き残る代表点は `model.elements` の並び順しだいで
+/// 変わりうる。生き残った点が候補直線の原点（[`wall_planes`] の `origin`）になるため、
+/// 検出される構面の原点も並び順の影響を受ける（構面自体・面走査の結果は変わらない。
+/// 影響するのは `WallRegionBoundary::plane_origin` の値のみ）。
 fn column_footprints(model: &Model) -> Vec<[f64; 2]> {
     let mut pts: Vec<[f64; 2]> = Vec::new();
     for e in &model.elements {
