@@ -67,7 +67,7 @@ pub struct Model {
     pub multi_opening_mode: MultiOpeningMode,
     /// フレーム外雑壁。
     #[serde(default)]
-    pub misc_walls: Vec<MiscWall>,
+    pub misc_walls: Vec<OutOfFrameMiscWall>,
     /// 応力解析の計算条件（令82条の応力解析。長期軸力を負担させない部材の指定）。
     #[serde(default)]
     pub stress_cfg: StressAnalysisCfg,

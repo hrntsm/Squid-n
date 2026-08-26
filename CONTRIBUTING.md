@@ -93,6 +93,15 @@ cargo insta review
 [dev_docs/handoff/実モデル統合テスト_申し送り.md](dev_docs/handoff/実モデル統合テスト_申し送り.md)
 にまとめています。
 
+`crates/squid-n-app/tests/wall_model.rs` は、`full_model.rs` のフィクスチャに壁要素が
+含まれていないことを補う、壁（耐震壁・フレーム外雑壁）専用の最小フィクスチャです。
+`full_model.rs` の床領域（26 件）を巻き込まずに壁関連の代表スカラを独立してスナップショット
+します。壁の型（`WallAttr`・`MiscWall` 等）を変更したときはこちらも実行してください。
+
+```bash
+cargo test -p squid-n-app --test wall_model
+```
+
 ## 静的解析
 
 **コミット前には必ず確認してください。** CI と同条件で実行します

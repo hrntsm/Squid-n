@@ -44,7 +44,7 @@ pub fn sum_column_area(model: &Model, story: StoryId) -> f64 {
 ///
 /// - n 係数は `Model::stress_cfg.misc_wall_n`（`None` なら雑壁剛性を考慮しない）
 /// - 帰属層: 壁の中間高さ z が（直下層 elevation, 当該層 elevation] に入る壁
-/// - `Aw' = 壁の平面長さ × 壁厚`（`MiscWall::thickness` 未設定の壁は対象外）
+/// - `Aw' = 壁の平面長さ × 壁厚`（`OutOfFrameMiscWall::thickness` 未設定の壁は対象外）
 /// - 方向別に `Kw'x = n·Aw'·ΣKc,x/ΣAc`, `Kw'y = n·Aw'·ΣKc,y/ΣAc` を求め、
 ///   壁面内方向の方向余弦 (cx, cy) で `dx = Kw'x·cx²`, `dy = Kw'y·cy²` として
 ///   壁の平面中点に置く。ΣAc = 0 の場合は Kw' = 0（0 除算回避）。

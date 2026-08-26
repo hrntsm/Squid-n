@@ -3,8 +3,8 @@ use squid_n_core::dof::Dof6Mask;
 use squid_n_core::ids::{ElemId, MaterialId, SecondaryMemberId, SectionId};
 use squid_n_core::model::{
     DamperSpec, ElementData, EndCondition, ForceRegime, LoadCase, LoadCaseKind, LoadCfg, LocalAxis,
-    Material, MaterialCategory, MemberLoad, MiscWall, MiscWallTransfer, NodalLoad, Node, RigidZone,
-    SecondaryMember, SecondaryMemberKind, Section, WallAttr,
+    Material, MaterialCategory, MemberLoad, MiscWallTransfer, NodalLoad, Node, OutOfFrameMiscWall,
+    RigidZone, SecondaryMember, SecondaryMemberKind, Section, WallAttr,
 };
 
 /// 2 層 × 1 スパンの平面ラーメン（各レベル 2 節点）。
@@ -1443,7 +1443,7 @@ fn test_misc_wall_beam_transfer_conserves_total_weight() {
         story: None,
         support_spring: None,
     });
-    model.misc_walls.push(MiscWall {
+    model.misc_walls.push(OutOfFrameMiscWall {
         start: [-600.0, 0.0, 2900.0],
         end: [600.0, 0.0, 2900.0],
         height: 200.0,
@@ -1528,7 +1528,7 @@ fn test_misc_wall_column_transfer_splits_to_column_ends() {
         plastic_zone: None,
         spring: None,
     });
-    model.misc_walls.push(MiscWall {
+    model.misc_walls.push(OutOfFrameMiscWall {
         start: [-100.0, 0.0, 2900.0],
         end: [100.0, 0.0, 2900.0],
         height: 200.0,

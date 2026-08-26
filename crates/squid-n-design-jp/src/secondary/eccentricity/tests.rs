@@ -234,11 +234,11 @@ fn test_sum_column_area() {
 
 #[test]
 fn test_append_misc_wall_stiffnesses() {
-    use squid_n_core::model::{MiscWall, MiscWallTransfer};
+    use squid_n_core::model::{MiscWallTransfer, OutOfFrameMiscWall};
     let (mut model, s0) = build_symmetric_frame(None);
     model.stress_cfg.misc_wall_n = Some(2.0);
     // Y 方向の壁 @ x=6000（長さ 6000 × 厚 100 → Aw' = 6e5）、z_mid=1500 → S0 帰属。
-    model.misc_walls.push(MiscWall {
+    model.misc_walls.push(OutOfFrameMiscWall {
         start: [6000.0, 0.0, 0.0],
         end: [6000.0, 6000.0, 0.0],
         height: 3000.0,
@@ -247,7 +247,7 @@ fn test_append_misc_wall_stiffnesses() {
         thickness: Some(100.0),
     });
     // 帯域外の壁（z_mid = 4500 > elevation 3000）→ 無視される。
-    model.misc_walls.push(MiscWall {
+    model.misc_walls.push(OutOfFrameMiscWall {
         start: [0.0, 0.0, 3000.0],
         end: [0.0, 6000.0, 3000.0],
         height: 3000.0,
@@ -256,7 +256,7 @@ fn test_append_misc_wall_stiffnesses() {
         thickness: Some(100.0),
     });
     // 厚さ未設定の壁 → 無視される。
-    model.misc_walls.push(MiscWall {
+    model.misc_walls.push(OutOfFrameMiscWall {
         start: [0.0, 0.0, 0.0],
         end: [0.0, 6000.0, 0.0],
         height: 3000.0,
