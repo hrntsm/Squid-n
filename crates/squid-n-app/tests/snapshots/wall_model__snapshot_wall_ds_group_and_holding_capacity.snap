@@ -1,0 +1,8 @@
+---
+source: crates/squid-n-app/tests/wall_model.rs
+expression: out
+---
+holding.qu = 9.529e5
+holding.ds = 2.500e-1
+holding.qun = 1.635e4
+holding.rank = FA
