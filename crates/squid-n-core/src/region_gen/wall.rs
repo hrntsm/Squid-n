@@ -60,6 +60,7 @@ use super::{scan_faces, Edge};
 use crate::geom::{is_vertical_pair, MEMBER_AXIS_TOL_MM};
 use crate::ids::{ElemId, NodeId};
 use crate::model::{ElementKind, Model};
+use std::collections::HashMap;
 
 /// 局所座標 `(s, z)` での部材の最小長さ [mm]。3 次元長さではなく射影後の長さで判定する
 /// （構面にほぼ垂直な短い部材が射影で長さ 0 に潰れ、方位角の並べ替えを乱すのを防ぐ）。
@@ -147,23 +148,120 @@ pub fn generate_wall_region_boundaries(model: &Model) -> Vec<WallRegionBoundary>
 
 /// 柱脚位置（XY）から鉛直構面の候補直線を検出する。戻り値は `(origin, direction)`。
 /// `direction` は見出し角 `[0, π)` に正規化した単位ベクトル。
+///
+/// **候補ペアの重複判定にはグリッド索引（[`LineIndex`]）を使う。** 候補ペアは
+/// 柱本数 N に対して O(N²) 生じ、格子状の柱配置では格子点を結ぶ斜め方向の候補が
+/// 大量に残るため、見つかっている直線の本数 L も N の増加とともに増える。
+/// 素朴に「既存の全直線と実距離で比較する」実装（O(N²·L)）は、実測で
+/// 900 本の柱を持つ 30×30 格子で 19 秒を超えた（`crates/squid-n-core/tests/perf_probe.rs`）。
+/// グリッド索引は候補を粗く絞り込む役割のみを持ち、**最終的な同一直線の判定は
+/// 必ず [`is_same_line`]（実距離）で行う**ため、索引の取りこぼし・衝突は
+/// 正しさを損なわない（性能上のヒントにすぎない）。
 fn wall_planes(model: &Model) -> Vec<([f64; 2], [f64; 2])> {
     let footprints = column_footprints(model);
+    if footprints.len() < 2 {
+        return Vec::new();
+    }
     let mut lines: Vec<([f64; 2], [f64; 2])> = Vec::new();
+    let mut index = LineIndex::new(&footprints);
     for i in 0..footprints.len() {
         for j in (i + 1)..footprints.len() {
             let (p, q) = (footprints[i], footprints[j]);
             let Some(direction) = canonical_direction(p, q) else {
                 continue; // 重複点（距離ほぼ 0）は方向が定まらない。
             };
-            let is_known = lines.iter().any(|&(o, d)| is_same_line(o, d, &[p, q]));
-            if is_known {
+            let found = index
+                .nearby(p, direction)
+                .into_iter()
+                .find(|&idx| is_same_line(lines[idx].0, lines[idx].1, &[p, q]));
+            if found.is_some() {
                 continue;
             }
+            let idx = lines.len();
             lines.push((p, direction));
+            index.insert(idx, p, direction);
         }
     }
     lines
+}
+
+/// [`wall_planes`] の候補直線をグリッドで粗く索引する構造体。
+///
+/// キーは `(2θ の単位円上の位置, 基準点からの符号なし距離)` を [`MEMBER_AXIS_TOL_MM`]
+/// 相当の刻みで量子化したもの。`2θ`（見出し角の 2 倍）を使うのは、直線の向きには
+/// ±180° の符号の曖昧さがあり、これを素朴な角度（mod π）でバケット化すると 0°/180°
+/// の境界で不連続になる（179.99° と 0.01° はほぼ同じ直線だが、実数直線上のバケットでは
+/// 両端に離れて割り当たる）ためである。角度を 2 倍すると、この符号の曖昧さがバケット
+/// キーの計算自体に現れなくなり（`cos 2(θ+π) = cos 2θ`）、単位円上の連続な埋め込みとして
+/// 素直にグリッド量子化できる。オフセット（[`point_to_line_dist`]）はもとから符号を
+/// 持たないため、同様の問題は生じない。
+struct LineIndex {
+    /// 直線の代表点からの距離を測る基準点（柱脚位置の重心）。
+    reference: [f64; 2],
+    /// 見出し角 `θ` の量子化刻み（`2θ` 側は `2 * ang_res`）。
+    ang_res: f64,
+    buckets: HashMap<(i64, i64, i64), Vec<usize>>,
+}
+
+impl LineIndex {
+    fn new(footprints: &[[f64; 2]]) -> Self {
+        let reference = centroid(footprints);
+        let r_max = footprints
+            .iter()
+            .map(|&p| dist2(p, reference).sqrt())
+            .fold(0.0_f64, f64::max)
+            .max(MEMBER_AXIS_TOL_MM);
+        // 基準点から最も遠い柱脚位置でも、角度の量子化による位置ずれが
+        // MEMBER_AXIS_TOL_MM 以下になるようにする。
+        let ang_res = MEMBER_AXIS_TOL_MM / r_max;
+        LineIndex {
+            reference,
+            ang_res,
+            buckets: HashMap::new(),
+        }
+    }
+
+    fn key(&self, line_point: [f64; 2], direction: [f64; 2]) -> (i64, i64, i64) {
+        let theta = direction[1].atan2(direction[0]);
+        let two_theta = 2.0 * theta;
+        let cell = (2.0 * self.ang_res).max(1e-12);
+        let bc = (two_theta.cos() / cell).floor() as i64;
+        let bs = (two_theta.sin() / cell).floor() as i64;
+        let offset = point_to_line_dist(line_point, direction, self.reference);
+        let bo = (offset / MEMBER_AXIS_TOL_MM).floor() as i64;
+        (bc, bs, bo)
+    }
+
+    /// このキーの近傍バケット（角度・オフセットとも隣接セルを含む）にある候補の
+    /// 直線インデックス一覧。近傍を含めるのは、量子化の境界をまたぐ場合を拾うため。
+    fn nearby(&self, line_point: [f64; 2], direction: [f64; 2]) -> Vec<usize> {
+        let (bc, bs, bo) = self.key(line_point, direction);
+        let mut out = Vec::new();
+        for dc in -1..=1 {
+            for ds in -1..=1 {
+                for doff in -1..=1 {
+                    if let Some(v) = self.buckets.get(&(bc + dc, bs + ds, bo + doff)) {
+                        out.extend_from_slice(v);
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    fn insert(&mut self, idx: usize, line_point: [f64; 2], direction: [f64; 2]) {
+        let key = self.key(line_point, direction);
+        self.buckets.entry(key).or_default().push(idx);
+    }
+}
+
+/// 点群の重心。
+fn centroid(pts: &[[f64; 2]]) -> [f64; 2] {
+    let n = pts.len().max(1) as f64;
+    let sum = pts
+        .iter()
+        .fold([0.0, 0.0], |a, p| [a[0] + p[0], a[1] + p[1]]);
+    [sum[0] / n, sum[1] / n]
 }
 
 /// 柱の柱脚位置（XY）を [`crate::geom::MEMBER_AXIS_TOL_MM`] 以内で重複排除して集める。
@@ -407,9 +505,10 @@ mod tests {
                 n_story: 2,
             },
         );
-        let boundaries = generate_wall_region_boundaries(&model);
-        assert_eq!(boundaries.len(), 4, "2×2 の壁構面は 4 面");
-        for b in &boundaries {
+        let scan = scan_wall_region_boundaries(&model);
+        assert_eq!(scan.unclosed, 0, "半辺の後続は一意に定まるはず");
+        assert_eq!(scan.boundaries.len(), 4, "2×2 の壁構面は 4 面");
+        for b in &scan.boundaries {
             assert!(
                 (b.area(&model) - 4000.0 * 3000.0).abs() < 1.0,
                 "面積 {}",
@@ -435,9 +534,10 @@ mod tests {
                 n_story: 2,
             },
         );
-        let boundaries = generate_wall_region_boundaries(&model);
-        assert_eq!(boundaries.len(), 4, "2×2 の壁構面は 4 面");
-        for b in &boundaries {
+        let scan = scan_wall_region_boundaries(&model);
+        assert_eq!(scan.unclosed, 0, "半辺の後続は一意に定まるはず");
+        assert_eq!(scan.boundaries.len(), 4, "2×2 の壁構面は 4 面");
+        for b in &scan.boundaries {
             assert!(
                 (b.area(&model) - 4000.0 * 3000.0).abs() < 1.0,
                 "面積 {}",
@@ -463,9 +563,10 @@ mod tests {
                 n_story: 2,
             },
         );
-        let boundaries = generate_wall_region_boundaries(&model);
-        assert_eq!(boundaries.len(), 4, "2×2 の壁構面は 4 面（斜め）");
-        for b in &boundaries {
+        let scan = scan_wall_region_boundaries(&model);
+        assert_eq!(scan.unclosed, 0, "半辺の後続は一意に定まるはず");
+        assert_eq!(scan.boundaries.len(), 4, "2×2 の壁構面は 4 面（斜め）");
+        for b in &scan.boundaries {
             assert!(
                 (b.area(&model) - 4000.0 * 3000.0).abs() < 1.0,
                 "面積 {}",
