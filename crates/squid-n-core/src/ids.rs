@@ -32,3 +32,5 @@ id_newtype!(VibrationCaseId);
 id_newtype!(LumpedVibrationCaseId);
 id_newtype!(SecondaryMemberId);
 id_newtype!(SlabId);
+id_newtype!(WallRegionId);
+id_newtype!(WallPlateId);

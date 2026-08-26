@@ -181,6 +181,9 @@ fn slab_node_refs(slab: &Slab) -> Vec<NodeId> {
         SlabShape::Attached { anchor, .. } => match anchor {
             RegionAnchor::Line { nodes, .. } => nodes.to_vec(),
             RegionAnchor::Point(n) => vec![*n],
+            // 床板の取付き先には使わない（`RegionAnchor::FloorRegion` のドキュメント参照。
+            // 壁側〔`WallPlate` の `Attached` 形〕専用のアンカーであり、床板では到達しない）。
+            RegionAnchor::FloorRegion(_) => Vec::new(),
         },
     }
 }
@@ -787,6 +790,8 @@ impl Model {
                         }
                     }
                     RegionAnchor::Point(n) => f(n),
+                    // 床板では到達しない（`slab_node_refs` と同じ理由）。
+                    RegionAnchor::FloorRegion(_) => {}
                 },
             }
         }

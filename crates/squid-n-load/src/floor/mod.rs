@@ -151,6 +151,9 @@ fn distribute_attached(
                 distribute_to_node(nodes[1], coords, w, t_mid, loads);
             }
         },
+        // 床板の取付き先には使わない（`RegionAnchor::FloorRegion` のドキュメント参照。
+        // 壁側〔自立壁〕専用のアンカーであり、`Slab::shape` 経由では到達しない）。
+        RegionAnchor::FloorRegion(_) => {}
     }
 }
 
