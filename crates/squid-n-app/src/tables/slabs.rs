@@ -1085,6 +1085,9 @@ fn attached_boundary_cell(
                     pending_anchor.push((id, RegionAnchor::Point(sel)));
                 }
             }
+            // 床板の取付き先には使わない（`RegionAnchor::FloorRegion` のドキュメント
+            // 参照。壁側〔自立壁〕専用のアンカーであり、床板の編集 UI では到達しない）。
+            RegionAnchor::FloorRegion { .. } => {}
         }
         ui.horizontal(|ui| {
             let mut e = extent;

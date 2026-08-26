@@ -36,7 +36,9 @@
 //!
 //! # 面積・自重の計算について
 //!
-//! [`WallRegionBoundary::area`] は、実座標からニューエルの公式で求めた 3 次元面積である。
+//! [`WallRegionBoundary::area`] は、実座標から [`crate::geom::polygon_area_3d`]
+//! （ニューエルの公式）で求めた 3 次元面積である。壁・シェル要素の自重算定と
+//! スラブ・壁の数量拾いが共通で使う既存の関数をそのまま使い、自前実装を持たない。
 //! トポロジー（面走査・外周面の判別）は直線への射影という近似で行ってよいが
 //! （`MEMBER_AXIS_TOL_MM` 以内の芯ずれ・非平面性は面走査の結果を左右しない）、
 //! 面積・荷重は理想平面へ投影せず実座標から直接求める（§3.2 E3）。芯ずれが
@@ -123,8 +125,42 @@ impl WallRegionBoundary {
     /// モジュールドキュメント参照）。節点が引けない場合は 0。
     pub fn area(&self, model: &Model) -> f64 {
         self.coords(model)
-            .map(|pts| newell_area(&pts))
+            .map(|pts| crate::geom::polygon_area_3d(&pts))
             .unwrap_or(0.0)
+    }
+
+    /// 境界節点を局所座標 `(s, z)` へ射影した多角形。節点が引けない場合は `None`。
+    fn local_polygon(&self, model: &Model) -> Option<Vec<[f64; 2]>> {
+        self.boundary
+            .iter()
+            .map(|n| {
+                model
+                    .nodes
+                    .get(n.index())
+                    .map(|nd| project(self.plane_origin, self.plane_direction, nd.coord))
+            })
+            .collect()
+    }
+
+    /// 局所座標 `(s, z)` の点 `p` がこの境界の内部にあるか（辺上は含まない厳密内包）。
+    /// `p` はこの境界と同じ構面（[`WallRegionBoundary::is_same_plane`]）上にあることを
+    /// 前提とする（呼び出し側で確認すること。射影後の座標系が異なる構面どうしを
+    /// 比較しても意味を持たない）。
+    pub fn contains(&self, model: &Model, p: [f64; 2]) -> bool {
+        let Some(poly) = self.local_polygon(model) else {
+            return false;
+        };
+        super::polygon_contains_strict(&poly, p)
+    }
+
+    /// 与えた点 `origin` がこの境界と同じ構面（直線）上にあるか
+    /// （[`crate::geom::MEMBER_AXIS_TOL_MM`] 以内の実距離。[`super::floor::
+    /// RegionBoundary::is_same_level`] の壁側版）。**直線の方向ベクトルの数値的な
+    /// 一致は求めない**（同じ物理的な直線でも、由来する候補点の組が異なれば
+    /// 正規化後の方向ベクトルが浮動小数点の誤差だけずれうるため。位置の実距離
+    /// のほうが頑健な同一性判定になる。`wall_planes` の候補統合と同じ判断）。
+    pub fn is_same_plane(&self, origin: [f64; 2]) -> bool {
+        is_same_line(self.plane_origin, self.plane_direction, &[origin])
     }
 }
 
@@ -410,24 +446,6 @@ fn project(origin: [f64; 2], direction: [f64; 2], coord: [f64; 3]) -> [f64; 2] {
     let v = [coord[0] - origin[0], coord[1] - origin[1]];
     let s = v[0] * direction[0] + v[1] * direction[1];
     [s, coord[2]]
-}
-
-/// 3 次元多角形の面積（ニューエルの公式）。理想平面への投影を経由しない
-/// （モジュールドキュメント参照。芯ずれ・非平面性による誤差を面積計算に持ち込まない）。
-fn newell_area(pts: &[[f64; 3]]) -> f64 {
-    let n = pts.len();
-    if n < 3 {
-        return 0.0;
-    }
-    let mut normal = [0.0; 3];
-    for i in 0..n {
-        let a = pts[i];
-        let b = pts[(i + 1) % n];
-        normal[0] += (a[1] - b[1]) * (a[2] + b[2]);
-        normal[1] += (a[2] - b[2]) * (a[0] + b[0]);
-        normal[2] += (a[0] - b[0]) * (a[1] + b[1]);
-    }
-    0.5 * (normal[0] * normal[0] + normal[1] * normal[1] + normal[2] * normal[2]).sqrt()
 }
 
 #[cfg(test)]

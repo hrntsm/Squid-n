@@ -498,17 +498,3 @@ pub struct OutOfFrameMiscWall {
     #[serde(default)]
     pub thickness: Option<f64>,
 }
-
-/// 壁領域（壁版と付属間柱のグループ）。
-///
-/// `wall` が `None` の場合は「版なし壁領域」（間柱のみの雑壁領域など）。
-/// 壁版は `ElementKind::Wall` の要素 ID を指す。
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct WallRegion {
-    /// 壁版（`ElementKind::Wall` の要素 ID）。`None` は版なし。
-    #[serde(default)]
-    pub wall: Option<ElemId>,
-    /// この壁領域に属する間柱（`SecondaryMember::Post`）の ID リスト。
-    #[serde(default)]
-    pub post_ids: Vec<SecondaryMemberId>,
-}

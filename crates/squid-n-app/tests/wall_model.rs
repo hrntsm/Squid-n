@@ -13,11 +13,55 @@
 //!
 //! # モデル
 //!
-//! 4m(X)×3m(Y)×3m(Z) の 1 スパン・1 層。柱 4 本（H-300x300 鋼）・梁 4 本（H-400x200 鋼、
-//! 頂部で閉路）・耐震壁 1 枚（Y=0 面、RC t=150、開口 1 つ）・フレーム外雑壁 1 本
-//! （Y=3000 面の梁上端に沿う想定、height=900・Column 伝達）。柱脚 4 節点は固定支点。
-//! 荷重は ST-Bridge を経由しないため `App::run_preparation` の自動同期
-//! （`sync_auto_load_cases_action`）が DL・LL・EX・EY を生成する。
+//! 4m(X)×3m(Y)×3m(Z) の 1 スパン・1 層。柱 4 本（うち柱 0・1〔壁の側柱〕は RC、
+//! 柱 2・3 は H-300x300 鋼）・梁 8 本（うち id 4〔頂部 4-5〕・id 8〔柱脚間 0-1、
+//! いずれも壁の上下大梁〕は RC、残り 6 本は H-400x200 鋼。柱脚どうし・柱頭どうしの
+//! 両方で閉路。id 4-7 が頂部、id 8-11 が柱脚〔基礎大梁想定〕）・耐震壁 1 枚
+//! （Y=0 面、RC t=150、開口 1 つ）・フレーム外雑壁 1 本（Y=3000 面の梁上端に沿う想定、
+//! height=900・Column 伝達）。柱脚 4 節点は固定支点。荷重は ST-Bridge を経由しないため
+//! `App::run_preparation` の自動同期（`sync_auto_load_cases_action`）が
+//! DL・LL・EX・EY を生成する。
+//!
+//! **柱脚どうしの梁（基礎大梁）を持つ。** 2026-08 に新設した当初は柱頭側の梁のみで、
+//! `region_gen::wall::scan_wall_region_boundaries` が境界を 1 つも検出できなかった
+//! （各鉛直構面が「柱 2 本＋頂部の梁 1 本」の開いた U 字にしかならないため）。
+//! 壁側 `region_gen` の実データ検証は実フィクスチャ（`full_model.rs`）の
+//! 軸組で代替していたが、`WallRegion`/`WallPlate` の型実装（Step 7+8 本体）は
+//! 本フィクスチャでの境界検出を前提にするため、柱脚どうしの梁を追加して 4 面とも
+//! 閉じた矩形（4 節点ループ）にした（`test_region_gen_wall_finds_all_four_faces` で確認）。
+//!
+//! **柱脚間の梁を足したことで、耐震壁の側柱・上下大梁を RC にする必要が生じた。**
+//! 壁エレメントは壁と周辺架構を一体の耐震要素としてモデル化するため、耐震壁の
+//! 四周（上下大梁・左右側柱）の構造種別が壁自身と一致しない場合はエラーになる
+//! （`wall_frame_category_issue`）。柱脚間の梁がなかった当初は壁が「四周を持つ」と
+//! 判定されず（`wall_is_framed` が false）、このチェック自体が働いていなかった
+//! （＝もともと本フィクスチャは、この検定の観点では気づかれずに不正な混合構造
+//! だった）。柱 0・1・大梁 4・8 の材料を RC（`MaterialId(1)`）へ差し替えて是正した。
+//!
+//! **側柱・壁上下大梁は本物の `SectionShape::RcRect`＋主筋（300x300・300x400、
+//! 主筋 3-D22・せん断補強筋 D10@100）を使う。** 以前は「鋼断面（H 形）の断面性能を
+//! そのまま流用し材料だけ RC へ差し替える」トリックを使っていたが、これは
+//! 実在しない断面（形状は鋼、材料は RC）で、増分解析（プッシュオーバー）・
+//! 保有水平耐力の Ds 群回帰テスト（`snapshot_wall_ds_group_and_holding_capacity`）を
+//! 追加しようとした際に破綻した（ファイバー断面が `shape` だけで鋼材と判定し
+//! 材料の `fy` を要求してエラーになる、側柱の主筋がないと壁の等価引張鉄筋比 pte が
+//! 算定できない）。本物の RC 矩形に差し替えたことで、線形の代表スカラ・
+//! 固有周期も現実の RC フレームの値に変わった（後述）。
+//!
+//! 追加した基礎大梁は柱脚（固定支点）どうしをつなぐため、線形静解析・固有値解析の
+//! いずれにも力・変位としては現れない（両端固定の部材は固定端間で力を伝達しない
+//! ため）。ただし RC への材料差し替え（ヤング係数・密度が鋼と異なる）は側柱・
+//! 上下大梁の剛性・自重を実際に変えるため、代表スカラは総じて動く（実測して
+//! スナップショットを更新した。値を予想で決め打ちしていない）。
+//!
+//! **`test_wall_element_changes_eigen_period` は方向を無視した `period[0]` の比較を
+//! やめた。** 本物の RC 矩形に差し替えたところ、壁の有無で `period[0]` が指す
+//! 方向自体が入れ替わり（壁ありは壁の影響を受けない Y 方向が最も柔らかく
+//! `period[0]` を占め、壁なしは壁を失った X 方向が最も柔らかくなって `period[0]`
+//! を占める）、無関係な方向どうしを比較して「壁が効いていない」という誤った
+//! 結論になっていた。`participation`/`effective_mass` の X 成分が卓越するモードの
+//! 周期を比較するよう修正した（`dominant_x_period` 参照。壁は Y=0 面で X 方向に
+//! スパンするため、面内せん断で効くのは X 方向のみ）。
 
 use squid_n_app::app::{App, StaticCaseKey};
 use squid_n_core::dof::Dof6Mask;
@@ -26,7 +70,7 @@ use squid_n_core::model::{
     ElementData, ElementKind, EndCondition, ForceRegime, LocalAxis, Material, MaterialCategory,
     MiscWallTransfer, Model, Node, OutOfFrameMiscWall, RigidZone, Section, WallAttr, WallOpening,
 };
-use squid_n_section::shape::SectionShape;
+use squid_n_section::shape::{BarSet, RcRebar, SectionShape, ShearBar};
 use squid_n_solver::analysis::SeismicDir;
 
 /// 有効数字 4 桁の指数表記（`full_model.rs::sig4` と同じ丸め規則。両ファイルの
@@ -109,6 +153,15 @@ fn wall_bay_model() -> Model {
         .sections
         .push(beam_shape.to_section(SectionId(1), "梁 H-400x200x8x13".into()));
     // 断面: 耐震壁（RC t=150）。
+    // `shape` に `SectionShape::RcWall` を持たせる（dig 2026-08-26 Q2=A）。
+    // `shape: None` のままだと `compute_holding_capacity` の部材ランク判定
+    // （告示「耐力壁の種別」表 WA〜WD）が壁を常にスキップし選択ランクへ
+    // フォールバックするため、壁固有の Ds ロジックを一切通らない回帰テストに
+    // なってしまう。`ps`（壁筋比）は回帰検出用の一般的な値（0.25%）。
+    // area・iy・iz・j・as_y・as_z は壁エレメント自身の 4 節点剛性式では
+    // 参照されない（側柱・大梁の断面と違い、壁の面内剛性は `thickness`・`ps`・
+    // 節点座標から直接組み立てる。`wall_element.rs` 参照）ため、名目値のまま
+    // 変更していない。
     model.sections.push(Section {
         id: SectionId(2),
         name: "耐震壁 t150".into(),
@@ -123,14 +176,71 @@ fn wall_bay_model() -> Model {
         floor: None,
         panel_thickness: None,
         thickness: Some(150.0),
-        shape: None,
+        shape: Some(SectionShape::RcWall {
+            thickness: 150.0,
+            ps: 0.0025,
+        }),
         material: Some(MaterialId(1)),
         rebar_material: None,
         shear_rebar_material: None,
         steel_material: None,
     });
+    // 断面: 耐震壁の側柱・上下大梁（柱 0・1 → id 3、大梁 4-5・0-1 → id 4）。
+    // 壁エレメントは壁と周辺架構を一体の耐震要素としてモデル化するため、
+    // 耐震壁の四周（上下大梁・左右側柱）は壁と同じ構造種別（RC）でなければならない
+    // （`wall_frame_category_issue`）。柱脚どうしの梁を足して壁面を「四周を持つ」
+    // 状態にする以上、四周をすべて RC にそろえる必要がある。
+    //
+    // **本物の `SectionShape::RcRect`＋主筋（自己矛盾のない断面）を使う。**
+    // 以前は「鋼断面（`col_shape`／`beam_shape`）の断面性能をそのまま流用し材料だけ
+    // RC へ差し替える」トリックを使っていたが、これは実在しない断面（形状は鋼、
+    // 材料は RC）だった。増分解析のファイバー断面は `shape` だけを見て鋼材と
+    // 判定するため材料の `fy` を要求してエラーになり、保有水平耐力の壁の等価
+    // 引張鉄筋比 pte も側柱の主筋（`RcRect` の `rebar`）がなければ算定できない。
+    // どちらも「RC 壁の側柱に鋼断面を使う」という組み合わせ自体が実在しえないことが
+    // 原因であり、鋼断面の数値流用は削って本物の RC 矩形（300x300・300x400、
+    // 主筋 3-D22・せん断補強筋 D10@100）に差し替えた。
+    let side_column_rebar = RcRebar {
+        main_x: BarSet {
+            count: 3,
+            dia: 22.0,
+            layers: 1,
+        },
+        main_y: BarSet {
+            count: 3,
+            dia: 22.0,
+            layers: 1,
+        },
+        cover: 40.0,
+        shear: ShearBar {
+            dia: 10.0,
+            pitch: 100.0,
+            legs: 2,
+        },
+    };
+    let mut side_column_section = SectionShape::RcRect {
+        b: 300.0,
+        d: 300.0,
+        rebar: side_column_rebar.clone(),
+    }
+    .to_section(SectionId(3), "側柱 RC 300x300".into());
+    side_column_section.material = Some(MaterialId(1));
+    side_column_section.rebar_material = Some(MaterialId(2));
+    side_column_section.shear_rebar_material = Some(MaterialId(2));
+    model.sections.push(side_column_section);
+    let mut wall_girder_section = SectionShape::RcRect {
+        b: 300.0,
+        d: 400.0,
+        rebar: side_column_rebar,
+    }
+    .to_section(SectionId(4), "壁上下大梁 RC 300x400".into());
+    wall_girder_section.material = Some(MaterialId(1));
+    wall_girder_section.rebar_material = Some(MaterialId(2));
+    wall_girder_section.shear_rebar_material = Some(MaterialId(2));
+    model.sections.push(wall_girder_section);
 
-    // 材料: 鋼 SN400B（柱・梁）、RC Fc24（耐震壁）。
+    // 材料: 鋼 SN400B（柱・梁）、RC Fc24（耐震壁・側柱・壁上下大梁）、
+    // 主筋・せん断補強筋 SD345（側柱・壁上下大梁）。
     model.materials.push(Material {
         strength_factor: None,
         concrete_class: Default::default(),
@@ -157,6 +267,19 @@ fn wall_bay_model() -> Model {
         fc: Some(24.0),
         fy: None,
     });
+    model.materials.push(Material {
+        strength_factor: None,
+        concrete_class: Default::default(),
+        id: MaterialId(2),
+        name: "SD345".into(),
+        category: MaterialCategory::Rebar,
+        young: 205000.0,
+        poisson: 0.3,
+        density: 7.85e-9,
+        shear: None,
+        fc: None,
+        fy: Some(345.0),
+    });
     for sec in model.sections.iter_mut().take(2) {
         sec.material = Some(MaterialId(0));
     }
@@ -173,21 +296,36 @@ fn wall_bay_model() -> Model {
         plastic_zone: None,
         spring: None,
     };
-    // 柱 4 本（id 0-3）。
+    // 柱 4 本（id 0-3）。柱 0・1（壁の側柱）は RC 断面（id 3）、柱 2・3 は鋼断面（id 0）。
     for i in 0..4u32 {
-        model.elements.push(beam(i, i, 4 + i, 0, [1.0, 0.0, 0.0]));
+        let sec = if i < 2 { 3 } else { 0 };
+        model.elements.push(beam(i, i, 4 + i, sec, [1.0, 0.0, 0.0]));
     }
-    // 梁 4 本（id 4-7。頂部で閉路: 4-5, 5-6, 6-7, 7-4）。
+    // 梁 4 本（id 4-7。頂部で閉路: 4-5, 5-6, 6-7, 7-4）。id 4（4-5、壁の頂部）だけ
+    // RC 断面（id 4）、それ以外（壁に接しない 3 本）は鋼断面（id 1）。
     let beam_pairs = [(4u32, 5u32), (5, 6), (6, 7), (7, 4)];
     for (k, (i, j)) in beam_pairs.iter().enumerate() {
+        let sec = if k == 0 { 4 } else { 1 };
         model
             .elements
-            .push(beam(4 + k as u32, *i, *j, 1, [0.0, 0.0, 1.0]));
+            .push(beam(4 + k as u32, *i, *j, sec, [0.0, 0.0, 1.0]));
+    }
+    // 梁 4 本（id 8-11。柱脚どうしで閉路: 0-1, 1-2, 2-3, 3-0。基礎大梁想定）。
+    // 柱脚は固定支点どうしのため線形解析の応力・変位には現れないが（§冒頭のモジュール doc
+    // 参照）、region_gen::wall が壁側の鉛直構面を閉じた矩形として検出するために要る
+    // （柱頭側の梁だけでは各構面が開いた U 字になり、境界を 1 つも検出できない）。
+    // id 8（0-1、壁の柱脚間）だけ RC 断面（id 4）、それ以外は鋼断面（id 1）。
+    let base_beam_pairs = [(0u32, 1u32), (1, 2), (2, 3), (3, 0)];
+    for (k, (i, j)) in base_beam_pairs.iter().enumerate() {
+        let sec = if k == 0 { 4 } else { 1 };
+        model
+            .elements
+            .push(beam(8 + k as u32, *i, *j, sec, [0.0, 0.0, 1.0]));
     }
 
     // 耐震壁 1 枚（Y=0 面: 節点 0,1,5,4 の矩形ループ）。開口あり。
     model.elements.push(ElementData {
-        id: ElemId(8),
+        id: ElemId(12),
         kind: ElementKind::Wall,
         nodes: [NodeId(0), NodeId(1), NodeId(5), NodeId(4)]
             .into_iter()
@@ -203,7 +341,7 @@ fn wall_bay_model() -> Model {
         spring: None,
     });
     model.wall_attrs.push(WallAttr {
-        elem: ElemId(8),
+        elem: ElemId(12),
         opening_area: 0.0,
         opening_weight: 0.0,
         three_side_slit: false,
@@ -232,6 +370,11 @@ fn wall_bay_app() -> App {
     let mut app = App::default();
     app.analysis_cfg.threads = 1;
     app.model = wall_bay_model();
+    // 架構種別（Ds 表の行を選ぶ設定。`App::design_frame`）は既定で SteelFrame
+    // のままだと、耐震壁を持つ本フィクスチャでも Ds 計算が鋼構造の表
+    // （`ds_steel`）を使ってしまい、RC 耐力壁の Ds 表（`ds_rc`）が一度も
+    // 通らない。本フィクスチャは RC 耐震壁付き構造なので明示的に宣言する。
+    app.design_frame = squid_n_design_jp::secondary::holding_capacity::FrameType::RcWall;
     app
 }
 
@@ -240,7 +383,7 @@ fn test_wall_bay_model_is_valid() {
     let model = wall_bay_model();
     assert!(model.validate().is_ok(), "{:?}", model.validate());
     assert_eq!(model.nodes.len(), 8);
-    assert_eq!(model.elements.len(), 9);
+    assert_eq!(model.elements.len(), 13);
     assert_eq!(model.wall_attrs.len(), 1);
     assert_eq!(model.misc_walls.len(), 1);
 }
@@ -320,13 +463,13 @@ fn snapshot_wall_bay_scalars() {
         line(&format!("eigen.T[{i}]"), sig4(*t));
     }
 
-    // 耐震壁要素（id=8）の材端力。`member_forces` は `Vec<(ElemId, MemberForces)>`
-    // で位置は保証されないため、`ElemId(8)` で探す（Step 8 で要素生成の順序・件数が
-    // 変われば `.get(8)` は無関係の要素を指しうる）。
+    // 耐震壁要素（id=12）の材端力。`member_forces` は `Vec<(ElemId, MemberForces)>`
+    // で位置は保証されないため、`ElemId(12)` で探す（Step 8 で要素生成の順序・件数が
+    // 変われば `.get(12)` は無関係の要素を指しうる）。
     let wall_member_forces = |res: &squid_n_solver::linear::StaticOnce| {
         res.member_forces
             .iter()
-            .find(|(id, _)| *id == ElemId(8))
+            .find(|(id, _)| *id == ElemId(12))
             .expect(
                 "耐震壁要素の材端力（Step 8 で参照先が壁領域 ID 起点へ変わったら、この \
                 探索条件も追随させること）",
@@ -376,25 +519,45 @@ fn snapshot_wall_bay_scalars() {
     insta::assert_snapshot!(out);
 }
 
+/// 固有値解析結果のうち、X 方向（`participation`/`effective_mass` の第 0 成分）が
+/// 卓越するモードの周期を返す（存在しなければ `None`）。
+///
+/// `ModalResult::period[0]` を単純比較してはいけない。**モードの並び順は
+/// 固有値（周期の長い順）で決まり、方向とは無関係**のため、壁の有無で
+/// 架構の X・Y 方向剛性の相対関係が変わると、`period[0]` が指す方向自体が
+/// 入れ替わりうる（本フィクスチャで実測: 壁ありは Y 方向が最も柔らかく
+/// `period[0]` を占め、壁なしは壁を失った X 方向が最も柔らかくなって
+/// `period[0]` を占める。どちらも壁の有無に関係ない Y 方向どうし・
+/// 別モードどうしを比べてしまい、壁の効果を見ていなかった）。
+fn dominant_x_period(modal: &squid_n_solver::eigen::ModalResult) -> Option<f64> {
+    modal
+        .effective_mass
+        .iter()
+        .enumerate()
+        .max_by(|a, b| a.1[0].partial_cmp(&b.1[0]).unwrap())
+        .map(|(i, _)| modal.period[i])
+}
+
 /// 壁要素が固有周期（＝剛性行列）に確実に寄与していることの確認。
+///
+/// 壁は Y=0 面（X 方向にスパンする面）にあり、面内せん断で効くのは
+/// **X 方向**の水平剛性のみ（Y 方向の面外曲げ剛性は無視できるほど小さい）。
+/// そのため比較対象は「X 方向が卓越するモードの周期」に限定する必要がある
+/// （`dominant_x_period` 参照。単純に `period[0]` を比べると、壁の有無で
+/// `period[0]` が指す方向自体が入れ替わり、Y 方向どうしを比較して
+/// 「壁が効いていない」という誤った結論になる）。
 ///
 /// `snapshot_wall_bay_scalars` の DL 側材端力がほぼゼロになる理由の裏付け
 /// （壁が剛性に効いていないのではなく、この対称な架構・鉛直荷重条件では
-/// 壁柱換算の軸力・曲げが小さいだけであること）を記録する。
+/// 壁柱換算の軸力・曲げが小さいだけであること）も兼ねる。
 #[test]
 fn test_wall_element_changes_eigen_period() {
     let mut with_wall = wall_bay_app();
     with_wall.run_preparation();
     with_wall.last_error = None;
-    with_wall.run_eigen(1);
-    let t_with = with_wall
-        .results
-        .as_ref()
-        .unwrap()
-        .modal
-        .as_ref()
-        .unwrap()
-        .period[0];
+    with_wall.run_eigen(3);
+    let t_with = dominant_x_period(with_wall.results.as_ref().unwrap().modal.as_ref().unwrap())
+        .expect("X 方向卓越モードが求まるはず");
 
     let mut model_without = wall_bay_model();
     model_without
@@ -406,19 +569,121 @@ fn test_wall_element_changes_eigen_period() {
     without_wall.model = model_without;
     without_wall.run_preparation();
     without_wall.last_error = None;
-    without_wall.run_eigen(1);
-    let t_without = without_wall
-        .results
-        .as_ref()
-        .unwrap()
-        .modal
-        .as_ref()
-        .unwrap()
-        .period[0];
+    without_wall.run_eigen(3);
+    let t_without = dominant_x_period(
+        without_wall
+            .results
+            .as_ref()
+            .unwrap()
+            .modal
+            .as_ref()
+            .unwrap(),
+    )
+    .expect("X 方向卓越モードが求まるはず");
 
+    // 実測: with≈0.0527s（壁あり、X 方向卓越は 2 次モード）、
+    // without≈0.0725s（壁なし、X 方向卓越は 1 次モード）で約 27% の差。
+    // 壁の面内せん断剛性が X 方向の水平剛性を実際に支配していることの
+    // 直接的な裏付けになる大きさのため、しきい値は安全側に 10% とする。
     assert!(
         (t_with - t_without).abs() > t_without * 0.1,
-        "壁の有無で 1 次固有周期が実質的に変わらない（壁が剛性に寄与していない）: \
+        "壁の有無で X 方向卓越モードの周期が実質的に変わらない（壁が剛性に寄与していない）: \
          with={t_with}, without={t_without}"
     );
+}
+
+/// 本フィクスチャの 4 つの鉛直構面（X=0・X=4000・Y=0〔壁面〕・Y=3000〔雑壁面〕）が、
+/// いずれも `region_gen::wall` で閉じた矩形として検出できることの確認。
+///
+/// 柱脚どうしの梁を追加する前は「柱 2 本＋頂部の梁 1 本」の開いた U 字にしかならず
+/// 境界を 1 つも検出できなかった（モジュール doc 参照）。`WallRegion`/`WallPlate` の
+/// 型実装（Step 7+8 本体）は本フィクスチャでの境界検出を前提にするため、退行しないよう
+/// 面数・面積を固定する。
+#[test]
+fn test_region_gen_wall_finds_all_four_faces() {
+    use squid_n_core::region_gen::scan_wall_region_boundaries;
+
+    let model = wall_bay_model();
+    let scan = scan_wall_region_boundaries(&model);
+    assert_eq!(scan.unclosed, 0, "半辺の後続は一意に定まるはず");
+    assert_eq!(
+        scan.boundaries.len(),
+        4,
+        "4 つの鉛直構面すべてが閉じた矩形になるはず"
+    );
+
+    let mut areas: Vec<f64> = scan.boundaries.iter().map(|b| b.area(&model)).collect();
+    areas.sort_by(f64::total_cmp);
+    // X=0・X=4000 面（3m×3m）が 2 面、Y=0・Y=3000 面（4m×3m）が 2 面。
+    let expected = [
+        3000.0 * 3000.0,
+        3000.0 * 3000.0,
+        4000.0 * 3000.0,
+        4000.0 * 3000.0,
+    ];
+    for (a, e) in areas.iter().zip(expected.iter()) {
+        assert!(
+            (a - e).abs() < 1.0,
+            "境界面積 {areas:?}（期待値 {expected:?}）"
+        );
+    }
+}
+
+/// 壁を含む Ds 群・保有水平耐力・増分解析の代表スカラをピン止めする
+/// （dig 2026-08-26 Q2=A）。
+///
+/// ElemId→領域参照への張り替え（`holding.rs`/`pushover.rs`。dig Q2 の本題）に
+/// 着手する前の安全網。壁の耐力壁種別判定（告示「耐力壁の種別」表。τu/Fc で
+/// WA〜WD、実装上は `MemberRank::FA`〜`FD` に統合）・保有水平耐力・増分解析の
+/// いずれも、これまで壁を含むモデルで一度も回帰されていなかった
+/// （`full_model.rs` の実フィクスチャは壁要素 0 件のため。モジュール doc 参照）。
+/// 参照張り替えで壁の応答（`resp_by_elem`）や壁長・壁厚の参照が壊れると、
+/// 壁は判定不能としてスキップされ層は選択ランクへ静かにフォールバックする
+/// （`holding.rs` 参照）。これはエラーにならないため、値の変化でしか検出できない。
+#[test]
+fn snapshot_wall_ds_group_and_holding_capacity() {
+    let mut app = wall_bay_app();
+    app.run_preparation();
+    assert!(app.last_error.is_none(), "準備計算: {:?}", app.last_error);
+    app.run_static_all();
+    assert!(app.last_error.is_none(), "静的解析: {:?}", app.last_error);
+    app.run_eigen(app.analysis_cfg.n_modes);
+    assert!(app.last_error.is_none(), "固有値解析: {:?}", app.last_error);
+    app.run_pushover();
+    assert!(app.last_error.is_none(), "増分解析: {:?}", app.last_error);
+
+    let (holding, ranks) = app
+        .compute_holding_capacity()
+        .expect("保有水平耐力が算定できるはず");
+
+    let mut out = String::new();
+    let mut line = |k: &str, v: String| out.push_str(&format!("{k} = {v}\n"));
+    assert_eq!(holding.stories.len(), 1, "本フィクスチャは 1 層");
+    let s = &holding.stories[0];
+    assert!(
+        s.qu > 0.0 && s.qu.is_finite(),
+        "保有水平耐力 Qu が異常: {}",
+        s.qu
+    );
+    // RC 造の Ds 表（`ds_rc`）が取りうる値の範囲は 0.30〜0.55（`App::design_frame`
+    // を `FrameType::RcWall` にしないと鋼構造の表 `ds_steel`（0.25〜0.55）が使われ
+    // てしまい、この範囲チェックを鋼構造の下限 0.25 まで緩めない限り気づけない
+    // 誤りになる。`wall_bay_app` 参照）。
+    assert!(
+        (0.3..=0.55).contains(&s.ds),
+        "構造特性係数 Ds が RC 造の規定範囲外: {}",
+        s.ds
+    );
+    assert!(
+        s.qun > 0.0 && s.qun.is_finite(),
+        "必要保有水平耐力 Qun が異常: {}",
+        s.qun
+    );
+    line("holding.qu", sig4(s.qu));
+    line("holding.ds", sig4(s.ds));
+    line("holding.qun", sig4(s.qun));
+    assert_eq!(ranks.len(), 1, "本フィクスチャは 1 層");
+    line("holding.rank", format!("{:?}", ranks[0]));
+
+    insta::assert_snapshot!(out);
 }

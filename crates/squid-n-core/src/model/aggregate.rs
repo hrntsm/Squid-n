@@ -138,6 +138,13 @@ pub struct Model {
     /// 旧スキーマ（フィールド無し）は空として補完。
     #[serde(default)]
     pub slabs: Vec<Slab>,
+    /// 壁版（版仕様。断面・開口。[`WallPlate`]）。柱・梁が囲む鉛直構面内の版、
+    /// または主架構・床領域に取り付く版（パラペット・腰壁・垂れ壁・自立壁）ごとに 1 つ。
+    /// `wall_regions` が「柱・梁が囲む鉛直構面内の閉領域」であるのに対し、こちらが
+    /// 版の仕様を持つ（床の `floor_regions`/`slabs` と同じ関係）。取り付く壁版は
+    /// どの `WallRegion` からも参照されないことがある。旧スキーマは空として補完。
+    #[serde(default)]
+    pub wall_plates: Vec<WallPlate>,
     #[serde(skip)]
     pub dof_map: crate::dof::DofMap,
 }
@@ -181,6 +188,25 @@ fn slab_node_refs(slab: &Slab) -> Vec<NodeId> {
         SlabShape::Attached { anchor, .. } => match anchor {
             RegionAnchor::Line { nodes, .. } => nodes.to_vec(),
             RegionAnchor::Point(n) => vec![*n],
+            // 床板の取付き先には使わない（`RegionAnchor::FloorRegion` のドキュメント参照。
+            // 壁側〔`WallPlate` の `Attached` 形〕専用のアンカーであり、床板では到達しない）。
+            RegionAnchor::FloorRegion { .. } => Vec::new(),
+        },
+    }
+}
+
+/// 壁版が参照する節点（境界節点、または取付き先の節点）。
+///
+/// 取り付く壁版は自由端に節点を持たないため、取付き先の節点だけを返す
+/// （`slab_node_refs` と同じ考え方）。`RegionAnchor::Point` は壁の取付き先としては
+/// 使わない（`WallPlate::boundary_coords` のドキュメント参照）。
+fn wall_plate_node_refs(plate: &WallPlate) -> Vec<NodeId> {
+    match &plate.shape {
+        WallPlateShape::Enclosed { boundary } => boundary.clone(),
+        WallPlateShape::Attached { anchor, .. } => match anchor {
+            RegionAnchor::Line { nodes, .. } => nodes.to_vec(),
+            RegionAnchor::FloorRegion { nodes, .. } => nodes.to_vec(),
+            RegionAnchor::Point(_) => Vec::new(),
         },
     }
 }
@@ -350,6 +376,82 @@ impl Model {
         }
         // 床板 ID は「配列添字と一致」かつ「複数の床領域から共有されない」こと。
         check_id_consistency(&self.slabs, "slabs", "SlabId", |s| s.id.index(), |s| s.id.0)?;
+        // 壁版 ID は「配列添字と一致」かつ「複数の壁領域から共有されない」こと
+        // （床板と同じ規約）。
+        check_id_consistency(
+            &self.wall_plates,
+            "wall_plates",
+            "WallPlateId",
+            |p| p.id.index(),
+            |p| p.id.0,
+        )?;
+        check_id_consistency(
+            &self.wall_regions,
+            "wall_regions",
+            "WallRegionId",
+            |r| r.id.index(),
+            |r| r.id.0,
+        )?;
+        {
+            let mut owner: std::collections::HashMap<u32, u32> = std::collections::HashMap::new();
+            for region in &self.wall_regions {
+                let mut seen_here = std::collections::HashSet::new();
+                for &pid in &region.wall_plate_ids {
+                    if !seen_here.insert(pid) {
+                        return Err(CoreError::DuplicateId(format!(
+                            "WallRegion {} wall_plate_ids has WallPlateId({})",
+                            region.id.0, pid.0
+                        )));
+                    }
+                    if pid.index() >= self.wall_plates.len()
+                        || self.wall_plates[pid.index()].id != pid
+                    {
+                        return Err(CoreError::DanglingRef(format!(
+                            "WallRegion {} -> WallPlate {}",
+                            region.id.0, pid.0
+                        )));
+                    }
+                    if let Some(&other) = owner.get(&pid.0) {
+                        if other != region.id.0 {
+                            return Err(CoreError::DuplicateId(format!(
+                                "WallPlate {} は複数の WallRegion（{}・{}）から参照されている",
+                                pid.0, other, region.id.0
+                            )));
+                        }
+                    }
+                    owner.insert(pid.0, region.id.0);
+                }
+            }
+        }
+        // 壁領域の境界が参照する節点が実在すること（陳腐化した参照の検出）。
+        for region in &self.wall_regions {
+            for &nid in &region.boundary {
+                if nid.index() >= self.nodes.len() || self.nodes[nid.index()].id != nid {
+                    return Err(CoreError::DanglingRef(format!(
+                        "WallRegion {} -> Node {}",
+                        region.id.0, nid.0
+                    )));
+                }
+            }
+        }
+        // 壁領域は、同じ境界（柱・梁の閉路）を持つものが 2 つあってはならない（D1）。
+        {
+            let mut seen: std::collections::HashSet<Vec<u32>> = std::collections::HashSet::new();
+            for region in &self.wall_regions {
+                if region.boundary.is_empty() {
+                    continue;
+                }
+                let mut key: Vec<u32> = region.boundary.iter().map(|n| n.0).collect();
+                key.sort_unstable();
+                key.dedup();
+                if !seen.insert(key) {
+                    return Err(CoreError::DuplicateId(format!(
+                        "WallRegion {} は他の領域と同じ境界を持つ",
+                        region.id.0
+                    )));
+                }
+            }
+        }
         {
             let mut owner: std::collections::HashMap<u32, u32> = std::collections::HashMap::new();
             for region in &self.floor_regions {
@@ -388,6 +490,39 @@ impl Model {
                     return Err(CoreError::DanglingRef(format!(
                         "Slab {} -> Section {}",
                         slab.id.0, sid.0
+                    )));
+                }
+            }
+        }
+        // 壁版の境界・取付き先が参照する節点・断面・床領域が実在すること（同上）。
+        for plate in &self.wall_plates {
+            for nid in wall_plate_node_refs(plate) {
+                if nid.index() >= self.nodes.len() || self.nodes[nid.index()].id != nid {
+                    return Err(CoreError::DanglingRef(format!(
+                        "WallPlate {} -> Node {}",
+                        plate.id.0, nid.0
+                    )));
+                }
+            }
+            if let Some(sid) = plate.section {
+                if sid.index() >= self.sections.len() || self.sections[sid.index()].id != sid {
+                    return Err(CoreError::DanglingRef(format!(
+                        "WallPlate {} -> Section {}",
+                        plate.id.0, sid.0
+                    )));
+                }
+            }
+            if let WallPlateShape::Attached {
+                anchor: RegionAnchor::FloorRegion { region, .. },
+                ..
+            } = &plate.shape
+            {
+                if region.index() >= self.floor_regions.len()
+                    || self.floor_regions[region.index()].id != *region
+                {
+                    return Err(CoreError::DanglingRef(format!(
+                        "WallPlate {} -> FloorRegion {}",
+                        plate.id.0, region.0
                     )));
                 }
             }
@@ -457,6 +592,27 @@ impl Model {
                 }
             }
         }
+        // 壁版の取付き線の無次元区間も同じ規約（`RegionAnchor::FloorRegion` は
+        // `span` を持たないため対象外。壁版自体の始点・終点全長を使う）。
+        for plate in &self.wall_plates {
+            if let WallPlateShape::Attached {
+                anchor: RegionAnchor::Line { span, .. },
+                ..
+            } = &plate.shape
+            {
+                let valid = span[0].is_finite()
+                    && span[1].is_finite()
+                    && span[0] >= -1e-9
+                    && span[1] <= 1.0 + 1e-9
+                    && span[1] - span[0] > 1e-9;
+                if !valid {
+                    return Err(CoreError::DanglingRef(format!(
+                        "WallPlate {} の取付き線の区間 span が不正（0.0 <= t_i < t_j <= 1.0 であること）",
+                        plate.id.0
+                    )));
+                }
+            }
+        }
 
         // 大梁または小梁で囲まれた床板は、同じ境界を持つものが 2 つあってはならない。
         // 2 つあると、その区画の荷重が二重に分配される。
@@ -476,6 +632,27 @@ impl Model {
                     return Err(CoreError::DuplicateId(format!(
                         "Slab {} は他の床板と同じ境界を持つ",
                         slab.id.0
+                    )));
+                }
+            }
+        }
+        // 柱・梁が囲む壁版も、同じ境界を持つものが 2 つあってはならない（同上）。
+        {
+            let mut seen: std::collections::HashSet<Vec<u32>> = std::collections::HashSet::new();
+            for plate in &self.wall_plates {
+                let WallPlateShape::Enclosed { boundary } = &plate.shape else {
+                    continue; // 取り付く壁版は数の制限を置かない。
+                };
+                if boundary.is_empty() {
+                    continue;
+                }
+                let mut key: Vec<u32> = boundary.iter().map(|n| n.0).collect();
+                key.sort_unstable();
+                key.dedup();
+                if !seen.insert(key) {
+                    return Err(CoreError::DuplicateId(format!(
+                        "WallPlate {} は他の壁版と同じ境界を持つ",
+                        plate.id.0
                     )));
                 }
             }
@@ -511,31 +688,13 @@ impl Model {
         }
 
         // 壁領域の post_ids は重複を許さず、参照先が実在し Post であること。
-        for (wi, wr) in self.wall_regions.iter().enumerate() {
-            if let Some(eid) = wr.wall {
-                let e = self.elements.get(eid.index()).filter(|e| e.id == eid);
-                match e {
-                    None => {
-                        return Err(CoreError::DanglingRef(format!(
-                            "WallRegion {} wall -> Elem {}",
-                            wi, eid.0
-                        )));
-                    }
-                    Some(e) if e.kind != ElementKind::Wall => {
-                        return Err(CoreError::DanglingRef(format!(
-                            "WallRegion {} wall -> Elem {} は Wall でない（{:?}）",
-                            wi, eid.0, e.kind
-                        )));
-                    }
-                    _ => {}
-                }
-            }
+        for wr in &self.wall_regions {
             let mut seen_posts = std::collections::HashSet::new();
             for &smid in &wr.post_ids {
                 if !seen_posts.insert(smid) {
                     return Err(CoreError::DuplicateId(format!(
                         "WallRegion {} post_ids has SecondaryMemberId({})",
-                        wi, smid.0
+                        wr.id.0, smid.0
                     )));
                 }
                 match self.secondary_members.get(smid.index()) {
@@ -543,14 +702,14 @@ impl Model {
                         if sm.kind != SecondaryMemberKind::Post {
                             return Err(CoreError::DanglingRef(format!(
                                 "WallRegion {} post_ids -> SecondaryMember {} は Post でない",
-                                wi, smid.0
+                                wr.id.0, smid.0
                             )));
                         }
                     }
                     _ => {
                         return Err(CoreError::DanglingRef(format!(
                             "WallRegion {} post_ids -> SecondaryMember {}",
-                            wi, smid.0
+                            wr.id.0, smid.0
                         )));
                     }
                 }
@@ -625,6 +784,10 @@ impl Model {
                 r.boundary.contains(&id) || r.joist_lines().iter().any(|j| j.support.contains(&id))
             })
             || self.slabs.iter().any(|sl| slab_node_refs(sl).contains(&id))
+            || self
+                .wall_plates
+                .iter()
+                .any(|p| wall_plate_node_refs(p).contains(&id))
             || self
                 .secondary_members
                 .iter()
@@ -787,6 +950,31 @@ impl Model {
                         }
                     }
                     RegionAnchor::Point(n) => f(n),
+                    // 床板では到達しない（`slab_node_refs` と同じ理由）。
+                    RegionAnchor::FloorRegion { .. } => {}
+                },
+            }
+        }
+        for plate in &mut self.wall_plates {
+            match &mut plate.shape {
+                WallPlateShape::Enclosed { boundary } => {
+                    for n in boundary {
+                        f(n);
+                    }
+                }
+                WallPlateShape::Attached { anchor, .. } => match anchor {
+                    RegionAnchor::Line { nodes, .. } => {
+                        for n in nodes {
+                            f(n);
+                        }
+                    }
+                    RegionAnchor::FloorRegion { nodes, .. } => {
+                        for n in nodes {
+                            f(n);
+                        }
+                    }
+                    // 壁の取付き先としては使わない（`wall_plate_node_refs` と同じ理由）。
+                    RegionAnchor::Point(_) => {}
                 },
             }
         }
@@ -863,6 +1051,11 @@ impl Model {
                 f(sid);
             }
         }
+        for plate in &mut self.wall_plates {
+            if let Some(sid) = &mut plate.section {
+                f(sid);
+            }
+        }
         for sm in &mut self.secondary_members {
             if let Some(sid) = &mut sm.section {
                 f(sid);
@@ -903,11 +1096,8 @@ impl Model {
                 f(&mut ml.elem);
             }
         }
-        for wr in &mut self.wall_regions {
-            if let Some(eid) = &mut wr.wall {
-                f(eid);
-            }
-        }
+        // WallRegion/WallPlate は ElemId を持たない（壁の解析要素は準備計算からの
+        // 生成物であり、モデルには残さない。D4・D5）。
         self.shift_elem_attr_refs(&mut f);
     }
 
@@ -1189,6 +1379,21 @@ impl Model {
         for region in &mut self.floor_regions {
             for sid in &mut region.slab_ids {
                 f(sid);
+            }
+        }
+    }
+
+    /// モデル内の全ての `WallPlateId` 参照（壁版自身の ID・壁領域の `wall_plate_ids`）へ
+    /// `f` を適用する（[`Model::visit_slab_ids`] と同じ規約の壁側版）。
+    ///
+    /// **`WallPlateId` を持つフィールドを `Model` へ追加したら必ずここへ追随すること**。
+    pub fn visit_wall_plate_ids(&mut self, mut f: impl FnMut(&mut WallPlateId)) {
+        for plate in &mut self.wall_plates {
+            f(&mut plate.id);
+        }
+        for region in &mut self.wall_regions {
+            for pid in &mut region.wall_plate_ids {
+                f(pid);
             }
         }
     }

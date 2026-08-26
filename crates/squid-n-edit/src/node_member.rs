@@ -681,16 +681,8 @@ impl EditCommand for DeleteMember {
                 }
             }
         }
-        // 当該部材を壁版に持つ壁領域を「版なし」へ戻す（`beam_groups` と同じ理由で、
-        // 残すと繰り上げ後に別の要素を指す。隣が壁だと検証も通ってしまい、
-        // 壁領域が黙って別の壁に付け替わる）。undo 用に壁領域の添字を退避する。
-        let mut removed_wall_region_refs = Vec::new();
-        for (ri, region) in model.wall_regions.iter_mut().enumerate() {
-            if region.wall == Some(self.id) {
-                region.wall = None;
-                removed_wall_region_refs.push(ri);
-            }
-        }
+        // WallRegion/WallPlate は ElemId を持たない（壁の解析要素は準備計算からの
+        // 生成物であり、モデルには残さない。D4・D5）ため、壁領域側の連動処理は不要。
         let removed = model.elements.remove(idx);
         shift_elem_ids(model, |id| {
             if id.0 > self.id.0 {
@@ -703,7 +695,6 @@ impl EditCommand for DeleteMember {
             member_loads: removed_loads,
             elem_attrs: removed_attrs,
             beam_group_refs: removed_group_refs,
-            wall_region_refs: removed_wall_region_refs,
         })
     }
 
@@ -724,8 +715,6 @@ pub struct InsertMember {
     /// 削除時に一本部材指定（beam_groups）から外した参照の
     /// (グループ index, グループ内位置)。undo で同じ位置へ復元する。
     pub beam_group_refs: Vec<(usize, usize)>,
-    /// 削除時に「版なし」へ戻した壁領域の添字。undo で壁版の参照を復元する。
-    pub wall_region_refs: Vec<usize>,
 }
 
 impl EditCommand for InsertMember {
@@ -760,12 +749,6 @@ impl EditCommand for InsertMember {
         for &(gi, pos) in self.beam_group_refs.iter().rev() {
             if let Some(group) = model.beam_groups.get_mut(gi) {
                 group.insert(pos.min(group.len()), id);
-            }
-        }
-        // 「版なし」へ戻した壁領域へ、再挿入した ID で壁版を復元する。
-        for &ri in &self.wall_region_refs {
-            if let Some(region) = model.wall_regions.get_mut(ri) {
-                region.wall = Some(id);
             }
         }
         Box::new(DeleteMember { id })

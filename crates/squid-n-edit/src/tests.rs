@@ -5133,22 +5133,21 @@ fn delete_secondary_member_cascade_wall_region() {
     let mut model = sm_base_model();
     let mut stack = UndoStack::new();
 
-    // 間柱 SM0 を追加して壁領域に登録する。
+    // 間柱 SM0 を追加して壁領域に登録する。壁領域は主架構から再構成される
+    // 派生的な入力の持ち主（D10）で Add/Delete コマンドを持たないため、直接組み立てる。
     stack.run(
         &mut model,
         Box::new(AddSecondaryMember {
             sm: make_sm(0, SecondaryMemberKind::Post),
         }),
     );
-    stack.run(
-        &mut model,
-        Box::new(AddWallRegion {
-            region: WallRegion {
-                wall: None,
-                post_ids: vec![SecondaryMemberId(0)],
-            },
-        }),
-    );
+    model.wall_regions.push(WallRegion {
+        id: WallRegionId(0),
+        name: String::new(),
+        boundary: vec![],
+        wall_plate_ids: vec![],
+        post_ids: vec![SecondaryMemberId(0)],
+    });
     assert_eq!(model.wall_regions[0].post_ids, vec![SecondaryMemberId(0)]);
 
     // SM0 を削除 → 壁領域の post_ids からも除去される。
@@ -5210,16 +5209,14 @@ fn undo_delete_secondary_member() {
         }),
     );
 
-    // 壁領域を追加して SM1 を登録する。
-    stack.run(
-        &mut model,
-        Box::new(AddWallRegion {
-            region: WallRegion {
-                wall: None,
-                post_ids: vec![SecondaryMemberId(1)],
-            },
-        }),
-    );
+    // 壁領域を追加して SM1 を登録する（直接組み立てる。上のテストと同じ理由）。
+    model.wall_regions.push(WallRegion {
+        id: WallRegionId(0),
+        name: String::new(),
+        boundary: vec![],
+        wall_plate_ids: vec![],
+        post_ids: vec![SecondaryMemberId(1)],
+    });
 
     let before = model.clone();
 
@@ -5246,35 +5243,39 @@ fn undo_delete_secondary_member() {
     assert!(model.validate().is_ok());
 }
 
-/// 壁領域の追加・削除・undo を確認する。
+/// 壁領域の表示名変更（`SetWallRegionName`）: 変更・undo・存在しない ID は Noop。
+///
+/// 壁領域は主架構から再構成される派生的な入力の持ち主（D10。床領域と同じ）で
+/// Add/Delete コマンドを持たないため、利用者が変更できるのは表示名と間柱の
+/// 割当だけである（`SetFloorRegionName` と同じ位置づけ）。
 #[test]
-fn add_delete_wall_region() {
+fn test_set_wall_region_name_roundtrip() {
     use squid_n_core::model::WallRegion;
     let mut model = empty_model();
+    model
+        .wall_regions
+        .push(WallRegion::new(WallRegionId(0), vec![]));
     let mut stack = UndoStack::new();
 
-    let region = WallRegion {
-        wall: None,
-        post_ids: vec![],
-    };
-
-    // 追加
-    stack.run(
+    assert!(stack.run(
         &mut model,
-        Box::new(AddWallRegion {
-            region: region.clone(),
+        Box::new(SetWallRegionName {
+            id: WallRegionId(0),
+            name: "西面耐震壁".into(),
         }),
-    );
-    assert_eq!(model.wall_regions.len(), 1);
+    ));
+    assert_eq!(model.wall_regions[0].name, "西面耐震壁");
 
-    // 削除
-    stack.run(&mut model, Box::new(DeleteWallRegion { index: 0 }));
-    assert_eq!(model.wall_regions.len(), 0);
-    assert!(model.validate().is_ok());
-
-    // undo で復元
     stack.undo(&mut model);
-    assert_eq!(model.wall_regions.len(), 1);
+    assert_eq!(model.wall_regions[0].name, "");
+
+    assert!(!stack.run(
+        &mut model,
+        Box::new(SetWallRegionName {
+            id: WallRegionId(9),
+            name: "x".into(),
+        }),
+    ));
     assert!(model.validate().is_ok());
 }
 
@@ -5369,9 +5370,10 @@ fn test_set_secondary_member_section_roundtrip() {
     assert!(model.validate().is_ok());
 }
 
-/// SetWallRegion: 全置換・undo・範囲外 index は Noop。
+/// SetWallRegionPostIds: 全置換・undo・範囲外 ID は Noop（`SetSlabSecondaryJoistIds`
+/// と同じ規約の壁側版）。
 #[test]
-fn test_set_wall_region_roundtrip() {
+fn test_set_wall_region_post_ids_roundtrip() {
     use squid_n_core::model::{SecondaryMemberKind, WallRegion};
     let mut model = seeded_model(2, 1);
     // Post 種別の二次部材を追加
@@ -5384,67 +5386,70 @@ fn test_set_wall_region_roundtrip() {
             section: None,
             name: "P1".into(),
         });
-    // ElemId(0) を Wall 種別に変更する
-    model.elements[0].kind = ElementKind::Wall;
-    let region_a = WallRegion {
-        wall: Some(ElemId(0)),
-        post_ids: vec![],
-    };
-    let region_b = WallRegion {
-        wall: Some(ElemId(0)),
-        post_ids: vec![squid_n_core::ids::SecondaryMemberId(0)],
-    };
-    model.wall_regions.push(region_a.clone());
+    model
+        .wall_regions
+        .push(WallRegion::new(WallRegionId(0), vec![]));
     let mut stack = UndoStack::new();
 
-    // 置換
+    // [SmId(0)] に置換
     assert!(stack.run(
         &mut model,
-        Box::new(SetWallRegion {
-            index: 0,
-            region: region_b.clone(),
+        Box::new(SetWallRegionPostIds {
+            region: WallRegionId(0),
+            ids: vec![squid_n_core::ids::SecondaryMemberId(0)],
         }),
     ));
-    assert_eq!(model.wall_regions[0], region_b);
+    assert_eq!(
+        model.wall_regions[0].post_ids,
+        vec![squid_n_core::ids::SecondaryMemberId(0)]
+    );
 
-    // undo
+    // undo で元の空リストへ戻る
     stack.undo(&mut model);
-    assert_eq!(model.wall_regions[0], region_a);
+    assert!(model.wall_regions[0].post_ids.is_empty());
 
-    // 範囲外 index は Noop
+    // 存在しない壁領域 ID は Noop
     assert!(!stack.run(
         &mut model,
-        Box::new(SetWallRegion {
-            index: 99,
-            region: region_b,
+        Box::new(SetWallRegionPostIds {
+            region: WallRegionId(99),
+            ids: vec![squid_n_core::ids::SecondaryMemberId(0)],
         }),
     ));
-    assert_eq!(model.wall_regions.len(), 1);
     assert!(model.validate().is_ok());
 }
 
-/// AddWallRegion: wall フィールドに Wall 種別でない要素 ID を渡すと Noop。
+/// SetWallRegionPostIds: Post 種別でない二次部材 ID を渡すと Noop。
 #[test]
-fn test_add_wall_region_rejects_non_wall_elem() {
-    use squid_n_core::model::WallRegion;
-    // seeded_model(2,1) は Beam 要素を 1 本持つ
+fn test_set_wall_region_post_ids_rejects_non_post() {
+    use squid_n_core::model::{SecondaryMemberKind, WallRegion};
     let mut model = seeded_model(2, 1);
+    // Joist 種別の二次部材を追加（Post ではない）。
+    model
+        .secondary_members
+        .push(squid_n_core::model::SecondaryMember {
+            id: squid_n_core::ids::SecondaryMemberId(0),
+            kind: SecondaryMemberKind::Joist,
+            nodes: [NodeId(0), NodeId(1)],
+            section: None,
+            name: "J1".into(),
+        });
+    model
+        .wall_regions
+        .push(WallRegion::new(WallRegionId(0), vec![]));
     let before = model.clone();
     let mut stack = UndoStack::new();
 
-    // ElemId(0) は Beam なので Wall ではない → Noop
     assert!(!stack.run(
         &mut model,
-        Box::new(AddWallRegion {
-            region: WallRegion {
-                wall: Some(ElemId(0)),
-                post_ids: vec![],
-            },
+        Box::new(SetWallRegionPostIds {
+            region: WallRegionId(0),
+            ids: vec![squid_n_core::ids::SecondaryMemberId(0)],
         }),
     ));
     assert!(
         model.eq_ignoring_dofmap(&before),
-        "Beam を wall に指定した AddWallRegion は Noop のはず"
+        "Joist を post_ids に指定した SetWallRegionPostIds は Noop のはず"
     );
     assert!(model.validate().is_ok(), "{:?}", model.validate());
 }
@@ -5632,38 +5637,6 @@ fn test_copy_story_slab_copy_does_not_touch_floor_regions() {
     assert_eq!(
         model.floor_regions, regions_before,
         "床板の複製は床領域（小梁登録を含む）に触れない"
-    );
-    assert!(model.validate().is_ok(), "{:?}", model.validate());
-}
-
-/// 壁部材を削除したとき、その壁版を指す壁領域が「版なし」へ戻り、
-/// 繰り上げで別の壁へ黙って付け替わらないこと。undo で壁版が戻ること。
-#[test]
-fn test_delete_member_clears_wall_region_wall() {
-    let mut model = seeded_model(4, 3);
-    for e in &mut model.elements {
-        e.kind = ElementKind::Wall;
-    }
-    // ElemId(1) を指す壁領域。削除で繰り上がると ElemId(2) だった壁を指してしまう。
-    model.wall_regions.push(squid_n_core::model::WallRegion {
-        wall: Some(ElemId(1)),
-        post_ids: vec![],
-    });
-    assert!(model.validate().is_ok(), "前提: {:?}", model.validate());
-
-    let mut stack = UndoStack::new();
-    assert!(stack.run(&mut model, Box::new(DeleteMember { id: ElemId(1) })));
-    assert_eq!(
-        model.wall_regions[0].wall, None,
-        "削除した壁を指す壁領域は版なしへ戻る"
-    );
-    assert!(model.validate().is_ok(), "{:?}", model.validate());
-
-    stack.undo(&mut model);
-    assert_eq!(
-        model.wall_regions[0].wall,
-        Some(ElemId(1)),
-        "undo で壁版の参照が戻る"
     );
     assert!(model.validate().is_ok(), "{:?}", model.validate());
 }

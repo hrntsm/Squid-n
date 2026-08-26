@@ -18,6 +18,7 @@ use squid_n_core::model::{
 };
 use squid_n_core::region_rebuild::rebuild_floor_regions;
 use squid_n_core::section_shape::SectionShape;
+use squid_n_core::wall_region_rebuild::rebuild_wall_regions;
 use std::collections::HashMap;
 
 /// パース済み中間表現からモデルと取り込み報告を組み立てる（後段のエントリポイント）。
@@ -144,6 +145,29 @@ pub(super) fn assemble(parsed: StbParser) -> Result<(Model, ImportReport), StbEr
         warnings.push(format!(
             "床領域の作り直しで照合できなかった旧床領域が {} 件あった",
             rebuild.unmatched_old_regions
+        ));
+    }
+    // 壁領域（柱・梁が囲む鉛直構面内の閉領域）を検出する。現時点では壁版
+    // （WallPlate）を取り込まないため wall_plates_assigned は常に 0 だが、
+    // 壁側 region_gen の結果はここで model.wall_regions へ反映しておく
+    // （領域 rebuild は結線済み。壁版の取り込み・要素生成は未着手）。
+    let wall_rebuild = rebuild_wall_regions(&mut model);
+    if wall_rebuild.unassigned_wall_plates != 0 {
+        warnings.push(format!(
+            "壁領域の作り直しで壁版 {} 枚が領域に割り当てられなかった",
+            wall_rebuild.unassigned_wall_plates
+        ));
+    }
+    if wall_rebuild.unassigned_posts != 0 {
+        warnings.push(format!(
+            "壁領域の作り直しで間柱 {} 本が領域に割り当てられなかった",
+            wall_rebuild.unassigned_posts
+        ));
+    }
+    if wall_rebuild.unmatched_old_regions != 0 {
+        warnings.push(format!(
+            "壁領域の作り直しで照合できなかった旧壁領域が {} 件あった",
+            wall_rebuild.unmatched_old_regions
         ));
     }
     build_load_cases(&mut model, raw_load_cases, &node_index, &mut warnings);
@@ -717,9 +741,11 @@ fn build_walls(
     warnings: &mut Vec<String>,
 ) {
     // ST-Bridge の XML には「壁と間柱の親子関係」を明示する要素がない。
-    // 壁要素単体では `WallRegion` の `wall` と `post_ids` を紐づけられず、
-    // そのため `wall_regions` は空配列のままにする（現行 importer ではスキップ）。
-    // 将来、親子関係を表す要素が見つかればここで `WallRegion` を生成する。
+    // 現行 importer は `ElementKind::Wall` 要素のみを直接生成する（`WallAttr` は
+    // 生成しない。開口・三方スリットは常に既定値〔開口なし〕になる）。
+    // `WallRegion`/`WallPlate` も組み立てない（`wall_regions`/`wall_plates` は
+    // 空配列のまま）。取り込み経路の `WallPlate` への移行は Step 7+8 本体で行う
+    // （`dev_docs/handoff/床領域・壁領域の再設計_申し送り.md` §5.8）。
     let mut skipped_walls = 0u32;
     // 壁厚 → 生成済みの厚さ専用断面。同じ厚さの壁で断面を使い回すための索引。
     // f64 は Hash を持たないため、符号（`Wall t180`）そのものをキーにする。

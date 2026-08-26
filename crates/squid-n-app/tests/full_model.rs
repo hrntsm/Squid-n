@@ -1315,6 +1315,68 @@ fn region_gen_finds_wall_bounded_regions() {
     );
 }
 
+/// ST-Bridge 取り込み（`assemble.rs`）が `rebuild_wall_regions` を実際に呼び、
+/// `model.wall_regions` が `region_gen::wall` の検出結果と一致する件数で
+/// 埋まっていること（§5.9 で結線した経路の end-to-end 確認）。
+///
+/// 本フィクスチャは壁版（`WallPlate`）を 1 枚も持たないため、検出した壁領域は
+/// すべて `wall_plate_ids` が空のまま（幾何の検出だけが先に結線され、壁版の取り込み
+/// はまだ Step 7+8 本体で行うため）。
+#[test]
+fn import_populates_wall_regions_from_region_gen() {
+    let app = imported();
+    assert_eq!(
+        app.model.wall_regions.len(),
+        55,
+        "region_gen_finds_wall_bounded_regions と同じ件数のはず"
+    );
+    assert!(
+        app.model
+            .wall_regions
+            .iter()
+            .all(|r| r.wall_plate_ids.is_empty()),
+        "本フィクスチャは壁版を持たないため、壁版の割当は 0 件のはず"
+    );
+    for (i, r) in app.model.wall_regions.iter().enumerate() {
+        assert_eq!(r.id.0, i as u32, "id は配列添字と一致するはず");
+    }
+    assert!(app.model.validate().is_ok(), "{:?}", app.model.validate());
+}
+
+/// 壁領域は「保存 → 読込 → 再度準備計算」を経ても ID・境界が変わらない。
+///
+/// `WallRegion` の ID は `scan_wall_region_boundaries` の走査順（`model.elements`
+/// の並びに依存。D10）で割り当たる。保存・再読込を経て `model.elements` の並びが
+/// 保たれなければ、再準備計算のたびに壁領域 ID が振り直され、UI・保存済み結果の
+/// 対応付けが壊れる。1 回の準備計算だけでは検出できない回帰のため、
+/// 「読込直後の状態」ではなく「再準備計算後の状態」を比較する。
+#[test]
+fn wall_regions_survive_save_reopen_reprepare() {
+    let app = prepared();
+    let before = app.model.wall_regions.clone();
+    assert!(!before.is_empty(), "本フィクスチャは壁領域を持つはず");
+
+    let path = test_tmp().join("wall_regions_reprepare_roundtrip.scz");
+    let mut app = app;
+    app.save_project_to(path.clone());
+    assert_no_error(&app, "プロジェクト保存");
+
+    let mut reopened = App::default();
+    reopened.analysis_cfg.threads = 1;
+    reopened.open_project_from(path.clone());
+    assert_no_error(&reopened, "プロジェクト読込");
+
+    reopened.run_preparation();
+    assert_no_error(&reopened, "再度の準備計算");
+
+    assert_eq!(
+        reopened.model.wall_regions, before,
+        "保存→読込→再準備計算を経ても壁領域（ID・境界）は変わらないはず"
+    );
+
+    std::fs::remove_file(&path).ok();
+}
+
 /// 取り込んだ床板が、大梁で囲まれた床領域の境界へ過不足なく収まる。
 ///
 /// 大梁が囲む区画（床領域）は 1 つの境界につき 1 つ（D1）。区画内の床板

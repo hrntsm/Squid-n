@@ -141,6 +141,10 @@ impl Slab {
                         [p[0], p[1] + extent[1], p[2]],
                     ])
                 }
+                // 床板の取付き先には使わない（`RegionAnchor::FloorRegion` のドキュメント
+                // 参照。壁側〔`WallPlate` の `Attached` 形〕専用のアンカーであり、
+                // 床板では到達しない）。
+                RegionAnchor::FloorRegion { .. } => None,
             },
         }
     }
@@ -159,7 +163,9 @@ impl Slab {
             }
             SlabShape::Attached { anchor, .. } => match anchor {
                 RegionAnchor::Line { nodes, .. } if k == 0 => Some(*nodes),
-                _ => None,
+                RegionAnchor::Line { .. } | RegionAnchor::Point(_) => None,
+                // 床板では到達しない（`boundary_coords` と同じ理由）。
+                RegionAnchor::FloorRegion { .. } => None,
             },
         }
     }
@@ -169,10 +175,12 @@ impl Slab {
     pub fn reference_node(&self) -> Option<NodeId> {
         match &self.shape {
             SlabShape::Enclosed { boundary } => boundary.first().copied(),
-            SlabShape::Attached { anchor, .. } => Some(match anchor {
-                RegionAnchor::Line { nodes, .. } => nodes[0],
-                RegionAnchor::Point(n) => *n,
-            }),
+            SlabShape::Attached { anchor, .. } => match anchor {
+                RegionAnchor::Line { nodes, .. } => Some(nodes[0]),
+                RegionAnchor::Point(n) => Some(*n),
+                // 床板では到達しない（`boundary_coords` と同じ理由）。
+                RegionAnchor::FloorRegion { .. } => None,
+            },
         }
     }
 
@@ -523,5 +531,28 @@ mod tests {
         assert_eq!(c.live_load(LoadPurpose::Floor), 3.0e-3);
         assert_eq!(c.live_load(LoadPurpose::Frame), 2.0e-3);
         assert_eq!(c.live_load(LoadPurpose::Seismic), 1.0e-3);
+    }
+
+    /// `RegionAnchor::FloorRegion` は床板の取付き先には使わない
+    /// （壁側〔自立壁〕専用のアンカー。モジュール doc・用語集「取付き先」参照）。
+    /// `Slab` のメソッドはこの分岐に来ないはずだが、`RegionAnchor` を壁と共有する
+    /// 都合上、網羅性のために持つ受け皿の戻り値を固定する。
+    #[test]
+    fn test_floor_region_anchor_never_yields_slab_geometry() {
+        let model = Model::default();
+        let slab = Slab {
+            id: crate::ids::SlabId(0),
+            shape: SlabShape::Attached {
+                anchor: RegionAnchor::FloorRegion {
+                    region: crate::ids::FloorRegionId(0),
+                    nodes: [NodeId(0), NodeId(1)],
+                },
+                extent: [0.0, 0.0],
+            },
+            plate: SlabPlate::default(),
+        };
+        assert_eq!(slab.boundary_coords(&model), None);
+        assert_eq!(slab.reference_node(), None);
+        assert_eq!(slab.edge_nodes(0), None);
     }
 }
