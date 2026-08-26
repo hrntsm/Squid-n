@@ -249,8 +249,10 @@ impl EditCommand for SetSlabSecondaryJoistIds {
 // 壁領域（`WallRegion`）は床領域（`FloorRegion`）と同じく主架構から再検出・
 // 再構成される派生的な入力の持ち主であり（D10）、利用者が任意の境界を与えて
 // 追加・削除する対象ではない（`region_gen::wall`/`wall_region_rebuild` が組み立てる）。
-// そのため床領域と同じく、利用者が変更できるのは表示名と間柱の割当だけである
-// （`FloorRegion` に `AddFloorRegion`/`DeleteFloorRegion` が存在しないのと同じ理由）。
+// そのため床領域と同じく、利用者が変更できるのは表示名と間柱の割当だけである。
+// 間柱の所属は床の `secondary_joist_ids` と同様、次回 `rebuild_wall_regions` の D7 で
+// 上書きされる（領域 CRUD がない点も床と同じ）。WallPlate の Add/Delete がないのは、
+// 床の `AddSlab` と非対称な次段（取り込み）の話である。
 
 /// 壁領域の表示名変更。逆操作は変更前の名前への復元。
 /// 対象が存在しない、または変更前後で同じ名前なら Noop。
@@ -281,6 +283,9 @@ impl EditCommand for SetWallRegionName {
 }
 
 /// 壁領域に属する間柱（`post_ids`）の一括変更。
+///
+/// 次回の準備計算（`rebuild_wall_regions`）で D7 により幾何から入れ直される
+/// （床の `secondary_joist_ids` と同じ。このコマンドの結果は次の作り直しまでしか残らない）。
 ///
 /// バリデーション:
 /// - 壁領域が実在すること

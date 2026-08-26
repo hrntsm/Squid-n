@@ -150,12 +150,24 @@ pub(super) fn assemble(parsed: StbParser) -> Result<(Model, ImportReport), StbEr
     // 壁領域（柱・梁が囲む鉛直構面内の閉領域）を検出する。現時点では壁版
     // （WallPlate）を取り込まないため wall_plates_assigned は常に 0 だが、
     // 壁側 region_gen の結果はここで model.wall_regions へ反映しておく
-    // （§5.8・§5.9。要素生成・壁版の取り込みへの結線は Step 7+8 本体で行う）。
+    // （領域 rebuild は結線済み。壁版の取り込み・要素生成は未着手）。
     let wall_rebuild = rebuild_wall_regions(&mut model);
     if wall_rebuild.unassigned_wall_plates != 0 {
         warnings.push(format!(
             "壁領域の作り直しで壁版 {} 枚が領域に割り当てられなかった",
             wall_rebuild.unassigned_wall_plates
+        ));
+    }
+    if wall_rebuild.unassigned_posts != 0 {
+        warnings.push(format!(
+            "壁領域の作り直しで間柱 {} 本が領域に割り当てられなかった",
+            wall_rebuild.unassigned_posts
+        ));
+    }
+    if wall_rebuild.unmatched_old_regions != 0 {
+        warnings.push(format!(
+            "壁領域の作り直しで照合できなかった旧壁領域が {} 件あった",
+            wall_rebuild.unmatched_old_regions
         ));
     }
     build_load_cases(&mut model, raw_load_cases, &node_index, &mut warnings);

@@ -423,7 +423,7 @@ impl Model {
                 }
             }
         }
-        // 壁領域の境界・小梁ラインが参照する節点が実在すること（陳腐化した参照の検出）。
+        // 壁領域の境界が参照する節点が実在すること（陳腐化した参照の検出）。
         for region in &self.wall_regions {
             for &nid in &region.boundary {
                 if nid.index() >= self.nodes.len() || self.nodes[nid.index()].id != nid {

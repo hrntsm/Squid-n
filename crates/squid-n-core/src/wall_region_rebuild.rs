@@ -3,15 +3,17 @@
 //!
 //! 柱・梁が囲む鉛直構面内の閉領域（[`crate::region_gen::wall::WallRegionBoundary`]）
 //! から壁領域（[`WallRegion`]）を再生成し、既存の壁領域と構面・重心・面積で
-//! 対応付けて名前・間柱を引き継ぐ。**壁版（[`WallPlate`]）は畳まない**。柱・梁で
+//! 対応付けて名前を引き継ぐ。構面判定は候補の全頂点で行い、内包判定には
+//! 局所座標の多角形重心を用いる。**壁版（[`WallPlate`]）は畳まない**。柱・梁で
 //! 囲まれた壁版（`WallPlateShape::Enclosed`）の帰属（どの壁領域に属すか）を、
 //! 壁版の重心が入る壁領域へ付け替えるだけである（`rebuild_floor_regions` と同じ方針）。
 //! 取り付く壁版（パラペット・腰壁・垂れ壁・自立壁）はどの壁領域からも参照されない
 //! 独立した壁版のまま、素通しする。
 //!
 //! **床側との違い**: 床は「同じレベル Z」で新旧区画を対応付けるが、壁は構面
-//! （直線）ごとに閉領域が現れるため「同じ構面上にあるか」（[`WallRegionBoundary::
-//! is_same_plane`]）で絞り込んでから、構面内の局所座標 `(s, z)` で重心・内包を判定する。
+//! （直線）ごとに閉領域が現れるため、候補の全頂点が「同じ構面上にあるか」
+//! （[`WallRegionBoundary::is_same_plane`]）で絞り込んでから、構面内の局所座標 `(s, z)`
+//! で多角形重心・内包を判定する。間柱は D7 により毎回入れ直す。
 //!
 //! **未対応**: 床側 D20（パネルに収まらない版を取り付き版へ自動変換する）に相当する
 //! 規則は壁側でまだ決めていない。囲まれた壁版でどの壁領域にも収まらないものは、
@@ -31,19 +33,21 @@ pub const CENTROID_MATCH_AREA_REL: f64 = 1e-3;
 pub struct WallRegionRebuildReport {
     /// 検出した壁領域（柱・梁が囲む鉛直構面内の閉領域）の数。
     pub regions: usize,
-    /// 旧壁領域から名前・間柱を引き継いだ数。
+    /// 旧壁領域から名前を引き継いだ数。
     pub inherited: usize,
     /// 対応する旧壁領域が見つからなかった新規区画の数。
     pub new_regions: usize,
-    /// 重心が新しい区画に入らなかった旧壁領域（名前・間柱を引き継げなかった）の数。
+    /// 重心が新しい区画に入らなかった旧壁領域（名前を引き継げなかった）の数。
     pub unmatched_old_regions: usize,
     /// 壁領域へ帰属し直した壁版の数。
     pub wall_plates_assigned: usize,
     /// どの壁領域にも収まらなかった、柱・梁で囲まれた壁版の数（警告対象。削除しない）。
     pub unassigned_wall_plates: usize,
+    /// 中点がちょうど 1 つの壁領域に厳密内包されなかった間柱（Post）の本数。
+    pub unassigned_posts: usize,
 }
 
-/// 壁領域を柱・梁が囲む鉛直構面内の閉領域から作り直し、名前・間柱を引き継ぎ、
+/// 壁領域を柱・梁が囲む鉛直構面内の閉領域から作り直し、名前を引き継ぎ、
 /// 壁版の帰属を付け替える。
 ///
 /// 壁版そのもの（`model.wall_plates`）は畳まない。どの壁領域にも収まらない
@@ -54,7 +58,7 @@ pub fn rebuild_wall_regions(model: &mut Model) -> WallRegionRebuildReport {
     let mut report = WallRegionRebuildReport::default();
 
     // 1. 新しい壁領域を区画ごとに作り、旧壁領域と構面・重心・面積で対応付けて
-    //    名前・間柱を引き継ぐ（D10 と同じ方針）。
+    //    名前を引き継ぐ（D10 と同じ方針）。間柱は後段で D7 により入れ直す。
     let mut matched_old = vec![false; old_regions.len()];
     let mut new_regions: Vec<WallRegion> = Vec::with_capacity(scan.boundaries.len());
     for rb in &scan.boundaries {
@@ -71,7 +75,6 @@ pub fn rebuild_wall_regions(model: &mut Model) -> WallRegionRebuildReport {
             let denom = rb_area.abs().max(f64::EPSILON);
             if (old_area - rb_area).abs() / denom < CENTROID_MATCH_AREA_REL {
                 region.name = old_regions[oi].name.clone();
-                region.post_ids = old_regions[oi].post_ids.clone();
                 report.inherited += 1;
             } else {
                 report.new_regions += 1;
@@ -116,6 +119,7 @@ pub fn rebuild_wall_regions(model: &mut Model) -> WallRegionRebuildReport {
         r.id = WallRegionId(i as u32);
     }
     model.wall_regions = new_regions;
+    report.unassigned_posts = assign_posts(model, &scan.boundaries);
 
     report
 }
@@ -123,8 +127,8 @@ pub fn rebuild_wall_regions(model: &mut Model) -> WallRegionRebuildReport {
 /// `candidate`（旧壁領域または壁版の境界節点列）が構面 `rb` に属すか判定する。
 /// 属すなら `(候補を識別する index, candidate の実面積 [mm²])` を返す。
 ///
-/// 判定は 2 段階: (1) `candidate` の代表点（境界の先頭節点）が `rb` と同じ構面上に
-/// あること（[`WallRegionBoundary::is_same_plane`]）、(2) `candidate` の重心
+/// 判定は 2 段階: (1) `candidate` の全頂点が `rb` と同じ構面上にあること
+/// （[`WallRegionBoundary::is_same_plane`]）、(2) `candidate` の多角形重心
 /// （`rb` の局所座標 `(s, z)` へ射影したもの）が `rb` の内部にあること
 /// （[`WallRegionBoundary::contains`]）。面積は実座標（3 次元）から求める（§3.2 E3。
 /// 局所座標への射影はトポロジー判定にのみ使う近似であり、面積には使わない）。
@@ -141,21 +145,14 @@ fn match_candidate(
     if coords.len() < 3 {
         return None;
     }
-    let representative_xy = [coords[0][0], coords[0][1]];
-    if !rb.is_same_plane(representative_xy) {
+    if !coords.iter().all(|c| rb.is_same_plane([c[0], c[1]])) {
         return None;
     }
-    let n = coords.len() as f64;
-    let local_centroid = {
-        let projected: Vec<[f64; 2]> = coords
-            .iter()
-            .map(|c| project_onto(rb.plane_origin, rb.plane_direction, *c))
-            .collect();
-        [
-            projected.iter().map(|p| p[0]).sum::<f64>() / n,
-            projected.iter().map(|p| p[1]).sum::<f64>() / n,
-        ]
-    };
+    let projected: Vec<[f64; 2]> = coords
+        .iter()
+        .map(|c| project_onto(rb.plane_origin, rb.plane_direction, *c))
+        .collect();
+    let local_centroid = shoelace_centroid(&projected, shoelace_area(&projected));
     if !rb.contains(model, local_centroid) {
         return None;
     }
@@ -170,6 +167,85 @@ fn project_onto(origin: [f64; 2], direction: [f64; 2], coord: [f64; 3]) -> [f64;
     let v = [coord[0] - origin[0], coord[1] - origin[1]];
     let s = v[0] * direction[0] + v[1] * direction[1];
     [s, coord[2]]
+}
+
+fn shoelace_area(pts: &[[f64; 2]]) -> f64 {
+    if pts.len() < 3 {
+        return 0.0;
+    }
+    let sum: f64 = pts
+        .iter()
+        .enumerate()
+        .map(|(i, a)| {
+            let b = pts[(i + 1) % pts.len()];
+            a[0] * b[1] - b[0] * a[1]
+        })
+        .sum();
+    sum / 2.0
+}
+
+fn shoelace_centroid(pts: &[[f64; 2]], signed_area: f64) -> [f64; 2] {
+    if signed_area.abs() <= f64::EPSILON {
+        let n = pts.len() as f64;
+        return [
+            pts.iter().map(|p| p[0]).sum::<f64>() / n,
+            pts.iter().map(|p| p[1]).sum::<f64>() / n,
+        ];
+    }
+    let mut cx = 0.0;
+    let mut cy = 0.0;
+    for (i, a) in pts.iter().enumerate() {
+        let b = pts[(i + 1) % pts.len()];
+        let cross = a[0] * b[1] - b[0] * a[1];
+        cx += (a[0] + b[0]) * cross;
+        cy += (a[1] + b[1]) * cross;
+    }
+    let six_a = 6.0 * signed_area;
+    [cx / six_a, cy / six_a]
+}
+
+fn assign_posts(model: &mut Model, boundaries: &[WallRegionBoundary]) -> usize {
+    let mut posts: Vec<_> = model
+        .secondary_members
+        .iter()
+        .filter(|sm| sm.kind == crate::model::SecondaryMemberKind::Post)
+        .map(|sm| (sm.id, sm.nodes))
+        .collect();
+    posts.sort_by_key(|(id, _)| *id);
+    for region in &mut model.wall_regions {
+        region.post_ids.clear();
+    }
+    let mut unassigned = 0;
+    for (id, nodes) in posts {
+        let Some(a) = model.nodes.get(nodes[0].index()).map(|n| n.coord) else {
+            unassigned += 1;
+            continue;
+        };
+        let Some(b) = model.nodes.get(nodes[1].index()).map(|n| n.coord) else {
+            unassigned += 1;
+            continue;
+        };
+        let midpoint = [(a[0] + b[0]) * 0.5, (a[1] + b[1]) * 0.5];
+        let hits: Vec<usize> = boundaries
+            .iter()
+            .enumerate()
+            .filter(|(_, rb)| rb.is_same_plane(midpoint))
+            .filter(|(_, rb)| {
+                let coord = [midpoint[0], midpoint[1], (a[2] + b[2]) * 0.5];
+                rb.contains(
+                    model,
+                    project_onto(rb.plane_origin, rb.plane_direction, coord),
+                )
+            })
+            .map(|(i, _)| i)
+            .collect();
+        if hits.len() == 1 {
+            model.wall_regions[hits[0]].post_ids.push(id);
+        } else {
+            unassigned += 1;
+        }
+    }
+    unassigned
 }
 
 #[cfg(test)]
@@ -235,10 +311,10 @@ mod tests {
         assert!(model.validate().is_ok(), "{:?}", model.validate());
     }
 
-    /// 再構成しても、同じ構面・同じ重心・同じ面積の区画には旧壁領域の名前・間柱を
-    /// 引き継ぐ（D10）。
+    /// 再構成しても、同じ構面・同じ重心・同じ面積の区画には旧壁領域の名前を
+    /// 引き継ぐ（D10）。間柱は再走査で帰属し、旧領域からは引き継がない（D7）。
     #[test]
-    fn test_rebuild_inherits_name_and_post_ids() {
+    fn test_rebuild_inherits_name_without_post_ids() {
         let mut model = one_bay_wall_model();
         rebuild_wall_regions(&mut model);
         model.wall_regions[0].name = "西面耐震壁".into();
@@ -255,6 +331,70 @@ mod tests {
         let report = rebuild_wall_regions(&mut model);
         assert_eq!(report.inherited, 1, "同じ区画は引き継がれるはず");
         assert_eq!(model.wall_regions[0].name, "西面耐震壁");
+        assert!(model.wall_regions[0].post_ids.is_empty());
+        assert!(report.unassigned_posts >= 1);
+    }
+
+    #[test]
+    fn test_match_candidate_requires_all_vertices_on_same_plane() {
+        let mut model = one_bay_wall_model();
+        model.nodes.push(node(4, 4000.0, 3000.0, 3000.0));
+        let rb = scan_wall_region_boundaries(&model).boundaries[0].clone();
+
+        let candidate = vec![NodeId(0), NodeId(1), NodeId(4), NodeId(3)];
+
+        assert!(match_candidate(&model, &rb, &candidate, 0).is_none());
+    }
+
+    #[test]
+    fn test_match_candidate_uses_shoelace_centroid_for_l_shape() {
+        let mut model = Model::default();
+        for (id, (s, z)) in [
+            (0, (0.0, 0.0)),
+            (1, (4000.0, 0.0)),
+            (2, (4000.0, 1500.0)),
+            (3, (2000.0, 1500.0)),
+            (4, (2000.0, 4000.0)),
+            (5, (0.0, 4000.0)),
+        ] {
+            model.nodes.push(node(id, s, 0.0, z));
+        }
+        let candidate = vec![
+            NodeId(0),
+            NodeId(1),
+            NodeId(2),
+            NodeId(3),
+            NodeId(4),
+            NodeId(5),
+        ];
+        let rb = WallRegionBoundary {
+            plane_origin: [0.0, 0.0],
+            plane_direction: [1.0, 0.0],
+            boundary: candidate.clone(),
+            edges: (0..6).map(ElemId).collect(),
+        };
+
+        assert!(!rb.contains(&model, [2000.0, 1833.3333333333]));
+        assert!(match_candidate(&model, &rb, &candidate, 0).is_some());
+    }
+
+    #[test]
+    fn test_rebuild_assigns_internal_post_only() {
+        let mut model = one_bay_wall_model();
+        model.nodes.push(node(4, 2000.0, 0.0, 0.0));
+        model.nodes.push(node(5, 2000.0, 0.0, 3000.0));
+        model.secondary_members.push(crate::model::SecondaryMember {
+            id: SecondaryMemberId(0),
+            kind: crate::model::SecondaryMemberKind::Post,
+            nodes: [NodeId(4), NodeId(5)],
+            section: None,
+            name: "内部間柱".into(),
+        });
+
+        let report = rebuild_wall_regions(&mut model);
+
+        assert_eq!(report.unassigned_posts, 0);
+        assert_eq!(model.wall_regions.len(), 1);
         assert_eq!(model.wall_regions[0].post_ids, vec![SecondaryMemberId(0)]);
     }
 
