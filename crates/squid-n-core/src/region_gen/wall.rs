@@ -36,7 +36,9 @@
 //!
 //! # 面積・自重の計算について
 //!
-//! [`WallRegionBoundary::area`] は、実座標からニューエルの公式で求めた 3 次元面積である。
+//! [`WallRegionBoundary::area`] は、実座標から [`crate::geom::polygon_area_3d`]
+//! （ニューエルの公式）で求めた 3 次元面積である。壁・シェル要素の自重算定と
+//! スラブ・壁の数量拾いが共通で使う既存の関数をそのまま使い、自前実装を持たない。
 //! トポロジー（面走査・外周面の判別）は直線への射影という近似で行ってよいが
 //! （`MEMBER_AXIS_TOL_MM` 以内の芯ずれ・非平面性は面走査の結果を左右しない）、
 //! 面積・荷重は理想平面へ投影せず実座標から直接求める（§3.2 E3）。芯ずれが
@@ -123,7 +125,7 @@ impl WallRegionBoundary {
     /// モジュールドキュメント参照）。節点が引けない場合は 0。
     pub fn area(&self, model: &Model) -> f64 {
         self.coords(model)
-            .map(|pts| newell_area(&pts))
+            .map(|pts| crate::geom::polygon_area_3d(&pts))
             .unwrap_or(0.0)
     }
 }
@@ -410,24 +412,6 @@ fn project(origin: [f64; 2], direction: [f64; 2], coord: [f64; 3]) -> [f64; 2] {
     let v = [coord[0] - origin[0], coord[1] - origin[1]];
     let s = v[0] * direction[0] + v[1] * direction[1];
     [s, coord[2]]
-}
-
-/// 3 次元多角形の面積（ニューエルの公式）。理想平面への投影を経由しない
-/// （モジュールドキュメント参照。芯ずれ・非平面性による誤差を面積計算に持ち込まない）。
-fn newell_area(pts: &[[f64; 3]]) -> f64 {
-    let n = pts.len();
-    if n < 3 {
-        return 0.0;
-    }
-    let mut normal = [0.0; 3];
-    for i in 0..n {
-        let a = pts[i];
-        let b = pts[(i + 1) % n];
-        normal[0] += (a[1] - b[1]) * (a[2] + b[2]);
-        normal[1] += (a[2] - b[2]) * (a[0] + b[0]);
-        normal[2] += (a[0] - b[0]) * (a[1] + b[1]);
-    }
-    0.5 * (normal[0] * normal[0] + normal[1] * normal[1] + normal[2] * normal[2]).sqrt()
 }
 
 #[cfg(test)]
