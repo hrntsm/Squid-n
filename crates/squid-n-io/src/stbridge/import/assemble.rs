@@ -729,8 +729,9 @@ fn build_walls(
     warnings: &mut Vec<String>,
 ) {
     // ST-Bridge の XML には「壁と間柱の親子関係」を明示する要素がない。
-    // 現行 importer は `ElementKind::Wall` 要素と `WallAttr` を直接生成するのみで、
-    // `WallRegion`/`WallPlate` は組み立てない（`wall_regions`/`wall_plates` は
+    // 現行 importer は `ElementKind::Wall` 要素のみを直接生成する（`WallAttr` は
+    // 生成しない。開口・三方スリットは常に既定値〔開口なし〕になる）。
+    // `WallRegion`/`WallPlate` も組み立てない（`wall_regions`/`wall_plates` は
     // 空配列のまま）。取り込み経路の `WallPlate` への移行は Step 7+8 本体で行う
     // （`dev_docs/handoff/床領域・壁領域の再設計_申し送り.md` §5.8）。
     let mut skipped_walls = 0u32;

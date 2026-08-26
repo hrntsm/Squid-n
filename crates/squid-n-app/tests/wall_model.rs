@@ -370,6 +370,11 @@ fn wall_bay_app() -> App {
     let mut app = App::default();
     app.analysis_cfg.threads = 1;
     app.model = wall_bay_model();
+    // 架構種別（Ds 表の行を選ぶ設定。`App::design_frame`）は既定で SteelFrame
+    // のままだと、耐震壁を持つ本フィクスチャでも Ds 計算が鋼構造の表
+    // （`ds_steel`）を使ってしまい、RC 耐力壁の Ds 表（`ds_rc`）が一度も
+    // 通らない。本フィクスチャは RC 耐震壁付き構造なので明示的に宣言する。
+    app.design_frame = squid_n_design_jp::secondary::holding_capacity::FrameType::RcWall;
     app
 }
 
@@ -660,9 +665,13 @@ fn snapshot_wall_ds_group_and_holding_capacity() {
         "保有水平耐力 Qu が異常: {}",
         s.qu
     );
+    // RC 造の Ds 表（`ds_rc`）が取りうる値の範囲は 0.30〜0.55（`App::design_frame`
+    // を `FrameType::RcWall` にしないと鋼構造の表 `ds_steel`（0.25〜0.55）が使われ
+    // てしまい、この範囲チェックを鋼構造の下限 0.25 まで緩めない限り気づけない
+    // 誤りになる。`wall_bay_app` 参照）。
     assert!(
-        (0.2..=0.6).contains(&s.ds),
-        "構造特性係数 Ds が規定の範囲外: {}",
+        (0.3..=0.55).contains(&s.ds),
+        "構造特性係数 Ds が RC 造の規定範囲外: {}",
         s.ds
     );
     assert!(
