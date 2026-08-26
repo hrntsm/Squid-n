@@ -651,7 +651,7 @@ fn node_reference_issues(model: &Model) -> Vec<ModelIssue> {
                     }
                     squid_n_core::model::RegionAnchor::Point(n) => mark(*n),
                     // 床板では到達しない（`slab.rs::boundary_coords` と同じ理由）。
-                    squid_n_core::model::RegionAnchor::FloorRegion(_) => {}
+                    squid_n_core::model::RegionAnchor::FloorRegion { .. } => {}
                 },
             }
         }

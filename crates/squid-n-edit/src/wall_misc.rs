@@ -486,7 +486,7 @@ impl EditCommand for AddAttachedSlab {
             RegionAnchor::Point(n) => crate::refs::node_exists(model, n),
             // 床板の取付き先には使わない（`RegionAnchor::FloorRegion` のドキュメント
             // 参照。壁側〔自立壁〕専用のアンカーであり、床板では常に不正）。
-            RegionAnchor::FloorRegion(_) => false,
+            RegionAnchor::FloorRegion { .. } => false,
         };
         if !nodes_ok {
             return Box::new(Noop);
@@ -583,7 +583,7 @@ impl EditCommand for SetAttachedAnchor {
             RegionAnchor::Point(n) => crate::refs::node_exists(model, n),
             // 床板の取付き先には使わない（`RegionAnchor::FloorRegion` のドキュメント
             // 参照。壁側〔自立壁〕専用のアンカーであり、床板では常に不正）。
-            RegionAnchor::FloorRegion(_) => false,
+            RegionAnchor::FloorRegion { .. } => false,
         };
         if !nodes_ok {
             return Box::new(Noop);

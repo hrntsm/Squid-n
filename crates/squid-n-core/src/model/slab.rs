@@ -144,7 +144,7 @@ impl Slab {
                 // 床板の取付き先には使わない（`RegionAnchor::FloorRegion` のドキュメント
                 // 参照。壁側〔`WallPlate` の `Attached` 形〕専用のアンカーであり、
                 // 床板では到達しない）。
-                RegionAnchor::FloorRegion(_) => None,
+                RegionAnchor::FloorRegion { .. } => None,
             },
         }
     }
@@ -165,7 +165,7 @@ impl Slab {
                 RegionAnchor::Line { nodes, .. } if k == 0 => Some(*nodes),
                 RegionAnchor::Line { .. } | RegionAnchor::Point(_) => None,
                 // 床板では到達しない（`boundary_coords` と同じ理由）。
-                RegionAnchor::FloorRegion(_) => None,
+                RegionAnchor::FloorRegion { .. } => None,
             },
         }
     }
@@ -179,7 +179,7 @@ impl Slab {
                 RegionAnchor::Line { nodes, .. } => Some(nodes[0]),
                 RegionAnchor::Point(n) => Some(*n),
                 // 床板では到達しない（`boundary_coords` と同じ理由）。
-                RegionAnchor::FloorRegion(_) => None,
+                RegionAnchor::FloorRegion { .. } => None,
             },
         }
     }
@@ -543,7 +543,10 @@ mod tests {
         let slab = Slab {
             id: crate::ids::SlabId(0),
             shape: SlabShape::Attached {
-                anchor: RegionAnchor::FloorRegion(crate::ids::FloorRegionId(0)),
+                anchor: RegionAnchor::FloorRegion {
+                    region: crate::ids::FloorRegionId(0),
+                    nodes: [NodeId(0), NodeId(1)],
+                },
                 extent: [0.0, 0.0],
             },
             plate: SlabPlate::default(),

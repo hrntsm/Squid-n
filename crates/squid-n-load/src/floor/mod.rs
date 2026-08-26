@@ -153,7 +153,7 @@ fn distribute_attached(
         },
         // 床板の取付き先には使わない（`RegionAnchor::FloorRegion` のドキュメント参照。
         // 壁側〔自立壁〕専用のアンカーであり、`Slab::shape` 経由では到達しない）。
-        RegionAnchor::FloorRegion(_) => {}
+        RegionAnchor::FloorRegion { .. } => {}
     }
 }
 

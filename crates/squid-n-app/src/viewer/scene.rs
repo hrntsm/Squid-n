@@ -173,7 +173,7 @@ fn slab_visible_on_frame(slab: &squid_n_core::model::Slab, filter: FrameFilter) 
             RegionAnchor::Line { nodes, .. } => nodes.iter().any(|n| filter.shows_node(n.index())),
             RegionAnchor::Point(n) => filter.shows_node(n.index()),
             // 床板では到達しない（`slab.rs::boundary_coords` と同じ理由）。
-            RegionAnchor::FloorRegion(_) => false,
+            RegionAnchor::FloorRegion { .. } => false,
         },
     }
 }

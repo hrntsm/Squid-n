@@ -547,7 +547,7 @@ fn slab_refs_node(slab: &Slab, id: NodeId) -> bool {
             RegionAnchor::Line { nodes, .. } => nodes[0] == id || nodes[1] == id,
             RegionAnchor::Point(n) => *n == id,
             // 床板では到達しない（`slab.rs::boundary_coords` と同じ理由）。
-            RegionAnchor::FloorRegion(_) => false,
+            RegionAnchor::FloorRegion { .. } => false,
         },
     }
 }
