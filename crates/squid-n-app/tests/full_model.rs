@@ -1283,10 +1283,22 @@ fn region_gen_finds_wall_bounded_regions() {
     // 同じ構面を 2 回検出していても気づけない。境界どうしが節点集合として
     // 重複していないこと（構面の重複統合ミスの検出）と、面積が必ず正であること
     // （外周面の判別・ニューエル面積算定の破綻の検出）を独立の不変条件として確認する。
+    // 本フィクスチャは直交グリッドの S 造建物であり（`import_builds_expected_model` 等
+    // 参照）、正の面積を持つ壁境界の構面はすべて軸方向（X または Y）のはずである。
+    // 斜め方向の構面に正の面積を持つ境界が現れた場合、`wall_planes` が実際には
+    // つながっていない柱の組を誤って直線候補として拾い、構造的に無意味な面を
+    // 検出している疑いが強い（列挙した候補直線ごとに面走査をかけるため、
+    // 実在しない斜めの「構面」でも部材がたまたま条件を満たせば面ができうる）。
     let mut seen: HashSet<Vec<u32>> = HashSet::new();
     for b in &scan.boundaries {
         let area = b.area(&app.model);
         assert!(area > 0.0, "境界の面積は必ず正: {area}");
+        let axis_aligned = b.plane_direction[0].abs() < 1e-6 || b.plane_direction[1].abs() < 1e-6;
+        assert!(
+            axis_aligned,
+            "直交グリッド建物のはずが斜め構面に正の面積を持つ境界がある（構造的に無意味な面の疑い）: {:?}",
+            b.plane_direction
+        );
         let mut nodes: Vec<u32> = b.boundary.iter().map(|n| n.0).collect();
         nodes.sort_unstable();
         assert!(
