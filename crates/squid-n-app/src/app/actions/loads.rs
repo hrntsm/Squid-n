@@ -155,6 +155,7 @@ impl App {
     ///    「同期していないのに一致」と誤判定するため、必ず同期後の状態で保存する）。
     pub fn sync_auto_load_cases_action(&mut self) {
         squid_n_core::region_rebuild::rebuild_floor_regions(&mut self.model);
+        squid_n_core::wall_region_rebuild::rebuild_wall_regions(&mut self.model);
         self.apply_rigid_zones_for_analysis();
         let current = self.compute_auto_load_sync_hash();
         if self.auto_load_sync_hash == Some(current) {

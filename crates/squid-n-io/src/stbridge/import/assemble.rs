@@ -18,6 +18,7 @@ use squid_n_core::model::{
 };
 use squid_n_core::region_rebuild::rebuild_floor_regions;
 use squid_n_core::section_shape::SectionShape;
+use squid_n_core::wall_region_rebuild::rebuild_wall_regions;
 use std::collections::HashMap;
 
 /// パース済み中間表現からモデルと取り込み報告を組み立てる（後段のエントリポイント）。
@@ -144,6 +145,17 @@ pub(super) fn assemble(parsed: StbParser) -> Result<(Model, ImportReport), StbEr
         warnings.push(format!(
             "床領域の作り直しで照合できなかった旧床領域が {} 件あった",
             rebuild.unmatched_old_regions
+        ));
+    }
+    // 壁領域（柱・梁が囲む鉛直構面内の閉領域）を検出する。現時点では壁版
+    // （WallPlate）を取り込まないため wall_plates_assigned は常に 0 だが、
+    // 壁側 region_gen の結果はここで model.wall_regions へ反映しておく
+    // （§5.8・§5.9。要素生成・壁版の取り込みへの結線は Step 7+8 本体で行う）。
+    let wall_rebuild = rebuild_wall_regions(&mut model);
+    if wall_rebuild.unassigned_wall_plates != 0 {
+        warnings.push(format!(
+            "壁領域の作り直しで壁版 {} 枚が領域に割り当てられなかった",
+            wall_rebuild.unassigned_wall_plates
         ));
     }
     build_load_cases(&mut model, raw_load_cases, &node_index, &mut warnings);

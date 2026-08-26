@@ -21,6 +21,7 @@ pub mod region_rebuild;
 pub mod section_shape;
 pub mod structure_kind;
 pub mod units;
+pub mod wall_region_rebuild;
 
 pub use dof::*;
 pub use error::*;

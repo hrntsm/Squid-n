@@ -128,6 +128,40 @@ impl WallRegionBoundary {
             .map(|pts| crate::geom::polygon_area_3d(&pts))
             .unwrap_or(0.0)
     }
+
+    /// 境界節点を局所座標 `(s, z)` へ射影した多角形。節点が引けない場合は `None`。
+    fn local_polygon(&self, model: &Model) -> Option<Vec<[f64; 2]>> {
+        self.boundary
+            .iter()
+            .map(|n| {
+                model
+                    .nodes
+                    .get(n.index())
+                    .map(|nd| project(self.plane_origin, self.plane_direction, nd.coord))
+            })
+            .collect()
+    }
+
+    /// 局所座標 `(s, z)` の点 `p` がこの境界の内部にあるか（辺上は含まない厳密内包）。
+    /// `p` はこの境界と同じ構面（[`WallRegionBoundary::is_same_plane`]）上にあることを
+    /// 前提とする（呼び出し側で確認すること。射影後の座標系が異なる構面どうしを
+    /// 比較しても意味を持たない）。
+    pub fn contains(&self, model: &Model, p: [f64; 2]) -> bool {
+        let Some(poly) = self.local_polygon(model) else {
+            return false;
+        };
+        super::polygon_contains_strict(&poly, p)
+    }
+
+    /// 与えた点 `origin` がこの境界と同じ構面（直線）上にあるか
+    /// （[`crate::geom::MEMBER_AXIS_TOL_MM`] 以内の実距離。[`super::floor::
+    /// RegionBoundary::is_same_level`] の壁側版）。**直線の方向ベクトルの数値的な
+    /// 一致は求めない**（同じ物理的な直線でも、由来する候補点の組が異なれば
+    /// 正規化後の方向ベクトルが浮動小数点の誤差だけずれうるため。位置の実距離
+    /// のほうが頑健な同一性判定になる。`wall_planes` の候補統合と同じ判断）。
+    pub fn is_same_plane(&self, origin: [f64; 2]) -> bool {
+        is_same_line(self.plane_origin, self.plane_direction, &[origin])
+    }
 }
 
 /// 面走査の結果。壁領域の境界を持つ。

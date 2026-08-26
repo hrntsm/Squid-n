@@ -1315,6 +1315,34 @@ fn region_gen_finds_wall_bounded_regions() {
     );
 }
 
+/// ST-Bridge 取り込み（`assemble.rs`）が `rebuild_wall_regions` を実際に呼び、
+/// `model.wall_regions` が `region_gen::wall` の検出結果と一致する件数で
+/// 埋まっていること（§5.9 で結線した経路の end-to-end 確認）。
+///
+/// 本フィクスチャは壁版（`WallPlate`）を 1 枚も持たないため、検出した壁領域は
+/// すべて `wall_plate_ids` が空のまま（幾何の検出だけが先に結線され、壁版の取り込み
+/// はまだ Step 7+8 本体で行うため）。
+#[test]
+fn import_populates_wall_regions_from_region_gen() {
+    let app = imported();
+    assert_eq!(
+        app.model.wall_regions.len(),
+        55,
+        "region_gen_finds_wall_bounded_regions と同じ件数のはず"
+    );
+    assert!(
+        app.model
+            .wall_regions
+            .iter()
+            .all(|r| r.wall_plate_ids.is_empty()),
+        "本フィクスチャは壁版を持たないため、壁版の割当は 0 件のはず"
+    );
+    for (i, r) in app.model.wall_regions.iter().enumerate() {
+        assert_eq!(r.id.0, i as u32, "id は配列添字と一致するはず");
+    }
+    assert!(app.model.validate().is_ok(), "{:?}", app.model.validate());
+}
+
 /// 取り込んだ床板が、大梁で囲まれた床領域の境界へ過不足なく収まる。
 ///
 /// 大梁が囲む区画（床領域）は 1 つの境界につき 1 つ（D1）。区画内の床板

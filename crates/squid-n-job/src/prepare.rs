@@ -6,6 +6,7 @@
 
 use squid_n_core::model::Model;
 use squid_n_core::region_rebuild::rebuild_floor_regions;
+use squid_n_core::wall_region_rebuild::rebuild_wall_regions;
 
 use crate::auto_loads::{apply_auto_load_cases, compute_auto_load_cases};
 use crate::settings::AnalysisSettings;
@@ -46,6 +47,7 @@ pub fn prepare_model_for_analysis(
     design_period: Option<f64>,
 ) -> PrepareReport {
     rebuild_floor_regions(model);
+    rebuild_wall_regions(model);
     let panels = apply_rigid_zones_and_panels(model);
     let computed = compute_auto_load_cases(model, settings, design_period);
     apply_auto_load_cases(model, &computed.cases);
