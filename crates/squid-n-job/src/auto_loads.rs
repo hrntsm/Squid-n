@@ -225,6 +225,10 @@ pub fn slab_load_case_content(
     ) {
         match *shape {
             LoadShape::Uniform { w } => push_dist(member, elem, a0, a0 + len_e, w, w),
+            LoadShape::Linear { w_i, w_j } => {
+                let (w1, w2) = if flip { (w_j, w_i) } else { (w_i, w_j) };
+                push_dist(member, elem, a0, a0 + len_e, w1, w2);
+            }
             LoadShape::Triangle { w0 } => {
                 let mid = len_e / 2.0;
                 push_dist(member, elem, a0, a0 + mid, 0.0, w0);
@@ -250,6 +254,13 @@ pub fn slab_load_case_content(
     fn line_intensity(shape: &LoadShape, len: f64, x: f64) -> f64 {
         match *shape {
             LoadShape::Uniform { w } => w,
+            LoadShape::Linear { w_i, w_j } => {
+                if len <= 1e-9 {
+                    w_i
+                } else {
+                    w_i + (w_j - w_i) * (x / len)
+                }
+            }
             LoadShape::Triangle { w0 } => {
                 let mid = len / 2.0;
                 if x <= mid {
@@ -289,7 +300,7 @@ pub fn slab_load_case_content(
     /// 荷重強度が折れる位置（線分始点からの距離）。区間をここで割ると各片が線形になる。
     fn shape_breakpoints(shape: &LoadShape, len: f64) -> Vec<f64> {
         match *shape {
-            LoadShape::Uniform { .. } => Vec::new(),
+            LoadShape::Uniform { .. } | LoadShape::Linear { .. } => Vec::new(),
             LoadShape::Triangle { .. } => vec![len / 2.0],
             LoadShape::Trapezoid { a, b, .. } => vec![a, a + b],
             LoadShape::Point { x, .. } => vec![x],
@@ -394,6 +405,10 @@ pub fn slab_load_case_content(
             LoadShape::Uniform { w } => {
                 let total = w * len;
                 (total / 2.0, total / 2.0)
+            }
+            LoadShape::Linear { w_i, w_j } => {
+                // 単純梁反力。台形の面積重心按分と一致する: R_i = L(2w_i+w_j)/6。
+                (len * (2.0 * w_i + w_j) / 6.0, len * (w_i + 2.0 * w_j) / 6.0)
             }
             LoadShape::Triangle { w0 } => {
                 let total = w0 * len / 2.0;
@@ -512,16 +527,27 @@ pub fn slab_load_case_content(
     (nodal, member)
 }
 
-/// CMQ 図用の DL スラブ分配 `BeamLoad` 列（自重・LL は含まない）。
+/// 床の DL 分配 `BeamLoad` 列（スラブ固定荷重＋自立壁の等価面荷重）。
+///
+/// 現状の CMQ 図ソースでもあるが、荷重ケースの全部材荷重ではない
+/// （梁自重・取り付く壁版の線アンカーは [`compute_gravity_auto_load_cases`] 側で
+/// 「DL」へ加算する。CMQ 図への反映は
+/// `dev_docs/handoff/CMQ図を荷重ケースの全荷重へ_申し送り.md`）。
 pub fn compute_dl_beam_loads(model: &Model) -> Vec<BeamLoad> {
     let beam_map = beam_elem_map(model);
     let unit_reactions = slab_grillage_unit_reactions(model, &beam_map);
-    slab_beam_loads_with(
+    let (extra_intensity, fallback) =
+        squid_n_load::wall_attached::floor_region_wall_extra_intensity(model);
+    let mut loads = slab_beam_loads_with(
         model,
-        |slab| model.slab_dead_intensity(slab),
+        |slab| {
+            model.slab_dead_intensity(slab) + extra_intensity.get(&slab.id).copied().unwrap_or(0.0)
+        },
         &unit_reactions,
         &beam_map,
-    )
+    );
+    loads.extend(fallback);
+    loads
 }
 
 /// 重力系（DL・LL(架構用)・LL(地震用)）の自動生成内容を計算する。
@@ -536,6 +562,13 @@ pub fn compute_gravity_auto_load_cases(model: &Model) -> AutoLoadComputeResult {
         squid_n_load::self_weight::self_weight_case_content(model, &load_cfg);
     dl_nodal.extend(sw_nodal);
     dl_member.extend(sw_member);
+    // 「線」アンカーの取り付く壁版（パラペット・腰壁・垂れ壁）の自重。床板分配と同じ
+    // 幾何解決（`slab_load_case_content` の `LoadTarget::Span`）へ合流させることで、
+    // 取付き線の部分区間（`span`）を梁全長へ薄めず正確に扱う（`wall_attached` 参照）。
+    let attached_wall_loads = squid_n_load::wall_attached::attached_wall_beam_loads(model);
+    let (aw_nodal, aw_member) = slab_load_case_content(model, &attached_wall_loads);
+    dl_nodal.extend(aw_nodal);
+    dl_member.extend(aw_member);
     let (dl_nodal, extra_member) = resolve_nodal_to_primary(model, dl_nodal, SPAN_TOL_MM);
     dl_member.extend(extra_member);
 
@@ -801,6 +834,318 @@ mod tests {
             .expect("DL case exists");
         assert_eq!(dl.member.len(), 8);
         assert!(dl.nodal.iter().all(|nl| nl.source.is_auto()));
+    }
+
+    /// 取り付く壁版（パラペット等）の自重が「DL」ケースへ合流すること
+    /// （`squid_n_load::wall_attached` の結線。dig 2026-08-27 Q2=A・Q3=B）。
+    #[test]
+    fn compute_gravity_includes_attached_wall_plate_self_weight() {
+        use squid_n_core::ids::{MaterialId, SectionId, WallPlateId};
+        use squid_n_core::model::{
+            LoadTransfer, Material, MaterialCategory, RegionAnchor, Section, WallPlate,
+            WallPlateShape,
+        };
+
+        let mut model = make_square_slab_model();
+        model.materials.push(Material {
+            strength_factor: None,
+            concrete_class: Default::default(),
+            id: MaterialId(0),
+            name: "Fc24".into(),
+            category: MaterialCategory::Concrete,
+            young: 23000.0,
+            poisson: 0.2,
+            density: 2.4e-9,
+            shear: None,
+            fc: Some(24.0),
+            fy: None,
+        });
+        model.sections.push(Section {
+            id: SectionId(0),
+            name: "壁 t150".into(),
+            area: 0.0,
+            iy: 1.0,
+            iz: 1.0,
+            j: 1.0,
+            depth: 0.0,
+            width: 0.0,
+            as_y: 1.0,
+            as_z: 1.0,
+            floor: None,
+            panel_thickness: None,
+            thickness: Some(150.0),
+            shape: None,
+            material: Some(MaterialId(0)),
+            rebar_material: None,
+            shear_rebar_material: None,
+            steel_material: None,
+        });
+        // 辺0（節点0-1、大梁として実在）に全長載るパラペット（立ち上がり500mm）。
+        let plate = WallPlate {
+            id: WallPlateId(0),
+            shape: WallPlateShape::Attached {
+                anchor: RegionAnchor::Line {
+                    nodes: [NodeId(0), NodeId(1)],
+                    span: [0.0, 1.0],
+                    transfer: LoadTransfer::Anchor,
+                },
+                extent: [500.0, 500.0],
+            },
+            section: Some(SectionId(0)),
+            opening_area: 0.0,
+            opening_weight: 0.0,
+            openings: Vec::new(),
+            three_side_slit: false,
+        };
+        let expected = model
+            .wall_plate_self_weight(&plate, &model)
+            .expect("自重が求まる");
+        model.wall_plates.push(plate);
+        model.validate().expect("valid model");
+
+        let baseline = compute_gravity_auto_load_cases(&make_square_slab_model());
+        let baseline_dl = baseline
+            .cases
+            .iter()
+            .find(|c| c.name == DL_CASE_NAME)
+            .unwrap();
+
+        let result = compute_gravity_auto_load_cases(&model);
+        let dl = result
+            .cases
+            .iter()
+            .find(|c| c.name == DL_CASE_NAME)
+            .expect("DL");
+        assert_eq!(
+            dl.member.len(),
+            baseline_dl.member.len() + 1,
+            "辺0（節点0-1）へ壁の等分布荷重が1件加わるはず"
+        );
+
+        // 辺0（節点0-1）に載る分布荷重の合計force（w×区間長の総和）を、壁版追加の
+        // 前後で比較する。増分が壁の自重総量と一致すること（総和保存）。
+        let beam0 = beam_elem_map(&model)[&beam_key(NodeId(0), NodeId(1))];
+        let member_total_on = |members: &[squid_n_core::model::MemberLoad]| -> f64 {
+            members
+                .iter()
+                .filter(|m| m.elem == beam0)
+                .map(|m| match m.kind {
+                    squid_n_core::model::MemberLoadKind::Distributed { a, b, w1, w2 } => {
+                        0.5 * (w1 + w2) * (b - a)
+                    }
+                    _ => 0.0,
+                })
+                .sum()
+        };
+        let added = member_total_on(&dl.member) - member_total_on(&baseline_dl.member);
+        assert!(
+            (added - expected).abs() / expected < 1e-6,
+            "added={added} expected={expected}"
+        );
+    }
+
+    /// 台形の取り付く壁版が DL の部材荷重まで線形変化として届き、強度比と総和が保存される。
+    #[test]
+    fn compute_gravity_preserves_trapezoid_linear_shape_on_beam() {
+        use squid_n_core::ids::{MaterialId, SectionId, WallPlateId};
+        use squid_n_core::model::{
+            LoadTransfer, Material, MaterialCategory, RegionAnchor, Section, WallPlate,
+            WallPlateShape,
+        };
+
+        let mut model = make_square_slab_model();
+        model.materials.push(Material {
+            strength_factor: None,
+            concrete_class: Default::default(),
+            id: MaterialId(0),
+            name: "Fc24".into(),
+            category: MaterialCategory::Concrete,
+            young: 23000.0,
+            poisson: 0.2,
+            density: 2.4e-9,
+            shear: None,
+            fc: Some(24.0),
+            fy: None,
+        });
+        model.sections.push(Section {
+            id: SectionId(0),
+            name: "壁 t150".into(),
+            area: 0.0,
+            iy: 1.0,
+            iz: 1.0,
+            j: 1.0,
+            depth: 0.0,
+            width: 0.0,
+            as_y: 1.0,
+            as_z: 1.0,
+            floor: None,
+            panel_thickness: None,
+            thickness: Some(150.0),
+            shape: None,
+            material: Some(MaterialId(0)),
+            rebar_material: None,
+            shear_rebar_material: None,
+            steel_material: None,
+        });
+        let plate = WallPlate {
+            id: WallPlateId(0),
+            shape: WallPlateShape::Attached {
+                anchor: RegionAnchor::Line {
+                    nodes: [NodeId(0), NodeId(1)],
+                    span: [0.0, 1.0],
+                    transfer: LoadTransfer::Anchor,
+                },
+                extent: [500.0, 1500.0],
+            },
+            section: Some(SectionId(0)),
+            opening_area: 0.0,
+            opening_weight: 0.0,
+            openings: Vec::new(),
+            three_side_slit: false,
+        };
+        let expected = model
+            .wall_plate_self_weight(&plate, &model)
+            .expect("自重が求まる");
+        model.wall_plates.push(plate);
+        model.validate().expect("valid model");
+
+        let result = compute_gravity_auto_load_cases(&model);
+        let dl = result
+            .cases
+            .iter()
+            .find(|c| c.name == DL_CASE_NAME)
+            .expect("DL");
+        let beam0 = beam_elem_map(&model)[&beam_key(NodeId(0), NodeId(1))];
+        let wall_loads: Vec<_> = dl
+            .member
+            .iter()
+            .filter(|m| m.elem == beam0)
+            .filter_map(|m| match m.kind {
+                squid_n_core::model::MemberLoadKind::Distributed { a, b, w1, w2 } => {
+                    Some((a, b, w1, w2))
+                }
+                _ => None,
+            })
+            .collect();
+        // 床分配の等分布に、壁の線形変化が 1 件乗る。
+        let linear = wall_loads
+            .iter()
+            .copied()
+            .find(|&(_, _, w1, w2)| w1 > 1e-12 && w2 > 1e-12 && (w1 - w2).abs() > 1e-12)
+            .expect("台形壁の線形変化（両端とも正で不等）が部材荷重に載るはず");
+        let (a, b, w1, w2) = linear;
+        let h0 = 500.0;
+        let h1 = 1500.0;
+        assert!(
+            ((w1 / w2) - (h0 / h1)).abs() < 1e-9,
+            "w1/w2={} h0/h1={}",
+            w1 / w2,
+            h0 / h1
+        );
+        let added = 0.5 * (w1 + w2) * (b - a);
+        assert!(
+            (added - expected).abs() / expected < 1e-6,
+            "added={added} expected={expected}"
+        );
+    }
+
+    /// 自立壁（床領域アンカー）の自重が、床の固定荷重分配経由で DL の総和に乗る。
+    #[test]
+    fn compute_gravity_includes_floor_region_attached_wall_as_slab_extra() {
+        use squid_n_core::ids::{MaterialId, SectionId, WallPlateId};
+        use squid_n_core::model::{
+            Material, MaterialCategory, RegionAnchor, Section, WallPlate, WallPlateShape,
+        };
+
+        let mut model = make_square_slab_model();
+        model.materials.push(Material {
+            strength_factor: None,
+            concrete_class: Default::default(),
+            id: MaterialId(0),
+            name: "Fc24".into(),
+            category: MaterialCategory::Concrete,
+            young: 23000.0,
+            poisson: 0.2,
+            density: 2.4e-9,
+            shear: None,
+            fc: Some(24.0),
+            fy: None,
+        });
+        model.sections.push(Section {
+            id: SectionId(0),
+            name: "壁 t150".into(),
+            area: 0.0,
+            iy: 1.0,
+            iz: 1.0,
+            j: 1.0,
+            depth: 0.0,
+            width: 0.0,
+            as_y: 1.0,
+            as_z: 1.0,
+            floor: None,
+            panel_thickness: None,
+            thickness: Some(150.0),
+            shape: None,
+            material: Some(MaterialId(0)),
+            rebar_material: None,
+            shear_rebar_material: None,
+            steel_material: None,
+        });
+        let plate = WallPlate {
+            id: WallPlateId(0),
+            shape: WallPlateShape::Attached {
+                anchor: RegionAnchor::FloorRegion {
+                    region: FloorRegionId(0),
+                    nodes: [NodeId(0), NodeId(1)],
+                },
+                extent: [500.0, 500.0],
+            },
+            section: Some(SectionId(0)),
+            opening_area: 0.0,
+            opening_weight: 0.0,
+            openings: Vec::new(),
+            three_side_slit: false,
+        };
+        let expected = model
+            .wall_plate_self_weight(&plate, &model)
+            .expect("自重が求まる");
+        model.wall_plates.push(plate);
+        model.validate().expect("valid model");
+
+        let member_total = |members: &[squid_n_core::model::MemberLoad]| -> f64 {
+            members
+                .iter()
+                .map(|m| match m.kind {
+                    squid_n_core::model::MemberLoadKind::Distributed { a, b, w1, w2 } => {
+                        0.5 * (w1 + w2) * (b - a)
+                    }
+                    squid_n_core::model::MemberLoadKind::Point { p, .. } => p,
+                })
+                .sum()
+        };
+        let nodal_total = |nodal: &[squid_n_core::model::NodalLoad]| -> f64 {
+            nodal.iter().map(|nl| -nl.values[2]).sum()
+        };
+
+        let baseline = compute_gravity_auto_load_cases(&make_square_slab_model());
+        let baseline_dl = baseline
+            .cases
+            .iter()
+            .find(|c| c.name == DL_CASE_NAME)
+            .unwrap();
+        let result = compute_gravity_auto_load_cases(&model);
+        let dl = result
+            .cases
+            .iter()
+            .find(|c| c.name == DL_CASE_NAME)
+            .expect("DL");
+        let added = member_total(&dl.member) + nodal_total(&dl.nodal)
+            - member_total(&baseline_dl.member)
+            - nodal_total(&baseline_dl.nodal);
+        assert!(
+            (added - expected).abs() / expected < 1e-6,
+            "added={added} expected={expected}"
+        );
     }
 
     #[test]

@@ -1362,6 +1362,67 @@ fn test_generate_stories_with_opts_self_weight_via_case_matches_density() {
     );
 }
 
+/// DL が無く密度から直接算入する経路でも、取り付く壁版の自重が階重量へ入る
+/// （囲まれた壁・フレーム外雑壁と同じ。抜け落ちは危険側）。
+#[test]
+fn test_density_seismic_weight_includes_attached_wall_plate() {
+    use squid_n_core::model::{LoadTransfer, RegionAnchor};
+
+    let mut model = two_story_model();
+    let baseline = generate_stories(&model, None).unwrap();
+
+    model.sections.push(Section {
+        id: SectionId(1),
+        name: "壁 t150".into(),
+        area: 0.0,
+        iy: 1.0,
+        iz: 1.0,
+        j: 1.0,
+        depth: 0.0,
+        width: 0.0,
+        as_y: 1.0,
+        as_z: 1.0,
+        floor: None,
+        panel_thickness: None,
+        thickness: Some(150.0),
+        shape: None,
+        material: Some(MaterialId(0)),
+        rebar_material: None,
+        shear_rebar_material: None,
+        steel_material: None,
+    });
+    let plate = WallPlate {
+        id: WallPlateId(0),
+        shape: WallPlateShape::Attached {
+            anchor: RegionAnchor::Line {
+                nodes: [NodeId(4), NodeId(5)],
+                span: [0.0, 1.0],
+                transfer: LoadTransfer::Anchor,
+            },
+            extent: [1000.0, 1000.0],
+        },
+        section: Some(SectionId(1)),
+        opening_area: 0.0,
+        opening_weight: 0.0,
+        openings: Vec::new(),
+        three_side_slit: false,
+    };
+    let expected = model
+        .wall_plate_self_weight(&plate, &model)
+        .expect("自重が求まる");
+    model.wall_plates.push(plate);
+
+    let with_wall = generate_stories(&model, None).unwrap();
+    let w0 = baseline.stories[2].seismic_weight.unwrap();
+    let w1 = with_wall.stories[2].seismic_weight.unwrap();
+    assert!(
+        ((w1 - w0) - expected).abs() / expected < 1e-6,
+        "屋根階の増分={} expected={}",
+        w1 - w0,
+        expected
+    );
+}
+
 // ------------------------------------------------------------------
 // §壁開口・三方スリット
 // ------------------------------------------------------------------

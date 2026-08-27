@@ -1,6 +1,6 @@
 //! 荷重分配の基本型と辺荷重の共通ヘルパ。
 //!
-//! - [`LoadShape`] — 荷重形状（等分布・台形・三角形・集中）
+//! - [`LoadShape`] — 荷重形状（等分布・線形変化・台形・三角形・集中）
 //! - [`Cmq`] — 両端固定梁の固定端モーメント・せん断（CMQ）
 //! - [`LoadTarget`] — 荷重の作用対象（境界辺 / 節点）
 //! - [`BeamLoad`] — 分配結果1件（作用対象・荷重形状・CMQ）
@@ -10,10 +10,28 @@ use squid_n_core::ids::{ElemId, NodeId};
 
 #[derive(Clone, Copy, Debug)]
 pub enum LoadShape {
-    Uniform { w: f64 },
-    Trapezoid { w0: f64, a: f64, b: f64 },
-    Triangle { w0: f64 },
-    Point { p: f64, x: f64 },
+    Uniform {
+        w: f64,
+    },
+    /// 材軸に沿って強度が線形に変わる分布（始端 `w_i` → 終端 `w_j`）。
+    /// 取り付く壁版の台形（張り出し高さが両端で異なる）の自重に使う。
+    /// [`LoadShape::Trapezoid`]（床の 45° 分配の対称台形）とは別物である。
+    Linear {
+        w_i: f64,
+        w_j: f64,
+    },
+    Trapezoid {
+        w0: f64,
+        a: f64,
+        b: f64,
+    },
+    Triangle {
+        w0: f64,
+    },
+    Point {
+        p: f64,
+        x: f64,
+    },
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -40,9 +58,9 @@ pub struct Cmq {
 ///   `squid-n-app::refresh_beam_loads` は現状 `target` を解釈しないため、`Node` 荷重を
 ///   実際に構造モデルへ反映する対応は後続タスク（app 側）で行う。
 /// - `Span { nodes, t }`: 実部材化された小梁（`nodes[0]`↔`nodes[1]` を両端に持つ実 `Beam`
-///   要素）への等分布荷重。小梁が実部材として存在する場合、点反力ではなくこの分布荷重を
-///   小梁自身へ載せ、小梁が FEM で支持へ伝達する（`elem` は番兵 `ElemId(u32::MAX)`。app 側が
-///   節点対から実 `ElemId` を解決する）。
+///   要素）への分布荷重（等分布または線形変化）。小梁が実部材として存在する場合、点反力ではなく
+///   この分布荷重を小梁自身へ載せ、小梁が FEM で支持へ伝達する（`elem` は番兵
+///   `ElemId(u32::MAX)`。app 側が節点対から実 `ElemId` を解決する）。
 ///
 ///   `t`（既定 `[0.0, 1.0]`）は `nodes[0]`→`nodes[1]` 上の無次元区間で、荷重が
 ///   `nodes` 間の全長ではなく一部だけを覆う場合に使う（取付き線の部分区間。

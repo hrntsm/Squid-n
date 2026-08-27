@@ -37,6 +37,9 @@ mod rect;
 mod rigid_zone;
 mod types;
 
+/// 取り付く壁版（[`crate::wall_attached`]）が、取付き線に載る等分布荷重の CMQ を
+/// 床側と同じ式で求めるための再公開（`fem` 自体は非公開モジュール）。
+pub(crate) use fem::{fem_linear, fem_uniform};
 pub use fem::{fixed_end_moments, simple_beam_moment_at, simple_reactions};
 pub use geometry::{point_in_slab_boundary, polygon_area, slab_dimensions, slab_dimensions_of};
 pub use rigid_zone::{cmq_with_rigid_zone, RigidZoneCmqMode, RigidZoneCmqResult};
@@ -51,7 +54,7 @@ use squid_n_core::model::{
 };
 
 #[cfg(test)]
-use fem::{fem_trapezoid, fem_triangle, fem_uniform};
+use fem::{fem_trapezoid, fem_triangle};
 
 /// 床板の面荷重を境界（および二次部材経由の節点荷重）へ分配する。
 ///

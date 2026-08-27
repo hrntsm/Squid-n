@@ -129,13 +129,13 @@ fn master_restraint(
 /// [`generate_stories_multi`] の自重算入方法を選べる版。
 ///
 /// `include_density_self_weight`:
-/// - `true`: 従来どおり自重（柱梁・壁・ダンパー・フレーム外雑壁）を材料密度から
-///   直接算入する（自重が重力ケースに含まれないモデル向け）。
-/// - `false`: 密度からの自重・フレーム外雑壁の直接算入を行わず、`gravity_lcs` の
-///   ケース内容だけを算入する。自重同期ケース
-///   （[`crate::self_weight::self_weight_case_content`] の内容を含む「DL」）が
-///   重力ケースに含まれるモデル向け（自重・雑壁ともケース側に含まれるため、
-///   直接算入すると二重計上になる）。
+/// - `true`: 従来どおり自重（柱梁・壁・ダンパー・フレーム外雑壁・取り付く壁版）を
+///   材料密度から直接算入する（自重が重力ケースに含まれないモデル向け）。
+/// - `false`: 密度からの自重・フレーム外雑壁・取り付く壁版の直接算入を行わず、
+///   `gravity_lcs` のケース内容だけを算入する。自重同期ケース
+///   （[`crate::self_weight::self_weight_case_content`] の内容を含む「DL」。
+///   取り付く壁版は [`crate::wall_attached`] 経由で DL に合流する）が
+///   重力ケースに含まれるモデル向け（直接算入すると二重計上になる）。
 ///
 /// `mass_method`: 剛床代表節点（マスター）へ与える質点質量（[`Node::mass`]）の
 /// 算定方式（[`MassMethod`]）。`include_density_self_weight` の真偽によらず、
@@ -342,6 +342,9 @@ pub fn generate_stories_with_opts(
         // §フレーム外雑壁: 部材としてモデル化しない壁の重量を近傍節点へ集計する。
         // （false の場合は自重同期ケースの節点荷重に雑壁分が含まれるため行わない）
         accumulate_misc_wall_weight(model, &mut node_weight);
+        // 取り付く壁版（解析要素を持たない）も同様。false のときは DL 同期
+        // （`compute_gravity_auto_load_cases`）側に含まれる。
+        crate::wall_attached::accumulate_attached_wall_seismic_weight(model, &mut node_weight);
     }
 
     // 指定荷重ケース（複数可）の鉛直下向き成分。

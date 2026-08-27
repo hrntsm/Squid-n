@@ -32,6 +32,12 @@ fn simpson_integrate<F: Fn(f64) -> f64>(f: F, a: f64, b: f64, n: usize) -> f64 {
 fn shape_intensity(shape: &LoadShape, l_total: f64, x: f64) -> f64 {
     match shape {
         LoadShape::Uniform { w } => *w,
+        LoadShape::Linear { w_i, w_j } => {
+            if l_total <= 0.0 {
+                return 0.0;
+            }
+            w_i + (w_j - w_i) * (x / l_total)
+        }
         LoadShape::Triangle { w0 } => {
             let half = l_total / 2.0;
             if half <= 0.0 {
