@@ -433,6 +433,16 @@ pub fn model_issues(model: &Model) -> Vec<ModelIssue> {
                 .warn(),
             );
         }
+        let attached = model.wall_plates.iter().filter(|p| p.is_attached()).count();
+        if attached != 0 {
+            issues.push(
+                ModelIssue::model(format!(
+                    "取り付く壁版が {attached} 枚あります。解析要素にはせず、\
+                     自重の自動分配（取付き線への分布）も行いません。"
+                ))
+                .warn(),
+            );
+        }
     }
 
     // 断面が未割当のスラブ・断面の主材料が未割当のスラブ

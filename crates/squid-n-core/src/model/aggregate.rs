@@ -879,6 +879,7 @@ impl Model {
             && self.load_cfg == other.load_cfg
             && self.wall_attrs == other.wall_attrs
             && self.misc_walls == other.misc_walls
+            && self.wall_plates == other.wall_plates
             && self.stress_cfg == other.stress_cfg
             && self.steel_design_attrs == other.steel_design_attrs
             && self.brb_attrs == other.brb_attrs
@@ -1683,14 +1684,30 @@ mod node_reference_tests {
             ci_override: None,
         });
 
-        for i in 0..=9u32 {
+        // 10: 壁版（Attached／FloorRegion。自立壁）。
+        model.wall_plates.push(WallPlate {
+            id: WallPlateId(2),
+            shape: WallPlateShape::Attached {
+                anchor: RegionAnchor::FloorRegion {
+                    region: FloorRegionId(0),
+                    nodes: [NodeId(10), NodeId(10)],
+                },
+                extent: [0.0, 0.0],
+            },
+            section: None,
+            opening_area: 0.0,
+            opening_weight: 0.0,
+            openings: Vec::new(),
+            three_side_slit: false,
+        });
+
+        for i in 0..=10u32 {
             assert!(
                 model.node_referenced_by_regions_or_plates(NodeId(i)),
                 "node {i} は参照されているはず"
             );
         }
-        // 10・11 はどこからも参照されない対照節点。
-        assert!(!model.node_referenced_by_regions_or_plates(NodeId(10)));
+        // 11 はどこからも参照されない対照節点。
         assert!(!model.node_referenced_by_regions_or_plates(NodeId(11)));
     }
 }
