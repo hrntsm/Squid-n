@@ -2010,6 +2010,75 @@ fn test_import_wall_with_node_order_and_thickness() {
     );
 }
 
+/// 頂部梁の上に立つパラペット（StbWall）は、どの壁領域にも収まらないが
+/// 下辺が頂部梁に全長覆われているため、取り込み後に取り付く壁版へ自動変換される
+/// （床側 D20 に相当。`wall_region_rebuild::rebuild_wall_regions` 参照）。
+#[test]
+fn test_import_converts_unenclosed_parapet_to_attached_wall_plate() {
+    use squid_n_core::model::{RegionAnchor, WallPlateShape};
+
+    let xml = r#"<?xml version="1.0"?>
+<ST_BRIDGE version="2.0.0"><StbModel>
+  <StbNodes>
+    <StbNode id="0" X="0" Y="0" Z="0"/>
+    <StbNode id="1" X="0" Y="0" Z="3000"/>
+    <StbNode id="2" X="4000" Y="0" Z="0"/>
+    <StbNode id="3" X="4000" Y="0" Z="3000"/>
+    <StbNode id="4" X="0" Y="0" Z="4500"/>
+    <StbNode id="5" X="4000" Y="0" Z="4500"/>
+  </StbNodes>
+  <StbSections>
+    <StbSecColumn_S id="0" name="C1"><StbSecSteelFigureColumn_S><StbSecSteelColumn_S_Same shape="H1"/></StbSecSteelFigureColumn_S></StbSecColumn_S>
+    <StbSecBeam_S id="1" name="G1"><StbSecSteelFigureBeam_S><StbSecSteelBeam_S_Straight shape="H1"/></StbSecSteelFigureBeam_S></StbSecBeam_S>
+    <StbSecSteel><StbSecRoll-H name="H1" type="H" A="300" B="150" t1="6.5" t2="9" r="0"/></StbSecSteel>
+  </StbSections>
+  <StbMembers>
+    <StbColumn id="0" id_node_bottom="0" id_node_top="1" id_section="0"/>
+    <StbColumn id="1" id_node_bottom="2" id_node_top="3" id_section="0"/>
+    <StbGirder id="2" id_node_start="0" id_node_end="2" id_section="1"/>
+    <StbGirder id="3" id_node_start="1" id_node_end="3" id_section="1"/>
+    <StbWall id="0" name="Parapet">
+      <StbNodeIdOrder>1 3 5 4</StbNodeIdOrder>
+    </StbWall>
+  </StbMembers>
+</StbModel></ST_BRIDGE>"#;
+    let (m, report) = import_stbridge_with_report(xml).expect("import");
+    assert!(m.validate().is_ok(), "{:?}", m.validate());
+    assert_eq!(
+        m.wall_regions.len(),
+        1,
+        "柱・梁の1区画が壁領域として検出される"
+    );
+    assert!(
+        m.wall_regions[0].wall_plate_ids.is_empty(),
+        "パラペットは壁領域に帰属しない"
+    );
+    assert_eq!(m.wall_plates.len(), 1);
+    let plate = &m.wall_plates[0];
+    assert!(plate.is_attached(), "パラペットは取り付く壁版へ変換される");
+    match &plate.shape {
+        WallPlateShape::Attached {
+            anchor: RegionAnchor::Line { nodes, .. },
+            extent,
+        } => {
+            let a = m.nodes[nodes[0].index()].coord;
+            let b = m.nodes[nodes[1].index()].coord;
+            assert!((a[2] - 3000.0).abs() < 1e-6, "取付き線は頂部梁の高さ");
+            assert!((b[2] - 3000.0).abs() < 1e-6);
+            assert!((extent[0] - 1500.0).abs() < 1e-6, "{extent:?}");
+            assert!((extent[1] - 1500.0).abs() < 1e-6, "{extent:?}");
+        }
+        other => panic!("Line の Attached ではない: {other:?}"),
+    }
+    // 帰属なし・照合できなかった旧領域の警告は出ない（自動変換は成功扱いで警告しない。
+    // 床側 D20 と同じ挙動）。断面未割当（本フィクスチャは id_section を持たない）の
+    // 警告だけが残る。
+    assert_eq!(
+        report.warnings,
+        vec!["断面未割当の壁版を 1 枚取り込みました。解析要素としては生成しません".to_string()]
+    );
+}
+
 /// 自己終了 <StbSlab/> の後の StbWall の節点ループが、陳腐化したスラブ状態に
 /// 取り込まれず正しく壁へ入ること（レビュー指摘の回帰テスト）。
 #[test]

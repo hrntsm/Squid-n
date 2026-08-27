@@ -12,7 +12,7 @@ use crate::geom::{LEVEL_TOL_MM, MEMBER_AXIS_TOL_MM};
 use crate::ids::{FloorRegionId, NodeId};
 use crate::model::{
     Constraint, ElementKind, FloorRegion, LoadTransfer, Model, RegionAnchor, SecondaryMemberKind,
-    Slab, SlabShape,
+    Slab, SlabShape, WallPlate, WallPlateShape,
 };
 use crate::region_gen::{
     generate_region_boundaries, polygon_contains_strict, scan_region_boundaries, BOUNDARY_TOL_MM,
@@ -264,13 +264,16 @@ fn shoelace_centroid(pts: &[[f64; 2]], signed_area: f64) -> [f64; 2] {
     [cx / six_a, cy / six_a]
 }
 
-struct GirderSeg {
+/// 水平な大梁の 1 本ぶん（XY 線分 ＋ レベル）。壁側の D20 相当判定
+/// （[`crate::wall_region_rebuild`]）も同じ「同一レベルの大梁に全長覆われているか」を
+/// 使うため `pub(crate)` にしている。
+pub(crate) struct GirderSeg {
     a: [f64; 2],
     b: [f64; 2],
     z: f64,
 }
 
-fn horizontal_girders(model: &Model) -> Vec<GirderSeg> {
+pub(crate) fn horizontal_girders(model: &Model) -> Vec<GirderSeg> {
     let mut out = Vec::new();
     for e in &model.elements {
         if e.kind != ElementKind::Beam || e.nodes.len() != 2 {
@@ -372,7 +375,7 @@ fn try_convert_cantilever(
     })
 }
 
-fn edge_fully_covered(a: [f64; 2], b: [f64; 2], z: f64, beams: &[GirderSeg]) -> bool {
+pub(crate) fn edge_fully_covered(a: [f64; 2], b: [f64; 2], z: f64, beams: &[GirderSeg]) -> bool {
     let dx = b[0] - a[0];
     let dy = b[1] - a[1];
     let len = (dx * dx + dy * dy).sqrt();
@@ -482,11 +485,20 @@ fn assign_joists(model: &mut Model) -> usize {
     unassigned
 }
 
-/// 節点 `id` が部材・二次部材・床領域・床板・拘束・節点荷重・支点（固定・ばね）・
-/// 質量・剛床マスターのいずれかから参照されているか。
+/// 節点 `id` が部材・二次部材・床領域・床板・壁領域・壁版・拘束・節点荷重・
+/// 支点（固定・ばね）・質量・剛床マスターのいずれかから参照されているか。
 ///
 /// 階の節点一覧（`Story::node_ids`）と通り芯（`AxisGroup`）は含めない
 /// （[`delete_unref_nodes`] の呼び出し側で扱う節点削除の判定にのみ用いるため）。
+///
+/// **壁領域（`model.wall_regions`）を含めるのは防御的である**。壁領域の境界は
+/// `rebuild_wall_regions` が呼ばれるたびに `region_gen::wall` の走査結果へ丸ごと
+/// 作り直されるため、`rebuild_floor_regions`（本関数の従来の唯一の呼び出し元）の
+/// 直後には必ず `rebuild_wall_regions` が続き、古い境界は上書きされる
+/// （現状の 2 つの呼び出し箇所はいずれもこの順序を守っている）。それでも
+/// ここに含めておくのは、壁版（`model.wall_plates`）は床側のリビルドをまたいで
+/// 存続するため確実に必要であり、同じ理由で壁領域も見ておくほうが呼び出し順の
+/// 前提が崩れたときに事故を起こさないため。
 fn node_has_structural_ref(model: &Model, id: NodeId) -> bool {
     if model.elements.iter().any(|e| e.nodes.contains(&id)) {
         return true;
@@ -504,6 +516,16 @@ fn node_has_structural_ref(model: &Model, id: NodeId) -> bool {
         return true;
     }
     if model.slabs.iter().any(|s| slab_refs_node(s, id)) {
+        return true;
+    }
+    if model.wall_regions.iter().any(|r| r.boundary.contains(&id)) {
+        return true;
+    }
+    if model
+        .wall_plates
+        .iter()
+        .any(|p| wall_plate_refs_node(p, id))
+    {
         return true;
     }
     // 階の節点一覧（`Story::node_ids`）と通り芯（`AxisGroup`）は構造参照に数えない
@@ -552,12 +574,25 @@ fn slab_refs_node(slab: &Slab, id: NodeId) -> bool {
     }
 }
 
+/// 壁版 `plate` が節点 `id` を参照しているか（`slab_refs_node` の壁版版）。
+fn wall_plate_refs_node(plate: &WallPlate, id: NodeId) -> bool {
+    match &plate.shape {
+        WallPlateShape::Enclosed { boundary } => boundary.contains(&id),
+        WallPlateShape::Attached { anchor, .. } => match anchor {
+            RegionAnchor::Line { nodes, .. } => nodes[0] == id || nodes[1] == id,
+            RegionAnchor::FloorRegion { nodes, .. } => nodes[0] == id || nodes[1] == id,
+            // 壁版では到達しない（`WallPlate::boundary_coords` と同じ理由）。
+            RegionAnchor::Point(_) => false,
+        },
+    }
+}
+
 /// `candidates` に挙がった節点のうち、参照が 0 になったものだけを削除する。
 ///
 /// `candidates` 以外の節点は、たとえ現状どこからも参照されていなくても対象外とする
 /// （D21。このリビルドが縮めた境界の先端節点だけを削除し、利用者が別の理由で
 /// 置いた既存の未使用節点まで巻き込まない）。
-fn delete_unref_nodes(model: &mut Model, candidates: &[NodeId]) -> usize {
+pub(crate) fn delete_unref_nodes(model: &mut Model, candidates: &[NodeId]) -> usize {
     let n = model.nodes.len();
     if n == 0 {
         return 0;

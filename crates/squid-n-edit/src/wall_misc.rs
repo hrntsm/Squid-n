@@ -604,6 +604,261 @@ impl EditCommand for SetAttachedAnchor {
     }
 }
 
+// ─── 取り付く壁版（パラペット・腰壁・垂れ壁・自立壁） ────────────────
+//
+// 壁版（`WallPlate`）は柱・梁で囲まれた領域（`Enclosed`）が主で、これは
+// ST-Bridge 取り込み・`rebuild_wall_regions`（床側 D20 相当。
+// `dev_docs/handoff/床領域・壁領域の再設計_申し送り.md` §9）が組み立てる派生的な
+// 入力である（`secondary.rs` の「グループC」コメント参照）。取り付く壁版
+// （`Attached`）だけは、ST-Bridge から自動検出できない自立壁を含め、利用者が
+// 直接作る対象になりうるため、床側の `AddAttachedSlab` と同じ位置づけで
+// 追加・削除コマンドを持つ。
+
+/// 取り付く壁版の取付き先（`RegionAnchor`）が妥当か。
+///
+/// 壁の取付き先としては `Line`（梁に載るパラペット・腰壁・垂れ壁）と
+/// `FloorRegion`（自立壁）のみを認める。`Point` は壁の取付き先としては使わない
+/// （`WallPlateShape::Attached` のドキュメント参照。出隅スラブ専用）。
+fn wall_anchor_ok(model: &Model, anchor: &squid_n_core::model::RegionAnchor) -> bool {
+    use squid_n_core::model::RegionAnchor;
+
+    match *anchor {
+        RegionAnchor::Line { nodes, span, .. } => {
+            // span の範囲は `Model::validate` と同じ規約（0.0 <= t_i < t_j <= 1.0）。
+            let span_ok = span[0].is_finite()
+                && span[1].is_finite()
+                && span[0] >= -1e-9
+                && span[1] <= 1.0 + 1e-9
+                && span[1] - span[0] > 1e-9;
+            span_ok
+                && nodes[0] != nodes[1]
+                && nodes.iter().all(|&n| crate::refs::node_exists(model, n))
+        }
+        RegionAnchor::FloorRegion { region, nodes } => {
+            crate::refs::floor_region_exists(model, region)
+                && nodes[0] != nodes[1]
+                && nodes.iter().all(|&n| crate::refs::node_exists(model, n))
+        }
+        RegionAnchor::Point(_) => false,
+    }
+}
+
+/// 壁版の削除（中間の壁版も可）。逆操作は [`InsertWallPlate`]。
+///
+/// ID＝配列インデックスの不変条件を保つため、削除後は当該壁版より後ろの
+/// ID を 1 つずつ繰り上げる。削除前に `WallRegion.wall_plate_ids` から該当 ID を
+/// 除去する（カスケード削除。[`crate::DeleteSlab`] と同じ理由）。
+pub struct DeleteWallPlate {
+    pub id: WallPlateId,
+}
+
+impl EditCommand for DeleteWallPlate {
+    fn apply(&self, model: &mut Model) -> Box<dyn EditCommand> {
+        let idx = self.id.index();
+        if idx >= model.wall_plates.len() || model.wall_plates[idx].id != self.id {
+            return Box::new(Noop);
+        }
+
+        // カスケード: 壁領域の wall_plate_ids から除去し、位置を退避
+        // (壁領域添字, リスト内位置) を昇順で記録する（InsertWallPlate での復元用）。
+        let mut region_refs: Vec<(usize, usize)> = Vec::new();
+        for (ri, region) in model.wall_regions.iter_mut().enumerate() {
+            let mut pos = 0;
+            while pos < region.wall_plate_ids.len() {
+                if region.wall_plate_ids[pos] == self.id {
+                    region.wall_plate_ids.remove(pos);
+                    region_refs.push((ri, pos));
+                } else {
+                    pos += 1;
+                }
+            }
+        }
+
+        let removed = model.wall_plates.remove(idx);
+        let target = self.id.0;
+        model.visit_wall_plate_ids(|id| {
+            if id.0 > target {
+                id.0 -= 1;
+            }
+        });
+
+        Box::new(InsertWallPlate {
+            index: idx,
+            plate: removed,
+            region_refs,
+        })
+    }
+
+    fn label(&self) -> &str {
+        "壁版削除"
+    }
+}
+
+/// [`DeleteWallPlate`] の取り消し。
+pub struct InsertWallPlate {
+    pub index: usize,
+    pub plate: squid_n_core::model::WallPlate,
+    /// 削除時に壁領域の `wall_plate_ids` から除去した参照の (壁領域添字, リスト内位置)。
+    /// 昇順で記録されているため逆順で挿入して元の並びを復元する。
+    pub region_refs: Vec<(usize, usize)>,
+}
+
+impl EditCommand for InsertWallPlate {
+    fn apply(&self, model: &mut Model) -> Box<dyn EditCommand> {
+        if self.index > model.wall_plates.len() {
+            return Box::new(Noop);
+        }
+        let id = WallPlateId(self.index as u32);
+        model.visit_wall_plate_ids(|x| {
+            if x.0 >= id.0 {
+                x.0 += 1;
+            }
+        });
+        let mut plate = self.plate.clone();
+        plate.id = id;
+        model.wall_plates.insert(self.index, plate);
+
+        // 壁領域の wall_plate_ids を元の位置へ復元（逆順挿入で昇順復元）。
+        for &(ri, pos) in self.region_refs.iter().rev() {
+            if let Some(region) = model.wall_regions.get_mut(ri) {
+                let insert_pos = pos.min(region.wall_plate_ids.len());
+                region.wall_plate_ids.insert(insert_pos, id);
+            }
+        }
+
+        Box::new(DeleteWallPlate { id })
+    }
+
+    fn label(&self) -> &str {
+        "壁版削除の取り消し"
+    }
+}
+
+/// 取り付く壁版（パラペット・腰壁・垂れ壁・自立壁）の追加。末尾に追加する。
+/// 逆操作は末尾の壁版削除（[`DeleteWallPlate`]）。
+///
+/// 取付き先が実在しない節点・床領域を指す場合、および壁の取付き先として
+/// 使わない `RegionAnchor::Point` を渡した場合は Noop（[`wall_anchor_ok`]）。
+/// 張り出し量 `extent` は鉛直上向きが正、符号つきで負なら下向き
+/// （垂れ壁）に張り出す。
+pub struct AddAttachedWallPlate {
+    pub anchor: squid_n_core::model::RegionAnchor,
+    pub extent: [f64; 2],
+    pub section: Option<SectionId>,
+    pub opening_area: f64,
+    pub opening_weight: f64,
+}
+
+impl EditCommand for AddAttachedWallPlate {
+    fn apply(&self, model: &mut Model) -> Box<dyn EditCommand> {
+        use squid_n_core::model::{WallPlate, WallPlateShape};
+
+        if !wall_anchor_ok(model, &self.anchor) {
+            return Box::new(Noop);
+        }
+        if !self.extent[0].is_finite() || !self.extent[1].is_finite() {
+            return Box::new(Noop);
+        }
+        if !crate::refs::section_ref_ok(model, self.section) {
+            return Box::new(Noop);
+        }
+        let id = WallPlateId(model.wall_plates.len() as u32);
+        model.wall_plates.push(WallPlate {
+            id,
+            shape: WallPlateShape::Attached {
+                anchor: self.anchor,
+                extent: self.extent,
+            },
+            section: self.section,
+            opening_area: self.opening_area,
+            opening_weight: self.opening_weight,
+            openings: Vec::new(),
+            three_side_slit: false,
+        });
+        Box::new(DeleteWallPlate { id })
+    }
+
+    fn label(&self) -> &str {
+        "取り付く壁版追加"
+    }
+}
+
+/// 取り付く壁版の張り出し量（`extent`）変更。逆操作は変更前の値への復元。
+/// 対象が取り付く壁版でない、存在しない `WallPlateId`、または非有限の
+/// 張り出し量は Noop。
+pub struct SetAttachedWallPlateExtent {
+    pub id: WallPlateId,
+    pub extent: [f64; 2],
+}
+
+impl EditCommand for SetAttachedWallPlateExtent {
+    fn apply(&self, model: &mut Model) -> Box<dyn EditCommand> {
+        use squid_n_core::model::WallPlateShape;
+
+        let idx = self.id.index();
+        if idx >= model.wall_plates.len() || model.wall_plates[idx].id != self.id {
+            return Box::new(Noop);
+        }
+        if !self.extent[0].is_finite() || !self.extent[1].is_finite() {
+            return Box::new(Noop);
+        }
+        let WallPlateShape::Attached { extent, .. } = &mut model.wall_plates[idx].shape else {
+            return Box::new(Noop);
+        };
+        let old = *extent;
+        *extent = self.extent;
+        Box::new(SetAttachedWallPlateExtent {
+            id: self.id,
+            extent: old,
+        })
+    }
+
+    fn label(&self) -> &str {
+        "壁版取り付き張り出し量変更"
+    }
+}
+
+/// 取り付く壁版の取付き先（`anchor`）変更。逆操作は変更前の値への復元。
+/// 対象が取り付く壁版でない、存在しない `WallPlateId`、および [`wall_anchor_ok`]
+/// に落ちる場合は Noop。
+pub struct SetAttachedWallPlateAnchor {
+    pub id: WallPlateId,
+    pub anchor: squid_n_core::model::RegionAnchor,
+}
+
+impl EditCommand for SetAttachedWallPlateAnchor {
+    fn apply(&self, model: &mut Model) -> Box<dyn EditCommand> {
+        use squid_n_core::model::WallPlateShape;
+
+        let idx = self.id.index();
+        if idx >= model.wall_plates.len() || model.wall_plates[idx].id != self.id {
+            return Box::new(Noop);
+        }
+        if !matches!(
+            model.wall_plates[idx].shape,
+            WallPlateShape::Attached { .. }
+        ) {
+            return Box::new(Noop);
+        }
+        if !wall_anchor_ok(model, &self.anchor) {
+            return Box::new(Noop);
+        }
+        let WallPlateShape::Attached { anchor, .. } = &mut model.wall_plates[idx].shape else {
+            return Box::new(Noop);
+        };
+        let old = *anchor;
+        *anchor = self.anchor;
+        Box::new(SetAttachedWallPlateAnchor {
+            id: self.id,
+            anchor: old,
+        })
+    }
+
+    fn label(&self) -> &str {
+        "壁版取り付き先変更"
+    }
+}
+
 /// 床板の用途（`usage`。積載荷重プリセット）変更。逆操作は変更前の値への復元。
 /// 存在しない `SlabId` は Noop。
 pub struct SetSlabUsage {
