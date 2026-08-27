@@ -527,13 +527,12 @@ pub fn slab_load_case_content(
     (nodal, member)
 }
 
-/// CMQ 図用の DL スラブ分配 `BeamLoad` 列（柱・梁・囲まれた壁の自重は含まない）。
+/// 床の DL 分配 `BeamLoad` 列（スラブ固定荷重＋自立壁の等価面荷重）。
 ///
-/// 「床領域」アンカーの取り付く壁版（自立壁、D17）の自重は、床の固定荷重強度へ
-/// 等価な面荷重として上乗せしたうえで床の分配に含める（`wall_attached` 参照）。
-/// 「線」アンカーの取り付く壁版（パラペット・腰壁・垂れ壁）はここに含めない
-/// （囲まれた壁の自重と同じく、床のスラブ分配とは別の壁自重として扱う。
-/// [`compute_gravity_auto_load_cases`] 側で加算する）。
+/// 現状の CMQ 図ソースでもあるが、荷重ケースの全部材荷重ではない
+/// （梁自重・取り付く壁版の線アンカーは [`compute_gravity_auto_load_cases`] 側で
+/// 「DL」へ加算する。CMQ 図への反映は
+/// `dev_docs/handoff/CMQ図を荷重ケースの全荷重へ_申し送り.md`）。
 pub fn compute_dl_beam_loads(model: &Model) -> Vec<BeamLoad> {
     let beam_map = beam_elem_map(model);
     let unit_reactions = slab_grillage_unit_reactions(model, &beam_map);
