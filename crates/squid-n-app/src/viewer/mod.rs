@@ -882,18 +882,14 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
     // 構面を解決する。通り芯の再生成・モデルの入れ替えで添字がずれることがあるため、
     // 毎フレーム実在を検証し、解決できなければ全体表示へ戻す。
     //
-    // `build_frame` は壁の解析要素（`ElementKind::Wall`）も対象にする実装（4節点
-    // すべてが通り上にあれば含める。`docs/result_view/12_構面の表示.md`）だが、
-    // `app.model` は D5 により壁を含まない生成前のモデルのため、壁展開済みモデルを
-    // 渡さない限り壁は常に構面の対象外になる（`FrameFilter::shows` は範囲外の
-    // 添字を「描かない」に倒すため、壁の要素IDは黙って除外され続ける）。
-    // `frame_target` が `None`（全体表示。既定かつ最多）のときは `build_frame` 自体を
-    // 呼ばないため、壁版を持つモデルでも展開は `and_then` の中でだけ行い、全体表示では
-    // 払わない（後段の `display_model` とは別に、構面表示中だけ都度計算する）。
-    let frame = app.frame_target.and_then(|t| {
-        let frame_model = wall_expanded_view_model(&app.model);
-        squid_n_core::frame::build_frame(&frame_model, t)
-    });
+    // ここでの `frame` はカメラ正対・構面基準線・クリック前の投影にだけ使う。
+    // `build_frame` の Some/None は通り・階の実在で決まり要素の有無に依存しないため、
+    // 壁展開前の `app.model` で足りる。壁の構面所属（`elem_on`）はクリック処理の後、
+    // `display_model` から作り直す `frame_for_draw` が担う。ここで展開すると
+    // 構面表示中に 1 フレーム 2 回 `model.clone()` することになる。
+    let frame = app
+        .frame_target
+        .and_then(|t| squid_n_core::frame::build_frame(&app.model, t));
     if frame.is_none() {
         app.frame_target = None;
     }
@@ -1290,6 +1286,8 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
     // 要素（D5）のため、以降の形状描画・選択ハイライト・ホバーピックは壁展開済み
     // モデルを参照する（`wall_expanded_view_model`）。編集対象を選ぶクリック処理
     // （上のブロック）は既存部材のみが対象のため `app.model` のままでよい。
+    // ホバーも `pick_nearest_member`（先頭 2 節点の線分）のため、壁ポリゴン面内や
+    // 壁柱では壁を一意に拾えない（大梁の下辺と一致して大梁が勝つ。§5.17 残課題）。
     let display_model = wall_expanded_view_model(&app.model);
 
     // 上の `filter`（1128行目）は壁展開前の `app.model` から作った構面のため、
@@ -1501,7 +1499,7 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
     // 構面に部材が 1 本もない場合の注記。ST-Bridge から取り込んだ、所属節点を
     // 持たない通り（`Y0`・`X2a` など）を選ぶと空の図になるため、モデルや表示の
     // 不具合と紛れないよう理由を示す。
-    if let Some(f) = &frame {
+    if let Some(f) = &frame_for_draw {
         if f.elem_count() == 0 {
             painter.text(
                 painter.clip_rect().center(),
