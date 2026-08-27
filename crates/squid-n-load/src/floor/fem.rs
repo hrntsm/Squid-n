@@ -1,6 +1,7 @@
 //! 両端固定梁の固定端モーメント・せん断（CMQ）の閉形式公式。
 //!
 //! - [`fem_uniform`] — 等分布荷重の CMQ
+//! - [`fem_linear`] — 線形変化分布（始端 w_i → 終端 w_j）の CMQ
 //! - [`fem_triangle`] — 対称三角形荷重の CMQ
 //! - [`fem_trapezoid`] — 対称台形荷重の CMQ（閉形式評価）
 //! - [`simple_reactions`] — `MemberLoadKind` の単純梁反力
@@ -17,6 +18,17 @@ pub(crate) fn fem_uniform(w: f64, l: f64) -> Cmq {
         c_j: -w * l * l / 12.0,
         q_i: w * l / 2.0,
         q_j: w * l / 2.0,
+    }
+}
+
+/// 線形変化分布（始端強度 `w_i`、終端強度 `w_j`、全長 `l`）の両端固定梁 CMQ。
+/// `w_i = w_j = w` のとき [`fem_uniform`] に一致する。
+pub(crate) fn fem_linear(w_i: f64, w_j: f64, l: f64) -> Cmq {
+    Cmq {
+        c_i: l * l * (3.0 * w_i + 2.0 * w_j) / 60.0,
+        c_j: -l * l * (2.0 * w_i + 3.0 * w_j) / 60.0,
+        q_i: l * (7.0 * w_i + 3.0 * w_j) / 20.0,
+        q_j: l * (3.0 * w_i + 7.0 * w_j) / 20.0,
     }
 }
 

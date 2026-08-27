@@ -1,6 +1,6 @@
 //! 荷重分配の基本型と辺荷重の共通ヘルパ。
 //!
-//! - [`LoadShape`] — 荷重形状（等分布・台形・三角形・集中）
+//! - [`LoadShape`] — 荷重形状（等分布・線形変化・台形・三角形・集中）
 //! - [`Cmq`] — 両端固定梁の固定端モーメント・せん断（CMQ）
 //! - [`LoadTarget`] — 荷重の作用対象（境界辺 / 節点）
 //! - [`BeamLoad`] — 分配結果1件（作用対象・荷重形状・CMQ）
@@ -10,10 +10,28 @@ use squid_n_core::ids::{ElemId, NodeId};
 
 #[derive(Clone, Copy, Debug)]
 pub enum LoadShape {
-    Uniform { w: f64 },
-    Trapezoid { w0: f64, a: f64, b: f64 },
-    Triangle { w0: f64 },
-    Point { p: f64, x: f64 },
+    Uniform {
+        w: f64,
+    },
+    /// 材軸に沿って強度が線形に変わる分布（始端 `w_i` → 終端 `w_j`）。
+    /// 取り付く壁版の台形（張り出し高さが両端で異なる）の自重に使う。
+    /// [`LoadShape::Trapezoid`]（床の 45° 分配の対称台形）とは別物である。
+    Linear {
+        w_i: f64,
+        w_j: f64,
+    },
+    Trapezoid {
+        w0: f64,
+        a: f64,
+        b: f64,
+    },
+    Triangle {
+        w0: f64,
+    },
+    Point {
+        p: f64,
+        x: f64,
+    },
 }
 
 #[derive(Clone, Copy, Debug)]

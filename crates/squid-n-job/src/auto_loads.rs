@@ -225,6 +225,10 @@ pub fn slab_load_case_content(
     ) {
         match *shape {
             LoadShape::Uniform { w } => push_dist(member, elem, a0, a0 + len_e, w, w),
+            LoadShape::Linear { w_i, w_j } => {
+                let (w1, w2) = if flip { (w_j, w_i) } else { (w_i, w_j) };
+                push_dist(member, elem, a0, a0 + len_e, w1, w2);
+            }
             LoadShape::Triangle { w0 } => {
                 let mid = len_e / 2.0;
                 push_dist(member, elem, a0, a0 + mid, 0.0, w0);
@@ -250,6 +254,13 @@ pub fn slab_load_case_content(
     fn line_intensity(shape: &LoadShape, len: f64, x: f64) -> f64 {
         match *shape {
             LoadShape::Uniform { w } => w,
+            LoadShape::Linear { w_i, w_j } => {
+                if len <= 1e-9 {
+                    w_i
+                } else {
+                    w_i + (w_j - w_i) * (x / len)
+                }
+            }
             LoadShape::Triangle { w0 } => {
                 let mid = len / 2.0;
                 if x <= mid {
@@ -289,7 +300,7 @@ pub fn slab_load_case_content(
     /// 荷重強度が折れる位置（線分始点からの距離）。区間をここで割ると各片が線形になる。
     fn shape_breakpoints(shape: &LoadShape, len: f64) -> Vec<f64> {
         match *shape {
-            LoadShape::Uniform { .. } => Vec::new(),
+            LoadShape::Uniform { .. } | LoadShape::Linear { .. } => Vec::new(),
             LoadShape::Triangle { .. } => vec![len / 2.0],
             LoadShape::Trapezoid { a, b, .. } => vec![a, a + b],
             LoadShape::Point { x, .. } => vec![x],
@@ -394,6 +405,10 @@ pub fn slab_load_case_content(
             LoadShape::Uniform { w } => {
                 let total = w * len;
                 (total / 2.0, total / 2.0)
+            }
+            LoadShape::Linear { w_i, w_j } => {
+                // 単純梁反力。台形の面積重心按分と一致する: R_i = L(2w_i+w_j)/6。
+                (len * (2.0 * w_i + w_j) / 6.0, len * (w_i + 2.0 * w_j) / 6.0)
             }
             LoadShape::Triangle { w0 } => {
                 let total = w0 * len / 2.0;

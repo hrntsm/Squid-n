@@ -24,16 +24,9 @@
 //!   保存する目的で取付き線の両端節点への集中荷重（フォールバック）を
 //!   [`BeamLoad`] 列として返す。
 //!
-//! # 既知の近似（総重量は保存するが、位置の精度には限界がある）
-//!
-//! 張り出し量 `extent[0] != extent[1]`（台形の壁。取付き線に沿って高さが変わる）の場合、
-//! `Anchor` 分布は台形ではなく取付き線全長で均した等分布（`w = 総重量/len`）とする。
-//! `Columns` 集中は区間中点 `t_mid` の単純梁反力按分とし、真の面積重心（張り出しの
-//! 大きい側へずれる）ではなく区間中点を使う。**いずれも総重量（`wall_plate_self_weight`
-//! が Newell の公式で正確に求める値）はそのまま保存されるが、取付き線に沿った
-//! 位置の精度は落ちる。** 床側の同じ形（[`RegionAnchor::Line`] ＋ `extent` 非対称）を
-//! 扱う `floor::distribute_attached` も同じ近似を持ち、そちらの doc に同じ限界が
-//! 明記されている。壁側だけの新しい近似ではない。
+//! 張り出し量 `extent[0] != extent[1]`（台形の壁）では、線荷重強度を張り出し高さに
+//! 比例させる（[`LoadShape::Linear`]）。柱按分・密度経路の節点集中は同じ台形の
+//! 面積重心へ置く。開口は総重量のスケールにだけ効き、開口位置は見ない。
 
 use std::collections::HashMap;
 
@@ -41,7 +34,40 @@ use squid_n_core::geom::vec3::dist as dist3;
 use squid_n_core::ids::{ElemId, FloorRegionId, NodeId, SlabId};
 use squid_n_core::model::{LoadTransfer, Model, RegionAnchor, WallPlateShape};
 
-use crate::floor::{fem_uniform, polygon_area, BeamLoad, Cmq, LoadShape, LoadTarget};
+use crate::floor::{fem_linear, fem_uniform, polygon_area, BeamLoad, Cmq, LoadShape, LoadTarget};
+
+/// 台形（始端高さ `h0`、終端高さ `h1`）の底辺に沿った無次元重心（始端 = 0、終端 = 1）。
+/// 両方の高さが実質 0 なら中点 0.5。
+fn trapezoid_centroid_s(h0: f64, h1: f64) -> f64 {
+    let sum = h0 + h1;
+    if sum <= 1e-12 {
+        0.5
+    } else {
+        (h0 + 2.0 * h1) / (3.0 * sum)
+    }
+}
+
+/// 取付き線上の集中位置（無次元）。矩形なら区間中点、台形なら面積重心。
+fn line_resultant_t(span: [f64; 2], extent: [f64; 2]) -> f64 {
+    let s = trapezoid_centroid_s(extent[0].abs(), extent[1].abs());
+    span[0] + (span[1] - span[0]) * s
+}
+
+/// 線アンカー分布の形状。高さが両端で実質等しければ等分布、異なれば線形変化。
+/// 総荷重 `∫ w dx = total` を保存する。
+fn line_load_shape(total: f64, len: f64, extent: [f64; 2]) -> (LoadShape, Cmq) {
+    let h0 = extent[0].abs();
+    let h1 = extent[1].abs();
+    let sum_h = h0 + h1;
+    if sum_h <= 1e-12 || (h0 - h1).abs() <= 1e-12 * sum_h.max(1.0) {
+        let w = total / len;
+        (LoadShape::Uniform { w }, fem_uniform(w, len))
+    } else {
+        let w_i = total * 2.0 * h0 / (sum_h * len);
+        let w_j = total * 2.0 * h1 / (sum_h * len);
+        (LoadShape::Linear { w_i, w_j }, fem_linear(w_i, w_j, len))
+    }
+}
 
 /// 節点 `node` への集中荷重（[`LoadTarget::Node`]）を1件積む。総量が実質0なら積まない。
 fn push_node_load(loads: &mut Vec<BeamLoad>, node: NodeId, total: f64) {
@@ -66,7 +92,7 @@ fn push_node_load(loads: &mut Vec<BeamLoad>, node: NodeId, total: f64) {
 pub fn attached_wall_beam_loads(model: &Model) -> Vec<BeamLoad> {
     let mut loads = Vec::new();
     for plate in &model.wall_plates {
-        let WallPlateShape::Attached { anchor, .. } = &plate.shape else {
+        let WallPlateShape::Attached { anchor, extent } = &plate.shape else {
             continue;
         };
         let RegionAnchor::Line {
@@ -94,25 +120,25 @@ pub fn attached_wall_beam_loads(model: &Model) -> Vec<BeamLoad> {
         }
         match transfer {
             LoadTransfer::Anchor => {
-                // 取付き線の区間 span にのみ載る等分布荷重。梁全長への希釈はしない
+                // 取付き線の区間 span にのみ載る分布。梁全長への希釈はしない
                 // （危険側の近似を避ける。dig 2026-08-27 Q2=A）。
-                let w = total / len;
+                // 矩形は等分布、台形は張り出し高さに比例する線形変化。
+                let (shape, cmq) = line_load_shape(total, len, *extent);
                 loads.push(BeamLoad {
                     elem: ElemId(u32::MAX),
                     target: LoadTarget::Span {
                         nodes: *nodes,
                         t: *span,
                     },
-                    shape: LoadShape::Uniform { w },
-                    cmq: fem_uniform(w, len),
+                    shape,
+                    cmq,
                 });
             }
             LoadTransfer::Columns => {
-                // 区間中点 t_mid での単純梁反力按分（floor::distribute_attached の
-                // Columns 分岐と同じ規則）。
-                let t_mid = 0.5 * (span[0] + span[1]);
-                push_node_load(&mut loads, nodes[0], total * (1.0 - t_mid));
-                push_node_load(&mut loads, nodes[1], total * t_mid);
+                // 台形の面積重心（矩形なら区間中点）での単純梁反力按分。
+                let t = line_resultant_t(*span, *extent);
+                push_node_load(&mut loads, nodes[0], total * (1.0 - t));
+                push_node_load(&mut loads, nodes[1], total * t);
             }
         }
     }
@@ -152,13 +178,14 @@ fn add_node_weight(node_weight: &mut [f64], node: NodeId, w: f64) {
 /// （囲まれた壁・フレーム外雑壁は `enumerate_self_weight` / 雑壁集計に入るのに、
 /// 取り付く壁版だけが抜けていた）。
 ///
-/// 配分は総重量を保存する節点集中（線アンカーは区間中点 `t_mid` の単純梁反力按分、
-/// 床領域アンカーは両端半分ずつ）。梁の曲げへの載り方は DL 同期側
+/// 配分は総重量を保存する節点集中（線アンカーは台形の面積重心、矩形なら区間中点の
+/// 単純梁反力按分。床領域アンカーも張り出し高さが両端で異なれば同じ重心比、
+/// 矩形なら両端半分ずつ）。梁の曲げへの載り方は DL 同期側
 /// （[`attached_wall_beam_loads`] / 等価面荷重）が担い、こちらは階重量の総和が
 /// 抜けないことだけを保証する。
 pub fn accumulate_attached_wall_seismic_weight(model: &Model, node_weight: &mut [f64]) {
     for plate in &model.wall_plates {
-        let WallPlateShape::Attached { anchor, .. } = &plate.shape else {
+        let WallPlateShape::Attached { anchor, extent } = &plate.shape else {
             continue;
         };
         let Some(total) = model.wall_plate_self_weight(plate, model) else {
@@ -169,13 +196,14 @@ pub fn accumulate_attached_wall_seismic_weight(model: &Model, node_weight: &mut 
         }
         match anchor {
             RegionAnchor::Line { nodes, span, .. } => {
-                let t_mid = 0.5 * (span[0] + span[1]);
-                add_node_weight(node_weight, nodes[0], total * (1.0 - t_mid));
-                add_node_weight(node_weight, nodes[1], total * t_mid);
+                let t = line_resultant_t(*span, *extent);
+                add_node_weight(node_weight, nodes[0], total * (1.0 - t));
+                add_node_weight(node_weight, nodes[1], total * t);
             }
             RegionAnchor::FloorRegion { nodes, .. } => {
-                add_node_weight(node_weight, nodes[0], total * 0.5);
-                add_node_weight(node_weight, nodes[1], total * 0.5);
+                let s = trapezoid_centroid_s(extent[0].abs(), extent[1].abs());
+                add_node_weight(node_weight, nodes[0], total * (1.0 - s));
+                add_node_weight(node_weight, nodes[1], total * s);
             }
             RegionAnchor::Point(_) => {}
         }
@@ -192,18 +220,20 @@ pub fn accumulate_attached_wall_seismic_weight(model: &Model, node_weight: &mut 
 ///
 /// 所属する床領域が床板を1枚も持たない、または床板の XY 投影合計面積が0の場合
 /// （版なし領域・鉛直に近い床板）は等価面荷重へならす先がないため、総重量を保存する
-/// 目的で取付き線の両端節点（`nodes`）へ半分ずつの集中荷重として返す。
+/// 目的で取付き線の両端節点（`nodes`）へ、台形なら面積重心比、矩形なら半分ずつの
+/// 集中荷重として返す。
 pub fn floor_region_wall_extra_intensity(model: &Model) -> (HashMap<SlabId, f64>, Vec<BeamLoad>) {
     struct Pending {
         region: FloorRegionId,
         total: f64,
         nodes: [NodeId; 2],
+        extent: [f64; 2],
     }
 
     let mut total_by_region: HashMap<FloorRegionId, f64> = HashMap::new();
     let mut pending: Vec<Pending> = Vec::new();
     for plate in &model.wall_plates {
-        let WallPlateShape::Attached { anchor, .. } = &plate.shape else {
+        let WallPlateShape::Attached { anchor, extent } = &plate.shape else {
             continue;
         };
         let RegionAnchor::FloorRegion { region, nodes } = anchor else {
@@ -220,6 +250,7 @@ pub fn floor_region_wall_extra_intensity(model: &Model) -> (HashMap<SlabId, f64>
             region: *region,
             total,
             nodes: *nodes,
+            extent: *extent,
         });
     }
     if total_by_region.is_empty() {
@@ -249,8 +280,9 @@ pub fn floor_region_wall_extra_intensity(model: &Model) -> (HashMap<SlabId, f64>
         if has_area {
             continue;
         }
-        push_node_load(&mut fallback, p.nodes[0], p.total * 0.5);
-        push_node_load(&mut fallback, p.nodes[1], p.total * 0.5);
+        let s = trapezoid_centroid_s(p.extent[0].abs(), p.extent[1].abs());
+        push_node_load(&mut fallback, p.nodes[0], p.total * (1.0 - s));
+        push_node_load(&mut fallback, p.nodes[1], p.total * s);
     }
 
     (extra_intensity, fallback)
@@ -455,12 +487,16 @@ mod tests {
         assert!((r1 - total * 0.25).abs() / total < 1e-9, "r1={r1}");
     }
 
-    /// 台形の壁（`extent[0] != extent[1]`）でも、位置の精度は落ちる（モジュール doc の
-    /// 「既知の近似」参照）が総重量は保存される。`Anchor`・`Columns` の両方で確認する。
+    /// 台形の壁（`extent[0] != extent[1]`）は高さに比例する線形分布・面積重心按分。
+    /// 総重量も保存する。
     #[test]
-    fn asymmetric_extent_conserves_total_weight_for_both_transfers() {
+    fn asymmetric_extent_uses_height_proportional_linear_and_centroid() {
         let mut m = model_with_line_anchor_nodes();
         let extent = [500.0, 1500.0]; // 台形（始端 500mm・終端 1500mm）。
+        let h0 = 500.0;
+        let h1 = 1500.0;
+        let len = 4000.0;
+        let s = (h0 + 2.0 * h1) / (3.0 * (h0 + h1)); // 7/12
 
         let anchor_plate = line_attached_plate([0.0, 1.0], extent, LoadTransfer::Anchor);
         let anchor_total = m
@@ -469,15 +505,17 @@ mod tests {
         m.wall_plates.push(anchor_plate);
         let anchor_loads = attached_wall_beam_loads(&m);
         assert_eq!(anchor_loads.len(), 1);
-        let LoadShape::Uniform { w } = anchor_loads[0].shape else {
-            panic!("Uniform を期待");
+        let LoadShape::Linear { w_i, w_j } = anchor_loads[0].shape else {
+            panic!("Linear を期待");
         };
-        let len = 4000.0;
         assert!(
-            (w * len - anchor_total).abs() / anchor_total < 1e-9,
-            "台形でも総重量は保存されるはず: w×len={} total={}",
-            w * len,
-            anchor_total
+            (w_i / w_j - h0 / h1).abs() < 1e-12,
+            "強度比が張り出し高さ比と一致しない: w_i={w_i} w_j={w_j}"
+        );
+        let integral = len * (w_i + w_j) / 2.0;
+        assert!(
+            (integral - anchor_total).abs() / anchor_total < 1e-9,
+            "台形でも総重量は保存されるはず: integral={integral} total={anchor_total}"
         );
 
         m.wall_plates.clear();
@@ -487,17 +525,56 @@ mod tests {
             .expect("自重が求まる");
         m.wall_plates.push(columns_plate);
         let columns_loads = attached_wall_beam_loads(&m);
-        let sum: f64 = columns_loads
-            .iter()
-            .map(|bl| match bl.shape {
-                LoadShape::Point { p, .. } => p,
-                _ => panic!("Point を期待"),
-            })
-            .sum();
+        let get = |n: NodeId| -> f64 {
+            columns_loads
+                .iter()
+                .find(|bl| bl.target == LoadTarget::Node(n))
+                .map(|bl| match bl.shape {
+                    LoadShape::Point { p, .. } => p,
+                    _ => panic!("Point を期待"),
+                })
+                .unwrap()
+        };
+        let (r0, r1) = (get(NodeId(0)), get(NodeId(1)));
         assert!(
-            (sum - columns_total).abs() / columns_total < 1e-9,
-            "台形でも総重量は保存されるはず: sum={sum} total={columns_total}"
+            (r0 - columns_total * (1.0 - s)).abs() / columns_total < 1e-9,
+            "r0={r0}"
         );
+        assert!(
+            (r1 - columns_total * s).abs() / columns_total < 1e-9,
+            "r1={r1}"
+        );
+        assert!((r0 + r1 - columns_total).abs() / columns_total < 1e-9);
+    }
+
+    /// 台形＋部分区間: 重心は区間内の相対位置に置く（区間中点ではない）。
+    #[test]
+    fn trapezoid_columns_partial_span_uses_centroid_in_span() {
+        let mut m = model_with_line_anchor_nodes();
+        let span = [0.0, 0.5];
+        let extent = [500.0, 1500.0];
+        let s = (500.0 + 2.0 * 1500.0) / (3.0 * 2000.0); // 7/12
+        let t = span[0] + (span[1] - span[0]) * s; // 7/24
+        let plate = line_attached_plate(span, extent, LoadTransfer::Columns);
+        let total = m.wall_plate_self_weight(&plate, &m).expect("自重が求まる");
+        m.wall_plates.push(plate);
+        let loads = attached_wall_beam_loads(&m);
+        let get = |n: NodeId| -> f64 {
+            loads
+                .iter()
+                .find(|bl| bl.target == LoadTarget::Node(n))
+                .map(|bl| match bl.shape {
+                    LoadShape::Point { p, .. } => p,
+                    _ => panic!("Point を期待"),
+                })
+                .unwrap()
+        };
+        let (r0, r1) = (get(NodeId(0)), get(NodeId(1)));
+        assert!(
+            (r0 - total * (1.0 - t)).abs() / total < 1e-9,
+            "r0={r0} t={t}"
+        );
+        assert!((r1 - total * t).abs() / total < 1e-9, "r1={r1}");
     }
 
     /// 「床領域」アンカー（自立壁）: 床板を持つ区画では、区画内の全床板へ
@@ -729,5 +806,18 @@ mod tests {
         accumulate_attached_wall_seismic_weight(&m, &mut nw);
         assert!((nw[0] - total * 0.75).abs() / total < 1e-9);
         assert!((nw[1] - total * 0.25).abs() / total < 1e-9);
+    }
+
+    #[test]
+    fn accumulate_seismic_weight_uses_trapezoid_centroid() {
+        let mut m = model_with_line_anchor_nodes();
+        let plate = line_attached_plate([0.0, 1.0], [500.0, 1500.0], LoadTransfer::Anchor);
+        let total = m.wall_plate_self_weight(&plate, &m).expect("自重が求まる");
+        m.wall_plates.push(plate);
+        let s = (500.0 + 2.0 * 1500.0) / (3.0 * 2000.0);
+        let mut nw = vec![0.0; m.nodes.len()];
+        accumulate_attached_wall_seismic_weight(&m, &mut nw);
+        assert!((nw[0] - total * (1.0 - s)).abs() / total < 1e-9);
+        assert!((nw[1] - total * s).abs() / total < 1e-9);
     }
 }

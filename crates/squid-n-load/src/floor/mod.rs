@@ -39,7 +39,7 @@ mod types;
 
 /// 取り付く壁版（[`crate::wall_attached`]）が、取付き線に載る等分布荷重の CMQ を
 /// 床側と同じ式で求めるための再公開（`fem` 自体は非公開モジュール）。
-pub(crate) use fem::fem_uniform;
+pub(crate) use fem::{fem_linear, fem_uniform};
 pub use fem::{fixed_end_moments, simple_beam_moment_at, simple_reactions};
 pub use geometry::{point_in_slab_boundary, polygon_area, slab_dimensions, slab_dimensions_of};
 pub use rigid_zone::{cmq_with_rigid_zone, RigidZoneCmqMode, RigidZoneCmqResult};
