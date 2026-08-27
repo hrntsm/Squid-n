@@ -396,6 +396,45 @@ pub fn model_issues(model: &Model) -> Vec<ModelIssue> {
         }
     }
 
+    // 壁版のうち解析要素にしないもの。解析は柱梁だけで成立するため止めないが、
+    // 耐震壁が消えたことに気づけるよう警告する（D5: 4 節点・断面ありの
+    // Enclosed だけが壁要素になる）。
+    {
+        use squid_n_core::model::WallPlateShape;
+        let mut skipped_non_quad = 0usize;
+        let mut skipped_no_section = 0usize;
+        for plate in &model.wall_plates {
+            let WallPlateShape::Enclosed { boundary } = &plate.shape else {
+                continue;
+            };
+            if plate.section.is_none() {
+                skipped_no_section += 1;
+                continue;
+            }
+            if boundary.len() != 4 {
+                skipped_non_quad += 1;
+            }
+        }
+        if skipped_non_quad != 0 {
+            issues.push(
+                ModelIssue::model(format!(
+                    "境界が 4 節点でない壁版が {skipped_non_quad} 枚あります。\
+                     解析要素としては生成しません（T 字取り付き等）。"
+                ))
+                .warn(),
+            );
+        }
+        if skipped_no_section != 0 {
+            issues.push(
+                ModelIssue::model(format!(
+                    "断面未割当の壁版が {skipped_no_section} 枚あります。\
+                     解析要素としては生成しません。"
+                ))
+                .warn(),
+            );
+        }
+    }
+
     // 断面が未割当のスラブ・断面の主材料が未割当のスラブ
     //
     // スラブの板厚と自重は断面から解決する（`Model::slab_self_weight_intensity`）。
@@ -658,6 +697,29 @@ fn node_reference_issues(model: &Model) -> Vec<ModelIssue> {
         for sm in &model.secondary_members {
             for n in &sm.nodes {
                 mark(*n);
+            }
+        }
+        // 壁版の境界・取付き先も、要素が無くても意図した幾何節点なので孤立扱いしない。
+        for plate in &model.wall_plates {
+            match &plate.shape {
+                squid_n_core::model::WallPlateShape::Enclosed { boundary } => {
+                    for n in boundary {
+                        mark(*n);
+                    }
+                }
+                squid_n_core::model::WallPlateShape::Attached { anchor, .. } => match anchor {
+                    squid_n_core::model::RegionAnchor::Line { nodes, .. } => {
+                        for n in nodes {
+                            mark(*n);
+                        }
+                    }
+                    squid_n_core::model::RegionAnchor::Point(n) => mark(*n),
+                    squid_n_core::model::RegionAnchor::FloorRegion { nodes, .. } => {
+                        for n in nodes {
+                            mark(*n);
+                        }
+                    }
+                },
             }
         }
     }

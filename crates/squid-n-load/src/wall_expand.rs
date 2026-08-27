@@ -3,9 +3,10 @@
 //! 入力の正は「壁領域」（[`squid_n_core::model::WallRegion`]）と「壁版」
 //! （[`squid_n_core::model::WallPlate`]）であり、`Model.elements` には壁の
 //! 解析要素（`ElementKind::Wall`）を一切持たせない（D5）。ソルバ・断面力表示・
-//! 保有水平耐力・ST-Bridge 出力など、壁の解析要素を必要とする消費者は、
-//! それぞれ [`expand_wall_elements`] を呼んで**壁展開モデル**（生成要素を追加した
-//! `Model` の一時的な複製）を得る。
+//! 保有水平耐力など、壁の解析要素を必要とする消費者は、それぞれ
+//! [`expand_wall_elements`] を呼んで**壁展開モデル**（生成要素を追加した
+//! `Model` の一時的な複製）を得る。ST-Bridge の書き出しは入力の正である壁版
+//! から直接行う（展開しない。4 節点でない壁版も往復させるため）。
 //!
 //! # 壁展開モデル・壁展開インデックス（用語）
 //!
@@ -50,7 +51,7 @@
 //! 追加され、壁の自重・剛性が実質的に二重計上される（生成 `ElemId` は
 //! 既存要素の最大値より後ろへ振るため ID 衝突では検出できない）。
 //!
-//! 現状の呼び出し経路（自重算定・ST-Bridge 出力の内部展開、ソルバ・GUI診断の
+//! 現状の呼び出し経路（自重算定の内部展開、ソルバ・GUI診断の
 //! 呼び出し元展開）は互いに素（どちらも「入力の正である `Model`」だけを受け取り、
 //! 他の展開済みモデルを再度渡すことはない）であることを確認済みだが、
 //! 呼び出し側の実装ミスに備えて `expand_wall_elements` 自身も
@@ -139,27 +140,44 @@ pub fn model_has_wall_plates_to_expand(model: &Model) -> bool {
 ///
 /// `model` 自体は変更しない。返す `Model` は一時的な派生値であり、呼び出し元が
 /// 保存・シリアライズしてはならない（D5。壁の解析要素はモデルに残さない）。
+/// 呼び出し元がすでに所有する `Model` を渡せるときは
+/// [`expand_wall_elements_owned`] を使い、ここでの複製を避ける。
 pub fn expand_wall_elements(model: &Model) -> (Model, WallExpansionIndex, WallExpansionReport) {
+    expand_wall_elements_owned(model.clone())
+}
+
+/// [`expand_wall_elements`] の所有権版。受け取った `Model` へ生成要素を追記して返す。
+///
+/// 解析入口のように呼び出し元がすでに `Model` の複製を持っているとき、
+/// もう一度 `clone` しないための入口。
+pub fn expand_wall_elements_owned(
+    mut expanded: Model,
+) -> (Model, WallExpansionIndex, WallExpansionReport) {
     debug_assert!(
-        model.elements.iter().all(|e| e.kind != ElementKind::Wall),
+        expanded
+            .elements
+            .iter()
+            .all(|e| e.kind != ElementKind::Wall),
         "expand_wall_elements への入力モデルに既に ElementKind::Wall が含まれている。\
          壁展開モデルを再度展開しようとしていないか確認すること（モジュール doc の\
          「二重展開しないこと」参照。壁の自重・剛性が二重計上される）。"
     );
 
-    let mut expanded = model.clone();
     let mut index = WallExpansionIndex::default();
     let mut report = WallExpansionReport::default();
-    let mut next_id = model
+    let mut next_id = expanded
         .elements
         .iter()
         .map(|e| e.id.0)
         .max()
         .map_or(0, |m| m + 1);
 
-    for region in &model.wall_regions {
+    // 生成対象を先に集めてから `elements` / `wall_attrs` へ追記する
+    // （領域・壁版の走査中にモデルを可変借用できないため）。
+    let mut jobs: Vec<(WallPlateId, ElementData, WallAttr)> = Vec::new();
+    for region in &expanded.wall_regions {
         for &plate_id in &region.wall_plate_ids {
-            let Some(plate) = model.wall_plate(plate_id) else {
+            let Some(plate) = expanded.wall_plate(plate_id) else {
                 continue;
             };
             let WallPlateShape::Enclosed { boundary } = &plate.shape else {
@@ -176,35 +194,42 @@ pub fn expand_wall_elements(model: &Model) -> (Model, WallExpansionIndex, WallEx
             }
             let id = ElemId(next_id);
             next_id += 1;
-            expanded.elements.push(ElementData {
-                id,
-                kind: ElementKind::Wall,
-                nodes: boundary.iter().copied().collect(),
-                section: plate.section,
-                local_axis: LocalAxis {
-                    ref_vector: [0.0, 0.0, 1.0],
+            jobs.push((
+                plate_id,
+                ElementData {
+                    id,
+                    kind: ElementKind::Wall,
+                    nodes: boundary.iter().copied().collect(),
+                    section: plate.section,
+                    local_axis: LocalAxis {
+                        ref_vector: [0.0, 0.0, 1.0],
+                    },
+                    end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+                    force_regime: ForceRegime::Auto,
+                    rigid_zone: Default::default(),
+                    plastic_zone: None,
+                    spring: None,
                 },
-                end_cond: [EndCondition::Fixed, EndCondition::Fixed],
-                force_regime: ForceRegime::Auto,
-                rigid_zone: Default::default(),
-                plastic_zone: None,
-                spring: None,
-            });
-            // 既存の壁消費者（自重算定・開口低減剛性・偏心率の雑壁剛性・数量拾い等）は
-            // いずれも `model.wall_attrs` を `elem` で引く同じ形の参照を持つ。
-            // 壁展開モデルだけに、由来する壁版の開口・三方スリットを写した合成
-            // `WallAttr` を積み、それらの消費者を無改修のまま動かす
-            // （モジュール doc「wall_attrs の合成」参照）。
-            expanded.wall_attrs.push(WallAttr {
-                elem: id,
-                opening_area: plate.opening_area,
-                opening_weight: plate.opening_weight,
-                three_side_slit: plate.three_side_slit,
-                openings: plate.openings.clone(),
-            });
-            index.0.insert(id, plate_id);
+                WallAttr {
+                    elem: id,
+                    opening_area: plate.opening_area,
+                    opening_weight: plate.opening_weight,
+                    three_side_slit: plate.three_side_slit,
+                    openings: plate.openings.clone(),
+                },
+            ));
             report.generated += 1;
         }
+    }
+    for (plate_id, elem, attr) in jobs {
+        index.0.insert(elem.id, plate_id);
+        expanded.elements.push(elem);
+        // 既存の壁消費者（自重算定・開口低減剛性・偏心率の雑壁剛性・数量拾い等）は
+        // いずれも `model.wall_attrs` を `elem` で引く同じ形の参照を持つ。
+        // 壁展開モデルだけに、由来する壁版の開口・三方スリットを写した合成
+        // `WallAttr` を積み、それらの消費者を無改修のまま動かす
+        // （モジュール doc「wall_attrs の合成」参照）。
+        expanded.wall_attrs.push(attr);
     }
 
     (expanded, index, report)

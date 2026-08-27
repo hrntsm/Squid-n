@@ -842,7 +842,7 @@ pub(super) fn standard_sections(model: &Model) -> StandardSections {
     let mut col_map: HashMap<u32, u32> = HashMap::new();
     let mut beam_map: HashMap<u32, u32> = HashMap::new();
 
-    // 壁要素だけが参照する厚さ専用断面（thickness のみ・形状なし。import が
+    // 壁版だけが参照する厚さ専用断面（thickness のみ・形状なし。import が
     // StbSecWall_RC の厚さから生成する）は、壁断面ブロック（StbSecWall_RC、
     // `export::wall_sections`）側で出力されるためここでは出力しない。
     // 従来は StbSecRaw としても二重に出力され、再取り込みのたびに
@@ -852,13 +852,18 @@ pub(super) fn standard_sections(model: &Model) -> StandardSections {
         let mut used_by_other = std::collections::HashSet::new();
         for e in &model.elements {
             if let Some(sid) = e.section {
-                // 壁ブロック（`export::wall_sections`）の出力対象は Wall と
-                // Shell の双方のため、「壁側で出力される」判定もそろえる。
+                // 壁ブロック（`export::wall_sections`）の出力対象は壁版と
+                // Shell のため、「壁側で出力される」判定もそろえる。
                 if matches!(e.kind, ElementKind::Wall | ElementKind::Shell) {
                     used_by_wall.insert(sid.0);
                 } else {
                     used_by_other.insert(sid.0);
                 }
+            }
+        }
+        for plate in &model.wall_plates {
+            if let Some(sid) = plate.section {
+                used_by_wall.insert(sid.0);
             }
         }
         // 二次部材（StbBeam/StbPost）は生の断面 id を id_section へ書き出すため、

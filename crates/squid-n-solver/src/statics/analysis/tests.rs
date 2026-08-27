@@ -1519,3 +1519,75 @@ fn test_model_issues_warns_floating_plate() {
     assert_eq!(warning.severity, IssueSeverity::Warning);
     assert!(precheck_model(&model).is_ok(), "解析は止めない");
 }
+
+/// 4 節点でない壁版・断面未割当の壁版は警告し、解析は止めない。
+#[test]
+fn test_model_issues_warns_wall_plates_not_expanded() {
+    use super::precheck::{model_issues, precheck_model, IssueSeverity};
+    use squid_n_core::ids::WallPlateId;
+    use squid_n_core::model::{WallPlate, WallPlateShape};
+
+    let mut model = make_cantilever_model();
+    let n = model.nodes.len() as u32;
+    for (i, c) in [
+        [1000.0, 0.0, 3000.0],
+        [0.0, 0.0, 3000.0],
+        [500.0, 0.0, 1500.0],
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        model.nodes.push(Node {
+            id: NodeId(n + i as u32),
+            coord: c,
+            restraint: Dof6Mask::FREE,
+            mass: None,
+            story: None,
+            support_spring: None,
+        });
+    }
+    model.wall_plates.push(WallPlate {
+        id: WallPlateId(0),
+        shape: WallPlateShape::Enclosed {
+            boundary: vec![
+                NodeId(0),
+                NodeId(1),
+                NodeId(n),
+                NodeId(n + 2),
+                NodeId(n + 1),
+            ],
+        },
+        section: Some(SectionId(0)),
+        opening_area: 0.0,
+        opening_weight: 0.0,
+        openings: Vec::new(),
+        three_side_slit: false,
+    });
+    model.wall_plates.push(WallPlate {
+        id: WallPlateId(1),
+        shape: WallPlateShape::Enclosed {
+            boundary: vec![NodeId(0), NodeId(1), NodeId(n), NodeId(n + 1)],
+        },
+        section: None,
+        opening_area: 0.0,
+        opening_weight: 0.0,
+        openings: Vec::new(),
+        three_side_slit: false,
+    });
+
+    let issues = model_issues(&model);
+    let msgs: Vec<&str> = issues.iter().map(|i| i.message.as_str()).collect();
+    assert!(
+        issues.iter().any(|i| {
+            i.severity == IssueSeverity::Warning && i.message.contains("4 節点でない壁版")
+        }),
+        "4 節点でない壁版の警告がない: {msgs:?}"
+    );
+    assert!(
+        issues.iter().any(|i| {
+            i.severity == IssueSeverity::Warning && i.message.contains("断面未割当の壁版")
+        }),
+        "断面未割当の壁版の警告がない: {msgs:?}"
+    );
+    assert!(precheck_model(&model).is_ok(), "解析は止めない");
+}

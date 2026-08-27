@@ -21,7 +21,7 @@
 //! `region_gen::wall` の出力から組み立てる経路（[`crate::wall_region_rebuild`]）は
 //! 準備計算・ST-Bridge 取り込みへ結線済み（`wall_plate_ids` へ壁版を割り当てる経路
 //! 含む）。**未結線（2026-08-26 時点）**なのは、壁版の ST-Bridge 取り込み・要素生成
-//! （D5）・断面力/保有水平耐力/ST-Bridge 出力の参照張り替え。詳細は
+//! （D5）・断面力/保有水平耐力の参照張り替え。ST-Bridge 書き出しは壁版が正。詳細は
 //! `dev_docs/handoff/床領域・壁領域の再設計_申し送り.md` §5.10・§5.13。
 
 use super::*;

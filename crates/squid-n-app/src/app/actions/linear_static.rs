@@ -162,7 +162,7 @@ impl App {
     ) -> Result<squid_n_solver::linear::StaticOnce, String> {
         // 壁の解析要素は生成物（D5）のため展開してから解く
         // （`squid_n_job::compute` の各関数と同じ理由）。
-        let model = squid_n_load::wall_expand::expand_wall_elements(&model).0;
+        let model = squid_n_load::wall_expand::expand_wall_elements_owned(model).0;
         match Analysis::prepare(&model) {
             Ok(analysis) => analysis
                 .linear_combination(&combo)
@@ -343,7 +343,7 @@ impl App {
     ) -> Result<StaticAllComputed, String> {
         // 壁の解析要素は生成物（D5）のため展開してから解く
         // （`squid_n_job::compute` の各関数と同じ理由）。
-        let model = squid_n_load::wall_expand::expand_wall_elements(&model).0;
+        let model = squid_n_load::wall_expand::expand_wall_elements_owned(model).0;
         let analysis = Analysis::prepare(&model).map_err(|e| format!("解析準備エラー: {:?}", e))?;
         let ids: Vec<LoadCaseId> = case_keys.iter().map(|(id, _)| *id).collect();
         let batch = analysis.linear_static_with_combinations(&ids, &combos);
