@@ -1979,25 +1979,35 @@ fn test_import_wall_with_node_order_and_thickness() {
 </StbModel></ST_BRIDGE>"#;
     let (m, report) = import_stbridge_with_report(xml).expect("import");
     assert!(m.validate().is_ok(), "{:?}", m.validate());
-    let walls: Vec<_> = m
-        .elements
-        .iter()
-        .filter(|e| e.kind == squid_n_core::model::ElementKind::Wall)
-        .collect();
-    assert_eq!(walls.len(), 1, "壁を1件取り込む");
-    let w = walls[0];
+    // 壁の解析要素（`ElementKind::Wall`）は取り込み時には作らない（D5）。取り込みは
+    // `WallPlate` を組み立て、`rebuild_wall_regions` が検出済みの壁領域へ帰属させる。
+    assert!(
+        m.elements
+            .iter()
+            .all(|e| e.kind != squid_n_core::model::ElementKind::Wall),
+        "壁要素は準備計算からの生成物であり取り込み時には作らない"
+    );
+    let plates: Vec<_> = m.wall_plates.iter().collect();
+    assert_eq!(plates.len(), 1, "壁版を1件取り込む");
+    let p = plates[0];
     assert_eq!(
-        w.nodes.as_slice(),
-        &[NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
+        p.boundary_nodes(),
+        Some(&[NodeId(0), NodeId(1), NodeId(2), NodeId(3)][..]),
         "境界節点ループが順序どおり"
     );
-    let sec = w.section.and_then(|s| m.sections.get(s.index()));
+    let sec = p.section.and_then(|s| m.sections.get(s.index()));
     assert_eq!(
         sec.and_then(|s| s.thickness),
         Some(200.0),
         "壁断面の厚さを解決"
     );
-    assert!(report.is_clean(), "警告なし: {:?}", report.warnings);
+    // 本フィクスチャは柱・梁を持たないため壁領域（region_gen::wall の検出対象）は
+    // 検出されず、壁版はどの壁領域にも帰属しない（警告になる。壁版の帰属確認は
+    // full_model.rs の実フィクスチャで行う）。
+    assert_eq!(
+        report.warnings,
+        vec!["壁領域の作り直しで壁版 1 枚が領域に割り当てられなかった".to_string()]
+    );
 }
 
 /// 自己終了 <StbSlab/> の後の StbWall の節点ループが、陳腐化したスラブ状態に
@@ -2021,22 +2031,28 @@ fn test_self_closing_slab_does_not_steal_wall_nodes() {
 </StbModel></ST_BRIDGE>"#;
     let (m, _report) = import_stbridge_with_report(xml).expect("import");
     assert!(m.validate().is_ok(), "{:?}", m.validate());
-    let walls: Vec<_> = m
-        .elements
-        .iter()
-        .filter(|e| e.kind == squid_n_core::model::ElementKind::Wall)
-        .collect();
-    assert_eq!(walls.len(), 1, "壁が取り込まれる（節点を横取りされない）");
     assert_eq!(
-        walls[0].nodes.as_slice(),
-        &[NodeId(0), NodeId(1), NodeId(2), NodeId(3)]
+        m.wall_plates.len(),
+        1,
+        "壁版が取り込まれる（節点を横取りされない）"
+    );
+    assert_eq!(
+        m.wall_plates[0].boundary_nodes(),
+        Some(&[NodeId(0), NodeId(1), NodeId(2), NodeId(3)][..])
     );
 }
 
 /// 壁（境界＋厚さ）を含むモデルが export→import で往復すること。
+///
+/// 壁の解析要素（`ElementKind::Wall`）はモデルに残らない生成物（D5）のため、
+/// ここでは入力の正である `WallPlate`/`WallRegion` を直接構築する（生の
+/// `ElementData` を `model.elements` へ直接置くのは、この移行後は
+/// 「準備計算・出力の直前に壁展開関数が組み立てる一時的な生成物」の形であり、
+/// 保存対象のモデルとしては不正な状態になったため使わない）。
 #[test]
 fn test_wall_roundtrip_export_import() {
-    use squid_n_core::model::{ElementData, ElementKind, EndCondition, ForceRegime, LocalAxis};
+    use squid_n_core::ids::{WallPlateId, WallRegionId};
+    use squid_n_core::model::{WallPlate, WallPlateShape, WallRegion};
     let mut model = Model::default();
     for (i, (x, z)) in [(0.0, 0.0), (4000.0, 0.0), (4000.0, 3000.0), (0.0, 3000.0)]
         .into_iter()
@@ -2072,37 +2088,44 @@ fn test_wall_roundtrip_export_import() {
         shear_rebar_material: None,
         steel_material: None,
     });
-    model.elements.push(ElementData {
-        id: ElemId(0),
-        kind: ElementKind::Wall,
-        nodes: smallvec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
-        section: Some(SectionId(0)),
-        local_axis: LocalAxis {
-            ref_vector: [0.0, 0.0, 1.0],
+    model.wall_plates.push(WallPlate {
+        id: WallPlateId(0),
+        shape: WallPlateShape::Enclosed {
+            boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
         },
-        end_cond: [EndCondition::Fixed, EndCondition::Fixed],
-        force_regime: ForceRegime::Auto,
-        rigid_zone: Default::default(),
-        plastic_zone: None,
-        spring: None,
+        section: Some(SectionId(0)),
+        opening_area: 0.0,
+        opening_weight: 0.0,
+        openings: Vec::new(),
+        three_side_slit: false,
+    });
+    model.wall_regions.push(WallRegion {
+        id: WallRegionId(0),
+        name: String::new(),
+        boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
+        wall_plate_ids: vec![WallPlateId(0)],
+        post_ids: Vec::new(),
     });
     assert!(model.validate().is_ok(), "{:?}", model.validate());
 
     let xml = export_stbridge(&model).expect("export");
     let (m2, _report) = import_stbridge_with_report(&xml).expect("import");
     assert!(m2.validate().is_ok(), "{:?}", m2.validate());
-    let walls: Vec<_> = m2
-        .elements
-        .iter()
-        .filter(|e| e.kind == ElementKind::Wall)
-        .collect();
-    assert_eq!(walls.len(), 1, "壁1件");
+    // 出力時は壁展開モデル（生成した `ElementKind::Wall` を含む一時的な複製）を
+    // 経由するため、`<StbWall>` としては書き出る。取り込み側は `WallPlate` を
+    // 組み立てる（D5）ため、往復後の姿は `wall_plates` で確認する。
+    assert!(
+        m2.elements.iter().all(|e| e.kind != ElementKind::Wall),
+        "壁要素は生成物であり保存されたモデルには残らない"
+    );
+    let plates: Vec<_> = m2.wall_plates.iter().collect();
+    assert_eq!(plates.len(), 1, "壁版1件");
     assert_eq!(
-        walls[0].nodes.as_slice(),
-        &[NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
+        plates[0].boundary_nodes(),
+        Some(&[NodeId(0), NodeId(1), NodeId(2), NodeId(3)][..]),
         "境界が往復"
     );
-    let t = walls[0].section.and_then(|s| m2.sections.get(s.index()));
+    let t = plates[0].section.and_then(|s| m2.sections.get(s.index()));
     assert_eq!(t.and_then(|s| s.thickness), Some(250.0), "厚さが往復");
 
     // 往復を重ねても断面数が増殖しないこと。従来は壁専用の厚さ断面が

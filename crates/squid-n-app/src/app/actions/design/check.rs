@@ -19,6 +19,24 @@ impl App {
         let Some(results) = &self.results else {
             return;
         };
+        // 壁の解析要素（`ElementKind::Wall`）は `self.model` には存在しない生成物
+        // （D5）だが、`results.member_forces` は壁展開済みモデルで解いた結果の
+        // ため壁の `ElemId` を含む。`run_member_design_checks`（内部の
+        // `joint_wiring::wall::check_walls`）はこの `ElemId` を `model.element`
+        // で引き直すため、`self.model` のまま渡すと耐震壁のせん断断面検定が
+        // 常にスキップされる（該当 `ElemId` が見つからず `continue` する）。
+        // 壁を持たないモデル（実 ST-Bridge フィクスチャは現状すべて該当する）
+        // では複製を避け、`self.model` をそのまま使う。
+        let expanded_storage;
+        let design_model: &squid_n_core::model::Model =
+            if squid_n_load::wall_expand::model_has_wall_plates_to_expand(&self.model) {
+                let (expanded, _wall_index, _wall_report) =
+                    squid_n_load::wall_expand::expand_wall_elements(&self.model);
+                expanded_storage = expanded;
+                &expanded_storage
+            } else {
+                &self.model
+            };
         // 地震時短期の設計用せん断力 QD 用の長期内力。
         // 優先: Q0 と同じ重力ケース集合の解析内力加算。なければ組合せ "DL + LL"。
         // 長期が未解析なら None（QD 割増なし＝従来動作）。
@@ -75,7 +93,7 @@ impl App {
             Default::default()
         };
         let report = squid_n_design_jp::run_member_design_checks(
-            &self.model,
+            design_model,
             &results.member_forces,
             &results.panel_moments,
             &squid_n_design_jp::MemberDesignCheckOptions {

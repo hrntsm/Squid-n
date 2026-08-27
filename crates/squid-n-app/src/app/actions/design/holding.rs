@@ -135,19 +135,33 @@ impl App {
             let gravity_lc = gravity_cases_for_seismic_weight(&self.model)
                 .first()
                 .copied();
-            for elem in &self.model.elements {
-                let Some(sec) = elem
-                    .section
-                    .and_then(|sid| self.model.sections.get(sid.index()))
-                else {
+            // 壁の解析要素（`ElementKind::Wall`）は `self.model` には存在しない
+            // 生成物（D5）だが、`resp_by_elem`（`po.member_response`）は
+            // `compute_pushover` が内部で壁展開したモデルで解いた結果のため
+            // 壁の `ElemId` を含む。`self.model.elements` をそのまま走査すると
+            // 壁が一度も分類されず、RC耐力壁の種別判定（下記 `SectionShape::RcWall`
+            // 分岐）が常にスキップされる。壁を持たないモデル（実 ST-Bridge
+            // フィクスチャは現状すべて該当する）では複製を避ける。
+            let expanded_storage;
+            let model: &squid_n_core::model::Model =
+                if squid_n_load::wall_expand::model_has_wall_plates_to_expand(&self.model) {
+                    let (expanded, _wall_index, _wall_report) =
+                        squid_n_load::wall_expand::expand_wall_elements(&self.model);
+                    expanded_storage = expanded;
+                    &expanded_storage
+                } else {
+                    &self.model
+                };
+            for elem in &model.elements {
+                let Some(sec) = elem.section.and_then(|sid| model.sections.get(sid.index())) else {
                     continue;
                 };
-                let Some(mat) = self.model.element_material(elem) else {
+                let Some(mat) = model.element_material(elem) else {
                     continue;
                 };
                 // 主筋・せん断補強筋・内蔵鉄骨の材料も断面が持つ。
-                let rebar_mat = self.model.element_rebar_material(elem);
-                let shear_mat = self.model.element_shear_rebar_material(elem);
+                let rebar_mat = model.element_rebar_material(elem);
+                let shear_mat = model.element_shear_rebar_material(elem);
                 let steel_grade = self
                     .model
                     .element_steel_material(elem)
@@ -160,13 +174,13 @@ impl App {
                 // FA と甘く判定して Ds を過小評価する危険側の誤りだった。
                 let is_brace_elem =
                     matches!(elem.kind, squid_n_core::model::ElementKind::Brace { .. })
-                        || squid_n_design_jp::MemberKind::of_element(elem, &self.model)
+                        || squid_n_design_jp::MemberKind::of_element(elem, model)
                             == squid_n_design_jp::MemberKind::Brace;
-                let elem_steel = elem_is_steel(elem, &self.model);
+                let elem_steel = elem_is_steel(elem, model);
                 let rank = if is_brace_elem && elem_steel {
                     // 有効細長比 λ = Lk/i（節点間長を座屈長さ、i=√(Imin/A) とする
                     // ピン支持の軸材モデル）。断面性能がない場合はスキップ。
-                    let len = self.model.member_length(elem);
+                    let len = model.member_length(elem);
                     let i_min = sec.iy.min(sec.iz);
                     if sec.area <= 0.0 || i_min <= 0.0 || len <= 0.0 {
                         continue;
@@ -189,7 +203,7 @@ impl App {
                     // 幅厚比による部材ランク判定は準備計算の表示と共通
                     // （`steel_width_thickness_rank`。構造規定の幅厚比表のみで判定し、
                     // 表の対象外形状は未判定＝選択ランクへのフォールバックとする）。
-                    let member_use = steel_member_use_of(elem, &self.model);
+                    let member_use = steel_member_use_of(elem, model);
                     let Some(rank) = steel_width_thickness_rank(shape, member_use, &mat.name)
                     else {
                         continue;
@@ -203,7 +217,7 @@ impl App {
                     use squid_n_design_jp::secondary::src_rank::{
                         src_column_rank, src_column_rank_ratios,
                     };
-                    if squid_n_design_jp::MemberKind::of_element(elem, &self.model)
+                    if squid_n_design_jp::MemberKind::of_element(elem, model)
                         != squid_n_design_jp::MemberKind::Column
                     {
                         continue;
@@ -227,7 +241,7 @@ impl App {
                     };
                     src_column_rank(n_n0, smo_m0, shear_yield_elems.contains(&elem.id))
                 } else if let Some(SectionShape::RcWall { thickness, .. }) = sec.shape.as_ref() {
-                    if wall_has_src_boundary_column(elem, &self.model) {
+                    if wall_has_src_boundary_column(elem, model) {
                         // SRC 耐震壁（側柱が SRC の壁）: 技術基準解説書の規定により
                         // 破壊モードがせん断破壊の場合を WC、それ以外を WA とする
                         // （τu/Fc の表は用いない）。
@@ -240,8 +254,7 @@ impl App {
                         // （耐震壁不成立等）と終局時応答がない壁は判定不能として
                         // スキップ（層の選択ランクへフォールバック）。
                         let qu = squid_n_element::wall_element::WallElement::shear_capacity_of(
-                            elem,
-                            &self.model,
+                            elem, model,
                         );
                         let Some(resp) = resp_by_elem.get(&elem.id) else {
                             continue;
@@ -268,15 +281,14 @@ impl App {
                         // 並び順には依存しない）、lw は**上下辺長さの平均**となる
                         // （台形壁では上下辺長が異なるため一方の辺では代表長さにならない）。
                         let Some(wgeom) =
-                            squid_n_element::wall_element::wall_element_geometry(elem, &self.model)
+                            squid_n_element::wall_element::wall_element_geometry(elem, model)
                         else {
                             continue;
                         };
                         let wall_len = wgeom.lw;
                         let r2 =
                             squid_n_element::wall_element::WallElement::opening_strength_reduction(
-                                elem,
-                                &self.model,
+                                elem, model,
                             );
                         let Some(tau_over_fc) = rc_wall_tau_over_fc(
                             resp.horizontal_force,
@@ -288,8 +300,7 @@ impl App {
                             continue;
                         };
                         let qu = squid_n_element::wall_element::WallElement::shear_capacity_of(
-                            elem,
-                            &self.model,
+                            elem, model,
                         );
                         let brittle = rc_wall_shear_brittle(resp.horizontal_force, qu);
                         // 壁式構造か否かは設計設定（設計タブのチェックボックス）による。
@@ -307,7 +318,7 @@ impl App {
                     // 剛域長(D_orth/2 − D_self/4)を引いた可撓長さとは別物
                     // （設計書 §6.2.1）。フェイス距離の合計が幾何長以上になる
                     // (不整合な入力)場合は下限0を割り込むため、幾何長のままとする。
-                    let geom_len = self.model.member_length(elem);
+                    let geom_len = model.member_length(elem);
                     let face_sum =
                         elem.rigid_zone.face_i_or_zero() + elem.rigid_zone.face_j_or_zero();
                     let clear_span = if geom_len - face_sum > 0.0 {
@@ -338,7 +349,7 @@ impl App {
                             )
                         })
                         .unwrap_or(0.0);
-                    let kind = squid_n_design_jp::MemberKind::of_element(elem, &self.model);
+                    let kind = squid_n_design_jp::MemberKind::of_element(elem, model);
                     // 告示の部材種別が要求する σ0・τu は「Ds 算定時」＝崩壊機構形成時の
                     // 応力度である。終局時応答が得られない部材は判定不能としてスキップ
                     // し、層は選択ランクへフォールバックする（τu=0 とみなすと FA と
@@ -412,7 +423,7 @@ impl App {
                 let Some(story_idx) = elem
                     .nodes
                     .iter()
-                    .filter_map(|nid| self.model.nodes.get(nid.index()))
+                    .filter_map(|nid| model.nodes.get(nid.index()))
                     .filter_map(|n| n.story)
                     .max()
                 else {

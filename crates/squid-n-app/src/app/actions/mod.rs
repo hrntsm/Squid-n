@@ -508,7 +508,15 @@ impl App {
         // Error、解析は通るが入力の意図を確かめたい事柄（剛床のない階など）は
         // Warning になる。準備計算の `PreparationResult::is_ready`
         // （`diag_errors == 0`）が「解析前に解消すべきか」の判定にそのまま使える。
-        for issue in squid_n_solver::analysis::precheck::model_issues(&self.model) {
+        //
+        // `model_issues` は壁展開モデル（壁の解析要素を含む一時的な複製。D5）を
+        // 渡す。`self.model` そのままでは壁要素が 0 件のため、耐震壁と周辺架構の
+        // 種別食い違い等、壁関連の診断が一切出なくなる（解析実行時の
+        // `squid_n_job::compute` 側の展開と同じ理由。忘れると壁の不備が診断タブに
+        // 現れないまま解析実行時に初めて分かる、という劣化になる）。
+        let (wall_expanded_model, _wall_index, _wall_report) =
+            squid_n_load::wall_expand::expand_wall_elements(&self.model);
+        for issue in squid_n_solver::analysis::precheck::model_issues(&wall_expanded_model) {
             push_issue_diagnostics(&mut diags, issue);
         }
 

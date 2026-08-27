@@ -11,10 +11,13 @@ use super::{
     PendingSecondary, RawAxisGroup, RawLoadCase, RawMaterial, RawNode, RawSlab, RawStory, RawWall,
     SecMatRef,
 };
-use squid_n_core::ids::{ElemId, LoadCaseId, MaterialId, NodeId, SectionId, SlabId, StoryId};
+use squid_n_core::ids::{
+    ElemId, LoadCaseId, MaterialId, NodeId, SectionId, SlabId, StoryId, WallPlateId,
+};
 use squid_n_core::model::{
     DistributionMethod, ElementData, ElementKind, EndCondition, ForceRegime, LoadCase, LocalAxis,
     Material, MaterialCategory, Model, NodalLoad, Node, Section, Slab, SlabPlate, SlabShape, Story,
+    WallPlate, WallPlateShape,
 };
 use squid_n_core::region_rebuild::rebuild_floor_regions;
 use squid_n_core::section_shape::SectionShape;
@@ -147,10 +150,10 @@ pub(super) fn assemble(parsed: StbParser) -> Result<(Model, ImportReport), StbEr
             rebuild.unmatched_old_regions
         ));
     }
-    // 壁領域（柱・梁が囲む鉛直構面内の閉領域）を検出する。現時点では壁版
-    // （WallPlate）を取り込まないため wall_plates_assigned は常に 0 だが、
-    // 壁側 region_gen の結果はここで model.wall_regions へ反映しておく
-    // （領域 rebuild は結線済み。壁版の取り込み・要素生成は未着手）。
+    // 壁領域（柱・梁が囲む鉛直構面内の閉領域）を検出し、直前に積んだ壁版
+    // （WallPlate）を帰属させる。壁の解析要素（ElementKind::Wall）はここでは
+    // 作らない（D5）。準備計算・解析実行の直前に
+    // `squid_n_load::wall_expand::expand_wall_elements` が壁展開モデルとして生成する。
     let wall_rebuild = rebuild_wall_regions(&mut model);
     if wall_rebuild.unassigned_wall_plates != 0 {
         warnings.push(format!(
@@ -741,18 +744,19 @@ fn build_walls(
     warnings: &mut Vec<String>,
 ) {
     // ST-Bridge の XML には「壁と間柱の親子関係」を明示する要素がない。
-    // 現行 importer は `ElementKind::Wall` 要素のみを直接生成する（`WallAttr` は
-    // 生成しない。開口・三方スリットは常に既定値〔開口なし〕になる）。
-    // `WallRegion`/`WallPlate` も組み立てない（`wall_regions`/`wall_plates` は
-    // 空配列のまま）。取り込み経路の `WallPlate` への移行は Step 7+8 本体で行う
-    // （`dev_docs/handoff/床領域・壁領域の再設計_申し送り.md` §5.8）。
+    // importer は `WallPlate`（囲まれた壁版）のみを組み立てる。`ElementKind::Wall`
+    // 要素はここでは作らない（D4・D5: 解析要素は準備計算からの生成物であり、
+    // 入力の正は壁版が持つ。展開は `squid_n_load::wall_expand::expand_wall_elements`
+    // が担う）。開口・三方スリットは ST-Bridge に対応する情報源がないため常に
+    // 既定値（開口なし）になる（旧 `WallAttr` と同じ挙動）。直後に呼ばれる
+    // `rebuild_wall_regions` が、ここで積んだ `WallPlate` を検出済みの壁領域へ
+    // 帰属させる（`dev_docs/handoff/床領域・壁領域の再設計_申し送り.md` §5.10）。
     let mut skipped_walls = 0u32;
     // 壁厚 → 生成済みの厚さ専用断面。同じ厚さの壁で断面を使い回すための索引。
     // f64 は Hash を持たないため、符号（`Wall t180`）そのものをキーにする。
     let mut wall_sections: HashMap<String, SectionId> = HashMap::new();
     for rw in raw_walls {
-        let mut boundary: smallvec::SmallVec<[NodeId; 8]> =
-            smallvec::SmallVec::with_capacity(rw.boundary.len());
+        let mut boundary: Vec<NodeId> = Vec::with_capacity(rw.boundary.len());
         let mut resolved = true;
         for fid in &rw.boundary {
             match node_index.get(fid) {
@@ -821,20 +825,15 @@ fn build_walls(
                 }
             }
         }
-        let id = ElemId(model.elements.len() as u32);
-        model.elements.push(ElementData {
+        let id = WallPlateId(model.wall_plates.len() as u32);
+        model.wall_plates.push(WallPlate {
             id,
-            kind: ElementKind::Wall,
-            nodes: boundary,
+            shape: WallPlateShape::Enclosed { boundary },
             section,
-            local_axis: LocalAxis {
-                ref_vector: [0.0, 0.0, 1.0],
-            },
-            end_cond: [EndCondition::Fixed, EndCondition::Fixed],
-            force_regime: ForceRegime::Auto,
-            rigid_zone: Default::default(),
-            plastic_zone: None,
-            spring: None,
+            opening_area: 0.0,
+            opening_weight: 0.0,
+            openings: Vec::new(),
+            three_side_slit: false,
         });
     }
     if skipped_walls > 0 {

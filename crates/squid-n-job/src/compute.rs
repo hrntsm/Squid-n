@@ -7,11 +7,25 @@
 //! 渡すモデルは [`crate::prepare::prepare_model_for_analysis`] または
 //! GUI の `ensure_preparation` で前処理済み（剛域・仕口パネル・DL/LL/EX/EY 同期）
 //! であること。荷重同期だけが必要な場合は [`crate::auto_loads`] を直接使う。
+//!
+//! **壁展開について**: 壁の解析要素（`ElementKind::Wall`）は入力の正である
+//! `Model` には存在しない生成物（D5）のため、本モジュールの各公開関数は
+//! 受け取った `model` を [`squid_n_load::wall_expand::expand_wall_elements`]
+//! で壁展開してから解く（呼び出し元〔GUI・MCP・job〕に展開を要求しない。
+//! 忘れると壁がソルバから消えるため）。壁展開モデルは呼び出しのたびに
+//! 都度組み立て、キャッシュしない（`dev_docs/handoff/
+//! 床領域・壁領域の再設計_申し送り.md` dig Q2=A）。
 
 use crate::error::{JobError, JobResult};
 use crate::settings::{AnalysisSettings, ThDampingModel, ThIntegrator};
 use squid_n_core::ids::LoadCaseId;
 use squid_n_solver::analysis::Analysis;
+
+/// 壁展開モデルを組み立てる（本モジュール共通のエントリポイント。モジュール doc
+/// 「壁展開について」参照）。展開の索引・件数報告は解析の入口では使わないため捨てる。
+fn expand_walls(model: squid_n_core::model::Model) -> squid_n_core::model::Model {
+    squid_n_load::wall_expand::expand_wall_elements(&model).0
+}
 
 /// 線形静的解析。前処理（[`crate::prepare`]）を通したモデルを渡す前提で、
 /// ここでは再適用しない（二重適用を避ける）。
@@ -19,6 +33,7 @@ pub fn compute_linear_static(
     model: squid_n_core::model::Model,
     lc: LoadCaseId,
 ) -> JobResult<squid_n_solver::linear::StaticOnce> {
+    let model = expand_walls(model);
     match Analysis::prepare(&model) {
         Ok(analysis) => analysis
             .linear_static(lc)
@@ -32,6 +47,7 @@ pub fn compute_eigen(
     model: squid_n_core::model::Model,
     n_modes: usize,
 ) -> JobResult<squid_n_solver::eigen::ModalResult> {
+    let model = expand_walls(model);
     match Analysis::prepare(&model) {
         Ok(analysis) => analysis
             .eigen(n_modes)
@@ -46,6 +62,7 @@ pub fn compute_seismic(
     cfg: squid_n_solver::analysis::SeismicCfg,
     t: f64,
 ) -> JobResult<squid_n_solver::linear::StaticOnce> {
+    let model = expand_walls(model);
     match Analysis::prepare(&model) {
         Ok(analysis) => analysis
             .seismic_static_with_period(cfg, t)
@@ -92,7 +109,7 @@ pub fn compute_pushover(
     model: squid_n_core::model::Model,
     cfg: AnalysisSettings,
 ) -> JobResult<squid_n_solver::pushover::PushoverResult> {
-    let work = model;
+    let work = expand_walls(model);
     Analysis::prepare(&work).map_err(|e| JobError::Prepare(e.to_string()))?;
     let dofmap = squid_n_core::dof::DofMap::build(&work);
     let reducer = squid_n_solver::constraint::Reducer::build(&work, &dofmap);
@@ -129,6 +146,7 @@ pub fn compute_time_history(
 ) -> JobResult<squid_n_solver::timehistory::ResponseResult> {
     // 位相差入力（ねじれ加振）を指定時に付加する（構造動力学の位相差入力解析）。
     let wave = apply_phase_diff(&cfg, wave);
+    let model = expand_walls(model);
     let analysis = Analysis::prepare(&model).map_err(|e| JobError::Prepare(e.to_string()))?;
     let damping = match cfg.th_damping_model {
         ThDampingModel::StiffnessProportional => {
@@ -301,6 +319,7 @@ pub fn compute_lumped_mass(
     po_y: Option<squid_n_solver::pushover::PushoverResult>,
     accel: Option<&[f64]>,
 ) -> JobResult<squid_n_solver::lumped_mass::LumpedMassResult> {
+    let model = expand_walls(model);
     let lm = crate::lumped_mass::build_lumped_mass(crate::lumped_mass::LumpedMassBuildInput {
         model: &model,
         dim: cfg.lumped_dim,

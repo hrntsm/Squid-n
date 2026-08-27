@@ -28,13 +28,37 @@ pub struct PrepareReport {
 ///
 /// いずれも冪等で、書き込み先が異なるため呼び出し順にも依存しない。
 /// 戻り値は生成した仕口パネルの一覧（GUI の準備計算表が表示する）。
+///
+/// **剛域算定は壁展開モデルに対して行う。** 壁の解析要素（`ElementKind::Wall`）は
+/// `model` には存在しない生成物（D5）だが、`rigid_zone_consider_walls`（既定
+/// true）は柱の袖壁・梁の腰壁/垂壁の張り出しを剛域長へ反映する技術基準の規定
+/// のため、壁展開しないまま算定すると「壁が一切ない」ものとして常に算定されて
+/// しまう（実測: 側柱の `length_j` が壁なしで 125.0mm、壁ありで 1262.5mm になる
+/// ケースを確認済み。dev_docs/handoff/床領域・壁領域の再設計_申し送り.md §5.15）。
+/// 壁展開モデルで算定した結果を、既存要素のインデックス対応で `model` へ書き戻す
+/// （壁展開は既存要素の末尾へ生成要素を追記するだけなので、先頭
+/// `model.elements.len()` 件は展開前後で 1:1 対応する）。仕口パネルは壁に
+/// 依存しないため、従来どおり非展開モデルに対して算定する。
 pub fn apply_rigid_zones_and_panels(
     model: &mut Model,
 ) -> Vec<squid_n_element::panel_gen::GeneratedPanel> {
     let rule = squid_n_element::beam::RigidZoneRule {
         consider_walls: model.stress_cfg.rigid_zone_consider_walls,
     };
-    squid_n_element::beam::apply_auto_rigid_zones(model, &rule);
+    // 壁を持たないモデル（実 ST-Bridge フィクスチャは現状すべて該当する）では、
+    // `expand_wall_elements` の `model.clone()`（要素数比例のコスト）を払う
+    // 意味がない。この関数は解析エントリの都度（`ensure_preparation` 経由で）
+    // 呼ばれるため、壁がない大多数のケースで無駄な複製を避ける。
+    if squid_n_load::wall_expand::model_has_wall_plates_to_expand(model) {
+        let (mut expanded, _wall_index, _wall_report) =
+            squid_n_load::wall_expand::expand_wall_elements(model);
+        squid_n_element::beam::apply_auto_rigid_zones(&mut expanded, &rule);
+        for (dst, src) in model.elements.iter_mut().zip(expanded.elements.iter()) {
+            dst.rigid_zone = src.rigid_zone;
+        }
+    } else {
+        squid_n_element::beam::apply_auto_rigid_zones(model, &rule);
+    }
     squid_n_element::panel_gen::apply_auto_panel_zones(model)
 }
 
@@ -152,6 +176,212 @@ mod tests {
             model.floor_regions[0].slab_ids.len(),
             2,
             "2 枚とも同じ床領域へ帰属"
+        );
+    }
+
+    /// 剛域算定（`apply_rigid_zones_and_panels`）が壁展開モデルを見ていることの
+    /// 回帰テスト。壁展開しないまま算定すると `model.elements` に壁要素が
+    /// 0 件のため `rigid_zone_consider_walls`（既定 true。柱の袖壁・梁の腰壁/垂壁
+    /// の張り出しを剛域長へ反映する技術基準の規定）が壁の有無に関わらず常に
+    /// 無効化されてしまう（`dev_docs/handoff/床領域・壁領域の再設計_申し送り.md`
+    /// §5.15 参照）。
+    ///
+    /// 柱・梁を全周 RC にそろえる（`all_rc_src_at` が全節点で成立する構成に
+    /// する）必要がある点に注意。RC/S 混在フレームでは「1 本でも S 系が
+    /// 集まる仕口には剛域を設けない」規則が優先し、壁の有無による差が
+    /// 現れない（この規則自体が §5.14 の `wall_bay_model` 回帰網を偶然素通り
+    /// させていた原因）。
+    #[test]
+    fn apply_rigid_zones_considers_wall_plates() {
+        use squid_n_core::ids::{MaterialId, WallPlateId, WallRegionId};
+        use squid_n_core::model::{
+            Material, MaterialCategory, WallPlate, WallPlateShape, WallRegion,
+        };
+        use squid_n_core::section_shape::{BarSet, RcRebar, SectionShape, ShearBar};
+
+        // 主筋 3-D22・せん断補強筋 D10@100（`剛域`の算定自体は鉄筋量を見ないが、
+        // `RcRect`/`to_section` が鉄筋情報を要求するため、名目値を与える）。
+        fn rebar() -> RcRebar {
+            RcRebar {
+                main_x: BarSet {
+                    count: 3,
+                    dia: 22.0,
+                    layers: 1,
+                },
+                main_y: BarSet {
+                    count: 3,
+                    dia: 22.0,
+                    layers: 1,
+                },
+                cover: 40.0,
+                shear: ShearBar {
+                    dia: 10.0,
+                    pitch: 100.0,
+                    legs: 2,
+                },
+            }
+        }
+
+        fn node3(id: u32, x: f64, y: f64, z: f64) -> Node {
+            Node {
+                id: NodeId(id),
+                coord: [x, y, z],
+                restraint: Default::default(),
+                mass: None,
+                story: None,
+                support_spring: None,
+            }
+        }
+
+        // 1 バイの全周 RC 架構（柱 4 本・頂部梁 4 本・柱脚間梁 4 本）。
+        // Y=0 面（節点 0,1,5,4）に耐震壁 1 枚を想定する。
+        fn base_frame() -> Model {
+            let mut model = Model::default();
+            let base = [
+                (0.0, 0.0, 0.0),
+                (4000.0, 0.0, 0.0),
+                (4000.0, 3000.0, 0.0),
+                (0.0, 3000.0, 0.0),
+            ];
+            let top = [
+                (0.0, 0.0, 3000.0),
+                (4000.0, 0.0, 3000.0),
+                (4000.0, 3000.0, 3000.0),
+                (0.0, 3000.0, 3000.0),
+            ];
+            for (i, &(x, y, z)) in base.iter().enumerate() {
+                model.nodes.push(node3(i as u32, x, y, z));
+            }
+            for (i, &(x, y, z)) in top.iter().enumerate() {
+                model.nodes.push(node3(4 + i as u32, x, y, z));
+            }
+            model.materials.push(Material {
+                strength_factor: None,
+                concrete_class: Default::default(),
+                id: MaterialId(0),
+                name: "Fc24".into(),
+                category: MaterialCategory::Concrete,
+                young: 23000.0,
+                poisson: 0.2,
+                density: 2.4e-9,
+                shear: None,
+                fc: Some(24.0),
+                fy: None,
+            });
+            let mut col_sec = SectionShape::RcRect {
+                b: 300.0,
+                d: 300.0,
+                rebar: rebar(),
+            }
+            .to_section(SectionId(0), "柱 RC 300x300".into());
+            col_sec.material = Some(MaterialId(0));
+            model.sections.push(col_sec);
+            let mut beam_sec = SectionShape::RcRect {
+                b: 300.0,
+                d: 400.0,
+                rebar: rebar(),
+            }
+            .to_section(SectionId(1), "梁 RC 300x400".into());
+            beam_sec.material = Some(MaterialId(0));
+            model.sections.push(beam_sec);
+
+            let member = |id: u32, i: u32, j: u32, sec: u32| {
+                let mut e = beam(id, i, j);
+                e.section = Some(SectionId(sec));
+                e
+            };
+            for i in 0..4u32 {
+                model.elements.push(member(i, i, 4 + i, 0));
+            }
+            let top_pairs = [(4u32, 5u32), (5, 6), (6, 7), (7, 4)];
+            for (k, (i, j)) in top_pairs.iter().enumerate() {
+                model.elements.push(member(4 + k as u32, *i, *j, 1));
+            }
+            let base_pairs = [(0u32, 1u32), (1, 2), (2, 3), (3, 0)];
+            for (k, (i, j)) in base_pairs.iter().enumerate() {
+                model.elements.push(member(8 + k as u32, *i, *j, 1));
+            }
+            model
+        }
+
+        fn wall_section_id() -> SectionId {
+            SectionId(2)
+        }
+
+        let mut with_wall = base_frame();
+        let mut wall_sec = SectionShape::RcWall {
+            thickness: 150.0,
+            ps: 0.0025,
+        }
+        .to_section(wall_section_id(), "耐震壁 t150".into());
+        wall_sec.material = Some(MaterialId(0));
+        with_wall.sections.push(wall_sec);
+        with_wall.wall_plates.push(WallPlate {
+            id: WallPlateId(0),
+            shape: WallPlateShape::Enclosed {
+                boundary: vec![NodeId(0), NodeId(1), NodeId(5), NodeId(4)],
+            },
+            section: Some(wall_section_id()),
+            opening_area: 0.0,
+            opening_weight: 0.0,
+            openings: Vec::new(),
+            three_side_slit: false,
+        });
+        with_wall.wall_regions.push(WallRegion {
+            id: WallRegionId(0),
+            name: String::new(),
+            boundary: vec![NodeId(0), NodeId(1), NodeId(5), NodeId(4)],
+            wall_plate_ids: vec![WallPlateId(0)],
+            post_ids: Vec::new(),
+        });
+
+        let mut without_wall = base_frame();
+
+        apply_rigid_zones_and_panels(&mut with_wall);
+        apply_rigid_zones_and_panels(&mut without_wall);
+
+        // 壁の側柱（elem 0、Y=0 面）は、壁を考慮すると剛域長が変わる。
+        let with_wall_col0 = with_wall.elements[0].rigid_zone;
+        let without_wall_col0 = without_wall.elements[0].rigid_zone;
+        assert_ne!(
+            with_wall_col0.length_i, without_wall_col0.length_i,
+            "壁の有無で側柱の剛域長 length_i が変わらない\
+             （壁展開モデルを見ずに算定している疑いがある）: with={:?} without={:?}",
+            with_wall_col0, without_wall_col0
+        );
+        assert_ne!(
+            with_wall_col0.length_j, without_wall_col0.length_j,
+            "壁の有無で側柱の剛域長 length_j が変わらない: with={:?} without={:?}",
+            with_wall_col0, without_wall_col0
+        );
+        // 壁ありのほうが張り出しの分だけ剛域は長くなる（少なくとも一方の端で）。
+        assert!(
+            with_wall_col0.length_j > without_wall_col0.length_j,
+            "壁を考慮すると剛域長は伸びるはず: with={:?} without={:?}",
+            with_wall_col0,
+            without_wall_col0
+        );
+
+        // 壁の頂部大梁（elem 4）も同様。
+        let with_wall_beam4 = with_wall.elements[4].rigid_zone;
+        let without_wall_beam4 = without_wall.elements[4].rigid_zone;
+        assert!(
+            with_wall_beam4.length_i > without_wall_beam4.length_i
+                && with_wall_beam4.length_j > without_wall_beam4.length_j,
+            "壁の頂部大梁は壁を考慮すると両端とも剛域長が伸びるはず: with={:?} without={:?}",
+            with_wall_beam4,
+            without_wall_beam4
+        );
+
+        // `apply_rigid_zones_and_panels` 自身は壁要素をモデルへ残さない（D5）。
+        // 壁展開はこの関数の内部だけの一時的な操作であること（書き戻しの実装
+        // ミスで壁要素が漏れ出していないか）を確認する。
+        assert!(
+            with_wall
+                .elements
+                .iter()
+                .all(|e| e.kind != squid_n_core::model::ElementKind::Wall),
+            "apply_rigid_zones_and_panels は壁要素を model.elements へ残してはならない"
         );
     }
 }

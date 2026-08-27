@@ -507,6 +507,59 @@ fn test_wall_quantity_with_opening() {
     assert!(w.rebar_weight_t() > 0.0);
 }
 
+/// `compute_quantity_takeoff` が壁展開モデルを見ていることの回帰テスト
+/// （申し送り §5.15）。壁の解析要素（`ElementKind::Wall`）は入力の正である
+/// `Model`（`WallPlate`＋`WallRegion` 経由）には存在しない生成物（D5）のため、
+/// 内部で壁展開しないと `MemberCategory::Wall` の数量が一切集計されない
+/// （壁の数量が積算から静かに消える）。
+#[test]
+fn test_wall_quantity_via_wall_plate_is_included() {
+    use squid_n_core::ids::{WallPlateId, WallRegionId};
+    use squid_n_core::model::{WallPlate, WallPlateShape, WallRegion};
+
+    let mut model = rc_portal_model();
+    let shape = SectionShape::RcWall {
+        thickness: 200.0,
+        ps: 0.0025,
+    };
+    let sec = shape.to_section(SectionId(2), "W20".to_string());
+    model.sections.push(sec);
+    // 柱・梁で囲まれた4節点壁（節点 0-1-3-2）を壁版として構築する
+    // （`test_wall_quantity_with_opening` の直接 `ElementData` 構築と同じ幾何）。
+    model.wall_plates.push(WallPlate {
+        id: WallPlateId(0),
+        shape: WallPlateShape::Enclosed {
+            boundary: vec![NodeId(0), NodeId(1), NodeId(3), NodeId(2)],
+        },
+        section: Some(SectionId(2)),
+        opening_area: 0.0,
+        opening_weight: 0.0,
+        openings: Vec::new(),
+        three_side_slit: false,
+    });
+    model.wall_regions.push(WallRegion {
+        id: WallRegionId(0),
+        name: String::new(),
+        boundary: vec![NodeId(0), NodeId(1), NodeId(3), NodeId(2)],
+        wall_plate_ids: vec![WallPlateId(0)],
+        post_ids: Vec::new(),
+    });
+    // 入力モデル自体には壁の解析要素は一切ない（D5）。
+    assert!(model.elements.iter().all(|e| e.kind != ElementKind::Wall));
+
+    let q = compute_quantity_takeoff(&model, &QuantityCfg::default());
+    let w = q.items.iter().find(|i| i.category == MemberCategory::Wall);
+    assert!(
+        w.is_some(),
+        "壁展開モデルを経由しないと、model.elements に壁要素が 0 件のため \
+         壁の数量が積算から欠落するはず: {:?}",
+        q.items.iter().map(|i| i.category).collect::<Vec<_>>()
+    );
+    let w = w.unwrap();
+    assert!(w.concrete_m3 > 0.0, "壁のコンクリート数量が正であるはず");
+    assert!(w.formwork_m2 > 0.0, "壁の型枠数量が正であるはず");
+}
+
 #[test]
 fn test_totals_aggregation() {
     let model = rc_portal_model();

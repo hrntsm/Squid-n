@@ -804,11 +804,29 @@ impl App {
     /// 割増しも等価換算も生じ得ないモデル（スラブ剛性を考慮しない・壁がない・
     /// SRC/CFT 断面がない）では、部材ごとの判定（`O(部材数)` の走査を含む）を
     /// 行わずに空を返す。
+    ///
+    /// 壁の解析要素（`ElementKind::Wall`）は `self.model` には存在しない生成物
+    /// （D5）のため、壁上下大梁の剛性割増しを確認表へ出すには壁展開モデルを
+    /// 都度組み立てて走査する（`App` に専用のキャッシュは持たせない。
+    /// `squid_n_load::wall_expand` の「都度計算」方針に揃える）。壁展開は
+    /// 既存要素の末尾へ生成要素を追記するだけなので、柱・梁の `ElemId` は
+    /// 展開の有無で変わらない。壁を持たないモデル（実 ST-Bridge フィクスチャは
+    /// 現状すべて該当する）では `expand_wall_elements` の `model.clone()` を
+    /// 避け、`self.model` をそのまま見る。
     fn build_prep_member_stiffness(&self) -> (Vec<PrepMemberStiffnessRow>, usize) {
-        use squid_n_core::model::ElementKind;
+        use squid_n_core::model::{ElementKind, Model};
         use squid_n_core::section_shape::SectionShape;
 
-        let model = &self.model;
+        let expanded_storage;
+        let model: &Model =
+            if squid_n_load::wall_expand::model_has_wall_plates_to_expand(&self.model) {
+                let (expanded, _wall_index, _wall_report) =
+                    squid_n_load::wall_expand::expand_wall_elements(&self.model);
+                expanded_storage = expanded;
+                &expanded_storage
+            } else {
+                &self.model
+            };
         let candidates = model
             .elements
             .iter()

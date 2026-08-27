@@ -31,7 +31,21 @@ pub(crate) fn compute_design_check_job(
     let lc_id = lc.id;
     // 解析の実体は GUI と共通（`squid-n-job`）。エラー文言も共通の `JobError`。
     let result = squid_n_job::compute::compute_linear_static(work.clone(), lc_id)?;
-    let model = &work;
+    // 壁の解析要素（`ElementKind::Wall`）は `work` には存在しない生成物（D5）だが、
+    // `result.member_forces` は `compute_linear_static` が内部で壁展開したモデルで
+    // 解いた結果のため壁の `ElemId` を含む。`run_member_design_checks`（内部の
+    // `check_walls`）はこの `ElemId` を `model.element` で引き直すため、`work` を
+    // そのまま渡すと耐震壁のせん断断面検定が常にスキップされる。壁を持たない
+    // モデル（実 ST-Bridge フィクスチャは現状すべて該当する）では複製を避ける。
+    let expanded_storage;
+    let model: &Model = if squid_n_load::wall_expand::model_has_wall_plates_to_expand(&work) {
+        let (expanded, _wall_index, _wall_report) =
+            squid_n_load::wall_expand::expand_wall_elements(&work);
+        expanded_storage = expanded;
+        &expanded_storage
+    } else {
+        &work
+    };
     let lc_id_u32 = lc_id.0;
 
     let term = match lc.kind {
