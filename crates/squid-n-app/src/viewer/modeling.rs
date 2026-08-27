@@ -407,15 +407,12 @@ fn flexible_span(elem: &ElementData, l: f64) -> (f32, f32, f64) {
 pub(super) fn draw_modeling(
     painter: &egui::Painter,
     app: &App,
+    model: &Model,
     pts: &[egui::Pos2],
     coords3: &[[f64; 3]],
     proj: &Projector,
     frame_filter: super::FrameFilter,
 ) {
-    // 壁の解析要素（`ElementKind::Wall`）は `app.model` には存在しない生成専用の
-    // 要素（D5）のため、壁展開済みモデルを参照する（`super::wall_expanded_view_model`）。
-    let model_cow = super::wall_expanded_view_model(&app.model);
-    let model = &*model_cow;
     let analysis = app.modeling_analysis;
 
     // 凡例に載せる情報を収集する。
@@ -1166,11 +1163,12 @@ fn show_wall_modeling_detail(
 
 /// モデル化図のホバー詳細ツールチップ。部材の解析モデル分類・端条件・剛域・
 /// 塑性化域などのモデル化情報を表示する。
-pub(super) fn show_modeling_tooltip(ui: &egui::Ui, app: &App, elem_id: squid_n_core::ids::ElemId) {
-    // 壁の解析要素（`ElementKind::Wall`）は `app.model` には存在しない生成専用の
-    // 要素（D5）のため、壁展開済みモデルを参照する。
-    let model_cow = super::wall_expanded_view_model(&app.model);
-    let model = &*model_cow;
+pub(super) fn show_modeling_tooltip(
+    ui: &egui::Ui,
+    app: &App,
+    model: &Model,
+    elem_id: squid_n_core::ids::ElemId,
+) {
     let Some(elem) = model.element(elem_id) else {
         return;
     };

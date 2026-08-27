@@ -881,9 +881,19 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
 
     // 構面を解決する。通り芯の再生成・モデルの入れ替えで添字がずれることがあるため、
     // 毎フレーム実在を検証し、解決できなければ全体表示へ戻す。
-    let frame = app
-        .frame_target
-        .and_then(|t| squid_n_core::frame::build_frame(&app.model, t));
+    //
+    // `build_frame` は壁の解析要素（`ElementKind::Wall`）も対象にする実装（4節点
+    // すべてが通り上にあれば含める。`docs/result_view/12_構面の表示.md`）だが、
+    // `app.model` は D5 により壁を含まない生成前のモデルのため、壁展開済みモデルを
+    // 渡さない限り壁は常に構面の対象外になる（`FrameFilter::shows` は範囲外の
+    // 添字を「描かない」に倒すため、壁の要素IDは黙って除外され続ける）。
+    // `frame_target` が `None`（全体表示。既定かつ最多）のときは `build_frame` 自体を
+    // 呼ばないため、壁版を持つモデルでも展開は `and_then` の中でだけ行い、全体表示では
+    // 払わない（後段の `display_model` とは別に、構面表示中だけ都度計算する）。
+    let frame = app.frame_target.and_then(|t| {
+        let frame_model = wall_expanded_view_model(&app.model);
+        squid_n_core::frame::build_frame(&frame_model, t)
+    });
     if frame.is_none() {
         app.frame_target = None;
     }
@@ -1324,6 +1334,7 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
         draw_mode_rest_ghost(
             &painter,
             app,
+            &display_model,
             &pts_rest,
             &node_visible,
             filter,
@@ -1507,6 +1518,7 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
         diagram::draw_force_diagram(
             &painter,
             app,
+            &display_model,
             app.force_components,
             &coords3,
             disp.as_deref(),
@@ -1527,7 +1539,7 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
         );
     }
     if mode == ViewMode::Modeling {
-        modeling::draw_modeling(&painter, app, &pts, &coords3, &proj, filter);
+        modeling::draw_modeling(&painter, app, &display_model, &pts, &coords3, &proj, filter);
         // ホバー詳細（ViewCube ホバー中は除く。検定比図と同じ最近傍部材探索・
         // 8px 閾値で最寄り部材を求め、ヒットしたらモデル化の詳細を表示）。
         if cube_hover.is_none() {
@@ -1536,14 +1548,14 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
                 if let Some((id, d)) = pick_nearest_member(&display_model, &pts, hover_pos, filter)
                 {
                     if d <= HOVER_PICK_THRESHOLD {
-                        modeling::show_modeling_tooltip(ui, app, id);
+                        modeling::show_modeling_tooltip(ui, app, &display_model, id);
                     }
                 }
             }
         }
     }
     if mode == ViewMode::CheckRatio {
-        check_ratio::draw_check_ratio(&painter, app, &pts, filter);
+        check_ratio::draw_check_ratio(&painter, app, &display_model, &pts, filter);
         // B-3: ホバー詳細（ViewCube ホバー中は除く。通常モードのクリック選択と
         // 同じ最近傍部材探索・8px 閾値で最寄り部材を求め、ヒットしたらツールチップ表示）。
         //

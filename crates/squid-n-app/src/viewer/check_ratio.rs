@@ -359,6 +359,7 @@ pub(super) fn build_tooltip_rows(positions: &[PositionCheck]) -> (Vec<CheckKind>
 pub(super) fn draw_check_ratio(
     painter: &egui::Painter,
     app: &App,
+    model: &squid_n_core::model::Model,
     pts: &[egui::Pos2],
     frame_filter: super::FrameFilter,
 ) {
@@ -394,11 +395,6 @@ pub(super) fn draw_check_ratio(
     // 引けるよう索引を作るだけでよい（位置ごとの全行線形走査は不要）。
     let checks_by_elem: HashMap<ElemId, &MemberChecks> =
         results.member_checks.iter().map(|m| (m.elem, m)).collect();
-
-    // 壁の解析要素（`ElementKind::Wall`）は `app.model` には存在しない生成専用の
-    // 要素（D5）のため、壁展開済みモデルを参照する（`super::wall_expanded_view_model`）。
-    // これにより、`member_checks`/`joint_checks` に含まれる壁の検定結果が着色対象に入る。
-    let model = super::wall_expanded_view_model(&app.model);
 
     // --- 部材の着色 ---
     for elem in &model.elements {

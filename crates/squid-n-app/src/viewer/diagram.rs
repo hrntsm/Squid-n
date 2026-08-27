@@ -295,6 +295,7 @@ fn display_scales_for_selection(maxes: &[f64; 6], components: ForceComponents) -
 pub(super) fn draw_force_diagram(
     painter: &egui::Painter,
     app: &App,
+    model: &Model,
     components: ForceComponents,
     coords3: &[[f64; 3]],
     disp: Option<&[[f64; 6]]>,
@@ -306,10 +307,6 @@ pub(super) fn draw_force_diagram(
     let Some(results) = &app.results else {
         return;
     };
-    // 壁の解析要素（`ElementKind::Wall`）は `app.model` には存在しない生成専用の
-    // 要素（D5）のため、壁展開済みモデルを参照する（`super::wall_expanded_view_model`）。
-    // 成分ごとに `draw_component` を呼ぶため、展開は1フレーム1回だけここで行う。
-    let model = super::wall_expanded_view_model(&app.model);
     // 成分ごとのモデル全体最大絶対値（共有スケール算出の入力。描画・凡例には
     // [`display_scales_for_selection`] の戻り値を使う）。
     let mut maxes = [0.0_f64; 6];
@@ -334,7 +331,7 @@ pub(super) fn draw_force_diagram(
             draw_component(
                 painter,
                 app,
-                &model,
+                model,
                 c,
                 max_abs,
                 coords3,
