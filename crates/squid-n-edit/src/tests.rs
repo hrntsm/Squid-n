@@ -3594,6 +3594,34 @@ fn test_delete_node_used_by_secondary_member_is_noop() {
     assert_eq!(model.nodes.len(), 2, "二次部材が参照する節点は削除できない");
 }
 
+/// 壁領域の境界だけが参照する節点（部材からは参照されない）は削除できない
+/// （敵対的レビューで発覚: `node_referenced_outside_elements` が `wall_regions` を
+/// 見ていなかった。実運用では壁領域の境界節点は必ず柱・梁からも参照されるため
+/// 顕在化しにくいが、防御的にここでも保護する）。
+#[test]
+fn test_delete_node_used_by_wall_region_boundary_is_noop() {
+    use squid_n_core::ids::WallRegionId;
+    use squid_n_core::model::WallRegion;
+
+    let mut model = empty_model();
+    for i in 0..2u32 {
+        model.nodes.push(Node {
+            id: NodeId(i),
+            coord: [f64::from(i) * 1000.0, 0.0, 0.0],
+            restraint: Dof6Mask::FREE,
+            mass: None,
+            story: None,
+            support_spring: None,
+        });
+    }
+    model
+        .wall_regions
+        .push(WallRegion::new(WallRegionId(0), vec![NodeId(0), NodeId(1)]));
+    let mut stack = UndoStack::new();
+    stack.run(&mut model, Box::new(DeleteNode { id: NodeId(0) }));
+    assert_eq!(model.nodes.len(), 2, "壁領域が参照する節点は削除できない");
+}
+
 /// 断面・材料削除の ID 繰り上げが二次部材の参照にも波及し、
 /// 二次部材が参照中の断面・材料は削除ガードで Noop になること。
 #[test]

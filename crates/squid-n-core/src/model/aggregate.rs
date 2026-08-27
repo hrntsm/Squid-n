@@ -773,8 +773,16 @@ impl Model {
             || self.node_referenced_outside_elements(id)
     }
 
-    /// 要素以外（節点荷重・階・床・二次部材・拘束）からの参照有無。
-    /// [`Model::node_in_use`]・[`Model::node_in_use_excluding_elem`] の共通部分。
+    /// 要素以外（節点荷重・階・床領域・床板・壁領域・壁版・二次部材・拘束）からの
+    /// 参照有無。[`Model::node_in_use`]・[`Model::node_in_use_excluding_elem`] の共通部分。
+    ///
+    /// **壁領域（`wall_regions`）を見るのは防御的である**。壁領域の境界節点は
+    /// 柱・梁の要素ノードと一致するため、通常は `elements` 側の判定
+    /// （[`Model::node_in_use`] 参照）で既に保護される。それでも明示的に見ておくのは、
+    /// `region_rebuild::node_has_structural_ref` に同種の抜け（壁領域・壁版を
+    /// 一切見ていなかった）が敵対的レビューで見つかった前例があるため（削除判定・
+    /// ID 繰り上げの両方で `wall_regions` を見ておかないと、壁展開の元になる境界が
+    /// 静かに壊れうる）。
     fn node_referenced_outside_elements(&self, id: NodeId) -> bool {
         self.load_cases
             .iter()
@@ -784,6 +792,7 @@ impl Model {
                 r.boundary.contains(&id) || r.joist_lines().iter().any(|j| j.support.contains(&id))
             })
             || self.slabs.iter().any(|sl| slab_node_refs(sl).contains(&id))
+            || self.wall_regions.iter().any(|r| r.boundary.contains(&id))
             || self
                 .wall_plates
                 .iter()
@@ -976,6 +985,11 @@ impl Model {
                     // 壁の取付き先としては使わない（`wall_plate_node_refs` と同じ理由）。
                     RegionAnchor::Point(_) => {}
                 },
+            }
+        }
+        for region in &mut self.wall_regions {
+            for n in &mut region.boundary {
+                f(n);
             }
         }
         for sm in &mut self.secondary_members {

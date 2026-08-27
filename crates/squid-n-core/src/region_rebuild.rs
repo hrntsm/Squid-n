@@ -491,14 +491,16 @@ fn assign_joists(model: &mut Model) -> usize {
 /// 階の節点一覧（`Story::node_ids`）と通り芯（`AxisGroup`）は含めない
 /// （[`delete_unref_nodes`] の呼び出し側で扱う節点削除の判定にのみ用いるため）。
 ///
-/// **壁領域（`model.wall_regions`）を含めるのは防御的である**。壁領域の境界は
-/// `rebuild_wall_regions` が呼ばれるたびに `region_gen::wall` の走査結果へ丸ごと
-/// 作り直されるため、`rebuild_floor_regions`（本関数の従来の唯一の呼び出し元）の
-/// 直後には必ず `rebuild_wall_regions` が続き、古い境界は上書きされる
-/// （現状の 2 つの呼び出し箇所はいずれもこの順序を守っている）。それでも
-/// ここに含めておくのは、壁版（`model.wall_plates`）は床側のリビルドをまたいで
-/// 存続するため確実に必要であり、同じ理由で壁領域も見ておくほうが呼び出し順の
-/// 前提が崩れたときに事故を起こさないため。
+/// **壁領域（`model.wall_regions`）を含める必要がある**。`rebuild_wall_regions`
+/// は「壁領域を検出して `model.wall_regions` へ書き込む」→「取り付く壁版への
+/// 変換で参照 0 になった節点を削除する（[`delete_unref_nodes`] 呼び出し）」の順に
+/// 進むため、削除判定の時点で `model.wall_regions` は**既に新しい境界を持っている**。
+/// 壁領域の境界節点は柱・梁の要素ノードと一致するため `model.elements` の判定で
+/// 既に保護されるのが通常だが、それに頼らず本関数で明示的に見ることで、
+/// 呼び出し順の前提が崩れたときの事故を防ぐ（敵対的レビューで発覚: 当初
+/// [`Model::visit_node_ids`] が `wall_regions` を走査していなかったため、
+/// この削除に伴う節点圧縮で壁領域の境界がダングリング参照へ壊れる回帰があった。
+/// 是正は `visit_node_ids` 側で行った）。
 fn node_has_structural_ref(model: &Model, id: NodeId) -> bool {
     if model.elements.iter().any(|e| e.nodes.contains(&id)) {
         return true;

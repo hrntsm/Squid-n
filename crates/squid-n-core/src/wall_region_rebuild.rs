@@ -656,4 +656,67 @@ mod tests {
             WallPlateShape::Enclosed { .. }
         ));
     }
+
+    /// 敵対的レビューで発覚した回帰: パラペット変換で境界が縮み、D21 により
+    /// 低インデックスの節点（パラペットの自由端）が削除・圧縮されると、
+    /// 既存の（別の）壁領域の境界がその圧縮に追随せず、ダングリング参照へ
+    /// 壊れることがあった（`Model::visit_node_ids` が `wall_regions` を
+    /// 走査していなかったため）。パラペットの自由端より高いインデックスの節点を
+    /// 持つ壁領域を用意し、変換後も壁領域の境界座標が元の4隅と一致することを固定する。
+    #[test]
+    fn test_wall_region_boundary_survives_node_compaction_from_attached_conversion() {
+        let mut model = Model::default();
+        // 低インデックス: パラペットの自由端（変換後に参照 0 になり削除される節点）。
+        model.nodes.push(node(0, 0.0, 0.0, 4500.0));
+        model.nodes.push(node(1, 4000.0, 0.0, 4500.0));
+        // 高インデックス: 実在の1区画（柱・梁）の4隅。
+        model.nodes.push(node(2, 0.0, 0.0, 0.0));
+        model.nodes.push(node(3, 4000.0, 0.0, 0.0));
+        model.nodes.push(node(4, 4000.0, 0.0, 3000.0));
+        model.nodes.push(node(5, 0.0, 0.0, 3000.0));
+        model.elements.push(beam(0, 2, 5)); // 柱（左）
+        model.elements.push(beam(1, 3, 4)); // 柱（右）
+        model.elements.push(beam(2, 5, 4)); // 頂部梁
+        model.elements.push(beam(3, 2, 3)); // 柱脚間の梁
+
+        // パラペット: 下辺 5->4 が頂部梁と一致、自由端は 1,0（Z=4500）。
+        model.wall_plates.push(WallPlate {
+            id: WallPlateId(0),
+            shape: WallPlateShape::Enclosed {
+                boundary: vec![NodeId(5), NodeId(4), NodeId(1), NodeId(0)],
+            },
+            section: None,
+            opening_area: 0.0,
+            opening_weight: 0.0,
+            openings: vec![],
+            three_side_slit: false,
+        });
+
+        let before: Vec<[f64; 3]> = vec![
+            model.nodes[2].coord,
+            model.nodes[3].coord,
+            model.nodes[4].coord,
+            model.nodes[5].coord,
+        ];
+
+        let report = rebuild_wall_regions(&mut model);
+        assert_eq!(report.wall_plates_converted_to_attached, 1);
+        assert!(report.deleted_nodes >= 1, "自由端の節点が削除されるはず");
+
+        assert_eq!(model.wall_regions.len(), 1);
+        let after: Vec<[f64; 3]> = model.wall_regions[0]
+            .boundary
+            .iter()
+            .map(|n| model.nodes[n.index()].coord)
+            .collect();
+        for c in &before {
+            assert!(
+                after
+                    .iter()
+                    .any(|a| (0..3).all(|k| (a[k] - c[k]).abs() < 1e-6)),
+                "壁領域の境界座標が節点圧縮の前後で保たれていない（{c:?} が {after:?} にない）"
+            );
+        }
+        assert!(model.validate().is_ok(), "{:?}", model.validate());
+    }
 }
