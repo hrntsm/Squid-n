@@ -512,16 +512,28 @@ pub fn slab_load_case_content(
     (nodal, member)
 }
 
-/// CMQ 図用の DL スラブ分配 `BeamLoad` 列（自重・LL は含まない）。
+/// CMQ 図用の DL スラブ分配 `BeamLoad` 列（柱・梁・囲まれた壁の自重は含まない）。
+///
+/// 「床領域」アンカーの取り付く壁版（自立壁、D17）の自重は、床の固定荷重強度へ
+/// 等価な面荷重として上乗せしたうえで床の分配に含める（`wall_attached` 参照）。
+/// 「線」アンカーの取り付く壁版（パラペット・腰壁・垂れ壁）はここに含めない
+/// （囲まれた壁の自重と同じく、床のスラブ分配とは別の壁自重として扱う。
+/// [`compute_gravity_auto_load_cases`] 側で加算する）。
 pub fn compute_dl_beam_loads(model: &Model) -> Vec<BeamLoad> {
     let beam_map = beam_elem_map(model);
     let unit_reactions = slab_grillage_unit_reactions(model, &beam_map);
-    slab_beam_loads_with(
+    let (extra_intensity, fallback) =
+        squid_n_load::wall_attached::floor_region_wall_extra_intensity(model);
+    let mut loads = slab_beam_loads_with(
         model,
-        |slab| model.slab_dead_intensity(slab),
+        |slab| {
+            model.slab_dead_intensity(slab) + extra_intensity.get(&slab.id).copied().unwrap_or(0.0)
+        },
         &unit_reactions,
         &beam_map,
-    )
+    );
+    loads.extend(fallback);
+    loads
 }
 
 /// 重力系（DL・LL(架構用)・LL(地震用)）の自動生成内容を計算する。
@@ -536,6 +548,13 @@ pub fn compute_gravity_auto_load_cases(model: &Model) -> AutoLoadComputeResult {
         squid_n_load::self_weight::self_weight_case_content(model, &load_cfg);
     dl_nodal.extend(sw_nodal);
     dl_member.extend(sw_member);
+    // 「線」アンカーの取り付く壁版（パラペット・腰壁・垂れ壁）の自重。床板分配と同じ
+    // 幾何解決（`slab_load_case_content` の `LoadTarget::Span`）へ合流させることで、
+    // 取付き線の部分区間（`span`）を梁全長へ薄めず正確に扱う（`wall_attached` 参照）。
+    let attached_wall_loads = squid_n_load::wall_attached::attached_wall_beam_loads(model);
+    let (aw_nodal, aw_member) = slab_load_case_content(model, &attached_wall_loads);
+    dl_nodal.extend(aw_nodal);
+    dl_member.extend(aw_member);
     let (dl_nodal, extra_member) = resolve_nodal_to_primary(model, dl_nodal, SPAN_TOL_MM);
     dl_member.extend(extra_member);
 
@@ -801,6 +820,114 @@ mod tests {
             .expect("DL case exists");
         assert_eq!(dl.member.len(), 8);
         assert!(dl.nodal.iter().all(|nl| nl.source.is_auto()));
+    }
+
+    /// 取り付く壁版（パラペット等）の自重が「DL」ケースへ合流すること
+    /// （`squid_n_load::wall_attached` の結線。dig 2026-08-27 Q2=A・Q3=B）。
+    #[test]
+    fn compute_gravity_includes_attached_wall_plate_self_weight() {
+        use squid_n_core::ids::{MaterialId, SectionId, WallPlateId};
+        use squid_n_core::model::{
+            LoadTransfer, Material, MaterialCategory, RegionAnchor, Section, WallPlate,
+            WallPlateShape,
+        };
+
+        let mut model = make_square_slab_model();
+        model.materials.push(Material {
+            strength_factor: None,
+            concrete_class: Default::default(),
+            id: MaterialId(0),
+            name: "Fc24".into(),
+            category: MaterialCategory::Concrete,
+            young: 23000.0,
+            poisson: 0.2,
+            density: 2.4e-9,
+            shear: None,
+            fc: Some(24.0),
+            fy: None,
+        });
+        model.sections.push(Section {
+            id: SectionId(0),
+            name: "壁 t150".into(),
+            area: 0.0,
+            iy: 1.0,
+            iz: 1.0,
+            j: 1.0,
+            depth: 0.0,
+            width: 0.0,
+            as_y: 1.0,
+            as_z: 1.0,
+            floor: None,
+            panel_thickness: None,
+            thickness: Some(150.0),
+            shape: None,
+            material: Some(MaterialId(0)),
+            rebar_material: None,
+            shear_rebar_material: None,
+            steel_material: None,
+        });
+        // 辺0（節点0-1、大梁として実在）に全長載るパラペット（立ち上がり500mm）。
+        let plate = WallPlate {
+            id: WallPlateId(0),
+            shape: WallPlateShape::Attached {
+                anchor: RegionAnchor::Line {
+                    nodes: [NodeId(0), NodeId(1)],
+                    span: [0.0, 1.0],
+                    transfer: LoadTransfer::Anchor,
+                },
+                extent: [500.0, 500.0],
+            },
+            section: Some(SectionId(0)),
+            opening_area: 0.0,
+            opening_weight: 0.0,
+            openings: Vec::new(),
+            three_side_slit: false,
+        };
+        let expected = model
+            .wall_plate_self_weight(&plate, &model)
+            .expect("自重が求まる");
+        model.wall_plates.push(plate);
+        model.validate().expect("valid model");
+
+        let baseline = compute_gravity_auto_load_cases(&make_square_slab_model());
+        let baseline_dl = baseline
+            .cases
+            .iter()
+            .find(|c| c.name == DL_CASE_NAME)
+            .unwrap();
+
+        let result = compute_gravity_auto_load_cases(&model);
+        let dl = result
+            .cases
+            .iter()
+            .find(|c| c.name == DL_CASE_NAME)
+            .expect("DL");
+        assert_eq!(
+            dl.member.len(),
+            baseline_dl.member.len() + 1,
+            "辺0（節点0-1）へ壁の等分布荷重が1件加わるはず"
+        );
+
+        // 辺0（節点0-1）に載る分布荷重の合計force（w×区間長の総和）を、壁版追加の
+        // 前後で比較する。増分が壁の自重総量と一致すること（総和保存）。
+        let beam0 = beam_elem_map(&model)[&beam_key(NodeId(0), NodeId(1))];
+        let member_total_on = |members: &[squid_n_core::model::MemberLoad]| -> f64 {
+            members
+                .iter()
+                .filter(|m| m.elem == beam0)
+                .map(|m| match m.kind {
+                    squid_n_core::model::MemberLoadKind::Distributed { a, b, w1, w2 } => {
+                        0.5 * (w1 + w2) * (b - a)
+                    }
+                    _ => 0.0,
+                })
+                .sum()
+        };
+        let added = member_total_on(&dl.member) - member_total_on(&baseline_dl.member);
+        assert!(
+            (added - expected).abs() / expected < 1e-6,
+            "added={added} expected={expected}"
+        );
     }
 
     #[test]

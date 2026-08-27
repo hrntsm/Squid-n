@@ -28,7 +28,9 @@ mod tests;
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use squid_n_core::ids::{ElemId, SlabId};
-use squid_n_core::model::{ElementData, ElementKind, Model, Slab};
+use squid_n_core::model::{
+    ElementData, ElementKind, Model, RegionAnchor, Slab, WallPlate, WallPlateShape,
+};
 use squid_n_core::section_shape::{RcRebar, SectionShape};
 
 use member::{BeamBarEnd, Haunch};
@@ -554,6 +556,15 @@ pub fn compute_quantity_takeoff(model: &Model, cfg: &QuantityCfg) -> QuantityTak
 
     for slab in &model.slabs {
         if let Some(item) = slab_quantity(&ctx, slab) {
+            out.items.push(item);
+        }
+    }
+
+    for (i, plate) in model.wall_plates.iter().enumerate() {
+        if !plate.is_attached() {
+            continue; // 囲まれた壁版（Enclosed）は解析要素経由の wall_quantity が数える。
+        }
+        if let Some(item) = attached_wall_plate_quantity(&ctx, plate, i) {
             out.items.push(item);
         }
     }
@@ -1167,6 +1178,60 @@ fn wall_quantity(ctx: &Ctx, elem: &ElementData) -> Option<MemberQuantity> {
         }
     }
     Some(item)
+}
+
+/// 取り付く壁版（`WallPlateShape::Attached`。パラペット・腰壁・垂れ壁・自立壁）の数量。
+///
+/// 解析要素を持たない（D5）ため `WallPlate` から直接算定する（[`slab_quantity`] と
+/// 同じ位置づけ。エレメント経由の [`wall_quantity`] は `Enclosed`（4節点の耐震壁）
+/// のみを数える）。取り付く壁版は `OutOfFrameMiscWall`（フレーム外雑壁）の後継
+/// （`dev_docs/specs/用語集.md`）のため、カテゴリは同じ `MemberCategory::MiscWall` を使う。
+fn attached_wall_plate_quantity(
+    ctx: &Ctx,
+    plate: &WallPlate,
+    index: usize,
+) -> Option<MemberQuantity> {
+    let model = ctx.model;
+    let WallPlateShape::Attached { anchor, .. } = &plate.shape else {
+        return None;
+    };
+    let anchor_nodes = match anchor {
+        RegionAnchor::Line { nodes, .. } => *nodes,
+        RegionAnchor::FloorRegion { nodes, .. } => *nodes,
+        // 壁の取付き先としては使わない（`WallPlate::boundary_coords` と同じ理由）。
+        RegionAnchor::Point(_) => return None,
+    };
+    let t = model.wall_plate_thickness(plate)?;
+    let pts = plate.boundary_coords(model)?;
+    if pts.len() < 3 {
+        return None;
+    }
+    let area = polygon_area_3d(&pts);
+    let net_area = (area - plate.total_opening_area()).max(0.0);
+
+    let lower = anchor_nodes
+        .iter()
+        .map(|n| n.index())
+        .min_by(|&a, &b| {
+            model.nodes[a].coord[2]
+                .partial_cmp(&model.nodes[b].coord[2])
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
+        .unwrap_or(anchor_nodes[0].index());
+
+    Some(MemberQuantity {
+        elem: None,
+        slab: None,
+        label: format!("取付き壁版{}", index + 1),
+        story: ctx.story_name(lower),
+        category: MemberCategory::MiscWall,
+        structure: StructureKind::Rc,
+        concrete_m3: net_area * t * 1e-9,
+        formwork_m2: net_area * 2.0 * 1e-6,
+        rebar: Vec::new(),
+        steel: None,
+        rebar_joints: 0.0,
+    })
 }
 
 /// 床（一般・片持ち・出隅・入隅）の数量。

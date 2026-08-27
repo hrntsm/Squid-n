@@ -560,6 +560,57 @@ fn test_wall_quantity_via_wall_plate_is_included() {
     assert!(w.formwork_m2 > 0.0, "壁の型枠数量が正であるはず");
 }
 
+/// 取り付く壁版（`Attached`。パラペット等）は解析要素を持たない（D5）ため、
+/// `wall_quantity`（エレメント経由）ではなく `attached_wall_plate_quantity`
+/// （`WallPlate` から直接算定）が数量へ算入する。カテゴリは
+/// `OutOfFrameMiscWall` の後継として `MemberCategory::MiscWall` を使う。
+#[test]
+fn test_attached_wall_plate_quantity_is_included_as_misc_wall() {
+    use squid_n_core::ids::WallPlateId;
+    use squid_n_core::model::{RegionAnchor, WallPlate, WallPlateShape};
+
+    let mut model = rc_portal_model();
+    let shape = SectionShape::RcWall {
+        thickness: 150.0,
+        ps: 0.0,
+    };
+    let sec = shape.to_section(SectionId(2), "W15".to_string());
+    model.sections.push(sec);
+    // 頂部の大梁（節点2-3）に載るパラペット（立ち上がり高さ1000mm、全長）。
+    model.wall_plates.push(WallPlate {
+        id: WallPlateId(0),
+        shape: WallPlateShape::Attached {
+            anchor: RegionAnchor::Line {
+                nodes: [NodeId(2), NodeId(3)],
+                span: [0.0, 1.0],
+                transfer: squid_n_core::model::LoadTransfer::Anchor,
+            },
+            extent: [1000.0, 1000.0],
+        },
+        section: Some(SectionId(2)),
+        opening_area: 0.0,
+        opening_weight: 0.0,
+        openings: Vec::new(),
+        three_side_slit: false,
+    });
+    assert!(model.elements.iter().all(|e| e.kind != ElementKind::Wall));
+
+    let q = compute_quantity_takeoff(&model, &QuantityCfg::default());
+    let items: Vec<_> = q
+        .items
+        .iter()
+        .filter(|i| i.category == MemberCategory::MiscWall)
+        .collect();
+    assert_eq!(items.len(), 1, "取り付く壁版1件が雑壁として数量に入るはず");
+    let expected_m3 = 6_000.0 * 1_000.0 * 150.0 * 1e-9;
+    assert!(
+        (items[0].concrete_m3 - expected_m3).abs() / expected_m3 < 1e-9,
+        "concrete_m3={} expected={}",
+        items[0].concrete_m3,
+        expected_m3
+    );
+}
+
 #[test]
 fn test_totals_aggregation() {
     let model = rc_portal_model();
