@@ -1292,6 +1292,22 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
     // （上のブロック）は既存部材のみが対象のため `app.model` のままでよい。
     let display_model = wall_expanded_view_model(&app.model);
 
+    // 上の `filter`（1128行目）は壁展開前の `app.model` から作った構面のため、
+    // 壁の要素IDを含まない。ここまでの間に部材作成ツール（梁・壁・スラブの
+    // クリック追加）が `app.model` へ要素を追記していた場合、壁の解析要素の
+    // ID採番（`max(既存要素ID)+1` 起点）がそのぶんずれ、`display_model` の壁と
+    // 上の `filter` の構面判定が食い違いうる（該当フレームだけ壁の表示/非表示が
+    // 一時的に誤る。次フレームで自己修復するがクリック直後の1フレームだけ
+    // ずれた見た目になりうる）。以降の描画・ホバーはすべて `display_model` を
+    // 参照するため、`filter` も同じ `display_model` から作り直し、両者を
+    // 常に整合させる（`frame` 自体は `.normal`・構面基準線の描画にしか使わず
+    // 要素IDを見ないため、作り直す必要はない。`build_frame` は成功・失敗が
+    // 要素の有無に依存しないため、上の `frame` と Some/None が食い違うことはない）。
+    let frame_for_draw = app
+        .frame_target
+        .and_then(|t| squid_n_core::frame::build_frame(&display_model, t));
+    let filter = FrameFilter::new(frame_for_draw.as_ref());
+
     // --- スラブ・小梁 ---
     // 荷重分配オブジェクト（解析部材ではない）であることが分かるよう、
     // 構造部材（実線・青/グレー系）と異なる暖色半透明フィル＋破線のフォーマットで描く。
