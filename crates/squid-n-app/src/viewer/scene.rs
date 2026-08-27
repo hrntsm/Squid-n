@@ -180,9 +180,11 @@ fn slab_visible_on_frame(slab: &squid_n_core::model::Slab, filter: FrameFilter) 
 
 /// モード形の変形前架構（破線・高透過）。変形後の紫実線の下に描き、基準位置からの変化を読む。
 /// 質点モードの変形前串と同じ破線（6 pt / 隙間 4 pt）とアルファ（線 90、塗り 55）。
+#[allow(clippy::too_many_arguments)]
 pub(super) fn draw_mode_rest_ghost(
     painter: &egui::Painter,
     app: &App,
+    model: &squid_n_core::model::Model,
     pts_rest: &[egui::Pos2],
     node_visible: &[bool],
     filter: FrameFilter,
@@ -204,7 +206,7 @@ pub(super) fn draw_mode_rest_ghost(
         painter.circle_filled(p, 3.0, theme::translucent(theme::DATA_BLUE, FILL_A));
     }
 
-    for elem in &app.model.elements {
+    for elem in &model.elements {
         if !filter.shows(elem.id) {
             continue;
         }

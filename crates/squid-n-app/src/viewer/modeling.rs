@@ -407,12 +407,12 @@ fn flexible_span(elem: &ElementData, l: f64) -> (f32, f32, f64) {
 pub(super) fn draw_modeling(
     painter: &egui::Painter,
     app: &App,
+    model: &Model,
     pts: &[egui::Pos2],
     coords3: &[[f64; 3]],
     proj: &Projector,
     frame_filter: super::FrameFilter,
 ) {
-    let model = &app.model;
     let analysis = app.modeling_analysis;
 
     // 凡例に載せる情報を収集する。
@@ -1130,16 +1130,21 @@ fn draw_legend(
 /// 壁エレメントの降伏はファイバー（軸・曲げ）と面内せん断ばね（Qu 頭打ち）の
 /// 2 機構からなる。図では前者を壁柱端部の Lp、後者を壁柱に沿うジグザグで示すため、
 /// ここではその根拠となる数値を並べる。
-fn show_wall_modeling_detail(ui: &mut egui::Ui, app: &App, elem: &ElementData) {
-    let Some(g) = squid_n_element::wall_element::wall_element_geometry(elem, &app.model) else {
+fn show_wall_modeling_detail(
+    ui: &mut egui::Ui,
+    model: &Model,
+    modeling_analysis: ModelingAnalysis,
+    elem: &ElementData,
+) {
+    let Some(g) = squid_n_element::wall_element::wall_element_geometry(elem, model) else {
         ui.label("幾何を取得できないため半透明ポリゴンで表示");
         return;
     };
     ui.label(format!("壁長 lw={:.0} mm ／ 壁高 h={:.0} mm", g.lw, g.h));
-    if app.modeling_analysis != ModelingAnalysis::Incremental {
+    if modeling_analysis != ModelingAnalysis::Incremental {
         return;
     }
-    match squid_n_element::wall_element::wall_column_fiber_lp(elem, &app.model) {
+    match squid_n_element::wall_element::wall_column_fiber_lp(elem, model) {
         Some(lp) => {
             ui.label("ファイバー断面: 壁柱の材端 2 箇所（積分点 ξ=∓1）");
             ui.label(format!("塑性化域 Lp={lp:.0} mm（0.5·lw）／中央弾性"));
@@ -1148,7 +1153,7 @@ fn show_wall_modeling_detail(ui: &mut egui::Ui, app: &App, elem: &ElementData) {
             ui.label("軸・曲げ: 弾性（ファイバー断面を組めない）");
         }
     }
-    let qu = squid_n_element::wall_element::WallElement::shear_capacity_of(elem, &app.model);
+    let qu = squid_n_element::wall_element::WallElement::shear_capacity_of(elem, model);
     if qu > 0.0 {
         ui.label(format!("面内せん断: Qu={:.0} kN で頭打ち", force_kn(qu)));
     } else {
@@ -1158,11 +1163,16 @@ fn show_wall_modeling_detail(ui: &mut egui::Ui, app: &App, elem: &ElementData) {
 
 /// モデル化図のホバー詳細ツールチップ。部材の解析モデル分類・端条件・剛域・
 /// 塑性化域などのモデル化情報を表示する。
-pub(super) fn show_modeling_tooltip(ui: &egui::Ui, app: &App, elem_id: squid_n_core::ids::ElemId) {
-    let Some(elem) = app.model.element(elem_id) else {
+pub(super) fn show_modeling_tooltip(
+    ui: &egui::Ui,
+    app: &App,
+    model: &Model,
+    elem_id: squid_n_core::ids::ElemId,
+) {
+    let Some(elem) = model.element(elem_id) else {
         return;
     };
-    let class = classify(elem, &app.model, app.modeling_analysis);
+    let class = classify(elem, model, app.modeling_analysis);
     let end_label = |c: EndCondition| -> &'static str {
         match c {
             EndCondition::Fixed => "剛",
@@ -1180,17 +1190,17 @@ pub(super) fn show_modeling_tooltip(ui: &egui::Ui, app: &App, elem_id: squid_n_c
             ui.label(format!("部材 #{}", elem_id.0));
             ui.colored_label(class.color(), class.label());
             if class == ModelClass::Wall {
-                show_wall_modeling_detail(ui, app, elem);
+                show_wall_modeling_detail(ui, model, app.modeling_analysis, elem);
                 return;
             }
             // 耐震壁の付帯梁（上下大梁）。断面性能へ倍率が乗った剛性で解析へ入る。
-            if is_wall_girder(elem, &app.model, &seismic_wall_nodes(&app.model)) {
+            if is_wall_girder(elem, model, &seismic_wall_nodes(model)) {
                 ui.label("壁の付帯梁（上下大梁。剛性に倍率）");
             }
             let is_frame_line = matches!(
                 elem.kind,
                 ElementKind::Beam | ElementKind::Fiber | ElementKind::MultiSpring
-            ) && wall_side_column_release(elem, &app.model).is_none();
+            ) && wall_side_column_release(elem, model).is_none();
             let end_plastic = is_end_plastic_zone_model(elem, class);
             if is_frame_line {
                 ui.label(format!(
@@ -1200,7 +1210,7 @@ pub(super) fn show_modeling_tooltip(ui: &egui::Ui, app: &App, elem_id: squid_n_c
                 ));
                 // 梁のねじり剛性を期待しない既定モデル化（i 端ねじれ解放）が
                 // この部材に適用されているかを明示する（適用されない例外がある）。
-                if squid_n_element::beam::i_end_torsion_release(elem, &app.model) {
+                if squid_n_element::beam::i_end_torsion_release(elem, model) {
                     ui.label("ねじれ: i 端ピン（部材全長で Mx=0）");
                 }
                 let rz = &elem.rigid_zone;
@@ -1220,13 +1230,13 @@ pub(super) fn show_modeling_tooltip(ui: &egui::Ui, app: &App, elem_id: squid_n_c
                     .first()
                     .zip(elem.nodes.get(1))
                     .and_then(|(i, j)| {
-                        let a = app.model.nodes.get(i.index())?;
-                        let b = app.model.nodes.get(j.index())?;
+                        let a = model.nodes.get(i.index())?;
+                        let b = model.nodes.get(j.index())?;
                         Some(vec3::dist(a.coord, b.coord))
                     })
                     .unwrap_or(0.0);
                 let (_, _, l_flex) = flexible_span(elem, l);
-                let lp = plastic_zone_len(elem, &app.model, l_flex);
+                let lp = plastic_zone_len(elem, model, l_flex);
                 let src = if elem.plastic_zone.is_some() {
                     "指定値"
                 } else {

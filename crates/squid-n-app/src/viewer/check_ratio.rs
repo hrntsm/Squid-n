@@ -359,6 +359,7 @@ pub(super) fn build_tooltip_rows(positions: &[PositionCheck]) -> (Vec<CheckKind>
 pub(super) fn draw_check_ratio(
     painter: &egui::Painter,
     app: &App,
+    model: &squid_n_core::model::Model,
     pts: &[egui::Pos2],
     frame_filter: super::FrameFilter,
 ) {
@@ -396,7 +397,7 @@ pub(super) fn draw_check_ratio(
         results.member_checks.iter().map(|m| (m.elem, m)).collect();
 
     // --- 部材の着色 ---
-    for elem in &app.model.elements {
+    for elem in &model.elements {
         if !frame_filter.shows(elem.id) {
             continue;
         }

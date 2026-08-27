@@ -53,6 +53,7 @@ use super::{
     ForceComponent, ForceComponents, Projector,
 };
 use squid_n_core::geom::vec3::dist as member_len3;
+use squid_n_core::model::Model;
 
 /// 張り出しピークがこの px 未満の図形は描かない。60px 正規化に対して値が
 /// 相対的に極小の部材（ほぼ潰れた図形）は、輪郭の折り返し点で epaint のマイター
@@ -294,6 +295,7 @@ fn display_scales_for_selection(maxes: &[f64; 6], components: ForceComponents) -
 pub(super) fn draw_force_diagram(
     painter: &egui::Painter,
     app: &App,
+    model: &Model,
     components: ForceComponents,
     coords3: &[[f64; 3]],
     disp: Option<&[[f64; 6]]>,
@@ -329,6 +331,7 @@ pub(super) fn draw_force_diagram(
             draw_component(
                 painter,
                 app,
+                model,
                 c,
                 max_abs,
                 coords3,
@@ -355,6 +358,7 @@ pub(super) fn draw_force_diagram(
 fn draw_component(
     painter: &egui::Painter,
     app: &App,
+    model: &Model,
     component: ForceComponent,
     max_abs: f64,
     coords3: &[[f64; 3]],
@@ -383,7 +387,7 @@ fn draw_component(
         if !frame_filter.shows(*elem_id) {
             continue;
         }
-        let elem = app.model.element(*elem_id);
+        let elem = model.element(*elem_id);
         let Some(elem) = elem else { continue };
         if elem.nodes.len() < 2 {
             continue;
