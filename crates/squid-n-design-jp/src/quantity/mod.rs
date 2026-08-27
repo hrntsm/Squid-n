@@ -1183,11 +1183,10 @@ fn wall_quantity(ctx: &Ctx, elem: &ElementData) -> Option<MemberQuantity> {
 /// 取り付く壁版（`WallPlateShape::Attached`。パラペット・腰壁・垂れ壁・自立壁）の数量。
 ///
 /// 解析要素を持たない（D5）ため `WallPlate` から直接算定する（[`slab_quantity`] と
-/// 同じ位置づけ。エレメント経由の [`wall_quantity`] は `Enclosed`（4節点の耐震壁）
+/// 同じ位置づけ。エレメント経由の [`wall_quantity`] は `Enclosed`（4 節点の耐震壁）
 /// のみを数える）。取り付く壁版は `OutOfFrameMiscWall`（フレーム外雑壁）の後継
 /// （`dev_docs/specs/用語集.md`）のため、カテゴリは同じ `MemberCategory::MiscWall` を使う。
-/// ラベルは `slab_quantity` と同じく壁版自身の ID を使う（呼び出し元のループ位置は
-/// `Enclosed` を読み飛ばした後の添字のため、そのまま使うと番号が飛ぶ）。
+/// ラベルは囲まれた壁と同じく割り当てた断面の符号（`wall_quantity` と同じ）。
 fn attached_wall_plate_quantity(ctx: &Ctx, plate: &WallPlate) -> Option<MemberQuantity> {
     let model = ctx.model;
     let WallPlateShape::Attached { anchor, .. } = &plate.shape else {

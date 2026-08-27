@@ -930,6 +930,105 @@ mod tests {
         );
     }
 
+    /// 自立壁（床領域アンカー）の自重が、床の固定荷重分配経由で DL の総和に乗る。
+    #[test]
+    fn compute_gravity_includes_floor_region_attached_wall_as_slab_extra() {
+        use squid_n_core::ids::{MaterialId, SectionId, WallPlateId};
+        use squid_n_core::model::{
+            Material, MaterialCategory, RegionAnchor, Section, WallPlate, WallPlateShape,
+        };
+
+        let mut model = make_square_slab_model();
+        model.materials.push(Material {
+            strength_factor: None,
+            concrete_class: Default::default(),
+            id: MaterialId(0),
+            name: "Fc24".into(),
+            category: MaterialCategory::Concrete,
+            young: 23000.0,
+            poisson: 0.2,
+            density: 2.4e-9,
+            shear: None,
+            fc: Some(24.0),
+            fy: None,
+        });
+        model.sections.push(Section {
+            id: SectionId(0),
+            name: "壁 t150".into(),
+            area: 0.0,
+            iy: 1.0,
+            iz: 1.0,
+            j: 1.0,
+            depth: 0.0,
+            width: 0.0,
+            as_y: 1.0,
+            as_z: 1.0,
+            floor: None,
+            panel_thickness: None,
+            thickness: Some(150.0),
+            shape: None,
+            material: Some(MaterialId(0)),
+            rebar_material: None,
+            shear_rebar_material: None,
+            steel_material: None,
+        });
+        let plate = WallPlate {
+            id: WallPlateId(0),
+            shape: WallPlateShape::Attached {
+                anchor: RegionAnchor::FloorRegion {
+                    region: FloorRegionId(0),
+                    nodes: [NodeId(0), NodeId(1)],
+                },
+                extent: [500.0, 500.0],
+            },
+            section: Some(SectionId(0)),
+            opening_area: 0.0,
+            opening_weight: 0.0,
+            openings: Vec::new(),
+            three_side_slit: false,
+        };
+        let expected = model
+            .wall_plate_self_weight(&plate, &model)
+            .expect("自重が求まる");
+        model.wall_plates.push(plate);
+        model.validate().expect("valid model");
+
+        let member_total = |members: &[squid_n_core::model::MemberLoad]| -> f64 {
+            members
+                .iter()
+                .map(|m| match m.kind {
+                    squid_n_core::model::MemberLoadKind::Distributed { a, b, w1, w2 } => {
+                        0.5 * (w1 + w2) * (b - a)
+                    }
+                    squid_n_core::model::MemberLoadKind::Point { p, .. } => p,
+                })
+                .sum()
+        };
+        let nodal_total = |nodal: &[squid_n_core::model::NodalLoad]| -> f64 {
+            nodal.iter().map(|nl| -nl.values[2]).sum()
+        };
+
+        let baseline = compute_gravity_auto_load_cases(&make_square_slab_model());
+        let baseline_dl = baseline
+            .cases
+            .iter()
+            .find(|c| c.name == DL_CASE_NAME)
+            .unwrap();
+        let result = compute_gravity_auto_load_cases(&model);
+        let dl = result
+            .cases
+            .iter()
+            .find(|c| c.name == DL_CASE_NAME)
+            .expect("DL");
+        let added = member_total(&dl.member) + nodal_total(&dl.nodal)
+            - member_total(&baseline_dl.member)
+            - nodal_total(&baseline_dl.nodal);
+        assert!(
+            (added - expected).abs() / expected < 1e-6,
+            "added={added} expected={expected}"
+        );
+    }
+
     #[test]
     fn compute_seismic_skips_when_semiprecise_without_period() {
         use squid_n_core::ids::StoryId;
