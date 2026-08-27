@@ -87,6 +87,25 @@ impl WallPlate {
         matches!(self.shape, WallPlateShape::Attached { .. })
     }
 
+    /// 柱・梁で囲まれた壁版（`Enclosed`）の境界が、壁エレメント（壁柱＋剛梁変換に
+    /// よる4節点24自由度モデル。`docs/calc_basis/04_要素剛性/05_壁エレメントモデル.md`
+    /// 参照）を組み立てられる形か。境界がちょうど4節点のときだけ `true`。
+    ///
+    /// 5節点以上（T字取り付き等。他の梁・壁が境界の辺の途中に接続することで
+    /// 生じる）や3節点以下は要素を生成しない（Q6=C）。壁エレメントは下辺2節点・
+    /// 上辺2節点を前提とした剛体変換の定式化であり、任意の多角形へ一般化する
+    /// ことは定式化そのものを崩すため行わない（実データによる検証ができないまま
+    /// 「按分」等で無理に4節点へ落とし込むと、根拠不明な近似を耐力評価へ持ち込む
+    /// ことになる。dev_docs/handoff/床領域・壁領域の再設計_申し送り.md §9 参照）。
+    /// 取り付く壁版（`Attached`）は境界を持たないため常に `false`。
+    ///
+    /// 解析要素生成（`squid_n_load::wall_expand`）・解析前診断
+    /// （`squid-n-solver::precheck`）・ST-Bridge 取り込み（`squid-n-io`）が
+    /// 判定を共有する（重複実装の統合）。
+    pub fn has_quad_boundary(&self) -> bool {
+        matches!(&self.shape, WallPlateShape::Enclosed { boundary } if boundary.len() == 4)
+    }
+
     /// 境界の節点列。**柱・梁が囲む壁版のみ**（取り付く壁版は自由端に節点を
     /// 持たないため `None`）。
     pub fn boundary_nodes(&self) -> Option<&[NodeId]> {
@@ -254,6 +273,51 @@ mod tests {
         let coords = p.boundary_coords(&m).expect("境界座標");
         assert_eq!(coords.len(), 4);
         assert!((p.area(&m) - 4000.0 * 3000.0).abs() < 1e-6);
+    }
+
+    /// `has_quad_boundary` は境界がちょうど4節点の `Enclosed` 壁版のみ `true`。
+    /// 5節点以上（T字取り付き等）・3節点以下・`Attached` は `false`
+    /// （Q6=C。壁エレメントの定式化を崩す一般化は行わない）。
+    #[test]
+    fn test_has_quad_boundary() {
+        let quad = WallPlate {
+            id: WallPlateId(0),
+            shape: WallPlateShape::Enclosed {
+                boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
+            },
+            section: None,
+            opening_area: 0.0,
+            opening_weight: 0.0,
+            openings: Vec::new(),
+            three_side_slit: false,
+        };
+        assert!(quad.has_quad_boundary());
+
+        let mut pentagon = quad.clone();
+        pentagon.shape = WallPlateShape::Enclosed {
+            boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3), NodeId(4)],
+        };
+        assert!(!pentagon.has_quad_boundary(), "5節点は false");
+
+        let mut triangle = quad.clone();
+        triangle.shape = WallPlateShape::Enclosed {
+            boundary: vec![NodeId(0), NodeId(1), NodeId(2)],
+        };
+        assert!(!triangle.has_quad_boundary(), "3節点は false");
+
+        let mut attached = quad.clone();
+        attached.shape = WallPlateShape::Attached {
+            anchor: RegionAnchor::Line {
+                nodes: [NodeId(0), NodeId(1)],
+                span: [0.0, 1.0],
+                transfer: LoadTransfer::Anchor,
+            },
+            extent: [900.0, 900.0],
+        };
+        assert!(
+            !attached.has_quad_boundary(),
+            "Attached は境界を持たないため false"
+        );
     }
 
     /// 取付き線アンカーは、床の取り付く床板（左向き法線方向へ張り出す）とは異なり、

@@ -188,7 +188,7 @@ pub fn expand_wall_elements_owned(
                 report.skipped_no_section += 1;
                 continue;
             }
-            if boundary.len() != 4 {
+            if !plate.has_quad_boundary() {
                 report.skipped_non_quad += 1;
                 continue;
             }

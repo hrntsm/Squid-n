@@ -404,14 +404,14 @@ pub fn model_issues(model: &Model) -> Vec<ModelIssue> {
         let mut skipped_non_quad = 0usize;
         let mut skipped_no_section = 0usize;
         for plate in &model.wall_plates {
-            let WallPlateShape::Enclosed { boundary } = &plate.shape else {
+            if !matches!(plate.shape, WallPlateShape::Enclosed { .. }) {
                 continue;
-            };
+            }
             if plate.section.is_none() {
                 skipped_no_section += 1;
                 continue;
             }
-            if boundary.len() != 4 {
+            if !plate.has_quad_boundary() {
                 skipped_non_quad += 1;
             }
         }

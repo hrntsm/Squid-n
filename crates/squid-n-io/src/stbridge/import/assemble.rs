@@ -830,11 +830,8 @@ fn build_walls(
         if section.is_none() {
             no_section_walls += 1;
         }
-        if boundary.len() != 4 {
-            non_quad_walls += 1;
-        }
         let id = WallPlateId(model.wall_plates.len() as u32);
-        model.wall_plates.push(WallPlate {
+        let plate = WallPlate {
             id,
             shape: WallPlateShape::Enclosed { boundary },
             section,
@@ -842,7 +839,11 @@ fn build_walls(
             opening_weight: 0.0,
             openings: Vec::new(),
             three_side_slit: false,
-        });
+        };
+        if !plate.has_quad_boundary() {
+            non_quad_walls += 1;
+        }
+        model.wall_plates.push(plate);
     }
     if skipped_walls > 0 {
         warnings.push(format!(
