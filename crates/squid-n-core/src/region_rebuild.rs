@@ -11,8 +11,7 @@ use crate::dof::Dof6Mask;
 use crate::geom::{LEVEL_TOL_MM, MEMBER_AXIS_TOL_MM};
 use crate::ids::{FloorRegionId, NodeId};
 use crate::model::{
-    Constraint, ElementKind, FloorRegion, LoadTransfer, Model, RegionAnchor, SecondaryMemberKind,
-    Slab, SlabShape, WallPlate, WallPlateShape,
+    ElementKind, FloorRegion, LoadTransfer, Model, RegionAnchor, SecondaryMemberKind, SlabShape,
 };
 use crate::region_gen::{
     generate_region_boundaries, polygon_contains_strict, scan_region_boundaries, BOUNDARY_TOL_MM,
@@ -489,67 +488,21 @@ fn assign_joists(model: &mut Model) -> usize {
 /// 支点（固定・ばね）・質量・剛床マスターのいずれかから参照されているか。
 ///
 /// 階の節点一覧（`Story::node_ids`）と通り芯（`AxisGroup`）は含めない
-/// （[`delete_unref_nodes`] の呼び出し側で扱う節点削除の判定にのみ用いるため）。
+/// （[`delete_unref_nodes`] の呼び出し側で扱う節点削除の判定にのみ用いるため。
+/// 階の節点一覧は準備計算のたびに階に属する全節点で埋め直されるため、これを
+/// 参照とみなすと削除対象の節点がほぼ必ず「参照あり」になってしまい、この関数
+/// 自体が実質的に無効化される。通り芯も構造計算に用いない表示専用データである）。
 ///
-/// **壁領域（`model.wall_regions`）を含める必要がある**。`rebuild_wall_regions`
-/// は「壁領域を検出して `model.wall_regions` へ書き込む」→「取り付く壁版への
-/// 変換で参照 0 になった節点を削除する（[`delete_unref_nodes`] 呼び出し）」の順に
-/// 進むため、削除判定の時点で `model.wall_regions` は**既に新しい境界を持っている**。
-/// 壁領域の境界節点は柱・梁の要素ノードと一致するため `model.elements` の判定で
-/// 既に保護されるのが通常だが、それに頼らず本関数で明示的に見ることで、
-/// 呼び出し順の前提が崩れたときの事故を防ぐ（敵対的レビューで発覚: 当初
-/// [`Model::visit_node_ids`] が `wall_regions` を走査していなかったため、
-/// この削除に伴う節点圧縮で壁領域の境界がダングリング参照へ壊れる回帰があった。
-/// 是正は `visit_node_ids` 側で行った）。
+/// 床領域・床板・壁領域・壁版・二次部材・拘束・節点荷重の判定は
+/// [`Model::node_referenced_by_regions_or_plates`] へ委譲する（`Model::node_in_use`
+/// の削除ガードと共有。**`NodeId` を持つフィールドを `Model` へ新設したときに
+/// 更新すべき箇所を1箇所へ集約する**のが狙いで、敵対的レビューで見つかった
+/// 「`wall_regions` を一切見ていなかった」回帰を踏まえた是正である）。
 fn node_has_structural_ref(model: &Model, id: NodeId) -> bool {
     if model.elements.iter().any(|e| e.nodes.contains(&id)) {
         return true;
     }
-    if model
-        .secondary_members
-        .iter()
-        .any(|sm| sm.nodes.contains(&id))
-    {
-        return true;
-    }
-    if model.floor_regions.iter().any(|r| {
-        r.boundary.contains(&id) || r.joist_lines().iter().any(|j| j.support.contains(&id))
-    }) {
-        return true;
-    }
-    if model.slabs.iter().any(|s| slab_refs_node(s, id)) {
-        return true;
-    }
-    if model.wall_regions.iter().any(|r| r.boundary.contains(&id)) {
-        return true;
-    }
-    if model
-        .wall_plates
-        .iter()
-        .any(|p| wall_plate_refs_node(p, id))
-    {
-        return true;
-    }
-    // 階の節点一覧（`Story::node_ids`）と通り芯（`AxisGroup`）は構造参照に数えない
-    // （ドキュメント参照）。階の節点一覧は準備計算のたびに階に属する全節点で
-    // 埋め直されるため、これを参照とみなすと削除対象の節点がほぼ必ず「参照あり」に
-    // なってしまい、この関数自体が実質的に無効化される（ST-Bridge 取り込みは
-    // 節点の階所属を先に確定させてから `rebuild_floor_regions` を呼ぶため、実運用の
-    // モデルでは必ずこの状態になる）。通り芯も構造計算に用いない表示専用データである。
-    if model.constraints.iter().any(|c| match c {
-        Constraint::RigidDiaphragm { master, slaves, .. }
-        | Constraint::RigidLink { master, slaves, .. } => *master == id || slaves.contains(&id),
-        Constraint::Mpc { master, terms } => {
-            *master == id || terms.iter().any(|(n, _, _)| *n == id)
-        }
-    }) {
-        return true;
-    }
-    if model
-        .load_cases
-        .iter()
-        .any(|lc| lc.nodal.iter().any(|nl| nl.node == id))
-    {
+    if model.node_referenced_by_regions_or_plates(id) {
         return true;
     }
     if let Some(node) = model.nodes.get(id.index()) {
@@ -562,31 +515,6 @@ fn node_has_structural_ref(model: &Model, id: NodeId) -> bool {
         return true;
     }
     false
-}
-
-fn slab_refs_node(slab: &Slab, id: NodeId) -> bool {
-    match &slab.shape {
-        SlabShape::Enclosed { boundary } => boundary.contains(&id),
-        SlabShape::Attached { anchor, .. } => match anchor {
-            RegionAnchor::Line { nodes, .. } => nodes[0] == id || nodes[1] == id,
-            RegionAnchor::Point(n) => *n == id,
-            // 床板では到達しない（`slab.rs::boundary_coords` と同じ理由）。
-            RegionAnchor::FloorRegion { .. } => false,
-        },
-    }
-}
-
-/// 壁版 `plate` が節点 `id` を参照しているか（`slab_refs_node` の壁版版）。
-fn wall_plate_refs_node(plate: &WallPlate, id: NodeId) -> bool {
-    match &plate.shape {
-        WallPlateShape::Enclosed { boundary } => boundary.contains(&id),
-        WallPlateShape::Attached { anchor, .. } => match anchor {
-            RegionAnchor::Line { nodes, .. } => nodes[0] == id || nodes[1] == id,
-            RegionAnchor::FloorRegion { nodes, .. } => nodes[0] == id || nodes[1] == id,
-            // 壁版では到達しない（`WallPlate::boundary_coords` と同じ理由）。
-            RegionAnchor::Point(_) => false,
-        },
-    }
 }
 
 /// `candidates` に挙がった節点のうち、参照が 0 になったものだけを削除する。
@@ -652,7 +580,7 @@ mod tests {
     use crate::ids::{ElemId, FloorRegionId, NodeId, SecondaryMemberId, SectionId, SlabId};
     use crate::model::{
         AreaLoad, DistributionMethod, ElementData, ElementKind, EndCondition, ForceRegime,
-        LocalAxis, Node, RegionAnchor, SecondaryMember, SecondaryMemberKind, SlabPlate,
+        LocalAxis, Node, RegionAnchor, SecondaryMember, SecondaryMemberKind, Slab, SlabPlate,
     };
     use crate::region_gen::generate_region_boundaries;
     use crate::section_shape::SectionShape;

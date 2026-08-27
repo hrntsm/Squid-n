@@ -776,18 +776,34 @@ impl Model {
     /// 要素以外（節点荷重・階・床領域・床板・壁領域・壁版・二次部材・拘束）からの
     /// 参照有無。[`Model::node_in_use`]・[`Model::node_in_use_excluding_elem`] の共通部分。
     ///
-    /// **壁領域（`wall_regions`）を見るのは防御的である**。壁領域の境界節点は
-    /// 柱・梁の要素ノードと一致するため、通常は `elements` 側の判定
-    /// （[`Model::node_in_use`] 参照）で既に保護される。それでも明示的に見ておくのは、
-    /// `region_rebuild::node_has_structural_ref` に同種の抜け（壁領域・壁版を
-    /// 一切見ていなかった）が敵対的レビューで見つかった前例があるため（削除判定・
-    /// ID 繰り上げの両方で `wall_regions` を見ておかないと、壁展開の元になる境界が
-    /// 静かに壊れうる）。
+    /// 大半は [`Model::node_referenced_by_regions_or_plates`] へ委譲し、ここでは
+    /// それに含まれない `stories`（利用者の節点削除を防ぐ目的では見る必要があるが、
+    /// D21 の判定である `region_rebuild::node_has_structural_ref` は準備計算のたびに
+    /// 埋め直されるため意図的に除外している）だけを追加で見る。
     fn node_referenced_outside_elements(&self, id: NodeId) -> bool {
+        self.stories.iter().any(|s| s.node_ids.contains(&id))
+            || self.node_referenced_by_regions_or_plates(id)
+    }
+
+    /// 節点 `id` が床領域・床板・壁領域・壁版・二次部材・拘束・節点荷重の
+    /// いずれかから参照されているか。
+    ///
+    /// [`Model::node_referenced_outside_elements`]（squid-n-edit の節点削除ガード）と
+    /// [`crate::region_rebuild::node_has_structural_ref`]（D21 の節点削除判定）が
+    /// この判定を共有する。両者が異なるのは、前者が追加で見る `stories`
+    /// （利用者の節点削除を防ぐ）と、後者が追加で見る節点自身の支点・質量・
+    /// 剛床マスター（`stories`/`axes` は意図的に除外）だけである。
+    ///
+    /// **`NodeId` を持つフィールドを `Model` へ新設したら、まず [`Model::visit_node_ids`]
+    /// を更新し、次に該当フィールドがここでも参照有無を判定できることを確認すること**
+    /// （壁領域（`wall_regions`）を追加し忘れて `visit_node_ids`・本関数の双方が
+    /// `wall_regions` を見ていなかったことが敵対的レビューで発覚した前例がある。
+    /// 床領域・床板・壁領域・壁版・二次部材・拘束・節点荷重を1箇所へ集約したのは
+    /// この事故を踏まえた是正である）。
+    pub(crate) fn node_referenced_by_regions_or_plates(&self, id: NodeId) -> bool {
         self.load_cases
             .iter()
             .any(|lc| lc.nodal.iter().any(|nl| nl.node == id))
-            || self.stories.iter().any(|s| s.node_ids.contains(&id))
             || self.floor_regions.iter().any(|r| {
                 r.boundary.contains(&id) || r.joist_lines().iter().any(|j| j.support.contains(&id))
             })
@@ -1536,5 +1552,145 @@ impl Model {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod node_reference_tests {
+    use super::*;
+
+    fn node(id: u32) -> Node {
+        Node {
+            id: NodeId(id),
+            coord: [f64::from(id) * 1000.0, 0.0, 0.0],
+            restraint: Dof6Mask::FREE,
+            mass: None,
+            story: None,
+            support_spring: None,
+        }
+    }
+
+    /// `Model::node_referenced_by_regions_or_plates` が、フィールド追加のたびに
+    /// `visit_node_ids`・`node_referenced_outside_elements`・
+    /// `region_rebuild::node_has_structural_ref` へ手作業で追随する運用（敵対的
+    /// レビューで `wall_regions` の抜けが見つかった原因）を集約先1箇所へ寄せた
+    /// ことを、対象フィールドそれぞれについて固定する。ここに載る全種別が
+    /// 「参照あり」と判定されることを確認すれば、`Model::node_in_use`
+    /// （squid-n-edit の削除ガード）と `region_rebuild::node_has_structural_ref`
+    /// （D21 の削除判定）の両方がその種別を保護できることになる。
+    #[test]
+    fn test_node_referenced_by_regions_or_plates_covers_every_field_kind() {
+        let mut model = Model::default();
+        for i in 0..12u32 {
+            model.nodes.push(node(i));
+        }
+
+        // 0: 節点荷重。
+        model.load_cases.push(LoadCase {
+            id: LoadCaseId(0),
+            name: "L".into(),
+            nodal: vec![NodalLoad {
+                node: NodeId(0),
+                values: [0.0; 6],
+                name: String::new(),
+                source: LoadSource::Manual,
+            }],
+            member: Vec::new(),
+            kind: LoadCaseKind::default(),
+        });
+
+        // 1: 床領域の境界。2: 床領域の小梁ライン支持節点。
+        let mut region = FloorRegion::new(FloorRegionId(0), vec![NodeId(1)]);
+        region.joists.push(JoistLine {
+            dir: [1.0, 0.0],
+            spacing: 1000.0,
+            support: [NodeId(2), NodeId(2)],
+            section: None,
+            pinned_onto: None,
+        });
+        model.floor_regions.push(region);
+
+        // 3: 床板（Enclosed）。4: 床板（Attached／Line）。
+        model.slabs.push(Slab {
+            id: SlabId(0),
+            shape: SlabShape::Enclosed {
+                boundary: vec![NodeId(3)],
+            },
+            plate: SlabPlate::default(),
+        });
+        model.slabs.push(Slab {
+            id: SlabId(1),
+            shape: SlabShape::Attached {
+                anchor: RegionAnchor::Line {
+                    nodes: [NodeId(4), NodeId(4)],
+                    span: [0.0, 1.0],
+                    transfer: LoadTransfer::Anchor,
+                },
+                extent: [0.0, 0.0],
+            },
+            plate: SlabPlate::default(),
+        });
+
+        // 5: 壁領域の境界。
+        model
+            .wall_regions
+            .push(WallRegion::new(WallRegionId(0), vec![NodeId(5)]));
+
+        // 6: 壁版（Enclosed）。7: 壁版（Attached／Line）。
+        model.wall_plates.push(WallPlate {
+            id: WallPlateId(0),
+            shape: WallPlateShape::Enclosed {
+                boundary: vec![NodeId(6)],
+            },
+            section: None,
+            opening_area: 0.0,
+            opening_weight: 0.0,
+            openings: Vec::new(),
+            three_side_slit: false,
+        });
+        model.wall_plates.push(WallPlate {
+            id: WallPlateId(1),
+            shape: WallPlateShape::Attached {
+                anchor: RegionAnchor::Line {
+                    nodes: [NodeId(7), NodeId(7)],
+                    span: [0.0, 1.0],
+                    transfer: LoadTransfer::Anchor,
+                },
+                extent: [0.0, 0.0],
+            },
+            section: None,
+            opening_area: 0.0,
+            opening_weight: 0.0,
+            openings: Vec::new(),
+            three_side_slit: false,
+        });
+
+        // 8: 二次部材。
+        model.secondary_members.push(SecondaryMember {
+            id: SecondaryMemberId(0),
+            kind: SecondaryMemberKind::Joist,
+            nodes: [NodeId(8), NodeId(8)],
+            section: None,
+            name: String::new(),
+        });
+
+        // 9: 拘束（剛床マスター）。
+        model.constraints.push(Constraint::RigidDiaphragm {
+            story: StoryId(0),
+            master: NodeId(9),
+            slaves: Vec::new(),
+            weight: None,
+            ci_override: None,
+        });
+
+        for i in 0..=9u32 {
+            assert!(
+                model.node_referenced_by_regions_or_plates(NodeId(i)),
+                "node {i} は参照されているはず"
+            );
+        }
+        // 10・11 はどこからも参照されない対照節点。
+        assert!(!model.node_referenced_by_regions_or_plates(NodeId(10)));
+        assert!(!model.node_referenced_by_regions_or_plates(NodeId(11)));
     }
 }
