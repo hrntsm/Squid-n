@@ -20,12 +20,20 @@
 //! 「対象の存在確認」は各コマンドが従来どおり自前で行う。本モジュールが受け持つのは
 //! **書き込む値の側**の確認である。
 
-use squid_n_core::ids::{ElemId, MaterialId, NodeId, SectionId};
+use squid_n_core::ids::{ElemId, FloorRegionId, MaterialId, NodeId, SectionId};
 use squid_n_core::model::Model;
 
 /// 節点が実在するか（ID ＝配列添字の規約込み）。
 pub(crate) fn node_exists(model: &Model, id: NodeId) -> bool {
     model.nodes.get(id.index()).is_some_and(|n| n.id == id)
+}
+
+/// 床領域が実在するか（ID ＝配列添字の規約込み）。
+pub(crate) fn floor_region_exists(model: &Model, id: FloorRegionId) -> bool {
+    model
+        .floor_regions
+        .get(id.index())
+        .is_some_and(|r| r.id == id)
 }
 
 /// 部材が実在するか（ID ＝配列添字の規約込み）。

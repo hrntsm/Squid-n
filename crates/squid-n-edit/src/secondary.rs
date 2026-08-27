@@ -251,8 +251,11 @@ impl EditCommand for SetSlabSecondaryJoistIds {
 // 追加・削除する対象ではない（`region_gen::wall`/`wall_region_rebuild` が組み立てる）。
 // そのため床領域と同じく、利用者が変更できるのは表示名と間柱の割当だけである。
 // 間柱の所属は床の `secondary_joist_ids` と同様、次回 `rebuild_wall_regions` の D7 で
-// 上書きされる（領域 CRUD がない点も床と同じ）。WallPlate の Add/Delete がないのは、
-// 床の `AddSlab` と非対称な次段（取り込み）の話である。
+// 上書きされる（領域 CRUD がない点も床と同じ）。WallPlate の Add/Delete（`wall_misc.rs` の
+// `AddAttachedWallPlate`/`DeleteWallPlate`/`InsertWallPlate`）は取り付く壁版
+// （パラペット・腰壁・垂れ壁・自立壁）に限って持つ。柱・梁で囲まれた壁版
+// （`Enclosed`）は床の `AddSlab` と非対称に、ST-Bridge 取り込み・`rebuild_wall_regions`
+// からしか作られない（利用者が任意の境界を与えて追加する経路はない）。
 
 /// 壁領域の表示名変更。逆操作は変更前の名前への復元。
 /// 対象が存在しない、または変更前後で同じ名前なら Noop。

@@ -3594,6 +3594,34 @@ fn test_delete_node_used_by_secondary_member_is_noop() {
     assert_eq!(model.nodes.len(), 2, "二次部材が参照する節点は削除できない");
 }
 
+/// 壁領域の境界だけが参照する節点（部材からは参照されない）は削除できない
+/// （敵対的レビューで発覚: `node_referenced_outside_elements` が `wall_regions` を
+/// 見ていなかった。実運用では壁領域の境界節点は必ず柱・梁からも参照されるため
+/// 顕在化しにくいが、防御的にここでも保護する）。
+#[test]
+fn test_delete_node_used_by_wall_region_boundary_is_noop() {
+    use squid_n_core::ids::WallRegionId;
+    use squid_n_core::model::WallRegion;
+
+    let mut model = empty_model();
+    for i in 0..2u32 {
+        model.nodes.push(Node {
+            id: NodeId(i),
+            coord: [f64::from(i) * 1000.0, 0.0, 0.0],
+            restraint: Dof6Mask::FREE,
+            mass: None,
+            story: None,
+            support_spring: None,
+        });
+    }
+    model
+        .wall_regions
+        .push(WallRegion::new(WallRegionId(0), vec![NodeId(0), NodeId(1)]));
+    let mut stack = UndoStack::new();
+    stack.run(&mut model, Box::new(DeleteNode { id: NodeId(0) }));
+    assert_eq!(model.nodes.len(), 2, "壁領域が参照する節点は削除できない");
+}
+
 /// 断面・材料削除の ID 繰り上げが二次部材の参照にも波及し、
 /// 二次部材が参照中の断面・材料は削除ガードで Noop になること。
 #[test]
@@ -6073,4 +6101,293 @@ fn test_copy_story_keeps_sectionless_enclosed_slab() {
         1,
         "断面未割当の enclosed 床板は断面が付かないまま複製される"
     );
+}
+
+/// 取り付く壁版（`Line` アンカー）を追加し、undo で消える。
+/// 取付き先が実在しない節点、または壁の取付き先として使わない `Point` は Noop。
+#[test]
+fn test_add_attached_wall_plate_roundtrip() {
+    use squid_n_core::ids::NodeId;
+    use squid_n_core::model::{LoadTransfer, RegionAnchor};
+
+    let mut model = Model::default();
+    for i in 0..2u32 {
+        model.nodes.push(squid_n_core::model::Node {
+            id: NodeId(i),
+            coord: [i as f64 * 4000.0, 0.0, 3000.0],
+            restraint: Default::default(),
+            mass: None,
+            story: None,
+            support_spring: None,
+        });
+    }
+    let mut undo = UndoStack::default();
+
+    let cmd = crate::AddAttachedWallPlate {
+        anchor: RegionAnchor::Line {
+            nodes: [NodeId(0), NodeId(1)],
+            span: [0.0, 1.0],
+            transfer: LoadTransfer::Anchor,
+        },
+        extent: [900.0, 900.0],
+        section: None,
+        opening_area: 0.0,
+        opening_weight: 0.0,
+    };
+    assert!(undo.run(&mut model, Box::new(cmd)));
+    assert_eq!(model.wall_plates.len(), 1);
+    assert!(model.wall_plates[0].is_attached());
+    assert!(model.validate().is_ok(), "{:?}", model.validate());
+
+    undo.undo(&mut model);
+    assert!(model.wall_plates.is_empty(), "undo で消える");
+
+    // 壁の取付き先としては使わない Point は Noop。
+    let bad = crate::AddAttachedWallPlate {
+        anchor: RegionAnchor::Point(NodeId(0)),
+        extent: [900.0, 900.0],
+        section: None,
+        opening_area: 0.0,
+        opening_weight: 0.0,
+    };
+    assert!(!undo.run(&mut model, Box::new(bad)));
+    assert!(model.wall_plates.is_empty());
+
+    // 区間が逆順（始端 >= 終端）は受け付けない。
+    let reversed = crate::AddAttachedWallPlate {
+        anchor: RegionAnchor::Line {
+            nodes: [NodeId(0), NodeId(1)],
+            span: [0.75, 0.25],
+            transfer: LoadTransfer::Anchor,
+        },
+        extent: [900.0, 900.0],
+        section: None,
+        opening_area: 0.0,
+        opening_weight: 0.0,
+    };
+    assert!(!undo.run(&mut model, Box::new(reversed)));
+    assert!(model.wall_plates.is_empty());
+
+    // 実在しない節点を指す取付き線は作らない。
+    let dangling = crate::AddAttachedWallPlate {
+        anchor: RegionAnchor::Line {
+            nodes: [NodeId(0), NodeId(9)],
+            span: [0.0, 1.0],
+            transfer: LoadTransfer::Anchor,
+        },
+        extent: [900.0, 900.0],
+        section: None,
+        opening_area: 0.0,
+        opening_weight: 0.0,
+    };
+    assert!(!undo.run(&mut model, Box::new(dangling)));
+    assert!(model.wall_plates.is_empty());
+}
+
+/// 取り付く壁版（`FloorRegion` アンカー。自立壁）を追加し、undo で消える。
+/// 所属先の床領域が実在しなければ Noop。
+#[test]
+fn test_add_attached_wall_plate_floor_region_anchor_roundtrip() {
+    use squid_n_core::ids::{FloorRegionId, NodeId};
+    use squid_n_core::model::{FloorRegion, RegionAnchor};
+
+    let mut model = Model::default();
+    for i in 0..2u32 {
+        model.nodes.push(squid_n_core::model::Node {
+            id: NodeId(i),
+            coord: [i as f64 * 2000.0, 0.0, 3000.0],
+            restraint: Default::default(),
+            mass: None,
+            story: None,
+            support_spring: None,
+        });
+    }
+    let mut undo = UndoStack::default();
+
+    // 所属先の床領域がまだ実在しない。
+    let cmd = crate::AddAttachedWallPlate {
+        anchor: RegionAnchor::FloorRegion {
+            region: FloorRegionId(0),
+            nodes: [NodeId(0), NodeId(1)],
+        },
+        extent: [2500.0, 2500.0],
+        section: None,
+        opening_area: 0.0,
+        opening_weight: 0.0,
+    };
+    assert!(
+        !undo.run(&mut model, Box::new(cmd)),
+        "存在しない床領域を指す自立壁は Noop"
+    );
+    assert!(model.wall_plates.is_empty());
+
+    model
+        .floor_regions
+        .push(FloorRegion::new(FloorRegionId(0), vec![]));
+    let cmd = crate::AddAttachedWallPlate {
+        anchor: RegionAnchor::FloorRegion {
+            region: FloorRegionId(0),
+            nodes: [NodeId(0), NodeId(1)],
+        },
+        extent: [2500.0, 2500.0],
+        section: None,
+        opening_area: 0.0,
+        opening_weight: 0.0,
+    };
+    assert!(undo.run(&mut model, Box::new(cmd)));
+    assert_eq!(model.wall_plates.len(), 1);
+    assert!(model.validate().is_ok(), "{:?}", model.validate());
+
+    undo.undo(&mut model);
+    assert!(model.wall_plates.is_empty(), "undo で消える");
+}
+
+/// SetAttachedWallPlateExtent / SetAttachedWallPlateAnchor の Noop と往復。
+#[test]
+fn test_set_attached_wall_plate_extent_and_anchor_noop() {
+    use squid_n_core::ids::{NodeId, WallPlateId};
+    use squid_n_core::model::{LoadTransfer, RegionAnchor, WallPlate, WallPlateShape};
+
+    let mut model = seeded_model(4, 0);
+    for n in &mut model.nodes {
+        n.coord[2] = 3000.0;
+    }
+    model.wall_plates.push(WallPlate {
+        id: WallPlateId(0),
+        shape: WallPlateShape::Enclosed {
+            boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
+        },
+        section: None,
+        opening_area: 0.0,
+        opening_weight: 0.0,
+        openings: vec![],
+        three_side_slit: false,
+    });
+    let mut undo = UndoStack::default();
+    assert!(
+        !undo.run(
+            &mut model,
+            Box::new(crate::SetAttachedWallPlateExtent {
+                id: WallPlateId(0),
+                extent: [900.0, 900.0],
+            })
+        ),
+        "囲まれた壁版への張り出し変更は Noop"
+    );
+    assert!(
+        !undo.run(
+            &mut model,
+            Box::new(crate::SetAttachedWallPlateExtent {
+                id: WallPlateId(9),
+                extent: [900.0, 900.0],
+            })
+        ),
+        "存在しない ID は Noop"
+    );
+
+    assert!(undo.run(
+        &mut model,
+        Box::new(crate::AddAttachedWallPlate {
+            anchor: RegionAnchor::Line {
+                nodes: [NodeId(0), NodeId(1)],
+                span: [0.0, 1.0],
+                transfer: LoadTransfer::Anchor,
+            },
+            extent: [900.0, 900.0],
+            section: None,
+            opening_area: 0.0,
+            opening_weight: 0.0,
+        })
+    ));
+    let aid = model.wall_plates.last().unwrap().id;
+    assert!(undo.run(
+        &mut model,
+        Box::new(crate::SetAttachedWallPlateExtent {
+            id: aid,
+            extent: [1200.0, -300.0],
+        })
+    ));
+    match &model.wall_plates[aid.index()].shape {
+        WallPlateShape::Attached { extent, .. } => assert_eq!(*extent, [1200.0, -300.0]),
+        other => panic!("{other:?}"),
+    }
+    assert!(
+        !undo.run(
+            &mut model,
+            Box::new(crate::SetAttachedWallPlateExtent {
+                id: aid,
+                extent: [f64::NAN, 0.0],
+            })
+        ),
+        "非有限の張り出し量は Noop"
+    );
+
+    // 取付き先としては使わない Point への変更は Noop。
+    assert!(
+        !undo.run(
+            &mut model,
+            Box::new(crate::SetAttachedWallPlateAnchor {
+                id: aid,
+                anchor: RegionAnchor::Point(NodeId(0)),
+            })
+        ),
+        "壁の取付き先としては使わない Point は Noop"
+    );
+    // 実在する取付き線への変更は通る。
+    assert!(undo.run(
+        &mut model,
+        Box::new(crate::SetAttachedWallPlateAnchor {
+            id: aid,
+            anchor: RegionAnchor::Line {
+                nodes: [NodeId(1), NodeId(2)],
+                span: [0.0, 1.0],
+                transfer: LoadTransfer::Anchor,
+            },
+        })
+    ));
+    assert!(model.validate().is_ok(), "{:?}", model.validate());
+}
+
+/// 壁領域に帰属した壁版を削除すると `WallRegion.wall_plate_ids` からも除去され、
+/// undo で元の位置へ戻る（`DeleteSlab`/`InsertSlab` の壁版版）。
+#[test]
+fn test_delete_wall_plate_cascades_region_ids_and_undoes() {
+    use squid_n_core::ids::{NodeId, WallPlateId, WallRegionId};
+    use squid_n_core::model::{WallPlate, WallPlateShape, WallRegion};
+
+    let mut model = seeded_model(4, 0);
+    for n in &mut model.nodes {
+        n.coord[2] = 3000.0;
+    }
+    model.wall_plates.push(WallPlate {
+        id: WallPlateId(0),
+        shape: WallPlateShape::Enclosed {
+            boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
+        },
+        section: None,
+        opening_area: 0.0,
+        opening_weight: 0.0,
+        openings: vec![],
+        three_side_slit: false,
+    });
+    let mut region = WallRegion::new(
+        WallRegionId(0),
+        vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
+    );
+    region.wall_plate_ids = vec![WallPlateId(0)];
+    model.wall_regions.push(region);
+
+    let mut undo = UndoStack::default();
+    assert!(undo.run(
+        &mut model,
+        Box::new(crate::DeleteWallPlate { id: WallPlateId(0) })
+    ));
+    assert!(model.wall_plates.is_empty());
+    assert!(model.wall_regions[0].wall_plate_ids.is_empty());
+    assert!(model.validate().is_ok(), "{:?}", model.validate());
+
+    undo.undo(&mut model);
+    assert_eq!(model.wall_plates.len(), 1);
+    assert_eq!(model.wall_regions[0].wall_plate_ids, vec![WallPlateId(0)]);
+    assert!(model.validate().is_ok(), "{:?}", model.validate());
 }

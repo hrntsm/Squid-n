@@ -404,14 +404,14 @@ pub fn model_issues(model: &Model) -> Vec<ModelIssue> {
         let mut skipped_non_quad = 0usize;
         let mut skipped_no_section = 0usize;
         for plate in &model.wall_plates {
-            let WallPlateShape::Enclosed { boundary } = &plate.shape else {
+            if !matches!(plate.shape, WallPlateShape::Enclosed { .. }) {
                 continue;
-            };
+            }
             if plate.section.is_none() {
                 skipped_no_section += 1;
                 continue;
             }
-            if boundary.len() != 4 {
+            if !plate.has_quad_boundary() {
                 skipped_non_quad += 1;
             }
         }
@@ -429,6 +429,16 @@ pub fn model_issues(model: &Model) -> Vec<ModelIssue> {
                 ModelIssue::model(format!(
                     "断面未割当の壁版が {skipped_no_section} 枚あります。\
                      解析要素としては生成しません。"
+                ))
+                .warn(),
+            );
+        }
+        let attached = model.wall_plates.iter().filter(|p| p.is_attached()).count();
+        if attached != 0 {
+            issues.push(
+                ModelIssue::model(format!(
+                    "取り付く壁版が {attached} 枚あります。解析要素にはせず、\
+                     自重の自動分配（取付き線への分布）も行いません。"
                 ))
                 .warn(),
             );

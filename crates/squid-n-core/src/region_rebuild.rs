@@ -11,8 +11,7 @@ use crate::dof::Dof6Mask;
 use crate::geom::{LEVEL_TOL_MM, MEMBER_AXIS_TOL_MM};
 use crate::ids::{FloorRegionId, NodeId};
 use crate::model::{
-    Constraint, ElementKind, FloorRegion, LoadTransfer, Model, RegionAnchor, SecondaryMemberKind,
-    Slab, SlabShape,
+    ElementKind, FloorRegion, LoadTransfer, Model, RegionAnchor, SecondaryMemberKind, SlabShape,
 };
 use crate::region_gen::{
     generate_region_boundaries, polygon_contains_strict, scan_region_boundaries, BOUNDARY_TOL_MM,
@@ -264,13 +263,16 @@ fn shoelace_centroid(pts: &[[f64; 2]], signed_area: f64) -> [f64; 2] {
     [cx / six_a, cy / six_a]
 }
 
-struct GirderSeg {
+/// 水平な大梁の 1 本ぶん（XY 線分 ＋ レベル）。壁側の D20 相当判定
+/// （[`crate::wall_region_rebuild`]）も同じ「同一レベルの大梁に全長覆われているか」を
+/// 使うため `pub(crate)` にしている。
+pub(crate) struct GirderSeg {
     a: [f64; 2],
     b: [f64; 2],
     z: f64,
 }
 
-fn horizontal_girders(model: &Model) -> Vec<GirderSeg> {
+pub(crate) fn horizontal_girders(model: &Model) -> Vec<GirderSeg> {
     let mut out = Vec::new();
     for e in &model.elements {
         if e.kind != ElementKind::Beam || e.nodes.len() != 2 {
@@ -372,7 +374,7 @@ fn try_convert_cantilever(
     })
 }
 
-fn edge_fully_covered(a: [f64; 2], b: [f64; 2], z: f64, beams: &[GirderSeg]) -> bool {
+pub(crate) fn edge_fully_covered(a: [f64; 2], b: [f64; 2], z: f64, beams: &[GirderSeg]) -> bool {
     let dx = b[0] - a[0];
     let dy = b[1] - a[1];
     let len = (dx * dx + dy * dy).sqrt();
@@ -418,7 +420,8 @@ fn edge_fully_covered(a: [f64; 2], b: [f64; 2], z: f64, beams: &[GirderSeg]) -> 
     covered >= len - MEMBER_AXIS_TOL_MM
 }
 
-fn point_segment_dist(p: [f64; 2], a: [f64; 2], b: [f64; 2]) -> f64 {
+/// 点 `p` から線分 `a`–`b` までの距離 [mm]。壁側 D20 相当の自由端判定でも使う。
+pub(crate) fn point_segment_dist(p: [f64; 2], a: [f64; 2], b: [f64; 2]) -> f64 {
     let ab = [b[0] - a[0], b[1] - a[1]];
     let len2 = ab[0] * ab[0] + ab[1] * ab[1];
     let t = if len2 <= f64::EPSILON {
@@ -482,50 +485,25 @@ fn assign_joists(model: &mut Model) -> usize {
     unassigned
 }
 
-/// 節点 `id` が部材・二次部材・床領域・床板・拘束・節点荷重・支点（固定・ばね）・
-/// 質量・剛床マスターのいずれかから参照されているか。
+/// 節点 `id` が部材・二次部材・床領域・床板・壁領域・壁版・拘束・節点荷重・
+/// 支点（固定・ばね）・質量・剛床マスターのいずれかから参照されているか。
 ///
 /// 階の節点一覧（`Story::node_ids`）と通り芯（`AxisGroup`）は含めない
-/// （[`delete_unref_nodes`] の呼び出し側で扱う節点削除の判定にのみ用いるため）。
+/// （[`delete_unref_nodes`] の呼び出し側で扱う節点削除の判定にのみ用いるため。
+/// 階の節点一覧は準備計算のたびに階に属する全節点で埋め直されるため、これを
+/// 参照とみなすと削除対象の節点がほぼ必ず「参照あり」になってしまい、この関数
+/// 自体が実質的に無効化される。通り芯も構造計算に用いない表示専用データである）。
+///
+/// 床領域・床板・壁領域・壁版・二次部材・拘束・節点荷重の判定は
+/// [`Model::node_referenced_by_regions_or_plates`] へ委譲する（`Model::node_in_use`
+/// の削除ガードと共有。**`NodeId` を持つフィールドを `Model` へ新設したときに
+/// 更新すべき箇所を1箇所へ集約する**のが狙いで、敵対的レビューで見つかった
+/// 「`wall_regions` を一切見ていなかった」回帰を踏まえた是正である）。
 fn node_has_structural_ref(model: &Model, id: NodeId) -> bool {
     if model.elements.iter().any(|e| e.nodes.contains(&id)) {
         return true;
     }
-    if model
-        .secondary_members
-        .iter()
-        .any(|sm| sm.nodes.contains(&id))
-    {
-        return true;
-    }
-    if model.floor_regions.iter().any(|r| {
-        r.boundary.contains(&id) || r.joist_lines().iter().any(|j| j.support.contains(&id))
-    }) {
-        return true;
-    }
-    if model.slabs.iter().any(|s| slab_refs_node(s, id)) {
-        return true;
-    }
-    // 階の節点一覧（`Story::node_ids`）と通り芯（`AxisGroup`）は構造参照に数えない
-    // （ドキュメント参照）。階の節点一覧は準備計算のたびに階に属する全節点で
-    // 埋め直されるため、これを参照とみなすと削除対象の節点がほぼ必ず「参照あり」に
-    // なってしまい、この関数自体が実質的に無効化される（ST-Bridge 取り込みは
-    // 節点の階所属を先に確定させてから `rebuild_floor_regions` を呼ぶため、実運用の
-    // モデルでは必ずこの状態になる）。通り芯も構造計算に用いない表示専用データである。
-    if model.constraints.iter().any(|c| match c {
-        Constraint::RigidDiaphragm { master, slaves, .. }
-        | Constraint::RigidLink { master, slaves, .. } => *master == id || slaves.contains(&id),
-        Constraint::Mpc { master, terms } => {
-            *master == id || terms.iter().any(|(n, _, _)| *n == id)
-        }
-    }) {
-        return true;
-    }
-    if model
-        .load_cases
-        .iter()
-        .any(|lc| lc.nodal.iter().any(|nl| nl.node == id))
-    {
+    if model.node_referenced_by_regions_or_plates(id) {
         return true;
     }
     if let Some(node) = model.nodes.get(id.index()) {
@@ -540,24 +518,12 @@ fn node_has_structural_ref(model: &Model, id: NodeId) -> bool {
     false
 }
 
-fn slab_refs_node(slab: &Slab, id: NodeId) -> bool {
-    match &slab.shape {
-        SlabShape::Enclosed { boundary } => boundary.contains(&id),
-        SlabShape::Attached { anchor, .. } => match anchor {
-            RegionAnchor::Line { nodes, .. } => nodes[0] == id || nodes[1] == id,
-            RegionAnchor::Point(n) => *n == id,
-            // 床板では到達しない（`slab.rs::boundary_coords` と同じ理由）。
-            RegionAnchor::FloorRegion { .. } => false,
-        },
-    }
-}
-
 /// `candidates` に挙がった節点のうち、参照が 0 になったものだけを削除する。
 ///
 /// `candidates` 以外の節点は、たとえ現状どこからも参照されていなくても対象外とする
 /// （D21。このリビルドが縮めた境界の先端節点だけを削除し、利用者が別の理由で
 /// 置いた既存の未使用節点まで巻き込まない）。
-fn delete_unref_nodes(model: &mut Model, candidates: &[NodeId]) -> usize {
+pub(crate) fn delete_unref_nodes(model: &mut Model, candidates: &[NodeId]) -> usize {
     let n = model.nodes.len();
     if n == 0 {
         return 0;
@@ -615,7 +581,7 @@ mod tests {
     use crate::ids::{ElemId, FloorRegionId, NodeId, SecondaryMemberId, SectionId, SlabId};
     use crate::model::{
         AreaLoad, DistributionMethod, ElementData, ElementKind, EndCondition, ForceRegime,
-        LocalAxis, Node, RegionAnchor, SecondaryMember, SecondaryMemberKind, SlabPlate,
+        LocalAxis, Node, RegionAnchor, SecondaryMember, SecondaryMemberKind, Slab, SlabPlate,
     };
     use crate::region_gen::generate_region_boundaries;
     use crate::section_shape::SectionShape;
