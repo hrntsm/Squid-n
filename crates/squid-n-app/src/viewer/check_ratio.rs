@@ -395,8 +395,13 @@ pub(super) fn draw_check_ratio(
     let checks_by_elem: HashMap<ElemId, &MemberChecks> =
         results.member_checks.iter().map(|m| (m.elem, m)).collect();
 
+    // 壁の解析要素（`ElementKind::Wall`）は `app.model` には存在しない生成専用の
+    // 要素（D5）のため、壁展開済みモデルを参照する（`super::wall_expanded_view_model`）。
+    // これにより、`member_checks`/`joint_checks` に含まれる壁の検定結果が着色対象に入る。
+    let model = super::wall_expanded_view_model(&app.model);
+
     // --- 部材の着色 ---
-    for elem in &app.model.elements {
+    for elem in &model.elements {
         if !frame_filter.shows(elem.id) {
             continue;
         }

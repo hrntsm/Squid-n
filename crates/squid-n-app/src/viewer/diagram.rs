@@ -53,6 +53,7 @@ use super::{
     ForceComponent, ForceComponents, Projector,
 };
 use squid_n_core::geom::vec3::dist as member_len3;
+use squid_n_core::model::Model;
 
 /// 張り出しピークがこの px 未満の図形は描かない。60px 正規化に対して値が
 /// 相対的に極小の部材（ほぼ潰れた図形）は、輪郭の折り返し点で epaint のマイター
@@ -305,6 +306,10 @@ pub(super) fn draw_force_diagram(
     let Some(results) = &app.results else {
         return;
     };
+    // 壁の解析要素（`ElementKind::Wall`）は `app.model` には存在しない生成専用の
+    // 要素（D5）のため、壁展開済みモデルを参照する（`super::wall_expanded_view_model`）。
+    // 成分ごとに `draw_component` を呼ぶため、展開は1フレーム1回だけここで行う。
+    let model = super::wall_expanded_view_model(&app.model);
     // 成分ごとのモデル全体最大絶対値（共有スケール算出の入力。描画・凡例には
     // [`display_scales_for_selection`] の戻り値を使う）。
     let mut maxes = [0.0_f64; 6];
@@ -329,6 +334,7 @@ pub(super) fn draw_force_diagram(
             draw_component(
                 painter,
                 app,
+                &model,
                 c,
                 max_abs,
                 coords3,
@@ -355,6 +361,7 @@ pub(super) fn draw_force_diagram(
 fn draw_component(
     painter: &egui::Painter,
     app: &App,
+    model: &Model,
     component: ForceComponent,
     max_abs: f64,
     coords3: &[[f64; 3]],
@@ -383,7 +390,7 @@ fn draw_component(
         if !frame_filter.shows(*elem_id) {
             continue;
         }
-        let elem = app.model.element(*elem_id);
+        let elem = model.element(*elem_id);
         let Some(elem) = elem else { continue };
         if elem.nodes.len() < 2 {
             continue;

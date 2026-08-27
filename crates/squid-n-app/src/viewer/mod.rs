@@ -437,6 +437,28 @@ use support::{
     draw_support_legend, draw_support_symbol, support_kind, supports_visible, SupportKind,
 };
 
+/// ビューア表示用に、壁の解析要素（`ElementKind::Wall`。D5により生成専用）を
+/// 含むモデルを返す。壁の解析要素は `model` 自体には存在せず、`WallRegion`/
+/// `WallPlate` から都度生成する（D5・`squid_n_load::wall_expand`）。
+///
+/// ビューアは毎フレーム呼ばれるため、壁版を1つも持たないモデル（既定・現状の
+/// 実 ST-Bridge フィクスチャは全件該当）では `expand_wall_elements` が伴う
+/// `model.clone()` を払わずそのまま借用する
+/// （`model_has_wall_plates_to_expand` によるガード。
+/// `squid_n_job::prepare::apply_rigid_zones_and_panels` と同じ性能ガード）。
+/// 壁版を持つモデルでは毎フレーム展開し直す（展開処理自体は壁版数に比例し
+/// 軽いため許容する。§5.7 で計測が重いのは境界検出=`rebuild_wall_regions`
+/// 側であり、こちらは都度実行しない）。
+pub(super) fn wall_expanded_view_model(
+    model: &squid_n_core::model::Model,
+) -> std::borrow::Cow<'_, squid_n_core::model::Model> {
+    if squid_n_load::wall_expand::model_has_wall_plates_to_expand(model) {
+        std::borrow::Cow::Owned(squid_n_load::wall_expand::expand_wall_elements(model).0)
+    } else {
+        std::borrow::Cow::Borrowed(model)
+    }
+}
+
 pub use camera::CameraState;
 pub use deform::TimeHistoryScaleCache;
 
@@ -1254,6 +1276,12 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
         }
     }
 
+    // 壁の解析要素（`ElementKind::Wall`）は `app.model` には存在しない生成専用の
+    // 要素（D5）のため、以降の形状描画・選択ハイライト・ホバーピックは壁展開済み
+    // モデルを参照する（`wall_expanded_view_model`）。編集対象を選ぶクリック処理
+    // （上のブロック）は既存部材のみが対象のため `app.model` のままでよい。
+    let display_model = wall_expanded_view_model(&app.model);
+
     // --- スラブ・小梁 ---
     // 荷重分配オブジェクト（解析部材ではない）であることが分かるよう、
     // 構造部材（実線・青/グレー系）と異なる暖色半透明フィル＋破線のフォーマットで描く。
@@ -1355,7 +1383,7 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
         } else {
             egui::Stroke::new(2.0_f32, line_color)
         };
-        for elem in &app.model.elements {
+        for elem in &display_model.elements {
             if !filter.shows(elem.id) {
                 continue;
             }
@@ -1505,7 +1533,8 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
         if cube_hover.is_none() {
             if let Some(hover_pos) = response.hover_pos() {
                 const HOVER_PICK_THRESHOLD: f32 = 8.0;
-                if let Some((id, d)) = pick_nearest_member(&app.model, &pts, hover_pos, filter) {
+                if let Some((id, d)) = pick_nearest_member(&display_model, &pts, hover_pos, filter)
+                {
                     if d <= HOVER_PICK_THRESHOLD {
                         modeling::show_modeling_tooltip(ui, app, id);
                     }
@@ -1531,7 +1560,7 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
                         check_ratio::show_node_check_tooltip(ui, app, node.id);
                     }
                 } else if let Some((id, d)) =
-                    pick_nearest_member(&app.model, &pts, hover_pos, filter)
+                    pick_nearest_member(&display_model, &pts, hover_pos, filter)
                 {
                     if d <= HOVER_PICK_THRESHOLD {
                         check_ratio::show_check_tooltip(ui, app, id);
@@ -1547,7 +1576,8 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
         if cube_hover.is_none() {
             if let Some(hover_pos) = response.hover_pos() {
                 const HOVER_PICK_THRESHOLD: f32 = 8.0;
-                if let Some((id, d)) = pick_nearest_member(&app.model, &pts, hover_pos, filter) {
+                if let Some((id, d)) = pick_nearest_member(&display_model, &pts, hover_pos, filter)
+                {
                     if d <= HOVER_PICK_THRESHOLD {
                         hinge::show_hinge_tooltip(ui, app, id);
                     }
@@ -1598,7 +1628,7 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
 
     // 選択ハイライト（描き方の規約は `element_draw_shape`）。
     for &elem_id in &app.selection.members {
-        let Some(elem) = app.model.element(elem_id) else {
+        let Some(elem) = display_model.element(elem_id) else {
             continue;
         };
         let stroke = egui::Stroke::new(4.0_f32, theme::PARETO_RED);
@@ -2007,5 +2037,99 @@ mod frame_filter_tests {
         let dir = [1.0, 0.0, 0.0];
         let out = scene::in_plane_offset_dir(dir, p_i, p_j, [0.0, 0.0, 1.0]);
         assert_eq!(out, dir);
+    }
+}
+
+#[cfg(test)]
+mod wall_expanded_view_model_tests {
+    use super::*;
+    use squid_n_core::ids::{NodeId, SectionId, WallPlateId, WallRegionId};
+    use squid_n_core::model::{
+        ElementKind, Model, Node, Section, WallPlate, WallPlateShape, WallRegion,
+    };
+
+    fn node(id: u32, x: f64, y: f64, z: f64) -> Node {
+        Node {
+            id: NodeId(id),
+            coord: [x, y, z],
+            restraint: Default::default(),
+            mass: None,
+            story: None,
+            support_spring: None,
+        }
+    }
+
+    /// 壁版を1つも持たないモデルでは、`expand_wall_elements` の複製を経ずに
+    /// 元のモデルをそのまま借用する（毎フレーム描画のガード。§5.15 と同じ
+    /// 性能ガードパターン）。
+    #[test]
+    fn no_wall_plates_borrows_without_cloning() {
+        let model = Model::default();
+        let view = wall_expanded_view_model(&model);
+        assert!(matches!(view, std::borrow::Cow::Borrowed(_)));
+        assert!(view.elements.is_empty());
+    }
+
+    /// 壁版を持つモデルでは展開済みモデルを複製して返し、
+    /// `ElementKind::Wall` が要素として現れる（ビューアが壁を描ける状態）。
+    #[test]
+    fn wall_plates_expand_into_wall_elements() {
+        let mut model = Model::default();
+        for (id, (x, y, z)) in [
+            (0, (0.0, 0.0, 0.0)),
+            (1, (4000.0, 0.0, 0.0)),
+            (2, (4000.0, 0.0, 3000.0)),
+            (3, (0.0, 0.0, 3000.0)),
+        ] {
+            model.nodes.push(node(id, x, y, z));
+        }
+        // `expand_wall_elements` は断面未割当の壁版を要素化しない（自重0・解析前
+        // チェックが止める。`WallPlate` モジュール doc 参照）ため、要素として
+        // 現れることを確認するには断面の割当が要る。
+        model.sections.push(Section {
+            id: SectionId(0),
+            name: "壁 t150".into(),
+            area: 150.0 * 3000.0,
+            iy: 1.0,
+            iz: 1.0,
+            j: 1.0,
+            depth: 3000.0,
+            width: 150.0,
+            as_y: 1.0,
+            as_z: 1.0,
+            floor: None,
+            panel_thickness: None,
+            thickness: Some(150.0),
+            shape: None,
+            material: None,
+            rebar_material: None,
+            shear_rebar_material: None,
+            steel_material: None,
+        });
+        model.wall_plates.push(WallPlate {
+            id: WallPlateId(0),
+            shape: WallPlateShape::Enclosed {
+                boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
+            },
+            section: Some(SectionId(0)),
+            opening_area: 0.0,
+            opening_weight: 0.0,
+            openings: Vec::new(),
+            three_side_slit: false,
+        });
+        model.wall_regions.push(WallRegion {
+            id: WallRegionId(0),
+            name: String::new(),
+            boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
+            wall_plate_ids: vec![WallPlateId(0)],
+            post_ids: Vec::new(),
+        });
+
+        let view = wall_expanded_view_model(&model);
+        assert!(matches!(view, std::borrow::Cow::Owned(_)));
+        assert_eq!(view.elements.len(), 1);
+        assert_eq!(view.elements[0].kind, ElementKind::Wall);
+        // 入力の正（`model`）は変更されない（D5。壁の解析要素はモデルに残さない）。
+        assert!(model.elements.is_empty());
     }
 }

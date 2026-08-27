@@ -204,7 +204,10 @@ pub(super) fn draw_mode_rest_ghost(
         painter.circle_filled(p, 3.0, theme::translucent(theme::DATA_BLUE, FILL_A));
     }
 
-    for elem in &app.model.elements {
+    // 壁の解析要素（`ElementKind::Wall`）は `app.model` には存在しない生成専用の
+    // 要素（D5）のため、壁展開済みモデルを参照する（`super::wall_expanded_view_model`）。
+    let model = super::wall_expanded_view_model(&app.model);
+    for elem in &model.elements {
         if !filter.shows(elem.id) {
             continue;
         }
