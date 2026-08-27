@@ -20,7 +20,6 @@ encoding_rs = { workspace = true }
 dirs        = { workspace = true }
 squid-n-core    = { path = "../squid-n-core" }
 squid-n-element = { path = "../squid-n-element" }
-squid-n-load    = { path = "../squid-n-load" }
 
 [dev-dependencies]
 squid-n-element = { path = "../squid-n-element" }

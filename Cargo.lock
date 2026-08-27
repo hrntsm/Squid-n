@@ -5497,7 +5497,6 @@ dependencies = [
  "smallvec",
  "squid-n-core",
  "squid-n-element",
- "squid-n-load",
  "thiserror 1.0.69",
  "zip",
 ]

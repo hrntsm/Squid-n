@@ -17,9 +17,9 @@
 
 use super::section_std::standard_sections;
 use super::{StbError, STB_VERSION};
-use squid_n_core::ids::{SectionId, SlabId};
+use squid_n_core::ids::{NodeId, SectionId, SlabId};
 use squid_n_core::model::{
-    AxisGroup, AxisGroupKind, ElementKind, EndCondition, Model, StoryLevelKind,
+    AxisGroup, AxisGroupKind, ElementKind, EndCondition, Model, StoryLevelKind, WallPlateShape,
 };
 
 /// ST-Bridge の id は `positiveInteger`（1 以上）。内部 0 始まり id に +1 して出力する。
@@ -29,13 +29,9 @@ fn sid(internal_id: u32) -> u32 {
 
 /// 内部モデルを標準 ST-Bridge 2.0.2 XML 文字列へ出力する。
 pub fn export_stbridge(model: &Model) -> Result<String, StbError> {
-    // 壁の解析要素は `Model.elements` に残らない生成物のため（D5）、出力の直前で
-    // 壁展開モデル（生成した `ElementKind::Wall` を含む一時的な複製）を組み立て、
-    // 以降このスコープではそちらを見る（dig Q3=B: 呼び出し元に展開を要求せず、
-    // 出力関数の内部で完結させる。忘れると壁が出力から消えるため）。
-    let (expanded, _wall_index, _wall_report) =
-        squid_n_load::wall_expand::expand_wall_elements(model);
-    let model = &expanded;
+    // 壁の入力の正は壁版（`WallPlate`）であり、解析要素は生成物（D5）。
+    // `StbWall` は壁版から直接書き出す（4 節点以外も往復させる。解析要素に
+    // しない壁を展開経由で落とさないため）。シェルは引き続き要素から出す。
 
     // 標準断面ブロックと、部材参照（id_section）の柱用・梁用張り替えマップ。
     let std = standard_sections(model);
@@ -316,32 +312,33 @@ fn members_body(
         slabs.push_str("        </StbSlab>\n");
     }
 
-    // 壁（StbWall）。壁要素（Wall/Shell、境界 3〜N 節点）の節点ループ＋断面参照。
-    let wall_sec_base = slab_sec_base + model.slabs.len() as u32;
+    // 壁（StbWall）。囲まれた壁版（境界 3〜N 節点）とシェル要素。
+    // member id は要素・二次部材・スラブと別空間。スラブは `slab.id` を足すため、
+    // ここも `slabs.len()` の次から連番にする（壁版 id と柱要素 id がどちらも 0
+    // のとき `sid(0)` が衝突しないようにする）。
+    let wall_member_base = slab_member_base + model.slabs.len() as u32;
+    let wall_sec_base = slab_sec_base + model.floor_regions.len() as u32;
+    let stb_walls = stb_walls_for_export(model);
     let mut walls = String::new();
-    let mut wall_idx = 0u32;
-    for e in &model.elements {
-        if !matches!(e.kind, ElementKind::Wall | ElementKind::Shell) || e.nodes.len() < 3 {
-            continue;
-        }
-        let order = e
+    for (wall_idx, wall) in stb_walls.iter().enumerate() {
+        let order = wall
             .nodes
             .iter()
             .map(|n| sid(n.0).to_string())
             .collect::<Vec<_>>()
             .join(" ");
-        let sec = wall_sec_base + wall_idx;
+        let mid = wall_member_base + wall_idx as u32;
+        let sec = wall_sec_base + wall_idx as u32;
         walls.push_str(&format!(
             "        <StbWall id=\"{}\" name=\"W{}\" id_section=\"{}\" kind_structure=\"RC\">\n",
-            sid(e.id.0),
-            sid(e.id.0),
+            sid(mid),
+            sid(mid),
             sid(sec),
         ));
         walls.push_str(&format!(
             "          <StbNodeIdOrder>{order}</StbNodeIdOrder>\n"
         ));
         walls.push_str("        </StbWall>\n");
-        wall_idx += 1;
     }
 
     // 複数形コンテナはスキーマ上、子を 1 つ以上持つ必要がある。空なら出力しない。
@@ -615,26 +612,22 @@ fn slab_sections(model: &Model, base: u32) -> String {
     body
 }
 
-/// 壁断面（`StbSecWall_RC`）ブロックを生成する。壁要素ごとに 1 つの断面を出力し、
-/// 厚さとコンクリート材料は壁の断面（`elem.section`）から取る（厚さの未設定は 0）。
+/// 壁断面（`StbSecWall_RC`）ブロックを生成する。書き出す壁ごとに 1 つの断面を出力し、
+/// 厚さとコンクリート材料は壁版（またはシェル）の断面から取る（厚さの未設定は 0）。
 fn wall_sections(model: &Model, base: u32) -> String {
     let mut body = String::new();
-    let mut idx = 0u32;
-    for e in &model.elements {
-        if !matches!(e.kind, ElementKind::Wall | ElementKind::Shell) || e.nodes.len() < 3 {
-            continue;
-        }
-        let s = sid(base + idx);
-        let t = e
+    for (idx, wall) in stb_walls_for_export(model).iter().enumerate() {
+        let s = sid(base + idx as u32);
+        let t = wall
             .section
             .and_then(|sc| model.sections.get(sc.index()))
             .and_then(|sc| sc.thickness)
             .unwrap_or(0.0);
-        let sec = e.section.and_then(|sc| model.sections.get(sc.index()));
+        let sec = wall.section.and_then(|sc| model.sections.get(sc.index()));
         body.push_str(&format!(
             "      <StbSecWall_RC id=\"{}\" name=\"{}\"{}>\n",
             s,
-            esc(&format!("W{}", sid(e.id.0))),
+            esc(&format!("W{}", sid(wall.id))),
             sec.map(|sc| concrete_attr(model, sc)).unwrap_or_default(),
         ));
         body.push_str("        <StbSecFigureWall_RC>\n");
@@ -644,9 +637,47 @@ fn wall_sections(model: &Model, base: u32) -> String {
         ));
         body.push_str("        </StbSecFigureWall_RC>\n");
         body.push_str("      </StbSecWall_RC>\n");
-        idx += 1;
     }
     body
+}
+
+/// ST-Bridge へ出す壁 1 件（囲まれた壁版、またはシェル要素）。
+struct StbWallOut {
+    id: u32,
+    nodes: Vec<NodeId>,
+    section: Option<SectionId>,
+}
+
+/// 囲まれた壁版（3 節点以上）とシェル要素を、書き出し順で列挙する。
+///
+/// 解析用の壁要素は生成物のためここには出さない。4 節点でない壁版も
+/// 入力の正として往復させる（解析要素にはしない。診断が警告する）。
+fn stb_walls_for_export(model: &Model) -> Vec<StbWallOut> {
+    let mut out = Vec::new();
+    for plate in &model.wall_plates {
+        let WallPlateShape::Enclosed { boundary } = &plate.shape else {
+            continue;
+        };
+        if boundary.len() < 3 {
+            continue;
+        }
+        out.push(StbWallOut {
+            id: plate.id.0,
+            nodes: boundary.clone(),
+            section: plate.section,
+        });
+    }
+    for e in &model.elements {
+        if e.kind != ElementKind::Shell || e.nodes.len() < 3 {
+            continue;
+        }
+        out.push(StbWallOut {
+            id: e.id.0,
+            nodes: e.nodes.iter().copied().collect(),
+            section: e.section,
+        });
+    }
+    out
 }
 
 pub(super) fn fmt(x: f64) -> String {

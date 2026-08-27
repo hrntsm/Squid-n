@@ -162,8 +162,7 @@ impl App {
                 // 主筋・せん断補強筋・内蔵鉄骨の材料も断面が持つ。
                 let rebar_mat = model.element_rebar_material(elem);
                 let shear_mat = model.element_shear_rebar_material(elem);
-                let steel_grade = self
-                    .model
+                let steel_grade = model
                     .element_steel_material(elem)
                     .map(|m| m.name.clone())
                     .unwrap_or_default();

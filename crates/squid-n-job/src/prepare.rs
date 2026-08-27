@@ -53,6 +53,18 @@ pub fn apply_rigid_zones_and_panels(
         let (mut expanded, _wall_index, _wall_report) =
             squid_n_load::wall_expand::expand_wall_elements(model);
         squid_n_element::beam::apply_auto_rigid_zones(&mut expanded, &rule);
+        // 壁展開は既存要素の末尾へ追記するだけなので、先頭 N 件の ElemId は
+        // 展開前後で一致する。この前提が壊れると zip は別部材へ剛域を載せる。
+        debug_assert!(
+            model.elements.len() <= expanded.elements.len()
+                && model
+                    .elements
+                    .iter()
+                    .zip(expanded.elements.iter())
+                    .all(|(dst, src)| dst.id == src.id),
+            "壁展開後の先頭要素列の ElemId が非展開モデルと一致しない。\
+             expand_wall_elements が既存要素の途中へ挿入していないか確認すること。"
+        );
         for (dst, src) in model.elements.iter_mut().zip(expanded.elements.iter()) {
             dst.rigid_zone = src.rigid_zone;
         }

@@ -2111,9 +2111,8 @@ fn test_wall_roundtrip_export_import() {
     let xml = export_stbridge(&model).expect("export");
     let (m2, _report) = import_stbridge_with_report(&xml).expect("import");
     assert!(m2.validate().is_ok(), "{:?}", m2.validate());
-    // 出力時は壁展開モデル（生成した `ElementKind::Wall` を含む一時的な複製）を
-    // 経由するため、`<StbWall>` としては書き出る。取り込み側は `WallPlate` を
-    // 組み立てる（D5）ため、往復後の姿は `wall_plates` で確認する。
+    // 出力は壁版（入力の正。D5）から `<StbWall>` を書く。取り込み側は
+    // `WallPlate` を組み立てるため、往復後の姿は `wall_plates` で確認する。
     assert!(
         m2.elements.iter().all(|e| e.kind != ElementKind::Wall),
         "壁要素は生成物であり保存されたモデルには残らない"
@@ -2144,6 +2143,87 @@ fn test_wall_roundtrip_export_import() {
         "2 サイクル目でも断面数が保たれる（増殖しない）"
     );
     assert!(m3.validate().is_ok(), "{:?}", m3.validate());
+}
+
+/// 4 節点でない囲まれた壁版も ST-Bridge では往復する（解析要素にはしない）。
+#[test]
+fn test_non_quad_wall_plate_roundtrip_export_import() {
+    use squid_n_core::ids::WallPlateId;
+    use squid_n_core::model::{WallPlate, WallPlateShape};
+    let mut model = Model::default();
+    for (i, (x, z)) in [
+        (0.0, 0.0),
+        (4000.0, 0.0),
+        (4000.0, 3000.0),
+        (2000.0, 3000.0),
+        (0.0, 3000.0),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        model.nodes.push(squid_n_core::model::Node {
+            id: NodeId(i as u32),
+            coord: [x, 0.0, z],
+            restraint: Default::default(),
+            mass: None,
+            story: None,
+            support_spring: None,
+        });
+    }
+    model.sections.push(squid_n_core::model::Section {
+        id: SectionId(0),
+        name: "W".into(),
+        area: 0.0,
+        iy: 0.0,
+        iz: 0.0,
+        j: 0.0,
+        depth: 0.0,
+        width: 0.0,
+        as_y: 0.0,
+        as_z: 0.0,
+        floor: None,
+        panel_thickness: None,
+        thickness: Some(180.0),
+        shape: None,
+        material: None,
+        rebar_material: None,
+        shear_rebar_material: None,
+        steel_material: None,
+    });
+    model.wall_plates.push(WallPlate {
+        id: WallPlateId(0),
+        shape: WallPlateShape::Enclosed {
+            boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3), NodeId(4)],
+        },
+        section: Some(SectionId(0)),
+        opening_area: 0.0,
+        opening_weight: 0.0,
+        openings: Vec::new(),
+        three_side_slit: false,
+    });
+    assert!(model.validate().is_ok(), "{:?}", model.validate());
+
+    let xml = export_stbridge(&model).expect("export");
+    assert!(
+        xml.contains("<StbWall"),
+        "5 節点の壁版も StbWall として出す"
+    );
+    let (m2, report) = import_stbridge_with_report(&xml).expect("import");
+    assert!(m2.validate().is_ok(), "{:?}", m2.validate());
+    assert_eq!(m2.wall_plates.len(), 1);
+    assert_eq!(
+        m2.wall_plates[0].boundary_nodes().map(|n| n.len()),
+        Some(5),
+        "5 節点が往復する"
+    );
+    assert!(
+        report
+            .warnings
+            .iter()
+            .any(|w| w.contains("4 節点でない壁版")),
+        "取り込み警告: {:?}",
+        report.warnings
+    );
 }
 
 /// スラブ（境界＋厚さ）を含むモデルが export→import で往復すること。

@@ -24,7 +24,7 @@ use squid_n_solver::analysis::Analysis;
 /// 壁展開モデルを組み立てる（本モジュール共通のエントリポイント。モジュール doc
 /// 「壁展開について」参照）。展開の索引・件数報告は解析の入口では使わないため捨てる。
 fn expand_walls(model: squid_n_core::model::Model) -> squid_n_core::model::Model {
-    squid_n_load::wall_expand::expand_wall_elements(&model).0
+    squid_n_load::wall_expand::expand_wall_elements_owned(model).0
 }
 
 /// 線形静的解析。前処理（[`crate::prepare`]）を通したモデルを渡す前提で、
