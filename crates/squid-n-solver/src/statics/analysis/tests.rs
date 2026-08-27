@@ -1574,6 +1574,22 @@ fn test_model_issues_warns_wall_plates_not_expanded() {
         openings: Vec::new(),
         three_side_slit: false,
     });
+    model.wall_plates.push(WallPlate {
+        id: WallPlateId(2),
+        shape: WallPlateShape::Attached {
+            anchor: squid_n_core::model::RegionAnchor::Line {
+                nodes: [NodeId(0), NodeId(1)],
+                span: [0.0, 1.0],
+                transfer: squid_n_core::model::LoadTransfer::Anchor,
+            },
+            extent: [900.0, 900.0],
+        },
+        section: Some(SectionId(0)),
+        opening_area: 0.0,
+        opening_weight: 0.0,
+        openings: Vec::new(),
+        three_side_slit: false,
+    });
 
     let issues = model_issues(&model);
     let msgs: Vec<&str> = issues.iter().map(|i| i.message.as_str()).collect();
@@ -1588,6 +1604,12 @@ fn test_model_issues_warns_wall_plates_not_expanded() {
             i.severity == IssueSeverity::Warning && i.message.contains("断面未割当の壁版")
         }),
         "断面未割当の壁版の警告がない: {msgs:?}"
+    );
+    assert!(
+        issues.iter().any(|i| {
+            i.severity == IssueSeverity::Warning && i.message.contains("取り付く壁版")
+        }),
+        "取り付く壁版の警告がない: {msgs:?}"
     );
     assert!(precheck_model(&model).is_ok(), "解析は止めない");
 }

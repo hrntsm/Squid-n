@@ -420,7 +420,8 @@ pub(crate) fn edge_fully_covered(a: [f64; 2], b: [f64; 2], z: f64, beams: &[Gird
     covered >= len - MEMBER_AXIS_TOL_MM
 }
 
-fn point_segment_dist(p: [f64; 2], a: [f64; 2], b: [f64; 2]) -> f64 {
+/// 点 `p` から線分 `a`–`b` までの距離 [mm]。壁側 D20 相当の自由端判定でも使う。
+pub(crate) fn point_segment_dist(p: [f64; 2], a: [f64; 2], b: [f64; 2]) -> f64 {
     let ab = [b[0] - a[0], b[1] - a[1]];
     let len2 = ab[0] * ab[0] + ab[1] * ab[1];
     let t = if len2 <= f64::EPSILON {
