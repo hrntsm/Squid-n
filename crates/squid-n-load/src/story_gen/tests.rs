@@ -1,10 +1,13 @@
 use super::*;
 use squid_n_core::dof::Dof6Mask;
-use squid_n_core::ids::{ElemId, MaterialId, SecondaryMemberId, SectionId};
+use squid_n_core::ids::{
+    ElemId, MaterialId, SecondaryMemberId, SectionId, WallPlateId, WallRegionId,
+};
 use squid_n_core::model::{
     DamperSpec, ElementData, EndCondition, ForceRegime, LoadCase, LoadCaseKind, LoadCfg, LocalAxis,
     Material, MaterialCategory, MemberLoad, MiscWallTransfer, NodalLoad, Node, OutOfFrameMiscWall,
-    RigidZone, SecondaryMember, SecondaryMemberKind, Section, WallAttr,
+    RigidZone, SecondaryMember, SecondaryMemberKind, Section, WallPlate, WallPlateShape,
+    WallRegion,
 };
 
 /// 2 層 × 1 スパンの平面ラーメン（各レベル 2 節点）。
@@ -1164,21 +1167,26 @@ fn wall_model() -> Model {
         fc: Some(24.0),
         fy: None,
     });
-    model.elements.push(ElementData {
-        id: ElemId(0),
-        kind: ElementKind::Wall,
-        nodes: [NodeId(0), NodeId(1), NodeId(2), NodeId(3)]
-            .into_iter()
-            .collect(),
-        section: Some(SectionId(0)),
-        local_axis: LocalAxis {
-            ref_vector: [0.0, 0.0, 1.0],
+    // 壁の解析要素は入力の正ではなく生成物（D5）のため、壁版（`WallPlate`）と
+    // それが属する壁領域（`WallRegion`）を直接構築する。`enumerate_self_weight`
+    // が内部で壁展開モデルを組み立て、そこから `ElementKind::Wall` を生成する。
+    model.wall_plates.push(WallPlate {
+        id: WallPlateId(0),
+        shape: WallPlateShape::Enclosed {
+            boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
         },
-        end_cond: [EndCondition::Fixed, EndCondition::Fixed],
-        force_regime: ForceRegime::Auto,
-        rigid_zone: Default::default(),
-        plastic_zone: None,
-        spring: None,
+        section: Some(SectionId(0)),
+        opening_area: 0.0,
+        opening_weight: 0.0,
+        openings: Vec::new(),
+        three_side_slit: false,
+    });
+    model.wall_regions.push(WallRegion {
+        id: WallRegionId(0),
+        name: String::new(),
+        boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
+        wall_plate_ids: vec![WallPlateId(0)],
+        post_ids: Vec::new(),
     });
     model
 }
@@ -1361,13 +1369,8 @@ fn test_generate_stories_with_opts_self_weight_via_case_matches_density() {
 #[test]
 fn test_wall_opening_deduction_and_opening_weight() {
     let mut model = wall_model();
-    model.wall_attrs.push(WallAttr {
-        elem: ElemId(0),
-        opening_area: 1_000_000.0,
-        opening_weight: 5000.0,
-        three_side_slit: false,
-        openings: vec![],
-    });
+    model.wall_plates[0].opening_area = 1_000_000.0;
+    model.wall_plates[0].opening_weight = 5000.0;
     let gen = generate_stories(&model, None).unwrap();
     let area = 4000.0 * 3000.0;
     let net_area = area - 1_000_000.0;
@@ -1384,13 +1387,7 @@ fn test_wall_opening_deduction_and_opening_weight() {
 fn test_wall_opening_deduction_clamped_non_negative() {
     // 開口面積が壁面積を超える極端な入力でも自重が負にならない(clamp)。
     let mut model = wall_model();
-    model.wall_attrs.push(WallAttr {
-        elem: ElemId(0),
-        opening_area: 4000.0 * 3000.0 * 2.0, // 壁面積を超える
-        opening_weight: 0.0,
-        three_side_slit: false,
-        openings: vec![],
-    });
+    model.wall_plates[0].opening_area = 4000.0 * 3000.0 * 2.0; // 壁面積を超える
     let gen = generate_stories(&model, None).unwrap();
     assert_eq!(gen.stories[1].seismic_weight, Some(0.0));
 }
@@ -1402,13 +1399,7 @@ fn test_wall_three_side_slit_transfers_all_to_top_nodes() {
     // どちらも階に属する(基部でない)ため、通常配分(上端2節点でw_total/2)とは異なり
     // 階の地震用重量は w_total 全量になる。
     let mut model = wall_model();
-    model.wall_attrs.push(WallAttr {
-        elem: ElemId(0),
-        opening_area: 0.0,
-        opening_weight: 0.0,
-        three_side_slit: true,
-        openings: vec![],
-    });
+    model.wall_plates[0].three_side_slit = true;
     let gen = generate_stories(&model, None).unwrap();
     let area = 4000.0 * 3000.0;
     let w_total = 2.4e-9 * 150.0 * area * GRAVITY_MM_S2;

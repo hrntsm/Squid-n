@@ -442,7 +442,22 @@ impl Ctx<'_> {
 }
 
 /// モデル全体の数量を集計する（部位別の概算数量）。
+///
+/// 壁の解析要素（`ElementKind::Wall`）は入力の正である `model` には存在しない
+/// 生成物（D5）のため、内部で壁展開モデル
+/// （[`squid_n_load::wall_expand::expand_wall_elements`]）を組み立てて数量拾いを
+/// 行う（呼び出し元に展開を要求しない。忘れると壁の数量が積算から静かに
+/// 消えるため。自重算定 `enumerate_self_weight` と同じ理由・同じパターン）。
 pub fn compute_quantity_takeoff(model: &Model, cfg: &QuantityCfg) -> QuantityTakeoff {
+    let expanded_storage;
+    let model: &Model = if squid_n_load::wall_expand::model_has_wall_plates_to_expand(model) {
+        let (expanded, _wall_index, _wall_report) =
+            squid_n_load::wall_expand::expand_wall_elements(model);
+        expanded_storage = expanded;
+        &expanded_storage
+    } else {
+        model
+    };
     let mut column_nodes: HashSet<usize> = HashSet::new();
     let mut beams_at_node: HashMap<usize, Vec<(usize, [f64; 2])>> = HashMap::new();
     let mut min_z = f64::INFINITY;

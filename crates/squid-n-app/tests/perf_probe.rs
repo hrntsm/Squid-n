@@ -12,10 +12,18 @@
 //!
 //! Stages 1/2/3/5 use methods/functions that are already `pub` on `App` /
 //! `squid_n_load`, so they are called directly (not re-implemented). Stage 4's
-//! `App::apply_rigid_zones_for_analysis` is a private one-line wrapper around
-//! the public `squid_n_element::beam::apply_auto_rigid_zones`, so that public
-//! function is called directly instead (byte-for-byte what the private
-//! wrapper does). The two private free functions that stage 2 needs as inputs
+//! `App::apply_rigid_zones_for_analysis` calls
+//! `squid_n_job::prepare::apply_rigid_zones_and_panels`, which since the
+//! wall-展開順序 fix (dev_docs/v_and_v/剛域算定の壁展開順序不整合_2026-08.md)
+//! first checks `squid_n_load::wall_expand::model_has_wall_plates_to_expand`
+//! and only takes the wall-expansion branch when the model actually has
+//! walls. The synthetic models generated below have none, so that guard
+//! always takes the cheap branch and this probe calls the public
+//! `squid_n_element::beam::apply_auto_rigid_zones` directly instead (which is
+//! byte-for-byte what the guard's false-branch does for these models). This
+//! measurement therefore does **not** cover the wall-expansion branch's cost
+//! — it is out of scope for this probe, not verified equivalent for
+//! wall-bearing models. The two private free functions that stage 2 needs as inputs
 //! (`gravity_cases_for_seismic_weight`, `density_self_weight_for_stories` in
 //! crates/squid-n-app/src/app/mod.rs) are trivial selection logic over
 //! `model.load_cases`; they are inlined verbatim below using the *public*

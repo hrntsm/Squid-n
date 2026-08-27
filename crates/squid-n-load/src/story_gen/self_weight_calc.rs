@@ -128,7 +128,22 @@ pub(crate) enum SelfWeightItem {
 ///   （ρ·A·L·g）は使わず、装置重量＋支持部重量に置き換える（§ダンパー自重。
 ///   `device_weight=0` かつ `support_area>0` の場合は支持部のみが算入され、
 ///   自重を考慮しない部材に相当する）。
+///
+/// 壁の解析要素（`ElementKind::Wall`）は入力の正である `model` には存在しない
+/// 生成物（D5）のため、本関数は内部で壁展開モデル
+/// （[`crate::wall_expand::expand_wall_elements`]）を組み立てて壁を検出する
+/// （呼び出し元に展開を要求しない。忘れると壁の自重が静かに消えるため）。
+/// 返す [`SelfWeightItem::Line`] の `elem_idx` は柱・梁・ブレースのみを指し、
+/// 生成要素は展開モデルの末尾へ追加されるだけなので、`model.elements` に対する
+/// 添字としてもそのまま有効。壁の開口・三方スリットは、壁展開モデルに合成される
+/// `wall_attrs`（[`crate::wall_expand::expand_wall_elements`] が壁版から複製する。
+/// モジュール doc 参照）から今までどおり読む（**この関数のロジック自体は
+/// 型移行の前後で無改修**。dig Q5=A: 自重算定の計算根拠を変えないことで、
+/// 型移行後も `wall_model.rs` の代表スカラが一致することを回帰検知の根拠にする）。
 pub(crate) fn enumerate_self_weight(model: &Model, load_cfg: &LoadCfg) -> Vec<SelfWeightItem> {
+    let (expanded, _wall_index, _wall_expand_report) =
+        crate::wall_expand::expand_wall_elements(model);
+    let model = &expanded;
     let mut items = Vec::new();
     // 柱脚探索（`has_column_below`/`max_depth`）・壁の辺→柱梁対応付け
     // （`wall_clear_area_factor`）を要素数分の走査から索引参照へ落とすため、

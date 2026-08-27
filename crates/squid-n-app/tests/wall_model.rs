@@ -65,11 +65,13 @@
 
 use squid_n_app::app::{App, StaticCaseKey};
 use squid_n_core::dof::Dof6Mask;
-use squid_n_core::ids::{ElemId, MaterialId, NodeId, SectionId};
+use squid_n_core::ids::{ElemId, MaterialId, NodeId, SectionId, WallPlateId};
 use squid_n_core::model::{
     ElementData, ElementKind, EndCondition, ForceRegime, LocalAxis, Material, MaterialCategory,
-    MiscWallTransfer, Model, Node, OutOfFrameMiscWall, RigidZone, Section, WallAttr, WallOpening,
+    MiscWallTransfer, Model, Node, OutOfFrameMiscWall, RigidZone, Section, WallOpening, WallPlate,
+    WallPlateShape,
 };
+use squid_n_core::wall_region_rebuild::rebuild_wall_regions;
 use squid_n_section::shape::{BarSet, RcRebar, SectionShape, ShearBar};
 use squid_n_solver::analysis::SeismicDir;
 
@@ -324,32 +326,33 @@ fn wall_bay_model() -> Model {
     }
 
     // 耐震壁 1 枚（Y=0 面: 節点 0,1,5,4 の矩形ループ）。開口あり。
-    model.elements.push(ElementData {
-        id: ElemId(12),
-        kind: ElementKind::Wall,
-        nodes: [NodeId(0), NodeId(1), NodeId(5), NodeId(4)]
-            .into_iter()
-            .collect(),
-        section: Some(SectionId(2)),
-        local_axis: LocalAxis {
-            ref_vector: [0.0, 1.0, 0.0],
+    //
+    // 壁の解析要素は入力の正ではなく生成物（D5）のため、ここでは壁版
+    // （`WallPlate`）を直接構築し、`rebuild_wall_regions` に壁領域（4 面すべて
+    // 検出される。モジュール doc §「柱脚どうしの梁」参照）への帰属を任せる
+    // （`region_gen::wall` の面走査が Y=0 面の閉路を検出し、この壁版の重心が
+    // その閉路に収まることで帰属が決まる。ノード順・巻き方向は面走査側の
+    // 走査結果と一致している必要はない。`match_candidate` は全頂点が同一構面上に
+    // あることと局所座標での内包だけを見る）。`squid_n_load::wall_expand::
+    // expand_wall_elements` が準備計算・解析入口の直前でこの壁版から
+    // `ElementKind::Wall` を生成する。`next_id = 既存要素の最大 ID + 1` で
+    // 決定的に採番されるが、値そのものは呼び出し経路に依存する。準備計算
+    // （`apply_auto_panel_zones` が仕口パネルを 12〜15 番へ先に生成する経路）を
+    // 経た後の解析時点では、壁要素の ID は 12 ではなく 16 になる。
+    model.wall_plates.push(WallPlate {
+        id: WallPlateId(0),
+        shape: WallPlateShape::Enclosed {
+            boundary: vec![NodeId(0), NodeId(1), NodeId(5), NodeId(4)],
         },
-        end_cond: [EndCondition::Fixed, EndCondition::Fixed],
-        force_regime: ForceRegime::Auto,
-        rigid_zone: RigidZone::default(),
-        plastic_zone: None,
-        spring: None,
-    });
-    model.wall_attrs.push(WallAttr {
-        elem: ElemId(12),
+        section: Some(SectionId(2)),
         opening_area: 0.0,
         opening_weight: 0.0,
-        three_side_slit: false,
         openings: vec![WallOpening {
             width: 900.0,
             height: 1200.0,
             offset: Some([1550.0, 0.0]),
         }],
+        three_side_slit: false,
     });
 
     // フレーム外雑壁 1 本（Y=3000 面の梁 6-7 上端に沿うパラペット想定。
@@ -362,6 +365,17 @@ fn wall_bay_model() -> Model {
         transfer: MiscWallTransfer::Column,
         thickness: None,
     });
+
+    // 壁領域を柱・梁の閉路から検出し、直前に積んだ壁版を帰属させる
+    // （ST-Bridge 取り込みが `build_walls` の直後に呼ぶのと同じ経路。
+    // §5.10 参照）。
+    let report = rebuild_wall_regions(&mut model);
+    assert_eq!(report.regions, 4, "1 スパンの 4 鉛直構面すべてが検出される");
+    assert_eq!(
+        report.wall_plates_assigned, 1,
+        "壁版が Y=0 面の壁領域へ帰属する"
+    );
+    assert_eq!(report.unassigned_wall_plates, 0);
 
     model
 }
@@ -383,9 +397,78 @@ fn test_wall_bay_model_is_valid() {
     let model = wall_bay_model();
     assert!(model.validate().is_ok(), "{:?}", model.validate());
     assert_eq!(model.nodes.len(), 8);
-    assert_eq!(model.elements.len(), 13);
-    assert_eq!(model.wall_attrs.len(), 1);
+    // 壁の解析要素は生成物であり `model.elements` には含まれない（D5）。
+    // 柱 4 本 + 頂部梁 4 本 + 基礎大梁 4 本 = 12。
+    assert_eq!(model.elements.len(), 12);
+    assert!(
+        model.elements.iter().all(|e| e.kind != ElementKind::Wall),
+        "壁要素は準備計算からの生成物であり model.elements には含まれない"
+    );
+    assert_eq!(model.wall_plates.len(), 1);
+    assert_eq!(model.wall_regions.len(), 4, "1 スパンの 4 鉛直構面すべて");
     assert_eq!(model.misc_walls.len(), 1);
+}
+
+/// GUI診断（`App::run_diagnostics`）が壁展開モデル（D5・dig Q4）を見ていることの回帰
+/// テスト。壁要素は `run_diagnostics` の内部で `expand_wall_elements` により初めて
+/// `model.elements` へ現れるため、この展開が壊れる（または元の `self.model` を渡す
+/// 実装に後退する）と、`model.elements` に壁要素が 0 件のまま
+/// `wall_frame_category_issue`（耐震壁と周辺架構の構造種別食い違い）が一度も
+/// 呼ばれず、壁の不備が診断タブから静かに消える（解析実行時に初めて気づく劣化になる。
+/// §5.14 dig Q4 参照）。
+#[test]
+fn test_wall_frame_mismatch_appears_in_gui_diagnostics() {
+    let mut model = wall_bay_model();
+    // 側柱の断面（id 3、柱 0・1 が共有）の材料を鋼へ差し替え、耐震壁（RC）との
+    // 構造種別を意図的に食い違わせる。
+    model.sections[3].material = Some(MaterialId(0));
+
+    let mut app = App::default();
+    app.analysis_cfg.threads = 1;
+    app.model = model;
+    app.run_diagnostics();
+
+    assert!(
+        app.diagnostics
+            .iter()
+            .any(|d| d.message.contains("耐震壁") && d.message.contains("構造種別")),
+        "壁展開モデルを経由しないと、model.elements の壁要素が 0 件のため \
+         この構造種別食い違いを検知できないはず: {:?}",
+        app.diagnostics
+            .iter()
+            .map(|d| &d.message)
+            .collect::<Vec<_>>()
+    );
+}
+
+/// `App::run_design_check` が壁展開モデルを見ていることの回帰テスト（申し送り
+/// §5.15）。`run_member_design_checks`（内部の `joint_wiring::wall::check_walls`）
+/// は `results.member_forces` の壁 `ElemId` を `model.element` で引き直すため、
+/// `self.model`（壁展開前）をそのまま渡すと該当 `ElemId` が見つからず
+/// `continue` し、耐震壁のせん断断面検定が常にスキップされる。
+#[test]
+fn test_wall_shear_check_appears_after_run_design_check() {
+    let mut app = wall_bay_app();
+    app.run_preparation();
+    assert!(app.last_error.is_none(), "準備計算: {:?}", app.last_error);
+    app.run_static_all();
+    assert!(app.last_error.is_none(), "静的解析: {:?}", app.last_error);
+    app.run_design_check();
+
+    let results = app.results.as_ref().expect("解析結果が格納されているはず");
+    assert!(
+        results
+            .joint_checks
+            .iter()
+            .any(|jc| jc.label.contains("耐震壁")),
+        "壁展開モデルを経由しないと、model.elements の壁要素が 0 件のため \
+         耐震壁のせん断断面検定（check_walls）が一度も実行されないはず: {:?}",
+        results
+            .joint_checks
+            .iter()
+            .map(|jc| &jc.label)
+            .collect::<Vec<_>>()
+    );
 }
 
 #[test]
@@ -463,17 +546,26 @@ fn snapshot_wall_bay_scalars() {
         line(&format!("eigen.T[{i}]"), sig4(*t));
     }
 
-    // 耐震壁要素（id=12）の材端力。`member_forces` は `Vec<(ElemId, MemberForces)>`
-    // で位置は保証されないため、`ElemId(12)` で探す（Step 8 で要素生成の順序・件数が
-    // 変われば `.get(12)` は無関係の要素を指しうる）。
+    // 耐震壁要素の材端力。`member_forces` は `Vec<(ElemId, MemberForces)>` で
+    // 位置は保証されない。壁の解析要素は準備計算からの生成物（D5）で、その
+    // `ElemId` は `apply_auto_panel_zones`（仕口パネル要素の生成）が先に走った
+    // 後の要素数に依存し決め打ちできないため、`expand_wall_elements` を
+    // `app.model`（`run_preparation` 済み。パネルゾーンまで生成済みで、それ以降
+    // `run_static_all` まで `model.elements` は変わらない）へ実際に適用して
+    // 生成 `ElemId` を求める（`run_static_all` が内部で行う展開と同じ入力・
+    // 同じ決定的な採番規則なので同じ ID になる）。
+    let (_expanded_for_id, wall_index, wall_expand_report) =
+        squid_n_load::wall_expand::expand_wall_elements(&app.model);
+    assert_eq!(wall_expand_report.generated, 1, "壁要素が1件生成されるはず");
+    let wall_elem_id = wall_index
+        .generated_elem_ids()
+        .next()
+        .expect("生成された壁要素の ElemId");
     let wall_member_forces = |res: &squid_n_solver::linear::StaticOnce| {
         res.member_forces
             .iter()
-            .find(|(id, _)| *id == ElemId(12))
-            .expect(
-                "耐震壁要素の材端力（Step 8 で参照先が壁領域 ID 起点へ変わったら、この \
-                探索条件も追随させること）",
-            )
+            .find(|(id, _)| *id == wall_elem_id)
+            .expect("耐震壁要素の材端力")
             .1
             .at
             .clone()
@@ -560,10 +652,13 @@ fn test_wall_element_changes_eigen_period() {
         .expect("X 方向卓越モードが求まるはず");
 
     let mut model_without = wall_bay_model();
-    model_without
-        .elements
-        .retain(|e| e.kind != ElementKind::Wall);
-    model_without.wall_attrs.clear();
+    // 壁の解析要素は生成物のため、入力側の壁版を取り除けば生成されなくなる
+    // （D5）。壁領域からの参照（`wall_plate_ids`）もあわせて外し、ダングリング
+    // 参照による `validate()` エラーを避ける。
+    for r in &mut model_without.wall_regions {
+        r.wall_plate_ids.clear();
+    }
+    model_without.wall_plates.clear();
     let mut without_wall = App::default();
     without_wall.analysis_cfg.threads = 1;
     without_wall.model = model_without;
@@ -686,4 +781,41 @@ fn snapshot_wall_ds_group_and_holding_capacity() {
     line("holding.rank", format!("{:?}", ranks[0]));
 
     insta::assert_snapshot!(out);
+}
+
+/// `App::compute_holding_capacity` の部材ランク自動判定
+/// （`design_rank_auto == true`）が壁展開モデルを見ていることの回帰テスト
+/// （申し送り §5.15）。この経路は `self.model.elements` を直接走査するため、
+/// 壁展開前のモデルでは耐震壁が一度も `ElementKind::Wall` として分類されず
+/// `wall_members` へ積まれない。`design_frame == FrameType::RcWall`
+/// （耐力壁付き）を宣言しているのに層内の耐力壁が 1 枚も検出できないと、
+/// `ds_beta_u_unavailable` が true になり βu を使わない簡易 Ds 表へ
+/// フォールバックする（`holding.rs` 参照）。壁展開モデルを見ていれば、
+/// この 1 バイ・1 枚壁のフィクスチャでは耐震壁が検出され false になるはず。
+///
+/// `snapshot_wall_ds_group_and_holding_capacity`（`design_rank_auto` 既定 false）
+/// はこの分岐を一度も通らないため検知できない（§5.15 未検証一覧参照）。
+#[test]
+fn test_holding_capacity_auto_rank_detects_wall() {
+    let mut app = wall_bay_app();
+    app.run_preparation();
+    assert!(app.last_error.is_none(), "準備計算: {:?}", app.last_error);
+    app.run_static_all();
+    assert!(app.last_error.is_none(), "静的解析: {:?}", app.last_error);
+    app.run_eigen(app.analysis_cfg.n_modes);
+    assert!(app.last_error.is_none(), "固有値解析: {:?}", app.last_error);
+    app.run_pushover();
+    assert!(app.last_error.is_none(), "増分解析: {:?}", app.last_error);
+
+    app.design_rank_auto = true;
+    let (_holding, _ranks) = app
+        .compute_holding_capacity()
+        .expect("保有水平耐力が算定できるはず");
+
+    assert!(
+        !app.ds_beta_u_unavailable,
+        "壁展開モデルを見ていないと、耐震壁が model.elements 側から検出できず \
+         wall_members が空のまま βu 算定不能（ds_beta_u_unavailable=true）に \
+         フォールバックするはず"
+    );
 }

@@ -29,6 +29,14 @@ fn sid(internal_id: u32) -> u32 {
 
 /// 内部モデルを標準 ST-Bridge 2.0.2 XML 文字列へ出力する。
 pub fn export_stbridge(model: &Model) -> Result<String, StbError> {
+    // 壁の解析要素は `Model.elements` に残らない生成物のため（D5）、出力の直前で
+    // 壁展開モデル（生成した `ElementKind::Wall` を含む一時的な複製）を組み立て、
+    // 以降このスコープではそちらを見る（dig Q3=B: 呼び出し元に展開を要求せず、
+    // 出力関数の内部で完結させる。忘れると壁が出力から消えるため）。
+    let (expanded, _wall_index, _wall_report) =
+        squid_n_load::wall_expand::expand_wall_elements(model);
+    let model = &expanded;
+
     // 標準断面ブロックと、部材参照（id_section）の柱用・梁用張り替えマップ。
     let std = standard_sections(model);
     let (sections_body, steel_lib, col_map, beam_map) =

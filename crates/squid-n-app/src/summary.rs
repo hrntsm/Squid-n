@@ -323,11 +323,16 @@ pub fn build_report_csv(app: &App) -> String {
                 soil: app.analysis_cfg.soil,
                 c0: app.analysis_cfg.c0,
             };
-            if let Ok(analysis) = squid_n_solver::analysis::Analysis::prepare(model) {
+            // 壁の解析要素は入力の正であるモデルには存在しない生成物（D5）のため、
+            // ここで壁展開モデルを組み立ててから解く（`squid_n_job::compute` の
+            // 各関数と同じ理由。忘れると壁がこの副次的な解析からも消える）。
+            let (expanded, _wall_index, _wall_report) =
+                squid_n_load::wall_expand::expand_wall_elements(model);
+            if let Ok(analysis) = squid_n_solver::analysis::Analysis::prepare(&expanded) {
                 if let Ok(p) = analysis.seismic_nodal_force_magnitudes(cfg) {
                     let theta =
                         squid_n_design_jp::secondary::principal_axis::principal_axis_from_results(
-                            model, &p, rx, ry,
+                            &expanded, &p, rx, ry,
                         );
                     out.push_str(&format!(
                         "\n[主軸の計算]\n主軸角Θ[deg],{:.3}\n",
