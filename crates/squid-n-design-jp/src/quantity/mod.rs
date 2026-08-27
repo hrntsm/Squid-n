@@ -560,11 +560,11 @@ pub fn compute_quantity_takeoff(model: &Model, cfg: &QuantityCfg) -> QuantityTak
         }
     }
 
-    for (i, plate) in model.wall_plates.iter().enumerate() {
+    for plate in &model.wall_plates {
         if !plate.is_attached() {
             continue; // 囲まれた壁版（Enclosed）は解析要素経由の wall_quantity が数える。
         }
-        if let Some(item) = attached_wall_plate_quantity(&ctx, plate, i) {
+        if let Some(item) = attached_wall_plate_quantity(&ctx, plate) {
             out.items.push(item);
         }
     }
@@ -1186,11 +1186,9 @@ fn wall_quantity(ctx: &Ctx, elem: &ElementData) -> Option<MemberQuantity> {
 /// 同じ位置づけ。エレメント経由の [`wall_quantity`] は `Enclosed`（4節点の耐震壁）
 /// のみを数える）。取り付く壁版は `OutOfFrameMiscWall`（フレーム外雑壁）の後継
 /// （`dev_docs/specs/用語集.md`）のため、カテゴリは同じ `MemberCategory::MiscWall` を使う。
-fn attached_wall_plate_quantity(
-    ctx: &Ctx,
-    plate: &WallPlate,
-    index: usize,
-) -> Option<MemberQuantity> {
+/// ラベルは `slab_quantity` と同じく壁版自身の ID を使う（呼び出し元のループ位置は
+/// `Enclosed` を読み飛ばした後の添字のため、そのまま使うと番号が飛ぶ）。
+fn attached_wall_plate_quantity(ctx: &Ctx, plate: &WallPlate) -> Option<MemberQuantity> {
     let model = ctx.model;
     let WallPlateShape::Attached { anchor, .. } = &plate.shape else {
         return None;
@@ -1201,6 +1199,7 @@ fn attached_wall_plate_quantity(
         // 壁の取付き先としては使わない（`WallPlate::boundary_coords` と同じ理由）。
         RegionAnchor::Point(_) => return None,
     };
+    let sec = model.wall_plate_section(plate)?;
     let t = model.wall_plate_thickness(plate)?;
     let pts = plate.boundary_coords(model)?;
     if pts.len() < 3 {
@@ -1222,7 +1221,7 @@ fn attached_wall_plate_quantity(
     Some(MemberQuantity {
         elem: None,
         slab: None,
-        label: format!("取付き壁版{}", index + 1),
+        label: sec.name.clone(),
         story: ctx.story_name(lower),
         category: MemberCategory::MiscWall,
         structure: StructureKind::Rc,

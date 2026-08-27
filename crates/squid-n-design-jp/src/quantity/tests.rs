@@ -602,6 +602,9 @@ fn test_attached_wall_plate_quantity_is_included_as_misc_wall() {
         .filter(|i| i.category == MemberCategory::MiscWall)
         .collect();
     assert_eq!(items.len(), 1, "取り付く壁版1件が雑壁として数量に入るはず");
+    // ラベルは壁版に割り当てた断面の符号（slab_quantity が SlabId を使うのと同じく、
+    // ループ位置ではなく壁版自身に紐づく安定した値を使う）。
+    assert_eq!(items[0].label, "W15");
     let expected_m3 = 6_000.0 * 1_000.0 * 150.0 * 1e-9;
     assert!(
         (items[0].concrete_m3 - expected_m3).abs() / expected_m3 < 1e-9,

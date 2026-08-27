@@ -21,6 +21,17 @@
 //!   ための追加強度 [N/mm²] を床板 ID ごとに返す。床領域が床板を1枚も持たない場合
 //!   （版なし領域）は等価面荷重へならせないため、総重量を保存する目的で取付き線の
 //!   両端節点への集中荷重（フォールバック）を [`BeamLoad`] 列として返す。
+//!
+//! # 既知の近似（総重量は保存するが、位置の精度には限界がある）
+//!
+//! 張り出し量 `extent[0] != extent[1]`（台形の壁。取付き線に沿って高さが変わる）の場合、
+//! `Anchor` 分布は台形ではなく取付き線全長で均した等分布（`w = 総重量/len`）とする。
+//! `Columns` 集中は区間中点 `t_mid` の単純梁反力按分とし、真の面積重心（張り出しの
+//! 大きい側へずれる）ではなく区間中点を使う。**いずれも総重量（`wall_plate_self_weight`
+//! が Newell の公式で正確に求める値）はそのまま保存されるが、取付き線に沿った
+//! 位置の精度は落ちる。** 床側の同じ形（[`RegionAnchor::Line`] ＋ `extent` 非対称）を
+//! 扱う `floor::distribute_attached` も同じ近似を持ち、そちらの doc に同じ限界が
+//! 明記されている。壁側だけの新しい近似ではない。
 
 use std::collections::HashMap;
 
@@ -388,6 +399,51 @@ mod tests {
         let (r0, r1) = (get(NodeId(0)), get(NodeId(1)));
         assert!((r0 - total * 0.75).abs() / total < 1e-9, "r0={r0}");
         assert!((r1 - total * 0.25).abs() / total < 1e-9, "r1={r1}");
+    }
+
+    /// 台形の壁（`extent[0] != extent[1]`）でも、位置の精度は落ちる（モジュール doc の
+    /// 「既知の近似」参照）が総重量は保存される。`Anchor`・`Columns` の両方で確認する。
+    #[test]
+    fn asymmetric_extent_conserves_total_weight_for_both_transfers() {
+        let mut m = model_with_line_anchor_nodes();
+        let extent = [500.0, 1500.0]; // 台形（始端 500mm・終端 1500mm）。
+
+        let anchor_plate = line_attached_plate([0.0, 1.0], extent, LoadTransfer::Anchor);
+        let anchor_total = m
+            .wall_plate_self_weight(&anchor_plate, &m)
+            .expect("自重が求まる");
+        m.wall_plates.push(anchor_plate);
+        let anchor_loads = attached_wall_beam_loads(&m);
+        assert_eq!(anchor_loads.len(), 1);
+        let LoadShape::Uniform { w } = anchor_loads[0].shape else {
+            panic!("Uniform を期待");
+        };
+        let len = 4000.0;
+        assert!(
+            (w * len - anchor_total).abs() / anchor_total < 1e-9,
+            "台形でも総重量は保存されるはず: w×len={} total={}",
+            w * len,
+            anchor_total
+        );
+
+        m.wall_plates.clear();
+        let columns_plate = line_attached_plate([0.0, 1.0], extent, LoadTransfer::Columns);
+        let columns_total = m
+            .wall_plate_self_weight(&columns_plate, &m)
+            .expect("自重が求まる");
+        m.wall_plates.push(columns_plate);
+        let columns_loads = attached_wall_beam_loads(&m);
+        let sum: f64 = columns_loads
+            .iter()
+            .map(|bl| match bl.shape {
+                LoadShape::Point { p, .. } => p,
+                _ => panic!("Point を期待"),
+            })
+            .sum();
+        assert!(
+            (sum - columns_total).abs() / columns_total < 1e-9,
+            "台形でも総重量は保存されるはず: sum={sum} total={columns_total}"
+        );
     }
 
     /// 「床領域」アンカー（自立壁）: 床板を持つ区画では、区画内の全床板へ
