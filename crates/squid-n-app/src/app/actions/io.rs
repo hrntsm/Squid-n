@@ -94,7 +94,6 @@ impl App {
         #[cfg(feature = "gui")]
         self.reset_draw_modes();
         self.sync_node_edit();
-        self.refresh_beam_loads();
     }
 
     /// 作成モード（梁・壁・スラブ）とその選択バッファをすべて解除する。

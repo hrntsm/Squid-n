@@ -1,6 +1,11 @@
 //! CMQ 図（両端固定端モーメント・単純梁モーメント・せん断）。
 //!
-//! `viewer` ハブからの構造分割。アルゴリズム変更は行わない。
+//! 描画ソースは表示中荷重ケース（`nav.focus_load_case`。応力図と異なり解析実行を
+//! 要しない）の `member`（部材荷重）そのもの。床分配・自重・取り付く壁版の線
+//! アンカー・手入力荷重のいずれも同じ図に重ねて描く（CMQ図を荷重ケースの全荷重へ
+//! 揃える改修。`dev_docs/handoff/CMQ図を荷重ケースの全荷重へ_申し送り.md`）。
+
+use std::collections::HashMap;
 
 use crate::app::App;
 use crate::theme;
@@ -11,11 +16,10 @@ use super::{
     CmqComponent, DiagramPlane, FrameFilter, Projector,
 };
 use squid_n_core::geom::vec3::dist as member_len3;
+use squid_n_core::ids::ElemId;
+use squid_n_core::model::{LoadCase, MemberLoadKind, Model};
 
-fn is_primary_beam_for_cmq(
-    model: &squid_n_core::model::Model,
-    elem: &squid_n_core::model::ElementData,
-) -> bool {
+fn is_primary_beam_for_cmq(model: &Model, elem: &squid_n_core::model::ElementData) -> bool {
     if elem.kind != squid_n_core::model::ElementKind::Beam || elem.nodes.len() != 2 {
         return false;
     }
@@ -28,32 +32,32 @@ fn is_primary_beam_for_cmq(
     !is_materialized_joist
 }
 
-/// 一つの主架構の大梁（`ElemId`）に載る全 `MemberLoadKind` を束ねたグループ。
+/// 一つの主架構の大梁（`ElemId`）に載る、表示中荷重ケースの全 `MemberLoad` を束ねた
+/// グループ。荷重は（種別, 世界座標の作用方向）の対で持ち、局所 ey/ez 面への投影は
+/// 描画時に行う（投影に要素の現在の節点座標が要るため）。
 struct CmqElemGroup {
     /// 対象の大梁。構面表示の絞り込み（`FrameFilter`）で使う。
-    elem: squid_n_core::ids::ElemId,
+    elem: ElemId,
     n0: usize,
     n1: usize,
     ref_vec: [f64; 3],
-    /// C/M/Q 評価用。グループ内の全 `MemberLoad` の荷重種別（`MemberLoadKind`）。
-    loads: Vec<squid_n_core::model::MemberLoadKind>,
+    loads: Vec<(MemberLoadKind, [f64; 3])>,
 }
 
-/// `app.cmq_display_member_loads()`（主架構変換後の部材荷重）を要素（大梁）単位で
-/// グループ化する。大梁の中間区間（小梁がとりつく位置）の荷重も同じ `ElemId` に
-/// 変換されているため、大梁1本=1グループになる。小梁・柱・スラブには `MemberLoad`
-/// が付かない（または実部材化小梁として `is_primary_beam_for_cmq` で除外される）ため
-/// 自然に描画対象から外れる。描画順は初出順（`app.beam_loads` に現れた順）で安定する。
-fn group_member_loads_by_elem(app: &App) -> Vec<CmqElemGroup> {
-    let member_loads = app.cmq_display_member_loads();
-    let mut order: Vec<squid_n_core::ids::ElemId> = Vec::new();
-    let mut groups: std::collections::HashMap<squid_n_core::ids::ElemId, CmqElemGroup> =
-        std::collections::HashMap::new();
-    for ml in member_loads {
-        let Some(elem) = app.model.element(ml.elem) else {
+/// 表示中荷重ケースの `member` を要素（大梁）単位でグループ化する。大梁の中間区間
+/// （小梁がとりつく位置）の荷重も同じ `ElemId` に変換済みのため、大梁1本=1グループに
+/// なる。小梁・柱・スラブには `MemberLoad` が付かない（または実部材化小梁として
+/// `is_primary_beam_for_cmq` で除外される）ため自然に描画対象から外れる。柱への
+/// 節点集中荷重（`NodalLoad`）はそもそも `member` に含まれないため、同じ理由で
+/// 梁の図に出ない（梁に載らない荷重であり、これは正しい）。
+fn group_member_loads_by_elem(model: &Model, case: &LoadCase) -> Vec<CmqElemGroup> {
+    let mut order: Vec<ElemId> = Vec::new();
+    let mut groups: HashMap<ElemId, CmqElemGroup> = HashMap::new();
+    for ml in &case.member {
+        let Some(elem) = model.element(ml.elem) else {
             continue;
         };
-        if !is_primary_beam_for_cmq(&app.model, elem) {
+        if !is_primary_beam_for_cmq(model, elem) {
             continue;
         }
         let group = groups.entry(ml.elem).or_insert_with(|| {
@@ -66,7 +70,7 @@ fn group_member_loads_by_elem(app: &App) -> Vec<CmqElemGroup> {
                 loads: Vec::new(),
             }
         });
-        group.loads.push(ml.kind);
+        group.loads.push((ml.kind.clone(), ml.dir));
     }
     order
         .into_iter()
@@ -74,8 +78,24 @@ fn group_member_loads_by_elem(app: &App) -> Vec<CmqElemGroup> {
         .collect()
 }
 
+/// `MemberLoadKind` の大きさ（強度・集中荷重）を、世界座標の作用方向 `dir` から
+/// 局所軸の単位ベクトル `axis`（ey または ez）へ投影する。位置（`a`/`b`）は
+/// 部材長に沿った値のためそのまま、強度・大きさだけを `dot(dir, axis)` 倍する。
+fn project_load(kind: MemberLoadKind, dir: [f64; 3], axis: [f64; 3]) -> MemberLoadKind {
+    let s = dir[0] * axis[0] + dir[1] * axis[1] + dir[2] * axis[2];
+    match kind {
+        MemberLoadKind::Point { a, p } => MemberLoadKind::Point { a, p: p * s },
+        MemberLoadKind::Distributed { a, b, w1, w2 } => MemberLoadKind::Distributed {
+            a,
+            b,
+            w1: w1 * s,
+            w2: w2 * s,
+        },
+    }
+}
+
 /// グループ内の全荷重の両端固定端モーメントを合算する（C 図）。
-fn sum_fixed_end_moments(loads: &[squid_n_core::model::MemberLoadKind], l: f64) -> (f64, f64) {
+fn sum_fixed_end_moments(loads: &[MemberLoadKind], l: f64) -> (f64, f64) {
     loads
         .iter()
         .map(|ld| squid_n_load::floor::fixed_end_moments(ld, l))
@@ -83,7 +103,7 @@ fn sum_fixed_end_moments(loads: &[squid_n_core::model::MemberLoadKind], l: f64) 
 }
 
 /// グループ内の全荷重の単純梁反力を合算する（Q 図）。
-fn sum_simple_reactions(loads: &[squid_n_core::model::MemberLoadKind], l: f64) -> (f64, f64) {
+fn sum_simple_reactions(loads: &[MemberLoadKind], l: f64) -> (f64, f64) {
     loads
         .iter()
         .map(|ld| squid_n_load::floor::simple_reactions(ld, l))
@@ -93,8 +113,7 @@ fn sum_simple_reactions(loads: &[squid_n_core::model::MemberLoadKind], l: f64) -
 /// M（単純梁中央モーメント）図の折れ線サンプリング位置 ξ∈[0,1] を返す。
 /// 等分割に加え、`loads` に含まれる区間分布荷重の両端 a/L, b/L・集中荷重の a/L を
 /// 折れ点として正確に出すため追加する。
-fn cmq_m_sample_xis(loads: &[squid_n_core::model::MemberLoadKind], l: f64) -> Vec<f64> {
-    use squid_n_core::model::MemberLoadKind;
+fn cmq_m_sample_xis(loads: &[MemberLoadKind], l: f64) -> Vec<f64> {
     const N: usize = 32;
     let mut xis: Vec<f64> = (0..=N).map(|k| k as f64 / N as f64).collect();
     if l > 1e-9 {
@@ -134,16 +153,23 @@ pub(super) fn paint_diagram_polygon(
     ));
 }
 
+/// 1 大梁・1 軸（ey または ez）分の描画対象。荷重は `axis`（局所軸の単位ベクトル。
+/// 世界座標）へ投影済みの `MemberLoadKind` 列で持つ。
+struct CmqTrace<'g> {
+    group: &'g CmqElemGroup,
+    l: f64,
+    /// 描画位置の張り出し方向（構面表示では `in_plane_offset_dir` で構面内へ倒し済み）。
+    offset_dir: [f64; 3],
+    loads: Vec<MemberLoadKind>,
+}
+
 /// 部材ローカルに沿って CMQ 図（両端固定端モーメント C・単純梁中央モーメント M・
 /// せん断 Q）を描く。
 ///
-/// N/Q/M 図と同様、張り出し方向は要素ローカル y 軸（曲げ平面内）をワールド空間で
-/// とってから投影する。CMQ は鉛直床荷重による強軸曲げのため、水平梁では鉛直面内の
-/// 図となり、ビューを回転しても要素座標系に固定される。
-///
-/// 描画ソースは `app.beam_loads`（スラブ・小梁の生の荷重分配）ではなく、主架構へ
-/// 変換後の部材荷重（[`group_member_loads_by_elem`]）。これにより大梁1本=1図形になり
-/// （小梁がとりつく大梁で図が分裂しない）、小梁・スラブは自然に描画対象から外れる。
+/// 応力図と同じ「面」の区別（強軸 ey・弱軸 ez。`app.cmq_axes`）を持つ。部材の局所軸が
+/// 傾いている（斜め柱・ひねりのある断面等）場合、鉛直荷重でも ey・ez 両方に成分が
+/// 生じうるため、実際に `MemberLoad.dir` を局所軸へ投影して評価する
+/// （[`project_load`]）。両軸を同時表示するときは同一スケールで重ねて描く。
 pub(super) fn draw_cmq_diagram(
     painter: &egui::Painter,
     app: &App,
@@ -153,13 +179,8 @@ pub(super) fn draw_cmq_diagram(
     frame_normal: Option<[f64; 3]>,
 ) {
     let scale = proj.scale();
-    if app.beam_loads.is_empty() {
-        // スラブ自体がないのか、スラブはあるが床荷重（強度）が 0 なのかを区別して案内する。
-        let msg = if app.model.floor_regions.is_empty() {
-            "スラブが未定義です。モデルタブの「スラブ」でスラブと床荷重を定義すると CMQ 図を表示できます"
-        } else {
-            "スラブの床荷重が 0 です。荷重タブ（スラブ）で固定荷重・用途（積載）を設定すると CMQ 図を表示できます"
-        };
+
+    fn info_text(painter: &egui::Painter, msg: &str) {
         painter.text(
             egui::pos2(
                 painter.clip_rect().min.x + 10.0,
@@ -170,12 +191,31 @@ pub(super) fn draw_cmq_diagram(
             egui::FontId::proportional(13.0),
             theme::GRAY_600,
         );
+    }
+
+    let Some(case) = app.cmq_display_load_case() else {
+        info_text(
+            painter,
+            "荷重ケースがありません。荷重タブで作成してください",
+        );
+        return;
+    };
+
+    let axes: Vec<DiagramPlane> = [
+        (app.cmq_axes.ey, DiagramPlane::Ey),
+        (app.cmq_axes.ez, DiagramPlane::Ez),
+    ]
+    .into_iter()
+    .filter_map(|(on, plane)| on.then_some(plane))
+    .collect();
+    if axes.is_empty() {
+        info_text(painter, "「軸:」で強軸・弱軸のどちらかを選んでください");
         return;
     }
 
-    // 主架構へ変換後の部材荷重を要素（大梁）単位でグループ化し、座標が有効
+    // 表示中ケースの部材荷重を要素（大梁）単位でグループ化し、座標が有効
     // （範囲内・非ゼロ長）なものだけを対象にする。
-    let groups: Vec<CmqElemGroup> = group_member_loads_by_elem(app)
+    let groups: Vec<CmqElemGroup> = group_member_loads_by_elem(&app.model, case)
         .into_iter()
         .filter(|g| {
             filter.shows(g.elem)
@@ -185,31 +225,75 @@ pub(super) fn draw_cmq_diagram(
         })
         .collect();
 
-    let max_c = groups
+    if groups.is_empty() {
+        info_text(
+            painter,
+            &format!(
+                "荷重ケース「{}」に大梁への部材荷重がありません。\
+                 荷重タブで荷重を追加するか、ナビゲータで他のケースを選択してください",
+                case.name
+            ),
+        );
+        return;
+    }
+
+    // 各大梁・各表示軸ごとに、荷重を局所軸へ投影したトレースを作る。
+    let traces: Vec<CmqTrace> = groups
         .iter()
-        .map(|g| {
-            let l = member_len3(coords3[g.n0], coords3[g.n1]);
-            let (c_i, c_j) = sum_fixed_end_moments(&g.loads, l);
+        .flat_map(|g| {
+            let p_i = coords3[g.n0];
+            let p_j = coords3[g.n1];
+            let l = member_len3(p_i, p_j);
+            axes.iter().map(move |&plane| {
+                // 局所 ey/ez の単位ベクトル（世界座標）。荷重の投影軸として使う。
+                let axis_dir = diagram_offset_dir(p_i, p_j, g.ref_vec, plane);
+                // 構面表示では張り出しを構面内へ倒す（応力図と同じ規約）。投影に使う
+                // `axis_dir` 自体はここでは倒さない（物理的な軸を変えないため）。
+                let offset_dir = match frame_normal {
+                    Some(n) => in_plane_offset_dir(axis_dir, p_i, p_j, n),
+                    None => axis_dir,
+                };
+                let loads = g
+                    .loads
+                    .iter()
+                    .map(|(kind, dir)| project_load(kind.clone(), *dir, axis_dir))
+                    .collect();
+                CmqTrace {
+                    group: g,
+                    l,
+                    offset_dir,
+                    loads,
+                }
+            })
+        })
+        .collect();
+
+    // 選択中の軸をまとめて 1 つのスケールで正規化する（応力図の同単位成分の
+    // 共有スケールと同じ規約）。
+    let max_c = traces
+        .iter()
+        .map(|t| {
+            let (c_i, c_j) = sum_fixed_end_moments(&t.loads, t.l);
             c_i.abs().max(c_j.abs())
         })
         .fold(0.0_f64, f64::max);
-    let max_q = groups
+    let max_q = traces
         .iter()
-        .map(|g| {
-            let l = member_len3(coords3[g.n0], coords3[g.n1]);
-            let (q_i, q_j) = sum_simple_reactions(&g.loads, l);
+        .map(|t| {
+            let (q_i, q_j) = sum_simple_reactions(&t.loads, t.l);
             q_i.abs().max(q_j.abs())
         })
         .fold(0.0_f64, f64::max);
     // M（単純梁中央モーメント）の最大値: スパンをサンプリングして評価する。
-    let max_m = groups
+    let max_m = traces
         .iter()
-        .map(|g| {
-            let l = member_len3(coords3[g.n0], coords3[g.n1]);
-            cmq_m_sample_xis(&g.loads, l)
+        .map(|t| {
+            cmq_m_sample_xis(&t.loads, t.l)
                 .into_iter()
                 .fold(0.0_f64, |acc, xi| {
-                    acc.max(squid_n_load::floor::simple_beam_moment_at(&g.loads, l, xi * l).abs())
+                    acc.max(
+                        squid_n_load::floor::simple_beam_moment_at(&t.loads, t.l, xi * t.l).abs(),
+                    )
                 })
         })
         .fold(0.0_f64, f64::max);
@@ -223,22 +307,16 @@ pub(super) fn draw_cmq_diagram(
 
     // 張り出しピーク px が閾値未満の潰れた図形はスキップ（マイター発散対策。
     // N/Q/M 図と共有する `diagram::MIN_DIAGRAM_PX`）。
-    for g in &groups {
-        let p_i = coords3[g.n0];
-        let p_j = coords3[g.n1];
-        let l = member_len3(p_i, p_j);
-        let ey = diagram_offset_dir(p_i, p_j, g.ref_vec, DiagramPlane::Ey);
-        // 構面表示では張り出しを構面内へ倒す（応力図と同じ規約）。
-        let ey = match frame_normal {
-            Some(n) => in_plane_offset_dir(ey, p_i, p_j, n),
-            None => ey,
-        };
+    for t in &traces {
+        let p_i = coords3[t.group.n0];
+        let p_j = coords3[t.group.n1];
         let p0 = proj.project(p_i);
         let p1 = proj.project(p_j);
+        let ey = t.offset_dir;
 
         match app.cmq_component {
             CmqComponent::C => {
-                let (c_i, c_j) = sum_fixed_end_moments(&g.loads, l);
+                let (c_i, c_j) = sum_fixed_end_moments(&t.loads, t.l);
                 // 張り出しピーク px が閾値未満の潰れたポリゴンはスキップ（上記コメント参照）
                 let peak_px = (60.0 * c_i.abs().max(c_j.abs()) / max_c.max(1e-12)) as f32;
                 if peak_px < diagram::MIN_DIAGRAM_PX {
@@ -268,13 +346,14 @@ pub(super) fn draw_cmq_diagram(
                 // グループ内の全荷重の simple_beam_moment_at を合算した値を、N/Q/M 図と
                 // 同じ規約（正の sagging モーメントが梁下側=-ey 側）でプロットする。
                 // 区間分布荷重の境界・集中荷重は折れ点 ξ=a/L, b/L を含める。
-                let xis = cmq_m_sample_xis(&g.loads, l);
+                let xis = cmq_m_sample_xis(&t.loads, t.l);
                 // 先に値と対応するワールド位置を求め、ピーク px を判定してから描画する
                 let mut val_max = 0.0_f64;
                 let samples: Vec<(f64, [f64; 3])> = xis
                     .into_iter()
                     .map(|xi| {
-                        let val = squid_n_load::floor::simple_beam_moment_at(&g.loads, l, xi * l);
+                        let val =
+                            squid_n_load::floor::simple_beam_moment_at(&t.loads, t.l, xi * t.l);
                         val_max = val_max.max(val.abs());
                         let base3 = [
                             p_i[0] + (p_j[0] - p_i[0]) * xi,
@@ -313,7 +392,7 @@ pub(super) fn draw_cmq_diagram(
                 );
             }
             CmqComponent::Q => {
-                let (q_i, q_j) = sum_simple_reactions(&g.loads, l);
+                let (q_i, q_j) = sum_simple_reactions(&t.loads, t.l);
                 // 張り出しピーク px が閾値未満の潰れたポリゴンはスキップ（上記コメント参照）
                 let peak_px = (60.0 * q_i.abs().max(q_j.abs()) / max_q.max(1e-12)) as f32;
                 if peak_px < diagram::MIN_DIAGRAM_PX {
@@ -337,11 +416,17 @@ pub(super) fn draw_cmq_diagram(
         }
     }
 
-    // 凡例（選択中の成分のみ表示）
+    // 凡例（選択中の成分・軸のみ表示）
+    let axis_label = match (app.cmq_axes.ey, app.cmq_axes.ez) {
+        (true, true) => "強軸+弱軸",
+        (true, false) => "強軸",
+        (false, true) => "弱軸",
+        (false, false) => unreachable!("axes.is_empty() で早期 return 済み"),
+    };
     let legend = match app.cmq_component {
-        CmqComponent::C => format!("CMQ図 C(max={:.2}) 青", max_c),
-        CmqComponent::M => format!("CMQ図 M(max={:.2}) 紫", max_m),
-        CmqComponent::Q => format!("CMQ図 Q(max={:.2}) 緑", max_q),
+        CmqComponent::C => format!("CMQ図 C(max={:.2}, {}) 青", max_c, axis_label),
+        CmqComponent::M => format!("CMQ図 M(max={:.2}, {}) 紫", max_m, axis_label),
+        CmqComponent::Q => format!("CMQ図 Q(max={:.2}, {}) 緑", max_q, axis_label),
     };
     painter.text(
         egui::pos2(
@@ -353,4 +438,154 @@ pub(super) fn draw_cmq_diagram(
         egui::FontId::proportional(14.0),
         theme::GRAY_700,
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use squid_n_core::ids::NodeId;
+    use squid_n_core::model::{
+        ElementData, ElementKind, EndCondition, ForceRegime, LoadCaseKind, LocalAxis, MemberLoad,
+        Node,
+    };
+
+    fn mk_node(id: u32, x: f64, y: f64, z: f64) -> Node {
+        Node {
+            id: NodeId(id),
+            coord: [x, y, z],
+            restraint: Default::default(),
+            mass: None,
+            story: None,
+            support_spring: None,
+        }
+    }
+
+    fn mk_beam(id: u32, i: u32, j: u32, ref_vector: [f64; 3]) -> ElementData {
+        ElementData {
+            id: ElemId(id),
+            kind: ElementKind::Beam,
+            nodes: [NodeId(i), NodeId(j)].into_iter().collect(),
+            section: None,
+            local_axis: LocalAxis { ref_vector },
+            end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+            force_regime: ForceRegime::Auto,
+            rigid_zone: Default::default(),
+            plastic_zone: None,
+            spring: None,
+        }
+    }
+
+    fn mk_wall(id: u32, i: u32, j: u32) -> ElementData {
+        ElementData {
+            kind: ElementKind::Wall,
+            ..mk_beam(id, i, j, [1.0, 0.0, 0.0])
+        }
+    }
+
+    // `ElementKind` は柱・梁を区別しない（幾何で決まる。`squid_n_core::frame::is_column`
+    // 参照）ため、`is_primary_beam_for_cmq` が実際に除外するのは非 `Beam` 種別の要素
+    // （壁・仕口パネル等）と実部材化小梁だけ。柱への集中荷重が CMQ 図に出ない理由は
+    // 別にある: `LoadTransfer::Columns`（雑壁・取り付く壁版の柱伝達）は `NodalLoad`
+    // を生成し、`LoadCase.member` に一切入らないため（`squid_n_load::wall_attached`）。
+    //
+    /// 表示中ケースの `member` は、由来を問わず（床分配・自重・取り付く壁版・
+    /// 手入力のいずれでも）大梁ごとに束ねられる。非 `Beam` 種別（壁等）への
+    /// 部材荷重は対象外（`is_primary_beam_for_cmq`）。
+    #[test]
+    fn group_member_loads_by_elem_merges_any_source_and_excludes_non_beam_kind() {
+        let model = Model {
+            nodes: vec![mk_node(0, 0.0, 0.0, 0.0), mk_node(1, 4000.0, 0.0, 0.0)],
+            elements: vec![mk_beam(0, 0, 1, [0.0, 0.0, 1.0]), mk_wall(1, 0, 1)],
+            ..Default::default()
+        };
+        let case = LoadCase {
+            id: squid_n_core::ids::LoadCaseId(0),
+            name: "DL".into(),
+            kind: LoadCaseKind::Dead,
+            nodal: Vec::new(),
+            member: vec![
+                // 床分配由来（自動）
+                MemberLoad::auto(
+                    ElemId(0),
+                    [0.0, 0.0, -1.0],
+                    MemberLoadKind::Distributed {
+                        a: 0.0,
+                        b: 4000.0,
+                        w1: 1.0,
+                        w2: 1.0,
+                    },
+                ),
+                // 手入力（取り付く壁版・梁自重相当）
+                MemberLoad::manual(
+                    ElemId(0),
+                    [0.0, 0.0, -1.0],
+                    MemberLoadKind::Point {
+                        a: 2000.0,
+                        p: 100.0,
+                    },
+                ),
+                // 壁（非 Beam 種別）への部材荷重は CMQ 対象外
+                MemberLoad::auto(
+                    ElemId(1),
+                    [0.0, 0.0, -1.0],
+                    MemberLoadKind::Distributed {
+                        a: 0.0,
+                        b: 3000.0,
+                        w1: 1.0,
+                        w2: 1.0,
+                    },
+                ),
+            ],
+        };
+
+        let groups = group_member_loads_by_elem(&model, &case);
+        assert_eq!(groups.len(), 1, "壁(ElemId(1))はグループに現れないはず");
+        assert_eq!(groups[0].elem, ElemId(0));
+        assert_eq!(
+            groups[0].loads.len(),
+            2,
+            "床分配・手入力の両方が同じ大梁のグループへ束ねられるはず"
+        );
+    }
+
+    /// 局所軸へ投影すると、ey（強軸）成分とez（弱軸）成分の二乗和が
+    /// 元の大きさの二乗と一致する（ey・ez は直交単位ベクトルのため）。
+    #[test]
+    fn project_load_splits_into_orthogonal_components() {
+        let dir = [0.6, 0.0, -0.8]; // 正規化済み（斜め方向）
+        let ey = [0.0, 0.0, -1.0];
+        let ez = [1.0, 0.0, 0.0];
+        let kind = MemberLoadKind::Point { a: 100.0, p: 10.0 };
+
+        let proj_ey = project_load(kind.clone(), dir, ey);
+        let proj_ez = project_load(kind, dir, ez);
+        let (MemberLoadKind::Point { p: p_ey, .. }, MemberLoadKind::Point { p: p_ez, .. }) =
+            (proj_ey, proj_ez)
+        else {
+            unreachable!()
+        };
+        assert!(
+            (p_ey * p_ey + p_ez * p_ez - 10.0 * 10.0).abs() < 1e-9,
+            "ey成分・ez成分の二乗和は元の大きさの二乗と一致するはず: p_ey={p_ey} p_ez={p_ez}"
+        );
+        // dir はほぼ ey 向き（0.8）で ez 成分（0.6）より大きい
+        assert!(p_ey.abs() > p_ez.abs());
+    }
+
+    /// 荷重方向が局所軸と直交するとき、その面への投影はゼロになる。
+    #[test]
+    fn project_load_zero_when_orthogonal() {
+        let dir = [0.0, 1.0, 0.0];
+        let ey = [0.0, 0.0, -1.0];
+        let kind = MemberLoadKind::Distributed {
+            a: 0.0,
+            b: 1.0,
+            w1: 5.0,
+            w2: 5.0,
+        };
+        let MemberLoadKind::Distributed { w1, w2, .. } = project_load(kind, dir, ey) else {
+            unreachable!()
+        };
+        assert!(w1.abs() < 1e-12 && w2.abs() < 1e-12);
+    }
 }

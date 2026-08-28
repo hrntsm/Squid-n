@@ -1,35 +1,23 @@
-//! 荷重ケース自動同期・床荷重分配・CMQ 表示ソース。
+//! 荷重ケース自動同期・CMQ 表示ソース。
 //!
 //! `actions` からの構造分割。アルゴリズム変更は行わない。
 
 use super::*;
 
 impl App {
-    /// 全スラブの床荷重を大梁（および小梁経由の節点反力）へ分配し、
-    /// `self.beam_loads` を更新する。対応する梁がない辺の荷重は捨てる。
+    /// CMQ 図（ビューア）が表示対象とする荷重ケース。
     ///
-    /// `squid_n_load::floor::distribute_slab` が返す `BeamLoad.target` は
-    /// `LoadTarget::Edge(i)`（スラブ境界の辺 i、`boundary[i]` → `boundary[(i+1)%n]`、
-    /// n = 境界頂点数。矩形に限らず三角形・五角形以上の多角形にも対応）または
-    /// `LoadTarget::Node(id)`（小梁反力などの節点集中荷重）。`Edge` はここで
-    /// その節点対を両端に持つ `Beam` 要素を探し、実 `ElemId` に置き換える
-    /// （ノード順は不問）。`Node` はそのまま（`elem` は番兵 `ElemId(u32::MAX)`
-    /// のまま）保持する（部材マッピング不要。`sync_gravity_load_cases_action` が
-    /// `NodalLoad` へ変換する。CMQ 図描画側は `elem` で梁を引くため、この番兵は
-    /// 単に描画対象外になるだけで安全）。
-    pub fn refresh_beam_loads(&mut self) {
-        let hash = self.compute_auto_load_sync_hash();
-        if self.beam_loads_hash == Some(hash) {
-            return;
-        }
-        self.beam_loads = squid_n_job::auto_loads::compute_dl_beam_loads(&self.model);
-        self.beam_loads_hash = Some(hash);
-    }
-
-    /// CMQ 図（ビューア）の描画ソース。
+    /// 応力図の `nav.focus_result`（解析結果ケース。解析未実行時は空）とは異なり、
+    /// CMQ 図は解析実行前でも使える診断図であるため、荷重タブ・ナビゲータで
+    /// 選択中の荷重ケース（`nav.focus_load_case`）をそのまま参照する。未選択時は
+    /// 静解析の対象決定（`resolved_analysis_target`）と同じ規約で先頭ケースへ
+    /// フォールバックする。
     #[cfg(feature = "gui")]
-    pub(crate) fn cmq_display_member_loads(&self) -> Vec<squid_n_core::model::MemberLoad> {
-        squid_n_job::auto_loads::slab_load_case_content(&self.model, &self.beam_loads).1
+    pub(crate) fn cmq_display_load_case(&self) -> Option<&squid_n_core::model::LoadCase> {
+        self.nav
+            .focus_load_case
+            .and_then(|id| self.model.load_cases.iter().find(|lc| lc.id == id))
+            .or_else(|| self.model.load_cases.first())
     }
 
     /// 重力系の標準荷重ケース（DL・LL(架構用)・LL(地震用)）へ自動計算値を同期する
@@ -58,8 +46,6 @@ impl App {
     /// の入口で毎回呼ぶことを想定した冪等な同期アクション。
     pub fn sync_gravity_load_cases_action(&mut self) {
         let result = squid_n_job::auto_loads::compute_gravity_auto_load_cases(&self.model);
-        self.beam_loads = result.dl_beam_loads;
-        self.beam_loads_hash = None;
         for case in result.cases {
             self.sync_one_auto_case(case.name, case.kind, case.nodal, case.member);
         }
@@ -171,8 +157,6 @@ impl App {
             &self.analysis_cfg,
             design_period,
         );
-        self.beam_loads = result.dl_beam_loads;
-        self.beam_loads_hash = None;
         for notice in result.notices {
             self.report_notice(notice);
         }
