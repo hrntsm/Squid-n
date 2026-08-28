@@ -2853,159 +2853,38 @@ fn test_rc_sigma_0_prefers_gravity_load_case_over_last_static() {
     );
 }
 
-/// Z=0 平面の矩形（4000×6000）+外周4本の梁 + スラブ1枚（TriTrapezoid）を持つモデルを作る。
-/// 辺 i = boundary[i] → boundary[(i+1)%4] の順に梁を並べる（refresh_beam_loads の対応付けと一致）。
-fn make_slab_test_model() -> squid_n_core::model::Model {
-    use squid_n_core::ids::FloorRegionId;
-    use squid_n_core::model::{
-        AreaLoad, DistributionMethod, ElementData, ElementKind, EndCondition, ForceRegime,
-        LocalAxis, Node,
-    };
-
-    let mk_node = |id: u32, x: f64, y: f64| Node {
-        id: NodeId(id),
-        coord: [x, y, 0.0],
-        restraint: Default::default(),
-        mass: None,
-        story: None,
-        support_spring: None,
-    };
-    let nodes = vec![
-        mk_node(0, 0.0, 0.0),
-        mk_node(1, 4000.0, 0.0),
-        mk_node(2, 4000.0, 6000.0),
-        mk_node(3, 0.0, 6000.0),
-    ];
-    let mk_beam = |id: u32, i: u32, j: u32| ElementData {
-        id: ElemId(id),
-        kind: ElementKind::Beam,
-        nodes: [NodeId(i), NodeId(j)].into_iter().collect(),
-        section: None,
-        local_axis: LocalAxis {
-            ref_vector: [0.0, 0.0, 1.0],
-        },
-        end_cond: [EndCondition::Fixed, EndCondition::Fixed],
-        force_regime: ForceRegime::Auto,
-        rigid_zone: Default::default(),
-        plastic_zone: None,
-        spring: None,
-    };
-    let elements = vec![
-        mk_beam(0, 0, 1),
-        mk_beam(1, 1, 2),
-        mk_beam(2, 2, 3),
-        mk_beam(3, 3, 0),
-    ];
-    let boundary = vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)];
-    let slab = Slab {
-        id: squid_n_core::ids::SlabId(0),
-        shape: SlabShape::Enclosed {
-            boundary: boundary.clone(),
-        },
-        plate: SlabPlate {
-            section: None,
-            loads: vec![AreaLoad {
-                kind: "DL".into(),
-                value: 0.005,
-            }],
-            usage: None,
-            method: DistributionMethod::TriTrapezoid,
-            one_way: None,
-        },
-    };
-    let mut region = FloorRegion::new(FloorRegionId(0), boundary);
-    region.slab_ids.push(squid_n_core::ids::SlabId(0));
-    squid_n_core::model::Model {
-        nodes,
-        elements,
-        floor_regions: vec![region],
-        slabs: vec![slab],
-        ..Default::default()
-    }
-}
-
+/// `App::cmq_display_load_case`（CMQ図の表示対象ケース）は、`nav.focus_load_case`
+/// が未選択・または失効（削除済みID）のときに先頭ケースへフォールバックする
+/// （静解析の対象決定 `resolved_analysis_target` と同じ規約）。
+#[cfg(feature = "gui")]
 #[test]
-fn test_refresh_beam_loads_maps_edges_to_members() {
-    let model = make_slab_test_model();
-    model
-        .validate()
-        .expect("テストモデルは validate を通るはず");
+fn cmq_display_load_case_falls_back_to_first_case() {
+    use squid_n_core::ids::LoadCaseId;
+    use squid_n_core::model::{LoadCase, LoadCaseKind};
 
-    let mut app = App {
-        model,
-        ..App::default()
+    let mk_case = |id: u32, name: &str| LoadCase {
+        id: LoadCaseId(id),
+        name: name.to_string(),
+        kind: LoadCaseKind::Dead,
+        nodal: Vec::new(),
+        member: Vec::new(),
     };
-    app.refresh_beam_loads();
 
-    assert_eq!(app.beam_loads.len(), 4, "外周4辺すべてに荷重が対応付くはず");
-    for bl in &app.beam_loads {
-        let elem = app
-            .model
-            .elements
-            .iter()
-            .find(|e| e.id == bl.elem)
-            .expect("beam_loads.elem は実在する部材IDを指すはず");
-        assert_eq!(elem.kind, squid_n_core::model::ElementKind::Beam);
-        assert!(
-            bl.cmq.c_i.abs() > 1e-9 || bl.cmq.q_i.abs() > 1e-9,
-            "CMQ が非ゼロのはず: {:?} {:?}",
-            bl.cmq.c_i,
-            bl.cmq.q_i
-        );
-    }
+    let mut app = App::default();
+    // 荷重ケースが1つもなければ None。
+    assert!(app.cmq_display_load_case().is_none());
 
-    // 梁が1本欠けたモデルでも荷重は捨てず、対応する辺は節点対（Span）として
-    // 保持される（slab_load_case_content が主架構へ変換する。二次部材対応）。
-    let mut missing = app.model.clone();
-    missing.elements.pop();
-    app.model = missing;
-    app.refresh_beam_loads();
-    assert_eq!(app.beam_loads.len(), 4);
-    let unresolved: Vec<_> = app
-        .beam_loads
-        .iter()
-        .filter(|bl| {
-            matches!(bl.target, squid_n_load::floor::LoadTarget::Span { .. })
-                && bl.elem == ElemId(u32::MAX)
-        })
-        .collect();
-    assert_eq!(
-        unresolved.len(),
-        1,
-        "欠けた辺は未解決の節点対として残るはず"
-    );
-}
+    app.model.load_cases = vec![mk_case(0, "DL"), mk_case(1, "LL")];
+    // 未選択（None）なら先頭ケース。
+    assert_eq!(app.cmq_display_load_case().unwrap().name, "DL");
 
-/// CMQ 図表示中は毎フレーム `refresh_beam_loads` が呼ばれるため、モデル・設定が
-/// 変わっていなければ床荷重分配を再計算しない（ハッシュキャッシュ）。
-/// モデルを編集するとハッシュが変わり再計算される。
-#[test]
-fn test_refresh_beam_loads_caches_by_model_hash() {
-    let mut app = App {
-        model: make_slab_test_model(),
-        ..App::default()
-    };
-    app.refresh_beam_loads();
-    assert_eq!(app.beam_loads.len(), 4);
+    // 選択中なら選択中のケース。
+    app.nav.focus_load_case = Some(LoadCaseId(1));
+    assert_eq!(app.cmq_display_load_case().unwrap().name, "LL");
 
-    // モデル不変のまま beam_loads を汚しても、再計算はスキップされ汚れたまま。
-    app.beam_loads.clear();
-    app.refresh_beam_loads();
-    assert!(
-        app.beam_loads.is_empty(),
-        "モデル不変なら再計算せずスキップするはず"
-    );
-
-    // モデルを編集するとハッシュが変わり再計算される。
-    app.model.slabs[0]
-        .plate
-        .loads
-        .push(squid_n_core::model::AreaLoad {
-            kind: "追加仕上げ".into(),
-            value: 1.0e-3,
-        });
-    app.refresh_beam_loads();
-    assert_eq!(app.beam_loads.len(), 4, "モデル編集後は再計算されるはず");
+    // 選択中IDが失効（削除済み）していれば先頭ケースへフォールバック。
+    app.nav.focus_load_case = Some(LoadCaseId(99));
+    assert_eq!(app.cmq_display_load_case().unwrap().name, "DL");
 }
 
 /// 正方形スラブ（4000×4000）+ 外周4本の梁を持つモデル
@@ -7883,53 +7762,6 @@ fn test_wall_has_src_boundary_column() {
     assert!(
         !wall_has_src_boundary_column(&wall, &model),
         "片側 1 節点のみ共有する上階柱は側柱ではない"
-    );
-}
-
-/// `sync_gravity_load_cases_action` は `beam_loads` を直接上書きするため、
-/// キャッシュキー `beam_loads_hash` を無効化しなければならない。無効化しないと、
-/// 編集→同期→undo でモデルをハッシュ記録時点の状態へ戻したとき refresh が
-/// スキップされ、編集後の分配（B2）が表示に残り続ける（敵対的レビューで検出）。
-#[test]
-fn test_sync_gravity_invalidates_beam_loads_hash() {
-    let mut app = App {
-        model: make_slab_test_model(),
-        ..App::default()
-    };
-    // M1 で CMQ 表示（毎フレーム refresh）を模擬。
-    app.refresh_beam_loads();
-    let b1 = app.beam_loads.clone();
-
-    // スラブ荷重を編集（M2）。
-    app.model.slabs[0]
-        .plate
-        .loads
-        .push(squid_n_core::model::AreaLoad {
-            kind: "追加仕上げ".into(),
-            value: 2.0e-3,
-        });
-    // 解析入口の荷重同期（beam_loads を直接上書き）→ hash は無効化される。
-    app.sync_gravity_load_cases_action();
-    let b2 = app.beam_loads.clone();
-    assert_ne!(
-        format!("{:?}", b1),
-        format!("{:?}", b2),
-        "前提: 編集で分配は変わる"
-    );
-    assert_eq!(
-        app.beam_loads_hash, None,
-        "直接上書きの後はキャッシュキーが無効化されるべき"
-    );
-
-    // 編集を戻す（モデルは M1 とバイト同一へ）。
-    app.model.slabs[0].plate.loads.pop();
-
-    // CMQ 表示を再開 → キーが無効なので再計算され、M1 の分配へ戻る。
-    app.refresh_beam_loads();
-    assert_eq!(
-        format!("{:?}", app.beam_loads),
-        format!("{:?}", b1),
-        "M1 へ戻したのだから M1 の分配が表示されるべき"
     );
 }
 

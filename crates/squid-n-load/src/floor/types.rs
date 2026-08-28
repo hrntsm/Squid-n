@@ -45,22 +45,21 @@ pub struct Cmq {
 /// 荷重の作用対象。
 ///
 /// 既存の `BeamLoad.elem` はスラブ境界の「辺インデックス」(`ElemId(i)`, 辺 i =
-/// `boundary[i]`→`boundary[(i+1)%n]`) を格納する規約（呼び出し側 `squid-n-app` の
-/// `refresh_beam_loads` が辺→実部材へ対応付ける）。この規約は変更しない。
+/// `boundary[i]`→`boundary[(i+1)%n]`) を格納する規約（呼び出し側 `squid-n-job::auto_loads`
+/// の `push_resolved_loads` が `beam_elem_map` で辺→実部材へ対応付ける）。この規約は変更しない。
 ///
 /// 一方、小梁反力のように「特定の辺に載らず、特定の節点へ集中荷重として作用する」
 /// 荷重を表現する必要が出てきたため、`target` フィールドを追加した。
 /// - `Edge(i)`: 従来どおり境界の辺 i。`elem` フィールドにも同じ値 `ElemId(i as u32)` を
 ///   設定する（互換のため二重に持つ）。
 /// - `Node(id)`: 実節点 `id` への集中荷重。`elem` フィールドは無意味なので
-///   `ElemId(u32::MAX)` を番兵として設定する（`squid-n-app` 側は `elem` しか見ないため、
-///   境界辺数 4 を必ず超えるこの値により誤って辺荷重として処理されることを防ぐ）。
-///   `squid-n-app::refresh_beam_loads` は現状 `target` を解釈しないため、`Node` 荷重を
-///   実際に構造モデルへ反映する対応は後続タスク（app 側）で行う。
+///   `ElemId(u32::MAX)` を番兵として設定する（`squid_n_core::model::MemberLoad` への
+///   変換（`slab_load_case_content`）は `elem` しか見ないため、境界辺数を必ず超える
+///   この値により誤って辺荷重として処理されることを防ぐ）。
 /// - `Span { nodes, t }`: 実部材化された小梁（`nodes[0]`↔`nodes[1]` を両端に持つ実 `Beam`
 ///   要素）への分布荷重（等分布または線形変化）。小梁が実部材として存在する場合、点反力ではなく
 ///   この分布荷重を小梁自身へ載せ、小梁が FEM で支持へ伝達する（`elem` は番兵
-///   `ElemId(u32::MAX)`。app 側が節点対から実 `ElemId` を解決する）。
+///   `ElemId(u32::MAX)`。`push_resolved_loads` が節点対から実 `ElemId` を解決する）。
 ///
 ///   `t`（既定 `[0.0, 1.0]`）は `nodes[0]`→`nodes[1]` 上の無次元区間で、荷重が
 ///   `nodes` 間の全長ではなく一部だけを覆う場合に使う（取付き線の部分区間。

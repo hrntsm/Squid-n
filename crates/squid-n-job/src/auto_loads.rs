@@ -29,8 +29,6 @@ pub struct AutoLoadCaseContent {
 /// [`compute_auto_load_cases`] の戻り値。
 pub struct AutoLoadComputeResult {
     pub cases: Vec<AutoLoadCaseContent>,
-    /// DL 分配の `BeamLoad`（GUI の CMQ 図用）。
-    pub dl_beam_loads: Vec<BeamLoad>,
     pub notices: Vec<String>,
 }
 
@@ -609,7 +607,6 @@ pub fn compute_gravity_auto_load_cases(model: &Model) -> AutoLoadComputeResult {
                 member: ls_member,
             },
         ],
-        dl_beam_loads,
         notices: Vec::new(),
     }
 }
@@ -624,11 +621,7 @@ pub fn compute_seismic_auto_load_cases(
     let mut cases = Vec::new();
 
     if model.stories.is_empty() {
-        return AutoLoadComputeResult {
-            cases,
-            dl_beam_loads: Vec::new(),
-            notices,
-        };
+        return AutoLoadComputeResult { cases, notices };
     }
 
     let t = match settings.ai_mode {
@@ -647,11 +640,7 @@ pub fn compute_seismic_auto_load_cases(
              (EX/EY の地震荷重は更新されません)。"
                 .to_string(),
         );
-        return AutoLoadComputeResult {
-            cases,
-            dl_beam_loads: Vec::new(),
-            notices,
-        };
+        return AutoLoadComputeResult { cases, notices };
     };
 
     for (dir, name) in [(SeismicDir::X, EX_CASE_NAME), (SeismicDir::Y, EY_CASE_NAME)] {
@@ -672,11 +661,7 @@ pub fn compute_seismic_auto_load_cases(
         }
     }
 
-    AutoLoadComputeResult {
-        cases,
-        dl_beam_loads: Vec::new(),
-        notices,
-    }
+    AutoLoadComputeResult { cases, notices }
 }
 
 /// 重力(DL/LL/LL地震用)＋地震(EX/EY)の自動生成内容を計算する（モデルは書き換えない）。
@@ -689,7 +674,6 @@ pub fn compute_auto_load_cases(
     let seismic = compute_seismic_auto_load_cases(model, settings, design_period);
     AutoLoadComputeResult {
         cases: gravity.cases.into_iter().chain(seismic.cases).collect(),
-        dl_beam_loads: gravity.dl_beam_loads,
         notices: seismic.notices,
     }
 }
@@ -818,7 +802,6 @@ mod tests {
             .expect("DL");
         assert_eq!(dl.kind, LoadCaseKind::Dead);
         assert_eq!(dl.member.len(), 8, "4辺 × 三角形2区間");
-        assert!(!result.dl_beam_loads.is_empty());
     }
 
     #[test]

@@ -829,6 +829,10 @@ pub struct App {
     /// CMQ 図で表示する成分（C: モーメント／Q: せん断）
     #[cfg(feature = "gui")]
     pub cmq_component: crate::viewer::CmqComponent,
+    /// CMQ 図で表示する軸（強軸 ey／弱軸 ez。応力図の`ForceComponent::plane`と同じ
+    /// 局所面の区別。既定は強軸のみ）
+    #[cfg(feature = "gui")]
+    pub cmq_axes: crate::viewer::CmqAxes,
     /// 検定比図の着色対象（最大＝全式の max、または特定の検定式のみ）
     #[cfg(feature = "gui")]
     pub check_ratio_filter: crate::viewer::CheckRatioFilter,
@@ -941,14 +945,6 @@ pub struct App {
     /// 1 回だけ算定した自動倍率（手動係数を掛ける前の値）を保持する。
     #[cfg(feature = "gui")]
     pub th_scale_cache: Option<crate::viewer::TimeHistoryScaleCache>,
-    /// 床荷重分配の CMQ 結果（P2 §5.1）。描画用。
-    pub beam_loads: Vec<squid_n_load::floor::BeamLoad>,
-    /// `beam_loads` を算定した時点のモデル・設定ハッシュ
-    /// （`compute_auto_load_sync_hash`）。CMQ 図表示中は毎フレーム
-    /// `refresh_beam_loads` が呼ばれるため、モデルが変わっていなければ
-    /// 床荷重分配（交差小梁スラブでは床格子サブ FEM 解析を含む）を
-    /// スキップするためのキャッシュキー。`None` は未算定。
-    pub beam_loads_hash: Option<u64>,
     /// 時刻歴応答データ（描画用）
     #[cfg(feature = "gui")]
     pub time_history_data: crate::time_history_view::TimeHistoryData,
@@ -1178,6 +1174,8 @@ impl Default for App {
             #[cfg(feature = "gui")]
             cmq_component: crate::viewer::CmqComponent::default(),
             #[cfg(feature = "gui")]
+            cmq_axes: crate::viewer::CmqAxes::default(),
+            #[cfg(feature = "gui")]
             check_ratio_filter: crate::viewer::CheckRatioFilter::default(),
             #[cfg(feature = "gui")]
             check_ratio_markers: true,
@@ -1233,8 +1231,6 @@ impl Default for App {
             th_detail_axial_component: None,
             #[cfg(feature = "gui")]
             th_scale_cache: None,
-            beam_loads: Vec::new(),
-            beam_loads_hash: None,
             #[cfg(feature = "gui")]
             time_history_data: crate::time_history_view::TimeHistoryData::default(),
             #[cfg(feature = "gui")]

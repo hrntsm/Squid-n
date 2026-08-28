@@ -267,6 +267,28 @@ pub enum CmqComponent {
     Q,
 }
 
+/// CMQ 図で表示する軸（局所 ey 面＝強軸／ez 面＝弱軸）。
+///
+/// 応力図の強軸(Qy・Mz)・弱軸(Qz・My)の区別（[`ForceComponent::plane`]）と同じ面を指す。
+/// `MemberLoad.dir`（世界座標）をこの面へ投影した成分から C/M/Q を計算する
+/// （`draw_cmq_diagram`）。両方 ON のときは同一スケールで重ねて描く（応力図の
+/// 同単位成分の共有スケールと同じ規約）。既定は強軸のみ（直交グリッド・ひねりの
+/// ない部材では弱軸はほぼ0になるため）。
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CmqAxes {
+    pub ey: bool,
+    pub ez: bool,
+}
+
+impl Default for CmqAxes {
+    fn default() -> Self {
+        Self {
+            ey: true,
+            ez: false,
+        }
+    }
+}
+
 /// 検定比図の着色対象（最大＝全式の max、または特定の検定式のみ）。
 ///
 /// `Kind` を選ぶと、部材・節点の色や中点ラベル・位置別マーカーが当該検定式
@@ -467,6 +489,7 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
     let mut mode_idx = app.view_mode_idx;
     let mut force_components = app.force_components;
     let mut cmq_component = app.cmq_component;
+    let mut cmq_axes = app.cmq_axes;
     let mut check_ratio_filter = app.check_ratio_filter;
     let mut modeling_analysis = app.modeling_analysis;
     // 時刻歴の詳細記録（`ThRecording`）がある場合のみ「時刻歴」モードを選択肢に出す。
@@ -538,11 +561,25 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
         );
     });
     if mode == ViewMode::Cmq {
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             ui.label("成分:");
             ui.selectable_value(&mut cmq_component, CmqComponent::C, "C(モーメント)");
             ui.selectable_value(&mut cmq_component, CmqComponent::M, "M(中央)");
             ui.selectable_value(&mut cmq_component, CmqComponent::Q, "Q(せん断)");
+            ui.separator();
+            // 応力図の強軸(ey)/弱軸(ez)と同じ面の区別（`ForceComponent::plane`）。
+            // 直交グリッド・ひねりのない部材では弱軸成分はほぼ0になるため既定は強軸のみ。
+            ui.label("軸:");
+            ui.checkbox(&mut cmq_axes.ey, "強軸(ey)");
+            ui.checkbox(&mut cmq_axes.ez, "弱軸(ez)");
+            ui.separator();
+            // ケース切替は追加せず、ナビゲータ／荷重タブで選択中のケース
+            // （`nav.focus_load_case`）をそのまま表示する。ここは現在値の案内のみ。
+            let case_label = app
+                .cmq_display_load_case()
+                .map(|lc| lc.name.clone())
+                .unwrap_or_else(|| "(荷重ケースなし)".to_string());
+            ui.label(format!("荷重ケース: {case_label}（ナビゲータで切替）"));
         });
     }
     // モデル化図: 可視化する解析種別（静解析＝弾性／増分解析＝弾塑性）を切り替える。
@@ -865,14 +902,9 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
     app.view_mode_idx = mode_idx;
     app.force_components = force_components;
     app.cmq_component = cmq_component;
+    app.cmq_axes = cmq_axes;
     app.check_ratio_filter = check_ratio_filter;
     app.modeling_analysis = modeling_analysis;
-
-    // CMQ 図はモデル編集に常に追従させるため、表示中は毎フレーム再計算する
-    // （スラブ数は小さい前提）。
-    if app.view_mode == ViewMode::Cmq {
-        app.refresh_beam_loads();
-    }
 
     // --- 表示範囲（全体 / 通り / 階）---
     // 通り芯・階の 1 構面だけを正対で描く 2D 表示。表示モード（形状・変形・応力図…）
