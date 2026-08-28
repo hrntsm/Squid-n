@@ -5617,7 +5617,7 @@ fn test_secondary_joist_subdivided_slab_dl_cmq_and_solve() {
             section: Some(SectionId(0)),
             name: "B1".into(),
         }],
-        // 床領域は大梁 1 区画（8000×6000）。小梁で区切られた 2 枚の床板を持つ。
+        // 床領域は大梁の 1 区画（8000×6000）。小梁で区切られた 2 枚の床板を持つ。
         floor_regions: vec![{
             let mut region = FloorRegion::new(
                 FloorRegionId(0),

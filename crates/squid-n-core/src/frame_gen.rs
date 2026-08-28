@@ -391,7 +391,7 @@ pub struct FrameGenResult {
 ///    その列の先頭が基部であることが `squid_n_core::model::story` の不変条件である。
 ///    階名は入力を優先し、空なら [`default_story_name`] で補う。所属節点・剛床・
 ///    地震用重量は準備計算が算定する派生値のため、ここでは空のままとする。
-/// 8. **床**は全レベルで、隣り合う通りに囲まれた格子区画へ 1 枚ずつ作る
+/// 8. **床**は全レベルで、隣り合う通りに囲まれた格子床領域へ 1 枚ずつ作る
 ///    （`with_slabs` が false、または片方向の通りが 1 本のときは作らない）。
 ///    板厚 [`FrameSpec::slab_thickness`] の断面 [`SLAB_SECTION_NAME`] を 1 枚だけ
 ///    作り、全階の床で共有する。断面には [`FrameSpec::slab_concrete`] の

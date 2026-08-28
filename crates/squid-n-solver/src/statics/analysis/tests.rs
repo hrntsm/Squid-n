@@ -276,7 +276,7 @@ fn test_model_issues_rejects_slab_without_section() {
     }
     let boundary = vec![NodeId(0), NodeId(1), NodeId(n + 1), NodeId(n)];
     // 大梁で境界を閉じる（1 本は `make_cantilever_model` が既に持つ 0→1）。
-    // 閉じていないと「大梁の区画に載らない浮き床板」として扱われてしまう。
+    // 閉じていないと「大梁の床領域に載らない浮き床板」として扱われてしまう。
     for (i, j) in [(1, n + 1), (n + 1, n), (n, 0)] {
         model.elements.push(ElementData {
             id: ElemId(model.elements.len() as u32),
@@ -1336,7 +1336,7 @@ fn analysis_linear_combination_matches_assembled_load_case() {
 
 /// 節点を共有せずに交差する大梁は、解析を止めない警告として診断に出る。
 ///
-/// 床領域は大梁で囲まれた区画として面走査で求めるため、交差があると区画が実際とずれる。
+/// 床領域は大梁が囲む閉領域として面走査で求めるため、交差があると床領域が実際とずれる。
 /// 解析自体は通るので、エラーではなく警告で利用者へ確かめる。
 #[test]
 fn test_crossing_beams_reported_as_warning() {
@@ -1441,7 +1441,7 @@ fn test_model_issues_warns_unassigned_joist() {
     assert!(precheck_model(&model).is_ok(), "解析は止めない");
 }
 
-/// 大梁の区画に載らない浮き床板は警告し、解析は止めない。
+/// 大梁の床領域に載らない浮き床板は警告し、解析は止めない。
 #[test]
 fn test_model_issues_warns_floating_plate() {
     use super::precheck::{model_issues, precheck_model, IssueSeverity};
@@ -1590,6 +1590,22 @@ fn test_model_issues_warns_wall_plates_not_expanded() {
         openings: Vec::new(),
         three_side_slit: false,
     });
+    model.wall_plates.push(WallPlate {
+        id: WallPlateId(3),
+        shape: WallPlateShape::Attached {
+            anchor: squid_n_core::model::RegionAnchor::Line {
+                nodes: [NodeId(0), NodeId(1)],
+                span: [0.0, 1.0],
+                transfer: squid_n_core::model::LoadTransfer::Anchor,
+            },
+            extent: [900.0, 900.0],
+        },
+        section: None,
+        opening_area: 0.0,
+        opening_weight: 0.0,
+        openings: Vec::new(),
+        three_side_slit: false,
+    });
 
     let issues = model_issues(&model);
     let msgs: Vec<&str> = issues.iter().map(|i| i.message.as_str()).collect();
@@ -1599,17 +1615,83 @@ fn test_model_issues_warns_wall_plates_not_expanded() {
         }),
         "4 節点でない壁版の警告がない: {msgs:?}"
     );
+    let no_section = issues
+        .iter()
+        .find(|i| i.severity == IssueSeverity::Warning && i.message.contains("断面未割当の壁版"))
+        .unwrap_or_else(|| panic!("断面未割当の壁版の警告がない: {msgs:?}"));
     assert!(
-        issues.iter().any(|i| {
-            i.severity == IssueSeverity::Warning && i.message.contains("断面未割当の壁版")
+        no_section.message.contains("2 枚"),
+        "Enclosed 1 枚と取り付く壁版 1 枚を数えること: {}",
+        no_section.message
+    );
+    assert!(
+        no_section.message.contains("自重を分配できません"),
+        "取り付く壁版の自重欠落に触れること: {}",
+        no_section.message
+    );
+    assert!(
+        !issues.iter().any(|i| {
+            i.severity == IssueSeverity::Warning
+                && i.message.contains("4 節点でない壁版")
+                && i.message.contains("2 枚")
         }),
-        "断面未割当の壁版の警告がない: {msgs:?}"
+        "断面ありの取り付く壁版を 4 節点でないと数えないこと: {msgs:?}"
     );
     assert!(
         issues.iter().any(|i| {
-            i.severity == IssueSeverity::Warning && i.message.contains("取り付く壁版")
+            i.severity == IssueSeverity::Warning
+                && i.message.contains("取り付く壁版")
+                && i.message.contains("自重は地震用重量")
         }),
-        "取り付く壁版の警告がない: {msgs:?}"
+        "取り付く壁版の警告がない、または自重を分配しない旨の古い文言のまま: {msgs:?}"
     );
     assert!(precheck_model(&model).is_ok(), "解析は止めない");
+}
+
+/// 自立壁（床領域アンカー）が荷重を流せる床の上に載っていない場合はエラーで止める。
+/// 自重の行き先が無く、黙って落とすと梁がその重量を負担しないまま設計される（危険側）。
+#[test]
+fn self_standing_wall_off_the_floor_is_an_error() {
+    use super::precheck::{model_issues, precheck_model, IssueSeverity};
+    use squid_n_core::ids::WallPlateId;
+    use squid_n_core::model::{RegionAnchor, WallPlate, WallPlateShape};
+
+    let mut model = make_cantilever_model();
+    let sec = model.sections[0].id;
+    let n = model.nodes.len() as u32;
+    // 床領域からも部材からも離れた位置に置いた自立壁の 2 節点。
+    for (i, x) in [50000.0f64, 54000.0].into_iter().enumerate() {
+        model.nodes.push(squid_n_core::model::Node {
+            id: NodeId(n + i as u32),
+            coord: [x, 50000.0, 3000.0],
+            restraint: Default::default(),
+            mass: None,
+            story: None,
+            support_spring: None,
+        });
+    }
+    model.wall_plates.push(WallPlate {
+        id: WallPlateId(model.wall_plates.len() as u32),
+        shape: WallPlateShape::Attached {
+            anchor: RegionAnchor::FloorRegion {
+                nodes: [NodeId(n), NodeId(n + 1)],
+            },
+            extent: [2000.0, 2000.0],
+        },
+        section: Some(sec),
+        opening_area: 0.0,
+        opening_weight: 0.0,
+        openings: Vec::new(),
+        three_side_slit: false,
+    });
+
+    let issues = model_issues(&model);
+    let msgs: Vec<&str> = issues.iter().map(|i| i.message.as_str()).collect();
+    assert!(
+        issues
+            .iter()
+            .any(|i| i.severity == IssueSeverity::Error && i.message.contains("自立壁")),
+        "床に載らない自立壁のエラーがない: {msgs:?}"
+    );
+    assert!(precheck_model(&model).is_err(), "解析を止めること");
 }

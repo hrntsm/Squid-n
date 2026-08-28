@@ -167,8 +167,8 @@ impl App {
 
         // --- 床領域（大梁の区画）ごとの手入力小梁ライン ---
         // 交差があれば床格子サブモデル（二方向）で、なければ単純支持梁で検定する。
-        // 積載は区画の代表床板（`slab_ids` の先頭。squid-n-load の `distribute_region`
-        // と同じ規約）から求める。区画が床板を持たない場合は検定対象外。
+        // 積載は床領域の代表床板（`slab_ids` の先頭。squid-n-load の `distribute_region`
+        // と同じ規約）から求める。床領域が床板を持たない場合は検定対象外。
         for region in &self.model.floor_regions {
             let Some(rep_slab) = region.slab_ids.first().and_then(|&id| self.model.slab(id)) else {
                 continue;

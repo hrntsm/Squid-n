@@ -1226,7 +1226,7 @@ fn test_uses_joist_distribution_false_for_attached() {
     assert!(!super::uses_joist_distribution(&model, &region));
 }
 
-/// 区画が床板を 2 枚以上持つ場合、手入力小梁ラインがあっても二段階分配は使わない
+/// 床領域が床板を 2 枚以上持つ場合、手入力小梁ラインがあっても二段階分配は使わない
 /// （代表床板〔先頭〕以外の面積・荷重を無視して総和保存が崩れるため）。
 /// `distribute_region` は通常経路（各床板を独立に分配）へ落ち、両方の床板の荷重が
 /// 出力に現れる。
@@ -1236,7 +1236,7 @@ fn test_uses_joist_distribution_false_for_multiple_slabs() {
     use squid_n_core::model::{DistributionMethod, FloorRegion, JoistLine, SlabShape};
 
     let mut model = Model::default();
-    // 6000×5000 の区画（節点 0-1-2-3）。中央の小梁（節点 4-5）が 2 枚の床板
+    // 6000×5000 の床領域（節点 0-1-2-3）。中央の小梁（節点 4-5）が 2 枚の床板
     // （0: y=0..2500, 1: y=2500..5000）へ細分する。
     for (i, c) in [
         [0.0, 0.0, 0.0],
@@ -1287,7 +1287,7 @@ fn test_uses_joist_distribution_false_for_multiple_slabs() {
 
     assert!(
         !super::uses_joist_distribution(&model, &region),
-        "床板が2枚以上ある区画は二段階分配を使わない"
+        "床板が2枚以上ある床領域は二段階分配を使わない"
     );
 
     // 総和保存: 両方の床板の面荷重が失われず出力へ現れる。

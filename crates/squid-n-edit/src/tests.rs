@@ -2234,63 +2234,146 @@ fn test_set_load_cfg_roundtrip() {
     assert_eq!(model.load_cfg.as_ref().unwrap().steel_weight_factor, 1.05);
 }
 
-#[test]
-fn test_set_wall_attr_add_replace_and_remove_roundtrip() {
-    use squid_n_core::model::WallAttr;
-    let mut model = seeded_model(2, 1);
-    let mut stack = UndoStack::new();
+/// 壁版コマンドの下地。柱・梁が囲む構面の 4 節点と、板厚を持つ断面 1 つを備え、
+/// 断面未割当の `Enclosed` 壁版を 1 枚だけ持つモデル。
+fn model_with_enclosed_wall_plate() -> Model {
+    use squid_n_core::model::{Section, WallPlate, WallPlateShape};
 
-    let attr1 = WallAttr {
-        elem: ElemId(0),
-        opening_area: 100.0,
-        opening_weight: 50.0,
+    let mut model = empty_model();
+    for (i, coord) in [
+        [0.0, 0.0, 0.0],
+        [4000.0, 0.0, 0.0],
+        [4000.0, 0.0, 3000.0],
+        [0.0, 0.0, 3000.0],
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        model.nodes.push(Node {
+            id: NodeId(i as u32),
+            coord,
+            restraint: Dof6Mask::FREE,
+            mass: None,
+            story: None,
+            support_spring: None,
+        });
+    }
+    model.sections.push(Section {
+        id: SectionId(0),
+        name: "壁 t150".into(),
+        area: 150.0 * 3000.0,
+        iy: 1.0,
+        iz: 1.0,
+        j: 1.0,
+        depth: 3000.0,
+        width: 150.0,
+        as_y: 1.0,
+        as_z: 1.0,
+        floor: None,
+        panel_thickness: None,
+        thickness: Some(150.0),
+        shape: None,
+        material: None,
+        rebar_material: None,
+        shear_rebar_material: None,
+        steel_material: None,
+    });
+    model.wall_plates.push(WallPlate {
+        id: WallPlateId(0),
+        shape: WallPlateShape::Enclosed {
+            boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
+        },
+        section: None,
+        opening_area: 0.0,
+        opening_weight: 0.0,
+        openings: vec![],
         three_side_slit: false,
-        openings: vec![],
-    };
-    stack.run(
-        &mut model,
-        Box::new(SetWallAttr {
-            attr: attr1.clone(),
-        }),
-    );
-    assert_eq!(model.wall_attrs, vec![attr1.clone()]);
-
-    // 既存エントリを置換
-    let attr2 = WallAttr {
-        elem: ElemId(0),
-        opening_area: 200.0,
-        opening_weight: 80.0,
-        three_side_slit: true,
-        openings: vec![],
-    };
-    stack.run(
-        &mut model,
-        Box::new(SetWallAttr {
-            attr: attr2.clone(),
-        }),
-    );
-    assert_eq!(model.wall_attrs, vec![attr2.clone()]);
-
-    stack.undo(&mut model);
-    assert_eq!(model.wall_attrs, vec![attr1.clone()]);
-
-    // 削除
-    stack.run(&mut model, Box::new(RemoveWallAttr { elem: ElemId(0) }));
-    assert!(model.wall_attrs.is_empty());
-
-    stack.undo(&mut model);
-    assert_eq!(model.wall_attrs, vec![attr1]);
+    });
+    model
 }
 
+/// 壁版の属性編集（開口・三方スリット）が往復すること。
 #[test]
-fn test_remove_wall_attr_missing_is_noop() {
+fn test_set_wall_plate_attrs_roundtrip() {
+    use squid_n_core::model::WallOpening;
+    let mut model = model_with_enclosed_wall_plate();
+    let mut stack = UndoStack::new();
+    let id = model.wall_plates[0].id;
+
+    stack.run(
+        &mut model,
+        Box::new(SetWallPlateAttrs {
+            id,
+            opening_area: 200.0,
+            opening_weight: 80.0,
+            openings: vec![WallOpening {
+                width: 900.0,
+                height: 1800.0,
+                offset: None,
+            }],
+            three_side_slit: true,
+        }),
+    );
+    assert_eq!(model.wall_plates[0].opening_area, 200.0);
+    assert_eq!(model.wall_plates[0].opening_weight, 80.0);
+    assert_eq!(model.wall_plates[0].openings.len(), 1);
+    assert!(model.wall_plates[0].three_side_slit);
+
+    stack.undo(&mut model);
+    assert_eq!(model.wall_plates[0].opening_area, 0.0);
+    assert_eq!(model.wall_plates[0].opening_weight, 0.0);
+    assert!(model.wall_plates[0].openings.is_empty());
+    assert!(!model.wall_plates[0].three_side_slit);
+}
+
+/// 存在しない壁版への属性編集は Noop（undo 履歴に積まれない）。
+#[test]
+fn test_set_wall_plate_attrs_missing_id_is_noop() {
     let mut model = empty_model();
     let mut stack = UndoStack::new();
-    stack.run(&mut model, Box::new(RemoveWallAttr { elem: ElemId(0) }));
-    assert!(model.wall_attrs.is_empty());
-    // 失敗したコマンド（Noop）は undo 履歴に積まれない。
+    stack.run(
+        &mut model,
+        Box::new(SetWallPlateAttrs {
+            id: WallPlateId(0),
+            opening_area: 1.0,
+            opening_weight: 2.0,
+            openings: vec![],
+            three_side_slit: true,
+        }),
+    );
     assert!(!stack.can_undo());
-    assert!(model.wall_attrs.is_empty());
+}
+
+/// 壁版の断面割当が往復し、実在しない断面は Noop になること
+/// （`SetSlabSection` と同じ参照検証の規約）。
+#[test]
+fn test_set_wall_plate_section_roundtrip_and_rejects_dangling() {
+    let mut model = model_with_enclosed_wall_plate();
+    let mut stack = UndoStack::new();
+    let id = model.wall_plates[0].id;
+    let sec = model.sections[0].id;
+
+    stack.run(
+        &mut model,
+        Box::new(SetWallPlateSection {
+            id,
+            section: Some(sec),
+        }),
+    );
+    assert_eq!(model.wall_plates[0].section, Some(sec));
+    stack.undo(&mut model);
+    assert_eq!(model.wall_plates[0].section, None);
+
+    // 実在しない断面は割り当てない。
+    stack.run(
+        &mut model,
+        Box::new(SetWallPlateSection {
+            id,
+            section: Some(SectionId(999)),
+        }),
+    );
+    assert_eq!(model.wall_plates[0].section, None);
+    assert!(!stack.can_undo());
 }
 
 fn sample_misc_wall(weight: f64) -> squid_n_core::model::OutOfFrameMiscWall {
@@ -6188,8 +6271,8 @@ fn test_add_attached_wall_plate_roundtrip() {
 /// 所属先の床領域が実在しなければ Noop。
 #[test]
 fn test_add_attached_wall_plate_floor_region_anchor_roundtrip() {
-    use squid_n_core::ids::{FloorRegionId, NodeId};
-    use squid_n_core::model::{FloorRegion, RegionAnchor};
+    use squid_n_core::ids::NodeId;
+    use squid_n_core::model::RegionAnchor;
 
     let mut model = Model::default();
     for i in 0..2u32 {
@@ -6204,29 +6287,11 @@ fn test_add_attached_wall_plate_floor_region_anchor_roundtrip() {
     }
     let mut undo = UndoStack::default();
 
-    // 所属先の床領域がまだ実在しない。
+    // 自立壁が荷重を渡す床領域は保存しないため、床領域が 1 つも無くても作れる
+    // （荷重を流せる床の上に載っているかは幾何の問題で、解析前チェックが見る。
+    // 判定を 2 か所に分けない）。
     let cmd = crate::AddAttachedWallPlate {
         anchor: RegionAnchor::FloorRegion {
-            region: FloorRegionId(0),
-            nodes: [NodeId(0), NodeId(1)],
-        },
-        extent: [2500.0, 2500.0],
-        section: None,
-        opening_area: 0.0,
-        opening_weight: 0.0,
-    };
-    assert!(
-        !undo.run(&mut model, Box::new(cmd)),
-        "存在しない床領域を指す自立壁は Noop"
-    );
-    assert!(model.wall_plates.is_empty());
-
-    model
-        .floor_regions
-        .push(FloorRegion::new(FloorRegionId(0), vec![]));
-    let cmd = crate::AddAttachedWallPlate {
-        anchor: RegionAnchor::FloorRegion {
-            region: FloorRegionId(0),
             nodes: [NodeId(0), NodeId(1)],
         },
         extent: [2500.0, 2500.0],
@@ -6240,6 +6305,19 @@ fn test_add_attached_wall_plate_floor_region_anchor_roundtrip() {
 
     undo.undo(&mut model);
     assert!(model.wall_plates.is_empty(), "undo で消える");
+
+    // 実在しない節点を指す自立壁は Noop（節点参照は編集層が検証する）。
+    let dangling = crate::AddAttachedWallPlate {
+        anchor: RegionAnchor::FloorRegion {
+            nodes: [NodeId(0), NodeId(9)],
+        },
+        extent: [2500.0, 2500.0],
+        section: None,
+        opening_area: 0.0,
+        opening_weight: 0.0,
+    };
+    assert!(!undo.run(&mut model, Box::new(dangling)));
+    assert!(model.wall_plates.is_empty());
 }
 
 /// SetAttachedWallPlateExtent / SetAttachedWallPlateAnchor の Noop と往復。

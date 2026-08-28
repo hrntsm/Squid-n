@@ -8,8 +8,7 @@ use squid_n_core::ids::*;
 /// 一致する既存エントリがあれば置換し、なければ末尾に追加する。逆操作は変更前の
 /// 状態への復元（既存エントリの置換なら変更前の `SteelDesignAttr` で
 /// [`SetSteelDesignAttr`] を再実行、新規追加なら [`RemoveSteelDesignAttr`] で
-/// 取り消す）。[`SetWallAttr`](crate::SetWallAttr)・
-/// [`SetMemberDetailAttr`](crate::SetMemberDetailAttr) と同じパターン。
+/// 取り消す）。[`SetMemberDetailAttr`](crate::SetMemberDetailAttr) と同じパターン。
 pub struct SetSteelDesignAttr {
     pub attr: squid_n_core::model::SteelDesignAttr,
 }

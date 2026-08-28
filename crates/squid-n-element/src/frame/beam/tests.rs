@@ -315,7 +315,7 @@ fn test_beam_new_slab_cooperation_width_amplifies_iy() {
 }
 
 /// 床領域（大梁の1区画）が小梁で複数の床板（`Slab`）へ細分されていても、
-/// 区画の外周を走る大梁のスラブ協力幅は効く（境界の判定は `FloorRegion::boundary`
+/// 床領域の外周を走る大梁のスラブ協力幅は効く（境界の判定は `FloorRegion::boundary`
 /// を優先するため。個々の床板の境界だけで判定すると、大梁の両端が別々の床板
 /// にまたがり、どちらの床板にも「両端を含む境界」が無くなって増大が消える
 /// 回帰が起きる）。
@@ -359,7 +359,7 @@ fn test_beam_new_slab_cooperation_width_survives_joist_subdivided_region() {
             },
         },
     };
-    // 区画は 6000×5000 の矩形（節点 0-1-2-3）。中央の小梁（節点 4-5）が
+    // 床領域は 6000×5000 の矩形（節点 0-1-2-3）。中央の小梁（節点 4-5）が
     // これを 2 枚の床板（0: y=0..2500, 1: y=2500..5000）へ細分する。
     let model = Model {
         nodes: vec![
@@ -425,7 +425,7 @@ fn test_beam_new_slab_cooperation_width_survives_joist_subdivided_region() {
         slab_thickness: 150.0,
         ..Default::default()
     };
-    // 区画の外周を走る大梁（節点 0→1。区画の対角にあたるため、細分後の
+    // 床領域の外周を走る大梁（節点 0→1。床領域の対角にあたるため、細分後の
     // どちらの床板の境界にも両端は同時に含まれない）。
     let elem = ElementData {
         id: ElemId(0),
@@ -447,7 +447,7 @@ fn test_beam_new_slab_cooperation_width_survives_joist_subdivided_region() {
     let beam = BeamElement::new(&elem, &model);
     assert!(
         beam.iz / i0 > 1.0,
-        "区画が細分されていても大梁のスラブ協力幅は増大するはず: iz/i0={}",
+        "床領域が細分されていても大梁のスラブ協力幅は増大するはず: iz/i0={}",
         beam.iz / i0
     );
 }

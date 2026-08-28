@@ -87,7 +87,7 @@ fn parse_single_joint(entry: &str) -> Result<MemberJoint, String> {
 }
 
 /// 継手入力バッファ（1行1件または「,」区切り、`距離` または `距離/種別`）を
-/// パースする（egui 非依存の純関数。`wall_attrs::parse_openings` の流儀）。
+/// パースする（egui 非依存の純関数。`wall_plates::parse_openings` の流儀）。
 pub fn parse_joints(s: &str) -> Result<Vec<MemberJoint>, String> {
     let normalized = s.replace('\n', ",");
     normalized

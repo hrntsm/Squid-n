@@ -131,7 +131,7 @@ fn test_beam_has_attached_slab_t_shape_and_plateless() {
     );
 }
 
-/// 床領域（大梁の1区画）が小梁で複数の床板へ細分されていても、区画の外周を走る
+/// 床領域（大梁の1区画）が小梁で複数の床板へ細分されていても、床領域の外周を走る
 /// 大梁のスラブ取付き判定は効く（判定を `FloorRegion::boundary` 優先にしているため。
 /// 個々の床板の境界だけで判定すると、大梁の両端が別々の床板にまたがり、
 /// どちらの床板にも「両端を含む」が成立しなくなる回帰が起きる）。
@@ -141,8 +141,8 @@ fn test_beam_has_attached_slab_survives_joist_subdivided_region() {
     use squid_n_core::model::{DistributionMethod, FloorRegion};
 
     let mut model = t_shape_model(vec![]);
-    // 6000×2500 の区画（節点 0-1-2-3）を、中央の小梁（節点 4-5）で 2 枚の床板へ
-    // 細分する。区画の外周を走る大梁（節点 0→1）の両端は、どちらの床板の境界にも
+    // 6000×2500 の床領域（節点 0-1-2-3）を、中央の小梁（節点 4-5）で 2 枚の床板へ
+    // 細分する。床領域の外周を走る大梁（節点 0→1）の両端は、どちらの床板の境界にも
     // 同時には含まれない。
     model.nodes.push(node(4, [6000.0, 1250.0, 3000.0]));
     model.nodes.push(node(5, [0.0, 1250.0, 3000.0]));
@@ -177,6 +177,6 @@ fn test_beam_has_attached_slab_survives_joist_subdivided_region() {
 
     assert!(
         beam_has_attached_slab(&model, &model.elements[0]),
-        "区画が細分されていても大梁（節点 0-1）のスラブ取付きは判定できるはず"
+        "床領域が細分されていても大梁（節点 0-1）のスラブ取付きは判定できるはず"
     );
 }

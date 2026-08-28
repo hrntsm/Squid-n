@@ -423,12 +423,12 @@ impl Default for DesignCtx {
 /// 「板厚が定まる」は [`squid_n_core::model::Model::slab_plate_thickness`]。
 /// 大梁または小梁で囲まれた床板は、その床板が属する**床領域の外周**
 /// （`FloorRegion::boundary`。小梁による細分によらず常に大梁の1区画を表す）に
-/// 両端が含まれること（区画内のどれか 1 枚でも板厚が定まればよい）。どの床領域にも
+/// 両端が含まれること（床領域内のどれか 1 枚でも板厚が定まればよい）。どの床領域にも
 /// 属さない床板は自身の `boundary_nodes` で判定する。取り付く床板は
 /// `edge_nodes(0)`（取付き線）が梁の両端と一致すること（順不同）。
 /// 点取り付き・板厚未定の床板は false。剛性側の協力幅
 /// （`squid_n_element::beam::stiffness_factors::slab_cooperating_width`）と同じ
-/// 判定規則（区画の外周を優先し、細分された床板の境界だけでは判定しない）。
+/// 判定規則（床領域の外周を優先し、細分された床板の境界だけでは判定しない）。
 /// 許容曲げの中央 T 形略算は取り付く床板がある支持梁も true とする。
 pub fn beam_has_attached_slab(
     model: &squid_n_core::model::Model,
