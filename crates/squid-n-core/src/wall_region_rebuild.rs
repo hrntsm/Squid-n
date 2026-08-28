@@ -10,7 +10,7 @@
 //! 取り付く壁版（パラペット・腰壁・垂れ壁・自立壁）はどの壁領域からも参照されない
 //! 独立した壁版のまま、素通しする。
 //!
-//! **床側との違い**: 床は「同じレベル Z」で新旧区画を対応付けるが、壁は構面
+//! **床側との違い**: 床は「同じレベル Z」で新旧の床領域を対応付けるが、壁は構面
 //! （直線）ごとに閉領域が現れるため、候補の全頂点が「同じ構面上にあるか」
 //! （[`WallRegionBoundary::is_same_plane`]）で絞り込んでから、構面内の局所座標 `(s, z)`
 //! で多角形重心・内包を判定する。間柱は D7 により毎回入れ直す。
@@ -42,7 +42,7 @@ use crate::region_rebuild::{
     delete_unref_nodes, edge_fully_covered, horizontal_girders, point_segment_dist, GirderSeg,
 };
 
-/// 重心照合で面積が近いとみなす相対許容（新旧区画の面積比）。
+/// 重心照合で面積が近いとみなす相対許容（新旧の床領域の面積比）。
 /// [`crate::region_rebuild::CENTROID_MATCH_AREA_REL`] と同じ値・同じ意味。
 pub const CENTROID_MATCH_AREA_REL: f64 = 1e-3;
 
@@ -53,9 +53,9 @@ pub struct WallRegionRebuildReport {
     pub regions: usize,
     /// 旧壁領域から名前を引き継いだ数。
     pub inherited: usize,
-    /// 対応する旧壁領域が見つからなかった新規区画の数。
+    /// 対応する旧壁領域が見つからなかった新規の床領域の数。
     pub new_regions: usize,
-    /// 重心が新しい区画に入らなかった旧壁領域（名前を引き継げなかった）の数。
+    /// 重心が新しい床領域に入らなかった旧壁領域（名前を引き継げなかった）の数。
     pub unmatched_old_regions: usize,
     /// 壁領域へ帰属し直した壁版の数。
     pub wall_plates_assigned: usize,
@@ -81,7 +81,7 @@ pub fn rebuild_wall_regions(model: &mut Model) -> WallRegionRebuildReport {
     let old_regions = std::mem::take(&mut model.wall_regions);
     let mut report = WallRegionRebuildReport::default();
 
-    // 1. 新しい壁領域を区画ごとに作り、旧壁領域と構面・重心・面積で対応付けて
+    // 1. 新しい壁領域を床領域ごとに作り、旧壁領域と構面・重心・面積で対応付けて
     //    名前を引き継ぐ（D10 と同じ方針）。間柱は後段で D7 により入れ直す。
     let mut matched_old = vec![false; old_regions.len()];
     let mut new_regions: Vec<WallRegion> = Vec::with_capacity(scan.boundaries.len());
@@ -440,7 +440,7 @@ mod tests {
         assert!(model.validate().is_ok(), "{:?}", model.validate());
     }
 
-    /// 再構成しても、同じ構面・同じ重心・同じ面積の区画には旧壁領域の名前を
+    /// 再構成しても、同じ構面・同じ重心・同じ面積の壁領域には旧壁領域の名前を
     /// 引き継ぐ（D10）。間柱は再走査で帰属し、旧領域からは引き継がない（D7）。
     #[test]
     fn test_rebuild_inherits_name_without_post_ids() {
@@ -458,7 +458,7 @@ mod tests {
 
         // 名前・間柱を付けたあとで、モデル自体は変えずに再構成する。
         let report = rebuild_wall_regions(&mut model);
-        assert_eq!(report.inherited, 1, "同じ区画は引き継がれるはず");
+        assert_eq!(report.inherited, 1, "同じ床領域は引き継がれるはず");
         assert_eq!(model.wall_regions[0].name, "西面耐震壁");
         assert!(model.wall_regions[0].post_ids.is_empty());
         assert!(report.unassigned_posts >= 1);
@@ -679,7 +679,7 @@ mod tests {
         // 低インデックス: パラペットの自由端（変換後に参照 0 になり削除される節点）。
         model.nodes.push(node(0, 0.0, 0.0, 4500.0));
         model.nodes.push(node(1, 4000.0, 0.0, 4500.0));
-        // 高インデックス: 実在の1区画（柱・梁）の4隅。
+        // 高インデックス: 実在の柱・梁の区画の4隅。
         model.nodes.push(node(2, 0.0, 0.0, 0.0));
         model.nodes.push(node(3, 4000.0, 0.0, 0.0));
         model.nodes.push(node(4, 4000.0, 0.0, 3000.0));

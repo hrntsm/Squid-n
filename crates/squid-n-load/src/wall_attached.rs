@@ -212,61 +212,61 @@ pub fn accumulate_attached_wall_seismic_weight(model: &Model, node_weight: &mut 
 
 /// 「床領域」アンカーの取り付く壁版（自立壁）の自重を配分する（D17）。
 ///
-/// 戻り値は `(床板ごとの追加面荷重強度 [N/mm²], フォールバックの BeamLoad 列)`。
-/// 追加強度は、所属する床領域内の全床板へ床板面積によらず同一の値を返す
-/// （D17「等価な面荷重へならす」を、区画内の床板ごとの強度差を無視する形で実装したもの。
-/// 区画内で面荷重強度が異なる床板が混在する場合の扱いは
+/// 戻り値は床板ごとの追加面荷重強度 [N/mm²]。追加強度は、載っている床領域内の
+/// 全床板へ床板面積によらず同一の値を返す（D17「等価な面荷重へならす」を、
+/// 床領域内の床板ごとの強度差を無視する形で実装したもの。床領域内で面荷重強度が
+/// 異なる床板が混在する場合の扱いは
 /// `dev_docs/handoff/床領域・壁領域の再設計_申し送り.md` §8.1 の残課題と同じ性質の近似）。
 ///
-/// 所属する床領域が床板を1枚も持たない、または床板の XY 投影合計面積が0の場合
-/// （版なし領域・鉛直に近い床板）は等価面荷重へならす先がないため、総重量を保存する
-/// 目的で取付き線の両端節点（`nodes`）へ、台形なら面積重心比、矩形なら半分ずつの
-/// 集中荷重として返す。
-pub fn floor_region_wall_extra_intensity(model: &Model) -> (HashMap<SlabId, f64>, Vec<BeamLoad>) {
-    struct Pending {
-        region: FloorRegionId,
-        total: f64,
-        nodes: [NodeId; 2],
-        extent: [f64; 2],
-    }
-
+/// # 荷重を渡す床領域は保存せず、壁の位置から都度求める
+///
+/// 分配先は [`squid_n_core::model::Model::self_standing_wall_coverage`] が解決する。
+/// 床領域をまたぐ壁は境界で内部的に分割し、それぞれの床領域へ台形面積比で配る。
+///
+/// # 荷重の行き先が無い壁は分配しない（フォールバックしない）
+///
+/// どの床領域にも載らない部分（`uncovered`）を持つ自立壁は、荷重の行き先が無い
+/// モデルの不備であり、**解析前チェック（`squid-n-solver::precheck`）がエラーで止める**。
+/// ここでは覆われている部分だけを配り、覆われていない部分は配らない。
+///
+/// かつては総重量を保存する目的で取付き線の両端節点への集中荷重へ逃がしていたが、
+/// この経路は**危険側だった**: 自立壁の両端はどの部材にも接続されない自由節点で
+/// ありうる。そこへの節点荷重は非構造節点として `DofMap` が無視するため
+/// （`squid_n_core::dof::DofMap::build`）、地震用重量には算入されるのに長期 DL の
+/// 応力解析からは黙って消え、梁がその重量を負担しないまま設計される。
+/// 不備を下流で糊付けせず、解析前チェックで止める形へ改めた。
+pub fn floor_region_wall_extra_intensity(model: &Model) -> HashMap<SlabId, f64> {
     let mut total_by_region: HashMap<FloorRegionId, f64> = HashMap::new();
-    let mut pending: Vec<Pending> = Vec::new();
     for plate in &model.wall_plates {
-        let WallPlateShape::Attached { anchor, extent } = &plate.shape else {
-            continue;
-        };
-        let RegionAnchor::FloorRegion { region, nodes } = anchor else {
-            continue;
-        };
         let Some(total) = model.wall_plate_self_weight(plate, model) else {
             continue;
         };
         if total <= 0.0 {
             continue;
         }
-        *total_by_region.entry(*region).or_insert(0.0) += total;
-        pending.push(Pending {
-            region: *region,
-            total,
-            nodes: *nodes,
-            extent: *extent,
-        });
+        let Some(cov) = model.self_standing_wall_coverage(plate) else {
+            continue;
+        };
+        for (region, frac) in cov.per_region {
+            *total_by_region.entry(region).or_insert(0.0) += total * frac;
+        }
     }
     if total_by_region.is_empty() {
-        return (HashMap::new(), Vec::new());
+        return HashMap::new();
     }
 
     let mut extra_intensity: HashMap<SlabId, f64> = HashMap::new();
-    let mut area_by_region: HashMap<FloorRegionId, f64> = HashMap::new();
     for region in &model.floor_regions {
         let Some(&extra) = total_by_region.get(&region.id) else {
             continue;
         };
+        // 面積は床の分配と同じ XY 投影（3 次元面積で割ると、分配側が XY 面積に
+        // 強度を掛けるため総重量が縮み、傾斜床で危険側になる）。
+        // `self_standing_wall_coverage` が候補を「XY 面積が正の床領域」に絞るため、
+        // ここへ来る床領域の面積は必ず正になる。
         let area = region_slab_area(model, &region.slab_ids);
-        area_by_region.insert(region.id, area);
         if area <= 0.0 {
-            continue; // 版なし領域はフォールバックへ回す（下記）。
+            continue;
         }
         let dw = extra / area;
         for &sid in &region.slab_ids {
@@ -274,18 +274,7 @@ pub fn floor_region_wall_extra_intensity(model: &Model) -> (HashMap<SlabId, f64>
         }
     }
 
-    let mut fallback = Vec::new();
-    for p in &pending {
-        let has_area = area_by_region.get(&p.region).copied().unwrap_or(0.0) > 0.0;
-        if has_area {
-            continue;
-        }
-        let s = trapezoid_centroid_s(p.extent[0].abs(), p.extent[1].abs());
-        push_node_load(&mut fallback, p.nodes[0], p.total * (1.0 - s));
-        push_node_load(&mut fallback, p.nodes[1], p.total * s);
-    }
-
-    (extra_intensity, fallback)
+    extra_intensity
 }
 
 #[cfg(test)]
@@ -577,39 +566,44 @@ mod tests {
         assert!((r1 - total * t).abs() / total < 1e-9, "r1={r1}");
     }
 
-    /// 「床領域」アンカー（自立壁）: 床板を持つ区画では、区画内の全床板へ
-    /// 同一の追加強度（総重量÷床板合計面積）が上乗せされる。
-    #[test]
-    fn floor_region_anchor_adds_equivalent_intensity_to_slabs() {
-        let mut m = model_with_line_anchor_nodes();
-        m.nodes.push(mk_node(2, 0.0, 0.0, 0.0));
-        m.nodes.push(mk_node(3, 4000.0, 0.0, 0.0));
-        m.nodes.push(mk_node(4, 4000.0, 4000.0, 0.0));
-        m.nodes.push(mk_node(5, 0.0, 4000.0, 0.0));
-        let boundary = vec![NodeId(2), NodeId(3), NodeId(4), NodeId(5)];
-        let slab = Slab {
-            id: SlabId(0),
-            shape: SlabShape::Enclosed {
-                boundary: boundary.clone(),
-            },
-            plate: SlabPlate {
-                section: None,
-                loads: Vec::new(),
-                usage: None,
-                method: DistributionMethod::TriTrapezoid,
-                one_way: None,
-            },
-        };
-        let mut region = FloorRegion::new(FloorRegionId(0), boundary);
-        region.slab_ids.push(slab.id);
-        m.slabs.push(slab);
+    /// 自立壁が載る床領域を作る。境界は Z=3000（壁の節点と同じレベル）の矩形で、
+    /// `slab` が真なら床板を 1 枚持たせる。`z_far` は奥側 2 点の Z（傾斜床の検証用）。
+    fn push_floor_region(m: &mut Model, x: [f64; 2], id: u32, slab: bool, z_far: f64) {
+        let n0 = m.nodes.len() as u32;
+        for (dx, y, z) in [
+            (x[0], -2000.0, 3000.0),
+            (x[1], -2000.0, 3000.0),
+            (x[1], 2000.0, z_far),
+            (x[0], 2000.0, z_far),
+        ] {
+            m.nodes.push(mk_node(m.nodes.len() as u32, dx, y, z));
+        }
+        let boundary = vec![NodeId(n0), NodeId(n0 + 1), NodeId(n0 + 2), NodeId(n0 + 3)];
+        let mut region = FloorRegion::new(FloorRegionId(id), boundary.clone());
+        if slab {
+            let sid = SlabId(m.slabs.len() as u32);
+            m.slabs.push(Slab {
+                id: sid,
+                shape: SlabShape::Enclosed { boundary },
+                plate: SlabPlate {
+                    section: None,
+                    loads: Vec::new(),
+                    usage: None,
+                    method: DistributionMethod::TriTrapezoid,
+                    one_way: None,
+                },
+            });
+            region.slab_ids.push(sid);
+        }
         m.floor_regions.push(region);
+    }
 
-        let plate = WallPlate {
+    /// 自立壁の壁版（節点 0-1 の間、Z=3000）。
+    fn self_standing_plate() -> WallPlate {
+        WallPlate {
             id: squid_n_core::ids::WallPlateId(0),
             shape: WallPlateShape::Attached {
                 anchor: RegionAnchor::FloorRegion {
-                    region: FloorRegionId(0),
                     nodes: [NodeId(0), NodeId(1)],
                 },
                 extent: [1000.0, 1000.0],
@@ -619,63 +613,88 @@ mod tests {
             opening_weight: 0.0,
             openings: Vec::new(),
             three_side_slit: false,
-        };
+        }
+    }
+
+    /// 「床領域」アンカー（自立壁）: 床板を持つ床領域では、床領域内の全床板へ
+    /// 同一の追加強度（総重量÷床板合計面積）が上乗せされる。
+    #[test]
+    fn floor_region_anchor_adds_equivalent_intensity_to_slabs() {
+        let mut m = model_with_line_anchor_nodes();
+        // 壁（X=0..4000）を完全に含む床領域（X=-1000..5000）。
+        push_floor_region(&mut m, [-1000.0, 5000.0], 0, true, 3000.0);
+        let plate = self_standing_plate();
         let total = m.wall_plate_self_weight(&plate, &m).expect("自重が求まる");
         m.wall_plates.push(plate);
 
-        let (extra, fallback) = floor_region_wall_extra_intensity(&m);
-        assert!(fallback.is_empty(), "床板があるためフォールバック不要");
+        let extra = floor_region_wall_extra_intensity(&m);
         let dw = extra.get(&SlabId(0)).copied().expect("床板への追加強度");
-        let slab_area = 4000.0 * 4000.0;
+        let slab_area = 6000.0 * 4000.0;
         assert!(
             (dw - total / slab_area).abs() / (total / slab_area) < 1e-9,
             "dw={dw}"
         );
     }
 
-    /// 「床領域」アンカーの所属先が版なし領域（床板0枚）の場合、
-    /// 総重量を保存するため取付き線の両端節点への集中荷重にフォールバックする。
+    /// 床領域をまたぐ自立壁は境界で内部分割し、それぞれの床領域の床板へ配る。
+    /// 総重量は保存する。
     #[test]
-    fn floor_region_anchor_falls_back_to_nodes_when_no_slabs() {
+    fn floor_region_anchor_splits_across_regions() {
         let mut m = model_with_line_anchor_nodes();
-        m.nodes.push(mk_node(2, 0.0, 0.0, 0.0));
-        m.nodes.push(mk_node(3, 4000.0, 0.0, 0.0));
-        m.nodes.push(mk_node(4, 4000.0, 4000.0, 0.0));
-        m.nodes.push(mk_node(5, 0.0, 4000.0, 0.0));
-        let boundary = vec![NodeId(2), NodeId(3), NodeId(4), NodeId(5)];
-        // 床板を1枚も持たない版なし床領域。
-        m.floor_regions
-            .push(FloorRegion::new(FloorRegionId(0), boundary));
-
-        let plate = WallPlate {
-            id: squid_n_core::ids::WallPlateId(0),
-            shape: WallPlateShape::Attached {
-                anchor: RegionAnchor::FloorRegion {
-                    region: FloorRegionId(0),
-                    nodes: [NodeId(0), NodeId(1)],
-                },
-                extent: [1000.0, 1000.0],
-            },
-            section: Some(SectionId(0)),
-            opening_area: 0.0,
-            opening_weight: 0.0,
-            openings: Vec::new(),
-            three_side_slit: false,
-        };
+        // 壁は X=0..4000。床領域を X=-1000..2000 と X=2000..5000 に置き、
+        // 壁は X=2000 で 2:2 に分かれる。
+        push_floor_region(&mut m, [-1000.0, 2000.0], 0, true, 3000.0);
+        push_floor_region(&mut m, [2000.0, 5000.0], 1, true, 3000.0);
+        let plate = self_standing_plate();
         let total = m.wall_plate_self_weight(&plate, &m).expect("自重が求まる");
         m.wall_plates.push(plate);
 
-        let (extra, fallback) = floor_region_wall_extra_intensity(&m);
-        assert!(extra.is_empty(), "床板がないため追加強度は発生しない");
-        assert_eq!(fallback.len(), 2);
-        let sum: f64 = fallback
-            .iter()
-            .map(|bl| match bl.shape {
-                LoadShape::Point { p, .. } => p,
-                _ => panic!("Point を期待"),
-            })
-            .sum();
-        assert!((sum - total).abs() / total < 1e-9, "総重量を保存すること");
+        let extra = floor_region_wall_extra_intensity(&m);
+        assert_eq!(extra.len(), 2, "両方の床板へ配ること: {extra:?}");
+        // 各床板の面積は 3000×4000。強度×面積の和が総重量に一致する。
+        let sum: f64 = extra.values().map(|dw| dw * 3000.0 * 4000.0).sum();
+        assert!(
+            (sum - total).abs() / total < 1e-9,
+            "総重量を保存すること sum={sum} total={total}"
+        );
+        // 半分ずつなので強度も等しい。
+        let v: Vec<f64> = extra.values().copied().collect();
+        assert!((v[0] - v[1]).abs() / v[0] < 1e-9, "{extra:?}");
+    }
+
+    /// 版なし床領域（床板 0 枚）は「力を流す先が無い」ため覆いとみなさず、
+    /// 分配しない（フォールバックもしない。解析前チェックが止める）。
+    #[test]
+    fn floor_region_without_slabs_distributes_nothing() {
+        let mut m = model_with_line_anchor_nodes();
+        push_floor_region(&mut m, [-1000.0, 5000.0], 0, false, 3000.0);
+        let plate = self_standing_plate();
+        m.wall_plates.push(plate);
+
+        let extra = floor_region_wall_extra_intensity(&m);
+        assert!(
+            extra.is_empty(),
+            "床板が無ければ分配しない（危険側のフォールバックはしない）: {extra:?}"
+        );
+    }
+
+    /// 床領域の外へはみ出す自立壁は、覆われている分だけを配る。
+    #[test]
+    fn floor_region_anchor_distributes_only_covered_part() {
+        let mut m = model_with_line_anchor_nodes();
+        // 壁は X=0..4000。床領域は X=-1000..2000 だけなので半分がはみ出す。
+        push_floor_region(&mut m, [-1000.0, 2000.0], 0, true, 3000.0);
+        let plate = self_standing_plate();
+        let total = m.wall_plate_self_weight(&plate, &m).expect("自重が求まる");
+        m.wall_plates.push(plate);
+
+        let extra = floor_region_wall_extra_intensity(&m);
+        let dw = extra.get(&SlabId(0)).copied().expect("追加強度");
+        let carried = dw * 3000.0 * 4000.0;
+        assert!(
+            (carried - total * 0.5).abs() / total < 1e-9,
+            "覆われた半分だけを配ること carried={carried} total={total}"
+        );
     }
 
     /// 床分配は XY 投影面積に強度を掛ける。追加強度の分母も同じ面積でないと
@@ -683,18 +702,24 @@ mod tests {
     #[test]
     fn floor_region_extra_intensity_uses_xy_area_so_distribution_conserves() {
         let mut m = model_with_line_anchor_nodes();
-        // 4000×4000 の床を Y 方向に 1000 mm 傾斜させる（XY 面積は 16e6 のまま、
-        // 3 次元面積はそれより大きい）。
-        m.nodes.push(mk_node(2, 0.0, 0.0, 0.0));
-        m.nodes.push(mk_node(3, 4000.0, 0.0, 0.0));
-        m.nodes.push(mk_node(4, 4000.0, 4000.0, 1000.0));
-        m.nodes.push(mk_node(5, 0.0, 4000.0, 1000.0));
-        let boundary = vec![NodeId(2), NodeId(3), NodeId(4), NodeId(5)];
-        let slab = Slab {
+        // 奥側 2 点を Z=3000 から持ち上げ、XY 面積は変えずに 3 次元面積だけ大きくする。
+        // レベル判定は境界節点の Z の平均なので、平均が 3000 のままになるよう
+        // 手前 2 点を下げる（±500）。
+        let n0 = m.nodes.len() as u32;
+        for (x, y, z) in [
+            (-1000.0, -2000.0, 2500.0),
+            (5000.0, -2000.0, 2500.0),
+            (5000.0, 2000.0, 3500.0),
+            (-1000.0, 2000.0, 3500.0),
+        ] {
+            m.nodes.push(mk_node(m.nodes.len() as u32, x, y, z));
+        }
+        let boundary = vec![NodeId(n0), NodeId(n0 + 1), NodeId(n0 + 2), NodeId(n0 + 3)];
+        let mut region = FloorRegion::new(FloorRegionId(0), boundary.clone());
+        region.slab_ids.push(SlabId(0));
+        m.slabs.push(Slab {
             id: SlabId(0),
-            shape: SlabShape::Enclosed {
-                boundary: boundary.clone(),
-            },
+            shape: SlabShape::Enclosed { boundary },
             plate: SlabPlate {
                 section: None,
                 loads: Vec::new(),
@@ -702,98 +727,22 @@ mod tests {
                 method: DistributionMethod::TriTrapezoid,
                 one_way: None,
             },
-        };
-        let mut region = FloorRegion::new(FloorRegionId(0), boundary);
-        region.slab_ids.push(slab.id);
-        m.slabs.push(slab);
+        });
         m.floor_regions.push(region);
 
-        let plate = WallPlate {
-            id: squid_n_core::ids::WallPlateId(0),
-            shape: WallPlateShape::Attached {
-                anchor: RegionAnchor::FloorRegion {
-                    region: FloorRegionId(0),
-                    nodes: [NodeId(0), NodeId(1)],
-                },
-                extent: [1000.0, 1000.0],
-            },
-            section: Some(SectionId(0)),
-            opening_area: 0.0,
-            opening_weight: 0.0,
-            openings: Vec::new(),
-            three_side_slit: false,
-        };
+        let plate = self_standing_plate();
         let total = m.wall_plate_self_weight(&plate, &m).expect("自重が求まる");
         m.wall_plates.push(plate);
 
-        let (extra, fallback) = floor_region_wall_extra_intensity(&m);
-        assert!(fallback.is_empty());
+        let extra = floor_region_wall_extra_intensity(&m);
         let dw = extra.get(&SlabId(0)).copied().expect("追加強度");
-        let xy_area = 4000.0 * 4000.0;
+        let xy_area = 6000.0 * 4000.0;
         assert!(
             (dw * xy_area - total).abs() / total < 1e-9,
             "dw×A_xy={} total={}（3次元面積で割ると縮小する）",
             dw * xy_area,
             total
         );
-    }
-
-    /// 床板が鉛直に近い（XY 面積 0）ときは等価面荷重へならせず、節点へフォールバックする。
-    #[test]
-    fn floor_region_vertical_slab_falls_back_to_nodes() {
-        let mut m = model_with_line_anchor_nodes();
-        // XY に投影すると線分になる鉛直な「床板」。
-        m.nodes.push(mk_node(2, 0.0, 0.0, 0.0));
-        m.nodes.push(mk_node(3, 4000.0, 0.0, 0.0));
-        m.nodes.push(mk_node(4, 4000.0, 0.0, 3000.0));
-        m.nodes.push(mk_node(5, 0.0, 0.0, 3000.0));
-        let boundary = vec![NodeId(2), NodeId(3), NodeId(4), NodeId(5)];
-        let slab = Slab {
-            id: SlabId(0),
-            shape: SlabShape::Enclosed {
-                boundary: boundary.clone(),
-            },
-            plate: SlabPlate {
-                section: None,
-                loads: Vec::new(),
-                usage: None,
-                method: DistributionMethod::TriTrapezoid,
-                one_way: None,
-            },
-        };
-        let mut region = FloorRegion::new(FloorRegionId(0), boundary);
-        region.slab_ids.push(slab.id);
-        m.slabs.push(slab);
-        m.floor_regions.push(region);
-
-        let plate = WallPlate {
-            id: squid_n_core::ids::WallPlateId(0),
-            shape: WallPlateShape::Attached {
-                anchor: RegionAnchor::FloorRegion {
-                    region: FloorRegionId(0),
-                    nodes: [NodeId(0), NodeId(1)],
-                },
-                extent: [1000.0, 1000.0],
-            },
-            section: Some(SectionId(0)),
-            opening_area: 0.0,
-            opening_weight: 0.0,
-            openings: Vec::new(),
-            three_side_slit: false,
-        };
-        let total = m.wall_plate_self_weight(&plate, &m).expect("自重が求まる");
-        m.wall_plates.push(plate);
-
-        let (extra, fallback) = floor_region_wall_extra_intensity(&m);
-        assert!(extra.is_empty(), "XY 面積 0 なら面荷重へならさない");
-        let sum: f64 = fallback
-            .iter()
-            .map(|bl| match bl.shape {
-                LoadShape::Point { p, .. } => p,
-                _ => panic!("Point を期待"),
-            })
-            .sum();
-        assert!((sum - total).abs() / total < 1e-9);
     }
 
     #[test]

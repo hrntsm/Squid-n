@@ -19,7 +19,7 @@
 //! 「適用」で 1 つの `SetWallPlateAttrs` として発行する。
 
 use crate::app::App;
-use squid_n_core::ids::{FloorRegionId, NodeId, SectionId, WallPlateId};
+use squid_n_core::ids::{NodeId, SectionId, WallPlateId};
 use squid_n_core::model::{
     LoadTransfer, MultiOpeningMode, RegionAnchor, WallOpening, WallPlate, WallPlateShape,
 };
@@ -70,8 +70,6 @@ pub struct WallPlateDraft {
     pub add_to_floor_region: bool,
     /// 追加フォーム: 取付き線の両端、または自立壁の始点・終点。
     pub add_nodes: [Option<NodeId>; 2],
-    /// 追加フォーム: 自立壁が荷重を渡す床領域。
-    pub add_region: Option<FloorRegionId>,
     /// 追加フォーム: 立ち上がり高さ [mm]（始端側・終端側。負なら垂れ壁）。
     pub add_extent: [String; 2],
     /// 追加フォーム: 取付き線に載る壁版の荷重の出口。
@@ -260,7 +258,6 @@ fn wall_plates_list(ui: &mut egui::Ui, app: &mut App) {
     let mut pending_anchor: Vec<(WallPlateId, RegionAnchor)> = Vec::new();
     let mut pending_delete: Option<WallPlateId> = None;
     let node_ids: Vec<NodeId> = app.model.nodes.iter().map(|n| n.id).collect();
-    let region_ids: Vec<FloorRegionId> = app.model.floor_regions.iter().map(|r| r.id).collect();
     // 板状の断面（板厚を持つ断面）だけを候補にする。板厚が無い断面を割り当てても
     // 自重・数量が算定できないため、選ばせない（床板の断面欄と同じ規約）。
     let wall_sections: Vec<(SectionId, String)> = app
@@ -296,7 +293,7 @@ fn wall_plates_list(ui: &mut egui::Ui, app: &mut App) {
                 table_util::text_cell(ui, shape_label(plate));
             });
             row.col(|ui| {
-                // どの壁領域（柱梁の区画）に属するかは `wall_plate_ids` から逆引きする
+                // どの壁領域（柱・梁の区画）に属するかは `wall_plate_ids` から逆引きする
                 // （取り付く壁版はどの壁領域からも参照されない）。
                 let owner = app
                     .model
@@ -329,7 +326,6 @@ fn wall_plates_list(ui: &mut egui::Ui, app: &mut App) {
                         *anchor,
                         *extent,
                         &node_ids,
-                        &region_ids,
                         &mut pending_extent,
                         &mut pending_anchor,
                     );
@@ -434,7 +430,6 @@ fn attached_anchor_cell(
     anchor: RegionAnchor,
     extent: [f64; 2],
     node_ids: &[NodeId],
-    region_ids: &[FloorRegionId],
     pending_extent: &mut Vec<(WallPlateId, [f64; 2])>,
     pending_anchor: &mut Vec<(WallPlateId, RegionAnchor)>,
 ) {
@@ -507,19 +502,11 @@ fn attached_anchor_cell(
                     ));
                 }
             }
-            RegionAnchor::FloorRegion { region, nodes } => {
-                ui.label("床領域:");
-                let mut r = region;
-                egui::ComboBox::from_id_salt(("wp_reg", id.0))
-                    .selected_text(format!("#{}", r.0))
-                    .show_ui(ui, |ui| {
-                        for &rid in region_ids {
-                            ui.selectable_value(&mut r, rid, format!("#{}", rid.0));
-                        }
-                    });
-                if r != region {
-                    pending_anchor.push((id, RegionAnchor::FloorRegion { region: r, nodes }));
-                }
+            // 自立壁。荷重を渡す床領域は保存せず壁の位置から都度求めるため、
+            // ここで編集するのは壁自身の始点・終点だけである
+            // （`RegionAnchor::FloorRegion` のドキュメント）。
+            RegionAnchor::FloorRegion { nodes } => {
+                ui.label("自立(始点/終点):");
                 for k in 0..2 {
                     let mut sel = nodes[k];
                     egui::ComboBox::from_id_salt(("wp_fr_n", id.0, k))
@@ -532,7 +519,7 @@ fn attached_anchor_cell(
                     if sel != nodes[k] && sel != nodes[1 - k] {
                         let mut n = nodes;
                         n[k] = sel;
-                        pending_anchor.push((id, RegionAnchor::FloorRegion { region, nodes: n }));
+                        pending_anchor.push((id, RegionAnchor::FloorRegion { nodes: n }));
                     }
                 }
             }
@@ -769,30 +756,13 @@ fn add_attached_form(ui: &mut egui::Ui, app: &mut App) {
             ui.label("床領域がありません（準備計算を実行すると主架構から生成されます）");
             return;
         }
-        ui.horizontal(|ui| {
-            ui.label("荷重を渡す床領域:");
-            let text = app
-                .wall_plate_draft
-                .add_region
-                .map(|r| format!("#{}", r.0))
-                .unwrap_or_else(|| "―".to_string());
-            egui::ComboBox::from_id_salt("wp_add_region")
-                .selected_text(text)
-                .show_ui(ui, |ui| {
-                    for r in &app.model.floor_regions {
-                        let label = if r.name.is_empty() {
-                            format!("#{}", r.id.0)
-                        } else {
-                            format!("#{} {}", r.id.0, r.name)
-                        };
-                        ui.selectable_value(
-                            &mut app.wall_plate_draft.add_region,
-                            Some(r.id),
-                            label,
-                        );
-                    }
-                });
-        });
+        // 荷重を渡す床領域は選ばせない。壁の位置から都度求めるため保存しない
+        // （`RegionAnchor::FloorRegion` のドキュメント）。床領域をまたぐ壁は
+        // 内部で分割して配り、床に載らない壁は解析前チェックが止める。
+        ui.label(
+            "荷重は壁が載っている床領域の床板へ等価な面荷重としてならします（床領域をまたぐ壁は\
+             境界で分割して配ります）。荷重を流せる床の上に無い壁は解析前チェックが止めます。",
+        );
     }
 
     ui.horizontal(|ui| {
@@ -925,12 +895,7 @@ fn add_attached_form(ui: &mut egui::Ui, app: &mut App) {
     ) {
         (Some(a), Some(b)) if a != b => {
             if to_region {
-                app.wall_plate_draft
-                    .add_region
-                    .map(|region| RegionAnchor::FloorRegion {
-                        region,
-                        nodes: [a, b],
-                    })
+                Some(RegionAnchor::FloorRegion { nodes: [a, b] })
             } else if span_ok {
                 Some(RegionAnchor::Line {
                     nodes: [a, b],

@@ -6271,8 +6271,8 @@ fn test_add_attached_wall_plate_roundtrip() {
 /// 所属先の床領域が実在しなければ Noop。
 #[test]
 fn test_add_attached_wall_plate_floor_region_anchor_roundtrip() {
-    use squid_n_core::ids::{FloorRegionId, NodeId};
-    use squid_n_core::model::{FloorRegion, RegionAnchor};
+    use squid_n_core::ids::NodeId;
+    use squid_n_core::model::RegionAnchor;
 
     let mut model = Model::default();
     for i in 0..2u32 {
@@ -6287,29 +6287,11 @@ fn test_add_attached_wall_plate_floor_region_anchor_roundtrip() {
     }
     let mut undo = UndoStack::default();
 
-    // 所属先の床領域がまだ実在しない。
+    // 自立壁が荷重を渡す床領域は保存しないため、床領域が 1 つも無くても作れる
+    // （荷重を流せる床の上に載っているかは幾何の問題で、解析前チェックが見る。
+    // 判定を 2 か所に分けない）。
     let cmd = crate::AddAttachedWallPlate {
         anchor: RegionAnchor::FloorRegion {
-            region: FloorRegionId(0),
-            nodes: [NodeId(0), NodeId(1)],
-        },
-        extent: [2500.0, 2500.0],
-        section: None,
-        opening_area: 0.0,
-        opening_weight: 0.0,
-    };
-    assert!(
-        !undo.run(&mut model, Box::new(cmd)),
-        "存在しない床領域を指す自立壁は Noop"
-    );
-    assert!(model.wall_plates.is_empty());
-
-    model
-        .floor_regions
-        .push(FloorRegion::new(FloorRegionId(0), vec![]));
-    let cmd = crate::AddAttachedWallPlate {
-        anchor: RegionAnchor::FloorRegion {
-            region: FloorRegionId(0),
             nodes: [NodeId(0), NodeId(1)],
         },
         extent: [2500.0, 2500.0],
@@ -6323,6 +6305,19 @@ fn test_add_attached_wall_plate_floor_region_anchor_roundtrip() {
 
     undo.undo(&mut model);
     assert!(model.wall_plates.is_empty(), "undo で消える");
+
+    // 実在しない節点を指す自立壁は Noop（節点参照は編集層が検証する）。
+    let dangling = crate::AddAttachedWallPlate {
+        anchor: RegionAnchor::FloorRegion {
+            nodes: [NodeId(0), NodeId(9)],
+        },
+        extent: [2500.0, 2500.0],
+        section: None,
+        opening_area: 0.0,
+        opening_weight: 0.0,
+    };
+    assert!(!undo.run(&mut model, Box::new(dangling)));
+    assert!(model.wall_plates.is_empty());
 }
 
 /// SetAttachedWallPlateExtent / SetAttachedWallPlateAnchor の Noop と往復。

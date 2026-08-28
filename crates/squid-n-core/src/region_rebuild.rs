@@ -17,7 +17,7 @@ use crate::region_gen::{
     generate_region_boundaries, polygon_contains_strict, scan_region_boundaries, BOUNDARY_TOL_MM,
 };
 
-/// 重心照合で面積が近いとみなす相対許容（新旧区画の面積比）。
+/// 重心照合で面積が近いとみなす相対許容（新旧の床領域の面積比）。
 pub const CENTROID_MATCH_AREA_REL: f64 = 1e-3;
 
 /// [`rebuild_floor_regions`] の件数報告。
@@ -27,9 +27,9 @@ pub struct FloorRegionRebuildReport {
     pub regions: usize,
     /// 旧床領域から名前・小梁ラインを引き継いだ数。
     pub inherited: usize,
-    /// 対応する旧床領域が見つからなかった新規区画の数。
+    /// 対応する旧床領域が見つからなかった新規の床領域の数。
     pub new_regions: usize,
-    /// 重心が新しい区画に入らなかった旧床領域（名前・小梁ラインを引き継げなかった）の数。
+    /// 重心が新しい床領域に入らなかった旧床領域（名前・小梁ラインを引き継げなかった）の数。
     pub unmatched_old_regions: usize,
     /// 床領域へ帰属し直した床板の数。
     pub slabs_assigned: usize,
@@ -54,7 +54,7 @@ pub fn rebuild_floor_regions(model: &mut Model) -> FloorRegionRebuildReport {
     let old_regions = std::mem::take(&mut model.floor_regions);
     let mut report = FloorRegionRebuildReport::default();
 
-    // 1. 新しい床領域を区画ごとに作り、旧床領域と重心・レベルで対応付けて
+    // 1. 新しい床領域を床領域ごとに作り、旧床領域と重心・レベルで対応付けて
     //    名前・小梁ラインを引き継ぐ（D10）。
     let mut matched_old = vec![false; old_regions.len()];
     let mut new_regions: Vec<FloorRegion> = Vec::with_capacity(scan.boundaries.len());

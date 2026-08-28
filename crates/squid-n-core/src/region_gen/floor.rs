@@ -20,7 +20,7 @@
 //! # 平面グラフであることの前提
 //!
 //! 面走査は、辺どうしが節点でのみ接することを前提とする。節点を共有せずに交差する梁が
-//! あると、検出される区画は実際とずれるが、走査自体はエラーにならず黙って通る。
+//! あると、検出される床領域は実際とずれるが、走査自体はエラーにならず黙って通る。
 //! [`scan_region_boundaries`] はその組を [`RegionBoundaryScan::crossings`] として報告する
 //! （検出は続行する。モデルの不備として利用者へ知らせるための情報である）。
 //!
@@ -95,7 +95,7 @@ pub struct RegionBoundaryScan {
     /// 節点を共有せずに交差している水平梁の組。
     ///
     /// 面走査は平面グラフ（辺どうしが節点でのみ接する）を前提とする。交差する梁があると
-    /// 検出される境界は実際の区画とずれるが、走査自体はエラーにならず黙って通る。
+    /// 検出される境界は実際の床領域とずれるが、走査自体はエラーにならず黙って通る。
     /// **モデルの不備として利用者へ知らせるための情報であり、境界の検出は続行する。**
     pub crossings: Vec<(ElemId, ElemId)>,
     /// 閉じずに終わった面走査の数。
@@ -128,7 +128,7 @@ pub fn generate_region_boundaries(model: &Model) -> Vec<RegionBoundary> {
 /// 節点を共有せずに交差している水平大梁の組を、レベルごとに集めて返す。
 ///
 /// 面走査は平面グラフ（辺どうしが節点でのみ接する）を前提とするため、交差する梁があると
-/// 検出される区画が実際とずれる。**モデルの不備として利用者へ知らせるための情報**であり、
+/// 検出される床領域が実際とずれる。**モデルの不備として利用者へ知らせるための情報**であり、
 /// 境界の検出自体は続行する（[`scan_region_boundaries`] 参照）。
 ///
 /// 境界を組まずに交差だけを知りたい場合（診断など）は、面走査を伴わないこちらを使う。
@@ -144,7 +144,7 @@ pub fn crossing_beams(model: &Model) -> Vec<(ElemId, ElemId)> {
 ///
 /// 端点で接する（T 字・十字に節点を共有する）ものは交差としない。
 /// 一方の端点が他方の内部に載る（節点を共有しない T 字）場合も交差として報告する。
-/// 面走査がその節点を分岐として扱えず、区画がつながってしまうためである。
+/// 面走査がその節点を分岐として扱えず、床領域がつながってしまうためである。
 fn crossing_pairs(model: &Model, edges: &[Edge]) -> Vec<(ElemId, ElemId)> {
     let coords = |n: NodeId| model.nodes.get(n.index()).map(|x| [x.coord[0], x.coord[1]]);
 
@@ -317,7 +317,7 @@ mod tests {
         }
     }
 
-    /// 節点を格子状に並べたモデル。`nx`×`ny` 区画の梁格子を張る。
+    /// 節点を格子状に並べたモデル。`nx`×`ny` 個の格子区画の梁格子を張る。
     fn grid(nx: usize, ny: usize, pitch: f64, z: f64) -> Model {
         let mut model = Model::default();
         let idx = |ix: usize, iy: usize| (iy * (nx + 1) + ix) as u32;
@@ -348,7 +348,7 @@ mod tests {
     fn test_single_boundary() {
         let model = grid(1, 1, 4000.0, 0.0);
         let boundaries = generate_region_boundaries(&model);
-        assert_eq!(boundaries.len(), 1, "1 区画なら面は 1 つ");
+        assert_eq!(boundaries.len(), 1, "1 床領域なら面は 1 つ");
         assert_eq!(boundaries[0].boundary.len(), 4);
         assert!((boundaries[0].area(&model) - 4000.0 * 4000.0).abs() < 1.0);
         assert!((boundaries[0].level - 0.0).abs() < 1e-9);
@@ -443,7 +443,7 @@ mod tests {
     #[test]
     fn test_crossing_beams_are_reported() {
         let mut model = grid(1, 1, 4000.0, 0.0);
-        // 区画の内側を斜めに横切る 2 本。互いに交差し、外周とも節点を共有しない。
+        // 床領域の内側を斜めに横切る 2 本。互いに交差し、外周とも節点を共有しない。
         model.nodes.push(node(4, 1000.0, 1000.0, 0.0));
         model.nodes.push(node(5, 3000.0, 3000.0, 0.0));
         model.nodes.push(node(6, 1000.0, 3000.0, 0.0));
@@ -521,7 +521,7 @@ mod tests {
     /// L 形（凹多角形）の面も 1 つの面として取れる。
     #[test]
     fn test_concave_boundary() {
-        // 2×2 の格子から 1 区画ぶんの梁を落として L 形の面を作る。
+        // 2×2 の格子から 1 床領域ぶんの梁を落として L 形の面を作る。
         let mut model = Model::default();
         let pts = [
             (0.0, 0.0),

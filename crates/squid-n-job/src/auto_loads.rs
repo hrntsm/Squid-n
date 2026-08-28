@@ -129,7 +129,7 @@ fn push_resolved_loads(
 /// 各床領域について面荷重強度 `w_of(slab)` を境界へ分配し、`BeamLoad` 列を返す。
 /// `w_of` は床板ごとの面荷重強度 [N/mm²]（DL・LL を分けるため床板単位で渡す）。
 ///
-/// 床領域に帰属する床板（`region.slab_ids`）は区画ごとにまとめて分配し、
+/// 床領域に帰属する床板（`region.slab_ids`）は床領域ごとにまとめて分配し、
 /// どの床領域からも参照されない床板（片持ち・バルコニー・出隅、または帰属先が
 /// 見つからない浮き床板）は個別に分配する（荷重を取りこぼさないため）。
 pub fn slab_beam_loads_with(
@@ -534,18 +534,15 @@ pub fn slab_load_case_content(
 pub fn compute_dl_beam_loads(model: &Model) -> Vec<BeamLoad> {
     let beam_map = beam_elem_map(model);
     let unit_reactions = slab_grillage_unit_reactions(model, &beam_map);
-    let (extra_intensity, fallback) =
-        squid_n_load::wall_attached::floor_region_wall_extra_intensity(model);
-    let mut loads = slab_beam_loads_with(
+    let extra_intensity = squid_n_load::wall_attached::floor_region_wall_extra_intensity(model);
+    slab_beam_loads_with(
         model,
         |slab| {
             model.slab_dead_intensity(slab) + extra_intensity.get(&slab.id).copied().unwrap_or(0.0)
         },
         &unit_reactions,
         &beam_map,
-    );
-    loads.extend(fallback);
-    loads
+    )
 }
 
 /// 重力系（DL・LL(架構用)・LL(地震用)）の自動生成内容を計算する。
@@ -1074,12 +1071,24 @@ mod tests {
             shear_rebar_material: None,
             steel_material: None,
         });
+        // 自立壁は床領域の**内側**に置く（境界の辺上に置くと、厳密内包の判定で
+        // 「床に載っていない」＝解析前チェックのエラー対象になる）。
+        let n = model.nodes.len() as u32;
+        for (i, x) in [1000.0f64, 3000.0].into_iter().enumerate() {
+            model.nodes.push(squid_n_core::model::Node {
+                id: NodeId(n + i as u32),
+                coord: [x, 2000.0, 0.0],
+                restraint: Default::default(),
+                mass: None,
+                story: None,
+                support_spring: None,
+            });
+        }
         let plate = WallPlate {
             id: WallPlateId(0),
             shape: WallPlateShape::Attached {
                 anchor: RegionAnchor::FloorRegion {
-                    region: FloorRegionId(0),
-                    nodes: [NodeId(0), NodeId(1)],
+                    nodes: [NodeId(n), NodeId(n + 1)],
                 },
                 extent: [500.0, 500.0],
             },

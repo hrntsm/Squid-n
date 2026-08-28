@@ -1196,7 +1196,7 @@ fn test_validate_duplicate_floor_region_boundary() {
         .floor_regions
         .push(FloorRegion::new(FloorRegionId(0), boundary.clone()));
     assert!(model.validate().is_ok());
-    // 同じ区画を指す 2 枚目。小梁・床板の帰属が二重になるため弾く。
+    // 同じ床領域を指す 2 枚目。小梁・床板の帰属が二重になるため弾く。
     model
         .floor_regions
         .push(FloorRegion::new(FloorRegionId(1), boundary));
@@ -1387,9 +1387,11 @@ fn test_validate_checks_wall_plate_anchor_span_bounds() {
 
 /// 壁版が `RegionAnchor::FloorRegion` を使う場合、`region`（所属先の床領域）と
 /// `nodes`（壁自体の始点・終点）の両方が実在すること。
+/// 自立壁（床領域アンカー）は荷重を渡す床領域を保存しないため、`validate` が
+/// 検査すべき床領域参照は存在しない。節点参照だけが検査対象になる。
 #[test]
-fn test_validate_dangling_wall_plate_floor_region_anchor() {
-    use crate::model::{FloorRegion, RegionAnchor, WallPlate, WallPlateShape};
+fn test_validate_self_standing_wall_checks_only_node_refs() {
+    use crate::model::{RegionAnchor, WallPlate, WallPlateShape};
     let mut model = Model::default();
     for i in 0..2u32 {
         model.nodes.push(Node {
@@ -1401,13 +1403,10 @@ fn test_validate_dangling_wall_plate_floor_region_anchor() {
             support_spring: None,
         });
     }
-    let mk = |region: FloorRegionId| WallPlate {
+    let mk = |nodes: [NodeId; 2]| WallPlate {
         id: WallPlateId(0),
         shape: WallPlateShape::Attached {
-            anchor: RegionAnchor::FloorRegion {
-                region,
-                nodes: [NodeId(0), NodeId(1)],
-            },
+            anchor: RegionAnchor::FloorRegion { nodes },
             extent: [2500.0, 2500.0],
         },
         section: None,
@@ -1416,15 +1415,16 @@ fn test_validate_dangling_wall_plate_floor_region_anchor() {
         openings: vec![],
         three_side_slit: false,
     };
-    // 所属先の床領域が実在しない。
-    model.wall_plates = vec![mk(FloorRegionId(0))];
+    // 床領域が 1 つも無くても、節点が実在すれば `validate` は通る
+    // （荷重を流せる床領域に載っているかは幾何の問題で、解析前チェックが見る）。
+    model.wall_plates = vec![mk([NodeId(0), NodeId(1)])];
+    assert!(model.validate().is_ok(), "{:?}", model.validate());
+    // 実在しない節点はダングリング参照として検出する。
+    model.wall_plates = vec![mk([NodeId(0), NodeId(9)])];
     assert!(
         model.validate().is_err(),
-        "存在しない床領域を指す自立壁は検出されるはず"
+        "存在しない節点を指す自立壁は検出されるはず"
     );
-    // 床領域を実在させれば通る。
-    model.floor_regions = vec![FloorRegion::new(FloorRegionId(0), vec![])];
-    assert!(model.validate().is_ok());
 }
 
 /// 壁領域は「配列添字と一致」かつ「同じ境界を持つものが 2 つあってはならない」

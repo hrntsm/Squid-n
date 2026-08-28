@@ -574,10 +574,12 @@ fn wall_anchor_ok(model: &Model, anchor: &squid_n_core::model::RegionAnchor) -> 
                 && nodes[0] != nodes[1]
                 && nodes.iter().all(|&n| crate::refs::node_exists(model, n))
         }
-        RegionAnchor::FloorRegion { region, nodes } => {
-            crate::refs::floor_region_exists(model, region)
-                && nodes[0] != nodes[1]
-                && nodes.iter().all(|&n| crate::refs::node_exists(model, n))
+        // 自立壁が荷重を渡す床領域は保存しないため、検証する床領域参照は無い
+        // （`RegionAnchor::FloorRegion` のドキュメント）。荷重を流せる床領域に
+        // 載っているかは幾何の問題で、解析前チェック（`model_issues`）が見る。
+        // ここで幾何判定まで行うと、同じ判定が 2 か所に分かれる。
+        RegionAnchor::FloorRegion { nodes } => {
+            nodes[0] != nodes[1] && nodes.iter().all(|&n| crate::refs::node_exists(model, n))
         }
         RegionAnchor::Point(_) => false,
     }

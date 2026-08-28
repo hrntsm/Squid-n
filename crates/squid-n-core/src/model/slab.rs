@@ -2,7 +2,7 @@
 //!
 //! 床領域（[`FloorRegion`]、[`super::region`]）は大梁の 1 スパン区画そのもので、
 //! 版の仕様は持たない。版の仕様（厚さ・材料・仕上げ荷重・室用途）は本モジュールの
-//! [`Slab`] が持つ。1 つの床領域は、区画内が小梁でさらに細かい打設単位に
+//! [`Slab`] が持つ。1 つの床領域は、床領域内が小梁でさらに細かい打設単位に
 //! 分かれていれば複数の [`Slab`] を持ちうる（[`FloorRegion::slab_ids`]）。
 //! 片持ちスラブ・バルコニー・出隅はどの床領域からも参照されない、独立した [`Slab`]
 //! として存在する。
@@ -544,7 +544,6 @@ mod tests {
             id: crate::ids::SlabId(0),
             shape: SlabShape::Attached {
                 anchor: RegionAnchor::FloorRegion {
-                    region: crate::ids::FloorRegionId(0),
                     nodes: [NodeId(0), NodeId(1)],
                 },
                 extent: [0.0, 0.0],

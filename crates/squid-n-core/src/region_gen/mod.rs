@@ -198,6 +198,14 @@ fn next_half_edge(
     Some((v, list[prev]))
 }
 
+/// 多角形の XY 投影面積（絶対値。周りの向きに依らない）。
+///
+/// 床板の面積を「床の分配と同じ XY 投影」で測るための入口
+/// （[`crate::model::Model::self_standing_wall_coverage`]）。
+pub fn signed_area_abs(pts: &[[f64; 2]]) -> f64 {
+    signed_area(pts).abs()
+}
+
 /// 多角形の符号付き面積（反時計回りが正）。
 pub(crate) fn signed_area(pts: &[[f64; 2]]) -> f64 {
     let n = pts.len();

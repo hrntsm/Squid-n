@@ -356,7 +356,7 @@ impl Model {
             }
         }
         // 床領域は、同じ境界（大梁の区画）を持つものが 2 つあってはならない（D1）。
-        // 2 つあると、その区画の小梁・床板の帰属が二重になる。
+        // 2 つあると、その床領域の小梁・床板の帰属が二重になる。
         {
             let mut seen: std::collections::HashSet<Vec<u32>> = std::collections::HashSet::new();
             for region in &self.floor_regions {
@@ -512,20 +512,10 @@ impl Model {
                     )));
                 }
             }
-            if let WallPlateShape::Attached {
-                anchor: RegionAnchor::FloorRegion { region, .. },
-                ..
-            } = &plate.shape
-            {
-                if region.index() >= self.floor_regions.len()
-                    || self.floor_regions[region.index()].id != *region
-                {
-                    return Err(CoreError::DanglingRef(format!(
-                        "WallPlate {} -> FloorRegion {}",
-                        plate.id.0, region.0
-                    )));
-                }
-            }
+            // 自立壁（`RegionAnchor::FloorRegion`）が荷重を渡す床領域は保存しない
+            // （壁の位置から都度解決する。`RegionAnchor::FloorRegion` のドキュメント）。
+            // 検査すべき床領域参照は存在しない。荷重を流せる床領域に載っているかは
+            // 幾何の問題であり、解析前チェック（`model_issues`）が見る。
         }
         check_id_consistency(
             &self.sections,
@@ -615,7 +605,7 @@ impl Model {
         }
 
         // 大梁または小梁で囲まれた床板は、同じ境界を持つものが 2 つあってはならない。
-        // 2 つあると、その区画の荷重が二重に分配される。
+        // 2 つあると、その床領域の荷重が二重に分配される。
         {
             let mut seen: std::collections::HashSet<Vec<u32>> = std::collections::HashSet::new();
             for slab in &self.slabs {
@@ -1689,7 +1679,6 @@ mod node_reference_tests {
             id: WallPlateId(2),
             shape: WallPlateShape::Attached {
                 anchor: RegionAnchor::FloorRegion {
-                    region: FloorRegionId(0),
                     nodes: [NodeId(10), NodeId(10)],
                 },
                 extent: [0.0, 0.0],

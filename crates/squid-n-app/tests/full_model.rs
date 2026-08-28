@@ -11,7 +11,7 @@
 //! # モデル（`tests/fixtures/model.stb`）
 //!
 //! 4 層＋PH の S 造（一部 RC）。節点 166・解析要素 115（柱 40・大梁 75）・
-//! 二次部材 56（小梁）・床領域 26（大梁1区画単位）・階 5（Z=200/4700/8700/12700/16500）。
+//! 二次部材 56（小梁）・床領域 26（大梁1床領域単位）・階 5（Z=200/4700/8700/12700/16500）。
 //! 荷重は ST-Bridge に含まれないため、取り込み時に標準荷重ケース
 //! （DL・LL(架構用)・LL(地震用)・EX・EY）が自動生成される。支点情報も
 //! 含まれないため、最下レベルの柱脚 12 箇所がピン支点として自動設定される。
@@ -191,7 +191,7 @@ fn auto_case(app: &App, name: &str) -> squid_n_core::model::LoadCase {
 /// （＝総荷重）の代わりにはならない**（このフィクスチャでは合計 [`base_column_axials`]
 /// が総荷重の半分未満）。垂直部材（柱）自身の材端軸力だけを見ており、同じ支点節点に
 /// 取り付く基礎梁（水平部材）が負担する分は含まない。荷重の分配経路が変わると
-/// （区画単位で1枚に畳んで配るか、床板ごとに個別へ配るか等）、柱の軸力と基礎梁の
+/// （床領域単位で1枚に畳んで配るか、床板ごとに個別へ配るか等）、柱の軸力と基礎梁の
 /// せん断のどちらへどれだけ載るかの配分が変わるため、この合計も変わりうる
 /// （床領域の荷重分配作り替え〔Step 4〕の際に実際に約 7.7% 動いた。総荷重は
 /// `dev_docs/v_and_v/床領域の再設計_荷重分配とSlabFloorRegion分離_2026-08.md`
@@ -258,7 +258,7 @@ fn import_builds_expected_model() {
     assert_eq!(m.nodes.len(), 166, "節点数");
     assert_eq!(m.elements.len(), 115, "解析要素数（柱 40・大梁 75）");
     assert_eq!(m.secondary_members.len(), 56, "二次部材（小梁）");
-    assert_eq!(m.floor_regions.len(), 26, "床領域（大梁1区画単位）");
+    assert_eq!(m.floor_regions.len(), 26, "床領域（大梁1床領域単位）");
     assert_eq!(m.stories.len(), 5, "階（1FL/2FL/3FL/RFL/PHRFL）");
 
     use squid_n_core::model::SecondaryMemberKind;
@@ -1207,7 +1207,7 @@ fn joist_design_checks_cover_imported_secondary_members() {
     );
 }
 
-/// 主架構の面走査（`region_gen`）が、大梁で囲まれた区画をレベルごとに検出する。
+/// 主架構の面走査（`region_gen`）が、大梁が囲む区画をレベルごとに検出する。
 ///
 /// 床領域は「大梁で囲まれた領域ごとに 1 つ」と定めるため（D1）、その検出が実建物で
 /// 期待どおりの数になることを固定する。期待値は Euler の公式（内部面数 `F = E − V + C`）
@@ -1230,17 +1230,17 @@ fn region_gen_finds_beam_bounded_regions() {
     assert_eq!(
         counts,
         vec![(200, 6), (4700, 6), (8700, 6), (12700, 7), (16500, 1)],
-        "レベル別の区画数（Euler の公式による検算値と一致すること）"
+        "レベル別の床領域数（Euler の公式による検算値と一致すること）"
     );
-    assert_eq!(boundaries.len(), 26, "区画総数");
+    assert_eq!(boundaries.len(), 26, "床領域総数");
     assert_eq!(
         app.model.floor_regions.len(),
         boundaries.len(),
-        "取り込み後の床領域数は区画数 26"
+        "取り込み後の床領域数は床領域数 26"
     );
 
-    // 区画の面積の合計は、そのレベルの床板面積の合計と一致する
-    // （床板は小梁で細分されているが、覆う範囲は区画と同じ）。
+    // 大梁の区画の面積の合計は、そのレベルの床板面積の合計と一致する
+    // （床板は小梁で細分されているが、覆う範囲は大梁の区画と同じ）。
     let mut slab_area: BTreeMap<i64, f64> = BTreeMap::new();
     for s in &app.model.slabs {
         let Some(coords) = s.boundary_coords(&app.model) else {
@@ -1256,7 +1256,7 @@ fn region_gen_finds_beam_bounded_regions() {
         let s = slab_area.get(z).copied().unwrap_or(0.0);
         assert!(
             (area - s).abs() / s < 1e-6,
-            "Z={z}: 区画面積 {area} と床板面積 {s} が一致しない"
+            "Z={z}: 床領域の面積 {area} と床板面積 {s} が一致しない"
         );
     }
 }
@@ -1379,9 +1379,9 @@ fn wall_regions_survive_save_reopen_reprepare() {
 
 /// 取り込んだ床板が、大梁で囲まれた床領域の境界へ過不足なく収まる。
 ///
-/// 大梁が囲む区画（床領域）は 1 つの境界につき 1 つ（D1）。区画内の床板
+/// 大梁が囲む区画（床領域）は 1 つの境界につき 1 つ（D1）。床領域内の床板
 /// （小梁でさらに細分された打設単位）は重複・欠落なく、ちょうど 1 つの
-/// 区画へ割り当たることを固定する。
+/// 床領域へ割り当たることを固定する。
 #[test]
 fn slabs_fold_into_regions_without_gaps() {
     use squid_n_core::region_gen::scan_region_boundaries;
@@ -1423,18 +1423,18 @@ fn slabs_fold_into_regions_without_gaps() {
 
     assert!(
         unassigned.is_empty(),
-        "どの区画にも収まらない床板: {unassigned:?}"
+        "どの床領域にも収まらない床板: {unassigned:?}"
     );
     assert_eq!(unassigned.len(), 0, "未割当 0");
     assert_eq!(
         app.model.floor_regions.len(),
         scan.boundaries.len(),
-        "床領域数＝区画数 26"
+        "床領域数＝床領域数 26"
     );
     assert_eq!(
         by_region.len(),
         scan.boundaries.len(),
-        "床板を持たない区画はない"
+        "床板を持たない床領域はない"
     );
 }
 
