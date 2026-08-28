@@ -166,13 +166,28 @@ impl WallPlate {
         ])
     }
 
-    /// 壁版の面積 [mm²]（[`crate::geom::polygon_area_3d`]。ニューエルの公式による
-    /// 3 次元面積。理想平面への投影を経由しない。壁・シェル要素の自重算定と
-    /// スラブ・壁の数量拾いが共通で使う関数をそのまま使う）。座標が引けない場合は 0。
+    /// 壁版の面積 [mm²]。囲まれた壁版は [`crate::geom::polygon_area_3d`]（ニューエル）。
+    /// 取り付く壁版は底辺長 × ∫|立ち上がり高さ|（[`crate::geom::abs_lerp_integral`]）。
+    /// 4 点多角形にすると、両端で高さが符号反転する壁は自己交差（蝶ネクタイ）になり、
+    /// Newell の面積が打ち消されて 0 近くになる（自重が黙って消える危険側）。
+    /// 座標が引けない場合は 0。
     pub fn area(&self, model: &Model) -> f64 {
-        self.boundary_coords(model)
-            .map(|pts| crate::geom::polygon_area_3d(&pts))
-            .unwrap_or(0.0)
+        match &self.shape {
+            WallPlateShape::Enclosed { .. } => self
+                .boundary_coords(model)
+                .map(|pts| crate::geom::polygon_area_3d(&pts))
+                .unwrap_or(0.0),
+            WallPlateShape::Attached { extent, .. } => {
+                let Some(pts) = self.boundary_coords(model) else {
+                    return 0.0;
+                };
+                if pts.len() < 2 {
+                    return 0.0;
+                }
+                let len = crate::geom::vec3::dist(pts[0], pts[1]);
+                len * crate::geom::abs_lerp_integral(extent[0], extent[1], 0.0, 1.0)
+            }
+        }
     }
 
     /// 開口の合計面積 [mm²]。個別開口 `openings` が非空ならその面積和、
@@ -245,9 +260,11 @@ impl Model {
     /// 全交点を求めて区間へ分け、各区間の中点がどの床領域に内包されるかで
     /// 帰属を決める（面走査が返す最小面は重ならないため、内包する床領域は高々 1 つ）。
     ///
-    /// 各区間の重量比は、その区間の**台形面積**（立ち上がり高さ `extent` は
-    /// 始端から終端へ線形に変わる）が全体に占める割合とする。開口は総重量の
-    /// スケールにだけ効き、開口位置は見ない（§5.25 の既知の近似と同じ）。
+    /// 各区間の重量比は、その区間の **∫|立ち上がり高さ|**（`extent` は始端から終端へ
+    /// 線形。符号が反転するときは高さ 0 で折れる）が全体に占める割合とする。
+    /// 端点の絶対値を結んだ台形にすると、符号反転時に分母が過大になり重量比の
+    /// 合計が 1 を下回る（危険側）。開口は総重量のスケールにだけ効き、開口位置は
+    /// 見ない（§5.25 の既知の近似と同じ）。
     ///
     /// # 戻り値
     ///
@@ -312,9 +329,14 @@ impl Model {
         cuts.dedup_by(|x, y| (*x - *y).abs() <= 1e-12);
 
         let lerp = |t: f64| [p0[0] + (p1[0] - p0[0]) * t, p0[1] + (p1[1] - p0[1]) * t];
-        // 立ち上がり高さは始端から終端へ線形。区間の台形面積比が重量比になる。
-        let h = |t: f64| (extent[0] + (extent[1] - extent[0]) * t).abs();
-        let total_area = (h(0.0) + h(1.0)) / 2.0;
+        // 立ち上がり高さは始端から終端へ線形。重量比は ∫|h|（符号反転はゼロ交差で折る）。
+        let (h0, h1) = (extent[0], extent[1]);
+        if h0 * h1 < 0.0 && h0.abs() > 1e-15 && h1.abs() > 1e-15 {
+            cuts.push((-h0 / (h1 - h0)).clamp(0.0, 1.0));
+            cuts.sort_by(|x, y| x.total_cmp(y));
+            cuts.dedup_by(|x, y| (*x - *y).abs() <= 1e-12);
+        }
+        let total_area = crate::geom::abs_lerp_integral(h0, h1, 0.0, 1.0);
 
         let mut cov = SelfStandingWallCoverage::default();
         for w in cuts.windows(2) {
@@ -323,7 +345,7 @@ impl Model {
                 continue;
             }
             let frac = if total_area > 0.0 {
-                (h(t0) + h(t1)) / 2.0 * (t1 - t0) / total_area
+                crate::geom::abs_lerp_integral(h0, h1, t0, t1) / total_area
             } else {
                 // 高さ 0 の壁は重量 0。長さ比で持たせても総和は 0 のまま。
                 t1 - t0
@@ -404,7 +426,7 @@ fn segment_intersection_t(p0: [f64; 2], p1: [f64; 2], q0: [f64; 2], q1: [f64; 2]
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ids::{FloorRegionId, MaterialId, NodeId, SectionId, WallPlateId};
+    use crate::ids::{FloorRegionId, MaterialId, NodeId, SectionId, SlabId, WallPlateId};
 
     fn model_with_nodes(pts: &[[f64; 3]]) -> Model {
         let mut m = Model::default();
@@ -519,6 +541,35 @@ mod tests {
         assert_eq!(coords[2][2], 3900.0);
         assert_eq!(coords[3][2], 3900.0);
         assert!((p.area(&m) - 4000.0 * 900.0).abs() < 1e-6);
+    }
+
+    /// 両端で立ち上がり高さの符号が反転する取り付く壁版は、蝶ネクタイの Newell
+    /// 面積（≈0）ではなく、2 つの三角形の和を自重面積にする。
+    #[test]
+    fn attached_area_uses_abs_height_when_extent_sign_reverses() {
+        let m = model_with_nodes(&[[0.0, 0.0, 3000.0], [4000.0, 0.0, 3000.0]]);
+        let p = WallPlate {
+            id: WallPlateId(0),
+            shape: WallPlateShape::Attached {
+                anchor: RegionAnchor::Line {
+                    nodes: [NodeId(0), NodeId(1)],
+                    span: [0.0, 1.0],
+                    transfer: LoadTransfer::Anchor,
+                },
+                extent: [2000.0, -2000.0],
+            },
+            section: None,
+            opening_area: 0.0,
+            opening_weight: 0.0,
+            openings: Vec::new(),
+            three_side_slit: false,
+        };
+        let expected = 4000.0 * 2000.0 * 0.5;
+        assert!(
+            (p.area(&m) - expected).abs() < 1e-6,
+            "area={} expected={expected}",
+            p.area(&m)
+        );
     }
 
     /// 床領域アンカーは、アンカー自身が持つ節点対を壁の平面上の始点・終点として使う
@@ -859,6 +910,30 @@ mod tests {
         assert!((sum - 1.0).abs() < 1e-9, "総和が保存すること: {cov:?}");
     }
 
+    /// 立ち上がり高さの符号が両端で反転する自立壁は、ゼロ交差で折れた ∫|h| で
+    /// 配る。端点絶対値の台形を分母にすると比率の合計が 0.5 になり重量が消える。
+    #[test]
+    fn coverage_sign_reversal_preserves_ratio_sum() {
+        let mut m = model_two_regions();
+        // X=2000..6000。X=4000 の境界かつ高さ 0。各側は同じ三角形。
+        let p = push_self_standing(
+            &mut m,
+            [2000.0, 1000.0, 3000.0],
+            [6000.0, 1000.0, 3000.0],
+            [2000.0, -2000.0],
+        );
+        let cov = m.self_standing_wall_coverage(&p).expect("自立壁");
+        assert!(!cov.has_uncovered(), "{cov:?}");
+        let sum: f64 = cov.per_region.iter().map(|(_, f)| f).sum::<f64>() + cov.uncovered;
+        assert!(
+            (sum - 1.0).abs() < 1e-9,
+            "符号反転でも比率の合計は 1: {cov:?}"
+        );
+        for (_, f) in &cov.per_region {
+            assert!((f - 0.5).abs() < 1e-9, "{cov:?}");
+        }
+    }
+
     /// 床領域の外へはみ出す自立壁は、その分を `uncovered` に集計する。
     #[test]
     fn coverage_reports_uncovered_outside_regions() {
@@ -925,5 +1000,88 @@ mod tests {
             three_side_slit: false,
         };
         assert!(m.self_standing_wall_coverage(&p).is_none());
+    }
+
+    /// L 形（非凸）の床領域 1 つ。欠けているのは X=4000..8000, Y=4000..8000。
+    fn model_l_region() -> Model {
+        let mut m = model_with_nodes(&[
+            [0.0, 0.0, 3000.0],
+            [8000.0, 0.0, 3000.0],
+            [8000.0, 4000.0, 3000.0],
+            [4000.0, 4000.0, 3000.0],
+            [4000.0, 8000.0, 3000.0],
+            [0.0, 8000.0, 3000.0],
+        ]);
+        let b = vec![
+            NodeId(0),
+            NodeId(1),
+            NodeId(2),
+            NodeId(3),
+            NodeId(4),
+            NodeId(5),
+        ];
+        let mut r = FloorRegion::new(FloorRegionId(0), b.clone());
+        r.slab_ids.push(SlabId(0));
+        m.floor_regions.push(r);
+        m.slabs.push(Slab {
+            id: SlabId(0),
+            shape: SlabShape::Enclosed { boundary: b },
+            plate: SlabPlate::default(),
+        });
+        m
+    }
+
+    /// L 形の底辺に収まる自立壁は、非凸でも全量をその床領域が受け持つ。
+    #[test]
+    fn coverage_l_shape_interior_is_fully_covered() {
+        let mut m = model_l_region();
+        let p = push_self_standing(
+            &mut m,
+            [500.0, 1000.0, 3000.0],
+            [7500.0, 1000.0, 3000.0],
+            [2000.0, 2000.0],
+        );
+        let cov = m.self_standing_wall_coverage(&p).expect("自立壁");
+        assert!(!cov.has_uncovered(), "{cov:?}");
+        assert_eq!(cov.per_region.len(), 1);
+        assert_eq!(cov.per_region[0].0, FloorRegionId(0));
+        assert!((cov.per_region[0].1 - 1.0).abs() < 1e-9, "{cov:?}");
+    }
+
+    /// L 形の欠けへはみ出す壁は、欠け側を `uncovered` にする（中点内包で帰属）。
+    #[test]
+    fn coverage_l_shape_notch_is_uncovered() {
+        let mut m = model_l_region();
+        // Y=1000..7000。Y=4000 より上が欠け（X=6000）。
+        let p = push_self_standing(
+            &mut m,
+            [6000.0, 1000.0, 3000.0],
+            [6000.0, 7000.0, 3000.0],
+            [2000.0, 2000.0],
+        );
+        let cov = m.self_standing_wall_coverage(&p).expect("自立壁");
+        assert!(cov.has_uncovered(), "{cov:?}");
+        assert!((cov.uncovered - 0.5).abs() < 1e-9, "{cov:?}");
+        let covered: f64 = cov.per_region.iter().map(|(_, f)| f).sum();
+        assert!((covered - 0.5).abs() < 1e-9, "{cov:?}");
+    }
+
+    /// 床領域の辺上に乗った壁は、厳密内包判定により覆われていない。
+    #[test]
+    fn coverage_on_region_boundary_is_uncovered() {
+        let mut m = model_two_regions();
+        // 領域 0 の南辺（Y=0, X=500..3500）にぴったり載せる。
+        let p = push_self_standing(
+            &mut m,
+            [500.0, 0.0, 3000.0],
+            [3500.0, 0.0, 3000.0],
+            [2000.0, 2000.0],
+        );
+        let cov = m.self_standing_wall_coverage(&p).expect("自立壁");
+        assert!(
+            cov.has_uncovered(),
+            "辺上は内包しない（大梁真上は線アンカーへ）: {cov:?}"
+        );
+        assert!((cov.uncovered - 1.0).abs() < 1e-9, "{cov:?}");
     }
 }
