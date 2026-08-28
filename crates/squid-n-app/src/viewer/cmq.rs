@@ -13,7 +13,7 @@ use crate::theme;
 use super::{
     diagram,
     scene::{diagram_offset_dir, in_plane_offset_dir},
-    CmqComponent, DiagramPlane, FrameFilter, Projector,
+    CmqAxes, CmqComponent, DiagramPlane, FrameFilter, Projector,
 };
 use squid_n_core::geom::vec3::dist as member_len3;
 use squid_n_core::ids::ElemId;
@@ -36,6 +36,18 @@ fn is_gravity_auto_case_name(name: &str) -> bool {
         name,
         DL_CASE_NAME | LL_FRAME_CASE_NAME | LL_SEISMIC_CASE_NAME
     )
+}
+
+/// 選択中の軸（`app.cmq_axes`）を表す表示ラベル。凡例と空表示メッセージの
+/// 双方で使う（`axes.is_empty()` は呼び出し前に早期 return 済みの前提。
+/// 両方 false のまま呼ぶと該当なしでパニックする）。
+fn selected_axis_label(axes: CmqAxes) -> &'static str {
+    match (axes.ey, axes.ez) {
+        (true, true) => "強軸+弱軸",
+        (true, false) => "強軸(ey)",
+        (false, true) => "弱軸(ez)",
+        (false, false) => unreachable!("axes.is_empty() で早期 return 済み"),
+    }
 }
 
 fn is_primary_beam_for_cmq(model: &Model, elem: &squid_n_core::model::ElementData) -> bool {
@@ -206,6 +218,24 @@ struct CmqTrace<'g> {
     /// 描画位置の張り出し方向（構面表示では `in_plane_offset_dir` で構面内へ倒し済み）。
     offset_dir: [f64; 3],
     loads: Vec<MemberLoadKind>,
+    /// 投影元の面（強軸 ey／弱軸 ez）。色は成分（C/M/Q）で決まるため軸では変えないが、
+    /// **2D 構面表示では ey・ez の張り出し方向が同一直線上に潰れる**
+    /// （`in_plane_offset_dir` は材軸と構面法線だけから向きを決め、投影元の面を見ない
+    /// ため。応力図の強軸 Mz・弱軸 My が同じ制約を持つのと同じ理由）。応力図は成分ごとに
+    /// 色そのものが違う（Mz=紫・My=赤）ため重なっても判別できるが、CMQ 図は軸に関わらず
+    /// 成分色が共通のため、区別できるよう ez を半透明で描く（`plane_alpha_scale`）。
+    plane: DiagramPlane,
+}
+
+/// `CmqTrace::plane` に応じた塗り・輪郭の不透明度倍率（0.0〜1.0）。
+/// 2D 構面表示で強軸・弱軸のトレースが同一直線上に重なっても判別できるよう、
+/// 弱軸(ez)を半透明にする（3D 表示では方向自体が分かれるため実害はないが、
+/// 軸ごとに描き分けを変えると挙動が複雑になるため 3D でも同じ規則で統一する）。
+fn plane_alpha_scale(plane: DiagramPlane) -> f32 {
+    match plane {
+        DiagramPlane::Ey => 1.0,
+        DiagramPlane::Ez => 0.5,
+    }
 }
 
 /// 部材ローカルに沿って CMQ 図（両端固定端モーメント C・単純梁中央モーメント M・
@@ -321,6 +351,7 @@ pub(super) fn draw_cmq_diagram(
                     l,
                     offset_dir,
                     loads,
+                    plane,
                 }
             })
         })
@@ -356,6 +387,20 @@ pub(super) fn draw_cmq_diagram(
         })
         .fold(0.0_f64, f64::max);
     if max_c < 1e-12 && max_q < 1e-12 && max_m < 1e-12 {
+        // 直交グリッド・ひねりのない部材が大半のモデルで「弱軸(ez)のみ」を選ぶと、
+        // 荷重（大半は鉛直）が局所 ez 面へほぼ投影されず、全トレースが 0 になる
+        // （物理的に正しい結果であり不具合ではない）。無言で何も描かないと
+        // 「表示が壊れた」と区別が付かないため、案内を出す。選択中の軸をそのまま
+        // 案内に含める（「強軸のみ選択中に強軸が0」のとき「強軸を追加してください」
+        // と勧めるような、選択済みの軸を勧め直す矛盾を避けるため）。
+        info_text(
+            painter,
+            &format!(
+                "選択中の軸（{}）には有意な荷重成分がありません。\
+                 「軸:」で他の軸も試すか、他の成分・荷重ケースを確認してください",
+                selected_axis_label(app.cmq_axes)
+            ),
+        );
         return;
     }
     // 最大値で 60px 相当のワールド長（一様スケール正射影なので px/scale=ワールド長）
@@ -371,6 +416,11 @@ pub(super) fn draw_cmq_diagram(
         let p0 = proj.project(p_i);
         let p1 = proj.project(p_j);
         let ey = t.offset_dir;
+        // 2D 構面表示で強軸・弱軸が同一直線上に重なっても判別できるよう、
+        // 弱軸(ez)は半透明にする（`plane_alpha_scale`）。
+        let alpha = plane_alpha_scale(t.plane);
+        let fill_alpha = (60.0 * alpha).round() as u8;
+        let stroke_alpha = (255.0 * alpha).round() as u8;
 
         match app.cmq_component {
             CmqComponent::C => {
@@ -395,8 +445,8 @@ pub(super) fn draw_cmq_diagram(
                 paint_diagram_polygon(
                     painter,
                     c_poly,
-                    theme::translucent(theme::DATA_BLUE, 60),
-                    theme::DATA_BLUE,
+                    theme::translucent(theme::DATA_BLUE, fill_alpha),
+                    theme::translucent(theme::DATA_BLUE, stroke_alpha),
                 );
             }
             CmqComponent::M => {
@@ -445,8 +495,8 @@ pub(super) fn draw_cmq_diagram(
                 paint_diagram_polygon(
                     painter,
                     m_poly,
-                    theme::translucent(theme::HILITE_PURPLE, 60),
-                    theme::HILITE_PURPLE,
+                    theme::translucent(theme::HILITE_PURPLE, fill_alpha),
+                    theme::translucent(theme::HILITE_PURPLE, stroke_alpha),
                 );
             }
             CmqComponent::Q => {
@@ -467,24 +517,35 @@ pub(super) fn draw_cmq_diagram(
                 paint_diagram_polygon(
                     painter,
                     q_poly,
-                    theme::translucent(theme::GOOD_GREEN, 60),
-                    theme::GOOD_GREEN,
+                    theme::translucent(theme::GOOD_GREEN, fill_alpha),
+                    theme::translucent(theme::GOOD_GREEN, stroke_alpha),
                 );
             }
         }
     }
 
-    // 凡例（選択中の成分・軸のみ表示）
-    let axis_label = match (app.cmq_axes.ey, app.cmq_axes.ez) {
-        (true, true) => "強軸+弱軸",
-        (true, false) => "強軸",
-        (false, true) => "弱軸",
-        (false, false) => unreachable!("axes.is_empty() で早期 return 済み"),
+    // 凡例（選択中の成分・軸のみ表示）。両軸表示中は弱軸(ez)を半透明で描く旨を付記する
+    // （`plane_alpha_scale`。2D 構面表示では強軸・弱軸の張り出し方向が同一直線上に
+    // 潰れるため、色だけでは判別できない）。
+    let axis_label = selected_axis_label(app.cmq_axes);
+    let both_axes_note = if app.cmq_axes.ey && app.cmq_axes.ez {
+        "・弱軸は半透明"
+    } else {
+        ""
     };
     let legend = match app.cmq_component {
-        CmqComponent::C => format!("CMQ図 C(max={:.2}, {}) 青", max_c, axis_label),
-        CmqComponent::M => format!("CMQ図 M(max={:.2}, {}) 紫", max_m, axis_label),
-        CmqComponent::Q => format!("CMQ図 Q(max={:.2}, {}) 緑", max_q, axis_label),
+        CmqComponent::C => format!(
+            "CMQ図 C(max={:.2}, {}{}) 青",
+            max_c, axis_label, both_axes_note
+        ),
+        CmqComponent::M => format!(
+            "CMQ図 M(max={:.2}, {}{}) 紫",
+            max_m, axis_label, both_axes_note
+        ),
+        CmqComponent::Q => format!(
+            "CMQ図 Q(max={:.2}, {}{}) 緑",
+            max_q, axis_label, both_axes_note
+        ),
     };
     painter.text(
         egui::pos2(
@@ -734,5 +795,43 @@ mod tests {
         );
         assert!(!is_gravity_auto_case_name("手入力ケース1"));
         assert!(!is_gravity_auto_case_name(""));
+    }
+
+    /// `selected_axis_label` は選択中の軸の組をそのまま表す（凡例・空表示メッセージ
+    /// 双方が「今まさに選択している軸」を指すこと。片方だけ選択中に「その軸を
+    /// 追加してください」という矛盾した案内を出さないための前提となる）。
+    #[test]
+    fn selected_axis_label_reflects_current_selection() {
+        assert_eq!(
+            selected_axis_label(CmqAxes {
+                ey: true,
+                ez: false
+            }),
+            "強軸(ey)"
+        );
+        assert_eq!(
+            selected_axis_label(CmqAxes {
+                ey: false,
+                ez: true
+            }),
+            "弱軸(ez)"
+        );
+        assert_eq!(
+            selected_axis_label(CmqAxes { ey: true, ez: true }),
+            "強軸+弱軸"
+        );
+    }
+
+    /// 弱軸(ez)は強軸(ey)より不透明度が低い（2D構面表示で強軸・弱軸のトレースが
+    /// 同一直線上に重なっても判別できるようにするため。`plane_alpha_scale`）。
+    #[test]
+    fn plane_alpha_scale_dims_weak_axis_relative_to_strong_axis() {
+        let ey_alpha = plane_alpha_scale(DiagramPlane::Ey);
+        let ez_alpha = plane_alpha_scale(DiagramPlane::Ez);
+        assert_eq!(ey_alpha, 1.0, "強軸は不透明のはず");
+        assert!(
+            ez_alpha > 0.0 && ez_alpha < ey_alpha,
+            "弱軸は強軸より薄いが完全透明ではないはず: ez_alpha={ez_alpha}"
+        );
     }
 }
