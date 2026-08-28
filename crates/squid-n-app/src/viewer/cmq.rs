@@ -80,9 +80,20 @@ fn group_member_loads_by_elem(model: &Model, case: &LoadCase) -> Vec<CmqElemGrou
 
 /// `MemberLoadKind` の大きさ（強度・集中荷重）を、世界座標の作用方向 `dir` から
 /// 局所軸の単位ベクトル `axis`（ey または ez）へ投影する。位置（`a`/`b`）は
-/// 部材長に沿った値のためそのまま、強度・大きさだけを `dot(dir, axis)` 倍する。
+/// 部材長に沿った値のためそのまま、強度・大きさだけを `-dot(dir, axis)` 倍する。
+///
+/// **符号は `dot` ではなく `-dot`。** `squid_n_load::floor::fem` の固定端モーメント・
+/// 単純梁公式（`fixed_end_moments`/`simple_reactions`/`simple_beam_moment_at`）は、
+/// 正の強度・集中荷重を「`axis` の負方向（重力のように）へ作用する」ものとして
+/// 扱う教科書的な単純梁公式であり、この描画コードの規約（`+ey側=梁上側`、
+/// `sagging正=-ey側=下`）とも整合する。標準的な水平梁（`ref_vector=[0,0,1]` →
+/// 局所 ey は世界 +Z）に鉛直荷重（`dir=[0,0,-1]`）が作用する既定ケースでは
+/// `dot(dir,ey) = -1` になるため、素朴な `dot` を使うと、この改修より前から
+/// 検証済みだった符号（投影なしで `w` をそのまま使っていた）が反転してしまう。
+/// `-dot(dir,axis)` はこの既定ケースで `+1` となり、在来の符号を保ったまま
+/// 傾いた部材・弱軸成分（軸が世界上下と一致しない場合）へ一般化する。
 fn project_load(kind: MemberLoadKind, dir: [f64; 3], axis: [f64; 3]) -> MemberLoadKind {
-    let s = dir[0] * axis[0] + dir[1] * axis[1] + dir[2] * axis[2];
+    let s = -(dir[0] * axis[0] + dir[1] * axis[1] + dir[2] * axis[2]);
     match kind {
         MemberLoadKind::Point { a, p } => MemberLoadKind::Point { a, p: p * s },
         MemberLoadKind::Distributed { a, b, w1, w2 } => MemberLoadKind::Distributed {
@@ -587,5 +598,42 @@ mod tests {
             unreachable!()
         };
         assert!(w1.abs() < 1e-12 && w2.abs() < 1e-12);
+    }
+
+    /// **回帰テスト（敵対的レビューで発見）**: 既定ケース（強軸のみ表示・標準的な
+    /// 水平梁・鉛直荷重）で投影後の符号・大きさが在来のまま保たれること。
+    ///
+    /// 標準的な水平梁（`ref_vector=[0,0,1]`）の局所 ey は世界 +Z（上向き）になる
+    /// （`squid_n_element::transform::LocalFrame::from_nodes` の導出。全ての標準
+    /// 生成経路が使う既定値: `crates/squid-n-io/src/scz.rs`・`checkpoint.rs`、
+    /// `crates/squid-n-edit/src/node_member.rs`）。鉛直荷重の作用方向は常に
+    /// `dir=[0,0,-1]`（`squid_n_load::self_weight::DIR_DOWN`、
+    /// `slab_load_case_content` の `DIR` 定数と同一）。
+    ///
+    /// この既定ケースで `dot(dir,ey) = -1` となるため、素朴な `dot` で投影すると
+    /// 全ての梁の C/M/Q が符号反転する（サギング/ホギングが入れ替わり、逆側に
+    /// 描かれる）。CMQ 図のソース付け替え自体はこの改修（本コミット）で入ったため
+    /// 「サインが反転した」ことを検出できる旧実装のスナップショットは存在しないが、
+    /// この改修より前は投影を一切行わず `w` をそのまま `fixed_end_moments` 等へ
+    /// 渡していた（＝実質的に `s=+1` 固定）。本テストはその基準（`s=+1`）を
+    /// 既定ケースで再現し続けることを固定する。
+    #[test]
+    fn project_load_preserves_legacy_sign_for_default_horizontal_beam_under_gravity() {
+        let ey = [0.0, 0.0, 1.0]; // 標準的な水平梁（ref_vector=[0,0,1]）の局所 ey
+        let dir = [0.0, 0.0, -1.0]; // 鉛直荷重（DIR_DOWN）
+        let kind = MemberLoadKind::Distributed {
+            a: 0.0,
+            b: 4000.0,
+            w1: 1.0,
+            w2: 1.0,
+        };
+        let MemberLoadKind::Distributed { w1, w2, .. } = project_load(kind, dir, ey) else {
+            unreachable!()
+        };
+        assert!(
+            (w1 - 1.0).abs() < 1e-12 && (w2 - 1.0).abs() < 1e-12,
+            "既定ケースでは投影後も w の符号・大きさが変わらないはず（在来の CMQ 図と\
+             一致させるため）: w1={w1} w2={w2}"
+        );
     }
 }
