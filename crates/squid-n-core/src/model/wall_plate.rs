@@ -404,7 +404,7 @@ fn segment_intersection_t(p0: [f64; 2], p1: [f64; 2], q0: [f64; 2], q1: [f64; 2]
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ids::{FloorRegionId, MaterialId, NodeId, SectionId, WallPlateId};
+    use crate::ids::{FloorRegionId, MaterialId, NodeId, SectionId, SlabId, WallPlateId};
 
     fn model_with_nodes(pts: &[[f64; 3]]) -> Model {
         let mut m = Model::default();
@@ -925,5 +925,88 @@ mod tests {
             three_side_slit: false,
         };
         assert!(m.self_standing_wall_coverage(&p).is_none());
+    }
+
+    /// L 形（非凸）の床領域 1 つ。欠けているのは X=4000..8000, Y=4000..8000。
+    fn model_l_region() -> Model {
+        let mut m = model_with_nodes(&[
+            [0.0, 0.0, 3000.0],
+            [8000.0, 0.0, 3000.0],
+            [8000.0, 4000.0, 3000.0],
+            [4000.0, 4000.0, 3000.0],
+            [4000.0, 8000.0, 3000.0],
+            [0.0, 8000.0, 3000.0],
+        ]);
+        let b = vec![
+            NodeId(0),
+            NodeId(1),
+            NodeId(2),
+            NodeId(3),
+            NodeId(4),
+            NodeId(5),
+        ];
+        let mut r = FloorRegion::new(FloorRegionId(0), b.clone());
+        r.slab_ids.push(SlabId(0));
+        m.floor_regions.push(r);
+        m.slabs.push(Slab {
+            id: SlabId(0),
+            shape: SlabShape::Enclosed { boundary: b },
+            plate: SlabPlate::default(),
+        });
+        m
+    }
+
+    /// L 形の底辺に収まる自立壁は、非凸でも全量をその床領域が受け持つ。
+    #[test]
+    fn coverage_l_shape_interior_is_fully_covered() {
+        let mut m = model_l_region();
+        let p = push_self_standing(
+            &mut m,
+            [500.0, 1000.0, 3000.0],
+            [7500.0, 1000.0, 3000.0],
+            [2000.0, 2000.0],
+        );
+        let cov = m.self_standing_wall_coverage(&p).expect("自立壁");
+        assert!(!cov.has_uncovered(), "{cov:?}");
+        assert_eq!(cov.per_region.len(), 1);
+        assert_eq!(cov.per_region[0].0, FloorRegionId(0));
+        assert!((cov.per_region[0].1 - 1.0).abs() < 1e-9, "{cov:?}");
+    }
+
+    /// L 形の欠けへはみ出す壁は、欠け側を `uncovered` にする（中点内包で帰属）。
+    #[test]
+    fn coverage_l_shape_notch_is_uncovered() {
+        let mut m = model_l_region();
+        // Y=1000..7000。Y=4000 より上が欠け（X=6000）。
+        let p = push_self_standing(
+            &mut m,
+            [6000.0, 1000.0, 3000.0],
+            [6000.0, 7000.0, 3000.0],
+            [2000.0, 2000.0],
+        );
+        let cov = m.self_standing_wall_coverage(&p).expect("自立壁");
+        assert!(cov.has_uncovered(), "{cov:?}");
+        assert!((cov.uncovered - 0.5).abs() < 1e-9, "{cov:?}");
+        let covered: f64 = cov.per_region.iter().map(|(_, f)| f).sum();
+        assert!((covered - 0.5).abs() < 1e-9, "{cov:?}");
+    }
+
+    /// 床領域の辺上に乗った壁は、厳密内包判定により覆われていない。
+    #[test]
+    fn coverage_on_region_boundary_is_uncovered() {
+        let mut m = model_two_regions();
+        // 領域 0 の南辺（Y=0, X=500..3500）にぴったり載せる。
+        let p = push_self_standing(
+            &mut m,
+            [500.0, 0.0, 3000.0],
+            [3500.0, 0.0, 3000.0],
+            [2000.0, 2000.0],
+        );
+        let cov = m.self_standing_wall_coverage(&p).expect("自立壁");
+        assert!(
+            cov.has_uncovered(),
+            "辺上は内包しない（大梁真上は線アンカーへ）: {cov:?}"
+        );
+        assert!((cov.uncovered - 1.0).abs() < 1e-9, "{cov:?}");
     }
 }
