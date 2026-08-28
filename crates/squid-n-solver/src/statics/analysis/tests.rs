@@ -1590,6 +1590,22 @@ fn test_model_issues_warns_wall_plates_not_expanded() {
         openings: Vec::new(),
         three_side_slit: false,
     });
+    model.wall_plates.push(WallPlate {
+        id: WallPlateId(3),
+        shape: WallPlateShape::Attached {
+            anchor: squid_n_core::model::RegionAnchor::Line {
+                nodes: [NodeId(0), NodeId(1)],
+                span: [0.0, 1.0],
+                transfer: squid_n_core::model::LoadTransfer::Anchor,
+            },
+            extent: [900.0, 900.0],
+        },
+        section: None,
+        opening_area: 0.0,
+        opening_weight: 0.0,
+        openings: Vec::new(),
+        three_side_slit: false,
+    });
 
     let issues = model_issues(&model);
     let msgs: Vec<&str> = issues.iter().map(|i| i.message.as_str()).collect();
@@ -1599,11 +1615,27 @@ fn test_model_issues_warns_wall_plates_not_expanded() {
         }),
         "4 節点でない壁版の警告がない: {msgs:?}"
     );
+    let no_section = issues
+        .iter()
+        .find(|i| i.severity == IssueSeverity::Warning && i.message.contains("断面未割当の壁版"))
+        .unwrap_or_else(|| panic!("断面未割当の壁版の警告がない: {msgs:?}"));
     assert!(
-        issues.iter().any(|i| {
-            i.severity == IssueSeverity::Warning && i.message.contains("断面未割当の壁版")
+        no_section.message.contains("2 枚"),
+        "Enclosed 1 枚と取り付く壁版 1 枚を数えること: {}",
+        no_section.message
+    );
+    assert!(
+        no_section.message.contains("自重を分配できません"),
+        "取り付く壁版の自重欠落に触れること: {}",
+        no_section.message
+    );
+    assert!(
+        !issues.iter().any(|i| {
+            i.severity == IssueSeverity::Warning
+                && i.message.contains("4 節点でない壁版")
+                && i.message.contains("2 枚")
         }),
-        "断面未割当の壁版の警告がない: {msgs:?}"
+        "断面ありの取り付く壁版を 4 節点でないと数えないこと: {msgs:?}"
     );
     assert!(
         issues.iter().any(|i| {

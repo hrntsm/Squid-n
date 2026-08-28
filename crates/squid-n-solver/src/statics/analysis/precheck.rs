@@ -397,22 +397,23 @@ pub fn model_issues(model: &Model) -> Vec<ModelIssue> {
         }
     }
 
-    // 壁版のうち解析要素にしないもの。解析は柱梁だけで成立するため止めないが、
-    // 耐震壁が消えたことに気づけるよう警告する（D5: 4 節点・断面ありの
-    // Enclosed だけが壁要素になる）。
+    // 壁版のうち解析要素にしないもの、および自重が算定できないもの。
+    // 解析は柱梁だけで成立するため止めないが、耐震壁が消えたこと・取り付く壁版の
+    // 自重が落ちることに気づけるよう警告する（D5: 4 節点・断面ありの Enclosed
+    // だけが壁要素になる。取り付く壁版の自重は断面から求める）。
     {
         use squid_n_core::model::WallPlateShape;
         let mut skipped_non_quad = 0usize;
         let mut skipped_no_section = 0usize;
         for plate in &model.wall_plates {
-            if !matches!(plate.shape, WallPlateShape::Enclosed { .. }) {
-                continue;
-            }
             if plate.section.is_none() {
                 skipped_no_section += 1;
                 continue;
             }
-            if !plate.has_quad_boundary() {
+            // 4 節点判定は囲まれた壁版だけ。取り付く壁版は境界を持たず
+            // `has_quad_boundary` が常に false なので、ここへ混ぜない。
+            if matches!(plate.shape, WallPlateShape::Enclosed { .. }) && !plate.has_quad_boundary()
+            {
                 skipped_non_quad += 1;
             }
         }
@@ -429,7 +430,8 @@ pub fn model_issues(model: &Model) -> Vec<ModelIssue> {
             issues.push(
                 ModelIssue::model(format!(
                     "断面未割当の壁版が {skipped_no_section} 枚あります。\
-                     解析要素としては生成しません。"
+                     囲まれた壁版は解析要素として生成せず、取り付く壁版は\
+                     自重を分配できません。"
                 ))
                 .warn(),
             );
