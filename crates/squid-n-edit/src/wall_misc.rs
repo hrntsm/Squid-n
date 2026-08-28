@@ -261,66 +261,6 @@ impl EditCommand for SetPanelZoneMode {
     }
 }
 
-/// 壁要素（`ElementKind::Wall`/`Shell`）の自重算定属性（`WallAttr`）を
-/// 追加/更新する。`attr.elem` に一致する既存エントリがあれば置換し、
-/// なければ末尾に追加する。逆操作は変更前の状態への復元
-/// （既存エントリの置換なら変更前の `WallAttr` で [`SetWallAttr`] を再実行、
-/// 新規追加なら [`RemoveWallAttr`] で取り消す）。
-pub struct SetWallAttr {
-    pub attr: squid_n_core::model::WallAttr,
-}
-
-impl EditCommand for SetWallAttr {
-    fn apply(&self, model: &mut Model) -> Box<dyn EditCommand> {
-        if !crate::refs::elem_exists(model, self.attr.elem) {
-            return Box::new(Noop);
-        }
-        if let Some(pos) = model
-            .wall_attrs
-            .iter()
-            .position(|a| a.elem == self.attr.elem)
-        {
-            let old = model.wall_attrs[pos].clone();
-            model.wall_attrs[pos] = self.attr.clone();
-            Box::new(SetWallAttr { attr: old })
-        } else {
-            model.wall_attrs.push(self.attr.clone());
-            Box::new(RemoveWallAttr {
-                elem: self.attr.elem,
-            })
-        }
-    }
-
-    fn label(&self) -> &str {
-        "壁属性変更"
-    }
-}
-
-/// 壁属性エントリを削除する（`elem` に一致するものを削除）。一致するエントリが
-/// なければ Noop。逆操作は削除前の値を復元する [`SetWallAttr`]
-/// （このエントリの `elem` は削除時点で存在しないため、`SetWallAttr` は
-/// 「既存エントリなし→末尾追加」の枝を通り、元の位置には戻らないが、
-/// `wall_attrs` は `ElemId` をキーとする集合的なデータであり配列順に意味は
-/// ないため問題ない）。
-pub struct RemoveWallAttr {
-    pub elem: ElemId,
-}
-
-impl EditCommand for RemoveWallAttr {
-    fn apply(&self, model: &mut Model) -> Box<dyn EditCommand> {
-        if let Some(pos) = model.wall_attrs.iter().position(|a| a.elem == self.elem) {
-            let old = model.wall_attrs.remove(pos);
-            Box::new(SetWallAttr { attr: old })
-        } else {
-            Box::new(Noop)
-        }
-    }
-
-    fn label(&self) -> &str {
-        "壁属性削除"
-    }
-}
-
 /// フレーム外雑壁（`OutOfFrameMiscWall`）を追加。末尾に追加する。逆操作は末尾の雑壁削除。
 pub struct AddMiscWall {
     pub wall: squid_n_core::model::OutOfFrameMiscWall,
@@ -856,6 +796,91 @@ impl EditCommand for SetAttachedWallPlateAnchor {
 
     fn label(&self) -> &str {
         "壁版取り付き先変更"
+    }
+}
+
+/// 壁版の断面（`section`。板厚・材料を持つ断面）変更。逆操作は変更前の値への
+/// 復元。存在しない `WallPlateId`、および実在しない断面を指す割当は Noop
+/// （[`SetSlabSection`] と同じ規約）。
+///
+/// 断面は壁版の自重（板厚 × 材料密度）と、囲まれた壁版では解析要素の生成可否
+/// （`squid_n_load::wall_expand` は断面未割当の壁版から要素を作らない）を
+/// 決めるため、囲まれた壁版・取り付く壁版のどちらにも意味を持つ。
+pub struct SetWallPlateSection {
+    pub id: WallPlateId,
+    pub section: Option<SectionId>,
+}
+
+impl EditCommand for SetWallPlateSection {
+    fn apply(&self, model: &mut Model) -> Box<dyn EditCommand> {
+        let idx = self.id.index();
+        if idx >= model.wall_plates.len() || model.wall_plates[idx].id != self.id {
+            return Box::new(Noop);
+        }
+        if !crate::refs::section_ref_ok(model, self.section) {
+            return Box::new(Noop);
+        }
+        let old = model.wall_plates[idx].section;
+        model.wall_plates[idx].section = self.section;
+        Box::new(SetWallPlateSection {
+            id: self.id,
+            section: old,
+        })
+    }
+
+    fn label(&self) -> &str {
+        "壁版断面変更"
+    }
+}
+
+/// 壁版の自重算定属性（開口面積・個別開口・開口部重量・三方スリット）を
+/// 一括変更する。逆操作は変更前の値への復元。存在しない `WallPlateId` は Noop。
+///
+/// 開口の 4 つの値をひとまとめにするのは、`openings`（個別開口）が非空のとき
+/// `opening_area` が無視されるという相互依存があるためである
+/// （[`squid_n_core::model::WallPlate::total_opening_area`]）。別々のコマンドに
+/// 分けると、undo の途中に「個別開口だけ戻って面積が残る」という、利用者が
+/// 一度も入力していない組み合わせが現れうる。
+///
+/// `three_side_slit` は囲まれた壁版（`Enclosed`）が解析要素として生成される
+/// ときにだけ効く（自重を上下に分けず頂部へ寄せる指定。
+/// `squid_n_load::story_gen::self_weight_calc`）。取り付く壁版
+/// （`Attached`。腰壁・垂れ壁・パラペット・自立壁）には自重を分ける相手方の
+/// 下端がそもそも無く、`squid_n_load::wall_attached` はこのフィールドを読まない。
+/// GUI は取り付く壁版でこの入力欄自体を出さないが、コマンドは形によらず値を
+/// そのまま保存する（`WallPlate` が形によらず同じフィールドを持つ設計〔D3〕を
+/// コマンド側で崩さないため）。
+pub struct SetWallPlateAttrs {
+    pub id: WallPlateId,
+    pub opening_area: f64,
+    pub opening_weight: f64,
+    pub openings: Vec<squid_n_core::model::WallOpening>,
+    pub three_side_slit: bool,
+}
+
+impl EditCommand for SetWallPlateAttrs {
+    fn apply(&self, model: &mut Model) -> Box<dyn EditCommand> {
+        let idx = self.id.index();
+        if idx >= model.wall_plates.len() || model.wall_plates[idx].id != self.id {
+            return Box::new(Noop);
+        }
+        let plate = &mut model.wall_plates[idx];
+        let old = SetWallPlateAttrs {
+            id: self.id,
+            opening_area: plate.opening_area,
+            opening_weight: plate.opening_weight,
+            openings: plate.openings.clone(),
+            three_side_slit: plate.three_side_slit,
+        };
+        plate.opening_area = self.opening_area;
+        plate.opening_weight = self.opening_weight;
+        plate.openings = self.openings.clone();
+        plate.three_side_slit = self.three_side_slit;
+        Box::new(old)
+    }
+
+    fn label(&self) -> &str {
+        "壁版属性変更"
     }
 }
 

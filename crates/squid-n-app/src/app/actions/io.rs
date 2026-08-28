@@ -84,7 +84,7 @@ impl App {
             // 階への複製ダイアログは、旧モデルの階を指したままにすると新モデルの
             // 別の階へ配ってしまうため、選択ごと閉じる。
             self.story_copy = Default::default();
-            self.wall_attr_draft = Default::default();
+            self.wall_plate_draft = Default::default();
             self.misc_wall_draft = Default::default();
             self.axis_name_draft = Default::default();
             self.load_cfg_draft = Default::default();

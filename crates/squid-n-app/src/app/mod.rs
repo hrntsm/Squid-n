@@ -32,8 +32,8 @@ pub enum ModelTab {
     Sections,
     Materials,
     Slabs,
-    /// 壁属性（開口・三方スリット）
-    WallAttrs,
+    /// 壁版（断面・開口・三方スリット・取付き先）
+    WallPlates,
     /// フレーム外雑壁
     MiscWalls,
     /// 部材付帯情報（ハンチ・継手位置）
@@ -1067,9 +1067,9 @@ pub struct App {
     /// 新規作成・読込時は `reset_gui_state` で空にする（永続化しない）。
     #[cfg(feature = "gui")]
     pub pending_story_cmds: std::collections::VecDeque<Box<dyn squid_n_edit::EditCommand>>,
-    /// モデルタブ「壁属性」フォームのドラフト状態
+    /// モデルタブ「壁版」フォームのドラフト状態
     #[cfg(feature = "gui")]
-    pub wall_attr_draft: crate::tables::wall_attrs::WallAttrDraft,
+    pub wall_plate_draft: crate::tables::wall_plates::WallPlateDraft,
     /// モデルタブ「雑壁」追加フォームのドラフト状態
     #[cfg(feature = "gui")]
     pub misc_wall_draft: crate::tables::misc_walls::MiscWallDraft,
@@ -1295,7 +1295,7 @@ impl Default for App {
             #[cfg(feature = "gui")]
             pending_story_cmds: std::collections::VecDeque::new(),
             #[cfg(feature = "gui")]
-            wall_attr_draft: crate::tables::wall_attrs::WallAttrDraft::default(),
+            wall_plate_draft: crate::tables::wall_plates::WallPlateDraft::default(),
             #[cfg(feature = "gui")]
             misc_wall_draft: crate::tables::misc_walls::MiscWallDraft::default(),
             #[cfg(feature = "gui")]
