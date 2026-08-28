@@ -37,25 +37,14 @@ use squid_n_core::model::{LoadTransfer, Model, RegionAnchor, WallPlateShape};
 
 use crate::floor::{fem_linear, fem_uniform, polygon_area, BeamLoad, Cmq, LoadShape, LoadTarget};
 
-/// 台形（始端高さ `h0`、終端高さ `h1`）の底辺に沿った無次元重心（始端 = 0、終端 = 1）。
-/// 両方の高さが実質 0 なら中点 0.5。
-fn trapezoid_centroid_s(h0: f64, h1: f64) -> f64 {
-    let sum = h0 + h1;
-    if sum <= 1e-12 {
-        0.5
-    } else {
-        (h0 + 2.0 * h1) / (3.0 * sum)
-    }
-}
-
-/// 取付き線上の集中位置（無次元）。矩形なら区間中点、台形なら面積重心。
+/// 取付き線上の集中位置（無次元）。矩形なら区間中点、台形なら ∫|h| の面積重心。
 fn line_resultant_t(span: [f64; 2], extent: [f64; 2]) -> f64 {
-    let s = trapezoid_centroid_s(extent[0].abs(), extent[1].abs());
+    let s = squid_n_core::geom::abs_lerp_centroid(extent[0], extent[1]);
     span[0] + (span[1] - span[0]) * s
 }
 
 /// 線アンカー分布の形状。高さが両端で実質等しければ等分布、異なれば線形変化。
-/// 総荷重 `∫ w dx = total` を保存する。
+/// 総荷重 `∫ w dx = total` を保存する。符号が同じ区間向け（反転は呼び出し側で分割）。
 fn line_load_shape(total: f64, len: f64, extent: [f64; 2]) -> (LoadShape, Cmq) {
     let h0 = extent[0].abs();
     let h1 = extent[1].abs();
@@ -68,6 +57,63 @@ fn line_load_shape(total: f64, len: f64, extent: [f64; 2]) -> (LoadShape, Cmq) {
         let w_j = total * 2.0 * h1 / (sum_h * len);
         (LoadShape::Linear { w_i, w_j }, fem_linear(w_i, w_j, len))
     }
+}
+
+fn push_span_load(
+    loads: &mut Vec<BeamLoad>,
+    nodes: [NodeId; 2],
+    span: [f64; 2],
+    extent: [f64; 2],
+    total: f64,
+    len: f64,
+) {
+    if total <= 1e-9 || len <= 1e-9 {
+        return;
+    }
+    let (shape, cmq) = line_load_shape(total, len, extent);
+    loads.push(BeamLoad {
+        elem: ElemId(u32::MAX),
+        target: LoadTarget::Span { nodes, t: span },
+        shape,
+        cmq,
+    });
+}
+
+fn push_anchor_span_loads(
+    loads: &mut Vec<BeamLoad>,
+    nodes: [NodeId; 2],
+    span: [f64; 2],
+    extent: [f64; 2],
+    total: f64,
+    len: f64,
+) {
+    if extent[0] * extent[1] < 0.0 && extent[0].abs() > 1e-12 && extent[1].abs() > 1e-12 {
+        let tz = extent[0].abs() / (extent[0].abs() + extent[1].abs());
+        let a0 = squid_n_core::geom::abs_lerp_integral(extent[0], extent[1], 0.0, tz);
+        let a1 = squid_n_core::geom::abs_lerp_integral(extent[0], extent[1], tz, 1.0);
+        let ta = a0 + a1;
+        if ta > 1e-15 && tz > 1e-12 && tz < 1.0 - 1e-12 {
+            let mid = span[0] + (span[1] - span[0]) * tz;
+            push_span_load(
+                loads,
+                nodes,
+                [span[0], mid],
+                [extent[0], 0.0],
+                total * a0 / ta,
+                len * tz,
+            );
+            push_span_load(
+                loads,
+                nodes,
+                [mid, span[1]],
+                [0.0, extent[1]],
+                total * a1 / ta,
+                len * (1.0 - tz),
+            );
+            return;
+        }
+    }
+    push_span_load(loads, nodes, span, extent, total, len);
 }
 
 /// 節点 `node` への集中荷重（[`LoadTarget::Node`]）を1件積む。総量が実質0なら積まない。
@@ -124,19 +170,13 @@ pub fn attached_wall_beam_loads(model: &Model) -> Vec<BeamLoad> {
                 // 取付き線の区間 span にのみ載る分布。梁全長への希釈はしない
                 // （危険側の近似を避ける。dig 2026-08-27 Q2=A）。
                 // 矩形は等分布、台形は張り出し高さに比例する線形変化。
-                let (shape, cmq) = line_load_shape(total, len, *extent);
-                loads.push(BeamLoad {
-                    elem: ElemId(u32::MAX),
-                    target: LoadTarget::Span {
-                        nodes: *nodes,
-                        t: *span,
-                    },
-                    shape,
-                    cmq,
-                });
+                // 符号が反転するときは高さ 0 で分割し、各側を線形にする
+                // （一端から他端へ |h| を直線で結ぶと中央が過大になる）。
+                push_anchor_span_loads(&mut loads, *nodes, *span, *extent, total, len);
             }
             LoadTransfer::Columns => {
                 // 台形の面積重心（矩形なら区間中点）での単純梁反力按分。
+                // 符号反転は ∫|h| の重心（端点絶対値の台形重心ではない）。
                 let t = line_resultant_t(*span, *extent);
                 push_node_load(&mut loads, nodes[0], total * (1.0 - t));
                 push_node_load(&mut loads, nodes[1], total * t);
@@ -203,7 +243,7 @@ pub fn accumulate_attached_wall_seismic_weight(model: &Model, node_weight: &mut 
                 add_node_weight(node_weight, nodes[1], total * t);
             }
             RegionAnchor::FloorRegion { nodes, .. } => {
-                let s = trapezoid_centroid_s(extent[0].abs(), extent[1].abs());
+                let s = squid_n_core::geom::abs_lerp_centroid(extent[0], extent[1]);
                 add_node_weight(node_weight, nodes[0], total * (1.0 - s));
                 add_node_weight(node_weight, nodes[1], total * s);
             }
@@ -661,7 +701,29 @@ mod tests {
         );
         // 半分ずつなので強度も等しい。
         let v: Vec<f64> = extra.values().copied().collect();
-        assert!((v[0] - v[1]).abs() / v[0] < 1e-9, "{extra:?}");
+        assert!((v[0] - v[1]).abs() / v[0] < 1e-9);
+    }
+
+    /// 両端で立ち上がり高さの符号が反転する自立壁でも、配分の総和は自重と一致する。
+    #[test]
+    fn floor_region_sign_reversal_conserves_total_weight() {
+        let mut m = model_with_line_anchor_nodes();
+        push_floor_region(&mut m, [-1000.0, 2000.0], 0, true, 3000.0);
+        push_floor_region(&mut m, [2000.0, 5000.0], 1, true, 3000.0);
+        let mut plate = self_standing_plate();
+        if let WallPlateShape::Attached { extent, .. } = &mut plate.shape {
+            *extent = [2000.0, -2000.0];
+        }
+        let total = m.wall_plate_self_weight(&plate, &m).expect("自重が求まる");
+        assert!(total > 0.0, "符号反転でも面積は正: {total}");
+        m.wall_plates.push(plate);
+
+        let extra = floor_region_wall_extra_intensity(&m);
+        let sum: f64 = extra.values().map(|dw| dw * 3000.0 * 4000.0).sum();
+        assert!(
+            (sum - total).abs() / total < 1e-9,
+            "符号反転でも総重量を保存すること sum={sum} total={total} extra={extra:?}"
+        );
     }
 
     /// 版なし床領域（床板 0 枚）は「力を流す先が無い」ため覆いとみなさず、

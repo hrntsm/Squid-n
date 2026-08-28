@@ -181,3 +181,19 @@ fn default_local_ref_vector_follows_vertical_rule() {
         [0.0, 0.0, 1.0]
     );
 }
+
+#[test]
+fn abs_lerp_integral_trapezoid_when_same_sign() {
+    assert!((abs_lerp_integral(500.0, 1500.0, 0.0, 1.0) - 1000.0).abs() < 1e-12);
+    assert!((abs_lerp_centroid(500.0, 1500.0) - 7.0 / 12.0).abs() < 1e-12);
+}
+
+#[test]
+fn abs_lerp_integral_splits_at_zero_when_sign_reverses() {
+    // +H → −H は 2 つの三角形。端点絶対値の台形 (H+H)/2 = H ではなく H/2。
+    let h = 2000.0;
+    assert!((abs_lerp_integral(h, -h, 0.0, 1.0) - h * 0.5).abs() < 1e-9);
+    assert!((abs_lerp_integral(h, -h, 0.0, 0.5) - h * 0.25).abs() < 1e-9);
+    assert!((abs_lerp_integral(h, -h, 0.5, 1.0) - h * 0.25).abs() < 1e-9);
+    assert!((abs_lerp_centroid(h, -h) - 0.5).abs() < 1e-12);
+}

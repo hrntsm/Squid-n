@@ -166,6 +166,60 @@ pub fn polygon_area_3d(pts: &[[f64; 3]]) -> f64 {
     0.5 * vec3::norm(normal)
 }
 
+/// 無次元パラメータ `t ∈ [0, 1]` で線形に変わる高さ `h(t) = lerp(h0, h1, t)` の
+/// 絶対値を、区間 `[t0, t1]` で積分する。
+///
+/// 両端の符号が同じなら `|h|` も線形（台形）。符号が反転するときは高さ 0 の位置で
+/// 折れるため、端点の絶対値を結んだ台形は過大になる（2 つの三角形の和が正しい面積）。
+/// 取り付く壁版の自重面積・自立壁の重量比がこれを共有する。
+pub fn abs_lerp_integral(h0: f64, h1: f64, t0: f64, t1: f64) -> f64 {
+    let t0 = t0.clamp(0.0, 1.0);
+    let t1 = t1.clamp(0.0, 1.0);
+    if t1 <= t0 {
+        return 0.0;
+    }
+    let h = |t: f64| h0 + (h1 - h0) * t;
+    let a = h(t0);
+    let b = h(t1);
+    if a * b >= 0.0 || a.abs() <= 1e-15 || b.abs() <= 1e-15 {
+        return (a.abs() + b.abs()) * 0.5 * (t1 - t0);
+    }
+    let denom = h1 - h0;
+    if denom.abs() <= 1e-15 {
+        return a.abs() * (t1 - t0);
+    }
+    let tz = (-h0 / denom).clamp(t0, t1);
+    abs_lerp_integral(h0, h1, t0, tz) + abs_lerp_integral(h0, h1, tz, t1)
+}
+
+/// [`abs_lerp_integral`] と同じ `|h(t)|` の、区間 `[0, 1]` での面積重心（始端 = 0）。
+/// 面積が 0 なら中点 0.5。
+pub fn abs_lerp_centroid(h0: f64, h1: f64) -> f64 {
+    let area = abs_lerp_integral(h0, h1, 0.0, 1.0);
+    if area <= 1e-15 {
+        return 0.5;
+    }
+    fn moment(h0: f64, h1: f64, t0: f64, t1: f64) -> f64 {
+        if t1 <= t0 {
+            return 0.0;
+        }
+        let h = |t: f64| h0 + (h1 - h0) * t;
+        let a = h(t0);
+        let b = h(t1);
+        if a * b < 0.0 && a.abs() > 1e-15 && b.abs() > 1e-15 {
+            let tz = (-h0 / (h1 - h0)).clamp(t0, t1);
+            if tz > t0 && tz < t1 {
+                return moment(h0, h1, t0, tz) + moment(h0, h1, tz, t1);
+            }
+        }
+        let dt = t1 - t0;
+        let ha = a.abs();
+        let hb = b.abs();
+        dt * (t0 * ha + t0 * (hb - ha) * 0.5 + dt * ha * 0.5 + dt * (hb - ha) / 3.0)
+    }
+    moment(h0, h1, 0.0, 1.0) / area
+}
+
 /// 点群に最も当てはまる平面の単位法線を、主成分分析（全最小二乗）で求める。
 ///
 /// 重心まわりの共分散行列の**最小固有値の固有ベクトル**を法線に採る。通常の
