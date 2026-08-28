@@ -17,7 +17,26 @@ use super::{
 };
 use squid_n_core::geom::vec3::dist as member_len3;
 use squid_n_core::ids::ElemId;
-use squid_n_core::model::{LoadCase, MemberLoadKind, Model};
+use squid_n_core::model::{
+    LoadCase, MemberLoadKind, Model, DL_CASE_NAME, LL_FRAME_CASE_NAME, LL_SEISMIC_CASE_NAME,
+};
+
+/// 名前が「準備計算で `member` が埋まる自動ケース」（DL・LL(架構用)・LL(地震用)）と
+/// 一致するか。**EX・EY は含まない**: これらは水平力を節点（`NodalLoad`）でしか
+/// 表現しない設計（`build_seismic_load_case_from_model`）のため、準備計算を実行しても
+/// `member` は常に空のままであり、「準備計算を実行すると更新される」という案内が
+/// 当てはまらない。
+///
+/// DL・LL(架構用)・LL(地震用) の `member` は準備計算（`sync_gravity_load_cases_action`。
+/// 解析実行の入口 `ensure_preparation` からしか呼ばれない）が書き込む。モデル読込直後・
+/// スラブ編集直後など、準備計算を一度も実行していない状態では中身が空のままになりうる
+/// ため、CMQ図の空表示メッセージでこの可能性を案内する（`draw_cmq_diagram`）。
+fn is_gravity_auto_case_name(name: &str) -> bool {
+    matches!(
+        name,
+        DL_CASE_NAME | LL_FRAME_CASE_NAME | LL_SEISMIC_CASE_NAME
+    )
+}
 
 fn is_primary_beam_for_cmq(model: &Model, elem: &squid_n_core::model::ElementData) -> bool {
     if elem.kind != squid_n_core::model::ElementKind::Beam || elem.nodes.len() != 2 {
@@ -79,8 +98,11 @@ fn group_member_loads_by_elem(model: &Model, case: &LoadCase) -> Vec<CmqElemGrou
 }
 
 /// `MemberLoadKind` の大きさ（強度・集中荷重）を、世界座標の作用方向 `dir` から
-/// 局所軸の単位ベクトル `axis`（ey または ez）へ投影する。位置（`a`/`b`）は
-/// 部材長に沿った値のためそのまま、強度・大きさだけを `-dot(dir, axis)` 倍する。
+/// 局所軸の単位ベクトル `axis`（ey または ez。単位ベクトル前提）へ投影する。
+/// 位置（`a`/`b`）は部材長に沿った値のためそのまま、強度・大きさだけを
+/// `-dot(dir, axis)` 倍する（`dir` は呼び出し前に正規化していなくてもよい。
+/// 内部で正規化する。長さがほぼ 0 の退化した向きは、どの面にも投影できないため
+/// 寄与 0 として扱う）。
 ///
 /// **符号は `dot` ではなく `-dot`。** `squid_n_load::floor::fem` の固定端モーメント・
 /// 単純梁公式（`fixed_end_moments`/`simple_reactions`/`simple_beam_moment_at`）は、
@@ -92,8 +114,20 @@ fn group_member_loads_by_elem(model: &Model, case: &LoadCase) -> Vec<CmqElemGrou
 /// 検証済みだった符号（投影なしで `w` をそのまま使っていた）が反転してしまう。
 /// `-dot(dir,axis)` はこの既定ケースで `+1` となり、在来の符号を保ったまま
 /// 傾いた部材・弱軸成分（軸が世界上下と一致しない場合）へ一般化する。
+///
+/// **`dir` の正規化について**: `MemberLoad.dir` は構造体のドキュメントで「内部で
+/// 正規化」と説明されているが、`MemberLoad::manual`/`auto` のコンストラクタ自体は
+/// 正規化しない（呼び出し側が単位ベクトルを渡す前提）。実際の解析で部材荷重を
+/// 局所軸へ分解する `squid_n_element::frame::member_load::resolve` は、この前提に
+/// 頼らず明示的に正規化してから内積を取っている。本関数も同じ流儀に揃え、
+/// 呼び出し側の実装詳細（すべて単位ベクトル定数）に暗黙に依存しないようにする。
 fn project_load(kind: MemberLoadKind, dir: [f64; 3], axis: [f64; 3]) -> MemberLoadKind {
-    let s = -(dir[0] * axis[0] + dir[1] * axis[1] + dir[2] * axis[2]);
+    let dl = (dir[0] * dir[0] + dir[1] * dir[1] + dir[2] * dir[2]).sqrt();
+    let s = if dl < 1e-12 {
+        0.0
+    } else {
+        -(dir[0] * axis[0] + dir[1] * axis[1] + dir[2] * axis[2]) / dl
+    };
     match kind {
         MemberLoadKind::Point { a, p } => MemberLoadKind::Point { a, p: p * s },
         MemberLoadKind::Distributed { a, b, w1, w2 } => MemberLoadKind::Distributed {
@@ -207,7 +241,8 @@ pub(super) fn draw_cmq_diagram(
     let Some(case) = app.cmq_display_load_case() else {
         info_text(
             painter,
-            "荷重ケースがありません。荷重タブで作成してください",
+            "荷重ケースがありません。荷重タブで作成するか、「準備計算」タブで準備計算を\
+             実行してください（スラブ等が定義されていれば DL 等のケースが自動生成されます）",
         );
         return;
     };
@@ -237,11 +272,23 @@ pub(super) fn draw_cmq_diagram(
         .collect();
 
     if groups.is_empty() {
+        // DL・LL(架構用)・LL(地震用) は、準備計算（またはいずれかの解析実行）を
+        // 一度も行っていないモデル（読込直後・スラブ編集直後等）では `member` が空の
+        // ままになる（`sync_gravity_load_cases_action` が準備計算の入口でしか
+        // 呼ばれないため）。原因を汎用の「荷重がない」だけで片付けず、これらの
+        // ケースのときはその可能性を案内する（EX/EY は水平力が常に節点荷重のみで
+        // `member` を持たないため対象外。`is_gravity_auto_case_name`）。
+        let sync_hint = if is_gravity_auto_case_name(&case.name) {
+            "。モデル読込直後やスラブ編集直後で「準備計算」タブをまだ実行していない場合、\
+             実行すると内容が更新されます"
+        } else {
+            ""
+        };
         info_text(
             painter,
             &format!(
                 "荷重ケース「{}」に大梁への部材荷重がありません。\
-                 荷重タブで荷重を追加するか、ナビゲータで他のケースを選択してください",
+                 荷重タブで荷重を追加するか、ナビゲータで他のケースを選択してください{sync_hint}",
                 case.name
             ),
         );
@@ -600,6 +647,38 @@ mod tests {
         assert!(w1.abs() < 1e-12 && w2.abs() < 1e-12);
     }
 
+    /// `dir` が単位ベクトルでなくても、正規化してから投影するため結果は同じになる
+    /// （`MemberLoad::manual`/`auto` は `dir` を正規化しないため、`project_load` 側で
+    /// 正規化を保証する必要がある。実際の解析側 `resolve` と同じ流儀）。
+    #[test]
+    fn project_load_normalizes_non_unit_dir() {
+        let ey = [0.0, 0.0, 1.0];
+        let kind = MemberLoadKind::Point { a: 0.0, p: 10.0 };
+        let unit = project_load(kind.clone(), [0.0, 0.0, -1.0], ey);
+        let scaled = project_load(kind, [0.0, 0.0, -3.5], ey); // 長さ3.5・向きは同じ
+        let (MemberLoadKind::Point { p: p_unit, .. }, MemberLoadKind::Point { p: p_scaled, .. }) =
+            (unit, scaled)
+        else {
+            unreachable!()
+        };
+        assert!(
+            (p_unit - p_scaled).abs() < 1e-9,
+            "正規化前の長さに関わらず同じ投影結果になるはず: p_unit={p_unit} p_scaled={p_scaled}"
+        );
+    }
+
+    /// `dir` が退化（長さほぼ0）のときは、どの面にも投影できないため寄与0とする
+    /// （パニック・NaN を出さない）。
+    #[test]
+    fn project_load_degenerate_dir_contributes_zero() {
+        let ey = [0.0, 0.0, 1.0];
+        let kind = MemberLoadKind::Point { a: 0.0, p: 10.0 };
+        let MemberLoadKind::Point { p, .. } = project_load(kind, [0.0, 0.0, 0.0], ey) else {
+            unreachable!()
+        };
+        assert_eq!(p, 0.0);
+    }
+
     /// **回帰テスト（敵対的レビューで発見）**: 既定ケース（強軸のみ表示・標準的な
     /// 水平梁・鉛直荷重）で投影後の符号・大きさが在来のまま保たれること。
     ///
@@ -635,5 +714,25 @@ mod tests {
             "既定ケースでは投影後も w の符号・大きさが変わらないはず（在来の CMQ 図と\
              一致させるため）: w1={w1} w2={w2}"
         );
+    }
+
+    /// 準備計算で `member` が埋まる自動ケース名（DL・LL(架構用)・LL(地震用)）だけを
+    /// `is_gravity_auto_case_name` が拾うこと。EX・EY は水平力が常に `NodalLoad`
+    /// のみで `member` を持たないため対象外、手入力ケース名も対象外。
+    #[test]
+    fn is_gravity_auto_case_name_matches_only_member_bearing_auto_cases() {
+        for name in [DL_CASE_NAME, LL_FRAME_CASE_NAME, LL_SEISMIC_CASE_NAME] {
+            assert!(is_gravity_auto_case_name(name), "{name} は自動ケースのはず");
+        }
+        assert!(
+            !is_gravity_auto_case_name(squid_n_core::model::EX_CASE_NAME),
+            "EXは常にmemberが空のため対象外のはず"
+        );
+        assert!(
+            !is_gravity_auto_case_name(squid_n_core::model::EY_CASE_NAME),
+            "EYは常にmemberが空のため対象外のはず"
+        );
+        assert!(!is_gravity_auto_case_name("手入力ケース1"));
+        assert!(!is_gravity_auto_case_name(""));
     }
 }
