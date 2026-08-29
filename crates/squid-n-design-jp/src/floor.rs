@@ -34,7 +34,7 @@ pub struct JoistDesignResult {
     pub ratio: f64,
     /// 判定（`ratio <= 1`）。未検定は `false`。
     pub ok: bool,
-    /// 分配荷重が無く部材力を算定していない（表には残し、判定は「未」）。
+    /// 分配荷重が無い・断面/材料不足などで部材力を算定していない（表には残し、判定は「未」）。
     #[serde(default)]
     pub unchecked: bool,
 }
@@ -226,8 +226,10 @@ pub fn design_slab_oneway(
     }
 }
 
-/// 鋼小梁の既定ヤング係数 [N/mm²]。
+/// 鋼小梁の既定ヤング係数 [N/mm²]（材料未設定時）。
 pub const STEEL_YOUNG: f64 = 205_000.0;
+/// 鋼小梁の既定 F 値 [N/mm²]（材料未設定・`fy` 未設定時）。
+pub const STEEL_F_DEFAULT: f64 = 235.0;
 /// たわみ制限の既定分母（δ/L ≤ 1/250）。
 pub const DEFLECTION_LIMIT_DENOM: f64 = 250.0;
 /// スラブ設計の既定かぶり [mm]（圧縮縁〜鉄筋重心）。
@@ -236,6 +238,25 @@ pub const SLAB_DEFAULT_COVER: f64 = 30.0;
 pub const SLAB_J_RATIO: f64 = 7.0 / 8.0;
 /// 異形鉄筋 SD295 の長期許容引張応力度 [N/mm²]。
 pub const REBAR_FT_LONG_SD295: f64 = 195.0;
+
+/// 小梁略算に使うヤング係数 E [N/mm²] と長期許容曲げ応力度 [N/mm²]。
+///
+/// 本経路の曲げ検定は鋼の断面係数 Z と長期 `ft = F/1.5` を前提とする。
+/// - 材料なし: 既定鋼（`STEEL_YOUNG`・`STEEL_F_DEFAULT`）
+/// - 鋼材: 材料の `young` と `fy`（無ければ `STEEL_F_DEFAULT`）から `ft`
+/// - コンクリート・鉄筋: `None`（RC 小梁の許容曲げはこの略算では扱わない → 表は「未」）
+pub fn joist_steel_e_and_ft(mat: Option<&squid_n_core::model::Material>) -> Option<(f64, f64)> {
+    use squid_n_core::model::MaterialCategory;
+    match mat {
+        None => Some((STEEL_YOUNG, STEEL_F_DEFAULT / 1.5)),
+        Some(m) if m.category == MaterialCategory::Steel => {
+            let e = if m.young > 0.0 { m.young } else { STEEL_YOUNG };
+            let f = m.fy.filter(|v| *v > 0.0).unwrap_or(STEEL_F_DEFAULT);
+            Some((e, f / 1.5))
+        }
+        Some(_) => None,
+    }
+}
 
 #[cfg(test)]
 mod tests {

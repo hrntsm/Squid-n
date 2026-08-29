@@ -872,18 +872,23 @@ fn floor_design_section(ui: &mut egui::Ui, app: &App) {
                 row.col(|ui| {
                     let label = match ji {
                         crate::app::JoistCheckTarget::SlabJoist(i) => format!("{i}"),
-                        crate::app::JoistCheckTarget::SecondaryMember(i) => {
-                            let joists: Vec<_> = app.model.joists().collect();
-                            joists
-                                .get(*i)
+                        crate::app::JoistCheckTarget::SecondaryJoist { nodes } => {
+                            let key = (nodes[0].0.min(nodes[1].0), nodes[0].0.max(nodes[1].0));
+                            app.model
+                                .joists()
+                                .find(|sm| {
+                                    let a = sm.nodes[0].0.min(sm.nodes[1].0);
+                                    let b = sm.nodes[0].0.max(sm.nodes[1].0);
+                                    (a, b) == key
+                                })
                                 .map(|sm| {
                                     if sm.name.is_empty() {
-                                        format!("SM{i}")
+                                        format!("SM{}-{}", nodes[0].0, nodes[1].0)
                                     } else {
                                         sm.name.clone()
                                     }
                                 })
-                                .unwrap_or_else(|| format!("SM{i}"))
+                                .unwrap_or_else(|| format!("SM{}-{}", nodes[0].0, nodes[1].0))
                         }
                     };
                     ui.label(label);

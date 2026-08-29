@@ -148,7 +148,7 @@
 | 25 | 終局検定（塑性 Qsu・付着 Qbu・軸 Nuc/Nut・2軸せん断・接合部 Vju/Qdu・CFT 軸終局+N-M） | squid-n-design-jp | ultimate/{rc_shear,rc_axial,joint,cft,cft_nm,mod}.rs | `test_rc_shear_qsu_plastic_*`/`test_rc_joint_ultimate_*`/`test_cft_*`/`test_cft_short_column_mu_*`/`test_biaxial_*`/`test_collect_*_ultimate_checks_*` | P7 | 🔶 |
 | 26 | 数量積算（部位別のコンクリート・型枠・鉄筋・鉄骨・継手個所） | squid-n-design-jp | quantity/{mod,member,rebar}.rs | `quantity::member::tests::*`（手計算照合）/`quantity::tests::*`（走査・分類）/`summary::tests::test_quantity_csv_from_sample_model`（CSV 一気通貫）/`test_quantity_takeoff_json_column`（MCP） | 横断 | 🔶 |
 | 27 | 材料グレード対応表（F 値・鉄筋・Fc・プリセット） | squid-n-core | material_grade.rs | `material_grade::tests::*`（告示値一致） | 横断 | ✅ |
-| 28 | 二次部材小梁の分配 Span 検定 | squid-n-load / squid-n-app | floor/joist_design.rs, check.rs | `distribution_loads_on_shared_joist_match_average_width` / `split_slab_edges_compose_onto_full_joist` / `simple_beam_extremes_uniform_matches_closed_form` / `joist_design_checks_cover_imported_secondary_members` | 横断 | ☑ |
+| 28 | 二次部材小梁の分配 Span 検定 | squid-n-load / squid-n-app | floor/joist_design.rs, check.rs | `distribution_loads_on_shared_joist_match_average_width` / `distribution_mq_vs_uniform_tributary_width` / `split_slab_edges_compose_onto_full_joist` / `span_attaches_to_nearest_joist_only` / `simple_beam_extremes_uniform_matches_closed_form` / `joist_design_checks_cover_imported_secondary_members` / `test_floor_design_checks_secondary_joist_without_section_is_unchecked` | 横断 | ☑ |
 
 凡例: ✅ 実装済み・🔶 一部実装（要拡張）・❌ 未実装
 

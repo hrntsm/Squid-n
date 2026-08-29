@@ -3710,7 +3710,9 @@ fn test_floor_design_checks_secondary_member_joist() {
     let (_sid, target, jr) = &joists[0];
     assert!(matches!(
         target,
-        crate::app::JoistCheckTarget::SecondaryMember(0)
+        crate::app::JoistCheckTarget::SecondaryJoist {
+            nodes: [NodeId(4), NodeId(5)]
+        }
     ));
     assert!(
         (jr.w - 11.85).abs() < 0.2,
@@ -3718,6 +3720,67 @@ fn test_floor_design_checks_secondary_member_joist() {
         jr.w
     );
     assert!(jr.m_max > 0.0);
+}
+
+/// 断面未割当の二次部材小梁は表から消さず判定「未」になる。
+#[test]
+fn test_floor_design_checks_secondary_joist_without_section_is_unchecked() {
+    use squid_n_core::model::{SecondaryMember, SecondaryMemberKind};
+
+    let mut model = make_square_slab_test_model();
+    // 共有辺になるよう床板を 2 枚に割る（分配 Span は出るが断面が無い）。
+    let plate = model.slabs[0].plate.clone();
+    model.nodes.push(squid_n_core::model::Node {
+        id: NodeId(4),
+        coord: [2000.0, 0.0, 0.0],
+        restraint: Default::default(),
+        mass: None,
+        story: None,
+        support_spring: None,
+    });
+    model.nodes.push(squid_n_core::model::Node {
+        id: NodeId(5),
+        coord: [2000.0, 4000.0, 0.0],
+        restraint: Default::default(),
+        mass: None,
+        story: None,
+        support_spring: None,
+    });
+    model.slabs = vec![
+        squid_n_core::model::Slab {
+            id: squid_n_core::ids::SlabId(0),
+            shape: squid_n_core::model::SlabShape::Enclosed {
+                boundary: vec![NodeId(0), NodeId(4), NodeId(5), NodeId(3)],
+            },
+            plate: plate.clone(),
+        },
+        squid_n_core::model::Slab {
+            id: squid_n_core::ids::SlabId(1),
+            shape: squid_n_core::model::SlabShape::Enclosed {
+                boundary: vec![NodeId(4), NodeId(1), NodeId(2), NodeId(5)],
+            },
+            plate,
+        },
+    ];
+    model.floor_regions[0].slab_ids =
+        vec![squid_n_core::ids::SlabId(0), squid_n_core::ids::SlabId(1)];
+    model.floor_regions[0]
+        .secondary_joists
+        .push(SecondaryMember {
+            kind: SecondaryMemberKind::Joist,
+            nodes: [NodeId(4), NodeId(5)],
+            section: None,
+            name: "J-no-sec".into(),
+        });
+    model.validate().expect("validate");
+    let app = App {
+        model,
+        ..App::default()
+    };
+    let (joists, _) = app.floor_design_checks();
+    assert_eq!(joists.len(), 1);
+    assert!(joists[0].2.unchecked, "断面なしは未検定");
+    assert!(!joists[0].2.ok);
 }
 
 /// 二次部材小梁は、平面が重なる上下階のスラブのうち**同じレベル**のスラブで検定される。

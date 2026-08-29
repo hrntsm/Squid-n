@@ -1152,14 +1152,23 @@ fn joist_design_checks_cover_imported_secondary_members() {
 
     let mut checked = 0;
     for (slab_id, target, jr) in &results.joist_checks {
-        let squid_n_app::app::JoistCheckTarget::SecondaryMember(smi) = target else {
+        let squid_n_app::app::JoistCheckTarget::SecondaryJoist { nodes } = target else {
             continue;
         };
         checked += 1;
         if jr.unchecked {
             continue;
         }
-        let sm = app.model.joists().nth(*smi).expect("小梁");
+        let key = (nodes[0].0.min(nodes[1].0), nodes[0].0.max(nodes[1].0));
+        let sm = app
+            .model
+            .joists()
+            .find(|sm| {
+                let a = sm.nodes[0].0.min(sm.nodes[1].0);
+                let b = sm.nodes[0].0.max(sm.nodes[1].0);
+                (a, b) == key
+            })
+            .expect("小梁");
         let z_joist = sm
             .nodes
             .iter()
@@ -1175,7 +1184,9 @@ fn joist_design_checks_cover_imported_secondary_members() {
         let z_slab = slab.level(&app.model).expect("床板のレベル");
         assert!(
             (z_slab - z_joist).abs() <= 1.0,
-            "小梁 {smi}（Z={z_joist}）が別レベルのスラブ {:?}（Z={z_slab}）で検定されている",
+            "小梁 {}-{}（Z={z_joist}）が別レベルのスラブ {:?}（Z={z_slab}）で検定されている",
+            nodes[0].0,
+            nodes[1].0,
             slab_id
         );
     }
