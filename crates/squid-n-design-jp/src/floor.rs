@@ -1,8 +1,9 @@
 //! 床の中での小梁・スラブ（床）の設計。
 //!
-//! 小梁は大梁を分割せず、床の中で**単純支持梁**として検定する（反力は大梁へ CMQ
-//! 荷重として伝達する扱い）。スラブは一方向の曲げとして設計曲げモーメントと必要
-//! 鉄筋量を算定する。いずれも全体 FEM から独立した床設計として扱う。
+//! 小梁は大梁を分割せず、床の中で**単純支持梁**として検定する。
+//!
+//! 手入力小梁ライン（`FloorRegion.joists`）は負担幅 `w × spacing`（または格子 FEM）。
+//! 二次部材小梁は床領域分配の `Span` を単純梁へ重ね合わせ、小梁自重の等分布を足す。
 //!
 //! 単位は N-mm（面荷重 N/mm²、線荷重 N/mm）。
 
@@ -11,11 +12,11 @@
 pub struct JoistDesignResult {
     /// スパン（支持間距離）[mm]。
     pub span: f64,
-    /// 等分布荷重 w [N/mm]（＝面荷重 × 負担幅 spacing）。
+    /// 代表等分布荷重 w [N/mm]（手入力経路は面荷重 × 負担幅。二次部材は合計/スパン）。
     pub w: f64,
-    /// 最大曲げモーメント M = wL²/8 [N·mm]（中央）。
+    /// 最大曲げモーメント [N·mm]。
     pub m_max: f64,
-    /// 最大せん断力 Q = wL/2 [N]（端部）。
+    /// 最大せん断力 [N]。
     pub q_max: f64,
     /// 曲げ応力度 σ = M/Z [N/mm²]。
     pub sigma: f64,
@@ -23,16 +24,19 @@ pub struct JoistDesignResult {
     pub sigma_allow: f64,
     /// 曲げ検定比 σ/σ_allow。
     pub bending_ratio: f64,
-    /// たわみ δ = 5wL⁴/(384EI) [mm]。
+    /// たわみ [mm]（等分布なら 5wL⁴/(384EI)。二次部材は数値積分）。
     pub deflection: f64,
     /// たわみ比 δ/L。
     pub deflection_span_ratio: f64,
     /// たわみ検定比 (δ/L)/(1/limit_denom)。
     pub deflection_ratio: f64,
-    /// 総合検定比（曲げ・たわみの最大）。
+    /// 総合検定比（曲げ・たわみの最大）。未検定は 0。
     pub ratio: f64,
-    /// 判定（`ratio <= 1`）。
+    /// 判定（`ratio <= 1`）。未検定は `false`。
     pub ok: bool,
+    /// 分配荷重が無く部材力を算定していない（表には残し、判定は「未」）。
+    #[serde(default)]
+    pub unchecked: bool,
 }
 
 /// 小梁を単純支持梁として設計する（床の中での小梁設計）。
@@ -73,9 +77,10 @@ pub fn design_joist_simple(
     )
 }
 
-/// 部材力（曲げ・せん断・たわみ）を直接与えて小梁を検定する（床格子サブモデルの
-/// FEM 結果から検定する用途。M・Q・δ は格子解析の実値。`w` は代表等分布荷重で
-/// 表示用途）。
+/// 部材力（曲げ・せん断・たわみ）を直接与えて小梁を検定する。
+///
+/// 床格子 FEM と、二次部材の分配 Span 重ね合わせの両方から使う。
+/// `m_max` / `q_max` / `deflection` が設計値。`w` は表示用の代表等分布（合計/スパン）。
 #[allow(clippy::too_many_arguments)]
 pub fn design_joist_from_forces(
     span: f64,
@@ -142,6 +147,26 @@ fn judge_joist(
         deflection_ratio,
         ratio,
         ok: ratio <= 1.0,
+        unchecked: false,
+    }
+}
+
+/// 分配結果が無く断面検定できない小梁の表行（判定は「未」。OK と誤認しない）。
+pub fn joist_unchecked(span: f64) -> JoistDesignResult {
+    JoistDesignResult {
+        span,
+        w: 0.0,
+        m_max: 0.0,
+        q_max: 0.0,
+        sigma: 0.0,
+        sigma_allow: 0.0,
+        bending_ratio: 0.0,
+        deflection: 0.0,
+        deflection_span_ratio: 0.0,
+        deflection_ratio: 0.0,
+        ratio: 0.0,
+        ok: false,
+        unchecked: true,
     }
 }
 

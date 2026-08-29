@@ -130,10 +130,11 @@ impl App {
 
     /// 床の中での小梁・スラブ設計を算定する（`run_design_check` から呼ぶ）。
     ///
-    /// - 小梁: 支持2節点間を単純支持梁とし、床用積載（令85条1項の床用）＋固定荷重の
-    ///   等分布 w·spacing で曲げ・たわみを検定する。反力は大梁へ CMQ として伝達する
-    ///   前提のため、小梁は大梁を分割しない。実部材化された小梁（支持間に実 Beam が
-    ///   存在）は全体 FEM で検定するため対象外。断面未割当の小梁もスキップする。
+    /// - 手入力小梁ライン（`FloorRegion.joists`）: 単純支持梁として床用積載＋固定荷重の
+    ///   等分布 `w × spacing` で曲げ・たわみを検定する（交差があれば格子 FEM）。
+    /// - 二次部材小梁: 床領域分配の `Span` を単純梁へ重ね合わせ、小梁自重の等分布を足す。
+    /// - 実部材化された小梁（支持間に実 Beam がある）は全体 FEM で検定するため対象外。
+    ///   断面未割当もスキップする。分配荷重が無い二次部材は表に「未」として残す。
     /// - スラブ: 矩形スラブの短辺を設計スパンとし、一方向版として設計曲げモーメントと
     ///   必要鉄筋量を算定する（鋼小梁・SD295 鉄筋の既定値を用いる）。
     pub(crate) fn floor_design_checks(
@@ -302,7 +303,7 @@ impl App {
             }
         }
 
-        // --- 二次部材（小梁）: ST-Bridge 取り込み等 `Slab::joists` に載らない小梁 ---
+        // --- 二次部材小梁（領域内 + 未割当。手入力 JoistLine とは別経路） ---
         self.design_secondary_joist_checks(&mut joist_checks, &beam_between, sigma_allow, &z_of);
 
         (joist_checks, slab_checks)
@@ -322,8 +323,8 @@ impl App {
         use squid_n_core::model::{LoadPurpose, SecondaryMemberKind};
         use squid_n_design_jp::floor as fd;
         use squid_n_load::floor::{
-            orient_member_loads, secondary_joist_distribution_loads, simple_beam_extremes,
-            span_node_key,
+            joist_self_weight_udl, orient_member_loads, secondary_joist_distribution_loads,
+            simple_beam_extremes, span_node_key,
         };
         use std::collections::HashSet;
 
@@ -377,26 +378,44 @@ impl App {
                 continue;
             }
 
-            let Some(entry) = distribution.get(&key) else {
-                continue;
-            };
-            if entry.member_loads.is_empty() {
-                continue;
-            }
-
-            let loads = orient_member_loads(&entry.member_loads, span, entry.span_nodes, (a, b));
-            let ex = simple_beam_extremes(&loads, span, fd::STEEL_YOUNG, sec.iy);
-            if ex.w_equiv <= 1e-9 && ex.m_max <= 1e-9 {
-                continue;
-            }
-
             let rep_slab_id = self
                 .model
                 .floor_regions
                 .iter()
                 .find(|r| r.secondary_joists.iter().any(|j| j.nodes == sm.nodes))
-                .and_then(|r| r.slab_ids.first().copied())
-                .unwrap_or(entry.rep_slab_id);
+                .and_then(|r| r.slab_ids.first().copied());
+
+            let Some(entry) = distribution
+                .get(&key)
+                .filter(|e| !e.member_loads.is_empty())
+            else {
+                joist_checks.push((
+                    rep_slab_id.unwrap_or(squid_n_core::ids::SlabId(0)),
+                    crate::app::JoistCheckTarget::SecondaryMember(smi),
+                    fd::joist_unchecked(span),
+                ));
+                continue;
+            };
+
+            let mut loads =
+                orient_member_loads(&entry.member_loads, span, entry.span_nodes, (a, b));
+            if let Some(w_sw) = joist_self_weight_udl(&self.model, sm) {
+                loads.push(squid_n_core::model::MemberLoadKind::Distributed {
+                    a: 0.0,
+                    b: span,
+                    w1: w_sw,
+                    w2: w_sw,
+                });
+            }
+            let ex = simple_beam_extremes(&loads, span, fd::STEEL_YOUNG, sec.iy);
+            if ex.w_equiv <= 1e-9 && ex.m_max <= 1e-9 {
+                joist_checks.push((
+                    rep_slab_id.unwrap_or(entry.rep_slab_id),
+                    crate::app::JoistCheckTarget::SecondaryMember(smi),
+                    fd::joist_unchecked(span),
+                ));
+                continue;
+            }
 
             let r = fd::design_joist_from_forces(
                 span,
@@ -409,7 +428,7 @@ impl App {
                 fd::DEFLECTION_LIMIT_DENOM,
             );
             joist_checks.push((
-                rep_slab_id,
+                rep_slab_id.unwrap_or(entry.rep_slab_id),
                 crate::app::JoistCheckTarget::SecondaryMember(smi),
                 r,
             ));

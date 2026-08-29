@@ -290,6 +290,8 @@ type PointKey = (usize, usize, i64);
 
 /// 部材・床・二次部材の対応付けキー（材端／頂点の並び。順序の違いを吸収するため整列）。
 type PlanKey = Vec<PointKey>;
+/// 二次部材は種別に加え平面位置で対応付ける（同幾何の小梁と間柱を衝突させない）。
+type SecondaryPlanKey = (SecondaryMemberKind, PlanKey);
 
 /// 階の中での高さの位置。直下階のレベルを 0、当該階のレベルを 1000 とし、
 /// あいだは階高に対する比を 1/1000 で量子化する。
@@ -384,14 +386,14 @@ impl EditCommand for RestoreModel {
 ///
 /// 先に見つかったものを採ると、どれが選ばれるかは要素の並び順しだいになる。
 /// 誤って別の部材へ断面や荷重を配るより、飛ばして件数を報告するほうが安全である。
-struct PlanIndex<T> {
-    map: HashMap<PlanKey, T>,
-    ambiguous: HashSet<PlanKey>,
+struct PlanIndex<K, T> {
+    map: HashMap<K, T>,
+    ambiguous: HashSet<K>,
 }
 
-impl<T> PlanIndex<T> {
-    fn build(items: impl Iterator<Item = (PlanKey, T)>) -> Self {
-        let mut map: HashMap<PlanKey, T> = HashMap::new();
+impl<K: Eq + std::hash::Hash, T> PlanIndex<K, T> {
+    fn build(items: impl Iterator<Item = (K, T)>) -> Self {
+        let mut map: HashMap<K, T> = HashMap::new();
         let mut ambiguous = HashSet::new();
         for (k, v) in items {
             if map.remove(&k).is_some() || ambiguous.contains(&k) {
@@ -403,12 +405,11 @@ impl<T> PlanIndex<T> {
         Self { map, ambiguous }
     }
 
-    /// キーに対応する相手。曖昧なキーは `None`（呼び出し側は飛ばして数える）。
-    fn get(&self, k: &PlanKey) -> Option<&T> {
+    fn get(&self, k: &K) -> Option<&T> {
         self.map.get(k)
     }
 
-    fn is_ambiguous(&self, k: &PlanKey) -> bool {
+    fn is_ambiguous(&self, k: &K) -> bool {
         self.ambiguous.contains(k)
     }
 }
@@ -609,11 +610,18 @@ fn secondary_count(model: &Model) -> usize {
 }
 
 /// 階の二次部材を、対応付けキーで引ける索引にする。
-fn secondary_by_plan(model: &Model, ctx: &Ctx, story: StoryId) -> PlanIndex<SecondarySlot> {
+fn secondary_by_plan(
+    model: &Model,
+    ctx: &Ctx,
+    story: StoryId,
+) -> PlanIndex<SecondaryPlanKey, SecondarySlot> {
     PlanIndex::build(all_secondary_slots(model).into_iter().filter_map(|slot| {
         let sm = secondary_at(model, slot)?;
         (secondary_story(model, sm) == Some(story))
-            .then(|| ctx.key(model, story, &sm.nodes).map(|k| (k, slot)))
+            .then(|| {
+                ctx.key(model, story, &sm.nodes)
+                    .map(|k| ((sm.kind, k), slot))
+            })
             .flatten()
     }))
 }
@@ -1025,14 +1033,14 @@ fn should_delete_copied_secondary(
     to: StoryId,
     dz: f64,
     sm: &SecondaryMember,
-    src_keys: &HashSet<PlanKey>,
+    src_keys: &HashSet<SecondaryPlanKey>,
 ) -> bool {
     if secondary_story(model, sm) != Some(to) {
         return false;
     }
     let unmatched = ctx
         .key(model, to, &sm.nodes)
-        .is_some_and(|k| !src_keys.contains(&k));
+        .is_some_and(|k| !src_keys.contains(&(sm.kind, k)));
     let in_src_plan = sm.nodes.iter().all(|&n| ctx.maps_back(model, n, dz));
     unmatched && in_src_plan
 }
@@ -1051,12 +1059,12 @@ fn copy_secondary(
     dst_story_name: &str,
     report: &mut CopyStoryReport,
 ) {
-    let src_keys: HashSet<PlanKey> = all_secondary_slots(model)
+    let src_keys: HashSet<SecondaryPlanKey> = all_secondary_slots(model)
         .into_iter()
         .filter_map(|slot| {
             let sm = secondary_at(model, slot)?;
             (secondary_story(model, sm) == Some(cmd.from))
-                .then(|| ctx.key(model, cmd.from, &sm.nodes))
+                .then(|| ctx.key(model, cmd.from, &sm.nodes).map(|k| (sm.kind, k)))
                 .flatten()
         })
         .collect();
@@ -1138,10 +1146,11 @@ fn copy_secondary(
         .collect();
     let mut mapped: HashMap<SectionId, SectionId> = HashMap::new();
     for sm in src {
-        let Some(key) = ctx.key(model, cmd.from, &sm.nodes) else {
+        let Some(plan) = ctx.key(model, cmd.from, &sm.nodes) else {
             report.skipped += 1;
             continue;
         };
+        let key = (sm.kind, plan);
         if existing.get(&key).is_some() {
             continue;
         }

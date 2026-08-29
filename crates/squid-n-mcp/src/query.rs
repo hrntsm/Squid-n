@@ -8,7 +8,8 @@ pub fn get_model_json(state: &ServerState) -> String {
 
 /// `model.query` の中核ロジック（feature 非依存・テスト可能）。
 ///
-/// `kind` で `node`/`member`(=element)/`section`/`wall_plate`/`slab`/`floor_region`
+/// `kind` で `node`/`member`(=element)/`section`/`wall_plate`/`slab`/`floor_region`/
+/// `wall_region`/`unassigned_joist`/`unassigned_post`/`secondary_joist`
 /// を選び、各要素を JSON 化して返す。
 /// `member`/`elements` では、`Model::member_detail` に付帯情報（ハンチ・継手位置。
 /// 剛性には影響しない）が登録されている部材について `haunch_i`/`haunch_j`
@@ -162,6 +163,31 @@ pub fn query_model(model: &Model, kind: &str, filter: Option<&str>) -> Vec<serde
                     "joists": r.joists,
                 })
             })
+            .collect(),
+        "wall_region" | "wall_regions" => model
+            .wall_regions
+            .iter()
+            .map(|r| {
+                json!({
+                    "id": r.id.0,
+                    "name": r.name,
+                    "boundary": r.boundary.iter().map(|n| n.0).collect::<Vec<_>>(),
+                    "wall_plate_ids": r.wall_plate_ids.iter().map(|p| p.0).collect::<Vec<_>>(),
+                    "posts": r.posts,
+                })
+            })
+            .collect(),
+        "unassigned_joist" | "unassigned_joists" => serde_json::to_value(&model.unassigned_joists)
+            .ok()
+            .and_then(|v| v.as_array().cloned())
+            .unwrap_or_default(),
+        "unassigned_post" | "unassigned_posts" => serde_json::to_value(&model.unassigned_posts)
+            .ok()
+            .and_then(|v| v.as_array().cloned())
+            .unwrap_or_default(),
+        "secondary_joist" | "secondary_joists" => model
+            .joists()
+            .map(|sm| serde_json::to_value(sm).unwrap_or(json!(null)))
             .collect(),
         _ => vec![],
     };

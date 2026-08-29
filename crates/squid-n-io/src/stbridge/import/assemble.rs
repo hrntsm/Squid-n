@@ -614,9 +614,8 @@ fn build_slabs(
 ) -> usize {
     let mut skipped_slabs = 0u32;
     // ST-Bridge の XML には「スラブと小梁の親子関係」を明示する要素がない。
-    // そのため `Slab.secondary_joist_ids` は現行 importer では空配列のままにし、
-    // ここでは関連付けを行わない（旧スキーマの自動補正と区別してスキップ）。
-    // ST-Bridge の将来拡張で、親子関係が明示されればそのときに収集する。
+    // 小梁実体は `build_secondaries` が未割当へ入れ、`rebuild_floor_regions` が
+    // 所属を付ける。ここでは床板と小梁の XML 親子関係を読まない。
     // ST-Bridge の断面 file id → 内部の断面 ID。同じ断面を指すスラブで使い回す。
     let mut sec_of_file: HashMap<u32, SectionId> = HashMap::new();
     let mut slab_section_count = 0usize;
