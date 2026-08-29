@@ -395,6 +395,16 @@ pub fn model_issues(model: &Model) -> Vec<ModelIssue> {
                 .warn(),
             );
         }
+        let n = squid_n_load::floor::secondary_joists_missing_distribution(model);
+        if n != 0 {
+            issues.push(
+                ModelIssue::model(format!(
+                    "床荷重の分配から荷重が得られず、小梁設計の対象外になる二次部材小梁が {n} 本あります。\
+                     段差床・傾斜小梁、床板境界に載っていない小梁、床領域の不足などを確認してください。"
+                ))
+                .warn(),
+            );
+        }
     }
 
     // 壁版のうち解析要素にしないもの、および自重が算定できないもの。

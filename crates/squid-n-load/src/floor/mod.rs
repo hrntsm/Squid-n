@@ -32,10 +32,17 @@
 mod cantilever;
 mod fem;
 mod geometry;
+mod joist_design;
 mod polygon;
 mod rect;
 mod rigid_zone;
 mod types;
+
+pub use joist_design::{
+    load_shape_to_member_loads, orient_member_loads, secondary_joist_distribution_loads,
+    secondary_joists_missing_distribution, simple_beam_extremes, span_node_key,
+    SecondaryJoistLoads, SimpleBeamExtremes,
+};
 
 /// 取り付く壁版（[`crate::wall_attached`]）が、取付き線に載る等分布荷重の CMQ を
 /// 床側と同じ式で求めるための再公開（`fem` 自体は非公開モジュール）。
