@@ -10,7 +10,7 @@
 //! - **壁領域**（本モジュール）: 柱・梁が囲む鉛直構面内の閉領域そのもの。境界は
 //!   柱・梁の閉路（節点列）で、[`crate::region_gen::wall`] の面走査から作る。
 //!   **1 つの閉領域につき 1 つ**とする（D1）。版の仕様は持たない。間柱
-//!   （[`WallRegion::post_ids`]）と、壁領域内の壁版一覧（[`WallRegion::wall_plate_ids`]）
+//!   （[`WallRegion::posts`]）と、壁領域内の壁版一覧（[`WallRegion::wall_plate_ids`]）
 //!   を持つ。
 //! - **壁版**（[`super::WallPlate`]）: 柱・梁で囲まれた版、または主架構・床領域に
 //!   取り付く版（パラペット・腰壁・垂れ壁・自立壁）。断面（板厚・材料）・開口は
@@ -44,9 +44,9 @@ pub struct WallRegion {
     /// 雑壁領域等）は空のままでよい。
     #[serde(default)]
     pub wall_plate_ids: Vec<WallPlateId>,
-    /// この壁領域に属する間柱（`SecondaryMember::Post`）の ID リスト。
+    /// この壁領域に属する間柱（`SecondaryMember::Post`）の実体。
     #[serde(default)]
-    pub post_ids: Vec<SecondaryMemberId>,
+    pub posts: Vec<SecondaryMember>,
 }
 
 impl WallRegion {
@@ -57,7 +57,7 @@ impl WallRegion {
             name: String::new(),
             boundary,
             wall_plate_ids: Vec::new(),
-            post_ids: Vec::new(),
+            posts: Vec::new(),
         }
     }
 

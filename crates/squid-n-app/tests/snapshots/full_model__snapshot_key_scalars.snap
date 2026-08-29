@@ -1,11 +1,10 @@
 ---
 source: crates/squid-n-app/tests/full_model.rs
-assertion_line: 1532
 expression: out
 ---
 model.nodes = 171
 model.elements = 157
-model.secondary_members = 56
+model.joists() = 56
 model.floor_regions = 26
 model.stories = 5
 prep.total_seismic_weight = 3.187e6

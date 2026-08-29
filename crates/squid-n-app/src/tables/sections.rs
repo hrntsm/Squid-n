@@ -126,7 +126,7 @@ pub fn sections_table(ui: &mut egui::Ui, app: &mut App) {
             count(j.section, &mut n_elements);
         }
     }
-    for sm in &app.model.secondary_members {
+    for sm in app.model.joists().chain(app.model.posts()) {
         count(sm.section, &mut n_elements);
     }
 

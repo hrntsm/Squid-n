@@ -111,7 +111,7 @@ fn test_validate_dangling_slab_boundary() {
             name: String::new(),
             // 存在しない節点 5 を境界に含む（陳腐化した参照）。
             boundary: vec![NodeId(0), NodeId(5)],
-            secondary_joist_ids: vec![],
+            secondary_joists: vec![],
             slab_ids: vec![],
             joists: vec![],
         }],
@@ -124,45 +124,77 @@ fn test_validate_dangling_slab_boundary() {
 }
 
 #[test]
-fn test_validate_duplicate_slab_secondary_joist_ids() {
+fn test_validate_rejects_post_in_floor_region_joists() {
     let model = Model {
-        secondary_members: vec![SecondaryMember {
-            id: SecondaryMemberId(0),
-            kind: SecondaryMemberKind::Joist,
-            nodes: [NodeId(0), NodeId(1)],
-            section: None,
-            name: "J0".to_string(),
-        }],
         floor_regions: vec![FloorRegion {
             id: FloorRegionId(0),
             name: String::new(),
             boundary: vec![],
-            secondary_joist_ids: vec![SecondaryMemberId(0), SecondaryMemberId(0)],
+            secondary_joists: vec![SecondaryMember {
+                kind: SecondaryMemberKind::Post,
+                nodes: [NodeId(0), NodeId(1)],
+                section: None,
+                name: "P0".to_string(),
+            }],
             slab_ids: vec![],
             joists: vec![],
         }],
+        nodes: vec![
+            Node {
+                id: NodeId(0),
+                coord: [0.0; 3],
+                restraint: Dof6Mask::FREE,
+                mass: None,
+                story: None,
+                support_spring: None,
+            },
+            Node {
+                id: NodeId(1),
+                coord: [1000.0, 0.0, 0.0],
+                restraint: Dof6Mask::FREE,
+                mass: None,
+                story: None,
+                support_spring: None,
+            },
+        ],
         ..Default::default()
     };
     assert!(model.validate().is_err());
 }
 
 #[test]
-fn test_validate_duplicate_wall_region_post_ids() {
+fn test_validate_rejects_joist_in_wall_region_posts() {
     let model = Model {
-        secondary_members: vec![SecondaryMember {
-            id: SecondaryMemberId(0),
-            kind: SecondaryMemberKind::Post,
-            nodes: [NodeId(0), NodeId(1)],
-            section: None,
-            name: "P0".to_string(),
-        }],
         wall_regions: vec![crate::model::WallRegion {
             id: WallRegionId(0),
             name: String::new(),
             boundary: vec![],
             wall_plate_ids: vec![],
-            post_ids: vec![SecondaryMemberId(0), SecondaryMemberId(0)],
+            posts: vec![SecondaryMember {
+                kind: SecondaryMemberKind::Joist,
+                nodes: [NodeId(0), NodeId(1)],
+                section: None,
+                name: "J0".to_string(),
+            }],
         }],
+        nodes: vec![
+            Node {
+                id: NodeId(0),
+                coord: [0.0; 3],
+                restraint: Dof6Mask::FREE,
+                mass: None,
+                story: None,
+                support_spring: None,
+            },
+            Node {
+                id: NodeId(1),
+                coord: [0.0, 0.0, 3000.0],
+                restraint: Dof6Mask::FREE,
+                mass: None,
+                story: None,
+                support_spring: None,
+            },
+        ],
         ..Default::default()
     };
     assert!(model.validate().is_err());
@@ -1126,55 +1158,6 @@ fn test_validate_rejects_stories_out_of_elevation_order() {
     let err = m.validate().expect_err("標高の逆転を検出する");
     let msg = format!("{err}");
     assert!(msg.contains("昇順"), "{msg}");
-}
-
-#[test]
-fn test_retain_secondary_members_remaps_region_refs() {
-    let sm = |i: u32, kind| SecondaryMember {
-        id: SecondaryMemberId(i),
-        kind,
-        nodes: [NodeId(0), NodeId(1)],
-        section: None,
-        name: format!("SM{i}"),
-    };
-    let mut model = Model {
-        secondary_members: vec![
-            sm(0, SecondaryMemberKind::Joist),
-            sm(1, SecondaryMemberKind::Post),
-            sm(2, SecondaryMemberKind::Joist),
-        ],
-        floor_regions: vec![FloorRegion {
-            id: FloorRegionId(0),
-            name: String::new(),
-            boundary: vec![],
-            secondary_joist_ids: vec![SecondaryMemberId(0), SecondaryMemberId(2)],
-            slab_ids: vec![],
-            joists: vec![],
-        }],
-        wall_regions: vec![crate::model::WallRegion {
-            id: WallRegionId(0),
-            name: String::new(),
-            boundary: vec![],
-            wall_plate_ids: vec![],
-            post_ids: vec![SecondaryMemberId(1)],
-        }],
-        ..Default::default()
-    };
-
-    // SM0（Joist）を落とす。SM1→0, SM2→1 へ繰り上がる。
-    model.retain_secondary_members(|sm| sm.id != SecondaryMemberId(0));
-
-    assert_eq!(model.secondary_members.len(), 2);
-    for (i, sm) in model.secondary_members.iter().enumerate() {
-        assert_eq!(sm.id, SecondaryMemberId(i as u32));
-    }
-    // 落とした SM0 への参照は消え、SM2 への参照は新 ID 1 へ張り替わる。
-    assert_eq!(
-        model.floor_regions[0].secondary_joist_ids,
-        vec![SecondaryMemberId(1)]
-    );
-    // 壁領域の SM1 への参照は新 ID 0 へ張り替わる。
-    assert_eq!(model.wall_regions[0].post_ids, vec![SecondaryMemberId(0)]);
 }
 
 /// 同じ境界を持つ床領域が 2 つあると弾く（1 閉領域 1 領域の不変条件。D1）。

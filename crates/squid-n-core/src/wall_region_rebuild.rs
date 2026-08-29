@@ -78,6 +78,10 @@ pub struct WallRegionRebuildReport {
 /// （警告。落とさない。モジュール doc 参照）。
 pub fn rebuild_wall_regions(model: &mut Model) -> WallRegionRebuildReport {
     let scan = scan_wall_region_boundaries(model);
+    // 壁領域を作り直す前に、領域内間柱を未割当へ集約する（assign_posts が再配分する）。
+    for r in &mut model.wall_regions {
+        model.unassigned_posts.append(&mut r.posts);
+    }
     let old_regions = std::mem::take(&mut model.wall_regions);
     let mut report = WallRegionRebuildReport::default();
 
@@ -334,23 +338,25 @@ fn shoelace_centroid(pts: &[[f64; 2]], signed_area: f64) -> [f64; 2] {
 }
 
 fn assign_posts(model: &mut Model, boundaries: &[WallRegionBoundary]) -> usize {
-    let mut posts: Vec<_> = model
-        .secondary_members
-        .iter()
-        .filter(|sm| sm.kind == crate::model::SecondaryMemberKind::Post)
-        .map(|sm| (sm.id, sm.nodes))
+    let posts: Vec<_> = model
+        .wall_regions
+        .iter_mut()
+        .flat_map(|r| r.posts.drain(..))
+        .chain(model.unassigned_posts.drain(..))
         .collect();
-    posts.sort_by_key(|(id, _)| *id);
     for region in &mut model.wall_regions {
-        region.post_ids.clear();
+        region.posts.clear();
     }
     let mut unassigned = 0;
-    for (id, nodes) in posts {
+    for sm in posts {
+        let nodes = sm.nodes;
         let Some(a) = model.nodes.get(nodes[0].index()).map(|n| n.coord) else {
+            model.unassigned_posts.push(sm);
             unassigned += 1;
             continue;
         };
         let Some(b) = model.nodes.get(nodes[1].index()).map(|n| n.coord) else {
+            model.unassigned_posts.push(sm);
             unassigned += 1;
             continue;
         };
@@ -369,8 +375,9 @@ fn assign_posts(model: &mut Model, boundaries: &[WallRegionBoundary]) -> usize {
             .map(|(i, _)| i)
             .collect();
         if hits.len() == 1 {
-            model.wall_regions[hits[0]].post_ids.push(id);
+            model.wall_regions[hits[0]].posts.push(sm);
         } else {
+            model.unassigned_posts.push(sm);
             unassigned += 1;
         }
     }
@@ -380,7 +387,7 @@ fn assign_posts(model: &mut Model, boundaries: &[WallRegionBoundary]) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ids::{ElemId, SecondaryMemberId, WallPlateId};
+    use crate::ids::{ElemId, WallPlateId};
     use crate::model::{
         ElementData, ElementKind, EndCondition, ForceRegime, LocalAxis, Node, WallPlate,
     };
@@ -447,20 +454,18 @@ mod tests {
         let mut model = one_bay_wall_model();
         rebuild_wall_regions(&mut model);
         model.wall_regions[0].name = "西面耐震壁".into();
-        model.secondary_members.push(crate::model::SecondaryMember {
-            id: SecondaryMemberId(0),
+        model.unassigned_posts.push(crate::model::SecondaryMember {
             kind: crate::model::SecondaryMemberKind::Post,
             nodes: [NodeId(0), NodeId(3)],
             section: None,
             name: "P1".into(),
         });
-        model.wall_regions[0].post_ids = vec![SecondaryMemberId(0)];
 
         // 名前・間柱を付けたあとで、モデル自体は変えずに再構成する。
         let report = rebuild_wall_regions(&mut model);
         assert_eq!(report.inherited, 1, "同じ床領域は引き継がれるはず");
         assert_eq!(model.wall_regions[0].name, "西面耐震壁");
-        assert!(model.wall_regions[0].post_ids.is_empty());
+        assert!(model.wall_regions[0].posts.is_empty());
         assert!(report.unassigned_posts >= 1);
     }
 
@@ -512,8 +517,7 @@ mod tests {
         let mut model = one_bay_wall_model();
         model.nodes.push(node(4, 2000.0, 0.0, 0.0));
         model.nodes.push(node(5, 2000.0, 0.0, 3000.0));
-        model.secondary_members.push(crate::model::SecondaryMember {
-            id: SecondaryMemberId(0),
+        model.unassigned_posts.push(crate::model::SecondaryMember {
             kind: crate::model::SecondaryMemberKind::Post,
             nodes: [NodeId(4), NodeId(5)],
             section: None,
@@ -524,7 +528,8 @@ mod tests {
 
         assert_eq!(report.unassigned_posts, 0);
         assert_eq!(model.wall_regions.len(), 1);
-        assert_eq!(model.wall_regions[0].post_ids, vec![SecondaryMemberId(0)]);
+        assert_eq!(model.wall_regions[0].posts.len(), 1);
+        assert_eq!(model.wall_regions[0].posts[0].nodes, [NodeId(4), NodeId(5)]);
     }
 
     #[test]

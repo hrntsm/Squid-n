@@ -434,7 +434,7 @@ pub(super) fn draw_section_solids(
     // 断面の向きは既定の局所座標系（水平材は鉛直上基準、鉛直材は X 基準）とする。
     // 二次部材が表示対象でないモード・トグル状態では描かない（中心線と同じ規則）。
     if show_secondary {
-        for sm in &model.secondary_members {
+        for sm in model.joists().chain(model.posts()) {
             let n0 = sm.nodes[0].index();
             let n1 = sm.nodes[1].index();
             if n0 >= coords.len() || n1 >= coords.len() {

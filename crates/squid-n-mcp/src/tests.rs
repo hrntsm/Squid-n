@@ -501,7 +501,7 @@ fn test_query_model_slabs_and_floor_regions() {
         id: FloorRegionId(0),
         name: "R1".into(),
         boundary: vec![NodeId(0), NodeId(1)],
-        secondary_joist_ids: Vec::new(),
+        secondary_joists: Vec::new(),
         slab_ids: vec![SlabId(0)],
         joists: Vec::new(),
     });
@@ -701,7 +701,7 @@ fn test_apply_edit_set_floor_region_name() {
             id: FloorRegionId(0),
             name: "old".into(),
             boundary: vec![NodeId(0), NodeId(1)],
-            secondary_joist_ids: Vec::new(),
+            secondary_joists: Vec::new(),
             slab_ids: vec![SlabId(0)],
             joists: Vec::new(),
         });

@@ -32,6 +32,7 @@
 mod cantilever;
 mod fem;
 mod geometry;
+mod joist_design;
 mod polygon;
 mod rect;
 mod rigid_zone;

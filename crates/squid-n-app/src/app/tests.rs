@@ -489,7 +489,7 @@ fn test_tab_default_is_model() {
 #[test]
 fn test_analysis_runs_with_non_structural_nodes_on_base_floor() {
     use squid_n_core::dof::Dof6Mask;
-    use squid_n_core::ids::{SecondaryMemberId, StoryId};
+    use squid_n_core::ids::StoryId;
     use squid_n_core::model::{SecondaryMember, SecondaryMemberKind};
 
     let mut model = crate::sample::portal_frame();
@@ -503,8 +503,7 @@ fn test_analysis_runs_with_non_structural_nodes_on_base_floor() {
         story: None,
         support_spring: None,
     });
-    model.secondary_members.push(SecondaryMember {
-        id: SecondaryMemberId(model.secondary_members.len() as u32),
+    model.unassigned_joists.push(SecondaryMember {
         kind: SecondaryMemberKind::Joist,
         nodes: [NodeId(0), free_id],
         section: Some(SectionId(1)),
@@ -3638,7 +3637,7 @@ fn test_floor_design_uses_grillage_for_crossing_joists() {
 /// 二次部材（小梁）1 本が `Slab::joists` なしで床設計の対象になる。
 #[test]
 fn test_floor_design_checks_secondary_member_joist() {
-    use squid_n_core::ids::{SecondaryMemberId, SectionId};
+    use squid_n_core::ids::SectionId;
     use squid_n_core::model::{SecondaryMember, SecondaryMemberKind, Section, SlabUsage};
 
     let mut model = make_square_slab_test_model();
@@ -3673,8 +3672,7 @@ fn test_floor_design_checks_secondary_member_joist() {
     };
     model.nodes.push(mk_mid(4, 2000.0, 0.0));
     model.nodes.push(mk_mid(5, 2000.0, 4000.0));
-    model.secondary_members.push(SecondaryMember {
-        id: SecondaryMemberId(model.secondary_members.len() as u32),
+    model.unassigned_joists.push(SecondaryMember {
         kind: SecondaryMemberKind::Joist,
         nodes: [NodeId(4), NodeId(5)],
         section: Some(SectionId(0)),
@@ -3704,7 +3702,7 @@ fn test_floor_design_checks_secondary_member_joist() {
 /// 該当し、下階の板厚・室用途で検定されてしまう（エラーは出ずに結果だけが誤る）。
 #[test]
 fn test_floor_design_checks_secondary_joist_uses_same_level_slab() {
-    use squid_n_core::ids::{SecondaryMemberId, SectionId};
+    use squid_n_core::ids::SectionId;
     use squid_n_core::model::{Node, SecondaryMember, SecondaryMemberKind, Section, SlabUsage};
 
     const Z_UPPER: f64 = 4000.0;
@@ -3759,8 +3757,7 @@ fn test_floor_design_checks_secondary_joist_uses_same_level_slab() {
     // 上階スラブの中央を通る小梁。
     model.nodes.push(mk_node(8, 2000.0, 0.0, Z_UPPER));
     model.nodes.push(mk_node(9, 2000.0, 4000.0, Z_UPPER));
-    model.secondary_members.push(SecondaryMember {
-        id: SecondaryMemberId(model.secondary_members.len() as u32),
+    model.unassigned_joists.push(SecondaryMember {
         kind: SecondaryMemberKind::Joist,
         nodes: [NodeId(8), NodeId(9)],
         section: Some(SectionId(0)),
@@ -3795,7 +3792,7 @@ fn test_floor_design_checks_secondary_joist_uses_same_level_slab() {
 /// 境界辺に載る小梁の負担幅は「両隣の半分ずつの和」＝2 枚の幅の平均である。
 #[test]
 fn test_floor_design_checks_secondary_joist_on_shared_edge_averages_width() {
-    use squid_n_core::ids::{SecondaryMemberId, SectionId};
+    use squid_n_core::ids::SectionId;
     use squid_n_core::model::{Node, SecondaryMember, SecondaryMemberKind, Section};
 
     let mut model = make_square_slab_test_model();
@@ -3851,8 +3848,7 @@ fn test_floor_design_checks_secondary_joist_on_shared_edge_averages_width() {
         },
     ];
     // 2 枚の境界辺（x=2000）に載る小梁。
-    model.secondary_members.push(SecondaryMember {
-        id: SecondaryMemberId(model.secondary_members.len() as u32),
+    model.unassigned_joists.push(SecondaryMember {
         kind: SecondaryMemberKind::Joist,
         nodes: [NodeId(4), NodeId(5)],
         section: Some(SectionId(0)),
@@ -3878,7 +3874,7 @@ fn test_floor_design_checks_secondary_joist_on_shared_edge_averages_width() {
 /// 中点がスラブ辺上にある二次部材小梁も床設計の対象になる。
 #[test]
 fn test_floor_design_checks_secondary_joist_on_slab_edge() {
-    use squid_n_core::ids::{SecondaryMemberId, SectionId};
+    use squid_n_core::ids::SectionId;
     use squid_n_core::model::{SecondaryMember, SecondaryMemberKind, Section, SlabUsage};
 
     let mut model = make_square_slab_test_model();
@@ -3914,8 +3910,7 @@ fn test_floor_design_checks_secondary_joist_on_slab_edge() {
     // 左辺上（x=0）の中点を持つ小梁。大梁とは両端節点が異なる。
     model.nodes.push(mk_mid(4, 0.0, 1000.0));
     model.nodes.push(mk_mid(5, 0.0, 3000.0));
-    model.secondary_members.push(SecondaryMember {
-        id: SecondaryMemberId(model.secondary_members.len() as u32),
+    model.unassigned_joists.push(SecondaryMember {
         kind: SecondaryMemberKind::Joist,
         nodes: [NodeId(4), NodeId(5)],
         section: Some(SectionId(0)),
@@ -5484,7 +5479,7 @@ fn test_import_stbridge_then_run_dl_succeeds() {
 /// - そのまま線形静的解析が成功する（小梁支持節点は解析自由度から除外）。
 #[test]
 fn test_secondary_joist_subdivided_slab_dl_cmq_and_solve() {
-    use squid_n_core::ids::{FloorRegionId, MaterialId, SecondaryMemberId, SectionId};
+    use squid_n_core::ids::{FloorRegionId, MaterialId, SectionId};
     use squid_n_core::model::{
         AreaLoad, DistributionMethod, ElementData, ElementKind, EndCondition, ForceRegime,
         LocalAxis, Material, MemberLoadKind, Model, Node, SecondaryMember, SecondaryMemberKind,
@@ -5610,8 +5605,7 @@ fn test_secondary_joist_subdivided_slab_dl_cmq_and_solve() {
             fy: None,
         }],
         // 小梁: 大梁 y=0 の中間 (4000,0) と大梁 y=6000 の中間 (4000,6000) を結ぶ。
-        secondary_members: vec![SecondaryMember {
-            id: SecondaryMemberId(0),
+        unassigned_joists: vec![SecondaryMember {
             kind: SecondaryMemberKind::Joist,
             nodes: [NodeId(8), NodeId(9)],
             section: Some(SectionId(0)),
@@ -5623,7 +5617,12 @@ fn test_secondary_joist_subdivided_slab_dl_cmq_and_solve() {
                 FloorRegionId(0),
                 vec![NodeId(4), NodeId(5), NodeId(6), NodeId(7)],
             );
-            region.secondary_joist_ids = vec![SecondaryMemberId(0)];
+            region.secondary_joists.push(SecondaryMember {
+                kind: SecondaryMemberKind::Joist,
+                nodes: [NodeId(0), NodeId(1)],
+                section: None,
+                name: String::new(),
+            });
             region.slab_ids = vec![squid_n_core::ids::SlabId(0), squid_n_core::ids::SlabId(1)];
             region
         }],

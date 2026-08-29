@@ -738,7 +738,7 @@ fn node_reference_issues(model: &Model) -> Vec<ModelIssue> {
                 },
             }
         }
-        for sm in &model.secondary_members {
+        for sm in model.joists().chain(model.posts()) {
             for n in &sm.nodes {
                 mark(*n);
             }

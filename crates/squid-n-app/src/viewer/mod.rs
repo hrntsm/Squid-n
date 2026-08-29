@@ -1561,7 +1561,7 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
             } else {
                 egui::Stroke::new(1.5_f32, theme::SECONDARY_AMBER)
             };
-            for sm in &app.model.secondary_members {
+            for sm in app.model.joists().chain(app.model.posts()) {
                 let n0 = sm.nodes[0].index();
                 let n1 = sm.nodes[1].index();
                 if !filter.shows_node(n0) || !filter.shows_node(n1) {
@@ -2230,7 +2230,7 @@ mod wall_expanded_view_model_tests {
             name: String::new(),
             boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
             wall_plate_ids: vec![WallPlateId(0)],
-            post_ids: Vec::new(),
+            posts: Vec::new(),
         });
 
         let view = wall_expanded_view_model(&model);
@@ -2289,7 +2289,7 @@ mod wall_expanded_view_model_tests {
             name: String::new(),
             boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
             wall_plate_ids: vec![WallPlateId(0)],
-            post_ids: Vec::new(),
+            posts: Vec::new(),
         });
         let view = wall_expanded_view_model(&model);
         let wall = &view.elements[0];

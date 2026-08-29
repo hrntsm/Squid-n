@@ -357,7 +357,7 @@ pub const SPAN_TOL_MM: f64 = squid_n_core::geom::MEMBER_AXIS_TOL_MM;
 mod tests {
     use super::*;
     use squid_n_core::dof::Dof6Mask;
-    use squid_n_core::ids::{NodeId, SecondaryMemberId, SectionId};
+    use squid_n_core::ids::{NodeId, SectionId};
     use squid_n_core::model::{
         ElementData, EndCondition, ForceRegime, LocalAxis, Node, SecondaryMember,
         SecondaryMemberKind,
@@ -402,8 +402,7 @@ mod tests {
                 node(2, 2000.0, 0.0, 0.0),
             ],
             elements: vec![beam(0, 0, 1)],
-            secondary_members: vec![SecondaryMember {
-                id: SecondaryMemberId(0),
+            unassigned_joists: vec![SecondaryMember {
                 kind: SecondaryMemberKind::Joist,
                 nodes: [NodeId(2), NodeId(2)],
                 section: Some(SectionId(0)),

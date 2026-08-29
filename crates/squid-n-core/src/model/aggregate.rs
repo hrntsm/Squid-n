@@ -97,10 +97,12 @@ pub struct Model {
     /// （ハンチ端・継手位置、§6.2.3）と数量拾いに用いる。
     #[serde(default)]
     pub member_detail_attrs: Vec<MemberDetailAttr>,
-    /// 二次部材（小梁・間柱）。全体解析（剛性）には算入せず、床荷重・自重を
-    /// 主架構への荷重（CMQ）として伝達する（[`SecondaryMember`]）。
+    /// 所属未割当の小梁（`rebuild_floor_regions` でどの床領域にも入らなかったもの）。
     #[serde(default)]
-    pub secondary_members: Vec<SecondaryMember>,
+    pub unassigned_joists: Vec<SecondaryMember>,
+    /// 所属未割当の間柱（`rebuild_wall_regions` でどの壁領域にも入らなかったもの）。
+    #[serde(default)]
+    pub unassigned_posts: Vec<SecondaryMember>,
     /// 一本部材の指定（断面検定の採用応力。一本部材指定時の採用応力の扱い）。
     /// 各エントリは**軸方向に連続する梁要素の ID を並び順**で持ち、
     /// 断面検定の採用応力（端部・中央モーメント、部材長、内法長、せん断スパン比
@@ -532,30 +534,63 @@ impl Model {
             |m| m.id.0,
         )?;
 
-        // 二次部材（小梁・間柱）の参照整合。
-        check_id_consistency(
-            &self.secondary_members,
-            "secondary_members",
-            "SecondaryMemberId",
-            |sm| sm.id.index(),
-            |sm| sm.id.0,
-        )?;
-        for (i, sm) in self.secondary_members.iter().enumerate() {
-            for &nid in &sm.nodes {
-                if nid.index() >= self.nodes.len() || self.nodes[nid.index()].id != nid {
+        // 二次部材（小梁・間柱）の参照整合（D6: 領域内または未割当リストに実体を保持）。
+        for (ri, region) in self.floor_regions.iter().enumerate() {
+            for (ji, sm) in region.secondary_joists.iter().enumerate() {
+                Self::validate_secondary_member(
+                    sm,
+                    &format!("FloorRegion {ri} secondary_joists[{ji}]"),
+                    &self.nodes,
+                    &self.sections,
+                )?;
+                if sm.kind != SecondaryMemberKind::Joist {
                     return Err(CoreError::DanglingRef(format!(
-                        "SecondaryMember {} -> Node {}",
-                        i, nid.0
+                        "FloorRegion {} secondary_joists[{ji}] は Joist でない",
+                        region.id.0
                     )));
                 }
             }
-            if let Some(sid) = sm.section {
-                if sid.index() >= self.sections.len() || self.sections[sid.index()].id != sid {
+        }
+        for (i, sm) in self.unassigned_joists.iter().enumerate() {
+            Self::validate_secondary_member(
+                sm,
+                &format!("unassigned_joists[{i}]"),
+                &self.nodes,
+                &self.sections,
+            )?;
+            if sm.kind != SecondaryMemberKind::Joist {
+                return Err(CoreError::DanglingRef(format!(
+                    "unassigned_joists[{i}] は Joist でない"
+                )));
+            }
+        }
+        for (ri, region) in self.wall_regions.iter().enumerate() {
+            for (pi, sm) in region.posts.iter().enumerate() {
+                Self::validate_secondary_member(
+                    sm,
+                    &format!("WallRegion {ri} posts[{pi}]"),
+                    &self.nodes,
+                    &self.sections,
+                )?;
+                if sm.kind != SecondaryMemberKind::Post {
                     return Err(CoreError::DanglingRef(format!(
-                        "SecondaryMember {} -> Section {}",
-                        i, sid.0
+                        "WallRegion {} posts[{pi}] は Post でない",
+                        region.id.0
                     )));
                 }
+            }
+        }
+        for (i, sm) in self.unassigned_posts.iter().enumerate() {
+            Self::validate_secondary_member(
+                sm,
+                &format!("unassigned_posts[{i}]"),
+                &self.nodes,
+                &self.sections,
+            )?;
+            if sm.kind != SecondaryMemberKind::Post {
+                return Err(CoreError::DanglingRef(format!(
+                    "unassigned_posts[{i}] は Post でない"
+                )));
             }
         }
 
@@ -644,64 +679,6 @@ impl Model {
                         "WallPlate {} は他の壁版と同じ境界を持つ",
                         plate.id.0
                     )));
-                }
-            }
-        }
-
-        // 床領域の secondary_joist_ids は重複を許さず、参照先が実在し Joist であること。
-        for slab in &self.floor_regions {
-            let mut seen_joists = std::collections::HashSet::new();
-            for &smid in &slab.secondary_joist_ids {
-                if !seen_joists.insert(smid) {
-                    return Err(CoreError::DuplicateId(format!(
-                        "FloorRegion {} secondary_joist_ids has SecondaryMemberId({})",
-                        slab.id.0, smid.0
-                    )));
-                }
-                match self.secondary_members.get(smid.index()) {
-                    Some(sm) if sm.id == smid => {
-                        if sm.kind != SecondaryMemberKind::Joist {
-                            return Err(CoreError::DanglingRef(format!(
-                                "FloorRegion {} secondary_joist_ids -> SecondaryMember {} は Joist でない",
-                                slab.id.0, smid.0
-                            )));
-                        }
-                    }
-                    _ => {
-                        return Err(CoreError::DanglingRef(format!(
-                            "FloorRegion {} secondary_joist_ids -> SecondaryMember {}",
-                            slab.id.0, smid.0
-                        )));
-                    }
-                }
-            }
-        }
-
-        // 壁領域の post_ids は重複を許さず、参照先が実在し Post であること。
-        for wr in &self.wall_regions {
-            let mut seen_posts = std::collections::HashSet::new();
-            for &smid in &wr.post_ids {
-                if !seen_posts.insert(smid) {
-                    return Err(CoreError::DuplicateId(format!(
-                        "WallRegion {} post_ids has SecondaryMemberId({})",
-                        wr.id.0, smid.0
-                    )));
-                }
-                match self.secondary_members.get(smid.index()) {
-                    Some(sm) if sm.id == smid => {
-                        if sm.kind != SecondaryMemberKind::Post {
-                            return Err(CoreError::DanglingRef(format!(
-                                "WallRegion {} post_ids -> SecondaryMember {} は Post でない",
-                                wr.id.0, smid.0
-                            )));
-                        }
-                    }
-                    _ => {
-                        return Err(CoreError::DanglingRef(format!(
-                            "WallRegion {} post_ids -> SecondaryMember {}",
-                            wr.id.0, smid.0
-                        )));
-                    }
                 }
             }
         }
@@ -804,8 +781,8 @@ impl Model {
                 .iter()
                 .any(|p| wall_plate_node_refs(p).contains(&id))
             || self
-                .secondary_members
-                .iter()
+                .joists()
+                .chain(self.posts())
                 .any(|sm| sm.nodes.contains(&id))
             || self.constraints.iter().any(|c| match c {
                 Constraint::RigidDiaphragm { master, slaves, .. } => {
@@ -874,7 +851,8 @@ impl Model {
             && self.steel_design_attrs == other.steel_design_attrs
             && self.brb_attrs == other.brb_attrs
             && self.pca_attrs == other.pca_attrs
-            && self.secondary_members == other.secondary_members
+            && self.unassigned_joists == other.unassigned_joists
+            && self.unassigned_posts == other.unassigned_posts
             && self.axes == other.axes
             && self.beam_groups == other.beam_groups
             && self.isolator_attrs == other.isolator_attrs
@@ -951,6 +929,11 @@ impl Model {
                     f(n);
                 }
             }
+            for sm in &mut region.secondary_joists {
+                for n in &mut sm.nodes {
+                    f(n);
+                }
+            }
         }
         for slab in &mut self.slabs {
             match &mut slab.shape {
@@ -998,8 +981,18 @@ impl Model {
             for n in &mut region.boundary {
                 f(n);
             }
+            for sm in &mut region.posts {
+                for n in &mut sm.nodes {
+                    f(n);
+                }
+            }
         }
-        for sm in &mut self.secondary_members {
+        for sm in &mut self.unassigned_joists {
+            for n in &mut sm.nodes {
+                f(n);
+            }
+        }
+        for sm in &mut self.unassigned_posts {
             for n in &mut sm.nodes {
                 f(n);
             }
@@ -1066,6 +1059,11 @@ impl Model {
                     f(sid);
                 }
             }
+            for sm in &mut region.secondary_joists {
+                if let Some(sid) = &mut sm.section {
+                    f(sid);
+                }
+            }
         }
         for slab in &mut self.slabs {
             if let Some(sid) = &mut slab.plate.section {
@@ -1077,9 +1075,20 @@ impl Model {
                 f(sid);
             }
         }
-        for sm in &mut self.secondary_members {
+        for sm in self
+            .unassigned_joists
+            .iter_mut()
+            .chain(self.unassigned_posts.iter_mut())
+        {
             if let Some(sid) = &mut sm.section {
                 f(sid);
+            }
+        }
+        for region in &mut self.wall_regions {
+            for sm in &mut region.posts {
+                if let Some(sid) = &mut sm.section {
+                    f(sid);
+                }
             }
         }
     }
@@ -1318,75 +1327,44 @@ impl Model {
         }
     }
 
-    /// モデル内の全ての `SecondaryMemberId` 参照（二次部材自身の ID・スラブの
-    /// `secondary_joist_ids`・壁領域の `post_ids`）へ `f` を適用する
-    /// （[`Model::visit_node_ids`] と同じ規約）。
-    ///
-    /// **`SecondaryMemberId` を持つフィールドを `Model` へ追加したら必ずここへ追随すること**。
-    pub fn visit_secondary_member_ids(&mut self, mut f: impl FnMut(&mut SecondaryMemberId)) {
-        for sm in &mut self.secondary_members {
-            f(&mut sm.id);
-        }
-        for region in &mut self.floor_regions {
-            for smid in &mut region.secondary_joist_ids {
-                f(smid);
+    /// 二次部材 1 件の節点・断面参照が実在することを検証する（D6）。
+    pub fn validate_secondary_member(
+        sm: &SecondaryMember,
+        label: &str,
+        nodes: &[Node],
+        sections: &[Section],
+    ) -> Result<(), crate::error::CoreError> {
+        use crate::error::CoreError;
+        for &nid in &sm.nodes {
+            if nid.index() >= nodes.len() || nodes[nid.index()].id != nid {
+                return Err(CoreError::DanglingRef(format!("{label} -> Node {}", nid.0)));
             }
         }
-        for wr in &mut self.wall_regions {
-            for smid in &mut wr.post_ids {
-                f(smid);
+        if let Some(sid) = sm.section {
+            if sid.index() >= sections.len() || sections[sid.index()].id != sid {
+                return Err(CoreError::DanglingRef(format!(
+                    "{label} -> Section {}",
+                    sid.0
+                )));
             }
         }
+        Ok(())
     }
 
-    /// `keep` が `false` を返す二次部材を取り除き、`id == index` の不変条件を
-    /// 復元したうえで、`Slab.secondary_joist_ids` と `WallRegion.post_ids` の
-    /// 参照を新しい ID へ張り替える（取り除かれた部材への参照は削除する）。
-    ///
-    /// 二次部材をまとめて間引く処理は必ずこれを通すこと。素の `retain` で消すと
-    /// 後続の `id` が添字とずれ、領域側の参照が黙って別の部材を指す。
-    pub fn retain_secondary_members(&mut self, mut keep: impl FnMut(&SecondaryMember) -> bool) {
-        // 旧 ID → 新 ID（`None` は削除された部材）。
-        let mut remap: Vec<Option<SecondaryMemberId>> =
-            Vec::with_capacity(self.secondary_members.len());
-        let mut next = 0u32;
-        for sm in &self.secondary_members {
-            if keep(sm) {
-                remap.push(Some(SecondaryMemberId(next)));
-                next += 1;
-            } else {
-                remap.push(None);
-            }
-        }
-        if remap.iter().all(|r| r.is_some()) {
-            return;
-        }
+    /// 全小梁（床領域内 + 未割当）を走査する。
+    pub fn joists(&self) -> impl Iterator<Item = &SecondaryMember> {
+        self.unassigned_joists.iter().chain(
+            self.floor_regions
+                .iter()
+                .flat_map(|r| r.secondary_joists.iter()),
+        )
+    }
 
-        let mut i = 0usize;
-        self.secondary_members.retain(|_| {
-            let k = remap[i].is_some();
-            i += 1;
-            k
-        });
-        for (i, sm) in self.secondary_members.iter_mut().enumerate() {
-            sm.id = SecondaryMemberId(i as u32);
-        }
-
-        let remap_list = |ids: &mut Vec<SecondaryMemberId>| {
-            ids.retain_mut(|id| match remap.get(id.index()).copied().flatten() {
-                Some(new_id) => {
-                    *id = new_id;
-                    true
-                }
-                None => false,
-            });
-        };
-        for region in &mut self.floor_regions {
-            remap_list(&mut region.secondary_joist_ids);
-        }
-        for wr in &mut self.wall_regions {
-            remap_list(&mut wr.post_ids);
-        }
+    /// 全間柱（壁領域内 + 未割当）を走査する。
+    pub fn posts(&self) -> impl Iterator<Item = &SecondaryMember> {
+        self.unassigned_posts
+            .iter()
+            .chain(self.wall_regions.iter().flat_map(|r| r.posts.iter()))
     }
 
     /// モデル内の全ての `SlabId` 参照（床板自身の ID・床領域の `slab_ids`）へ
@@ -1423,8 +1401,7 @@ impl Model {
     /// 復元したうえで、`FloorRegion.slab_ids` の参照を新しい ID へ張り替える
     /// （取り除かれた床板への参照は削除する）。
     ///
-    /// 床板をまとめて間引く処理は必ずこれを通すこと（[`Model::retain_secondary_members`]
-    /// と同じ理由）。
+    /// 床板をまとめて間引く処理は必ずこれを通すこと。
     pub fn retain_slabs(&mut self, mut keep: impl FnMut(&Slab) -> bool) {
         let mut remap: Vec<Option<SlabId>> = Vec::with_capacity(self.slabs.len());
         let mut next = 0u32;
@@ -1656,9 +1633,8 @@ mod node_reference_tests {
             three_side_slit: false,
         });
 
-        // 8: 二次部材。
-        model.secondary_members.push(SecondaryMember {
-            id: SecondaryMemberId(0),
+        // 8: 二次部材（未割当小梁）。
+        model.unassigned_joists.push(SecondaryMember {
             kind: SecondaryMemberKind::Joist,
             nodes: [NodeId(8), NodeId(8)],
             section: None,

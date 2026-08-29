@@ -763,7 +763,7 @@ mod tests {
                 id: FloorRegionId(0),
                 name: String::new(),
                 boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
-                secondary_joist_ids: vec![],
+                secondary_joists: vec![],
                 slab_ids: vec![],
                 joists: vec![
                     JoistLine {
@@ -866,7 +866,7 @@ mod tests {
                 id: FloorRegionId(0),
                 name: String::new(),
                 boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
-                secondary_joist_ids: vec![],
+                secondary_joists: vec![],
                 slab_ids: vec![],
                 joists: vec![
                     JoistLine {
@@ -951,7 +951,7 @@ mod tests {
                 id: FloorRegionId(0),
                 name: String::new(),
                 boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
-                secondary_joist_ids: vec![],
+                secondary_joists: vec![],
                 slab_ids: vec![],
                 joists: vec![
                     JoistLine {
@@ -1008,7 +1008,7 @@ mod tests {
                 id: FloorRegionId(0),
                 name: String::new(),
                 boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
-                secondary_joist_ids: vec![],
+                secondary_joists: vec![],
                 slab_ids: vec![],
                 joists: vec![
                     JoistLine {

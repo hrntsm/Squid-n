@@ -532,9 +532,9 @@ fn build_members(
     }
 }
 
-/// 二次部材（小梁・間柱）を格納する（参照の正規化・伝播は部材と同じ規則）。
+/// 二次部材（小梁・間柱）を未割当リストへ格納する（D6）。
 /// 全体解析の対象外（CMQ 用）のため `model.elements` には入れず
-/// `model.secondary_members` に入れる。返り値は（小梁数, 間柱数）。
+/// `unassigned_joists` / `unassigned_posts` へ入れる。返り値は（小梁数, 間柱数）。
 fn build_secondaries(
     model: &mut Model,
     pending_secondaries: Vec<PendingSecondary>,
@@ -574,19 +574,22 @@ fn build_secondaries(
                 None => stats.dangling_material += 1,
             }
         }
+        let sm = squid_n_core::model::SecondaryMember {
+            kind: s.kind,
+            nodes: [NodeId(ni), NodeId(nj)],
+            section,
+            name: s.name,
+        };
         match s.kind {
-            squid_n_core::model::SecondaryMemberKind::Joist => n_joists += 1,
-            squid_n_core::model::SecondaryMemberKind::Post => n_posts += 1,
+            squid_n_core::model::SecondaryMemberKind::Joist => {
+                n_joists += 1;
+                model.unassigned_joists.push(sm);
+            }
+            squid_n_core::model::SecondaryMemberKind::Post => {
+                n_posts += 1;
+                model.unassigned_posts.push(sm);
+            }
         }
-        model
-            .secondary_members
-            .push(squid_n_core::model::SecondaryMember {
-                id: squid_n_core::ids::SecondaryMemberId(model.secondary_members.len() as u32),
-                kind: s.kind,
-                nodes: [NodeId(ni), NodeId(nj)],
-                section,
-                name: s.name,
-            });
     }
     (n_joists, n_posts)
 }

@@ -145,10 +145,16 @@ pub(crate) fn material_category_groups(
 impl App {
     /// 断面一覧ツリー（階ごとにグループ化）。
     pub(crate) fn nav_sections(&mut self, ui: &mut egui::Ui) {
+        let secondary: Vec<_> = self
+            .model
+            .joists()
+            .chain(self.model.posts())
+            .cloned()
+            .collect();
         let groups = section_floor_groups(
             &self.model.stories,
             &self.model.sections,
-            &self.model.secondary_members,
+            &secondary,
             &self.model.slabs,
             &self.model.floor_regions,
         );
@@ -283,7 +289,6 @@ mod tests {
 
     fn secondary_member(id: u32, section: Option<SectionId>) -> SecondaryMember {
         SecondaryMember {
-            id: squid_n_core::ids::SecondaryMemberId(id),
             kind: SecondaryMemberKind::Joist,
             nodes: [squid_n_core::ids::NodeId(0), squid_n_core::ids::NodeId(1)],
             section,
@@ -499,7 +504,6 @@ mod tests {
         let stories = vec![];
         let sections = vec![section(0, "A", None), section(1, "B", None)];
         let secondary_members = vec![SecondaryMember {
-            id: squid_n_core::ids::SecondaryMemberId(0),
             kind: SecondaryMemberKind::Post,
             nodes: [squid_n_core::ids::NodeId(0), squid_n_core::ids::NodeId(1)],
             section: Some(SectionId(0)),

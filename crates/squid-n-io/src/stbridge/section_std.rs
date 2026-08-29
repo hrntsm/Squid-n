@@ -869,7 +869,7 @@ pub(super) fn standard_sections(model: &Model) -> StandardSections {
         // 二次部材（StbBeam/StbPost）は生の断面 id を id_section へ書き出すため、
         // 二次部材が参照する断面を Raw 出力から除外すると出力 XML 内に存在しない
         // 断面参照が生じる。壁専用扱いから外す（Raw を出力する）。
-        for sm in &model.secondary_members {
+        for sm in model.joists().chain(model.posts()) {
             if let Some(sid) = sm.section {
                 used_by_other.insert(sid.0);
             }
@@ -902,7 +902,7 @@ pub(super) fn standard_sections(model: &Model) -> StandardSections {
                 used_by_other.insert(sid.0);
             }
         }
-        for sm in &model.secondary_members {
+        for sm in model.joists().chain(model.posts()) {
             if let Some(sid) = sm.section {
                 used_by_other.insert(sid.0);
             }

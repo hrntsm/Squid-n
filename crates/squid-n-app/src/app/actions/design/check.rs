@@ -308,7 +308,7 @@ impl App {
         (joist_checks, slab_checks)
     }
 
-    /// `Model::secondary_members` の小梁を単純支持梁として検定する。
+    /// 領域内小梁および未割当小梁を単純支持梁として検定する。
     ///
     /// `FloorRegion::joists` に同じ両端を持つ小梁は GUI 定義済みとしてスキップする。
     /// 積載強度は中点が属する床板を XY 多角形判定（内部または辺上）**かつ同じレベル**で
@@ -355,7 +355,7 @@ impl App {
 
         let mut candidates = Vec::new();
 
-        for (smi, sm) in self.model.secondary_members.iter().enumerate() {
+        for (smi, sm) in self.model.joists().enumerate() {
             if sm.kind != SecondaryMemberKind::Joist {
                 continue;
             }

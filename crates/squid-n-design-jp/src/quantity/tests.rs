@@ -542,7 +542,7 @@ fn test_wall_quantity_via_wall_plate_is_included() {
         name: String::new(),
         boundary: vec![NodeId(0), NodeId(1), NodeId(3), NodeId(2)],
         wall_plate_ids: vec![WallPlateId(0)],
-        post_ids: Vec::new(),
+        posts: Vec::new(),
     });
     // 入力モデル自体には壁の解析要素は一切ない（D5）。
     assert!(model.elements.iter().all(|e| e.kind != ElementKind::Wall));

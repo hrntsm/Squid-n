@@ -158,7 +158,7 @@ pub fn query_model(model: &Model, kind: &str, filter: Option<&str>) -> Vec<serde
                     "name": r.name,
                     "boundary": r.boundary.iter().map(|n| n.0).collect::<Vec<_>>(),
                     "slab_ids": r.slab_ids.iter().map(|s| s.0).collect::<Vec<_>>(),
-                    "secondary_joist_ids": r.secondary_joist_ids.iter().map(|j| j.0).collect::<Vec<_>>(),
+                    "secondary_joists": r.secondary_joists,
                     "joists": r.joists,
                 })
             })
