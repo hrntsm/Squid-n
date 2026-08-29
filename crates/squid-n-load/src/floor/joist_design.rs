@@ -310,7 +310,6 @@ struct JoistAxis {
     nodes: (NodeId, NodeId),
     a: [f64; 3],
     b: [f64; 3],
-    len: f64,
 }
 
 fn joist_axes(model: &Model) -> Vec<JoistAxis> {
@@ -335,7 +334,6 @@ fn joist_axes(model: &Model) -> Vec<JoistAxis> {
             nodes: (n0, n1),
             a,
             b,
-            len,
         });
     }
     out
@@ -704,10 +702,28 @@ mod tests {
                 MemberLoadKind::Distributed { a, b, w1, w2 } => (w1 + w2) / 2.0 * (b - a),
             })
             .sum();
+        // 左を 2 枚に割ると共有する水平辺へ 45° 分配の一部が逃げるため、
+        // 小梁上の合計は未分割より小さくなる。欠落していたのは「節点対不一致で
+        // 左側が 0 になる」ことなので、右側だけの約半分（15000 N）を十分上回ることを見る。
         assert!(
-            (total - unsplit_total).abs() / unsplit_total < 0.15,
-            "split={total} unsplit={unsplit_total}"
+            total > 0.7 * unsplit_total,
+            "split={total} unsplit={unsplit_total}（左側が落ちると ~15000）"
         );
+        let (mut s_min, mut s_max) = (f64::INFINITY, 0.0_f64);
+        for l in &entry.member_loads {
+            match l {
+                MemberLoadKind::Point { a, .. } => {
+                    s_min = s_min.min(*a);
+                    s_max = s_max.max(*a);
+                }
+                MemberLoadKind::Distributed { a, b, .. } => {
+                    s_min = s_min.min(*a);
+                    s_max = s_max.max(*b);
+                }
+            }
+        }
+        assert!(s_min < 500.0, "始端側が欠ける s_min={s_min}");
+        assert!(s_max > 3500.0, "終端側が欠ける s_max={s_max}");
     }
 
     #[test]
