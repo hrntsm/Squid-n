@@ -45,6 +45,17 @@ impl SquidNServer {
         Ok(CallToolResult::success(vec![Content::json(result)?]))
     }
 
+    #[tool(description = "モデルを編集する（EditCommand 経由。Undo 可能）")]
+    pub async fn model_edit(
+        &self,
+        Parameters(args): Parameters<EditArgs>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let mut st = self.state.lock().await;
+        let result = super::apply_edit(&mut st, &args.body)
+            .map_err(|e| ErrorData::invalid_params(e, None))?;
+        Ok(CallToolResult::success(vec![Content::json(result)?]))
+    }
+
     #[tool(description = "数量積算（コンクリート体積・型枠面積・鉄筋/鉄骨重量の概算）を集計する")]
     pub async fn quantity_takeoff(
         &self,
@@ -206,6 +217,12 @@ impl ServerHandler for SquidNServer {
 pub struct QueryArgs {
     pub kind: String,
     pub filter: Option<String>,
+}
+
+/// `model.edit` の引数。`body` は `command` キーで種別を指定する JSON オブジェクト。
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct EditArgs {
+    pub body: serde_json::Value,
 }
 
 #[derive(Debug, serde::Serialize, schemars::JsonSchema)]

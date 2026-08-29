@@ -1288,7 +1288,8 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
                     }
                 }
             } else if app.wall_draw_mode {
-                // 壁作成モード：クリック位置に最も近い節点を選ぶ
+                // 壁作成モード：クリック位置に最も近い節点を選び、4 点そろったら
+                // 囲まれた壁版（`AddEnclosedWallPlate`）として追加する。
                 let best = pick_nearest_node(&pts, &node_visible, click_pos);
                 // 節点ピッキング許容距離（px）
                 const NODE_PICK_THRESHOLD: f32 = 10.0;
@@ -1299,31 +1300,32 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
                         if !app.wall_draw_nodes.contains(&node_id) {
                             app.wall_draw_nodes.push(node_id);
                         }
-                        // 4 点そろったら壁を生成
+                        // 4 点そろったら壁版を生成
                         if app.wall_draw_nodes.len() == 4 {
                             let ordered = order_wall_nodes(&app.model, &app.wall_draw_nodes);
-                            let new_id = squid_n_core::ids::ElemId(app.model.elements.len() as u32);
-                            let elem = squid_n_core::model::ElementData {
-                                id: new_id,
-                                kind: squid_n_core::model::ElementKind::Wall,
-                                nodes: ordered.into_iter().collect(),
-                                section: None,
-                                local_axis: squid_n_core::model::LocalAxis {
-                                    ref_vector: [0.0, 0.0, 1.0],
-                                },
-                                end_cond: [
-                                    squid_n_core::model::EndCondition::Fixed,
-                                    squid_n_core::model::EndCondition::Fixed,
-                                ],
-                                force_regime: squid_n_core::model::ForceRegime::Auto,
-                                rigid_zone: Default::default(),
-                                plastic_zone: None,
-                                spring: None,
-                            };
-                            app.undo
-                                .run(&mut app.model, Box::new(squid_n_edit::AddMember { elem }));
-                            app.staleness.mark_edited();
-                            app.nav.focus_member = Some(new_id);
+                            let mut dedup = ordered.clone();
+                            dedup.sort_by_key(|n| n.0);
+                            dedup.dedup();
+                            if dedup.len() == 4 {
+                                let section =
+                                    app.wall_plate_draft.add_enclosed_section.filter(|sid| {
+                                        app.model
+                                            .sections
+                                            .get(sid.index())
+                                            .is_some_and(|s| s.thickness.is_some_and(|t| t > 0.0))
+                                    });
+                                if app.undo.run(
+                                    &mut app.model,
+                                    Box::new(squid_n_edit::AddEnclosedWallPlate {
+                                        boundary: ordered,
+                                        section,
+                                        opening_area: 0.0,
+                                        opening_weight: 0.0,
+                                    }),
+                                ) {
+                                    app.staleness.mark_edited();
+                                }
+                            }
                             app.wall_draw_nodes.clear();
                         }
                     }

@@ -96,6 +96,32 @@ pub fn query_model(model: &Model, kind: &str, filter: Option<&str>) -> Vec<serde
                 })
             })
             .collect(),
+        "wall_plate" | "wall_plates" => model
+            .wall_plates
+            .iter()
+            .map(|p| {
+                let shape = match &p.shape {
+                    squid_n_core::model::WallPlateShape::Enclosed { boundary } => json!({
+                        "kind": "Enclosed",
+                        "boundary": boundary.iter().map(|n| n.0).collect::<Vec<_>>(),
+                    }),
+                    squid_n_core::model::WallPlateShape::Attached { anchor, extent } => json!({
+                        "kind": "Attached",
+                        "anchor": anchor,
+                        "extent": extent,
+                    }),
+                };
+                json!({
+                    "id": p.id.0,
+                    "shape": shape,
+                    "section": p.section.map(|s| s.0),
+                    "opening_area": p.opening_area,
+                    "opening_weight": p.opening_weight,
+                    "three_side_slit": p.three_side_slit,
+                    "openings": p.openings,
+                })
+            })
+            .collect(),
         _ => vec![],
     };
     match filter {
