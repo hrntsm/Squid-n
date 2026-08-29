@@ -1,10 +1,8 @@
 //! 床領域の分配結果（[`super::distribute_region`]）から領域内小梁の設計部材力を求める。
 //!
-//! ST-Bridge 取り込み小梁（床領域内の [`squid_n_core::model::SecondaryMember`]）の
-//! 断面検定は、幾何から負担幅を再導出せず、荷重分配と同じ `BeamLoad`（`LoadTarget::Span`）
-//! を単純梁として重ね合わせる（Step 5 で `check.rs` へ結線予定）。
-
-#![allow(dead_code)] // Step 5 結線前のため未使用 API を許容
+//! 領域内小梁（[`squid_n_core::model::FloorRegion::secondary_joists`]）の断面検定は、
+//! 幾何から負担幅を再導出せず、荷重分配と同じ `BeamLoad`（`LoadTarget::Span`）を
+//! 単純梁として重ね合わせる。
 
 use std::collections::HashMap;
 

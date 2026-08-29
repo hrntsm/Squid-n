@@ -43,6 +43,10 @@ mod types;
 pub(crate) use fem::{fem_linear, fem_uniform};
 pub use fem::{fixed_end_moments, simple_beam_moment_at, simple_reactions};
 pub use geometry::{point_in_slab_boundary, polygon_area, slab_dimensions, slab_dimensions_of};
+pub use joist_design::{
+    load_shape_to_member_loads, orient_member_loads, secondary_joist_distribution_loads,
+    secondary_joists_missing_distribution, simple_beam_extremes, span_node_key,
+};
 pub use rigid_zone::{cmq_with_rigid_zone, RigidZoneCmqMode, RigidZoneCmqResult};
 pub use types::{BeamLoad, Cmq, LoadShape, LoadTarget};
 

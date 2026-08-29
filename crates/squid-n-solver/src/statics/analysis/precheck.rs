@@ -385,6 +385,16 @@ pub fn model_issues(model: &Model) -> Vec<ModelIssue> {
                 .warn(),
             );
         }
+        let n = squid_n_load::floor::secondary_joists_missing_distribution(model);
+        if n != 0 {
+            issues.push(
+                ModelIssue::model(format!(
+                    "床領域分配から荷重が得られない二次部材小梁が {n} 本あります。\
+                     段差床・傾斜小梁・床板境界外などの配置では断面検定されません。"
+                ))
+                .warn(),
+            );
+        }
         let n = squid_n_core::region_rebuild::floating_slab_count(model);
         if n != 0 {
             issues.push(
