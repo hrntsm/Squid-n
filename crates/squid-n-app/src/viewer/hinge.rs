@@ -26,6 +26,7 @@ use squid_n_core::material_grade::{
 use squid_n_core::model::{ElementData, ElementKind, Model, Section};
 use squid_n_core::units::to_display::{force_kn, moment_kn_m};
 use squid_n_element::behavior::{FiberSectionState, FiberStateSample};
+use squid_n_element::wall_element::wall_element_geometry;
 use squid_n_section::mn_surface::{build_surface, plastic_fibers, StrengthParams, YieldModelKind};
 use squid_n_solver::pushover::{HingeEvent, HingeLevel, MemberStepState};
 
@@ -118,12 +119,49 @@ const MARKER_R: f32 = 4.0;
 /// マーカー中心を材端から材軸に沿って内側へ寄せる比率（0.0=材端、0.5=中点）。
 const INSET_T: f32 = 0.1;
 
+/// ヒンジマーカー描画位置（材端から [`INSET_T`] 内側）のスクリーン座標。
+/// 耐震壁は壁柱（上下辺中点）を材軸とする。
+pub(super) fn hinge_marker_screen_pos(
+    elem: &ElementData,
+    model: &Model,
+    pts: &[egui::Pos2],
+    proj: &super::Projector<'_>,
+    end_j: bool,
+) -> Option<egui::Pos2> {
+    if matches!(elem.kind, ElementKind::Wall) && elem.nodes.len() >= 4 {
+        let g = wall_element_geometry(elem, model)?;
+        let bc = proj.project(g.bottom_center);
+        let tc = proj.project(g.top_center);
+        let t = if end_j { 1.0 - INSET_T } else { INSET_T };
+        return Some(egui::pos2(
+            bc.x + (tc.x - bc.x) * t,
+            bc.y + (tc.y - bc.y) * t,
+        ));
+    }
+    if elem.nodes.len() < 2 {
+        return None;
+    }
+    let n0 = elem.nodes[0].index();
+    let n1 = elem.nodes[1].index();
+    if n0 >= pts.len() || n1 >= pts.len() {
+        return None;
+    }
+    let (p0, p1) = (pts[n0], pts[n1]);
+    let t = if end_j { 1.0 - INSET_T } else { INSET_T };
+    Some(egui::pos2(
+        p0.x + (p1.x - p0.x) * t,
+        p0.y + (p1.y - p0.y) * t,
+    ))
+}
+
 /// ヒンジ図を描く。`pts` は `viewer_panel` で計算済みの節点スクリーン座標
 /// （`app.model.nodes` と同じ順序）。
 pub(super) fn draw_hinge(
     painter: &egui::Painter,
     app: &App,
+    model: &Model,
     pts: &[egui::Pos2],
+    proj: &super::Projector<'_>,
     frame_filter: super::FrameFilter,
 ) {
     let Some(po) = app.displayed_pushover() else {
@@ -139,21 +177,12 @@ pub(super) fn draw_hinge(
         if !frame_filter.shows(m.elem) {
             continue;
         }
-        let Some(elem) = app.model.element(m.elem) else {
+        let Some(elem) = model.element(m.elem) else {
             continue;
         };
-        if elem.nodes.len() < 2 {
+        let Some(center) = hinge_marker_screen_pos(elem, model, pts, proj, m.end_j) else {
             continue;
-        }
-        let n0 = elem.nodes[0].index();
-        let n1 = elem.nodes[1].index();
-        if n0 >= pts.len() || n1 >= pts.len() {
-            continue;
-        }
-        let (p0, p1) = (pts[n0], pts[n1]);
-        // i端(end_j=false)は始点側から、j端(end_j=true)は終点側から内側へ寄せる。
-        let t = if m.end_j { 1.0 - INSET_T } else { INSET_T };
-        let center = egui::pos2(p0.x + (p1.x - p0.x) * t, p0.y + (p1.y - p0.y) * t);
+        };
 
         let color = hinge_color(&m.level);
         counts[level_rank(&m.level) as usize] += 1;
@@ -439,11 +468,11 @@ pub(super) fn pick_fiber_section(
 /// ファイバーを生成できない場合は `None`。
 fn build_mn_curve_cache(
     app: &App,
+    elem: &ElementData,
     elem_id: ElemId,
     bend_dir_z: bool,
     step_count: usize,
 ) -> Option<MnCurveCache> {
-    let elem = app.model.element(elem_id)?;
     let sec = elem
         .section
         .and_then(|sid| app.model.sections.get(sid.index()))?;
@@ -488,13 +517,19 @@ fn build_mn_curve_cache(
 }
 
 /// `app.hinge_mn_cache` が古ければ（選択部材・ステップ数が変われば）再計算する。
-fn ensure_mn_cache(app: &mut App, elem_id: ElemId, bend_dir_z: bool, step_count: usize) {
+fn ensure_mn_cache(
+    app: &mut App,
+    elem: &ElementData,
+    elem_id: ElemId,
+    bend_dir_z: bool,
+    step_count: usize,
+) {
     let stale = match &app.hinge_mn_cache {
         Some(c) => c.elem != elem_id || c.step_count != step_count,
         None => true,
     };
     if stale {
-        app.hinge_mn_cache = build_mn_curve_cache(app, elem_id, bend_dir_z, step_count);
+        app.hinge_mn_cache = build_mn_curve_cache(app, elem, elem_id, bend_dir_z, step_count);
     }
 }
 
@@ -526,6 +561,23 @@ pub(crate) fn show_hinge_detail_window(ui: &egui::Ui, app: &mut App) {
 /// M-θ カーブ（常時）・N-M 相関図（軸力を受ける部材のみ）・ファイバー断面の
 /// 塑性化マップ（ファイバー要素のみ）を該当するものだけ縦に並べる。
 fn draw_hinge_detail_content(ui: &mut egui::Ui, app: &mut App, elem_id: ElemId) {
+    let (is_axial, elem_snapshot, elem_section) = {
+        let display = super::wall_expanded_view_model(&app.model);
+        let Some(elem) = display.element(elem_id) else {
+            ui.colored_label(theme::GRAY_600, "この部材はモデルから削除されています。");
+            return;
+        };
+        if matches!(elem.kind, ElementKind::Wall) {
+            ui.label("耐震壁（壁版から生成された解析要素）");
+            ui.separator();
+        }
+        (
+            is_axial_bending_member(elem, display.as_ref()),
+            elem.clone(),
+            elem.section,
+        )
+    };
+
     let Some(po) = app.displayed_pushover() else {
         ui.colored_label(theme::GRAY_600, "増分解析が未実行です。");
         return;
@@ -593,15 +645,9 @@ fn draw_hinge_detail_content(ui: &mut egui::Ui, app: &mut App, elem_id: ElemId) 
     ui.separator();
 
     // 2. N-M 相関図: 軸力を受ける部材（柱、またはファイバー系要素）のみ。
-    let is_axial = app
-        .model
-        .elements
-        .iter()
-        .find(|e| e.id == elem_id)
-        .is_some_and(|e| is_axial_bending_member(e, &app.model));
     if is_axial {
         ui.strong("N-M 相関図");
-        ensure_mn_cache(app, elem_id, bend_dir_z, records.len());
+        ensure_mn_cache(app, &elem_snapshot, elem_id, bend_dir_z, records.len());
         // カメラ状態は `app` からローカルへ複製して使う（`app.hinge_mn_cache`
         // の借用と同時に `app` を可変借用しないため）。描画後に書き戻す。
         let mut cam = app.hinge_mn_camera.clone();
@@ -621,13 +667,7 @@ fn draw_hinge_detail_content(ui: &mut egui::Ui, app: &mut App, elem_id: ElemId) 
     // 3. ファイバー断面の塑性化マップ: ファイバー要素のみ（fiber_states に記録あり）。
     if let Some(sections) = fiber_sections {
         // 断面外形線の重ね描き用（断面が引けなければ輪郭なしでファイバーのみ描く）。
-        let sec = app
-            .model
-            .elements
-            .iter()
-            .find(|e| e.id == elem_id)
-            .and_then(|e| e.section)
-            .and_then(|sid| app.model.sections.get(sid.index()));
+        let sec = elem_section.and_then(|sid| app.model.sections.get(sid.index()));
         ui.strong("ファイバー断面の塑性化マップ（終局時）");
         draw_fiber_maps(ui, elem_id, &sections, &mine, sec);
     }

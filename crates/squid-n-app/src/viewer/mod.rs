@@ -481,6 +481,60 @@ pub(super) fn wall_expanded_view_model(
     }
 }
 
+/// 応力図・ヒンジ・時刻歴詳細で共有する材軸端点（2 節点部材または壁柱）。
+pub(super) struct MemberAxisEndpoints {
+    pub p_i: [f64; 3],
+    pub p_j: [f64; 3],
+    pub n0: usize,
+    pub n1: usize,
+    pub length: f64,
+}
+
+/// 部材の材軸端点。耐震壁は [`wall_element_geometry`] の壁柱（上下辺中点）を返す。
+pub(super) fn member_axis_endpoints(
+    elem: &squid_n_core::model::ElementData,
+    model: &squid_n_core::model::Model,
+) -> Option<MemberAxisEndpoints> {
+    use squid_n_core::geom::vec3::dist as member_len3;
+    use squid_n_core::model::ElementKind;
+    use squid_n_element::wall_element::wall_element_geometry;
+
+    if matches!(elem.kind, ElementKind::Wall) && elem.nodes.len() >= 4 {
+        let g = wall_element_geometry(elem, model)?;
+        let n0 = g.bottom[0].index();
+        let n1 = g.top[0].index();
+        if model.nodes.get(n0).is_none() || model.nodes.get(n1).is_none() {
+            return None;
+        }
+        let length = g.h;
+        if length < 1e-9 {
+            return None;
+        }
+        return Some(MemberAxisEndpoints {
+            p_i: g.bottom_center,
+            p_j: g.top_center,
+            n0,
+            n1,
+            length,
+        });
+    }
+    if elem.nodes.len() < 2 {
+        return None;
+    }
+    let n0 = elem.nodes[0].index();
+    let n1 = elem.nodes[1].index();
+    let p_i = model.nodes.get(n0)?.coord;
+    let p_j = model.nodes.get(n1)?.coord;
+    let length = member_len3(p_i, p_j);
+    Some(MemberAxisEndpoints {
+        p_i,
+        p_j,
+        n0,
+        n1,
+        length,
+    })
+}
+
 pub use camera::CameraState;
 pub use deform::TimeHistoryScaleCache;
 
@@ -1302,14 +1356,11 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
                     Some((id, d)) if d <= PICK_THRESHOLD => {
                         app.selection.members = vec![id];
                         app.nav.focus_member = Some(id);
-                        // ヒンジ・時刻歴詳細は `app.model` 上の部材のみ（壁は未対応）。
-                        if app.model.element(id).is_some() {
-                            if mode == ViewMode::Hinge {
-                                app.hinge_detail_elem = Some(id);
-                            }
-                            if mode == ViewMode::TimeHistory && !app.staleness.results_stale {
-                                app.th_detail_elem = Some(id);
-                            }
+                        if mode == ViewMode::Hinge {
+                            app.hinge_detail_elem = Some(id);
+                        }
+                        if mode == ViewMode::TimeHistory && !app.staleness.results_stale {
+                            app.th_detail_elem = Some(id);
                         }
                     }
                     _ => {
@@ -1619,7 +1670,7 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
         }
     }
     if mode == ViewMode::Hinge {
-        hinge::draw_hinge(&painter, app, &pts, filter);
+        hinge::draw_hinge(&painter, app, &display_model, &pts, &proj, filter);
         // ホバー詳細（ViewCube ホバー中は除く。検定比図と同じ最近傍部材探索・
         // 8px 閾値で最寄り部材を求め、ヒットしたらヒンジ詳細を表示）。
         if cube_hover.is_none() {
@@ -2180,5 +2231,65 @@ mod wall_expanded_view_model_tests {
         assert_eq!(view.elements[0].kind, ElementKind::Wall);
         // 入力の正（`model`）は変更されない（D5。壁の解析要素はモデルに残さない）。
         assert!(model.elements.is_empty());
+    }
+
+    /// 展開された耐震壁の材軸端点は上下辺中点（壁柱）になる。
+    #[test]
+    fn member_axis_endpoints_uses_wall_column_midpoints() {
+        let mut model = Model::default();
+        for (id, (x, y, z)) in [
+            (0, (0.0, 0.0, 0.0)),
+            (1, (4000.0, 0.0, 0.0)),
+            (2, (4000.0, 0.0, 3000.0)),
+            (3, (0.0, 0.0, 3000.0)),
+        ] {
+            model.nodes.push(node(id, x, y, z));
+        }
+        model.sections.push(Section {
+            id: SectionId(0),
+            name: "壁 t150".into(),
+            area: 150.0 * 3000.0,
+            iy: 1.0,
+            iz: 1.0,
+            j: 1.0,
+            depth: 3000.0,
+            width: 150.0,
+            as_y: 1.0,
+            as_z: 1.0,
+            floor: None,
+            panel_thickness: None,
+            thickness: Some(150.0),
+            shape: None,
+            material: None,
+            rebar_material: None,
+            shear_rebar_material: None,
+            steel_material: None,
+        });
+        model.wall_plates.push(WallPlate {
+            id: WallPlateId(0),
+            shape: WallPlateShape::Enclosed {
+                boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
+            },
+            section: Some(SectionId(0)),
+            opening_area: 0.0,
+            opening_weight: 0.0,
+            openings: Vec::new(),
+            three_side_slit: false,
+        });
+        model.wall_regions.push(WallRegion {
+            id: WallRegionId(0),
+            name: String::new(),
+            boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
+            wall_plate_ids: vec![WallPlateId(0)],
+            post_ids: Vec::new(),
+        });
+        let view = wall_expanded_view_model(&model);
+        let wall = &view.elements[0];
+        let axis = member_axis_endpoints(wall, view.as_ref()).expect("axis");
+        assert!((axis.p_i[2] - 0.0).abs() < 1e-6);
+        assert!((axis.p_j[2] - 3000.0).abs() < 1e-6);
+        assert!((axis.length - 3000.0).abs() < 1e-6);
+        // 下辺中点 (2000, 0, 0)
+        assert!((axis.p_i[0] - 2000.0).abs() < 1e-6);
     }
 }

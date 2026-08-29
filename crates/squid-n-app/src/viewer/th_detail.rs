@@ -233,13 +233,15 @@ fn elem_has_force_recording(rec: &ThRecording, elem_idx: usize) -> bool {
 }
 
 /// 断面検定の対象になる部材種別か（軸力のみの減衰・免震・節点ばね要素、
-/// 壁・シェル・パネルゾーンは対象外）。
+/// シェル・パネルゾーンは対象外）。耐震壁は壁柱軸で柱として簡易検定する。
 fn design_member_kind(elem: &ElementData, model: &Model) -> Option<MemberKind> {
     match elem.kind {
         ElementKind::Brace { .. } => Some(MemberKind::Brace),
         ElementKind::Beam | ElementKind::Fiber | ElementKind::MultiSpring => {
             Some(MemberKind::of_element(elem, model))
         }
+        ElementKind::Wall => super::member_axis_endpoints(elem, model)
+            .map(|ep| MemberKind::from_axis(ep.p_i, ep.p_j)),
         _ => None,
     }
 }
@@ -295,22 +297,18 @@ fn draw_th_detail_content(ui: &mut egui::Ui, app: &mut App, elem_id: ElemId) {
     // 同時に保持できないため、値だけコピーする）。
     let th_nonlinear = th_result.nonlinear;
     let th_applied_long_term = th_result.applied_long_term;
-    let Some(elem_idx) = app.model.elements.iter().position(|e| e.id == elem_id) else {
+    let display = super::wall_expanded_view_model(&app.model);
+    let Some(elem_idx) = display.elements.iter().position(|e| e.id == elem_id) else {
         ui.colored_label(theme::GRAY_600, "この部材はモデルから削除されています。");
         return;
     };
-    let elem = &app.model.elements[elem_idx];
-    if elem.nodes.len() < 2 {
-        ui.colored_label(theme::GRAY_600, "2 節点未満の要素は対象外です。");
-        return;
-    }
-    let n0 = elem.nodes[0].index();
-    let n1 = elem.nodes[1].index();
-    let (Some(node0), Some(node1)) = (app.model.nodes.get(n0), app.model.nodes.get(n1)) else {
-        ui.colored_label(theme::GRAY_600, "節点情報を取得できません。");
+    let elem = &display.elements[elem_idx];
+    let Some(axis) = super::member_axis_endpoints(elem, display.as_ref()) else {
+        ui.colored_label(theme::GRAY_600, "材軸端点を取得できません。");
         return;
     };
-    let (p_i, p_j) = (node0.coord, node1.coord);
+    let (p_i, p_j) = (axis.p_i, axis.p_j);
+    let (n0, n1) = (axis.n0, axis.n1);
 
     ui.label(format!("部材 #{}（{}）", elem_id.0, kind_label(&elem.kind)));
     let n_frames = recording.frame_time.len();
@@ -359,6 +357,25 @@ fn draw_th_detail_content(ui: &mut egui::Ui, app: &mut App, elem_id: ElemId) {
             frame,
             &mut axis_z,
         ),
+        LoopKind::Unsupported if matches!(elem.kind, ElementKind::Wall) => {
+            if elem_has_force_recording(recording, elem_idx) {
+                draw_flexural_loop(
+                    ui,
+                    recording,
+                    elem_id,
+                    elem_idx,
+                    n0,
+                    n1,
+                    p_i,
+                    p_j,
+                    elem.local_axis.ref_vector,
+                    frame,
+                    &mut axis_z,
+                );
+            } else {
+                ui.colored_label(theme::GRAY_600, "この耐震壁の内力は記録されていません。");
+            }
+        }
         LoopKind::Unsupported => {
             ui.colored_label(
                 theme::GRAY_600,
@@ -371,7 +388,6 @@ fn draw_th_detail_content(ui: &mut egui::Ui, app: &mut App, elem_id: ElemId) {
 
     ui.add_space(6.0);
     ui.separator();
-    let elem = &app.model.elements[elem_idx];
     draw_peak_check(
         ui,
         app,
@@ -380,6 +396,7 @@ fn draw_th_detail_content(ui: &mut egui::Ui, app: &mut App, elem_id: ElemId) {
         recording,
         th_nonlinear,
         th_applied_long_term,
+        &axis,
     );
 }
 
@@ -625,6 +642,7 @@ fn draw_peak_check(
     rec: &ThRecording,
     th_nonlinear: bool,
     th_applied_long_term: bool,
+    axis: &super::MemberAxisEndpoints,
 ) {
     ui.strong("最大応力に対する検定（全ステップの内力包絡・短期）");
     draw_long_term_note(ui, th_nonlinear, th_applied_long_term);
@@ -670,10 +688,7 @@ fn draw_peak_check(
         return;
     };
 
-    let length = member_len3(
-        app.model.nodes[elem.nodes[0].index()].coord,
-        app.model.nodes[elem.nodes[1].index()].coord,
-    );
+    let length = axis.length;
     let face_sum = elem.rigid_zone.face_i_or_zero() + elem.rigid_zone.face_j_or_zero();
     let clear_span = if length - face_sum > 0.0 {
         length - face_sum
