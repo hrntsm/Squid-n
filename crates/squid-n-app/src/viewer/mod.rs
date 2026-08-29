@@ -1323,6 +1323,12 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
                                         opening_weight: 0.0,
                                     }),
                                 ) {
+                                    // 所属壁領域への結びつきは `rebuild_wall_regions` が行う。
+                                    // 呼ばないと壁展開の対象にならず、3D・部材表に現れない
+                                    // （旧 `AddMember`+`Wall` は要素へ直書きしていたため即時見えた）。
+                                    squid_n_core::wall_region_rebuild::rebuild_wall_regions(
+                                        &mut app.model,
+                                    );
                                     app.staleness.mark_edited();
                                 }
                             }

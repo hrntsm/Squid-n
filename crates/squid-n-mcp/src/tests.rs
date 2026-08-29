@@ -559,3 +559,158 @@ fn test_apply_edit_add_slab() {
         SlabShape::Enclosed { .. }
     ));
 }
+
+fn four_node_edit_state(name: &str) -> ServerState {
+    use squid_n_core::dof::Dof6Mask;
+    use squid_n_core::ids::NodeId;
+    use squid_n_core::model::Node;
+
+    ServerState {
+        model: Model {
+            nodes: (0..4)
+                .map(|i| Node {
+                    id: NodeId(i),
+                    coord: match i {
+                        0 => [0.0, 0.0, 0.0],
+                        1 => [3000.0, 0.0, 0.0],
+                        2 => [3000.0, 3000.0, 0.0],
+                        _ => [0.0, 3000.0, 0.0],
+                    },
+                    restraint: Dof6Mask::FREE,
+                    mass: None,
+                    story: None,
+                    support_spring: None,
+                })
+                .collect(),
+            sections: sample_model().sections,
+            ..Default::default()
+        },
+        undo: squid_n_edit::UndoStack::new(),
+        jobs: JobRegistry::new(),
+        results: squid_n_io::results::FsResultStore::open(std::env::temp_dir().join(format!(
+            "squid-n-test-{}/mcp_edit_{name}",
+            std::process::id()
+        )))
+        .expect("temp store"),
+    }
+}
+
+#[test]
+fn test_apply_edit_nested_body_wrapper() {
+    let mut state = four_node_edit_state("nested_body");
+    let body = serde_json::json!({
+        "body": {
+            "command": "AddEnclosedWallPlate",
+            "boundary": [0, 1, 2, 3]
+        }
+    });
+    let result = apply_edit(&mut state, &body).expect("apply");
+    assert!(result.applied);
+    assert_eq!(state.model.wall_plates.len(), 1);
+}
+
+#[test]
+fn test_apply_edit_add_attached_slab_flat_and_plate() {
+    use squid_n_core::model::SlabShape;
+
+    let mut state = four_node_edit_state("attached_slab_flat");
+    let flat = serde_json::json!({
+        "command": "AddAttachedSlab",
+        "anchor": {
+            "Line": {
+                "nodes": [0, 1],
+                "span": [0.0, 1.0],
+                "transfer": "Anchor"
+            }
+        },
+        "extent": [1000.0, 1000.0],
+        "section": 0
+    });
+    let result = apply_edit(&mut state, &flat).expect("flat");
+    assert!(
+        result.applied,
+        "フラット引数で AddAttachedSlab が適用される"
+    );
+    assert_eq!(state.model.slabs.len(), 1);
+    assert!(matches!(
+        state.model.slabs[0].shape,
+        SlabShape::Attached { .. }
+    ));
+    assert_eq!(state.model.slabs[0].plate.section.map(|s| s.0), Some(0));
+
+    let mut state = four_node_edit_state("attached_slab_plate");
+    let nested_plate = serde_json::json!({
+        "command": "AddAttachedSlab",
+        "anchor": {
+            "Line": {
+                "nodes": [0, 1],
+                "span": [0.0, 1.0],
+                "transfer": "Anchor"
+            }
+        },
+        "extent": [800.0, 800.0],
+        "plate": {
+            "section": 0,
+            "loads": [],
+            "method": "TriTrapezoid"
+        }
+    });
+    let result = apply_edit(&mut state, &nested_plate).expect("plate");
+    assert!(
+        result.applied,
+        "plate オブジェクトでも AddAttachedSlab が適用される"
+    );
+    assert_eq!(state.model.slabs.len(), 1);
+}
+
+#[test]
+fn test_apply_edit_add_attached_wall_plate() {
+    use squid_n_core::model::WallPlateShape;
+
+    let mut state = four_node_edit_state("attached_wall");
+    let body = serde_json::json!({
+        "command": "AddAttachedWallPlate",
+        "anchor": {
+            "Line": {
+                "nodes": [0, 1],
+                "span": [0.0, 1.0],
+                "transfer": "Anchor"
+            }
+        },
+        "extent": [1200.0, 1200.0],
+        "section": 0
+    });
+    let result = apply_edit(&mut state, &body).expect("apply");
+    assert!(result.applied);
+    assert_eq!(state.model.wall_plates.len(), 1);
+    assert!(matches!(
+        state.model.wall_plates[0].shape,
+        WallPlateShape::Attached { .. }
+    ));
+}
+
+#[test]
+fn test_apply_edit_set_floor_region_name() {
+    use squid_n_core::ids::{FloorRegionId, NodeId, SlabId};
+
+    let mut state = four_node_edit_state("floor_region_name");
+    state
+        .model
+        .floor_regions
+        .push(squid_n_core::model::FloorRegion {
+            id: FloorRegionId(0),
+            name: "old".into(),
+            boundary: vec![NodeId(0), NodeId(1)],
+            secondary_joist_ids: Vec::new(),
+            slab_ids: vec![SlabId(0)],
+            joists: Vec::new(),
+        });
+    let body = serde_json::json!({
+        "command": "SetFloorRegionName",
+        "id": 0,
+        "name": "R1"
+    });
+    let result = apply_edit(&mut state, &body).expect("apply");
+    assert!(result.applied);
+    assert_eq!(state.model.floor_regions[0].name, "R1");
+}

@@ -26,7 +26,11 @@ pub struct WriteResult {
 }
 
 /// JSON 引数から `EditCommand` を生成する。`command` キーで種別を指定する。
+///
+/// MCP ツール引数は `command` をトップレベルに置く（P8 T2）。
+/// `{ "body": { "command": ... } }` も受け付ける。
 pub fn parse_edit_command(value: &serde_json::Value) -> Result<Box<dyn EditCommand>, String> {
+    let value = resolve_edit_payload(value);
     let command = value
         .get("command")
         .and_then(|v| v.as_str())
@@ -245,6 +249,22 @@ pub fn apply_edit(
             format!("{label} は適用されませんでした（参照検証等で Noop）")
         },
     })
+}
+
+/// `command` がトップレベルに無いとき、ネストした `body` をコマンド JSON とみなす。
+fn resolve_edit_payload(value: &serde_json::Value) -> &serde_json::Value {
+    match value {
+        serde_json::Value::Object(m)
+            if m.get("command").and_then(|v| v.as_str()).is_none()
+                && m.get("body")
+                    .and_then(|b| b.get("command"))
+                    .and_then(|v| v.as_str())
+                    .is_some() =>
+        {
+            &m["body"]
+        }
+        _ => value,
+    }
 }
 
 fn parse_node_ids(value: &serde_json::Value) -> Result<Vec<NodeId>, String> {

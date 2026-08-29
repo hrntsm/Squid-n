@@ -39,6 +39,18 @@ fn resolve_damper_def_selection(
     defs.iter().position(|d| d.name == name).map(|i| (i, name))
 }
 
+/// 部材表の履歴則コンボを編集できるか。
+///
+/// 生成壁の `ElemId` は入力モデルの `elements` に存在しないため、
+/// [`SetMemberHysteresis`] は存在検証で Noop になる。履歴則は壁版のフィールドでもない。
+fn member_hysteresis_editable(is_generated_wall: bool, kind: ElementKind) -> bool {
+    !is_generated_wall
+        && matches!(
+            kind,
+            ElementKind::Beam | ElementKind::Fiber | ElementKind::MultiSpring | ElementKind::Wall
+        )
+}
+
 /// 「自動」解決表示用に、要素種別に応じた履歴則解決関数を使い分ける。
 /// 梁=材端曲げバネの履歴則、ファイバー柱・MS・壁=コンクリート除荷則。
 fn resolve_member_hysteresis_for_kind(
@@ -483,13 +495,7 @@ pub fn members_table(ui: &mut egui::Ui, app: &mut App) {
                             format!("自動（{}）", eff.label())
                         }
                     };
-                    let enabled = matches!(
-                        elem.kind,
-                        ElementKind::Beam
-                            | ElementKind::Fiber
-                            | ElementKind::MultiSpring
-                            | ElementKind::Wall
-                    );
+                    let enabled = member_hysteresis_editable(generated_wall.is_some(), elem.kind);
                     ui.add_enabled_ui(enabled, |ui| {
                         table_util::cell_combo(
                             ui,
@@ -508,13 +514,16 @@ pub fn members_table(ui: &mut egui::Ui, app: &mut App) {
                             },
                         )
                         .response
-                        .on_hover_text(
+                        .on_hover_text(if generated_wall.is_some() {
+                            "壁版由来の耐震壁は入力モデルに要素として存在しないため、\
+                             履歴則の個別指定はできません（解析時は壁の既定＝原点指向型）"
+                        } else {
                             "増分解析（保有水平耐力計算）の履歴則。\
                                  梁=材端曲げバネ（自動: RC/SRC/CFT=武田型、S=標準型）。\
                                  柱（ファイバー）・MS・壁=コンクリート除荷則\
                                  （逆行型／原点指向型／Karsan-Jirsa型のみ有効。\
-                                 自動: 柱・MS=逆行型、壁=原点指向型）",
-                        );
+                                 自動: 柱・MS=逆行型、壁=原点指向型）"
+                        });
                     });
                 });
                 row.col(|ui| {
@@ -532,13 +541,7 @@ pub fn members_table(ui: &mut egui::Ui, app: &mut App) {
                         }
                         Some(r) => r.label().to_string(),
                     };
-                    let enabled = matches!(
-                        elem.kind,
-                        ElementKind::Beam
-                            | ElementKind::Fiber
-                            | ElementKind::MultiSpring
-                            | ElementKind::Wall
-                    );
+                    let enabled = member_hysteresis_editable(generated_wall.is_some(), elem.kind);
                     ui.add_enabled_ui(enabled, |ui| {
                         table_util::cell_combo(
                             ui,
@@ -560,11 +563,14 @@ pub fn members_table(ui: &mut egui::Ui, app: &mut App) {
                             },
                         )
                         .response
-                        .on_hover_text(
+                        .on_hover_text(if generated_wall.is_some() {
+                            "壁版由来の耐震壁は入力モデルに要素として存在しないため、\
+                             履歴則の個別指定はできません（解析時は壁の既定）"
+                        } else {
                             "時刻歴応答解析の履歴則。「増分と同じ」で増分用の指定に従う。\
                                  自動: 梁=増分と同じ既定、柱（ファイバー）・MS・壁の\
-                                 コンクリートは Karsan-Jirsa型",
-                        );
+                                 コンクリートは Karsan-Jirsa型"
+                        });
                     });
                 });
                 row.col(|ui| {
@@ -1329,5 +1335,14 @@ mod tests {
         let view = members_table_view(&model);
         assert!(matches!(view.model, Cow::Borrowed(_)));
         assert!(view.wall_index.is_none());
+    }
+
+    /// 生成壁の履歴則コンボは編集不可（`SetMemberHysteresis` が入力モデル上で Noop）。
+    #[test]
+    fn generated_wall_hysteresis_is_not_editable() {
+        assert!(!member_hysteresis_editable(true, ElementKind::Wall));
+        assert!(member_hysteresis_editable(false, ElementKind::Beam));
+        assert!(member_hysteresis_editable(false, ElementKind::Wall));
+        assert!(!member_hysteresis_editable(false, ElementKind::Damper));
     }
 }
