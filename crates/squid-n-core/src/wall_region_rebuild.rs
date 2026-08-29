@@ -69,6 +69,11 @@ pub struct WallRegionRebuildReport {
     pub deleted_nodes: usize,
 }
 
+/// 現状の壁領域で、中点がちょうど 1 領域に厳密内包されない間柱の本数。
+pub fn unassigned_post_count(model: &Model) -> usize {
+    model.unassigned_posts.len()
+}
+
 /// 壁領域を柱・梁が囲む鉛直構面内の閉領域から作り直し、名前を引き継ぎ、
 /// 壁版の帰属を付け替える。
 ///

@@ -594,6 +594,22 @@ impl Model {
             }
         }
 
+        // 同じ種別・同じ端点の二次部材は 1 本だけ（床をまたいだ手編集の重複を止める）。
+        {
+            use std::collections::HashSet;
+            let mut seen = HashSet::new();
+            for sm in self.joists().chain(self.posts()) {
+                let a = sm.nodes[0].0.min(sm.nodes[1].0);
+                let b = sm.nodes[0].0.max(sm.nodes[1].0);
+                if !seen.insert((sm.kind, a, b)) {
+                    return Err(CoreError::DanglingRef(format!(
+                        "二次部材が重複しています（{:?} 節点 {}-{}）",
+                        sm.kind, a, b
+                    )));
+                }
+            }
+        }
+
         // 取付き線の無次元区間 `span`（[t_i, t_j]）は 0.0〜1.0 の範囲で始端 < 終端でなければ
         // ならない。荷重は `squid_n_load::floor::distribute_cantilever` が `span` から引いた
         // 部分区間へ幾何解決で載せる（`squid_n_load::floor::LoadTarget::Span::t`）。

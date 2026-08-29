@@ -1151,11 +1151,14 @@ fn joist_design_checks_cover_imported_secondary_members() {
     );
 
     let mut checked = 0;
-    for (slab_id, target, _) in &results.joist_checks {
+    for (slab_id, target, jr) in &results.joist_checks {
         let squid_n_app::app::JoistCheckTarget::SecondaryMember(smi) = target else {
             continue;
         };
         checked += 1;
+        if jr.unchecked {
+            continue;
+        }
         let sm = app.model.joists().nth(*smi).expect("小梁");
         let z_joist = sm
             .nodes
@@ -1537,6 +1540,7 @@ fn snapshot_key_scalars() {
     let joist_max_ratio = results
         .joist_checks
         .iter()
+        .filter(|(_, _, r)| !r.unchecked)
         .map(|(_, _, r)| r.ratio)
         .fold(0.0_f64, f64::max);
     line("design.joist_max_ratio", sig4(joist_max_ratio));

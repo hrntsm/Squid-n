@@ -2,12 +2,15 @@
 //!
 //! 領域内小梁（[`squid_n_core::model::FloorRegion::secondary_joists`]）の断面検定は、
 //! 幾何から負担幅を再導出せず、荷重分配と同じ `BeamLoad`（`LoadTarget::Span`）を
-//! 単純梁として重ね合わせる。
+//! 単純梁として重ね合わせる。床板境界が途中節点で分割されていても、小梁材軸上に
+//! 載る `Span` は全長へ合成する（T 字取り付きの片側欠落を防ぐ）。
 
 use std::collections::HashMap;
 
+use squid_n_core::geom::MEMBER_AXIS_TOL_MM;
 use squid_n_core::ids::{NodeId, SlabId};
-use squid_n_core::model::{ElementKind, MemberLoadKind, Model, Slab};
+use squid_n_core::model::{ElementKind, MemberLoadKind, Model, SecondaryMemberKind, Slab};
+use squid_n_core::units::GRAVITY_MM_S2;
 
 use super::distribute_region;
 use super::fem::{simple_beam_moment_at, simple_reactions};
@@ -148,6 +151,11 @@ fn simple_beam_shear_at(loads: &[MemberLoadKind], x: f64, r_i: f64) -> f64 {
     r_i - loaded
 }
 
+/// 曲げ・せん断の最大値を探す分割数（スパンをこの数で等分。端点を含む）。
+pub const JOIST_FORCE_SAMPLE_DIVISIONS: usize = 64;
+/// たわみ積分・最大値探索の分割数。
+pub const JOIST_DEFLECTION_SAMPLE_DIVISIONS: usize = 80;
+
 /// 単純梁（両端ピン）の最大たわみ [mm]。
 fn simple_beam_max_deflection(
     loads: &[MemberLoadKind],
@@ -159,7 +167,7 @@ fn simple_beam_max_deflection(
     if span <= 1e-9 || ei <= 1e-9 || loads.is_empty() {
         return 0.0;
     }
-    const N: usize = 80;
+    const N: usize = JOIST_DEFLECTION_SAMPLE_DIVISIONS;
     let h = span / N as f64;
     let kappa: Vec<f64> = (0..=N)
         .map(|i| simple_beam_moment_at(loads, span, i as f64 * h) / ei)
@@ -211,7 +219,7 @@ pub fn simple_beam_extremes(
             w_equiv: 0.0,
         };
     }
-    const N: usize = 64;
+    const N: usize = JOIST_FORCE_SAMPLE_DIVISIONS;
     let r_i: f64 = loads.iter().map(|l| simple_reactions(l, span).0).sum();
     let mut m_max = 0.0_f64;
     let mut q_max = 0.0_f64;
@@ -236,7 +244,7 @@ pub struct SecondaryJoistLoads {
     pub member_loads: Vec<MemberLoadKind>,
     /// 代表床板（所属床領域の `slab_ids` 先頭。表示・室用途の参照用）。
     pub rep_slab_id: SlabId,
-    /// 分配側が最初に返した `Span.nodes`（向き判定用）。
+    /// このエントリの荷重を載せるときの小梁節点順（`SecondaryMember.nodes`）。
     pub span_nodes: (NodeId, NodeId),
 }
 
@@ -248,25 +256,134 @@ fn beam_between(model: &Model, a: NodeId, b: NodeId) -> bool {
     })
 }
 
-fn joist_span_length(model: &Model, n0: NodeId, n1: NodeId) -> Option<f64> {
-    let na = model.nodes.get(n0.index())?;
-    let nb = model.nodes.get(n1.index())?;
-    let dx = nb.coord[0] - na.coord[0];
-    let dy = nb.coord[1] - na.coord[1];
-    let dz = nb.coord[2] - na.coord[2];
-    let len = (dx * dx + dy * dy + dz * dz).sqrt();
-    (len > 1e-9).then_some(len)
+fn coord(model: &Model, id: NodeId) -> Option<[f64; 3]> {
+    model.nodes.get(id.index()).map(|n| n.coord)
 }
 
-fn span_is_full(t: [f64; 2]) -> bool {
-    (t[0] - 0.0).abs() <= 1e-9 && (t[1] - 1.0).abs() <= 1e-9
+fn dist3(a: [f64; 3], b: [f64; 3]) -> f64 {
+    let dx = b[0] - a[0];
+    let dy = b[1] - a[1];
+    let dz = b[2] - a[2];
+    (dx * dx + dy * dy + dz * dz).sqrt()
 }
 
-/// 全床領域の [`distribute_region`] 出力から、実部材化していない小梁 `Span` 荷重を集める。
+fn lerp3(a: [f64; 3], b: [f64; 3], t: f64) -> [f64; 3] {
+    [
+        a[0] + (b[0] - a[0]) * t,
+        a[1] + (b[1] - a[1]) * t,
+        a[2] + (b[2] - a[2]) * t,
+    ]
+}
+
+/// 点 `p` が線分 `a`–`b` の材軸から `tol` 以内なら、`a` からの材軸距離 [mm]。
+fn project_on_segment(p: [f64; 3], a: [f64; 3], b: [f64; 3], tol: f64) -> Option<f64> {
+    let ab = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+    let len = dist3(a, b);
+    if len <= 1e-9 {
+        return None;
+    }
+    let ap = [p[0] - a[0], p[1] - a[1], p[2] - a[2]];
+    let s = (ap[0] * ab[0] + ap[1] * ab[1] + ap[2] * ab[2]) / (len * len) * len;
+    if s < -tol || s > len + tol {
+        return None;
+    }
+    let t = (s / len).clamp(0.0, 1.0);
+    let proj = lerp3(a, b, t);
+    let d = dist3(p, proj);
+    (d <= tol).then_some(s.clamp(0.0, len))
+}
+
+fn shift_member_load(load: &MemberLoadKind, s0: f64) -> MemberLoadKind {
+    match *load {
+        MemberLoadKind::Point { a, p } => MemberLoadKind::Point { a: a + s0, p },
+        MemberLoadKind::Distributed { a, b, w1, w2 } => MemberLoadKind::Distributed {
+            a: a + s0,
+            b: b + s0,
+            w1,
+            w2,
+        },
+    }
+}
+
+struct JoistAxis {
+    key: (NodeId, NodeId),
+    nodes: (NodeId, NodeId),
+    a: [f64; 3],
+    b: [f64; 3],
+}
+
+fn joist_axes(model: &Model) -> Vec<JoistAxis> {
+    let mut out = Vec::new();
+    for sm in model.joists() {
+        if sm.kind != SecondaryMemberKind::Joist {
+            continue;
+        }
+        let (n0, n1) = (sm.nodes[0], sm.nodes[1]);
+        if n0 == n1 || beam_between(model, n0, n1) {
+            continue;
+        }
+        let (Some(a), Some(b)) = (coord(model, n0), coord(model, n1)) else {
+            continue;
+        };
+        let len = dist3(a, b);
+        if len <= 1e-9 {
+            continue;
+        }
+        out.push(JoistAxis {
+            key: span_node_key(n0, n1),
+            nodes: (n0, n1),
+            a,
+            b,
+        });
+    }
+    out
+}
+
+fn segment_on_beam(model: &Model, p0: [f64; 3], p1: [f64; 3]) -> bool {
+    model.elements.iter().any(|e| {
+        if e.kind != ElementKind::Beam || e.nodes.len() != 2 {
+            return false;
+        }
+        let (Some(a), Some(b)) = (coord(model, e.nodes[0]), coord(model, e.nodes[1])) else {
+            return false;
+        };
+        project_on_segment(p0, a, b, MEMBER_AXIS_TOL_MM).is_some()
+            && project_on_segment(p1, a, b, MEMBER_AXIS_TOL_MM).is_some()
+    })
+}
+
+/// 二次部材小梁の自重を単純梁の等分布荷重 [N/mm] として返す。
+///
+/// 自重算定（`enumerate_self_weight`）と同じ ρ·A·g·鉄骨割増。断面または材料が
+/// 無ければ `None`（その小梁の検定荷重には自重を足さない）。
+pub fn joist_self_weight_udl(
+    model: &Model,
+    sm: &squid_n_core::model::SecondaryMember,
+) -> Option<f64> {
+    let mat = model.secondary_material(sm)?;
+    let sec = model.sections.get(sm.section?.index())?;
+    let factor = if mat.fc.is_some() {
+        1.0
+    } else {
+        model
+            .load_cfg
+            .as_ref()
+            .map(|c| c.effective_steel_factor())
+            .unwrap_or(1.0)
+    };
+    let w = mat.density * sec.area * GRAVITY_MM_S2 * factor;
+    (w > 0.0).then_some(w)
+}
+
+/// 全床領域の [`distribute_region`] 出力から、実部材化していない小梁へ荷重を載せる。
+///
+/// 床板境界の `Span` は、両端が小梁材軸上にあれば（節点対の完全一致を要求しない）
+/// その小梁の局所座標へ写して重ねる。部分区間 `t` も同じ。大梁材軸上の `Span` は除外する。
 pub fn secondary_joist_distribution_loads(
     model: &Model,
     w_of: impl Fn(&Slab) -> f64,
 ) -> HashMap<(NodeId, NodeId), SecondaryJoistLoads> {
+    let axes = joist_axes(model);
     let mut map: HashMap<(NodeId, NodeId), SecondaryJoistLoads> = HashMap::new();
     for region in &model.floor_regions {
         let rep_slab_id = region.slab_ids.first().copied().unwrap_or(SlabId(0));
@@ -276,25 +393,45 @@ pub fn secondary_joist_distribution_loads(
             let LoadTarget::Span { nodes: [n0, n1], t } = target else {
                 continue;
             };
-            if !span_is_full(t) {
-                continue;
-            }
-            if beam_between(model, n0, n1) {
-                continue;
-            }
-            let Some(len) = joist_span_length(model, n0, n1) else {
+            let (Some(c0), Some(c1)) = (coord(model, n0), coord(model, n1)) else {
                 continue;
             };
-            let key = span_node_key(n0, n1);
-            let entry = map.entry(key).or_insert_with(|| SecondaryJoistLoads {
-                member_loads: Vec::new(),
-                rep_slab_id,
-                span_nodes: (n0, n1),
-            });
-            let flip = (n0, n1) != entry.span_nodes;
-            entry
-                .member_loads
-                .extend(load_shape_to_member_loads(&shape, len, flip));
+            let p0 = lerp3(c0, c1, t[0]);
+            let p1 = lerp3(c0, c1, t[1]);
+            let loaded_len = dist3(p0, p1);
+            if loaded_len <= 1e-9 {
+                continue;
+            }
+            if segment_on_beam(model, p0, p1) {
+                continue;
+            }
+            let shape_loads = load_shape_to_member_loads(&shape, loaded_len, false);
+            for axis in &axes {
+                let Some(mut s0) = project_on_segment(p0, axis.a, axis.b, MEMBER_AXIS_TOL_MM)
+                else {
+                    continue;
+                };
+                let Some(mut s1) = project_on_segment(p1, axis.a, axis.b, MEMBER_AXIS_TOL_MM)
+                else {
+                    continue;
+                };
+                let mut piece = shape_loads.clone();
+                if s1 + 1e-9 < s0 {
+                    piece = piece
+                        .iter()
+                        .map(|l| flip_member_load(l, loaded_len))
+                        .collect();
+                    std::mem::swap(&mut s0, &mut s1);
+                }
+                let entry = map.entry(axis.key).or_insert_with(|| SecondaryJoistLoads {
+                    member_loads: Vec::new(),
+                    rep_slab_id,
+                    span_nodes: axis.nodes,
+                });
+                entry
+                    .member_loads
+                    .extend(piece.into_iter().map(|l| shift_member_load(&l, s0)));
+            }
         }
     }
     map
@@ -365,11 +502,13 @@ pub fn secondary_joists_missing_distribution(model: &Model) -> usize {
 
 #[cfg(test)]
 mod tests {
+    use super::super::types::LoadShape;
     use super::*;
     use squid_n_core::ids::{ElemId, FloorRegionId};
     use squid_n_core::model::{
         AreaLoad, DistributionMethod, ElementData, ElementKind, EndCondition, FloorRegion,
-        ForceRegime, LocalAxis, Node, Slab, SlabPlate, SlabShape,
+        ForceRegime, LocalAxis, MemberLoadKind, Node, SecondaryMember, SecondaryMemberKind, Slab,
+        SlabPlate, SlabShape,
     };
 
     fn square_model_with_shared_joist() -> Model {
@@ -440,6 +579,12 @@ mod tests {
             vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
         );
         region.slab_ids = vec![SlabId(0), SlabId(1)];
+        region.secondary_joists = vec![SecondaryMember {
+            kind: SecondaryMemberKind::Joist,
+            nodes: [NodeId(4), NodeId(5)],
+            section: None,
+            name: "J".into(),
+        }];
         Model {
             nodes,
             elements,
@@ -459,6 +604,145 @@ mod tests {
         let ex = simple_beam_extremes(&entry.member_loads, 4000.0, 205_000.0, 1.0e8);
         // 2000×4000 の 2 枚が x=2000 の辺を共有。三角/台形分配の辺荷重を重ね合わせると
         // 合計 30000 N / 4000 mm = 7.5 N/mm（旧 w×spacing=15 とは分配形状が異なる）。
+        // 小梁断面の需要は負担幅一様より小さくなる。解析の大梁伝達と同じ 45° 分配を
+        // 検定に使うためであり、負担幅一様は小梁に対して過大評価（安全側）になりうる。
         assert!((ex.w_equiv - 7.5).abs() < 0.1, "w_equiv={}", ex.w_equiv);
+    }
+
+    #[test]
+    fn simple_beam_extremes_uniform_matches_closed_form() {
+        let w = 10.0_f64;
+        let l = 4000.0_f64;
+        let loads = vec![MemberLoadKind::Distributed {
+            a: 0.0,
+            b: l,
+            w1: w,
+            w2: w,
+        }];
+        let e = 205_000.0;
+        let i = 1.0e8;
+        let ex = simple_beam_extremes(&loads, l, e, i);
+        let m = w * l * l / 8.0;
+        let q = w * l / 2.0;
+        let d = 5.0 * w * l.powi(4) / (384.0 * e * i);
+        assert!((ex.m_max - m).abs() / m < 1e-6, "m_max={}", ex.m_max);
+        assert!((ex.q_max - q).abs() / q < 1e-6, "q_max={}", ex.q_max);
+        assert!(
+            (ex.deflection - d).abs() / d < 2e-3,
+            "defl={}",
+            ex.deflection
+        );
+        assert!((ex.w_equiv - w).abs() < 1e-9);
+    }
+
+    #[test]
+    fn split_slab_edges_compose_onto_full_joist() {
+        // 左を途中節点で 2 枚に割り、右は全長 1 辺。小梁は 4–5 の全長。
+        let mut model = square_model_with_shared_joist();
+        model.nodes.push(Node {
+            id: NodeId(6),
+            coord: [2000.0, 2000.0, 0.0],
+            restraint: Default::default(),
+            mass: None,
+            story: None,
+            support_spring: None,
+        });
+        model.nodes.push(Node {
+            id: NodeId(7),
+            coord: [0.0, 2000.0, 0.0],
+            restraint: Default::default(),
+            mass: None,
+            story: None,
+            support_spring: None,
+        });
+        let plate = model.slabs[0].plate.clone();
+        model.slabs = vec![
+            Slab {
+                id: SlabId(0),
+                shape: SlabShape::Enclosed {
+                    boundary: vec![NodeId(0), NodeId(4), NodeId(6), NodeId(7)],
+                },
+                plate: plate.clone(),
+            },
+            Slab {
+                id: SlabId(1),
+                shape: SlabShape::Enclosed {
+                    boundary: vec![NodeId(7), NodeId(6), NodeId(5), NodeId(3)],
+                },
+                plate: plate.clone(),
+            },
+            Slab {
+                id: SlabId(2),
+                shape: SlabShape::Enclosed {
+                    boundary: vec![NodeId(4), NodeId(1), NodeId(2), NodeId(5)],
+                },
+                plate,
+            },
+        ];
+        model.floor_regions[0].slab_ids = vec![SlabId(0), SlabId(1), SlabId(2)];
+        let w_of = |_: &Slab| 0.005_f64;
+        let map = secondary_joist_distribution_loads(&model, w_of);
+        let key = span_node_key(NodeId(4), NodeId(5));
+        let entry = map.get(&key).expect("分割辺も全長小梁へ合成される");
+        let total: f64 = entry
+            .member_loads
+            .iter()
+            .map(|l| match l {
+                MemberLoadKind::Point { p, .. } => *p,
+                MemberLoadKind::Distributed { a, b, w1, w2 } => (w1 + w2) / 2.0 * (b - a),
+            })
+            .sum();
+        let unsplit = square_model_with_shared_joist();
+        let unsplit_map = secondary_joist_distribution_loads(&unsplit, w_of);
+        let unsplit_total: f64 = unsplit_map[&key]
+            .member_loads
+            .iter()
+            .map(|l| match l {
+                MemberLoadKind::Point { p, .. } => *p,
+                MemberLoadKind::Distributed { a, b, w1, w2 } => (w1 + w2) / 2.0 * (b - a),
+            })
+            .sum();
+        // 左を 2 枚に割ると共有する水平辺へ 45° 分配の一部が逃げるため、
+        // 小梁上の合計は未分割より小さくなる。欠落していたのは「節点対不一致で
+        // 左側が 0 になる」ことなので、右側だけの約半分（15000 N）を十分上回ることを見る。
+        assert!(
+            total > 0.7 * unsplit_total,
+            "split={total} unsplit={unsplit_total}（左側が落ちると ~15000）"
+        );
+        let (mut s_min, mut s_max) = (f64::INFINITY, 0.0_f64);
+        for l in &entry.member_loads {
+            match l {
+                MemberLoadKind::Point { a, .. } => {
+                    s_min = s_min.min(*a);
+                    s_max = s_max.max(*a);
+                }
+                MemberLoadKind::Distributed { a, b, .. } => {
+                    s_min = s_min.min(*a);
+                    s_max = s_max.max(*b);
+                }
+            }
+        }
+        assert!(s_min < 500.0, "始端側が欠ける s_min={s_min}");
+        assert!(s_max > 3500.0, "終端側が欠ける s_max={s_max}");
+    }
+
+    #[test]
+    fn partial_span_t_maps_onto_joist_interior() {
+        let model = square_model_with_shared_joist();
+        let a = coord(&model, NodeId(4)).unwrap();
+        let b = coord(&model, NodeId(5)).unwrap();
+        let p0 = lerp3(a, b, 0.375);
+        let p1 = lerp3(a, b, 0.625);
+        let s0 = project_on_segment(p0, a, b, MEMBER_AXIS_TOL_MM).unwrap();
+        let s1 = project_on_segment(p1, a, b, MEMBER_AXIS_TOL_MM).unwrap();
+        assert!((s0 - 1500.0).abs() < 1e-6, "s0={s0}");
+        assert!((s1 - 2500.0).abs() < 1e-6, "s1={s1}");
+        let piece = load_shape_to_member_loads(&LoadShape::Uniform { w: 2.0 }, s1 - s0, false);
+        let shifted = shift_member_load(&piece[0], s0);
+        let MemberLoadKind::Distributed { a, b, w1, w2 } = shifted else {
+            panic!("{shifted:?}");
+        };
+        assert!((a - 1500.0).abs() < 1e-9 && (b - 2500.0).abs() < 1e-9);
+        assert!((w1 - 2.0).abs() < 1e-12 && (w2 - 2.0).abs() < 1e-12);
     }
 }

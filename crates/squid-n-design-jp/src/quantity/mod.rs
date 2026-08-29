@@ -29,7 +29,8 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 
 use squid_n_core::ids::{ElemId, SlabId};
 use squid_n_core::model::{
-    ElementData, ElementKind, Model, RegionAnchor, Slab, WallPlate, WallPlateShape,
+    ElementData, ElementKind, Model, RegionAnchor, SecondaryMember, SecondaryMemberKind, Slab,
+    WallPlate, WallPlateShape,
 };
 use squid_n_core::section_shape::{RcRebar, SectionShape};
 
@@ -569,6 +570,12 @@ pub fn compute_quantity_takeoff(model: &Model, cfg: &QuantityCfg) -> QuantityTak
         }
     }
 
+    for sm in model.joists().chain(model.posts()) {
+        if let Some(item) = secondary_member_quantity(&ctx, sm) {
+            out.items.push(item);
+        }
+    }
+
     for (i, mw) in model.misc_walls.iter().enumerate() {
         if let Some(t) = mw.thickness {
             let l = ((mw.end[0] - mw.start[0]).powi(2) + (mw.end[1] - mw.start[1]).powi(2)).sqrt();
@@ -605,6 +612,7 @@ fn build_notes(model: &Model) -> Vec<String> {
         "基礎フーチングはモデルに定義がないため計上しない。".to_string(),
         "梁端ハンチは部材付帯情報（ハンチ長・せい増分・幅増分）から平均断面×ハンチ長で加算する（未入力の部材はハンチなし）。".to_string(),
         "鉄筋継手は個所数（圧接個所数）として集計する（梁 0.5 個所/本＋5m 毎 0.5、柱 1 個所/本＋7m 毎 1）。".to_string(),
+        "二次部材の小梁・間柱も数量に含める。同じ両端を持つ実部材の小梁は線材側のみ数え、二次部材側では重複計上しない。".to_string(),
         "鉄骨継手（部材付帯情報の継手位置）は位置・種別の保持のみで、プレート・ボルト重量は計上しない。".to_string(),
     ];
     if !model.slabs.is_empty() {
@@ -618,11 +626,85 @@ fn build_notes(model: &Model) -> Vec<String> {
             .any(|s| !s.joist_lines().is_empty())
         {
             notes.push(
-                "床荷重分配用の小梁ライン（JoistLine）は断面情報がないため集計対象外（部材として配置した小梁のみ集計）。".to_string(),
+                "床荷重分配用の小梁ライン（JoistLine）は断面情報がないため集計対象外。二次部材小梁・間柱（領域内および未割当）は節点間長で集計する。".to_string(),
             );
         }
     }
     notes
+}
+
+/// 解析要素ではない二次部材（小梁・間柱）の数量。実部材化済み小梁は線材側で数える。
+fn secondary_member_quantity(ctx: &Ctx, sm: &SecondaryMember) -> Option<MemberQuantity> {
+    let model = ctx.model;
+    let a = sm.nodes[0];
+    let b = sm.nodes[1];
+    if sm.kind == SecondaryMemberKind::Joist
+        && model.elements.iter().any(|e| {
+            e.kind == ElementKind::Beam
+                && e.nodes.len() == 2
+                && ((e.nodes[0] == a && e.nodes[1] == b) || (e.nodes[0] == b && e.nodes[1] == a))
+        })
+    {
+        return None;
+    }
+    let sec = model.sections.get(sm.section?.index())?;
+    let mat = model.secondary_material(sm)?;
+    let ni = a.index();
+    let nj = b.index();
+    let (ci, cj) = (model.nodes.get(ni)?.coord, model.nodes.get(nj)?.coord);
+    let len = dist3(ci, cj);
+    if len <= 0.0 {
+        return None;
+    }
+    let structure = squid_n_core::structure_kind::structure_kind_of(Some(sec), Some(mat.category));
+    let category = if sm.kind == SecondaryMemberKind::Post {
+        MemberCategory::Column
+    } else {
+        MemberCategory::Joist
+    };
+    let story = ctx.story_name(if ci[2] <= cj[2] { ni } else { nj });
+    let mut item = MemberQuantity {
+        elem: None,
+        slab: None,
+        label: if sm.name.is_empty() {
+            sec.name.clone()
+        } else {
+            sm.name.clone()
+        },
+        story,
+        category,
+        structure,
+        concrete_m3: 0.0,
+        formwork_m2: 0.0,
+        rebar: Vec::new(),
+        steel: None,
+        rebar_joints: 0.0,
+    };
+    if structure == StructureKind::S || structure == StructureKind::Cft {
+        let area = sec
+            .shape
+            .as_ref()
+            .map(|s| s.calc_area())
+            .unwrap_or(sec.area);
+        item.steel = Some(SteelItem {
+            section_name: sec.name.clone(),
+            length_m: len / 1_000.0,
+            weight_t: area * len * STEEL_UNIT_WEIGHT_T_PER_MM3,
+        });
+        return Some(item);
+    }
+    let (width, depth) = match sec.shape.as_ref() {
+        Some(SectionShape::RcRect { b, d, .. } | SectionShape::SrcRect { b, d, .. }) => (*b, *d),
+        _ => (sec.width, sec.depth),
+    };
+    if sm.kind == SecondaryMemberKind::Post {
+        item.concrete_m3 = member::column_concrete_volume(width, depth, len) * 1e-9;
+        item.formwork_m2 = member::column_formwork_area(width, depth, len) * 1e-6;
+    } else {
+        item.concrete_m3 = member::joist_concrete_volume(width, depth, len) * 1e-9;
+        item.formwork_m2 = member::joist_formwork_area(width, depth, len) * 1e-6;
+    }
+    Some(item)
 }
 
 /// 線材（柱・大梁・小梁・基礎梁）の数量。

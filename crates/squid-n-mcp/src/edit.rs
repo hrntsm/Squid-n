@@ -1,7 +1,7 @@
 //! モデル編集（P8 T2: `model.edit`）。GUI と同一の `EditCommand` + `UndoStack` 経路。
 
 use super::*;
-use squid_n_core::ids::{FloorRegionId, NodeId, SectionId, SlabId, WallPlateId};
+use squid_n_core::ids::{FloorRegionId, NodeId, SectionId, SlabId, WallPlateId, WallRegionId};
 use squid_n_core::model::SecondaryMember;
 use squid_n_core::model::{
     DistributionMethod, JoistLine, OneWayDir, RegionAnchor, SlabPlate, SlabUsage, WallOpening,
@@ -12,7 +12,7 @@ use squid_n_edit::{
     DeleteWallPlate, SetAttachedAnchor, SetAttachedExtent, SetAttachedWallPlateAnchor,
     SetAttachedWallPlateExtent, SetFloorRegionJoists, SetFloorRegionName,
     SetFloorRegionSecondaryJoists, SetSlabOneWay, SetSlabSection, SetSlabUsage, SetWallPlateAttrs,
-    SetWallPlateSection,
+    SetWallPlateSection, SetWallRegionPosts,
 };
 
 #[derive(Debug, Clone, serde::Serialize, schemars::JsonSchema)]
@@ -200,22 +200,52 @@ pub fn parse_edit_command(value: &serde_json::Value) -> Result<Box<dyn EditComma
                 joists,
             }))
         }
-        "SetSlabSecondaryJoistIds" | "SetFloorRegionSecondaryJoists" => {
-            let joists: Vec<SecondaryMember> =
-                match value.get("secondary_joists").or(value.get("joists")) {
-                    None | Some(serde_json::Value::Null) => Vec::new(),
-                    Some(v) => serde_json::from_value(v.clone())
-                        .map_err(|e| format!("secondary_joists の解析に失敗: {e}"))?,
-                };
+        "SetFloorRegionSecondaryJoists" => {
+            if value.get("secondary_joist_ids").is_some() || value.get("ids").is_some() {
+                return Err(
+                    "SetFloorRegionSecondaryJoists は secondary_joists（SecondaryMember の配列）が必須です。\
+                     旧コマンド SetSlabSecondaryJoistIds / キー secondary_joist_ids は廃止しました"
+                        .into(),
+                );
+            }
+            let joists: Vec<SecondaryMember> = match value.get("secondary_joists") {
+                None | Some(serde_json::Value::Null) => {
+                    return Err("secondary_joists が必要です（空にする場合は [] を渡す）".into());
+                }
+                Some(v) => serde_json::from_value(v.clone())
+                    .map_err(|e| format!("secondary_joists の解析に失敗: {e}"))?,
+            };
             Ok(Box::new(SetFloorRegionSecondaryJoists {
                 region: parse_floor_region_id(
                     value
                         .get("floor_region")
                         .or(value.get("id"))
-                        .or(value.get("slab"))
                         .ok_or("floor_region が必要です")?,
                 )?,
                 joists,
+            }))
+        }
+        "SetSlabSecondaryJoistIds" => Err(
+            "SetSlabSecondaryJoistIds は廃止しました。SetFloorRegionSecondaryJoists と \
+             secondary_joists を使ってください"
+                .into(),
+        ),
+        "SetWallRegionPosts" => {
+            let posts: Vec<SecondaryMember> = match value.get("posts") {
+                None | Some(serde_json::Value::Null) => {
+                    return Err("posts が必要です（空にする場合は [] を渡す）".into());
+                }
+                Some(v) => serde_json::from_value(v.clone())
+                    .map_err(|e| format!("posts の解析に失敗: {e}"))?,
+            };
+            Ok(Box::new(SetWallRegionPosts {
+                region: parse_wall_region_id(
+                    value
+                        .get("wall_region")
+                        .or(value.get("id"))
+                        .ok_or("wall_region が必要です")?,
+                )?,
+                posts,
             }))
         }
         other => Err(format!(
@@ -224,7 +254,8 @@ pub fn parse_edit_command(value: &serde_json::Value) -> Result<Box<dyn EditComma
              SetAttachedWallPlateExtent, SetAttachedWallPlateAnchor / \
              床板: AddSlab, AddAttachedSlab, DeleteSlab, SetSlabSection, SetSlabUsage, \
              SetSlabOneWay, SetAttachedExtent, SetAttachedAnchor / \
-             床領域: SetFloorRegionName, SetFloorRegionJoists, SetFloorRegionSecondaryJoists）"
+             床領域: SetFloorRegionName, SetFloorRegionJoists, SetFloorRegionSecondaryJoists / \
+             壁領域: SetWallRegionPosts）"
         )),
     }
 }
@@ -301,6 +332,13 @@ fn parse_floor_region_id(value: &serde_json::Value) -> Result<FloorRegionId, Str
         .as_u64()
         .map(|n| FloorRegionId(n as u32))
         .ok_or_else(|| format!("床領域 ID は非負整数です: {value}"))
+}
+
+fn parse_wall_region_id(value: &serde_json::Value) -> Result<WallRegionId, String> {
+    value
+        .as_u64()
+        .map(|n| WallRegionId(n as u32))
+        .ok_or_else(|| format!("壁領域 ID は非負整数です: {value}"))
 }
 
 fn parse_distribution_method(

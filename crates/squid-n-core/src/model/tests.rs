@@ -163,6 +163,56 @@ fn test_validate_rejects_post_in_floor_region_joists() {
 }
 
 #[test]
+fn test_validate_rejects_duplicate_joist_endpoints() {
+    let sm = SecondaryMember {
+        kind: SecondaryMemberKind::Joist,
+        nodes: [NodeId(0), NodeId(1)],
+        section: None,
+        name: "J".into(),
+    };
+    let model = Model {
+        floor_regions: vec![
+            FloorRegion {
+                id: FloorRegionId(0),
+                name: String::new(),
+                boundary: vec![],
+                secondary_joists: vec![sm.clone()],
+                slab_ids: vec![],
+                joists: vec![],
+            },
+            FloorRegion {
+                id: FloorRegionId(1),
+                name: String::new(),
+                boundary: vec![],
+                secondary_joists: vec![sm],
+                slab_ids: vec![],
+                joists: vec![],
+            },
+        ],
+        nodes: vec![
+            Node {
+                id: NodeId(0),
+                coord: [0.0; 3],
+                restraint: Dof6Mask::FREE,
+                mass: None,
+                story: None,
+                support_spring: None,
+            },
+            Node {
+                id: NodeId(1),
+                coord: [1000.0, 0.0, 0.0],
+                restraint: Dof6Mask::FREE,
+                mass: None,
+                story: None,
+                support_spring: None,
+            },
+        ],
+        ..Default::default()
+    };
+    assert!(model.validate().is_err());
+}
+
+#[test]
 fn test_validate_rejects_joist_in_wall_region_posts() {
     let model = Model {
         wall_regions: vec![crate::model::WallRegion {

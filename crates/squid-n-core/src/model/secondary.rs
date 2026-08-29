@@ -13,7 +13,7 @@
 use super::*;
 
 /// 二次部材の種別。
-#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum SecondaryMemberKind {
     /// 小梁（床荷重を大梁へ伝える。単純梁として両端反力を返す）
     Joist,

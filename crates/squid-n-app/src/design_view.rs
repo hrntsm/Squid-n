@@ -913,7 +913,9 @@ fn floor_design_section(ui: &mut egui::Ui, app: &App) {
                     );
                 });
                 row.col(|ui| {
-                    if jr.ok {
+                    if jr.unchecked {
+                        ui.label("未");
+                    } else if jr.ok {
                         ui.colored_label(crate::theme::GOOD_GREEN, "OK");
                     } else {
                         ui.colored_label(crate::theme::ERROR_RED, "NG");

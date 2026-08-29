@@ -385,6 +385,16 @@ pub fn model_issues(model: &Model) -> Vec<ModelIssue> {
                 .warn(),
             );
         }
+        let n = squid_n_core::wall_region_rebuild::unassigned_post_count(model);
+        if n != 0 {
+            issues.push(
+                ModelIssue::model(format!(
+                    "どの壁領域にも所属しない間柱が {n} 本あります。\
+                     間柱の配置または壁領域の境界を確認してください。"
+                ))
+                .warn(),
+            );
+        }
         let n = squid_n_load::floor::secondary_joists_missing_distribution(model);
         if n != 0 {
             issues.push(

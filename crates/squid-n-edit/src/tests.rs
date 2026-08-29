@@ -5106,11 +5106,11 @@ fn test_copy_story_matches_across_rounding_boundary() {
 
 // ─── 二次部材・壁領域のテスト ────────────────────────────────────────────────
 
-/// 二次部材用の最小モデル（節点 2 個）を作る。
+/// 二次部材用の最小モデル（節点 4 個。端点が重ならない小梁を 2 本置ける）。
 fn sm_base_model() -> Model {
     use squid_n_core::dof::Dof6Mask;
     let mut model = empty_model();
-    for i in 0..2u32 {
+    for i in 0..4u32 {
         model.nodes.push(Node {
             id: NodeId(i),
             coord: [i as f64 * 1000.0, 0.0, 0.0],
@@ -5130,7 +5130,7 @@ fn make_sm(
 ) -> squid_n_core::model::SecondaryMember {
     squid_n_core::model::SecondaryMember {
         kind,
-        nodes: [NodeId(0), NodeId(1)],
+        nodes: [NodeId(id), NodeId(id + 1)],
         section: None,
         name: format!("SM{id}"),
     }
@@ -5350,8 +5350,6 @@ fn test_copy_story_slab_copy_does_not_touch_floor_regions() {
         section: None,
         name: "J1".into(),
     };
-    model.unassigned_joists.push(joist.clone());
-    // 2F の床領域へ小梁を登録する。
     let src = model
         .floor_regions
         .iter()
