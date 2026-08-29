@@ -1289,21 +1289,27 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
                     }
                 }
             } else {
-                // 通常モード：クリック位置に最も近い部材線分を選び、閾値内なら選択。
+                // 通常モード：クリック位置に最も近い部材を選び、閾値内なら選択。
+                // 壁は `display_model` 上の多角形ピック（§5.17 残→§5.31）。
                 // ピッキング許容距離（px）
                 const PICK_THRESHOLD: f32 = 8.0;
-                match pick_nearest_member(&app.model, &pts, click_pos, filter) {
+                let display_model = wall_expanded_view_model(&app.model);
+                let frame_for_pick = app
+                    .frame_target
+                    .and_then(|t| squid_n_core::frame::build_frame(display_model.as_ref(), t));
+                let filter_pick = FrameFilter::new(frame_for_pick.as_ref());
+                match pick_nearest_member(display_model.as_ref(), &pts, click_pos, filter_pick) {
                     Some((id, d)) if d <= PICK_THRESHOLD => {
                         app.selection.members = vec![id];
                         app.nav.focus_member = Some(id);
-                        // ヒンジ図モードでは、クリックした部材のヒンジ詳細ウィンドウを開く。
-                        if mode == ViewMode::Hinge {
-                            app.hinge_detail_elem = Some(id);
-                        }
-                        // 時刻歴モードでは、クリックした部材の履歴・検定ウィンドウを開く
-                        // （中-1(a): モデル編集後は添字ずれの恐れがあるため無効化）。
-                        if mode == ViewMode::TimeHistory && !app.staleness.results_stale {
-                            app.th_detail_elem = Some(id);
+                        // ヒンジ・時刻歴詳細は `app.model` 上の部材のみ（壁は未対応）。
+                        if app.model.element(id).is_some() {
+                            if mode == ViewMode::Hinge {
+                                app.hinge_detail_elem = Some(id);
+                            }
+                            if mode == ViewMode::TimeHistory && !app.staleness.results_stale {
+                                app.th_detail_elem = Some(id);
+                            }
                         }
                     }
                     _ => {
@@ -1314,28 +1320,13 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
         }
     }
 
-    // 壁の解析要素（`ElementKind::Wall`）は `app.model` には存在しない生成専用の
-    // 要素（D5）のため、以降の形状描画・選択ハイライト・ホバーピックは壁展開済み
-    // モデルを参照する（`wall_expanded_view_model`）。編集対象を選ぶクリック処理
-    // （上のブロック）は既存部材のみが対象のため `app.model` のままでよい。
-    // ホバーも `pick_nearest_member`（先頭 2 節点の線分）のため、壁ポリゴン面内や
-    // 壁柱では壁を一意に拾えない（大梁の下辺と一致して大梁が勝つ。§5.17 残課題）。
+    // 壁の解析要素（D5）を含む表示用モデル。描画・ホバーピックで共有する
+    // （`wall_expanded_view_model` の性能ガード付き）。クリック処理より後に置き、
+    // 梁・壁作成モードでの `app.model` 可変借用と衝突しないようにする。
     let display_model = wall_expanded_view_model(&app.model);
-
-    // 上の `filter`（1128行目）は壁展開前の `app.model` から作った構面のため、
-    // 壁の要素IDを含まない。ここまでの間に部材作成ツール（梁・壁・スラブの
-    // クリック追加）が `app.model` へ要素を追記していた場合、壁の解析要素の
-    // ID採番（`max(既存要素ID)+1` 起点）がそのぶんずれ、`display_model` の壁と
-    // 上の `filter` の構面判定が食い違いうる（該当フレームだけ壁の表示/非表示が
-    // 一時的に誤る。次フレームで自己修復するがクリック直後の1フレームだけ
-    // ずれた見た目になりうる）。以降の描画・ホバーはすべて `display_model` を
-    // 参照するため、`filter` も同じ `display_model` から作り直し、両者を
-    // 常に整合させる（`frame` 自体は `.normal`・構面基準線の描画にしか使わず
-    // 要素IDを見ないため、作り直す必要はない。`build_frame` は成功・失敗が
-    // 要素の有無に依存しないため、上の `frame` と Some/None が食い違うことはない）。
     let frame_for_draw = app
         .frame_target
-        .and_then(|t| squid_n_core::frame::build_frame(&display_model, t));
+        .and_then(|t| squid_n_core::frame::build_frame(display_model.as_ref(), t));
     let filter = FrameFilter::new(frame_for_draw.as_ref());
 
     // --- スラブ・小梁 ---
