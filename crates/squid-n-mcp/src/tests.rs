@@ -715,44 +715,47 @@ fn test_apply_edit_set_floor_region_name() {
     assert_eq!(state.model.floor_regions[0].name, "R1");
 }
 
+fn expect_parse_err(value: serde_json::Value) -> String {
+    match parse_edit_command(&value) {
+        Ok(_) => panic!("エラーになるはずだった: {value}"),
+        Err(e) => e,
+    }
+}
+
 #[test]
 fn test_parse_rejects_obsolete_set_slab_secondary_joist_ids() {
-    let err = parse_edit_command(&serde_json::json!({
+    let err = expect_parse_err(serde_json::json!({
         "command": "SetSlabSecondaryJoistIds",
         "floor_region": 0,
         "secondary_joist_ids": [1, 2]
-    }))
-    .unwrap_err();
+    }));
     assert!(err.contains("廃止"), "{err}");
 }
 
 #[test]
 fn test_parse_requires_secondary_joists_array() {
-    let err = parse_edit_command(&serde_json::json!({
+    let err = expect_parse_err(serde_json::json!({
         "command": "SetFloorRegionSecondaryJoists",
         "floor_region": 0
-    }))
-    .unwrap_err();
+    }));
     assert!(err.contains("secondary_joists"), "{err}");
 }
 
 #[test]
 fn test_parse_rejects_legacy_secondary_joist_ids_key() {
-    let err = parse_edit_command(&serde_json::json!({
+    let err = expect_parse_err(serde_json::json!({
         "command": "SetFloorRegionSecondaryJoists",
         "floor_region": 0,
         "secondary_joist_ids": [1, 2]
-    }))
-    .unwrap_err();
+    }));
     assert!(err.contains("廃止"), "{err}");
 }
 
 #[test]
 fn test_parse_requires_wall_region_posts() {
-    let err = parse_edit_command(&serde_json::json!({
+    let err = expect_parse_err(serde_json::json!({
         "command": "SetWallRegionPosts",
         "wall_region": 0
-    }))
-    .unwrap_err();
+    }));
     assert!(err.contains("posts"), "{err}");
 }
