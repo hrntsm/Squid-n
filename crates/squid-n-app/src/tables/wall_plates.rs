@@ -7,7 +7,7 @@
 //!
 //! 編集は `squid_n_edit::{SetWallPlateSection, SetWallPlateAttrs,
 //! SetAttachedWallPlateAnchor, SetAttachedWallPlateExtent, AddAttachedWallPlate,
-//! DeleteWallPlate}` 経由（undo 対応）。
+//! AddEnclosedWallPlate, DeleteWallPlate}` 経由（undo 対応）。
 //! 併せて、建物一律の複数開口の取り扱い（`Model.multi_opening_mode`）を
 //! `squid_n_edit::SetMultiOpeningMode` 経由で編集する（undo 対応）。
 //!
@@ -24,8 +24,8 @@ use squid_n_core::model::{
     LoadTransfer, MultiOpeningMode, RegionAnchor, WallOpening, WallPlate, WallPlateShape,
 };
 use squid_n_edit::{
-    AddAttachedWallPlate, DeleteWallPlate, SetAttachedWallPlateAnchor, SetAttachedWallPlateExtent,
-    SetMultiOpeningMode, SetWallPlateAttrs, SetWallPlateSection,
+    AddAttachedWallPlate, AddEnclosedWallPlate, DeleteWallPlate, SetAttachedWallPlateAnchor,
+    SetAttachedWallPlateExtent, SetMultiOpeningMode, SetWallPlateAttrs, SetWallPlateSection,
 };
 
 /// 複数開口の取り扱い（`MultiOpeningMode`）の選択肢一覧（UI 表示順）。
@@ -78,6 +78,11 @@ pub struct WallPlateDraft {
     pub add_span: [f64; 2],
     /// 追加フォーム: 断面（板厚・材料）。
     pub add_section: Option<SectionId>,
+
+    /// 囲まれた壁版追加フォーム: 境界 4 節点（反時計回り）。
+    pub add_enclosed_nodes: [Option<NodeId>; 4],
+    /// 囲まれた壁版追加フォーム: 断面。
+    pub add_enclosed_section: Option<SectionId>,
 }
 
 /// 個別開口の入力バッファ1件分の書式エラー。
@@ -238,6 +243,7 @@ pub fn wall_plates_table(ui: &mut egui::Ui, app: &mut App) {
 
     wall_plates_list(ui, app);
     attrs_form(ui, app);
+    add_enclosed_form(ui, app);
     add_attached_form(ui, app);
 }
 
@@ -710,6 +716,116 @@ fn attrs_form(ui: &mut egui::Ui, app: &mut App) {
             );
             app.staleness.mark_edited();
         }
+    }
+}
+
+/// 柱・梁で囲まれた壁版の追加フォーム。
+///
+/// 主架構に囲まれた壁版は、取り付く壁版と違って境界を節点 4 点で指定する。
+/// 所属する壁領域は準備計算（`rebuild_wall_regions`）が自動で結びつける。
+fn add_enclosed_form(ui: &mut egui::Ui, app: &mut App) {
+    ui.separator();
+    ui.strong("囲まれた壁版を追加（柱・梁で囲まれた構面内の版）");
+    ui.label(
+        "柱・梁が囲む鉛直構面内の壁版です。境界は 4 節点を反時計回りに指定します。\
+         所属する壁領域は準備計算が自動で結びつけます。",
+    );
+
+    if app.model.nodes.len() < 4 {
+        ui.label("囲まれた壁版を追加するには節点が4つ以上必要です");
+        return;
+    }
+
+    let node_ids: Vec<NodeId> = app.model.nodes.iter().map(|n| n.id).collect();
+
+    ui.label("境界節点（反時計回り。下辺 2 節点 → 上辺 2 節点の順を推奨）:");
+    ui.horizontal_wrapped(|ui| {
+        for (k, slot) in app
+            .wall_plate_draft
+            .add_enclosed_nodes
+            .iter_mut()
+            .enumerate()
+        {
+            let text = slot
+                .map(|n| format!("N{}", n.0))
+                .unwrap_or_else(|| "―".to_string());
+            egui::ComboBox::from_id_salt(("wp_enc_node", k))
+                .selected_text(format!("節点{}: {}", k, text))
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(slot, None, "―");
+                    for &nid in &node_ids {
+                        ui.selectable_value(slot, Some(nid), format!("N{}", nid.0));
+                    }
+                });
+        }
+    });
+
+    ui.horizontal(|ui| {
+        ui.label("断面:");
+        let resolved = app
+            .wall_plate_draft
+            .add_enclosed_section
+            .and_then(|sid| app.model.sections.get(sid.index()))
+            .filter(|sec| sec.thickness.is_some_and(|t| t > 0.0));
+        if resolved.is_none() {
+            app.wall_plate_draft.add_enclosed_section = None;
+        }
+        let label = resolved
+            .map(|sec| sec.display_name())
+            .unwrap_or_else(|| "―".to_string());
+        egui::ComboBox::from_id_salt("wp_add_enclosed_section")
+            .selected_text(label)
+            .show_ui(ui, |ui| {
+                ui.selectable_value(&mut app.wall_plate_draft.add_enclosed_section, None, "―");
+                for sec in &app.model.sections {
+                    if sec.thickness.is_some_and(|t| t > 0.0) {
+                        ui.selectable_value(
+                            &mut app.wall_plate_draft.add_enclosed_section,
+                            Some(sec.id),
+                            sec.display_name(),
+                        );
+                    }
+                }
+            });
+    })
+    .response
+    .on_hover_text("壁の板厚と自重は断面から決まります。断面が未割当の壁版は自重が 0 になります");
+
+    let selected: Vec<NodeId> = app
+        .wall_plate_draft
+        .add_enclosed_nodes
+        .iter()
+        .filter_map(|n| *n)
+        .collect();
+    let mut dedup = selected.clone();
+    dedup.sort_by_key(|n| n.0);
+    dedup.dedup();
+    let can_add = selected.len() == 4 && dedup.len() == 4;
+
+    if !can_add {
+        ui.label("境界節点 4 点をすべて選び、重複がないようにしてください");
+    }
+    if ui
+        .add_enabled(can_add, egui::Button::new("+ 囲まれた壁版を追加"))
+        .on_hover_text("4 節点すべてが選択され、重複がない場合に追加できます")
+        .clicked()
+    {
+        let boundary: Vec<NodeId> = app
+            .wall_plate_draft
+            .add_enclosed_nodes
+            .iter()
+            .map(|n| n.expect("can_add で全スロット Some を確認済み"))
+            .collect();
+        app.undo.run(
+            &mut app.model,
+            Box::new(AddEnclosedWallPlate {
+                boundary,
+                section: app.wall_plate_draft.add_enclosed_section,
+                opening_area: 0.0,
+                opening_weight: 0.0,
+            }),
+        );
+        app.staleness.mark_edited();
     }
 }
 
