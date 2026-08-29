@@ -33,7 +33,7 @@ impl SquidNServer {
 
 #[tool_router]
 impl SquidNServer {
-    #[tool(description = "節点・部材・断面を検索する")]
+    #[tool(description = "節点・部材・断面・壁版・床板・床領域を検索する")]
     pub async fn model_query(
         &self,
         Parameters(args): Parameters<QueryArgs>,
@@ -42,6 +42,19 @@ impl SquidNServer {
         // 実クエリは feature 非依存の query_model に委譲（テスト済み）。
         let items = super::query_model(&st.model, &args.kind, args.filter.as_deref());
         let result = QueryResult { items };
+        Ok(CallToolResult::success(vec![Content::json(result)?]))
+    }
+
+    #[tool(
+        description = "モデルを編集する（EditCommand 経由。Undo 可能。command キーで種別を指定）"
+    )]
+    pub async fn model_edit(
+        &self,
+        Parameters(args): Parameters<EditArgs>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let mut st = self.state.lock().await;
+        let result = super::apply_edit(&mut st, &args.body)
+            .map_err(|e| ErrorData::invalid_params(e, None))?;
         Ok(CallToolResult::success(vec![Content::json(result)?]))
     }
 
@@ -206,6 +219,14 @@ impl ServerHandler for SquidNServer {
 pub struct QueryArgs {
     pub kind: String,
     pub filter: Option<String>,
+}
+
+/// `model.edit` の引数。`command` キーで種別を指定する JSON オブジェクト。
+/// フラット（`{ "command": "...", ... }`）が正。ネストした `{ "body": { ... } }` も受け付ける。
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+#[serde(transparent)]
+pub struct EditArgs {
+    pub body: serde_json::Value,
 }
 
 #[derive(Debug, serde::Serialize, schemars::JsonSchema)]

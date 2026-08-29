@@ -481,6 +481,60 @@ pub(super) fn wall_expanded_view_model(
     }
 }
 
+/// 応力図・ヒンジ・時刻歴詳細で共有する材軸端点（2 節点部材または壁柱）。
+pub(super) struct MemberAxisEndpoints {
+    pub p_i: [f64; 3],
+    pub p_j: [f64; 3],
+    pub n0: usize,
+    pub n1: usize,
+    pub length: f64,
+}
+
+/// 部材の材軸端点。耐震壁は [`wall_element_geometry`] の壁柱（上下辺中点）を返す。
+pub(super) fn member_axis_endpoints(
+    elem: &squid_n_core::model::ElementData,
+    model: &squid_n_core::model::Model,
+) -> Option<MemberAxisEndpoints> {
+    use squid_n_core::geom::vec3::dist as member_len3;
+    use squid_n_core::model::ElementKind;
+    use squid_n_element::wall_element::wall_element_geometry;
+
+    if matches!(elem.kind, ElementKind::Wall) && elem.nodes.len() >= 4 {
+        let g = wall_element_geometry(elem, model)?;
+        let n0 = g.bottom[0].index();
+        let n1 = g.top[0].index();
+        if model.nodes.get(n0).is_none() || model.nodes.get(n1).is_none() {
+            return None;
+        }
+        let length = g.h;
+        if length < 1e-9 {
+            return None;
+        }
+        return Some(MemberAxisEndpoints {
+            p_i: g.bottom_center,
+            p_j: g.top_center,
+            n0,
+            n1,
+            length,
+        });
+    }
+    if elem.nodes.len() < 2 {
+        return None;
+    }
+    let n0 = elem.nodes[0].index();
+    let n1 = elem.nodes[1].index();
+    let p_i = model.nodes.get(n0)?.coord;
+    let p_j = model.nodes.get(n1)?.coord;
+    let length = member_len3(p_i, p_j);
+    Some(MemberAxisEndpoints {
+        p_i,
+        p_j,
+        n0,
+        n1,
+        length,
+    })
+}
+
 pub use camera::CameraState;
 pub use deform::TimeHistoryScaleCache;
 
@@ -1234,7 +1288,8 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
                     }
                 }
             } else if app.wall_draw_mode {
-                // 壁作成モード：クリック位置に最も近い節点を選ぶ
+                // 壁作成モード：クリック位置に最も近い節点を選び、4 点そろったら
+                // 囲まれた壁版（`AddEnclosedWallPlate`）として追加する。
                 let best = pick_nearest_node(&pts, &node_visible, click_pos);
                 // 節点ピッキング許容距離（px）
                 const NODE_PICK_THRESHOLD: f32 = 10.0;
@@ -1245,31 +1300,38 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
                         if !app.wall_draw_nodes.contains(&node_id) {
                             app.wall_draw_nodes.push(node_id);
                         }
-                        // 4 点そろったら壁を生成
+                        // 4 点そろったら壁版を生成
                         if app.wall_draw_nodes.len() == 4 {
                             let ordered = order_wall_nodes(&app.model, &app.wall_draw_nodes);
-                            let new_id = squid_n_core::ids::ElemId(app.model.elements.len() as u32);
-                            let elem = squid_n_core::model::ElementData {
-                                id: new_id,
-                                kind: squid_n_core::model::ElementKind::Wall,
-                                nodes: ordered.into_iter().collect(),
-                                section: None,
-                                local_axis: squid_n_core::model::LocalAxis {
-                                    ref_vector: [0.0, 0.0, 1.0],
-                                },
-                                end_cond: [
-                                    squid_n_core::model::EndCondition::Fixed,
-                                    squid_n_core::model::EndCondition::Fixed,
-                                ],
-                                force_regime: squid_n_core::model::ForceRegime::Auto,
-                                rigid_zone: Default::default(),
-                                plastic_zone: None,
-                                spring: None,
-                            };
-                            app.undo
-                                .run(&mut app.model, Box::new(squid_n_edit::AddMember { elem }));
-                            app.staleness.mark_edited();
-                            app.nav.focus_member = Some(new_id);
+                            let mut dedup = ordered.clone();
+                            dedup.sort_by_key(|n| n.0);
+                            dedup.dedup();
+                            if dedup.len() == 4 {
+                                let section =
+                                    app.wall_plate_draft.add_enclosed_section.filter(|sid| {
+                                        app.model
+                                            .sections
+                                            .get(sid.index())
+                                            .is_some_and(|s| s.thickness.is_some_and(|t| t > 0.0))
+                                    });
+                                if app.undo.run(
+                                    &mut app.model,
+                                    Box::new(squid_n_edit::AddEnclosedWallPlate {
+                                        boundary: ordered,
+                                        section,
+                                        opening_area: 0.0,
+                                        opening_weight: 0.0,
+                                    }),
+                                ) {
+                                    // 所属壁領域への結びつきは `rebuild_wall_regions` が行う。
+                                    // 呼ばないと壁展開の対象にならず、3D・部材表に現れない
+                                    // （旧 `AddMember`+`Wall` は要素へ直書きしていたため即時見えた）。
+                                    squid_n_core::wall_region_rebuild::rebuild_wall_regions(
+                                        &mut app.model,
+                                    );
+                                    app.staleness.mark_edited();
+                                }
+                            }
                             app.wall_draw_nodes.clear();
                         }
                     }
@@ -1289,19 +1351,22 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
                     }
                 }
             } else {
-                // 通常モード：クリック位置に最も近い部材線分を選び、閾値内なら選択。
+                // 通常モード：クリック位置に最も近い部材を選び、閾値内なら選択。
+                // 壁は `display_model` 上の多角形ピック（§5.17 残→§5.31）。
                 // ピッキング許容距離（px）
                 const PICK_THRESHOLD: f32 = 8.0;
-                match pick_nearest_member(&app.model, &pts, click_pos, filter) {
+                let display_model = wall_expanded_view_model(&app.model);
+                let frame_for_pick = app
+                    .frame_target
+                    .and_then(|t| squid_n_core::frame::build_frame(display_model.as_ref(), t));
+                let filter_pick = FrameFilter::new(frame_for_pick.as_ref());
+                match pick_nearest_member(display_model.as_ref(), &pts, click_pos, filter_pick) {
                     Some((id, d)) if d <= PICK_THRESHOLD => {
                         app.selection.members = vec![id];
                         app.nav.focus_member = Some(id);
-                        // ヒンジ図モードでは、クリックした部材のヒンジ詳細ウィンドウを開く。
                         if mode == ViewMode::Hinge {
                             app.hinge_detail_elem = Some(id);
                         }
-                        // 時刻歴モードでは、クリックした部材の履歴・検定ウィンドウを開く
-                        // （中-1(a): モデル編集後は添字ずれの恐れがあるため無効化）。
                         if mode == ViewMode::TimeHistory && !app.staleness.results_stale {
                             app.th_detail_elem = Some(id);
                         }
@@ -1314,28 +1379,13 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
         }
     }
 
-    // 壁の解析要素（`ElementKind::Wall`）は `app.model` には存在しない生成専用の
-    // 要素（D5）のため、以降の形状描画・選択ハイライト・ホバーピックは壁展開済み
-    // モデルを参照する（`wall_expanded_view_model`）。編集対象を選ぶクリック処理
-    // （上のブロック）は既存部材のみが対象のため `app.model` のままでよい。
-    // ホバーも `pick_nearest_member`（先頭 2 節点の線分）のため、壁ポリゴン面内や
-    // 壁柱では壁を一意に拾えない（大梁の下辺と一致して大梁が勝つ。§5.17 残課題）。
+    // 壁の解析要素（D5）を含む表示用モデル。描画・ホバーピックで共有する
+    // （`wall_expanded_view_model` の性能ガード付き）。クリック処理より後に置き、
+    // 梁・壁作成モードでの `app.model` 可変借用と衝突しないようにする。
     let display_model = wall_expanded_view_model(&app.model);
-
-    // 上の `filter`（1128行目）は壁展開前の `app.model` から作った構面のため、
-    // 壁の要素IDを含まない。ここまでの間に部材作成ツール（梁・壁・スラブの
-    // クリック追加）が `app.model` へ要素を追記していた場合、壁の解析要素の
-    // ID採番（`max(既存要素ID)+1` 起点）がそのぶんずれ、`display_model` の壁と
-    // 上の `filter` の構面判定が食い違いうる（該当フレームだけ壁の表示/非表示が
-    // 一時的に誤る。次フレームで自己修復するがクリック直後の1フレームだけ
-    // ずれた見た目になりうる）。以降の描画・ホバーはすべて `display_model` を
-    // 参照するため、`filter` も同じ `display_model` から作り直し、両者を
-    // 常に整合させる（`frame` 自体は `.normal`・構面基準線の描画にしか使わず
-    // 要素IDを見ないため、作り直す必要はない。`build_frame` は成功・失敗が
-    // 要素の有無に依存しないため、上の `frame` と Some/None が食い違うことはない）。
     let frame_for_draw = app
         .frame_target
-        .and_then(|t| squid_n_core::frame::build_frame(&display_model, t));
+        .and_then(|t| squid_n_core::frame::build_frame(display_model.as_ref(), t));
     let filter = FrameFilter::new(frame_for_draw.as_ref());
 
     // --- スラブ・小梁 ---
@@ -1628,7 +1678,7 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
         }
     }
     if mode == ViewMode::Hinge {
-        hinge::draw_hinge(&painter, app, &pts, filter);
+        hinge::draw_hinge(&painter, app, &display_model, &pts, &proj, filter);
         // ホバー詳細（ViewCube ホバー中は除く。検定比図と同じ最近傍部材探索・
         // 8px 閾値で最寄り部材を求め、ヒットしたらヒンジ詳細を表示）。
         if cube_hover.is_none() {
@@ -2189,5 +2239,65 @@ mod wall_expanded_view_model_tests {
         assert_eq!(view.elements[0].kind, ElementKind::Wall);
         // 入力の正（`model`）は変更されない（D5。壁の解析要素はモデルに残さない）。
         assert!(model.elements.is_empty());
+    }
+
+    /// 展開された耐震壁の材軸端点は上下辺中点（壁柱）になる。
+    #[test]
+    fn member_axis_endpoints_uses_wall_column_midpoints() {
+        let mut model = Model::default();
+        for (id, (x, y, z)) in [
+            (0, (0.0, 0.0, 0.0)),
+            (1, (4000.0, 0.0, 0.0)),
+            (2, (4000.0, 0.0, 3000.0)),
+            (3, (0.0, 0.0, 3000.0)),
+        ] {
+            model.nodes.push(node(id, x, y, z));
+        }
+        model.sections.push(Section {
+            id: SectionId(0),
+            name: "壁 t150".into(),
+            area: 150.0 * 3000.0,
+            iy: 1.0,
+            iz: 1.0,
+            j: 1.0,
+            depth: 3000.0,
+            width: 150.0,
+            as_y: 1.0,
+            as_z: 1.0,
+            floor: None,
+            panel_thickness: None,
+            thickness: Some(150.0),
+            shape: None,
+            material: None,
+            rebar_material: None,
+            shear_rebar_material: None,
+            steel_material: None,
+        });
+        model.wall_plates.push(WallPlate {
+            id: WallPlateId(0),
+            shape: WallPlateShape::Enclosed {
+                boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
+            },
+            section: Some(SectionId(0)),
+            opening_area: 0.0,
+            opening_weight: 0.0,
+            openings: Vec::new(),
+            three_side_slit: false,
+        });
+        model.wall_regions.push(WallRegion {
+            id: WallRegionId(0),
+            name: String::new(),
+            boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
+            wall_plate_ids: vec![WallPlateId(0)],
+            post_ids: Vec::new(),
+        });
+        let view = wall_expanded_view_model(&model);
+        let wall = &view.elements[0];
+        let axis = member_axis_endpoints(wall, view.as_ref()).expect("axis");
+        assert!((axis.p_i[2] - 0.0).abs() < 1e-6);
+        assert!((axis.p_j[2] - 3000.0).abs() < 1e-6);
+        assert!((axis.length - 3000.0).abs() < 1e-6);
+        // 下辺中点 (2000, 0, 0)
+        assert!((axis.p_i[0] - 2000.0).abs() < 1e-6);
     }
 }

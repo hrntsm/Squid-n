@@ -124,10 +124,12 @@ pub fn default_result_dir() -> PathBuf {
 #[cfg(feature = "mcp")]
 pub mod server;
 
+mod edit;
 mod job;
 mod persist;
 mod query;
 
+pub use edit::*;
 pub use job::*;
 pub use persist::*;
 pub use query::*;

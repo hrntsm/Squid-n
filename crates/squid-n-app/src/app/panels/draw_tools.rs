@@ -62,6 +62,9 @@ impl App {
                 self.slab_draw_mode = false;
             }
             if self.wall_draw_mode {
+                // 節点削除などで陳腐化した参照を除去する。
+                let node_count = self.model.nodes.len() as u32;
+                self.wall_draw_nodes.retain(|n| n.0 < node_count);
                 let picked: Vec<String> = self
                     .wall_draw_nodes
                     .iter()
@@ -76,6 +79,21 @@ impl App {
                         format!(": {}", picked.join(", "))
                     }
                 ));
+                ui.horizontal(|ui| {
+                    ui.label("断面:");
+                    ui.selectable_value(&mut self.wall_plate_draft.add_enclosed_section, None, "―");
+                    for sec in &self.model.sections {
+                        if sec.thickness.is_some_and(|t| t > 0.0) {
+                            ui.selectable_value(
+                                &mut self.wall_plate_draft.add_enclosed_section,
+                                Some(sec.id),
+                                sec.display_name(),
+                            );
+                        }
+                    }
+                })
+                .response
+                .on_hover_text("壁の板厚と自重は断面から決まります");
                 if !self.wall_draw_nodes.is_empty() && ui.button("キャンセル").clicked() {
                     self.wall_draw_nodes.clear();
                 }
