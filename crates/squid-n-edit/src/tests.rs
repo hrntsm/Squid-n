@@ -6426,6 +6426,55 @@ fn test_set_attached_wall_plate_extent_and_anchor_noop() {
     assert!(model.validate().is_ok(), "{:?}", model.validate());
 }
 
+/// 囲まれた壁版（`Enclosed`）を追加し、undo で消える。
+#[test]
+fn test_add_enclosed_wall_plate_roundtrip() {
+    use squid_n_core::ids::NodeId;
+    use squid_n_core::model::WallPlateShape;
+
+    let mut model = seeded_model(4, 0);
+    for n in &mut model.nodes {
+        n.coord[2] = 3000.0;
+    }
+    let mut undo = UndoStack::default();
+
+    let boundary = vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)];
+    let cmd = crate::AddEnclosedWallPlate {
+        boundary: boundary.clone(),
+        section: None,
+        opening_area: 0.0,
+        opening_weight: 0.0,
+    };
+    assert!(undo.run(&mut model, Box::new(cmd)));
+    assert_eq!(model.wall_plates.len(), 1);
+    match &model.wall_plates[0].shape {
+        WallPlateShape::Enclosed { boundary: b } => assert_eq!(b, &boundary),
+        other => panic!("{other:?}"),
+    }
+    assert!(model.validate().is_ok(), "{:?}", model.validate());
+
+    undo.undo(&mut model);
+    assert!(model.wall_plates.is_empty());
+
+    // 境界が空は Noop。
+    let empty = crate::AddEnclosedWallPlate {
+        boundary: vec![],
+        section: None,
+        opening_area: 0.0,
+        opening_weight: 0.0,
+    };
+    assert!(!undo.run(&mut model, Box::new(empty)));
+
+    // 実在しない節点を含む境界は Noop。
+    let dangling = crate::AddEnclosedWallPlate {
+        boundary: vec![NodeId(0), NodeId(9)],
+        section: None,
+        opening_area: 0.0,
+        opening_weight: 0.0,
+    };
+    assert!(!undo.run(&mut model, Box::new(dangling)));
+}
+
 /// 壁領域に帰属した壁版を削除すると `WallRegion.wall_plate_ids` からも除去され、
 /// undo で元の位置へ戻る（`DeleteSlab`/`InsertSlab` の壁版版）。
 #[test]

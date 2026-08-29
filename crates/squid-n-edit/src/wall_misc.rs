@@ -725,6 +725,55 @@ impl EditCommand for AddAttachedWallPlate {
     }
 }
 
+/// 柱・梁で囲まれた壁版（`WallPlateShape::Enclosed`）の追加。末尾に追加する。
+/// 逆操作は末尾の壁版削除（[`DeleteWallPlate`]）。
+///
+/// ここで作るのは**柱・梁が囲む鉛直構面内の壁版**である。所属する壁領域は
+/// 次の準備計算（`rebuild_wall_regions`）が自動で結びつける。
+/// 取り付く壁版の追加コマンドは [`AddAttachedWallPlate`]。
+///
+/// 境界が実在しない節点を指す場合、境界が空、または実在しない断面を指す
+/// 割当は Noop（[`AddSlab`] と同じ規約）。
+pub struct AddEnclosedWallPlate {
+    pub boundary: Vec<NodeId>,
+    pub section: Option<SectionId>,
+    pub opening_area: f64,
+    pub opening_weight: f64,
+}
+
+impl EditCommand for AddEnclosedWallPlate {
+    fn apply(&self, model: &mut Model) -> Box<dyn EditCommand> {
+        use squid_n_core::model::{WallPlate, WallPlateShape};
+
+        if self.boundary.is_empty()
+            || !self
+                .boundary
+                .iter()
+                .all(|&n| crate::refs::node_exists(model, n))
+            || !crate::refs::section_ref_ok(model, self.section)
+        {
+            return Box::new(Noop);
+        }
+        let id = WallPlateId(model.wall_plates.len() as u32);
+        model.wall_plates.push(WallPlate {
+            id,
+            shape: WallPlateShape::Enclosed {
+                boundary: self.boundary.clone(),
+            },
+            section: self.section,
+            opening_area: self.opening_area,
+            opening_weight: self.opening_weight,
+            openings: Vec::new(),
+            three_side_slit: false,
+        });
+        Box::new(DeleteWallPlate { id })
+    }
+
+    fn label(&self) -> &str {
+        "囲まれた壁版追加"
+    }
+}
+
 /// 取り付く壁版の張り出し量（`extent`）変更。逆操作は変更前の値への復元。
 /// 対象が取り付く壁版でない、存在しない `WallPlateId`、または非有限の
 /// 張り出し量は Noop。
