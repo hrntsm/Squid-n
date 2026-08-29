@@ -134,7 +134,7 @@ impl App {
     ///   等分布 `w × spacing` で曲げ・たわみを検定する（交差があれば格子 FEM）。
     /// - 二次部材小梁: 床領域分配の `Span` を単純梁へ重ね合わせ、小梁自重の等分布を足す。
     /// - 実部材化された小梁（支持間に実 Beam がある）は全体 FEM で検定するため対象外。
-    ///   断面未割当もスキップする。分配荷重が無い二次部材は表に「未」として残す。
+    /// - 断面未割当・鋼以外の材料・分配荷重が無い二次部材は表に「未」として残す。
     /// - スラブ: 矩形スラブの短辺を設計スパンとし、一方向版として設計曲げモーメントと
     ///   必要鉄筋量を算定する（鋼小梁・SD295 鉄筋の既定値を用いる）。
     pub(crate) fn floor_design_checks(
@@ -155,15 +155,18 @@ impl App {
             })
         };
 
-        let sigma_allow = 235.0 / 1.5; // 鋼の長期許容曲げ応力度 F/1.5（既定 F=235）。
-        let z_of = |sid: squid_n_core::ids::SectionId| -> Option<f64> {
+        let joist_params = |sid: squid_n_core::ids::SectionId| -> Option<(f64, f64, f64)> {
             let sec = self.model.sections.get(sid.index())?;
-            // 強軸断面係数 Z = Iy / (depth/2)。
-            Some(if sec.depth > 0.0 {
+            let z = if sec.depth > 0.0 {
                 sec.iy / (sec.depth / 2.0)
             } else {
                 0.0
-            })
+            };
+            let mat = sec
+                .material
+                .and_then(|mid| self.model.materials.get(mid.index()));
+            let (e, ft) = fd::joist_steel_e_and_ft(mat)?;
+            Some((z, e, ft))
         };
 
         // --- 床領域（大梁の区画）ごとの手入力小梁ライン ---
@@ -190,8 +193,22 @@ impl App {
                     let Some(j) = region.joist_lines().get(jidx) else {
                         continue;
                     };
-                    let Some(sid) = j.section else { continue };
-                    let Some(z) = z_of(sid) else { continue };
+                    let Some(sid) = j.section else {
+                        joist_checks.push((
+                            rep_slab.id,
+                            crate::app::JoistCheckTarget::SlabJoist(jidx),
+                            fd::joist_unchecked(span),
+                        ));
+                        continue;
+                    };
+                    let Some((z, _e, ft)) = joist_params(sid) else {
+                        joist_checks.push((
+                            rep_slab.id,
+                            crate::app::JoistCheckTarget::SlabJoist(jidx),
+                            fd::joist_unchecked(span),
+                        ));
+                        continue;
+                    };
                     let r = fd::design_joist_from_forces(
                         span,
                         w * j.spacing,
@@ -199,7 +216,7 @@ impl App {
                         q,
                         defl,
                         z,
-                        sigma_allow,
+                        ft,
                         fd::DEFLECTION_LIMIT_DENOM,
                     );
                     joist_checks.push((
@@ -216,11 +233,6 @@ impl App {
                         // 実部材化済み or 退化した小梁は床設計の対象外。
                         continue;
                     }
-                    let Some(sid) = j.section else { continue };
-                    let Some(z) = z_of(sid) else { continue };
-                    let Some(sec) = self.model.sections.get(sid.index()) else {
-                        continue;
-                    };
                     let (Some(na), Some(nb)) = (
                         self.model.nodes.get(a.index()),
                         self.model.nodes.get(b.index()),
@@ -238,13 +250,37 @@ impl App {
                     if span <= 1e-9 {
                         continue;
                     }
+                    let Some(sid) = j.section else {
+                        joist_checks.push((
+                            rep_slab.id,
+                            crate::app::JoistCheckTarget::SlabJoist(ji),
+                            fd::joist_unchecked(span),
+                        ));
+                        continue;
+                    };
+                    let Some(sec) = self.model.sections.get(sid.index()) else {
+                        joist_checks.push((
+                            rep_slab.id,
+                            crate::app::JoistCheckTarget::SlabJoist(ji),
+                            fd::joist_unchecked(span),
+                        ));
+                        continue;
+                    };
+                    let Some((z, e, ft)) = joist_params(sid) else {
+                        joist_checks.push((
+                            rep_slab.id,
+                            crate::app::JoistCheckTarget::SlabJoist(ji),
+                            fd::joist_unchecked(span),
+                        ));
+                        continue;
+                    };
                     let r = fd::design_joist_simple(
                         span,
                         w * j.spacing,
                         z,
                         sec.iy,
-                        fd::STEEL_YOUNG,
-                        sigma_allow,
+                        e,
+                        ft,
                         fd::DEFLECTION_LIMIT_DENOM,
                     );
                     joist_checks.push((
@@ -304,7 +340,7 @@ impl App {
         }
 
         // --- 二次部材小梁（領域内 + 未割当。手入力 JoistLine とは別経路） ---
-        self.design_secondary_joist_checks(&mut joist_checks, &beam_between, sigma_allow, &z_of);
+        self.design_secondary_joist_checks(&mut joist_checks, &beam_between);
 
         (joist_checks, slab_checks)
     }
@@ -313,12 +349,11 @@ impl App {
     /// の `LoadTarget::Span` 出力を単純梁として重ね合わせて検定する。
     ///
     /// `FloorRegion.joists`（格子解析用手入力）に同じ両端を持つ小梁はスキップする。
+    /// 断面未割当・鋼以外の材料・分配荷重無しは表に「未」として残す。
     fn design_secondary_joist_checks(
         &self,
         joist_checks: &mut Vec<crate::app::JoistCheck>,
         beam_between: &impl Fn(squid_n_core::ids::NodeId, squid_n_core::ids::NodeId) -> bool,
-        sigma_allow: f64,
-        z_of: &impl Fn(squid_n_core::ids::SectionId) -> Option<f64>,
     ) {
         use squid_n_core::model::{LoadPurpose, SecondaryMemberKind};
         use squid_n_design_jp::floor as fd;
@@ -341,15 +376,10 @@ impl App {
             }
         }
 
-        for (smi, sm) in self.model.joists().enumerate() {
+        for sm in self.model.joists() {
             if sm.kind != SecondaryMemberKind::Joist {
                 continue;
             }
-            let Some(sid) = sm.section else { continue };
-            let Some(z) = z_of(sid) else { continue };
-            let Some(sec) = self.model.sections.get(sid.index()) else {
-                continue;
-            };
 
             let (a, b) = (sm.nodes[0], sm.nodes[1]);
             if a == b || beam_between(a, b) {
@@ -378,22 +408,43 @@ impl App {
                 continue;
             }
 
+            let target = crate::app::JoistCheckTarget::SecondaryJoist { nodes: sm.nodes };
             let rep_slab_id = self
                 .model
                 .floor_regions
                 .iter()
-                .find(|r| r.secondary_joists.iter().any(|j| j.nodes == sm.nodes))
-                .and_then(|r| r.slab_ids.first().copied());
+                .find(|r| {
+                    r.secondary_joists
+                        .iter()
+                        .any(|j| span_node_key(j.nodes[0], j.nodes[1]) == key)
+                })
+                .and_then(|r| r.slab_ids.first().copied())
+                .unwrap_or(squid_n_core::ids::SlabId(0));
+
+            let Some(sid) = sm.section else {
+                joist_checks.push((rep_slab_id, target, fd::joist_unchecked(span)));
+                continue;
+            };
+            let Some(sec) = self.model.sections.get(sid.index()) else {
+                joist_checks.push((rep_slab_id, target, fd::joist_unchecked(span)));
+                continue;
+            };
+            let z = if sec.depth > 0.0 {
+                sec.iy / (sec.depth / 2.0)
+            } else {
+                0.0
+            };
+            let mat = self.model.secondary_material(sm);
+            let Some((e, ft)) = fd::joist_steel_e_and_ft(mat) else {
+                joist_checks.push((rep_slab_id, target, fd::joist_unchecked(span)));
+                continue;
+            };
 
             let Some(entry) = distribution
                 .get(&key)
                 .filter(|e| !e.member_loads.is_empty())
             else {
-                joist_checks.push((
-                    rep_slab_id.unwrap_or(squid_n_core::ids::SlabId(0)),
-                    crate::app::JoistCheckTarget::SecondaryMember(smi),
-                    fd::joist_unchecked(span),
-                ));
+                joist_checks.push((rep_slab_id, target, fd::joist_unchecked(span)));
                 continue;
             };
 
@@ -407,11 +458,15 @@ impl App {
                     w2: w_sw,
                 });
             }
-            let ex = simple_beam_extremes(&loads, span, fd::STEEL_YOUNG, sec.iy);
+            let ex = simple_beam_extremes(&loads, span, e, sec.iy);
             if ex.w_equiv <= 1e-9 && ex.m_max <= 1e-9 {
                 joist_checks.push((
-                    rep_slab_id.unwrap_or(entry.rep_slab_id),
-                    crate::app::JoistCheckTarget::SecondaryMember(smi),
+                    if rep_slab_id.0 == 0 {
+                        entry.rep_slab_id
+                    } else {
+                        rep_slab_id
+                    },
+                    target,
                     fd::joist_unchecked(span),
                 ));
                 continue;
@@ -424,12 +479,16 @@ impl App {
                 ex.q_max,
                 ex.deflection,
                 z,
-                sigma_allow,
+                ft,
                 fd::DEFLECTION_LIMIT_DENOM,
             );
             joist_checks.push((
-                rep_slab_id.unwrap_or(entry.rep_slab_id),
-                crate::app::JoistCheckTarget::SecondaryMember(smi),
+                if rep_slab_id.0 == 0 {
+                    entry.rep_slab_id
+                } else {
+                    rep_slab_id
+                },
+                target,
                 r,
             ));
         }

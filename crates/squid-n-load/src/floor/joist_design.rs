@@ -339,7 +339,15 @@ fn joist_axes(model: &Model) -> Vec<JoistAxis> {
     out
 }
 
-fn segment_on_beam(model: &Model, p0: [f64; 3], p1: [f64; 3]) -> bool {
+fn segment_on_beam_only(model: &Model, p0: [f64; 3], p1: [f64; 3], axes: &[JoistAxis]) -> bool {
+    // 小梁材軸上にあれば大梁並走でも落とさない（10 mm 以内の並走で欠落するのを防ぐ）。
+    let on_joist = axes.iter().any(|axis| {
+        project_on_segment(p0, axis.a, axis.b, MEMBER_AXIS_TOL_MM).is_some()
+            && project_on_segment(p1, axis.a, axis.b, MEMBER_AXIS_TOL_MM).is_some()
+    });
+    if on_joist {
+        return false;
+    }
     model.elements.iter().any(|e| {
         if e.kind != ElementKind::Beam || e.nodes.len() != 2 {
             return false;
@@ -350,6 +358,17 @@ fn segment_on_beam(model: &Model, p0: [f64; 3], p1: [f64; 3]) -> bool {
         project_on_segment(p0, a, b, MEMBER_AXIS_TOL_MM).is_some()
             && project_on_segment(p1, a, b, MEMBER_AXIS_TOL_MM).is_some()
     })
+}
+
+fn point_dist_to_axis(p: [f64; 3], a: [f64; 3], b: [f64; 3]) -> f64 {
+    let ab = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+    let len = dist3(a, b);
+    if len <= 1e-9 {
+        return dist3(p, a);
+    }
+    let ap = [p[0] - a[0], p[1] - a[1], p[2] - a[2]];
+    let t = ((ap[0] * ab[0] + ap[1] * ab[1] + ap[2] * ab[2]) / (len * len)).clamp(0.0, 1.0);
+    dist3(p, lerp3(a, b, t))
 }
 
 /// 二次部材小梁の自重を単純梁の等分布荷重 [N/mm] として返す。
@@ -378,7 +397,9 @@ pub fn joist_self_weight_udl(
 /// 全床領域の [`distribute_region`] 出力から、実部材化していない小梁へ荷重を載せる。
 ///
 /// 床板境界の `Span` は、両端が小梁材軸上にあれば（節点対の完全一致を要求しない）
-/// その小梁の局所座標へ写して重ねる。部分区間 `t` も同じ。大梁材軸上の `Span` は除外する。
+/// その小梁の局所座標へ写して重ねる。部分区間 `t` も同じ。大梁材軸上の `Span` は除外する
+/// （ただし同じ位置に小梁がある場合は小梁側を優先する）。
+/// 1 本の `Span` が複数の小梁材軸に載りうる場合は、端点の材軸距離が最小の 1 本だけに載せる。
 pub fn secondary_joist_distribution_loads(
     model: &Model,
     w_of: impl Fn(&Slab) -> f64,
@@ -402,11 +423,14 @@ pub fn secondary_joist_distribution_loads(
             if loaded_len <= 1e-9 {
                 continue;
             }
-            if segment_on_beam(model, p0, p1) {
+            if segment_on_beam_only(model, p0, p1, &axes) {
                 continue;
             }
             let shape_loads = load_shape_to_member_loads(&shape, loaded_len, false);
-            for axis in &axes {
+
+            // 候補のうち端点距離の最大が最小の材軸を 1 本だけ採る（近接平行への二重計上を防ぐ）。
+            let mut best: Option<(usize, f64, f64, f64, Vec<MemberLoadKind>)> = None;
+            for (ai, axis) in axes.iter().enumerate() {
                 let Some(mut s0) = project_on_segment(p0, axis.a, axis.b, MEMBER_AXIS_TOL_MM)
                 else {
                     continue;
@@ -423,15 +447,28 @@ pub fn secondary_joist_distribution_loads(
                         .collect();
                     std::mem::swap(&mut s0, &mut s1);
                 }
-                let entry = map.entry(axis.key).or_insert_with(|| SecondaryJoistLoads {
-                    member_loads: Vec::new(),
-                    rep_slab_id,
-                    span_nodes: axis.nodes,
-                });
-                entry
-                    .member_loads
-                    .extend(piece.into_iter().map(|l| shift_member_load(&l, s0)));
+                let d = point_dist_to_axis(p0, axis.a, axis.b)
+                    .max(point_dist_to_axis(p1, axis.a, axis.b));
+                let replace = match best {
+                    None => true,
+                    Some((_, best_d, ..)) => d + 1e-9 < best_d,
+                };
+                if replace {
+                    best = Some((ai, d, s0, s1, piece));
+                }
             }
+            let Some((ai, _, s0, _s1, piece)) = best else {
+                continue;
+            };
+            let axis = &axes[ai];
+            let entry = map.entry(axis.key).or_insert_with(|| SecondaryJoistLoads {
+                member_loads: Vec::new(),
+                rep_slab_id,
+                span_nodes: axis.nodes,
+            });
+            entry
+                .member_loads
+                .extend(piece.into_iter().map(|l| shift_member_load(&l, s0)));
         }
     }
     map
@@ -703,11 +740,52 @@ mod tests {
             })
             .sum();
         // 左を 2 枚に割ると共有する水平辺へ 45° 分配の一部が逃げるため、
-        // 小梁上の合計は未分割より小さくなる。欠落していたのは「節点対不一致で
-        // 左側が 0 になる」ことなので、右側だけの約半分（15000 N）を十分上回ることを見る。
+        // 小梁上の合計は未分割より小さくなりうる。欠落していたのは「節点対不一致で
+        // 左側が 0 になる」ことなので、左右それぞれの半区間に十分な荷重があり、
+        // 右側だけの約半分（15000 N）を十分上回ることを見る。
+        let half = 2000.0_f64;
+        let load_on = |s0: f64, s1: f64| -> f64 {
+            entry
+                .member_loads
+                .iter()
+                .map(|l| match l {
+                    MemberLoadKind::Point { a, p } => {
+                        if *a >= s0 - 1e-9 && *a <= s1 + 1e-9 {
+                            *p
+                        } else {
+                            0.0
+                        }
+                    }
+                    MemberLoadKind::Distributed { a, b, w1, w2 } => {
+                        let lo = (*a).max(s0);
+                        let hi = (*b).min(s1);
+                        if hi <= lo {
+                            return 0.0;
+                        }
+                        let t0 = (lo - *a) / (*b - *a);
+                        let t1 = (hi - *a) / (*b - *a);
+                        let w_lo = w1 + (w2 - w1) * t0;
+                        let w_hi = w1 + (w2 - w1) * t1;
+                        (w_lo + w_hi) / 2.0 * (hi - lo)
+                    }
+                })
+                .sum()
+        };
+        let left = load_on(0.0, half);
+        let right = load_on(half, 4000.0);
         assert!(
-            total > 0.7 * unsplit_total,
-            "split={total} unsplit={unsplit_total}（左側が落ちると ~15000）"
+            left > 5000.0,
+            "始端側半区間の荷重が薄い left={left}（左側欠落の兆候）"
+        );
+        assert!(right > 5000.0, "終端側半区間の荷重が薄い right={right}");
+        assert!(
+            total > 0.9 * (left + right).min(unsplit_total),
+            "split={total} left+right={} unsplit={unsplit_total}",
+            left + right
+        );
+        assert!(
+            total > 20000.0,
+            "右側だけだと ~15000。合成後はそれを十分上回る total={total}"
         );
         let (mut s_min, mut s_max) = (f64::INFINITY, 0.0_f64);
         for l in &entry.member_loads {
@@ -722,8 +800,112 @@ mod tests {
                 }
             }
         }
-        assert!(s_min < 500.0, "始端側が欠ける s_min={s_min}");
-        assert!(s_max > 3500.0, "終端側が欠ける s_max={s_max}");
+        assert!(s_min < 200.0, "始端側が欠ける s_min={s_min}");
+        assert!(s_max > 3800.0, "終端側が欠ける s_max={s_max}");
+    }
+
+    #[test]
+    fn distribution_mq_vs_uniform_tributary_width() {
+        // 共有辺: 分配重ね合わせ w_equiv=7.5。負担幅一様なら w=面荷重×間隔=0.005×3000=15。
+        // （左右各 2000 の半分合計 2000 ではなく、2 枚×2000 の合計半分=2000… ここでは
+        // 旧略算の代表として spacing=3000 → w=15 を使う。テストコメントと一致。）
+        let model = square_model_with_shared_joist();
+        let w_of = |_: &Slab| 0.005_f64;
+        let map = secondary_joist_distribution_loads(&model, w_of);
+        let key = span_node_key(NodeId(4), NodeId(5));
+        let entry = map.get(&key).expect("共有辺");
+        let l = 4000.0_f64;
+        let ex = simple_beam_extremes(&entry.member_loads, l, 205_000.0, 1.0e8);
+        let w_trib = 15.0_f64;
+        let m_trib = w_trib * l * l / 8.0;
+        let q_trib = w_trib * l / 2.0;
+        // 分配経路は負担幅一様より系統的に小さい（大梁伝達と同じ 45°）。
+        assert!(
+            ex.m_max < 0.85 * m_trib,
+            "分配 M={} が負担幅一様 M={m_trib} の 85% 未満であること",
+            ex.m_max
+        );
+        assert!(
+            ex.q_max < 0.85 * q_trib,
+            "分配 Q={} が負担幅一様 Q={q_trib} の 85% 未満であること",
+            ex.q_max
+        );
+        // 等価等分布 7.5 の閉形式と比較（三角/台形の重ねでも合計は一致）。
+        let m_u = 7.5 * l * l / 8.0;
+        let q_u = 7.5 * l / 2.0;
+        assert!((ex.w_equiv - 7.5).abs() < 0.1, "w_equiv={}", ex.w_equiv);
+        // 形状が非一様なので M は等価一様と完全一致しないが、同じオーダー。
+        assert!(
+            (ex.m_max - m_u).abs() / m_u < 0.25,
+            "m_max={} m_uniform={m_u}",
+            ex.m_max
+        );
+        assert!(
+            (ex.q_max - q_u).abs() / q_u < 0.25,
+            "q_max={} q_uniform={q_u}",
+            ex.q_max
+        );
+    }
+
+    #[test]
+    fn span_attaches_to_nearest_joist_only() {
+        let mut model = square_model_with_shared_joist();
+        // 共有辺 4–5 に平行で 5 mm ずれた別小梁（近接）。荷重は近い方だけへ。
+        model.nodes.push(Node {
+            id: NodeId(6),
+            coord: [2005.0, 0.0, 0.0],
+            restraint: Default::default(),
+            mass: None,
+            story: None,
+            support_spring: None,
+        });
+        model.nodes.push(Node {
+            id: NodeId(7),
+            coord: [2005.0, 4000.0, 0.0],
+            restraint: Default::default(),
+            mass: None,
+            story: None,
+            support_spring: None,
+        });
+        model.floor_regions[0]
+            .secondary_joists
+            .push(SecondaryMember {
+                kind: SecondaryMemberKind::Joist,
+                nodes: [NodeId(6), NodeId(7)],
+                section: None,
+                name: "J2".into(),
+            });
+        let w_of = |_: &Slab| 0.005_f64;
+        let map = secondary_joist_distribution_loads(&model, w_of);
+        let k1 = span_node_key(NodeId(4), NodeId(5));
+        let k2 = span_node_key(NodeId(6), NodeId(7));
+        let t1 = map
+            .get(&k1)
+            .map(|e| {
+                e.member_loads
+                    .iter()
+                    .map(|l| match l {
+                        MemberLoadKind::Point { p, .. } => *p,
+                        MemberLoadKind::Distributed { a, b, w1, w2 } => (w1 + w2) / 2.0 * (b - a),
+                    })
+                    .sum::<f64>()
+            })
+            .unwrap_or(0.0);
+        let t2 = map
+            .get(&k2)
+            .map(|e| {
+                e.member_loads
+                    .iter()
+                    .map(|l| match l {
+                        MemberLoadKind::Point { p, .. } => *p,
+                        MemberLoadKind::Distributed { a, b, w1, w2 } => (w1 + w2) / 2.0 * (b - a),
+                    })
+                    .sum::<f64>()
+            })
+            .unwrap_or(0.0);
+        // 境界は x=2000 なので 4–5 が近い。J2 には載らない（または無視できる量）。
+        assert!(t1 > 10000.0, "近い小梁 t1={t1}");
+        assert!(t2 < 1.0, "遠い小梁へ二重計上 t2={t2}");
     }
 
     #[test]

@@ -265,13 +265,15 @@ pub struct Selection {
     pub members: Vec<squid_n_core::ids::ElemId>,
 }
 
-/// 小梁設計結果の対象（`FloorRegion::joists` の添字、または [`Model::joists`] の走査順）。
+/// 小梁設計結果の対象（`FloorRegion::joists` の添字、または二次部材の端点）。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum JoistCheckTarget {
     /// `FloorRegion::joists` 内の添字（代表床板の ID で紐づける）。
     SlabJoist(usize),
-    /// [`squid_n_core::model::Model::joists`] の走査順（未割当のあと領域内）。
-    SecondaryMember(usize),
+    /// 二次部材小梁。端点の節点対で識別する（リビルドで走査順が変わっても安定）。
+    SecondaryJoist {
+        nodes: [squid_n_core::ids::NodeId; 2],
+    },
 }
 
 /// 床の中での小梁設計結果1件（`(床板 id, 対象, 設計結果)`）。
