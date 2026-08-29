@@ -52,8 +52,9 @@ use super::{
     scene::{diagram_offset_dir, in_plane_offset_dir},
     ForceComponent, ForceComponents, Projector,
 };
-use squid_n_core::geom::vec3::dist as member_len3;
-use squid_n_core::model::Model;
+use squid_n_core::geom::vec3::{self, dist as member_len3};
+use squid_n_core::model::{ElementData, ElementKind, Model};
+use squid_n_element::wall_element::wall_element_geometry;
 
 /// 張り出しピークがこの px 未満の図形は描かない。60px 正規化に対して値が
 /// 相対的に極小の部材（ほぼ潰れた図形）は、輪郭の折り返し点で epaint のマイター
@@ -283,6 +284,50 @@ fn display_scales_for_selection(maxes: &[f64; 6], components: ForceComponents) -
     scales
 }
 
+/// 壁エレメントの応力図用材軸（壁柱）。
+struct WallForceAxis {
+    bottom_center: [f64; 3],
+    top_center: [f64; 3],
+    ex_bottom: [f64; 3],
+    /// 未変形の壁高（ξ 正規化の材長）。
+    model_height: f64,
+}
+
+/// 壁エレメントの応力図用材軸（壁柱）。上下辺中点を結び、局所 x は下辺方向。
+///
+/// 変形重ね時は四隅節点の変形後座標から中点・下辺方向を再算定する。内力の
+/// 材長（ξ 正規化の分母）は未変形の [`wall_element_geometry`] の h を使う。
+fn wall_force_axis(
+    elem: &ElementData,
+    model: &Model,
+    coords3: &[[f64; 3]],
+) -> Option<WallForceAxis> {
+    let geom = wall_element_geometry(elem, model)?;
+    let b0 = geom.bottom[0].index();
+    let b1 = geom.bottom[1].index();
+    let t0 = geom.top[0].index();
+    let t1 = geom.top[1].index();
+    if [b0, b1, t0, t1].iter().any(|&i| i >= coords3.len()) {
+        return None;
+    }
+    let pa = coords3[b0];
+    let pb = coords3[b1];
+    let pta = coords3[t0];
+    let ptb = coords3[t1];
+    let bc = vec3::midpoint(pa, pb);
+    let tc = vec3::midpoint(pta, ptb);
+    if member_len3(bc, tc) < 1e-9 {
+        return None;
+    }
+    let ex = vec3::unit_from(pa, pb).unwrap_or(geom.ex_bottom);
+    Some(WallForceAxis {
+        bottom_center: bc,
+        top_center: tc,
+        ex_bottom: ex,
+        model_height: geom.h,
+    })
+}
+
 /// 部材ローカルに沿って応力図を描く。
 ///
 /// `components` が ON にした成分をすべて重ねて描き、**同単位の成分は共有 max で
@@ -392,17 +437,36 @@ fn draw_component(
         if elem.nodes.len() < 2 {
             continue;
         }
-        let n0 = elem.nodes[0].index();
-        let n1 = elem.nodes[1].index();
-        if n0 >= coords3.len() || n1 >= coords3.len() {
-            continue;
-        }
-        let p_i = coords3[n0];
-        let p_j = coords3[n1];
-        if member_len3(p_i, p_j) < 1e-9 {
-            continue; // ゼロ長部材（同一節点間）は材軸が定まらず図を描けない
-        }
-        let ref_vec = elem.local_axis.ref_vector;
+
+        // 壁は壁柱（上下辺中点）を材軸とする。線材は先頭 2 節点を結ぶ。
+        let (p_i, p_j, ref_vec, model_len) = if elem.kind == ElementKind::Wall {
+            let Some(axis) = wall_force_axis(elem, model, coords3) else {
+                continue;
+            };
+            (
+                axis.bottom_center,
+                axis.top_center,
+                axis.ex_bottom,
+                axis.model_height,
+            )
+        } else {
+            let n0 = elem.nodes[0].index();
+            let n1 = elem.nodes[1].index();
+            if n0 >= coords3.len() || n1 >= coords3.len() {
+                continue;
+            }
+            let p_i = coords3[n0];
+            let p_j = coords3[n1];
+            if member_len3(p_i, p_j) < 1e-9 {
+                continue;
+            }
+            (
+                p_i,
+                p_j,
+                elem.local_axis.ref_vector,
+                member_len3(app.model.nodes[n0].coord, app.model.nodes[n1].coord),
+            )
+        };
         let ey = diagram_offset_dir(p_i, p_j, ref_vec, component.plane());
         // 構面表示では張り出しを構面内へ倒す（面外成分が線に潰れるのを防ぐ）。
         let ey = match frame_normal {
@@ -415,7 +479,9 @@ fn draw_component(
         // 内部たわみ OFF・変形重ね無し）は変形後の節点間直線（弦）を基準線にする
         // （従来どおり）。未変形材軸端点から一度だけ前処理する。
         let deflection: Option<BeamDeflection> =
-            if app.show_beam_interpolation && elem.kind == squid_n_core::model::ElementKind::Beam {
+            if app.show_beam_interpolation && elem.kind == ElementKind::Beam {
+                let n0 = elem.nodes[0].index();
+                let n1 = elem.nodes[1].index();
                 disp.and_then(|d| {
                     (n0 < d.len() && n1 < d.len()).then(|| {
                         BeamDeflection::new(
@@ -441,17 +507,14 @@ fn draw_component(
         let grad = component.moment_gradient_source().filter(|_| {
             matches!(
                 elem.kind,
-                squid_n_core::model::ElementKind::Beam
-                    | squid_n_core::model::ElementKind::Fiber
-                    | squid_n_core::model::ElementKind::MultiSpring
+                ElementKind::Beam | ElementKind::Fiber | ElementKind::MultiSpring
             )
         });
         // 張り出し値（= 内力値 × plot_sign）。補間・塗り・輪郭はこの値で行い、
         // 数値ラベル・コンター色は内力値そのもの（張り出し値 × plot_sign）を使う。
         let samples: Vec<(f64, f64)> = if let Some(q) = grad {
             // 勾配 d(張り出し値)/dξ = 対応せん断·L に用いる部材長は、変形倍率の
-            // 影響を受けない未変形の節点間距離（内力回復時の材長）とする。
-            let model_len = member_len3(app.model.nodes[n0].coord, app.model.nodes[n1].coord);
+            // 影響を受けない未変形の材長（内力回復時の材長）とする。
             let tri: Vec<(f64, f64, f64)> = mf
                 .at
                 .iter()
@@ -902,6 +965,71 @@ mod tests {
         let viridis = contour_color(0.0, theme::ColorMap::Viridis);
         let jet = contour_color(0.0, theme::ColorMap::Jet);
         assert_ne!(viridis, jet);
+    }
+
+    #[test]
+    fn wall_force_axis_uses_midpoints_not_first_two_nodes() {
+        use squid_n_core::dof::Dof6Mask;
+        use squid_n_core::ids::{ElemId, NodeId, SectionId};
+        use squid_n_core::model::{
+            ElementData, ElementKind, EndCondition, ForceRegime, LocalAxis, Model, Node,
+        };
+        use squid_n_core::section_shape::SectionShape;
+
+        let shape = SectionShape::RcWall {
+            thickness: 150.0,
+            ps: 0.0025,
+        };
+        let model = Model {
+            nodes: [
+                ([0.0, 0.0, 0.0], 0),
+                ([3000.0, 0.0, 0.0], 1),
+                ([3000.0, 0.0, 2700.0], 2),
+                ([0.0, 0.0, 2700.0], 3),
+            ]
+            .into_iter()
+            .map(|(coord, id)| Node {
+                id: NodeId(id),
+                coord,
+                restraint: Dof6Mask::FREE,
+                mass: None,
+                story: None,
+                support_spring: None,
+            })
+            .collect(),
+            sections: vec![shape.to_section(SectionId(0), "W150".into())],
+            ..Default::default()
+        };
+        let elem = ElementData {
+            id: ElemId(0),
+            kind: ElementKind::Wall,
+            // 先頭 2 節点が上辺になる並び。
+            nodes: [NodeId(2), NodeId(3), NodeId(0), NodeId(1)]
+                .into_iter()
+                .collect(),
+            section: Some(SectionId(0)),
+            local_axis: LocalAxis {
+                ref_vector: [0.0, 0.0, 1.0],
+            },
+            end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+            force_regime: ForceRegime::Auto,
+            rigid_zone: Default::default(),
+            plastic_zone: None,
+            spring: None,
+        };
+        let coords3: Vec<[f64; 3]> = model.nodes.iter().map(|n| n.coord).collect();
+        let axis = wall_force_axis(&elem, &model, &coords3).expect("axis");
+        assert!(
+            (axis.bottom_center[0] - 1500.0).abs() < 1e-6 && axis.bottom_center[2].abs() < 1e-6
+        );
+        assert!(
+            (axis.top_center[0] - 1500.0).abs() < 1e-6
+                && (axis.top_center[2] - 2700.0).abs() < 1e-6
+        );
+        assert!((axis.model_height - 2700.0).abs() < 1e-6);
+        // 先頭 2 節点（上辺）を結ぶ旧経路とは z が大きく異なる。
+        let old_axis = vec3::midpoint(coords3[2], coords3[3]);
+        assert!((axis.bottom_center[2] - old_axis[2]).abs() > 100.0);
     }
 }
 
