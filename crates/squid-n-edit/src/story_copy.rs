@@ -513,7 +513,7 @@ fn copy_one(
 }
 
 /// 階に属する部材を、対応付けキーで引ける索引にする。
-fn members_by_plan(model: &Model, ctx: &Ctx, story: StoryId) -> PlanIndex<ElemId> {
+fn members_by_plan(model: &Model, ctx: &Ctx, story: StoryId) -> PlanIndex<PlanKey, ElemId> {
     PlanIndex::build(model.elements.iter().filter_map(|e| {
         (model.member_story(e) == Some(story))
             .then(|| Some((ctx.key(model, story, &e.nodes)?, e.id)))
@@ -522,7 +522,7 @@ fn members_by_plan(model: &Model, ctx: &Ctx, story: StoryId) -> PlanIndex<ElemId
 }
 
 /// 階の床板を、対応付けキーで引ける索引にする。
-fn slabs_by_plan(model: &Model, ctx: &Ctx, story: StoryId) -> PlanIndex<SlabId> {
+fn slabs_by_plan(model: &Model, ctx: &Ctx, story: StoryId) -> PlanIndex<PlanKey, SlabId> {
     PlanIndex::build(model.slabs.iter().filter_map(|sl| {
         (slab_story(model, sl) == Some(story))
             .then(|| Some((ctx.key(model, story, sl.boundary_nodes()?)?, sl.id)))
@@ -738,12 +738,15 @@ fn copy_sections(
 
     // --- 二次部材 ---
     let dst_sec = secondary_by_plan(model, ctx, to);
-    let src: Vec<(PlanKey, Option<SectionId>)> = all_secondary_slots(model)
+    let src: Vec<(SecondaryPlanKey, Option<SectionId>)> = all_secondary_slots(model)
         .into_iter()
         .filter_map(|slot| {
             let sm = secondary_at(model, slot)?;
             (secondary_story(model, sm) == Some(cmd.from))
-                .then(|| Some((ctx.key(model, cmd.from, &sm.nodes)?, sm.section)))
+                .then(|| {
+                    ctx.key(model, cmd.from, &sm.nodes)
+                        .map(|k| ((sm.kind, k), sm.section))
+                })
                 .flatten()
         })
         .collect();
