@@ -1,12 +1,16 @@
 //! モデル編集（P8 T2: `model.edit`）。GUI と同一の `EditCommand` + `UndoStack` 経路。
 
 use super::*;
-use squid_n_core::ids::{NodeId, SectionId, WallPlateId};
-use squid_n_core::model::{RegionAnchor, WallOpening};
+use squid_n_core::ids::{FloorRegionId, NodeId, SecondaryMemberId, SectionId, SlabId, WallPlateId};
+use squid_n_core::model::{
+    DistributionMethod, JoistLine, OneWayDir, RegionAnchor, SlabPlate, SlabUsage, WallOpening,
+};
 use squid_n_edit::EditCommand;
 use squid_n_edit::{
-    AddAttachedWallPlate, AddEnclosedWallPlate, DeleteWallPlate, SetAttachedWallPlateAnchor,
-    SetAttachedWallPlateExtent, SetWallPlateAttrs, SetWallPlateSection,
+    AddAttachedSlab, AddAttachedWallPlate, AddEnclosedWallPlate, AddSlab, DeleteSlab,
+    DeleteWallPlate, SetAttachedAnchor, SetAttachedExtent, SetAttachedWallPlateAnchor,
+    SetAttachedWallPlateExtent, SetFloorRegionJoists, SetFloorRegionName, SetSlabOneWay,
+    SetSlabSecondaryJoistIds, SetSlabSection, SetSlabUsage, SetWallPlateAttrs, SetWallPlateSection,
 };
 
 #[derive(Debug, Clone, serde::Serialize, schemars::JsonSchema)]
@@ -99,10 +103,121 @@ pub fn parse_edit_command(value: &serde_json::Value) -> Result<Box<dyn EditComma
                 anchor,
             }))
         }
+        "AddSlab" => {
+            let boundary = parse_node_ids(value.get("boundary").ok_or("boundary が必要です")?)?;
+            if boundary.len() < 3 {
+                return Err("boundary は 3 節点以上を指定してください".into());
+            }
+            let loads = match value.get("loads") {
+                None | Some(serde_json::Value::Null) => Vec::new(),
+                Some(v) => serde_json::from_value(v.clone())
+                    .map_err(|e| format!("loads の解析に失敗: {e}"))?,
+            };
+            Ok(Box::new(AddSlab {
+                boundary,
+                loads,
+                method: parse_distribution_method(value.get("method"))?,
+                usage: parse_optional_enum::<SlabUsage>(value.get("usage"))?,
+                section: parse_optional_section_id(value.get("section"))?,
+            }))
+        }
+        "AddAttachedSlab" => {
+            let anchor: RegionAnchor =
+                serde_json::from_value(value.get("anchor").ok_or("anchor が必要です")?.clone())
+                    .map_err(|e| format!("anchor の解析に失敗: {e}"))?;
+            let extent = parse_f64_pair(value.get("extent"), "extent")?;
+            let plate: SlabPlate = if let Some(v) = value.get("plate") {
+                serde_json::from_value(v.clone()).map_err(|e| format!("plate の解析に失敗: {e}"))?
+            } else {
+                SlabPlate {
+                    section: parse_optional_section_id(value.get("section"))?,
+                    loads: match value.get("loads") {
+                        None | Some(serde_json::Value::Null) => Vec::new(),
+                        Some(v) => serde_json::from_value(v.clone())
+                            .map_err(|e| format!("loads の解析に失敗: {e}"))?,
+                    },
+                    usage: parse_optional_enum::<SlabUsage>(value.get("usage"))?,
+                    method: parse_distribution_method(value.get("method"))?,
+                    one_way: parse_optional_enum::<OneWayDir>(value.get("one_way"))?,
+                }
+            };
+            Ok(Box::new(AddAttachedSlab {
+                anchor,
+                extent,
+                plate,
+            }))
+        }
+        "DeleteSlab" => Ok(Box::new(DeleteSlab {
+            id: parse_slab_id(value.get("id").ok_or("id が必要です")?)?,
+        })),
+        "SetSlabSection" => Ok(Box::new(SetSlabSection {
+            id: parse_slab_id(value.get("id").ok_or("id が必要です")?)?,
+            section: parse_optional_section_id(value.get("section"))?,
+        })),
+        "SetSlabUsage" => Ok(Box::new(SetSlabUsage {
+            id: parse_slab_id(value.get("id").ok_or("id が必要です")?)?,
+            usage: parse_optional_enum::<SlabUsage>(value.get("usage"))?,
+        })),
+        "SetSlabOneWay" => Ok(Box::new(SetSlabOneWay {
+            id: parse_slab_id(value.get("id").ok_or("id が必要です")?)?,
+            one_way: parse_optional_enum::<OneWayDir>(value.get("one_way"))?,
+        })),
+        "SetAttachedExtent" => Ok(Box::new(SetAttachedExtent {
+            id: parse_slab_id(value.get("id").ok_or("id が必要です")?)?,
+            extent: parse_f64_pair(value.get("extent"), "extent")?,
+        })),
+        "SetAttachedAnchor" => {
+            let anchor: RegionAnchor =
+                serde_json::from_value(value.get("anchor").ok_or("anchor が必要です")?.clone())
+                    .map_err(|e| format!("anchor の解析に失敗: {e}"))?;
+            Ok(Box::new(SetAttachedAnchor {
+                id: parse_slab_id(value.get("id").ok_or("id が必要です")?)?,
+                anchor,
+            }))
+        }
+        "SetFloorRegionName" => Ok(Box::new(SetFloorRegionName {
+            id: parse_floor_region_id(value.get("id").ok_or("id が必要です")?)?,
+            name: value
+                .get("name")
+                .and_then(|v| v.as_str())
+                .ok_or("name が必要です")?
+                .to_string(),
+        })),
+        "SetFloorRegionJoists" => {
+            let joists: Vec<JoistLine> = match value.get("joists") {
+                None | Some(serde_json::Value::Null) => Vec::new(),
+                Some(v) => serde_json::from_value(v.clone())
+                    .map_err(|e| format!("joists の解析に失敗: {e}"))?,
+            };
+            Ok(Box::new(SetFloorRegionJoists {
+                id: parse_floor_region_id(value.get("id").ok_or("id が必要です")?)?,
+                joists,
+            }))
+        }
+        "SetSlabSecondaryJoistIds" => {
+            let ids = parse_secondary_member_ids(
+                value
+                    .get("secondary_joist_ids")
+                    .or(value.get("ids"))
+                    .ok_or("secondary_joist_ids が必要です")?,
+            )?;
+            Ok(Box::new(SetSlabSecondaryJoistIds {
+                slab: parse_floor_region_id(
+                    value
+                        .get("floor_region")
+                        .or(value.get("id"))
+                        .ok_or("floor_region が必要です")?,
+                )?,
+                ids,
+            }))
+        }
         other => Err(format!(
             "未対応の command: {other}（壁版: AddEnclosedWallPlate, AddAttachedWallPlate, \
              DeleteWallPlate, SetWallPlateSection, SetWallPlateAttrs, \
-             SetAttachedWallPlateExtent, SetAttachedWallPlateAnchor）"
+             SetAttachedWallPlateExtent, SetAttachedWallPlateAnchor / \
+             床板: AddSlab, AddAttachedSlab, DeleteSlab, SetSlabSection, SetSlabUsage, \
+             SetSlabOneWay, SetAttachedExtent, SetAttachedAnchor / \
+             床領域: SetFloorRegionName, SetFloorRegionJoists, SetSlabSecondaryJoistIds）"
         )),
     }
 }
@@ -149,6 +264,55 @@ fn parse_wall_plate_id(value: &serde_json::Value) -> Result<WallPlateId, String>
         .as_u64()
         .map(|n| WallPlateId(n as u32))
         .ok_or_else(|| format!("壁版 ID は非負整数です: {value}"))
+}
+
+fn parse_slab_id(value: &serde_json::Value) -> Result<SlabId, String> {
+    value
+        .as_u64()
+        .map(|n| SlabId(n as u32))
+        .ok_or_else(|| format!("床板 ID は非負整数です: {value}"))
+}
+
+fn parse_floor_region_id(value: &serde_json::Value) -> Result<FloorRegionId, String> {
+    value
+        .as_u64()
+        .map(|n| FloorRegionId(n as u32))
+        .ok_or_else(|| format!("床領域 ID は非負整数です: {value}"))
+}
+
+fn parse_secondary_member_ids(value: &serde_json::Value) -> Result<Vec<SecondaryMemberId>, String> {
+    let arr = value
+        .as_array()
+        .ok_or("secondary_joist_ids は配列で指定してください")?;
+    arr.iter()
+        .map(|v| {
+            v.as_u64()
+                .map(|n| SecondaryMemberId(n as u32))
+                .ok_or_else(|| format!("二次部材 ID は非負整数です: {v}"))
+        })
+        .collect()
+}
+
+fn parse_distribution_method(
+    value: Option<&serde_json::Value>,
+) -> Result<DistributionMethod, String> {
+    match value {
+        None | Some(serde_json::Value::Null) => Ok(DistributionMethod::default()),
+        Some(v) => {
+            serde_json::from_value(v.clone()).map_err(|e| format!("method の解析に失敗: {e}"))
+        }
+    }
+}
+
+fn parse_optional_enum<T: serde::de::DeserializeOwned>(
+    value: Option<&serde_json::Value>,
+) -> Result<Option<T>, String> {
+    match value {
+        None | Some(serde_json::Value::Null) => Ok(None),
+        Some(v) => serde_json::from_value(v.clone())
+            .map(Some)
+            .map_err(|e| format!("列挙値の解析に失敗: {e}")),
+    }
 }
 
 fn parse_optional_section_id(

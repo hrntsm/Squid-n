@@ -8,7 +8,8 @@ pub fn get_model_json(state: &ServerState) -> String {
 
 /// `model.query` の中核ロジック（feature 非依存・テスト可能）。
 ///
-/// `kind` で `node`/`member`(=element)/`section` を選び、各要素を JSON 化して返す。
+/// `kind` で `node`/`member`(=element)/`section`/`wall_plate`/`slab`/`floor_region`
+/// を選び、各要素を JSON 化して返す。
 /// `member`/`elements` では、`Model::member_detail` に付帯情報（ハンチ・継手位置。
 /// 剛性には影響しない）が登録されている部材について `haunch_i`/`haunch_j`
 /// （`length`/`depth_increase`/`width_increase`）と `joints`（`distance`/`kind`）
@@ -119,6 +120,46 @@ pub fn query_model(model: &Model, kind: &str, filter: Option<&str>) -> Vec<serde
                     "opening_weight": p.opening_weight,
                     "three_side_slit": p.three_side_slit,
                     "openings": p.openings,
+                })
+            })
+            .collect(),
+        "slab" | "slabs" => model
+            .slabs
+            .iter()
+            .map(|s| {
+                let shape = match &s.shape {
+                    squid_n_core::model::SlabShape::Enclosed { boundary } => json!({
+                        "kind": "Enclosed",
+                        "boundary": boundary.iter().map(|n| n.0).collect::<Vec<_>>(),
+                    }),
+                    squid_n_core::model::SlabShape::Attached { anchor, extent } => json!({
+                        "kind": "Attached",
+                        "anchor": anchor,
+                        "extent": extent,
+                    }),
+                };
+                json!({
+                    "id": s.id.0,
+                    "shape": shape,
+                    "section": s.plate.section.map(|sid| sid.0),
+                    "loads": s.plate.loads,
+                    "usage": s.plate.usage,
+                    "method": s.plate.method,
+                    "one_way": s.plate.one_way,
+                })
+            })
+            .collect(),
+        "floor_region" | "floor_regions" => model
+            .floor_regions
+            .iter()
+            .map(|r| {
+                json!({
+                    "id": r.id.0,
+                    "name": r.name,
+                    "boundary": r.boundary.iter().map(|n| n.0).collect::<Vec<_>>(),
+                    "slab_ids": r.slab_ids.iter().map(|s| s.0).collect::<Vec<_>>(),
+                    "secondary_joist_ids": r.secondary_joist_ids.iter().map(|j| j.0).collect::<Vec<_>>(),
+                    "joists": r.joists,
                 })
             })
             .collect(),

@@ -479,3 +479,83 @@ fn test_apply_edit_noop_unknown_node() {
     assert!(!result.applied);
     assert!(state.model.wall_plates.is_empty());
 }
+
+#[test]
+fn test_query_model_slabs_and_floor_regions() {
+    use squid_n_core::ids::{FloorRegionId, NodeId, SlabId};
+    use squid_n_core::model::{DistributionMethod, Slab, SlabPlate, SlabShape};
+
+    let mut m = sample_model();
+    m.slabs.push(Slab {
+        id: SlabId(0),
+        shape: SlabShape::Enclosed {
+            boundary: vec![NodeId(0), NodeId(1), NodeId(0), NodeId(1)],
+        },
+        plate: SlabPlate {
+            section: Some(SectionId(0)),
+            method: DistributionMethod::TriTrapezoid,
+            ..Default::default()
+        },
+    });
+    m.floor_regions.push(squid_n_core::model::FloorRegion {
+        id: FloorRegionId(0),
+        name: "R1".into(),
+        boundary: vec![NodeId(0), NodeId(1)],
+        secondary_joist_ids: Vec::new(),
+        slab_ids: vec![SlabId(0)],
+        joists: Vec::new(),
+    });
+    assert_eq!(query_model(&m, "slab", None).len(), 1);
+    let regions = query_model(&m, "floor_region", None);
+    assert_eq!(regions.len(), 1);
+    assert_eq!(regions[0]["name"], "R1");
+}
+
+#[test]
+fn test_apply_edit_add_slab() {
+    use squid_n_core::dof::Dof6Mask;
+    use squid_n_core::ids::NodeId;
+    use squid_n_core::model::{Node, SlabShape};
+
+    let mut state = ServerState {
+        model: Model {
+            nodes: (0..4)
+                .map(|i| Node {
+                    id: NodeId(i),
+                    coord: match i {
+                        0 => [0.0, 0.0, 0.0],
+                        1 => [3000.0, 0.0, 0.0],
+                        2 => [3000.0, 3000.0, 0.0],
+                        _ => [0.0, 3000.0, 0.0],
+                    },
+                    restraint: Dof6Mask::FREE,
+                    mass: None,
+                    story: None,
+                    support_spring: None,
+                })
+                .collect(),
+            sections: sample_model().sections,
+            ..Default::default()
+        },
+        undo: squid_n_edit::UndoStack::new(),
+        jobs: JobRegistry::new(),
+        results: squid_n_io::results::FsResultStore::open(
+            std::env::temp_dir().join(format!("squid-n-test-{}/mcp_edit_slab", std::process::id())),
+        )
+        .expect("temp store"),
+    };
+
+    let body = serde_json::json!({
+        "command": "AddSlab",
+        "boundary": [0, 1, 2, 3],
+        "section": null,
+        "method": "TriTrapezoid"
+    });
+    let result = apply_edit(&mut state, &body).expect("apply");
+    assert!(result.applied);
+    assert_eq!(state.model.slabs.len(), 1);
+    assert!(matches!(
+        state.model.slabs[0].shape,
+        SlabShape::Enclosed { .. }
+    ));
+}
