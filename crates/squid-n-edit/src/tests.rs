@@ -5189,6 +5189,44 @@ fn set_floor_region_secondary_joists_roundtrip() {
     assert!(model.floor_regions[0].secondary_joists.is_empty());
 }
 
+/// 領域リストを空にすると実体は未割当へ移る（削除しない）。
+#[test]
+fn set_floor_region_secondary_joists_empty_moves_to_unassigned() {
+    use squid_n_core::model::SecondaryMemberKind;
+    let mut model = sm_base_model();
+    model.floor_regions.push(FloorRegion::new(
+        FloorRegionId(0),
+        vec![NodeId(0), NodeId(1)],
+    ));
+    let joist = make_sm(0, SecondaryMemberKind::Joist);
+    model.floor_regions[0].secondary_joists.push(joist.clone());
+    let mut stack = UndoStack::new();
+    assert!(stack.run(
+        &mut model,
+        Box::new(SetFloorRegionSecondaryJoists {
+            region: FloorRegionId(0),
+            joists: vec![],
+        }),
+    ));
+    assert!(model.floor_regions[0].secondary_joists.is_empty());
+    assert_eq!(model.unassigned_joists, vec![joist.clone()]);
+    stack.undo(&mut model);
+    assert_eq!(model.floor_regions[0].secondary_joists, vec![joist]);
+    assert!(model.unassigned_joists.is_empty());
+}
+
+/// 同じ端点の小梁を未割当へ重ねると Noop。
+#[test]
+fn add_unassigned_joist_rejects_duplicate_endpoints() {
+    use squid_n_core::model::SecondaryMemberKind;
+    let mut model = sm_base_model();
+    let sm = make_sm(0, SecondaryMemberKind::Joist);
+    model.unassigned_joists.push(sm.clone());
+    let mut stack = UndoStack::new();
+    assert!(!stack.run(&mut model, Box::new(AddUnassignedJoist { sm }),));
+    assert_eq!(model.unassigned_joists.len(), 1);
+}
+
 /// 壁領域間柱リストの全置換と undo。
 #[test]
 fn set_wall_region_posts_roundtrip() {

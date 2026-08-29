@@ -242,8 +242,8 @@ pub fn simple_beam_extremes(
 pub struct SecondaryJoistLoads {
     /// 分配 `Span` を単純梁荷重へ変換した重ね合わせ。
     pub member_loads: Vec<MemberLoadKind>,
-    /// 代表床板（所属床領域の `slab_ids` 先頭。表示・室用途の参照用）。
-    pub rep_slab_id: SlabId,
+    /// 代表床板（所属床領域の `slab_ids` 先頭。無いときは `None`）。
+    pub rep_slab_id: Option<SlabId>,
     /// このエントリの荷重を載せるときの小梁節点順（`SecondaryMember.nodes`）。
     pub span_nodes: (NodeId, NodeId),
 }
@@ -293,6 +293,7 @@ fn project_on_segment(p: [f64; 3], a: [f64; 3], b: [f64; 3], tol: f64) -> Option
     (d <= tol).then_some(s.clamp(0.0, len))
 }
 
+#[cfg(test)]
 fn shift_member_load(load: &MemberLoadKind, s0: f64) -> MemberLoadKind {
     match *load {
         MemberLoadKind::Point { a, p } => MemberLoadKind::Point { a: a + s0, p },
@@ -303,6 +304,102 @@ fn shift_member_load(load: &MemberLoadKind, s0: f64) -> MemberLoadKind {
             w2,
         },
     }
+}
+
+/// 分配辺の局所長さ `loaded_len` 上の荷重を、材軸区間 `[s0, s1]` へ写す。
+/// 合計力は保存する（長さが変われば線荷重強度を逆比でスケールする）。
+fn map_loads_onto_axis(
+    loads: &[MemberLoadKind],
+    loaded_len: f64,
+    s0: f64,
+    s1: f64,
+) -> Vec<MemberLoadKind> {
+    if loaded_len <= 1e-9 {
+        return Vec::new();
+    }
+    let axis_len = (s1 - s0).abs();
+    let scale = axis_len / loaded_len;
+    let w_scale = if axis_len > 1e-9 {
+        loaded_len / axis_len
+    } else {
+        1.0
+    };
+    loads
+        .iter()
+        .map(|load| match *load {
+            MemberLoadKind::Point { a, p } => MemberLoadKind::Point {
+                a: s0 + a * scale,
+                p,
+            },
+            MemberLoadKind::Distributed { a, b, w1, w2 } => MemberLoadKind::Distributed {
+                a: s0 + a * scale,
+                b: s0 + b * scale,
+                w1: w1 * w_scale,
+                w2: w2 * w_scale,
+            },
+        })
+        .collect()
+}
+
+/// 分配荷重が材軸を覆う長さの合計 [mm]（重なりは結合）。集中荷重は区間 0。
+pub fn covered_length_of_loads(loads: &[MemberLoadKind], span: f64) -> f64 {
+    if span <= 1e-9 {
+        return 0.0;
+    }
+    let mut ivs: Vec<(f64, f64)> = loads
+        .iter()
+        .filter_map(|l| match l {
+            MemberLoadKind::Point { .. } => None,
+            MemberLoadKind::Distributed { a, b, .. } => {
+                let lo = (*a).min(*b).clamp(0.0, span);
+                let hi = (*a).max(*b).clamp(0.0, span);
+                (hi - lo > 1e-9).then_some((lo, hi))
+            }
+        })
+        .collect();
+    if ivs.is_empty() {
+        return 0.0;
+    }
+    ivs.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+    let mut cover = 0.0;
+    let (mut cur_lo, mut cur_hi) = ivs[0];
+    for &(lo, hi) in ivs.iter().skip(1) {
+        if lo <= cur_hi + 1e-6 {
+            cur_hi = cur_hi.max(hi);
+        } else {
+            cover += cur_hi - cur_lo;
+            cur_lo = lo;
+            cur_hi = hi;
+        }
+    }
+    cover + (cur_hi - cur_lo)
+}
+
+/// 片側欠落とみなすカバー率の下限（材軸長に対する載荷区間）。既定 0.5。
+pub const JOIST_COVER_MIN_RATIO: f64 = 0.5;
+
+/// 分配荷重が空でなく、材軸の半分以上を覆っていれば検定に使える。
+pub fn joist_distribution_is_sufficient(loads: &[MemberLoadKind], span: f64) -> bool {
+    !loads.is_empty()
+        && span > 1e-9
+        && covered_length_of_loads(loads, span) / span + 1e-9 >= JOIST_COVER_MIN_RATIO
+}
+
+fn nearest_beam_dist(model: &Model, p0: [f64; 3], p1: [f64; 3]) -> f64 {
+    let mut best = f64::INFINITY;
+    for e in &model.elements {
+        if e.kind != ElementKind::Beam || e.nodes.len() != 2 {
+            continue;
+        }
+        let (Some(a), Some(b)) = (coord(model, e.nodes[0]), coord(model, e.nodes[1])) else {
+            continue;
+        };
+        let d = point_dist_to_axis(p0, a, b).max(point_dist_to_axis(p1, a, b));
+        if d < best {
+            best = d;
+        }
+    }
+    best
 }
 
 struct JoistAxis {
@@ -407,7 +504,7 @@ pub fn secondary_joist_distribution_loads(
     let axes = joist_axes(model);
     let mut map: HashMap<(NodeId, NodeId), SecondaryJoistLoads> = HashMap::new();
     for region in &model.floor_regions {
-        let rep_slab_id = region.slab_ids.first().copied().unwrap_or(SlabId(0));
+        let rep_slab_id = region.slab_ids.first().copied();
         let loads = distribute_region(model, region, |s| w_of(s));
         for bl in loads {
             let BeamLoad { target, shape, .. } = bl;
@@ -457,18 +554,23 @@ pub fn secondary_joist_distribution_loads(
                     best = Some((ai, d, s0, s1, piece));
                 }
             }
-            let Some((ai, _, s0, _s1, piece)) = best else {
+            let Some((ai, joist_d, s0, s1, piece)) = best else {
                 continue;
             };
+            // 外周大梁の方が近い辺荷重は小梁へ載せない（10 mm 並走小梁が大梁辺を奪うのを防ぐ）。
+            // 小梁材軸上（距離が大梁以下）なら従来どおり小梁側を優先する。
+            let beam_d = nearest_beam_dist(model, p0, p1);
+            if beam_d + 1e-9 < joist_d {
+                continue;
+            }
             let axis = &axes[ai];
+            let mapped = map_loads_onto_axis(&piece, loaded_len, s0, s1);
             let entry = map.entry(axis.key).or_insert_with(|| SecondaryJoistLoads {
                 member_loads: Vec::new(),
                 rep_slab_id,
                 span_nodes: axis.nodes,
             });
-            entry
-                .member_loads
-                .extend(piece.into_iter().map(|l| shift_member_load(&l, s0)));
+            entry.member_loads.extend(mapped);
         }
     }
     map
@@ -527,10 +629,15 @@ pub fn secondary_joists_missing_distribution(model: &Model) -> usize {
         if joist_supports.contains(&key) {
             continue;
         }
-        let has_loads = distribution
+        let (Some(na), Some(nb)) = (coord(model, a), coord(model, b)) else {
+            missing += 1;
+            continue;
+        };
+        let span = dist3(na, nb);
+        let sufficient = distribution
             .get(&key)
-            .is_some_and(|e| !e.member_loads.is_empty());
-        if !has_loads {
+            .is_some_and(|e| joist_distribution_is_sufficient(&e.member_loads, span));
+        if !sufficient {
             missing += 1;
         }
     }
@@ -926,5 +1033,91 @@ mod tests {
         };
         assert!((a - 1500.0).abs() < 1e-9 && (b - 2500.0).abs() < 1e-9);
         assert!((w1 - 2.0).abs() < 1e-12 && (w2 - 2.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn joist_distribution_cover_rejects_half_span() {
+        let l = 4000.0;
+        let half = vec![MemberLoadKind::Distributed {
+            a: 0.0,
+            b: 1800.0,
+            w1: 7.5,
+            w2: 7.5,
+        }];
+        assert!(!joist_distribution_is_sufficient(&half, l));
+        let full = vec![MemberLoadKind::Distributed {
+            a: 0.0,
+            b: l,
+            w1: 7.5,
+            w2: 7.5,
+        }];
+        assert!(joist_distribution_is_sufficient(&full, l));
+        assert!((covered_length_of_loads(&half, l) - 1800.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn map_loads_onto_axis_preserves_total_force() {
+        let loaded_len = 1000.0;
+        let loads = vec![MemberLoadKind::Distributed {
+            a: 0.0,
+            b: loaded_len,
+            w1: 4.0,
+            w2: 4.0,
+        }];
+        let mapped = map_loads_onto_axis(&loads, loaded_len, 100.0, 900.0);
+        let total: f64 = mapped.iter().map(member_load_total).sum();
+        assert!((total - 4000.0).abs() < 1e-6, "total={total}");
+        let MemberLoadKind::Distributed { a, b, w1, w2 } = mapped[0] else {
+            panic!("{:?}", mapped[0]);
+        };
+        assert!((a - 100.0).abs() < 1e-9 && (b - 900.0).abs() < 1e-9);
+        assert!((w1 - 5.0).abs() < 1e-9 && (w2 - 5.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn perimeter_parallel_joist_does_not_steal_beam_span() {
+        let mut model = square_model_with_shared_joist();
+        model.nodes.push(Node {
+            id: NodeId(8),
+            coord: [0.0, 5.0, 0.0],
+            restraint: Default::default(),
+            mass: None,
+            story: None,
+            support_spring: None,
+        });
+        model.nodes.push(Node {
+            id: NodeId(9),
+            coord: [4000.0, 5.0, 0.0],
+            restraint: Default::default(),
+            mass: None,
+            story: None,
+            support_spring: None,
+        });
+        model.floor_regions[0]
+            .secondary_joists
+            .push(SecondaryMember {
+                kind: SecondaryMemberKind::Joist,
+                nodes: [NodeId(8), NodeId(9)],
+                section: None,
+                name: "parallel".into(),
+            });
+        let w_of = |_: &Slab| 0.005_f64;
+        let map = secondary_joist_distribution_loads(&model, w_of);
+        let k_shared = span_node_key(NodeId(4), NodeId(5));
+        let k_par = span_node_key(NodeId(8), NodeId(9));
+        let t_shared = map
+            .get(&k_shared)
+            .map(|e| e.member_loads.iter().map(member_load_total).sum::<f64>())
+            .unwrap_or(0.0);
+        let t_par = map
+            .get(&k_par)
+            .map(|e| e.member_loads.iter().map(member_load_total).sum::<f64>())
+            .unwrap_or(0.0);
+        assert!(t_shared > 20000.0, "共有辺 t_shared={t_shared}");
+        assert!(t_par < 1.0, "外周並走が大梁辺を奪う t_par={t_par}");
+        assert!(
+            joist_distribution_is_sufficient(&map[&k_shared].member_loads, 4000.0),
+            "共有辺のカバーが足りない"
+        );
     }
 }

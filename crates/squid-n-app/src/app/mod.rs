@@ -276,13 +276,13 @@ pub enum JoistCheckTarget {
     },
 }
 
-/// 床の中での小梁設計結果1件（`(床板 id, 対象, 設計結果)`）。
+/// 床の中での小梁設計結果1件（`(代表床板 id, 対象, 設計結果)`）。
 ///
 /// 手入力小梁ライン（`FloorRegion::joists`）の検定は、その床領域の代表床板
 /// （`FloorRegion::slab_ids` の先頭。squid-n-load の `distribute_region` と同じ規約）
-/// の `SlabId` で紐づける。
+/// の `SlabId` で紐づける。二次部材で所属領域も分配代表も無いときは `None`。
 pub type JoistCheck = (
-    squid_n_core::ids::SlabId,
+    Option<squid_n_core::ids::SlabId>,
     JoistCheckTarget,
     squid_n_design_jp::floor::JoistDesignResult,
 );
