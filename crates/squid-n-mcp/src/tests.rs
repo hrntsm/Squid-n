@@ -759,3 +759,20 @@ fn test_parse_requires_wall_region_posts() {
     }));
     assert!(err.contains("posts"), "{err}");
 }
+
+#[test]
+fn test_parse_requires_floor_region_joists() {
+    let err = expect_parse_err(serde_json::json!({
+        "command": "SetFloorRegionJoists",
+        "id": 0
+    }));
+    assert!(err.contains("joists"), "{err}");
+}
+
+#[test]
+fn test_parse_requires_unassigned_joist_body() {
+    let err = expect_parse_err(serde_json::json!({
+        "command": "AddUnassignedJoist"
+    }));
+    assert!(err.contains("joist"), "{err}");
+}

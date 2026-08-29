@@ -195,7 +195,7 @@ impl App {
                     };
                     let Some(sid) = j.section else {
                         joist_checks.push((
-                            rep_slab.id,
+                            Some(rep_slab.id),
                             crate::app::JoistCheckTarget::SlabJoist(jidx),
                             fd::joist_unchecked(span),
                         ));
@@ -203,7 +203,7 @@ impl App {
                     };
                     let Some((z, _e, ft)) = joist_params(sid) else {
                         joist_checks.push((
-                            rep_slab.id,
+                            Some(rep_slab.id),
                             crate::app::JoistCheckTarget::SlabJoist(jidx),
                             fd::joist_unchecked(span),
                         ));
@@ -220,7 +220,7 @@ impl App {
                         fd::DEFLECTION_LIMIT_DENOM,
                     );
                     joist_checks.push((
-                        rep_slab.id,
+                        Some(rep_slab.id),
                         crate::app::JoistCheckTarget::SlabJoist(jidx),
                         r,
                     ));
@@ -252,7 +252,7 @@ impl App {
                     }
                     let Some(sid) = j.section else {
                         joist_checks.push((
-                            rep_slab.id,
+                            Some(rep_slab.id),
                             crate::app::JoistCheckTarget::SlabJoist(ji),
                             fd::joist_unchecked(span),
                         ));
@@ -260,7 +260,7 @@ impl App {
                     };
                     let Some(sec) = self.model.sections.get(sid.index()) else {
                         joist_checks.push((
-                            rep_slab.id,
+                            Some(rep_slab.id),
                             crate::app::JoistCheckTarget::SlabJoist(ji),
                             fd::joist_unchecked(span),
                         ));
@@ -268,7 +268,7 @@ impl App {
                     };
                     let Some((z, e, ft)) = joist_params(sid) else {
                         joist_checks.push((
-                            rep_slab.id,
+                            Some(rep_slab.id),
                             crate::app::JoistCheckTarget::SlabJoist(ji),
                             fd::joist_unchecked(span),
                         ));
@@ -284,7 +284,7 @@ impl App {
                         fd::DEFLECTION_LIMIT_DENOM,
                     );
                     joist_checks.push((
-                        rep_slab.id,
+                        Some(rep_slab.id),
                         crate::app::JoistCheckTarget::SlabJoist(ji),
                         r,
                     ));
@@ -358,8 +358,8 @@ impl App {
         use squid_n_core::model::{LoadPurpose, SecondaryMemberKind};
         use squid_n_design_jp::floor as fd;
         use squid_n_load::floor::{
-            joist_self_weight_udl, orient_member_loads, secondary_joist_distribution_loads,
-            simple_beam_extremes, span_node_key,
+            joist_distribution_is_sufficient, joist_self_weight_udl, orient_member_loads,
+            secondary_joist_distribution_loads, simple_beam_extremes, span_node_key,
         };
         use std::collections::HashSet;
 
@@ -409,7 +409,7 @@ impl App {
             }
 
             let target = crate::app::JoistCheckTarget::SecondaryJoist { nodes: sm.nodes };
-            let rep_slab_id = self
+            let region_slab = self
                 .model
                 .floor_regions
                 .iter()
@@ -418,15 +418,16 @@ impl App {
                         .iter()
                         .any(|j| span_node_key(j.nodes[0], j.nodes[1]) == key)
                 })
-                .and_then(|r| r.slab_ids.first().copied())
-                .unwrap_or(squid_n_core::ids::SlabId(0));
+                .and_then(|r| r.slab_ids.first().copied());
+            let dist_entry = distribution.get(&key);
+            let slab_id = region_slab.or_else(|| dist_entry.and_then(|e| e.rep_slab_id));
 
             let Some(sid) = sm.section else {
-                joist_checks.push((rep_slab_id, target, fd::joist_unchecked(span)));
+                joist_checks.push((slab_id, target, fd::joist_unchecked(span)));
                 continue;
             };
             let Some(sec) = self.model.sections.get(sid.index()) else {
-                joist_checks.push((rep_slab_id, target, fd::joist_unchecked(span)));
+                joist_checks.push((slab_id, target, fd::joist_unchecked(span)));
                 continue;
             };
             let z = if sec.depth > 0.0 {
@@ -436,15 +437,14 @@ impl App {
             };
             let mat = self.model.secondary_material(sm);
             let Some((e, ft)) = fd::joist_steel_e_and_ft(mat) else {
-                joist_checks.push((rep_slab_id, target, fd::joist_unchecked(span)));
+                joist_checks.push((slab_id, target, fd::joist_unchecked(span)));
                 continue;
             };
 
-            let Some(entry) = distribution
-                .get(&key)
-                .filter(|e| !e.member_loads.is_empty())
+            let Some(entry) =
+                dist_entry.filter(|e| joist_distribution_is_sufficient(&e.member_loads, span))
             else {
-                joist_checks.push((rep_slab_id, target, fd::joist_unchecked(span)));
+                joist_checks.push((slab_id, target, fd::joist_unchecked(span)));
                 continue;
             };
 
@@ -460,15 +460,7 @@ impl App {
             }
             let ex = simple_beam_extremes(&loads, span, e, sec.iy);
             if ex.w_equiv <= 1e-9 && ex.m_max <= 1e-9 {
-                joist_checks.push((
-                    if rep_slab_id.0 == 0 {
-                        entry.rep_slab_id
-                    } else {
-                        rep_slab_id
-                    },
-                    target,
-                    fd::joist_unchecked(span),
-                ));
+                joist_checks.push((slab_id, target, fd::joist_unchecked(span)));
                 continue;
             }
 
@@ -482,15 +474,7 @@ impl App {
                 ft,
                 fd::DEFLECTION_LIMIT_DENOM,
             );
-            joist_checks.push((
-                if rep_slab_id.0 == 0 {
-                    entry.rep_slab_id
-                } else {
-                    rep_slab_id
-                },
-                target,
-                r,
-            ));
+            joist_checks.push((slab_id, target, r));
         }
     }
 }

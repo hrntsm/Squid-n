@@ -3875,7 +3875,7 @@ fn test_floor_design_checks_secondary_joist_uses_same_level_slab() {
     let (joists, _slabs) = app.floor_design_checks();
     assert_eq!(joists.len(), 1, "二次部材小梁が1件設計される");
     let (sid, _target, jr) = &joists[0];
-    assert_eq!(*sid, SlabId(1), "上階床領域の代表床板で検定される");
+    assert_eq!(*sid, Some(SlabId(1)), "上階床領域の代表床板で検定される");
     assert!(
         (jr.w - 11.85).abs() < 0.2,
         "上階床板の分配荷重で検定されていない: w={}",

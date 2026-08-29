@@ -1175,11 +1175,14 @@ fn joist_design_checks_cover_imported_secondary_members() {
             .map(|n| app.model.nodes[n.index()].coord[2])
             .sum::<f64>()
             / 2.0;
+        let Some(sid) = slab_id else {
+            continue;
+        };
         let slab = app
             .model
             .slabs
             .iter()
-            .find(|s| s.id == *slab_id)
+            .find(|s| s.id == *sid)
             .expect("検定結果の床板が実在する");
         let z_slab = slab.level(&app.model).expect("床板のレベル");
         assert!(

@@ -845,7 +845,7 @@ fn floor_design_section(ui: &mut egui::Ui, app: &App) {
         crate::theme::GRAY_600,
         "小梁は大梁を分割せず、床の中で単純支持梁として曲げ・たわみを検定します（反力は\
          大梁へ CMQ として伝達）。スラブは一方向版として設計曲げと必要鉄筋量を算定します。\
-         鋼小梁 E=205000・F=235、鉄筋 SD295（長期 ft=195）の既定値を用います。",
+         鋼小梁の E・長期 ft は断面材料（未設定時 E=205000・F=235）。鉄筋は SD295（長期 ft=195）です。",
     );
 
     if !r.joist_checks.is_empty() {
@@ -867,7 +867,10 @@ fn floor_design_section(ui: &mut egui::Ui, app: &App) {
             |row| {
                 let (sid, ji, jr) = &r.joist_checks[row.index()];
                 row.col(|ui| {
-                    ui.label(format!("#{}", sid.0));
+                    ui.label(match sid {
+                        Some(id) => format!("#{}", id.0),
+                        None => "未割当".into(),
+                    });
                 });
                 row.col(|ui| {
                     let label = match ji {

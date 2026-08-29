@@ -8,11 +8,11 @@ use squid_n_core::model::{
 };
 use squid_n_edit::EditCommand;
 use squid_n_edit::{
-    AddAttachedSlab, AddAttachedWallPlate, AddEnclosedWallPlate, AddSlab, DeleteSlab,
-    DeleteWallPlate, SetAttachedAnchor, SetAttachedExtent, SetAttachedWallPlateAnchor,
-    SetAttachedWallPlateExtent, SetFloorRegionJoists, SetFloorRegionName,
-    SetFloorRegionSecondaryJoists, SetSlabOneWay, SetSlabSection, SetSlabUsage, SetWallPlateAttrs,
-    SetWallPlateSection, SetWallRegionPosts,
+    AddAttachedSlab, AddAttachedWallPlate, AddEnclosedWallPlate, AddSlab, AddUnassignedJoist,
+    AddUnassignedPost, DeleteSlab, DeleteUnassignedJoist, DeleteUnassignedPost, DeleteWallPlate,
+    SetAttachedAnchor, SetAttachedExtent, SetAttachedWallPlateAnchor, SetAttachedWallPlateExtent,
+    SetFloorRegionJoists, SetFloorRegionName, SetFloorRegionSecondaryJoists, SetSlabOneWay,
+    SetSlabSection, SetSlabUsage, SetWallPlateAttrs, SetWallPlateSection, SetWallRegionPosts,
 };
 
 #[derive(Debug, Clone, serde::Serialize, schemars::JsonSchema)]
@@ -191,7 +191,9 @@ pub fn parse_edit_command(value: &serde_json::Value) -> Result<Box<dyn EditComma
         })),
         "SetFloorRegionJoists" => {
             let joists: Vec<JoistLine> = match value.get("joists") {
-                None | Some(serde_json::Value::Null) => Vec::new(),
+                None | Some(serde_json::Value::Null) => {
+                    return Err("joists が必要です（空にする場合は [] を渡す）".into());
+                }
                 Some(v) => serde_json::from_value(v.clone())
                     .map_err(|e| format!("joists の解析に失敗: {e}"))?,
             };
@@ -248,6 +250,40 @@ pub fn parse_edit_command(value: &serde_json::Value) -> Result<Box<dyn EditComma
                 posts,
             }))
         }
+        "AddUnassignedJoist" => {
+            let sm: SecondaryMember = serde_json::from_value(
+                value
+                    .get("joist")
+                    .cloned()
+                    .ok_or("joist が必要です（SecondaryMember）")?,
+            )
+            .map_err(|e| format!("joist の解析に失敗: {e}"))?;
+            Ok(Box::new(AddUnassignedJoist { sm }))
+        }
+        "DeleteUnassignedJoist" => {
+            let index = value
+                .get("index")
+                .and_then(|v| v.as_u64())
+                .ok_or("index が必要です")? as usize;
+            Ok(Box::new(DeleteUnassignedJoist { index }))
+        }
+        "AddUnassignedPost" => {
+            let sm: SecondaryMember = serde_json::from_value(
+                value
+                    .get("post")
+                    .cloned()
+                    .ok_or("post が必要です（SecondaryMember）")?,
+            )
+            .map_err(|e| format!("post の解析に失敗: {e}"))?;
+            Ok(Box::new(AddUnassignedPost { sm }))
+        }
+        "DeleteUnassignedPost" => {
+            let index = value
+                .get("index")
+                .and_then(|v| v.as_u64())
+                .ok_or("index が必要です")? as usize;
+            Ok(Box::new(DeleteUnassignedPost { index }))
+        }
         other => Err(format!(
             "未対応の command: {other}（壁版: AddEnclosedWallPlate, AddAttachedWallPlate, \
              DeleteWallPlate, SetWallPlateSection, SetWallPlateAttrs, \
@@ -255,7 +291,8 @@ pub fn parse_edit_command(value: &serde_json::Value) -> Result<Box<dyn EditComma
              床板: AddSlab, AddAttachedSlab, DeleteSlab, SetSlabSection, SetSlabUsage, \
              SetSlabOneWay, SetAttachedExtent, SetAttachedAnchor / \
              床領域: SetFloorRegionName, SetFloorRegionJoists, SetFloorRegionSecondaryJoists / \
-             壁領域: SetWallRegionPosts）"
+             壁領域: SetWallRegionPosts / \
+             未割当: AddUnassignedJoist, DeleteUnassignedJoist, AddUnassignedPost, DeleteUnassignedPost）"
         )),
     }
 }

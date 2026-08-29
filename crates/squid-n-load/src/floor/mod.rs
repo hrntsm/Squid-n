@@ -44,10 +44,10 @@ pub(crate) use fem::{fem_linear, fem_uniform};
 pub use fem::{fixed_end_moments, simple_beam_moment_at, simple_reactions};
 pub use geometry::{point_in_slab_boundary, polygon_area, slab_dimensions, slab_dimensions_of};
 pub use joist_design::{
-    joist_self_weight_udl, load_shape_to_member_loads, orient_member_loads,
-    secondary_joist_distribution_loads, secondary_joists_missing_distribution,
-    simple_beam_extremes, span_node_key, JOIST_DEFLECTION_SAMPLE_DIVISIONS,
-    JOIST_FORCE_SAMPLE_DIVISIONS,
+    covered_length_of_loads, joist_distribution_is_sufficient, joist_self_weight_udl,
+    load_shape_to_member_loads, orient_member_loads, secondary_joist_distribution_loads,
+    secondary_joists_missing_distribution, simple_beam_extremes, span_node_key,
+    JOIST_COVER_MIN_RATIO, JOIST_DEFLECTION_SAMPLE_DIVISIONS, JOIST_FORCE_SAMPLE_DIVISIONS,
 };
 pub use rigid_zone::{cmq_with_rigid_zone, RigidZoneCmqMode, RigidZoneCmqResult};
 pub use types::{BeamLoad, Cmq, LoadShape, LoadTarget};
