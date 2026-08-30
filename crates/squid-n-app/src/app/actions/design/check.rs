@@ -134,7 +134,7 @@ impl App {
     ///   等分布 `w × spacing` で曲げ・たわみを検定する（交差があれば格子 FEM）。
     /// - 二次部材小梁: 床領域分配の `Span` を単純梁へ重ね合わせ、小梁自重の等分布を足す。
     /// - 実部材化された小梁（支持間に実 Beam がある）は全体 FEM で検定するため対象外。
-    /// - 断面未割当・鋼以外の材料・分配荷重が無い二次部材は表に「未」として残す。
+    /// - 断面未割当・鋼以外の材料・分配荷重が無い・期待床板の欠落・カバー不足の二次部材は表に「未」として残す。
     /// - スラブ: 矩形スラブの短辺を設計スパンとし、一方向版として設計曲げモーメントと
     ///   必要鉄筋量を算定する（鋼小梁・SD295 鉄筋の既定値を用いる）。
     pub(crate) fn floor_design_checks(
@@ -358,7 +358,7 @@ impl App {
         use squid_n_core::model::{LoadPurpose, SecondaryMemberKind};
         use squid_n_design_jp::floor as fd;
         use squid_n_load::floor::{
-            joist_distribution_is_sufficient, joist_self_weight_udl, orient_member_loads,
+            joist_distribution_is_ready, joist_self_weight_udl, orient_member_loads,
             secondary_joist_distribution_loads, simple_beam_extremes, span_node_key,
         };
         use std::collections::HashSet;
@@ -441,9 +441,7 @@ impl App {
                 continue;
             };
 
-            let Some(entry) =
-                dist_entry.filter(|e| joist_distribution_is_sufficient(&e.member_loads, span))
-            else {
+            let Some(entry) = dist_entry.filter(|e| joist_distribution_is_ready(e, span)) else {
                 joist_checks.push((slab_id, target, fd::joist_unchecked(span)));
                 continue;
             };

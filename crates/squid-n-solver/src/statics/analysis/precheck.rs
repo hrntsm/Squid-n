@@ -395,12 +395,24 @@ pub fn model_issues(model: &Model) -> Vec<ModelIssue> {
                 .warn(),
             );
         }
-        let n = squid_n_load::floor::secondary_joists_missing_distribution(model);
-        if n != 0 {
+        let gaps = squid_n_load::floor::secondary_joist_distribution_gaps(model);
+        if gaps.missing_expected_slabs != 0 {
+            issues.push(
+                ModelIssue::model(format!(
+                    "内法の二次部材小梁で、期待する床板の分配が載っていないものが\
+                     {} 本あります。片側の床板が欠けると需要を過小評価するため、\
+                     断面検定しません。",
+                    gaps.missing_expected_slabs
+                ))
+                .warn(),
+            );
+        }
+        if gaps.short_cover != 0 || gaps.no_distribution != 0 {
+            let n = gaps.short_cover + gaps.no_distribution;
             issues.push(
                 ModelIssue::model(format!(
                     "床領域分配から荷重が得られない、または載荷区間がスパンの半分未満の\
-                     二次部材小梁が {n} 本あります。段差床・傾斜小梁・床板境界外・片側欠落では\
+                     二次部材小梁が {n} 本あります。段差床・傾斜小梁・床板境界外では\
                      断面検定しません。"
                 ))
                 .warn(),

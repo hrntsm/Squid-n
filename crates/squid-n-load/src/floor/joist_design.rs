@@ -5,7 +5,7 @@
 //! 単純梁として重ね合わせる。床板境界が途中節点で分割されていても、小梁材軸上に
 //! 載る `Span` は全長へ合成する（T 字取り付きの片側欠落を防ぐ）。
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use squid_n_core::geom::MEMBER_AXIS_TOL_MM;
 use squid_n_core::ids::{NodeId, SlabId};
@@ -13,8 +13,10 @@ use squid_n_core::model::{ElementKind, MemberLoadKind, Model, SecondaryMemberKin
 use squid_n_core::units::GRAVITY_MM_S2;
 
 use super::distribute_region;
+use super::distribute_slab_resolved;
 use super::fem::{simple_beam_moment_at, simple_reactions};
 use super::types::{BeamLoad, LoadShape, LoadTarget};
+use super::uses_joist_distribution;
 
 /// 節点対を順不同キー `(min, max)` に正規化する。
 pub fn span_node_key(a: NodeId, b: NodeId) -> (NodeId, NodeId) {
@@ -246,6 +248,10 @@ pub struct SecondaryJoistLoads {
     pub rep_slab_id: Option<SlabId>,
     /// このエントリの荷重を載せるときの小梁節点順（`SecondaryMember.nodes`）。
     pub span_nodes: (NodeId, NodeId),
+    /// この材軸へ分配がその辺へ `Span` を出すと期待される床板。
+    pub expected_slab_ids: HashSet<SlabId>,
+    /// 重ね合わせに実際に載った床板。
+    pub contributed_slab_ids: HashSet<SlabId>,
 }
 
 fn beam_between(model: &Model, a: NodeId, b: NodeId) -> bool {
@@ -378,11 +384,26 @@ pub fn covered_length_of_loads(loads: &[MemberLoadKind], span: f64) -> f64 {
 /// 片側欠落とみなすカバー率の下限（材軸長に対する載荷区間）。既定 0.5。
 pub const JOIST_COVER_MIN_RATIO: f64 = 0.5;
 
-/// 分配荷重が空でなく、材軸の半分以上を覆っていれば検定に使える。
+/// 分配荷重が空でなく、材軸の半分以上を覆っていれば長さカバーは足りる。
 pub fn joist_distribution_is_sufficient(loads: &[MemberLoadKind], span: f64) -> bool {
     !loads.is_empty()
         && span > 1e-9
         && covered_length_of_loads(loads, span) / span + 1e-9 >= JOIST_COVER_MIN_RATIO
+}
+
+/// 期待床板の寄与がすべて重ね合わせに載っているか。
+pub fn joist_expected_slabs_covered(
+    expected: &HashSet<SlabId>,
+    contributed: &HashSet<SlabId>,
+) -> bool {
+    expected.iter().all(|id| contributed.contains(id))
+}
+
+/// 期待床板が空でなく、各床板の寄与があり、載荷長さも半分以上なら検定に使える。
+pub fn joist_distribution_is_ready(entry: &SecondaryJoistLoads, span: f64) -> bool {
+    !entry.expected_slab_ids.is_empty()
+        && joist_expected_slabs_covered(&entry.expected_slab_ids, &entry.contributed_slab_ids)
+        && joist_distribution_is_sufficient(&entry.member_loads, span)
 }
 
 fn nearest_beam_dist(model: &Model, p0: [f64; 3], p1: [f64; 3]) -> f64 {
@@ -497,83 +518,176 @@ pub fn joist_self_weight_udl(
 /// その小梁の局所座標へ写して重ねる。部分区間 `t` も同じ。大梁材軸上の `Span` は除外する
 /// （ただし同じ位置に小梁がある場合は小梁側を優先する）。
 /// 1 本の `Span` が複数の小梁材軸に載りうる場合は、端点の材軸距離が最小の 1 本だけに載せる。
+///
+/// 期待床板が 0 枚の材軸には載せない（並走・未割当への奪取を防ぐ）。期待床板は、
+/// 境界が材軸に載り、かつその床板の分配がその辺へ `Span` を出す囲まれ床板である。
 pub fn secondary_joist_distribution_loads(
     model: &Model,
     w_of: impl Fn(&Slab) -> f64,
 ) -> HashMap<(NodeId, NodeId), SecondaryJoistLoads> {
     let axes = joist_axes(model);
-    let mut map: HashMap<(NodeId, NodeId), SecondaryJoistLoads> = HashMap::new();
-    for region in &model.floor_regions {
-        let rep_slab_id = region.slab_ids.first().copied();
-        let loads = distribute_region(model, region, |s| w_of(s));
-        for bl in loads {
-            let BeamLoad { target, shape, .. } = bl;
-            let LoadTarget::Span { nodes: [n0, n1], t } = target else {
-                continue;
-            };
-            let (Some(c0), Some(c1)) = (coord(model, n0), coord(model, n1)) else {
-                continue;
-            };
-            let p0 = lerp3(c0, c1, t[0]);
-            let p1 = lerp3(c0, c1, t[1]);
-            let loaded_len = dist3(p0, p1);
-            if loaded_len <= 1e-9 {
+    let tagged = tagged_span_loads(model, &w_of);
+    let mut expected: HashMap<(NodeId, NodeId), HashSet<SlabId>> = HashMap::new();
+    for (slab_id, bl) in &tagged {
+        let Some((p0, p1, loaded_len)) = span_points(model, bl) else {
+            continue;
+        };
+        if loaded_len <= 1e-9 {
+            continue;
+        }
+        for axis in &axes {
+            if !span_belongs_to_axis(model, p0, p1, axis) {
                 continue;
             }
-            if segment_on_beam_only(model, p0, p1, &axes) {
+            if !slab_in_joist_scope(model, axis.key, *slab_id) {
                 continue;
             }
-            let shape_loads = load_shape_to_member_loads(&shape, loaded_len, false);
+            expected.entry(axis.key).or_default().insert(*slab_id);
+        }
+    }
 
-            // 候補のうち端点距離の最大が最小の材軸を 1 本だけ採る（近接平行への二重計上を防ぐ）。
-            let mut best: Option<(usize, f64, f64, f64, Vec<MemberLoadKind>)> = None;
-            for (ai, axis) in axes.iter().enumerate() {
-                let Some(mut s0) = project_on_segment(p0, axis.a, axis.b, MEMBER_AXIS_TOL_MM)
-                else {
-                    continue;
-                };
-                let Some(mut s1) = project_on_segment(p1, axis.a, axis.b, MEMBER_AXIS_TOL_MM)
-                else {
-                    continue;
-                };
-                let mut piece = shape_loads.clone();
-                if s1 + 1e-9 < s0 {
-                    piece = piece
-                        .iter()
-                        .map(|l| flip_member_load(l, loaded_len))
-                        .collect();
-                    std::mem::swap(&mut s0, &mut s1);
-                }
-                let d = point_dist_to_axis(p0, axis.a, axis.b)
-                    .max(point_dist_to_axis(p1, axis.a, axis.b));
-                let replace = match best {
-                    None => true,
-                    Some((_, best_d, ..)) => d + 1e-9 < best_d,
-                };
-                if replace {
-                    best = Some((ai, d, s0, s1, piece));
-                }
-            }
-            let Some((ai, joist_d, s0, s1, piece)) = best else {
-                continue;
-            };
-            // 外周大梁の方が近い辺荷重は小梁へ載せない（10 mm 並走小梁が大梁辺を奪うのを防ぐ）。
-            // 小梁材軸上（距離が大梁以下）なら従来どおり小梁側を優先する。
-            let beam_d = nearest_beam_dist(model, p0, p1);
-            if beam_d + 1e-9 < joist_d {
-                continue;
-            }
-            let axis = &axes[ai];
-            let mapped = map_loads_onto_axis(&piece, loaded_len, s0, s1);
-            let entry = map.entry(axis.key).or_insert_with(|| SecondaryJoistLoads {
+    let candidates: Vec<&JoistAxis> = axes
+        .iter()
+        .filter(|axis| expected.get(&axis.key).is_some_and(|s| !s.is_empty()))
+        .collect();
+
+    let mut map: HashMap<(NodeId, NodeId), SecondaryJoistLoads> = HashMap::new();
+    for axis in &candidates {
+        let expected_slab_ids = expected.get(&axis.key).cloned().unwrap_or_default();
+        let rep_slab_id = expected_slab_ids.iter().copied().min_by_key(|id| id.0);
+        map.insert(
+            axis.key,
+            SecondaryJoistLoads {
                 member_loads: Vec::new(),
                 rep_slab_id,
                 span_nodes: axis.nodes,
-            });
-            entry.member_loads.extend(mapped);
+                expected_slab_ids,
+                contributed_slab_ids: HashSet::new(),
+            },
+        );
+    }
+
+    for (slab_id, bl) in &tagged {
+        let Some((p0, p1, loaded_len)) = span_points(model, bl) else {
+            continue;
+        };
+        if loaded_len <= 1e-9 {
+            continue;
+        }
+        if segment_on_beam_only(model, p0, p1, &axes) {
+            continue;
+        }
+        let shape_loads = load_shape_to_member_loads(&bl.shape, loaded_len, false);
+
+        let mut best: Option<(usize, f64, f64, f64, Vec<MemberLoadKind>)> = None;
+        for (ai, axis) in candidates.iter().enumerate() {
+            let Some(mut s0) = project_on_segment(p0, axis.a, axis.b, MEMBER_AXIS_TOL_MM) else {
+                continue;
+            };
+            let Some(mut s1) = project_on_segment(p1, axis.a, axis.b, MEMBER_AXIS_TOL_MM) else {
+                continue;
+            };
+            let mut piece = shape_loads.clone();
+            if s1 + 1e-9 < s0 {
+                piece = piece
+                    .iter()
+                    .map(|l| flip_member_load(l, loaded_len))
+                    .collect();
+                std::mem::swap(&mut s0, &mut s1);
+            }
+            let d =
+                point_dist_to_axis(p0, axis.a, axis.b).max(point_dist_to_axis(p1, axis.a, axis.b));
+            let replace = match best {
+                None => true,
+                Some((_, best_d, ..)) => d + 1e-9 < best_d,
+            };
+            if replace {
+                best = Some((ai, d, s0, s1, piece));
+            }
+        }
+        let Some((ai, joist_d, s0, s1, piece)) = best else {
+            continue;
+        };
+        let beam_d = nearest_beam_dist(model, p0, p1);
+        if beam_d + 1e-9 < joist_d {
+            continue;
+        }
+        let axis = candidates[ai];
+        let mapped = map_loads_onto_axis(&piece, loaded_len, s0, s1);
+        let entry = map.entry(axis.key).or_insert_with(|| SecondaryJoistLoads {
+            member_loads: Vec::new(),
+            rep_slab_id: Some(*slab_id),
+            span_nodes: axis.nodes,
+            expected_slab_ids: expected.get(&axis.key).cloned().unwrap_or_default(),
+            contributed_slab_ids: HashSet::new(),
+        });
+        entry.member_loads.extend(mapped);
+        entry.contributed_slab_ids.insert(*slab_id);
+        if entry.rep_slab_id.is_none() {
+            entry.rep_slab_id = Some(*slab_id);
         }
     }
     map
+}
+
+fn span_points(model: &Model, bl: &BeamLoad) -> Option<([f64; 3], [f64; 3], f64)> {
+    let LoadTarget::Span { nodes: [n0, n1], t } = bl.target else {
+        return None;
+    };
+    let (c0, c1) = (coord(model, n0)?, coord(model, n1)?);
+    let p0 = lerp3(c0, c1, t[0]);
+    let p1 = lerp3(c0, c1, t[1]);
+    let loaded_len = dist3(p0, p1);
+    Some((p0, p1, loaded_len))
+}
+
+fn span_belongs_to_axis(model: &Model, p0: [f64; 3], p1: [f64; 3], axis: &JoistAxis) -> bool {
+    if project_on_segment(p0, axis.a, axis.b, MEMBER_AXIS_TOL_MM).is_none()
+        || project_on_segment(p1, axis.a, axis.b, MEMBER_AXIS_TOL_MM).is_none()
+    {
+        return false;
+    }
+    let joist_d =
+        point_dist_to_axis(p0, axis.a, axis.b).max(point_dist_to_axis(p1, axis.a, axis.b));
+    let beam_d = nearest_beam_dist(model, p0, p1);
+    beam_d + 1e-9 >= joist_d
+}
+
+fn tagged_span_loads(model: &Model, w_of: &impl Fn(&Slab) -> f64) -> Vec<(SlabId, BeamLoad)> {
+    let mut out = Vec::new();
+    for region in &model.floor_regions {
+        if uses_joist_distribution(model, region) {
+            let Some(slab) = region.slab_ids.first().and_then(|&id| model.slab(id)) else {
+                continue;
+            };
+            for bl in distribute_region(model, region, |s| w_of(s)) {
+                out.push((slab.id, bl));
+            }
+            continue;
+        }
+        for &sid in &region.slab_ids {
+            let Some(slab) = model.slab(sid) else {
+                continue;
+            };
+            for bl in distribute_slab_resolved(model, slab, w_of(slab)) {
+                out.push((slab.id, bl));
+            }
+        }
+    }
+    out
+}
+
+fn slab_in_joist_scope(model: &Model, joist_key: (NodeId, NodeId), slab_id: SlabId) -> bool {
+    for region in &model.floor_regions {
+        if region
+            .secondary_joists
+            .iter()
+            .any(|j| span_node_key(j.nodes[0], j.nodes[1]) == joist_key)
+        {
+            return region.slab_ids.contains(&slab_id);
+        }
+    }
+    true
 }
 
 /// `member_loads` を二次部材の節点順 `(a, b)` に合わせて向きを揃える。
@@ -598,6 +712,29 @@ pub fn orient_member_loads(
 ///
 /// 実部材化済み・`FloorRegion.joists` 重複・断面未割当・退化は数えない。
 pub fn secondary_joists_missing_distribution(model: &Model) -> usize {
+    secondary_joist_distribution_gaps(model).total()
+}
+
+/// 二次部材小梁の分配欠落を理由別に数える（診断用。1 本は最も具体的な理由へ排他集計）。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SecondaryJoistDistributionGaps {
+    /// 期待床板の寄与が欠けている本数。
+    pub missing_expected_slabs: usize,
+    /// 期待床板は揃っているが載荷長さが半分未満の本数。
+    pub short_cover: usize,
+    /// 分配荷重が無い、または期待床板が 0 枚の本数。
+    pub no_distribution: usize,
+}
+
+impl SecondaryJoistDistributionGaps {
+    /// 断面検定しない二次部材小梁の合計本数。
+    pub fn total(self) -> usize {
+        self.missing_expected_slabs + self.short_cover + self.no_distribution
+    }
+}
+
+/// [`secondary_joists_missing_distribution`] の内訳。
+pub fn secondary_joist_distribution_gaps(model: &Model) -> SecondaryJoistDistributionGaps {
     use squid_n_core::model::{LoadPurpose, SecondaryMemberKind};
 
     let w_of = |s: &Slab| model.slab_intensity(s, LoadPurpose::Floor);
@@ -613,7 +750,7 @@ pub fn secondary_joists_missing_distribution(model: &Model) -> usize {
         }
     }
 
-    let mut missing = 0usize;
+    let mut gaps = SecondaryJoistDistributionGaps::default();
     for sm in model.joists() {
         if sm.kind != SecondaryMemberKind::Joist {
             continue;
@@ -630,18 +767,26 @@ pub fn secondary_joists_missing_distribution(model: &Model) -> usize {
             continue;
         }
         let (Some(na), Some(nb)) = (coord(model, a), coord(model, b)) else {
-            missing += 1;
+            gaps.no_distribution += 1;
             continue;
         };
         let span = dist3(na, nb);
-        let sufficient = distribution
-            .get(&key)
-            .is_some_and(|e| joist_distribution_is_sufficient(&e.member_loads, span));
-        if !sufficient {
-            missing += 1;
+        match distribution.get(&key) {
+            Some(e)
+                if !joist_expected_slabs_covered(&e.expected_slab_ids, &e.contributed_slab_ids) =>
+            {
+                gaps.missing_expected_slabs += 1;
+            }
+            Some(e) if joist_distribution_is_sufficient(&e.member_loads, span) => {}
+            Some(e) if !e.member_loads.is_empty() => {
+                gaps.short_cover += 1;
+            }
+            _ => {
+                gaps.no_distribution += 1;
+            }
         }
     }
-    missing
+    gaps
 }
 
 #[cfg(test)]
@@ -1119,5 +1264,88 @@ mod tests {
             joist_distribution_is_sufficient(&map[&k_shared].member_loads, 4000.0),
             "共有辺のカバーが足りない"
         );
+    }
+
+    #[test]
+    fn shared_joist_expects_both_slabs() {
+        let model = square_model_with_shared_joist();
+        let w_of = |_: &Slab| 0.005_f64;
+        let map = secondary_joist_distribution_loads(&model, w_of);
+        let key = span_node_key(NodeId(4), NodeId(5));
+        let entry = map.get(&key).expect("共有辺");
+        assert_eq!(entry.expected_slab_ids.len(), 2);
+        assert_eq!(entry.contributed_slab_ids.len(), 2);
+        assert!(joist_distribution_is_ready(entry, 4000.0));
+    }
+
+    #[test]
+    fn one_sided_slab_is_ready_when_only_one_slab_emits() {
+        let mut model = square_model_with_shared_joist();
+        model.slabs.pop();
+        model.floor_regions[0].slab_ids = vec![SlabId(0)];
+        let w_of = |_: &Slab| 0.005_f64;
+        let map = secondary_joist_distribution_loads(&model, w_of);
+        let key = span_node_key(NodeId(4), NodeId(5));
+        let entry = map.get(&key).expect("片側でも期待床板があれば載る");
+        assert_eq!(entry.expected_slab_ids.len(), 1);
+        assert!(entry.expected_slab_ids.contains(&SlabId(0)));
+        assert!(joist_distribution_is_ready(entry, 4000.0));
+    }
+
+    #[test]
+    fn missing_expected_slab_is_not_ready() {
+        let expected = HashSet::from([SlabId(0), SlabId(1)]);
+        let contributed = HashSet::from([SlabId(0)]);
+        assert!(!joist_expected_slabs_covered(&expected, &contributed));
+        let loads = vec![MemberLoadKind::Distributed {
+            a: 0.0,
+            b: 4000.0,
+            w1: 7.5,
+            w2: 7.5,
+        }];
+        let entry = SecondaryJoistLoads {
+            member_loads: loads,
+            rep_slab_id: Some(SlabId(0)),
+            span_nodes: (NodeId(4), NodeId(5)),
+            expected_slab_ids: expected,
+            contributed_slab_ids: contributed,
+        };
+        assert!(!joist_distribution_is_ready(&entry, 4000.0));
+    }
+
+    #[test]
+    fn zero_expected_axis_does_not_receive_spans() {
+        let mut model = square_model_with_shared_joist();
+        model.nodes.push(Node {
+            id: NodeId(10),
+            coord: [8000.0, 0.0, 0.0],
+            restraint: Default::default(),
+            mass: None,
+            story: None,
+            support_spring: None,
+        });
+        model.nodes.push(Node {
+            id: NodeId(11),
+            coord: [8000.0, 4000.0, 0.0],
+            restraint: Default::default(),
+            mass: None,
+            story: None,
+            support_spring: None,
+        });
+        model.unassigned_joists.push(SecondaryMember {
+            kind: SecondaryMemberKind::Joist,
+            nodes: [NodeId(10), NodeId(11)],
+            section: None,
+            name: "far".into(),
+        });
+        let w_of = |_: &Slab| 0.005_f64;
+        let map = secondary_joist_distribution_loads(&model, w_of);
+        let k_far = span_node_key(NodeId(10), NodeId(11));
+        let k_shared = span_node_key(NodeId(4), NodeId(5));
+        assert!(
+            !map.contains_key(&k_far),
+            "期待床板 0 枚の材軸は付着先にしない"
+        );
+        assert!(joist_distribution_is_ready(&map[&k_shared], 4000.0));
     }
 }
