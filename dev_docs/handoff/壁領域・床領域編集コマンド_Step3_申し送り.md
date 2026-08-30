@@ -116,26 +116,26 @@ CONTRIBUTING.md の静的解析コマンドは、既定機能だけでなく `gu
 
 | 状態 | 項目 |
 |------|------|
-| ☐ | `squid-n-app` のナビゲータへ二次部材・壁領域の編集 UI を接続する |
+| ☑ | `squid-n-app` のナビゲータへ二次部材・壁領域の編集 UI を接続する（`nav_model.rs` の床領域・壁領域・未割当ツリー） |
 | ☐ | `squid-n-mcp` に二次部材・壁領域操作のツールを追加する |
-| ☐ | 床領域・壁領域を「版を任意、小梁／間柱は領域の子」とするナビ階層化（詳細は[残課題一覧 §2](残課題一覧.md)） |
+| ☑ | 床領域・壁領域を「版を任意、小梁／間柱は領域の子」とするナビ階層化（`nav_model.rs`） |
 | ☐ | 荷重分配・CMQ 変換を所属関係に対応させ、同時に床をまたいだ小梁の重複検証を追加する |
-| ☐ | 利用者向け `docs/` への節の追加（UI と荷重分配ができてから。設計は[specs/床領域と壁領域](../specs/床領域と壁領域.md)） |
+| ☑ | 利用者向け `docs/` への節（`docs/model_edit/06_床領域と壁領域.md`） |
 
 ---
 
 ## 次ステップへの申し送り
 
-### squid-n-app ナビゲータ更新
+### squid-n-app ナビゲータ更新（2026-08-30 実装済み）
 
-`squid-n-app` の二次部材パネルが現在どのように実装されているかを確認した上で、
-以下のコマンドを UI アクションから呼ぶ接続を実装する。
+左ドック・ナビゲータに「床領域」「壁領域」「未割当」の 3 セクションを追加した
+（`squid-n-app/src/app/nav_model.rs`）。ツリー組み立ては GUI なしでテスト可能な純関数。
+編集は次の現行コマンドを `UndoStack::run` 経由で呼ぶ。
 
-- 追加ボタン → `AddSecondaryMember`
-- 削除ボタン → `DeleteSecondaryMember`
-- 断面変更 → `SetSecondaryMemberSection`
-- スラブ小梁 ID リスト編集 → `SetSlabSecondaryJoistIds`
-- 壁領域の追加/削除/編集 → `AddWallRegion` / `DeleteWallRegion` / `SetWallRegion`
+- 領域内小梁の外し → `SetFloorRegionSecondaryJoists`（リスト全置換）
+- 領域内間柱の外し → `SetWallRegionPosts`
+- 未割当の追加 → `AddUnassignedJoist` / `AddUnassignedPost`
+- 未割当の削除 → `DeleteUnassignedJoist` / `DeleteUnassignedPost`
 
-`UndoStack::run` の戻り値（`bool`）で変更有無を検出し、
-`App::staleness.mark_edited()` を適切に呼ぶこと（他コマンドと同パターン）。
+領域の追加・削除 UI は出さない（準備計算の rebuild が生成する）。
+利用者向け操作説明は `docs/model_edit/06_床領域と壁領域.md`。

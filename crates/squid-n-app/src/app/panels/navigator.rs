@@ -53,6 +53,8 @@ impl App {
 
             self.nav_vibration_cases(ui);
 
+            self.nav_regions(ui);
+
             // 部材リスト（クリックで focus_member を更新 → テーブル/インスペクタに連動）
             let header = egui::CollapsingHeader::new("部材一覧")
                 .default_open(false)

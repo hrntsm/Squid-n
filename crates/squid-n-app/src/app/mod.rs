@@ -1,7 +1,8 @@
 use std::time::SystemTime;
 
 use squid_n_core::ids::{
-    ElemId, LoadCaseId, LumpedVibrationCaseId, MaterialId, NodeId, SectionId, VibrationCaseId,
+    ElemId, FloorRegionId, LoadCaseId, LumpedVibrationCaseId, MaterialId, NodeId, SectionId,
+    VibrationCaseId, WallRegionId,
 };
 use squid_n_design_jp::LoadTerm;
 use squid_n_edit::UndoStack;
@@ -127,6 +128,15 @@ pub struct Navigator {
     pub focus_member: Option<ElemId>,
     pub focus_section: Option<SectionId>,
     pub focus_material: Option<MaterialId>,
+    /// ナビゲータで選択中の床領域（存在しなければクリア）。
+    pub focus_floor_region: Option<FloorRegionId>,
+    /// ナビゲータで選択中の壁領域（存在しなければクリア）。
+    pub focus_wall_region: Option<WallRegionId>,
+    /// 未割当追加フォーム（小梁/間柱・端点・断面）。
+    pub unassigned_add_post: bool,
+    pub unassigned_add_node_a: u32,
+    pub unassigned_add_node_b: u32,
+    pub unassigned_add_section: Option<SectionId>,
     pub focus_load_case: Option<LoadCaseId>,
     /// ナビゲータで選択中の結果表示対象（静的ケース／荷重組合せ）
     pub focus_result: Option<StaticKey>,
