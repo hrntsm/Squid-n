@@ -1,11 +1,11 @@
 ---
 source: crates/squid-n-app/tests/full_model.rs
-assertion_line: 1532
+assertion_line: 1632
 expression: out
 ---
 model.nodes = 171
 model.elements = 157
-model.secondary_members = 56
+model.joists() = 56
 model.floor_regions = 26
 model.stories = 5
 prep.total_seismic_weight = 3.187e6
@@ -40,7 +40,7 @@ design.joint_checks = 42
 design.joist_checks = 56
 design.slab_checks = 81
 design.max_ratio = 6.352e-1
-design.joist_max_ratio = 4.645e-1
+design.joist_max_ratio = 2.975e-1
 metrics[1FL].drift_angle = 1.359e-3
 metrics[1FL].Rs = 7.571e-1
 metrics[1FL].Re = 1.985e-2

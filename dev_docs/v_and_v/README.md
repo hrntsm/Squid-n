@@ -101,7 +101,8 @@
 | [床辺荷重の梁への幾何割付_2026-08.md](床辺荷重の梁への幾何割付_2026-08.md) | 床の辺荷重を覆う梁へ割り付ける経路 | ✅ |
 | [床領域のパネル統合_2026-08.md](床領域のパネル統合_2026-08.md) | ST-Bridge 小片スラブを大梁の床領域へ畳む | 🔶 |
 | [床領域の再設計_荷重分配とSlabFloorRegion分離_2026-08.md](床領域の再設計_荷重分配とSlabFloorRegion分離_2026-08.md) | 荷重分配を `FloorRegion`/`Slab` 単位へ作り替え、型を再分離 | 🔶 |
-| [小梁検定の負担幅を床板境界から求める_2026-08.md](小梁検定の負担幅を床板境界から求める_2026-08.md) | 小梁検定の負担幅を床板境界の幾何から求める（Step 5 一部対応） | 🔶 |
+| [小梁検定の負担幅を床板境界から求める_2026-08.md](小梁検定の負担幅を床板境界から求める_2026-08.md) | 小梁検定の負担幅を床板境界の幾何から求める（Step 5 一部。**二次部材経路は §5.39・§5.40 で supersede**） | 🔶 |
+| [小梁設計を分配結果から出す_2026-08.md](小梁設計を分配結果から出す_2026-08.md) | 二次部材小梁の断面検定を分配 `Span` から出す（Step 5。§5.40〜§5.43） | ☑ |
 | [壁版の取り込み・要素生成・参照張り替え_2026-08.md](壁版の取り込み・要素生成・参照張り替え_2026-08.md) | 壁の解析要素を準備計算からの生成物へ転換（Step 7+8 本体） | ☑ |
 | [剛域算定の壁展開順序不整合_2026-08.md](剛域算定の壁展開順序不整合_2026-08.md) | 壁展開モデルを見ていなかった4箇所（剛域自動算定・耐震壁のせん断断面検定・数量拾い・保有水平耐力の部材ランク自動判定）の是正 | ☑ |
 
@@ -147,6 +148,7 @@
 | 25 | 終局検定（塑性 Qsu・付着 Qbu・軸 Nuc/Nut・2軸せん断・接合部 Vju/Qdu・CFT 軸終局+N-M） | squid-n-design-jp | ultimate/{rc_shear,rc_axial,joint,cft,cft_nm,mod}.rs | `test_rc_shear_qsu_plastic_*`/`test_rc_joint_ultimate_*`/`test_cft_*`/`test_cft_short_column_mu_*`/`test_biaxial_*`/`test_collect_*_ultimate_checks_*` | P7 | 🔶 |
 | 26 | 数量積算（部位別のコンクリート・型枠・鉄筋・鉄骨・継手個所） | squid-n-design-jp | quantity/{mod,member,rebar}.rs | `quantity::member::tests::*`（手計算照合）/`quantity::tests::*`（走査・分類）/`summary::tests::test_quantity_csv_from_sample_model`（CSV 一気通貫）/`test_quantity_takeoff_json_column`（MCP） | 横断 | 🔶 |
 | 27 | 材料グレード対応表（F 値・鉄筋・Fc・プリセット） | squid-n-core | material_grade.rs | `material_grade::tests::*`（告示値一致） | 横断 | ✅ |
+| 28 | 二次部材小梁の分配 Span 検定 | squid-n-load / squid-n-app | floor/joist_design.rs, check.rs | `distribution_loads_on_shared_joist_match_average_width` / `split_slab_edges_compose_onto_full_joist` / `span_attaches_to_nearest_joist_only` / `perimeter_parallel_joist_does_not_steal_beam_span` / `joist_distribution_cover_rejects_half_span` / `shared_joist_expects_both_slabs` / `missing_expected_slab_is_not_ready` / `zero_expected_axis_does_not_receive_spans` / `joist_design_checks_cover_imported_secondary_members` | 横断 | ☑ |
 
 凡例: ✅ 実装済み・🔶 一部実装（要拡張）・❌ 未実装
 

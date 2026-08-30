@@ -257,58 +257,40 @@ fn import_builds_expected_model() {
 
     assert_eq!(m.nodes.len(), 166, "節点数");
     assert_eq!(m.elements.len(), 115, "解析要素数（柱 40・大梁 75）");
-    assert_eq!(m.secondary_members.len(), 56, "二次部材（小梁）");
+    assert_eq!(m.joists().count(), 56, "二次部材（小梁）");
     assert_eq!(m.floor_regions.len(), 26, "床領域（大梁1床領域単位）");
     assert_eq!(m.stories.len(), 5, "階（1FL/2FL/3FL/RFL/PHRFL）");
 
-    use squid_n_core::model::SecondaryMemberKind;
     use squid_n_core::region_gen::generate_region_boundaries;
-    use std::collections::HashMap;
     assert!(
         m.slabs
             .iter()
             .all(|s| !s.is_attached() && s.section().is_some()),
         "すべて Enclosed かつ版あり"
     );
-    let mut joist_owner: HashMap<u32, usize> = HashMap::new();
-    for (ri, r) in m.floor_regions.iter().enumerate() {
-        for jid in &r.secondary_joist_ids {
+    let boundaries = generate_region_boundaries(m);
+    for r in &m.floor_regions {
+        for sm in &r.secondary_joists {
+            let coords = r.boundary_coords(m).expect("領域境界");
+            let n = coords.len() as f64;
+            let centroid = [
+                coords.iter().map(|p| p[0]).sum::<f64>() / n,
+                coords.iter().map(|p| p[1]).sum::<f64>() / n,
+            ];
+            let z = coords[0][2];
+            let boundary = boundaries
+                .iter()
+                .find(|b| b.is_same_level(z) && b.contains(m, centroid))
+                .expect("領域が大梁の境界に載る");
+            let a = m.nodes[sm.nodes[0].index()].coord;
+            let b = m.nodes[sm.nodes[1].index()].coord;
+            let mid = [(a[0] + b[0]) / 2.0, (a[1] + b[1]) / 2.0];
             assert!(
-                joist_owner.insert(jid.0, ri).is_none(),
-                "小梁 {} が複数領域に属する",
-                jid.0
+                boundary.contains(m, mid),
+                "小梁 {:?} の中点が所属領域に入らない",
+                sm.nodes
             );
         }
-    }
-    let boundaries = generate_region_boundaries(m);
-    for sm in m
-        .secondary_members
-        .iter()
-        .filter(|sm| sm.kind == SecondaryMemberKind::Joist)
-    {
-        let ri = *joist_owner
-            .get(&sm.id.0)
-            .unwrap_or_else(|| panic!("小梁 {} がどの領域にも属さない", sm.id.0));
-        let r = &m.floor_regions[ri];
-        let coords = r.boundary_coords(m).expect("領域境界");
-        let n = coords.len() as f64;
-        let centroid = [
-            coords.iter().map(|p| p[0]).sum::<f64>() / n,
-            coords.iter().map(|p| p[1]).sum::<f64>() / n,
-        ];
-        let z = coords[0][2];
-        let boundary = boundaries
-            .iter()
-            .find(|b| b.is_same_level(z) && b.contains(m, centroid))
-            .expect("領域が大梁の境界に載る");
-        let a = m.nodes[sm.nodes[0].index()].coord;
-        let b = m.nodes[sm.nodes[1].index()].coord;
-        let mid = [(a[0] + b[0]) / 2.0, (a[1] + b[1]) / 2.0];
-        assert!(
-            boundary.contains(m, mid),
-            "小梁 {} の中点が所属領域に入らない",
-            sm.id.0
-        );
     }
 
     // 荷重は ST-Bridge に含まれないため標準荷重ケースが自動生成される。
@@ -1039,8 +1021,8 @@ fn scz_roundtrip_preserves_model_and_results() {
         "要素数"
     );
     assert_eq!(
-        reopened.model.secondary_members.len(),
-        app.model.secondary_members.len(),
+        reopened.model.joists().count(),
+        app.model.joists().count(),
         "二次部材数"
     );
     assert_eq!(
@@ -1119,8 +1101,8 @@ fn stbridge_roundtrip_is_reanalyzable() {
         "往復で要素数が変わる"
     );
     assert_eq!(
-        reimported.model.secondary_members.len(),
-        app.model.secondary_members.len(),
+        reimported.model.joists().count(),
+        app.model.joists().count(),
         "往復で二次部材数が変わる"
     );
     assert_eq!(
@@ -1157,47 +1139,57 @@ fn stbridge_roundtrip_is_reanalyzable() {
 /// すべて該当し、別階の板厚・室用途・境界寸法で検定されてしまう（エラーは出ない）。
 #[test]
 fn joist_design_checks_cover_imported_secondary_members() {
-    use squid_n_core::model::SecondaryMemberKind;
-
     let mut app = analyzed();
     app.run_design_check();
     assert_no_error(&app, "断面検定");
 
     let results = app.results.as_ref().expect("解析結果");
-    let n_joists = app
-        .model
-        .secondary_members
-        .iter()
-        .filter(|sm| sm.kind == SecondaryMemberKind::Joist)
-        .count();
+    let n_joists = app.model.joists().count();
     assert!(
         !results.joist_checks.is_empty(),
         "小梁 {n_joists} 本が 1 件も検定されていない"
     );
 
     let mut checked = 0;
-    for (slab_id, target, _) in &results.joist_checks {
-        let squid_n_app::app::JoistCheckTarget::SecondaryMember(smi) = target else {
+    for (slab_id, target, jr) in &results.joist_checks {
+        let squid_n_app::app::JoistCheckTarget::SecondaryJoist { nodes } = target else {
             continue;
         };
         checked += 1;
-        let sm = &app.model.secondary_members[*smi];
+        if jr.unchecked {
+            continue;
+        }
+        let key = (nodes[0].0.min(nodes[1].0), nodes[0].0.max(nodes[1].0));
+        let sm = app
+            .model
+            .joists()
+            .find(|sm| {
+                let a = sm.nodes[0].0.min(sm.nodes[1].0);
+                let b = sm.nodes[0].0.max(sm.nodes[1].0);
+                (a, b) == key
+            })
+            .expect("小梁");
         let z_joist = sm
             .nodes
             .iter()
             .map(|n| app.model.nodes[n.index()].coord[2])
             .sum::<f64>()
             / 2.0;
+        let Some(sid) = slab_id else {
+            continue;
+        };
         let slab = app
             .model
             .slabs
             .iter()
-            .find(|s| s.id == *slab_id)
+            .find(|s| s.id == *sid)
             .expect("検定結果の床板が実在する");
         let z_slab = slab.level(&app.model).expect("床板のレベル");
         assert!(
             (z_slab - z_joist).abs() <= 1.0,
-            "小梁 {smi}（Z={z_joist}）が別レベルのスラブ {:?}（Z={z_slab}）で検定されている",
+            "小梁 {}-{}（Z={z_joist}）が別レベルのスラブ {:?}（Z={z_slab}）で検定されている",
+            nodes[0].0,
+            nodes[1].0,
             slab_id
         );
     }
@@ -1465,10 +1457,7 @@ fn snapshot_key_scalars() {
     // --- モデル構成 ---
     line("model.nodes", app.model.nodes.len().to_string());
     line("model.elements", app.model.elements.len().to_string());
-    line(
-        "model.secondary_members",
-        app.model.secondary_members.len().to_string(),
-    );
+    line("model.joists()", app.model.joists().count().to_string());
     assert_eq!(
         app.model.floor_regions.len(),
         26,
@@ -1565,6 +1554,7 @@ fn snapshot_key_scalars() {
     let joist_max_ratio = results
         .joist_checks
         .iter()
+        .filter(|(_, _, r)| !r.unchecked)
         .map(|(_, _, r)| r.ratio)
         .fold(0.0_f64, f64::max);
     line("design.joist_max_ratio", sig4(joist_max_ratio));

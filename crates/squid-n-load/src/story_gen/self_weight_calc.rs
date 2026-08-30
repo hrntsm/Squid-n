@@ -329,7 +329,7 @@ pub(crate) fn enumerate_self_weight(model: &Model, load_cfg: &LoadCfg) -> Vec<Se
     // 二次部材（小梁・間柱）の自重: ρ·A·L·g（節点間距離。解析部材ではないため
     // 柱面間控除・スラブ厚控除は行わない簡易則）。鋼材は鉄骨重量割増率を乗じる。
     // 両端節点へ 1/2 ずつ帰属する（[`SelfWeightItem::SecondaryLine`]）。
-    for sm in &model.secondary_members {
+    for sm in model.joists().chain(model.posts()) {
         let (Some(sec_id), Some(mat)) = (sm.section, model.secondary_material(sm)) else {
             continue;
         };

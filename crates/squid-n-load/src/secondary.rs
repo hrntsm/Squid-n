@@ -6,8 +6,13 @@
 //! （`DofMap::build` が自由度から除外する）、載っている梁の
 //! **中間集中荷重**（`MemberLoadKind::Point`。大梁の CMQ）へ変換する。
 
-use squid_n_core::ids::{ElemId, NodeId};
-use squid_n_core::model::{ElementKind, MemberLoad, MemberLoadKind, Model, NodalLoad, SlabShape};
+use squid_n_core::ids::ElemId;
+use squid_n_core::model::{ElementKind, MemberLoad, MemberLoadKind, Model, NodalLoad};
+
+#[cfg(test)]
+use squid_n_core::ids::NodeId;
+#[cfg(test)]
+use squid_n_core::model::SlabShape;
 
 /// `beam_span_position`/`resolve_nodal_to_primary` が候補とする 2 節点 `Beam` 要素
 /// （要素独立な幾何のみ。ダングリング参照は除外済み）。`resolve_nodal_to_primary` が
@@ -185,9 +190,12 @@ pub fn beams_along_segment(
 /// ものと数学的に等しい）。
 ///
 /// 小梁がどの床板の境界にも沿わない（床板の内部を通る、対応する床板がない、
-/// 取り付く床板しかない等）場合は `None`。呼び出し側は幾何的な近似（平行な
-/// 小梁どうしの間隔等）へフォールバックすること。
-pub fn joist_edge_tributary_width(model: &Model, a: NodeId, b: NodeId) -> Option<f64> {
+/// 取り付く床板しかない等）場合は `None`。
+///
+/// **二次部材小梁の本番検定では使わない**（分配 `Span` 経路が正。§5.39 以降）。
+/// §5.5 当時の幾何負担幅の回帰テスト専用。
+#[cfg(test)]
+fn joist_edge_tributary_width(model: &Model, a: NodeId, b: NodeId) -> Option<f64> {
     let na = model.nodes.get(a.index())?;
     let nb = model.nodes.get(b.index())?;
     let dx = nb.coord[0] - na.coord[0];
@@ -357,7 +365,7 @@ pub const SPAN_TOL_MM: f64 = squid_n_core::geom::MEMBER_AXIS_TOL_MM;
 mod tests {
     use super::*;
     use squid_n_core::dof::Dof6Mask;
-    use squid_n_core::ids::{NodeId, SecondaryMemberId, SectionId};
+    use squid_n_core::ids::{NodeId, SectionId};
     use squid_n_core::model::{
         ElementData, EndCondition, ForceRegime, LocalAxis, Node, SecondaryMember,
         SecondaryMemberKind,
@@ -402,8 +410,7 @@ mod tests {
                 node(2, 2000.0, 0.0, 0.0),
             ],
             elements: vec![beam(0, 0, 1)],
-            secondary_members: vec![SecondaryMember {
-                id: SecondaryMemberId(0),
+            unassigned_joists: vec![SecondaryMember {
                 kind: SecondaryMemberKind::Joist,
                 nodes: [NodeId(2), NodeId(2)],
                 section: Some(SectionId(0)),

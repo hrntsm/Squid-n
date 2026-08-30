@@ -385,6 +385,39 @@ pub fn model_issues(model: &Model) -> Vec<ModelIssue> {
                 .warn(),
             );
         }
+        let n = squid_n_core::wall_region_rebuild::unassigned_post_count(model);
+        if n != 0 {
+            issues.push(
+                ModelIssue::model(format!(
+                    "どの壁領域にも所属しない間柱が {n} 本あります。\
+                     間柱の配置または壁領域の境界を確認してください。"
+                ))
+                .warn(),
+            );
+        }
+        let gaps = squid_n_load::floor::secondary_joist_distribution_gaps(model);
+        if gaps.missing_expected_slabs != 0 {
+            issues.push(
+                ModelIssue::model(format!(
+                    "内法の二次部材小梁で、期待する床板の分配が載っていないものが\
+                     {} 本あります。片側の床板が欠けると需要を過小評価するため、\
+                     断面検定しません。",
+                    gaps.missing_expected_slabs
+                ))
+                .warn(),
+            );
+        }
+        if gaps.short_cover != 0 || gaps.no_distribution != 0 {
+            let n = gaps.short_cover + gaps.no_distribution;
+            issues.push(
+                ModelIssue::model(format!(
+                    "床領域分配から荷重が得られない、または載荷区間がスパンの半分未満の\
+                     二次部材小梁が {n} 本あります。段差床・傾斜小梁・床板境界外では\
+                     断面検定しません。"
+                ))
+                .warn(),
+            );
+        }
         let n = squid_n_core::region_rebuild::floating_slab_count(model);
         if n != 0 {
             issues.push(
@@ -738,7 +771,7 @@ fn node_reference_issues(model: &Model) -> Vec<ModelIssue> {
                 },
             }
         }
-        for sm in &model.secondary_members {
+        for sm in model.joists().chain(model.posts()) {
             for n in &sm.nodes {
                 mark(*n);
             }

@@ -845,7 +845,7 @@ fn floor_design_section(ui: &mut egui::Ui, app: &App) {
         crate::theme::GRAY_600,
         "小梁は大梁を分割せず、床の中で単純支持梁として曲げ・たわみを検定します（反力は\
          大梁へ CMQ として伝達）。スラブは一方向版として設計曲げと必要鉄筋量を算定します。\
-         鋼小梁 E=205000・F=235、鉄筋 SD295（長期 ft=195）の既定値を用います。",
+         鋼小梁の E・長期 ft は断面材料（未設定時 E=205000・F=235）。鉄筋は SD295（長期 ft=195）です。",
     );
 
     if !r.joist_checks.is_empty() {
@@ -867,23 +867,32 @@ fn floor_design_section(ui: &mut egui::Ui, app: &App) {
             |row| {
                 let (sid, ji, jr) = &r.joist_checks[row.index()];
                 row.col(|ui| {
-                    ui.label(format!("#{}", sid.0));
+                    ui.label(match sid {
+                        Some(id) => format!("#{}", id.0),
+                        None => "未割当".into(),
+                    });
                 });
                 row.col(|ui| {
                     let label = match ji {
                         crate::app::JoistCheckTarget::SlabJoist(i) => format!("{i}"),
-                        crate::app::JoistCheckTarget::SecondaryMember(i) => app
-                            .model
-                            .secondary_members
-                            .get(*i)
-                            .map(|sm| {
-                                if sm.name.is_empty() {
-                                    format!("SM{i}")
-                                } else {
-                                    sm.name.clone()
-                                }
-                            })
-                            .unwrap_or_else(|| format!("SM{i}")),
+                        crate::app::JoistCheckTarget::SecondaryJoist { nodes } => {
+                            let key = (nodes[0].0.min(nodes[1].0), nodes[0].0.max(nodes[1].0));
+                            app.model
+                                .joists()
+                                .find(|sm| {
+                                    let a = sm.nodes[0].0.min(sm.nodes[1].0);
+                                    let b = sm.nodes[0].0.max(sm.nodes[1].0);
+                                    (a, b) == key
+                                })
+                                .map(|sm| {
+                                    if sm.name.is_empty() {
+                                        format!("SM{}-{}", nodes[0].0, nodes[1].0)
+                                    } else {
+                                        sm.name.clone()
+                                    }
+                                })
+                                .unwrap_or_else(|| format!("SM{}-{}", nodes[0].0, nodes[1].0))
+                        }
                     };
                     ui.label(label);
                 });
@@ -912,7 +921,9 @@ fn floor_design_section(ui: &mut egui::Ui, app: &App) {
                     );
                 });
                 row.col(|ui| {
-                    if jr.ok {
+                    if jr.unchecked {
+                        ui.label("未");
+                    } else if jr.ok {
                         ui.colored_label(crate::theme::GOOD_GREEN, "OK");
                     } else {
                         ui.colored_label(crate::theme::ERROR_RED, "NG");

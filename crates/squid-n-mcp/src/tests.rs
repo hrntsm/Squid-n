@@ -501,7 +501,7 @@ fn test_query_model_slabs_and_floor_regions() {
         id: FloorRegionId(0),
         name: "R1".into(),
         boundary: vec![NodeId(0), NodeId(1)],
-        secondary_joist_ids: Vec::new(),
+        secondary_joists: Vec::new(),
         slab_ids: vec![SlabId(0)],
         joists: Vec::new(),
     });
@@ -701,7 +701,7 @@ fn test_apply_edit_set_floor_region_name() {
             id: FloorRegionId(0),
             name: "old".into(),
             boundary: vec![NodeId(0), NodeId(1)],
-            secondary_joist_ids: Vec::new(),
+            secondary_joists: Vec::new(),
             slab_ids: vec![SlabId(0)],
             joists: Vec::new(),
         });
@@ -713,4 +713,66 @@ fn test_apply_edit_set_floor_region_name() {
     let result = apply_edit(&mut state, &body).expect("apply");
     assert!(result.applied);
     assert_eq!(state.model.floor_regions[0].name, "R1");
+}
+
+fn expect_parse_err(value: serde_json::Value) -> String {
+    match parse_edit_command(&value) {
+        Ok(_) => panic!("エラーになるはずだった: {value}"),
+        Err(e) => e,
+    }
+}
+
+#[test]
+fn test_parse_rejects_obsolete_set_slab_secondary_joist_ids() {
+    let err = expect_parse_err(serde_json::json!({
+        "command": "SetSlabSecondaryJoistIds",
+        "floor_region": 0,
+        "secondary_joist_ids": [1, 2]
+    }));
+    assert!(err.contains("廃止"), "{err}");
+}
+
+#[test]
+fn test_parse_requires_secondary_joists_array() {
+    let err = expect_parse_err(serde_json::json!({
+        "command": "SetFloorRegionSecondaryJoists",
+        "floor_region": 0
+    }));
+    assert!(err.contains("secondary_joists"), "{err}");
+}
+
+#[test]
+fn test_parse_rejects_legacy_secondary_joist_ids_key() {
+    let err = expect_parse_err(serde_json::json!({
+        "command": "SetFloorRegionSecondaryJoists",
+        "floor_region": 0,
+        "secondary_joist_ids": [1, 2]
+    }));
+    assert!(err.contains("廃止"), "{err}");
+}
+
+#[test]
+fn test_parse_requires_wall_region_posts() {
+    let err = expect_parse_err(serde_json::json!({
+        "command": "SetWallRegionPosts",
+        "wall_region": 0
+    }));
+    assert!(err.contains("posts"), "{err}");
+}
+
+#[test]
+fn test_parse_requires_floor_region_joists() {
+    let err = expect_parse_err(serde_json::json!({
+        "command": "SetFloorRegionJoists",
+        "id": 0
+    }));
+    assert!(err.contains("joists"), "{err}");
+}
+
+#[test]
+fn test_parse_requires_unassigned_joist_body() {
+    let err = expect_parse_err(serde_json::json!({
+        "command": "AddUnassignedJoist"
+    }));
+    assert!(err.contains("joist"), "{err}");
 }

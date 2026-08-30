@@ -221,12 +221,46 @@ pub fn build_slab_grillage(model: &Model, slab: &FloorRegion, w: f64) -> Option<
         return None;
     }
 
-    // 断面レジストリ（原 SectionId → サブ index）。
+    // 断面レジストリ（原 SectionId → サブ index）。材料は親のヤング係数を写す。
     let mut sec_map: Vec<(SectionId, usize)> = Vec::new();
     let mut sub_sections: Vec<Section> = Vec::new();
+    let mut sub_materials: Vec<Material> = Vec::new();
+    let joist_young = |sec: SectionId| -> f64 {
+        let s = &model.sections[sec.index()];
+        let mat = s.material.and_then(|mid| model.materials.get(mid.index()));
+        match mat {
+            Some(m) if m.young > 0.0 => m.young,
+            _ => squid_n_design_jp::floor::STEEL_YOUNG,
+        }
+    };
+    let sub_mat_for_young = |young: f64, materials: &mut Vec<Material>| -> MaterialId {
+        if let Some((i, _)) = materials
+            .iter()
+            .enumerate()
+            .find(|(_, m)| (m.young - young).abs() < 1e-6)
+        {
+            return MaterialId(i as u32);
+        }
+        let idx = materials.len() as u32;
+        materials.push(Material {
+            strength_factor: None,
+            concrete_class: Default::default(),
+            id: MaterialId(idx),
+            name: format!("小梁鋼材(E={young})"),
+            category: MaterialCategory::Steel,
+            young,
+            poisson: 0.3,
+            density: 7.85e-9,
+            shear: None,
+            fc: None,
+            fy: Some(235.0),
+        });
+        MaterialId(idx)
+    };
     let sub_sec_id = |orig: SectionId,
                       sub_sections: &mut Vec<Section>,
-                      sec_map: &mut Vec<(SectionId, usize)>|
+                      sec_map: &mut Vec<(SectionId, usize)>,
+                      sub_materials: &mut Vec<Material>|
      -> usize {
         if let Some((_, idx)) = sec_map.iter().find(|(o, _)| *o == orig) {
             return *idx;
@@ -234,10 +268,7 @@ pub fn build_slab_grillage(model: &Model, slab: &FloorRegion, w: f64) -> Option<
         let mut s = model.sections[orig.index()].clone();
         let idx = sub_sections.len();
         s.id = SectionId(idx as u32);
-        // 格子解析用のサブモデルは材料を 1 つしか持たないため、断面の材料参照は
-        // すべてその既定鋼材へ差し替える（剛性のみを見る解析であり、
-        // 鉄筋・内蔵鉄骨の材料は使わない）。
-        s.material = Some(MaterialId(0));
+        s.material = Some(sub_mat_for_young(joist_young(orig), sub_materials));
         s.rebar_material = None;
         s.shear_rebar_material = None;
         s.steel_material = None;
@@ -268,7 +299,7 @@ pub fn build_slab_grillage(model: &Model, slab: &FloorRegion, w: f64) -> Option<
         // 全区間とも端部は曲げ連続（Fixed）。受け/架けの曲げ解放は、架け梁側の
         // 別節点と受け梁節点を Uz のみ結合する `RigidLink` で表現しており、部材端では
         // 解放しない（架け梁は自身は連続＝機構を生じない）。
-        let sec_idx = sub_sec_id(j.sec, &mut sub_sections, &mut sec_map);
+        let sec_idx = sub_sec_id(j.sec, &mut sub_sections, &mut sec_map, &mut sub_materials);
         let w_udl = w * j.spacing; // 負担幅の等分布荷重（下向き）。
         for seg in chain.windows(2) {
             let (n0, n1) = (seg[0], seg[1]);
@@ -353,19 +384,10 @@ pub fn build_slab_grillage(model: &Model, slab: &FloorRegion, w: f64) -> Option<
         })
         .collect();
 
-    let materials = vec![Material {
-        strength_factor: None,
-        concrete_class: Default::default(),
-        id: MaterialId(0),
-        name: "小梁鋼材(既定)".into(),
-        category: MaterialCategory::Steel,
-        young: STEEL_YOUNG,
-        poisson: 0.3,
-        density: 7.85e-9,
-        shear: None,
-        fc: None,
-        fy: Some(235.0),
-    }];
+    let materials = sub_materials;
+    if materials.is_empty() {
+        return None;
+    }
 
     // ピン受け/架けの鉛直リンク: 架け梁の別節点(fresh, master)と受け梁の共有節点
     // (shared, slave)の Uz のみを結合。曲げは伝えず鉛直せん断だけを伝える。
@@ -410,9 +432,6 @@ pub fn build_slab_grillage(model: &Model, slab: &FloorRegion, w: f64) -> Option<
         elem_joist,
     })
 }
-
-/// 鋼小梁の既定ヤング係数 [N/mm²]（設計モジュールと同一）。
-const STEEL_YOUNG: f64 = 205_000.0;
 
 /// 床格子サブモデルの解。
 pub struct GrillageSolution {
@@ -763,7 +782,7 @@ mod tests {
                 id: FloorRegionId(0),
                 name: String::new(),
                 boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
-                secondary_joist_ids: vec![],
+                secondary_joists: vec![],
                 slab_ids: vec![],
                 joists: vec![
                     JoistLine {
@@ -866,7 +885,7 @@ mod tests {
                 id: FloorRegionId(0),
                 name: String::new(),
                 boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
-                secondary_joist_ids: vec![],
+                secondary_joists: vec![],
                 slab_ids: vec![],
                 joists: vec![
                     JoistLine {
@@ -951,7 +970,7 @@ mod tests {
                 id: FloorRegionId(0),
                 name: String::new(),
                 boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
-                secondary_joist_ids: vec![],
+                secondary_joists: vec![],
                 slab_ids: vec![],
                 joists: vec![
                     JoistLine {
@@ -1008,7 +1027,7 @@ mod tests {
                 id: FloorRegionId(0),
                 name: String::new(),
                 boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
-                secondary_joist_ids: vec![],
+                secondary_joists: vec![],
                 slab_ids: vec![],
                 joists: vec![
                     JoistLine {
@@ -1041,6 +1060,68 @@ mod tests {
         assert!(
             (sum - total).abs() / total < 1e-6,
             "支点反力総和={sum} 全載荷={total}"
+        );
+    }
+
+    #[test]
+    fn grillage_uses_section_material_young() {
+        use squid_n_core::ids::FloorRegionId;
+        use squid_n_core::model::JoistLine;
+
+        let mk = |id: u32, x: f64, y: f64| Node {
+            id: NodeId(id),
+            coord: [x, y, 0.0],
+            restraint: Dof6Mask::FREE,
+            mass: None,
+            story: None,
+            support_spring: None,
+        };
+        let mut mat = steel(0);
+        mat.young = 100_000.0;
+        let model = Model {
+            nodes: vec![
+                mk(0, 0.0, 0.0),
+                mk(1, 4000.0, 0.0),
+                mk(2, 4000.0, 4000.0),
+                mk(3, 0.0, 4000.0),
+                mk(4, 2000.0, 0.0),
+                mk(5, 2000.0, 4000.0),
+                mk(6, 0.0, 2000.0),
+                mk(7, 4000.0, 2000.0),
+            ],
+            sections: vec![beam_section(0)],
+            materials: vec![mat],
+            floor_regions: vec![FloorRegion {
+                id: FloorRegionId(0),
+                name: String::new(),
+                boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
+                secondary_joists: vec![],
+                slab_ids: vec![],
+                joists: vec![
+                    JoistLine {
+                        dir: [0.0, 1.0],
+                        spacing: 2000.0,
+                        support: [NodeId(4), NodeId(5)],
+                        section: Some(SectionId(0)),
+                        pinned_onto: None,
+                    },
+                    JoistLine {
+                        dir: [1.0, 0.0],
+                        spacing: 2000.0,
+                        support: [NodeId(6), NodeId(7)],
+                        section: Some(SectionId(0)),
+                        pinned_onto: None,
+                    },
+                ],
+            }],
+            ..Default::default()
+        };
+        let g = build_slab_grillage(&model, &model.floor_regions[0], 0.005).expect("格子構築");
+        assert_eq!(g.model.materials.len(), 1);
+        assert!(
+            (g.model.materials[0].young - 100_000.0).abs() < 1e-6,
+            "young={}",
+            g.model.materials[0].young
         );
     }
 }

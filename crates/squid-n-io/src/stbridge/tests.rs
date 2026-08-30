@@ -2,7 +2,7 @@
 
 use super::*;
 use smallvec::smallvec;
-use squid_n_core::ids::{ElemId, MaterialId, NodeId, SecondaryMemberId, SectionId, StoryId};
+use squid_n_core::ids::{ElemId, MaterialId, NodeId, SectionId, StoryId};
 use squid_n_core::model::SlabPlate;
 use squid_n_core::model::{
     AxisGroupKind, AxisSource, ElementData, ElementKind, EndCondition, ForceRegime, LocalAxis,
@@ -2173,7 +2173,7 @@ fn test_wall_roundtrip_export_import() {
         name: String::new(),
         boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
         wall_plate_ids: vec![WallPlateId(0)],
-        post_ids: Vec::new(),
+        posts: Vec::new(),
     });
     assert!(model.validate().is_ok(), "{:?}", model.validate());
 
@@ -2434,9 +2434,9 @@ fn test_import_stbpost_bottom_top() {
 </StbModel></ST_BRIDGE>"#;
     let m = import_stbridge(xml).expect("StbPost で中断しない");
     assert!(m.elements.is_empty(), "間柱は解析要素にしない");
-    assert_eq!(m.secondary_members.len(), 1);
-    assert_eq!(m.secondary_members[0].kind, SecondaryMemberKind::Post);
-    assert_eq!(m.secondary_members[0].nodes, [NodeId(0), NodeId(1)]);
+    assert_eq!(m.unassigned_posts.len(), 1);
+    assert_eq!(m.unassigned_posts[0].kind, SecondaryMemberKind::Post);
+    assert_eq!(m.unassigned_posts[0].nodes, [NodeId(0), NodeId(1)]);
 }
 
 /// [高] SRC 内蔵鉄骨の参照が未解決なら警告する（無言のゼロ鉄骨を防ぐ）。
@@ -2761,8 +2761,8 @@ fn test_import_stbbeam_as_secondary_member() {
 </StbModel></ST_BRIDGE>"#;
     let (m, report) = import_stbridge_with_report(xml).expect("import");
     assert_eq!(m.elements.len(), 1, "大梁のみ解析要素");
-    assert_eq!(m.secondary_members.len(), 1);
-    let sm = &m.secondary_members[0];
+    assert_eq!(m.joists().count(), 1);
+    let sm = m.joists().next().expect("小梁 1 本");
     assert_eq!(sm.kind, SecondaryMemberKind::Joist);
     assert_eq!(sm.nodes, [NodeId(2), NodeId(3)]);
     assert!(sm.section.is_some(), "断面参照が解決されるはず");
@@ -2794,15 +2794,13 @@ fn test_secondary_members_roundtrip() {
     push_section(&mut m, h.to_section(SectionId(0), "G".into()));
     m.elements.push(member(0, false, 0));
     // 小梁と間柱を 1 本ずつ（節点は既存節点を使う）。
-    m.secondary_members.push(SecondaryMember {
-        id: SecondaryMemberId(0),
+    m.unassigned_joists.push(SecondaryMember {
         kind: SecondaryMemberKind::Joist,
         nodes: [NodeId(0), NodeId(1)],
         section: Some(SectionId(0)),
         name: "B1".into(),
     });
-    m.secondary_members.push(SecondaryMember {
-        id: SecondaryMemberId(1),
+    m.unassigned_posts.push(SecondaryMember {
         kind: SecondaryMemberKind::Post,
         nodes: [NodeId(0), NodeId(2)],
         section: Some(SectionId(0)),
@@ -2815,8 +2813,9 @@ fn test_secondary_members_roundtrip() {
     assert!(xml.contains("<StbPosts>"), "間柱を書き出す: {xml}");
 
     let (back, _report) = import_stbridge_with_report(&xml).expect("re-import");
-    assert_eq!(back.secondary_members.len(), 2);
-    let kinds: Vec<SecondaryMemberKind> = back.secondary_members.iter().map(|s| s.kind).collect();
+    assert_eq!(back.joists().count() + back.posts().count(), 2);
+    let kinds: Vec<SecondaryMemberKind> =
+        back.joists().chain(back.posts()).map(|s| s.kind).collect();
     assert!(kinds.contains(&SecondaryMemberKind::Joist));
     assert!(kinds.contains(&SecondaryMemberKind::Post));
     assert_eq!(back.elements.len(), 1, "大梁は解析要素のまま");
@@ -3391,7 +3390,17 @@ fn test_import_enclosed_frame_with_slab_folds_to_one_region() {
     assert_eq!(m.floor_regions[0].slab_ids.len(), 1, "床板が 1 枚帰属する");
     assert_eq!(m.slabs.len(), 1);
     assert!(!m.slabs[0].is_attached(), "囲まれ床板");
-    assert_eq!(m.secondary_members.len(), 0, "小梁 0");
+    assert_eq!(
+        m.unassigned_posts.len()
+            + m.unassigned_joists.len()
+            + m.floor_regions
+                .iter()
+                .map(|r| r.secondary_joists.len())
+                .sum::<usize>()
+            + m.wall_regions.iter().map(|r| r.posts.len()).sum::<usize>(),
+        0,
+        "小梁 0"
+    );
 }
 
 /// 大梁 1 本 + 跳ね出し StbSlab は取り付き領域になる。

@@ -1,8 +1,6 @@
 use super::*;
 use squid_n_core::dof::Dof6Mask;
-use squid_n_core::ids::{
-    ElemId, MaterialId, SecondaryMemberId, SectionId, WallPlateId, WallRegionId,
-};
+use squid_n_core::ids::{ElemId, MaterialId, SectionId, WallPlateId, WallRegionId};
 use squid_n_core::model::{
     DamperSpec, ElementData, EndCondition, ForceRegime, LoadCase, LoadCaseKind, LoadCfg, LocalAxis,
     Material, MaterialCategory, MemberLoad, MiscWallTransfer, NodalLoad, Node, OutOfFrameMiscWall,
@@ -239,8 +237,7 @@ fn test_base_master_ignores_non_structural_slaves() {
         story: None,
         support_spring: None,
     });
-    model.secondary_members.push(SecondaryMember {
-        id: SecondaryMemberId(model.secondary_members.len() as u32),
+    model.unassigned_joists.push(SecondaryMember {
         kind: SecondaryMemberKind::Joist,
         nodes: [NodeId(0), free_id],
         section: Some(SectionId(0)),
@@ -655,8 +652,7 @@ fn secondary_joist_model() -> Model {
         fc: None,
         fy: None,
     });
-    model.secondary_members.push(SecondaryMember {
-        id: SecondaryMemberId(model.secondary_members.len() as u32),
+    model.unassigned_joists.push(SecondaryMember {
         kind: SecondaryMemberKind::Joist,
         nodes: [NodeId(1), NodeId(2)],
         section: Some(SectionId(0)),
@@ -1186,7 +1182,7 @@ fn wall_model() -> Model {
         name: String::new(),
         boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
         wall_plate_ids: vec![WallPlateId(0)],
-        post_ids: Vec::new(),
+        posts: Vec::new(),
     });
     model
 }

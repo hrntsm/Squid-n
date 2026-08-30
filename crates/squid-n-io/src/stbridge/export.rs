@@ -229,7 +229,8 @@ fn members_body(
     let secondary_member_base = model.elements.len() as u32;
     let mut sec_beams = String::new();
     let mut posts = String::new();
-    for (i, sm) in model.secondary_members.iter().enumerate() {
+    let all_secondaries: Vec<_> = model.joists().chain(model.posts()).collect();
+    for (i, sm) in all_secondaries.iter().enumerate() {
         let mid = secondary_member_base + i as u32;
         let sec = sm
             .section
@@ -279,7 +280,7 @@ fn members_body(
 
     // スラブ（StbSlab）。境界節点ループ＋断面参照。member id は要素 id と別空間なので
     // 要素数の次から採番する（1 始まり。二次部材の後）。
-    let slab_member_base = model.elements.len() as u32 + model.secondary_members.len() as u32;
+    let slab_member_base = model.elements.len() as u32 + all_secondaries.len() as u32;
     let slab_sec_base = slab_section_id_base(model, col_map, beam_map);
     let slab_sec_ids = slab_section_ids(model, slab_sec_base);
     let mut slabs = String::new();

@@ -10,9 +10,7 @@
 use crate::dof::Dof6Mask;
 use crate::geom::{LEVEL_TOL_MM, MEMBER_AXIS_TOL_MM};
 use crate::ids::{FloorRegionId, NodeId};
-use crate::model::{
-    ElementKind, FloorRegion, LoadTransfer, Model, RegionAnchor, SecondaryMemberKind, SlabShape,
-};
+use crate::model::{ElementKind, FloorRegion, LoadTransfer, Model, RegionAnchor, SlabShape};
 use crate::region_gen::{
     generate_region_boundaries, polygon_contains_strict, scan_region_boundaries, BOUNDARY_TOL_MM,
 };
@@ -51,6 +49,10 @@ pub struct FloorRegionRebuildReport {
 /// 帰属なしのまま残す（警告。落とさない）。
 pub fn rebuild_floor_regions(model: &mut Model) -> FloorRegionRebuildReport {
     let scan = scan_region_boundaries(model);
+    // 床領域を作り直す前に、領域内小梁を未割当へ集約する（assign_joists が再配分する）。
+    for r in &mut model.floor_regions {
+        model.unassigned_joists.append(&mut r.secondary_joists);
+    }
     let old_regions = std::mem::take(&mut model.floor_regions);
     let mut report = FloorRegionRebuildReport::default();
 
@@ -156,17 +158,7 @@ pub fn rebuild_floor_regions(model: &mut Model) -> FloorRegionRebuildReport {
 
 /// 現状の床領域で、中点がちょうど 1 領域に厳密内包されない小梁の本数。
 pub fn unassigned_joist_count(model: &Model) -> usize {
-    model
-        .secondary_members
-        .iter()
-        .filter(|sm| sm.kind == SecondaryMemberKind::Joist)
-        .filter(|sm| {
-            let Some((xy, z)) = joist_midpoint(model, sm.nodes) else {
-                return true;
-            };
-            regions_containing(model, &model.floor_regions, xy, z).len() != 1
-        })
-        .count()
+    model.unassigned_joists.len()
 }
 
 /// 大梁または小梁で囲まれた床板（`Enclosed`）で、重心がどの床領域にも入らないものの件数。
@@ -459,26 +451,28 @@ fn regions_containing(model: &Model, regions: &[FloorRegion], xy: [f64; 2], z: f
 }
 
 fn assign_joists(model: &mut Model) -> usize {
-    let mut joists: Vec<_> = model
-        .secondary_members
-        .iter()
-        .filter(|sm| sm.kind == SecondaryMemberKind::Joist)
-        .map(|sm| (sm.id, sm.nodes))
+    let joists: Vec<_> = model
+        .floor_regions
+        .iter_mut()
+        .flat_map(|r| r.secondary_joists.drain(..))
+        .chain(model.unassigned_joists.drain(..))
         .collect();
-    joists.sort_by_key(|(id, _)| *id);
     for r in &mut model.floor_regions {
-        r.secondary_joist_ids.clear();
+        r.secondary_joists.clear();
     }
     let mut unassigned = 0;
-    for (id, nodes) in joists {
+    for sm in joists {
+        let nodes = sm.nodes;
         let Some((xy, z)) = joist_midpoint(model, nodes) else {
+            model.unassigned_joists.push(sm);
             unassigned += 1;
             continue;
         };
         let hits = regions_containing(model, &model.floor_regions, xy, z);
         if hits.len() == 1 {
-            model.floor_regions[hits[0]].secondary_joist_ids.push(id);
+            model.floor_regions[hits[0]].secondary_joists.push(sm);
         } else {
+            model.unassigned_joists.push(sm);
             unassigned += 1;
         }
     }
@@ -578,7 +572,7 @@ pub(crate) fn delete_unref_nodes(model: &mut Model, candidates: &[NodeId]) -> us
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ids::{ElemId, FloorRegionId, NodeId, SecondaryMemberId, SectionId, SlabId};
+    use crate::ids::{ElemId, FloorRegionId, NodeId, SectionId, SlabId};
     use crate::model::{
         AreaLoad, DistributionMethod, ElementData, ElementKind, EndCondition, ForceRegime,
         LocalAxis, Node, RegionAnchor, SecondaryMember, SecondaryMemberKind, Slab, SlabPlate,
@@ -648,7 +642,6 @@ mod tests {
             nodes: [NodeId(i), NodeId(j)],
             section: None,
             name: format!("J{id}"),
-            id: SecondaryMemberId(id),
         }
     }
 
@@ -695,7 +688,7 @@ mod tests {
             vec![1, 2, 3, 4],
             plate(Some(sid), Vec::new()),
         ));
-        model.secondary_members.push(joist(0, 1, 4));
+        model.unassigned_joists.push(joist(0, 1, 4));
         model
     }
 
@@ -728,9 +721,13 @@ mod tests {
             "2 枚とも同じ床領域へ帰属"
         );
         assert_eq!(
-            model.floor_regions[0].secondary_joist_ids,
-            vec![SecondaryMemberId(0)],
+            model.floor_regions[0].secondary_joists.len(),
+            1,
             "中央小梁が属する"
+        );
+        assert_eq!(
+            model.floor_regions[0].secondary_joists[0].nodes,
+            [NodeId(1), NodeId(4)]
         );
         assert_eq!(report.regions, 1);
         assert_eq!(report.slabs_assigned, 2);
@@ -747,6 +744,26 @@ mod tests {
         assert_eq!(model.floor_regions, first_regions);
         assert_eq!(model.slabs, first_slabs);
         assert_eq!(model.nodes.len(), first_nodes);
+    }
+
+    #[test]
+    fn test_rebuild_preserves_secondary_joists_across_runs() {
+        let mut model = two_piece_square();
+        rebuild_floor_regions(&mut model);
+        assert_eq!(model.joists().count(), 1);
+        let first = model
+            .floor_regions
+            .iter()
+            .flat_map(|r| r.secondary_joists.clone())
+            .collect::<Vec<_>>();
+        rebuild_floor_regions(&mut model);
+        assert_eq!(model.joists().count(), 1);
+        let second = model
+            .floor_regions
+            .iter()
+            .flat_map(|r| r.secondary_joists.clone())
+            .collect::<Vec<_>>();
+        assert_eq!(first, second);
     }
 
     #[test]
@@ -883,15 +900,17 @@ mod tests {
         let mut model = two_piece_square();
         model.nodes.push(node(6, 10000.0, 0.0, 0.0));
         model.nodes.push(node(7, 10000.0, 4000.0, 0.0));
-        model.secondary_members.push(joist(1, 6, 7));
+        model.unassigned_joists.push(joist(1, 6, 7));
         let report = rebuild_floor_regions(&mut model);
-        assert_eq!(model.secondary_members.len(), 2, "所属なし小梁も残る");
-        assert!(
-            model
-                .floor_regions
-                .iter()
-                .all(|r| !r.secondary_joist_ids.contains(&SecondaryMemberId(1))),
-            "どの領域の secondary_joist_ids にも入らない"
+        assert_eq!(
+            model.floor_regions[0].secondary_joists.len(),
+            1,
+            "領域内小梁"
+        );
+        assert_eq!(
+            model.unassigned_joists.len(),
+            1,
+            "所属なし小梁は unassigned へ"
         );
         assert_eq!(report.unassigned_joists, 1);
     }

@@ -365,7 +365,7 @@ fn section_in_use(model: &Model, id: SectionId) -> bool {
             .iter()
             .any(|r| r.joist_lines().iter().any(|j| j.section == Some(id)))
         || model
-            .secondary_members
-            .iter()
+            .joists()
+            .chain(model.posts())
             .any(|sm| sm.section == Some(id))
 }

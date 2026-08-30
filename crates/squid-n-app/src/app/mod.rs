@@ -265,22 +265,24 @@ pub struct Selection {
     pub members: Vec<squid_n_core::ids::ElemId>,
 }
 
-/// 小梁設計結果の対象（`FloorRegion::joists` の添字、または `secondary_members` の添字）。
+/// 小梁設計結果の対象（`FloorRegion::joists` の添字、または二次部材の端点）。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum JoistCheckTarget {
     /// `FloorRegion::joists` 内の添字（代表床板の ID で紐づける）。
     SlabJoist(usize),
-    /// `Model::secondary_members` 内の添字（ST-Bridge 取り込み小梁など）。
-    SecondaryMember(usize),
+    /// 二次部材小梁。端点の節点対で識別する（リビルドで走査順が変わっても安定）。
+    SecondaryJoist {
+        nodes: [squid_n_core::ids::NodeId; 2],
+    },
 }
 
-/// 床の中での小梁設計結果1件（`(床板 id, 対象, 設計結果)`）。
+/// 床の中での小梁設計結果1件（`(代表床板 id, 対象, 設計結果)`）。
 ///
 /// 手入力小梁ライン（`FloorRegion::joists`）の検定は、その床領域の代表床板
 /// （`FloorRegion::slab_ids` の先頭。squid-n-load の `distribute_region` と同じ規約）
-/// の `SlabId` で紐づける。
+/// の `SlabId` で紐づける。二次部材で所属領域も分配代表も無いときは `None`。
 pub type JoistCheck = (
-    squid_n_core::ids::SlabId,
+    Option<squid_n_core::ids::SlabId>,
     JoistCheckTarget,
     squid_n_design_jp::floor::JoistDesignResult,
 );

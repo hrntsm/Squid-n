@@ -1303,7 +1303,7 @@ mod tests {
             name: String::new(),
             boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
             wall_plate_ids: vec![WallPlateId(0)],
-            post_ids: Vec::new(),
+            posts: Vec::new(),
         });
 
         let base = model.elements.len();

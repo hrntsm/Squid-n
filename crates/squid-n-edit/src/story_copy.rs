@@ -42,8 +42,10 @@
 //! 場合は [`CopyStoryReport::mismatched_sections`] で名指しし、利用者が判断する。
 
 use super::*;
-use squid_n_core::ids::{ElemId, NodeId, SecondaryMemberId, SectionId, SlabId, StoryId};
-use squid_n_core::model::{SecondaryMember, Section, Slab, SlabPlate, SlabShape, SlabUsage};
+use squid_n_core::ids::{ElemId, NodeId, SectionId, SlabId, StoryId};
+use squid_n_core::model::{
+    SecondaryMember, SecondaryMemberKind, Section, Slab, SlabPlate, SlabShape, SlabUsage,
+};
 use std::collections::{HashMap, HashSet};
 
 /// 同じ平面位置とみなす座標差 [mm]。
@@ -288,6 +290,8 @@ type PointKey = (usize, usize, i64);
 
 /// 部材・床・二次部材の対応付けキー（材端／頂点の並び。順序の違いを吸収するため整列）。
 type PlanKey = Vec<PointKey>;
+/// 二次部材は種別に加え平面位置で対応付ける（同幾何の小梁と間柱を衝突させない）。
+type SecondaryPlanKey = (SecondaryMemberKind, PlanKey);
 
 /// 階の中での高さの位置。直下階のレベルを 0、当該階のレベルを 1000 とし、
 /// あいだは階高に対する比を 1/1000 で量子化する。
@@ -382,14 +386,14 @@ impl EditCommand for RestoreModel {
 ///
 /// 先に見つかったものを採ると、どれが選ばれるかは要素の並び順しだいになる。
 /// 誤って別の部材へ断面や荷重を配るより、飛ばして件数を報告するほうが安全である。
-struct PlanIndex<T> {
-    map: HashMap<PlanKey, T>,
-    ambiguous: HashSet<PlanKey>,
+struct PlanIndex<K, T> {
+    map: HashMap<K, T>,
+    ambiguous: HashSet<K>,
 }
 
-impl<T> PlanIndex<T> {
-    fn build(items: impl Iterator<Item = (PlanKey, T)>) -> Self {
-        let mut map: HashMap<PlanKey, T> = HashMap::new();
+impl<K: Eq + std::hash::Hash, T> PlanIndex<K, T> {
+    fn build(items: impl Iterator<Item = (K, T)>) -> Self {
+        let mut map: HashMap<K, T> = HashMap::new();
         let mut ambiguous = HashSet::new();
         for (k, v) in items {
             if map.remove(&k).is_some() || ambiguous.contains(&k) {
@@ -401,12 +405,11 @@ impl<T> PlanIndex<T> {
         Self { map, ambiguous }
     }
 
-    /// キーに対応する相手。曖昧なキーは `None`（呼び出し側は飛ばして数える）。
-    fn get(&self, k: &PlanKey) -> Option<&T> {
+    fn get(&self, k: &K) -> Option<&T> {
         self.map.get(k)
     }
 
-    fn is_ambiguous(&self, k: &PlanKey) -> bool {
+    fn is_ambiguous(&self, k: &K) -> bool {
         self.ambiguous.contains(k)
     }
 }
@@ -510,7 +513,7 @@ fn copy_one(
 }
 
 /// 階に属する部材を、対応付けキーで引ける索引にする。
-fn members_by_plan(model: &Model, ctx: &Ctx, story: StoryId) -> PlanIndex<ElemId> {
+fn members_by_plan(model: &Model, ctx: &Ctx, story: StoryId) -> PlanIndex<PlanKey, ElemId> {
     PlanIndex::build(model.elements.iter().filter_map(|e| {
         (model.member_story(e) == Some(story))
             .then(|| Some((ctx.key(model, story, &e.nodes)?, e.id)))
@@ -519,7 +522,7 @@ fn members_by_plan(model: &Model, ctx: &Ctx, story: StoryId) -> PlanIndex<ElemId
 }
 
 /// 階の床板を、対応付けキーで引ける索引にする。
-fn slabs_by_plan(model: &Model, ctx: &Ctx, story: StoryId) -> PlanIndex<SlabId> {
+fn slabs_by_plan(model: &Model, ctx: &Ctx, story: StoryId) -> PlanIndex<PlanKey, SlabId> {
     PlanIndex::build(model.slabs.iter().filter_map(|sl| {
         (slab_story(model, sl) == Some(story))
             .then(|| Some((ctx.key(model, story, sl.boundary_nodes()?)?, sl.id)))
@@ -527,19 +530,100 @@ fn slabs_by_plan(model: &Model, ctx: &Ctx, story: StoryId) -> PlanIndex<SlabId> 
     }))
 }
 
-/// 階の二次部材を、対応付けキーで引ける索引にする（値は配列添字）。
-fn secondary_by_plan(model: &Model, ctx: &Ctx, story: StoryId) -> PlanIndex<usize> {
-    PlanIndex::build(
-        model
-            .secondary_members
+/// 二次部材の格納位置（D6）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum SecondarySlot {
+    UnassignedJoist(usize),
+    UnassignedPost(usize),
+    FloorJoist { region: usize, index: usize },
+    WallPost { region: usize, index: usize },
+}
+
+fn secondary_at(model: &Model, slot: SecondarySlot) -> Option<&SecondaryMember> {
+    match slot {
+        SecondarySlot::UnassignedJoist(i) => model.unassigned_joists.get(i),
+        SecondarySlot::UnassignedPost(i) => model.unassigned_posts.get(i),
+        SecondarySlot::FloorJoist { region, index } => {
+            model.floor_regions.get(region)?.secondary_joists.get(index)
+        }
+        SecondarySlot::WallPost { region, index } => {
+            model.wall_regions.get(region)?.posts.get(index)
+        }
+    }
+}
+
+fn secondary_at_mut(model: &mut Model, slot: SecondarySlot) -> Option<&mut SecondaryMember> {
+    match slot {
+        SecondarySlot::UnassignedJoist(i) => model.unassigned_joists.get_mut(i),
+        SecondarySlot::UnassignedPost(i) => model.unassigned_posts.get_mut(i),
+        SecondarySlot::FloorJoist { region, index } => model
+            .floor_regions
+            .get_mut(region)?
+            .secondary_joists
+            .get_mut(index),
+        SecondarySlot::WallPost { region, index } => {
+            model.wall_regions.get_mut(region)?.posts.get_mut(index)
+        }
+    }
+}
+
+fn all_secondary_slots(model: &Model) -> Vec<SecondarySlot> {
+    let mut out = Vec::new();
+    for i in 0..model.unassigned_joists.len() {
+        out.push(SecondarySlot::UnassignedJoist(i));
+    }
+    for i in 0..model.unassigned_posts.len() {
+        out.push(SecondarySlot::UnassignedPost(i));
+    }
+    for (ri, region) in model.floor_regions.iter().enumerate() {
+        for ji in 0..region.secondary_joists.len() {
+            out.push(SecondarySlot::FloorJoist {
+                region: ri,
+                index: ji,
+            });
+        }
+    }
+    for (ri, region) in model.wall_regions.iter().enumerate() {
+        for pi in 0..region.posts.len() {
+            out.push(SecondarySlot::WallPost {
+                region: ri,
+                index: pi,
+            });
+        }
+    }
+    out
+}
+
+fn secondary_count(model: &Model) -> usize {
+    model.unassigned_joists.len()
+        + model.unassigned_posts.len()
+        + model
+            .floor_regions
             .iter()
-            .enumerate()
-            .filter_map(|(i, sm)| {
-                (secondary_story(model, sm) == Some(story))
-                    .then(|| Some((ctx.key(model, story, &sm.nodes)?, i)))
-                    .flatten()
-            }),
-    )
+            .map(|r| r.secondary_joists.len())
+            .sum::<usize>()
+        + model
+            .wall_regions
+            .iter()
+            .map(|r| r.posts.len())
+            .sum::<usize>()
+}
+
+/// 階の二次部材を、対応付けキーで引ける索引にする。
+fn secondary_by_plan(
+    model: &Model,
+    ctx: &Ctx,
+    story: StoryId,
+) -> PlanIndex<SecondaryPlanKey, SecondarySlot> {
+    PlanIndex::build(all_secondary_slots(model).into_iter().filter_map(|slot| {
+        let sm = secondary_at(model, slot)?;
+        (secondary_story(model, sm) == Some(story))
+            .then(|| {
+                ctx.key(model, story, &sm.nodes)
+                    .map(|k| ((sm.kind, k), slot))
+            })
+            .flatten()
+    }))
 }
 
 /// 床板の所属階（参照する節点のうちもっとも高い節点の所属階。部材と同じ規則）。
@@ -654,17 +738,23 @@ fn copy_sections(
 
     // --- 二次部材 ---
     let dst_sec = secondary_by_plan(model, ctx, to);
-    let src: Vec<(PlanKey, Option<SectionId>)> = model
-        .secondary_members
-        .iter()
-        .filter(|sm| secondary_story(model, sm) == Some(cmd.from))
-        .filter_map(|sm| Some((ctx.key(model, cmd.from, &sm.nodes)?, sm.section)))
+    let src: Vec<(SecondaryPlanKey, Option<SectionId>)> = all_secondary_slots(model)
+        .into_iter()
+        .filter_map(|slot| {
+            let sm = secondary_at(model, slot)?;
+            (secondary_story(model, sm) == Some(cmd.from))
+                .then(|| {
+                    ctx.key(model, cmd.from, &sm.nodes)
+                        .map(|k| ((sm.kind, k), sm.section))
+                })
+                .flatten()
+        })
         .collect();
     for (key, src_sec) in src {
-        let Some(&i) = dst_sec.get(&key) else {
+        let Some(&slot) = dst_sec.get(&key) else {
             continue;
         };
-        let current = model.secondary_members[i].section;
+        let current = secondary_at(model, slot).and_then(|sm| sm.section);
         let Some(next) = resolve_section(
             model,
             cmd,
@@ -676,9 +766,12 @@ fn copy_sections(
         ) else {
             continue;
         };
-        if model.secondary_members[i].section != next {
-            count_section_change(model.secondary_members[i].section, next, report);
-            model.secondary_members[i].section = next;
+        let Some(sm) = secondary_at_mut(model, slot) else {
+            continue;
+        };
+        if sm.section != next {
+            count_section_change(sm.section, next, report);
+            sm.section = next;
         }
     }
 }
@@ -936,10 +1029,30 @@ fn copy_slab_loads(
     }
 }
 
+fn should_delete_copied_secondary(
+    model: &Model,
+    ctx: &Ctx,
+    _cmd: &CopyStory,
+    to: StoryId,
+    dz: f64,
+    sm: &SecondaryMember,
+    src_keys: &HashSet<SecondaryPlanKey>,
+) -> bool {
+    if secondary_story(model, sm) != Some(to) {
+        return false;
+    }
+    let unmatched = ctx
+        .key(model, to, &sm.nodes)
+        .is_some_and(|k| !src_keys.contains(&(sm.kind, k)));
+    let in_src_plan = sm.nodes.iter().all(|&n| ctx.maps_back(model, n, dz));
+    unmatched && in_src_plan
+}
+
 /// 二次部材（小梁・間柱）の形を配る。断面は `copy_sections` が受け持つ。
 ///
 /// 上書きが真のときは、複製元に同じ位置の二次部材が無い複製先の二次部材を削除する
-/// （材端節点が複製元の階へ対応するものに限る）。
+/// （材端節点が複製元の階へ対応するものに限る）。新規複製分は未割当リストへ入れ、
+/// 次回の領域リビルドで D7 により帰属が決まる。
 fn copy_secondary(
     model: &mut Model,
     ctx: &Ctx,
@@ -949,57 +1062,99 @@ fn copy_secondary(
     dst_story_name: &str,
     report: &mut CopyStoryReport,
 ) {
-    let src_keys: HashSet<PlanKey> = model
-        .secondary_members
-        .iter()
-        .filter(|sm| secondary_story(model, sm) == Some(cmd.from))
-        .filter_map(|sm| ctx.key(model, cmd.from, &sm.nodes))
+    let src_keys: HashSet<SecondaryPlanKey> = all_secondary_slots(model)
+        .into_iter()
+        .filter_map(|slot| {
+            let sm = secondary_at(model, slot)?;
+            (secondary_story(model, sm) == Some(cmd.from))
+                .then(|| ctx.key(model, cmd.from, &sm.nodes).map(|k| (sm.kind, k)))
+                .flatten()
+        })
         .collect();
 
     if cmd.overwrite {
-        let before = model.secondary_members.len();
-        // 残す部材を先に決める。`retain_secondary_members` へ渡す述語は
-        // `&Model` を借りられないため、判定結果を ID 順の表にしておく。
-        let keep_flags: Vec<bool> = model
-            .secondary_members
+        let before = secondary_count(model);
+        let delete_joists: Vec<bool> = model
+            .unassigned_joists
             .iter()
-            .map(|sm| {
-                if secondary_story(model, sm) != Some(to) {
-                    return true;
-                }
-                let unmatched = ctx
-                    .key(model, to, &sm.nodes)
-                    .is_some_and(|k| !src_keys.contains(&k));
-                let in_src_plan = sm.nodes.iter().all(|&n| ctx.maps_back(model, n, dz));
-                !(unmatched && in_src_plan)
+            .map(|sm| should_delete_copied_secondary(model, ctx, cmd, to, dz, sm, &src_keys))
+            .collect();
+        let mut ji = 0usize;
+        model.unassigned_joists.retain(|_| {
+            let keep = !delete_joists[ji];
+            ji += 1;
+            keep
+        });
+        let delete_posts: Vec<bool> = model
+            .unassigned_posts
+            .iter()
+            .map(|sm| should_delete_copied_secondary(model, ctx, cmd, to, dz, sm, &src_keys))
+            .collect();
+        let mut pi = 0usize;
+        model.unassigned_posts.retain(|_| {
+            let keep = !delete_posts[pi];
+            pi += 1;
+            keep
+        });
+        let region_joist_deletes: Vec<Vec<bool>> = model
+            .floor_regions
+            .iter()
+            .map(|region| {
+                region
+                    .secondary_joists
+                    .iter()
+                    .map(|sm| {
+                        should_delete_copied_secondary(model, ctx, cmd, to, dz, sm, &src_keys)
+                    })
+                    .collect()
             })
             .collect();
-        // 素の差し替えでは後続の `id` が添字とずれ、床・壁領域の参照が別の部材を
-        // 指す。core 側の再採番つき間引きを通す。
-        let mut i = 0usize;
-        model.retain_secondary_members(|_| {
-            let k = keep_flags[i];
-            i += 1;
-            k
-        });
-        report.secondary_deleted += before - model.secondary_members.len();
+        for (region, delete) in model.floor_regions.iter_mut().zip(region_joist_deletes) {
+            let mut k = 0usize;
+            region.secondary_joists.retain(|_| {
+                let keep = !delete[k];
+                k += 1;
+                keep
+            });
+        }
+        let region_post_deletes: Vec<Vec<bool>> = model
+            .wall_regions
+            .iter()
+            .map(|region| {
+                region
+                    .posts
+                    .iter()
+                    .map(|sm| {
+                        should_delete_copied_secondary(model, ctx, cmd, to, dz, sm, &src_keys)
+                    })
+                    .collect()
+            })
+            .collect();
+        for (region, delete) in model.wall_regions.iter_mut().zip(region_post_deletes) {
+            let mut k = 0usize;
+            region.posts.retain(|_| {
+                let keep = !delete[k];
+                k += 1;
+                keep
+            });
+        }
+        report.secondary_deleted += before - secondary_count(model);
     }
 
     let existing = secondary_by_plan(model, ctx, to);
-    let src: Vec<SecondaryMember> = model
-        .secondary_members
-        .iter()
+    let src: Vec<SecondaryMember> = all_secondary_slots(model)
+        .into_iter()
+        .filter_map(|slot| secondary_at(model, slot).cloned())
         .filter(|sm| secondary_story(model, sm) == Some(cmd.from))
-        .cloned()
         .collect();
     let mut mapped: HashMap<SectionId, SectionId> = HashMap::new();
     for sm in src {
-        let Some(key) = ctx.key(model, cmd.from, &sm.nodes) else {
+        let Some(plan) = ctx.key(model, cmd.from, &sm.nodes) else {
             report.skipped += 1;
             continue;
         };
+        let key = (sm.kind, plan);
         if existing.get(&key).is_some() {
-            // 形は既にある。断面は `copy_sections` が受け持つ。
             continue;
         }
         if existing.is_ambiguous(&key) {
@@ -1021,13 +1176,16 @@ fn copy_secondary(
                 d
             }
         });
-        // `..sm` は複製元の `id` まで写す。`id == index` が破れるため明示で振り直す。
-        model.secondary_members.push(SecondaryMember {
-            id: SecondaryMemberId(model.secondary_members.len() as u32),
+        let new_sm = SecondaryMember {
+            kind: sm.kind,
             nodes: [a, b],
             section,
-            ..sm
-        });
+            name: sm.name.clone(),
+        };
+        match sm.kind {
+            SecondaryMemberKind::Joist => model.unassigned_joists.push(new_sm),
+            SecondaryMemberKind::Post => model.unassigned_posts.push(new_sm),
+        }
         report.secondary_created += 1;
     }
 }

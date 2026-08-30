@@ -344,7 +344,7 @@ mod tests {
             name: String::new(),
             boundary: vec![NodeId(0), NodeId(1), NodeId(5), NodeId(4)],
             wall_plate_ids: vec![WallPlateId(0)],
-            post_ids: Vec::new(),
+            posts: Vec::new(),
         });
 
         let mut without_wall = base_frame();

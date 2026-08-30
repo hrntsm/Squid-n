@@ -312,7 +312,7 @@ mod tests {
             name: String::new(),
             boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
             wall_plate_ids: vec![squid_n_core::ids::WallPlateId(0)],
-            post_ids: Vec::new(),
+            posts: Vec::new(),
         });
 
         let (expanded, index, report) = expand_wall_elements(&m);
@@ -351,7 +351,7 @@ mod tests {
             name: String::new(),
             boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
             wall_plate_ids: vec![squid_n_core::ids::WallPlateId(0)],
-            post_ids: Vec::new(),
+            posts: Vec::new(),
         });
 
         let (expanded, _index, _report) = expand_wall_elements(&m);
@@ -375,7 +375,7 @@ mod tests {
             name: String::new(),
             boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
             wall_plate_ids: vec![squid_n_core::ids::WallPlateId(0)],
-            post_ids: Vec::new(),
+            posts: Vec::new(),
         });
         let (expanded, _index, _report) = expand_wall_elements(&m);
         let _ = expand_wall_elements(&expanded);
@@ -390,7 +390,7 @@ mod tests {
             name: String::new(),
             boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
             wall_plate_ids: vec![squid_n_core::ids::WallPlateId(0)],
-            post_ids: Vec::new(),
+            posts: Vec::new(),
         });
 
         let (expanded, index, report) = expand_wall_elements(&m);
@@ -414,7 +414,7 @@ mod tests {
             name: String::new(),
             boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(4), NodeId(3)],
             wall_plate_ids: vec![squid_n_core::ids::WallPlateId(0)],
-            post_ids: Vec::new(),
+            posts: Vec::new(),
         });
 
         let (expanded, _index, report) = expand_wall_elements(&m);
@@ -474,7 +474,7 @@ mod tests {
             name: String::new(),
             boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
             wall_plate_ids: vec![squid_n_core::ids::WallPlateId(0)],
-            post_ids: Vec::new(),
+            posts: Vec::new(),
         });
 
         let (expanded, _index, _report) = expand_wall_elements(&m);
@@ -501,7 +501,7 @@ mod tests {
             name: String::new(),
             boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
             wall_plate_ids: vec![squid_n_core::ids::WallPlateId(0)],
-            post_ids: Vec::new(),
+            posts: Vec::new(),
         });
 
         let (e1, i1, _) = expand_wall_elements(&m);

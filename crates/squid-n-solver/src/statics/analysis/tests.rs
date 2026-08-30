@@ -1393,7 +1393,6 @@ fn test_crossing_beams_reported_as_warning() {
 #[test]
 fn test_model_issues_warns_unassigned_joist() {
     use super::precheck::{model_issues, precheck_model, IssueSeverity};
-    use squid_n_core::ids::SecondaryMemberId;
     use squid_n_core::model::{SecondaryMember, SecondaryMemberKind};
 
     let mut model = make_cantilever_model();
@@ -1414,12 +1413,11 @@ fn test_model_issues_warns_unassigned_joist() {
         story: None,
         support_spring: None,
     });
-    model.secondary_members.push(SecondaryMember {
+    model.unassigned_joists.push(SecondaryMember {
         kind: SecondaryMemberKind::Joist,
         nodes: [NodeId(n), NodeId(n + 1)],
         section: Some(SectionId(0)),
         name: "孤立小梁".into(),
-        id: SecondaryMemberId(0),
     });
 
     let issues = model_issues(&model);

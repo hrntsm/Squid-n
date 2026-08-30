@@ -8,7 +8,7 @@
 //!
 //! - **床領域**（本モジュール）: 大梁が囲む 1 区画そのもの。境界は大梁の閉路（節点列）で、
 //!   [`crate::region_gen`] の走査から作る。**1 つの閉領域につき 1 つ**とする（D1）。
-//!   版の仕様は持たない。小梁（[`FloorRegion::secondary_joist_ids`]）と、
+//!   版の仕様は持たない。小梁（[`FloorRegion::secondary_joists`]）と、
 //!   床領域内の床板一覧（[`FloorRegion::slab_ids`]）を持つ。
 //! - **床板**（[`Slab`]、[`super::slab`]）: 大梁または小梁で囲まれた版、
 //!   または主架構に取り付く版（片持ち・バルコニー・出隅）。厚さ・材料・仕上げ荷重・
@@ -93,18 +93,18 @@ pub struct FloorRegion {
     pub name: String,
     /// 境界の節点列（大梁の閉路。反時計回り、始点は繰り返さない）。
     pub boundary: Vec<NodeId>,
-    /// この床領域に属する小梁（`SecondaryMember::Joist`）の ID リスト。
-    /// リスト内の順序は任意。重複は許可しない（`Model::validate` が確認）。
+    /// この床領域に属する小梁（`SecondaryMember::Joist`）の実体。
+    /// リスト内の順序は任意。
     #[serde(default)]
-    pub secondary_joist_ids: Vec<SecondaryMemberId>,
+    pub secondary_joists: Vec<SecondaryMember>,
     /// この床領域に属する床板の ID リスト。床領域内が小梁で複数の打設単位に
     /// 分かれている場合、複数持ちうる。順序は任意。重複・他領域との共有は許さない
     /// （`Model::validate` が確認）。
     #[serde(default)]
     pub slab_ids: Vec<SlabId>,
     /// 交差小梁の格子解析（[`crate::model::JoistLine`]・床格子サブモデル）用の
-    /// 手入力の小梁ライン。**廃止予定ではない**（小梁の実体は `secondary_joist_ids` が
-    /// 持つ二次部材だが、交差小梁の格子解析だけはこの理想化された入力を使う）。
+    /// 手入力の小梁ライン。**廃止予定ではない**（小梁の実体は `secondary_joists` が
+    /// 持つが、交差小梁の格子解析だけはこの理想化された入力を使う）。
     #[serde(default)]
     pub joists: Vec<JoistLine>,
 }
@@ -116,7 +116,7 @@ impl FloorRegion {
             id,
             name: String::new(),
             boundary,
-            secondary_joist_ids: Vec::new(),
+            secondary_joists: Vec::new(),
             slab_ids: Vec::new(),
             joists: Vec::new(),
         }
