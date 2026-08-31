@@ -1,9 +1,0 @@
-[package]
-name = "squid-n-ml"
-version = "0.0.1"
-edition = "2021"
-license = "MIT"
-
-[features]
-default = []
-ml = []

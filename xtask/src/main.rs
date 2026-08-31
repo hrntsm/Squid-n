@@ -11,13 +11,8 @@ fn main() -> anyhow::Result<()> {
     // レイヤ順（下が下流＝依存される側）。実依存グラフ（DAG）に一致させる。
     // 上位→下位（dep_layer < layer_idx）のみ許可。同層・下位→上位は不許可。
     let layers: &[&[&str]] = &[
-        &[
-            "squid-n-core",
-            "squid-n-math",
-            "squid-n-material",
-            "squid-n-ml",
-        ],
-        &["squid-n-section", "squid-n-load", "squid-n-gpu"],
+        &["squid-n-core", "squid-n-math", "squid-n-material"],
+        &["squid-n-section", "squid-n-load"],
         &["squid-n-edit", "squid-n-skeleton"],
         &["squid-n-element"],
         &["squid-n-solver", "squid-n-io"],

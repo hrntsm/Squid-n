@@ -6,6 +6,14 @@
 **先行フェーズ:** [P0](P0_基盤.md)〜[P9](P9_仕上げ.md)（特に squid-n-design-jp/squid-n-solver を学習・検証に使う）
 **前提環境:** Rust stable / `burn = "0.21"`（backend: ndarray/wgpu/cuda を feature 切替）/ `feature = "ml"`
 
+> **現況（2026-08-31）:** 予約地として置いていた `squid-n-ml` クレートと `ml` フィーチャは撤去済み。
+> 実装が入る見込みが当分ないため、空クレートを置いたままレイヤ表・機能フラグ表に載せ続けるより、
+> 着手時に本仕様書の §2 に従って作り直すほうが実体と文書が食い違わない。
+> 経緯は [`GPUとMLクレートの削除_申し送り.md`](../handoff/GPUとMLクレートの削除_申し送り.md) を参照。
+> なお本仕様書の backend にある `wgpu`/`cuda` は burn 自身のバックエンドであり、
+> 削除した `squid-n-gpu`（P10）とは無関係。P10 の GPU 高速化は**恒久的に実装しない**方針となり、
+> 仕様書 `P10_GPU高速化.md` も削除したため、本書から P10 への参照は外してある。
+
 ---
 
 ## 0. このフェーズについて
@@ -130,7 +138,7 @@ pub fn generate_synthetic(n: usize) -> Vec<Sample> {
 設計書 §16.2。
 
 - 回帰：断面寸法（連続）を出力。分類：配筋クラス・断面種別（離散）を出力。
-- 学習は burn の Optimizer（Adam 等）＋ MSE/CrossEntropy。CPU(ndarray) で学習可、GPU(wgpu) で加速（P10 共有）。
+- 学習は burn の Optimizer（Adam 等）＋ MSE/CrossEntropy。CPU(ndarray) で学習可、burn の wgpu バックエンドで加速。
 - 配布：burn ネイティブ形式 or onnx 互換。推論は MCP/GUI から呼ぶ。
 
 ```rust
@@ -217,7 +225,7 @@ pub fn propose_and_verify(features: &[f32], model: &squid_n_core::model::Model)
 
 ### 8.2 サロゲートとスクリーニング（→ §5）
 本物の解析（プッシュオーバー等）は重い。サロゲートは「結果を近似する軽いモデル」で、多数の候補を
-高速に足切りする。残りを本物で確定するので、速度と正確さを両立する（GPU 概算→CPU 確定と同じ思想）。
+高速に足切りする。残りを本物で確定するので、速度と正確さを両立する。
 
 ### 8.3 合成データ（→ §3）
 教師データは過去案件だけだと足りない。条件をサンプリングし、規準計算でラベル付けして**自前で量産**する
