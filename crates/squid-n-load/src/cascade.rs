@@ -8,7 +8,7 @@
 //!
 //! # なぜ必要か
 //!
-//! 逐次伝達がないと、二次部材に支持された二次部材の反力は行き先の無い節点荷重として
+//! 逐次伝達がないと、二次部材に支持された二次部材の反力は行き先のない節点荷重として
 //! 残り、`DofMap::build` が非構造節点として無視するため**黙って解析から消える**
 //! （申し送り §3.4 F10）。荷重タブには見えるので、総和を眺めても気づけない。
 //!
@@ -26,17 +26,18 @@
 //!
 //! # 反力の分配則
 //!
-//! 部材の向きでは場合分けしない（§3.4 F3）。荷重を材軸に対して分解し、
+//! 部材の向きで荷重の扱いを変えることはしない（§3.4 F3）。鉛直荷重に対する**鉛直反力**は、
+//! 支点まわりのモーメントつり合いで決まる。てこの腕は**水平投影**の距離であり、荷重の
+//! 材軸上の位置は水平投影へ線形に写るので、**水平投影が 0 でない限り、鉛直反力は材軸上の
+//! 按分（単純梁の反力）と厳密に一致する**。傾斜した二次部材でも成分へ分ける必要はない。
 //!
-//! - **材軸に直交する成分**: 単純梁の反力（静定に決まる）
-//! - **材軸方向の成分（軸力）**: 両端へ 1/2 ずつ
+//! 例外は**水平投影が 0 になる部材**（鉛直な間柱）である。このときモーメントのつり合いが
+//! 退化し、荷重は軸力として流れるため、両端への配分は不静定になって仮定が要る。ここでは
+//! 従来の扱いに合わせて**両端へ 1/2 ずつ**とする。
 //!
-//! とする。水平な小梁に鉛直荷重なら全部が直交成分、鉛直な間柱に鉛直荷重なら全部が
-//! 軸方向成分になり、どちらも従来の扱いと一致する。傾斜した二次部材は両方を持つ。
-//!
-//! 軸方向成分の 1/2 ずつは**現時点の仮定**である。長期の鉛直荷重としては下側の支点へ
-//! 全量が流れるのが自然で、現行は下の梁を半分だけ軽く見る危険側の可能性がある
-//! （§3.4 F8 の残課題）。本モジュールは従来の扱いを引き継ぐにとどめる。
+//! この 1/2 ずつは**現時点の仮定**である。長期の鉛直荷重としては下側の支点へ全量が流れるのが
+//! 自然で、現行は下の梁を半分だけ軽く見る危険側の可能性がある（§3.4 F8 の残課題）。
+//! 本モジュールは従来の扱いを引き継ぐにとどめる。
 
 use std::collections::{HashMap, HashSet};
 
@@ -67,7 +68,7 @@ pub enum SupportAt {
     /// 別の二次部材の内部。逐次伝達を 1 段進める。`a` は受け側の材軸上の位置 [mm]
     /// （受け側の `nodes[0]` からの距離）。
     Secondary { key: SecondaryKey, a: f64 },
-    /// どこにも載っていない。荷重の行き先が無い（診断のエラー対象）。
+    /// どこにも載っていない。荷重の行き先がない（診断のエラー対象）。
     Unresolved,
 }
 
@@ -102,9 +103,6 @@ pub struct SecondaryTransfer {
     pub unresolved: Vec<SecondaryKey>,
     /// 支持関係が循環している二次部材（互いに載せ合う）。荷重を流せない。
     pub cyclic: Vec<SecondaryKey>,
-    /// 節点を共有せず交差している二次部材の組。接合が存在しないモデルであり、
-    /// 受け側・架け側を幾何から決められない。
-    pub crossings: Vec<(SecondaryKey, SecondaryKey)>,
     /// どの二次部材にも載らなかった床領域分配の辺荷重。呼び出し側はこれだけを主架構へ
     /// 解決する（二次部材が受け持ったぶんは反力として渡るため、そのまま載せると
     /// 二重計上になる）。
@@ -149,13 +147,15 @@ fn dist3(a: [f64; 3], b: [f64; 3]) -> f64 {
     (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt()
 }
 
-/// 節点 `a`↔`b` を両端に持つ実 `Beam` 要素が存在するか（実部材化済みの二次部材）。
-fn beam_between(model: &Model, a: NodeId, b: NodeId) -> bool {
-    model.elements.iter().any(|e| {
-        e.kind == ElementKind::Beam
-            && e.nodes.len() == 2
-            && ((e.nodes[0] == a && e.nodes[1] == b) || (e.nodes[0] == b && e.nodes[1] == a))
-    })
+/// 2 節点 `Beam` 要素の端点対（順不同）の集合。二次部材が実部材化済みかを
+/// 部材ごとの全要素走査なしで判定するために 1 回だけ構築する。
+fn beam_endpoint_keys(model: &Model) -> HashSet<SecondaryKey> {
+    model
+        .elements
+        .iter()
+        .filter(|e| e.kind == ElementKind::Beam && e.nodes.len() == 2)
+        .map(|e| span_node_key(e.nodes[0], e.nodes[1]))
+        .collect()
 }
 
 /// 点 `p` の線分 `a`→`b` 上の位置 [mm]（始点からの距離）。材軸から `tol` を超えて
@@ -181,10 +181,11 @@ fn project_on_segment(p: [f64; 3], a: [f64; 3], b: [f64; 3], tol: f64) -> Option
 /// 実部材化済み（両端を持つ実 `Beam` がある）・退化（両端が同一・長さ 0）・
 /// 節点が引けないものは対象外（解析要素として直接扱われる、または荷重を持てない）。
 fn axes(model: &Model) -> Vec<Axis> {
+    let materialized = beam_endpoint_keys(model);
     let mut out = Vec::new();
     for sm in model.joists().chain(model.posts()) {
         let (n0, n1) = (sm.nodes[0], sm.nodes[1]);
-        if n0 == n1 || beam_between(model, n0, n1) {
+        if n0 == n1 || materialized.contains(&span_node_key(n0, n1)) {
             continue;
         }
         let (Some(a), Some(b)) = (coord(model, n0), coord(model, n1)) else {
@@ -325,20 +326,22 @@ fn segments_cross(p: &Axis, q: &Axis) -> bool {
     dist3(cp, cq) <= tol
 }
 
-/// 荷重 1 件の両端反力を、材軸に対する分解で求める（モジュールドキュメント参照）。
+/// 荷重 1 件が両端へ渡す**鉛直反力**（モジュールドキュメント「反力の分配則」参照）。
 ///
-/// `axis_z` は材軸の単位ベクトルの Z 成分。鉛直荷重のうち材軸方向の成分は両端へ
-/// 1/2 ずつ、直交成分は単純梁反力とする。
-fn reactions_of(load: &MemberLoadKind, span: f64, axis_z: f64) -> (f64, f64) {
+/// `horizontal` が真（部材が水平投影を持つ）なら単純梁の反力がそのまま鉛直反力になる。
+/// 偽（鉛直材）ならモーメントのつり合いが退化して不静定になるため、両端へ 1/2 ずつとする。
+///
+/// **成分へ分けて混ぜてはならない。** 「材軸方向成分を 1/2 ずつ、直交成分を単純梁反力」と
+/// して `|u_z|` で線形に混ぜると、総和は保存するが配分が誤る。水平投影 4000・鉛直 3000 の
+/// 傾斜材に材軸上 1/5 の位置で集中荷重を載せた例では、厳密解 0.8W に対して 0.62W となり、
+/// **載荷側の反力を 22.5% 過小評価する**（受け側の部材にとって危険側）。
+fn reactions_of(load: &MemberLoadKind, span: f64, horizontal: bool) -> (f64, f64) {
     let (r_i, r_j) = simple_reactions(load, span);
-    let total = r_i + r_j;
-    let axial_ratio = axis_z.abs().clamp(0.0, 1.0);
-    let axial = total * axial_ratio;
-    let transverse = 1.0 - axial_ratio;
-    (
-        r_i * transverse + axial / 2.0,
-        r_j * transverse + axial / 2.0,
-    )
+    if horizontal {
+        return (r_i, r_j);
+    }
+    let half = (r_i + r_j) / 2.0;
+    (half, half)
 }
 
 /// 二次部材の反力の逐次伝達を解く。
@@ -353,7 +356,7 @@ pub fn solve(
 ) -> SecondaryTransfer {
     let axes = axes(model);
     if axes.is_empty() {
-        // 二次部材が無くても、床領域分配の辺荷重はそのまま主架構へ渡す必要がある。
+        // 二次部材がなくても、床領域分配の辺荷重はそのまま主架構へ渡す必要がある。
         let (_, leftover) = secondary_joist_distribution_split(model, w_of);
         return SecondaryTransfer {
             leftover_region_loads: leftover,
@@ -429,10 +432,14 @@ pub fn solve(
         let mut loads = base.remove(key).unwrap_or_default();
         loads.extend(extra.remove(key).unwrap_or_default());
 
-        let axis_z = (ax.b[2] - ax.a[2]) / ax.len;
+        // 水平投影の有無で分ける（鉛直材だけが不静定になる）。許容差は材軸判定と同じ。
+        let horizontal = {
+            let (dx, dy) = (ax.b[0] - ax.a[0], ax.b[1] - ax.a[1]);
+            (dx * dx + dy * dy).sqrt() > MEMBER_AXIS_TOL_MM
+        };
         let mut r = [0.0_f64; 2];
         for l in &loads {
-            let (ri, rj) = reactions_of(l, ax.len, axis_z);
+            let (ri, rj) = reactions_of(l, ax.len, horizontal);
             r[0] += ri;
             r[1] += rj;
         }
@@ -468,7 +475,7 @@ pub fn solve(
         );
     }
 
-    // 行き先の無い端部は、**そこへ実際に反力が生じるときだけ**問題になる。荷重を持たない
+    // 行き先のない端部は、**そこへ実際に反力が生じるときだけ**問題になる。荷重を持たない
     // 二次部材（断面・材料未割当で自重が出ず、床分配も載らない）は何も失わないため、
     // 解析を止めない（形だけ置かれた支持点で解析が止まるのを避ける）。
     let mut unresolved: Vec<SecondaryKey> = members
@@ -484,9 +491,17 @@ pub fn solve(
         members,
         unresolved,
         cyclic,
-        crossings: crossings(&axes),
         leftover_region_loads,
     }
+}
+
+/// 節点を共有せず交差している二次部材の組（診断専用。§3.4 F5）。
+///
+/// 荷重の同期では使わないため [`solve`] からは外してある。`solve` は荷重ケースごとに
+/// 呼ばれる（DL・LL 架構用・LL 地震用）のに対し、この走査は二次部材の本数の 2 乗を
+/// 要するため、診断が要るときだけ払う。
+pub fn secondary_crossings(model: &Model) -> Vec<(SecondaryKey, SecondaryKey)> {
+    crossings(&axes(model))
 }
 
 /// キーから二次部材の実体を引く。

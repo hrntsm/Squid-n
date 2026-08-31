@@ -133,7 +133,7 @@ fn joist_on_girders_terminates_at_primary() {
     }
     assert!(t.unresolved.is_empty());
     assert!(t.cyclic.is_empty());
-    assert!(t.crossings.is_empty());
+    assert!(super::secondary_crossings(&m).is_empty());
 }
 
 /// 小梁 B の端点が小梁 A の内部に載るとき、B の反力は A の集中荷重として渡り、
@@ -149,7 +149,7 @@ fn joist_on_joist_cascades_to_primary() {
         [3000.0, 0.0, 0.0],    // 4 A の端（大梁上）
         [3000.0, 4000.0, 0.0], // 5 A の端（大梁上）
         [3000.0, 2000.0, 0.0], // 6 A の中央（B の端。どの大梁にも載らない）
-        [6000.0, 2000.0, 0.0], // 7 B の端（大梁 1-3 上… は無いので下で足す）
+        [6000.0, 2000.0, 0.0], // 7 B の端（右側の大梁 1-3 のスパン上）
     ]
     .iter()
     .enumerate()
@@ -188,9 +188,12 @@ fn joist_on_joist_cascades_to_primary() {
     assert!(t.unresolved.is_empty(), "{:?}", t.unresolved);
 }
 
-/// 鉛直な間柱の自重は材軸方向成分なので、両端へ 1/2 ずつ渡る（従来の扱いを保つ）。
+/// 鉛直な間柱は水平投影が 0 なので、自重は両端へ 1/2 ずつ渡る（従来の扱いを保つ）。
+///
+/// 水平投影が 0 だと鉛直反力のモーメントのつり合いが退化し、荷重は軸力として流れる。
+/// 両端への配分は不静定になるため仮定が要る（申し送り §3.4 F8 の残課題）。
 #[test]
-fn vertical_post_splits_axial_load_in_half() {
+fn vertical_post_splits_load_in_half() {
     let mut m = base_model();
     for (i, c) in [
         [0.0, 0.0, 0.0],
@@ -221,6 +224,60 @@ fn vertical_post_splits_axial_load_in_half() {
     for r in p.reactions {
         assert!((r - half).abs() / half < 1e-9, "反力 {r} != {half}");
     }
+}
+
+/// 傾斜した二次部材の鉛直反力は、材軸上の按分（単純梁の反力）と一致する。
+///
+/// 鉛直反力は水平てこでのモーメントつり合いで決まり、荷重の材軸上の位置は水平投影へ
+/// 線形に写るため、水平投影が 0 でなければ成分へ分ける必要はない。「材軸方向成分を
+/// 1/2 ずつ、直交成分を単純梁反力」として `|u_z|` で混ぜると、総和は保存するが配分が
+/// 誤り、載荷側の反力を過小評価する（受け側にとって危険側）。実フィクスチャの小梁は
+/// すべて水平なのでこの誤りを検出できない。ここで固定する。
+#[test]
+fn inclined_joist_reactions_match_simple_beam() {
+    let mut m = base_model();
+    // 水平投影 4000・鉛直 3000（L=5000）の傾斜小梁。両端は大梁に載せて終端させる。
+    for (i, c) in [
+        [-1000.0, 0.0, 0.0],
+        [1000.0, 0.0, 0.0],
+        [3000.0, 0.0, 3000.0],
+        [5000.0, 0.0, 3000.0],
+        [0.0, 0.0, 0.0],       // 4 傾斜小梁の下端（下の大梁上）
+        [4000.0, 0.0, 3000.0], // 5 傾斜小梁の上端（上の大梁上）
+    ]
+    .iter()
+    .enumerate()
+    {
+        m.nodes.push(node(i as u32, c[0], c[1], c[2]));
+    }
+    m.elements.push(beam(0, 0, 1));
+    m.elements.push(beam(1, 2, 3));
+    m.unassigned_joists.push(joist(4, 5, "SB"));
+
+    let t = solved(&m);
+    let key = span_node_key(NodeId(4), NodeId(5));
+    let sm = t.members.get(&key).expect("傾斜小梁");
+    assert_eq!(sm.supports, [SupportAt::Primary, SupportAt::Primary]);
+
+    // 自重は等分布なので、鉛直反力は両端等分（総量は ρAgL）。
+    let total = w_self() * 5000.0;
+    for r in sm.reactions {
+        assert!(
+            (r - total / 2.0).abs() / total < 1e-9,
+            "等分布の鉛直反力は両端等分: {r}"
+        );
+    }
+
+    // 材軸上 1/5 の位置に集中荷重を足すと、鉛直反力は 4:1 に分かれる
+    // （水平てこでのモーメントつり合い。混ぜると 0.62:0.38 になってしまう）。
+    let p = 1000.0_f64;
+    let (ri, rj) = super::reactions_of(&MemberLoadKind::Point { a: 1000.0, p }, 5000.0, true);
+    assert!((ri - 0.8 * p).abs() < 1e-9, "R_i={ri}");
+    assert!((rj - 0.2 * p).abs() < 1e-9, "R_j={rj}");
+
+    // 鉛直材（水平投影 0）だけが不静定で、両端 1/2 ずつになる。
+    let (ri, rj) = super::reactions_of(&MemberLoadKind::Point { a: 1000.0, p }, 5000.0, false);
+    assert!((ri - 0.5 * p).abs() < 1e-9 && (rj - 0.5 * p).abs() < 1e-9);
 }
 
 /// 端部がどの主架構にも二次部材にも載らない二次部材は `unresolved` に入る。
@@ -297,8 +354,32 @@ fn crossing_without_shared_node_is_reported() {
     m.unassigned_joists.push(joist(0, 1, "A"));
     m.unassigned_joists.push(joist(2, 3, "B"));
 
+    let crossings = super::secondary_crossings(&m);
+    assert_eq!(crossings.len(), 1, "交差 1 組: {crossings:?}");
+}
+
+/// 荷重を持たない二次部材は、端部の行き先が決まらなくても報告しない。
+///
+/// 断面が未割当なら自重も床分配も載らず、失う荷重がない。形だけ置かれた支持点で
+/// 解析前チェックのエラーを出さないための扱いである（`solve` 末尾の判定）。
+#[test]
+fn floating_joist_without_load_is_not_reported() {
+    let mut m = base_model();
+    m.nodes.push(node(0, 0.0, 0.0, 0.0));
+    m.nodes.push(node(1, 4000.0, 0.0, 0.0));
+    m.unassigned_joists.push(SecondaryMember {
+        kind: SecondaryMemberKind::Joist,
+        nodes: [NodeId(0), NodeId(1)],
+        section: None,
+        name: "SB".into(),
+    });
+
     let t = solved(&m);
-    assert_eq!(t.crossings.len(), 1, "交差 1 組: {:?}", t.crossings);
+    let key = span_node_key(NodeId(0), NodeId(1));
+    let sm = t.members.get(&key).expect("小梁");
+    assert_eq!(sm.supports, [SupportAt::Unresolved; 2]);
+    assert_eq!(sm.reactions, [0.0, 0.0]);
+    assert!(t.unresolved.is_empty(), "{:?}", t.unresolved);
 }
 
 /// 実部材化された二次部材（両端を持つ実 `Beam` がある）は逐次伝達の対象外。

@@ -1368,7 +1368,7 @@ pub fn install_japanese_fonts(ctx: &egui::Context) {
 /// `squid_n_core::model` の定数を単一ソースオブトゥルースとして再公開する。
 ///
 /// - `DL_CASE_NAME`: `sync_gravity_load_cases_action` がスラブの固定荷重
-///   （仕上げ等）の分配と躯体自重（柱梁・壁・ダンパー・フレーム外雑壁）を
+///   （仕上げ等）の分配と躯体自重（柱梁・壁・ダンパー・フレーム外雑壁・二次部材）を
 ///   合算して同期する（レビュー §1.1・照合レビュー③梁自重/②壁荷重）。
 /// - `LL_FRAME_CASE_NAME`: スラブ用途（`SlabUsage`）から令別表第1 の
 ///   骨組用積載を分配する（長期骨組解析用。令85条1項）。
