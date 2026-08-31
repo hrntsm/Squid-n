@@ -55,10 +55,9 @@ fn is_primary_beam_for_cmq(model: &Model, elem: &squid_n_core::model::ElementDat
         return false;
     }
     let (n0, n1) = (elem.nodes[0], elem.nodes[1]);
-    let is_materialized_joist = model.floor_regions.iter().any(|slab| {
-        slab.joist_lines().iter().any(|j| {
-            (j.support[0] == n0 && j.support[1] == n1) || (j.support[0] == n1 && j.support[1] == n0)
-        })
+    // 二次部材の小梁を実部材化しただけの梁は主架構の大梁ではない。
+    let is_materialized_joist = model.joists().any(|sm| {
+        (sm.nodes[0] == n0 && sm.nodes[1] == n1) || (sm.nodes[0] == n1 && sm.nodes[1] == n0)
     });
     !is_materialized_joist
 }

@@ -23,7 +23,7 @@ pub(crate) enum SectionGroupKey {
 /// まず `stories` に載る階名と一致する断面を上階から下階へ順に並べる。
 /// 次に、階定義にない `floor: Some(name)` の断面を、`sections` の並び順で初登場した
 /// 階名ごとに独立したグループへまとめる。`floor: None` の断面は、二次部材・床板・
-/// 床領域の小梁ラインが参照する断面を `Secondary` グループにまとめ、残りを末尾の
+/// 二次部材が参照する断面を `Secondary` グループにまとめ、残りを末尾の
 /// 「（階なし）」グループへ集約する。階名がある断面は二次部材・床板から参照されて
 /// いても階グループに残す。
 pub(crate) fn section_floor_groups(

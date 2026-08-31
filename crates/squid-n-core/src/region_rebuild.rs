@@ -2,7 +2,7 @@
 //!
 //! 大梁の区画（[`crate::region_gen::RegionBoundary`]）から床領域（[`FloorRegion`]、
 //! 大梁の 1 スパン区画）を再生成し、既存の床領域と重心・レベルで対応付けて
-//! 名前・格子解析用の小梁ラインを引き継ぐ。**床板（[`Slab`]）は畳まない**。
+//! 名前を引き継ぐ。**床板（[`Slab`]）は畳まない**。
 //! 各床板の帰属（どの床領域に属すか）を、床板の重心が入る床領域へ付け替えるだけである
 //! （申し送り Step 3 改訂 / D7・D10・D20・D21）。取り付く床板（片持ち・バルコニー等）は
 //! どの床領域からも参照されない独立した床板のまま、素通しする。
@@ -23,11 +23,11 @@ pub const CENTROID_MATCH_AREA_REL: f64 = 1e-3;
 pub struct FloorRegionRebuildReport {
     /// 検出した床領域（大梁の区画）の数。
     pub regions: usize,
-    /// 旧床領域から名前・小梁ラインを引き継いだ数。
+    /// 旧床領域から名前を引き継いだ数。
     pub inherited: usize,
     /// 対応する旧床領域が見つからなかった新規の床領域の数。
     pub new_regions: usize,
-    /// 重心が新しい床領域に入らなかった旧床領域（名前・小梁ラインを引き継げなかった）の数。
+    /// 重心が新しい床領域に入らなかった旧床領域（名前を引き継げなかった）の数。
     pub unmatched_old_regions: usize,
     /// 床領域へ帰属し直した床板の数。
     pub slabs_assigned: usize,
@@ -41,7 +41,7 @@ pub struct FloorRegionRebuildReport {
     pub deleted_nodes: usize,
 }
 
-/// 床領域を大梁の区画から作り直し、名前・小梁ラインを引き継ぎ、床板の帰属を
+/// 床領域を大梁の区画から作り直し、名前を引き継ぎ、床板の帰属を
 /// 付け替え、小梁を D7 で入れ直し、参照 0 節点を削除する。
 ///
 /// 床板そのもの（`model.slabs`）は畳まない。どの床領域にも収まらない床板は、
@@ -57,7 +57,7 @@ pub fn rebuild_floor_regions(model: &mut Model) -> FloorRegionRebuildReport {
     let mut report = FloorRegionRebuildReport::default();
 
     // 1. 新しい床領域を床領域ごとに作り、旧床領域と重心・レベルで対応付けて
-    //    名前・小梁ラインを引き継ぐ（D10）。
+    //    名前を引き継ぐ（D10）。
     let mut matched_old = vec![false; old_regions.len()];
     let mut new_regions: Vec<FloorRegion> = Vec::with_capacity(scan.boundaries.len());
     for rb in &scan.boundaries {

@@ -418,6 +418,38 @@ pub fn model_issues(model: &Model) -> Vec<ModelIssue> {
                 .warn(),
             );
         }
+        // 二次部材の反力の逐次伝達（`squid_n_load::cascade`）が荷重を流せない形。
+        // 判定はここ 1 か所（逐次伝達本体）に置き、診断と解析前チェックで共有する
+        // （申し送り §3.4 F4・F5）。
+        {
+            use squid_n_core::model::LoadPurpose;
+            let w_of =
+                |sl: &squid_n_core::model::Slab| model.slab_intensity(sl, LoadPurpose::Floor);
+            let transfer = squid_n_load::cascade::solve(model, w_of, true);
+            if !transfer.unresolved.is_empty() {
+                issues.push(ModelIssue::model(format!(
+                    "端部がどの主架構にも二次部材にも載っていない二次部材が {} 本あります。\
+                         受け持った荷重の行き先が無く、解析へ渡りません。端部を大梁の材軸上、\
+                         または受け側となる二次部材の内法へ載せてください。",
+                    transfer.unresolved.len()
+                )));
+            }
+            if !transfer.cyclic.is_empty() {
+                issues.push(ModelIssue::model(format!(
+                    "二次部材どうしの支持関係が一巡しています（{} 本）。互いに載せ合う形は\
+                         荷重を流せません。受け側を 1 本の通し部材としてモデル化してください。",
+                    transfer.cyclic.len()
+                )));
+            }
+            if !transfer.crossings.is_empty() {
+                issues.push(ModelIssue::model(format!(
+                    "節点を共有せずに交差している二次部材が {} 組あります。交点に接合が無く、\
+                         受け側と架け側を決められません。受け側を通し、架け側を交点で分けて\
+                         モデル化してください。",
+                    transfer.crossings.len()
+                )));
+            }
+        }
         let n = squid_n_core::region_rebuild::floating_slab_count(model);
         if n != 0 {
             issues.push(

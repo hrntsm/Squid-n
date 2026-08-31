@@ -1677,6 +1677,40 @@ fn slab_floor_load_reaches_primary_frame() {
     }
     assert!(expected > 0.0, "床板の固定荷重が 0");
 
+    // 二次部材の自重も DL へ逐次伝達で載る（`self_weight_case_content` は扱わない）。
+    // 期待値は `enumerate_self_weight` と同じ ρ·A·L·g·鉄骨割増を独立に組み立てる。
+    let steel_factor = model
+        .load_cfg
+        .as_ref()
+        .map(|c| c.effective_steel_factor())
+        .unwrap_or(1.0);
+    for sm in model.joists().chain(model.posts()) {
+        let (a, b) = (sm.nodes[0], sm.nodes[1]);
+        let materialized = model.elements.iter().any(|e| {
+            e.kind == ElementKind::Beam
+                && e.nodes.len() == 2
+                && ((e.nodes[0] == a && e.nodes[1] == b) || (e.nodes[0] == b && e.nodes[1] == a))
+        });
+        if a == b || materialized {
+            continue;
+        }
+        let (Some(sec), Some(mat)) = (
+            sm.section.and_then(|id| model.sections.get(id.index())),
+            model.secondary_material(sm),
+        ) else {
+            continue;
+        };
+        let (Some(na), Some(nb)) = (model.nodes.get(a.index()), model.nodes.get(b.index())) else {
+            continue;
+        };
+        let len = ((nb.coord[0] - na.coord[0]).powi(2)
+            + (nb.coord[1] - na.coord[1]).powi(2)
+            + (nb.coord[2] - na.coord[2]).powi(2))
+        .sqrt();
+        let factor = if mat.fc.is_some() { 1.0 } else { steel_factor };
+        expected += mat.density * sec.area * len * squid_n_core::units::GRAVITY_MM_S2 * factor;
+    }
+
     // 実際に主架構へ届く鉛直荷重（非構造節点で捨てられるぶんを除く）。
     let beam_loads = squid_n_job::auto_loads::compute_dl_beam_loads(model);
     let (nodal, mut member) = squid_n_job::auto_loads::slab_load_case_content(model, &beam_loads);

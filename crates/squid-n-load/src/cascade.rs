@@ -46,9 +46,11 @@ use squid_n_core::model::{
     ElementKind, MemberLoadKind, Model, SecondaryMember, SecondaryMemberKind, Slab,
 };
 
+use squid_n_core::ids::SlabId;
+
 use crate::floor::{
-    joist_self_weight_udl, orient_member_loads, secondary_joist_distribution_loads,
-    simple_reactions, span_node_key,
+    joist_distribution_is_ready, joist_self_weight_udl, orient_member_loads,
+    secondary_joist_distribution_split, simple_reactions, span_node_key, BeamLoad,
 };
 
 /// 二次部材 1 本の識別キー（両端節点の順不同対）。
@@ -83,6 +85,12 @@ pub struct TransferredMember {
     pub reactions: [f64; 2],
     /// 各端の支持相手。`nodes` と同じ並び。
     pub supports: [SupportAt; 2],
+    /// 床分配が断面検定に足りているか（期待床板が揃い、載荷長さがスパンの半分以上。
+    /// `crate::floor::joist_distribution_is_ready`）。分配を持たない二次部材
+    /// （間柱・床板の境界に載らない小梁）は偽。
+    pub distribution_ready: bool,
+    /// 分配の代表床板（検定結果の帰属先。分配が無ければ `None`）。
+    pub rep_slab_id: Option<SlabId>,
 }
 
 /// 逐次伝達の結果。
@@ -97,6 +105,10 @@ pub struct SecondaryTransfer {
     /// 節点を共有せず交差している二次部材の組。接合が存在しないモデルであり、
     /// 受け側・架け側を幾何から決められない。
     pub crossings: Vec<(SecondaryKey, SecondaryKey)>,
+    /// どの二次部材にも載らなかった床領域分配の辺荷重。呼び出し側はこれだけを主架構へ
+    /// 解決する（二次部材が受け持ったぶんは反力として渡るため、そのまま載せると
+    /// 二重計上になる）。
+    pub leftover_region_loads: Vec<BeamLoad>,
 }
 
 impl SecondaryTransfer {
@@ -193,30 +205,29 @@ fn axes(model: &Model) -> Vec<Axis> {
     out
 }
 
-/// 節点に解析要素が接続しているか、または大梁のスパン上にあるか（主架構へ渡せるか）。
-fn reaches_primary(model: &Model, node: NodeId, connected: &[bool]) -> bool {
-    if connected.get(node.index()).copied().unwrap_or(false) {
-        return true;
-    }
-    let Some(c) = coord(model, node) else {
-        return false;
-    };
-    crate::secondary::beam_span_position(model, c, MEMBER_AXIS_TOL_MM).is_some()
-}
-
 /// 端部 `node`（座標 `p`）の支持相手を幾何から決める。
 ///
-/// 別の二次部材の**内部**に載っていればその二次部材が受け側（§3.4 F4）。端点どうしが
-/// 一致するだけの取り付き（L 字・端部で集まる形）は、どちらも相手を支持しないため
-/// 受け側にしない。主架構へ届くなら終端、どちらでもなければ行き先無しとする。
+/// **主架構を優先する。** 端部が要素の接続する節点、または大梁のスパン上にあるなら、
+/// その大梁が直接支持しているのだから、そこで終端する。10 mm 以内に並走する二次部材が
+/// 大梁の荷重を奪わないようにするためでもある（`joist_design` の並走大梁優先と同じ考え）。
+///
+/// 主架構へ届かないときだけ、別の二次部材の**内部**に載っているかを見る。載っていれば
+/// その二次部材が受け側である（§3.4 F4）。端点どうしが一致するだけの取り付き
+/// （L 字・端部で集まる形）は、どちらも相手を支持しないため受け側にしない。
+/// どちらでもなければ行き先無しとする。
 fn support_of(
-    model: &Model,
     self_key: SecondaryKey,
     node: NodeId,
     p: [f64; 3],
     axes: &[Axis],
     connected: &[bool],
+    beams: &[crate::secondary::BeamSpanCandidate],
 ) -> SupportAt {
+    if connected.get(node.index()).copied().unwrap_or(false)
+        || crate::secondary::best_span_position(beams, p, MEMBER_AXIS_TOL_MM).is_some()
+    {
+        return SupportAt::Primary;
+    }
     let mut best: Option<(SecondaryKey, f64, f64)> = None; // (相手, 位置 a, 材軸距離)
     for other in axes {
         if other.key == self_key {
@@ -245,13 +256,9 @@ fn support_of(
             best = Some((other.key, a, d));
         }
     }
-    if let Some((key, a, _)) = best {
-        return SupportAt::Secondary { key, a };
-    }
-    if reaches_primary(model, node, connected) {
-        SupportAt::Primary
-    } else {
-        SupportAt::Unresolved
+    match best {
+        Some((key, a, _)) => SupportAt::Secondary { key, a },
+        None => SupportAt::Unresolved,
     }
 }
 
@@ -346,21 +353,37 @@ pub fn solve(
 ) -> SecondaryTransfer {
     let axes = axes(model);
     if axes.is_empty() {
-        return SecondaryTransfer::default();
+        // 二次部材が無くても、床領域分配の辺荷重はそのまま主架構へ渡す必要がある。
+        let (_, leftover) = secondary_joist_distribution_split(model, w_of);
+        return SecondaryTransfer {
+            leftover_region_loads: leftover,
+            ..SecondaryTransfer::default()
+        };
     }
     let connected = crate::secondary::node_connected_flags(model);
+    // 大梁候補は 1 回だけ構築して使い回す。端部ごとに `beam_span_position` を呼ぶと
+    // 呼び出しのたびに全要素を走査し直し、部材数に対して超線形になる。
+    let beams = crate::secondary::beam_span_candidates(model);
 
     // --- 支持関係を幾何から決める ---
     let mut supports: HashMap<SecondaryKey, [SupportAt; 2]> = HashMap::new();
     for ax in &axes {
-        let s0 = support_of(model, ax.key, ax.nodes[0], ax.a, &axes, &connected);
-        let s1 = support_of(model, ax.key, ax.nodes[1], ax.b, &axes, &connected);
+        let s0 = support_of(ax.key, ax.nodes[0], ax.a, &axes, &connected, &beams);
+        let s1 = support_of(ax.key, ax.nodes[1], ax.b, &axes, &connected, &beams);
         supports.insert(ax.key, [s0, s1]);
     }
 
     // --- 床分配の辺荷重（小梁のみ。間柱は壁版からの分配が未実装のため持たない） ---
-    let distribution = secondary_joist_distribution_loads(model, w_of);
+    let (distribution, leftover_region_loads) = secondary_joist_distribution_split(model, w_of);
 
+    // 自重の引き当ても索引経由にする（キーごとに全二次部材を線形探索しない）。
+    let by_key: HashMap<SecondaryKey, &SecondaryMember> = model
+        .joists()
+        .chain(model.posts())
+        .map(|sm| (span_node_key(sm.nodes[0], sm.nodes[1]), sm))
+        .collect();
+
+    let mut ready: HashMap<SecondaryKey, (bool, Option<SlabId>)> = HashMap::new();
     let mut base: HashMap<SecondaryKey, Vec<MemberLoadKind>> = HashMap::new();
     for ax in &axes {
         let mut loads = Vec::new();
@@ -371,9 +394,16 @@ pub fn solve(
                 entry.span_nodes,
                 (ax.nodes[0], ax.nodes[1]),
             ));
+            ready.insert(
+                ax.key,
+                (
+                    joist_distribution_is_ready(entry, ax.len),
+                    entry.rep_slab_id,
+                ),
+            );
         }
         if include_self_weight {
-            if let Some(sm) = secondary_of(model, ax.key) {
+            if let Some(sm) = by_key.get(&ax.key) {
                 if let Some(w) = joist_self_weight_udl(model, sm) {
                     loads.push(MemberLoadKind::Distributed {
                         a: 0.0,
@@ -423,6 +453,7 @@ pub fn solve(
             }
         }
 
+        let (distribution_ready, rep_slab_id) = ready.get(key).copied().unwrap_or((false, None));
         members.insert(
             *key,
             TransferredMember {
@@ -431,25 +462,30 @@ pub fn solve(
                 member_loads: loads,
                 reactions: r,
                 supports: sup,
+                distribution_ready,
+                rep_slab_id,
             },
         );
     }
 
-    let unresolved: Vec<SecondaryKey> = axes
-        .iter()
-        .filter(|ax| {
-            supports
-                .get(&ax.key)
-                .is_some_and(|s| s.iter().any(|x| *x == SupportAt::Unresolved))
+    // 行き先の無い端部は、**そこへ実際に反力が生じるときだけ**問題になる。荷重を持たない
+    // 二次部材（断面・材料未割当で自重が出ず、床分配も載らない）は何も失わないため、
+    // 解析を止めない（形だけ置かれた支持点で解析が止まるのを避ける）。
+    let mut unresolved: Vec<SecondaryKey> = members
+        .values()
+        .filter(|m| {
+            (0..2).any(|k| m.supports[k] == SupportAt::Unresolved && m.reactions[k].abs() > 1e-9)
         })
-        .map(|ax| ax.key)
+        .map(|m| span_node_key(m.nodes[0], m.nodes[1]))
         .collect();
+    unresolved.sort();
 
     SecondaryTransfer {
         members,
         unresolved,
         cyclic,
         crossings: crossings(&axes),
+        leftover_region_loads,
     }
 }
 

@@ -311,7 +311,7 @@ impl Model {
             |s| s.id.index(),
             |s| s.id.0,
         )?;
-        // 床領域の境界・小梁ラインが参照する節点・断面が実在すること（陳腐化した参照の検出）。
+        // 床領域の境界が参照する節点が実在すること（陳腐化した参照の検出）。
         for region in &self.floor_regions {
             for &nid in &region.boundary {
                 if nid.index() >= self.nodes.len() || self.nodes[nid.index()].id != nid {
@@ -1544,8 +1544,14 @@ mod node_reference_tests {
             kind: LoadCaseKind::default(),
         });
 
-        // 1: 床領域の境界。
-        let region = FloorRegion::new(FloorRegionId(0), vec![NodeId(1)]);
+        // 1: 床領域の境界。2: 床領域が持つ二次部材小梁（`secondary_joists`）。
+        let mut region = FloorRegion::new(FloorRegionId(0), vec![NodeId(1)]);
+        region.secondary_joists.push(SecondaryMember {
+            kind: SecondaryMemberKind::Joist,
+            nodes: [NodeId(2), NodeId(2)],
+            section: None,
+            name: String::new(),
+        });
         model.floor_regions.push(region);
 
         // 3: 床板（Enclosed）。4: 床板（Attached／Line）。
@@ -1603,7 +1609,7 @@ mod node_reference_tests {
             three_side_slit: false,
         });
 
-        // 8: 二次部材（未割当小梁）。
+        // 8: 二次部材（未割当小梁）。領域内（node 2）とは別のフィールドである。
         model.unassigned_joists.push(SecondaryMember {
             kind: SecondaryMemberKind::Joist,
             nodes: [NodeId(8), NodeId(8)],

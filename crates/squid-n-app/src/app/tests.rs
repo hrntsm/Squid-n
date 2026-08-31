@@ -503,10 +503,13 @@ fn test_analysis_runs_with_non_structural_nodes_on_base_floor() {
         story: None,
         support_spring: None,
     });
+    // 断面は割り当てない。ここで見たいのは「要素が接続しない節点が基部の剛床スレーブに
+    // 混じる」ことであり、断面を与えると自重の行き先が問われて別の話（逐次伝達の
+    // 診断。申し送り §3.4 F10）になる。
     model.unassigned_joists.push(SecondaryMember {
         kind: SecondaryMemberKind::Joist,
         nodes: [NodeId(0), free_id],
-        section: Some(SectionId(1)),
+        section: None,
         name: "B1".into(),
     });
 
@@ -5363,7 +5366,7 @@ fn test_secondary_joist_subdivided_slab_dl_cmq_and_solve() {
         &app.model,
         &squid_n_core::model::LoadCfg::default(),
     );
-    let sw_total: f64 = sw_member
+    let mut sw_total: f64 = sw_member
         .iter()
         .map(|m| match m.kind {
             MemberLoadKind::Distributed { a, b, w1, w2 } => (w1 + w2) / 2.0 * (b - a),
@@ -5371,6 +5374,24 @@ fn test_secondary_joist_subdivided_slab_dl_cmq_and_solve() {
         })
         .sum::<f64>()
         + sw_nodal.iter().map(|nl| -nl.values[2]).sum::<f64>();
+    // 二次部材の自重は `self_weight_case_content` ではなく逐次伝達が運ぶ
+    // （申し送り §3.4 F6）。期待値には別途足す。
+    for sm in app.model.joists().chain(app.model.posts()) {
+        if let Some(w) = squid_n_load::floor::joist_self_weight_udl(&app.model, sm) {
+            let (a, b) = (sm.nodes[0], sm.nodes[1]);
+            let (Some(na), Some(nb)) = (
+                app.model.nodes.get(a.index()),
+                app.model.nodes.get(b.index()),
+            ) else {
+                continue;
+            };
+            let len = ((nb.coord[0] - na.coord[0]).powi(2)
+                + (nb.coord[1] - na.coord[1]).powi(2)
+                + (nb.coord[2] - na.coord[2]).powi(2))
+            .sqrt();
+            sw_total += w * len;
+        }
+    }
     // スラブの固定荷重は「仕上げ（AreaLoad 0.005）＋スラブ自重（板厚×材料密度）」。
     // 自重は断面から都度算定するため、期待値もモデルから引く。
     let slab_area = 8000.0 * 6000.0;

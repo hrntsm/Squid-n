@@ -3367,8 +3367,8 @@ fn test_i_end_torsion_release_skipped_at_collinear_beam_node() {
     assert!(!seg_a.torsion_release[0]);
 }
 
-/// `BeamTorsionMode::Keep` ではねじり剛性を保持する（床小梁の格子解析など、
-/// ねじりで釣り合わせるモデル化のための切替）。
+/// `BeamTorsionMode::Keep` ではねじり剛性を保持する（ねじりで釣り合わせる
+/// モデル化のための切替）。
 #[test]
 fn test_beam_torsion_mode_keep_retains_torsion() {
     let mut model = torsion_test_model(false);

@@ -1,12 +1,12 @@
 use crate::app::App;
 use squid_n_core::ids::{FloorRegionId, NodeId, SlabId};
-use squid_n_core::model::{AreaLoad, DistributionMethod, JoistLine, OneWayDir, SlabUsage};
+use squid_n_core::model::{AreaLoad, DistributionMethod, OneWayDir, SlabUsage};
 use squid_n_core::model::{RegionAnchor, SlabShape};
 use squid_n_core::units::to_display::area_load_kn_per_m2;
 use squid_n_core::units::to_internal;
 use squid_n_edit::{
-    AddSlab, DeleteSlab, SetAttachedAnchor, SetAttachedExtent, SetFloorRegionJoists,
-    SetFloorRegionName, SetSlabOneWay, SetSlabUsage,
+    AddSlab, DeleteSlab, SetAttachedAnchor, SetAttachedExtent, SetFloorRegionName, SetSlabOneWay,
+    SetSlabUsage,
 };
 
 /// スラブ追加フォームのドラフト状態（GUI 専用）。

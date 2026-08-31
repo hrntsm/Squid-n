@@ -874,7 +874,6 @@ fn floor_design_section(ui: &mut egui::Ui, app: &App) {
                 });
                 row.col(|ui| {
                     let label = match ji {
-                        crate::app::JoistCheckTarget::SlabJoist(i) => format!("{i}"),
                         crate::app::JoistCheckTarget::SecondaryJoist { nodes } => {
                             let key = (nodes[0].0.min(nodes[1].0), nodes[0].0.max(nodes[1].0));
                             app.model

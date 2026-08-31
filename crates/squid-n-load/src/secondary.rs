@@ -18,7 +18,7 @@ use squid_n_core::model::SlabShape;
 /// （要素独立な幾何のみ。ダングリング参照は除外済み）。`resolve_nodal_to_primary` が
 /// 荷重ごとに `model.elements` を走査し直す（かつ節点座標を都度引き直す）のを避け、
 /// 呼び出し 1 回につき 1 度だけ構築して使い回すための中間表現。
-struct BeamSpanCandidate {
+pub struct BeamSpanCandidate {
     id: ElemId,
     a: [f64; 3],
     b: [f64; 3],
@@ -28,7 +28,7 @@ struct BeamSpanCandidate {
 /// （端点座標つき）を集める。ダングリング参照（未検証モデルで節点が見つからない
 /// 要素）はここで読み飛ばす（この要素だけを除外し、他要素の探索は継続する。
 /// 元の `beam_span_position` の「1 要素の不整合で全体を打ち切らない」挙動を保つ）。
-fn beam_span_candidates(model: &Model) -> Vec<BeamSpanCandidate> {
+pub fn beam_span_candidates(model: &Model) -> Vec<BeamSpanCandidate> {
     let mut out = Vec::new();
     for e in &model.elements {
         if e.kind != ElementKind::Beam || e.nodes.len() != 2 {
@@ -53,7 +53,7 @@ fn beam_span_candidates(model: &Model) -> Vec<BeamSpanCandidate> {
 /// スパン上（端点を除く、距離 `tol` [mm] 以内）にある最も近い梁を探す。
 /// 複数の梁に載る場合は最も近いものを返す（`d < bd` の狭義比較により、同着なら
 /// 候補列で先に見つかったものを保持する＝要素順の先勝ち）。
-fn best_span_position(
+pub fn best_span_position(
     candidates: &[BeamSpanCandidate],
     coord: [f64; 3],
     tol: f64,

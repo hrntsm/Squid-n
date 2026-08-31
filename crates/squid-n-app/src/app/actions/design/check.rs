@@ -130,9 +130,8 @@ impl App {
 
     /// 床の中での小梁・スラブ設計を算定する（`run_design_check` から呼ぶ）。
     ///
-    /// - 手入力小梁ライン（`FloorRegion.joists`）: 単純支持梁として床用積載＋固定荷重の
-    ///   等分布 `w × spacing` で曲げ・たわみを検定する（交差があれば格子 FEM）。
-    /// - 二次部材小梁: 床領域分配の `Span` を単純梁へ重ね合わせ、小梁自重の等分布を足す。
+    /// - 二次部材小梁: 二次部材の反力の逐次伝達（[`squid_n_load::cascade`]）が求めた荷重
+    ///   （床領域分配の辺荷重・自重・架け側から渡された集中荷重）を単純梁として検定する。
     /// - 実部材化された小梁（支持間に実 Beam がある）は全体 FEM で検定するため対象外。
     /// - 断面未割当・鋼以外の材料・分配荷重が無い・期待床板の欠落・カバー不足の二次部材は表に「未」として残す。
     /// - スラブ: 矩形スラブの短辺を設計スパンとし、一方向版として設計曲げモーメントと
@@ -208,10 +207,14 @@ impl App {
         (joist_checks, slab_checks)
     }
 
-    /// 領域内小梁および未割当小梁を、床領域分配（[`squid_n_load::floor::distribute_region`]）
-    /// の `LoadTarget::Span` 出力を単純梁として重ね合わせて検定する。
+    /// 領域内小梁および未割当小梁を、二次部材の反力の逐次伝達
+    /// （[`squid_n_load::cascade`]）が求めた荷重で検定する。
     ///
-    /// 断面未割当・鋼以外の材料・分配荷重無しは表に「未」として残す。
+    /// 荷重は床領域分配の辺荷重・自重・**架け側の二次部材から渡された集中荷重**の
+    /// 重ね合わせで、荷重同期（`squid-n-job::auto_loads`）とまったく同じものを使う
+    /// （判定が 2 か所に分かれると食い違うため。申し送り §3.4 F6）。
+    ///
+    /// 断面未割当・鋼以外の材料・分配が足りないものは表に「未」として残す。
     fn design_secondary_joist_checks(
         &self,
         joist_checks: &mut Vec<crate::app::JoistCheck>,
@@ -219,12 +222,10 @@ impl App {
     ) {
         use squid_n_core::model::{LoadPurpose, SecondaryMemberKind};
         use squid_n_design_jp::floor as fd;
-        use squid_n_load::floor::{
-            joist_distribution_is_ready, joist_self_weight_udl, orient_member_loads,
-            secondary_joist_distribution_loads, simple_beam_extremes, span_node_key,
-        };
+        use squid_n_load::floor::{simple_beam_extremes, span_node_key};
+
         let w_of = |s: &squid_n_core::model::Slab| self.model.slab_intensity(s, LoadPurpose::Floor);
-        let distribution = secondary_joist_distribution_loads(&self.model, w_of);
+        let transfer = squid_n_load::cascade::solve(&self.model, w_of, true);
 
         for sm in self.model.joists() {
             if sm.kind != SecondaryMemberKind::Joist {
@@ -255,6 +256,7 @@ impl App {
             }
 
             let target = crate::app::JoistCheckTarget::SecondaryJoist { nodes: sm.nodes };
+            let entry = transfer.members.get(&key);
             let region_slab = self
                 .model
                 .floor_regions
@@ -265,8 +267,7 @@ impl App {
                         .any(|j| span_node_key(j.nodes[0], j.nodes[1]) == key)
                 })
                 .and_then(|r| r.slab_ids.first().copied());
-            let dist_entry = distribution.get(&key);
-            let slab_id = region_slab.or_else(|| dist_entry.and_then(|e| e.rep_slab_id));
+            let slab_id = region_slab.or_else(|| entry.and_then(|e| e.rep_slab_id));
 
             let Some(sid) = sm.section else {
                 joist_checks.push((slab_id, target, fd::joist_unchecked(span)));
@@ -287,22 +288,13 @@ impl App {
                 continue;
             };
 
-            let Some(entry) = dist_entry.filter(|e| joist_distribution_is_ready(e, span)) else {
+            // 逐次伝達の対象外（循環・実部材化済み）、または床分配が足りない本は「未」。
+            let Some(entry) = entry.filter(|e| e.distribution_ready) else {
                 joist_checks.push((slab_id, target, fd::joist_unchecked(span)));
                 continue;
             };
-
-            let mut loads =
-                orient_member_loads(&entry.member_loads, span, entry.span_nodes, (a, b));
-            if let Some(w_sw) = joist_self_weight_udl(&self.model, sm) {
-                loads.push(squid_n_core::model::MemberLoadKind::Distributed {
-                    a: 0.0,
-                    b: span,
-                    w1: w_sw,
-                    w2: w_sw,
-                });
-            }
-            let ex = simple_beam_extremes(&loads, span, e, sec.iy);
+            // `member_loads` は二次部材の節点順（`nodes`）に揃っている。
+            let ex = simple_beam_extremes(&entry.member_loads, span, e, sec.iy);
             if ex.w_equiv <= 1e-9 && ex.m_max <= 1e-9 {
                 joist_checks.push((slab_id, target, fd::joist_unchecked(span)));
                 continue;

@@ -523,6 +523,24 @@ pub fn secondary_joist_distribution_loads(
     model: &Model,
     w_of: impl Fn(&Slab) -> f64,
 ) -> HashMap<(NodeId, NodeId), SecondaryJoistLoads> {
+    secondary_joist_distribution_split(model, w_of).0
+}
+
+/// [`secondary_joist_distribution_loads`] に加えて、**どの二次部材にも載らなかった**
+/// 辺荷重を返す。
+///
+/// 二次部材が受け持った辺荷重は、その反力として主架構へ渡る（逐次伝達。
+/// [`crate::cascade`]）。そのぶんをそのまま主架構へ載せると二重計上になるため、
+/// 荷重同期側は残りだけを主架構へ解決する。**どの辺荷重が二次部材に載ったかの判定は
+/// ここ 1 か所に置く**（検定側と荷重同期側で判定が食い違うと、解析では受け側が
+/// 架け側の反力を受けているのに検定では受けていない、という事故になる。申し送り §3.4 F6）。
+pub fn secondary_joist_distribution_split(
+    model: &Model,
+    w_of: impl Fn(&Slab) -> f64,
+) -> (
+    HashMap<(NodeId, NodeId), SecondaryJoistLoads>,
+    Vec<BeamLoad>,
+) {
     let axes = joist_axes(model);
     let tagged = tagged_span_loads(model, &w_of);
     let mut expected: HashMap<(NodeId, NodeId), HashSet<SlabId>> = HashMap::new();
@@ -565,14 +583,18 @@ pub fn secondary_joist_distribution_loads(
         );
     }
 
+    let mut leftover: Vec<BeamLoad> = Vec::new();
     for (slab_id, bl) in &tagged {
         let Some((p0, p1, loaded_len)) = span_points(model, bl) else {
+            leftover.push(*bl);
             continue;
         };
         if loaded_len <= 1e-9 {
+            leftover.push(*bl);
             continue;
         }
         if segment_on_beam_only(model, p0, p1, &axes) {
+            leftover.push(*bl);
             continue;
         }
         let shape_loads = load_shape_to_member_loads(&bl.shape, loaded_len, false);
@@ -604,10 +626,12 @@ pub fn secondary_joist_distribution_loads(
             }
         }
         let Some((ai, joist_d, s0, s1, piece)) = best else {
+            leftover.push(*bl);
             continue;
         };
         let beam_d = nearest_beam_dist(model, p0, p1);
         if beam_d + 1e-9 < joist_d {
+            leftover.push(*bl);
             continue;
         }
         let axis = candidates[ai];
@@ -625,7 +649,7 @@ pub fn secondary_joist_distribution_loads(
             entry.rep_slab_id = Some(*slab_id);
         }
     }
-    map
+    (map, leftover)
 }
 
 fn span_points(model: &Model, bl: &BeamLoad) -> Option<([f64; 3], [f64; 3], f64)> {
