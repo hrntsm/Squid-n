@@ -6,11 +6,10 @@
 
 use std::collections::HashMap;
 
-use squid_n_core::ids::{ElemId, FloorRegionId, LoadCaseId, NodeId};
+use squid_n_core::ids::{ElemId, NodeId};
 use squid_n_core::model::{
-    ElementKind, FloorRegion, LoadCase, LoadCaseKind, LoadPurpose, MemberLoad, MemberLoadKind,
-    Model, NodalLoad, Slab, DL_CASE_NAME, EX_CASE_NAME, EY_CASE_NAME, LL_FRAME_CASE_NAME,
-    LL_SEISMIC_CASE_NAME,
+    ElementKind, LoadCase, LoadCaseKind, LoadPurpose, MemberLoad, MemberLoadKind, Model, NodalLoad,
+    Slab, DL_CASE_NAME, EX_CASE_NAME, EY_CASE_NAME, LL_FRAME_CASE_NAME, LL_SEISMIC_CASE_NAME,
 };
 use squid_n_load::floor::{self, BeamLoad, LoadShape, LoadTarget};
 use squid_n_load::secondary::{beam_span_position, resolve_nodal_to_primary, SPAN_TOL_MM};
@@ -52,52 +51,10 @@ pub fn beam_elem_map(model: &Model) -> HashMap<(NodeId, NodeId), ElemId> {
     map
 }
 
-/// 交差小梁スラブについて、床格子サブモデルの支点反力を大梁接続点への集中荷重として返す。
-pub fn slab_grillage_node_reactions(
-    model: &Model,
-    slab: &FloorRegion,
-    w: f64,
-    beam_map: &HashMap<(NodeId, NodeId), ElemId>,
-) -> Option<Vec<(NodeId, f64)>> {
-    if !floor::uses_joist_distribution(model, slab) {
-        return None;
-    }
-    if slab
-        .joist_lines()
-        .iter()
-        .any(|j| beam_map.contains_key(&beam_key(j.support[0], j.support[1])))
-    {
-        return None;
-    }
-    let g = crate::floor_grillage::build_slab_grillage(model, slab, w)?;
-    let sol = crate::floor_grillage::solve_grillage(&g.model, LoadCaseId(0)).ok()?;
-    Some(
-        g.support_origin
-            .iter()
-            .map(|(n, id)| (*id, sol.reactions[*n][2]))
-            .collect(),
-    )
-}
-
-fn slab_grillage_unit_reactions(
-    model: &Model,
-    beam_map: &HashMap<(NodeId, NodeId), ElemId>,
-) -> HashMap<FloorRegionId, Vec<(NodeId, f64)>> {
-    let mut out = HashMap::new();
-    for slab in &model.floor_regions {
-        if let Some(reactions) = slab_grillage_node_reactions(model, slab, 1.0, beam_map) {
-            out.insert(slab.id, reactions);
-        }
-    }
-    out
-}
-
 /// `distribute_region`/`distribute_slab_resolved` が返す `BeamLoad`（`Node`/`Span` のみ）を
-/// 実部材へ解決して `out` へ積む。`grillage_reactions` が `Some` の間は `Node` を素通しせず
-/// 格子反力（後段で別途積む）に譲る（二重計上を防ぐ）。
+/// 実部材へ解決して `out` へ積む。
 fn push_resolved_loads(
     loads: Vec<BeamLoad>,
-    grillage_reactions: &Option<Vec<(NodeId, f64)>>,
     beam_map: &HashMap<(NodeId, NodeId), ElemId>,
     out: &mut Vec<BeamLoad>,
 ) {
@@ -105,11 +62,7 @@ fn push_resolved_loads(
         |n0: NodeId, n1: NodeId| -> Option<ElemId> { beam_map.get(&beam_key(n0, n1)).copied() };
     for mut bl in loads {
         match bl.target {
-            LoadTarget::Node(_) => {
-                if grillage_reactions.is_none() {
-                    out.push(bl);
-                }
-            }
+            LoadTarget::Node(_) => out.push(bl),
             LoadTarget::Edge(_) => {
                 // `distribute_region`/`distribute_slab_resolved` は Edge を残さず Span へ解決済み。
                 continue;
@@ -135,49 +88,44 @@ fn push_resolved_loads(
 pub fn slab_beam_loads_with(
     model: &Model,
     w_of: impl Fn(&Slab) -> f64,
-    unit_reactions: &HashMap<FloorRegionId, Vec<(NodeId, f64)>>,
+    include_secondary_self_weight: bool,
     beam_map: &HashMap<(NodeId, NodeId), ElemId>,
 ) -> Vec<BeamLoad> {
     let mut beam_loads = Vec::new();
-    let mut referenced = std::collections::HashSet::new();
-    for region in &model.floor_regions {
-        referenced.extend(region.slab_ids.iter().copied());
-        // 格子反力は代表床板（`region.slab_ids` の先頭）の強度で判定する
-        // （`uses_joist_distribution` が要求する形。§floor::mod ドキュメント参照）。
-        let w = region
-            .slab_ids
-            .first()
-            .and_then(|&id| model.slab(id))
-            .map(&w_of)
-            .unwrap_or(0.0);
-        let grillage_reactions: Option<Vec<(NodeId, f64)>> = unit_reactions
-            .get(&region.id)
-            .map(|rs| rs.iter().map(|(node, r)| (*node, r * w)).collect());
-        push_resolved_loads(
-            floor::distribute_region(model, region, &w_of),
-            &grillage_reactions,
-            beam_map,
-            &mut beam_loads,
-        );
-        if let Some(reactions) = grillage_reactions {
-            for (node, r) in reactions {
-                if r.abs() <= 1e-9 {
-                    continue;
-                }
-                beam_loads.push(BeamLoad {
-                    elem: ElemId(u32::MAX),
-                    target: LoadTarget::Node(node),
-                    shape: LoadShape::Point { p: r, x: 0.0 },
-                    cmq: floor::Cmq {
-                        c_i: 0.0,
-                        c_j: 0.0,
-                        q_i: r,
-                        q_j: 0.0,
-                    },
-                });
-            }
-        }
+
+    // 二次部材が受け持つ辺荷重は、逐次伝達（`squid_n_load::cascade`）が両端反力へ
+    // 変えて主架構まで運ぶ。残り（どの二次部材にも載らなかった辺荷重）だけを
+    // ここで直接主架構へ解決する（両方載せると二重計上になる）。
+    let mut transfer = squid_n_load::cascade::solve(model, &w_of, include_secondary_self_weight);
+    push_resolved_loads(
+        std::mem::take(&mut transfer.leftover_region_loads),
+        beam_map,
+        &mut beam_loads,
+    );
+
+    // 逐次伝達が主架構へ渡す集中荷重（終端の端部反力）。節点が大梁のスパン途中に
+    // あるときは `resolve_nodal_to_primary` が梁の中間集中荷重へ変換する。
+    for (node, r) in transfer.primary_node_loads() {
+        beam_loads.push(BeamLoad {
+            elem: ElemId(u32::MAX),
+            target: LoadTarget::Node(node),
+            shape: LoadShape::Point { p: r, x: 0.0 },
+            cmq: floor::Cmq {
+                c_i: 0.0,
+                c_j: 0.0,
+                q_i: r,
+                q_j: 0.0,
+            },
+        });
     }
+
+    // どの床領域からも参照されない床板（片持ち・バルコニー・出隅、または帰属先が
+    // 見つからない浮き床板）は床領域とは独立に分配する（荷重を取りこぼさないため）。
+    let referenced: std::collections::HashSet<_> = model
+        .floor_regions
+        .iter()
+        .flat_map(|r| r.slab_ids.iter().copied())
+        .collect();
     for slab in &model.slabs {
         if referenced.contains(&slab.id) {
             continue;
@@ -185,7 +133,6 @@ pub fn slab_beam_loads_with(
         let w = w_of(slab);
         push_resolved_loads(
             floor::distribute_slab_resolved(model, slab, w),
-            &None,
             beam_map,
             &mut beam_loads,
         );
@@ -533,14 +480,13 @@ pub fn slab_load_case_content(
 /// `dev_docs/handoff/CMQ図を荷重ケースの全荷重へ_申し送り.md`）。
 pub fn compute_dl_beam_loads(model: &Model) -> Vec<BeamLoad> {
     let beam_map = beam_elem_map(model);
-    let unit_reactions = slab_grillage_unit_reactions(model, &beam_map);
     let extra_intensity = squid_n_load::wall_attached::floor_region_wall_extra_intensity(model);
     slab_beam_loads_with(
         model,
         |slab| {
             model.slab_dead_intensity(slab) + extra_intensity.get(&slab.id).copied().unwrap_or(0.0)
         },
-        &unit_reactions,
+        true,
         &beam_map,
     )
 }
@@ -548,7 +494,6 @@ pub fn compute_dl_beam_loads(model: &Model) -> Vec<BeamLoad> {
 /// 重力系（DL・LL(架構用)・LL(地震用)）の自動生成内容を計算する。
 pub fn compute_gravity_auto_load_cases(model: &Model) -> AutoLoadComputeResult {
     let beam_map = beam_elem_map(model);
-    let unit_reactions = slab_grillage_unit_reactions(model, &beam_map);
     let dl_beam_loads = compute_dl_beam_loads(model);
 
     let (mut dl_nodal, mut dl_member) = slab_load_case_content(model, &dl_beam_loads);
@@ -570,7 +515,7 @@ pub fn compute_gravity_auto_load_cases(model: &Model) -> AutoLoadComputeResult {
     let ll_beam_loads = slab_beam_loads_with(
         model,
         |slab| slab.live_intensity(LoadPurpose::Frame),
-        &unit_reactions,
+        false,
         &beam_map,
     );
     let (ll_nodal, ll_member) = slab_load_case_content(model, &ll_beam_loads);
@@ -578,7 +523,7 @@ pub fn compute_gravity_auto_load_cases(model: &Model) -> AutoLoadComputeResult {
     let ls_beam_loads = slab_beam_loads_with(
         model,
         |slab| slab.live_intensity(LoadPurpose::Seismic),
-        &unit_reactions,
+        false,
         &beam_map,
     );
     let (ls_nodal, ls_member) = slab_load_case_content(model, &ls_beam_loads);
@@ -718,8 +663,8 @@ mod tests {
     use super::*;
     use squid_n_core::ids::{FloorRegionId, NodeId, SlabId};
     use squid_n_core::model::{
-        AreaLoad, DistributionMethod, ElementData, ElementKind, EndCondition, ForceRegime,
-        LocalAxis, Node,
+        AreaLoad, DistributionMethod, ElementData, ElementKind, EndCondition, FloorRegion,
+        ForceRegime, LocalAxis, Node,
     };
     use squid_n_core::model::{Slab, SlabPlate, SlabShape};
 
@@ -1238,12 +1183,8 @@ mod attached_anchor_tests {
         }];
 
         let beam_map = beam_elem_map(&model);
-        let beam_loads = slab_beam_loads_with(
-            &model,
-            |s| model.slab_dead_intensity(s),
-            &Default::default(),
-            &beam_map,
-        );
+        let beam_loads =
+            slab_beam_loads_with(&model, |s| model.slab_dead_intensity(s), false, &beam_map);
         let (nodal, member) = slab_load_case_content(&model, &beam_loads);
 
         assert!(nodal.is_empty(), "節点荷重へ落ちない: {nodal:?}");
@@ -1298,12 +1239,8 @@ mod attached_anchor_tests {
         }];
 
         let beam_map = beam_elem_map(&model);
-        let beam_loads = slab_beam_loads_with(
-            &model,
-            |s| model.slab_dead_intensity(s),
-            &Default::default(),
-            &beam_map,
-        );
+        let beam_loads =
+            slab_beam_loads_with(&model, |s| model.slab_dead_intensity(s), false, &beam_map);
         let (nodal, member) = slab_load_case_content(&model, &beam_loads);
 
         assert!(nodal.is_empty(), "節点荷重へ落ちない: {nodal:?}");
@@ -1362,12 +1299,8 @@ mod attached_anchor_tests {
         }];
 
         let beam_map = beam_elem_map(&model);
-        let beam_loads = slab_beam_loads_with(
-            &model,
-            |s| model.slab_dead_intensity(s),
-            &Default::default(),
-            &beam_map,
-        );
+        let beam_loads =
+            slab_beam_loads_with(&model, |s| model.slab_dead_intensity(s), false, &beam_map);
         let (nodal, member) = slab_load_case_content(&model, &beam_loads);
 
         assert!(nodal.is_empty(), "節点荷重へ落ちない: {nodal:?}");
@@ -1424,12 +1357,8 @@ mod attached_anchor_tests {
         }];
 
         let beam_map = beam_elem_map(&model);
-        let beam_loads = slab_beam_loads_with(
-            &model,
-            |s| model.slab_dead_intensity(s),
-            &Default::default(),
-            &beam_map,
-        );
+        let beam_loads =
+            slab_beam_loads_with(&model, |s| model.slab_dead_intensity(s), false, &beam_map);
         let (nodal, member) = slab_load_case_content(&model, &beam_loads);
 
         assert!(nodal.is_empty(), "節点荷重へ落ちない: {nodal:?}");
@@ -1487,12 +1416,8 @@ mod attached_anchor_tests {
         }];
 
         let beam_map = beam_elem_map(&model);
-        let beam_loads = slab_beam_loads_with(
-            &model,
-            |s| model.slab_dead_intensity(s),
-            &Default::default(),
-            &beam_map,
-        );
+        let beam_loads =
+            slab_beam_loads_with(&model, |s| model.slab_dead_intensity(s), false, &beam_map);
         let (nodal, member) = slab_load_case_content(&model, &beam_loads);
 
         assert!(
@@ -1560,12 +1485,8 @@ mod attached_anchor_tests {
         }];
 
         let beam_map = beam_elem_map(&model);
-        let beam_loads = slab_beam_loads_with(
-            &model,
-            |s| model.slab_dead_intensity(s),
-            &Default::default(),
-            &beam_map,
-        );
+        let beam_loads =
+            slab_beam_loads_with(&model, |s| model.slab_dead_intensity(s), false, &beam_map);
         let (nodal, member) = slab_load_case_content(&model, &beam_loads);
 
         assert!(nodal.is_empty(), "節点荷重へ落ちない: {nodal:?}");
@@ -1623,12 +1544,8 @@ mod attached_anchor_tests {
         }];
 
         let beam_map = beam_elem_map(&model);
-        let beam_loads = slab_beam_loads_with(
-            &model,
-            |s| model.slab_dead_intensity(s),
-            &Default::default(),
-            &beam_map,
-        );
+        let beam_loads =
+            slab_beam_loads_with(&model, |s| model.slab_dead_intensity(s), false, &beam_map);
         let (nodal, member) = slab_load_case_content(&model, &beam_loads);
         assert!(
             member.is_empty(),
@@ -1671,5 +1588,230 @@ mod attached_anchor_tests {
         let (nodal, member) = slab_load_case_content(&model, &[bl]);
         assert!(nodal.is_empty());
         assert_eq!(member.len(), 1, "1 本の梁へ 1 度だけ載る: {member:?}");
+    }
+}
+
+#[cfg(test)]
+mod cascade_tests {
+    use super::*;
+    use squid_n_core::ids::{FloorRegionId, MaterialId, NodeId, SectionId, SlabId};
+    use squid_n_core::model::{
+        AreaLoad, DistributionMethod, ElementData, ElementKind, EndCondition, FloorRegion,
+        ForceRegime, LocalAxis, Material, MaterialCategory, Node, SecondaryMember,
+        SecondaryMemberKind, Section, Slab, SlabPlate, SlabShape,
+    };
+
+    /// 6000×6000 の床領域を、小梁 A（中央を Y 方向に通す）で 2 枚の床板に分け、
+    /// さらに小梁 B を A の中央から右側の大梁へ架けたモデル。
+    ///
+    /// B の端点（A の中央）はどの大梁の材軸上にもないため、逐次伝達がないと B の
+    /// 反力は非構造節点で捨てられる（申し送り §3.4 F10）。
+    fn joist_on_joist_model() -> Model {
+        let mk_node = |id: u32, x: f64, y: f64| Node {
+            id: NodeId(id),
+            coord: [x, y, 0.0],
+            restraint: Default::default(),
+            mass: None,
+            story: None,
+            support_spring: None,
+        };
+        let nodes = vec![
+            mk_node(0, 0.0, 0.0),       // 隅
+            mk_node(1, 6000.0, 0.0),    // 隅
+            mk_node(2, 6000.0, 6000.0), // 隅
+            mk_node(3, 0.0, 6000.0),    // 隅
+            mk_node(4, 3000.0, 0.0),    // A の下端（下の大梁上）
+            mk_node(5, 3000.0, 6000.0), // A の上端（上の大梁上）
+            mk_node(6, 3000.0, 3000.0), // A の中央（B の端。大梁の材軸上にない）
+            mk_node(7, 6000.0, 3000.0), // B の端（右の大梁上）
+        ];
+        let mk_beam = |id: u32, i: u32, j: u32| ElementData {
+            id: ElemId(id),
+            kind: ElementKind::Beam,
+            nodes: [NodeId(i), NodeId(j)].into_iter().collect(),
+            section: None,
+            local_axis: LocalAxis {
+                ref_vector: [0.0, 0.0, 1.0],
+            },
+            end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+            force_regime: ForceRegime::Auto,
+            rigid_zone: Default::default(),
+            plastic_zone: None,
+            spring: None,
+        };
+        let elements = vec![
+            mk_beam(0, 0, 1),
+            mk_beam(1, 1, 2),
+            mk_beam(2, 2, 3),
+            mk_beam(3, 3, 0),
+        ];
+        let mk_slab = |id: u32, boundary: Vec<NodeId>| Slab {
+            id: SlabId(id),
+            shape: SlabShape::Enclosed { boundary },
+            plate: SlabPlate {
+                section: None,
+                loads: vec![AreaLoad {
+                    kind: "DL".into(),
+                    value: 0.005,
+                }],
+                usage: None,
+                method: DistributionMethod::TriTrapezoid,
+                one_way: None,
+            },
+        };
+        // 小梁 A で左右 2 枚に分ける（B は床板の境界にしない＝分配は A までで完結する）。
+        let slabs = vec![
+            mk_slab(0, vec![NodeId(0), NodeId(4), NodeId(5), NodeId(3)]),
+            mk_slab(1, vec![NodeId(4), NodeId(1), NodeId(2), NodeId(5)]),
+        ];
+        let mut region = FloorRegion::new(
+            FloorRegionId(0),
+            vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
+        );
+        region.slab_ids = vec![SlabId(0), SlabId(1)];
+        region.secondary_joists = vec![
+            SecondaryMember {
+                kind: SecondaryMemberKind::Joist,
+                nodes: [NodeId(4), NodeId(5)],
+                section: Some(SectionId(0)),
+                name: "A".into(),
+            },
+            SecondaryMember {
+                kind: SecondaryMemberKind::Joist,
+                nodes: [NodeId(6), NodeId(7)],
+                section: Some(SectionId(0)),
+                name: "B".into(),
+            },
+        ];
+        let materials = vec![Material {
+            id: MaterialId(0),
+            name: "SN400".into(),
+            category: MaterialCategory::Steel,
+            young: 205_000.0,
+            poisson: 0.3,
+            density: 7.85e-9,
+            shear: None,
+            fc: None,
+            fy: Some(235.0),
+            concrete_class: Default::default(),
+            strength_factor: None,
+        }];
+        let sections = vec![Section {
+            id: SectionId(0),
+            name: "H".into(),
+            floor: None,
+            area: 10_000.0,
+            iy: 1.0e8,
+            iz: 1.0e7,
+            j: 1.0e6,
+            depth: 400.0,
+            width: 200.0,
+            as_y: 0.0,
+            as_z: 0.0,
+            panel_thickness: None,
+            thickness: None,
+            shape: None,
+            material: Some(MaterialId(0)),
+            rebar_material: None,
+            shear_rebar_material: None,
+            steel_material: None,
+        }];
+        Model {
+            nodes,
+            elements,
+            floor_regions: vec![region],
+            slabs,
+            materials,
+            sections,
+            ..Default::default()
+        }
+    }
+
+    /// 小梁に支持された小梁があっても、床の面荷重は 1 N も失わずに主架構へ届く。
+    ///
+    /// 逐次伝達が無いと、小梁 B の反力は大梁の材軸上に無い節点 6 へ載り、
+    /// `DofMap::build` が非構造節点として黙って捨てる（§3.4 F10）。
+    #[test]
+    fn joist_on_joist_delivers_all_floor_load_to_primary() {
+        let model = joist_on_joist_model();
+        model.validate().expect("valid model");
+
+        let beam_map = beam_elem_map(&model);
+        // 自重は入れず、床の面荷重だけで総和を見る。
+        let beam_loads =
+            slab_beam_loads_with(&model, |s| model.slab_dead_intensity(s), false, &beam_map);
+        let (nodal, mut member) = slab_load_case_content(&model, &beam_loads);
+        let (nodal, extra) = squid_n_load::secondary::resolve_nodal_to_primary(
+            &model,
+            nodal,
+            squid_n_load::secondary::SPAN_TOL_MM,
+        );
+        member.extend(extra);
+
+        let connected = squid_n_load::secondary::node_connected_flags(&model);
+        let mut delivered = 0.0_f64;
+        let mut dropped = 0.0_f64;
+        for nl in &nodal {
+            let w = -nl.values[2];
+            if connected.get(nl.node.index()).copied().unwrap_or(false) {
+                delivered += w;
+            } else {
+                dropped += w;
+            }
+        }
+        for ml in &member {
+            let total = match ml.kind {
+                MemberLoadKind::Distributed { a, b, w1, w2 } => (w1 + w2) / 2.0 * (b - a),
+                MemberLoadKind::Point { p, .. } => p,
+            };
+            delivered += total * -ml.dir[2];
+        }
+
+        let expected = 0.005 * 6000.0 * 6000.0;
+        assert!(
+            dropped.abs() < 1e-6,
+            "非構造節点で捨てられる荷重 {dropped} N"
+        );
+        assert!(
+            (delivered - expected).abs() / expected < 1e-9,
+            "主架構へ届いた荷重 {delivered} N != 期待 {expected} N"
+        );
+    }
+
+    /// 架け側（B）の反力は受け側（A）の集中荷重として渡り、A の反力に含まれる。
+    #[test]
+    fn reaction_of_supported_joist_lands_on_supporting_joist() {
+        use squid_n_load::cascade::{self as cascade, SupportAt};
+        use squid_n_load::floor::span_node_key;
+
+        let model = joist_on_joist_model();
+        let transfer = cascade::solve(&model, |s| model.slab_dead_intensity(s), false);
+
+        let ka = span_node_key(NodeId(4), NodeId(5));
+        let kb = span_node_key(NodeId(6), NodeId(7));
+        let b = transfer.members.get(&kb).expect("B");
+        let i6 = b.nodes.iter().position(|n| *n == NodeId(6)).expect("節点6");
+        assert!(
+            matches!(b.supports[i6], SupportAt::Secondary { key, .. } if key == ka),
+            "B の端は A に載る: {:?}",
+            b.supports
+        );
+
+        let a = transfer.members.get(&ka).expect("A");
+        assert_eq!(
+            a.supports,
+            [SupportAt::Primary, SupportAt::Primary],
+            "A の両端は大梁で終端する"
+        );
+        // A が受けた集中荷重に B の反力が含まれる。
+        let has_point = a.member_loads.iter().any(
+            |l| matches!(l, MemberLoadKind::Point { p, .. } if (*p - b.reactions[i6]).abs() < 1e-9),
+        );
+        assert!(
+            has_point || b.reactions[i6].abs() < 1e-9,
+            "A の荷重に B の反力 {} が集中荷重として入る: {:?}",
+            b.reactions[i6],
+            a.member_loads
+        );
     }
 }

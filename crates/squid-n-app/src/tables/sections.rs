@@ -121,11 +121,7 @@ pub fn sections_table(ui: &mut egui::Ui, app: &mut App) {
         // そろえないと、使用部材数 0 の行で削除ボタンが押せるのに Noop になる。
         count(s.section(), &mut n_elements);
     }
-    for r in &app.model.floor_regions {
-        for j in r.joist_lines() {
-            count(j.section, &mut n_elements);
-        }
-    }
+    // 二次部材（領域内・未割当）は `Model::joists`/`posts` が両方を返す。
     for sm in app.model.joists().chain(app.model.posts()) {
         count(sm.section, &mut n_elements);
     }

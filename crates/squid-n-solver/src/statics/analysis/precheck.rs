@@ -418,6 +418,39 @@ pub fn model_issues(model: &Model) -> Vec<ModelIssue> {
                 .warn(),
             );
         }
+        // 二次部材の反力の逐次伝達（`squid_n_load::cascade`）が荷重を流せない形。
+        // 判定はここ 1 か所（逐次伝達本体）に置き、診断と解析前チェックで共有する
+        // （申し送り §3.4 F4・F5）。
+        {
+            use squid_n_core::model::LoadPurpose;
+            let w_of =
+                |sl: &squid_n_core::model::Slab| model.slab_intensity(sl, LoadPurpose::Floor);
+            let transfer = squid_n_load::cascade::solve(model, w_of, true);
+            if !transfer.unresolved.is_empty() {
+                issues.push(ModelIssue::model(format!(
+                    "端部がどの主架構にも二次部材にも載っていない二次部材が {} 本あります。\
+                         受け持った荷重の行き先がなく、解析へ渡りません。端部を大梁の材軸上、\
+                         または受け側となる二次部材の内法へ載せてください。",
+                    transfer.unresolved.len()
+                )));
+            }
+            if !transfer.cyclic.is_empty() {
+                issues.push(ModelIssue::model(format!(
+                    "二次部材どうしの支持関係が一巡しています（{} 本）。互いに載せ合う形は\
+                         荷重を流せません。受け側を 1 本の通し部材としてモデル化してください。",
+                    transfer.cyclic.len()
+                )));
+            }
+            let crossings = squid_n_load::cascade::secondary_crossings(model);
+            if !crossings.is_empty() {
+                issues.push(ModelIssue::model(format!(
+                    "節点を共有せずに交差している二次部材が {} 組あります。交点に接合がなく、\
+                         受け側と架け側を決められません。受け側を通し、架け側を交点で分けて\
+                         モデル化してください。",
+                    crossings.len()
+                )));
+            }
+        }
         let n = squid_n_core::region_rebuild::floating_slab_count(model);
         if n != 0 {
             issues.push(
@@ -738,18 +771,13 @@ fn node_reference_issues(model: &Model) -> Vec<ModelIssue> {
                 }
             }
         }
-        // 床（スラブ境界・小梁支持点）・二次部材（小梁・間柱）が参照する節点は、
+        // 床（床板の境界）・二次部材（小梁・間柱）が参照する節点は、
         // 要素が接続しなくても意図的な幾何節点（荷重伝達点）なので孤立扱いしない。
         // これらは `DofMap::build` が解析自由度から自動的に除外するため、
         // 零剛性の自由度にはならない。
         for region in &model.floor_regions {
             for n in &region.boundary {
                 mark(*n);
-            }
-            for j in region.joist_lines() {
-                for n in &j.support {
-                    mark(*n);
-                }
             }
         }
         for slab in &model.slabs {

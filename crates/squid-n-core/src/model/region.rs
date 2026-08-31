@@ -102,11 +102,6 @@ pub struct FloorRegion {
     /// （`Model::validate` が確認）。
     #[serde(default)]
     pub slab_ids: Vec<SlabId>,
-    /// 交差小梁の格子解析（[`crate::model::JoistLine`]・床格子サブモデル）用の
-    /// 手入力の小梁ライン。**廃止予定ではない**（小梁の実体は `secondary_joists` が
-    /// 持つが、交差小梁の格子解析だけはこの理想化された入力を使う）。
-    #[serde(default)]
-    pub joists: Vec<JoistLine>,
 }
 
 impl FloorRegion {
@@ -118,13 +113,7 @@ impl FloorRegion {
             boundary,
             secondary_joists: Vec::new(),
             slab_ids: Vec::new(),
-            joists: Vec::new(),
         }
-    }
-
-    /// 格子解析用の小梁ライン（[`FloorRegion::joists`] のエイリアス）。
-    pub fn joist_lines(&self) -> &[JoistLine] {
-        &self.joists
     }
 
     /// 境界多角形の座標列 [mm]。節点が引けない（陳腐化した参照）場合は `None`。

@@ -1152,9 +1152,7 @@ fn joist_design_checks_cover_imported_secondary_members() {
 
     let mut checked = 0;
     for (slab_id, target, jr) in &results.joist_checks {
-        let squid_n_app::app::JoistCheckTarget::SecondaryJoist { nodes } = target else {
-            continue;
-        };
+        let squid_n_app::app::JoistCheckTarget::SecondaryJoist { nodes } = target;
         checked += 1;
         if jr.unchecked {
             continue;
@@ -1644,4 +1642,109 @@ fn snapshot_key_scalars() {
     }
 
     insta::assert_snapshot!(out);
+}
+
+/// 床板の面荷重（固定荷重）が、二次部材を経由しても失われずに主架構へ届く。
+///
+/// 二次部材は解析要素ではないため、その反力は節点荷重として出され
+/// `resolve_nodal_to_primary` が主架構の梁へ変換する。変換できない節点への荷重は
+/// `DofMap::build` が非構造節点として無視するため、**荷重が黙って消える**
+/// （申し送り §3.4 F10）。小梁の途中に別の小梁が取り付くモデルでこれが起こりうる。
+#[test]
+fn slab_floor_load_reaches_primary_frame() {
+    use squid_n_load::secondary::{node_connected_flags, resolve_nodal_to_primary, SPAN_TOL_MM};
+
+    let app = prepared();
+    let model = &app.model;
+
+    // 期待値: 全床板の固定荷重 × XY 投影面積（`compute_dl_beam_loads` と同じ強度）。
+    let extra = squid_n_load::wall_attached::floor_region_wall_extra_intensity(model);
+    let w_of = |slab: &squid_n_core::model::Slab| {
+        model.slab_dead_intensity(slab) + extra.get(&slab.id).copied().unwrap_or(0.0)
+    };
+    let mut expected = 0.0_f64;
+    for slab in &model.slabs {
+        let Some(coords) = slab.boundary_coords(model) else {
+            continue;
+        };
+        let mut area2 = 0.0;
+        let n = coords.len();
+        for k in 0..n {
+            let (p, q) = (coords[k], coords[(k + 1) % n]);
+            area2 += p[0] * q[1] - q[0] * p[1];
+        }
+        expected += w_of(slab) * (area2 / 2.0).abs();
+    }
+    assert!(expected > 0.0, "床板の固定荷重が 0");
+
+    // 二次部材の自重も DL へ逐次伝達で載る（`self_weight_case_content` は扱わない）。
+    // 期待値は `enumerate_self_weight` と同じ ρ·A·L·g·鉄骨割増を独立に組み立てる。
+    let steel_factor = model
+        .load_cfg
+        .as_ref()
+        .map(|c| c.effective_steel_factor())
+        .unwrap_or(1.0);
+    for sm in model.joists().chain(model.posts()) {
+        let (a, b) = (sm.nodes[0], sm.nodes[1]);
+        let materialized = model.elements.iter().any(|e| {
+            e.kind == ElementKind::Beam
+                && e.nodes.len() == 2
+                && ((e.nodes[0] == a && e.nodes[1] == b) || (e.nodes[0] == b && e.nodes[1] == a))
+        });
+        if a == b || materialized {
+            continue;
+        }
+        let (Some(sec), Some(mat)) = (
+            sm.section.and_then(|id| model.sections.get(id.index())),
+            model.secondary_material(sm),
+        ) else {
+            continue;
+        };
+        let (Some(na), Some(nb)) = (model.nodes.get(a.index()), model.nodes.get(b.index())) else {
+            continue;
+        };
+        let len = ((nb.coord[0] - na.coord[0]).powi(2)
+            + (nb.coord[1] - na.coord[1]).powi(2)
+            + (nb.coord[2] - na.coord[2]).powi(2))
+        .sqrt();
+        let factor = if mat.fc.is_some() { 1.0 } else { steel_factor };
+        expected += mat.density * sec.area * len * squid_n_core::units::GRAVITY_MM_S2 * factor;
+    }
+
+    // 実際に主架構へ届く鉛直荷重（非構造節点で捨てられるぶんを除く）。
+    let beam_loads = squid_n_job::auto_loads::compute_dl_beam_loads(model);
+    let (nodal, mut member) = squid_n_job::auto_loads::slab_load_case_content(model, &beam_loads);
+    let (nodal, extra_member) = resolve_nodal_to_primary(model, nodal, SPAN_TOL_MM);
+    member.extend(extra_member);
+
+    let connected = node_connected_flags(model);
+    let mut delivered = 0.0_f64;
+    let mut dropped = 0.0_f64;
+    for nl in &nodal {
+        let w = -nl.values[2];
+        if connected.get(nl.node.index()).copied().unwrap_or(false) {
+            delivered += w;
+        } else {
+            dropped += w;
+        }
+    }
+    for ml in &member {
+        let total = match ml.kind {
+            squid_n_core::model::MemberLoadKind::Distributed { a, b, w1, w2 } => {
+                (w1 + w2) / 2.0 * (b - a)
+            }
+            squid_n_core::model::MemberLoadKind::Point { p, .. } => p,
+        };
+        delivered += total * -ml.dir[2];
+    }
+
+    let ratio = delivered / expected;
+    assert!(
+        dropped.abs() <= expected * 1e-9,
+        "非構造節点で捨てられる床荷重が {dropped:.1} N ある（総床荷重 {expected:.1} N）"
+    );
+    assert!(
+        (ratio - 1.0).abs() < 1e-6,
+        "主架構へ届いた床荷重 {delivered:.1} N / 期待 {expected:.1} N = {ratio:.6}"
+    );
 }

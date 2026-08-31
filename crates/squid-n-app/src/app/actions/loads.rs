@@ -28,6 +28,9 @@ impl App {
     /// - 「DL」（kind=Dead・[`DL_CASE_NAME`]）: スラブの `loads`（仕上げ等の
     ///   固定荷重）の分配と、躯体自重（柱梁・壁・ダンパー・フレーム外雑壁。
     ///   `squid_n_load::self_weight::self_weight_case_content`）の合算。
+    ///   **二次部材（小梁・間柱）が受け持つ床荷重とその自重は、逐次伝達
+    ///   （`squid_n_load::cascade`）が両端反力へ変えて主架構まで運ぶ**ため、
+    ///   `self_weight_case_content` は二次部材の自重を返さない（二重計上の防止）。
     /// - 「LL(架構用)」（kind=Live）: スラブ用途（`SlabUsage`）から令別表第1 の
     ///   **骨組用**積載（LL）を分配（長期骨組解析用。用途未設定のスラブは寄与 0）。
     /// - 「LL(地震用)」（kind=LiveSeismic）: スラブ用途から令別表第1 の地震用積載を

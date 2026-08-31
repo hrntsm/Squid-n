@@ -2,8 +2,9 @@
 //!
 //! 小梁は大梁を分割せず、床の中で**単純支持梁**として検定する。
 //!
-//! 手入力小梁ライン（`FloorRegion.joists`）は負担幅 `w × spacing`（または格子 FEM）。
-//! 二次部材小梁は床領域分配の `Span` を単純梁へ重ね合わせ、小梁自重の等分布を足す。
+//! 荷重は床領域分配が材軸へ出した辺荷重・小梁自身の自重・架け側の二次部材から
+//! 渡された集中荷重の重ね合わせで、二次部材の反力の逐次伝達（`squid_n_load::cascade`）が
+//! 求める。本モジュールは部材力を受け取って検定するだけである。
 //!
 //! 単位は N-mm（面荷重 N/mm²、線荷重 N/mm）。
 
@@ -12,7 +13,7 @@
 pub struct JoistDesignResult {
     /// スパン（支持間距離）[mm]。
     pub span: f64,
-    /// 代表等分布荷重 w [N/mm]（手入力経路は面荷重 × 負担幅。二次部材は合計/スパン）。
+    /// 代表等分布荷重 w [N/mm]（合計荷重 / スパン。表示用であり検定には使わない）。
     pub w: f64,
     /// 最大曲げモーメント [N·mm]。
     pub m_max: f64,
@@ -39,48 +40,13 @@ pub struct JoistDesignResult {
     pub unchecked: bool,
 }
 
-/// 小梁を単純支持梁として設計する（床の中での小梁設計）。
-///
-/// - `span`: 支持間距離 [mm]、`w`: 等分布荷重 [N/mm]（面荷重 × 負担幅）。
-/// - `section_modulus`: 断面係数 Z [mm³]（強軸）、`inertia`: 断面二次モーメント I [mm⁴]。
-/// - `young`: ヤング係数 E [N/mm²]、`sigma_allow`: 許容曲げ応力度 [N/mm²]（長期）。
-/// - `defl_limit_denom`: たわみ制限の分母（例: 250 なら δ/L ≤ 1/250）。
-///
-/// `section_modulus`・`inertia`・`young` が 0 以下の場合は該当検定比を 0 とする
-/// （断面情報が不足する場合の安全なフォールバック）。
-#[allow(clippy::too_many_arguments)]
-pub fn design_joist_simple(
-    span: f64,
-    w: f64,
-    section_modulus: f64,
-    inertia: f64,
-    young: f64,
-    sigma_allow: f64,
-    defl_limit_denom: f64,
-) -> JoistDesignResult {
-    let m_max = w * span * span / 8.0;
-    let q_max = w * span / 2.0;
-    let deflection = if young > 0.0 && inertia > 0.0 {
-        5.0 * w * span.powi(4) / (384.0 * young * inertia)
-    } else {
-        0.0
-    };
-    judge_joist(
-        span,
-        w,
-        m_max,
-        q_max,
-        deflection,
-        section_modulus,
-        sigma_allow,
-        defl_limit_denom,
-    )
-}
-
 /// 部材力（曲げ・せん断・たわみ）を直接与えて小梁を検定する。
 ///
-/// 床格子 FEM と、二次部材の分配 Span 重ね合わせの両方から使う。
+/// 逐次伝達（`squid_n_load::cascade`）が重ね合わせた荷重から求めた部材力を渡す。
 /// `m_max` / `q_max` / `deflection` が設計値。`w` は表示用の代表等分布（合計/スパン）。
+///
+/// `section_modulus`・`sigma_allow`・`defl_limit_denom` が 0 以下の場合は該当検定比を
+/// 0 とする（断面情報が不足する場合の安全なフォールバック）。
 #[allow(clippy::too_many_arguments)]
 pub fn design_joist_from_forces(
     span: f64,
@@ -104,8 +70,7 @@ pub fn design_joist_from_forces(
     )
 }
 
-/// 共通の検定判定（曲げ応力度・たわみ制限）。`design_joist_simple`（単純梁の
-/// 閉形式）と `design_joist_from_forces`（格子 FEM）で共有する。
+/// 共通の検定判定（曲げ応力度・たわみ制限）。
 #[allow(clippy::too_many_arguments)]
 fn judge_joist(
     span: f64,
@@ -263,23 +228,24 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_joist_simple_bending_and_shear() {
-        // w=10 N/mm, L=4000mm → M=wL²/8=2.0e7 N·mm, Q=wL/2=2.0e4 N。
-        let r = design_joist_simple(4000.0, 10.0, 1.0e6, 1.0e8, STEEL_YOUNG, 156.0, 250.0);
+    fn test_joist_bending_and_deflection_ratio() {
+        // 等分布 w=10 N/mm・L=4000mm 相当の部材力（M=wL²/8、Q=wL/2、δ=5wL⁴/(384EI)）。
+        let defl = 5.0 * 10.0 * 4000.0_f64.powi(4) / (384.0 * STEEL_YOUNG * 1.0e8);
+        let r = design_joist_from_forces(4000.0, 10.0, 2.0e7, 2.0e4, defl, 1.0e6, 156.0, 250.0);
         assert!((r.m_max - 2.0e7).abs() < 1.0, "M={}", r.m_max);
         assert!((r.q_max - 2.0e4).abs() < 1.0, "Q={}", r.q_max);
         // σ = M/Z = 2e7/1e6 = 20。
         assert!((r.sigma - 20.0).abs() < 1e-9);
         assert!((r.bending_ratio - 20.0 / 156.0).abs() < 1e-9);
-        // δ = 5wL⁴/(384EI) = 5·10·4000⁴/(384·205000·1e8)。
-        let expect_defl = 5.0 * 10.0 * 4000.0_f64.powi(4) / (384.0 * STEEL_YOUNG * 1.0e8);
-        assert!((r.deflection - expect_defl).abs() / expect_defl < 1e-9);
+        // δ/L に対する検定比は (δ/L)/(1/250)。
+        assert!((r.deflection_span_ratio - defl / 4000.0).abs() < 1e-15);
+        assert!((r.deflection_ratio - defl / 4000.0 * 250.0).abs() < 1e-9);
     }
 
     #[test]
     fn test_joist_zero_section_is_safe() {
         // 断面情報ゼロでもパニックせず、検定比 0。
-        let r = design_joist_simple(4000.0, 10.0, 0.0, 0.0, 0.0, 0.0, 0.0);
+        let r = design_joist_from_forces(4000.0, 10.0, 2.0e7, 2.0e4, 10.0, 0.0, 0.0, 0.0);
         assert_eq!(r.bending_ratio, 0.0);
         assert_eq!(r.deflection_ratio, 0.0);
         assert!(r.ok);

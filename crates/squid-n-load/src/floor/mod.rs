@@ -21,13 +21,6 @@
 //! （`squid-n-job::auto_loads`）が小梁の両端節点への集中荷重（単純梁反力）へ変換する。
 //! 同じ小梁を挟む両側の床板がそれぞれ寄与を出すため、小梁の両端に立つ集中荷重は
 //! 自然に合算される（総和保存。追加の合成処理を要らない）。
-//!
-//! 交差小梁の格子解析用に手入力した小梁ライン（[`FloorRegion::joists`]）があり、かつ
-//! 床領域が床板をちょうど 1 枚だけ持つ場合は、その床板を床領域全体として扱う従来の
-//! 二段階伝達・床格子サブモデルへ回す（申し送り「床領域・壁領域の再設計」Q1 決定 C。
-//! この経路自体は変更しない）。床領域が床板を 2 枚以上持つ場合は、代表床板以外の面積・
-//! 荷重を無視してしまう（総和保存が崩れる）ため、この経路を採らず通常の
-//! 床板ごとの独立分配へ落とす（[`uses_joist_distribution`]）。
 
 mod cantilever;
 mod fem;
@@ -47,9 +40,9 @@ pub use joist_design::{
     covered_length_of_loads, joist_distribution_is_ready, joist_distribution_is_sufficient,
     joist_expected_slabs_covered, joist_self_weight_udl, load_shape_to_member_loads,
     orient_member_loads, secondary_joist_distribution_gaps, secondary_joist_distribution_loads,
-    secondary_joists_missing_distribution, simple_beam_extremes, span_node_key,
-    SecondaryJoistDistributionGaps, JOIST_COVER_MIN_RATIO, JOIST_DEFLECTION_SAMPLE_DIVISIONS,
-    JOIST_FORCE_SAMPLE_DIVISIONS,
+    secondary_joist_distribution_split, secondary_joists_missing_distribution,
+    simple_beam_extremes, span_node_key, SecondaryJoistDistributionGaps, JOIST_COVER_MIN_RATIO,
+    JOIST_DEFLECTION_SAMPLE_DIVISIONS, JOIST_FORCE_SAMPLE_DIVISIONS,
 };
 pub use rigid_zone::{cmq_with_rigid_zone, RigidZoneCmqMode, RigidZoneCmqResult};
 pub use types::{BeamLoad, Cmq, LoadShape, LoadTarget};
@@ -57,10 +50,8 @@ pub use types::{BeamLoad, Cmq, LoadShape, LoadTarget};
 use cantilever::{distribute_cantilever, distribute_to_node};
 use geometry::boundary_coords;
 use polygon::distribute_polygon;
-use rect::{distribute_rect, distribute_rect_with_joists};
-use squid_n_core::model::{
-    DistributionMethod, FloorRegion, LoadTransfer, Model, RegionAnchor, Slab, SlabShape,
-};
+use rect::distribute_rect;
+use squid_n_core::model::{FloorRegion, LoadTransfer, Model, RegionAnchor, Slab, SlabShape};
 
 #[cfg(test)]
 use fem::{fem_trapezoid, fem_triangle};
@@ -169,33 +160,6 @@ fn distribute_attached(
     }
 }
 
-/// [`distribute_region`] が交差小梁の格子解析・二段階伝達（従来経路）を採る条件。
-///
-/// `region.joists`（手入力の小梁ライン）が空でなく、かつ床領域が床板を**ちょうど 1 枚**
-/// だけ持つ場合に、その床板を床領域全体とみなして扱う。呼び出し側（床格子サブモデルで
-/// 小梁点反力を置換したい層）が、平行小梁モデルの出力形状を前提にできるかを
-/// 判定するために公開する。分岐は [`distribute_region`] と厳密に一致させること。
-///
-/// 床板が 2 枚以上ある床領域では、この経路は代表床板（先頭）以外の床板の面積・荷重を
-/// 無視してしまう（総和が保存されない）ため、代表床板 1 枚しか見ない前提が崩れる。
-/// 手入力小梁ラインと複数床板（打設単位の分割）が両方ある床領域は、ここで拒否して
-/// 各床板を独立に分配する経路（[`distribute_region`] の else 節）へ落とす。
-pub fn uses_joist_distribution(model: &Model, region: &FloorRegion) -> bool {
-    if region.joist_lines().is_empty() || region.slab_ids.len() != 1 {
-        return false;
-    }
-    let Some(slab) = region.slab_ids.first().and_then(|&id| model.slab(id)) else {
-        return false;
-    };
-    if slab.is_attached() || slab_dimensions(model, slab).is_none() {
-        return false; // 代表床板が矩形でない（多角形経路）。
-    }
-    matches!(
-        slab.method(),
-        DistributionMethod::TriTrapezoid | DistributionMethod::OneWay
-    )
-}
-
 /// 局所辺インデックス（`Edge(k)`）を、床板自身の境界から引いた実節点対の
 /// `Span` へ解決する。床領域は複数の床板を束ねるため、`Edge(k)` の `k` は
 /// どの床板を指すかによって別々の辺を意味する。呼び出し側（`squid-n-job`）へ
@@ -246,33 +210,11 @@ pub fn distribute_slab_resolved(model: &Model, slab: &Slab, w: f64) -> Vec<BeamL
 /// [`distribute_slab_w`] へ渡す（[`Self`] のモジュールドキュメント参照）。
 /// `w_of` は床板ごとの面荷重強度 [N/mm²] を返す関数（DL/LL を分けるため）。
 /// 戻り値の `LoadTarget` は `Node`/`Span` のみ（[`resolve_edges_to_span`]）。
-///
-/// 手入力の小梁ライン（[`FloorRegion::joists`]）があり、かつ床領域の床板が 1 枚だけの
-/// 場合は、その床板を床領域全体として二段階伝達（[`distribute_rect_with_joists`]）へ回す
-/// （[`uses_joist_distribution`] と同じ条件。この経路は変更しない）。床板が 2 枚以上
-/// あるとこの経路は代表床板以外を無視して総和保存が崩れるため、`uses_joist_distribution`
-/// が拒否し、下の通常経路（各床板を独立に分配）へ落ちる。
 pub fn distribute_region(
     model: &Model,
     region: &FloorRegion,
     w_of: impl Fn(&Slab) -> f64,
 ) -> Vec<BeamLoad> {
-    if uses_joist_distribution(model, region) {
-        let Some(slab) = region.slab_ids.first().and_then(|&id| model.slab(id)) else {
-            return Vec::new();
-        };
-        let w = w_of(slab);
-        let mut loads = Vec::new();
-        if w == 0.0 {
-            return loads;
-        }
-        let Some(coords) = boundary_coords(model, slab) else {
-            return loads;
-        };
-        distribute_rect_with_joists(model, region, &coords, w, &mut loads);
-        return resolve_edges_to_span(slab, loads);
-    }
-
     let mut loads = Vec::new();
     for &sid in &region.slab_ids {
         let Some(slab) = model.slab(sid) else {

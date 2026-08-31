@@ -60,14 +60,3 @@ pub(crate) fn new_elem_ok(model: &Model, elem: &squid_n_core::model::ElementData
         && elem.nodes.iter().all(|&n| node_exists(model, n))
         && section_ref_ok(model, elem.section)
 }
-
-/// 小梁ライン（[`JoistLine`](squid_n_core::model::JoistLine)）が参照する
-/// 支持節点・断面が実在するか。`pinned_onto` は同一スラブ内の添字のため、
-/// 小梁列の長さと自己参照でないことも合わせて確認する。
-pub(crate) fn joists_ok(model: &Model, joists: &[squid_n_core::model::JoistLine]) -> bool {
-    joists.iter().enumerate().all(|(ji, j)| {
-        j.support.iter().all(|&n| node_exists(model, n))
-            && section_ref_ok(model, j.section)
-            && j.pinned_onto.is_none_or(|c| c < joists.len() && c != ji)
-    })
-}

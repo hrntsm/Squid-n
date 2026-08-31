@@ -11,7 +11,6 @@
 //! - [`SlabShape`] — 床板の形（大梁または小梁で囲まれた領域 / 主架構に取り付く領域）。
 //! - [`SlabPlate`] — 版の仕様（断面・仕上げ荷重・室用途・分配方法）。
 //! - [`DistributionMethod`] — 床荷重の分配方法。
-//! - [`JoistLine`] — 交差小梁の格子解析用の小梁ライン（[`FloorRegion::joists`] が持つ）。
 //! - [`AreaLoad`] — 面荷重。
 //! - [`OneWayDir`] — 一方向スラブの伝達方向。
 //! - [`LoadPurpose`] — 積載荷重の用途（床用／骨組用／地震用。令85条1項）。
@@ -418,23 +417,6 @@ impl SlabUsage {
         };
         v_n_per_m2 * 1e-6
     }
-}
-
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct JoistLine {
-    pub dir: [f64; 2],
-    pub spacing: f64,
-    pub support: [NodeId; 2],
-    /// 小梁の断面参照（床の中での小梁設計に用いる。単純支持梁として検定する）。
-    /// `None`（旧スキーマ・未設定）は断面未割当（設計対象外）。
-    #[serde(default)]
-    pub section: Option<crate::ids::SectionId>,
-    /// 交差する相手小梁（同一スラブの `joists` インデックス）へ**ピン接合で載る**
-    /// 場合の受け梁の指定（この小梁＝架け梁）。`Some(受け梁index)` のとき、その交点で
-    /// この小梁の端部は曲げを解放し（単純支持）、受け梁へ鉛直反力のみ伝える。
-    /// `None`（既定）は交点で曲げ連続＝**剛接十字**（二方向格子）。
-    #[serde(default)]
-    pub pinned_onto: Option<usize>,
 }
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]

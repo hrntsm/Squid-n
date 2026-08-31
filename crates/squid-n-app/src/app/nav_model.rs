@@ -9,9 +9,7 @@ use std::collections::{HashMap, HashSet};
 #[cfg(feature = "gui")]
 use super::*;
 use squid_n_core::ids::{MaterialId, SectionId};
-use squid_n_core::model::{
-    FloorRegion, Material, MaterialCategory, SecondaryMember, Section, Slab, Story,
-};
+use squid_n_core::model::{Material, MaterialCategory, SecondaryMember, Section, Slab, Story};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum SectionGroupKey {
@@ -25,7 +23,7 @@ pub(crate) enum SectionGroupKey {
 /// まず `stories` に載る階名と一致する断面を上階から下階へ順に並べる。
 /// 次に、階定義にない `floor: Some(name)` の断面を、`sections` の並び順で初登場した
 /// 階名ごとに独立したグループへまとめる。`floor: None` の断面は、二次部材・床板・
-/// 床領域の小梁ラインが参照する断面を `Secondary` グループにまとめ、残りを末尾の
+/// 二次部材が参照する断面を `Secondary` グループにまとめ、残りを末尾の
 /// 「（階なし）」グループへ集約する。階名がある断面は二次部材・床板から参照されて
 /// いても階グループに残す。
 pub(crate) fn section_floor_groups(
@@ -33,7 +31,6 @@ pub(crate) fn section_floor_groups(
     sections: &[Section],
     secondary_members: &[SecondaryMember],
     slabs: &[Slab],
-    floor_regions: &[FloorRegion],
 ) -> Vec<(SectionGroupKey, Vec<SectionId>)> {
     let mut groups = Vec::new();
     let mut matched_section_ids = HashSet::new();
@@ -76,18 +73,12 @@ pub(crate) fn section_floor_groups(
         groups.push((SectionGroupKey::Floor(floor_name), ids));
     }
 
-    // 床領域・壁領域への登録の有無では絞らない。登録を持つモデルをまだ作れないため
-    // （UI 未接続・ST-Bridge も親子関係を持たない）、絞ると本グループが常に空になる。
+    // `secondary_members` は領域内・未割当の両方を含む（`Model::joists`/`posts`）ため、
+    // 床領域を別途走査する必要はない。
     let secondary_referenced_ids: HashSet<_> = secondary_members
         .iter()
         .filter_map(|member| member.section)
         .chain(slabs.iter().filter_map(|slab| slab.section()))
-        .chain(floor_regions.iter().flat_map(|region| {
-            region
-                .joist_lines()
-                .iter()
-                .filter_map(|joist| joist.section)
-        }))
         .collect();
 
     let secondary_no_floor: Vec<_> = sections
@@ -156,7 +147,6 @@ impl App {
             &self.model.sections,
             &secondary,
             &self.model.slabs,
-            &self.model.floor_regions,
         );
         let mut jump: Option<SectionId> = None;
 
@@ -308,16 +298,6 @@ mod tests {
         }
     }
 
-    /// 手入力の小梁ライン（`FloorRegion::joists`）だけを持つ床領域。
-    fn floor_region_with_joists(
-        id: u32,
-        joists: Vec<squid_n_core::model::JoistLine>,
-    ) -> FloorRegion {
-        let mut region = FloorRegion::new(squid_n_core::ids::FloorRegionId(id), vec![]);
-        region.joists = joists;
-        region
-    }
-
     fn material(id: u32, name: &str, category: MaterialCategory) -> Material {
         Material {
             id: MaterialId(id),
@@ -343,7 +323,7 @@ mod tests {
             section(2, "C", None),
         ];
 
-        let groups = section_floor_groups(&stories, &sections, &[], &[], &[]);
+        let groups = section_floor_groups(&stories, &sections, &[], &[]);
         assert_eq!(groups.len(), 3);
         assert_eq!(groups[0].0, SectionGroupKey::Floor("3F".to_string()));
         assert_eq!(groups[0].1, vec![SectionId(0)]);
@@ -363,7 +343,7 @@ mod tests {
             section(2, "C", Some("3F")),
         ];
 
-        let groups = section_floor_groups(&stories, &sections, &[], &[], &[]);
+        let groups = section_floor_groups(&stories, &sections, &[], &[]);
         assert_eq!(
             groups,
             vec![
@@ -384,7 +364,7 @@ mod tests {
             section(3, "D", None),
         ];
 
-        let groups = section_floor_groups(&stories, &sections, &[], &[], &[]);
+        let groups = section_floor_groups(&stories, &sections, &[], &[]);
         assert_eq!(groups.len(), 3);
         assert_eq!(groups[0].0, SectionGroupKey::Floor("2F".to_string()));
         assert_eq!(groups[0].1, vec![SectionId(0), SectionId(2)]);
@@ -399,7 +379,7 @@ mod tests {
         let stories = vec![story("1F"), story("2F")];
         let sections = vec![section(0, "A", Some("1F"))];
 
-        let groups = section_floor_groups(&stories, &sections, &[], &[], &[]);
+        let groups = section_floor_groups(&stories, &sections, &[], &[]);
         assert_eq!(groups.len(), 1);
         assert_eq!(groups[0].0, SectionGroupKey::Floor("1F".to_string()));
         assert_eq!(groups[0].1, vec![SectionId(0)]);
@@ -411,7 +391,7 @@ mod tests {
         let sections = vec![section(0, "A", None), section(1, "B", None)];
         let secondary_members = vec![secondary_member(0, Some(SectionId(0)))];
 
-        let groups = section_floor_groups(&stories, &sections, &secondary_members, &[], &[]);
+        let groups = section_floor_groups(&stories, &sections, &secondary_members, &[]);
         assert_eq!(
             groups,
             vec![
@@ -427,7 +407,7 @@ mod tests {
         let sections = vec![section(0, "A", None), section(1, "B", None)];
         let slabs = vec![slab(0, Some(SectionId(0)))];
 
-        let groups = section_floor_groups(&stories, &sections, &[], &slabs, &[]);
+        let groups = section_floor_groups(&stories, &sections, &[], &slabs);
         assert_eq!(
             groups,
             vec![
@@ -447,7 +427,7 @@ mod tests {
         ];
         let secondary_members = vec![secondary_member(0, Some(SectionId(1)))];
 
-        let groups = section_floor_groups(&stories, &sections, &secondary_members, &[], &[]);
+        let groups = section_floor_groups(&stories, &sections, &secondary_members, &[]);
         assert_eq!(
             groups,
             vec![
@@ -464,7 +444,7 @@ mod tests {
         let sections = vec![section(0, "A", Some("1F")), section(1, "B", None)];
         let secondary_members = vec![secondary_member(0, Some(SectionId(0)))];
 
-        let groups = section_floor_groups(&stories, &sections, &secondary_members, &[], &[]);
+        let groups = section_floor_groups(&stories, &sections, &secondary_members, &[]);
         assert_eq!(
             groups,
             vec![
@@ -478,18 +458,14 @@ mod tests {
     fn joist_sections_go_to_secondary_group() {
         let stories = vec![];
         let sections = vec![section(0, "A", None), section(1, "B", None)];
-        let floor_regions = vec![floor_region_with_joists(
-            0,
-            vec![squid_n_core::model::JoistLine {
-                dir: [1.0, 0.0],
-                spacing: 1.0,
-                support: [squid_n_core::ids::NodeId(0), squid_n_core::ids::NodeId(1)],
-                section: Some(SectionId(0)),
-                pinned_onto: None,
-            }],
-        )];
+        let joists = vec![squid_n_core::model::SecondaryMember {
+            kind: squid_n_core::model::SecondaryMemberKind::Joist,
+            nodes: [squid_n_core::ids::NodeId(0), squid_n_core::ids::NodeId(1)],
+            section: Some(SectionId(0)),
+            name: "SB1".to_string(),
+        }];
 
-        let groups = section_floor_groups(&stories, &sections, &[], &[], &floor_regions);
+        let groups = section_floor_groups(&stories, &sections, &joists, &[]);
         assert_eq!(
             groups,
             vec![
@@ -510,7 +486,7 @@ mod tests {
             name: "post-0".to_string(),
         }];
 
-        let groups = section_floor_groups(&stories, &sections, &secondary_members, &[], &[]);
+        let groups = section_floor_groups(&stories, &sections, &secondary_members, &[]);
         assert_eq!(
             groups,
             vec![

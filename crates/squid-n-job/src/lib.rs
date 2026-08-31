@@ -23,7 +23,6 @@ pub mod auto_loads;
 pub mod compute;
 pub mod design_q0;
 pub mod error;
-pub mod floor_grillage;
 pub mod lumped_mass;
 pub mod prepare;
 pub mod sample_wave;

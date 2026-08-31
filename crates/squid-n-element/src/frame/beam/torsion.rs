@@ -170,8 +170,8 @@ pub fn i_end_torsion_release_skip(data: &ElementData, model: &Model) -> Option<T
 ///
 /// 対象は線材（梁・柱・ブレース）で、解放によって材軸まわり回転が浮く節点が
 /// 生じる場合は解放しない（モジュールドキュメントの判定規則を参照）。
-/// モデルが `BeamTorsionMode::Keep`（ねじり剛性を保持するモデル化。床小梁の
-/// 格子解析など）の場合は常に解放しない。
+/// モデルが `BeamTorsionMode::Keep`（ねじり剛性を保持するモデル化）の場合は
+/// 常に解放しない。
 pub fn i_end_torsion_release(data: &ElementData, model: &Model) -> bool {
     i_end_torsion_release_skip(data, model).is_none()
 }

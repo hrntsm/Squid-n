@@ -104,10 +104,11 @@ pub(super) fn element_draw_shape(kind: squid_n_core::model::ElementKind) -> Draw
 
 use squid_n_core::geom::vec3::cross as cross3;
 
-pub(super) fn draw_slabs_and_joists(
+/// 床板（版）の輪郭と塗りを描く。二次部材（小梁・間柱）は実部材と同じ経路
+/// （`draw_mode_rest_ghost` の二次部材ブロック）で別途描画する。
+pub(super) fn draw_slabs(
     painter: &egui::Painter,
     app: &App,
-    pts: &[egui::Pos2],
     filter: FrameFilter,
     proj: &Projector,
 ) {
@@ -137,27 +138,6 @@ pub(super) fn draw_slabs_and_joists(
             painter.extend(egui::Shape::dashed_line(
                 &closed,
                 egui::Stroke::new(1.5_f32, theme::translucent(theme::BEST_YELLOW, 220)),
-                DASH,
-                GAP,
-            ));
-        }
-    }
-
-    // 床領域の手入力小梁ライン（交差小梁の格子解析用）: support 節点間の破線
-    // （ニュートラル色。スラブ輪郭の暖色とも弁別）。
-    for region in &app.model.floor_regions {
-        if !region.boundary.iter().all(|n| filter.shows_node(n.index())) {
-            continue;
-        }
-        for joist in region.joist_lines() {
-            let i0 = joist.support[0].index();
-            let i1 = joist.support[1].index();
-            if i0 >= pts.len() || i1 >= pts.len() {
-                continue;
-            }
-            painter.extend(egui::Shape::dashed_line(
-                &[pts[i0], pts[i1]],
-                egui::Stroke::new(1.5_f32, theme::GRAY_600),
                 DASH,
                 GAP,
             ));
