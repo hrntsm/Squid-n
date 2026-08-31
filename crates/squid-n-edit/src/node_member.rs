@@ -259,74 +259,7 @@ impl EditCommand for AddMember {
     }
 }
 
-/// スラブの小梁（`JoistLine`）を実部材化する。各小梁について支持2節点を両端に持つ
-/// 実 `Beam` 要素が未生成なら新規に生成（末尾に追加。断面未割当・両端ピン）する。
-/// 実部材化された小梁には床分配が点反力ではなく等分布荷重を載せる（分配エンジンが
-/// 実部材の有無で自動的に切り替える）。これにより小梁が応力解析に参加し、断面検定・
-/// たわみ検定の対象となる。逆操作は生成した部材の末尾からの除去
-/// （[`PopTailMembers`]。生成直後の undo のため末尾＝生成分）。
-pub struct MaterializeSlabJoists {
-    pub slab: FloorRegionId,
-}
-
-impl EditCommand for MaterializeSlabJoists {
-    fn apply(&self, model: &mut Model) -> Box<dyn EditCommand> {
-        use squid_n_core::model::{ElementData, ElementKind, EndCondition, ForceRegime, LocalAxis};
-        let Some(slab) = model
-            .floor_regions
-            .get(self.slab.index())
-            .filter(|s| s.id == self.slab)
-        else {
-            return Box::new(Noop);
-        };
-        // 支持節点対は借用を切るため先に複製する。
-        let supports: Vec<[NodeId; 2]> = slab.joist_lines().iter().map(|j| j.support).collect();
-
-        let beam_exists = |model: &Model, created: &[ElementData], a: NodeId, b: NodeId| -> bool {
-            model.elements.iter().chain(created.iter()).any(|e| {
-                e.kind == ElementKind::Beam
-                    && e.nodes.len() == 2
-                    && ((e.nodes[0] == a && e.nodes[1] == b)
-                        || (e.nodes[0] == b && e.nodes[1] == a))
-            })
-        };
-
-        let mut created: Vec<ElementData> = Vec::new();
-        let mut next_id = model.elements.len() as u32;
-        for sp in supports {
-            let (a, b) = (sp[0], sp[1]);
-            if a == b || beam_exists(model, &created, a, b) {
-                continue;
-            }
-            created.push(ElementData {
-                id: ElemId(next_id),
-                kind: ElementKind::Beam,
-                nodes: [a, b].into_iter().collect(),
-                section: None,
-                local_axis: LocalAxis {
-                    ref_vector: [0.0, 0.0, 1.0],
-                },
-                // 小梁は大梁へピン接合（単純梁）とみなす。
-                end_cond: [EndCondition::Pinned, EndCondition::Pinned],
-                force_regime: ForceRegime::Auto,
-                rigid_zone: Default::default(),
-                plastic_zone: None,
-                spring: None,
-            });
-            next_id += 1;
-        }
-        for e in &created {
-            model.elements.push(e.clone());
-        }
-        Box::new(PopTailMembers { elems: created })
-    }
-
-    fn label(&self) -> &str {
-        "小梁の実部材化"
-    }
-}
-
-/// モデル末尾の部材を除去する（[`MaterializeSlabJoists`] 等の逆操作）。
+/// モデル末尾の部材を除去する（部材を末尾へ追加するコマンドの逆操作）。
 /// `elems` の件数分だけ末尾から取り除く（生成直後の undo を想定し、末尾＝生成分）。
 /// 逆操作は [`PushTailMembers`]（同じ部材の末尾再追加）。
 pub struct PopTailMembers {

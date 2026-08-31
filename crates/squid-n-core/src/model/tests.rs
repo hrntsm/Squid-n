@@ -113,7 +113,6 @@ fn test_validate_dangling_slab_boundary() {
             boundary: vec![NodeId(0), NodeId(5)],
             secondary_joists: vec![],
             slab_ids: vec![],
-            joists: vec![],
         }],
         ..Default::default()
     };
@@ -124,7 +123,7 @@ fn test_validate_dangling_slab_boundary() {
 }
 
 #[test]
-fn test_validate_rejects_post_in_floor_region_joists() {
+fn test_validate_rejects_post_in_floor_region_secondary_joists() {
     let model = Model {
         floor_regions: vec![FloorRegion {
             id: FloorRegionId(0),
@@ -137,7 +136,6 @@ fn test_validate_rejects_post_in_floor_region_joists() {
                 name: "P0".to_string(),
             }],
             slab_ids: vec![],
-            joists: vec![],
         }],
         nodes: vec![
             Node {
@@ -178,7 +176,6 @@ fn test_validate_rejects_duplicate_joist_endpoints() {
                 boundary: vec![],
                 secondary_joists: vec![sm.clone()],
                 slab_ids: vec![],
-                joists: vec![],
             },
             FloorRegion {
                 id: FloorRegionId(1),
@@ -186,7 +183,6 @@ fn test_validate_rejects_duplicate_joist_endpoints() {
                 boundary: vec![],
                 secondary_joists: vec![sm],
                 slab_ids: vec![],
-                joists: vec![],
             },
         ],
         nodes: vec![

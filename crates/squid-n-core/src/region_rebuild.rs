@@ -77,7 +77,6 @@ pub fn rebuild_floor_regions(model: &mut Model) -> FloorRegionRebuildReport {
             let denom = rb_area.abs().max(f64::EPSILON);
             if (old_area - rb_area).abs() / denom < CENTROID_MATCH_AREA_REL {
                 region.name = old_regions[oi].name.clone();
-                region.joists = old_regions[oi].joists.clone();
                 report.inherited += 1;
             } else {
                 report.new_regions += 1;

@@ -3105,350 +3105,18 @@ fn test_sync_gravity_load_cases_action_separates_dead_and_live() {
     );
 }
 
-/// 床 Phase F-3b: 交差小梁スラブは床格子サブモデルの支点反力を大梁接続点へ渡す。
-/// 支点反力総和は平行小梁モデルの小梁反力総和（w·Σspacing·L）と一致し（総和保存）、
-/// 実部材化された小梁を含むスラブは二重計上回避のため対象外（None）になる。
+/// 床 Phase E: 矩形床板が一方向版として設計され、設計曲げ・必要鉄筋量が算定される。
+///
+/// 小梁の検定は分配 Span 経路（`test_floor_design_checks_secondary_member_joist` 以降）が
+/// 受け持つため、本テストは床板だけを見る。
 #[test]
-fn test_slab_grillage_node_reactions_total_and_gate() {
-    use squid_n_core::ids::FloorRegionId;
-    use squid_n_core::model::{
-        AreaLoad, DistributionMethod, ElementData, ElementKind, EndCondition, ForceRegime,
-        JoistLine, LocalAxis, Node, Section,
-    };
-
-    let mk_node = |id: u32, x: f64, y: f64| Node {
-        id: NodeId(id),
-        coord: [x, y, 0.0],
-        restraint: Default::default(),
-        mass: None,
-        story: None,
-        support_spring: None,
-    };
-    let mk_beam = |id: u32, i: u32, j: u32| ElementData {
-        id: ElemId(id),
-        kind: ElementKind::Beam,
-        nodes: [NodeId(i), NodeId(j)].into_iter().collect(),
-        section: None,
-        local_axis: LocalAxis {
-            ref_vector: [0.0, 0.0, 1.0],
-        },
-        end_cond: [EndCondition::Fixed, EndCondition::Fixed],
-        force_regime: ForceRegime::Auto,
-        rigid_zone: Default::default(),
-        plastic_zone: None,
-        spring: None,
-    };
-    let section = Section {
-        id: SectionId(0),
-        name: "H".into(),
-        area: 10000.0,
-        iy: 1.0e8,
-        iz: 1.0e8,
-        j: 1.0e6,
-        depth: 400.0,
-        width: 200.0,
-        as_y: 0.0,
-        as_z: 0.0,
-        floor: None,
-        panel_thickness: None,
-        thickness: None,
-        shape: None,
-        // 床格子の解析は断面性能のみを使うため、材料は割り当てない。
-        material: None,
-        rebar_material: None,
-        shear_rebar_material: None,
-        steel_material: None,
-    };
-    let spacing = 2000.0_f64;
-    let boundary = vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)];
-    let slab = Slab {
-        id: squid_n_core::ids::SlabId(0),
-        shape: SlabShape::Enclosed {
-            boundary: boundary.clone(),
-        },
-        plate: SlabPlate {
-            section: None,
-            loads: vec![AreaLoad {
-                kind: "DL".into(),
-                value: 0.005,
-            }],
-            usage: None,
-            method: DistributionMethod::TriTrapezoid,
-            one_way: None,
-        },
-    };
-    let mut region = FloorRegion::new(FloorRegionId(0), boundary);
-    region.slab_ids.push(squid_n_core::ids::SlabId(0));
-    region.joists = vec![
-        JoistLine {
-            dir: [0.0, 1.0],
-            spacing,
-            support: [NodeId(4), NodeId(5)], // 縦（x=2000）
-            section: Some(SectionId(0)),
-            pinned_onto: None,
-        },
-        JoistLine {
-            dir: [1.0, 0.0],
-            spacing,
-            support: [NodeId(6), NodeId(7)], // 横（y=2000）
-            section: Some(SectionId(0)),
-            pinned_onto: None,
-        },
-    ];
-    let model = squid_n_core::model::Model {
-        nodes: vec![
-            mk_node(0, 0.0, 0.0),
-            mk_node(1, 4000.0, 0.0),
-            mk_node(2, 4000.0, 4000.0),
-            mk_node(3, 0.0, 4000.0),
-            mk_node(4, 2000.0, 0.0),
-            mk_node(5, 2000.0, 4000.0),
-            mk_node(6, 0.0, 2000.0),
-            mk_node(7, 4000.0, 2000.0),
-        ],
-        elements: vec![
-            mk_beam(0, 0, 1),
-            mk_beam(1, 1, 2),
-            mk_beam(2, 2, 3),
-            mk_beam(3, 3, 0),
-        ],
-        sections: vec![section],
-        floor_regions: vec![region],
-        slabs: vec![slab],
-        ..Default::default()
-    };
-    model.validate().expect("交差小梁モデルは validate を通る");
-    let mut app = App {
-        model,
-        ..App::default()
-    };
-
-    let w = 0.005_f64;
-    let beam_map = squid_n_job::auto_loads::beam_elem_map(&app.model);
-    let reactions = squid_n_job::auto_loads::slab_grillage_node_reactions(
-        &app.model,
-        &app.model.floor_regions[0],
-        w,
-        &beam_map,
-    )
-    .expect("交差格子の支点反力が得られるはず");
-    // 4 支点（N4..N7）へ配分。
-    assert_eq!(reactions.len(), 4, "支点は4節点");
-    let total: f64 = reactions.iter().map(|(_, r)| r).sum();
-    let expected = w * spacing * 4000.0 * 2.0; // w·spacing·L × 2本
-    assert!(
-        (total - expected).abs() / expected < 1e-6,
-        "格子支点反力総和={total} 期待(平行モデル小梁反力総和)={expected}"
-    );
-
-    // 実部材化された小梁を含むと二重計上回避のため None（本体 FEM が伝達）。
-    app.model.elements.push(mk_beam(4, 4, 5)); // N4-N5 に実 Beam
-    let beam_map = squid_n_job::auto_loads::beam_elem_map(&app.model);
-    assert!(
-        squid_n_job::auto_loads::slab_grillage_node_reactions(
-            &app.model,
-            &app.model.floor_regions[0],
-            w,
-            &beam_map,
-        )
-        .is_none(),
-        "実部材化小梁を含むスラブは格子荷重の対象外（None）"
-    );
-
-    // 分配法が小梁二段階伝達（三角/一方向）でないスラブは、distribute_slab_w が
-    // 小梁点反力を出さず全面積を境界へ Edge 分配するため、格子反力を上乗せすると
-    // 二重計上になる。この場合は None（既存挙動を維持）でなければならない。
-    app.model.elements.pop(); // 実 Beam を戻す（他条件は満たす）。
-    app.model.slabs[0].plate.method = DistributionMethod::TributaryArea;
-    let beam_map = squid_n_job::auto_loads::beam_elem_map(&app.model);
-    assert!(
-        squid_n_job::auto_loads::slab_grillage_node_reactions(
-            &app.model,
-            &app.model.floor_regions[0],
-            w,
-            &beam_map,
-        )
-        .is_none(),
-        "分配法が三角/一方向でないスラブは格子荷重の対象外（二重計上回避）"
-    );
-}
-
-/// 床 Phase A-3: 用途を設定したスラブは地震用積載（LiveSeismic）ケースも同期され、
-/// 地震用重量の重力ケース選択（`gravity_cases_for_seismic_weight`）が
-/// 骨組用 Live ではなく地震用 LiveSeismic を採用することを確認する
-/// （令85条1項の地震用値〔事務室=800 N/m²〕を地震用重量に用いる）。
-#[test]
-fn test_sync_gravity_load_cases_action_seismic_live_case() {
-    use squid_n_core::model::{LoadCaseKind, MemberLoadKind, SlabUsage};
-
-    let mut model = make_square_slab_test_model();
-    model.slabs[0].plate.usage = Some(SlabUsage::Office);
-    model
-        .validate()
-        .expect("テストモデルは validate を通るはず");
-    let mut app = App {
-        model,
-        ..App::default()
-    };
-    app.sync_gravity_load_cases_action();
-
-    let sum_vertical = |name: &str| -> f64 {
-        app.model
-            .load_cases
-            .iter()
-            .find(|lc| lc.name == name)
-            .map(|c| {
-                c.member
-                    .iter()
-                    .map(|m| match m.kind {
-                        MemberLoadKind::Distributed { a, b, w1, w2 } => (w1 + w2) / 2.0 * (b - a),
-                        MemberLoadKind::Point { p, .. } => p,
-                    })
-                    .sum()
-            })
-            .unwrap_or(0.0)
-    };
-
-    let area = 4000.0 * 4000.0;
-    // 地震用積載ケース: 地震用値 800 N/m² = 8e-4 N/mm²。
-    let ls = app
-        .model
-        .load_cases
-        .iter()
-        .find(|lc| lc.name == LL_SEISMIC_CASE_NAME)
-        .expect("LL(地震用)ケースが作られるはず");
-    assert_eq!(ls.kind, LoadCaseKind::LiveSeismic);
-    assert!((sum_vertical(LL_SEISMIC_CASE_NAME) - 8e-4 * area).abs() < 1e-6);
-
-    // 地震用重量の重力ケース: DL(床荷重) と LiveSeismic(床地震用積載) を含み、
-    // 骨組用 Live(床積載) は含まない（LiveSeismic 優先）。
-    let dl_id = app
-        .model
-        .load_cases
-        .iter()
-        .find(|lc| lc.name == DL_CASE_NAME)
-        .unwrap()
-        .id;
-    let live_id = app
-        .model
-        .load_cases
-        .iter()
-        .find(|lc| lc.name == LL_FRAME_CASE_NAME)
-        .unwrap()
-        .id;
-    let ls_id = ls.id;
-    let gravity = gravity_cases_for_seismic_weight(&app.model);
-    assert!(gravity.contains(&dl_id), "DL(床荷重)は地震用重量に含むはず");
-    assert!(
-        gravity.contains(&ls_id),
-        "LiveSeismic(床地震用積載)は地震用重量に含むはず"
-    );
-    assert!(
-        !gravity.contains(&live_id),
-        "骨組用 Live(床積載)は地震用重量に含めないはず（LiveSeismic 優先）"
-    );
-}
-
-/// 床 Phase A-3 レビュー指摘: 用途の地震用値が明示的に 0（骨組用のみ正）の場合、
-/// 地震用積載(LiveSeismic)ケースは生成されないが、骨組用 Live(床積載)ケースへ
-/// フォールバックして地震用重量が過大にならないことを確認する
-/// （自動生成の骨組用 Live ケースは地震用重量の代用対象から除外される）。
-#[test]
-fn test_gravity_cases_excludes_auto_frame_live_when_no_seismic() {
-    use squid_n_core::model::SlabUsage;
-
-    let mut model = make_square_slab_test_model();
-    // 骨組用のみ正・地震用 0 の用途（serde 由来を想定した異常系）。
-    model.slabs[0].plate.usage = Some(SlabUsage::Custom {
-        floor: 3e-3,
-        frame: 2e-3,
-        seismic: 0.0,
-    });
-    model
-        .validate()
-        .expect("テストモデルは validate を通るはず");
-    let mut app = App {
-        model,
-        ..App::default()
-    };
-    app.sync_gravity_load_cases_action();
-
-    // 地震用値 0 なので LiveSeismic ケースは生成されない。
-    assert!(
-        !app.model
-            .load_cases
-            .iter()
-            .any(|lc| lc.name == LL_SEISMIC_CASE_NAME),
-        "地震用値 0 ならLL(地震用)は作られないはず"
-    );
-    // 骨組用 Live ケースは生成される。
-    let live_id = app
-        .model
-        .load_cases
-        .iter()
-        .find(|lc| lc.name == LL_FRAME_CASE_NAME)
-        .expect("LL(架構用)は作られるはず")
-        .id;
-    // 地震用重量の重力ケースに、骨組用 Live(床積載)を含めてはならない。
-    let gravity = gravity_cases_for_seismic_weight(&app.model);
-    assert!(
-        !gravity.contains(&live_id),
-        "自動生成の骨組用 Live(床積載)は地震用重量にフォールバックしてはならない"
-    );
-}
-
-/// 床 Phase E: 床の中での小梁・スラブ設計。断面を割り当てた小梁は単純支持梁として
-/// 検定され、矩形スラブは一方向版として設計曲げ・必要鉄筋量が算定される。
-#[test]
-fn test_floor_design_checks_joist_and_slab() {
+fn test_floor_design_checks_slab() {
     use squid_n_core::ids::SectionId;
-    use squid_n_core::model::{JoistLine, Section, SlabUsage};
+    use squid_n_core::model::SlabUsage;
 
     let mut model = make_square_slab_test_model();
     // 事務室用途（床用積載 2900 N/m² = 2.9e-3 N/mm²）＋固定荷重 0.005。
     model.slabs[0].plate.usage = Some(SlabUsage::Office);
-    // 鋼小梁の断面（Iy=1e8 mm⁴, せい 400mm → Z=5e5 mm³）。
-    model.sections.push(Section {
-        id: SectionId(0),
-        name: "H-400".into(),
-        area: 10000.0,
-        iy: 1.0e8,
-        iz: 1.0e7,
-        j: 1.0e6,
-        depth: 400.0,
-        width: 200.0,
-        as_y: 0.0,
-        as_z: 0.0,
-        floor: None,
-        panel_thickness: None,
-        thickness: None,
-        shape: None,
-        // 床の小梁設計は断面性能のみを使うため、材料は割り当てない。
-        material: None,
-        rebar_material: None,
-        shear_rebar_material: None,
-        steel_material: None,
-    });
-    // 対辺の中間節点 N4(2000,0)・N5(2000,4000) を追加し、その間に小梁を架ける
-    // （境界大梁で直接結ばれていない＝実部材化されていない現実的な小梁）。
-    let mk_mid = |id: u32, x: f64, y: f64| squid_n_core::model::Node {
-        id: NodeId(id),
-        coord: [x, y, 0.0],
-        restraint: Default::default(),
-        mass: None,
-        story: None,
-        support_spring: None,
-    };
-    model.nodes.push(mk_mid(4, 2000.0, 0.0));
-    model.nodes.push(mk_mid(5, 2000.0, 4000.0));
-    // 支持 N4(2000,0)–N5(2000,4000)、スパン 4000、負担幅 2000、断面 S0。
-    model.floor_regions[0].joists.push(JoistLine {
-        dir: [0.0, 1.0],
-        spacing: 2000.0,
-        support: [NodeId(4), NodeId(5)],
-        section: Some(SectionId(0)),
-        pinned_onto: None,
-    });
     // 板厚はスラブ断面が持つ（材料は割り当てないので自重は算定されない）。
     let slab_sec_id = SectionId(model.sections.len() as u32);
     model.sections.push(
@@ -3462,15 +3130,7 @@ fn test_floor_design_checks_joist_and_slab() {
         ..App::default()
     };
 
-    let (joists, slabs) = app.floor_design_checks();
-    assert_eq!(joists.len(), 1, "断面付き小梁が1件設計される");
-    let (_sid, _ji, jr) = &joists[0];
-    // w = (固定0.005 + 床用積載2.9e-3) × spacing2000。M = wL²/8。
-    let w_udl = (0.005 + 2.9e-3) * 2000.0;
-    assert!((jr.w - w_udl).abs() / w_udl < 1e-9, "w={}", jr.w);
-    assert!((jr.m_max - w_udl * 4000.0 * 4000.0 / 8.0).abs() < 1.0);
-    assert!(jr.span > 0.0 && jr.bending_ratio > 0.0);
-
+    let (_joists, slabs) = app.floor_design_checks();
     assert_eq!(slabs.len(), 1, "矩形スラブが1件設計される");
     let (_sid, sr) = &slabs[0];
     assert!((sr.span - 4000.0).abs() < 1e-6, "短辺スパン");
@@ -3483,7 +3143,8 @@ fn test_floor_design_checks_joist_and_slab() {
 fn test_floor_design_skips_materialized_joist() {
     use squid_n_core::ids::SectionId;
     use squid_n_core::model::{
-        ElementData, ElementKind, EndCondition, ForceRegime, JoistLine, LocalAxis, Section,
+        ElementData, ElementKind, EndCondition, ForceRegime, LocalAxis, SecondaryMember,
+        SecondaryMemberKind, Section,
     };
 
     let mut model = make_square_slab_test_model();
@@ -3518,14 +3179,15 @@ fn test_floor_design_skips_materialized_joist() {
     };
     model.nodes.push(mk_mid(4, 2000.0, 0.0));
     model.nodes.push(mk_mid(5, 2000.0, 4000.0));
-    model.floor_regions[0].joists.push(JoistLine {
-        dir: [0.0, 1.0],
-        spacing: 2000.0,
-        support: [NodeId(4), NodeId(5)],
-        section: Some(SectionId(0)),
-        pinned_onto: None,
-    });
-    // 支持 N4–N5 を両端に持つ実 Beam を追加（実部材化相当）。
+    model.floor_regions[0]
+        .secondary_joists
+        .push(SecondaryMember {
+            kind: SecondaryMemberKind::Joist,
+            nodes: [NodeId(4), NodeId(5)],
+            section: Some(SectionId(0)),
+            name: "SB1".to_string(),
+        });
+    // 両端 N4–N5 を持つ実 Beam を追加（実部材化相当）。
     let next = model.elements.len() as u32;
     model.elements.push(ElementData {
         id: ElemId(next),
@@ -3552,86 +3214,6 @@ fn test_floor_design_skips_materialized_joist() {
         joists.is_empty(),
         "実部材化された小梁は床設計の対象外（全体 FEM で検定）"
     );
-}
-
-/// 床 Phase F: 交差小梁（十字）のスラブは床格子サブモデル（二方向）で検定される。
-/// 2本の交差小梁が両方とも設計され、対称配置なので検定比が一致する。
-#[test]
-fn test_floor_design_uses_grillage_for_crossing_joists() {
-    use squid_n_core::ids::SectionId;
-    use squid_n_core::model::{JoistLine, Section, SlabUsage};
-
-    let mut model = make_square_slab_test_model();
-    model.slabs[0].plate.usage = Some(SlabUsage::Office);
-    // 鋼小梁断面。
-    model.sections.push(Section {
-        id: SectionId(0),
-        name: "H-400".into(),
-        area: 10000.0,
-        iy: 1.0e8,
-        iz: 1.0e8,
-        j: 1.0e6,
-        depth: 400.0,
-        width: 200.0,
-        as_y: 0.0,
-        as_z: 0.0,
-        floor: None,
-        panel_thickness: None,
-        thickness: None,
-        shape: None,
-        // 床の小梁設計は断面性能のみを使うため、材料は割り当てない。
-        material: None,
-        rebar_material: None,
-        shear_rebar_material: None,
-        steel_material: None,
-    });
-    // 対辺の中点 N4..N7 を追加し、十字に交差する2本の小梁を配置。
-    let mk = |id: u32, x: f64, y: f64| squid_n_core::model::Node {
-        id: NodeId(id),
-        coord: [x, y, 0.0],
-        restraint: Default::default(),
-        mass: None,
-        story: None,
-        support_spring: None,
-    };
-    model.nodes.push(mk(4, 2000.0, 0.0));
-    model.nodes.push(mk(5, 2000.0, 4000.0));
-    model.nodes.push(mk(6, 0.0, 2000.0));
-    model.nodes.push(mk(7, 4000.0, 2000.0));
-    model.floor_regions[0].joists = vec![
-        JoistLine {
-            dir: [0.0, 1.0],
-            spacing: 2000.0,
-            support: [NodeId(4), NodeId(5)],
-            section: Some(SectionId(0)),
-            pinned_onto: None,
-        },
-        JoistLine {
-            dir: [1.0, 0.0],
-            spacing: 2000.0,
-            support: [NodeId(6), NodeId(7)],
-            section: Some(SectionId(0)),
-            pinned_onto: None,
-        },
-    ];
-    model.validate().expect("validate");
-    let app = App {
-        model,
-        ..App::default()
-    };
-
-    let (joists, _slabs) = app.floor_design_checks();
-    assert_eq!(joists.len(), 2, "交差2小梁が格子で設計される");
-    // FEM 由来の検定比（曲げ・たわみ）が正で、対称配置なので一致。
-    assert!(joists[0].2.ratio > 0.0 && joists[1].2.ratio > 0.0);
-    assert!(
-        (joists[0].2.ratio - joists[1].2.ratio).abs() / joists[0].2.ratio < 1e-3,
-        "対称な十字は検定比が一致: {} vs {}",
-        joists[0].2.ratio,
-        joists[1].2.ratio
-    );
-    // 曲げモーメントも FEM 実値（>0）。
-    assert!(joists[0].2.m_max > 0.0);
 }
 
 /// 二次部材（小梁）1 本が `Slab::joists` なしで床設計の対象になる。

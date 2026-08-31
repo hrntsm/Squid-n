@@ -889,19 +889,12 @@ pub(super) fn standard_sections(model: &Model) -> StandardSections {
                 used_by_slab.insert(sid.0);
             }
         }
-        // 小梁は生の断面 id を書き出すため、Raw 出力から外さない。
-        for region in &model.floor_regions {
-            for j in region.joist_lines() {
-                if let Some(sid) = j.section {
-                    used_by_other.insert(sid.0);
-                }
-            }
-        }
         for e in &model.elements {
             if let Some(sid) = e.section {
                 used_by_other.insert(sid.0);
             }
         }
+        // 二次部材は生の断面 id を書き出すため、Raw 出力から外さない。
         for sm in model.joists().chain(model.posts()) {
             if let Some(sid) = sm.section {
                 used_by_other.insert(sid.0);

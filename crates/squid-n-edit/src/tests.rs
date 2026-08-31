@@ -858,11 +858,11 @@ fn test_delete_section_in_use_is_noop_and_renumbers() {
     assert!(model.eq_ignoring_dofmap(&before));
 }
 
-/// 小梁（JoistLine.section）が参照する断面は削除ガードで守られ、別断面の削除では
-/// 参照が繰り上がって追随する（床設計用の断面参照が陳腐化しない。レビュー指摘）。
+/// 二次部材小梁（`SecondaryMember::section`）が参照する断面は削除ガードで守られ、
+/// 別断面の削除では参照が繰り上がって追随する（断面参照が陳腐化しない）。
 #[test]
 fn test_delete_section_referenced_by_joist() {
-    use squid_n_core::model::{JoistLine, Node, Section};
+    use squid_n_core::model::{Node, SecondaryMember, SecondaryMemberKind, Section};
     let mut model = empty_model();
     for i in 0..4u32 {
         model.nodes.push(Node {
@@ -897,17 +897,16 @@ fn test_delete_section_referenced_by_joist() {
             steel_material: None,
         });
     }
-    // 小梁ラインが断面 1 のみを参照する床領域（要素は断面を参照しない）。
+    // 二次部材小梁が断面 1 のみを参照する床領域（要素は断面を参照しない）。
     let mut region = squid_n_core::model::FloorRegion::new(
         FloorRegionId(0),
         vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
     );
-    region.joists = vec![JoistLine {
-        dir: [1.0, 0.0],
-        spacing: 900.0,
-        support: [NodeId(0), NodeId(1)],
+    region.secondary_joists = vec![SecondaryMember {
+        kind: SecondaryMemberKind::Joist,
+        nodes: [NodeId(0), NodeId(1)],
         section: Some(SectionId(1)),
-        pinned_onto: None,
+        name: "SB1".to_string(),
     }];
     model.floor_regions.push(region);
     let mut stack = UndoStack::new();
@@ -920,7 +919,7 @@ fn test_delete_section_referenced_by_joist() {
     stack.run(&mut model, Box::new(DeleteSection { id: SectionId(0) }));
     assert_eq!(model.sections.len(), 1);
     assert_eq!(
-        model.floor_regions[0].joists[0].section,
+        model.floor_regions[0].secondary_joists[0].section,
         Some(SectionId(0)),
         "小梁の断面参照が繰り上がりに追随"
     );
@@ -2472,112 +2471,6 @@ fn test_set_story_level_kind_roundtrip() {
 
     stack.undo(&mut model);
     assert_eq!(model.stories[0].level_kind, StoryLevelKind::Normal);
-}
-
-#[test]
-fn test_set_slab_joists_roundtrip() {
-    use squid_n_core::model::JoistLine;
-    let mut model = seeded_model(4, 0);
-    model
-        .floor_regions
-        .push(squid_n_core::model::FloorRegion::new(
-            FloorRegionId(0),
-            vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
-        ));
-    let mut stack = UndoStack::new();
-    assert!(model.floor_regions[0].joists.is_empty());
-
-    let joists = vec![JoistLine {
-        dir: [0.0, 1.0],
-        spacing: 900.0,
-        support: [NodeId(0), NodeId(3)],
-        section: None,
-        pinned_onto: None,
-    }];
-    stack.run(
-        &mut model,
-        Box::new(SetFloorRegionJoists {
-            id: FloorRegionId(0),
-            joists: joists.clone(),
-        }),
-    );
-    assert_eq!(model.floor_regions[0].joists, joists);
-
-    // undo で元の空 joists に戻る（対称逆操作）。
-    stack.undo(&mut model);
-    assert!(model.floor_regions[0].joists.is_empty());
-    stack.redo(&mut model);
-    assert_eq!(model.floor_regions[0].joists, joists);
-
-    // 存在しない FloorRegionId は Noop（モデル不変・undo スタックも安全）。
-    stack.run(
-        &mut model,
-        Box::new(SetFloorRegionJoists {
-            id: FloorRegionId(99),
-            joists: vec![],
-        }),
-    );
-    assert_eq!(model.floor_regions[0].joists, joists);
-}
-
-#[test]
-fn test_materialize_slab_joists_creates_beams() {
-    use squid_n_core::model::{ElementKind, EndCondition, JoistLine};
-    let mut model = seeded_model(4, 0);
-    let mut region = squid_n_core::model::FloorRegion::new(
-        FloorRegionId(0),
-        vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
-    );
-    region.joists = vec![JoistLine {
-        dir: [0.0, 1.0],
-        spacing: 900.0,
-        support: [NodeId(0), NodeId(3)],
-        section: None,
-        pinned_onto: None,
-    }];
-    model.floor_regions.push(region);
-    let mut stack = UndoStack::new();
-    let before = model.elements.len();
-
-    stack.run(
-        &mut model,
-        Box::new(MaterializeSlabJoists {
-            slab: FloorRegionId(0),
-        }),
-    );
-    assert_eq!(model.elements.len(), before + 1, "小梁1本が実部材化される");
-    let beam = model.elements.last().unwrap();
-    assert_eq!(beam.kind, ElementKind::Beam);
-    assert_eq!(beam.nodes.len(), 2);
-    assert!(
-        (beam.nodes[0] == NodeId(0) && beam.nodes[1] == NodeId(3))
-            || (beam.nodes[0] == NodeId(3) && beam.nodes[1] == NodeId(0)),
-        "支持2節点を両端に持つ"
-    );
-    assert_eq!(
-        beam.end_cond,
-        [EndCondition::Pinned, EndCondition::Pinned],
-        "小梁は両端ピン"
-    );
-
-    // 再実行しても既存の実部材があるので新規生成しない（冪等）。
-    stack.run(
-        &mut model,
-        Box::new(MaterializeSlabJoists {
-            slab: FloorRegionId(0),
-        }),
-    );
-    assert_eq!(
-        model.elements.len(),
-        before + 1,
-        "実部材化済みは重複生成しない"
-    );
-
-    // undo で生成した実部材が末尾から除去される。
-    stack.undo(&mut model); // 2回目（冪等 no-op）を戻す
-    assert_eq!(model.elements.len(), before + 1);
-    stack.undo(&mut model); // 1回目の生成を戻す
-    assert_eq!(model.elements.len(), before, "undo で実部材化を取り消す");
 }
 
 #[test]

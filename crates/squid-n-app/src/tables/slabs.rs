@@ -24,14 +24,6 @@ pub struct SlabDraft {
     pub usage: Option<SlabUsage>,
     /// スラブ断面（板厚・コンクリート材料を持つ断面。`None` は未割当）。
     pub section: Option<squid_n_core::ids::SectionId>,
-    /// 小梁入力の対象スラブ（小梁編集セクション用）。
-    pub joist_target: Option<FloorRegionId>,
-    /// 小梁の支持節点（両端。小梁が架かる2節点）。
-    pub joist_supports: [Option<NodeId>; 2],
-    /// 小梁の負担幅 spacing の入力文字列（**UI 表示は mm**、内部も mm）。
-    pub joist_spacing: String,
-    /// 小梁の断面（床の中での小梁設計用。`None` は断面未割当）。
-    pub joist_section: Option<squid_n_core::ids::SectionId>,
     /// 取り付き領域の取付き先の節点（線なら両端、点なら 1 つ目だけを使う）。
     pub attached_nodes: [Option<NodeId>; 2],
     /// 取り付き先を点（柱）にするか。false は線（取付き線）。
@@ -53,10 +45,6 @@ impl Default for SlabDraft {
             method: DistributionMethod::TriTrapezoid,
             usage: None,
             section: None,
-            joist_target: None,
-            joist_supports: [None; 2],
-            joist_spacing: "0".to_string(),
-            joist_section: None,
             attached_nodes: [None; 2],
             attached_point: false,
             attached_extent: ["1000".to_string(), "1000".to_string()],
@@ -152,7 +140,7 @@ pub fn slabs_table(ui: &mut egui::Ui, app: &mut App) {
     use crate::table_util::{self, Col};
 
     ui.label(
-        "床領域は大梁が囲む1区画です（名前と手入力小梁ラインだけを持ちます）。床板（スラブ）は、\
+        "床領域は大梁が囲む1区画です（名前・所属する小梁・所属する床板を持ちます）。床板（スラブ）は、\
          大梁または小梁で囲まれた版、または主架構に取り付く版（片持ち・バルコニー・出隅）です。\
          版の仕様（断面・荷重・用途・分配法）は床板が持ちます。断面が未割当の床板には床荷重・\
          スラブ検定・協力幅は生じません（結果タブ/モデルタブの3Dビューで表示モード「CMQ図」を\
@@ -205,7 +193,7 @@ pub fn slabs_table(ui: &mut egui::Ui, app: &mut App) {
                 }
             });
             row.col(|ui| {
-                let cnt = region.joist_lines().len();
+                let cnt = region.secondary_joists.len();
                 if cnt == 0 {
                     table_util::muted_cell(ui, "―", "小梁が配置されていません");
                 } else {
@@ -607,7 +595,6 @@ pub fn slabs_table(ui: &mut egui::Ui, app: &mut App) {
     }
 
     attached_section(ui, app);
-    joists_section(ui, app);
 }
 
 /// 取り付き領域（片持ちスラブ・バルコニー・出隅）の入力セクション。
@@ -747,264 +734,6 @@ fn attached_section(ui: &mut egui::Ui, app: &mut App) {
             );
             app.staleness.mark_edited();
         }
-    }
-}
-
-/// 手入力小梁ライン（`FloorRegion::joists`）の入力セクション。対象の床領域を選び、
-/// 支持2節点＋負担幅 `spacing` で小梁を追加/削除する。交差小梁の格子解析、および
-/// 矩形床板の二段階伝達（`distribute_rect_with_joists`）でのみ使われ、代表床板の
-/// 分配法が「三角/台形」または「一方向」のとき有効になる（それ以外の分配法では無視される）。
-///
-/// 小梁の架かる方向 `dir` は支持2節点の平面（XY）ベクトルから自動算定する。
-fn joists_section(ui: &mut egui::Ui, app: &mut App) {
-    ui.separator();
-    ui.strong("小梁を入力（床領域の交差小梁・二段階伝達）");
-    ui.label(
-        "対象の床領域を選び、小梁が架かる支持2節点と負担幅を指定します。分配法が「三角/台形」または「一方向」のときに有効です。",
-    );
-
-    if app.model.floor_regions.is_empty() {
-        ui.label("床領域がありません");
-        return;
-    }
-
-    // 対象の床領域選択。
-    let region_ids: Vec<FloorRegionId> = app.model.floor_regions.iter().map(|r| r.id).collect();
-    if app
-        .slab_draft
-        .joist_target
-        .is_none_or(|t| !region_ids.contains(&t))
-    {
-        app.slab_draft.joist_target = region_ids.first().copied();
-    }
-    egui::ComboBox::from_id_salt("joist_target_slab")
-        .selected_text(
-            app.slab_draft
-                .joist_target
-                .map(|t| format!("床領域 #{}", t.0))
-                .unwrap_or_else(|| "―".to_string()),
-        )
-        .show_ui(ui, |ui| {
-            for &rid in &region_ids {
-                ui.selectable_value(
-                    &mut app.slab_draft.joist_target,
-                    Some(rid),
-                    format!("床領域 #{}", rid.0),
-                );
-            }
-        });
-
-    let Some(target) = app.slab_draft.joist_target else {
-        return;
-    };
-    let Some(region_idx) = app.model.floor_regions.iter().position(|r| r.id == target) else {
-        return;
-    };
-
-    // 変更は借用衝突を避けるため、UI 走査後に SetFloorRegionJoists で一括反映する。
-    let mut new_joists: Option<Vec<JoistLine>> = None;
-
-    // 既存小梁の一覧（削除ボタン付き）。
-    let joists = app.model.floor_regions[region_idx].joist_lines().to_vec();
-    if joists.is_empty() {
-        ui.label("この床には小梁がありません");
-    } else {
-        for (k, j) in joists.iter().enumerate() {
-            ui.horizontal(|ui| {
-                let sec = j
-                    .section
-                    .map(|s| format!("S{}", s.0))
-                    .unwrap_or_else(|| "断面なし".to_string());
-                ui.label(format!(
-                    "小梁{}: 支持 N{}–N{}, 負担幅 {:.0} mm, 断面 {}",
-                    k, j.support[0].0, j.support[1].0, j.spacing, sec
-                ));
-                // 交差接合の指定: 剛接十字（既定）か、他の小梁への受け/架け（ピン）か。
-                // 「受け:小梁c」を選ぶとこの小梁が架け梁となり、交点で小梁c にピン接合で
-                // 載る（曲げは伝えず鉛直せん断のみ。交差しない相手を選んでも無効）。
-                let cur = match j.pinned_onto {
-                    Some(c) => format!("受け:小梁{c}"),
-                    None => "剛接十字".to_string(),
-                };
-                egui::ComboBox::from_id_salt(format!("joist_pin_{k}"))
-                    .selected_text(cur)
-                    .show_ui(ui, |ui| {
-                        let mut sel = j.pinned_onto;
-                        ui.selectable_value(&mut sel, None, "剛接十字");
-                        for c in 0..joists.len() {
-                            if c == k {
-                                continue;
-                            }
-                            ui.selectable_value(&mut sel, Some(c), format!("受け:小梁{c}"));
-                        }
-                        if sel != j.pinned_onto {
-                            let mut v = joists.clone();
-                            v[k].pinned_onto = sel;
-                            new_joists = Some(v);
-                        }
-                    })
-                    .response
-                    .on_hover_text(
-                        "剛接十字＝交点で二方向曲げ連続（たわみ抑制）。受け/架け＝架け梁が受け梁にピンで載る（鉛直せん断のみ伝達）。",
-                    );
-                if ui.button("🗑").on_hover_text("この小梁を削除").clicked() {
-                    let mut v = joists.clone();
-                    v.remove(k);
-                    // 削除で小梁インデックスがずれるため、pinned_onto を補正する。
-                    for jj in v.iter_mut() {
-                        match jj.pinned_onto {
-                            Some(c) if c == k => jj.pinned_onto = None,
-                            Some(c) if c > k => jj.pinned_onto = Some(c - 1),
-                            _ => {}
-                        }
-                    }
-                    new_joists = Some(v);
-                }
-            });
-        }
-    }
-
-    // 小梁の実部材化（実 Beam 要素を生成し、応力解析・断面検定の対象にする）。
-    if !joists.is_empty() {
-        // 実 Beam が未生成の小梁本数を数える。
-        let beam_exists = |a: NodeId, b: NodeId| -> bool {
-            app.model.elements.iter().any(|e| {
-                e.kind == squid_n_core::model::ElementKind::Beam
-                    && e.nodes.len() == 2
-                    && ((e.nodes[0] == a && e.nodes[1] == b)
-                        || (e.nodes[0] == b && e.nodes[1] == a))
-            })
-        };
-        let unmaterialized = joists
-            .iter()
-            .filter(|j| j.support[0] != j.support[1] && !beam_exists(j.support[0], j.support[1]))
-            .count();
-        ui.horizontal(|ui| {
-            if ui
-                .add_enabled(
-                    unmaterialized > 0,
-                    egui::Button::new("小梁を実部材化"),
-                )
-                .on_hover_text(
-                    "各小梁の支持2節点に実 Beam 要素を生成します。実部材化した小梁には床荷重が等分布荷重として載り、応力解析・断面検定の対象になります。",
-                )
-                .clicked()
-            {
-                app.undo.run(
-                    &mut app.model,
-                    Box::new(squid_n_edit::MaterializeSlabJoists { slab: target }),
-                );
-                app.staleness.mark_edited();
-            }
-            ui.label(if unmaterialized > 0 {
-                format!("未実部材化: {unmaterialized}本")
-            } else {
-                "すべて実部材化済み".to_string()
-            });
-        });
-    }
-
-    // 小梁の追加フォーム。
-    let node_ids: Vec<NodeId> = app.model.nodes.iter().map(|n| n.id).collect();
-    ui.horizontal(|ui| {
-        for e in 0..2 {
-            let text = app.slab_draft.joist_supports[e]
-                .map(|n| format!("N{}", n.0))
-                .unwrap_or_else(|| "―".to_string());
-            egui::ComboBox::from_id_salt(format!("joist_support_{e}"))
-                .selected_text(format!("支持{e}: {text}"))
-                .show_ui(ui, |ui| {
-                    for &nid in &node_ids {
-                        if ui
-                            .selectable_label(
-                                app.slab_draft.joist_supports[e] == Some(nid),
-                                format!("N{}", nid.0),
-                            )
-                            .clicked()
-                        {
-                            app.slab_draft.joist_supports[e] = Some(nid);
-                        }
-                    }
-                });
-        }
-        ui.label("負担幅 [mm]:");
-        ui.add(egui::TextEdit::singleline(&mut app.slab_draft.joist_spacing).desired_width(80.0));
-        ui.label("断面:")
-            .on_hover_text("床の中での小梁設計（単純支持梁の曲げ・たわみ検定）に用いる断面");
-        let sec_text = app
-            .slab_draft
-            .joist_section
-            .map(|s| format!("S{}", s.0))
-            .unwrap_or_else(|| "―".to_string());
-        egui::ComboBox::from_id_salt("joist_section")
-            .selected_text(sec_text)
-            .show_ui(ui, |ui| {
-                ui.selectable_value(&mut app.slab_draft.joist_section, None, "―");
-                for sec in &app.model.sections {
-                    ui.selectable_value(
-                        &mut app.slab_draft.joist_section,
-                        Some(sec.id),
-                        format!("S{} {}", sec.id.0, sec.name),
-                    );
-                }
-            });
-    });
-
-    let s0 = app.slab_draft.joist_supports[0];
-    let s1 = app.slab_draft.joist_supports[1];
-    let spacing = app
-        .slab_draft
-        .joist_spacing
-        .trim()
-        .parse::<f64>()
-        .unwrap_or(0.0);
-    // 追加可能な小梁を安全に構成する。両支持節点が現存し（節点削除でドラフトが
-    // 陳腐化しても out-of-bounds しないよう `nodes.get` で確認）、平面（XY）方向に
-    // 有意な離間がある（`dir≈[0,0]` は分配エンジンが Y 軸へ暗黙フォールバックし
-    // 誤分配となるため弾く）場合のみ Some を返す。
-    let addable_joist: Option<JoistLine> = (|| {
-        let (a, b) = (s0?, s1?);
-        if a == b || spacing <= 0.0 {
-            return None;
-        }
-        let ca = app.model.nodes.get(a.index())?.coord;
-        let cb = app.model.nodes.get(b.index())?.coord;
-        let dir = [cb[0] - ca[0], cb[1] - ca[1]];
-        if dir[0].hypot(dir[1]) <= 1e-9 {
-            return None; // 平面上で重なる2節点（鉛直に積層等）は小梁として無効。
-        }
-        Some(JoistLine {
-            dir,
-            spacing,
-            support: [a, b],
-            section: app.slab_draft.joist_section,
-            pinned_onto: None,
-        })
-    })();
-
-    if ui
-        .add_enabled(addable_joist.is_some(), egui::Button::new("+ 小梁を追加"))
-        .on_hover_text(
-            "現存する異なる支持2節点（平面上で離れている）と正の負担幅を指定してください",
-        )
-        .clicked()
-    {
-        if let Some(joist) = addable_joist {
-            let mut v = joists.clone();
-            v.push(joist);
-            new_joists = Some(v);
-        }
-    }
-
-    if let Some(v) = new_joists {
-        app.undo.run(
-            &mut app.model,
-            Box::new(SetFloorRegionJoists {
-                id: target,
-                joists: v,
-            }),
-        );
-        app.staleness.mark_edited();
     }
 }
 

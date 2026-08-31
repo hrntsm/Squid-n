@@ -990,33 +990,3 @@ impl EditCommand for SetSlabSection {
         "床板断面変更"
     }
 }
-
-/// 床領域の小梁ライン（`joists`。交差小梁の格子解析・二段階伝達用の手入力）を
-/// 全置換する。逆操作は変更前の `joists` への復元（`SetLoadCfg` と同様の値置換
-/// パターン）。存在しない `FloorRegionId`、および実在しない節点・断面を指す
-/// 小梁は Noop（crate::refs の規約）。
-pub struct SetFloorRegionJoists {
-    pub id: FloorRegionId,
-    pub joists: Vec<squid_n_core::model::JoistLine>,
-}
-
-impl EditCommand for SetFloorRegionJoists {
-    fn apply(&self, model: &mut Model) -> Box<dyn EditCommand> {
-        let idx = self.id.index();
-        if idx >= model.floor_regions.len() || model.floor_regions[idx].id != self.id {
-            return Box::new(Noop);
-        }
-        if !crate::refs::joists_ok(model, &self.joists) {
-            return Box::new(Noop);
-        }
-        let old = std::mem::replace(&mut model.floor_regions[idx].joists, self.joists.clone());
-        Box::new(SetFloorRegionJoists {
-            id: self.id,
-            joists: old,
-        })
-    }
-
-    fn label(&self) -> &str {
-        "床領域小梁ライン変更"
-    }
-}

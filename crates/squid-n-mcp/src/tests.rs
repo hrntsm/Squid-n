@@ -503,7 +503,6 @@ fn test_query_model_slabs_and_floor_regions() {
         boundary: vec![NodeId(0), NodeId(1)],
         secondary_joists: Vec::new(),
         slab_ids: vec![SlabId(0)],
-        joists: Vec::new(),
     });
     assert_eq!(query_model(&m, "slab", None).len(), 1);
     let regions = query_model(&m, "floor_region", None);
@@ -703,7 +702,6 @@ fn test_apply_edit_set_floor_region_name() {
             boundary: vec![NodeId(0), NodeId(1)],
             secondary_joists: Vec::new(),
             slab_ids: vec![SlabId(0)],
-            joists: Vec::new(),
         });
     let body = serde_json::json!({
         "command": "SetFloorRegionName",
@@ -760,13 +758,15 @@ fn test_parse_requires_wall_region_posts() {
     assert!(err.contains("posts"), "{err}");
 }
 
+/// 廃止した手入力小梁ラインのコマンドは、黙って無視せず明示エラーにする（§3.4 F1）。
 #[test]
-fn test_parse_requires_floor_region_joists() {
+fn test_parse_rejects_obsolete_set_floor_region_joists() {
     let err = expect_parse_err(serde_json::json!({
         "command": "SetFloorRegionJoists",
-        "id": 0
+        "id": 0,
+        "joists": []
     }));
-    assert!(err.contains("joists"), "{err}");
+    assert!(err.contains("廃止"), "{err}");
 }
 
 #[test]

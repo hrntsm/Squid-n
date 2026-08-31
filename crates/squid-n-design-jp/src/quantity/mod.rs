@@ -620,15 +620,6 @@ fn build_notes(model: &Model) -> Vec<String> {
             "床厚は床ごとに割り当てた断面の板厚による（デッキスラブのデッキ高さ控除は未対応）。"
                 .to_string(),
         );
-        if model
-            .floor_regions
-            .iter()
-            .any(|s| !s.joist_lines().is_empty())
-        {
-            notes.push(
-                "床荷重分配用の小梁ライン（JoistLine）は断面情報がないため集計対象外。二次部材小梁・間柱（領域内および未割当）は節点間長で集計する。".to_string(),
-            );
-        }
     }
     notes
 }

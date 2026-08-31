@@ -12,11 +12,9 @@ use squid_n_core::ids::{NodeId, SlabId};
 use squid_n_core::model::{ElementKind, MemberLoadKind, Model, SecondaryMemberKind, Slab};
 use squid_n_core::units::GRAVITY_MM_S2;
 
-use super::distribute_region;
 use super::distribute_slab_resolved;
 use super::fem::{simple_beam_moment_at, simple_reactions};
 use super::types::{BeamLoad, LoadShape, LoadTarget};
-use super::uses_joist_distribution;
 
 /// 節点対を順不同キー `(min, max)` に正規化する。
 pub fn span_node_key(a: NodeId, b: NodeId) -> (NodeId, NodeId) {
@@ -656,15 +654,6 @@ fn span_belongs_to_axis(model: &Model, p0: [f64; 3], p1: [f64; 3], axis: &JoistA
 fn tagged_span_loads(model: &Model, w_of: &impl Fn(&Slab) -> f64) -> Vec<(SlabId, BeamLoad)> {
     let mut out = Vec::new();
     for region in &model.floor_regions {
-        if uses_joist_distribution(model, region) {
-            let Some(slab) = region.slab_ids.first().and_then(|&id| model.slab(id)) else {
-                continue;
-            };
-            for bl in distribute_region(model, region, |s| w_of(s)) {
-                out.push((slab.id, bl));
-            }
-            continue;
-        }
         for &sid in &region.slab_ids {
             let Some(slab) = model.slab(sid) else {
                 continue;
@@ -710,7 +699,7 @@ pub fn orient_member_loads(
 
 /// 床領域分配から荷重が得られず、断面検定対象から外れる二次部材小梁の本数。
 ///
-/// 実部材化済み・`FloorRegion.joists` 重複・断面未割当・退化は数えない。
+/// 実部材化済み・断面未割当・退化は数えない。
 pub fn secondary_joists_missing_distribution(model: &Model) -> usize {
     secondary_joist_distribution_gaps(model).total()
 }
@@ -740,16 +729,6 @@ pub fn secondary_joist_distribution_gaps(model: &Model) -> SecondaryJoistDistrib
     let w_of = |s: &Slab| model.slab_intensity(s, LoadPurpose::Floor);
     let distribution = secondary_joist_distribution_loads(model, w_of);
 
-    let mut joist_supports = std::collections::HashSet::new();
-    for region in &model.floor_regions {
-        for j in region.joist_lines() {
-            let (a, b) = (j.support[0], j.support[1]);
-            if a != b {
-                joist_supports.insert(span_node_key(a, b));
-            }
-        }
-    }
-
     let mut gaps = SecondaryJoistDistributionGaps::default();
     for sm in model.joists() {
         if sm.kind != SecondaryMemberKind::Joist {
@@ -763,9 +742,6 @@ pub fn secondary_joist_distribution_gaps(model: &Model) -> SecondaryJoistDistrib
             continue;
         }
         let key = span_node_key(a, b);
-        if joist_supports.contains(&key) {
-            continue;
-        }
         let (Some(na), Some(nb)) = (coord(model, a), coord(model, b)) else {
             gaps.no_distribution += 1;
             continue;

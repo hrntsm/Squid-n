@@ -4,15 +4,15 @@ use super::*;
 use squid_n_core::ids::{FloorRegionId, NodeId, SectionId, SlabId, WallPlateId, WallRegionId};
 use squid_n_core::model::SecondaryMember;
 use squid_n_core::model::{
-    DistributionMethod, JoistLine, OneWayDir, RegionAnchor, SlabPlate, SlabUsage, WallOpening,
+    DistributionMethod, OneWayDir, RegionAnchor, SlabPlate, SlabUsage, WallOpening,
 };
 use squid_n_edit::EditCommand;
 use squid_n_edit::{
     AddAttachedSlab, AddAttachedWallPlate, AddEnclosedWallPlate, AddSlab, AddUnassignedJoist,
     AddUnassignedPost, DeleteSlab, DeleteUnassignedJoist, DeleteUnassignedPost, DeleteWallPlate,
     SetAttachedAnchor, SetAttachedExtent, SetAttachedWallPlateAnchor, SetAttachedWallPlateExtent,
-    SetFloorRegionJoists, SetFloorRegionName, SetFloorRegionSecondaryJoists, SetSlabOneWay,
-    SetSlabSection, SetSlabUsage, SetWallPlateAttrs, SetWallPlateSection, SetWallRegionPosts,
+    SetFloorRegionName, SetFloorRegionSecondaryJoists, SetSlabOneWay, SetSlabSection, SetSlabUsage,
+    SetWallPlateAttrs, SetWallPlateSection, SetWallRegionPosts,
 };
 
 #[derive(Debug, Clone, serde::Serialize, schemars::JsonSchema)]
@@ -189,19 +189,13 @@ pub fn parse_edit_command(value: &serde_json::Value) -> Result<Box<dyn EditComma
                 .ok_or("name が必要です")?
                 .to_string(),
         })),
-        "SetFloorRegionJoists" => {
-            let joists: Vec<JoistLine> = match value.get("joists") {
-                None | Some(serde_json::Value::Null) => {
-                    return Err("joists が必要です（空にする場合は [] を渡す）".into());
-                }
-                Some(v) => serde_json::from_value(v.clone())
-                    .map_err(|e| format!("joists の解析に失敗: {e}"))?,
-            };
-            Ok(Box::new(SetFloorRegionJoists {
-                id: parse_floor_region_id(value.get("id").ok_or("id が必要です")?)?,
-                joists,
-            }))
-        }
+        // 手入力小梁ライン（JoistLine）は廃止した（§3.4 F1）。小梁の実体は二次部材
+        // （SetFloorRegionSecondaryJoists）に一本化したため、黙って無視せず明示エラーにする。
+        "SetFloorRegionJoists" => Err(
+            "SetFloorRegionJoists は廃止しました。小梁は二次部材へ一本化したため、\
+             SetFloorRegionSecondaryJoists（SecondaryMember の配列）を使ってください"
+                .into(),
+        ),
         "SetFloorRegionSecondaryJoists" => {
             if value.get("secondary_joist_ids").is_some() || value.get("ids").is_some() {
                 return Err(
@@ -290,7 +284,7 @@ pub fn parse_edit_command(value: &serde_json::Value) -> Result<Box<dyn EditComma
              SetAttachedWallPlateExtent, SetAttachedWallPlateAnchor / \
              床板: AddSlab, AddAttachedSlab, DeleteSlab, SetSlabSection, SetSlabUsage, \
              SetSlabOneWay, SetAttachedExtent, SetAttachedAnchor / \
-             床領域: SetFloorRegionName, SetFloorRegionJoists, SetFloorRegionSecondaryJoists / \
+             床領域: SetFloorRegionName, SetFloorRegionSecondaryJoists / \
              壁領域: SetWallRegionPosts / \
              未割当: AddUnassignedJoist, DeleteUnassignedJoist, AddUnassignedPost, DeleteUnassignedPost）"
         )),

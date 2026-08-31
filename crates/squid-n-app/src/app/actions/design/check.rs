@@ -155,143 +155,6 @@ impl App {
             })
         };
 
-        let joist_params = |sid: squid_n_core::ids::SectionId| -> Option<(f64, f64, f64)> {
-            let sec = self.model.sections.get(sid.index())?;
-            let z = if sec.depth > 0.0 {
-                sec.iy / (sec.depth / 2.0)
-            } else {
-                0.0
-            };
-            let mat = sec
-                .material
-                .and_then(|mid| self.model.materials.get(mid.index()));
-            let (e, ft) = fd::joist_steel_e_and_ft(mat)?;
-            Some((z, e, ft))
-        };
-
-        // --- 床領域（大梁の区画）ごとの手入力小梁ライン ---
-        // 交差があれば床格子サブモデル（二方向）で、なければ単純支持梁で検定する。
-        // 積載は床領域の代表床板（`slab_ids` の先頭。squid-n-load の `distribute_region`
-        // と同じ規約）から求める。床領域が床板を持たない場合は検定対象外。
-        for region in &self.model.floor_regions {
-            let Some(rep_slab) = region.slab_ids.first().and_then(|&id| self.model.slab(id)) else {
-                continue;
-            };
-            let w = self.model.slab_intensity(rep_slab, LoadPurpose::Floor);
-
-            let grillage = squid_n_job::floor_grillage::build_slab_grillage(&self.model, region, w)
-                .and_then(|g| {
-                    squid_n_job::floor_grillage::solve_grillage(&g.model, LoadCaseId(0))
-                        .ok()
-                        .map(|sol| (g, sol))
-                });
-            if let Some((g, sol)) = grillage {
-                // 格子 FEM の部材力・たわみで各小梁を検定（十字梁の二方向挙動を反映）。
-                for (jidx, span, m, q, defl) in
-                    squid_n_job::floor_grillage::joist_design_forces(&g, &sol)
-                {
-                    let Some(j) = region.joist_lines().get(jidx) else {
-                        continue;
-                    };
-                    let Some(sid) = j.section else {
-                        joist_checks.push((
-                            Some(rep_slab.id),
-                            crate::app::JoistCheckTarget::SlabJoist(jidx),
-                            fd::joist_unchecked(span),
-                        ));
-                        continue;
-                    };
-                    let Some((z, _e, ft)) = joist_params(sid) else {
-                        joist_checks.push((
-                            Some(rep_slab.id),
-                            crate::app::JoistCheckTarget::SlabJoist(jidx),
-                            fd::joist_unchecked(span),
-                        ));
-                        continue;
-                    };
-                    let r = fd::design_joist_from_forces(
-                        span,
-                        w * j.spacing,
-                        m,
-                        q,
-                        defl,
-                        z,
-                        ft,
-                        fd::DEFLECTION_LIMIT_DENOM,
-                    );
-                    joist_checks.push((
-                        Some(rep_slab.id),
-                        crate::app::JoistCheckTarget::SlabJoist(jidx),
-                        r,
-                    ));
-                }
-            } else {
-                // 交差なし: 各小梁を独立した単純支持梁として検定。
-                for (ji, j) in region.joist_lines().iter().enumerate() {
-                    let (a, b) = (j.support[0], j.support[1]);
-                    if a == b || beam_between(a, b) {
-                        // 実部材化済み or 退化した小梁は床設計の対象外。
-                        continue;
-                    }
-                    let (Some(na), Some(nb)) = (
-                        self.model.nodes.get(a.index()),
-                        self.model.nodes.get(b.index()),
-                    ) else {
-                        continue;
-                    };
-                    let span = {
-                        let d = [
-                            nb.coord[0] - na.coord[0],
-                            nb.coord[1] - na.coord[1],
-                            nb.coord[2] - na.coord[2],
-                        ];
-                        (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt()
-                    };
-                    if span <= 1e-9 {
-                        continue;
-                    }
-                    let Some(sid) = j.section else {
-                        joist_checks.push((
-                            Some(rep_slab.id),
-                            crate::app::JoistCheckTarget::SlabJoist(ji),
-                            fd::joist_unchecked(span),
-                        ));
-                        continue;
-                    };
-                    let Some(sec) = self.model.sections.get(sid.index()) else {
-                        joist_checks.push((
-                            Some(rep_slab.id),
-                            crate::app::JoistCheckTarget::SlabJoist(ji),
-                            fd::joist_unchecked(span),
-                        ));
-                        continue;
-                    };
-                    let Some((z, e, ft)) = joist_params(sid) else {
-                        joist_checks.push((
-                            Some(rep_slab.id),
-                            crate::app::JoistCheckTarget::SlabJoist(ji),
-                            fd::joist_unchecked(span),
-                        ));
-                        continue;
-                    };
-                    let r = fd::design_joist_simple(
-                        span,
-                        w * j.spacing,
-                        z,
-                        sec.iy,
-                        e,
-                        ft,
-                        fd::DEFLECTION_LIMIT_DENOM,
-                    );
-                    joist_checks.push((
-                        Some(rep_slab.id),
-                        crate::app::JoistCheckTarget::SlabJoist(ji),
-                        r,
-                    ));
-                }
-            }
-        }
-
         // --- 床板（一方向版）ごとの検定 ---
         // 「版がある」= 断面割当があり板厚が正（`slab_plate_thickness` が `Some` を返す）。
         // 版なし・厚さ 0 は出さない。
@@ -339,7 +202,7 @@ impl App {
             }
         }
 
-        // --- 二次部材小梁（領域内 + 未割当。手入力 JoistLine とは別経路） ---
+        // --- 二次部材小梁（領域内 + 未割当） ---
         self.design_secondary_joist_checks(&mut joist_checks, &beam_between);
 
         (joist_checks, slab_checks)
@@ -348,7 +211,6 @@ impl App {
     /// 領域内小梁および未割当小梁を、床領域分配（[`squid_n_load::floor::distribute_region`]）
     /// の `LoadTarget::Span` 出力を単純梁として重ね合わせて検定する。
     ///
-    /// `FloorRegion.joists`（格子解析用手入力）に同じ両端を持つ小梁はスキップする。
     /// 断面未割当・鋼以外の材料・分配荷重無しは表に「未」として残す。
     fn design_secondary_joist_checks(
         &self,
@@ -361,20 +223,8 @@ impl App {
             joist_distribution_is_ready, joist_self_weight_udl, orient_member_loads,
             secondary_joist_distribution_loads, simple_beam_extremes, span_node_key,
         };
-        use std::collections::HashSet;
-
         let w_of = |s: &squid_n_core::model::Slab| self.model.slab_intensity(s, LoadPurpose::Floor);
         let distribution = secondary_joist_distribution_loads(&self.model, w_of);
-
-        let mut joist_supports = HashSet::new();
-        for region in &self.model.floor_regions {
-            for j in region.joist_lines() {
-                let (a, b) = (j.support[0], j.support[1]);
-                if a != b {
-                    joist_supports.insert(span_node_key(a, b));
-                }
-            }
-        }
 
         for sm in self.model.joists() {
             if sm.kind != SecondaryMemberKind::Joist {
@@ -386,10 +236,6 @@ impl App {
                 continue;
             }
             let key = span_node_key(a, b);
-            if joist_supports.contains(&key) {
-                continue;
-            }
-
             let (Some(na), Some(nb)) = (
                 self.model.nodes.get(a.index()),
                 self.model.nodes.get(b.index()),

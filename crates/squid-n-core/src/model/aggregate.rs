@@ -329,33 +329,6 @@ impl Model {
                     )));
                 }
             }
-            for (ji, j) in region.joist_lines().iter().enumerate() {
-                for &nid in &j.support {
-                    if nid.index() >= self.nodes.len() || self.nodes[nid.index()].id != nid {
-                        return Err(CoreError::DanglingRef(format!(
-                            "FloorRegion {} joist support -> Node {}",
-                            region.id.0, nid.0
-                        )));
-                    }
-                }
-                if let Some(sid) = j.section {
-                    if sid.index() >= self.sections.len() || self.sections[sid.index()].id != sid {
-                        return Err(CoreError::DanglingRef(format!(
-                            "FloorRegion {} joist -> Section {}",
-                            region.id.0, sid.0
-                        )));
-                    }
-                }
-                // ピン受け/架けの相手小梁インデックスは同一床領域内の別小梁を指す。
-                if let Some(c) = j.pinned_onto {
-                    if c >= region.joist_lines().len() || c == ji {
-                        return Err(CoreError::DanglingRef(format!(
-                            "FloorRegion {} joist {} pinned_onto -> joist {}",
-                            region.id.0, ji, c
-                        )));
-                    }
-                }
-            }
         }
         // 床領域は、同じ境界（大梁の区画）を持つものが 2 つあってはならない（D1）。
         // 2 つあると、その床領域の小梁・床板の帰属が二重になる。
@@ -787,9 +760,7 @@ impl Model {
         self.load_cases
             .iter()
             .any(|lc| lc.nodal.iter().any(|nl| nl.node == id))
-            || self.floor_regions.iter().any(|r| {
-                r.boundary.contains(&id) || r.joist_lines().iter().any(|j| j.support.contains(&id))
-            })
+            || self.floor_regions.iter().any(|r| r.boundary.contains(&id))
             || self.slabs.iter().any(|sl| slab_node_refs(sl).contains(&id))
             || self.wall_regions.iter().any(|r| r.boundary.contains(&id))
             || self
@@ -940,11 +911,6 @@ impl Model {
             for n in &mut region.boundary {
                 f(n);
             }
-            for j in &mut region.joists {
-                for n in &mut j.support {
-                    f(n);
-                }
-            }
             for sm in &mut region.secondary_joists {
                 for n in &mut sm.nodes {
                     f(n);
@@ -1070,11 +1036,6 @@ impl Model {
             }
         }
         for region in &mut self.floor_regions {
-            for j in &mut region.joists {
-                if let Some(sid) = &mut j.section {
-                    f(sid);
-                }
-            }
             for sm in &mut region.secondary_joists {
                 if let Some(sid) = &mut sm.section {
                     f(sid);
@@ -1583,15 +1544,8 @@ mod node_reference_tests {
             kind: LoadCaseKind::default(),
         });
 
-        // 1: 床領域の境界。2: 床領域の小梁ライン支持節点。
-        let mut region = FloorRegion::new(FloorRegionId(0), vec![NodeId(1)]);
-        region.joists.push(JoistLine {
-            dir: [1.0, 0.0],
-            spacing: 1000.0,
-            support: [NodeId(2), NodeId(2)],
-            section: None,
-            pinned_onto: None,
-        });
+        // 1: 床領域の境界。
+        let region = FloorRegion::new(FloorRegionId(0), vec![NodeId(1)]);
         model.floor_regions.push(region);
 
         // 3: 床板（Enclosed）。4: 床板（Attached／Line）。

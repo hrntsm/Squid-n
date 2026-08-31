@@ -738,18 +738,13 @@ fn node_reference_issues(model: &Model) -> Vec<ModelIssue> {
                 }
             }
         }
-        // 床（スラブ境界・小梁支持点）・二次部材（小梁・間柱）が参照する節点は、
+        // 床（床板の境界）・二次部材（小梁・間柱）が参照する節点は、
         // 要素が接続しなくても意図的な幾何節点（荷重伝達点）なので孤立扱いしない。
         // これらは `DofMap::build` が解析自由度から自動的に除外するため、
         // 零剛性の自由度にはならない。
         for region in &model.floor_regions {
             for n in &region.boundary {
                 mark(*n);
-            }
-            for j in region.joist_lines() {
-                for n in &j.support {
-                    mark(*n);
-                }
             }
         }
         for slab in &model.slabs {
