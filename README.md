@@ -10,12 +10,12 @@
 
 ## アーキテクチャ
 
-**16** のクレートから成る階層型アーキテクチャ（詳細は [docs/architecture.md](docs/architecture.md)）:
+**14** のクレートから成る階層型アーキテクチャ（詳細は [docs/architecture.md](docs/architecture.md)）:
 
 ```
 Layer 0: squid-n-core（基本データ構造・DOF 管理・荷重組合せ）、squid-n-math（疎行列・ソルバ）、
-         squid-n-material（一軸材料履歴則）、squid-n-ml（ML 断面提案）
-Layer 1: squid-n-section（断面性能算定）、squid-n-load（Ai 分布・床荷重）、squid-n-gpu（GPU 高速化）
+         squid-n-material（一軸材料履歴則）
+Layer 1: squid-n-section（断面性能算定）、squid-n-load（Ai 分布・床荷重）
 Layer 2: squid-n-edit（編集トランザクション）、squid-n-skeleton（スケルトン曲線）
 Layer 3: squid-n-element（梁・板・パネルゾーン要素）
 Layer 4: squid-n-solver（各種解析）、squid-n-io（結果 I/O・ST-Bridge）

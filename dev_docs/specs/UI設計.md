@@ -414,7 +414,6 @@ pub struct Staleness { pub results_stale: bool, pub design_stale: bool, pub last
 | UI-ID | UI項目 | 実装フェーズ |
 |---|---|---|
 | **UI-18** | ML 断面提案UI（提案→規準検証ゲートの結果提示。未検証案は採用不可表示） | **P11 と同時** |
-| **UI-19** | GPU 設定UI（概算モード切替・CPU確定の明示）任意 | **P10 と同時** |
 
 ### 9.5 各フェーズ仕様書への反映（タスク追加先）
 
@@ -431,7 +430,7 @@ pub struct Staleness { pub results_stale: bool, pub design_stale: bool, pub last
 | [P7](P7_二次設計.md) | UI-13（設計タブ拡充・幅厚比をShapeから） |
 | [P8](P8_操作と連携.md) | UI-14（編集コマンド共通）, UI-15（CSV・ジョブ） |
 | [P9](P9_仕上げ.md) | UI-16（レポート） |
-| [P10/P11] | UI-18〜UI-19 |
+| [P11] | UI-18 |
 
 > **反映済み（実施完了）:** 上表のとおり、各フェーズ仕様書の「§1 タスク一覧」直後に UI-x のポインタを
 > 追記済み。実装者は**自分が着手するフェーズの仕様書を見れば、そのフェーズでやる UI-x が分かる**。
