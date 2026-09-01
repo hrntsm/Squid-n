@@ -305,9 +305,7 @@ pub(crate) const RIGID_ZONE_WALL_MIN_THICKNESS_MM: f64 = 100.0;
 /// 三方スリットの壁は周辺部材と縁が切れているため剛性算入の対象外とする
 /// （自重は荷重側で別途評価される）。
 pub(crate) fn collect_misc_walls(model: &Model) -> Vec<InFrameMiscWallGeometry> {
-    collect_walls_where(model, |plate, model, _t| {
-        !plate_is_seismic_wall(plate, model)
-    })
+    collect_walls_where(model, |plate, model, _t| plate_is_misc_wall(plate, model))
 }
 
 /// 剛域算定に用いる壁を収集する（技術基準「剛域の計算」）。
@@ -322,22 +320,32 @@ pub(crate) fn collect_rigid_zone_walls(model: &Model) -> Vec<InFrameMiscWallGeom
     })
 }
 
-/// 壁版から生成された壁エレメントが耐震壁として成立しているか。
+/// 壁版をフレーム内雑壁として周辺部材の断面性能へ算入するか。
 ///
-/// 壁エレメントは壁領域全体を覆う 4 節点の壁版のときだけ生成される
-/// （`squid_n_load::wall_expand`）。生成された要素は壁版と同じ節点集合を持つため、
-/// 節点集合の一致で引き当てる。耐震壁の成立判定そのものは要素に対する
-/// [`wall_is_seismic`] へ委ね、判定を 2 つに増やさない。
-fn plate_is_seismic_wall(plate: &WallPlate, model: &Model) -> bool {
+/// 壁エレメントになるのは壁領域全体を覆う 4 節点の壁版だけ
+/// （`Model::wall_plate_covers_region`）なので、覆っていない壁版は常に雑壁である。
+///
+/// 覆っている壁版は、耐震壁として成立すれば壁エレメントが面内せん断を負担するため
+/// 雑壁にはしない。成立判定は生成された要素に対する [`wall_is_seismic`] へ委ね、
+/// 判定を 2 つに増やさない。要素は壁版と同じ節点集合を持つので節点集合の一致で
+/// 引き当てる。**要素が見つからない（壁展開を経ていないモデル）ときは算入しない。**
+/// 展開の有無で周辺部材の剛性が変わらないようにするためである。
+fn plate_is_misc_wall(plate: &WallPlate, model: &Model) -> bool {
+    if !model.wall_plate_covers_region(plate) {
+        return true;
+    }
     let Some(boundary) = plate.boundary_nodes() else {
-        return false; // 取り付く壁版は要素にならない。
+        return false;
     };
-    model.elements.iter().any(|e| {
-        matches!(e.kind, ElementKind::Wall)
-            && e.nodes.len() == boundary.len()
-            && boundary.iter().all(|n| e.nodes.contains(n))
-            && wall_is_seismic(e, model)
-    })
+    model
+        .elements
+        .iter()
+        .find(|e| {
+            matches!(e.kind, ElementKind::Wall)
+                && e.nodes.len() == boundary.len()
+                && boundary.iter().all(|n| e.nodes.contains(n))
+        })
+        .is_some_and(|e| !wall_is_seismic(e, model))
 }
 
 /// 壁版が RC 造の壁か（[`is_rc_wall`] の壁版版）。
@@ -564,8 +572,20 @@ mod tests {
         (model, data)
     }
 
-    /// 壁エレメントと同じ境界・断面の壁版を積む（雑壁の幾何は壁版が情報源）。
+    /// 壁エレメントと同じ境界・断面の壁版と、それを覆う壁領域を積む。
+    ///
+    /// 雑壁の幾何は壁版が情報源であり、壁エレメントになるか（＝雑壁の算入対象から
+    /// 外れるか）は「壁版が壁領域全体を覆うか」で決まるため、壁領域も要る。
     fn add_wall_plate(model: &mut Model, openings: Vec<WallOpening>, three_side_slit: bool) {
+        model.wall_regions.push(squid_n_core::model::WallRegion {
+            id: squid_n_core::ids::WallRegionId(model.wall_regions.len() as u32),
+            name: String::new(),
+            boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
+            wall_plate_ids: vec![squid_n_core::ids::WallPlateId(
+                model.wall_plates.len() as u32
+            )],
+            posts: Vec::new(),
+        });
         model.wall_plates.push(squid_n_core::model::WallPlate {
             id: squid_n_core::ids::WallPlateId(model.wall_plates.len() as u32),
             shape: squid_n_core::model::WallPlateShape::Enclosed {
@@ -876,6 +896,19 @@ mod tests {
         });
         add_wall_plate(&mut model, vec![], true);
         // スリット壁は耐震壁不成立だが、縁切りのため雑壁算入もしない
+        assert!(collect_misc_walls(&model).is_empty());
+    }
+
+    /// 壁展開を経ていないモデル（壁エレメントが 1 つも無い）でも、壁領域全体を覆う
+    /// 壁版は雑壁として算入しない。展開の有無で周辺部材の剛性が変わらないようにする。
+    #[test]
+    fn 未展開モデルの覆う壁版は雑壁に算入しない() {
+        let (mut model, _data) = make_model(150.0);
+        add_wall_plate(&mut model, vec![], false);
+        assert!(
+            model.elements.iter().all(|e| e.kind != ElementKind::Wall),
+            "壁エレメントを持たないモデル"
+        );
         assert!(collect_misc_walls(&model).is_empty());
     }
 
