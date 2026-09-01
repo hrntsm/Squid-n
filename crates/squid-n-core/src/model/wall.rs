@@ -110,6 +110,12 @@ pub struct WallAttr {
 }
 
 impl WallAttr {
+    /// 柱際スリットが左右いずれかにあるか（[`super::WallPlate::has_column_face_slit`]
+    /// と同じ問いの、要素側の入口）。
+    pub fn has_column_face_slit(&self) -> bool {
+        self.column_face_slit.iter().any(|&s| s)
+    }
+
     /// 開口の合計面積 [mm²]。個別開口 `openings` が非空ならその面積和、
     /// 空なら `opening_area` を返す（全消費側はこのメソッドを経由すること）。
     pub fn total_opening_area(&self) -> f64 {

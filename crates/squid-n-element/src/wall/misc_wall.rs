@@ -11,7 +11,8 @@
 
 use squid_n_core::ids::NodeId;
 use squid_n_core::model::{
-    ElementData, ElementKind, MaterialCategory, Model, RegionAnchor, WallPlate, WallPlateShape,
+    ElementData, ElementKind, MaterialCategory, Model, RegionAnchor, WallAttr, WallPlate,
+    WallPlateShape,
 };
 use squid_n_core::section_shape::SectionShape;
 
@@ -75,7 +76,7 @@ pub fn wall_is_seismic(data: &ElementData, model: &Model) -> bool {
     };
     let attr = model.wall_attrs.iter().find(|w| w.elem == data.id);
     // 柱際が切れている壁は、面内せん断を側柱へ伝えられないため耐震壁にしない。
-    if attr.is_some_and(|a| a.column_face_slit.iter().any(|&slit| slit)) {
+    if attr.is_some_and(WallAttr::has_column_face_slit) {
         return false;
     }
     if t < 120.0 {
