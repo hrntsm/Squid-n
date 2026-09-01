@@ -104,8 +104,6 @@ pub(super) fn element_draw_shape(kind: squid_n_core::model::ElementKind) -> Draw
 
 use squid_n_core::geom::vec3::cross as cross3;
 
-/// 床板（版）の輪郭と塗りを描く。二次部材（小梁・間柱）は実部材と同じ経路
-/// （`draw_mode_rest_ghost` の二次部材ブロック）で別途描画する。
 /// 荷重分配オブジェクト（床板・要素にならない壁版）の破線パターン（描画長 / 間隔, px）。
 const PLATE_DASH: f32 = 6.0;
 const PLATE_GAP: f32 = 4.0;
@@ -144,6 +142,8 @@ fn draw_load_plate_polygon(
 }
 
 /// 床板（版）の輪郭・塗り。大梁または小梁で囲まれた床板と、取り付く床板の両方を描く。
+/// 二次部材（小梁・間柱）は実部材と同じ経路（`draw_mode_rest_ghost` の二次部材
+/// ブロック）で別途描画する。
 ///
 /// `coords3` は節点インデックス順の**表示用 3D 座標**で、変形図・モード形・時刻歴では
 /// 変形後の位置が入る。周囲の梁が変形するのに床板だけが元の位置に残ると、床が梁から

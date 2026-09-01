@@ -72,10 +72,6 @@ fn wall_protrusion(
                 continue;
             };
             for s in 0..2 {
-                // 柱際が切れている辺は柱と一体でないため、剛域を作らない。
-                if w.column_face_slit[s] {
-                    continue;
-                }
                 if !same_pair(bottom[s], top[s]) {
                     continue;
                 }

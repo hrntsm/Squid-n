@@ -241,6 +241,30 @@ fn test_split_wall_plates_do_not_become_elements() {
         .all(|e| e.kind != ElementKind::Wall));
 }
 
+/// 間柱で分割された壁版は、すべて 3D ビューの描画対象になる。
+///
+/// 壁エレメントの生成条件を「壁領域全体を覆う 4 節点」へ絞ったとき、これらの壁版が
+/// 要素としても壁版としても描かれず 3D ビューから消えた。描画対象の判定
+/// （`Model::wall_plate_becomes_element` の否定）が、実際に要素が作られないことと
+/// 一致していることを、実フィクスチャで固定する。
+#[test]
+fn test_split_wall_plates_are_drawn_as_wall_plates() {
+    let model = wall_post_model();
+    assert_eq!(model.wall_plates.len(), 2, "間柱で 2 枚に分割されている");
+    for plate in &model.wall_plates {
+        assert!(
+            !model.wall_plate_becomes_element(plate),
+            "壁版 {} は要素にならないので、壁版として描く対象になる",
+            plate.id.0
+        );
+        assert!(
+            plate.boundary_coords(&model).is_some(),
+            "壁版 {} は境界多角形を組み立てられる（描けないと図に出ない）",
+            plate.id.0
+        );
+    }
+}
+
 /// 壁版の自重が、左右の鉛直辺（柱・間柱）へ半分ずつ配られる。
 #[test]
 fn test_wall_weight_is_split_between_columns_and_post() {

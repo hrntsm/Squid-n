@@ -259,7 +259,15 @@ impl InFrameMiscWallGeometry {
     /// 柱（side=0: a 側 x=0 の鉛直辺、side=1: b 側 x=lw）に取り付く
     /// 袖壁長さ [mm]（構造階高の 1/2 位置における包絡開口までの距離。
     /// 開口が h/2 を跨がない・位置不明の場合は壁を両側柱で折半 lw/2）。
+    ///
+    /// **柱際スリットのある側は 0 を返す。** その柱とは縁が切れており、袖壁として
+    /// 効かないためである。判定を消費側（断面性能への算入・剛域の張り出し）へ
+    /// 置くと、袖壁長さを使う箇所が増えたときに落とし忘れる。長さ 0 なら
+    /// どの消費側も「壁が無い」と同じ扱いになるので、ここで落とすのが安全である。
     pub fn wing_length(&self, side: usize) -> f64 {
+        if self.column_face_slit.get(side).copied().unwrap_or(false) {
+            return 0.0;
+        }
         match self.envelope {
             Some([x0, z0, x1, z1]) if z0 <= self.h / 2.0 && self.h / 2.0 <= z1 => {
                 if side == 0 {
@@ -346,8 +354,13 @@ pub(crate) fn collect_rigid_zone_walls(model: &Model) -> Vec<InFrameMiscWallGeom
 
 /// 壁版をフレーム内雑壁として周辺部材の断面性能へ算入するか。
 ///
-/// 壁エレメントになるのは壁領域全体を覆う 4 節点の壁版だけ
-/// （`Model::wall_plate_covers_region`）なので、覆っていない壁版は常に雑壁である。
+/// 壁領域全体を覆っていない壁版（`Model::wall_plate_covers_region` が偽）は、
+/// 壁エレメントになりえないので常に雑壁である。
+///
+/// 覆う壁版が実際に要素になるかは断面の有無にも依る
+/// （`Model::wall_plate_becomes_element`）が、ここでは `covers_region` で足りる。
+/// 断面が無い壁版は板厚を引けず、呼び出し元の [`collect_walls_where`] が
+/// 幾何を組み立てる前に落とすためである。
 ///
 /// 覆っている壁版は、耐震壁として成立すれば壁エレメントが面内せん断を負担するため
 /// 雑壁にはしない。成立判定は生成された要素に対する [`wall_is_seismic`] へ委ね、

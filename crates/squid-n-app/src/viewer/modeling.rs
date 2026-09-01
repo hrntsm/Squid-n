@@ -514,7 +514,19 @@ fn draw_wall_plates_modeling(
     // 壁版の表示可否は「床壁・二次部材」トグルに従う（形状表示と同じ規則。
     // モデル化図では `lumped_only` が偽・モードが CMQ 以外に確定しているため、
     // トグルの値がそのまま表示可否になる）。
-    if model.wall_plates.is_empty() || !app.show_floor_secondary {
+    if !app.show_floor_secondary {
+        return;
+    }
+    // 描く対象を先に絞る。`misc_stiffness_wall_plates` は壁版ごとに要素を線形走査
+    // するため、毎フレーム呼ぶには重い。全壁版が要素になるモデル（描くものが無い）で
+    // その走査を走らせない。
+    let targets: Vec<_> = model
+        .wall_plates
+        .iter()
+        .filter(|plate| !model.wall_plate_becomes_element(plate))
+        .filter(|plate| super::scene::wall_plate_visible_on_frame(plate, frame_filter))
+        .collect();
+    if targets.is_empty() {
         return;
     }
     let misc: std::collections::BTreeSet<_> =
@@ -522,13 +534,7 @@ fn draw_wall_plates_modeling(
             .into_iter()
             .collect();
 
-    for plate in &model.wall_plates {
-        if model.wall_plate_becomes_element(plate) {
-            continue;
-        }
-        if !super::scene::wall_plate_visible_on_frame(plate, frame_filter) {
-            continue;
-        }
+    for plate in targets {
         let Some(coords) = plate.boundary_coords_with(|n| coords3.get(n.index()).copied()) else {
             continue;
         };

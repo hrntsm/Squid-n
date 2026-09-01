@@ -1407,7 +1407,12 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
     if show_secondary {
         draw_slabs(&painter, app, filter, &proj, &coords3);
         // 要素にならない壁版。壁エレメントは下の部材ループが実線で描く。
-        draw_wall_plates(&painter, app, filter, &proj, &coords3);
+        // モデル化図では描かない。同じ壁版を分類色で描き分ける専用の経路
+        // （`modeling::draw_wall_plates_modeling`）があり、両方描くと青が下に
+        // 透けて「荷重のみ」のウォームグレーが濁り、凡例の色と一致しなくなる。
+        if mode != ViewMode::Modeling {
+            draw_wall_plates(&painter, app, filter, &proj, &coords3);
+        }
     }
 
     // --- 断面ソリッド ---

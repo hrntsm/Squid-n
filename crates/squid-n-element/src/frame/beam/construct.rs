@@ -255,10 +255,6 @@ impl BeamElement {
                         continue;
                     };
                     for s in 0..2 {
-                        // 柱際が切れている辺は、その柱へ袖壁として効かない。
-                        if wall.column_face_slit[s] {
-                            continue;
-                        }
                         let pair = (bottom[s], top[s]);
                         if !same_pair([n0, n1], pair) {
                             continue;
