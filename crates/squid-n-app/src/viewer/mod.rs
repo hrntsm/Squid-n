@@ -325,7 +325,7 @@ impl<'a> FrameFilter<'a> {
 
     /// 節点の配列添字で判定する。要素として持たない描画（支点記号・支点ばね・
     /// 免震マーカー・スラブ・二次部材・剛床代表点）を構面へ絞り込むために使う。
-    /// 「床・二次部材」トグルとは独立で、構面の所属だけを見る。
+    /// 「床壁・二次部材」トグルとは独立で、構面の所属だけを見る。
     pub(crate) fn shows_node(&self, i: usize) -> bool {
         match self.node_on {
             Some(on) => on.get(i).copied().unwrap_or(false),

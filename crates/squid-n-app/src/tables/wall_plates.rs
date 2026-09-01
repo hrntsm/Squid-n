@@ -216,6 +216,14 @@ fn not_element_reason(plate: &WallPlate, model: &squid_n_core::model::Model) -> 
         return "取り付く壁版（腰壁・垂壁・パラペット・自立壁）は解析要素にしません。\
                 自重の分配と周辺部材への剛性算入は行います";
     }
+    if !model
+        .wall_regions
+        .iter()
+        .any(|r| r.wall_plate_ids.contains(&plate.id))
+    {
+        return "どの壁領域にも帰属していません。準備計算が構面を検出できていないか、\
+                壁版が構面の平面から外れています。自重だけを持つ壁版になります";
+    }
     if !model.wall_plate_covers_region(plate) {
         return "壁領域全体を覆う 4 節点ではありません（間柱で分割されている、\
                 または壁領域の境界が 5 節点以上）。自重だけを持つ壁版になります";
@@ -1127,6 +1135,92 @@ fn add_attached_form(ui: &mut egui::Ui, app: &mut App) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn plate_model() -> (squid_n_core::model::Model, Vec<NodeId>) {
+        use squid_n_core::model::Node;
+        let mut m = squid_n_core::model::Model::default();
+        for (i, c) in [
+            [0.0, 0.0, 0.0],
+            [4000.0, 0.0, 0.0],
+            [4000.0, 0.0, 3000.0],
+            [0.0, 0.0, 3000.0],
+        ]
+        .iter()
+        .enumerate()
+        {
+            m.nodes.push(Node {
+                id: NodeId(i as u32),
+                coord: *c,
+                restraint: Default::default(),
+                mass: None,
+                story: None,
+                support_spring: None,
+            });
+        }
+        let ids: Vec<NodeId> = m.nodes.iter().map(|n| n.id).collect();
+        (m, ids)
+    }
+
+    fn enclosed(id: u32, boundary: Vec<NodeId>, section: Option<SectionId>) -> WallPlate {
+        WallPlate {
+            id: WallPlateId(id),
+            shape: WallPlateShape::Enclosed { boundary },
+            section,
+            opening_area: 0.0,
+            opening_weight: 0.0,
+            openings: Vec::new(),
+            column_face_slit: [false, false],
+        }
+    }
+
+    /// 「解析要素」列のホバーは、要素にならない理由を実際の状態どおりに述べる。
+    ///
+    /// 理由の言い分けを誤ると、利用者は直しようのない案内を読むことになる。
+    /// とくに「どの壁領域にも帰属していない」を「4 節点でない」と言ってしまうと、
+    /// 境界の節点数を疑って時間を使わせる。
+    #[test]
+    fn test_not_element_reason_distinguishes_causes() {
+        let (mut m, ids) = plate_model();
+
+        // どの壁領域からも参照されていない。
+        m.wall_plates
+            .push(enclosed(0, ids.clone(), Some(SectionId(0))));
+        assert!(
+            not_element_reason(&m.wall_plates[0], &m).contains("どの壁領域にも帰属していません")
+        );
+
+        // 壁領域はあるが、覆っていない（境界が 3 節点）。
+        m.wall_regions.push(squid_n_core::model::WallRegion {
+            id: squid_n_core::ids::WallRegionId(0),
+            name: String::new(),
+            boundary: ids.clone(),
+            wall_plate_ids: vec![WallPlateId(0)],
+            posts: Vec::new(),
+        });
+        m.wall_plates[0].shape = WallPlateShape::Enclosed {
+            boundary: ids[..3].to_vec(),
+        };
+        assert!(not_element_reason(&m.wall_plates[0], &m).contains("4 節点ではありません"));
+
+        // 覆っているが断面が無い。
+        m.wall_plates[0].shape = WallPlateShape::Enclosed {
+            boundary: ids.clone(),
+        };
+        m.wall_plates[0].section = None;
+        assert!(not_element_reason(&m.wall_plates[0], &m).contains("断面が割り当たっていません"));
+
+        // 取り付く壁版。
+        let mut attached = enclosed(1, Vec::new(), None);
+        attached.shape = WallPlateShape::Attached {
+            anchor: RegionAnchor::Line {
+                nodes: [ids[0], ids[1]],
+                span: [0.0, 1.0],
+                transfer: Default::default(),
+            },
+            extent: [900.0, 900.0],
+        };
+        assert!(not_element_reason(&attached, &m).contains("取り付く壁版"));
+    }
 
     /// 空文字列は「個別開口なし」を表し、空の Vec になること。
     #[test]
