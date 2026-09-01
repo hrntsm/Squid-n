@@ -215,15 +215,6 @@ impl BeamElement {
             Vec::new()
         };
         if !misc_walls.is_empty() {
-            // 不変条件の確認: 壁要素と周辺部材（柱・梁）の ElemId は別空間ではなく
-            // モデル全体で一意のはずなので、自部材自身が雑壁として収集される
-            // （壁要素IDと自部材IDの衝突）ことはない。
-            for w in &misc_walls {
-                debug_assert_ne!(
-                    w.elem, data.id,
-                    "壁要素と周辺部材のIDが衝突している（model 不整合）"
-                );
-            }
             // 全クレート共通の 45° 余弦基準（|ez| > 0.707）で柱系/梁系を分ける。
             let is_vertical_member = squid_n_core::geom::is_vertical_axis(p0, p1);
 
@@ -258,8 +249,13 @@ impl BeamElement {
                 let mut a_add = 0.0;
 
                 for wall in &misc_walls {
+                    // 上下いずれかの辺に主架構が無い壁（梁に載る腰壁・梁から垂れる
+                    // 垂壁）は鉛直辺が柱と一致しえないため、袖壁としては効かない。
+                    let (Some(bottom), Some(top)) = (wall.bottom_pair, wall.top_pair) else {
+                        continue;
+                    };
                     for s in 0..2 {
-                        let pair = (wall.bottom_pair[s], wall.top_pair[s]);
+                        let pair = (bottom[s], top[s]);
                         if !same_pair([n0, n1], pair) {
                             continue;
                         }
@@ -267,29 +263,9 @@ impl BeamElement {
                         if lww <= 0.0 {
                             continue;
                         }
-                        let Some(pa) = model
-                            .nodes
-                            .get(wall.bottom_pair[0].index())
-                            .map(|n| n.coord)
-                        else {
-                            continue;
-                        };
-                        let Some(pb) = model
-                            .nodes
-                            .get(wall.bottom_pair[1].index())
-                            .map(|n| n.coord)
-                        else {
-                            continue;
-                        };
-                        let wdx = pb[0] - pa[0];
-                        let wdy = pb[1] - pa[1];
-                        let wl = (wdx * wdx + wdy * wdy).sqrt();
-                        if wl < 1e-9 {
-                            continue;
-                        }
                         // 壁下辺方向の水平単位ベクトルと柱の局所 ey・ez との内積で
                         // 面内たわみ方向（iz↔as_y か iy↔as_z か）を判定する。
-                        let e_wall = [wdx / wl, wdy / wl, 0.0];
+                        let e_wall = wall.bottom_dir;
                         // 符号付き内積。面内たわみ方向の選択には絶対値を、袖壁の
                         // 偏心 e の符号には**符号付きの射影**を用いる。
                         let dot_ey_signed = axis.rot[1][0] * e_wall[0]
@@ -340,12 +316,13 @@ impl BeamElement {
                 let mut a_add = 0.0;
 
                 for wall in &misc_walls {
-                    let bottom = (wall.bottom_pair[0], wall.bottom_pair[1]);
-                    let top = (wall.top_pair[0], wall.top_pair[1]);
+                    let on = |pair: Option<[NodeId; 2]>| -> bool {
+                        pair.is_some_and(|p| same_pair([n0, n1], (p[0], p[1])))
+                    };
                     // 下辺の梁なら壁は上に載る（腰壁）、上辺の梁なら壁は下に垂れる（垂壁）。
-                    let (matched, hw_raw, sign) = if same_pair([n0, n1], bottom) {
+                    let (matched, hw_raw, sign) = if on(wall.bottom_pair) {
                         (true, wall.strip_height(false), 1.0)
-                    } else if same_pair([n0, n1], top) {
+                    } else if on(wall.top_pair) {
                         (true, wall.strip_height(true), -1.0)
                     } else {
                         (false, 0.0, 0.0)

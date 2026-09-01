@@ -1421,11 +1421,10 @@ fn test_model_issues_warns_unassigned_joist() {
     });
 
     let issues = model_issues(&model);
-    let warning = issues
+    let issue = issues
         .iter()
         .find(|i| {
-            i.severity == IssueSeverity::Warning
-                && (i.message.contains("小梁") || i.short.contains("小梁"))
+            (i.message.contains("小梁") || i.short.contains("小梁"))
                 && (i.message.contains("所属")
                     || i.message.contains("割り当て")
                     || i.short.contains("所属")
@@ -1433,10 +1432,12 @@ fn test_model_issues_warns_unassigned_joist() {
         })
         .unwrap_or_else(|| {
             let msgs: Vec<_> = issues.iter().map(|i| i.message.as_str()).collect();
-            panic!("所属なし小梁の警告がない: {msgs:?}")
+            panic!("所属なし小梁の指摘がない: {msgs:?}")
         });
-    assert_eq!(warning.severity, IssueSeverity::Warning);
-    assert!(precheck_model(&model).is_ok(), "解析は止めない");
+    // 所属が決まらない二次部材は荷重の行き先も検定の可否も決められないため、
+    // 存在自体を許さない（エラーで止める）。
+    assert_eq!(issue.severity, IssueSeverity::Error);
+    assert!(precheck_model(&model).is_err(), "解析を止める");
 }
 
 /// 大梁の床領域に載らない浮き床板は警告し、解析は止めない。
@@ -1607,11 +1608,18 @@ fn test_model_issues_warns_wall_plates_not_expanded() {
 
     let issues = model_issues(&model);
     let msgs: Vec<&str> = issues.iter().map(|i| i.message.as_str()).collect();
+    // 解析要素にならない壁版は正常な状態なので知らせない（壁エレメントになるのは
+    // 壁領域全体を覆う 4 節点の壁版だけで、腰壁・垂れ壁・T 字取り付きはそもそも
+    // 要素にする対象ではない）。
     assert!(
-        issues.iter().any(|i| {
-            i.severity == IssueSeverity::Warning && i.message.contains("4 節点でない壁版")
-        }),
-        "4 節点でない壁版の警告がない: {msgs:?}"
+        !issues
+            .iter()
+            .any(|i| i.message.contains("4 節点でない壁版")),
+        "解析要素にならないことを知らせないこと: {msgs:?}"
+    );
+    assert!(
+        !issues.iter().any(|i| i.message.contains("取り付く壁版が")),
+        "取り付く壁版の存在自体を知らせないこと: {msgs:?}"
     );
     let no_section = issues
         .iter()
@@ -1623,25 +1631,9 @@ fn test_model_issues_warns_wall_plates_not_expanded() {
         no_section.message
     );
     assert!(
-        no_section.message.contains("自重を分配できません"),
-        "取り付く壁版の自重欠落に触れること: {}",
+        no_section.message.contains("自重を算定できず"),
+        "自重が算定できないことに触れること: {}",
         no_section.message
-    );
-    assert!(
-        !issues.iter().any(|i| {
-            i.severity == IssueSeverity::Warning
-                && i.message.contains("4 節点でない壁版")
-                && i.message.contains("2 枚")
-        }),
-        "断面ありの取り付く壁版を 4 節点でないと数えないこと: {msgs:?}"
-    );
-    assert!(
-        issues.iter().any(|i| {
-            i.severity == IssueSeverity::Warning
-                && i.message.contains("取り付く壁版")
-                && i.message.contains("自重は地震用重量")
-        }),
-        "取り付く壁版の警告がない、または自重を分配しない旨の古い文言のまま: {msgs:?}"
     );
     assert!(precheck_model(&model).is_ok(), "解析は止めない");
 }

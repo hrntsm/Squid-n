@@ -345,6 +345,9 @@ pub fn generate_stories_with_opts(
         // 取り付く壁版（解析要素を持たない）も同様。false のときは DL 同期
         // （`compute_gravity_auto_load_cases`）側に含まれる。
         crate::wall_attached::accumulate_attached_wall_seismic_weight(model, &mut node_weight);
+        // 解析要素にならない囲まれた壁版（間柱で分割された壁版・腰壁等）も同様に
+        // 要素経由では拾えないため、辺への分配と同じ規則で節点重量へ集計する。
+        crate::wall_plate_load::accumulate_enclosed_wall_seismic_weight(model, &mut node_weight);
     }
 
     // 指定荷重ケース（複数可）の鉛直下向き成分。

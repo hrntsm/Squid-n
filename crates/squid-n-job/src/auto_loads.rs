@@ -509,6 +509,14 @@ pub fn compute_gravity_auto_load_cases(model: &Model) -> AutoLoadComputeResult {
     let (aw_nodal, aw_member) = slab_load_case_content(model, &attached_wall_loads);
     dl_nodal.extend(aw_nodal);
     dl_member.extend(aw_member);
+    // 解析要素にならない囲まれた壁版（間柱で分割された壁版・腰壁等）の自重のうち、
+    // 主架構（柱・大梁）が受け持つぶん。間柱が受け持つぶんは逐次伝達
+    // （`slab_beam_loads_with` が呼ぶ `cascade::solve`）が反力として運ぶ。
+    let enclosed_wall_loads =
+        squid_n_load::wall_plate_load::distribute_enclosed_wall_plates(model).primary;
+    let (ew_nodal, ew_member) = slab_load_case_content(model, &enclosed_wall_loads);
+    dl_nodal.extend(ew_nodal);
+    dl_member.extend(ew_member);
     let (dl_nodal, extra_member) = resolve_nodal_to_primary(model, dl_nodal, SPAN_TOL_MM);
     dl_member.extend(extra_member);
 

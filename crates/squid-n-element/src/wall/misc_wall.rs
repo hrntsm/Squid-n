@@ -9,8 +9,10 @@
 //! 本モジュールは判定と幾何（袖壁長さ・腰壁/垂壁高さ）のみを提供し、
 //! 周辺部材への断面性能の合成は梁要素側（`beam.rs`）で行う。
 
-use squid_n_core::ids::{ElemId, NodeId};
-use squid_n_core::model::{ElementData, ElementKind, MaterialCategory, Model};
+use squid_n_core::ids::NodeId;
+use squid_n_core::model::{
+    ElementData, ElementKind, MaterialCategory, Model, RegionAnchor, WallPlate, WallPlateShape,
+};
 use squid_n_core::section_shape::SectionShape;
 
 /// RC 造の壁か（断面形状が [`SectionShape::RcWall`]、または材料の区分が
@@ -217,18 +219,28 @@ fn wall_thickness(data: &ElementData, model: &Model) -> Option<f64> {
 
 /// フレーム内雑壁 1 枚分の幾何情報（壁ローカル座標: 原点=下辺 a 節点、
 /// x=下辺方向 0..lw、z=鉛直 0..h）。
+///
+/// **情報源は壁版（[`squid_n_core::model::WallPlate`]）である。** 壁エレメントは
+/// 壁領域全体を覆う壁版のときだけ作られる解析要素であり、雑壁として周辺部材の
+/// 断面性能へ算入される壁は要素にならない。要素を幾何の入れ物として使うと、
+/// 「剛性を持たない要素を作ってから 1e-9 倍で潰す」という筋の通らない構造に
+/// なるため、幾何は入力である壁版から直接組み立てる。
 pub(crate) struct InFrameMiscWallGeometry {
-    pub elem: ElemId,
     /// 壁板厚 [mm]
     pub t: f64,
     /// 壁長さ（下辺基準）[mm]
     pub lw: f64,
     /// 壁高さ [mm]
     pub h: f64,
-    /// 下辺の節点対 [a, b]（a が壁ローカル x=0 側）
-    pub bottom_pair: [NodeId; 2],
-    /// 上辺の節点対 [a, b]（下辺と対応付け済み）
-    pub top_pair: [NodeId; 2],
+    /// 下辺の節点対 [a, b]（a が壁ローカル x=0 側）。下辺に主架構が無い壁
+    /// （梁から垂れる取り付く壁版）は `None`。
+    pub bottom_pair: Option<[NodeId; 2]>,
+    /// 上辺の節点対 [a, b]（下辺と対応付け済み）。上辺に主架構が無い壁
+    /// （梁に載る取り付く壁版）は `None`。
+    pub top_pair: Option<[NodeId; 2]>,
+    /// 下辺方向の水平単位ベクトル（ローカル x の向き）。節点対を持たない辺が
+    /// ありうるため、向きは節点から都度求めず幾何として持つ。
+    pub bottom_dir: [f64; 3],
     /// 位置付き開口の包絡矩形 [x0, z0, x1, z1]（壁ローカル）。
     /// 位置付き開口がない場合は None。
     pub envelope: Option<[f64; 4]>,
@@ -251,13 +263,19 @@ impl InFrameMiscWallGeometry {
         }
     }
 
-    /// 梁（top=false: 下辺の梁の垂壁、top=true: 上辺の梁の腰壁）に取り付く
-    /// 壁高さ [mm]（軸間距離の 1/2 位置における包絡開口までの距離。
+    /// 梁（top=false: 下辺の梁に載る腰壁、top=true: 上辺の梁から垂れる垂壁）に
+    /// 取り付く壁高さ [mm]（軸間距離の 1/2 位置における包絡開口までの距離。
     /// 開口が lw/2 を跨がない・位置不明の場合は壁を上下梁で折半 h/2）。
     ///
-    /// ※下辺の梁にとって壁は上に載る「腰壁」、上辺の梁にとっては下に垂れる
-    /// 「垂壁」だが、剛性算入上は取り付く壁高さのみが問題となる。
+    /// **反対側の辺に主架構が無い壁（取り付く壁版）は折半しない。** 梁に載る
+    /// 腰壁・梁から垂れる垂壁は、その 1 本の梁だけが全高を負担するためである。
     pub fn strip_height(&self, top: bool) -> f64 {
+        let other_missing = if top {
+            self.bottom_pair.is_none()
+        } else {
+            self.top_pair.is_none()
+        };
+        let halved = if other_missing { self.h } else { self.h / 2.0 };
         match self.envelope {
             Some([x0, z0, x1, z1]) if x0 <= self.lw / 2.0 && self.lw / 2.0 <= x1 => {
                 if top {
@@ -266,7 +284,7 @@ impl InFrameMiscWallGeometry {
                     z0.clamp(0.0, self.h)
                 }
             }
-            _ => self.h / 2.0,
+            _ => halved,
         }
     }
 }
@@ -277,11 +295,17 @@ impl InFrameMiscWallGeometry {
 /// 耐震壁の成立条件の板厚 120 mm（[`wall_is_seismic`]）とは別の閾値である。
 pub(crate) const RIGID_ZONE_WALL_MIN_THICKNESS_MM: f64 = 100.0;
 
-/// モデル中の全フレーム内雑壁（耐震壁不成立の Wall 要素）を収集する。
+/// モデル中の全フレーム内雑壁（耐震壁として成立しない壁版）を収集する。
+///
+/// 壁エレメントになった壁版のうち耐震壁が成立したものだけを除く。要素にならない
+/// 壁版（間柱で分割された壁版・腰壁・垂れ壁・パラペット等）は、`Enclosed` か
+/// `Attached` かを問わずすべて雑壁として周辺部材へ算入する。同じ腰壁が入力の形
+/// （囲まれた壁版か取り付く壁版か）で剛性に効いたり効かなかったりしないためである。
+///
 /// 三方スリットの壁は周辺部材と縁が切れているため剛性算入の対象外とする
 /// （自重は荷重側で別途評価される）。
 pub(crate) fn collect_misc_walls(model: &Model) -> Vec<InFrameMiscWallGeometry> {
-    collect_walls_where(model, |data, model, _t| !wall_is_seismic(data, model))
+    collect_walls_where(model, |plate, model, _t| plate_is_misc_wall(plate, model))
 }
 
 /// 剛域算定に用いる壁を収集する（技術基準「剛域の計算」）。
@@ -291,98 +315,202 @@ pub(crate) fn collect_misc_walls(model: &Model) -> Vec<InFrameMiscWallGeometry> 
 /// ものを指し、耐震壁として成立するか否かを問わないためである。
 /// 三方スリット壁は周辺部材と縁が切れているため除く（[`collect_walls_where`]）。
 pub(crate) fn collect_rigid_zone_walls(model: &Model) -> Vec<InFrameMiscWallGeometry> {
-    collect_walls_where(model, |data, model, t| {
-        is_rc_wall(data, model) && t >= RIGID_ZONE_WALL_MIN_THICKNESS_MM
+    collect_walls_where(model, |plate, model, t| {
+        plate_is_rc_wall(plate, model) && t >= RIGID_ZONE_WALL_MIN_THICKNESS_MM
     })
 }
 
-/// Wall 要素を走査し、`accept` が true を返したものだけ壁ローカル座標系の
+/// 壁版をフレーム内雑壁として周辺部材の断面性能へ算入するか。
+///
+/// 壁エレメントになるのは壁領域全体を覆う 4 節点の壁版だけ
+/// （`Model::wall_plate_covers_region`）なので、覆っていない壁版は常に雑壁である。
+///
+/// 覆っている壁版は、耐震壁として成立すれば壁エレメントが面内せん断を負担するため
+/// 雑壁にはしない。成立判定は生成された要素に対する [`wall_is_seismic`] へ委ね、
+/// 判定を 2 つに増やさない。要素は壁版と同じ節点集合を持つので節点集合の一致で
+/// 引き当てる。**要素が見つからない（壁展開を経ていないモデル）ときは算入しない。**
+/// 展開の有無で周辺部材の剛性が変わらないようにするためである。
+fn plate_is_misc_wall(plate: &WallPlate, model: &Model) -> bool {
+    if !model.wall_plate_covers_region(plate) {
+        return true;
+    }
+    let Some(boundary) = plate.boundary_nodes() else {
+        return false;
+    };
+    model
+        .elements
+        .iter()
+        .find(|e| {
+            matches!(e.kind, ElementKind::Wall)
+                && e.nodes.len() == boundary.len()
+                && boundary.iter().all(|n| e.nodes.contains(n))
+        })
+        .is_some_and(|e| !wall_is_seismic(e, model))
+}
+
+/// 壁版が RC 造の壁か（[`is_rc_wall`] の壁版版）。
+fn plate_is_rc_wall(plate: &WallPlate, model: &Model) -> bool {
+    let sec_is_rc_wall = model
+        .wall_plate_section(plate)
+        .is_some_and(|s| matches!(s.shape, Some(SectionShape::RcWall { .. })));
+    let mat_is_rc = model
+        .wall_plate_material(plate)
+        .is_some_and(|m| m.category == MaterialCategory::Concrete);
+    sec_is_rc_wall || mat_is_rc
+}
+
+/// 壁版を走査し、`accept` が true を返したものだけ壁ローカル座標系の
 /// 幾何情報（[`InFrameMiscWallGeometry`]）へ変換して集める。
 ///
 /// 三方スリットの壁は、いずれの用途でも周辺部材と縁が切れているため一律に除く。
 fn collect_walls_where(
     model: &Model,
-    accept: impl Fn(&ElementData, &Model, f64) -> bool,
+    accept: impl Fn(&WallPlate, &Model, f64) -> bool,
 ) -> Vec<InFrameMiscWallGeometry> {
     let mut out = Vec::new();
-    for data in &model.elements {
-        if !matches!(data.kind, ElementKind::Wall) || data.nodes.len() < 4 {
+    for plate in &model.wall_plates {
+        if plate.three_side_slit {
             continue;
         }
-        let attr = model.wall_attrs.iter().find(|w| w.elem == data.id);
-        if attr.is_some_and(|a| a.three_side_slit) {
-            continue;
-        }
-        let Some(t) = wall_thickness(data, model) else {
+        let Some(t) = model.wall_plate_thickness(plate) else {
             continue;
         };
-        if !accept(data, model, t) {
+        if !accept(plate, model, t) {
             continue;
         }
-
-        // 壁ローカル座標系の構築（wall_element::try_new と同じ並べ替え）
-        let ids: Vec<NodeId> = data.nodes.iter().take(4).copied().collect();
-        let Some(coords) = ids
-            .iter()
-            .map(|nid| model.nodes.get(nid.index()).map(|n| n.coord))
-            .collect::<Option<Vec<[f64; 3]>>>()
-        else {
+        let Some(mut geom) = plate_geometry(plate, model, t) else {
             continue;
         };
-        let mut order: Vec<usize> = (0..4).collect();
-        order.sort_by(|&a, &b| coords[a][2].total_cmp(&coords[b][2]));
-        let (b0, b1, t0, t1) = (order[0], order[1], order[2], order[3]);
-        let (pa, pb) = (coords[b0], coords[b1]);
-        let dxy = [pb[0] - pa[0], pb[1] - pa[1]];
-        let lw = (dxy[0] * dxy[0] + dxy[1] * dxy[1]).sqrt();
-        let h = 0.5 * ((coords[t0][2] + coords[t1][2]) - (pa[2] + pb[2]));
-        if lw <= 0.0 || h <= 0.0 {
-            continue;
-        }
-        let ex = [dxy[0] / lw, dxy[1] / lw];
-        let proj = |p: [f64; 3]| -> f64 { (p[0] - pa[0]) * ex[0] + (p[1] - pa[1]) * ex[1] };
-        let (ta, tb) = if proj(coords[t0]).abs() <= proj(coords[t1]).abs() {
-            (t0, t1)
-        } else {
-            (t1, t0)
-        };
-
-        // 位置付き開口の包絡矩形（複数開口は包絡開口により
-        // 壁の長さを考慮する）
-        let envelope = attr.and_then(|a| {
-            let mut rect: Option<[f64; 4]> = None;
-            for o in &a.openings {
-                let Some([x, z]) = o.offset else { continue };
-                let (w, hh) = (o.width.max(0.0), o.height.max(0.0));
-                if w <= 0.0 || hh <= 0.0 {
-                    continue;
-                }
-                rect = Some(match rect {
-                    None => [x, z, x + w, z + hh],
-                    Some(r) => [r[0].min(x), r[1].min(z), r[2].max(x + w), r[3].max(z + hh)],
-                });
-            }
-            rect
-        });
-
-        out.push(InFrameMiscWallGeometry {
-            elem: data.id,
-            t,
-            lw,
-            h,
-            bottom_pair: [ids[b0], ids[b1]],
-            top_pair: [ids[ta], ids[tb]],
-            envelope,
-        });
+        geom.envelope = opening_envelope(plate);
+        out.push(geom);
     }
     out
+}
+
+/// 位置付き開口の包絡矩形 [x0, z0, x1, z1]（壁ローカル）。
+fn opening_envelope(plate: &WallPlate) -> Option<[f64; 4]> {
+    let mut rect: Option<[f64; 4]> = None;
+    for o in &plate.openings {
+        let Some([x, z]) = o.offset else { continue };
+        let (w, hh) = (o.width.max(0.0), o.height.max(0.0));
+        if w <= 0.0 || hh <= 0.0 {
+            continue;
+        }
+        rect = Some(match rect {
+            None => [x, z, x + w, z + hh],
+            Some(r) => [r[0].min(x), r[1].min(z), r[2].max(x + w), r[3].max(z + hh)],
+        });
+    }
+    rect
+}
+
+/// 壁版 1 枚を壁ローカル座標系の幾何へ変換する（開口の包絡は呼び出し側が入れる）。
+fn plate_geometry(plate: &WallPlate, model: &Model, t: f64) -> Option<InFrameMiscWallGeometry> {
+    match &plate.shape {
+        WallPlateShape::Enclosed { boundary } => enclosed_geometry(model, t, boundary),
+        WallPlateShape::Attached { anchor, extent } => attached_geometry(model, t, anchor, *extent),
+    }
+}
+
+/// 柱・梁が囲む壁版の幾何。境界がちょうど 4 節点のものだけを扱う
+/// （下辺 2 節点・上辺 2 節点という壁ローカル座標の前提が崩れるため）。
+fn enclosed_geometry(
+    model: &Model,
+    t: f64,
+    boundary: &[NodeId],
+) -> Option<InFrameMiscWallGeometry> {
+    if boundary.len() != 4 {
+        return None;
+    }
+    let coords: Vec<[f64; 3]> = boundary
+        .iter()
+        .map(|nid| model.nodes.get(nid.index()).map(|n| n.coord))
+        .collect::<Option<_>>()?;
+    let mut order: Vec<usize> = (0..4).collect();
+    order.sort_by(|&a, &b| coords[a][2].total_cmp(&coords[b][2]));
+    let (b0, b1, t0, t1) = (order[0], order[1], order[2], order[3]);
+    let (pa, pb) = (coords[b0], coords[b1]);
+    let dxy = [pb[0] - pa[0], pb[1] - pa[1]];
+    let lw = (dxy[0] * dxy[0] + dxy[1] * dxy[1]).sqrt();
+    let h = 0.5 * ((coords[t0][2] + coords[t1][2]) - (pa[2] + pb[2]));
+    if lw <= 0.0 || h <= 0.0 {
+        return None;
+    }
+    let ex = [dxy[0] / lw, dxy[1] / lw];
+    let proj = |p: [f64; 3]| -> f64 { (p[0] - pa[0]) * ex[0] + (p[1] - pa[1]) * ex[1] };
+    let (ta, tb) = if proj(coords[t0]).abs() <= proj(coords[t1]).abs() {
+        (t0, t1)
+    } else {
+        (t1, t0)
+    };
+    Some(InFrameMiscWallGeometry {
+        t,
+        lw,
+        h,
+        bottom_pair: Some([boundary[b0], boundary[b1]]),
+        top_pair: Some([boundary[ta], boundary[tb]]),
+        bottom_dir: [ex[0], ex[1], 0.0],
+        envelope: None,
+    })
+}
+
+/// 取り付く壁版（パラペット・腰壁・垂れ壁）の幾何。
+///
+/// 取付き線がその梁の全長 `[0, 1]` を覆う場合だけを対象にする。梁の一部だけに
+/// 載る壁を梁全長の断面性能へ合成すると、部材全長にわたって剛性を増したことに
+/// なり根拠がないためである（区間ごとに剛性を変える定式化は持たない）。
+/// 自立壁（[`RegionAnchor::FloorRegion`]）は主架構に取り付かないので対象外とする。
+fn attached_geometry(
+    model: &Model,
+    t: f64,
+    anchor: &RegionAnchor,
+    extent: [f64; 2],
+) -> Option<InFrameMiscWallGeometry> {
+    let RegionAnchor::Line { nodes, span, .. } = anchor else {
+        return None;
+    };
+    if (span[0] - 0.0).abs() > 1e-9 || (span[1] - 1.0).abs() > 1e-9 {
+        return None;
+    }
+    // 立ち上がりの符号が両端で食い違う壁は、腰壁とも垂壁とも決められない。
+    if extent[0] * extent[1] < 0.0 {
+        return None;
+    }
+    let up = extent[0] + extent[1] >= 0.0;
+    let h = (extent[0].abs() + extent[1].abs()) / 2.0;
+    if h <= 0.0 {
+        return None;
+    }
+    let pa = model.nodes.get(nodes[0].index())?.coord;
+    let pb = model.nodes.get(nodes[1].index())?.coord;
+    let dxy = [pb[0] - pa[0], pb[1] - pa[1]];
+    let lw = (dxy[0] * dxy[0] + dxy[1] * dxy[1]).sqrt();
+    if lw <= 0.0 {
+        return None;
+    }
+    let ex = [dxy[0] / lw, dxy[1] / lw, 0.0];
+    // 立ち上がりが上向きなら壁は取付き梁に載る（下辺が取付き線＝腰壁）。
+    let (bottom_pair, top_pair) = if up {
+        (Some(*nodes), None)
+    } else {
+        (None, Some(*nodes))
+    };
+    Some(InFrameMiscWallGeometry {
+        t,
+        lw,
+        h,
+        bottom_pair,
+        top_pair,
+        bottom_dir: ex,
+        envelope: None,
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use squid_n_core::dof::Dof6Mask;
-    use squid_n_core::ids::{MaterialId, SectionId};
+    use squid_n_core::ids::{ElemId, MaterialId, SectionId};
     use squid_n_core::model::MaterialCategory;
     use squid_n_core::model::{
         EndCondition, ForceRegime, LocalAxis, Material, Node, WallAttr, WallOpening,
@@ -442,6 +570,33 @@ mod tests {
         // 耐震壁は上下辺が大梁で囲まれた壁を対象とするため、上下辺に線材を置く。
         crate::wall::add_surrounding_frame(&mut model, &data);
         (model, data)
+    }
+
+    /// 壁エレメントと同じ境界・断面の壁版と、それを覆う壁領域を積む。
+    ///
+    /// 雑壁の幾何は壁版が情報源であり、壁エレメントになるか（＝雑壁の算入対象から
+    /// 外れるか）は「壁版が壁領域全体を覆うか」で決まるため、壁領域も要る。
+    fn add_wall_plate(model: &mut Model, openings: Vec<WallOpening>, three_side_slit: bool) {
+        model.wall_regions.push(squid_n_core::model::WallRegion {
+            id: squid_n_core::ids::WallRegionId(model.wall_regions.len() as u32),
+            name: String::new(),
+            boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
+            wall_plate_ids: vec![squid_n_core::ids::WallPlateId(
+                model.wall_plates.len() as u32
+            )],
+            posts: Vec::new(),
+        });
+        model.wall_plates.push(squid_n_core::model::WallPlate {
+            id: squid_n_core::ids::WallPlateId(model.wall_plates.len() as u32),
+            shape: squid_n_core::model::WallPlateShape::Enclosed {
+                boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
+            },
+            section: Some(SectionId(0)),
+            opening_area: 0.0,
+            opening_weight: 0.0,
+            openings,
+            three_side_slit,
+        });
     }
 
     #[test]
@@ -690,17 +845,19 @@ mod tests {
         // 大開口(2400×1500 @ [800, 750]) → r0=√(3.6e6/12e6)=0.548 > 0.4 で不成立
         let (mut model, data) = make_model(150.0);
         model.elements.push(data);
+        let openings = vec![WallOpening {
+            width: 2400.0,
+            height: 1500.0,
+            offset: Some([800.0, 750.0]),
+        }];
         model.wall_attrs.push(WallAttr {
             elem: ElemId(0),
             opening_area: 0.0,
             opening_weight: 0.0,
             three_side_slit: false,
-            openings: vec![WallOpening {
-                width: 2400.0,
-                height: 1500.0,
-                offset: Some([800.0, 750.0]),
-            }],
+            openings: openings.clone(),
         });
+        add_wall_plate(&mut model, openings, false);
         let walls = collect_misc_walls(&model);
         assert_eq!(walls.len(), 1);
         let w = &walls[0];
@@ -719,6 +876,7 @@ mod tests {
         // 薄壁(t=100)・開口位置なし → 折半則
         let (mut model, data) = make_model(100.0);
         model.elements.push(data);
+        add_wall_plate(&mut model, vec![], false);
         let walls = collect_misc_walls(&model);
         assert_eq!(walls.len(), 1);
         assert!((walls[0].wing_length(0) - 2000.0).abs() < 1e-9);
@@ -736,7 +894,21 @@ mod tests {
             three_side_slit: true,
             openings: vec![],
         });
+        add_wall_plate(&mut model, vec![], true);
         // スリット壁は耐震壁不成立だが、縁切りのため雑壁算入もしない
+        assert!(collect_misc_walls(&model).is_empty());
+    }
+
+    /// 壁展開を経ていないモデル（壁エレメントが 1 つも無い）でも、壁領域全体を覆う
+    /// 壁版は雑壁として算入しない。展開の有無で周辺部材の剛性が変わらないようにする。
+    #[test]
+    fn 未展開モデルの覆う壁版は雑壁に算入しない() {
+        let (mut model, _data) = make_model(150.0);
+        add_wall_plate(&mut model, vec![], false);
+        assert!(
+            model.elements.iter().all(|e| e.kind != ElementKind::Wall),
+            "壁エレメントを持たないモデル"
+        );
         assert!(collect_misc_walls(&model).is_empty());
     }
 
@@ -744,6 +916,7 @@ mod tests {
     fn test_seismic_wall_not_collected() {
         let (mut model, data) = make_model(150.0);
         model.elements.push(data);
+        add_wall_plate(&mut model, vec![], false);
         assert!(collect_misc_walls(&model).is_empty());
     }
 }

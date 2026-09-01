@@ -104,6 +104,45 @@ pub struct FloorRegion {
     pub slab_ids: Vec<SlabId>,
 }
 
+impl Model {
+    /// 床領域の境界節点が**すべて同一の剛床**に属するか。
+    ///
+    /// 小梁の断面検定（分配 Span 検定）は、曲げ・せん断・たわみだけを見て軸力を
+    /// 見ない。これは「その小梁が載る床面が 1 枚の剛体で、面内力を剛床が処理して
+    /// いる」ことを暗黙の前提にしている。剛床でない床の小梁は面内力を負担する
+    /// ため、この前提が成り立たず検定できない（検定側は「未」にする）。
+    ///
+    /// **判定は節点の集合で行う。** 剛床のスレーブ集合に境界節点がすべて含まれる
+    /// ことを求める。将来、節点ごとに剛床の対象を変えられるようにしても、この
+    /// 判定はそのまま使える。
+    ///
+    /// 複数の剛床にまたがる床領域（段差床の階は 1 階に複数の剛床を持つ）は偽と
+    /// する。境界で相対変位が生じうるため、面内力が小梁へ回る可能性が残る。
+    pub fn floor_region_on_single_diaphragm(&self, region: &FloorRegion) -> bool {
+        if region.boundary.is_empty() {
+            return false;
+        }
+        self.constraints.iter().any(|c| match c {
+            Constraint::RigidDiaphragm { master, slaves, .. } => region
+                .boundary
+                .iter()
+                .all(|n| n == master || slaves.contains(n)),
+            _ => false,
+        })
+    }
+
+    /// 二次部材（端点対で識別）が属する床領域。どこにも属さなければ `None`。
+    pub fn floor_region_of_joist(&self, nodes: [NodeId; 2]) -> Option<&FloorRegion> {
+        let key = |a: NodeId, b: NodeId| (a.0.min(b.0), a.0.max(b.0));
+        let want = key(nodes[0], nodes[1]);
+        self.floor_regions.iter().find(|r| {
+            r.secondary_joists
+                .iter()
+                .any(|j| key(j.nodes[0], j.nodes[1]) == want)
+        })
+    }
+}
+
 impl FloorRegion {
     /// 床領域を作る（版なし・小梁なし）。
     pub fn new(id: FloorRegionId, boundary: Vec<NodeId>) -> Self {

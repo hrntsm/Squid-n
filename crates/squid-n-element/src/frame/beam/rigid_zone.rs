@@ -66,14 +66,17 @@ fn wall_protrusion(
     for w in walls {
         if is_vertical {
             // 柱: 壁の鉛直辺（bottom_pair[s]–top_pair[s]）が自部材と一致する側の袖壁。
+            // 上下いずれかの辺に主架構が無い壁（取り付く壁版）は鉛直辺が柱と
+            // 一致しえないため、袖壁としては効かない。
+            let (Some(bottom), Some(top)) = (w.bottom_pair, w.top_pair) else {
+                continue;
+            };
             for s in 0..2 {
-                if !same_pair(w.bottom_pair[s], w.top_pair[s]) {
+                if !same_pair(bottom[s], top[s]) {
                     continue;
                 }
                 // 壁は s=0 側の柱からは +e_wall 方向へ、s=1 側の柱からは −e_wall 方向へ伸びる。
-                let Some(e_wall) = wall_bottom_dir(model, w) else {
-                    continue;
-                };
+                let e_wall = w.bottom_dir;
                 let sign = if s == 0 { 1.0 } else { -1.0 };
                 let dir = [e_wall[0] * sign, e_wall[1] * sign, 0.0];
                 if !accepts(dir) {
@@ -85,12 +88,12 @@ fn wall_protrusion(
             // 梁: 下辺が自部材なら壁は上に載る（腰壁）、上辺が自部材なら下に垂れる（垂壁）。
             for (matched, extent, dir) in [
                 (
-                    same_pair(w.bottom_pair[0], w.bottom_pair[1]),
+                    w.bottom_pair.is_some_and(|p| same_pair(p[0], p[1])),
                     w.strip_height(false),
                     [0.0, 0.0, 1.0],
                 ),
                 (
-                    same_pair(w.top_pair[0], w.top_pair[1]),
+                    w.top_pair.is_some_and(|p| same_pair(p[0], p[1])),
                     w.strip_height(true),
                     [0.0, 0.0, -1.0],
                 ),
@@ -103,18 +106,6 @@ fn wall_protrusion(
         }
     }
     out
-}
-
-/// 壁下辺の水平単位ベクトル（`bottom_pair[0]` → `bottom_pair[1]`）。
-fn wall_bottom_dir(
-    model: &Model,
-    w: &crate::wall::misc_wall::InFrameMiscWallGeometry,
-) -> Option<[f64; 3]> {
-    let pa = model.nodes.get(w.bottom_pair[0].index())?.coord;
-    let pb = model.nodes.get(w.bottom_pair[1].index())?.coord;
-    let (dx, dy) = (pb[0] - pa[0], pb[1] - pa[1]);
-    let l = (dx * dx + dy * dy).sqrt();
-    (l > 1e-9).then(|| [dx / l, dy / l, 0.0])
 }
 
 /// 壁を考慮した部材せい D [mm]（原断面せい ＋ 壁の張り出し）。

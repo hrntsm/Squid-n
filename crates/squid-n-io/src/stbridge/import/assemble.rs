@@ -754,7 +754,6 @@ fn build_walls(
     // `rebuild_wall_regions` が、ここで積んだ `WallPlate` を検出済みの壁領域へ
     // 帰属させる（`dev_docs/handoff/床領域・壁領域の再設計_申し送り.md` §5.10）。
     let mut skipped_walls = 0u32;
-    let mut non_quad_walls = 0u32;
     let mut no_section_walls = 0u32;
     // 壁厚 → 生成済みの厚さ専用断面。同じ厚さの壁で断面を使い回すための索引。
     // f64 は Hash を持たないため、符号（`Wall t180`）そのものをキーにする。
@@ -842,20 +841,11 @@ fn build_walls(
             openings: Vec::new(),
             three_side_slit: false,
         };
-        if !plate.has_quad_boundary() {
-            non_quad_walls += 1;
-        }
         model.wall_plates.push(plate);
     }
     if skipped_walls > 0 {
         warnings.push(format!(
             "境界節点が解決できない、または頂点数が不足する壁を {skipped_walls} 件スキップしました"
-        ));
-    }
-    if non_quad_walls > 0 {
-        warnings.push(format!(
-            "境界が 4 節点でない壁版を {non_quad_walls} 枚取り込みました。\
-             解析要素としては生成しません（T 字取り付き等）"
         ));
     }
     if no_section_walls > 0 {

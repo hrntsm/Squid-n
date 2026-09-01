@@ -2384,16 +2384,29 @@ fn test_beam_new_misc_wall_wing_augments_column_inplane_stiffness() {
         materials: vec![mat],
         ..Default::default()
     };
+    let openings = vec![WallOpening {
+        width: 2400.0,
+        height: 1500.0,
+        offset: Some([800.0, 750.0]),
+    }];
     model.wall_attrs.push(WallAttr {
         elem: ElemId(1),
         opening_area: 0.0,
         opening_weight: 0.0,
         three_side_slit: false,
-        openings: vec![WallOpening {
-            width: 2400.0,
-            height: 1500.0,
-            offset: Some([800.0, 750.0]),
-        }],
+        openings: openings.clone(),
+    });
+    // 雑壁の幾何は壁版（入力）が情報源。
+    model.wall_plates.push(squid_n_core::model::WallPlate {
+        id: squid_n_core::ids::WallPlateId(0),
+        shape: squid_n_core::model::WallPlateShape::Enclosed {
+            boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
+        },
+        section: Some(SectionId(1)),
+        opening_area: 0.0,
+        opening_weight: 0.0,
+        openings,
+        three_side_slit: false,
     });
 
     let column = BeamElement::new(&column_elem, &model);
@@ -2536,16 +2549,29 @@ fn test_beam_new_misc_wall_strip_augments_girder_iy_without_100x() {
         materials: vec![mat],
         ..Default::default()
     };
+    let openings = vec![WallOpening {
+        width: 2400.0,
+        height: 1500.0,
+        offset: Some([800.0, 750.0]),
+    }];
     model.wall_attrs.push(WallAttr {
         elem: ElemId(1),
         opening_area: 0.0,
         opening_weight: 0.0,
         three_side_slit: false,
-        openings: vec![WallOpening {
-            width: 2400.0,
-            height: 1500.0,
-            offset: Some([800.0, 750.0]),
-        }],
+        openings: openings.clone(),
+    });
+    // 雑壁の幾何は壁版（入力）が情報源。
+    model.wall_plates.push(squid_n_core::model::WallPlate {
+        id: squid_n_core::ids::WallPlateId(0),
+        shape: squid_n_core::model::WallPlateShape::Enclosed {
+            boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
+        },
+        section: Some(SectionId(1)),
+        opening_area: 0.0,
+        opening_weight: 0.0,
+        openings,
+        three_side_slit: false,
     });
 
     let beam = BeamElement::new(&beam_elem, &model);
@@ -3660,6 +3686,18 @@ fn portal_with_wing_wall(col_depth: f64, beam_depth: f64, wall_thickness: f64) -
             mk_sec(2, 0.0, Some(wall_thickness)),
         ],
         materials: vec![mat],
+        // 雑壁の幾何は壁版（入力）が情報源なので、壁エレメントと同じ境界の壁版を置く。
+        wall_plates: vec![squid_n_core::model::WallPlate {
+            id: squid_n_core::ids::WallPlateId(0),
+            shape: squid_n_core::model::WallPlateShape::Enclosed {
+                boundary: vec![NodeId(0), NodeId(4), NodeId(5), NodeId(1)],
+            },
+            section: Some(SectionId(2)),
+            opening_area: 0.0,
+            opening_weight: 0.0,
+            openings: vec![],
+            three_side_slit: false,
+        }],
         ..Default::default()
     }
 }

@@ -376,8 +376,15 @@ pub fn solve(
         supports.insert(ax.key, [s0, s1]);
     }
 
-    // --- 床分配の辺荷重（小梁のみ。間柱は壁版からの分配が未実装のため持たない） ---
+    // --- 床分配の辺荷重（小梁）と、壁版の自重の分配（間柱） ---
     let (distribution, leftover_region_loads) = secondary_joist_distribution_split(model, w_of);
+    // 壁版の自重は固定荷重なので、二次部材自身の自重と同じ条件で載せる
+    // （積載荷重のケースには載せない）。
+    let wall_loads = if include_self_weight {
+        crate::wall_plate_load::distribute_enclosed_wall_plates(model).posts
+    } else {
+        HashMap::new()
+    };
 
     // 自重の引き当ても索引経由にする（キーごとに全二次部材を線形探索しない）。
     let by_key: HashMap<SecondaryKey, &SecondaryMember> = model
@@ -404,6 +411,14 @@ pub fn solve(
                     entry.rep_slab_id,
                 ),
             );
+        }
+        if let Some(wall) = wall_loads.get(&ax.key) {
+            loads.extend(orient_member_loads(
+                &wall.member_loads,
+                ax.len,
+                (wall.span_nodes[0], wall.span_nodes[1]),
+                (ax.nodes[0], ax.nodes[1]),
+            ));
         }
         if include_self_weight {
             if let Some(sm) = by_key.get(&ax.key) {

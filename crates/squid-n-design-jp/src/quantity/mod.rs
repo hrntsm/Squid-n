@@ -562,10 +562,14 @@ pub fn compute_quantity_takeoff(model: &Model, cfg: &QuantityCfg) -> QuantityTak
     }
 
     for plate in &model.wall_plates {
-        if !plate.is_attached() {
-            continue; // 囲まれた壁版（Enclosed）は解析要素経由の wall_quantity が数える。
+        // 解析要素になった壁版（壁領域全体を覆う 4 節点の壁版）は `wall_quantity` が
+        // 要素経由で数える。それ以外（取り付く壁版・間柱で分割された壁版・腰壁・
+        // 垂れ壁など）は要素にならないため、壁版から直接数える。ここを漏らすと
+        // 数量が黙って落ちる。
+        if !plate.is_attached() && model.wall_plate_covers_region(plate) {
+            continue;
         }
-        if let Some(item) = attached_wall_plate_quantity(&ctx, plate) {
+        if let Some(item) = wall_plate_quantity(&ctx, plate) {
             out.items.push(item);
         }
     }
@@ -1260,17 +1264,22 @@ fn wall_quantity(ctx: &Ctx, elem: &ElementData) -> Option<MemberQuantity> {
 /// のみを数える）。取り付く壁版は `OutOfFrameMiscWall`（フレーム外雑壁）の後継
 /// （`dev_docs/specs/用語集.md`）のため、カテゴリは同じ `MemberCategory::MiscWall` を使う。
 /// ラベルは囲まれた壁と同じく割り当てた断面の符号（`wall_quantity` と同じ）。
-fn attached_wall_plate_quantity(ctx: &Ctx, plate: &WallPlate) -> Option<MemberQuantity> {
+fn wall_plate_quantity(ctx: &Ctx, plate: &WallPlate) -> Option<MemberQuantity> {
     let model = ctx.model;
-    let WallPlateShape::Attached { anchor, .. } = &plate.shape else {
+    // 階の帰属を決めるための代表節点。取り付く壁版は取付き線の両端、囲まれた
+    // 壁版は境界の全節点から、最も低いものを選ぶ。
+    let anchor_nodes: Vec<squid_n_core::ids::NodeId> = match &plate.shape {
+        WallPlateShape::Attached { anchor, .. } => match anchor {
+            RegionAnchor::Line { nodes, .. } => nodes.to_vec(),
+            RegionAnchor::FloorRegion { nodes, .. } => nodes.to_vec(),
+            // 壁の取付き先としては使わない（`WallPlate::boundary_coords` と同じ理由）。
+            RegionAnchor::Point(_) => return None,
+        },
+        WallPlateShape::Enclosed { boundary } => boundary.clone(),
+    };
+    if anchor_nodes.is_empty() {
         return None;
-    };
-    let anchor_nodes = match anchor {
-        RegionAnchor::Line { nodes, .. } => *nodes,
-        RegionAnchor::FloorRegion { nodes, .. } => *nodes,
-        // 壁の取付き先としては使わない（`WallPlate::boundary_coords` と同じ理由）。
-        RegionAnchor::Point(_) => return None,
-    };
+    }
     let sec = model.wall_plate_section(plate)?;
     let t = model.wall_plate_thickness(plate)?;
     let pts = plate.boundary_coords(model)?;
@@ -1283,6 +1292,7 @@ fn attached_wall_plate_quantity(ctx: &Ctx, plate: &WallPlate) -> Option<MemberQu
     let lower = anchor_nodes
         .iter()
         .map(|n| n.index())
+        .filter(|i| model.nodes.get(*i).is_some())
         .min_by(|&a, &b| {
             model.nodes[a].coord[2]
                 .partial_cmp(&model.nodes[b].coord[2])

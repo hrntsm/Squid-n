@@ -129,6 +129,21 @@ pub fn beams_along_segment(
     p1: [f64; 3],
     tol: f64,
 ) -> Vec<SegmentCoverage> {
+    beams_along_segment_with(&beam_span_candidates(model), p0, p1, tol)
+}
+
+/// [`beams_along_segment`] の候補列を使い回す版（クレート内向け）。
+///
+/// 線分ごとに [`beam_span_candidates`] を組み直すと、呼び出しのたびに全要素を走査し直し、
+/// 線分の本数 × 部材数になる。多数の線分を続けて割り付ける呼び出し元は候補列を 1 回だけ
+/// 構築してこちらを使う（逐次伝達が `beam_span_candidates` を 1 回だけ構築しているのと
+/// 同じ理由）。
+pub(crate) fn beams_along_segment_with(
+    candidates: &[BeamSpanCandidate],
+    p0: [f64; 3],
+    p1: [f64; 3],
+    tol: f64,
+) -> Vec<SegmentCoverage> {
     let d = [p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2]];
     let len = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
     if len <= tol {
@@ -147,7 +162,7 @@ pub fn beams_along_segment(
     };
 
     let mut out = Vec::new();
-    for c in beam_span_candidates(model) {
+    for c in candidates {
         if perp_dist(c.a) > tol || perp_dist(c.b) > tol {
             continue; // 線分の直線上にない梁。
         }

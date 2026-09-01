@@ -11,3 +11,4 @@ pub mod self_weight;
 pub mod story_gen;
 pub mod wall_attached;
 pub mod wall_expand;
+pub mod wall_plate_load;

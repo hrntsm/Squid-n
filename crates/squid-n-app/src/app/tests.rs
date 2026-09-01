@@ -490,7 +490,6 @@ fn test_tab_default_is_model() {
 fn test_analysis_runs_with_non_structural_nodes_on_base_floor() {
     use squid_n_core::dof::Dof6Mask;
     use squid_n_core::ids::StoryId;
-    use squid_n_core::model::{SecondaryMember, SecondaryMemberKind};
 
     let mut model = crate::sample::portal_frame();
     // 基部レベル（柱脚と同じ Z）へ小梁の支持点を足す。
@@ -503,15 +502,10 @@ fn test_analysis_runs_with_non_structural_nodes_on_base_floor() {
         story: None,
         support_spring: None,
     });
-    // 断面は割り当てない。ここで見たいのは「要素が接続しない節点が基部の剛床スレーブに
-    // 混じる」ことであり、断面を与えると自重の行き先が問われて別の話（逐次伝達の
-    // 診断。申し送り §3.4 F10）になる。
-    model.unassigned_joists.push(SecondaryMember {
-        kind: SecondaryMemberKind::Joist,
-        nodes: [NodeId(0), free_id],
-        section: None,
-        name: "B1".into(),
-    });
+    // 二次部材は置かない。階の所属は節点の標高だけで決まる（`story_gen`）ので、
+    // 「要素が接続しない節点が基部の剛床スレーブに混じる」状況はこれで再現できる。
+    // 小梁を置くと、どの床領域にも属さない二次部材として解析前チェックが止める
+    // （この平面ラーメンには閉じた床領域が存在しないため）。
 
     let mut app = App::default();
     app.load_model(model);
@@ -2952,11 +2946,21 @@ fn make_square_slab_test_model() -> squid_n_core::model::Model {
     };
     let mut region = FloorRegion::new(FloorRegionId(0), boundary);
     region.slab_ids.push(squid_n_core::ids::SlabId(0));
+    // 小梁の分配 Span 検定は「床面が 1 枚の剛体で面内力を剛床が処理している」ことを
+    // 前提にするため、床領域の境界節点を覆う剛床を置く（`floor_design_checks`）。
+    let diaphragm = squid_n_core::model::Constraint::RigidDiaphragm {
+        story: squid_n_core::ids::StoryId(0),
+        master: NodeId(0),
+        slaves: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
+        weight: None,
+        ci_override: None,
+    };
     squid_n_core::model::Model {
         nodes,
         elements,
         floor_regions: vec![region],
         slabs: vec![slab],
+        constraints: vec![diaphragm],
         ..Default::default()
     }
 }
@@ -3451,6 +3455,16 @@ fn test_floor_design_checks_secondary_joist_uses_same_level_slab() {
         });
         r
     });
+    // 上階床領域にも剛床を置く（小梁の分配 Span 検定の前提）。
+    model
+        .constraints
+        .push(squid_n_core::model::Constraint::RigidDiaphragm {
+            story: squid_n_core::ids::StoryId(1),
+            master: NodeId(4),
+            slaves: vec![NodeId(4), NodeId(5), NodeId(6), NodeId(7)],
+            weight: None,
+            ci_override: None,
+        });
     model.validate().expect("validate");
     let app = App {
         model,
@@ -3541,6 +3555,14 @@ fn test_floor_design_checks_secondary_joist_on_shared_edge_averages_width() {
             name: "J1".into(),
         });
         r
+    }];
+    // 床領域の境界を変えたので、剛床のスレーブも新しい境界節点へ揃える。
+    model.constraints = vec![squid_n_core::model::Constraint::RigidDiaphragm {
+        story: squid_n_core::ids::StoryId(0),
+        master: NodeId(0),
+        slaves: vec![NodeId(0), NodeId(6), NodeId(7), NodeId(3)],
+        weight: None,
+        ci_override: None,
     }];
     model.validate().expect("validate");
     let app = App {
@@ -5325,12 +5347,6 @@ fn test_secondary_joist_subdivided_slab_dl_cmq_and_solve() {
                 FloorRegionId(0),
                 vec![NodeId(4), NodeId(5), NodeId(6), NodeId(7)],
             );
-            region.secondary_joists.push(SecondaryMember {
-                kind: SecondaryMemberKind::Joist,
-                nodes: [NodeId(0), NodeId(1)],
-                section: None,
-                name: String::new(),
-            });
             region.slab_ids = vec![squid_n_core::ids::SlabId(0), squid_n_core::ids::SlabId(1)];
             region
         }],
