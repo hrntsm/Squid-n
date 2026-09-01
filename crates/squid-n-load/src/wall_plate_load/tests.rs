@@ -275,3 +275,44 @@ fn 柱に並走する間柱は柱の荷重を奪わない() {
     );
     assert_eq!(out.primary.len(), 2, "柱側の鉛直辺は主架構が受け続ける");
 }
+
+/// 下に大梁も間柱も無い壁版は、自重の行き先が決まらないので何も配らない。
+///
+/// 行き先の無い節点荷重は `DofMap` が無視するため、黙って落とすと荷重タブには
+/// 見えるのに解析から消える。解析前チェックがエラーで止める対象になる。
+#[test]
+fn 行き先の無い壁版は配らずに診断へ回す() {
+    let mut m = bay();
+    // 宙に浮いた壁版（4 隅とも柱・大梁の材軸から外れている）。
+    for (id, x, z) in [
+        (6, 1000.0, 1000.0),
+        (7, 3000.0, 1000.0),
+        (8, 3000.0, 2000.0),
+        (9, 1000.0, 2000.0),
+    ] {
+        m.nodes.push(node(id, x, z));
+    }
+    m.wall_plates = vec![plate(0, [6, 7, 8, 9])];
+    m.wall_regions = vec![WallRegion {
+        id: WallRegionId(0),
+        name: String::new(),
+        boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
+        wall_plate_ids: vec![WallPlateId(0)],
+        posts: Vec::new(),
+    }];
+
+    let out = distribute_enclosed_wall_plates(&m);
+    assert!(out.posts.is_empty());
+    assert!(out.primary.is_empty(), "行き先が無いので何も配らない");
+    assert_eq!(
+        wall_plates_without_load_path(&m),
+        vec![WallPlateId(0)],
+        "診断が拾う"
+    );
+}
+
+/// 支持部材のある辺を持つ壁版は診断の対象にならない。
+#[test]
+fn 行き先のある壁版は診断に出ない() {
+    assert!(wall_plates_without_load_path(&split_by_post()).is_empty());
+}

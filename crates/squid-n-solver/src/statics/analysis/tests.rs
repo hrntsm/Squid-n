@@ -1631,8 +1631,8 @@ fn test_model_issues_warns_wall_plates_not_expanded() {
         no_section.message
     );
     assert!(
-        no_section.message.contains("自重を分配できません"),
-        "取り付く壁版の自重欠落に触れること: {}",
+        no_section.message.contains("自重を算定できず"),
+        "自重が算定できないことに触れること: {}",
         no_section.message
     );
     assert!(precheck_model(&model).is_ok(), "解析は止めない");

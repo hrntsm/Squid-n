@@ -481,11 +481,23 @@ pub fn model_issues(model: &Model) -> Vec<ModelIssue> {
             issues.push(
                 ModelIssue::model(format!(
                     "断面未割当の壁版が {skipped_no_section} 枚あります。\
-                     囲まれた壁版は解析要素として生成せず、取り付く壁版は\
-                     自重を分配できません。"
+                     板厚と材料が決まらないため自重を算定できず、解析要素にも\
+                     しません。"
                 ))
                 .warn(),
             );
+        }
+        // 自重の行き先が決まらない壁版はエラーで止める。行き先の無い節点荷重は
+        // `DofMap` が無視するため、黙って落とすと荷重タブには見えるのに解析から
+        // 消える（申し送り §3.4 F10・§5.28 の自立壁と同じ扱い）。
+        let stranded = squid_n_load::wall_plate_load::wall_plates_without_load_path(model);
+        if !stranded.is_empty() {
+            let n = stranded.len();
+            issues.push(ModelIssue::model(format!(
+                "自重の行き先が決まらない壁版が {n} 枚あります。\
+                 境界のどの辺にも支持する柱・大梁・間柱がありません。\
+                 壁版の境界、または取付き先の指定を確認してください。"
+            )));
         }
         // 自立壁（床領域アンカー）は、荷重を流せる床領域（床板を持ち、その XY 投影
         // 面積が正である床領域）の上に載っていなければならない。載らない部分の自重は
