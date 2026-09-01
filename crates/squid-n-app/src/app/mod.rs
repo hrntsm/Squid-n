@@ -32,7 +32,7 @@ pub enum ModelTab {
     Sections,
     Materials,
     Slabs,
-    /// 壁版（断面・開口・三方スリット・取付き先）
+    /// 壁版（断面・開口・柱際スリット・取付き先）
     WallPlates,
     /// フレーム外雑壁
     MiscWalls,

@@ -340,7 +340,7 @@ fn test_wall_attr_total_opening_area_prefers_openings() {
         elem: ElemId(0),
         opening_area: 999.0,
         opening_weight: 0.0,
-        three_side_slit: false,
+        column_face_slit: [false, false],
         openings: vec![
             WallOpening {
                 width: 1000.0,
@@ -387,7 +387,7 @@ fn attr_with(openings: Vec<WallOpening>) -> WallAttr {
         elem: ElemId(0),
         opening_area: 0.0,
         opening_weight: 0.0,
-        three_side_slit: false,
+        column_face_slit: [false, false],
         openings,
     }
 }
@@ -458,15 +458,23 @@ fn test_can_envelope_boundary() {
     assert!(!a.can_envelope(&d));
 }
 
-/// 旧スキーマ(openings 無し)の WallAttr が読み込めること(serde 後方互換)。
+/// 省略可能なフィールド(openings・column_face_slit)を欠く WallAttr が読み込めること。
 #[test]
-fn test_wall_attr_serde_backward_compat() {
-    let json = r#"{"elem":3,"opening_area":1200.0,"three_side_slit":true}"#;
+fn test_wall_attr_serde_optional_fields_default() {
+    let json = r#"{"elem":3,"opening_area":1200.0}"#;
     let attr: WallAttr = serde_json::from_str(json).unwrap();
     assert_eq!(attr.elem, ElemId(3));
     assert!(attr.openings.is_empty());
     assert!((attr.total_opening_area() - 1200.0).abs() < 1e-9);
-    assert!(attr.three_side_slit);
+    assert_eq!(attr.column_face_slit, [false, false]);
+}
+
+/// 柱際スリットは左右独立に読み書きできる。
+#[test]
+fn test_wall_attr_column_face_slit_roundtrip() {
+    let json = r#"{"elem":3,"column_face_slit":[true,false]}"#;
+    let attr: WallAttr = serde_json::from_str(json).unwrap();
+    assert_eq!(attr.column_face_slit, [true, false]);
 }
 
 #[test]
@@ -1332,7 +1340,7 @@ fn test_validate_dangling_wall_plate_boundary() {
             opening_area: 0.0,
             opening_weight: 0.0,
             openings: vec![],
-            three_side_slit: false,
+            column_face_slit: [false, false],
         }],
         ..Default::default()
     };
@@ -1365,7 +1373,7 @@ fn test_validate_duplicate_enclosed_wall_plate_boundary() {
         opening_area: 0.0,
         opening_weight: 0.0,
         openings: vec![],
-        three_side_slit: false,
+        column_face_slit: [false, false],
     };
     model.wall_plates.push(mk(0, boundary.clone()));
     assert!(model.validate().is_ok());
@@ -1406,7 +1414,7 @@ fn test_validate_checks_wall_plate_anchor_span_bounds() {
         opening_area: 0.0,
         opening_weight: 0.0,
         openings: vec![],
-        three_side_slit: false,
+        column_face_slit: [false, false],
     };
     model.wall_plates = vec![mk([0.0, 1.0])];
     assert!(model.validate().is_ok(), "全長の取り付きは通る");
@@ -1442,7 +1450,7 @@ fn test_validate_self_standing_wall_checks_only_node_refs() {
         opening_area: 0.0,
         opening_weight: 0.0,
         openings: vec![],
-        three_side_slit: false,
+        column_face_slit: [false, false],
     };
     // 床領域が 1 つも無くても、節点が実在すれば `validate` は通る
     // （荷重を流せる床領域に載っているかは幾何の問題で、解析前チェックが見る）。
@@ -1508,7 +1516,7 @@ fn test_validate_wall_plate_shared_by_two_wall_regions() {
         opening_area: 0.0,
         opening_weight: 0.0,
         openings: vec![],
-        three_side_slit: false,
+        column_face_slit: [false, false],
     }];
     model.wall_regions = vec![
         WallRegion {

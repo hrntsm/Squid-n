@@ -117,8 +117,9 @@ pub(crate) enum SelfWeightItem {
 ///   `load_cfg.finish_area_weight`（仕上げ面重量 w_f、周長 φ から自動換算）が
 ///   あれば自重算定長を掛けて加算する。
 /// - 壁・シェル（`ElementKind::Wall`/`Shell`, 節点数3以上）: ρ·t·(A−開口面積)·g＋開口重量
-///   （§壁自重）を全頂点に等分配。三方スリット壁は最上位標高の頂点へ全量集中
-///   （壁に三方スリットが指定されている場合、壁荷重は全て上部の大梁に伝達する扱い）。
+///   （§壁自重）を全頂点に等分配。要素になる壁版は上下の梁と一体なので、行き先を
+///   上下どちらかへ寄せる扱いはしない（上下いずれかの梁との縁切りは壁版の形が表し、
+///   取り付く壁版として `crate::wall_attached` が受け持つ）。
 ///   §1.2: 壁の重量を階高の中央で上下階の節点に分配する扱いに対応
 ///   （矩形壁なら上下2節点ずつに1/4ずつ配分される）。
 ///   §壁自重: 4 節点の耐震壁は「周辺の柱梁の内法寸法」で面積を評価する
@@ -135,7 +136,7 @@ pub(crate) enum SelfWeightItem {
 /// （呼び出し元に展開を要求しない。忘れると壁の自重が静かに消えるため）。
 /// 返す [`SelfWeightItem::Line`] の `elem_idx` は柱・梁・ブレースのみを指し、
 /// 生成要素は展開モデルの末尾へ追加されるだけなので、`model.elements` に対する
-/// 添字としてもそのまま有効。壁の開口・三方スリットは、壁展開モデルに合成される
+/// 添字としてもそのまま有効。壁の開口は、壁展開モデルに合成される
 /// `wall_attrs`（[`crate::wall_expand::expand_wall_elements`] が壁版から複製する。
 /// モジュール doc 参照）から今までどおり読む（**この関数のロジック自体は
 /// 型移行の前後で無改修**。dig Q5=A: 自重算定の計算根拠を変えないことで、
@@ -294,32 +295,21 @@ pub(crate) fn enumerate_self_weight(model: &Model, load_cfg: &LoadCfg) -> Vec<Se
                 let area =
                     polygon_area_3d(&pts) * wall_clear_area_factor(model, elem, &pts, &beam_pairs);
 
-                // §壁自重: 開口控除・開口重量。三方スリットは全量を最上位標高の頂点へ。
+                // §壁自重: 開口控除・開口重量。
                 let attr = model.wall_attrs.iter().find(|a| a.elem == elem.id);
                 let opening_area = attr.map(|a| a.total_opening_area()).unwrap_or(0.0);
                 let opening_weight = attr.map(|a| a.opening_weight).unwrap_or(0.0);
-                let three_side_slit = attr.map(|a| a.three_side_slit).unwrap_or(false);
                 let net_area = (area - opening_area).max(0.0);
                 let w = (mat.density * t * net_area * GRAVITY_MM_S2 + opening_weight).max(0.0);
 
-                let shares = if three_side_slit {
-                    // 壁荷重は全て上部の節点（頂点のうち標高最大のもの。同率上位は等分）へ。
-                    let max_z = pts.iter().map(|p| p[2]).fold(f64::MIN, f64::max);
-                    let top_indices: Vec<usize> = pts
-                        .iter()
-                        .enumerate()
-                        .filter(|(_, p)| (p[2] - max_z).abs() < LEVEL_TOL_MM)
-                        .map(|(i, _)| i)
-                        .collect();
-                    let share = w / top_indices.len() as f64;
-                    top_indices
-                        .into_iter()
-                        .map(|i| (elem.nodes[i].index(), share))
-                        .collect()
-                } else {
-                    let share = w / pts.len() as f64;
-                    elem.nodes.iter().map(|n| (n.index(), share)).collect()
-                };
+                // 自重は四隅へ等分する。上下いずれかの梁との縁切りは壁版の形が表し
+                // （上端が切れた壁は下の梁に載る腰壁、下端が切れた壁は上の梁から垂れる
+                // 垂壁で、いずれも取り付く壁版として `wall_attached` が受け持つ）、
+                // 要素になる壁版は上下の梁と一体だからである。柱際スリットは自重の
+                // 行き先を変えない（上下の梁との縁は切れていない）。
+                let share = w / pts.len() as f64;
+                let shares: Vec<(usize, f64)> =
+                    elem.nodes.iter().map(|n| (n.index(), share)).collect();
                 items.push(SelfWeightItem::Panel { shares });
             }
             _ => {}

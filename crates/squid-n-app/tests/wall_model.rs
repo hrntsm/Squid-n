@@ -352,7 +352,7 @@ fn wall_bay_model() -> Model {
             height: 1200.0,
             offset: Some([1550.0, 0.0]),
         }],
-        three_side_slit: false,
+        column_face_slit: [false, false],
     });
 
     // フレーム外雑壁 1 本（Y=3000 面の梁 6-7 上端に沿うパラペット想定。

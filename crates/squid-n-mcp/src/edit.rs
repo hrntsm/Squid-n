@@ -90,10 +90,7 @@ pub fn parse_edit_command(value: &serde_json::Value) -> Result<Box<dyn EditComma
                 opening_weight: parse_f64(value.get("opening_weight"), "opening_weight")?
                     .unwrap_or(0.0),
                 openings,
-                three_side_slit: value
-                    .get("three_side_slit")
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(false),
+                column_face_slit: parse_bool_pair(value.get("column_face_slit"))?,
             }))
         }
         "SetAttachedWallPlateExtent" => Ok(Box::new(SetAttachedWallPlateExtent {
@@ -415,6 +412,33 @@ fn parse_f64(value: Option<&serde_json::Value>, field: &str) -> Result<Option<f6
             .ok_or_else(|| format!("{field} は数値です: {v}"))
             .map(Some),
     }
+}
+
+/// 柱際スリット `column_face_slit` を読む。省略・null は「両側とも切れていない」。
+///
+/// 添字は `WallPlate::column_face_nodes` が返す 2 節点に対応する。
+fn parse_bool_pair(value: Option<&serde_json::Value>) -> Result<[bool; 2], String> {
+    const FIELD: &str = "column_face_slit";
+    let Some(v) = value else {
+        return Ok([false, false]);
+    };
+    if v.is_null() {
+        return Ok([false, false]);
+    }
+    let arr = v
+        .as_array()
+        .ok_or_else(|| format!("{FIELD} は2要素の真偽値配列です"))?;
+    if arr.len() != 2 {
+        return Err(format!("{FIELD} は2要素の真偽値配列です"));
+    }
+    Ok([
+        arr[0]
+            .as_bool()
+            .ok_or_else(|| format!("{FIELD}[0] は真偽値です"))?,
+        arr[1]
+            .as_bool()
+            .ok_or_else(|| format!("{FIELD}[1] は真偽値です"))?,
+    ])
 }
 
 fn parse_f64_pair(value: Option<&serde_json::Value>, field: &str) -> Result<[f64; 2], String> {

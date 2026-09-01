@@ -74,11 +74,18 @@ pub struct WallPlate {
     /// 優先する（`opening_area` へのフォールバック規約は `WallAttr` と同じ）。
     #[serde(default)]
     pub openings: Vec<WallOpening>,
-    /// 三方スリット。true の場合、自重は上下分配せず全て上部の節点へ伝達する。
-    /// 要素生成される構造壁のときのみ意味を持つ（[`super::WallRegion`] が
-    /// 「囲まれた領域」で、かつ `section` 割当ありの場合）。
+    /// 柱際スリット（左右の鉛直辺）。true の側は柱との縁が切れており、その柱へ
+    /// 袖壁として剛性算入しない。上下の縁切りは壁版の形が表す（上端が切れた壁は
+    /// 下の梁に載る腰壁、下端が切れた壁は上の梁から垂れる垂壁で、いずれも
+    /// [`WallPlateShape::Attached`]）ため、独立した入力は柱際だけである。
+    ///
+    /// 添字は [`WallPlate::column_face_nodes`] が返す 2 節点に対応する。
+    /// 柱と接する鉛直辺を持たない取り付く壁版では意味を持たない。
+    ///
+    /// いずれかが true の壁は耐震壁として成立しない（面内せん断を柱へ伝えられない
+    /// ため。`squid_n_element::misc_wall::wall_is_seismic`）。
     #[serde(default)]
-    pub three_side_slit: bool,
+    pub column_face_slit: [bool; 2],
 }
 
 impl WallPlate {
@@ -104,6 +111,39 @@ impl WallPlate {
     /// 判定を共有する（重複実装の統合）。
     pub fn has_quad_boundary(&self) -> bool {
         matches!(&self.shape, WallPlateShape::Enclosed { boundary } if boundary.len() == 4)
+    }
+
+    /// 柱際スリット [`WallPlate::column_face_slit`] の添字に対応する境界節点。
+    ///
+    /// 柱際の鉛直辺は、境界のうち標高の低い 2 節点（下辺）から立ち上がる。
+    /// そこで下辺の 2 節点を**境界の並び順**で返し、`column_face_slit[0]` を
+    /// 1 つ目、`[1]` を 2 つ目の柱際に対応させる。
+    ///
+    /// **添字の対応規則はここ 1 か所に置く。** 剛性算入
+    /// （`squid_n_element::misc_wall`）が袖壁を辺ごとに評価するとき、および GUI が
+    /// どちらのスリットかを節点番号で示すときに、同じ並びを見る必要があるためである。
+    ///
+    /// 境界が 4 節点でない壁版・取り付く壁版・節点を引けない壁版は `None`。
+    pub fn column_face_nodes(&self, model: &Model) -> Option<[NodeId; 2]> {
+        let boundary = self.boundary_nodes()?;
+        if boundary.len() != 4 {
+            return None;
+        }
+        let z: Vec<f64> = boundary
+            .iter()
+            .map(|n| model.nodes.get(n.index()).map(|nd| nd.coord[2]))
+            .collect::<Option<_>>()?;
+        let mut order: Vec<usize> = (0..4).collect();
+        order.sort_by(|&a, &b| z[a].total_cmp(&z[b]));
+        // 低い方の 2 点を取り、境界の並び順へ戻す。
+        let mut bottom = [order[0], order[1]];
+        bottom.sort_unstable();
+        Some([boundary[bottom[0]], boundary[bottom[1]]])
+    }
+
+    /// 柱際スリットが左右いずれかにあるか。
+    pub fn has_column_face_slit(&self) -> bool {
+        self.column_face_slit.iter().any(|&s| s)
     }
 
     /// 境界の節点列。**柱・梁が囲む壁版のみ**（取り付く壁版は自由端に節点を
@@ -525,7 +565,7 @@ mod tests {
             opening_area: 0.0,
             opening_weight: 0.0,
             openings: Vec::new(),
-            three_side_slit: false,
+            column_face_slit: [false, false],
         };
         // 全節点を +100 mm ずらした「変形後」の座標を渡す。
         let moved: Vec<[f64; 3]> = m
@@ -554,7 +594,7 @@ mod tests {
             opening_area: 0.0,
             opening_weight: 0.0,
             openings: Vec::new(),
-            three_side_slit: false,
+            column_face_slit: [false, false],
         };
         let coords = attached
             .boundary_coords_with(|n| moved.get(n.index()).copied())
@@ -583,7 +623,7 @@ mod tests {
             opening_area: 0.0,
             opening_weight: 0.0,
             openings: Vec::new(),
-            three_side_slit: false,
+            column_face_slit: [false, false],
         });
         m.wall_regions.push(crate::model::WallRegion {
             id: crate::ids::WallRegionId(0),
@@ -618,7 +658,7 @@ mod tests {
             opening_area: 0.0,
             opening_weight: 0.0,
             openings: Vec::new(),
-            three_side_slit: false,
+            column_face_slit: [false, false],
         };
         let coords = p.boundary_coords(&m).expect("境界座標");
         assert_eq!(coords.len(), 4);
@@ -639,7 +679,7 @@ mod tests {
             opening_area: 0.0,
             opening_weight: 0.0,
             openings: Vec::new(),
-            three_side_slit: false,
+            column_face_slit: [false, false],
         };
         assert!(quad.has_quad_boundary());
 
@@ -689,7 +729,7 @@ mod tests {
             opening_area: 0.0,
             opening_weight: 0.0,
             openings: Vec::new(),
-            three_side_slit: false,
+            column_face_slit: [false, false],
         };
         let coords = p.boundary_coords(&m).expect("境界座標");
         // 4点とも Y=0（左向き法線方向へは動かない）、上 2 点は Z=3900（+900 立ち上げ）。
@@ -720,7 +760,7 @@ mod tests {
             opening_area: 0.0,
             opening_weight: 0.0,
             openings: Vec::new(),
-            three_side_slit: false,
+            column_face_slit: [false, false],
         };
         let expected = 4000.0 * 2000.0 * 0.5;
         assert!(
@@ -747,7 +787,7 @@ mod tests {
             opening_area: 0.0,
             opening_weight: 0.0,
             openings: Vec::new(),
-            three_side_slit: false,
+            column_face_slit: [false, false],
         };
         assert!((p.area(&m) - 2000.0 * 2500.0).abs() < 1e-6);
     }
@@ -766,7 +806,7 @@ mod tests {
             opening_area: 0.0,
             opening_weight: 0.0,
             openings: Vec::new(),
-            three_side_slit: false,
+            column_face_slit: [false, false],
         };
         assert_eq!(p.boundary_coords(&m), None);
         assert_eq!(p.area(&m), 0.0);
@@ -789,7 +829,7 @@ mod tests {
             opening_area: 0.0,
             opening_weight: 0.0,
             openings: Vec::new(),
-            three_side_slit: false,
+            column_face_slit: [false, false],
         };
         assert_eq!(m.wall_plate_self_weight(&p, &m), None);
     }
@@ -848,7 +888,7 @@ mod tests {
                 height: 1200.0,
                 offset: Some([1550.0, 0.0]),
             }],
-            three_side_slit: false,
+            column_face_slit: [false, false],
         };
         let gross_area = 4000.0 * 3000.0;
         let opening_area = 900.0 * 1200.0;
@@ -916,7 +956,7 @@ mod tests {
             opening_area: 999.0,
             opening_weight: 0.0,
             openings: Vec::new(),
-            three_side_slit: false,
+            column_face_slit: [false, false],
         };
         assert!((p.total_opening_area() - 999.0).abs() < 1e-9);
     }
@@ -934,7 +974,7 @@ mod tests {
             opening_area: 0.0,
             opening_weight: 1234.0,
             openings: Vec::new(),
-            three_side_slit: false,
+            column_face_slit: [false, false],
         };
         let gross_area = 4000.0 * 3000.0;
         let base = 150.0 * 2.4e-9 * gross_area * crate::units::GRAVITY_MM_S2;
@@ -1001,7 +1041,7 @@ mod tests {
             opening_area: 0.0,
             opening_weight: 0.0,
             openings: vec![],
-            three_side_slit: false,
+            column_face_slit: [false, false],
         }
     }
 
@@ -1155,7 +1195,7 @@ mod tests {
             opening_area: 0.0,
             opening_weight: 0.0,
             openings: vec![],
-            three_side_slit: false,
+            column_face_slit: [false, false],
         };
         assert!(m.self_standing_wall_coverage(&p).is_none());
     }

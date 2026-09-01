@@ -2286,12 +2286,12 @@ fn model_with_enclosed_wall_plate() -> Model {
         opening_area: 0.0,
         opening_weight: 0.0,
         openings: vec![],
-        three_side_slit: false,
+        column_face_slit: [false, false],
     });
     model
 }
 
-/// 壁版の属性編集（開口・三方スリット）が往復すること。
+/// 壁版の属性編集（開口・柱際スリット）が往復すること。
 #[test]
 fn test_set_wall_plate_attrs_roundtrip() {
     use squid_n_core::model::WallOpening;
@@ -2310,19 +2310,20 @@ fn test_set_wall_plate_attrs_roundtrip() {
                 height: 1800.0,
                 offset: None,
             }],
-            three_side_slit: true,
+            column_face_slit: [true, false],
         }),
     );
     assert_eq!(model.wall_plates[0].opening_area, 200.0);
     assert_eq!(model.wall_plates[0].opening_weight, 80.0);
     assert_eq!(model.wall_plates[0].openings.len(), 1);
-    assert!(model.wall_plates[0].three_side_slit);
+    // 左右を独立に保存する（片側だけのスリットが両側へ広がらない）。
+    assert_eq!(model.wall_plates[0].column_face_slit, [true, false]);
 
     stack.undo(&mut model);
     assert_eq!(model.wall_plates[0].opening_area, 0.0);
     assert_eq!(model.wall_plates[0].opening_weight, 0.0);
     assert!(model.wall_plates[0].openings.is_empty());
-    assert!(!model.wall_plates[0].three_side_slit);
+    assert_eq!(model.wall_plates[0].column_face_slit, [false, false]);
 }
 
 /// 存在しない壁版への属性編集は Noop（undo 履歴に積まれない）。
@@ -2337,7 +2338,7 @@ fn test_set_wall_plate_attrs_missing_id_is_noop() {
             opening_area: 1.0,
             opening_weight: 2.0,
             openings: vec![],
-            three_side_slit: true,
+            column_face_slit: [true, true],
         }),
     );
     assert!(!stack.can_undo());
@@ -5911,7 +5912,7 @@ fn test_set_attached_wall_plate_extent_and_anchor_noop() {
         opening_area: 0.0,
         opening_weight: 0.0,
         openings: vec![],
-        three_side_slit: false,
+        column_face_slit: [false, false],
     });
     let mut undo = UndoStack::default();
     assert!(
@@ -6067,7 +6068,7 @@ fn test_delete_wall_plate_cascades_region_ids_and_undoes() {
         opening_area: 0.0,
         opening_weight: 0.0,
         openings: vec![],
-        three_side_slit: false,
+        column_face_slit: [false, false],
     });
     let mut region = WallRegion::new(
         WallRegionId(0),

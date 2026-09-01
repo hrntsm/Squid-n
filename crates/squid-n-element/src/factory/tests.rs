@@ -514,7 +514,7 @@ fn test_build_behavior_wall_opening_reduces_shear_stiffness() {
         elem: ElemId(0),
         opening_area: 1.2e6,
         opening_weight: 0.0,
-        three_side_slit: false,
+        column_face_slit: [false, false],
         openings: vec![],
     });
     let b_open = build_behavior(&wall, &model);
@@ -527,7 +527,7 @@ fn test_build_behavior_wall_opening_reduces_shear_stiffness() {
         elem: ElemId(0),
         opening_area: 1.0, // 無視される(個別開口が優先)
         opening_weight: 0.0,
-        three_side_slit: false,
+        column_face_slit: [false, false],
         openings: vec![
             squid_n_core::model::WallOpening {
                 width: 1000.0,

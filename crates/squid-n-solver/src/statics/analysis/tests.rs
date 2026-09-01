@@ -1560,7 +1560,7 @@ fn test_model_issues_warns_wall_plates_not_expanded() {
         opening_area: 0.0,
         opening_weight: 0.0,
         openings: Vec::new(),
-        three_side_slit: false,
+        column_face_slit: [false, false],
     });
     model.wall_plates.push(WallPlate {
         id: WallPlateId(1),
@@ -1571,7 +1571,7 @@ fn test_model_issues_warns_wall_plates_not_expanded() {
         opening_area: 0.0,
         opening_weight: 0.0,
         openings: Vec::new(),
-        three_side_slit: false,
+        column_face_slit: [false, false],
     });
     model.wall_plates.push(WallPlate {
         id: WallPlateId(2),
@@ -1587,7 +1587,7 @@ fn test_model_issues_warns_wall_plates_not_expanded() {
         opening_area: 0.0,
         opening_weight: 0.0,
         openings: Vec::new(),
-        three_side_slit: false,
+        column_face_slit: [false, false],
     });
     model.wall_plates.push(WallPlate {
         id: WallPlateId(3),
@@ -1603,7 +1603,7 @@ fn test_model_issues_warns_wall_plates_not_expanded() {
         opening_area: 0.0,
         opening_weight: 0.0,
         openings: Vec::new(),
-        three_side_slit: false,
+        column_face_slit: [false, false],
     });
 
     let issues = model_issues(&model);
@@ -1672,7 +1672,7 @@ fn self_standing_wall_off_the_floor_is_an_error() {
         opening_area: 0.0,
         opening_weight: 0.0,
         openings: Vec::new(),
-        three_side_slit: false,
+        column_face_slit: [false, false],
     });
 
     let issues = model_issues(&model);

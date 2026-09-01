@@ -402,7 +402,7 @@ mod tests {
             opening_area: 0.0,
             opening_weight: 0.0,
             openings: Vec::new(),
-            three_side_slit: false,
+            column_face_slit: [false, false],
         }
     }
 
@@ -654,7 +654,7 @@ mod tests {
             opening_area: 0.0,
             opening_weight: 0.0,
             openings: Vec::new(),
-            three_side_slit: false,
+            column_face_slit: [false, false],
         }
     }
 

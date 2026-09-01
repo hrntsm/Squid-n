@@ -119,7 +119,7 @@ pub fn query_model(model: &Model, kind: &str, filter: Option<&str>) -> Vec<serde
                     "section": p.section.map(|s| s.0),
                     "opening_area": p.opening_area,
                     "opening_weight": p.opening_weight,
-                    "three_side_slit": p.three_side_slit,
+                    "column_face_slit": p.column_face_slit,
                     "openings": p.openings,
                 })
             })

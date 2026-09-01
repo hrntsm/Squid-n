@@ -76,7 +76,7 @@ pub(super) fn check_walls(
             - coords.iter().map(|c| c[2]).fold(f64::MAX, f64::min);
 
         // 壁自重属性（開口面積合計・個別開口寸法）。未登録の壁は開口ゼロ
-        // （無開口の耐震壁）として扱う。三方スリットの有無は耐震壁判定でのみ効き、
+        // （無開口の耐震壁）として扱う。柱際スリットの有無は耐震壁判定でのみ効き、
         // その判定は `wall_is_seismic` へ委ねている。
         let attr = model.wall_attrs.iter().find(|w| w.elem == elem.id);
 
