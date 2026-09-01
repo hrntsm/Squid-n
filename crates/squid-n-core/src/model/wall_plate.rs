@@ -265,7 +265,7 @@ impl Model {
     /// ＋ 開口部（サッシ等）の重量。`WallAttr` の自重算定式と同じ）。
     ///
     /// 断面または主材料が未割当のときは `None`（[`Model::slab_self_weight_intensity`]
-    /// と同じ規約。既定厚で補わない）。開口面積が正味面積を超える場合は 0 に丸める。
+    /// と同じ規約。既定厚で補わない）。開口面積が壁の面積を超える場合は正味面積を 0 とする。
     pub fn wall_plate_self_weight(&self, plate: &WallPlate, model_for_area: &Model) -> Option<f64> {
         let t = self.wall_plate_thickness(plate)?;
         let mat = self.wall_plate_material(plate)?;
