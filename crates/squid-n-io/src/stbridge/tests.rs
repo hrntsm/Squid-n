@@ -2285,12 +2285,13 @@ fn test_non_quad_wall_plate_roundtrip_export_import() {
         Some(5),
         "5 節点が往復する"
     );
+    // 解析要素にならない壁版は正常な状態なので、取り込みでは知らせない。
     assert!(
-        report
+        !report
             .warnings
             .iter()
             .any(|w| w.contains("4 節点でない壁版")),
-        "取り込み警告: {:?}",
+        "解析要素にならないことを知らせないこと: {:?}",
         report.warnings
     );
 }
