@@ -220,6 +220,17 @@ impl App {
     /// 固定＋床用積載）、荷重同期は固定荷重ケースと積載荷重ケースへ分けて解く。
     ///
     /// 断面未割当・鋼以外の材料・分配が足りないものは表に「未」として残す。
+    ///
+    /// # 検定できない二次部材（表には「未」の行として残す）
+    ///
+    /// - **間柱**。壁版から受ける荷重は材軸方向の軸力であり、地震時には壁の面外
+    ///   地震力による弱軸曲げも受ける。軸力・面外曲げのいずれも本検定は扱わない。
+    /// - **剛床でない床の小梁**。分配 Span 検定は曲げ・せん断・たわみだけを見て
+    ///   軸力を見ない。これは「その小梁が載る床面が 1 枚の剛体で、面内力を剛床が
+    ///   処理している」ことを前提にしている。剛床でない床の小梁は面内力を負担する
+    ///   ため前提が成り立たない（`Model::floor_region_on_single_diaphragm`）。
+    ///
+    /// 表から消すと検定されていないことに気づけないため、行は残す（§5.40 の前例）。
     fn design_secondary_joist_checks(
         &self,
         joist_checks: &mut Vec<crate::app::JoistCheck>,
@@ -231,6 +242,30 @@ impl App {
 
         let w_of = |s: &squid_n_core::model::Slab| self.model.slab_intensity(s, LoadPurpose::Floor);
         let transfer = squid_n_load::cascade::solve(&self.model, w_of, true);
+
+        // 間柱は検定できない（軸力・面外曲げが未対応）。表には「未」の行として残す。
+        for sm in self.model.posts() {
+            let (Some(na), Some(nb)) = (
+                self.model.nodes.get(sm.nodes[0].index()),
+                self.model.nodes.get(sm.nodes[1].index()),
+            ) else {
+                continue;
+            };
+            let d = [
+                nb.coord[0] - na.coord[0],
+                nb.coord[1] - na.coord[1],
+                nb.coord[2] - na.coord[2],
+            ];
+            let span = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+            if span <= 1e-9 {
+                continue;
+            }
+            joist_checks.push((
+                None,
+                crate::app::JoistCheckTarget::SecondaryPost { nodes: sm.nodes },
+                fd::joist_unchecked(span),
+            ));
+        }
 
         for sm in self.model.joists() {
             if sm.kind != SecondaryMemberKind::Joist {
@@ -262,17 +297,15 @@ impl App {
 
             let target = crate::app::JoistCheckTarget::SecondaryJoist { nodes: sm.nodes };
             let entry = transfer.members.get(&key);
-            let region_slab = self
-                .model
-                .floor_regions
-                .iter()
-                .find(|r| {
-                    r.secondary_joists
-                        .iter()
-                        .any(|j| span_node_key(j.nodes[0], j.nodes[1]) == key)
-                })
-                .and_then(|r| r.slab_ids.first().copied());
+            let region = self.model.floor_region_of_joist(sm.nodes);
+            let region_slab = region.and_then(|r| r.slab_ids.first().copied());
             let slab_id = region_slab.or_else(|| entry.and_then(|e| e.rep_slab_id));
+
+            // 剛床でない床の小梁は面内力（軸力）を負担するため検定できない。
+            if !region.is_some_and(|r| self.model.floor_region_on_single_diaphragm(r)) {
+                joist_checks.push((slab_id, target, fd::joist_unchecked(span)));
+                continue;
+            }
 
             let Some(sid) = sm.section else {
                 joist_checks.push((slab_id, target, fd::joist_unchecked(span)));

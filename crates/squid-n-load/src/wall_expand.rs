@@ -58,24 +58,33 @@
 //! `debug_assert!` で「入力モデルに壁要素が最初から含まれていないこと」を
 //! 検査する（release ビルドではコストを持たない）。
 //!
-//! # 生成対象・非対象（Q6=C）
+//! # 生成対象・非対象
 //!
-//! - `WallPlateShape::Enclosed` かつ `section` 割当ありかつ境界がちょうど 4 節点
-//!   の壁版だけを `ElementKind::Wall` として生成する。生成後、その要素が実際に
-//!   耐震壁として成立するか（面内せん断を負担する構造壁か、フレーム内雑壁として
-//!   剛性のみ寄与するか）は、既存の `wall_is_seismic`/`wall_is_framed`
-//!   （`squid_n_element::wall::misc_wall`）が要素の種別を問わず判定するため、
-//!   生成側では区別しない。
-//! - 境界が 4 節点でない壁版（T 字取り付き等）は生成しない。`wall_element_geometry`
-//!   （`squid_n_element`）が `data.nodes.iter().take(4)` と先頭 4 節点しか
-//!   使わない実装であるため、5 節点以上の境界をそのまま 1 要素にすると、
-//!   落ちた頂点の分だけ壁の幾何が壊れる（実測: 落ちる頂点は必ず境界の実頂点で、
-//!   中間節点ではない）。一般化（辺ごとに対応する主架構を探して按分する等）は
-//!   このタスクのスコープ外（残課題）。
-//! - `section` 未割当の壁版は生成しない（自重すら求まらないため。
-//!   `WallPlate` モジュール doc 参照）。
-//! - `WallPlateShape::Attached`（パラペット・腰壁・垂れ壁・自立壁）は生成しない。
-//!   耐震壁要素（4 節点・上下剛梁）は柱・梁に囲まれた壁版を前提とするため。
+//! **壁領域全体を覆う 1 枚の壁版だけが壁エレメントになる。** 具体的には、
+//! `WallPlateShape::Enclosed` の壁版の境界節点集合が、所属する壁領域の境界節点
+//! 集合と一致し、その節点数がちょうど 4 のときだけ `ElementKind::Wall` を生成する
+//! （`section` 割当も要る）。生成後、その要素が実際に耐震壁として成立するか
+//! （面内せん断を負担する構造壁か、フレーム内雑壁として剛性のみ寄与するか）は、
+//! 既存の `wall_is_seismic`/`wall_is_framed`（`squid_n_element::wall::misc_wall`）が
+//! 判定するため、生成側では区別しない。
+//!
+//! この条件は壁エレメントの定式化そのものから来ている。壁エレメントは下辺 2 節点・
+//! 上辺 2 節点を両端ピンの剛梁で結ぶ 4 節点 24 自由度モデルであり、
+//!
+//! - 壁領域の境界が 5 節点以上（上下の大梁が中間節点で分割されている等）の場合、
+//!   剛梁は四隅しか結ばないため、中間節点が壁にめり込む向きへ自由に動ける。
+//!   壁があるはずの位置で大梁が曲がれるモデルになり、前提が崩れる。
+//! - 壁領域が間柱で複数の壁版に分割されている場合、壁版ごとに要素を作ると
+//!   1 本の長い壁柱が複数の細い壁柱に割れ、面内剛性が実態と食い違う。
+//!
+//! 要素にならなかった壁版（間柱で分割された壁版・腰壁・垂れ壁・パラペット・
+//! 5 節点以上の壁領域内の壁版）は**荷重だけを持つ壁版**であり、これは正常な状態
+//! である。自重は `crate::wall_plate_load` が辺へ分配し、剛性は
+//! `squid_n_element` がフレーム内雑壁（袖壁・腰壁・垂壁）として周辺の柱梁の
+//! 断面性能へ算入する。したがって診断で警告を出すことはしない。
+//!
+//! `section` 未割当の壁版だけは生成対象から外れる（自重すら求まらないため。
+//! `WallPlate` モジュール doc 参照）。これは解析前チェックが警告する。
 
 use squid_n_core::ids::{ElemId, WallPlateId};
 use squid_n_core::model::{
@@ -114,8 +123,10 @@ impl WallExpansionIndex {
 pub struct WallExpansionReport {
     /// 生成した壁要素数。
     pub generated: usize,
-    /// 境界が 4 節点でないため生成しなかった壁版数（T 字取り付き等。残課題）。
-    pub skipped_non_quad: usize,
+    /// 壁領域全体を覆っていないため生成しなかった壁版数（間柱で分割された壁版・
+    /// 腰壁・垂れ壁、および壁領域の境界が 4 節点でない場合）。**異常ではない。**
+    /// 荷重だけを持つ壁版として自重の分配・雑壁の剛性算入の対象になる。
+    pub skipped_not_covering: usize,
     /// 断面未割当のため生成しなかった壁版数。
     pub skipped_no_section: usize,
 }
@@ -184,12 +195,12 @@ pub fn expand_wall_elements_owned(
                 // 取り付く壁版（パラペット等）は耐震壁要素の対象外。
                 continue;
             };
-            if plate.section.is_none() {
-                report.skipped_no_section += 1;
+            if !expanded.wall_plate_covers_region(plate) {
+                report.skipped_not_covering += 1;
                 continue;
             }
-            if !plate.has_quad_boundary() {
-                report.skipped_non_quad += 1;
+            if plate.section.is_none() {
+                report.skipped_no_section += 1;
                 continue;
             }
             let id = ElemId(next_id);
@@ -318,7 +329,7 @@ mod tests {
         let (expanded, index, report) = expand_wall_elements(&m);
 
         assert_eq!(report.generated, 1);
-        assert_eq!(report.skipped_non_quad, 0);
+        assert_eq!(report.skipped_not_covering, 0);
         assert_eq!(report.skipped_no_section, 0);
         assert_eq!(expanded.elements.len(), 1);
         let elem = &expanded.elements[0];
@@ -400,6 +411,9 @@ mod tests {
         assert!(index.is_empty());
     }
 
+    /// 壁領域の境界が 5 節点（大梁が中間節点で分割された等）なら、壁版が同じ
+    /// 輪郭でも壁エレメントは作れない。剛梁が四隅しか結ばず、中間節点が壁に
+    /// めり込む向きへ動けてしまうため、定式化の前提が崩れる。
     #[test]
     fn test_skips_non_quad_boundary() {
         let mut m = base_model();
@@ -419,7 +433,7 @@ mod tests {
 
         let (expanded, _index, report) = expand_wall_elements(&m);
         assert_eq!(report.generated, 0);
-        assert_eq!(report.skipped_non_quad, 1);
+        assert_eq!(report.skipped_not_covering, 1);
         assert!(expanded.elements.is_empty());
     }
 

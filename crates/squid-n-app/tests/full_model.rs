@@ -1152,7 +1152,9 @@ fn joist_design_checks_cover_imported_secondary_members() {
 
     let mut checked = 0;
     for (slab_id, target, jr) in &results.joist_checks {
-        let squid_n_app::app::JoistCheckTarget::SecondaryJoist { nodes } = target;
+        let squid_n_app::app::JoistCheckTarget::SecondaryJoist { nodes } = target else {
+            continue; // 間柱は検定対象外（軸力・面外曲げが未対応）。
+        };
         checked += 1;
         if jr.unchecked {
             continue;

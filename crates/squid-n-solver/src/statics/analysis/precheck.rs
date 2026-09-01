@@ -370,30 +370,28 @@ pub fn model_issues(model: &Model) -> Vec<ModelIssue> {
         }
     }
 
-    // 床領域に属さない小梁・大梁の床領域に載らない浮き床板。
+    // 床領域・壁領域に属さない二次部材、および大梁の床領域に載らない浮き床板。
     //
     // 作り直し前の現状の床領域で判定する（診断はモデルを書き換えない）。
-    // 解析は成立するため警告に留め、割り当てを確かめてもらう。
+    //
+    // **どの領域にも属さない二次部材の存在は許さない（エラー）。** 所属が決まらない
+    // 二次部材は、どの床面・どの構面に載っているかが確定していない。荷重の分配も
+    // 断面検定も「所属する領域」を土台にしているため、そのままでは荷重の行き先も
+    // 検定の可否も決められない。モデル化を直してもらう必要がある。
     {
         let n = squid_n_core::region_rebuild::unassigned_joist_count(model);
         if n != 0 {
-            issues.push(
-                ModelIssue::model(format!(
-                    "どの床領域にも所属しない小梁が {n} 本あります。\
-                     小梁の配置または床領域の境界を確認してください。"
-                ))
-                .warn(),
-            );
+            issues.push(ModelIssue::model(format!(
+                "どの床領域にも所属しない小梁が {n} 本あります。\
+                 小梁の配置または床領域の境界を確認してください。"
+            )));
         }
         let n = squid_n_core::wall_region_rebuild::unassigned_post_count(model);
         if n != 0 {
-            issues.push(
-                ModelIssue::model(format!(
-                    "どの壁領域にも所属しない間柱が {n} 本あります。\
-                     間柱の配置または壁領域の境界を確認してください。"
-                ))
-                .warn(),
-            );
+            issues.push(ModelIssue::model(format!(
+                "どの壁領域にも所属しない間柱が {n} 本あります。\
+                 間柱の配置または壁領域の境界を確認してください。"
+            )));
         }
         let gaps = squid_n_load::floor::secondary_joist_distribution_gaps(model);
         if gaps.missing_expected_slabs != 0 {
@@ -463,51 +461,28 @@ pub fn model_issues(model: &Model) -> Vec<ModelIssue> {
         }
     }
 
-    // 壁版のうち解析要素にしないもの、および自重が算定できないもの。
-    // 解析は柱梁だけで成立するため止めないが、耐震壁が消えたこと・取り付く壁版の
-    // 自重が落ちることに気づけるよう警告する（D5: 4 節点・断面ありの Enclosed
-    // だけが壁要素になる。取り付く壁版の自重は断面から求める）。
+    // 自重が算定できない壁版（断面未割当）。
+    //
+    // **解析要素にならないこと自体は警告しない。** 壁エレメントになるのは壁領域
+    // 全体を覆う 4 節点の壁版だけで（`Model::wall_plate_covers_region`）、それ以外
+    // （間柱で分割された壁版・腰壁・垂れ壁・取り付く壁版）は荷重だけを持つ壁版と
+    // して正常に扱われる。自重は辺へ分配し、剛性はフレーム内雑壁として周辺の柱梁の
+    // 断面性能へ算入する。腰壁・垂れ壁を入力した利用者はそれが壁エレメントでない
+    // ことを承知しているので、知らせる意味がない。
+    //
+    // 断面未割当だけは別で、自重すら求まらないため警告する。
     {
-        use squid_n_core::model::WallPlateShape;
-        let mut skipped_non_quad = 0usize;
-        let mut skipped_no_section = 0usize;
-        for plate in &model.wall_plates {
-            if plate.section.is_none() {
-                skipped_no_section += 1;
-                continue;
-            }
-            // 4 節点判定は囲まれた壁版だけ。取り付く壁版は境界を持たず
-            // `has_quad_boundary` が常に false なので、ここへ混ぜない。
-            if matches!(plate.shape, WallPlateShape::Enclosed { .. }) && !plate.has_quad_boundary()
-            {
-                skipped_non_quad += 1;
-            }
-        }
-        if skipped_non_quad != 0 {
-            issues.push(
-                ModelIssue::model(format!(
-                    "境界が 4 節点でない壁版が {skipped_non_quad} 枚あります。\
-                     解析要素としては生成しません（T 字取り付き等）。"
-                ))
-                .warn(),
-            );
-        }
+        let skipped_no_section = model
+            .wall_plates
+            .iter()
+            .filter(|p| p.section.is_none())
+            .count();
         if skipped_no_section != 0 {
             issues.push(
                 ModelIssue::model(format!(
                     "断面未割当の壁版が {skipped_no_section} 枚あります。\
                      囲まれた壁版は解析要素として生成せず、取り付く壁版は\
                      自重を分配できません。"
-                ))
-                .warn(),
-            );
-        }
-        let attached = model.wall_plates.iter().filter(|p| p.is_attached()).count();
-        if attached != 0 {
-            issues.push(
-                ModelIssue::model(format!(
-                    "取り付く壁版が {attached} 枚あります。解析要素にはしませんが、\
-                     自重は地震用重量・固定荷重ケース「DL」・数量拾いへ自動で分配します。"
                 ))
                 .warn(),
             );

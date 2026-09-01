@@ -211,6 +211,36 @@ impl Model {
         }
     }
 
+    /// 壁版が**壁領域全体を覆う 4 節点の壁版**か。
+    ///
+    /// 壁エレメント（`squid_n_load::wall_expand`）を生成できるのはこの形の壁版だけ
+    /// である。壁エレメントは下辺 2 節点・上辺 2 節点を両端ピンの剛梁で結ぶ
+    /// 4 節点 24 自由度モデルなので、
+    ///
+    /// - 壁領域の境界が 5 節点以上（上下の大梁が中間節点で分割されている等）なら、
+    ///   剛梁が四隅しか結ばず、中間節点が壁にめり込む向きへ動けてしまう。
+    /// - 壁領域が間柱で複数の壁版へ分割されているなら、壁版ごとに要素を作ると
+    ///   1 本の長い壁柱が複数の細い壁柱に割れる。
+    ///
+    /// いずれも定式化の前提が崩れるため、覆っていない壁版は要素にしない
+    /// （＝荷重だけを持つ壁版になる。異常ではない）。
+    ///
+    /// **判定はここ 1 か所に置く。** 要素生成（`wall_expand`）・自重の分配
+    /// （`squid_n_load::wall_plate_load`）・フレーム内雑壁の剛性算入
+    /// （`squid_n_element`）が同じ答えを見る必要があるためである。
+    pub fn wall_plate_covers_region(&self, plate: &WallPlate) -> bool {
+        let Some(boundary) = plate.boundary_nodes() else {
+            return false; // 取り付く壁版は壁領域に属さない。
+        };
+        if boundary.len() != 4 {
+            return false;
+        }
+        self.wall_regions
+            .iter()
+            .filter(|r| r.wall_plate_ids.contains(&plate.id))
+            .any(|r| r.boundary.len() == 4 && r.boundary.iter().all(|n| boundary.contains(n)))
+    }
+
     /// 壁版へ割り当てた断面。未割当・ダングリングは `None`。
     pub fn wall_plate_section(&self, plate: &WallPlate) -> Option<&Section> {
         plate.section.and_then(|sid| self.sections.get(sid.index()))

@@ -272,6 +272,11 @@ pub enum JoistCheckTarget {
     SecondaryJoist {
         nodes: [squid_n_core::ids::NodeId; 2],
     },
+    /// 二次部材間柱。現状は常に「未」（軸力・面外曲げの検定が未対応）。
+    /// 表から消すと検定されていないことに気づけないため、行としては残す。
+    SecondaryPost {
+        nodes: [squid_n_core::ids::NodeId; 2],
+    },
 }
 
 /// 床の中での小梁設計結果1件（`(代表床板 id, 対象, 設計結果)`）。

@@ -855,7 +855,7 @@ fn floor_design_section(ui: &mut egui::Ui, app: &App) {
             "joist_design_table",
             &[
                 Col::id_named("スラブ"),
-                Col::id_named("小梁"),
+                Col::id_named("二次部材"),
                 Col::num("スパン[mm]"),
                 Col::num("M[kN·m]"),
                 Col::num("Q[kN]"),
@@ -875,22 +875,10 @@ fn floor_design_section(ui: &mut egui::Ui, app: &App) {
                 row.col(|ui| {
                     let label = match ji {
                         crate::app::JoistCheckTarget::SecondaryJoist { nodes } => {
-                            let key = (nodes[0].0.min(nodes[1].0), nodes[0].0.max(nodes[1].0));
-                            app.model
-                                .joists()
-                                .find(|sm| {
-                                    let a = sm.nodes[0].0.min(sm.nodes[1].0);
-                                    let b = sm.nodes[0].0.max(sm.nodes[1].0);
-                                    (a, b) == key
-                                })
-                                .map(|sm| {
-                                    if sm.name.is_empty() {
-                                        format!("SM{}-{}", nodes[0].0, nodes[1].0)
-                                    } else {
-                                        sm.name.clone()
-                                    }
-                                })
-                                .unwrap_or_else(|| format!("SM{}-{}", nodes[0].0, nodes[1].0))
+                            secondary_label(app.model.joists(), *nodes)
+                        }
+                        crate::app::JoistCheckTarget::SecondaryPost { nodes } => {
+                            format!("（間柱）{}", secondary_label(app.model.posts(), *nodes))
                         }
                     };
                     ui.label(label);
@@ -981,4 +969,21 @@ fn rank_label(r: squid_n_design_jp::secondary::holding_capacity::MemberRank) -> 
         MemberRank::FC => "FC",
         MemberRank::FD => "FD",
     }
+}
+
+/// 二次部材の表示名（名前が空なら端点の節点対から作る）。
+fn secondary_label<'a>(
+    members: impl Iterator<Item = &'a squid_n_core::model::SecondaryMember>,
+    nodes: [squid_n_core::ids::NodeId; 2],
+) -> String {
+    let key = (nodes[0].0.min(nodes[1].0), nodes[0].0.max(nodes[1].0));
+    members
+        .filter(|sm| {
+            (
+                sm.nodes[0].0.min(sm.nodes[1].0),
+                sm.nodes[0].0.max(sm.nodes[1].0),
+            ) == key
+        })
+        .find_map(|sm| (!sm.name.is_empty()).then(|| sm.name.clone()))
+        .unwrap_or_else(|| format!("SM{}-{}", nodes[0].0, nodes[1].0))
 }
