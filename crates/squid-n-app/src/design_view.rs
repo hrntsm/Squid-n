@@ -867,9 +867,10 @@ fn floor_design_section(ui: &mut egui::Ui, app: &App) {
             |row| {
                 let (sid, ji, jr) = &r.joist_checks[row.index()];
                 row.col(|ui| {
+                    // 間柱には床板が無い。小梁でも所属床領域が床板を持たなければ空になる。
                     ui.label(match sid {
                         Some(id) => format!("#{}", id.0),
-                        None => "未割当".into(),
+                        None => "—".into(),
                     });
                 });
                 row.col(|ui| {

@@ -385,3 +385,85 @@ fn test_split_wall_plates_are_counted_in_quantity() {
         "壁 2 枚のコンクリート体積 {wall_m3} m3 が期待 {expect} m3 と一致しない"
     );
 }
+
+/// 柱脚（支点に取り付く鉛直部材の支点側材端）の軸力 [N] の合計。
+fn base_column_axial_sum(app: &App, res: &squid_n_solver::linear::StaticOnce) -> f64 {
+    let mut sum = 0.0;
+    for (eid, mf) in &res.member_forces {
+        let Some(e) = app.model.elements.get(eid.index()) else {
+            continue;
+        };
+        if e.kind != ElementKind::Beam || e.nodes.len() != 2 {
+            continue;
+        }
+        let (Some(na), Some(nb)) = (
+            app.model.nodes.get(e.nodes[0].index()),
+            app.model.nodes.get(e.nodes[1].index()),
+        ) else {
+            continue;
+        };
+        if (nb.coord[2] - na.coord[2]).abs() <= 1e-6 {
+            continue; // 鉛直部材（柱）のみ。
+        }
+        let i_is_base = na.coord[2] < nb.coord[2];
+        let base_node = if i_is_base { na } else { nb };
+        if base_node.restraint == Dof6Mask::FREE {
+            continue;
+        }
+        let (Some((_, fi)), Some((_, fj))) = (mf.at.first(), mf.at.last()) else {
+            continue;
+        };
+        sum += if i_is_base { fi[0] } else { fj[0] };
+    }
+    sum
+}
+
+/// 壁版の自重が**解析まで**届く。荷重ケースの総和ではなく、柱の軸力で確かめる。
+///
+/// 総和との厳密な照合はできない。柱が受け持つぶんは材軸方向の分布荷重として載るが、
+/// 断面力として報告される軸力は両端反力の線形内挿（`fixed_internal_local` に明記の
+/// 近似）であり、材中間での増加が現れないためである。間柱の下端反力も、両端が固定
+/// 支点の基礎大梁へ載るので柱を通らない。
+///
+/// ここで見たいのは経路が生きていることなので、壁版を外したモデルとの差が実荷重の
+/// オーダーで出ることを固定する。経路が切れれば差は 0 になる。
+#[test]
+fn test_wall_weight_reaches_column_axial_force() {
+    let base_axial = |plates: bool| -> f64 {
+        let mut app = wall_post_app();
+        if !plates {
+            app.model.wall_plates.clear();
+            for r in &mut app.model.wall_regions {
+                r.wall_plate_ids.clear();
+            }
+        }
+        app.run_preparation();
+        assert!(app.last_error.is_none(), "{:?}", app.last_error);
+        let dl = app
+            .model
+            .load_cases
+            .iter()
+            .find(|lc| lc.kind == squid_n_core::model::LoadCaseKind::Dead)
+            .expect("DL ケース")
+            .id;
+        app.run_linear_static(dl);
+        assert!(app.last_error.is_none(), "{:?}", app.last_error);
+        let res = &app
+            .results
+            .as_ref()
+            .expect("解析結果")
+            .statics
+            .iter()
+            .find(|(k, _)| *k == squid_n_app::app::StaticCaseKey::User(dl))
+            .expect("DL ケースの静解析結果")
+            .1;
+        base_column_axial_sum(&app, res)
+    };
+
+    let diff = (base_axial(true) - base_axial(false)).abs();
+    assert!(
+        diff > wall_weight() / 8.0,
+        "柱脚軸力が壁自重に反応していない（増分 {diff}・壁自重 {}）",
+        wall_weight()
+    );
+}
