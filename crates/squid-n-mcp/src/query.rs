@@ -121,6 +121,10 @@ pub fn query_model(model: &Model, kind: &str, filter: Option<&str>) -> Vec<serde
                     "opening_weight": p.opening_weight,
                     "column_face_slit": p.column_face_slit,
                     "openings": p.openings,
+                    // その壁版から壁エレメントが生成されるか。GUI の「壁版」タブの
+                    // 同名の列と同じ判定で、壁版が解析に効いているかを MCP からも
+                    // 引けるようにする。
+                    "becomes_element": model.wall_plate_becomes_element(p),
                 })
             })
             .collect(),

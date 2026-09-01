@@ -250,7 +250,8 @@ pub(crate) struct InFrameMiscWallGeometry {
     /// （[`misc_stiffness_wall_plates`]）。
     pub plate: squid_n_core::ids::WallPlateId,
     /// 柱際スリット。添字は [`Self::bottom_pair`]（＝ [`Self::wing_length`] の `side`）
-    /// に対応し、true の側は柱と縁が切れているため袖壁として算入しない。
+    /// に対応する。true の側は柱と縁が切れているため、[`Self::wing_length`] が
+    /// 0 を返して袖壁として算入されない。
     /// 柱と接する鉛直辺を持たない取り付く壁版は常に `[false, false]`。
     pub column_face_slit: [bool; 2],
 }
@@ -321,8 +322,8 @@ pub(crate) const RIGID_ZONE_WALL_MIN_THICKNESS_MM: f64 = 100.0;
 ///
 /// 柱際スリットのある壁も対象である。切れているのは柱際だけで、上下の梁とは
 /// 一体だからである。どの柱と縁が切れているかは
-/// [`InFrameMiscWallGeometry::column_face_slit`] が持ち、袖壁の算入側で辺ごとに
-/// 落とす。
+/// [`InFrameMiscWallGeometry::column_face_slit`] が持ち、その側の
+/// [`InFrameMiscWallGeometry::wing_length`] が 0 になる。
 pub(crate) fn collect_misc_walls(model: &Model) -> Vec<InFrameMiscWallGeometry> {
     collect_walls_where(model, |plate, model, _t| plate_is_misc_wall(plate, model))
 }
@@ -401,8 +402,8 @@ fn plate_is_rc_wall(plate: &WallPlate, model: &Model) -> bool {
 ///
 /// 柱際スリットのある壁も対象に含める。切れているのは柱際だけで、上下の梁とは
 /// 一体だからである（垂れ壁・腰壁として梁の剛性に効く）。どの柱と縁が切れて
-/// いるかは [`InFrameMiscWallGeometry::column_face_slit`] が持ち、袖壁の算入側で
-/// 辺ごとに落とす。
+/// いるかは [`InFrameMiscWallGeometry::column_face_slit`] が持ち、その側の
+/// [`InFrameMiscWallGeometry::wing_length`] が 0 になる。
 fn collect_walls_where(
     model: &Model,
     accept: impl Fn(&WallPlate, &Model, f64) -> bool,

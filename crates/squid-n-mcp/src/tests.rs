@@ -409,6 +409,8 @@ fn test_query_model_wall_plates() {
         items[0]["column_face_slit"],
         serde_json::json!([false, false])
     );
+    // 壁エレメントになるかも出す（どの壁版が解析に効いているかを引けるようにする）。
+    assert_eq!(items[0]["becomes_element"], serde_json::json!(false));
 }
 
 /// 柱際スリットは左右独立に読み書きでき、省略時は両側とも切れていない扱いになる。
