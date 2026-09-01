@@ -361,3 +361,27 @@ fn test_wall_weight_reaches_dl_load_case() {
         wall_weight()
     );
 }
+
+/// 要素にならない壁版の数量が数量拾いから落ちない。
+///
+/// 壁の数量は解析要素（`ElementKind::Wall`）経由でも数えるため、要素にならなく
+/// なった壁版を壁版側で数え直さないと、数量が黙って消える。
+#[test]
+fn test_split_wall_plates_are_counted_in_quantity() {
+    let model = wall_post_model();
+    let takeoff = squid_n_design_jp::quantity::compute_quantity_takeoff(
+        &model,
+        &squid_n_design_jp::quantity::QuantityCfg::default(),
+    );
+    let wall_m3: f64 = takeoff
+        .items
+        .iter()
+        .filter(|i| i.category == squid_n_design_jp::quantity::MemberCategory::MiscWall)
+        .map(|i| i.concrete_m3)
+        .sum();
+    let expect = 4000.0 * 3000.0 * WALL_T * 1e-9;
+    assert!(
+        (wall_m3 - expect).abs() / expect < 1e-9,
+        "壁 2 枚のコンクリート体積 {wall_m3} m3 が期待 {expect} m3 と一致しない"
+    );
+}

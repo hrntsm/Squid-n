@@ -252,3 +252,26 @@ fn 地震用重量は辺の両端へ半分ずつ配り総和を保存する() {
         );
     }
 }
+
+/// 柱の材軸に並走する間柱は、柱の荷重を奪わない（主架構を優先する）。
+///
+/// 逐次伝達の `support_of`・小梁の並走大梁優先と同じ考え方で、辺が柱・大梁に
+/// 覆われていればそこで終端する。
+#[test]
+fn 柱に並走する間柱は柱の荷重を奪わない() {
+    let mut m = split_by_post();
+    // 左の柱（節点 0-3）と同じ位置に間柱を 1 本足す（重複モデル化）。
+    m.wall_regions[0].posts.push(SecondaryMember {
+        kind: SecondaryMemberKind::Post,
+        nodes: [NodeId(0), NodeId(3)],
+        section: Some(SectionId(1)),
+        name: "P0".into(),
+    });
+
+    let out = distribute_enclosed_wall_plates(&m);
+    assert!(
+        !out.posts.contains_key(&(NodeId(0), NodeId(3))),
+        "柱に並走する間柱は荷重を受けない"
+    );
+    assert_eq!(out.primary.len(), 2, "柱側の鉛直辺は主架構が受け続ける");
+}

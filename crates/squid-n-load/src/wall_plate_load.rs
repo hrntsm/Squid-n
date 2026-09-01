@@ -84,6 +84,27 @@ fn is_horizontal(a: [f64; 3], b: [f64; 3]) -> bool {
     (b[2] - a[2]).abs() <= MEMBER_AXIS_TOL_MM && (dx * dx + dy * dy).sqrt() > MEMBER_AXIS_TOL_MM
 }
 
+/// 辺の支持部材。
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum EdgeSupport {
+    /// 主架構（柱・大梁）が覆っている。
+    Primary,
+    /// 間柱が覆っている。
+    Post((NodeId, NodeId)),
+}
+
+/// 線分 `p0`–`p1` を覆う支持部材。無ければ `None`。
+///
+/// **主架構を優先する。** 辺が柱・大梁に覆われているなら、その部材が直接支持して
+/// いるのだから、そこで終端する。10 mm 以内に並走する間柱が主架構の荷重を奪わない
+/// ようにするためでもある（逐次伝達の `support_of`・小梁の並走大梁優先と同じ考え）。
+fn edge_support(model: &Model, p0: [f64; 3], p1: [f64; 3]) -> Option<EdgeSupport> {
+    if primary_covering(model, p0, p1) {
+        return Some(EdgeSupport::Primary);
+    }
+    post_covering(model, p0, p1).map(EdgeSupport::Post)
+}
+
 /// 線分 `p0`–`p1` を覆う間柱の端点対。無ければ `None`。
 ///
 /// 間柱の材軸が線分を含む（両端が材軸上にあり、区間が重なる）ものを探す。
@@ -157,10 +178,10 @@ pub fn wall_plate_edge_shares(model: &Model, plate: &WallPlate) -> Vec<WallEdgeS
     for i in 0..n {
         let (a, b) = (coords[i], coords[(i + 1) % n]);
         if is_vertical(a, b) {
-            if let Some(key) = post_covering(model, a, b) {
-                vertical.push((i, Some(key)));
-            } else if primary_covering(model, a, b) {
-                vertical.push((i, None));
+            match edge_support(model, a, b) {
+                Some(EdgeSupport::Post(key)) => vertical.push((i, Some(key))),
+                Some(EdgeSupport::Primary) => vertical.push((i, None)),
+                None => {}
             }
         } else if is_horizontal(a, b) {
             horizontal.push(i);
@@ -189,7 +210,10 @@ pub fn wall_plate_edge_shares(model: &Model, plate: &WallPlate) -> Vec<WallEdgeS
         return Vec::new(); // 水平な辺が無い壁は荷重の行き先が決まらない。
     };
     let (a, b) = (coords[bottom], coords[(bottom + 1) % n]);
-    let post = post_covering(model, a, b);
+    let post = match edge_support(model, a, b) {
+        Some(EdgeSupport::Post(key)) => Some(key),
+        _ => None,
+    };
     vec![WallEdgeShare {
         nodes: edge_nodes(bottom),
         total,
