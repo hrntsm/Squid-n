@@ -553,7 +553,12 @@ fn draw_wall_plates_modeling(
         }
         let poly: Vec<egui::Pos2> = coords.iter().copied().map(|c| proj.project(c)).collect();
         // 壁エレメントでないことを示す破線の輪郭（既存の雑壁描画と同じ書式）。
-        draw_polygon_shape(painter, poly, class.color(), true);
+        // 自己交差する壁版は塗らない（理由は `scene::plate_fill_is_valid`）。
+        if super::scene::plate_fill_is_valid(plate) {
+            draw_polygon_shape(painter, poly, class.color(), true);
+        } else {
+            draw_polygon_outline(painter, poly, class.color());
+        }
     }
 }
 
@@ -916,6 +921,21 @@ fn draw_wall_polygon(
         return;
     }
     draw_polygon_shape(painter, poly, color, dashed);
+}
+
+/// 面の多角形の輪郭だけを破線で描く（塗りが破綻する形状用）。
+fn draw_polygon_outline(painter: &egui::Painter, poly: Vec<egui::Pos2>, color: egui::Color32) {
+    if poly.len() < 3 {
+        return;
+    }
+    let mut ring = poly;
+    ring.push(ring[0]);
+    painter.extend(egui::Shape::dashed_line(
+        &ring,
+        egui::Stroke::new(1.5_f32, color),
+        6.0,
+        4.0,
+    ));
 }
 
 /// 面の多角形を、モデル化図の書式（塗り＋実線／破線の輪郭）で描く。

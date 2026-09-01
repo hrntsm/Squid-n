@@ -121,16 +121,19 @@ fn draw_load_plate_polygon(
     coords: &[[f64; 3]],
     proj: &Projector,
     color: egui::Color32,
+    fill: bool,
 ) {
     let poly: Vec<egui::Pos2> = coords.iter().copied().map(|c| proj.project(c)).collect();
     if poly.len() < 3 {
         return;
     }
-    painter.add(egui::Shape::convex_polygon(
-        poly.clone(),
-        theme::translucent(color, PLATE_FILL_ALPHA),
-        egui::Stroke::NONE,
-    ));
+    if fill {
+        painter.add(egui::Shape::convex_polygon(
+            poly.clone(),
+            theme::translucent(color, PLATE_FILL_ALPHA),
+            egui::Stroke::NONE,
+        ));
+    }
     let mut closed = poly.clone();
     closed.push(poly[0]);
     painter.extend(egui::Shape::dashed_line(
@@ -163,7 +166,7 @@ pub(super) fn draw_slabs(
             continue;
         };
         // 面は淡い半透明の暖色フィル（壁の青と弁別）。
-        draw_load_plate_polygon(painter, &coords, proj, theme::BEST_YELLOW);
+        draw_load_plate_polygon(painter, &coords, proj, theme::BEST_YELLOW, true);
     }
 }
 
@@ -198,7 +201,28 @@ pub(super) fn draw_wall_plates(
         };
         // 色は「壁」を表す青（床板の暖色と弁別）。線種の破線が「解析要素ではない」を
         // 表し、壁エレメント（青・実線・濃い塗り）と区別が付く。
-        draw_load_plate_polygon(painter, &coords, proj, theme::DATA_BLUE);
+        draw_load_plate_polygon(
+            painter,
+            &coords,
+            proj,
+            theme::DATA_BLUE,
+            plate_fill_is_valid(plate),
+        );
+    }
+}
+
+/// 壁版の内部を塗ってよいか。
+///
+/// 取り付く壁版の立ち上がり高さが両端で符号反転すると、境界の 4 点が自己交差する
+/// 蝶ネクタイ形になる（[`squid_n_core::model::WallPlate::area`] がこの形を避けて
+/// 面積を積分で求めているのと同じ理由）。塗りは凸多角形を前提に三角形へ分割する
+/// ため、この形では輪郭からはみ出す。輪郭の破線だけを描いて、入力が異常である
+/// ことをそのまま見せる。
+pub(super) fn plate_fill_is_valid(plate: &squid_n_core::model::WallPlate) -> bool {
+    use squid_n_core::model::WallPlateShape;
+    match &plate.shape {
+        WallPlateShape::Attached { extent, .. } => extent[0] * extent[1] >= 0.0,
+        WallPlateShape::Enclosed { .. } => true,
     }
 }
 
@@ -570,6 +594,41 @@ mod tests {
             openings: Vec::new(),
             column_face_slit: [false, false],
         }
+    }
+
+    /// 立ち上がり高さが両端で符号反転する取り付く壁版は、塗らずに輪郭だけ描く。
+    ///
+    /// 境界の 4 点が自己交差する蝶ネクタイ形になり、凸多角形前提の塗りが輪郭から
+    /// はみ出すためである。面積の算定が同じ形を避けているのと同じ理由による
+    /// （`WallPlate::area`）。
+    #[test]
+    fn 符号反転する取り付く壁版は塗らない() {
+        use squid_n_core::ids::NodeId;
+        use squid_n_core::model::{RegionAnchor, WallPlateShape};
+        let mut plate = enclosed_plate(Vec::new());
+        let mut with_extent = |extent: [f64; 2]| {
+            plate.shape = WallPlateShape::Attached {
+                anchor: RegionAnchor::Line {
+                    nodes: [NodeId(0), NodeId(1)],
+                    span: [0.0, 1.0],
+                    transfer: Default::default(),
+                },
+                extent,
+            };
+            plate_fill_is_valid(&plate)
+        };
+        assert!(with_extent([900.0, 900.0]), "同じ向きの立ち上がりは塗る");
+        assert!(with_extent([900.0, 0.0]), "片端 0 は自己交差しない");
+        assert!(with_extent([-900.0, -300.0]), "下向き同士も塗る");
+        assert!(!with_extent([900.0, -900.0]), "符号が反転する壁は塗らない");
+
+        // 囲まれた壁版は境界そのものなので、この理由では塗りを止めない。
+        assert!(plate_fill_is_valid(&enclosed_plate(vec![
+            NodeId(0),
+            NodeId(1),
+            NodeId(2),
+            NodeId(3)
+        ])));
     }
 
     /// 構面表示中は、境界節点がすべてその構面にある壁版だけを描く。
