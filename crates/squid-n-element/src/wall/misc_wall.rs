@@ -967,6 +967,38 @@ mod tests {
         assert_eq!(walls[0].column_face_slit, [true, true]);
     }
 
+    /// 剛性算入されない壁版は `misc_stiffness_wall_plates` に載らない。
+    ///
+    /// モデル化図はこの一覧で「雑壁(周辺部材へ剛性算入)」と「荷重のみ(剛性に
+    /// 算入しない)」を分ける。載る／載らないが実際の算入と食い違うと、図が
+    /// 「算入している」と嘘をつく（三方スリット壁で実際に起きていた）。
+    #[test]
+    fn test_plate_without_thickness_is_not_counted_as_misc_stiffness() {
+        let (mut model, data) = make_model(150.0);
+        model.elements.push(data);
+        // 柱際スリットで耐震壁が不成立になり、雑壁として算入される状態を作る。
+        model.wall_attrs.push(WallAttr {
+            elem: ElemId(0),
+            opening_area: 0.0,
+            opening_weight: 0.0,
+            column_face_slit: [true, true],
+            openings: vec![],
+        });
+        add_wall_plate(&mut model, vec![], [true, true]);
+        assert_eq!(
+            misc_stiffness_wall_plates(&model),
+            vec![squid_n_core::ids::WallPlateId(0)],
+            "板厚を引ける壁版は算入対象に載る"
+        );
+
+        // 断面を外すと板厚が引けず、剛性算入の相手が決まらない。
+        model.wall_plates[0].section = None;
+        assert!(
+            misc_stiffness_wall_plates(&model).is_empty(),
+            "板厚を引けない壁版は載らない"
+        );
+    }
+
     /// 柱際スリットは指定した側だけに効く。左右を独立に持つ意味を固定する。
     #[test]
     fn test_column_face_slit_is_per_side() {
