@@ -195,12 +195,16 @@ pub fn expand_wall_elements_owned(
                 // 取り付く壁版（パラペット等）は耐震壁要素の対象外。
                 continue;
             };
-            if !expanded.wall_plate_covers_region(plate) {
-                report.skipped_not_covering += 1;
-                continue;
-            }
-            if plate.section.is_none() {
-                report.skipped_no_section += 1;
+            // 生成の可否は `Model::wall_plate_becomes_element` が単独で決める。
+            // 内訳カウンタのためにここで理由も分けるが、**可否そのものを
+            // ここで組み立て直さない**（同じ問いを 2 か所で実装すると、
+            // 3D ビューの壁版描画・「解析要素」列と食い違う）。
+            if !expanded.wall_plate_becomes_element(plate) {
+                if expanded.wall_plate_covers_region(plate) {
+                    report.skipped_no_section += 1;
+                } else {
+                    report.skipped_not_covering += 1;
+                }
                 continue;
             }
             let id = ElemId(next_id);
@@ -370,6 +374,51 @@ mod tests {
         assert_eq!(attr.opening_area, 1_000_000.0);
         assert_eq!(attr.opening_weight, 5000.0);
         assert!(attr.three_side_slit);
+    }
+
+    /// `Model::wall_plate_becomes_element` の答えと、実際に要素が生成されたかが
+    /// 一致することを固定する。
+    ///
+    /// 3D ビューの壁版描画とモデルタブ「壁版」の「解析要素」列は、展開を走らせずに
+    /// このメソッドだけで「要素になるか」を決める。判定が実際の生成と乖離すると、
+    /// 要素としても壁版としても描かれない壁版が生まれる（＝入力したのに図に出ない）。
+    #[test]
+    fn test_becomes_element_agrees_with_generated_elements() {
+        let mut m = base_model();
+        // 4 節点・断面あり（要素になる）。
+        m.wall_plates.push(quad_plate(0, Some(SectionId(0))));
+        // 4 節点だが断面なし（要素にならない）。
+        m.wall_plates.push(quad_plate(1, None));
+        // 壁領域を覆わない（境界の一部しか共有しない）壁版。
+        let mut partial = quad_plate(2, Some(SectionId(0)));
+        partial.shape = WallPlateShape::Enclosed {
+            boundary: vec![NodeId(0), NodeId(1), NodeId(2)],
+        };
+        m.wall_plates.push(partial);
+        m.wall_regions.push(WallRegion {
+            id: WallRegionId(0),
+            name: String::new(),
+            boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
+            wall_plate_ids: vec![
+                squid_n_core::ids::WallPlateId(0),
+                squid_n_core::ids::WallPlateId(1),
+                squid_n_core::ids::WallPlateId(2),
+            ],
+            posts: Vec::new(),
+        });
+
+        let (_expanded, index, _report) = expand_wall_elements(&m);
+        let generated: std::collections::BTreeSet<_> = index.0.values().copied().collect();
+        for plate in &m.wall_plates {
+            assert_eq!(
+                m.wall_plate_becomes_element(plate),
+                generated.contains(&plate.id),
+                "壁版 {} の判定と生成結果が食い違う",
+                plate.id.0
+            );
+        }
+        // 3 枚のうち要素になるのは 1 枚だけ（テスト自体が退化していないことの確認）。
+        assert_eq!(generated.len(), 1);
     }
 
     /// 壁展開モデルへ再度 `expand_wall_elements` を適用しようとすると、

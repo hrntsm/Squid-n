@@ -67,6 +67,9 @@ pub(super) enum ModelClass {
     Wall,
     /// フレーム内雑壁（耐震壁不成立。剛性を周辺の柱・梁へ算入する）。
     WallMisc,
+    /// 荷重のみの壁版（解析要素にならず、周辺部材への剛性算入もされない）。
+    /// 三方スリット壁・板厚を引けない壁版など。自重だけが荷重へ流れる。
+    WallPlateLoadOnly,
     /// 仕口パネル（柱梁接合部パネル）。
     Panel,
     /// トラス／軸材（ブレースなど軸剛性のみ）。
@@ -92,6 +95,10 @@ impl ModelClass {
             ModelClass::Wall => Color32::from_rgb(0x25, 0x63, 0xEB),
             // 雑壁＝淡い暖色（周辺部材へ剛性算入。構造壁エレメントと区別）
             ModelClass::WallMisc => theme::SECONDARY_AMBER,
+            // 荷重のみの壁版＝不活性を示すウォームグレー。剛性に一切効かないことを
+            // 沈めた色で表す。冷色系の Elastic（GRAY_600）・その他（GRAY_300）とは
+            // 色味で弁別する。
+            ModelClass::WallPlateLoadOnly => Color32::from_rgb(0x78, 0x71, 0x6C),
             // 仕口パネル＝藍
             ModelClass::Panel => Color32::from_rgb(0x6D, 0x28, 0xD9),
             // トラス／軸材＝ティール
@@ -110,6 +117,7 @@ impl ModelClass {
             ModelClass::SideColumnPin => "側柱(面内両端ピン)",
             ModelClass::Wall => "壁エレメント",
             ModelClass::WallMisc => "雑壁(周辺部材へ剛性算入)",
+            ModelClass::WallPlateLoadOnly => "荷重のみ(剛性に算入しない)",
             ModelClass::Panel => "仕口パネル",
             ModelClass::Truss => "トラス/軸材",
             ModelClass::Other => "その他(バネ/免震/ダンパー)",
@@ -472,7 +480,70 @@ pub(super) fn draw_modeling(
         }
     }
 
+    draw_wall_plates_modeling(
+        painter,
+        app,
+        model,
+        coords3,
+        proj,
+        frame_filter,
+        &mut present,
+    );
+
     draw_legend(painter, analysis, &present, &sym);
+}
+
+/// 解析要素にならない壁版を、剛性算入の有無で描き分ける。
+///
+/// 壁版は入力なので、解析要素になるか否かにかかわらず図に出す。要素になる壁版は
+/// 上の要素ループが壁エレメントとして描くため、ここでは扱わない。
+///
+/// 分類は 2 つある。フレーム内雑壁として周辺の柱・梁へ剛性算入される壁版
+/// （[`squid_n_element::misc_wall::misc_stiffness_wall_plates`]）と、剛性へ一切
+/// 効かない壁版である。**算入されるかは剛性算入が実際に見ている収集結果から引く**
+/// ので、図と解析が食い違わない。
+fn draw_wall_plates_modeling(
+    painter: &egui::Painter,
+    app: &App,
+    model: &Model,
+    coords3: &[[f64; 3]],
+    proj: &Projector,
+    frame_filter: super::FrameFilter,
+    present: &mut Vec<ModelClass>,
+) {
+    // 壁版の表示可否は「床壁・二次部材」トグルに従う（形状表示と同じ規則。
+    // モデル化図では `lumped_only` が偽・モードが CMQ 以外に確定しているため、
+    // トグルの値がそのまま表示可否になる）。
+    if model.wall_plates.is_empty() || !app.show_floor_secondary {
+        return;
+    }
+    let misc: std::collections::BTreeSet<_> =
+        squid_n_element::misc_wall::misc_stiffness_wall_plates(model)
+            .into_iter()
+            .collect();
+
+    for plate in &model.wall_plates {
+        if model.wall_plate_becomes_element(plate) {
+            continue;
+        }
+        if !super::scene::wall_plate_visible_on_frame(plate, frame_filter) {
+            continue;
+        }
+        let Some(coords) = plate.boundary_coords_with(|n| coords3.get(n.index()).copied()) else {
+            continue;
+        };
+        let class = if misc.contains(&plate.id) {
+            ModelClass::WallMisc
+        } else {
+            ModelClass::WallPlateLoadOnly
+        };
+        if !present.contains(&class) {
+            present.push(class);
+        }
+        let poly: Vec<egui::Pos2> = coords.iter().copied().map(|c| proj.project(c)).collect();
+        // 壁エレメントでないことを示す破線の輪郭（既存の雑壁描画と同じ書式）。
+        draw_polygon_shape(painter, poly, class.color(), true);
+    }
 }
 
 /// 記号凡例に載せるフラグ（描画中に実際に現れた記号のみ凡例へ出す）。
@@ -831,6 +902,22 @@ fn draw_wall_polygon(
         })
         .collect();
     if poly.len() != elem.nodes.len() {
+        return;
+    }
+    draw_polygon_shape(painter, poly, color, dashed);
+}
+
+/// 面の多角形を、モデル化図の書式（塗り＋実線／破線の輪郭）で描く。
+///
+/// 壁エレメント（要素の節点から引く）と壁版（入力の境界から引く）で書式を
+/// 共有するため、投影済みの点列だけを受け取る。
+fn draw_polygon_shape(
+    painter: &egui::Painter,
+    poly: Vec<egui::Pos2>,
+    color: egui::Color32,
+    dashed: bool,
+) {
+    if poly.len() < 3 {
         return;
     }
     let stroke = egui::Stroke::new(1.5_f32, color);

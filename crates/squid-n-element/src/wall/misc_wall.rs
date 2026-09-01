@@ -244,6 +244,9 @@ pub(crate) struct InFrameMiscWallGeometry {
     /// 位置付き開口の包絡矩形 [x0, z0, x1, z1]（壁ローカル）。
     /// 位置付き開口がない場合は None。
     pub envelope: Option<[f64; 4]>,
+    /// 由来する壁版。どの壁版が実際に算入されたかを外へ問い合わせるために持つ
+    /// （[`misc_stiffness_wall_plates`]）。
+    pub plate: squid_n_core::ids::WallPlateId,
 }
 
 impl InFrameMiscWallGeometry {
@@ -306,6 +309,18 @@ pub(crate) const RIGID_ZONE_WALL_MIN_THICKNESS_MM: f64 = 100.0;
 /// （自重は荷重側で別途評価される）。
 pub(crate) fn collect_misc_walls(model: &Model) -> Vec<InFrameMiscWallGeometry> {
     collect_walls_where(model, |plate, model, _t| plate_is_misc_wall(plate, model))
+}
+
+/// フレーム内雑壁として周辺部材の断面性能へ剛性算入される壁版の一覧。
+///
+/// モデル化図が「雑壁(周辺部材へ剛性算入)」と着色する対象を決めるために使う。
+/// **判定を組み立て直さず、剛性算入が実際に見ている収集結果
+/// （[`collect_misc_walls`]）から引く。** 図と解析が食い違わないようにするためである。
+pub fn misc_stiffness_wall_plates(model: &Model) -> Vec<squid_n_core::ids::WallPlateId> {
+    collect_misc_walls(model)
+        .into_iter()
+        .map(|g| g.plate)
+        .collect()
 }
 
 /// 剛域算定に用いる壁を収集する（技術基準「剛域の計算」）。
@@ -407,8 +422,10 @@ fn opening_envelope(plate: &WallPlate) -> Option<[f64; 4]> {
 /// 壁版 1 枚を壁ローカル座標系の幾何へ変換する（開口の包絡は呼び出し側が入れる）。
 fn plate_geometry(plate: &WallPlate, model: &Model, t: f64) -> Option<InFrameMiscWallGeometry> {
     match &plate.shape {
-        WallPlateShape::Enclosed { boundary } => enclosed_geometry(model, t, boundary),
-        WallPlateShape::Attached { anchor, extent } => attached_geometry(model, t, anchor, *extent),
+        WallPlateShape::Enclosed { boundary } => enclosed_geometry(model, t, boundary, plate.id),
+        WallPlateShape::Attached { anchor, extent } => {
+            attached_geometry(model, t, anchor, *extent, plate.id)
+        }
     }
 }
 
@@ -418,6 +435,7 @@ fn enclosed_geometry(
     model: &Model,
     t: f64,
     boundary: &[NodeId],
+    plate: squid_n_core::ids::WallPlateId,
 ) -> Option<InFrameMiscWallGeometry> {
     if boundary.len() != 4 {
         return None;
@@ -451,6 +469,7 @@ fn enclosed_geometry(
         top_pair: Some([boundary[ta], boundary[tb]]),
         bottom_dir: [ex[0], ex[1], 0.0],
         envelope: None,
+        plate,
     })
 }
 
@@ -465,6 +484,7 @@ fn attached_geometry(
     t: f64,
     anchor: &RegionAnchor,
     extent: [f64; 2],
+    plate: squid_n_core::ids::WallPlateId,
 ) -> Option<InFrameMiscWallGeometry> {
     let RegionAnchor::Line { nodes, span, .. } = anchor else {
         return None;
@@ -503,6 +523,7 @@ fn attached_geometry(
         top_pair,
         bottom_dir: ex,
         envelope: None,
+        plate,
     })
 }
 

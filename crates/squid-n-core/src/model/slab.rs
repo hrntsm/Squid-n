@@ -99,15 +99,25 @@ impl Slab {
     /// 境界多角形の座標列 [mm]。取り付く床板は取付き先と張り出し量から算出する。
     /// 節点が引けない（陳腐化した参照）場合は `None`。
     pub fn boundary_coords(&self, model: &Model) -> Option<Vec<[f64; 3]>> {
+        self.boundary_coords_with(|n| model.nodes.get(n.index()).map(|n| n.coord))
+    }
+
+    /// 境界多角形の座標列 [mm] を、節点座標の引き方を差し替えて求める。
+    ///
+    /// [`Slab::boundary_coords`] はモデルの節点座標をそのまま使うが、変形図・
+    /// モード形・時刻歴は**変形後の節点座標**で描く必要がある。形状の組み立て方
+    /// （取付き線の内挿・左向き法線への張り出し）は同じなので、座標の引き方だけを
+    /// 差し替えられるようにして実装を 1 つに保つ。
+    pub fn boundary_coords_with(
+        &self,
+        coord_of: impl Fn(NodeId) -> Option<[f64; 3]>,
+    ) -> Option<Vec<[f64; 3]>> {
         match &self.shape {
-            SlabShape::Enclosed { boundary } => boundary
-                .iter()
-                .map(|n| model.nodes.get(n.index()).map(|n| n.coord))
-                .collect(),
+            SlabShape::Enclosed { boundary } => boundary.iter().map(|n| coord_of(*n)).collect(),
             SlabShape::Attached { anchor, extent } => match anchor {
                 RegionAnchor::Line { nodes, span, .. } => {
-                    let a = model.nodes.get(nodes[0].index())?.coord;
-                    let b = model.nodes.get(nodes[1].index())?.coord;
+                    let a = coord_of(nodes[0])?;
+                    let b = coord_of(nodes[1])?;
                     let lerp = |t: f64| {
                         [
                             a[0] + (b[0] - a[0]) * t,
@@ -132,7 +142,7 @@ impl Slab {
                     ])
                 }
                 RegionAnchor::Point(nid) => {
-                    let p = model.nodes.get(nid.index())?.coord;
+                    let p = coord_of(*nid)?;
                     Some(vec![
                         p,
                         [p[0] + extent[0], p[1], p[2]],

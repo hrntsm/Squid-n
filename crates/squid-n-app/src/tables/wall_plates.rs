@@ -186,6 +186,23 @@ fn shape_label(plate: &WallPlate) -> &'static str {
     }
 }
 
+/// 壁エレメントが生成されない理由（「解析要素」列のホバー）。
+///
+/// 生成の可否そのものは `Model::wall_plate_becomes_element` が単独で決める。ここは
+/// **理由の言い換えだけ**を担い、可否の判定を組み立て直さない（同じ問いを 2 か所で
+/// 実装すると、列の表示と実際の生成が食い違う）。
+fn not_element_reason(plate: &WallPlate, model: &squid_n_core::model::Model) -> &'static str {
+    if plate.is_attached() {
+        return "取り付く壁版（腰壁・垂壁・パラペット・自立壁）は解析要素にしません。\
+                自重の分配と周辺部材への剛性算入は行います";
+    }
+    if !model.wall_plate_covers_region(plate) {
+        return "壁領域全体を覆う 4 節点ではありません（間柱で分割されている、\
+                または壁領域の境界が 5 節点以上）。自重だけを持つ壁版になります";
+    }
+    "断面が割り当たっていません。板厚・材料が引けないため要素を組み立てられません"
+}
+
 /// 開口の要約文字列（一覧表示用）。
 fn opening_summary(plate: &WallPlate) -> String {
     if plate.openings.is_empty() {
@@ -281,6 +298,9 @@ fn wall_plates_list(ui: &mut egui::Ui, app: &mut App) {
         &[
             Col::id(),
             Col::label("種別"),
+            Col::label("解析要素").hover(
+                "壁エレメント（耐震壁）が生成される壁版か。生成されない壁版は自重だけを持つ",
+            ),
             Col::text("所属壁領域"),
             Col::text("境界 / 取付き先"),
             Col::text("断面"),
@@ -298,6 +318,16 @@ fn wall_plates_list(ui: &mut egui::Ui, app: &mut App) {
             });
             row.col(|ui| {
                 table_util::text_cell(ui, shape_label(plate));
+            });
+            row.col(|ui| {
+                if app.model.wall_plate_becomes_element(plate) {
+                    ui.label("壁エレメント").on_hover_text(
+                        "壁領域全体を覆う 4 節点で断面も割り当たっているため、解析要素\
+                         （耐震壁）を生成します",
+                    );
+                } else {
+                    table_util::muted_cell(ui, "―", not_element_reason(plate, &app.model));
+                }
             });
             row.col(|ui| {
                 // どの壁領域（柱・梁の区画）に属するかは `wall_plate_ids` から逆引きする

@@ -119,20 +119,33 @@ impl WallPlate {
     /// （鉛直上向きの高さ）から算出する。節点が引けない、または壁の取付き先として
     /// 使わない組み合わせ（`RegionAnchor::Point`）の場合は `None`。
     pub fn boundary_coords(&self, model: &Model) -> Option<Vec<[f64; 3]>> {
+        self.boundary_coords_with(|n| model.nodes.get(n.index()).map(|n| n.coord))
+    }
+
+    /// 境界多角形の座標列 [mm] を、節点座標の引き方を差し替えて求める。
+    ///
+    /// [`WallPlate::boundary_coords`] はモデルの節点座標をそのまま使うが、変形図・
+    /// モード形・時刻歴は**変形後の節点座標**で描く必要がある。形状の組み立て方
+    /// （取付き線の内挿・鉛直上向きへの立ち上げ）は同じなので、座標の引き方だけを
+    /// 差し替えられるようにして実装を 1 つに保つ（床側の
+    /// [`super::Slab::boundary_coords_with`] と同じ規約）。
+    pub fn boundary_coords_with(
+        &self,
+        coord_of: impl Fn(NodeId) -> Option<[f64; 3]>,
+    ) -> Option<Vec<[f64; 3]>> {
         match &self.shape {
-            WallPlateShape::Enclosed { boundary } => boundary
-                .iter()
-                .map(|n| model.nodes.get(n.index()).map(|n| n.coord))
-                .collect(),
+            WallPlateShape::Enclosed { boundary } => {
+                boundary.iter().map(|n| coord_of(*n)).collect()
+            }
             WallPlateShape::Attached { anchor, extent } => match anchor {
                 RegionAnchor::Line { nodes, span, .. } => {
-                    let a = model.nodes.get(nodes[0].index())?.coord;
-                    let b = model.nodes.get(nodes[1].index())?.coord;
+                    let a = coord_of(nodes[0])?;
+                    let b = coord_of(nodes[1])?;
                     Self::extrude_up(a, b, *span, *extent)
                 }
                 RegionAnchor::FloorRegion { nodes, .. } => {
-                    let a = model.nodes.get(nodes[0].index())?.coord;
-                    let b = model.nodes.get(nodes[1].index())?.coord;
+                    let a = coord_of(nodes[0])?;
+                    let b = coord_of(nodes[1])?;
                     Self::extrude_up(a, b, [0.0, 1.0], *extent)
                 }
                 // 壁の取付き先としては使わない（モジュール doc 参照）。
@@ -239,6 +252,25 @@ impl Model {
             .iter()
             .filter(|r| r.wall_plate_ids.contains(&plate.id))
             .any(|r| r.boundary.len() == 4 && r.boundary.iter().all(|n| boundary.contains(n)))
+    }
+
+    /// 壁版から壁エレメント（`ElementKind::Wall`）が生成されるか。
+    ///
+    /// 壁領域全体を覆う 4 節点であること（[`Model::wall_plate_covers_region`]）に
+    /// 加えて、**断面が割り当たっていること**を要する。断面が無い壁版は板厚・材料が
+    /// 引けず要素を組み立てられないためである（`squid_n_load::wall_expand` は
+    /// `skipped_no_section` として数える）。
+    ///
+    /// `covers_region` との違いはこの 1 点だけだが、両者を取り違えると
+    /// 「断面未割当の壁版が、要素でもなく荷重だけの壁版でもない」という
+    /// どこからも扱われない状態が生まれる。要素が生成されるかを問うときは
+    /// 必ず本メソッドを使うこと。
+    ///
+    /// **生成の可否を決めるのはここ 1 か所である。** `wall_expand` の生成ゲート・
+    /// 3D ビューの壁版描画（要素として描かれる壁版を除くため）・
+    /// モデルタブ「壁版」の「解析要素」列が同じ答えを見る。
+    pub fn wall_plate_becomes_element(&self, plate: &WallPlate) -> bool {
+        self.wall_plate_covers_region(plate) && plate.section.is_some()
     }
 
     /// 壁版へ割り当てた断面。未割当・ダングリングは `None`。
@@ -471,6 +503,102 @@ mod tests {
             });
         }
         m
+    }
+
+    /// `boundary_coords_with` は渡した座標をそのまま使う。変形図・モード形が
+    /// 変形後の節点座標で壁版を描くための入口であり、モデルの元座標へ落ちない
+    /// ことを固定する（落ちると壁版だけが変形前の位置に取り残される）。
+    #[test]
+    fn test_boundary_coords_with_uses_supplied_coords() {
+        let m = model_with_nodes(&[
+            [0.0, 0.0, 0.0],
+            [4000.0, 0.0, 0.0],
+            [4000.0, 0.0, 3000.0],
+            [0.0, 0.0, 3000.0],
+        ]);
+        let p = WallPlate {
+            id: WallPlateId(0),
+            shape: WallPlateShape::Enclosed {
+                boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
+            },
+            section: None,
+            opening_area: 0.0,
+            opening_weight: 0.0,
+            openings: Vec::new(),
+            three_side_slit: false,
+        };
+        // 全節点を +100 mm ずらした「変形後」の座標を渡す。
+        let moved: Vec<[f64; 3]> = m
+            .nodes
+            .iter()
+            .map(|n| [n.coord[0] + 100.0, n.coord[1], n.coord[2]])
+            .collect();
+        let coords = p
+            .boundary_coords_with(|n| moved.get(n.index()).copied())
+            .expect("境界座標");
+        assert_eq!(coords[0], [100.0, 0.0, 0.0]);
+        assert_eq!(coords[1], [4100.0, 0.0, 0.0]);
+
+        // 取り付く壁版も取付き先の節点座標に追従する。
+        let attached = WallPlate {
+            id: WallPlateId(1),
+            shape: WallPlateShape::Attached {
+                anchor: RegionAnchor::Line {
+                    nodes: [NodeId(0), NodeId(1)],
+                    span: [0.0, 1.0],
+                    transfer: Default::default(),
+                },
+                extent: [900.0, 900.0],
+            },
+            section: None,
+            opening_area: 0.0,
+            opening_weight: 0.0,
+            openings: Vec::new(),
+            three_side_slit: false,
+        };
+        let coords = attached
+            .boundary_coords_with(|n| moved.get(n.index()).copied())
+            .expect("境界座標");
+        assert_eq!(coords[0], [100.0, 0.0, 0.0]);
+        assert_eq!(coords[2], [4100.0, 0.0, 900.0]);
+    }
+
+    /// `wall_plate_becomes_element` は断面の有無まで見る。壁領域を覆っていても
+    /// 断面が無ければ要素にならないため、3D ビューは壁版として描く必要がある。
+    #[test]
+    fn test_becomes_element_requires_section() {
+        let mut m = model_with_nodes(&[
+            [0.0, 0.0, 0.0],
+            [4000.0, 0.0, 0.0],
+            [4000.0, 0.0, 3000.0],
+            [0.0, 0.0, 3000.0],
+        ]);
+        let boundary = vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)];
+        m.wall_plates.push(WallPlate {
+            id: WallPlateId(0),
+            shape: WallPlateShape::Enclosed {
+                boundary: boundary.clone(),
+            },
+            section: None,
+            opening_area: 0.0,
+            opening_weight: 0.0,
+            openings: Vec::new(),
+            three_side_slit: false,
+        });
+        m.wall_regions.push(crate::model::WallRegion {
+            id: crate::ids::WallRegionId(0),
+            name: String::new(),
+            boundary,
+            wall_plate_ids: vec![WallPlateId(0)],
+            posts: Vec::new(),
+        });
+
+        // 覆ってはいるが断面が無い。
+        assert!(m.wall_plate_covers_region(&m.wall_plates[0]));
+        assert!(!m.wall_plate_becomes_element(&m.wall_plates[0]));
+
+        m.wall_plates[0].section = Some(SectionId(0));
+        assert!(m.wall_plate_becomes_element(&m.wall_plates[0]));
     }
 
     #[test]
