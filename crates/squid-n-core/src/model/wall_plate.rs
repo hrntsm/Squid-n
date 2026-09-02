@@ -5,7 +5,7 @@
 //! 1 つの壁領域は、壁領域内が間柱でさらに細かい壁パネルに分かれていれば複数の
 //! `WallPlate` を持ちうる（[`WallRegion::wall_plate_ids`]。E5。床側の `FloorRegion`/
 //! [`super::Slab`] と同じ関係）。パラペット・腰壁・垂れ壁・自立壁はどの壁領域からも
-//! 参照されない、独立した `WallPlate` として存在する（`OutOfFrameMiscWall` の後継）。
+//! 参照されない、独立した `WallPlate` として存在する。
 //!
 //! # 参入レベル（構造壁・n倍法・重量のみ）は型で区別しない
 //!
@@ -15,15 +15,18 @@
 //! （dig Q4=B）。**`section` の有無と、所属する `WallRegion` の種別（囲まれた領域か
 //! 取り付き領域か）の組み合わせで、生成ロジック（Step 8・D5）側が決める。**
 //!
-//! # 自重は必ず断面参照から求める（`OutOfFrameMiscWall` との相違点）
+//! # 躯体の自重は必ず断面参照から求める
 //!
-//! 現行 `OutOfFrameMiscWall` は断面を介さず `weight_per_area`（直接入力）と
-//! `thickness`（直接入力、n倍法用）を自前で持つ。`WallPlate` はこれを踏襲しない
-//! （dig Q5=A）。[`super::Slab`]/[`super::SlabPlate`] と同じく、自重は必ず `section`
-//! （厚さ・主材料）から求める。断面未割当は自重 0 とし、解析前チェックが止める
-//! （既定厚で補わない）。`OutOfFrameMiscWall` の直接入力経路は、ST-Bridge 取り込みに
-//! 生成コードが存在せず実データが 0 件（単体テストの合成データのみ）だったため、
-//! 移行対象の実利用がないと判断して廃止した。
+//! 板厚と主材料は `section` から解決し、面重量を直接入力する経路は持たない
+//! （[`super::Slab`]/[`super::SlabPlate`] と同じ規約）。断面未割当は躯体自重 0 と
+//! し、解析前チェックが止める（既定厚で補わない）。
+//!
+//! # 仕上げ・増打ちは面荷重として持つ
+//!
+//! コンクリート壁は増打ちを伴うのが常で、仕上げ（タイル・モルタル）も無視できない
+//! 重さを持つ。どちらも断面の板厚には含めない（打ち継ぎで一体性が保証されないため
+//! 構造厚ではなく、剛性・耐力にも算入しない）ので、[`WallPlate::loads`] が面荷重
+//! [N/mm²] として受け持つ。床板の [`super::SlabPlate::loads`] と同型である。
 
 use super::*;
 
@@ -42,9 +45,23 @@ pub enum WallPlateShape {
     /// 壁自体の平面上の始点・終点）。[`RegionAnchor::Point`] は壁の取付き先としては
     /// 使わない（D14 の対応表に壁の用例がなく、出隅スラブ専用のため。
     /// [`WallPlate::boundary_coords`] はこの組み合わせで `None` を返す）。
+    ///
+    /// **`extent` が `None` のときは階高いっぱいの壁である**
+    /// （[`Model::wall_plate_extent`] が壁の下端から直上の階レベルまでの高さへ
+    /// 解決する）。階高は設計中に何度も変わるため、全高の壁を絶対寸法で書くと
+    /// 変更に追随せず、上階との間に隙間が残る。数値としては破綻しないので黙って
+    /// 残る種類の誤りである。
+    ///
+    /// `None` を許すのは [`RegionAnchor::FloorRegion`]（自立壁）だけである。
+    /// 囲む柱梁があるなら壁の高さは幾何から決まるので、全高の壁は
+    /// [`WallPlateShape::Enclosed`]（境界＝壁領域の節点列）で表す。線アンカーで
+    /// `None` を許すと、`squid_n_element::misc_wall` が階高分の腰壁せいを取付き先の
+    /// 梁 1 本へ丸ごと算入し（反対側の梁が無い扱いになる）、梁の剛性を過大に、
+    /// 変形を過小に見る危険側の評価になる。`Model::validate` が弾く。
     Attached {
         anchor: RegionAnchor,
-        extent: [f64; 2],
+        #[serde(default)]
+        extent: Option<[f64; 2]>,
     },
 }
 
@@ -74,6 +91,10 @@ pub struct WallPlate {
     /// 優先する（`opening_area` へのフォールバック規約は `WallAttr` と同じ）。
     #[serde(default)]
     pub openings: Vec<WallOpening>,
+    /// 仕上げ・増打ち等の面荷重（[`super::AreaLoad`]）。**版自身の躯体自重は
+    /// 含まない**（躯体は `section` から求める）。モジュール doc 参照。
+    #[serde(default)]
+    pub loads: Vec<AreaLoad>,
     /// 耐震スリット（辺ごとの縁切り）。[`WallSlit`] 参照。
     #[serde(default)]
     pub slit: WallSlit,
@@ -194,7 +215,7 @@ impl WallPlate {
     /// （鉛直上向きの高さ）から算出する。節点が引けない、または壁の取付き先として
     /// 使わない組み合わせ（`RegionAnchor::Point`）の場合は `None`。
     pub fn boundary_coords(&self, model: &Model) -> Option<Vec<[f64; 3]>> {
-        self.boundary_coords_with(|n| model.nodes.get(n.index()).map(|n| n.coord))
+        self.boundary_coords_with(model, |n| model.nodes.get(n.index()).map(|n| n.coord))
     }
 
     /// 境界多角形の座標列 [mm] を、節点座標の引き方を差し替えて求める。
@@ -204,28 +225,35 @@ impl WallPlate {
     /// （取付き線の内挿・鉛直上向きへの立ち上げ）は同じなので、座標の引き方だけを
     /// 差し替えられるようにして実装を 1 つに保つ（床側の
     /// [`super::Slab::boundary_coords_with`] と同じ規約）。
+    /// `model` は立ち上がり高さの解決（[`Model::wall_plate_extent`]。`extent` が
+    /// `None` の壁は階高いっぱい）にだけ使う。階レベルは変形しないので、変形後の
+    /// 座標を渡す呼び出しでも元の `model` を渡してよい。
     pub fn boundary_coords_with(
         &self,
+        model: &Model,
         coord_of: impl Fn(NodeId) -> Option<[f64; 3]>,
     ) -> Option<Vec<[f64; 3]>> {
         match &self.shape {
             WallPlateShape::Enclosed { boundary } => {
                 boundary.iter().map(|n| coord_of(*n)).collect()
             }
-            WallPlateShape::Attached { anchor, extent } => match anchor {
-                RegionAnchor::Line { nodes, span, .. } => {
-                    let a = coord_of(nodes[0])?;
-                    let b = coord_of(nodes[1])?;
-                    Self::extrude_up(a, b, *span, *extent)
+            WallPlateShape::Attached { anchor, .. } => {
+                let extent = model.wall_plate_extent(self)?;
+                match anchor {
+                    RegionAnchor::Line { nodes, span, .. } => {
+                        let a = coord_of(nodes[0])?;
+                        let b = coord_of(nodes[1])?;
+                        Self::extrude_up(a, b, *span, extent)
+                    }
+                    RegionAnchor::FloorRegion { nodes, .. } => {
+                        let a = coord_of(nodes[0])?;
+                        let b = coord_of(nodes[1])?;
+                        Self::extrude_up(a, b, [0.0, 1.0], extent)
+                    }
+                    // 壁の取付き先としては使わない（モジュール doc 参照）。
+                    RegionAnchor::Point(_) => None,
                 }
-                RegionAnchor::FloorRegion { nodes, .. } => {
-                    let a = coord_of(nodes[0])?;
-                    let b = coord_of(nodes[1])?;
-                    Self::extrude_up(a, b, [0.0, 1.0], *extent)
-                }
-                // 壁の取付き先としては使わない（モジュール doc 参照）。
-                RegionAnchor::Point(_) => None,
-            },
+            }
         }
     }
 
@@ -265,8 +293,11 @@ impl WallPlate {
                 .boundary_coords(model)
                 .map(|pts| crate::geom::polygon_area_3d(&pts))
                 .unwrap_or(0.0),
-            WallPlateShape::Attached { extent, .. } => {
+            WallPlateShape::Attached { .. } => {
                 let Some(pts) = self.boundary_coords(model) else {
+                    return 0.0;
+                };
+                let Some(extent) = model.wall_plate_extent(self) else {
                     return 0.0;
                 };
                 if pts.len() < 2 {
@@ -287,6 +318,12 @@ impl WallPlate {
         } else {
             self.openings.iter().map(WallOpening::area).sum()
         }
+    }
+
+    /// 仕上げ・増打ち等の面荷重強度 [N/mm²]（`loads` の合算）。
+    /// **版自身の躯体自重は含まない**（[`super::SlabPlate::finish_intensity`] と同じ規約）。
+    pub fn finish_intensity(&self) -> f64 {
+        self.loads.iter().map(|l| l.value).sum()
     }
 }
 
@@ -368,18 +405,83 @@ impl Model {
             .and_then(|mid| self.materials.get(mid.index()))
     }
 
-    /// 壁版の自重 [N]（開口控除後の正味面積 × 板厚 × 主材料の密度 × 重力加速度
-    /// ＋ 開口部（サッシ等）の重量。`WallAttr` の自重算定式と同じ）。
+    /// 取り付く壁版の立ち上がり高さ `[d_i, d_j]` [mm]。
     ///
-    /// 断面または主材料が未割当のときは `None`（[`Model::slab_self_weight_intensity`]
-    /// と同じ規約。既定厚で補わない）。開口面積が壁の面積を超える場合は正味面積を 0 とする。
+    /// `extent` が `Some` ならその値をそのまま返す。`None`（＝階高いっぱい）は、
+    /// 壁の下端から**直上の階レベル**までの高さへ解決する
+    /// （[`WallPlateShape::Attached`] のドキュメント参照）。
+    ///
+    /// 次のいずれかでは高さが決まらないため `None` を返し、解析前チェックが止める。
+    /// 0 を返すと壁が面積 0 になり、自重が黙って消える。
+    ///
+    /// - 取り付く壁版でない
+    /// - `extent` が `None` なのに取付き先が線（[`RegionAnchor::FloorRegion`] 以外）。
+    ///   [`Model::validate`] が弾く組み合わせである
+    /// - 下端の節点が引けない
+    /// - 下端より上に階レベルが無い（最上階の壁）。パラペットのように最上階で上へ
+    ///   伸ばす壁は、上端を決める階が無いので絶対寸法で指定する
+    pub fn wall_plate_extent(&self, plate: &WallPlate) -> Option<[f64; 2]> {
+        let WallPlateShape::Attached { anchor, extent } = &plate.shape else {
+            return None;
+        };
+        if let Some(e) = extent {
+            return Some(*e);
+        }
+        let RegionAnchor::FloorRegion { nodes } = anchor else {
+            return None;
+        };
+        // 壁が載るレベルは下端線分の平均標高とする
+        // （[`Model::self_standing_wall_coverage`] と同じ規約。両端の標高が違う壁で
+        // 帰属レベルの求め方が 2 通りに割れないようにする）。
+        let a = self.nodes.get(nodes[0].index())?.coord[2];
+        let b = self.nodes.get(nodes[1].index())?.coord[2];
+        let h = self.story_height_above((a + b) / 2.0)?;
+        Some([h, h])
+    }
+
+    /// レベル `z` [mm] から**直上の階レベル**までの高さ [mm]。
+    ///
+    /// 階レベルは床レベル列（[`Story::elevation`]）なので、`z` より上にある最も低い
+    /// 階レベルとの差がその位置の階高になる。`z` と同じレベルの階は、床そのもので
+    /// あって「上」ではないため対象にしない（[`crate::model::DIAPHRAGM_LEVEL_TOL_MM`]
+    /// の許容差で同一とみなす）。直上に階が無ければ `None`。
+    pub fn story_height_above(&self, z: f64) -> Option<f64> {
+        let tol = crate::model::DIAPHRAGM_LEVEL_TOL_MM;
+        self.stories
+            .iter()
+            .map(|s| s.elevation)
+            .filter(|e| *e > z + tol)
+            .fold(None::<f64>, |acc, e| Some(acc.map_or(e, |a: f64| a.min(e))))
+            .map(|e| e - z)
+    }
+
+    /// 壁版の自重 [N]。躯体（開口控除後の正味面積 × 板厚 × 主材料の密度 ×
+    /// 重力加速度）＋ 仕上げ・増打ち（正味面積 × [`WallPlate::finish_intensity`]）
+    /// ＋ 開口部（サッシ等）の重量。
+    ///
+    /// 仕上げ・増打ちを躯体と同じ**正味面積**に乗じるのは、開口部にはコンクリートも
+    /// 仕上げも無いためである。開口周りの見込み・額縁の重さは `opening_weight`
+    /// （開口部の重量）で見る場所が別にあり、面積側で二重に見ない。
+    ///
+    /// 断面または主材料が未割当のとき、躯体分は 0 とする（既定厚で補わない。
+    /// 解析前チェックが止める）。仕上げ・増打ちは断面に依らないので、この場合も
+    /// そのまま計上する。壁版の高さが決まらないときだけ `None` を返す
+    /// （[`Model::wall_plate_extent`]）。開口面積が壁の面積を超える場合は正味面積を 0 とする。
     pub fn wall_plate_self_weight(&self, plate: &WallPlate, model_for_area: &Model) -> Option<f64> {
-        let t = self.wall_plate_thickness(plate)?;
-        let mat = self.wall_plate_material(plate)?;
+        if plate.is_attached() && model_for_area.wall_plate_extent(plate).is_none() {
+            return None;
+        }
         let area = plate.area(model_for_area);
         let net_area = (area - plate.total_opening_area()).max(0.0);
-        let w = mat.density * t * net_area * crate::units::GRAVITY_MM_S2 + plate.opening_weight;
-        Some(w.max(0.0))
+        let structural = match (
+            self.wall_plate_thickness(plate),
+            self.wall_plate_material(plate),
+        ) {
+            (Some(t), Some(mat)) => mat.density * t * net_area * crate::units::GRAVITY_MM_S2,
+            _ => 0.0,
+        };
+        let finish = plate.finish_intensity() * net_area;
+        Some((structural + finish + plate.opening_weight).max(0.0))
     }
 
     /// 自立壁（[`RegionAnchor::FloorRegion`] の取り付く壁版）が、どの床領域の上に
@@ -413,12 +515,13 @@ impl Model {
         &self,
         plate: &WallPlate,
     ) -> Option<SelfStandingWallCoverage> {
-        let WallPlateShape::Attached { anchor, extent } = &plate.shape else {
+        let WallPlateShape::Attached { anchor, .. } = &plate.shape else {
             return None;
         };
         let RegionAnchor::FloorRegion { nodes } = anchor else {
             return None;
         };
+        let extent = &self.wall_plate_extent(plate)?;
         let a = self.nodes.get(nodes[0].index())?.coord;
         let b = self.nodes.get(nodes[1].index())?.coord;
         let (p0, p1) = ([a[0], a[1]], [b[0], b[1]]);
@@ -600,6 +703,7 @@ mod tests {
             opening_area: 0.0,
             opening_weight: 0.0,
             openings: Vec::new(),
+            loads: vec![],
             slit: WallSlit::default(),
         };
         // 全節点を +100 mm ずらした「変形後」の座標を渡す。
@@ -609,7 +713,7 @@ mod tests {
             .map(|n| [n.coord[0] + 100.0, n.coord[1], n.coord[2]])
             .collect();
         let coords = p
-            .boundary_coords_with(|n| moved.get(n.index()).copied())
+            .boundary_coords_with(&m, |n| moved.get(n.index()).copied())
             .expect("境界座標");
         assert_eq!(coords[0], [100.0, 0.0, 0.0]);
         assert_eq!(coords[1], [4100.0, 0.0, 0.0]);
@@ -623,16 +727,17 @@ mod tests {
                     span: [0.0, 1.0],
                     transfer: Default::default(),
                 },
-                extent: [900.0, 900.0],
+                extent: Some([900.0, 900.0]),
             },
             section: None,
             opening_area: 0.0,
             opening_weight: 0.0,
             openings: Vec::new(),
+            loads: vec![],
             slit: WallSlit::default(),
         };
         let coords = attached
-            .boundary_coords_with(|n| moved.get(n.index()).copied())
+            .boundary_coords_with(&m, |n| moved.get(n.index()).copied())
             .expect("境界座標");
         assert_eq!(coords[0], [100.0, 0.0, 0.0]);
         assert_eq!(coords[2], [4100.0, 0.0, 900.0]);
@@ -658,6 +763,7 @@ mod tests {
             opening_area: 0.0,
             opening_weight: 0.0,
             openings: Vec::new(),
+            loads: vec![],
             slit: WallSlit::default(),
         });
         m.wall_regions.push(crate::model::WallRegion {
@@ -693,6 +799,7 @@ mod tests {
             opening_area: 0.0,
             opening_weight: 0.0,
             openings: Vec::new(),
+            loads: vec![],
             slit: WallSlit::default(),
         };
         let coords = p.boundary_coords(&m).expect("境界座標");
@@ -714,6 +821,7 @@ mod tests {
             opening_area: 0.0,
             opening_weight: 0.0,
             openings: Vec::new(),
+            loads: vec![],
             slit: WallSlit::default(),
         };
         assert!(quad.has_quad_boundary());
@@ -737,7 +845,7 @@ mod tests {
                 span: [0.0, 1.0],
                 transfer: LoadTransfer::Anchor,
             },
-            extent: [900.0, 900.0],
+            extent: Some([900.0, 900.0]),
         };
         assert!(
             !attached.has_quad_boundary(),
@@ -758,12 +866,13 @@ mod tests {
                     span: [0.0, 1.0],
                     transfer: LoadTransfer::Anchor,
                 },
-                extent: [900.0, 900.0],
+                extent: Some([900.0, 900.0]),
             },
             section: None,
             opening_area: 0.0,
             opening_weight: 0.0,
             openings: Vec::new(),
+            loads: vec![],
             slit: WallSlit::default(),
         };
         let coords = p.boundary_coords(&m).expect("境界座標");
@@ -789,12 +898,13 @@ mod tests {
                     span: [0.0, 1.0],
                     transfer: LoadTransfer::Anchor,
                 },
-                extent: [2000.0, -2000.0],
+                extent: Some([2000.0, -2000.0]),
             },
             section: None,
             opening_area: 0.0,
             opening_weight: 0.0,
             openings: Vec::new(),
+            loads: vec![],
             slit: WallSlit::default(),
         };
         let expected = 4000.0 * 2000.0 * 0.5;
@@ -816,12 +926,13 @@ mod tests {
                 anchor: RegionAnchor::FloorRegion {
                     nodes: [NodeId(0), NodeId(1)],
                 },
-                extent: [2500.0, 2500.0],
+                extent: Some([2500.0, 2500.0]),
             },
             section: None,
             opening_area: 0.0,
             opening_weight: 0.0,
             openings: Vec::new(),
+            loads: vec![],
             slit: WallSlit::default(),
         };
         assert!((p.area(&m) - 2000.0 * 2500.0).abs() < 1e-6);
@@ -835,20 +946,55 @@ mod tests {
             id: WallPlateId(0),
             shape: WallPlateShape::Attached {
                 anchor: RegionAnchor::Point(NodeId(0)),
-                extent: [900.0, 900.0],
+                extent: Some([900.0, 900.0]),
             },
             section: None,
             opening_area: 0.0,
             opening_weight: 0.0,
             openings: Vec::new(),
+            loads: vec![],
             slit: WallSlit::default(),
         };
         assert_eq!(p.boundary_coords(&m), None);
         assert_eq!(p.area(&m), 0.0);
     }
 
+    /// 断面が無い壁版の躯体自重は 0 になる（既定厚では補わない）。仕上げ・増打ちは
+    /// 断面に依らないので、断面が無くてもそのまま計上する。ここで丸ごと `None` を
+    /// 返すと、入力された仕上げの重さが黙って落ちる。
     #[test]
-    fn test_self_weight_none_without_section() {
+    fn test_self_weight_without_section_counts_only_finish() {
+        let m = model_with_nodes(&[
+            [0.0, 0.0, 0.0],
+            [4000.0, 0.0, 0.0],
+            [4000.0, 0.0, 3000.0],
+            [0.0, 0.0, 3000.0],
+        ]);
+        let mut p = WallPlate {
+            id: WallPlateId(0),
+            shape: WallPlateShape::Enclosed {
+                boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
+            },
+            section: None,
+            opening_area: 0.0,
+            opening_weight: 0.0,
+            openings: Vec::new(),
+            loads: vec![],
+            slit: WallSlit::default(),
+        };
+        assert_eq!(m.wall_plate_self_weight(&p, &m), Some(0.0));
+
+        p.loads.push(AreaLoad {
+            kind: "増打ち".into(),
+            value: 1.0e-3,
+        });
+        let w = m.wall_plate_self_weight(&p, &m).expect("自重が求まる");
+        assert!((w - 1.0e-3 * 4000.0 * 3000.0).abs() < 1e-6, "{w}");
+    }
+
+    /// 仕上げ・増打ちも躯体と同じ正味面積（開口控除後）に乗る。
+    #[test]
+    fn test_finish_load_deducts_opening_area() {
         let m = model_with_nodes(&[
             [0.0, 0.0, 0.0],
             [4000.0, 0.0, 0.0],
@@ -861,11 +1007,57 @@ mod tests {
                 boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
             },
             section: None,
+            opening_area: 2.0e6,
+            opening_weight: 0.0,
+            openings: Vec::new(),
+            loads: vec![AreaLoad {
+                kind: "仕上げ".into(),
+                value: 1.0e-3,
+            }],
+            slit: WallSlit::default(),
+        };
+        let w = m.wall_plate_self_weight(&p, &m).expect("自重が求まる");
+        assert!((w - 1.0e-3 * (4000.0 * 3000.0 - 2.0e6)).abs() < 1e-6, "{w}");
+    }
+
+    /// 高さを階高いっぱいとした自立壁は、直上の階レベルまでの高さへ解決する。
+    /// 直上に階が無ければ高さが決まらず `None`（解析前チェックが止める）。
+    #[test]
+    fn test_story_height_extent_resolves_from_stories() {
+        use crate::ids::StoryId;
+        let mut m = model_with_nodes(&[[0.0, 0.0, 0.0], [4000.0, 0.0, 0.0]]);
+        for (i, z) in [0.0_f64, 3200.0].into_iter().enumerate() {
+            m.stories.push(Story {
+                id: StoryId(i as u32),
+                name: format!("{i}F"),
+                elevation: z,
+                node_ids: vec![],
+                seismic_weight: None,
+                weight_override: None,
+                structure: Default::default(),
+                level_kind: Default::default(),
+            });
+        }
+        let p = WallPlate {
+            id: WallPlateId(0),
+            shape: WallPlateShape::Attached {
+                anchor: RegionAnchor::FloorRegion {
+                    nodes: [NodeId(0), NodeId(1)],
+                },
+                extent: None,
+            },
+            section: None,
             opening_area: 0.0,
             opening_weight: 0.0,
             openings: Vec::new(),
+            loads: vec![],
             slit: WallSlit::default(),
         };
+        assert_eq!(m.wall_plate_extent(&p), Some([3200.0, 3200.0]));
+
+        // 最上階の床に立つ壁は上端を決める階が無い。
+        m.stories.truncate(1);
+        assert_eq!(m.wall_plate_extent(&p), None);
         assert_eq!(m.wall_plate_self_weight(&p, &m), None);
     }
 
@@ -923,6 +1115,7 @@ mod tests {
                 height: 1200.0,
                 offset: Some([1550.0, 0.0]),
             }],
+            loads: vec![],
             slit: WallSlit::default(),
         };
         let gross_area = 4000.0 * 3000.0;
@@ -991,6 +1184,7 @@ mod tests {
             opening_area: 999.0,
             opening_weight: 0.0,
             openings: Vec::new(),
+            loads: vec![],
             slit: WallSlit::default(),
         };
         assert!((p.total_opening_area() - 999.0).abs() < 1e-9);
@@ -1009,6 +1203,7 @@ mod tests {
             opening_area: 0.0,
             opening_weight: 1234.0,
             openings: Vec::new(),
+            loads: vec![],
             slit: WallSlit::default(),
         };
         let gross_area = 4000.0 * 3000.0;
@@ -1070,12 +1265,13 @@ mod tests {
                 anchor: RegionAnchor::FloorRegion {
                     nodes: [NodeId(i), NodeId(i + 1)],
                 },
-                extent,
+                extent: Some(extent),
             },
             section: None,
             opening_area: 0.0,
             opening_weight: 0.0,
             openings: vec![],
+            loads: vec![],
             slit: WallSlit::default(),
         }
     }
@@ -1230,6 +1426,7 @@ mod tests {
             opening_area: 0.0,
             opening_weight: 0.0,
             openings: vec![],
+            loads: vec![],
             slit: WallSlit::default(),
         };
         assert!(m.self_standing_wall_coverage(&p).is_none());

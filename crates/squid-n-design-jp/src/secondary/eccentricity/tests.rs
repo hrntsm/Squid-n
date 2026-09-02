@@ -232,38 +232,85 @@ fn test_sum_column_area() {
     assert!((sum_column_area(&model, s0) - 400.0).abs() < 1e-12);
 }
 
+/// 壁厚 100mm の壁用断面を末尾に足し、その `SectionId` を返す。
+fn push_wall_section(model: &mut squid_n_core::Model) -> squid_n_core::ids::SectionId {
+    let id = squid_n_core::ids::SectionId(model.sections.len() as u32);
+    let mut sec = model.sections[0].clone();
+    sec.id = id;
+    sec.name = "wall".to_string();
+    sec.thickness = Some(100.0);
+    model.sections.push(sec);
+    id
+}
+
+/// 自立壁を 1 枚足す。`extent` が `None` なら高さは階高いっぱい。
+fn push_self_standing(
+    model: &mut squid_n_core::Model,
+    nodes: [squid_n_core::ids::NodeId; 2],
+    extent: Option<[f64; 2]>,
+    section: Option<squid_n_core::ids::SectionId>,
+) {
+    use squid_n_core::model::{RegionAnchor, WallPlate, WallPlateShape};
+    let id = squid_n_core::ids::WallPlateId(model.wall_plates.len() as u32);
+    model.wall_plates.push(WallPlate {
+        id,
+        shape: WallPlateShape::Attached {
+            anchor: RegionAnchor::FloorRegion { nodes },
+            extent,
+        },
+        section,
+        opening_area: 0.0,
+        opening_weight: 0.0,
+        openings: vec![],
+        loads: vec![],
+        slit: Default::default(),
+    });
+}
+
+/// n 倍法が拾うのは「断面が割り当たっていて上階まで届いている自立壁」だけである。
+/// 腰高の自立壁・断面なしの自立壁・取付き線に取り付く腰壁は、いずれも層剛性に
+/// 効かないため対象にしない。
 #[test]
 fn test_append_misc_wall_stiffnesses() {
-    use squid_n_core::model::{MiscWallTransfer, OutOfFrameMiscWall};
+    use squid_n_core::ids::{NodeId, WallPlateId};
+    use squid_n_core::model::{LoadTransfer, RegionAnchor, WallPlate, WallPlateShape};
+
     let (mut model, s0) = build_symmetric_frame(None);
     model.stress_cfg.misc_wall_n = Some(2.0);
-    // Y 方向の壁 @ x=6000（長さ 6000 × 厚 100 → Aw' = 6e5）、z_mid=1500 → S0 帰属。
-    model.misc_walls.push(OutOfFrameMiscWall {
-        start: [6000.0, 0.0, 0.0],
-        end: [6000.0, 6000.0, 0.0],
-        height: 3000.0,
-        weight_per_area: 1.0e-3,
-        transfer: MiscWallTransfer::SelfStanding,
-        thickness: Some(100.0),
+    let wall_sec = push_wall_section(&mut model);
+
+    // 対象: x=6000 の Y 方向の自立壁（N1→N3、z=0）。高さは階高（3000）。
+    // 長さ 6000 × 厚 100 → Aw' = 6e5、z_mid = 1500 → S0 帰属。
+    push_self_standing(&mut model, [NodeId(1), NodeId(3)], None, Some(wall_sec));
+    // 対象外: 腰高（1500 < 階高 3000）の自立壁。階と階をつないでいない。
+    push_self_standing(
+        &mut model,
+        [NodeId(0), NodeId(2)],
+        Some([1500.0, 1500.0]),
+        Some(wall_sec),
+    );
+    // 対象外: 断面が無く板厚を引けない自立壁。
+    push_self_standing(&mut model, [NodeId(0), NodeId(1)], None, None);
+    // 対象外: 取付き線に取り付く全高の腰壁。フロア間で壁がつながっていないもの
+    // （腰壁・垂れ壁・パラペット）は周辺部材の断面性能へ算入する経路が受け持つ。
+    model.wall_plates.push(WallPlate {
+        id: WallPlateId(model.wall_plates.len() as u32),
+        shape: WallPlateShape::Attached {
+            anchor: RegionAnchor::Line {
+                nodes: [NodeId(2), NodeId(3)],
+                span: [0.0, 1.0],
+                transfer: LoadTransfer::Anchor,
+            },
+            extent: Some([3000.0, 3000.0]),
+        },
+        section: Some(wall_sec),
+        opening_area: 0.0,
+        opening_weight: 0.0,
+        openings: vec![],
+        loads: vec![],
+        slit: Default::default(),
     });
-    // 帯域外の壁（z_mid = 4500 > elevation 3000）→ 無視される。
-    model.misc_walls.push(OutOfFrameMiscWall {
-        start: [0.0, 0.0, 3000.0],
-        end: [0.0, 6000.0, 3000.0],
-        height: 3000.0,
-        weight_per_area: 1.0e-3,
-        transfer: MiscWallTransfer::SelfStanding,
-        thickness: Some(100.0),
-    });
-    // 厚さ未設定の壁 → 無視される。
-    model.misc_walls.push(OutOfFrameMiscWall {
-        start: [0.0, 0.0, 0.0],
-        end: [0.0, 6000.0, 0.0],
-        height: 3000.0,
-        weight_per_area: 1.0e-3,
-        transfer: MiscWallTransfer::SelfStanding,
-        thickness: None,
-    });
+    assert!(model.validate().is_ok(), "{:?}", model.validate());
 
     let mut cols = vec![
         ColumnStiffness {
@@ -288,7 +335,7 @@ fn test_append_misc_wall_stiffnesses() {
         },
     ];
     append_misc_wall_stiffnesses(&model, s0, &mut cols);
-    assert_eq!(cols.len(), 5, "帯域内かつ厚さ有りの壁 1 枚のみ追加");
+    assert_eq!(cols.len(), 5, "上階まで届く断面付きの自立壁 1 枚のみ追加");
     let wall = cols[4];
     // Kw'y = n·Aw'·ΣKy/ΣAc = 2·6e5·400/400 = 1.2e6（cy=1 なので dy へ全量）
     assert!((wall.dy - 1.2e6).abs() < 1e-6, "Kw'y={}", wall.dy);

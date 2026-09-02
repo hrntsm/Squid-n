@@ -2065,8 +2065,9 @@ fn test_import_converts_unenclosed_parapet_to_attached_wall_plate() {
             let b = m.nodes[nodes[1].index()].coord;
             assert!((a[2] - 3000.0).abs() < 1e-6, "取付き線は頂部梁の高さ");
             assert!((b[2] - 3000.0).abs() < 1e-6);
-            assert!((extent[0] - 1500.0).abs() < 1e-6, "{extent:?}");
-            assert!((extent[1] - 1500.0).abs() < 1e-6, "{extent:?}");
+            let e = extent.expect("取付き線に取り付く壁版は高さを明示する");
+            assert!((e[0] - 1500.0).abs() < 1e-6, "{extent:?}");
+            assert!((e[1] - 1500.0).abs() < 1e-6, "{extent:?}");
         }
         other => panic!("Line の Attached ではない: {other:?}"),
     }
@@ -2166,6 +2167,7 @@ fn test_wall_roundtrip_export_import() {
         opening_area: 0.0,
         opening_weight: 0.0,
         openings: Vec::new(),
+        loads: vec![],
         slit: Default::default(),
     });
     model.wall_regions.push(WallRegion {
@@ -2268,6 +2270,7 @@ fn test_non_quad_wall_plate_roundtrip_export_import() {
         opening_area: 0.0,
         opening_weight: 0.0,
         openings: Vec::new(),
+        loads: vec![],
         slit: Default::default(),
     });
     assert!(model.validate().is_ok(), "{:?}", model.validate());

@@ -1552,6 +1552,7 @@ fn test_model_issues_errors_on_both_beam_face_slit() {
         opening_area: 0.0,
         opening_weight: 0.0,
         openings: Vec::new(),
+        loads: vec![],
         slit: WallSlit {
             column_face: [true, true],
             beam_face: [true, true],
@@ -1621,6 +1622,7 @@ fn test_model_issues_warns_ignored_slit_on_non_quad_plate() {
         opening_area: 0.0,
         opening_weight: 0.0,
         openings: Vec::new(),
+        loads: vec![],
         slit: WallSlit {
             column_face: [true, true],
             beam_face: [true, true],
@@ -1683,6 +1685,7 @@ fn test_model_issues_warns_wall_plates_not_expanded() {
         opening_area: 0.0,
         opening_weight: 0.0,
         openings: Vec::new(),
+        loads: vec![],
         slit: Default::default(),
     });
     model.wall_plates.push(WallPlate {
@@ -1694,6 +1697,7 @@ fn test_model_issues_warns_wall_plates_not_expanded() {
         opening_area: 0.0,
         opening_weight: 0.0,
         openings: Vec::new(),
+        loads: vec![],
         slit: Default::default(),
     });
     model.wall_plates.push(WallPlate {
@@ -1704,12 +1708,13 @@ fn test_model_issues_warns_wall_plates_not_expanded() {
                 span: [0.0, 1.0],
                 transfer: squid_n_core::model::LoadTransfer::Anchor,
             },
-            extent: [900.0, 900.0],
+            extent: Some([900.0, 900.0]),
         },
         section: Some(SectionId(0)),
         opening_area: 0.0,
         opening_weight: 0.0,
         openings: Vec::new(),
+        loads: vec![],
         slit: Default::default(),
     });
     model.wall_plates.push(WallPlate {
@@ -1720,12 +1725,13 @@ fn test_model_issues_warns_wall_plates_not_expanded() {
                 span: [0.0, 1.0],
                 transfer: squid_n_core::model::LoadTransfer::Anchor,
             },
-            extent: [900.0, 900.0],
+            extent: Some([900.0, 900.0]),
         },
         section: None,
         opening_area: 0.0,
         opening_weight: 0.0,
         openings: Vec::new(),
+        loads: vec![],
         slit: Default::default(),
     });
 
@@ -1789,12 +1795,13 @@ fn self_standing_wall_off_the_floor_is_an_error() {
             anchor: RegionAnchor::FloorRegion {
                 nodes: [NodeId(n), NodeId(n + 1)],
             },
-            extent: [2000.0, 2000.0],
+            extent: Some([2000.0, 2000.0]),
         },
         section: Some(sec),
         opening_area: 0.0,
         opening_weight: 0.0,
         openings: Vec::new(),
+        loads: vec![],
         slit: Default::default(),
     });
 

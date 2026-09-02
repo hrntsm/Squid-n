@@ -34,8 +34,6 @@ pub enum ModelTab {
     Slabs,
     /// 壁版（断面・開口・柱際スリット・取付き先）
     WallPlates,
-    /// フレーム外雑壁
-    MiscWalls,
     /// 部材付帯情報（ハンチ・継手位置）
     MemberDetails,
     /// S造検定属性（継手・スカラップ欠損率、横座屈長さ・座屈長さの直接入力）
@@ -1073,9 +1071,6 @@ pub struct App {
     /// モデルタブ「壁版」フォームのドラフト状態
     #[cfg(feature = "gui")]
     pub wall_plate_draft: crate::tables::wall_plates::WallPlateDraft,
-    /// モデルタブ「雑壁」追加フォームのドラフト状態
-    #[cfg(feature = "gui")]
-    pub misc_wall_draft: crate::tables::misc_walls::MiscWallDraft,
     /// モデルタブ「通り芯」の通り名編集のドラフト状態
     #[cfg(feature = "gui")]
     pub axis_name_draft: crate::tables::axes::AxisNameDraft,
@@ -1300,7 +1295,6 @@ impl Default for App {
             #[cfg(feature = "gui")]
             wall_plate_draft: crate::tables::wall_plates::WallPlateDraft::default(),
             #[cfg(feature = "gui")]
-            misc_wall_draft: crate::tables::misc_walls::MiscWallDraft::default(),
             #[cfg(feature = "gui")]
             axis_name_draft: crate::tables::axes::AxisNameDraft::default(),
             #[cfg(feature = "gui")]

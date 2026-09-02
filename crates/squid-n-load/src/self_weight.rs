@@ -17,7 +17,7 @@
 
 use squid_n_core::model::{LoadCfg, MemberLoad, MemberLoadKind, Model, NodalLoad};
 
-use crate::story_gen::{enumerate_self_weight, misc_wall_weight_shares, SelfWeightItem};
+use crate::story_gen::{enumerate_self_weight, SelfWeightItem};
 
 /// 旧スキーマの自重自動生成荷重ケース名（現行は自重を「DL」ケースへ統合して
 /// 同期する。読込時の移行 `Model::migrate_legacy_auto_load_cases` が参照する）。
@@ -84,7 +84,8 @@ pub fn self_weight_case_content(
                 node_force[ni] += total / 2.0;
                 node_force[nj] += total / 2.0;
             }
-            SelfWeightItem::Panel { shares } => {
+            // 長期荷重は総重量（躯体 ＋ 仕上げ・増打ち）を配る。
+            SelfWeightItem::Panel { shares, .. } => {
                 for (i, w) in shares {
                     node_force[i] += w;
                 }
@@ -96,10 +97,6 @@ pub fn self_weight_case_content(
             // 地震用重量の階配分（`story_gen`）は引き続き本項目を使う。
             SelfWeightItem::SecondaryLine { .. } => {}
         }
-    }
-
-    for (i, w) in misc_wall_weight_shares(model) {
-        node_force[i] += w;
     }
 
     let nodal: Vec<NodalLoad> = node_force
@@ -272,7 +269,7 @@ mod tests {
                 crate::story_gen::SelfWeightItem::Line { total, .. } => *total,
                 crate::story_gen::SelfWeightItem::Damper { total, .. } => *total,
                 crate::story_gen::SelfWeightItem::SecondaryLine { total, .. } => *total,
-                crate::story_gen::SelfWeightItem::Panel { shares } => {
+                crate::story_gen::SelfWeightItem::Panel { shares, .. } => {
                     shares.iter().map(|(_, w)| w).sum()
                 }
             })

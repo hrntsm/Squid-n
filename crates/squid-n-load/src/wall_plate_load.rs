@@ -1,9 +1,10 @@
 //! 解析要素にならない壁版（`WallPlateShape::Enclosed`）の自重の分配。
 //!
-//! 壁エレメントになるのは壁領域全体を覆う 4 節点の壁版だけである
-//! （[`squid_n_core::model::Model::wall_plate_covers_region`]）。それ以外の囲まれた
-//! 壁版（間柱で分割された壁版・腰壁・垂れ壁・5 節点以上の壁領域内の壁版）は
-//! **荷重だけを持つ壁版**であり、その自重を境界の辺へ配るのが本モジュールである。
+//! 壁エレメントになるのは壁領域全体を覆う 4 節点で、かつ断面が割り当たった壁版だけ
+//! である（[`squid_n_core::model::Model::wall_plate_becomes_element`]）。それ以外の
+//! 囲まれた壁版（間柱で分割された壁版・腰壁・垂れ壁・5 節点以上の壁領域内の壁版・
+//! 断面未割当の壁版）は**荷重だけを持つ壁版**であり、その自重を境界の辺へ配るのが
+//! 本モジュールである。
 //! 取り付く壁版（`WallPlateShape::Attached`）は [`crate::wall_attached`] が受け持つ。
 //!
 //! # 一方向版として配る
@@ -242,8 +243,14 @@ fn edge_shares_with(index: &SupportIndex, plate: &WallPlate) -> Vec<WallEdgeShar
     let WallPlateShape::Enclosed { boundary } = &plate.shape else {
         return Vec::new(); // 取り付く壁版は `wall_attached` が受け持つ。
     };
-    if model.wall_plate_covers_region(plate) {
-        return Vec::new(); // 壁エレメントになる壁版の自重は要素の頂点へ配られる。
+    // 壁エレメントになる壁版の自重は要素の頂点へ配られるので、ここでは扱わない。
+    //
+    // 判定に `wall_plate_covers_region` ではなく `wall_plate_becomes_element` を
+    // 使う。壁領域を覆っていても断面が無ければ要素にならず、要素経由の自重算定を
+    // 通らない。仕上げ・増打ちの面荷重は断面に依らず重さを持つため、`covers_region`
+    // で落とすとその重さが**どちらの経路も通らずに消える**。
+    if model.wall_plate_becomes_element(plate) {
+        return Vec::new();
     }
     let Some(total) = model.wall_plate_self_weight(plate, model) else {
         return Vec::new();
@@ -451,7 +458,7 @@ pub fn wall_plates_without_load_path(model: &Model) -> Vec<WallPlateId> {
         .iter()
         .filter(|plate| {
             if !matches!(plate.shape, WallPlateShape::Enclosed { .. })
-                || model.wall_plate_covers_region(plate)
+                || model.wall_plate_becomes_element(plate)
             {
                 return false;
             }

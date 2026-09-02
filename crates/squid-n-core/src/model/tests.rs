@@ -341,6 +341,7 @@ fn test_wall_attr_total_opening_area_prefers_openings() {
         opening_area: 999.0,
         opening_weight: 0.0,
         slit: Default::default(),
+        finish_intensity: 0.0,
         openings: vec![
             WallOpening {
                 width: 1000.0,
@@ -389,6 +390,7 @@ fn attr_with(openings: Vec<WallOpening>) -> WallAttr {
         opening_weight: 0.0,
         slit: Default::default(),
         openings,
+        finish_intensity: 0.0,
     }
 }
 
@@ -1362,6 +1364,7 @@ fn test_validate_dangling_wall_plate_boundary() {
             opening_area: 0.0,
             opening_weight: 0.0,
             openings: vec![],
+            loads: vec![],
             slit: Default::default(),
         }],
         ..Default::default()
@@ -1395,6 +1398,7 @@ fn test_validate_duplicate_enclosed_wall_plate_boundary() {
         opening_area: 0.0,
         opening_weight: 0.0,
         openings: vec![],
+        loads: vec![],
         slit: Default::default(),
     };
     model.wall_plates.push(mk(0, boundary.clone()));
@@ -1430,12 +1434,13 @@ fn test_validate_checks_wall_plate_anchor_span_bounds() {
                 span,
                 transfer: LoadTransfer::Anchor,
             },
-            extent: [900.0, 900.0],
+            extent: Some([900.0, 900.0]),
         },
         section: None,
         opening_area: 0.0,
         opening_weight: 0.0,
         openings: vec![],
+        loads: vec![],
         slit: Default::default(),
     };
     model.wall_plates = vec![mk([0.0, 1.0])];
@@ -1466,12 +1471,13 @@ fn test_validate_self_standing_wall_checks_only_node_refs() {
         id: WallPlateId(0),
         shape: WallPlateShape::Attached {
             anchor: RegionAnchor::FloorRegion { nodes },
-            extent: [2500.0, 2500.0],
+            extent: Some([2500.0, 2500.0]),
         },
         section: None,
         opening_area: 0.0,
         opening_weight: 0.0,
         openings: vec![],
+        loads: vec![],
         slit: Default::default(),
     };
     // 床領域が 1 つも無くても、節点が実在すれば `validate` は通る
@@ -1538,6 +1544,7 @@ fn test_validate_wall_plate_shared_by_two_wall_regions() {
         opening_area: 0.0,
         opening_weight: 0.0,
         openings: vec![],
+        loads: vec![],
         slit: Default::default(),
     }];
     model.wall_regions = vec![

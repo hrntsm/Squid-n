@@ -2395,6 +2395,7 @@ fn test_beam_new_misc_wall_wing_augments_column_inplane_stiffness() {
         opening_weight: 0.0,
         slit: Default::default(),
         openings: openings.clone(),
+        finish_intensity: 0.0,
     });
     // 雑壁の幾何は壁版（入力）が情報源。
     model.wall_plates.push(squid_n_core::model::WallPlate {
@@ -2406,6 +2407,7 @@ fn test_beam_new_misc_wall_wing_augments_column_inplane_stiffness() {
         opening_area: 0.0,
         opening_weight: 0.0,
         openings,
+        loads: vec![],
         slit: Default::default(),
     });
 
@@ -2560,6 +2562,7 @@ fn test_beam_new_misc_wall_strip_augments_girder_iy_without_100x() {
         opening_weight: 0.0,
         slit: Default::default(),
         openings: openings.clone(),
+        finish_intensity: 0.0,
     });
     // 雑壁の幾何は壁版（入力）が情報源。
     model.wall_plates.push(squid_n_core::model::WallPlate {
@@ -2571,6 +2574,7 @@ fn test_beam_new_misc_wall_strip_augments_girder_iy_without_100x() {
         opening_area: 0.0,
         opening_weight: 0.0,
         openings,
+        loads: vec![],
         slit: Default::default(),
     });
 
@@ -2776,6 +2780,7 @@ fn test_column_face_slit_drops_wing_wall_but_keeps_girder_strip() {
             opening_weight: 0.0,
             slit,
             openings: openings.clone(),
+            finish_intensity: 0.0,
         });
         model.wall_plates.push(squid_n_core::model::WallPlate {
             id: squid_n_core::ids::WallPlateId(0),
@@ -2786,6 +2791,7 @@ fn test_column_face_slit_drops_wing_wall_but_keeps_girder_strip() {
             opening_area: 0.0,
             opening_weight: 0.0,
             openings,
+            loads: vec![],
             slit,
         });
         model
@@ -3379,6 +3385,7 @@ fn test_misc_wall_wing_eccentricity_is_independent_of_wall_node_order() {
         opening_area: 0.0,
         opening_weight: 0.0,
         slit: Default::default(),
+        finish_intensity: 0.0,
         openings: vec![WallOpening {
             width: 2400.0,
             height: 1500.0,
@@ -3929,6 +3936,7 @@ fn portal_with_wing_wall(col_depth: f64, beam_depth: f64, wall_thickness: f64) -
             opening_area: 0.0,
             opening_weight: 0.0,
             openings: vec![],
+            loads: vec![],
             slit: Default::default(),
         }],
         ..Default::default()

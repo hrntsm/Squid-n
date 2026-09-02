@@ -839,6 +839,7 @@ fn build_walls(
             opening_area: 0.0,
             opening_weight: 0.0,
             openings: Vec::new(),
+            loads: vec![],
             slit: Default::default(),
         };
         model.wall_plates.push(plate);

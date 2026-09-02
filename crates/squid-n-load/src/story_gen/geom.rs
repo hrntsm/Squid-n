@@ -13,6 +13,6 @@ pub(super) use squid_n_core::geom::polygon_area_3d;
 /// 2 点間の 3D 距離 [mm]。算定の情報源は `squid-n-core` に置く。
 pub(super) use squid_n_core::geom::vec3::dist as dist3;
 
-/// 「鉛直材（柱）」判定。仕上げ周長式・雑壁の柱探索・柱脚梁せい付加・通り芯の
+/// 「鉛直材（柱）」判定。仕上げ周長式・柱脚梁せい付加・壁領域の構面走査・通り芯の
 /// 自動生成が共通で用いるため、判定規則は `squid-n-core` を情報源とする。
 pub(super) use squid_n_core::geom::is_vertical_pair;

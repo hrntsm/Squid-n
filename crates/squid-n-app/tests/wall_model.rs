@@ -4,11 +4,11 @@
 //!
 //! `dev_docs/handoff/床領域・壁領域の再設計_申し送り.md` §3.2 E8 で決めたとおり、
 //! 実フィクスチャ（`tests/fixtures/model.stb`、`full_model.rs`）には壁要素が 0 件で、
-//! 壁関連の機能（`WallAttr` の開口低減・自重、`OutOfFrameMiscWall` の 0.5m 分割集計）は
+//! 壁関連の機能（`WallAttr` の開口低減・自重、取り付く壁版の自重配分）は
 //! いずれも単体テストでしか検証されていない。`Model.floor_regions`（26 件）を
 //! 巻き込まない**独立した壁専用フィクスチャ**として、耐震壁 1 パネル＋フレーム外雑壁
 //! 1 本を含む最小の立体架構を用意し、`App` の全解析入口を通した代表スカラを
-//! ピン止めする。`WallRegion`/`WallAttr`/`OutOfFrameMiscWall` の型を作り替える Step 7+8 の
+//! ピン止めする。`WallRegion`/`WallAttr`/`WallPlate` の型を作り替える Step 7+8 の
 //! 着手時、このテストの差分が「型変更が計算結果を変えていないか」の一次判定になる。
 //!
 //! # モデル
@@ -67,9 +67,9 @@ use squid_n_app::app::{App, StaticCaseKey};
 use squid_n_core::dof::Dof6Mask;
 use squid_n_core::ids::{ElemId, MaterialId, NodeId, SectionId, WallPlateId};
 use squid_n_core::model::{
-    ElementData, ElementKind, EndCondition, ForceRegime, LocalAxis, Material, MaterialCategory,
-    MiscWallTransfer, Model, Node, OutOfFrameMiscWall, RigidZone, Section, WallOpening, WallPlate,
-    WallPlateShape,
+    AreaLoad, ElementData, ElementKind, EndCondition, ForceRegime, LoadTransfer, LocalAxis,
+    Material, MaterialCategory, Model, Node, RegionAnchor, RigidZone, Section, WallOpening,
+    WallPlate, WallPlateShape,
 };
 use squid_n_core::wall_region_rebuild::rebuild_wall_regions;
 use squid_n_section::shape::{BarSet, RcRebar, SectionShape, ShearBar};
@@ -282,6 +282,30 @@ fn wall_bay_model() -> Model {
         fc: None,
         fy: Some(345.0),
     });
+    // 断面: パラペット（取り付く壁版 = 壁版 1）。板厚 120 の RC。
+    model.sections.push(Section {
+        id: SectionId(5),
+        name: "パラペット t120".into(),
+        area: 120.0 * 900.0,
+        iy: 1.0e8,
+        iz: 1.0e8,
+        j: 1.0e8,
+        depth: 900.0,
+        width: 120.0,
+        as_y: 1.0e4,
+        as_z: 1.0e4,
+        floor: None,
+        panel_thickness: None,
+        thickness: Some(120.0),
+        shape: Some(SectionShape::RcWall {
+            thickness: 120.0,
+            ps: 0.0025,
+        }),
+        material: Some(MaterialId(1)),
+        rebar_material: None,
+        shear_rebar_material: None,
+        steel_material: None,
+    });
     for sec in model.sections.iter_mut().take(2) {
         sec.material = Some(MaterialId(0));
     }
@@ -352,18 +376,36 @@ fn wall_bay_model() -> Model {
             height: 1200.0,
             offset: Some([1550.0, 0.0]),
         }],
+        loads: vec![],
         slit: Default::default(),
     });
 
-    // フレーム外雑壁 1 本（Y=3000 面の梁 6-7 上端に沿うパラペット想定。
-    // height=900・Column 伝達で節点 6・7 へ集計される）。
-    model.misc_walls.push(OutOfFrameMiscWall {
-        start: [4000.0, 3000.0, 3000.0],
-        end: [0.0, 3000.0, 3000.0],
-        height: 900.0,
-        weight_per_area: 1.2e-3,
-        transfer: MiscWallTransfer::Column,
-        thickness: None,
+    // 取り付く壁版 1 枚（Y=3000 面の梁 6-7 に載るパラペット。立ち上がり 900、
+    // 荷重は取付き線の両端＝柱頭の節点 6・7 へ集中する）。
+    //
+    // 自重は断面（板厚 120・RC）から求め、外装の仕上げ 0.3kN/m² を `loads` で
+    // 上乗せする。壁版の面荷重を代表スカラのピン止め対象へ入れるためでもある。
+    // どのフィクスチャも `loads` を持たないと、仕上げ・増打ちを自重へ算入する
+    // 経路が壊れても代表スカラが動かず、静かに落ちる。
+    model.wall_plates.push(WallPlate {
+        id: WallPlateId(1),
+        shape: WallPlateShape::Attached {
+            anchor: RegionAnchor::Line {
+                nodes: [NodeId(6), NodeId(7)],
+                span: [0.0, 1.0],
+                transfer: LoadTransfer::Columns,
+            },
+            extent: Some([900.0, 900.0]),
+        },
+        section: Some(SectionId(5)),
+        opening_area: 0.0,
+        opening_weight: 0.0,
+        openings: vec![],
+        loads: vec![AreaLoad {
+            kind: "仕上げ".into(),
+            value: 3.0e-4,
+        }],
+        slit: Default::default(),
     });
 
     // 壁領域を柱・梁の閉路から検出し、直前に積んだ壁版を帰属させる
@@ -404,9 +446,8 @@ fn test_wall_bay_model_is_valid() {
         model.elements.iter().all(|e| e.kind != ElementKind::Wall),
         "壁要素は準備計算からの生成物であり model.elements には含まれない"
     );
-    assert_eq!(model.wall_plates.len(), 1);
+    assert_eq!(model.wall_plates.len(), 2, "耐震壁 1 枚＋パラペット 1 枚");
     assert_eq!(model.wall_regions.len(), 4, "1 スパンの 4 鉛直構面すべて");
-    assert_eq!(model.misc_walls.len(), 1);
 }
 
 /// GUI診断（`App::run_diagnostics`）が壁展開モデル（D5・dig Q4）を見ていることの回帰
@@ -512,7 +553,7 @@ fn test_wall_bay_model_runs_full_pipeline() {
 /// 代表スカラのスナップショット（有効数字 4 桁）。
 ///
 /// `full_model.rs::snapshot_key_scalars` と同じ趣旨。壁関連の型（`WallRegion`・
-/// `WallAttr`・`OutOfFrameMiscWall`）を作り替える際、この値の変化を V&V の対象とすること。
+/// `WallAttr`・`WallPlate`）を作り替える際、この値の変化を V&V の対象とすること。
 #[test]
 fn snapshot_wall_bay_scalars() {
     let mut app = wall_bay_app();
@@ -655,10 +696,18 @@ fn test_wall_element_changes_eigen_period() {
     // 壁の解析要素は生成物のため、入力側の壁版を取り除けば生成されなくなる
     // （D5）。壁領域からの参照（`wall_plate_ids`）もあわせて外し、ダングリング
     // 参照による `validate()` エラーを避ける。
+    //
+    // 取り除くのは耐震壁（壁版 0）だけで、パラペット（壁版 1）は双方に残す。
+    // パラペットまで消すとその自重の分だけ質量も変わり、周期の差が「壁の面内
+    // せん断剛性の寄与」を表さなくなる。
     for r in &mut model_without.wall_regions {
         r.wall_plate_ids.clear();
     }
-    model_without.wall_plates.clear();
+    model_without.wall_plates.retain(|p| p.id != WallPlateId(0));
+    // ID＝配列インデックスの不変条件を保つため詰め直す。
+    for (i, p) in model_without.wall_plates.iter_mut().enumerate() {
+        p.id = WallPlateId(i as u32);
+    }
     let mut without_wall = App::default();
     without_wall.analysis_cfg.threads = 1;
     without_wall.model = model_without;

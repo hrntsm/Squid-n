@@ -258,7 +258,9 @@ fn try_convert_wall_attached(
             span: [0.0, 1.0],
             transfer: LoadTransfer::Anchor,
         },
-        extent,
+        // 取付き線に取り付く壁版なので、高さは必ず明示する（`WallPlateShape::Attached`
+        // のドキュメント参照）。ここでは輪郭の自由端から幾何的に決まる。
+        extent: Some(extent),
     })
 }
 
@@ -549,6 +551,7 @@ mod tests {
             opening_area: 0.0,
             opening_weight: 0.0,
             openings: vec![],
+            loads: vec![],
             slit: Default::default(),
         });
         let report = rebuild_wall_regions(&mut model);
@@ -578,6 +581,7 @@ mod tests {
             opening_area: 0.0,
             opening_weight: 0.0,
             openings: vec![],
+            loads: vec![],
             slit: Default::default(),
         });
         let report = rebuild_wall_regions(&mut model);
@@ -607,6 +611,7 @@ mod tests {
             opening_area: 0.0,
             opening_weight: 0.0,
             openings: vec![],
+            loads: vec![],
             slit: Default::default(),
         });
         let report = rebuild_wall_regions(&mut model);
@@ -632,8 +637,9 @@ mod tests {
                 let b = model.nodes[nodes[1].index()].coord;
                 assert!((a[2] - 3000.0).abs() < 1e-6, "取付き線は頂部梁の高さ");
                 assert!((b[2] - 3000.0).abs() < 1e-6);
-                assert!((extent[0] - 1500.0).abs() < 1e-6, "上向き {extent:?}");
-                assert!((extent[1] - 1500.0).abs() < 1e-6, "{extent:?}");
+                let e = extent.expect("取付き線に取り付く壁版は高さを明示する");
+                assert!((e[0] - 1500.0).abs() < 1e-6, "上向き {extent:?}");
+                assert!((e[1] - 1500.0).abs() < 1e-6, "{extent:?}");
             }
             other => panic!("Line の Attached ではない: {other:?}"),
         }
@@ -666,6 +672,7 @@ mod tests {
             opening_area: 0.0,
             opening_weight: 0.0,
             openings: vec![],
+            loads: vec![],
             slit: Default::default(),
         });
         let report = rebuild_wall_regions(&mut model);
@@ -709,6 +716,7 @@ mod tests {
             opening_area: 0.0,
             opening_weight: 0.0,
             openings: vec![],
+            loads: vec![],
             slit: Default::default(),
         });
 
@@ -756,14 +764,16 @@ mod tests {
             opening_area: 0.0,
             opening_weight: 0.0,
             openings: vec![],
+            loads: vec![],
             slit: Default::default(),
         });
         let report = rebuild_wall_regions(&mut model);
         assert_eq!(report.wall_plates_converted_to_attached, 1);
         match &model.wall_plates[0].shape {
             WallPlateShape::Attached { extent, .. } => {
-                assert!((extent[0] + 1200.0).abs() < 1e-6, "{extent:?}");
-                assert!((extent[1] + 1200.0).abs() < 1e-6, "{extent:?}");
+                let e = extent.expect("取付き線に取り付く壁版は高さを明示する");
+                assert!((e[0] + 1200.0).abs() < 1e-6, "{extent:?}");
+                assert!((e[1] + 1200.0).abs() < 1e-6, "{extent:?}");
             }
             other => panic!("{other:?}"),
         }
@@ -788,6 +798,7 @@ mod tests {
             opening_area: 0.0,
             opening_weight: 0.0,
             openings: vec![],
+            loads: vec![],
             slit: Default::default(),
         });
         let report = rebuild_wall_regions(&mut model);

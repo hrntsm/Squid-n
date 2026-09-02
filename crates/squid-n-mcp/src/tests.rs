@@ -398,6 +398,7 @@ fn test_query_model_wall_plates() {
         opening_area: 0.0,
         opening_weight: 0.0,
         openings: Vec::new(),
+        loads: vec![],
         slit: Default::default(),
     });
     let items = query_model(&m, "wall_plate", None);
@@ -437,6 +438,7 @@ fn test_apply_edit_set_wall_plate_slit() {
         opening_area: 0.0,
         opening_weight: 0.0,
         openings: Vec::new(),
+        loads: vec![],
         slit: Default::default(),
     });
 

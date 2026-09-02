@@ -329,7 +329,7 @@ impl QuantityTakeoff {
 use squid_n_core::geom::vec3::dist as dist3;
 
 /// 鉛直材（柱）判定。判定規則の情報源は `squid-n-core` に置く
-/// （仕上げ周長式・雑壁の柱探索・通り芯の自動生成と同一規則）。
+/// （仕上げ周長式・柱脚梁せい付加・通り芯の自動生成と同一規則）。
 use squid_n_core::geom::is_vertical_pair;
 
 /// 平面多角形（3D 座標）の面積 [mm²]。算定の情報源は `squid-n-core` に置く。
@@ -562,11 +562,15 @@ pub fn compute_quantity_takeoff(model: &Model, cfg: &QuantityCfg) -> QuantityTak
     }
 
     for plate in &model.wall_plates {
-        // 解析要素になった壁版（壁領域全体を覆う 4 節点の壁版）は `wall_quantity` が
-        // 要素経由で数える。それ以外（取り付く壁版・間柱で分割された壁版・腰壁・
-        // 垂れ壁など）は要素にならないため、壁版から直接数える。ここを漏らすと
-        // 数量が黙って落ちる。
-        if !plate.is_attached() && model.wall_plate_covers_region(plate) {
+        // 解析要素になった壁版は `wall_quantity` が要素経由で数える。それ以外
+        // （取り付く壁版・間柱で分割された壁版・腰壁・垂れ壁など）は要素にならない
+        // ため、壁版から直接数える。ここを漏らすと数量が黙って落ちる。
+        //
+        // 判定は `wall_plate_covers_region` ではなく `wall_plate_becomes_element`
+        // を使う。壁領域を覆っていても断面が無ければ要素にならず、要素経由でも
+        // 数えられない。断面が無い壁版は板厚が引けず数量も 0 になるので現状は結果が
+        // 変わらないが、「要素経由で数えたか」を問うている以上そちらで判定する。
+        if !plate.is_attached() && model.wall_plate_becomes_element(plate) {
             continue;
         }
         if let Some(item) = wall_plate_quantity(&ctx, plate) {
@@ -577,26 +581,6 @@ pub fn compute_quantity_takeoff(model: &Model, cfg: &QuantityCfg) -> QuantityTak
     for sm in model.joists().chain(model.posts()) {
         if let Some(item) = secondary_member_quantity(&ctx, sm) {
             out.items.push(item);
-        }
-    }
-
-    for (i, mw) in model.misc_walls.iter().enumerate() {
-        if let Some(t) = mw.thickness {
-            let l = ((mw.end[0] - mw.start[0]).powi(2) + (mw.end[1] - mw.start[1]).powi(2)).sqrt();
-            let area = l * mw.height;
-            out.items.push(MemberQuantity {
-                elem: None,
-                slab: None,
-                label: format!("雑壁{}", i + 1),
-                story: "-".to_string(),
-                category: MemberCategory::MiscWall,
-                structure: StructureKind::Rc,
-                concrete_m3: area * t * 1e-9,
-                formwork_m2: area * 2.0 * 1e-6,
-                rebar: Vec::new(),
-                steel: None,
-                rebar_joints: 0.0,
-            });
         }
     }
 
@@ -1261,7 +1245,7 @@ fn wall_quantity(ctx: &Ctx, elem: &ElementData) -> Option<MemberQuantity> {
 ///
 /// 解析要素を持たない（D5）ため `WallPlate` から直接算定する（[`slab_quantity`] と
 /// 同じ位置づけ。エレメント経由の [`wall_quantity`] は `Enclosed`（4 節点の耐震壁）
-/// のみを数える）。取り付く壁版は `OutOfFrameMiscWall`（フレーム外雑壁）の後継
+/// のみを数える）。取り付く壁版はフレーム外雑壁にあたる
 /// （`dev_docs/specs/用語集.md`）のため、カテゴリは同じ `MemberCategory::MiscWall` を使う。
 /// ラベルは囲まれた壁と同じく割り当てた断面の符号（`wall_quantity` と同じ）。
 fn wall_plate_quantity(ctx: &Ctx, plate: &WallPlate) -> Option<MemberQuantity> {

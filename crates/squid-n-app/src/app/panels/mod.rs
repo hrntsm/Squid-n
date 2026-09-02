@@ -101,7 +101,6 @@ impl App {
                 ("材料", ModelTab::Materials),
                 ("スラブ", ModelTab::Slabs),
                 ("壁版", ModelTab::WallPlates),
-                ("雑壁", ModelTab::MiscWalls),
                 ("部材付帯情報", ModelTab::MemberDetails),
                 ("S造検定属性", ModelTab::SteelAttrs),
                 ("通り芯", ModelTab::Axes),
@@ -132,7 +131,6 @@ impl App {
             ModelTab::Materials => crate::tables::materials::materials_table(ui, self),
             ModelTab::Slabs => crate::tables::slabs::slabs_table(ui, self),
             ModelTab::WallPlates => crate::tables::wall_plates::wall_plates_table(ui, self),
-            ModelTab::MiscWalls => crate::tables::misc_walls::misc_walls_table(ui, self),
             ModelTab::MemberDetails => {
                 crate::tables::member_details::member_details_table(ui, self)
             }

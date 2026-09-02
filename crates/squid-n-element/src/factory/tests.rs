@@ -516,6 +516,7 @@ fn test_build_behavior_wall_opening_reduces_shear_stiffness() {
         opening_weight: 0.0,
         slit: Default::default(),
         openings: vec![],
+        finish_intensity: 0.0,
     });
     let b_open = build_behavior(&wall, &model);
     let ctx2 = crate::behavior::Ctx { model: &model };
@@ -528,6 +529,7 @@ fn test_build_behavior_wall_opening_reduces_shear_stiffness() {
         opening_area: 1.0, // 無視される(個別開口が優先)
         opening_weight: 0.0,
         slit: Default::default(),
+        finish_intensity: 0.0,
         openings: vec![
             squid_n_core::model::WallOpening {
                 width: 1000.0,

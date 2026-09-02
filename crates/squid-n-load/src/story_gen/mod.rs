@@ -39,7 +39,6 @@
 //!
 //! - [`geom`] — 幾何ユーティリティ（面積・距離・鉛直判定）
 //! - [`self_weight_calc`] — 自重（線材・壁・シェル・ダンパー）の列挙と算定
-//! - [`misc_wall`] — フレーム外雑壁の重量集計
 //! - [`reactions`] — 単純支持梁の静定反力
 //! - [`generate`] — 階生成の本体（[`generate_stories_multi`] ほか）
 
@@ -47,7 +46,7 @@ use squid_n_core::dof::{Dof, Dof6Mask};
 use squid_n_core::ids::{LoadCaseId, NodeId, StoryId};
 use squid_n_core::model::{
     Constraint, ElementData, ElementKind, KBraceWeightRule, LoadCfg, MassMethod, MemberLoadKind,
-    MiscWallTransfer, Model, Node, Story, DIAPHRAGM_LEVEL_TOL_MM,
+    Model, Node, Story, DIAPHRAGM_LEVEL_TOL_MM,
 };
 
 /// 重力加速度 [mm/s²]（内部単位系 N-mm-s、質量 ton）。
@@ -59,14 +58,12 @@ const LEVEL_TOL_MM: f64 = 1.0;
 
 mod generate;
 mod geom;
-mod misc_wall;
 mod reactions;
 mod self_weight_calc;
 
 pub use generate::{
     generate_stories, generate_stories_multi, generate_stories_with_opts, StoryGenResult,
 };
-pub(crate) use misc_wall::misc_wall_weight_shares;
 pub(crate) use self_weight_calc::{enumerate_self_weight, SelfWeightItem};
 
 // tests が `super::*` から直接呼ぶ内部関数（本体は各サブモジュールに一元化）。
