@@ -9,15 +9,21 @@
 //! - [`sparse_matvec_into`] — `squid_n_math::sparse::sparse_matvec_into` の再エクスポート
 //!   （時刻歴応答解析高速化・第1波で暫定実装したローカル版を、squid-n-math に同等
 //!   API が追加された第2波で置き換えた）
+//! - [`resolve_dt`] — 時間刻みの解決（設定値と波形の刻みの優先順）
+//! - [`NewmarkCoeffs`] — Newmark-β の積分係数 c1〜c6
+//! - [`GroundInfluence`] — 影響ベクトル束 `M·r` と等価地震力 `p = −M·r·ẍg`
+//! - [`empty_response`] — 独立自由度が無い退化ケースの応答
+//! - [`reduced_vec_from`] — 縮約空間の初期値ベクトル生成
 
-use super::config::GroundMotion;
+use super::config::{GroundMotion, NewmarkCfg};
+use super::result::{ResponseHistory, ResponseResult};
 use squid_n_core::dof::{DofMap, DOF_PER_NODE};
 use squid_n_core::model::Model;
 use squid_n_math::solver::{make_solver, SolveError, SolverBackend};
 use squid_n_math::sparse::sparse_matvec;
 
 /// [`squid_n_math::sparse::sparse_matvec_into`] の再エクスポート。時刻歴応答解析
-/// 各所（`linear.rs`・`hht.rs`・`nonlinear.rs`）は本モジュール経由でこの名前を使う
+/// 各所（`linear.rs`・`nonlinear.rs`）は本モジュール経由でこの名前を使う
 /// （第1波はここにローカル実装を置いていたが、第2波で squid-n-math 側の実装へ寄せた。
 /// 呼び出し側の変更は不要）。
 pub(crate) use squid_n_math::sparse::sparse_matvec_into;
@@ -26,8 +32,8 @@ pub(crate) use squid_n_math::sparse::sparse_matvec_into;
 ///
 /// 影響ベクトル r は当該方向の並進自由度に 1 を立てた単位剛体並進で、
 /// `M·r` が各ステップの等価地震力 `−M·r·üg` の係数になる。積分スキーム
-/// （Newmark 線形・HHT-α・非線形）で同一のため単一実装とする。
-pub(crate) fn horizontal_influence_m(
+/// （Newmark 線形・非線形）で同一のため単一実装とする。
+fn horizontal_influence_m(
     model: &Model,
     dofmap: &DofMap,
     m_free: &faer::sparse::SparseColMat<usize, f64>,
@@ -55,7 +61,7 @@ pub(crate) fn horizontal_influence_m(
 /// （多点位相差入力、構造力学）。鉛直（Z）軸まわりの単位角加速度に対し、各節点は
 /// 剛体回転 `ax=−(y−yc)`, `ay=(x−xc)` の並進と、回転自由度 rz=1 の影響を受ける
 /// （`(xc,yc)`＝節点幾何重心）。返り値は自由 DOF 空間の `M·r_θ`。
-pub(crate) fn theta_influence_m(
+fn theta_influence_m(
     model: &Model,
     dofmap: &DofMap,
     m_free: &faer::sparse::SparseColMat<usize, f64>,
@@ -91,7 +97,7 @@ pub(crate) fn theta_influence_m(
 }
 
 /// 位相差入力のねじれ地動加速度をステップ `n` で取得（未指定は 0）。
-pub(crate) fn theta_accel_at(wave: &GroundMotion, n: usize) -> f64 {
+fn theta_accel_at(wave: &GroundMotion, n: usize) -> f64 {
     wave.accel_theta
         .as_ref()
         .and_then(|a| a.get(n).copied())
@@ -145,4 +151,138 @@ pub(crate) fn mass_accel_free_into(
     out: &mut [f64],
 ) {
     sparse_matvec_into(m_free, a_free, out);
+}
+
+/// 時刻歴の時間刻み [s] を決める。設定値が正ならそれを、さもなくば波形の刻みを使う。
+///
+/// 各積分器（`linear`・`nonlinear`）が同じ規約・同じエラー文言を持つため、
+/// 解決規則をここに一本化する。
+pub(crate) fn resolve_dt(cfg_dt: f64, wave: &GroundMotion) -> Result<f64, SolveError> {
+    let dt = if cfg_dt > 0.0 { cfg_dt } else { wave.dt };
+    if dt <= 0.0 {
+        return Err(SolveError::Backend(
+            "time history: dt must be positive".into(),
+        ));
+    }
+    Ok(dt)
+}
+
+/// Newmark-β の積分係数（構造動力学の標準形）。
+///
+/// 有効剛性・有効荷重の組立と、ステップ確定後の速度・加速度更新に使う。
+/// 線形・非線形の双方が同一の式を用いるため、算定をここへ集約する。
+pub(crate) struct NewmarkCoeffs {
+    pub gamma: f64,
+    pub c1: f64,
+    pub c2: f64,
+    pub c3: f64,
+    pub c4: f64,
+    pub c5: f64,
+    pub c6: f64,
+}
+
+impl NewmarkCoeffs {
+    pub(crate) fn new(newmark: &NewmarkCfg, dt: f64) -> Self {
+        let beta = newmark.beta;
+        let gamma = newmark.gamma;
+        Self {
+            gamma,
+            c1: 1.0 / (beta * dt * dt),
+            c2: gamma / (beta * dt),
+            c3: 1.0 / (beta * dt),
+            c4: 1.0 / (2.0 * beta) - 1.0,
+            c5: gamma / beta - 1.0,
+            c6: dt * (gamma / (2.0 * beta) - 1.0),
+        }
+    }
+}
+
+/// 地動入力の影響ベクトル束 `M·r`（自由 DOF 空間）。
+///
+/// 水平 2 方向（[`horizontal_influence_m`]）と位相差入力の回転
+/// （[`theta_influence_m`]）は常に 3 本まとめて使うため、束ねて持つ。
+/// 等価地震力 `p = −M·r·ẍg` の構築（[`Self::force_at_into`]）もここに置き、
+/// 各積分器のホットループが同じ式を通るようにする。
+pub(crate) struct GroundInfluence {
+    pub m_r_x: Vec<f64>,
+    pub m_r_y: Vec<f64>,
+    pub m_r_theta: Vec<f64>,
+}
+
+impl GroundInfluence {
+    pub(crate) fn build(
+        model: &Model,
+        dofmap: &DofMap,
+        m_free: &faer::sparse::SparseColMat<usize, f64>,
+    ) -> Self {
+        let (m_r_x, m_r_y) = horizontal_influence_m(model, dofmap, m_free);
+        Self {
+            m_r_x,
+            m_r_y,
+            m_r_theta: theta_influence_m(model, dofmap, m_free),
+        }
+    }
+
+    /// ステップ `n` の等価地震力 `p = −M·r·ẍg(n)`（自由 DOF 空間）を `out` へ書き込む。
+    ///
+    /// 範囲外のステップ・未指定の成分は加速度 0 として扱う（自由振動・
+    /// 片方向入力の波形をそのまま渡せるようにするため）。
+    pub(crate) fn force_at_into(&self, wave: &GroundMotion, n: usize, out: &mut [f64]) {
+        debug_assert_eq!(
+            out.len(),
+            self.m_r_x.len(),
+            "等価地震力の書き込み先は自由 DOF 空間の長さであること"
+        );
+        let xg_x = wave.accel_x.get(n).copied().unwrap_or(0.0);
+        let xg_y = wave
+            .accel_y
+            .as_ref()
+            .map(|a| a.get(n).copied().unwrap_or(0.0))
+            .unwrap_or(0.0);
+        let xg_theta = theta_accel_at(wave, n);
+        for (i, o) in out.iter_mut().enumerate() {
+            *o = -(self.m_r_x[i] * xg_x + self.m_r_y[i] * xg_y + self.m_r_theta[i] * xg_theta);
+        }
+    }
+
+    /// [`Self::force_at_into`] の新規確保版。ループ外で 1 回だけ使う経路向け。
+    pub(crate) fn force_at(&self, wave: &GroundMotion, n: usize) -> Vec<f64> {
+        let mut out = vec![0.0; self.m_r_x.len()];
+        self.force_at_into(wave, n, &mut out);
+        out
+    }
+}
+
+/// 解くべき独立自由度がない退化ケースの応答（全ステップ 0）。
+///
+/// `nonlinear`・`applied_long_term` は解析種別によって決まるため引数で受ける。
+/// それ以外の欄は「解かなかった」ことを表す空・零の値で揃える。
+pub(crate) fn empty_response(
+    model: &Model,
+    nonlinear: bool,
+    applied_long_term: bool,
+) -> ResponseResult {
+    ResponseResult {
+        // 解くべきステップがないため Newton 反復も行われない。
+        non_converged_steps: 0,
+        time: vec![],
+        peak_disp: vec![[0.0; 6]; model.nodes.len()],
+        story_drift_angle: vec![0.0; model.layer_count()],
+        cumulative_ductility: vec![0.0; model.elements.len()],
+        history: ResponseHistory::default(),
+        recording: None,
+        nonlinear,
+        applied_long_term,
+    }
+}
+
+/// 縮約空間（`n_indep` 長）のベクトルを作り、`values` の先頭を写す。
+///
+/// 初期変位・初期速度は呼び出し側が短い配列を渡しうるため、長さを切り詰めて
+/// 受ける（余りは 0 のまま）。
+pub(crate) fn reduced_vec_from(n_indep: usize, values: &[f64]) -> Vec<f64> {
+    let mut v = vec![0.0; n_indep];
+    let n = n_indep.min(values.len());
+    v[..n].copy_from_slice(&values[..n]);
+    v
 }

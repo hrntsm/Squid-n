@@ -1,7 +1,6 @@
 //! 時刻歴応答解析の入力設定。
 //!
 //! - [`NewmarkCfg`] — Newmark-β 法のパラメータ（§2）
-//! - [`HhtCfg`] — HHT-α 法のパラメータ（§2）
 //! - [`GroundMotion`] — 地動加速度入力（基盤一様加振）
 
 /// Newmark-β 法のパラメータ（§2）。
@@ -27,18 +26,6 @@ impl NewmarkCfg {
             gamma: 0.5,
             dt: 0.0,
         }
-    }
-}
-
-/// HHT-α 法のパラメータ（§2）。α ∈ [−1/3, 0]、既定 −0.1。
-pub struct HhtCfg {
-    pub alpha: f64,
-    pub dt: f64,
-}
-
-impl HhtCfg {
-    pub fn new(dt: f64) -> Self {
-        Self { alpha: -0.1, dt }
     }
 }
 

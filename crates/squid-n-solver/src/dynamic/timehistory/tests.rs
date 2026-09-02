@@ -31,7 +31,6 @@ fn test_timehistory_config_deterministic() {
         gamma: 0.5,
         dt: 0.02,
     };
-    let cfg3 = HhtCfg::new(0.005);
     for _ in 0..10 {
         let c1 = NewmarkCfg {
             beta: 0.25,
@@ -47,9 +46,6 @@ fn test_timehistory_config_deterministic() {
             dt: 0.02,
         };
         assert_eq!(cfg2.beta.to_bits(), c2.beta.to_bits());
-        let c3 = HhtCfg::new(0.005);
-        assert_eq!(cfg3.alpha.to_bits(), c3.alpha.to_bits());
-        assert_eq!(cfg3.dt.to_bits(), c3.dt.to_bits());
     }
 }
 
@@ -835,253 +831,6 @@ fn test_checkpoint_restart_bit_exact() {
             i
         );
     }
-}
-
-/// HHT-α の α=0 が Newmark-β（平均加速度法）と bit 一致することを確認。
-#[test]
-fn test_hht_alpha_alpha_zero_matches_newmark() {
-    let model = sdof_model();
-    let dofmap = DofMap::build(&model);
-    let reducer = Reducer::build(&model, &dofmap);
-
-    let omega = (1000.0_f64 / 1.0).sqrt();
-    let damping = Damping::StiffnessProportional {
-        h: 0.02,
-        omega,
-        basis: StiffnessKind::Initial,
-    };
-
-    let dt = 0.01;
-    let n_steps = 100;
-    let wave = zero_wave(dt, n_steps);
-
-    let newmark = NewmarkCfg {
-        beta: 0.25,
-        gamma: 0.5,
-        dt,
-    };
-    let hht = HhtCfg { alpha: 0.0, dt };
-
-    let (result_nm, _state_nm) = linear_time_history_with_state(
-        &model,
-        &dofmap,
-        &reducer,
-        &wave,
-        &newmark,
-        &damping,
-        &[1.0],
-        &[0.0],
-        false,
-        None,
-    )
-    .expect("newmark");
-
-    let result_hht = linear_hht_alpha_analysis(
-        &model,
-        &dofmap,
-        &reducer,
-        &wave,
-        &hht,
-        &damping,
-        &[1.0],
-        &[0.0],
-        false,
-        None,
-    )
-    .expect("hht alpha=0");
-
-    // peak_disp が bit 一致
-    for ni in 0..model.nodes.len() {
-        for d in 0..6 {
-            assert_eq!(
-                result_hht.peak_disp[ni][d].to_bits(),
-                result_nm.peak_disp[ni][d].to_bits(),
-                "peak_disp mismatch at node[{ni}][{d}]"
-            );
-        }
-    }
-
-    // time が一致
-    assert_eq!(result_hht.time.len(), result_nm.time.len());
-    for i in 0..result_hht.time.len() {
-        assert_eq!(
-            result_hht.time[i].to_bits(),
-            result_nm.time[i].to_bits(),
-            "time[{i}] mismatch"
-        );
-    }
-}
-
-/// HHT-α（α=-0.1）が大 Δt でも発散しないこと（無条件安定性の確認）。
-#[test]
-fn test_hht_alpha_stability() {
-    let model = sdof_model();
-    let dofmap = DofMap::build(&model);
-    let reducer = Reducer::build(&model, &dofmap);
-
-    let omega = (1000.0_f64 / 1.0).sqrt();
-    let damping = Damping::StiffnessProportional {
-        h: 0.02,
-        omega,
-        basis: StiffnessKind::Initial,
-    };
-
-    // T=0.199s に対し Δt=1.0s（T の約5倍＝非常に粗い）
-    let dt = 1.0;
-    let n_steps = 10;
-    let wave = zero_wave(dt, n_steps);
-    let hht = HhtCfg { alpha: -0.1, dt };
-
-    let result = linear_hht_alpha_analysis(
-        &model,
-        &dofmap,
-        &reducer,
-        &wave,
-        &hht,
-        &damping,
-        &[1.0],
-        &[0.0],
-        false,
-        None,
-    )
-    .expect("HHT-α should not diverge");
-
-    let peak = result.peak_disp[1][0];
-    assert!(
-        peak.is_finite() && peak < 1e6,
-        "peak={} should not diverge",
-        peak
-    );
-}
-
-/// SDOF 自由振動が正常に減衰すること。
-/// HHT-α（α=-0.1）は数値減衰が付加されるため、Newmark より早く減衰する。
-#[test]
-fn test_hht_alpha_sdof_free_vibration() {
-    let model = sdof_model();
-    let dofmap = DofMap::build(&model);
-    let reducer = Reducer::build(&model, &dofmap);
-
-    let omega = (1000.0_f64 / 1.0).sqrt();
-    let damping = Damping::StiffnessProportional {
-        h: 0.02,
-        omega,
-        basis: StiffnessKind::Initial,
-    };
-
-    let dt = 0.001;
-    let n_steps = 500; // 0.5s
-    let wave = zero_wave(dt, n_steps);
-
-    let newmark = NewmarkCfg {
-        beta: 0.25,
-        gamma: 0.5,
-        dt,
-    };
-    let hht = HhtCfg { alpha: -0.1, dt };
-
-    let result_nm = linear_time_history_analysis(
-        &model,
-        &dofmap,
-        &reducer,
-        &wave,
-        &newmark,
-        &damping,
-        &[1.0],
-        &[0.0],
-        false,
-        None,
-    )
-    .expect("newmark");
-
-    let result_hht = linear_hht_alpha_analysis(
-        &model,
-        &dofmap,
-        &reducer,
-        &wave,
-        &hht,
-        &damping,
-        &[1.0],
-        &[0.0],
-        false,
-        None,
-    )
-    .expect("hht");
-
-    // 両者とも有限値
-    assert!(result_nm.peak_disp[1][0].is_finite());
-    assert!(result_hht.peak_disp[1][0].is_finite());
-
-    // ピークは初期値 1.0
-    assert!((result_nm.peak_disp[1][0] - 1.0).abs() < 1e-9);
-    assert!((result_hht.peak_disp[1][0] - 1.0).abs() < 1e-9);
-
-    // HHT-α の最終時刻（0.5s）の変位を Newmark から取得し、より速く減衰していることを
-    // 簡易的に確認する。時系列が取れないため、ピーク変位の減衰率では判定困難だが、
-    // 両者とも正常に振動していることを確認（数値的に破綻していない）。
-    assert_eq!(result_nm.time.len(), n_steps + 1);
-    assert_eq!(result_hht.time.len(), n_steps + 1);
-}
-
-/// HHT-α が α<0 で高振動数（粗い Δt）モードに数値減衰を付与すること。
-/// 無減衰 SDOF 自由振動で、α=0（平均加速度・エネルギー保存）は振幅が保たれ、
-/// α=−0.1 は数値減衰で振幅が明確に減衰する。従来は β=0.25,γ=0.5 固定のため
-/// α≠0 でも意図した数値減衰が付かなかった（γ=1/2−α, β=(1−α)²/4 で修正）。
-#[test]
-fn test_hht_alpha_adds_numerical_dissipation() {
-    let model = sdof_model();
-    let dofmap = DofMap::build(&model);
-    let reducer = Reducer::build(&model, &dofmap);
-
-    // 無減衰（h=0）で物理減衰を排し、数値減衰のみを見る。
-    let omega = (1000.0_f64 / 1.0).sqrt(); // ≈31.62 rad/s, T≈0.199s
-    let damping = Damping::StiffnessProportional {
-        h: 0.0,
-        omega,
-        basis: StiffnessKind::Initial,
-    };
-
-    // ωΔt≈0.63（粗め）で HHT の数値減衰が効く領域。100 周期程度回す。
-    let dt = 0.02;
-    let n_steps = 1000;
-    let wave = zero_wave(dt, n_steps);
-
-    // 終盤 20% の振幅（|node_disp| の最大）を代表振幅とする。
-    let late_amplitude = |alpha: f64| -> f64 {
-        let hht = HhtCfg { alpha, dt };
-        let r = linear_hht_alpha_analysis(
-            &model,
-            &dofmap,
-            &reducer,
-            &wave,
-            &hht,
-            &damping,
-            &[1.0],
-            &[0.0],
-            false,
-            None,
-        )
-        .expect("hht");
-        let nd = &r.history.node_disp;
-        assert!(!nd.is_empty(), "node_disp history should be recorded");
-        let start = nd.len() * 4 / 5;
-        nd[start..].iter().fold(0.0_f64, |m, &x| m.max(x.abs()))
-    };
-
-    let amp_conservative = late_amplitude(0.0);
-    let amp_dissipative = late_amplitude(-0.1);
-
-    // α=0（平均加速度）はエネルギー保存で終盤も振幅がほぼ保たれる。
-    assert!(
-        amp_conservative > 0.9,
-        "α=0 should conserve amplitude (average-acceleration): {amp_conservative}"
-    );
-    // α=−0.1 は数値減衰で終盤振幅が明確に低下する。
-    assert!(
-        amp_dissipative < 0.8 * amp_conservative,
-        "HHT-α (α=−0.1) should add numerical dissipation: \
-         late amplitude {amp_dissipative} vs α=0 {amp_conservative}"
-    );
 }
 
 /// Y 方向のみの加振（accel_x 全ゼロ、accel_y 正弦波）で記録方向が自動的に
@@ -2184,7 +1933,7 @@ fn test_nonlinear_record_every_thinning() {
 
 /// UI からの `record_every` 指定が線形（Newmark-β）経路にも効くこと
 /// （`n_steps=50, record_every=5` なら 0,5,..,50 の 11 フレーム）。
-/// 線形（Newmark-β）・HHT-α には、非線形 `NonlinearThCfg::record_every` に相当する
+/// 線形（Newmark-β）には、非線形 `NonlinearThCfg::record_every` に相当する
 /// 明示指定手段がなかった（申し送り「時刻歴応答_詳細記録と長期荷重初期化」参照）ため、
 /// `linear_time_history_analysis` の末尾引数追加で解消したことを確認する。
 #[test]
@@ -2244,43 +1993,6 @@ fn test_linear_record_every_thinning() {
         recording_auto.record_every, 1,
         "n_steps=50 では auto_record_every が 1 になる"
     );
-}
-
-/// UI からの `record_every` 指定が HHT-α 経路にも効くこと（線形と同じ検証）。
-#[test]
-fn test_hht_record_every_thinning() {
-    let model = sdof_model();
-    let dofmap = DofMap::build(&model);
-    let reducer = Reducer::build(&model, &dofmap);
-
-    let omega = (1000.0_f64 / 1.0).sqrt();
-    let damping = Damping::StiffnessProportional {
-        h: 0.02,
-        omega,
-        basis: StiffnessKind::Initial,
-    };
-    let dt = 0.001;
-    let n_steps = 50;
-    let wave = zero_wave(dt, n_steps);
-    let hht = HhtCfg { alpha: -0.1, dt };
-
-    let result = linear_hht_alpha_analysis(
-        &model,
-        &dofmap,
-        &reducer,
-        &wave,
-        &hht,
-        &damping,
-        &[1.0],
-        &[0.0],
-        false,
-        Some(5),
-    )
-    .expect("should converge");
-
-    let recording = result.recording.expect("recording");
-    assert_eq!(recording.record_every, 5);
-    assert_eq!(recording.frame_time.len(), 11, "0,5,..,50 の 11 フレーム");
 }
 
 /// 中-3: `StoryResponse` の `peak_*`（層せん断力・階絶対加速度・階速度・階変位の
@@ -2471,11 +2183,11 @@ fn test_frame_member_forces_trimmed_to_endpoints_envelope_keeps_all_sections() {
     }
 }
 
-/// 線形・HHT-α の時刻歴結果は `nonlinear=false, applied_long_term=false` を
+/// 線形の時刻歴結果は `nonlinear=false, applied_long_term=false` を
 /// 常に記録すること（`ResponseResult` に解析条件フラグを持たせた目的の確認。
 /// `viewer/th_detail.rs` の長期重ね合わせ注記がこのフラグを直接参照する）。
 #[test]
-fn test_linear_and_hht_result_flags_are_linear() {
+fn test_linear_result_flags_are_linear() {
     let model = sdof_model();
     let dofmap = DofMap::build(&model);
     let reducer = Reducer::build(&model, &dofmap);
@@ -2494,7 +2206,6 @@ fn test_linear_and_hht_result_flags_are_linear() {
         gamma: 0.5,
         dt,
     };
-    let hht = HhtCfg { alpha: -0.1, dt };
 
     let result_nm = linear_time_history_analysis(
         &model,
@@ -2511,22 +2222,6 @@ fn test_linear_and_hht_result_flags_are_linear() {
     .expect("newmark");
     assert!(!result_nm.nonlinear);
     assert!(!result_nm.applied_long_term);
-
-    let result_hht = linear_hht_alpha_analysis(
-        &model,
-        &dofmap,
-        &reducer,
-        &wave,
-        &hht,
-        &damping,
-        &[1.0],
-        &[0.0],
-        false,
-        None,
-    )
-    .expect("hht");
-    assert!(!result_hht.nonlinear);
-    assert!(!result_hht.applied_long_term);
 }
 
 /// 非線形時刻歴の結果は `nonlinear=true` を記録し、`applied_long_term` は
@@ -2671,46 +2366,6 @@ fn test_linear_time_history_deterministic_guard() {
         bincode::serialize(&r1).expect("serialize r1"),
         bincode::serialize(&r2).expect("serialize r2"),
         "linear time history should be bit-identical across repeated runs"
-    );
-}
-
-/// HHT-α 版も同様（線形と積分ループの記録経路を共有するため回帰防止に加える）。
-#[test]
-fn test_hht_time_history_deterministic_guard() {
-    let model = fiber_column_model(1e10);
-    let dofmap = DofMap::build(&model);
-    let reducer = Reducer::build(&model, &dofmap);
-    let damping = Damping::StiffnessProportional {
-        h: 0.02,
-        omega: 10.0,
-        basis: StiffnessKind::Initial,
-    };
-    let dt = 0.001;
-    let n_steps = 40;
-    let wave = zero_wave(dt, n_steps);
-    let hht = HhtCfg { alpha: -0.1, dt };
-
-    let run = || {
-        linear_hht_alpha_analysis(
-            &model,
-            &dofmap,
-            &reducer,
-            &wave,
-            &hht,
-            &damping,
-            &[10.0],
-            &[0.0],
-            false,
-            None,
-        )
-        .expect("should converge")
-    };
-    let r1 = run();
-    let r2 = run();
-    assert_eq!(
-        bincode::serialize(&r1).expect("serialize r1"),
-        bincode::serialize(&r2).expect("serialize r2"),
-        "HHT-alpha time history should be bit-identical across repeated runs"
     );
 }
 

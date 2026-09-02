@@ -54,10 +54,7 @@ pub struct AnalysisSettings {
     pub th_damping_model: ThDampingModel,
     /// Rayleigh の2次モード減衰比(1次は th_damping を使用)
     pub th_h2: f64,
-    /// 時刻歴の積分法
-    pub th_integrator: ThIntegrator,
     /// 時刻歴を非線形（各部材の復元力特性を考慮した Newton 反復）で解析するか。
-    /// ON のとき積分法は Newmark-β 固定（HHT-α は選択不可）。
     pub th_nonlinear: bool,
     /// 非線形時刻歴: 長期系荷重ケース（固定・積載等）を時刻歴開始前に静的載荷し、
     /// その応力状態を初期条件とするか。線形時刻歴は重ね合わせ運用のため対象外
@@ -69,7 +66,7 @@ pub struct AnalysisSettings {
     /// 非線形時刻歴: Newton 収束判定の相対許容誤差。
     pub th_tol: f64,
     /// 時刻歴の詳細記録（3D アニメーション・層応答グラフ・部材履歴用）の
-    /// フレーム間引き係数（線形・HHT-α・非線形の 3 経路共通）。
+    /// フレーム間引き係数（線形・非線形の 2 経路共通）。
     /// 0 は自動決定（記録フレーム数が概ね 1000 になるよう調整）。
     /// ピーク値（`peak_disp`・`peak_member_forces`・`peak_shear_coeff`）は
     /// 間引きの影響を受けず全ステップで更新される。
@@ -179,13 +176,6 @@ pub enum ThDampingModel {
     TangentH1,
 }
 
-/// 時刻歴の積分法選択（UI 用）。
-#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub enum ThIntegrator {
-    NewmarkBeta,
-    HhtAlpha,
-}
-
 impl Default for AnalysisSettings {
     fn default() -> Self {
         Self {
@@ -218,7 +208,6 @@ impl Default for AnalysisSettings {
             th_dir: ThDir::X,
             th_damping_model: ThDampingModel::StiffnessProportional,
             th_h2: 0.02,
-            th_integrator: ThIntegrator::NewmarkBeta,
             th_nonlinear: false,
             th_apply_long_term: false,
             th_max_iter: 50,

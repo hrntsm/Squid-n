@@ -17,7 +17,7 @@
 //! 床領域・壁領域の再設計_申し送り.md` dig Q2=A）。
 
 use crate::error::{JobError, JobResult};
-use crate::settings::{AnalysisSettings, ThDampingModel, ThIntegrator};
+use crate::settings::{AnalysisSettings, ThDampingModel};
 use squid_n_core::ids::LoadCaseId;
 use squid_n_solver::analysis::Analysis;
 
@@ -138,7 +138,7 @@ pub fn compute_pushover(
 }
 
 /// 時刻歴応答解析。減衰モデル・積分法は `cfg` に従う（剛性比例／Rayleigh／
-/// モード別／接線剛性比例、Newmark-β／HHT-α）。前処理を通したモデルを渡す前提。
+/// モード別／接線剛性比例、Newmark-β）。前処理を通したモデルを渡す前提。
 pub fn compute_time_history(
     model: squid_n_core::model::Model,
     cfg: AnalysisSettings,
@@ -248,17 +248,10 @@ pub fn compute_time_history(
     }
     // 0 は「自動決定」の意（`ThRecorder`/`recording.rs::auto_record_every` に委ねる）。
     let record_every = (cfg.th_record_every > 0).then_some(cfg.th_record_every);
-    let result = match cfg.th_integrator {
-        ThIntegrator::NewmarkBeta => {
-            let newmark = squid_n_solver::timehistory::NewmarkCfg::average_accel();
-            analysis.time_history(&wave, newmark, damping, record_every)
-        }
-        ThIntegrator::HhtAlpha => {
-            let hht = squid_n_solver::timehistory::HhtCfg::new(wave.dt);
-            analysis.time_history_hht(&wave, hht, damping, record_every)
-        }
-    };
-    result.map_err(|e| JobError::Solve(e.to_string()))
+    let newmark = squid_n_solver::timehistory::NewmarkCfg::average_accel();
+    analysis
+        .time_history(&wave, newmark, damping, record_every)
+        .map_err(|e| JobError::Solve(e.to_string()))
 }
 
 /// 非線形時刻歴応答解析（[`compute_time_history`] の非線形分岐）。

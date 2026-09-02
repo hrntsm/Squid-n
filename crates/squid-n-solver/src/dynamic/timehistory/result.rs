@@ -22,7 +22,7 @@ pub struct ResponseResult {
     #[serde(default)]
     pub recording: Option<ThRecording>,
     /// 非線形時刻歴（各部材の復元力特性を考慮した Newton 反復）で解析したか。
-    /// 線形（Newmark-β・HHT-α）は false。旧プロジェクトファイル（.scz）には
+    /// 線形（Newmark-β）は false。旧プロジェクトファイル（.scz）には
     /// ないフィールドのため、読込時は false（線形扱い）で補う。
     #[serde(default)]
     pub nonlinear: bool,

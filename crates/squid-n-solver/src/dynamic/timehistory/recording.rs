@@ -172,7 +172,7 @@ impl StoryDofGroup {
 
 /// 時刻歴応答の詳細記録（[`ThRecording`]）を組み立てる状態機械。
 ///
-/// 呼び出し側（`linear`/`hht`/`nonlinear` の各時刻歴ループ）は、各ステップ確定後に
+/// 呼び出し側（`linear`・`nonlinear` の各時刻歴ループ）は、各ステップ確定後に
 /// [`Self::record_step`] を呼ぶ。フレーム間引き・部材内力包絡・層別集計をここに集約し、
 /// 3 つの積分スキームで同一のロジックを共有する。
 pub(crate) struct ThRecorder {

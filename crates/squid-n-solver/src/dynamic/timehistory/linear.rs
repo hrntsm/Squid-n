@@ -5,8 +5,8 @@
 //! - [`linear_time_history_from_state`] — チェックポイントからの再開
 
 use super::common::{
-    horizontal_influence_m, mass_accel_free_into, solve_initial_accel, sparse_matvec_into,
-    theta_accel_at, theta_influence_m,
+    empty_response, mass_accel_free_into, reduced_vec_from, resolve_dt, solve_initial_accel,
+    sparse_matvec_into, GroundInfluence, NewmarkCoeffs,
 };
 use super::config::{GroundMotion, NewmarkCfg};
 use super::history::{
@@ -75,32 +75,12 @@ pub fn linear_time_history_with_state(
 ) -> Result<(ResponseResult, TimeStepState), SolveError> {
     squid_n_math::parallelism::apply_to_faer();
 
-    let dt = if newmark.dt > 0.0 {
-        newmark.dt
-    } else {
-        wave.dt
-    };
-    if dt <= 0.0 {
-        return Err(SolveError::Backend(
-            "time history: dt must be positive".into(),
-        ));
-    }
+    let dt = resolve_dt(newmark.dt, wave)?;
 
     let n_indep = reducer.n_indep;
     if n_indep == 0 {
         return Ok((
-            ResponseResult {
-                // 線形経路は Newton 反復を行わないため常に 0。
-                non_converged_steps: 0,
-                time: vec![],
-                peak_disp: vec![[0.0; 6]; model.nodes.len()],
-                story_drift_angle: vec![0.0; model.layer_count()],
-                cumulative_ductility: vec![0.0; model.elements.len()],
-                history: ResponseHistory::default(),
-                recording: None,
-                nonlinear: false,
-                applied_long_term: false,
-            },
+            empty_response(model, false, false),
             TimeStepState {
                 step: 0,
                 time: 0.0,
@@ -111,84 +91,17 @@ pub fn linear_time_history_with_state(
         ));
     }
 
-    // 部材内力記録（`ThRecording::member_forces`）用: 要素の弾性 behavior は
-    // 時刻歴を通じて不変（線形解析）のため、ループ前に 1 回だけ構築して共有する。
-    let behaviors: Vec<Box<dyn ElementBehavior>> = model
-        .elements
-        .iter()
-        .map(|e| build_behavior(e, model))
-        .collect();
-
-    // --- 行列組立（縮約空間） ---
-    let m_free = assemble_global_m(model, dofmap, MassOption::Consistent);
-    let k_free = assemble_global_k(model, dofmap);
-    // 幾何剛性（P-Δ）は線形時刻歴では未実装。かつては `let _ = use_kg;` で
-    // 無言に捨てており、P-Δ を有効化したつもりの呼び出しでも考慮されないまま
-    // 解析が通っていた。未対応である事実を明示エラーで返す。
-    if use_kg {
-        return Err(SolveError::InvalidInput(
-            "線形時刻歴応答解析の幾何剛性（P-Δ、use_kg）は未対応です。\
-             P-Δ を考慮する場合は非線形時刻歴応答解析を使用してください。"
-                .into(),
-        ));
-    }
-    let m_red = reducer.reduce_k(&m_free);
-    let k_red = reducer.reduce_k(&k_free);
-    let c_red = damping.assemble_c(&m_red, &k_red);
-
-    // --- 影響ベクトルと M·r の事前計算 ---
-    let (m_r_x, m_r_y) = horizontal_influence_m(model, dofmap, &m_free);
-    // 位相差入力（ねじれ加振）用の回転影響 M·r_θ。
-    let m_r_theta = theta_influence_m(model, dofmap, &m_free);
-
-    // --- Newmark-β 係数 ---
-    let beta = newmark.beta;
-    let gamma = newmark.gamma;
-    let c1 = 1.0 / (beta * dt * dt);
-    let c2 = gamma / (beta * dt);
-    let c3 = 1.0 / (beta * dt);
-    let c4 = 1.0 / (2.0 * beta) - 1.0;
-    let c5 = gamma / beta - 1.0;
-    let c6 = dt * (gamma / (2.0 * beta) - 1.0);
-
-    // --- 有効剛性 K^ = K + c2·C + c1・M ---
-    let k_eff = squid_n_math::sparse::weighted_sum_csc(
-        n_indep,
-        &[(1.0, &k_red), (c2, &c_red), (c1, &m_red)],
-    );
-
-    // 有効剛性は全ステップ共通で、1回の分解を全時刻ステップの求解で再利用する。
-    // 反復法（PCG）はステップごとに反復をやり直すため不利であり、直接法を明示する。
-    let mut solver = make_solver(SolverBackend::DirectSparseCholesky);
-    solver.factorize(&k_eff)?;
+    let mut setup = LinearSetup::build(model, dofmap, reducer, newmark, damping, dt, use_kg)?;
 
     // --- 初期条件 ---
-    let mut u = vec![0.0; n_indep];
-    let mut v = vec![0.0; n_indep];
-    let n_init_d = n_indep.min(initial_disp.len());
-    u[..n_init_d].copy_from_slice(&initial_disp[..n_init_d]);
-    let n_init_v = n_indep.min(initial_vel.len());
-    v[..n_init_v].copy_from_slice(&initial_vel[..n_init_v]);
+    let u = reduced_vec_from(n_indep, initial_disp);
+    let v = reduced_vec_from(n_indep, initial_vel);
 
     // 初期加速度: M·a_0 = p(0) − C·v_0 − K·u_0（p(0) = −M·r·ẍg(0) は符号込みで構築済み）
-    let xg0_x = wave.accel_x.first().copied().unwrap_or(0.0);
-    let xg0_y = wave
-        .accel_y
-        .as_ref()
-        .and_then(|a| a.first())
-        .copied()
-        .unwrap_or(0.0);
-    let xg0_theta = theta_accel_at(wave, 0);
-    let p_free_0: Vec<f64> = m_r_x
-        .iter()
-        .zip(m_r_y.iter())
-        .zip(m_r_theta.iter())
-        .map(|((mx, my), mt)| -(mx * xg0_x + my * xg0_y + mt * xg0_theta))
-        .collect();
-    let p_red_0 = reducer.reduce_f(&p_free_0);
+    let p_red_0 = reducer.reduce_f(&setup.infl.force_at(wave, 0));
 
-    let cv0 = sparse_matvec(&c_red, &v);
-    let ku0 = sparse_matvec(&k_red, &u);
+    let cv0 = sparse_matvec(&setup.c_red, &v);
+    let ku0 = sparse_matvec(&setup.k_red, &u);
     let mut rhs_a0 = vec![0.0; n_indep];
     for i in 0..n_indep {
         // p(0) は −M·r·ẍg として符号込みで構築済みのため、ここでは加算する
@@ -196,7 +109,7 @@ pub fn linear_time_history_with_state(
         // +r·ẍg(0) 側に立ち上がっていた。ẍg(0)=0 の波形では影響なし）。
         rhs_a0[i] = p_red_0[i] - cv0[i] - ku0[i];
     }
-    let a = solve_initial_accel(&m_red, &rhs_a0, n_indep)?;
+    let a = solve_initial_accel(&setup.m_red, &rhs_a0, n_indep)?;
 
     // --- 時刻歴ループ（start_step=0 から） ---
     run_steps(
@@ -206,21 +119,7 @@ pub fn linear_time_history_with_state(
         wave,
         dt,
         0,
-        &m_r_x,
-        &m_r_y,
-        &m_r_theta,
-        &m_free,
-        &m_red,
-        &c_red,
-        &mut solver,
-        &behaviors,
-        c1,
-        c2,
-        c3,
-        c4,
-        c5,
-        c6,
-        gamma,
+        &mut setup,
         u,
         v,
         a,
@@ -251,16 +150,7 @@ pub fn linear_time_history_from_state(
 ) -> Result<(ResponseResult, TimeStepState), SolveError> {
     squid_n_math::parallelism::apply_to_faer();
 
-    let dt = if newmark.dt > 0.0 {
-        newmark.dt
-    } else {
-        wave.dt
-    };
-    if dt <= 0.0 {
-        return Err(SolveError::Backend(
-            "time history: dt must be positive".into(),
-        ));
-    }
+    let dt = resolve_dt(newmark.dt, wave)?;
 
     let n_indep = reducer.n_indep;
     if n_indep == 0 || state.disp_red.len() != n_indep {
@@ -269,49 +159,8 @@ pub fn linear_time_history_from_state(
         ));
     }
 
-    // 部材内力記録用の弾性 behavior（線形解析なので時刻歴を通じて不変）。
-    let behaviors: Vec<Box<dyn ElementBehavior>> = model
-        .elements
-        .iter()
-        .map(|e| build_behavior(e, model))
-        .collect();
-
-    // 行列・係数の再計算（線形なので同一）
-    let m_free = assemble_global_m(model, dofmap, MassOption::Consistent);
-    let k_free = assemble_global_k(model, dofmap);
-    // 幾何剛性（P-Δ）は線形時刻歴では未実装。かつては `let _ = use_kg;` で
-    // 無言に捨てており、P-Δ を有効化したつもりの呼び出しでも考慮されないまま
-    // 解析が通っていた。未対応である事実を明示エラーで返す。
-    if use_kg {
-        return Err(SolveError::InvalidInput(
-            "線形時刻歴応答解析の幾何剛性（P-Δ、use_kg）は未対応です。\
-             P-Δ を考慮する場合は非線形時刻歴応答解析を使用してください。"
-                .into(),
-        ));
-    }
-    let m_red = reducer.reduce_k(&m_free);
-    let k_red = reducer.reduce_k(&k_free);
-    let c_red = damping.assemble_c(&m_red, &k_red);
-
-    let (m_r_x, m_r_y) = horizontal_influence_m(model, dofmap, &m_free);
-    // 位相差入力（ねじれ加振）用の回転影響 M·r_θ。
-    let m_r_theta = theta_influence_m(model, dofmap, &m_free);
-
-    let beta = newmark.beta;
-    let gamma = newmark.gamma;
-    let c1 = 1.0 / (beta * dt * dt);
-    let c2 = gamma / (beta * dt);
-    let c3 = 1.0 / (beta * dt);
-    let c4 = 1.0 / (2.0 * beta) - 1.0;
-    let c5 = gamma / beta - 1.0;
-    let c6 = dt * (gamma / (2.0 * beta) - 1.0);
-
-    let k_eff = squid_n_math::sparse::weighted_sum_csc(
-        n_indep,
-        &[(1.0, &k_red), (c2, &c_red), (c1, &m_red)],
-    );
-    let mut solver = make_solver(SolverBackend::DirectSparseCholesky);
-    solver.factorize(&k_eff)?;
+    // 前処理は初回実行と同一（線形なので行列・係数はステップに依らない）。
+    let mut setup = LinearSetup::build(model, dofmap, reducer, newmark, damping, dt, use_kg)?;
 
     // チェックポイントから状態を復元
     let u = state.disp_red.clone();
@@ -325,26 +174,90 @@ pub fn linear_time_history_from_state(
         wave,
         dt,
         state.step,
-        &m_r_x,
-        &m_r_y,
-        &m_r_theta,
-        &m_free,
-        &m_red,
-        &c_red,
-        &mut solver,
-        &behaviors,
-        c1,
-        c2,
-        c3,
-        c4,
-        c5,
-        c6,
-        gamma,
+        &mut setup,
         u,
         v,
         a,
         record_every,
     )
+}
+
+/// 線形時刻歴の前処理一式。要素の弾性 behavior・質量／減衰行列（縮約空間）・
+/// 地動入力の影響ベクトル・Newmark 係数・分解済みの有効剛性ソルバを持つ。
+///
+/// 初回実行（[`linear_time_history_with_state`]）とチェックポイント再開
+/// （[`linear_time_history_from_state`]）は同じ前処理を要する。線形解析では
+/// 行列も係数もステップに依らないため、両者が同じ組み立てを通るようにここへ集約する。
+struct LinearSetup {
+    /// 部材内力記録用の弾性 behavior。線形なので時刻歴を通じて不変。
+    behaviors: Vec<Box<dyn ElementBehavior>>,
+    m_free: faer::sparse::SparseColMat<usize, f64>,
+    m_red: faer::sparse::SparseColMat<usize, f64>,
+    /// 初期加速度の算定（K·u₀）で使う。
+    k_red: faer::sparse::SparseColMat<usize, f64>,
+    c_red: faer::sparse::SparseColMat<usize, f64>,
+    infl: GroundInfluence,
+    coeffs: NewmarkCoeffs,
+    /// 有効剛性 K^ = K + c2·C + c1·M を分解済みのソルバ。
+    solver: Box<dyn squid_n_math::solver::LinearSolver>,
+}
+
+impl LinearSetup {
+    fn build(
+        model: &Model,
+        dofmap: &DofMap,
+        reducer: &Reducer,
+        newmark: &NewmarkCfg,
+        damping: &Damping,
+        dt: f64,
+        use_kg: bool,
+    ) -> Result<Self, SolveError> {
+        // 幾何剛性（P-Δ）は線形時刻歴では未実装。かつては `let _ = use_kg;` で
+        // 無言に捨てており、P-Δ を有効化したつもりの呼び出しでも考慮されないまま
+        // 解析が通っていた。未対応である事実を明示エラーで返す。
+        if use_kg {
+            return Err(SolveError::InvalidInput(
+                "線形時刻歴応答解析の幾何剛性（P-Δ、use_kg）は未対応です。\
+                 P-Δ を考慮する場合は非線形時刻歴応答解析を使用してください。"
+                    .into(),
+            ));
+        }
+        let behaviors: Vec<Box<dyn ElementBehavior>> = model
+            .elements
+            .iter()
+            .map(|e| build_behavior(e, model))
+            .collect();
+
+        let m_free = assemble_global_m(model, dofmap, MassOption::Consistent);
+        let k_free = assemble_global_k(model, dofmap);
+        let m_red = reducer.reduce_k(&m_free);
+        let k_red = reducer.reduce_k(&k_free);
+        let c_red = damping.assemble_c(&m_red, &k_red);
+
+        let infl = GroundInfluence::build(model, dofmap, &m_free);
+        let coeffs = NewmarkCoeffs::new(newmark, dt);
+
+        // 有効剛性 K^ = K + c2·C + c1·M は全ステップ共通で、1 回の分解を全時刻
+        // ステップの求解で再利用する。反復法（PCG）はステップごとに反復をやり直す
+        // ため不利であり、直接法を明示する。
+        let k_eff = squid_n_math::sparse::weighted_sum_csc(
+            reducer.n_indep,
+            &[(1.0, &k_red), (coeffs.c2, &c_red), (coeffs.c1, &m_red)],
+        );
+        let mut solver = make_solver(SolverBackend::DirectSparseCholesky);
+        solver.factorize(&k_eff)?;
+
+        Ok(Self {
+            behaviors,
+            m_free,
+            m_red,
+            k_red,
+            c_red,
+            infl,
+            coeffs,
+            solver,
+        })
+    }
 }
 
 /// 時刻歴ステップを `start_step` から `wave` の終端まで進める内部関数。
@@ -358,26 +271,35 @@ fn run_steps(
     wave: &GroundMotion,
     dt: f64,
     start_step: u64,
-    m_r_x: &[f64],
-    m_r_y: &[f64],
-    m_r_theta: &[f64],
-    m_free: &faer::sparse::SparseColMat<usize, f64>,
-    m_red: &faer::sparse::SparseColMat<usize, f64>,
-    c_red: &faer::sparse::SparseColMat<usize, f64>,
-    solver: &mut Box<dyn squid_n_math::solver::LinearSolver>,
-    behaviors: &[Box<dyn ElementBehavior>],
-    c1: f64,
-    c2: f64,
-    c3: f64,
-    c4: f64,
-    c5: f64,
-    c6: f64,
-    gamma: f64,
+    setup: &mut LinearSetup,
     mut u: Vec<f64>,
     mut v: Vec<f64>,
     mut a: Vec<f64>,
     record_every: Option<usize>,
 ) -> Result<(ResponseResult, TimeStepState), SolveError> {
+    let LinearSetup {
+        behaviors,
+        m_free,
+        m_red,
+        c_red,
+        infl,
+        coeffs,
+        solver,
+        ..
+    } = setup;
+    let NewmarkCoeffs {
+        gamma,
+        c1,
+        c2,
+        c3,
+        c4,
+        c5,
+        c6,
+        ..
+    } = *coeffs;
+    let m_r_x: &[f64] = &infl.m_r_x;
+    let m_r_y: &[f64] = &infl.m_r_y;
+
     let n_indep = reducer.n_indep;
     let n_free = dofmap.n_active();
 
@@ -491,17 +413,7 @@ fn run_steps(
 
     for n in start_step as usize..wave.accel_x.len() {
         let t_next = (n + 1) as f64 * dt;
-        let xg_x = wave.accel_x[n];
-        let xg_y = wave
-            .accel_y
-            .as_ref()
-            .map(|a| a.get(n).copied().unwrap_or(0.0))
-            .unwrap_or(0.0);
-
-        let xg_theta = theta_accel_at(wave, n);
-        for i in 0..n_free {
-            p_free_buf[i] = -(m_r_x[i] * xg_x + m_r_y[i] * xg_y + m_r_theta[i] * xg_theta);
-        }
+        infl.force_at_into(wave, n, &mut p_free_buf);
         reducer.reduce_f_into(&p_free_buf, &mut p_red_buf);
 
         for i in 0..n_indep {

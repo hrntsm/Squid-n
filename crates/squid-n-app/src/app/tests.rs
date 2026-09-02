@@ -1051,12 +1051,11 @@ fn shear_2dof_model() -> squid_n_core::model::Model {
 }
 
 #[test]
-fn test_time_history_rayleigh_and_hht() {
+fn test_time_history_rayleigh() {
     let mut app = App::default();
     app.load_model(shear_2dof_model());
     app.analysis_cfg.th_duration = 2.0;
     app.analysis_cfg.th_damping_model = ThDampingModel::Rayleigh;
-    app.analysis_cfg.th_integrator = ThIntegrator::HhtAlpha;
     app.run_time_history_sample();
     assert!(app.last_error.is_none(), "{:?}", app.last_error);
     let th = app.results.as_ref().unwrap().time_history.as_ref().unwrap();
@@ -1145,20 +1144,6 @@ fn test_nonlinear_time_history_with_long_term_flow() {
     assert!(app.last_error.is_none(), "{:?}", app.last_error);
     let th = app.results.as_ref().unwrap().time_history.as_ref().unwrap();
     assert!(th.recording.is_some());
-}
-
-/// 非線形時刻歴の積分法は Newmark-β 固定（`th_integrator` に HHT-α が選ばれていても
-/// 非線形時は無視される）ことを確認する。
-#[test]
-fn test_nonlinear_time_history_ignores_hht_selection() {
-    let mut app = App::default();
-    app.load_model(crate::sample::portal_frame());
-    app.generate_stories_action();
-    app.analysis_cfg.th_nonlinear = true;
-    app.analysis_cfg.th_integrator = ThIntegrator::HhtAlpha;
-    app.analysis_cfg.th_duration = 1.0;
-    app.run_time_history_sample();
-    assert!(app.last_error.is_none(), "{:?}", app.last_error);
 }
 
 /// ジョブラベルが線形／非線形で切り替わることを確認する
