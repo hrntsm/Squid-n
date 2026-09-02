@@ -178,6 +178,97 @@ fn 間柱で分割された壁は左右の鉛直辺へ半分ずつ配る() {
     );
 }
 
+/// 柱際にスリットを入れると、その鉛直辺は自重を受けない。
+///
+/// 分割壁は左右の鉛直辺（柱と間柱）へ半分ずつ配るのが既定だが、片側を切ると
+/// 支持する鉛直辺が 1 つになり、規則は「もっとも低い水平な辺へ全量」へ移る。
+#[test]
+fn 柱際スリットのある鉛直辺は自重を受けない() {
+    let mut m = split_by_post();
+    // 左の壁版（節点 0-4-5-3）の柱側（節点 0 から立ち上がる辺）を切る。
+    let faces = m.wall_plates[0].column_face_nodes(&m).expect("下辺 2 節点");
+    let k = usize::from(faces[0] != NodeId(0));
+    m.wall_plates[0].slit.column_face[k] = true;
+
+    let out = distribute_enclosed_wall_plates(&m);
+    // 間柱は右の壁版からのぶんだけを受ける（左の壁版は鉛直辺が 1 つになり、
+    // 下の大梁へ全量が回るため）。
+    let post_total: f64 = out
+        .posts
+        .get(&(NodeId(4), NodeId(5)))
+        .map(|p| {
+            p.member_loads
+                .iter()
+                .map(|l| match *l {
+                    MemberLoadKind::Distributed { a, b, w1, w2 } => (w1 + w2) / 2.0 * (b - a),
+                    MemberLoadKind::Point { p, .. } => p,
+                })
+                .sum()
+        })
+        .unwrap_or(0.0);
+    assert!(
+        (post_total - full_weight() / 4.0).abs() / full_weight() < 1e-9,
+        "間柱が受けるのは右の壁版の半分だけ: {post_total}"
+    );
+
+    // 総和は保存する（切れた辺へ配らないだけで、重量は失わない）。
+    let primary_total: f64 = out
+        .primary
+        .iter()
+        .map(|bl| match bl.shape {
+            LoadShape::Uniform { w } => w * edge_len(&m, bl),
+            _ => panic!("等分布のみ"),
+        })
+        .sum();
+    assert!(
+        (post_total + primary_total - full_weight()).abs() / full_weight() < 1e-9,
+        "総和保存: {post_total} + {primary_total}"
+    );
+}
+
+/// 下辺の梁際にスリットを入れると、自重は上の梁へ回る。
+///
+/// 鉛直辺に支持部材が無い壁版は既定で「もっとも低い水平な辺」が全量を受けるが、
+/// その辺が切れていれば次に低い（＝上の）辺が受ける。三方スリットの垂れ壁型に
+/// あたる形である。
+#[test]
+fn 下辺の梁際スリットは自重を上の梁へ回す() {
+    let mut m = bay();
+    // 間柱を置かず、鉛直辺に支持を持たない壁版にする（下の梁が全量を受ける形）。
+    m.wall_plates.push(plate(0, [0, 1, 2, 3]));
+    m.wall_regions.push(WallRegion {
+        id: WallRegionId(0),
+        name: String::new(),
+        // 壁領域の境界を壁版と別にして、覆っていない扱いにする。
+        boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3), NodeId(4)],
+        wall_plate_ids: vec![WallPlateId(0)],
+        posts: Vec::new(),
+    });
+    // 柱際を切って鉛直辺の支持を外し、水平な辺で受ける形にする。
+    m.wall_plates[0].slit.column_face = [true, true];
+
+    let bottom = distribute_enclosed_wall_plates(&m);
+    let bottom_edge = bottom.primary.first().expect("下の梁が全量を受ける").target;
+    let LoadTarget::Span { nodes, .. } = bottom_edge else {
+        panic!("Span")
+    };
+    let z_bottom = m.nodes[nodes[0].index()].coord[2];
+    assert!(z_bottom.abs() < 1e-9, "既定では下辺（z=0）が受ける");
+
+    // 下辺を切ると、上辺（z=3000）が受ける。
+    m.wall_plates[0].slit.beam_face = [true, false];
+    let top = distribute_enclosed_wall_plates(&m);
+    let LoadTarget::Span { nodes, .. } = top.primary.first().expect("上の梁が受ける").target
+    else {
+        panic!("Span")
+    };
+    let z_top = m.nodes[nodes[0].index()].coord[2];
+    assert!(
+        (z_top - 3000.0).abs() < 1e-9,
+        "下辺が切れれば上辺が受ける: {z_top}"
+    );
+}
+
 fn edge_len(model: &Model, bl: &BeamLoad) -> f64 {
     let LoadTarget::Span { nodes, .. } = bl.target else {
         panic!("Span 以外は出さない");

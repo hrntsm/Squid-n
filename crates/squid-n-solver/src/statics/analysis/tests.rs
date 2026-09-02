@@ -1519,6 +1519,62 @@ fn test_model_issues_warns_floating_plate() {
     assert!(precheck_model(&model).is_ok(), "解析は止めない");
 }
 
+/// 上下の梁際をともに切った壁版はエラーで止める。
+///
+/// 柱際の鉛直辺は壁の重量を受けないため、上下とも縁が切れていると自重の伝達先が
+/// 無くなる。実際に作らない納まりなので、入力の誤りとして扱う。
+#[test]
+fn test_model_issues_errors_on_both_beam_face_slit() {
+    use super::precheck::{model_issues, IssueSeverity};
+    use squid_n_core::ids::WallPlateId;
+    use squid_n_core::model::{WallPlate, WallPlateShape, WallSlit};
+
+    let mut model = make_cantilever_model();
+    let n = model.nodes.len() as u32;
+    for (i, c) in [[1000.0, 0.0, 3000.0], [0.0, 0.0, 3000.0]]
+        .into_iter()
+        .enumerate()
+    {
+        model.nodes.push(Node {
+            id: NodeId(n + i as u32),
+            coord: c,
+            restraint: Dof6Mask::FREE,
+            mass: None,
+            story: None,
+            support_spring: None,
+        });
+    }
+    let boundary = vec![NodeId(0), NodeId(1), NodeId(n), NodeId(n + 1)];
+    model.wall_plates.push(WallPlate {
+        id: WallPlateId(0),
+        shape: WallPlateShape::Enclosed { boundary },
+        section: Some(SectionId(0)),
+        opening_area: 0.0,
+        opening_weight: 0.0,
+        openings: Vec::new(),
+        slit: WallSlit {
+            column_face: [true, true],
+            beam_face: [true, true],
+        },
+    });
+
+    let issues = model_issues(&model);
+    let hit = issues
+        .iter()
+        .find(|i| i.message.contains("上下の梁際がともに切れた壁版"));
+    let hit = hit.expect("エラーが出る");
+    assert_eq!(hit.severity, IssueSeverity::Error, "{}", hit.message);
+
+    // 片側だけなら出ない（三方スリットは正常な入力）。
+    model.wall_plates[0].slit.beam_face = [true, false];
+    assert!(
+        !model_issues(&model)
+            .iter()
+            .any(|i| i.message.contains("上下の梁際がともに切れた壁版")),
+        "三方スリットはエラーにしない"
+    );
+}
+
 /// 4 節点でない壁版・断面未割当の壁版は警告し、解析は止めない。
 #[test]
 fn test_model_issues_warns_wall_plates_not_expanded() {
