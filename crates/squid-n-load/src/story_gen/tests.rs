@@ -1236,6 +1236,42 @@ fn test_wall_finish_load_included_in_story_weight() {
     );
 }
 
+/// 壁の仕上げ・増打ちの分は、`CorrectedLumped` の補正質点として残る。
+///
+/// 解析の質量行列は要素の**密度**からしか質量を作らないので、仕上げ・増打ちの
+/// 面荷重はそこに現れない。補正質点の控除を総重量で行うと、控除だけされて分布質量
+/// としては現れず、質量が黙って消える。控除は躯体（密度）分に限る必要がある。
+#[test]
+fn test_wall_finish_load_survives_corrected_lumped_mass() {
+    use squid_n_core::model::AreaLoad;
+
+    let base = generate_stories(&wall_model(), None).unwrap();
+    let mut model = wall_model();
+    model.wall_plates[0].loads = vec![AreaLoad {
+        kind: "増打ち".into(),
+        value: 5.0e-4,
+    }];
+    let gen = generate_stories(&model, None).unwrap();
+
+    // 上の床の代表節点の質点質量。躯体分は控除されて 0 のままなので、増えた分は
+    // そのまま仕上げ・増打ちの質量になる。
+    let m0 = base.rep_nodes[1].mass.map(|m| m[0]).unwrap_or(0.0);
+    let m1 = gen.rep_nodes[1].mass.map(|m| m[0]).unwrap_or(0.0);
+    assert!(
+        m1 > m0,
+        "仕上げ・増打ちの質量が補正質点に残っていない: {m0} -> {m1}"
+    );
+
+    // 増分は「仕上げ分の重量の上端 2 節点ぶん ÷ g」に一致する。
+    let dw = gen.stories[1].seismic_weight.unwrap() - base.stories[1].seismic_weight.unwrap();
+    assert!(
+        ((m1 - m0) - dw / GRAVITY_MM_S2).abs() / (dw / GRAVITY_MM_S2) < 1e-9,
+        "質点質量の増分={} 期待={}",
+        m1 - m0,
+        dw / GRAVITY_MM_S2
+    );
+}
+
 #[test]
 fn test_wall_self_weight_uses_clear_dimensions_of_boundary_members() {
     // §壁自重: 耐震壁の重量は周辺の柱梁の内法寸法で計算する。

@@ -285,36 +285,51 @@ pub fn generate_stories_with_opts(
     // 線材（柱梁・ブレース）・壁エレメントの自重を対象 Vec へ配分する（K型ブレースの
     // 再配分規則込み）。node_weight（地震用重量の合算）と node_self_weight
     // （解析質量行列に部材密度質量として計上される自重の控除用）の双方で使う。
-    let distribute_line_panel = |target: &mut Vec<f64>, item: &SelfWeightItem| match item {
-        SelfWeightItem::Line { elem_idx, total } => {
-            let elem = &model.elements[*elem_idx];
-            let ni = elem.nodes[0].index();
-            let nj = elem.nodes[1].index();
-            if matches!(elem.kind, ElementKind::Brace { .. })
-                && load_cfg.k_brace_rule == KBraceWeightRule::BaseNodesOnly
-            {
-                k_brace_redistribute(target, ni, nj, *total / 2.0, *total / 2.0);
-            } else {
-                target[ni] += *total / 2.0;
-                target[nj] += *total / 2.0;
+    // `panel_density_only` が真のとき、壁・シェルは躯体（密度）分だけを配る。
+    // `CorrectedLumped` の控除は解析の質量行列と対応させる必要があり、質量行列は
+    // 要素の密度からしか質量を作らないためである（`SelfWeightItem::Panel` の doc）。
+    let distribute_line_panel =
+        |target: &mut Vec<f64>, item: &SelfWeightItem, panel_density_only: bool| match item {
+            SelfWeightItem::Line { elem_idx, total } => {
+                let elem = &model.elements[*elem_idx];
+                let ni = elem.nodes[0].index();
+                let nj = elem.nodes[1].index();
+                if matches!(elem.kind, ElementKind::Brace { .. })
+                    && load_cfg.k_brace_rule == KBraceWeightRule::BaseNodesOnly
+                {
+                    k_brace_redistribute(target, ni, nj, *total / 2.0, *total / 2.0);
+                } else {
+                    target[ni] += *total / 2.0;
+                    target[nj] += *total / 2.0;
+                }
             }
-        }
-        SelfWeightItem::Panel { shares } => {
-            for &(i, w) in shares {
-                target[i] += w;
+            SelfWeightItem::Panel {
+                shares,
+                density_shares,
+            } => {
+                let src = if panel_density_only {
+                    density_shares
+                } else {
+                    shares
+                };
+                for &(i, w) in src {
+                    target[i] += w;
+                }
             }
-        }
-        SelfWeightItem::Damper { .. } | SelfWeightItem::SecondaryLine { .. } => {}
-    };
+            SelfWeightItem::Damper { .. } | SelfWeightItem::SecondaryLine { .. } => {}
+        };
 
     // §CorrectedLumped の控除対象: 解析の質量行列に部材密度質量として計上される
     // 要素（主架構の線材・壁エレメント）の自重のみ。ダンパー・二次部材（小梁・間柱）・
-    // フレーム外雑壁は解析質量に算入されない（assemble_global_m がダンパーの
-    // mass_matrix を零で返し、二次部材・雑壁は model.elements にすら現れない）
-    // ため控除しない。
+    // 取り付く壁版は解析質量に算入されない（assemble_global_m がダンパーの
+    // mass_matrix を零で返し、二次部材・取り付く壁版は model.elements にすら
+    // 現れない）ため控除しない。
+    //
+    // 壁・シェルは**躯体（密度）分だけ**を控除する。仕上げ・増打ちの面荷重は要素の
+    // 密度に入らないため質量行列にも現れず、総重量で控除すると質量が黙って消える。
     let mut node_self_weight = vec![0.0f64; model.nodes.len()];
     for item in &self_weight_items {
-        distribute_line_panel(&mut node_self_weight, item);
+        distribute_line_panel(&mut node_self_weight, item, true);
     }
 
     // 自重が重力ケース（「DL」自動同期）側に含まれる場合は、地震用重量の合算
@@ -333,7 +348,8 @@ pub fn generate_stories_with_opts(
                     node_weight[*nj] += total / 2.0;
                 }
                 SelfWeightItem::Line { .. } | SelfWeightItem::Panel { .. } => {
-                    distribute_line_panel(&mut node_weight, item);
+                    // 地震用重量は総重量（仕上げ・増打ちを含む）。
+                    distribute_line_panel(&mut node_weight, item, false);
                 }
             }
         }

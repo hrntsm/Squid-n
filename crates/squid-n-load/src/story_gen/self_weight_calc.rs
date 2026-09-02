@@ -89,7 +89,16 @@ pub(crate) enum SelfWeightItem {
     /// ダンパー装置＋支持部の重量（総量 [N]）。両端節点（`model.nodes` 添字）へ 1/2 ずつ。
     Damper { ni: usize, nj: usize, total: f64 },
     /// 壁・シェルの自重の頂点配分（`model.nodes` 添字 → [N]）。
-    Panel { shares: Vec<(usize, f64)> },
+    ///
+    /// `shares` は総重量（躯体 ＋ 仕上げ・増打ち）、`density_shares` はそのうち
+    /// **躯体の密度から生じる分だけ**を同じ規則で配ったものである。2 つに分けるのは
+    /// `CorrectedLumped`（既定の質量方式）の控除に密度分だけを使うためで、解析の
+    /// 質量行列は要素の密度からしか質量を作らない。総重量で控除すると、仕上げ・
+    /// 増打ちの質量が控除されるだけで分布質量としては現れず、黙って消える。
+    Panel {
+        shares: Vec<(usize, f64)>,
+        density_shares: Vec<(usize, f64)>,
+    },
     /// 二次部材（小梁・間柱）の自重（総量 [N]）。両端節点（`model.nodes` 添字）へ
     /// 1/2 ずつ。要素ではないため部材荷重にはならず、節点荷重（→ 主架構梁上の
     /// 節点なら CMQ 変換）として扱う。
@@ -319,7 +328,14 @@ pub(crate) fn enumerate_self_weight(model: &Model, load_cfg: &LoadCfg) -> Vec<Se
                 // 重量を落とさない（黙って消すより、止まる側の判断へ委ねる）。
                 let slit = attr.map(|a| a.slit).unwrap_or_default();
                 let shares = wall_corner_shares(elem, &pts, w, slit);
-                items.push(SelfWeightItem::Panel { shares });
+                // 躯体（密度）分だけを別に配る。理由は `SelfWeightItem::Panel` の doc。
+                let w_density =
+                    (mat.density * t * GRAVITY_MM_S2 * net_area + opening_weight).max(0.0);
+                let density_shares = wall_corner_shares(elem, &pts, w_density, slit);
+                items.push(SelfWeightItem::Panel {
+                    shares,
+                    density_shares,
+                });
             }
             _ => {}
         }

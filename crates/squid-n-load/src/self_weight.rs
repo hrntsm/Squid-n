@@ -84,7 +84,8 @@ pub fn self_weight_case_content(
                 node_force[ni] += total / 2.0;
                 node_force[nj] += total / 2.0;
             }
-            SelfWeightItem::Panel { shares } => {
+            // 長期荷重は総重量（躯体 ＋ 仕上げ・増打ち）を配る。
+            SelfWeightItem::Panel { shares, .. } => {
                 for (i, w) in shares {
                     node_force[i] += w;
                 }
@@ -268,7 +269,7 @@ mod tests {
                 crate::story_gen::SelfWeightItem::Line { total, .. } => *total,
                 crate::story_gen::SelfWeightItem::Damper { total, .. } => *total,
                 crate::story_gen::SelfWeightItem::SecondaryLine { total, .. } => *total,
-                crate::story_gen::SelfWeightItem::Panel { shares } => {
+                crate::story_gen::SelfWeightItem::Panel { shares, .. } => {
                     shares.iter().map(|(_, w)| w).sum()
                 }
             })
