@@ -349,7 +349,7 @@ pub(super) fn draw_force_diagram(
     frame_filter: super::FrameFilter,
     frame_normal: Option<[f64; 3]>,
 ) {
-    let Some(results) = &app.results else {
+    let Some(results) = &app.core.scoped.results else {
         return;
     };
     // 成分ごとのモデル全体最大絶対値（共有スケール算出の入力。描画・凡例には
@@ -393,8 +393,8 @@ pub(super) fn draw_force_diagram(
     draw_force_legend(
         painter,
         &legend_rows,
-        app.diagram_contour,
-        app.contour_colormap,
+        app.ui.view.diagram_contour,
+        app.ui.view.contour_colormap,
     );
 }
 
@@ -420,8 +420,8 @@ fn draw_component(
     // 最大値で 60px 相当のワールド長（一様スケール正射影なので px/scale=ワールド長）
     let amp_world = 60.0 / max_abs / scale as f64;
 
-    let contour = app.diagram_contour;
-    let colormap = app.contour_colormap;
+    let contour = app.ui.view.diagram_contour;
+    let colormap = app.ui.view.contour_colormap;
     // 塗りの不透明度: コンターは色そのものが情報を持つためモノクロより濃くする。
     let fill_alpha: u8 = if contour { 160 } else { 60 };
     // 輪郭は常に成分固定色。コンター中でも「どの図がどの成分か」を判別できる。
@@ -464,7 +464,10 @@ fn draw_component(
                 p_i,
                 p_j,
                 elem.local_axis.ref_vector,
-                member_len3(app.model.nodes[n0].coord, app.model.nodes[n1].coord),
+                member_len3(
+                    app.core.model.nodes[n0].coord,
+                    app.core.model.nodes[n1].coord,
+                ),
             )
         };
         let ey = diagram_offset_dir(p_i, p_j, ref_vec, component.plane());
@@ -479,14 +482,14 @@ fn draw_component(
         // 内部たわみ OFF・変形重ね無し）は変形後の節点間直線（弦）を基準線にする
         // （従来どおり）。未変形材軸端点から一度だけ前処理する。
         let deflection: Option<BeamDeflection> =
-            if app.show_beam_interpolation && elem.kind == ElementKind::Beam {
+            if app.ui.view.show_beam_interpolation && elem.kind == ElementKind::Beam {
                 let n0 = elem.nodes[0].index();
                 let n1 = elem.nodes[1].index();
                 disp.and_then(|d| {
                     (n0 < d.len() && n1 < d.len()).then(|| {
                         BeamDeflection::new(
-                            app.model.nodes[n0].coord,
-                            app.model.nodes[n1].coord,
+                            app.core.model.nodes[n0].coord,
+                            app.core.model.nodes[n1].coord,
                             d[n0],
                             d[n1],
                             ref_vec,
@@ -603,7 +606,7 @@ fn draw_component(
         ));
 
         // --- 数値ラベル: 両端部と中央（ξ=0・0.5・1.0）---
-        if app.diagram_values {
+        if app.ui.view.diagram_values {
             draw_value_labels(painter, mf, component, max_abs, plot_sign, &to_screen);
         }
     }

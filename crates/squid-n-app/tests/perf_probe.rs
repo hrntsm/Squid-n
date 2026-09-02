@@ -225,7 +225,7 @@ fn build_grid_model(nx: usize, ny: usize, n_stories: usize, with_slabs: bool) ->
 /// 再現しつつ個別に計測する（private 関数には一切触れない。詳細はファイル
 /// 冒頭のコメント参照）。
 fn timed_generate_stories(app: &mut App) -> [std::time::Duration; 5] {
-    app.last_error = None;
+    app.core.scoped.last_error = None;
 
     // --- stage 1: sync_gravity_load_cases_action (pub) ---
     let t0 = Instant::now();
@@ -237,12 +237,14 @@ fn timed_generate_stories(app: &mut App) -> [std::time::Duration; 5] {
     // (crates/squid-n-app/src/app/mod.rs) using only public constants ---
     let gravity_lcs: Vec<LoadCaseId> = {
         let any_kind_set = app
+            .core
             .model
             .load_cases
             .iter()
             .any(|lc| lc.kind != LoadCaseKind::Other);
         if !any_kind_set {
-            app.model
+            app.core
+                .model
                 .load_cases
                 .first()
                 .map(|c| c.id)
@@ -250,6 +252,7 @@ fn timed_generate_stories(app: &mut App) -> [std::time::Duration; 5] {
                 .collect()
         } else {
             let mut result: Vec<LoadCaseId> = app
+                .core
                 .model
                 .load_cases
                 .iter()
@@ -259,6 +262,7 @@ fn timed_generate_stories(app: &mut App) -> [std::time::Duration; 5] {
                 .map(|lc| lc.id)
                 .collect();
             let live_seismic: Vec<LoadCaseId> = app
+                .core
                 .model
                 .load_cases
                 .iter()
@@ -269,7 +273,8 @@ fn timed_generate_stories(app: &mut App) -> [std::time::Duration; 5] {
                 result.extend(live_seismic);
             } else {
                 result.extend(
-                    app.model
+                    app.core
+                        .model
                         .load_cases
                         .iter()
                         .filter(|lc| lc.kind == LoadCaseKind::Live && lc.name != LL_FRAME_CASE_NAME)
@@ -280,6 +285,7 @@ fn timed_generate_stories(app: &mut App) -> [std::time::Duration; 5] {
         }
     };
     let include_density = !app
+        .core
         .model
         .load_cases
         .iter()
@@ -289,7 +295,7 @@ fn timed_generate_stories(app: &mut App) -> [std::time::Duration; 5] {
     let t0 = Instant::now();
     let mass_method = squid_n_core::model::MassMethod::default();
     let gen = squid_n_load::story_gen::generate_stories_with_opts(
-        &app.model,
+        &app.core.model,
         &gravity_lcs,
         include_density,
         mass_method,
@@ -299,8 +305,8 @@ fn timed_generate_stories(app: &mut App) -> [std::time::Duration; 5] {
 
     // --- stage 3: undo.run(ApplyStories) (pub `undo` field + pub `ApplyStories`) ---
     let t0 = Instant::now();
-    app.undo.run(
-        &mut app.model,
+    app.core.scoped.undo.run(
+        &mut app.core.model,
         Box::new(squid_n_edit::ApplyStories {
             stories: gen.stories,
             node_story: gen.node_story,
@@ -311,11 +317,11 @@ fn timed_generate_stories(app: &mut App) -> [std::time::Duration; 5] {
         }),
     );
     let d3 = t0.elapsed();
-    app.staleness.mark_edited();
+    app.core.scoped.staleness.mark_edited();
 
     // --- stage 4: apply_rigid_zones_for_analysis == apply_auto_rigid_zones (pub) ---
     let t0 = Instant::now();
-    apply_auto_rigid_zones(&mut app.model, &RigidZoneRule::default());
+    apply_auto_rigid_zones(&mut app.core.model, &RigidZoneRule::default());
     let d4 = t0.elapsed();
 
     // --- stage 5 sub-breakdown (diagnostic only, redundant w/ stage 5 itself):
@@ -327,14 +333,14 @@ fn timed_generate_stories(app: &mut App) -> [std::time::Duration; 5] {
     {
         use squid_n_solver::analysis::{Analysis, SeismicCfg, SeismicDir};
         let t0 = Instant::now();
-        if let Ok(analysis) = Analysis::prepare(&app.model) {
+        if let Ok(analysis) = Analysis::prepare(&app.core.model) {
             let d_prepare = t0.elapsed();
             let cfg_x = SeismicCfg {
                 dir: SeismicDir::X,
-                mode: app.analysis_cfg.ai_mode,
-                z: app.analysis_cfg.z,
-                soil: app.analysis_cfg.soil,
-                c0: app.analysis_cfg.c0,
+                mode: app.core.analysis_cfg.ai_mode,
+                z: app.core.analysis_cfg.z,
+                soil: app.core.analysis_cfg.soil,
+                c0: app.core.analysis_cfg.c0,
             };
             let t0 = Instant::now();
             let _ = analysis.build_seismic_load_case(cfg_x);
@@ -395,9 +401,9 @@ fn run_case(label: &str, nx: usize, ny: usize, n_stories: usize, with_slabs: boo
     app2.generate_stories_action();
     let t_whole = t_whole0.elapsed();
     assert!(
-        app2.last_error.is_none(),
+        app2.core.scoped.last_error.is_none(),
         "generate_stories_action failed: {:?}",
-        app2.last_error
+        app2.core.scoped.last_error
     );
 
     let sum: std::time::Duration = stages.iter().sum();

@@ -24,9 +24,9 @@ impl App {
     /// `cfg(any(test, feature = "gui"))` とする。
     #[cfg(any(test, feature = "gui"))]
     pub(crate) fn set_wave_library_selection(&mut self, name: Option<String>) {
-        if name != self.wave_library_selection {
-            self.wave_library_selection = name;
-            self.wave_library_selected_sha256 = None;
+        if name != self.core.scoped.wave_library_selection {
+            self.core.scoped.wave_library_selection = name;
+            self.core.scoped.wave_library_selected_sha256 = None;
         }
     }
 
@@ -44,16 +44,16 @@ impl App {
         wave_sha256: Option<String>,
     ) {
         let Some(name) = wave_name else {
-            self.wave_library_selection = None;
-            self.wave_library_selected_sha256 = None;
+            self.core.scoped.wave_library_selection = None;
+            self.core.scoped.wave_library_selected_sha256 = None;
             return;
         };
         let Some(dir) = squid_n_io::wave_library::wave_library_dir() else {
             self.report_notice(format!(
                 "波形ライブラリの場所を特定できないため、選択されていた波形「{name}」を復元できません。"
             ));
-            self.wave_library_selection = None;
-            self.wave_library_selected_sha256 = None;
+            self.core.scoped.wave_library_selection = None;
+            self.core.scoped.wave_library_selected_sha256 = None;
             return;
         };
         if !squid_n_io::wave_library::wave_exists(&dir, &name) {
@@ -61,12 +61,12 @@ impl App {
                 "波形ライブラリに「{name}」が見つかりません（削除された可能性があります）。\
                  「🌊 波形を保存…」から再登録してください。"
             ));
-            self.wave_library_selection = None;
-            self.wave_library_selected_sha256 = None;
+            self.core.scoped.wave_library_selection = None;
+            self.core.scoped.wave_library_selected_sha256 = None;
             return;
         }
-        self.wave_library_selection = Some(name.clone());
-        self.wave_library_selected_sha256 = wave_sha256.clone();
+        self.core.scoped.wave_library_selection = Some(name.clone());
+        self.core.scoped.wave_library_selected_sha256 = wave_sha256.clone();
         if let Some(saved_hash) = wave_sha256 {
             if let Ok(current_hash) = squid_n_io::wave_library::wave_sha256(&dir, &name) {
                 if saved_hash != current_hash {
@@ -86,28 +86,28 @@ impl App {
         wave_sha256: Option<String>,
     ) {
         let Some(name) = wave_name else {
-            self.lumped_wave_library_selection = None;
-            self.lumped_wave_library_selected_sha256 = None;
+            self.core.scoped.lumped_wave_library_selection = None;
+            self.core.scoped.lumped_wave_library_selected_sha256 = None;
             return;
         };
         let Some(dir) = squid_n_io::wave_library::wave_library_dir() else {
             self.report_notice(format!(
                 "波形ライブラリの場所を特定できないため、質点系の波形「{name}」を復元できません。"
             ));
-            self.lumped_wave_library_selection = None;
-            self.lumped_wave_library_selected_sha256 = None;
+            self.core.scoped.lumped_wave_library_selection = None;
+            self.core.scoped.lumped_wave_library_selected_sha256 = None;
             return;
         };
         if !squid_n_io::wave_library::wave_exists(&dir, &name) {
             self.report_notice(format!(
                 "波形ライブラリに質点系の波形「{name}」が見つかりません。"
             ));
-            self.lumped_wave_library_selection = None;
-            self.lumped_wave_library_selected_sha256 = None;
+            self.core.scoped.lumped_wave_library_selection = None;
+            self.core.scoped.lumped_wave_library_selected_sha256 = None;
             return;
         }
-        self.lumped_wave_library_selection = Some(name.clone());
-        self.lumped_wave_library_selected_sha256 = wave_sha256.clone();
+        self.core.scoped.lumped_wave_library_selection = Some(name.clone());
+        self.core.scoped.lumped_wave_library_selected_sha256 = wave_sha256.clone();
         if let Some(saved_hash) = wave_sha256 {
             if let Ok(current_hash) = squid_n_io::wave_library::wave_sha256(&dir, &name) {
                 if saved_hash != current_hash {
@@ -139,7 +139,7 @@ impl App {
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_default();
         if squid_n_io::wave_library::wave_exists(&dir, &file_name) {
-            self.pending_wave_register = Some(path);
+            self.ui.view.pending_wave_register = Some(path);
             return;
         }
         self.finish_register_wave(&dir, &path);
@@ -148,7 +148,7 @@ impl App {
     /// 上書き確認ダイアログ「上書きする」。
     #[cfg(feature = "gui")]
     pub fn confirm_register_wave(&mut self) {
-        let Some(path) = self.pending_wave_register.take() else {
+        let Some(path) = self.ui.view.pending_wave_register.take() else {
             return;
         };
         let Some(dir) = squid_n_io::wave_library::wave_library_dir() else {
@@ -161,7 +161,7 @@ impl App {
     /// 上書き確認ダイアログ「キャンセル」。
     #[cfg(feature = "gui")]
     pub fn cancel_register_wave(&mut self) {
-        self.pending_wave_register = None;
+        self.ui.view.pending_wave_register = None;
     }
 
     #[cfg(feature = "gui")]
@@ -178,7 +178,7 @@ impl App {
     /// 次回読込時の内容検証に使われる）。
     #[cfg(feature = "gui")]
     pub fn run_time_history_from_library(&mut self) {
-        let Some(name) = self.wave_library_selection.clone() else {
+        let Some(name) = self.core.scoped.wave_library_selection.clone() else {
             return;
         };
         let Some(dir) = squid_n_io::wave_library::wave_library_dir() else {
@@ -192,14 +192,15 @@ impl App {
                 return;
             }
         };
-        let wave = match ground_motion_from_wave_content(&self.analysis_cfg, &content) {
+        let wave = match ground_motion_from_wave_content(&self.core.analysis_cfg, &content) {
             Ok(w) => w,
             Err(e) => {
                 self.report_error(e);
                 return;
             }
         };
-        self.wave_library_selected_sha256 = squid_n_io::wave_library::wave_sha256(&dir, &name).ok();
+        self.core.scoped.wave_library_selected_sha256 =
+            squid_n_io::wave_library::wave_sha256(&dir, &name).ok();
         self.start_time_history_job(wave);
     }
 }

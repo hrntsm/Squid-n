@@ -30,7 +30,7 @@ pub fn story_absmax(series: &[Vec<f64>], n_story: usize) -> Vec<f64> {
 /// 該当する階が見つからない場合（記録後に当該階が削除された等）は
 /// 「(削除済み階)」を返す。
 ///
-/// `model_stories` は `app.model.stories.iter().map(|s| (s.id, s.name.clone()))`
+/// `model_stories` は `app.core.model.stories.iter().map(|s| (s.id, s.name.clone()))`
 /// を渡すことを想定する（本関数は GUI 非依存に保つため `Model` 型に依存しない）。
 pub fn story_display_names(
     model_stories: &[(squid_n_core::ids::StoryId, String)],

@@ -34,7 +34,7 @@ pub struct QuantityViewState {
 
 /// 数量積算パネルの描画。
 pub fn quantity_panel(ui: &mut egui::Ui, app: &mut App) {
-    let takeoff = compute_quantity_takeoff(&app.model, &QuantityCfg::default());
+    let takeoff = compute_quantity_takeoff(&app.core.model, &QuantityCfg::default());
 
     if takeoff.items.is_empty() {
         ui.colored_label(
@@ -54,15 +54,15 @@ pub fn quantity_panel(ui: &mut egui::Ui, app: &mut App) {
             (QuantityGrouping::RebarByDia, "鉄筋径別"),
         ] {
             if ui
-                .selectable_label(app.quantity_view.grouping == g, label)
+                .selectable_label(app.ui.view.quantity_view.grouping == g, label)
                 .clicked()
             {
-                app.quantity_view.grouping = g;
+                app.ui.view.quantity_view.grouping = g;
             }
         }
         ui.separator();
         if ui.button("💾 CSV エクスポート…").clicked() {
-            let csv = crate::summary::build_quantity_csv(&app.model);
+            let csv = crate::summary::build_quantity_csv(&app.core.model);
             if let Some(path) = rfd::FileDialog::new()
                 .add_filter("CSV", &["csv"])
                 .set_file_name("quantity.csv")
@@ -75,7 +75,7 @@ pub fn quantity_panel(ui: &mut egui::Ui, app: &mut App) {
         }
         if ui.button("📋 クリップボードへコピー").clicked() {
             ui.ctx()
-                .copy_text(crate::summary::build_quantity_csv(&app.model));
+                .copy_text(crate::summary::build_quantity_csv(&app.core.model));
         }
     });
 
@@ -96,7 +96,7 @@ pub fn quantity_panel(ui: &mut egui::Ui, app: &mut App) {
 
     let mut focus: Option<squid_n_core::ids::ElemId> = None;
     egui::ScrollArea::vertical().show(ui, |ui| {
-        match app.quantity_view.grouping {
+        match app.ui.view.quantity_view.grouping {
             QuantityGrouping::ByCategory => {
                 let rows = takeoff.totals_by_category();
                 totals_table(
@@ -191,7 +191,7 @@ pub fn quantity_panel(ui: &mut egui::Ui, app: &mut App) {
                         let it = &takeoff.items[row.index()];
                         row.col(|ui| match it.elem {
                             Some(id) => {
-                                let is_focus = app.nav.focus_member == Some(id);
+                                let is_focus = app.ui.scoped.nav.focus_member == Some(id);
                                 if crate::table_util::id_cell(
                                     ui,
                                     is_focus,
@@ -253,7 +253,7 @@ pub fn quantity_panel(ui: &mut egui::Ui, app: &mut App) {
     });
 
     if let Some(id) = focus {
-        app.nav.focus_member = Some(id);
+        app.ui.scoped.nav.focus_member = Some(id);
     }
 }
 

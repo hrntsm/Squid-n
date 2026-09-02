@@ -22,18 +22,18 @@ impl App {
     /// 標準ケース名（DL・LL(架構用)・LL(地震用)）へ移行する。
     pub fn load_model(&mut self, mut model: squid_n_core::model::Model) {
         model.migrate_legacy_auto_load_cases();
-        self.model = model;
-        self.results = None;
-        self.selection = Selection::default();
-        self.undo = UndoStack::new();
-        self.nav = Navigator::default();
-        self.last_static = None;
-        self.last_error = None;
-        self.last_notice = None;
-        self.auto_load_sync_hash = None;
-        self.preparation = None;
-        self.diagnostics.clear();
-        self.staleness = Staleness::default();
+        self.core.model = model;
+        self.core.scoped.results = None;
+        self.ui.scoped.selection = Selection::default();
+        self.core.scoped.undo = UndoStack::new();
+        self.ui.scoped.nav = Navigator::default();
+        self.core.scoped.last_static = None;
+        self.core.scoped.last_error = None;
+        self.core.scoped.last_notice = None;
+        self.core.scoped.auto_load_sync_hash = None;
+        self.core.scoped.preparation = None;
+        self.core.scoped.diagnostics.clear();
+        self.core.scoped.staleness = Staleness::default();
         // 旧モデル由来の解析結果・準備計算表示・詳細ウィンドウの選択部材など、
         // モデル差し替えで無効になる状態をすべてリセットする（従来は
         // results/selection 等のみで、時刻歴データ・質点系応答・仕口パネル一覧・
@@ -43,52 +43,52 @@ impl App {
         // 計算中の結果が完了時に poll_job 経由で新モデルへ「最新結果」として適用され、
         // 別モデルの変位・応力が stale 警告なしに表示される（受信側 Receiver の破棄
         // だけでよい。ワーカースレッドの送信は失敗して静かに終了する）。
-        self.job = None;
+        self.core.scoped.job = None;
         // 保存確認ダイアログの保留も破棄する（旧モデル用に選んだパスへ
         // 新モデルを保存してしまうのを防ぐ）。
-        self.pending_save_recording = None;
-        self.pushover_view_dir = SeismicDir::X;
-        self.view_vibration_case = None;
-        self.view_lumped_vibration_case = None;
-        self.stick_response = None;
-        self.combo_error = None;
-        self.generated_panels.clear();
+        self.core.scoped.pending_save_recording = None;
+        self.core.scoped.pushover_view_dir = SeismicDir::X;
+        self.core.scoped.view_vibration_case = None;
+        self.core.scoped.view_lumped_vibration_case = None;
+        self.core.scoped.stick_response = None;
+        self.core.scoped.combo_error = None;
+        self.core.scoped.generated_panels.clear();
         // 波形ライブラリの選択も旧モデル由来の状態なので破棄する（そうしないと、
         // 波形を選択したプロジェクトAの後に別プロジェクトBを開いた際、Bでは
         // 一度も選んでいない波形がAの選択のまま持ち越され、Bを保存すると
         // 実際には使っていない波形がB側に記録されてしまう）。
-        self.wave_library_selection = None;
-        self.wave_library_selected_sha256 = None;
+        self.core.scoped.wave_library_selection = None;
+        self.core.scoped.wave_library_selected_sha256 = None;
         #[cfg(feature = "gui")]
         {
-            self.frame_target = None;
-            self.analysis_target = None;
-            self.hinge_detail_elem = None;
-            self.hinge_mn_cache = None;
-            self.th_detail_elem = None;
-            self.th_detail_axial_component = None;
-            self.th_scale_cache = None;
-            self.th_frame = 0;
-            self.th_playing = false;
-            self.th_play_time = 0.0;
-            self.time_history_data = crate::time_history_view::TimeHistoryData::default();
-            self.section_draft = Default::default();
-            self.catalog_draft = Default::default();
-            self.isolator_support_draft = Default::default();
-            self.isolator_member_draft = Default::default();
-            self.damper_def_draft = Default::default();
-            self.combo_draft = ComboDraft::default();
-            self.slab_draft = Default::default();
-            self.new_story_draft = (String::new(), 0.0);
-            self.pending_story_cmds.clear();
+            self.ui.scoped.frame_target = None;
+            self.ui.scoped.analysis_target = None;
+            self.ui.scoped.hinge_detail_elem = None;
+            self.ui.scoped.hinge_mn_cache = None;
+            self.ui.scoped.th_detail_elem = None;
+            self.ui.scoped.th_detail_axial_component = None;
+            self.ui.scoped.th_scale_cache = None;
+            self.ui.scoped.th_frame = 0;
+            self.ui.scoped.th_playing = false;
+            self.ui.scoped.th_play_time = 0.0;
+            self.ui.scoped.time_history_data = crate::time_history_view::TimeHistoryData::default();
+            self.ui.scoped.section_draft = Default::default();
+            self.ui.scoped.catalog_draft = Default::default();
+            self.ui.scoped.isolator_support_draft = Default::default();
+            self.ui.scoped.isolator_member_draft = Default::default();
+            self.ui.scoped.damper_def_draft = Default::default();
+            self.ui.scoped.combo_draft = ComboDraft::default();
+            self.ui.scoped.slab_draft = Default::default();
+            self.ui.scoped.new_story_draft = (String::new(), 0.0);
+            self.ui.scoped.pending_story_cmds.clear();
             // 階への複製ダイアログは、旧モデルの階を指したままにすると新モデルの
             // 別の階へ配ってしまうため、選択ごと閉じる。
-            self.story_copy = Default::default();
-            self.wall_plate_draft = Default::default();
-            self.axis_name_draft = Default::default();
-            self.load_cfg_draft = Default::default();
-            self.member_detail_draft = Default::default();
-            self.steel_attr_draft = Default::default();
+            self.ui.scoped.story_copy = Default::default();
+            self.ui.scoped.wall_plate_draft = Default::default();
+            self.ui.scoped.axis_name_draft = Default::default();
+            self.ui.scoped.load_cfg_draft = Default::default();
+            self.ui.scoped.member_detail_draft = Default::default();
+            self.ui.scoped.steel_attr_draft = Default::default();
         }
         #[cfg(feature = "gui")]
         self.reset_draw_modes();
@@ -100,12 +100,12 @@ impl App {
     /// 指すため、残したままにすると意図しない部材が生成されうる。
     #[cfg(feature = "gui")]
     pub(crate) fn reset_draw_modes(&mut self) {
-        self.beam_draw_mode = false;
-        self.beam_draw_first = None;
-        self.wall_draw_mode = false;
-        self.wall_draw_nodes.clear();
-        self.slab_draw_mode = false;
-        self.slab_draw_nodes.clear();
+        self.ui.scoped.beam_draw_mode = false;
+        self.ui.scoped.beam_draw_first = None;
+        self.ui.scoped.wall_draw_mode = false;
+        self.ui.scoped.wall_draw_nodes.clear();
+        self.ui.scoped.slab_draw_mode = false;
+        self.ui.scoped.slab_draw_nodes.clear();
     }
 
     /// プロジェクトを指定パスへ保存する。成功時は project_path と未保存フラグを更新。
@@ -133,14 +133,16 @@ impl App {
         path: std::path::PathBuf,
         include_recording: Option<bool>,
     ) {
-        self.last_error = None;
+        self.core.scoped.last_error = None;
         // 保存直前に表示中方向の増分解析結果を `pushover` 窓口へ同期する。
         self.sync_pushover_for_save();
         // self を可変借用する `encoded_or_notice` の前に、直列化まで済ませておく。
         let prep = self
+            .core
+            .scoped
             .preparation
             .as_ref()
-            .filter(|_| !self.staleness.preparation_stale)
+            .filter(|_| !self.core.scoped.staleness.preparation_stale)
             .map(rmp_serde::to_vec);
         // 時刻歴の詳細記録（`ThRecording`）も解析結果の一部として保存する。
         // 実建物規模では数百MB級になり得るため、既定の閾値を超える場合のみ
@@ -149,28 +151,33 @@ impl App {
         // （記録本体の複製コストを避ける。保存はメモリ上の結果に対し非破壊）。
         let exclude_recording = include_recording == Some(false);
         let taken_recordings = if exclude_recording {
-            self.results
+            self.core
+                .scoped
+                .results
                 .as_mut()
                 .map(|bundle| bundle.take_th_recordings())
         } else {
             None
         };
-        let persist_results = self.results.is_some() && !self.staleness.results_stale;
+        let persist_results =
+            self.core.scoped.results.is_some() && !self.core.scoped.staleness.results_stale;
         let results = self
+            .core
+            .scoped
             .results
             .as_ref()
             .filter(|_| persist_results)
             .map(|bundle| SavedResults {
                 bundle: bundle.clone(),
-                last_static: self.last_static,
-                view_vibration_case: self.view_vibration_case,
-                view_lumped_vibration_case: self.view_lumped_vibration_case,
-                last_run: self.staleness.last_run,
+                last_static: self.core.scoped.last_static,
+                view_vibration_case: self.core.scoped.view_vibration_case,
+                view_lumped_vibration_case: self.core.scoped.view_lumped_vibration_case,
+                last_run: self.core.scoped.staleness.last_run,
             })
             .as_ref()
             .map(rmp_serde::to_vec);
         if let Some(taken) = taken_recordings {
-            if let Some(bundle) = self.results.as_mut() {
+            if let Some(bundle) = self.core.scoped.results.as_mut() {
                 bundle.restore_th_recordings(taken);
             }
         }
@@ -179,11 +186,11 @@ impl App {
         // 現在の設定は保存する意味がある）。波形ライブラリの選択（ファイル名・
         // 実行時点のハッシュ）も同じエントリに含める。
         let analysis_settings = Some(rmp_serde::to_vec(&SavedAnalysisSettings {
-            cfg: self.analysis_cfg,
-            wave_name: self.wave_library_selection.clone(),
-            wave_sha256: self.wave_library_selected_sha256.clone(),
-            lumped_wave_name: self.lumped_wave_library_selection.clone(),
-            lumped_wave_sha256: self.lumped_wave_library_selected_sha256.clone(),
+            cfg: self.core.analysis_cfg,
+            wave_name: self.core.scoped.wave_library_selection.clone(),
+            wave_sha256: self.core.scoped.wave_library_selected_sha256.clone(),
+            lumped_wave_name: self.core.scoped.lumped_wave_library_selection.clone(),
+            lumped_wave_sha256: self.core.scoped.lumped_wave_library_selected_sha256.clone(),
         }));
         let prep_bytes = self.encoded_or_notice(prep, "準備計算の結果");
         let results_bytes = self.encoded_or_notice(results, "解析結果");
@@ -193,13 +200,15 @@ impl App {
         // 超える場合は保存せず、確認ダイアログの表示を要求して戻る。
         if include_recording.is_none() {
             let has_recording = self
+                .core
+                .scoped
                 .results
                 .as_ref()
                 .filter(|_| persist_results)
                 .is_some_and(|b| b.has_th_recording());
             let size = results_bytes.as_ref().map(|b| b.len()).unwrap_or(0);
             if needs_recording_confirm(size, has_recording) {
-                self.pending_save_recording = Some((path, size as u64 / (1024 * 1024)));
+                self.core.scoped.pending_save_recording = Some((path, size as u64 / (1024 * 1024)));
                 return;
             }
         }
@@ -216,14 +225,14 @@ impl App {
             None
         } else {
             Some((
-                std::mem::take(&mut self.model.vibration_cases),
-                std::mem::take(&mut self.model.lumped_vibration_cases),
+                std::mem::take(&mut self.core.model.vibration_cases),
+                std::mem::take(&mut self.core.model.lumped_vibration_cases),
             ))
         };
-        let save_result = squid_n_io::scz::save_scz(&path, &self.model, extras);
+        let save_result = squid_n_io::scz::save_scz(&path, &self.core.model, extras);
         if let Some((spatial, lumped)) = taken_vibration_cases {
-            self.model.vibration_cases = spatial;
-            self.model.lumped_vibration_cases = lumped;
+            self.core.model.vibration_cases = spatial;
+            self.core.model.lumped_vibration_cases = lumped;
         }
         match save_result {
             Ok(()) => {
@@ -234,8 +243,8 @@ impl App {
                     .map(|n| n.to_string_lossy().into_owned())
                     .unwrap_or_else(|| path.display().to_string());
                 self.report_notice(format!("保存しました: {}", name));
-                self.project_path = Some(path);
-                self.staleness.unsaved_changes = false;
+                self.core.scoped.project_path = Some(path);
+                self.core.scoped.staleness.unsaved_changes = false;
             }
             Err(e) => self.report_error(format!("保存エラー: {}", e)),
         }
@@ -280,7 +289,7 @@ impl App {
     /// （`mass_method`）だけは、解析タブの設定値の同梱有無によらず、読み込んだ
     /// モデル側の値へ必ず同期する（単一情報源の原則。詳細は本体側のコメント参照）。
     pub fn open_project_from(&mut self, path: std::path::PathBuf) {
-        self.last_error = None;
+        self.core.scoped.last_error = None;
         match squid_n_io::scz::load_scz(&path) {
             Ok(contents) => {
                 if let Err(e) = contents.model.validate() {
@@ -292,7 +301,7 @@ impl App {
                     contents.analysis_settings,
                     "解析タブの設定値",
                 ) {
-                    self.analysis_cfg = saved.cfg;
+                    self.core.analysis_cfg = saved.cfg;
                     self.restore_wave_library_selection(saved.wave_name, saved.wave_sha256);
                     self.restore_lumped_wave_library_selection(
                         saved.lumped_wave_name,
@@ -308,54 +317,64 @@ impl App {
                 // スキップされ、パネル表示とモデルが実際に使う方式が食い違ったまま
                 // 気づけなくなるため、同梱の有無によらず必ずモデル側の値で
                 // 上書きする（単一情報源の原則）。
-                self.analysis_cfg.mass_method = self.model.mass_method;
+                self.core.analysis_cfg.mass_method = self.core.model.mass_method;
                 if let Some(prep) =
                     self.decode_on_load::<PreparationResult>(contents.preparation, "準備計算の結果")
                 {
-                    self.preparation = Some(prep);
-                    self.staleness.preparation_stale = false;
+                    self.core.scoped.preparation = Some(prep);
+                    self.core.scoped.staleness.preparation_stale = false;
                 }
                 if let Some(saved) =
                     self.decode_on_load::<SavedResults>(contents.results, "解析結果")
                 {
                     let mut bundle = saved.bundle;
-                    bundle.migrate_legacy_pushover(self.analysis_cfg.push_dir);
+                    bundle.migrate_legacy_pushover(self.core.analysis_cfg.push_dir);
                     bundle.migrate_legacy_time_history(
-                        &mut self.model,
-                        self.wave_library_selection.as_deref().unwrap_or("サンプル"),
-                        crate::app::vibration::vibration_th_dir_from_th(self.analysis_cfg.th_dir),
-                        self.analysis_cfg.th_nonlinear,
+                        &mut self.core.model,
+                        self.core
+                            .scoped
+                            .wave_library_selection
+                            .as_deref()
+                            .unwrap_or("サンプル"),
+                        crate::app::vibration::vibration_th_dir_from_th(
+                            self.core.analysis_cfg.th_dir,
+                        ),
+                        self.core.analysis_cfg.th_nonlinear,
                     );
                     bundle.migrate_legacy_lumped(
-                        &mut self.model,
-                        self.lumped_wave_library_selection
+                        &mut self.core.model,
+                        self.core
+                            .scoped
+                            .lumped_wave_library_selection
                             .as_deref()
                             .unwrap_or("サンプル"),
                         crate::app::vibration::lumped_vibration_dir_from_seismic(
-                            self.analysis_cfg.lumped_dir,
+                            self.core.analysis_cfg.lumped_dir,
                         ),
-                        self.analysis_cfg.lumped_nonlinear,
+                        self.core.analysis_cfg.lumped_nonlinear,
                         crate::app::vibration::lumped_vibration_dim_from_stick(
-                            self.analysis_cfg.lumped_dim,
+                            self.core.analysis_cfg.lumped_dim,
                         ),
                     );
-                    self.pushover_view_dir =
-                        bundle.infer_pushover_view_dir(self.analysis_cfg.push_dir);
-                    bundle.pushover = bundle.pushover_for_dir(self.pushover_view_dir).cloned();
-                    self.results = Some(bundle);
-                    self.last_static = saved.last_static;
+                    self.core.scoped.pushover_view_dir =
+                        bundle.infer_pushover_view_dir(self.core.analysis_cfg.push_dir);
+                    bundle.pushover = bundle
+                        .pushover_for_dir(self.core.scoped.pushover_view_dir)
+                        .cloned();
+                    self.core.scoped.results = Some(bundle);
+                    self.core.scoped.last_static = saved.last_static;
                     self.hydrate_saved_vibration_views(
                         saved.view_vibration_case,
                         saved.view_lumped_vibration_case,
                     );
-                    self.staleness.last_run = saved.last_run;
+                    self.core.scoped.staleness.last_run = saved.last_run;
                     // 保存側が最新のときだけ書き出すため、復元できた結果は
                     // モデルと整合している（断面検定の結果も同梱されている）。
-                    self.staleness.results_stale = false;
-                    self.staleness.design_stale = false;
+                    self.core.scoped.staleness.results_stale = false;
+                    self.core.scoped.staleness.design_stale = false;
                 }
                 self.prune_orphan_vibration_cases();
-                self.project_path = Some(path);
+                self.core.scoped.project_path = Some(path);
             }
             Err(e) => self.report_error(format!("読込エラー: {}", e)),
         }
@@ -388,7 +407,7 @@ impl App {
     /// 短期地震 DL+LL±EX・DL+LL±EY）を自動作成する（新規モデルと同じ出発点。
     /// DL の自重・スラブ荷重は解析実行前の同期アクションが自動計算する）。
     pub fn import_stbridge_from(&mut self, path: std::path::PathBuf) {
-        self.last_error = None;
+        self.core.scoped.last_error = None;
         let xml = match squid_n_io::stbridge::read_stbridge_file(&path) {
             Ok(s) => s,
             Err(e) => {
@@ -410,7 +429,7 @@ impl App {
                     }
                 }
                 self.load_model(model);
-                self.project_path = None;
+                self.core.scoped.project_path = None;
                 self.log_attribute_dispositions(&report);
                 // 欠落・近似（warnings）と自動補完の仮定（notes。支点の自動設定など）が
                 // あれば注意として表示する（致命的ではない）。
@@ -451,12 +470,12 @@ impl App {
         let dropped: Vec<&squid_n_io::stbridge::AttrDisposition> =
             report.dropped_attributes().collect();
         if dropped.is_empty() {
-            self.log.push(
+            self.core.log.push(
                 crate::app::LogLevel::Info,
                 "ST-Bridge 取り込み: ファイルの属性はすべて取り込みました",
             );
         } else {
-            self.log.push(
+            self.core.log.push(
                 crate::app::LogLevel::Notice,
                 format!(
                     "ST-Bridge 取り込み: 取り込まなかった属性 {} 種類\n  {}",
@@ -476,7 +495,7 @@ impl App {
             .map(|a| a.log_line())
             .collect();
         if !kept.is_empty() {
-            self.log.push(
+            self.core.log.push(
                 crate::app::LogLevel::Info,
                 format!(
                     "ST-Bridge 取り込み: 取り込んだ属性 {} 種類\n  {}",
@@ -489,8 +508,8 @@ impl App {
 
     /// モデルを標準 ST-Bridge 2.0.2（XML, 幾何サブセット）として指定パスへ書き出す。
     pub fn export_stbridge_to(&mut self, path: std::path::PathBuf) {
-        self.last_error = None;
-        match squid_n_io::stbridge::export_stbridge(&self.model) {
+        self.core.scoped.last_error = None;
+        match squid_n_io::stbridge::export_stbridge(&self.core.model) {
             Ok(xml) => {
                 if let Err(e) = std::fs::write(&path, xml) {
                     self.report_error(format!("ST-Bridge書出エラー: {}", e));
@@ -499,6 +518,7 @@ impl App {
                 // 平行芯以外の通り芯（円弧芯・放射芯・作図芯）は幾何を保持して
                 // いないため書き出せない。無言で落とさず利用者へ知らせる。
                 let dropped = self
+                    .core
                     .model
                     .axes
                     .iter()

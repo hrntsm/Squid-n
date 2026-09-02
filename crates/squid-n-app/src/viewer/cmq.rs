@@ -38,7 +38,7 @@ fn is_gravity_auto_case_name(name: &str) -> bool {
     )
 }
 
-/// 選択中の軸（`app.cmq_axes`）を表す表示ラベル。凡例と空表示メッセージの
+/// 選択中の軸（`app.ui.view.cmq_axes`）を表す表示ラベル。凡例と空表示メッセージの
 /// 双方で使う（`axes.is_empty()` は呼び出し前に早期 return 済みの前提。
 /// 両方 false のまま呼ぶと該当なしでパニックする）。
 fn selected_axis_label(axes: CmqAxes) -> &'static str {
@@ -240,7 +240,7 @@ fn plane_alpha_scale(plane: DiagramPlane) -> f32 {
 /// 部材ローカルに沿って CMQ 図（両端固定端モーメント C・単純梁中央モーメント M・
 /// せん断 Q）を描く。
 ///
-/// 応力図と同じ「面」の区別（強軸 ey・弱軸 ez。`app.cmq_axes`）を持つ。部材の局所軸が
+/// 応力図と同じ「面」の区別（強軸 ey・弱軸 ez。`app.ui.view.cmq_axes`）を持つ。部材の局所軸が
 /// 傾いている（斜め柱・ひねりのある断面等）場合、鉛直荷重でも ey・ez 両方に成分が
 /// 生じうるため、実際に `MemberLoad.dir` を局所軸へ投影して評価する
 /// （[`project_load`]）。両軸を同時表示するときは同一スケールで重ねて描く。
@@ -277,8 +277,8 @@ pub(super) fn draw_cmq_diagram(
     };
 
     let axes: Vec<DiagramPlane> = [
-        (app.cmq_axes.ey, DiagramPlane::Ey),
-        (app.cmq_axes.ez, DiagramPlane::Ez),
+        (app.ui.view.cmq_axes.ey, DiagramPlane::Ey),
+        (app.ui.view.cmq_axes.ez, DiagramPlane::Ez),
     ]
     .into_iter()
     .filter_map(|(on, plane)| on.then_some(plane))
@@ -290,7 +290,7 @@ pub(super) fn draw_cmq_diagram(
 
     // 表示中ケースの部材荷重を要素（大梁）単位でグループ化し、座標が有効
     // （範囲内・非ゼロ長）なものだけを対象にする。
-    let groups: Vec<CmqElemGroup> = group_member_loads_by_elem(&app.model, case)
+    let groups: Vec<CmqElemGroup> = group_member_loads_by_elem(&app.core.model, case)
         .into_iter()
         .filter(|g| {
             filter.shows(g.elem)
@@ -397,7 +397,7 @@ pub(super) fn draw_cmq_diagram(
             &format!(
                 "選択中の軸（{}）には有意な荷重成分がありません。\
                  「軸:」で他の軸も試すか、他の成分・荷重ケースを確認してください",
-                selected_axis_label(app.cmq_axes)
+                selected_axis_label(app.ui.view.cmq_axes)
             ),
         );
         return;
@@ -421,7 +421,7 @@ pub(super) fn draw_cmq_diagram(
         let fill_alpha = (60.0 * alpha).round() as u8;
         let stroke_alpha = (255.0 * alpha).round() as u8;
 
-        match app.cmq_component {
+        match app.ui.view.cmq_component {
             CmqComponent::C => {
                 let (c_i, c_j) = sum_fixed_end_moments(&t.loads, t.l);
                 // 張り出しピーク px が閾値未満の潰れたポリゴンはスキップ（上記コメント参照）
@@ -526,13 +526,13 @@ pub(super) fn draw_cmq_diagram(
     // 凡例（選択中の成分・軸のみ表示）。両軸表示中は弱軸(ez)を半透明で描く旨を付記する
     // （`plane_alpha_scale`。2D 構面表示では強軸・弱軸の張り出し方向が同一直線上に
     // 潰れるため、色だけでは判別できない）。
-    let axis_label = selected_axis_label(app.cmq_axes);
-    let both_axes_note = if app.cmq_axes.ey && app.cmq_axes.ez {
+    let axis_label = selected_axis_label(app.ui.view.cmq_axes);
+    let both_axes_note = if app.ui.view.cmq_axes.ey && app.ui.view.cmq_axes.ez {
         "・弱軸は半透明"
     } else {
         ""
     };
-    let legend = match app.cmq_component {
+    let legend = match app.ui.view.cmq_component {
         CmqComponent::C => format!(
             "CMQ図 C(max={:.2}, {}{}) 青",
             max_c, axis_label, both_axes_note

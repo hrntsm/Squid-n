@@ -272,7 +272,7 @@ pub fn wall_plates_table(ui: &mut egui::Ui, app: &mut App) {
     // ── 複数開口の取り扱い（建物一律） ─────────────────────────
     ui.horizontal(|ui| {
         ui.label("複数開口の取り扱い(建物一律):");
-        let current = app.model.multi_opening_mode;
+        let current = app.core.model.multi_opening_mode;
         let combo = egui::ComboBox::from_id_salt("multi_opening_mode")
             .selected_text(multi_opening_mode_label(current))
             .show_ui(ui, |ui| {
@@ -282,9 +282,9 @@ pub fn wall_plates_table(ui: &mut egui::Ui, app: &mut App) {
                         .clicked()
                         && current != mode
                     {
-                        app.undo
-                            .run(&mut app.model, Box::new(SetMultiOpeningMode { mode }));
-                        app.staleness.mark_edited();
+                        app.core.scoped.undo
+                            .run(&mut app.core.model, Box::new(SetMultiOpeningMode { mode }));
+                        app.core.scoped.staleness.mark_edited();
                     }
                 }
             });
@@ -309,7 +309,7 @@ fn wall_plates_list(ui: &mut egui::Ui, app: &mut App) {
     use crate::table_util::{self, Col};
 
     ui.strong("壁版");
-    if app.model.wall_plates.is_empty() {
+    if app.core.model.wall_plates.is_empty() {
         ui.label(
             "壁版がありません（ST-Bridge の取り込み、または下の「囲まれた壁版を追加」\
              「取り付く壁版を追加」で作ります）。",
@@ -321,10 +321,11 @@ fn wall_plates_list(ui: &mut egui::Ui, app: &mut App) {
     let mut pending_extent: Vec<(WallPlateId, Option<[f64; 2]>)> = Vec::new();
     let mut pending_anchor: Vec<(WallPlateId, RegionAnchor)> = Vec::new();
     let mut pending_delete: Option<WallPlateId> = None;
-    let node_ids: Vec<NodeId> = app.model.nodes.iter().map(|n| n.id).collect();
+    let node_ids: Vec<NodeId> = app.core.model.nodes.iter().map(|n| n.id).collect();
     // 板状の断面（板厚を持つ断面）だけを候補にする。板厚が無い断面を割り当てても
     // 自重・数量が算定できないため、選ばせない（床板の断面欄と同じ規約）。
     let wall_sections: Vec<(SectionId, String)> = app
+        .core
         .model
         .sections
         .iter()
@@ -354,10 +355,10 @@ fn wall_plates_list(ui: &mut egui::Ui, app: &mut App) {
             ),
             Col::actions(),
         ],
-        app.model.wall_plates.len(),
+        app.core.model.wall_plates.len(),
         |row| {
             let i = row.index();
-            let plate = &app.model.wall_plates[i];
+            let plate = &app.core.model.wall_plates[i];
             row.col(|ui| {
                 table_util::id_label(ui, plate.id.0);
             });
@@ -365,20 +366,20 @@ fn wall_plates_list(ui: &mut egui::Ui, app: &mut App) {
                 table_util::text_cell(ui, shape_label(plate));
             });
             row.col(|ui| {
-                if app.model.wall_plate_becomes_element(plate) {
+                if app.core.model.wall_plate_becomes_element(plate) {
                     ui.label("壁エレメント").on_hover_text(
                         "壁領域全体を覆う 4 節点で断面も割り当たっているため、解析要素\
                          （耐震壁）を生成します",
                     );
                 } else {
-                    table_util::muted_cell(ui, "―", not_element_reason(plate, &app.model));
+                    table_util::muted_cell(ui, "―", not_element_reason(plate, &app.core.model));
                 }
             });
             row.col(|ui| {
                 // どの壁領域（柱・梁の区画）に属するかは `wall_plate_ids` から逆引きする
                 // （取り付く壁版はどの壁領域からも参照されない）。
                 let owner = app
-                    .model
+                    .core.model
                     .wall_regions
                     .iter()
                     .find(|r| r.wall_plate_ids.contains(&plate.id));
@@ -393,7 +394,7 @@ fn wall_plates_list(ui: &mut egui::Ui, app: &mut App) {
                 }
             });
             // 「階高いっぱい」の壁版の高さは、階レベルから解決した値を見せる。
-            let resolved_extent = app.model.wall_plate_extent(plate);
+            let resolved_extent = app.core.model.wall_plate_extent(plate);
             row.col(|ui| match &plate.shape {
                 WallPlateShape::Enclosed { boundary } => {
                     let s = boundary
@@ -418,7 +419,7 @@ fn wall_plates_list(ui: &mut egui::Ui, app: &mut App) {
             });
             row.col(|ui| {
                 let label = app
-                    .model
+                    .core.model
                     .wall_plate_section(plate)
                     .map(|sec| sec.display_name())
                     .unwrap_or_else(|| "―".to_string());
@@ -441,7 +442,7 @@ fn wall_plates_list(ui: &mut egui::Ui, app: &mut App) {
             });
             row.col(|ui| {
                 // 面積は m² 表示（mm² のままでは桁が読めない）。
-                ui.label(format!("{:.2}", plate.area(&app.model) / 1.0e6));
+                ui.label(format!("{:.2}", plate.area(&app.core.model) / 1.0e6));
             });
             row.col(|ui| {
                 table_util::text_cell(ui, &opening_summary(plate));
@@ -473,7 +474,7 @@ fn wall_plates_list(ui: &mut egui::Ui, app: &mut App) {
                          柱・梁と接する 4 辺を持たないため耐震スリットの指定はありません",
                     );
                 } else {
-                    match slit_label(plate, &app.model) {
+                    match slit_label(plate, &app.core.model) {
                         Some(label) => {
                             ui.label(label);
                         }
@@ -494,33 +495,35 @@ fn wall_plates_list(ui: &mut egui::Ui, app: &mut App) {
         || !pending_anchor.is_empty()
         || pending_delete.is_some();
     for (id, section) in pending_section {
-        app.undo.run(
-            &mut app.model,
+        app.core.scoped.undo.run(
+            &mut app.core.model,
             Box::new(SetWallPlateSection { id, section }),
         );
     }
     for (id, extent) in pending_extent {
-        app.undo.run(
-            &mut app.model,
+        app.core.scoped.undo.run(
+            &mut app.core.model,
             Box::new(SetAttachedWallPlateExtent { id, extent }),
         );
     }
     for (id, anchor) in pending_anchor {
-        app.undo.run(
-            &mut app.model,
+        app.core.scoped.undo.run(
+            &mut app.core.model,
             Box::new(SetAttachedWallPlateAnchor { id, anchor }),
         );
     }
     if let Some(id) = pending_delete {
-        app.undo
-            .run(&mut app.model, Box::new(DeleteWallPlate { id }));
+        app.core
+            .scoped
+            .undo
+            .run(&mut app.core.model, Box::new(DeleteWallPlate { id }));
         // 削除は後続の壁版 ID を 1 つずつ繰り上げるため、フォームの対象を
         // そのまま残すと「別の壁版を編集していた」ことになる。対象を外す。
-        app.wall_plate_draft.target = None;
-        app.wall_plate_draft.synced_for = None;
+        app.ui.scoped.wall_plate_draft.target = None;
+        app.ui.scoped.wall_plate_draft.synced_for = None;
     }
     if had_pending {
-        app.staleness.mark_edited();
+        app.core.scoped.staleness.mark_edited();
     }
 }
 
@@ -710,24 +713,28 @@ fn attrs_form(ui: &mut egui::Ui, app: &mut App) {
     ui.separator();
     ui.strong("開口・耐震スリットを設定");
 
-    if app.model.wall_plates.is_empty() {
+    if app.core.model.wall_plates.is_empty() {
         return;
     }
 
-    let plate_ids: Vec<WallPlateId> = app.model.wall_plates.iter().map(|p| p.id).collect();
+    let plate_ids: Vec<WallPlateId> = app.core.model.wall_plates.iter().map(|p| p.id).collect();
     // 対象が消えている（削除・ID 繰り上げ）場合は未選択へ戻す。
     if app
+        .ui
+        .scoped
         .wall_plate_draft
         .target
         .is_some_and(|t| !plate_ids.contains(&t))
     {
-        app.wall_plate_draft.target = None;
-        app.wall_plate_draft.synced_for = None;
+        app.ui.scoped.wall_plate_draft.target = None;
+        app.ui.scoped.wall_plate_draft.synced_for = None;
     }
 
     ui.horizontal(|ui| {
         ui.label("対象の壁版:");
         let text = app
+            .ui
+            .scoped
             .wall_plate_draft
             .target
             .map(|p| format!("壁版#{}", p.0))
@@ -737,29 +744,32 @@ fn attrs_form(ui: &mut egui::Ui, app: &mut App) {
             .show_ui(ui, |ui| {
                 for &pid in &plate_ids {
                     let kind = app
+                        .core
                         .model
                         .wall_plate(pid)
                         .map(shape_label)
                         .unwrap_or_default();
                     if ui
                         .selectable_label(
-                            app.wall_plate_draft.target == Some(pid),
+                            app.ui.scoped.wall_plate_draft.target == Some(pid),
                             format!("壁版#{}（{kind}）", pid.0),
                         )
                         .clicked()
                     {
-                        app.wall_plate_draft.target = Some(pid);
+                        app.ui.scoped.wall_plate_draft.target = Some(pid);
                     }
                 }
             });
     });
 
     // 対象が変わったら model の現在値でバッファを再同期する。
-    if app.wall_plate_draft.target != app.wall_plate_draft.synced_for {
+    if app.ui.scoped.wall_plate_draft.target != app.ui.scoped.wall_plate_draft.synced_for {
         if let Some(plate) = app
+            .ui
+            .scoped
             .wall_plate_draft
             .target
-            .and_then(|pid| app.model.wall_plate(pid))
+            .and_then(|pid| app.core.model.wall_plate(pid))
         {
             let (area, weight, slit, openings) = (
                 plate.opening_area,
@@ -767,29 +777,30 @@ fn attrs_form(ui: &mut egui::Ui, app: &mut App) {
                 plate.slit,
                 plate.openings.clone(),
             );
-            app.wall_plate_draft.opening_area = format!("{area:.0}");
-            app.wall_plate_draft.opening_weight = format!("{weight:.0}");
-            app.wall_plate_draft.slit = slit;
-            app.wall_plate_draft.openings = format_openings(&openings);
+            app.ui.scoped.wall_plate_draft.opening_area = format!("{area:.0}");
+            app.ui.scoped.wall_plate_draft.opening_weight = format!("{weight:.0}");
+            app.ui.scoped.wall_plate_draft.slit = slit;
+            app.ui.scoped.wall_plate_draft.openings = format_openings(&openings);
             // 面荷重は 1 件だけ扱う（床板の追加フォームと同じ簡略化）。複数件を
             // 持つ壁版は合計値を見せ、適用すると 1 件へまとめる。
             let total = plate.finish_intensity();
-            app.wall_plate_draft.load_value =
+            app.ui.scoped.wall_plate_draft.load_value =
                 format!("{:.3}", to_display::area_load_kn_per_m2(total));
-            app.wall_plate_draft.load_kind = plate
+            app.ui.scoped.wall_plate_draft.load_kind = plate
                 .loads
                 .first()
                 .map(|l| l.kind.clone())
                 .unwrap_or_else(|| "仕上げ".to_string());
-            app.wall_plate_draft.synced_for = app.wall_plate_draft.target;
+            app.ui.scoped.wall_plate_draft.synced_for = app.ui.scoped.wall_plate_draft.target;
         }
     }
 
-    let Some(target) = app.wall_plate_draft.target else {
+    let Some(target) = app.ui.scoped.wall_plate_draft.target else {
         ui.label("編集する壁版を選んでください。");
         return;
     };
     let is_attached = app
+        .core
         .model
         .wall_plate(target)
         .is_some_and(|p| p.is_attached());
@@ -797,20 +808,21 @@ fn attrs_form(ui: &mut egui::Ui, app: &mut App) {
     ui.horizontal(|ui| {
         ui.label("開口面積[mm²]:");
         ui.add(
-            egui::TextEdit::singleline(&mut app.wall_plate_draft.opening_area).desired_width(90.0),
+            egui::TextEdit::singleline(&mut app.ui.scoped.wall_plate_draft.opening_area)
+                .desired_width(90.0),
         );
         ui.label("開口部重量[N]:");
         ui.add(
-            egui::TextEdit::singleline(&mut app.wall_plate_draft.opening_weight)
+            egui::TextEdit::singleline(&mut app.ui.scoped.wall_plate_draft.opening_weight)
                 .desired_width(90.0),
         );
     });
 
     ui.horizontal(|ui| {
         ui.label("仕上げ・増打ち:");
-        ui.add(egui::TextEdit::singleline(&mut app.wall_plate_draft.load_kind).desired_width(80.0));
+        ui.add(egui::TextEdit::singleline(&mut app.ui.scoped.wall_plate_draft.load_kind).desired_width(80.0));
         ui.add(
-            egui::TextEdit::singleline(&mut app.wall_plate_draft.load_value).desired_width(70.0),
+            egui::TextEdit::singleline(&mut app.ui.scoped.wall_plate_draft.load_value).desired_width(70.0),
         );
         ui.label("kN/m²");
     })
@@ -825,13 +837,15 @@ fn attrs_form(ui: &mut egui::Ui, app: &mut App) {
         // スリットは辺の役割（柱際か梁際か、下辺か上辺か）を決められる 4 節点の
         // 壁版でのみ扱える。効かない壁版では入力を出さず、理由を示す。
         let quad = app
+            .core
             .model
             .wall_plate(target)
             .is_some_and(|p| p.has_quad_boundary());
         let faces = app
+            .core
             .model
             .wall_plate(target)
-            .and_then(|p| p.column_face_nodes(&app.model));
+            .and_then(|p| p.column_face_nodes(&app.core.model));
         ui.horizontal(|ui| {
             ui.label("耐震スリット:");
             // 4 節点でない壁版では指定しても効かないため、入力を無効化する。
@@ -841,13 +855,16 @@ fn attrs_form(ui: &mut egui::Ui, app: &mut App) {
                         Some(nodes) => format!("柱際 N{}", nodes[k].0),
                         None => format!("柱際 {}", k + 1),
                     };
-                    ui.checkbox(&mut app.wall_plate_draft.slit.column_face[k], label)
-                        .on_hover_text(
-                            "その柱との縁を切ります。切れている側へは袖壁として剛性算入しません",
-                        );
+                    ui.checkbox(
+                        &mut app.ui.scoped.wall_plate_draft.slit.column_face[k],
+                        label,
+                    )
+                    .on_hover_text(
+                        "その柱との縁を切ります。切れている側へは袖壁として剛性算入しません",
+                    );
                 }
                 for (k, label) in ["下辺", "上辺"].into_iter().enumerate() {
-                    ui.checkbox(&mut app.wall_plate_draft.slit.beam_face[k], label)
+                    ui.checkbox(&mut app.ui.scoped.wall_plate_draft.slit.beam_face[k], label)
                         .on_hover_text(
                             "その梁との縁を切ります。切れている側へは腰壁・垂れ壁として\
                              剛性算入せず、自重も伝えません",
@@ -865,7 +882,7 @@ fn attrs_form(ui: &mut egui::Ui, app: &mut App) {
                 .small(),
             );
         }
-        if app.wall_plate_draft.slit.both_beam_faces() {
+        if app.ui.scoped.wall_plate_draft.slit.both_beam_faces() {
             ui.colored_label(
                 crate::theme::ERROR_RED,
                 "上下の梁際をともに切ると自重の伝達先がなくなります（解析前チェックが止めます）",
@@ -883,7 +900,7 @@ fn attrs_form(ui: &mut egui::Ui, app: &mut App) {
 
     ui.label("個別開口（任意・耐震壁判定/剛性計算の複数開口寸法）:");
     ui.add(
-        egui::TextEdit::multiline(&mut app.wall_plate_draft.openings)
+        egui::TextEdit::multiline(&mut app.ui.scoped.wall_plate_draft.openings)
             .desired_rows(3)
             .desired_width(320.0)
             .hint_text(
@@ -897,7 +914,7 @@ fn attrs_form(ui: &mut egui::Ui, app: &mut App) {
          空欄の場合は開口面積[mm²]の入力値がそのまま使われます。",
     );
 
-    let parsed_openings = parse_openings(&app.wall_plate_draft.openings);
+    let parsed_openings = parse_openings(&app.ui.scoped.wall_plate_draft.openings);
     match &parsed_openings {
         Ok(openings) if !openings.is_empty() => {
             let sum_area: f64 = openings.iter().map(WallOpening::area).sum();
@@ -917,9 +934,21 @@ fn attrs_form(ui: &mut egui::Ui, app: &mut App) {
         }
     }
 
-    let parsed_area = app.wall_plate_draft.opening_area.trim().parse::<f64>();
-    let parsed_weight = app.wall_plate_draft.opening_weight.trim().parse::<f64>();
-    let parsed_load = parse_area_load_kn_per_m2(&app.wall_plate_draft.load_value);
+    let parsed_area = app
+        .ui
+        .scoped
+        .wall_plate_draft
+        .opening_area
+        .trim()
+        .parse::<f64>();
+    let parsed_weight = app
+        .ui
+        .scoped
+        .wall_plate_draft
+        .opening_weight
+        .trim()
+        .parse::<f64>();
+    let parsed_load = parse_area_load_kn_per_m2(&app.ui.scoped.wall_plate_draft.load_value);
     if parsed_load.is_none() {
         ui.colored_label(
             crate::theme::ERROR_RED,
@@ -940,25 +969,26 @@ fn attrs_form(ui: &mut egui::Ui, app: &mut App) {
         {
             // 取り付く壁版では入力欄を出さないため、既存値をそのまま書き戻す。
             let slit = if is_attached {
-                app.model
+                app.core
+                    .model
                     .wall_plate(target)
                     .map(|p| p.slit)
                     .unwrap_or_default()
             } else {
-                app.wall_plate_draft.slit
+                app.ui.scoped.wall_plate_draft.slit
             };
             // 0 の面荷重は項目自体を持たせない（一覧が「―」になり、空の
             // 「仕上げ 0.00kN/m²」が並ばない）。
             let value = to_internal::area_load_kn_per_m2(parsed_load.unwrap_or(0.0));
-            let kind = app.wall_plate_draft.load_kind.trim();
+            let kind = app.ui.scoped.wall_plate_draft.load_kind.trim();
             let kind = if kind.is_empty() { "仕上げ" } else { kind }.to_string();
             let loads = if value == 0.0 {
                 Vec::new()
             } else {
                 vec![AreaLoad { kind, value }]
             };
-            app.undo.run(
-                &mut app.model,
+            app.core.scoped.undo.run(
+                &mut app.core.model,
                 Box::new(SetWallPlateAttrs {
                     id: target,
                     opening_area,
@@ -968,7 +998,7 @@ fn attrs_form(ui: &mut egui::Ui, app: &mut App) {
                     slit,
                 }),
             );
-            app.staleness.mark_edited();
+            app.core.scoped.staleness.mark_edited();
         }
     }
 }
@@ -985,16 +1015,18 @@ fn add_enclosed_form(ui: &mut egui::Ui, app: &mut App) {
          所属する壁領域は準備計算が自動で結びつけます。",
     );
 
-    if app.model.nodes.len() < 4 {
+    if app.core.model.nodes.len() < 4 {
         ui.label("囲まれた壁版を追加するには節点が4つ以上必要です");
         return;
     }
 
-    let node_ids: Vec<NodeId> = app.model.nodes.iter().map(|n| n.id).collect();
+    let node_ids: Vec<NodeId> = app.core.model.nodes.iter().map(|n| n.id).collect();
 
     ui.label("境界節点（反時計回り。下辺 2 節点 → 上辺 2 節点の順を推奨）:");
     ui.horizontal_wrapped(|ui| {
         for (k, slot) in app
+            .ui
+            .scoped
             .wall_plate_draft
             .add_enclosed_nodes
             .iter_mut()
@@ -1017,12 +1049,14 @@ fn add_enclosed_form(ui: &mut egui::Ui, app: &mut App) {
     ui.horizontal(|ui| {
         ui.label("断面:");
         let resolved = app
+            .ui
+            .scoped
             .wall_plate_draft
             .add_enclosed_section
-            .and_then(|sid| app.model.sections.get(sid.index()))
+            .and_then(|sid| app.core.model.sections.get(sid.index()))
             .filter(|sec| sec.thickness.is_some_and(|t| t > 0.0));
         if resolved.is_none() {
-            app.wall_plate_draft.add_enclosed_section = None;
+            app.ui.scoped.wall_plate_draft.add_enclosed_section = None;
         }
         let label = resolved
             .map(|sec| sec.display_name())
@@ -1030,11 +1064,15 @@ fn add_enclosed_form(ui: &mut egui::Ui, app: &mut App) {
         egui::ComboBox::from_id_salt("wp_add_enclosed_section")
             .selected_text(label)
             .show_ui(ui, |ui| {
-                ui.selectable_value(&mut app.wall_plate_draft.add_enclosed_section, None, "―");
-                for sec in &app.model.sections {
+                ui.selectable_value(
+                    &mut app.ui.scoped.wall_plate_draft.add_enclosed_section,
+                    None,
+                    "―",
+                );
+                for sec in &app.core.model.sections {
                     if sec.thickness.is_some_and(|t| t > 0.0) {
                         ui.selectable_value(
-                            &mut app.wall_plate_draft.add_enclosed_section,
+                            &mut app.ui.scoped.wall_plate_draft.add_enclosed_section,
                             Some(sec.id),
                             sec.display_name(),
                         );
@@ -1046,6 +1084,8 @@ fn add_enclosed_form(ui: &mut egui::Ui, app: &mut App) {
     .on_hover_text("壁の板厚と自重は断面から決まります。断面が未割当の壁版は自重が 0 になります");
 
     let selected: Vec<NodeId> = app
+        .ui
+        .scoped
         .wall_plate_draft
         .add_enclosed_nodes
         .iter()
@@ -1065,21 +1105,23 @@ fn add_enclosed_form(ui: &mut egui::Ui, app: &mut App) {
         .clicked()
     {
         let boundary: Vec<NodeId> = app
+            .ui
+            .scoped
             .wall_plate_draft
             .add_enclosed_nodes
             .iter()
             .map(|n| n.expect("can_add で全スロット Some を確認済み"))
             .collect();
-        app.undo.run(
-            &mut app.model,
+        app.core.scoped.undo.run(
+            &mut app.core.model,
             Box::new(AddEnclosedWallPlate {
                 boundary,
-                section: app.wall_plate_draft.add_enclosed_section,
+                section: app.ui.scoped.wall_plate_draft.add_enclosed_section,
                 opening_area: 0.0,
                 opening_weight: 0.0,
             }),
         );
-        app.staleness.mark_edited();
+        app.core.scoped.staleness.mark_edited();
     }
 }
 
@@ -1096,7 +1138,7 @@ fn add_attached_form(ui: &mut egui::Ui, app: &mut App) {
          負の値にすると垂れ壁（下向きの張り出し）になります。",
     );
 
-    if app.model.nodes.len() < 2 {
+    if app.core.model.nodes.len() < 2 {
         ui.label("取り付く壁版を追加するには節点が2つ以上必要です");
         return;
     }
@@ -1104,12 +1146,12 @@ fn add_attached_form(ui: &mut egui::Ui, app: &mut App) {
     ui.horizontal(|ui| {
         ui.label("取付き先:");
         ui.selectable_value(
-            &mut app.wall_plate_draft.add_to_floor_region,
+            &mut app.ui.scoped.wall_plate_draft.add_to_floor_region,
             false,
             "線（大梁・柱頭）",
         );
         ui.selectable_value(
-            &mut app.wall_plate_draft.add_to_floor_region,
+            &mut app.ui.scoped.wall_plate_draft.add_to_floor_region,
             true,
             "床領域（自立壁）",
         )
@@ -1118,11 +1160,11 @@ fn add_attached_form(ui: &mut egui::Ui, app: &mut App) {
         );
     });
 
-    let node_ids: Vec<NodeId> = app.model.nodes.iter().map(|n| n.id).collect();
-    let to_region = app.wall_plate_draft.add_to_floor_region;
+    let node_ids: Vec<NodeId> = app.core.model.nodes.iter().map(|n| n.id).collect();
+    let to_region = app.ui.scoped.wall_plate_draft.add_to_floor_region;
 
     if to_region {
-        if app.model.floor_regions.is_empty() {
+        if app.core.model.floor_regions.is_empty() {
             ui.label("床領域がありません（準備計算を実行すると主架構から生成されます）");
             return;
         }
@@ -1143,16 +1185,20 @@ fn add_attached_form(ui: &mut egui::Ui, app: &mut App) {
         };
         for (k, text_label) in label.iter().enumerate() {
             ui.label(*text_label);
-            let text = app.wall_plate_draft.add_nodes[k]
+            let text = app.ui.scoped.wall_plate_draft.add_nodes[k]
                 .map(|n| format!("N{}", n.0))
                 .unwrap_or_else(|| "―".to_string());
             egui::ComboBox::from_id_salt(("wp_add_node", k))
                 .selected_text(text)
                 .show_ui(ui, |ui| {
-                    ui.selectable_value(&mut app.wall_plate_draft.add_nodes[k], None, "―");
+                    ui.selectable_value(
+                        &mut app.ui.scoped.wall_plate_draft.add_nodes[k],
+                        None,
+                        "―",
+                    );
                     for &nid in &node_ids {
                         ui.selectable_value(
-                            &mut app.wall_plate_draft.add_nodes[k],
+                            &mut app.ui.scoped.wall_plate_draft.add_nodes[k],
                             Some(nid),
                             format!("N{}", nid.0),
                         );
@@ -1163,23 +1209,24 @@ fn add_attached_form(ui: &mut egui::Ui, app: &mut App) {
 
     // 「階高いっぱい」を選べるのは自立壁だけである（`WallPlateShape::Attached` の
     // ドキュメント）。取付き線に取り付く全高の壁は囲まれた壁版として入力する。
-    let use_story_height = to_region && app.wall_plate_draft.add_story_height;
+    let use_story_height = to_region && app.ui.scoped.wall_plate_draft.add_story_height;
     ui.horizontal(|ui| {
         if to_region {
-            ui.checkbox(&mut app.wall_plate_draft.add_story_height, "高さは階高")
-                .on_hover_text(
-                    "壁の下端から直上の階レベルまでを高さにする。階高を変えても追随する",
-                );
+            ui.checkbox(
+                &mut app.ui.scoped.wall_plate_draft.add_story_height,
+                "高さは階高",
+            )
+            .on_hover_text("壁の下端から直上の階レベルまでを高さにする。階高を変えても追随する");
         }
         ui.add_enabled_ui(!use_story_height, |ui| {
             ui.label("立ち上がり高さ 始端側 [mm]:");
             ui.add(
-                egui::TextEdit::singleline(&mut app.wall_plate_draft.add_extent[0])
+                egui::TextEdit::singleline(&mut app.ui.scoped.wall_plate_draft.add_extent[0])
                     .desired_width(70.0),
             );
             ui.label("終端側 [mm]:");
             ui.add(
-                egui::TextEdit::singleline(&mut app.wall_plate_draft.add_extent[1])
+                egui::TextEdit::singleline(&mut app.ui.scoped.wall_plate_draft.add_extent[1])
                     .desired_width(70.0),
             );
         });
@@ -1189,12 +1236,12 @@ fn add_attached_form(ui: &mut egui::Ui, app: &mut App) {
         ui.horizontal(|ui| {
             ui.label("荷重の出口:");
             ui.selectable_value(
-                &mut app.wall_plate_draft.add_transfer,
+                &mut app.ui.scoped.wall_plate_draft.add_transfer,
                 LoadTransfer::Anchor,
                 transfer_label(LoadTransfer::Anchor),
             );
             ui.selectable_value(
-                &mut app.wall_plate_draft.add_transfer,
+                &mut app.ui.scoped.wall_plate_draft.add_transfer,
                 LoadTransfer::Columns,
                 transfer_label(LoadTransfer::Columns),
             );
@@ -1202,13 +1249,13 @@ fn add_attached_form(ui: &mut egui::Ui, app: &mut App) {
         ui.horizontal(|ui| {
             ui.label("取付き線の区間 [0, 1]（既定は全長）:");
             ui.add(
-                egui::DragValue::new(&mut app.wall_plate_draft.add_span[0])
+                egui::DragValue::new(&mut app.ui.scoped.wall_plate_draft.add_span[0])
                     .range(0.0..=1.0)
                     .speed(0.01),
             );
             ui.label("〜");
             ui.add(
-                egui::DragValue::new(&mut app.wall_plate_draft.add_span[1])
+                egui::DragValue::new(&mut app.ui.scoped.wall_plate_draft.add_span[1])
                     .range(0.0..=1.0)
                     .speed(0.01),
             );
@@ -1221,12 +1268,14 @@ fn add_attached_form(ui: &mut egui::Ui, app: &mut App) {
         // 残したままだと `AddAttachedWallPlate` が参照検証で Noop になり、
         // 「追加」を押しても何も起きない状態になる。
         let resolved = app
+            .ui
+            .scoped
             .wall_plate_draft
             .add_section
-            .and_then(|sid| app.model.sections.get(sid.index()))
+            .and_then(|sid| app.core.model.sections.get(sid.index()))
             .filter(|sec| sec.thickness.is_some_and(|t| t > 0.0));
         if resolved.is_none() {
-            app.wall_plate_draft.add_section = None;
+            app.ui.scoped.wall_plate_draft.add_section = None;
         }
         let label = resolved
             .map(|sec| sec.display_name())
@@ -1234,11 +1283,11 @@ fn add_attached_form(ui: &mut egui::Ui, app: &mut App) {
         egui::ComboBox::from_id_salt("wp_add_section")
             .selected_text(label)
             .show_ui(ui, |ui| {
-                ui.selectable_value(&mut app.wall_plate_draft.add_section, None, "―");
-                for sec in &app.model.sections {
+                ui.selectable_value(&mut app.ui.scoped.wall_plate_draft.add_section, None, "―");
+                for sec in &app.core.model.sections {
                     if sec.thickness.is_some_and(|t| t > 0.0) {
                         ui.selectable_value(
-                            &mut app.wall_plate_draft.add_section,
+                            &mut app.ui.scoped.wall_plate_draft.add_section,
                             Some(sec.id),
                             sec.display_name(),
                         );
@@ -1253,12 +1302,12 @@ fn add_attached_form(ui: &mut egui::Ui, app: &mut App) {
     // 「追加」を無効にしないと、"inf"・"NaN"（`parse::<f64>()` を通る）を入れたとき
     // ボタンだけ押せて何も起きない状態になる。
     let parsed_extent: Option<[f64; 2]> = {
-        let a = app.wall_plate_draft.add_extent[0]
+        let a = app.ui.scoped.wall_plate_draft.add_extent[0]
             .trim()
             .parse::<f64>()
             .ok()
             .filter(|v| v.is_finite());
-        let b = app.wall_plate_draft.add_extent[1]
+        let b = app.ui.scoped.wall_plate_draft.add_extent[1]
             .trim()
             .parse::<f64>()
             .ok()
@@ -1273,7 +1322,7 @@ fn add_attached_form(ui: &mut egui::Ui, app: &mut App) {
         parsed_extent
     };
     let extent_ok = use_story_height || parsed_extent.is_some();
-    let span = app.wall_plate_draft.add_span;
+    let span = app.ui.scoped.wall_plate_draft.add_span;
     // `Model::validate`（squid-n-core）・`wall_anchor_ok`（squid-n-edit）と同じ範囲。
     let span_ok = span[0].is_finite()
         && span[1].is_finite()
@@ -1281,8 +1330,8 @@ fn add_attached_form(ui: &mut egui::Ui, app: &mut App) {
         && span[1] <= 1.0
         && span[1] - span[0] > 1e-9;
     let anchor: Option<RegionAnchor> = match (
-        app.wall_plate_draft.add_nodes[0],
-        app.wall_plate_draft.add_nodes[1],
+        app.ui.scoped.wall_plate_draft.add_nodes[0],
+        app.ui.scoped.wall_plate_draft.add_nodes[1],
     ) {
         (Some(a), Some(b)) if a != b => {
             if to_region {
@@ -1291,7 +1340,7 @@ fn add_attached_form(ui: &mut egui::Ui, app: &mut App) {
                 Some(RegionAnchor::Line {
                     nodes: [a, b],
                     span,
-                    transfer: app.wall_plate_draft.add_transfer,
+                    transfer: app.ui.scoped.wall_plate_draft.add_transfer,
                 })
             } else {
                 None
@@ -1312,19 +1361,19 @@ fn add_attached_form(ui: &mut egui::Ui, app: &mut App) {
         .clicked()
     {
         if let Some(anchor) = anchor {
-            app.undo.run(
-                &mut app.model,
+            app.core.scoped.undo.run(
+                &mut app.core.model,
                 Box::new(AddAttachedWallPlate {
                     anchor,
                     extent,
-                    section: app.wall_plate_draft.add_section,
+                    section: app.ui.scoped.wall_plate_draft.add_section,
                     // 開口は追加後に上の「開口・耐震スリットを設定」で与える
                     // （床板の追加フォームが版の仕様を後から与えるのと同じ流儀）。
                     opening_area: 0.0,
                     opening_weight: 0.0,
                 }),
             );
-            app.staleness.mark_edited();
+            app.core.scoped.staleness.mark_edited();
         }
     }
 }

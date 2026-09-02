@@ -12,28 +12,33 @@ impl App {
         // 表示対象（荷重ケース／組合せ）の選択肢を先に収集する
         // （クロージャ内で self を可変借用しないため）。current_key は現在の表示対象。
         let result_options = self.result_display_options();
-        let current_key = self.nav.focus_result.or(self.last_static);
+        let current_key = self
+            .ui
+            .scoped
+            .nav
+            .focus_result
+            .or(self.core.scoped.last_static);
         let mut selected_result: Option<StaticKey> = None;
         ui.horizontal(|ui| {
-            let sel_spatial = self.results_view == ResultsView::Spatial;
-            let sel_th = self.results_view == ResultsView::TimeHistory;
-            let sel_po = self.results_view == ResultsView::Pushover;
-            let sel_lm = self.results_view == ResultsView::LumpedMass;
+            let sel_spatial = self.ui.view.results_view == ResultsView::Spatial;
+            let sel_th = self.ui.view.results_view == ResultsView::TimeHistory;
+            let sel_po = self.ui.view.results_view == ResultsView::Pushover;
+            let sel_lm = self.ui.view.results_view == ResultsView::LumpedMass;
             if ui.selectable_label(sel_spatial, "3D/応力図").clicked() {
-                self.results_view = ResultsView::Spatial;
+                self.ui.view.results_view = ResultsView::Spatial;
             }
             if ui.selectable_label(sel_th, "時刻歴").clicked() {
-                self.results_view = ResultsView::TimeHistory;
+                self.ui.view.results_view = ResultsView::TimeHistory;
             }
             if ui.selectable_label(sel_po, "増分解析").clicked() {
-                self.results_view = ResultsView::Pushover;
+                self.ui.view.results_view = ResultsView::Pushover;
             }
             if ui.selectable_label(sel_lm, "質点系").clicked() {
-                self.results_view = ResultsView::LumpedMass;
+                self.ui.view.results_view = ResultsView::LumpedMass;
             }
             ui.separator();
             // 結果サマリ
-            if let Some(r) = &self.results {
+            if let Some(r) = &self.core.scoped.results {
                 ui.label(format!("静的ケース数: {}", r.statics.len()));
                 if let Some(m) = &r.modal {
                     let t1 = m.period.first().copied().unwrap_or(0.0);
@@ -71,7 +76,7 @@ impl App {
             self.select_displayed_result(key);
         }
         ui.separator();
-        match self.results_view {
+        match self.ui.view.results_view {
             ResultsView::Spatial => crate::viewer::viewer_panel(ui, self),
             ResultsView::TimeHistory => crate::time_history_view::time_history_panel(ui, self),
             ResultsView::Pushover => self.pushover_results_panel(ui),
@@ -96,7 +101,10 @@ impl App {
             if ui
                 .add_enabled(
                     has_x,
-                    egui::Button::selectable(self.pushover_view_dir == SeismicDir::X, "X"),
+                    egui::Button::selectable(
+                        self.core.scoped.pushover_view_dir == SeismicDir::X,
+                        "X",
+                    ),
                 )
                 .clicked()
             {
@@ -105,7 +113,10 @@ impl App {
             if ui
                 .add_enabled(
                     has_y,
-                    egui::Button::selectable(self.pushover_view_dir == SeismicDir::Y, "Y"),
+                    egui::Button::selectable(
+                        self.core.scoped.pushover_view_dir == SeismicDir::Y,
+                        "Y",
+                    ),
                 )
                 .clicked()
             {
@@ -187,6 +198,7 @@ impl App {
                 squid_n_solver::pushover::MechanismType::StoryCollapse { layer } => {
                     // 層の呼び名は下端の階名（法令の「i 階」）。
                     let name = self
+                        .core
                         .model
                         .layers()
                         .get(*layer)
@@ -209,7 +221,7 @@ impl App {
         // 塑性率（構造力学）の方式と最大値。
         ui.horizontal(|ui| {
             use squid_n_solver::pushover::DuctilityMethod;
-            let method = match self.analysis_cfg.ductility_method {
+            let method = match self.core.analysis_cfg.ductility_method {
                 DuctilityMethod::ReferenceStrain => "基点歪み",
                 DuctilityMethod::WeightedAverageJm => "重み付け平均Jm",
                 DuctilityMethod::FirstYield => "降伏時",
@@ -228,7 +240,7 @@ impl App {
         // 符号を持ちうるため絶対値を取ってから最大値を求める
         // （crates/squid-n-app/src/app/actions.rs の `story_qu` 算定と同じ着眼＝
         // capacity_curve 全点にわたる層せん断力の最大値／βu の分母）。
-        let layers = self.model.layers();
+        let layers = self.core.model.layers();
         let n_stories = layers.len();
         let story_name = |i: usize| -> String {
             layers
@@ -331,7 +343,13 @@ impl App {
 
     /// 質点系の結果表示（実行は右バー「質点系」パネル）。
     pub(crate) fn lumped_mass_panel(&mut self, ui: &mut egui::Ui) {
-        let Some(lm_res) = self.results.as_ref().and_then(|r| r.lumped.as_ref()) else {
+        let Some(lm_res) = self
+            .core
+            .scoped
+            .results
+            .as_ref()
+            .and_then(|r| r.lumped.as_ref())
+        else {
             ui.colored_label(
                 crate::theme::GRAY_600,
                 "質点系の結果がありません。右バー「質点系」から実行してください。",
@@ -379,6 +397,7 @@ impl App {
                     let stick = &lm.stories[i];
                     let sp = &lm.spatial[i];
                     let name = self
+                        .core
                         .model
                         .layers()
                         .get(i)
@@ -433,6 +452,7 @@ impl App {
                     let i = order[row.index()];
                     let stick = &lm.stories[i];
                     let name = self
+                        .core
                         .model
                         .layers()
                         .get(i)
@@ -513,10 +533,15 @@ impl App {
         }
 
         ui.separator();
-        if let Some(res) = lm_res.response.as_ref().or(self.stick_response.as_ref()) {
+        if let Some(res) = lm_res
+            .response
+            .as_ref()
+            .or(self.core.scoped.stick_response.as_ref())
+        {
             let names: Vec<String> = (0..res.story_peak_drift.len())
                 .map(|i| {
-                    self.model
+                    self.core
+                        .model
                         .layers()
                         .get(i)
                         .map(|l| l.name.clone())

@@ -208,7 +208,7 @@ pub fn compute_story_metrics_with(
 /// 解析・検定結果を CSV テキストにまとめる（レポートタブの出力）。
 pub fn build_report_csv(app: &App) -> String {
     let mut out = String::new();
-    let model = &app.model;
+    let model = &app.core.model;
 
     out.push_str("# Squid-n レポート\n");
     out.push_str("\n[モデル概要]\n");
@@ -237,7 +237,7 @@ pub fn build_report_csv(app: &App) -> String {
     // 数量積算（モデルのみから算定できるため解析結果の有無に関わらず出力する）。
     out.push_str(&build_quantity_csv(model));
 
-    let Some(results) = &app.results else {
+    let Some(results) = &app.core.scoped.results else {
         out.push_str("\n(解析結果なし)\n");
         return out;
     };
@@ -276,9 +276,9 @@ pub fn build_report_csv(app: &App) -> String {
 
     // 層指標（最後に実行した静的結果に基づく）
     if let Some((_, st)) = results.statics.last() {
-        let ctx = metrics_ctx_from_results(app.results.as_ref());
+        let ctx = metrics_ctx_from_results(app.core.scoped.results.as_ref());
         let metrics =
-            compute_story_metrics_with(model, &st.disp, app.analysis_cfg.seismic_dir, &ctx);
+            compute_story_metrics_with(model, &st.disp, app.core.analysis_cfg.seismic_dir, &ctx);
         if !metrics.is_empty() {
             let denom = metrics
                 .first()
@@ -314,14 +314,14 @@ pub fn build_report_csv(app: &App) -> String {
     // X・Y 加力の弾性解析結果が揃っている場合のみ、水平力のなす仕事が極値をとる
     // 角度 Θ（tan2Θ = −Pᵗ(uy+vx)/Pᵗ(vy−ux)）を出力する。
     {
-        let ctx = metrics_ctx_from_results(app.results.as_ref());
+        let ctx = metrics_ctx_from_results(app.core.scoped.results.as_ref());
         if let (Some(rx), Some(ry)) = (ctx.seismic_x, ctx.seismic_y) {
             let cfg = squid_n_solver::analysis::SeismicCfg {
                 dir: SeismicDir::X,
-                mode: app.analysis_cfg.ai_mode,
-                z: app.analysis_cfg.z,
-                soil: app.analysis_cfg.soil,
-                c0: app.analysis_cfg.c0,
+                mode: app.core.analysis_cfg.ai_mode,
+                z: app.core.analysis_cfg.z,
+                soil: app.core.analysis_cfg.soil,
+                c0: app.core.analysis_cfg.c0,
             };
             // 壁の解析要素は入力の正であるモデルには存在しない生成物（D5）のため、
             // ここで壁展開モデルを組み立ててから解く（`squid_n_job::compute` の
@@ -524,7 +524,7 @@ pub fn build_preparation_csv(app: &App) -> String {
         zone_source_label,
     };
 
-    let Some(p) = app.preparation.as_ref() else {
+    let Some(p) = app.core.scoped.preparation.as_ref() else {
         return String::new();
     };
     let kn = force_kn;
@@ -867,11 +867,24 @@ mod tests {
         app.load_model(crate::sample::portal_frame());
         app.generate_stories_action();
         app.run_seismic(SeismicDir::X);
-        assert!(app.last_error.is_none(), "{:?}", app.last_error);
+        assert!(
+            app.core.scoped.last_error.is_none(),
+            "{:?}",
+            app.core.scoped.last_error
+        );
 
         // 層指標
-        let st = &app.results.as_ref().unwrap().statics.last().unwrap().1;
-        let metrics = compute_story_metrics(&app.model, &st.disp, SeismicDir::X);
+        let st = &app
+            .core
+            .scoped
+            .results
+            .as_ref()
+            .unwrap()
+            .statics
+            .last()
+            .unwrap()
+            .1;
+        let metrics = compute_story_metrics(&app.core.model, &st.disp, SeismicDir::X);
         assert_eq!(metrics.len(), 1);
         assert!(metrics[0].drift > 0.0);
         assert!(metrics[0].rs > 0.0);
@@ -909,12 +922,25 @@ mod tests {
         let mut app = App::default();
         app.load_model(crate::sample::portal_frame());
         app.generate_stories_action();
-        app.model.stress_cfg.drift_limit_denom = 120.0;
+        app.core.model.stress_cfg.drift_limit_denom = 120.0;
         app.run_seismic(SeismicDir::X);
-        assert!(app.last_error.is_none(), "{:?}", app.last_error);
+        assert!(
+            app.core.scoped.last_error.is_none(),
+            "{:?}",
+            app.core.scoped.last_error
+        );
 
-        let st = &app.results.as_ref().unwrap().statics.last().unwrap().1;
-        let metrics = compute_story_metrics(&app.model, &st.disp, SeismicDir::X);
+        let st = &app
+            .core
+            .scoped
+            .results
+            .as_ref()
+            .unwrap()
+            .statics
+            .last()
+            .unwrap()
+            .1;
+        let metrics = compute_story_metrics(&app.core.model, &st.disp, SeismicDir::X);
         assert_eq!(metrics[0].drift_limit_denom, 120.0);
         assert_eq!(metrics[0].drift_ok, metrics[0].drift_angle <= 1.0 / 120.0);
         let csv = build_report_csv(&app);
@@ -926,6 +952,6 @@ mod tests {
         let app = App::default();
         let csv = build_report_csv(&app);
         assert!(csv.contains("解析結果なし"));
-        assert!(!has_report_content(&app.results));
+        assert!(!has_report_content(&app.core.scoped.results));
     }
 }

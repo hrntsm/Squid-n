@@ -18,7 +18,7 @@ impl App {
         ui.separator();
 
         // バックグラウンドジョブ実行中は実行ボタンを無効化する（P8 §5）。
-        let running = self.job.is_some();
+        let running = self.core.scoped.job.is_some();
         self.preparation_section(ui, running);
     }
     /// 準備計算（① 解析前の前処理）のセクション一式。
@@ -39,20 +39,20 @@ impl App {
                 .clicked()
             {
                 self.run_preparation();
-                self.bottom_dock_open = true;
-                self.bottom_tab = BottomTab::Preparation;
+                self.ui.view.bottom_dock_open = true;
+                self.ui.view.bottom_tab = BottomTab::Preparation;
             }
             if ui
                 .button("📋 結果を表示")
                 .on_hover_text("下ドックの「準備計算」タブを開きます")
                 .clicked()
             {
-                self.bottom_dock_open = true;
-                self.bottom_tab = BottomTab::Preparation;
+                self.ui.view.bottom_dock_open = true;
+                self.ui.view.bottom_tab = BottomTab::Preparation;
             }
         });
-        match self.preparation.as_ref() {
-            _ if self.staleness.preparation_stale => ui.colored_label(
+        match self.core.scoped.preparation.as_ref() {
+            _ if self.core.scoped.staleness.preparation_stale => ui.colored_label(
                 crate::theme::WARN_TEXT,
                 "⚠ 準備計算が未実行、またはモデル編集により古くなっています。",
             ),
@@ -94,7 +94,7 @@ impl App {
             .id_salt("as_member_modeling")
             .show(ui, |ui| {
                 use squid_n_core::model::BeamTorsionMode;
-                let mut release = self.model.beam_torsion == BeamTorsionMode::ReleaseIEnd;
+                let mut release = self.core.model.beam_torsion == BeamTorsionMode::ReleaseIEnd;
                 let resp = ui
                     .checkbox(&mut release, "部材 i 端のねじりをピン（梁・柱）")
                     .on_hover_text(
@@ -112,11 +112,11 @@ impl App {
                     } else {
                         BeamTorsionMode::Keep
                     };
-                    self.undo.run(
-                        &mut self.model,
+                    self.core.scoped.undo.run(
+                        &mut self.core.model,
                         Box::new(squid_n_edit::SetBeamTorsion { mode }),
                     );
-                    self.staleness.mark_edited();
+                    self.core.scoped.staleness.mark_edited();
                 }
                 ui.colored_label(
                     crate::theme::GRAY_600,
@@ -125,7 +125,7 @@ impl App {
 
                 ui.add_space(6.0);
                 use squid_n_core::model::PanelZoneMode;
-                let mut panel = self.model.panel_zone.is_enabled();
+                let mut panel = self.core.model.panel_zone.is_enabled();
                 let resp = ui
                     .checkbox(&mut panel, "仕口パネルをモデル化（柱梁接合部）")
                     .on_hover_text(
@@ -142,11 +142,11 @@ impl App {
                     } else {
                         PanelZoneMode::None
                     };
-                    self.undo.run(
-                        &mut self.model,
+                    self.core.scoped.undo.run(
+                        &mut self.core.model,
                         Box::new(squid_n_edit::SetPanelZoneMode { mode }),
                     );
-                    self.staleness.mark_edited();
+                    self.core.scoped.staleness.mark_edited();
                 }
                 ui.colored_label(
                     crate::theme::GRAY_600,
@@ -155,7 +155,7 @@ impl App {
                 );
 
                 ui.add_space(6.0);
-                let mut consider = self.model.stress_cfg.rigid_zone_consider_walls;
+                let mut consider = self.core.model.stress_cfg.rigid_zone_consider_walls;
                 let resp = ui
                     .checkbox(&mut consider, "剛域の算定で壁を考慮する")
                     .on_hover_text(
@@ -166,8 +166,8 @@ impl App {
                      100mm 以上のもので、耐震壁・雑壁を問いません。",
                     );
                 if resp.changed() {
-                    self.model.stress_cfg.rigid_zone_consider_walls = consider;
-                    self.staleness.mark_edited();
+                    self.core.model.stress_cfg.rigid_zone_consider_walls = consider;
+                    self.core.scoped.staleness.mark_edited();
                 }
                 ui.colored_label(
                     crate::theme::GRAY_600,
@@ -191,18 +191,22 @@ impl App {
                 ui.horizontal_wrapped(|ui| {
                     ui.label("T算定:");
                     ui.selectable_value(
-                        &mut self.analysis_cfg.ai_mode,
+                        &mut self.core.analysis_cfg.ai_mode,
                         AiMode::SemiPrecise,
                         "固有値",
                     )
                     .on_hover_text("固有値解析による 1 次周期（先に固有値解析の実行が必要）");
-                    ui.selectable_value(&mut self.analysis_cfg.ai_mode, AiMode::Approx, "略算")
-                        .on_hover_text("T = h(0.02 + 0.01α) の略算式");
+                    ui.selectable_value(
+                        &mut self.core.analysis_cfg.ai_mode,
+                        AiMode::Approx,
+                        "略算",
+                    )
+                    .on_hover_text("T = h(0.02 + 0.01α) の略算式");
                 });
                 ui.horizontal_wrapped(|ui| {
                     ui.label("Z:");
                     ui.add(
-                        egui::DragValue::new(&mut self.analysis_cfg.z)
+                        egui::DragValue::new(&mut self.core.analysis_cfg.z)
                             .speed(0.05)
                             .range(0.7..=1.0),
                     )
@@ -216,11 +220,11 @@ impl App {
                         ("第二種", SoilClass::II),
                         ("第三種", SoilClass::III),
                     ] {
-                        ui.selectable_value(&mut self.analysis_cfg.soil, soil, label);
+                        ui.selectable_value(&mut self.core.analysis_cfg.soil, soil, label);
                     }
                     ui.label("C0:");
                     ui.add(
-                        egui::DragValue::new(&mut self.analysis_cfg.c0)
+                        egui::DragValue::new(&mut self.core.analysis_cfg.c0)
                             .speed(0.05)
                             .range(0.05..=1.0),
                     );
@@ -239,18 +243,18 @@ impl App {
                     use squid_n_core::model::MassMethod;
                     ui.label("質量方式:");
                     egui::ComboBox::from_id_salt("mass_method")
-                        .selected_text(match self.analysis_cfg.mass_method {
+                        .selected_text(match self.core.analysis_cfg.mass_method {
                             MassMethod::CorrectedLumped => "補正質点（既定）",
                             MassMethod::LumpedOnly => "質点のみ",
                         })
                         .show_ui(ui, |ui| {
                             ui.selectable_value(
-                                &mut self.analysis_cfg.mass_method,
+                                &mut self.core.analysis_cfg.mass_method,
                                 MassMethod::CorrectedLumped,
                                 "補正質点（既定）",
                             );
                             ui.selectable_value(
-                                &mut self.analysis_cfg.mass_method,
+                                &mut self.core.analysis_cfg.mass_method,
                                 MassMethod::LumpedOnly,
                                 "質点のみ",
                             );
@@ -263,7 +267,9 @@ impl App {
                 });
                 ui.horizontal_wrapped(|ui| {
                     ui.label("並列スレッド数:");
-                    ui.add(egui::DragValue::new(&mut self.analysis_cfg.threads).range(0..=256));
+                    ui.add(
+                        egui::DragValue::new(&mut self.core.analysis_cfg.threads).range(0..=256),
+                    );
                 });
                 ui.colored_label(
                     crate::theme::GRAY_600,
@@ -278,17 +284,17 @@ impl App {
         ui.horizontal(|ui| {
             ui.label("階名:");
             ui.add(
-                egui::TextEdit::singleline(&mut self.new_story_draft.0)
+                egui::TextEdit::singleline(&mut self.ui.scoped.new_story_draft.0)
                     .desired_width(60.0)
                     .hint_text("3F"),
             );
             ui.label("レベル[mm]:");
             ui.add(
-                egui::DragValue::new(&mut self.new_story_draft.1)
+                egui::DragValue::new(&mut self.ui.scoped.new_story_draft.1)
                     .speed(50.0)
                     .range(-1.0e6..=1.0e6),
             );
-            let name = self.new_story_draft.0.trim().to_string();
+            let name = self.ui.scoped.new_story_draft.0.trim().to_string();
             let can_add = !name.is_empty();
             if ui
                 .add_enabled(can_add, egui::Button::new("➕ 階を追加"))
@@ -299,14 +305,14 @@ impl App {
                 .on_disabled_hover_text("階名を入力してください")
                 .clicked()
             {
-                let elevation = self.new_story_draft.1;
-                self.undo.run(
-                    &mut self.model,
+                let elevation = self.ui.scoped.new_story_draft.1;
+                self.core.scoped.undo.run(
+                    &mut self.core.model,
                     Box::new(squid_n_edit::AddStory { name, elevation }),
                 );
-                self.staleness.mark_edited();
-                self.new_story_draft.0.clear();
-                self.new_story_draft.1 = elevation + 3500.0;
+                self.core.scoped.staleness.mark_edited();
+                self.ui.scoped.new_story_draft.0.clear();
+                self.ui.scoped.new_story_draft.1 = elevation + 3500.0;
             }
         });
         ui.separator();
@@ -327,7 +333,7 @@ impl App {
             .id_salt("as_stories_table")
             .show(ui, |ui| {
                 self.story_add_row(ui);
-                if self.model.stories.is_empty() {
+                if self.core.model.stories.is_empty() {
                     ui.colored_label(
                         crate::theme::GRAY_600,
                         "未定義です。上の「階を追加」で定義するか、準備計算を実行すると\
@@ -357,7 +363,7 @@ impl App {
                     squid_n_core::model::StoryStructure,
                     StoryLevelKind,
                 )> = self
-                    .model
+                    .core.model
                     .stories
                     .iter()
                     .rev()
@@ -672,23 +678,23 @@ impl App {
                 // `SetStoryLevel` は標高の変更時のみ並べ替える。`DeleteStory` が
                 // 後を観るコマンドの ID を古くしないよう、削除は最後に積む。）
                 if let Some((story, level_kind)) = pending_level_kind {
-                    self.pending_story_cmds.push_back(Box::new(
+                    self.ui.scoped.pending_story_cmds.push_back(Box::new(
                         squid_n_edit::SetStoryLevelKind { story, level_kind },
                     ));
                 }
                 if let Some((story, weight)) = pending_weight {
-                    self.pending_story_cmds
+                    self.ui.scoped.pending_story_cmds
                         .push_back(Box::new(squid_n_edit::SetStoryWeight { story, weight }));
                 }
                 if let Some((story, name, elevation)) = pending_name_elev {
-                    self.pending_story_cmds.push_back(Box::new(squid_n_edit::SetStoryLevel {
+                    self.ui.scoped.pending_story_cmds.push_back(Box::new(squid_n_edit::SetStoryLevel {
                         story,
                         name,
                         elevation,
                     }));
                 }
                 if let Some(story) = pending_delete {
-                    self.pending_story_cmds
+                    self.ui.scoped.pending_story_cmds
                         .push_back(Box::new(squid_n_edit::DeleteStory { story }));
                 }
                 if let Some(story) = pending_copy {

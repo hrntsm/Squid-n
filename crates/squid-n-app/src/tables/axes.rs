@@ -60,7 +60,7 @@ pub fn axes_table(ui: &mut egui::Ui, app: &mut App) {
     });
     ui.separator();
 
-    if app.model.axes.is_empty() {
+    if app.core.model.axes.is_empty() {
         ui.colored_label(
             crate::theme::GRAY_600,
             "通り芯はありません。「柱位置から自動生成」で作成するか、\
@@ -73,14 +73,14 @@ pub fn axes_table(ui: &mut egui::Ui, app: &mut App) {
     let mut pending_commit: Option<(usize, usize, String)> = None;
     let mut pending_cancel = false;
 
-    for (gi, group) in app.model.axes.iter().enumerate() {
+    for (gi, group) in app.core.model.axes.iter().enumerate() {
         ui.strong(format!("{} — {}", group.name, kind_label(group.kind)));
         if group.axes.is_empty() {
             ui.colored_label(crate::theme::GRAY_600, "  （通りなし）");
             continue;
         }
-        let draft = &mut app.axis_name_draft;
-        let model = &app.model;
+        let draft = &mut app.ui.scoped.axis_name_draft;
+        let model = &app.core.model;
         crate::table_util::standard_table(
             ui,
             &format!("axes_tbl_{gi}"),
@@ -152,25 +152,25 @@ pub fn axes_table(ui: &mut egui::Ui, app: &mut App) {
     );
 
     if let Some((gi, ai)) = pending_edit {
-        app.axis_name_draft.name = app.model.axes[gi].axes[ai].name.clone();
-        app.axis_name_draft.editing = Some((gi, ai));
+        app.ui.scoped.axis_name_draft.name = app.core.model.axes[gi].axes[ai].name.clone();
+        app.ui.scoped.axis_name_draft.editing = Some((gi, ai));
     }
     if pending_cancel {
-        app.axis_name_draft.editing = None;
+        app.ui.scoped.axis_name_draft.editing = None;
     }
     if let Some((gi, ai, name)) = pending_commit {
-        app.axis_name_draft.editing = None;
+        app.ui.scoped.axis_name_draft.editing = None;
         // 空欄は無視する（名前のない通りは識別札として意味を成さない）。
-        if !name.is_empty() && app.model.axes[gi].axes[ai].name != name {
-            app.undo.run(
-                &mut app.model,
+        if !name.is_empty() && app.core.model.axes[gi].axes[ai].name != name {
+            app.core.scoped.undo.run(
+                &mut app.core.model,
                 Box::new(RenameAxis {
                     group: gi,
                     axis: ai,
                     name,
                 }),
             );
-            app.staleness.mark_non_calc_edited();
+            app.core.scoped.staleness.mark_non_calc_edited();
         }
     }
 }

@@ -70,15 +70,15 @@ fn test_tmp() -> std::path::PathBuf {
 /// 残るため、各ステップの前に [`clear_error`] でクリアしてから使う。
 fn assert_no_error(app: &App, what: &str) {
     assert!(
-        app.last_error.is_none(),
+        app.core.scoped.last_error.is_none(),
         "{what} でエラー: {}",
-        app.last_error.as_deref().unwrap_or("")
+        app.core.scoped.last_error.as_deref().unwrap_or("")
     );
 }
 
 /// `last_error` をクリアする（次のステップの判定に前の内容を持ち越さない）。
 fn clear_error(app: &mut App) {
-    app.last_error = None;
+    app.core.scoped.last_error = None;
 }
 
 /// フィクスチャを取り込んだ `App`。
@@ -91,9 +91,9 @@ fn clear_error(app: &mut App) {
 fn imported() -> App {
     let mut app = App::default();
     // 解析結果の完全再現性を確保する（スナップショット比較の前提）。
-    app.analysis_cfg.threads = 1;
+    app.core.analysis_cfg.threads = 1;
     app.import_stbridge_from(fixture_path());
-    if let Some(e) = &app.last_error {
+    if let Some(e) = &app.core.scoped.last_error {
         assert!(
             e.starts_with('⚠'),
             "ST-Bridge 取り込みが失敗した（注意ではなくエラー）: {e}"
@@ -116,7 +116,7 @@ fn analyzed() -> App {
     let mut app = prepared();
     app.run_static_all();
     assert_no_error(&app, "静的解析（一括）");
-    app.run_eigen(app.analysis_cfg.n_modes);
+    app.run_eigen(app.core.analysis_cfg.n_modes);
     assert_no_error(&app, "固有値解析");
     app
 }
@@ -124,7 +124,8 @@ fn analyzed() -> App {
 /// 解析対象の梁要素（断面力が必ず得られる部材）の本数。
 /// 準備計算が自動生成する仕口パネル要素（`PanelZone`）は断面力の対象外のため除く。
 fn frame_elem_count(app: &App) -> usize {
-    app.model
+    app.core
+        .model
         .elements
         .iter()
         .filter(|e| e.kind == ElementKind::Beam && e.nodes.len() == 2)
@@ -140,6 +141,7 @@ fn frame_elem_count(app: &App) -> usize {
 fn static_case_key(app: &App, lc: squid_n_core::ids::LoadCaseId) -> StaticCaseKey {
     use squid_n_core::model::{LoadCaseKind, EX_CASE_NAME, EY_CASE_NAME};
     let case = app
+        .core
         .model
         .load_cases
         .iter()
@@ -154,7 +156,9 @@ fn static_case_key(app: &App, lc: squid_n_core::ids::LoadCaseId) -> StaticCaseKe
 
 /// 指定した静的結果を取り出す。
 fn static_of(app: &App, key: StaticCaseKey) -> &squid_n_solver::linear::StaticOnce {
-    app.results
+    app.core
+        .scoped
+        .results
         .as_ref()
         .expect("解析結果が格納されているはず")
         .statics
@@ -166,7 +170,8 @@ fn static_of(app: &App, key: StaticCaseKey) -> &squid_n_solver::linear::StaticOn
 
 /// DL（固定荷重）の荷重ケース ID。
 fn dl_case_id(app: &App) -> squid_n_core::ids::LoadCaseId {
-    app.model
+    app.core
+        .model
         .load_cases
         .iter()
         .find(|lc| lc.name == DL_CASE_NAME)
@@ -176,7 +181,8 @@ fn dl_case_id(app: &App) -> squid_n_core::ids::LoadCaseId {
 
 /// 名前で荷重ケースを取り出す（内容の比較用）。
 fn auto_case(app: &App, name: &str) -> squid_n_core::model::LoadCase {
-    app.model
+    app.core
+        .model
         .load_cases
         .iter()
         .find(|lc| lc.name == name)
@@ -199,15 +205,15 @@ fn auto_case(app: &App, name: &str) -> squid_n_core::model::LoadCase {
 fn base_column_axials(app: &App, res: &squid_n_solver::linear::StaticOnce) -> Vec<f64> {
     let mut out = Vec::new();
     for (eid, mf) in &res.member_forces {
-        let Some(e) = app.model.elements.get(eid.index()) else {
+        let Some(e) = app.core.model.elements.get(eid.index()) else {
             continue;
         };
         if e.kind != ElementKind::Beam || e.nodes.len() != 2 {
             continue;
         }
         let (Some(na), Some(nb)) = (
-            app.model.nodes.get(e.nodes[0].index()),
-            app.model.nodes.get(e.nodes[1].index()),
+            app.core.model.nodes.get(e.nodes[0].index()),
+            app.core.model.nodes.get(e.nodes[1].index()),
         ) else {
             continue;
         };
@@ -253,7 +259,7 @@ fn sig4(v: f64) -> String {
 #[test]
 fn import_builds_expected_model() {
     let app = imported();
-    let m = &app.model;
+    let m = &app.core.model;
 
     assert_eq!(m.nodes.len(), 166, "節点数");
     assert_eq!(m.elements.len(), 115, "解析要素数（柱 40・大梁 75）");
@@ -330,10 +336,19 @@ fn import_builds_expected_model() {
 #[test]
 fn preparation_computes_stories_and_seismic_forces() {
     let app = prepared();
-    let prep = app.preparation.as_ref().expect("準備計算の結果が入るはず");
+    let prep = app
+        .core
+        .scoped
+        .preparation
+        .as_ref()
+        .expect("準備計算の結果が入るはず");
 
     assert!(prep.is_ready(), "整合性チェックにエラーがない");
-    assert_eq!(app.model.stories.len(), 5, "階（1FL/2FL/3FL/RFL/PHRFL）");
+    assert_eq!(
+        app.core.model.stories.len(),
+        5,
+        "階（1FL/2FL/3FL/RFL/PHRFL）"
+    );
     // 準備計算の階の表は「層」（階と階の間）を並べるため、階数より 1 少ない。
     assert_eq!(prep.stories.len(), 4, "階の分布の行数");
     assert_eq!(prep.summary.n_supports, 12, "支点数");
@@ -391,7 +406,7 @@ fn preparation_computes_stories_and_seismic_forces() {
     assert!(!prep.sections.is_empty(), "断面性能が算定される");
     assert_eq!(
         prep.load_cases.len(),
-        app.model.load_cases.len(),
+        app.core.model.load_cases.len(),
         "荷重ケースの集計行数"
     );
 }
@@ -409,17 +424,32 @@ fn preparation_computes_stories_and_seismic_forces() {
 #[test]
 fn preparation_is_idempotent() {
     let mut app = prepared();
-    assert_eq!(app.model.floor_regions.len(), 26, "準備計算後も床領域は 26");
-    let stories = app.model.stories.len();
-    let weights: Vec<Option<f64>> = app.model.stories.iter().map(|s| s.seismic_weight).collect();
+    assert_eq!(
+        app.core.model.floor_regions.len(),
+        26,
+        "準備計算後も床領域は 26"
+    );
+    let stories = app.core.model.stories.len();
+    let weights: Vec<Option<f64>> = app
+        .core
+        .model
+        .stories
+        .iter()
+        .map(|s| s.seismic_weight)
+        .collect();
     let dl = auto_case(&app, DL_CASE_NAME);
 
     for n in 2..=3 {
         app.run_preparation();
         assert_no_error(&app, &format!("準備計算（{n} 回目）"));
-        assert_eq!(app.model.stories.len(), stories, "{n} 回目で階数が変わった");
         assert_eq!(
-            app.model
+            app.core.model.stories.len(),
+            stories,
+            "{n} 回目で階数が変わった"
+        );
+        assert_eq!(
+            app.core
+                .model
                 .stories
                 .iter()
                 .map(|s| s.seismic_weight)
@@ -494,20 +524,20 @@ fn diagnostics_are_clean() {
 #[test]
 fn static_all_solves_every_case_and_combination() {
     let app = analyzed();
-    let results = app.results.as_ref().expect("解析結果");
+    let results = app.core.scoped.results.as_ref().expect("解析結果");
     let n_elems = frame_elem_count(&app);
 
     assert_eq!(results.statics.len(), 5, "荷重ケース単体の結果数");
     assert_eq!(
         results.combos.len(),
-        app.model.combinations.len(),
+        app.core.model.combinations.len(),
         "荷重組合せの結果数"
     );
 
     for (key, once) in &results.statics {
         assert_eq!(
             once.disp.len(),
-            app.model.nodes.len(),
+            app.core.model.nodes.len(),
             "{key:?}: 変位が全節点分ない"
         );
         assert!(
@@ -577,18 +607,19 @@ fn dead_load_transfers_to_column_bases() {
 #[test]
 fn combination_is_linear_sum_of_load_cases() {
     let app = analyzed();
-    let results = app.results.as_ref().expect("解析結果");
+    let results = app.core.scoped.results.as_ref().expect("解析結果");
     assert!(!results.combos.is_empty(), "荷重組合せの結果が空");
 
     for (name, combo_res) in &results.combos {
         let combo = app
+            .core
             .model
             .combinations
             .iter()
             .find(|c| c.name == *name)
             .unwrap_or_else(|| panic!("組合せ「{name}」の定義が見つからない"));
 
-        let mut expected = vec![[0.0_f64; 6]; app.model.nodes.len()];
+        let mut expected = vec![[0.0_f64; 6]; app.core.model.nodes.len()];
         for (case, factor) in &combo.terms {
             let once = static_of(&app, static_case_key(&app, *case));
             for (dst, src) in expected.iter_mut().zip(once.disp.iter()) {
@@ -618,6 +649,8 @@ fn combination_is_linear_sum_of_load_cases() {
 fn eigen_returns_descending_positive_periods() {
     let app = analyzed();
     let modal = app
+        .core
+        .scoped
         .results
         .as_ref()
         .expect("解析結果")
@@ -640,7 +673,7 @@ fn eigen_returns_descending_positive_periods() {
     for (i, shape) in modal.node_shapes.iter().enumerate() {
         assert_eq!(
             shape.len(),
-            app.model.nodes.len(),
+            app.core.model.nodes.len(),
             "{i} 次モードの形状が全節点分ない"
         );
         assert!(
@@ -674,7 +707,7 @@ fn seismic_static_produces_monotonic_story_displacement() {
         };
 
         let mut prev = -1.0_f64;
-        for s in &app.model.stories {
+        for s in &app.core.model.stories {
             let mx = s
                 .node_ids
                 .iter()
@@ -704,7 +737,7 @@ fn design_check_covers_every_member() {
     app.run_design_check();
     assert_no_error(&app, "断面検定");
 
-    let results = app.results.as_ref().expect("解析結果");
+    let results = app.core.scoped.results.as_ref().expect("解析結果");
     assert_eq!(
         results.member_checks.len(),
         frame_elem_count(&app),
@@ -742,11 +775,15 @@ fn design_check_covers_every_member() {
 #[test]
 fn story_metrics_computed_for_every_layer() {
     let app = analyzed();
-    let results = app.results.as_ref().expect("解析結果");
+    let results = app.core.scoped.results.as_ref().expect("解析結果");
     let ex = static_of(&app, StaticCaseKey::Seismic(SeismicDir::X));
     let ctx = squid_n_app::summary::metrics_ctx_from_results(Some(results));
-    let metrics =
-        squid_n_app::summary::compute_story_metrics_with(&app.model, &ex.disp, SeismicDir::X, &ctx);
+    let metrics = squid_n_app::summary::compute_story_metrics_with(
+        &app.core.model,
+        &ex.disp,
+        SeismicDir::X,
+        &ctx,
+    );
 
     assert_eq!(metrics.len(), 4, "層指標の層数（階数 5 − 1）");
     for m in &metrics {
@@ -831,6 +868,8 @@ fn pushover_reaches_ultimate_state() {
     assert_no_error(&app, "増分解析");
 
     let push = app
+        .core
+        .scoped
         .results
         .as_ref()
         .expect("解析結果")
@@ -887,12 +926,14 @@ fn pushover_reaches_ultimate_state() {
 #[test]
 fn time_history_linear_runs() {
     let mut app = prepared();
-    app.analysis_cfg.th_dir = ThDir::X;
-    app.analysis_cfg.th_nonlinear = false;
+    app.core.analysis_cfg.th_dir = ThDir::X;
+    app.core.analysis_cfg.th_nonlinear = false;
     app.run_time_history_sample();
     assert_no_error(&app, "線形時刻歴応答解析");
 
     let th = app
+        .core
+        .scoped
         .results
         .as_ref()
         .expect("解析結果")
@@ -901,12 +942,12 @@ fn time_history_linear_runs() {
         .expect("時刻歴の結果");
 
     let expected_frames =
-        (app.analysis_cfg.th_duration / app.analysis_cfg.th_dt).round() as usize + 1;
+        (app.core.analysis_cfg.th_duration / app.core.analysis_cfg.th_dt).round() as usize + 1;
     assert_eq!(th.time.len(), expected_frames, "時刻ステップ数");
     assert!(!th.nonlinear, "線形として記録される");
     assert_eq!(
         th.peak_disp.len(),
-        app.model.nodes.len(),
+        app.core.model.nodes.len(),
         "ピーク変位が全節点分ない"
     );
     assert!(
@@ -937,16 +978,18 @@ fn time_history_linear_runs() {
 #[test]
 fn time_history_nonlinear_long_duration_has_no_false_non_convergence() {
     let mut app = prepared();
-    app.analysis_cfg.th_dir = ThDir::X;
-    app.analysis_cfg.th_nonlinear = true;
-    app.analysis_cfg.th_duration = 120.0;
+    app.core.analysis_cfg.th_dir = ThDir::X;
+    app.core.analysis_cfg.th_nonlinear = true;
+    app.core.analysis_cfg.th_duration = 120.0;
     // 刻みは既定より粗くする（この不具合は応答の減衰で決まり、刻みには依らない）。
     // 既定の 0.01 秒では 12000 ステップになり、テスト時間が 5 倍以上に伸びる。
-    app.analysis_cfg.th_dt = 0.05;
+    app.core.analysis_cfg.th_dt = 0.05;
     app.run_time_history_sample();
     assert_no_error(&app, "非線形時刻歴応答解析（120 秒）");
 
     let th = app
+        .core
+        .scoped
         .results
         .as_ref()
         .expect("解析結果")
@@ -973,12 +1016,14 @@ fn time_history_nonlinear_long_duration_has_no_false_non_convergence() {
 #[test]
 fn time_history_nonlinear_runs() {
     let mut app = prepared();
-    app.analysis_cfg.th_dir = ThDir::X;
-    app.analysis_cfg.th_nonlinear = true;
+    app.core.analysis_cfg.th_dir = ThDir::X;
+    app.core.analysis_cfg.th_nonlinear = true;
     app.run_time_history_sample();
     assert_no_error(&app, "非線形時刻歴応答解析");
 
     let th = app
+        .core
+        .scoped
         .results
         .as_ref()
         .expect("解析結果")
@@ -1001,43 +1046,49 @@ fn scz_roundtrip_preserves_model_and_results() {
     app.run_design_check();
     clear_error(&mut app);
     // 既定値から変えておき、往復で「既定値に戻ってしまう」誤りを検出できるようにする。
-    app.analysis_cfg.th_damping = 0.037;
-    app.analysis_cfg.th_damping_model = ThDampingModel::Rayleigh;
-    app.analysis_cfg.n_modes = 5;
+    app.core.analysis_cfg.th_damping = 0.037;
+    app.core.analysis_cfg.th_damping_model = ThDampingModel::Rayleigh;
+    app.core.analysis_cfg.n_modes = 5;
 
     let path = test_tmp().join("full_model_roundtrip.scz");
     app.save_project_to(path.clone());
     assert_no_error(&app, "プロジェクト保存");
 
     let mut reopened = App::default();
-    reopened.analysis_cfg.threads = 1;
+    reopened.core.analysis_cfg.threads = 1;
     reopened.open_project_from(path.clone());
     assert_no_error(&reopened, "プロジェクト読込");
 
-    assert_eq!(reopened.model.nodes.len(), app.model.nodes.len(), "節点数");
     assert_eq!(
-        reopened.model.elements.len(),
-        app.model.elements.len(),
+        reopened.core.model.nodes.len(),
+        app.core.model.nodes.len(),
+        "節点数"
+    );
+    assert_eq!(
+        reopened.core.model.elements.len(),
+        app.core.model.elements.len(),
         "要素数"
     );
     assert_eq!(
-        reopened.model.joists().count(),
-        app.model.joists().count(),
+        reopened.core.model.joists().count(),
+        app.core.model.joists().count(),
         "二次部材数"
     );
     assert_eq!(
-        reopened.model.floor_regions.len(),
-        app.model.floor_regions.len(),
+        reopened.core.model.floor_regions.len(),
+        app.core.model.floor_regions.len(),
         "スラブ数"
     );
     assert_eq!(
-        reopened.model.stories.len(),
-        app.model.stories.len(),
+        reopened.core.model.stories.len(),
+        app.core.model.stories.len(),
         "階数"
     );
 
-    let before = app.results.as_ref().expect("保存前の結果");
+    let before = app.core.scoped.results.as_ref().expect("保存前の結果");
     let after = reopened
+        .core
+        .scoped
         .results
         .as_ref()
         .expect("読込後に結果が復元されるはず");
@@ -1048,15 +1099,15 @@ fn scz_roundtrip_preserves_model_and_results() {
     // 解析タブの設定値（結果を生成した条件）も往復で保たれる。既定値と異なる値に
     // しておいたので、既定値へ戻ってしまう回帰（設定が保存されない）を検出できる。
     assert_eq!(
-        reopened.analysis_cfg.th_damping, app.analysis_cfg.th_damping,
+        reopened.core.analysis_cfg.th_damping, app.core.analysis_cfg.th_damping,
         "時刻歴の減衰比"
     );
     assert_eq!(
-        reopened.analysis_cfg.th_damping_model, app.analysis_cfg.th_damping_model,
+        reopened.core.analysis_cfg.th_damping_model, app.core.analysis_cfg.th_damping_model,
         "時刻歴の減衰モデル"
     );
     assert_eq!(
-        reopened.analysis_cfg.n_modes, app.analysis_cfg.n_modes,
+        reopened.core.analysis_cfg.n_modes, app.core.analysis_cfg.n_modes,
         "固有値解析のモード数"
     );
 
@@ -1080,9 +1131,9 @@ fn stbridge_roundtrip_is_reanalyzable() {
     assert_no_error(&app, "ST-Bridge 書き出し");
 
     let mut reimported = App::default();
-    reimported.analysis_cfg.threads = 1;
+    reimported.core.analysis_cfg.threads = 1;
     reimported.import_stbridge_from(path.clone());
-    if let Some(e) = &reimported.last_error {
+    if let Some(e) = &reimported.core.scoped.last_error {
         assert!(
             e.starts_with('⚠'),
             "書き出したファイルの再取り込みが失敗: {e}"
@@ -1091,35 +1142,35 @@ fn stbridge_roundtrip_is_reanalyzable() {
     clear_error(&mut reimported);
 
     assert_eq!(
-        reimported.model.nodes.len(),
-        app.model.nodes.len(),
+        reimported.core.model.nodes.len(),
+        app.core.model.nodes.len(),
         "往復で節点数が変わる"
     );
     assert_eq!(
-        reimported.model.elements.len(),
-        app.model.elements.len(),
+        reimported.core.model.elements.len(),
+        app.core.model.elements.len(),
         "往復で要素数が変わる"
     );
     assert_eq!(
-        reimported.model.joists().count(),
-        app.model.joists().count(),
+        reimported.core.model.joists().count(),
+        app.core.model.joists().count(),
         "往復で二次部材数が変わる"
     );
     assert_eq!(
-        reimported.model.floor_regions.len(),
-        app.model.floor_regions.len(),
+        reimported.core.model.floor_regions.len(),
+        app.core.model.floor_regions.len(),
         "往復でスラブ数が変わる"
     );
     assert_eq!(
-        app.model.floor_regions.len(),
+        app.core.model.floor_regions.len(),
         26,
         "STB 再取り込みで小片 82 に戻らない"
     );
-    assert_eq!(reimported.model.floor_regions.len(), 26);
+    assert_eq!(reimported.core.model.floor_regions.len(), 26);
 
     reimported.run_preparation();
     assert_eq!(
-        reimported.model.floor_regions.len(),
+        reimported.core.model.floor_regions.len(),
         26,
         "準備計算で 26 のまま"
     );
@@ -1143,8 +1194,8 @@ fn joist_design_checks_cover_imported_secondary_members() {
     app.run_design_check();
     assert_no_error(&app, "断面検定");
 
-    let results = app.results.as_ref().expect("解析結果");
-    let n_joists = app.model.joists().count();
+    let results = app.core.scoped.results.as_ref().expect("解析結果");
+    let n_joists = app.core.model.joists().count();
     assert!(
         !results.joist_checks.is_empty(),
         "小梁 {n_joists} 本が 1 件も検定されていない"
@@ -1161,6 +1212,7 @@ fn joist_design_checks_cover_imported_secondary_members() {
         }
         let key = (nodes[0].0.min(nodes[1].0), nodes[0].0.max(nodes[1].0));
         let sm = app
+            .core
             .model
             .joists()
             .find(|sm| {
@@ -1172,19 +1224,20 @@ fn joist_design_checks_cover_imported_secondary_members() {
         let z_joist = sm
             .nodes
             .iter()
-            .map(|n| app.model.nodes[n.index()].coord[2])
+            .map(|n| app.core.model.nodes[n.index()].coord[2])
             .sum::<f64>()
             / 2.0;
         let Some(sid) = slab_id else {
             continue;
         };
         let slab = app
+            .core
             .model
             .slabs
             .iter()
             .find(|s| s.id == *sid)
             .expect("検定結果の床板が実在する");
-        let z_slab = slab.level(&app.model).expect("床板のレベル");
+        let z_slab = slab.level(&app.core.model).expect("床板のレベル");
         assert!(
             (z_slab - z_joist).abs() <= 1.0,
             "小梁 {}-{}（Z={z_joist}）が別レベルのスラブ {:?}（Z={z_slab}）で検定されている",
@@ -1210,13 +1263,13 @@ fn region_gen_finds_beam_bounded_regions() {
     use std::collections::BTreeMap;
 
     let app = imported();
-    let boundaries = generate_region_boundaries(&app.model);
+    let boundaries = generate_region_boundaries(&app.core.model);
 
     let mut per_level: BTreeMap<i64, (usize, f64)> = BTreeMap::new();
     for b in &boundaries {
         let e = per_level.entry(b.level.round() as i64).or_insert((0, 0.0));
         e.0 += 1;
-        e.1 += b.area(&app.model);
+        e.1 += b.area(&app.core.model);
     }
     let counts: Vec<(i64, usize)> = per_level.iter().map(|(z, (n, _))| (*z, *n)).collect();
     assert_eq!(
@@ -1226,7 +1279,7 @@ fn region_gen_finds_beam_bounded_regions() {
     );
     assert_eq!(boundaries.len(), 26, "床領域総数");
     assert_eq!(
-        app.model.floor_regions.len(),
+        app.core.model.floor_regions.len(),
         boundaries.len(),
         "取り込み後の床領域数は床領域数 26"
     );
@@ -1234,8 +1287,8 @@ fn region_gen_finds_beam_bounded_regions() {
     // 大梁の区画の面積の合計は、そのレベルの床板面積の合計と一致する
     // （床板は小梁で細分されているが、覆う範囲は大梁の区画と同じ）。
     let mut slab_area: BTreeMap<i64, f64> = BTreeMap::new();
-    for s in &app.model.slabs {
-        let Some(coords) = s.boundary_coords(&app.model) else {
+    for s in &app.core.model.slabs {
+        let Some(coords) = s.boundary_coords(&app.core.model) else {
             continue;
         };
         if coords.len() < 3 {
@@ -1268,7 +1321,7 @@ fn region_gen_finds_wall_bounded_regions() {
     use std::collections::HashSet;
 
     let app = imported();
-    let scan = scan_wall_region_boundaries(&app.model);
+    let scan = scan_wall_region_boundaries(&app.core.model);
     assert_eq!(scan.unclosed, 0, "半辺の後続は一意に定まるはず");
 
     // 単一の観測値（境界数・合計面積）だけでは、直線の重複統合に不具合があって
@@ -1283,7 +1336,7 @@ fn region_gen_finds_wall_bounded_regions() {
     // 実在しない斜めの「構面」でも部材がたまたま条件を満たせば面ができうる）。
     let mut seen: HashSet<Vec<u32>> = HashSet::new();
     for b in &scan.boundaries {
-        let area = b.area(&app.model);
+        let area = b.area(&app.core.model);
         assert!(area > 0.0, "境界の面積は必ず正: {area}");
         let axis_aligned = b.plane_direction[0].abs() < 1e-6 || b.plane_direction[1].abs() < 1e-6;
         assert!(
@@ -1299,7 +1352,11 @@ fn region_gen_finds_wall_bounded_regions() {
         );
     }
 
-    let total_area: f64 = scan.boundaries.iter().map(|b| b.area(&app.model)).sum();
+    let total_area: f64 = scan
+        .boundaries
+        .iter()
+        .map(|b| b.area(&app.core.model))
+        .sum();
     assert_eq!(scan.boundaries.len(), 55, "壁側の鉛直構面の境界数");
     assert!(
         (total_area - 1_427_640_000.0).abs() / total_area < 1e-6,
@@ -1318,21 +1375,26 @@ fn region_gen_finds_wall_bounded_regions() {
 fn import_populates_wall_regions_from_region_gen() {
     let app = imported();
     assert_eq!(
-        app.model.wall_regions.len(),
+        app.core.model.wall_regions.len(),
         55,
         "region_gen_finds_wall_bounded_regions と同じ件数のはず"
     );
     assert!(
-        app.model
+        app.core
+            .model
             .wall_regions
             .iter()
             .all(|r| r.wall_plate_ids.is_empty()),
         "本フィクスチャは壁版を持たないため、壁版の割当は 0 件のはず"
     );
-    for (i, r) in app.model.wall_regions.iter().enumerate() {
+    for (i, r) in app.core.model.wall_regions.iter().enumerate() {
         assert_eq!(r.id.0, i as u32, "id は配列添字と一致するはず");
     }
-    assert!(app.model.validate().is_ok(), "{:?}", app.model.validate());
+    assert!(
+        app.core.model.validate().is_ok(),
+        "{:?}",
+        app.core.model.validate()
+    );
 }
 
 /// 壁領域は「保存 → 読込 → 再度準備計算」を経ても ID・境界が変わらない。
@@ -1345,7 +1407,7 @@ fn import_populates_wall_regions_from_region_gen() {
 #[test]
 fn wall_regions_survive_save_reopen_reprepare() {
     let app = prepared();
-    let before = app.model.wall_regions.clone();
+    let before = app.core.model.wall_regions.clone();
     assert!(!before.is_empty(), "本フィクスチャは壁領域を持つはず");
 
     let path = test_tmp().join("wall_regions_reprepare_roundtrip.scz");
@@ -1354,7 +1416,7 @@ fn wall_regions_survive_save_reopen_reprepare() {
     assert_no_error(&app, "プロジェクト保存");
 
     let mut reopened = App::default();
-    reopened.analysis_cfg.threads = 1;
+    reopened.core.analysis_cfg.threads = 1;
     reopened.open_project_from(path.clone());
     assert_no_error(&reopened, "プロジェクト読込");
 
@@ -1362,7 +1424,7 @@ fn wall_regions_survive_save_reopen_reprepare() {
     assert_no_error(&reopened, "再度の準備計算");
 
     assert_eq!(
-        reopened.model.wall_regions, before,
+        reopened.core.model.wall_regions, before,
         "保存→読込→再準備計算を経ても壁領域（ID・境界）は変わらないはず"
     );
 
@@ -1380,7 +1442,7 @@ fn slabs_fold_into_regions_without_gaps() {
     use std::collections::BTreeMap;
 
     let app = imported();
-    let scan = scan_region_boundaries(&app.model);
+    let scan = scan_region_boundaries(&app.core.model);
     assert_eq!(scan.unclosed, 0, "閉じない面走査はない");
     assert!(
         scan.crossings.is_empty(),
@@ -1390,8 +1452,8 @@ fn slabs_fold_into_regions_without_gaps() {
 
     let mut by_region: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
     let mut unassigned = Vec::new();
-    for (si, slab) in app.model.slabs.iter().enumerate() {
-        let Some(coords) = slab.boundary_coords(&app.model) else {
+    for (si, slab) in app.core.model.slabs.iter().enumerate() {
+        let Some(coords) = slab.boundary_coords(&app.core.model) else {
             continue;
         };
         if coords.len() < 3 {
@@ -1406,7 +1468,7 @@ fn slabs_fold_into_regions_without_gaps() {
         match scan
             .boundaries
             .iter()
-            .position(|b| b.is_same_level(z) && b.contains(&app.model, centroid))
+            .position(|b| b.is_same_level(z) && b.contains(&app.core.model, centroid))
         {
             Some(bi) => by_region.entry(bi).or_default().push(si),
             None => unassigned.push(si),
@@ -1419,7 +1481,7 @@ fn slabs_fold_into_regions_without_gaps() {
     );
     assert_eq!(unassigned.len(), 0, "未割当 0");
     assert_eq!(
-        app.model.floor_regions.len(),
+        app.core.model.floor_regions.len(),
         scan.boundaries.len(),
         "床領域数＝床領域数 26"
     );
@@ -1455,22 +1517,30 @@ fn snapshot_key_scalars() {
     };
 
     // --- モデル構成 ---
-    line("model.nodes", app.model.nodes.len().to_string());
-    line("model.elements", app.model.elements.len().to_string());
-    line("model.joists()", app.model.joists().count().to_string());
+    line("model.nodes", app.core.model.nodes.len().to_string());
+    line("model.elements", app.core.model.elements.len().to_string());
+    line(
+        "model.joists()",
+        app.core.model.joists().count().to_string(),
+    );
     assert_eq!(
-        app.model.floor_regions.len(),
+        app.core.model.floor_regions.len(),
         26,
         "スナップショット対象の床領域数"
     );
     line(
         "model.floor_regions",
-        app.model.floor_regions.len().to_string(),
+        app.core.model.floor_regions.len().to_string(),
     );
-    line("model.stories", app.model.stories.len().to_string());
+    line("model.stories", app.core.model.stories.len().to_string());
 
     // --- 準備計算 ---
-    let prep = app.preparation.as_ref().expect("準備計算の結果");
+    let prep = app
+        .core
+        .scoped
+        .preparation
+        .as_ref()
+        .expect("準備計算の結果");
     line(
         "prep.total_seismic_weight",
         sig4(prep.summary.total_seismic_weight),
@@ -1493,6 +1563,8 @@ fn snapshot_key_scalars() {
 
     // --- 固有値 ---
     let modal = app
+        .core
+        .scoped
         .results
         .as_ref()
         .expect("解析結果")
@@ -1514,7 +1586,7 @@ fn snapshot_key_scalars() {
         sig4(base_column_axials(&app, dl).iter().sum::<f64>()),
     );
     let ex = static_of(&app, StaticCaseKey::Seismic(SeismicDir::X));
-    for s in &app.model.stories {
+    for s in &app.core.model.stories {
         let mx = s
             .node_ids
             .iter()
@@ -1525,7 +1597,7 @@ fn snapshot_key_scalars() {
     }
 
     // --- 断面検定 ---
-    let results = app.results.as_ref().expect("解析結果");
+    let results = app.core.scoped.results.as_ref().expect("解析結果");
     line(
         "design.member_checks",
         results.member_checks.len().to_string(),
@@ -1561,8 +1633,12 @@ fn snapshot_key_scalars() {
 
     // --- 層指標 ---
     let ctx = squid_n_app::summary::metrics_ctx_from_results(Some(results));
-    let metrics =
-        squid_n_app::summary::compute_story_metrics_with(&app.model, &ex.disp, SeismicDir::X, &ctx);
+    let metrics = squid_n_app::summary::compute_story_metrics_with(
+        &app.core.model,
+        &ex.disp,
+        SeismicDir::X,
+        &ctx,
+    );
     for m in &metrics {
         line(
             &format!("metrics[{}].drift_angle", m.name),
@@ -1576,6 +1652,8 @@ fn snapshot_key_scalars() {
     app.run_pushover();
     clear_error(&mut app);
     let push = app
+        .core
+        .scoped
         .results
         .as_ref()
         .expect("解析結果")
@@ -1603,11 +1681,13 @@ fn snapshot_key_scalars() {
     );
 
     // --- 時刻歴（線形） ---
-    app.analysis_cfg.th_dir = ThDir::X;
-    app.analysis_cfg.th_nonlinear = false;
+    app.core.analysis_cfg.th_dir = ThDir::X;
+    app.core.analysis_cfg.th_nonlinear = false;
     app.run_time_history_sample();
     clear_error(&mut app);
     let th = app
+        .core
+        .scoped
         .results
         .as_ref()
         .expect("解析結果")
@@ -1624,10 +1704,12 @@ fn snapshot_key_scalars() {
     }
 
     // --- 時刻歴（非線形） ---
-    app.analysis_cfg.th_nonlinear = true;
+    app.core.analysis_cfg.th_nonlinear = true;
     app.run_time_history_sample();
     clear_error(&mut app);
     let th = app
+        .core
+        .scoped
         .results
         .as_ref()
         .expect("解析結果")
@@ -1657,7 +1739,7 @@ fn slab_floor_load_reaches_primary_frame() {
     use squid_n_load::secondary::{node_connected_flags, resolve_nodal_to_primary, SPAN_TOL_MM};
 
     let app = prepared();
-    let model = &app.model;
+    let model = &app.core.model;
 
     // 期待値: 全床板の固定荷重 × XY 投影面積（`compute_dl_beam_loads` と同じ強度）。
     let extra = squid_n_load::wall_attached::floor_region_wall_extra_intensity(model);

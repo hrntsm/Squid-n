@@ -19,9 +19,9 @@ impl App {
     pub(crate) fn status_bar(&mut self, ui: &mut egui::Ui) {
         let summary = format!(
             "部材 {}. 節点 {}. 断面 {}.",
-            self.model.elements.len(),
-            self.model.nodes.len(),
-            self.model.sections.len()
+            self.core.model.elements.len(),
+            self.core.model.nodes.len(),
+            self.core.model.sections.len()
         );
         let body_font = egui::TextStyle::Body.resolve(ui.style());
         let summary_width = ui
@@ -50,62 +50,67 @@ impl App {
             ui.horizontal(|ui| {
                 // 下ドック切替アイコン。対象ドックが開いていて対象タブが
                 // アクティブなら閉じる。それ以外は開いてそのタブをアクティブにする。
-                let is_log_active = self.bottom_dock_open && self.bottom_tab == BottomTab::Log;
+                let is_log_active =
+                    self.ui.view.bottom_dock_open && self.ui.view.bottom_tab == BottomTab::Log;
                 if ui
                     .selectable_label(is_log_active, "📜")
                     .on_hover_text("ログ")
                     .clicked()
-                    && toggle_dock_icon(&mut self.bottom_dock_open, is_log_active)
+                    && toggle_dock_icon(&mut self.ui.view.bottom_dock_open, is_log_active)
                 {
-                    self.bottom_tab = BottomTab::Log;
+                    self.ui.view.bottom_tab = BottomTab::Log;
                 }
-                let is_model_active = self.bottom_dock_open && self.bottom_tab == BottomTab::Model;
+                let is_model_active =
+                    self.ui.view.bottom_dock_open && self.ui.view.bottom_tab == BottomTab::Model;
                 if ui
                     .selectable_label(is_model_active, "📋")
                     .on_hover_text("モデル表")
                     .clicked()
-                    && toggle_dock_icon(&mut self.bottom_dock_open, is_model_active)
+                    && toggle_dock_icon(&mut self.ui.view.bottom_dock_open, is_model_active)
                 {
-                    self.bottom_tab = BottomTab::Model;
+                    self.ui.view.bottom_tab = BottomTab::Model;
                 }
-                let is_loads_active = self.bottom_dock_open && self.bottom_tab == BottomTab::Loads;
+                let is_loads_active =
+                    self.ui.view.bottom_dock_open && self.ui.view.bottom_tab == BottomTab::Loads;
                 if ui
                     .selectable_label(is_loads_active, "⚡")
                     .on_hover_text("荷重表")
                     .clicked()
-                    && toggle_dock_icon(&mut self.bottom_dock_open, is_loads_active)
+                    && toggle_dock_icon(&mut self.ui.view.bottom_dock_open, is_loads_active)
                 {
-                    self.bottom_tab = BottomTab::Loads;
+                    self.ui.view.bottom_tab = BottomTab::Loads;
                 }
-                let is_prep_active =
-                    self.bottom_dock_open && self.bottom_tab == BottomTab::Preparation;
+                let is_prep_active = self.ui.view.bottom_dock_open
+                    && self.ui.view.bottom_tab == BottomTab::Preparation;
                 if ui
                     .selectable_label(is_prep_active, "🛠")
                     .on_hover_text("準備計算の結果")
                     .clicked()
-                    && toggle_dock_icon(&mut self.bottom_dock_open, is_prep_active)
+                    && toggle_dock_icon(&mut self.ui.view.bottom_dock_open, is_prep_active)
                 {
-                    self.bottom_tab = BottomTab::Preparation;
+                    self.ui.view.bottom_tab = BottomTab::Preparation;
                 }
-                let is_diag_active =
-                    self.bottom_dock_open && self.bottom_tab == BottomTab::Diagnostics;
+                let is_diag_active = self.ui.view.bottom_dock_open
+                    && self.ui.view.bottom_tab == BottomTab::Diagnostics;
                 if ui
                     .selectable_label(is_diag_active, "⚠")
                     .on_hover_text("診断")
                     .clicked()
-                    && toggle_dock_icon(&mut self.bottom_dock_open, is_diag_active)
+                    && toggle_dock_icon(&mut self.ui.view.bottom_dock_open, is_diag_active)
                 {
-                    self.bottom_tab = BottomTab::Diagnostics;
+                    self.ui.view.bottom_tab = BottomTab::Diagnostics;
                 }
                 ui.separator();
                 // プロジェクトファイル名 + 未保存マーカー
                 let file_label = self
+                    .core
+                    .scoped
                     .project_path
                     .as_ref()
                     .and_then(|p| p.file_name())
                     .map(|n| n.to_string_lossy().to_string())
                     .unwrap_or_else(|| "(未保存プロジェクト)".to_string());
-                let marker = if self.staleness.unsaved_changes {
+                let marker = if self.core.scoped.staleness.unsaved_changes {
                     " ●"
                 } else {
                     ""
@@ -113,7 +118,7 @@ impl App {
                 ui.label(format!("{}{}", file_label, marker));
                 ui.separator();
                 // バックグラウンド解析ジョブの実行状況
-                if let Some(job) = &self.job {
+                if let Some(job) = &self.core.scoped.job {
                     let elapsed = job.started.elapsed().unwrap_or_default().as_secs_f64();
                     ui.colored_label(
                         crate::theme::WHITE,
@@ -122,14 +127,14 @@ impl App {
                     ui.separator();
                 }
                 // stale アイコン。意味色は下ドック／ログ側。青地のバー上は白。
-                if self.staleness.results_stale {
+                if self.core.scoped.staleness.results_stale {
                     ui.colored_label(crate::theme::WHITE, "⚠ stale");
-                } else if self.results.is_some() {
+                } else if self.core.scoped.results.is_some() {
                     ui.colored_label(crate::theme::WHITE, "✓ 最新");
                 } else {
                     ui.colored_label(crate::theme::WHITE, "▷ 未実行");
                 }
-                if let Some(err) = &self.last_error {
+                if let Some(err) = &self.core.scoped.last_error {
                     ui.separator();
                     // ST-Bridge 取込警告（複数件を \n 区切りで連結）など改行を含む
                     // メッセージは1行に畳んでから truncate する（\n はレイアウト上
@@ -155,7 +160,7 @@ impl App {
                 // last_error（処理を止める）とは別枠の注意事項（例: 精算周期
                 // (SemiPrecise)選択時に固有値解析が未実行で EX/EY が未更新である旨）。
                 // バー上は白。意味色（黄）はログ側。解析自体は継続してよい。
-                if let Some(notice) = &self.last_notice {
+                if let Some(notice) = &self.core.scoped.last_notice {
                     ui.separator();
                     let one_line = notice.replace('\n', " ");
                     ui.add(

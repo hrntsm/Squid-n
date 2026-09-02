@@ -57,7 +57,7 @@ impl App {
         let path = if force_ask {
             None
         } else {
-            self.project_path.clone()
+            self.core.scoped.project_path.clone()
         };
         let path = path.or_else(|| {
             rfd::FileDialog::new()
@@ -106,14 +106,14 @@ impl App {
                 ("通り芯", ModelTab::Axes),
             ];
             for (label, sub) in &subs {
-                let sel = self.model_tab == *sub;
+                let sel = self.ui.view.model_tab == *sub;
                 if ui.selectable_label(sel, *label).clicked() {
-                    self.model_tab = *sub;
+                    self.ui.view.model_tab = *sub;
                 }
             }
         });
         ui.separator();
-        match self.model_tab {
+        match self.ui.view.model_tab {
             ModelTab::Nodes => crate::tables::nodes::nodes_table(ui, self),
             ModelTab::BoundaryConditions => {
                 crate::tables::nodes::boundary_condition_panel(ui, self)
@@ -143,11 +143,12 @@ impl App {
     /// ラベルはナビゲータの葉ノードと揃える（[`super::nav_results`]）。
     fn result_display_options(&self) -> Vec<(StaticKey, String)> {
         let mut opts = Vec::new();
-        if let Some(r) = &self.results {
+        if let Some(r) = &self.core.scoped.results {
             for (key, _) in r.statics.iter() {
                 let label = match key {
                     StaticCaseKey::User(id) => {
                         let nm = self
+                            .core
                             .model
                             .load_cases
                             .iter()
@@ -174,24 +175,29 @@ impl App {
         // 長期/短期区分は選んだ組合せ名から自動判定され（令82条の荷重組合せ:
         // G+P=長期、地震・積雪・風入り=短期）、対象荷重の右に読み取り専用で表示する。
         let result_options = self.result_display_options();
-        let current_key = self.nav.focus_result.or(self.last_static);
+        let current_key = self
+            .ui
+            .scoped
+            .nav
+            .focus_result
+            .or(self.core.scoped.last_static);
         let mut selected_result: Option<StaticKey> = None;
         ui.horizontal(|ui| {
-            let sel_table = self.design_view == DesignView::Table;
-            let sel_ult = self.design_view == DesignView::Ultimate;
-            let sel_mn = self.design_view == DesignView::MnSurface;
-            let sel_qty = self.design_view == DesignView::Quantities;
+            let sel_table = self.ui.view.design_view == DesignView::Table;
+            let sel_ult = self.ui.view.design_view == DesignView::Ultimate;
+            let sel_mn = self.ui.view.design_view == DesignView::MnSurface;
+            let sel_qty = self.ui.view.design_view == DesignView::Quantities;
             if ui.selectable_label(sel_table, "検定表").clicked() {
-                self.design_view = DesignView::Table;
+                self.ui.view.design_view = DesignView::Table;
             }
             if ui.selectable_label(sel_ult, "終局検定").clicked() {
-                self.design_view = DesignView::Ultimate;
+                self.ui.view.design_view = DesignView::Ultimate;
             }
             if ui.selectable_label(sel_mn, "MN相関曲面").clicked() {
-                self.design_view = DesignView::MnSurface;
+                self.ui.view.design_view = DesignView::MnSurface;
             }
             if ui.selectable_label(sel_qty, "数量積算").clicked() {
-                self.design_view = DesignView::Quantities;
+                self.ui.view.design_view = DesignView::Quantities;
             }
             // 対象荷重の選択。選ぶとその組合せの内力・長期/短期で断面算定が再実行される。
             if !result_options.is_empty() {
@@ -215,7 +221,7 @@ impl App {
                     });
                 // 荷重継続性区分（許容応力度の長期/短期）。対象荷重から自動判定した
                 // 結果の表示のみで、ここでの手動切替は行わない。
-                let term_label = match self.design_term {
+                let term_label = match self.core.design_term {
                     LoadTerm::Long => "長期",
                     LoadTerm::Short => "短期",
                 };
@@ -229,7 +235,7 @@ impl App {
             self.select_displayed_result(key);
         }
         ui.separator();
-        match self.design_view {
+        match self.ui.view.design_view {
             DesignView::Table => crate::design_view::design_table(ui, self),
             DesignView::Ultimate => crate::ultimate_view::ultimate_table(ui, self),
             DesignView::MnSurface => crate::mn_view::mn_surface_panel(ui, self),
@@ -239,7 +245,7 @@ impl App {
     /// レポートタブ：CSV レポートのプレビューとエクスポート。
     pub(crate) fn report_tab_panel(&mut self, ui: &mut egui::Ui) {
         ui.heading("レポート");
-        if !crate::summary::has_report_content(&self.results) {
+        if !crate::summary::has_report_content(&self.core.scoped.results) {
             ui.colored_label(
                 crate::theme::GRAY_600,
                 "解析結果がありません。解析タブから実行するとレポートを生成できます。",

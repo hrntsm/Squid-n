@@ -25,7 +25,7 @@ pub fn loads_table(ui: &mut egui::Ui, app: &mut App) {
     // --- スラブ荷重（床荷重）への案内 ---
     ui.label(format!(
         "スラブ: {} 枚（モデルタブの「スラブ」で床荷重を追加できます。分配結果は結果タブ/モデルタブの3Dビューで表示モード「CMQ図」を選ぶと確認できます）",
-        app.model.floor_regions.len()
+        app.core.model.floor_regions.len()
     ));
     ui.add_space(4.0);
 
@@ -37,18 +37,22 @@ pub fn loads_table(ui: &mut egui::Ui, app: &mut App) {
             .on_hover_text("新しい荷重ケースを追加します")
             .clicked()
         {
-            let name = format!("LC{}", app.model.load_cases.len());
-            app.undo.run(&mut app.model, Box::new(AddLoadCase { name }));
+            let name = format!("LC{}", app.core.model.load_cases.len());
+            app.core
+                .scoped
+                .undo
+                .run(&mut app.core.model, Box::new(AddLoadCase { name }));
             // 追加したケースを編集対象として選択
-            app.nav.focus_load_case = app.model.load_cases.last().map(|lc| lc.id);
-            app.staleness.mark_edited();
+            app.ui.scoped.nav.focus_load_case = app.core.model.load_cases.last().map(|lc| lc.id);
+            app.core.scoped.staleness.mark_edited();
         }
     });
-    let n_lc = app.model.load_cases.len();
+    let n_lc = app.core.model.load_cases.len();
     let mut pending_name: Vec<(usize, String)> = Vec::new();
     let mut pending_kind: Vec<(LoadCaseId, LoadCaseKind)> = Vec::new();
     let mut pending_delete: Option<LoadCaseId> = None;
     let mut name_bufs: Vec<String> = app
+        .core
         .model
         .load_cases
         .iter()
@@ -68,12 +72,12 @@ pub fn loads_table(ui: &mut egui::Ui, app: &mut App) {
         n_lc,
         |row| {
             let i = row.index();
-            let lc = &app.model.load_cases[i];
-            let is_sel = app.nav.focus_load_case == Some(lc.id);
+            let lc = &app.core.model.load_cases[i];
+            let is_sel = app.ui.scoped.nav.focus_load_case == Some(lc.id);
             row.col(|ui| {
                 if table_util::id_cell(ui, is_sel, lc.id.0, "クリックで下の荷重編集の対象にする")
                 {
-                    app.nav.focus_load_case = Some(lc.id);
+                    app.ui.scoped.nav.focus_load_case = Some(lc.id);
                 }
             });
             row.col(|ui| {
@@ -110,6 +114,7 @@ pub fn loads_table(ui: &mut egui::Ui, app: &mut App) {
             });
             row.col(|ui| {
                 let referenced = app
+                    .core
                     .model
                     .combinations
                     .iter()
@@ -127,15 +132,17 @@ pub fn loads_table(ui: &mut egui::Ui, app: &mut App) {
     // （組合せから参照中で削除が拒まれた場合に、変更もないのに陳腐化してしまう）。
     let had_name = !pending_name.is_empty() || !pending_kind.is_empty();
     for (i, name) in pending_name {
-        let lc_id = LoadCaseId(app.model.load_cases[i].id.0);
-        app.undo.run(
-            &mut app.model,
+        let lc_id = LoadCaseId(app.core.model.load_cases[i].id.0);
+        app.core.scoped.undo.run(
+            &mut app.core.model,
             Box::new(SetLoadCaseName { id: lc_id, name }),
         );
     }
     for (id, kind) in pending_kind {
-        app.undo
-            .run(&mut app.model, Box::new(SetLoadCaseKind { id, kind }));
+        app.core
+            .scoped
+            .undo
+            .run(&mut app.core.model, Box::new(SetLoadCaseKind { id, kind }));
     }
     if let Some(lc_id) = pending_delete {
         // 削除は後続の LoadCaseId を繰り上げるため、開いたままの荷重モーダルを
@@ -143,7 +150,7 @@ pub fn loads_table(ui: &mut egui::Ui, app: &mut App) {
         app.delete_load_case_action(lc_id);
     }
     if had_name {
-        app.staleness.mark_edited();
+        app.core.scoped.staleness.mark_edited();
     }
 
     ui.add_space(8.0);
@@ -161,45 +168,47 @@ pub fn loads_table(ui: &mut egui::Ui, app: &mut App) {
 
     // --- 節点荷重詳細（選択中の荷重ケース） ---
     ui.strong("節点荷重");
-    if app.model.load_cases.is_empty() {
+    if app.core.model.load_cases.is_empty() {
         ui.label("荷重ケースがありません。「+ ケース追加」で作成してください。");
         return;
     }
     // 編集対象: ナビゲータ/上表で選択したケース → 最後に実行したケース → 先頭
     let lc_idx = app
+        .ui
+        .scoped
         .nav
         .focus_load_case
-        .and_then(|id| app.model.load_cases.iter().position(|lc| lc.id == id))
+        .and_then(|id| app.core.model.load_cases.iter().position(|lc| lc.id == id))
         .or_else(|| {
-            app.last_static.and_then(|key| match key {
+            app.core.scoped.last_static.and_then(|key| match key {
                 // 地震静的(Seismic)はユーザー荷重ケースに対応しないため
                 // None（呼び出し元のフォールバックで先頭ケースが選ばれる）。
                 crate::app::StaticKey::Case(crate::app::StaticCaseKey::User(id)) => {
-                    app.model.load_cases.iter().position(|lc| lc.id == id)
+                    app.core.model.load_cases.iter().position(|lc| lc.id == id)
                 }
                 crate::app::StaticKey::Case(crate::app::StaticCaseKey::Seismic(_))
                 | crate::app::StaticKey::Combo(_) => None,
             })
         })
         .unwrap_or(0);
-    let lc_id = app.model.load_cases[lc_idx].id;
+    let lc_id = app.core.model.load_cases[lc_idx].id;
     ui.label(format!(
         "ケース: {} ({})",
-        lc_id.0, app.model.load_cases[lc_idx].name
+        lc_id.0, app.core.model.load_cases[lc_idx].name
     ));
 
-    let nodal_count = app.model.load_cases[lc_idx].nodal.len();
+    let nodal_count = app.core.model.load_cases[lc_idx].nodal.len();
     // 準備計算が生成した荷重は同期のたびに作り直されるため編集・削除できない。
     // 表には残す（この画面は準備計算の結果を確認する場でもある）。
     let mut pending_load: Vec<(usize, [f64; 6])> = Vec::new();
     let mut pending_name_edit: Vec<(usize, String)> = Vec::new();
     let mut pending_nodal_delete: Option<usize> = None;
-    let mut value_bufs: Vec<[String; 6]> = app.model.load_cases[lc_idx]
+    let mut value_bufs: Vec<[String; 6]> = app.core.model.load_cases[lc_idx]
         .nodal
         .iter()
         .map(|n| n.values.map(|v| format!("{:.2}", v)))
         .collect();
-    let mut nodal_name_bufs: Vec<String> = app.model.load_cases[lc_idx]
+    let mut nodal_name_bufs: Vec<String> = app.core.model.load_cases[lc_idx]
         .nodal
         .iter()
         .map(|n| n.name.clone())
@@ -222,7 +231,7 @@ pub fn loads_table(ui: &mut egui::Ui, app: &mut App) {
         nodal_count,
         |row| {
             let i = row.index();
-            let nodal = &app.model.load_cases[lc_idx].nodal[i];
+            let nodal = &app.core.model.load_cases[lc_idx].nodal[i];
             let is_auto = nodal.source.is_auto();
             row.col(|ui| {
                 if is_auto {
@@ -280,10 +289,10 @@ pub fn loads_table(ui: &mut egui::Ui, app: &mut App) {
     // 値・名称の変更は `SetNodalLoad`（要素まるごと差し替え）で行うため、
     // 変更前の内容を読んでから 1 件ずつ発行する。
     for (index, values) in pending_load {
-        let mut load = app.model.load_cases[lc_idx].nodal[index].clone();
+        let mut load = app.core.model.load_cases[lc_idx].nodal[index].clone();
         load.values = values;
-        had_load |= app.undo.run(
-            &mut app.model,
+        had_load |= app.core.scoped.undo.run(
+            &mut app.core.model,
             Box::new(SetNodalLoad {
                 lc: lc_id,
                 index,
@@ -292,13 +301,13 @@ pub fn loads_table(ui: &mut egui::Ui, app: &mut App) {
         );
     }
     for (index, name) in pending_name_edit {
-        let mut load = app.model.load_cases[lc_idx].nodal[index].clone();
+        let mut load = app.core.model.load_cases[lc_idx].nodal[index].clone();
         if load.name == name {
             continue;
         }
         load.name = name;
-        had_load |= app.undo.run(
-            &mut app.model,
+        had_load |= app.core.scoped.undo.run(
+            &mut app.core.model,
             Box::new(SetNodalLoad {
                 lc: lc_id,
                 index,
@@ -307,13 +316,13 @@ pub fn loads_table(ui: &mut egui::Ui, app: &mut App) {
         );
     }
     if let Some(index) = pending_nodal_delete {
-        had_load |= app.undo.run(
-            &mut app.model,
+        had_load |= app.core.scoped.undo.run(
+            &mut app.core.model,
             Box::new(DeleteNodalLoad { lc: lc_id, index }),
         );
     }
     if had_load {
-        app.staleness.mark_edited();
+        app.core.scoped.staleness.mark_edited();
     }
 
     // --- 部材荷重セクション ---
@@ -322,7 +331,7 @@ pub fn loads_table(ui: &mut egui::Ui, app: &mut App) {
 
     let mut pending_delete: Option<usize> = None;
     {
-        let member_loads = &app.model.load_cases[lc_idx].member;
+        let member_loads = &app.core.model.load_cases[lc_idx].member;
         if member_loads.is_empty() {
             ui.label("部材荷重なし");
         } else {
@@ -357,11 +366,11 @@ pub fn loads_table(ui: &mut egui::Ui, app: &mut App) {
         }
     }
     if let Some(index) = pending_delete {
-        app.undo.run(
-            &mut app.model,
+        app.core.scoped.undo.run(
+            &mut app.core.model,
             Box::new(DeleteMemberLoad { lc: lc_id, index }),
         );
-        app.staleness.mark_edited();
+        app.core.scoped.staleness.mark_edited();
     }
 
     ui.add_space(4.0);
@@ -472,17 +481,17 @@ fn combo_case_selector(
 fn combinations_section(ui: &mut egui::Ui, app: &mut App) {
     ui.strong("荷重組合せ");
 
-    if app.model.load_cases.is_empty() {
+    if app.core.model.load_cases.is_empty() {
         ui.label("荷重ケースがありません。組合せを作成するにはまず荷重ケースを追加してください。");
         return;
     }
 
     // --- 既存組合せの一覧（内訳表示・削除） ---
     let mut pending_delete: Option<usize> = None;
-    if app.model.combinations.is_empty() {
+    if app.core.model.combinations.is_empty() {
         ui.label("組合せがありません。下の「自動生成」で作成できます。");
     } else {
-        for (i, combo) in app.model.combinations.iter().enumerate() {
+        for (i, combo) in app.core.model.combinations.iter().enumerate() {
             ui.horizontal(|ui| {
                 let terms_str = combo
                     .terms
@@ -492,7 +501,7 @@ fn combinations_section(ui: &mut egui::Ui, app: &mut App) {
                             "{:.2}×[{}]{}",
                             factor,
                             id.0,
-                            load_case_name(&app.model, *id)
+                            load_case_name(&app.core.model, *id)
                         )
                     })
                     .collect::<Vec<_>>()
@@ -509,9 +518,11 @@ fn combinations_section(ui: &mut egui::Ui, app: &mut App) {
         }
     }
     if let Some(idx) = pending_delete {
-        app.undo
-            .run(&mut app.model, Box::new(DeleteCombination { index: idx }));
-        app.staleness.mark_edited();
+        app.core.scoped.undo.run(
+            &mut app.core.model,
+            Box::new(DeleteCombination { index: idx }),
+        );
+        app.core.scoped.staleness.mark_edited();
     }
 
     // --- 自動生成 ---
@@ -521,66 +532,67 @@ fn combinations_section(ui: &mut egui::Ui, app: &mut App) {
         ui,
         "combo_draft_dl",
         "DL用:",
-        &app.model,
-        &mut app.combo_draft.dl,
+        &app.core.model,
+        &mut app.ui.scoped.combo_draft.dl,
         false,
     );
     combo_case_selector(
         ui,
         "combo_draft_ll",
         "LL用:",
-        &app.model,
-        &mut app.combo_draft.ll,
+        &app.core.model,
+        &mut app.ui.scoped.combo_draft.ll,
         false,
     );
     combo_case_selector(
         ui,
         "combo_draft_seismic_x",
         "地震X用:",
-        &app.model,
-        &mut app.combo_draft.seismic_x,
+        &app.core.model,
+        &mut app.ui.scoped.combo_draft.seismic_x,
         true,
     );
     combo_case_selector(
         ui,
         "combo_draft_seismic_y",
         "地震Y用:",
-        &app.model,
-        &mut app.combo_draft.seismic_y,
+        &app.core.model,
+        &mut app.ui.scoped.combo_draft.seismic_y,
         true,
     );
     combo_case_selector(
         ui,
         "combo_draft_snow",
         "積雪用:",
-        &app.model,
-        &mut app.combo_draft.snow,
+        &app.core.model,
+        &mut app.ui.scoped.combo_draft.snow,
         true,
     );
 
-    ui.checkbox(&mut app.analysis_cfg.heavy_snow_zone, "多雪区域")
+    ui.checkbox(&mut app.core.analysis_cfg.heavy_snow_zone, "多雪区域")
         .on_hover_text("有効にすると長期 G+P+δ1・S、短期地震 G+P+δ3・S±K の組合せも生成します（施行令86条・82条）");
-    if app.analysis_cfg.heavy_snow_zone {
+    if app.core.analysis_cfg.heavy_snow_zone {
         ui.horizontal(|ui| {
             ui.label("積雪低減係数:").on_hover_text(
                 "多雪区域の積雪荷重低減係数（平12建告1455号。既定 δ1=0.7、δ3=0.35）",
             );
             ui.label("δ1(長期)");
             ui.add(
-                egui::DragValue::new(&mut app.analysis_cfg.snow_delta1)
+                egui::DragValue::new(&mut app.core.analysis_cfg.snow_delta1)
                     .speed(0.01)
                     .range(0.0..=1.0),
             );
             ui.label("δ3(地震時)");
             ui.add(
-                egui::DragValue::new(&mut app.analysis_cfg.snow_delta3)
+                egui::DragValue::new(&mut app.core.analysis_cfg.snow_delta3)
                     .speed(0.01)
                     .range(0.0..=1.0),
             );
         });
     }
 
-    let can_generate = app.combo_draft.dl.is_some() && app.combo_draft.ll.is_some();
+    let can_generate =
+        app.ui.scoped.combo_draft.dl.is_some() && app.ui.scoped.combo_draft.ll.is_some();
     ui.horizontal(|ui| {
         if ui
             .add_enabled(can_generate, egui::Button::new("⚙ 標準組合せを生成"))
@@ -589,28 +601,28 @@ fn combinations_section(ui: &mut egui::Ui, app: &mut App) {
             )
             .clicked()
         {
-            if let (Some(dl), Some(ll)) = (app.combo_draft.dl, app.combo_draft.ll) {
+            if let (Some(dl), Some(ll)) = (app.ui.scoped.combo_draft.dl, app.ui.scoped.combo_draft.ll) {
                 let input = squid_n_load::combo::ComboInput {
                     dl,
                     ll,
-                    seismic_x: app.combo_draft.seismic_x,
-                    seismic_y: app.combo_draft.seismic_y,
-                    snow: app.combo_draft.snow,
-                    heavy_snow_zone: app.analysis_cfg.heavy_snow_zone,
+                    seismic_x: app.ui.scoped.combo_draft.seismic_x,
+                    seismic_y: app.ui.scoped.combo_draft.seismic_y,
+                    snow: app.ui.scoped.combo_draft.snow,
+                    heavy_snow_zone: app.core.analysis_cfg.heavy_snow_zone,
                     snow_factors: Some(squid_n_load::combo::SnowFactors {
-                        delta1: app.analysis_cfg.snow_delta1,
-                        delta3: app.analysis_cfg.snow_delta3,
+                        delta1: app.core.analysis_cfg.snow_delta1,
+                        delta3: app.core.analysis_cfg.snow_delta3,
                     }),
                 };
                 let combos = squid_n_load::combo::standard_combinations(&input);
                 for combo in combos {
-                    app.undo
-                        .run(&mut app.model, Box::new(AddCombination { combo }));
+                    app.core.scoped.undo
+                        .run(&mut app.core.model, Box::new(AddCombination { combo }));
                 }
-                app.staleness.mark_edited();
+                app.core.scoped.staleness.mark_edited();
                 // 別経路で組合せを作れたため、自動生成の失敗表示は解消する
                 // （残すと解決済みのエラーが欄に出続ける）。
-                app.combo_error = None;
+                app.core.scoped.combo_error = None;
             }
         }
         if ui
@@ -626,7 +638,7 @@ fn combinations_section(ui: &mut egui::Ui, app: &mut App) {
     });
     // 組合せ生成に固有のエラーのみ表示する（`last_error` は共用スロットのため、
     // ここへ出すと他の操作のエラーが無関係な欄に現れる）。
-    if let Some(err) = &app.combo_error {
+    if let Some(err) = &app.core.scoped.combo_error {
         ui.colored_label(crate::theme::ERROR_RED, err);
     }
 }

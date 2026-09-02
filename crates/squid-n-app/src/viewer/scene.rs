@@ -158,7 +158,7 @@ pub(super) fn draw_slabs(
     proj: &Projector,
     coords3: &[[f64; 3]],
 ) {
-    for slab in &app.model.slabs {
+    for slab in &app.core.model.slabs {
         if !slab_visible_on_frame(slab, filter) {
             continue;
         }
@@ -189,15 +189,15 @@ pub(super) fn draw_wall_plates(
     proj: &Projector,
     coords3: &[[f64; 3]],
 ) {
-    for plate in &app.model.wall_plates {
-        if app.model.wall_plate_becomes_element(plate) {
+    for plate in &app.core.model.wall_plates {
+        if app.core.model.wall_plate_becomes_element(plate) {
             continue;
         }
         if !wall_plate_visible_on_frame(plate, filter) {
             continue;
         }
         let Some(coords) =
-            plate.boundary_coords_with(&app.model, |n| coords3.get(n.index()).copied())
+            plate.boundary_coords_with(&app.core.model, |n| coords3.get(n.index()).copied())
         else {
             continue;
         };
@@ -208,7 +208,7 @@ pub(super) fn draw_wall_plates(
             &coords,
             proj,
             theme::DATA_BLUE,
-            plate_fill_is_valid(&app.model, plate),
+            plate_fill_is_valid(&app.core.model, plate),
         );
     }
 }
@@ -345,7 +345,7 @@ pub(super) fn draw_mode_rest_ghost(
             if show_sections { 1.0_f32 } else { 1.5_f32 },
             theme::translucent(theme::SECONDARY_AMBER, LINE_A),
         );
-        for sm in app.model.joists().chain(app.model.posts()) {
+        for sm in app.core.model.joists().chain(app.core.model.posts()) {
             let n0 = sm.nodes[0].index();
             let n1 = sm.nodes[1].index();
             if !filter.shows_node(n0) || !filter.shows_node(n1) {

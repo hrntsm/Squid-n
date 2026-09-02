@@ -177,36 +177,38 @@ enum ResultTreeAction {
 
 #[cfg(feature = "gui")]
 fn is_static_selected(app: &App, key: StaticKey) -> bool {
-    app.nav.focus_result == Some(key)
+    app.ui.scoped.nav.focus_result == Some(key)
 }
 
 #[cfg(feature = "gui")]
 fn is_eigen_mode_selected(app: &App, mode_idx: usize) -> bool {
-    app.results_view == ResultsView::Spatial
-        && app.view_mode == crate::viewer::ViewMode::Mode
-        && app.view_mode_idx == mode_idx
+    app.ui.view.results_view == ResultsView::Spatial
+        && app.ui.view.view_mode == crate::viewer::ViewMode::Mode
+        && app.ui.scoped.view_mode_idx == mode_idx
 }
 
 #[cfg(feature = "gui")]
 fn is_pushover_selected(app: &App, dir: SeismicDir) -> bool {
-    app.results_view == ResultsView::Pushover && app.pushover_view_dir == dir
+    app.ui.view.results_view == ResultsView::Pushover && app.core.scoped.pushover_view_dir == dir
 }
 
 #[cfg(feature = "gui")]
 fn is_time_history_case_selected(app: &App, id: VibrationCaseId) -> bool {
-    app.results_view == ResultsView::TimeHistory && app.view_vibration_case == Some(id)
+    app.ui.view.results_view == ResultsView::TimeHistory
+        && app.core.scoped.view_vibration_case == Some(id)
 }
 
 #[cfg(feature = "gui")]
 fn is_lumped_eigen_mode_selected(app: &App, mode_idx: usize) -> bool {
-    app.results_view == ResultsView::Spatial
-        && app.view_mode == crate::viewer::ViewMode::LumpedMode
-        && app.view_mode_idx == mode_idx
+    app.ui.view.results_view == ResultsView::Spatial
+        && app.ui.view.view_mode == crate::viewer::ViewMode::LumpedMode
+        && app.ui.scoped.view_mode_idx == mode_idx
 }
 
 #[cfg(feature = "gui")]
 fn is_lumped_th_case_selected(app: &App, id: LumpedVibrationCaseId) -> bool {
-    app.results_view == ResultsView::LumpedMass && app.view_lumped_vibration_case == Some(id)
+    app.ui.view.results_view == ResultsView::LumpedMass
+        && app.core.scoped.view_lumped_vibration_case == Some(id)
 }
 
 #[cfg(feature = "gui")]
@@ -220,8 +222,9 @@ fn draw_header_underline(ui: &egui::Ui, rect: egui::Rect) {
 #[cfg(feature = "gui")]
 impl App {
     pub(crate) fn nav_result_cases(&mut self, ui: &mut egui::Ui) {
-        let tree = build_result_tree(self.results.as_ref(), &self.model, |id| {
-            self.model
+        let tree = build_result_tree(self.core.scoped.results.as_ref(), &self.core.model, |id| {
+            self.core
+                .model
                 .load_cases
                 .iter()
                 .find(|lc| lc.id == id)
@@ -241,7 +244,7 @@ impl App {
             }
 
             if !tree.static_leaves.is_empty() {
-                let static_header_sel = self.nav.focus_result.is_some();
+                let static_header_sel = self.ui.scoped.nav.focus_result.is_some();
                 let h = egui::CollapsingHeader::new("静的解析")
                     .default_open(true)
                     .id_salt("nav_result_static");
@@ -392,34 +395,36 @@ impl App {
         match action {
             ResultTreeAction::Static(key) => {
                 self.select_displayed_result(key);
-                self.active_tab = Tab::Results;
-                self.results_view = ResultsView::Spatial;
+                self.ui.view.active_tab = Tab::Results;
+                self.ui.view.results_view = ResultsView::Spatial;
             }
             ResultTreeAction::EigenMode(i) => {
-                self.nav.focus_result = None;
-                self.active_tab = Tab::Results;
-                self.results_view = ResultsView::Spatial;
-                self.view_mode = crate::viewer::ViewMode::Mode;
-                self.view_mode_idx = i;
+                self.ui.scoped.nav.focus_result = None;
+                self.ui.view.active_tab = Tab::Results;
+                self.ui.view.results_view = ResultsView::Spatial;
+                self.ui.view.view_mode = crate::viewer::ViewMode::Mode;
+                self.ui.scoped.view_mode_idx = i;
             }
             ResultTreeAction::Pushover(dir) => {
-                self.nav.focus_result = None;
+                self.ui.scoped.nav.focus_result = None;
                 self.set_pushover_view_dir(dir);
-                self.active_tab = Tab::Results;
-                self.results_view = ResultsView::Pushover;
+                self.ui.view.active_tab = Tab::Results;
+                self.ui.view.results_view = ResultsView::Pushover;
             }
             ResultTreeAction::TimeHistoryCase(id) => {
                 if let Some(res) = self
+                    .core
+                    .scoped
                     .results
                     .as_ref()
                     .and_then(|b| b.time_history_for(id))
                     .cloned()
                 {
-                    self.nav.focus_result = None;
+                    self.ui.scoped.nav.focus_result = None;
                     self.set_spatial_time_history_view(id, &res);
-                    self.active_tab = Tab::Results;
-                    self.results_view = ResultsView::TimeHistory;
-                    self.view_mode = crate::viewer::ViewMode::TimeHistory;
+                    self.ui.view.active_tab = Tab::Results;
+                    self.ui.view.results_view = ResultsView::TimeHistory;
+                    self.ui.view.view_mode = crate::viewer::ViewMode::TimeHistory;
                 }
             }
             ResultTreeAction::LumpedEigenMode(i) => {
@@ -427,16 +432,18 @@ impl App {
             }
             ResultTreeAction::LumpedTimeHistoryCase(id) => {
                 if let Some(res) = self
+                    .core
+                    .scoped
                     .results
                     .as_ref()
                     .and_then(|b| b.lumped_result_for(id))
                     .cloned()
                 {
-                    self.nav.focus_result = None;
+                    self.ui.scoped.nav.focus_result = None;
                     self.set_lumped_mass_view(Some(id), &res);
-                    self.active_tab = Tab::Results;
-                    self.results_view = ResultsView::LumpedMass;
-                    self.view_mode = crate::viewer::ViewMode::LumpedTimeHistory;
+                    self.ui.view.active_tab = Tab::Results;
+                    self.ui.view.results_view = ResultsView::LumpedMass;
+                    self.ui.view.view_mode = crate::viewer::ViewMode::LumpedTimeHistory;
                 }
             }
         }

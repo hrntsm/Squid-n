@@ -38,12 +38,12 @@ pub enum TimeHistoryViewMode {
 pub fn time_history_panel(ui: &mut egui::Ui, app: &mut App) {
     ui.horizontal(|ui| {
         ui.selectable_value(
-            &mut app.time_history_view_mode,
+            &mut app.ui.view.time_history_view_mode,
             TimeHistoryViewMode::Waveform,
             "時刻歴波形",
         );
         ui.selectable_value(
-            &mut app.time_history_view_mode,
+            &mut app.ui.view.time_history_view_mode,
             TimeHistoryViewMode::StoryResponse,
             "層応答分布",
         );
@@ -54,6 +54,8 @@ pub fn time_history_panel(ui: &mut egui::Ui, app: &mut App) {
     // 収束を確認できていないステップを含む応答が参考値であることは、波形を見て
     // いても層応答分布を見ていても同じく伝わる必要がある。
     let non_converged = app
+        .core
+        .scoped
         .results
         .as_ref()
         .and_then(|r| r.time_history.as_ref())
@@ -69,7 +71,7 @@ pub fn time_history_panel(ui: &mut egui::Ui, app: &mut App) {
         );
     }
 
-    match app.time_history_view_mode {
+    match app.ui.view.time_history_view_mode {
         TimeHistoryViewMode::Waveform => waveform_panel(ui, app),
         TimeHistoryViewMode::StoryResponse => story_response_panel(ui, app),
     }
@@ -78,7 +80,7 @@ pub fn time_history_panel(ui: &mut egui::Ui, app: &mut App) {
 /// 時刻歴波形（代表応答: 節点変位／ベースシア／層間変形角）。従来の
 /// `time_history_panel` の本体（表示モード追加に伴い切り出し）。
 fn waveform_panel(ui: &mut egui::Ui, app: &mut App) {
-    if app.time_history_data.time.is_empty() {
+    if app.ui.scoped.time_history_data.time.is_empty() {
         ui.colored_label(
             crate::theme::GRAY_600,
             "時刻歴応答データがありません。解析タブの「時刻歴」から実行してください。",
@@ -86,11 +88,13 @@ fn waveform_panel(ui: &mut egui::Ui, app: &mut App) {
         return;
     }
 
-    let mut source = app.time_history_source;
+    let mut source = app.ui.view.time_history_source;
 
     ui.horizontal(|ui| {
         ui.label("表示項目:");
         let node_label = app
+            .ui
+            .scoped
             .time_history_data
             .node
             .map(|n| format!("節点 N{} 変位", n.0))
@@ -106,11 +110,11 @@ fn waveform_panel(ui: &mut egui::Ui, app: &mut App) {
 
     ui.add_space(4.0);
 
-    if source != app.time_history_source {
-        app.time_history_source = source;
+    if source != app.ui.view.time_history_source {
+        app.ui.view.time_history_source = source;
     }
 
-    let data = &app.time_history_data;
+    let data = &app.ui.scoped.time_history_data;
     let series = match source {
         TimeHistorySource::NodeDisp => &data.node_disp,
         TimeHistorySource::StoryShear => &data.story_shear,
@@ -147,7 +151,13 @@ fn waveform_panel(ui: &mut egui::Ui, app: &mut App) {
 
     // 梁端累積損傷度 D（鉄骨梁端部の累積損傷度計算）。非線形時刻歴で
     // 各要素の危険断面塑性率 μ 時刻歴からレインフロー法で算定した値を表示する。
-    if let Some(res) = app.results.as_ref().and_then(|r| r.time_history.as_ref()) {
+    if let Some(res) = app
+        .core
+        .scoped
+        .results
+        .as_ref()
+        .and_then(|r| r.time_history.as_ref())
+    {
         let dmax = res
             .cumulative_ductility
             .iter()
@@ -221,11 +231,13 @@ fn waveform_panel(ui: &mut egui::Ui, app: &mut App) {
 }
 
 /// 層応答分布（縦軸=階、横軸=層せん断力／層せん断力係数／階加速度／階速度／階変位）。
-/// データは `App.results.time_history.recording`（`ThRecording`）から直接参照する
+/// データは `App.core.scoped.results.time_history.recording`（`ThRecording`）から直接参照する
 /// （コピー保持しない）。`recording` がない（旧い結果、または非線形以前の解析結果でも
 /// ないことはないが念のため）場合は再解析を案内する。
 fn story_response_panel(ui: &mut egui::Ui, app: &mut App) {
     let Some(recording) = app
+        .core
+        .scoped
         .results
         .as_ref()
         .and_then(|r| r.time_history.as_ref())
@@ -239,8 +251,8 @@ fn story_response_panel(ui: &mut egui::Ui, app: &mut App) {
         return;
     };
 
-    let mut dir = app.story_response_dir;
-    let mut kind = app.story_response_kind;
+    let mut dir = app.ui.view.story_response_dir;
+    let mut kind = app.ui.view.story_response_kind;
 
     ui.horizontal_wrapped(|ui| {
         ui.label("方向:");
@@ -254,8 +266,8 @@ fn story_response_panel(ui: &mut egui::Ui, app: &mut App) {
         ui.selectable_value(&mut kind, StoryResponseKind::Vel, "階速度");
         ui.selectable_value(&mut kind, StoryResponseKind::Disp, "階変位");
     });
-    app.story_response_dir = dir;
-    app.story_response_kind = kind;
+    app.ui.view.story_response_dir = dir;
+    app.ui.view.story_response_kind = kind;
 
     let story = match dir {
         StoryRespDir::X => &recording.story_x,
@@ -273,6 +285,7 @@ fn story_response_panel(ui: &mut egui::Ui, app: &mut App) {
     // 階名（低: 添字ではなく `StoryId` で現モデルと突き合わせる。解析後にモデルの
     // 階が編集されても別の階の名前を誤って表示しない。見つからなければ「(削除済み階)」）。
     let model_story_names: Vec<(squid_n_core::ids::StoryId, String)> = app
+        .core
         .model
         .stories
         .iter()

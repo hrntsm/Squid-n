@@ -161,10 +161,10 @@ pub fn slabs_table(ui: &mut egui::Ui, app: &mut App) {
             Col::label("床板"),
             Col::label("小梁"),
         ],
-        app.model.floor_regions.len(),
+        app.core.model.floor_regions.len(),
         |row| {
             let i = row.index();
-            let region = &app.model.floor_regions[i];
+            let region = &app.core.model.floor_regions[i];
             row.col(|ui| {
                 table_util::id_label(ui, region.id.0);
             });
@@ -203,26 +203,29 @@ pub fn slabs_table(ui: &mut egui::Ui, app: &mut App) {
         },
     );
     for (id, name) in pending_region_name {
-        app.undo
-            .run(&mut app.model, Box::new(SetFloorRegionName { id, name }));
-        app.staleness.mark_edited();
+        app.core.scoped.undo.run(
+            &mut app.core.model,
+            Box::new(SetFloorRegionName { id, name }),
+        );
+        app.core.scoped.staleness.mark_edited();
     }
 
     ui.add_space(8.0);
     ui.strong("床板（スラブ）");
 
     // ── 一覧表 ──────────────────────────────────────────
-    let n = app.model.slabs.len();
+    let n = app.core.model.slabs.len();
     let mut pending_delete: Option<SlabId> = None;
     let mut pending_one_way: Vec<(SlabId, Option<OneWayDir>)> = Vec::new();
     let mut pending_usage: Vec<(SlabId, Option<SlabUsage>)> = Vec::new();
     let mut pending_section: Vec<(SlabId, Option<squid_n_core::ids::SectionId>)> = Vec::new();
     let mut pending_extent: Vec<(SlabId, [f64; 2])> = Vec::new();
     let mut pending_anchor: Vec<(SlabId, RegionAnchor)> = Vec::new();
-    let node_ids: Vec<NodeId> = app.model.nodes.iter().map(|n| n.id).collect();
+    let node_ids: Vec<NodeId> = app.core.model.nodes.iter().map(|n| n.id).collect();
     // 板状の断面（板厚を持つ断面）だけを候補にする。板厚が無い断面を割り当てても
     // 自重・数量が算定できないため、選ばせない。
     let slab_sections: Vec<(squid_n_core::ids::SectionId, String)> = app
+        .core
         .model
         .sections
         .iter()
@@ -248,7 +251,7 @@ pub fn slabs_table(ui: &mut egui::Ui, app: &mut App) {
         n,
         |row| {
             let i = row.index();
-            let slab = &app.model.slabs[i];
+            let slab = &app.core.model.slabs[i];
             row.col(|ui| {
                 table_util::id_label(ui, slab.id.0);
             });
@@ -256,6 +259,7 @@ pub fn slabs_table(ui: &mut egui::Ui, app: &mut App) {
                 // どの床領域（大梁の区画）に属するかは `slab_ids` から逆引きする
                 // （取り付く床板・浮き床板はどの床領域からも参照されない）。
                 let owner = app
+                    .core
                     .model
                     .floor_regions
                     .iter()
@@ -347,6 +351,7 @@ pub fn slabs_table(ui: &mut egui::Ui, app: &mut App) {
             });
             row.col(|ui| {
                 let label = app
+                    .core
                     .model
                     .slab_section(slab)
                     .map(|sec| sec.display_name())
@@ -383,74 +388,85 @@ pub fn slabs_table(ui: &mut egui::Ui, app: &mut App) {
         || !pending_anchor.is_empty()
         || pending_delete.is_some();
     for (id, one_way) in pending_one_way {
-        app.undo
-            .run(&mut app.model, Box::new(SetSlabOneWay { id, one_way }));
+        app.core
+            .scoped
+            .undo
+            .run(&mut app.core.model, Box::new(SetSlabOneWay { id, one_way }));
     }
     for (id, usage) in pending_usage {
-        app.undo
-            .run(&mut app.model, Box::new(SetSlabUsage { id, usage }));
+        app.core
+            .scoped
+            .undo
+            .run(&mut app.core.model, Box::new(SetSlabUsage { id, usage }));
     }
     for (id, section) in pending_section {
-        app.undo.run(
-            &mut app.model,
+        app.core.scoped.undo.run(
+            &mut app.core.model,
             Box::new(squid_n_edit::SetSlabSection { id, section }),
         );
     }
     for (id, extent) in pending_extent {
-        app.undo
-            .run(&mut app.model, Box::new(SetAttachedExtent { id, extent }));
+        app.core.scoped.undo.run(
+            &mut app.core.model,
+            Box::new(SetAttachedExtent { id, extent }),
+        );
     }
     for (id, anchor) in pending_anchor {
-        app.undo
-            .run(&mut app.model, Box::new(SetAttachedAnchor { id, anchor }));
+        app.core.scoped.undo.run(
+            &mut app.core.model,
+            Box::new(SetAttachedAnchor { id, anchor }),
+        );
     }
     if let Some(id) = pending_delete {
-        app.undo.run(&mut app.model, Box::new(DeleteSlab { id }));
+        app.core
+            .scoped
+            .undo
+            .run(&mut app.core.model, Box::new(DeleteSlab { id }));
     }
     if had_pending {
-        app.staleness.mark_edited();
+        app.core.scoped.staleness.mark_edited();
     }
 
     ui.separator();
     // ── 床板追加フォーム ──────────────────────────────────
     ui.strong("床板を追加");
 
-    if app.model.nodes.len() < 3 {
+    if app.core.model.nodes.len() < 3 {
         ui.label("床板を追加するには節点が3つ以上必要です");
         return;
     }
 
     // 借用衝突を避けるため、節点一覧は先にローカルへ複製しておく
-    // （app.model への参照を保持したまま app.slab_draft を可変参照しないため）。
-    let node_ids: Vec<NodeId> = app.model.nodes.iter().map(|n| n.id).collect();
+    // （app.core.model への参照を保持したまま app.ui.scoped.slab_draft を可変参照しないため）。
+    let node_ids: Vec<NodeId> = app.core.model.nodes.iter().map(|n| n.id).collect();
 
     // 境界頂点は 3〜N の可変長。スロット数は +/− ボタンで調整する。
-    if app.slab_draft.nodes.len() < 3 {
-        app.slab_draft.nodes.resize(3, None);
+    if app.ui.scoped.slab_draft.nodes.len() < 3 {
+        app.ui.scoped.slab_draft.nodes.resize(3, None);
     }
     ui.label(
         "境界節点（頂点0→1→2→…→0 の順で外周を辿り、その辺 i=節点i→節点i+1 を持つ梁を検索します。3〜N 節点対応）:",
     );
     ui.horizontal(|ui| {
         if ui.button("+ 頂点を追加").clicked() {
-            app.slab_draft.nodes.push(None);
+            app.ui.scoped.slab_draft.nodes.push(None);
         }
         if ui
             .add_enabled(
-                app.slab_draft.nodes.len() > 3,
+                app.ui.scoped.slab_draft.nodes.len() > 3,
                 egui::Button::new("− 頂点を削除"),
             )
             .on_hover_text("末尾の頂点スロットを削除（最小3）")
             .clicked()
         {
-            app.slab_draft.nodes.pop();
+            app.ui.scoped.slab_draft.nodes.pop();
         }
-        ui.label(format!("頂点数: {}", app.slab_draft.nodes.len()));
+        ui.label(format!("頂点数: {}", app.ui.scoped.slab_draft.nodes.len()));
     });
     ui.horizontal_wrapped(|ui| {
-        let n_slots = app.slab_draft.nodes.len();
+        let n_slots = app.ui.scoped.slab_draft.nodes.len();
         for k in 0..n_slots {
-            let text = app.slab_draft.nodes[k]
+            let text = app.ui.scoped.slab_draft.nodes[k]
                 .map(|n| format!("N{}", n.0))
                 .unwrap_or_else(|| "―".to_string());
             egui::ComboBox::from_id_salt(format!("slab_draft_node_{}", k))
@@ -459,10 +475,13 @@ pub fn slabs_table(ui: &mut egui::Ui, app: &mut App) {
                     for &nid in &node_ids {
                         let label = format!("N{}", nid.0);
                         if ui
-                            .selectable_label(app.slab_draft.nodes[k] == Some(nid), &label)
+                            .selectable_label(
+                                app.ui.scoped.slab_draft.nodes[k] == Some(nid),
+                                &label,
+                            )
                             .clicked()
                         {
-                            app.slab_draft.nodes[k] = Some(nid);
+                            app.ui.scoped.slab_draft.nodes[k] = Some(nid);
                         }
                     }
                 });
@@ -471,9 +490,14 @@ pub fn slabs_table(ui: &mut egui::Ui, app: &mut App) {
 
     ui.horizontal(|ui| {
         ui.label("荷重種別:");
-        ui.add(egui::TextEdit::singleline(&mut app.slab_draft.load_kind).desired_width(60.0));
+        ui.add(
+            egui::TextEdit::singleline(&mut app.ui.scoped.slab_draft.load_kind).desired_width(60.0),
+        );
         ui.label("荷重 [kN/m²]:");
-        ui.add(egui::TextEdit::singleline(&mut app.slab_draft.load_value).desired_width(80.0));
+        ui.add(
+            egui::TextEdit::singleline(&mut app.ui.scoped.slab_draft.load_value)
+                .desired_width(80.0),
+        );
     });
 
     ui.horizontal(|ui| {
@@ -484,12 +508,14 @@ pub fn slabs_table(ui: &mut egui::Ui, app: &mut App) {
             // 残したままだと `AddSlab` が参照検証で Noop になり、「追加」を押しても
             // 何も起きない状態になる。
             let resolved = app
+                .ui
+                .scoped
                 .slab_draft
                 .section
-                .and_then(|sid| app.model.sections.get(sid.index()))
+                .and_then(|sid| app.core.model.sections.get(sid.index()))
                 .filter(|sec| sec.thickness.is_some_and(|t| t > 0.0));
             if resolved.is_none() {
-                app.slab_draft.section = None;
+                app.ui.scoped.slab_draft.section = None;
             }
             let label = resolved
                 .map(|sec| sec.display_name())
@@ -497,11 +523,11 @@ pub fn slabs_table(ui: &mut egui::Ui, app: &mut App) {
             egui::ComboBox::from_id_salt("slab_draft_section")
                 .selected_text(label)
                 .show_ui(ui, |ui| {
-                    ui.selectable_value(&mut app.slab_draft.section, None, "―");
-                    for sec in &app.model.sections {
+                    ui.selectable_value(&mut app.ui.scoped.slab_draft.section, None, "―");
+                    for sec in &app.core.model.sections {
                         if sec.thickness.is_some_and(|t| t > 0.0) {
                             ui.selectable_value(
-                                &mut app.slab_draft.section,
+                                &mut app.ui.scoped.slab_draft.section,
                                 Some(sec.id),
                                 sec.display_name(),
                             );
@@ -516,13 +542,13 @@ pub fn slabs_table(ui: &mut egui::Ui, app: &mut App) {
         ui.label("用途（積載荷重）:")
             .on_hover_text("令別表第1 の積載荷重（骨組用）を「LL(架構用)」ケースへ分配します");
         egui::ComboBox::from_id_salt("slab_draft_usage")
-            .selected_text(usage_label(app.slab_draft.usage))
+            .selected_text(usage_label(app.ui.scoped.slab_draft.usage))
             .show_ui(ui, |ui| {
                 for &u in USAGE_PRESETS {
-                    ui.selectable_value(&mut app.slab_draft.usage, u, usage_label(u));
+                    ui.selectable_value(&mut app.ui.scoped.slab_draft.usage, u, usage_label(u));
                 }
             });
-        if let Some(u) = app.slab_draft.usage {
+        if let Some(u) = app.ui.scoped.slab_draft.usage {
             use squid_n_core::model::LoadPurpose;
             // 表示は kN/m²。
             ui.label(format!(
@@ -537,28 +563,35 @@ pub fn slabs_table(ui: &mut egui::Ui, app: &mut App) {
     ui.horizontal(|ui| {
         ui.label("分配法:");
         ui.selectable_value(
-            &mut app.slab_draft.method,
+            &mut app.ui.scoped.slab_draft.method,
             DistributionMethod::TriTrapezoid,
             "三角/台形(45°法)",
         );
         ui.selectable_value(
-            &mut app.slab_draft.method,
+            &mut app.ui.scoped.slab_draft.method,
             DistributionMethod::OneWay,
             "一方向",
         );
         ui.selectable_value(
-            &mut app.slab_draft.method,
+            &mut app.ui.scoped.slab_draft.method,
             DistributionMethod::TributaryArea,
             "負担面積",
         );
     });
 
-    let selected: Vec<NodeId> = app.slab_draft.nodes.iter().filter_map(|n| *n).collect();
+    let selected: Vec<NodeId> = app
+        .ui
+        .scoped
+        .slab_draft
+        .nodes
+        .iter()
+        .filter_map(|n| *n)
+        .collect();
     let mut dedup = selected.clone();
     dedup.sort_by_key(|n| n.0);
     dedup.dedup();
     // 全スロットが埋まり（selected.len == slots）、3頂点以上、重複がないこと。
-    let n_slots = app.slab_draft.nodes.len();
+    let n_slots = app.ui.scoped.slab_draft.nodes.len();
     let can_add = selected.len() == n_slots && n_slots >= 3 && dedup.len() == n_slots;
 
     if ui
@@ -567,31 +600,35 @@ pub fn slabs_table(ui: &mut egui::Ui, app: &mut App) {
         .clicked()
     {
         let boundary: Vec<NodeId> = app
+            .ui
+            .scoped
             .slab_draft
             .nodes
             .iter()
             .map(|n| n.expect("can_add で全スロット Some を確認済み"))
             .collect();
         let value_kn_m2 = app
+            .ui
+            .scoped
             .slab_draft
             .load_value
             .trim()
             .parse::<f64>()
             .unwrap_or(0.0);
         let value = to_internal::area_load_kn_per_m2(value_kn_m2);
-        let kind = app.slab_draft.load_kind.trim();
+        let kind = app.ui.scoped.slab_draft.load_kind.trim();
         let kind = if kind.is_empty() { "DL" } else { kind }.to_string();
-        app.undo.run(
-            &mut app.model,
+        app.core.scoped.undo.run(
+            &mut app.core.model,
             Box::new(AddSlab {
                 boundary,
                 loads: vec![AreaLoad { kind, value }],
-                method: app.slab_draft.method,
-                usage: app.slab_draft.usage,
-                section: app.slab_draft.section,
+                method: app.ui.scoped.slab_draft.method,
+                usage: app.ui.scoped.slab_draft.usage,
+                section: app.ui.scoped.slab_draft.section,
             }),
         );
-        app.staleness.mark_edited();
+        app.core.scoped.staleness.mark_edited();
     }
 
     attached_section(ui, app);
@@ -614,25 +651,37 @@ fn attached_section(ui: &mut egui::Ui, app: &mut App) {
 
     ui.horizontal(|ui| {
         ui.label("取付き先:");
-        ui.selectable_value(&mut app.slab_draft.attached_point, false, "線（大梁）");
-        ui.selectable_value(&mut app.slab_draft.attached_point, true, "点（柱）");
+        ui.selectable_value(
+            &mut app.ui.scoped.slab_draft.attached_point,
+            false,
+            "線（大梁）",
+        );
+        ui.selectable_value(
+            &mut app.ui.scoped.slab_draft.attached_point,
+            true,
+            "点（柱）",
+        );
     });
 
-    let node_ids: Vec<NodeId> = app.model.nodes.iter().map(|n| n.id).collect();
-    let n_slots = if app.slab_draft.attached_point { 1 } else { 2 };
+    let node_ids: Vec<NodeId> = app.core.model.nodes.iter().map(|n| n.id).collect();
+    let n_slots = if app.ui.scoped.slab_draft.attached_point {
+        1
+    } else {
+        2
+    };
     ui.horizontal(|ui| {
         for k in 0..n_slots {
             ui.label(format!("節点{}:", k + 1));
-            let label = app.slab_draft.attached_nodes[k]
+            let label = app.ui.scoped.slab_draft.attached_nodes[k]
                 .map(|n| n.0.to_string())
                 .unwrap_or_else(|| "―".to_string());
             egui::ComboBox::from_id_salt(("attached_node", k))
                 .selected_text(label)
                 .show_ui(ui, |ui| {
-                    ui.selectable_value(&mut app.slab_draft.attached_nodes[k], None, "―");
+                    ui.selectable_value(&mut app.ui.scoped.slab_draft.attached_nodes[k], None, "―");
                     for id in &node_ids {
                         ui.selectable_value(
-                            &mut app.slab_draft.attached_nodes[k],
+                            &mut app.ui.scoped.slab_draft.attached_nodes[k],
                             Some(*id),
                             id.0.to_string(),
                         );
@@ -642,27 +691,30 @@ fn attached_section(ui: &mut egui::Ui, app: &mut App) {
     });
 
     ui.horizontal(|ui| {
-        let labels = if app.slab_draft.attached_point {
+        let labels = if app.ui.scoped.slab_draft.attached_point {
             ["X 方向 [mm]:", "Y 方向 [mm]:"]
         } else {
             ["始端側 [mm]:", "終端側 [mm]:"]
         };
-        for (label, value) in labels.iter().zip(app.slab_draft.attached_extent.iter_mut()) {
+        for (label, value) in labels
+            .iter()
+            .zip(app.ui.scoped.slab_draft.attached_extent.iter_mut())
+        {
             ui.label(*label);
             ui.add(egui::TextEdit::singleline(value).desired_width(70.0));
         }
     });
 
-    if !app.slab_draft.attached_point {
+    if !app.ui.scoped.slab_draft.attached_point {
         ui.horizontal(|ui| {
             ui.label("荷重の出口:");
             ui.selectable_value(
-                &mut app.slab_draft.attached_transfer,
+                &mut app.ui.scoped.slab_draft.attached_transfer,
                 LoadTransfer::Anchor,
                 "取付き線へ分布",
             );
             ui.selectable_value(
-                &mut app.slab_draft.attached_transfer,
+                &mut app.ui.scoped.slab_draft.attached_transfer,
                 LoadTransfer::Columns,
                 "両端の柱へ集中",
             );
@@ -670,13 +722,13 @@ fn attached_section(ui: &mut egui::Ui, app: &mut App) {
         ui.horizontal(|ui| {
             ui.label("取付き線の区間 [0, 1]（既定は全長）:");
             ui.add(
-                egui::DragValue::new(&mut app.slab_draft.attached_span[0])
+                egui::DragValue::new(&mut app.ui.scoped.slab_draft.attached_span[0])
                     .range(0.0..=1.0)
                     .speed(0.01),
             );
             ui.label("〜");
             ui.add(
-                egui::DragValue::new(&mut app.slab_draft.attached_span[1])
+                egui::DragValue::new(&mut app.ui.scoped.slab_draft.attached_span[1])
                     .range(0.0..=1.0)
                     .speed(0.01),
             );
@@ -684,34 +736,40 @@ fn attached_section(ui: &mut egui::Ui, app: &mut App) {
     }
 
     let extent: Option<[f64; 2]> = {
-        let a = app.slab_draft.attached_extent[0].trim().parse::<f64>().ok();
-        let b = app.slab_draft.attached_extent[1].trim().parse::<f64>().ok();
+        let a = app.ui.scoped.slab_draft.attached_extent[0]
+            .trim()
+            .parse::<f64>()
+            .ok();
+        let b = app.ui.scoped.slab_draft.attached_extent[1]
+            .trim()
+            .parse::<f64>()
+            .ok();
         a.zip(b).map(|(a, b)| [a, b])
     };
-    let span = app.slab_draft.attached_span;
+    let span = app.ui.scoped.slab_draft.attached_span;
     // `Model::validate`（squid-n-core）・`AddAttachedSlab`（squid-n-edit）と同じ範囲。
     let span_ok = span[0].is_finite()
         && span[1].is_finite()
         && span[0] >= 0.0
         && span[1] <= 1.0
         && span[1] - span[0] > 1e-9;
-    let anchor: Option<RegionAnchor> = if app.slab_draft.attached_point {
-        app.slab_draft.attached_nodes[0].map(RegionAnchor::Point)
+    let anchor: Option<RegionAnchor> = if app.ui.scoped.slab_draft.attached_point {
+        app.ui.scoped.slab_draft.attached_nodes[0].map(RegionAnchor::Point)
     } else {
         match (
-            app.slab_draft.attached_nodes[0],
-            app.slab_draft.attached_nodes[1],
+            app.ui.scoped.slab_draft.attached_nodes[0],
+            app.ui.scoped.slab_draft.attached_nodes[1],
         ) {
             (Some(a), Some(b)) if a != b && span_ok => Some(RegionAnchor::Line {
                 nodes: [a, b],
                 span,
-                transfer: app.slab_draft.attached_transfer,
+                transfer: app.ui.scoped.slab_draft.attached_transfer,
             }),
             _ => None,
         }
     };
 
-    if !app.slab_draft.attached_point && !span_ok {
+    if !app.ui.scoped.slab_draft.attached_point && !span_ok {
         ui.label("取付き線の区間は始端 < 終端にしてください");
     }
     let ready = anchor.is_some() && extent.is_some();
@@ -723,8 +781,8 @@ fn attached_section(ui: &mut egui::Ui, app: &mut App) {
         .clicked()
     {
         if let (Some(anchor), Some(extent)) = (anchor, extent) {
-            app.undo.run(
-                &mut app.model,
+            app.core.scoped.undo.run(
+                &mut app.core.model,
                 Box::new(squid_n_edit::AddAttachedSlab {
                     anchor,
                     extent,
@@ -732,7 +790,7 @@ fn attached_section(ui: &mut egui::Ui, app: &mut App) {
                     plate: squid_n_core::model::SlabPlate::default(),
                 }),
             );
-            app.staleness.mark_edited();
+            app.core.scoped.staleness.mark_edited();
         }
     }
 }

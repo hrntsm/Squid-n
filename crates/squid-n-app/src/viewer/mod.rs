@@ -542,8 +542,8 @@ pub use deform::TimeHistoryScaleCache;
 pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
     // --- コントロール ---
     controls::view_controls(ui, app);
-    let mode = app.view_mode;
-    let mode_idx = app.view_mode_idx;
+    let mode = app.ui.view.view_mode;
+    let mode_idx = app.ui.scoped.view_mode_idx;
 
     // --- 表示範囲（全体 / 通り / 階）---
     // 通り芯・階の 1 構面だけを正対で描く 2D 表示。表示モード（形状・変形・応力図…）
@@ -555,14 +555,16 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
     //
     // ここでの `frame` はカメラ正対・構面基準線・クリック前の投影にだけ使う。
     // `build_frame` の Some/None は通り・階の実在で決まり要素の有無に依存しないため、
-    // 壁展開前の `app.model` で足りる。壁の構面所属（`elem_on`）はクリック処理の後、
+    // 壁展開前の `app.core.model` で足りる。壁の構面所属（`elem_on`）はクリック処理の後、
     // `display_model` から作り直す `frame_for_draw` が担う。ここで展開すると
     // 構面表示中に 1 フレーム 2 回 `model.clone()` することになる。
     let frame = app
+        .ui
+        .scoped
         .frame_target
-        .and_then(|t| squid_n_core::frame::build_frame(&app.model, t));
+        .and_then(|t| squid_n_core::frame::build_frame(&app.core.model, t));
     if frame.is_none() {
-        app.frame_target = None;
+        app.ui.scoped.frame_target = None;
     }
 
     ui.separator();
@@ -575,7 +577,7 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
 
     // カメラ操作と ViewCube は投影より前に視点を確定させる必要があるため、
     // 描画に先立って入力を反映する（`input.rs`）。
-    let mut cam = input::interact_camera(ui, &response, frame.as_ref(), &app.camera);
+    let mut cam = input::interact_camera(ui, &response, frame.as_ref(), &app.ui.view.camera);
     let cube = input::interact_viewcube(ui, &response, rect, frame.is_none(), &mut cam);
     let cube_hover = cube.hover;
     let cube_clicked = cube.clicked;
@@ -591,8 +593,8 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
     // 構面表示中は、その構面に属する部材だけの外接直方体を基準にする（全体基準の
     // ままだと、大きな建物の 1 構面が小さく画面の端へ寄ってしまう）。
     let (bmin, bmax) = match &frame {
-        Some(f) => frame_bbox(&app.model, f).unwrap_or_else(|| model_bbox(&app.model)),
-        None => model_bbox(&app.model),
+        Some(f) => frame_bbox(&app.core.model, f).unwrap_or_else(|| model_bbox(&app.core.model)),
+        None => model_bbox(&app.core.model),
     };
     let center3 = [
         (bmin[0] + bmax[0]) * 0.5,
@@ -602,7 +604,7 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
     let model_size = if frame.is_some() {
         bbox_diagonal(bmin, bmax)
     } else {
-        model_bbox_size(&app.model)
+        model_bbox_size(&app.core.model)
     };
     let min_dim = rect.width().min(rect.height());
     let fit = if model_size > 1e-9 {
@@ -618,9 +620,9 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
     // グリッド・軸（§3-2: 赤=X / 緑=Y / 青=Z）。モデルの背後に先に描く。
     // 構面表示中は、汎用の 1m 方眼の代わりに通り芯・階の基準線を描く
     // （同時に出すと線が二重になって読みづらいため）。
-    match (&frame, app.frame_target) {
+    match (&frame, app.ui.scoped.frame_target) {
         (Some(f), Some(t)) => {
-            frame_view::draw_frame_grid(&painter, &app.model, f, t, (bmin, bmax), &proj)
+            frame_view::draw_frame_grid(&painter, &app.core.model, f, t, (bmin, bmax), &proj)
         }
         _ => draw_grid_and_axes(&painter, rect, &proj),
     }
@@ -628,35 +630,45 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
     // 立体グリッド（通り芯 × 階レベルの平面格子）。方眼の上・架構の下に描き、
     // モデリングの下敷きとして見えるようにする。構面表示中は構面の基準線と
     // 二重になるため描かない。
-    if app.show_space_grid && frame.is_none() {
-        space_grid::draw(&painter, &proj, &app.model);
+    if app.ui.view.show_space_grid && frame.is_none() {
+        space_grid::draw(&painter, &proj, &app.core.model);
     }
 
     // 節点座標（変形・モード時と、応力図の変形重ね表示時は変位を加味）
     let disp = match mode {
         ViewMode::Deformed => app.current_static().map(|s| s.disp.clone()),
-        ViewMode::Force if app.overlay_deform => app.current_static().map(|s| s.disp.clone()),
+        ViewMode::Force if app.ui.view.overlay_deform => {
+            app.current_static().map(|s| s.disp.clone())
+        }
         // `ModalResult::shapes` は剛床等の縮約後独立自由度座標のため直接は使えない。
         // ソルバが節点×6へ展開済みの `node_shapes` を用いる。
         ViewMode::Mode => app
+            .core
+            .scoped
             .results
             .as_ref()
             .and_then(|r| r.modal.as_ref())
             .and_then(|m| m.node_shapes.get(mode_idx))
             .cloned(),
-        // 時刻歴アニメーション: 現在フレーム（`app.th_frame`）の全節点変位（node 順、
+        // 時刻歴アニメーション: 現在フレーム（`app.ui.scoped.th_frame`）の全節点変位（node 順、
         // 展開済み。`ThRecording::node_disp` は既に `Deformed` と同じ形の
         // `Vec<[f64;6]>` のため、以降の変形描画経路をそのまま流用できる）。
         // モデル編集後（中-1）は再解析するまでアニメーションを無効化し、無変形の
         // ままにする（`disp=None` で以降の変位加算・N/Q/M 重ねも行われない）。
-        ViewMode::TimeHistory if !app.staleness.results_stale => app
+        ViewMode::TimeHistory if !app.core.scoped.staleness.results_stale => app
+            .core
+            .scoped
             .results
             .as_ref()
             .and_then(|r| r.time_history.as_ref())
             .and_then(|t| t.recording.as_ref())
             .and_then(|rec| {
-                rec.node_disp
-                    .get(app.th_frame.min(rec.node_disp.len().saturating_sub(1)))
+                rec.node_disp.get(
+                    app.ui
+                        .scoped
+                        .th_frame
+                        .min(rec.node_disp.len().saturating_sub(1)),
+                )
             })
             .cloned(),
         _ => None,
@@ -667,30 +679,31 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
     // 主架構部材の変位から補間し、床・二次部材を変形へ追従させる。梁に載る節点は
     // 梁の Hermite 変形曲線上へ載る（`interpolate_unreferenced_disp`）。続けて剛床
     // 代表節点の鉛直変位をスレーブ平均で補い、代表点も床の変形へ追従させる。
-    let disp = disp.map(|d| display_disp(&app.model, d, app.show_beam_interpolation));
+    let disp = disp.map(|d| display_disp(&app.core.model, d, app.ui.view.show_beam_interpolation));
 
     // 実効表示倍率（自動倍率 × 手動係数）。時刻歴アニメーションは記録全体の
     // ピーク変位から 1 回だけ算定した固定倍率を使う（高-2、[`time_history_deform_scale`]）。
     // それ以外は現在フレームの変位から都度算定する（[`deform_display_scale`]）。
     let deform_scale_actual = if mode == ViewMode::TimeHistory {
-        if app.staleness.results_stale {
+        if app.core.scoped.staleness.results_stale {
             0.0
         } else {
             time_history_deform_scale(app, model_size)
         }
     } else {
         deform_display_scale(
-            &app.model,
+            &app.core.model,
             disp.as_deref(),
             model_size,
-            app.show_beam_interpolation,
-            app.deform_scale_factor,
+            app.ui.view.show_beam_interpolation,
+            app.ui.view.deform_scale_factor,
         )
     };
 
     // 表示用の節点 3D 座標（変形図・モード形では変位を加味）。
     // 断面ソリッド描画でも 3D 座標が要るため、投影前の座標を保持する。
     let coords3: Vec<[f64; 3]> = app
+        .core
         .model
         .nodes
         .iter()
@@ -709,7 +722,7 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
 
     // 解析対象の節点（主架構要素が接続する節点・拘束のマスター節点）。判定規則は
     // 解析（`DofMap::build`）と共通。
-    let structural = squid_n_core::dof::structural_nodes(&app.model);
+    let structural = squid_n_core::dof::structural_nodes(&app.core.model);
 
     // 節点の表示可否。解析対象外の節点（スラブ境界・小梁支持点・二次部材の節点）は
     // 床・二次部材と一体の存在なので、「床・二次部材」トグル OFF では節点も描かない
@@ -720,7 +733,7 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
         .iter()
         .enumerate()
         .map(|(i, &s)| {
-            (s || app.show_floor_secondary)
+            (s || app.ui.view.show_floor_secondary)
                 && frame
                     .as_ref()
                     .is_none_or(|f| f.node_on.get(i).copied().unwrap_or(false))
@@ -748,9 +761,11 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
 
     // 壁の解析要素（D5）を含む表示用モデル。描画・ホバーピックで共有する
     // （`wall_expanded_view_model` の性能ガード付き）。クリック処理より後に置き、
-    // 梁・壁作成モードでの `app.model` 可変借用と衝突しないようにする。
-    let display_model = wall_expanded_view_model(&app.model);
+    // 梁・壁作成モードでの `app.core.model` 可変借用と衝突しないようにする。
+    let display_model = wall_expanded_view_model(&app.core.model);
     let frame_for_draw = app
+        .ui
+        .scoped
         .frame_target
         .and_then(|t| squid_n_core::frame::build_frame(display_model.as_ref(), t));
     let filter = FrameFilter::new(frame_for_draw.as_ref());
@@ -765,8 +780,8 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
     // 床・二次部材（スラブ・小梁・間柱）の表示可否は、中心線と断面ソリッドで共通の
     // 判定とする（断面表示だけがトグルを無視して小梁を描いてしまわないよう、判定を
     // ここで 1 つの変数に集約して各描画へ渡す）。
-    let lumped_only = lumped::is_lumped_view(mode) && !app.lumped_show_frame;
-    let show_secondary = !lumped_only && mode != ViewMode::Cmq && app.show_floor_secondary;
+    let lumped_only = lumped::is_lumped_view(mode) && !app.ui.view.lumped_show_frame;
+    let show_secondary = !lumped_only && mode != ViewMode::Cmq && app.ui.view.show_floor_secondary;
     if show_secondary {
         draw_slabs(&painter, app, filter, &proj, &coords3);
         // 要素にならない壁版。壁エレメントは下の部材ループが実線で描く。
@@ -781,10 +796,10 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
     // --- 断面ソリッド ---
     // 節点・部材線より先に描き、線・シンボル類は上に重ねる（材軸が見えるように）。
     let mut solids_skipped = 0usize;
-    if app.show_sections && !lumped_only {
+    if app.ui.view.show_sections && !lumped_only {
         solids_skipped = solid::draw_section_solids(
             &painter,
-            &app.model,
+            &app.core.model,
             &coords3,
             &proj,
             show_secondary,
@@ -796,6 +811,7 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
     // 質点モードの変形前串と同じ規約（破線 6/4 pt、線アルファ 90）。
     if !lumped_only && mode == ViewMode::Mode && deform_scale_actual > 1e-12 {
         let pts_rest: Vec<egui::Pos2> = app
+            .core
             .model
             .nodes
             .iter()
@@ -809,7 +825,7 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
             &node_visible,
             filter,
             show_secondary,
-            app.show_sections,
+            app.ui.view.show_sections,
         );
     }
 
@@ -820,13 +836,14 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
             if !node_visible[i] {
                 continue;
             }
-            let node_id = app.model.nodes[i].id;
-            let is_first = app.beam_draw_first == Some(space_grid::SnapPoint::Node(node_id));
-            let is_wall_pick = app.wall_draw_nodes.contains(&node_id);
-            let is_slab_pick = app.slab_draw_nodes.contains(&node_id);
+            let node_id = app.core.model.nodes[i].id;
+            let is_first =
+                app.ui.scoped.beam_draw_first == Some(space_grid::SnapPoint::Node(node_id));
+            let is_wall_pick = app.ui.scoped.wall_draw_nodes.contains(&node_id);
+            let is_slab_pick = app.ui.scoped.slab_draw_nodes.contains(&node_id);
             // 節点の選択（ナビゲータの荷重ツリー・荷重の対象ピック）。部材の選択
             // ハイライトと対をなし、どの節点が対象なのかを 3D 上で示す。
-            let is_selected = app.selection.nodes.contains(&node_id);
+            let is_selected = app.ui.scoped.selection.nodes.contains(&node_id);
             let (radius, color) = if is_first || is_wall_pick || is_slab_pick {
                 // 作成モードで選択中の節点 = 重要（赤）
                 (5.0, theme::PARETO_RED)
@@ -842,7 +859,7 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
 
         // 梁作成モードの始点が節点のない格子点の場合、まだモデルに節点が無いため
         // 上のループでは描かれない。選択中であることが分かるよう、同じ色で印を置く。
-        if let Some(space_grid::SnapPoint::Grid(c)) = app.beam_draw_first {
+        if let Some(space_grid::SnapPoint::Grid(c)) = app.ui.scoped.beam_draw_first {
             painter.circle_stroke(
                 proj.project(c),
                 5.0,
@@ -859,7 +876,7 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
             theme::GRAY_700
         };
         // 断面表示中は中心線を細く淡くし、ソリッドの上に材軸として薄く重ねる
-        let line_stroke = if app.show_sections {
+        let line_stroke = if app.ui.view.show_sections {
             egui::Stroke::new(1.0_f32, theme::translucent(line_color, 110))
         } else {
             egui::Stroke::new(2.0_f32, line_color)
@@ -906,11 +923,11 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
             // 変形を内挿して曲線描画する（節点間の直線ではたわみが見えないため）。
             // トグル OFF では梁も直線で描き、全体の変形だけを素直に見る。変形を表示
             // していない（`disp` が None）モードでは常に直線。
-            let curved_beam =
-                app.show_beam_interpolation && elem.kind == squid_n_core::model::ElementKind::Beam;
+            let curved_beam = app.ui.view.show_beam_interpolation
+                && elem.kind == squid_n_core::model::ElementKind::Beam;
             if let (true, Some(d)) = (curved_beam, &disp) {
-                let p_i = app.model.nodes[n0].coord;
-                let p_j = app.model.nodes[n1].coord;
+                let p_i = app.core.model.nodes[n0].coord;
+                let p_j = app.core.model.nodes[n1].coord;
                 if member_len3(p_i, p_j) > 1e-9 {
                     let poly3 =
                         BeamDeflection::new(p_i, p_j, d[n0], d[n1], elem.local_axis.ref_vector)
@@ -930,12 +947,12 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
         // 青/グレーと弁別。断面表示中はソリッドが上に描かれているため
         // 材軸線として薄く重ねる）。
         if show_secondary {
-            let secondary_stroke = if app.show_sections {
+            let secondary_stroke = if app.ui.view.show_sections {
                 egui::Stroke::new(1.0_f32, theme::translucent(theme::SECONDARY_AMBER, 110))
             } else {
                 egui::Stroke::new(1.5_f32, theme::SECONDARY_AMBER)
             };
-            for sm in app.model.joists().chain(app.model.posts()) {
+            for sm in app.core.model.joists().chain(app.core.model.posts()) {
                 let n0 = sm.nodes[0].index();
                 let n1 = sm.nodes[1].index();
                 if !filter.shows_node(n0) || !filter.shows_node(n1) {
@@ -968,7 +985,7 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
     }
 
     // 断面を描けなかった線材（断面未割当・形状情報なし）があれば右上に注記
-    if app.show_sections && solids_skipped > 0 {
+    if app.ui.view.show_sections && solids_skipped > 0 {
         painter.text(
             egui::pos2(
                 painter.clip_rect().max.x - 10.0,
@@ -989,7 +1006,7 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
             &painter,
             app,
             &display_model,
-            app.force_components,
+            app.ui.view.force_components,
             &coords3,
             disp.as_deref(),
             deform_scale_actual,
@@ -1038,7 +1055,7 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
                 let node_hit = check_ratio::pick_nearest_checked_node(app, &pts, hover_pos, filter)
                     .filter(|&(_, d)| d <= check_ratio::NODE_HOVER_THRESHOLD);
                 if let Some((idx, _)) = node_hit {
-                    if let Some(node) = app.model.nodes.get(idx) {
+                    if let Some(node) = app.core.model.nodes.get(idx) {
                         check_ratio::show_node_check_tooltip(ui, app, node.id);
                     }
                 } else if let Some((id, d)) =
@@ -1083,17 +1100,17 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
         // N/Q/M 図の凡例（min.y+10）・コンターバー＋ラベル（min.y+30〜56 程度）と
         // 重ならない位置へ
         let y = match mode {
-            ViewMode::Force if app.diagram_contour => 70.0,
+            ViewMode::Force if app.ui.view.diagram_contour => 70.0,
             ViewMode::Force => 30.0,
             _ => 10.0,
         };
         // 手動係数が 1.0 のときは「自動」、それ以外は「自動×係数」を併記する。
-        let note = if (app.deform_scale_factor - 1.0).abs() < 1e-3 {
+        let note = if (app.ui.view.deform_scale_factor - 1.0).abs() < 1e-3 {
             format!("変形倍率 ×{:.0}（自動）", scale_note)
         } else {
             format!(
                 "変形倍率 ×{:.0}（自動×{:.2}）",
-                scale_note, app.deform_scale_factor
+                scale_note, app.ui.view.deform_scale_factor
             )
         };
         painter.text(
@@ -1109,7 +1126,7 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
     }
 
     // 選択ハイライト（描き方の規約は `element_draw_shape`）。
-    for &elem_id in &app.selection.members {
+    for &elem_id in &app.ui.scoped.selection.members {
         let Some(elem) = display_model.element(elem_id) else {
             continue;
         };
@@ -1154,10 +1171,10 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
     // スレーブ一覧に含まれる。これらは剛床の縮約対象にならない（`DofMap` が
     // 全自由度を不活性にし、拘束行列の生成も `dofmap.active` で素通りする）ので、
     // 点線は解析対象の節点に限って描く。
-    if app.show_diaphragm_master {
+    if app.ui.view.show_diaphragm_master {
         const DASH: f32 = 5.0;
         const GAP: f32 = 4.0;
-        for c in &app.model.constraints {
+        for c in &app.core.model.constraints {
             let squid_n_core::model::Constraint::RigidDiaphragm { master, slaves, .. } = c else {
                 continue;
             };
@@ -1201,9 +1218,10 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
     const SUPPORT_ARROW_PX: f32 = 18.0;
     const SUPPORT_ARC_PX: f32 = 12.0;
     let lumped_view = lumped::is_lumped_view(mode);
-    let draw_supports = supports_visible(lumped_view, app.show_supports);
+    let draw_supports = supports_visible(lumped_view, app.ui.view.show_supports);
     // 剛床マスター節点の index 集合。
     let diaphragm_masters: std::collections::HashSet<usize> = app
+        .core
         .model
         .constraints
         .iter()
@@ -1223,14 +1241,14 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
     let mut has_support = false;
     let mut has_diaphragm = false;
     if !lumped_view {
-        for (i, node) in app.model.nodes.iter().enumerate() {
+        for (i, node) in app.core.model.nodes.iter().enumerate() {
             if !filter.shows_node(i) {
                 continue;
             }
             let is_master = diaphragm_masters.contains(&i);
             // 剛床マスターの面内拘束マークは代表点トグル ON 時のみ描く（既定は非表示に
             // して他部材を見やすくする。点線・マーカーと表示を一致させる）。
-            if is_master && !app.show_diaphragm_master {
+            if is_master && !app.ui.view.show_diaphragm_master {
                 continue;
             }
             if !is_master && !draw_supports {
@@ -1270,7 +1288,7 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
     // 剛床マスター節点はダミー拘束の仮想節点でありばね支持を持たないため対象外。
     let mut has_spring = false;
     if draw_supports {
-        for (i, node) in app.model.nodes.iter().enumerate() {
+        for (i, node) in app.core.model.nodes.iter().enumerate() {
             if diaphragm_masters.contains(&i) || !filter.shows_node(i) {
                 continue;
             }
@@ -1295,7 +1313,7 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
     // 支点配置は「接地節点（restraint=FIXED）と対象節点の間の零長 Isolator 要素」
     // （`support_symbols::support_isolators` が判定）。対象節点側にマーカーを描く。
     let support_isolators = if draw_supports {
-        support_symbols::support_isolators(&app.model)
+        support_symbols::support_isolators(&app.core.model)
     } else {
         Vec::new()
     };
@@ -1307,7 +1325,7 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
         let coord = coords3
             .get(idx)
             .copied()
-            .unwrap_or_else(|| app.model.nodes[idx].coord);
+            .unwrap_or_else(|| app.core.model.nodes[idx].coord);
         support_symbols::draw_isolator_marker(&painter, proj.project(coord), theme::ISOLATOR_TEAL);
     }
     // 免震支承マーカーのホバー詳細（ViewCube ホバー中は除く。節点近傍・8px 閾値）。
@@ -1340,7 +1358,7 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
     draw_axis_gadget(&painter, &cam);
 
     // カメラ状態を保存
-    app.camera = cam;
+    app.ui.view.camera = cam;
 
     // ヒンジ詳細ウィンドウ（ヒンジ図でクリックした部材があれば表示。表示中は
     // 他の表示モードへ切り替えても閉じるまで残す）。
@@ -1354,7 +1372,7 @@ fn frame_range_controls(ui: &mut egui::Ui, app: &mut App) {
 
     // 選択肢（通り・階）を平坦な一覧にする。前後送りはこの並び順で行う。
     let mut choices: Vec<(FrameTarget, String)> = Vec::new();
-    for (gi, group) in app.model.axes.iter().enumerate() {
+    for (gi, group) in app.core.model.axes.iter().enumerate() {
         for (ai, ax) in group.axes.iter().enumerate() {
             choices.push((
                 FrameTarget::Axis {
@@ -1366,7 +1384,7 @@ fn frame_range_controls(ui: &mut egui::Ui, app: &mut App) {
         }
     }
     let axis_count = choices.len();
-    for st in &app.model.stories {
+    for st in &app.core.model.stories {
         choices.push((FrameTarget::Story(st.id), st.name.clone()));
     }
     if choices.is_empty() {
@@ -1375,7 +1393,7 @@ fn frame_range_controls(ui: &mut egui::Ui, app: &mut App) {
 
     ui.horizontal_wrapped(|ui| {
         ui.label("表示範囲:");
-        let mut target = app.frame_target;
+        let mut target = app.ui.scoped.frame_target;
         if ui
             .selectable_label(target.is_none(), "全体(3D)")
             .on_hover_text("モデル全体を 3D で表示します")
@@ -1443,11 +1461,11 @@ fn frame_range_controls(ui: &mut egui::Ui, app: &mut App) {
         // 対象を切り替えたら、その構面へ自動でフィットし直す（パン・ズームを既定へ
         // 戻す）。前の構面で寄せた表示のまま切り替えると、次の構面が画面外へ
         // 外れたままになるため。
-        if app.frame_target != target {
-            app.camera.pan = [0.0, 0.0];
-            app.camera.zoom = 3.0;
+        if app.ui.scoped.frame_target != target {
+            app.ui.view.camera.pan = [0.0, 0.0];
+            app.ui.view.camera.zoom = 3.0;
         }
-        app.frame_target = target;
+        app.ui.scoped.frame_target = target;
     });
 }
 

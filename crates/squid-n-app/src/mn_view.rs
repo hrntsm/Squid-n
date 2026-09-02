@@ -85,7 +85,7 @@ struct MThetaData {
 
 /// M-N 相関曲面ビューの状態（`App` が保持する）。
 pub struct MnViewState {
-    /// `app.model.sections` のインデックス
+    /// `app.core.model.sections` のインデックス
     pub section_idx: usize,
     pub strength: StrengthParams,
     pub show_simple: bool,
@@ -132,15 +132,15 @@ impl Default for MnViewState {
 
 /// エントリポイント: 左に操作パネル、右に可視化領域（3D + 2Dスライス）。
 pub fn mn_surface_panel(ui: &mut egui::Ui, app: &mut App) {
-    if app.model.sections.is_empty() {
+    if app.core.model.sections.is_empty() {
         ui.colored_label(
             theme::GRAY_600,
             "断面が定義されていません。モデルタブの「断面」で断面を追加してください。",
         );
         return;
     }
-    if app.mn_view.section_idx >= app.model.sections.len() {
-        app.mn_view.section_idx = 0;
+    if app.ui.scoped.mn_view.section_idx >= app.core.model.sections.len() {
+        app.ui.scoped.mn_view.section_idx = 0;
     }
 
     ui.horizontal(|ui| {
@@ -166,23 +166,25 @@ pub fn mn_surface_panel(ui: &mut egui::Ui, app: &mut App) {
 fn control_panel(ui: &mut egui::Ui, app: &mut App) {
     ui.strong("断面");
     let selected_text = app
+        .core
         .model
         .sections
-        .get(app.mn_view.section_idx)
+        .get(app.ui.scoped.mn_view.section_idx)
         .map(|s| s.name.clone())
         .unwrap_or_default();
     egui::ComboBox::from_id_salt("mn_view_section")
         .selected_text(selected_text)
         .show_ui(ui, |ui| {
-            for (i, sec) in app.model.sections.iter().enumerate() {
-                ui.selectable_value(&mut app.mn_view.section_idx, i, &sec.name);
+            for (i, sec) in app.core.model.sections.iter().enumerate() {
+                ui.selectable_value(&mut app.ui.scoped.mn_view.section_idx, i, &sec.name);
             }
         });
 
     let shape = app
+        .core
         .model
         .sections
-        .get(app.mn_view.section_idx)
+        .get(app.ui.scoped.mn_view.section_idx)
         .and_then(|s| s.shape.as_ref());
     let is_rc = matches!(
         shape,
@@ -198,7 +200,7 @@ fn control_panel(ui: &mut egui::Ui, app: &mut App) {
         ui.horizontal(|ui| {
             ui.label("鋼材 fy:");
             ui.add(
-                egui::DragValue::new(&mut app.mn_view.strength.steel_fy)
+                egui::DragValue::new(&mut app.ui.scoped.mn_view.strength.steel_fy)
                     .speed(1.0)
                     .range(1.0..=1000.0),
             );
@@ -208,7 +210,7 @@ fn control_panel(ui: &mut egui::Ui, app: &mut App) {
         ui.horizontal(|ui| {
             ui.label("鉄筋 fy:");
             ui.add(
-                egui::DragValue::new(&mut app.mn_view.strength.rebar_fy)
+                egui::DragValue::new(&mut app.ui.scoped.mn_view.strength.rebar_fy)
                     .speed(1.0)
                     .range(1.0..=1000.0),
             );
@@ -216,7 +218,7 @@ fn control_panel(ui: &mut egui::Ui, app: &mut App) {
         ui.horizontal(|ui| {
             ui.label("コンクリート Fc:");
             ui.add(
-                egui::DragValue::new(&mut app.mn_view.strength.concrete_fc)
+                egui::DragValue::new(&mut app.ui.scoped.mn_view.strength.concrete_fc)
                     .speed(0.5)
                     .range(1.0..=100.0),
             );
@@ -228,49 +230,52 @@ fn control_panel(ui: &mut egui::Ui, app: &mut App) {
     ui.horizontal(|ui| {
         ui.colored_label(model_color(YieldModelKind::SimpleSpring), "■");
         ui.checkbox(
-            &mut app.mn_view.show_simple,
+            &mut app.ui.scoped.mn_view.show_simple,
             YieldModelKind::SimpleSpring.label(),
         );
     });
     ui.horizontal(|ui| {
         ui.colored_label(model_color(YieldModelKind::MultiSpring), "■");
         ui.checkbox(
-            &mut app.mn_view.show_ms,
+            &mut app.ui.scoped.mn_view.show_ms,
             YieldModelKind::MultiSpring.label(),
         );
     });
     ui.horizontal(|ui| {
         ui.colored_label(model_color(YieldModelKind::MultiFiber), "■");
         ui.checkbox(
-            &mut app.mn_view.show_fiber,
+            &mut app.ui.scoped.mn_view.show_fiber,
             YieldModelKind::MultiFiber.label(),
         );
     });
 
     ui.add_space(8.0);
     ui.strong("スライス軸力 N/Nmax");
-    ui.add(egui::Slider::new(&mut app.mn_view.n_ratio, -1.0..=1.0));
+    ui.add(egui::Slider::new(
+        &mut app.ui.scoped.mn_view.n_ratio,
+        -1.0..=1.0,
+    ));
 
     ui.add_space(8.0);
     ui.strong("2Dプロット");
     ui.horizontal(|ui| {
-        let sel_mymz = app.mn_view.slice_mode == SlicePlotMode::MyMz;
-        let sel_mtheta = app.mn_view.slice_mode == SlicePlotMode::MTheta;
+        let sel_mymz = app.ui.scoped.mn_view.slice_mode == SlicePlotMode::MyMz;
+        let sel_mtheta = app.ui.scoped.mn_view.slice_mode == SlicePlotMode::MTheta;
         if ui.selectable_label(sel_mymz, "My-Mz相関").clicked() {
-            app.mn_view.slice_mode = SlicePlotMode::MyMz;
+            app.ui.scoped.mn_view.slice_mode = SlicePlotMode::MyMz;
         }
         if ui
             .selectable_label(sel_mtheta, "M-θ骨格（塑性化域）")
             .clicked()
         {
-            app.mn_view.slice_mode = SlicePlotMode::MTheta;
+            app.ui.scoped.mn_view.slice_mode = SlicePlotMode::MTheta;
         }
     });
-    if app.mn_view.slice_mode == SlicePlotMode::MTheta {
+    if app.ui.scoped.mn_view.slice_mode == SlicePlotMode::MTheta {
         ui.horizontal(|ui| {
             ui.label("塑性化領域長さ Lp [mm]:");
             ui.add(
-                egui::DragValue::new(&mut app.mn_view.lp)
+                egui::DragValue::new(&mut app.ui.scoped.mn_view.lp)
                     .speed(10.0)
                     .range(1.0..=5000.0),
             );
@@ -278,20 +283,20 @@ fn control_panel(ui: &mut egui::Ui, app: &mut App) {
         ui.horizontal(|ui| {
             ui.label("内法スパン L [mm]:");
             ui.add(
-                egui::DragValue::new(&mut app.mn_view.span)
+                egui::DragValue::new(&mut app.ui.scoped.mn_view.span)
                     .speed(50.0)
                     .range(100.0..=30000.0),
             );
         });
         ui.horizontal(|ui| {
             ui.label("曲げ方向:");
-            let sel_my = !app.mn_view.bend_dir_z;
-            let sel_mz = app.mn_view.bend_dir_z;
+            let sel_my = !app.ui.scoped.mn_view.bend_dir_z;
+            let sel_mz = app.ui.scoped.mn_view.bend_dir_z;
             if ui.selectable_label(sel_my, "Myまわり").clicked() {
-                app.mn_view.bend_dir_z = false;
+                app.ui.scoped.mn_view.bend_dir_z = false;
             }
             if ui.selectable_label(sel_mz, "Mzまわり").clicked() {
-                app.mn_view.bend_dir_z = true;
+                app.ui.scoped.mn_view.bend_dir_z = true;
             }
         });
     }
@@ -299,12 +304,12 @@ fn control_panel(ui: &mut egui::Ui, app: &mut App) {
     ui.add_space(8.0);
     ui.strong("耐力サマリ");
     if let Some(shape) = shape.cloned() {
-        let section_idx = app.mn_view.section_idx;
-        ensure_cache(&mut app.mn_view, section_idx, &shape);
-        if let Some(cache) = &app.mn_view.cache {
+        let section_idx = app.ui.scoped.mn_view.section_idx;
+        ensure_cache(&mut app.ui.scoped.mn_view, section_idx, &shape);
+        if let Some(cache) = &app.ui.scoped.mn_view.cache {
             summary_table(ui, cache);
         }
-        if app.mn_view.slice_mode == SlicePlotMode::MTheta {
+        if app.ui.scoped.mn_view.slice_mode == SlicePlotMode::MTheta {
             ui.add_space(4.0);
             ui.add(egui::Label::new(
                 egui::RichText::new(
@@ -476,7 +481,12 @@ fn ensure_m_theta_cache(
 
 /// 右ペイン: 断面が未選択・形状未定義の場合は案内、それ以外は 3D + 2D を描画する。
 fn visualization(ui: &mut egui::Ui, app: &mut App) {
-    let Some(sec) = app.model.sections.get(app.mn_view.section_idx) else {
+    let Some(sec) = app
+        .core
+        .model
+        .sections
+        .get(app.ui.scoped.mn_view.section_idx)
+    else {
         return;
     };
     let Some(shape) = sec.shape.clone() else {
@@ -487,17 +497,17 @@ fn visualization(ui: &mut egui::Ui, app: &mut App) {
         return;
     };
 
-    let section_idx = app.mn_view.section_idx;
-    ensure_cache(&mut app.mn_view, section_idx, &shape);
-    let Some(cache) = app.mn_view.cache.as_ref() else {
+    let section_idx = app.ui.scoped.mn_view.section_idx;
+    ensure_cache(&mut app.ui.scoped.mn_view, section_idx, &shape);
+    let Some(cache) = app.ui.scoped.mn_view.cache.as_ref() else {
         return;
     };
 
-    let n_ratio = app.mn_view.n_ratio;
+    let n_ratio = app.ui.scoped.mn_view.n_ratio;
     let show = [
-        app.mn_view.show_simple,
-        app.mn_view.show_ms,
-        app.mn_view.show_fiber,
+        app.ui.scoped.mn_view.show_simple,
+        app.ui.scoped.mn_view.show_ms,
+        app.ui.scoped.mn_view.show_fiber,
     ];
     let n_target = n_from_ratio(cache, n_ratio);
 
@@ -508,7 +518,7 @@ fn visualization(ui: &mut egui::Ui, app: &mut App) {
         egui::Sense::click_and_drag(),
     );
 
-    let mut cam = app.mn_view.camera.clone();
+    let mut cam = app.ui.scoped.mn_view.camera.clone();
     if response.dragged_by(egui::PointerButton::Primary) {
         // ターンテーブル回転（viewer と同じ操作感。N 軸＝Z を画面上で縦に保つ）
         let d = response.drag_delta();
@@ -534,24 +544,24 @@ fn visualization(ui: &mut egui::Ui, app: &mut App) {
     cam.zoom = cam.zoom.clamp(0.5, 10.0);
 
     draw_3d(ui, &rect, &cam, cache, show, n_target);
-    app.mn_view.camera = cam;
+    app.ui.scoped.mn_view.camera = cam;
 
     ui.separator();
 
     // --- 2D プロット（下4割）: My-Mz相関 または M-θ骨格に切替 ---
-    match app.mn_view.slice_mode {
+    match app.ui.scoped.mn_view.slice_mode {
         SlicePlotMode::MyMz => draw_slice_plot(ui, cache, show, n_target),
         SlicePlotMode::MTheta => {
             let key = MThetaKey {
-                section_idx: app.mn_view.section_idx,
-                strength: app.mn_view.strength,
+                section_idx: app.ui.scoped.mn_view.section_idx,
+                strength: app.ui.scoped.mn_view.strength,
                 n_target,
-                lp: app.mn_view.lp,
-                span: app.mn_view.span,
-                bend_dir_z: app.mn_view.bend_dir_z,
+                lp: app.ui.scoped.mn_view.lp,
+                span: app.ui.scoped.mn_view.span,
+                bend_dir_z: app.ui.scoped.mn_view.bend_dir_z,
             };
-            ensure_m_theta_cache(&mut app.mn_view.m_theta_cache, key, cache);
-            if let Some((_, data)) = &app.mn_view.m_theta_cache {
+            ensure_m_theta_cache(&mut app.ui.scoped.mn_view.m_theta_cache, key, cache);
+            if let Some((_, data)) = &app.ui.scoped.mn_view.m_theta_cache {
                 draw_m_theta_plot(ui, data, show);
             }
         }

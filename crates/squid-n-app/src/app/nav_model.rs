@@ -137,16 +137,17 @@ impl App {
     /// 断面一覧ツリー（階ごとにグループ化）。
     pub(crate) fn nav_sections(&mut self, ui: &mut egui::Ui) {
         let secondary: Vec<_> = self
+            .core
             .model
             .joists()
-            .chain(self.model.posts())
+            .chain(self.core.model.posts())
             .cloned()
             .collect();
         let groups = section_floor_groups(
-            &self.model.stories,
-            &self.model.sections,
+            &self.core.model.stories,
+            &self.core.model.sections,
             &secondary,
-            &self.model.slabs,
+            &self.core.model.slabs,
         );
         let mut jump: Option<SectionId> = None;
 
@@ -154,7 +155,7 @@ impl App {
             .default_open(false)
             .id_salt("nav_sections");
         let _ = header.show(ui, |ui| {
-            if self.model.sections.is_empty() {
+            if self.core.model.sections.is_empty() {
                 ui.colored_label(crate::theme::GRAY_600, "断面がありません");
                 return;
             }
@@ -170,8 +171,8 @@ impl App {
                     .id_salt(("nav_sections_group", title.clone()));
                 group_header.show(ui, |ui| {
                     for sid in ids {
-                        let sec = &self.model.sections[sid.index()];
-                        let is_focus = self.nav.focus_section == Some(*sid);
+                        let sec = &self.core.model.sections[sid.index()];
+                        let is_focus = self.ui.scoped.nav.focus_section == Some(*sid);
                         let resp = ui
                             .selectable_label(is_focus, format!("[{}] {}", sec.id.0, sec.name))
                             .on_hover_text("クリックで断面テーブルへ移動");
@@ -184,24 +185,24 @@ impl App {
         });
 
         if let Some(sid) = jump {
-            self.active_tab = Tab::Model;
-            self.bottom_dock_open = true;
-            self.bottom_tab = BottomTab::Model;
-            self.model_tab = ModelTab::Sections;
-            self.nav.focus_section = Some(sid);
+            self.ui.view.active_tab = Tab::Model;
+            self.ui.view.bottom_dock_open = true;
+            self.ui.view.bottom_tab = BottomTab::Model;
+            self.ui.view.model_tab = ModelTab::Sections;
+            self.ui.scoped.nav.focus_section = Some(sid);
         }
     }
 
     /// 材料一覧ツリー（材料区分ごとにグループ化）。
     pub(crate) fn nav_materials(&mut self, ui: &mut egui::Ui) {
-        let groups = material_category_groups(&self.model.materials);
+        let groups = material_category_groups(&self.core.model.materials);
         let mut jump: Option<MaterialId> = None;
 
         let header = egui::CollapsingHeader::new("材料一覧")
             .default_open(false)
             .id_salt("nav_materials");
         let _ = header.show(ui, |ui| {
-            if self.model.materials.is_empty() {
+            if self.core.model.materials.is_empty() {
                 ui.colored_label(crate::theme::GRAY_600, "材料がありません");
                 return;
             }
@@ -212,8 +213,8 @@ impl App {
                     .id_salt(("nav_material_group", category.label()));
                 group_header.show(ui, |ui| {
                     for mid in ids {
-                        let mat = &self.model.materials[mid.index()];
-                        let is_focus = self.nav.focus_material == Some(*mid);
+                        let mat = &self.core.model.materials[mid.index()];
+                        let is_focus = self.ui.scoped.nav.focus_material == Some(*mid);
                         let resp = ui
                             .selectable_label(is_focus, format!("[{}] {}", mat.id.0, mat.name))
                             .on_hover_text("クリックで材料テーブルへ移動");
@@ -226,11 +227,11 @@ impl App {
         });
 
         if let Some(mid) = jump {
-            self.active_tab = Tab::Model;
-            self.bottom_dock_open = true;
-            self.bottom_tab = BottomTab::Model;
-            self.model_tab = ModelTab::Materials;
-            self.nav.focus_material = Some(mid);
+            self.ui.view.active_tab = Tab::Model;
+            self.ui.view.bottom_dock_open = true;
+            self.ui.view.bottom_tab = BottomTab::Model;
+            self.ui.view.model_tab = ModelTab::Materials;
+            self.ui.scoped.nav.focus_material = Some(mid);
         }
     }
 }

@@ -19,9 +19,11 @@ impl App {
             header.show(ui, |ui| {
                 // 鋼系（S・CFT）とそれ以外へ 1 回の走査で分ける
                 // （振り分けの規約は `member_material_groups`）。
-                let (steel_ids, rc_ids) = member_material_groups(&self.model);
+                let (steel_ids, rc_ids) = member_material_groups(&self.core.model);
                 // selected 表示は簡易判定（先頭要素が当該グループに属するか）。
                 let is_steel_sel = self
+                    .ui
+                    .scoped
                     .selection
                     .members
                     .first()
@@ -32,9 +34,11 @@ impl App {
                     .on_hover_text("クリックで3Dビューにハイライト")
                     .clicked()
                 {
-                    self.selection.members = steel_ids.clone();
+                    self.ui.scoped.selection.members = steel_ids.clone();
                 }
                 let is_rc_sel = self
+                    .ui
+                    .scoped
                     .selection
                     .members
                     .first()
@@ -45,7 +49,7 @@ impl App {
                     .on_hover_text("クリックで3Dビューにハイライト")
                     .clicked()
                 {
-                    self.selection.members = rc_ids.clone();
+                    self.ui.scoped.selection.members = rc_ids.clone();
                 }
             });
 
@@ -59,7 +63,7 @@ impl App {
                 .id_salt("nav_members");
             header.show(ui, |ui| {
                 use crate::table_util::{self, Col};
-                let n = self.model.elements.len();
+                let n = self.core.model.elements.len();
                 table_util::standard_table(
                     ui,
                     "nav_members_tbl",
@@ -67,12 +71,12 @@ impl App {
                     n,
                     |row| {
                         let idx = row.index();
-                        let elem = self.model.elements[idx].clone();
-                        let is_focus = self.nav.focus_member == Some(elem.id);
+                        let elem = self.core.model.elements[idx].clone();
+                        let is_focus = self.ui.scoped.nav.focus_member == Some(elem.id);
                         row.col(|ui| {
                             if table_util::id_cell(ui, is_focus, elem.id.0, "クリックで部材を選択")
                             {
-                                self.nav.focus_member = Some(elem.id);
+                                self.ui.scoped.nav.focus_member = Some(elem.id);
                             }
                         });
                         row.col(|ui| {
@@ -89,13 +93,13 @@ impl App {
 
             // 階/レベル（準備計算が生成した階を上階→下階順に表示）
             let _ = ui.collapsing("階/レベル", |ui| {
-                if self.model.stories.is_empty() {
+                if self.core.model.stories.is_empty() {
                     ui.colored_label(crate::theme::GRAY_600, "未定義");
                     if ui.small_button("🏢 解析タブで自動生成").clicked() {
-                        self.active_tab = Tab::Analysis;
+                        self.ui.view.active_tab = Tab::Analysis;
                     }
                 } else {
-                    for s in self.model.stories.iter().rev() {
+                    for s in self.core.model.stories.iter().rev() {
                         ui.label(format!(
                             "{}  Z={:.0}mm  W={:.1}kN",
                             s.name,

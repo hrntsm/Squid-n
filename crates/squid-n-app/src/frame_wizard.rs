@@ -57,7 +57,7 @@ const USAGE_PRESETS: &[(Option<SlabUsage>, &str)] = &[
 
 /// ウィザードのウィンドウを描く。生成が確定したら現在のモデルを置き換える。
 pub fn frame_wizard_window(ctx: &egui::Context, app: &mut App) {
-    if !app.frame_wizard.open {
+    if !app.ui.view.frame_wizard.open {
         return;
     }
     let mut open = true;
@@ -100,7 +100,7 @@ pub fn frame_wizard_window(ctx: &egui::Context, app: &mut App) {
                     );
                     ui.separator();
 
-                    let w = &mut app.frame_wizard;
+                    let w = &mut app.ui.view.frame_wizard;
                     spans_section(ui, "X 方向", &mut w.spec.x_spans, &mut w.bulk_x, "wiz_x");
                     ui.add_space(4.0);
                     spans_section(ui, "Y 方向", &mut w.spec.y_spans, &mut w.bulk_y, "wiz_y");
@@ -133,11 +133,11 @@ pub fn frame_wizard_window(ctx: &egui::Context, app: &mut App) {
         });
 
     if generate {
-        match squid_n_core::frame_gen::frame_model(&app.frame_wizard.spec) {
+        match squid_n_core::frame_gen::frame_model(&app.ui.view.frame_wizard.spec) {
             Ok(model) => {
                 app.load_model(model);
-                app.project_path = None;
-                app.frame_wizard.open = false;
+                app.core.scoped.project_path = None;
+                app.ui.view.frame_wizard.open = false;
                 app.report_notice("架構を作成しました。断面タブで断面を割り当ててください");
             }
             Err(e) => app.report_error(e),
@@ -145,7 +145,7 @@ pub fn frame_wizard_window(ctx: &egui::Context, app: &mut App) {
         return;
     }
     if !open {
-        app.frame_wizard.open = false;
+        app.ui.view.frame_wizard.open = false;
     }
 }
 

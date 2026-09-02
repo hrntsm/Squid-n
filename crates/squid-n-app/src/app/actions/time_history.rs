@@ -15,16 +15,19 @@ impl App {
         match res {
             Ok(res) => {
                 let wave_name = self.spatial_th_wave_name();
-                let dir = vibration_th_dir_from_th(self.analysis_cfg.th_dir);
-                let nonlinear = self.analysis_cfg.th_nonlinear;
-                let case_id = self.model.upsert_vibration_case(wave_name, dir, nonlinear);
-                let mut bundle = self.results.take().unwrap_or_default();
+                let dir = vibration_th_dir_from_th(self.core.analysis_cfg.th_dir);
+                let nonlinear = self.core.analysis_cfg.th_nonlinear;
+                let case_id = self
+                    .core
+                    .model
+                    .upsert_vibration_case(wave_name, dir, nonlinear);
+                let mut bundle = self.core.scoped.results.take().unwrap_or_default();
                 bundle.upsert_time_history(case_id, res.clone());
-                self.results = Some(bundle);
+                self.core.scoped.results = Some(bundle);
                 self.set_spatial_time_history_view(case_id, &res);
-                self.staleness.mark_non_calc_edited();
-                self.staleness.mark_fresh();
-                self.last_error = None;
+                self.core.scoped.staleness.mark_non_calc_edited();
+                self.core.scoped.staleness.mark_fresh();
+                self.core.scoped.last_error = None;
             }
             Err(e) => self.report_error(e),
         }
@@ -34,9 +37,12 @@ impl App {
     /// （剛性比例／Rayleigh、Newmark-β）。
     pub fn run_time_history(&mut self, wave: squid_n_solver::timehistory::GroundMotion) {
         self.begin_analysis();
-        let res =
-            squid_n_job::compute::compute_time_history(self.model.clone(), self.analysis_cfg, wave)
-                .map_err(|e| e.to_string());
+        let res = squid_n_job::compute::compute_time_history(
+            self.core.model.clone(),
+            self.core.analysis_cfg,
+            wave,
+        )
+        .map_err(|e| e.to_string());
         self.apply_time_history_result(res);
     }
 
@@ -47,8 +53,8 @@ impl App {
         if !self.begin_analysis_job() {
             return;
         }
-        let model = self.model.clone();
-        let cfg = self.analysis_cfg;
+        let model = self.core.model.clone();
+        let cfg = self.core.analysis_cfg;
         // 非線形／線形の別をジョブラベル・完了ログへ出す（実行中の判別・履歴の両方で有用）。
         let label = if cfg.th_nonlinear {
             "時刻歴応答(非線形)"
@@ -62,7 +68,7 @@ impl App {
             })))
         });
         #[cfg(feature = "gui")]
-        if let Some(job) = self.job.as_mut() {
+        if let Some(job) = self.core.scoped.job.as_mut() {
             job.jump_on_success = Some((Tab::Results, ResultsView::TimeHistory));
         }
     }
@@ -76,7 +82,7 @@ impl App {
     /// 正弦減衰のサンプル地震波を生成して時刻歴解析を実行する（同期）。
     pub fn run_time_history_sample(&mut self) {
         self.apply_parallelism_setting();
-        let wave = Self::sample_wave(&self.analysis_cfg);
+        let wave = Self::sample_wave(&self.core.analysis_cfg);
         self.run_time_history(wave);
     }
 }

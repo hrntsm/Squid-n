@@ -208,8 +208,8 @@ fn wall_post_model() -> Model {
 
 fn wall_post_app() -> App {
     let mut app = App::default();
-    app.analysis_cfg.threads = 1;
-    app.model = wall_post_model();
+    app.core.analysis_cfg.threads = 1;
+    app.core.model = wall_post_model();
     app
 }
 
@@ -299,9 +299,17 @@ fn test_wall_weight_is_split_between_columns_and_post() {
 fn test_runs_full_pipeline() {
     let mut app = wall_post_app();
     app.run_preparation();
-    assert!(app.last_error.is_none(), "{:?}", app.last_error);
+    assert!(
+        app.core.scoped.last_error.is_none(),
+        "{:?}",
+        app.core.scoped.last_error
+    );
     app.run_linear_static(LoadCaseId(0));
-    assert!(app.last_error.is_none(), "{:?}", app.last_error);
+    assert!(
+        app.core.scoped.last_error.is_none(),
+        "{:?}",
+        app.core.scoped.last_error
+    );
 }
 
 /// 壁版の自重が地震用重量へ算入される（要素にならなくても失われない）。
@@ -309,8 +317,13 @@ fn test_runs_full_pipeline() {
 fn test_wall_weight_reaches_story_seismic_weight() {
     let mut app = wall_post_app();
     app.run_preparation();
-    assert!(app.last_error.is_none(), "{:?}", app.last_error);
+    assert!(
+        app.core.scoped.last_error.is_none(),
+        "{:?}",
+        app.core.scoped.last_error
+    );
     let total: f64 = app
+        .core
         .model
         .stories
         .iter()
@@ -330,7 +343,7 @@ fn test_post_appears_as_unchecked_row() {
     app.run_preparation();
     app.run_linear_static(LoadCaseId(0));
     app.run_design_check();
-    let results = app.results.as_ref().expect("解析結果");
+    let results = app.core.scoped.results.as_ref().expect("解析結果");
     let post_rows: Vec<_> = results
         .joist_checks
         .iter()
@@ -354,14 +367,19 @@ fn test_wall_weight_reaches_dl_load_case() {
     let dl_total = |plates: bool| -> f64 {
         let mut app = wall_post_app();
         if !plates {
-            app.model.wall_plates.clear();
-            for r in &mut app.model.wall_regions {
+            app.core.model.wall_plates.clear();
+            for r in &mut app.core.model.wall_regions {
                 r.wall_plate_ids.clear();
             }
         }
         app.run_preparation();
-        assert!(app.last_error.is_none(), "{:?}", app.last_error);
+        assert!(
+            app.core.scoped.last_error.is_none(),
+            "{:?}",
+            app.core.scoped.last_error
+        );
         let dl = app
+            .core
             .model
             .load_cases
             .iter()
@@ -415,15 +433,15 @@ fn test_split_wall_plates_are_counted_in_quantity() {
 fn base_column_axial_sum(app: &App, res: &squid_n_solver::linear::StaticOnce) -> f64 {
     let mut sum = 0.0;
     for (eid, mf) in &res.member_forces {
-        let Some(e) = app.model.elements.get(eid.index()) else {
+        let Some(e) = app.core.model.elements.get(eid.index()) else {
             continue;
         };
         if e.kind != ElementKind::Beam || e.nodes.len() != 2 {
             continue;
         }
         let (Some(na), Some(nb)) = (
-            app.model.nodes.get(e.nodes[0].index()),
-            app.model.nodes.get(e.nodes[1].index()),
+            app.core.model.nodes.get(e.nodes[0].index()),
+            app.core.model.nodes.get(e.nodes[1].index()),
         ) else {
             continue;
         };
@@ -457,14 +475,19 @@ fn test_wall_weight_reaches_column_axial_force() {
     let base_axial = |plates: bool| -> f64 {
         let mut app = wall_post_app();
         if !plates {
-            app.model.wall_plates.clear();
-            for r in &mut app.model.wall_regions {
+            app.core.model.wall_plates.clear();
+            for r in &mut app.core.model.wall_regions {
                 r.wall_plate_ids.clear();
             }
         }
         app.run_preparation();
-        assert!(app.last_error.is_none(), "{:?}", app.last_error);
+        assert!(
+            app.core.scoped.last_error.is_none(),
+            "{:?}",
+            app.core.scoped.last_error
+        );
         let dl = app
+            .core
             .model
             .load_cases
             .iter()
@@ -472,8 +495,14 @@ fn test_wall_weight_reaches_column_axial_force() {
             .expect("DL ケース")
             .id;
         app.run_linear_static(dl);
-        assert!(app.last_error.is_none(), "{:?}", app.last_error);
+        assert!(
+            app.core.scoped.last_error.is_none(),
+            "{:?}",
+            app.core.scoped.last_error
+        );
         let res = &app
+            .core
+            .scoped
             .results
             .as_ref()
             .expect("解析結果")

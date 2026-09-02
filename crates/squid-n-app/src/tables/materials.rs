@@ -126,8 +126,8 @@ pub fn materials_table(ui: &mut egui::Ui, app: &mut App) {
                 (preset.name.to_string(), preset.density)
             };
             if ui.button("+ 追加").clicked() {
-                app.undo.run(
-                    &mut app.model,
+                app.core.scoped.undo.run(
+                    &mut app.core.model,
                     Box::new(AddMaterial {
                         name,
                         category: draft.category,
@@ -139,7 +139,7 @@ pub fn materials_table(ui: &mut egui::Ui, app: &mut App) {
                         strength_factor: None,
                     }),
                 );
-                app.staleness.mark_edited();
+                app.core.scoped.staleness.mark_edited();
             }
         }
     });
@@ -224,8 +224,8 @@ pub fn materials_table(ui: &mut egui::Ui, app: &mut App) {
             draft[2].parse::<f64>(),
             draft[3].parse::<f64>(),
         ) {
-            app.undo.run(
-                &mut app.model,
+            app.core.scoped.undo.run(
+                &mut app.core.model,
                 Box::new(AddMaterial {
                     name: draft[0].clone(),
                     category: custom_category,
@@ -237,7 +237,7 @@ pub fn materials_table(ui: &mut egui::Ui, app: &mut App) {
                     strength_factor,
                 }),
             );
-            app.staleness.mark_edited();
+            app.core.scoped.staleness.mark_edited();
         }
     }
     ui.data_mut(|d| d.insert_temp(id_cat, custom_category));
@@ -245,7 +245,7 @@ pub fn materials_table(ui: &mut egui::Ui, app: &mut App) {
     ui.separator();
 
     // ── 一覧テーブル（編集・削除） ──────────────────────────────
-    let n = app.model.materials.len();
+    let n = app.core.model.materials.len();
     ui.label(format!("材料一覧（{} 件）", n));
     let mut pending_name: Option<(u32, String)> = None;
     let mut pending_category: Option<(u32, MaterialCategory)> = None;
@@ -277,10 +277,10 @@ pub fn materials_table(ui: &mut egui::Ui, app: &mut App) {
         n,
         |row| {
             let idx = row.index();
-            let mat = &app.model.materials[idx];
+            let mat = &app.core.model.materials[idx];
             let mat_id = mat.id;
             row.col(|ui| {
-                let is_sel = app.nav.focus_material == Some(mat_id);
+                let is_sel = app.ui.scoped.nav.focus_material == Some(mat_id);
                 if table_util::id_cell(ui, is_sel, mat_id.0, "クリックで選択") {
                     pending_focus = Some(mat_id);
                 }
@@ -351,7 +351,7 @@ pub fn materials_table(ui: &mut egui::Ui, app: &mut App) {
             row.col(|ui| {
                 // 削除ガード（`squid_n_edit` の `material_in_use`）と数える対象を
                 // 揃える。材料は断面が持つため、断面の 4 つの欄すべてを見る。
-                let in_use = app.model.sections.iter().any(|s| {
+                let in_use = app.core.model.sections.iter().any(|s| {
                     [
                         s.material,
                         s.rebar_material,
@@ -371,8 +371,8 @@ pub fn materials_table(ui: &mut egui::Ui, app: &mut App) {
     // 確定処理（テーブル描画後に model を可変借用）
     let mut edited = false;
     if let Some((id, name)) = pending_name {
-        app.undo.run(
-            &mut app.model,
+        app.core.scoped.undo.run(
+            &mut app.core.model,
             Box::new(SetMaterialName {
                 id: squid_n_core::ids::MaterialId(id),
                 name,
@@ -381,8 +381,8 @@ pub fn materials_table(ui: &mut egui::Ui, app: &mut App) {
         edited = true;
     }
     if let Some((id, category)) = pending_category {
-        app.undo.run(
-            &mut app.model,
+        app.core.scoped.undo.run(
+            &mut app.core.model,
             Box::new(SetMaterialCategory {
                 id: squid_n_core::ids::MaterialId(id),
                 category,
@@ -391,8 +391,8 @@ pub fn materials_table(ui: &mut egui::Ui, app: &mut App) {
         edited = true;
     }
     if let Some((id, field, value)) = pending_field {
-        app.undo.run(
-            &mut app.model,
+        app.core.scoped.undo.run(
+            &mut app.core.model,
             Box::new(SetMaterialField {
                 id: squid_n_core::ids::MaterialId(id),
                 field,
@@ -402,22 +402,22 @@ pub fn materials_table(ui: &mut egui::Ui, app: &mut App) {
         edited = true;
     }
     if let Some(id) = pending_delete {
-        app.undo.run(
-            &mut app.model,
+        app.core.scoped.undo.run(
+            &mut app.core.model,
             Box::new(DeleteMaterial {
                 id: squid_n_core::ids::MaterialId(id),
             }),
         );
-        if app.nav.focus_material == Some(squid_n_core::ids::MaterialId(id)) {
-            app.nav.focus_material = None;
+        if app.ui.scoped.nav.focus_material == Some(squid_n_core::ids::MaterialId(id)) {
+            app.ui.scoped.nav.focus_material = None;
         }
         edited = true;
     }
     if let Some(mid) = pending_focus {
-        app.nav.focus_material = Some(mid);
+        app.ui.scoped.nav.focus_material = Some(mid);
     }
     if edited {
-        app.staleness.mark_edited();
+        app.core.scoped.staleness.mark_edited();
     }
 }
 

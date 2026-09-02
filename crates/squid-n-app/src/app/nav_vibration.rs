@@ -19,7 +19,8 @@ impl App {
             .default_open(false)
             .id_salt("nav_vibration_cases");
         header.show(ui, |ui| {
-            if self.model.vibration_cases.is_empty() && self.model.lumped_vibration_cases.is_empty()
+            if self.core.model.vibration_cases.is_empty()
+                && self.core.model.lumped_vibration_cases.is_empty()
             {
                 ui.colored_label(crate::theme::GRAY_600, "（なし）");
                 return;
@@ -29,11 +30,11 @@ impl App {
                 .default_open(false)
                 .id_salt("nav_vibration_spatial");
             spatial_header.show(ui, |ui| {
-                if self.model.vibration_cases.is_empty() {
+                if self.core.model.vibration_cases.is_empty() {
                     ui.colored_label(crate::theme::GRAY_600, "（なし）");
                 }
-                for case in &self.model.vibration_cases {
-                    let is_sel = self.nav.focus_vibration_case == Some(case.id);
+                for case in &self.core.model.vibration_cases {
+                    let is_sel = self.ui.scoped.nav.focus_vibration_case == Some(case.id);
                     if ui.selectable_label(is_sel, &case.name).clicked() {
                         action = Some(VibrationNavAction::Spatial(case.id));
                     }
@@ -44,11 +45,11 @@ impl App {
                 .default_open(false)
                 .id_salt("nav_vibration_lumped");
             lumped_header.show(ui, |ui| {
-                if self.model.lumped_vibration_cases.is_empty() {
+                if self.core.model.lumped_vibration_cases.is_empty() {
                     ui.colored_label(crate::theme::GRAY_600, "（なし）");
                 }
-                for case in &self.model.lumped_vibration_cases {
-                    let is_sel = self.nav.focus_lumped_vibration_case == Some(case.id);
+                for case in &self.core.model.lumped_vibration_cases {
+                    let is_sel = self.ui.scoped.nav.focus_lumped_vibration_case == Some(case.id);
                     if ui.selectable_label(is_sel, &case.name).clicked() {
                         action = Some(VibrationNavAction::Lumped(case.id));
                     }

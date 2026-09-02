@@ -136,7 +136,7 @@ pub(super) struct ClickContext<'a> {
 /// 通常の選択）。ViewCube 上のクリックは呼び出し側で除外済み。
 ///
 /// 呼び出し側の描画用モデル（`wall_expanded_view_model` の結果）を作る前に呼ぶ。
-/// 梁・壁作成モードが `app.model` を可変借用するためである。
+/// 梁・壁作成モードが `app.core.model` を可変借用するためである。
 /// 通常モードの部材ピックだけは壁を展開したモデルが要るため、この中で作り直す
 /// （§5.17 残→§5.31 の多角形ピック）。
 pub(super) fn handle_click(app: &mut App, response: &egui::Response, ctx: ClickContext<'_>) {
@@ -152,78 +152,84 @@ pub(super) fn handle_click(app: &mut App, response: &egui::Response, ctx: ClickC
         if app.load_pick_active() {
             // 荷重の対象ピック待ち：節点荷重なら節点、部材荷重なら部材を仮選択する
             // （確定は Enter。案内バーは `crate::load_editor`）。
-            let picks_node = app.load_editor.as_ref().is_some_and(|e| e.picks_node());
+            let picks_node = app
+                .ui
+                .scoped
+                .load_editor
+                .as_ref()
+                .is_some_and(|e| e.picks_node());
             if picks_node {
                 // 節点ピッキング許容距離（px）
                 const NODE_PICK_THRESHOLD: f32 = 10.0;
                 if let Some((i, d)) = pick_nearest_node(pts, node_visible, click_pos) {
                     if d <= NODE_PICK_THRESHOLD {
-                        let node_id = app.model.nodes[i].id;
-                        if let Some(editor) = app.load_editor.as_mut() {
+                        let node_id = app.core.model.nodes[i].id;
+                        if let Some(editor) = app.ui.scoped.load_editor.as_mut() {
                             editor.set_picked_node(node_id);
                         }
-                        app.nav.focus_node = Some(node_id);
-                        app.selection.nodes = vec![node_id];
+                        app.ui.scoped.nav.focus_node = Some(node_id);
+                        app.ui.scoped.selection.nodes = vec![node_id];
                     }
                 }
             } else {
                 // 部材ピッキング許容距離（px）
                 const PICK_THRESHOLD: f32 = 8.0;
-                if let Some((id, d)) = pick_nearest_member(&app.model, pts, click_pos, filter) {
+                if let Some((id, d)) = pick_nearest_member(&app.core.model, pts, click_pos, filter)
+                {
                     if d <= PICK_THRESHOLD {
                         // 壁・スラブ等の非線材には部材荷重を載せられない
                         // （`is_member_load_target` と同じ集合に限る）。
-                        if member_load_pickable(&app.model, id) {
+                        if member_load_pickable(&app.core.model, id) {
                             // モデルの不変借用はここで終える（`set_picked_member`
                             // へはブレースか否かの判定結果だけを渡す）。
-                            let is_brace = crate::load_editor::is_brace(&app.model, id);
-                            if let Some(editor) = app.load_editor.as_mut() {
+                            let is_brace = crate::load_editor::is_brace(&app.core.model, id);
+                            if let Some(editor) = app.ui.scoped.load_editor.as_mut() {
                                 editor.set_picked_member(id, is_brace);
                             }
-                            app.nav.focus_member = Some(id);
-                            app.selection.members = vec![id];
+                            app.ui.scoped.nav.focus_member = Some(id);
+                            app.ui.scoped.selection.members = vec![id];
                         }
                     }
                 }
             }
-        } else if app.beam_draw_mode {
+        } else if app.ui.scoped.beam_draw_mode {
             // 梁作成モード：クリック位置を既存節点または格子点へスナップする。
             // グリッド表示が OFF のときは、見えていない格子点を拾わないよう
             // 既存節点だけを対象にする。
             // 構面表示中は格子を描かないため、スナップの対象からも外す
             // （正射影で重なった別構面の格子点を拾い、見ていない構面へ
             // 節点と梁を作ってしまう）。
-            let picked = if app.show_space_grid && frame.is_none() {
-                space_grid::pick(&app.model, proj, pts, node_visible, click_pos)
+            let picked = if app.ui.view.show_space_grid && frame.is_none() {
+                space_grid::pick(&app.core.model, proj, pts, node_visible, click_pos)
             } else {
                 // 節点ピッキング許容距離（px）
                 const NODE_PICK_THRESHOLD: f32 = 10.0;
                 pick_nearest_node(pts, node_visible, click_pos)
                     .filter(|(_, d)| *d <= NODE_PICK_THRESHOLD)
-                    .map(|(i, _)| space_grid::SnapPoint::Node(app.model.nodes[i].id))
+                    .map(|(i, _)| space_grid::SnapPoint::Node(app.core.model.nodes[i].id))
             };
             if let Some(point) = picked {
-                match app.beam_draw_first {
+                match app.ui.scoped.beam_draw_first {
                     None => {
                         // 1 点目：始点として記憶（この時点ではモデルを変更しない）
-                        app.beam_draw_first = Some(point);
+                        app.ui.scoped.beam_draw_first = Some(point);
                     }
                     Some(first) => {
                         // 2 点目：始点と異なれば梁を生成。節点のない格子点は
                         // 節点追加とあわせて 1 回の undo にまとめる。
                         if let Some((cmd, new_id)) =
-                            space_grid::beam_command(&app.model, first, point)
+                            space_grid::beam_command(&app.core.model, first, point)
                         {
-                            app.undo.run(&mut app.model, Box::new(cmd));
-                            app.staleness.mark_edited();
-                            app.nav.focus_member = Some(new_id);
+                            app.core.scoped.undo.run(&mut app.core.model, Box::new(cmd));
+                            app.core.scoped.staleness.mark_edited();
+                            app.ui.scoped.nav.focus_member = Some(new_id);
                         }
                         // 次の梁に備えて始点をリセット
-                        app.beam_draw_first = None;
+                        app.ui.scoped.beam_draw_first = None;
                     }
                 }
             }
-        } else if app.wall_draw_mode {
+        } else if app.ui.scoped.wall_draw_mode {
             // 壁作成モード：クリック位置に最も近い節点を選び、4 点そろったら
             // 囲まれた壁版（`AddEnclosedWallPlate`）として追加する。
             let best = pick_nearest_node(pts, node_visible, click_pos);
@@ -231,26 +237,33 @@ pub(super) fn handle_click(app: &mut App, response: &egui::Response, ctx: ClickC
             const NODE_PICK_THRESHOLD: f32 = 10.0;
             if let Some((i, d)) = best {
                 if d <= NODE_PICK_THRESHOLD {
-                    let node_id = app.model.nodes[i].id;
+                    let node_id = app.core.model.nodes[i].id;
                     // 同一節点の重複選択は無視
-                    if !app.wall_draw_nodes.contains(&node_id) {
-                        app.wall_draw_nodes.push(node_id);
+                    if !app.ui.scoped.wall_draw_nodes.contains(&node_id) {
+                        app.ui.scoped.wall_draw_nodes.push(node_id);
                     }
                     // 4 点そろったら壁版を生成
-                    if app.wall_draw_nodes.len() == 4 {
-                        let ordered = order_wall_nodes(&app.model, &app.wall_draw_nodes);
+                    if app.ui.scoped.wall_draw_nodes.len() == 4 {
+                        let ordered =
+                            order_wall_nodes(&app.core.model, &app.ui.scoped.wall_draw_nodes);
                         let mut dedup = ordered.clone();
                         dedup.sort_by_key(|n| n.0);
                         dedup.dedup();
                         if dedup.len() == 4 {
-                            let section = app.wall_plate_draft.add_enclosed_section.filter(|sid| {
-                                app.model
-                                    .sections
-                                    .get(sid.index())
-                                    .is_some_and(|s| s.thickness.is_some_and(|t| t > 0.0))
-                            });
-                            if app.undo.run(
-                                &mut app.model,
+                            let section = app
+                                .ui
+                                .scoped
+                                .wall_plate_draft
+                                .add_enclosed_section
+                                .filter(|sid| {
+                                    app.core
+                                        .model
+                                        .sections
+                                        .get(sid.index())
+                                        .is_some_and(|s| s.thickness.is_some_and(|t| t > 0.0))
+                                });
+                            if app.core.scoped.undo.run(
+                                &mut app.core.model,
                                 Box::new(squid_n_edit::AddEnclosedWallPlate {
                                     boundary: ordered,
                                     section,
@@ -262,26 +275,26 @@ pub(super) fn handle_click(app: &mut App, response: &egui::Response, ctx: ClickC
                                 // 呼ばないと壁展開の対象にならず、3D・部材表に現れない
                                 // （旧 `AddMember`+`Wall` は要素へ直書きしていたため即時見えた）。
                                 squid_n_core::wall_region_rebuild::rebuild_wall_regions(
-                                    &mut app.model,
+                                    &mut app.core.model,
                                 );
-                                app.staleness.mark_edited();
+                                app.core.scoped.staleness.mark_edited();
                             }
                         }
-                        app.wall_draw_nodes.clear();
+                        app.ui.scoped.wall_draw_nodes.clear();
                     }
                 }
             }
-        } else if app.slab_draw_mode {
+        } else if app.ui.scoped.slab_draw_mode {
             // スラブ作成モード：クリック位置に最も近い節点を外周順に追加する。
             let best = pick_nearest_node(pts, node_visible, click_pos);
             // 節点ピッキング許容距離（px）
             const NODE_PICK_THRESHOLD: f32 = 10.0;
             if let Some((i, d)) = best {
                 if d <= NODE_PICK_THRESHOLD {
-                    let node_id = app.model.nodes[i].id;
+                    let node_id = app.core.model.nodes[i].id;
                     // 同一節点の重複選択は無視（外周は各節点1回）。
-                    if !app.slab_draw_nodes.contains(&node_id) {
-                        app.slab_draw_nodes.push(node_id);
+                    if !app.ui.scoped.slab_draw_nodes.contains(&node_id) {
+                        app.ui.scoped.slab_draw_nodes.push(node_id);
                     }
                 }
             }
@@ -290,24 +303,26 @@ pub(super) fn handle_click(app: &mut App, response: &egui::Response, ctx: ClickC
             // 壁は `display_model` 上の多角形ピック（§5.17 残→§5.31）。
             // ピッキング許容距離（px）
             const PICK_THRESHOLD: f32 = 8.0;
-            let display_model = wall_expanded_view_model(&app.model);
+            let display_model = wall_expanded_view_model(&app.core.model);
             let frame_for_pick = app
+                .ui
+                .scoped
                 .frame_target
                 .and_then(|t| squid_n_core::frame::build_frame(display_model.as_ref(), t));
             let filter_pick = FrameFilter::new(frame_for_pick.as_ref());
             match pick_nearest_member(display_model.as_ref(), pts, click_pos, filter_pick) {
                 Some((id, d)) if d <= PICK_THRESHOLD => {
-                    app.selection.members = vec![id];
-                    app.nav.focus_member = Some(id);
+                    app.ui.scoped.selection.members = vec![id];
+                    app.ui.scoped.nav.focus_member = Some(id);
                     if mode == ViewMode::Hinge {
-                        app.hinge_detail_elem = Some(id);
+                        app.ui.scoped.hinge_detail_elem = Some(id);
                     }
-                    if mode == ViewMode::TimeHistory && !app.staleness.results_stale {
-                        app.th_detail_elem = Some(id);
+                    if mode == ViewMode::TimeHistory && !app.core.scoped.staleness.results_stale {
+                        app.ui.scoped.th_detail_elem = Some(id);
                     }
                 }
                 _ => {
-                    app.selection.members.clear();
+                    app.ui.scoped.selection.members.clear();
                 }
             }
         }

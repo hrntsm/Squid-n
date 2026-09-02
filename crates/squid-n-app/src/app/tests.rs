@@ -60,21 +60,22 @@ fn test_member_material_groups_excludes_generated_panel_zones() {
 
     let mut app = App::default();
     app.load_model(crate::sample::portal_frame());
-    let (steel_before, rc_before) = member_material_groups(&app.model);
+    let (steel_before, rc_before) = member_material_groups(&app.core.model);
     assert_eq!(steel_before.len(), 3, "柱 2 本・梁 1 本はすべて S");
     assert!(rc_before.is_empty(), "純 S 造モデルに RC 部材はない");
 
     // 実際の導線と同じく準備計算を通し、仕口パネルを自動生成させる。
     app.ensure_preparation();
     assert!(
-        app.model
+        app.core
+            .model
             .elements
             .iter()
             .any(|e| e.kind == ElementKind::PanelZone),
         "S 造の門型ラーメンでは柱頭に仕口パネルが生成されるはず"
     );
 
-    let (steel, rc) = member_material_groups(&app.model);
+    let (steel, rc) = member_material_groups(&app.core.model);
     assert_eq!(steel, steel_before, "パネル生成で鋼材部材は増減しない");
     assert!(
         rc.is_empty(),
@@ -86,7 +87,17 @@ fn test_member_material_groups_excludes_generated_panel_zones() {
 fn test_run_design_check_empty_model() {
     let mut app = App::default();
     app.run_design_check();
-    assert!(app.results.is_none() || app.results.as_ref().unwrap().member_checks.is_empty());
+    assert!(
+        app.core.scoped.results.is_none()
+            || app
+                .core
+                .scoped
+                .results
+                .as_ref()
+                .unwrap()
+                .member_checks
+                .is_empty()
+    );
 }
 
 /// `EventLog` の保持件数上限（1000件）: 上限を1件超えて push すると、
@@ -118,8 +129,13 @@ fn test_log_level_label() {
 fn test_report_error_updates_last_error_and_log() {
     let mut app = App::default();
     app.report_error("テストエラー");
-    assert_eq!(app.last_error.as_deref(), Some("テストエラー"));
-    let last = app.log.entries.last().expect("ログにエントリがあるはず");
+    assert_eq!(app.core.scoped.last_error.as_deref(), Some("テストエラー"));
+    let last = app
+        .core
+        .log
+        .entries
+        .last()
+        .expect("ログにエントリがあるはず");
     assert_eq!(last.level, LogLevel::Error);
     assert_eq!(last.message, "テストエラー");
 }
@@ -131,11 +147,11 @@ fn test_report_error_updates_last_error_and_log() {
 #[allow(clippy::field_reassign_with_default)]
 fn test_report_error_switches_bottom_tab_to_log() {
     let mut app = App::default();
-    app.bottom_tab = BottomTab::Diagnostics;
-    app.bottom_dock_open = false;
+    app.ui.view.bottom_tab = BottomTab::Diagnostics;
+    app.ui.view.bottom_dock_open = false;
     app.report_error("テストエラー");
-    assert!(app.bottom_dock_open);
-    assert_eq!(app.bottom_tab, BottomTab::Log);
+    assert!(app.ui.view.bottom_dock_open);
+    assert_eq!(app.ui.view.bottom_tab, BottomTab::Log);
 }
 
 /// モデル差し替えで作成モードと選択バッファが解除される
@@ -145,19 +161,25 @@ fn test_report_error_switches_bottom_tab_to_log() {
 #[allow(clippy::field_reassign_with_default)]
 fn test_load_model_resets_draw_modes() {
     let mut app = App::default();
-    app.beam_draw_mode = true;
-    app.beam_draw_first = Some(crate::viewer::space_grid::SnapPoint::Node(
+    app.ui.scoped.beam_draw_mode = true;
+    app.ui.scoped.beam_draw_first = Some(crate::viewer::space_grid::SnapPoint::Node(
         squid_n_core::ids::NodeId(3),
     ));
-    app.wall_draw_mode = true;
-    app.wall_draw_nodes.push(squid_n_core::ids::NodeId(1));
-    app.slab_draw_nodes.push(squid_n_core::ids::NodeId(2));
+    app.ui.scoped.wall_draw_mode = true;
+    app.ui
+        .scoped
+        .wall_draw_nodes
+        .push(squid_n_core::ids::NodeId(1));
+    app.ui
+        .scoped
+        .slab_draw_nodes
+        .push(squid_n_core::ids::NodeId(2));
     app.load_model(crate::sample::portal_frame());
-    assert!(!app.beam_draw_mode);
-    assert!(app.beam_draw_first.is_none());
-    assert!(!app.wall_draw_mode);
-    assert!(app.wall_draw_nodes.is_empty());
-    assert!(app.slab_draw_nodes.is_empty());
+    assert!(!app.ui.scoped.beam_draw_mode);
+    assert!(app.ui.scoped.beam_draw_first.is_none());
+    assert!(!app.ui.scoped.wall_draw_mode);
+    assert!(app.ui.scoped.wall_draw_nodes.is_empty());
+    assert!(app.ui.scoped.slab_draw_nodes.is_empty());
 }
 
 /// 一本部材指定（beam_groups）: 2 分割梁のグループ合成値
@@ -317,16 +339,20 @@ fn test_run_linear_static_applies_auto_rigid_zones() {
     app.load_model(aligned_portal_frame());
 
     // 適用前は既定の 0（apply_auto_rigid_zones 未実行）。
-    assert_eq!(app.model.elements[1].rigid_zone.length_i, 0.0);
-    assert_eq!(app.model.elements[1].rigid_zone.face_i_or_zero(), 0.0);
+    assert_eq!(app.core.model.elements[1].rigid_zone.length_i, 0.0);
+    assert_eq!(app.core.model.elements[1].rigid_zone.face_i_or_zero(), 0.0);
 
     app.run_linear_static(LoadCaseId(0));
-    assert!(app.last_error.is_none(), "{:?}", app.last_error);
+    assert!(
+        app.core.scoped.last_error.is_none(),
+        "{:?}",
+        app.core.scoped.last_error
+    );
 
     // 梁(id=1)の i端(node1, 柱と直交)。
     // λ_i = D_orth/2 − D_self/4 = 柱せい/2 − 梁せい/4 = 150 − 100 = 50
     // face_i = D_orth/2 = 柱せい/2 = 150
-    let beam = &app.model.elements[1];
+    let beam = &app.core.model.elements[1];
     assert!(
         (beam.rigid_zone.length_i - 50.0).abs() < 1e-9,
         "length_i={}",
@@ -341,7 +367,7 @@ fn test_run_linear_static_applies_auto_rigid_zones() {
     // 柱(id=0)の j端(node1, 梁と直交)。
     // λ_j = D_orth/2 − D_self/4 = 梁せい/2 − 柱せい/4 = 200 − 75 = 125
     // face_j = D_orth/2 = 梁せい/2 = 200
-    let col = &app.model.elements[0];
+    let col = &app.core.model.elements[0];
     assert!(
         (col.rigid_zone.length_j - 125.0).abs() < 1e-9,
         "length_j={}",
@@ -364,9 +390,13 @@ fn test_run_design_check_filters_to_design_positions() {
     let mut app = App::default();
     app.load_model(aligned_portal_frame());
     app.run_linear_static(LoadCaseId(0));
-    assert!(app.last_error.is_none(), "{:?}", app.last_error);
+    assert!(
+        app.core.scoped.last_error.is_none(),
+        "{:?}",
+        app.core.scoped.last_error
+    );
 
-    let member_checks = &app.results.as_ref().unwrap().member_checks;
+    let member_checks = &app.core.scoped.results.as_ref().unwrap().member_checks;
     assert!(!member_checks.is_empty());
     let positions_of = |elem: ElemId| -> Vec<f64> {
         member_checks
@@ -439,9 +469,13 @@ fn test_run_design_check_includes_member_detail_positions() {
     let mut app = App::default();
     app.load_model(model);
     app.run_linear_static(LoadCaseId(0));
-    assert!(app.last_error.is_none(), "{:?}", app.last_error);
+    assert!(
+        app.core.scoped.last_error.is_none(),
+        "{:?}",
+        app.core.scoped.last_error
+    );
 
-    let member_checks = &app.results.as_ref().unwrap().member_checks;
+    let member_checks = &app.core.scoped.results.as_ref().unwrap().member_checks;
     let beam_positions: Vec<f64> = member_checks
         .iter()
         .find(|m| m.elem == ElemId(1))
@@ -510,10 +544,15 @@ fn test_analysis_runs_with_non_structural_nodes_on_base_floor() {
     let mut app = App::default();
     app.load_model(model);
     app.run_preparation();
-    assert!(app.last_error.is_none(), "{:?}", app.last_error);
+    assert!(
+        app.core.scoped.last_error.is_none(),
+        "{:?}",
+        app.core.scoped.last_error
+    );
 
     // 基部の剛床代表節点は面内 3 成分とも拘束される（剛性が写らないため）。
     let base_master = app
+        .core
         .model
         .constraints
         .iter()
@@ -526,15 +565,23 @@ fn test_analysis_runs_with_non_structural_nodes_on_base_floor() {
             _ => None,
         })
         .expect("基部の床にも剛床がある");
-    let r = app.model.nodes[base_master.index()].restraint;
+    let r = app.core.model.nodes[base_master.index()].restraint;
     assert!(r.is_fixed(squid_n_core::dof::Dof::Ux));
     assert!(r.is_fixed(squid_n_core::dof::Dof::Uy));
     assert!(r.is_fixed(squid_n_core::dof::Dof::Rz));
 
     app.run_linear_static(LoadCaseId(0));
-    assert!(app.last_error.is_none(), "{:?}", app.last_error);
+    assert!(
+        app.core.scoped.last_error.is_none(),
+        "{:?}",
+        app.core.scoped.last_error
+    );
     app.run_seismic(SeismicDir::X);
-    assert!(app.last_error.is_none(), "{:?}", app.last_error);
+    assert!(
+        app.core.scoped.last_error.is_none(),
+        "{:?}",
+        app.core.scoped.last_error
+    );
 }
 
 #[test]
@@ -544,26 +591,41 @@ fn test_seismic_flow_requires_then_uses_stories() {
 
     // 階なし → 明示エラー（サイレントゼロ結果ではない）
     app.run_seismic(SeismicDir::X);
-    assert!(app.last_error.is_some());
+    assert!(app.core.scoped.last_error.is_some());
 
     // 階の自動生成 → 地震静的が成功する
     app.generate_stories_action();
-    assert!(app.last_error.is_none(), "{:?}", app.last_error);
-    assert_eq!(app.model.stories.len(), 2, "基部の床 + 上の床");
-    assert!(app.model.stories[1].seismic_weight.unwrap() > 0.0);
+    assert!(
+        app.core.scoped.last_error.is_none(),
+        "{:?}",
+        app.core.scoped.last_error
+    );
+    assert_eq!(app.core.model.stories.len(), 2, "基部の床 + 上の床");
+    assert!(app.core.model.stories[1].seismic_weight.unwrap() > 0.0);
 
     // ユーザー荷重ケース0("長期")を先に実行しておく。
     app.run_linear_static(LoadCaseId(0));
-    assert!(app.last_error.is_none(), "{:?}", app.last_error);
-    let user_disp = app.results.as_ref().unwrap().statics[0].1.disp.clone();
+    assert!(
+        app.core.scoped.last_error.is_none(),
+        "{:?}",
+        app.core.scoped.last_error
+    );
+    let user_disp = app.core.scoped.results.as_ref().unwrap().statics[0]
+        .1
+        .disp
+        .clone();
 
     app.run_seismic(SeismicDir::X);
-    assert!(app.last_error.is_none(), "{:?}", app.last_error);
+    assert!(
+        app.core.scoped.last_error.is_none(),
+        "{:?}",
+        app.core.scoped.last_error
+    );
 
     // 地震静的の結果は StaticCaseKey::Seismic(X) に格納され、直前に実行した
     // ユーザーケース0(StaticCaseKey::User)の結果を上書きしない
     // (旧実装ではどちらも LoadCaseId(0) を共有し、後勝ちで上書きされていた)。
-    let r = app.results.as_ref().unwrap();
+    let r = app.core.scoped.results.as_ref().unwrap();
     assert_eq!(
         r.statics.len(),
         2,
@@ -593,25 +655,27 @@ fn test_seismic_flow_requires_then_uses_stories() {
     assert!(seismic_disp[2][0].abs() > 1e-3, "{}", seismic_disp[2][0]);
 
     // ナビゲータでそれぞれのキーを選択すれば current_static が個別に引ける
-    app.nav.focus_result = Some(StaticKey::Case(StaticCaseKey::User(LoadCaseId(0))));
+    app.ui.scoped.nav.focus_result = Some(StaticKey::Case(StaticCaseKey::User(LoadCaseId(0))));
     assert_eq!(app.current_static().unwrap().disp, kept_user_disp);
-    app.nav.focus_result = Some(StaticKey::Case(StaticCaseKey::Seismic(SeismicDir::X)));
+    app.ui.scoped.nav.focus_result = Some(StaticKey::Case(StaticCaseKey::Seismic(SeismicDir::X)));
     assert_eq!(app.current_static().unwrap().disp, seismic_disp);
 
     // undo で EY・EX の同期 → 階定義 → DL(自重)の同期の順に戻る
     // （generate_stories_action が DL 同期 → 階適用 → EX/EY 同期の順に
     // undo 履歴を積む。以降の解析実行時の同期は冪等で履歴を積まない）
-    app.undo.undo(&mut app.model); // EY
-    app.undo.undo(&mut app.model); // EX
+    app.core.scoped.undo.undo(&mut app.core.model); // EY
+    app.core.scoped.undo.undo(&mut app.core.model); // EX
     assert!(app
+        .core
         .model
         .load_cases
         .iter()
         .all(|lc| lc.name != EX_CASE_NAME && lc.name != EY_CASE_NAME));
-    app.undo.undo(&mut app.model); // 階定義
-    assert!(app.model.stories.is_empty());
-    app.undo.undo(&mut app.model); // DL(自重)
+    app.core.scoped.undo.undo(&mut app.core.model); // 階定義
+    assert!(app.core.model.stories.is_empty());
+    app.core.scoped.undo.undo(&mut app.core.model); // DL(自重)
     assert!(app
+        .core
         .model
         .load_cases
         .iter()
@@ -625,17 +689,29 @@ fn test_seismic_flow_requires_then_uses_stories() {
 fn test_sync_seismic_approx_mode_syncs_ex_ey_without_eigen() {
     let mut app = App::default();
     app.load_model(crate::sample::portal_frame());
-    assert_eq!(app.analysis_cfg.ai_mode, AiMode::Approx, "既定は略算のはず");
-    app.generate_stories_action();
-    assert!(app.last_error.is_none(), "{:?}", app.last_error);
-    assert!(
-        app.last_notice.is_none(),
-        "略算モードでは注意メッセージは出ないはず: {:?}",
-        app.last_notice
+    assert_eq!(
+        app.core.analysis_cfg.ai_mode,
+        AiMode::Approx,
+        "既定は略算のはず"
     );
-    assert!(app.results.is_none(), "固有値解析は実行されていないはず");
+    app.generate_stories_action();
+    assert!(
+        app.core.scoped.last_error.is_none(),
+        "{:?}",
+        app.core.scoped.last_error
+    );
+    assert!(
+        app.core.scoped.last_notice.is_none(),
+        "略算モードでは注意メッセージは出ないはず: {:?}",
+        app.core.scoped.last_notice
+    );
+    assert!(
+        app.core.scoped.results.is_none(),
+        "固有値解析は実行されていないはず"
+    );
 
     let ex = app
+        .core
         .model
         .load_cases
         .iter()
@@ -643,6 +719,7 @@ fn test_sync_seismic_approx_mode_syncs_ex_ey_without_eigen() {
         .expect("EXケースが同期されるはず");
     assert!(!ex.nodal.is_empty(), "EXには水平力が入っているはず");
     let ey = app
+        .core
         .model
         .load_cases
         .iter()
@@ -661,8 +738,13 @@ fn test_sync_seismic_semiprecise_without_eigen_sets_notice_and_skips() {
     app.load_model(crate::sample::portal_frame());
     // まず既定(略算)で EX/EY を生成しておく。
     app.generate_stories_action();
-    assert!(app.last_error.is_none(), "{:?}", app.last_error);
+    assert!(
+        app.core.scoped.last_error.is_none(),
+        "{:?}",
+        app.core.scoped.last_error
+    );
     let ex_before = app
+        .core
         .model
         .load_cases
         .iter()
@@ -671,15 +753,16 @@ fn test_sync_seismic_semiprecise_without_eigen_sets_notice_and_skips() {
         .expect("EXケースが同期されているはず");
 
     // 精算周期へ切り替え、固有値解析は実行しない。
-    app.analysis_cfg.ai_mode = AiMode::SemiPrecise;
-    app.last_notice = None;
+    app.core.analysis_cfg.ai_mode = AiMode::SemiPrecise;
+    app.core.scoped.last_notice = None;
     app.sync_seismic_load_cases_action();
 
     assert!(
-        app.last_notice.is_some(),
+        app.core.scoped.last_notice.is_some(),
         "固有値解析未実行時は注意メッセージが設定されるはず"
     );
     let ex_after = app
+        .core
         .model
         .load_cases
         .iter()
@@ -692,10 +775,10 @@ fn test_sync_seismic_semiprecise_without_eigen_sets_notice_and_skips() {
     );
 
     // run_seismic も同様に、解析を行わず last_error で案内する。
-    app.last_error = None;
+    app.core.scoped.last_error = None;
     app.run_seismic(SeismicDir::X);
     assert!(
-        app.last_error.is_some(),
+        app.core.scoped.last_error.is_some(),
         "SemiPreciseで固有値解析未実行ならrun_seismicはエラーを返すはず"
     );
 }
@@ -709,9 +792,14 @@ fn test_manual_load_in_auto_case_survives_sync() {
     let mut app = App::default();
     app.load_model(crate::sample::portal_frame());
     app.generate_stories_action();
-    assert!(app.last_error.is_none(), "{:?}", app.last_error);
+    assert!(
+        app.core.scoped.last_error.is_none(),
+        "{:?}",
+        app.core.scoped.last_error
+    );
 
     let ex = app
+        .core
         .model
         .load_cases
         .iter()
@@ -727,8 +815,8 @@ fn test_manual_load_in_auto_case_survives_sync() {
         [1234.0, 0.0, 0.0, 0.0, 0.0, 0.0],
     );
     manual.name = "手入力の水平力".into();
-    app.undo.run(
-        &mut app.model,
+    app.core.scoped.undo.run(
+        &mut app.core.model,
         Box::new(squid_n_edit::AddNodalLoad {
             lc: ex_id,
             load: manual.clone(),
@@ -739,6 +827,7 @@ fn test_manual_load_in_auto_case_survives_sync() {
     app.sync_auto_load_cases_action();
 
     let ex = app
+        .core
         .model
         .load_cases
         .iter()
@@ -766,21 +855,26 @@ fn test_sync_auto_load_cases_action_skips_when_hash_unchanged() {
     let mut app = App::default();
     app.load_model(crate::sample::portal_frame());
     app.generate_stories_action();
-    assert!(app.last_error.is_none(), "{:?}", app.last_error);
+    assert!(
+        app.core.scoped.last_error.is_none(),
+        "{:?}",
+        app.core.scoped.last_error
+    );
 
     let ex_idx = app
+        .core
         .model
         .load_cases
         .iter()
         .position(|lc| lc.name == EX_CASE_NAME)
         .expect("EXケースが生成されているはず");
     assert!(
-        !app.model.load_cases[ex_idx].nodal.is_empty(),
+        !app.core.model.load_cases[ex_idx].nodal.is_empty(),
         "前提: EXには水平力が入っているはず"
     );
     // EX ケースの内容を手で壊す。
-    app.model.load_cases[ex_idx].nodal.clear();
-    app.model.load_cases[ex_idx].member.clear();
+    app.core.model.load_cases[ex_idx].nodal.clear();
+    app.core.model.load_cases[ex_idx].member.clear();
 
     // 「この(壊れた)モデル状態で同期済み」であるとキャッシュへ偽装する
     // （`compute_auto_load_sync_hash` と同じロジック。Approx モードなので
@@ -788,20 +882,20 @@ fn test_sync_auto_load_cases_action_skips_when_hash_unchanged() {
     fn fake_hash(app: &App) -> u64 {
         use std::hash::{Hash, Hasher};
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        if let Ok(bytes) = bincode::serialize(&app.model) {
+        if let Ok(bytes) = bincode::serialize(&app.core.model) {
             bytes.hash(&mut hasher);
         }
-        std::mem::discriminant(&app.analysis_cfg.ai_mode).hash(&mut hasher);
-        app.analysis_cfg.z.to_bits().hash(&mut hasher);
-        (app.analysis_cfg.soil as u8).hash(&mut hasher);
-        app.analysis_cfg.c0.to_bits().hash(&mut hasher);
+        std::mem::discriminant(&app.core.analysis_cfg.ai_mode).hash(&mut hasher);
+        app.core.analysis_cfg.z.to_bits().hash(&mut hasher);
+        (app.core.analysis_cfg.soil as u8).hash(&mut hasher);
+        app.core.analysis_cfg.c0.to_bits().hash(&mut hasher);
         hasher.finish()
     }
-    app.auto_load_sync_hash = Some(fake_hash(&app));
+    app.core.scoped.auto_load_sync_hash = Some(fake_hash(&app));
 
     app.sync_auto_load_cases_action();
 
-    let ex_after = &app.model.load_cases[ex_idx];
+    let ex_after = &app.core.model.load_cases[ex_idx];
     assert!(
         ex_after.nodal.is_empty() && ex_after.member.is_empty(),
         "ハッシュ一致時は同期がスキップされ、壊した内容がそのまま残るはず"
@@ -815,44 +909,72 @@ fn test_sync_auto_load_cases_action_skips_when_hash_unchanged() {
 fn test_generate_stories_action_reuses_rep_node_on_regenerate() {
     let mut app = App::default();
     app.load_model(crate::sample::portal_frame());
-    let n0 = app.model.nodes.len();
-    assert!(app.model.generated_masters.is_empty());
+    let n0 = app.core.model.nodes.len();
+    assert!(app.core.model.generated_masters.is_empty());
 
     app.generate_stories_action();
-    assert!(app.last_error.is_none(), "{:?}", app.last_error);
-    let n1 = app.model.nodes.len();
+    assert!(
+        app.core.scoped.last_error.is_none(),
+        "{:?}",
+        app.core.scoped.last_error
+    );
+    let n1 = app.core.model.nodes.len();
     // 階は床であり、基部の床にも剛床代表節点が作られる（基部の床と 2FL の 2 つ）。
     assert_eq!(n1, n0 + 2, "剛床代表節点が階の数だけ新規生成される");
-    assert_eq!(app.model.generated_masters.len(), 2);
-    let masters_after_first = app.model.generated_masters.clone();
-    assert!(app.model.validate().is_ok());
+    assert_eq!(app.core.model.generated_masters.len(), 2);
+    let masters_after_first = app.core.model.generated_masters.clone();
+    assert!(app.core.model.validate().is_ok());
 
     // 再生成しても代表節点は再利用され、節点数は増えない。
     app.generate_stories_action();
-    assert!(app.last_error.is_none(), "{:?}", app.last_error);
+    assert!(
+        app.core.scoped.last_error.is_none(),
+        "{:?}",
+        app.core.scoped.last_error
+    );
     assert_eq!(
-        app.model.nodes.len(),
+        app.core.model.nodes.len(),
         n1,
         "再生成でノード数が増えてはいけない（代表節点の再利用）"
     );
-    assert_eq!(app.model.generated_masters, masters_after_first);
-    assert!(app.model.validate().is_ok());
+    assert_eq!(app.core.model.generated_masters, masters_after_first);
+    assert!(app.core.model.validate().is_ok());
 
     // 固有値解析・地震静的解析が正常に動作する（生成された剛床を含む縮約の統合確認）。
     app.run_eigen(1);
-    assert!(app.last_error.is_none(), "{:?}", app.last_error);
+    assert!(
+        app.core.scoped.last_error.is_none(),
+        "{:?}",
+        app.core.scoped.last_error
+    );
     app.run_seismic(SeismicDir::X);
-    assert!(app.last_error.is_none(), "{:?}", app.last_error);
+    assert!(
+        app.core.scoped.last_error.is_none(),
+        "{:?}",
+        app.core.scoped.last_error
+    );
 }
 
 #[test]
 fn test_time_history_sample_flow() {
     let mut app = App::default();
     app.load_model(crate::sample::portal_frame());
-    app.analysis_cfg.th_duration = 2.0;
+    app.core.analysis_cfg.th_duration = 2.0;
     app.run_time_history_sample();
-    assert!(app.last_error.is_none(), "{:?}", app.last_error);
-    let th = app.results.as_ref().unwrap().time_history.as_ref().unwrap();
+    assert!(
+        app.core.scoped.last_error.is_none(),
+        "{:?}",
+        app.core.scoped.last_error
+    );
+    let th = app
+        .core
+        .scoped
+        .results
+        .as_ref()
+        .unwrap()
+        .time_history
+        .as_ref()
+        .unwrap();
     assert!(th.history.node_disp.len() > 100);
     assert!(
         th.history.node_disp.iter().any(|v| v.abs() > 1e-6),
@@ -865,11 +987,23 @@ fn test_time_history_sample_flow() {
 fn test_time_history_y_direction_flow() {
     let mut app = App::default();
     app.load_model(crate::sample::portal_frame());
-    app.analysis_cfg.th_duration = 2.0;
-    app.analysis_cfg.th_dir = ThDir::Y;
+    app.core.analysis_cfg.th_duration = 2.0;
+    app.core.analysis_cfg.th_dir = ThDir::Y;
     app.run_time_history_sample();
-    assert!(app.last_error.is_none(), "{:?}", app.last_error);
-    let th = app.results.as_ref().unwrap().time_history.as_ref().unwrap();
+    assert!(
+        app.core.scoped.last_error.is_none(),
+        "{:?}",
+        app.core.scoped.last_error
+    );
+    let th = app
+        .core
+        .scoped
+        .results
+        .as_ref()
+        .unwrap()
+        .time_history
+        .as_ref()
+        .unwrap();
     assert!(
         th.history.record_dir_y,
         "th_dir=Y なのに代表応答の記録方向が X のままです"
@@ -958,11 +1092,23 @@ fn test_parse_wave_csv_xy_too_few_points_is_err() {
 fn test_time_history_xy_sample_flow() {
     let mut app = App::default();
     app.load_model(crate::sample::portal_frame());
-    app.analysis_cfg.th_duration = 2.0;
-    app.analysis_cfg.th_dir = ThDir::Xy;
+    app.core.analysis_cfg.th_duration = 2.0;
+    app.core.analysis_cfg.th_dir = ThDir::Xy;
     app.run_time_history_sample();
-    assert!(app.last_error.is_none(), "{:?}", app.last_error);
-    let th = app.results.as_ref().unwrap().time_history.as_ref().unwrap();
+    assert!(
+        app.core.scoped.last_error.is_none(),
+        "{:?}",
+        app.core.scoped.last_error
+    );
+    let th = app
+        .core
+        .scoped
+        .results
+        .as_ref()
+        .unwrap()
+        .time_history
+        .as_ref()
+        .unwrap();
     assert!(
         th.history.node_disp.iter().any(|v| v.abs() > 1e-6),
         "応答がゼロのままです"
@@ -1054,11 +1200,23 @@ fn shear_2dof_model() -> squid_n_core::model::Model {
 fn test_time_history_rayleigh() {
     let mut app = App::default();
     app.load_model(shear_2dof_model());
-    app.analysis_cfg.th_duration = 2.0;
-    app.analysis_cfg.th_damping_model = ThDampingModel::Rayleigh;
+    app.core.analysis_cfg.th_duration = 2.0;
+    app.core.analysis_cfg.th_damping_model = ThDampingModel::Rayleigh;
     app.run_time_history_sample();
-    assert!(app.last_error.is_none(), "{:?}", app.last_error);
-    let th = app.results.as_ref().unwrap().time_history.as_ref().unwrap();
+    assert!(
+        app.core.scoped.last_error.is_none(),
+        "{:?}",
+        app.core.scoped.last_error
+    );
+    let th = app
+        .core
+        .scoped
+        .results
+        .as_ref()
+        .unwrap()
+        .time_history
+        .as_ref()
+        .unwrap();
     assert!(!th.history.node_disp.is_empty());
     assert!(
         th.history.node_disp.iter().any(|v| v.abs() > 1e-6),
@@ -1074,18 +1232,40 @@ fn test_nonlinear_time_history_flow_records_story_response() {
     let mut app = App::default();
     app.load_model(crate::sample::portal_frame());
     app.generate_stories_action();
-    assert!(app.last_error.is_none(), "{:?}", app.last_error);
-    app.analysis_cfg.th_nonlinear = true;
-    app.analysis_cfg.th_duration = 1.0;
+    assert!(
+        app.core.scoped.last_error.is_none(),
+        "{:?}",
+        app.core.scoped.last_error
+    );
+    app.core.analysis_cfg.th_nonlinear = true;
+    app.core.analysis_cfg.th_duration = 1.0;
     app.run_time_history_sample();
-    assert!(app.last_error.is_none(), "{:?}", app.last_error);
-    let th = app.results.as_ref().unwrap().time_history.as_ref().unwrap();
+    assert!(
+        app.core.scoped.last_error.is_none(),
+        "{:?}",
+        app.core.scoped.last_error
+    );
+    let th = app
+        .core
+        .scoped
+        .results
+        .as_ref()
+        .unwrap()
+        .time_history
+        .as_ref()
+        .unwrap();
     let recording = th
         .recording
         .as_ref()
         .expect("非線形時刻歴でも recording が入るはず");
-    assert_eq!(recording.story_x.stories.len(), app.model.layer_count());
-    assert_eq!(recording.story_y.stories.len(), app.model.layer_count());
+    assert_eq!(
+        recording.story_x.stories.len(),
+        app.core.model.layer_count()
+    );
+    assert_eq!(
+        recording.story_y.stories.len(),
+        app.core.model.layer_count()
+    );
     assert_eq!(
         recording.story_x.story_shear.len(),
         recording.frame_time.len()
@@ -1101,11 +1281,27 @@ fn test_story_shear_layer0_matches_history_base_shear() {
     let mut app = App::default();
     app.load_model(crate::sample::portal_frame());
     app.generate_stories_action();
-    assert!(app.last_error.is_none(), "{:?}", app.last_error);
-    app.analysis_cfg.th_duration = 2.0;
+    assert!(
+        app.core.scoped.last_error.is_none(),
+        "{:?}",
+        app.core.scoped.last_error
+    );
+    app.core.analysis_cfg.th_duration = 2.0;
     app.run_time_history_sample();
-    assert!(app.last_error.is_none(), "{:?}", app.last_error);
-    let th = app.results.as_ref().unwrap().time_history.as_ref().unwrap();
+    assert!(
+        app.core.scoped.last_error.is_none(),
+        "{:?}",
+        app.core.scoped.last_error
+    );
+    let th = app
+        .core
+        .scoped
+        .results
+        .as_ref()
+        .unwrap()
+        .time_history
+        .as_ref()
+        .unwrap();
     let recording = th.recording.as_ref().expect("recording should be present");
     let story = if th.history.record_dir_y {
         &recording.story_y
@@ -1136,13 +1332,29 @@ fn test_nonlinear_time_history_with_long_term_flow() {
     let mut app = App::default();
     app.load_model(crate::sample::portal_frame());
     app.generate_stories_action();
-    assert!(app.last_error.is_none(), "{:?}", app.last_error);
-    app.analysis_cfg.th_nonlinear = true;
-    app.analysis_cfg.th_apply_long_term = true;
-    app.analysis_cfg.th_duration = 1.0;
+    assert!(
+        app.core.scoped.last_error.is_none(),
+        "{:?}",
+        app.core.scoped.last_error
+    );
+    app.core.analysis_cfg.th_nonlinear = true;
+    app.core.analysis_cfg.th_apply_long_term = true;
+    app.core.analysis_cfg.th_duration = 1.0;
     app.run_time_history_sample();
-    assert!(app.last_error.is_none(), "{:?}", app.last_error);
-    let th = app.results.as_ref().unwrap().time_history.as_ref().unwrap();
+    assert!(
+        app.core.scoped.last_error.is_none(),
+        "{:?}",
+        app.core.scoped.last_error
+    );
+    let th = app
+        .core
+        .scoped
+        .results
+        .as_ref()
+        .unwrap()
+        .time_history
+        .as_ref()
+        .unwrap();
     assert!(th.recording.is_some());
 }
 
@@ -1153,22 +1365,36 @@ fn test_time_history_job_label_reflects_nonlinear_setting() {
     let mut app = App::default();
     app.load_model(crate::sample::portal_frame());
     app.generate_stories_action();
-    app.analysis_cfg.th_duration = 1.0;
-    app.analysis_cfg.th_nonlinear = false;
-    app.start_time_history_job(App::sample_wave(&app.analysis_cfg));
-    assert_eq!(app.job.as_ref().unwrap().label, "時刻歴応答(線形)");
+    app.core.analysis_cfg.th_duration = 1.0;
+    app.core.analysis_cfg.th_nonlinear = false;
+    app.start_time_history_job(App::sample_wave(&app.core.analysis_cfg));
+    assert_eq!(
+        app.core.scoped.job.as_ref().unwrap().label,
+        "時刻歴応答(線形)"
+    );
     while !app.poll_job() {
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
-    assert!(app.last_error.is_none(), "{:?}", app.last_error);
+    assert!(
+        app.core.scoped.last_error.is_none(),
+        "{:?}",
+        app.core.scoped.last_error
+    );
 
-    app.analysis_cfg.th_nonlinear = true;
-    app.start_time_history_job(App::sample_wave(&app.analysis_cfg));
-    assert_eq!(app.job.as_ref().unwrap().label, "時刻歴応答(非線形)");
+    app.core.analysis_cfg.th_nonlinear = true;
+    app.start_time_history_job(App::sample_wave(&app.core.analysis_cfg));
+    assert_eq!(
+        app.core.scoped.job.as_ref().unwrap().label,
+        "時刻歴応答(非線形)"
+    );
     while !app.poll_job() {
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
-    assert!(app.last_error.is_none(), "{:?}", app.last_error);
+    assert!(
+        app.core.scoped.last_error.is_none(),
+        "{:?}",
+        app.core.scoped.last_error
+    );
 }
 
 #[test]
@@ -1176,21 +1402,25 @@ fn test_set_story_weight_via_ui_flow() {
     let mut app = App::default();
     app.load_model(crate::sample::portal_frame());
     app.generate_stories_action();
-    assert!(app.last_error.is_none(), "{:?}", app.last_error);
-    let story_id = app.model.stories[0].id;
-    let old_weight = app.model.stories[0].seismic_weight;
+    assert!(
+        app.core.scoped.last_error.is_none(),
+        "{:?}",
+        app.core.scoped.last_error
+    );
+    let story_id = app.core.model.stories[0].id;
+    let old_weight = app.core.model.stories[0].seismic_weight;
 
-    app.undo.run(
-        &mut app.model,
+    app.core.scoped.undo.run(
+        &mut app.core.model,
         Box::new(squid_n_edit::SetStoryWeight {
             story: story_id,
             weight: Some(12345.0),
         }),
     );
-    assert_eq!(app.model.stories[0].seismic_weight, Some(12345.0));
+    assert_eq!(app.core.model.stories[0].seismic_weight, Some(12345.0));
 
-    app.undo.undo(&mut app.model);
-    assert_eq!(app.model.stories[0].seismic_weight, old_weight);
+    app.core.scoped.undo.undo(&mut app.core.model);
+    assert_eq!(app.core.model.stories[0].seismic_weight, old_weight);
 }
 
 #[test]
@@ -1198,12 +1428,31 @@ fn test_pushover_flow() {
     let mut app = App::default();
     app.load_model(crate::sample::portal_frame());
     app.generate_stories_action();
-    app.analysis_cfg.push_steps = 10;
+    app.core.analysis_cfg.push_steps = 10;
     app.run_pushover();
-    assert!(app.last_error.is_none(), "{:?}", app.last_error);
-    let po = app.results.as_ref().unwrap().pushover.as_ref().unwrap();
+    assert!(
+        app.core.scoped.last_error.is_none(),
+        "{:?}",
+        app.core.scoped.last_error
+    );
+    let po = app
+        .core
+        .scoped
+        .results
+        .as_ref()
+        .unwrap()
+        .pushover
+        .as_ref()
+        .unwrap();
     assert!(!po.capacity_curve.is_empty());
-    assert!(app.results.as_ref().unwrap().pushover_x.is_some());
+    assert!(app
+        .core
+        .scoped
+        .results
+        .as_ref()
+        .unwrap()
+        .pushover_x
+        .is_some());
 }
 
 /// 旧 `.scz` 形式（`pushover` のみ）が `push_dir` のスロットへ移行されること。
@@ -1243,22 +1492,36 @@ fn test_pushover_x_y_slots_and_view_dir() {
     let mut app = App::default();
     app.load_model(crate::sample::portal_frame());
     app.generate_stories_action();
-    app.analysis_cfg.push_steps = 5;
+    app.core.analysis_cfg.push_steps = 5;
 
-    app.analysis_cfg.push_dir = SeismicDir::X;
+    app.core.analysis_cfg.push_dir = SeismicDir::X;
     app.run_pushover();
     let qu_x = app.displayed_pushover().unwrap().qu;
 
-    app.analysis_cfg.push_dir = SeismicDir::Y;
+    app.core.analysis_cfg.push_dir = SeismicDir::Y;
     app.run_pushover();
     let qu_y = app.displayed_pushover().unwrap().qu;
 
-    assert!(app.results.as_ref().unwrap().pushover_x.is_some());
-    assert!(app.results.as_ref().unwrap().pushover_y.is_some());
-    assert_eq!(app.pushover_view_dir, SeismicDir::Y);
+    assert!(app
+        .core
+        .scoped
+        .results
+        .as_ref()
+        .unwrap()
+        .pushover_x
+        .is_some());
+    assert!(app
+        .core
+        .scoped
+        .results
+        .as_ref()
+        .unwrap()
+        .pushover_y
+        .is_some());
+    assert_eq!(app.core.scoped.pushover_view_dir, SeismicDir::Y);
 
     app.set_pushover_view_dir(SeismicDir::X);
-    assert_eq!(app.pushover_view_dir, SeismicDir::X);
+    assert_eq!(app.core.scoped.pushover_view_dir, SeismicDir::X);
     assert!((app.displayed_pushover().unwrap().qu - qu_x).abs() < 1e-6);
     app.set_pushover_view_dir(SeismicDir::Y);
     assert!((app.displayed_pushover().unwrap().qu - qu_y).abs() < 1e-6);
@@ -1270,19 +1533,31 @@ fn test_lumped_mass_model_from_pushover() {
     let mut app = App::default();
     app.load_model(crate::sample::portal_frame());
     app.generate_stories_action();
-    app.analysis_cfg.push_steps = 10;
+    app.core.analysis_cfg.push_steps = 10;
     app.run_pushover();
-    assert!(app.last_error.is_none(), "{:?}", app.last_error);
-    let po = app.results.as_ref().unwrap().pushover.as_ref().unwrap();
+    assert!(
+        app.core.scoped.last_error.is_none(),
+        "{:?}",
+        app.core.scoped.last_error
+    );
+    let po = app
+        .core
+        .scoped
+        .results
+        .as_ref()
+        .unwrap()
+        .pushover
+        .as_ref()
+        .unwrap();
 
     let lm = squid_n_solver::lumped_mass::build_lumped_mass_model(
-        &app.model,
+        &app.core.model,
         po,
-        app.analysis_cfg.lumped_mass_type,
-        app.analysis_cfg.lumped_secant_ratio,
+        app.core.analysis_cfg.lumped_mass_type,
+        app.core.analysis_cfg.lumped_secant_ratio,
     );
     // 層数分の質点が生成され、各層のトリリニア骨格が妥当（K1>0・折点昇順）。
-    assert_eq!(lm.stories.len(), app.model.layer_count());
+    assert_eq!(lm.stories.len(), app.core.model.layer_count());
     assert!(!lm.stories.is_empty());
     for stick in &lm.stories {
         let sk = &stick.skeleton;
@@ -1301,10 +1576,10 @@ fn test_damper_create_edit_delete_via_undo() {
     };
     let mut app = App::default();
     app.load_model(crate::sample::portal_frame());
-    let n = app.model.nodes.len();
+    let n = app.core.model.nodes.len();
     assert!(n >= 2);
-    let (i_node, j_node) = (app.model.nodes[0].id, app.model.nodes[1].id);
-    let new_id = squid_n_core::ids::ElemId(app.model.elements.len() as u32);
+    let (i_node, j_node) = (app.core.model.nodes[0].id, app.core.model.nodes[1].id);
+    let new_id = squid_n_core::ids::ElemId(app.core.model.elements.len() as u32);
     let elem = ElementData {
         id: new_id,
         kind: ElementKind::Damper,
@@ -1320,14 +1595,17 @@ fn test_damper_create_edit_delete_via_undo() {
         spring: None,
     };
     // 作成。
-    app.undo.run(
-        &mut app.model,
+    app.core.scoped.undo.run(
+        &mut app.core.model,
         Box::new(squid_n_edit::AddDamper {
             elem,
             props: DamperProps::default(),
         }),
     );
-    assert_eq!(app.model.damper_props(new_id), Some(DamperProps::default()));
+    assert_eq!(
+        app.core.model.damper_props(new_id),
+        Some(DamperProps::default())
+    );
     // 諸元変更。
     let edited = DamperProps {
         kd: 150_000.0,
@@ -1335,21 +1613,21 @@ fn test_damper_create_edit_delete_via_undo() {
         alpha: 0.35,
         ..Default::default()
     };
-    app.undo.run(
-        &mut app.model,
+    app.core.scoped.undo.run(
+        &mut app.core.model,
         Box::new(squid_n_edit::SetDamperProps {
             elem: new_id,
             props: Some(edited),
         }),
     );
-    assert_eq!(app.model.damper_props(new_id), Some(edited));
+    assert_eq!(app.core.model.damper_props(new_id), Some(edited));
     // 削除（要素も特性も消える）。
-    app.undo.run(
-        &mut app.model,
+    app.core.scoped.undo.run(
+        &mut app.core.model,
         Box::new(squid_n_edit::DeleteMember { id: new_id }),
     );
-    assert_eq!(app.model.damper_props(new_id), None);
-    assert!(app.model.elements.iter().all(|e| e.id != new_id));
+    assert_eq!(app.core.model.damper_props(new_id), None);
+    assert!(app.core.model.elements.iter().all(|e| e.id != new_id));
 }
 
 /// `poll_job` が完了するまで待つ（タイムアウト5秒でパニック、10ms 間隔でポーリング）。
@@ -1369,17 +1647,33 @@ fn test_async_pushover_job_flow() {
     let mut app = App::default();
     app.load_model(crate::sample::portal_frame());
     app.generate_stories_action();
-    assert!(app.last_error.is_none(), "{:?}", app.last_error);
-    app.analysis_cfg.push_steps = 10;
+    assert!(
+        app.core.scoped.last_error.is_none(),
+        "{:?}",
+        app.core.scoped.last_error
+    );
+    app.core.analysis_cfg.push_steps = 10;
 
     app.start_pushover_job();
-    assert!(app.job.is_some());
+    assert!(app.core.scoped.job.is_some());
 
     wait_for_job(&mut app);
 
-    assert!(app.last_error.is_none(), "{:?}", app.last_error);
-    assert!(app.job.is_none());
-    let po = app.results.as_ref().unwrap().pushover.as_ref().unwrap();
+    assert!(
+        app.core.scoped.last_error.is_none(),
+        "{:?}",
+        app.core.scoped.last_error
+    );
+    assert!(app.core.scoped.job.is_none());
+    let po = app
+        .core
+        .scoped
+        .results
+        .as_ref()
+        .unwrap()
+        .pushover
+        .as_ref()
+        .unwrap();
     assert!(!po.capacity_curve.is_empty());
 }
 
@@ -1387,17 +1681,29 @@ fn test_async_pushover_job_flow() {
 fn test_async_time_history_job_flow() {
     let mut app = App::default();
     app.load_model(crate::sample::portal_frame());
-    app.analysis_cfg.th_duration = 2.0;
-    let wave = App::sample_wave(&app.analysis_cfg);
+    app.core.analysis_cfg.th_duration = 2.0;
+    let wave = App::sample_wave(&app.core.analysis_cfg);
 
     app.start_time_history_job(wave);
-    assert!(app.job.is_some());
+    assert!(app.core.scoped.job.is_some());
 
     wait_for_job(&mut app);
 
-    assert!(app.last_error.is_none(), "{:?}", app.last_error);
-    assert!(app.job.is_none());
-    let th = app.results.as_ref().unwrap().time_history.as_ref().unwrap();
+    assert!(
+        app.core.scoped.last_error.is_none(),
+        "{:?}",
+        app.core.scoped.last_error
+    );
+    assert!(app.core.scoped.job.is_none());
+    let th = app
+        .core
+        .scoped
+        .results
+        .as_ref()
+        .unwrap()
+        .time_history
+        .as_ref()
+        .unwrap();
     assert!(th.history.node_disp.len() > 100);
     assert!(
         th.history.node_disp.iter().any(|v| v.abs() > 1e-6),
@@ -1410,22 +1716,33 @@ fn test_start_job_while_running_is_rejected() {
     let mut app = App::default();
     app.load_model(crate::sample::portal_frame());
     app.generate_stories_action();
-    app.analysis_cfg.push_steps = 10;
+    app.core.analysis_cfg.push_steps = 10;
 
     app.start_pushover_job();
-    assert!(app.job.is_some());
+    assert!(app.core.scoped.job.is_some());
 
     // 実行中に再度 start しても2つ目は無視され、job は上書きされない。
-    app.start_time_history_job(App::sample_wave(&app.analysis_cfg));
-    assert!(app.job.is_some());
-    assert_eq!(app.job.as_ref().unwrap().label, "増分解析");
+    app.start_time_history_job(App::sample_wave(&app.core.analysis_cfg));
+    assert!(app.core.scoped.job.is_some());
+    assert_eq!(app.core.scoped.job.as_ref().unwrap().label, "増分解析");
 
     wait_for_job(&mut app);
 
-    assert!(app.job.is_none());
-    assert!(app.last_error.is_none(), "{:?}", app.last_error);
-    assert!(app.results.as_ref().unwrap().pushover.is_some());
-    assert!(app.results.as_ref().unwrap().time_history.is_none());
+    assert!(app.core.scoped.job.is_none());
+    assert!(
+        app.core.scoped.last_error.is_none(),
+        "{:?}",
+        app.core.scoped.last_error
+    );
+    assert!(app.core.scoped.results.as_ref().unwrap().pushover.is_some());
+    assert!(app
+        .core
+        .scoped
+        .results
+        .as_ref()
+        .unwrap()
+        .time_history
+        .is_none());
 }
 
 /// `start_linear_static_job` はバックグラウンドで `run_linear_static` と同じ結果
@@ -1435,20 +1752,31 @@ fn test_async_linear_static_job_flow() {
     let mut app_sync = App::default();
     app_sync.load_model(crate::sample::portal_frame());
     app_sync.run_linear_static(LoadCaseId(0));
-    assert!(app_sync.last_error.is_none(), "{:?}", app_sync.last_error);
-    let expected_disp = app_sync.results.as_ref().unwrap().statics[0].1.disp.clone();
+    assert!(
+        app_sync.core.scoped.last_error.is_none(),
+        "{:?}",
+        app_sync.core.scoped.last_error
+    );
+    let expected_disp = app_sync.core.scoped.results.as_ref().unwrap().statics[0]
+        .1
+        .disp
+        .clone();
 
     let mut app = App::default();
     app.load_model(crate::sample::portal_frame());
     app.start_linear_static_job(LoadCaseId(0));
-    assert!(app.job.is_some());
-    assert_eq!(app.job.as_ref().unwrap().label, "線形静的解析");
+    assert!(app.core.scoped.job.is_some());
+    assert_eq!(app.core.scoped.job.as_ref().unwrap().label, "線形静的解析");
 
     wait_for_job(&mut app);
 
-    assert!(app.last_error.is_none(), "{:?}", app.last_error);
-    assert!(app.job.is_none());
-    let bundle = app.results.as_ref().unwrap();
+    assert!(
+        app.core.scoped.last_error.is_none(),
+        "{:?}",
+        app.core.scoped.last_error
+    );
+    assert!(app.core.scoped.job.is_none());
+    let bundle = app.core.scoped.results.as_ref().unwrap();
     let (_, static_once) = bundle
         .statics
         .iter()
@@ -1456,7 +1784,7 @@ fn test_async_linear_static_job_flow() {
         .expect("線形静的解析結果が格納されるはず");
     assert_eq!(static_once.disp, expected_disp);
     assert_eq!(
-        app.last_static,
+        app.core.scoped.last_static,
         Some(StaticKey::Case(StaticCaseKey::User(LoadCaseId(0))))
     );
     assert!(!bundle.member_checks.is_empty());
@@ -1472,26 +1800,33 @@ fn test_async_combination_job_flow() {
 
     let mut app = App::default();
     app.load_model(crate::sample::portal_frame());
-    app.undo.run(
-        &mut app.model,
+    app.core.scoped.undo.run(
+        &mut app.core.model,
         Box::new(squid_n_edit::AddCombination {
             combo: combo.clone(),
         }),
     );
 
     app.start_combination_job(0);
-    assert!(app.job.is_some());
-    assert_eq!(app.job.as_ref().unwrap().label, "荷重組合せ解析");
+    assert!(app.core.scoped.job.is_some());
+    assert_eq!(
+        app.core.scoped.job.as_ref().unwrap().label,
+        "荷重組合せ解析"
+    );
 
     wait_for_job(&mut app);
 
-    assert!(app.last_error.is_none(), "{:?}", app.last_error);
-    assert!(app.job.is_none());
-    let bundle = app.results.as_ref().unwrap();
+    assert!(
+        app.core.scoped.last_error.is_none(),
+        "{:?}",
+        app.core.scoped.last_error
+    );
+    assert!(app.core.scoped.job.is_none());
+    let bundle = app.core.scoped.results.as_ref().unwrap();
     assert_eq!(bundle.combos.len(), 1);
     assert_eq!(bundle.combos[0].0, combo.name);
     assert!(!bundle.member_checks.is_empty());
-    assert_eq!(app.last_static, Some(StaticKey::Combo(0)));
+    assert_eq!(app.core.scoped.last_static, Some(StaticKey::Combo(0)));
 }
 
 /// `start_static_all_job` はバックグラウンドで `run_static_all` と
@@ -1511,46 +1846,57 @@ fn test_async_static_all_job_flow() {
 
     let mut app_sync = App::default();
     app_sync.load_model(crate::sample::portal_frame());
-    app_sync.analysis_cfg.threads = 1;
+    app_sync.core.analysis_cfg.threads = 1;
     for combo in &combos {
-        app_sync.undo.run(
-            &mut app_sync.model,
+        app_sync.core.scoped.undo.run(
+            &mut app_sync.core.model,
             Box::new(squid_n_edit::AddCombination {
                 combo: combo.clone(),
             }),
         );
     }
     app_sync.run_static_all();
-    assert!(app_sync.last_error.is_none(), "{:?}", app_sync.last_error);
+    assert!(
+        app_sync.core.scoped.last_error.is_none(),
+        "{:?}",
+        app_sync.core.scoped.last_error
+    );
 
     let mut app = App::default();
     app.load_model(crate::sample::portal_frame());
-    app.analysis_cfg.threads = 1;
+    app.core.analysis_cfg.threads = 1;
     for combo in &combos {
-        app.undo.run(
-            &mut app.model,
+        app.core.scoped.undo.run(
+            &mut app.core.model,
             Box::new(squid_n_edit::AddCombination {
                 combo: combo.clone(),
             }),
         );
     }
     app.start_static_all_job();
-    assert!(app.job.is_some());
-    assert_eq!(app.job.as_ref().unwrap().label, "一括解析");
+    assert!(app.core.scoped.job.is_some());
+    assert_eq!(app.core.scoped.job.as_ref().unwrap().label, "一括解析");
 
     wait_for_job(&mut app);
 
-    assert!(app.last_error.is_none(), "{:?}", app.last_error);
-    assert!(app.job.is_none());
-    let bundle_sync = app_sync.results.as_ref().unwrap();
-    let bundle = app.results.as_ref().unwrap();
+    assert!(
+        app.core.scoped.last_error.is_none(),
+        "{:?}",
+        app.core.scoped.last_error
+    );
+    assert!(app.core.scoped.job.is_none());
+    let bundle_sync = app_sync.core.scoped.results.as_ref().unwrap();
+    let bundle = app.core.scoped.results.as_ref().unwrap();
     assert_eq!(bundle.combos.len(), bundle_sync.combos.len());
     for ((name, res), (name_sync, res_sync)) in bundle.combos.iter().zip(bundle_sync.combos.iter())
     {
         assert_eq!(name, name_sync);
         assert_eq!(res.disp, res_sync.disp);
     }
-    assert_eq!(app.last_static, app_sync.last_static);
+    assert_eq!(
+        app.core.scoped.last_static,
+        app_sync.core.scoped.last_static
+    );
 }
 
 /// `start_seismic_job` はバックグラウンドで `run_seismic` と同じ結果を与える。
@@ -1559,23 +1905,31 @@ fn test_async_seismic_job_flow() {
     let mut app = App::default();
     app.load_model(crate::sample::portal_frame());
     app.generate_stories_action();
-    assert!(app.last_error.is_none(), "{:?}", app.last_error);
+    assert!(
+        app.core.scoped.last_error.is_none(),
+        "{:?}",
+        app.core.scoped.last_error
+    );
 
     app.start_seismic_job(SeismicDir::X);
-    assert!(app.job.is_some());
-    assert_eq!(app.job.as_ref().unwrap().label, "地震静的解析");
+    assert!(app.core.scoped.job.is_some());
+    assert_eq!(app.core.scoped.job.as_ref().unwrap().label, "地震静的解析");
 
     wait_for_job(&mut app);
 
-    assert!(app.last_error.is_none(), "{:?}", app.last_error);
-    assert!(app.job.is_none());
-    let bundle = app.results.as_ref().unwrap();
+    assert!(
+        app.core.scoped.last_error.is_none(),
+        "{:?}",
+        app.core.scoped.last_error
+    );
+    assert!(app.core.scoped.job.is_none());
+    let bundle = app.core.scoped.results.as_ref().unwrap();
     assert!(bundle
         .statics
         .iter()
         .any(|(k, _)| *k == StaticCaseKey::Seismic(SeismicDir::X)));
     assert_eq!(
-        app.last_static,
+        app.core.scoped.last_static,
         Some(StaticKey::Case(StaticCaseKey::Seismic(SeismicDir::X)))
     );
     assert!(!bundle.member_checks.is_empty());
@@ -1589,26 +1943,36 @@ fn test_save_and_open_project_roundtrip() {
 
     let mut app = App::default();
     app.load_model(crate::sample::portal_frame());
-    app.staleness.mark_edited();
+    app.core.scoped.staleness.mark_edited();
     app.save_project_to(path.clone());
-    assert!(app.last_error.is_none(), "{:?}", app.last_error);
-    assert!(!app.staleness.unsaved_changes);
-    assert_eq!(app.project_path.as_ref(), Some(&path));
+    assert!(
+        app.core.scoped.last_error.is_none(),
+        "{:?}",
+        app.core.scoped.last_error
+    );
+    assert!(!app.core.scoped.staleness.unsaved_changes);
+    assert_eq!(app.core.scoped.project_path.as_ref(), Some(&path));
     // ショートカット保存はダイアログが出ず無反応になるため、成功通知で明示する。
     assert!(
-        app.last_notice
+        app.core
+            .scoped
+            .last_notice
             .as_deref()
             .is_some_and(|n| n.contains("保存しました") && n.contains("roundtrip.scz")),
         "{:?}",
-        app.last_notice
+        app.core.scoped.last_notice
     );
 
-    let saved_model = app.model.clone();
+    let saved_model = app.core.model.clone();
     let mut app2 = App::default();
     app2.open_project_from(path.clone());
-    assert!(app2.last_error.is_none(), "{:?}", app2.last_error);
-    assert!(app2.model.eq_ignoring_dofmap(&saved_model));
-    assert_eq!(app2.project_path.as_ref(), Some(&path));
+    assert!(
+        app2.core.scoped.last_error.is_none(),
+        "{:?}",
+        app2.core.scoped.last_error
+    );
+    assert!(app2.core.model.eq_ignoring_dofmap(&saved_model));
+    assert_eq!(app2.core.scoped.project_path.as_ref(), Some(&path));
 
     std::fs::remove_file(&path).ok();
 }
@@ -1619,7 +1983,7 @@ fn test_open_project_missing_file_sets_error() {
     app.open_project_from(std::path::PathBuf::from(
         "/nonexistent/dir/does_not_exist.scz",
     ));
-    assert!(app.last_error.is_some());
+    assert!(app.core.scoped.last_error.is_some());
 }
 
 #[test]
@@ -1630,31 +1994,41 @@ fn test_export_and_import_stbridge_roundtrip() {
 
     let mut app = App::default();
     app.load_model(crate::sample::portal_frame());
-    let original = app.model.clone();
+    let original = app.core.model.clone();
     app.export_stbridge_to(path.clone());
-    assert!(app.last_error.is_none(), "{:?}", app.last_error);
+    assert!(
+        app.core.scoped.last_error.is_none(),
+        "{:?}",
+        app.core.scoped.last_error
+    );
 
     let mut app2 = App::default();
     app2.import_stbridge_from(path.clone());
     // ST-Bridge は支点を持たないため、支点の自動設定の通知だけが出る
     // （それ以外の欠落警告はない）。
-    let msg = app2.last_error.as_deref().unwrap_or("");
+    let msg = app2.core.scoped.last_error.as_deref().unwrap_or("");
     assert!(
         msg.contains("ピン支点に設定"),
         "支点自動設定の通知が出るはず: {msg}"
     );
-    assert!(app2.model.validate().is_ok());
+    assert!(app2.core.model.validate().is_ok());
     // ST-Bridge プロジェクト(.scz)とは別物なので project_path は更新されない。
-    assert!(app2.project_path.is_none());
+    assert!(app2.core.scoped.project_path.is_none());
 
     // 標準 ST-Bridge は幾何サブセットのため完全一致は求めない（拘束・荷重・材料の
     // E/ν は対象外）が、節点数・部材数・座標・接続関係は保たれる。
-    assert_eq!(app2.model.nodes.len(), original.nodes.len());
-    assert_eq!(app2.model.elements.len(), original.elements.len());
-    for (a, b) in app2.model.nodes.iter().zip(original.nodes.iter()) {
+    assert_eq!(app2.core.model.nodes.len(), original.nodes.len());
+    assert_eq!(app2.core.model.elements.len(), original.elements.len());
+    for (a, b) in app2.core.model.nodes.iter().zip(original.nodes.iter()) {
         assert_eq!(a.coord, b.coord);
     }
-    for (a, b) in app2.model.elements.iter().zip(original.elements.iter()) {
+    for (a, b) in app2
+        .core
+        .model
+        .elements
+        .iter()
+        .zip(original.elements.iter())
+    {
         assert_eq!(a.kind, b.kind, "要素種別が保たれる");
         assert_eq!(a.nodes, b.nodes, "節点接続が保たれる");
     }
@@ -1671,7 +2045,11 @@ fn test_export_stbridge_standard_mode_writes_steel_library() {
     let mut app = App::default();
     app.load_model(crate::sample::portal_frame());
     app.export_stbridge_to(path.clone());
-    assert!(app.last_error.is_none(), "{:?}", app.last_error);
+    assert!(
+        app.core.scoped.last_error.is_none(),
+        "{:?}",
+        app.core.scoped.last_error
+    );
 
     let xml = std::fs::read_to_string(&path).unwrap();
     // 門型ラーメンのサンプルは鋼 H 断面（柱・梁）を持つため、標準断面要素と
@@ -1697,15 +2075,19 @@ fn test_stbridge_standard_mode_roundtrip_through_app() {
 
     let mut app = App::default();
     app.load_model(crate::sample::portal_frame());
-    let n_sections = app.model.sections.len();
+    let n_sections = app.core.model.sections.len();
     app.export_stbridge_to(path.clone());
-    assert!(app.last_error.is_none(), "{:?}", app.last_error);
+    assert!(
+        app.core.scoped.last_error.is_none(),
+        "{:?}",
+        app.core.scoped.last_error
+    );
 
     let mut app2 = App::default();
     app2.import_stbridge_from(path.clone());
     // 支点の自動設定の通知以外の警告（欠落・断面未解決など）がないこと
     // ＝標準モードのファイルを読み戻せることを確認する。
-    let msg = app2.last_error.as_deref().unwrap_or("");
+    let msg = app2.core.scoped.last_error.as_deref().unwrap_or("");
     assert!(
         msg.is_empty() || msg.contains("ピン支点に設定"),
         "標準モードのファイルを読み戻せる: {msg}"
@@ -1714,11 +2096,11 @@ fn test_stbridge_standard_mode_roundtrip_through_app() {
         !msg.contains("スキップ") && !msg.contains("破棄"),
         "欠落警告はないはず: {msg}"
     );
-    assert!(app2.model.validate().is_ok());
-    assert_eq!(app2.model.sections.len(), n_sections);
+    assert!(app2.core.model.validate().is_ok());
+    assert_eq!(app2.core.model.sections.len(), n_sections);
     // サンプルは鋼 H 断面のみ。読み戻した断面も H 形鋼として復元される。
     assert!(
-        app2.model.sections.iter().all(|s| matches!(
+        app2.core.model.sections.iter().all(|s| matches!(
             s.shape,
             Some(squid_n_core::section_shape::SectionShape::SteelH { .. })
         )),
@@ -1734,7 +2116,7 @@ fn test_import_stbridge_missing_file_sets_error() {
     app.import_stbridge_from(std::path::PathBuf::from(
         "/nonexistent/dir/does_not_exist.stb",
     ));
-    assert!(app.last_error.is_some());
+    assert!(app.core.scoped.last_error.is_some());
 }
 
 #[test]
@@ -1746,17 +2128,21 @@ fn test_combination_flow() {
         name: "G+Kx".into(),
         terms: vec![(LoadCaseId(0), 1.0), (LoadCaseId(1), 1.0)],
     };
-    app.undo.run(
-        &mut app.model,
+    app.core.scoped.undo.run(
+        &mut app.core.model,
         Box::new(squid_n_edit::AddCombination { combo }),
     );
 
     app.run_combination(0);
-    assert!(app.last_error.is_none(), "{:?}", app.last_error);
-    let bundle = app.results.as_ref().unwrap();
+    assert!(
+        app.core.scoped.last_error.is_none(),
+        "{:?}",
+        app.core.scoped.last_error
+    );
+    let bundle = app.core.scoped.results.as_ref().unwrap();
     assert_eq!(bundle.combos.len(), 1);
     assert!(!bundle.member_checks.is_empty());
-    assert_eq!(app.last_static, Some(StaticKey::Combo(0)));
+    assert_eq!(app.core.scoped.last_static, Some(StaticKey::Combo(0)));
 }
 
 /// 結果表示の切替 `select_displayed_result`（結果タブのドロップダウン・ナビゲータ共通）:
@@ -1768,7 +2154,7 @@ fn test_select_displayed_result_switches_forces_and_term() {
 
     let mut app = App::default();
     app.load_model(crate::sample::portal_frame());
-    app.analysis_cfg.threads = 1;
+    app.core.analysis_cfg.threads = 1;
     // 長期 DL+LL（重力 LC0 のみ）と短期 DL+LL+EX（地震 LC1 入り）の 2 組合せ。
     for combo in [
         squid_n_core::model::LoadCombination {
@@ -1780,19 +2166,23 @@ fn test_select_displayed_result_switches_forces_and_term() {
             terms: vec![(LoadCaseId(0), 1.0), (LoadCaseId(1), 1.0)],
         },
     ] {
-        app.undo.run(
-            &mut app.model,
+        app.core.scoped.undo.run(
+            &mut app.core.model,
             Box::new(squid_n_edit::AddCombination { combo }),
         );
     }
     app.run_static_all();
-    assert!(app.last_error.is_none(), "{:?}", app.last_error);
+    assert!(
+        app.core.scoped.last_error.is_none(),
+        "{:?}",
+        app.core.scoped.last_error
+    );
     // 一括解析後は最後の組合せ（短期 DL+LL+EX）が表示対象。
-    assert_eq!(app.last_static, Some(StaticKey::Combo(1)));
-    assert_eq!(app.design_term, LoadTerm::Short);
+    assert_eq!(app.core.scoped.last_static, Some(StaticKey::Combo(1)));
+    assert_eq!(app.core.design_term, LoadTerm::Short);
     // 長期・短期で部材内力が異なる（表示切替が実質的に効く前提）。
     {
-        let b = app.results.as_ref().unwrap();
+        let b = app.core.scoped.results.as_ref().unwrap();
         assert!(!b.member_forces.is_empty());
         assert_ne!(
             b.combos[0].1.member_forces[0].1.at,
@@ -1802,25 +2192,25 @@ fn test_select_displayed_result_switches_forces_and_term() {
 
     // 長期組合せ（Combo(0)）へ表示切替 → focus/last/member_forces/design_term が長期へ。
     app.select_displayed_result(StaticKey::Combo(0));
-    assert_eq!(app.nav.focus_result, Some(StaticKey::Combo(0)));
-    assert_eq!(app.last_static, Some(StaticKey::Combo(0)));
-    assert_eq!(app.design_term, LoadTerm::Long);
+    assert_eq!(app.ui.scoped.nav.focus_result, Some(StaticKey::Combo(0)));
+    assert_eq!(app.core.scoped.last_static, Some(StaticKey::Combo(0)));
+    assert_eq!(app.core.design_term, LoadTerm::Long);
     {
-        let b = app.results.as_ref().unwrap();
+        let b = app.core.scoped.results.as_ref().unwrap();
         assert_eq!(b.member_forces[0].1.at, b.combos[0].1.member_forces[0].1.at);
     }
 
     // 短期組合せ（Combo(1)）へ戻す → design_term が短期へ、member_forces も一致。
     app.select_displayed_result(StaticKey::Combo(1));
-    assert_eq!(app.design_term, LoadTerm::Short);
+    assert_eq!(app.core.design_term, LoadTerm::Short);
     {
-        let b = app.results.as_ref().unwrap();
+        let b = app.core.scoped.results.as_ref().unwrap();
         assert_eq!(b.member_forces[0].1.at, b.combos[1].1.member_forces[0].1.at);
     }
 
     // 存在しないキーは no-op（表示対象は変わらない）。
     app.select_displayed_result(StaticKey::Combo(99));
-    assert_eq!(app.last_static, Some(StaticKey::Combo(1)));
+    assert_eq!(app.core.scoped.last_static, Some(StaticKey::Combo(1)));
 }
 
 /// `run_static_all`（一括解析）は個別に `run_combination`（単体実行）を実行した
@@ -1841,32 +2231,44 @@ fn test_run_static_all_matches_individual_runs() {
 
     let mut app_batch = App::default();
     app_batch.load_model(crate::sample::portal_frame());
-    app_batch.analysis_cfg.threads = 1;
+    app_batch.core.analysis_cfg.threads = 1;
     for combo in combos.clone() {
-        app_batch.undo.run(
-            &mut app_batch.model,
+        app_batch.core.scoped.undo.run(
+            &mut app_batch.core.model,
             Box::new(squid_n_edit::AddCombination { combo }),
         );
     }
     app_batch.run_static_all();
-    assert!(app_batch.last_error.is_none(), "{:?}", app_batch.last_error);
+    assert!(
+        app_batch.core.scoped.last_error.is_none(),
+        "{:?}",
+        app_batch.core.scoped.last_error
+    );
 
     let mut app_each = App::default();
     app_each.load_model(crate::sample::portal_frame());
-    app_each.analysis_cfg.threads = 1;
+    app_each.core.analysis_cfg.threads = 1;
     for combo in combos {
-        app_each.undo.run(
-            &mut app_each.model,
+        app_each.core.scoped.undo.run(
+            &mut app_each.core.model,
             Box::new(squid_n_edit::AddCombination { combo }),
         );
     }
     app_each.run_combination(0);
-    assert!(app_each.last_error.is_none(), "{:?}", app_each.last_error);
+    assert!(
+        app_each.core.scoped.last_error.is_none(),
+        "{:?}",
+        app_each.core.scoped.last_error
+    );
     app_each.run_combination(1);
-    assert!(app_each.last_error.is_none(), "{:?}", app_each.last_error);
+    assert!(
+        app_each.core.scoped.last_error.is_none(),
+        "{:?}",
+        app_each.core.scoped.last_error
+    );
 
-    let bundle_batch = app_batch.results.as_ref().unwrap();
-    let bundle_each = app_each.results.as_ref().unwrap();
+    let bundle_batch = app_batch.core.scoped.results.as_ref().unwrap();
+    let bundle_each = app_each.core.scoped.results.as_ref().unwrap();
     assert_eq!(bundle_batch.combos.len(), bundle_each.combos.len());
     for ((name_b, res_b), (name_e, res_e)) in
         bundle_batch.combos.iter().zip(bundle_each.combos.iter())
@@ -1874,7 +2276,7 @@ fn test_run_static_all_matches_individual_runs() {
         assert_eq!(name_b, name_e);
         assert_eq!(res_b.disp, res_e.disp);
     }
-    assert_eq!(app_batch.last_static, Some(StaticKey::Combo(1)));
+    assert_eq!(app_batch.core.scoped.last_static, Some(StaticKey::Combo(1)));
 }
 
 /// 一括解析は荷重組合せが 1 件もなくても荷重ケース単体を解く（表示対象は
@@ -1883,20 +2285,27 @@ fn test_run_static_all_matches_individual_runs() {
 fn test_run_static_all_without_combos_solves_load_cases() {
     let mut app = App::default();
     app.load_model(crate::sample::portal_frame());
-    app.analysis_cfg.threads = 1;
-    assert!(app.model.combinations.is_empty());
-    assert!(!app.model.load_cases.is_empty());
+    app.core.analysis_cfg.threads = 1;
+    assert!(app.core.model.combinations.is_empty());
+    assert!(!app.core.model.load_cases.is_empty());
 
     app.run_static_all();
-    assert!(app.last_error.is_none(), "{:?}", app.last_error);
-    let bundle = app.results.as_ref().unwrap();
+    assert!(
+        app.core.scoped.last_error.is_none(),
+        "{:?}",
+        app.core.scoped.last_error
+    );
+    let bundle = app.core.scoped.results.as_ref().unwrap();
     assert_eq!(
         bundle.statics.len(),
-        app.model.load_cases.len(),
+        app.core.model.load_cases.len(),
         "全荷重ケースが単体で解かれるはず"
     );
     assert!(bundle.combos.is_empty());
-    assert!(matches!(app.last_static, Some(StaticKey::Case(_))));
+    assert!(matches!(
+        app.core.scoped.last_static,
+        Some(StaticKey::Case(_))
+    ));
 }
 
 /// 荷重ケースが 1 件もない場合はエラーメッセージを設定し、結果は変更しない。
@@ -1904,11 +2313,11 @@ fn test_run_static_all_without_combos_solves_load_cases() {
 fn test_run_static_all_no_load_cases_is_error() {
     let mut app = App::default();
     app.load_model(squid_n_core::model::Model::default());
-    assert!(app.model.load_cases.is_empty());
+    assert!(app.core.model.load_cases.is_empty());
 
     app.run_static_all();
-    assert!(app.last_error.is_some());
-    assert!(app.results.is_none());
+    assert!(app.core.scoped.last_error.is_some());
+    assert!(app.core.scoped.results.is_none());
 }
 
 /// 一括解析は荷重ケース単体の結果と、その線形和である荷重組合せの結果の双方を
@@ -1917,9 +2326,9 @@ fn test_run_static_all_no_load_cases_is_error() {
 fn test_run_static_all_combo_is_linear_sum_of_cases() {
     let mut app = App::default();
     app.load_model(crate::sample::portal_frame());
-    app.analysis_cfg.threads = 1;
-    app.undo.run(
-        &mut app.model,
+    app.core.analysis_cfg.threads = 1;
+    app.core.scoped.undo.run(
+        &mut app.core.model,
         Box::new(squid_n_edit::AddCombination {
             combo: squid_n_core::model::LoadCombination {
                 name: "G+Kx".into(),
@@ -1929,8 +2338,12 @@ fn test_run_static_all_combo_is_linear_sum_of_cases() {
     );
 
     app.run_static_all();
-    assert!(app.last_error.is_none(), "{:?}", app.last_error);
-    let bundle = app.results.as_ref().unwrap();
+    assert!(
+        app.core.scoped.last_error.is_none(),
+        "{:?}",
+        app.core.scoped.last_error
+    );
+    let bundle = app.core.scoped.results.as_ref().unwrap();
     let case = |id: LoadCaseId| {
         bundle
             .statics
@@ -1961,18 +2374,25 @@ fn test_current_static_priority() {
     let mut app = App::default();
     app.load_model(crate::sample::portal_frame());
     app.run_linear_static(LoadCaseId(0));
-    assert!(app.last_error.is_none(), "{:?}", app.last_error);
-    let expected_disp = app.results.as_ref().unwrap().statics[0].1.disp.clone();
+    assert!(
+        app.core.scoped.last_error.is_none(),
+        "{:?}",
+        app.core.scoped.last_error
+    );
+    let expected_disp = app.core.scoped.results.as_ref().unwrap().statics[0]
+        .1
+        .disp
+        .clone();
 
     // ナビゲータで存在しない Combo を選択していても last_static にフォールバックする
-    app.nav.focus_result = Some(StaticKey::Combo(9));
+    app.ui.scoped.nav.focus_result = Some(StaticKey::Combo(9));
     let fallback = app
         .current_static()
         .expect("無効な選択時は last_static にフォールバックするはず");
     assert_eq!(fallback.disp, expected_disp);
 
     // Case を選択すれば該当ケースの結果が返る
-    app.nav.focus_result = Some(StaticKey::Case(StaticCaseKey::User(LoadCaseId(0))));
+    app.ui.scoped.nav.focus_result = Some(StaticKey::Case(StaticCaseKey::User(LoadCaseId(0))));
     let by_case = app
         .current_static()
         .expect("Case 選択時は該当ケースの結果が返るはず");
@@ -1988,17 +2408,29 @@ fn test_holding_capacity_flow() {
     assert!(app.compute_holding_capacity().is_err());
 
     app.generate_stories_action();
-    assert!(app.last_error.is_none(), "{:?}", app.last_error);
+    assert!(
+        app.core.scoped.last_error.is_none(),
+        "{:?}",
+        app.core.scoped.last_error
+    );
 
     app.run_seismic(SeismicDir::X);
-    assert!(app.last_error.is_none(), "{:?}", app.last_error);
+    assert!(
+        app.core.scoped.last_error.is_none(),
+        "{:?}",
+        app.core.scoped.last_error
+    );
 
     // プッシュオーバー未実行 → Err
     assert!(app.compute_holding_capacity().is_err());
 
-    app.analysis_cfg.push_steps = 10;
+    app.core.analysis_cfg.push_steps = 10;
     app.run_pushover();
-    assert!(app.last_error.is_none(), "{:?}", app.last_error);
+    assert!(
+        app.core.scoped.last_error.is_none(),
+        "{:?}",
+        app.core.scoped.last_error
+    );
 
     let (result, story_ranks) = app
         .compute_holding_capacity()
@@ -2008,7 +2440,7 @@ fn test_holding_capacity_flow() {
     // Qu はプッシュオーバー最終点の層せん断（capacity_curve.story_shear）から取得される。
     assert!(result.stories[0].qu > 0.0, "{}", result.stories[0].qu);
     // design_rank_auto=false（既定）→ 全層フォールバック（選択値 design_rank）。
-    assert_eq!(story_ranks, vec![app.design_rank]);
+    assert_eq!(story_ranks, vec![app.core.design_rank]);
     assert!(result.member_ranks.is_empty());
 }
 
@@ -2023,17 +2455,21 @@ fn test_holding_capacity_falls_back_when_brace_undetected() {
     app.load_model(crate::sample::portal_frame()); // 筋かいのないラーメン
     app.generate_stories_action();
     app.run_seismic(SeismicDir::X);
-    app.analysis_cfg.push_steps = 10;
+    app.core.analysis_cfg.push_steps = 10;
     app.run_pushover();
-    assert!(app.last_error.is_none(), "{:?}", app.last_error);
+    assert!(
+        app.core.scoped.last_error.is_none(),
+        "{:?}",
+        app.core.scoped.last_error
+    );
 
-    app.design_rank_auto = false;
-    app.design_rank = MemberRank::FA;
-    app.design_frame = FrameType::SteelBrace;
+    app.core.design_rank_auto = false;
+    app.core.design_rank = MemberRank::FA;
+    app.core.design_frame = FrameType::SteelBrace;
     let (result, _) = app.compute_holding_capacity().expect("Ok のはず");
 
     assert!(
-        app.ds_beta_u_unavailable,
+        app.core.scoped.ds_beta_u_unavailable,
         "筋かい未検出なら βu 算定不可のフラグが立つはず"
     );
     // 純ラーメンの行（S造 FA=0.25）ではなく、S ブレースの行（FA=0.30）が使われる。
@@ -2062,16 +2498,28 @@ fn test_holding_capacity_rank_auto_from_width_thickness() {
     let mut app = App::default();
     app.load_model(crate::sample::portal_frame());
     app.generate_stories_action();
-    assert!(app.last_error.is_none(), "{:?}", app.last_error);
+    assert!(
+        app.core.scoped.last_error.is_none(),
+        "{:?}",
+        app.core.scoped.last_error
+    );
 
     app.run_seismic(SeismicDir::X);
-    assert!(app.last_error.is_none(), "{:?}", app.last_error);
+    assert!(
+        app.core.scoped.last_error.is_none(),
+        "{:?}",
+        app.core.scoped.last_error
+    );
 
-    app.analysis_cfg.push_steps = 10;
+    app.core.analysis_cfg.push_steps = 10;
     app.run_pushover();
-    assert!(app.last_error.is_none(), "{:?}", app.last_error);
+    assert!(
+        app.core.scoped.last_error.is_none(),
+        "{:?}",
+        app.core.scoped.last_error
+    );
 
-    app.design_rank_auto = true;
+    app.core.design_rank_auto = true;
     let (result, story_ranks) = app
         .compute_holding_capacity()
         .expect("shape 付き鋼断面があれば Ok のはず");
@@ -2083,7 +2531,7 @@ fn test_holding_capacity_rank_auto_from_width_thickness() {
 
     // 柱 H-300x300x10x15（SN400B）: フランジ 10.0 → FB が支配。
     let col_rank = s_member_rank_by_kihon(
-        app.model.sections[0].shape.as_ref().unwrap(),
+        app.core.model.sections[0].shape.as_ref().unwrap(),
         SteelMemberUse::Column,
         "SN400B",
     )
@@ -2091,7 +2539,7 @@ fn test_holding_capacity_rank_auto_from_width_thickness() {
     assert_eq!(col_rank, MemberRank::FB);
     // 梁 H-400x200x8x13（SN400B）: フランジ・ウェブとも FA。
     let beam_rank = s_member_rank_by_kihon(
-        app.model.sections[1].shape.as_ref().unwrap(),
+        app.core.model.sections[1].shape.as_ref().unwrap(),
         SteelMemberUse::Beam,
         "SN400B",
     )
@@ -2111,9 +2559,9 @@ fn test_holding_capacity_rank_auto_from_width_thickness() {
     assert_eq!(story_ranks[0], worst_rank(&[col_rank, beam_rank]).unwrap());
     // 全部材のランクを算定できているため、選択ランクへのフォールバック層はない。
     assert!(
-        app.ds_rank_fallback_stories.is_empty(),
+        app.core.scoped.ds_rank_fallback_stories.is_empty(),
         "{:?}",
-        app.ds_rank_fallback_stories
+        app.core.scoped.ds_rank_fallback_stories
     );
 }
 
@@ -2128,29 +2576,33 @@ fn test_holding_capacity_rank_auto_records_fallback_stories() {
     app.load_model(crate::sample::portal_frame());
     app.generate_stories_action();
     app.run_seismic(SeismicDir::X);
-    app.analysis_cfg.push_steps = 10;
+    app.core.analysis_cfg.push_steps = 10;
     app.run_pushover();
-    assert!(app.last_error.is_none(), "{:?}", app.last_error);
+    assert!(
+        app.core.scoped.last_error.is_none(),
+        "{:?}",
+        app.core.scoped.last_error
+    );
 
     // 全断面の形状情報を外し、幅厚比・RC 略算のいずれも算定不能にする。
-    for sec in &mut app.model.sections {
+    for sec in &mut app.core.model.sections {
         sec.shape = None;
     }
-    app.design_rank_auto = true;
-    app.design_rank = MemberRank::FB;
+    app.core.design_rank_auto = true;
+    app.core.design_rank = MemberRank::FB;
     let (_, story_ranks) = app.compute_holding_capacity().expect("Ok のはず");
 
     // 全層が選択ランクへフォールバックし、層名が記録される。
     assert_eq!(story_ranks, vec![MemberRank::FB]);
     assert_eq!(
-        app.ds_rank_fallback_stories,
-        vec![app.model.stories[0].name.clone()]
+        app.core.scoped.ds_rank_fallback_stories,
+        vec![app.core.model.stories[0].name.clone()]
     );
 
     // 自動判定 OFF では全層が選択値の明示運用のため、フォールバック記録は空。
-    app.design_rank_auto = false;
+    app.core.design_rank_auto = false;
     let _ = app.compute_holding_capacity().expect("Ok のはず");
-    assert!(app.ds_rank_fallback_stories.is_empty());
+    assert!(app.core.scoped.ds_rank_fallback_stories.is_empty());
 }
 
 /// SectionShape::RcRect の配筋情報から `rc_capacity_input_from_rect` で
@@ -2411,23 +2863,35 @@ fn test_holding_capacity_rank_auto_rc_rect_from_shape() {
     let mut app = App::default();
     app.load_model(model);
     app.generate_stories_action();
-    assert!(app.last_error.is_none(), "{:?}", app.last_error);
+    assert!(
+        app.core.scoped.last_error.is_none(),
+        "{:?}",
+        app.core.scoped.last_error
+    );
 
     app.run_seismic(SeismicDir::X);
-    assert!(app.last_error.is_none(), "{:?}", app.last_error);
+    assert!(
+        app.core.scoped.last_error.is_none(),
+        "{:?}",
+        app.core.scoped.last_error
+    );
 
     // RC の簡易断面・fy 未設定材料はヒンジ耐力の既定値(鋼材既定 235N/mm²)を用いる
     // 都合上、既定の push_max_disp=500mm では機構形成後に特異行列となり得るため、
     // 微小変位のみを対象とする(ここではランク判定経路の配線確認が目的で、
     // 崩壊形の精算は対象外)。
-    app.analysis_cfg.push_steps = 3;
-    app.analysis_cfg.push_use_max_disp = true;
-    app.analysis_cfg.push_max_disp = 3.0;
-    app.analysis_cfg.push_use_drift_angle = false;
+    app.core.analysis_cfg.push_steps = 3;
+    app.core.analysis_cfg.push_use_max_disp = true;
+    app.core.analysis_cfg.push_max_disp = 3.0;
+    app.core.analysis_cfg.push_use_drift_angle = false;
     app.run_pushover();
-    assert!(app.last_error.is_none(), "{:?}", app.last_error);
+    assert!(
+        app.core.scoped.last_error.is_none(),
+        "{:?}",
+        app.core.scoped.last_error
+    );
 
-    app.design_rank_auto = true;
+    app.core.design_rank_auto = true;
     let (result, _story_ranks) = app
         .compute_holding_capacity()
         .expect("RC 矩形 + fc 付き材料があれば Ok のはず");
@@ -2447,9 +2911,11 @@ fn test_holding_capacity_rank_auto_rc_rect_from_shape() {
     //       σ0/Fc・τu/Fc ともに FA 限界以下 → FA
     //   梁: τu/Fc ≦ 0.15 → FA
     // となる。せん断先行（Qsu < Qmu）でもないため脆性 FD にも該当しない。
-    let mat = &app.model.materials[0];
+    let mat = &app.core.model.materials[0];
     let fc = mat.fc.expect("fc 設定済み");
     let resp: std::collections::HashMap<ElemId, _> = app
+        .core
+        .scoped
         .results
         .as_ref()
         .unwrap()
@@ -2632,9 +3098,13 @@ fn test_rc_sigma_0_from_compression_axial_force() {
     let mut app = App::default();
     app.load_model(model);
     app.run_linear_static(LoadCaseId(0));
-    assert!(app.last_error.is_none(), "{:?}", app.last_error);
+    assert!(
+        app.core.scoped.last_error.is_none(),
+        "{:?}",
+        app.core.scoped.last_error
+    );
 
-    let member_forces = &app.results.as_ref().unwrap().member_forces;
+    let member_forces = &app.core.scoped.results.as_ref().unwrap().member_forces;
     let (_, mf) = member_forces
         .iter()
         .find(|(id, _)| *id == ElemId(0))
@@ -2648,8 +3118,8 @@ fn test_rc_sigma_0_from_compression_axial_force() {
         -p
     );
 
-    let statics = &app.results.as_ref().unwrap().statics;
-    let gravity_lc = app.model.load_cases.first().map(|c| c.id);
+    let statics = &app.core.scoped.results.as_ref().unwrap().statics;
+    let gravity_lc = app.core.model.load_cases.first().map(|c| c.id);
     let sigma_0 =
         rc_sigma_0_from_gravity_or_last_static(statics, member_forces, gravity_lc, ElemId(0), b, d);
     let expected_sigma_0 = p / (b * d);
@@ -2802,11 +3272,19 @@ fn test_rc_sigma_0_prefers_gravity_load_case_over_last_static() {
     // 先頭ケース(長期,圧縮)→2番目のケース(地震,引張)の順に実行し、
     // 「最後に実行した静的解析結果」は引張(id=1)になるようにする。
     app.run_linear_static(LoadCaseId(0));
-    assert!(app.last_error.is_none(), "{:?}", app.last_error);
+    assert!(
+        app.core.scoped.last_error.is_none(),
+        "{:?}",
+        app.core.scoped.last_error
+    );
     app.run_linear_static(LoadCaseId(1));
-    assert!(app.last_error.is_none(), "{:?}", app.last_error);
+    assert!(
+        app.core.scoped.last_error.is_none(),
+        "{:?}",
+        app.core.scoped.last_error
+    );
 
-    let bundle = app.results.as_ref().unwrap();
+    let bundle = app.core.scoped.results.as_ref().unwrap();
     // 最後に実行した静的解析結果(bundle.member_forces)は引張なので、
     // これをそのまま使うと σ0=0 になってしまうことの確認(比較対象)。
     let sigma_0_last_only =
@@ -2815,7 +3293,7 @@ fn test_rc_sigma_0_prefers_gravity_load_case_over_last_static() {
 
     // 優先順位が正しく効いていれば、先頭ケース(長期,id=0)の圧縮軸力から
     // σ0=P1/(b・D) (>0) が算定される。
-    let gravity_lc = app.model.load_cases.first().map(|c| c.id);
+    let gravity_lc = app.core.model.load_cases.first().map(|c| c.id);
     assert_eq!(gravity_lc, Some(LoadCaseId(0)));
     let sigma_0 = rc_sigma_0_from_gravity_or_last_static(
         &bundle.statics,
@@ -2855,16 +3333,16 @@ fn cmq_display_load_case_falls_back_to_first_case() {
     // 荷重ケースが1つもなければ None。
     assert!(app.cmq_display_load_case().is_none());
 
-    app.model.load_cases = vec![mk_case(0, "DL"), mk_case(1, "LL")];
+    app.core.model.load_cases = vec![mk_case(0, "DL"), mk_case(1, "LL")];
     // 未選択（None）なら先頭ケース。
     assert_eq!(app.cmq_display_load_case().unwrap().name, "DL");
 
     // 選択中なら選択中のケース。
-    app.nav.focus_load_case = Some(LoadCaseId(1));
+    app.ui.scoped.nav.focus_load_case = Some(LoadCaseId(1));
     assert_eq!(app.cmq_display_load_case().unwrap().name, "LL");
 
     // 選択中IDが失効（削除済み）していれば先頭ケースへフォールバック。
-    app.nav.focus_load_case = Some(LoadCaseId(99));
+    app.ui.scoped.nav.focus_load_case = Some(LoadCaseId(99));
     assert_eq!(app.cmq_display_load_case().unwrap().name, "DL");
 }
 
@@ -2963,13 +3441,17 @@ fn test_sync_gravity_load_cases_action_square_slab_triangle_distribution() {
         .validate()
         .expect("テストモデルは validate を通るはず");
     let mut app = App {
-        model,
+        core: AppCore {
+            model,
+            ..Default::default()
+        },
         ..App::default()
     };
 
     app.sync_gravity_load_cases_action();
 
     let case = app
+        .core
         .model
         .load_cases
         .iter()
@@ -3010,6 +3492,7 @@ fn test_sync_gravity_load_cases_action_square_slab_triangle_distribution() {
     // 再同期しても重複しない（全置換）
     app.sync_gravity_load_cases_action();
     let cases: Vec<_> = app
+        .core
         .model
         .load_cases
         .iter()
@@ -3019,9 +3502,10 @@ fn test_sync_gravity_load_cases_action_square_slab_triangle_distribution() {
     assert_eq!(cases[0].member.len(), 8, "再同期で荷重が重複してはいけない");
 
     // undo で元に戻る（新規作成だったケースが丸ごと消える）
-    app.undo.undo(&mut app.model);
+    app.core.scoped.undo.undo(&mut app.core.model);
     assert!(
-        !app.model
+        !app.core
+            .model
             .load_cases
             .iter()
             .any(|lc| lc.name == DL_CASE_NAME),
@@ -3044,7 +3528,10 @@ fn test_sync_gravity_load_cases_action_separates_dead_and_live() {
         .validate()
         .expect("テストモデルは validate を通るはず");
     let mut app = App {
-        model,
+        core: AppCore {
+            model,
+            ..Default::default()
+        },
         ..App::default()
     };
 
@@ -3069,6 +3556,7 @@ fn test_sync_gravity_load_cases_action_separates_dead_and_live() {
 
     // DL ケース: 従来どおり loads(0.005) を分配。
     let dl = app
+        .core
         .model
         .load_cases
         .iter()
@@ -3076,23 +3564,24 @@ fn test_sync_gravity_load_cases_action_separates_dead_and_live() {
         .expect("DLケースが作られるはず");
     assert_eq!(dl.kind, LoadCaseKind::Dead);
     let area = 4000.0 * 4000.0;
-    assert!((sum_vertical(&app.model, DL_CASE_NAME) - 0.005 * area).abs() < 1e-6);
+    assert!((sum_vertical(&app.core.model, DL_CASE_NAME) - 0.005 * area).abs() < 1e-6);
 
     // LL ケース: 骨組用積載 1.8e-3 N/mm² を分配（DL とは別ケース・kind=Live）。
     let ll = app
+        .core
         .model
         .load_cases
         .iter()
         .find(|lc| lc.name == LL_FRAME_CASE_NAME)
         .expect("LL(架構用)ケースが作られるはず");
     assert_eq!(ll.kind, LoadCaseKind::Live);
-    assert!((sum_vertical(&app.model, LL_FRAME_CASE_NAME) - 1.8e-3 * area).abs() < 1e-6);
+    assert!((sum_vertical(&app.core.model, LL_FRAME_CASE_NAME) - 1.8e-3 * area).abs() < 1e-6);
 
     // 用途を外すと LL ケースは空同期され、寄与がなくなる（新規なら作られない）。
-    app.model.slabs[0].plate.usage = None;
+    app.core.model.slabs[0].plate.usage = None;
     app.sync_gravity_load_cases_action();
     assert!(
-        (sum_vertical(&app.model, LL_FRAME_CASE_NAME)).abs() < 1e-12,
+        (sum_vertical(&app.core.model, LL_FRAME_CASE_NAME)).abs() < 1e-12,
         "用途を外したら積載寄与は 0 になるはず"
     );
 }
@@ -3118,7 +3607,10 @@ fn test_floor_design_checks_slab() {
     model.slabs[0].plate.section = Some(slab_sec_id);
     model.validate().expect("validate");
     let app = App {
-        model,
+        core: AppCore {
+            model,
+            ..Default::default()
+        },
         ..App::default()
     };
 
@@ -3197,7 +3689,10 @@ fn test_floor_design_skips_materialized_joist() {
     });
     model.validate().expect("validate");
     let app = App {
-        model,
+        core: AppCore {
+            model,
+            ..Default::default()
+        },
         ..App::default()
     };
 
@@ -3275,7 +3770,10 @@ fn test_floor_design_checks_secondary_member_joist() {
         });
     model.validate().expect("validate");
     let app = App {
-        model,
+        core: AppCore {
+            model,
+            ..Default::default()
+        },
         ..App::default()
     };
 
@@ -3348,7 +3846,10 @@ fn test_floor_design_checks_secondary_joist_without_section_is_unchecked() {
         });
     model.validate().expect("validate");
     let app = App {
-        model,
+        core: AppCore {
+            model,
+            ..Default::default()
+        },
         ..App::default()
     };
     let (joists, _) = app.floor_design_checks();
@@ -3452,7 +3953,10 @@ fn test_floor_design_checks_secondary_joist_uses_same_level_slab() {
         });
     model.validate().expect("validate");
     let app = App {
-        model,
+        core: AppCore {
+            model,
+            ..Default::default()
+        },
         ..App::default()
     };
 
@@ -3551,7 +4055,10 @@ fn test_floor_design_checks_secondary_joist_on_shared_edge_averages_width() {
     }];
     model.validate().expect("validate");
     let app = App {
-        model,
+        core: AppCore {
+            model,
+            ..Default::default()
+        },
         ..App::default()
     };
 
@@ -3633,7 +4140,10 @@ fn test_floor_design_checks_secondary_joist_on_slab_edge() {
         });
     model.validate().expect("validate");
     let app = App {
-        model,
+        core: AppCore {
+            model,
+            ..Default::default()
+        },
         ..App::default()
     };
 
@@ -3690,7 +4200,10 @@ fn test_slab_design_span_respects_one_way() {
 
     // 一方向 X → スパン = lx = 6000（長辺）。
     let app_x = App {
-        model: mk_model(Some(OneWayDir::X)),
+        core: AppCore {
+            model: mk_model(Some(OneWayDir::X)),
+            ..Default::default()
+        },
         ..App::default()
     };
     let (_j, slabs_x) = app_x.floor_design_checks();
@@ -3701,7 +4214,10 @@ fn test_slab_design_span_respects_one_way() {
 
     // 一方向 Y → スパン = ly = 3000（短辺）。
     let app_y = App {
-        model: mk_model(Some(OneWayDir::Y)),
+        core: AppCore {
+            model: mk_model(Some(OneWayDir::Y)),
+            ..Default::default()
+        },
         ..App::default()
     };
     let (_j, slabs_y) = app_y.floor_design_checks();
@@ -3712,7 +4228,10 @@ fn test_slab_design_span_respects_one_way() {
 
     // 指定なし → 短辺 min(6000,3000)=3000（安全側）。
     let app_n = App {
-        model: mk_model(None),
+        core: AppCore {
+            model: mk_model(None),
+            ..Default::default()
+        },
         ..App::default()
     };
     let (_j, slabs_n) = app_n.floor_design_checks();
@@ -3764,7 +4283,10 @@ fn test_attached_cantilever_slab_check_coef_2() {
     });
     model.validate().expect("validate");
     let app = App {
-        model,
+        core: AppCore {
+            model,
+            ..Default::default()
+        },
         ..App::default()
     };
     let (_j, slabs) = app.floor_design_checks();
@@ -3777,11 +4299,13 @@ fn test_attached_cantilever_slab_check_coef_2() {
         .find(|(id, _)| *id == attached_id)
         .expect("取り付きが床検定に載る");
     let w_e = app
+        .core
         .model
-        .slab_intensity(&app.model.slabs[0], LoadPurpose::Floor);
+        .slab_intensity(&app.core.model.slabs[0], LoadPurpose::Floor);
     let w_a = app
+        .core
         .model
-        .slab_intensity(&app.model.slabs[1], LoadPurpose::Floor);
+        .slab_intensity(&app.core.model.slabs[1], LoadPurpose::Floor);
     assert!(
         (enclosed.1.moment - w_e * 4000.0 * 4000.0 / 8.0).abs() < 1.0,
         "囲まれは coef=8 M={} w={}",
@@ -3831,14 +4355,18 @@ fn test_attached_trapezoid_slab_check_survives_none_dimensions() {
     assert!(dims.is_none(), "台形は矩形寸法を持たない: {dims:?}");
     model.validate().expect("validate");
     let app = App {
-        model,
+        core: AppCore {
+            model,
+            ..Default::default()
+        },
         ..App::default()
     };
     let (_j, slabs) = app.floor_design_checks();
     assert_eq!(slabs.len(), 1, "slab_dimensions が None でも検定する");
     let w = app
+        .core
         .model
-        .slab_intensity(&app.model.slabs[0], LoadPurpose::Floor);
+        .slab_intensity(&app.core.model.slabs[0], LoadPurpose::Floor);
     let sr = &slabs[0].1;
     assert!((sr.span - 2000.0).abs() < 1e-6, "スパン={}", sr.span);
     assert!(
@@ -3872,14 +4400,18 @@ fn test_attached_point_slab_check_coef_2() {
     });
     model.validate().expect("validate");
     let app = App {
-        model,
+        core: AppCore {
+            model,
+            ..Default::default()
+        },
         ..App::default()
     };
     let (_j, slabs) = app.floor_design_checks();
     assert_eq!(slabs.len(), 1);
     let w = app
+        .core
         .model
-        .slab_intensity(&app.model.slabs[0], LoadPurpose::Floor);
+        .slab_intensity(&app.core.model.slabs[0], LoadPurpose::Floor);
     let sr = &slabs[0].1;
     assert!((sr.span - 1500.0).abs() < 1e-6, "スパン={}", sr.span);
     assert!(
@@ -3989,7 +4521,7 @@ fn test_auto_generate_combinations_from_kinds() {
     use squid_n_core::model::LoadCaseKind;
 
     let mut app = App::default();
-    app.model.load_cases = vec![
+    app.core.model.load_cases = vec![
         kind_lc(0, "固定", LoadCaseKind::Dead),
         kind_lc(1, "積載", LoadCaseKind::Live),
         kind_lc(2, "積雪", LoadCaseKind::Snow),
@@ -3997,12 +4529,17 @@ fn test_auto_generate_combinations_from_kinds() {
     ];
 
     app.auto_generate_combinations_action();
-    assert!(app.last_error.is_none(), "{:?}", app.last_error);
+    assert!(
+        app.core.scoped.last_error.is_none(),
+        "{:?}",
+        app.core.scoped.last_error
+    );
 
     // 多雪区域=false: DL+LL(1) + DL+LL+SL(1) = 2 ケース
     // （地震(EX/EY)は kind だけでは方向を判別できないため対象外の仕様。
     // 風は種別 Wind のケースがあっても生成しない）。
     let names: Vec<&str> = app
+        .core
         .model
         .combinations
         .iter()
@@ -4012,15 +4549,15 @@ fn test_auto_generate_combinations_from_kinds() {
 
     // DL+LL の中身は Dead(0)+Live(1) を各1.0で参照する。
     assert_eq!(
-        app.model.combinations[0].terms,
+        app.core.model.combinations[0].terms,
         vec![(LoadCaseId(0), 1.0), (LoadCaseId(1), 1.0)]
     );
 
     // 各組合せは個別コマンドで追加されているため、全 undo で消える。
-    for _ in 0..app.model.combinations.len() {
-        app.undo.undo(&mut app.model);
+    for _ in 0..app.core.model.combinations.len() {
+        app.core.scoped.undo.undo(&mut app.core.model);
     }
-    assert!(app.model.combinations.is_empty());
+    assert!(app.core.model.combinations.is_empty());
 }
 
 /// 多雪区域フラグ（AnalysisSettings::heavy_snow_zone）を立てると
@@ -4030,8 +4567,8 @@ fn test_auto_generate_combinations_heavy_snow() {
     use squid_n_core::model::LoadCaseKind;
 
     let mut app = App::default();
-    app.analysis_cfg.heavy_snow_zone = true;
-    app.model.load_cases = vec![
+    app.core.analysis_cfg.heavy_snow_zone = true;
+    app.core.model.load_cases = vec![
         kind_lc(0, "固定", LoadCaseKind::Dead),
         kind_lc(1, "積載", LoadCaseKind::Live),
         kind_lc(2, "積雪", LoadCaseKind::Snow),
@@ -4039,9 +4576,14 @@ fn test_auto_generate_combinations_heavy_snow() {
     ];
 
     app.auto_generate_combinations_action();
-    assert!(app.last_error.is_none(), "{:?}", app.last_error);
+    assert!(
+        app.core.scoped.last_error.is_none(),
+        "{:?}",
+        app.core.scoped.last_error
+    );
 
     let names: Vec<&str> = app
+        .core
         .model
         .combinations
         .iter()
@@ -4060,28 +4602,41 @@ fn test_auto_generate_combinations_missing_dead_or_live_is_error() {
 
     // Dead 無し
     let mut app = App::default();
-    app.model.load_cases = vec![kind_lc(0, "積載", LoadCaseKind::Live)];
+    app.core.model.load_cases = vec![kind_lc(0, "積載", LoadCaseKind::Live)];
     app.auto_generate_combinations_action();
-    assert!(app.last_error.as_deref().unwrap().contains("固定荷重"));
+    assert!(app
+        .core
+        .scoped
+        .last_error
+        .as_deref()
+        .unwrap()
+        .contains("固定荷重"));
     // 荷重組合せ欄に表示する専用スロットにも同じエラーが入る。
-    assert_eq!(app.combo_error, app.last_error);
-    assert!(app.model.combinations.is_empty());
+    assert_eq!(app.core.scoped.combo_error, app.core.scoped.last_error);
+    assert!(app.core.model.combinations.is_empty());
 
     // Live 無し
     let mut app = App::default();
-    app.model.load_cases = vec![kind_lc(0, "固定", LoadCaseKind::Dead)];
+    app.core.model.load_cases = vec![kind_lc(0, "固定", LoadCaseKind::Dead)];
     app.auto_generate_combinations_action();
-    assert!(app.last_error.as_deref().unwrap().contains("積載荷重"));
-    assert_eq!(app.combo_error, app.last_error);
-    assert!(app.model.combinations.is_empty());
+    assert!(app
+        .core
+        .scoped
+        .last_error
+        .as_deref()
+        .unwrap()
+        .contains("積載荷重"));
+    assert_eq!(app.core.scoped.combo_error, app.core.scoped.last_error);
+    assert!(app.core.model.combinations.is_empty());
 
     // Dead/Live が揃えば生成に成功し、組合せ欄のエラーは消える。
-    app.model
+    app.core
+        .model
         .load_cases
         .push(kind_lc(1, "積載", LoadCaseKind::Live));
     app.auto_generate_combinations_action();
-    assert!(app.combo_error.is_none());
-    assert!(!app.model.combinations.is_empty());
+    assert!(app.core.scoped.combo_error.is_none());
+    assert!(!app.core.model.combinations.is_empty());
 }
 
 /// SetLoadCfg が App の undo スタック経由で機能すること
@@ -4091,7 +4646,7 @@ fn test_set_load_cfg_via_app_undo() {
     use squid_n_core::model::{KBraceWeightRule, LoadCfg};
 
     let mut app = App::default();
-    assert!(app.model.load_cfg.is_none());
+    assert!(app.core.model.load_cfg.is_none());
 
     let cfg = LoadCfg {
         steel_weight_factor: 1.1,
@@ -4099,16 +4654,16 @@ fn test_set_load_cfg_via_app_undo() {
         live_load_reduction: true,
         ..Default::default()
     };
-    app.undo.run(
-        &mut app.model,
+    app.core.scoped.undo.run(
+        &mut app.core.model,
         Box::new(squid_n_edit::SetLoadCfg {
             cfg: Some(cfg.clone()),
         }),
     );
-    assert_eq!(app.model.load_cfg, Some(cfg));
+    assert_eq!(app.core.model.load_cfg, Some(cfg));
 
-    app.undo.undo(&mut app.model);
-    assert!(app.model.load_cfg.is_none());
+    app.core.scoped.undo.undo(&mut app.core.model);
+    assert!(app.core.model.load_cfg.is_none());
 }
 
 /// 3層1本柱のモデルで `column_live_load_factors` が
@@ -4203,22 +4758,26 @@ fn test_run_preparation_generates_stories_and_infers_structure() {
     use squid_n_core::model::StoryStructure;
     let mut app = App::default();
     app.load_model(crate::sample::portal_frame());
-    assert!(app.model.stories.is_empty(), "前提: 階は未定義");
+    assert!(app.core.model.stories.is_empty(), "前提: 階は未定義");
 
     app.run_preparation();
-    assert!(app.last_error.is_none(), "{:?}", app.last_error);
+    assert!(
+        app.core.scoped.last_error.is_none(),
+        "{:?}",
+        app.core.scoped.last_error
+    );
     assert_eq!(
-        app.model.stories.len(),
+        app.core.model.stories.len(),
         2,
         "準備計算が階（基部の床 + 上の床）を生成するはず"
     );
     // 構造種別は層の属性で、層の上端の階が持つ。
     assert_eq!(
-        app.model.stories[1].structure,
+        app.core.model.stories[1].structure,
         StoryStructure::S,
         "鋼断面の柱梁だけの層は S と判定されるはず"
     );
-    assert!(!app.staleness.preparation_stale);
+    assert!(!app.core.scoped.staleness.preparation_stale);
 }
 
 /// 準備計算は冪等: モデルが変わっていなければ 2 回目以降の実行で undo 履歴を積まず、
@@ -4229,28 +4788,40 @@ fn test_run_preparation_is_idempotent() {
     let mut app = App::default();
     app.load_model(crate::sample::portal_frame());
     app.run_preparation();
-    assert!(app.last_error.is_none(), "{:?}", app.last_error);
+    assert!(
+        app.core.scoped.last_error.is_none(),
+        "{:?}",
+        app.core.scoped.last_error
+    );
 
     // 解析まで済ませて結果を最新状態にする。
     app.run_linear_static(LoadCaseId(0));
-    assert!(app.last_error.is_none(), "{:?}", app.last_error);
-    assert!(!app.staleness.results_stale);
-    let undo_label = app.undo.undo_label().map(|s| s.to_string());
-    let stories_before = app.model.stories.clone();
-    let nodes_before = app.model.nodes.len();
+    assert!(
+        app.core.scoped.last_error.is_none(),
+        "{:?}",
+        app.core.scoped.last_error
+    );
+    assert!(!app.core.scoped.staleness.results_stale);
+    let undo_label = app.core.scoped.undo.undo_label().map(|s| s.to_string());
+    let stories_before = app.core.model.stories.clone();
+    let nodes_before = app.core.model.nodes.len();
 
     // 2 回目の準備計算ではモデルが変わらない。
     app.run_preparation();
-    assert!(app.last_error.is_none(), "{:?}", app.last_error);
-    assert_eq!(app.model.stories, stories_before);
-    assert_eq!(app.model.nodes.len(), nodes_before);
+    assert!(
+        app.core.scoped.last_error.is_none(),
+        "{:?}",
+        app.core.scoped.last_error
+    );
+    assert_eq!(app.core.model.stories, stories_before);
+    assert_eq!(app.core.model.nodes.len(), nodes_before);
     assert_eq!(
-        app.undo.undo_label().map(|s| s.to_string()),
+        app.core.scoped.undo.undo_label().map(|s| s.to_string()),
         undo_label,
         "差分がなければ undo 履歴を積まないはず"
     );
     assert!(
-        !app.staleness.results_stale,
+        !app.core.scoped.staleness.results_stale,
         "差分がなければ解析結果を stale にしないはず"
     );
 }
@@ -4264,19 +4835,23 @@ fn test_run_preparation_continues_when_story_generation_fails() {
 
     app.run_preparation();
     assert!(
-        app.last_error
+        app.core
+            .scoped
+            .last_error
             .as_deref()
             .unwrap()
             .contains("階の生成エラー"),
         "{:?}",
-        app.last_error
+        app.core.scoped.last_error
     );
     let prep = app
+        .core
+        .scoped
         .preparation
         .as_ref()
         .expect("階が作れなくても準備計算の集計は行われるはず");
     assert!(prep.stories.is_empty());
-    assert!(!app.staleness.preparation_stale);
+    assert!(!app.core.scoped.staleness.preparation_stale);
 }
 
 /// 準備計算は実行のたびに階を再生成するが、利用者の手入力（地震用重量の手入力値・
@@ -4287,21 +4862,25 @@ fn test_run_preparation_regenerates_stories_keeping_manual_input() {
     let mut app = App::default();
     app.load_model(crate::sample::portal_frame());
     app.run_preparation();
-    assert!(app.last_error.is_none(), "{:?}", app.last_error);
-    let auto_weight = app.model.stories[0].seismic_weight.unwrap();
+    assert!(
+        app.core.scoped.last_error.is_none(),
+        "{:?}",
+        app.core.scoped.last_error
+    );
+    let auto_weight = app.core.model.stories[0].seismic_weight.unwrap();
     assert!(auto_weight > 0.0);
 
     // 地震用重量の手入力と階の種別（PH）を設定する。
-    let story = app.model.stories[0].id;
-    app.undo.run(
-        &mut app.model,
+    let story = app.core.model.stories[0].id;
+    app.core.scoped.undo.run(
+        &mut app.core.model,
         Box::new(squid_n_edit::SetStoryWeight {
             story,
             weight: Some(auto_weight * 2.0),
         }),
     );
-    app.undo.run(
-        &mut app.model,
+    app.core.scoped.undo.run(
+        &mut app.core.model,
         Box::new(squid_n_edit::SetStoryLevelKind {
             story,
             level_kind: StoryLevelKind::Penthouse { k: 0.6 },
@@ -4310,31 +4889,42 @@ fn test_run_preparation_regenerates_stories_keeping_manual_input() {
 
     // 再度の準備計算でも手入力は失われない。
     app.run_preparation();
-    assert!(app.last_error.is_none(), "{:?}", app.last_error);
+    assert!(
+        app.core.scoped.last_error.is_none(),
+        "{:?}",
+        app.core.scoped.last_error
+    );
     assert_eq!(
-        app.model.stories[0].weight_override,
+        app.core.model.stories[0].weight_override,
         Some(auto_weight * 2.0)
     );
-    assert_eq!(app.model.stories[0].seismic_weight, Some(auto_weight * 2.0));
     assert_eq!(
-        app.model.stories[0].level_kind,
+        app.core.model.stories[0].seismic_weight,
+        Some(auto_weight * 2.0)
+    );
+    assert_eq!(
+        app.core.model.stories[0].level_kind,
         StoryLevelKind::Penthouse { k: 0.6 }
     );
 
     // 手入力を解除すると次の準備計算で自動算定値へ戻る。
-    let story = app.model.stories[0].id;
-    app.undo.run(
-        &mut app.model,
+    let story = app.core.model.stories[0].id;
+    app.core.scoped.undo.run(
+        &mut app.core.model,
         Box::new(squid_n_edit::SetStoryWeight {
             story,
             weight: None,
         }),
     );
     app.run_preparation();
-    assert!(app.last_error.is_none(), "{:?}", app.last_error);
-    assert_eq!(app.model.stories[0].weight_override, None);
+    assert!(
+        app.core.scoped.last_error.is_none(),
+        "{:?}",
+        app.core.scoped.last_error
+    );
+    assert_eq!(app.core.model.stories[0].weight_override, None);
     // PH 階でも階自体の重量集計は変わらない（Ai 分布での扱いだけが変わる）。
-    assert!((app.model.stories[0].seismic_weight.unwrap() - auto_weight).abs() < 1e-6);
+    assert!((app.core.model.stories[0].seismic_weight.unwrap() - auto_weight).abs() < 1e-6);
 }
 
 /// 荷重ケースの実行導線は、標準の水平力ケース（EX/EY）を方向別の結果キーへ
@@ -4344,10 +4934,15 @@ fn test_load_case_job_routes_standard_lateral_cases() {
     let mut app = App::default();
     app.load_model(crate::sample::portal_frame());
     app.run_preparation();
-    assert!(app.last_error.is_none(), "{:?}", app.last_error);
+    assert!(
+        app.core.scoped.last_error.is_none(),
+        "{:?}",
+        app.core.scoped.last_error
+    );
 
     let id_of = |app: &App, name: &str| {
-        app.model
+        app.core
+            .model
             .load_cases
             .iter()
             .find(|lc| lc.name == name)
@@ -4364,21 +4959,29 @@ fn test_load_case_job_routes_standard_lateral_cases() {
 
     // EX の実行は地震静的ジョブとして走り、結果は Seismic(X) へ格納される。
     app.start_load_case_job(ex);
-    assert_eq!(app.job.as_ref().unwrap().label, "地震静的解析");
+    assert_eq!(app.core.scoped.job.as_ref().unwrap().label, "地震静的解析");
     wait_for_job(&mut app);
-    assert!(app.last_error.is_none(), "{:?}", app.last_error);
+    assert!(
+        app.core.scoped.last_error.is_none(),
+        "{:?}",
+        app.core.scoped.last_error
+    );
     assert_eq!(
-        app.last_static,
+        app.core.scoped.last_static,
         Some(StaticKey::Case(StaticCaseKey::Seismic(SeismicDir::X)))
     );
 
     // DL の実行は線形静的ジョブとして走り、結果は User キーへ格納される。
     app.start_load_case_job(dl);
-    assert_eq!(app.job.as_ref().unwrap().label, "線形静的解析");
+    assert_eq!(app.core.scoped.job.as_ref().unwrap().label, "線形静的解析");
     wait_for_job(&mut app);
-    assert!(app.last_error.is_none(), "{:?}", app.last_error);
+    assert!(
+        app.core.scoped.last_error.is_none(),
+        "{:?}",
+        app.core.scoped.last_error
+    );
     assert_eq!(
-        app.last_static,
+        app.core.scoped.last_static,
         Some(StaticKey::Case(StaticCaseKey::User(dl)))
     );
 }
@@ -4391,22 +4994,34 @@ fn test_auto_generate_combinations_uses_standard_case_names() {
     let mut app = App::default();
     app.load_model(crate::sample::portal_frame());
     app.run_preparation();
-    assert!(app.last_error.is_none(), "{:?}", app.last_error);
-    app.model.combinations.clear();
+    assert!(
+        app.core.scoped.last_error.is_none(),
+        "{:?}",
+        app.core.scoped.last_error
+    );
+    app.core.model.combinations.clear();
     // 門型ラーメンのサンプルはスラブを持たず積載荷重ケースが自動生成されない
     // （組合せ生成には固定・積載の両方が要る）ため、空の積載ケースを足す。
-    let next_id = LoadCaseId(app.model.load_cases.len() as u32);
-    app.model.load_cases.push(squid_n_core::model::LoadCase {
-        id: next_id,
-        name: LL_FRAME_CASE_NAME.into(),
-        kind: squid_n_core::model::LoadCaseKind::Live,
-        nodal: Vec::new(),
-        member: Vec::new(),
-    });
+    let next_id = LoadCaseId(app.core.model.load_cases.len() as u32);
+    app.core
+        .model
+        .load_cases
+        .push(squid_n_core::model::LoadCase {
+            id: next_id,
+            name: LL_FRAME_CASE_NAME.into(),
+            kind: squid_n_core::model::LoadCaseKind::Live,
+            nodal: Vec::new(),
+            member: Vec::new(),
+        });
 
     app.auto_generate_combinations_action();
-    assert!(app.last_error.is_none(), "{:?}", app.last_error);
+    assert!(
+        app.core.scoped.last_error.is_none(),
+        "{:?}",
+        app.core.scoped.last_error
+    );
     let names: Vec<&str> = app
+        .core
         .model
         .combinations
         .iter()
@@ -4669,6 +5284,7 @@ fn test_new_model_has_default_load_cases() {
     let mut app = App::default();
     app.load_model(squid_n_core::model::Model::with_default_load_cases());
     let names: Vec<&str> = app
+        .core
         .model
         .load_cases
         .iter()
@@ -4686,6 +5302,7 @@ fn test_new_model_has_default_load_cases() {
     );
     // 標準荷重組合せ（長期 DL+LL、短期地震 DL+LL±EX・DL+LL±EY）も既定で用意される。
     let combo_names: Vec<&str> = app
+        .core
         .model
         .combinations
         .iter()
@@ -4754,12 +5371,16 @@ fn test_sync_gravity_dl_includes_self_weight_and_slab() {
         .validate()
         .expect("テストモデルは validate を通るはず");
     let mut app = App {
-        model,
+        core: AppCore {
+            model,
+            ..Default::default()
+        },
         ..App::default()
     };
     app.sync_gravity_load_cases_action();
 
     let dl = app
+        .core
         .model
         .load_cases
         .iter()
@@ -4776,7 +5397,7 @@ fn test_sync_gravity_dl_includes_self_weight_and_slab() {
         + dl.nodal.iter().map(|nl| -nl.values[2]).sum::<f64>();
     let slab_dl = 0.005 * 4000.0 * 4000.0;
     let (sw_nodal, sw_member) = squid_n_load::self_weight::self_weight_case_content(
-        &app.model,
+        &app.core.model,
         &squid_n_core::model::LoadCfg::default(),
     );
     let self_weight: f64 = sw_member
@@ -4794,6 +5415,7 @@ fn test_sync_gravity_dl_includes_self_weight_and_slab() {
     );
     // 旧「自重(自動)」ケースは作られない。
     assert!(app
+        .core
         .model
         .load_cases
         .iter()
@@ -4810,21 +5432,31 @@ fn test_generate_stories_seismic_weight_no_double_count() {
     let mut app = App::default();
     app.load_model(crate::sample::portal_frame());
     app.generate_stories_action();
-    assert!(app.last_error.is_none(), "{:?}", app.last_error);
+    assert!(
+        app.core.scoped.last_error.is_none(),
+        "{:?}",
+        app.core.scoped.last_error
+    );
 
     // 自重の節点配分（等分布荷重の静定反力 = 両端 1/2 ずつ）のうち、
     // 階レベル（z=3500 の節点 2,3）へ配分される分だけが階重量に算入される
     // （柱の下半分は基部 z=0 へ配分され階に属さない）。
     let (sw_nodal, sw_member) = squid_n_load::self_weight::self_weight_case_content(
-        &app.model,
+        &app.core.model,
         &squid_n_core::model::LoadCfg::default(),
     );
-    let mut node_share = vec![0.0_f64; app.model.nodes.len()];
+    let mut node_share = vec![0.0_f64; app.core.model.nodes.len()];
     for nl in &sw_nodal {
         node_share[nl.node.index()] += -nl.values[2];
     }
     for ml in &sw_member {
-        let elem = app.model.elements.iter().find(|e| e.id == ml.elem).unwrap();
+        let elem = app
+            .core
+            .model
+            .elements
+            .iter()
+            .find(|e| e.id == ml.elem)
+            .unwrap();
         let total = match ml.kind {
             MemberLoadKind::Distributed { a, b, w1, w2 } => (w1 + w2) / 2.0 * (b - a),
             MemberLoadKind::Point { p, .. } => p,
@@ -4833,6 +5465,7 @@ fn test_generate_stories_seismic_weight_no_double_count() {
         node_share[elem.nodes[1].index()] += total / 2.0;
     }
     let self_weight_at_story: f64 = app
+        .core
         .model
         .nodes
         .iter()
@@ -4843,7 +5476,7 @@ fn test_generate_stories_seismic_weight_no_double_count() {
     // サンプル LC0「長期」（kind=Dead）: 梁等分布 10 N/mm × 6000 mm = 60 kN。
     // 層の重量は上端の階（2FL）が持つ。基部の階には柱脚側の配分が入る。
     let case_loads = 10.0 * 6000.0;
-    let w = app.model.stories[1].seismic_weight.unwrap();
+    let w = app.core.model.stories[1].seismic_weight.unwrap();
     assert!(
         (w - (self_weight_at_story + case_loads)).abs() < 1e-6,
         "階重量 {w} = 自重(階配分) {self_weight_at_story} + ケース荷重 {case_loads} のはず（二重計上なし）"
@@ -4851,8 +5484,12 @@ fn test_generate_stories_seismic_weight_no_double_count() {
 
     // 再生成しても増えない（冪等）。
     app.generate_stories_action();
-    assert!(app.last_error.is_none(), "{:?}", app.last_error);
-    let w2 = app.model.stories[1].seismic_weight.unwrap();
+    assert!(
+        app.core.scoped.last_error.is_none(),
+        "{:?}",
+        app.core.scoped.last_error
+    );
+    let w2 = app.core.model.stories[1].seismic_weight.unwrap();
     assert!((w2 - w).abs() < 1e-6, "再生成で階重量が変わってはいけない");
 }
 
@@ -4864,9 +5501,14 @@ fn test_generate_stories_syncs_ex_ey_cases() {
     let mut app = App::default();
     app.load_model(crate::sample::portal_frame());
     app.generate_stories_action();
-    assert!(app.last_error.is_none(), "{:?}", app.last_error);
+    assert!(
+        app.core.scoped.last_error.is_none(),
+        "{:?}",
+        app.core.scoped.last_error
+    );
 
     let ex = app
+        .core
         .model
         .load_cases
         .iter()
@@ -4881,6 +5523,7 @@ fn test_generate_stories_syncs_ex_ey_cases() {
     );
 
     let ey = app
+        .core
         .model
         .load_cases
         .iter()
@@ -4920,13 +5563,14 @@ fn test_load_model_migrates_legacy_case_names() {
     let mut app = App::default();
     app.load_model(model);
     let names: Vec<&str> = app
+        .core
         .model
         .load_cases
         .iter()
         .map(|c| c.name.as_str())
         .collect();
     assert_eq!(names, vec![DL_CASE_NAME, LL_FRAME_CASE_NAME]);
-    assert!(app.model.validate().is_ok());
+    assert!(app.core.model.validate().is_ok());
 }
 
 /// 空の地震荷重ケース（未生成の EX 等）を参照する荷重組合せは実行せず、
@@ -4953,7 +5597,7 @@ fn test_run_combination_errors_on_empty_seismic_case() {
     let mut app = App::default();
     app.load_model(model);
     app.run_combination(0);
-    let err = app.last_error.as_deref().unwrap_or("");
+    let err = app.core.scoped.last_error.as_deref().unwrap_or("");
     assert!(
         err.contains("EX") && err.contains("空"),
         "空の EX 参照はエラーで案内するはず: {err}"
@@ -4973,14 +5617,19 @@ fn test_import_stbridge_without_loads_creates_default_cases() {
     let mut app = App::default();
     app.load_model(crate::sample::portal_frame());
     app.export_stbridge_to(path.clone());
-    assert!(app.last_error.is_none(), "{:?}", app.last_error);
+    assert!(
+        app.core.scoped.last_error.is_none(),
+        "{:?}",
+        app.core.scoped.last_error
+    );
 
     let mut app2 = App::default();
     app2.import_stbridge_from(path.clone());
     // 支点の自動設定の通知は出る（欠落警告ではない）。
-    let msg = app2.last_error.as_deref().unwrap_or("");
+    let msg = app2.core.scoped.last_error.as_deref().unwrap_or("");
     assert!(msg.is_empty() || msg.contains("ピン支点に設定"), "{msg}");
     let names: Vec<&str> = app2
+        .core
         .model
         .load_cases
         .iter()
@@ -4997,7 +5646,7 @@ fn test_import_stbridge_without_loads_creates_default_cases() {
         ],
         "荷重のない STB は標準荷重ケースが自動作成されるはず"
     );
-    assert!(app2.model.validate().is_ok());
+    assert!(app2.core.model.validate().is_ok());
 
     std::fs::remove_file(&path).ok();
 }
@@ -5039,12 +5688,12 @@ fn test_import_stbridge_with_loads_keeps_file_cases() {
     let mut app = App::default();
     app.import_stbridge_from(path.clone());
     assert_eq!(
-        app.model.load_cases.len(),
+        app.core.model.load_cases.len(),
         1,
         "STB 自身の荷重ケースを採用し、標準ケースは追加しない: {:?}",
-        app.last_error
+        app.core.scoped.last_error
     );
-    assert_eq!(app.model.load_cases[0].name, "L1");
+    assert_eq!(app.core.model.load_cases[0].name, "L1");
 
     std::fs::remove_file(&path).ok();
 }
@@ -5146,11 +5795,16 @@ fn test_import_stbridge_then_run_dl_succeeds() {
     let mut app = App::default();
     app.load_model(model);
     app.export_stbridge_to(path.clone());
-    assert!(app.last_error.is_none(), "{:?}", app.last_error);
+    assert!(
+        app.core.scoped.last_error.is_none(),
+        "{:?}",
+        app.core.scoped.last_error
+    );
 
     let mut app2 = App::default();
     app2.import_stbridge_from(path.clone());
     let dl_id = app2
+        .core
         .model
         .load_cases
         .iter()
@@ -5160,17 +5814,23 @@ fn test_import_stbridge_then_run_dl_succeeds() {
 
     app2.run_linear_static(dl_id);
     assert!(
-        app2.last_error.is_none(),
+        app2.core.scoped.last_error.is_none(),
         "支点自動設定により DL 解析が成功するはず: {:?}",
-        app2.last_error
+        app2.core.scoped.last_error
     );
-    let results = app2.results.as_ref().expect("解析結果が格納されるはず");
+    let results = app2
+        .core
+        .scoped
+        .results
+        .as_ref()
+        .expect("解析結果が格納されるはず");
     assert!(results
         .statics
         .iter()
         .any(|(k, _)| *k == StaticCaseKey::User(dl_id)));
     // DL には自重が同期され、柱に軸力（鉛直変位）が生じている。
     let dl = app2
+        .core
         .model
         .load_cases
         .iter()
@@ -5347,6 +6007,7 @@ fn test_secondary_joist_subdivided_slab_dl_cmq_and_solve() {
     app.sync_gravity_load_cases_action();
 
     let dl = app
+        .core
         .model
         .load_cases
         .iter()
@@ -5364,7 +6025,7 @@ fn test_secondary_joist_subdivided_slab_dl_cmq_and_solve() {
         .sum::<f64>()
         + dl.nodal.iter().map(|nl| -nl.values[2]).sum::<f64>();
     let (sw_nodal, sw_member) = squid_n_load::self_weight::self_weight_case_content(
-        &app.model,
+        &app.core.model,
         &squid_n_core::model::LoadCfg::default(),
     );
     let mut sw_total: f64 = sw_member
@@ -5377,12 +6038,12 @@ fn test_secondary_joist_subdivided_slab_dl_cmq_and_solve() {
         + sw_nodal.iter().map(|nl| -nl.values[2]).sum::<f64>();
     // 二次部材の自重は `self_weight_case_content` ではなく逐次伝達が運ぶ
     // （申し送り §3.4 F6）。期待値には別途足す。
-    for sm in app.model.joists().chain(app.model.posts()) {
-        if let Some(w) = squid_n_load::floor::joist_self_weight_udl(&app.model, sm) {
+    for sm in app.core.model.joists().chain(app.core.model.posts()) {
+        if let Some(w) = squid_n_load::floor::joist_self_weight_udl(&app.core.model, sm) {
             let (a, b) = (sm.nodes[0], sm.nodes[1]);
             let (Some(na), Some(nb)) = (
-                app.model.nodes.get(a.index()),
-                app.model.nodes.get(b.index()),
+                app.core.model.nodes.get(a.index()),
+                app.core.model.nodes.get(b.index()),
             ) else {
                 continue;
             };
@@ -5397,10 +6058,11 @@ fn test_secondary_joist_subdivided_slab_dl_cmq_and_solve() {
     // 自重は断面から都度算定するため、期待値もモデルから引く。
     let slab_area = 8000.0 * 6000.0;
     let slab_w: f64 = app
+        .core
         .model
         .slabs
         .iter()
-        .map(|sl| app.model.slab_dead_intensity(sl))
+        .map(|sl| app.core.model.slab_dead_intensity(sl))
         .next()
         .expect("スラブがある");
     let slab_dl = slab_w * slab_area;
@@ -5437,8 +6099,14 @@ fn test_secondary_joist_subdivided_slab_dl_cmq_and_solve() {
     // そのまま線形静的解析が成功する（小梁支持節点は解析自由度から除外される）。
     let dl_id = dl.id;
     app.run_linear_static(dl_id);
-    assert!(app.last_error.is_none(), "{:?}", app.last_error);
+    assert!(
+        app.core.scoped.last_error.is_none(),
+        "{:?}",
+        app.core.scoped.last_error
+    );
     assert!(app
+        .core
+        .scoped
         .results
         .as_ref()
         .unwrap()
@@ -5453,6 +6121,8 @@ fn test_run_diagnostics_flags_missing_support() {
     let mut app = App::default();
     app.run_diagnostics();
     assert!(app
+        .core
+        .scoped
         .diagnostics
         .iter()
         .any(|d| d.severity == DiagSeverity::Error && d.message.contains("支点")));
@@ -5466,6 +6136,8 @@ fn test_run_diagnostics_no_missing_support_for_sample() {
     app.load_model(crate::sample::portal_frame());
     app.run_diagnostics();
     assert!(!app
+        .core
+        .scoped
         .diagnostics
         .iter()
         .any(|d| d.severity == DiagSeverity::Error && d.message.contains("支点")));
@@ -5484,6 +6156,8 @@ fn test_run_diagnostics_flags_unassigned_section() {
     app.run_diagnostics();
 
     let diag = app
+        .core
+        .scoped
         .diagnostics
         .iter()
         .find(|d| matches!(d.target, Some(DiagTarget::Member(id)) if id == target_id))
@@ -5510,6 +6184,8 @@ fn test_run_diagnostics_flags_unassigned_material() {
     app.run_diagnostics();
 
     let diag = app
+        .core
+        .scoped
         .diagnostics
         .iter()
         .find(|d| matches!(d.target, Some(DiagTarget::Member(id)) if id == target_id))
@@ -5561,9 +6237,9 @@ fn test_diagnostics_errors_agree_with_analysis_precheck() {
         app.diagnostics_counts().0,
         0,
         "健全なモデルで Error: {:?}",
-        app.diagnostics
+        app.core.scoped.diagnostics
     );
-    assert!(squid_n_solver::analysis::Analysis::prepare(&app.model).is_ok());
+    assert!(squid_n_solver::analysis::Analysis::prepare(&app.core.model).is_ok());
 
     for (name, break_it) in broken {
         let mut model = crate::sample::portal_frame();
@@ -5576,7 +6252,7 @@ fn test_diagnostics_errors_agree_with_analysis_precheck() {
             "{name}: 解析が止まるのに診断が Error を出していない"
         );
         assert!(
-            squid_n_solver::analysis::Analysis::prepare(&app.model).is_err(),
+            squid_n_solver::analysis::Analysis::prepare(&app.core.model).is_err(),
             "{name}: 診断が Error を出したのに解析前チェックが通った"
         );
     }
@@ -5594,13 +6270,13 @@ fn test_run_preparation_refreshes_diagnostics_even_if_not_stale() {
     app.load_model(model);
     app.run_diagnostics();
     assert!(app.diagnostics_counts().0 > 0);
-    app.diagnostics.clear();
-    app.staleness.diagnostics_stale = false;
+    app.core.scoped.diagnostics.clear();
+    app.core.scoped.staleness.diagnostics_stale = false;
     app.run_preparation();
     assert!(
         app.diagnostics_counts().0 > 0,
         "準備計算後も診断件数が空のまま: {:?}",
-        app.diagnostics
+        app.core.scoped.diagnostics
     );
 }
 
@@ -5621,6 +6297,7 @@ fn test_run_diagnostics_ignores_generated_panel_zones() {
     app.ensure_preparation();
 
     let panels: Vec<_> = app
+        .core
         .model
         .elements
         .iter()
@@ -5634,7 +6311,9 @@ fn test_run_diagnostics_ignores_generated_panel_zones() {
 
     for id in panels {
         assert!(
-            !app.diagnostics
+            !app.core
+                .scoped
+                .diagnostics
                 .iter()
                 .any(|d| d.target == Some(DiagTarget::Member(id))),
             "仕口パネル #{} が診断に上がっている",
@@ -5642,9 +6321,13 @@ fn test_run_diagnostics_ignores_generated_panel_zones() {
         );
     }
     assert!(
-        !app.diagnostics.iter().any(|d| d.message.contains("未割当")),
+        !app.core
+            .scoped
+            .diagnostics
+            .iter()
+            .any(|d| d.message.contains("未割当")),
         "断面がすべて割り当たったモデルで未割当警告が出ている: {:?}",
-        app.diagnostics
+        app.core.scoped.diagnostics
     );
 }
 
@@ -5653,9 +6336,9 @@ fn test_run_diagnostics_ignores_generated_panel_zones() {
 fn test_mark_edited_marks_diagnostics_stale() {
     let mut app = App::default();
     app.run_diagnostics();
-    assert!(!app.staleness.diagnostics_stale);
-    app.staleness.mark_edited();
-    assert!(app.staleness.diagnostics_stale);
+    assert!(!app.core.scoped.staleness.diagnostics_stale);
+    app.core.scoped.staleness.mark_edited();
+    assert!(app.core.scoped.staleness.diagnostics_stale);
 }
 
 // ---- グリッド操作（§9.2 ヘッドレス UI テスト。T5） ----
@@ -5676,7 +6359,7 @@ mod grid_headless {
     fn app_with_nodes(n: usize) -> App {
         let mut app = App::default();
         for i in 0..n {
-            app.model.nodes.push(Node {
+            app.core.model.nodes.push(Node {
                 id: NodeId(i as u32),
                 coord: [i as f64 * 1000.0, 0.0, 0.0],
                 restraint: Dof6Mask::FREE,
@@ -5691,8 +6374,8 @@ mod grid_headless {
     /// 節点 a-b を結ぶ梁を追加する（参照中の節点を作るため）
     fn push_beam(app: &mut App, a: u32, b: u32) {
         use squid_n_core::model::{ElementData, ElementKind, EndCondition, ForceRegime, LocalAxis};
-        app.model.elements.push(ElementData {
-            id: ElemId(app.model.elements.len() as u32),
+        app.core.model.elements.push(ElementData {
+            id: ElemId(app.core.model.elements.len() as u32),
             kind: ElementKind::Beam,
             nodes: [NodeId(a), NodeId(b)].into_iter().collect(),
             section: None,
@@ -5720,8 +6403,8 @@ mod grid_headless {
         anchor: CellRef,
     ) -> Result<PastePlan, Vec<String>> {
         let mut adapter = NodeGridAdapter {
-            model: &mut app.model,
-            undo: &mut app.undo,
+            model: &mut app.core.model,
+            undo: &mut app.core.scoped.undo,
             edited: false,
         };
         let plan = plan_paste(block, anchor, adapter.rows(), adapter.cols(), |r, c, t| {
@@ -5736,7 +6419,7 @@ mod grid_headless {
     #[test]
     fn test_grid_paste_composite_single_undo_restores_appended_rows() {
         let mut app = app_with_nodes(2);
-        let before = app.model.clone();
+        let before = app.core.model.clone();
         // 2 行の表に 3 行 ×2 列を貼る → 1 行はみ出し（自動追加）
         let plan = paste(
             &mut app,
@@ -5745,20 +6428,27 @@ mod grid_headless {
         )
         .expect("正常ペーストは成功する");
         assert_eq!(plan.extra_rows, 1, "はみ出し行数の算定");
-        assert_eq!(app.model.nodes.len(), 3, "確認なしで行が自動追加される");
-        assert_eq!(app.model.nodes[0].coord, [10.0, 20.0, 0.0]);
-        assert_eq!(app.model.nodes[2].coord, [50.0, 60.0, 0.0]);
-        assert_eq!(app.undo.undo_label(), Some("節点座標の貼り付け"));
+        assert_eq!(
+            app.core.model.nodes.len(),
+            3,
+            "確認なしで行が自動追加される"
+        );
+        assert_eq!(app.core.model.nodes[0].coord, [10.0, 20.0, 0.0]);
+        assert_eq!(app.core.model.nodes[2].coord, [50.0, 60.0, 0.0]);
+        assert_eq!(
+            app.core.scoped.undo.undo_label(),
+            Some("節点座標の貼り付け")
+        );
         // undo 1 回で行追加ごと元に戻る
-        app.undo.undo(&mut app.model);
-        assert!(app.model.eq_ignoring_dofmap(&before));
+        app.core.scoped.undo.undo(&mut app.core.model);
+        assert!(app.core.model.eq_ignoring_dofmap(&before));
     }
 
     /// §9.2: 全体拒否時にモデルが一切変化しない（undo スタックにも積まれない）
     #[test]
     fn test_grid_paste_reject_leaves_model_untouched() {
         let mut app = app_with_nodes(2);
-        let before = app.model.clone();
+        let before = app.core.model.clone();
         let err = paste(
             &mut app,
             &block(&[&["1", "abc"]]),
@@ -5766,8 +6456,11 @@ mod grid_headless {
         )
         .expect_err("不正セルを含むペーストは全体拒否");
         assert_eq!(err.len(), 1);
-        assert!(app.model.eq_ignoring_dofmap(&before));
-        assert!(!app.undo.can_undo(), "拒否時は undo 履歴にも積まれない");
+        assert!(app.core.model.eq_ignoring_dofmap(&before));
+        assert!(
+            !app.core.scoped.undo.can_undo(),
+            "拒否時は undo 履歴にも積まれない"
+        );
     }
 
     /// §9.2: 空モデル（節点 0）への貼り付けがプレースホルダ経由で成立し、
@@ -5782,31 +6475,34 @@ mod grid_headless {
         )
         .expect("空モデルへの貼り付けが成立する");
         assert_eq!(plan.extra_rows, 2);
-        assert_eq!(app.model.nodes.len(), 2);
-        assert_eq!(app.model.nodes[0].coord, [1.0, 2.0, 3.0]);
-        assert_eq!(app.model.nodes[1].coord, [4.0, 5.0, 6.0]);
-        app.undo.undo(&mut app.model);
-        assert!(app.model.nodes.is_empty(), "undo 1 回で空に戻る");
+        assert_eq!(app.core.model.nodes.len(), 2);
+        assert_eq!(app.core.model.nodes[0].coord, [1.0, 2.0, 3.0]);
+        assert_eq!(app.core.model.nodes[1].coord, [4.0, 5.0, 6.0]);
+        app.core.scoped.undo.undo(&mut app.core.model);
+        assert!(app.core.model.nodes.is_empty(), "undo 1 回で空に戻る");
     }
 
     /// §9.2: Delete クリアの適用と undo（節点テーブルのクリア = 0 埋め）
     #[test]
     fn test_grid_clear_cells_and_undo() {
         let mut app = app_with_nodes(3);
-        let before = app.model.clone();
+        let before = app.core.model.clone();
         let n = {
             let mut adapter = NodeGridAdapter {
-                model: &mut app.model,
-                undo: &mut app.undo,
+                model: &mut app.core.model,
+                undo: &mut app.core.scoped.undo,
                 edited: false,
             };
             adapter.clear_cells(&[(1, 0), (1, 1), (2, 0)])
         };
         assert_eq!(n, 3);
-        assert_eq!(app.model.nodes[1].coord, [0.0, 0.0, 0.0]);
-        assert_eq!(app.model.nodes[2].coord, [0.0, 0.0, 0.0]);
-        app.undo.undo(&mut app.model);
-        assert!(app.model.eq_ignoring_dofmap(&before), "undo 1 回で復元");
+        assert_eq!(app.core.model.nodes[1].coord, [0.0, 0.0, 0.0]);
+        assert_eq!(app.core.model.nodes[2].coord, [0.0, 0.0, 0.0]);
+        app.core.scoped.undo.undo(&mut app.core.model);
+        assert!(
+            app.core.model.eq_ignoring_dofmap(&before),
+            "undo 1 回で復元"
+        );
     }
 
     /// §9.2: プレースホルダでの編集確定が行追加＋値設定の 1 コマンドになり、
@@ -5816,22 +6512,22 @@ mod grid_headless {
         let mut app = app_with_nodes(1);
         let outcome = {
             let mut adapter = NodeGridAdapter {
-                model: &mut app.model,
-                undo: &mut app.undo,
+                model: &mut app.core.model,
+                undo: &mut app.core.scoped.undo,
                 edited: false,
             };
             // プレースホルダ行（row == rows()）の Y 列に確定
             commit_cell_text(&mut adapter, CellRef { row: 1, col: 1 }, "6000")
         };
         assert_eq!(outcome, CommitOutcome::Applied { appended: true });
-        assert_eq!(app.model.nodes.len(), 2);
+        assert_eq!(app.core.model.nodes.len(), 2);
         assert_eq!(
-            app.model.nodes[1].coord,
+            app.core.model.nodes[1].coord,
             [0.0, 6000.0, 0.0],
             "他列は既定値 0"
         );
-        app.undo.undo(&mut app.model);
-        assert_eq!(app.model.nodes.len(), 1, "undo 1 回で行追加ごと戻る");
+        app.core.scoped.undo.undo(&mut app.core.model);
+        assert_eq!(app.core.model.nodes.len(), 1, "undo 1 回で行追加ごと戻る");
     }
 
     /// §9.2: Backspace（空バッファでの編集開始）→ Enter の空確定は「変更なし」
@@ -5839,36 +6535,36 @@ mod grid_headless {
     #[test]
     fn test_grid_empty_commit_is_no_change() {
         let mut app = app_with_nodes(2);
-        let before = app.model.clone();
+        let before = app.core.model.clone();
         let outcome = {
             let mut adapter = NodeGridAdapter {
-                model: &mut app.model,
-                undo: &mut app.undo,
+                model: &mut app.core.model,
+                undo: &mut app.core.scoped.undo,
                 edited: false,
             };
             commit_cell_text(&mut adapter, CellRef { row: 0, col: 0 }, "  ")
         };
         assert_eq!(outcome, CommitOutcome::NoChange);
-        assert!(app.model.eq_ignoring_dofmap(&before));
-        assert!(!app.undo.can_undo());
+        assert!(app.core.model.eq_ignoring_dofmap(&before));
+        assert!(!app.core.scoped.undo.can_undo());
     }
 
     /// §9.2: 不正値の編集確定は Rejected でモデル無変化
     #[test]
     fn test_grid_invalid_commit_is_rejected() {
         let mut app = app_with_nodes(2);
-        let before = app.model.clone();
+        let before = app.core.model.clone();
         let outcome = {
             let mut adapter = NodeGridAdapter {
-                model: &mut app.model,
-                undo: &mut app.undo,
+                model: &mut app.core.model,
+                undo: &mut app.core.scoped.undo,
                 edited: false,
             };
             commit_cell_text(&mut adapter, CellRef { row: 0, col: 0 }, "abc")
         };
         assert!(matches!(outcome, CommitOutcome::Rejected(_)));
-        assert!(app.model.eq_ignoring_dofmap(&before));
-        assert!(!app.undo.can_undo());
+        assert!(app.core.model.eq_ignoring_dofmap(&before));
+        assert!(!app.core.scoped.undo.can_undo());
     }
 
     /// §9.2: 行削除が複合コマンド 1 個になり、undo 1 回で ID 繰り上げごと復元される
@@ -5876,26 +6572,26 @@ mod grid_headless {
     fn test_grid_delete_rows_single_undo_restores_ids() {
         let mut app = app_with_nodes(5);
         push_beam(&mut app, 0, 4); // 削除対象外の節点を結ぶ梁（ID 繰り上げの検証用）
-        let before = app.model.clone();
+        let before = app.core.model.clone();
         {
             let mut adapter = NodeGridAdapter {
-                model: &mut app.model,
-                undo: &mut app.undo,
+                model: &mut app.core.model,
+                undo: &mut app.core.scoped.undo,
                 edited: false,
             };
             // widget は昇順で渡す（降順化はアダプタの責務）
             adapter.delete_rows(&[1, 3]);
         }
-        assert_eq!(app.model.nodes.len(), 3);
+        assert_eq!(app.core.model.nodes.len(), 3);
         assert_eq!(
-            app.model.elements[0].nodes[1],
+            app.core.model.elements[0].nodes[1],
             NodeId(2),
             "参照 ID が繰り上がる"
         );
-        assert_eq!(app.undo.undo_label(), Some("節点 2 行の削除"));
-        app.undo.undo(&mut app.model);
+        assert_eq!(app.core.scoped.undo.undo_label(), Some("節点 2 行の削除"));
+        app.core.scoped.undo.undo(&mut app.core.model);
         assert!(
-            app.model.eq_ignoring_dofmap(&before),
+            app.core.model.eq_ignoring_dofmap(&before),
             "undo 1 回で ID・参照ごと復元"
         );
     }
@@ -5906,11 +6602,11 @@ mod grid_headless {
     fn test_grid_delete_referenced_row_is_rejected() {
         let mut app = app_with_nodes(3);
         push_beam(&mut app, 0, 1);
-        let before = app.model.clone();
+        let before = app.core.model.clone();
         let (blocked, free) = {
             let adapter = NodeGridAdapter {
-                model: &mut app.model,
-                undo: &mut app.undo,
+                model: &mut app.core.model,
+                undo: &mut app.core.scoped.undo,
                 edited: false,
             };
             (
@@ -5922,8 +6618,8 @@ mod grid_headless {
         assert!(blocked.unwrap_err().contains("参照"), "参照元を理由に示す");
         assert!(free.is_ok());
         // widget は 1 行でも拒否があれば delete_rows を呼ばない（all-or-nothing）
-        assert!(app.model.eq_ignoring_dofmap(&before));
-        assert!(!app.undo.can_undo());
+        assert!(app.core.model.eq_ignoring_dofmap(&before));
+        assert!(!app.core.scoped.undo.can_undo());
     }
 }
 /// 剛床（階の剛床定義）に載る梁でも、応力図・検定比図の元データ
@@ -5959,9 +6655,13 @@ fn test_rigid_floor_beam_has_forces_and_checks() {
     let mut app = App::default();
     app.load_model(model);
     app.run_linear_static(LoadCaseId(0));
-    assert!(app.last_error.is_none(), "{:?}", app.last_error);
+    assert!(
+        app.core.scoped.last_error.is_none(),
+        "{:?}",
+        app.core.scoped.last_error
+    );
 
-    let results = app.results.as_ref().expect("解析結果");
+    let results = app.core.scoped.results.as_ref().expect("解析結果");
     let beam_forces = results
         .member_forces
         .iter()
@@ -5994,16 +6694,28 @@ fn test_rigid_floor_beam_has_forces_and_checks() {
 fn test_run_preparation_populates_result() {
     let mut app = App::default();
     app.load_model(crate::sample::portal_frame());
-    assert!(app.preparation.is_none(), "読込直後は未実行");
-    assert!(app.staleness.preparation_stale);
+    assert!(app.core.scoped.preparation.is_none(), "読込直後は未実行");
+    assert!(app.core.scoped.staleness.preparation_stale);
 
     app.run_preparation();
-    assert!(app.last_error.is_none(), "{:?}", app.last_error);
-    assert!(!app.staleness.preparation_stale, "実行後は最新化される");
+    assert!(
+        app.core.scoped.last_error.is_none(),
+        "{:?}",
+        app.core.scoped.last_error
+    );
+    assert!(
+        !app.core.scoped.staleness.preparation_stale,
+        "実行後は最新化される"
+    );
 
-    let prep = app.preparation.as_ref().expect("準備計算の結果があるはず");
+    let prep = app
+        .core
+        .scoped
+        .preparation
+        .as_ref()
+        .expect("準備計算の結果があるはず");
     // 階が未定義だったので自動生成される（基部の床 + 2FL の 2 階、層は 1 つ）。
-    assert_eq!(app.model.stories.len(), 2);
+    assert_eq!(app.core.model.stories.len(), 2);
     assert_eq!(prep.stories.len(), 1, "分布表の単位は層");
     let story = &prep.stories[0];
     assert!(story.weight > 0.0, "地震用重量が算定される");
@@ -6012,7 +6724,7 @@ fn test_run_preparation_populates_result() {
     assert!((story.height - 3500.0).abs() < 1e-6, "{}", story.height);
 
     // 建物概要。
-    assert_eq!(prep.summary.n_nodes, app.model.nodes.len());
+    assert_eq!(prep.summary.n_nodes, app.core.model.nodes.len());
     // 剛床代表節点（面外拘束を持つ）は支点として数えない。
     assert_eq!(prep.summary.n_supports, 2, "柱脚 2 点が固定");
     assert!((prep.summary.height_mm - 3500.0).abs() < 1e-6);
@@ -6048,6 +6760,8 @@ fn test_preparation_ai_matches_synced_seismic_case() {
     app.run_preparation();
 
     let sm = app
+        .core
+        .scoped
         .preparation
         .as_ref()
         .unwrap()
@@ -6057,6 +6771,7 @@ fn test_preparation_ai_matches_synced_seismic_case() {
     let sum_pi: f64 = sm.rows.iter().map(|r| r.pi).sum();
 
     let ex = app
+        .core
         .model
         .load_cases
         .iter()
@@ -6080,12 +6795,13 @@ fn test_preparation_generates_panel_zones() {
     let mut app = App::default();
     app.load_model(crate::sample::portal_frame());
     assert!(
-        app.model.panel_zone.is_enabled(),
+        app.core.model.panel_zone.is_enabled(),
         "仕口パネルのモデル化は既定でオン"
     );
     app.run_preparation();
 
     let n_panels = app
+        .core
         .model
         .elements
         .iter()
@@ -6093,7 +6809,7 @@ fn test_preparation_generates_panel_zones() {
         .count();
     assert!(n_panels > 0, "S 造の柱梁接合部にパネルが生成される");
 
-    let prep = app.preparation.as_ref().unwrap();
+    let prep = app.core.scoped.preparation.as_ref().unwrap();
     assert!(prep.panel_modeling_enabled);
     assert_eq!(prep.panels.len(), n_panels, "一覧と生成数が一致する");
     for p in &prep.panels {
@@ -6108,8 +6824,9 @@ fn test_preparation_generates_panel_zones() {
         assert!(p.k_panel > 0.0, "せん断剛性 Kxp = G・Ve が正");
     }
     // パネル節点には γX・γY の 2 自由度が増える。
-    let dofmap = squid_n_core::dof::DofMap::build(&app.model);
+    let dofmap = squid_n_core::dof::DofMap::build(&app.core.model);
     let panel_nodes: Vec<usize> = app
+        .core
         .model
         .elements
         .iter()
@@ -6121,15 +6838,26 @@ fn test_preparation_generates_panel_zones() {
     }
 
     // OFF にすると生成済みのパネルが取り除かれ、モデルの不変条件も保たれる。
-    app.model.panel_zone = PanelZoneMode::None;
+    app.core.model.panel_zone = PanelZoneMode::None;
     app.run_preparation();
     assert!(!app
+        .core
         .model
         .elements
         .iter()
         .any(|e| e.kind == ElementKind::PanelZone));
-    assert!(app.preparation.as_ref().unwrap().panels.is_empty());
-    app.model.validate().expect("配列添字 == ElemId が保たれる");
+    assert!(app
+        .core
+        .scoped
+        .preparation
+        .as_ref()
+        .unwrap()
+        .panels
+        .is_empty());
+    app.core
+        .model
+        .validate()
+        .expect("配列添字 == ElemId が保たれる");
 }
 
 /// 準備計算は剛域を算定してモデルへ反映し、その内容を一覧化する。
@@ -6140,10 +6868,11 @@ fn test_preparation_lists_rigid_zones() {
     app.load_model(crate::sample::portal_frame());
     app.run_preparation();
 
-    let prep = app.preparation.as_ref().unwrap();
+    let prep = app.core.scoped.preparation.as_ref().unwrap();
     // 準備計算は柱梁接合部へ仕口パネル要素も生成するため、剛域の候補数は
     // 全要素数ではなく梁要素（線材）の数と一致する。
     let n_beams = app
+        .core
         .model
         .elements
         .iter()
@@ -6174,6 +6903,7 @@ fn test_preparation_lists_rigid_zones() {
         assert!((r.ratio - (arm_i + arm_j) / r.length).abs() < 1e-12);
         // モデル側の値と一致する（表示が実際の解析入力と同じであること）。
         let elem = app
+            .core
             .model
             .elements
             .iter()
@@ -6195,7 +6925,12 @@ fn test_preparation_without_stories_reports_notes() {
     app.load_model(crate::sample::portal_frame());
     app.run_linear_static(LoadCaseId(0));
 
-    let prep = app.preparation.as_ref().expect("解析前に準備計算が走る");
+    let prep = app
+        .core
+        .scoped
+        .preparation
+        .as_ref()
+        .expect("解析前に準備計算が走る");
     assert!(prep.stories.is_empty());
     assert!(prep.seismic.is_none());
     assert!(prep.seismic_note.as_ref().unwrap().contains("階"));
@@ -6210,13 +6945,20 @@ fn test_preparation_without_stories_reports_notes() {
 fn test_analysis_ensures_preparation_without_generating_stories() {
     let mut app = App::default();
     app.load_model(crate::sample::portal_frame());
-    assert!(app.staleness.preparation_stale);
+    assert!(app.core.scoped.staleness.preparation_stale);
 
     app.run_linear_static(LoadCaseId(0));
-    assert!(app.last_error.is_none(), "{:?}", app.last_error);
-    assert!(!app.staleness.preparation_stale, "解析前に準備計算が走る");
-    assert!(app.preparation.is_some());
-    assert!(app.model.stories.is_empty(), "階は自動生成しない");
+    assert!(
+        app.core.scoped.last_error.is_none(),
+        "{:?}",
+        app.core.scoped.last_error
+    );
+    assert!(
+        !app.core.scoped.staleness.preparation_stale,
+        "解析前に準備計算が走る"
+    );
+    assert!(app.core.scoped.preparation.is_some());
+    assert!(app.core.model.stories.is_empty(), "階は自動生成しない");
 }
 
 /// モデル編集で準備計算は stale に戻り、再実行で最新化される。
@@ -6225,11 +6967,11 @@ fn test_mark_edited_marks_preparation_stale() {
     let mut app = App::default();
     app.load_model(crate::sample::portal_frame());
     app.run_preparation();
-    assert!(!app.staleness.preparation_stale);
-    app.staleness.mark_edited();
-    assert!(app.staleness.preparation_stale);
+    assert!(!app.core.scoped.staleness.preparation_stale);
+    app.core.scoped.staleness.mark_edited();
+    assert!(app.core.scoped.staleness.preparation_stale);
     app.run_preparation();
-    assert!(!app.staleness.preparation_stale);
+    assert!(!app.core.scoped.staleness.preparation_stale);
 }
 
 /// 精算周期（SemiPrecise）で固有値解析が未実行なら Ai 分布は算定せず、
@@ -6239,11 +6981,11 @@ fn test_preparation_semiprecise_without_eigen_reports_note() {
     let mut app = App::default();
     app.load_model(crate::sample::portal_frame());
     app.generate_stories_action();
-    app.analysis_cfg.ai_mode = AiMode::SemiPrecise;
-    app.staleness.mark_edited();
+    app.core.analysis_cfg.ai_mode = AiMode::SemiPrecise;
+    app.core.scoped.staleness.mark_edited();
     app.run_preparation();
 
-    let prep = app.preparation.as_ref().unwrap();
+    let prep = app.core.scoped.preparation.as_ref().unwrap();
     assert!(prep.seismic.is_none());
     assert!(
         prep.seismic_note.as_ref().unwrap().contains("固有値解析"),
@@ -6254,10 +6996,19 @@ fn test_preparation_semiprecise_without_eigen_reports_note() {
     // 固有値解析を実行すると、その1次周期で Ai 分布が算定できるようになる。
     app.run_eigen(3);
     app.run_preparation();
-    let prep = app.preparation.as_ref().unwrap();
+    let prep = app.core.scoped.preparation.as_ref().unwrap();
     let sm = prep.seismic.as_ref().expect("固有値実行後は算定できる");
     assert_eq!(sm.t_mode, AiMode::SemiPrecise);
-    let t1 = app.results.as_ref().unwrap().modal.as_ref().unwrap().period[0];
+    let t1 = app
+        .core
+        .scoped
+        .results
+        .as_ref()
+        .unwrap()
+        .modal
+        .as_ref()
+        .unwrap()
+        .period[0];
     assert!((sm.t - t1).abs() < 1e-12);
 }
 
@@ -6267,12 +7018,12 @@ fn test_load_model_resets_preparation() {
     let mut app = App::default();
     app.load_model(crate::sample::portal_frame());
     app.run_preparation();
-    assert!(app.preparation.is_some());
+    assert!(app.core.scoped.preparation.is_some());
 
     app.load_model(crate::sample::portal_frame());
-    assert!(app.preparation.is_none());
-    assert!(app.diagnostics.is_empty());
-    assert!(app.staleness.preparation_stale);
+    assert!(app.core.scoped.preparation.is_none());
+    assert!(app.core.scoped.diagnostics.is_empty());
+    assert!(app.core.scoped.staleness.preparation_stale);
 }
 
 /// モデル差し替え（load_model）は旧モデル由来の結果・表示状態をすべてリセット
@@ -6285,7 +7036,7 @@ fn test_load_model_resets_model_derived_state() {
     app.run_preparation();
 
     // 旧モデル由来の状態を擬似的に残す。
-    app.stick_response = Some(squid_n_solver::lumped_mass::StickResponse {
+    app.core.scoped.stick_response = Some(squid_n_solver::lumped_mass::StickResponse {
         time: vec![0.0],
         roof_disp: vec![0.0],
         story_peak_drift: vec![0.0],
@@ -6293,7 +7044,9 @@ fn test_load_model_resets_model_derived_state() {
         story_ductility: vec![0.0],
         ..Default::default()
     });
-    app.generated_panels
+    app.core
+        .scoped
+        .generated_panels
         .push(squid_n_element::panel_gen::GeneratedPanel {
             node: NodeId(0),
             dc: 300.0,
@@ -6304,36 +7057,36 @@ fn test_load_model_resets_model_derived_state() {
         });
     #[cfg(feature = "gui")]
     {
-        app.hinge_detail_elem = Some(squid_n_core::ids::ElemId(0));
-        app.th_detail_elem = Some(squid_n_core::ids::ElemId(0));
-        app.analysis_target = None;
-        app.th_frame = 42;
-        app.th_playing = true;
+        app.ui.scoped.hinge_detail_elem = Some(squid_n_core::ids::ElemId(0));
+        app.ui.scoped.th_detail_elem = Some(squid_n_core::ids::ElemId(0));
+        app.ui.scoped.analysis_target = None;
+        app.ui.scoped.th_frame = 42;
+        app.ui.scoped.th_playing = true;
     }
     // 波形ライブラリの選択も旧モデル由来の状態。ここが漏れていると、
     // プロジェクトAで選んだ波形が、一度も選んでいないプロジェクトBへ
     // 持ち越されたまま保存されてしまう。
-    app.wave_library_selection = Some("elcentro.csv".to_string());
-    app.wave_library_selected_sha256 = Some("deadbeef".to_string());
-    app.view_vibration_case = Some(squid_n_core::ids::VibrationCaseId(99));
-    app.view_lumped_vibration_case = Some(squid_n_core::ids::LumpedVibrationCaseId(99));
+    app.core.scoped.wave_library_selection = Some("elcentro.csv".to_string());
+    app.core.scoped.wave_library_selected_sha256 = Some("deadbeef".to_string());
+    app.core.scoped.view_vibration_case = Some(squid_n_core::ids::VibrationCaseId(99));
+    app.core.scoped.view_lumped_vibration_case = Some(squid_n_core::ids::LumpedVibrationCaseId(99));
 
     app.load_model(crate::sample::portal_frame());
-    assert!(app.stick_response.is_none());
-    assert!(app.view_vibration_case.is_none());
-    assert!(app.view_lumped_vibration_case.is_none());
-    assert!(app.generated_panels.is_empty());
+    assert!(app.core.scoped.stick_response.is_none());
+    assert!(app.core.scoped.view_vibration_case.is_none());
+    assert!(app.core.scoped.view_lumped_vibration_case.is_none());
+    assert!(app.core.scoped.generated_panels.is_empty());
     assert!(
-        app.wave_library_selection.is_none(),
+        app.core.scoped.wave_library_selection.is_none(),
         "波形ライブラリの選択が旧モデルから持ち越されている"
     );
-    assert!(app.wave_library_selected_sha256.is_none());
+    assert!(app.core.scoped.wave_library_selected_sha256.is_none());
     #[cfg(feature = "gui")]
     {
-        assert!(app.hinge_detail_elem.is_none());
-        assert!(app.th_detail_elem.is_none());
-        assert_eq!(app.th_frame, 0);
-        assert!(!app.th_playing);
+        assert!(app.ui.scoped.hinge_detail_elem.is_none());
+        assert!(app.ui.scoped.th_detail_elem.is_none());
+        assert_eq!(app.ui.scoped.th_frame, 0);
+        assert!(!app.ui.scoped.th_playing);
     }
 }
 
@@ -6345,17 +7098,23 @@ fn test_load_model_resets_model_derived_state() {
 #[allow(clippy::field_reassign_with_default)]
 fn test_set_wave_library_selection_clears_hash_only_on_change() {
     let mut app = App::default();
-    app.wave_library_selection = Some("a.csv".to_string());
-    app.wave_library_selected_sha256 = Some("hash_a".to_string());
+    app.core.scoped.wave_library_selection = Some("a.csv".to_string());
+    app.core.scoped.wave_library_selected_sha256 = Some("hash_a".to_string());
 
     // 同じ値を選び直してもハッシュは維持する（実行済みの状態は壊さない）。
     app.set_wave_library_selection(Some("a.csv".to_string()));
-    assert_eq!(app.wave_library_selected_sha256.as_deref(), Some("hash_a"));
+    assert_eq!(
+        app.core.scoped.wave_library_selected_sha256.as_deref(),
+        Some("hash_a")
+    );
 
     // 別の波形へ選び直すと、まだ実行していないためハッシュを破棄する。
     app.set_wave_library_selection(Some("b.csv".to_string()));
-    assert_eq!(app.wave_library_selection.as_deref(), Some("b.csv"));
-    assert!(app.wave_library_selected_sha256.is_none());
+    assert_eq!(
+        app.core.scoped.wave_library_selection.as_deref(),
+        Some("b.csv")
+    );
+    assert!(app.core.scoped.wave_library_selected_sha256.is_none());
 }
 
 /// 質量モデルの方式（`mass_method`）は、解析タブの設定値
@@ -6380,14 +7139,18 @@ fn test_open_legacy_project_without_analysis_settings_syncs_mass_method() {
 
     let mut reopened = App::default();
     assert_eq!(
-        reopened.analysis_cfg.mass_method,
+        reopened.core.analysis_cfg.mass_method,
         MassMethod::CorrectedLumped,
         "既定値（前提の確認）"
     );
     reopened.open_project_from(path.clone());
-    assert!(reopened.last_error.is_none(), "{:?}", reopened.last_error);
+    assert!(
+        reopened.core.scoped.last_error.is_none(),
+        "{:?}",
+        reopened.core.scoped.last_error
+    );
     assert_eq!(
-        reopened.analysis_cfg.mass_method,
+        reopened.core.analysis_cfg.mass_method,
         MassMethod::LumpedOnly,
         "analysis_settings を持たない旧形式の .scz でも mass_method はモデル側に同期されるはず"
     );
@@ -6452,11 +7215,16 @@ fn test_prep_sections_count_slab_reference() {
     assert!(model.validate().is_ok(), "{:?}", model.validate());
 
     let mut app = App {
-        model,
+        core: AppCore {
+            model,
+            ..Default::default()
+        },
         ..App::default()
     };
     app.run_preparation();
     let row = app
+        .core
+        .scoped
         .preparation
         .as_ref()
         .expect("準備計算")
@@ -6474,9 +7242,9 @@ fn test_preparation_lists_section_properties() {
     app.load_model(crate::sample::portal_frame());
     app.run_preparation();
 
-    let prep = app.preparation.as_ref().unwrap();
-    assert_eq!(prep.sections.len(), app.model.sections.len());
-    for (row, sec) in prep.sections.iter().zip(app.model.sections.iter()) {
+    let prep = app.core.scoped.preparation.as_ref().unwrap();
+    assert_eq!(prep.sections.len(), app.core.model.sections.len());
+    for (row, sec) in prep.sections.iter().zip(app.core.model.sections.iter()) {
         // 表示値はモデルが持つ解析入力そのもの（ここで再計算はしない）。
         assert_eq!(row.section, sec.id);
         assert_eq!(row.area, sec.area);
@@ -6505,7 +7273,7 @@ fn test_preparation_lists_width_thickness() {
     app.load_model(crate::sample::portal_frame());
     app.run_preparation();
 
-    let prep = app.preparation.as_ref().unwrap();
+    let prep = app.core.scoped.preparation.as_ref().unwrap();
     // 柱（H-300x300）2 本 + 梁（H-400x200）1 本 → 2 行にまとまる。
     assert_eq!(prep.width_thickness.len(), 2, "{:?}", prep.width_thickness);
 
@@ -6527,7 +7295,7 @@ fn test_preparation_lists_width_thickness() {
         .expect("梁の行");
     assert_eq!(beam.n_elements, 1);
     // ランク判定は保有水平耐力の Ds 算定と同じ共通関数を通っていること。
-    let shape = app.model.sections[1].shape.as_ref().unwrap();
+    let shape = app.core.model.sections[1].shape.as_ref().unwrap();
     assert_eq!(
         beam.rank,
         steel_width_thickness_rank(shape, SteelMemberUse::Beam, "SN400B")
@@ -6545,18 +7313,28 @@ fn test_preparation_persisted_in_project_file() {
     let mut app = App::default();
     app.load_model(crate::sample::portal_frame());
     app.run_preparation();
-    let saved = app.preparation.as_ref().unwrap();
+    let saved = app.core.scoped.preparation.as_ref().unwrap();
     let saved_base_shear = saved.seismic.as_ref().unwrap().base_shear;
     let saved_stories = saved.stories.len();
     let saved_sections = saved.sections.len();
     app.save_project_to(path.clone());
-    assert!(app.last_error.is_none(), "{:?}", app.last_error);
+    assert!(
+        app.core.scoped.last_error.is_none(),
+        "{:?}",
+        app.core.scoped.last_error
+    );
 
     let mut reopened = App::default();
     reopened.open_project_from(path.clone());
-    assert!(reopened.last_error.is_none(), "{:?}", reopened.last_error);
+    assert!(
+        reopened.core.scoped.last_error.is_none(),
+        "{:?}",
+        reopened.core.scoped.last_error
+    );
 
     let restored = reopened
+        .core
+        .scoped
         .preparation
         .as_ref()
         .expect("準備計算の結果が復元されるはず");
@@ -6567,7 +7345,7 @@ fn test_preparation_persisted_in_project_file() {
         "基部せん断力が一致しない"
     );
     assert!(
-        !reopened.staleness.preparation_stale,
+        !reopened.core.scoped.staleness.preparation_stale,
         "復元できたら実行済み扱いにする"
     );
 
@@ -6585,15 +7363,23 @@ fn test_stale_preparation_not_persisted() {
     let mut app = App::default();
     app.load_model(crate::sample::portal_frame());
     app.run_preparation();
-    app.staleness.mark_edited();
+    app.core.scoped.staleness.mark_edited();
     app.save_project_to(path.clone());
-    assert!(app.last_error.is_none(), "{:?}", app.last_error);
+    assert!(
+        app.core.scoped.last_error.is_none(),
+        "{:?}",
+        app.core.scoped.last_error
+    );
 
     let mut reopened = App::default();
     reopened.open_project_from(path.clone());
-    assert!(reopened.last_error.is_none(), "{:?}", reopened.last_error);
-    assert!(reopened.preparation.is_none());
-    assert!(reopened.staleness.preparation_stale);
+    assert!(
+        reopened.core.scoped.last_error.is_none(),
+        "{:?}",
+        reopened.core.scoped.last_error
+    );
+    assert!(reopened.core.scoped.preparation.is_none());
+    assert!(reopened.core.scoped.staleness.preparation_stale);
 
     let _ = std::fs::remove_file(&path);
 }
@@ -6618,7 +7404,7 @@ fn test_preparation_member_stiffness_empty_for_plain_model() {
     app.load_model(crate::sample::portal_frame());
     app.run_preparation();
 
-    let prep = app.preparation.as_ref().unwrap();
+    let prep = app.core.scoped.preparation.as_ref().unwrap();
     assert!(
         prep.member_stiffness.is_empty(),
         "{:?}",
@@ -6627,6 +7413,7 @@ fn test_preparation_member_stiffness_empty_for_plain_model() {
     // 準備計算は柱梁接合部へ仕口パネル要素も生成するため、候補数は全要素数では
     // なく梁要素（線材）の数と一致する。
     let n_beams = app
+        .core
         .model
         .elements
         .iter()
@@ -6663,7 +7450,7 @@ fn test_preparation_member_stiffness_reports_composite_props() {
     app.load_model(model);
     app.run_preparation();
 
-    let prep = app.preparation.as_ref().unwrap();
+    let prep = app.core.scoped.preparation.as_ref().unwrap();
     let row = prep
         .member_stiffness
         .iter()
@@ -6681,12 +7468,13 @@ fn test_preparation_member_stiffness_reports_composite_props() {
 
     // 要素構築が用いる等価換算と一致する（表示と解析入力の一致）。
     let elem = app
+        .core
         .model
         .elements
         .iter()
         .find(|e| e.id == row.elem)
         .unwrap();
-    let props = squid_n_element::beam::composite_props_of(&app.model, elem)
+    let props = squid_n_element::beam::composite_props_of(&app.core.model, elem)
         .expect("要素側でも算定できるはず");
     assert_eq!(props.iy, c.iy);
     assert_eq!(props.area_ax, c.area_ax);
@@ -6705,30 +7493,47 @@ fn test_results_persisted_in_project_file() {
     app.generate_stories_action();
     app.run_linear_static(LoadCaseId(0));
     app.run_eigen(3);
-    assert!(app.last_error.is_none(), "{:?}", app.last_error);
+    assert!(
+        app.core.scoped.last_error.is_none(),
+        "{:?}",
+        app.core.scoped.last_error
+    );
 
-    let saved = app.results.as_ref().unwrap();
+    let saved = app.core.scoped.results.as_ref().unwrap();
     let saved_disp = saved.statics[0].1.disp.clone();
     let saved_period = saved.modal.as_ref().unwrap().period.clone();
     let saved_checks = saved.member_checks.len();
-    let saved_key = app.last_static;
-    assert!(!app.staleness.results_stale);
+    let saved_key = app.core.scoped.last_static;
+    assert!(!app.core.scoped.staleness.results_stale);
 
     app.save_project_to(path.clone());
-    assert!(app.last_error.is_none(), "{:?}", app.last_error);
+    assert!(
+        app.core.scoped.last_error.is_none(),
+        "{:?}",
+        app.core.scoped.last_error
+    );
 
     let mut reopened = App::default();
     reopened.open_project_from(path.clone());
-    assert!(reopened.last_error.is_none(), "{:?}", reopened.last_error);
+    assert!(
+        reopened.core.scoped.last_error.is_none(),
+        "{:?}",
+        reopened.core.scoped.last_error
+    );
 
-    let restored = reopened.results.as_ref().expect("解析結果が復元されるはず");
+    let restored = reopened
+        .core
+        .scoped
+        .results
+        .as_ref()
+        .expect("解析結果が復元されるはず");
     assert_eq!(restored.statics[0].1.disp, saved_disp);
     assert_eq!(restored.modal.as_ref().unwrap().period, saved_period);
     assert_eq!(restored.member_checks.len(), saved_checks);
-    assert_eq!(reopened.last_static, saved_key);
-    assert!(!reopened.staleness.results_stale);
-    assert!(!reopened.staleness.design_stale);
-    assert!(reopened.staleness.last_run.is_some());
+    assert_eq!(reopened.core.scoped.last_static, saved_key);
+    assert!(!reopened.core.scoped.staleness.results_stale);
+    assert!(!reopened.core.scoped.staleness.design_stale);
+    assert!(reopened.core.scoped.staleness.last_run.is_some());
 
     let _ = std::fs::remove_file(&path);
 }
@@ -6744,23 +7549,31 @@ fn test_stale_results_not_persisted() {
     let mut app = App::default();
     app.load_model(crate::sample::portal_frame());
     app.run_linear_static(LoadCaseId(0));
-    app.staleness.mark_edited();
+    app.core.scoped.staleness.mark_edited();
     app.save_project_to(path.clone());
-    assert!(app.last_error.is_none(), "{:?}", app.last_error);
+    assert!(
+        app.core.scoped.last_error.is_none(),
+        "{:?}",
+        app.core.scoped.last_error
+    );
 
     let mut reopened = App::default();
     reopened.open_project_from(path.clone());
-    assert!(reopened.last_error.is_none(), "{:?}", reopened.last_error);
+    assert!(
+        reopened.core.scoped.last_error.is_none(),
+        "{:?}",
+        reopened.core.scoped.last_error
+    );
     // 結果自体が復元されない（`results_stale` は結果がない既定状態のまま）。
-    assert!(reopened.results.is_none());
-    assert_eq!(reopened.last_static, None);
+    assert!(reopened.core.scoped.results.is_none());
+    assert_eq!(reopened.core.scoped.last_static, None);
 
     let _ = std::fs::remove_file(&path);
 }
 
 /// 時刻歴の詳細記録（`ThRecording`）は既定でプロジェクト保存（.scz）に含まれ、
 /// 復元後も 3D アニメーション・層応答分布が利用できる。保存操作はメモリ上の
-/// `app.results` を破壊しない。閾値超過時の確認（`needs_recording_confirm`）と
+/// `app.core.scoped.results` を破壊しない。閾値超過時の確認（`needs_recording_confirm`）と
 /// 「除外して保存」（`save_project_without_recording`）の分岐も併せて検証する。
 #[test]
 fn test_time_history_recording_saved_and_optional_exclusion() {
@@ -6773,11 +7586,17 @@ fn test_time_history_recording_saved_and_optional_exclusion() {
     let mut app = App::default();
     app.load_model(crate::sample::portal_frame());
     app.generate_stories_action();
-    app.analysis_cfg.th_duration = 1.0;
+    app.core.analysis_cfg.th_duration = 1.0;
     app.run_time_history_sample();
-    assert!(app.last_error.is_none(), "{:?}", app.last_error);
     assert!(
-        app.results
+        app.core.scoped.last_error.is_none(),
+        "{:?}",
+        app.core.scoped.last_error
+    );
+    assert!(
+        app.core
+            .scoped
+            .results
             .as_ref()
             .and_then(|r| r.time_history.as_ref())
             .and_then(|t| t.recording.as_ref())
@@ -6788,18 +7607,28 @@ fn test_time_history_recording_saved_and_optional_exclusion() {
     // 荷重組合せのみが呼ぶ）ため、時刻歴だけでは `results_stale` が解消しない。
     // 保存条件（`!results_stale`）を満たす実利用の流れ（静的解析も実行）に揃える。
     app.run_linear_static(LoadCaseId(0));
-    assert!(app.last_error.is_none(), "{:?}", app.last_error);
-    assert!(!app.staleness.results_stale);
+    assert!(
+        app.core.scoped.last_error.is_none(),
+        "{:?}",
+        app.core.scoped.last_error
+    );
+    assert!(!app.core.scoped.staleness.results_stale);
 
     // 既定保存: 小規模モデルは閾値未満なので確認なしで保存され、recording を含む。
     app.save_project_to(path.clone());
-    assert!(app.last_error.is_none(), "{:?}", app.last_error);
     assert!(
-        app.pending_save_recording.is_none(),
+        app.core.scoped.last_error.is_none(),
+        "{:?}",
+        app.core.scoped.last_error
+    );
+    assert!(
+        app.core.scoped.pending_save_recording.is_none(),
         "閾値未満では確認保留にならないはず"
     );
     assert!(
-        app.results
+        app.core
+            .scoped
+            .results
             .as_ref()
             .and_then(|r| r.time_history.as_ref())
             .and_then(|t| t.recording.as_ref())
@@ -6809,8 +7638,14 @@ fn test_time_history_recording_saved_and_optional_exclusion() {
 
     let mut reopened = App::default();
     reopened.open_project_from(path.clone());
-    assert!(reopened.last_error.is_none(), "{:?}", reopened.last_error);
+    assert!(
+        reopened.core.scoped.last_error.is_none(),
+        "{:?}",
+        reopened.core.scoped.last_error
+    );
     let restored_th = reopened
+        .core
+        .scoped
         .results
         .as_ref()
         .and_then(|r| r.time_history.as_ref())
@@ -6823,9 +7658,15 @@ fn test_time_history_recording_saved_and_optional_exclusion() {
 
     // 「除外して保存」: recording を含めずに保存し、メモリ上は保持される。
     app.save_project_without_recording(path_excl.clone());
-    assert!(app.last_error.is_none(), "{:?}", app.last_error);
     assert!(
-        app.results
+        app.core.scoped.last_error.is_none(),
+        "{:?}",
+        app.core.scoped.last_error
+    );
+    assert!(
+        app.core
+            .scoped
+            .results
             .as_ref()
             .and_then(|r| r.time_history.as_ref())
             .and_then(|t| t.recording.as_ref())
@@ -6835,11 +7676,13 @@ fn test_time_history_recording_saved_and_optional_exclusion() {
     let mut reopened_excl = App::default();
     reopened_excl.open_project_from(path_excl.clone());
     assert!(
-        reopened_excl.last_error.is_none(),
+        reopened_excl.core.scoped.last_error.is_none(),
         "{:?}",
-        reopened_excl.last_error
+        reopened_excl.core.scoped.last_error
     );
     let excl_th = reopened_excl
+        .core
+        .scoped
         .results
         .as_ref()
         .and_then(|r| r.time_history.as_ref())
@@ -6850,6 +7693,8 @@ fn test_time_history_recording_saved_and_optional_exclusion() {
     );
     assert!(
         reopened_excl
+            .core
+            .scoped
             .results
             .as_ref()
             .unwrap()
@@ -6891,7 +7736,7 @@ fn test_damper_def_add_update_remove_via_undo() {
     use squid_n_core::model::{DamperDef, DamperKind, DamperProps};
 
     let mut app = App::default();
-    assert!(app.model.damper_defs.is_empty());
+    assert!(app.core.model.damper_defs.is_empty());
 
     let def = DamperDef {
         name: "オイルダンパーA".to_string(),
@@ -6903,12 +7748,12 @@ fn test_damper_def_add_update_remove_via_undo() {
             ..DamperProps::default()
         },
     };
-    app.undo.run(
-        &mut app.model,
+    app.core.scoped.undo.run(
+        &mut app.core.model,
         Box::new(squid_n_edit::AddDamperDef { def: def.clone() }),
     );
-    assert_eq!(app.model.damper_defs.len(), 1);
-    assert_eq!(app.model.damper_defs[0].name, "オイルダンパーA");
+    assert_eq!(app.core.model.damper_defs.len(), 1);
+    assert_eq!(app.core.model.damper_defs[0].name, "オイルダンパーA");
 
     // 更新（名称・諸元の書き換え）。
     let updated = DamperDef {
@@ -6918,34 +7763,34 @@ fn test_damper_def_add_update_remove_via_undo() {
             ..def.props
         },
     };
-    app.undo.run(
-        &mut app.model,
+    app.core.scoped.undo.run(
+        &mut app.core.model,
         Box::new(squid_n_edit::UpdateDamperDef {
             index: 0,
             def: updated.clone(),
         }),
     );
-    assert_eq!(app.model.damper_defs[0].name, "オイルダンパーA改");
-    assert_eq!(app.model.damper_defs[0].props.kd, 200_000.0);
+    assert_eq!(app.core.model.damper_defs[0].name, "オイルダンパーA改");
+    assert_eq!(app.core.model.damper_defs[0].props.kd, 200_000.0);
 
     // 削除。
-    app.undo.run(
-        &mut app.model,
+    app.core.scoped.undo.run(
+        &mut app.core.model,
         Box::new(squid_n_edit::RemoveDamperDef { index: 0 }),
     );
-    assert!(app.model.damper_defs.is_empty());
+    assert!(app.core.model.damper_defs.is_empty());
 
     // undo を 3 回巻き戻すと、更新前→追加前の順に復元される。
-    app.undo.undo(&mut app.model);
-    assert_eq!(app.model.damper_defs.len(), 1, "削除の取り消し");
-    assert_eq!(app.model.damper_defs[0].name, "オイルダンパーA改");
-    app.undo.undo(&mut app.model);
+    app.core.scoped.undo.undo(&mut app.core.model);
+    assert_eq!(app.core.model.damper_defs.len(), 1, "削除の取り消し");
+    assert_eq!(app.core.model.damper_defs[0].name, "オイルダンパーA改");
+    app.core.scoped.undo.undo(&mut app.core.model);
     assert_eq!(
-        app.model.damper_defs[0].name, "オイルダンパーA",
+        app.core.model.damper_defs[0].name, "オイルダンパーA",
         "更新の取り消し"
     );
-    app.undo.undo(&mut app.model);
-    assert!(app.model.damper_defs.is_empty(), "追加の取り消し");
+    app.core.scoped.undo.undo(&mut app.core.model);
+    assert!(app.core.model.damper_defs.is_empty(), "追加の取り消し");
 }
 
 /// 免震支承材の作成（`AddIsolator`）: 2節点間へ免震支承材要素＋諸元を追加し、
@@ -6959,10 +7804,10 @@ fn test_add_isolator_between_two_nodes_via_undo() {
 
     let mut app = App::default();
     app.load_model(crate::sample::portal_frame());
-    let n = app.model.nodes.len();
+    let n = app.core.model.nodes.len();
     assert!(n >= 2);
-    let (i_node, j_node) = (app.model.nodes[0].id, app.model.nodes[1].id);
-    let new_id = squid_n_core::ids::ElemId(app.model.elements.len() as u32);
+    let (i_node, j_node) = (app.core.model.nodes[0].id, app.core.model.nodes[1].id);
+    let new_id = squid_n_core::ids::ElemId(app.core.model.elements.len() as u32);
     let elem = ElementData {
         id: new_id,
         kind: ElementKind::Isolator,
@@ -6981,13 +7826,14 @@ fn test_add_isolator_between_two_nodes_via_undo() {
         kind: IsolatorKind::HighDampingRubber,
         ..IsolatorProps::default()
     };
-    app.undo.run(
-        &mut app.model,
+    app.core.scoped.undo.run(
+        &mut app.core.model,
         Box::new(squid_n_edit::AddIsolator { elem, props }),
     );
-    assert!(app.model.elements.iter().any(|e| e.id == new_id));
+    assert!(app.core.model.elements.iter().any(|e| e.id == new_id));
     assert_eq!(
-        app.model
+        app.core
+            .model
             .isolator_attrs
             .iter()
             .find(|a| a.elem == new_id)
@@ -6995,9 +7841,14 @@ fn test_add_isolator_between_two_nodes_via_undo() {
         Some(props)
     );
 
-    app.undo.undo(&mut app.model);
-    assert!(!app.model.elements.iter().any(|e| e.id == new_id));
-    assert!(!app.model.isolator_attrs.iter().any(|a| a.elem == new_id));
+    app.core.scoped.undo.undo(&mut app.core.model);
+    assert!(!app.core.model.elements.iter().any(|e| e.id == new_id));
+    assert!(!app
+        .core
+        .model
+        .isolator_attrs
+        .iter()
+        .any(|a| a.elem == new_id));
 }
 
 // ===== 部材ねじり解放（i 端ねじれピン）の設定と準備計算の一覧 =====
@@ -7010,12 +7861,17 @@ fn test_preparation_lists_no_torsion_skip_for_portal_frame() {
     let mut app = App::default();
     app.load_model(crate::sample::portal_frame());
     assert_eq!(
-        app.model.beam_torsion,
+        app.core.model.beam_torsion,
         BeamTorsionMode::ReleaseIEnd,
         "既定は i 端ねじれ解放"
     );
     app.run_preparation();
-    let prep = app.preparation.as_ref().expect("準備計算の結果");
+    let prep = app
+        .core
+        .scoped
+        .preparation
+        .as_ref()
+        .expect("準備計算の結果");
     assert!(prep.torsion_release_enabled);
     assert!(
         prep.torsion_skipped.is_empty(),
@@ -7039,7 +7895,12 @@ fn test_preparation_lists_torsion_skip_for_unrestrained_column_base() {
     }
     app.load_model(model);
     app.run_preparation();
-    let prep = app.preparation.as_ref().expect("準備計算の結果");
+    let prep = app
+        .core
+        .scoped
+        .preparation
+        .as_ref()
+        .expect("準備計算の結果");
     let ids: Vec<u32> = prep.torsion_skipped.iter().map(|r| r.elem.0).collect();
     assert_eq!(ids, vec![0, 1], "柱 2 本が対象外になるはず: {ids:?}");
 }
@@ -7051,21 +7912,26 @@ fn test_preparation_torsion_disabled_reports_no_rows() {
     use squid_n_core::model::BeamTorsionMode;
     let mut app = App::default();
     app.load_model(crate::sample::portal_frame());
-    app.undo.run(
-        &mut app.model,
+    app.core.scoped.undo.run(
+        &mut app.core.model,
         Box::new(squid_n_edit::SetBeamTorsion {
             mode: BeamTorsionMode::Keep,
         }),
     );
-    assert_eq!(app.model.beam_torsion, BeamTorsionMode::Keep);
+    assert_eq!(app.core.model.beam_torsion, BeamTorsionMode::Keep);
     // undo で既定へ戻る（準備計算が別のコマンドを積む前に確認する）。
-    app.undo.undo(&mut app.model);
-    assert_eq!(app.model.beam_torsion, BeamTorsionMode::ReleaseIEnd);
-    app.undo.redo(&mut app.model);
-    assert_eq!(app.model.beam_torsion, BeamTorsionMode::Keep);
+    app.core.scoped.undo.undo(&mut app.core.model);
+    assert_eq!(app.core.model.beam_torsion, BeamTorsionMode::ReleaseIEnd);
+    app.core.scoped.undo.redo(&mut app.core.model);
+    assert_eq!(app.core.model.beam_torsion, BeamTorsionMode::Keep);
 
     app.run_preparation();
-    let prep = app.preparation.as_ref().expect("準備計算の結果");
+    let prep = app
+        .core
+        .scoped
+        .preparation
+        .as_ref()
+        .expect("準備計算の結果");
     assert!(!prep.torsion_release_enabled);
     assert!(prep.torsion_skipped.is_empty());
 }
@@ -7089,7 +7955,7 @@ fn test_generate_axes_action_does_not_stale_results() {
     for (i, x) in [0.0f64, 6000.0].iter().enumerate() {
         let base = (i * 2) as u32;
         for (k, z) in [0.0f64, 3000.0].iter().enumerate() {
-            app.model.nodes.push(Node {
+            app.core.model.nodes.push(Node {
                 id: NodeId(base + k as u32),
                 coord: [*x, 0.0, *z],
                 restraint: Dof6Mask::FREE,
@@ -7101,7 +7967,7 @@ fn test_generate_axes_action_does_not_stale_results() {
         let mut nodes: SmallVec<[NodeId; 8]> = SmallVec::new();
         nodes.push(NodeId(base));
         nodes.push(NodeId(base + 1));
-        app.model.elements.push(ElementData {
+        app.core.model.elements.push(ElementData {
             id: ElemId(i as u32),
             kind: ElementKind::Beam,
             nodes,
@@ -7118,40 +7984,59 @@ fn test_generate_axes_action_does_not_stale_results() {
     }
 
     // 解析済み・準備計算済みの状態を作る。
-    app.staleness.mark_fresh();
-    app.staleness.preparation_stale = false;
-    app.staleness.diagnostics_stale = false;
-    app.staleness.unsaved_changes = false;
+    app.core.scoped.staleness.mark_fresh();
+    app.core.scoped.staleness.preparation_stale = false;
+    app.core.scoped.staleness.diagnostics_stale = false;
+    app.core.scoped.staleness.unsaved_changes = false;
 
     app.generate_axes_action();
 
     // X 方向 2 本・Y 方向 1 本（柱はすべて Y=0）。
-    let x = app.model.axes.iter().find(|g| g.name == "X").unwrap();
+    let x = app.core.model.axes.iter().find(|g| g.name == "X").unwrap();
     assert_eq!(
         x.axes.iter().map(|a| a.name.as_str()).collect::<Vec<_>>(),
         vec!["X1", "X2"]
     );
     assert_eq!(x.axes[0].distance, Some(0.0));
     assert_eq!(x.axes[1].distance, Some(6000.0));
-    let y = app.model.axes.iter().find(|g| g.name == "Y").unwrap();
+    let y = app.core.model.axes.iter().find(|g| g.name == "Y").unwrap();
     assert_eq!(y.axes.len(), 1);
 
     // 通り芯は計算に用いないため、結果は陳腐化しない（未保存フラグだけ立つ）。
-    assert!(!app.staleness.results_stale, "解析結果は有効なまま");
-    assert!(!app.staleness.design_stale, "設計結果は有効なまま");
-    assert!(!app.staleness.preparation_stale, "準備計算は有効なまま");
-    assert!(!app.staleness.diagnostics_stale, "診断は有効なまま");
-    assert!(app.staleness.unsaved_changes, "保存は必要になる");
+    assert!(
+        !app.core.scoped.staleness.results_stale,
+        "解析結果は有効なまま"
+    );
+    assert!(
+        !app.core.scoped.staleness.design_stale,
+        "設計結果は有効なまま"
+    );
+    assert!(
+        !app.core.scoped.staleness.preparation_stale,
+        "準備計算は有効なまま"
+    );
+    assert!(
+        !app.core.scoped.staleness.diagnostics_stale,
+        "診断は有効なまま"
+    );
+    assert!(
+        app.core.scoped.staleness.unsaved_changes,
+        "保存は必要になる"
+    );
 
     // 再実行しても増殖せず、モデルは変わらない（冪等）。
-    let before = app.model.axes.clone();
+    let before = app.core.model.axes.clone();
     app.generate_axes_action();
-    assert_eq!(app.model.axes, before);
+    assert_eq!(app.core.model.axes, before);
 
     // undo で通り芯だけが元へ戻る。
-    app.undo.undo(&mut app.model);
-    assert!(app.model.axes.is_empty());
-    assert!(app.model.validate().is_ok(), "{:?}", app.model.validate());
+    app.core.scoped.undo.undo(&mut app.core.model);
+    assert!(app.core.model.axes.is_empty());
+    assert!(
+        app.core.model.validate().is_ok(),
+        "{:?}",
+        app.core.model.validate()
+    );
 }
 
 /// 2D 構面表示: 通り芯を自動生成したモデルで、通りと階の構面が期待どおりに
@@ -7171,8 +8056,8 @@ fn test_frame_view_filters_members_by_axis_and_story() {
 
     let mut app = App::default();
     let mut node = |x: f64, y: f64, z: f64| -> NodeId {
-        let id = NodeId(app.model.nodes.len() as u32);
-        app.model.nodes.push(Node {
+        let id = NodeId(app.core.model.nodes.len() as u32);
+        app.core.model.nodes.push(Node {
             id,
             coord: [x, y, z],
             restraint: Dof6Mask::FREE,
@@ -7188,11 +8073,11 @@ fn test_frame_view_filters_members_by_axis_and_story() {
     let b0 = node(6000.0, 0.0, 0.0);
     let b1 = node(6000.0, 0.0, 4000.0);
     let mut line = |i: NodeId, j: NodeId| {
-        let id = ElemId(app.model.elements.len() as u32);
+        let id = ElemId(app.core.model.elements.len() as u32);
         let mut nodes: SmallVec<[NodeId; 8]> = SmallVec::new();
         nodes.push(i);
         nodes.push(j);
-        app.model.elements.push(ElementData {
+        app.core.model.elements.push(ElementData {
             id,
             kind: ElementKind::Beam,
             nodes,
@@ -7214,28 +8099,42 @@ fn test_frame_view_filters_members_by_axis_and_story() {
 
     app.generate_axes_action();
     // X 群には X1(0) と X2(6000)、Y 群には Y1(0) ができる。
-    let xg = app.model.axes.iter().position(|g| g.name == "X").unwrap();
-    let yg = app.model.axes.iter().position(|g| g.name == "Y").unwrap();
-    assert_eq!(app.model.axes[xg].axes.len(), 2);
-    assert_eq!(app.model.axes[yg].axes.len(), 1);
+    let xg = app
+        .core
+        .model
+        .axes
+        .iter()
+        .position(|g| g.name == "X")
+        .unwrap();
+    let yg = app
+        .core
+        .model
+        .axes
+        .iter()
+        .position(|g| g.name == "Y")
+        .unwrap();
+    assert_eq!(app.core.model.axes[xg].axes.len(), 2);
+    assert_eq!(app.core.model.axes[yg].axes.len(), 1);
 
     // X1 通り（X=0 の構面）には、その位置の柱だけが属する。
-    let f = build_frame(&app.model, FrameTarget::Axis { group: xg, axis: 0 }).expect("X1 通り");
+    let f =
+        build_frame(&app.core.model, FrameTarget::Axis { group: xg, axis: 0 }).expect("X1 通り");
     assert_eq!(f.normal, [1.0, 0.0, 0.0]);
     assert!(f.elem_on[col_a.index()]);
     assert!(!f.elem_on[col_b.index()], "別の通りの柱");
     assert!(!f.elem_on[girder.index()], "通りをまたぐ梁");
 
     // Y1 通り（Y=0 の構面）には、柱 2 本と大梁がすべて属する（同一平面）。
-    let f = build_frame(&app.model, FrameTarget::Axis { group: yg, axis: 0 }).expect("Y1 通り");
+    let f =
+        build_frame(&app.core.model, FrameTarget::Axis { group: yg, axis: 0 }).expect("Y1 通り");
     assert_eq!(f.normal, [0.0, 1.0, 0.0]);
     assert_eq!(f.elem_count(), 3, "Y1 構面には 3 部材すべてが属する");
 
     // 階（伏図）: 階は床であり、先頭は基部の床。梁が架かるのは 2 番目の床。
     // 柱は上端がその階に属する。
     app.generate_stories_action();
-    let story = app.model.stories[1].id;
-    let f = build_frame(&app.model, FrameTarget::Story(story)).expect("階");
+    let story = app.core.model.stories[1].id;
+    let f = build_frame(&app.core.model, FrameTarget::Story(story)).expect("階");
     assert_eq!(f.normal, [0.0, 0.0, 1.0], "伏図の法線は鉛直");
     assert!(f.elem_on[girder.index()], "その階の梁");
     assert!(f.elem_on[col_a.index()], "上端がその階の柱");
@@ -7244,14 +8143,14 @@ fn test_frame_view_filters_members_by_axis_and_story() {
     // 基部の床（基礎伏図）: 柱脚の節点が属する。準備計算を通していないモデルでも
     // 幾何から引くため、伏図は空にならない（`build_story_frame` は
     // `Model::node_stories` を情報源とする）。
-    let base = app.model.stories[0].id;
-    let fb = build_frame(&app.model, FrameTarget::Story(base)).expect("基部の階");
+    let base = app.core.model.stories[0].id;
+    let fb = build_frame(&app.core.model, FrameTarget::Story(base)).expect("基部の階");
     assert!(fb.node_on[a0.index()], "柱脚は基部の床に属する");
     assert!(fb.node_on[b0.index()]);
 
     // 存在しない通りを指すと構面は解決できない（ビューアは全体表示へ戻す）。
     assert!(build_frame(
-        &app.model,
+        &app.core.model,
         FrameTarget::Axis {
             group: xg,
             axis: 99
@@ -7270,18 +8169,22 @@ fn test_apply_static_result_updates_focus_result() {
     app.load_model(aligned_portal_frame());
 
     app.run_linear_static(LoadCaseId(0));
-    assert!(app.last_error.is_none(), "{:?}", app.last_error);
+    assert!(
+        app.core.scoped.last_error.is_none(),
+        "{:?}",
+        app.core.scoped.last_error
+    );
     assert_eq!(
-        app.nav.focus_result,
+        app.ui.scoped.nav.focus_result,
         Some(StaticKey::Case(StaticCaseKey::User(LoadCaseId(0)))),
         "解析実行後は表示対象も新しい結果を指すべき"
     );
 
     // 別の結果を表示対象にした状態で再実行しても、表示対象は実行した結果へ移る。
-    app.nav.focus_result = Some(StaticKey::Case(StaticCaseKey::Seismic(SeismicDir::X)));
+    app.ui.scoped.nav.focus_result = Some(StaticKey::Case(StaticCaseKey::Seismic(SeismicDir::X)));
     app.run_linear_static(LoadCaseId(0));
     assert_eq!(
-        app.nav.focus_result,
+        app.ui.scoped.nav.focus_result,
         Some(StaticKey::Case(StaticCaseKey::User(LoadCaseId(0)))),
         "再実行後の表示対象は実行した結果へ切り替わるべき"
     );
@@ -7289,7 +8192,7 @@ fn test_apply_static_result_updates_focus_result() {
     // 同じ結果を指している（食い違いがない）。
     let displayed = app.current_static().unwrap().member_forces.clone();
     assert_eq!(
-        app.results.as_ref().unwrap().member_forces,
+        app.core.scoped.results.as_ref().unwrap().member_forces,
         displayed,
         "変位図と応力図・検定の参照元は一致すべき"
     );
@@ -7302,14 +8205,18 @@ fn test_apply_static_result_updates_focus_result() {
 fn test_time_history_apply_clears_stale() {
     let mut app = App::default();
     app.load_model(crate::sample::portal_frame());
-    app.analysis_cfg.th_duration = 1.0;
+    app.core.analysis_cfg.th_duration = 1.0;
     // モデル編集で stale を立ててから時刻歴のみ実行する。
-    app.staleness.mark_edited();
-    assert!(app.staleness.results_stale);
+    app.core.scoped.staleness.mark_edited();
+    assert!(app.core.scoped.staleness.results_stale);
     app.run_time_history_sample();
-    assert!(app.last_error.is_none(), "{:?}", app.last_error);
     assert!(
-        !app.staleness.results_stale,
+        app.core.scoped.last_error.is_none(),
+        "{:?}",
+        app.core.scoped.last_error
+    );
+    assert!(
+        !app.core.scoped.staleness.results_stale,
         "時刻歴の完了後は stale が解消されるべき"
     );
 }
@@ -7321,24 +8228,28 @@ fn test_time_history_apply_clears_stale() {
 fn test_time_history_and_pushover_run_preparation() {
     let mut app = App::default();
     app.load_model(crate::sample::portal_frame());
-    app.analysis_cfg.th_duration = 0.5;
+    app.core.analysis_cfg.th_duration = 0.5;
     assert!(
-        app.staleness.preparation_stale,
+        app.core.scoped.staleness.preparation_stale,
         "読込直後は準備計算が未実行のはず"
     );
     app.run_time_history_sample();
-    assert!(app.last_error.is_none(), "{:?}", app.last_error);
     assert!(
-        !app.staleness.preparation_stale,
+        app.core.scoped.last_error.is_none(),
+        "{:?}",
+        app.core.scoped.last_error
+    );
+    assert!(
+        !app.core.scoped.staleness.preparation_stale,
         "時刻歴の実行で準備計算が走るべき"
     );
 
     // 増分解析も同じ入口（begin_analysis）を通ること。
-    app.staleness.mark_edited();
-    assert!(app.staleness.preparation_stale);
+    app.core.scoped.staleness.mark_edited();
+    assert!(app.core.scoped.staleness.preparation_stale);
     app.run_pushover();
     assert!(
-        !app.staleness.preparation_stale,
+        !app.core.scoped.staleness.preparation_stale,
         "増分解析の実行で準備計算が走るべき"
     );
 }
@@ -7519,13 +8430,19 @@ fn toggle_dock_icon_closes_when_active_opens_otherwise() {
 #[test]
 fn open_log_dock_switches_to_log_tab() {
     let mut app = App {
-        bottom_dock_open: false,
-        bottom_tab: BottomTab::Model,
+        ui: UiState {
+            view: UiViewState {
+                bottom_dock_open: false,
+                bottom_tab: BottomTab::Model,
+                ..Default::default()
+            },
+            ..Default::default()
+        },
         ..Default::default()
     };
     app.open_log_dock();
-    assert!(app.bottom_dock_open);
-    assert_eq!(app.bottom_tab, BottomTab::Log);
+    assert!(app.ui.view.bottom_dock_open);
+    assert_eq!(app.ui.view.bottom_tab, BottomTab::Log);
 }
 
 /// 工程タブ「解析」のプリセットは ① 準備計算から入る。
@@ -7533,13 +8450,19 @@ fn open_log_dock_switches_to_log_tab() {
 #[test]
 fn analysis_tab_preset_opens_preparation() {
     let mut app = App {
-        right_panel: RightPanel::Inspector,
-        right_dock_open: false,
+        ui: UiState {
+            view: UiViewState {
+                right_panel: RightPanel::Inspector,
+                right_dock_open: false,
+                ..Default::default()
+            },
+            ..Default::default()
+        },
         ..Default::default()
     };
     app.apply_tab_preset(Tab::Analysis);
-    assert!(app.right_dock_open);
-    assert_eq!(app.right_panel, RightPanel::Preparation);
+    assert!(app.ui.view.right_dock_open);
+    assert_eq!(app.ui.view.right_panel, RightPanel::Preparation);
 }
 
 /// アクティビティバーの SVG がラスタライズできる（壊れたコメント等で 0 サイズにならない）。
@@ -7878,17 +8801,37 @@ fn test_time_history_upsert_keeps_distinct_case_names() {
 fn test_time_history_does_not_stale_static_results() {
     let mut app = App::default();
     app.load_model(crate::sample::portal_frame());
-    app.analysis_cfg.th_duration = 0.5;
+    app.core.analysis_cfg.th_duration = 0.5;
     app.run_linear_static(LoadCaseId(0));
-    assert!(app.last_error.is_none(), "{:?}", app.last_error);
-    assert!(!app.staleness.results_stale);
-    let static_count = app.results.as_ref().unwrap().statics.len();
+    assert!(
+        app.core.scoped.last_error.is_none(),
+        "{:?}",
+        app.core.scoped.last_error
+    );
+    assert!(!app.core.scoped.staleness.results_stale);
+    let static_count = app.core.scoped.results.as_ref().unwrap().statics.len();
     app.run_time_history_sample();
-    assert!(app.last_error.is_none(), "{:?}", app.last_error);
-    assert!(!app.staleness.results_stale);
-    assert_eq!(app.results.as_ref().unwrap().statics.len(), static_count);
-    assert_eq!(app.model.vibration_cases.len(), 1);
-    assert_eq!(app.results.as_ref().unwrap().time_histories.len(), 1);
+    assert!(
+        app.core.scoped.last_error.is_none(),
+        "{:?}",
+        app.core.scoped.last_error
+    );
+    assert!(!app.core.scoped.staleness.results_stale);
+    assert_eq!(
+        app.core.scoped.results.as_ref().unwrap().statics.len(),
+        static_count
+    );
+    assert_eq!(app.core.model.vibration_cases.len(), 1);
+    assert_eq!(
+        app.core
+            .scoped
+            .results
+            .as_ref()
+            .unwrap()
+            .time_histories
+            .len(),
+        1
+    );
 }
 
 /// 固有値モードの表示ラベル（周期の桁）。
@@ -7948,18 +8891,24 @@ fn test_set_pushover_view_dir_keeps_window_when_slot_missing() {
 
     let po = dummy_pushover(12.0);
     let mut app = App {
-        results: Some(ResultsBundle {
-            pushover_x: Some(po.clone()),
-            pushover: Some(po),
+        core: AppCore {
+            scoped: ModelScoped {
+                results: Some(ResultsBundle {
+                    pushover_x: Some(po.clone()),
+                    pushover: Some(po),
+                    ..Default::default()
+                }),
+                pushover_view_dir: SeismicDir::X,
+                ..Default::default()
+            },
             ..Default::default()
-        }),
-        pushover_view_dir: SeismicDir::X,
+        },
         ..Default::default()
     };
     app.set_pushover_view_dir(SeismicDir::Y);
-    assert_eq!(app.pushover_view_dir, SeismicDir::Y);
+    assert_eq!(app.core.scoped.pushover_view_dir, SeismicDir::Y);
     assert!(
-        app.results.as_ref().unwrap().pushover.is_some(),
+        app.core.scoped.results.as_ref().unwrap().pushover.is_some(),
         "相手方向スロットが空でも表示中の増分結果を消してはいけない"
     );
 }
@@ -7968,16 +8917,24 @@ fn test_set_pushover_view_dir_keeps_window_when_slot_missing() {
 #[test]
 fn test_lumped_eigen_only_clears_stick_response() {
     let mut app = App {
-        stick_response: Some(squid_n_solver::lumped_mass::StickResponse::default()),
-        results: Some(ResultsBundle {
-            lumped: Some(dummy_lumped(0.5, true)),
+        core: AppCore {
+            scoped: ModelScoped {
+                stick_response: Some(squid_n_solver::lumped_mass::StickResponse::default()),
+                results: Some(ResultsBundle {
+                    lumped: Some(dummy_lumped(0.5, true)),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
             ..Default::default()
-        }),
+        },
         ..Default::default()
     };
     app.apply_lumped_mass_result(Ok(dummy_lumped(0.4, false)));
-    assert!(app.stick_response.is_none());
+    assert!(app.core.scoped.stick_response.is_none());
     assert!(app
+        .core
+        .scoped
         .results
         .as_ref()
         .unwrap()
@@ -8018,20 +8975,26 @@ fn test_migrate_legacy_lumped_uses_wave_name() {
 #[test]
 fn test_select_lumped_eigen_mode_switches_spatial_view() {
     let mut app = App {
-        nav: Navigator {
-            focus_result: Some(StaticKey::Case(StaticCaseKey::User(LoadCaseId(0)))),
+        ui: UiState {
+            scoped: UiModelScoped {
+                nav: Navigator {
+                    focus_result: Some(StaticKey::Case(StaticCaseKey::User(LoadCaseId(0)))),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
             ..Default::default()
         },
         ..Default::default()
     };
     app.select_lumped_eigen_mode(1);
-    assert!(app.nav.focus_result.is_none());
-    assert_eq!(app.active_tab, Tab::Results);
+    assert!(app.ui.scoped.nav.focus_result.is_none());
+    assert_eq!(app.ui.view.active_tab, Tab::Results);
     #[cfg(feature = "gui")]
     {
-        assert_eq!(app.results_view, ResultsView::Spatial);
-        assert_eq!(app.view_mode, crate::viewer::ViewMode::LumpedMode);
-        assert_eq!(app.view_mode_idx, 1);
+        assert_eq!(app.ui.view.results_view, ResultsView::Spatial);
+        assert_eq!(app.ui.view.view_mode, crate::viewer::ViewMode::LumpedMode);
+        assert_eq!(app.ui.scoped.view_mode_idx, 1);
     }
 }
 
@@ -8041,11 +9004,12 @@ fn test_prune_orphan_vibration_cases_without_results() {
     use squid_n_core::model::VibrationThDir;
 
     let mut app = App::default();
-    app.model
+    app.core
+        .model
         .upsert_vibration_case("サンプル".into(), VibrationThDir::X, false);
-    assert_eq!(app.model.vibration_cases.len(), 1);
+    assert_eq!(app.core.model.vibration_cases.len(), 1);
     app.prune_orphan_vibration_cases();
-    assert!(app.model.vibration_cases.is_empty());
+    assert!(app.core.model.vibration_cases.is_empty());
 }
 
 /// 結果スロットがある振動ケースは残す。
@@ -8056,15 +9020,21 @@ fn test_prune_orphan_vibration_cases_keeps_matched() {
     let mut model = squid_n_core::model::Model::default();
     let id = model.upsert_vibration_case("サンプル".into(), VibrationThDir::X, false);
     let mut app = App {
-        model,
-        results: Some(ResultsBundle {
-            time_histories: vec![(id, dummy_th(vec![0.0]))],
+        core: AppCore {
+            model,
+            scoped: ModelScoped {
+                results: Some(ResultsBundle {
+                    time_histories: vec![(id, dummy_th(vec![0.0]))],
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
             ..Default::default()
-        }),
+        },
         ..Default::default()
     };
     app.prune_orphan_vibration_cases();
-    assert_eq!(app.model.vibration_cases.len(), 1);
+    assert_eq!(app.core.model.vibration_cases.len(), 1);
 }
 
 /// 古い結果のまま保存すると、振動ケースもファイルへ書かない。
@@ -8077,16 +9047,24 @@ fn test_stale_save_omits_vibration_cases() {
     let mut app = App::default();
     app.load_model(crate::sample::portal_frame());
     app.generate_stories_action();
-    app.analysis_cfg.th_duration = 0.5;
+    app.core.analysis_cfg.th_duration = 0.5;
     app.run_time_history_sample();
-    assert!(app.last_error.is_none(), "{:?}", app.last_error);
-    assert_eq!(app.model.vibration_cases.len(), 1);
+    assert!(
+        app.core.scoped.last_error.is_none(),
+        "{:?}",
+        app.core.scoped.last_error
+    );
+    assert_eq!(app.core.model.vibration_cases.len(), 1);
 
-    app.staleness.mark_edited();
+    app.core.scoped.staleness.mark_edited();
     app.save_project_to(path.clone());
-    assert!(app.last_error.is_none(), "{:?}", app.last_error);
+    assert!(
+        app.core.scoped.last_error.is_none(),
+        "{:?}",
+        app.core.scoped.last_error
+    );
     assert_eq!(
-        app.model.vibration_cases.len(),
+        app.core.model.vibration_cases.len(),
         1,
         "保存後もメモリ上のケースは残る"
     );
@@ -8098,9 +9076,13 @@ fn test_stale_save_omits_vibration_cases() {
 
     let mut reopened = App::default();
     reopened.open_project_from(path.clone());
-    assert!(reopened.last_error.is_none(), "{:?}", reopened.last_error);
-    assert!(reopened.results.is_none());
-    assert!(reopened.model.vibration_cases.is_empty());
+    assert!(
+        reopened.core.scoped.last_error.is_none(),
+        "{:?}",
+        reopened.core.scoped.last_error
+    );
+    assert!(reopened.core.scoped.results.is_none());
+    assert!(reopened.core.model.vibration_cases.is_empty());
 
     let _ = std::fs::remove_file(&path);
 }
@@ -8114,20 +9096,26 @@ fn test_hydrate_saved_vibration_views_fills_graph_data() {
     let id = model.upsert_vibration_case("サンプル".into(), VibrationThDir::X, false);
     let th = dummy_th(vec![0.0, 0.1, 0.2]);
     let mut app = App {
-        model,
-        results: Some(ResultsBundle {
-            time_histories: vec![(id, th.clone())],
-            time_history: Some(th),
-            lumped: Some(dummy_lumped(0.4, true)),
+        core: AppCore {
+            model,
+            scoped: ModelScoped {
+                results: Some(ResultsBundle {
+                    time_histories: vec![(id, th.clone())],
+                    time_history: Some(th),
+                    lumped: Some(dummy_lumped(0.4, true)),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
             ..Default::default()
-        }),
+        },
         ..Default::default()
     };
     app.hydrate_saved_vibration_views(Some(id), None);
-    assert_eq!(app.view_vibration_case, Some(id));
-    assert!(app.stick_response.is_some());
+    assert_eq!(app.core.scoped.view_vibration_case, Some(id));
+    assert!(app.core.scoped.stick_response.is_some());
     #[cfg(feature = "gui")]
     {
-        assert_eq!(app.time_history_data.time, vec![0.0, 0.1, 0.2]);
+        assert_eq!(app.ui.scoped.time_history_data.time, vec![0.0, 0.1, 0.2]);
     }
 }

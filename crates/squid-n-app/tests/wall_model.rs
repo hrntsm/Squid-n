@@ -87,7 +87,9 @@ fn sig4(v: f64) -> String {
 
 /// 指定した静的結果を取り出す（`full_model.rs::static_of` と同じ規則）。
 fn static_res_for(app: &App, key: StaticCaseKey) -> &squid_n_solver::linear::StaticOnce {
-    &app.results
+    &app.core
+        .scoped
+        .results
         .as_ref()
         .expect("解析結果が格納されているはず")
         .statics
@@ -424,13 +426,13 @@ fn wall_bay_model() -> Model {
 
 fn wall_bay_app() -> App {
     let mut app = App::default();
-    app.analysis_cfg.threads = 1;
-    app.model = wall_bay_model();
+    app.core.analysis_cfg.threads = 1;
+    app.core.model = wall_bay_model();
     // 架構種別（Ds 表の行を選ぶ設定。`App::design_frame`）は既定で SteelFrame
     // のままだと、耐震壁を持つ本フィクスチャでも Ds 計算が鋼構造の表
     // （`ds_steel`）を使ってしまい、RC 耐力壁の Ds 表（`ds_rc`）が一度も
     // 通らない。本フィクスチャは RC 耐震壁付き構造なので明示的に宣言する。
-    app.design_frame = squid_n_design_jp::secondary::holding_capacity::FrameType::RcWall;
+    app.core.design_frame = squid_n_design_jp::secondary::holding_capacity::FrameType::RcWall;
     app
 }
 
@@ -465,17 +467,21 @@ fn test_wall_frame_mismatch_appears_in_gui_diagnostics() {
     model.sections[3].material = Some(MaterialId(0));
 
     let mut app = App::default();
-    app.analysis_cfg.threads = 1;
-    app.model = model;
+    app.core.analysis_cfg.threads = 1;
+    app.core.model = model;
     app.run_diagnostics();
 
     assert!(
-        app.diagnostics
+        app.core
+            .scoped
+            .diagnostics
             .iter()
             .any(|d| d.message.contains("耐震壁") && d.message.contains("構造種別")),
         "壁展開モデルを経由しないと、model.elements の壁要素が 0 件のため \
          この構造種別食い違いを検知できないはず: {:?}",
-        app.diagnostics
+        app.core
+            .scoped
+            .diagnostics
             .iter()
             .map(|d| &d.message)
             .collect::<Vec<_>>()
@@ -491,12 +497,25 @@ fn test_wall_frame_mismatch_appears_in_gui_diagnostics() {
 fn test_wall_shear_check_appears_after_run_design_check() {
     let mut app = wall_bay_app();
     app.run_preparation();
-    assert!(app.last_error.is_none(), "準備計算: {:?}", app.last_error);
+    assert!(
+        app.core.scoped.last_error.is_none(),
+        "準備計算: {:?}",
+        app.core.scoped.last_error
+    );
     app.run_static_all();
-    assert!(app.last_error.is_none(), "静的解析: {:?}", app.last_error);
+    assert!(
+        app.core.scoped.last_error.is_none(),
+        "静的解析: {:?}",
+        app.core.scoped.last_error
+    );
     app.run_design_check();
 
-    let results = app.results.as_ref().expect("解析結果が格納されているはず");
+    let results = app
+        .core
+        .scoped
+        .results
+        .as_ref()
+        .expect("解析結果が格納されているはず");
     assert!(
         results
             .joint_checks
@@ -517,30 +536,46 @@ fn test_wall_bay_model_runs_full_pipeline() {
     let mut app = wall_bay_app();
     app.run_preparation();
     assert!(
-        app.last_error.as_deref().unwrap_or("").is_empty()
-            || app.last_error.as_deref().unwrap_or("").starts_with('⚠'),
+        app.core
+            .scoped
+            .last_error
+            .as_deref()
+            .unwrap_or("")
+            .is_empty()
+            || app
+                .core
+                .scoped
+                .last_error
+                .as_deref()
+                .unwrap_or("")
+                .starts_with('⚠'),
         "準備計算でエラー: {:?}",
-        app.last_error
+        app.core.scoped.last_error
     );
-    app.last_error = None;
+    app.core.scoped.last_error = None;
 
     app.run_static_all();
     assert!(
-        app.last_error.is_none(),
+        app.core.scoped.last_error.is_none(),
         "静的解析でエラー: {:?}",
-        app.last_error
+        app.core.scoped.last_error
     );
 
-    app.run_eigen(app.analysis_cfg.n_modes);
+    app.run_eigen(app.core.analysis_cfg.n_modes);
     assert!(
-        app.last_error.is_none(),
+        app.core.scoped.last_error.is_none(),
         "固有値解析でエラー: {:?}",
-        app.last_error
+        app.core.scoped.last_error
     );
 
-    assert!(app.results.is_some(), "解析結果が格納されているはず");
     assert!(
-        app.preparation
+        app.core.scoped.results.is_some(),
+        "解析結果が格納されているはず"
+    );
+    assert!(
+        app.core
+            .scoped
+            .preparation
             .as_ref()
             .unwrap()
             .summary
@@ -558,9 +593,9 @@ fn test_wall_bay_model_runs_full_pipeline() {
 fn snapshot_wall_bay_scalars() {
     let mut app = wall_bay_app();
     app.run_preparation();
-    app.last_error = None;
+    app.core.scoped.last_error = None;
     app.run_static_all();
-    app.run_eigen(app.analysis_cfg.n_modes);
+    app.run_eigen(app.core.analysis_cfg.n_modes);
 
     let mut out = String::new();
     let mut line = |k: &str, v: String| {
@@ -570,13 +605,20 @@ fn snapshot_wall_bay_scalars() {
         out.push('\n');
     };
 
-    let prep = app.preparation.as_ref().expect("準備計算の結果");
+    let prep = app
+        .core
+        .scoped
+        .preparation
+        .as_ref()
+        .expect("準備計算の結果");
     line(
         "prep.total_seismic_weight",
         sig4(prep.summary.total_seismic_weight),
     );
 
     let modal = app
+        .core
+        .scoped
         .results
         .as_ref()
         .expect("解析結果")
@@ -591,12 +633,12 @@ fn snapshot_wall_bay_scalars() {
     // 位置は保証されない。壁の解析要素は準備計算からの生成物（D5）で、その
     // `ElemId` は `apply_auto_panel_zones`（仕口パネル要素の生成）が先に走った
     // 後の要素数に依存し決め打ちできないため、`expand_wall_elements` を
-    // `app.model`（`run_preparation` 済み。パネルゾーンまで生成済みで、それ以降
+    // `app.core.model`（`run_preparation` 済み。パネルゾーンまで生成済みで、それ以降
     // `run_static_all` まで `model.elements` は変わらない）へ実際に適用して
     // 生成 `ElemId` を求める（`run_static_all` が内部で行う展開と同じ入力・
     // 同じ決定的な採番規則なので同じ ID になる）。
     let (_expanded_for_id, wall_index, wall_expand_report) =
-        squid_n_load::wall_expand::expand_wall_elements(&app.model);
+        squid_n_load::wall_expand::expand_wall_elements(&app.core.model);
     assert_eq!(wall_expand_report.generated, 1, "壁要素が1件生成されるはず");
     let wall_elem_id = wall_index
         .generated_elem_ids()
@@ -621,6 +663,7 @@ fn snapshot_wall_bay_scalars() {
     // 上の `.expect()` パニックとして検知する）。壁の面内せん断・開口低減を
     // 実際に動かす荷重は地震（EX）のため、変化を追う代表値は EX 側に置く。
     let dl_key = app
+        .core
         .model
         .load_cases
         .iter()
@@ -687,10 +730,20 @@ fn dominant_x_period(modal: &squid_n_solver::eigen::ModalResult) -> Option<f64> 
 fn test_wall_element_changes_eigen_period() {
     let mut with_wall = wall_bay_app();
     with_wall.run_preparation();
-    with_wall.last_error = None;
+    with_wall.core.scoped.last_error = None;
     with_wall.run_eigen(3);
-    let t_with = dominant_x_period(with_wall.results.as_ref().unwrap().modal.as_ref().unwrap())
-        .expect("X 方向卓越モードが求まるはず");
+    let t_with = dominant_x_period(
+        with_wall
+            .core
+            .scoped
+            .results
+            .as_ref()
+            .unwrap()
+            .modal
+            .as_ref()
+            .unwrap(),
+    )
+    .expect("X 方向卓越モードが求まるはず");
 
     let mut model_without = wall_bay_model();
     // 壁の解析要素は生成物のため、入力側の壁版を取り除けば生成されなくなる
@@ -709,13 +762,15 @@ fn test_wall_element_changes_eigen_period() {
         p.id = WallPlateId(i as u32);
     }
     let mut without_wall = App::default();
-    without_wall.analysis_cfg.threads = 1;
-    without_wall.model = model_without;
+    without_wall.core.analysis_cfg.threads = 1;
+    without_wall.core.model = model_without;
     without_wall.run_preparation();
-    without_wall.last_error = None;
+    without_wall.core.scoped.last_error = None;
     without_wall.run_eigen(3);
     let t_without = dominant_x_period(
         without_wall
+            .core
+            .scoped
             .results
             .as_ref()
             .unwrap()
@@ -788,13 +843,29 @@ fn test_region_gen_wall_finds_all_four_faces() {
 fn snapshot_wall_ds_group_and_holding_capacity() {
     let mut app = wall_bay_app();
     app.run_preparation();
-    assert!(app.last_error.is_none(), "準備計算: {:?}", app.last_error);
+    assert!(
+        app.core.scoped.last_error.is_none(),
+        "準備計算: {:?}",
+        app.core.scoped.last_error
+    );
     app.run_static_all();
-    assert!(app.last_error.is_none(), "静的解析: {:?}", app.last_error);
-    app.run_eigen(app.analysis_cfg.n_modes);
-    assert!(app.last_error.is_none(), "固有値解析: {:?}", app.last_error);
+    assert!(
+        app.core.scoped.last_error.is_none(),
+        "静的解析: {:?}",
+        app.core.scoped.last_error
+    );
+    app.run_eigen(app.core.analysis_cfg.n_modes);
+    assert!(
+        app.core.scoped.last_error.is_none(),
+        "固有値解析: {:?}",
+        app.core.scoped.last_error
+    );
     app.run_pushover();
-    assert!(app.last_error.is_none(), "増分解析: {:?}", app.last_error);
+    assert!(
+        app.core.scoped.last_error.is_none(),
+        "増分解析: {:?}",
+        app.core.scoped.last_error
+    );
 
     let (holding, ranks) = app
         .compute_holding_capacity()
@@ -848,21 +919,37 @@ fn snapshot_wall_ds_group_and_holding_capacity() {
 fn test_holding_capacity_auto_rank_detects_wall() {
     let mut app = wall_bay_app();
     app.run_preparation();
-    assert!(app.last_error.is_none(), "準備計算: {:?}", app.last_error);
+    assert!(
+        app.core.scoped.last_error.is_none(),
+        "準備計算: {:?}",
+        app.core.scoped.last_error
+    );
     app.run_static_all();
-    assert!(app.last_error.is_none(), "静的解析: {:?}", app.last_error);
-    app.run_eigen(app.analysis_cfg.n_modes);
-    assert!(app.last_error.is_none(), "固有値解析: {:?}", app.last_error);
+    assert!(
+        app.core.scoped.last_error.is_none(),
+        "静的解析: {:?}",
+        app.core.scoped.last_error
+    );
+    app.run_eigen(app.core.analysis_cfg.n_modes);
+    assert!(
+        app.core.scoped.last_error.is_none(),
+        "固有値解析: {:?}",
+        app.core.scoped.last_error
+    );
     app.run_pushover();
-    assert!(app.last_error.is_none(), "増分解析: {:?}", app.last_error);
+    assert!(
+        app.core.scoped.last_error.is_none(),
+        "増分解析: {:?}",
+        app.core.scoped.last_error
+    );
 
-    app.design_rank_auto = true;
+    app.core.design_rank_auto = true;
     let (_holding, _ranks) = app
         .compute_holding_capacity()
         .expect("保有水平耐力が算定できるはず");
 
     assert!(
-        !app.ds_beta_u_unavailable,
+        !app.core.scoped.ds_beta_u_unavailable,
         "壁展開モデルを見ていないと、耐震壁が model.elements 側から検出できず \
          wall_members が空のまま βu 算定不能（ds_beta_u_unavailable=true）に \
          フォールバックするはず"

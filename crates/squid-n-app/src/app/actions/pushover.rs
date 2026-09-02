@@ -10,14 +10,14 @@ impl App {
         &self,
         dir: SeismicDir,
     ) -> Option<&squid_n_solver::pushover::PushoverResult> {
-        let results = self.results.as_ref()?;
+        let results = self.core.scoped.results.as_ref()?;
         results.pushover_for_dir(dir)
     }
 
     /// 結果タブ・設計タブで表示中の増分解析結果を返す。
     pub fn displayed_pushover(&self) -> Option<&squid_n_solver::pushover::PushoverResult> {
-        let view_dir = self.pushover_view_dir;
-        let results = self.results.as_ref()?;
+        let view_dir = self.core.scoped.pushover_view_dir;
+        let results = self.core.scoped.results.as_ref()?;
         results
             .pushover_for_dir(view_dir)
             .or(results.pushover.as_ref())
@@ -26,11 +26,11 @@ impl App {
     /// 結果タブの増分解析表示方向を切り替え、`pushover` 窓口も同期する。
     #[cfg(any(test, feature = "gui"))]
     pub(crate) fn set_pushover_view_dir(&mut self, dir: SeismicDir) {
-        if self.pushover_view_dir == dir {
+        if self.core.scoped.pushover_view_dir == dir {
             return;
         }
-        self.pushover_view_dir = dir;
-        if let Some(bundle) = self.results.as_mut() {
+        self.core.scoped.pushover_view_dir = dir;
+        if let Some(bundle) = self.core.scoped.results.as_mut() {
             if let Some(po) = bundle.pushover_for_dir(dir).cloned() {
                 bundle.pushover = Some(po);
             }
@@ -39,8 +39,10 @@ impl App {
 
     /// 保存直前に `pushover` 窓口を表示中方向へ同期する。
     pub(crate) fn sync_pushover_for_save(&mut self) {
-        if let Some(bundle) = self.results.as_mut() {
-            bundle.pushover = bundle.pushover_for_dir(self.pushover_view_dir).cloned();
+        if let Some(bundle) = self.core.scoped.results.as_mut() {
+            bundle.pushover = bundle
+                .pushover_for_dir(self.core.scoped.pushover_view_dir)
+                .cloned();
         }
     }
 
@@ -59,21 +61,21 @@ impl App {
                         result.termination.describe()
                     ));
                 }
-                let dir = self.analysis_cfg.push_dir;
-                let mut bundle = self.results.take().unwrap_or_default();
+                let dir = self.core.analysis_cfg.push_dir;
+                let mut bundle = self.core.scoped.results.take().unwrap_or_default();
                 match dir {
                     SeismicDir::X => bundle.pushover_x = Some(result.clone()),
                     SeismicDir::Y => bundle.pushover_y = Some(result.clone()),
                 }
                 bundle.pushover = Some(result);
-                self.results = Some(bundle);
-                self.pushover_view_dir = dir;
+                self.core.scoped.results = Some(bundle);
+                self.core.scoped.pushover_view_dir = dir;
                 // mark_fresh で stale を解消する（`apply_static_case_result` と同じ扱い）。
                 // last_run の更新だけでは results_stale が立ったままになり、編集後に
                 // 増分解析だけを実行してもビューアが「再実行してください」表示のまま
                 // 復帰しなかった。
-                self.staleness.mark_fresh();
-                self.last_error = None;
+                self.core.scoped.staleness.mark_fresh();
+                self.core.scoped.last_error = None;
             }
             Err(e) => self.report_error(e),
         }
@@ -89,13 +91,14 @@ impl App {
     /// 耐力を過大評価する（危険側）。解析は継続してよい事項のため注意事項として扱う。
     fn notice_steel_seismic_walls(&mut self) {
         let n = self
+            .core
             .model
             .elements
             .iter()
             .filter(|e| {
                 matches!(e.kind, squid_n_core::model::ElementKind::Wall)
-                    && squid_n_element::misc_wall::wall_is_seismic(e, &self.model)
-                    && !squid_n_element::misc_wall::is_rc_wall(e, &self.model)
+                    && squid_n_element::misc_wall::wall_is_seismic(e, &self.core.model)
+                    && !squid_n_element::misc_wall::is_rc_wall(e, &self.core.model)
             })
             .count();
         if n == 0 {
@@ -111,8 +114,9 @@ impl App {
     pub fn run_pushover(&mut self) {
         self.begin_analysis();
         self.notice_steel_seismic_walls();
-        let res = squid_n_job::compute::compute_pushover(self.model.clone(), self.analysis_cfg)
-            .map_err(|e| e.to_string());
+        let res =
+            squid_n_job::compute::compute_pushover(self.core.model.clone(), self.core.analysis_cfg)
+                .map_err(|e| e.to_string());
         self.apply_pushover_result(res);
     }
 
@@ -124,15 +128,15 @@ impl App {
             return;
         }
         self.notice_steel_seismic_walls();
-        let model = self.model.clone();
-        let cfg = self.analysis_cfg;
+        let model = self.core.model.clone();
+        let cfg = self.core.analysis_cfg;
         self.spawn_analysis_job("増分解析", move || {
             JobResult::Pushover(Self::run_compute(|| {
                 squid_n_job::compute::compute_pushover(model, cfg).map_err(|e| e.to_string())
             }))
         });
         #[cfg(feature = "gui")]
-        if let Some(job) = self.job.as_mut() {
+        if let Some(job) = self.core.scoped.job.as_mut() {
             job.jump_on_success = Some((Tab::Results, ResultsView::Pushover));
         }
     }

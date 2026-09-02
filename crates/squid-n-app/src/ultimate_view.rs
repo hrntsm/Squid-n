@@ -28,7 +28,7 @@ pub fn ultimate_table(ui: &mut egui::Ui, app: &mut App) {
     ui.horizontal(|ui| {
         ui.label("ヒンジ回転角 Rp:");
         ui.add(
-            egui::DragValue::new(&mut app.ultimate_rp)
+            egui::DragValue::new(&mut app.core.ultimate_rp)
                 .speed(0.001)
                 .range(0.0..=0.1)
                 .fixed_decimals(3),
@@ -40,7 +40,7 @@ pub fn ultimate_table(ui: &mut egui::Ui, app: &mut App) {
         ui.separator();
         ui.label("上限強度倍率:");
         ui.add(
-            egui::DragValue::new(&mut app.ultimate_upper_factor)
+            egui::DragValue::new(&mut app.core.ultimate_upper_factor)
                 .speed(0.05)
                 .range(0.1..=2.0)
                 .fixed_decimals(2),
@@ -49,31 +49,39 @@ pub fn ultimate_table(ui: &mut egui::Ui, app: &mut App) {
     });
     ui.horizontal(|ui| {
         ui.checkbox(
-            &mut app.ultimate_lightweight,
+            &mut app.core.ultimate_lightweight,
             "軽量コンクリート（Qsu・Qbu を 0.9 倍）",
         )
         .on_hover_text("軽量コンクリート使用時のせん断終局耐力 0.9 倍低減（共通事項）。");
-        ui.checkbox(&mut app.ultimate_include_bond, "付着割裂 Qbu を検定");
+        ui.checkbox(&mut app.core.ultimate_include_bond, "付着割裂 Qbu を検定");
     });
     ui.horizontal(|ui| {
         ui.label("終局せん断強度:");
-        ui.selectable_value(&mut app.ultimate_shear_ductility, false, "塑性理論式(Qsu)")
-            .on_hover_text(
-                "藤井・森田式系の塑性理論式（終局強度型設計指針）で終局せん断強度を算定します。",
-            );
-        ui.selectable_value(&mut app.ultimate_shear_ductility, true, "靭性指針式(Vu)")
-            .on_hover_text(
-                "AIJ「靭性保証型耐震設計指針」6.4 の Vu=min(Vu1,Vu2,Vu3)（トラス＋アーチ機構）\
+        ui.selectable_value(
+            &mut app.core.ultimate_shear_ductility,
+            false,
+            "塑性理論式(Qsu)",
+        )
+        .on_hover_text(
+            "藤井・森田式系の塑性理論式（終局強度型設計指針）で終局せん断強度を算定します。",
+        );
+        ui.selectable_value(
+            &mut app.core.ultimate_shear_ductility,
+            true,
+            "靭性指針式(Vu)",
+        )
+        .on_hover_text(
+            "AIJ「靭性保証型耐震設計指針」6.4 の Vu=min(Vu1,Vu2,Vu3)（トラス＋アーチ機構）\
                  で終局せん断信頼強度を算定します。Qsu 列に Vu を表示します。",
-            );
+        );
     });
     ui.horizontal(|ui| {
-        ui.checkbox(&mut app.ultimate_biaxial_shear, "柱を2軸せん断で検定")
+        ui.checkbox(&mut app.core.ultimate_biaxial_shear, "柱を2軸せん断で検定")
             .on_hover_text(
                 "RC 柱のせん断余裕度を 2 軸せん断 1/((Qmx/Qux)²+(Qmy/Quy)²)^(1/2) として\
                  検定します（採用応力）。Qsu/Qmu 列は 2 軸合成値を表示します。",
             );
-        ui.checkbox(&mut app.ultimate_biaxial_bending, "柱を2軸曲げで検定")
+        ui.checkbox(&mut app.core.ultimate_biaxial_bending, "柱を2軸曲げで検定")
             .on_hover_text(
                 "RC 柱の曲げ余裕度を 2 軸曲げ 1/((Mmx/Mux)²+(Mmy/Muy)²)^(1/2) として検定します\
                  （採用応力）。需要曲げは応答（増分解析／静的）の値を用います。",
@@ -81,7 +89,7 @@ pub fn ultimate_table(ui: &mut egui::Ui, app: &mut App) {
     });
     ui.horizontal(|ui| {
         ui.checkbox(
-            &mut app.ultimate_use_pushover,
+            &mut app.core.ultimate_use_pushover,
             "設計用応力・Rp を増分解析応答から反映",
         )
         .on_hover_text(
@@ -89,7 +97,7 @@ pub fn ultimate_table(ui: &mut egui::Ui, app: &mut App) {
              最終ステップの部材別応答から直接反映します。未実行時は静的応答＋UI 一律 Rp \
              にフォールバックします。",
         );
-        if app.ultimate_use_pushover {
+        if app.core.ultimate_use_pushover {
             let has_po = app
                 .displayed_pushover()
                 .map(|p| !p.member_response.is_empty())
@@ -111,7 +119,7 @@ pub fn ultimate_table(ui: &mut egui::Ui, app: &mut App) {
             ui.colored_label(crate::theme::GRAY_600, &msg);
             let needs_analysis = msg.contains("静的") || msg.contains("解析");
             if needs_analysis && ui.button("▶ 解析タブへ").clicked() {
-                app.active_tab = crate::app::Tab::Analysis;
+                app.ui.view.active_tab = crate::app::Tab::Analysis;
             }
         }
         Ok(checks) => {
@@ -126,9 +134,10 @@ pub fn ultimate_table(ui: &mut egui::Ui, app: &mut App) {
             });
             ui.add_space(4.0);
 
-            let bond = app.ultimate_include_bond;
+            let bond = app.core.ultimate_include_bond;
             // 終局せん断強度の列見出し（靭性指針式は Vu／付着考慮 Vbu 表記）。
-            let (qsu_hdr, ratio_hdr, qbu_hdr, bond_ratio_hdr) = if app.ultimate_shear_ductility {
+            let (qsu_hdr, ratio_hdr, qbu_hdr, bond_ratio_hdr) = if app.core.ultimate_shear_ductility
+            {
                 ("Vu[kN]", "Vu/Qmu", "Vbu[kN]", "Vbu/Qmu")
             } else {
                 ("Qsu[kN]", "Qsu/Qmu", "Qbu[kN]", "Qbu/Qmu")
@@ -199,7 +208,7 @@ pub fn ultimate_table(ui: &mut egui::Ui, app: &mut App) {
             );
 
             ui.add_space(4.0);
-            let (shear_note, bond_note) = if app.ultimate_shear_ductility {
+            let (shear_note, bond_note) = if app.core.ultimate_shear_ductility {
                 (
                     "Vu=靭性指針式の終局せん断信頼強度 min(Vu1,Vu2,Vu3)（トラス＋アーチ機構）",
                     "Vbu=付着考慮せん断信頼強度 min(Vbu1,Vbu2)",
@@ -207,7 +216,7 @@ pub fn ultimate_table(ui: &mut egui::Ui, app: &mut App) {
             } else {
                 ("Qsu=塑性理論式の終局せん断強度", "Qbu=付着割裂耐力")
             };
-            let using_po = app.ultimate_use_pushover
+            let using_po = app.core.ultimate_use_pushover
                 && app
                     .displayed_pushover()
                     .map(|p| !p.member_response.is_empty())

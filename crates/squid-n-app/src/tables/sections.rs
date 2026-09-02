@@ -94,7 +94,7 @@ fn material_cell(
 pub fn sections_table(ui: &mut egui::Ui, app: &mut App) {
     use crate::table_util::{self, Col};
 
-    let n = app.model.sections.len();
+    let n = app.core.model.sections.len();
     let mut pending_delete: Option<SectionId> = None;
     let mut pending_focus: Option<SectionId> = None;
     let mut pending_material: Vec<(SectionId, SectionMaterialRole, Option<MaterialId>)> =
@@ -113,16 +113,16 @@ pub fn sections_table(ui: &mut egui::Ui, app: &mut App) {
             }
         }
     };
-    for e in &app.model.elements {
+    for e in &app.core.model.elements {
         count(e.section, &mut n_elements);
     }
-    for s in &app.model.slabs {
+    for s in &app.core.model.slabs {
         // 床板も断面を参照する（板厚・自重の情報源）。削除ガードが数える対象と
         // そろえないと、使用部材数 0 の行で削除ボタンが押せるのに Noop になる。
         count(s.section(), &mut n_elements);
     }
     // 二次部材（領域内・未割当）は `Model::joists`/`posts` が両方を返す。
-    for sm in app.model.joists().chain(app.model.posts()) {
+    for sm in app.core.model.joists().chain(app.core.model.posts()) {
         count(sm.section, &mut n_elements);
     }
 
@@ -150,10 +150,10 @@ pub fn sections_table(ui: &mut egui::Ui, app: &mut App) {
         n,
         |row| {
             let i = row.index();
-            let sec = &app.model.sections[i];
+            let sec = &app.core.model.sections[i];
             row.col(|ui| {
                 let sid = sec.id;
-                let is_sel = app.nav.focus_section == Some(sid);
+                let is_sel = app.ui.scoped.nav.focus_section == Some(sid);
                 if table_util::id_cell(ui, is_sel, sid.0, "クリックでインスペクタに断面詳細を表示")
                 {
                     pending_focus = Some(sid);
@@ -184,7 +184,7 @@ pub fn sections_table(ui: &mut egui::Ui, app: &mut App) {
             row.col(|ui| {
                 material_cell(
                     ui,
-                    &app.model,
+                    &app.core.model,
                     sec,
                     SectionMaterialRole::Main,
                     "sec_mat",
@@ -194,7 +194,7 @@ pub fn sections_table(ui: &mut egui::Ui, app: &mut App) {
             row.col(|ui| {
                 material_cell(
                     ui,
-                    &app.model,
+                    &app.core.model,
                     sec,
                     SectionMaterialRole::Rebar,
                     "sec_rebar_mat",
@@ -204,7 +204,7 @@ pub fn sections_table(ui: &mut egui::Ui, app: &mut App) {
             row.col(|ui| {
                 material_cell(
                     ui,
-                    &app.model,
+                    &app.core.model,
                     sec,
                     SectionMaterialRole::ShearRebar,
                     "sec_shear_mat",
@@ -214,7 +214,7 @@ pub fn sections_table(ui: &mut egui::Ui, app: &mut App) {
             row.col(|ui| {
                 material_cell(
                     ui,
-                    &app.model,
+                    &app.core.model,
                     sec,
                     SectionMaterialRole::Steel,
                     "sec_steel_mat",
@@ -263,25 +263,27 @@ pub fn sections_table(ui: &mut egui::Ui, app: &mut App) {
     );
 
     for (section, role, material) in pending_material {
-        app.undo.run(
-            &mut app.model,
+        app.core.scoped.undo.run(
+            &mut app.core.model,
             Box::new(SetSectionMaterial {
                 section,
                 role,
                 material,
             }),
         );
-        app.staleness.mark_edited();
+        app.core.scoped.staleness.mark_edited();
     }
     if let Some(sid) = pending_delete {
-        app.undo
-            .run(&mut app.model, Box::new(DeleteSection { id: sid }));
-        if app.nav.focus_section == Some(sid) {
-            app.nav.focus_section = None;
+        app.core
+            .scoped
+            .undo
+            .run(&mut app.core.model, Box::new(DeleteSection { id: sid }));
+        if app.ui.scoped.nav.focus_section == Some(sid) {
+            app.ui.scoped.nav.focus_section = None;
         }
-        app.staleness.mark_edited();
+        app.core.scoped.staleness.mark_edited();
     }
     if let Some(sid) = pending_focus {
-        app.nav.focus_section = Some(sid);
+        app.ui.scoped.nav.focus_section = Some(sid);
     }
 }

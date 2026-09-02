@@ -369,20 +369,20 @@ impl App {
     /// 整合性チェックなど、階を前提としない項目）を集計する。
     ///
     /// 以降は [`App::refresh_preparation`] と同じ処理を行い、結果を
-    /// `self.preparation` へ格納する。
+    /// `self.core.scoped.preparation` へ格納する。
     pub fn run_preparation(&mut self) {
-        self.last_error = None;
-        self.last_notice = None;
+        self.core.scoped.last_error = None;
+        self.core.scoped.last_notice = None;
         // 階の生成に失敗しても `last_error` は以降で上書きされない
         // （`refresh_preparation` と `report_info` はエラーを設定しない）。
         self.generate_stories_action();
-        let story_error = self.last_error.is_some();
+        let story_error = self.core.scoped.last_error.is_some();
         self.refresh_preparation();
         if story_error {
             self.report_info("準備計算を実行しました（階の生成に失敗したため、階を前提とする項目は算定していません）");
             return;
         }
-        let msg = match self.preparation.as_ref() {
+        let msg = match self.core.scoped.preparation.as_ref() {
             Some(p) if !p.is_ready() => format!(
                 "準備計算を実行しました（整合性チェック: エラー {} 件・警告 {} 件）。解析前に不備を解消してください。",
                 p.diag_errors, p.diag_warnings
@@ -410,7 +410,7 @@ impl App {
     }
 
     /// 剛域の反映・荷重の同期・整合性チェックを行い、結果を集計して
-    /// `self.preparation` へ格納する。モデルの階構成は変更しない。
+    /// `self.core.scoped.preparation` へ格納する。モデルの階構成は変更しない。
     fn refresh_preparation(&mut self) {
         self.apply_parallelism_setting();
         // 剛域の自動算定と DL/LL/EX/EY の同期（内部で冪等・ハッシュによる
@@ -421,10 +421,10 @@ impl App {
         // まま診断タブを開かずに準備計算だけ再実行したときに件数が古いまま残る。
         // 解析実行時の precheck は都度最新だが、画面上の件数は準備計算の結果に載る。
         self.run_diagnostics();
-        self.preparation = Some(self.build_preparation_result());
+        self.core.scoped.preparation = Some(self.build_preparation_result());
         // 荷重同期が `mark_edited`（＝preparation_stale = true）を呼びうるため、
         // フラグのクリアは必ず集計の後に行う。
-        self.staleness.preparation_stale = false;
+        self.core.scoped.staleness.preparation_stale = false;
     }
 
     /// 現在のモデル・解析設定から準備計算の結果を集計する（モデルは変更しない）。
@@ -447,9 +447,11 @@ impl App {
             member_stiffness,
             member_stiffness_candidates,
             torsion_skipped,
-            torsion_release_enabled: self.model.beam_torsion
+            torsion_release_enabled: self.core.model.beam_torsion
                 == squid_n_core::model::BeamTorsionMode::ReleaseIEnd,
             panels: self
+                .core
+                .scoped
                 .generated_panels
                 .iter()
                 .map(|p| PrepPanelRow {
@@ -461,7 +463,7 @@ impl App {
                     k_panel: p.k_panel,
                 })
                 .collect(),
-            panel_modeling_enabled: self.model.panel_zone.is_enabled(),
+            panel_modeling_enabled: self.core.model.panel_zone.is_enabled(),
             load_cases: self.build_prep_load_cases(),
             diag_errors,
             diag_warnings,
@@ -469,7 +471,7 @@ impl App {
     }
 
     fn build_prep_summary(&self) -> PrepSummary {
-        let model = &self.model;
+        let model = &self.core.model;
         PrepSummary {
             n_nodes: model.nodes.len(),
             n_elements: model.elements.len(),
@@ -502,7 +504,7 @@ impl App {
     /// 層（法規上の「i 階」）ごとの分布表。名前は下端の階、重量・所属節点・剛床・
     /// 階種別は上端の階から採る（`squid_n_core::model::Layer`）。
     fn build_prep_stories(&self) -> Vec<PrepStoryRow> {
-        let model = &self.model;
+        let model = &self.core.model;
         let layers = model.layers();
         let weights: Vec<f64> = layers.iter().map(|l| l.weight.unwrap_or(0.0)).collect();
         layers
@@ -524,7 +526,7 @@ impl App {
     /// Ai 分布（層せん断力の分布）を算定する。階が未定義・地震用重量が全 0・
     /// 精算周期を選択して固有値解析が未実行、のいずれかでは `None` と理由を返す。
     fn build_prep_seismic(&self) -> (Option<PrepSeismic>, Option<String>) {
-        if self.model.stories.is_empty() {
+        if self.core.model.stories.is_empty() {
             return (
                 None,
                 Some(
@@ -541,19 +543,22 @@ impl App {
         let cfg = squid_n_solver::analysis::SeismicCfg {
             // Ai 分布は加力方向によらないため方向は結果に影響しない。
             dir: SeismicDir::X,
-            mode: self.analysis_cfg.ai_mode,
-            z: self.analysis_cfg.z,
-            soil: self.analysis_cfg.soil,
-            c0: self.analysis_cfg.c0,
+            mode: self.core.analysis_cfg.ai_mode,
+            z: self.core.analysis_cfg.z,
+            soil: self.core.analysis_cfg.soil,
+            c0: self.core.analysis_cfg.c0,
         };
-        let dist =
-            match squid_n_solver::analysis::seismic_distribution_for_model(&self.model, cfg, t) {
-                Ok(d) => d,
-                Err(e) => return (None, Some(format!("地震力(Ai分布)の算定エラー: {}", e))),
-            };
+        let dist = match squid_n_solver::analysis::seismic_distribution_for_model(
+            &self.core.model,
+            cfg,
+            t,
+        ) {
+            Ok(d) => d,
+            Err(e) => return (None, Some(format!("地震力(Ai分布)の算定エラー: {}", e))),
+        };
         let tc = squid_n_load::ai::tc_of(cfg.soil);
         // Ai 分布は層ごと。名前は下端の階、重量・階種別は上端の階から採る。
-        let layers = self.model.layers();
+        let layers = self.core.model.layers();
         let weights: Vec<f64> = layers.iter().map(|l| l.weight.unwrap_or(0.0)).collect();
         let rows: Vec<PrepSeismicRow> = layers
             .iter()
@@ -574,7 +579,7 @@ impl App {
             .collect();
         let seismic = PrepSeismic {
             t,
-            t_mode: self.analysis_cfg.ai_mode,
+            t_mode: self.core.analysis_cfg.ai_mode,
             tc,
             rt: squid_n_load::ai::rt(t, tc),
             z: cfg.z,
@@ -594,7 +599,7 @@ impl App {
     /// λ = 0 でもフェース距離は付く。危険断面位置の確認のため、
     /// λ = 0 でもフェース距離を持つ部材は一覧に含める。
     fn build_prep_rigid_zones(&self) -> (Vec<PrepRigidZoneRow>, usize) {
-        let model = &self.model;
+        let model = &self.core.model;
         let mut candidates = 0usize;
         let mut rows = Vec::new();
         for e in &model.elements {
@@ -657,7 +662,7 @@ impl App {
     /// 剛性が 0 で設計上の影響がないため対象外とする。
     fn build_prep_torsion_skipped(&self) -> Vec<PrepTorsionSkipRow> {
         use squid_n_element::beam::TorsionReleaseSkip;
-        let model = &self.model;
+        let model = &self.core.model;
         let mut rows = Vec::new();
         for e in &model.elements {
             let Some(TorsionReleaseSkip::UnrestrainedRotation { node }) =
@@ -689,7 +694,7 @@ impl App {
 
     /// 断面性能を一覧化する。断面ごとに使用部材数と、断面が持つ主材料を添える。
     fn build_prep_sections(&self) -> Vec<PrepSectionRow> {
-        let model = &self.model;
+        let model = &self.core.model;
         // 断面 → 使用部材数
         let mut usage: Vec<usize> = vec![0; model.sections.len()];
         let mut count = |sid: Option<squid_n_core::ids::SectionId>| {
@@ -757,7 +762,7 @@ impl App {
     /// （カタログ数値の直入力等）と非鋼材は対象外。
     fn build_prep_width_thickness(&self) -> Vec<PrepWidthThicknessRow> {
         use squid_n_design_jp::secondary::width_thickness::{max_width_thickness, SteelMemberUse};
-        let model = &self.model;
+        let model = &self.core.model;
         let mut rows: Vec<PrepWidthThicknessRow> = Vec::new();
         let mut index: std::collections::HashMap<(SectionId, SteelMemberUse, MaterialId), usize> =
             std::collections::HashMap::new();
@@ -805,27 +810,27 @@ impl App {
     /// SRC/CFT 断面がない）では、部材ごとの判定（`O(部材数)` の走査を含む）を
     /// 行わずに空を返す。
     ///
-    /// 壁の解析要素（`ElementKind::Wall`）は `self.model` には存在しない生成物
+    /// 壁の解析要素（`ElementKind::Wall`）は `self.core.model` には存在しない生成物
     /// （D5）のため、壁上下大梁の剛性割増しを確認表へ出すには壁展開モデルを
     /// 都度組み立てて走査する（`App` に専用のキャッシュは持たせない。
     /// `squid_n_load::wall_expand` の「都度計算」方針に揃える）。壁展開は
     /// 既存要素の末尾へ生成要素を追記するだけなので、柱・梁の `ElemId` は
     /// 展開の有無で変わらない。壁を持たないモデル（実 ST-Bridge フィクスチャは
     /// 現状すべて該当する）では `expand_wall_elements` の `model.clone()` を
-    /// 避け、`self.model` をそのまま見る。
+    /// 避け、`self.core.model` をそのまま見る。
     fn build_prep_member_stiffness(&self) -> (Vec<PrepMemberStiffnessRow>, usize) {
         use squid_n_core::model::{ElementKind, Model};
         use squid_n_core::section_shape::SectionShape;
 
         let expanded_storage;
         let model: &Model =
-            if squid_n_load::wall_expand::model_has_wall_plates_to_expand(&self.model) {
+            if squid_n_load::wall_expand::model_has_wall_plates_to_expand(&self.core.model) {
                 let (expanded, _wall_index, _wall_report) =
-                    squid_n_load::wall_expand::expand_wall_elements(&self.model);
+                    squid_n_load::wall_expand::expand_wall_elements(&self.core.model);
                 expanded_storage = expanded;
                 &expanded_storage
             } else {
-                &self.model
+                &self.core.model
             };
         let candidates = model
             .elements
@@ -917,7 +922,8 @@ impl App {
     }
 
     fn build_prep_load_cases(&self) -> Vec<PrepLoadCaseRow> {
-        self.model
+        self.core
+            .model
             .load_cases
             .iter()
             .map(|lc| {

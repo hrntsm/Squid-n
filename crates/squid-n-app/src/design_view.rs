@@ -9,6 +9,7 @@ use squid_n_core::units::to_display::{
 /// **検定の長期軸力への実適用は残課題**（表示のみ。荷重計算条件のツールチップにも明記）。
 fn live_load_reduction_section(ui: &mut egui::Ui, app: &App) {
     if !app
+        .core
         .model
         .load_cfg
         .as_ref()
@@ -24,7 +25,7 @@ fn live_load_reduction_section(ui: &mut egui::Ui, app: &App) {
                 crate::theme::GRAY_600,
                 "支える床の数に応じた低減率の集計値です。断面検定の長期軸力への実適用は未対応（残課題）。",
             );
-            let factors = crate::app::column_live_load_factors(&app.model);
+            let factors = crate::app::column_live_load_factors(&app.core.model);
             if factors.is_empty() {
                 ui.label("柱要素（鉛直材）がありません。準備計算で階が生成され所属階が設定されると床数を集計できます。");
                 return;
@@ -51,7 +52,7 @@ pub fn design_table(ui: &mut egui::Ui, app: &mut App) {
         let mut changed = false;
         changed |= ui
             .checkbox(
-                &mut app.analysis_cfg.rc_damage_control,
+                &mut app.core.analysis_cfg.rc_damage_control,
                 "RC短期せん断: 損傷制御",
             )
             .on_hover_text(
@@ -66,14 +67,14 @@ pub fn design_table(ui: &mut egui::Ui, app: &mut App) {
             (squid_n_design_jp::QdMethod::Qd2, "QD2"),
         ] {
             if ui
-                .selectable_label(app.analysis_cfg.qd_method == m, label)
+                .selectable_label(app.core.analysis_cfg.qd_method == m, label)
                 .on_hover_text(
                     "地震時短期の設計用せん断力の決定方法（QD1=終局曲げベース、\
                      QD2=QL+n・QE。長期組合せ(G+P)を先に解析している場合のみ有効）",
                 )
                 .clicked()
             {
-                app.analysis_cfg.qd_method = m;
+                app.core.analysis_cfg.qd_method = m;
                 changed = true;
             }
         }
@@ -83,13 +84,13 @@ pub fn design_table(ui: &mut egui::Ui, app: &mut App) {
             (squid_n_design_jp::BondMethod::Rc1991, "1991"),
         ] {
             if ui
-                .selectable_label(app.analysis_cfg.bond_method == m, label)
+                .selectable_label(app.core.analysis_cfg.bond_method == m, label)
                 .on_hover_text(
                     "RC 梁付着検定の方式。1999=必要付着長さ、1991=τa=Q/(ψ·j)。既定は 1999",
                 )
                 .clicked()
             {
-                app.analysis_cfg.bond_method = m;
+                app.core.analysis_cfg.bond_method = m;
                 changed = true;
             }
         }
@@ -97,7 +98,7 @@ pub fn design_table(ui: &mut egui::Ui, app: &mut App) {
             app.run_design_check();
         }
     });
-    if app.staleness.design_stale {
+    if app.core.scoped.staleness.design_stale {
         ui.colored_label(
             crate::theme::WARN_TEXT,
             "⚠ モデルが編集されました。解析を再実行してください。",
@@ -116,6 +117,8 @@ pub fn design_table(ui: &mut egui::Ui, app: &mut App) {
         components: Vec<squid_n_design_jp::CheckComponent>,
     }
     let checks: Vec<CheckRow> = app
+        .core
+        .scoped
         .results
         .as_ref()
         .map(|r| {
@@ -150,13 +153,15 @@ pub fn design_table(ui: &mut egui::Ui, app: &mut App) {
     let section_of: Vec<Option<(squid_n_core::ids::SectionId, String)>> = checks
         .iter()
         .map(|row| {
-            app.model
+            app.core
+                .model
                 .elements
                 .iter()
                 .find(|e| e.id == row.elem)
                 .and_then(|e| e.section)
                 .and_then(|sid| {
-                    app.model
+                    app.core
+                        .model
                         .sections
                         .iter()
                         .find(|s| s.id == sid)
@@ -200,7 +205,7 @@ pub fn design_table(ui: &mut egui::Ui, app: &mut App) {
         |row| {
             let i = row.index();
             let r = &checks[i];
-            let is_focus = app.nav.focus_member == Some(r.elem);
+            let is_focus = app.ui.scoped.nav.focus_member == Some(r.elem);
             row.col(|ui| {
                 if crate::table_util::id_cell(
                     ui,
@@ -275,13 +280,13 @@ pub fn design_table(ui: &mut egui::Ui, app: &mut App) {
         },
     );
     if let Some(id) = focus {
-        app.nav.focus_member = Some(id);
+        app.ui.scoped.nav.focus_member = Some(id);
     }
     if let Some((sid, eid)) = jump_to_section {
-        app.active_tab = crate::app::Tab::Model;
-        app.model_tab = crate::app::ModelTab::Sections;
-        app.nav.focus_section = Some(sid);
-        app.nav.focus_member = Some(eid);
+        app.ui.view.active_tab = crate::app::Tab::Model;
+        app.ui.view.model_tab = crate::app::ModelTab::Sections;
+        app.ui.scoped.nav.focus_section = Some(sid);
+        app.ui.scoped.nav.focus_member = Some(eid);
     }
 
     // ── 一次設計: 節点単位の検定（柱梁接合部・パネルゾーン・冷間耐力比・耐震壁） ──
@@ -296,6 +301,8 @@ pub fn design_table(ui: &mut egui::Ui, app: &mut App) {
         detail: String,
     }
     let joint_checks: Vec<JointCheckRow> = app
+        .core
+        .scoped
         .results
         .as_ref()
         .map(|r| {
@@ -390,10 +397,10 @@ pub fn design_table(ui: &mut egui::Ui, app: &mut App) {
     }
 
     // ── 免震支承材の非線形特性 ────────────
-    if !app.model.isolator_attrs.is_empty() {
+    if !app.core.model.isolator_attrs.is_empty() {
         ui.add_space(12.0);
         ui.strong("免震支承材の非線形特性");
-        for a in &app.model.isolator_attrs {
+        for a in &app.core.model.isolator_attrs {
             let p = a.props;
             let ks = squid_n_design_jp::isolator::multi_shear_stiffness_reduction(p.n_springs);
             let qs = squid_n_design_jp::isolator::multi_shear_strength_reduction(p.n_springs);
@@ -450,10 +457,10 @@ pub fn design_table(ui: &mut egui::Ui, app: &mut App) {
     }
 
     // ── 制振ダンパーの非線形特性 ──
-    if !app.model.damper_attrs.is_empty() {
+    if !app.core.model.damper_attrs.is_empty() {
         ui.add_space(12.0);
         ui.strong("制振ダンパーの非線形特性");
-        for a in &app.model.damper_attrs {
+        for a in &app.core.model.damper_attrs {
             let p = a.props;
             match p.kind {
                 squid_n_core::model::DamperKind::Maxwell => {
@@ -488,19 +495,19 @@ pub fn design_table(ui: &mut egui::Ui, app: &mut App) {
             use std::collections::BTreeMap;
             let mut counts: BTreeMap<&'static str, u32> = BTreeMap::new();
             let mut overrides: Vec<String> = Vec::new();
-            for e in &app.model.elements {
+            for e in &app.core.model.elements {
                 if e.kind != squid_n_core::model::ElementKind::Beam {
                     continue;
                 }
                 let eff = squid_n_element::factory::resolve_member_hysteresis(
                     e,
-                    &app.model,
+                    &app.core.model,
                     squid_n_core::model::AnalysisKind::Incremental,
                 );
                 *counts.entry(eff.label()).or_default() += 1;
-                if let Some(r) = app.model.member_hysteresis(e.id) {
+                if let Some(r) = app.core.model.member_hysteresis(e.id) {
                     let mut line = format!("部材{}: {}", e.id.0, r.label());
-                    if let Some(r_th) = app.model.member_hysteresis_th_raw(e.id) {
+                    if let Some(r_th) = app.core.model.member_hysteresis_th_raw(e.id) {
                         line.push_str(&format!("(時刻歴: {})", r_th.label()));
                     }
                     overrides.push(line);
@@ -530,21 +537,21 @@ pub fn design_table(ui: &mut egui::Ui, app: &mut App) {
             "層指標と必要保有水平耐力の判定を評価する方向。\
              剛心の精算には対応する向きの EX／EY の解析結果を用いる",
         );
-        ui.selectable_value(&mut app.analysis_cfg.seismic_dir, SeismicDir::X, "X");
-        ui.selectable_value(&mut app.analysis_cfg.seismic_dir, SeismicDir::Y, "Y");
+        ui.selectable_value(&mut app.core.analysis_cfg.seismic_dir, SeismicDir::X, "X");
+        ui.selectable_value(&mut app.core.analysis_cfg.seismic_dir, SeismicDir::Y, "Y");
     });
-    if app.model.stories.is_empty() {
+    if app.core.model.stories.is_empty() {
         ui.colored_label(
             crate::theme::GRAY_600,
             "階が未定義です。解析タブの「準備計算 実行」を行ってください。",
         );
     } else if let Some(st) = app.current_static() {
         // 表示対象はナビゲータの結果ケース選択（→最後に実行した結果）に追従する。
-        let ctx = crate::summary::metrics_ctx_from_results(app.results.as_ref());
+        let ctx = crate::summary::metrics_ctx_from_results(app.core.scoped.results.as_ref());
         let metrics = crate::summary::compute_story_metrics_with(
-            &app.model,
+            &app.core.model,
             &st.disp,
-            app.analysis_cfg.seismic_dir,
+            app.core.analysis_cfg.seismic_dir,
             &ctx,
         );
 
@@ -552,7 +559,7 @@ pub fn design_table(ui: &mut egui::Ui, app: &mut App) {
         let denom = metrics
             .first()
             .map(|m| m.drift_limit_denom)
-            .unwrap_or(app.model.stress_cfg.drift_limit_denom);
+            .unwrap_or(app.core.model.stress_cfg.drift_limit_denom);
         let drift_label = format!("変形角(1/{:.0})", denom);
         crate::table_util::standard_table(
             ui,
@@ -624,14 +631,22 @@ pub fn design_table(ui: &mut egui::Ui, app: &mut App) {
     ui.horizontal(|ui| {
         use squid_n_design_jp::secondary::holding_capacity::FrameType;
         ui.label("架構種別:");
-        ui.selectable_value(&mut app.design_frame, FrameType::RcFrame, "RCラーメン");
-        ui.selectable_value(&mut app.design_frame, FrameType::RcWall, "RC壁式");
-        ui.selectable_value(&mut app.design_frame, FrameType::SteelFrame, "Sラーメン");
-        ui.selectable_value(&mut app.design_frame, FrameType::SteelBrace, "Sブレース");
+        ui.selectable_value(&mut app.core.design_frame, FrameType::RcFrame, "RCラーメン");
+        ui.selectable_value(&mut app.core.design_frame, FrameType::RcWall, "RC壁式");
+        ui.selectable_value(
+            &mut app.core.design_frame,
+            FrameType::SteelFrame,
+            "Sラーメン",
+        );
+        ui.selectable_value(
+            &mut app.core.design_frame,
+            FrameType::SteelBrace,
+            "Sブレース",
+        );
     });
     ui.horizontal(|ui| {
         ui.checkbox(
-            &mut app.design_rank_auto,
+            &mut app.core.design_rank_auto,
             "自動判定（鋼=幅厚比・RC矩形=Qsu/Qmu）",
         )
         .on_hover_text(
@@ -646,28 +661,28 @@ pub fn design_table(ui: &mut egui::Ui, app: &mut App) {
     });
     ui.horizontal(|ui| {
         use squid_n_design_jp::secondary::holding_capacity::MemberRank;
-        ui.label(if app.design_rank_auto {
+        ui.label(if app.core.design_rank_auto {
             "部材ランク（フォールバック用）:"
         } else {
             "部材ランク:"
         });
-        ui.selectable_value(&mut app.design_rank, MemberRank::FA, "FA");
-        ui.selectable_value(&mut app.design_rank, MemberRank::FB, "FB");
-        ui.selectable_value(&mut app.design_rank, MemberRank::FC, "FC");
-        ui.selectable_value(&mut app.design_rank, MemberRank::FD, "FD");
+        ui.selectable_value(&mut app.core.design_rank, MemberRank::FA, "FA");
+        ui.selectable_value(&mut app.core.design_rank, MemberRank::FB, "FB");
+        ui.selectable_value(&mut app.core.design_rank, MemberRank::FC, "FC");
+        ui.selectable_value(&mut app.core.design_rank, MemberRank::FD, "FD");
     });
     ui.horizontal(|ui| {
-        ui.checkbox(&mut app.wall_structure, "壁式構造")
+        ui.checkbox(&mut app.core.wall_structure, "壁式構造")
             .on_hover_text(
                 "耐力壁の種別（WA〜WD）判定に壁式構造の列を用います。告示「耐力壁の種別」表は\
                  壁式構造で限界値が厳しく（τu/Fc: WA 0.1・WB 0.125・WC 0.15）、\
                  壁式構造以外（WA 0.20・WB 0.25）とは別の列になります。",
             );
     });
-    if !app.design_rank_auto {
+    if !app.core.design_rank_auto {
         let ds = squid_n_design_jp::secondary::holding_capacity::ds_value(
-            app.design_frame,
-            app.design_rank,
+            app.core.design_frame,
+            app.core.design_rank,
         );
         ui.label(format!("Ds = {:.2}（部材ランク選択値による簡易運用）", ds));
     }
@@ -678,7 +693,7 @@ pub fn design_table(ui: &mut egui::Ui, app: &mut App) {
             let needs_analysis =
                 msg.contains("増分解析") || msg.contains("地震静的") || msg.contains("階");
             if needs_analysis && ui.button("▶ 解析タブへ").clicked() {
-                app.active_tab = crate::app::Tab::Analysis;
+                app.ui.view.active_tab = crate::app::Tab::Analysis;
             }
         }
         Ok((result, story_ranks)) => {
@@ -701,6 +716,7 @@ pub fn design_table(ui: &mut egui::Ui, app: &mut App) {
                     let s = &result.stories[i];
                     // 層の呼び名は下端の階名（法令の「i 階」）。
                     let name = app
+                        .core
                         .model
                         .layers()
                         .get(i)
@@ -746,6 +762,7 @@ pub fn design_table(ui: &mut egui::Ui, app: &mut App) {
                     MechanismType::StoryCollapse { layer } => {
                         // 層の呼び名は下端の階名（法令の「i 階」）。
                         let name = app
+                            .core
                             .model
                             .layers()
                             .get(*layer)
@@ -774,17 +791,19 @@ pub fn design_table(ui: &mut egui::Ui, app: &mut App) {
             }
             // βu（耐力壁・筋かいの水平耐力比）の算定状況。Ds 表の行選択に直結するため
             // 算定値、または算定できなかった旨を明示する。
-            if app.ds_beta_u_unavailable {
+            if app.core.scoped.ds_beta_u_unavailable {
                 ui.colored_label(
                     crate::theme::SECONDARY_AMBER,
                     "⚠ 架構種別が耐力壁付き／筋かい付きですが、耐力壁・筋かい部材を検出\
                      できなかったため βu を算定できません。架構種別別の Ds 表で代用して\
                      います（告示の βu 別の表は適用されていません）。",
                 );
-            } else if !app.ds_beta_u_by_story.is_empty()
-                && app.ds_beta_u_by_story.iter().any(|b| *b > 0.0)
+            } else if !app.core.scoped.ds_beta_u_by_story.is_empty()
+                && app.core.scoped.ds_beta_u_by_story.iter().any(|b| *b > 0.0)
             {
                 let list = app
+                    .core
+                    .scoped
                     .ds_beta_u_by_story
                     .iter()
                     .map(|b| format!("{:.2}", b))
@@ -798,7 +817,7 @@ pub fn design_table(ui: &mut egui::Ui, app: &mut App) {
             // rank-auto で 1 本も算定できず選択ランクへフォールバックした層の警告。
             // 幅厚比表の対象外形状（円形鋼管等）・形状未設定などの層は選択ランク
             // （既定 FA）のまま Ds が決まり、実状より甘いと危険側になるため明示する。
-            if app.design_rank_auto && !app.ds_rank_fallback_stories.is_empty() {
+            if app.core.design_rank_auto && !app.core.scoped.ds_rank_fallback_stories.is_empty() {
                 ui.colored_label(
                     crate::theme::SECONDARY_AMBER,
                     format!(
@@ -806,12 +825,12 @@ pub fn design_table(ui: &mut egui::Ui, app: &mut App) {
                          （{}）。幅厚比表の対象外形状・断面形状未設定・Fc 未設定などが原因です。\
                          選択ランクが実状より甘いと Ds を過小評価するため、該当層の部材種別を\
                          確認してください。",
-                        app.design_rank,
-                        app.ds_rank_fallback_stories.join("、"),
+                        app.core.design_rank,
+                        app.core.scoped.ds_rank_fallback_stories.join("、"),
                     ),
                 );
             }
-            let note = if app.design_rank_auto {
+            let note = if app.core.design_rank_auto {
                 "Qu は増分解析性能曲線上の層別ピーク層せん断力（崩壊機構形成時の耐力）。\
                  Ds は部材ランク自動判定（鋼=幅厚比、RC矩形=せん断余裕度 Qsu/Qmu の略算。柱は\
                  軸力考慮の曲げ終局から Qmu を算定）×崩壊機構。形状未設定・RC円形・Fc未設定材料は\
@@ -832,7 +851,7 @@ pub fn design_table(ui: &mut egui::Ui, app: &mut App) {
 /// モーメント・必要鉄筋量を表示する（いずれも全体 FEM から独立）。
 fn floor_design_section(ui: &mut egui::Ui, app: &App) {
     use crate::table_util::Col;
-    let Some(r) = app.results.as_ref() else {
+    let Some(r) = app.core.scoped.results.as_ref() else {
         return;
     };
     if r.joist_checks.is_empty() && r.slab_checks.is_empty() {
@@ -876,10 +895,13 @@ fn floor_design_section(ui: &mut egui::Ui, app: &App) {
                 row.col(|ui| {
                     let label = match ji {
                         crate::app::JoistCheckTarget::SecondaryJoist { nodes } => {
-                            secondary_label(app.model.joists(), *nodes)
+                            secondary_label(app.core.model.joists(), *nodes)
                         }
                         crate::app::JoistCheckTarget::SecondaryPost { nodes } => {
-                            format!("（間柱）{}", secondary_label(app.model.posts(), *nodes))
+                            format!(
+                                "（間柱）{}",
+                                secondary_label(app.core.model.posts(), *nodes)
+                            )
                         }
                     };
                     ui.label(label);
