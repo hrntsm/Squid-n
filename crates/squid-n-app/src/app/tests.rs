@@ -182,6 +182,94 @@ fn test_load_model_resets_draw_modes() {
     assert!(app.ui.scoped.slab_draw_nodes.is_empty());
 }
 
+/// モデル差し替えで、旧モデルを指す UI 状態がすべて破棄される。
+///
+/// 従来は `load_model` がフィールドを個別に列挙してリセットしており、列挙から
+/// 漏れた `mn_view`（断面添字とその断面の曲面キャッシュ）・`load_editor`
+/// （荷重ケース／節点／部材の id）・`node_grid`（選択矩形）・`view_mode_idx`
+/// （モード形の番号）・`pending_duplicate_node_coord`（追加保留座標）が旧モデルの
+/// 状態のまま残っていた。
+#[cfg(feature = "gui")]
+#[test]
+#[allow(clippy::field_reassign_with_default)]
+fn test_load_model_resets_model_bound_ui_state() {
+    let mut app = App::default();
+    app.ui.scoped.mn_view.section_idx = 7;
+    app.ui.scoped.load_editor = Some(crate::load_editor::LoadEditor::new_nodal(
+        squid_n_core::ids::LoadCaseId(3),
+        Some(squid_n_core::ids::NodeId(9)),
+    ));
+    app.ui.scoped.view_mode_idx = 4;
+    app.ui.scoped.pending_duplicate_node_coord = Some([1.0, 2.0, 3.0]);
+    app.ui.scoped.node_draft = ["100".into(), "200".into(), "300".into()];
+
+    app.load_model(crate::sample::portal_frame());
+
+    assert_eq!(app.ui.scoped.mn_view.section_idx, 0);
+    assert!(app.ui.scoped.load_editor.is_none());
+    assert_eq!(app.ui.scoped.view_mode_idx, 0);
+    assert!(app.ui.scoped.pending_duplicate_node_coord.is_none());
+    assert_eq!(
+        app.ui.scoped.node_draft,
+        ["0".to_string(), "0".to_string(), "0".to_string()]
+    );
+}
+
+/// モデル差し替えで、そのモデルに対して選んだ解析側の状態が破棄される。
+///
+/// 質点系の波形選択は、立体時刻歴の `wave_library_selection` と同じ理由
+/// （一度も選んでいない波形が新しいプロジェクトの `.scz` へ記録される）で
+/// 破棄しなければならないのに、従来は列挙から漏れて持ち越されていた。
+/// `project_path` も同様に列挙になく、呼び出し元 5 箇所が個別に `None` を
+/// 代入することで辛うじて保たれていた。
+#[test]
+#[allow(clippy::field_reassign_with_default)]
+fn test_load_model_resets_model_bound_core_state() {
+    let mut app = App::default();
+    app.core.scoped.lumped_wave_library_selection = Some("旧波形.csv".into());
+    app.core.scoped.lumped_wave_library_selected_sha256 = Some("dummy".into());
+    app.core.scoped.project_path = Some(std::path::PathBuf::from("/tmp/旧.scz"));
+    app.core.scoped.ds_beta_u_by_story = vec![0.5, 0.6];
+    app.core.scoped.ds_beta_u_unavailable = true;
+    app.core.scoped.ds_rank_fallback_stories = vec!["2F".into()];
+
+    app.load_model(crate::sample::portal_frame());
+
+    assert!(app.core.scoped.lumped_wave_library_selection.is_none());
+    assert!(app
+        .core
+        .scoped
+        .lumped_wave_library_selected_sha256
+        .is_none());
+    assert!(app.core.scoped.project_path.is_none());
+    assert!(app.core.scoped.ds_beta_u_by_story.is_empty());
+    assert!(!app.core.scoped.ds_beta_u_unavailable);
+    assert!(app.core.scoped.ds_rank_fallback_stories.is_empty());
+}
+
+/// モデル差し替えでも、利用者の表示設定は持ち越す
+/// （モデルを開くたびにドック配置・カメラ・配色が初期化されると作業にならない）。
+#[cfg(feature = "gui")]
+#[test]
+#[allow(clippy::field_reassign_with_default)]
+fn test_load_model_keeps_view_settings() {
+    let mut app = App::default();
+    app.ui.view.left_dock_open = false;
+    app.ui.view.bottom_tab = BottomTab::Diagnostics;
+    app.ui.view.contour_colormap = crate::theme::ColorMap::Turbo;
+    app.ui.view.camera.yaw += 1.0;
+    let yaw = app.ui.view.camera.yaw;
+    app.core.analysis_cfg.push_steps = 37;
+
+    app.load_model(crate::sample::portal_frame());
+
+    assert!(!app.ui.view.left_dock_open);
+    assert_eq!(app.ui.view.bottom_tab, BottomTab::Diagnostics);
+    assert_eq!(app.ui.view.contour_colormap, crate::theme::ColorMap::Turbo);
+    assert_eq!(app.ui.view.camera.yaw, yaw);
+    assert_eq!(app.core.analysis_cfg.push_steps, 37);
+}
+
 /// 一本部材指定（beam_groups）: 2 分割梁のグループ合成値
 /// 剛域自動算定・危険断面フィルタのテスト用モデル。
 /// `sample::portal_frame`（対角材を含む変則的な接続）と異なり、

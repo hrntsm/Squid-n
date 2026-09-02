@@ -812,10 +812,18 @@ pub struct ModelScoped {
     /// 実行中のバックグラウンド解析ジョブ（増分解析・時刻歴・静的解析の単体実行と
     /// 一括解析、P8 §5）。
     /// 完了は `poll_job` で検知して結果を適用する。
+    ///
+    /// モデル差し替えで破棄する。残したままだと、旧モデルで計算中の結果が完了時に
+    /// `poll_job` 経由で新モデルへ「最新結果」として適用され、別モデルの変位・応力が
+    /// stale 警告なしに表示される（受信側 `Receiver` の破棄だけでよい。ワーカー
+    /// スレッドの送信は失敗して静かに終了する）。
     pub job: Option<AnalysisJob>,
     /// 保存サイズ超過時の保存保留（保存先パス, 解析結果の直列化サイズ [MB]）。
     /// セットされている間は「時刻歴の詳細記録を保存に含めますか？」の確認
     /// ダイアログを表示し、選択に応じて含めて保存／除外して保存／キャンセル。
+    ///
+    /// モデル差し替えで破棄する（旧モデル用に選んだパスへ新モデルを保存して
+    /// しまうのを防ぐ）。
     pub pending_save_recording: Option<(std::path::PathBuf, u64)>,
     /// stale（要再計算）状態と最終実行時刻
     pub staleness: Staleness,
@@ -849,6 +857,12 @@ pub struct ModelScoped {
     /// 「▶ 選択した波形で実行」で使う波形を指し、`.scz` にも同梱する
     /// （次回開いたときに自動で同じ波形を参照できるようにするため。
     /// `SavedAnalysisSettings::wave_name`）。
+    ///
+    /// そのモデルに対して選んだものなので、モデル差し替えで破棄する。残すと、波形を
+    /// 選択したプロジェクト A の後に別のプロジェクト B を開いたとき、B では一度も
+    /// 選んでいない波形が A の選択のまま持ち越され、B を保存すると実際には使って
+    /// いない波形が B 側に記録される。質点系の
+    /// [`ModelScoped::lumped_wave_library_selection`] も同じ理由で破棄する。
     pub wave_library_selection: Option<String>,
     /// `wave_library_selection` を最後に実行／読込復元した時点のライブラリ内
     /// ファイルの SHA-256。プロジェクト読込時、ライブラリ側のファイルが同名の
@@ -1036,6 +1050,8 @@ pub struct UiModelScoped {
     #[cfg(feature = "gui")]
     pub new_story_draft: (String, f64),
     /// 階への複製ダイアログ（`① 準備計算 > 階の定義 > ⧉`）の入力状態。
+    /// 旧モデルの階を指したままにすると新モデルの別の階へ配ってしまうため、
+    /// モデル差し替えでは選択ごと閉じる。
     #[cfg(feature = "gui")]
     pub story_copy: crate::story_copy_view::StoryCopyState,
     /// 解析タブ「階の定義」表で確定した編集コマンドの適用待ちキュー。
@@ -2062,7 +2078,6 @@ impl eframe::App for App {
                     if ui.button("📄 新規").clicked() {
                         // 新規モデルは標準荷重ケース（DL・LL(架構用)・LL(地震用)・EX・EY）付き。
                         self.load_model(squid_n_core::model::Model::with_default_load_cases());
-                        self.core.scoped.project_path = None;
                         ui.close();
                     }
                     if ui.button("📐 新規（架構ウィザード）…").clicked() {
@@ -2071,7 +2086,6 @@ impl eframe::App for App {
                     }
                     if ui.button("🏠 サンプル(門型ラーメン)").clicked() {
                         self.load_model(crate::sample::portal_frame());
-                        self.core.scoped.project_path = None;
                         ui.close();
                     }
                     ui.separator();

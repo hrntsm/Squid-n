@@ -17,81 +17,20 @@ pub(crate) fn needs_recording_confirm(results_bytes: usize, has_recording: bool)
 
 impl App {
     /// モデルを丸ごと差し替える（新規作成・サンプル読込・ファイル読込で共用）。
-    /// undo 履歴・結果・選択・stale 状態をすべてリセットする。
+    ///
+    /// 現在のモデルに紐づく状態（[`ModelScoped`]・[`UiModelScoped`]）を丸ごと
+    /// 捨てる。個々のフィールドを列挙してリセットするのではなく `Default::default()`
+    /// を代入するため、フィールドを増やしてもここへ書き足す必要がなく、リセット漏れが
+    /// 起こらない。持ち越すもの（解析条件・設計条件・ドック配置・カメラ・配色等）は
+    /// [`AppCore`] 直下と [`UiViewState`] にあり、この代入では触れない。
+    ///
     /// 旧スキーマの自動生成荷重ケース名（「床荷重(自動)」「自重(自動)」等）は
     /// 標準ケース名（DL・LL(架構用)・LL(地震用)）へ移行する。
     pub fn load_model(&mut self, mut model: squid_n_core::model::Model) {
         model.migrate_legacy_auto_load_cases();
         self.core.model = model;
-        self.core.scoped.results = None;
-        self.ui.scoped.selection = Selection::default();
-        self.core.scoped.undo = UndoStack::new();
-        self.ui.scoped.nav = Navigator::default();
-        self.core.scoped.last_static = None;
-        self.core.scoped.last_error = None;
-        self.core.scoped.last_notice = None;
-        self.core.scoped.auto_load_sync_hash = None;
-        self.core.scoped.preparation = None;
-        self.core.scoped.diagnostics.clear();
-        self.core.scoped.staleness = Staleness::default();
-        // 旧モデル由来の解析結果・準備計算表示・詳細ウィンドウの選択部材など、
-        // モデル差し替えで無効になる状態をすべてリセットする（従来は
-        // results/selection 等のみで、時刻歴データ・質点系応答・仕口パネル一覧・
-        // 各種ドラフトが旧モデルの ID を指したまま残っていた）。
-        //
-        // 実行中のバックグラウンド解析ジョブも破棄する。残したままだと、旧モデルで
-        // 計算中の結果が完了時に poll_job 経由で新モデルへ「最新結果」として適用され、
-        // 別モデルの変位・応力が stale 警告なしに表示される（受信側 Receiver の破棄
-        // だけでよい。ワーカースレッドの送信は失敗して静かに終了する）。
-        self.core.scoped.job = None;
-        // 保存確認ダイアログの保留も破棄する（旧モデル用に選んだパスへ
-        // 新モデルを保存してしまうのを防ぐ）。
-        self.core.scoped.pending_save_recording = None;
-        self.core.scoped.pushover_view_dir = SeismicDir::X;
-        self.core.scoped.view_vibration_case = None;
-        self.core.scoped.view_lumped_vibration_case = None;
-        self.core.scoped.stick_response = None;
-        self.core.scoped.combo_error = None;
-        self.core.scoped.generated_panels.clear();
-        // 波形ライブラリの選択も旧モデル由来の状態なので破棄する（そうしないと、
-        // 波形を選択したプロジェクトAの後に別プロジェクトBを開いた際、Bでは
-        // 一度も選んでいない波形がAの選択のまま持ち越され、Bを保存すると
-        // 実際には使っていない波形がB側に記録されてしまう）。
-        self.core.scoped.wave_library_selection = None;
-        self.core.scoped.wave_library_selected_sha256 = None;
-        #[cfg(feature = "gui")]
-        {
-            self.ui.scoped.frame_target = None;
-            self.ui.scoped.analysis_target = None;
-            self.ui.scoped.hinge_detail_elem = None;
-            self.ui.scoped.hinge_mn_cache = None;
-            self.ui.scoped.th_detail_elem = None;
-            self.ui.scoped.th_detail_axial_component = None;
-            self.ui.scoped.th_scale_cache = None;
-            self.ui.scoped.th_frame = 0;
-            self.ui.scoped.th_playing = false;
-            self.ui.scoped.th_play_time = 0.0;
-            self.ui.scoped.time_history_data = crate::time_history_view::TimeHistoryData::default();
-            self.ui.scoped.section_draft = Default::default();
-            self.ui.scoped.catalog_draft = Default::default();
-            self.ui.scoped.isolator_support_draft = Default::default();
-            self.ui.scoped.isolator_member_draft = Default::default();
-            self.ui.scoped.damper_def_draft = Default::default();
-            self.ui.scoped.combo_draft = ComboDraft::default();
-            self.ui.scoped.slab_draft = Default::default();
-            self.ui.scoped.new_story_draft = (String::new(), 0.0);
-            self.ui.scoped.pending_story_cmds.clear();
-            // 階への複製ダイアログは、旧モデルの階を指したままにすると新モデルの
-            // 別の階へ配ってしまうため、選択ごと閉じる。
-            self.ui.scoped.story_copy = Default::default();
-            self.ui.scoped.wall_plate_draft = Default::default();
-            self.ui.scoped.axis_name_draft = Default::default();
-            self.ui.scoped.load_cfg_draft = Default::default();
-            self.ui.scoped.member_detail_draft = Default::default();
-            self.ui.scoped.steel_attr_draft = Default::default();
-        }
-        #[cfg(feature = "gui")]
-        self.reset_draw_modes();
+        self.core.scoped = ModelScoped::default();
+        self.ui.scoped = UiModelScoped::default();
         self.sync_node_edit();
     }
 
@@ -401,7 +340,8 @@ impl App {
     }
 
     /// ST-Bridge（XML, サブセット）ファイルを読み込む。
-    /// Squid-n プロジェクト（.scz）とは別物なので project_path はクリアする。
+    /// Squid-n プロジェクト（.scz）とは別物なので、`load_model` が
+    /// `project_path` をクリアしたまま（未保存扱いで）進む。
     /// ファイルが荷重情報（`StbLoadCase`）を持たない場合は、標準荷重ケース
     /// （DL・LL(架構用)・LL(地震用)・EX・EY）と標準荷重組合せ（長期 DL+LL、
     /// 短期地震 DL+LL±EX・DL+LL±EY）を自動作成する（新規モデルと同じ出発点。
@@ -429,7 +369,6 @@ impl App {
                     }
                 }
                 self.load_model(model);
-                self.core.scoped.project_path = None;
                 self.log_attribute_dispositions(&report);
                 // 欠落・近似（warnings）と自動補完の仮定（notes。支点の自動設定など）が
                 // あれば注意として表示する（致命的ではない）。

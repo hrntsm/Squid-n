@@ -136,7 +136,6 @@ pub fn frame_wizard_window(ctx: &egui::Context, app: &mut App) {
         match squid_n_core::frame_gen::frame_model(&app.ui.view.frame_wizard.spec) {
             Ok(model) => {
                 app.load_model(model);
-                app.core.scoped.project_path = None;
                 app.ui.view.frame_wizard.open = false;
                 app.report_notice("架構を作成しました。断面タブで断面を割り当ててください");
             }
