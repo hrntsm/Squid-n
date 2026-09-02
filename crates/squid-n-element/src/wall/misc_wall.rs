@@ -41,10 +41,10 @@ pub fn is_rc_wall(data: &ElementData, model: &Model) -> bool {
 ///
 /// 材種によらず課す条件:
 /// - 上下辺が大梁（水平材）で囲まれていること（[`wall_is_framed`]）
+/// - 耐震スリットが 4 辺のいずれにも無いこと（切れていると面内せん断を周辺の
+///   柱梁へ伝えられない）
 ///
 /// RC 壁（[`is_rc_wall`]）にのみ課す条件（RC規準・耐震壁の判定）:
-/// - 柱際スリットが左右いずれにも無いこと（切れていると面内せん断を側柱へ
-///   伝えられない）
 /// - 壁厚が 120mm 以上であること
 /// - 開口周比 r0=√(開口面積/(l·h)) ≤ 0.4（複数開口モード適用後の面積）。
 ///   `l`・`h` は [`crate::wall_element::wall_element_geometry`] の壁長・高さ
@@ -67,6 +67,15 @@ pub fn wall_is_seismic(data: &ElementData, model: &Model) -> bool {
     if !wall_is_framed_with(&g, model) {
         return false;
     }
+    let attr = model.wall_attrs.iter().find(|w| w.elem == data.id);
+    // スリットのある壁は、負担した面内せん断を周辺の柱梁へ伝えられないため
+    // 耐震壁にしない。4 辺すべてが躯体と一体であることを要する。
+    //
+    // **材種を問わない条件である。** 以降の RC 規準の規定と違い、縁が切れていれば
+    // せん断を伝えられないのは鋼板耐震壁でも同じだからである。
+    if attr.is_some_and(|a| a.slit.any()) {
+        return false;
+    }
     // 以降は RC 規準の耐震壁規定。鋼板耐震壁には課さない。
     if !is_rc_wall(data, model) {
         return true;
@@ -74,12 +83,6 @@ pub fn wall_is_seismic(data: &ElementData, model: &Model) -> bool {
     let Some(t) = wall_thickness(data, model) else {
         return true;
     };
-    let attr = model.wall_attrs.iter().find(|w| w.elem == data.id);
-    // スリットのある壁は、負担した面内せん断を周辺の柱梁へ伝えられないため
-    // 耐震壁にしない。4 辺すべてが躯体と一体であることを要する。
-    if attr.is_some_and(|a| a.slit.any()) {
-        return false;
-    }
     if t < 120.0 {
         return false;
     }
@@ -838,13 +841,16 @@ mod tests {
         assert!(!wall_is_seismic(&data, &model), "対角材は上辺に一致しない");
     }
 
-    /// 鋼板耐震壁は RC 規準に由来する条件（スリット・板厚 120mm・開口周比）を
-    /// 課さない。鋼板は板厚 9〜16mm 程度のため、材種を問わず課すと成立しなくなる。
+    /// 鋼板耐震壁は RC 規準に由来する条件（板厚 120mm・開口周比）を課さない。
+    /// 鋼板は板厚 9〜16mm 程度のため、材種を問わず課すと成立しなくなる。
+    ///
+    /// **耐震スリットは材種を問わず課す。** 縁が切れていれば面内せん断を周辺の
+    /// 柱梁へ伝えられないのは、鋼板耐震壁でも同じだからである。
     #[test]
     fn 鋼板耐震壁にはrc固有の成立条件を課さない() {
         use squid_n_core::model::WallAttr;
 
-        // 板厚 9mm・大開口・柱際スリットのいずれも、鋼板壁では不成立の理由にしない。
+        // 板厚 9mm・大開口は鋼板壁では不成立の理由にしない。
         let (mut model, mut data) = make_model(9.0);
         model.materials[0].category = MaterialCategory::Steel;
         model.materials[0].fc = None;
@@ -857,17 +863,22 @@ mod tests {
             elem: ElemId(0),
             opening_area: 3.0e6,
             opening_weight: 0.0,
-            slit: squid_n_core::model::WallSlit {
-                column_face: [true, true],
-                beam_face: [false, false],
-            },
+            slit: squid_n_core::model::WallSlit::default(),
             openings: vec![],
         });
         assert!(!is_rc_wall(&data, &model));
         assert!(
             wall_is_seismic(&data, &model),
-            "鋼板耐震壁は板厚・開口・スリットの条件を課さない"
+            "鋼板耐震壁は板厚・開口の条件を課さない"
         );
+
+        // スリットだけは鋼板壁でも成立を妨げる。
+        model.wall_attrs[0].slit.column_face = [true, false];
+        assert!(
+            !wall_is_seismic(&data, &model),
+            "スリットは材種を問わず課す"
+        );
+        model.wall_attrs[0].slit = squid_n_core::model::WallSlit::default();
 
         // 同じ寸法でも RC 壁なら板厚 120mm 未満で不成立になる。
         let (model, data) = make_model(9.0);
