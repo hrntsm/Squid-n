@@ -433,6 +433,45 @@ mod tests {
         }
     }
 
+    /// 梁際が切れている辺の梁には、腰壁・垂れ壁による剛域の張り出しを与えない。
+    ///
+    /// 切れた辺の高さは 0 になるので（`InFrameMiscWallGeometry::strip_height`）、
+    /// 剛域も伸びない。反対側の梁は全高を負担するため、折半（h/2）ではなく h から
+    /// 部材せいの半分を引いた値まで伸びる。
+    #[test]
+    fn 梁際スリットのある側は剛域の腰壁張り出しを持たない() {
+        let (model, _column) = column_with_wall();
+        // 下辺の梁（節点 0-1）。
+        let beam = ElementData {
+            id: ElemId(1),
+            kind: ElementKind::Beam,
+            nodes: smallvec::smallvec![NodeId(0), NodeId(1)],
+            section: Some(SectionId(0)),
+            local_axis: LocalAxis {
+                ref_vector: [0.0, 0.0, 1.0],
+            },
+            end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+            force_regime: ForceRegime::Auto,
+            rigid_zone: Default::default(),
+            plastic_zone: None,
+            spring: None,
+        };
+        let depth = 600.0;
+
+        let with_slit = |beam_face: [bool; 2]| {
+            let mut w = wall_geometry([false, false]);
+            w.slit.beam_face = beam_face;
+            wall_protrusion(&model, &beam, depth, &[w], None)
+        };
+
+        // スリット無し: 折半 1500 から梁せいの半分を引いた 1200。
+        assert!((with_slit([false, false]) - 1200.0).abs() < 1e-9);
+        // 下辺を切ると、その梁には張り出さない。
+        assert!(with_slit([true, false]).abs() < 1e-9);
+        // 上辺を切ると、下の梁が全高 3000 を負担して 2700 まで伸びる。
+        assert!((with_slit([false, true]) - 2700.0).abs() < 1e-9);
+    }
+
     /// 柱際が切れている側の柱には、袖壁による剛域の張り出しを与えない。
     ///
     /// 柱際スリットは柱との縁を切る指定なので、その柱の接合部が壁のぶん大きく
