@@ -487,13 +487,35 @@ pub fn model_issues(model: &Model) -> Vec<ModelIssue> {
                 .warn(),
             );
         }
+        // スリットが効かない壁版に指定が入っていれば警告する。スリットは辺の役割
+        // （柱際か梁際か、下辺か上辺か）を決められる 4 節点の囲まれた壁版でのみ
+        // 意味を持つ。黙って無視すると、利用者は縁を切ったつもりのまま解析へ進む。
+        let ignored_slit = model
+            .wall_plates
+            .iter()
+            .filter(|p| p.slit.any() && !p.has_quad_boundary())
+            .count();
+        if ignored_slit != 0 {
+            issues.push(
+                ModelIssue::model(format!(
+                    "耐震スリットの指定が効かない壁版が {ignored_slit} 枚あります。\
+                     スリットは境界が 4 節点の囲まれた壁版でのみ扱えます\
+                     （辺が柱際か梁際かを決められないため）。"
+                ))
+                .warn(),
+            );
+        }
+
         // 上下の梁際がともに切れた壁版はエラーで止める。柱際の鉛直辺は壁の重量を
         // 受けないため、上下とも縁が切れていると自重の伝達先が無い。実際に作らない
         // 納まりなので、入力の誤りとして扱う（`WallSlit::both_beam_faces`）。
+        //
+        // スリットが効かない壁版（4 節点でない）は対象外。指定は無視されるので
+        // 自重の伝達先は失われず、上の警告で知らせる。
         let both_beam_slit: Vec<_> = model
             .wall_plates
             .iter()
-            .filter(|p| !p.is_attached() && p.slit.both_beam_faces())
+            .filter(|p| p.has_quad_boundary() && p.slit.both_beam_faces())
             .map(|p| p.id.0)
             .collect();
         if !both_beam_slit.is_empty() {

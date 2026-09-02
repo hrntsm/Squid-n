@@ -715,30 +715,49 @@ fn attrs_form(ui: &mut egui::Ui, app: &mut App) {
     // 耐震スリットは囲まれた壁版にしか意味がない（一覧の同名列と同じ理由）。
     // 取り付く壁版では入力欄自体を出さない。左右どちらの柱際かは節点番号で示す。
     if !is_attached {
+        // スリットは辺の役割（柱際か梁際か、下辺か上辺か）を決められる 4 節点の
+        // 壁版でのみ扱える。効かない壁版では入力を出さず、理由を示す。
+        let quad = app
+            .model
+            .wall_plate(target)
+            .is_some_and(|p| p.has_quad_boundary());
         let faces = app
             .model
             .wall_plate(target)
             .and_then(|p| p.column_face_nodes(&app.model));
         ui.horizontal(|ui| {
             ui.label("耐震スリット:");
-            for k in 0..2 {
-                let label = match faces {
-                    Some(nodes) => format!("柱際 N{}", nodes[k].0),
-                    None => format!("柱際 {}", k + 1),
-                };
-                ui.checkbox(&mut app.wall_plate_draft.slit.column_face[k], label)
-                    .on_hover_text(
-                        "その柱との縁を切ります。切れている側へは袖壁として剛性算入しません",
-                    );
-            }
-            for (k, label) in ["下辺", "上辺"].into_iter().enumerate() {
-                ui.checkbox(&mut app.wall_plate_draft.slit.beam_face[k], label)
-                    .on_hover_text(
-                        "その梁との縁を切ります。切れている側へは腰壁・垂れ壁として\
-                         剛性算入せず、自重も伝えません",
-                    );
-            }
+            // 4 節点でない壁版では指定しても効かないため、入力を無効化する。
+            ui.add_enabled_ui(quad, |ui| {
+                for k in 0..2 {
+                    let label = match faces {
+                        Some(nodes) => format!("柱際 N{}", nodes[k].0),
+                        None => format!("柱際 {}", k + 1),
+                    };
+                    ui.checkbox(&mut app.wall_plate_draft.slit.column_face[k], label)
+                        .on_hover_text(
+                            "その柱との縁を切ります。切れている側へは袖壁として剛性算入しません",
+                        );
+                }
+                for (k, label) in ["下辺", "上辺"].into_iter().enumerate() {
+                    ui.checkbox(&mut app.wall_plate_draft.slit.beam_face[k], label)
+                        .on_hover_text(
+                            "その梁との縁を切ります。切れている側へは腰壁・垂れ壁として\
+                             剛性算入せず、自重も伝えません",
+                        );
+                }
+            });
         });
+        if !quad {
+            ui.label(
+                egui::RichText::new(
+                    "耐震スリットは境界が 4 節点の壁版でのみ指定できます\
+                     （辺が柱際か梁際かを決められないため）。",
+                )
+                .color(crate::theme::GRAY_600)
+                .small(),
+            );
+        }
         if app.wall_plate_draft.slit.both_beam_faces() {
             ui.colored_label(
                 crate::theme::ERROR_RED,

@@ -1575,6 +1575,73 @@ fn test_model_issues_errors_on_both_beam_face_slit() {
     );
 }
 
+/// スリットが効かない壁版（境界が 4 節点でない）は、エラーではなく警告で知らせる。
+///
+/// 指定は無視されるので自重の伝達先は失われない。エラーで止めると、効かない入力の
+/// ために解析へ進めなくなる。一方、黙って無視すると縁を切ったつもりのまま進むので、
+/// 警告は出す。
+#[test]
+fn test_model_issues_warns_ignored_slit_on_non_quad_plate() {
+    use super::precheck::{model_issues, IssueSeverity};
+    use squid_n_core::ids::WallPlateId;
+    use squid_n_core::model::{WallPlate, WallPlateShape, WallSlit};
+
+    let mut model = make_cantilever_model();
+    let n = model.nodes.len() as u32;
+    for (i, c) in [
+        [1000.0, 0.0, 3000.0],
+        [0.0, 0.0, 3000.0],
+        [500.0, 0.0, 3000.0],
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        model.nodes.push(Node {
+            id: NodeId(n + i as u32),
+            coord: c,
+            restraint: Dof6Mask::FREE,
+            mass: None,
+            story: None,
+            support_spring: None,
+        });
+    }
+    // 境界 5 節点（上辺が中間節点で分割されている）。
+    model.wall_plates.push(WallPlate {
+        id: WallPlateId(0),
+        shape: WallPlateShape::Enclosed {
+            boundary: vec![
+                NodeId(0),
+                NodeId(1),
+                NodeId(n),
+                NodeId(n + 2),
+                NodeId(n + 1),
+            ],
+        },
+        section: Some(SectionId(0)),
+        opening_area: 0.0,
+        opening_weight: 0.0,
+        openings: Vec::new(),
+        slit: WallSlit {
+            column_face: [true, true],
+            beam_face: [true, true],
+        },
+    });
+
+    let issues = model_issues(&model);
+    let warn = issues
+        .iter()
+        .find(|i| i.message.contains("耐震スリットの指定が効かない壁版"))
+        .expect("警告が出る");
+    assert_eq!(warn.severity, IssueSeverity::Warning, "{}", warn.message);
+    // 上下ともスリットでも、効かない壁版はエラーにしない。
+    assert!(
+        !issues
+            .iter()
+            .any(|i| i.message.contains("上下の梁際がともに切れた壁版")),
+        "効かない指定でエラーにしない"
+    );
+}
+
 /// 4 節点でない壁版・断面未割当の壁版は警告し、解析は止めない。
 #[test]
 fn test_model_issues_warns_wall_plates_not_expanded() {
