@@ -1590,7 +1590,7 @@ mod node_reference_tests {
             opening_area: 0.0,
             opening_weight: 0.0,
             openings: Vec::new(),
-            column_face_slit: [false, false],
+            slit: Default::default(),
         });
         model.wall_plates.push(WallPlate {
             id: WallPlateId(1),
@@ -1606,7 +1606,7 @@ mod node_reference_tests {
             opening_area: 0.0,
             opening_weight: 0.0,
             openings: Vec::new(),
-            column_face_slit: [false, false],
+            slit: Default::default(),
         });
 
         // 8: 二次部材（未割当小梁）。領域内（node 2）とは別のフィールドである。
@@ -1639,7 +1639,7 @@ mod node_reference_tests {
             opening_area: 0.0,
             opening_weight: 0.0,
             openings: Vec::new(),
-            column_face_slit: [false, false],
+            slit: Default::default(),
         });
 
         for i in 0..=10u32 {

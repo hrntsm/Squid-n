@@ -74,18 +74,58 @@ pub struct WallPlate {
     /// 優先する（`opening_area` へのフォールバック規約は `WallAttr` と同じ）。
     #[serde(default)]
     pub openings: Vec<WallOpening>,
-    /// 柱際スリット（左右の鉛直辺）。true の側は柱との縁が切れており、その柱へ
-    /// 袖壁として剛性算入しない。上下の縁切りは壁版の形が表す（上端が切れた壁は
-    /// 下の梁に載る腰壁、下端が切れた壁は上の梁から垂れる垂壁で、いずれも
-    /// [`WallPlateShape::Attached`]）ため、独立した入力は柱際だけである。
-    ///
-    /// 添字は [`WallPlate::column_face_nodes`] が返す 2 節点に対応する。
-    /// 柱と接する鉛直辺を持たない取り付く壁版では意味を持たない。
-    ///
-    /// いずれかが true の壁は耐震壁として成立しない（面内せん断を柱へ伝えられない
-    /// ため。`squid_n_element::misc_wall::wall_is_seismic`）。
+    /// 耐震スリット（辺ごとの縁切り）。[`WallSlit`] 参照。
     #[serde(default)]
-    pub column_face_slit: [bool; 2],
+    pub slit: WallSlit,
+}
+
+/// 耐震スリット。壁版の 4 辺それぞれについて、周辺部材との縁を切ったかを持つ。
+///
+/// スリットは辺ごとに入れるものなので、辺ごとに持つ。三方スリットは柱際 2 辺と
+/// 上下いずれか 1 辺、完全スリットは 4 辺すべてが切れた状態として表す。
+///
+/// **垂れ壁・腰壁とは別の概念である。** 垂れ壁は上の梁からぶら下がる短い壁で、
+/// 下端に壁そのものが無い（[`WallPlateShape::Attached`] で表す）。一方、下辺に
+/// スリットを入れた壁は構面いっぱいの全高の壁であり、下の梁と接してはいるが縁が
+/// 切れている。形が違うので、どちらか一方では表せない。
+///
+/// 規則は 2 つある。**剛性は切れていない辺の部材にだけ算入し**（袖壁は柱際、
+/// 腰壁・垂れ壁は梁際）、**自重は切れていない辺へ伝える**。下辺が切れて上辺が
+/// 一体なら、自重は全量が上の梁へ向かう。
+///
+/// 4 辺すべてが一体でなければ耐震壁として成立しない
+/// （`squid_n_element::misc_wall::wall_is_seismic`）。切れた辺があると、負担した
+/// 面内せん断を周辺の柱梁へ伝えられないためである。
+///
+/// 境界が 4 節点の囲まれた壁版でのみ意味を持つ。取り付く壁版は柱・梁と接する
+/// 4 辺を持たないため参照しない。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct WallSlit {
+    /// 柱際（左右の鉛直辺）。添字は [`WallPlate::column_face_nodes`] が返す
+    /// 2 節点に対応する。
+    #[serde(default)]
+    pub column_face: [bool; 2],
+    /// 梁際（0: 下辺、1: 上辺）。
+    #[serde(default)]
+    pub beam_face: [bool; 2],
+}
+
+impl WallSlit {
+    /// いずれかの辺が切れているか。耐震壁の成立判定に用いる。
+    pub fn any(&self) -> bool {
+        self.column_face
+            .iter()
+            .chain(self.beam_face.iter())
+            .any(|&s| s)
+    }
+
+    /// 上下の梁際がともに切れているか。
+    ///
+    /// この壁は自重の伝達先を持たない（柱際は壁の重量を受けない）。入力として
+    /// ありえないので、解析前チェックがエラーで止める。
+    pub fn both_beam_faces(&self) -> bool {
+        self.beam_face[0] && self.beam_face[1]
+    }
 }
 
 impl WallPlate {
@@ -113,10 +153,10 @@ impl WallPlate {
         matches!(&self.shape, WallPlateShape::Enclosed { boundary } if boundary.len() == 4)
     }
 
-    /// 柱際スリット [`WallPlate::column_face_slit`] の添字に対応する境界節点。
+    /// 柱際スリット [`WallSlit::column_face`] の添字に対応する境界節点。
     ///
     /// 柱際の鉛直辺は、境界のうち標高の低い 2 節点（下辺）から立ち上がる。
-    /// そこで下辺の 2 節点を**境界の並び順**で返し、`column_face_slit[0]` を
+    /// そこで下辺の 2 節点を**境界の並び順**で返し、`column_face[0]` を
     /// 1 つ目、`[1]` を 2 つ目の柱際に対応させる。
     ///
     /// **添字の対応規則はここ 1 か所に置く。** 剛性算入
@@ -139,11 +179,6 @@ impl WallPlate {
         let mut bottom = [order[0], order[1]];
         bottom.sort_unstable();
         Some([boundary[bottom[0]], boundary[bottom[1]]])
-    }
-
-    /// 柱際スリットが左右いずれかにあるか。
-    pub fn has_column_face_slit(&self) -> bool {
-        self.column_face_slit.iter().any(|&s| s)
     }
 
     /// 境界の節点列。**柱・梁が囲む壁版のみ**（取り付く壁版は自由端に節点を
@@ -565,7 +600,7 @@ mod tests {
             opening_area: 0.0,
             opening_weight: 0.0,
             openings: Vec::new(),
-            column_face_slit: [false, false],
+            slit: WallSlit::default(),
         };
         // 全節点を +100 mm ずらした「変形後」の座標を渡す。
         let moved: Vec<[f64; 3]> = m
@@ -594,7 +629,7 @@ mod tests {
             opening_area: 0.0,
             opening_weight: 0.0,
             openings: Vec::new(),
-            column_face_slit: [false, false],
+            slit: WallSlit::default(),
         };
         let coords = attached
             .boundary_coords_with(|n| moved.get(n.index()).copied())
@@ -623,7 +658,7 @@ mod tests {
             opening_area: 0.0,
             opening_weight: 0.0,
             openings: Vec::new(),
-            column_face_slit: [false, false],
+            slit: WallSlit::default(),
         });
         m.wall_regions.push(crate::model::WallRegion {
             id: crate::ids::WallRegionId(0),
@@ -658,7 +693,7 @@ mod tests {
             opening_area: 0.0,
             opening_weight: 0.0,
             openings: Vec::new(),
-            column_face_slit: [false, false],
+            slit: WallSlit::default(),
         };
         let coords = p.boundary_coords(&m).expect("境界座標");
         assert_eq!(coords.len(), 4);
@@ -679,7 +714,7 @@ mod tests {
             opening_area: 0.0,
             opening_weight: 0.0,
             openings: Vec::new(),
-            column_face_slit: [false, false],
+            slit: WallSlit::default(),
         };
         assert!(quad.has_quad_boundary());
 
@@ -729,7 +764,7 @@ mod tests {
             opening_area: 0.0,
             opening_weight: 0.0,
             openings: Vec::new(),
-            column_face_slit: [false, false],
+            slit: WallSlit::default(),
         };
         let coords = p.boundary_coords(&m).expect("境界座標");
         // 4点とも Y=0（左向き法線方向へは動かない）、上 2 点は Z=3900（+900 立ち上げ）。
@@ -760,7 +795,7 @@ mod tests {
             opening_area: 0.0,
             opening_weight: 0.0,
             openings: Vec::new(),
-            column_face_slit: [false, false],
+            slit: WallSlit::default(),
         };
         let expected = 4000.0 * 2000.0 * 0.5;
         assert!(
@@ -787,7 +822,7 @@ mod tests {
             opening_area: 0.0,
             opening_weight: 0.0,
             openings: Vec::new(),
-            column_face_slit: [false, false],
+            slit: WallSlit::default(),
         };
         assert!((p.area(&m) - 2000.0 * 2500.0).abs() < 1e-6);
     }
@@ -806,7 +841,7 @@ mod tests {
             opening_area: 0.0,
             opening_weight: 0.0,
             openings: Vec::new(),
-            column_face_slit: [false, false],
+            slit: WallSlit::default(),
         };
         assert_eq!(p.boundary_coords(&m), None);
         assert_eq!(p.area(&m), 0.0);
@@ -829,7 +864,7 @@ mod tests {
             opening_area: 0.0,
             opening_weight: 0.0,
             openings: Vec::new(),
-            column_face_slit: [false, false],
+            slit: WallSlit::default(),
         };
         assert_eq!(m.wall_plate_self_weight(&p, &m), None);
     }
@@ -888,7 +923,7 @@ mod tests {
                 height: 1200.0,
                 offset: Some([1550.0, 0.0]),
             }],
-            column_face_slit: [false, false],
+            slit: WallSlit::default(),
         };
         let gross_area = 4000.0 * 3000.0;
         let opening_area = 900.0 * 1200.0;
@@ -956,7 +991,7 @@ mod tests {
             opening_area: 999.0,
             opening_weight: 0.0,
             openings: Vec::new(),
-            column_face_slit: [false, false],
+            slit: WallSlit::default(),
         };
         assert!((p.total_opening_area() - 999.0).abs() < 1e-9);
     }
@@ -974,7 +1009,7 @@ mod tests {
             opening_area: 0.0,
             opening_weight: 1234.0,
             openings: Vec::new(),
-            column_face_slit: [false, false],
+            slit: WallSlit::default(),
         };
         let gross_area = 4000.0 * 3000.0;
         let base = 150.0 * 2.4e-9 * gross_area * crate::units::GRAVITY_MM_S2;
@@ -1041,7 +1076,7 @@ mod tests {
             opening_area: 0.0,
             opening_weight: 0.0,
             openings: vec![],
-            column_face_slit: [false, false],
+            slit: WallSlit::default(),
         }
     }
 
@@ -1195,7 +1230,7 @@ mod tests {
             opening_area: 0.0,
             opening_weight: 0.0,
             openings: vec![],
-            column_face_slit: [false, false],
+            slit: WallSlit::default(),
         };
         assert!(m.self_standing_wall_coverage(&p).is_none());
     }

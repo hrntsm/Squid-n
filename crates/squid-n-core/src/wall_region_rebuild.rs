@@ -549,7 +549,7 @@ mod tests {
             opening_area: 0.0,
             opening_weight: 0.0,
             openings: vec![],
-            column_face_slit: [false, false],
+            slit: Default::default(),
         });
         let report = rebuild_wall_regions(&mut model);
         assert_eq!(report.wall_plates_assigned, 1);
@@ -578,7 +578,7 @@ mod tests {
             opening_area: 0.0,
             opening_weight: 0.0,
             openings: vec![],
-            column_face_slit: [false, false],
+            slit: Default::default(),
         });
         let report = rebuild_wall_regions(&mut model);
         assert_eq!(report.wall_plates_assigned, 0);
@@ -607,7 +607,7 @@ mod tests {
             opening_area: 0.0,
             opening_weight: 0.0,
             openings: vec![],
-            column_face_slit: [false, false],
+            slit: Default::default(),
         });
         let report = rebuild_wall_regions(&mut model);
         assert_eq!(report.wall_plates_assigned, 0);
@@ -666,7 +666,7 @@ mod tests {
             opening_area: 0.0,
             opening_weight: 0.0,
             openings: vec![],
-            column_face_slit: [false, false],
+            slit: Default::default(),
         });
         let report = rebuild_wall_regions(&mut model);
         assert_eq!(report.wall_plates_converted_to_attached, 0);
@@ -709,7 +709,7 @@ mod tests {
             opening_area: 0.0,
             opening_weight: 0.0,
             openings: vec![],
-            column_face_slit: [false, false],
+            slit: Default::default(),
         });
 
         let before: Vec<[f64; 3]> = vec![
@@ -756,7 +756,7 @@ mod tests {
             opening_area: 0.0,
             opening_weight: 0.0,
             openings: vec![],
-            column_face_slit: [false, false],
+            slit: Default::default(),
         });
         let report = rebuild_wall_regions(&mut model);
         assert_eq!(report.wall_plates_converted_to_attached, 1);
@@ -788,7 +788,7 @@ mod tests {
             opening_area: 0.0,
             opening_weight: 0.0,
             openings: vec![],
-            column_face_slit: [false, false],
+            slit: Default::default(),
         });
         let report = rebuild_wall_regions(&mut model);
         assert_eq!(report.wall_plates_converted_to_attached, 0);

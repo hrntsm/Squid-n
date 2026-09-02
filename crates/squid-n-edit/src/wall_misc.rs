@@ -715,7 +715,7 @@ impl EditCommand for AddAttachedWallPlate {
             opening_area: self.opening_area,
             opening_weight: self.opening_weight,
             openings: Vec::new(),
-            column_face_slit: [false, false],
+            slit: Default::default(),
         });
         Box::new(DeleteWallPlate { id })
     }
@@ -764,7 +764,7 @@ impl EditCommand for AddEnclosedWallPlate {
             opening_area: self.opening_area,
             opening_weight: self.opening_weight,
             openings: Vec::new(),
-            column_face_slit: [false, false],
+            slit: Default::default(),
         });
         Box::new(DeleteWallPlate { id })
     }
@@ -884,7 +884,7 @@ impl EditCommand for SetWallPlateSection {
     }
 }
 
-/// 壁版の属性（開口面積・個別開口・開口部重量・柱際スリット）を
+/// 壁版の属性（開口面積・個別開口・開口部重量・耐震スリット）を
 /// 一括変更する。逆操作は変更前の値への復元。存在しない `WallPlateId` は Noop。
 ///
 /// 開口の 4 つの値をひとまとめにするのは、`openings`（個別開口）が非空のとき
@@ -893,11 +893,11 @@ impl EditCommand for SetWallPlateSection {
 /// 分けると、undo の途中に「個別開口だけ戻って面積が残る」という、利用者が
 /// 一度も入力していない組み合わせが現れうる。
 ///
-/// `column_face_slit` は囲まれた壁版（`Enclosed`）でだけ意味を持つ。柱と接する
-/// 鉛直辺の縁切りを表す指定で、切れている側へは袖壁として剛性算入せず、
-/// 左右いずれかが切れていれば耐震壁としても成立しない
+/// `slit`（耐震スリット）は囲まれた壁版（`Enclosed`）でだけ意味を持つ。辺ごとの
+/// 縁切りを表す指定で、切れている辺の部材へは剛性算入せず、自重も伝えない。
+/// 4 辺すべてが一体でなければ耐震壁としても成立しない
 /// （`squid_n_element::misc_wall`）。取り付く壁版（`Attached`。腰壁・垂れ壁・
-/// パラペット・自立壁）は柱と接する鉛直辺を持たないため効かない。
+/// パラペット・自立壁）は柱・梁と接する 4 辺を持たないため効かない。
 /// GUI は取り付く壁版でこの入力欄自体を出さないが、コマンドは形によらず値を
 /// そのまま保存する（`WallPlate` が形によらず同じフィールドを持つ設計〔D3〕を
 /// コマンド側で崩さないため）。
@@ -906,7 +906,7 @@ pub struct SetWallPlateAttrs {
     pub opening_area: f64,
     pub opening_weight: f64,
     pub openings: Vec<squid_n_core::model::WallOpening>,
-    pub column_face_slit: [bool; 2],
+    pub slit: squid_n_core::model::WallSlit,
 }
 
 impl EditCommand for SetWallPlateAttrs {
@@ -921,12 +921,12 @@ impl EditCommand for SetWallPlateAttrs {
             opening_area: plate.opening_area,
             opening_weight: plate.opening_weight,
             openings: plate.openings.clone(),
-            column_face_slit: plate.column_face_slit,
+            slit: plate.slit,
         };
         plate.opening_area = self.opening_area;
         plate.opening_weight = self.opening_weight;
         plate.openings = self.openings.clone();
-        plate.column_face_slit = self.column_face_slit;
+        plate.slit = self.slit;
         Box::new(old)
     }
 

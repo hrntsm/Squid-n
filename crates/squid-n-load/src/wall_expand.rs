@@ -27,7 +27,7 @@
 //!
 //! # `wall_attrs` の合成（移行期の内部表現）
 //!
-//! 生成した壁要素ごとに、由来する `WallPlate` の開口・柱際スリットを写した
+//! 生成した壁要素ごとに、由来する `WallPlate` の開口・スリットを写した
 //! `WallAttr` を壁展開モデルの `wall_attrs` へ合成して積む。既存の壁消費者
 //! （自重算定 [`crate::story_gen::self_weight_calc`]、開口低減・剛性
 //! （`squid_n_element::factory::wall_opening`）、偏心率の雑壁剛性、数量拾い等、
@@ -229,7 +229,7 @@ pub fn expand_wall_elements_owned(
                     elem: id,
                     opening_area: plate.opening_area,
                     opening_weight: plate.opening_weight,
-                    column_face_slit: plate.column_face_slit,
+                    slit: plate.slit,
                     openings: plate.openings.clone(),
                 },
             ));
@@ -241,7 +241,7 @@ pub fn expand_wall_elements_owned(
         expanded.elements.push(elem);
         // 既存の壁消費者（自重算定・開口低減剛性・偏心率の雑壁剛性・数量拾い等）は
         // いずれも `model.wall_attrs` を `elem` で引く同じ形の参照を持つ。
-        // 壁展開モデルだけに、由来する壁版の開口・柱際スリットを写した合成
+        // 壁展開モデルだけに、由来する壁版の開口・スリットを写した合成
         // `WallAttr` を積み、それらの消費者を無改修のまま動かす
         // （モジュール doc「wall_attrs の合成」参照）。
         expanded.wall_attrs.push(attr);
@@ -300,7 +300,7 @@ mod tests {
             opening_area: 0.0,
             opening_weight: 0.0,
             openings: Vec::new(),
-            column_face_slit: [false, false],
+            slit: Default::default(),
         }
     }
 
@@ -352,14 +352,17 @@ mod tests {
         assert!(m.wall_attrs.is_empty());
     }
 
-    /// 壁版の開口・柱際スリットは、合成 `WallAttr` へそのまま写る。
+    /// 壁版の開口・スリットは、合成 `WallAttr` へそのまま写る。
     #[test]
     fn test_synthesized_wall_attr_mirrors_plate_openings() {
         let mut m = base_model();
         let mut plate = quad_plate(0, Some(SectionId(0)));
         plate.opening_area = 1_000_000.0;
         plate.opening_weight = 5000.0;
-        plate.column_face_slit = [true, false];
+        plate.slit = squid_n_core::model::WallSlit {
+            column_face: [true, false],
+            beam_face: [false, true],
+        };
         m.wall_plates.push(plate);
         m.wall_regions.push(WallRegion {
             id: WallRegionId(0),
@@ -373,7 +376,8 @@ mod tests {
         let attr = &expanded.wall_attrs[0];
         assert_eq!(attr.opening_area, 1_000_000.0);
         assert_eq!(attr.opening_weight, 5000.0);
-        assert_eq!(attr.column_face_slit, [true, false]);
+        assert_eq!(attr.slit.column_face, [true, false]);
+        assert_eq!(attr.slit.beam_face, [false, true]);
     }
 
     /// `Model::wall_plate_becomes_element` の答えと、実際に要素が生成されたかが
@@ -503,7 +507,7 @@ mod tests {
             opening_area: 0.0,
             opening_weight: 0.0,
             openings: Vec::new(),
-            column_face_slit: [false, false],
+            slit: Default::default(),
         });
         // 取り付く壁版はどの壁領域からも参照されない（wall_plate_ids に入らない）ため、
         // この壁版自体を走査しても generated は増えない。

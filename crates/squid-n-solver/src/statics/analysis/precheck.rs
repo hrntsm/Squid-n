@@ -487,6 +487,28 @@ pub fn model_issues(model: &Model) -> Vec<ModelIssue> {
                 .warn(),
             );
         }
+        // 上下の梁際がともに切れた壁版はエラーで止める。柱際の鉛直辺は壁の重量を
+        // 受けないため、上下とも縁が切れていると自重の伝達先が無い。実際に作らない
+        // 納まりなので、入力の誤りとして扱う（`WallSlit::both_beam_faces`）。
+        let both_beam_slit: Vec<_> = model
+            .wall_plates
+            .iter()
+            .filter(|p| !p.is_attached() && p.slit.both_beam_faces())
+            .map(|p| p.id.0)
+            .collect();
+        if !both_beam_slit.is_empty() {
+            let ids = both_beam_slit
+                .iter()
+                .map(|id| id.to_string())
+                .collect::<Vec<_>>()
+                .join(", ");
+            issues.push(ModelIssue::model(format!(
+                "上下の梁際がともに切れた壁版があります（壁版 {ids}）。\
+                 柱際の辺は壁の重量を受けないため、自重の伝達先がありません。\
+                 いずれかの梁際のスリットを外してください。"
+            )));
+        }
+
         // 自重の行き先が決まらない壁版はエラーで止める。行き先の無い節点荷重は
         // `DofMap` が無視するため、黙って落とすと荷重タブには見えるのに解析から
         // 消える（申し送り §3.4 F10・§5.28 の自立壁と同じ扱い）。

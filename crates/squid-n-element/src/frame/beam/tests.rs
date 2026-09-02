@@ -2393,7 +2393,7 @@ fn test_beam_new_misc_wall_wing_augments_column_inplane_stiffness() {
         elem: ElemId(1),
         opening_area: 0.0,
         opening_weight: 0.0,
-        column_face_slit: [false, false],
+        slit: Default::default(),
         openings: openings.clone(),
     });
     // 雑壁の幾何は壁版（入力）が情報源。
@@ -2406,7 +2406,7 @@ fn test_beam_new_misc_wall_wing_augments_column_inplane_stiffness() {
         opening_area: 0.0,
         opening_weight: 0.0,
         openings,
-        column_face_slit: [false, false],
+        slit: Default::default(),
     });
 
     let column = BeamElement::new(&column_elem, &model);
@@ -2558,7 +2558,7 @@ fn test_beam_new_misc_wall_strip_augments_girder_iy_without_100x() {
         elem: ElemId(1),
         opening_area: 0.0,
         opening_weight: 0.0,
-        column_face_slit: [false, false],
+        slit: Default::default(),
         openings: openings.clone(),
     });
     // 雑壁の幾何は壁版（入力）が情報源。
@@ -2571,7 +2571,7 @@ fn test_beam_new_misc_wall_strip_augments_girder_iy_without_100x() {
         opening_area: 0.0,
         opening_weight: 0.0,
         openings,
-        column_face_slit: [false, false],
+        slit: Default::default(),
     });
 
     let beam = BeamElement::new(&beam_elem, &model);
@@ -2748,7 +2748,7 @@ fn test_column_face_slit_drops_wing_wall_but_keeps_girder_strip() {
     // 柱際スリットの有無だけを変えたモデルを 2 つ作る。どちらも大開口
     // （r0 = √(3.6e6 / 12e6) = 0.548 > 0.4）で耐震壁は不成立なので、
     // 差はスリットだけになる。
-    let build = |slit: [bool; 2]| -> Model {
+    let build = |slit: squid_n_core::model::WallSlit| -> Model {
         let openings = vec![WallOpening {
             width: 2400.0,
             height: 1500.0,
@@ -2774,7 +2774,7 @@ fn test_column_face_slit_drops_wing_wall_but_keeps_girder_strip() {
             elem: ElemId(1),
             opening_area: 0.0,
             opening_weight: 0.0,
-            column_face_slit: slit,
+            slit,
             openings: openings.clone(),
         });
         model.wall_plates.push(squid_n_core::model::WallPlate {
@@ -2786,13 +2786,17 @@ fn test_column_face_slit_drops_wing_wall_but_keeps_girder_strip() {
             opening_area: 0.0,
             opening_weight: 0.0,
             openings,
-            column_face_slit: slit,
+            slit,
         });
         model
     };
 
-    let plain = build([false, false]);
-    let slit = build([true, true]);
+    use squid_n_core::model::WallSlit;
+    let plain = build(WallSlit::default());
+    let slit = build(WallSlit {
+        column_face: [true, true],
+        beam_face: [false, false],
+    });
 
     let column_plain = BeamElement::new(&column_elem, &plain);
     let column_slit = BeamElement::new(&column_elem, &slit);
@@ -2830,6 +2834,24 @@ fn test_column_face_slit_drops_wing_wall_but_keeps_girder_strip() {
     assert!(
         (beam_slit.iz - beam_plain.iz).abs() < 1e-6,
         "柱際スリットは梁の面内剛性を変えない"
+    );
+
+    // 梁際スリットは、その梁への腰壁算入を落とす。柱際とは独立に効く。
+    let bottom_slit = build(WallSlit {
+        column_face: [false, false],
+        beam_face: [true, false],
+    });
+    let beam_bottom_slit = BeamElement::new(&beam_elem, &bottom_slit);
+    assert!(
+        (beam_bottom_slit.a - beam_sec.area).abs() < 1e-6,
+        "下辺の梁際を切った側へは腰壁を算入しない: a={}",
+        beam_bottom_slit.a
+    );
+    // 柱は梁際スリットの影響を受けない（袖壁は柱際の縁切りだけで決まる）。
+    let column_bottom_slit = BeamElement::new(&column_elem, &bottom_slit);
+    assert!(
+        (column_bottom_slit.a - column_plain.a).abs() < 1e-9,
+        "梁際スリットは柱の袖壁算入を変えない"
     );
 }
 
@@ -3356,7 +3378,7 @@ fn test_misc_wall_wing_eccentricity_is_independent_of_wall_node_order() {
         elem: ElemId(id),
         opening_area: 0.0,
         opening_weight: 0.0,
-        column_face_slit: [false, false],
+        slit: Default::default(),
         openings: vec![WallOpening {
             width: 2400.0,
             height: 1500.0,
@@ -3907,7 +3929,7 @@ fn portal_with_wing_wall(col_depth: f64, beam_depth: f64, wall_thickness: f64) -
             opening_area: 0.0,
             opening_weight: 0.0,
             openings: vec![],
-            column_face_slit: [false, false],
+            slit: Default::default(),
         }],
         ..Default::default()
     }

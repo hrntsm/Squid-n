@@ -302,14 +302,18 @@ pub(crate) fn enumerate_self_weight(model: &Model, load_cfg: &LoadCfg) -> Vec<Se
                 let net_area = (area - opening_area).max(0.0);
                 let w = (mat.density * t * net_area * GRAVITY_MM_S2 + opening_weight).max(0.0);
 
-                // 自重は四隅へ等分する。上下いずれかの梁との縁切りは壁版の形が表し
-                // （上端が切れた壁は下の梁に載る腰壁、下端が切れた壁は上の梁から垂れる
-                // 垂壁で、いずれも取り付く壁版として `wall_attached` が受け持つ）、
-                // 要素になる壁版は上下の梁と一体だからである。柱際スリットは自重の
-                // 行き先を変えない（上下の梁との縁は切れていない）。
-                let share = w / pts.len() as f64;
-                let shares: Vec<(usize, f64)> =
-                    elem.nodes.iter().map(|n| (n.index(), share)).collect();
+                // §壁自重: 自重は**縁が切れていない梁際の辺**へ伝える。
+                //
+                // 上下とも一体なら四隅へ等分する（壁の重量を階高の中央で上下階へ
+                // 分ける従来の扱い）。下辺だけが切れていれば全量を上辺の 2 節点へ、
+                // 上辺だけが切れていれば全量を下辺の 2 節点へ寄せる。柱際スリットは
+                // 自重の行き先を変えない（柱際の鉛直辺は壁の重量を受けないため）。
+                //
+                // 上下とも切れた壁は伝達先が無い。解析前チェックがエラーで止めるが、
+                // 準備計算はそこへ到達する前にも走るので、ここでは四隅へ等分して
+                // 重量を落とさない（黙って消すより、止まる側の判断へ委ねる）。
+                let slit = attr.map(|a| a.slit).unwrap_or_default();
+                let shares = wall_corner_shares(elem, &pts, w, slit);
                 items.push(SelfWeightItem::Panel { shares });
             }
             _ => {}
@@ -361,6 +365,56 @@ pub(crate) fn enumerate_self_weight(model: &Model, load_cfg: &LoadCfg) -> Vec<Se
 ///
 /// `beam_pairs` は `beam_pair_map` が返す節点対→`Beam` 要素添字の索引（呼び出し側
 /// `enumerate_self_weight` が壁ループの前に 1 回だけ構築したものを使い回す）。
+/// 壁エレメントの自重を頂点へ配る（§壁自重）。
+///
+/// 縁が切れていない梁際の辺へ伝える。上下とも一体なら四隅へ等分し、片側だけ切れて
+/// いれば反対側の 2 節点へ全量を寄せる。上下とも切れた壁（伝達先が無い）は四隅へ
+/// 等分して重量を落とさず、解析前チェックのエラーに委ねる。
+///
+/// 上下の別は標高で決める。同じ標高の節点はまとめて 1 つの辺として扱う
+/// （台形壁で上辺の 2 節点の標高がわずかに異なる場合も、[`LEVEL_TOL_MM`] 以内なら
+/// 同じ辺とみなす）。
+fn wall_corner_shares(
+    elem: &squid_n_core::model::ElementData,
+    pts: &[[f64; 3]],
+    w: f64,
+    slit: squid_n_core::model::WallSlit,
+) -> Vec<(usize, f64)> {
+    let equal = |idx: Vec<usize>| -> Vec<(usize, f64)> {
+        let share = w / idx.len() as f64;
+        idx.into_iter()
+            .map(|i| (elem.nodes[i].index(), share))
+            .collect()
+    };
+    let all: Vec<usize> = (0..pts.len()).collect();
+    // 上下いずれかだけが切れている場合にのみ寄せる。
+    let (bottom_slit, top_slit) = (slit.beam_face[0], slit.beam_face[1]);
+    if bottom_slit == top_slit {
+        return equal(all);
+    }
+    let level = |take_max: bool| -> Vec<usize> {
+        let z =
+            pts.iter()
+                .map(|p| p[2])
+                .fold(if take_max { f64::MIN } else { f64::MAX }, |acc, v| {
+                    if take_max {
+                        acc.max(v)
+                    } else {
+                        acc.min(v)
+                    }
+                });
+        (0..pts.len())
+            .filter(|&i| (pts[i][2] - z).abs() < LEVEL_TOL_MM)
+            .collect()
+    };
+    // 下辺が切れていれば上辺へ、上辺が切れていれば下辺へ。
+    let idx = level(bottom_slit);
+    if idx.is_empty() {
+        return equal(all);
+    }
+    equal(idx)
+}
+
 fn wall_clear_area_factor(
     model: &Model,
     elem: &ElementData,

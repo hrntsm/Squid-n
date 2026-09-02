@@ -183,7 +183,7 @@ fn wall_post_model() -> Model {
             opening_area: 0.0,
             opening_weight: 0.0,
             openings: Vec::new(),
-            column_face_slit: [false, false],
+            slit: Default::default(),
         });
     }
     model.unassigned_posts.push(SecondaryMember {

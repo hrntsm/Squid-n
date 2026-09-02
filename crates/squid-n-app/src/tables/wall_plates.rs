@@ -1,4 +1,4 @@
-//! 壁版（`Model.wall_plates` = [`WallPlate`]: 断面・開口・柱際スリット・取付き先）
+//! 壁版（`Model.wall_plates` = [`WallPlate`]: 断面・開口・耐震スリット・取付き先）
 //! の編集 UI。
 //!
 //! 壁の入力の正は壁版であり、解析用の壁要素（`ElementKind::Wall`）はモデルに
@@ -59,8 +59,8 @@ pub struct WallPlateDraft {
     pub opening_area: String,
     /// 開口部重量 [N] の入力バッファ。
     pub opening_weight: String,
-    /// 柱際スリット（左右の鉛直辺）。添字は `WallPlate::column_face_nodes` の並び。
-    pub column_face_slit: [bool; 2],
+    /// 耐震スリット（4 辺）。柱際の添字は `WallPlate::column_face_nodes` の並び。
+    pub slit: squid_n_core::model::WallSlit,
     /// 個別開口寸法の入力バッファ。1行1開口または「,」区切りで
     /// `幅x高さ` または `幅x高さ@x,z`（位置指定付き）を入力する。
     /// 空文字列は「個別開口なし（`opening_area` を使用）」を表す。
@@ -186,23 +186,28 @@ fn shape_label(plate: &WallPlate) -> &'static str {
     }
 }
 
-/// 柱際スリットの一覧表示（切れている側の節点番号）。切れていなければ `None`。
+/// 耐震スリットの一覧表示（切れている辺の名前）。切れていなければ `None`。
 ///
-/// どちらの柱際かを節点番号で示す。壁版は左右を持つが、図を見ずに「1 側／2 側」
-/// とだけ書かれても利用者はどちらか判別できないためである。
-fn column_face_slit_label(plate: &WallPlate, model: &squid_n_core::model::Model) -> Option<String> {
-    if !plate.has_column_face_slit() {
+/// 柱際はどちら側かを節点番号で示す。壁版は左右を持つが、図を見ずに「1 側／2 側」
+/// とだけ書かれても利用者はどちらか判別できないためである。梁際は下辺・上辺と示す。
+fn slit_label(plate: &WallPlate, model: &squid_n_core::model::Model) -> Option<String> {
+    if !plate.slit.any() {
         return None;
     }
     let faces = plate.column_face_nodes(model);
-    let names: Vec<String> = (0..2)
-        .filter(|&k| plate.column_face_slit[k])
+    let mut names: Vec<String> = (0..2)
+        .filter(|&k| plate.slit.column_face[k])
         .map(|k| match faces {
-            Some(nodes) => format!("N{}", nodes[k].0),
+            Some(nodes) => format!("柱際N{}", nodes[k].0),
             // 境界が 4 節点でない等で節点を引けない場合は添字だけ示す。
-            None => format!("{}側", k + 1),
+            None => format!("柱際{}", k + 1),
         })
         .collect();
+    for (k, name) in ["下辺", "上辺"].into_iter().enumerate() {
+        if plate.slit.beam_face[k] {
+            names.push(name.to_string());
+        }
+    }
     Some(format!("あり({})", names.join("・")))
 }
 
@@ -334,8 +339,9 @@ fn wall_plates_list(ui: &mut egui::Ui, app: &mut App) {
             Col::text("断面"),
             Col::num("面積[m²]").hover("境界多角形の生の面積（開口・柱梁の内法による低減前）"),
             Col::text("開口"),
-            Col::label("柱際スリット")
-                .hover("柱と縁を切った側。切れている側へは袖壁として剛性算入せず、左右いずれかが切れていれば耐震壁として成立しない"),
+            Col::label("スリット").hover(
+                "縁を切った辺。切れている辺の部材へは剛性算入せず自重も伝えない。4 辺すべてが一体でなければ耐震壁として成立しない",
+            ),
             Col::actions(),
         ],
         app.model.wall_plates.len(),
@@ -428,7 +434,7 @@ fn wall_plates_list(ui: &mut egui::Ui, app: &mut App) {
                 table_util::text_cell(ui, &opening_summary(plate));
             });
             row.col(|ui| {
-                // 柱際スリットは、柱と接する鉛直辺を持つ囲まれた壁版でだけ意味を持つ。
+                // 耐震スリットは、柱・梁と接する 4 辺を持つ囲まれた壁版でだけ意味を持つ。
                 // 取り付く壁版（腰壁・垂れ壁・パラペット・自立壁）はその辺を持たない
                 // ため、値の有無を問わず「―」とする。
                 if plate.is_attached() {
@@ -436,10 +442,10 @@ fn wall_plates_list(ui: &mut egui::Ui, app: &mut App) {
                         ui,
                         "―",
                         "取り付く壁版（腰壁・垂れ壁・パラペット・自立壁）は、\
-                         柱と接する鉛直辺を持たないため柱際スリットの指定はありません",
+                         柱・梁と接する 4 辺を持たないため耐震スリットの指定はありません",
                     );
                 } else {
-                    match column_face_slit_label(plate, &app.model) {
+                    match slit_label(plate, &app.model) {
                         Some(label) => {
                             ui.label(label);
                         }
@@ -615,10 +621,10 @@ fn transfer_label(t: LoadTransfer) -> &'static str {
     }
 }
 
-/// 開口・柱際スリットの編集フォーム（対象を選び、「適用」で 1 コマンド発行）。
+/// 開口・耐震スリットの編集フォーム（対象を選び、「適用」で 1 コマンド発行）。
 fn attrs_form(ui: &mut egui::Ui, app: &mut App) {
     ui.separator();
-    ui.strong("開口・柱際スリットを設定");
+    ui.strong("開口・耐震スリットを設定");
 
     if app.model.wall_plates.is_empty() {
         return;
@@ -674,12 +680,12 @@ fn attrs_form(ui: &mut egui::Ui, app: &mut App) {
             let (area, weight, slit, openings) = (
                 plate.opening_area,
                 plate.opening_weight,
-                plate.column_face_slit,
+                plate.slit,
                 plate.openings.clone(),
             );
             app.wall_plate_draft.opening_area = format!("{area:.0}");
             app.wall_plate_draft.opening_weight = format!("{weight:.0}");
-            app.wall_plate_draft.column_face_slit = slit;
+            app.wall_plate_draft.slit = slit;
             app.wall_plate_draft.openings = format_openings(&openings);
             app.wall_plate_draft.synced_for = app.wall_plate_draft.target;
         }
@@ -704,27 +710,50 @@ fn attrs_form(ui: &mut egui::Ui, app: &mut App) {
             egui::TextEdit::singleline(&mut app.wall_plate_draft.opening_weight)
                 .desired_width(90.0),
         );
-        // 柱際スリットは囲まれた壁版にしか意味がない（一覧の同名列と同じ理由）。
-        // 取り付く壁版では入力欄自体を出さない。左右どちらの柱際かは節点番号で示す。
-        if !is_attached {
-            let faces = app
-                .model
-                .wall_plate(target)
-                .and_then(|p| p.column_face_nodes(&app.model));
-            ui.label("柱際スリット:");
+    });
+
+    // 耐震スリットは囲まれた壁版にしか意味がない（一覧の同名列と同じ理由）。
+    // 取り付く壁版では入力欄自体を出さない。左右どちらの柱際かは節点番号で示す。
+    if !is_attached {
+        let faces = app
+            .model
+            .wall_plate(target)
+            .and_then(|p| p.column_face_nodes(&app.model));
+        ui.horizontal(|ui| {
+            ui.label("耐震スリット:");
             for k in 0..2 {
                 let label = match faces {
-                    Some(nodes) => format!("N{}", nodes[k].0),
-                    None => format!("{}側", k + 1),
+                    Some(nodes) => format!("柱際 N{}", nodes[k].0),
+                    None => format!("柱際 {}", k + 1),
                 };
-                ui.checkbox(&mut app.wall_plate_draft.column_face_slit[k], label)
+                ui.checkbox(&mut app.wall_plate_draft.slit.column_face[k], label)
                     .on_hover_text(
-                        "その柱との縁を切ります。切れている側へは袖壁として剛性算入せず、\
-                         左右いずれかが切れていれば耐震壁としても成立しません",
+                        "その柱との縁を切ります。切れている側へは袖壁として剛性算入しません",
                     );
             }
+            for (k, label) in ["下辺", "上辺"].into_iter().enumerate() {
+                ui.checkbox(&mut app.wall_plate_draft.slit.beam_face[k], label)
+                    .on_hover_text(
+                        "その梁との縁を切ります。切れている側へは腰壁・垂れ壁として\
+                         剛性算入せず、自重も伝えません",
+                    );
+            }
+        });
+        if app.wall_plate_draft.slit.both_beam_faces() {
+            ui.colored_label(
+                crate::theme::ERROR_RED,
+                "上下の梁際をともに切ると自重の伝達先がなくなります（解析前チェックが止めます）",
+            );
         }
-    });
+        ui.label(
+            egui::RichText::new(
+                "三方スリットは柱際 2 辺と上下いずれか 1 辺、完全スリットは 4 辺を切った状態です。\
+                 4 辺すべてが一体でなければ耐震壁として成立しません。",
+            )
+            .color(crate::theme::GRAY_600)
+            .small(),
+        );
+    }
 
     ui.label("個別開口（任意・耐震壁判定/剛性計算の複数開口寸法）:");
     ui.add(
@@ -774,13 +803,13 @@ fn attrs_form(ui: &mut egui::Ui, app: &mut App) {
             (parsed_area, parsed_weight, parsed_openings)
         {
             // 取り付く壁版では入力欄を出さないため、既存値をそのまま書き戻す。
-            let column_face_slit = if is_attached {
+            let slit = if is_attached {
                 app.model
                     .wall_plate(target)
-                    .map(|p| p.column_face_slit)
-                    .unwrap_or([false, false])
+                    .map(|p| p.slit)
+                    .unwrap_or_default()
             } else {
-                app.wall_plate_draft.column_face_slit
+                app.wall_plate_draft.slit
             };
             app.undo.run(
                 &mut app.model,
@@ -789,7 +818,7 @@ fn attrs_form(ui: &mut egui::Ui, app: &mut App) {
                     opening_area,
                     opening_weight,
                     openings,
-                    column_face_slit,
+                    slit,
                 }),
             );
             app.staleness.mark_edited();
@@ -1121,7 +1150,7 @@ fn add_attached_form(ui: &mut egui::Ui, app: &mut App) {
                     anchor,
                     extent,
                     section: app.wall_plate_draft.add_section,
-                    // 開口は追加後に上の「開口・柱際スリットを設定」で与える
+                    // 開口は追加後に上の「開口・耐震スリットを設定」で与える
                     // （床板の追加フォームが版の仕様を後から与えるのと同じ流儀）。
                     opening_area: 0.0,
                     opening_weight: 0.0,
@@ -1169,7 +1198,7 @@ mod tests {
             opening_area: 0.0,
             opening_weight: 0.0,
             openings: Vec::new(),
-            column_face_slit: [false, false],
+            slit: Default::default(),
         }
     }
 

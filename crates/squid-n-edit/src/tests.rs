@@ -2286,12 +2286,12 @@ fn model_with_enclosed_wall_plate() -> Model {
         opening_area: 0.0,
         opening_weight: 0.0,
         openings: vec![],
-        column_face_slit: [false, false],
+        slit: Default::default(),
     });
     model
 }
 
-/// 壁版の属性編集（開口・柱際スリット）が往復すること。
+/// 壁版の属性編集（開口・耐震スリット）が往復すること。
 #[test]
 fn test_set_wall_plate_attrs_roundtrip() {
     use squid_n_core::model::WallOpening;
@@ -2310,20 +2310,24 @@ fn test_set_wall_plate_attrs_roundtrip() {
                 height: 1800.0,
                 offset: None,
             }],
-            column_face_slit: [true, false],
+            slit: squid_n_core::model::WallSlit {
+                column_face: [true, false],
+                beam_face: [false, true],
+            },
         }),
     );
     assert_eq!(model.wall_plates[0].opening_area, 200.0);
     assert_eq!(model.wall_plates[0].opening_weight, 80.0);
     assert_eq!(model.wall_plates[0].openings.len(), 1);
     // 左右を独立に保存する（片側だけのスリットが両側へ広がらない）。
-    assert_eq!(model.wall_plates[0].column_face_slit, [true, false]);
+    assert_eq!(model.wall_plates[0].slit.column_face, [true, false]);
+    assert_eq!(model.wall_plates[0].slit.beam_face, [false, true]);
 
     stack.undo(&mut model);
     assert_eq!(model.wall_plates[0].opening_area, 0.0);
     assert_eq!(model.wall_plates[0].opening_weight, 0.0);
     assert!(model.wall_plates[0].openings.is_empty());
-    assert_eq!(model.wall_plates[0].column_face_slit, [false, false]);
+    assert!(!model.wall_plates[0].slit.any());
 }
 
 /// 存在しない壁版への属性編集は Noop（undo 履歴に積まれない）。
@@ -2338,7 +2342,10 @@ fn test_set_wall_plate_attrs_missing_id_is_noop() {
             opening_area: 1.0,
             opening_weight: 2.0,
             openings: vec![],
-            column_face_slit: [true, true],
+            slit: squid_n_core::model::WallSlit {
+                column_face: [true, true],
+                beam_face: [false, false],
+            },
         }),
     );
     assert!(!stack.can_undo());
@@ -5912,7 +5919,7 @@ fn test_set_attached_wall_plate_extent_and_anchor_noop() {
         opening_area: 0.0,
         opening_weight: 0.0,
         openings: vec![],
-        column_face_slit: [false, false],
+        slit: Default::default(),
     });
     let mut undo = UndoStack::default();
     assert!(
@@ -6068,7 +6075,7 @@ fn test_delete_wall_plate_cascades_region_ids_and_undoes() {
         opening_area: 0.0,
         opening_weight: 0.0,
         openings: vec![],
-        column_face_slit: [false, false],
+        slit: Default::default(),
     });
     let mut region = WallRegion::new(
         WallRegionId(0),

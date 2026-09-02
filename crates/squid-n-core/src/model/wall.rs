@@ -97,11 +97,11 @@ pub struct WallAttr {
     /// 開口部（サッシ等）の重量 [N]。控除後に加算する。
     #[serde(default)]
     pub opening_weight: f64,
-    /// 柱際スリット（左右の鉛直辺）。由来する壁版の
-    /// [`super::WallPlate::column_face_slit`] を写したもので、意味も添字の規則も
-    /// 同じである。いずれかが true の壁は耐震壁として成立しない。
+    /// 耐震スリット。由来する壁版の [`super::WallPlate::slit`] を写したもので、
+    /// 意味も添字の規則も同じである。いずれかの辺が切れていれば耐震壁として
+    /// 成立しない。
     #[serde(default)]
-    pub column_face_slit: [bool; 2],
+    pub slit: super::WallSlit,
     /// 個別開口の寸法リスト。非空の場合、開口の面積評価（自重控除・
     /// 開口周比 r0・開口低減率 r）と耐震壁検定の開口供給はこのリストを
     /// 優先する。空の場合は従来どおり `opening_area`（合計面積のみ）で評価する。
@@ -110,12 +110,6 @@ pub struct WallAttr {
 }
 
 impl WallAttr {
-    /// 柱際スリットが左右いずれかにあるか（[`super::WallPlate::has_column_face_slit`]
-    /// と同じ問いの、要素側の入口）。
-    pub fn has_column_face_slit(&self) -> bool {
-        self.column_face_slit.iter().any(|&s| s)
-    }
-
     /// 開口の合計面積 [mm²]。個別開口 `openings` が非空ならその面積和、
     /// 空なら `opening_area` を返す（全消費側はこのメソッドを経由すること）。
     pub fn total_opening_area(&self) -> f64 {

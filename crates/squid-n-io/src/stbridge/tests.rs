@@ -2166,7 +2166,7 @@ fn test_wall_roundtrip_export_import() {
         opening_area: 0.0,
         opening_weight: 0.0,
         openings: Vec::new(),
-        column_face_slit: [false, false],
+        slit: Default::default(),
     });
     model.wall_regions.push(WallRegion {
         id: WallRegionId(0),
@@ -2268,7 +2268,7 @@ fn test_non_quad_wall_plate_roundtrip_export_import() {
         opening_area: 0.0,
         opening_weight: 0.0,
         openings: Vec::new(),
-        column_face_slit: [false, false],
+        slit: Default::default(),
     });
     assert!(model.validate().is_ok(), "{:?}", model.validate());
 

@@ -415,7 +415,7 @@ mod tests {
         (model, column)
     }
 
-    fn wall_geometry(column_face_slit: [bool; 2]) -> InFrameMiscWallGeometry {
+    fn wall_geometry(column_face: [bool; 2]) -> InFrameMiscWallGeometry {
         InFrameMiscWallGeometry {
             t: 150.0,
             lw: 4000.0,
@@ -426,7 +426,10 @@ mod tests {
             bottom_dir: [1.0, 0.0, 0.0],
             envelope: None,
             plate: WallPlateId(0),
-            column_face_slit,
+            slit: squid_n_core::model::WallSlit {
+                column_face,
+                beam_face: [false, false],
+            },
         }
     }
 

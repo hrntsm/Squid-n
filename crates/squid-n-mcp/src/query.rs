@@ -119,7 +119,10 @@ pub fn query_model(model: &Model, kind: &str, filter: Option<&str>) -> Vec<serde
                     "section": p.section.map(|s| s.0),
                     "opening_area": p.opening_area,
                     "opening_weight": p.opening_weight,
-                    "column_face_slit": p.column_face_slit,
+                    "slit": {
+                        "column_face": p.slit.column_face,
+                        "beam_face": p.slit.beam_face,
+                    },
                     "openings": p.openings,
                     // その壁版から壁エレメントが生成されるか。GUI の「壁版」タブの
                     // 同名の列と同じ判定で、壁版が解析に効いているかを MCP からも

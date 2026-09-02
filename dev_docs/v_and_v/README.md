@@ -104,7 +104,7 @@
 | [小梁検定の負担幅を床板境界から求める_2026-08.md](小梁検定の負担幅を床板境界から求める_2026-08.md) | 小梁検定の負担幅を床板境界の幾何から求める（Step 5 一部。**二次部材経路は §5.39・§5.40 で supersede**） | 🔶 |
 | [小梁設計を分配結果から出す_2026-08.md](小梁設計を分配結果から出す_2026-08.md) | 二次部材小梁の断面検定を分配 `Span` から出す（Step 5。§5.40〜§5.43） | ☑ |
 | [二次部材の反力の逐次伝達_2026-08.md](二次部材の反力の逐次伝達_2026-08.md) | 小梁を二次部材へ一本化し、二次部材に支持された二次部材の荷重が解析から消える危険側の穴を塞ぐ（§3.4・§5.44）。実データで床固定荷重の 7.2% が失われていた | ☑ |
-| [要素にならない壁版の可視化と柱際スリット_2026-09.md](要素にならない壁版の可視化と柱際スリット_2026-09.md) | 要素にならない壁版を 3D ビュー・モデル化図へ描く（§5.46）。三方スリットを廃し左右独立の柱際スリットへ置き換え、垂れ壁付き梁の剛性を無視していた危険側を是正。既存の代表スカラは全項目不変 | 🔶 |
+| [要素にならない壁版の可視化と耐震スリット_2026-09.md](要素にならない壁版の可視化と耐震スリット_2026-09.md) | 要素にならない壁版を 3D ビュー・モデル化図へ描く（§5.46）。耐震スリットを辺ごとの入力（`WallSlit`）へ一般化し、垂れ壁付き梁の剛性を無視していた危険側を是正（§5.47）。既存の代表スカラは全項目不変 | 🔶 |
 | [壁版から間柱への荷重分配と雑壁の壁版参照化_2026-09.md](壁版から間柱への荷重分配と雑壁の壁版参照化_2026-09.md) | 壁エレメントを「壁領域全体を覆う 4 節点の壁版」に限定し、要素にならない壁版の自重を一方向版として辺へ配る（§3.5・§5.45）。フレーム内雑壁の幾何を壁版直接参照へ移した。既存の代表スカラは全項目不変 | 🔶 |
 | [壁版の取り込み・要素生成・参照張り替え_2026-08.md](壁版の取り込み・要素生成・参照張り替え_2026-08.md) | 壁の解析要素を準備計算からの生成物へ転換（Step 7+8 本体） | ☑ |
 | [剛域算定の壁展開順序不整合_2026-08.md](剛域算定の壁展開順序不整合_2026-08.md) | 壁展開モデルを見ていなかった4箇所（剛域自動算定・耐震壁のせん断断面検定・数量拾い・保有水平耐力の部材ランク自動判定）の是正 | ☑ |
@@ -152,7 +152,7 @@
 | 26 | 数量積算（部位別のコンクリート・型枠・鉄筋・鉄骨・継手個所） | squid-n-design-jp | quantity/{mod,member,rebar}.rs | `quantity::member::tests::*`（手計算照合）/`quantity::tests::*`（走査・分類）/`summary::tests::test_quantity_csv_from_sample_model`（CSV 一気通貫）/`test_quantity_takeoff_json_column`（MCP） | 横断 | 🔶 |
 | 27 | 材料グレード対応表（F 値・鉄筋・Fc・プリセット） | squid-n-core | material_grade.rs | `material_grade::tests::*`（告示値一致） | 横断 | ✅ |
 | 28 | 二次部材小梁の分配 Span 検定 | squid-n-load / squid-n-app | floor/joist_design.rs, check.rs | `distribution_loads_on_shared_joist_match_average_width` / `split_slab_edges_compose_onto_full_joist` / `span_attaches_to_nearest_joist_only` / `perimeter_parallel_joist_does_not_steal_beam_span` / `joist_distribution_cover_rejects_half_span` / `shared_joist_expects_both_slabs` / `missing_expected_slab_is_not_ready` / `zero_expected_axis_does_not_receive_spans` / `joist_design_checks_cover_imported_secondary_members` | 横断 | ☑ |
-| 29 | 柱際スリット（袖壁・剛域・耐震壁判定・自重） | squid-n-element / squid-n-load | wall/misc_wall.rs, frame/beam/{construct,rigid_zone}.rs, story_gen/self_weight_calc.rs | `test_column_face_slit_drops_wing_wall_but_keeps_girder_strip` / `柱際スリットのある側は剛域の袖壁張り出しを持たない` / `test_column_face_slit_wall_is_collected_as_misc_wall` / `test_column_face_slit_is_per_side` / `test_column_face_slit_does_not_change_self_weight_destination` / `test_wall_is_seismic_judgement` | 横断 | 🔶 |
+| 29 | 耐震スリット（辺ごとの縁切り。袖壁・腰壁垂壁・剛域・耐震壁判定・自重） | squid-n-element / squid-n-load | wall/misc_wall.rs, frame/beam/{construct,rigid_zone}.rs, story_gen/self_weight_calc.rs | `test_column_face_slit_drops_wing_wall_but_keeps_girder_strip` / `test_strip_height_follows_beam_face_slit` / `test_any_slit_breaks_seismic_wall` / `柱際スリットのある側は剛域の袖壁張り出しを持たない` / `test_column_face_slit_wall_is_collected_as_misc_wall` / `test_column_face_slit_is_per_side` / `test_column_face_slit_does_not_change_self_weight_destination` / `test_bottom_beam_face_slit_sends_self_weight_to_top` / `test_top_beam_face_slit_sends_self_weight_to_bottom` | 横断 | 🔶 |
 | 30 | 壁版の要素生成判定と可視化 | squid-n-core / squid-n-load / squid-n-app | model/wall_plate.rs, wall_expand.rs, viewer/scene.rs | `test_becomes_element_agrees_with_generated_elements` / `test_becomes_element_requires_section` / `test_boundary_coords_with_uses_supplied_coords` / `囲まれた壁版は境界節点が全て構面上にあるときだけ描く` / `取り付く壁版は取付き先の節点で構面を判定する` | 横断 | ☑ |
 
 凡例: ✅ 実装済み・🔶 一部実装（要拡張）・❌ 未実装

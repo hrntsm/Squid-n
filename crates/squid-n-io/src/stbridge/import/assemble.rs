@@ -839,7 +839,7 @@ fn build_walls(
             opening_area: 0.0,
             opening_weight: 0.0,
             openings: Vec::new(),
-            column_face_slit: [false, false],
+            slit: Default::default(),
         };
         model.wall_plates.push(plate);
     }

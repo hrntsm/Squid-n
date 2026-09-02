@@ -48,7 +48,7 @@ fn plate(id: u32, boundary: [u32; 4]) -> WallPlate {
         opening_area: 0.0,
         opening_weight: 0.0,
         openings: Vec::new(),
-        column_face_slit: [false, false],
+        slit: Default::default(),
     }
 }
 

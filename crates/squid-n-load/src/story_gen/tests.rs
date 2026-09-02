@@ -1175,7 +1175,7 @@ fn wall_model() -> Model {
         opening_area: 0.0,
         opening_weight: 0.0,
         openings: Vec::new(),
-        column_face_slit: [false, false],
+        slit: Default::default(),
     });
     model.wall_regions.push(WallRegion {
         id: WallRegionId(0),
@@ -1401,7 +1401,7 @@ fn test_density_seismic_weight_includes_attached_wall_plate() {
         opening_area: 0.0,
         opening_weight: 0.0,
         openings: Vec::new(),
-        column_face_slit: [false, false],
+        slit: Default::default(),
     };
     let expected = model
         .wall_plate_self_weight(&plate, &model)
@@ -1451,15 +1451,14 @@ fn test_wall_opening_deduction_clamped_non_negative() {
 
 #[test]
 fn test_column_face_slit_does_not_change_self_weight_destination() {
-    // §壁自重: 柱際スリットは自重の行き先を変えない。切れているのは柱際だけで、
-    // 上下の梁とは一体だからである。上下いずれかの梁との縁切りは壁版の形が表し
-    // （腰壁・垂壁は取り付く壁版）、要素になる壁版には現れない。
+    // §壁自重: 柱際スリットは自重の行き先を変えない。柱際の鉛直辺は壁の重量を
+    // 受けないためである。行き先を変えるのは梁際のスリットだけ。
     let base = generate_stories(&wall_model(), None).unwrap().stories[1]
         .seismic_weight
         .unwrap();
 
     let mut model = wall_model();
-    model.wall_plates[0].column_face_slit = [true, true];
+    model.wall_plates[0].slit.column_face = [true, true];
     let slit = generate_stories(&model, None).unwrap().stories[1]
         .seismic_weight
         .unwrap();
@@ -1469,6 +1468,36 @@ fn test_column_face_slit_does_not_change_self_weight_destination() {
     // 上端 2 節点分（4 節点等分の半分）。
     assert!((base - w_total / 2.0).abs() < 1e-6, "{base}");
     assert!((slit - base).abs() < 1e-9, "{slit} != {base}");
+}
+
+/// §壁自重: 下辺の梁際スリットは、自重を全量上辺へ寄せる（三方スリットの垂れ壁型）。
+///
+/// `wall_model()` の頂点は下 2 節点・上 2 節点で、上位 2 節点はどちらも階に属する。
+/// 通常配分（上端 2 節点で w/2）に対し、下辺が切れると階の地震用重量は w 全量になる。
+#[test]
+fn test_bottom_beam_face_slit_sends_self_weight_to_top() {
+    let mut model = wall_model();
+    model.wall_plates[0].slit.beam_face = [true, false];
+    let got = generate_stories(&model, None).unwrap().stories[1]
+        .seismic_weight
+        .unwrap();
+
+    let area = 4000.0 * 3000.0;
+    let w_total = 2.4e-9 * 150.0 * area * GRAVITY_MM_S2;
+    assert!((got - w_total).abs() < 1e-6, "{got}");
+}
+
+/// §壁自重: 上辺の梁際スリットは、自重を全量下辺へ寄せる（三方スリットの腰壁型）。
+///
+/// 下端 2 節点は柱脚（階に属さない基部）なので、階の地震用重量は 0 になる。
+#[test]
+fn test_top_beam_face_slit_sends_self_weight_to_bottom() {
+    let mut model = wall_model();
+    model.wall_plates[0].slit.beam_face = [false, true];
+    let got = generate_stories(&model, None).unwrap().stories[1]
+        .seismic_weight
+        .unwrap();
+    assert!(got.abs() < 1e-6, "{got}");
 }
 
 // ------------------------------------------------------------------
