@@ -37,9 +37,16 @@ fn model_color(kind: YieldModelKind) -> egui::Color32 {
 }
 
 /// 断面・材料強度から算定した曲面/ファイバのキャッシュ。
-/// `section_idx` と `strength` が前回と同じ間は再利用する。
+/// 断面（`section_idx` と、その断面の形状 `shape`）と `strength` が前回と同じ間は
+/// 再利用する。
+///
+/// **`shape` を鍵に含めるのは必須である**。曲面は断面形状そのものから算定するため、
+/// 添字だけを鍵にすると、同じ添字の断面が別物へ変わったとき（断面寸法の編集や、
+/// モデルの差し替え）に前の断面の曲面を有効と判定して表示し続ける。断面と一致しない
+/// 耐力曲面の表示は、実際より大きい耐力を読み取りうる危険側の誤りである。
 struct MnCache {
     section_idx: usize,
+    shape: SectionShape,
     strength: StrengthParams,
     simple: MnSurface,
     ms: MnSurface,
@@ -61,13 +68,15 @@ pub enum SlicePlotMode {
 }
 
 /// M-θ サブキャッシュのキー。前回と同じ間は `m_phi_curve` の再計算（数十ms）を
-/// 省略する。`MnCache` は section/strength の変化で作り直されるため、そこに
+/// 省略する。`MnCache` は断面・強度の変化で作り直されるため、そこに
 /// ぶら下げると `ensure_cache` 後に可変参照が必要になり借用が競合する。
 /// そのため `MnViewState` 側に独立したサブキャッシュとして持たせ、
-/// キーに section_idx・strength も含めて一致判定する。
-#[derive(Clone, Copy, PartialEq)]
+/// キーに断面（`section_idx`・`shape`）と `strength` も含めて一致判定する。
+/// `shape` を含める理由は [`MnCache`] と同じ。
+#[derive(Clone, PartialEq)]
 struct MThetaKey {
     section_idx: usize,
+    shape: SectionShape,
     strength: StrengthParams,
     n_target: f64,
     lp: f64,
@@ -371,17 +380,19 @@ fn section_depth(shape: &SectionShape) -> f64 {
     }
 }
 
-/// キャッシュが古ければ再計算する（`section_idx` または `strength` が変化した場合）。
-/// 断面切替時は塑性化領域長さ Lp を新断面の 0.5D へ自動リセットする。
+/// キャッシュが古ければ再計算する（断面〔添字または形状〕、あるいは `strength` が
+/// 変化した場合）。断面が変わったときは塑性化領域長さ Lp を新断面の 0.5D へ
+/// 自動リセットする（形状の編集で断面せい D が変われば Lp も追随させる）。
 fn ensure_cache(state: &mut MnViewState, section_idx: usize, shape: &SectionShape) {
     let section_changed = match &state.cache {
-        Some(c) => c.section_idx != section_idx,
+        Some(c) => c.section_idx != section_idx || &c.shape != shape,
         None => true,
     };
-    let stale = match &state.cache {
-        Some(c) => c.section_idx != section_idx || c.strength != state.strength,
-        None => true,
-    };
+    let stale = section_changed
+        || state
+            .cache
+            .as_ref()
+            .is_none_or(|c| c.strength != state.strength);
     if !stale {
         return;
     }
@@ -402,6 +413,7 @@ fn ensure_cache(state: &mut MnViewState, section_idx: usize, shape: &SectionShap
 
     state.cache = Some(MnCache {
         section_idx,
+        shape: shape.clone(),
         strength,
         simple,
         ms,
@@ -554,6 +566,7 @@ fn visualization(ui: &mut egui::Ui, app: &mut App) {
         SlicePlotMode::MTheta => {
             let key = MThetaKey {
                 section_idx: app.ui.scoped.mn_view.section_idx,
+                shape: shape.clone(),
                 strength: app.ui.scoped.mn_view.strength,
                 n_target,
                 lp: app.ui.scoped.mn_view.lp,
@@ -868,4 +881,88 @@ fn plot_m_theta_line(plot_ui: &mut egui_plot::PlotUi<'_>, pts: &[[f64; 2]], kind
             .color(model_color(kind))
             .width(2.0_f32),
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn rc_rect(b: f64, d: f64) -> SectionShape {
+        use squid_n_core::section_shape::{BarSet, RcRebar, ShearBar};
+        SectionShape::RcRect {
+            b,
+            d,
+            rebar: RcRebar {
+                main_x: BarSet {
+                    count: 3,
+                    dia: 22.0,
+                    layers: 1,
+                },
+                main_y: BarSet {
+                    count: 3,
+                    dia: 22.0,
+                    layers: 1,
+                },
+                cover: 40.0,
+                shear: ShearBar {
+                    dia: 10.0,
+                    pitch: 100.0,
+                    legs: 2,
+                },
+            },
+        }
+    }
+
+    /// 同じ添字のまま断面形状が別物へ変わったら、曲面キャッシュを作り直す。
+    ///
+    /// 従来は鍵が `section_idx` と `strength` だけだったため、断面寸法を編集しても
+    /// 前の断面の曲面を有効と判定して表示し続けていた（断面と一致しない耐力曲面の
+    /// 表示は、実際より大きい耐力を読み取りうる危険側の誤り）。モデルを差し替えて
+    /// 同じ添字に別の断面が来た場合も同様だった。
+    #[test]
+    fn cache_is_rebuilt_when_shape_changes_at_same_index() {
+        let mut state = MnViewState::default();
+
+        ensure_cache(&mut state, 0, &rc_rect(400.0, 600.0));
+        // 軸圧縮耐力はコンクリート断面積で決まるので、せいを増やせば必ず増える
+        // （軸引張耐力は主筋量だけで決まるため、この検証には使えない）。
+        let n_comp_before = state
+            .cache
+            .as_ref()
+            .expect("初回で作られる")
+            .fiber
+            .n_comp
+            .abs();
+        assert!(
+            (state.lp - 300.0).abs() < 1e-9,
+            "Lp は 0.5D で自動設定される"
+        );
+
+        // 添字も強度も同じまま、断面せいだけを大きくする。
+        ensure_cache(&mut state, 0, &rc_rect(400.0, 900.0));
+        let cache = state.cache.as_ref().expect("作り直される");
+        assert_eq!(cache.shape, rc_rect(400.0, 900.0), "新しい形状で持ち直す");
+        assert!(
+            cache.fiber.n_comp.abs() > n_comp_before,
+            "断面せいを増やせばコンクリート断面積が増え、軸圧縮耐力も増える\
+             （前の断面の曲面が残っていない）"
+        );
+        assert!(
+            (state.lp - 450.0).abs() < 1e-9,
+            "Lp も新しい断面せいの 0.5D へ追随する"
+        );
+    }
+
+    /// 断面も強度も変わらなければ作り直さない（毎フレームの再計算を避ける本来の目的）。
+    #[test]
+    fn cache_is_reused_when_nothing_changes() {
+        let mut state = MnViewState::default();
+        ensure_cache(&mut state, 0, &rc_rect(400.0, 600.0));
+        state.lp = 123.0; // 利用者が手で変えた値
+        ensure_cache(&mut state, 0, &rc_rect(400.0, 600.0));
+        assert!(
+            (state.lp - 123.0).abs() < 1e-9,
+            "作り直していないので Lp は不変"
+        );
+    }
 }
