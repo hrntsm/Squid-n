@@ -2234,6 +2234,7 @@ mod wall_expanded_view_model_tests {
             opening_area: 0.0,
             opening_weight: 0.0,
             openings: Vec::new(),
+            loads: vec![],
             slit: Default::default(),
         });
         model.wall_regions.push(WallRegion {
@@ -2293,6 +2294,7 @@ mod wall_expanded_view_model_tests {
             opening_area: 0.0,
             opening_weight: 0.0,
             openings: Vec::new(),
+            loads: vec![],
             slit: Default::default(),
         });
         model.wall_regions.push(WallRegion {

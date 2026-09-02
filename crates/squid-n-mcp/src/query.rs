@@ -110,7 +110,11 @@ pub fn query_model(model: &Model, kind: &str, filter: Option<&str>) -> Vec<serde
                     squid_n_core::model::WallPlateShape::Attached { anchor, extent } => json!({
                         "kind": "Attached",
                         "anchor": anchor,
+                        // 入力値そのもの。null は「階高いっぱい」を表す。
                         "extent": extent,
+                        // 階レベルから解決した高さ。null は解決できない
+                        // （直上に階が無い）ことを表し、解析前チェックが止める。
+                        "resolved_extent": model.wall_plate_extent(p),
                     }),
                 };
                 json!({
@@ -124,6 +128,8 @@ pub fn query_model(model: &Model, kind: &str, filter: Option<&str>) -> Vec<serde
                         "beam_face": p.slit.beam_face,
                     },
                     "openings": p.openings,
+                    // 仕上げ・増打ちの面荷重 [N/mm²]。躯体の自重は含まない。
+                    "loads": p.loads,
                     // その壁版から壁エレメントが生成されるか。GUI の「壁版」タブの
                     // 同名の列と同じ判定で、壁版が解析に効いているかを MCP からも
                     // 引けるようにする。

@@ -261,60 +261,6 @@ impl EditCommand for SetPanelZoneMode {
     }
 }
 
-/// フレーム外雑壁（`OutOfFrameMiscWall`）を追加。末尾に追加する。逆操作は末尾の雑壁削除。
-pub struct AddMiscWall {
-    pub wall: squid_n_core::model::OutOfFrameMiscWall,
-}
-
-impl EditCommand for AddMiscWall {
-    fn apply(&self, model: &mut Model) -> Box<dyn EditCommand> {
-        model.misc_walls.push(self.wall.clone());
-        let index = model.misc_walls.len() - 1;
-        Box::new(DeleteMiscWall { index })
-    }
-
-    fn label(&self) -> &str {
-        "雑壁追加"
-    }
-}
-
-indexed_delete_insert!(
-    /// 雑壁を index 指定で削除。逆操作は [`InsertMiscWall`]（同じ位置への復元）。
-    /// `OutOfFrameMiscWall` は他データから参照されないため ID 再採番は不要。index が範囲外なら Noop。
-    DeleteMiscWall,
-    /// 指定インデックスへ雑壁を再挿入する（[`DeleteMiscWall`] の逆操作専用）。
-    InsertMiscWall,
-    entity = squid_n_core::model::OutOfFrameMiscWall,
-    vec = misc_walls,
-    field = wall,
-    del_label = "雑壁削除",
-    ins_label = "雑壁削除の取り消し",
-);
-
-/// 雑壁の内容を index 指定で置換する（フィールド編集用）。逆操作は変更前の
-/// 内容への復元。index が範囲外なら Noop。
-pub struct SetMiscWall {
-    pub index: usize,
-    pub wall: squid_n_core::model::OutOfFrameMiscWall,
-}
-
-impl EditCommand for SetMiscWall {
-    fn apply(&self, model: &mut Model) -> Box<dyn EditCommand> {
-        if self.index >= model.misc_walls.len() {
-            return Box::new(Noop);
-        }
-        let old = std::mem::replace(&mut model.misc_walls[self.index], self.wall.clone());
-        Box::new(SetMiscWall {
-            index: self.index,
-            wall: old,
-        })
-    }
-
-    fn label(&self) -> &str {
-        "雑壁変更"
-    }
-}
-
 /// 階の種別（一般/PH/地下、`StoryLevelKind`）変更。逆操作は変更前の値への復元。
 /// 存在しない `StoryId` は Noop。
 pub struct SetStoryLevelKind {
@@ -585,6 +531,21 @@ fn wall_anchor_ok(model: &Model, anchor: &squid_n_core::model::RegionAnchor) -> 
     }
 }
 
+/// 取り付く壁版の張り出し量（`extent`）が取付き先と組み合わせて妥当か。
+///
+/// `None`（＝階高いっぱい）を許すのは自立壁（`FloorRegion` アンカー）だけである。
+/// 取付き線で許すと、階高分の腰壁せいが取付き先の梁へ丸ごと算入されて剛性を過大に
+/// 見る（`WallPlateShape::Attached` のドキュメント参照）。`Model::validate` と同じ
+/// 規約をコマンド側でも先に弾き、不正なモデルを作らせない。
+fn wall_extent_ok(anchor: &squid_n_core::model::RegionAnchor, extent: Option<[f64; 2]>) -> bool {
+    use squid_n_core::model::RegionAnchor;
+
+    match extent {
+        Some(e) => e[0].is_finite() && e[1].is_finite(),
+        None => matches!(anchor, RegionAnchor::FloorRegion { .. }),
+    }
+}
+
 /// 壁版の削除（中間の壁版も可）。逆操作は [`InsertWallPlate`]。
 ///
 /// ID＝配列インデックスの不変条件を保つため、削除後は当該壁版より後ろの
@@ -683,9 +644,13 @@ impl EditCommand for InsertWallPlate {
 /// 使わない `RegionAnchor::Point` を渡した場合は Noop（[`wall_anchor_ok`]）。
 /// 張り出し量 `extent` は鉛直上向きが正、符号つきで負なら下向き
 /// （垂れ壁）に張り出す。
+///
+/// `extent` が `None` は「階高いっぱい」を表す。これを許すのは取付き先が床領域
+/// （自立壁）のときだけで、取付き線に対して渡すと Noop になる
+/// （`WallPlateShape::Attached` のドキュメント参照）。
 pub struct AddAttachedWallPlate {
     pub anchor: squid_n_core::model::RegionAnchor,
-    pub extent: [f64; 2],
+    pub extent: Option<[f64; 2]>,
     pub section: Option<SectionId>,
     pub opening_area: f64,
     pub opening_weight: f64,
@@ -698,7 +663,7 @@ impl EditCommand for AddAttachedWallPlate {
         if !wall_anchor_ok(model, &self.anchor) {
             return Box::new(Noop);
         }
-        if !self.extent[0].is_finite() || !self.extent[1].is_finite() {
+        if !wall_extent_ok(&self.anchor, self.extent) {
             return Box::new(Noop);
         }
         if !crate::refs::section_ref_ok(model, self.section) {
@@ -715,6 +680,7 @@ impl EditCommand for AddAttachedWallPlate {
             opening_area: self.opening_area,
             opening_weight: self.opening_weight,
             openings: Vec::new(),
+            loads: vec![],
             slit: Default::default(),
         });
         Box::new(DeleteWallPlate { id })
@@ -764,6 +730,7 @@ impl EditCommand for AddEnclosedWallPlate {
             opening_area: self.opening_area,
             opening_weight: self.opening_weight,
             openings: Vec::new(),
+            loads: vec![],
             slit: Default::default(),
         });
         Box::new(DeleteWallPlate { id })
@@ -777,9 +744,12 @@ impl EditCommand for AddEnclosedWallPlate {
 /// 取り付く壁版の張り出し量（`extent`）変更。逆操作は変更前の値への復元。
 /// 対象が取り付く壁版でない、存在しない `WallPlateId`、または非有限の
 /// 張り出し量は Noop。
+///
+/// `extent` が `None`（＝階高いっぱい）を許すのは取付き先が床領域（自立壁）の
+/// ときだけで、取付き線の壁版に対して渡すと Noop になる。
 pub struct SetAttachedWallPlateExtent {
     pub id: WallPlateId,
-    pub extent: [f64; 2],
+    pub extent: Option<[f64; 2]>,
 }
 
 impl EditCommand for SetAttachedWallPlateExtent {
@@ -790,12 +760,12 @@ impl EditCommand for SetAttachedWallPlateExtent {
         if idx >= model.wall_plates.len() || model.wall_plates[idx].id != self.id {
             return Box::new(Noop);
         }
-        if !self.extent[0].is_finite() || !self.extent[1].is_finite() {
-            return Box::new(Noop);
-        }
-        let WallPlateShape::Attached { extent, .. } = &mut model.wall_plates[idx].shape else {
+        let WallPlateShape::Attached { anchor, extent } = &mut model.wall_plates[idx].shape else {
             return Box::new(Noop);
         };
+        if !wall_extent_ok(anchor, self.extent) {
+            return Box::new(Noop);
+        }
         let old = *extent;
         *extent = self.extent;
         Box::new(SetAttachedWallPlateExtent {
@@ -906,6 +876,8 @@ pub struct SetWallPlateAttrs {
     pub opening_area: f64,
     pub opening_weight: f64,
     pub openings: Vec<squid_n_core::model::WallOpening>,
+    /// 仕上げ・増打ち等の面荷重（`WallPlate::loads`）。
+    pub loads: Vec<squid_n_core::model::AreaLoad>,
     pub slit: squid_n_core::model::WallSlit,
 }
 
@@ -921,11 +893,13 @@ impl EditCommand for SetWallPlateAttrs {
             opening_area: plate.opening_area,
             opening_weight: plate.opening_weight,
             openings: plate.openings.clone(),
+            loads: plate.loads.clone(),
             slit: plate.slit,
         };
         plate.opening_area = self.opening_area;
         plate.opening_weight = self.opening_weight;
         plate.openings = self.openings.clone();
+        plate.loads = self.loads.clone();
         plate.slit = self.slit;
         Box::new(old)
     }

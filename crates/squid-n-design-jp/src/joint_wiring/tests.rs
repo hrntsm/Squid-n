@@ -172,6 +172,7 @@ fn wall_with_opening_has_larger_ratio_than_without() {
         opening_weight: 0.0,
         slit: Default::default(),
         openings: vec![],
+        finish_intensity: 0.0,
     }));
     let res_opening =
         wall_check_result(&model_with_opening, &forces).expect("小開口は耐震壁のまま検定される");
@@ -198,6 +199,7 @@ fn wall_with_column_face_slit_is_not_checked() {
             beam_face: [false, false],
         },
         openings: vec![],
+        finish_intensity: 0.0,
     }));
     assert!(wall_check_result(&model, &forces).is_none());
 }
@@ -213,6 +215,7 @@ fn wall_with_large_opening_ratio_is_not_checked() {
         opening_weight: 0.0,
         slit: Default::default(),
         openings: vec![],
+        finish_intensity: 0.0,
     }));
     assert!(wall_check_result(&model, &forces).is_none());
 }
@@ -244,6 +247,7 @@ fn wall_single_opening_dims_differs_from_area_only_ratio() {
         opening_area: 0.0,
         opening_weight: 0.0,
         slit: Default::default(),
+        finish_intensity: 0.0,
         openings: vec![WallOpening {
             width: 750.0,
             height: 2000.0,
@@ -259,6 +263,7 @@ fn wall_single_opening_dims_differs_from_area_only_ratio() {
         opening_weight: 0.0,
         slit: Default::default(),
         openings: vec![],
+        finish_intensity: 0.0,
     }));
     let res_area_only = wall_check_result(&model_area_only, &forces)
         .expect("同面積を面積のみで与えた壁も耐震壁として検定されるはず");
@@ -283,6 +288,7 @@ fn wall_multiple_openings_matches_equivalent_opening() {
         opening_area: 0.0,
         opening_weight: 0.0,
         slit: Default::default(),
+        finish_intensity: 0.0,
         openings: dims
             .iter()
             .map(|&(w, h)| WallOpening {
@@ -332,6 +338,7 @@ fn wall_multiple_openings_large_ratio_is_not_checked() {
         opening_area: 0.0,
         opening_weight: 0.0,
         slit: Default::default(),
+        finish_intensity: 0.0,
         openings: vec![
             WallOpening {
                 width: 2000.0,
@@ -381,6 +388,7 @@ fn wall_auto_mode_envelopes_close_openings_and_differs_from_equivalent() {
             opening_weight: 0.0,
             slit: Default::default(),
             openings: openings.clone(),
+            finish_intensity: 0.0,
         }),
     );
     let res_equiv = wall_check_result(&model_equiv, &forces)
@@ -399,6 +407,7 @@ fn wall_auto_mode_envelopes_close_openings_and_differs_from_equivalent() {
             opening_weight: 0.0,
             slit: Default::default(),
             openings,
+            finish_intensity: 0.0,
         }),
     );
     model_auto.multi_opening_mode = MultiOpeningMode::Auto;
@@ -415,6 +424,7 @@ fn wall_auto_mode_envelopes_close_openings_and_differs_from_equivalent() {
             opening_area: 0.0,
             opening_weight: 0.0,
             slit: Default::default(),
+            finish_intensity: 0.0,
             openings: vec![WallOpening {
                 width: 2000.0,
                 height: 2000.0,
@@ -467,6 +477,7 @@ fn wall_envelope_mode_excludes_wall_when_envelope_ratio_too_large() {
         opening_weight: 0.0,
         slit: Default::default(),
         openings: openings.clone(),
+        finish_intensity: 0.0,
     }));
     assert!(
         wall_check_result(&model_equiv, &forces).is_some(),
@@ -481,6 +492,7 @@ fn wall_envelope_mode_excludes_wall_when_envelope_ratio_too_large() {
         opening_weight: 0.0,
         slit: Default::default(),
         openings,
+        finish_intensity: 0.0,
     }));
     model_envelope.multi_opening_mode = MultiOpeningMode::Envelope;
     assert!(

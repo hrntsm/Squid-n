@@ -183,6 +183,7 @@ fn wall_post_model() -> Model {
             opening_area: 0.0,
             opening_weight: 0.0,
             openings: Vec::new(),
+            loads: vec![],
             slit: Default::default(),
         });
     }

@@ -574,6 +574,26 @@ pub fn model_issues(model: &Model) -> Vec<ModelIssue> {
                  （線アンカー）へ変えてください。"
             )));
         }
+        // 高さを「階高いっぱい」とした壁版は、直上に階レベルが無いと高さが決まらない。
+        // 面積が 0 になり自重が黙って消えるため、ここで止める。
+        let unresolved: Vec<u32> = model
+            .wall_plates
+            .iter()
+            .filter(|p| p.is_attached() && model.wall_plate_extent(p).is_none())
+            .map(|p| p.id.0)
+            .collect();
+        if !unresolved.is_empty() {
+            let ids = unresolved
+                .iter()
+                .map(|i| i.to_string())
+                .collect::<Vec<_>>()
+                .join(", ");
+            issues.push(ModelIssue::model(format!(
+                "壁版 {ids} は高さを階高いっぱいとしていますが、壁の下端より上に\
+                 階レベルがないため高さが決まりません。自重が算定できません。\
+                 上の階を定義するか、立ち上がり高さを数値で指定してください。"
+            )));
+        }
     }
 
     // 断面が未割当のスラブ・断面の主材料が未割当のスラブ

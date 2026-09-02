@@ -196,7 +196,9 @@ pub(super) fn draw_wall_plates(
         if !wall_plate_visible_on_frame(plate, filter) {
             continue;
         }
-        let Some(coords) = plate.boundary_coords_with(|n| coords3.get(n.index()).copied()) else {
+        let Some(coords) =
+            plate.boundary_coords_with(&app.model, |n| coords3.get(n.index()).copied())
+        else {
             continue;
         };
         // 色は「壁」を表す青（床板の暖色と弁別）。線種の破線が「解析要素ではない」を
@@ -206,7 +208,7 @@ pub(super) fn draw_wall_plates(
             &coords,
             proj,
             theme::DATA_BLUE,
-            plate_fill_is_valid(plate),
+            plate_fill_is_valid(&app.model, plate),
         );
     }
 }
@@ -218,10 +220,18 @@ pub(super) fn draw_wall_plates(
 /// 面積を積分で求めているのと同じ理由）。塗りは凸多角形を前提に三角形へ分割する
 /// ため、この形では輪郭からはみ出す。輪郭の破線だけを描いて、入力が異常である
 /// ことをそのまま見せる。
-pub(super) fn plate_fill_is_valid(plate: &squid_n_core::model::WallPlate) -> bool {
+pub(super) fn plate_fill_is_valid(
+    model: &squid_n_core::Model,
+    plate: &squid_n_core::model::WallPlate,
+) -> bool {
     use squid_n_core::model::WallPlateShape;
     match &plate.shape {
-        WallPlateShape::Attached { extent, .. } => extent[0] * extent[1] >= 0.0,
+        // 高さが解決できない壁版（階高を引けない自立壁）は形が定まらない。
+        // `boundary_coords_with` も `None` を返すのでここへは来ないが、塗って
+        // よいかを判定する側で「解決できたときだけ真」を保っておく。
+        WallPlateShape::Attached { .. } => model
+            .wall_plate_extent(plate)
+            .is_some_and(|e| e[0] * e[1] >= 0.0),
         WallPlateShape::Enclosed { .. } => true,
     }
 }
@@ -592,6 +602,7 @@ mod tests {
             opening_area: 0.0,
             opening_weight: 0.0,
             openings: Vec::new(),
+            loads: vec![],
             slit: Default::default(),
         }
     }
@@ -605,6 +616,7 @@ mod tests {
     fn 符号反転する取り付く壁版は塗らない() {
         use squid_n_core::ids::NodeId;
         use squid_n_core::model::{RegionAnchor, WallPlateShape};
+        let model = squid_n_core::Model::default();
         let mut plate = enclosed_plate(Vec::new());
         let mut with_extent = |extent: [f64; 2]| {
             plate.shape = WallPlateShape::Attached {
@@ -613,9 +625,9 @@ mod tests {
                     span: [0.0, 1.0],
                     transfer: Default::default(),
                 },
-                extent,
+                extent: Some(extent),
             };
-            plate_fill_is_valid(&plate)
+            plate_fill_is_valid(&model, &plate)
         };
         assert!(with_extent([900.0, 900.0]), "同じ向きの立ち上がりは塗る");
         assert!(with_extent([900.0, 0.0]), "片端 0 は自己交差しない");
@@ -623,12 +635,10 @@ mod tests {
         assert!(!with_extent([900.0, -900.0]), "符号が反転する壁は塗らない");
 
         // 囲まれた壁版は境界そのものなので、この理由では塗りを止めない。
-        assert!(plate_fill_is_valid(&enclosed_plate(vec![
-            NodeId(0),
-            NodeId(1),
-            NodeId(2),
-            NodeId(3)
-        ])));
+        assert!(plate_fill_is_valid(
+            &model,
+            &enclosed_plate(vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)])
+        ));
     }
 
     /// 構面表示中は、境界節点がすべてその構面にある壁版だけを描く。
@@ -681,7 +691,7 @@ mod tests {
                 span: [0.0, 1.0],
                 transfer: Default::default(),
             },
-            extent: [900.0, 900.0],
+            extent: Some([900.0, 900.0]),
         };
         assert!(wall_plate_visible_on_frame(&plate, filter));
 
@@ -691,13 +701,13 @@ mod tests {
                 span: [0.0, 1.0],
                 transfer: Default::default(),
             },
-            extent: [900.0, 900.0],
+            extent: Some([900.0, 900.0]),
         };
         assert!(!wall_plate_visible_on_frame(&plate, filter));
 
         plate.shape = WallPlateShape::Attached {
             anchor: RegionAnchor::Point(NodeId(0)),
-            extent: [900.0, 900.0],
+            extent: Some([900.0, 900.0]),
         };
         assert!(!wall_plate_visible_on_frame(&plate, filter));
     }

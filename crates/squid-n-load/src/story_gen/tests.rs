@@ -2,10 +2,9 @@ use super::*;
 use squid_n_core::dof::Dof6Mask;
 use squid_n_core::ids::{ElemId, MaterialId, SectionId, WallPlateId, WallRegionId};
 use squid_n_core::model::{
-    DamperSpec, ElementData, EndCondition, ForceRegime, LoadCase, LoadCaseKind, LoadCfg, LocalAxis,
-    Material, MaterialCategory, MemberLoad, MiscWallTransfer, NodalLoad, Node, OutOfFrameMiscWall,
-    RigidZone, SecondaryMember, SecondaryMemberKind, Section, WallPlate, WallPlateShape,
-    WallRegion,
+    DamperSpec, ElementData, EndCondition, ForceRegime, LoadCase, LoadCaseKind, LoadCfg,
+    LoadTransfer, LocalAxis, Material, MaterialCategory, MemberLoad, NodalLoad, Node, RigidZone,
+    SecondaryMember, SecondaryMemberKind, Section, WallPlate, WallPlateShape, WallRegion,
 };
 
 /// 2 層 × 1 スパンの平面ラーメン（各レベル 2 節点）。
@@ -1175,6 +1174,7 @@ fn wall_model() -> Model {
         opening_area: 0.0,
         opening_weight: 0.0,
         openings: Vec::new(),
+        loads: vec![],
         slit: Default::default(),
     });
     model.wall_regions.push(WallRegion {
@@ -1202,6 +1202,37 @@ fn test_wall_self_weight_included_in_story_weight() {
         (gen.stories[1].seismic_weight.unwrap() - expected).abs() < 1e-6,
         "{}",
         gen.stories[1].seismic_weight.unwrap()
+    );
+}
+
+/// 壁エレメントになる壁版の仕上げ・増打ちの面荷重も、階の地震用重量へ算入する。
+///
+/// 壁エレメントの自重は要素経由で算定するため、合成する `WallAttr` へ面荷重を
+/// 写し忘れると**要素になる壁版だけ**この重さが黙って落ちる。要素にならない
+/// 壁版は `Model::wall_plate_self_weight` を直接使うので落ちず、差が出るのが
+/// 一部の壁だけという気づきにくい形になる。
+#[test]
+fn test_wall_finish_load_included_in_story_weight() {
+    use squid_n_core::model::AreaLoad;
+
+    let base = generate_stories(&wall_model(), None).unwrap();
+    let mut model = wall_model();
+    model.wall_plates[0].loads = vec![AreaLoad {
+        kind: "増打ち".into(),
+        value: 5.0e-4,
+    }];
+    let gen = generate_stories(&model, None).unwrap();
+
+    // 壁の自重は四隅へ等分され、上端 2 節点分（1/2）だけが層の重量へ入る。
+    // 面積は周辺柱梁の内法寸法で評価するため、増分そのものを式で書くかわりに
+    // 「躯体自重に対する面荷重の比」で期待値を作る（内法係数が約分される）。
+    let w0 = base.stories[1].seismic_weight.unwrap();
+    let w1 = gen.stories[1].seismic_weight.unwrap();
+    let ratio = 5.0e-4 / (2.4e-9 * 150.0 * GRAVITY_MM_S2);
+    assert!(
+        ((w1 - w0) / w0 - ratio).abs() < 1e-9,
+        "増分比={} expected={ratio}",
+        (w1 - w0) / w0
     );
 }
 
@@ -1395,12 +1426,13 @@ fn test_density_seismic_weight_includes_attached_wall_plate() {
                 span: [0.0, 1.0],
                 transfer: LoadTransfer::Anchor,
             },
-            extent: [1000.0, 1000.0],
+            extent: Some([1000.0, 1000.0]),
         },
         section: Some(SectionId(1)),
         opening_area: 0.0,
         opening_weight: 0.0,
         openings: Vec::new(),
+        loads: vec![],
         slit: Default::default(),
     };
     let expected = model
@@ -1501,62 +1533,29 @@ fn test_top_beam_face_slit_sends_self_weight_to_bottom() {
 }
 
 // ------------------------------------------------------------------
-// §フレーム外雑壁
+// §取り付く壁版（旧フレーム外雑壁の後継）
 // ------------------------------------------------------------------
 
-#[test]
-fn test_misc_wall_beam_transfer_conserves_total_weight() {
-    // 長さ 1200mm(500+500+200 の端数分割)を Beam タイプで最近接節点へ集中。
-    let mut model = Model::default();
-    model.nodes.push(Node {
-        id: NodeId(0),
-        coord: [0.0, 0.0, 0.0],
-        restraint: Dof6Mask::FIXED,
-        mass: None,
-        story: None,
-        support_spring: None,
-    });
-    model.nodes.push(Node {
-        id: NodeId(1),
-        coord: [0.0, 0.0, 3000.0],
-        restraint: Dof6Mask::FREE,
-        mass: None,
-        story: None,
-        support_spring: None,
-    });
-    model.misc_walls.push(OutOfFrameMiscWall {
-        start: [-600.0, 0.0, 2900.0],
-        end: [600.0, 0.0, 2900.0],
-        height: 200.0,
-        weight_per_area: 1.0e-3,
-        transfer: MiscWallTransfer::Beam,
-        thickness: None,
-    });
-    let gen = generate_stories(&model, None).unwrap();
-    // 領域中心の z は 2900+200/2=3000 で node1 に一致し、x も node1(x=0)に
-    // node0(距離 3000超)より常に近いため、全量が node1(story0)へ集中する。
-    let expected = 1.0e-3 * 200.0 * 1200.0; // weight_per_area * height * 壁長
-    assert!(
-        (gen.stories[1].seismic_weight.unwrap() - expected).abs() < 1e-6,
-        "{}",
-        gen.stories[1].seismic_weight.unwrap()
-    );
-}
+/// 柱 1 本（節点 0＝基部、節点 1＝頂部）と、その頂部へ取り付く壁版 1 枚のモデル。
+/// 壁版の自重は「板厚 × 材料密度 × 重力加速度」で求まるので、期待値も同じ式で書ける。
+fn single_column_with_attached_wall(transfer: LoadTransfer) -> (Model, f64) {
+    use squid_n_core::model::RegionAnchor;
 
-#[test]
-fn test_misc_wall_column_transfer_splits_to_column_ends() {
     let mut model = Model::default();
+    for (id, z, restraint) in [(0, 0.0, Dof6Mask::FIXED), (1, 3000.0, Dof6Mask::FREE)] {
+        model.nodes.push(Node {
+            id: NodeId(id),
+            coord: [0.0, 0.0, z],
+            restraint,
+            mass: None,
+            story: None,
+            support_spring: None,
+        });
+    }
+    // 取付き線の両端は相異なる節点でなければならないため、頂部にもう 1 点置く。
     model.nodes.push(Node {
-        id: NodeId(0),
-        coord: [0.0, 0.0, 0.0],
-        restraint: Dof6Mask::FIXED,
-        mass: None,
-        story: None,
-        support_spring: None,
-    });
-    model.nodes.push(Node {
-        id: NodeId(1),
-        coord: [0.0, 0.0, 3000.0],
+        id: NodeId(2),
+        coord: [4000.0, 0.0, 3000.0],
         restraint: Dof6Mask::FREE,
         mass: None,
         story: None,
@@ -1582,6 +1581,12 @@ fn test_misc_wall_column_transfer_splits_to_column_ends() {
         shear_rebar_material: None,
         steel_material: None,
     });
+    // 壁版用の断面（板厚 120）。
+    let mut wall_sec = model.sections[0].clone();
+    wall_sec.id = SectionId(1);
+    wall_sec.name = "Wall".into();
+    wall_sec.thickness = Some(120.0);
+    model.sections.push(wall_sec);
     model.materials.push(Material {
         strength_factor: None,
         concrete_class: Default::default(),
@@ -1595,36 +1600,70 @@ fn test_misc_wall_column_transfer_splits_to_column_ends() {
         fc: Some(24.0),
         fy: None,
     });
-    model.elements.push(ElementData {
-        id: ElemId(0),
-        kind: ElementKind::Beam,
-        nodes: [NodeId(0), NodeId(1)].into_iter().collect(),
-        section: Some(SectionId(0)),
-        local_axis: LocalAxis {
-            ref_vector: [1.0, 0.0, 0.0],
+    // 柱（節点 0-1）と頂部の梁（節点 1-2）。
+    for (id, i, j) in [(0_u32, 0_u32, 1_u32), (1, 1, 2)] {
+        model.elements.push(ElementData {
+            id: ElemId(id),
+            kind: ElementKind::Beam,
+            nodes: [NodeId(i), NodeId(j)].into_iter().collect(),
+            section: Some(SectionId(0)),
+            local_axis: LocalAxis {
+                ref_vector: [1.0, 0.0, 0.0],
+            },
+            end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+            force_regime: ForceRegime::Auto,
+            rigid_zone: RigidZone::default(),
+            plastic_zone: None,
+            spring: None,
+        });
+    }
+    model.wall_plates.push(WallPlate {
+        id: WallPlateId(0),
+        shape: WallPlateShape::Attached {
+            anchor: RegionAnchor::Line {
+                nodes: [NodeId(1), NodeId(2)],
+                span: [0.0, 1.0],
+                transfer,
+            },
+            extent: Some([200.0, 200.0]),
         },
-        end_cond: [EndCondition::Fixed, EndCondition::Fixed],
-        force_regime: ForceRegime::Auto,
-        rigid_zone: RigidZone::default(),
-        plastic_zone: None,
-        spring: None,
+        section: Some(SectionId(1)),
+        opening_area: 0.0,
+        opening_weight: 0.0,
+        openings: vec![],
+        loads: vec![],
+        slit: Default::default(),
     });
-    model.misc_walls.push(OutOfFrameMiscWall {
-        start: [-100.0, 0.0, 2900.0],
-        end: [100.0, 0.0, 2900.0],
-        height: 200.0,
-        weight_per_area: 1.0e-3,
-        transfer: MiscWallTransfer::Column,
-        thickness: None,
-    });
+    let total = 2.4e-9 * 120.0 * GRAVITY_MM_S2 * 4000.0 * 200.0;
+    (model, total)
+}
+
+/// 取付き線へ分布させる壁版の重量は、全量がその階に残る。
+#[test]
+fn test_attached_wall_anchor_transfer_conserves_total_weight() {
+    let (model, total) = single_column_with_attached_wall(LoadTransfer::Anchor);
     let gen = generate_stories(&model, None).unwrap();
-    let total = 1.0e-3 * 200.0 * 200.0;
-    // 唯一の柱(node0-node1)へ 1/2 ずつ。node0 は基部で階に属さないため、
-    // 階の地震用重量に現れるのは node1 側(w/2)のみ。
-    let expected = total / 2.0;
+    // 柱・梁の自重は断面積 0 なので 0。壁版の分だけが現れる。
     assert!(
-        (gen.stories[1].seismic_weight.unwrap() - expected).abs() < 1e-6,
+        (gen.stories[1].seismic_weight.unwrap() - total).abs() < 1e-6,
         "{}",
+        gen.stories[1].seismic_weight.unwrap()
+    );
+}
+
+/// 両端の柱へ集中させる壁版でも、重量は取付き線の高さに残る。
+///
+/// 旧フレーム外雑壁の「柱」伝達は、最も近い柱要素の**上下 2 節点**へ 1/2 ずつ配って
+/// いた。下端は基部でどの階にも属さないため、壁の重量の半分が階の地震用重量から
+/// 黙って消えていた。上階の地震力を過小に見る危険側の挙動である。後継の
+/// `LoadTransfer::Columns` は取付き線の両端へ集中するので、全量がその階に残る。
+#[test]
+fn test_attached_wall_columns_transfer_keeps_weight_at_anchor_line() {
+    let (model, total) = single_column_with_attached_wall(LoadTransfer::Columns);
+    let gen = generate_stories(&model, None).unwrap();
+    assert!(
+        (gen.stories[1].seismic_weight.unwrap() - total).abs() < 1e-6,
+        "重量の一部が基部へ逃げている: {}",
         gen.stories[1].seismic_weight.unwrap()
     );
 }

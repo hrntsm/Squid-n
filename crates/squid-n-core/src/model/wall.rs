@@ -107,6 +107,15 @@ pub struct WallAttr {
     /// 優先する。空の場合は従来どおり `opening_area`（合計面積のみ）で評価する。
     #[serde(default)]
     pub openings: Vec<WallOpening>,
+    /// 仕上げ・増打ちの面荷重強度 [N/mm²]。由来する壁版の
+    /// [`super::WallPlate::finish_intensity`] を写したもので、意味も同じである。
+    /// **躯体の自重は含まない。**
+    ///
+    /// 壁エレメントになる壁版もこの重さを持つため、要素経由の自重算定
+    /// （`squid_n_load::story_gen::self_weight_calc`）が読む。写し忘れると、
+    /// 入力された仕上げ・増打ちが壁エレメントの壁だけ黙って落ちる。
+    #[serde(default)]
+    pub finish_intensity: f64,
 }
 
 impl WallAttr {
@@ -463,38 +472,4 @@ pub struct PcaBeamAttr {
     pub sigma_y_joint: f64,
     /// 接合面の位置: 断面上端からの距離 [mm]（例: 後打ちスラブ厚）
     pub joint_depth_from_top: f64,
-}
-
-/// フレーム外雑壁の荷重伝達タイプ（雑壁自重の伝達。本実装の規則）。
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub enum MiscWallTransfer {
-    /// 0.5m 分割した各領域の中心から最も近い柱の上下節点へ 1/2 ずつ伝達。
-    #[default]
-    Column,
-    /// 0.5m 分割した各領域の中心から最も近い大梁・小梁側の節点へ集中伝達。
-    Beam,
-    /// 自立。配置階の剛床（最も近い節点）へ伝達する簡易扱い。
-    SelfStanding,
-}
-
-/// フレーム外雑壁（部材としてモデル化しない壁）。始点→終点の直線区間に
-/// 高さ・面重量を持ち、0.5m 分割規則で近傍の節点へ重量を集計する。
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct OutOfFrameMiscWall {
-    /// 壁下端の始点座標 [mm]。
-    pub start: [f64; 3],
-    /// 壁下端の終点座標 [mm]。
-    pub end: [f64; 3],
-    /// 壁高さ [mm]。
-    pub height: f64,
-    /// 面重量 [N/mm²]（仕上げ込み）。
-    pub weight_per_area: f64,
-    /// 荷重伝達タイプ。
-    #[serde(default)]
-    pub transfer: MiscWallTransfer,
-    /// 壁厚 [mm]。雑壁剛性の n 倍法（`StressAnalysisCfg::misc_wall_n`）で
-    /// 断面積 Aw' = 壁長 × 壁厚 の算定に用いる。`None` は剛性評価の対象外
-    /// （重量のみ考慮）。
-    #[serde(default)]
-    pub thickness: Option<f64>,
 }

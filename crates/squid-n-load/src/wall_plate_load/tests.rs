@@ -48,6 +48,7 @@ fn plate(id: u32, boundary: [u32; 4]) -> WallPlate {
         opening_area: 0.0,
         opening_weight: 0.0,
         openings: Vec::new(),
+        loads: vec![],
         slit: Default::default(),
     }
 }
@@ -132,6 +133,61 @@ fn 領域を覆う壁版は分配の対象外() {
     let out = distribute_enclosed_wall_plates(&m);
     assert!(out.posts.is_empty());
     assert!(out.primary.is_empty());
+}
+
+/// 壁領域を覆っていても、断面が無く壁エレメントにならない壁版は分配の対象になる。
+///
+/// 要素経由の自重算定を通らないため、ここで落とすと仕上げ・増打ちの面荷重が
+/// どちらの経路も通らずに消える。躯体の自重は断面が無いので 0 のままである。
+#[test]
+fn 領域を覆っても断面が無ければ分配の対象になる() {
+    use squid_n_core::model::AreaLoad;
+
+    let mut m = bay();
+    let mut p = plate(0, [0, 1, 2, 3]);
+    p.section = None;
+    p.loads = vec![AreaLoad {
+        kind: "増打ち".into(),
+        value: 1.0e-3,
+    }];
+    m.wall_plates = vec![p];
+    m.wall_regions = vec![WallRegion {
+        id: WallRegionId(0),
+        name: String::new(),
+        boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
+        wall_plate_ids: vec![WallPlateId(0)],
+        posts: Vec::new(),
+    }];
+    assert!(m.wall_plate_covers_region(&m.wall_plates[0]));
+    assert!(!m.wall_plate_becomes_element(&m.wall_plates[0]));
+
+    let out = distribute_enclosed_wall_plates(&m);
+    let primary_total: f64 = out
+        .primary
+        .iter()
+        .map(|bl| match bl.shape {
+            LoadShape::Uniform { w } => w * edge_len(&m, bl),
+            _ => panic!("鉛直辺は等分布"),
+        })
+        .sum();
+    let post_total: f64 = out
+        .posts
+        .values()
+        .flat_map(|p| p.member_loads.iter())
+        .map(|l| match *l {
+            MemberLoadKind::Distributed { a, b, w1, w2 } => (w1 + w2) / 2.0 * (b - a),
+            MemberLoadKind::Point { p, .. } => p,
+        })
+        .sum();
+    let total = primary_total + post_total;
+    let expected = m
+        .wall_plate_self_weight(&m.wall_plates[0], &m)
+        .expect("仕上げ分の自重が求まる");
+    assert!(expected > 0.0, "仕上げ分の自重が 0 になっている");
+    assert!(
+        (total - expected).abs() / expected < 1e-9,
+        "分配の総和={total} expected={expected}"
+    );
 }
 
 /// 間柱で分割された壁版は、左右の鉛直辺（柱・間柱）へ半分ずつ配る。

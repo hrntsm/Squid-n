@@ -21,8 +21,9 @@
 use crate::app::App;
 use squid_n_core::ids::{NodeId, SectionId, WallPlateId};
 use squid_n_core::model::{
-    LoadTransfer, MultiOpeningMode, RegionAnchor, WallOpening, WallPlate, WallPlateShape,
+    AreaLoad, LoadTransfer, MultiOpeningMode, RegionAnchor, WallOpening, WallPlate, WallPlateShape,
 };
+use squid_n_core::units::{to_display, to_internal};
 use squid_n_edit::{
     AddAttachedWallPlate, AddEnclosedWallPlate, DeleteWallPlate, SetAttachedWallPlateAnchor,
     SetAttachedWallPlateExtent, SetMultiOpeningMode, SetWallPlateAttrs, SetWallPlateSection,
@@ -65,6 +66,10 @@ pub struct WallPlateDraft {
     /// `幅x高さ` または `幅x高さ@x,z`（位置指定付き）を入力する。
     /// 空文字列は「個別開口なし（`opening_area` を使用）」を表す。
     pub openings: String,
+    /// 仕上げ・増打ちの面荷重 [kN/m²] の入力バッファ。
+    pub load_value: String,
+    /// 仕上げ・増打ちの面荷重の名称（空欄は「仕上げ」）。
+    pub load_kind: String,
 
     /// 追加フォーム: 取付き先を床領域（自立壁）にするか。false は線（大梁・柱頭）。
     pub add_to_floor_region: bool,
@@ -72,6 +77,8 @@ pub struct WallPlateDraft {
     pub add_nodes: [Option<NodeId>; 2],
     /// 追加フォーム: 立ち上がり高さ [mm]（始端側・終端側。負なら垂れ壁）。
     pub add_extent: [String; 2],
+    /// 追加フォーム: 高さを階高いっぱいにするか（自立壁のみ）。
+    pub add_story_height: bool,
     /// 追加フォーム: 取付き線に載る壁版の荷重の出口。
     pub add_transfer: LoadTransfer,
     /// 追加フォーム: 取付き線上の無次元区間 `[t_i, t_j]`。床領域アンカーでは使わない。
@@ -311,7 +318,7 @@ fn wall_plates_list(ui: &mut egui::Ui, app: &mut App) {
     }
 
     let mut pending_section: Vec<(WallPlateId, Option<SectionId>)> = Vec::new();
-    let mut pending_extent: Vec<(WallPlateId, [f64; 2])> = Vec::new();
+    let mut pending_extent: Vec<(WallPlateId, Option<[f64; 2]>)> = Vec::new();
     let mut pending_anchor: Vec<(WallPlateId, RegionAnchor)> = Vec::new();
     let mut pending_delete: Option<WallPlateId> = None;
     let node_ids: Vec<NodeId> = app.model.nodes.iter().map(|n| n.id).collect();
@@ -339,6 +346,9 @@ fn wall_plates_list(ui: &mut egui::Ui, app: &mut App) {
             Col::text("断面"),
             Col::num("面積[m²]").hover("境界多角形の生の面積（開口・柱梁の内法による低減前）"),
             Col::text("開口"),
+            Col::text("仕上げ・増打ち").hover(
+                "壁の重さに加える面荷重。躯体の自重は断面から別に求める。増打ちは構造厚に含めないため剛性・耐力には算入しない",
+            ),
             Col::label("スリット").hover(
                 "縁を切った辺。切れている辺の部材へは剛性算入せず自重も伝えない。4 辺すべてが一体でなければ耐震壁として成立しない",
             ),
@@ -382,6 +392,8 @@ fn wall_plates_list(ui: &mut egui::Ui, app: &mut App) {
                     ),
                 }
             });
+            // 「階高いっぱい」の壁版の高さは、階レベルから解決した値を見せる。
+            let resolved_extent = app.model.wall_plate_extent(plate);
             row.col(|ui| match &plate.shape {
                 WallPlateShape::Enclosed { boundary } => {
                     let s = boundary
@@ -397,6 +409,7 @@ fn wall_plates_list(ui: &mut egui::Ui, app: &mut App) {
                         plate.id,
                         *anchor,
                         *extent,
+                        resolved_extent,
                         &node_ids,
                         &mut pending_extent,
                         &mut pending_anchor,
@@ -432,6 +445,21 @@ fn wall_plates_list(ui: &mut egui::Ui, app: &mut App) {
             });
             row.col(|ui| {
                 table_util::text_cell(ui, &opening_summary(plate));
+            });
+            row.col(|ui| {
+                let s = plate
+                    .loads
+                    .iter()
+                    .map(|l| {
+                        format!("{} {:.2}kN/m²", l.kind, to_display::area_load_kn_per_m2(l.value))
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                if s.is_empty() {
+                    table_util::muted_cell(ui, "―", "仕上げ・増打ちの面荷重が登録されていません");
+                } else {
+                    table_util::text_cell(ui, &s);
+                }
             });
             row.col(|ui| {
                 // 耐震スリットは、柱・梁と接する 4 辺を持つ囲まれた壁版でだけ意味を持つ。
@@ -503,9 +531,10 @@ fn attached_anchor_cell(
     ui: &mut egui::Ui,
     id: WallPlateId,
     anchor: RegionAnchor,
-    extent: [f64; 2],
+    extent: Option<[f64; 2]>,
+    resolved_extent: Option<[f64; 2]>,
     node_ids: &[NodeId],
-    pending_extent: &mut Vec<(WallPlateId, [f64; 2])>,
+    pending_extent: &mut Vec<(WallPlateId, Option<[f64; 2]>)>,
     pending_anchor: &mut Vec<(WallPlateId, RegionAnchor)>,
 ) {
     ui.horizontal(|ui| {
@@ -604,14 +633,69 @@ fn attached_anchor_cell(
                 ui.label("(未対応の取付き先)");
             }
         }
-        ui.label("高さ:");
-        let mut e = extent;
-        ui.add(egui::DragValue::new(&mut e[0]).suffix(" mm"));
-        ui.add(egui::DragValue::new(&mut e[1]).suffix(" mm"));
-        if e != extent && e[0].is_finite() && e[1].is_finite() {
-            pending_extent.push((id, e));
-        }
+        height_cell(ui, id, anchor, extent, resolved_extent, pending_extent);
     });
+}
+
+/// 立ち上がり高さの入力欄。
+///
+/// 自立壁だけは「階高」（`extent = None`）を選べる。階高は設計中に何度も変わるので、
+/// 全高の壁を絶対寸法で書くと変更に追随せず、上階との間に隙間が残るためである。
+/// 取付き線の壁版で階高を許すと、階高分の腰壁せいが取付き先の梁へ丸ごと算入されて
+/// 剛性を過大に見るので、チェックボックス自体を出さない
+/// （`WallPlateShape::Attached` のドキュメント）。
+fn height_cell(
+    ui: &mut egui::Ui,
+    id: WallPlateId,
+    anchor: RegionAnchor,
+    extent: Option<[f64; 2]>,
+    resolved_extent: Option<[f64; 2]>,
+    pending_extent: &mut Vec<(WallPlateId, Option<[f64; 2]>)>,
+) {
+    ui.label("高さ:");
+    if matches!(anchor, RegionAnchor::FloorRegion { .. }) {
+        let mut story_height = extent.is_none();
+        if ui
+            .checkbox(&mut story_height, "階高")
+            .on_hover_text("壁の下端から直上の階レベルまでを高さにする。階高を変えても追随する")
+            .changed()
+        {
+            // 階高を外したときは、直前まで表示していた解決後の高さを初期値にする
+            // （0 へ落とすと壁が消えたように見える）。
+            let seed = resolved_extent.unwrap_or([0.0, 0.0]);
+            pending_extent.push((id, (!story_height).then_some(seed)));
+        }
+        if story_height {
+            match resolved_extent {
+                Some(e) => {
+                    ui.label(format!("{:.0} mm", e[0]));
+                }
+                // 直上に階が無い壁。解析前チェックがエラーで止める。
+                None => {
+                    ui.colored_label(crate::theme::WARN_TEXT, "階高が引けません");
+                }
+            }
+            return;
+        }
+    }
+    let Some(mut e) = extent else {
+        return;
+    };
+    let before = e;
+    ui.add(egui::DragValue::new(&mut e[0]).suffix(" mm"));
+    ui.add(egui::DragValue::new(&mut e[1]).suffix(" mm"));
+    if e != before && e[0].is_finite() && e[1].is_finite() {
+        pending_extent.push((id, Some(e)));
+    }
+}
+
+/// 仕上げ・増打ちの面荷重 [kN/m²] の入力を読む。空欄は 0、数値でなければ `None`。
+fn parse_area_load_kn_per_m2(text: &str) -> Option<f64> {
+    let t = text.trim();
+    if t.is_empty() {
+        return Some(0.0);
+    }
+    t.parse::<f64>().ok().filter(|v| v.is_finite())
 }
 
 fn transfer_label(t: LoadTransfer) -> &'static str {
@@ -687,6 +771,16 @@ fn attrs_form(ui: &mut egui::Ui, app: &mut App) {
             app.wall_plate_draft.opening_weight = format!("{weight:.0}");
             app.wall_plate_draft.slit = slit;
             app.wall_plate_draft.openings = format_openings(&openings);
+            // 面荷重は 1 件だけ扱う（床板の追加フォームと同じ簡略化）。複数件を
+            // 持つ壁版は合計値を見せ、適用すると 1 件へまとめる。
+            let total = plate.finish_intensity();
+            app.wall_plate_draft.load_value =
+                format!("{:.3}", to_display::area_load_kn_per_m2(total));
+            app.wall_plate_draft.load_kind = plate
+                .loads
+                .first()
+                .map(|l| l.kind.clone())
+                .unwrap_or_else(|| "仕上げ".to_string());
             app.wall_plate_draft.synced_for = app.wall_plate_draft.target;
         }
     }
@@ -711,6 +805,19 @@ fn attrs_form(ui: &mut egui::Ui, app: &mut App) {
                 .desired_width(90.0),
         );
     });
+
+    ui.horizontal(|ui| {
+        ui.label("仕上げ・増打ち:");
+        ui.add(egui::TextEdit::singleline(&mut app.wall_plate_draft.load_kind).desired_width(80.0));
+        ui.add(
+            egui::TextEdit::singleline(&mut app.wall_plate_draft.load_value).desired_width(70.0),
+        );
+        ui.label("kN/m²");
+    })
+    .response
+    .on_hover_text(
+        "コンクリートの増打ち・仕上げの重さを面荷重として加えます。躯体の自重は         断面の板厚と材料から別に求めるため、ここには含めません。増打ちは構造厚に         含めない扱いなので、剛性・耐力には算入しません。",
+    );
 
     // 耐震スリットは囲まれた壁版にしか意味がない（一覧の同名列と同じ理由）。
     // 取り付く壁版では入力欄自体を出さない。左右どちらの柱際かは節点番号で示す。
@@ -812,7 +919,17 @@ fn attrs_form(ui: &mut egui::Ui, app: &mut App) {
 
     let parsed_area = app.wall_plate_draft.opening_area.trim().parse::<f64>();
     let parsed_weight = app.wall_plate_draft.opening_weight.trim().parse::<f64>();
-    let can_apply = parsed_area.is_ok() && parsed_weight.is_ok() && parsed_openings.is_ok();
+    let parsed_load = parse_area_load_kn_per_m2(&app.wall_plate_draft.load_value);
+    if parsed_load.is_none() {
+        ui.colored_label(
+            crate::theme::ERROR_RED,
+            "仕上げ・増打ちの面荷重は数値で入力してください（空欄は 0）",
+        );
+    }
+    let can_apply = parsed_area.is_ok()
+        && parsed_weight.is_ok()
+        && parsed_openings.is_ok()
+        && parsed_load.is_some();
     if ui
         .add_enabled(can_apply, egui::Button::new("✔ 適用"))
         .on_hover_text("選択した壁版に開口・スリットを設定します（undo可）")
@@ -830,6 +947,16 @@ fn attrs_form(ui: &mut egui::Ui, app: &mut App) {
             } else {
                 app.wall_plate_draft.slit
             };
+            // 0 の面荷重は項目自体を持たせない（一覧が「―」になり、空の
+            // 「仕上げ 0.00kN/m²」が並ばない）。
+            let value = to_internal::area_load_kn_per_m2(parsed_load.unwrap_or(0.0));
+            let kind = app.wall_plate_draft.load_kind.trim();
+            let kind = if kind.is_empty() { "仕上げ" } else { kind }.to_string();
+            let loads = if value == 0.0 {
+                Vec::new()
+            } else {
+                vec![AreaLoad { kind, value }]
+            };
             app.undo.run(
                 &mut app.model,
                 Box::new(SetWallPlateAttrs {
@@ -837,6 +964,7 @@ fn attrs_form(ui: &mut egui::Ui, app: &mut App) {
                     opening_area,
                     opening_weight,
                     openings,
+                    loads,
                     slit,
                 }),
             );
@@ -1033,15 +1161,28 @@ fn add_attached_form(ui: &mut egui::Ui, app: &mut App) {
         }
     });
 
+    // 「階高いっぱい」を選べるのは自立壁だけである（`WallPlateShape::Attached` の
+    // ドキュメント）。取付き線に取り付く全高の壁は囲まれた壁版として入力する。
+    let use_story_height = to_region && app.wall_plate_draft.add_story_height;
     ui.horizontal(|ui| {
-        ui.label("立ち上がり高さ 始端側 [mm]:");
-        ui.add(
-            egui::TextEdit::singleline(&mut app.wall_plate_draft.add_extent[0]).desired_width(70.0),
-        );
-        ui.label("終端側 [mm]:");
-        ui.add(
-            egui::TextEdit::singleline(&mut app.wall_plate_draft.add_extent[1]).desired_width(70.0),
-        );
+        if to_region {
+            ui.checkbox(&mut app.wall_plate_draft.add_story_height, "高さは階高")
+                .on_hover_text(
+                    "壁の下端から直上の階レベルまでを高さにする。階高を変えても追随する",
+                );
+        }
+        ui.add_enabled_ui(!use_story_height, |ui| {
+            ui.label("立ち上がり高さ 始端側 [mm]:");
+            ui.add(
+                egui::TextEdit::singleline(&mut app.wall_plate_draft.add_extent[0])
+                    .desired_width(70.0),
+            );
+            ui.label("終端側 [mm]:");
+            ui.add(
+                egui::TextEdit::singleline(&mut app.wall_plate_draft.add_extent[1])
+                    .desired_width(70.0),
+            );
+        });
     });
 
     if !to_region {
@@ -1111,7 +1252,7 @@ fn add_attached_form(ui: &mut egui::Ui, app: &mut App) {
     // `AddAttachedWallPlate` は非有限の高さを Noop で弾く。GUI 側でも同じ条件で
     // 「追加」を無効にしないと、"inf"・"NaN"（`parse::<f64>()` を通る）を入れたとき
     // ボタンだけ押せて何も起きない状態になる。
-    let extent: Option<[f64; 2]> = {
+    let parsed_extent: Option<[f64; 2]> = {
         let a = app.wall_plate_draft.add_extent[0]
             .trim()
             .parse::<f64>()
@@ -1124,6 +1265,14 @@ fn add_attached_form(ui: &mut egui::Ui, app: &mut App) {
             .filter(|v| v.is_finite());
         a.zip(b).map(|(a, b)| [a, b])
     };
+    // 階高いっぱいの壁は高さを持たない（`extent = None`）。「未入力」と区別する
+    // ため、追加可否の判定は別のフラグで持つ。
+    let extent: Option<[f64; 2]> = if use_story_height {
+        None
+    } else {
+        parsed_extent
+    };
+    let extent_ok = use_story_height || parsed_extent.is_some();
     let span = app.wall_plate_draft.add_span;
     // `Model::validate`（squid-n-core）・`wall_anchor_ok`（squid-n-edit）と同じ範囲。
     let span_ok = span[0].is_finite()
@@ -1154,7 +1303,7 @@ fn add_attached_form(ui: &mut egui::Ui, app: &mut App) {
     if !to_region && !span_ok {
         ui.label("取付き線の区間は始端 < 終端にしてください");
     }
-    let ready = anchor.is_some() && extent.is_some();
+    let ready = anchor.is_some() && extent_ok;
     if !ready {
         ui.label("取付き先の節点（相異なる2点）と立ち上がり高さを指定してください");
     }
@@ -1162,7 +1311,7 @@ fn add_attached_form(ui: &mut egui::Ui, app: &mut App) {
         .add_enabled(ready, egui::Button::new("+ 取り付く壁版を追加"))
         .clicked()
     {
-        if let (Some(anchor), Some(extent)) = (anchor, extent) {
+        if let Some(anchor) = anchor {
             app.undo.run(
                 &mut app.model,
                 Box::new(AddAttachedWallPlate {
@@ -1217,6 +1366,7 @@ mod tests {
             opening_area: 0.0,
             opening_weight: 0.0,
             openings: Vec::new(),
+            loads: vec![],
             slit: Default::default(),
         }
     }
@@ -1265,7 +1415,7 @@ mod tests {
                 span: [0.0, 1.0],
                 transfer: Default::default(),
             },
-            extent: [900.0, 900.0],
+            extent: Some([900.0, 900.0]),
         };
         assert!(not_element_reason(&attached, &m).contains("取り付く壁版"));
     }

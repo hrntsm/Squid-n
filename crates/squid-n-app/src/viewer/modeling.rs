@@ -540,7 +540,8 @@ fn draw_wall_plates_modeling(
             .collect();
 
     for plate in targets {
-        let Some(coords) = plate.boundary_coords_with(|n| coords3.get(n.index()).copied()) else {
+        let Some(coords) = plate.boundary_coords_with(model, |n| coords3.get(n.index()).copied())
+        else {
             continue;
         };
         let class = if misc.contains(&plate.id) {
@@ -554,7 +555,7 @@ fn draw_wall_plates_modeling(
         let poly: Vec<egui::Pos2> = coords.iter().copied().map(|c| proj.project(c)).collect();
         // 壁エレメントでないことを示す破線の輪郭（既存の雑壁描画と同じ書式）。
         // 自己交差する壁版は塗らない（理由は `scene::plate_fill_is_valid`）。
-        if super::scene::plate_fill_is_valid(plate) {
+        if super::scene::plate_fill_is_valid(model, plate) {
             draw_polygon_shape(painter, poly, class.color(), true);
         } else {
             draw_polygon_outline(painter, poly, class.color());

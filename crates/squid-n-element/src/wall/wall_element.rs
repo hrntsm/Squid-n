@@ -1726,6 +1726,7 @@ mod tests {
             opening_area: 0.0,
             opening_weight: 0.0,
             slit: Default::default(),
+            finish_intensity: 0.0,
             openings: vec![WallOpening {
                 width: 2000.0,
                 height: 1500.0,
@@ -1755,6 +1756,7 @@ mod tests {
             opening_weight: 0.0,
             slit: Default::default(),
             openings: vec![],
+            finish_intensity: 0.0,
         });
         let wall_o = WallElement::try_new(&data, &model).unwrap();
         let ctx = Ctx { model: &model };

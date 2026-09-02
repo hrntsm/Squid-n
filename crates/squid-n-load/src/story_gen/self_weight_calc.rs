@@ -300,7 +300,12 @@ pub(crate) fn enumerate_self_weight(model: &Model, load_cfg: &LoadCfg) -> Vec<Se
                 let opening_area = attr.map(|a| a.total_opening_area()).unwrap_or(0.0);
                 let opening_weight = attr.map(|a| a.opening_weight).unwrap_or(0.0);
                 let net_area = (area - opening_area).max(0.0);
-                let w = (mat.density * t * net_area * GRAVITY_MM_S2 + opening_weight).max(0.0);
+                // §壁自重: 仕上げ・増打ちの面荷重も躯体と同じ正味面積へ乗じる
+                // （`Model::wall_plate_self_weight` と同じ規約）。壁エレメントに
+                // なる壁版だけこれを落とすと、入力した重さが黙って消える。
+                let finish = attr.map(|a| a.finish_intensity).unwrap_or(0.0);
+                let w = ((mat.density * t * GRAVITY_MM_S2 + finish) * net_area + opening_weight)
+                    .max(0.0);
 
                 // §壁自重: 自重は**縁が切れていない梁際の辺**へ伝える。
                 //

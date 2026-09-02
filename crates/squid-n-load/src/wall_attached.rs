@@ -139,7 +139,7 @@ fn push_node_load(loads: &mut Vec<BeamLoad>, node: NodeId, total: f64) {
 pub fn attached_wall_beam_loads(model: &Model) -> Vec<BeamLoad> {
     let mut loads = Vec::new();
     for plate in &model.wall_plates {
-        let WallPlateShape::Attached { anchor, extent } = &plate.shape else {
+        let WallPlateShape::Attached { anchor, .. } = &plate.shape else {
             continue;
         };
         let RegionAnchor::Line {
@@ -148,6 +148,11 @@ pub fn attached_wall_beam_loads(model: &Model) -> Vec<BeamLoad> {
             transfer,
         } = anchor
         else {
+            continue;
+        };
+        // 立ち上がり高さ。未指定（＝階高いっぱい）は自立壁だけなので、線アンカーの
+        // ここでは必ず明示値が返る（`Model::validate`）。
+        let Some(extent) = model.wall_plate_extent(plate) else {
             continue;
         };
         let Some(total) = model.wall_plate_self_weight(plate, model) else {
@@ -172,12 +177,12 @@ pub fn attached_wall_beam_loads(model: &Model) -> Vec<BeamLoad> {
                 // 矩形は等分布、台形は張り出し高さに比例する線形変化。
                 // 符号が反転するときは高さ 0 で分割し、各側を線形にする
                 // （一端から他端へ |h| を直線で結ぶと中央が過大になる）。
-                push_anchor_span_loads(&mut loads, *nodes, *span, *extent, total, len);
+                push_anchor_span_loads(&mut loads, *nodes, *span, extent, total, len);
             }
             LoadTransfer::Columns => {
                 // 台形の面積重心（矩形なら区間中点）での単純梁反力按分。
                 // 符号反転は ∫|h| の重心（端点絶対値の台形重心ではない）。
-                let t = line_resultant_t(*span, *extent);
+                let t = line_resultant_t(*span, extent);
                 push_node_load(&mut loads, nodes[0], total * (1.0 - t));
                 push_node_load(&mut loads, nodes[1], total * t);
             }
@@ -227,7 +232,10 @@ fn add_node_weight(node_weight: &mut [f64], node: NodeId, w: f64) {
 /// 抜けないことだけを保証する。
 pub fn accumulate_attached_wall_seismic_weight(model: &Model, node_weight: &mut [f64]) {
     for plate in &model.wall_plates {
-        let WallPlateShape::Attached { anchor, extent } = &plate.shape else {
+        let WallPlateShape::Attached { anchor, .. } = &plate.shape else {
+            continue;
+        };
+        let Some(extent) = model.wall_plate_extent(plate) else {
             continue;
         };
         let Some(total) = model.wall_plate_self_weight(plate, model) else {
@@ -238,7 +246,7 @@ pub fn accumulate_attached_wall_seismic_weight(model: &Model, node_weight: &mut 
         }
         match anchor {
             RegionAnchor::Line { nodes, span, .. } => {
-                let t = line_resultant_t(*span, *extent);
+                let t = line_resultant_t(*span, extent);
                 add_node_weight(node_weight, nodes[0], total * (1.0 - t));
                 add_node_weight(node_weight, nodes[1], total * t);
             }
@@ -396,12 +404,13 @@ mod tests {
                     span,
                     transfer,
                 },
-                extent,
+                extent: Some(extent),
             },
             section: Some(SectionId(0)),
             opening_area: 0.0,
             opening_weight: 0.0,
             openings: Vec::new(),
+            loads: vec![],
             slit: Default::default(),
         }
     }
@@ -648,12 +657,13 @@ mod tests {
                 anchor: RegionAnchor::FloorRegion {
                     nodes: [NodeId(0), NodeId(1)],
                 },
-                extent: [1000.0, 1000.0],
+                extent: Some([1000.0, 1000.0]),
             },
             section: Some(SectionId(0)),
             opening_area: 0.0,
             opening_weight: 0.0,
             openings: Vec::new(),
+            loads: vec![],
             slit: Default::default(),
         }
     }
@@ -712,7 +722,7 @@ mod tests {
         push_floor_region(&mut m, [2000.0, 5000.0], 1, true, 3000.0);
         let mut plate = self_standing_plate();
         if let WallPlateShape::Attached { extent, .. } = &mut plate.shape {
-            *extent = [2000.0, -2000.0];
+            *extent = Some([2000.0, -2000.0]);
         }
         let total = m.wall_plate_self_weight(&plate, &m).expect("自重が求まる");
         assert!(total > 0.0, "符号反転でも面積は正: {total}");

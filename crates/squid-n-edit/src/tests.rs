@@ -2286,6 +2286,7 @@ fn model_with_enclosed_wall_plate() -> Model {
         opening_area: 0.0,
         opening_weight: 0.0,
         openings: vec![],
+        loads: vec![],
         slit: Default::default(),
     });
     model
@@ -2310,6 +2311,10 @@ fn test_set_wall_plate_attrs_roundtrip() {
                 height: 1800.0,
                 offset: None,
             }],
+            loads: vec![squid_n_core::model::AreaLoad {
+                kind: "増打ち".into(),
+                value: 1.0e-3,
+            }],
             slit: squid_n_core::model::WallSlit {
                 column_face: [true, false],
                 beam_face: [false, true],
@@ -2319,6 +2324,7 @@ fn test_set_wall_plate_attrs_roundtrip() {
     assert_eq!(model.wall_plates[0].opening_area, 200.0);
     assert_eq!(model.wall_plates[0].opening_weight, 80.0);
     assert_eq!(model.wall_plates[0].openings.len(), 1);
+    assert_eq!(model.wall_plates[0].finish_intensity(), 1.0e-3);
     // 左右を独立に保存する（片側だけのスリットが両側へ広がらない）。
     assert_eq!(model.wall_plates[0].slit.column_face, [true, false]);
     assert_eq!(model.wall_plates[0].slit.beam_face, [false, true]);
@@ -2327,6 +2333,7 @@ fn test_set_wall_plate_attrs_roundtrip() {
     assert_eq!(model.wall_plates[0].opening_area, 0.0);
     assert_eq!(model.wall_plates[0].opening_weight, 0.0);
     assert!(model.wall_plates[0].openings.is_empty());
+    assert!(model.wall_plates[0].loads.is_empty());
     assert!(!model.wall_plates[0].slit.any());
 }
 
@@ -2342,6 +2349,7 @@ fn test_set_wall_plate_attrs_missing_id_is_noop() {
             opening_area: 1.0,
             opening_weight: 2.0,
             openings: vec![],
+            loads: vec![],
             slit: squid_n_core::model::WallSlit {
                 column_face: [true, true],
                 beam_face: [false, false],
@@ -2381,81 +2389,6 @@ fn test_set_wall_plate_section_roundtrip_and_rejects_dangling() {
     );
     assert_eq!(model.wall_plates[0].section, None);
     assert!(!stack.can_undo());
-}
-
-fn sample_misc_wall(weight: f64) -> squid_n_core::model::OutOfFrameMiscWall {
-    squid_n_core::model::OutOfFrameMiscWall {
-        start: [0.0, 0.0, 0.0],
-        end: [3000.0, 0.0, 0.0],
-        height: 3000.0,
-        weight_per_area: weight,
-        transfer: Default::default(),
-        thickness: None,
-    }
-}
-
-#[test]
-fn test_add_delete_misc_wall_roundtrip() {
-    let mut model = empty_model();
-    let mut stack = UndoStack::new();
-
-    stack.run(
-        &mut model,
-        Box::new(AddMiscWall {
-            wall: sample_misc_wall(1.0),
-        }),
-    );
-    stack.run(
-        &mut model,
-        Box::new(AddMiscWall {
-            wall: sample_misc_wall(2.0),
-        }),
-    );
-    assert_eq!(model.misc_walls.len(), 2);
-
-    let before = model.clone();
-    stack.run(&mut model, Box::new(DeleteMiscWall { index: 0 }));
-    assert_eq!(model.misc_walls.len(), 1);
-    assert_eq!(model.misc_walls[0].weight_per_area, 2.0);
-
-    stack.undo(&mut model);
-    assert!(model.eq_ignoring_dofmap(&before));
-
-    stack.redo(&mut model);
-    assert_eq!(model.misc_walls.len(), 1);
-}
-
-#[test]
-fn test_set_misc_wall_roundtrip() {
-    let mut model = empty_model();
-    model.misc_walls.push(sample_misc_wall(1.0));
-    let mut stack = UndoStack::new();
-
-    stack.run(
-        &mut model,
-        Box::new(SetMiscWall {
-            index: 0,
-            wall: sample_misc_wall(9.0),
-        }),
-    );
-    assert_eq!(model.misc_walls[0].weight_per_area, 9.0);
-
-    stack.undo(&mut model);
-    assert_eq!(model.misc_walls[0].weight_per_area, 1.0);
-}
-
-#[test]
-fn test_set_misc_wall_out_of_range_is_noop() {
-    let mut model = empty_model();
-    let mut stack = UndoStack::new();
-    stack.run(
-        &mut model,
-        Box::new(SetMiscWall {
-            index: 0,
-            wall: sample_misc_wall(1.0),
-        }),
-    );
-    assert!(model.misc_walls.is_empty());
 }
 
 #[test]
@@ -5792,7 +5725,7 @@ fn test_add_attached_wall_plate_roundtrip() {
             span: [0.0, 1.0],
             transfer: LoadTransfer::Anchor,
         },
-        extent: [900.0, 900.0],
+        extent: Some([900.0, 900.0]),
         section: None,
         opening_area: 0.0,
         opening_weight: 0.0,
@@ -5808,7 +5741,7 @@ fn test_add_attached_wall_plate_roundtrip() {
     // 壁の取付き先としては使わない Point は Noop。
     let bad = crate::AddAttachedWallPlate {
         anchor: RegionAnchor::Point(NodeId(0)),
-        extent: [900.0, 900.0],
+        extent: Some([900.0, 900.0]),
         section: None,
         opening_area: 0.0,
         opening_weight: 0.0,
@@ -5823,7 +5756,7 @@ fn test_add_attached_wall_plate_roundtrip() {
             span: [0.75, 0.25],
             transfer: LoadTransfer::Anchor,
         },
-        extent: [900.0, 900.0],
+        extent: Some([900.0, 900.0]),
         section: None,
         opening_area: 0.0,
         opening_weight: 0.0,
@@ -5838,7 +5771,7 @@ fn test_add_attached_wall_plate_roundtrip() {
             span: [0.0, 1.0],
             transfer: LoadTransfer::Anchor,
         },
-        extent: [900.0, 900.0],
+        extent: Some([900.0, 900.0]),
         section: None,
         opening_area: 0.0,
         opening_weight: 0.0,
@@ -5874,7 +5807,7 @@ fn test_add_attached_wall_plate_floor_region_anchor_roundtrip() {
         anchor: RegionAnchor::FloorRegion {
             nodes: [NodeId(0), NodeId(1)],
         },
-        extent: [2500.0, 2500.0],
+        extent: Some([2500.0, 2500.0]),
         section: None,
         opening_area: 0.0,
         opening_weight: 0.0,
@@ -5891,7 +5824,7 @@ fn test_add_attached_wall_plate_floor_region_anchor_roundtrip() {
         anchor: RegionAnchor::FloorRegion {
             nodes: [NodeId(0), NodeId(9)],
         },
-        extent: [2500.0, 2500.0],
+        extent: Some([2500.0, 2500.0]),
         section: None,
         opening_area: 0.0,
         opening_weight: 0.0,
@@ -5919,6 +5852,7 @@ fn test_set_attached_wall_plate_extent_and_anchor_noop() {
         opening_area: 0.0,
         opening_weight: 0.0,
         openings: vec![],
+        loads: vec![],
         slit: Default::default(),
     });
     let mut undo = UndoStack::default();
@@ -5927,7 +5861,7 @@ fn test_set_attached_wall_plate_extent_and_anchor_noop() {
             &mut model,
             Box::new(crate::SetAttachedWallPlateExtent {
                 id: WallPlateId(0),
-                extent: [900.0, 900.0],
+                extent: Some([900.0, 900.0]),
             })
         ),
         "囲まれた壁版への張り出し変更は Noop"
@@ -5937,7 +5871,7 @@ fn test_set_attached_wall_plate_extent_and_anchor_noop() {
             &mut model,
             Box::new(crate::SetAttachedWallPlateExtent {
                 id: WallPlateId(9),
-                extent: [900.0, 900.0],
+                extent: Some([900.0, 900.0]),
             })
         ),
         "存在しない ID は Noop"
@@ -5951,7 +5885,7 @@ fn test_set_attached_wall_plate_extent_and_anchor_noop() {
                 span: [0.0, 1.0],
                 transfer: LoadTransfer::Anchor,
             },
-            extent: [900.0, 900.0],
+            extent: Some([900.0, 900.0]),
             section: None,
             opening_area: 0.0,
             opening_weight: 0.0,
@@ -5962,11 +5896,11 @@ fn test_set_attached_wall_plate_extent_and_anchor_noop() {
         &mut model,
         Box::new(crate::SetAttachedWallPlateExtent {
             id: aid,
-            extent: [1200.0, -300.0],
+            extent: Some([1200.0, -300.0]),
         })
     ));
     match &model.wall_plates[aid.index()].shape {
-        WallPlateShape::Attached { extent, .. } => assert_eq!(*extent, [1200.0, -300.0]),
+        WallPlateShape::Attached { extent, .. } => assert_eq!(*extent, Some([1200.0, -300.0])),
         other => panic!("{other:?}"),
     }
     assert!(
@@ -5974,7 +5908,7 @@ fn test_set_attached_wall_plate_extent_and_anchor_noop() {
             &mut model,
             Box::new(crate::SetAttachedWallPlateExtent {
                 id: aid,
-                extent: [f64::NAN, 0.0],
+                extent: Some([f64::NAN, 0.0]),
             })
         ),
         "非有限の張り出し量は Noop"
@@ -6075,6 +6009,7 @@ fn test_delete_wall_plate_cascades_region_ids_and_undoes() {
         opening_area: 0.0,
         opening_weight: 0.0,
         openings: vec![],
+        loads: vec![],
         slit: Default::default(),
     });
     let mut region = WallRegion::new(

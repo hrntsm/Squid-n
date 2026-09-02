@@ -381,7 +381,7 @@ GUI 所有フィールドの集合はコード上で 1 箇所（`convert.rs` の
 （新旧モデルの GUI 所有フィールド全一致を assert）を置く。
 
 **上表にない `Model` フィールドは GH 所有（全量置換で消える）を既定とする**（D19）。
-要素紐付きの設計属性（`steel_design_attrs` の欠損率等・`wall_attrs`・`misc_walls` など）も
+要素紐付きの設計属性（`steel_design_attrs` の欠損率等・`wall_attrs` など）も
 同様に消える。GUI で設定済みの属性が置換で失われる場合は warning で通知する。
 移植関数は `Model` の全フィールドを destructuring で列挙する実装とし、フィールド追加時に
 GH 所有／GUI 所有の分類判断がコンパイルエラーで強制されるようにする。

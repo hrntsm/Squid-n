@@ -462,8 +462,12 @@ fn opening_envelope(plate: &WallPlate) -> Option<[f64; 4]> {
 fn plate_geometry(plate: &WallPlate, model: &Model, t: f64) -> Option<InFrameMiscWallGeometry> {
     match &plate.shape {
         WallPlateShape::Enclosed { boundary } => enclosed_geometry(model, t, boundary, plate),
+        // 立ち上がり高さが未指定（＝階高いっぱい）なのは自立壁だけで
+        // （`Model::validate`）、自立壁は `attached_geometry` の対象外である。
+        // ここで高さを階高へ解決してしまうと、階高分の腰壁せいを取付き先の梁へ
+        // 算入する経路が開き、剛性を過大に見る危険側の評価になる。
         WallPlateShape::Attached { anchor, extent } => {
-            attached_geometry(model, t, anchor, *extent, plate.id)
+            attached_geometry(model, t, anchor, (*extent)?, plate.id)
         }
     }
 }
@@ -680,6 +684,7 @@ mod tests {
             opening_area: 0.0,
             opening_weight: 0.0,
             openings,
+            loads: vec![],
             slit,
         });
     }
@@ -701,6 +706,7 @@ mod tests {
             opening_weight: 0.0,
             slit: Default::default(),
             openings: vec![],
+            finish_intensity: 0.0,
         });
         assert!(!wall_is_seismic(&data, &model));
         // 柱際スリット（片側だけでも）→ 不成立
@@ -789,6 +795,7 @@ mod tests {
             opening_weight: 0.0,
             slit: Default::default(),
             openings: vec![],
+            finish_intensity: 0.0,
         });
         assert!(
             !wall_is_seismic(&data, &model),
@@ -865,6 +872,7 @@ mod tests {
             opening_weight: 0.0,
             slit: squid_n_core::model::WallSlit::default(),
             openings: vec![],
+            finish_intensity: 0.0,
         });
         assert!(!is_rc_wall(&data, &model));
         assert!(
@@ -952,6 +960,7 @@ mod tests {
             opening_weight: 0.0,
             slit: Default::default(),
             openings: openings.clone(),
+            finish_intensity: 0.0,
         });
         add_wall_plate(&mut model, openings, WallSlit::default());
         let walls = collect_misc_walls(&model);
@@ -992,6 +1001,7 @@ mod tests {
                 beam_face: [false, false],
             },
             openings: vec![],
+            finish_intensity: 0.0,
         });
         add_wall_plate(
             &mut model,
@@ -1071,6 +1081,7 @@ mod tests {
                 opening_weight: 0.0,
                 slit,
                 openings: vec![],
+                finish_intensity: 0.0,
             });
             assert!(
                 !wall_is_seismic(&data, &model),
@@ -1098,6 +1109,7 @@ mod tests {
                 beam_face: [false, false],
             },
             openings: vec![],
+            finish_intensity: 0.0,
         });
         add_wall_plate(
             &mut model,
@@ -1135,6 +1147,7 @@ mod tests {
                 beam_face: [false, false],
             },
             openings: vec![],
+            finish_intensity: 0.0,
         });
         add_wall_plate(
             &mut model,

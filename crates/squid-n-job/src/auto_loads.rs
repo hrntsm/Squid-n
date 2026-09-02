@@ -822,12 +822,13 @@ mod tests {
                     span: [0.0, 1.0],
                     transfer: LoadTransfer::Anchor,
                 },
-                extent: [500.0, 500.0],
+                extent: Some([500.0, 500.0]),
             },
             section: Some(SectionId(0)),
             opening_area: 0.0,
             opening_weight: 0.0,
             openings: Vec::new(),
+            loads: vec![],
             slit: Default::default(),
         };
         let expected = model
@@ -928,12 +929,13 @@ mod tests {
                     span: [0.0, 1.0],
                     transfer: LoadTransfer::Anchor,
                 },
-                extent: [500.0, 1500.0],
+                extent: Some([500.0, 1500.0]),
             },
             section: Some(SectionId(0)),
             opening_area: 0.0,
             opening_weight: 0.0,
             openings: Vec::new(),
+            loads: vec![],
             slit: Default::default(),
         };
         let expected = model
@@ -1043,12 +1045,13 @@ mod tests {
                 anchor: RegionAnchor::FloorRegion {
                     nodes: [NodeId(n), NodeId(n + 1)],
                 },
-                extent: [500.0, 500.0],
+                extent: Some([500.0, 500.0]),
             },
             section: Some(SectionId(0)),
             opening_area: 0.0,
             opening_weight: 0.0,
             openings: Vec::new(),
+            loads: vec![],
             slit: Default::default(),
         };
         let expected = model

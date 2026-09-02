@@ -4,7 +4,6 @@
 //! - [`generate_stories_multi`] — 複数重力荷重ケースを地震用重量に算入する階生成
 //! - [`generate_stories`] — 単一ケース指定の従来互換ラッパー
 
-use super::misc_wall::accumulate_misc_wall_weight;
 use super::reactions::static_reactions;
 use super::*;
 
@@ -341,7 +340,6 @@ pub fn generate_stories_with_opts(
 
         // §フレーム外雑壁: 部材としてモデル化しない壁の重量を近傍節点へ集計する。
         // （false の場合は自重同期ケースの節点荷重に雑壁分が含まれるため行わない）
-        accumulate_misc_wall_weight(model, &mut node_weight);
         // 取り付く壁版（解析要素を持たない）も同様。false のときは DL 同期
         // （`compute_gravity_auto_load_cases`）側に含まれる。
         crate::wall_attached::accumulate_attached_wall_seismic_weight(model, &mut node_weight);

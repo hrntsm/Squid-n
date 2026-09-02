@@ -61,7 +61,7 @@ pub fn parse_edit_command(value: &serde_json::Value) -> Result<Box<dyn EditComma
             let anchor: RegionAnchor =
                 serde_json::from_value(value.get("anchor").ok_or("anchor が必要です")?.clone())
                     .map_err(|e| format!("anchor の解析に失敗: {e}"))?;
-            let extent = parse_f64_pair(value.get("extent"), "extent")?;
+            let extent = parse_optional_f64_pair(value.get("extent"), "extent")?;
             Ok(Box::new(AddAttachedWallPlate {
                 anchor,
                 extent,
@@ -84,18 +84,24 @@ pub fn parse_edit_command(value: &serde_json::Value) -> Result<Box<dyn EditComma
                 Some(v) => serde_json::from_value::<Vec<WallOpening>>(v.clone())
                     .map_err(|e| format!("openings の解析に失敗: {e}"))?,
             };
+            let loads = match value.get("loads") {
+                None | Some(serde_json::Value::Null) => Vec::new(),
+                Some(v) => serde_json::from_value(v.clone())
+                    .map_err(|e| format!("loads の解析に失敗: {e}"))?,
+            };
             Ok(Box::new(SetWallPlateAttrs {
                 id: parse_wall_plate_id(value.get("id").ok_or("id が必要です")?)?,
                 opening_area: parse_f64(value.get("opening_area"), "opening_area")?.unwrap_or(0.0),
                 opening_weight: parse_f64(value.get("opening_weight"), "opening_weight")?
                     .unwrap_or(0.0),
                 openings,
+                loads,
                 slit: parse_slit(value.get("slit"))?,
             }))
         }
         "SetAttachedWallPlateExtent" => Ok(Box::new(SetAttachedWallPlateExtent {
             id: parse_wall_plate_id(value.get("id").ok_or("id が必要です")?)?,
-            extent: parse_f64_pair(value.get("extent"), "extent")?,
+            extent: parse_optional_f64_pair(value.get("extent"), "extent")?,
         })),
         "SetAttachedWallPlateAnchor" => {
             let anchor: RegionAnchor =
@@ -457,6 +463,18 @@ fn parse_bool_pair(value: Option<&serde_json::Value>, field: &str) -> Result<[bo
             .as_bool()
             .ok_or_else(|| format!("{field}[1] は真偽値です"))?,
     ])
+}
+
+/// 壁版の立ち上がり高さのように「未指定」に意味がある 2 要素配列を読む。
+/// キーが無い、または `null` なら `None`（＝階高いっぱい）。
+fn parse_optional_f64_pair(
+    value: Option<&serde_json::Value>,
+    field: &str,
+) -> Result<Option<[f64; 2]>, String> {
+    match value {
+        None | Some(serde_json::Value::Null) => Ok(None),
+        Some(_) => parse_f64_pair(value, field).map(Some),
+    }
 }
 
 fn parse_f64_pair(value: Option<&serde_json::Value>, field: &str) -> Result<[f64; 2], String> {

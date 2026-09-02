@@ -65,9 +65,6 @@ pub struct Model {
     /// （自重控除は常に生の開口面積和）。既定は「等価開口とする」。
     #[serde(default)]
     pub multi_opening_mode: MultiOpeningMode,
-    /// フレーム外雑壁。
-    #[serde(default)]
-    pub misc_walls: Vec<OutOfFrameMiscWall>,
     /// 応力解析の計算条件（令82条の応力解析。長期軸力を負担させない部材の指定）。
     #[serde(default)]
     pub stress_cfg: StressAnalysisCfg,
@@ -627,6 +624,27 @@ impl Model {
                 }
             }
         }
+        // 立ち上がり高さの未指定（＝階高いっぱい）を許すのは自立壁だけである。
+        // 取付き線に取り付く全高の壁は、囲む柱梁が高さを決めるので囲まれた壁版
+        // （`WallPlateShape::Enclosed`）で表す。線アンカーで未指定を許すと、
+        // `squid_n_element::misc_wall` が階高分の腰壁せいを取付き先の梁 1 本へ
+        // 丸ごと算入し、梁の剛性を過大に、変形を過小に見る危険側の評価になる。
+        for plate in &self.wall_plates {
+            if let WallPlateShape::Attached {
+                anchor,
+                extent: None,
+            } = &plate.shape
+            {
+                if !matches!(anchor, RegionAnchor::FloorRegion { .. }) {
+                    return Err(CoreError::DanglingRef(format!(
+                        "WallPlate {} は立ち上がり高さが未指定（階高いっぱい）だが、\
+                         取付き先が床領域ではない。未指定を許すのは自立壁だけで、\
+                         取付き線に取り付く全高の壁は囲まれた壁版として入力する",
+                        plate.id.0
+                    )));
+                }
+            }
+        }
 
         // 大梁または小梁で囲まれた床板は、同じ境界を持つものが 2 つあってはならない。
         // 2 つあると、その床領域の荷重が二重に分配される。
@@ -832,7 +850,6 @@ impl Model {
             && self.mass_method == other.mass_method
             && self.load_cfg == other.load_cfg
             && self.wall_attrs == other.wall_attrs
-            && self.misc_walls == other.misc_walls
             && self.wall_plates == other.wall_plates
             && self.stress_cfg == other.stress_cfg
             && self.steel_design_attrs == other.steel_design_attrs
@@ -1590,6 +1607,7 @@ mod node_reference_tests {
             opening_area: 0.0,
             opening_weight: 0.0,
             openings: Vec::new(),
+            loads: vec![],
             slit: Default::default(),
         });
         model.wall_plates.push(WallPlate {
@@ -1600,12 +1618,13 @@ mod node_reference_tests {
                     span: [0.0, 1.0],
                     transfer: LoadTransfer::Anchor,
                 },
-                extent: [0.0, 0.0],
+                extent: Some([0.0, 0.0]),
             },
             section: None,
             opening_area: 0.0,
             opening_weight: 0.0,
             openings: Vec::new(),
+            loads: vec![],
             slit: Default::default(),
         });
 
@@ -1633,12 +1652,13 @@ mod node_reference_tests {
                 anchor: RegionAnchor::FloorRegion {
                     nodes: [NodeId(10), NodeId(10)],
                 },
-                extent: [0.0, 0.0],
+                extent: Some([0.0, 0.0]),
             },
             section: None,
             opening_area: 0.0,
             opening_weight: 0.0,
             openings: Vec::new(),
+            loads: vec![],
             slit: Default::default(),
         });
 

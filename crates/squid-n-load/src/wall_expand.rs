@@ -231,6 +231,7 @@ pub fn expand_wall_elements_owned(
                     opening_weight: plate.opening_weight,
                     slit: plate.slit,
                     openings: plate.openings.clone(),
+                    finish_intensity: plate.finish_intensity(),
                 },
             ));
             report.generated += 1;
@@ -300,6 +301,7 @@ mod tests {
             opening_area: 0.0,
             opening_weight: 0.0,
             openings: Vec::new(),
+            loads: vec![],
             slit: Default::default(),
         }
     }
@@ -316,6 +318,51 @@ mod tests {
         }
         m.sections.push(section(0));
         m
+    }
+
+    /// 壁版の仕上げ・増打ちの面荷重を、合成する `WallAttr` へ写す。
+    ///
+    /// 壁エレメントの自重は要素経由（`story_gen::self_weight_calc`）で算定するため、
+    /// ここで写し忘れると**壁エレメントになる壁版だけ**仕上げ・増打ちの重さが
+    /// 黙って落ちる。要素にならない壁版は `Model::wall_plate_self_weight` を直接
+    /// 使うので落ちず、差が出るのは要素になる壁版だけという気づきにくい形になる。
+    #[test]
+    fn test_copies_finish_intensity_into_synthesized_wall_attr() {
+        use squid_n_core::model::AreaLoad;
+
+        let mut m = base_model();
+        let mut plate = quad_plate(0, Some(SectionId(0)));
+        plate.loads = vec![
+            AreaLoad {
+                kind: "増打ち".into(),
+                value: 4.0e-4,
+            },
+            AreaLoad {
+                kind: "仕上げ".into(),
+                value: 3.0e-4,
+            },
+        ];
+        m.wall_plates.push(plate);
+        m.wall_regions.push(WallRegion {
+            id: WallRegionId(0),
+            name: String::new(),
+            boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
+            wall_plate_ids: vec![squid_n_core::ids::WallPlateId(0)],
+            posts: Vec::new(),
+        });
+
+        let (expanded, _index, report) = expand_wall_elements(&m);
+        assert_eq!(report.generated, 1);
+        let attr = expanded
+            .wall_attrs
+            .first()
+            .expect("合成された WallAttr が 1 件");
+        // 複数件の面荷重は合算して写す（`WallPlate::finish_intensity` と同じ）。
+        assert!(
+            (attr.finish_intensity - 7.0e-4).abs() < 1e-12,
+            "{}",
+            attr.finish_intensity
+        );
     }
 
     #[test]
@@ -501,12 +548,13 @@ mod tests {
                     span: [0.0, 1.0],
                     transfer: squid_n_core::model::LoadTransfer::Anchor,
                 },
-                extent: [900.0, 900.0],
+                extent: Some([900.0, 900.0]),
             },
             section: Some(SectionId(0)),
             opening_area: 0.0,
             opening_weight: 0.0,
             openings: Vec::new(),
+            loads: vec![],
             slit: Default::default(),
         });
         // 取り付く壁版はどの壁領域からも参照されない（wall_plate_ids に入らない）ため、

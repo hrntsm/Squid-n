@@ -490,6 +490,7 @@ fn test_wall_quantity_with_opening() {
         opening_weight: 0.0,
         slit: Default::default(),
         openings: vec![],
+        finish_intensity: 0.0,
     });
 
     let q = compute_quantity_takeoff(&model, &QuantityCfg::default());
@@ -535,6 +536,7 @@ fn test_wall_quantity_via_wall_plate_is_included() {
         opening_area: 0.0,
         opening_weight: 0.0,
         openings: Vec::new(),
+        loads: vec![],
         slit: Default::default(),
     });
     model.wall_regions.push(WallRegion {
@@ -563,7 +565,7 @@ fn test_wall_quantity_via_wall_plate_is_included() {
 /// 取り付く壁版（`Attached`。パラペット等）は解析要素を持たない（D5）ため、
 /// `wall_quantity`（エレメント経由）ではなく `attached_wall_plate_quantity`
 /// （`WallPlate` から直接算定）が数量へ算入する。カテゴリは
-/// `OutOfFrameMiscWall` の後継として `MemberCategory::MiscWall` を使う。
+/// 雑壁の区分として `MemberCategory::MiscWall` を使う。
 #[test]
 fn test_attached_wall_plate_quantity_is_included_as_misc_wall() {
     use squid_n_core::ids::WallPlateId;
@@ -585,12 +587,13 @@ fn test_attached_wall_plate_quantity_is_included_as_misc_wall() {
                 span: [0.0, 1.0],
                 transfer: squid_n_core::model::LoadTransfer::Anchor,
             },
-            extent: [1000.0, 1000.0],
+            extent: Some([1000.0, 1000.0]),
         },
         section: Some(SectionId(2)),
         opening_area: 0.0,
         opening_weight: 0.0,
         openings: Vec::new(),
+        loads: vec![],
         slit: Default::default(),
     });
     assert!(model.elements.iter().all(|e| e.kind != ElementKind::Wall));
