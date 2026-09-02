@@ -8,7 +8,7 @@ use squid_n_edit::UndoStack;
 use squid_n_solver::analysis::{AiMode, Analysis, SeismicDir};
 
 /// 解析条件。実体は [`squid_n_job::settings`]（GUI と MCP で同一の条件を使う）。
-pub use squid_n_job::settings::{AnalysisSettings, ThDampingModel, ThDir, ThIntegrator};
+pub use squid_n_job::settings::{AnalysisSettings, ThDampingModel, ThDir};
 
 /// 工程タブ（UI設計 §1.1）。進行ロックしない。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]

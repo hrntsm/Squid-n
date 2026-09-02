@@ -4,8 +4,8 @@
 //! - [`nonlinear_time_history_analysis`] — 非線形時刻歴応答解析
 
 use super::common::{
-    horizontal_influence_m, mass_accel_free_into, solve_initial_accel, sparse_matvec_into,
-    theta_accel_at, theta_influence_m,
+    empty_response, mass_accel_free_into, reduced_vec_from, resolve_dt, solve_initial_accel,
+    sparse_matvec_into, GroundInfluence, NewmarkCoeffs,
 };
 use super::config::{GroundMotion, NewmarkCfg};
 use super::history::{
@@ -100,31 +100,11 @@ pub fn nonlinear_time_history_analysis(
     // 部材は弾性のまま際限なく応力を負担し、応答を過小評価する（危険側）。
     squid_n_element::factory::ensure_nonlinear_input(model).map_err(SolveError::InvalidInput)?;
 
-    let dt = if newmark.dt > 0.0 {
-        newmark.dt
-    } else {
-        wave.dt
-    };
-    if dt <= 0.0 {
-        return Err(SolveError::Backend(
-            "time history: dt must be positive".into(),
-        ));
-    }
+    let dt = resolve_dt(newmark.dt, wave)?;
 
     let n_indep = reducer.n_indep;
     if n_indep == 0 {
-        return Ok(ResponseResult {
-            // 解くべきステップがない退化ケース。
-            non_converged_steps: 0,
-            time: vec![],
-            peak_disp: vec![[0.0; 6]; model.nodes.len()],
-            story_drift_angle: vec![0.0; model.layer_count()],
-            cumulative_ductility: vec![0.0; model.elements.len()],
-            history: ResponseHistory::default(),
-            recording: None,
-            nonlinear: true,
-            applied_long_term: cfg.apply_long_term,
-        });
+        return Ok(empty_response(model, true, cfg.apply_long_term));
     }
 
     let mut behaviors = build_behaviors(model);
@@ -148,19 +128,20 @@ pub fn nonlinear_time_history_analysis(
 
     // 影響ベクトルと M·r
     let n_free = dofmap.n_active();
-    let (m_r_x, m_r_y) = horizontal_influence_m(model, dofmap, &m_free);
-    // 位相差入力（ねじれ加振）用の回転影響 M·r_θ。
-    let m_r_theta = theta_influence_m(model, dofmap, &m_free);
+    let infl = GroundInfluence::build(model, dofmap, &m_free);
+    let m_r_x: &[f64] = &infl.m_r_x;
+    let m_r_y: &[f64] = &infl.m_r_y;
 
     // Newmark-β 係数
-    let beta = newmark.beta;
-    let gamma = newmark.gamma;
-    let c1 = 1.0 / (beta * dt * dt);
-    let c2 = gamma / (beta * dt);
-    let c3 = 1.0 / (beta * dt);
-    let c4 = 1.0 / (2.0 * beta) - 1.0;
-    let c5 = gamma / beta - 1.0;
-    let c6 = dt * (gamma / (2.0 * beta) - 1.0);
+    let NewmarkCoeffs {
+        c1,
+        c2,
+        c3,
+        c4,
+        c5,
+        c6,
+        ..
+    } = NewmarkCoeffs::new(newmark, dt);
 
     // ── 長期荷重ベクトル（apply_long_term） ─────────────────────────────
     // 長期系荷重ケース（固定・積載等、`LoadCaseKind::is_long_term`）の外力を、
@@ -205,9 +186,7 @@ pub fn nonlinear_time_history_analysis(
 
     // 動的初期条件（initial_disp）は「長期解からの増分」として要素状態へ反映する。
     {
-        let n_init_d = n_indep.min(initial_disp.len());
-        let mut du_dyn = vec![0.0; n_indep];
-        du_dyn[..n_init_d].copy_from_slice(&initial_disp[..n_init_d]);
+        let du_dyn = reduced_vec_from(n_indep, initial_disp);
         for i in 0..n_indep {
             u[i] += du_dyn[i];
         }
@@ -218,9 +197,7 @@ pub fn nonlinear_time_history_analysis(
         }
     }
 
-    let mut v = vec![0.0; n_indep];
-    let n_init_v = n_indep.min(initial_vel.len());
-    v[..n_init_v].copy_from_slice(&initial_vel[..n_init_v]);
+    let mut v = reduced_vec_from(n_indep, initial_vel);
 
     // 累積型減衰力 {Cn}（初期は C·v0）と、各ステップ収束時の減衰力（累積更新用）。
     let mut f_damp = sparse_matvec(&c_red, &v);
@@ -244,21 +221,7 @@ pub fn nonlinear_time_history_analysis(
     // p(0) は地震外力（符号込み −M·r·ẍg）、f0 は長期荷重（時刻歴を通じて一定、
     // プッシュオーバーの f0+λ·q と同じ扱い）。f_int(u_0) は長期荷重＋動的初期変位を
     // 反映した現在の要素状態から求まる（既に commit 済み）。
-    let xg0_x = wave.accel_x.first().copied().unwrap_or(0.0);
-    let xg0_y = wave
-        .accel_y
-        .as_ref()
-        .and_then(|a| a.first())
-        .copied()
-        .unwrap_or(0.0);
-    let xg0_theta = theta_accel_at(wave, 0);
-    let p_free_0: Vec<f64> = m_r_x
-        .iter()
-        .zip(m_r_y.iter())
-        .zip(m_r_theta.iter())
-        .map(|((mx, my), mt)| -(mx * xg0_x + my * xg0_y + mt * xg0_theta))
-        .collect();
-    let p_red_0 = reducer.reduce_f(&p_free_0);
+    let p_red_0 = reducer.reduce_f(&infl.force_at(wave, 0));
 
     // 内力（支点ばねの寄与を含む。u_trial は縮約前の全体変位、プッシュオーバーの
     // Newton 反復（`driver.rs`）と同じ経路）。
@@ -279,7 +242,7 @@ pub fn nonlinear_time_history_analysis(
     let n_steps = wave.accel_x.len();
     // P9: u_free/v_free/a_free（自由 DOF 空間への展開）は 1 ステップに 1 回だけ
     // 展開し、以後（ピーク変位・層間変形角・record_history_step・
-    // recorder.record_step）で使い回す（linear.rs/hht.rs と同じ方針。従来は
+    // recorder.record_step）で使い回す（linear.rs と同じ方針。従来は
     // ここだけでも同じ `reducer.expand_u(&u)` を 2 回呼んでいた上、
     // `record_step` 内部でももう一度展開していた）。
     let mut u_free = vec![0.0f64; n_free];
@@ -299,7 +262,7 @@ pub fn nonlinear_time_history_analysis(
     // UI 用の代表応答記録（記録方向は入力加速度の絶対値和が大きい方を自動選択）
     let record_dir_y = choose_record_dir_y(wave);
     let dir_idx = if record_dir_y { 1 } else { 0 };
-    let m_r_record: &[f64] = if record_dir_y { &m_r_y } else { &m_r_x };
+    let m_r_record: &[f64] = if record_dir_y { m_r_y } else { m_r_x };
     let mut history = ResponseHistory {
         node: pick_record_node(model, dofmap, dir_idx),
         record_dir_y,
@@ -354,7 +317,7 @@ pub fn nonlinear_time_history_analysis(
         // 空になっていた（線形経路の ensure_line_member_forces と同じ趣旨）。
         super::recording::ensure_line_member_forces_nonlinear(model, &mf_init)?;
         recorder.record_step(
-            0, 0.0, model, dofmap, &m_r_x, &m_r_y, &ma_free, &u_free, &v_free, &a_free, xg_x_init,
+            0, 0.0, model, dofmap, m_r_x, m_r_y, &ma_free, &u_free, &v_free, &a_free, xg_x_init,
             xg_y_init, &mf_init,
         );
     }
@@ -422,16 +385,7 @@ pub fn nonlinear_time_history_analysis(
         // （毎ステップ数万 Box）、この等価性を利用して捕捉自体を省く。
 
         // 地震荷重（動的分）＋長期荷重（f0、時刻歴を通じて一定）。
-        let xg_x = wave.accel_x[n];
-        let xg_y = wave
-            .accel_y
-            .as_ref()
-            .map(|a| a.get(n).copied().unwrap_or(0.0))
-            .unwrap_or(0.0);
-        let xg_theta = theta_accel_at(wave, n);
-        for i in 0..n_free {
-            p_free_buf[i] = -(m_r_x[i] * xg_x + m_r_y[i] * xg_y + m_r_theta[i] * xg_theta);
-        }
+        infl.force_at_into(wave, n, &mut p_free_buf);
         // 収束判定の分母に使う「動的外力のみ」のノルム基準（長期荷重 f0 を含まない）。
         // 長期荷重が卓越するモデルでは f0 を含めると分母が過大になり、動的外力に
         // 対する収束判定が実質的に緩んでしまう。
@@ -688,8 +642,8 @@ pub fn nonlinear_time_history_analysis(
                 t_next,
                 model,
                 dofmap,
-                &m_r_x,
-                &m_r_y,
+                m_r_x,
+                m_r_y,
                 &ma_free,
                 &u_free,
                 &v_free,

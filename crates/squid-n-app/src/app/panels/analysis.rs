@@ -374,28 +374,8 @@ impl App {
             )
             .on_hover_text(
                 "各部材の復元力特性（ひび割れ・降伏等）を考慮し、\
-                         各時刻ステップを Newton 反復で解く時刻歴応答解析。\
-                         積分法は Newmark-β 固定になります。",
+                         各時刻ステップを Newton 反復で解く時刻歴応答解析。",
             );
-        });
-        ui.horizontal_wrapped(|ui| {
-            ui.label("積分法:");
-            // 低: 非線形 ON でも Newmark-β は選択状態のまま有効表示にする
-            // （非線形時刻歴は常に Newmark-β 相当で解くため、選択自体は無効化する
-            // 理由がない）。HHT-α のみ無効化し、hover で理由を示す。
-            ui.selectable_value(
-                &mut self.analysis_cfg.th_integrator,
-                ThIntegrator::NewmarkBeta,
-                "Newmark-β",
-            );
-            ui.add_enabled_ui(!self.analysis_cfg.th_nonlinear, |ui| {
-                ui.selectable_value(
-                    &mut self.analysis_cfg.th_integrator,
-                    ThIntegrator::HhtAlpha,
-                    "HHT-α(α=-0.1)",
-                )
-                .on_disabled_hover_text("非線形時刻歴は Newmark-β 固定です（HHT-α は線形専用）。");
-            });
         });
         if self.analysis_cfg.th_nonlinear {
             ui.horizontal_wrapped(|ui| {
@@ -416,7 +396,7 @@ impl App {
                     "3D アニメーション・層応答グラフ・部材履歴用の詳細記録\
                          （ThRecording）を N ステップごとに 1 フレーム記録します。\
                          0 なら記録フレーム数が概ね 1000 になるよう自動決定します\
-                         （線形・HHT-α・非線形の 3 経路とも共通）。\
+                         （線形・非線形のどちらの経路でも共通）。\
                          ピーク値（最大変位・最大内力・層せん断力係数の最大値）は\
                          間引かず全ステップで更新するため、この値は精度ではなく\
                          アニメーション・履歴グラフの解像度とメモリ使用量に影響します。",
