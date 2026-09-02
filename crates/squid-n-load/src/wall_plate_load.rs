@@ -178,6 +178,62 @@ fn project_on_segment(p: [f64; 3], a: [f64; 3], b: [f64; 3]) -> Option<f64> {
         .then(|| s.clamp(0.0, len))
 }
 
+/// 境界の辺ごとに、耐震スリットで縁が切れているかを返す（`boundary` と同じ並び）。
+///
+/// スリットは辺ごとの縁切りなので、辺の役割（柱際か梁際か、下辺か上辺か）へ
+/// 対応付ける必要がある。柱際は [`WallPlate::column_face_nodes`] の並びで、
+/// 梁際は標高の低い側を下辺として引き当てる。
+///
+/// 境界が 4 節点でない壁版は役割を決められないため、切れていないものとして扱う
+/// （スリットは 4 節点の囲まれた壁版でのみ意味を持つ。[`squid_n_core::model::WallSlit`]）。
+fn slit_edge_flags(
+    model: &Model,
+    plate: &WallPlate,
+    boundary: &[NodeId],
+    coords: &[[f64; 3]],
+) -> Vec<bool> {
+    let n = boundary.len();
+    let mut out = vec![false; n];
+    if n != 4 || !plate.slit.any() {
+        return out;
+    }
+    let faces = plate.column_face_nodes(model);
+    // 辺の中点標高が低いほうを下辺とする。
+    let mid_z = |i: usize| (coords[i][2] + coords[(i + 1) % n][2]) / 2.0;
+    let horizontal: Vec<usize> = (0..n)
+        .filter(|&i| is_horizontal(coords[i], coords[(i + 1) % n]))
+        .collect();
+    let lowest = horizontal
+        .iter()
+        .copied()
+        .min_by(|&a, &b| mid_z(a).total_cmp(&mid_z(b)));
+    for i in 0..n {
+        let (a, b) = (coords[i], coords[(i + 1) % n]);
+        if is_vertical(a, b) {
+            // 柱際。辺の下端の節点で左右を引き当てる。
+            let lower = if a[2] <= b[2] {
+                boundary[i]
+            } else {
+                boundary[(i + 1) % n]
+            };
+            if let Some([f0, f1]) = faces {
+                if f0 != f1 {
+                    if lower == f0 {
+                        out[i] = plate.slit.column_face[0];
+                    } else if lower == f1 {
+                        out[i] = plate.slit.column_face[1];
+                    }
+                }
+            }
+        } else if is_horizontal(a, b) {
+            // 梁際。もっとも低い水平な辺を下辺、それ以外を上辺とする。
+            let is_bottom = lowest == Some(i);
+            out[i] = plate.slit.beam_face[usize::from(!is_bottom)];
+        }
+    }
+    out
+}
+
 /// 壁版 1 枚の自重を辺へ配る（モジュール doc「一方向版として配る」）。
 ///
 /// 荷重の分配と地震用重量の集計が同じ規則を見るよう、辺への配分はこの関数 1 つに置く。
@@ -203,11 +259,16 @@ fn edge_shares_with(index: &SupportIndex, plate: &WallPlate) -> Vec<WallEdgeShar
         return Vec::new();
     };
 
-    // 支持部材のある鉛直な辺を集める。
+    // 支持部材のある鉛直な辺を集める。**縁が切れている辺は集めない。**
+    // スリットを入れた辺は周辺部材と縁が切れており、自重を伝えられないためである。
     let n = boundary.len();
+    let slit_edge = slit_edge_flags(model, plate, boundary, &coords);
     let mut vertical: Vec<(usize, Option<SecondaryKey>)> = Vec::new();
     let mut horizontal: Vec<usize> = Vec::new();
     for i in 0..n {
+        if slit_edge[i] {
+            continue;
+        }
         let (a, b) = (coords[i], coords[(i + 1) % n]);
         if is_vertical(a, b) {
             match index.of(a, b) {

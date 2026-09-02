@@ -170,7 +170,7 @@ fn wall_with_opening_has_larger_ratio_than_without() {
         elem: ElemId(0),
         opening_area: 0.1 * 4000.0 * 3000.0,
         opening_weight: 0.0,
-        three_side_slit: false,
+        slit: Default::default(),
         openings: vec![],
     }));
     let res_opening =
@@ -184,16 +184,19 @@ fn wall_with_opening_has_larger_ratio_than_without() {
     );
 }
 
-/// 三方スリットが指定された壁は耐震壁として扱われず、耐震壁検定自体が
+/// 柱際スリットが指定された壁は耐震壁として扱われず、耐震壁検定自体が
 /// 出力されない。
 #[test]
-fn wall_with_three_side_slit_is_not_checked() {
+fn wall_with_column_face_slit_is_not_checked() {
     let forces: [(f64, [f64; 6]); 1] = [(0.0, [0.0, 500_000.0, 0.0, 0.0, 0.0, 0.0])];
     let model = wall_model(Some(WallAttr {
         elem: ElemId(0),
         opening_area: 0.0,
         opening_weight: 0.0,
-        three_side_slit: true,
+        slit: squid_n_core::model::WallSlit {
+            column_face: [true, true],
+            beam_face: [false, false],
+        },
         openings: vec![],
     }));
     assert!(wall_check_result(&model, &forces).is_none());
@@ -208,7 +211,7 @@ fn wall_with_large_opening_ratio_is_not_checked() {
         elem: ElemId(0),
         opening_area: 0.5 * 4000.0 * 3000.0,
         opening_weight: 0.0,
-        three_side_slit: false,
+        slit: Default::default(),
         openings: vec![],
     }));
     assert!(wall_check_result(&model, &forces).is_none());
@@ -240,7 +243,7 @@ fn wall_single_opening_dims_differs_from_area_only_ratio() {
         elem: ElemId(0),
         opening_area: 0.0,
         opening_weight: 0.0,
-        three_side_slit: false,
+        slit: Default::default(),
         openings: vec![WallOpening {
             width: 750.0,
             height: 2000.0,
@@ -254,7 +257,7 @@ fn wall_single_opening_dims_differs_from_area_only_ratio() {
         elem: ElemId(0),
         opening_area: 750.0 * 2000.0,
         opening_weight: 0.0,
-        three_side_slit: false,
+        slit: Default::default(),
         openings: vec![],
     }));
     let res_area_only = wall_check_result(&model_area_only, &forces)
@@ -279,7 +282,7 @@ fn wall_multiple_openings_matches_equivalent_opening() {
         elem: ElemId(0),
         opening_area: 0.0,
         opening_weight: 0.0,
-        three_side_slit: false,
+        slit: Default::default(),
         openings: dims
             .iter()
             .map(|&(w, h)| WallOpening {
@@ -328,7 +331,7 @@ fn wall_multiple_openings_large_ratio_is_not_checked() {
         elem: ElemId(0),
         opening_area: 0.0,
         opening_weight: 0.0,
-        three_side_slit: false,
+        slit: Default::default(),
         openings: vec![
             WallOpening {
                 width: 2000.0,
@@ -376,7 +379,7 @@ fn wall_auto_mode_envelopes_close_openings_and_differs_from_equivalent() {
             elem: ElemId(0),
             opening_area: 0.0,
             opening_weight: 0.0,
-            three_side_slit: false,
+            slit: Default::default(),
             openings: openings.clone(),
         }),
     );
@@ -394,7 +397,7 @@ fn wall_auto_mode_envelopes_close_openings_and_differs_from_equivalent() {
             elem: ElemId(0),
             opening_area: 0.0,
             opening_weight: 0.0,
-            three_side_slit: false,
+            slit: Default::default(),
             openings,
         }),
     );
@@ -411,7 +414,7 @@ fn wall_auto_mode_envelopes_close_openings_and_differs_from_equivalent() {
             elem: ElemId(0),
             opening_area: 0.0,
             opening_weight: 0.0,
-            three_side_slit: false,
+            slit: Default::default(),
             openings: vec![WallOpening {
                 width: 2000.0,
                 height: 2000.0,
@@ -462,7 +465,7 @@ fn wall_envelope_mode_excludes_wall_when_envelope_ratio_too_large() {
         elem: ElemId(0),
         opening_area: 0.0,
         opening_weight: 0.0,
-        three_side_slit: false,
+        slit: Default::default(),
         openings: openings.clone(),
     }));
     assert!(
@@ -476,7 +479,7 @@ fn wall_envelope_mode_excludes_wall_when_envelope_ratio_too_large() {
         elem: ElemId(0),
         opening_area: 0.0,
         opening_weight: 0.0,
-        three_side_slit: false,
+        slit: Default::default(),
         openings,
     }));
     model_envelope.multi_opening_mode = MultiOpeningMode::Envelope;

@@ -12,6 +12,7 @@
 use squid_n_core::ids::NodeId;
 use squid_n_core::model::{
     ElementData, ElementKind, MaterialCategory, Model, RegionAnchor, WallPlate, WallPlateShape,
+    WallSlit,
 };
 use squid_n_core::section_shape::SectionShape;
 
@@ -40,9 +41,10 @@ pub fn is_rc_wall(data: &ElementData, model: &Model) -> bool {
 ///
 /// 材種によらず課す条件:
 /// - 上下辺が大梁（水平材）で囲まれていること（[`wall_is_framed`]）
+/// - 耐震スリットが 4 辺のいずれにも無いこと（切れていると面内せん断を周辺の
+///   柱梁へ伝えられない）
 ///
 /// RC 壁（[`is_rc_wall`]）にのみ課す条件（RC規準・耐震壁の判定）:
-/// - スリット（三方スリット）がないこと
 /// - 壁厚が 120mm 以上であること
 /// - 開口周比 r0=√(開口面積/(l·h)) ≤ 0.4（複数開口モード適用後の面積）。
 ///   `l`・`h` は [`crate::wall_element::wall_element_geometry`] の壁長・高さ
@@ -65,6 +67,15 @@ pub fn wall_is_seismic(data: &ElementData, model: &Model) -> bool {
     if !wall_is_framed_with(&g, model) {
         return false;
     }
+    let attr = model.wall_attrs.iter().find(|w| w.elem == data.id);
+    // スリットのある壁は、負担した面内せん断を周辺の柱梁へ伝えられないため
+    // 耐震壁にしない。4 辺すべてが躯体と一体であることを要する。
+    //
+    // **材種を問わない条件である。** 以降の RC 規準の規定と違い、縁が切れていれば
+    // せん断を伝えられないのは鋼板耐震壁でも同じだからである。
+    if attr.is_some_and(|a| a.slit.any()) {
+        return false;
+    }
     // 以降は RC 規準の耐震壁規定。鋼板耐震壁には課さない。
     if !is_rc_wall(data, model) {
         return true;
@@ -72,10 +83,6 @@ pub fn wall_is_seismic(data: &ElementData, model: &Model) -> bool {
     let Some(t) = wall_thickness(data, model) else {
         return true;
     };
-    let attr = model.wall_attrs.iter().find(|w| w.elem == data.id);
-    if attr.is_some_and(|a| a.three_side_slit) {
-        return false;
-    }
     if t < 120.0 {
         return false;
     }
@@ -244,13 +251,29 @@ pub(crate) struct InFrameMiscWallGeometry {
     /// 位置付き開口の包絡矩形 [x0, z0, x1, z1]（壁ローカル）。
     /// 位置付き開口がない場合は None。
     pub envelope: Option<[f64; 4]>,
+    /// 由来する壁版。どの壁版が実際に算入されたかを外へ問い合わせるために持つ
+    /// （[`misc_stiffness_wall_plates`]）。
+    pub plate: squid_n_core::ids::WallPlateId,
+    /// 耐震スリット。柱際の添字は [`Self::bottom_pair`]（＝ [`Self::wing_length`] の
+    /// `side`）に、梁際の添字は 0 が下辺・1 が上辺（＝ [`Self::strip_height`] の
+    /// `top`）に対応する。切れている辺の長さ・高さは 0 になり、その部材へ算入されない。
+    /// 柱・梁と接する 4 辺を持たない取り付く壁版は常に既定値（切れていない）。
+    pub slit: WallSlit,
 }
 
 impl InFrameMiscWallGeometry {
     /// 柱（side=0: a 側 x=0 の鉛直辺、side=1: b 側 x=lw）に取り付く
     /// 袖壁長さ [mm]（構造階高の 1/2 位置における包絡開口までの距離。
     /// 開口が h/2 を跨がない・位置不明の場合は壁を両側柱で折半 lw/2）。
+    ///
+    /// **柱際スリットのある側は 0 を返す。** その柱とは縁が切れており、袖壁として
+    /// 効かないためである。判定を消費側（断面性能への算入・剛域の張り出し）へ
+    /// 置くと、袖壁長さを使う箇所が増えたときに落とし忘れる。長さ 0 なら
+    /// どの消費側も「壁が無い」と同じ扱いになるので、ここで落とすのが安全である。
     pub fn wing_length(&self, side: usize) -> f64 {
+        if self.slit.column_face.get(side).copied().unwrap_or(false) {
+            return 0.0;
+        }
         match self.envelope {
             Some([x0, z0, x1, z1]) if z0 <= self.h / 2.0 && self.h / 2.0 <= z1 => {
                 if side == 0 {
@@ -267,14 +290,25 @@ impl InFrameMiscWallGeometry {
     /// 取り付く壁高さ [mm]（軸間距離の 1/2 位置における包絡開口までの距離。
     /// 開口が lw/2 を跨がない・位置不明の場合は壁を上下梁で折半 h/2）。
     ///
-    /// **反対側の辺に主架構が無い壁（取り付く壁版）は折半しない。** 梁に載る
-    /// 腰壁・梁から垂れる垂壁は、その 1 本の梁だけが全高を負担するためである。
+    /// **梁際スリットのある側は 0 を返す。** その梁とは縁が切れており、腰壁・
+    /// 垂れ壁として効かないためである（柱際と同じ扱い。[`Self::wing_length`]）。
+    ///
+    /// **反対側の梁が受け持たない壁は折半しない。** 反対側の辺に主架構が無い壁
+    /// （取り付く壁版）と、反対側の梁際が切れている壁（三方スリット等）は、
+    /// この 1 本の梁だけが全高を負担するためである。
     pub fn strip_height(&self, top: bool) -> f64 {
-        let other_missing = if top {
-            self.bottom_pair.is_none()
-        } else {
-            self.top_pair.is_none()
-        };
+        let side = usize::from(top);
+        if self.slit.beam_face[side] {
+            return 0.0;
+        }
+        // 反対側の梁が受け持たない（主架構が無い、または縁が切れている）。
+        let other = usize::from(!top);
+        let other_missing = self.slit.beam_face[other]
+            || if top {
+                self.bottom_pair.is_none()
+            } else {
+                self.top_pair.is_none()
+            };
         let halved = if other_missing { self.h } else { self.h / 2.0 };
         match self.envelope {
             Some([x0, z0, x1, z1]) if x0 <= self.lw / 2.0 && self.lw / 2.0 <= x1 => {
@@ -302,10 +336,24 @@ pub(crate) const RIGID_ZONE_WALL_MIN_THICKNESS_MM: f64 = 100.0;
 /// `Attached` かを問わずすべて雑壁として周辺部材へ算入する。同じ腰壁が入力の形
 /// （囲まれた壁版か取り付く壁版か）で剛性に効いたり効かなかったりしないためである。
 ///
-/// 三方スリットの壁は周辺部材と縁が切れているため剛性算入の対象外とする
-/// （自重は荷重側で別途評価される）。
+/// 柱際スリットのある壁も対象である。切れているのは柱際だけで、上下の梁とは
+/// 一体だからである。どの柱と縁が切れているかは
+/// [`InFrameMiscWallGeometry::slit`] が持ち、その側の
+/// [`InFrameMiscWallGeometry::wing_length`] が 0 になる。
 pub(crate) fn collect_misc_walls(model: &Model) -> Vec<InFrameMiscWallGeometry> {
     collect_walls_where(model, |plate, model, _t| plate_is_misc_wall(plate, model))
+}
+
+/// フレーム内雑壁として周辺部材の断面性能へ剛性算入される壁版の一覧。
+///
+/// モデル化図が「雑壁(周辺部材へ剛性算入)」と着色する対象を決めるために使う。
+/// **判定を組み立て直さず、剛性算入が実際に見ている収集結果
+/// （[`collect_misc_walls`]）から引く。** 図と解析が食い違わないようにするためである。
+pub fn misc_stiffness_wall_plates(model: &Model) -> Vec<squid_n_core::ids::WallPlateId> {
+    collect_misc_walls(model)
+        .into_iter()
+        .map(|g| g.plate)
+        .collect()
 }
 
 /// 剛域算定に用いる壁を収集する（技術基準「剛域の計算」）。
@@ -313,7 +361,8 @@ pub(crate) fn collect_misc_walls(model: &Model) -> Vec<InFrameMiscWallGeometry> 
 /// [`collect_misc_walls`] と違い**耐震壁も含む**。剛域の規定でいう「壁」は
 /// 現場打ちコンクリート壁で厚さ [`RIGID_ZONE_WALL_MIN_THICKNESS_MM`] 以上の
 /// ものを指し、耐震壁として成立するか否かを問わないためである。
-/// 三方スリット壁は周辺部材と縁が切れているため除く（[`collect_walls_where`]）。
+/// 柱際スリットのある壁も含める（切れているのは柱際だけで、上下の梁とは一体で
+/// あるため。袖壁として効かない辺は剛域の算定側で落とす）。
 pub(crate) fn collect_rigid_zone_walls(model: &Model) -> Vec<InFrameMiscWallGeometry> {
     collect_walls_where(model, |plate, model, t| {
         plate_is_rc_wall(plate, model) && t >= RIGID_ZONE_WALL_MIN_THICKNESS_MM
@@ -322,8 +371,13 @@ pub(crate) fn collect_rigid_zone_walls(model: &Model) -> Vec<InFrameMiscWallGeom
 
 /// 壁版をフレーム内雑壁として周辺部材の断面性能へ算入するか。
 ///
-/// 壁エレメントになるのは壁領域全体を覆う 4 節点の壁版だけ
-/// （`Model::wall_plate_covers_region`）なので、覆っていない壁版は常に雑壁である。
+/// 壁領域全体を覆っていない壁版（`Model::wall_plate_covers_region` が偽）は、
+/// 壁エレメントになりえないので常に雑壁である。
+///
+/// 覆う壁版が実際に要素になるかは断面の有無にも依る
+/// （`Model::wall_plate_becomes_element`）が、ここでは `covers_region` で足りる。
+/// 断面が無い壁版は板厚を引けず、呼び出し元の [`collect_walls_where`] が
+/// 幾何を組み立てる前に落とすためである。
 ///
 /// 覆っている壁版は、耐震壁として成立すれば壁エレメントが面内せん断を負担するため
 /// 雑壁にはしない。成立判定は生成された要素に対する [`wall_is_seismic`] へ委ね、
@@ -362,16 +416,16 @@ fn plate_is_rc_wall(plate: &WallPlate, model: &Model) -> bool {
 /// 壁版を走査し、`accept` が true を返したものだけ壁ローカル座標系の
 /// 幾何情報（[`InFrameMiscWallGeometry`]）へ変換して集める。
 ///
-/// 三方スリットの壁は、いずれの用途でも周辺部材と縁が切れているため一律に除く。
+/// 柱際スリットのある壁も対象に含める。切れているのは柱際だけで、上下の梁とは
+/// 一体だからである（垂れ壁・腰壁として梁の剛性に効く）。どの柱と縁が切れて
+/// いるかは [`InFrameMiscWallGeometry::slit`] が持ち、その側の
+/// [`InFrameMiscWallGeometry::wing_length`] が 0 になる。
 fn collect_walls_where(
     model: &Model,
     accept: impl Fn(&WallPlate, &Model, f64) -> bool,
 ) -> Vec<InFrameMiscWallGeometry> {
     let mut out = Vec::new();
     for plate in &model.wall_plates {
-        if plate.three_side_slit {
-            continue;
-        }
         let Some(t) = model.wall_plate_thickness(plate) else {
             continue;
         };
@@ -407,8 +461,10 @@ fn opening_envelope(plate: &WallPlate) -> Option<[f64; 4]> {
 /// 壁版 1 枚を壁ローカル座標系の幾何へ変換する（開口の包絡は呼び出し側が入れる）。
 fn plate_geometry(plate: &WallPlate, model: &Model, t: f64) -> Option<InFrameMiscWallGeometry> {
     match &plate.shape {
-        WallPlateShape::Enclosed { boundary } => enclosed_geometry(model, t, boundary),
-        WallPlateShape::Attached { anchor, extent } => attached_geometry(model, t, anchor, *extent),
+        WallPlateShape::Enclosed { boundary } => enclosed_geometry(model, t, boundary, plate),
+        WallPlateShape::Attached { anchor, extent } => {
+            attached_geometry(model, t, anchor, *extent, plate.id)
+        }
     }
 }
 
@@ -418,6 +474,7 @@ fn enclosed_geometry(
     model: &Model,
     t: f64,
     boundary: &[NodeId],
+    plate: &WallPlate,
 ) -> Option<InFrameMiscWallGeometry> {
     if boundary.len() != 4 {
         return None;
@@ -443,6 +500,25 @@ fn enclosed_geometry(
     } else {
         (t1, t0)
     };
+    // 柱際スリットの添字は `WallPlate::column_face_nodes` の並びに対応する。
+    // ここでの辺の順（b0 / b1）は壁ローカル x の向きで決まり、境界の並び順とは
+    // 限らないため、節点で引き当てて対応付ける。梁際は下辺・上辺が幾何側で
+    // 確定しているので、そのまま写す。
+    let faces = plate.column_face_nodes(model);
+    let slit_of = |n: NodeId| -> bool {
+        match faces {
+            Some([f0, f1]) if f0 != f1 => {
+                if n == f0 {
+                    plate.slit.column_face[0]
+                } else if n == f1 {
+                    plate.slit.column_face[1]
+                } else {
+                    false
+                }
+            }
+            _ => false,
+        }
+    };
     Some(InFrameMiscWallGeometry {
         t,
         lw,
@@ -451,6 +527,11 @@ fn enclosed_geometry(
         top_pair: Some([boundary[ta], boundary[tb]]),
         bottom_dir: [ex[0], ex[1], 0.0],
         envelope: None,
+        plate: plate.id,
+        slit: WallSlit {
+            column_face: [slit_of(boundary[b0]), slit_of(boundary[b1])],
+            beam_face: plate.slit.beam_face,
+        },
     })
 }
 
@@ -465,6 +546,7 @@ fn attached_geometry(
     t: f64,
     anchor: &RegionAnchor,
     extent: [f64; 2],
+    plate: squid_n_core::ids::WallPlateId,
 ) -> Option<InFrameMiscWallGeometry> {
     let RegionAnchor::Line { nodes, span, .. } = anchor else {
         return None;
@@ -503,6 +585,9 @@ fn attached_geometry(
         top_pair,
         bottom_dir: ex,
         envelope: None,
+        plate,
+        // 取り付く壁版は柱・梁と接する 4 辺を持たない（スリットを参照しない）。
+        slit: WallSlit::default(),
     })
 }
 
@@ -576,7 +661,7 @@ mod tests {
     ///
     /// 雑壁の幾何は壁版が情報源であり、壁エレメントになるか（＝雑壁の算入対象から
     /// 外れるか）は「壁版が壁領域全体を覆うか」で決まるため、壁領域も要る。
-    fn add_wall_plate(model: &mut Model, openings: Vec<WallOpening>, three_side_slit: bool) {
+    fn add_wall_plate(model: &mut Model, openings: Vec<WallOpening>, slit: WallSlit) {
         model.wall_regions.push(squid_n_core::model::WallRegion {
             id: squid_n_core::ids::WallRegionId(model.wall_regions.len() as u32),
             name: String::new(),
@@ -595,7 +680,7 @@ mod tests {
             opening_area: 0.0,
             opening_weight: 0.0,
             openings,
-            three_side_slit,
+            slit,
         });
     }
 
@@ -614,13 +699,13 @@ mod tests {
             elem: ElemId(0),
             opening_area: 3.0e6,
             opening_weight: 0.0,
-            three_side_slit: false,
+            slit: Default::default(),
             openings: vec![],
         });
         assert!(!wall_is_seismic(&data, &model));
-        // 三方スリット → 不成立
+        // 柱際スリット（片側だけでも）→ 不成立
         model.wall_attrs[0].opening_area = 0.0;
-        model.wall_attrs[0].three_side_slit = true;
+        model.wall_attrs[0].slit.column_face = [true, false];
         assert!(!wall_is_seismic(&data, &model));
     }
 
@@ -702,7 +787,7 @@ mod tests {
             elem: ElemId(0),
             opening_area,
             opening_weight: 0.0,
-            three_side_slit: false,
+            slit: Default::default(),
             openings: vec![],
         });
         assert!(
@@ -756,13 +841,16 @@ mod tests {
         assert!(!wall_is_seismic(&data, &model), "対角材は上辺に一致しない");
     }
 
-    /// 鋼板耐震壁は RC 規準に由来する条件（スリット・板厚 120mm・開口周比）を
-    /// 課さない。鋼板は板厚 9〜16mm 程度のため、材種を問わず課すと成立しなくなる。
+    /// 鋼板耐震壁は RC 規準に由来する条件（板厚 120mm・開口周比）を課さない。
+    /// 鋼板は板厚 9〜16mm 程度のため、材種を問わず課すと成立しなくなる。
+    ///
+    /// **耐震スリットは材種を問わず課す。** 縁が切れていれば面内せん断を周辺の
+    /// 柱梁へ伝えられないのは、鋼板耐震壁でも同じだからである。
     #[test]
     fn 鋼板耐震壁にはrc固有の成立条件を課さない() {
         use squid_n_core::model::WallAttr;
 
-        // 板厚 9mm・大開口・三方スリットのいずれも、鋼板壁では不成立の理由にしない。
+        // 板厚 9mm・大開口は鋼板壁では不成立の理由にしない。
         let (mut model, mut data) = make_model(9.0);
         model.materials[0].category = MaterialCategory::Steel;
         model.materials[0].fc = None;
@@ -775,14 +863,22 @@ mod tests {
             elem: ElemId(0),
             opening_area: 3.0e6,
             opening_weight: 0.0,
-            three_side_slit: true,
+            slit: squid_n_core::model::WallSlit::default(),
             openings: vec![],
         });
         assert!(!is_rc_wall(&data, &model));
         assert!(
             wall_is_seismic(&data, &model),
-            "鋼板耐震壁は板厚・開口・スリットの条件を課さない"
+            "鋼板耐震壁は板厚・開口の条件を課さない"
         );
+
+        // スリットだけは鋼板壁でも成立を妨げる。
+        model.wall_attrs[0].slit.column_face = [true, false];
+        assert!(
+            !wall_is_seismic(&data, &model),
+            "スリットは材種を問わず課す"
+        );
+        model.wall_attrs[0].slit = squid_n_core::model::WallSlit::default();
 
         // 同じ寸法でも RC 壁なら板厚 120mm 未満で不成立になる。
         let (model, data) = make_model(9.0);
@@ -854,10 +950,10 @@ mod tests {
             elem: ElemId(0),
             opening_area: 0.0,
             opening_weight: 0.0,
-            three_side_slit: false,
+            slit: Default::default(),
             openings: openings.clone(),
         });
-        add_wall_plate(&mut model, openings, false);
+        add_wall_plate(&mut model, openings, WallSlit::default());
         let walls = collect_misc_walls(&model);
         assert_eq!(walls.len(), 1);
         let w = &walls[0];
@@ -876,7 +972,7 @@ mod tests {
         // 薄壁(t=100)・開口位置なし → 折半則
         let (mut model, data) = make_model(100.0);
         model.elements.push(data);
-        add_wall_plate(&mut model, vec![], false);
+        add_wall_plate(&mut model, vec![], WallSlit::default());
         let walls = collect_misc_walls(&model);
         assert_eq!(walls.len(), 1);
         assert!((walls[0].wing_length(0) - 2000.0).abs() < 1e-9);
@@ -884,19 +980,179 @@ mod tests {
     }
 
     #[test]
-    fn test_slit_wall_is_excluded_from_misc_walls() {
+    fn test_column_face_slit_wall_is_collected_as_misc_wall() {
         let (mut model, data) = make_model(150.0);
         model.elements.push(data);
         model.wall_attrs.push(WallAttr {
             elem: ElemId(0),
             opening_area: 0.0,
             opening_weight: 0.0,
-            three_side_slit: true,
+            slit: squid_n_core::model::WallSlit {
+                column_face: [true, true],
+                beam_face: [false, false],
+            },
             openings: vec![],
         });
-        add_wall_plate(&mut model, vec![], true);
-        // スリット壁は耐震壁不成立だが、縁切りのため雑壁算入もしない
-        assert!(collect_misc_walls(&model).is_empty());
+        add_wall_plate(
+            &mut model,
+            vec![],
+            WallSlit {
+                column_face: [true, true],
+                beam_face: [false, false],
+            },
+        );
+        // 柱際スリット壁は耐震壁として不成立だが、上下の梁とは一体なので雑壁として
+        // 算入する（垂れ壁・腰壁として梁の剛性に効く）。切れているのは柱際だけである。
+        let walls = collect_misc_walls(&model);
+        assert_eq!(walls.len(), 1);
+        // どの柱と縁が切れているかは幾何が持ち、袖壁の算入側が辺ごとに落とす。
+        assert_eq!(walls[0].slit.column_face, [true, true]);
+    }
+
+    /// 梁際スリットのある側は腰壁・垂れ壁の高さを 0 とし、反対側の梁が全高を負担する。
+    ///
+    /// 三方スリット（柱際 2 辺＋下辺）の壁は、上の梁だけが躯体と一体である。
+    /// その梁は壁の全高を垂れ壁として負担するので、上下で折半しない。
+    #[test]
+    fn test_strip_height_follows_beam_face_slit() {
+        let geom = |beam_face: [bool; 2]| InFrameMiscWallGeometry {
+            t: 150.0,
+            lw: 4000.0,
+            h: 3000.0,
+            bottom_pair: Some([NodeId(0), NodeId(1)]),
+            top_pair: Some([NodeId(3), NodeId(2)]),
+            bottom_dir: [1.0, 0.0, 0.0],
+            envelope: None,
+            plate: squid_n_core::ids::WallPlateId(0),
+            slit: WallSlit {
+                column_face: [false, false],
+                beam_face,
+            },
+        };
+
+        // 上下とも一体なら折半する。
+        let plain = geom([false, false]);
+        assert!((plain.strip_height(false) - 1500.0).abs() < 1e-9);
+        assert!((plain.strip_height(true) - 1500.0).abs() < 1e-9);
+
+        // 下辺が切れていれば、下の梁は 0、上の梁が全高を負担する（三方スリット）。
+        let bottom = geom([true, false]);
+        assert!((bottom.strip_height(false) - 0.0).abs() < 1e-9);
+        assert!((bottom.strip_height(true) - 3000.0).abs() < 1e-9);
+
+        // 上辺が切れていれば逆になる。
+        let top = geom([false, true]);
+        assert!((top.strip_height(false) - 3000.0).abs() < 1e-9);
+        assert!((top.strip_height(true) - 0.0).abs() < 1e-9);
+    }
+
+    /// スリットのある壁は耐震壁として成立しない。柱際でも梁際でも同じである。
+    #[test]
+    fn test_any_slit_breaks_seismic_wall() {
+        for slit in [
+            WallSlit {
+                column_face: [true, false],
+                beam_face: [false, false],
+            },
+            WallSlit {
+                column_face: [false, false],
+                beam_face: [true, false],
+            },
+            WallSlit {
+                column_face: [false, false],
+                beam_face: [false, true],
+            },
+        ] {
+            let (mut model, data) = make_model(150.0);
+            model.elements.push(data.clone());
+            model.wall_attrs.push(WallAttr {
+                elem: ElemId(0),
+                opening_area: 0.0,
+                opening_weight: 0.0,
+                slit,
+                openings: vec![],
+            });
+            assert!(
+                !wall_is_seismic(&data, &model),
+                "1 辺でも切れていれば不成立: {slit:?}"
+            );
+        }
+    }
+
+    /// 剛性算入されない壁版は `misc_stiffness_wall_plates` に載らない。
+    ///
+    /// モデル化図はこの一覧で「雑壁(周辺部材へ剛性算入)」と「荷重のみ(剛性に
+    /// 算入しない)」を分ける。載る／載らないが実際の算入と食い違うと、図が
+    /// 「算入している」と嘘をつく（三方スリット壁で実際に起きていた）。
+    #[test]
+    fn test_plate_without_thickness_is_not_counted_as_misc_stiffness() {
+        let (mut model, data) = make_model(150.0);
+        model.elements.push(data);
+        // 柱際スリットで耐震壁が不成立になり、雑壁として算入される状態を作る。
+        model.wall_attrs.push(WallAttr {
+            elem: ElemId(0),
+            opening_area: 0.0,
+            opening_weight: 0.0,
+            slit: squid_n_core::model::WallSlit {
+                column_face: [true, true],
+                beam_face: [false, false],
+            },
+            openings: vec![],
+        });
+        add_wall_plate(
+            &mut model,
+            vec![],
+            WallSlit {
+                column_face: [true, true],
+                beam_face: [false, false],
+            },
+        );
+        assert_eq!(
+            misc_stiffness_wall_plates(&model),
+            vec![squid_n_core::ids::WallPlateId(0)],
+            "板厚を引ける壁版は算入対象に載る"
+        );
+
+        // 断面を外すと板厚が引けず、剛性算入の相手が決まらない。
+        model.wall_plates[0].section = None;
+        assert!(
+            misc_stiffness_wall_plates(&model).is_empty(),
+            "板厚を引けない壁版は載らない"
+        );
+    }
+
+    /// 柱際スリットは指定した側だけに効く。左右を独立に持つ意味を固定する。
+    #[test]
+    fn test_column_face_slit_is_per_side() {
+        let (mut model, data) = make_model(150.0);
+        model.elements.push(data);
+        model.wall_attrs.push(WallAttr {
+            elem: ElemId(0),
+            opening_area: 0.0,
+            opening_weight: 0.0,
+            slit: squid_n_core::model::WallSlit {
+                column_face: [true, false],
+                beam_face: [false, false],
+            },
+            openings: vec![],
+        });
+        add_wall_plate(
+            &mut model,
+            vec![],
+            WallSlit {
+                column_face: [true, false],
+                beam_face: [false, false],
+            },
+        );
+        let walls = collect_misc_walls(&model);
+        assert_eq!(walls.len(), 1);
+        // 幾何の添字は `bottom_pair`（＝ `wing_length` の side）に対応する。
+        let faces = model.wall_plates[0]
+            .column_face_nodes(&model)
+            .expect("下辺 2 節点");
+        let bottom = walls[0].bottom_pair.expect("下辺の節点対");
+        let expected = [bottom[0] == faces[0], bottom[1] == faces[0]];
+        assert_eq!(walls[0].slit.column_face, expected);
     }
 
     /// 壁展開を経ていないモデル（壁エレメントが 1 つも無い）でも、壁領域全体を覆う
@@ -904,7 +1160,7 @@ mod tests {
     #[test]
     fn 未展開モデルの覆う壁版は雑壁に算入しない() {
         let (mut model, _data) = make_model(150.0);
-        add_wall_plate(&mut model, vec![], false);
+        add_wall_plate(&mut model, vec![], WallSlit::default());
         assert!(
             model.elements.iter().all(|e| e.kind != ElementKind::Wall),
             "壁エレメントを持たないモデル"
@@ -916,7 +1172,7 @@ mod tests {
     fn test_seismic_wall_not_collected() {
         let (mut model, data) = make_model(150.0);
         model.elements.push(data);
-        add_wall_plate(&mut model, vec![], false);
+        add_wall_plate(&mut model, vec![], WallSlit::default());
         assert!(collect_misc_walls(&model).is_empty());
     }
 }

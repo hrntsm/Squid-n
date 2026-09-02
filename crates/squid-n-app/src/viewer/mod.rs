@@ -325,7 +325,7 @@ impl<'a> FrameFilter<'a> {
 
     /// 節点の配列添字で判定する。要素として持たない描画（支点記号・支点ばね・
     /// 免震マーカー・スラブ・二次部材・剛床代表点）を構面へ絞り込むために使う。
-    /// 「床・二次部材」トグルとは独立で、構面の所属だけを見る。
+    /// 「床壁・二次部材」トグルとは独立で、構面の所属だけを見る。
     pub(crate) fn shows_node(&self, i: usize) -> bool {
         match self.node_on {
             Some(on) => on.get(i).copied().unwrap_or(false),
@@ -451,8 +451,8 @@ use deform::{
 use pick::{member_load_pickable, pick_nearest_member, pick_nearest_node};
 use playback::{advance_play_time, frame_at_time};
 use scene::{
-    draw_axis_gadget, draw_grid_and_axes, draw_mode_rest_ghost, draw_slabs, draws_as_line,
-    element_draw_shape, order_wall_nodes, DrawShape,
+    draw_axis_gadget, draw_grid_and_axes, draw_mode_rest_ghost, draw_slabs, draw_wall_plates,
+    draws_as_line, element_draw_shape, order_wall_nodes, DrawShape,
 };
 use squid_n_core::geom::vec3::dist as member_len3;
 use support::{
@@ -577,9 +577,13 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
         ui.separator();
         // 断面表示: 部材を断面形状の押し出しソリッドで立体表示（全モードと併用可）
         ui.toggle_value(&mut app.show_sections, "断面表示");
-        // 床（スラブ・小梁）・二次部材の表示切替（全モードと併用可。
+        // 床（スラブ・小梁）・壁版・二次部材の表示切替（全モードと併用可。
         // CMQ 図は主架構の図のため設定によらず常に非表示）
-        ui.toggle_value(&mut app.show_floor_secondary, "床・二次部材");
+        ui.toggle_value(&mut app.show_floor_secondary, "床壁・二次部材")
+            .on_hover_text(
+                "床板・小梁・間柱と、解析要素にならない壁版（腰壁・垂壁・パラペット・\
+                 自立壁・間柱で分割された壁）の表示",
+            );
         // 支点記号。質点ビューでは立体の柱脚拘束は関係ないので選択肢自体を出さない。
         if !lumped::is_lumped_view(mode) {
             ui.toggle_value(&mut app.show_supports, "支点")
@@ -1401,7 +1405,14 @@ pub fn viewer_panel(ui: &mut egui::Ui, app: &mut App) {
     let lumped_only = lumped::is_lumped_view(mode) && !app.lumped_show_frame;
     let show_secondary = !lumped_only && mode != ViewMode::Cmq && app.show_floor_secondary;
     if show_secondary {
-        draw_slabs(&painter, app, filter, &proj);
+        draw_slabs(&painter, app, filter, &proj, &coords3);
+        // 要素にならない壁版。壁エレメントは下の部材ループが実線で描く。
+        // モデル化図では描かない。同じ壁版を分類色で描き分ける専用の経路
+        // （`modeling::draw_wall_plates_modeling`）があり、両方描くと青が下に
+        // 透けて「荷重のみ」のウォームグレーが濁り、凡例の色と一致しなくなる。
+        if mode != ViewMode::Modeling {
+            draw_wall_plates(&painter, app, filter, &proj, &coords3);
+        }
     }
 
     // --- 断面ソリッド ---
@@ -2223,7 +2234,7 @@ mod wall_expanded_view_model_tests {
             opening_area: 0.0,
             opening_weight: 0.0,
             openings: Vec::new(),
-            three_side_slit: false,
+            slit: Default::default(),
         });
         model.wall_regions.push(WallRegion {
             id: WallRegionId(0),
@@ -2282,7 +2293,7 @@ mod wall_expanded_view_model_tests {
             opening_area: 0.0,
             opening_weight: 0.0,
             openings: Vec::new(),
-            three_side_slit: false,
+            slit: Default::default(),
         });
         model.wall_regions.push(WallRegion {
             id: WallRegionId(0),

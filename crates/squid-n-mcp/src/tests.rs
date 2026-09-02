@@ -398,12 +398,81 @@ fn test_query_model_wall_plates() {
         opening_area: 0.0,
         opening_weight: 0.0,
         openings: Vec::new(),
-        three_side_slit: false,
+        slit: Default::default(),
     });
     let items = query_model(&m, "wall_plate", None);
     assert_eq!(items.len(), 1);
     assert_eq!(items[0]["id"], 0);
     assert_eq!(items[0]["shape"]["kind"], "Enclosed");
+    // 耐震スリットは辺ごとの真偽値として出す。
+    assert_eq!(
+        items[0]["slit"],
+        serde_json::json!({ "column_face": [false, false], "beam_face": [false, false] })
+    );
+    // 壁エレメントになるかも出す（どの壁版が解析に効いているかを引けるようにする）。
+    assert_eq!(items[0]["becomes_element"], serde_json::json!(false));
+}
+
+/// 耐震スリットは辺ごとに読み書きでき、省略時はどの辺も切れていない扱いになる。
+#[test]
+fn test_apply_edit_set_wall_plate_slit() {
+    use squid_n_core::ids::NodeId;
+    use squid_n_core::model::{WallPlate, WallPlateShape};
+
+    let mut state = ServerState {
+        model: sample_model(),
+        undo: squid_n_edit::UndoStack::new(),
+        jobs: JobRegistry::new(),
+        results: squid_n_io::results::FsResultStore::open(
+            std::env::temp_dir().join(format!("squid-n-test-{}/mcp_slit_test", std::process::id())),
+        )
+        .expect("temp store"),
+    };
+    state.model.wall_plates.push(WallPlate {
+        id: squid_n_core::ids::WallPlateId(0),
+        shape: WallPlateShape::Enclosed {
+            boundary: vec![NodeId(0), NodeId(1), NodeId(0), NodeId(1)],
+        },
+        section: Some(SectionId(0)),
+        opening_area: 0.0,
+        opening_weight: 0.0,
+        openings: Vec::new(),
+        slit: Default::default(),
+    });
+
+    // 三方スリット（柱際 2 辺 ＋ 下辺）を辺の組み合わせで指定する。
+    let body = serde_json::json!({
+        "command": "SetWallPlateAttrs",
+        "id": 0,
+        "slit": { "column_face": [true, true], "beam_face": [true, false] }
+    });
+    assert!(apply_edit(&mut state, &body).expect("apply").applied);
+    assert_eq!(state.model.wall_plates[0].slit.column_face, [true, true]);
+    assert_eq!(state.model.wall_plates[0].slit.beam_face, [true, false]);
+
+    // 片方のキーだけでも指定できる。欠けた側は切れていない扱い。
+    let body = serde_json::json!({
+        "command": "SetWallPlateAttrs",
+        "id": 0,
+        "slit": { "beam_face": [false, true] }
+    });
+    assert!(apply_edit(&mut state, &body).expect("apply").applied);
+    assert_eq!(state.model.wall_plates[0].slit.column_face, [false, false]);
+    assert_eq!(state.model.wall_plates[0].slit.beam_face, [false, true]);
+
+    // 省略すると「どの辺も切れていない」へ戻る（他の属性と同じ既定の扱い）。
+    let body = serde_json::json!({ "command": "SetWallPlateAttrs", "id": 0 });
+    assert!(apply_edit(&mut state, &body).expect("apply").applied);
+    assert!(!state.model.wall_plates[0].slit.any());
+
+    // 要素数が違う配列は誤りとして弾く（片側だけ指定して残りが既定になる、
+    // という黙った解釈をしない）。
+    let body = serde_json::json!({
+        "command": "SetWallPlateAttrs",
+        "id": 0,
+        "slit": { "column_face": [true] }
+    });
+    assert!(apply_edit(&mut state, &body).is_err());
 }
 
 #[test]

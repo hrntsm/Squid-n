@@ -90,10 +90,7 @@ pub fn parse_edit_command(value: &serde_json::Value) -> Result<Box<dyn EditComma
                 opening_weight: parse_f64(value.get("opening_weight"), "opening_weight")?
                     .unwrap_or(0.0),
                 openings,
-                three_side_slit: value
-                    .get("three_side_slit")
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(false),
+                slit: parse_slit(value.get("slit"))?,
             }))
         }
         "SetAttachedWallPlateExtent" => Ok(Box::new(SetAttachedWallPlateExtent {
@@ -415,6 +412,51 @@ fn parse_f64(value: Option<&serde_json::Value>, field: &str) -> Result<Option<f6
             .ok_or_else(|| format!("{field} は数値です: {v}"))
             .map(Some),
     }
+}
+
+/// 耐震スリット `slit` を読む。省略・null は「どの辺も切れていない」。
+///
+/// `{"column_face": [bool, bool], "beam_face": [bool, bool]}` の形で、柱際の添字は
+/// `WallPlate::column_face_nodes` が返す 2 節点に、梁際は 0 が下辺・1 が上辺に対応する。
+/// 片方のキーだけを与えることもでき、欠けた側は切れていない扱いになる。
+fn parse_slit(value: Option<&serde_json::Value>) -> Result<squid_n_core::model::WallSlit, String> {
+    let Some(v) = value else {
+        return Ok(Default::default());
+    };
+    if v.is_null() {
+        return Ok(Default::default());
+    }
+    let obj = v
+        .as_object()
+        .ok_or("slit は column_face / beam_face を持つオブジェクトです")?;
+    Ok(squid_n_core::model::WallSlit {
+        column_face: parse_bool_pair(obj.get("column_face"), "slit.column_face")?,
+        beam_face: parse_bool_pair(obj.get("beam_face"), "slit.beam_face")?,
+    })
+}
+
+/// 2 要素の真偽値配列を読む。省略・null は `[false, false]`。
+fn parse_bool_pair(value: Option<&serde_json::Value>, field: &str) -> Result<[bool; 2], String> {
+    let Some(v) = value else {
+        return Ok([false, false]);
+    };
+    if v.is_null() {
+        return Ok([false, false]);
+    }
+    let arr = v
+        .as_array()
+        .ok_or_else(|| format!("{field} は2要素の真偽値配列です"))?;
+    if arr.len() != 2 {
+        return Err(format!("{field} は2要素の真偽値配列です"));
+    }
+    Ok([
+        arr[0]
+            .as_bool()
+            .ok_or_else(|| format!("{field}[0] は真偽値です"))?,
+        arr[1]
+            .as_bool()
+            .ok_or_else(|| format!("{field}[1] は真偽値です"))?,
+    ])
 }
 
 fn parse_f64_pair(value: Option<&serde_json::Value>, field: &str) -> Result<[f64; 2], String> {

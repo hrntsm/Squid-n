@@ -21,7 +21,7 @@
 //!   tp > 40mm の極厚パネルでは F 値を過大評価しうる点に注意）。
 //! - 耐震壁は `SectionShape::RcWall` を割り当てた Wall 要素のみ検定する。
 //!   設計用せん断力は等価梁化された壁要素の内力の最大水平せん断成分を用いる
-//!   （暫定）。`Model::wall_attrs` に開口面積合計・個別開口寸法・三方スリット
+//!   （暫定）。`Model::wall_attrs` に開口面積合計・個別開口寸法・柱際スリット
 //!   の有無が登録されている場合は以下のとおり配線する。
 //!   - まず `Model::multi_opening_mode`（建物一律。既定は `Equivalent`）に
 //!     応じて `WallAttr::opening_dims_for(mode)` でモード適用後の個別開口

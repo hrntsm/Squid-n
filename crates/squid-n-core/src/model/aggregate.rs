@@ -57,7 +57,7 @@ pub struct Model {
     /// 自重算定の付加設定（鉄骨重量割増率・部材付加線重量）。`None` は既定値。
     #[serde(default)]
     pub load_cfg: Option<LoadCfg>,
-    /// 壁要素の自重算定属性（開口・三方スリット）。
+    /// 壁要素の付帯属性（開口・柱際スリット）。
     #[serde(default)]
     pub wall_attrs: Vec<WallAttr>,
     /// 複数開口の取り扱い（建物一律。耐震壁の開口。RC 規準）。
@@ -1590,7 +1590,7 @@ mod node_reference_tests {
             opening_area: 0.0,
             opening_weight: 0.0,
             openings: Vec::new(),
-            three_side_slit: false,
+            slit: Default::default(),
         });
         model.wall_plates.push(WallPlate {
             id: WallPlateId(1),
@@ -1606,7 +1606,7 @@ mod node_reference_tests {
             opening_area: 0.0,
             opening_weight: 0.0,
             openings: Vec::new(),
-            three_side_slit: false,
+            slit: Default::default(),
         });
 
         // 8: 二次部材（未割当小梁）。領域内（node 2）とは別のフィールドである。
@@ -1639,7 +1639,7 @@ mod node_reference_tests {
             opening_area: 0.0,
             opening_weight: 0.0,
             openings: Vec::new(),
-            three_side_slit: false,
+            slit: Default::default(),
         });
 
         for i in 0..=10u32 {

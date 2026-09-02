@@ -749,7 +749,7 @@ fn build_walls(
     // importer は `WallPlate`（囲まれた壁版）のみを組み立てる。`ElementKind::Wall`
     // 要素はここでは作らない（D4・D5: 解析要素は準備計算からの生成物であり、
     // 入力の正は壁版が持つ。展開は `squid_n_load::wall_expand::expand_wall_elements`
-    // が担う）。開口・三方スリットは ST-Bridge に対応する情報源がないため常に
+    // が担う）。開口・柱際スリットは ST-Bridge に対応する情報源がないため常に
     // 既定値（開口なし）になる（旧 `WallAttr` と同じ挙動）。直後に呼ばれる
     // `rebuild_wall_regions` が、ここで積んだ `WallPlate` を検出済みの壁領域へ
     // 帰属させる（`dev_docs/handoff/床領域・壁領域の再設計_申し送り.md` §5.10）。
@@ -839,7 +839,7 @@ fn build_walls(
             opening_area: 0.0,
             opening_weight: 0.0,
             openings: Vec::new(),
-            three_side_slit: false,
+            slit: Default::default(),
         };
         model.wall_plates.push(plate);
     }

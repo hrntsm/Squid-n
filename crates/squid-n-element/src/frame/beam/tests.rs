@@ -2393,7 +2393,7 @@ fn test_beam_new_misc_wall_wing_augments_column_inplane_stiffness() {
         elem: ElemId(1),
         opening_area: 0.0,
         opening_weight: 0.0,
-        three_side_slit: false,
+        slit: Default::default(),
         openings: openings.clone(),
     });
     // 雑壁の幾何は壁版（入力）が情報源。
@@ -2406,7 +2406,7 @@ fn test_beam_new_misc_wall_wing_augments_column_inplane_stiffness() {
         opening_area: 0.0,
         opening_weight: 0.0,
         openings,
-        three_side_slit: false,
+        slit: Default::default(),
     });
 
     let column = BeamElement::new(&column_elem, &model);
@@ -2558,7 +2558,7 @@ fn test_beam_new_misc_wall_strip_augments_girder_iy_without_100x() {
         elem: ElemId(1),
         opening_area: 0.0,
         opening_weight: 0.0,
-        three_side_slit: false,
+        slit: Default::default(),
         openings: openings.clone(),
     });
     // 雑壁の幾何は壁版（入力）が情報源。
@@ -2571,7 +2571,7 @@ fn test_beam_new_misc_wall_strip_augments_girder_iy_without_100x() {
         opening_area: 0.0,
         opening_weight: 0.0,
         openings,
-        three_side_slit: false,
+        slit: Default::default(),
     });
 
     let beam = BeamElement::new(&beam_elem, &model);
@@ -2619,6 +2619,239 @@ fn test_beam_new_misc_wall_strip_augments_girder_iy_without_100x() {
         (beam.as_z - beam_sec.as_y).abs() < 1e-6,
         "as_z={}",
         beam.as_z
+    );
+}
+
+/// 柱際スリットは、切れている側の柱への袖壁算入だけを落とし、梁への腰壁・垂れ壁
+/// 算入は残す。
+///
+/// スリットのある壁を一律に剛性算入の対象外としていた頃は、上の梁と一体の壁を無視して
+/// 梁の剛性を過小に評価していた（その梁の負担応力を過小に見る危険側）。切れている
+/// のは柱際だけで、上下の梁とは打ち放しで一体だからである。
+#[test]
+fn test_column_face_slit_drops_wing_wall_but_keeps_girder_strip() {
+    use squid_n_core::ids::{ElemId, MaterialId, SectionId};
+    use squid_n_core::model::{
+        ElementData, ElementKind, ForceRegime, LocalAxis, Model, WallAttr, WallOpening,
+    };
+    use squid_n_core::section_shape::SectionShape;
+
+    let make_node = |id: u32, coord: [f64; 3]| Node {
+        id: NodeId(id),
+        coord,
+        restraint: Default::default(),
+        mass: None,
+        story: None,
+        support_spring: None,
+    };
+    let col_sec = Section {
+        id: SectionId(0),
+        name: "C300x300".into(),
+        area: 90000.0,
+        iy: 6.75e8,
+        iz: 6.75e8,
+        j: 1.0e9,
+        depth: 300.0,
+        width: 300.0,
+        as_y: 75000.0,
+        as_z: 75000.0,
+        floor: None,
+        panel_thickness: None,
+        thickness: None,
+        shape: None,
+        material: Some(MaterialId(0)),
+        rebar_material: None,
+        shear_rebar_material: None,
+        steel_material: None,
+    };
+    let beam_sec = Section {
+        id: SectionId(2),
+        name: "G400x600".into(),
+        area: 240000.0,
+        iy: 7.2e9,
+        iz: 3.2e9,
+        j: 1.0e10,
+        depth: 600.0,
+        width: 400.0,
+        as_y: 200000.0,
+        as_z: 200000.0,
+        floor: None,
+        panel_thickness: None,
+        thickness: None,
+        shape: None,
+        material: Some(MaterialId(0)),
+        rebar_material: None,
+        shear_rebar_material: None,
+        steel_material: None,
+    };
+    let wall_shape = SectionShape::RcWall {
+        thickness: 150.0,
+        ps: 0.0025,
+    };
+    let mat = Material {
+        strength_factor: None,
+        concrete_class: Default::default(),
+        id: MaterialId(0),
+        name: "FC24".into(),
+        category: MaterialCategory::Concrete,
+        young: 23000.0,
+        poisson: 0.2,
+        density: 2.4e-9,
+        shear: None,
+        fc: Some(24.0),
+        fy: None,
+    };
+    // 左辺（節点 0-3）が柱、下辺（節点 0-1）が梁。
+    let column_elem = ElementData {
+        id: ElemId(0),
+        kind: ElementKind::Beam,
+        nodes: smallvec::smallvec![NodeId(0), NodeId(3)],
+        section: Some(SectionId(0)),
+        local_axis: LocalAxis {
+            ref_vector: [1.0, 0.0, 0.0],
+        },
+        end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+        force_regime: ForceRegime::Auto,
+        rigid_zone: Default::default(),
+        plastic_zone: None,
+        spring: None,
+    };
+    let beam_elem = ElementData {
+        id: ElemId(2),
+        kind: ElementKind::Beam,
+        nodes: smallvec::smallvec![NodeId(0), NodeId(1)],
+        section: Some(SectionId(2)),
+        local_axis: LocalAxis {
+            ref_vector: [0.0, 0.0, 1.0],
+        },
+        end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+        force_regime: ForceRegime::Auto,
+        rigid_zone: Default::default(),
+        plastic_zone: None,
+        spring: None,
+    };
+    let wall_elem = ElementData {
+        id: ElemId(1),
+        kind: ElementKind::Wall,
+        nodes: smallvec::smallvec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
+        section: Some(SectionId(1)),
+        local_axis: LocalAxis {
+            ref_vector: [0.0, 1.0, 0.0],
+        },
+        end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+        force_regime: ForceRegime::Auto,
+        rigid_zone: Default::default(),
+        plastic_zone: None,
+        spring: None,
+    };
+
+    // 柱際スリットの有無だけを変えたモデルを 2 つ作る。どちらも大開口
+    // （r0 = √(3.6e6 / 12e6) = 0.548 > 0.4）で耐震壁は不成立なので、
+    // 差はスリットだけになる。
+    let build = |slit: squid_n_core::model::WallSlit| -> Model {
+        let openings = vec![WallOpening {
+            width: 2400.0,
+            height: 1500.0,
+            offset: Some([800.0, 750.0]),
+        }];
+        let mut model = Model {
+            nodes: vec![
+                make_node(0, [0.0, 0.0, 0.0]),
+                make_node(1, [4000.0, 0.0, 0.0]),
+                make_node(2, [4000.0, 0.0, 3000.0]),
+                make_node(3, [0.0, 0.0, 3000.0]),
+            ],
+            elements: vec![column_elem.clone(), wall_elem.clone(), beam_elem.clone()],
+            sections: vec![
+                col_sec.clone(),
+                wall_shape.to_section(SectionId(1), "W150".into()),
+                beam_sec.clone(),
+            ],
+            materials: vec![mat.clone()],
+            ..Default::default()
+        };
+        model.wall_attrs.push(WallAttr {
+            elem: ElemId(1),
+            opening_area: 0.0,
+            opening_weight: 0.0,
+            slit,
+            openings: openings.clone(),
+        });
+        model.wall_plates.push(squid_n_core::model::WallPlate {
+            id: squid_n_core::ids::WallPlateId(0),
+            shape: squid_n_core::model::WallPlateShape::Enclosed {
+                boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
+            },
+            section: Some(SectionId(1)),
+            opening_area: 0.0,
+            opening_weight: 0.0,
+            openings,
+            slit,
+        });
+        model
+    };
+
+    use squid_n_core::model::WallSlit;
+    let plain = build(WallSlit::default());
+    let slit = build(WallSlit {
+        column_face: [true, true],
+        beam_face: [false, false],
+    });
+
+    let column_plain = BeamElement::new(&column_elem, &plain);
+    let column_slit = BeamElement::new(&column_elem, &slit);
+    let beam_plain = BeamElement::new(&beam_elem, &plain);
+    let beam_slit = BeamElement::new(&beam_elem, &slit);
+
+    // 柱: スリットありでは袖壁が付かず、断面そのままになる。
+    assert!(
+        column_plain.a > col_sec.area + 1.0,
+        "スリット無しでは袖壁が算入される: a={}",
+        column_plain.a
+    );
+    assert!(
+        (column_slit.a - col_sec.area).abs() < 1e-6,
+        "柱際が切れた側へは袖壁を算入しない: a={}",
+        column_slit.a
+    );
+    assert!(
+        (column_slit.iz - column_plain.iz).abs() / column_plain.iz > 1e-6,
+        "袖壁の有無で面内剛性が変わる"
+    );
+
+    // 梁: スリットの有無で変わらない（上下の梁とは一体のまま）。
+    assert!(
+        beam_plain.a > beam_sec.area + 1.0,
+        "腰壁が算入される: a={}",
+        beam_plain.a
+    );
+    assert!(
+        (beam_slit.a - beam_plain.a).abs() < 1e-9,
+        "柱際スリットは梁への腰壁算入を変えない: {} != {}",
+        beam_slit.a,
+        beam_plain.a
+    );
+    assert!(
+        (beam_slit.iz - beam_plain.iz).abs() < 1e-6,
+        "柱際スリットは梁の面内剛性を変えない"
+    );
+
+    // 梁際スリットは、その梁への腰壁算入を落とす。柱際とは独立に効く。
+    let bottom_slit = build(WallSlit {
+        column_face: [false, false],
+        beam_face: [true, false],
+    });
+    let beam_bottom_slit = BeamElement::new(&beam_elem, &bottom_slit);
+    assert!(
+        (beam_bottom_slit.a - beam_sec.area).abs() < 1e-6,
+        "下辺の梁際を切った側へは腰壁を算入しない: a={}",
+        beam_bottom_slit.a
+    );
+    // 柱は梁際スリットの影響を受けない（袖壁は柱際の縁切りだけで決まる）。
+    let column_bottom_slit = BeamElement::new(&column_elem, &bottom_slit);
+    assert!(
+        (column_bottom_slit.a - column_plain.a).abs() < 1e-9,
+        "梁際スリットは柱の袖壁算入を変えない"
     );
 }
 
@@ -3145,7 +3378,7 @@ fn test_misc_wall_wing_eccentricity_is_independent_of_wall_node_order() {
         elem: ElemId(id),
         opening_area: 0.0,
         opening_weight: 0.0,
-        three_side_slit: false,
+        slit: Default::default(),
         openings: vec![WallOpening {
             width: 2400.0,
             height: 1500.0,
@@ -3696,7 +3929,7 @@ fn portal_with_wing_wall(col_depth: f64, beam_depth: f64, wall_thickness: f64) -
             opening_area: 0.0,
             opening_weight: 0.0,
             openings: vec![],
-            three_side_slit: false,
+            slit: Default::default(),
         }],
         ..Default::default()
     }

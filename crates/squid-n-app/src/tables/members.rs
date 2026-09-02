@@ -369,6 +369,26 @@ pub fn members_table(ui: &mut egui::Ui, app: &mut App) {
             ui.separator();
         }
 
+        // 本表は解析要素の一覧なので、解析要素にならない壁版（腰壁・垂壁・間柱で
+        // 分割された壁等）は行として現れない。壁版の一覧は「壁版」タブが持つため、
+        // そこへ導線を出す（「入力したはずの壁が見当たらない」を防ぐ）。
+        if app
+            .model
+            .wall_plates
+            .iter()
+            .any(|p| !app.model.wall_plate_becomes_element(p))
+        {
+            ui.label(
+                egui::RichText::new(
+                    "解析要素にならない壁版（腰壁・垂壁・パラペット・自立壁・間柱で分割\
+                     された壁など）は、本表には現れません。「壁版」タブで一覧・編集できます。",
+                )
+                .color(crate::theme::GRAY_600)
+                .small(),
+            );
+            ui.separator();
+        }
+
         let n = view.model.elements.len();
         let mut pending_section: Vec<(ElemId, u32)> = Vec::new();
         let mut pending_hysteresis: Vec<(ElemId, HysteresisModel)> = Vec::new();
@@ -1296,7 +1316,7 @@ mod tests {
             opening_area: 0.0,
             opening_weight: 0.0,
             openings: Vec::new(),
-            three_side_slit: false,
+            slit: Default::default(),
         });
         model.wall_regions.push(WallRegion {
             id: WallRegionId(0),

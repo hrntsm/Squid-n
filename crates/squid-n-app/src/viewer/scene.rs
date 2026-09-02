@@ -104,44 +104,147 @@ pub(super) fn element_draw_shape(kind: squid_n_core::model::ElementKind) -> Draw
 
 use squid_n_core::geom::vec3::cross as cross3;
 
-/// 床板（版）の輪郭と塗りを描く。二次部材（小梁・間柱）は実部材と同じ経路
-/// （`draw_mode_rest_ghost` の二次部材ブロック）で別途描画する。
+/// 荷重分配オブジェクト（床板・要素にならない壁版）の破線パターン（描画長 / 間隔, px）。
+const PLATE_DASH: f32 = 6.0;
+const PLATE_GAP: f32 = 4.0;
+/// 同・塗りの不透明度。実部材（壁エレメントは 50）より薄くして手前に出さない。
+const PLATE_FILL_ALPHA: u8 = 28;
+/// 同・輪郭の不透明度。
+const PLATE_STROKE_ALPHA: u8 = 220;
+
+/// 荷重分配オブジェクトの多角形（淡い半透明フィル＋破線の輪郭）を 1 枚描く。
+///
+/// 床板と要素にならない壁版で書式を共有する。**線種が「解析要素かどうか」を、
+/// 色が「床か壁か」を表す**規約であり、実部材（実線・濃い塗り）と弁別できる。
+fn draw_load_plate_polygon(
+    painter: &egui::Painter,
+    coords: &[[f64; 3]],
+    proj: &Projector,
+    color: egui::Color32,
+    fill: bool,
+) {
+    let poly: Vec<egui::Pos2> = coords.iter().copied().map(|c| proj.project(c)).collect();
+    if poly.len() < 3 {
+        return;
+    }
+    if fill {
+        painter.add(egui::Shape::convex_polygon(
+            poly.clone(),
+            theme::translucent(color, PLATE_FILL_ALPHA),
+            egui::Stroke::NONE,
+        ));
+    }
+    let mut closed = poly.clone();
+    closed.push(poly[0]);
+    painter.extend(egui::Shape::dashed_line(
+        &closed,
+        egui::Stroke::new(1.5_f32, theme::translucent(color, PLATE_STROKE_ALPHA)),
+        PLATE_DASH,
+        PLATE_GAP,
+    ));
+}
+
+/// 床板（版）の輪郭・塗り。大梁または小梁で囲まれた床板と、取り付く床板の両方を描く。
+/// 二次部材（小梁・間柱）は実部材と同じ経路（`draw_mode_rest_ghost` の二次部材
+/// ブロック）で別途描画する。
+///
+/// `coords3` は節点インデックス順の**表示用 3D 座標**で、変形図・モード形・時刻歴では
+/// 変形後の位置が入る。周囲の梁が変形するのに床板だけが元の位置に残ると、床が梁から
+/// 浮いて見えて変形の読み取りを妨げるため、床板も同じ座標へ載せる。
 pub(super) fn draw_slabs(
     painter: &egui::Painter,
     app: &App,
     filter: FrameFilter,
     proj: &Projector,
+    coords3: &[[f64; 3]],
 ) {
-    /// 破線パターン（描画長 / 間隔, px）
-    const DASH: f32 = 6.0;
-    const GAP: f32 = 4.0;
-
-    // 床板（版）の輪郭・塗り。大梁または小梁で囲まれた床板と、取り付く床板の両方を描く。
     for slab in &app.model.slabs {
         if !slab_visible_on_frame(slab, filter) {
             continue;
         }
-        let Some(coords) = slab.boundary_coords(&app.model) else {
+        let Some(coords) = slab.boundary_coords_with(|n| coords3.get(n.index()).copied()) else {
             continue;
         };
-        let poly: Vec<egui::Pos2> = coords.iter().copied().map(|c| proj.project(c)).collect();
-        if poly.len() >= 3 {
-            // 面: 淡い半透明の暖色フィル（壁の青と弁別）
-            painter.add(egui::Shape::convex_polygon(
-                poly.clone(),
-                theme::translucent(theme::BEST_YELLOW, 28),
-                egui::Stroke::NONE,
-            ));
-            // 輪郭: 破線（実部材の実線と弁別）
-            let mut closed = poly.clone();
-            closed.push(poly[0]);
-            painter.extend(egui::Shape::dashed_line(
-                &closed,
-                egui::Stroke::new(1.5_f32, theme::translucent(theme::BEST_YELLOW, 220)),
-                DASH,
-                GAP,
-            ));
+        // 面は淡い半透明の暖色フィル（壁の青と弁別）。
+        draw_load_plate_polygon(painter, &coords, proj, theme::BEST_YELLOW, true);
+    }
+}
+
+/// 要素にならない壁版の輪郭・塗り。
+///
+/// 壁版は入力なので、解析要素になるか否かにかかわらず図に出す。要素になる壁版
+/// （[`squid_n_core::model::Model::wall_plate_becomes_element`]）は壁エレメントとして
+/// 実線で描かれるため、ここでは描かない（同じ多角形の二重描画を避ける）。
+///
+/// 対象は要素にならない壁版すべてで、間柱で分割された壁版・5 節点以上の壁領域内の
+/// 壁版・断面未割当の壁版に加え、取り付く壁版（腰壁・垂壁・パラペット・自立壁）も含む。
+/// 取付き先が点（`RegionAnchor::Point`）の壁版は座標を組み立てられないため描けない
+/// （壁の取付き先としては使わない組み合わせ。[`squid_n_core::model::WallPlate`] 参照）。
+///
+/// `coords3` の意味は [`draw_slabs`] と同じ（変形図では変形後の座標が入る）。
+pub(super) fn draw_wall_plates(
+    painter: &egui::Painter,
+    app: &App,
+    filter: FrameFilter,
+    proj: &Projector,
+    coords3: &[[f64; 3]],
+) {
+    for plate in &app.model.wall_plates {
+        if app.model.wall_plate_becomes_element(plate) {
+            continue;
         }
+        if !wall_plate_visible_on_frame(plate, filter) {
+            continue;
+        }
+        let Some(coords) = plate.boundary_coords_with(|n| coords3.get(n.index()).copied()) else {
+            continue;
+        };
+        // 色は「壁」を表す青（床板の暖色と弁別）。線種の破線が「解析要素ではない」を
+        // 表し、壁エレメント（青・実線・濃い塗り）と区別が付く。
+        draw_load_plate_polygon(
+            painter,
+            &coords,
+            proj,
+            theme::DATA_BLUE,
+            plate_fill_is_valid(plate),
+        );
+    }
+}
+
+/// 壁版の内部を塗ってよいか。
+///
+/// 取り付く壁版の立ち上がり高さが両端で符号反転すると、境界の 4 点が自己交差する
+/// 蝶ネクタイ形になる（[`squid_n_core::model::WallPlate::area`] がこの形を避けて
+/// 面積を積分で求めているのと同じ理由）。塗りは凸多角形を前提に三角形へ分割する
+/// ため、この形では輪郭からはみ出す。輪郭の破線だけを描いて、入力が異常である
+/// ことをそのまま見せる。
+pub(super) fn plate_fill_is_valid(plate: &squid_n_core::model::WallPlate) -> bool {
+    use squid_n_core::model::WallPlateShape;
+    match &plate.shape {
+        WallPlateShape::Attached { extent, .. } => extent[0] * extent[1] >= 0.0,
+        WallPlateShape::Enclosed { .. } => true,
+    }
+}
+
+/// 壁版が現在の構面表示に含まれるか（[`slab_visible_on_frame`] の壁版版）。
+pub(super) fn wall_plate_visible_on_frame(
+    plate: &squid_n_core::model::WallPlate,
+    filter: FrameFilter,
+) -> bool {
+    use squid_n_core::model::{RegionAnchor, WallPlateShape};
+    match &plate.shape {
+        WallPlateShape::Enclosed { boundary } => {
+            boundary.iter().all(|n| filter.shows_node(n.index()))
+        }
+        WallPlateShape::Attached { anchor, .. } => match anchor {
+            // 取付き先の節点が構面上にあれば描く（床板の取り付き版と同じ規約）。
+            RegionAnchor::Line { nodes, .. } => nodes.iter().any(|n| filter.shows_node(n.index())),
+            RegionAnchor::FloorRegion { nodes, .. } => {
+                nodes.iter().any(|n| filter.shows_node(n.index()))
+            }
+            // 壁の取付き先としては使わない（`boundary_coords` も `None` を返す）。
+            RegionAnchor::Point(_) => false,
+        },
     }
 }
 
@@ -480,6 +583,124 @@ pub(super) fn draw_axis_gadget(painter: &egui::Painter, cam: &CameraState) {
 mod tests {
     use super::*;
     use squid_n_core::model::ElementKind;
+
+    fn enclosed_plate(boundary: Vec<squid_n_core::ids::NodeId>) -> squid_n_core::model::WallPlate {
+        squid_n_core::model::WallPlate {
+            id: squid_n_core::ids::WallPlateId(0),
+            shape: squid_n_core::model::WallPlateShape::Enclosed { boundary },
+            section: None,
+            opening_area: 0.0,
+            opening_weight: 0.0,
+            openings: Vec::new(),
+            slit: Default::default(),
+        }
+    }
+
+    /// 立ち上がり高さが両端で符号反転する取り付く壁版は、塗らずに輪郭だけ描く。
+    ///
+    /// 境界の 4 点が自己交差する蝶ネクタイ形になり、凸多角形前提の塗りが輪郭から
+    /// はみ出すためである。面積の算定が同じ形を避けているのと同じ理由による
+    /// （`WallPlate::area`）。
+    #[test]
+    fn 符号反転する取り付く壁版は塗らない() {
+        use squid_n_core::ids::NodeId;
+        use squid_n_core::model::{RegionAnchor, WallPlateShape};
+        let mut plate = enclosed_plate(Vec::new());
+        let mut with_extent = |extent: [f64; 2]| {
+            plate.shape = WallPlateShape::Attached {
+                anchor: RegionAnchor::Line {
+                    nodes: [NodeId(0), NodeId(1)],
+                    span: [0.0, 1.0],
+                    transfer: Default::default(),
+                },
+                extent,
+            };
+            plate_fill_is_valid(&plate)
+        };
+        assert!(with_extent([900.0, 900.0]), "同じ向きの立ち上がりは塗る");
+        assert!(with_extent([900.0, 0.0]), "片端 0 は自己交差しない");
+        assert!(with_extent([-900.0, -300.0]), "下向き同士も塗る");
+        assert!(!with_extent([900.0, -900.0]), "符号が反転する壁は塗らない");
+
+        // 囲まれた壁版は境界そのものなので、この理由では塗りを止めない。
+        assert!(plate_fill_is_valid(&enclosed_plate(vec![
+            NodeId(0),
+            NodeId(1),
+            NodeId(2),
+            NodeId(3)
+        ])));
+    }
+
+    /// 構面表示中は、境界節点がすべてその構面にある壁版だけを描く。
+    ///
+    /// 床板（`slab_visible_on_frame`）と同じ規約である。1 点でも構面外にあると
+    /// 多角形が構面から飛び出して描かれ、構面図として読めなくなる。
+    #[test]
+    fn 囲まれた壁版は境界節点が全て構面上にあるときだけ描く() {
+        use squid_n_core::ids::NodeId;
+        let on = [true, true, true, false];
+        let filter = FrameFilter {
+            elem_on: None,
+            node_on: Some(&on),
+        };
+        // 節点 3 が構面外。
+        assert!(!wall_plate_visible_on_frame(
+            &enclosed_plate(vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)]),
+            filter
+        ));
+        assert!(wall_plate_visible_on_frame(
+            &enclosed_plate(vec![NodeId(0), NodeId(1), NodeId(2)]),
+            filter
+        ));
+        // 構面表示していないときはすべて描く。
+        let all = FrameFilter {
+            elem_on: None,
+            node_on: None,
+        };
+        assert!(wall_plate_visible_on_frame(
+            &enclosed_plate(vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)]),
+            all
+        ));
+    }
+
+    /// 取り付く壁版は取付き先の節点が構面上にあれば描く（床板と同じ規約）。
+    /// 取付き先が点の壁版は座標を組み立てられないため描かない。
+    #[test]
+    fn 取り付く壁版は取付き先の節点で構面を判定する() {
+        use squid_n_core::ids::NodeId;
+        use squid_n_core::model::{RegionAnchor, WallPlateShape};
+        let on = [true, false, false];
+        let filter = FrameFilter {
+            elem_on: None,
+            node_on: Some(&on),
+        };
+        let mut plate = enclosed_plate(Vec::new());
+        plate.shape = WallPlateShape::Attached {
+            anchor: RegionAnchor::Line {
+                nodes: [NodeId(0), NodeId(1)],
+                span: [0.0, 1.0],
+                transfer: Default::default(),
+            },
+            extent: [900.0, 900.0],
+        };
+        assert!(wall_plate_visible_on_frame(&plate, filter));
+
+        plate.shape = WallPlateShape::Attached {
+            anchor: RegionAnchor::Line {
+                nodes: [NodeId(1), NodeId(2)],
+                span: [0.0, 1.0],
+                transfer: Default::default(),
+            },
+            extent: [900.0, 900.0],
+        };
+        assert!(!wall_plate_visible_on_frame(&plate, filter));
+
+        plate.shape = WallPlateShape::Attached {
+            anchor: RegionAnchor::Point(NodeId(0)),
+            extent: [900.0, 900.0],
+        };
+        assert!(!wall_plate_visible_on_frame(&plate, filter));
+    }
 
     #[test]
     fn 仕口パネルと面要素は部材線として描かない() {

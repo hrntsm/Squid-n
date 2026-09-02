@@ -74,11 +74,58 @@ pub struct WallPlate {
     /// 優先する（`opening_area` へのフォールバック規約は `WallAttr` と同じ）。
     #[serde(default)]
     pub openings: Vec<WallOpening>,
-    /// 三方スリット。true の場合、自重は上下分配せず全て上部の節点へ伝達する。
-    /// 要素生成される構造壁のときのみ意味を持つ（[`super::WallRegion`] が
-    /// 「囲まれた領域」で、かつ `section` 割当ありの場合）。
+    /// 耐震スリット（辺ごとの縁切り）。[`WallSlit`] 参照。
     #[serde(default)]
-    pub three_side_slit: bool,
+    pub slit: WallSlit,
+}
+
+/// 耐震スリット。壁版の 4 辺それぞれについて、周辺部材との縁を切ったかを持つ。
+///
+/// スリットは辺ごとに入れるものなので、辺ごとに持つ。三方スリットは柱際 2 辺と
+/// 上下いずれか 1 辺、完全スリットは 4 辺すべてが切れた状態として表す。
+///
+/// **垂れ壁・腰壁とは別の概念である。** 垂れ壁は上の梁からぶら下がる短い壁で、
+/// 下端に壁そのものが無い（[`WallPlateShape::Attached`] で表す）。一方、下辺に
+/// スリットを入れた壁は構面いっぱいの全高の壁であり、下の梁と接してはいるが縁が
+/// 切れている。形が違うので、どちらか一方では表せない。
+///
+/// 規則は 2 つある。**剛性は切れていない辺の部材にだけ算入し**（袖壁は柱際、
+/// 腰壁・垂れ壁は梁際）、**自重は切れていない辺へ伝える**。下辺が切れて上辺が
+/// 一体なら、自重は全量が上の梁へ向かう。
+///
+/// 4 辺すべてが一体でなければ耐震壁として成立しない
+/// （`squid_n_element::misc_wall::wall_is_seismic`）。切れた辺があると、負担した
+/// 面内せん断を周辺の柱梁へ伝えられないためである。
+///
+/// 境界が 4 節点の囲まれた壁版でのみ意味を持つ。取り付く壁版は柱・梁と接する
+/// 4 辺を持たないため参照しない。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct WallSlit {
+    /// 柱際（左右の鉛直辺）。添字は [`WallPlate::column_face_nodes`] が返す
+    /// 2 節点に対応する。
+    #[serde(default)]
+    pub column_face: [bool; 2],
+    /// 梁際（0: 下辺、1: 上辺）。
+    #[serde(default)]
+    pub beam_face: [bool; 2],
+}
+
+impl WallSlit {
+    /// いずれかの辺が切れているか。耐震壁の成立判定に用いる。
+    pub fn any(&self) -> bool {
+        self.column_face
+            .iter()
+            .chain(self.beam_face.iter())
+            .any(|&s| s)
+    }
+
+    /// 上下の梁際がともに切れているか。
+    ///
+    /// この壁は自重の伝達先を持たない（柱際は壁の重量を受けない）。入力として
+    /// ありえないので、解析前チェックがエラーで止める。
+    pub fn both_beam_faces(&self) -> bool {
+        self.beam_face[0] && self.beam_face[1]
+    }
 }
 
 impl WallPlate {
@@ -106,6 +153,34 @@ impl WallPlate {
         matches!(&self.shape, WallPlateShape::Enclosed { boundary } if boundary.len() == 4)
     }
 
+    /// 柱際スリット [`WallSlit::column_face`] の添字に対応する境界節点。
+    ///
+    /// 柱際の鉛直辺は、境界のうち標高の低い 2 節点（下辺）から立ち上がる。
+    /// そこで下辺の 2 節点を**境界の並び順**で返し、`column_face[0]` を
+    /// 1 つ目、`[1]` を 2 つ目の柱際に対応させる。
+    ///
+    /// **添字の対応規則はここ 1 か所に置く。** 剛性算入
+    /// （`squid_n_element::misc_wall`）が袖壁を辺ごとに評価するとき、および GUI が
+    /// どちらのスリットかを節点番号で示すときに、同じ並びを見る必要があるためである。
+    ///
+    /// 境界が 4 節点でない壁版・取り付く壁版・節点を引けない壁版は `None`。
+    pub fn column_face_nodes(&self, model: &Model) -> Option<[NodeId; 2]> {
+        let boundary = self.boundary_nodes()?;
+        if boundary.len() != 4 {
+            return None;
+        }
+        let z: Vec<f64> = boundary
+            .iter()
+            .map(|n| model.nodes.get(n.index()).map(|nd| nd.coord[2]))
+            .collect::<Option<_>>()?;
+        let mut order: Vec<usize> = (0..4).collect();
+        order.sort_by(|&a, &b| z[a].total_cmp(&z[b]));
+        // 低い方の 2 点を取り、境界の並び順へ戻す。
+        let mut bottom = [order[0], order[1]];
+        bottom.sort_unstable();
+        Some([boundary[bottom[0]], boundary[bottom[1]]])
+    }
+
     /// 境界の節点列。**柱・梁が囲む壁版のみ**（取り付く壁版は自由端に節点を
     /// 持たないため `None`）。
     pub fn boundary_nodes(&self) -> Option<&[NodeId]> {
@@ -119,20 +194,33 @@ impl WallPlate {
     /// （鉛直上向きの高さ）から算出する。節点が引けない、または壁の取付き先として
     /// 使わない組み合わせ（`RegionAnchor::Point`）の場合は `None`。
     pub fn boundary_coords(&self, model: &Model) -> Option<Vec<[f64; 3]>> {
+        self.boundary_coords_with(|n| model.nodes.get(n.index()).map(|n| n.coord))
+    }
+
+    /// 境界多角形の座標列 [mm] を、節点座標の引き方を差し替えて求める。
+    ///
+    /// [`WallPlate::boundary_coords`] はモデルの節点座標をそのまま使うが、変形図・
+    /// モード形・時刻歴は**変形後の節点座標**で描く必要がある。形状の組み立て方
+    /// （取付き線の内挿・鉛直上向きへの立ち上げ）は同じなので、座標の引き方だけを
+    /// 差し替えられるようにして実装を 1 つに保つ（床側の
+    /// [`super::Slab::boundary_coords_with`] と同じ規約）。
+    pub fn boundary_coords_with(
+        &self,
+        coord_of: impl Fn(NodeId) -> Option<[f64; 3]>,
+    ) -> Option<Vec<[f64; 3]>> {
         match &self.shape {
-            WallPlateShape::Enclosed { boundary } => boundary
-                .iter()
-                .map(|n| model.nodes.get(n.index()).map(|n| n.coord))
-                .collect(),
+            WallPlateShape::Enclosed { boundary } => {
+                boundary.iter().map(|n| coord_of(*n)).collect()
+            }
             WallPlateShape::Attached { anchor, extent } => match anchor {
                 RegionAnchor::Line { nodes, span, .. } => {
-                    let a = model.nodes.get(nodes[0].index())?.coord;
-                    let b = model.nodes.get(nodes[1].index())?.coord;
+                    let a = coord_of(nodes[0])?;
+                    let b = coord_of(nodes[1])?;
                     Self::extrude_up(a, b, *span, *extent)
                 }
                 RegionAnchor::FloorRegion { nodes, .. } => {
-                    let a = model.nodes.get(nodes[0].index())?.coord;
-                    let b = model.nodes.get(nodes[1].index())?.coord;
+                    let a = coord_of(nodes[0])?;
+                    let b = coord_of(nodes[1])?;
                     Self::extrude_up(a, b, [0.0, 1.0], *extent)
                 }
                 // 壁の取付き先としては使わない（モジュール doc 参照）。
@@ -239,6 +327,25 @@ impl Model {
             .iter()
             .filter(|r| r.wall_plate_ids.contains(&plate.id))
             .any(|r| r.boundary.len() == 4 && r.boundary.iter().all(|n| boundary.contains(n)))
+    }
+
+    /// 壁版から壁エレメント（`ElementKind::Wall`）が生成されるか。
+    ///
+    /// 壁領域全体を覆う 4 節点であること（[`Model::wall_plate_covers_region`]）に
+    /// 加えて、**断面が割り当たっていること**を要する。断面が無い壁版は板厚・材料が
+    /// 引けず要素を組み立てられないためである（`squid_n_load::wall_expand` は
+    /// `skipped_no_section` として数える）。
+    ///
+    /// `covers_region` との違いはこの 1 点だけだが、両者を取り違えると
+    /// 「断面未割当の壁版が、要素でもなく荷重だけの壁版でもない」という
+    /// どこからも扱われない状態が生まれる。要素が生成されるかを問うときは
+    /// 必ず本メソッドを使うこと。
+    ///
+    /// **生成の可否を決めるのはここ 1 か所である。** `wall_expand` の生成ゲート・
+    /// 3D ビューの壁版描画（要素として描かれる壁版を除くため）・
+    /// モデルタブ「壁版」の「解析要素」列が同じ答えを見る。
+    pub fn wall_plate_becomes_element(&self, plate: &WallPlate) -> bool {
+        self.wall_plate_covers_region(plate) && plate.section.is_some()
     }
 
     /// 壁版へ割り当てた断面。未割当・ダングリングは `None`。
@@ -473,6 +580,102 @@ mod tests {
         m
     }
 
+    /// `boundary_coords_with` は渡した座標をそのまま使う。変形図・モード形が
+    /// 変形後の節点座標で壁版を描くための入口であり、モデルの元座標へ落ちない
+    /// ことを固定する（落ちると壁版だけが変形前の位置に取り残される）。
+    #[test]
+    fn test_boundary_coords_with_uses_supplied_coords() {
+        let m = model_with_nodes(&[
+            [0.0, 0.0, 0.0],
+            [4000.0, 0.0, 0.0],
+            [4000.0, 0.0, 3000.0],
+            [0.0, 0.0, 3000.0],
+        ]);
+        let p = WallPlate {
+            id: WallPlateId(0),
+            shape: WallPlateShape::Enclosed {
+                boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
+            },
+            section: None,
+            opening_area: 0.0,
+            opening_weight: 0.0,
+            openings: Vec::new(),
+            slit: WallSlit::default(),
+        };
+        // 全節点を +100 mm ずらした「変形後」の座標を渡す。
+        let moved: Vec<[f64; 3]> = m
+            .nodes
+            .iter()
+            .map(|n| [n.coord[0] + 100.0, n.coord[1], n.coord[2]])
+            .collect();
+        let coords = p
+            .boundary_coords_with(|n| moved.get(n.index()).copied())
+            .expect("境界座標");
+        assert_eq!(coords[0], [100.0, 0.0, 0.0]);
+        assert_eq!(coords[1], [4100.0, 0.0, 0.0]);
+
+        // 取り付く壁版も取付き先の節点座標に追従する。
+        let attached = WallPlate {
+            id: WallPlateId(1),
+            shape: WallPlateShape::Attached {
+                anchor: RegionAnchor::Line {
+                    nodes: [NodeId(0), NodeId(1)],
+                    span: [0.0, 1.0],
+                    transfer: Default::default(),
+                },
+                extent: [900.0, 900.0],
+            },
+            section: None,
+            opening_area: 0.0,
+            opening_weight: 0.0,
+            openings: Vec::new(),
+            slit: WallSlit::default(),
+        };
+        let coords = attached
+            .boundary_coords_with(|n| moved.get(n.index()).copied())
+            .expect("境界座標");
+        assert_eq!(coords[0], [100.0, 0.0, 0.0]);
+        assert_eq!(coords[2], [4100.0, 0.0, 900.0]);
+    }
+
+    /// `wall_plate_becomes_element` は断面の有無まで見る。壁領域を覆っていても
+    /// 断面が無ければ要素にならないため、3D ビューは壁版として描く必要がある。
+    #[test]
+    fn test_becomes_element_requires_section() {
+        let mut m = model_with_nodes(&[
+            [0.0, 0.0, 0.0],
+            [4000.0, 0.0, 0.0],
+            [4000.0, 0.0, 3000.0],
+            [0.0, 0.0, 3000.0],
+        ]);
+        let boundary = vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)];
+        m.wall_plates.push(WallPlate {
+            id: WallPlateId(0),
+            shape: WallPlateShape::Enclosed {
+                boundary: boundary.clone(),
+            },
+            section: None,
+            opening_area: 0.0,
+            opening_weight: 0.0,
+            openings: Vec::new(),
+            slit: WallSlit::default(),
+        });
+        m.wall_regions.push(crate::model::WallRegion {
+            id: crate::ids::WallRegionId(0),
+            name: String::new(),
+            boundary,
+            wall_plate_ids: vec![WallPlateId(0)],
+            posts: Vec::new(),
+        });
+
+        // 覆ってはいるが断面が無い。
+        assert!(m.wall_plate_covers_region(&m.wall_plates[0]));
+        assert!(!m.wall_plate_becomes_element(&m.wall_plates[0]));
+
+        m.wall_plates[0].section = Some(SectionId(0));
+        assert!(m.wall_plate_becomes_element(&m.wall_plates[0]));
+    }
+
     #[test]
     fn test_enclosed_boundary_coords_and_area() {
         let m = model_with_nodes(&[
@@ -490,7 +693,7 @@ mod tests {
             opening_area: 0.0,
             opening_weight: 0.0,
             openings: Vec::new(),
-            three_side_slit: false,
+            slit: WallSlit::default(),
         };
         let coords = p.boundary_coords(&m).expect("境界座標");
         assert_eq!(coords.len(), 4);
@@ -511,7 +714,7 @@ mod tests {
             opening_area: 0.0,
             opening_weight: 0.0,
             openings: Vec::new(),
-            three_side_slit: false,
+            slit: WallSlit::default(),
         };
         assert!(quad.has_quad_boundary());
 
@@ -561,7 +764,7 @@ mod tests {
             opening_area: 0.0,
             opening_weight: 0.0,
             openings: Vec::new(),
-            three_side_slit: false,
+            slit: WallSlit::default(),
         };
         let coords = p.boundary_coords(&m).expect("境界座標");
         // 4点とも Y=0（左向き法線方向へは動かない）、上 2 点は Z=3900（+900 立ち上げ）。
@@ -592,7 +795,7 @@ mod tests {
             opening_area: 0.0,
             opening_weight: 0.0,
             openings: Vec::new(),
-            three_side_slit: false,
+            slit: WallSlit::default(),
         };
         let expected = 4000.0 * 2000.0 * 0.5;
         assert!(
@@ -619,7 +822,7 @@ mod tests {
             opening_area: 0.0,
             opening_weight: 0.0,
             openings: Vec::new(),
-            three_side_slit: false,
+            slit: WallSlit::default(),
         };
         assert!((p.area(&m) - 2000.0 * 2500.0).abs() < 1e-6);
     }
@@ -638,7 +841,7 @@ mod tests {
             opening_area: 0.0,
             opening_weight: 0.0,
             openings: Vec::new(),
-            three_side_slit: false,
+            slit: WallSlit::default(),
         };
         assert_eq!(p.boundary_coords(&m), None);
         assert_eq!(p.area(&m), 0.0);
@@ -661,7 +864,7 @@ mod tests {
             opening_area: 0.0,
             opening_weight: 0.0,
             openings: Vec::new(),
-            three_side_slit: false,
+            slit: WallSlit::default(),
         };
         assert_eq!(m.wall_plate_self_weight(&p, &m), None);
     }
@@ -720,7 +923,7 @@ mod tests {
                 height: 1200.0,
                 offset: Some([1550.0, 0.0]),
             }],
-            three_side_slit: false,
+            slit: WallSlit::default(),
         };
         let gross_area = 4000.0 * 3000.0;
         let opening_area = 900.0 * 1200.0;
@@ -788,7 +991,7 @@ mod tests {
             opening_area: 999.0,
             opening_weight: 0.0,
             openings: Vec::new(),
-            three_side_slit: false,
+            slit: WallSlit::default(),
         };
         assert!((p.total_opening_area() - 999.0).abs() < 1e-9);
     }
@@ -806,7 +1009,7 @@ mod tests {
             opening_area: 0.0,
             opening_weight: 1234.0,
             openings: Vec::new(),
-            three_side_slit: false,
+            slit: WallSlit::default(),
         };
         let gross_area = 4000.0 * 3000.0;
         let base = 150.0 * 2.4e-9 * gross_area * crate::units::GRAVITY_MM_S2;
@@ -873,7 +1076,7 @@ mod tests {
             opening_area: 0.0,
             opening_weight: 0.0,
             openings: vec![],
-            three_side_slit: false,
+            slit: WallSlit::default(),
         }
     }
 
@@ -1027,7 +1230,7 @@ mod tests {
             opening_area: 0.0,
             opening_weight: 0.0,
             openings: vec![],
-            three_side_slit: false,
+            slit: WallSlit::default(),
         };
         assert!(m.self_standing_wall_coverage(&p).is_none());
     }

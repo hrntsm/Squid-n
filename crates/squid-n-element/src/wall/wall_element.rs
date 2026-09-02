@@ -1725,7 +1725,7 @@ mod tests {
             elem: ElemId(0),
             opening_area: 0.0,
             opening_weight: 0.0,
-            three_side_slit: false,
+            slit: Default::default(),
             openings: vec![WallOpening {
                 width: 2000.0,
                 height: 1500.0,
@@ -1753,7 +1753,7 @@ mod tests {
             elem: ElemId(0),
             opening_area: 3.0e6, // 25%
             opening_weight: 0.0,
-            three_side_slit: false,
+            slit: Default::default(),
             openings: vec![],
         });
         let wall_o = WallElement::try_new(&data, &model).unwrap();

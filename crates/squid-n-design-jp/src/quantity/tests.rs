@@ -488,7 +488,7 @@ fn test_wall_quantity_with_opening() {
         elem: ElemId(4),
         opening_area: 2.0e6, // 2 m²
         opening_weight: 0.0,
-        three_side_slit: false,
+        slit: Default::default(),
         openings: vec![],
     });
 
@@ -535,7 +535,7 @@ fn test_wall_quantity_via_wall_plate_is_included() {
         opening_area: 0.0,
         opening_weight: 0.0,
         openings: Vec::new(),
-        three_side_slit: false,
+        slit: Default::default(),
     });
     model.wall_regions.push(WallRegion {
         id: WallRegionId(0),
@@ -591,7 +591,7 @@ fn test_attached_wall_plate_quantity_is_included_as_misc_wall() {
         opening_area: 0.0,
         opening_weight: 0.0,
         openings: Vec::new(),
-        three_side_slit: false,
+        slit: Default::default(),
     });
     assert!(model.elements.iter().all(|e| e.kind != ElementKind::Wall));
 

@@ -828,7 +828,7 @@ mod tests {
             opening_area: 0.0,
             opening_weight: 0.0,
             openings: Vec::new(),
-            three_side_slit: false,
+            slit: Default::default(),
         };
         let expected = model
             .wall_plate_self_weight(&plate, &model)
@@ -934,7 +934,7 @@ mod tests {
             opening_area: 0.0,
             opening_weight: 0.0,
             openings: Vec::new(),
-            three_side_slit: false,
+            slit: Default::default(),
         };
         let expected = model
             .wall_plate_self_weight(&plate, &model)
@@ -1049,7 +1049,7 @@ mod tests {
             opening_area: 0.0,
             opening_weight: 0.0,
             openings: Vec::new(),
-            three_side_slit: false,
+            slit: Default::default(),
         };
         let expected = model
             .wall_plate_self_weight(&plate, &model)

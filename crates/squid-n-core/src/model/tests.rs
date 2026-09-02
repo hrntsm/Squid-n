@@ -340,7 +340,7 @@ fn test_wall_attr_total_opening_area_prefers_openings() {
         elem: ElemId(0),
         opening_area: 999.0,
         opening_weight: 0.0,
-        three_side_slit: false,
+        slit: Default::default(),
         openings: vec![
             WallOpening {
                 width: 1000.0,
@@ -387,7 +387,7 @@ fn attr_with(openings: Vec<WallOpening>) -> WallAttr {
         elem: ElemId(0),
         opening_area: 0.0,
         opening_weight: 0.0,
-        three_side_slit: false,
+        slit: Default::default(),
         openings,
     }
 }
@@ -458,15 +458,45 @@ fn test_can_envelope_boundary() {
     assert!(!a.can_envelope(&d));
 }
 
-/// 旧スキーマ(openings 無し)の WallAttr が読み込めること(serde 後方互換)。
+/// 省略可能なフィールド(openings・slit)を欠く WallAttr が読み込めること。
 #[test]
-fn test_wall_attr_serde_backward_compat() {
-    let json = r#"{"elem":3,"opening_area":1200.0,"three_side_slit":true}"#;
+fn test_wall_attr_serde_optional_fields_default() {
+    let json = r#"{"elem":3,"opening_area":1200.0}"#;
     let attr: WallAttr = serde_json::from_str(json).unwrap();
     assert_eq!(attr.elem, ElemId(3));
     assert!(attr.openings.is_empty());
     assert!((attr.total_opening_area() - 1200.0).abs() < 1e-9);
-    assert!(attr.three_side_slit);
+    assert!(!attr.slit.any());
+}
+
+/// スリットは辺ごとに独立して読み書きできる。
+#[test]
+fn test_wall_attr_slit_roundtrip() {
+    let json = r#"{"elem":3,"slit":{"column_face":[true,false],"beam_face":[false,true]}}"#;
+    let attr: WallAttr = serde_json::from_str(json).unwrap();
+    assert_eq!(attr.slit.column_face, [true, false]);
+    assert_eq!(attr.slit.beam_face, [false, true]);
+    assert!(attr.slit.any());
+    assert!(!attr.slit.both_beam_faces());
+}
+
+/// 三方スリット（柱際 2 辺＋下辺）と完全スリット（4 辺）を辺の組み合わせで表せる。
+#[test]
+fn test_slit_expresses_three_side_and_full() {
+    // 三方スリット（垂れ壁型）。上辺だけが躯体と一体なので、自重は上へ向かう。
+    let three_side = WallSlit {
+        column_face: [true, true],
+        beam_face: [true, false],
+    };
+    assert!(three_side.any());
+    assert!(!three_side.both_beam_faces());
+
+    // 完全スリット。上下とも切れているため自重の伝達先が無く、エラーになる。
+    let full = WallSlit {
+        column_face: [true, true],
+        beam_face: [true, true],
+    };
+    assert!(full.both_beam_faces());
 }
 
 #[test]
@@ -1332,7 +1362,7 @@ fn test_validate_dangling_wall_plate_boundary() {
             opening_area: 0.0,
             opening_weight: 0.0,
             openings: vec![],
-            three_side_slit: false,
+            slit: Default::default(),
         }],
         ..Default::default()
     };
@@ -1365,7 +1395,7 @@ fn test_validate_duplicate_enclosed_wall_plate_boundary() {
         opening_area: 0.0,
         opening_weight: 0.0,
         openings: vec![],
-        three_side_slit: false,
+        slit: Default::default(),
     };
     model.wall_plates.push(mk(0, boundary.clone()));
     assert!(model.validate().is_ok());
@@ -1406,7 +1436,7 @@ fn test_validate_checks_wall_plate_anchor_span_bounds() {
         opening_area: 0.0,
         opening_weight: 0.0,
         openings: vec![],
-        three_side_slit: false,
+        slit: Default::default(),
     };
     model.wall_plates = vec![mk([0.0, 1.0])];
     assert!(model.validate().is_ok(), "全長の取り付きは通る");
@@ -1442,7 +1472,7 @@ fn test_validate_self_standing_wall_checks_only_node_refs() {
         opening_area: 0.0,
         opening_weight: 0.0,
         openings: vec![],
-        three_side_slit: false,
+        slit: Default::default(),
     };
     // 床領域が 1 つも無くても、節点が実在すれば `validate` は通る
     // （荷重を流せる床領域に載っているかは幾何の問題で、解析前チェックが見る）。
@@ -1508,7 +1538,7 @@ fn test_validate_wall_plate_shared_by_two_wall_regions() {
         opening_area: 0.0,
         opening_weight: 0.0,
         openings: vec![],
-        three_side_slit: false,
+        slit: Default::default(),
     }];
     model.wall_regions = vec![
         WallRegion {

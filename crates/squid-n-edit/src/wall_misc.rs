@@ -715,7 +715,7 @@ impl EditCommand for AddAttachedWallPlate {
             opening_area: self.opening_area,
             opening_weight: self.opening_weight,
             openings: Vec::new(),
-            three_side_slit: false,
+            slit: Default::default(),
         });
         Box::new(DeleteWallPlate { id })
     }
@@ -764,7 +764,7 @@ impl EditCommand for AddEnclosedWallPlate {
             opening_area: self.opening_area,
             opening_weight: self.opening_weight,
             openings: Vec::new(),
-            three_side_slit: false,
+            slit: Default::default(),
         });
         Box::new(DeleteWallPlate { id })
     }
@@ -884,7 +884,7 @@ impl EditCommand for SetWallPlateSection {
     }
 }
 
-/// 壁版の自重算定属性（開口面積・個別開口・開口部重量・三方スリット）を
+/// 壁版の属性（開口面積・個別開口・開口部重量・耐震スリット）を
 /// 一括変更する。逆操作は変更前の値への復元。存在しない `WallPlateId` は Noop。
 ///
 /// 開口の 4 つの値をひとまとめにするのは、`openings`（個別開口）が非空のとき
@@ -893,11 +893,11 @@ impl EditCommand for SetWallPlateSection {
 /// 分けると、undo の途中に「個別開口だけ戻って面積が残る」という、利用者が
 /// 一度も入力していない組み合わせが現れうる。
 ///
-/// `three_side_slit` は囲まれた壁版（`Enclosed`）が解析要素として生成される
-/// ときにだけ効く（自重を上下に分けず頂部へ寄せる指定。
-/// `squid_n_load::story_gen::self_weight_calc`）。取り付く壁版
-/// （`Attached`。腰壁・垂れ壁・パラペット・自立壁）には自重を分ける相手方の
-/// 下端がそもそも無く、`squid_n_load::wall_attached` はこのフィールドを読まない。
+/// `slit`（耐震スリット）は囲まれた壁版（`Enclosed`）でだけ意味を持つ。辺ごとの
+/// 縁切りを表す指定で、切れている辺の部材へは剛性算入せず、自重も伝えない。
+/// 4 辺すべてが一体でなければ耐震壁としても成立しない
+/// （`squid_n_element::misc_wall`）。取り付く壁版（`Attached`。腰壁・垂れ壁・
+/// パラペット・自立壁）は柱・梁と接する 4 辺を持たないため効かない。
 /// GUI は取り付く壁版でこの入力欄自体を出さないが、コマンドは形によらず値を
 /// そのまま保存する（`WallPlate` が形によらず同じフィールドを持つ設計〔D3〕を
 /// コマンド側で崩さないため）。
@@ -906,7 +906,7 @@ pub struct SetWallPlateAttrs {
     pub opening_area: f64,
     pub opening_weight: f64,
     pub openings: Vec<squid_n_core::model::WallOpening>,
-    pub three_side_slit: bool,
+    pub slit: squid_n_core::model::WallSlit,
 }
 
 impl EditCommand for SetWallPlateAttrs {
@@ -921,12 +921,12 @@ impl EditCommand for SetWallPlateAttrs {
             opening_area: plate.opening_area,
             opening_weight: plate.opening_weight,
             openings: plate.openings.clone(),
-            three_side_slit: plate.three_side_slit,
+            slit: plate.slit,
         };
         plate.opening_area = self.opening_area;
         plate.opening_weight = self.opening_weight;
         plate.openings = self.openings.clone();
-        plate.three_side_slit = self.three_side_slit;
+        plate.slit = self.slit;
         Box::new(old)
     }
 

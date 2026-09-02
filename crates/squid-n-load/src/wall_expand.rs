@@ -27,7 +27,7 @@
 //!
 //! # `wall_attrs` の合成（移行期の内部表現）
 //!
-//! 生成した壁要素ごとに、由来する `WallPlate` の開口・三方スリットを写した
+//! 生成した壁要素ごとに、由来する `WallPlate` の開口・スリットを写した
 //! `WallAttr` を壁展開モデルの `wall_attrs` へ合成して積む。既存の壁消費者
 //! （自重算定 [`crate::story_gen::self_weight_calc`]、開口低減・剛性
 //! （`squid_n_element::factory::wall_opening`）、偏心率の雑壁剛性、数量拾い等、
@@ -195,12 +195,16 @@ pub fn expand_wall_elements_owned(
                 // 取り付く壁版（パラペット等）は耐震壁要素の対象外。
                 continue;
             };
-            if !expanded.wall_plate_covers_region(plate) {
-                report.skipped_not_covering += 1;
-                continue;
-            }
-            if plate.section.is_none() {
-                report.skipped_no_section += 1;
+            // 生成の可否は `Model::wall_plate_becomes_element` が単独で決める。
+            // 内訳カウンタのためにここで理由も分けるが、**可否そのものを
+            // ここで組み立て直さない**（同じ問いを 2 か所で実装すると、
+            // 3D ビューの壁版描画・「解析要素」列と食い違う）。
+            if !expanded.wall_plate_becomes_element(plate) {
+                if expanded.wall_plate_covers_region(plate) {
+                    report.skipped_no_section += 1;
+                } else {
+                    report.skipped_not_covering += 1;
+                }
                 continue;
             }
             let id = ElemId(next_id);
@@ -225,7 +229,7 @@ pub fn expand_wall_elements_owned(
                     elem: id,
                     opening_area: plate.opening_area,
                     opening_weight: plate.opening_weight,
-                    three_side_slit: plate.three_side_slit,
+                    slit: plate.slit,
                     openings: plate.openings.clone(),
                 },
             ));
@@ -237,7 +241,7 @@ pub fn expand_wall_elements_owned(
         expanded.elements.push(elem);
         // 既存の壁消費者（自重算定・開口低減剛性・偏心率の雑壁剛性・数量拾い等）は
         // いずれも `model.wall_attrs` を `elem` で引く同じ形の参照を持つ。
-        // 壁展開モデルだけに、由来する壁版の開口・三方スリットを写した合成
+        // 壁展開モデルだけに、由来する壁版の開口・スリットを写した合成
         // `WallAttr` を積み、それらの消費者を無改修のまま動かす
         // （モジュール doc「wall_attrs の合成」参照）。
         expanded.wall_attrs.push(attr);
@@ -296,7 +300,7 @@ mod tests {
             opening_area: 0.0,
             opening_weight: 0.0,
             openings: Vec::new(),
-            three_side_slit: false,
+            slit: Default::default(),
         }
     }
 
@@ -348,14 +352,17 @@ mod tests {
         assert!(m.wall_attrs.is_empty());
     }
 
-    /// 壁版の開口・三方スリットは、合成 `WallAttr` へそのまま写る。
+    /// 壁版の開口・スリットは、合成 `WallAttr` へそのまま写る。
     #[test]
     fn test_synthesized_wall_attr_mirrors_plate_openings() {
         let mut m = base_model();
         let mut plate = quad_plate(0, Some(SectionId(0)));
         plate.opening_area = 1_000_000.0;
         plate.opening_weight = 5000.0;
-        plate.three_side_slit = true;
+        plate.slit = squid_n_core::model::WallSlit {
+            column_face: [true, false],
+            beam_face: [false, true],
+        };
         m.wall_plates.push(plate);
         m.wall_regions.push(WallRegion {
             id: WallRegionId(0),
@@ -369,7 +376,53 @@ mod tests {
         let attr = &expanded.wall_attrs[0];
         assert_eq!(attr.opening_area, 1_000_000.0);
         assert_eq!(attr.opening_weight, 5000.0);
-        assert!(attr.three_side_slit);
+        assert_eq!(attr.slit.column_face, [true, false]);
+        assert_eq!(attr.slit.beam_face, [false, true]);
+    }
+
+    /// `Model::wall_plate_becomes_element` の答えと、実際に要素が生成されたかが
+    /// 一致することを固定する。
+    ///
+    /// 3D ビューの壁版描画とモデルタブ「壁版」の「解析要素」列は、展開を走らせずに
+    /// このメソッドだけで「要素になるか」を決める。判定が実際の生成と乖離すると、
+    /// 要素としても壁版としても描かれない壁版が生まれる（＝入力したのに図に出ない）。
+    #[test]
+    fn test_becomes_element_agrees_with_generated_elements() {
+        let mut m = base_model();
+        // 4 節点・断面あり（要素になる）。
+        m.wall_plates.push(quad_plate(0, Some(SectionId(0))));
+        // 4 節点だが断面なし（要素にならない）。
+        m.wall_plates.push(quad_plate(1, None));
+        // 壁領域を覆わない（境界の一部しか共有しない）壁版。
+        let mut partial = quad_plate(2, Some(SectionId(0)));
+        partial.shape = WallPlateShape::Enclosed {
+            boundary: vec![NodeId(0), NodeId(1), NodeId(2)],
+        };
+        m.wall_plates.push(partial);
+        m.wall_regions.push(WallRegion {
+            id: WallRegionId(0),
+            name: String::new(),
+            boundary: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)],
+            wall_plate_ids: vec![
+                squid_n_core::ids::WallPlateId(0),
+                squid_n_core::ids::WallPlateId(1),
+                squid_n_core::ids::WallPlateId(2),
+            ],
+            posts: Vec::new(),
+        });
+
+        let (_expanded, index, _report) = expand_wall_elements(&m);
+        let generated: std::collections::BTreeSet<_> = index.0.values().copied().collect();
+        for plate in &m.wall_plates {
+            assert_eq!(
+                m.wall_plate_becomes_element(plate),
+                generated.contains(&plate.id),
+                "壁版 {} の判定と生成結果が食い違う",
+                plate.id.0
+            );
+        }
+        // 3 枚のうち要素になるのは 1 枚だけ（テスト自体が退化していないことの確認）。
+        assert_eq!(generated.len(), 1);
     }
 
     /// 壁展開モデルへ再度 `expand_wall_elements` を適用しようとすると、
@@ -454,7 +507,7 @@ mod tests {
             opening_area: 0.0,
             opening_weight: 0.0,
             openings: Vec::new(),
-            three_side_slit: false,
+            slit: Default::default(),
         });
         // 取り付く壁版はどの壁領域からも参照されない（wall_plate_ids に入らない）ため、
         // この壁版自体を走査しても generated は増えない。

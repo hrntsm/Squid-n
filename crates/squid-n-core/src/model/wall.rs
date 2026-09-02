@@ -84,7 +84,7 @@ impl WallOpening {
 }
 
 /// 壁要素（`ElementKind::Wall`/`Shell`）の壁属性
-/// （壁自重（固定荷重）の開口・三方スリット、および
+/// （壁自重（固定荷重）の開口、柱際スリット、および
 /// 剛性計算の開口低減・耐震壁判定に用いる個別開口寸法。RC 規準）。
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct WallAttr {
@@ -97,11 +97,11 @@ pub struct WallAttr {
     /// 開口部（サッシ等）の重量 [N]。控除後に加算する。
     #[serde(default)]
     pub opening_weight: f64,
-    /// 三方スリット。true の場合、壁自重は上下分配せず全て上部の節点
-    /// （壁頂部の節点）へ伝達する（三方スリット壁の壁荷重は全て上部の大梁に
-    /// 伝達する扱いの節点重量版）。
+    /// 耐震スリット。由来する壁版の [`super::WallPlate::slit`] を写したもので、
+    /// 意味も添字の規則も同じである。いずれかの辺が切れていれば耐震壁として
+    /// 成立しない。
     #[serde(default)]
-    pub three_side_slit: bool,
+    pub slit: super::WallSlit,
     /// 個別開口の寸法リスト。非空の場合、開口の面積評価（自重控除・
     /// 開口周比 r0・開口低減率 r）と耐震壁検定の開口供給はこのリストを
     /// 優先する。空の場合は従来どおり `opening_area`（合計面積のみ）で評価する。

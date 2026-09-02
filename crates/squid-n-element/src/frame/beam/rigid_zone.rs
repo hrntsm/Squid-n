@@ -366,3 +366,135 @@ pub fn apply_auto_rigid_zones(model: &mut Model, rule: &RigidZoneRule) {
         recompute_auto_zones(&mut model.elements[i].rigid_zone, &rz);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::wall::misc_wall::InFrameMiscWallGeometry;
+    use squid_n_core::ids::{ElemId, NodeId, SectionId, WallPlateId};
+    use squid_n_core::model::{
+        ElementData, ElementKind, EndCondition, ForceRegime, LocalAxis, Node,
+    };
+
+    fn node(id: u32, coord: [f64; 3]) -> Node {
+        Node {
+            id: NodeId(id),
+            coord,
+            restraint: Default::default(),
+            mass: None,
+            story: None,
+            support_spring: None,
+        }
+    }
+
+    /// 左辺（節点 0-3）の柱と、それに取り付く壁 1 枚を持つモデル。
+    fn column_with_wall() -> (Model, ElementData) {
+        let model = Model {
+            nodes: vec![
+                node(0, [0.0, 0.0, 0.0]),
+                node(1, [4000.0, 0.0, 0.0]),
+                node(2, [4000.0, 0.0, 3000.0]),
+                node(3, [0.0, 0.0, 3000.0]),
+            ],
+            ..Default::default()
+        };
+        let column = ElementData {
+            id: ElemId(0),
+            kind: ElementKind::Beam,
+            nodes: smallvec::smallvec![NodeId(0), NodeId(3)],
+            section: Some(SectionId(0)),
+            local_axis: LocalAxis {
+                ref_vector: [1.0, 0.0, 0.0],
+            },
+            end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+            force_regime: ForceRegime::Auto,
+            rigid_zone: Default::default(),
+            plastic_zone: None,
+            spring: None,
+        };
+        (model, column)
+    }
+
+    fn wall_geometry(column_face: [bool; 2]) -> InFrameMiscWallGeometry {
+        InFrameMiscWallGeometry {
+            t: 150.0,
+            lw: 4000.0,
+            h: 3000.0,
+            // 下辺は節点 0→1、上辺は節点 3→2。柱（0-3）は s=0 側にあたる。
+            bottom_pair: Some([NodeId(0), NodeId(1)]),
+            top_pair: Some([NodeId(3), NodeId(2)]),
+            bottom_dir: [1.0, 0.0, 0.0],
+            envelope: None,
+            plate: WallPlateId(0),
+            slit: squid_n_core::model::WallSlit {
+                column_face,
+                beam_face: [false, false],
+            },
+        }
+    }
+
+    /// 梁際が切れている辺の梁には、腰壁・垂れ壁による剛域の張り出しを与えない。
+    ///
+    /// 切れた辺の高さは 0 になるので（`InFrameMiscWallGeometry::strip_height`）、
+    /// 剛域も伸びない。反対側の梁は全高を負担するため、折半（h/2）ではなく h から
+    /// 部材せいの半分を引いた値まで伸びる。
+    #[test]
+    fn 梁際スリットのある側は剛域の腰壁張り出しを持たない() {
+        let (model, _column) = column_with_wall();
+        // 下辺の梁（節点 0-1）。
+        let beam = ElementData {
+            id: ElemId(1),
+            kind: ElementKind::Beam,
+            nodes: smallvec::smallvec![NodeId(0), NodeId(1)],
+            section: Some(SectionId(0)),
+            local_axis: LocalAxis {
+                ref_vector: [0.0, 0.0, 1.0],
+            },
+            end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+            force_regime: ForceRegime::Auto,
+            rigid_zone: Default::default(),
+            plastic_zone: None,
+            spring: None,
+        };
+        let depth = 600.0;
+
+        let with_slit = |beam_face: [bool; 2]| {
+            let mut w = wall_geometry([false, false]);
+            w.slit.beam_face = beam_face;
+            wall_protrusion(&model, &beam, depth, &[w], None)
+        };
+
+        // スリット無し: 折半 1500 から梁せいの半分を引いた 1200。
+        assert!((with_slit([false, false]) - 1200.0).abs() < 1e-9);
+        // 下辺を切ると、その梁には張り出さない。
+        assert!(with_slit([true, false]).abs() < 1e-9);
+        // 上辺を切ると、下の梁が全高 3000 を負担して 2700 まで伸びる。
+        assert!((with_slit([false, true]) - 2700.0).abs() < 1e-9);
+    }
+
+    /// 柱際が切れている側の柱には、袖壁による剛域の張り出しを与えない。
+    ///
+    /// 柱際スリットは柱との縁を切る指定なので、その柱の接合部が壁のぶん大きく
+    /// なることはない。梁への腰壁・垂れ壁は別途残る（[`super::tests`] の
+    /// 剛性側テストと同じ規約）。
+    #[test]
+    fn 柱際スリットのある側は剛域の袖壁張り出しを持たない() {
+        let (model, column) = column_with_wall();
+        let depth = 300.0;
+
+        // スリット無し: 袖壁 lw/2=2000 から柱せいの半分を引いた 1850 が張り出す。
+        let walls = [wall_geometry([false, false])];
+        let plain = wall_protrusion(&model, &column, depth, &walls, None);
+        assert!((plain - 1850.0).abs() < 1e-9, "{plain}");
+
+        // s=0 側（柱 0-3 の側）を切ると張り出さない。
+        let walls = [wall_geometry([true, false])];
+        let slit = wall_protrusion(&model, &column, depth, &walls, None);
+        assert!((slit - 0.0).abs() < 1e-9, "{slit}");
+
+        // 反対側だけを切っても、この柱には効かない（左右独立であることの確認）。
+        let walls = [wall_geometry([false, true])];
+        let other = wall_protrusion(&model, &column, depth, &walls, None);
+        assert!((other - 1850.0).abs() < 1e-9, "{other}");
+    }
+}
