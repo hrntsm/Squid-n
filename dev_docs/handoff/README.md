@@ -19,6 +19,7 @@
 
 | 作成日 | ファイル | カテゴリ | 残課題 | 概要 |
 |--------|----------|----------|--------|------|
+| 2026-09-02 | [`AppのAppCoreとUiState分離_申し送り.md`](AppのAppCoreとUiState分離_申し送り.md) | リファクタ | あり | 124 フィールドの `App` を `AppCore` / `UiState` へ二分割し、双方に「モデル従属状態」（`ModelScoped` / `UiModelScoped`）を隔離。`load_model` の約 50 行の手動リセットを `scoped` への `Default::default()` 代入 2 行へ置換した。列挙から漏れていた 8 件（`mn_view`・質点系の波形選択・`load_editor`・`project_path` 等）も是正。`MnCache` / `MThetaKey` の鍵へ `SectionShape` を加え、断面寸法の編集で別断面の MN 相関曲面を表示し続ける危険側の誤りを塞いだ |
 | 2026-09-02 | [`時刻歴ソルバの重複統合とHHT削除_申し送り.md`](時刻歴ソルバの重複統合とHHT削除_申し送り.md) | リファクタ | **あり** | 時刻歴 3 積分器の前処理・地動外力の重複を `timehistory/common.rs` へ集約。線形時刻歴の積分法 HHT-α を廃止（GUI 選択肢・`ThIntegrator`・docs §5.5.2 ごと削除）。`viewer_panel` を `controls.rs`・`input.rs` へ分割 |
 | 2026-08-31 | [`GPUとMLクレートの削除_申し送り.md`](GPUとMLクレートの削除_申し送り.md) | 基盤 | — | 未実装のまま残っていた `squid-n-gpu`（P10）・`squid-n-ml`（P11）の予約クレートを削除。GPU は恒久的に実装しない方針、ML は着手時に新設 |
 | 2026-08-27 | [`CMQ図を荷重ケースの全荷重へ_申し送り.md`](CMQ図を荷重ケースの全荷重へ_申し送り.md) | UI | — | CMQ 図のソースを表示中荷重ケースの`member`へ付け替え済み（床分配・自重・取り付く壁版の線アンカー・手入力を同じ図に重ねる）。dig により応力図と同じ強軸ey/弱軸ez の面選択も追加した |
@@ -185,6 +186,7 @@
 
 | ファイル | 作成日 | 残課題 | 概要 |
 |----------|--------|--------|------|
+| [`AppのAppCoreとUiState分離_申し送り.md`](AppのAppCoreとUiState分離_申し送り.md) | 2026-09-02 | あり | `App` の `AppCore` / `UiState` 分離とモデル従属状態の隔離 |
 | [`時刻歴ソルバの重複統合とHHT削除_申し送り.md`](時刻歴ソルバの重複統合とHHT削除_申し送り.md) | 2026-09-02 | あり | 時刻歴の前処理集約・HHT-α 廃止・`viewer_panel` 分割 |
 | [`app_actions解析種別分割_申し送り.md`](app_actions解析種別分割_申し送り.md) | 2026-08-13 | — | actions 解析ジョブの種別分割 |
 | [`app_viewerハブ薄化_申し送り.md`](app_viewerハブ薄化_申し送り.md) | 2026-08-13 | — | viewer 親モジュールの分割 |
