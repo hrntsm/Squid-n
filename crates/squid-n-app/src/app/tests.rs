@@ -191,7 +191,6 @@ fn test_load_model_resets_draw_modes() {
 /// 状態のまま残っていた。
 #[cfg(feature = "gui")]
 #[test]
-#[allow(clippy::field_reassign_with_default)]
 fn test_load_model_resets_model_bound_ui_state() {
     let mut app = App::default();
     app.ui.scoped.mn_view.section_idx = 7;
@@ -223,7 +222,6 @@ fn test_load_model_resets_model_bound_ui_state() {
 /// `project_path` も同様に列挙になく、呼び出し元 5 箇所が個別に `None` を
 /// 代入することで辛うじて保たれていた。
 #[test]
-#[allow(clippy::field_reassign_with_default)]
 fn test_load_model_resets_model_bound_core_state() {
     let mut app = App::default();
     app.core.scoped.lumped_wave_library_selection = Some("旧波形.csv".into());
@@ -251,7 +249,6 @@ fn test_load_model_resets_model_bound_core_state() {
 /// （モデルを開くたびにドック配置・カメラ・配色が初期化されると作業にならない）。
 #[cfg(feature = "gui")]
 #[test]
-#[allow(clippy::field_reassign_with_default)]
 fn test_load_model_keeps_view_settings() {
     let mut app = App::default();
     app.ui.view.left_dock_open = false;

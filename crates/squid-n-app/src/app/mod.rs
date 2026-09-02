@@ -1153,7 +1153,6 @@ impl Default for UiModelScoped {
             #[cfg(feature = "gui")]
             wall_plate_draft: crate::tables::wall_plates::WallPlateDraft::default(),
             #[cfg(feature = "gui")]
-            #[cfg(feature = "gui")]
             axis_name_draft: crate::tables::axes::AxisNameDraft::default(),
             #[cfg(feature = "gui")]
             load_cfg_draft: crate::tables::load_cfg::LoadCfgDraft::default(),

@@ -92,7 +92,10 @@ struct MThetaData {
     simple: Option<Vec<[f64; 2]>>,
 }
 
-/// M-N 相関曲面ビューの状態（`App` が保持する）。
+/// M-N 相関曲面ビューの状態。
+///
+/// 断面の添字とその断面の曲面キャッシュを持つため、`App` では
+/// `ui.scoped`（`UiModelScoped`）が保持する。モデルを差し替えると捨てられる。
 pub struct MnViewState {
     /// `app.core.model.sections` のインデックス
     pub section_idx: usize,
@@ -104,8 +107,9 @@ pub struct MnViewState {
     pub n_ratio: f64,
     /// 下段2Dプロットの表示モード（My-Mz相関 / M-θ骨格）。
     pub slice_mode: SlicePlotMode,
-    /// 塑性化領域長さ Lp [mm]。0.0 は未設定扱いで、断面選択時に断面せい D の
-    /// 0.5倍を自動設定する（断面切替のたびに再設定する。`ensure_cache` 参照）。
+    /// 塑性化領域長さ Lp [mm]。0.0 は未設定扱いで、断面が変わったときに断面せい D の
+    /// 0.5倍を自動設定する（`ensure_cache` 参照）。断面の切替だけでなく、表示中の断面の
+    /// 形状を編集して断面せいが変わった場合も再設定する。手で入れた値は上書きされる。
     pub lp: f64,
     /// 部材内法スパン L [mm]（M-θ 換算の弾性回転項に使用）。
     pub span: f64,
