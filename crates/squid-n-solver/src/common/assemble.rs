@@ -30,7 +30,7 @@ pub fn assemble_global_k(model: &Model, dofmap: &DofMap) -> SparseColMat<usize, 
 /// 不活性（`dofmap` 側で自由度がない＝孤立節点等）の項は含まない。
 ///
 /// 全体剛性の対角加算（[`add_support_spring_diag`]、線形経路）と、非線形経路
-/// （`nonlinear::pushover::assembly` の `assemble_k`・`add_support_spring_f_int`）の
+/// （`common::tangent` の `assemble_k`・`add_support_spring_f_int`）の
 /// 双方が同じ列挙結果を使うための共通ヘルパ。ばねは全体座標系の値をそのまま
 /// 対角へ用いる線形ばねのため、K 側の対角項も内力側の `k・u` も同じ
 /// `(active, k)` の組で足りる。

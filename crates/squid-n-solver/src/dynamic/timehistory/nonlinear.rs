@@ -181,7 +181,7 @@ pub fn nonlinear_time_history_analysis(
 
     // 初期剛性の参照（長期荷重載荷後の状態、`use_kg` を反映）から減衰行列を組み立てる。
     // 従来は幾何剛性を持たない `assemble_global_k`（線形弾性 behavior）を用いており、
-    // Newton 反復内の接線剛性（`pushover::assemble_k`、`use_kg` 反映）と不整合だった。
+    // Newton 反復内の接線剛性（`common::tangent::assemble_k`、`use_kg` 反映）と不整合だった。
     let k_free = assemble_k(model, dofmap, &behaviors, cfg.use_kg);
     let k_red = reducer.reduce_k(&k_free);
     let c_red = damping.assemble_c(&m_red, &k_red);

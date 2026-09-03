@@ -21,13 +21,19 @@ impl crate::behavior::ElementBehavior for ShellElement {
         crate::behavior::node_global_dofs(&self.nodes, dof)
     }
 
+    /// 剛床所属（`membrane_active == false`）の面内成分は、厳密なゼロにはならない。
+    /// `apply_rigid_floor_membrane_off` が特異回避のため対角へ入れるダミー剛性 1.0 に
+    /// 由来する微小な寄生剛性が残る（実剛性より約 10 桁小さく実害はない）。
+    ///
+    /// `internal_force`（[`crate::behavior::elastic_disp_behavior`] が生成）はこの行列をそのまま
+    /// 使うため、寄生分は剛性と内力で同じ値になり、数学的には整合する。
     fn tangent_stiffness(&self, _ctx: &crate::behavior::Ctx) -> LocalMat {
         let mut k_local = self.local_stiffness();
         self.apply_rigid_floor_membrane_off(&mut k_local);
         self.frame.to_global(&k_local)
     }
 
-    crate::elastic_disp_behavior!(ShellElement, 24);
+    crate::behavior::elastic_disp_behavior!(ShellElement, 24);
 
     fn mass_matrix(&self, opt: MassOption) -> LocalMat {
         let area = element_area(&self.coords);

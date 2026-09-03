@@ -424,7 +424,7 @@ fn main() {
     );
 
     // (b2) 非線形時刻歴（並列、Parallelism::Auto）。要素ループの並列化
-    // （nonlinear.rs の Newton 反復・driver.rs・assembly.rs）が
+    // （nonlinear.rs の Newton 反復・driver.rs・common/tangent.rs）が
     // Deterministic 経路とビット一致することを、逐次ケース (b) との
     // ピーク変位完全一致で検証する（並列化のビット一致検証を兼ねる）。
     set_parallelism(Parallelism::Auto);

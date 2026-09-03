@@ -201,7 +201,7 @@ impl PanelOffsetMember {
     }
 }
 
-crate::forward_element_behavior!(PanelOffsetMember, inner, {
+crate::behavior::forward_element_behavior!(PanelOffsetMember, inner, {
     n_dof: custom,
     global_dofs: custom,
     tangent_stiffness: custom,
@@ -209,6 +209,8 @@ crate::forward_element_behavior!(PanelOffsetMember, inner, {
     update_state: custom,
     mass_matrix: custom,
     recover_forces: custom,
+    // 素通しで正しい。内側は自身のトライアル変位（パネル寄与を反映済み）を
+    // 保持しており、自由度の並べ替えを経ずに内力分布を出せる。
     state_member_forces: forward,
     geometric_stiffness: custom,
     snapshot_state: forward,

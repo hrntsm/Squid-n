@@ -1466,18 +1466,6 @@ impl FiberBeam {
         kstar
     }
 
-    fn beam_global_dofs(&self, dof: &DofMap) -> SmallVec<[usize; 24]> {
-        let mut gdofs = SmallVec::new();
-        for &n in &self.nodes {
-            let ni = n.index();
-            for d in 0..6 {
-                let g = ni * 6 + d;
-                gdofs.push(dof.active(g).map(|a| a as usize).unwrap_or(usize::MAX));
-            }
-        }
-        gdofs
-    }
-
     /// ガウス点の断面応答（force, stiff）を返す。総和は `GaussPoint::refresh_response`
     /// で trial_stress/trial_et 書き換え直後に計算済みのため、ここでは
     /// キャッシュを読むだけでよい（ファイバー再走査なし）。
@@ -1816,7 +1804,7 @@ impl ElementBehavior for FiberBeam {
     }
 
     fn global_dofs(&self, dof: &DofMap) -> SmallVec<[usize; 24]> {
-        self.beam_global_dofs(dof)
+        crate::behavior::node_global_dofs(&self.nodes, dof)
     }
 
     fn tangent_stiffness(&self, _ctx: &Ctx) -> LocalMat {

@@ -189,9 +189,10 @@ pub fn push_panel_global_dofs(out: &mut SmallVec<[usize; 24]>, node_idx: usize, 
 /// 全状態が「全体系の committed / trial 変位」だけで表せる線形弾性要素へ、
 /// [`ElementBehavior`] の `internal_force` と状態管理 6 メソッドを実装する。
 ///
-/// `impl ElementBehavior for X { ... }` の中で `elastic_disp_behavior!(X, 12);` と
-/// 呼ぶ。要素側は `committed_disp: [f64; N]` と `trial_disp: [f64; N]` を持ち、
-/// `tangent_stiffness` を実装していることが前提になる。
+/// `impl ElementBehavior for X { ... }` の中で
+/// `crate::behavior::elastic_disp_behavior!(X, 12);` と呼ぶ。要素側は
+/// `committed_disp: [f64; N]` と `trial_disp: [f64; N]` を持ち、`tangent_stiffness` を
+/// 実装していることが前提になる。
 ///
 /// この定型は Newton 反復のトライアル追従（未確定変位も内力へ反映する。committed
 /// だけを見ると反復中に内力が凍結し、収束が準ニュートンへ劣化する）と、レジューム
@@ -206,6 +207,10 @@ pub fn push_panel_global_dofs(out: &mut SmallVec<[usize; 24]>, node_idx: usize, 
 /// `internal_force` は `tangent_stiffness` を呼んで `f = K_global · u_trial` を組む。
 /// 従来は各要素が `tangent_stiffness` と同じ K の組み立て式を内力側にも書いており、
 /// 片方だけ直すと両者が静かに食い違う状態だった。
+///
+/// `#[macro_export]` はマクロをクレート根へ置く仕様のため、このマクロは公開 API に出る。
+/// ただし展開結果が `smallvec` と `bincode` に依存しており、本クレート内部の道具として
+/// 書いている。外部から使うことは想定していない。
 #[macro_export]
 macro_rules! elastic_disp_behavior {
     ($ty:ident, $n:expr) => {
@@ -285,6 +290,11 @@ macro_rules! elastic_disp_behavior {
         }
     };
 }
+
+// `#[macro_export]` はマクロをクレート根へ置くため、そのままでは階層と食い違う。
+// モジュール階層のパス（`crate::behavior::elastic_disp_behavior!`）でも参照できるよう
+// ここで再エクスポートし、呼び出し側は階層パスで書く。
+pub use crate::{elastic_disp_behavior, forward_element_behavior};
 
 /// `Send + Sync` を supertrait とするのは、静解析バッチ（`squid-n-solver::statics`）が
 /// 荷重ケース・組合せごとの `Box<dyn ElementBehavior>` キャッシュを rayon 並列
@@ -396,7 +406,7 @@ pub trait ElementBehavior: Send + Sync {
 /// **必ず明示する**。`custom` としたメソッドの本体は末尾の `custom { ... }` へ書く。
 ///
 /// ```ignore
-/// forward_element_behavior!(InPlaneReleasedColumn, inner, {
+/// crate::behavior::forward_element_behavior!(InPlaneReleasedColumn, inner, {
 ///     n_dof: forward,
 ///     tangent_stiffness: custom,
 ///     // …全 19 メソッド…
@@ -417,6 +427,9 @@ pub trait ElementBehavior: Send + Sync {
 /// なってこれもコンパイルエラーになる。
 ///
 /// **[`ElementBehavior`] にメソッドを追加したら、このマクロにも追加すること。**
+///
+/// `#[macro_export]` はマクロをクレート根へ置く仕様のため、このマクロは公開 API に出る。
+/// ただし本クレート内部の道具として書いており、外部から使うことは想定していない。
 #[macro_export]
 macro_rules! forward_element_behavior {
     // 内部アーム: `forward` なら本体を出し、`custom` なら何も出さない。

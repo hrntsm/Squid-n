@@ -130,7 +130,7 @@ impl InPlaneReleasedColumn {
     }
 }
 
-crate::forward_element_behavior!(InPlaneReleasedColumn, inner, {
+crate::behavior::forward_element_behavior!(InPlaneReleasedColumn, inner, {
     n_dof: forward,
     global_dofs: forward,
     tangent_stiffness: custom,

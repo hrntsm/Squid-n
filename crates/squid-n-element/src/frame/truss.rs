@@ -161,7 +161,7 @@ impl ElementBehavior for TrussElement {
         self.axis.to_global(&self.local_stiffness())
     }
 
-    crate::elastic_disp_behavior!(TrussElement, 12);
+    crate::behavior::elastic_disp_behavior!(TrussElement, 12);
 
     fn mass_matrix(&self, opt: MassOption) -> LocalMat {
         let m = self.density * self.a_mass * self.length;

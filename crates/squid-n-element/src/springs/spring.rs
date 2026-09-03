@@ -126,7 +126,7 @@ impl ElementBehavior for NodalSpringElement {
         self.axis.to_global(&self.local_stiffness())
     }
 
-    crate::elastic_disp_behavior!(NodalSpringElement, 12);
+    crate::behavior::elastic_disp_behavior!(NodalSpringElement, 12);
 
     fn mass_matrix(&self, _opt: MassOption) -> LocalMat {
         // 節点バネは質量を持たない（質量規定は設けない。既存要素の質量は

@@ -70,7 +70,7 @@ impl MultiSpringElement {
     }
 }
 
-crate::forward_element_behavior!(MultiSpringElement, inner, {
+crate::behavior::forward_element_behavior!(MultiSpringElement, inner, {
     n_dof: forward,
     global_dofs: forward,
     tangent_stiffness: forward,
@@ -78,6 +78,7 @@ crate::forward_element_behavior!(MultiSpringElement, inner, {
     update_state: forward,
     mass_matrix: forward,
     recover_forces: forward,
+    // 内力分布は実体（端部バネ断面＋中央弾性のファイバー要素）へ委譲する。
     state_member_forces: forward,
     geometric_stiffness: forward,
     snapshot_state: forward,
