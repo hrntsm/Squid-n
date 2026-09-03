@@ -49,7 +49,7 @@ pub(crate) fn condense_end_releases(k_elem: &LocalMat, releases: &[(usize, f64)]
         "condense_end_releases: 解放自由度は両端の回転 6 まで"
     );
     // 解放自由度は要素の 12 自由度の中を指し、重複しない。破ると写像 `map` が
-    // 上書きされ、もっともらしい別の剛性が無言で出来上がる。
+    // 上書きされ、もっともらしい別の剛性が無言でできあがる。
     debug_assert!(
         releases.iter().all(|&(r, _)| r < NA),
         "condense_end_releases: 解放自由度が要素自由度の範囲外"
