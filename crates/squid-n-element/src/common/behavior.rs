@@ -377,6 +377,239 @@ pub trait ElementBehavior: Send + Sync {
     fn set_time_step(&mut self, _dt: f64) {}
 }
 
+/// 内側の要素へ `ElementBehavior` を委譲するラッパ要素の実装を生成する。
+///
+/// ラッパ（[`crate::multi_spring::MultiSpringElement`]・
+/// [`crate::side_column::InPlaneReleasedColumn`]・
+/// [`crate::panel_offset::PanelOffsetMember`]）は、大半のメソッドを内側の要素へ
+/// そのまま流し、いくつかだけ自前で持つ。これを手書きすると、**流し忘れたメソッドが
+/// トレイトの既定値へ静かに落ちる**。既定値は `None` や「何もしない」なので、
+/// コンパイルは通り、テストも書いていなければ落ちない。
+///
+/// 実際に `MultiSpringElement` は `fiber_section_states` の委譲を書き忘れており、
+/// 内側の [`crate::fiber::FiberBeam`] が状態を持っているのに、ヒンジ詳細ウィンドウの
+/// ファイバー断面の塑性化マップが MS 要素でだけ空になっていた。
+///
+/// # 使い方
+///
+/// 全メソッドについて `forward`（内側へ委譲）か `custom`（自前で実装）かを
+/// **必ず明示する**。`custom` としたメソッドの本体は末尾の `custom { ... }` へ書く。
+///
+/// ```ignore
+/// forward_element_behavior!(InPlaneReleasedColumn, inner, {
+///     n_dof: forward,
+///     tangent_stiffness: custom,
+///     // …全 19 メソッド…
+/// }, custom {
+///     fn tangent_stiffness(&self, _ctx: &Ctx) -> LocalMat { … }
+/// });
+/// ```
+///
+/// # なぜ全メソッドを列挙させるか
+///
+/// マクロのパターンが 19 メソッドすべての記載を要求するため、
+/// **[`ElementBehavior`] にメソッドを追加してこのマクロを更新すると、
+/// 呼び出し側 3 箇所はパターンに一致しなくなってコンパイルエラーになる**。
+/// 「新しいメソッドをこのラッパでどう扱うか」を決めない限りビルドが通らない、
+/// という形で流し忘れを防ぐ。列挙は冗長だが、その冗長さが保証の実体である。
+///
+/// `custom` の本体を書いたのに `forward` と記した場合は、同名メソッドの重複定義に
+/// なってこれもコンパイルエラーになる。
+///
+/// **[`ElementBehavior`] にメソッドを追加したら、このマクロにも追加すること。**
+#[macro_export]
+macro_rules! forward_element_behavior {
+    // 内部アーム: `forward` なら本体を出し、`custom` なら何も出さない。
+    // 引数は呼び出し側が書いた `forward` / `custom` の識別子がそのまま届く。
+    (@opt forward $($body:tt)*) => { $($body)* };
+    (@opt custom $($body:tt)*) => {};
+
+    ($ty:ty, $inner:ident, {
+        n_dof: $m_n_dof:ident,
+        global_dofs: $m_global_dofs:ident,
+        tangent_stiffness: $m_tangent_stiffness:ident,
+        internal_force: $m_internal_force:ident,
+        update_state: $m_update_state:ident,
+        mass_matrix: $m_mass_matrix:ident,
+        recover_forces: $m_recover_forces:ident,
+        state_member_forces: $m_state_member_forces:ident,
+        geometric_stiffness: $m_geometric_stiffness:ident,
+        snapshot_state: $m_snapshot_state:ident,
+        restore_state: $m_restore_state:ident,
+        commit_state: $m_commit_state:ident,
+        revert_state: $m_revert_state:ident,
+        serialize_checkpoint: $m_serialize_checkpoint:ident,
+        deserialize_checkpoint: $m_deserialize_checkpoint:ident,
+        panel_moments_from: $m_panel_moments_from:ident,
+        ductility_probe: $m_ductility_probe:ident,
+        fiber_section_states: $m_fiber_section_states:ident,
+        set_time_step: $m_set_time_step:ident $(,)?
+    } $(, custom { $($custom:tt)* })? $(,)?) => {
+        impl $crate::behavior::ElementBehavior for $ty {
+            $($($custom)*)?
+
+            $crate::forward_element_behavior!(@opt $m_n_dof
+                fn n_dof(&self) -> usize {
+                    #[allow(unused_imports)]
+                    use $crate::behavior::ElementBehavior as _;
+                    self.$inner.n_dof()
+                }
+            );
+            $crate::forward_element_behavior!(@opt $m_global_dofs
+                fn global_dofs(
+                    &self,
+                    dof: &::squid_n_core::dof::DofMap,
+                ) -> ::smallvec::SmallVec<[usize; 24]> {
+                    #[allow(unused_imports)]
+                    use $crate::behavior::ElementBehavior as _;
+                    self.$inner.global_dofs(dof)
+                }
+            );
+            $crate::forward_element_behavior!(@opt $m_tangent_stiffness
+                fn tangent_stiffness(
+                    &self,
+                    ctx: &$crate::behavior::Ctx,
+                ) -> $crate::behavior::LocalMat {
+                    #[allow(unused_imports)]
+                    use $crate::behavior::ElementBehavior as _;
+                    self.$inner.tangent_stiffness(ctx)
+                }
+            );
+            $crate::forward_element_behavior!(@opt $m_internal_force
+                fn internal_force(
+                    &self,
+                    ctx: &$crate::behavior::Ctx,
+                ) -> $crate::behavior::LocalVec {
+                    #[allow(unused_imports)]
+                    use $crate::behavior::ElementBehavior as _;
+                    self.$inner.internal_force(ctx)
+                }
+            );
+            $crate::forward_element_behavior!(@opt $m_update_state
+                fn update_state(
+                    &mut self,
+                    du: &$crate::behavior::LocalVec,
+                    commit: bool,
+                    ctx: &$crate::behavior::Ctx,
+                ) {
+                    #[allow(unused_imports)]
+                    use $crate::behavior::ElementBehavior as _;
+                    self.$inner.update_state(du, commit, ctx)
+                }
+            );
+            $crate::forward_element_behavior!(@opt $m_mass_matrix
+                fn mass_matrix(
+                    &self,
+                    opt: $crate::behavior::MassOption,
+                ) -> $crate::behavior::LocalMat {
+                    #[allow(unused_imports)]
+                    use $crate::behavior::ElementBehavior as _;
+                    self.$inner.mass_matrix(opt)
+                }
+            );
+            $crate::forward_element_behavior!(@opt $m_recover_forces
+                fn recover_forces(&self, u_elem: &[f64]) -> Option<$crate::beam::MemberForces> {
+                    #[allow(unused_imports)]
+                    use $crate::behavior::ElementBehavior as _;
+                    self.$inner.recover_forces(u_elem)
+                }
+            );
+            $crate::forward_element_behavior!(@opt $m_state_member_forces
+                fn state_member_forces(
+                    &self,
+                    ctx: &$crate::behavior::Ctx,
+                ) -> Option<$crate::beam::MemberForces> {
+                    #[allow(unused_imports)]
+                    use $crate::behavior::ElementBehavior as _;
+                    self.$inner.state_member_forces(ctx)
+                }
+            );
+            $crate::forward_element_behavior!(@opt $m_geometric_stiffness
+                fn geometric_stiffness(&self, n: f64) -> $crate::behavior::LocalMat {
+                    #[allow(unused_imports)]
+                    use $crate::behavior::ElementBehavior as _;
+                    self.$inner.geometric_stiffness(n)
+                }
+            );
+            $crate::forward_element_behavior!(@opt $m_snapshot_state
+                fn snapshot_state(&self) -> Box<dyn ::std::any::Any> {
+                    #[allow(unused_imports)]
+                    use $crate::behavior::ElementBehavior as _;
+                    self.$inner.snapshot_state()
+                }
+            );
+            $crate::forward_element_behavior!(@opt $m_restore_state
+                fn restore_state(&mut self, state: &dyn ::std::any::Any) {
+                    #[allow(unused_imports)]
+                    use $crate::behavior::ElementBehavior as _;
+                    self.$inner.restore_state(state)
+                }
+            );
+            $crate::forward_element_behavior!(@opt $m_commit_state
+                fn commit_state(&mut self) {
+                    #[allow(unused_imports)]
+                    use $crate::behavior::ElementBehavior as _;
+                    self.$inner.commit_state()
+                }
+            );
+            $crate::forward_element_behavior!(@opt $m_revert_state
+                fn revert_state(&mut self) {
+                    #[allow(unused_imports)]
+                    use $crate::behavior::ElementBehavior as _;
+                    self.$inner.revert_state()
+                }
+            );
+            $crate::forward_element_behavior!(@opt $m_serialize_checkpoint
+                fn serialize_checkpoint(&self) -> Vec<u8> {
+                    #[allow(unused_imports)]
+                    use $crate::behavior::ElementBehavior as _;
+                    self.$inner.serialize_checkpoint()
+                }
+            );
+            $crate::forward_element_behavior!(@opt $m_deserialize_checkpoint
+                fn deserialize_checkpoint(
+                    &mut self,
+                    data: &[u8],
+                ) -> Result<(), $crate::behavior::CheckpointError> {
+                    #[allow(unused_imports)]
+                    use $crate::behavior::ElementBehavior as _;
+                    self.$inner.deserialize_checkpoint(data)
+                }
+            );
+            $crate::forward_element_behavior!(@opt $m_panel_moments_from
+                fn panel_moments_from(&self, u_elem: &[f64]) -> Option<[f64; 2]> {
+                    #[allow(unused_imports)]
+                    use $crate::behavior::ElementBehavior as _;
+                    self.$inner.panel_moments_from(u_elem)
+                }
+            );
+            $crate::forward_element_behavior!(@opt $m_ductility_probe
+                fn ductility_probe(&self) -> Option<$crate::behavior::DuctilityProbe> {
+                    #[allow(unused_imports)]
+                    use $crate::behavior::ElementBehavior as _;
+                    self.$inner.ductility_probe()
+                }
+            );
+            $crate::forward_element_behavior!(@opt $m_fiber_section_states
+                fn fiber_section_states(
+                    &self,
+                ) -> Option<Vec<$crate::behavior::FiberSectionState>> {
+                    #[allow(unused_imports)]
+                    use $crate::behavior::ElementBehavior as _;
+                    self.$inner.fiber_section_states()
+                }
+            );
+            $crate::forward_element_behavior!(@opt $m_set_time_step
+                fn set_time_step(&mut self, dt: f64) {
+                    #[allow(unused_imports)]
+                    use $crate::behavior::ElementBehavior as _;
+                    self.$inner.set_time_step(dt)
+                }
+            );
+        }
+    };
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

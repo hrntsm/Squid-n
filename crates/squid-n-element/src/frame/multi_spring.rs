@@ -1,10 +1,6 @@
-use crate::behavior::{Ctx, ElementBehavior, LocalMat, LocalVec, MassOption};
 use crate::fiber::FiberBeam;
-use smallvec::SmallVec;
-use squid_n_core::dof::DofMap;
 use squid_n_core::ids::MaterialId;
 use squid_n_core::model::Model;
-use std::any::Any;
 
 /// 軸ばね1本：断面内の位置と材料を保持（P5.5 §3）
 pub struct AxialSpring {
@@ -74,75 +70,41 @@ impl MultiSpringElement {
     }
 }
 
-impl ElementBehavior for MultiSpringElement {
-    fn n_dof(&self) -> usize {
-        self.inner.n_dof()
+crate::forward_element_behavior!(MultiSpringElement, inner, {
+    n_dof: forward,
+    global_dofs: forward,
+    tangent_stiffness: forward,
+    internal_force: forward,
+    update_state: forward,
+    mass_matrix: forward,
+    recover_forces: forward,
+    state_member_forces: forward,
+    geometric_stiffness: forward,
+    snapshot_state: forward,
+    restore_state: forward,
+    commit_state: forward,
+    revert_state: forward,
+    serialize_checkpoint: forward,
+    deserialize_checkpoint: forward,
+    panel_moments_from: forward,
+    ductility_probe: forward,
+    // TODO(次コミット): 委譲へ戻す。移設コミットで挙動を変えないための一時的な据え置き。
+    fiber_section_states: custom,
+    set_time_step: forward,
+}, custom {
+    /// 内側の [`FiberBeam`] は状態を持っているが、移設前の手書き実装が委譲を
+    /// 書き忘れていたため、既定の `None` が返っていた。移設コミットで挙動を
+    /// 変えないよう、ここではその欠落をそのまま再現する。
+    fn fiber_section_states(&self) -> Option<Vec<crate::behavior::FiberSectionState>> {
+        None
     }
-
-    fn global_dofs(&self, dof: &DofMap) -> SmallVec<[usize; 24]> {
-        self.inner.global_dofs(dof)
-    }
-
-    fn tangent_stiffness(&self, ctx: &Ctx) -> LocalMat {
-        self.inner.tangent_stiffness(ctx)
-    }
-
-    fn internal_force(&self, ctx: &Ctx) -> LocalVec {
-        self.inner.internal_force(ctx)
-    }
-
-    /// 内力分布は実体（端部バネ断面＋中央弾性のファイバー要素）へ委譲する。
-    fn state_member_forces(&self, ctx: &Ctx) -> Option<crate::beam::MemberForces> {
-        self.inner.state_member_forces(ctx)
-    }
-
-    fn update_state(&mut self, du: &LocalVec, commit: bool, ctx: &Ctx) {
-        self.inner.update_state(du, commit, ctx);
-    }
-
-    fn mass_matrix(&self, opt: MassOption) -> LocalMat {
-        self.inner.mass_matrix(opt)
-    }
-
-    fn geometric_stiffness(&self, n: f64) -> LocalMat {
-        self.inner.geometric_stiffness(n)
-    }
-
-    fn snapshot_state(&self) -> Box<dyn Any> {
-        self.inner.snapshot_state()
-    }
-
-    fn restore_state(&mut self, state: &dyn Any) {
-        self.inner.restore_state(state);
-    }
-
-    fn commit_state(&mut self) {
-        self.inner.commit_state();
-    }
-
-    fn revert_state(&mut self) {
-        self.inner.revert_state();
-    }
-
-    fn serialize_checkpoint(&self) -> Vec<u8> {
-        self.inner.serialize_checkpoint()
-    }
-
-    fn deserialize_checkpoint(
-        &mut self,
-        data: &[u8],
-    ) -> Result<(), crate::behavior::CheckpointError> {
-        self.inner.deserialize_checkpoint(data)
-    }
-
-    fn ductility_probe(&self) -> Option<crate::behavior::DuctilityProbe> {
-        self.inner.ductility_probe()
-    }
-}
+});
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::behavior::{Ctx, ElementBehavior, LocalVec};
+    use smallvec::SmallVec;
     use squid_n_core::ids::{ElemId, MaterialId, NodeId, SectionId};
     use squid_n_core::model::AnalysisKind;
     use squid_n_core::model::{

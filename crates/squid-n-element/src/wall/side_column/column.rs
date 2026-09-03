@@ -4,9 +4,8 @@
 //! `ReleaseAxis`。
 
 use crate::beam::{invert_small, BeamElement};
-use crate::behavior::{Ctx, ElementBehavior, LocalMat, LocalVec, MassOption};
+use crate::behavior::{Ctx, LocalMat, LocalVec};
 use smallvec::SmallVec;
-use squid_n_core::dof::DofMap;
 
 /// 解放する局所曲げ面（回転自由度）。
 ///
@@ -128,15 +127,27 @@ impl InPlaneReleasedColumn {
     }
 }
 
-impl ElementBehavior for InPlaneReleasedColumn {
-    fn n_dof(&self) -> usize {
-        self.inner.n_dof()
-    }
-
-    fn global_dofs(&self, dof: &DofMap) -> SmallVec<[usize; 24]> {
-        self.inner.global_dofs(dof)
-    }
-
+crate::forward_element_behavior!(InPlaneReleasedColumn, inner, {
+    n_dof: forward,
+    global_dofs: forward,
+    tangent_stiffness: custom,
+    internal_force: custom,
+    update_state: forward,
+    mass_matrix: forward,
+    recover_forces: custom,
+    state_member_forces: custom,
+    geometric_stiffness: forward,
+    snapshot_state: forward,
+    restore_state: forward,
+    commit_state: forward,
+    revert_state: forward,
+    serialize_checkpoint: forward,
+    deserialize_checkpoint: forward,
+    panel_moments_from: forward,
+    ductility_probe: forward,
+    fiber_section_states: forward,
+    set_time_step: forward,
+}, custom {
     fn tangent_stiffness(&self, _ctx: &Ctx) -> LocalMat {
         self.inner.axis.to_global(&self.released_local_stiffness())
     }
@@ -158,45 +169,6 @@ impl ElementBehavior for InPlaneReleasedColumn {
         f
     }
 
-    fn update_state(&mut self, du: &LocalVec, commit: bool, ctx: &Ctx) {
-        self.inner.update_state(du, commit, ctx);
-    }
-
-    fn commit_state(&mut self) {
-        self.inner.commit_state();
-    }
-
-    fn revert_state(&mut self) {
-        self.inner.revert_state();
-    }
-
-    fn snapshot_state(&self) -> Box<dyn std::any::Any> {
-        self.inner.snapshot_state()
-    }
-
-    fn restore_state(&mut self, state: &dyn std::any::Any) {
-        self.inner.restore_state(state);
-    }
-
-    fn serialize_checkpoint(&self) -> Vec<u8> {
-        self.inner.serialize_checkpoint()
-    }
-
-    fn deserialize_checkpoint(
-        &mut self,
-        data: &[u8],
-    ) -> Result<(), crate::behavior::CheckpointError> {
-        self.inner.deserialize_checkpoint(data)
-    }
-
-    fn mass_matrix(&self, opt: MassOption) -> LocalMat {
-        self.inner.mass_matrix(opt)
-    }
-
-    fn geometric_stiffness(&self, n: f64) -> LocalMat {
-        self.inner.geometric_stiffness(n)
-    }
-
     fn recover_forces(&self, u_elem: &[f64]) -> Option<crate::beam::MemberForces> {
         if u_elem.len() < 12 {
             return None;
@@ -210,4 +182,4 @@ impl ElementBehavior for InPlaneReleasedColumn {
     fn state_member_forces(&self, _ctx: &Ctx) -> Option<crate::beam::MemberForces> {
         Some(self.recover_forces_released(&self.inner.trial_disp))
     }
-}
+});

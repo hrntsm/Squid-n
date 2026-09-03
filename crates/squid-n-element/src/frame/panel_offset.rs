@@ -201,7 +201,27 @@ impl PanelOffsetMember {
     }
 }
 
-impl ElementBehavior for PanelOffsetMember {
+crate::forward_element_behavior!(PanelOffsetMember, inner, {
+    n_dof: custom,
+    global_dofs: custom,
+    tangent_stiffness: custom,
+    internal_force: custom,
+    update_state: custom,
+    mass_matrix: custom,
+    recover_forces: custom,
+    state_member_forces: forward,
+    geometric_stiffness: custom,
+    snapshot_state: forward,
+    restore_state: forward,
+    commit_state: forward,
+    revert_state: forward,
+    serialize_checkpoint: forward,
+    deserialize_checkpoint: forward,
+    panel_moments_from: forward,
+    ductility_probe: forward,
+    fiber_section_states: forward,
+    set_time_step: forward,
+}, custom {
     fn n_dof(&self) -> usize {
         12 + self.n_panel_dof()
     }
@@ -250,54 +270,10 @@ impl ElementBehavior for PanelOffsetMember {
         self.inner.update_state(&du_inner, commit, ctx);
     }
 
-    fn commit_state(&mut self) {
-        self.inner.commit_state();
-    }
-
-    fn revert_state(&mut self) {
-        self.inner.revert_state();
-    }
-
-    fn snapshot_state(&self) -> Box<dyn std::any::Any> {
-        self.inner.snapshot_state()
-    }
-
-    fn restore_state(&mut self, state: &dyn std::any::Any) {
-        self.inner.restore_state(state);
-    }
-
-    fn serialize_checkpoint(&self) -> Vec<u8> {
-        self.inner.serialize_checkpoint()
-    }
-
-    fn deserialize_checkpoint(
-        &mut self,
-        data: &[u8],
-    ) -> Result<(), crate::behavior::CheckpointError> {
-        self.inner.deserialize_checkpoint(data)
-    }
-
     fn recover_forces(&self, u_elem: &[f64]) -> Option<crate::beam::MemberForces> {
         self.inner.recover_forces(&self.to_inner(u_elem))
     }
-
-    fn state_member_forces(&self, ctx: &Ctx) -> Option<crate::beam::MemberForces> {
-        // 内側は自身のトライアル変位（パネル寄与を反映済み）を保持している。
-        self.inner.state_member_forces(ctx)
-    }
-
-    fn ductility_probe(&self) -> Option<crate::behavior::DuctilityProbe> {
-        self.inner.ductility_probe()
-    }
-
-    fn fiber_section_states(&self) -> Option<Vec<crate::behavior::FiberSectionState>> {
-        self.inner.fiber_section_states()
-    }
-
-    fn set_time_step(&mut self, dt: f64) {
-        self.inner.set_time_step(dt);
-    }
-}
+});
 
 #[cfg(test)]
 mod tests {
