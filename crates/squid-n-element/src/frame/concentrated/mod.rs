@@ -1,6 +1,6 @@
 use crate::beam::invert_small;
 use crate::behavior::{Ctx, ElementBehavior, LocalMat, LocalVec, MassOption};
-use squid_n_core::dof::{DofMap, DOF_PER_NODE};
+use squid_n_core::dof::DofMap;
 
 use smallvec::SmallVec;
 use squid_n_material::uniaxial::UniaxialMaterial;
@@ -342,19 +342,7 @@ impl ElementBehavior for ConcentratedSpringBeam {
     }
 
     fn global_dofs(&self, dof: &DofMap) -> SmallVec<[usize; 24]> {
-        let mut gdofs = SmallVec::new();
-        for &nid in &self.elastic.nodes {
-            let ni = nid.index();
-            for d in 0..DOF_PER_NODE {
-                let g = ni * DOF_PER_NODE + d;
-                if let Some(active) = dof.active(g) {
-                    gdofs.push(active as usize);
-                } else {
-                    gdofs.push(usize::MAX);
-                }
-            }
-        }
-        gdofs
+        crate::behavior::node_global_dofs(&self.elastic.nodes, dof)
     }
 
     fn tangent_stiffness(&self, _ctx: &Ctx) -> LocalMat {

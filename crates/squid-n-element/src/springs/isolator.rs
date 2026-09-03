@@ -19,7 +19,7 @@
 use crate::behavior::{Ctx, ElementBehavior, LocalMat, LocalVec, MassOption};
 use crate::transform::LocalFrame;
 use smallvec::SmallVec;
-use squid_n_core::dof::{DofMap, DOF_PER_NODE};
+use squid_n_core::dof::DofMap;
 use squid_n_core::ids::NodeId;
 use squid_n_core::model::{ElementData, IsolatorKind, IsolatorProps, Model};
 use squid_n_material::uniaxial::{Bilinear, UniaxialMaterial};
@@ -284,15 +284,7 @@ impl ElementBehavior for IsolatorElement {
     }
 
     fn global_dofs(&self, dof: &DofMap) -> SmallVec<[usize; 24]> {
-        let mut gdofs = SmallVec::new();
-        for &nid in &self.nodes {
-            let ni = nid.index();
-            for d in 0..DOF_PER_NODE {
-                let g = ni * DOF_PER_NODE + d;
-                gdofs.push(dof.active(g).map(|a| a as usize).unwrap_or(usize::MAX));
-            }
-        }
-        gdofs
+        crate::behavior::node_global_dofs(&self.nodes, dof)
     }
 
     fn tangent_stiffness(&self, _ctx: &Ctx) -> LocalMat {

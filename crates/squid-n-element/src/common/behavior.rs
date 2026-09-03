@@ -1,5 +1,5 @@
 use smallvec::SmallVec;
-use squid_n_core::dof::DofMap;
+use squid_n_core::dof::{DofMap, DOF_PER_NODE, PANEL_DOF_PER_NODE};
 use squid_n_core::model::Model;
 use std::any::Any;
 
@@ -141,6 +141,51 @@ impl LocalMat {
     }
 }
 
+/// 節点列の並進・回転自由度を、[`ElementBehavior::global_dofs`] が返す並びへ収集する。
+///
+/// 節点 1 個あたり [`DOF_PER_NODE`] 成分を節点の順に並べ、拘束・従属で全体方程式から
+/// 消えた自由度は `usize::MAX` を置く（[`LocalMat::to_triplets`] がこの番兵を見て
+/// 当該行・列の散布を飛ばす）。
+///
+/// 節点自由度だけで構成される要素はこれをそのまま返せばよい。仕口パネルのように
+/// 追加自由度を持つ要素は、[`push_node_global_dofs`] と [`push_panel_global_dofs`] を
+/// 必要な順に呼んで並びを組み立てる。
+pub fn node_global_dofs(
+    nodes: &[squid_n_core::ids::NodeId],
+    dof: &DofMap,
+) -> SmallVec<[usize; 24]> {
+    let mut gdofs = SmallVec::new();
+    push_node_global_dofs(&mut gdofs, nodes, dof);
+    gdofs
+}
+
+/// [`node_global_dofs`] の並びを、既存の並びの末尾へ追加する。
+pub fn push_node_global_dofs(
+    out: &mut SmallVec<[usize; 24]>,
+    nodes: &[squid_n_core::ids::NodeId],
+    dof: &DofMap,
+) {
+    for &nid in nodes {
+        let ni = nid.index();
+        for d in 0..DOF_PER_NODE {
+            let g = ni * DOF_PER_NODE + d;
+            out.push(dof.active(g).map_or(usize::MAX, |a| a as usize));
+        }
+    }
+}
+
+/// 仕口パネル節点の追加自由度（せん断変形角。[`PANEL_DOF_PER_NODE`] 成分）を
+/// 既存の並びの末尾へ追加する。欠番の扱いは [`push_node_global_dofs`] と同じく
+/// `usize::MAX` の番兵。
+pub fn push_panel_global_dofs(out: &mut SmallVec<[usize; 24]>, node_idx: usize, dof: &DofMap) {
+    for d in 0..PANEL_DOF_PER_NODE {
+        out.push(
+            dof.panel_dof(node_idx, d)
+                .map_or(usize::MAX, |a| a as usize),
+        );
+    }
+}
+
 /// `Send + Sync` を supertrait とするのは、静解析バッチ（`squid-n-solver::statics`）が
 /// 荷重ケース・組合せごとの `Box<dyn ElementBehavior>` キャッシュを rayon 並列
 /// （`&self` 共有）から参照するため。全実装型は内部に `Box<dyn UniaxialMaterial>`
@@ -230,4 +275,91 @@ pub trait ElementBehavior: Send + Sync {
     /// ダッシュポット積分に用いる。`dt<=0`（静的・線形）では減衰要素は不活性となる。
     /// 対応しない要素は何もしない（既定）。
     fn set_time_step(&mut self, _dt: f64) {}
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use squid_n_core::dof::Dof6Mask;
+    use squid_n_core::ids::{ElemId, NodeId};
+    use squid_n_core::model::{
+        ElementData, ElementKind, EndCondition, ForceRegime, LocalAxis, Model, Node,
+    };
+
+    /// 2 節点 1 部材。節点 1 は全自由度を拘束する。
+    fn two_node_model() -> Model {
+        let node = |id: u32, z: f64, restraint| Node {
+            id: NodeId(id),
+            coord: [0.0, 0.0, z],
+            restraint,
+            mass: None,
+            story: None,
+            support_spring: None,
+        };
+        Model {
+            nodes: vec![
+                node(0, 3000.0, Dof6Mask::FREE),
+                node(1, 0.0, Dof6Mask::FIXED),
+            ],
+            elements: vec![ElementData {
+                id: ElemId(0),
+                kind: ElementKind::Beam,
+                nodes: smallvec::smallvec![NodeId(0), NodeId(1)],
+                section: None,
+                local_axis: LocalAxis {
+                    ref_vector: [1.0, 0.0, 0.0],
+                },
+                end_cond: [EndCondition::Fixed, EndCondition::Fixed],
+                force_regime: ForceRegime::Auto,
+                rigid_zone: Default::default(),
+                plastic_zone: None,
+                spring: None,
+            }],
+            ..Default::default()
+        }
+    }
+
+    /// 節点の並び順どおりに [`DOF_PER_NODE`] 成分ずつ並び、拘束された自由度には
+    /// 番兵 `usize::MAX` が入る。
+    #[test]
+    fn node_global_dofs_orders_by_node_and_marks_restrained() {
+        let model = two_node_model();
+        let dof = DofMap::build(&model);
+        let g = node_global_dofs(&[NodeId(0), NodeId(1)], &dof);
+
+        assert_eq!(g.len(), 2 * DOF_PER_NODE);
+        // 自由な節点 0 は全成分が活性番号（重複なし）。
+        for (d, &v) in g.iter().take(DOF_PER_NODE).enumerate() {
+            assert_eq!(v, dof.active(d).unwrap() as usize);
+        }
+        // 全拘束の節点 1 は全成分が番兵。
+        assert!(g[DOF_PER_NODE..].iter().all(|&v| v == usize::MAX));
+    }
+
+    /// 節点を渡す順がそのまま並びになる（要素の節点順に追随する契約）。
+    #[test]
+    fn node_global_dofs_follows_given_order() {
+        let model = two_node_model();
+        let dof = DofMap::build(&model);
+        let forward = node_global_dofs(&[NodeId(0), NodeId(1)], &dof);
+        let reversed = node_global_dofs(&[NodeId(1), NodeId(0)], &dof);
+
+        assert_eq!(forward[..DOF_PER_NODE], reversed[DOF_PER_NODE..]);
+        assert_eq!(forward[DOF_PER_NODE..], reversed[..DOF_PER_NODE]);
+    }
+
+    /// `push_*` は末尾へ足す。パネル自由度を持たない節点は番兵になる
+    /// （パネルのないモデルではパネル自由度が払い出されないため）。
+    #[test]
+    fn push_helpers_append_to_existing_sequence() {
+        let model = two_node_model();
+        let dof = DofMap::build(&model);
+        let mut g = SmallVec::new();
+        push_node_global_dofs(&mut g, &[NodeId(0)], &dof);
+        push_panel_global_dofs(&mut g, 0, &dof);
+
+        assert_eq!(g.len(), DOF_PER_NODE + PANEL_DOF_PER_NODE);
+        assert_eq!(g[..DOF_PER_NODE], node_global_dofs(&[NodeId(0)], &dof)[..]);
+        assert!(g[DOF_PER_NODE..].iter().all(|&v| v == usize::MAX));
+    }
 }

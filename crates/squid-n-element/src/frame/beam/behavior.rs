@@ -3,7 +3,7 @@
 use super::element::BeamElement;
 use crate::behavior::{Ctx, ElementBehavior, LocalMat, LocalVec, MassOption};
 use smallvec::SmallVec;
-use squid_n_core::dof::{DofMap, DOF_PER_NODE};
+use squid_n_core::dof::DofMap;
 
 impl ElementBehavior for BeamElement {
     fn n_dof(&self) -> usize {
@@ -11,19 +11,7 @@ impl ElementBehavior for BeamElement {
     }
 
     fn global_dofs(&self, dof: &DofMap) -> SmallVec<[usize; 24]> {
-        let mut gdofs = SmallVec::new();
-        for &nid in &self.nodes {
-            let ni = nid.index();
-            for d in 0..DOF_PER_NODE {
-                let g = ni * DOF_PER_NODE + d;
-                if let Some(active) = dof.active(g) {
-                    gdofs.push(active as usize);
-                } else {
-                    gdofs.push(usize::MAX);
-                }
-            }
-        }
-        gdofs
+        crate::behavior::node_global_dofs(&self.nodes, dof)
     }
 
     fn tangent_stiffness(&self, _ctx: &Ctx) -> LocalMat {

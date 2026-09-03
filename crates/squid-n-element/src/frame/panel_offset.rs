@@ -209,10 +209,7 @@ impl ElementBehavior for PanelOffsetMember {
     fn global_dofs(&self, dof: &DofMap) -> SmallVec<[usize; 24]> {
         let mut gdofs = self.inner.global_dofs(dof);
         for end in self.ends.iter().flatten() {
-            let ni = end.node.index();
-            for d in 0..2 {
-                gdofs.push(dof.panel_dof(ni, d).map_or(usize::MAX, |a| a as usize));
-            }
+            crate::behavior::push_panel_global_dofs(&mut gdofs, end.node.index(), dof);
         }
         gdofs
     }

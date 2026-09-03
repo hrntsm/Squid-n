@@ -51,7 +51,7 @@
 
 use crate::behavior::{Ctx, ElementBehavior, LocalMat, LocalVec, MassOption};
 use smallvec::SmallVec;
-use squid_n_core::dof::{DofMap, DOF_PER_NODE};
+use squid_n_core::dof::DofMap;
 use squid_n_core::ids::NodeId;
 use squid_n_core::model::{ElementData, Model};
 use squid_n_core::panel_zone::{resolve_panel_joint, PanelGeometry};
@@ -382,21 +382,9 @@ impl ElementBehavior for PanelZone {
 
     fn global_dofs(&self, dof: &DofMap) -> SmallVec<[usize; 24]> {
         let mut gdofs = SmallVec::new();
-        let ni = self.node.index();
-        for d in 0..2 {
-            gdofs.push(
-                dof.panel_dof(ni, d)
-                    .map_or(usize::MAX, |active| active as usize),
-            );
-        }
+        crate::behavior::push_panel_global_dofs(&mut gdofs, self.node.index(), dof);
         if let Some(col) = &self.column {
-            for &nid in &col.nodes {
-                let cn = nid.index();
-                for d in 0..DOF_PER_NODE {
-                    let g = cn * DOF_PER_NODE + d;
-                    gdofs.push(dof.active(g).map_or(usize::MAX, |a| a as usize));
-                }
-            }
+            crate::behavior::push_node_global_dofs(&mut gdofs, &col.nodes, dof);
         }
         gdofs
     }
