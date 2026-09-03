@@ -9,13 +9,15 @@ impl App {
     pub fn pushover_for(
         &self,
         dir: SeismicDir,
-    ) -> Option<&squid_n_solver::pushover::PushoverResult> {
+    ) -> Option<&squid_n_solver::nonlinear::pushover::PushoverResult> {
         let results = self.core.scoped.results.as_ref()?;
         results.pushover_for_dir(dir)
     }
 
     /// 結果タブ・設計タブで表示中の増分解析結果を返す。
-    pub fn displayed_pushover(&self) -> Option<&squid_n_solver::pushover::PushoverResult> {
+    pub fn displayed_pushover(
+        &self,
+    ) -> Option<&squid_n_solver::nonlinear::pushover::PushoverResult> {
         let view_dir = self.core.scoped.pushover_view_dir;
         let results = self.core.scoped.results.as_ref()?;
         results
@@ -49,7 +51,7 @@ impl App {
     /// `compute_pushover` の結果を適用する（bundle 格納・最終実行時刻更新・エラー設定）。
     pub(super) fn apply_pushover_result(
         &mut self,
-        res: Result<squid_n_solver::pushover::PushoverResult, String>,
+        res: Result<squid_n_solver::nonlinear::pushover::PushoverResult, String>,
     ) {
         match res {
             Ok(result) => {
@@ -86,7 +88,7 @@ impl App {
     /// 鋼板耐震壁を含むモデルの増分解析で、せん断座屈を考慮していない旨を知らせる。
     ///
     /// 鋼板耐震壁の面内せん断終局強度は鋼板のせん断降伏 Qy=t·lw·F/√3 で評価している
-    /// （`squid_n_element::wall_element::WallElement::steel_shear_capacity_of`）。
+    /// （`squid_n_element::wall::wall_element::WallElement::steel_shear_capacity_of`）。
     /// 幅厚比の大きい無補剛の鋼板は降伏前に面外へせん断座屈するため、その場合は
     /// 耐力を過大評価する（危険側）。解析は継続してよい事項のため注意事項として扱う。
     fn notice_steel_seismic_walls(&mut self) {
@@ -97,8 +99,8 @@ impl App {
             .iter()
             .filter(|e| {
                 matches!(e.kind, squid_n_core::model::ElementKind::Wall)
-                    && squid_n_element::misc_wall::wall_is_seismic(e, &self.core.model)
-                    && !squid_n_element::misc_wall::is_rc_wall(e, &self.core.model)
+                    && squid_n_element::wall::misc_wall::wall_is_seismic(e, &self.core.model)
+                    && !squid_n_element::wall::misc_wall::is_rc_wall(e, &self.core.model)
             })
             .count();
         if n == 0 {

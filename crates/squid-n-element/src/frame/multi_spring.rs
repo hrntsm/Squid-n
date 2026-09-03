@@ -1,4 +1,4 @@
-use crate::fiber::FiberBeam;
+use crate::frame::fiber::FiberBeam;
 use squid_n_core::ids::MaterialId;
 use squid_n_core::model::Model;
 

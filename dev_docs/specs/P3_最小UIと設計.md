@@ -117,11 +117,11 @@ pub enum Tab { Nodes, Members, Sections, Loads, Viewer, Design }
 /// 解析結果のまとめ。GUI が表・図・検定で参照する。
 pub struct ResultsBundle {
     /// 荷重ケース/組合せごとの静的結果（P2 §3 の StaticOnce）。
-    pub statics: Vec<(squid_n_core::ids::LoadCaseId, squid_n_solver::linear::StaticOnce)>,
+    pub statics: Vec<(squid_n_core::ids::LoadCaseId, squid_n_solver::statics::linear::StaticOnce)>,
     /// 固有値結果（P2 §4 の ModalResult）。固有値未実行なら None。
-    pub modal: Option<squid_n_solver::eigen::ModalResult>,
+    pub modal: Option<squid_n_solver::dynamic::eigen::ModalResult>,
     /// 部材ごと・ケースごとの復元内力（P1 §6.2.3 の MemberForces）。N/Q/M・CMQ 図が読む。
-    pub member_forces: Vec<(squid_n_core::ids::ElemId, squid_n_element::beam::MemberForces)>,
+    pub member_forces: Vec<(squid_n_core::ids::ElemId, squid_n_element::frame::beam::MemberForces)>,
     /// 検定結果（P3 §6 の CheckResult）。位置別・組合せ別。検定比表（§7）が読む。
     pub checks: Vec<(squid_n_core::ids::ElemId, f64 /*pos*/, squid_n_design_jp::CheckResult)>,
 }
@@ -265,7 +265,7 @@ P2 の `Analysis` を GUI から起動する。
 // squid-n-app/src/app.rs（解析実行）
 impl crate::app::App {
     fn run_linear_static(&mut self, lc: squid_n_core::ids::LoadCaseId) {
-        let mut analysis = squid_n_solver::analysis::Analysis::prepare(&self.model).unwrap();
+        let mut analysis = squid_n_solver::statics::analysis::Analysis::prepare(&self.model).unwrap();
         let res = analysis.linear_static(lc).unwrap();
         self.results = Some(/* res を ResultsBundle に格納 */);
     }

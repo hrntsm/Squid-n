@@ -112,7 +112,7 @@ fn l_frame(with_panel: bool) -> Model {
 /// **パネルのせん断変形のみ**に由来する。
 ///
 /// パネル有りのモデルは準備計算と同じ経路
-/// （[`squid_n_element::panel_gen::apply_auto_panel_zones`]）で生成する。
+/// （[`squid_n_element::springs::panel_gen::apply_auto_panel_zones`]）で生成する。
 /// パネル要素の追加とオフセットの剛域長への書き込みが一体の処理であり、
 /// 手組みすると実際のモデル化と食い違うためである。
 fn l_frame_with(with_panel: bool, rigid_joint: bool) -> Model {
@@ -194,7 +194,7 @@ fn l_frame_with(with_panel: bool, rigid_joint: bool) -> Model {
         ..Default::default()
     };
     if with_panel {
-        let panels = squid_n_element::panel_gen::apply_auto_panel_zones(&mut model);
+        let panels = squid_n_element::springs::panel_gen::apply_auto_panel_zones(&mut model);
         assert_eq!(panels.len(), 1, "接合部にパネルが 1 つ生成される");
     }
     model
@@ -241,8 +241,8 @@ fn test_panel_adds_exactly_two_dofs() {
 /// せん断変形角を取り出すには全体系を自前で解く必要がある。
 fn solve_free(model: &Model, dofmap: &DofMap) -> Vec<f64> {
     use squid_n_math::solver::LinearSolver;
-    let k = squid_n_solver::assemble::assemble_global_k(model, dofmap);
-    let f = squid_n_solver::assemble::assemble_global_f(model, dofmap, LoadCaseId(1));
+    let k = squid_n_solver::common::assemble::assemble_global_k(model, dofmap);
+    let f = squid_n_solver::common::assemble::assemble_global_f(model, dofmap, LoadCaseId(1));
     let mut solver = squid_n_math::lu::LuSolver::default();
     solver.factorize(&k).expect("分解できる");
     solver.solve(&f).expect("解ける")
@@ -296,7 +296,7 @@ fn test_panel_shear_angle_matches_closed_form() {
         .iter()
         .find(|e| matches!(e.kind, ElementKind::PanelZone))
         .expect("パネル要素");
-    let mut panel = squid_n_element::panel::PanelZone::new(panel_data, &model);
+    let mut panel = squid_n_element::springs::panel::PanelZone::new(panel_data, &model);
     let ctx = Ctx { model: &model };
     let du = LocalVec {
         data: smallvec::smallvec![gamma[0], gamma[1]],
@@ -323,8 +323,8 @@ fn test_panel_shear_angle_matches_closed_form() {
 fn test_panel_dof_equilibrium_residual_is_zero() {
     let model = l_frame(true);
     let dofmap = DofMap::build(&model);
-    let k = squid_n_solver::assemble::assemble_global_k(&model, &dofmap);
-    let f = squid_n_solver::assemble::assemble_global_f(&model, &dofmap, LoadCaseId(1));
+    let k = squid_n_solver::common::assemble::assemble_global_k(&model, &dofmap);
+    let f = squid_n_solver::common::assemble::assemble_global_f(&model, &dofmap, LoadCaseId(1));
     let u = solve_free(&model, &dofmap);
     let ku = spmv(&k, &u);
 
@@ -353,11 +353,14 @@ fn test_panel_dof_equilibrium_residual_is_zero() {
 /// ため、パネルのせん断変形の効果だけを取り出せない。
 #[test]
 fn test_panel_shear_adds_flexibility() {
-    let rigid_joint =
-        squid_n_solver::linear::linear_static_once(&l_frame_with(false, true), LoadCaseId(1))
-            .expect("剛パネル（剛域のみ）の解析");
-    let with_panel = squid_n_solver::linear::linear_static_once(&l_frame(true), LoadCaseId(1))
-        .expect("パネル有りの解析");
+    let rigid_joint = squid_n_solver::statics::linear::linear_static_once(
+        &l_frame_with(false, true),
+        LoadCaseId(1),
+    )
+    .expect("剛パネル（剛域のみ）の解析");
+    let with_panel =
+        squid_n_solver::statics::linear::linear_static_once(&l_frame(true), LoadCaseId(1))
+            .expect("パネル有りの解析");
 
     // 荷重点（節点 1）の鉛直変位（下向き荷重なので負）。
     let d_rigid = rigid_joint.disp[1][2].abs();
@@ -376,10 +379,11 @@ fn test_panel_shear_adds_flexibility() {
 /// 効いていないことを意味するため、回帰として押さえる。
 #[test]
 fn test_panel_is_stiffer_than_ignoring_joint_size() {
-    let plain = squid_n_solver::linear::linear_static_once(&l_frame(false), LoadCaseId(1))
+    let plain = squid_n_solver::statics::linear::linear_static_once(&l_frame(false), LoadCaseId(1))
         .expect("接合部無視モデルの解析");
-    let with_panel = squid_n_solver::linear::linear_static_once(&l_frame(true), LoadCaseId(1))
-        .expect("パネル有りの解析");
+    let with_panel =
+        squid_n_solver::statics::linear::linear_static_once(&l_frame(true), LoadCaseId(1))
+            .expect("パネル有りの解析");
     assert!(
         with_panel.disp[1][2].abs() < plain.disp[1][2].abs(),
         "剛域が折り込まれていない: 接合部無視 {}, パネル有り {}",

@@ -6,8 +6,8 @@ use squid_n_design_jp::secondary::eccentricity::story_eccentricity;
 use squid_n_design_jp::secondary::eccentricity_analysis::story_eccentricity_from_analysis;
 use squid_n_design_jp::secondary::holding_capacity::{eccentricity_ratio, fes, stiffness_ratios};
 use squid_n_design_jp::secondary::stiffness_ratio::{cog_story_drifts, max_column_drift};
-use squid_n_solver::analysis::SeismicDir;
-use squid_n_solver::linear::StaticOnce;
+use squid_n_solver::statics::analysis::SeismicDir;
+use squid_n_solver::statics::linear::StaticOnce;
 
 use crate::app::{App, ResultsBundle, StaticCaseKey};
 
@@ -316,7 +316,7 @@ pub fn build_report_csv(app: &App) -> String {
     {
         let ctx = metrics_ctx_from_results(app.core.scoped.results.as_ref());
         if let (Some(rx), Some(ry)) = (ctx.seismic_x, ctx.seismic_y) {
-            let cfg = squid_n_solver::analysis::SeismicCfg {
+            let cfg = squid_n_solver::statics::analysis::SeismicCfg {
                 dir: SeismicDir::X,
                 mode: app.core.analysis_cfg.ai_mode,
                 z: app.core.analysis_cfg.z,
@@ -328,7 +328,7 @@ pub fn build_report_csv(app: &App) -> String {
             // 各関数と同じ理由。忘れると壁がこの副次的な解析からも消える）。
             let (expanded, _wall_index, _wall_report) =
                 squid_n_load::wall_expand::expand_wall_elements(model);
-            if let Ok(analysis) = squid_n_solver::analysis::Analysis::prepare(&expanded) {
+            if let Ok(analysis) = squid_n_solver::statics::analysis::Analysis::prepare(&expanded) {
                 if let Ok(p) = analysis.seismic_nodal_force_magnitudes(cfg) {
                     let theta =
                         squid_n_design_jp::secondary::principal_axis::principal_axis_from_results(
@@ -401,8 +401,8 @@ pub fn build_report_csv(app: &App) -> String {
 
     if let Some(po) = app.displayed_pushover() {
         let control = match po.control {
-            squid_n_solver::pushover::PushoverControl::Phased => "段階制御",
-            squid_n_solver::pushover::PushoverControl::LoadOnly => "荷重増分のみ",
+            squid_n_solver::nonlinear::pushover::PushoverControl::Phased => "段階制御",
+            squid_n_solver::nonlinear::pushover::PushoverControl::LoadOnly => "荷重増分のみ",
         };
         out.push_str(&format!(
             "\n[増分解析]\n増分方式,{}\n保有水平耐力Qu[kN],{:.2}\nヒンジ数,{}\n",
@@ -473,7 +473,7 @@ fn push_story_response_table(
     out: &mut String,
     model: &Model,
     dir_label: &str,
-    story: &squid_n_solver::timehistory::StoryResponse,
+    story: &squid_n_solver::dynamic::timehistory::StoryResponse,
 ) {
     use crate::story_response::{mm_s2_to_gal, mm_s_to_m_s, n_to_kn};
 

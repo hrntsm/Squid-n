@@ -142,7 +142,7 @@ pub(crate) fn solve_initial_accel(
 /// 1 ステップに 1 回だけ呼び出す。
 ///
 /// `a_free` は呼び出し側で展開済みの自由 DOF 空間の加速度（`Reducer::expand_u`/
-/// [`Reducer::expand_u_into`](crate::constraint::Reducer::expand_u_into)）を渡す
+/// [`Reducer::expand_u_into`](crate::common::constraint::Reducer::expand_u_into)）を渡す
 /// （`ThRecorder::record_step` 等でも同じ展開済み `a_free` を使い回すため、
 /// 展開そのものは呼び出し側で 1 ステップに 1 回だけ行う）。
 pub(crate) fn mass_accel_free_into(

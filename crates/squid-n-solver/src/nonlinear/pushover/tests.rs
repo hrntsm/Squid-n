@@ -1,5 +1,5 @@
 use super::*;
-use crate::constraint::Reducer;
+use crate::common::constraint::Reducer;
 use squid_n_core::dof::{Dof6Mask, DofMap};
 use squid_n_core::ids::{ElemId, MaterialId, NodeId, SectionId, StoryId};
 use squid_n_core::model::{
@@ -173,7 +173,7 @@ fn test_pushover_single_column_forms_hinge() {
     // いずれかであり、少なくとも Unknown（未記録）ではないこと。
     assert_ne!(
         result.termination,
-        crate::pushover::PushoverTermination::Unknown,
+        crate::nonlinear::pushover::PushoverTermination::Unknown,
         "終了理由が記録されるべき: {:?}",
         result.termination
     );

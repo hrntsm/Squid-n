@@ -7,8 +7,8 @@ use std::collections::HashMap;
 
 use squid_n_core::ids::ElemId;
 use squid_n_design_jp::ultimate::MemberDemand;
-use squid_n_element::beam::MemberForces;
-use squid_n_solver::pushover::PushoverMemberResponse;
+use squid_n_element::frame::beam::MemberForces;
+use squid_n_solver::nonlinear::pushover::PushoverMemberResponse;
 
 /// 静的内力の各部材について、せん断力 `|Q|` の最大値を QL マップにする。
 ///
@@ -99,7 +99,7 @@ pub fn member_demand_from_pushover(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use squid_n_element::beam::MemberForces;
+    use squid_n_element::frame::beam::MemberForces;
 
     fn mf(rows: &[(f64, f64, f64, f64)]) -> MemberForces {
         // (pos, N, Qy, Mz)

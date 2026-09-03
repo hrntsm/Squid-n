@@ -19,7 +19,7 @@
 //! Ux・Uy・Rz が「剛性がありません」と名指しされ、健全なモデルでも入力不備を
 //! 疑わせる誤った案内になる。
 
-use crate::constraint::Reducer;
+use crate::common::constraint::Reducer;
 use squid_n_core::dof::{DofMap, DOF_PER_NODE};
 use squid_n_core::model::Model;
 

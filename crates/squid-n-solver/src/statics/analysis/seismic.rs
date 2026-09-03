@@ -9,7 +9,7 @@ use squid_n_math::solver::SolveError;
 
 use super::config::{AiMode, SeismicCfg, SeismicDir};
 use super::Analysis;
-use crate::linear::StaticOnce;
+use crate::statics::linear::StaticOnce;
 
 /// 建物の基部レベル（elevation の基準 0）を求める。
 ///

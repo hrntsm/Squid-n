@@ -8,7 +8,7 @@
 //! - [`story_reference_node`] — 階を代表する節点（剛床マスター、なければ最重量節点）
 //! - [`get_roof_disp`] / [`get_roof_dof`] — 屋根（最上階の代表節点）の変位・DOF
 
-use crate::analysis::SeismicDir;
+use crate::statics::analysis::SeismicDir;
 use squid_n_core::dof::DofMap;
 use squid_n_core::ids::NodeId;
 use squid_n_core::model::{Model, Story};

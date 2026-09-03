@@ -133,7 +133,7 @@ impl ElementBehavior for BeamElement {
         }
     }
 
-    fn recover_forces(&self, u_elem: &[f64]) -> Option<crate::beam::MemberForces> {
+    fn recover_forces(&self, u_elem: &[f64]) -> Option<crate::frame::beam::MemberForces> {
         if u_elem.len() < 12 {
             return None;
         }
@@ -144,7 +144,7 @@ impl ElementBehavior for BeamElement {
 
     /// 弾性材は常に線形なので、蓄積した trial 変位からの復元でよい
     /// （非線形解析中の弾性材＝`recover_forces` と同じ結果）。
-    fn state_member_forces(&self, _ctx: &Ctx) -> Option<crate::beam::MemberForces> {
+    fn state_member_forces(&self, _ctx: &Ctx) -> Option<crate::frame::beam::MemberForces> {
         Some(self.recover_forces(&self.trial_disp))
     }
 }

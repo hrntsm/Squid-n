@@ -42,7 +42,7 @@
 use squid_n_app::app::{App, StaticCaseKey, ThDampingModel, ThDir, DL_CASE_NAME};
 use squid_n_core::dof::Dof6Mask;
 use squid_n_core::model::ElementKind;
-use squid_n_solver::analysis::SeismicDir;
+use squid_n_solver::statics::analysis::SeismicDir;
 
 // ===================== フィクスチャと共通ヘルパー =====================
 
@@ -155,7 +155,7 @@ fn static_case_key(app: &App, lc: squid_n_core::ids::LoadCaseId) -> StaticCaseKe
 }
 
 /// 指定した静的結果を取り出す。
-fn static_of(app: &App, key: StaticCaseKey) -> &squid_n_solver::linear::StaticOnce {
+fn static_of(app: &App, key: StaticCaseKey) -> &squid_n_solver::statics::linear::StaticOnce {
     app.core
         .scoped
         .results
@@ -202,7 +202,7 @@ fn auto_case(app: &App, name: &str) -> squid_n_core::model::LoadCase {
 /// （床領域の荷重分配作り替え〔Step 4〕の際に実際に約 7.7% 動いた。総荷重は
 /// `dev_docs/v_and_v/床領域の再設計_荷重分配とSlabFloorRegion分離_2026-08.md`
 /// の追記のとおりビット単位で一致しており、荷重が失われたのではない）。
-fn base_column_axials(app: &App, res: &squid_n_solver::linear::StaticOnce) -> Vec<f64> {
+fn base_column_axials(app: &App, res: &squid_n_solver::statics::linear::StaticOnce) -> Vec<f64> {
     let mut out = Vec::new();
     for (eid, mf) in &res.member_forces {
         let Some(e) = app.core.model.elements.get(eid.index()) else {

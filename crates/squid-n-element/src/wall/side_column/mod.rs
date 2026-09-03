@@ -25,9 +25,9 @@ pub use detect::{
 };
 
 #[cfg(test)]
-use crate::beam::BeamElement;
-#[cfg(test)]
 use crate::behavior::{Ctx, ElementBehavior, LocalMat};
+#[cfg(test)]
+use crate::frame::beam::BeamElement;
 #[cfg(test)]
 use crate::transform::LocalFrame;
 #[cfg(test)]

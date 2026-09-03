@@ -210,7 +210,7 @@ impl BeamElement {
         // 1 桁近く過大評価するため適用しない。
         let is_concrete_member = mat.fc.is_some();
         let misc_walls = if is_concrete_member {
-            crate::misc_wall::collect_misc_walls(model)
+            crate::wall::misc_wall::collect_misc_walls(model)
         } else {
             Vec::new()
         };

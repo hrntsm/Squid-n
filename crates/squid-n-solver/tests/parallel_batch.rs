@@ -12,7 +12,7 @@ use squid_n_core::model::{
     Material, MaterialCategory, Model, NodalLoad, Node, Section,
 };
 use squid_n_math::parallelism::{set_parallelism, Parallelism};
-use squid_n_solver::analysis::Analysis;
+use squid_n_solver::statics::analysis::Analysis;
 
 /// 複数の荷重ケースを持つ片持ち梁モデル（unit テストの
 /// `make_cantilever_model` と同等。先端に方向違いの集中荷重を n ケース）。

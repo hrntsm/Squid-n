@@ -31,9 +31,9 @@ use squid_n_core::units::to_display::{force_kn, moment_kn_m};
 use squid_n_design_jp::{
     CheckOutcome, DesignCheck, DesignCtx, LoadTerm, MemberForcesAt, MemberKind,
 };
-use squid_n_element::beam::MemberForces;
+use squid_n_element::frame::beam::MemberForces;
 use squid_n_element::transform::LocalFrame;
-use squid_n_solver::timehistory::ThRecording;
+use squid_n_solver::dynamic::timehistory::ThRecording;
 
 /// ループ表示の分類（要素種別による）。
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -1004,10 +1004,10 @@ mod tests {
     /// テストと同じ設定で ey=グローバルY・ez=グローバルZ とし、期待値を
     /// 手計算しやすくする）。`squid_n_element::frame::beam::tests::make_test_beam`
     /// と同じ諸元。
-    fn cantilever_test_beam() -> squid_n_element::beam::BeamElement {
+    fn cantilever_test_beam() -> squid_n_element::frame::beam::BeamElement {
         use squid_n_core::ids::{ElemId as CoreElemId, NodeId};
         use squid_n_core::model::{EndCondition, RigidZone};
-        squid_n_element::beam::BeamElement {
+        squid_n_element::frame::beam::BeamElement {
             id: CoreElemId(0),
             e: 205000.0,
             g: 78846.15,

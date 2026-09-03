@@ -55,7 +55,7 @@ pub enum WallPlateShape {
     /// `None` を許すのは [`RegionAnchor::FloorRegion`]（自立壁）だけである。
     /// 囲む柱梁があるなら壁の高さは幾何から決まるので、全高の壁は
     /// [`WallPlateShape::Enclosed`]（境界＝壁領域の節点列）で表す。線アンカーで
-    /// `None` を許すと、`squid_n_element::misc_wall` が階高分の腰壁せいを取付き先の
+    /// `None` を許すと、`squid_n_element::wall::misc_wall` が階高分の腰壁せいを取付き先の
     /// 梁 1 本へ丸ごと算入し（反対側の梁が無い扱いになる）、梁の剛性を過大に、
     /// 変形を過小に見る危険側の評価になる。`Model::validate` が弾く。
     Attached {
@@ -115,7 +115,7 @@ pub struct WallPlate {
 /// 一体なら、自重は全量が上の梁へ向かう。
 ///
 /// 4 辺すべてが一体でなければ耐震壁として成立しない
-/// （`squid_n_element::misc_wall::wall_is_seismic`）。切れた辺があると、負担した
+/// （`squid_n_element::wall::misc_wall::wall_is_seismic`）。切れた辺があると、負担した
 /// 面内せん断を周辺の柱梁へ伝えられないためである。
 ///
 /// 境界が 4 節点の囲まれた壁版でのみ意味を持つ。取り付く壁版は柱・梁と接する
@@ -181,7 +181,7 @@ impl WallPlate {
     /// 1 つ目、`[1]` を 2 つ目の柱際に対応させる。
     ///
     /// **添字の対応規則はここ 1 か所に置く。** 剛性算入
-    /// （`squid_n_element::misc_wall`）が袖壁を辺ごとに評価するとき、および GUI が
+    /// （`squid_n_element::wall::misc_wall`）が袖壁を辺ごとに評価するとき、および GUI が
     /// どちらのスリットかを節点番号で示すときに、同じ並びを見る必要があるためである。
     ///
     /// 境界が 4 節点でない壁版・取り付く壁版・節点を引けない壁版は `None`。

@@ -13,7 +13,7 @@ use squid_n_core::model::{
 };
 use squid_n_load::floor::{self, BeamLoad, LoadShape, LoadTarget};
 use squid_n_load::secondary::{beam_span_position, resolve_nodal_to_primary, SPAN_TOL_MM};
-use squid_n_solver::analysis::{self, AiMode, SeismicDir};
+use squid_n_solver::statics::analysis::{self, AiMode, SeismicDir};
 
 use crate::settings::AnalysisSettings;
 

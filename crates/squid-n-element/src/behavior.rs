@@ -84,7 +84,7 @@ pub struct FiberStateSample {
 /// 塑性率（ductility）評価用の危険断面プローブ（ファイバーモデルの塑性率、
 /// 構造力学）。ファイバー要素が最大曲率のガウス点（危険断面）
 /// について現在のひずみ状態を集約して返す。プッシュオーバー解析
-/// （`squid_n_solver::pushover`）が各ステップで参照し、塑性率基点曲率と
+/// （`squid_n_solver::nonlinear::pushover`）が各ステップで参照し、塑性率基点曲率と
 /// 最大応答曲率から部材塑性率 μ を算定する。
 #[derive(Clone, Copy, Debug, Default)]
 pub struct DuctilityProbe {
@@ -312,19 +312,19 @@ pub trait ElementBehavior: Send + Sync {
     /// 線材（梁・柱・ブレース）は必ず実装する。ここで `None` を返すと線形解析の
     /// `member_forces` から当該部材が丸ごと欠落し、応力図・断面検定・接合部検定の
     /// 入力が空になる（線形静解析側で検出してエラーにしている）。
-    fn recover_forces(&self, _u_elem: &[f64]) -> Option<crate::beam::MemberForces> {
+    fn recover_forces(&self, _u_elem: &[f64]) -> Option<crate::frame::beam::MemberForces> {
         None
     }
     /// 現在の要素状態（committed / trial）から部材内力分布を返す（非線形解析用）。
     ///
     /// 弾塑性要素の内力は「接線剛性 × 全変位」では**降伏後に誤る**ため、
     /// 履歴状態から求めた復元力（[`Self::internal_force`]）や断面応答を材軸方向へ
-    /// 釣合いで分配して組み立てる（[`crate::beam::member_forces_from_end_forces`]）。
+    /// 釣合いで分配して組み立てる（[`crate::frame::beam::member_forces_from_end_forces`]）。
     ///
     /// 既定は `None`（内力分布を持たない要素、または状態から正しく内力を
     /// 取り出せない要素）。プッシュオーバー・時刻歴の結果から部材応力を
     /// 取り出す用途はこちらを使う。
-    fn state_member_forces(&self, _ctx: &Ctx) -> Option<crate::beam::MemberForces> {
+    fn state_member_forces(&self, _ctx: &Ctx) -> Option<crate::frame::beam::MemberForces> {
         None
     }
     /// T7: 線形化幾何剛性 Kg（P-Δ）。軸力 N（引張正）。デフォルトはゼロ。
@@ -379,15 +379,15 @@ pub trait ElementBehavior: Send + Sync {
 
 /// 内側の要素へ `ElementBehavior` を委譲するラッパ要素の実装を生成する。
 ///
-/// ラッパ（[`crate::multi_spring::MultiSpringElement`]・
-/// [`crate::side_column::InPlaneReleasedColumn`]・
-/// [`crate::panel_offset::PanelOffsetMember`]）は、大半のメソッドを内側の要素へ
+/// ラッパ（[`crate::frame::multi_spring::MultiSpringElement`]・
+/// [`crate::wall::side_column::InPlaneReleasedColumn`]・
+/// [`crate::frame::panel_offset::PanelOffsetMember`]）は、大半のメソッドを内側の要素へ
 /// そのまま流し、いくつかだけ自前で持つ。これを手書きすると、**流し忘れたメソッドが
 /// トレイトの既定値へ静かに落ちる**。既定値は `None` や「何もしない」なので、
 /// コンパイルは通り、テストも書いていなければ落ちない。
 ///
 /// 実際に `MultiSpringElement` は `fiber_section_states` の委譲を書き忘れており、
-/// 内側の [`crate::fiber::FiberBeam`] が状態を持っているのに、ヒンジ詳細ウィンドウの
+/// 内側の [`crate::frame::fiber::FiberBeam`] が状態を持っているのに、ヒンジ詳細ウィンドウの
 /// ファイバー断面の塑性化マップが MS 要素でだけ空になっていた。
 ///
 /// # 使い方
@@ -508,7 +508,7 @@ macro_rules! forward_element_behavior {
                 }
             );
             $crate::forward_element_behavior!(@opt $m_recover_forces
-                fn recover_forces(&self, u_elem: &[f64]) -> Option<$crate::beam::MemberForces> {
+                fn recover_forces(&self, u_elem: &[f64]) -> Option<$crate::frame::beam::MemberForces> {
                     #[allow(unused_imports)]
                     use $crate::behavior::ElementBehavior as _;
                     self.$inner.recover_forces(u_elem)
@@ -518,7 +518,7 @@ macro_rules! forward_element_behavior {
                 fn state_member_forces(
                     &self,
                     ctx: &$crate::behavior::Ctx,
-                ) -> Option<$crate::beam::MemberForces> {
+                ) -> Option<$crate::frame::beam::MemberForces> {
                     #[allow(unused_imports)]
                     use $crate::behavior::ElementBehavior as _;
                     self.$inner.state_member_forces(ctx)

@@ -119,13 +119,13 @@ impl ElementBehavior for HystereticDamperElement {
         LocalMat::zeros(12)
     }
 
-    fn state_member_forces(&self, _ctx: &Ctx) -> Option<crate::beam::MemberForces> {
+    fn state_member_forces(&self, _ctx: &Ctx) -> Option<crate::frame::beam::MemberForces> {
         use squid_n_material::UniaxialMaterial;
         // trial を汚さないよう複製し、現在状態の復元力（引張正）を取り出す。
         let mut m = self.mat.clone();
         let (n, _k) = m.trial(self.trial_elong);
         let v = [n, 0.0, 0.0, 0.0, 0.0, 0.0];
-        Some(crate::beam::MemberForces {
+        Some(crate::frame::beam::MemberForces {
             at: vec![(0.0, v), (1.0, v)],
         })
     }

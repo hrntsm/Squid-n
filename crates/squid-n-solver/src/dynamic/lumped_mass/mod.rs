@@ -48,7 +48,7 @@ use time_history::{fundamental_omega, solve_tridiagonal};
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::analysis::SeismicDir;
+    use crate::statics::analysis::SeismicDir;
 
     #[test]
     fn test_fit_trilinear_equal_area_and_endpoints() {
@@ -217,21 +217,21 @@ mod tests {
         // （`total_disp` が長期・水平力増分の両フェーズを通じて累積するのと同じ
         // 構成）とし、原点補正後に純粋な弾性直線（K=100000）へ戻ることを見る。
         let capacity_curve = vec![
-            crate::pushover::CapacityPoint {
+            crate::nonlinear::pushover::CapacityPoint {
                 step: 0,
                 roof_disp: -0.1,
                 base_shear: 0.0,
                 story_shear: vec![1e-11],
                 story_drift: vec![-0.2],
             },
-            crate::pushover::CapacityPoint {
+            crate::nonlinear::pushover::CapacityPoint {
                 step: 1,
                 roof_disp: 5.0,
                 base_shear: 500_000.0,
                 story_shear: vec![500_000.0],
                 story_drift: vec![-0.2 + 5.0],
             },
-            crate::pushover::CapacityPoint {
+            crate::nonlinear::pushover::CapacityPoint {
                 step: 2,
                 roof_disp: 10.0,
                 base_shear: 1_000_000.0,
@@ -240,37 +240,37 @@ mod tests {
             },
         ];
         let steps = vec![
-            crate::pushover::PushoverStep {
+            crate::nonlinear::pushover::PushoverStep {
                 load_factor: 0.0,
                 top_disp: -0.1,
                 base_shear: 0.0,
                 story_drifts: vec![-0.2],
             },
-            crate::pushover::PushoverStep {
+            crate::nonlinear::pushover::PushoverStep {
                 load_factor: 0.5,
                 top_disp: 5.0,
                 base_shear: 500_000.0,
                 story_drifts: vec![-0.2 + 5.0],
             },
-            crate::pushover::PushoverStep {
+            crate::nonlinear::pushover::PushoverStep {
                 load_factor: 1.0,
                 top_disp: 10.0,
                 base_shear: 1_000_000.0,
                 story_drifts: vec![-0.2 + 10.0],
             },
         ];
-        let pushover = crate::pushover::PushoverResult {
+        let pushover = crate::nonlinear::pushover::PushoverResult {
             steps,
             capacity_curve,
             hinges: Vec::new(),
             shear_yields: Vec::new(),
-            mechanism: crate::pushover::MechanismType::Overall,
+            mechanism: crate::nonlinear::pushover::MechanismType::Overall,
             qu: 1_000_000.0,
             member_response: Vec::new(),
-            control: crate::pushover::PushoverControl::default(),
+            control: crate::nonlinear::pushover::PushoverControl::default(),
             member_history: Vec::new(),
             fiber_states: Vec::new(),
-            termination: crate::pushover::PushoverTermination::TargetReached,
+            termination: crate::nonlinear::pushover::PushoverTermination::TargetReached,
         };
 
         let lm = build_lumped_mass_model(&model, &pushover, LumpedMassType::EquivalentShear, 0.75);

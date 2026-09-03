@@ -411,6 +411,6 @@ pub(super) fn is_wall_top_bottom_girder(model: &Model, n0: NodeId, n1: NodeId) -
             && e.nodes.len() >= 4
             && e.nodes.contains(&n0)
             && e.nodes.contains(&n1)
-            && crate::misc_wall::wall_is_seismic(e, model)
+            && crate::wall::misc_wall::wall_is_seismic(e, model)
     })
 }

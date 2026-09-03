@@ -20,7 +20,7 @@
 //! # 既存の剛域変換との関係
 //!
 //! `[B0]{Φ} = Φ × r`（`r = {X0,Y0,Z0}`）は剛体アームによる並進-回転結合そのもので、
-//! [`crate::rigid_arm`] の剛域変換が既に実装している。さらに、上記 3 行列の間には
+//! [`crate::frame::rigid_arm`] の剛域変換が既に実装している。さらに、上記 3 行列の間には
 //!
 //! ```text
 //! [Btp]{S} = ([Bp]{S}) × r
@@ -43,7 +43,7 @@
 //! 2. 節点の回転自由度へ `ζ・γ` を加える変換 `T = [I | C]` を被せる
 //!
 //! の 2 段で資料の `[B]` を厳密に再現する。1. はパネル生成
-//! （[`crate::panel_gen::apply_auto_panel_zones`]）が部材の剛域長へ書き込み済みで、
+//! （[`crate::springs::panel_gen::apply_auto_panel_zones`]）が部材の剛域長へ書き込み済みで、
 //! 本モジュールは 2. だけを担う。
 //!
 //! オフセットの大きさは接合部の物理的な半寸法（はりは柱せいの 1/2、柱は梁せいの
@@ -82,7 +82,7 @@ pub struct PanelEnd {
 /// どちらの端もパネルへ接合しない場合は `None`（素の要素をそのまま組む）。
 ///
 /// パネル分のオフセットはここでは扱わない。パネル生成
-/// （[`crate::panel_gen::apply_auto_panel_zones`]）が既に部材の剛域長へ
+/// （[`crate::springs::panel_gen::apply_auto_panel_zones`]）が既に部材の剛域長へ
 /// 書き込んでおり、剛体アーム `r` は既存の剛域変換がそのまま担う。
 pub fn resolve(data: &ElementData, model: &Model) -> Option<[Option<PanelEnd>; 2]> {
     if !matches!(data.kind, ElementKind::Beam) || data.nodes.len() < 2 {
@@ -270,7 +270,7 @@ crate::forward_element_behavior!(PanelOffsetMember, inner, {
         self.inner.update_state(&du_inner, commit, ctx);
     }
 
-    fn recover_forces(&self, u_elem: &[f64]) -> Option<crate::beam::MemberForces> {
+    fn recover_forces(&self, u_elem: &[f64]) -> Option<crate::frame::beam::MemberForces> {
         self.inner.recover_forces(&self.to_inner(u_elem))
     }
 });
@@ -447,7 +447,7 @@ mod tests {
         let model = model_with_panel(200.0);
         let ctx = Ctx { model: &model };
         let ends = resolve(&model.elements[0], &model).expect("梁");
-        let inner = crate::beam::BeamElement::new(&model.elements[0], &model);
+        let inner = crate::frame::beam::BeamElement::new(&model.elements[0], &model);
         let k_inner = inner.tangent_stiffness(&ctx);
         let wrapped = PanelOffsetMember::new(Box::new(inner), ends);
 
@@ -482,7 +482,7 @@ mod tests {
     fn test_panel_rotation_enters_member_end_rotation() {
         let model = model_with_panel(200.0);
         let ends = resolve(&model.elements[0], &model).expect("梁");
-        let inner = crate::beam::BeamElement::new(&model.elements[0], &model);
+        let inner = crate::frame::beam::BeamElement::new(&model.elements[0], &model);
         let wrapped = PanelOffsetMember::new(Box::new(inner), ends);
 
         let mut u = vec![0.0; wrapped.n_dof()];
@@ -505,7 +505,7 @@ mod tests {
         let model = model_with_panel(200.0);
         let ctx = Ctx { model: &model };
         let ends = resolve(&model.elements[0], &model).expect("梁");
-        let inner = crate::beam::BeamElement::new(&model.elements[0], &model);
+        let inner = crate::frame::beam::BeamElement::new(&model.elements[0], &model);
         let mut wrapped = PanelOffsetMember::new(Box::new(inner), ends);
 
         // 梁 j 端（節点 1）に単位回転を与える。

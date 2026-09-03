@@ -5,7 +5,7 @@
 //! - [`add_support_spring_f_int`] — 支点ばね（`Node::support_spring`）の内力寄与
 //!
 //! `assemble_k`・`compute_f_int` は `dynamic`/`timehistory` モジュールが
-//! `crate::pushover::{assemble_k, compute_f_int}` として参照するため `pub(crate)` を
+//! `crate::nonlinear::pushover::{assemble_k, compute_f_int}` として参照するため `pub(crate)` を
 //! 維持し、シグネチャは変更しない（支点ばねの内力寄与は別関数
 //! [`add_support_spring_f_int`] として呼び出し側 [`super::driver`] が加算する）。
 

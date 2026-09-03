@@ -21,7 +21,7 @@ const MAX_LISTED: usize = 5;
 ///
 /// 鋼材ファイバの材料には降伏強度 fy が必須。ファイバー断面は降伏進展を追う
 /// ことが目的のため、fy 未設定を弾性で無音に代替せず、解析前にエラーで停止する
-/// （`squid_n_element::fiber::steel_fiber_material` は fy 無しで呼ぶと panic する）。
+/// （`squid_n_element::frame::fiber::steel_fiber_material` は fy 無しで呼ぶと panic する）。
 fn shape_has_steel_fiber_region(shape: &SectionShape) -> bool {
     !matches!(
         shape,
@@ -33,7 +33,7 @@ fn shape_has_steel_fiber_region(shape: &SectionShape) -> bool {
 ///
 /// 検査対象は、非線形解析で降伏を扱う要素に限る:
 /// - 耐震壁（`Wall`）: 面内せん断の終局強度 Qu
-///   （[`crate::wall_element::WallElement::wall_shear_capacity_issue`]）
+///   （[`crate::wall::wall_element::WallElement::wall_shear_capacity_issue`]）
 /// - 線材（`Beam` / `Fiber` / `MultiSpring`）: 曲げ・せん断の終局耐力に要する材料強度
 ///
 /// 弾性としてモデル化することが仕様である要素（`Shell` / `PanelZone` / `NodalSpring`、
@@ -43,7 +43,7 @@ pub fn nonlinear_input_issues(model: &Model) -> Vec<String> {
     for elem in &model.elements {
         let issue = match elem.kind {
             ElementKind::Wall => {
-                crate::wall_element::WallElement::wall_shear_capacity_issue(elem, model)
+                crate::wall::wall_element::WallElement::wall_shear_capacity_issue(elem, model)
             }
             ElementKind::Beam | ElementKind::Fiber | ElementKind::MultiSpring => {
                 member_strength_issue(elem, model)
@@ -192,12 +192,12 @@ fn member_strength_issue(data: &ElementData, model: &Model) -> Option<String> {
         }
         // SRC・CFT は鋼材領域（内蔵鉄骨・管壁）のファイバに降伏強度が要る。
         // SRC は断面の内蔵鉄骨鋼種 → 部材材料 fy の順で解決する
-        // （`crate::fiber::resolve_steel_fiber_fy`、要素生成と同じ規則）。
+        // （`crate::frame::fiber::resolve_steel_fiber_fy`、要素生成と同じ規則）。
         // 未設定のまま弾性で代替すると、鋼材部分がいくら応力が上がっても降伏せず
         // 耐力を過大評価する（危険側）。
         let fiber_shape = sec.and_then(|s| s.shape.as_ref());
         if fiber_shape.is_some_and(shape_has_steel_fiber_region)
-            && !crate::fiber::resolve_steel_fiber_fy(
+            && !crate::frame::fiber::resolve_steel_fiber_fy(
                 fiber_shape,
                 model.element_steel_material(data),
                 mat.fy,
@@ -225,7 +225,7 @@ fn member_strength_issue(data: &ElementData, model: &Model) -> Option<String> {
         }
         return None;
     }
-    // 断面形状未設定（shape: None）の線材。要素生成（`crate::fiber::build_gauss_fibers`
+    // 断面形状未設定（shape: None）の線材。要素生成（`crate::frame::fiber::build_gauss_fibers`
     // の形状なし経路）は「Fc があればコンクリート、なければ鋼材（fy 必須）」の
     // ファイバとして組み立てるため、同じ規則で正の値が設定されていることを検査する。
     // fy=0 等の非正値を「設定済み」と扱って素通しすると、要素生成時の panic

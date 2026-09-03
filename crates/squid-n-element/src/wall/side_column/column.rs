@@ -3,8 +3,8 @@
 //! 静的縮約による剛性計算と `ElementBehavior` 実装、および解放曲げ面を表す
 //! `ReleaseAxis`。
 
-use crate::beam::{invert_small, BeamElement};
 use crate::behavior::{Ctx, LocalMat, LocalVec};
+use crate::frame::beam::{invert_small, BeamElement};
 use smallvec::SmallVec;
 
 /// 解放する局所曲げ面（回転自由度）。
@@ -107,7 +107,10 @@ impl InPlaneReleasedColumn {
     /// 縮約後の局所剛性を用いた断面力の復元（`BeamElement::recover_forces` と同じ規約）。
     /// `BeamElement::recover_forces` は自身の（非解放の）`local_stiffness()` を用いるため、
     /// ここでは解放後の局所剛性で同じ算定式を再実装する。
-    fn recover_forces_released(&self, u_elem_global: &[f64; 12]) -> crate::beam::MemberForces {
+    fn recover_forces_released(
+        &self,
+        u_elem_global: &[f64; 12],
+    ) -> crate::frame::beam::MemberForces {
         let u_local = self.inner.axis.rotate_to_local(u_elem_global);
         let k_local = self.released_local_stiffness();
         let mut f_local = [0.0; 12];
@@ -119,7 +122,7 @@ impl InPlaneReleasedColumn {
             *fi = s;
         }
 
-        crate::beam::member_forces_from_end_forces(
+        crate::frame::beam::member_forces_from_end_forces(
             &f_local,
             self.inner.length,
             &self.inner.eval_sections,
@@ -169,7 +172,7 @@ crate::forward_element_behavior!(InPlaneReleasedColumn, inner, {
         f
     }
 
-    fn recover_forces(&self, u_elem: &[f64]) -> Option<crate::beam::MemberForces> {
+    fn recover_forces(&self, u_elem: &[f64]) -> Option<crate::frame::beam::MemberForces> {
         if u_elem.len() < 12 {
             return None;
         }
@@ -179,7 +182,7 @@ crate::forward_element_behavior!(InPlaneReleasedColumn, inner, {
     }
 
     /// 側柱は面内解放を除けば弾性材のため、蓄積した trial 変位から復元する。
-    fn state_member_forces(&self, _ctx: &Ctx) -> Option<crate::beam::MemberForces> {
+    fn state_member_forces(&self, _ctx: &Ctx) -> Option<crate::frame::beam::MemberForces> {
         Some(self.recover_forces_released(&self.inner.trial_disp))
     }
 });

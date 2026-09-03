@@ -2,7 +2,7 @@
 //!
 //! squid-n-skeleton のファイバ解析（`build_rc_member_skeleton`）は Mu を精算できるが、
 //! 保有水平耐力の部材ランク自動判定（RC 部材の脆性破壊判定 Qsu/Qmu）
-//! は毎フレーム実行されるため重すぎる。また `squid_n_solver::pushover` のせん断降伏判定
+//! は毎フレーム実行されるため重すぎる。また `squid_n_solver::nonlinear::pushover` のせん断降伏判定
 //! （`compute_shear_yield_qy`）も同様に軽量な閉形式解を必要とする。本モジュールは
 //! 閉形式の簡易式で Mu・Qsu・Qmu を算定し、両者の入力とする。係数は靭性指針・
 //! 技術基準解説書等の略算式に基づく代表値であり、全て要・原典照合
@@ -17,7 +17,7 @@
 
 /// RC 矩形断面の簡易終局耐力算定用の入力一式。
 ///
-/// `Clone, Copy` はプッシュオーバー解析（`squid_n_solver::pushover`）が σ0 を
+/// `Clone, Copy` はプッシュオーバー解析（`squid_n_solver::nonlinear::pushover`）が σ0 を
 /// 除く入力一式を保持し、各ステップで σ0 のみ差し替えて `rc_qsu_simple` を
 /// 呼び直す用途（`DirThreshold::RcArakawa`）のために付与する。全フィールドが
 /// f64 のみのため、値のコピーは軽量。

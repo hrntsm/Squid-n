@@ -246,7 +246,7 @@ impl ElementBehavior for MaxwellDamperElement {
         LocalMat::zeros(12)
     }
 
-    fn state_member_forces(&self, _ctx: &Ctx) -> Option<crate::beam::MemberForces> {
+    fn state_member_forces(&self, _ctx: &Ctx) -> Option<crate::frame::beam::MemberForces> {
         // 現在状態の軸力（引張正）を両評価点一定で返す。時刻歴・増分解析の
         // 部材内力記録（N-δ 履歴ループ表示など）に用いる。
         //
@@ -263,7 +263,7 @@ impl ElementBehavior for MaxwellDamperElement {
             self.axial_force(self.trial_elong)
         };
         let v = [n, 0.0, 0.0, 0.0, 0.0, 0.0];
-        Some(crate::beam::MemberForces {
+        Some(crate::frame::beam::MemberForces {
             at: vec![(0.0, v), (1.0, v)],
         })
     }

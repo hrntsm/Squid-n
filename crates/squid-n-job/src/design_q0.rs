@@ -7,7 +7,7 @@ use std::collections::HashMap;
 
 use squid_n_core::ids::{ElemId, LoadCaseId};
 use squid_n_core::model::{LoadCaseKind, MemberLoadKind, Model, LL_FRAME_CASE_NAME};
-use squid_n_element::beam::MemberForces;
+use squid_n_element::frame::beam::MemberForces;
 use squid_n_load::self_weight::SELF_WEIGHT_AUTO_LOAD_CASE_NAME;
 
 /// 地震用重量・QD 用 Q0 に使う重力ケース ID 列（Dead + LiveSeismic、なければ Live）。

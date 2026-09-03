@@ -4,7 +4,7 @@
 //! これを読む。GUI と MCP サーバが**同じ条件で同じ結果を得られる**ようにするため、
 //! app ではなく本クレートに置く。
 
-use squid_n_solver::analysis::{AiMode, SeismicDir};
+use squid_n_solver::statics::analysis::{AiMode, SeismicDir};
 
 /// 解析タブの設定値（GUI 非依存。テストからも使う）。
 ///
@@ -32,14 +32,14 @@ pub struct AnalysisSettings {
     /// 増分解析: 目標最大層間変形角の分母 n（角度は 1/n [rad]）。
     pub push_drift_denom: f64,
     /// 増分解析: 塑性率（ductility）の算定方式（構造力学）。
-    pub ductility_method: squid_n_solver::pushover::DuctilityMethod,
+    pub ductility_method: squid_n_solver::nonlinear::pushover::DuctilityMethod,
     /// 増分解析: 制御方式（段階制御／荷重増分のみ）。
-    pub push_control: squid_n_solver::pushover::PushoverControl,
+    pub push_control: squid_n_solver::nonlinear::pushover::PushoverControl,
     /// 増分解析: 長期系荷重ケース（固定・積載等）を水平力増分の前に初期載荷するか。
     /// 長期荷重ケースがないモデルでは無視される（ソルバ側の対応実装に依存）。
     pub push_apply_long_term: bool,
     /// 質点系モデル生成: モデル化タイプ（等価せん断型など）。
-    pub lumped_mass_type: squid_n_solver::lumped_mass::LumpedMassType,
+    pub lumped_mass_type: squid_n_solver::dynamic::lumped_mass::LumpedMassType,
     /// 質点系モデル生成: 第1折点判定の割線剛性比（0..1、既定 0.75）。
     pub lumped_secant_ratio: f64,
     /// 時刻歴: 減衰比・サンプル波の刻み/継続時間/周期/振幅 [mm/s²]
@@ -102,10 +102,10 @@ pub struct AnalysisSettings {
     pub mass_method: squid_n_core::model::MassMethod,
     /// 質点系の次元（2 次元せん断串 / 3 次元 Ux,Uy,θz）。
     #[serde(default)]
-    pub lumped_dim: squid_n_solver::lumped_mass::StickDim,
+    pub lumped_dim: squid_n_solver::dynamic::lumped_mass::StickDim,
     /// 層並進剛性の定義（層 Q/δ または柱 ki）。
     #[serde(default)]
-    pub lumped_stiffness: squid_n_solver::lumped_mass::LumpedStiffnessSource,
+    pub lumped_stiffness: squid_n_solver::dynamic::lumped_mass::LumpedStiffnessSource,
     /// 質点系を非線形（トリリニア骨格）で解くか。線形は地震静的 EX/EY が前提。
     #[serde(default)]
     pub lumped_nonlinear: bool,
@@ -195,10 +195,10 @@ impl Default for AnalysisSettings {
             push_use_max_disp: false,
             push_use_drift_angle: true,
             push_drift_denom: 150.0,
-            ductility_method: squid_n_solver::pushover::DuctilityMethod::default(),
-            push_control: squid_n_solver::pushover::PushoverControl::default(),
+            ductility_method: squid_n_solver::nonlinear::pushover::DuctilityMethod::default(),
+            push_control: squid_n_solver::nonlinear::pushover::PushoverControl::default(),
             push_apply_long_term: true,
-            lumped_mass_type: squid_n_solver::lumped_mass::LumpedMassType::default(),
+            lumped_mass_type: squid_n_solver::dynamic::lumped_mass::LumpedMassType::default(),
             lumped_secant_ratio: 0.75,
             th_damping: 0.02,
             th_dt: 0.01,
@@ -226,8 +226,9 @@ impl Default for AnalysisSettings {
             bond_method: squid_n_design_jp::BondMethod::Rc1999,
             threads: 0,
             mass_method: squid_n_core::model::MassMethod::default(),
-            lumped_dim: squid_n_solver::lumped_mass::StickDim::default(),
-            lumped_stiffness: squid_n_solver::lumped_mass::LumpedStiffnessSource::default(),
+            lumped_dim: squid_n_solver::dynamic::lumped_mass::StickDim::default(),
+            lumped_stiffness: squid_n_solver::dynamic::lumped_mass::LumpedStiffnessSource::default(
+            ),
             lumped_nonlinear: false,
             lumped_dir: SeismicDir::X,
             lumped_n_modes: 3,

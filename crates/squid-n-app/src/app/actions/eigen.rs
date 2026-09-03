@@ -31,7 +31,7 @@ impl App {
     /// `compute_eigen` の結果を適用する（bundle 格納・最終実行時刻更新）。
     pub(super) fn apply_eigen_result(
         &mut self,
-        res: Result<squid_n_solver::eigen::ModalResult, String>,
+        res: Result<squid_n_solver::dynamic::eigen::ModalResult, String>,
     ) {
         match res {
             Ok(modal) => {

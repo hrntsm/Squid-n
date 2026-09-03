@@ -627,7 +627,7 @@ impl Model {
         // 立ち上がり高さの未指定（＝階高いっぱい）を許すのは自立壁だけである。
         // 取付き線に取り付く全高の壁は、囲む柱梁が高さを決めるので囲まれた壁版
         // （`WallPlateShape::Enclosed`）で表す。線アンカーで未指定を許すと、
-        // `squid_n_element::misc_wall` が階高分の腰壁せいを取付き先の梁 1 本へ
+        // `squid_n_element::wall::misc_wall` が階高分の腰壁せいを取付き先の梁 1 本へ
         // 丸ごと算入し、梁の剛性を過大に、変形を過小に見る危険側の評価になる。
         for plate in &self.wall_plates {
             if let WallPlateShape::Attached {

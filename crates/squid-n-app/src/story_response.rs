@@ -1,4 +1,4 @@
-//! 時刻歴応答の詳細記録（`squid_n_solver::timehistory::ThRecording`）から
+//! 時刻歴応答の詳細記録（`squid_n_solver::dynamic::timehistory::ThRecording`）から
 //! 層応答分布（層せん断力・層せん断力係数・階加速度・階速度・階変位）を
 //! 求める純粋関数群。GUI 非依存（`time_history_view`（グラフ描画、`gui` 機能）と
 //! `summary`（レポート CSV、機能フラグ非依存）の両方から使う。

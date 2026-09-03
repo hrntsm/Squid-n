@@ -2,34 +2,21 @@
 
 //! 要素（エレメント）クレート。
 //!
-//! 要素の種類ごとにモジュールを階層化している:
+//! - [`behavior`] —  要素の振る舞いトレイトと局所行列・ベクトル・状態の型
+//! - [`transform`] — 要素ローカル座標系（`LocalFrame`）
+//! - [`frame`] —     線材要素（梁・トラス・材端集中ばね梁・ファイバー・マルチスプリング・部材荷重）
+//! - [`springs`] —   ばね・パネル要素
+//! - [`wall`] —      壁要素
+//! - [`shell`] —     シェル要素
+//! - [`factory`] —   要素データから振る舞いを生成するディスパッチャ
 //!
-//! - [`common`] —  要素共通の基盤（振る舞いトレイト・局所行列/ベクトル・座標変換）
-//! - [`frame`] —   線材要素（梁・トラス・材端集中ばね梁・ファイバー・マルチスプリング・部材荷重）
-//! - [`springs`] — ばね・パネル要素
-//! - [`wall`] —    壁要素
-//! - [`shell`] —   シェル要素
-//! - [`factory`] — 要素データから振る舞いを生成するディスパッチャ
-//!
-//! 階層化前の平坦なモジュールパス（例: `squid_n_element::beam`）は、
-//! 下記の再エクスポートにより従来どおり利用できる。
+//! モジュールパスは階層をそのまま辿る（例: `squid_n_element::frame::beam`）。
+//! 再エクスポートによる平坦なパスは設けない。
 
-mod common;
-mod frame;
-mod springs;
-mod wall;
-
+pub mod behavior;
 pub mod factory;
+pub mod frame;
 pub mod shell;
-
-// 階層化後も従来のモジュールパス（例: `squid_n_element::beam` や
-// クレート内部の `crate::behavior`）を維持するための再エクスポート。
-pub use common::{behavior, transform};
-pub use frame::{
-    beam, concentrated, fiber, member_load, multi_spring, panel_offset, rigid_arm, truss,
-};
-pub use springs::{damper, isolator, panel, panel_gen, spring};
-pub use wall::{misc_wall, side_column, wall_element};
-
-pub use behavior::*;
-pub use factory::*;
+pub mod springs;
+pub mod transform;
+pub mod wall;

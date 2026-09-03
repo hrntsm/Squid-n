@@ -322,7 +322,7 @@ impl ElementBehavior for IsolatorElement {
         }
     }
 
-    fn state_member_forces(&self, _ctx: &Ctx) -> Option<crate::beam::MemberForces> {
+    fn state_member_forces(&self, _ctx: &Ctx) -> Option<crate::frame::beam::MemberForces> {
         // 現在状態の断面力を両評価点一定で返す（時刻歴・増分解析の記録用）。
         // 符号規約は節点バネ（`spring.rs::recover_forces`）と同じ:
         // N は引張正、せん断は i 端節点力そのまま、モーメントは i 端の符号反転。
@@ -335,7 +335,7 @@ impl ElementBehavior for IsolatorElement {
         let mrz = RIGID_ROT * rel(5);
         // i 端局所節点力は [-fx, -fy, -fz, -mrx, -mry, -mrz]。
         let v = [fx, -fy, -fz, mrx, mry, mrz];
-        Some(crate::beam::MemberForces {
+        Some(crate::frame::beam::MemberForces {
             at: vec![(0.0, v), (1.0, v)],
         })
     }

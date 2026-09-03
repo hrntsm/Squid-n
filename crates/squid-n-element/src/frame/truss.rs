@@ -192,7 +192,7 @@ impl ElementBehavior for TrussElement {
         }
     }
 
-    fn recover_forces(&self, u_elem: &[f64]) -> Option<crate::beam::MemberForces> {
+    fn recover_forces(&self, u_elem: &[f64]) -> Option<crate::frame::beam::MemberForces> {
         if u_elem.len() < 12 {
             return None;
         }
@@ -210,7 +210,7 @@ impl ElementBehavior for TrussElement {
         }
         // 軸力 N（引張正）のみ。他要素の慣習（beam.rs）に合わせ i 端側は -f_local[0]。
         let n = -f_local[0];
-        Some(crate::beam::MemberForces {
+        Some(crate::frame::beam::MemberForces {
             at: vec![
                 (0.0, [n, 0.0, 0.0, 0.0, 0.0, 0.0]),
                 (1.0, [n, 0.0, 0.0, 0.0, 0.0, 0.0]),
@@ -220,7 +220,7 @@ impl ElementBehavior for TrussElement {
 
     /// トラス（ブレース）は非線形解析でも弾性軸材のため、蓄積した trial 変位から
     /// 復元する（`recover_forces` と同じ結果）。
-    fn state_member_forces(&self, _ctx: &Ctx) -> Option<crate::beam::MemberForces> {
+    fn state_member_forces(&self, _ctx: &Ctx) -> Option<crate::frame::beam::MemberForces> {
         self.recover_forces(&self.trial_disp)
     }
 }

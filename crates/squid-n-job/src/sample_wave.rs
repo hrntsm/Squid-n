@@ -4,7 +4,7 @@
 //! 波形を組み立てられるよう、本クレートに置く。
 
 use crate::settings::{AnalysisSettings, ThDir};
-use squid_n_solver::analysis::SeismicDir;
+use squid_n_solver::statics::analysis::SeismicDir;
 
 /// 方向 `dir` に加速度列 `accel` を割り当てた `GroundMotion` を組み立てる。
 /// X なら accel_x、Y なら accel_y に入れ、他方はゼロ列にする。
@@ -16,9 +16,9 @@ pub fn build_ground_motion(
     dt: f64,
     dir: ThDir,
     accel: Vec<f64>,
-) -> squid_n_solver::timehistory::GroundMotion {
+) -> squid_n_solver::dynamic::timehistory::GroundMotion {
     match dir {
-        ThDir::X => squid_n_solver::timehistory::GroundMotion {
+        ThDir::X => squid_n_solver::dynamic::timehistory::GroundMotion {
             dt,
             accel_x: accel,
             accel_y: None,
@@ -26,14 +26,14 @@ pub fn build_ground_motion(
         },
         ThDir::Y => {
             let n = accel.len();
-            squid_n_solver::timehistory::GroundMotion {
+            squid_n_solver::dynamic::timehistory::GroundMotion {
                 dt,
                 accel_x: vec![0.0; n],
                 accel_y: Some(accel),
                 accel_theta: None,
             }
         }
-        ThDir::Xy => squid_n_solver::timehistory::GroundMotion {
+        ThDir::Xy => squid_n_solver::dynamic::timehistory::GroundMotion {
             dt,
             accel_x: accel.clone(),
             accel_y: Some(accel),
@@ -43,7 +43,9 @@ pub fn build_ground_motion(
 }
 
 /// 正弦減衰のサンプル地震波を `cfg` から組み立てる。
-pub fn sample_ground_motion(cfg: &AnalysisSettings) -> squid_n_solver::timehistory::GroundMotion {
+pub fn sample_ground_motion(
+    cfg: &AnalysisSettings,
+) -> squid_n_solver::dynamic::timehistory::GroundMotion {
     let n = ((cfg.th_duration / cfg.th_dt).ceil() as usize).max(2);
     let omega = 2.0 * std::f64::consts::PI / cfg.th_period.max(1e-6);
     let accel: Vec<f64> = (0..n)
@@ -58,7 +60,7 @@ pub fn sample_ground_motion(cfg: &AnalysisSettings) -> squid_n_solver::timehisto
 /// 質点系時刻歴用の正弦減衰サンプル波（立体時刻歴の dt/継続/周期/振幅とは独立）。
 pub fn sample_lumped_ground_motion(
     cfg: &AnalysisSettings,
-) -> squid_n_solver::timehistory::GroundMotion {
+) -> squid_n_solver::dynamic::timehistory::GroundMotion {
     let n = ((cfg.lumped_th_duration / cfg.lumped_th_dt).ceil() as usize).max(2);
     let omega = 2.0 * std::f64::consts::PI / cfg.lumped_th_period.max(1e-6);
     let accel: Vec<f64> = (0..n)
@@ -77,7 +79,7 @@ pub fn sample_lumped_ground_motion(
 /// 質点系時刻歴に渡す地動加速度列（加振方向の成分）。
 /// Y 加振で `accel_y` が無い波形は、X 列へ黙って落とさずエラーにする。
 pub fn lumped_accel_from_wave(
-    wave: &squid_n_solver::timehistory::GroundMotion,
+    wave: &squid_n_solver::dynamic::timehistory::GroundMotion,
     dir: SeismicDir,
 ) -> Result<Vec<f64>, String> {
     match dir {
@@ -93,7 +95,7 @@ pub fn lumped_accel_from_wave(
 mod tests {
     use super::*;
     use crate::settings::AnalysisSettings;
-    use squid_n_solver::analysis::SeismicDir;
+    use squid_n_solver::statics::analysis::SeismicDir;
 
     #[test]
     fn build_ground_motion_routes_by_direction() {

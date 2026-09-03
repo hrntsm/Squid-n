@@ -112,7 +112,7 @@ pub enum EndCondition {
 /// 日本の一貫計算プログラムでは、床と一体になる大梁のねじり剛性を設計上
 /// 期待しないのが通例のため、既定は「i 端のねじれを解放する」とする。
 /// 判定と例外（解放すると材軸まわり回転が浮く節点がある部材は解放しない）は
-/// `squid_n_element::beam::i_end_torsion_release` を参照。
+/// `squid_n_element::frame::beam::i_end_torsion_release` を参照。
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum BeamTorsionMode {
     /// 水平材の i 端ねじれをピン（解放）とし、梁のねじり剛性を期待しない（既定）。
@@ -129,7 +129,7 @@ pub enum BeamTorsionMode {
 /// `γX`・`γY` の 2 自由度を追加で持ち、その節点へ取り付く部材はパネル寸法分の
 /// オフセット位置で接合する。
 ///
-/// 対象を S 造に限るのは、S 造の接合部が剛域長 0（`squid_n_element::beam` の
+/// 対象を S 造に限るのは、S 造の接合部が剛域長 0（`squid_n_element::frame::beam` の
 /// 剛域自動算定は RC/SRC の直交材のみを探す）であり、パネルのせん断変形を
 /// 明示的に評価しても剛域と二重計上にならないため。RC・SRC の接合部は
 /// 従来どおり剛域で接合部の有限寸法を評価する。
@@ -189,7 +189,7 @@ pub struct RigidZone {
     /// 「フェース距離 0＝節点間長」として計算を進めてしまい、危険断面位置や
     /// RC/SRC 梁の自重が静かに誤る。
     ///
-    /// 値を埋めるのは `squid_n_element::beam::apply_auto_rigid_zones`（解析の各入口が
+    /// 値を埋めるのは `squid_n_element::frame::beam::apply_auto_rigid_zones`（解析の各入口が
     /// 呼ぶ）。キャッシュを当てにできない場所からは、幾何そのものを返す
     /// [`crate::face_distance::face_distances`] を直接使うこと。
     ///

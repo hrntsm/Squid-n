@@ -52,7 +52,7 @@ pub(crate) fn axial_compression(f_i: [f64; 3], f_j: [f64; 3], ex: [f64; 3]) -> f
 ///
 /// 1. 局所座標系（`LocalFrame`）へ回転し、
 /// 2. 剛体アームのモーメント（アーム長 × 材端せん断）を差し引く
-///    （[`squid_n_element::rigid_arm::to_flex_force`]）
+///    （[`squid_n_element::frame::rigid_arm::to_flex_force`]）
 ///
 /// の 2 段で変換する。剛域がない部材では 2. は恒等となり、局所成分への回転のみ。
 ///
@@ -84,10 +84,12 @@ pub(crate) fn member_end_forces_at_face(
         pj.coord[2] - pi.coord[2],
     ];
     let length = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
-    let (li, lj) = squid_n_element::rigid_arm::resolve_lengths(
+    let (li, lj) = squid_n_element::frame::rigid_arm::resolve_lengths(
         elem.rigid_zone.rigid_length_i(),
         elem.rigid_zone.rigid_length_j(),
         length,
     );
-    Some(squid_n_element::rigid_arm::to_flex_force(&local, li, lj))
+    Some(squid_n_element::frame::rigid_arm::to_flex_force(
+        &local, li, lj,
+    ))
 }

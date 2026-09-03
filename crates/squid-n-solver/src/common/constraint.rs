@@ -11,7 +11,7 @@ pub struct Reducer {
     /// 縮約空間の自由度番号 → 自由 DOF 空間の自由度番号（`n_indep` 長）。
     /// `t_rows` の逆写像だが、従属行が偶然 `[(a, 1.0)]` の形（剛リンクのスレーブ等）に
     /// なるため `t_rows` からは一意に復元できない。縮約後の行列の行・列を
-    /// 節点・成分へ翻訳する用途（[`crate::pushover`] の特異診断）に用いる。
+    /// 節点・成分へ翻訳する用途（[`crate::nonlinear::pushover`] の特異診断）に用いる。
     indep_free: Vec<usize>,
 }
 

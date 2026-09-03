@@ -7,7 +7,7 @@
 use super::*;
 use squid_n_core::ids::{LumpedVibrationCaseId, VibrationCaseId};
 use squid_n_core::model::{Model, EX_CASE_NAME, EY_CASE_NAME};
-use squid_n_solver::analysis::SeismicDir;
+use squid_n_solver::statics::analysis::SeismicDir;
 
 /// ナビゲータに並べる解析結果ツリー（純データ）。
 #[derive(Debug, Clone, PartialEq, Eq, Default)]

@@ -427,7 +427,7 @@ impl Default for DesignCtx {
 /// 属さない床板は自身の `boundary_nodes` で判定する。取り付く床板は
 /// `edge_nodes(0)`（取付き線）が梁の両端と一致すること（順不同）。
 /// 点取り付き・板厚未定の床板は false。剛性側の協力幅
-/// （`squid_n_element::beam::stiffness_factors::slab_cooperating_width`）と同じ
+/// （`squid_n_element::frame::beam::stiffness_factors::slab_cooperating_width`）と同じ
 /// 判定規則（床領域の外周を優先し、細分された床板の境界だけでは判定しない）。
 /// 許容曲げの中央 T 形略算は取り付く床板がある支持梁も true とする。
 pub fn beam_has_attached_slab(

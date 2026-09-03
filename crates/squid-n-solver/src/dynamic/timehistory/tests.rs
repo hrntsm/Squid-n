@@ -51,8 +51,8 @@ fn test_timehistory_config_deterministic() {
 
 // ===== §8.1 SDOF / §8.2 減衰 検証テスト =====
 
-use crate::constraint::Reducer;
-use crate::damping::{Damping, DampingAccumulation, StiffnessKind};
+use crate::common::constraint::Reducer;
+use crate::dynamic::damping::{Damping, DampingAccumulation, StiffnessKind};
 use squid_n_core::dof::{Dof6Mask, DofMap};
 use squid_n_core::ids::{ElemId, MaterialId, NodeId, SectionId};
 use squid_n_core::model::{
@@ -1354,7 +1354,7 @@ fn test_nonlinear_time_history_cumulative_vs_noncumulative() {
 /// 反復上限が十分なら収束し、足りなければ**打ち切らず参考値として続行**する。
 ///
 /// 以前は最初の不収束で `Err` を返して解析全体を捨てていた。質点系
-/// （`crate::lumped_mass`）は同じ状況でその時点の試行状態で確定して続行し、
+/// （`crate::dynamic::lumped_mass`）は同じ状況でその時点の試行状態で確定して続行し、
 /// 非収束ステップ数を警告表示する設計だったため、扱いが 2 経路で食い違っていた。
 /// 途中まで解けた応答を捨てるより参考値として見せるほうが利用者の判断材料に
 /// なるため、立体モデル側を質点系へ揃えた
@@ -1649,8 +1649,11 @@ fn test_nonlinear_apply_long_term_matches_static_solution() {
     // 独立に静的線形解を求める（弾性なので長期荷重の非線形解とほぼ一致するはず）。
     let k_free = assemble_global_k(&model, &dofmap);
     let k_red = reducer.reduce_k(&k_free);
-    let f_free =
-        crate::assemble::assemble_global_f(&model, &dofmap, squid_n_core::ids::LoadCaseId(0));
+    let f_free = crate::common::assemble::assemble_global_f(
+        &model,
+        &dofmap,
+        squid_n_core::ids::LoadCaseId(0),
+    );
     let f_red = reducer.reduce_f(&f_free);
     let k_val = *k_red.get(0, 0).unwrap_or(&0.0);
     let expected_u = f_red[0] / k_val;
@@ -2479,7 +2482,7 @@ fn test_nonlinear_time_history_tangent_damping_deterministic_guard() {
 /// **このテストだけでは基準ノルムの不具合は再現しない。**実際の不収束は、悪条件な
 /// 有効剛性の線形解が持つ残差（概ね `条件数 × ε × 力のスケール`）が絶対判定の
 /// 閾値を超えることで起きるため、再現には多自由度の実規模モデルが要る。本体の
-/// 回帰ガードは基準ノルムの単体テスト（[`crate::newton`] の
+/// 回帰ガードは基準ノルムの単体テスト（[`crate::common::newton`] の
 /// `dynamic_reference_norm`）と、実建物での統合テスト
 /// （`squid-n-app` の `time_history_nonlinear_runs`）である。
 ///

@@ -14,9 +14,9 @@ use super::history::{
 };
 use super::recording::{member_forces_linear, ThRecorder};
 use super::result::{ResponseHistory, ResponseResult, TimeStepState};
-use crate::assemble::{assemble_global_k, assemble_global_m};
-use crate::constraint::Reducer;
-use crate::damping::Damping;
+use crate::common::assemble::{assemble_global_k, assemble_global_m};
+use crate::common::constraint::Reducer;
+use crate::dynamic::damping::Damping;
 use squid_n_core::dof::{DofMap, DOF_PER_NODE};
 use squid_n_core::model::Model;
 use squid_n_element::behavior::{ElementBehavior, MassOption};

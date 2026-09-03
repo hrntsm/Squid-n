@@ -14,8 +14,8 @@ use squid_n_core::model::{ElementData, ElementKind, Model};
 /// 曲げを伝達しないため除く。ファイバー梁・マルチスプリング梁は増分解析で用いる
 /// 正規の線材のため、解析種別で辺の有無が変わらないよう対象に含める。
 ///
-/// 大梁の判定（[`crate::misc_wall::wall_is_framed`]）と周辺架構の構造種別の判定
-/// （[`crate::misc_wall::wall_frame_category_issue`]）で対象種別が食い違わないよう、
+/// 大梁の判定（[`crate::wall::misc_wall::wall_is_framed`]）と周辺架構の構造種別の判定
+/// （[`crate::wall::misc_wall::wall_frame_category_issue`]）で対象種別が食い違わないよう、
 /// 判定を本関数へ集約する。
 pub fn is_line_member(kind: ElementKind) -> bool {
     matches!(
@@ -50,7 +50,7 @@ pub fn is_side_column_member(kind: ElementKind) -> bool {
 /// 1. 自部材が側柱として扱う種別（[`is_side_column_member`]）かつ鉛直材であること
 ///    （dz が dx・dy に対して支配的）。
 /// 2. `model.elements` 中に節点数4以上の `ElementKind::Wall` があり、それが耐震壁として
-///    成立すること（[`crate::misc_wall::wall_is_seismic`]）。
+///    成立すること（[`crate::wall::misc_wall::wall_is_seismic`]）。
 /// 3. その壁の四隅を z で下辺2・上辺2 に分け、下辺の軸方向への射影で上辺と対応付けた
 ///    （`wall_element.rs::try_new` と同じロジック）とき、自部材の両端節点が
 ///    「下辺a-上辺a」または「下辺b-上辺b」のいずれかの鉛直辺の2節点と一致すること。
@@ -58,7 +58,7 @@ pub fn is_side_column_member(kind: ElementKind) -> bool {
 /// 側柱を面内両端ピンとするのは、面内せん断を壁エレメントが全部負担するモデルにおいて
 /// 側柱にも面内曲げ・せん断を持たせると**二重計上**になるという置換モデルの内部整合の
 /// 要請である。壁材料が RC か鋼かとは無関係のため、材種による条件は課さない
-/// （RC 規準に由来する条件は [`crate::misc_wall::wall_is_seismic`] が持つ）。
+/// （RC 規準に由来する条件は [`crate::wall::misc_wall::wall_is_seismic`] が持つ）。
 ///
 /// 解放曲げ面は、壁面法線（下辺方向×鉛直の外積）と柱の局所 ey・ez の内積絶対値が
 /// 大きい方（＝回転軸が壁法線に平行な方）とする。
@@ -81,7 +81,7 @@ pub fn wall_side_column_release(data: &ElementData, model: &Model) -> Option<Rel
         // 耐震壁が不成立（フレーム内雑壁）の場合、柱は側柱としてピン化せず、
         // 通常の柱として袖壁付きの断面性能算入（`beam.rs`）を受ける
         // （RC規準の耐震壁規定。フレーム内雑壁の扱い）。
-        if !crate::misc_wall::wall_is_seismic(wall, model) {
+        if !crate::wall::misc_wall::wall_is_seismic(wall, model) {
             continue;
         }
         let Some((sides, normal)) = wall_side_edges(wall, model) else {
@@ -130,10 +130,10 @@ type SideEdges = ([(NodeId, NodeId); 2], [f64; 3]);
 ///
 /// 四隅の並べ替え（z で下辺 2・上辺 2 に分け、下辺の軸方向への射影で上辺と
 /// 対応付ける）は壁エレメント要素と**同じ幾何**でなければならないため、
-/// [`crate::wall_element::wall_element_geometry`] をそのまま用いる。
+/// [`crate::wall::wall_element::wall_element_geometry`] をそのまま用いる。
 /// 退化した壁（節点欠落・辺長ゼロ・法線が定まらない）は `None`。
 fn wall_side_edges(wall: &ElementData, model: &Model) -> Option<SideEdges> {
-    let g = crate::wall_element::wall_element_geometry(wall, model)?;
+    let g = crate::wall::wall_element::wall_element_geometry(wall, model)?;
     // 壁面法線 = 下辺方向 × 鉛直
     let normal = unit(cross(g.ex_bottom, [0.0, 0.0, 1.0]))?;
     Some(([(g.bottom[0], g.top[0]), (g.bottom[1], g.top[1])], normal))
@@ -185,7 +185,7 @@ impl SideColumnEdges {
             if !matches!(wall.kind, ElementKind::Wall) || wall.nodes.len() < 4 {
                 continue;
             }
-            if !crate::misc_wall::wall_is_seismic(wall, model) {
+            if !crate::wall::misc_wall::wall_is_seismic(wall, model) {
                 continue;
             }
             let Some((sides, normal)) = wall_side_edges(wall, model) else {

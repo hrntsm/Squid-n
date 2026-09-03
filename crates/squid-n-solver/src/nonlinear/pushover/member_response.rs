@@ -193,11 +193,11 @@ pub(crate) fn compute_member_response(
     dofmap: &DofMap,
     behaviors: &[Box<dyn ElementBehavior>],
     total_disp: &[f64],
-    dir: crate::analysis::SeismicDir,
+    dir: crate::statics::analysis::SeismicDir,
 ) -> Vec<PushoverMemberResponse> {
     let dir_idx = match dir {
-        crate::analysis::SeismicDir::X => 0usize,
-        crate::analysis::SeismicDir::Y => 1usize,
+        crate::statics::analysis::SeismicDir::X => 0usize,
+        crate::statics::analysis::SeismicDir::Y => 1usize,
     };
     let ctx = Ctx { model };
     let mut out = Vec::with_capacity(model.elements.len());

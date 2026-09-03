@@ -40,7 +40,7 @@
 //! （[`squid_n_core::dof::PANEL_DOF_PER_NODE`]）。本要素はその 2 自由度に対して
 //! のみ剛性を与える。パネル分のオフセットを介した部材端との適合
 //! （`{d} = {D} + [B0]{Φ} + [Btp]{S}`）は、部材側のデコレータ
-//! [`crate::panel_offset::PanelOffsetMember`] が担う。
+//! [`crate::frame::panel_offset::PanelOffsetMember`] が担う。
 //!
 //! # 弾塑性
 //!
@@ -154,7 +154,7 @@ struct ResolvedPanel {
 ///
 /// 対象接合部の判定・`dc`・`tp`・`db`・柱の選択は
 /// [`squid_n_core::panel_zone::resolve_panel_joint`] に委ねる。準備計算のパネル生成
-/// （[`crate::panel_gen`]）・S 造パネルゾーンの断面検定と同じ関数を通るため、
+/// （[`crate::springs::panel_gen`]）・S 造パネルゾーンの断面検定と同じ関数を通るため、
 /// 準備計算の表に出る諸元と、実際に組まれる要素の剛性・耐力が一致する。
 ///
 /// 本関数が加えるのは、解決した柱から取る材料量（せん断弾性係数 `G`・基準強度 `F`・

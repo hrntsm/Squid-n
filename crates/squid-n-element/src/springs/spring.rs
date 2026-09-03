@@ -134,13 +134,13 @@ impl ElementBehavior for NodalSpringElement {
         LocalMat::zeros(12)
     }
 
-    fn state_member_forces(&self, _ctx: &Ctx) -> Option<crate::beam::MemberForces> {
+    fn state_member_forces(&self, _ctx: &Ctx) -> Option<crate::frame::beam::MemberForces> {
         // 弾性バネのため、累積した全変位（global）から `recover_forces` と
         // 同じ経路で断面力を返す（非線形解析の部材内力記録用）。
         self.recover_forces(&self.trial_disp)
     }
 
-    fn recover_forces(&self, u_elem: &[f64]) -> Option<crate::beam::MemberForces> {
+    fn recover_forces(&self, u_elem: &[f64]) -> Option<crate::frame::beam::MemberForces> {
         if u_elem.len() < 12 {
             return None;
         }
@@ -168,7 +168,7 @@ impl ElementBehavior for NodalSpringElement {
             -f_local[4],
             -f_local[5],
         ];
-        Some(crate::beam::MemberForces {
+        Some(crate::frame::beam::MemberForces {
             at: vec![(0.0, v), (1.0, v)],
         })
     }

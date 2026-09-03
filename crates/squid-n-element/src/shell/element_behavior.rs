@@ -76,7 +76,7 @@ impl crate::behavior::ElementBehavior for ShellElement {
         mm
     }
 
-    fn recover_forces(&self, u_elem: &[f64]) -> Option<crate::beam::MemberForces> {
+    fn recover_forces(&self, u_elem: &[f64]) -> Option<crate::frame::beam::MemberForces> {
         if u_elem.len() < 24 {
             return None;
         }
@@ -87,6 +87,6 @@ impl crate::behavior::ElementBehavior for ShellElement {
             .into_iter()
             .map(|(pt, r)| (pt[0], [r.nx, r.ny, r.nxy, r.mx, r.my, r.mxy]))
             .collect();
-        Some(crate::beam::MemberForces { at: data })
+        Some(crate::frame::beam::MemberForces { at: data })
     }
 }

@@ -5,7 +5,7 @@ use squid_n_core::ids::{
 };
 use squid_n_design_jp::LoadTerm;
 use squid_n_edit::UndoStack;
-use squid_n_solver::analysis::{AiMode, Analysis, SeismicDir};
+use squid_n_solver::statics::analysis::{AiMode, Analysis, SeismicDir};
 
 /// 解析条件。実体は [`squid_n_job::settings`]（GUI と MCP で同一の条件を使う）。
 pub use squid_n_job::settings::{AnalysisSettings, ThDampingModel, ThDir};
@@ -385,11 +385,11 @@ pub struct SavedAnalysisSettings {
 
 #[derive(Default, Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct ResultsBundle {
-    pub statics: Vec<(StaticCaseKey, squid_n_solver::linear::StaticOnce)>,
+    pub statics: Vec<(StaticCaseKey, squid_n_solver::statics::linear::StaticOnce)>,
     /// 荷重組合せの解析結果（組合せ名で保持）
-    pub combos: Vec<(String, squid_n_solver::linear::StaticOnce)>,
-    pub modal: Option<squid_n_solver::eigen::ModalResult>,
-    pub member_forces: Vec<(ElemId, squid_n_element::beam::MemberForces)>,
+    pub combos: Vec<(String, squid_n_solver::statics::linear::StaticOnce)>,
+    pub modal: Option<squid_n_solver::dynamic::eigen::ModalResult>,
+    pub member_forces: Vec<(ElemId, squid_n_element::frame::beam::MemberForces)>,
     /// 仕口パネルのせん断モーメント `{MSX, MSY}` [N·mm]（接合部の節点ごと）。
     /// `member_forces` と同じく、直近に表示している静的結果のものを保持する。
     /// S 造パネルゾーン検定の設計用パネルモーメント `pM` に用いる。
@@ -405,25 +405,28 @@ pub struct ResultsBundle {
     /// スラブ（床）の設計（一方向曲げ）。
     pub slab_checks: Vec<SlabCheck>,
     /// 表示中の増分解析結果（互換・既存参照の窓口）。
-    pub pushover: Option<squid_n_solver::pushover::PushoverResult>,
+    pub pushover: Option<squid_n_solver::nonlinear::pushover::PushoverResult>,
     /// X 方向の増分解析結果。
     #[serde(default)]
-    pub pushover_x: Option<squid_n_solver::pushover::PushoverResult>,
+    pub pushover_x: Option<squid_n_solver::nonlinear::pushover::PushoverResult>,
     /// Y 方向の増分解析結果。
     #[serde(default)]
-    pub pushover_y: Option<squid_n_solver::pushover::PushoverResult>,
-    pub time_history: Option<squid_n_solver::timehistory::ResponseResult>,
+    pub pushover_y: Option<squid_n_solver::nonlinear::pushover::PushoverResult>,
+    pub time_history: Option<squid_n_solver::dynamic::timehistory::ResponseResult>,
     /// 立体時刻歴結果（振動ケース ID 別）。
     #[serde(default)]
-    pub time_histories: Vec<(VibrationCaseId, squid_n_solver::timehistory::ResponseResult)>,
+    pub time_histories: Vec<(
+        VibrationCaseId,
+        squid_n_solver::dynamic::timehistory::ResponseResult,
+    )>,
     /// 質点系解析結果（モデル・固有値・時刻歴）。表示中の窓口。
     #[serde(default)]
-    pub lumped: Option<squid_n_solver::lumped_mass::LumpedMassResult>,
+    pub lumped: Option<squid_n_solver::dynamic::lumped_mass::LumpedMassResult>,
     /// 質点系結果（振動ケース ID 別）。
     #[serde(default)]
     pub lumped_results: Vec<(
         LumpedVibrationCaseId,
-        squid_n_solver::lumped_mass::LumpedMassResult,
+        squid_n_solver::dynamic::lumped_mass::LumpedMassResult,
     )>,
 }
 
@@ -432,7 +435,7 @@ impl ResultsBundle {
     pub fn pushover_for_dir(
         &self,
         dir: SeismicDir,
-    ) -> Option<&squid_n_solver::pushover::PushoverResult> {
+    ) -> Option<&squid_n_solver::nonlinear::pushover::PushoverResult> {
         match dir {
             SeismicDir::X => self.pushover_x.as_ref(),
             SeismicDir::Y => self.pushover_y.as_ref(),
@@ -440,7 +443,7 @@ impl ResultsBundle {
     }
 
     /// 地震静的（EX/EY）の結果。
-    pub fn seismic(&self, dir: SeismicDir) -> Option<&squid_n_solver::linear::StaticOnce> {
+    pub fn seismic(&self, dir: SeismicDir) -> Option<&squid_n_solver::statics::linear::StaticOnce> {
         self.statics
             .iter()
             .find(|(k, _)| *k == StaticCaseKey::Seismic(dir))
@@ -495,31 +498,34 @@ pub struct StaticAllComputed {
     /// 荷重ケース単体の結果（格納キーと結果）。
     pub cases: Vec<(
         StaticCaseKey,
-        Result<squid_n_solver::linear::StaticOnce, String>,
+        Result<squid_n_solver::statics::linear::StaticOnce, String>,
     )>,
     /// 荷重組合せの結果（組合せ名と結果）。
-    pub combos: Vec<(String, Result<squid_n_solver::linear::StaticOnce, String>)>,
+    pub combos: Vec<(
+        String,
+        Result<squid_n_solver::statics::linear::StaticOnce, String>,
+    )>,
 }
 
 /// バックグラウンド解析ジョブ（増分解析／時刻歴／静的解析の単体実行・一括解析）が
 /// 送る結果。
 pub enum JobResult {
-    Pushover(Result<squid_n_solver::pushover::PushoverResult, String>),
+    Pushover(Result<squid_n_solver::nonlinear::pushover::PushoverResult, String>),
     /// 固有値解析（モード数は起動時の `analysis_cfg.n_modes`）。
-    Modal(Result<squid_n_solver::eigen::ModalResult, String>),
+    Modal(Result<squid_n_solver::dynamic::eigen::ModalResult, String>),
     /// 時刻歴応答解析。`ResponseResult` は詳細記録を含み大きいため Box で運ぶ。
-    TimeHistory(Box<Result<squid_n_solver::timehistory::ResponseResult, String>>),
+    TimeHistory(Box<Result<squid_n_solver::dynamic::timehistory::ResponseResult, String>>),
     /// 質点系（固有値・時刻歴）。方向別ピークを含み大きいため Box で運ぶ。
-    LumpedMass(Box<Result<squid_n_solver::lumped_mass::LumpedMassResult, String>>),
+    LumpedMass(Box<Result<squid_n_solver::dynamic::lumped_mass::LumpedMassResult, String>>),
     /// 線形静的・地震静的(Ai)（`StaticCaseKey` で結果格納先を区別）。
     StaticCase {
         key: StaticCaseKey,
-        res: Result<squid_n_solver::linear::StaticOnce, String>,
+        res: Result<squid_n_solver::statics::linear::StaticOnce, String>,
     },
     /// 単一の荷重組合せ解析（`bundle.combos` の名前一致検索で格納位置を決める）。
     Combo {
         name: String,
-        res: Result<squid_n_solver::linear::StaticOnce, String>,
+        res: Result<squid_n_solver::statics::linear::StaticOnce, String>,
     },
     /// 一括解析（全荷重ケース単体＋全荷重組合せ）。`computed` は
     /// `Analysis::prepare` 失敗時（全件アボート）と個別解析結果の両方を運ぶ。
@@ -845,7 +851,7 @@ pub struct ModelScoped {
     /// 実状より甘い場合に Ds を過小評価する危険側となるため、設計タブで警告する。
     pub ds_rank_fallback_stories: Vec<String>,
     /// 質点系（串団子）時刻歴応答の結果（結果タブ「質点系」で表示。bundle と同内容）。
-    pub stick_response: Option<squid_n_solver::lumped_mass::StickResponse>,
+    pub stick_response: Option<squid_n_solver::dynamic::lumped_mass::StickResponse>,
     /// 質点系時刻歴の波形ライブラリ選択（立体時刻歴とは独立）。
     pub lumped_wave_library_selection: Option<String>,
     pub lumped_wave_library_selected_sha256: Option<String>,
@@ -876,7 +882,7 @@ pub struct ModelScoped {
     pub auto_load_sync_hash: Option<u64>,
     /// 最後の準備計算で生成した仕口パネルの諸元（節点 index の昇順）。
     /// 準備計算の結果タブに一覧表示する。永続化しない（モデルから毎回再生成する）。
-    pub generated_panels: Vec<squid_n_element::panel_gen::GeneratedPanel>,
+    pub generated_panels: Vec<squid_n_element::springs::panel_gen::GeneratedPanel>,
     /// 荷重組合せの自動生成に固有のエラー（荷重組合せ欄にだけ表示する）。
     /// `last_error` はステータスバー共用の単一スロットのため、これを組合せ欄へ
     /// そのまま出すと他の操作のエラーが無関係な欄に現れる。
@@ -1691,7 +1697,7 @@ fn parse_wave_csv(content: &str, dir: ThDir) -> Result<(Vec<f64>, Option<Vec<f64
 fn ground_motion_from_wave_content(
     cfg: &AnalysisSettings,
     content: &str,
-) -> Result<squid_n_solver::timehistory::GroundMotion, String> {
+) -> Result<squid_n_solver::dynamic::timehistory::GroundMotion, String> {
     let (col1, col2) = parse_wave_csv(content, cfg.th_dir)?;
     Ok(match cfg.th_dir {
         // X/Y は単一列を方向へ振り分ける（従来仕様、job::build_ground_motion 共用）。
@@ -1699,7 +1705,7 @@ fn ground_motion_from_wave_content(
         // X+Y は CSV の 2 列がそのまま X・Y の入力になる
         // （build_ground_motion の Xy 分岐は「同一波形を複製」する仕様のため、
         // 別波形の 2 列読込はここで直接 GroundMotion を組み立てる）。
-        ThDir::Xy => squid_n_solver::timehistory::GroundMotion {
+        ThDir::Xy => squid_n_solver::dynamic::timehistory::GroundMotion {
             dt: cfg.th_dt,
             accel_x: col1,
             accel_y: col2,
@@ -1787,17 +1793,17 @@ fn rc_capacity_input_from_rect(
 /// （最後に実行した静的解析の内力）を用いる。
 ///
 /// # 符号規約（要確認済み・推測ではない）
-/// `squid_n_element::beam::BeamElement::recover_forces` は局所剛性 K・u を
+/// `squid_n_element::frame::beam::BeamElement::recover_forces` は局所剛性 K・u を
 /// そのまま評価値とするため、始端(pos=0.0、`eval_sections`\[0\])では
 /// `n = f_local[0] = -N`（N は引張正）となる。これは
-/// `squid_n_solver::linear::test_linear_static_axial_cantilever` で
+/// `squid_n_solver::statics::linear::test_linear_static_axial_cantilever` で
 /// N=+1000N（引張）を与えたとき `forces.at[0].1[0]` ≈ -1000 になることで
 /// 確認済み（すなわち f_local\[0\] は「圧縮正」）。よって `mf.at.first()`
 /// (= pos=0.0、始端)の n は「圧縮正」（n>0 のとき圧縮）であり、
 /// n<=0（引張または軸力なし）なら σ0=0（安全側）とする。
 fn rc_sigma_0_from_gravity_or_last_static(
-    statics: &[(StaticCaseKey, squid_n_solver::linear::StaticOnce)],
-    fallback_member_forces: &[(ElemId, squid_n_element::beam::MemberForces)],
+    statics: &[(StaticCaseKey, squid_n_solver::statics::linear::StaticOnce)],
+    fallback_member_forces: &[(ElemId, squid_n_element::frame::beam::MemberForces)],
     gravity_lc: Option<LoadCaseId>,
     elem_id: ElemId,
     b: f64,

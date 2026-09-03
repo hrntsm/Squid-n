@@ -157,7 +157,7 @@ pub fn qud_by_story(story_weights_bottom_to_top: &[f64], z: f64, rt: f64, t: f64
 
 // ===== T6: Qun 比較・判定・統合 (§3) =====
 
-use squid_n_solver::pushover::PushoverResult;
+use squid_n_solver::nonlinear::pushover::PushoverResult;
 
 /// 二次設計（保有水平耐力）の層チェックを統合する。
 ///
@@ -367,7 +367,7 @@ mod tests {
     // ---- T6 ----
     /// Qu を持つ capacity_curve 1点だけの PushoverResult を作る。
     fn pushover_with_qu(story_shear: Vec<f64>, story_drift: Vec<f64>) -> PushoverResult {
-        use squid_n_solver::pushover::{CapacityPoint, MechanismType};
+        use squid_n_solver::nonlinear::pushover::{CapacityPoint, MechanismType};
         PushoverResult {
             steps: vec![],
             capacity_curve: vec![CapacityPoint {
@@ -394,7 +394,7 @@ mod tests {
     /// Qu を過小評価する。ここでは最終点より前にピークがある曲線で検証する。
     #[test]
     fn test_check_holding_capacity_uses_peak_not_last_point() {
-        use squid_n_solver::pushover::{CapacityPoint, MechanismType};
+        use squid_n_solver::nonlinear::pushover::{CapacityPoint, MechanismType};
         // 1層。層せん断は 100 → 150(ピーク) → 120(劣化) と推移。
         let pushover = PushoverResult {
             steps: vec![],

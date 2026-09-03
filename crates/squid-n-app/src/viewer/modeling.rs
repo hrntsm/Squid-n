@@ -46,9 +46,9 @@ use squid_n_core::ids::NodeId;
 use squid_n_core::model::{ElementData, ElementKind, EndCondition, Model};
 use squid_n_core::units::to_display::force_kn;
 use squid_n_element::factory::{resolve_force_regime, ResolvedRegime};
-use squid_n_element::misc_wall::wall_is_seismic;
-use squid_n_element::side_column::{wall_side_column_release, SideColumnEdges};
-use squid_n_element::wall_element::wall_element_geometry;
+use squid_n_element::wall::misc_wall::wall_is_seismic;
+use squid_n_element::wall::side_column::{wall_side_column_release, SideColumnEdges};
+use squid_n_element::wall::wall_element::wall_element_geometry;
 
 use super::{ModelingAnalysis, Projector};
 
@@ -73,7 +73,7 @@ pub(super) enum ModelClass {
     /// 該当するのは、板厚を引けない壁版（断面未割当・板厚のない断面）、床領域に
     /// 取り付く自立壁（周辺の柱梁に取り付いておらず剛性を渡す相手がいない）、
     /// 取付き線が梁の全長を覆わない取り付く壁版、境界が 4 節点でない囲まれた壁版
-    /// である（`squid_n_element::misc_wall` の収集条件）。
+    /// である（`squid_n_element::wall::misc_wall` の収集条件）。
     WallPlateLoadOnly,
     /// 仕口パネル（柱梁接合部パネル）。
     Panel,
@@ -399,13 +399,13 @@ fn draw_shear_spring(
 }
 
 /// 可とう区間の端点フラクション（材軸パラメータ s∈[0,1] の両端）と可とう長 [mm]。
-/// 剛域長の解決は要素側（[`squid_n_element::rigid_arm::resolve_lengths`]）と共通で、
+/// 剛域長の解決は要素側（[`squid_n_element::frame::rigid_arm::resolve_lengths`]）と共通で、
 /// 可撓長が残らない入力は剛域なしとして扱う。
 fn flexible_span(elem: &ElementData, l: f64) -> (f32, f32, f64) {
     if l <= 1e-9 {
         return (0.0, 1.0, l);
     }
-    let (li, lj) = squid_n_element::rigid_arm::resolve_lengths(
+    let (li, lj) = squid_n_element::frame::rigid_arm::resolve_lengths(
         elem.rigid_zone.rigid_length_i(),
         elem.rigid_zone.rigid_length_j(),
         l,
@@ -504,7 +504,7 @@ pub(super) fn draw_modeling(
 /// 上の要素ループが壁エレメントとして描くため、ここでは扱わない。
 ///
 /// 分類は 2 つある。フレーム内雑壁として周辺の柱・梁へ剛性算入される壁版
-/// （[`squid_n_element::misc_wall::misc_stiffness_wall_plates`]）と、剛性へ一切
+/// （[`squid_n_element::wall::misc_wall::misc_stiffness_wall_plates`]）と、剛性へ一切
 /// 効かない壁版である。**算入されるかは剛性算入が実際に見ている収集結果から引く**
 /// ので、図と解析が食い違わない。
 fn draw_wall_plates_modeling(
@@ -535,7 +535,7 @@ fn draw_wall_plates_modeling(
         return;
     }
     let misc: std::collections::BTreeSet<_> =
-        squid_n_element::misc_wall::misc_stiffness_wall_plates(model)
+        squid_n_element::wall::misc_wall::misc_stiffness_wall_plates(model)
             .into_iter()
             .collect();
 
@@ -597,7 +597,7 @@ fn seismic_wall_nodes(model: &Model) -> std::collections::HashSet<NodeId> {
 
 /// 部材 `elem` が耐震壁の付帯梁（上下大梁）か。
 ///
-/// 判定・倍率ともに要素生成（[`squid_n_element::beam::stiffness_breakdown`]）へ委ねる
+/// 判定・倍率ともに要素生成（[`squid_n_element::frame::beam::stiffness_breakdown`]）へ委ねる
 /// ため、図に現れる付帯梁は実際に倍率が乗って解析へ入る梁と一致する。倍率の値は
 /// 剛性計算条件で変わりうるため図には出さず、付帯梁であることのみを示す。
 ///
@@ -619,7 +619,7 @@ fn is_wall_girder(
     ) && elem.nodes.len() >= 2
         && wall_nodes.contains(&elem.nodes[0])
         && wall_nodes.contains(&elem.nodes[1])
-        && squid_n_element::beam::stiffness_breakdown(model, elem).wall_girder > 1.0
+        && squid_n_element::frame::beam::stiffness_breakdown(model, elem).wall_girder > 1.0
 }
 
 /// 部材 `elem` が「端部塑性化域モデル」（材端 ξ=∓1 にファイバー断面を置き、
@@ -642,7 +642,7 @@ fn plastic_zone_len(elem: &ElementData, model: &Model, l_flex: f64) -> f64 {
     if l_flex <= 1e-9 {
         return 0.0;
     }
-    squid_n_element::fiber::clamp_plastic_zone(
+    squid_n_element::frame::fiber::clamp_plastic_zone(
         squid_n_element::factory::plastic_zone_length(elem, model),
         l_flex,
     )
@@ -674,7 +674,7 @@ fn draw_line_member(
     let color = class.color();
 
     // 可とう区間（剛域フェイス間）。すべての線材モデルが剛域を可撓長から控除し、
-    // 可撓端自由度を剛体アームで節点自由度へ写す（`squid_n_element::rigid_arm`）。
+    // 可撓端自由度を剛体アームで節点自由度へ写す（`squid_n_element::frame::rigid_arm`）。
     let end_plastic = is_end_plastic_zone_model(elem, class);
     let (s_i, s_j, l_flex) = flexible_span(elem, l);
 
@@ -842,7 +842,8 @@ fn draw_wall_element(
     let bc = proj.project(vec3::add(g.bottom_center, vec3::scale(ez, inset)));
     let tc = proj.project(vec3::add(g.top_center, vec3::scale(ez, -inset)));
     let lp_ratio = if analysis == ModelingAnalysis::Incremental && g.h > 1e-9 {
-        squid_n_element::wall_element::wall_column_fiber_lp(elem, model).map(|lp| (lp / g.h) as f32)
+        squid_n_element::wall::wall_element::wall_column_fiber_lp(elem, model)
+            .map(|lp| (lp / g.h) as f32)
     } else {
         None
     };
@@ -850,7 +851,7 @@ fn draw_wall_element(
 
     // 面内せん断ばね（Qu 頭打ち）。壁柱が全長で持つ 1 自由度のため材軸に沿わせる。
     if analysis == ModelingAnalysis::Incremental
-        && squid_n_element::wall_element::WallElement::shear_capacity_of(elem, model) > 0.0
+        && squid_n_element::wall::wall_element::WallElement::shear_capacity_of(elem, model) > 0.0
     {
         draw_shear_spring(painter, bc, tc, PARALLEL_OFFSET, color);
         sym.wall_shear = true;
@@ -1255,7 +1256,7 @@ fn show_wall_modeling_detail(
     modeling_analysis: ModelingAnalysis,
     elem: &ElementData,
 ) {
-    let Some(g) = squid_n_element::wall_element::wall_element_geometry(elem, model) else {
+    let Some(g) = squid_n_element::wall::wall_element::wall_element_geometry(elem, model) else {
         ui.label("幾何を取得できないため半透明ポリゴンで表示");
         return;
     };
@@ -1263,7 +1264,7 @@ fn show_wall_modeling_detail(
     if modeling_analysis != ModelingAnalysis::Incremental {
         return;
     }
-    match squid_n_element::wall_element::wall_column_fiber_lp(elem, model) {
+    match squid_n_element::wall::wall_element::wall_column_fiber_lp(elem, model) {
         Some(lp) => {
             ui.label("ファイバー断面: 壁柱の材端 2 箇所（積分点 ξ=∓1）");
             ui.label(format!("塑性化域 Lp={lp:.0} mm（0.5·lw）／中央弾性"));
@@ -1272,7 +1273,7 @@ fn show_wall_modeling_detail(
             ui.label("軸・曲げ: 弾性（ファイバー断面を組めない）");
         }
     }
-    let qu = squid_n_element::wall_element::WallElement::shear_capacity_of(elem, model);
+    let qu = squid_n_element::wall::wall_element::WallElement::shear_capacity_of(elem, model);
     if qu > 0.0 {
         ui.label(format!("面内せん断: Qu={:.0} kN で頭打ち", force_kn(qu)));
     } else {
@@ -1329,7 +1330,7 @@ pub(super) fn show_modeling_tooltip(
                 ));
                 // 梁のねじり剛性を期待しない既定モデル化（i 端ねじれ解放）が
                 // この部材に適用されているかを明示する（適用されない例外がある）。
-                if squid_n_element::beam::i_end_torsion_release(elem, model) {
+                if squid_n_element::frame::beam::i_end_torsion_release(elem, model) {
                     ui.label("ねじれ: i 端ピン（部材全長で Mx=0）");
                 }
                 let rz = &elem.rigid_zone;
@@ -1718,7 +1719,7 @@ mod tests {
 
     /// 壁の上下大梁（付帯梁）は、断面性能へ倍率が乗った剛性で解析へ入る。
     /// 図では分類色を保ったまま平行線を添えるため、判定が解析と一致していること
-    /// （[`squid_n_element::beam::stiffness_breakdown`] と同じ結果）を確認する。
+    /// （[`squid_n_element::frame::beam::stiffness_breakdown`] と同じ結果）を確認する。
     #[test]
     fn 壁の上下大梁だけを付帯梁として判定する() {
         let (mut model, _) = wall_model(150.0);

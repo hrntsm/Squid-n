@@ -19,7 +19,7 @@
 //! - `vx(vy)` : X(Y)方向加力時の Y 方向節点移動量
 
 use squid_n_core::model::Model;
-use squid_n_solver::linear::StaticOnce;
+use squid_n_solver::statics::linear::StaticOnce;
 
 /// 主軸角 Θ [rad]。`tan2Θ = −Pᵗ(uy+vx) / Pᵗ(vy−ux)` を `atan2` で解く。
 ///

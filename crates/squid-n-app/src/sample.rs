@@ -154,7 +154,7 @@ mod tests {
     #[test]
     fn test_portal_frame_solves() {
         let model = portal_frame();
-        let analysis = squid_n_solver::analysis::Analysis::prepare(&model).unwrap();
+        let analysis = squid_n_solver::statics::analysis::Analysis::prepare(&model).unwrap();
         // 長期（等分布）: 梁中央がたわむ → 柱頭に鉛直変位が生じる
         let r0 = analysis
             .linear_static(squid_n_core::ids::LoadCaseId(0))

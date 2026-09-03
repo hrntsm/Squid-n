@@ -1,12 +1,12 @@
-use crate::assemble::{add_support_spring_diag, assemble_global_f, support_spring_terms};
+use crate::common::assemble::{add_support_spring_diag, assemble_global_f, support_spring_terms};
+use crate::common::constraint::Reducer;
 use crate::common::csc_cache::CscCache;
-use crate::constraint::Reducer;
 use squid_n_core::dof::DofMap;
 use squid_n_core::ids::{ElemId, LoadCaseId};
 use squid_n_core::model::{ElementData, ElementKind, LoadCaseKind, MemberLoad, Model};
-use squid_n_element::beam::MemberForces;
 use squid_n_element::behavior::{Ctx, ElementBehavior};
 use squid_n_element::factory::build_behavior;
+use squid_n_element::frame::beam::MemberForces;
 use squid_n_math::solver::{make_solver, SolveError, SolverBackend};
 use squid_n_math::sparse::{assemble_csc, Triplet};
 use std::borrow::Cow;
@@ -118,9 +118,9 @@ pub struct StaticOnce {
 /// 線形解析では重ね合わせの原理が成り立つため、荷重組合せ `Σ cᵢ·Lᵢ` の応答は、
 /// 荷重ケース単体 `Lᵢ` の応答を `cᵢ` 倍して足し合わせた値と一致する。解析の最小単位を
 /// 荷重ケース単体に統一し、荷重組合せはその結果の線形和として組み立てるための共通処理
-/// （[`crate::analysis::Analysis::linear_combination`] が使う）。
+/// （[`crate::statics::analysis::Analysis::linear_combination`] が使う）。
 ///
-/// 各項は同一モデル・同一 [`crate::analysis::Analysis`] から得た結果である前提で、
+/// 各項は同一モデル・同一 [`crate::statics::analysis::Analysis`] から得た結果である前提で、
 /// 節点数・部材の出現順・部材内の評価断面位置が一致しているものとして足し合わせる
 /// （評価断面の位置 `xi` は先頭の項の値を採る）。項が空の場合は変位・断面力とも
 /// 空の結果を返す。
@@ -726,24 +726,24 @@ pub(crate) fn superpose_member_loads(
     model: &Model,
     elem: &squid_n_core::model::ElementData,
     loads: &[MemberLoad],
-    forces: &mut squid_n_element::beam::MemberForces,
+    forces: &mut squid_n_element::frame::beam::MemberForces,
 ) {
     if loads.is_empty() {
         return;
     }
     // 対象の線材判定・局所座標系・部材長は等価節点力側（`assemble_global_f`）と
-    // 同じ規則を共有する（[`crate::assemble::member_load_frame`]）。荷重ベクトル側で
+    // 同じ規則を共有する（[`crate::common::assemble::member_load_frame`]）。荷重ベクトル側で
     // 載らなかった荷重が内力回復側だけに重なる（またはその逆）不整合を防ぐ。
-    let Some((frame, length)) = crate::assemble::member_load_frame(model, elem) else {
+    let Some((frame, length)) = crate::common::assemble::member_load_frame(model, elem) else {
         return;
     };
     for (xi, vals) in forces.at.iter_mut() {
-        let fixed = squid_n_element::member_load::fixed_internal_local(
+        let fixed = squid_n_element::frame::member_load::fixed_internal_local(
             loads,
             &frame,
             length,
             *xi,
-            crate::assemble::span_load_transfer(elem),
+            crate::common::assemble::span_load_transfer(elem),
         );
         for k in 0..6 {
             vals[k] += fixed[k];

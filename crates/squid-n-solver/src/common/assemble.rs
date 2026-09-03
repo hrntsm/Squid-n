@@ -3,7 +3,7 @@ use squid_n_core::dof::{Dof, DofMap, DOF_PER_NODE};
 use squid_n_core::ids::LoadCaseId;
 use squid_n_core::model::{ElementData, ElementKind, Model};
 use squid_n_element::factory::build_behavior;
-use squid_n_element::member_load::SpanLoadTransfer;
+use squid_n_element::frame::member_load::SpanLoadTransfer;
 use squid_n_element::transform::LocalFrame;
 use squid_n_math::sparse::{assemble_csc, Triplet};
 
@@ -159,7 +159,7 @@ pub fn assemble_global_f(model: &Model, dofmap: &DofMap, lc: LoadCaseId) -> Vec<
 /// 部材荷重（等価節点力・固定端内力）を扱える線材要素か。
 ///
 /// 対象は 2 節点の線材（梁・ファイバー梁・マルチスプリング梁・ブレース。
-/// [`crate::linear::ensure_line_member_forces`] の対象と同じ集合）。壁・シェル等の
+/// [`crate::statics::linear::ensure_line_member_forces`] の対象と同じ集合）。壁・シェル等の
 /// 非線材（4 節点）に `MemberLoad` が誤って紐付いた場合、従来は先頭 2 節点だけを
 /// 材端とみなして荷重を配ってしまい、エラーも出ずに荷重が誤適用されていた。
 pub(crate) fn is_member_load_target(elem: &ElementData) -> bool {
@@ -235,7 +235,7 @@ fn add_member_loads(
         };
         let ni = elem.nodes[0].index();
         let nj = elem.nodes[1].index();
-        let q_local = squid_n_element::member_load::consistent_load_local(
+        let q_local = squid_n_element::frame::member_load::consistent_load_local(
             loads,
             &frame,
             length,
@@ -330,14 +330,14 @@ mod tests {
         assert_eq!(dofmap_baseline.n_active(), 1);
         assert_eq!(dofmap_spring.n_active(), 1);
 
-        // 線形静解析（`crate::linear::linear_static_once`）で節点1に水平力を与え、
+        // 線形静解析（`crate::statics::linear::linear_static_once`）で節点1に水平力を与え、
         // 変位 u=F/k から実効剛性を逆算し、要素単独(kx)・要素+支点ばね(kx+ks) の
         // 理論値と一致することを確認する。
         let lc = LoadCaseId(0);
-        let disp_baseline = crate::linear::linear_static_once(&model_baseline, lc)
+        let disp_baseline = crate::statics::linear::linear_static_once(&model_baseline, lc)
             .expect("baseline linear static should solve")
             .disp[1][0];
-        let disp_spring = crate::linear::linear_static_once(&model_spring, lc)
+        let disp_spring = crate::statics::linear::linear_static_once(&model_spring, lc)
             .expect("spring linear static should solve")
             .disp[1][0];
 

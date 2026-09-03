@@ -162,7 +162,7 @@ impl App {
     }
 
     /// 解析前に剛域を自動算定してモデルへ反映する（設計書 §6.2.1「剛域」は
-    /// 標準実装。解析前に1回適用する）。`squid_n_element::beam::apply_auto_rigid_zones`
+    /// 標準実装。解析前に1回適用する）。`squid_n_element::frame::beam::apply_auto_rigid_zones`
     /// は `ZoneSource::Auto` の端のみ更新し `Manual` 端を保護するため、
     /// 各解析エントリの先頭で毎回呼んでも冪等で安全。
     fn apply_rigid_zones_for_analysis(&mut self) {
@@ -519,7 +519,8 @@ impl App {
         // 現れないまま解析実行時に初めて分かる、という劣化になる）。
         let (wall_expanded_model, _wall_index, _wall_report) =
             squid_n_load::wall_expand::expand_wall_elements(&self.core.model);
-        for issue in squid_n_solver::analysis::precheck::model_issues(&wall_expanded_model) {
+        for issue in squid_n_solver::statics::analysis::precheck::model_issues(&wall_expanded_model)
+        {
             push_issue_diagnostics(&mut diags, issue);
         }
 
@@ -585,9 +586,9 @@ impl App {
 /// Error、解析は通るが入力の意図を確かめたい事柄は Warning になる。
 fn push_issue_diagnostics(
     diags: &mut Vec<Diagnostic>,
-    issue: squid_n_solver::analysis::precheck::ModelIssue,
+    issue: squid_n_solver::statics::analysis::precheck::ModelIssue,
 ) {
-    use squid_n_solver::analysis::precheck::{IssueSeverity, IssueTargets};
+    use squid_n_solver::statics::analysis::precheck::{IssueSeverity, IssueTargets};
 
     /// 対象単位の行を並べる上限。超過分は集約 1 行にまとめる。
     const MAX_ISSUE_TARGETS: usize = 100;

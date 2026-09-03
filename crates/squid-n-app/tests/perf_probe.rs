@@ -7,7 +7,7 @@
 //!   1. sync_gravity_load_cases_action
 //!   2. squid_n_load::story_gen::generate_stories_with_opts
 //!   3. undo.run(ApplyStories)
-//!   4. apply_rigid_zones_for_analysis (== squid_n_element::beam::apply_auto_rigid_zones)
+//!   4. apply_rigid_zones_for_analysis (== squid_n_element::frame::beam::apply_auto_rigid_zones)
 //!   5. sync_seismic_load_cases_action
 //!
 //! Stages 1/2/3/5 use methods/functions that are already `pub` on `App` /
@@ -19,7 +19,7 @@
 //! and only takes the wall-expansion branch when the model actually has
 //! walls. The synthetic models generated below have none, so that guard
 //! always takes the cheap branch and this probe calls the public
-//! `squid_n_element::beam::apply_auto_rigid_zones` directly instead (which is
+//! `squid_n_element::frame::beam::apply_auto_rigid_zones` directly instead (which is
 //! byte-for-byte what the guard's false-branch does for these models). This
 //! measurement therefore does **not** cover the wall-expansion branch's cost
 //! — it is out of scope for this probe, not verified equivalent for
@@ -49,7 +49,7 @@ use squid_n_core::model::{
     LoadCaseKind, LocalAxis, Material, MaterialCategory, Model, Node, Section, Slab, SlabPlate,
     SlabShape,
 };
-use squid_n_element::beam::{apply_auto_rigid_zones, RigidZoneRule};
+use squid_n_element::frame::beam::{apply_auto_rigid_zones, RigidZoneRule};
 
 /// 節点格子: nx * ny 本の通り芯 x n_stories 階 (+ 基部レベル)。
 /// 柱・梁は RC 概算断面。各階各スパンにスラブ (一様 DL) を配置する。
@@ -328,10 +328,10 @@ fn timed_generate_stories(app: &mut App) -> [std::time::Duration; 5] {
     // replicate what sync_seismic_load_cases_action does internally --
     // Analysis::prepare once, then build_seismic_load_case for X and Y --
     // to see which part of stage 5 dominates. Uses the same public API
-    // (`squid_n_solver::analysis::{Analysis, SeismicCfg}`) on the exact same
+    // (`squid_n_solver::statics::analysis::{Analysis, SeismicCfg}`) on the exact same
     // model state (post rigid-zone application, pre EX/EY sync). ---
     {
-        use squid_n_solver::analysis::{Analysis, SeismicCfg, SeismicDir};
+        use squid_n_solver::statics::analysis::{Analysis, SeismicCfg, SeismicDir};
         let t0 = Instant::now();
         if let Ok(analysis) = Analysis::prepare(&app.core.model) {
             let d_prepare = t0.elapsed();

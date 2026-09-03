@@ -4,8 +4,8 @@ use squid_n_core::ids::{ElemId, NodeId};
 use squid_n_core::model::RigidZone;
 use squid_n_material::uniaxial::Bilinear;
 
-fn make_test_beam() -> crate::beam::BeamElement {
-    crate::beam::BeamElement {
+fn make_test_beam() -> crate::frame::beam::BeamElement {
+    crate::frame::beam::BeamElement {
         id: ElemId(0),
         e: 205000.0,
         g: 78846.15,

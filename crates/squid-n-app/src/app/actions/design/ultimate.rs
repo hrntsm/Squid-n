@@ -107,7 +107,7 @@ impl App {
                     })
                     .map(|(_, s)| s.member_forces.as_slice())
                     .unwrap_or(r.member_forces.as_slice());
-                let member_forces: &[(ElemId, squid_n_element::beam::MemberForces)] =
+                let member_forces: &[(ElemId, squid_n_element::frame::beam::MemberForces)] =
                     gravity_long.as_deref().unwrap_or(fallback);
                 let ql_map = squid_n_job::q_long_map_from_member_forces(member_forces);
                 squid_n_job::member_demand_from_static_forces(
@@ -121,7 +121,7 @@ impl App {
 
     /// 増分解析応答（部材別応答）から終局検定用の部材需要を組み立てる。
     ///
-    /// 増分解析最終ステップの部材別応答（[`squid_n_solver::pushover::PushoverMemberResponse`]）
+    /// 増分解析最終ステップの部材別応答（[`squid_n_solver::nonlinear::pushover::PushoverMemberResponse`]）
     /// から、軸力（圧縮正）・強軸/弱軸の設計用曲げ・強軸設計用せん断・部材別 Rp を
     /// 反映する。増分解析未実行、または部材別応答が空（ステップ未確定）の場合は
     /// `None`（呼び出し側が静的応答へフォールバック）。

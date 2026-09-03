@@ -12,7 +12,7 @@ use squid_n_core::model::Model;
 
 use super::story_columns::story_columns;
 use squid_n_element::transform::LocalFrame;
-use squid_n_solver::linear::StaticOnce;
+use squid_n_solver::statics::linear::StaticOnce;
 
 use super::eccentricity::{
     append_misc_wall_stiffnesses, center_of_mass, center_of_rigidity, eccentricity,
@@ -84,29 +84,30 @@ pub fn column_stiffnesses_from_analysis(
     for_each_story_column(model, story, |elem, top, bot| {
         let p0 = model.nodes[elem.nodes[0].index()].coord;
         let p1 = model.nodes[elem.nodes[1].index()].coord;
-        let k_of =
-            |res: &StaticOnce,
-             forces: &HashMap<squid_n_core::ids::ElemId, &squid_n_element::beam::MemberForces>,
-             dir: usize|
-             -> f64 {
-                let (Some(ut), Some(ub)) =
-                    (res.disp.get(top.id.index()), res.disp.get(bot.id.index()))
-                else {
-                    return 0.0;
-                };
-                let delta = (ut[dir] - ub[dir]).abs();
-                if delta < 1e-9 {
-                    return 0.0;
-                }
-                let Some(mf) = forces.get(&elem.id) else {
-                    return 0.0;
-                };
-                let Some(&(_, local)) = mf.at.first() else {
-                    return 0.0;
-                };
-                let g = station_force_global(p0, p1, elem.local_axis.ref_vector, local);
-                g[dir].abs() / delta
+        let k_of = |res: &StaticOnce,
+                    forces: &HashMap<
+            squid_n_core::ids::ElemId,
+            &squid_n_element::frame::beam::MemberForces,
+        >,
+                    dir: usize|
+         -> f64 {
+            let (Some(ut), Some(ub)) = (res.disp.get(top.id.index()), res.disp.get(bot.id.index()))
+            else {
+                return 0.0;
             };
+            let delta = (ut[dir] - ub[dir]).abs();
+            if delta < 1e-9 {
+                return 0.0;
+            }
+            let Some(mf) = forces.get(&elem.id) else {
+                return 0.0;
+            };
+            let Some(&(_, local)) = mf.at.first() else {
+                return 0.0;
+            };
+            let g = station_force_global(p0, p1, elem.local_axis.ref_vector, local);
+            g[dir].abs() / delta
+        };
         out.push(ColumnStiffness {
             pos: [top.coord[0], top.coord[1]],
             dx: k_of(res_x, &fx, 0),
@@ -185,7 +186,7 @@ mod tests {
     use super::*;
     use crate::secondary::eccentricity::test_support::build_symmetric_frame;
     use squid_n_core::ids::ElemId;
-    use squid_n_element::beam::MemberForces;
+    use squid_n_element::frame::beam::MemberForces;
 
     /// 柱 4 本（ElemId 0..4、節点 i(底)→i+4(頂)）へ、指定の局所内力
     /// [n, qy, qz] を持つ member_forces と頂部一様変位 disp を合成する。

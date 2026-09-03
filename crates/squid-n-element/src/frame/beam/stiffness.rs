@@ -68,14 +68,14 @@ impl BeamElement {
     }
 
     /// 可撓端自由度の剛性を剛体アームで節点自由度へ写す
-    /// （運動学と符号規約は [`crate::rigid_arm`] を参照。ファイバー梁と共有する）。
+    /// （運動学と符号規約は [`crate::frame::rigid_arm`] を参照。ファイバー梁と共有する）。
     pub(crate) fn apply_rigid_zone_transform(
         &self,
         k_flex: &LocalMat,
         li: f64,
         lj: f64,
     ) -> LocalMat {
-        crate::rigid_arm::transform_stiffness(k_flex, li, lj)
+        crate::frame::rigid_arm::transform_stiffness(k_flex, li, lj)
     }
 
     /// 端部条件（剛接・ピン・半剛）を要素剛性へ反映し、12×12（節点自由度のみ）を返す。
@@ -235,9 +235,9 @@ impl BeamElement {
     ///
     /// 合計が部材長以上になる病的な入力（極端に短い部材など）は剛域なしとして扱う。
     /// 可撓長がゼロ以下では要素が剛性ゼロに退化するためで、規則はファイバー梁と共通
-    /// （[`crate::rigid_arm::resolve_lengths`]）。
+    /// （[`crate::frame::rigid_arm::resolve_lengths`]）。
     pub(crate) fn rigid_lengths(&self) -> (f64, f64) {
-        crate::rigid_arm::resolve_lengths(
+        crate::frame::rigid_arm::resolve_lengths(
             self.rigid.rigid_length_i(),
             self.rigid.rigid_length_j(),
             self.length,
