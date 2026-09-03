@@ -1,5 +1,5 @@
 use crate::behavior::{Ctx, ElementBehavior, LocalMat, LocalVec, MassOption};
-use crate::frame::beam::invert_small;
+use crate::linalg::invert_small;
 use squid_n_core::dof::DofMap;
 
 use smallvec::SmallVec;

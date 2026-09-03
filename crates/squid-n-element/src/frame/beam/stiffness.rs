@@ -4,8 +4,8 @@
 //! 局所剛性 [`BeamElement::local_stiffness`] を組み立てる。
 
 use super::element::BeamElement;
-use super::linalg::invert_small;
 use crate::behavior::LocalMat;
+use crate::linalg::invert_small;
 use squid_n_core::model::EndCondition;
 
 impl BeamElement {

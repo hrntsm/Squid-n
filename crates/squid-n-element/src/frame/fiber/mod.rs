@@ -1297,7 +1297,7 @@ impl FiberBeam {
                 kbb[a * n + a] += ra.spring;
             }
             // 縮約行列が特異なら更新を打ち切り、直前の状態を保つ。
-            let Some(kbb_inv) = Self::invert_small_stack(&kbb[..n * n], n) else {
+            let Some(kbb_inv) = crate::linalg::invert_small(&kbb[..n * n], n) else {
                 break;
             };
             let mut du = [0.0_f64; 6];
@@ -1318,71 +1318,6 @@ impl FiberBeam {
         // 収束打ち切り時も断面状態を最終 u_elem と整合させる。
         let u_elem = self.elem_disp(&u_flex);
         self.update_trial_state(&u_elem);
-    }
-
-    /// 小行列（n≤6）の逆行列（部分ピボッティング付きガウス・ジョルダン法）。
-    /// `super::beam::invert_small` と同一アルゴリズムだが、fiber 要素内に閉じた
-    /// 呼び出し（`solve_internal_dofs`・`solve_hinges`・`hinge_tangent`・
-    /// `condense_releases`）向けにスタック上へ確保する版をここに用意し、
-    /// 反復のたびの小さなヒープ確保を避ける。
-    /// 特異（ピボット候補の最大絶対値がスケール比 1e-12 未満）の場合は `None`
-    /// （従来はピボットを 1.0 へ差し替えて誤った行列を無言で返していた）。
-    /// 戻り値はフラット化した n×n 逆行列（先頭 n*n 要素のみ有効）。
-    fn invert_small_stack(a: &[f64], n: usize) -> Option<[f64; 36]> {
-        debug_assert!(n <= 6, "invert_small_stack: n は releases 上限=最大6まで");
-        let scale = a.iter().fold(0.0_f64, |m, &v| m.max(v.abs()));
-        if !scale.is_finite() || scale <= 0.0 {
-            return None;
-        }
-        let tol = 1e-12 * scale;
-        let w = 2 * n;
-        let mut aug = [0.0_f64; 72]; // n*(2n) ≤ 6*12 = 72
-        for i in 0..n {
-            for j in 0..n {
-                aug[i * w + j] = a[i * n + j];
-            }
-            aug[i * w + n + i] = 1.0;
-        }
-        for col in 0..n {
-            let mut best = col;
-            let mut best_abs = aug[col * w + col].abs();
-            for row in (col + 1)..n {
-                let v = aug[row * w + col].abs();
-                if v > best_abs {
-                    best = row;
-                    best_abs = v;
-                }
-            }
-            if best_abs < tol {
-                return None;
-            }
-            if best != col {
-                for j in 0..w {
-                    aug.swap(col * w + j, best * w + j);
-                }
-            }
-            let pivot = aug[col * w + col];
-            for j in 0..w {
-                aug[col * w + j] /= pivot;
-            }
-            for row in 0..n {
-                if row != col {
-                    let factor = aug[row * w + col];
-                    if factor != 0.0 {
-                        for j in 0..w {
-                            aug[row * w + j] -= factor * aug[col * w + j];
-                        }
-                    }
-                }
-            }
-        }
-        let mut inv = [0.0_f64; 36];
-        for i in 0..n {
-            for j in 0..n {
-                inv[i * n + j] = aug[i * w + n + j];
-            }
-        }
-        Some(inv)
     }
 
     /// 要素変形 `u_elem` に対するトライアル状態の更新。
@@ -1439,7 +1374,7 @@ impl FiberBeam {
                 kbb[i * nb + j] = k[(na + i) * n + (na + j)];
             }
         }
-        let Some(kbb_inv) = Self::invert_small_stack(&kbb[..nb * nb], nb) else {
+        let Some(kbb_inv) = crate::linalg::invert_small(&kbb[..nb * nb], nb) else {
             // 縮約行列 Kbb が特異（解放自由度が機構化）。補正項を省略して返し、
             // 全体求解の特異検出（自由度名指しの診断）に委ねる（`beam::stiffness::
             // condense_end_springs` と同じ扱い）。
@@ -1636,7 +1571,7 @@ impl FiberBeam {
                 }
             }
             // ヤコビアンが特異なら反復を打ち切り、直前の状態を保つ。
-            let Some(jinv) = Self::invert_small_stack(&jac[..n * n], n) else {
+            let Some(jinv) = crate::linalg::invert_small(&jac[..n * n], n) else {
                 break;
             };
             let mut dk = [0.0_f64; 4];
@@ -1742,7 +1677,7 @@ impl FiberBeam {
         // ヤコビアンが特異な場合は補正なしの弾性剛性 K_el を接線として返す
         // （内力は履歴に整合した厳密値のため収束解は変わらない。反復回数が
         // 増えるだけで、誤った接線を混入させるより安全）。
-        let Some(jinv) = Self::invert_small_stack(&jac[..n * n], n) else {
+        let Some(jinv) = crate::linalg::invert_small(&jac[..n * n], n) else {
             return LocalMat {
                 n: 12,
                 data: h.k_el.data.clone(),
