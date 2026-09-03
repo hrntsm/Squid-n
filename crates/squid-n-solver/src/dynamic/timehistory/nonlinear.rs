@@ -18,11 +18,11 @@ use crate::common::constraint::Reducer;
 use crate::common::csc_cache::{CscCache, WeightedSumGuard};
 use crate::common::elem_loop::apply_du_trial;
 use crate::common::newton::{l2_norm, NewtonCriteria, STATIC_NEWTON};
-use crate::common::transaction::{revert_all, StateSnapshot};
-use crate::dynamic::damping::{Damping, DampingAccumulation};
-use crate::nonlinear::pushover::{
+use crate::common::tangent::{
     add_support_spring_f_int, assemble_k, assemble_k_cached_ref, compute_f_int,
 };
+use crate::common::transaction::{revert_all, StateSnapshot};
+use crate::dynamic::damping::{Damping, DampingAccumulation};
 use squid_n_core::dof::{DofMap, DOF_PER_NODE};
 use squid_n_core::model::Model;
 use squid_n_element::behavior::{ElementBehavior, MassOption};

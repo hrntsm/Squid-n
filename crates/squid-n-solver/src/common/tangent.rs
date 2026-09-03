@@ -1,13 +1,15 @@
-//! 剛性行列の組立と内力ベクトルの算定。
+//! 非線形反復の接線剛性行列と内力ベクトルの組み立て。
 //!
 //! - [`assemble_k`] — 全体接線剛性行列（幾何剛性対応）
 //! - [`compute_f_int`] — 全自由節点の内力ベクトル
 //! - [`add_support_spring_f_int`] — 支点ばね（`Node::support_spring`）の内力寄与
 //!
-//! `assemble_k`・`compute_f_int` は `dynamic`/`timehistory` モジュールが
-//! `crate::nonlinear::pushover::{assemble_k, compute_f_int}` として参照するため `pub(crate)` を
-//! 維持し、シグネチャは変更しない（支点ばねの内力寄与は別関数
-//! [`add_support_spring_f_int`] として呼び出し側 [`super::driver`] が加算する）。
+//! 要素の**現在の状態**（`&[Box<dyn ElementBehavior>]`）から組み立てる経路であり、
+//! Newton 反復を回す解析はすべてここを通る（増分解析・弧長法・非線形時刻歴）。
+//! モデルから毎回要素を組み直す線形経路は [`super::assemble`] にある。
+//!
+//! 支点ばねの内力寄与を [`add_support_spring_f_int`] として分けてあるのは、
+//! 加算する位置が解析ごとに異なるためである（呼び出し側が足す）。
 
 use crate::common::assemble::support_spring_terms;
 use crate::common::csc_cache::CscCache;

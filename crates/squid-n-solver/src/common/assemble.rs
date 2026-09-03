@@ -69,9 +69,9 @@ pub fn support_spring_terms(model: &Model, dofmap: &DofMap) -> Vec<(usize, f64)>
 /// 節点集中質量の対角加算（[`assemble_global_m`]）と同じ形で、
 /// [`support_spring_terms`] が返す自由 DOF の対角項へ単純加算する。
 ///
-/// 線形経路（本関数内）・非線形経路（`nonlinear::pushover::assembly::assemble_k`）の
+/// 線形経路（本関数内）・非線形経路（`common::tangent::assemble_k`）の
 /// 双方から呼ばれる共通処理。非線形経路では内力側 `k_i・u_i` の計上も別途必要
-/// （`nonlinear::pushover::assembly::add_support_spring_f_int` 参照）。
+/// （`common::tangent::add_support_spring_f_int` 参照）。
 pub fn add_support_spring_diag(model: &Model, dofmap: &DofMap, triplets: &mut Vec<Triplet>) {
     for (active, k) in support_spring_terms(model, dofmap) {
         triplets.push(Triplet {
