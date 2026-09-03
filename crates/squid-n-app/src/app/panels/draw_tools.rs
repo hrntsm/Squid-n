@@ -183,14 +183,7 @@ impl App {
         let focus_id: Option<squid_n_core::ids::ElemId> = self.ui.scoped.nav.focus_member;
         // 存在確認もここで行い、ローカルに有効性と現在断面を取得
         let elem_info: Option<(squid_n_core::ids::ElemId, Option<SectionId>)> =
-            focus_id.and_then(|eid| {
-                self.core
-                    .model
-                    .elements
-                    .iter()
-                    .find(|e| e.id == eid)
-                    .map(|e| (e.id, e.section))
-            });
+            focus_id.and_then(|eid| self.core.model.element(eid).map(|e| (e.id, e.section)));
 
         let mut pending_assign: Option<Option<SectionId>> = None;
 

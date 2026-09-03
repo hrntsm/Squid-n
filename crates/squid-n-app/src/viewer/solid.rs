@@ -409,10 +409,7 @@ pub(super) fn draw_section_solids(
         if n0 >= coords.len() || n1 >= coords.len() {
             continue;
         }
-        let Some(sec) = elem
-            .section
-            .and_then(|sid| model.sections.iter().find(|s| s.id == sid))
-        else {
+        let Some(sec) = model.element_section(elem) else {
             skipped += 1;
             continue;
         };
@@ -440,10 +437,7 @@ pub(super) fn draw_section_solids(
             if n0 >= coords.len() || n1 >= coords.len() {
                 continue;
             }
-            let Some(sec) = sm
-                .section
-                .and_then(|sid| model.sections.iter().find(|s| s.id == sid))
-            else {
+            let Some(sec) = sm.section.and_then(|sid| model.section(sid)) else {
                 skipped += 1;
                 continue;
             };

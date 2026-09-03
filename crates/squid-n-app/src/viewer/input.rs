@@ -25,11 +25,11 @@ pub(super) struct ViewCubeState {
     pub clicked: bool,
 }
 
-/// ドラッグ・スクロール・構面正対を反映したカメラを返す。
+/// ポインタ入力（[`CameraState::apply_pointer_input`]）と構面正対を反映した
+/// カメラを返す。
 ///
-/// 左ドラッグ＝回転／スクロール＝ズーム（UI設計 §3-2）。パンは規約外の補助操作
-/// として右ドラッグに割り当てる。構面表示中は回転させると正対が崩れ、構面内に描く
-/// 基準線も傾くため回転を禁じ、左ドラッグもパンに割り当てる（2D CAD の操作に揃える）。
+/// 構面表示中は回転を禁じたうえで、その構面の法線方向へ毎フレーム正対させる。
+/// 正対はこのビュー固有の扱いのため、操作の共通部分とは分けてここに置く。
 pub(super) fn interact_camera(
     ui: &egui::Ui,
     response: &egui::Response,
@@ -37,36 +37,8 @@ pub(super) fn interact_camera(
     base: &CameraState,
 ) -> CameraState {
     let mut cam = base.clone();
-    if response.dragged_by(egui::PointerButton::Primary) {
-        let d = response.drag_delta();
-        if frame.is_some() {
-            cam.pan[0] += d.x;
-            cam.pan[1] += d.y;
-        } else {
-            // ターンテーブル回転（鉛直軸を画面上で縦に保つ。CameraState のドキュメント参照）。
-            cam.turntable_drag(d.x, d.y);
-        }
-    }
-    if response.dragged_by(egui::PointerButton::Secondary) {
-        let d = response.drag_delta();
-        cam.pan[0] += d.x;
-        cam.pan[1] += d.y;
-    }
-    // スクロールズーム（係数 0.01、0.5–10.0 にクランプ）。トラックパッドのピンチも反映。
-    // ポインタが描画領域上にあるときのみ反応させる。`hovered()` は手前のレイヤー
-    // （ヒンジ詳細などの egui::Window）による遮蔽も考慮するため、ポップアップが
-    // 重なっている間は手前のビューだけが反応する。
-    if response.hovered() {
-        let scroll_y = ui.input(|i| i.smooth_scroll_delta.y);
-        if scroll_y != 0.0 {
-            cam.zoom *= 1.0 + scroll_y * 0.01;
-        }
-        let pinch = ui.input(|i| i.zoom_delta());
-        if pinch != 1.0 {
-            cam.zoom *= pinch;
-        }
-    }
-    cam.zoom = cam.zoom.clamp(0.5, 10.0);
+    // 構面表示中は回転を禁じる（正対が崩れ、構面内に描く基準線も傾くため）。
+    cam.apply_pointer_input(ui, response, frame.is_none());
 
     // 構面表示中は、その構面の法線方向へ毎フレーム正対させる（回転操作は上で禁じて
     // いるが、全体表示から切り替えた直後の向きもここで確定する）。

@@ -91,6 +91,11 @@ impl Default for CameraState {
 impl CameraState {
     /// ドラッグ回転の感度 [rad/px]
     const ROT_SENS: f32 = 0.005;
+    /// スクロール 1 単位あたりのズーム変化率。
+    const ZOOM_SENS: f32 = 0.01;
+    /// ズーム倍率の下限・上限（UI設計 §3-2）。
+    const ZOOM_MIN: f32 = 0.5;
+    const ZOOM_MAX: f32 = 10.0;
 
     /// `yaw`/`pitch` からビュー回転を導出する（旋回→俯仰の順で合成）。
     fn rot_from(yaw: f32, pitch: f32) -> Quat {
@@ -106,6 +111,56 @@ impl CameraState {
         self.yaw += dx_px * Self::ROT_SENS;
         self.pitch = (self.pitch + dy_px * Self::ROT_SENS).clamp(-std::f32::consts::PI, 0.0);
         self.rot = Self::rot_from(self.yaw, self.pitch);
+    }
+
+    /// 描画領域のポインタ入力（ドラッグ・スクロール・ピンチ）をカメラへ反映する。
+    ///
+    /// 操作の割り当ては 3D を描く全てのビュー（ビューア・M-N 相関図・ヒンジ詳細）で
+    /// 共通とする。**同じ 3D をどのパネルで触っても同じ操作感になることが利用者から
+    /// 見た要件**であり、感度やクランプ範囲がパネルごとに割れてはならない。
+    ///
+    /// - 左ドラッグ＝ターンテーブル回転（UI設計 §3-2）
+    /// - 右ドラッグ＝パン（規約外の補助操作）
+    /// - スクロール／トラックパッドのピンチ＝ズーム
+    ///
+    /// `allow_rotate` が偽のときは左ドラッグもパンに割り当てる。構面表示中に回転を
+    /// 許すと正対が崩れ、構面内に描く基準線も傾くためで、2D CAD の操作に揃える。
+    ///
+    /// ズームは**ポインタが描画領域上にあるときだけ**反応させる。同一画面に複数の
+    /// ビューやプロットが並ぶため、スクロールが背後のビューまで届くと操作が混線する。
+    /// `hovered()` は手前のレイヤー（ヒンジ詳細などの `egui::Window`）による遮蔽も
+    /// 考慮するため、ポップアップが重なっている間は手前のビューだけが反応する。
+    pub(crate) fn apply_pointer_input(
+        &mut self,
+        ui: &egui::Ui,
+        response: &egui::Response,
+        allow_rotate: bool,
+    ) {
+        if response.dragged_by(egui::PointerButton::Primary) {
+            let d = response.drag_delta();
+            if allow_rotate {
+                self.turntable_drag(d.x, d.y);
+            } else {
+                self.pan[0] += d.x;
+                self.pan[1] += d.y;
+            }
+        }
+        if response.dragged_by(egui::PointerButton::Secondary) {
+            let d = response.drag_delta();
+            self.pan[0] += d.x;
+            self.pan[1] += d.y;
+        }
+        if response.hovered() {
+            let scroll_y = ui.input(|i| i.smooth_scroll_delta.y);
+            if scroll_y != 0.0 {
+                self.zoom *= 1.0 + scroll_y * Self::ZOOM_SENS;
+            }
+            let pinch = ui.input(|i| i.zoom_delta());
+            if pinch != 1.0 {
+                self.zoom *= pinch;
+            }
+        }
+        self.zoom = self.zoom.clamp(Self::ZOOM_MIN, Self::ZOOM_MAX);
     }
 
     /// 視点方向 `d`（ワールド座標、原点から視点位置へ向かうベクトル）へ即時スナップする。

@@ -154,9 +154,7 @@ pub fn collect_joint_checks_with_long(
         if elem.nodes.len() < 2 {
             continue;
         }
-        let sec = elem
-            .section
-            .and_then(|sid| model.sections.iter().find(|s| s.id == sid));
+        let sec = model.element_section(elem);
         let mat = model.element_material(elem);
         let rebar_mat = model.element_rebar_material(elem);
         let shear_mat = model.element_shear_rebar_material(elem);

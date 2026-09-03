@@ -196,9 +196,11 @@ impl App {
                     if radius <= 0.0 {
                         continue;
                     }
+                    // F 値の板厚区分に用いる板厚は、断面検定と同じ情報源
+                    // （`material_strength::plate_thickness`）から引く。
                     let f_value = steel_f_value_prefix(
                         &mat.name,
-                        sec.shape.as_ref().map(steel_max_thickness).unwrap_or(0.0),
+                        squid_n_design_jp::material_strength::plate_thickness(sec),
                     )
                     .unwrap_or(235.0);
                     steel_brace_type(len / radius, f_value)

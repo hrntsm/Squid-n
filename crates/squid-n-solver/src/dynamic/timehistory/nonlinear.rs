@@ -4,8 +4,9 @@
 //! - [`nonlinear_time_history_analysis`] — 非線形時刻歴応答解析
 
 use super::common::{
-    empty_response, mass_accel_free_into, reduced_vec_from, resolve_dt, solve_initial_accel,
-    sparse_matvec_into, GroundInfluence, NewmarkCoeffs,
+    accel_dir_at, accel_xy_at, empty_response, expand_peak_disp, mass_accel_free_into,
+    reduced_vec_from, resolve_dt, solve_initial_accel, sparse_matvec_into, GroundInfluence,
+    NewmarkCoeffs,
 };
 use super::config::{GroundMotion, NewmarkCfg};
 use super::history::{
@@ -23,7 +24,7 @@ use crate::common::tangent::{
 };
 use crate::common::transaction::{revert_all, StateSnapshot};
 use crate::dynamic::damping::{Damping, DampingAccumulation};
-use squid_n_core::dof::{DofMap, DOF_PER_NODE};
+use squid_n_core::dof::DofMap;
 use squid_n_core::model::Model;
 use squid_n_element::behavior::{ElementBehavior, MassOption};
 use squid_n_element::factory::{build_nonlinear_behavior, StrengthBasis};
@@ -613,14 +614,7 @@ pub fn nonlinear_time_history_analysis(
             // 節点慣性力ベクトル算定用の M·a_free（自由 DOF 空間）。ベースシア・
             // 層せん断力の双方で共有する（1 ステップに 1 回だけ算定）。
             mass_accel_free_into(&m_free, &a_free, &mut ma_free);
-            let xg_next = if record_dir_y {
-                wave.accel_y
-                    .as_ref()
-                    .and_then(|a| a.get(n + 1).copied())
-                    .unwrap_or(0.0)
-            } else {
-                wave.accel_x.get(n + 1).copied().unwrap_or(0.0)
-            };
+            let xg_next = accel_dir_at(wave, n + 1, record_dir_y);
             record_history_step(
                 &mut history,
                 model,
@@ -632,12 +626,7 @@ pub fn nonlinear_time_history_analysis(
                 xg_next,
             );
 
-            let xg_x_next = wave.accel_x.get(n + 1).copied().unwrap_or(0.0);
-            let xg_y_next = wave
-                .accel_y
-                .as_ref()
-                .and_then(|acc| acc.get(n + 1).copied())
-                .unwrap_or(0.0);
+            let (xg_x_next, xg_y_next) = accel_xy_at(wave, n + 1);
             let mf_now = member_forces_nonlinear(model, &behaviors);
             recorder.record_step(
                 (n + 1) as u64,
@@ -657,15 +646,7 @@ pub fn nonlinear_time_history_analysis(
         }
     }
 
-    let mut peak_disp = vec![[0.0f64; 6]; model.nodes.len()];
-    for ni in 0..model.nodes.len() {
-        for d in 0..DOF_PER_NODE {
-            let g = ni * DOF_PER_NODE + d;
-            if let Some(a) = dofmap.active(g) {
-                peak_disp[ni][d] = peak_disp_free[a as usize];
-            }
-        }
-    }
+    let peak_disp = expand_peak_disp(model, dofmap, &peak_disp_free);
 
     // 各要素の μ 時刻歴からレインフロー法で累積損傷度 D を算定する
     // （レインフロー法（ASTM E1049-85）・Miner 則。鉄骨梁端部の累積損傷度計算）。μ 時刻歴が空（塑性率プローブ

@@ -165,6 +165,58 @@ pub(crate) fn resolve_steel_fiber_fy(
     }
 }
 
+/// 同じ諸元のファイバー断面をガウス点 2 点分つくる。
+///
+/// [`build_gauss_fibers`] は呼ぶたびに独立した断面と材料インスタンスを返す。
+/// 各ガウス点は自分の履歴状態（塑性ひずみ・除荷点）を持つため、1 組を複製したり
+/// 共有したりはできず、**必ず同じ引数で 2 回呼ぶ**必要がある。この定型と、
+/// その前段にある材料文脈（形状・fc・降伏諸元・材料強度割増・除荷則）の解決が
+/// マルチファイバー梁の構築 2 か所に複製されていたため、ここへ集約する。
+///
+/// 断面・材料が未割当のときの既定はゼロ剛性（[`FiberBeamElement::new`] と同じ方針。
+/// 解析前チェックで捕捉される前提で、架空の断面を作らない）。
+#[allow(clippy::too_many_arguments)]
+fn build_gauss_fiber_pair(
+    data: &squid_n_core::model::ElementData,
+    model: &squid_n_core::model::Model,
+    basis: crate::factory::StrengthBasis,
+    kind: AnalysisKind,
+    width: f64,
+    depth: f64,
+    nw: usize,
+    nd: usize,
+) -> [(FiberSection, Vec<Box<dyn UniaxialMaterial>>); 2] {
+    let sec = model.element_section(data);
+    let mat_ref = model.element_material(data);
+    let e = mat_ref.map(|m| m.young).unwrap_or(0.0);
+    let shape = sec.and_then(|s| s.shape.as_ref());
+    let fc = mat_ref.and_then(|m| m.fc);
+    let yield_ = resolve_fiber_yield(model, data);
+    // 保有水平耐力計算（basis==MaterialStrength）時のみ材料強度割増を適用する
+    // （鋼材文脈・RC 主筋文脈で係数が異なる。せん断補強筋は割増対象外）。
+    let steel_factor = basis.steel_factor(mat_ref);
+    let rebar_factor = basis.rebar_factor(mat_ref);
+    // RC 断面はコンクリート格子＋主筋分離（構造力学のファイバーモデル）。
+    // コンクリート除荷則は解析種別と部材個別指定から解決する。
+    let concrete_rule = crate::factory::resolve_fiber_concrete_hysteresis(data, model, kind);
+    let build = || {
+        build_gauss_fibers(
+            width,
+            depth,
+            nw,
+            nd,
+            shape,
+            fc,
+            e,
+            yield_,
+            steel_factor,
+            rebar_factor,
+            concrete_rule,
+        )
+    };
+    [build(), build()]
+}
+
 /// ガウス点のファイバー断面と材料を構築する（構造力学のファイバーモデル）。
 ///
 /// 断面形状（[`SectionShape`]）がある場合は、MN 相関曲面と同じ配置規則
@@ -675,42 +727,8 @@ impl FiberBeam {
 
         let nw = 12;
         let nd = 20;
-        let shape = sec.and_then(|s| s.shape.as_ref());
-        let fc = mat_ref.and_then(|m| m.fc);
-        let yield_ = resolve_fiber_yield(model, data);
-        // 保有水平耐力計算（basis==MaterialStrength）時のみ材料強度割増を適用する
-        // （鋼材文脈・RC 主筋文脈で係数が異なる。せん断補強筋は割増対象外）。
-        let steel_factor = basis.steel_factor(mat_ref);
-        let rebar_factor = basis.rebar_factor(mat_ref);
-        // RC 断面はコンクリート格子＋主筋分離（構造力学のファイバーモデル）。
-        // コンクリート除荷則は解析種別と部材個別指定から解決する。
-        let concrete_rule = crate::factory::resolve_fiber_concrete_hysteresis(data, model, kind);
-        let (sec_a, mats_a) = build_gauss_fibers(
-            width,
-            depth,
-            nw,
-            nd,
-            shape,
-            fc,
-            e,
-            yield_,
-            steel_factor,
-            rebar_factor,
-            concrete_rule,
-        );
-        let (sec_b, mats_b) = build_gauss_fibers(
-            width,
-            depth,
-            nw,
-            nd,
-            shape,
-            fc,
-            e,
-            yield_,
-            steel_factor,
-            rebar_factor,
-            concrete_rule,
-        );
+        let [(sec_a, mats_a), (sec_b, mats_b)] =
+            build_gauss_fiber_pair(data, model, basis, kind, width, depth, nw, nd);
         let gauss_points = vec![
             GaussPoint::new(
                 -0.5773502691896257,
@@ -993,40 +1011,8 @@ impl FiberBeam {
 
         // 端部積分点: ξ=∓1、重み w·(L/2) = Lp → w = 2Lp/L
         let w_end = 2.0 * lp / l;
-        let shape = sec.and_then(|s| s.shape.as_ref());
-        let fc = mat_ref.and_then(|m| m.fc);
-        let yield_ = resolve_fiber_yield(model, data);
-        // 保有水平耐力計算（basis==MaterialStrength）時のみ材料強度割増を適用する。
-        let steel_factor = basis.steel_factor(mat_ref);
-        let rebar_factor = basis.rebar_factor(mat_ref);
-        // RC 断面はコンクリート格子＋主筋分離（構造力学のファイバーモデル）。
-        let concrete_rule = crate::factory::resolve_fiber_concrete_hysteresis(data, model, kind);
-        let (sec_a, mats_a) = build_gauss_fibers(
-            width,
-            depth,
-            nw,
-            nd,
-            shape,
-            fc,
-            e,
-            yield_,
-            steel_factor,
-            rebar_factor,
-            concrete_rule,
-        );
-        let (sec_b, mats_b) = build_gauss_fibers(
-            width,
-            depth,
-            nw,
-            nd,
-            shape,
-            fc,
-            e,
-            yield_,
-            steel_factor,
-            rebar_factor,
-            concrete_rule,
-        );
+        let [(sec_a, mats_a), (sec_b, mats_b)] =
+            build_gauss_fiber_pair(data, model, basis, kind, width, depth, nw, nd);
         fb.gauss_points = vec![
             GaussPoint::new(-1.0, w_end, sec_a, mats_a, l, fb.phi_y, fb.phi_z),
             GaussPoint::new(1.0, w_end, sec_b, mats_b, l, fb.phi_y, fb.phi_z),

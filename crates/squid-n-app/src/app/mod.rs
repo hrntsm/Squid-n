@@ -1830,53 +1830,6 @@ fn rc_sigma_0_from_gravity_or_last_static(
         .unwrap_or(0.0)
 }
 
-/// 鋼断面形状の最大板厚 [mm]（F 値の板厚区分判定用）。
-/// 形状情報のない断面・RC 断面は 0（板厚 40mm 以下の区分扱い）。
-fn steel_max_thickness(shape: &squid_n_core::section_shape::SectionShape) -> f64 {
-    use squid_n_core::section_shape::SectionShape;
-    match *shape {
-        SectionShape::SteelH {
-            web_thick,
-            flange_thick,
-            ..
-        }
-        | SectionShape::SteelChannel {
-            web_thick,
-            flange_thick,
-            ..
-        }
-        | SectionShape::SteelTee {
-            web_thick,
-            flange_thick,
-            ..
-        } => web_thick.max(flange_thick),
-        SectionShape::SteelBox { thick, .. }
-        | SectionShape::SteelAngle { thick, .. }
-        | SectionShape::SteelPipe { thick, .. }
-        | SectionShape::SteelFlatBar { thick, .. }
-        | SectionShape::SteelLipChannel { thick, .. }
-        | SectionShape::CftBox { thick, .. }
-        | SectionShape::CftPipe { thick, .. } => thick,
-        // 中実丸鋼は板要素でないため径を板厚区分に用いる。
-        SectionShape::SteelRoundBar { dia } => dia,
-        SectionShape::SteelBuiltH {
-            web_thick,
-            upper_thick,
-            lower_thick,
-            ..
-        } => web_thick.max(upper_thick).max(lower_thick),
-        SectionShape::SrcRect {
-            steel_web_thick,
-            steel_flange_thick,
-            ..
-        } => steel_web_thick.max(steel_flange_thick),
-        SectionShape::RcRect { .. }
-        | SectionShape::RcCircle { .. }
-        | SectionShape::RcWall { .. }
-        | SectionShape::RcSlab { .. } => 0.0,
-    }
-}
-
 /// 幅厚比ランク表の行（柱／梁）を部材から選ぶ。柱以外（梁・ブレース）は梁の行を用いる。
 pub(crate) fn steel_member_use_of(
     elem: &squid_n_core::model::ElementData,

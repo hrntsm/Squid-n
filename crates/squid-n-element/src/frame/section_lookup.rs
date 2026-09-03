@@ -23,26 +23,7 @@ pub(crate) fn get_section(model: &Model, sid: Option<SectionId>) -> Section {
             None
         }
     })
-    .unwrap_or_else(|| Section {
-        id: SectionId(0),
-        name: String::new(),
-        area: 0.0,
-        iy: 0.0,
-        iz: 0.0,
-        j: 0.0,
-        depth: 0.0,
-        width: 0.0,
-        as_y: 0.0,
-        as_z: 0.0,
-        floor: None,
-        panel_thickness: None,
-        thickness: None,
-        shape: None,
-        material: None,
-        rebar_material: None,
-        shear_rebar_material: None,
-        steel_material: None,
-    })
+    .unwrap_or_else(|| Section::zero(SectionId(0), String::new()))
 }
 
 /// 材料 ID から材料を引く。未割当・範囲外・世代違いは物性ゼロの材料へ落とす。

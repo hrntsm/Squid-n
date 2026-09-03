@@ -358,9 +358,7 @@ pub fn boundary_condition_panel(ui: &mut egui::Ui, app: &mut App) {
         let has_spring = app
             .core
             .model
-            .nodes
-            .iter()
-            .find(|n| n.id == id)
+            .node(id)
             .is_some_and(|n| n.support_spring.is_some());
         if has_spring {
             format!("N{} 🌀ばね", id.0)

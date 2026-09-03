@@ -176,9 +176,7 @@ impl LoadEditor {
             MemberLoadKind::Distributed { a, b, w1, w2 } => {
                 // 全長かつ強度一定なら等分布、それ以外は台形として開く。
                 let full = model
-                    .elements
-                    .iter()
-                    .find(|e| e.id == load.elem)
+                    .element(load.elem)
                     .map(|e| elem_length(model, e))
                     .unwrap_or(0.0);
                 let uniform = (w1 - w2).abs() < 1e-9 && a.abs() < 1e-6 && (b - full).abs() < 1e-6;

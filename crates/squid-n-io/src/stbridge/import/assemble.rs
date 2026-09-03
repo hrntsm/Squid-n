@@ -794,24 +794,8 @@ fn build_walls(
                 }
                 let sid = SectionId(model.sections.len() as u32);
                 model.sections.push(Section {
-                    id: sid,
-                    name: name.clone(),
-                    area: 0.0,
-                    iy: 0.0,
-                    iz: 0.0,
-                    j: 0.0,
-                    depth: 0.0,
-                    width: 0.0,
-                    as_y: 0.0,
-                    as_z: 0.0,
-                    floor: None,
-                    panel_thickness: None,
                     thickness: Some(t),
-                    shape: None,
-                    material: None,
-                    rebar_material: None,
-                    shear_rebar_material: None,
-                    steel_material: None,
+                    ..Section::zero(sid, name.clone())
                 });
                 wall_sections.insert(base, sid);
                 sid
@@ -1137,7 +1121,7 @@ fn build_sections(
                             "鋼断面 (name=\"{}\") の形鋼参照を解決できず物性ゼロで取り込みました",
                             ps.name
                         ));
-                        zero_section(new_id, ps.name)
+                        Section::zero(new_id, ps.name)
                     }
                 }
             }
@@ -1168,7 +1152,7 @@ fn build_sections(
                             "CFT 断面 (name=\"{}\") の充填鋼管参照を解決できず物性ゼロで取り込みました",
                             ps.name
                         ));
-                        zero_section(new_id, ps.name)
+                        Section::zero(new_id, ps.name)
                     }
                 }
             }
@@ -1291,30 +1275,6 @@ fn push_section(
     by_key.insert((section.name.clone(), section.floor.clone()), idx);
     model.sections.push(section);
     idx
-}
-
-/// 物性ゼロ・形状なしの断面（形鋼名未解決などのフォールバック。解析前に要確認）。
-fn zero_section(id: SectionId, name: String) -> Section {
-    Section {
-        id,
-        name,
-        area: 0.0,
-        iy: 0.0,
-        iz: 0.0,
-        j: 0.0,
-        depth: 0.0,
-        width: 0.0,
-        as_y: 0.0,
-        as_z: 0.0,
-        floor: None,
-        panel_thickness: None,
-        thickness: None,
-        shape: None,
-        material: None,
-        rebar_material: None,
-        shear_rebar_material: None,
-        steel_material: None,
-    }
 }
 
 /// 部材軸（`p_i`→`p_j`）まわりに断面回転角 `rotate` [deg] を適用した ref_vector を返す。

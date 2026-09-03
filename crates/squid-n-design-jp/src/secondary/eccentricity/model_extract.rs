@@ -60,7 +60,7 @@ pub fn column_stiffnesses(model: &Model, story: StoryId) -> Vec<ColumnStiffness>
     let mut result = Vec::new();
 
     for col in crate::secondary::story_columns::story_columns(model, story) {
-        let Some(elem) = model.elements.iter().find(|e| e.id == col.top_elem) else {
+        let Some(elem) = model.element(col.top_elem) else {
             continue;
         };
         if elem.kind != ElementKind::Beam || elem.nodes.len() != 2 {

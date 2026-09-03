@@ -17,11 +17,11 @@
 
 use std::time::Instant;
 
-use squid_n_core::dof::{Dof6Mask, DofMap};
-use squid_n_core::ids::{ElemId, LoadCaseId, MaterialId, NodeId, SectionId, StoryId};
+use squid_n_core::dof::DofMap;
+use squid_n_core::ids::{LoadCaseId, MaterialId, NodeId, SectionId, StoryId};
 use squid_n_core::model::{
-    Constraint, ElementData, ElementKind, EndCondition, ForceRegime, LoadCase, LoadCaseKind,
-    LocalAxis, Material, MaterialCategory, MemberLoad, MemberLoadKind, Model, Node, Section, Story,
+    Constraint, LoadCase, LoadCaseKind, Material, MaterialCategory, MemberLoad, MemberLoadKind,
+    Model, Section, Story,
 };
 use squid_n_solver::common::constraint::Reducer;
 use squid_n_solver::nonlinear::pushover::{
@@ -29,100 +29,28 @@ use squid_n_solver::nonlinear::pushover::{
 };
 use squid_n_solver::statics::analysis::SeismicDir;
 
+#[path = "common/mod.rs"]
+mod common;
+
 /// nx×ny スパン・nz 層の S造立体ラーメン（柱・X/Y 大梁）を生成する。
 /// 各階に剛床（隅節点をマスターとする）と地震用重量を与え、大梁に長期荷重
 /// ケース（固定荷重、等分布荷重）を載荷する。
 fn make_frame(nx: usize, ny: usize, nz: usize) -> Model {
-    let span = 6000.0; // [mm]
-    let height = 3500.0; // [mm]
-
-    let node_id = |ix: usize, iy: usize, iz: usize| -> NodeId {
-        NodeId((iz * (nx + 1) * (ny + 1) + iy * (nx + 1) + ix) as u32)
-    };
-
-    let mut nodes = Vec::new();
-    for iz in 0..=nz {
-        for iy in 0..=ny {
-            for ix in 0..=nx {
-                let is_base = iz == 0;
-                nodes.push(Node {
-                    id: node_id(ix, iy, iz),
-                    coord: [ix as f64 * span, iy as f64 * span, iz as f64 * height],
-                    restraint: if is_base {
-                        Dof6Mask::FIXED
-                    } else {
-                        Dof6Mask::FREE
-                    },
-                    mass: None,
-                    story: if is_base {
-                        None
-                    } else {
-                        Some(StoryId((iz - 1) as u32))
-                    },
-                    support_spring: None,
-                });
-            }
+    let grid = common::FrameGrid::new(nx, ny, nz);
+    let (span, height) = (grid.span, grid.height);
+    // 基部以外の節点は階へ帰属させる（剛床・地震用重量の集計対象）。
+    let nodes = grid.build_nodes(|node, iz| {
+        if iz > 0 {
+            node.story = Some(StoryId((iz - 1) as u32));
         }
-    }
+    });
 
+    // 大梁は長期荷重を載荷する対象として ID を控える。
     let mut elements = Vec::new();
     let mut beam_ids_for_load = Vec::new();
-    let mut push_beam =
-        |n0: NodeId, n1: NodeId, ref_vector: [f64; 3], section: SectionId| -> ElemId {
-            let id = ElemId(elements.len() as u32);
-            elements.push(ElementData {
-                id,
-                kind: ElementKind::Beam,
-                nodes: smallvec::smallvec![n0, n1],
-                section: Some(section),
-                local_axis: LocalAxis { ref_vector },
-                end_cond: [EndCondition::Fixed, EndCondition::Fixed],
-                force_regime: ForceRegime::Auto,
-                rigid_zone: Default::default(),
-                plastic_zone: None,
-                spring: None,
-            });
-            id
-        };
-
-    // 柱（全層・全通り、断面 SectionId(0)）
-    for iz in 0..nz {
-        for iy in 0..=ny {
-            for ix in 0..=nx {
-                push_beam(
-                    node_id(ix, iy, iz),
-                    node_id(ix, iy, iz + 1),
-                    [1.0, 0.0, 0.0],
-                    SectionId(0),
-                );
-            }
-        }
-    }
-    // 大梁（各階、X/Y 両方向、断面 SectionId(1)）。長期荷重を載荷する対象として ID を控える。
-    for iz in 1..=nz {
-        for iy in 0..=ny {
-            for ix in 0..nx {
-                let id = push_beam(
-                    node_id(ix, iy, iz),
-                    node_id(ix + 1, iy, iz),
-                    [0.0, 0.0, 1.0],
-                    SectionId(1),
-                );
-                beam_ids_for_load.push(id);
-            }
-        }
-        for iy in 0..ny {
-            for ix in 0..=nx {
-                let id = push_beam(
-                    node_id(ix, iy, iz),
-                    node_id(ix, iy + 1, iz),
-                    [0.0, 0.0, 1.0],
-                    SectionId(1),
-                );
-                beam_ids_for_load.push(id);
-            }
-        }
-    }
+    grid.push_frame_members(&mut elements, SectionId(0), SectionId(1), |id| {
+        beam_ids_for_load.push(id)
+    });
 
     // 長期荷重ケース（固定荷重）: 全大梁に等分布荷重 w=10 N/mm（鉛直下向き）。
     // プッシュオーバーの長期荷重初期載荷（apply_long_term）に使う。
@@ -157,7 +85,7 @@ fn make_frame(nx: usize, ny: usize, nz: usize) -> Model {
     let mut constraints = Vec::new();
     for iz in 1..=nz {
         let node_ids: Vec<NodeId> = (0..=ny)
-            .flat_map(|iy| (0..=nx).map(move |ix| node_id(ix, iy, iz)))
+            .flat_map(|iy| (0..=nx).map(move |ix| grid.node_id(ix, iy, iz)))
             .collect();
         let master = node_ids[0];
         let slaves: Vec<NodeId> = node_ids[1..].to_vec();
@@ -183,8 +111,6 @@ fn make_frame(nx: usize, ny: usize, nz: usize) -> Model {
         elements,
         sections: vec![
             Section {
-                id: SectionId(0),
-                name: "柱 H-400x400x13x21".into(),
                 area: 21_870.0,
                 iy: 6.6e8,
                 iz: 6.6e8,
@@ -193,18 +119,10 @@ fn make_frame(nx: usize, ny: usize, nz: usize) -> Model {
                 width: 400.0,
                 as_y: 12_000.0,
                 as_z: 12_000.0,
-                floor: None,
-                panel_thickness: None,
-                thickness: None,
-                shape: None,
                 material: Some(MaterialId(0)),
-                rebar_material: None,
-                shear_rebar_material: None,
-                steel_material: None,
+                ..Section::zero(SectionId(0), "柱 H-400x400x13x21".into())
             },
             Section {
-                id: SectionId(1),
-                name: "梁 H-400x200x8x13".into(),
                 area: 8_412.0,
                 iy: 2.34e8,
                 iz: 2.34e8,
@@ -213,14 +131,8 @@ fn make_frame(nx: usize, ny: usize, nz: usize) -> Model {
                 width: 200.0,
                 as_y: 4_000.0,
                 as_z: 4_000.0,
-                floor: None,
-                panel_thickness: None,
-                thickness: None,
-                shape: None,
                 material: Some(MaterialId(0)),
-                rebar_material: None,
-                shear_rebar_material: None,
-                steel_material: None,
+                ..Section::zero(SectionId(1), "梁 H-400x200x8x13".into())
             },
         ],
         materials: vec![Material {

@@ -730,6 +730,20 @@ impl Model {
         }
     }
 
+    /// 断面 ID から断面を引く。存在しなければ `None`。
+    /// 引き方は [`Model::node`] と同じ（`sections[i].id == SectionId(i)`）。
+    ///
+    /// この不変条件は [`Model::validate`] が要素・二次部材からの参照ごとに
+    /// 検証しており（`sections[sid.index()].id != sid` をダングリング参照として弾く）、
+    /// [`Model::element_section`] も添字で引いている。ID から断面を引くところは
+    /// 常にこのメソッドを使う。
+    pub fn section(&self, id: SectionId) -> Option<&Section> {
+        match self.sections.get(id.index()) {
+            Some(s) if s.id == id => Some(s),
+            _ => self.sections.iter().find(|s| s.id == id),
+        }
+    }
+
     /// 指定した節点が部材・節点荷重・階・床・拘束のいずれかから参照されているかを判定する。
     /// 参照中の節点を削除すると参照が壊れる（ダングリング）ため、削除前にこれで確認する。
     pub fn node_in_use(&self, id: NodeId) -> bool {

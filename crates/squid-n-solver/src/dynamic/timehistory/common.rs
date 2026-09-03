@@ -9,6 +9,9 @@
 //! - [`sparse_matvec_into`] — `squid_n_math::sparse::sparse_matvec_into` の再エクスポート
 //!   （時刻歴応答解析高速化・第1波で暫定実装したローカル版を、squid-n-math に同等
 //!   API が追加された第2波で置き換えた）
+//! - [`accel_xy_at`] — 水平 2 方向の地動加速度 `(ẍg_x, ẍg_y)` の取得
+//! - [`accel_dir_at`] — 記録対象 1 方向の地動加速度の取得
+//! - [`expand_peak_disp`] — 最大応答変位の全節点 × 6 自由度への展開
 //! - [`resolve_dt`] — 時間刻みの解決（設定値と波形の刻みの優先順）
 //! - [`NewmarkCoeffs`] — Newmark-β の積分係数 c1〜c6
 //! - [`GroundInfluence`] — 影響ベクトル束 `M·r` と等価地震力 `p = −M·r·ẍg`
@@ -102,6 +105,51 @@ fn theta_accel_at(wave: &GroundMotion, n: usize) -> f64 {
         .as_ref()
         .and_then(|a| a.get(n).copied())
         .unwrap_or(0.0)
+}
+
+/// 水平 2 方向の地動加速度 `(ẍg_x, ẍg_y)` をステップ `n` で取得する。
+///
+/// 波形の長さを超えるステップと、Y 波を持たない入力は 0 とする。前者は最終ステップの
+/// 記録（`n + 1` が波形長に達する）で必ず起きるため、範囲外を欠測ではなく 0 として扱う。
+pub(crate) fn accel_xy_at(wave: &GroundMotion, n: usize) -> (f64, f64) {
+    let x = wave.accel_x.get(n).copied().unwrap_or(0.0);
+    let y = wave
+        .accel_y
+        .as_ref()
+        .and_then(|a| a.get(n).copied())
+        .unwrap_or(0.0);
+    (x, y)
+}
+
+/// 記録対象の 1 方向（`dir_y` が真なら Y、偽なら X）の地動加速度。
+/// 応答履歴（[`ResponseHistory`]）は 1 方向ぶんだけを保持するため、
+/// [`accel_xy_at`] の該当成分を選ぶ。
+pub(crate) fn accel_dir_at(wave: &GroundMotion, n: usize, dir_y: bool) -> f64 {
+    let (x, y) = accel_xy_at(wave, n);
+    if dir_y {
+        y
+    } else {
+        x
+    }
+}
+
+/// 自由 DOF 空間の最大応答変位を、全節点 × 6 自由度の配列へ展開する。
+/// 拘束された自由度は 0 のまま残る。
+pub(crate) fn expand_peak_disp(
+    model: &Model,
+    dofmap: &DofMap,
+    peak_disp_free: &[f64],
+) -> Vec<[f64; 6]> {
+    let mut peak_disp = vec![[0.0f64; 6]; model.nodes.len()];
+    for (ni, row) in peak_disp.iter_mut().enumerate() {
+        for (d, cell) in row.iter_mut().enumerate() {
+            let g = ni * DOF_PER_NODE + d;
+            if let Some(a) = dofmap.active(g) {
+                *cell = peak_disp_free[a as usize];
+            }
+        }
+    }
+    peak_disp
 }
 
 /// 初期加速度 M·a₀ = rhs を解く。

@@ -132,21 +132,9 @@ impl ElementBehavior for NodalSpringElement {
     }
 
     fn recover_forces(&self, u_elem: &[f64]) -> Option<crate::frame::beam::MemberForces> {
-        if u_elem.len() < 12 {
-            return None;
-        }
-        let mut arr = [0.0; 12];
-        arr.copy_from_slice(&u_elem[..12]);
-        let u_local = self.axis.rotate_to_local(&arr);
-        let k_local = self.local_stiffness();
-        let mut f_local = [0.0; 12];
-        for (i, fi) in f_local.iter_mut().enumerate() {
-            let mut s = 0.0;
-            for (j, &uj) in u_local.iter().enumerate() {
-                s += k_local.get(i, j) * uj;
-            }
-            *fi = s;
-        }
+        let f_local = self
+            .axis
+            .local_end_forces(&self.local_stiffness(), u_elem)?;
         // 両端 2 評価点の [N, Qy, Qz, Mx, My, Mz]（バネ力。beam.rs と同じ断面力の
         // 符号規約: N は引張正・モーメントは i 端節点モーメントの符号反転、
         // せん断は i 端節点力そのまま）。バネの剛性形（f_local[d+6] = −f_local[d]）

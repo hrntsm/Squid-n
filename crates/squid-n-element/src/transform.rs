@@ -181,4 +181,30 @@ impl LocalFrame {
         }
         vl
     }
+
+    /// 全体座標系の要素変位から、局所座標系の材端力 `f_local = K_local·(R·u)` を返す。
+    ///
+    /// 弾性要素（[`crate::springs::spring`] の節点バネ・[`crate::frame::truss`] の
+    /// トラス）が `recover_forces` で断面力を組み立てる前半部分。要素が返す断面力の
+    /// 形（バネは 6 成分すべて・トラスは軸力のみ）は要素ごとに違うため、共有できるのは
+    /// ここまでで、符号規約の適用は各要素に残る。
+    ///
+    /// `u_elem` が 12 成分に満たない場合は `None`（要素の自由度が揃っていない）。
+    pub(crate) fn local_end_forces(&self, k_local: &LocalMat, u_elem: &[f64]) -> Option<[f64; 12]> {
+        if u_elem.len() < 12 {
+            return None;
+        }
+        let mut arr = [0.0; 12];
+        arr.copy_from_slice(&u_elem[..12]);
+        let u_local = self.rotate_to_local(&arr);
+        let mut f_local = [0.0; 12];
+        for (i, fi) in f_local.iter_mut().enumerate() {
+            let mut s = 0.0;
+            for (j, &uj) in u_local.iter().enumerate() {
+                s += k_local.get(i, j) * uj;
+            }
+            *fi = s;
+        }
+        Some(f_local)
+    }
 }

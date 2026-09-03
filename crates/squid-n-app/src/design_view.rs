@@ -155,18 +155,9 @@ pub fn design_table(ui: &mut egui::Ui, app: &mut App) {
         .map(|row| {
             app.core
                 .model
-                .elements
-                .iter()
-                .find(|e| e.id == row.elem)
+                .element(row.elem)
                 .and_then(|e| e.section)
-                .and_then(|sid| {
-                    app.core
-                        .model
-                        .sections
-                        .iter()
-                        .find(|s| s.id == sid)
-                        .map(|s| (sid, s.name.clone()))
-                })
+                .and_then(|sid| app.core.model.section(sid).map(|s| (sid, s.name.clone())))
         })
         .collect();
 
