@@ -385,13 +385,12 @@ mod tests {
         let sum: f64 = [0usize, 6].iter().map(|&d| lumped.get(d, d)).sum();
         assert!((sum - M).abs() < 1e-12, "集中質量の軸方向総和 {sum}");
 
+        // 曲げ面の並進自由度 Uy_i=1・Uy_j=7 の 4 成分（156+54+54+156 = 420）。
         let cm = consistent_mass(M, 3000.0, 0.0);
         let mut total = 0.0;
-        for i in [1usize, 5, 7, 11] {
-            for j in [1usize, 5, 7, 11] {
-                if i != 5 && i != 11 && j != 5 && j != 11 {
-                    total += cm.get(i, j);
-                }
+        for i in [1usize, 7] {
+            for j in [1usize, 7] {
+                total += cm.get(i, j);
             }
         }
         assert!((total - M).abs() < 1e-9, "整合質量の並進総和 {total}");

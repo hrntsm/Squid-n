@@ -16,9 +16,9 @@ use squid_n_core::model::{ElementData, Model};
 pub struct EndGeometry {
     /// 両端の節点 ID（i 端, j 端）。
     pub nodes: [NodeId; 2],
-    /// 両端の節点座標 [mm]（i 端, j 端）。
+    /// 両端の節点座標 \[mm\]（i 端, j 端）。
     pub coords: [[f64; 3]; 2],
-    /// 節点間距離（芯々長さ）[mm]。
+    /// 節点間距離（芯々長さ）\[mm\]。
     pub length: f64,
 }
 

@@ -5,6 +5,7 @@
 
 use super::element::BeamElement;
 use crate::behavior::LocalMat;
+use smallvec::SmallVec;
 use squid_n_core::model::EndCondition;
 
 impl BeamElement {
@@ -109,12 +110,12 @@ impl BeamElement {
 
         // ねじり剛性 GJ/L がない部材（J≤0・G≤0）の rx は解放しない。解放しても
         // 縮約行列 Kbb が特異化して縮約の意味がないため（ファイバー梁
-        // `fiber::resolve_end_releases` と同じ規則。特異な Kbb は `invert_small` が
-        // `None` を返し補正項が省略される）。
+        // `fiber::resolve_end_releases` と同じ規則。特異な Kbb を
+        // `prismatic::condense_end_releases` が補正項の省略として扱う）。
         let has_torsion = self.j > 0.0 && self.g > 0.0;
 
         // 解放（非剛接）する回転自由度: (要素回転 DOF, ばね剛性 k_s)
-        let mut released: Vec<(usize, f64)> = Vec::new();
+        let mut released: SmallVec<[(usize, f64); 6]> = SmallVec::new();
         for &(r, end) in ROT_DOFS.iter() {
             let is_torsion = r == 3 || r == 9;
             let spring = match released_spring(&self.end_cond[end]) {

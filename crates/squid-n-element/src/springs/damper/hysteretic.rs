@@ -29,8 +29,7 @@ impl HystereticDamperElement {
     pub fn new(data: &ElementData, model: &Model) -> Self {
         let geom = crate::transform::EndGeometry::of_element(data, model);
         let [n0, n1] = geom.nodes;
-        let [p0, p1] = geom.coords;
-        let axis = LocalFrame::from_nodes(p0, p1, data.local_axis.ref_vector);
+        let axis = geom.local_frame(data.local_axis.ref_vector);
         let props = model.damper_props(data.id).unwrap_or_default();
         let k1 = props.kd.max(1e-9);
         let qy = props.qy.max(1e-9);

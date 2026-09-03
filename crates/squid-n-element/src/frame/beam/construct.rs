@@ -7,7 +7,6 @@
 use super::element::BeamElement;
 use super::stiffness_factors::{breakdown_with, composite_props_with};
 use crate::frame::section_lookup::{get_material, get_section, sec_material};
-use crate::transform::LocalFrame;
 use squid_n_core::ids::NodeId;
 use squid_n_core::model::Model;
 
@@ -50,7 +49,7 @@ impl BeamElement {
         let [p0, p1] = geom.coords;
         let len = geom.length;
 
-        let axis = LocalFrame::from_nodes(p0, p1, data.local_axis.ref_vector);
+        let axis = geom.local_frame(data.local_axis.ref_vector);
         let sec = get_section(model, data.section);
         let mat = get_material(model, sec_material(model, data));
         let g = mat.shear_modulus();

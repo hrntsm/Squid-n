@@ -37,10 +37,9 @@ impl TrussElement {
     pub fn new(data: &ElementData, model: &Model) -> Self {
         let geom = crate::transform::EndGeometry::of_element(data, model);
         let [n0, n1] = geom.nodes;
-        let [p0, p1] = geom.coords;
         let len = geom.length;
 
-        let axis = LocalFrame::from_nodes(p0, p1, data.local_axis.ref_vector);
+        let axis = geom.local_frame(data.local_axis.ref_vector);
         let sec = get_section(model, data.section);
         let mat = get_material(model, sec_material(model, data));
 
