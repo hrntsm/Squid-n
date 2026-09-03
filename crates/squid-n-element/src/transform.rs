@@ -1,4 +1,51 @@
 use crate::behavior::LocalMat;
+use squid_n_core::ids::NodeId;
+use squid_n_core::model::{ElementData, Model};
+
+/// 2 節点線材の端部幾何（節点 ID・節点座標・節点間距離）。
+///
+/// 線材要素の構築は例外なく「2 節点を引く → 座標を得る → 節点間距離を測る →
+/// 局所座標系を組む」という順で始まる。前半 3 つは要素種別に依らないためここへ
+/// 集約する。局所座標系の組み方は零長要素の扱いが要素ごとに異なる（節点バネは
+/// 単位回転、免震支承は鉛直を既定とする）ため、[`Self::local_frame`] を使うか
+/// 各要素で `LocalFrame::from_nodes` を呼ぶかは呼び出し側が決める。
+///
+/// 節点 ID が範囲外のときは原点へ落とす。要素が壊れたモデルでも構築自体は通し、
+/// 検出は解析前チェックに委ねる（断面・材料の引き当てと同じ方針）。
+#[derive(Clone, Copy, Debug)]
+pub struct EndGeometry {
+    /// 両端の節点 ID（i 端, j 端）。
+    pub nodes: [NodeId; 2],
+    /// 両端の節点座標 [mm]（i 端, j 端）。
+    pub coords: [[f64; 3]; 2],
+    /// 節点間距離（芯々長さ）[mm]。
+    pub length: f64,
+}
+
+impl EndGeometry {
+    /// 要素データとモデルから端部幾何を求める。
+    pub fn of_element(data: &ElementData, model: &Model) -> Self {
+        let nodes = [data.nodes[0], data.nodes[1]];
+        let coords = nodes.map(|n| {
+            model
+                .nodes
+                .get(n.index())
+                .map(|node| node.coord)
+                .unwrap_or([0.0; 3])
+        });
+        Self {
+            nodes,
+            coords,
+            length: squid_n_core::geom::vec3::dist(coords[0], coords[1]),
+        }
+    }
+
+    /// i 端から j 端へ向かう局所座標系。零長要素を特別扱いしない要素向け
+    /// （`LocalFrame::from_nodes` が長さ 1 へ退避させる既定の扱いに従う）。
+    pub fn local_frame(&self, ref_vec: [f64; 3]) -> LocalFrame {
+        LocalFrame::from_nodes(self.coords[0], self.coords[1], ref_vec)
+    }
+}
 
 #[derive(Clone, Copy, Debug)]
 pub struct LocalFrame {

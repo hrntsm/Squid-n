@@ -35,19 +35,10 @@ pub struct TrussElement {
 
 impl TrussElement {
     pub fn new(data: &ElementData, model: &Model) -> Self {
-        let n0 = data.nodes[0];
-        let n1 = data.nodes[1];
-        let p0 = if n0.index() < model.nodes.len() {
-            model.nodes[n0.index()].coord
-        } else {
-            [0.0; 3]
-        };
-        let p1 = if n1.index() < model.nodes.len() {
-            model.nodes[n1.index()].coord
-        } else {
-            [0.0; 3]
-        };
-        let len = squid_n_core::geom::vec3::dist(p0, p1);
+        let geom = crate::transform::EndGeometry::of_element(data, model);
+        let [n0, n1] = geom.nodes;
+        let [p0, p1] = geom.coords;
+        let len = geom.length;
 
         let axis = LocalFrame::from_nodes(p0, p1, data.local_axis.ref_vector);
         let sec = get_section(model, data.section);
