@@ -414,7 +414,7 @@ fn flexible_span(elem: &ElementData, l: f64) -> (f32, f32, f64) {
 }
 
 /// モデル化図を描く。`pts` は節点スクリーン座標、`coords3` は節点 3D 座標
-/// （いずれも `app.model.nodes` と同じ順序）、`proj` は投影文脈。基本形状の上に、
+/// （いずれも `app.core.model.nodes` と同じ順序）、`proj` は投影文脈。基本形状の上に、
 /// 解析モデル分類ごとの色で部材を塗り、剛域・塑性ヒンジ・ファイバー域・端部接合条件
 /// などモデル化の要素を記号で重ねる。
 pub(super) fn draw_modeling(
@@ -426,7 +426,7 @@ pub(super) fn draw_modeling(
     proj: &Projector,
     frame_filter: super::FrameFilter,
 ) {
-    let analysis = app.modeling_analysis;
+    let analysis = app.ui.view.modeling_analysis;
 
     // 凡例に載せる情報を収集する。
     let mut present: Vec<ModelClass> = Vec::new();
@@ -519,7 +519,7 @@ fn draw_wall_plates_modeling(
     // 壁版の表示可否は「床壁・二次部材」トグルに従う（形状表示と同じ規則。
     // モデル化図では `lumped_only` が偽・モードが CMQ 以外に確定しているため、
     // トグルの値がそのまま表示可否になる）。
-    if !app.show_floor_secondary {
+    if !app.ui.view.show_floor_secondary {
         return;
     }
     // 描く対象を先に絞る。`misc_stiffness_wall_plates` は壁版ごとに要素を線形走査
@@ -1291,7 +1291,7 @@ pub(super) fn show_modeling_tooltip(
     let Some(elem) = model.element(elem_id) else {
         return;
     };
-    let class = classify(elem, model, app.modeling_analysis);
+    let class = classify(elem, model, app.ui.view.modeling_analysis);
     let end_label = |c: EndCondition| -> &'static str {
         match c {
             EndCondition::Fixed => "剛",
@@ -1309,7 +1309,7 @@ pub(super) fn show_modeling_tooltip(
             ui.label(format!("部材 #{}", elem_id.0));
             ui.colored_label(class.color(), class.label());
             if class == ModelClass::Wall {
-                show_wall_modeling_detail(ui, model, app.modeling_analysis, elem);
+                show_wall_modeling_detail(ui, model, app.ui.view.modeling_analysis, elem);
                 return;
             }
             // 耐震壁の付帯梁（上下大梁）。断面性能へ倍率が乗った剛性で解析へ入る。

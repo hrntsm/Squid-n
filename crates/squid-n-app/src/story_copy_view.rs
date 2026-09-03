@@ -82,25 +82,31 @@ impl StoryCopyState {
 /// 複製する対象は選び直させる。複製は削除・解除も行うため、開いてすぐ実行を押した
 /// だけで入力が消えることのないようにする。
 pub fn open(app: &mut App, from: StoryId) {
-    app.story_copy.open = true;
-    app.story_copy.from = Some(from);
-    app.story_copy.report = None;
-    app.story_copy.preview = None;
-    app.story_copy.to = vec![false; app.model.stories.len()];
-    app.story_copy.targets = CopyTargets::default();
-    app.story_copy.overwrite = true;
+    app.ui.scoped.story_copy.open = true;
+    app.ui.scoped.story_copy.from = Some(from);
+    app.ui.scoped.story_copy.report = None;
+    app.ui.scoped.story_copy.preview = None;
+    app.ui.scoped.story_copy.to = vec![false; app.core.model.stories.len()];
+    app.ui.scoped.story_copy.targets = CopyTargets::default();
+    app.ui.scoped.story_copy.overwrite = true;
 }
 
 /// ダイアログのウィンドウを描く。
 pub fn story_copy_window(ctx: &egui::Context, app: &mut App) {
-    if !app.story_copy.open {
+    if !app.ui.scoped.story_copy.open {
         return;
     }
     // 階の追加・削除で並びが変わるため、選択の長さを毎フレームそろえる。
-    let n = app.model.stories.len();
-    app.story_copy.to.resize(n, false);
-    if app.story_copy.from.is_some_and(|s| s.index() >= n) {
-        app.story_copy.from = None;
+    let n = app.core.model.stories.len();
+    app.ui.scoped.story_copy.to.resize(n, false);
+    if app
+        .ui
+        .scoped
+        .story_copy
+        .from
+        .is_some_and(|s| s.index() >= n)
+    {
+        app.ui.scoped.story_copy.from = None;
     }
 
     let mut open = true;
@@ -117,7 +123,7 @@ pub fn story_copy_window(ctx: &egui::Context, app: &mut App) {
                 return;
             }
             // 所属階は準備計算が付けるため、未実行だと配る相手を 1 つも見つけられない。
-            if !app.model.nodes.iter().any(|nd| nd.story.is_some()) {
+            if !app.core.model.nodes.iter().any(|nd| nd.story.is_some()) {
                 ui.colored_label(
                     crate::theme::WARN_TEXT,
                     "⚠ 節点の所属階が未設定です。先に準備計算を実行してください\
@@ -136,31 +142,34 @@ pub fn story_copy_window(ctx: &egui::Context, app: &mut App) {
         });
 
     // 実行ボタンは事前表示が埋まっているときだけ出るため、ここでは両方そろう。
-    if let (true, Some(from), Some(cache)) =
-        (run, app.story_copy.from, app.story_copy.preview.clone())
-    {
+    if let (true, Some(from), Some(cache)) = (
+        run,
+        app.ui.scoped.story_copy.from,
+        app.ui.scoped.story_copy.preview.clone(),
+    ) {
         let cmd = CopyStory {
             from,
-            to: app.story_copy.targets_to(),
-            targets: app.story_copy.targets,
-            overwrite: app.story_copy.overwrite,
+            to: app.ui.scoped.story_copy.targets_to(),
+            targets: app.ui.scoped.story_copy.targets,
+            overwrite: app.ui.scoped.story_copy.overwrite,
         };
-        if app.undo.run(&mut app.model, Box::new(cmd)) {
-            app.staleness.mark_edited();
+        if app.core.scoped.undo.run(&mut app.core.model, Box::new(cmd)) {
+            app.core.scoped.staleness.mark_edited();
             app.report_notice(format!("階へ複製しました: {}", cache.report.summary()));
-            app.story_copy.report = Some(cache.report);
+            app.ui.scoped.story_copy.report = Some(cache.report);
         } else {
             app.report_notice("複製するものがありませんでした");
         }
     }
     if !open {
-        app.story_copy.open = false;
+        app.ui.scoped.story_copy.open = false;
     }
 }
 
 /// 複製元の選択。
 fn from_section(ui: &mut egui::Ui, app: &mut App) {
     let names: Vec<(StoryId, String)> = app
+        .core
         .model
         .stories
         .iter()
@@ -169,6 +178,8 @@ fn from_section(ui: &mut egui::Ui, app: &mut App) {
     ui.horizontal(|ui| {
         ui.strong("複製元:");
         let current = app
+            .ui
+            .scoped
             .story_copy
             .from
             .and_then(|f| names.iter().find(|(id, _)| *id == f))
@@ -179,13 +190,13 @@ fn from_section(ui: &mut egui::Ui, app: &mut App) {
             .show_ui(ui, |ui| {
                 // 上階から順に並べる（階の一覧と同じ見え方にする）。
                 for (id, name) in names.iter().rev() {
-                    ui.selectable_value(&mut app.story_copy.from, Some(*id), name);
+                    ui.selectable_value(&mut app.ui.scoped.story_copy.from, Some(*id), name);
                 }
             });
     });
     // 複製元へ配る意味はないため、複製先の選択からは外す。
-    if let Some(f) = app.story_copy.from {
-        if let Some(on) = app.story_copy.to.get_mut(f.index()) {
+    if let Some(f) = app.ui.scoped.story_copy.from {
+        if let Some(on) = app.ui.scoped.story_copy.to.get_mut(f.index()) {
             *on = false;
         }
     }
@@ -193,25 +204,31 @@ fn from_section(ui: &mut egui::Ui, app: &mut App) {
 
 /// 複製先の選択（複数可）。
 fn to_section(ui: &mut egui::Ui, app: &mut App) {
-    let names: Vec<String> = app.model.stories.iter().map(|s| s.name.clone()).collect();
-    let from = app.story_copy.from;
+    let names: Vec<String> = app
+        .core
+        .model
+        .stories
+        .iter()
+        .map(|s| s.name.clone())
+        .collect();
+    let from = app.ui.scoped.story_copy.from;
     ui.group(|ui| {
         ui.horizontal(|ui| {
             ui.strong("複製先:");
             if ui.small_button("すべて選択").clicked() {
-                for (i, on) in app.story_copy.to.iter_mut().enumerate() {
+                for (i, on) in app.ui.scoped.story_copy.to.iter_mut().enumerate() {
                     *on = from != Some(StoryId(i as u32));
                 }
             }
             if ui.small_button("すべて解除").clicked() {
-                app.story_copy.to.fill(false);
+                app.ui.scoped.story_copy.to.fill(false);
             }
         });
         ui.horizontal_wrapped(|ui| {
             for (i, name) in names.iter().enumerate().rev() {
                 let id = StoryId(i as u32);
                 ui.add_enabled_ui(from != Some(id), |ui| {
-                    ui.checkbox(&mut app.story_copy.to[i], name);
+                    ui.checkbox(&mut app.ui.scoped.story_copy.to[i], name);
                 });
             }
         });
@@ -222,7 +239,7 @@ fn to_section(ui: &mut egui::Ui, app: &mut App) {
 fn targets_section(ui: &mut egui::Ui, app: &mut App) {
     ui.group(|ui| {
         ui.strong("複製する対象");
-        let t = &mut app.story_copy.targets;
+        let t = &mut app.ui.scoped.story_copy.targets;
         ui.checkbox(&mut t.sections, "断面の割当")
             .on_hover_text(
                 "部材・床・二次部材の断面を配ります。複製先の階名で断面を複製してから                 割り当てます（符号は変えません）",
@@ -234,7 +251,7 @@ fn targets_section(ui: &mut egui::Ui, app: &mut App) {
         ui.checkbox(&mut t.secondary, "二次部材")
             .on_hover_text("小梁・間柱を配ります");
         ui.separator();
-        ui.checkbox(&mut app.story_copy.overwrite, "既存を上書きする")
+        ui.checkbox(&mut app.ui.scoped.story_copy.overwrite, "既存を上書きする")
             .on_hover_text(
                 "ON: 複製元の状態をそのまま写します。複製元に無いもの（未割当の断面・\
                  床・荷重）は複製先からも取り除きます。\n\
@@ -248,23 +265,32 @@ fn refresh_preview(app: &mut App, from: StoryId, to: Vec<StoryId>) -> &PreviewCa
     let key: PreviewKey = (
         from,
         to.clone(),
-        app.story_copy.targets,
-        app.story_copy.overwrite,
-        app.undo.revision(),
+        app.ui.scoped.story_copy.targets,
+        app.ui.scoped.story_copy.overwrite,
+        app.core.scoped.undo.revision(),
     );
-    if app.story_copy.preview.as_ref().is_none_or(|c| c.key != key) {
+    if app
+        .ui
+        .scoped
+        .story_copy
+        .preview
+        .as_ref()
+        .is_none_or(|c| c.key != key)
+    {
         let cmd = CopyStory {
             from,
             to,
-            targets: app.story_copy.targets,
-            overwrite: app.story_copy.overwrite,
+            targets: app.ui.scoped.story_copy.targets,
+            overwrite: app.ui.scoped.story_copy.overwrite,
         };
-        app.story_copy.preview = Some(PreviewCache {
+        app.ui.scoped.story_copy.preview = Some(PreviewCache {
             key,
-            report: cmd.preview(&app.model),
+            report: cmd.preview(&app.core.model),
         });
     }
-    app.story_copy
+    app.ui
+        .scoped
+        .story_copy
         .preview
         .as_ref()
         .expect("直前に埋めているので必ずある")
@@ -273,16 +299,16 @@ fn refresh_preview(app: &mut App, from: StoryId, to: Vec<StoryId>) -> &PreviewCa
 /// 実行前の見込みと実行ボタン。押されたら真を返す。
 #[must_use]
 fn preview_section(ui: &mut egui::Ui, app: &mut App) -> bool {
-    let Some(from) = app.story_copy.from else {
+    let Some(from) = app.ui.scoped.story_copy.from else {
         ui.colored_label(crate::theme::GRAY_600, "複製元の階を選んでください。");
         return false;
     };
-    let to = app.story_copy.targets_to();
+    let to = app.ui.scoped.story_copy.targets_to();
     if to.is_empty() {
         ui.colored_label(crate::theme::GRAY_600, "複製先の階を選んでください。");
         return false;
     }
-    if !app.story_copy.targets.any() {
+    if !app.ui.scoped.story_copy.targets.any() {
         ui.colored_label(crate::theme::GRAY_600, "複製する対象を選んでください。");
         return false;
     }
@@ -336,7 +362,7 @@ fn preview_section(ui: &mut egui::Ui, app: &mut App) -> bool {
         .on_disabled_hover_text("この組み合わせで配れるものがありません")
         .clicked();
 
-    if let Some(done) = &app.story_copy.report {
+    if let Some(done) = &app.ui.scoped.story_copy.report {
         ui.separator();
         ui.colored_label(
             crate::theme::GOOD_GREEN,

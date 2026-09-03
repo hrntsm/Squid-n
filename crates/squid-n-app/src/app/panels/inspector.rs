@@ -10,7 +10,7 @@ impl App {
     /// 右ペイン：選択要素のインスペクタ。
     /// 3D/ナビゲータ/テーブルの選択（現時点では focus_*）を表示。断面編集は UI-4 で拡充。
     pub(crate) fn inspector_panel(&mut self, ui: &mut egui::Ui) {
-        // 遅延アクション（借用チェーン回避：UI 内で self.model を immutable borrow 中に
+        // 遅延アクション（借用チェーン回避：UI 内で self.core.model を immutable borrow 中に
         // mut borrow できないため、複製ボタンクリックは一旦 here に保存）
         let mut duplicate_member = None;
         let mut highlight_section_members: Option<Vec<ElemId>> = None;
@@ -18,8 +18,8 @@ impl App {
             ui.strong("インスペクタ");
             ui.separator();
 
-            if let Some(id) = self.nav.focus_vibration_case {
-                if let Some(case) = self.model.vibration_cases.iter().find(|c| c.id == id) {
+            if let Some(id) = self.ui.scoped.nav.focus_vibration_case {
+                if let Some(case) = self.core.model.vibration_cases.iter().find(|c| c.id == id) {
                     ui.strong("立体振動ケース（選択中）");
                     ui.label(format!("名称: {}", case.name));
                     ui.label(format!("波形: {}", case.wave_name));
@@ -41,8 +41,9 @@ impl App {
                     ));
                     ui.separator();
                 }
-            } else if let Some(id) = self.nav.focus_lumped_vibration_case {
+            } else if let Some(id) = self.ui.scoped.nav.focus_lumped_vibration_case {
                 if let Some(case) = self
+                    .core
                     .model
                     .lumped_vibration_cases
                     .iter()
@@ -75,14 +76,15 @@ impl App {
             }
 
             // 選択された部材の諸元
-            if let Some(elem_id) = self.nav.focus_member {
-                if let Some(e) = self.model.element(elem_id) {
+            if let Some(elem_id) = self.ui.scoped.nav.focus_member {
+                if let Some(e) = self.core.model.element(elem_id) {
                     ui.label(format!("部材 ID: {}", e.id.0));
                     let n0 = e.nodes.first().map(|n| n.0).unwrap_or(0);
                     let n1 = e.nodes.get(1).map(|n| n.0).unwrap_or(0);
                     ui.label(format!("節点 I/J: {} / {}", n0, n1));
                     if let Some(sec_id) = e.section {
                         if let Some(sec) = self
+                            .core
                             .model
                             .sections
                             .get(sec_id.index())
@@ -103,6 +105,7 @@ impl App {
                             ));
                             // 影響数: 同一断面を使う部材数
                             let n_used = self
+                                .core
                                 .model
                                 .elements
                                 .iter()
@@ -123,7 +126,7 @@ impl App {
                         ui.label("断面: 未割当");
                     }
                     // 材料は断面が持つ。ここでは断面から引いた実効値を表示する。
-                    if let Some(mat) = self.model.element_material(e) {
+                    if let Some(mat) = self.core.model.element_material(e) {
                         ui.label(format!("材料: {} ({})", mat.name, mat.id.0));
                         ui.label(format!("  E = {:.1} N/mm²", mat.young));
                         if let Some(fc) = mat.fc {
@@ -132,7 +135,7 @@ impl App {
                     }
                     ui.separator();
                     // 検定結果サマリ（同一部材）
-                    if let Some(r) = &self.results {
+                    if let Some(r) = &self.core.scoped.results {
                         let positions = r
                             .member_checks
                             .iter()
@@ -173,8 +176,8 @@ impl App {
             }
 
             // 選択された断面の諸元（断面テーブルの行選択と連動）
-            if let Some(sec_id) = self.nav.focus_section {
-                if let Some(sec) = self.model.sections.iter().find(|s| s.id == sec_id) {
+            if let Some(sec_id) = self.ui.scoped.nav.focus_section {
+                if let Some(sec) = self.core.model.sections.iter().find(|s| s.id == sec_id) {
                     ui.separator();
                     ui.strong("断面（選択中）");
                     ui.label(format!("名前: {} ({})", sec.name, sec_id.0));
@@ -191,6 +194,7 @@ impl App {
                         fmt_section_prop(inertia_cm4(sec.iz))
                     ));
                     let used: Vec<ElemId> = self
+                        .core
                         .model
                         .elements
                         .iter()
@@ -206,8 +210,8 @@ impl App {
 
             ui.separator();
             // 選択された節点の諸元
-            if let Some(node_id) = self.nav.focus_node {
-                if let Some(node) = self.model.node(node_id) {
+            if let Some(node_id) = self.ui.scoped.nav.focus_node {
+                if let Some(node) = self.core.model.node(node_id) {
                     ui.label(format!("節点 ID: {}", node.id.0));
                     ui.label(format!(
                         "座標: ({:.3}, {:.3}, {:.3})",
@@ -226,15 +230,15 @@ impl App {
 
         // 遅延実行: 複製ボタンが押されていたら EditCommand を叩く
         if let Some(member) = duplicate_member {
-            self.undo.run(
-                &mut self.model,
+            self.core.scoped.undo.run(
+                &mut self.core.model,
                 Box::new(squid_n_edit::DuplicateSectionForMember { member }),
             );
-            self.staleness.mark_edited();
+            self.core.scoped.staleness.mark_edited();
         }
         // 遅延実行: 断面の使用部材ハイライトボタン
         if let Some(members) = highlight_section_members {
-            self.selection.members = members;
+            self.ui.scoped.selection.members = members;
         }
     }
 }

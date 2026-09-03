@@ -98,7 +98,7 @@ pub fn members_table(ui: &mut egui::Ui, app: &mut App) {
     use crate::table_util::{self, Col};
 
     // ── 梁追加フォーム ──────────────────────────────────────────
-    if app.model.nodes.len() < 2 {
+    if app.core.model.nodes.len() < 2 {
         ui.label("梁を追加するには節点が2つ以上必要です");
     } else {
         let id_i = egui::Id::new("add_member_sel_i");
@@ -108,11 +108,11 @@ pub fn members_table(ui: &mut egui::Ui, app: &mut App) {
         let mut sel_i: Option<NodeId> = ui
             .data(|d| d.get_temp::<Option<NodeId>>(id_i))
             .flatten()
-            .or_else(|| app.model.nodes.first().map(|n| n.id));
+            .or_else(|| app.core.model.nodes.first().map(|n| n.id));
         let mut sel_j: Option<NodeId> = ui
             .data(|d| d.get_temp::<Option<NodeId>>(id_j))
             .flatten()
-            .or_else(|| app.model.nodes.get(1).map(|n| n.id));
+            .or_else(|| app.core.model.nodes.get(1).map(|n| n.id));
 
         // 制振ダンパー追加時に使う「定義から選択」の選択中インデックス。
         // （インデックス, 選択時点の定義名）を egui 一時メモリに保持し（App
@@ -121,9 +121,11 @@ pub fn members_table(ui: &mut egui::Ui, app: &mut App) {
         let id_damper_def_sel = egui::Id::new("add_member_damper_def_sel");
         let stored_damper_def_sel =
             ui.data(|d| d.get_temp::<Option<(usize, String)>>(id_damper_def_sel));
-        let mut damper_def_sel: Option<usize> =
-            resolve_damper_def_selection(&app.model.damper_defs, stored_damper_def_sel.flatten())
-                .map(|(i, _)| i);
+        let mut damper_def_sel: Option<usize> = resolve_damper_def_selection(
+            &app.core.model.damper_defs,
+            stored_damper_def_sel.flatten(),
+        )
+        .map(|(i, _)| i);
 
         let mut do_add = false;
         // 免震支承材の作成（2節点＋種別＋諸元。下の折りたたみフォームで諸元を編集）。
@@ -141,7 +143,7 @@ pub fn members_table(ui: &mut egui::Ui, app: &mut App) {
             egui::ComboBox::from_id_salt("add_member_i")
                 .selected_text(i_text)
                 .show_ui(ui, |ui| {
-                    for node in &app.model.nodes {
+                    for node in &app.core.model.nodes {
                         let label = format!("N{}", node.id.0);
                         if ui
                             .selectable_label(sel_i == Some(node.id), &label)
@@ -159,7 +161,7 @@ pub fn members_table(ui: &mut egui::Ui, app: &mut App) {
             egui::ComboBox::from_id_salt("add_member_j")
                 .selected_text(j_text)
                 .show_ui(ui, |ui| {
-                    for node in &app.model.nodes {
+                    for node in &app.core.model.nodes {
                         let label = format!("N{}", node.id.0);
                         if ui
                             .selectable_label(sel_j == Some(node.id), &label)
@@ -211,7 +213,7 @@ pub fn members_table(ui: &mut egui::Ui, app: &mut App) {
         ui.horizontal(|ui| {
             ui.label("制振ダンパーの定義:");
             let text = damper_def_sel
-                .and_then(|i| app.model.damper_defs.get(i))
+                .and_then(|i| app.core.model.damper_defs.get(i))
                 .map(|d| d.name.clone())
                 .unwrap_or_else(|| "（既定諸元）".to_string());
             egui::ComboBox::from_id_salt("add_member_damper_def")
@@ -223,7 +225,7 @@ pub fn members_table(ui: &mut egui::Ui, app: &mut App) {
                     {
                         damper_def_sel = None;
                     }
-                    for (i, def) in app.model.damper_defs.iter().enumerate() {
+                    for (i, def) in app.core.model.damper_defs.iter().enumerate() {
                         if ui
                             .selectable_label(damper_def_sel == Some(i), &def.name)
                             .clicked()
@@ -232,15 +234,20 @@ pub fn members_table(ui: &mut egui::Ui, app: &mut App) {
                         }
                     }
                 });
-            if app.model.damper_defs.is_empty() {
+            if app.core.model.damper_defs.is_empty() {
                 ui.colored_label(
                     crate::theme::GRAY_600,
                     "（定義がありません。「断面」タブの「制振要素」パネルで作成できます）",
                 );
             }
         });
-        let to_store =
-            damper_def_sel.and_then(|i| app.model.damper_defs.get(i).map(|d| (i, d.name.clone())));
+        let to_store = damper_def_sel.and_then(|i| {
+            app.core
+                .model
+                .damper_defs
+                .get(i)
+                .map(|d| (i, d.name.clone()))
+        });
         ui.data_mut(|d| d.insert_temp(id_damper_def_sel, to_store));
 
         // ── 免震支承材を追加（諸元フォーム） ─────────────────────
@@ -258,18 +265,18 @@ pub fn members_table(ui: &mut egui::Ui, app: &mut App) {
                         .map(|n| format!("N{}", n.0))
                         .unwrap_or_else(|| "―".to_string()),
                 ));
-                isolator_kind_selector(ui, &mut app.isolator_member_draft.props.kind);
+                isolator_kind_selector(ui, &mut app.ui.scoped.isolator_member_draft.props.kind);
                 isolator_props_fields(
                     ui,
                     "members_add_isolator",
-                    &mut app.isolator_member_draft.props,
+                    &mut app.ui.scoped.isolator_member_draft.props,
                 );
             });
 
         // 追加実行（クロージャ外で app の可変借用を使う）
         if do_add {
             if let (Some(i_node), Some(j_node)) = (sel_i, sel_j) {
-                let new_id = ElemId(app.model.elements.len() as u32);
+                let new_id = ElemId(app.core.model.elements.len() as u32);
                 let elem = ElementData {
                     id: new_id,
                     kind: ElementKind::Beam,
@@ -284,15 +291,18 @@ pub fn members_table(ui: &mut egui::Ui, app: &mut App) {
                     plastic_zone: None,
                     spring: None,
                 };
-                app.undo.run(&mut app.model, Box::new(AddMember { elem }));
-                app.staleness.mark_edited();
+                app.core
+                    .scoped
+                    .undo
+                    .run(&mut app.core.model, Box::new(AddMember { elem }));
+                app.core.scoped.staleness.mark_edited();
             }
         }
 
         // 免震支承材追加（要素＋既定諸元を原子的に作成）。
         if do_add_isolator {
             if let (Some(i_node), Some(j_node)) = (sel_i, sel_j) {
-                let new_id = ElemId(app.model.elements.len() as u32);
+                let new_id = ElemId(app.core.model.elements.len() as u32);
                 let elem = ElementData {
                     id: new_id,
                     kind: ElementKind::Isolator,
@@ -307,22 +317,22 @@ pub fn members_table(ui: &mut egui::Ui, app: &mut App) {
                     plastic_zone: None,
                     spring: None,
                 };
-                app.undo.run(
-                    &mut app.model,
+                app.core.scoped.undo.run(
+                    &mut app.core.model,
                     Box::new(AddIsolator {
                         elem,
-                        props: app.isolator_member_draft.props,
+                        props: app.ui.scoped.isolator_member_draft.props,
                     }),
                 );
-                app.nav.focus_member = Some(new_id);
-                app.staleness.mark_edited();
+                app.ui.scoped.nav.focus_member = Some(new_id);
+                app.core.scoped.staleness.mark_edited();
             }
         }
 
         // 制振ダンパー追加（要素＋諸元を原子的に作成。「定義から選択」があればその諸元を使う）。
         if do_add_damper {
             if let (Some(i_node), Some(j_node)) = (sel_i, sel_j) {
-                let new_id = ElemId(app.model.elements.len() as u32);
+                let new_id = ElemId(app.core.model.elements.len() as u32);
                 let elem = ElementData {
                     id: new_id,
                     kind: ElementKind::Damper,
@@ -338,13 +348,15 @@ pub fn members_table(ui: &mut egui::Ui, app: &mut App) {
                     spring: None,
                 };
                 let props = damper_def_sel
-                    .and_then(|i| app.model.damper_defs.get(i))
+                    .and_then(|i| app.core.model.damper_defs.get(i))
                     .map(|d| d.props)
                     .unwrap_or_default();
-                app.undo
-                    .run(&mut app.model, Box::new(AddDamper { elem, props }));
-                app.nav.focus_member = Some(new_id);
-                app.staleness.mark_edited();
+                app.core
+                    .scoped
+                    .undo
+                    .run(&mut app.core.model, Box::new(AddDamper { elem, props }));
+                app.ui.scoped.nav.focus_member = Some(new_id);
+                app.core.scoped.staleness.mark_edited();
             }
         }
     }
@@ -352,7 +364,7 @@ pub fn members_table(ui: &mut egui::Ui, app: &mut App) {
     // ── ここまで梁追加フォーム ────────────────────────────────────
 
     let (wall_index, pending_section, pending_hysteresis, pending_hysteresis_th, pending_delete) = {
-        let view = members_table_view(&app.model);
+        let view = members_table_view(&app.core.model);
         if view
             .wall_index
             .as_ref()
@@ -373,10 +385,11 @@ pub fn members_table(ui: &mut egui::Ui, app: &mut App) {
         // 分割された壁等）は行として現れない。壁版の一覧は「壁版」タブが持つため、
         // そこへ導線を出す（「入力したはずの壁が見当たらない」を防ぐ）。
         if app
+            .core
             .model
             .wall_plates
             .iter()
-            .any(|p| !app.model.wall_plate_becomes_element(p))
+            .any(|p| !app.core.model.wall_plate_becomes_element(p))
         {
             ui.label(
                 egui::RichText::new(
@@ -416,11 +429,11 @@ pub fn members_table(ui: &mut egui::Ui, app: &mut App) {
                     .wall_index
                     .as_ref()
                     .and_then(|index| index.plate_of(elem.id));
-                let is_focus = app.nav.focus_member == Some(elem.id);
+                let is_focus = app.ui.scoped.nav.focus_member == Some(elem.id);
                 row.col(|ui| {
                     if table_util::id_cell(ui, is_focus, elem.id.0, "クリックで部材を選択")
                     {
-                        app.nav.focus_member = Some(elem.id);
+                        app.ui.scoped.nav.focus_member = Some(elem.id);
                     }
                 });
                 row.col(|ui| {
@@ -467,7 +480,7 @@ pub fn members_table(ui: &mut egui::Ui, app: &mut App) {
                             if ui.selectable_label(selected == u32::MAX, "―").clicked() {
                                 pending_section.push((elem.id, u32::MAX));
                             }
-                            for sec in &app.model.sections {
+                            for sec in &app.core.model.sections {
                                 if ui
                                     .selectable_label(
                                         selected == sec.id.0,
@@ -503,7 +516,7 @@ pub fn members_table(ui: &mut egui::Ui, app: &mut App) {
                 row.col(|ui| {
                     // 履歴則（復元力特性、増分解析用）。非線形解析の材端履歴則。
                     // 梁=材端曲げバネ、柱（ファイバー）・MS・壁=コンクリート除荷則へ反映。
-                    let current = app.model.member_hysteresis(elem.id);
+                    let current = app.core.model.member_hysteresis(elem.id);
                     let selected_text = match current {
                         Some(r) => r.label().to_string(),
                         None => {
@@ -548,7 +561,7 @@ pub fn members_table(ui: &mut egui::Ui, app: &mut App) {
                 });
                 row.col(|ui| {
                     // 履歴則（時刻歴応答解析用スロット）。`None`＝増分用の指定に従う。
-                    let current_th_raw = app.model.member_hysteresis_th_raw(elem.id);
+                    let current_th_raw = app.core.model.member_hysteresis_th_raw(elem.id);
                     let selected_text = match current_th_raw {
                         None => "増分と同じ".to_string(),
                         Some(HysteresisModel::Auto) => {
@@ -626,7 +639,7 @@ pub fn members_table(ui: &mut egui::Ui, app: &mut App) {
         } else {
             // 参照先が存在するか確認
             let sid = SectionId(sec_id);
-            if app.model.sections.iter().any(|s| s.id == sid) {
+            if app.core.model.sections.iter().any(|s| s.id == sid) {
                 Some(sid)
             } else {
                 None
@@ -636,16 +649,16 @@ pub fn members_table(ui: &mut egui::Ui, app: &mut App) {
             .as_ref()
             .and_then(|index| index.plate_of(elem_id))
         {
-            app.undo.run(
-                &mut app.model,
+            app.core.scoped.undo.run(
+                &mut app.core.model,
                 Box::new(SetWallPlateSection {
                     id: plate_id,
                     section,
                 }),
             );
         } else {
-            app.undo.run(
-                &mut app.model,
+            app.core.scoped.undo.run(
+                &mut app.core.model,
                 Box::new(SetElementSection {
                     elem: elem_id,
                     section,
@@ -654,8 +667,8 @@ pub fn members_table(ui: &mut egui::Ui, app: &mut App) {
         }
     }
     for (elem_id, rule) in pending_hysteresis {
-        app.undo.run(
-            &mut app.model,
+        app.core.scoped.undo.run(
+            &mut app.core.model,
             Box::new(SetMemberHysteresis {
                 elem: elem_id,
                 rule,
@@ -663,8 +676,8 @@ pub fn members_table(ui: &mut egui::Ui, app: &mut App) {
         );
     }
     for (elem_id, rule_th) in pending_hysteresis_th {
-        app.undo.run(
-            &mut app.model,
+        app.core.scoped.undo.run(
+            &mut app.core.model,
             Box::new(SetMemberHysteresisTh {
                 elem: elem_id,
                 rule_th,
@@ -676,20 +689,24 @@ pub fn members_table(ui: &mut egui::Ui, app: &mut App) {
             .as_ref()
             .and_then(|index| index.plate_of(elem_id))
         {
-            app.undo
-                .run(&mut app.model, Box::new(DeleteWallPlate { id: plate_id }));
+            app.core.scoped.undo.run(
+                &mut app.core.model,
+                Box::new(DeleteWallPlate { id: plate_id }),
+            );
         } else {
-            app.undo
-                .run(&mut app.model, Box::new(DeleteMember { id: elem_id }));
+            app.core
+                .scoped
+                .undo
+                .run(&mut app.core.model, Box::new(DeleteMember { id: elem_id }));
         }
-        if app.nav.focus_member == Some(elem_id) {
-            app.nav.focus_member = None;
+        if app.ui.scoped.nav.focus_member == Some(elem_id) {
+            app.ui.scoped.nav.focus_member = None;
         }
     }
 
     // 編集があった場合は下流（結果・設計）を stale にする（UI設計 §5）
     if had_pending {
-        app.staleness.mark_edited();
+        app.core.scoped.staleness.mark_edited();
     }
 
     // ── 制振ダンパー一覧（Kd/C0/α の編集・削除）─────────────────────
@@ -705,11 +722,12 @@ fn dampers_table(ui: &mut egui::Ui, app: &mut App) {
     use crate::table_util::{self, Col};
 
     let dampers: Vec<(ElemId, DamperProps)> = app
+        .core
         .model
         .elements
         .iter()
         .filter(|e| e.kind == ElementKind::Damper)
-        .map(|e| (e.id, app.model.damper_props(e.id).unwrap_or_default()))
+        .map(|e| (e.id, app.core.model.damper_props(e.id).unwrap_or_default()))
         .collect();
     if dampers.is_empty() {
         return;
@@ -731,22 +749,22 @@ fn dampers_table(ui: &mut egui::Ui, app: &mut App) {
     let mut pending_del: Option<ElemId> = None;
 
     // ── 定義から一覧の全ダンパーへ一括適用 ─────────────────────
-    if !app.model.damper_defs.is_empty() {
+    if !app.core.model.damper_defs.is_empty() {
         let id_bulk_sel = egui::Id::new("dampers_table_bulk_def_sel");
         let mut bulk_sel: Option<usize> = ui
             .data(|d| d.get_temp::<Option<usize>>(id_bulk_sel))
             .flatten()
-            .filter(|i| *i < app.model.damper_defs.len());
+            .filter(|i| *i < app.core.model.damper_defs.len());
         ui.horizontal(|ui| {
             ui.label("一覧の全ダンパーへ一括適用:");
             let text = bulk_sel
-                .and_then(|i| app.model.damper_defs.get(i))
+                .and_then(|i| app.core.model.damper_defs.get(i))
                 .map(|d| d.name.clone())
                 .unwrap_or_else(|| "（定義を選択）".to_string());
             egui::ComboBox::from_id_salt("dampers_table_bulk_def")
                 .selected_text(text)
                 .show_ui(ui, |ui| {
-                    for (i, def) in app.model.damper_defs.iter().enumerate() {
+                    for (i, def) in app.core.model.damper_defs.iter().enumerate() {
                         if ui
                             .selectable_label(bulk_sel == Some(i), &def.name)
                             .clicked()
@@ -766,7 +784,7 @@ fn dampers_table(ui: &mut egui::Ui, app: &mut App) {
                 .clicked()
             {
                 if let Some(props) = bulk_sel
-                    .and_then(|i| app.model.damper_defs.get(i))
+                    .and_then(|i| app.core.model.damper_defs.get(i))
                     .map(|d| d.props)
                 {
                     for (elem_id, _) in &dampers {
@@ -802,6 +820,7 @@ fn dampers_table(ui: &mut egui::Ui, app: &mut App) {
             });
             row.col(|ui| {
                 let nodes = app
+                    .core
                     .model
                     .elements
                     .iter()
@@ -916,8 +935,8 @@ fn dampers_table(ui: &mut egui::Ui, app: &mut App) {
 
     let mut changed = false;
     for (elem_id, props) in pending_props {
-        app.undo.run(
-            &mut app.model,
+        app.core.scoped.undo.run(
+            &mut app.core.model,
             Box::new(SetDamperProps {
                 elem: elem_id,
                 props: Some(props),
@@ -926,15 +945,17 @@ fn dampers_table(ui: &mut egui::Ui, app: &mut App) {
         changed = true;
     }
     if let Some(elem_id) = pending_del {
-        app.undo
-            .run(&mut app.model, Box::new(DeleteMember { id: elem_id }));
-        if app.nav.focus_member == Some(elem_id) {
-            app.nav.focus_member = None;
+        app.core
+            .scoped
+            .undo
+            .run(&mut app.core.model, Box::new(DeleteMember { id: elem_id }));
+        if app.ui.scoped.nav.focus_member == Some(elem_id) {
+            app.ui.scoped.nav.focus_member = None;
         }
         changed = true;
     }
     if changed {
-        app.staleness.mark_edited();
+        app.core.scoped.staleness.mark_edited();
     }
 }
 
@@ -945,12 +966,14 @@ fn isolators_table(ui: &mut egui::Ui, app: &mut App) {
     use crate::table_util::{self, Col};
 
     let isolators: Vec<(ElemId, IsolatorProps)> = app
+        .core
         .model
         .elements
         .iter()
         .filter(|e| e.kind == ElementKind::Isolator)
         .filter_map(|e| {
-            app.model
+            app.core
+                .model
                 .isolator_attrs
                 .iter()
                 .find(|a| a.elem == e.id)
@@ -999,6 +1022,7 @@ fn isolators_table(ui: &mut egui::Ui, app: &mut App) {
             });
             row.col(|ui| {
                 let nodes = app
+                    .core
                     .model
                     .elements
                     .iter()
@@ -1125,8 +1149,8 @@ fn isolators_table(ui: &mut egui::Ui, app: &mut App) {
 
     let mut changed = false;
     for (elem_id, props) in pending_props {
-        app.undo.run(
-            &mut app.model,
+        app.core.scoped.undo.run(
+            &mut app.core.model,
             Box::new(SetIsolatorPropsLocal {
                 elem: elem_id,
                 props: Some(props),
@@ -1138,25 +1162,27 @@ fn isolators_table(ui: &mut egui::Ui, app: &mut App) {
         // 対象が支点免震（零長＋接地節点）であれば RemoveSupportIsolator で
         // 接地節点まで含めて撤去する（通常の DeleteMember だと接地節点だけが
         // ゴミとして残ってしまうため）。通常の免震要素は従来どおり DeleteMember。
-        match app.model.support_isolator_ends(elem_id) {
+        match app.core.model.support_isolator_ends(elem_id) {
             Some((upper, _ground)) => {
-                app.undo.run(
-                    &mut app.model,
+                app.core.scoped.undo.run(
+                    &mut app.core.model,
                     Box::new(RemoveSupportIsolator { node: upper }),
                 );
             }
             None => {
-                app.undo
-                    .run(&mut app.model, Box::new(DeleteMember { id: elem_id }));
+                app.core
+                    .scoped
+                    .undo
+                    .run(&mut app.core.model, Box::new(DeleteMember { id: elem_id }));
             }
         }
-        if app.nav.focus_member == Some(elem_id) {
-            app.nav.focus_member = None;
+        if app.ui.scoped.nav.focus_member == Some(elem_id) {
+            app.ui.scoped.nav.focus_member = None;
         }
         changed = true;
     }
     if changed {
-        app.staleness.mark_edited();
+        app.core.scoped.staleness.mark_edited();
     }
 }
 

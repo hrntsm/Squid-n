@@ -37,9 +37,16 @@ fn model_color(kind: YieldModelKind) -> egui::Color32 {
 }
 
 /// 断面・材料強度から算定した曲面/ファイバのキャッシュ。
-/// `section_idx` と `strength` が前回と同じ間は再利用する。
+/// 断面（`section_idx` と、その断面の形状 `shape`）と `strength` が前回と同じ間は
+/// 再利用する。
+///
+/// **`shape` を鍵に含めるのは必須である**。曲面は断面形状そのものから算定するため、
+/// 添字だけを鍵にすると、同じ添字の断面が別物へ変わったとき（断面寸法の編集や、
+/// モデルの差し替え）に前の断面の曲面を有効と判定して表示し続ける。断面と一致しない
+/// 耐力曲面の表示は、実際より大きい耐力を読み取りうる危険側の誤りである。
 struct MnCache {
     section_idx: usize,
+    shape: SectionShape,
     strength: StrengthParams,
     simple: MnSurface,
     ms: MnSurface,
@@ -61,13 +68,15 @@ pub enum SlicePlotMode {
 }
 
 /// M-θ サブキャッシュのキー。前回と同じ間は `m_phi_curve` の再計算（数十ms）を
-/// 省略する。`MnCache` は section/strength の変化で作り直されるため、そこに
+/// 省略する。`MnCache` は断面・強度の変化で作り直されるため、そこに
 /// ぶら下げると `ensure_cache` 後に可変参照が必要になり借用が競合する。
 /// そのため `MnViewState` 側に独立したサブキャッシュとして持たせ、
-/// キーに section_idx・strength も含めて一致判定する。
-#[derive(Clone, Copy, PartialEq)]
+/// キーに断面（`section_idx`・`shape`）と `strength` も含めて一致判定する。
+/// `shape` を含める理由は [`MnCache`] と同じ。
+#[derive(Clone, PartialEq)]
 struct MThetaKey {
     section_idx: usize,
+    shape: SectionShape,
     strength: StrengthParams,
     n_target: f64,
     lp: f64,
@@ -83,9 +92,12 @@ struct MThetaData {
     simple: Option<Vec<[f64; 2]>>,
 }
 
-/// M-N 相関曲面ビューの状態（`App` が保持する）。
+/// M-N 相関曲面ビューの状態。
+///
+/// 断面の添字とその断面の曲面キャッシュを持つため、`App` では
+/// `ui.scoped`（`UiModelScoped`）が保持する。モデルを差し替えると捨てられる。
 pub struct MnViewState {
-    /// `app.model.sections` のインデックス
+    /// `app.core.model.sections` のインデックス
     pub section_idx: usize,
     pub strength: StrengthParams,
     pub show_simple: bool,
@@ -95,8 +107,9 @@ pub struct MnViewState {
     pub n_ratio: f64,
     /// 下段2Dプロットの表示モード（My-Mz相関 / M-θ骨格）。
     pub slice_mode: SlicePlotMode,
-    /// 塑性化領域長さ Lp [mm]。0.0 は未設定扱いで、断面選択時に断面せい D の
-    /// 0.5倍を自動設定する（断面切替のたびに再設定する。`ensure_cache` 参照）。
+    /// 塑性化領域長さ Lp [mm]。0.0 は未設定扱いで、断面が変わったときに断面せい D の
+    /// 0.5倍を自動設定する（`ensure_cache` 参照）。断面の切替だけでなく、表示中の断面の
+    /// 形状を編集して断面せいが変わった場合も再設定する。手で入れた値は上書きされる。
     pub lp: f64,
     /// 部材内法スパン L [mm]（M-θ 換算の弾性回転項に使用）。
     pub span: f64,
@@ -132,15 +145,15 @@ impl Default for MnViewState {
 
 /// エントリポイント: 左に操作パネル、右に可視化領域（3D + 2Dスライス）。
 pub fn mn_surface_panel(ui: &mut egui::Ui, app: &mut App) {
-    if app.model.sections.is_empty() {
+    if app.core.model.sections.is_empty() {
         ui.colored_label(
             theme::GRAY_600,
             "断面が定義されていません。モデルタブの「断面」で断面を追加してください。",
         );
         return;
     }
-    if app.mn_view.section_idx >= app.model.sections.len() {
-        app.mn_view.section_idx = 0;
+    if app.ui.scoped.mn_view.section_idx >= app.core.model.sections.len() {
+        app.ui.scoped.mn_view.section_idx = 0;
     }
 
     ui.horizontal(|ui| {
@@ -166,23 +179,25 @@ pub fn mn_surface_panel(ui: &mut egui::Ui, app: &mut App) {
 fn control_panel(ui: &mut egui::Ui, app: &mut App) {
     ui.strong("断面");
     let selected_text = app
+        .core
         .model
         .sections
-        .get(app.mn_view.section_idx)
+        .get(app.ui.scoped.mn_view.section_idx)
         .map(|s| s.name.clone())
         .unwrap_or_default();
     egui::ComboBox::from_id_salt("mn_view_section")
         .selected_text(selected_text)
         .show_ui(ui, |ui| {
-            for (i, sec) in app.model.sections.iter().enumerate() {
-                ui.selectable_value(&mut app.mn_view.section_idx, i, &sec.name);
+            for (i, sec) in app.core.model.sections.iter().enumerate() {
+                ui.selectable_value(&mut app.ui.scoped.mn_view.section_idx, i, &sec.name);
             }
         });
 
     let shape = app
+        .core
         .model
         .sections
-        .get(app.mn_view.section_idx)
+        .get(app.ui.scoped.mn_view.section_idx)
         .and_then(|s| s.shape.as_ref());
     let is_rc = matches!(
         shape,
@@ -198,7 +213,7 @@ fn control_panel(ui: &mut egui::Ui, app: &mut App) {
         ui.horizontal(|ui| {
             ui.label("鋼材 fy:");
             ui.add(
-                egui::DragValue::new(&mut app.mn_view.strength.steel_fy)
+                egui::DragValue::new(&mut app.ui.scoped.mn_view.strength.steel_fy)
                     .speed(1.0)
                     .range(1.0..=1000.0),
             );
@@ -208,7 +223,7 @@ fn control_panel(ui: &mut egui::Ui, app: &mut App) {
         ui.horizontal(|ui| {
             ui.label("鉄筋 fy:");
             ui.add(
-                egui::DragValue::new(&mut app.mn_view.strength.rebar_fy)
+                egui::DragValue::new(&mut app.ui.scoped.mn_view.strength.rebar_fy)
                     .speed(1.0)
                     .range(1.0..=1000.0),
             );
@@ -216,7 +231,7 @@ fn control_panel(ui: &mut egui::Ui, app: &mut App) {
         ui.horizontal(|ui| {
             ui.label("コンクリート Fc:");
             ui.add(
-                egui::DragValue::new(&mut app.mn_view.strength.concrete_fc)
+                egui::DragValue::new(&mut app.ui.scoped.mn_view.strength.concrete_fc)
                     .speed(0.5)
                     .range(1.0..=100.0),
             );
@@ -228,49 +243,52 @@ fn control_panel(ui: &mut egui::Ui, app: &mut App) {
     ui.horizontal(|ui| {
         ui.colored_label(model_color(YieldModelKind::SimpleSpring), "■");
         ui.checkbox(
-            &mut app.mn_view.show_simple,
+            &mut app.ui.scoped.mn_view.show_simple,
             YieldModelKind::SimpleSpring.label(),
         );
     });
     ui.horizontal(|ui| {
         ui.colored_label(model_color(YieldModelKind::MultiSpring), "■");
         ui.checkbox(
-            &mut app.mn_view.show_ms,
+            &mut app.ui.scoped.mn_view.show_ms,
             YieldModelKind::MultiSpring.label(),
         );
     });
     ui.horizontal(|ui| {
         ui.colored_label(model_color(YieldModelKind::MultiFiber), "■");
         ui.checkbox(
-            &mut app.mn_view.show_fiber,
+            &mut app.ui.scoped.mn_view.show_fiber,
             YieldModelKind::MultiFiber.label(),
         );
     });
 
     ui.add_space(8.0);
     ui.strong("スライス軸力 N/Nmax");
-    ui.add(egui::Slider::new(&mut app.mn_view.n_ratio, -1.0..=1.0));
+    ui.add(egui::Slider::new(
+        &mut app.ui.scoped.mn_view.n_ratio,
+        -1.0..=1.0,
+    ));
 
     ui.add_space(8.0);
     ui.strong("2Dプロット");
     ui.horizontal(|ui| {
-        let sel_mymz = app.mn_view.slice_mode == SlicePlotMode::MyMz;
-        let sel_mtheta = app.mn_view.slice_mode == SlicePlotMode::MTheta;
+        let sel_mymz = app.ui.scoped.mn_view.slice_mode == SlicePlotMode::MyMz;
+        let sel_mtheta = app.ui.scoped.mn_view.slice_mode == SlicePlotMode::MTheta;
         if ui.selectable_label(sel_mymz, "My-Mz相関").clicked() {
-            app.mn_view.slice_mode = SlicePlotMode::MyMz;
+            app.ui.scoped.mn_view.slice_mode = SlicePlotMode::MyMz;
         }
         if ui
             .selectable_label(sel_mtheta, "M-θ骨格（塑性化域）")
             .clicked()
         {
-            app.mn_view.slice_mode = SlicePlotMode::MTheta;
+            app.ui.scoped.mn_view.slice_mode = SlicePlotMode::MTheta;
         }
     });
-    if app.mn_view.slice_mode == SlicePlotMode::MTheta {
+    if app.ui.scoped.mn_view.slice_mode == SlicePlotMode::MTheta {
         ui.horizontal(|ui| {
             ui.label("塑性化領域長さ Lp [mm]:");
             ui.add(
-                egui::DragValue::new(&mut app.mn_view.lp)
+                egui::DragValue::new(&mut app.ui.scoped.mn_view.lp)
                     .speed(10.0)
                     .range(1.0..=5000.0),
             );
@@ -278,20 +296,20 @@ fn control_panel(ui: &mut egui::Ui, app: &mut App) {
         ui.horizontal(|ui| {
             ui.label("内法スパン L [mm]:");
             ui.add(
-                egui::DragValue::new(&mut app.mn_view.span)
+                egui::DragValue::new(&mut app.ui.scoped.mn_view.span)
                     .speed(50.0)
                     .range(100.0..=30000.0),
             );
         });
         ui.horizontal(|ui| {
             ui.label("曲げ方向:");
-            let sel_my = !app.mn_view.bend_dir_z;
-            let sel_mz = app.mn_view.bend_dir_z;
+            let sel_my = !app.ui.scoped.mn_view.bend_dir_z;
+            let sel_mz = app.ui.scoped.mn_view.bend_dir_z;
             if ui.selectable_label(sel_my, "Myまわり").clicked() {
-                app.mn_view.bend_dir_z = false;
+                app.ui.scoped.mn_view.bend_dir_z = false;
             }
             if ui.selectable_label(sel_mz, "Mzまわり").clicked() {
-                app.mn_view.bend_dir_z = true;
+                app.ui.scoped.mn_view.bend_dir_z = true;
             }
         });
     }
@@ -299,12 +317,12 @@ fn control_panel(ui: &mut egui::Ui, app: &mut App) {
     ui.add_space(8.0);
     ui.strong("耐力サマリ");
     if let Some(shape) = shape.cloned() {
-        let section_idx = app.mn_view.section_idx;
-        ensure_cache(&mut app.mn_view, section_idx, &shape);
-        if let Some(cache) = &app.mn_view.cache {
+        let section_idx = app.ui.scoped.mn_view.section_idx;
+        ensure_cache(&mut app.ui.scoped.mn_view, section_idx, &shape);
+        if let Some(cache) = &app.ui.scoped.mn_view.cache {
             summary_table(ui, cache);
         }
-        if app.mn_view.slice_mode == SlicePlotMode::MTheta {
+        if app.ui.scoped.mn_view.slice_mode == SlicePlotMode::MTheta {
             ui.add_space(4.0);
             ui.add(egui::Label::new(
                 egui::RichText::new(
@@ -366,17 +384,19 @@ fn section_depth(shape: &SectionShape) -> f64 {
     }
 }
 
-/// キャッシュが古ければ再計算する（`section_idx` または `strength` が変化した場合）。
-/// 断面切替時は塑性化領域長さ Lp を新断面の 0.5D へ自動リセットする。
+/// キャッシュが古ければ再計算する（断面〔添字または形状〕、あるいは `strength` が
+/// 変化した場合）。断面が変わったときは塑性化領域長さ Lp を新断面の 0.5D へ
+/// 自動リセットする（形状の編集で断面せい D が変われば Lp も追随させる）。
 fn ensure_cache(state: &mut MnViewState, section_idx: usize, shape: &SectionShape) {
     let section_changed = match &state.cache {
-        Some(c) => c.section_idx != section_idx,
+        Some(c) => c.section_idx != section_idx || &c.shape != shape,
         None => true,
     };
-    let stale = match &state.cache {
-        Some(c) => c.section_idx != section_idx || c.strength != state.strength,
-        None => true,
-    };
+    let stale = section_changed
+        || state
+            .cache
+            .as_ref()
+            .is_none_or(|c| c.strength != state.strength);
     if !stale {
         return;
     }
@@ -397,6 +417,7 @@ fn ensure_cache(state: &mut MnViewState, section_idx: usize, shape: &SectionShap
 
     state.cache = Some(MnCache {
         section_idx,
+        shape: shape.clone(),
         strength,
         simple,
         ms,
@@ -476,7 +497,12 @@ fn ensure_m_theta_cache(
 
 /// 右ペイン: 断面が未選択・形状未定義の場合は案内、それ以外は 3D + 2D を描画する。
 fn visualization(ui: &mut egui::Ui, app: &mut App) {
-    let Some(sec) = app.model.sections.get(app.mn_view.section_idx) else {
+    let Some(sec) = app
+        .core
+        .model
+        .sections
+        .get(app.ui.scoped.mn_view.section_idx)
+    else {
         return;
     };
     let Some(shape) = sec.shape.clone() else {
@@ -487,17 +513,17 @@ fn visualization(ui: &mut egui::Ui, app: &mut App) {
         return;
     };
 
-    let section_idx = app.mn_view.section_idx;
-    ensure_cache(&mut app.mn_view, section_idx, &shape);
-    let Some(cache) = app.mn_view.cache.as_ref() else {
+    let section_idx = app.ui.scoped.mn_view.section_idx;
+    ensure_cache(&mut app.ui.scoped.mn_view, section_idx, &shape);
+    let Some(cache) = app.ui.scoped.mn_view.cache.as_ref() else {
         return;
     };
 
-    let n_ratio = app.mn_view.n_ratio;
+    let n_ratio = app.ui.scoped.mn_view.n_ratio;
     let show = [
-        app.mn_view.show_simple,
-        app.mn_view.show_ms,
-        app.mn_view.show_fiber,
+        app.ui.scoped.mn_view.show_simple,
+        app.ui.scoped.mn_view.show_ms,
+        app.ui.scoped.mn_view.show_fiber,
     ];
     let n_target = n_from_ratio(cache, n_ratio);
 
@@ -508,7 +534,7 @@ fn visualization(ui: &mut egui::Ui, app: &mut App) {
         egui::Sense::click_and_drag(),
     );
 
-    let mut cam = app.mn_view.camera.clone();
+    let mut cam = app.ui.scoped.mn_view.camera.clone();
     if response.dragged_by(egui::PointerButton::Primary) {
         // ターンテーブル回転（viewer と同じ操作感。N 軸＝Z を画面上で縦に保つ）
         let d = response.drag_delta();
@@ -534,24 +560,25 @@ fn visualization(ui: &mut egui::Ui, app: &mut App) {
     cam.zoom = cam.zoom.clamp(0.5, 10.0);
 
     draw_3d(ui, &rect, &cam, cache, show, n_target);
-    app.mn_view.camera = cam;
+    app.ui.scoped.mn_view.camera = cam;
 
     ui.separator();
 
     // --- 2D プロット（下4割）: My-Mz相関 または M-θ骨格に切替 ---
-    match app.mn_view.slice_mode {
+    match app.ui.scoped.mn_view.slice_mode {
         SlicePlotMode::MyMz => draw_slice_plot(ui, cache, show, n_target),
         SlicePlotMode::MTheta => {
             let key = MThetaKey {
-                section_idx: app.mn_view.section_idx,
-                strength: app.mn_view.strength,
+                section_idx: app.ui.scoped.mn_view.section_idx,
+                shape: shape.clone(),
+                strength: app.ui.scoped.mn_view.strength,
                 n_target,
-                lp: app.mn_view.lp,
-                span: app.mn_view.span,
-                bend_dir_z: app.mn_view.bend_dir_z,
+                lp: app.ui.scoped.mn_view.lp,
+                span: app.ui.scoped.mn_view.span,
+                bend_dir_z: app.ui.scoped.mn_view.bend_dir_z,
             };
-            ensure_m_theta_cache(&mut app.mn_view.m_theta_cache, key, cache);
-            if let Some((_, data)) = &app.mn_view.m_theta_cache {
+            ensure_m_theta_cache(&mut app.ui.scoped.mn_view.m_theta_cache, key, cache);
+            if let Some((_, data)) = &app.ui.scoped.mn_view.m_theta_cache {
                 draw_m_theta_plot(ui, data, show);
             }
         }
@@ -858,4 +885,88 @@ fn plot_m_theta_line(plot_ui: &mut egui_plot::PlotUi<'_>, pts: &[[f64; 2]], kind
             .color(model_color(kind))
             .width(2.0_f32),
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn rc_rect(b: f64, d: f64) -> SectionShape {
+        use squid_n_core::section_shape::{BarSet, RcRebar, ShearBar};
+        SectionShape::RcRect {
+            b,
+            d,
+            rebar: RcRebar {
+                main_x: BarSet {
+                    count: 3,
+                    dia: 22.0,
+                    layers: 1,
+                },
+                main_y: BarSet {
+                    count: 3,
+                    dia: 22.0,
+                    layers: 1,
+                },
+                cover: 40.0,
+                shear: ShearBar {
+                    dia: 10.0,
+                    pitch: 100.0,
+                    legs: 2,
+                },
+            },
+        }
+    }
+
+    /// 同じ添字のまま断面形状が別物へ変わったら、曲面キャッシュを作り直す。
+    ///
+    /// 従来は鍵が `section_idx` と `strength` だけだったため、断面寸法を編集しても
+    /// 前の断面の曲面を有効と判定して表示し続けていた（断面と一致しない耐力曲面の
+    /// 表示は、実際より大きい耐力を読み取りうる危険側の誤り）。モデルを差し替えて
+    /// 同じ添字に別の断面が来た場合も同様だった。
+    #[test]
+    fn cache_is_rebuilt_when_shape_changes_at_same_index() {
+        let mut state = MnViewState::default();
+
+        ensure_cache(&mut state, 0, &rc_rect(400.0, 600.0));
+        // 軸圧縮耐力はコンクリート断面積で決まるので、せいを増やせば必ず増える
+        // （軸引張耐力は主筋量だけで決まるため、この検証には使えない）。
+        let n_comp_before = state
+            .cache
+            .as_ref()
+            .expect("初回で作られる")
+            .fiber
+            .n_comp
+            .abs();
+        assert!(
+            (state.lp - 300.0).abs() < 1e-9,
+            "Lp は 0.5D で自動設定される"
+        );
+
+        // 添字も強度も同じまま、断面せいだけを大きくする。
+        ensure_cache(&mut state, 0, &rc_rect(400.0, 900.0));
+        let cache = state.cache.as_ref().expect("作り直される");
+        assert_eq!(cache.shape, rc_rect(400.0, 900.0), "新しい形状で持ち直す");
+        assert!(
+            cache.fiber.n_comp.abs() > n_comp_before,
+            "断面せいを増やせばコンクリート断面積が増え、軸圧縮耐力も増える\
+             （前の断面の曲面が残っていない）"
+        );
+        assert!(
+            (state.lp - 450.0).abs() < 1e-9,
+            "Lp も新しい断面せいの 0.5D へ追随する"
+        );
+    }
+
+    /// 断面も強度も変わらなければ作り直さない（毎フレームの再計算を避ける本来の目的）。
+    #[test]
+    fn cache_is_reused_when_nothing_changes() {
+        let mut state = MnViewState::default();
+        ensure_cache(&mut state, 0, &rc_rect(400.0, 600.0));
+        state.lp = 123.0; // 利用者が手で変えた値
+        ensure_cache(&mut state, 0, &rc_rect(400.0, 600.0));
+        assert!(
+            (state.lp - 123.0).abs() < 1e-9,
+            "作り直していないので Lp は不変"
+        );
+    }
 }

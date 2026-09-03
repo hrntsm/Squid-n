@@ -8,7 +8,9 @@ use squid_n_solver::lumped_mass::LumpedMassResult;
 use super::{playback, Projector, ViewMode};
 
 pub(super) fn has_lumped(app: &App) -> bool {
-    app.results
+    app.core
+        .scoped
+        .results
         .as_ref()
         .and_then(|r| r.lumped.as_ref())
         .is_some()
@@ -49,10 +51,11 @@ fn align_xy_to_mean(pts: &mut [[f64; 3]]) {
 /// `align_vertical` が真なら平面位置を平均へ揃え、横ずれは変形だけになる。
 fn rest_positions(app: &App, result: &LumpedMassResult, align_vertical: bool) -> Vec<[f64; 3]> {
     let lm = &result.model;
-    let layers = app.model.layers();
+    let layers = app.core.model.layers();
     let n = lm.stories.len();
     let mut out = Vec::with_capacity(n);
     let mut z = app
+        .core
         .model
         .stories
         .first()
@@ -66,10 +69,11 @@ fn rest_positions(app: &App, result: &LumpedMassResult, align_vertical: bool) ->
             layers
                 .get(i)
                 .and_then(|l| {
-                    app.model
+                    app.core
+                        .model
                         .diaphragms_of(l.top)
                         .next()
-                        .and_then(|d| app.model.nodes.get(d.master.index()))
+                        .and_then(|d| app.core.model.nodes.get(d.master.index()))
                         .map(|n| [n.coord[0], n.coord[1]])
                 })
                 .unwrap_or([0.0, 0.0])
@@ -116,7 +120,7 @@ fn disp_at(app: &App, result: &LumpedMassResult, mode: ViewMode, mode_idx: usize
             if th.floor_disp.is_empty() {
                 return zero;
             }
-            let frame = playback::frame_at_time(&th.time, app.th_play_time)
+            let frame = playback::frame_at_time(&th.time, app.ui.scoped.th_play_time)
                 .min(th.floor_disp.len().saturating_sub(1));
             th.floor_disp.get(frame).cloned().unwrap_or(zero)
         }
@@ -133,7 +137,13 @@ fn peak_xy<'a>(disps: impl Iterator<Item = &'a [f64; 3]>) -> f64 {
 /// 質点変位のピークがモデル対角の 10% になる自動倍率に、手動係数を掛ける。
 /// 時刻歴は全フレームのピークで固定し、振幅の小さい時刻で倍率が発散しないようにする。
 pub(super) fn display_scale(app: &App, mode: ViewMode, mode_idx: usize, model_size: f64) -> f64 {
-    let Some(result) = app.results.as_ref().and_then(|r| r.lumped.as_ref()) else {
+    let Some(result) = app
+        .core
+        .scoped
+        .results
+        .as_ref()
+        .and_then(|r| r.lumped.as_ref())
+    else {
         return 0.0;
     };
     let peak = match mode {
@@ -148,7 +158,7 @@ pub(super) fn display_scale(app: &App, mode: ViewMode, mode_idx: usize, model_si
     if peak <= 1e-12 || model_size <= 1e-12 {
         return 0.0;
     }
-    model_size * 0.1 / peak * f64::from(app.deform_scale_factor)
+    model_size * 0.1 / peak * f64::from(app.ui.view.deform_scale_factor)
 }
 
 const GHOST_DASH: f32 = 6.0;
@@ -207,10 +217,16 @@ pub(super) fn draw(
     mode_idx: usize,
     model_size: f64,
 ) {
-    let Some(result) = app.results.as_ref().and_then(|r| r.lumped.as_ref()) else {
+    let Some(result) = app
+        .core
+        .scoped
+        .results
+        .as_ref()
+        .and_then(|r| r.lumped.as_ref())
+    else {
         return;
     };
-    let rest = rest_positions(app, result, !app.lumped_show_frame);
+    let rest = rest_positions(app, result, !app.ui.view.lumped_show_frame);
     if rest.is_empty() {
         return;
     }
@@ -241,6 +257,7 @@ pub(super) fn draw(
         .map(|s| mass_marker_radius(s.mass, mass_max))
         .collect();
     let base_z = app
+        .core
         .model
         .stories
         .first()

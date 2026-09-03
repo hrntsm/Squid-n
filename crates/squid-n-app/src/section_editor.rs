@@ -185,29 +185,31 @@ pub fn catalog_section_panel(ui: &mut egui::Ui, app: &mut App) {
         ui.horizontal(|ui| {
             ui.label("Shape:");
             for s in CatalogShape::ALL {
-                let cur = app.catalog_draft.shape;
+                let cur = app.ui.scoped.catalog_draft.shape;
                 if ui.selectable_label(cur == s, s.label()).clicked() && cur != s {
-                    app.catalog_draft.shape = s;
-                    app.catalog_draft.family = None;
-                    app.catalog_draft.name = None;
+                    app.ui.scoped.catalog_draft.shape = s;
+                    app.ui.scoped.catalog_draft.family = None;
+                    app.ui.scoped.catalog_draft.name = None;
                 }
             }
         });
 
-        let families = squid_n_section::catalog::families(app.catalog_draft.shape);
+        let families = squid_n_section::catalog::families(app.ui.scoped.catalog_draft.shape);
         if families.is_empty() {
             ui.label("該当する断面がありません");
             return;
         }
         let family = app
+            .ui
+            .scoped
             .catalog_draft
             .family
             .clone()
             .filter(|f| families.contains(&f.as_str()))
             .unwrap_or_else(|| families[0].to_string());
-        if app.catalog_draft.family.as_deref() != Some(family.as_str()) {
-            app.catalog_draft.family = Some(family.clone());
-            app.catalog_draft.name = None;
+        if app.ui.scoped.catalog_draft.family.as_deref() != Some(family.as_str()) {
+            app.ui.scoped.catalog_draft.family = Some(family.clone());
+            app.ui.scoped.catalog_draft.name = None;
         }
 
         ui.horizontal(|ui| {
@@ -217,25 +219,28 @@ pub fn catalog_section_panel(ui: &mut egui::Ui, app: &mut App) {
                 .show_ui(ui, |ui| {
                     for f in &families {
                         if ui.selectable_label(family == *f, *f).clicked() {
-                            app.catalog_draft.family = Some((*f).to_string());
-                            app.catalog_draft.name = None;
+                            app.ui.scoped.catalog_draft.family = Some((*f).to_string());
+                            app.ui.scoped.catalog_draft.name = None;
                         }
                     }
                 });
         });
 
-        let entries = squid_n_section::catalog::entries_in(app.catalog_draft.shape, &family);
+        let entries =
+            squid_n_section::catalog::entries_in(app.ui.scoped.catalog_draft.shape, &family);
         if entries.is_empty() {
             return;
         }
         let name = app
+            .ui
+            .scoped
             .catalog_draft
             .name
             .clone()
             .filter(|n| entries.iter().any(|e| &e.name == n))
             .unwrap_or_else(|| entries[0].name.clone());
-        if app.catalog_draft.name.as_deref() != Some(name.as_str()) {
-            app.catalog_draft.name = Some(name.clone());
+        if app.ui.scoped.catalog_draft.name.as_deref() != Some(name.as_str()) {
+            app.ui.scoped.catalog_draft.name = Some(name.clone());
         }
 
         ui.horizontal(|ui| {
@@ -245,7 +250,7 @@ pub fn catalog_section_panel(ui: &mut egui::Ui, app: &mut App) {
                 .show_ui(ui, |ui| {
                     for e in &entries {
                         if ui.selectable_label(name == e.name, &e.name).clicked() {
-                            app.catalog_draft.name = Some(e.name.clone());
+                            app.ui.scoped.catalog_draft.name = Some(e.name.clone());
                         }
                     }
                 });
@@ -262,9 +267,10 @@ pub fn catalog_section_panel(ui: &mut egui::Ui, app: &mut App) {
 
         // カタログ断面の符号はカタログ名（`H-400x200x8x13` 等）で、階は持たない。
         // 同じ断面を 2 回追加すると符号＋階が衝突するため、追加を止めて理由を示す。
-        let new_id = SectionId(app.model.sections.len() as u32);
+        let new_id = SectionId(app.core.model.sections.len() as u32);
         let sec = squid_n_section::catalog::to_section(entry, new_id);
-        let taken = squid_n_core::model::section_key_taken(&app.model.sections, sec.key(), None);
+        let taken =
+            squid_n_core::model::section_key_taken(&app.core.model.sections, sec.key(), None);
         let add_resp = ui.add_enabled(!taken, egui::Button::new("+ 追加"));
         if taken {
             add_resp.on_hover_text(format!(
@@ -272,9 +278,11 @@ pub fn catalog_section_panel(ui: &mut egui::Ui, app: &mut App) {
                 sec.name
             ));
         } else if add_resp.clicked() {
-            app.undo
-                .run(&mut app.model, Box::new(AddCatalogSection { section: sec }));
-            app.staleness.mark_edited();
+            app.core.scoped.undo.run(
+                &mut app.core.model,
+                Box::new(AddCatalogSection { section: sec }),
+            );
+            app.core.scoped.staleness.mark_edited();
         }
     });
 }
@@ -288,19 +296,19 @@ pub fn section_editor_panel(ui: &mut egui::Ui, app: &mut App) {
     // 断面テーブルで断面を選んだら、その符号・階を欄へ読み込む。断面テーブルは
     // 読み取り専用で、既存断面の符号・階を直す手段がこのパネルしかないため、
     // 選んだ断面の現在値から編集を始められるようにする。
-    let focused = focused_section_index(app.nav.focus_section, &app.model.sections)
-        .map(|idx| &app.model.sections[idx]);
+    let focused = focused_section_index(app.ui.scoped.nav.focus_section, &app.core.model.sections)
+        .map(|idx| &app.core.model.sections[idx]);
     if let Some(sec) = focused {
-        if app.section_draft.synced_focus != Some(sec.id) {
-            app.section_draft.name = sec.name.clone();
-            app.section_draft.floor = sec.floor.clone().unwrap_or_default();
-            app.section_draft.synced_focus = Some(sec.id);
+        if app.ui.scoped.section_draft.synced_focus != Some(sec.id) {
+            app.ui.scoped.section_draft.name = sec.name.clone();
+            app.ui.scoped.section_draft.floor = sec.floor.clone().unwrap_or_default();
+            app.ui.scoped.section_draft.synced_focus = Some(sec.id);
         }
     } else {
-        app.section_draft.synced_focus = None;
+        app.ui.scoped.section_draft.synced_focus = None;
     }
 
-    let draft = &mut app.section_draft;
+    let draft = &mut app.ui.scoped.section_draft;
 
     ui.group(|ui| {
         ui.strong("断面作成");
@@ -327,7 +335,7 @@ pub fn section_editor_panel(ui: &mut egui::Ui, app: &mut App) {
         });
         ui.separator();
 
-        let mut predicted_id = SectionId(app.model.sections.len() as u32);
+        let mut predicted_id = SectionId(app.core.model.sections.len() as u32);
 
         // 寸法入力
         match draft.kind {
@@ -380,7 +388,7 @@ pub fn section_editor_panel(ui: &mut egui::Ui, app: &mut App) {
 
         let shape = build_shape(draft);
         let sec = shape.to_section(
-            SectionId(app.model.sections.len() as u32),
+            SectionId(app.core.model.sections.len() as u32),
             draft.name.clone(),
         );
         // プレビュー：A/Iy/Iz/J を表示
@@ -392,16 +400,16 @@ pub fn section_editor_panel(ui: &mut egui::Ui, app: &mut App) {
         ui.separator();
 
         let draft_floor = non_empty(&draft.floor);
-        let focus = focused_section_index(app.nav.focus_section, &app.model.sections);
+        let focus = focused_section_index(app.ui.scoped.nav.focus_section, &app.core.model.sections);
         // 符号＋階は断面の同一性キーなので、既存断面と衝突する追加・改名はできない。
         // 改名では対象の断面自身を衝突判定から外す。
         let key_free_for_add = !squid_n_core::model::section_key_taken(
-            &app.model.sections,
+            &app.core.model.sections,
             (draft.name.as_str(), draft_floor.as_deref()),
             None,
         );
         let key_free_for_rename = !squid_n_core::model::section_key_taken(
-            &app.model.sections,
+            &app.core.model.sections,
             (draft.name.as_str(), draft_floor.as_deref()),
             focus,
         );
@@ -420,9 +428,9 @@ pub fn section_editor_panel(ui: &mut egui::Ui, app: &mut App) {
                     format!("符号＋階「{key_label}」の断面が既にあります。符号か階を変えてください")
                 });
             } else if add_resp.clicked() {
-                predicted_id = SectionId(app.model.sections.len() as u32);
-                app.undo.run(
-                    &mut app.model,
+                predicted_id = SectionId(app.core.model.sections.len() as u32);
+                app.core.scoped.undo.run(
+                    &mut app.core.model,
                     Box::new(AddSectionShape {
                         shape: shape.clone(),
                         new_id: predicted_id,
@@ -430,9 +438,9 @@ pub fn section_editor_panel(ui: &mut egui::Ui, app: &mut App) {
                         floor: draft_floor.clone(),
                     }),
                 );
-                app.staleness.mark_edited();
+                app.core.scoped.staleness.mark_edited();
                 // 生成後、次の断面をすぐ作れるよう符号を更新
-                let n = app.model.sections.len();
+                let n = app.core.model.sections.len();
                 draft.name = format!("断面{}", n + 1);
             }
             ui.separator();
@@ -440,10 +448,10 @@ pub fn section_editor_panel(ui: &mut egui::Ui, app: &mut App) {
             let apply_resp = ui.add_enabled(focus.is_some(), egui::Button::new("✏ 選択断面へ適用"));
             match focus {
                 Some(idx) => {
-                    let sid = app.model.sections[idx].id;
-                    let name = app.model.sections[idx].display_name();
+                    let sid = app.core.model.sections[idx].id;
+                    let name = app.core.model.sections[idx].display_name();
                     let used = app
-                        .model
+                        .core.model
                         .elements
                         .iter()
                         .filter(|e| e.section == Some(sid))
@@ -453,14 +461,14 @@ pub fn section_editor_panel(ui: &mut egui::Ui, app: &mut App) {
 （この断面を使う全 {used} 部材に波及。符号と階は維持されます）"
                     ));
                     if apply_resp.clicked() {
-                        app.undo.run(
-                            &mut app.model,
+                        app.core.scoped.undo.run(
+                            &mut app.core.model,
                             Box::new(EditSectionShape {
                                 section: sid,
                                 new_shape: shape.clone(),
                             }),
                         );
-                        app.staleness.mark_edited();
+                        app.core.scoped.staleness.mark_edited();
                     }
                     // 断面テーブルは読み取り専用なので、既存断面の符号・階を直す手段は
                     // ここに置く（フォームの符号・階を選択中の断面へ書き込む）。
@@ -479,17 +487,17 @@ pub fn section_editor_panel(ui: &mut egui::Ui, app: &mut App) {
                         ))
                         .clicked()
                     {
-                        app.undo.run(
-                            &mut app.model,
+                        app.core.scoped.undo.run(
+                            &mut app.core.model,
                             Box::new(SetSectionName {
                                 id: sid,
                                 name: draft.name.clone(),
                                 floor: draft_floor.clone(),
                             }),
                         );
-                        app.staleness.mark_edited();
+                        app.core.scoped.staleness.mark_edited();
                     }
-                    let current_tp = app.model.sections[idx].panel_thickness.unwrap_or(0.0);
+                    let current_tp = app.core.model.sections[idx].panel_thickness.unwrap_or(0.0);
                     panel_thickness_field(ui, sid, current_tp, &mut pending_tp);
                 }
                 None => {
@@ -498,20 +506,20 @@ pub fn section_editor_panel(ui: &mut egui::Ui, app: &mut App) {
             }
 
             ui.separator();
-            ui.label(format!("現在: {}/セクション", app.model.sections.len()));
+            ui.label(format!("現在: {}/セクション", app.core.model.sections.len()));
         });
     });
 
     if let Some((id, value)) = pending_tp {
-        app.undo.run(
-            &mut app.model,
+        app.core.scoped.undo.run(
+            &mut app.core.model,
             Box::new(SetSectionField {
                 id,
                 field: SectionField::PanelThickness,
                 value,
             }),
         );
-        app.staleness.mark_edited();
+        app.core.scoped.staleness.mark_edited();
     }
 }
 
@@ -519,7 +527,7 @@ pub fn section_editor_panel(ui: &mut egui::Ui, app: &mut App) {
 /// 存在すれば `sections` 内のインデックスを返す。断面テーブル側での削除等で
 /// 参照が古くなっている場合は `None`（ボタン無効化用）。
 /// `App` 全体ではなく個別フィールドを引数に取ることで、呼び出し側の
-/// `ui.group` クロージャが `app.section_draft` と `app.model` を disjoint に
+/// `ui.group` クロージャが `app.ui.scoped.section_draft` と `app.core.model` を disjoint に
 /// 借用できるようにしている。
 fn focused_section_index(
     focus_section: Option<SectionId>,

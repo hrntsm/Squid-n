@@ -337,14 +337,18 @@ fn parse(s: &str) -> f64 {
 impl App {
     /// 荷重の 3D ピック待ちか（ビューアのクリック処理・他の作成モードとの排他判定）。
     pub(crate) fn load_pick_active(&self) -> bool {
-        self.load_editor.as_ref().is_some_and(|e| e.picking)
+        self.ui
+            .scoped
+            .load_editor
+            .as_ref()
+            .is_some_and(|e| e.picking)
     }
 
     /// 荷重モーダル・ピックモードの毎フレーム処理。
     /// ビューアより先に呼ぶと、ピック確定のキー入力を 3D クリックと同じフレームで
     /// 拾ってしまうため、中央パネルの描画後に呼ぶ。
     pub(crate) fn load_editor_ui(&mut self, ctx: &egui::Context) {
-        if self.load_editor.is_none() {
+        if self.ui.scoped.load_editor.is_none() {
             return;
         }
         if self.load_pick_active() {
@@ -357,7 +361,7 @@ impl App {
     /// ピック待ち中の案内バー（画面上端）。モーダルは閉じているため、
     /// いま何を求められているか・どう抜けるかをここだけが示す。
     fn load_pick_bar(&mut self, ctx: &egui::Context) {
-        let Some(editor) = self.load_editor.as_ref() else {
+        let Some(editor) = self.ui.scoped.load_editor.as_ref() else {
             return;
         };
         let picks_node = editor.picks_node();
@@ -406,7 +410,7 @@ impl App {
             cancel = true;
         }
 
-        if let Some(editor) = self.load_editor.as_mut() {
+        if let Some(editor) = self.ui.scoped.load_editor.as_mut() {
             if confirm {
                 editor.confirm_pick();
             } else if cancel {
@@ -417,7 +421,7 @@ impl App {
 
     /// 荷重の追加・編集モーダル本体。
     fn load_editor_modal(&mut self, ctx: &egui::Context) {
-        let Some(editor) = self.load_editor.take() else {
+        let Some(editor) = self.ui.scoped.load_editor.take() else {
             return;
         };
         let mut editor = editor;
@@ -432,6 +436,7 @@ impl App {
             (_, LoadDraft::Member(_)) => "部材荷重の編集",
         };
         let case_label = self
+            .core
             .model
             .load_cases
             .iter()
@@ -460,6 +465,7 @@ impl App {
                         match d.node {
                             Some(n) => {
                                 let coord = self
+                                    .core
                                     .model
                                     .nodes
                                     .get(n.index())
@@ -512,12 +518,13 @@ impl App {
                                 .desired_width(260.0),
                         );
                     });
-                    let brace = d.elem.is_some_and(|e| is_brace(&self.model, e));
+                    let brace = d.elem.is_some_and(|e| is_brace(&self.core.model, e));
                     ui.horizontal(|ui| {
                         ui.label("対象部材:");
                         match d.elem {
                             Some(e) => {
                                 let kind = self
+                                    .core
                                     .model
                                     .elements
                                     .iter()
@@ -632,7 +639,7 @@ impl App {
 
         if begin_pick {
             editor.begin_pick();
-            self.load_editor = Some(editor);
+            self.ui.scoped.load_editor = Some(editor);
             return;
         }
         if close {
@@ -644,7 +651,7 @@ impl App {
                 Err(msg) => editor.error = Some(msg),
             }
         }
-        self.load_editor = Some(editor);
+        self.ui.scoped.load_editor = Some(editor);
     }
 
     /// モーダルの入力内容を編集コマンドとして発行する。
@@ -652,7 +659,7 @@ impl App {
     /// （ピック待ちの間にモデルが編集され、添字が別の荷重を指している可能性がある）。
     fn commit_load_editor(&mut self, editor: &LoadEditor) -> Result<(), String> {
         let lc = editor.lc;
-        if !self.model.load_cases.iter().any(|c| c.id == lc) {
+        if !self.core.model.load_cases.iter().any(|c| c.id == lc) {
             return Err("荷重ケースが見つかりません".to_string());
         }
         match &editor.draft {
@@ -660,7 +667,7 @@ impl App {
                 let Some(node) = d.node else {
                     return Err("対象の節点が選ばれていません".to_string());
                 };
-                if node.index() >= self.model.nodes.len() {
+                if node.index() >= self.core.model.nodes.len() {
                     return Err(format!("節点 N{} は存在しません", node.0));
                 }
                 let load = NodalLoad {
@@ -671,15 +678,15 @@ impl App {
                 };
                 match &editor.target {
                     LoadEditTarget::New => {
-                        self.undo.run(
-                            &mut self.model,
+                        self.core.scoped.undo.run(
+                            &mut self.core.model,
                             Box::new(squid_n_edit::AddNodalLoad { lc, load }),
                         );
                     }
                     LoadEditTarget::ExistingNodal { index, snapshot } => {
                         self.verify_nodal_snapshot(lc, *index, snapshot)?;
-                        self.undo.run(
-                            &mut self.model,
+                        self.core.scoped.undo.run(
+                            &mut self.core.model,
                             Box::new(squid_n_edit::SetNodalLoad {
                                 lc,
                                 index: *index,
@@ -696,10 +703,10 @@ impl App {
                 let Some(elem) = d.elem else {
                     return Err("対象の部材が選ばれていません".to_string());
                 };
-                let Some(element) = self.model.element(elem) else {
+                let Some(element) = self.core.model.element(elem) else {
                     return Err(format!("部材 #{} は存在しません", elem.0));
                 };
-                let length = elem_length(&self.model, element);
+                let length = elem_length(&self.core.model, element);
                 if length <= 1e-9 {
                     return Err(format!("部材 #{} の材長が 0 です", elem.0));
                 }
@@ -707,8 +714,8 @@ impl App {
                 // ブレースかどうかが唯一の条件であり、下書き側の番号を信じると、
                 // ピックの取り消しなどで番号だけがブレース用に残った場合に
                 // 選択肢の範囲外を引く。
-                let dir = if is_brace(&self.model, elem) {
-                    brace_axis_dir(&self.model, elem)
+                let dir = if is_brace(&self.core.model, elem) {
+                    brace_axis_dir(&self.core.model, elem)
                 } else {
                     DIR_CHOICES
                         .get(d.dir)
@@ -747,15 +754,15 @@ impl App {
                 };
                 match &editor.target {
                     LoadEditTarget::New => {
-                        self.undo.run(
-                            &mut self.model,
+                        self.core.scoped.undo.run(
+                            &mut self.core.model,
                             Box::new(squid_n_edit::AddMemberLoad { lc, load }),
                         );
                     }
                     LoadEditTarget::ExistingMember { index, snapshot } => {
                         self.verify_member_snapshot(lc, *index, snapshot)?;
-                        self.undo.run(
-                            &mut self.model,
+                        self.core.scoped.undo.run(
+                            &mut self.core.model,
                             Box::new(squid_n_edit::SetMemberLoad {
                                 lc,
                                 index: *index,
@@ -769,7 +776,7 @@ impl App {
                 }
             }
         }
-        self.staleness.mark_edited();
+        self.core.scoped.staleness.mark_edited();
         Ok(())
     }
 
@@ -781,6 +788,7 @@ impl App {
         snapshot: &NodalLoad,
     ) -> Result<(), String> {
         let case = self
+            .core
             .model
             .load_cases
             .iter()
@@ -800,6 +808,7 @@ impl App {
         snapshot: &MemberLoad,
     ) -> Result<(), String> {
         let case = self
+            .core
             .model
             .load_cases
             .iter()
@@ -924,7 +933,7 @@ mod tests {
         }
         app.commit_load_editor(&editor).expect("追加できるはず");
 
-        let load = &app.model.load_cases[0].member[0];
+        let load = &app.core.model.load_cases[0].member[0];
         assert_eq!(load.dir, DIR_CHOICES[0].1, "梁は既定の鉛直下向きへ落とす");
     }
 
@@ -942,7 +951,7 @@ mod tests {
         app.commit_load_editor(&editor).expect("追加できるはず");
 
         // 節点 0 (0,0,0) → 節点 2 (6000,0,4000) の単位ベクトル
-        let load = &app.model.load_cases[0].member[0];
+        let load = &app.core.model.load_cases[0].member[0];
         let n = (6000.0_f64.powi(2) + 4000.0_f64.powi(2)).sqrt();
         assert!((load.dir[0] - 6000.0 / n).abs() < 1e-9, "{:?}", load.dir);
         assert!(load.dir[1].abs() < 1e-9, "{:?}", load.dir);
@@ -959,8 +968,8 @@ mod tests {
         let first = NodalLoad::manual(NodeId(0), [1.0, 0.0, 0.0, 0.0, 0.0, 0.0]);
         let second = NodalLoad::manual(NodeId(1), [2.0, 0.0, 0.0, 0.0, 0.0, 0.0]);
         for load in [first.clone(), second.clone()] {
-            app.undo.run(
-                &mut app.model,
+            app.core.scoped.undo.run(
+                &mut app.core.model,
                 Box::new(squid_n_edit::AddNodalLoad {
                     lc: LoadCaseId(0),
                     load,
@@ -971,8 +980,8 @@ mod tests {
         // 添字 1 の荷重を編集するモーダルを開いた状態を作る。
         let editor = LoadEditor::edit_nodal(LoadCaseId(0), 1, &second);
         // 開いている間に添字 0 が消え、添字 1 が別の荷重を指すようになる。
-        app.undo.run(
-            &mut app.model,
+        app.core.scoped.undo.run(
+            &mut app.core.model,
             Box::new(squid_n_edit::DeleteNodalLoad {
                 lc: LoadCaseId(0),
                 index: 0,
@@ -982,7 +991,7 @@ mod tests {
         let err = app.commit_load_editor(&editor).unwrap_err();
         assert_eq!(err, STALE_TARGET_MESSAGE);
         assert_eq!(
-            app.model.load_cases[0].nodal,
+            app.core.model.load_cases[0].nodal,
             vec![second],
             "書き換わらない"
         );

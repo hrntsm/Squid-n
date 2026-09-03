@@ -155,7 +155,7 @@ pub(super) fn hinge_marker_screen_pos(
 }
 
 /// ヒンジ図を描く。`pts` は `viewer_panel` で計算済みの節点スクリーン座標
-/// （`app.model.nodes` と同じ順序）。
+/// （`app.core.model.nodes` と同じ順序）。
 pub(super) fn draw_hinge(
     painter: &egui::Painter,
     app: &App,
@@ -475,10 +475,10 @@ fn build_mn_curve_cache(
 ) -> Option<MnCurveCache> {
     let sec = elem
         .section
-        .and_then(|sid| app.model.sections.get(sid.index()))?;
+        .and_then(|sid| app.core.model.sections.get(sid.index()))?;
     let shape = sec.shape.clone()?;
-    let mat = app.model.element_material(elem);
-    let rebar_mat = app.model.element_rebar_material(elem);
+    let mat = app.core.model.element_material(elem);
+    let rebar_mat = app.core.model.element_rebar_material(elem);
 
     // 保有水平耐力計算（プッシュオーバー）と整合する材料強度割増を適用する
     // （`pushover/hinge.rs::member_moment_thresholds` と同じ規約）。
@@ -516,7 +516,7 @@ fn build_mn_curve_cache(
     })
 }
 
-/// `app.hinge_mn_cache` が古ければ（選択部材・ステップ数が変われば）再計算する。
+/// `app.ui.scoped.hinge_mn_cache` が古ければ（選択部材・ステップ数が変われば）再計算する。
 fn ensure_mn_cache(
     app: &mut App,
     elem: &ElementData,
@@ -524,19 +524,20 @@ fn ensure_mn_cache(
     bend_dir_z: bool,
     step_count: usize,
 ) {
-    let stale = match &app.hinge_mn_cache {
+    let stale = match &app.ui.scoped.hinge_mn_cache {
         Some(c) => c.elem != elem_id || c.step_count != step_count,
         None => true,
     };
     if stale {
-        app.hinge_mn_cache = build_mn_curve_cache(app, elem, elem_id, bend_dir_z, step_count);
+        app.ui.scoped.hinge_mn_cache =
+            build_mn_curve_cache(app, elem, elem_id, bend_dir_z, step_count);
     }
 }
 
-/// ヒンジ詳細ウィンドウ（クリックで開く）。`app.hinge_detail_elem` が `None`
-/// なら何も描かない。閉じるボタン（×）で `app.hinge_detail_elem` をクリアする。
+/// ヒンジ詳細ウィンドウ（クリックで開く）。`app.ui.scoped.hinge_detail_elem` が `None`
+/// なら何も描かない。閉じるボタン（×）で `app.ui.scoped.hinge_detail_elem` をクリアする。
 pub(crate) fn show_hinge_detail_window(ui: &egui::Ui, app: &mut App) {
-    let Some(elem_id) = app.hinge_detail_elem else {
+    let Some(elem_id) = app.ui.scoped.hinge_detail_elem else {
         return;
     };
     let mut open = true;
@@ -552,8 +553,8 @@ pub(crate) fn show_hinge_detail_window(ui: &egui::Ui, app: &mut App) {
             });
         });
     if !open {
-        app.hinge_detail_elem = None;
-        app.hinge_mn_cache = None;
+        app.ui.scoped.hinge_detail_elem = None;
+        app.ui.scoped.hinge_mn_cache = None;
     }
 }
 
@@ -562,7 +563,7 @@ pub(crate) fn show_hinge_detail_window(ui: &egui::Ui, app: &mut App) {
 /// 塑性化マップ（ファイバー要素のみ）を該当するものだけ縦に並べる。
 fn draw_hinge_detail_content(ui: &mut egui::Ui, app: &mut App, elem_id: ElemId) {
     let (is_axial, elem_snapshot, elem_section) = {
-        let display = super::wall_expanded_view_model(&app.model);
+        let display = super::wall_expanded_view_model(&app.core.model);
         let Some(elem) = display.element(elem_id) else {
             ui.colored_label(theme::GRAY_600, "この部材はモデルから削除されています。");
             return;
@@ -648,10 +649,16 @@ fn draw_hinge_detail_content(ui: &mut egui::Ui, app: &mut App, elem_id: ElemId) 
     if is_axial {
         ui.strong("N-M 相関図");
         ensure_mn_cache(app, &elem_snapshot, elem_id, bend_dir_z, records.len());
-        // カメラ状態は `app` からローカルへ複製して使う（`app.hinge_mn_cache`
+        // カメラ状態は `app` からローカルへ複製して使う（`app.ui.scoped.hinge_mn_cache`
         // の借用と同時に `app` を可変借用しないため）。描画後に書き戻す。
-        let mut cam = app.hinge_mn_camera.clone();
-        match app.hinge_mn_cache.as_ref().filter(|c| c.elem == elem_id) {
+        let mut cam = app.ui.view.hinge_mn_camera.clone();
+        match app
+            .ui
+            .scoped
+            .hinge_mn_cache
+            .as_ref()
+            .filter(|c| c.elem == elem_id)
+        {
             Some(cache) => draw_mn_plot(ui, cache, elem_id, &records, bend_dir_z, &mut cam),
             None => {
                 ui.colored_label(
@@ -660,14 +667,14 @@ fn draw_hinge_detail_content(ui: &mut egui::Ui, app: &mut App, elem_id: ElemId) 
                 );
             }
         }
-        app.hinge_mn_camera = cam;
+        app.ui.view.hinge_mn_camera = cam;
         ui.separator();
     }
 
     // 3. ファイバー断面の塑性化マップ: ファイバー要素のみ（fiber_states に記録あり）。
     if let Some(sections) = fiber_sections {
         // 断面外形線の重ね描き用（断面が引けなければ輪郭なしでファイバーのみ描く）。
-        let sec = elem_section.and_then(|sid| app.model.sections.get(sid.index()));
+        let sec = elem_section.and_then(|sid| app.core.model.sections.get(sid.index()));
         ui.strong("ファイバー断面の塑性化マップ（終局時）");
         draw_fiber_maps(ui, elem_id, &sections, &mine, sec);
     }

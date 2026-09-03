@@ -16,31 +16,31 @@ impl App {
         // rigid_zone（face_i/j）から危険断面位置を決めるため、算定前に自動剛域を
         // 反映する（設計書 §6.2.1、冪等なので他の解析エントリと重複して呼んでも安全）。
         self.apply_rigid_zones_for_analysis();
-        let Some(results) = &self.results else {
+        let Some(results) = &self.core.scoped.results else {
             return;
         };
-        // 壁の解析要素（`ElementKind::Wall`）は `self.model` には存在しない生成物
+        // 壁の解析要素（`ElementKind::Wall`）は `self.core.model` には存在しない生成物
         // （D5）だが、`results.member_forces` は壁展開済みモデルで解いた結果の
         // ため壁の `ElemId` を含む。`run_member_design_checks`（内部の
         // `joint_wiring::wall::check_walls`）はこの `ElemId` を `model.element`
-        // で引き直すため、`self.model` のまま渡すと耐震壁のせん断断面検定が
+        // で引き直すため、`self.core.model` のまま渡すと耐震壁のせん断断面検定が
         // 常にスキップされる（該当 `ElemId` が見つからず `continue` する）。
         // 壁を持たないモデル（実 ST-Bridge フィクスチャは現状すべて該当する）
-        // では複製を避け、`self.model` をそのまま使う。
+        // では複製を避け、`self.core.model` をそのまま使う。
         let expanded_storage;
         let design_model: &squid_n_core::model::Model =
-            if squid_n_load::wall_expand::model_has_wall_plates_to_expand(&self.model) {
+            if squid_n_load::wall_expand::model_has_wall_plates_to_expand(&self.core.model) {
                 let (expanded, _wall_index, _wall_report) =
-                    squid_n_load::wall_expand::expand_wall_elements(&self.model);
+                    squid_n_load::wall_expand::expand_wall_elements(&self.core.model);
                 expanded_storage = expanded;
                 &expanded_storage
             } else {
-                &self.model
+                &self.core.model
             };
         // 地震時短期の設計用せん断力 QD 用の長期内力。
         // 優先: Q0 と同じ重力ケース集合の解析内力加算。なければ組合せ "DL + LL"。
         // 長期が未解析なら None（QD 割増なし＝従来動作）。
-        let is_seismic_combo = match self.last_static {
+        let is_seismic_combo = match self.core.scoped.last_static {
             Some(StaticKey::Combo(idx)) => results
                 .combos
                 .get(idx)
@@ -51,8 +51,8 @@ impl App {
                 .unwrap_or(false),
             _ => false,
         };
-        let gravity_long_owned = if is_seismic_combo && self.design_term == LoadTerm::Short {
-            squid_n_job::sum_analyzed_gravity_member_forces(&self.model, |lc| {
+        let gravity_long_owned = if is_seismic_combo && self.core.design_term == LoadTerm::Short {
+            squid_n_job::sum_analyzed_gravity_member_forces(&self.core.model, |lc| {
                 results
                     .statics
                     .iter()
@@ -63,7 +63,7 @@ impl App {
             None
         };
         let long_from_combo: Option<&Vec<(ElemId, squid_n_element::beam::MemberForces)>> =
-            if is_seismic_combo && self.design_term == LoadTerm::Short {
+            if is_seismic_combo && self.core.design_term == LoadTerm::Short {
                 results
                     .combos
                     .iter()
@@ -85,10 +85,10 @@ impl App {
         // 一本部材指定（Model.beam_groups）: グループ単位の採用応力を合成し、
         // 所属部材の検定文脈（部材長・端部/中央モーメント等）を上書きする。
         let group_overrides =
-            squid_n_design_jp::beam_group_overrides(&self.model, &results.member_forces);
+            squid_n_design_jp::beam_group_overrides(&self.core.model, &results.member_forces);
         // 梁 QD1 用の単純梁せん断 Q0（Dead+LiveSeismic 加算の長期相当）。
         let q0_by_elem = if long_member_forces.is_some() {
-            squid_n_job::simple_beam_q0_by_gravity_cases(&self.model)
+            squid_n_job::simple_beam_q0_by_gravity_cases(&self.core.model)
         } else {
             Default::default()
         };
@@ -97,10 +97,10 @@ impl App {
             &results.member_forces,
             &results.panel_moments,
             &squid_n_design_jp::MemberDesignCheckOptions {
-                term: self.design_term,
-                rc_damage_control: self.analysis_cfg.rc_damage_control,
-                bond_method: self.analysis_cfg.bond_method,
-                qd_method: self.analysis_cfg.qd_method,
+                term: self.core.design_term,
+                rc_damage_control: self.core.analysis_cfg.rc_damage_control,
+                bond_method: self.core.analysis_cfg.bond_method,
+                qd_method: self.core.analysis_cfg.qd_method,
                 long_member_forces,
                 q_simple_by_elem: Some(&q0_by_elem),
                 beam_group_overrides: Some(&group_overrides),
@@ -120,7 +120,7 @@ impl App {
 
         let member_checks = group_member_checks(report.member_checks);
 
-        if let Some(bundle) = self.results.as_mut() {
+        if let Some(bundle) = self.core.scoped.results.as_mut() {
             bundle.member_checks = member_checks;
             bundle.joint_checks = joint_checks;
             bundle.joist_checks = joist_checks;
@@ -146,7 +146,7 @@ impl App {
         let mut slab_checks = Vec::new();
 
         let beam_between = |a: NodeId, b: NodeId| -> bool {
-            self.model.elements.iter().any(|e| {
+            self.core.model.elements.iter().any(|e| {
                 e.kind == squid_n_core::model::ElementKind::Beam
                     && e.nodes.len() == 2
                     && ((e.nodes[0] == a && e.nodes[1] == b)
@@ -157,11 +157,11 @@ impl App {
         // --- 床板（一方向版）ごとの検定 ---
         // 「版がある」= 断面割当があり板厚が正（`slab_plate_thickness` が `Some` を返す）。
         // 版なし・厚さ 0 は出さない。
-        for slab in &self.model.slabs {
-            let Some(thickness) = self.model.slab_plate_thickness(slab) else {
+        for slab in &self.core.model.slabs {
+            let Some(thickness) = self.core.model.slab_plate_thickness(slab) else {
                 continue;
             };
-            let w = self.model.slab_intensity(slab, LoadPurpose::Floor);
+            let w = self.core.model.slab_intensity(slab, LoadPurpose::Floor);
             if slab.is_attached() {
                 // 取り付き＋版あり: 片持ち M=wL²/2（coef=2）。
                 // スパンは張り出し量の絶対値の大きい方。slab_dimensions が
@@ -178,7 +178,9 @@ impl App {
                     );
                     slab_checks.push((slab.id, r));
                 }
-            } else if let Some((lx, ly)) = squid_n_load::floor::slab_dimensions(&self.model, slab) {
+            } else if let Some((lx, ly)) =
+                squid_n_load::floor::slab_dimensions(&self.core.model, slab)
+            {
                 use squid_n_core::model::OneWayDir;
                 // 囲まれ＋版あり＋矩形: 従来どおり単純支持相当（coef=8）。
                 let span = match slab.one_way() {
@@ -240,14 +242,15 @@ impl App {
         use squid_n_design_jp::floor as fd;
         use squid_n_load::floor::{simple_beam_extremes, span_node_key};
 
-        let w_of = |s: &squid_n_core::model::Slab| self.model.slab_intensity(s, LoadPurpose::Floor);
-        let transfer = squid_n_load::cascade::solve(&self.model, w_of, true);
+        let w_of =
+            |s: &squid_n_core::model::Slab| self.core.model.slab_intensity(s, LoadPurpose::Floor);
+        let transfer = squid_n_load::cascade::solve(&self.core.model, w_of, true);
 
         // 間柱は検定できない（軸力・面外曲げが未対応）。表には「未」の行として残す。
-        for sm in self.model.posts() {
+        for sm in self.core.model.posts() {
             let (Some(na), Some(nb)) = (
-                self.model.nodes.get(sm.nodes[0].index()),
-                self.model.nodes.get(sm.nodes[1].index()),
+                self.core.model.nodes.get(sm.nodes[0].index()),
+                self.core.model.nodes.get(sm.nodes[1].index()),
             ) else {
                 continue;
             };
@@ -267,7 +270,7 @@ impl App {
             ));
         }
 
-        for sm in self.model.joists() {
+        for sm in self.core.model.joists() {
             if sm.kind != SecondaryMemberKind::Joist {
                 continue;
             }
@@ -278,8 +281,8 @@ impl App {
             }
             let key = span_node_key(a, b);
             let (Some(na), Some(nb)) = (
-                self.model.nodes.get(a.index()),
-                self.model.nodes.get(b.index()),
+                self.core.model.nodes.get(a.index()),
+                self.core.model.nodes.get(b.index()),
             ) else {
                 continue;
             };
@@ -297,12 +300,12 @@ impl App {
 
             let target = crate::app::JoistCheckTarget::SecondaryJoist { nodes: sm.nodes };
             let entry = transfer.members.get(&key);
-            let region = self.model.floor_region_of_joist(sm.nodes);
+            let region = self.core.model.floor_region_of_joist(sm.nodes);
             let region_slab = region.and_then(|r| r.slab_ids.first().copied());
             let slab_id = region_slab.or_else(|| entry.and_then(|e| e.rep_slab_id));
 
             // 剛床でない床の小梁は面内力（軸力）を負担するため検定できない。
-            if !region.is_some_and(|r| self.model.floor_region_on_single_diaphragm(r)) {
+            if !region.is_some_and(|r| self.core.model.floor_region_on_single_diaphragm(r)) {
                 joist_checks.push((slab_id, target, fd::joist_unchecked(span)));
                 continue;
             }
@@ -311,7 +314,7 @@ impl App {
                 joist_checks.push((slab_id, target, fd::joist_unchecked(span)));
                 continue;
             };
-            let Some(sec) = self.model.sections.get(sid.index()) else {
+            let Some(sec) = self.core.model.sections.get(sid.index()) else {
                 joist_checks.push((slab_id, target, fd::joist_unchecked(span)));
                 continue;
             };
@@ -320,7 +323,7 @@ impl App {
             } else {
                 0.0
             };
-            let mat = self.model.secondary_material(sm);
+            let mat = self.core.model.secondary_material(sm);
             let Some((e, ft)) = fd::joist_steel_e_and_ft(mat) else {
                 joist_checks.push((slab_id, target, fd::joist_unchecked(span)));
                 continue;

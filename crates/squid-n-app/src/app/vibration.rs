@@ -30,14 +30,18 @@ pub(crate) fn lumped_vibration_dim_from_stick(dim: StickDim) -> LumpedVibrationD
 impl App {
     /// 立体時刻歴実行時の波形表示名（サンプル波は「サンプル」）。
     pub(crate) fn spatial_th_wave_name(&self) -> String {
-        self.wave_library_selection
+        self.core
+            .scoped
+            .wave_library_selection
             .clone()
             .unwrap_or_else(|| "サンプル".to_string())
     }
 
     /// 質点系時刻歴実行時の波形表示名。
     pub(crate) fn lumped_th_wave_name(&self) -> String {
-        self.lumped_wave_library_selection
+        self.core
+            .scoped
+            .lumped_wave_library_selection
             .clone()
             .unwrap_or_else(|| "サンプル".to_string())
     }
@@ -48,8 +52,8 @@ impl App {
         case_id: VibrationCaseId,
         res: &squid_n_solver::timehistory::ResponseResult,
     ) {
-        self.view_vibration_case = Some(case_id);
-        if let Some(bundle) = &mut self.results {
+        self.core.scoped.view_vibration_case = Some(case_id);
+        if let Some(bundle) = &mut self.core.scoped.results {
             bundle.time_history = Some(res.clone());
         }
         self.fill_time_history_data(res);
@@ -58,7 +62,7 @@ impl App {
     fn fill_time_history_data(&mut self, res: &squid_n_solver::timehistory::ResponseResult) {
         #[cfg(feature = "gui")]
         {
-            self.time_history_data = crate::time_history_view::TimeHistoryData {
+            self.ui.scoped.time_history_data = crate::time_history_view::TimeHistoryData {
                 time: res.time.clone(),
                 node_disp: res.history.node_disp.clone(),
                 story_shear: res.history.base_shear.clone(),
@@ -71,10 +75,17 @@ impl App {
     }
 
     fn fill_time_history_from_window(&mut self) {
-        let Some(res) = self.results.as_ref().and_then(|b| b.time_history.clone()) else {
+        let Some(res) = self
+            .core
+            .scoped
+            .results
+            .as_ref()
+            .and_then(|b| b.time_history.clone())
+        else {
             #[cfg(feature = "gui")]
             {
-                self.time_history_data = crate::time_history_view::TimeHistoryData::default();
+                self.ui.scoped.time_history_data =
+                    crate::time_history_view::TimeHistoryData::default();
             }
             return;
         };
@@ -90,6 +101,8 @@ impl App {
         match view_vibration_case {
             Some(id) => {
                 if let Some(res) = self
+                    .core
+                    .scoped
                     .results
                     .as_ref()
                     .and_then(|b| b.time_history_for(id))
@@ -97,7 +110,7 @@ impl App {
                 {
                     self.set_spatial_time_history_view(id, &res);
                 } else {
-                    self.view_vibration_case = None;
+                    self.core.scoped.view_vibration_case = None;
                     self.fill_time_history_from_window();
                 }
             }
@@ -107,21 +120,35 @@ impl App {
         match view_lumped_vibration_case {
             Some(id) => {
                 if let Some(res) = self
+                    .core
+                    .scoped
                     .results
                     .as_ref()
                     .and_then(|b| b.lumped_result_for(id))
                     .cloned()
                 {
                     self.set_lumped_mass_view(Some(id), &res);
-                } else if let Some(res) = self.results.as_ref().and_then(|b| b.lumped.clone()) {
+                } else if let Some(res) = self
+                    .core
+                    .scoped
+                    .results
+                    .as_ref()
+                    .and_then(|b| b.lumped.clone())
+                {
                     self.set_lumped_mass_view(None, &res);
                 } else {
-                    self.view_lumped_vibration_case = None;
-                    self.stick_response = None;
+                    self.core.scoped.view_lumped_vibration_case = None;
+                    self.core.scoped.stick_response = None;
                 }
             }
             None => {
-                if let Some(res) = self.results.as_ref().and_then(|b| b.lumped.clone()) {
+                if let Some(res) = self
+                    .core
+                    .scoped
+                    .results
+                    .as_ref()
+                    .and_then(|b| b.lumped.clone())
+                {
                     self.set_lumped_mass_view(None, &res);
                 }
             }
@@ -134,19 +161,25 @@ impl App {
     /// 残らないようにする。未実行の空ケースは作らない、という規約に合わせる。
     pub(crate) fn prune_orphan_vibration_cases(&mut self) {
         let spatial: std::collections::HashSet<_> = self
+            .core
+            .scoped
             .results
             .as_ref()
             .map(|b| b.time_histories.iter().map(|(id, _)| *id).collect())
             .unwrap_or_default();
         let lumped: std::collections::HashSet<_> = self
+            .core
+            .scoped
             .results
             .as_ref()
             .map(|b| b.lumped_results.iter().map(|(id, _)| *id).collect())
             .unwrap_or_default();
-        self.model
+        self.core
+            .model
             .vibration_cases
             .retain(|c| spatial.contains(&c.id));
-        self.model
+        self.core
+            .model
             .lumped_vibration_cases
             .retain(|c| lumped.contains(&c.id));
     }
@@ -157,9 +190,9 @@ impl App {
         case_id: Option<LumpedVibrationCaseId>,
         result: &squid_n_solver::lumped_mass::LumpedMassResult,
     ) {
-        self.view_lumped_vibration_case = case_id;
-        self.stick_response = result.response.clone();
-        if let Some(bundle) = &mut self.results {
+        self.core.scoped.view_lumped_vibration_case = case_id;
+        self.core.scoped.stick_response = result.response.clone();
+        if let Some(bundle) = &mut self.core.scoped.results {
             bundle.lumped = Some(result.clone());
         }
     }
@@ -167,21 +200,23 @@ impl App {
     /// 立体振動ケースを選択（ナビ「振動荷重ケース」用）。
     #[cfg(feature = "gui")]
     pub(crate) fn focus_spatial_vibration_case(&mut self, id: VibrationCaseId) {
-        self.nav.focus_vibration_case = Some(id);
-        self.nav.focus_lumped_vibration_case = None;
-        self.nav.focus_load_case = None;
+        self.ui.scoped.nav.focus_vibration_case = Some(id);
+        self.ui.scoped.nav.focus_lumped_vibration_case = None;
+        self.ui.scoped.nav.focus_load_case = None;
         if let Some(res) = self
+            .core
+            .scoped
             .results
             .as_ref()
             .and_then(|b| b.time_history_for(id))
             .cloned()
         {
             self.set_spatial_time_history_view(id, &res);
-            self.active_tab = Tab::Results;
+            self.ui.view.active_tab = Tab::Results;
             #[cfg(feature = "gui")]
             {
-                self.results_view = ResultsView::TimeHistory;
-                self.view_mode = crate::viewer::ViewMode::TimeHistory;
+                self.ui.view.results_view = ResultsView::TimeHistory;
+                self.ui.view.view_mode = crate::viewer::ViewMode::TimeHistory;
             }
         }
     }
@@ -189,20 +224,22 @@ impl App {
     /// 質点系振動ケースを選択（ナビ「振動荷重ケース」用）。
     #[cfg(feature = "gui")]
     pub(crate) fn focus_lumped_vibration_case(&mut self, id: LumpedVibrationCaseId) {
-        self.nav.focus_lumped_vibration_case = Some(id);
-        self.nav.focus_vibration_case = None;
-        self.nav.focus_load_case = None;
+        self.ui.scoped.nav.focus_lumped_vibration_case = Some(id);
+        self.ui.scoped.nav.focus_vibration_case = None;
+        self.ui.scoped.nav.focus_load_case = None;
         if let Some(res) = self
+            .core
+            .scoped
             .results
             .as_ref()
             .and_then(|b| b.lumped_result_for(id))
             .cloned()
         {
             self.set_lumped_mass_view(Some(id), &res);
-            self.active_tab = Tab::Results;
+            self.ui.view.active_tab = Tab::Results;
             #[cfg(feature = "gui")]
             {
-                self.results_view = ResultsView::LumpedMass;
+                self.ui.view.results_view = ResultsView::LumpedMass;
             }
         }
     }

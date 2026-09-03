@@ -693,59 +693,33 @@ impl EventLog {
     }
 }
 
+/// アプリケーション全体の状態。
+///
+/// モデルと解析・設計の状態（[`AppCore`]）と、画面の状態（[`UiState`]）に分ける。
+/// どちらも「現在のモデルに紐づく状態（モデル従属状態）」を専用の構造体
+/// （[`ModelScoped`]／[`UiModelScoped`]）へ隔離しており、モデルを差し替えたときの
+/// 破棄は [`App::load_model`] の 2 行（`scoped` へ `Default::default()` を代入）で完結する。
+/// フィールドを追加するときは「モデルを差し替えたら捨てるか」を決めるだけでよく、
+/// リセット処理へ書き足す必要はない（書き漏らしが起こりえない）。
+#[derive(Default)]
 pub struct App {
+    /// モデルと解析・設計の状態。
+    pub core: AppCore,
+    /// 画面の状態。
+    pub ui: UiState,
+}
+
+/// モデルと、解析・設計の状態。
+///
+/// 直下のフィールドは**モデルに依らない**もの（モデルそのもの・解析条件・設計条件・
+/// セッションのイベントログ）に限る。モデルを差し替えると無効になるものは
+/// [`ModelScoped`] へ置くこと。
+pub struct AppCore {
     pub model: squid_n_core::model::Model,
-    pub results: Option<ResultsBundle>,
-    /// 表示中の立体時刻歴振動ケース ID。
-    pub view_vibration_case: Option<VibrationCaseId>,
-    /// 表示中の質点系振動ケース ID。
-    pub view_lumped_vibration_case: Option<LumpedVibrationCaseId>,
-    pub selection: Selection,
-    pub undo: UndoStack,
-    pub active_tab: Tab,
     /// 設計検定の荷重継続性区分（長期／短期）
     pub design_term: LoadTerm,
-    /// 最後に実行した静的解析結果（荷重ケース／荷重組合せ）
-    pub last_static: Option<StaticKey>,
-    /// 解析実行中のエラーメッセージ
-    pub last_error: Option<String>,
-    /// 解析実行中の注意メッセージ（エラーではないが利用者に知らせたい事項。
-    /// 例: 精算周期(SemiPrecise)選択時に固有値解析が未実行で EX/EY の地震荷重が
-    /// 更新されなかった旨）。ステータスバーは白文字、ログ側で情報色を付ける。
-    /// `last_error` とは別枠。
-    pub last_notice: Option<String>,
     /// セッション内イベントログ（下ドックのログパネルに表示）。
     pub log: EventLog,
-    /// 実行中のバックグラウンド解析ジョブ（増分解析・時刻歴・静的解析の単体実行と
-    /// 一括解析、P8 §5）。
-    /// 完了は `poll_job` で検知して結果を適用する。
-    pub job: Option<AnalysisJob>,
-    /// 節点座標の編集バッファ（model.nodes に同期）
-    pub node_edit: Vec<[String; 3]>,
-    /// 節点テーブルのグリッド操作ウィジェット状態（選択・編集モード・フラッシュ等）
-    #[cfg(feature = "gui")]
-    pub node_grid: crate::grid::GridWidget,
-    /// 節点追加フォームの入力中座標（境界条件の編集とは別の独立 UI）
-    pub node_draft: [String; 3],
-    /// 節点追加時に既存節点と同一座標だった場合の追加保留座標。
-    /// セットされている間は確認ダイアログを表示し、ユーザの判断を待つ。
-    pub pending_duplicate_node_coord: Option<[f64; 3]>,
-    /// 保存サイズ超過時の保存保留（保存先パス, 解析結果の直列化サイズ [MB]）。
-    /// セットされている間は「時刻歴の詳細記録を保存に含めますか？」の確認
-    /// ダイアログを表示し、選択に応じて含めて保存／除外して保存／キャンセル。
-    pub pending_save_recording: Option<(std::path::PathBuf, u64)>,
-    /// stale（要再計算）状態と最終実行時刻
-    pub staleness: Staleness,
-    /// モデル整合性チェック（診断）の結果一覧。`run_diagnostics` で再構築する。
-    pub diagnostics: Vec<Diagnostic>,
-    /// 準備計算（解析前の前処理）の結果。解析前に階の分布・剛域・Ai 分布・
-    /// 荷重集計を確認するために保持する。`run_preparation`／
-    /// 各解析実行時の `ensure_preparation` で再構築する。
-    pub preparation: Option<PreparationResult>,
-    /// ナビゲータ（左ペイン）状態
-    pub nav: Navigator,
-    /// モデルタブ内のサブタブ
-    pub model_tab: ModelTab,
     /// 保有水平耐力（ルート3）判定の架構種別（Ds 表の行選択）
     pub design_frame: squid_n_design_jp::secondary::holding_capacity::FrameType,
     /// 保有水平耐力（ルート3）判定の部材ランク（Ds 表の列選択）。
@@ -761,17 +735,6 @@ pub struct App {
     /// 告示「耐力壁の種別」表は壁式構造で限界値が厳しい（τu/Fc: WA 0.1・WB 0.125・
     /// WC 0.15）。既定は false（壁式構造以外: WA 0.20・WB 0.25）。
     pub wall_structure: bool,
-    /// 直近の保有水平耐力算定で用いた層別 βu（耐力壁・筋かいの水平耐力比）。
-    /// `compute_holding_capacity` が設定する（表示用）。
-    pub ds_beta_u_by_story: Vec<f64>,
-    /// 架構種別が耐力壁付き／筋かい付きなのに耐力壁・筋かいを検出できず、βu を
-    /// 算定できなかったため架構種別別 Ds 表へフォールバックしたか（表示用）。
-    pub ds_beta_u_unavailable: bool,
-    /// 部材ランク自動判定（`design_rank_auto`）で 1 本も算定できず、選択ランク
-    /// （`design_rank`）へフォールバックした層の名前（下階→上階順）。
-    /// `compute_holding_capacity` が設定する（表示用）。選択ランク（既定 FA）が
-    /// 実状より甘い場合に Ds を過小評価する危険側となるため、設計タブで警告する。
-    pub ds_rank_fallback_stories: Vec<String>,
     /// 終局検定（靭性保証型耐震設計指針）のヒンジ回転角 Rp [rad]（ν・cotφ 用。既定 0）。
     pub ultimate_rp: f64,
     /// 終局検定で軽量コンクリートのせん断終局耐力 0.9 倍低減を適用するか。
@@ -790,59 +753,203 @@ pub struct App {
     /// 直接反映するか（false は静的解析応答＋UI 一律 Rp）。増分解析未実行時は
     /// 自動的に静的応答へフォールバックする。
     pub ultimate_use_pushover: bool,
-    /// 左ドック（ナビゲータ／編集パネル）の表示状態
+    /// 解析タブの設定値
+    pub analysis_cfg: AnalysisSettings,
+    /// 現在のモデルに紐づく状態。モデルを差し替えると丸ごと破棄される。
+    pub scoped: ModelScoped,
+}
+
+impl Default for AppCore {
+    fn default() -> Self {
+        Self {
+            model: squid_n_core::model::Model::default(),
+            design_term: LoadTerm::Long,
+            log: EventLog::default(),
+            // サンプル(門型ラーメン)が鋼構造のため既定は S ラーメン
+            design_frame: squid_n_design_jp::secondary::holding_capacity::FrameType::SteelFrame,
+            design_rank: squid_n_design_jp::secondary::holding_capacity::MemberRank::FA,
+            design_rank_auto: false,
+            wall_structure: false,
+            ultimate_rp: 0.0,
+            ultimate_lightweight: false,
+            ultimate_include_bond: true,
+            ultimate_upper_factor: 1.0,
+            ultimate_shear_ductility: false,
+            ultimate_biaxial_shear: false,
+            ultimate_biaxial_bending: false,
+            ultimate_use_pushover: false,
+            analysis_cfg: AnalysisSettings::default(),
+            scoped: ModelScoped::default(),
+        }
+    }
+}
+
+/// 現在のモデルに紐づく、解析・設計側の状態（モデル従属状態）。
+///
+/// モデルを差し替えると意味を失うものだけをここへ置く。解析結果・準備計算・診断・
+/// 再計算要否・実行中ジョブのほか、「そのモデルに対して選んだもの」（プロジェクト
+/// ファイルのパス・波形ライブラリの選択）と、直近の操作に対する報告
+/// （`last_error`・`last_notice`・`combo_error`）を含む。
+///
+/// [`App::load_model`] が `Default::default()` の代入で丸ごと破棄するため、
+/// ここへ足したフィールドは自動的にリセット対象になる。
+pub struct ModelScoped {
+    pub results: Option<ResultsBundle>,
+    /// 表示中の立体時刻歴振動ケース ID。
+    pub view_vibration_case: Option<VibrationCaseId>,
+    /// 表示中の質点系振動ケース ID。
+    pub view_lumped_vibration_case: Option<LumpedVibrationCaseId>,
+    pub undo: UndoStack,
+    /// 最後に実行した静的解析結果（荷重ケース／荷重組合せ）
+    pub last_static: Option<StaticKey>,
+    /// 解析実行中のエラーメッセージ
+    pub last_error: Option<String>,
+    /// 解析実行中の注意メッセージ（エラーではないが利用者に知らせたい事項。
+    /// 例: 精算周期(SemiPrecise)選択時に固有値解析が未実行で EX/EY の地震荷重が
+    /// 更新されなかった旨）。ステータスバーは白文字、ログ側で情報色を付ける。
+    /// `last_error` とは別枠。
+    pub last_notice: Option<String>,
+    /// 実行中のバックグラウンド解析ジョブ（増分解析・時刻歴・静的解析の単体実行と
+    /// 一括解析、P8 §5）。
+    /// 完了は `poll_job` で検知して結果を適用する。
+    ///
+    /// モデル差し替えで破棄する。残したままだと、旧モデルで計算中の結果が完了時に
+    /// `poll_job` 経由で新モデルへ「最新結果」として適用され、別モデルの変位・応力が
+    /// stale 警告なしに表示される（受信側 `Receiver` の破棄だけでよい。ワーカー
+    /// スレッドの送信は失敗して静かに終了する）。
+    pub job: Option<AnalysisJob>,
+    /// 保存サイズ超過時の保存保留（保存先パス, 解析結果の直列化サイズ [MB]）。
+    /// セットされている間は「時刻歴の詳細記録を保存に含めますか？」の確認
+    /// ダイアログを表示し、選択に応じて含めて保存／除外して保存／キャンセル。
+    ///
+    /// モデル差し替えで破棄する（旧モデル用に選んだパスへ新モデルを保存して
+    /// しまうのを防ぐ）。
+    pub pending_save_recording: Option<(std::path::PathBuf, u64)>,
+    /// stale（要再計算）状態と最終実行時刻
+    pub staleness: Staleness,
+    /// モデル整合性チェック（診断）の結果一覧。`run_diagnostics` で再構築する。
+    pub diagnostics: Vec<Diagnostic>,
+    /// 準備計算（解析前の前処理）の結果。解析前に階の分布・剛域・Ai 分布・
+    /// 荷重集計を確認するために保持する。`run_preparation`／
+    /// 各解析実行時の `ensure_preparation` で再構築する。
+    pub preparation: Option<PreparationResult>,
+    /// 直近の保有水平耐力算定で用いた層別 βu（耐力壁・筋かいの水平耐力比）。
+    /// `compute_holding_capacity` が設定する（表示用）。
+    pub ds_beta_u_by_story: Vec<f64>,
+    /// 架構種別が耐力壁付き／筋かい付きなのに耐力壁・筋かいを検出できず、βu を
+    /// 算定できなかったため架構種別別 Ds 表へフォールバックしたか（表示用）。
+    pub ds_beta_u_unavailable: bool,
+    /// 部材ランク自動判定（`design_rank_auto`）で 1 本も算定できず、選択ランク
+    /// （`design_rank`）へフォールバックした層の名前（下階→上階順）。
+    /// `compute_holding_capacity` が設定する（表示用）。選択ランク（既定 FA）が
+    /// 実状より甘い場合に Ds を過小評価する危険側となるため、設計タブで警告する。
+    pub ds_rank_fallback_stories: Vec<String>,
+    /// 質点系（串団子）時刻歴応答の結果（結果タブ「質点系」で表示。bundle と同内容）。
+    pub stick_response: Option<squid_n_solver::lumped_mass::StickResponse>,
+    /// 質点系時刻歴の波形ライブラリ選択（立体時刻歴とは独立）。
+    pub lumped_wave_library_selection: Option<String>,
+    pub lumped_wave_library_selected_sha256: Option<String>,
+    /// 現在のプロジェクトファイル（.scz）パス。未保存なら None。
+    pub project_path: Option<std::path::PathBuf>,
+    /// 結果タブ・設計タブで表示中の増分解析方向（既定 X）。
+    pub pushover_view_dir: SeismicDir,
+    /// 波形ライブラリ（`squid_n_io::wave_library`）で選択中の波形ファイル名。
+    /// 「▶ 選択した波形で実行」で使う波形を指し、`.scz` にも同梱する
+    /// （次回開いたときに自動で同じ波形を参照できるようにするため。
+    /// `SavedAnalysisSettings::wave_name`）。
+    ///
+    /// そのモデルに対して選んだものなので、モデル差し替えで破棄する。残すと、波形を
+    /// 選択したプロジェクト A の後に別のプロジェクト B を開いたとき、B では一度も
+    /// 選んでいない波形が A の選択のまま持ち越され、B を保存すると実際には使って
+    /// いない波形が B 側に記録される。質点系の
+    /// [`ModelScoped::lumped_wave_library_selection`] も同じ理由で破棄する。
+    pub wave_library_selection: Option<String>,
+    /// `wave_library_selection` を最後に実行／読込復元した時点のライブラリ内
+    /// ファイルの SHA-256。プロジェクト読込時、ライブラリ側のファイルが同名の
+    /// まま差し替えられていないかを検証するために使う
+    /// （`SavedAnalysisSettings::wave_sha256`）。
+    pub wave_library_selected_sha256: Option<String>,
+    /// 自動荷重同期（`sync_auto_load_cases_action`）が最後に行われた時点の
+    /// モデル＋関連設定のハッシュ。次回呼び出し時に現在のハッシュと一致すれば
+    /// DL/LL/EX/EY の再計算（床格子サブFEM解析等）を丸ごとスキップする。
+    /// モデルの新規作成・読込では `None` にリセットする（永続化しない）。
+    pub auto_load_sync_hash: Option<u64>,
+    /// 最後の準備計算で生成した仕口パネルの諸元（節点 index の昇順）。
+    /// 準備計算の結果タブに一覧表示する。永続化しない（モデルから毎回再生成する）。
+    pub generated_panels: Vec<squid_n_element::panel_gen::GeneratedPanel>,
+    /// 荷重組合せの自動生成に固有のエラー（荷重組合せ欄にだけ表示する）。
+    /// `last_error` はステータスバー共用の単一スロットのため、これを組合せ欄へ
+    /// そのまま出すと他の操作のエラーが無関係な欄に現れる。
+    pub combo_error: Option<String>,
+}
+
+impl Default for ModelScoped {
+    fn default() -> Self {
+        Self {
+            results: None,
+            view_vibration_case: None,
+            view_lumped_vibration_case: None,
+            undo: UndoStack::new(),
+            last_static: None,
+            last_error: None,
+            last_notice: None,
+            job: None,
+            pending_save_recording: None,
+            staleness: Staleness::default(),
+            diagnostics: Vec::new(),
+            preparation: None,
+            ds_beta_u_by_story: Vec::new(),
+            ds_beta_u_unavailable: false,
+            ds_rank_fallback_stories: Vec::new(),
+            stick_response: None,
+            lumped_wave_library_selection: None,
+            lumped_wave_library_selected_sha256: None,
+            project_path: None,
+            pushover_view_dir: SeismicDir::X,
+            wave_library_selection: None,
+            wave_library_selected_sha256: None,
+            auto_load_sync_hash: None,
+            generated_panels: Vec::new(),
+            combo_error: None,
+        }
+    }
+}
+
+/// 画面の状態。
+///
+/// モデルに紐づくもの（[`UiModelScoped`]）と、モデルをまたいで持ち越すもの
+/// （[`UiViewState`]）に分ける。gui フィーチャの有無で分けているのではないため、
+/// この構造体自体はフィーチャで囲まない（個々のフィールドの `cfg` は維持する）。
+#[derive(Default)]
+pub struct UiState {
+    /// 現在のモデルに紐づく画面状態。モデルを差し替えると丸ごと破棄される。
+    pub scoped: UiModelScoped,
+    /// モデルをまたいで持ち越す画面状態。
+    pub view: UiViewState,
+}
+
+/// 現在のモデルに紐づく画面状態（モデル従属状態）。
+///
+/// 旧モデルの ID・添字・キャッシュを握るもの（選択・ナビゲータの注目対象・入力途中の
+/// ドラフト・詳細ウィンドウの選択部材とそのキャッシュ・作成モードの選択節点）を
+/// ここへ置く。[`App::load_model`] が `Default::default()` の代入で丸ごと破棄する。
+pub struct UiModelScoped {
+    pub selection: Selection,
+    /// 節点座標の編集バッファ（model.nodes に同期）
+    pub node_edit: Vec<[String; 3]>,
+    /// 節点テーブルのグリッド操作ウィジェット状態（選択・編集モード・フラッシュ等）
     #[cfg(feature = "gui")]
-    pub left_dock_open: bool,
-    /// 左ドックの表示パネル（ナビゲータ／作成パレット）
-    #[cfg(feature = "gui")]
-    pub left_panel: LeftPanel,
-    /// 右ドック（インスペクタ／準備計算／解析）の表示状態
-    #[cfg(feature = "gui")]
-    pub right_dock_open: bool,
-    /// 右ドックの表示パネル（インスペクタ／準備計算／解析）
-    #[cfg(feature = "gui")]
-    pub right_panel: RightPanel,
-    /// 下ドック（ログ／編集テーブル）の表示状態。既定で開き、イベントログを
-    /// 起動直後から見えるようにする（処理の経過が常時追える Zed のターミナル相当）。
-    #[cfg(feature = "gui")]
-    pub bottom_dock_open: bool,
-    /// 下ドックの表示タブ（ログ／モデル編集／荷重編集）
-    #[cfg(feature = "gui")]
-    pub bottom_tab: BottomTab,
-    /// 結果タブ内の表示切替（3D / 時刻歴）
-    #[cfg(feature = "gui")]
-    pub results_view: ResultsView,
-    /// 設計タブ内の表示切替（検定表 / MN相関曲面）
-    #[cfg(feature = "gui")]
-    pub design_view: DesignView,
+    pub node_grid: crate::grid::GridWidget,
+    /// 節点追加フォームの入力中座標（境界条件の編集とは別の独立 UI）
+    pub node_draft: [String; 3],
+    /// 節点追加時に既存節点と同一座標だった場合の追加保留座標。
+    /// セットされている間は確認ダイアログを表示し、ユーザの判断を待つ。
+    pub pending_duplicate_node_coord: Option<[f64; 3]>,
+    /// ナビゲータ（左ペイン）状態
+    pub nav: Navigator,
     /// MN 相関曲面ビューの状態（断面選択・材料強度・表示切替・カメラ等）
     #[cfg(feature = "gui")]
     pub mn_view: crate::mn_view::MnViewState,
-    /// ビューアの表示モード
-    #[cfg(feature = "gui")]
-    pub view_mode: crate::viewer::ViewMode,
-    /// 応力図で表示中の成分（N/Qy/Qz/Mx/My/Mz の ON/OFF。複数同時表示）
-    #[cfg(feature = "gui")]
-    pub force_components: crate::viewer::ForceComponents,
-    /// 応力図に数値ラベル（両端部・中央の値）を表示するか
-    #[cfg(feature = "gui")]
-    pub diagram_values: bool,
-    /// CMQ 図で表示する成分（C: モーメント／Q: せん断）
-    #[cfg(feature = "gui")]
-    pub cmq_component: crate::viewer::CmqComponent,
-    /// CMQ 図で表示する軸（強軸 ey／弱軸 ez。応力図の`ForceComponent::plane`と同じ
-    /// 局所面の区別。既定は強軸のみ）
-    #[cfg(feature = "gui")]
-    pub cmq_axes: crate::viewer::CmqAxes,
-    /// 検定比図の着色対象（最大＝全式の max、または特定の検定式のみ）
-    #[cfg(feature = "gui")]
-    pub check_ratio_filter: crate::viewer::CheckRatioFilter,
-    /// 検定比図で検定位置ごとの正方形マーカーを表示するか
-    #[cfg(feature = "gui")]
-    pub check_ratio_markers: bool,
-    /// 検定比図の数値ラベルを全部材に表示するか（false=注意域以上のみ。既定）
-    #[cfg(feature = "gui")]
-    pub check_ratio_label_all: bool,
     /// ヒンジ図でクリック選択された部材（ヒンジ詳細ウィンドウの表示対象。
     /// `None` はウィンドウ非表示）。
     #[cfg(feature = "gui")]
@@ -851,67 +958,14 @@ pub struct App {
     /// 曲面構築は数十msかかりうるため、選択部材が変わらない限り再計算しない）。
     #[cfg(feature = "gui")]
     pub hinge_mn_cache: Option<crate::viewer::hinge::MnCurveCache>,
-    /// ヒンジ詳細ウィンドウの N-M 相関図（3D ワイヤーフレーム）用カメラ状態
-    /// （`viewer::CameraState` を再利用し、断面詳細ビューと同じ操作感にする）。
-    #[cfg(feature = "gui")]
-    pub hinge_mn_camera: crate::viewer::CameraState,
-    /// N/Q/M 図の表示切替（false=単色塗り／true=値に応じたコンター色分け）
-    #[cfg(feature = "gui")]
-    pub diagram_contour: bool,
-    /// コンター表示のカラーマップ（既定は TONMANUAL §3 準拠の Viridis）
-    #[cfg(feature = "gui")]
-    pub contour_colormap: crate::theme::ColorMap,
-    /// N/Q/M 図で変形図を重ねて表示するか（応力と変形を同時に確認する）
-    #[cfg(feature = "gui")]
-    pub overlay_deform: bool,
-    /// 床（スラブ・小梁）と二次部材の表示（変形図で解析対象外の要素を隠せる）
-    #[cfg(feature = "gui")]
-    pub show_floor_secondary: bool,
     /// モード形の表示インデックス
     #[cfg(feature = "gui")]
     pub view_mode_idx: usize,
-    /// ビューアのカメラ状態
-    #[cfg(feature = "gui")]
-    pub camera: crate::viewer::CameraState,
     /// 2D 構面表示の対象（`None` は全体表示＝従来の 3D ビュー）。
     /// 通り芯の再生成・モデルの入れ替えで添字がずれるため、描画のたびに
     /// 実在を検証し、解決できなければ全体表示へ戻す。
     #[cfg(feature = "gui")]
     pub frame_target: Option<squid_n_core::frame::FrameTarget>,
-    /// ビューアの断面表示（部材を断面形状の押し出しソリッドで立体表示する）
-    #[cfg(feature = "gui")]
-    pub show_sections: bool,
-    /// 変形図の表示倍率の手動係数（自動算定倍率への乗数、既定 1.0）。
-    /// 自動倍率（バウンディングボックスと梁スパンから決定）にこの係数を掛けた
-    /// 値が実効倍率になる。スライダーで拡大・縮小できる。
-    #[cfg(feature = "gui")]
-    pub deform_scale_factor: f32,
-    /// 剛床代表節点（重心マスター）の可視化トグル（既定 OFF）。
-    /// ON にすると代表点マーカー・面内拘束マーク・関連スレーブ節点への点線を描く。
-    /// 点線は節点数が多いと他部材が見づらくなるため、既定は非表示にしている。
-    #[cfg(feature = "gui")]
-    pub show_diaphragm_master: bool,
-    /// 支点記号（矢印・円弧・支点ばね・免震マーカー）の表示トグル（既定 ON）。
-    /// 質点モード・質点時刻歴では立体の支点は関係ないので、この値に依らず出さない。
-    #[cfg(feature = "gui")]
-    pub show_supports: bool,
-    /// 立体グリッド（通り芯 × 階レベルの平面格子）の表示トグル（既定 ON）。
-    /// モデリングの下敷きとして使うため既定で出す。梁作成モードのスナップ対象は
-    /// 「格子を描いているときだけ」とし、このトグルと構面表示の両方に従わせる
-    /// （見えていない格子点が選ばれるのを防ぐ）。
-    #[cfg(feature = "gui")]
-    pub show_space_grid: bool,
-    /// モデル化図で可視化する解析種別（静解析＝弾性／増分解析＝弾塑性）。
-    /// 解析種別によって部材のモデル化（要素定式化）が変わるため切り替える。
-    #[cfg(feature = "gui")]
-    pub modeling_analysis: crate::viewer::ModelingAnalysis,
-    /// 変形図・応力図の変形重ねで、梁を内部たわみ（Hermite 3 次曲線）で描くか
-    /// （既定 ON）。ON では梁の内部たわみと、それに載る床・二次部材の追従を
-    /// 曲線で表示する。OFF では梁を節点間の直線（弦）で描き、床・二次部材の追従も
-    /// 線形補間にする（全体の変形を素直に見る用）。変位図だけでなく N/Q/M 図の
-    /// 変形重ねにも適用する。
-    #[cfg(feature = "gui")]
-    pub show_beam_interpolation: bool,
     /// 時刻歴モード（[`crate::viewer::ViewMode::TimeHistory`]）の現在フレーム番号
     /// （`ThRecording::frame_time` の添字）。
     #[cfg(feature = "gui")]
@@ -919,9 +973,6 @@ pub struct App {
     /// 時刻歴モードの再生中フラグ（ON でフレームを自動で進める）。
     #[cfg(feature = "gui")]
     pub th_playing: bool,
-    /// 時刻歴モードの再生速度倍率（×0.25〜×2 等）。
-    #[cfg(feature = "gui")]
-    pub th_speed: f32,
     /// 時刻歴モードの再生経過時刻 [s]（`ThRecording::frame_time` に基づき現在
     /// フレームを決定する。スライダー操作時は選択フレームの時刻に同期する）。
     #[cfg(feature = "gui")]
@@ -930,9 +981,6 @@ pub struct App {
     /// `None` はウィンドウ非表示）。
     #[cfg(feature = "gui")]
     pub th_detail_elem: Option<squid_n_core::ids::ElemId>,
-    /// 時刻歴詳細ウィンドウの梁・柱ループで表示する曲げ軸（true=強軸Mz／false=弱軸My）。
-    #[cfg(feature = "gui")]
-    pub th_detail_axis_z: bool,
     /// 時刻歴詳細ウィンドウの零長要素（免震・節点ばね）N-δ ループで選択中の成分
     /// （中-2）。`(部材, 成分)` を保持し、`th_detail_elem` と部材が一致しない場合は
     /// 要素種別ごとの既定（免震＝せん断、それ以外＝軸）へ戻す。`None` は未選択。
@@ -949,26 +997,6 @@ pub struct App {
     /// 時刻歴応答データ（描画用）
     #[cfg(feature = "gui")]
     pub time_history_data: crate::time_history_view::TimeHistoryData,
-    /// 時刻歴グラフの表示項目選択
-    #[cfg(feature = "gui")]
-    pub time_history_source: crate::time_history_view::TimeHistorySource,
-    /// 時刻歴結果タブの表示モード（時刻歴波形／層応答分布）
-    #[cfg(feature = "gui")]
-    pub time_history_view_mode: crate::time_history_view::TimeHistoryViewMode,
-    /// 層応答分布グラフの表示項目選択
-    #[cfg(feature = "gui")]
-    pub story_response_kind: crate::story_response::StoryResponseKind,
-    /// 層応答分布グラフの方向選択（記録済みの X・Y いずれか）
-    #[cfg(feature = "gui")]
-    pub story_response_dir: crate::story_response::StoryRespDir,
-    /// 質点系（串団子）時刻歴応答の結果（結果タブ「質点系」で表示。bundle と同内容）。
-    pub stick_response: Option<squid_n_solver::lumped_mass::StickResponse>,
-    /// 質点系時刻歴の波形ライブラリ選択（立体時刻歴とは独立）。
-    pub lumped_wave_library_selection: Option<String>,
-    pub lumped_wave_library_selected_sha256: Option<String>,
-    /// 3D で質点系を骨組に重ねて描く（OFF で質点・ばねのみ）。
-    #[cfg(feature = "gui")]
-    pub lumped_show_frame: bool,
     /// 断面作成UI のドラフト（UI-3）
     #[cfg(feature = "gui")]
     pub section_draft: crate::section_editor::SectionEditorDraft,
@@ -1008,34 +1036,6 @@ pub struct App {
     /// 入力内容はここに保持され続ける（`crate::load_editor`）。
     #[cfg(feature = "gui")]
     pub load_editor: Option<crate::load_editor::LoadEditor>,
-    /// 現在のプロジェクトファイル（.scz）パス。未保存なら None。
-    pub project_path: Option<std::path::PathBuf>,
-    /// 解析タブの設定値
-    pub analysis_cfg: AnalysisSettings,
-    /// 結果タブ・設計タブで表示中の増分解析方向（既定 X）。
-    pub pushover_view_dir: SeismicDir,
-    /// 波形ライブラリ（`squid_n_io::wave_library`）で選択中の波形ファイル名。
-    /// 「▶ 選択した波形で実行」で使う波形を指し、`.scz` にも同梱する
-    /// （次回開いたときに自動で同じ波形を参照できるようにするため。
-    /// `SavedAnalysisSettings::wave_name`）。
-    pub wave_library_selection: Option<String>,
-    /// `wave_library_selection` を最後に実行／読込復元した時点のライブラリ内
-    /// ファイルの SHA-256。プロジェクト読込時、ライブラリ側のファイルが同名の
-    /// まま差し替えられていないかを検証するために使う
-    /// （`SavedAnalysisSettings::wave_sha256`）。
-    pub wave_library_selected_sha256: Option<String>,
-    /// 「🌊 波形を保存…」で選んだファイルが波形ライブラリに同名で既に存在し、
-    /// 上書き確認ダイアログの表示待ちであることを示す（パスは登録元）。
-    #[cfg(feature = "gui")]
-    pub pending_wave_register: Option<std::path::PathBuf>,
-    /// 自動荷重同期（`sync_auto_load_cases_action`）が最後に行われた時点の
-    /// モデル＋関連設定のハッシュ。次回呼び出し時に現在のハッシュと一致すれば
-    /// DL/LL/EX/EY の再計算（床格子サブFEM解析等）を丸ごとスキップする。
-    /// モデルの新規作成・読込では `None` にリセットする（永続化しない）。
-    pub auto_load_sync_hash: Option<u64>,
-    /// 最後の準備計算で生成した仕口パネルの諸元（節点 index の昇順）。
-    /// 準備計算の結果タブに一覧表示する。永続化しない（モデルから毎回再生成する）。
-    pub generated_panels: Vec<squid_n_element::panel_gen::GeneratedPanel>,
     /// 解析パネル「静的解析」で選択中の単体実行の対象（荷重ケース／荷重組合せ）。
     /// `None` は未選択（荷重ケースの先頭を既定として扱う）。
     #[cfg(feature = "gui")]
@@ -1043,20 +1043,15 @@ pub struct App {
     /// 荷重タブ「荷重組合せ」自動生成 UI のドラフト状態
     #[cfg(feature = "gui")]
     pub combo_draft: ComboDraft,
-    /// 荷重組合せの自動生成に固有のエラー（荷重組合せ欄にだけ表示する）。
-    /// `last_error` はステータスバー共用の単一スロットのため、これを組合せ欄へ
-    /// そのまま出すと他の操作のエラーが無関係な欄に現れる。
-    pub combo_error: Option<String>,
     /// モデルタブ「スラブ」追加フォームのドラフト状態
     #[cfg(feature = "gui")]
     pub slab_draft: crate::tables::slabs::SlabDraft,
     /// 階の追加フォームの入力 `(階名, 階レベル [mm])`。
     #[cfg(feature = "gui")]
     pub new_story_draft: (String, f64),
-    /// 架構作成ウィザード（`ファイル > 新規（架構ウィザード）…`）の入力状態。
-    #[cfg(feature = "gui")]
-    pub frame_wizard: crate::frame_wizard::FrameWizardState,
     /// 階への複製ダイアログ（`① 準備計算 > 階の定義 > ⧉`）の入力状態。
+    /// 旧モデルの階を指したままにすると新モデルの別の階へ配ってしまうため、
+    /// モデル差し替えでは選択ごと閉じる。
     #[cfg(feature = "gui")]
     pub story_copy: crate::story_copy_view::StoryCopyState,
     /// 解析タブ「階の定義」表で確定した編集コマンドの適用待ちキュー。
@@ -1083,6 +1078,233 @@ pub struct App {
     /// モデルタブ「S造検定属性」フォームのドラフト状態
     #[cfg(feature = "gui")]
     pub steel_attr_draft: crate::tables::steel_attrs::SteelAttrDraft,
+}
+
+impl Default for UiModelScoped {
+    fn default() -> Self {
+        Self {
+            selection: Selection::default(),
+            node_edit: Vec::new(),
+            #[cfg(feature = "gui")]
+            node_grid: crate::grid::GridWidget::new(),
+            node_draft: ["0".to_string(), "0".to_string(), "0".to_string()],
+            pending_duplicate_node_coord: None,
+            nav: Navigator::default(),
+            #[cfg(feature = "gui")]
+            mn_view: crate::mn_view::MnViewState::default(),
+            #[cfg(feature = "gui")]
+            hinge_detail_elem: None,
+            #[cfg(feature = "gui")]
+            hinge_mn_cache: None,
+            #[cfg(feature = "gui")]
+            view_mode_idx: 0,
+            #[cfg(feature = "gui")]
+            frame_target: None,
+            #[cfg(feature = "gui")]
+            th_frame: 0,
+            #[cfg(feature = "gui")]
+            th_playing: false,
+            #[cfg(feature = "gui")]
+            th_play_time: 0.0,
+            #[cfg(feature = "gui")]
+            th_detail_elem: None,
+            #[cfg(feature = "gui")]
+            th_detail_axial_component: None,
+            #[cfg(feature = "gui")]
+            th_scale_cache: None,
+            #[cfg(feature = "gui")]
+            time_history_data: crate::time_history_view::TimeHistoryData::default(),
+            #[cfg(feature = "gui")]
+            section_draft: crate::section_editor::SectionEditorDraft::default(),
+            #[cfg(feature = "gui")]
+            catalog_draft: crate::section_editor::CatalogDraft::default(),
+            #[cfg(feature = "gui")]
+            isolator_support_draft: crate::tables::nodes::IsolatorSupportDraft::default(),
+            #[cfg(feature = "gui")]
+            isolator_member_draft: crate::tables::members::IsolatorMemberDraft::default(),
+            #[cfg(feature = "gui")]
+            damper_def_draft: crate::damper_def_editor::DamperDefDraft::default(),
+            #[cfg(feature = "gui")]
+            beam_draw_mode: false,
+            #[cfg(feature = "gui")]
+            beam_draw_first: None,
+            #[cfg(feature = "gui")]
+            wall_draw_mode: false,
+            #[cfg(feature = "gui")]
+            wall_draw_nodes: Vec::new(),
+            #[cfg(feature = "gui")]
+            slab_draw_mode: false,
+            #[cfg(feature = "gui")]
+            slab_draw_nodes: Vec::new(),
+            #[cfg(feature = "gui")]
+            load_editor: None,
+            #[cfg(feature = "gui")]
+            analysis_target: None,
+            #[cfg(feature = "gui")]
+            combo_draft: ComboDraft::default(),
+            #[cfg(feature = "gui")]
+            slab_draft: crate::tables::slabs::SlabDraft::default(),
+            #[cfg(feature = "gui")]
+            new_story_draft: (String::new(), 0.0),
+            #[cfg(feature = "gui")]
+            story_copy: crate::story_copy_view::StoryCopyState::default(),
+            #[cfg(feature = "gui")]
+            pending_story_cmds: std::collections::VecDeque::new(),
+            #[cfg(feature = "gui")]
+            wall_plate_draft: crate::tables::wall_plates::WallPlateDraft::default(),
+            #[cfg(feature = "gui")]
+            axis_name_draft: crate::tables::axes::AxisNameDraft::default(),
+            #[cfg(feature = "gui")]
+            load_cfg_draft: crate::tables::load_cfg::LoadCfgDraft::default(),
+            #[cfg(feature = "gui")]
+            member_detail_draft: crate::tables::member_details::MemberDetailDraft::default(),
+            #[cfg(feature = "gui")]
+            steel_attr_draft: crate::tables::steel_attrs::SteelAttrDraft::default(),
+        }
+    }
+}
+
+/// モデルをまたいで持ち越す画面状態。
+///
+/// 利用者の作業環境（ドックの開閉と表示パネル・工程タブ・カメラ・配色・表示トグル）と、
+/// モデルに紐づかない入力状態（架構作成ウィザード・波形ライブラリへの登録確認）。
+/// モデルを差し替えてもこれらは保つ（差し替えのたびにドック配置やカメラが初期化されると
+/// 作業にならないため）。
+pub struct UiViewState {
+    pub active_tab: Tab,
+    /// モデルタブ内のサブタブ
+    pub model_tab: ModelTab,
+    /// 左ドック（ナビゲータ／編集パネル）の表示状態
+    #[cfg(feature = "gui")]
+    pub left_dock_open: bool,
+    /// 左ドックの表示パネル（ナビゲータ／作成パレット）
+    #[cfg(feature = "gui")]
+    pub left_panel: LeftPanel,
+    /// 右ドック（インスペクタ／準備計算／解析）の表示状態
+    #[cfg(feature = "gui")]
+    pub right_dock_open: bool,
+    /// 右ドックの表示パネル（インスペクタ／準備計算／解析）
+    #[cfg(feature = "gui")]
+    pub right_panel: RightPanel,
+    /// 下ドック（ログ／編集テーブル）の表示状態。既定で開き、イベントログを
+    /// 起動直後から見えるようにする（処理の経過が常時追える Zed のターミナル相当）。
+    #[cfg(feature = "gui")]
+    pub bottom_dock_open: bool,
+    /// 下ドックの表示タブ（ログ／モデル編集／荷重編集）
+    #[cfg(feature = "gui")]
+    pub bottom_tab: BottomTab,
+    /// 結果タブ内の表示切替（3D / 時刻歴）
+    #[cfg(feature = "gui")]
+    pub results_view: ResultsView,
+    /// 設計タブ内の表示切替（検定表 / MN相関曲面）
+    #[cfg(feature = "gui")]
+    pub design_view: DesignView,
+    /// ビューアの表示モード
+    #[cfg(feature = "gui")]
+    pub view_mode: crate::viewer::ViewMode,
+    /// 応力図で表示中の成分（N/Qy/Qz/Mx/My/Mz の ON/OFF。複数同時表示）
+    #[cfg(feature = "gui")]
+    pub force_components: crate::viewer::ForceComponents,
+    /// 応力図に数値ラベル（両端部・中央の値）を表示するか
+    #[cfg(feature = "gui")]
+    pub diagram_values: bool,
+    /// CMQ 図で表示する成分（C: モーメント／Q: せん断）
+    #[cfg(feature = "gui")]
+    pub cmq_component: crate::viewer::CmqComponent,
+    /// CMQ 図で表示する軸（強軸 ey／弱軸 ez。応力図の`ForceComponent::plane`と同じ
+    /// 局所面の区別。既定は強軸のみ）
+    #[cfg(feature = "gui")]
+    pub cmq_axes: crate::viewer::CmqAxes,
+    /// 検定比図の着色対象（最大＝全式の max、または特定の検定式のみ）
+    #[cfg(feature = "gui")]
+    pub check_ratio_filter: crate::viewer::CheckRatioFilter,
+    /// 検定比図で検定位置ごとの正方形マーカーを表示するか
+    #[cfg(feature = "gui")]
+    pub check_ratio_markers: bool,
+    /// 検定比図の数値ラベルを全部材に表示するか（false=注意域以上のみ。既定）
+    #[cfg(feature = "gui")]
+    pub check_ratio_label_all: bool,
+    /// ヒンジ詳細ウィンドウの N-M 相関図（3D ワイヤーフレーム）用カメラ状態
+    /// （`viewer::CameraState` を再利用し、断面詳細ビューと同じ操作感にする）。
+    #[cfg(feature = "gui")]
+    pub hinge_mn_camera: crate::viewer::CameraState,
+    /// N/Q/M 図の表示切替（false=単色塗り／true=値に応じたコンター色分け）
+    #[cfg(feature = "gui")]
+    pub diagram_contour: bool,
+    /// コンター表示のカラーマップ（既定は TONMANUAL §3 準拠の Viridis）
+    #[cfg(feature = "gui")]
+    pub contour_colormap: crate::theme::ColorMap,
+    /// N/Q/M 図で変形図を重ねて表示するか（応力と変形を同時に確認する）
+    #[cfg(feature = "gui")]
+    pub overlay_deform: bool,
+    /// 床（スラブ・小梁）と二次部材の表示（変形図で解析対象外の要素を隠せる）
+    #[cfg(feature = "gui")]
+    pub show_floor_secondary: bool,
+    /// ビューアのカメラ状態
+    #[cfg(feature = "gui")]
+    pub camera: crate::viewer::CameraState,
+    /// ビューアの断面表示（部材を断面形状の押し出しソリッドで立体表示する）
+    #[cfg(feature = "gui")]
+    pub show_sections: bool,
+    /// 変形図の表示倍率の手動係数（自動算定倍率への乗数、既定 1.0）。
+    /// 自動倍率（バウンディングボックスと梁スパンから決定）にこの係数を掛けた
+    /// 値が実効倍率になる。スライダーで拡大・縮小できる。
+    #[cfg(feature = "gui")]
+    pub deform_scale_factor: f32,
+    /// 剛床代表節点（重心マスター）の可視化トグル（既定 OFF）。
+    /// ON にすると代表点マーカー・面内拘束マーク・関連スレーブ節点への点線を描く。
+    /// 点線は節点数が多いと他部材が見づらくなるため、既定は非表示にしている。
+    #[cfg(feature = "gui")]
+    pub show_diaphragm_master: bool,
+    /// 支点記号（矢印・円弧・支点ばね・免震マーカー）の表示トグル（既定 ON）。
+    /// 質点モード・質点時刻歴では立体の支点は関係ないので、この値に依らず出さない。
+    #[cfg(feature = "gui")]
+    pub show_supports: bool,
+    /// 立体グリッド（通り芯 × 階レベルの平面格子）の表示トグル（既定 ON）。
+    /// モデリングの下敷きとして使うため既定で出す。梁作成モードのスナップ対象は
+    /// 「格子を描いているときだけ」とし、このトグルと構面表示の両方に従わせる
+    /// （見えていない格子点が選ばれるのを防ぐ）。
+    #[cfg(feature = "gui")]
+    pub show_space_grid: bool,
+    /// モデル化図で可視化する解析種別（静解析＝弾性／増分解析＝弾塑性）。
+    /// 解析種別によって部材のモデル化（要素定式化）が変わるため切り替える。
+    #[cfg(feature = "gui")]
+    pub modeling_analysis: crate::viewer::ModelingAnalysis,
+    /// 変形図・応力図の変形重ねで、梁を内部たわみ（Hermite 3 次曲線）で描くか
+    /// （既定 ON）。ON では梁の内部たわみと、それに載る床・二次部材の追従を
+    /// 曲線で表示する。OFF では梁を節点間の直線（弦）で描き、床・二次部材の追従も
+    /// 線形補間にする（全体の変形を素直に見る用）。変位図だけでなく N/Q/M 図の
+    /// 変形重ねにも適用する。
+    #[cfg(feature = "gui")]
+    pub show_beam_interpolation: bool,
+    /// 時刻歴モードの再生速度倍率（×0.25〜×2 等）。
+    #[cfg(feature = "gui")]
+    pub th_speed: f32,
+    /// 時刻歴詳細ウィンドウの梁・柱ループで表示する曲げ軸（true=強軸Mz／false=弱軸My）。
+    #[cfg(feature = "gui")]
+    pub th_detail_axis_z: bool,
+    /// 時刻歴グラフの表示項目選択
+    #[cfg(feature = "gui")]
+    pub time_history_source: crate::time_history_view::TimeHistorySource,
+    /// 時刻歴結果タブの表示モード（時刻歴波形／層応答分布）
+    #[cfg(feature = "gui")]
+    pub time_history_view_mode: crate::time_history_view::TimeHistoryViewMode,
+    /// 層応答分布グラフの表示項目選択
+    #[cfg(feature = "gui")]
+    pub story_response_kind: crate::story_response::StoryResponseKind,
+    /// 層応答分布グラフの方向選択（記録済みの X・Y いずれか）
+    #[cfg(feature = "gui")]
+    pub story_response_dir: crate::story_response::StoryRespDir,
+    /// 3D で質点系を骨組に重ねて描く（OFF で質点・ばねのみ）。
+    #[cfg(feature = "gui")]
+    pub lumped_show_frame: bool,
+    /// 「🌊 波形を保存…」で選んだファイルが波形ライブラリに同名で既に存在し、
+    /// 上書き確認ダイアログの表示待ちであることを示す（パスは登録元）。
+    #[cfg(feature = "gui")]
+    pub pending_wave_register: Option<std::path::PathBuf>,
+    /// 架構作成ウィザード（`ファイル > 新規（架構ウィザード）…`）の入力状態。
+    #[cfg(feature = "gui")]
+    pub frame_wizard: crate::frame_wizard::FrameWizardState,
     /// 設計タブ「数量積算」ビューの状態（集計単位の切替）
     #[cfg(feature = "gui")]
     pub quantity_view: crate::quantity_view::QuantityViewState,
@@ -1091,60 +1313,11 @@ pub struct App {
     pub prep_view: crate::prep_view::PrepViewState,
 }
 
-/// 荷重組合せ自動生成 UI のドラフト（GUI 専用）。DL/LL は必須、地震X/Y・積雪は任意。
-#[cfg(feature = "gui")]
-#[derive(Clone, Debug, Default)]
-pub struct ComboDraft {
-    pub dl: Option<LoadCaseId>,
-    pub ll: Option<LoadCaseId>,
-    pub seismic_x: Option<LoadCaseId>,
-    pub seismic_y: Option<LoadCaseId>,
-    pub snow: Option<LoadCaseId>,
-}
-
-impl Default for App {
+impl Default for UiViewState {
     fn default() -> Self {
         Self {
-            model: squid_n_core::model::Model::default(),
-            results: None,
-            view_vibration_case: None,
-            view_lumped_vibration_case: None,
-            selection: Selection::default(),
-            undo: UndoStack::new(),
             active_tab: Tab::Model,
-            design_term: LoadTerm::Long,
-            last_static: None,
-            last_error: None,
-            last_notice: None,
-            log: EventLog::default(),
-            job: None,
-            node_edit: Vec::new(),
-            #[cfg(feature = "gui")]
-            node_grid: crate::grid::GridWidget::new(),
-            node_draft: ["0".to_string(), "0".to_string(), "0".to_string()],
-            pending_duplicate_node_coord: None,
-            pending_save_recording: None,
-            staleness: Staleness::default(),
-            diagnostics: Vec::new(),
-            preparation: None,
-            nav: Navigator::default(),
             model_tab: ModelTab::default(),
-            // サンプル(門型ラーメン)が鋼構造のため既定は S ラーメン
-            design_frame: squid_n_design_jp::secondary::holding_capacity::FrameType::SteelFrame,
-            design_rank: squid_n_design_jp::secondary::holding_capacity::MemberRank::FA,
-            design_rank_auto: false,
-            wall_structure: false,
-            ds_beta_u_by_story: Vec::new(),
-            ds_beta_u_unavailable: false,
-            ds_rank_fallback_stories: Vec::new(),
-            ultimate_rp: 0.0,
-            ultimate_lightweight: false,
-            ultimate_include_bond: true,
-            ultimate_upper_factor: 1.0,
-            ultimate_shear_ductility: false,
-            ultimate_biaxial_shear: false,
-            ultimate_biaxial_bending: false,
-            ultimate_use_pushover: false,
             #[cfg(feature = "gui")]
             left_dock_open: true,
             #[cfg(feature = "gui")]
@@ -1162,8 +1335,6 @@ impl Default for App {
             #[cfg(feature = "gui")]
             design_view: DesignView::default(),
             #[cfg(feature = "gui")]
-            mn_view: crate::mn_view::MnViewState::default(),
-            #[cfg(feature = "gui")]
             view_mode: crate::viewer::ViewMode::default(),
             #[cfg(feature = "gui")]
             force_components: crate::viewer::ForceComponents::default(),
@@ -1180,10 +1351,6 @@ impl Default for App {
             #[cfg(feature = "gui")]
             check_ratio_label_all: false,
             #[cfg(feature = "gui")]
-            hinge_detail_elem: None,
-            #[cfg(feature = "gui")]
-            hinge_mn_cache: None,
-            #[cfg(feature = "gui")]
             hinge_mn_camera: crate::viewer::CameraState::default(),
             #[cfg(feature = "gui")]
             diagram_contour: false,
@@ -1194,11 +1361,7 @@ impl Default for App {
             #[cfg(feature = "gui")]
             show_floor_secondary: true,
             #[cfg(feature = "gui")]
-            view_mode_idx: 0,
-            #[cfg(feature = "gui")]
             camera: crate::viewer::CameraState::default(),
-            #[cfg(feature = "gui")]
-            frame_target: None,
             #[cfg(feature = "gui")]
             show_sections: false,
             #[cfg(feature = "gui")]
@@ -1214,23 +1377,9 @@ impl Default for App {
             #[cfg(feature = "gui")]
             show_beam_interpolation: true,
             #[cfg(feature = "gui")]
-            th_frame: 0,
-            #[cfg(feature = "gui")]
-            th_playing: false,
-            #[cfg(feature = "gui")]
             th_speed: 1.0,
             #[cfg(feature = "gui")]
-            th_play_time: 0.0,
-            #[cfg(feature = "gui")]
-            th_detail_elem: None,
-            #[cfg(feature = "gui")]
             th_detail_axis_z: true,
-            #[cfg(feature = "gui")]
-            th_detail_axial_component: None,
-            #[cfg(feature = "gui")]
-            th_scale_cache: None,
-            #[cfg(feature = "gui")]
-            time_history_data: crate::time_history_view::TimeHistoryData::default(),
             #[cfg(feature = "gui")]
             time_history_source: crate::time_history_view::TimeHistorySource::default(),
             #[cfg(feature = "gui")]
@@ -1239,76 +1388,29 @@ impl Default for App {
             story_response_kind: crate::story_response::StoryResponseKind::default(),
             #[cfg(feature = "gui")]
             story_response_dir: crate::story_response::StoryRespDir::default(),
-            stick_response: None,
-            lumped_wave_library_selection: None,
-            lumped_wave_library_selected_sha256: None,
             #[cfg(feature = "gui")]
             lumped_show_frame: true,
             #[cfg(feature = "gui")]
-            section_draft: crate::section_editor::SectionEditorDraft::default(),
-            #[cfg(feature = "gui")]
-            catalog_draft: crate::section_editor::CatalogDraft::default(),
-            #[cfg(feature = "gui")]
-            isolator_support_draft: crate::tables::nodes::IsolatorSupportDraft::default(),
-            #[cfg(feature = "gui")]
-            isolator_member_draft: crate::tables::members::IsolatorMemberDraft::default(),
-            #[cfg(feature = "gui")]
-            damper_def_draft: crate::damper_def_editor::DamperDefDraft::default(),
+            pending_wave_register: None,
             #[cfg(feature = "gui")]
             frame_wizard: crate::frame_wizard::FrameWizardState::default(),
-            #[cfg(feature = "gui")]
-            story_copy: crate::story_copy_view::StoryCopyState::default(),
-            #[cfg(feature = "gui")]
-            beam_draw_mode: false,
-            #[cfg(feature = "gui")]
-            beam_draw_first: None,
-            #[cfg(feature = "gui")]
-            slab_draw_mode: false,
-            #[cfg(feature = "gui")]
-            slab_draw_nodes: Vec::new(),
-            #[cfg(feature = "gui")]
-            load_editor: None,
-            #[cfg(feature = "gui")]
-            wall_draw_mode: false,
-            #[cfg(feature = "gui")]
-            wall_draw_nodes: Vec::new(),
-            project_path: None,
-            analysis_cfg: AnalysisSettings::default(),
-            pushover_view_dir: SeismicDir::X,
-            wave_library_selection: None,
-            wave_library_selected_sha256: None,
-            #[cfg(feature = "gui")]
-            pending_wave_register: None,
-            auto_load_sync_hash: None,
-            generated_panels: Vec::new(),
-            #[cfg(feature = "gui")]
-            analysis_target: None,
-            #[cfg(feature = "gui")]
-            combo_draft: ComboDraft::default(),
-            combo_error: None,
-            #[cfg(feature = "gui")]
-            slab_draft: crate::tables::slabs::SlabDraft::default(),
-            #[cfg(feature = "gui")]
-            new_story_draft: (String::new(), 0.0),
-            #[cfg(feature = "gui")]
-            pending_story_cmds: std::collections::VecDeque::new(),
-            #[cfg(feature = "gui")]
-            wall_plate_draft: crate::tables::wall_plates::WallPlateDraft::default(),
-            #[cfg(feature = "gui")]
-            #[cfg(feature = "gui")]
-            axis_name_draft: crate::tables::axes::AxisNameDraft::default(),
-            #[cfg(feature = "gui")]
-            load_cfg_draft: crate::tables::load_cfg::LoadCfgDraft::default(),
-            #[cfg(feature = "gui")]
-            member_detail_draft: crate::tables::member_details::MemberDetailDraft::default(),
-            #[cfg(feature = "gui")]
-            steel_attr_draft: crate::tables::steel_attrs::SteelAttrDraft::default(),
             #[cfg(feature = "gui")]
             quantity_view: crate::quantity_view::QuantityViewState::default(),
             #[cfg(feature = "gui")]
             prep_view: crate::prep_view::PrepViewState::default(),
         }
     }
+}
+
+/// 荷重組合せ自動生成 UI のドラフト（GUI 専用）。DL/LL は必須、地震X/Y・積雪は任意。
+#[cfg(feature = "gui")]
+#[derive(Clone, Debug, Default)]
+pub struct ComboDraft {
+    pub dl: Option<LoadCaseId>,
+    pub ll: Option<LoadCaseId>,
+    pub seismic_x: Option<LoadCaseId>,
+    pub seismic_y: Option<LoadCaseId>,
+    pub snow: Option<LoadCaseId>,
 }
 
 /// 日本語フォントを egui に登録する（UI のラベルが豆腐□にならないように）。
@@ -1848,13 +1950,13 @@ impl eframe::App for App {
         // モデルを使う操作（準備計算の実行・保存など）が、未反映の階編集に基づいて走るのを避ける。
         // モデルを書き換えても、表の描画は `story_rows`（セクション内で先に複製した
         // 行データ）を使うため、残りの行が古い ID を指すことはない。
-        if let Some(cmd) = self.pending_story_cmds.pop_front() {
-            self.undo.run(&mut self.model, cmd);
-            self.staleness.mark_edited();
+        if let Some(cmd) = self.ui.scoped.pending_story_cmds.pop_front() {
+            self.core.scoped.undo.run(&mut self.core.model, cmd);
+            self.core.scoped.staleness.mark_edited();
         }
         // バックグラウンド解析ジョブ（P8 §5）: 完了していれば結果を適用し、
         // 実行中は完了検知のため再描画を要求し続ける。
-        if self.job.is_some() {
+        if self.core.scoped.job.is_some() {
             self.poll_job();
             ui.ctx()
                 .request_repaint_after(std::time::Duration::from_millis(100));
@@ -1863,7 +1965,7 @@ impl eframe::App for App {
         // 作成パレットが見えていない間は作成モードを強制解除する。モードのトグル・
         // 進捗表示・クリア処理はパレット内にしかないため、非表示のままモードが残ると
         // 3D クリックで意図しない部材が無言で生成される（可視性と発動可能性を一致させる）。
-        if !(self.left_dock_open && self.left_panel == LeftPanel::DrawTools) {
+        if !(self.ui.view.left_dock_open && self.ui.view.left_panel == LeftPanel::DrawTools) {
             self.reset_draw_modes();
         }
 
@@ -1885,7 +1987,7 @@ impl eframe::App for App {
 
         // 保存サイズ超過の確認ダイアログ（時刻歴の詳細記録を含めるかの選択）。
         // どのタブからの保存でも表示できるよう、ここで描画する。
-        if self.pending_save_recording.is_some() {
+        if self.core.scoped.pending_save_recording.is_some() {
             let mut choice: Option<bool> = None;
             let mut do_cancel = false;
             let mut open = true;
@@ -1896,7 +1998,7 @@ impl eframe::App for App {
                 .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
                 .open(&mut open)
                 .show(ui.ctx(), |ui| {
-                    if let Some((_, size_mb)) = &self.pending_save_recording {
+                    if let Some((_, size_mb)) = &self.core.scoped.pending_save_recording {
                         ui.label(format!(
                             "解析結果のサイズが約 {} MB あります（時刻歴の詳細記録を含む）。",
                             size_mb
@@ -1917,10 +2019,10 @@ impl eframe::App for App {
                     });
                 });
             if !open || do_cancel {
-                self.pending_save_recording = None;
+                self.core.scoped.pending_save_recording = None;
             }
             if let Some(include) = choice {
-                if let Some((path, _)) = self.pending_save_recording.take() {
+                if let Some((path, _)) = self.core.scoped.pending_save_recording.take() {
                     self.save_project_to_opts(path, Some(include));
                 }
             }
@@ -1928,11 +2030,13 @@ impl eframe::App for App {
 
         // 波形ライブラリ登録の上書き確認ダイアログ（「🌊 波形を保存…」で同名の
         // 波形が既にある場合）。どのタブからでも表示できるよう、ここで描画する。
-        if self.pending_wave_register.is_some() {
+        if self.ui.view.pending_wave_register.is_some() {
             let mut do_confirm = false;
             let mut do_cancel = false;
             let mut open = true;
             let file_name = self
+                .ui
+                .view
                 .pending_wave_register
                 .as_ref()
                 .and_then(|p| p.file_name())
@@ -1973,16 +2077,14 @@ impl eframe::App for App {
                     if ui.button("📄 新規").clicked() {
                         // 新規モデルは標準荷重ケース（DL・LL(架構用)・LL(地震用)・EX・EY）付き。
                         self.load_model(squid_n_core::model::Model::with_default_load_cases());
-                        self.project_path = None;
                         ui.close();
                     }
                     if ui.button("📐 新規（架構ウィザード）…").clicked() {
-                        self.frame_wizard.open = true;
+                        self.ui.view.frame_wizard.open = true;
                         ui.close();
                     }
                     if ui.button("🏠 サンプル(門型ラーメン)").clicked() {
                         self.load_model(crate::sample::portal_frame());
-                        self.project_path = None;
                         ui.close();
                     }
                     ui.separator();
@@ -2046,36 +2148,36 @@ impl eframe::App for App {
                     ("レポート", Tab::Report),
                 ];
                 for (label, tab) in &tabs {
-                    let selected = self.active_tab == *tab;
+                    let selected = self.ui.view.active_tab == *tab;
                     let stale_marker = match *tab {
                         // 進行中の下流タブに stale バッジを付与（§5）
-                        Tab::Results | Tab::Design if self.staleness.results_stale => "⚠",
+                        Tab::Results | Tab::Design if self.core.scoped.staleness.results_stale => "⚠",
                         _ => "",
                     };
                     let label_str = format!("{} {}", label, stale_marker);
                     // プリセットは工程が実際に変わったときのみ適用する。選択中タブの
                     // 再クリックで手動調整したドック配置が巻き戻らないようにするため。
                     if ui.selectable_label(selected, label_str).clicked() && !selected {
-                        self.active_tab = *tab;
+                        self.ui.view.active_tab = *tab;
                         self.apply_tab_preset(*tab);
                     }
                 }
                 ui.separator();
-                let can_undo = self.undo.can_undo();
-                let can_redo = self.undo.can_redo();
+                let can_undo = self.core.scoped.undo.can_undo();
+                let can_redo = self.core.scoped.undo.can_redo();
                 if ui
                     .add_enabled(can_undo, egui::Button::new("↶ Undo"))
                     .clicked()
                 {
-                    self.undo.undo(&mut self.model);
-                    self.staleness.mark_edited();
+                    self.core.scoped.undo.undo(&mut self.core.model);
+                    self.core.scoped.staleness.mark_edited();
                 }
                 if ui
                     .add_enabled(can_redo, egui::Button::new("↷ Redo"))
                     .clicked()
                 {
-                    self.undo.redo(&mut self.model);
-                    self.staleness.mark_edited();
+                    self.core.scoped.undo.redo(&mut self.core.model);
+                    self.core.scoped.staleness.mark_edited();
                 }
                 // 荷重継続性区分（長期/短期）の手動切替はツールバーに置かない。
                 // 区分は表示対象の荷重ケース／組合せから自動判定される
@@ -2116,7 +2218,7 @@ impl eframe::App for App {
             });
 
         // 左：パネル切替式（ナビゲータ／作成パレット）。アイコン列で切り替える。
-        if self.left_dock_open {
+        if self.ui.view.left_dock_open {
             egui::Panel::left("left_dock")
                 .resizable(true)
                 .default_size(280.0)
@@ -2125,7 +2227,7 @@ impl eframe::App for App {
                 .show_inside(ui, |ui| {
                     egui::ScrollArea::both()
                         .auto_shrink([false, false])
-                        .show(ui, |ui| match self.left_panel {
+                        .show(ui, |ui| match self.ui.view.left_panel {
                             LeftPanel::Navigator => self.navigator_panel(ui),
                             LeftPanel::DrawTools => self.draw_tools_panel(ui),
                         });
@@ -2135,7 +2237,7 @@ impl eframe::App for App {
         // 右：パネル切替式（インスペクタ／準備計算／各解析パネル）。アイコン列で
         // 切り替える。準備計算・解析は 3D ビューを見ながら設定・実行できるようここに
         // 置くため、他パネルより縦に長くなりがちで、右ドック全体をスクロール可能にする。
-        if self.right_dock_open {
+        if self.ui.view.right_dock_open {
             egui::Panel::right("right_dock")
                 .resizable(true)
                 .default_size(320.0)
@@ -2144,7 +2246,7 @@ impl eframe::App for App {
                 .show_inside(ui, |ui| {
                     egui::ScrollArea::vertical()
                         .auto_shrink([false, false])
-                        .show(ui, |ui| match self.right_panel {
+                        .show(ui, |ui| match self.ui.view.right_panel {
                             RightPanel::Inspector => self.inspector_panel(ui),
                             RightPanel::Preparation => self.preparation_panel(ui),
                             RightPanel::Static => self.static_panel(ui),
@@ -2160,7 +2262,7 @@ impl eframe::App for App {
         // 横長テーブルは幅の狭い左ドックより下ドックの方が視認性が良いため、
         // モデル/荷重の編集テーブルもここに収容する。
         // 左右ドックより後に show_inside することで、中央領域の下部（左右ドックの間）に出す。
-        if self.bottom_dock_open {
+        if self.ui.view.bottom_dock_open {
             egui::Panel::bottom("bottom_dock")
                 .resizable(true)
                 .default_size(200.0)
@@ -2173,41 +2275,44 @@ impl eframe::App for App {
                     // 縮んだままになる。割り当て済みの高さを下限に固定して高さを保つ。
                     ui.set_min_height(ui.available_height());
                     ui.horizontal(|ui| {
-                        let log_label = format!("ログ ({})", self.log.entries.len());
+                        let log_label = format!("ログ ({})", self.core.log.entries.len());
                         if ui
-                            .selectable_label(self.bottom_tab == BottomTab::Log, log_label)
+                            .selectable_label(self.ui.view.bottom_tab == BottomTab::Log, log_label)
                             .clicked()
                         {
-                            self.bottom_tab = BottomTab::Log;
+                            self.ui.view.bottom_tab = BottomTab::Log;
                         }
                         if ui
-                            .selectable_label(self.bottom_tab == BottomTab::Model, "モデル")
+                            .selectable_label(self.ui.view.bottom_tab == BottomTab::Model, "モデル")
                             .clicked()
                         {
-                            self.bottom_tab = BottomTab::Model;
+                            self.ui.view.bottom_tab = BottomTab::Model;
                         }
                         if ui
-                            .selectable_label(self.bottom_tab == BottomTab::Loads, "荷重")
+                            .selectable_label(self.ui.view.bottom_tab == BottomTab::Loads, "荷重")
                             .clicked()
                         {
-                            self.bottom_tab = BottomTab::Loads;
+                            self.ui.view.bottom_tab = BottomTab::Loads;
                         }
                         // 準備計算タブ: 未実行・要再実行なら「*」を付けて再実行を促す。
-                        let prep_label = if self.staleness.preparation_stale {
+                        let prep_label = if self.core.scoped.staleness.preparation_stale {
                             "準備計算 *"
                         } else {
                             "準備計算"
                         };
                         if ui
-                            .selectable_label(self.bottom_tab == BottomTab::Preparation, prep_label)
+                            .selectable_label(
+                                self.ui.view.bottom_tab == BottomTab::Preparation,
+                                prep_label,
+                            )
                             .clicked()
                         {
-                            self.bottom_tab = BottomTab::Preparation;
+                            self.ui.view.bottom_tab = BottomTab::Preparation;
                         }
                         // 診断タブのラベル: 実行済みで Error/Warning があれば件数を付す
                         // （未実行・0件なら「診断」のみでラベルを騒がしくしない）。
                         let (diag_errors, diag_warnings) = self.diagnostics_counts();
-                        let diag_label = if !self.staleness.diagnostics_stale
+                        let diag_label = if !self.core.scoped.staleness.diagnostics_stale
                             && (diag_errors > 0 || diag_warnings > 0)
                         {
                             format!("診断 (E{}/W{})", diag_errors, diag_warnings)
@@ -2215,20 +2320,24 @@ impl eframe::App for App {
                             "診断".to_string()
                         };
                         if ui
-                            .selectable_label(self.bottom_tab == BottomTab::Diagnostics, diag_label)
+                            .selectable_label(
+                                self.ui.view.bottom_tab == BottomTab::Diagnostics,
+                                diag_label,
+                            )
                             .clicked()
                         {
-                            self.bottom_tab = BottomTab::Diagnostics;
+                            self.ui.view.bottom_tab = BottomTab::Diagnostics;
                         }
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             if ui.button("✕").clicked() {
-                                self.bottom_dock_open = false;
+                                self.ui.view.bottom_dock_open = false;
                             }
-                            if self.bottom_tab == BottomTab::Log && ui.button("クリア").clicked()
+                            if self.ui.view.bottom_tab == BottomTab::Log
+                                && ui.button("クリア").clicked()
                             {
-                                self.log.entries.clear();
+                                self.core.log.entries.clear();
                             }
-                            if self.bottom_tab == BottomTab::Diagnostics
+                            if self.ui.view.bottom_tab == BottomTab::Diagnostics
                                 && ui.button("再チェック").clicked()
                             {
                                 self.run_diagnostics();
@@ -2238,13 +2347,14 @@ impl eframe::App for App {
                     ui.separator();
                     // 診断タブを開いた時点で stale なら遅延実行する（編集の度に毎フレーム
                     // 走らせるとモデル/荷重編集操作が重くなるため）。
-                    if self.bottom_tab == BottomTab::Diagnostics && self.staleness.diagnostics_stale
+                    if self.ui.view.bottom_tab == BottomTab::Diagnostics
+                        && self.core.scoped.staleness.diagnostics_stale
                     {
                         self.run_diagnostics();
                     }
-                    match self.bottom_tab {
+                    match self.ui.view.bottom_tab {
                         BottomTab::Log => {
-                            self.log.show(ui);
+                            self.core.log.show(ui);
                         }
                         BottomTab::Model => {
                             // 横スクロールは表ごとに `table_util::standard_table` が
@@ -2267,7 +2377,7 @@ impl eframe::App for App {
                             crate::prep_view::preparation_panel(ui, self);
                         }
                         BottomTab::Diagnostics => {
-                            if self.diagnostics.is_empty() {
+                            if self.core.scoped.diagnostics.is_empty() {
                                 ui.colored_label(
                                     crate::theme::GOOD_GREEN,
                                     "問題は見つかりませんでした",
@@ -2280,9 +2390,9 @@ impl eframe::App for App {
                                         // インデックスで回す（クリック時に selection/nav を
                                         // 書き換えるため self を可変借用する必要があり、
                                         // diagnostics への不変参照と両立できない）。
-                                        for i in 0..self.diagnostics.len() {
+                                        for i in 0..self.core.scoped.diagnostics.len() {
                                             let (color, icon, message, target) = {
-                                                let d = &self.diagnostics[i];
+                                                let d = &self.core.scoped.diagnostics[i];
                                                 let color = match d.severity {
                                                     DiagSeverity::Error => crate::theme::ERROR_RED,
                                                     DiagSeverity::Warning => {
@@ -2310,14 +2420,22 @@ impl eframe::App for App {
                                                 if resp.clicked() {
                                                     match target {
                                                         DiagTarget::Member(id) => {
-                                                            self.selection.members = vec![id];
-                                                            self.selection.nodes.clear();
-                                                            self.nav.focus_member = Some(id);
+                                                            self.ui.scoped.selection.members =
+                                                                vec![id];
+                                                            self.ui.scoped.selection.nodes.clear();
+                                                            self.ui.scoped.nav.focus_member =
+                                                                Some(id);
                                                         }
                                                         DiagTarget::Node(id) => {
-                                                            self.selection.nodes = vec![id];
-                                                            self.selection.members.clear();
-                                                            self.nav.focus_node = Some(id);
+                                                            self.ui.scoped.selection.nodes =
+                                                                vec![id];
+                                                            self.ui
+                                                                .scoped
+                                                                .selection
+                                                                .members
+                                                                .clear();
+                                                            self.ui.scoped.nav.focus_node =
+                                                                Some(id);
                                                         }
                                                     }
                                                 }
@@ -2337,7 +2455,7 @@ impl eframe::App for App {
         // それ以外の工程タブは各内容を表示する。
         egui::CentralPanel::default()
             .frame(crate::theme::central_panel_frame())
-            .show_inside(ui, |ui| match self.active_tab {
+            .show_inside(ui, |ui| match self.ui.view.active_tab {
                 Tab::Model | Tab::Loads | Tab::Analysis => crate::viewer::viewer_panel(ui, self),
                 Tab::Results => self.results_tab_panel(ui),
                 Tab::Design => self.design_tab_panel(ui),

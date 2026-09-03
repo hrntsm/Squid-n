@@ -158,6 +158,7 @@ pub fn steel_attrs_table(ui: &mut egui::Ui, app: &mut App) {
     ui.separator();
 
     let target_elems: Vec<ElemId> = app
+        .core
         .model
         .elements
         .iter()
@@ -173,12 +174,12 @@ pub fn steel_attrs_table(ui: &mut egui::Ui, app: &mut App) {
     // ── 既存の S造検定属性一覧 ─────────────────────────────
     let mut pending_remove: Option<ElemId> = None;
     let mut pending_edit: Option<SteelDesignAttr> = None;
-    if app.model.steel_design_attrs.is_empty() {
+    if app.core.model.steel_design_attrs.is_empty() {
         ui.label(
             "設定済みのS造検定属性はありません(未設定の部材は欠損なし・座屈長さ自動として扱われます)。",
         );
     } else {
-        for attr in &app.model.steel_design_attrs {
+        for attr in &app.core.model.steel_design_attrs {
             ui.horizontal(|ui| {
                 ui.label(format!(
                     "部材#{}: βf={:.1}% βw={:.1}% αw={:.1}% / lb={} / 横補剛n={} / \
@@ -211,37 +212,39 @@ pub fn steel_attrs_table(ui: &mut egui::Ui, app: &mut App) {
         }
     }
     if let Some(attr) = pending_edit {
-        app.steel_attr_draft.elem = Some(attr.elem);
-        app.steel_attr_draft.synced_for = Some(attr.elem);
-        app.steel_attr_draft.joint_flange_loss = format!("{:.1}", attr.joint_flange_loss);
-        app.steel_attr_draft.joint_web_loss = format!("{:.1}", attr.joint_web_loss);
-        app.steel_attr_draft.scallop_web_loss = format!("{:.1}", attr.scallop_web_loss);
+        app.ui.scoped.steel_attr_draft.elem = Some(attr.elem);
+        app.ui.scoped.steel_attr_draft.synced_for = Some(attr.elem);
+        app.ui.scoped.steel_attr_draft.joint_flange_loss = format!("{:.1}", attr.joint_flange_loss);
+        app.ui.scoped.steel_attr_draft.joint_web_loss = format!("{:.1}", attr.joint_web_loss);
+        app.ui.scoped.steel_attr_draft.scallop_web_loss = format!("{:.1}", attr.scallop_web_loss);
         let (lb_s, lb_m, lb_e) = attr
             .lb_direct
             .map(|(s, m, e)| (format!("{s:.0}"), format!("{m:.0}"), format!("{e:.0}")))
             .unwrap_or_default();
-        app.steel_attr_draft.lb_start = lb_s;
-        app.steel_attr_draft.lb_mid = lb_m;
-        app.steel_attr_draft.lb_end = lb_e;
-        app.steel_attr_draft.lateral_brace_count = attr
+        app.ui.scoped.steel_attr_draft.lb_start = lb_s;
+        app.ui.scoped.steel_attr_draft.lb_mid = lb_m;
+        app.ui.scoped.steel_attr_draft.lb_end = lb_e;
+        app.ui.scoped.steel_attr_draft.lateral_brace_count = attr
             .lateral_brace_count
             .map(|n| n.to_string())
             .unwrap_or_default();
-        app.steel_attr_draft.lk_y_direct = attr
+        app.ui.scoped.steel_attr_draft.lk_y_direct = attr
             .lk_y_direct
             .map(|v| format!("{v:.0}"))
             .unwrap_or_default();
-        app.steel_attr_draft.lk_z_direct = attr
+        app.ui.scoped.steel_attr_draft.lk_z_direct = attr
             .lk_z_direct
             .map(|v| format!("{v:.0}"))
             .unwrap_or_default();
-        app.steel_attr_draft.c_direct =
+        app.ui.scoped.steel_attr_draft.c_direct =
             attr.c_direct.map(|v| format!("{v:.2}")).unwrap_or_default();
     }
     if let Some(elem) = pending_remove {
-        app.undo
-            .run(&mut app.model, Box::new(RemoveSteelDesignAttr { elem }));
-        app.staleness.mark_edited();
+        app.core.scoped.undo.run(
+            &mut app.core.model,
+            Box::new(RemoveSteelDesignAttr { elem }),
+        );
+        app.core.scoped.staleness.mark_edited();
     }
 
     ui.separator();
@@ -251,6 +254,8 @@ pub fn steel_attrs_table(ui: &mut egui::Ui, app: &mut App) {
     ui.horizontal(|ui| {
         ui.label("対象部材:");
         let text = app
+            .ui
+            .scoped
             .steel_attr_draft
             .elem
             .map(|e| format!("部材#{}", e.0))
@@ -261,19 +266,20 @@ pub fn steel_attrs_table(ui: &mut egui::Ui, app: &mut App) {
                 for &eid in &target_elems {
                     if ui
                         .selectable_label(
-                            app.steel_attr_draft.elem == Some(eid),
+                            app.ui.scoped.steel_attr_draft.elem == Some(eid),
                             format!("部材#{}", eid.0),
                         )
                         .clicked()
                     {
-                        app.steel_attr_draft.elem = Some(eid);
+                        app.ui.scoped.steel_attr_draft.elem = Some(eid);
                     }
                 }
             });
     });
-    if app.steel_attr_draft.elem != app.steel_attr_draft.synced_for {
-        if let Some(eid) = app.steel_attr_draft.elem {
+    if app.ui.scoped.steel_attr_draft.elem != app.ui.scoped.steel_attr_draft.synced_for {
+        if let Some(eid) = app.ui.scoped.steel_attr_draft.elem {
             let existing = app
+                .core
                 .model
                 .steel_design_attrs
                 .iter()
@@ -290,59 +296,70 @@ pub fn steel_attrs_table(ui: &mut egui::Ui, app: &mut App) {
                 lk_z_direct: None,
                 c_direct: None,
             });
-            app.steel_attr_draft.joint_flange_loss = format!("{:.1}", attr.joint_flange_loss);
-            app.steel_attr_draft.joint_web_loss = format!("{:.1}", attr.joint_web_loss);
-            app.steel_attr_draft.scallop_web_loss = format!("{:.1}", attr.scallop_web_loss);
+            app.ui.scoped.steel_attr_draft.joint_flange_loss =
+                format!("{:.1}", attr.joint_flange_loss);
+            app.ui.scoped.steel_attr_draft.joint_web_loss = format!("{:.1}", attr.joint_web_loss);
+            app.ui.scoped.steel_attr_draft.scallop_web_loss =
+                format!("{:.1}", attr.scallop_web_loss);
             let (lb_s, lb_m, lb_e) = attr
                 .lb_direct
                 .map(|(s, m, e)| (format!("{s:.0}"), format!("{m:.0}"), format!("{e:.0}")))
                 .unwrap_or_default();
-            app.steel_attr_draft.lb_start = lb_s;
-            app.steel_attr_draft.lb_mid = lb_m;
-            app.steel_attr_draft.lb_end = lb_e;
-            app.steel_attr_draft.lateral_brace_count = attr
+            app.ui.scoped.steel_attr_draft.lb_start = lb_s;
+            app.ui.scoped.steel_attr_draft.lb_mid = lb_m;
+            app.ui.scoped.steel_attr_draft.lb_end = lb_e;
+            app.ui.scoped.steel_attr_draft.lateral_brace_count = attr
                 .lateral_brace_count
                 .map(|n| n.to_string())
                 .unwrap_or_default();
-            app.steel_attr_draft.lk_y_direct = attr
+            app.ui.scoped.steel_attr_draft.lk_y_direct = attr
                 .lk_y_direct
                 .map(|v| format!("{v:.0}"))
                 .unwrap_or_default();
-            app.steel_attr_draft.lk_z_direct = attr
+            app.ui.scoped.steel_attr_draft.lk_z_direct = attr
                 .lk_z_direct
                 .map(|v| format!("{v:.0}"))
                 .unwrap_or_default();
-            app.steel_attr_draft.c_direct =
+            app.ui.scoped.steel_attr_draft.c_direct =
                 attr.c_direct.map(|v| format!("{v:.2}")).unwrap_or_default();
-            app.steel_attr_draft.synced_for = Some(eid);
+            app.ui.scoped.steel_attr_draft.synced_for = Some(eid);
         }
     }
 
     ui.horizontal(|ui| {
         ui.label("βf 継手フランジ欠損率[%]:");
         ui.add(
-            egui::TextEdit::singleline(&mut app.steel_attr_draft.joint_flange_loss)
+            egui::TextEdit::singleline(&mut app.ui.scoped.steel_attr_draft.joint_flange_loss)
                 .desired_width(60.0),
         );
         ui.label("βw 継手ウェブ欠損率[%]:");
         ui.add(
-            egui::TextEdit::singleline(&mut app.steel_attr_draft.joint_web_loss)
+            egui::TextEdit::singleline(&mut app.ui.scoped.steel_attr_draft.joint_web_loss)
                 .desired_width(60.0),
         );
         ui.label("αw スカラップ欠損率[%]:");
         ui.add(
-            egui::TextEdit::singleline(&mut app.steel_attr_draft.scallop_web_loss)
+            egui::TextEdit::singleline(&mut app.ui.scoped.steel_attr_draft.scallop_web_loss)
                 .desired_width(60.0),
         );
     });
 
     ui.horizontal(|ui| {
         ui.label("横座屈長さ lb 直接入力[mm] 始端:");
-        ui.add(egui::TextEdit::singleline(&mut app.steel_attr_draft.lb_start).desired_width(70.0));
+        ui.add(
+            egui::TextEdit::singleline(&mut app.ui.scoped.steel_attr_draft.lb_start)
+                .desired_width(70.0),
+        );
         ui.label("中央:");
-        ui.add(egui::TextEdit::singleline(&mut app.steel_attr_draft.lb_mid).desired_width(70.0));
+        ui.add(
+            egui::TextEdit::singleline(&mut app.ui.scoped.steel_attr_draft.lb_mid)
+                .desired_width(70.0),
+        );
         ui.label("終端:");
-        ui.add(egui::TextEdit::singleline(&mut app.steel_attr_draft.lb_end).desired_width(70.0));
+        ui.add(
+            egui::TextEdit::singleline(&mut app.ui.scoped.steel_attr_draft.lb_end)
+                .desired_width(70.0),
+        );
     })
     .response
     .on_hover_text("3欄すべて空欄なら自動算定(等間隔横補剛本数、または部材長)。");
@@ -350,7 +367,7 @@ pub fn steel_attrs_table(ui: &mut egui::Ui, app: &mut App) {
     ui.horizontal(|ui| {
         ui.label("等間隔横補剛本数:");
         ui.add(
-            egui::TextEdit::singleline(&mut app.steel_attr_draft.lateral_brace_count)
+            egui::TextEdit::singleline(&mut app.ui.scoped.steel_attr_draft.lateral_brace_count)
                 .desired_width(50.0),
         )
         .on_hover_text(
@@ -361,12 +378,12 @@ pub fn steel_attrs_table(ui: &mut egui::Ui, app: &mut App) {
     ui.horizontal(|ui| {
         ui.label("座屈長さ lk_y(強軸)直接入力[mm]:");
         ui.add(
-            egui::TextEdit::singleline(&mut app.steel_attr_draft.lk_y_direct)
+            egui::TextEdit::singleline(&mut app.ui.scoped.steel_attr_draft.lk_y_direct)
                 .desired_width(80.0),
         );
         ui.label("lk_z(弱軸)直接入力[mm]:");
         ui.add(
-            egui::TextEdit::singleline(&mut app.steel_attr_draft.lk_z_direct)
+            egui::TextEdit::singleline(&mut app.ui.scoped.steel_attr_draft.lk_z_direct)
                 .desired_width(80.0),
         );
     })
@@ -377,25 +394,25 @@ pub fn steel_attrs_table(ui: &mut egui::Ui, app: &mut App) {
 
     ui.horizontal(|ui| {
         ui.label("C 係数直接入力（空欄=自動）:");
-        ui.add(egui::TextEdit::singleline(&mut app.steel_attr_draft.c_direct).desired_width(60.0));
+        ui.add(egui::TextEdit::singleline(&mut app.ui.scoped.steel_attr_draft.c_direct).desired_width(60.0));
     })
     .response
     .on_hover_text(
         "空欄=自動算定(材端モーメント比M2/M1・上限2.3)。指定した場合は自動算定・上限2.3を行わず入力値をそのまま採用します。",
     );
 
-    let parsed_flange = parse_loss_percent(&app.steel_attr_draft.joint_flange_loss, "βf");
-    let parsed_web = parse_loss_percent(&app.steel_attr_draft.joint_web_loss, "βw");
-    let parsed_scallop = parse_loss_percent(&app.steel_attr_draft.scallop_web_loss, "αw");
+    let parsed_flange = parse_loss_percent(&app.ui.scoped.steel_attr_draft.joint_flange_loss, "βf");
+    let parsed_web = parse_loss_percent(&app.ui.scoped.steel_attr_draft.joint_web_loss, "βw");
+    let parsed_scallop = parse_loss_percent(&app.ui.scoped.steel_attr_draft.scallop_web_loss, "αw");
     let parsed_lb = parse_lb_direct(
-        &app.steel_attr_draft.lb_start,
-        &app.steel_attr_draft.lb_mid,
-        &app.steel_attr_draft.lb_end,
+        &app.ui.scoped.steel_attr_draft.lb_start,
+        &app.ui.scoped.steel_attr_draft.lb_mid,
+        &app.ui.scoped.steel_attr_draft.lb_end,
     );
-    let parsed_brace_count = parse_brace_count(&app.steel_attr_draft.lateral_brace_count);
-    let parsed_lk_y = parse_lk_direct(&app.steel_attr_draft.lk_y_direct, "lk_y");
-    let parsed_lk_z = parse_lk_direct(&app.steel_attr_draft.lk_z_direct, "lk_z");
-    let parsed_c = parse_lk_direct(&app.steel_attr_draft.c_direct, "C係数");
+    let parsed_brace_count = parse_brace_count(&app.ui.scoped.steel_attr_draft.lateral_brace_count);
+    let parsed_lk_y = parse_lk_direct(&app.ui.scoped.steel_attr_draft.lk_y_direct, "lk_y");
+    let parsed_lk_z = parse_lk_direct(&app.ui.scoped.steel_attr_draft.lk_z_direct, "lk_z");
+    let parsed_c = parse_lk_direct(&app.ui.scoped.steel_attr_draft.c_direct, "C係数");
 
     for (label, r) in [
         ("βf", parsed_flange.as_ref().err()),
@@ -412,7 +429,7 @@ pub fn steel_attrs_table(ui: &mut egui::Ui, app: &mut App) {
         }
     }
 
-    let can_apply = app.steel_attr_draft.elem.is_some()
+    let can_apply = app.ui.scoped.steel_attr_draft.elem.is_some()
         && parsed_flange.is_ok()
         && parsed_web.is_ok()
         && parsed_scallop.is_ok()
@@ -440,7 +457,7 @@ pub fn steel_attrs_table(ui: &mut egui::Ui, app: &mut App) {
                 Ok(lk_z_direct),
                 Ok(c_direct),
             ) = (
-                app.steel_attr_draft.elem,
+                app.ui.scoped.steel_attr_draft.elem,
                 parsed_flange,
                 parsed_web,
                 parsed_scallop,
@@ -462,25 +479,31 @@ pub fn steel_attrs_table(ui: &mut egui::Ui, app: &mut App) {
                     c_direct,
                 };
                 if attr.is_empty() {
-                    app.undo
-                        .run(&mut app.model, Box::new(RemoveSteelDesignAttr { elem }));
+                    app.core.scoped.undo.run(
+                        &mut app.core.model,
+                        Box::new(RemoveSteelDesignAttr { elem }),
+                    );
                 } else {
-                    app.undo
-                        .run(&mut app.model, Box::new(SetSteelDesignAttr { attr }));
+                    app.core
+                        .scoped
+                        .undo
+                        .run(&mut app.core.model, Box::new(SetSteelDesignAttr { attr }));
                 }
-                app.staleness.mark_edited();
+                app.core.scoped.staleness.mark_edited();
             }
         }
-        if app.steel_attr_draft.elem.is_some()
+        if app.ui.scoped.steel_attr_draft.elem.is_some()
             && ui
                 .button("🗑 この部材のS造検定属性を削除")
                 .on_hover_text("選択した部材のS造検定属性を削除します(undo可)")
                 .clicked()
         {
-            if let Some(elem) = app.steel_attr_draft.elem {
-                app.undo
-                    .run(&mut app.model, Box::new(RemoveSteelDesignAttr { elem }));
-                app.staleness.mark_edited();
+            if let Some(elem) = app.ui.scoped.steel_attr_draft.elem {
+                app.core.scoped.undo.run(
+                    &mut app.core.model,
+                    Box::new(RemoveSteelDesignAttr { elem }),
+                );
+                app.core.scoped.staleness.mark_edited();
             }
         }
     });

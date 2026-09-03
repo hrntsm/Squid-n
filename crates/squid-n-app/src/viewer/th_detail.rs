@@ -246,9 +246,9 @@ fn design_member_kind(elem: &ElementData, model: &Model) -> Option<MemberKind> {
     }
 }
 
-/// 時刻歴詳細ウィンドウ（`app.th_detail_elem` があれば表示）。
+/// 時刻歴詳細ウィンドウ（`app.ui.scoped.th_detail_elem` があれば表示）。
 pub(crate) fn show_th_detail_window(ui: &egui::Ui, app: &mut App) {
-    let Some(elem_id) = app.th_detail_elem else {
+    let Some(elem_id) = app.ui.scoped.th_detail_elem else {
         return;
     };
     let mut open = true;
@@ -264,18 +264,18 @@ pub(crate) fn show_th_detail_window(ui: &egui::Ui, app: &mut App) {
             });
         });
     if !open {
-        app.th_detail_elem = None;
+        app.ui.scoped.th_detail_elem = None;
     }
 }
 
-/// `app.th_detail_axis_z` は一時的にローカル変数へ取り出し、`ThRecording` の
-/// 借用（`app.results` 由来。フレーム数×要素数の内力を持つため複製すると重い）と
+/// `app.ui.view.th_detail_axis_z` は一時的にローカル変数へ取り出し、`ThRecording` の
+/// 借用（`app.core.scoped.results` 由来。フレーム数×要素数の内力を持つため複製すると重い）と
 /// `app: &mut App` の同時使用を避け、最後にまとめて書き戻す
-/// （§実装内容2 のループ本体は `app.model`／`app.results` の共有参照のみで完結する）。
+/// （§実装内容2 のループ本体は `app.core.model`／`app.core.scoped.results` の共有参照のみで完結する）。
 fn draw_th_detail_content(ui: &mut egui::Ui, app: &mut App, elem_id: ElemId) {
     // 中-1(b): モデル編集後（他タブの ⚠ 表示と同じ判定条件）は添字ずれにより
     // 別部材のデータを表示する恐れがあるため、プロット・検定を出さず警告のみ表示する。
-    if app.staleness.results_stale {
+    if app.core.scoped.staleness.results_stale {
         ui.colored_label(
             theme::WARN_TEXT,
             "⚠ モデルが編集されています。解析を再実行してください\
@@ -283,7 +283,13 @@ fn draw_th_detail_content(ui: &mut egui::Ui, app: &mut App, elem_id: ElemId) {
         );
         return;
     }
-    let Some(th_result) = app.results.as_ref().and_then(|r| r.time_history.as_ref()) else {
+    let Some(th_result) = app
+        .core
+        .scoped
+        .results
+        .as_ref()
+        .and_then(|r| r.time_history.as_ref())
+    else {
         ui.colored_label(theme::GRAY_600, "時刻歴の詳細記録がありません。");
         return;
     };
@@ -297,7 +303,7 @@ fn draw_th_detail_content(ui: &mut egui::Ui, app: &mut App, elem_id: ElemId) {
     // 同時に保持できないため、値だけコピーする）。
     let th_nonlinear = th_result.nonlinear;
     let th_applied_long_term = th_result.applied_long_term;
-    let display = super::wall_expanded_view_model(&app.model);
+    let display = super::wall_expanded_view_model(&app.core.model);
     let Some(elem_idx) = display.elements.iter().position(|e| e.id == elem_id) else {
         ui.colored_label(theme::GRAY_600, "この部材はモデルから削除されています。");
         return;
@@ -312,7 +318,7 @@ fn draw_th_detail_content(ui: &mut egui::Ui, app: &mut App, elem_id: ElemId) {
 
     ui.label(format!("部材 #{}（{}）", elem_id.0, kind_label(&elem.kind)));
     let n_frames = recording.frame_time.len();
-    let frame = app.th_frame.min(n_frames.saturating_sub(1));
+    let frame = app.ui.scoped.th_frame.min(n_frames.saturating_sub(1));
     if let Some(t) = recording.frame_time.get(frame) {
         ui.label(format!(
             "現在フレーム: {frame}/{} (t={:.3}s)",
@@ -323,9 +329,9 @@ fn draw_th_detail_content(ui: &mut egui::Ui, app: &mut App, elem_id: ElemId) {
     ui.separator();
 
     ui.strong("荷重変形関係の履歴ループ");
-    let mut axis_z = app.th_detail_axis_z;
+    let mut axis_z = app.ui.view.th_detail_axis_z;
     // 中-2: 零長要素の成分選択は部材ごとに保持し、部材が変われば要素種別の既定へ戻す。
-    let mut axial_component = match app.th_detail_axial_component {
+    let mut axial_component = match app.ui.scoped.th_detail_axial_component {
         Some((id, c)) if id == elem_id => c,
         _ => default_axial_component(&elem.kind),
     };
@@ -383,8 +389,8 @@ fn draw_th_detail_content(ui: &mut egui::Ui, app: &mut App, elem_id: ElemId) {
             );
         }
     }
-    app.th_detail_axis_z = axis_z;
-    app.th_detail_axial_component = Some((elem_id, axial_component));
+    app.ui.view.th_detail_axis_z = axis_z;
+    app.ui.scoped.th_detail_axial_component = Some((elem_id, axial_component));
 
     ui.add_space(6.0);
     ui.separator();
@@ -510,7 +516,7 @@ fn axial_point(
 /// 梁・柱の M-θ ループ（i端・j端、強軸/弱軸切替可能）。
 ///
 /// `axis_z`（表示中の曲げ軸）は呼び出し側（`App::th_detail_axis_z`）が保持する
-/// 状態をローカル変数として受け渡す。`ThRecording` の借用（`app.results` 由来）と
+/// 状態をローカル変数として受け渡す。`ThRecording` の借用（`app.core.scoped.results` 由来）と
 /// `app: &mut App` の同時使用を避けるため、`App` そのものは受け取らない。
 #[allow(clippy::too_many_arguments)]
 fn draw_flexural_loop(
@@ -666,7 +672,7 @@ fn draw_peak_check(
         ui.colored_label(theme::GRAY_600, "内力の記録がないため検定対象外です。");
         return;
     };
-    let Some(kind) = design_member_kind(elem, &app.model) else {
+    let Some(kind) = design_member_kind(elem, &app.core.model) else {
         ui.colored_label(
             theme::GRAY_600,
             "この要素種別は断面検定の対象外です（軸力のみの減衰・免震・節点ばね要素等）。",
@@ -675,12 +681,12 @@ fn draw_peak_check(
     };
     let Some(sec) = elem
         .section
-        .and_then(|sid| app.model.sections.get(sid.index()))
+        .and_then(|sid| app.core.model.sections.get(sid.index()))
     else {
         ui.colored_label(theme::GRAY_600, "断面が未設定のため検定対象外です。");
         return;
     };
-    let Some(mat) = app.model.element_material(elem) else {
+    let Some(mat) = app.core.model.element_material(elem) else {
         ui.colored_label(
             theme::GRAY_600,
             "断面に材料が割り当てられていないため検定対象外です。",
@@ -721,7 +727,7 @@ fn draw_peak_check(
     let wire_qd = th_nonlinear && th_applied_long_term;
     let long_mf = wire_qd
         .then(|| {
-            app.results.as_ref().and_then(|r| {
+            app.core.scoped.results.as_ref().and_then(|r| {
                 r.combos
                     .iter()
                     .find(|(n, _)| n == "DL + LL")
@@ -734,7 +740,7 @@ fn draw_peak_check(
             })
         })
         .flatten();
-    let q0_by_elem = wire_qd.then(|| squid_n_job::simple_beam_q0_by_gravity_cases(&app.model));
+    let q0_by_elem = wire_qd.then(|| squid_n_job::simple_beam_q0_by_gravity_cases(&app.core.model));
     let seismic_qd = long_mf.and_then(|list| {
         list.iter()
             .find(|(id, _)| *id == elem.id)
@@ -744,7 +750,7 @@ fn draw_peak_check(
                 n_mechanism: 1.0,
                 q_simple: q0_by_elem.as_ref().and_then(|m| m.get(&elem.id).copied()),
                 clear_length: clear_span,
-                method: app.analysis_cfg.qd_method,
+                method: app.core.analysis_cfg.qd_method,
             })
     });
     let column_sum_my = if kind == MemberKind::Column && seismic_qd.is_some() {
@@ -761,9 +767,16 @@ fn draw_peak_check(
             .and_then(|list| list.iter().find(|(id, _)| *id == elem.id))
             .map(|(_, mf)| (n_at(mf, 0), n_at(mf, 1)))
             .unwrap_or((n_combo_i, n_combo_j));
-        let adj = squid_n_core::adjacency::NodeAdjacency::build(&app.model);
+        let adj = squid_n_core::adjacency::NodeAdjacency::build(&app.core.model);
         squid_n_design_jp::rc::compute_column_mechanism_sum_my(
-            &app.model, &adj, elem, n_long_i, n_long_j, n_combo_i, n_combo_j, 1.0,
+            &app.core.model,
+            &adj,
+            elem,
+            n_long_i,
+            n_long_j,
+            n_combo_i,
+            n_combo_j,
+            1.0,
         )
     } else {
         None
@@ -776,17 +789,17 @@ fn draw_peak_check(
         clear_length: Some(clear_span),
         shear_span,
         shear_span_y,
-        rc_damage_control: app.analysis_cfg.rc_damage_control,
-        bond_method: app.analysis_cfg.bond_method,
+        rc_damage_control: app.core.analysis_cfg.rc_damage_control,
+        bond_method: app.core.analysis_cfg.bond_method,
         end_moments_z,
         mid_moment_z: m_at(0.5),
         // 材料は断面が持つ。RC・SRC の検定は主筋・せん断補強筋・内蔵鉄骨の材料を
         // 要求するため、設計タブの検定（`actions.rs`）と同じく断面から解決して渡す。
-        rebar_material: app.model.element_rebar_material(elem).cloned(),
-        shear_rebar_material: app.model.element_shear_rebar_material(elem).cloned(),
-        steel_material: app.model.element_steel_material(elem).cloned(),
+        rebar_material: app.core.model.element_rebar_material(elem).cloned(),
+        shear_rebar_material: app.core.model.element_shear_rebar_material(elem).cloned(),
+        steel_material: app.core.model.element_steel_material(elem).cloned(),
         beam_has_slab: kind == MemberKind::Beam
-            && squid_n_design_jp::beam_has_attached_slab(&app.model, elem),
+            && squid_n_design_jp::beam_has_attached_slab(&app.core.model, elem),
         seismic_qd,
         column_sum_my,
         ..Default::default()

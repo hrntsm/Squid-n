@@ -57,12 +57,14 @@ pub fn preparation_panel(ui: &mut egui::Ui, app: &mut App) {
         {
             app.run_preparation();
         }
-        if app.staleness.preparation_stale {
+        if app.core.scoped.staleness.preparation_stale {
             ui.colored_label(
                 crate::theme::WARN_TEXT,
                 "⚠ モデルが編集されました。準備計算は再実行が必要です。",
             );
         } else if let Some(elapsed) = app
+            .core
+            .scoped
             .preparation
             .as_ref()
             .and_then(|p| p.computed_at.elapsed().ok())
@@ -73,7 +75,8 @@ pub fn preparation_panel(ui: &mut egui::Ui, app: &mut App) {
             );
         }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if app.preparation.is_some() && ui.button("📋 CSV をコピー").clicked() {
+            if app.core.scoped.preparation.is_some() && ui.button("📋 CSV をコピー").clicked()
+            {
                 ui.ctx()
                     .copy_text(crate::summary::build_preparation_csv(app));
             }
@@ -81,7 +84,7 @@ pub fn preparation_panel(ui: &mut egui::Ui, app: &mut App) {
     });
     ui.separator();
 
-    let Some(prep) = app.preparation.as_ref() else {
+    let Some(prep) = app.core.scoped.preparation.as_ref() else {
         ui.colored_label(
             crate::theme::GRAY_600,
             "準備計算が未実行です。「▶ 準備計算 実行」を押すと、\
@@ -108,7 +111,7 @@ pub fn preparation_panel(ui: &mut egui::Ui, app: &mut App) {
         ui.colored_label(crate::theme::GOOD_GREEN, "✅ 整合性チェック: 問題なし");
     }
 
-    let view = &mut app.prep_view.view;
+    let view = &mut app.ui.view.prep_view.view;
     ui.horizontal(|ui| {
         for (v, label) in [
             (PrepView::Stories, "階の分布"),
@@ -128,7 +131,7 @@ pub fn preparation_panel(ui: &mut egui::Ui, app: &mut App) {
     });
     ui.separator();
 
-    let view = app.prep_view.view;
+    let view = app.ui.view.prep_view.view;
     // 横スクロールは表ごとに `table_util::standard_table` が持つため、ここは縦のみ。
     // 外側にも横スクロールを置くと、表の横スクロールと二重になって操作が定まらない。
     egui::ScrollArea::vertical()

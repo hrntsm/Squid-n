@@ -164,6 +164,7 @@ pub fn member_details_table(ui: &mut egui::Ui, app: &mut App) {
     ui.separator();
 
     let target_elems: Vec<ElemId> = app
+        .core
         .model
         .elements
         .iter()
@@ -179,12 +180,12 @@ pub fn member_details_table(ui: &mut egui::Ui, app: &mut App) {
     // ── 既存の付帯情報一覧 ─────────────────────────────────
     let mut pending_remove: Option<ElemId> = None;
     let mut pending_edit: Option<MemberDetailAttr> = None;
-    if app.model.member_detail_attrs.is_empty() {
+    if app.core.model.member_detail_attrs.is_empty() {
         ui.label(
             "設定済みの付帯情報はありません(未設定の部材はハンチ・継手なしとして扱われます)。",
         );
     } else {
-        for attr in &app.model.member_detail_attrs {
+        for attr in &app.core.model.member_detail_attrs {
             ui.horizontal(|ui| {
                 ui.label(format!(
                     "部材#{}: i端ハンチ[{}] / j端ハンチ[{}] / 継手{}箇所",
@@ -207,9 +208,9 @@ pub fn member_details_table(ui: &mut egui::Ui, app: &mut App) {
         }
     }
     if let Some(attr) = pending_edit {
-        app.member_detail_draft.elem = Some(attr.elem);
-        app.member_detail_draft.synced_for = Some(attr.elem);
-        app.member_detail_draft.haunch_i_enabled = attr.haunch_i.is_some();
+        app.ui.scoped.member_detail_draft.elem = Some(attr.elem);
+        app.ui.scoped.member_detail_draft.synced_for = Some(attr.elem);
+        app.ui.scoped.member_detail_draft.haunch_i_enabled = attr.haunch_i.is_some();
         let (li, di, wi) = attr
             .haunch_i
             .map(|h| {
@@ -220,10 +221,10 @@ pub fn member_details_table(ui: &mut egui::Ui, app: &mut App) {
                 )
             })
             .unwrap_or_default();
-        app.member_detail_draft.haunch_i_length = li;
-        app.member_detail_draft.haunch_i_depth = di;
-        app.member_detail_draft.haunch_i_width = wi;
-        app.member_detail_draft.haunch_j_enabled = attr.haunch_j.is_some();
+        app.ui.scoped.member_detail_draft.haunch_i_length = li;
+        app.ui.scoped.member_detail_draft.haunch_i_depth = di;
+        app.ui.scoped.member_detail_draft.haunch_i_width = wi;
+        app.ui.scoped.member_detail_draft.haunch_j_enabled = attr.haunch_j.is_some();
         let (lj, dj, wj) = attr
             .haunch_j
             .map(|h| {
@@ -234,15 +235,17 @@ pub fn member_details_table(ui: &mut egui::Ui, app: &mut App) {
                 )
             })
             .unwrap_or_default();
-        app.member_detail_draft.haunch_j_length = lj;
-        app.member_detail_draft.haunch_j_depth = dj;
-        app.member_detail_draft.haunch_j_width = wj;
-        app.member_detail_draft.joints = format_joints(&attr.joints);
+        app.ui.scoped.member_detail_draft.haunch_j_length = lj;
+        app.ui.scoped.member_detail_draft.haunch_j_depth = dj;
+        app.ui.scoped.member_detail_draft.haunch_j_width = wj;
+        app.ui.scoped.member_detail_draft.joints = format_joints(&attr.joints);
     }
     if let Some(elem) = pending_remove {
-        app.undo
-            .run(&mut app.model, Box::new(RemoveMemberDetailAttr { elem }));
-        app.staleness.mark_edited();
+        app.core.scoped.undo.run(
+            &mut app.core.model,
+            Box::new(RemoveMemberDetailAttr { elem }),
+        );
+        app.core.scoped.staleness.mark_edited();
     }
 
     ui.separator();
@@ -252,6 +255,8 @@ pub fn member_details_table(ui: &mut egui::Ui, app: &mut App) {
     ui.horizontal(|ui| {
         ui.label("対象部材:");
         let text = app
+            .ui
+            .scoped
             .member_detail_draft
             .elem
             .map(|e| format!("部材#{}", e.0))
@@ -262,23 +267,23 @@ pub fn member_details_table(ui: &mut egui::Ui, app: &mut App) {
                 for &eid in &target_elems {
                     if ui
                         .selectable_label(
-                            app.member_detail_draft.elem == Some(eid),
+                            app.ui.scoped.member_detail_draft.elem == Some(eid),
                             format!("部材#{}", eid.0),
                         )
                         .clicked()
                     {
-                        app.member_detail_draft.elem = Some(eid);
+                        app.ui.scoped.member_detail_draft.elem = Some(eid);
                     }
                 }
             });
     });
-    if app.member_detail_draft.elem != app.member_detail_draft.synced_for {
-        if let Some(eid) = app.member_detail_draft.elem {
-            let existing = app.model.member_detail(eid).cloned();
+    if app.ui.scoped.member_detail_draft.elem != app.ui.scoped.member_detail_draft.synced_for {
+        if let Some(eid) = app.ui.scoped.member_detail_draft.elem {
+            let existing = app.core.model.member_detail(eid).cloned();
             let (haunch_i, haunch_j, joints) = existing
                 .map(|a| (a.haunch_i, a.haunch_j, a.joints))
                 .unwrap_or((None, None, Vec::new()));
-            app.member_detail_draft.haunch_i_enabled = haunch_i.is_some();
+            app.ui.scoped.member_detail_draft.haunch_i_enabled = haunch_i.is_some();
             let (li, di, wi) = haunch_i
                 .map(|h| {
                     (
@@ -288,10 +293,10 @@ pub fn member_details_table(ui: &mut egui::Ui, app: &mut App) {
                     )
                 })
                 .unwrap_or_default();
-            app.member_detail_draft.haunch_i_length = li;
-            app.member_detail_draft.haunch_i_depth = di;
-            app.member_detail_draft.haunch_i_width = wi;
-            app.member_detail_draft.haunch_j_enabled = haunch_j.is_some();
+            app.ui.scoped.member_detail_draft.haunch_i_length = li;
+            app.ui.scoped.member_detail_draft.haunch_i_depth = di;
+            app.ui.scoped.member_detail_draft.haunch_i_width = wi;
+            app.ui.scoped.member_detail_draft.haunch_j_enabled = haunch_j.is_some();
             let (lj, dj, wj) = haunch_j
                 .map(|h| {
                     (
@@ -301,50 +306,56 @@ pub fn member_details_table(ui: &mut egui::Ui, app: &mut App) {
                     )
                 })
                 .unwrap_or_default();
-            app.member_detail_draft.haunch_j_length = lj;
-            app.member_detail_draft.haunch_j_depth = dj;
-            app.member_detail_draft.haunch_j_width = wj;
-            app.member_detail_draft.joints = format_joints(&joints);
-            app.member_detail_draft.synced_for = Some(eid);
+            app.ui.scoped.member_detail_draft.haunch_j_length = lj;
+            app.ui.scoped.member_detail_draft.haunch_j_depth = dj;
+            app.ui.scoped.member_detail_draft.haunch_j_width = wj;
+            app.ui.scoped.member_detail_draft.joints = format_joints(&joints);
+            app.ui.scoped.member_detail_draft.synced_for = Some(eid);
         }
     }
 
     ui.horizontal(|ui| {
-        ui.checkbox(&mut app.member_detail_draft.haunch_i_enabled, "i端ハンチ");
-        ui.add_enabled_ui(app.member_detail_draft.haunch_i_enabled, |ui| {
+        ui.checkbox(
+            &mut app.ui.scoped.member_detail_draft.haunch_i_enabled,
+            "i端ハンチ",
+        );
+        ui.add_enabled_ui(app.ui.scoped.member_detail_draft.haunch_i_enabled, |ui| {
             ui.label("長さ[mm]:");
             ui.add(
-                egui::TextEdit::singleline(&mut app.member_detail_draft.haunch_i_length)
+                egui::TextEdit::singleline(&mut app.ui.scoped.member_detail_draft.haunch_i_length)
                     .desired_width(70.0),
             );
             ui.label("せい増分[mm]:");
             ui.add(
-                egui::TextEdit::singleline(&mut app.member_detail_draft.haunch_i_depth)
+                egui::TextEdit::singleline(&mut app.ui.scoped.member_detail_draft.haunch_i_depth)
                     .desired_width(70.0),
             );
             ui.label("幅増分[mm]:");
             ui.add(
-                egui::TextEdit::singleline(&mut app.member_detail_draft.haunch_i_width)
+                egui::TextEdit::singleline(&mut app.ui.scoped.member_detail_draft.haunch_i_width)
                     .desired_width(70.0),
             );
         });
     });
     ui.horizontal(|ui| {
-        ui.checkbox(&mut app.member_detail_draft.haunch_j_enabled, "j端ハンチ");
-        ui.add_enabled_ui(app.member_detail_draft.haunch_j_enabled, |ui| {
+        ui.checkbox(
+            &mut app.ui.scoped.member_detail_draft.haunch_j_enabled,
+            "j端ハンチ",
+        );
+        ui.add_enabled_ui(app.ui.scoped.member_detail_draft.haunch_j_enabled, |ui| {
             ui.label("長さ[mm]:");
             ui.add(
-                egui::TextEdit::singleline(&mut app.member_detail_draft.haunch_j_length)
+                egui::TextEdit::singleline(&mut app.ui.scoped.member_detail_draft.haunch_j_length)
                     .desired_width(70.0),
             );
             ui.label("せい増分[mm]:");
             ui.add(
-                egui::TextEdit::singleline(&mut app.member_detail_draft.haunch_j_depth)
+                egui::TextEdit::singleline(&mut app.ui.scoped.member_detail_draft.haunch_j_depth)
                     .desired_width(70.0),
             );
             ui.label("幅増分[mm]:");
             ui.add(
-                egui::TextEdit::singleline(&mut app.member_detail_draft.haunch_j_width)
+                egui::TextEdit::singleline(&mut app.ui.scoped.member_detail_draft.haunch_j_width)
                     .desired_width(70.0),
             );
         });
@@ -352,7 +363,7 @@ pub fn member_details_table(ui: &mut egui::Ui, app: &mut App) {
 
     ui.label("継手一覧(始端節点芯からの距離[mm]。任意で「/現場」「/工場」を付記):");
     ui.add(
-        egui::TextEdit::multiline(&mut app.member_detail_draft.joints)
+        egui::TextEdit::multiline(&mut app.ui.scoped.member_detail_draft.joints)
             .desired_rows(3)
             .desired_width(320.0)
             .hint_text(
@@ -367,18 +378,18 @@ pub fn member_details_table(ui: &mut egui::Ui, app: &mut App) {
     );
 
     let parsed_haunch_i = parse_haunch(
-        app.member_detail_draft.haunch_i_enabled,
-        &app.member_detail_draft.haunch_i_length,
-        &app.member_detail_draft.haunch_i_depth,
-        &app.member_detail_draft.haunch_i_width,
+        app.ui.scoped.member_detail_draft.haunch_i_enabled,
+        &app.ui.scoped.member_detail_draft.haunch_i_length,
+        &app.ui.scoped.member_detail_draft.haunch_i_depth,
+        &app.ui.scoped.member_detail_draft.haunch_i_width,
     );
     let parsed_haunch_j = parse_haunch(
-        app.member_detail_draft.haunch_j_enabled,
-        &app.member_detail_draft.haunch_j_length,
-        &app.member_detail_draft.haunch_j_depth,
-        &app.member_detail_draft.haunch_j_width,
+        app.ui.scoped.member_detail_draft.haunch_j_enabled,
+        &app.ui.scoped.member_detail_draft.haunch_j_length,
+        &app.ui.scoped.member_detail_draft.haunch_j_depth,
+        &app.ui.scoped.member_detail_draft.haunch_j_width,
     );
-    let parsed_joints = parse_joints(&app.member_detail_draft.joints);
+    let parsed_joints = parse_joints(&app.ui.scoped.member_detail_draft.joints);
     for (label, r) in [
         ("i端ハンチ", &parsed_haunch_i),
         ("j端ハンチ", &parsed_haunch_j),
@@ -391,7 +402,7 @@ pub fn member_details_table(ui: &mut egui::Ui, app: &mut App) {
         ui.colored_label(crate::theme::ERROR_RED, format!("継手の書式エラー: {e}"));
     }
 
-    let can_apply = app.member_detail_draft.elem.is_some()
+    let can_apply = app.ui.scoped.member_detail_draft.elem.is_some()
         && parsed_haunch_i.is_ok()
         && parsed_haunch_j.is_ok()
         && parsed_joints.is_ok();
@@ -404,7 +415,7 @@ pub fn member_details_table(ui: &mut egui::Ui, app: &mut App) {
             .clicked()
         {
             if let (Some(elem), Ok(haunch_i), Ok(haunch_j), Ok(joints)) = (
-                app.member_detail_draft.elem,
+                app.ui.scoped.member_detail_draft.elem,
                 parsed_haunch_i,
                 parsed_haunch_j,
                 parsed_joints,
@@ -416,25 +427,31 @@ pub fn member_details_table(ui: &mut egui::Ui, app: &mut App) {
                     joints,
                 };
                 if attr.is_empty() {
-                    app.undo
-                        .run(&mut app.model, Box::new(RemoveMemberDetailAttr { elem }));
+                    app.core.scoped.undo.run(
+                        &mut app.core.model,
+                        Box::new(RemoveMemberDetailAttr { elem }),
+                    );
                 } else {
-                    app.undo
-                        .run(&mut app.model, Box::new(SetMemberDetailAttr { attr }));
+                    app.core
+                        .scoped
+                        .undo
+                        .run(&mut app.core.model, Box::new(SetMemberDetailAttr { attr }));
                 }
-                app.staleness.mark_edited();
+                app.core.scoped.staleness.mark_edited();
             }
         }
-        if app.member_detail_draft.elem.is_some()
+        if app.ui.scoped.member_detail_draft.elem.is_some()
             && ui
                 .button("🗑 この部材の付帯情報を削除")
                 .on_hover_text("選択した部材の付帯情報を削除します(undo可)")
                 .clicked()
         {
-            if let Some(elem) = app.member_detail_draft.elem {
-                app.undo
-                    .run(&mut app.model, Box::new(RemoveMemberDetailAttr { elem }));
-                app.staleness.mark_edited();
+            if let Some(elem) = app.ui.scoped.member_detail_draft.elem {
+                app.core.scoped.undo.run(
+                    &mut app.core.model,
+                    Box::new(RemoveMemberDetailAttr { elem }),
+                );
+                app.core.scoped.staleness.mark_edited();
             }
         }
     });

@@ -172,7 +172,8 @@ impl App {
     /// 左アクティビティバー（ナビゲータ・作成パレット）。
     pub(crate) fn left_activity_bar(&mut self, ui: &mut egui::Ui) {
         ui.vertical(|ui| {
-            let is_nav_active = self.left_dock_open && self.left_panel == LeftPanel::Navigator;
+            let is_nav_active =
+                self.ui.view.left_dock_open && self.ui.view.left_panel == LeftPanel::Navigator;
             if activity_icon_button(
                 ui,
                 ActivityGlyph::Navigator,
@@ -181,11 +182,12 @@ impl App {
                 "ナビゲータ",
             )
             .clicked()
-                && toggle_dock_icon(&mut self.left_dock_open, is_nav_active)
+                && toggle_dock_icon(&mut self.ui.view.left_dock_open, is_nav_active)
             {
-                self.left_panel = LeftPanel::Navigator;
+                self.ui.view.left_panel = LeftPanel::Navigator;
             }
-            let is_draw_active = self.left_dock_open && self.left_panel == LeftPanel::DrawTools;
+            let is_draw_active =
+                self.ui.view.left_dock_open && self.ui.view.left_panel == LeftPanel::DrawTools;
             if activity_icon_button(
                 ui,
                 ActivityGlyph::DrawTools,
@@ -194,9 +196,9 @@ impl App {
                 "作成パレット",
             )
             .clicked()
-                && toggle_dock_icon(&mut self.left_dock_open, is_draw_active)
+                && toggle_dock_icon(&mut self.ui.view.left_dock_open, is_draw_active)
             {
-                self.left_panel = LeftPanel::DrawTools;
+                self.ui.view.left_panel = LeftPanel::DrawTools;
             }
         });
     }
@@ -205,7 +207,7 @@ impl App {
     pub(crate) fn right_activity_bar(&mut self, ui: &mut egui::Ui) {
         ui.vertical(|ui| {
             let is_inspector_active =
-                self.right_dock_open && self.right_panel == RightPanel::Inspector;
+                self.ui.view.right_dock_open && self.ui.view.right_panel == RightPanel::Inspector;
             if activity_icon_button(
                 ui,
                 ActivityGlyph::Inspector,
@@ -214,12 +216,12 @@ impl App {
                 "インスペクタ",
             )
             .clicked()
-                && toggle_dock_icon(&mut self.right_dock_open, is_inspector_active)
+                && toggle_dock_icon(&mut self.ui.view.right_dock_open, is_inspector_active)
             {
-                self.right_panel = RightPanel::Inspector;
+                self.ui.view.right_panel = RightPanel::Inspector;
             }
             let is_prep_active =
-                self.right_dock_open && self.right_panel == RightPanel::Preparation;
+                self.ui.view.right_dock_open && self.ui.view.right_panel == RightPanel::Preparation;
             if activity_icon_button(
                 ui,
                 ActivityGlyph::Preparation,
@@ -228,11 +230,12 @@ impl App {
                 "① 準備計算",
             )
             .clicked()
-                && toggle_dock_icon(&mut self.right_dock_open, is_prep_active)
+                && toggle_dock_icon(&mut self.ui.view.right_dock_open, is_prep_active)
             {
-                self.right_panel = RightPanel::Preparation;
+                self.ui.view.right_panel = RightPanel::Preparation;
             }
-            let is_static_active = self.right_dock_open && self.right_panel == RightPanel::Static;
+            let is_static_active =
+                self.ui.view.right_dock_open && self.ui.view.right_panel == RightPanel::Static;
             if activity_icon_button(
                 ui,
                 ActivityGlyph::Static,
@@ -241,11 +244,12 @@ impl App {
                 "静的解析",
             )
             .clicked()
-                && toggle_dock_icon(&mut self.right_dock_open, is_static_active)
+                && toggle_dock_icon(&mut self.ui.view.right_dock_open, is_static_active)
             {
-                self.right_panel = RightPanel::Static;
+                self.ui.view.right_panel = RightPanel::Static;
             }
-            let is_eigen_active = self.right_dock_open && self.right_panel == RightPanel::Eigen;
+            let is_eigen_active =
+                self.ui.view.right_dock_open && self.ui.view.right_panel == RightPanel::Eigen;
             if activity_icon_button(
                 ui,
                 ActivityGlyph::Eigen,
@@ -254,12 +258,12 @@ impl App {
                 "固有値",
             )
             .clicked()
-                && toggle_dock_icon(&mut self.right_dock_open, is_eigen_active)
+                && toggle_dock_icon(&mut self.ui.view.right_dock_open, is_eigen_active)
             {
-                self.right_panel = RightPanel::Eigen;
+                self.ui.view.right_panel = RightPanel::Eigen;
             }
             let is_pushover_active =
-                self.right_dock_open && self.right_panel == RightPanel::Pushover;
+                self.ui.view.right_dock_open && self.ui.view.right_panel == RightPanel::Pushover;
             if activity_icon_button(
                 ui,
                 ActivityGlyph::Pushover,
@@ -268,11 +272,12 @@ impl App {
                 "増分解析",
             )
             .clicked()
-                && toggle_dock_icon(&mut self.right_dock_open, is_pushover_active)
+                && toggle_dock_icon(&mut self.ui.view.right_dock_open, is_pushover_active)
             {
-                self.right_panel = RightPanel::Pushover;
+                self.ui.view.right_panel = RightPanel::Pushover;
             }
-            let is_th_active = self.right_dock_open && self.right_panel == RightPanel::TimeHistory;
+            let is_th_active =
+                self.ui.view.right_dock_open && self.ui.view.right_panel == RightPanel::TimeHistory;
             if activity_icon_button(
                 ui,
                 ActivityGlyph::TimeHistory,
@@ -281,11 +286,12 @@ impl App {
                 "時刻歴応答",
             )
             .clicked()
-                && toggle_dock_icon(&mut self.right_dock_open, is_th_active)
+                && toggle_dock_icon(&mut self.ui.view.right_dock_open, is_th_active)
             {
-                self.right_panel = RightPanel::TimeHistory;
+                self.ui.view.right_panel = RightPanel::TimeHistory;
             }
-            let is_lm_active = self.right_dock_open && self.right_panel == RightPanel::LumpedMass;
+            let is_lm_active =
+                self.ui.view.right_dock_open && self.ui.view.right_panel == RightPanel::LumpedMass;
             if activity_icon_button(
                 ui,
                 ActivityGlyph::LumpedMass,
@@ -294,9 +300,9 @@ impl App {
                 "質点系",
             )
             .clicked()
-                && toggle_dock_icon(&mut self.right_dock_open, is_lm_active)
+                && toggle_dock_icon(&mut self.ui.view.right_dock_open, is_lm_active)
             {
-                self.right_panel = RightPanel::LumpedMass;
+                self.ui.view.right_panel = RightPanel::LumpedMass;
             }
         });
     }

@@ -63,8 +63,8 @@ impl App {
     /// ため、GUI ではログパネルを自動的に開く。
     pub fn report_error(&mut self, msg: impl Into<String>) {
         let msg = msg.into();
-        self.log.push(LogLevel::Error, msg.clone());
-        self.last_error = Some(msg);
+        self.core.log.push(LogLevel::Error, msg.clone());
+        self.core.scoped.last_error = Some(msg);
         #[cfg(feature = "gui")]
         {
             self.open_log_dock();
@@ -77,8 +77,8 @@ impl App {
     /// 別タブ（診断・テーブル）が表示中でもエラー本文が見えるようにする。
     #[cfg(feature = "gui")]
     pub(crate) fn open_log_dock(&mut self) {
-        self.bottom_dock_open = true;
-        self.bottom_tab = BottomTab::Log;
+        self.ui.view.bottom_dock_open = true;
+        self.ui.view.bottom_tab = BottomTab::Log;
     }
 
     /// エラーではないが利用者に知らせたい注意事項を `last_notice` とログの
@@ -86,13 +86,13 @@ impl App {
     /// 自動オープンはしない。
     pub fn report_notice(&mut self, msg: impl Into<String>) {
         let msg = msg.into();
-        self.log.push(LogLevel::Notice, msg.clone());
-        self.last_notice = Some(msg);
+        self.core.log.push(LogLevel::Notice, msg.clone());
+        self.core.scoped.last_notice = Some(msg);
     }
 
     /// ログのみに残す情報（ジョブの開始・完了など）。
     pub fn report_info(&mut self, msg: impl Into<String>) {
-        self.log.push(LogLevel::Info, msg.into());
+        self.core.log.push(LogLevel::Info, msg.into());
     }
 
     /// 荷重組合せの自動生成に固有のエラー。ステータスバー・ログ
@@ -101,7 +101,7 @@ impl App {
     /// 組合せ欄へそのまま出すと他の操作のエラーが無関係な欄に現れる）。
     pub fn report_combo_error(&mut self, msg: impl Into<String>) {
         let msg = msg.into();
-        self.combo_error = Some(msg.clone());
+        self.core.scoped.combo_error = Some(msg.clone());
         self.report_error(msg);
     }
 
@@ -114,10 +114,10 @@ impl App {
     /// 利用者が改名した通り（`AxisSource::Manual`）は保護される。
     pub fn generate_axes_action(&mut self) {
         use squid_n_core::model::AxisSource;
-        self.last_error = None;
-        self.last_notice = None;
-        let axes = squid_n_core::axis_gen::generate_axes(&self.model);
-        if axes == self.model.axes {
+        self.core.scoped.last_error = None;
+        self.core.scoped.last_notice = None;
+        let axes = squid_n_core::axis_gen::generate_axes(&self.core.model);
+        if axes == self.core.model.axes {
             self.report_notice("通り芯は既に最新です（柱位置から作られる通りに変更はありません）");
             return;
         }
@@ -131,11 +131,11 @@ impl App {
             .flat_map(|g| &g.axes)
             .filter(|a| a.source == AxisSource::Manual)
             .count();
-        self.undo.run(
-            &mut self.model,
+        self.core.scoped.undo.run(
+            &mut self.core.model,
             Box::new(squid_n_edit::ReplaceAxes { axes }),
         );
-        self.staleness.mark_non_calc_edited();
+        self.core.scoped.staleness.mark_non_calc_edited();
         if n_auto == 0 {
             self.report_notice(
                 "柱が見つからないため通り芯を生成できませんでした（自動生成の対象は柱の材端節点です）",
@@ -150,12 +150,12 @@ impl App {
     /// 節点編集バッファを model.nodes に同期する。
     /// 編集中でない（フォーカス外）セルのみ model 値で更新する。
     pub fn sync_node_edit(&mut self) {
-        self.node_edit.resize(
-            self.model.nodes.len(),
+        self.ui.scoped.node_edit.resize(
+            self.core.model.nodes.len(),
             ["0".to_string(), "0".to_string(), "0".to_string()],
         );
-        for (i, node) in self.model.nodes.iter().enumerate() {
-            for (k, slot) in self.node_edit[i].iter_mut().enumerate().take(3) {
+        for (i, node) in self.core.model.nodes.iter().enumerate() {
+            for (k, slot) in self.ui.scoped.node_edit[i].iter_mut().enumerate().take(3) {
                 *slot = format!("{:.3}", node.coord[k]);
             }
         }
@@ -168,7 +168,8 @@ impl App {
     fn apply_rigid_zones_for_analysis(&mut self) {
         // 剛域・仕口パネルの算定規則は MCP サーバと共有する
         // （`squid_n_job::prepare`。前処理が食い違うと同じモデルでも剛性が変わる）。
-        self.generated_panels = squid_n_job::prepare::apply_rigid_zones_and_panels(&mut self.model);
+        self.core.scoped.generated_panels =
+            squid_n_job::prepare::apply_rigid_zones_and_panels(&mut self.core.model);
     }
 
     /// `analysis_cfg.threads` を並列度設定（プロセスグローバル）へ反映する。
@@ -176,7 +177,7 @@ impl App {
     /// 呼べばよい。設定はプロセスグローバルのためジョブ側での再設定は不要）。
     pub(crate) fn apply_parallelism_setting(&self) {
         squid_n_math::parallelism::set_parallelism(
-            squid_n_math::parallelism::Parallelism::from_threads(self.analysis_cfg.threads),
+            squid_n_math::parallelism::Parallelism::from_threads(self.core.analysis_cfg.threads),
         );
     }
 
@@ -190,15 +191,15 @@ impl App {
     /// 抜けが実際に起きていた。
     fn begin_analysis(&mut self) {
         self.apply_parallelism_setting();
-        self.last_error = None;
-        self.last_notice = None;
+        self.core.scoped.last_error = None;
+        self.core.scoped.last_notice = None;
         self.ensure_preparation();
     }
 
     /// バックグラウンドジョブ共通の入口ガード＋前処理。
     /// ジョブ実行中なら案内を出して `false` を返す（呼び出し側は即 return）。
     fn begin_analysis_job(&mut self) -> bool {
-        if self.job.is_some() {
+        if self.core.scoped.job.is_some() {
             self.report_error("解析実行中です");
             return false;
         }
@@ -214,7 +215,7 @@ impl App {
 
     /// 計算クロージャをバックグラウンドスレッドで起動し、ジョブとして登録する
     /// （起動ログ込み）。結果タブへの自動遷移（`jump_on_success`）が必要な場合は
-    /// 呼び出し側が登録後に `self.job` へ設定する。
+    /// 呼び出し側が登録後に `self.core.scoped.job` へ設定する。
     fn spawn_analysis_job(
         &mut self,
         label: &'static str,
@@ -224,7 +225,7 @@ impl App {
         std::thread::spawn(move || {
             let _ = tx.send(work());
         });
-        self.job = Some(AnalysisJob {
+        self.core.scoped.job = Some(AnalysisJob {
             label,
             started: std::time::SystemTime::now(),
             rx,
@@ -257,8 +258,8 @@ impl App {
     /// undo 履歴を積んだり `mark_edited` で解析結果を stale にしたりしないようにする。
     /// `sync_one_auto_case` と同じ規約）。
     pub fn generate_stories_action(&mut self) {
-        self.last_error = None;
-        self.last_notice = None;
+        self.core.scoped.last_error = None;
+        self.core.scoped.last_notice = None;
         // 柱フェース距離（`RigidZone::face_i/face_j`）の算定は自重の同期より先に
         // 行う。RC/SRC 梁の自重は柱面間の内法長で算定するため
         // （`squid_n_load::story_gen::self_weight_calc`）、face が未算定（0）の
@@ -273,25 +274,25 @@ impl App {
         // 依存し階の生成結果には依存しないため、先に呼んで差し支えない。
         self.apply_rigid_zones_for_analysis();
         self.sync_gravity_load_cases_action();
-        let gravity_lcs = gravity_cases_for_seismic_weight(&self.model);
-        let include_density = density_self_weight_for_stories(&self.model);
-        let mass_method = self.analysis_cfg.mass_method;
+        let gravity_lcs = gravity_cases_for_seismic_weight(&self.core.model);
+        let include_density = density_self_weight_for_stories(&self.core.model);
+        let mass_method = self.core.analysis_cfg.mass_method;
         match squid_n_load::story_gen::generate_stories_with_opts(
-            &self.model,
+            &self.core.model,
             &gravity_lcs,
             include_density,
             mass_method,
         ) {
             Ok(gen) => {
-                if !story_gen_changes_model(&self.model, &gen, mass_method) {
+                if !story_gen_changes_model(&self.core.model, &gen, mass_method) {
                     // 階は既に最新。荷重の同期だけ冪等に確認して終える。
                     self.apply_rigid_zones_for_analysis();
                     self.sync_seismic_load_cases_action();
-                    self.auto_load_sync_hash = Some(self.compute_auto_load_sync_hash());
+                    self.core.scoped.auto_load_sync_hash = Some(self.compute_auto_load_sync_hash());
                     return;
                 }
-                self.undo.run(
-                    &mut self.model,
+                self.core.scoped.undo.run(
+                    &mut self.core.model,
                     Box::new(squid_n_edit::ApplyStories {
                         stories: gen.stories,
                         node_story: gen.node_story,
@@ -301,7 +302,7 @@ impl App {
                         mass_method,
                     }),
                 );
-                self.staleness.mark_edited();
+                self.core.scoped.staleness.mark_edited();
                 // 剛域の反映は地震荷重の同期より先に行う（SemiPrecise の固有周期算定が
                 // 剛域込みの剛性を用いるようにするため）。
                 self.apply_rigid_zones_for_analysis();
@@ -309,7 +310,7 @@ impl App {
                 // 直後に run_linear_static 等（`sync_auto_load_cases_action`）が
                 // 呼ばれても、いま行った DL/LL/EX/EY の同期を無駄に繰り返さない
                 // よう、同期後の状態のハッシュを記録しておく。
-                self.auto_load_sync_hash = Some(self.compute_auto_load_sync_hash());
+                self.core.scoped.auto_load_sync_hash = Some(self.compute_auto_load_sync_hash());
             }
             Err(e) => self.report_error(format!("階の生成エラー: {}", e)),
         }
@@ -329,17 +330,19 @@ impl App {
     pub fn auto_generate_combinations_action(&mut self) {
         use squid_n_core::model::{LoadCaseKind, EX_CASE_NAME, EY_CASE_NAME};
 
-        self.last_error = None;
-        self.combo_error = None;
+        self.core.scoped.last_error = None;
+        self.core.scoped.combo_error = None;
         let find_first = |kind: LoadCaseKind| {
-            self.model
+            self.core
+                .model
                 .load_cases
                 .iter()
                 .find(|lc| lc.kind == kind)
                 .map(|lc| lc.id)
         };
         let find_named = |name: &str, kind: LoadCaseKind| {
-            self.model
+            self.core
+                .model
                 .load_cases
                 .iter()
                 .find(|lc| lc.name == name && lc.kind == kind)
@@ -361,27 +364,27 @@ impl App {
             seismic_x: find_named(EX_CASE_NAME, LoadCaseKind::Seismic),
             seismic_y: find_named(EY_CASE_NAME, LoadCaseKind::Seismic),
             snow,
-            heavy_snow_zone: self.analysis_cfg.heavy_snow_zone,
+            heavy_snow_zone: self.core.analysis_cfg.heavy_snow_zone,
             snow_factors: Some(squid_n_load::combo::SnowFactors {
-                delta1: self.analysis_cfg.snow_delta1,
-                delta3: self.analysis_cfg.snow_delta3,
+                delta1: self.core.analysis_cfg.snow_delta1,
+                delta3: self.core.analysis_cfg.snow_delta3,
             }),
         };
         let combos = squid_n_load::combo::standard_combinations(&input);
         for combo in combos {
-            self.undo.run(
-                &mut self.model,
+            self.core.scoped.undo.run(
+                &mut self.core.model,
                 Box::new(squid_n_edit::AddCombination { combo }),
             );
         }
-        self.staleness.mark_edited();
+        self.core.scoped.staleness.mark_edited();
     }
 
     /// 実行中のジョブの完了を確認し、完了していれば結果を適用する。
     /// 成功/失敗いずれかで結果を受信できた場合、またはスレッド異常終了時は
     /// `job` を `None` に戻し `true` を返す。まだ実行中なら `false` を返す。
     pub fn poll_job(&mut self) -> bool {
-        let recv = match &self.job {
+        let recv = match &self.core.scoped.job {
             Some(job) => job.rx.try_recv(),
             None => return false,
         };
@@ -389,7 +392,7 @@ impl App {
             Ok(result) => {
                 // ラベルと経過時間は完了ログ用に、jump_on_success は結果タブへの
                 // 自動遷移用に、job を take する前に取り出しておく。
-                let job = self.job.take();
+                let job = self.core.scoped.job.take();
                 let (label, elapsed_secs) = job
                     .as_ref()
                     .map(|j| {
@@ -409,7 +412,7 @@ impl App {
                 // こうしないと成功判定（下の last_error.is_none()）が古いエラーに
                 // 引きずられ、成功したのに完了ログ・自動遷移が行われない
                 // （エラー自体はイベントログに残っており失われない）。
-                self.last_error = None;
+                self.core.scoped.last_error = None;
                 match result {
                     JobResult::Pushover(res) => self.apply_pushover_result(res),
                     JobResult::Modal(res) => self.apply_eigen_result(res),
@@ -425,20 +428,20 @@ impl App {
                 // 失敗時は各 apply_* が report_error 経由で last_error とログの両方
                 // へ反映済みのため、ここでは成功時のみ完了ログを追加する
                 // （二重ログを避ける）。
-                if self.last_error.is_none() {
+                if self.core.scoped.last_error.is_none() {
                     self.report_info(format!("✅ {} が完了 ({:.1}s)", label, elapsed_secs));
                     #[cfg(feature = "gui")]
                     if let Some((tab, view)) = jump {
-                        self.active_tab = tab;
+                        self.ui.view.active_tab = tab;
                         self.apply_tab_preset(tab);
-                        self.results_view = view;
+                        self.ui.view.results_view = view;
                     }
                 }
                 true
             }
             Err(std::sync::mpsc::TryRecvError::Empty) => false,
             Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                self.job = None;
+                self.core.scoped.job = None;
                 self.report_error("解析スレッドが異常終了しました（結果を受信できませんでした）。");
                 true
             }
@@ -452,43 +455,43 @@ impl App {
     pub(crate) fn apply_tab_preset(&mut self, tab: Tab) {
         match tab {
             Tab::Model => {
-                self.left_dock_open = true;
-                self.left_panel = LeftPanel::Navigator;
-                self.bottom_dock_open = true;
-                self.bottom_tab = BottomTab::Model;
-                self.right_dock_open = true;
-                self.right_panel = RightPanel::Inspector;
+                self.ui.view.left_dock_open = true;
+                self.ui.view.left_panel = LeftPanel::Navigator;
+                self.ui.view.bottom_dock_open = true;
+                self.ui.view.bottom_tab = BottomTab::Model;
+                self.ui.view.right_dock_open = true;
+                self.ui.view.right_panel = RightPanel::Inspector;
             }
             Tab::Loads => {
-                self.left_dock_open = true;
-                self.left_panel = LeftPanel::Navigator;
-                self.bottom_dock_open = true;
-                self.bottom_tab = BottomTab::Loads;
-                self.right_dock_open = true;
-                self.right_panel = RightPanel::Inspector;
+                self.ui.view.left_dock_open = true;
+                self.ui.view.left_panel = LeftPanel::Navigator;
+                self.ui.view.bottom_dock_open = true;
+                self.ui.view.bottom_tab = BottomTab::Loads;
+                self.ui.view.right_dock_open = true;
+                self.ui.view.right_panel = RightPanel::Inspector;
             }
             Tab::Analysis => {
-                self.right_dock_open = true;
+                self.ui.view.right_dock_open = true;
                 // 一貫計算の手順どおり ①（準備計算）から入れるようにする。
                 // 各解析パネルへは右アイコン列から移る。
-                self.right_panel = RightPanel::Preparation;
-                self.bottom_tab = BottomTab::Log;
+                self.ui.view.right_panel = RightPanel::Preparation;
+                self.ui.view.bottom_tab = BottomTab::Log;
             }
             Tab::Results => {
-                self.left_dock_open = true;
-                self.left_panel = LeftPanel::Navigator;
-                self.right_dock_open = true;
-                self.right_panel = RightPanel::Inspector;
+                self.ui.view.left_dock_open = true;
+                self.ui.view.left_panel = LeftPanel::Navigator;
+                self.ui.view.right_dock_open = true;
+                self.ui.view.right_panel = RightPanel::Inspector;
             }
             Tab::Design => {
-                self.right_dock_open = true;
-                self.right_panel = RightPanel::Inspector;
+                self.ui.view.right_dock_open = true;
+                self.ui.view.right_panel = RightPanel::Inspector;
             }
             Tab::Report => {}
         }
     }
 
-    /// モデル整合性チェック（診断）を実行し `self.diagnostics` を再構築する。
+    /// モデル整合性チェック（診断）を実行し `self.core.scoped.diagnostics` を再構築する。
     /// 下ドック「診断」タブを開いたとき／「再チェック」ボタン押下時のみ呼ばれる
     /// 想定で、解析等の重い処理は行わない。
     ///
@@ -510,19 +513,19 @@ impl App {
         // （`diag_errors == 0`）が「解析前に解消すべきか」の判定にそのまま使える。
         //
         // `model_issues` は壁展開モデル（壁の解析要素を含む一時的な複製。D5）を
-        // 渡す。`self.model` そのままでは壁要素が 0 件のため、耐震壁と周辺架構の
+        // 渡す。`self.core.model` そのままでは壁要素が 0 件のため、耐震壁と周辺架構の
         // 種別食い違い等、壁関連の診断が一切出なくなる（解析実行時の
         // `squid_n_job::compute` 側の展開と同じ理由。忘れると壁の不備が診断タブに
         // 現れないまま解析実行時に初めて分かる、という劣化になる）。
         let (wall_expanded_model, _wall_index, _wall_report) =
-            squid_n_load::wall_expand::expand_wall_elements(&self.model);
+            squid_n_load::wall_expand::expand_wall_elements(&self.core.model);
         for issue in squid_n_solver::analysis::precheck::model_issues(&wall_expanded_model) {
             push_issue_diagnostics(&mut diags, issue);
         }
 
         // 空の水平力ケース（地震・風）を参照する荷重組合せ: そのまま解くと水平力の
         // 項が黙って 0 になるため（`empty_lateral_case_in_combo` と同じ判定を流用）。
-        for combo in &self.model.combinations {
+        for combo in &self.core.model.combinations {
             if let Some(name) = self.empty_lateral_case_in_combo(combo) {
                 diags.push(Diagnostic {
                     severity: DiagSeverity::Warning,
@@ -538,7 +541,7 @@ impl App {
 
         // 空の荷重ケース（節点・部材荷重とも未定義）。誤って荷重を入れ忘れた
         // ケースに気づけるよう情報表示する。
-        for lc in &self.model.load_cases {
+        for lc in &self.core.model.load_cases {
             if lc.nodal.is_empty() && lc.member.is_empty() {
                 diags.push(Diagnostic {
                     severity: DiagSeverity::Info,
@@ -548,18 +551,22 @@ impl App {
             }
         }
 
-        self.diagnostics = diags;
-        self.staleness.diagnostics_stale = false;
+        self.core.scoped.diagnostics = diags;
+        self.core.scoped.staleness.diagnostics_stale = false;
     }
 
     /// 診断結果の件数集計（Error数, Warning数）。タブラベル・ステータス表示用。
     pub fn diagnostics_counts(&self) -> (usize, usize) {
         let errors = self
+            .core
+            .scoped
             .diagnostics
             .iter()
             .filter(|d| d.severity == DiagSeverity::Error)
             .count();
         let warnings = self
+            .core
+            .scoped
             .diagnostics
             .iter()
             .filter(|d| d.severity == DiagSeverity::Warning)

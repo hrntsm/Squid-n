@@ -36,10 +36,10 @@ impl App {
             .default_open(true)
             .id_salt("nav_load_cases");
         let resp = header.show(ui, |ui| {
-            if self.model.load_cases.is_empty() {
+            if self.core.model.load_cases.is_empty() {
                 ui.colored_label(crate::theme::GRAY_600, "荷重ケースがありません");
             }
-            for i in 0..self.model.load_cases.len() {
+            for i in 0..self.core.model.load_cases.len() {
                 self.nav_load_case_node(ui, i, &mut action);
             }
         });
@@ -63,12 +63,12 @@ impl App {
         case_index: usize,
         action: &mut Option<LoadTreeAction>,
     ) {
-        let lc_id = self.model.load_cases[case_index].id;
+        let lc_id = self.core.model.load_cases[case_index].id;
         let label = format!(
             "[{}] {}",
-            case_index, self.model.load_cases[case_index].name
+            case_index, self.core.model.load_cases[case_index].name
         );
-        let is_sel = self.nav.focus_load_case == Some(lc_id);
+        let is_sel = self.ui.scoped.nav.focus_load_case == Some(lc_id);
         let referenced = self.load_case_referenced_by_combination(lc_id);
 
         let header = egui::CollapsingHeader::new(egui::RichText::new(label).strong())
@@ -80,7 +80,7 @@ impl App {
         });
 
         if resp.header_response.clicked() {
-            self.nav.focus_load_case = Some(lc_id);
+            self.ui.scoped.nav.focus_load_case = Some(lc_id);
         }
         if is_sel {
             // 選択中のケースは見出しの下に細い下線を引く（CollapsingHeader は
@@ -119,10 +119,10 @@ impl App {
         group: LoadGroup,
         action: &mut Option<LoadTreeAction>,
     ) {
-        let lc_id = self.model.load_cases[case_index].id;
+        let lc_id = self.core.model.load_cases[case_index].id;
         // 表示するのは手入力分のみ。添字は編集・削除コマンドが使うため一緒に持つ。
         let entries: Vec<(usize, String)> = match group {
-            LoadGroup::Nodal => self.model.load_cases[case_index]
+            LoadGroup::Nodal => self.core.model.load_cases[case_index]
                 .manual_nodal()
                 .map(|(i, nl)| {
                     (
@@ -131,7 +131,7 @@ impl App {
                     )
                 })
                 .collect(),
-            LoadGroup::Member => self.model.load_cases[case_index]
+            LoadGroup::Member => self.core.model.load_cases[case_index]
                 .manual_member()
                 .map(|(i, ml)| {
                     (
@@ -189,17 +189,17 @@ impl App {
     fn focus_load_target(&mut self, case_index: usize, group: LoadGroup, index: usize) {
         match group {
             LoadGroup::Nodal => {
-                if let Some(nl) = self.model.load_cases[case_index].nodal.get(index) {
-                    self.nav.focus_node = Some(nl.node);
-                    self.selection.nodes = vec![nl.node];
-                    self.selection.members.clear();
+                if let Some(nl) = self.core.model.load_cases[case_index].nodal.get(index) {
+                    self.ui.scoped.nav.focus_node = Some(nl.node);
+                    self.ui.scoped.selection.nodes = vec![nl.node];
+                    self.ui.scoped.selection.members.clear();
                 }
             }
             LoadGroup::Member => {
-                if let Some(ml) = self.model.load_cases[case_index].member.get(index) {
-                    self.nav.focus_member = Some(ml.elem);
-                    self.selection.members = vec![ml.elem];
-                    self.selection.nodes.clear();
+                if let Some(ml) = self.core.model.load_cases[case_index].member.get(index) {
+                    self.ui.scoped.nav.focus_member = Some(ml.elem);
+                    self.ui.scoped.selection.members = vec![ml.elem];
+                    self.ui.scoped.selection.nodes.clear();
                 }
             }
         }
@@ -207,7 +207,8 @@ impl App {
 
     /// 指定の荷重ケースを参照している荷重組合せがあるか（ケース削除の可否）。
     fn load_case_referenced_by_combination(&self, lc: LoadCaseId) -> bool {
-        self.model
+        self.core
+            .model
             .combinations
             .iter()
             .any(|c| c.terms.iter().any(|(id, _)| *id == lc))
@@ -217,22 +218,24 @@ impl App {
     fn apply_load_tree_action(&mut self, action: LoadTreeAction) {
         match action {
             LoadTreeAction::AddCase => {
-                let name = format!("LC{}", self.model.load_cases.len());
-                self.undo.run(
-                    &mut self.model,
+                let name = format!("LC{}", self.core.model.load_cases.len());
+                self.core.scoped.undo.run(
+                    &mut self.core.model,
                     Box::new(squid_n_edit::AddLoadCase { name }),
                 );
-                self.nav.focus_load_case = self.model.load_cases.last().map(|lc| lc.id);
-                self.staleness.mark_edited();
+                self.ui.scoped.nav.focus_load_case =
+                    self.core.model.load_cases.last().map(|lc| lc.id);
+                self.core.scoped.staleness.mark_edited();
             }
             LoadTreeAction::AddNodal(lc) => {
-                self.open_load_editor(LoadEditor::new_nodal(lc, self.nav.focus_node));
+                self.open_load_editor(LoadEditor::new_nodal(lc, self.ui.scoped.nav.focus_node));
             }
             LoadTreeAction::AddMember(lc) => {
-                self.open_load_editor(LoadEditor::new_member(lc, self.nav.focus_member));
+                self.open_load_editor(LoadEditor::new_member(lc, self.ui.scoped.nav.focus_member));
             }
             LoadTreeAction::EditNodal(lc, index) => {
                 let Some(load) = self
+                    .core
                     .model
                     .load_cases
                     .iter()
@@ -246,6 +249,7 @@ impl App {
             }
             LoadTreeAction::EditMember(lc, index) => {
                 let Some(load) = self
+                    .core
                     .model
                     .load_cases
                     .iter()
@@ -255,22 +259,22 @@ impl App {
                 else {
                     return;
                 };
-                let editor = LoadEditor::edit_member(lc, index, &load, &self.model);
+                let editor = LoadEditor::edit_member(lc, index, &load, &self.core.model);
                 self.open_load_editor(editor);
             }
             LoadTreeAction::DeleteNodal(lc, index) => {
-                self.undo.run(
-                    &mut self.model,
+                self.core.scoped.undo.run(
+                    &mut self.core.model,
                     Box::new(squid_n_edit::DeleteNodalLoad { lc, index }),
                 );
-                self.staleness.mark_edited();
+                self.core.scoped.staleness.mark_edited();
             }
             LoadTreeAction::DeleteMember(lc, index) => {
-                self.undo.run(
-                    &mut self.model,
+                self.core.scoped.undo.run(
+                    &mut self.core.model,
                     Box::new(squid_n_edit::DeleteMemberLoad { lc, index }),
                 );
-                self.staleness.mark_edited();
+                self.core.scoped.staleness.mark_edited();
             }
             LoadTreeAction::DeleteCase(lc) => self.delete_load_case_action(lc),
         }
@@ -284,40 +288,43 @@ impl App {
     /// 削除にあわせてモーダルを閉じる（対象選択の待ち受け中はツリーを操作できるので、
     /// この組み合わせは実際に起こり得る）。
     pub(crate) fn delete_load_case_action(&mut self, lc: LoadCaseId) {
-        if !self.undo.run(
-            &mut self.model,
+        if !self.core.scoped.undo.run(
+            &mut self.core.model,
             Box::new(squid_n_edit::DeleteLoadCase { id: lc }),
         ) {
             return;
         }
-        self.load_editor = None;
-        if self.nav.focus_load_case == Some(lc) {
-            self.nav.focus_load_case = None;
+        self.ui.scoped.load_editor = None;
+        if self.ui.scoped.nav.focus_load_case == Some(lc) {
+            self.ui.scoped.nav.focus_load_case = None;
         }
-        if self.last_static == Some(StaticKey::Case(StaticCaseKey::User(lc))) {
-            self.last_static = None;
+        if self.core.scoped.last_static == Some(StaticKey::Case(StaticCaseKey::User(lc))) {
+            self.core.scoped.last_static = None;
         }
-        self.staleness.mark_edited();
+        self.core.scoped.staleness.mark_edited();
     }
 
     /// 荷重モーダルを開く。3D ビューが出ないタブにいる場合はモデルタブへ移す
     /// （対象の節点・部材は 3D クリックで選ぶため、ビューが必要）。
     fn open_load_editor(&mut self, editor: LoadEditor) {
-        if !matches!(self.active_tab, Tab::Model | Tab::Loads | Tab::Analysis) {
-            self.active_tab = Tab::Model;
+        if !matches!(
+            self.ui.view.active_tab,
+            Tab::Model | Tab::Loads | Tab::Analysis
+        ) {
+            self.ui.view.active_tab = Tab::Model;
         }
         // 作成モードと排他にする。3D のクリックは荷重の対象ピックが先に受け取るため、
         // 作成モードを ON のままにすると、選択中の節点が赤く残ったまま操作だけが
         // 効かない状態になる。
-        self.beam_draw_mode = false;
-        self.beam_draw_first = None;
-        self.wall_draw_mode = false;
-        self.wall_draw_nodes.clear();
-        self.slab_draw_mode = false;
-        self.slab_draw_nodes.clear();
+        self.ui.scoped.beam_draw_mode = false;
+        self.ui.scoped.beam_draw_first = None;
+        self.ui.scoped.wall_draw_mode = false;
+        self.ui.scoped.wall_draw_nodes.clear();
+        self.ui.scoped.slab_draw_mode = false;
+        self.ui.scoped.slab_draw_nodes.clear();
 
-        self.nav.focus_load_case = Some(editor.lc);
-        self.load_editor = Some(editor);
+        self.ui.scoped.nav.focus_load_case = Some(editor.lc);
+        self.ui.scoped.load_editor = Some(editor);
     }
 }
 
@@ -367,7 +374,7 @@ mod tests {
         use squid_n_core::model::{LoadCase, LoadCaseKind};
 
         let mut app = App::default();
-        app.model.load_cases = (0..3)
+        app.core.model.load_cases = (0..3)
             .map(|i| LoadCase {
                 id: LoadCaseId(i),
                 name: format!("LC{i}"),
@@ -376,17 +383,20 @@ mod tests {
                 kind: LoadCaseKind::Other,
             })
             .collect();
-        app.model.combinations.clear();
+        app.core.model.combinations.clear();
 
         // LC2 を対象にモーダルを開いたまま、LC0 を削除する。
-        app.load_editor = Some(LoadEditor::new_nodal(LoadCaseId(2), None));
+        app.ui.scoped.load_editor = Some(LoadEditor::new_nodal(LoadCaseId(2), None));
         app.delete_load_case_action(LoadCaseId(0));
 
-        assert!(app.load_editor.is_none(), "モーダルは閉じているはず");
+        assert!(
+            app.ui.scoped.load_editor.is_none(),
+            "モーダルは閉じているはず"
+        );
         // 削除で ID が繰り上がり、元の LC2 は LoadCaseId(1) になっている。
-        assert_eq!(app.model.load_cases.len(), 2);
-        assert_eq!(app.model.load_cases[1].name, "LC2");
-        assert_eq!(app.model.load_cases[1].id, LoadCaseId(1));
+        assert_eq!(app.core.model.load_cases.len(), 2);
+        assert_eq!(app.core.model.load_cases[1].name, "LC2");
+        assert_eq!(app.core.model.load_cases[1].id, LoadCaseId(1));
     }
 
     /// 荷重組合せから参照中のケースは削除できず、モーダルも閉じない。
@@ -395,22 +405,29 @@ mod tests {
         use squid_n_core::model::{LoadCase, LoadCaseKind, LoadCombination};
 
         let mut app = App::default();
-        app.model.load_cases = vec![LoadCase {
+        app.core.model.load_cases = vec![LoadCase {
             id: LoadCaseId(0),
             name: "LC0".into(),
             nodal: Vec::new(),
             member: Vec::new(),
             kind: LoadCaseKind::Other,
         }];
-        app.model.combinations = vec![LoadCombination {
+        app.core.model.combinations = vec![LoadCombination {
             name: "C".into(),
             terms: vec![(LoadCaseId(0), 1.0)],
         }];
-        app.load_editor = Some(LoadEditor::new_nodal(LoadCaseId(0), None));
+        app.ui.scoped.load_editor = Some(LoadEditor::new_nodal(LoadCaseId(0), None));
 
         app.delete_load_case_action(LoadCaseId(0));
 
-        assert_eq!(app.model.load_cases.len(), 1, "参照中なので削除されない");
-        assert!(app.load_editor.is_some(), "削除されていなければ閉じない");
+        assert_eq!(
+            app.core.model.load_cases.len(),
+            1,
+            "参照中なので削除されない"
+        );
+        assert!(
+            app.ui.scoped.load_editor.is_some(),
+            "削除されていなければ閉じない"
+        );
     }
 }

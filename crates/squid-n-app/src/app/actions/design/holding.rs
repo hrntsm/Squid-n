@@ -36,13 +36,15 @@ impl App {
         // （設計書 §6.2.1、冪等なので他の解析エントリと重複して呼んでも安全）。
         self.apply_rigid_zones_for_analysis();
 
-        if self.model.stories.is_empty() {
+        if self.core.model.stories.is_empty() {
             return Err(
                 "階が未定義です。解析タブの「準備計算 実行」を行ってください。".to_string(),
             );
         }
-        let view_dir = self.pushover_view_dir;
+        let view_dir = self.core.scoped.pushover_view_dir;
         let po = self
+            .core
+            .scoped
             .results
             .as_ref()
             .and_then(|r| r.pushover_for_dir(view_dir).or(r.pushover.as_ref()))
@@ -53,16 +55,16 @@ impl App {
             "静的解析結果がありません。地震静的(Ai)を実行してください。".to_string()
         })?;
 
-        let ctx = crate::summary::metrics_ctx_from_results(self.results.as_ref());
+        let ctx = crate::summary::metrics_ctx_from_results(self.core.scoped.results.as_ref());
         let metrics = crate::summary::compute_story_metrics_with(
-            &self.model,
+            &self.core.model,
             &st.disp,
-            self.analysis_cfg.seismic_dir,
+            self.core.analysis_cfg.seismic_dir,
             &ctx,
         );
 
         // 地震重量: 下層→上層順（層の重量は上端の階が持つ。`Model::layers` 参照）。
-        let layers = self.model.layers();
+        let layers = self.core.model.layers();
         let weights: Vec<f64> = layers.iter().map(|l| l.weight.unwrap_or(0.0)).collect();
         if weights.iter().any(|w| *w <= 0.0) {
             return Err(
@@ -75,17 +77,21 @@ impl App {
         // α は鉄骨造比（令88条・告示1793号。従来は α=0.0 固定・h は生の
         // 最上階 Z 標高で、S 造モデルや地下階付きモデルの T を誤っていた）。
         let t = self
+            .core
+            .scoped
             .results
             .as_ref()
             .and_then(|r| r.modal.as_ref())
             .and_then(|m| m.period.first().copied())
             .unwrap_or_else(|| {
-                let height_m = length_m(squid_n_solver::analysis::building_height_mm(&self.model));
-                let steel_ratio = squid_n_solver::analysis::steel_height_ratio(&self.model);
+                let height_m = length_m(squid_n_solver::analysis::building_height_mm(
+                    &self.core.model,
+                ));
+                let steel_ratio = squid_n_solver::analysis::steel_height_ratio(&self.core.model);
                 squid_n_load::ai::approx_t(height_m, steel_ratio)
             });
-        let rt = squid_n_load::ai::rt(t, squid_n_load::ai::tc_of(self.analysis_cfg.soil));
-        let qud = qud_by_story(&weights, self.analysis_cfg.z, rt, t);
+        let rt = squid_n_load::ai::rt(t, squid_n_load::ai::tc_of(self.core.analysis_cfg.soil));
+        let qud = qud_by_story(&weights, self.core.analysis_cfg.z, rt, t);
 
         let n_stories = weights.len();
 
@@ -116,6 +122,7 @@ impl App {
         let mut wall_horizontal: Vec<f64> = vec![0.0; n_stories];
 
         let (story_ranks, member_ranks): (Vec<MemberRank>, Vec<(ElemId, MemberRank)>) = if self
+            .core
             .design_rank_auto
         {
             // 鋼部材は幅厚比、RC 矩形部材はせん断余裕度 Qsu/Qmu の略算から
@@ -132,25 +139,25 @@ impl App {
             // （`generate_stories_action` の gravity_lcs と同じ規則。§1.7:
             // kind による選択の先頭を採用。従来の「先頭ケース」規則は
             // 種別が未設定のモデルに対する後方互換フォールバックとして残る）。
-            let gravity_lc = gravity_cases_for_seismic_weight(&self.model)
+            let gravity_lc = gravity_cases_for_seismic_weight(&self.core.model)
                 .first()
                 .copied();
-            // 壁の解析要素（`ElementKind::Wall`）は `self.model` には存在しない
+            // 壁の解析要素（`ElementKind::Wall`）は `self.core.model` には存在しない
             // 生成物（D5）だが、`resp_by_elem`（`po.member_response`）は
             // `compute_pushover` が内部で壁展開したモデルで解いた結果のため
-            // 壁の `ElemId` を含む。`self.model.elements` をそのまま走査すると
+            // 壁の `ElemId` を含む。`self.core.model.elements` をそのまま走査すると
             // 壁が一度も分類されず、RC耐力壁の種別判定（下記 `SectionShape::RcWall`
             // 分岐）が常にスキップされる。壁を持たないモデル（実 ST-Bridge
             // フィクスチャは現状すべて該当する）では複製を避ける。
             let expanded_storage;
             let model: &squid_n_core::model::Model =
-                if squid_n_load::wall_expand::model_has_wall_plates_to_expand(&self.model) {
+                if squid_n_load::wall_expand::model_has_wall_plates_to_expand(&self.core.model) {
                     let (expanded, _wall_index, _wall_report) =
-                        squid_n_load::wall_expand::expand_wall_elements(&self.model);
+                        squid_n_load::wall_expand::expand_wall_elements(&self.core.model);
                     expanded_storage = expanded;
                     &expanded_storage
                 } else {
-                    &self.model
+                    &self.core.model
                 };
             for elem in &model.elements {
                 let Some(sec) = elem.section.and_then(|sid| model.sections.get(sid.index())) else {
@@ -304,7 +311,7 @@ impl App {
                         let brittle = rc_wall_shear_brittle(resp.horizontal_force, qu);
                         // 壁式構造か否かは設計設定（設計タブのチェックボックス）による。
                         // 告示「耐力壁の種別」表は壁式構造で限界値が厳しくなる。
-                        let wall_structure = self.wall_structure;
+                        let wall_structure = self.core.wall_structure;
                         rc_wall_type(tau_over_fc, wall_structure, brittle)
                     }
                 } else {
@@ -332,9 +339,11 @@ impl App {
                     };
                     // σ0: 長期軸力の簡易近似として先頭荷重ケース(gravity_lc)の
                     // 静的解析結果を優先し、なければ最後に実行した静的解析結果
-                    // (self.results.member_forces)から当該部材の軸力を引き、
+                    // (self.core.scoped.results.member_forces)から当該部材の軸力を引き、
                     // 圧縮のときのみ設定する。
                     let sigma_0 = self
+                        .core
+                        .scoped
                         .results
                         .as_ref()
                         .map(|r| {
@@ -465,20 +474,20 @@ impl App {
                 .enumerate()
                 .map(|(i, rs)| {
                     worst_rank(&rs).unwrap_or_else(|| {
-                        if let Some(s) = self.model.stories.get(i) {
+                        if let Some(s) = self.core.model.stories.get(i) {
                             fallback_stories.push(s.name.clone());
                         }
-                        self.design_rank
+                        self.core.design_rank
                     })
                 })
                 .collect();
-            self.ds_rank_fallback_stories = fallback_stories;
+            self.core.scoped.ds_rank_fallback_stories = fallback_stories;
             (ranks, computed)
         } else {
             // 自動判定 OFF は全層が選択ランクによる明示運用のため、警告対象の
             // フォールバックではない。
-            self.ds_rank_fallback_stories = Vec::new();
-            (vec![self.design_rank; n_stories], Vec::new())
+            self.core.scoped.ds_rank_fallback_stories = Vec::new();
+            (vec![self.core.design_rank; n_stories], Vec::new())
         };
 
         // Ds は告示の「各階の Ds」表（耐力壁／筋かいの部材群としての種別 × βu ×
@@ -497,7 +506,7 @@ impl App {
         // Ds を最大 0.10〜0.15 過小評価する危険側の誤りがあった。
         let mechanism = &po.mechanism;
         let is_rc_frame = matches!(
-            self.design_frame,
+            self.core.design_frame,
             squid_n_design_jp::secondary::holding_capacity::FrameType::RcFrame
                 | squid_n_design_jp::secondary::holding_capacity::FrameType::RcWall
         );
@@ -511,7 +520,7 @@ impl App {
                     MemberRank::FC => GroupType::C,
                     MemberRank::FD => GroupType::D,
                 };
-                let rep_rank = story_ranks.get(i).copied().unwrap_or(self.design_rank);
+                let rep_rank = story_ranks.get(i).copied().unwrap_or(self.core.design_rank);
                 // 柱はり群種別（耐力比で判定。判定不能なら代表ランクから読み替え）。
                 let mut cb_group =
                     member_group(&cb_members[i]).unwrap_or_else(|| fallback_group(rep_rank));
@@ -538,14 +547,14 @@ impl App {
                 // 使うと Ds を過小評価する（例: RC 壁付きで 0.35 → 0.30）。βu を算定
                 // できないことを明示し、従来の架構種別別 Ds 表へフォールバックする。
                 let declares_wall_or_brace = matches!(
-                    self.design_frame,
+                    self.core.design_frame,
                     squid_n_design_jp::secondary::holding_capacity::FrameType::RcWall
                         | squid_n_design_jp::secondary::holding_capacity::FrameType::SteelBrace
                 );
                 if declares_wall_or_brace && wall_members[i].is_empty() {
                     beta_u_unavailable = true;
                     return squid_n_design_jp::secondary::holding_capacity::ds_value(
-                        self.design_frame,
+                        self.core.design_frame,
                         rep_rank,
                     );
                 }
@@ -557,8 +566,8 @@ impl App {
                 }
             })
             .collect();
-        self.ds_beta_u_by_story = beta_u_by_story;
-        self.ds_beta_u_unavailable = beta_u_unavailable;
+        self.core.scoped.ds_beta_u_by_story = beta_u_by_story;
+        self.core.scoped.ds_beta_u_unavailable = beta_u_unavailable;
 
         let heights: Vec<f64> = metrics.iter().map(|m| m.height).collect();
         let rs: Vec<f64> = metrics.iter().map(|m| m.rs).collect();

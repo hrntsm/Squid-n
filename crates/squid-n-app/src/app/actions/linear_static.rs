@@ -5,7 +5,7 @@
 use super::*;
 
 impl App {
-    /// T3: 線形静的解析を実行し、結果を `self.results` に格納する。
+    /// T3: 線形静的解析を実行し、結果を `self.core.scoped.results` に格納する。
     /// 指定した荷重ケースが存在しない場合はエラーメッセージをセット。
     ///
     /// 解析に先立って準備計算（`ensure_preparation`）を実行する。剛域を反映し、
@@ -15,7 +15,7 @@ impl App {
     /// 変わっていなければ荷重の再計算は丸ごとスキップする）。
     pub fn run_linear_static(&mut self, lc: LoadCaseId) {
         self.begin_analysis();
-        let res = squid_n_job::compute::compute_linear_static(self.model.clone(), lc)
+        let res = squid_n_job::compute::compute_linear_static(self.core.model.clone(), lc)
             .map_err(|e| e.to_string());
         self.apply_static_case_result(StaticCaseKey::User(lc), res);
     }
@@ -34,18 +34,18 @@ impl App {
             Ok(res) => {
                 let member_forces = res.member_forces.clone();
                 let panel_moments = res.panel_moments.clone();
-                let mut bundle = self.results.take().unwrap_or_default();
+                let mut bundle = self.core.scoped.results.take().unwrap_or_default();
                 bundle.statics.retain(|(id, _)| *id != key);
                 bundle.statics.push((key, res));
                 bundle.member_forces = member_forces;
                 bundle.panel_moments = panel_moments;
-                self.results = Some(bundle);
-                self.last_static = Some(StaticKey::Case(key));
+                self.core.scoped.results = Some(bundle);
+                self.core.scoped.last_static = Some(StaticKey::Case(key));
                 // 表示対象（focus_result）も新しい結果へ切り替える。据え置くと
                 // 変位図・応力図は旧結果、member_forces・断面検定は新結果という
                 // 不整合な表示になる（`current_static` は focus_result を優先する）。
-                self.nav.focus_result = Some(StaticKey::Case(key));
-                self.staleness.mark_fresh();
+                self.ui.scoped.nav.focus_result = Some(StaticKey::Case(key));
+                self.core.scoped.staleness.mark_fresh();
                 self.run_design_check();
             }
             Err(e) => self.report_error(e),
@@ -58,7 +58,7 @@ impl App {
     /// 剛心の精算・保有水平耐力の判定などがその結果を参照する。
     pub(crate) fn standard_lateral_case(&self, lc: LoadCaseId) -> Option<StaticCaseKey> {
         use squid_n_core::model::{LoadCaseKind, EX_CASE_NAME, EY_CASE_NAME};
-        let case = self.model.load_cases.iter().find(|c| c.id == lc)?;
+        let case = self.core.model.load_cases.iter().find(|c| c.id == lc)?;
         match (case.name.as_str(), case.kind) {
             (EX_CASE_NAME, LoadCaseKind::Seismic) => Some(StaticCaseKey::Seismic(SeismicDir::X)),
             (EY_CASE_NAME, LoadCaseKind::Seismic) => Some(StaticCaseKey::Seismic(SeismicDir::Y)),
@@ -88,7 +88,7 @@ impl App {
         if !self.begin_analysis_job() {
             return;
         }
-        let model = self.model.clone();
+        let model = self.core.model.clone();
         self.spawn_analysis_job("線形静的解析", move || JobResult::StaticCase {
             key: StaticCaseKey::User(lc),
             res: Self::run_compute(|| {
@@ -136,7 +136,7 @@ impl App {
     /// （地震項が黙って 0 になるのを防ぐ）。
     pub fn run_combination(&mut self, index: usize) {
         self.begin_analysis();
-        let Some(combo) = self.model.combinations.get(index).cloned() else {
+        let Some(combo) = self.core.model.combinations.get(index).cloned() else {
             self.report_error(format!("荷重組合せ #{} が存在しません", index));
             return;
         };
@@ -148,7 +148,7 @@ impl App {
             return;
         }
         let name = combo.name.clone();
-        let res = Self::compute_combination(self.model.clone(), combo);
+        let res = Self::compute_combination(self.core.model.clone(), combo);
         self.apply_combo_result(name, res);
     }
 
@@ -184,7 +184,7 @@ impl App {
             Ok(res) => {
                 let member_forces = res.member_forces.clone();
                 let panel_moments = res.panel_moments.clone();
-                let mut bundle = self.results.take().unwrap_or_default();
+                let mut bundle = self.core.scoped.results.take().unwrap_or_default();
                 // StaticKey::Combo は bundle.combos 上の位置を指す規約
                 // （current_static・ナビゲータと共有）。再実行時は既存位置を
                 // その場で差し替え、他の組合せ結果のキーを無効化しない。
@@ -200,14 +200,14 @@ impl App {
                 };
                 bundle.member_forces = member_forces;
                 bundle.panel_moments = panel_moments;
-                self.results = Some(bundle);
-                self.last_static = Some(StaticKey::Combo(pos));
+                self.core.scoped.results = Some(bundle);
+                self.core.scoped.last_static = Some(StaticKey::Combo(pos));
                 // 表示対象も新しい結果へ（`apply_static_case_result` と同じ理由）。
-                self.nav.focus_result = Some(StaticKey::Combo(pos));
-                self.staleness.mark_fresh();
+                self.ui.scoped.nav.focus_result = Some(StaticKey::Combo(pos));
+                self.core.scoped.staleness.mark_fresh();
                 // 荷重継続性区分（長期/短期）は組合せ内容から自動判定する
                 // （令82条の荷重組合せ: G+P=長期、地震・積雪・風入り=短期）。
-                self.design_term = if squid_n_load::combo::is_short_term_combo(&name) {
+                self.core.design_term = if squid_n_load::combo::is_short_term_combo(&name) {
                     LoadTerm::Short
                 } else {
                     LoadTerm::Long
@@ -225,7 +225,7 @@ impl App {
         if !self.begin_analysis_job() {
             return;
         }
-        let Some(combo) = self.model.combinations.get(index).cloned() else {
+        let Some(combo) = self.core.model.combinations.get(index).cloned() else {
             self.report_error(format!("荷重組合せ #{} が存在しません", index));
             return;
         };
@@ -236,7 +236,7 @@ impl App {
             ));
             return;
         }
-        let model = self.model.clone();
+        let model = self.core.model.clone();
         let name = combo.name.clone();
         self.spawn_analysis_job("荷重組合せ解析", move || JobResult::Combo {
             name,
@@ -259,17 +259,17 @@ impl App {
     /// 設定して return する。
     pub fn run_static_all(&mut self) {
         self.begin_analysis();
-        if self.model.load_cases.is_empty() {
+        if self.core.model.load_cases.is_empty() {
             self.report_error("荷重ケースがありません。荷重タブで作成してください。");
             return;
         }
         let (case_keys, combos, errors) = self.static_all_inputs();
-        let computed = Self::compute_static_all(self.model.clone(), case_keys, combos);
+        let computed = Self::compute_static_all(self.core.model.clone(), case_keys, combos);
         self.apply_static_all_result(computed, errors);
     }
 
     /// `run_static_all`/`start_static_all_job` 共通の事前準備。UI スレッド側の
-    /// `self.model` を参照するため、バックグラウンドジョブでもここで行う。
+    /// `self.core.model` を参照するため、バックグラウンドジョブでもここで行う。
     ///
     /// - 荷重ケース: 結果の格納キー（標準の水平力ケースは方向別の
     ///   `StaticCaseKey::Seismic`/`Wind`、それ以外は `User`）を対応付ける。
@@ -290,7 +290,7 @@ impl App {
     ) {
         let mut errors: Vec<String> = Vec::new();
         let case_keys = self
-            .model
+            .core.model
             .load_cases
             .iter()
             .filter(|lc| {
@@ -311,7 +311,7 @@ impl App {
             })
             .collect();
         let combos = self
-            .model
+            .core.model
             .combinations
             .iter()
             .filter(|combo| match self.empty_lateral_case_in_combo(combo) {
@@ -399,8 +399,8 @@ impl App {
             }
         };
 
-        let had_results = self.results.is_some();
-        let mut bundle = self.results.take().unwrap_or_default();
+        let had_results = self.core.scoped.results.is_some();
+        let mut bundle = self.core.scoped.results.take().unwrap_or_default();
         let mut last_case: Option<StaticCaseKey> = None;
         for (key, res) in items.cases {
             match res {
@@ -441,7 +441,7 @@ impl App {
         let Some(display) = display else {
             // 1件も解けなかった場合は既存の結果を壊さない（取り出した結果を戻す）。
             if had_results {
-                self.results = Some(bundle);
+                self.core.scoped.results = Some(bundle);
             }
             self.report_error(format!(
                 "一括解析エラー（{} 件すべて失敗）: {}",
@@ -467,16 +467,16 @@ impl App {
             bundle.member_forces = member_forces;
             bundle.panel_moments = panel_moments;
         }
-        self.results = Some(bundle);
-        self.last_static = Some(display);
+        self.core.scoped.results = Some(bundle);
+        self.core.scoped.last_static = Some(display);
         // 表示対象も新しい結果へ（`apply_static_case_result` と同じ理由）。
-        self.nav.focus_result = Some(display);
-        self.staleness.mark_fresh();
+        self.ui.scoped.nav.focus_result = Some(display);
+        self.core.scoped.staleness.mark_fresh();
         // 荷重継続性区分（長期/短期）は表示対象の組合せ名から自動判定する
         // （令82条の荷重組合せ: G+P=長期、地震・積雪・風入り=短期）。荷重ケース単体を
         // 表示対象にした場合は現在の区分を維持する（`apply_static_case_result` と同じ）。
         if let Some((_, name)) = &last_combo {
-            self.design_term = if squid_n_load::combo::is_short_term_combo(name) {
+            self.core.design_term = if squid_n_load::combo::is_short_term_combo(name) {
                 LoadTerm::Short
             } else {
                 LoadTerm::Long
@@ -496,12 +496,12 @@ impl App {
         if !self.begin_analysis_job() {
             return;
         }
-        if self.model.load_cases.is_empty() {
+        if self.core.model.load_cases.is_empty() {
             self.report_error("荷重ケースがありません。荷重タブで作成してください。");
             return;
         }
         let (case_keys, combos, pre_errors) = self.static_all_inputs();
-        let model = self.model.clone();
+        let model = self.core.model.clone();
         self.spawn_analysis_job("一括解析", move || JobResult::StaticAll {
             computed: Self::run_compute(|| Self::compute_static_all(model, case_keys, combos)),
             pre_errors,
@@ -510,7 +510,7 @@ impl App {
 
     /// 表示対象の静的解析結果を解決する。優先順: ナビゲータ選択 → 最後に実行した結果。
     pub fn current_static(&self) -> Option<&squid_n_solver::linear::StaticOnce> {
-        let bundle = self.results.as_ref()?;
+        let bundle = self.core.scoped.results.as_ref()?;
         let resolve = |key: StaticKey| -> Option<&squid_n_solver::linear::StaticOnce> {
             match key {
                 StaticKey::Case(case_key) => bundle
@@ -521,10 +521,12 @@ impl App {
                 StaticKey::Combo(idx) => bundle.combos.get(idx).map(|(_, s)| s),
             }
         };
-        self.nav
+        self.ui
+            .scoped
+            .nav
             .focus_result
             .and_then(resolve)
-            .or_else(|| self.last_static.and_then(resolve))
+            .or_else(|| self.core.scoped.last_static.and_then(resolve))
     }
 
     /// 結果表示の対象を切り替える（ナビゲータ・結果タブの選択ドロップダウン共通）。
@@ -537,32 +539,37 @@ impl App {
     /// （`apply_static_case_result` と同じ扱い）。該当キーの解析結果がない場合は何もしない。
     pub fn select_displayed_result(&mut self, key: StaticKey) {
         // 選択キーに対応する解析結果（内力と、組合せなら名前）を取り出す。
-        let resolved = self.results.as_ref().and_then(|bundle| match key {
-            StaticKey::Case(case_key) => bundle
-                .statics
-                .iter()
-                .find(|(k, _)| *k == case_key)
-                .map(|(_, s)| (s.member_forces.clone(), s.panel_moments.clone(), None)),
-            StaticKey::Combo(idx) => bundle.combos.get(idx).map(|(name, s)| {
-                (
-                    s.member_forces.clone(),
-                    s.panel_moments.clone(),
-                    Some(name.clone()),
-                )
-            }),
-        });
+        let resolved = self
+            .core
+            .scoped
+            .results
+            .as_ref()
+            .and_then(|bundle| match key {
+                StaticKey::Case(case_key) => bundle
+                    .statics
+                    .iter()
+                    .find(|(k, _)| *k == case_key)
+                    .map(|(_, s)| (s.member_forces.clone(), s.panel_moments.clone(), None)),
+                StaticKey::Combo(idx) => bundle.combos.get(idx).map(|(name, s)| {
+                    (
+                        s.member_forces.clone(),
+                        s.panel_moments.clone(),
+                        Some(name.clone()),
+                    )
+                }),
+            });
         let Some((member_forces, panel_moments, combo_name)) = resolved else {
             return;
         };
-        self.nav.focus_result = Some(key);
-        self.last_static = Some(key);
-        if let Some(bundle) = self.results.as_mut() {
+        self.ui.scoped.nav.focus_result = Some(key);
+        self.core.scoped.last_static = Some(key);
+        if let Some(bundle) = self.core.scoped.results.as_mut() {
             bundle.member_forces = member_forces;
             bundle.panel_moments = panel_moments;
         }
         // 組合せは名前から長期/短期を再判定する（単一ケースは現在の区分を維持）。
         if let Some(name) = combo_name {
-            self.design_term = if squid_n_load::combo::is_short_term_combo(&name) {
+            self.core.design_term = if squid_n_load::combo::is_short_term_combo(&name) {
                 LoadTerm::Short
             } else {
                 LoadTerm::Long
@@ -571,7 +578,7 @@ impl App {
         self.run_design_check();
     }
 
-    /// T3: 地震静的解析（Ai一気通貫）を実行し、結果を `self.results` に格納する。
+    /// T3: 地震静的解析（Ai一気通貫）を実行し、結果を `self.core.scoped.results` に格納する。
     /// 方向・Ai算定法・Z・地盤種別・C0 は `analysis_cfg` を用いる。
     /// 結果は `StaticCaseKey::Seismic(dir)` に格納するため、X/Y 双方の地震静的結果
     /// および任意のユーザー荷重ケースの結果と衝突せず共存できる。
@@ -593,12 +600,12 @@ impl App {
         };
         let cfg = squid_n_solver::analysis::SeismicCfg {
             dir,
-            mode: self.analysis_cfg.ai_mode,
-            z: self.analysis_cfg.z,
-            soil: self.analysis_cfg.soil,
-            c0: self.analysis_cfg.c0,
+            mode: self.core.analysis_cfg.ai_mode,
+            z: self.core.analysis_cfg.z,
+            soil: self.core.analysis_cfg.soil,
+            c0: self.core.analysis_cfg.c0,
         };
-        let res = squid_n_job::compute::compute_seismic(self.model.clone(), cfg, t)
+        let res = squid_n_job::compute::compute_seismic(self.core.model.clone(), cfg, t)
             .map_err(|e| e.to_string());
         self.apply_static_case_result(StaticCaseKey::Seismic(dir), res);
     }
@@ -619,12 +626,12 @@ impl App {
         };
         let cfg = squid_n_solver::analysis::SeismicCfg {
             dir,
-            mode: self.analysis_cfg.ai_mode,
-            z: self.analysis_cfg.z,
-            soil: self.analysis_cfg.soil,
-            c0: self.analysis_cfg.c0,
+            mode: self.core.analysis_cfg.ai_mode,
+            z: self.core.analysis_cfg.z,
+            soil: self.core.analysis_cfg.soil,
+            c0: self.core.analysis_cfg.c0,
         };
-        let model = self.model.clone();
+        let model = self.core.model.clone();
         self.spawn_analysis_job("地震静的解析", move || JobResult::StaticCase {
             key: StaticCaseKey::Seismic(dir),
             res: Self::run_compute(|| {

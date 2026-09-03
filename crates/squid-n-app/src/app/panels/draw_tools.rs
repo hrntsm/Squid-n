@@ -25,54 +25,56 @@ impl App {
         // --- 梁作成モード ---
         // ON 中はクリックで節点を選び、2 点目で梁を生成する（OFF 中は部材クリック=断面割当）。
         ui.horizontal(|ui| {
-            let beam_was_on = self.beam_draw_mode;
-            ui.toggle_value(&mut self.beam_draw_mode, "梁作成モード");
+            let beam_was_on = self.ui.scoped.beam_draw_mode;
+            ui.toggle_value(&mut self.ui.scoped.beam_draw_mode, "梁作成モード");
             // 梁作成を ON にしたら壁・スラブ作成は OFF（排他）
-            if self.beam_draw_mode && !beam_was_on {
-                self.wall_draw_mode = false;
-                self.slab_draw_mode = false;
+            if self.ui.scoped.beam_draw_mode && !beam_was_on {
+                self.ui.scoped.wall_draw_mode = false;
+                self.ui.scoped.slab_draw_mode = false;
             }
-            if self.beam_draw_mode {
-                match self.beam_draw_first {
+            if self.ui.scoped.beam_draw_mode {
+                match self.ui.scoped.beam_draw_first {
                     None => {
                         ui.label("始点をクリック");
                     }
                     Some(first) => {
                         ui.label(format!("始点 {} 選択中 → 終点をクリック", first.label()));
                         if ui.button("キャンセル").clicked() {
-                            self.beam_draw_first = None;
+                            self.ui.scoped.beam_draw_first = None;
                         }
                     }
                 }
             }
         });
         // モード OFF 時は始点選択をクリア
-        if !self.beam_draw_mode {
-            self.beam_draw_first = None;
+        if !self.ui.scoped.beam_draw_mode {
+            self.ui.scoped.beam_draw_first = None;
         }
 
         // --- 壁作成モード ---
         // ON 中はクリックで柱・梁に囲まれた 4 節点を順に選び、4 点目で壁を生成する。
         ui.horizontal(|ui| {
-            let wall_was_on = self.wall_draw_mode;
-            ui.toggle_value(&mut self.wall_draw_mode, "壁作成モード");
+            let wall_was_on = self.ui.scoped.wall_draw_mode;
+            ui.toggle_value(&mut self.ui.scoped.wall_draw_mode, "壁作成モード");
             // 壁作成を ON にしたら梁・スラブ作成は OFF（排他）
-            if self.wall_draw_mode && !wall_was_on {
-                self.beam_draw_mode = false;
-                self.slab_draw_mode = false;
+            if self.ui.scoped.wall_draw_mode && !wall_was_on {
+                self.ui.scoped.beam_draw_mode = false;
+                self.ui.scoped.slab_draw_mode = false;
             }
-            if self.wall_draw_mode {
+            if self.ui.scoped.wall_draw_mode {
                 // 節点削除などで陳腐化した参照を除去する。
-                let node_count = self.model.nodes.len() as u32;
-                self.wall_draw_nodes.retain(|n| n.0 < node_count);
+                let node_count = self.core.model.nodes.len() as u32;
+                self.ui.scoped.wall_draw_nodes.retain(|n| n.0 < node_count);
                 let picked: Vec<String> = self
+                    .ui
+                    .scoped
                     .wall_draw_nodes
                     .iter()
                     .map(|n| format!("N{}", n.0))
                     .collect();
                 ui.label(format!(
                     "節点を4つクリック ({}/4){}",
-                    self.wall_draw_nodes.len(),
+                    self.ui.scoped.wall_draw_nodes.len(),
                     if picked.is_empty() {
                         String::new()
                     } else {
@@ -81,11 +83,15 @@ impl App {
                 ));
                 ui.horizontal(|ui| {
                     ui.label("断面:");
-                    ui.selectable_value(&mut self.wall_plate_draft.add_enclosed_section, None, "―");
-                    for sec in &self.model.sections {
+                    ui.selectable_value(
+                        &mut self.ui.scoped.wall_plate_draft.add_enclosed_section,
+                        None,
+                        "―",
+                    );
+                    for sec in &self.core.model.sections {
                         if sec.thickness.is_some_and(|t| t > 0.0) {
                             ui.selectable_value(
-                                &mut self.wall_plate_draft.add_enclosed_section,
+                                &mut self.ui.scoped.wall_plate_draft.add_enclosed_section,
                                 Some(sec.id),
                                 sec.display_name(),
                             );
@@ -94,86 +100,92 @@ impl App {
                 })
                 .response
                 .on_hover_text("壁の板厚と自重は断面から決まります");
-                if !self.wall_draw_nodes.is_empty() && ui.button("キャンセル").clicked() {
-                    self.wall_draw_nodes.clear();
+                if !self.ui.scoped.wall_draw_nodes.is_empty() && ui.button("キャンセル").clicked()
+                {
+                    self.ui.scoped.wall_draw_nodes.clear();
                 }
             }
         });
         // モード OFF 時は選択をクリア
-        if !self.wall_draw_mode {
-            self.wall_draw_nodes.clear();
+        if !self.ui.scoped.wall_draw_mode {
+            self.ui.scoped.wall_draw_nodes.clear();
         }
 
         // --- スラブ作成モード ---
         // ON 中はクリックで境界節点を外周順に選び、3〜N 節点そろったら「確定」で生成する。
         ui.horizontal(|ui| {
-            let slab_was_on = self.slab_draw_mode;
-            ui.toggle_value(&mut self.slab_draw_mode, "スラブ作成モード");
+            let slab_was_on = self.ui.scoped.slab_draw_mode;
+            ui.toggle_value(&mut self.ui.scoped.slab_draw_mode, "スラブ作成モード");
             // スラブ作成を ON にしたら梁・壁作成は OFF（排他）
-            if self.slab_draw_mode && !slab_was_on {
-                self.beam_draw_mode = false;
-                self.wall_draw_mode = false;
+            if self.ui.scoped.slab_draw_mode && !slab_was_on {
+                self.ui.scoped.beam_draw_mode = false;
+                self.ui.scoped.wall_draw_mode = false;
             }
-            if self.slab_draw_mode {
+            if self.ui.scoped.slab_draw_mode {
                 // 節点削除などで陳腐化した参照（範囲外 id）を毎フレーム除去し、
                 // 存在しない節点を境界に含むスラブの生成を防ぐ。
-                let node_count = self.model.nodes.len() as u32;
-                self.slab_draw_nodes.retain(|n| n.0 < node_count);
+                let node_count = self.core.model.nodes.len() as u32;
+                self.ui.scoped.slab_draw_nodes.retain(|n| n.0 < node_count);
                 let picked: Vec<String> = self
+                    .ui
+                    .scoped
                     .slab_draw_nodes
                     .iter()
                     .map(|n| format!("N{}", n.0))
                     .collect();
                 ui.label(format!(
                     "境界節点を外周順にクリック ({}){}",
-                    self.slab_draw_nodes.len(),
+                    self.ui.scoped.slab_draw_nodes.len(),
                     if picked.is_empty() {
                         String::new()
                     } else {
                         format!(": {}", picked.join(", "))
                     }
                 ));
-                if self.slab_draw_nodes.len() >= 3 && ui.button("確定").clicked() {
-                    let boundary = self.slab_draw_nodes.clone();
+                if self.ui.scoped.slab_draw_nodes.len() >= 3 && ui.button("確定").clicked() {
+                    let boundary = self.ui.scoped.slab_draw_nodes.clone();
                     // 床タブの追加フォームと同じ下書きの断面を使う。消えた断面を
                     // 指したままだと `AddSlab` が参照検証で Noop になり無反応に
                     // 見えるため、解決できない下書きは未割当として渡す。
-                    let draft_section = self.slab_draft.section.filter(|sid| {
-                        self.model
+                    let draft_section = self.ui.scoped.slab_draft.section.filter(|sid| {
+                        self.core
+                            .model
                             .sections
                             .get(sid.index())
                             .is_some_and(|s| s.thickness.is_some_and(|t| t > 0.0))
                     });
-                    self.undo.run(
-                        &mut self.model,
+                    self.core.scoped.undo.run(
+                        &mut self.core.model,
                         Box::new(squid_n_edit::AddSlab {
                             boundary,
                             loads: Vec::new(),
                             method: squid_n_core::model::DistributionMethod::TriTrapezoid,
-                            usage: self.slab_draft.usage,
+                            usage: self.ui.scoped.slab_draft.usage,
                             section: draft_section,
                         }),
                     );
-                    self.staleness.mark_edited();
-                    self.slab_draw_nodes.clear();
+                    self.core.scoped.staleness.mark_edited();
+                    self.ui.scoped.slab_draw_nodes.clear();
                 }
-                if !self.slab_draw_nodes.is_empty() && ui.button("キャンセル").clicked() {
-                    self.slab_draw_nodes.clear();
+                if !self.ui.scoped.slab_draw_nodes.is_empty() && ui.button("キャンセル").clicked()
+                {
+                    self.ui.scoped.slab_draw_nodes.clear();
                 }
             }
         });
         // モード OFF 時は選択をクリア
-        if !self.slab_draw_mode {
-            self.slab_draw_nodes.clear();
+        if !self.ui.scoped.slab_draw_mode {
+            self.ui.scoped.slab_draw_nodes.clear();
         }
 
         // --- 断面割当 UI ---
         // focus_member を先にコピーして、後段の可変借用と競合しないようにする
-        let focus_id: Option<squid_n_core::ids::ElemId> = self.nav.focus_member;
+        let focus_id: Option<squid_n_core::ids::ElemId> = self.ui.scoped.nav.focus_member;
         // 存在確認もここで行い、ローカルに有効性と現在断面を取得
         let elem_info: Option<(squid_n_core::ids::ElemId, Option<SectionId>)> =
             focus_id.and_then(|eid| {
-                self.model
+                self.core
+                    .model
                     .elements
                     .iter()
                     .find(|e| e.id == eid)
@@ -198,7 +210,7 @@ impl App {
                         {
                             pending_assign = Some(None);
                         }
-                        for sec in &self.model.sections {
+                        for sec in &self.core.model.sections {
                             if ui
                                 .selectable_label(
                                     current_section == Some(sec.id),
@@ -213,14 +225,14 @@ impl App {
             });
             // クロージャ外で発行（借用ルール）
             if let Some(section) = pending_assign {
-                self.undo.run(
-                    &mut self.model,
+                self.core.scoped.undo.run(
+                    &mut self.core.model,
                     Box::new(squid_n_edit::SetElementSection {
                         elem: elem_id,
                         section,
                     }),
                 );
-                self.staleness.mark_edited();
+                self.core.scoped.staleness.mark_edited();
             }
         } else {
             ui.label("ビューアで梁をクリックすると選択できます");

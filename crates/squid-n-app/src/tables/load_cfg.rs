@@ -55,9 +55,11 @@ fn k_brace_rule_label(rule: KBraceWeightRule) -> &'static str {
 
 /// `SetLoadCfg` を発行して undo 可能に全置換する共通ヘルパー。
 fn commit(app: &mut App, cfg: LoadCfg) {
-    app.undo
-        .run(&mut app.model, Box::new(SetLoadCfg { cfg: Some(cfg) }));
-    app.staleness.mark_edited();
+    app.core
+        .scoped
+        .undo
+        .run(&mut app.core.model, Box::new(SetLoadCfg { cfg: Some(cfg) }));
+    app.core.scoped.staleness.mark_edited();
 }
 
 /// (ElemId, f64) リストの表示・削除と追加フォームの共通 UI。
@@ -135,27 +137,27 @@ fn elem_selector(
 
 /// 荷重計算条件パネル本体。
 pub fn load_cfg_panel(ui: &mut egui::Ui, app: &mut App) {
-    let cfg = app.model.load_cfg.clone().unwrap_or_default();
+    let cfg = app.core.model.load_cfg.clone().unwrap_or_default();
 
     // ── 鉄骨重量割増率 ─────────────────────────────────────
-    if !app.load_cfg_draft.steel_factor_active {
-        app.load_cfg_draft.steel_factor = cfg.steel_weight_factor;
+    if !app.ui.scoped.load_cfg_draft.steel_factor_active {
+        app.ui.scoped.load_cfg_draft.steel_factor = cfg.steel_weight_factor;
     }
     ui.horizontal(|ui| {
         ui.label("鉄骨重量割増率 α:");
         let resp = ui
             .add(
-                egui::DragValue::new(&mut app.load_cfg_draft.steel_factor)
+                egui::DragValue::new(&mut app.ui.scoped.load_cfg_draft.steel_factor)
                     .speed(0.01)
                     .range(0.0..=3.0),
             )
             .on_hover_text("コンクリート材(Fcあり)には適用されません。0以下は1.0として扱われます");
-        app.load_cfg_draft.steel_factor_active = resp.dragged() || resp.has_focus();
+        app.ui.scoped.load_cfg_draft.steel_factor_active = resp.dragged() || resp.has_focus();
         if (resp.drag_stopped() || resp.lost_focus())
-            && (app.load_cfg_draft.steel_factor - cfg.steel_weight_factor).abs() > 1e-9
+            && (app.ui.scoped.load_cfg_draft.steel_factor - cfg.steel_weight_factor).abs() > 1e-9
         {
             let mut new_cfg = cfg.clone();
-            new_cfg.steel_weight_factor = app.load_cfg_draft.steel_factor;
+            new_cfg.steel_weight_factor = app.ui.scoped.load_cfg_draft.steel_factor;
             // ドラッグ終了/フォーカス喪失と同一フレームで他の操作は発生しない
             // （egui の1フレーム1操作）ため、以降の描画が旧 cfg を参照しても
             // 次フレームで model の新値に再同期される。
@@ -217,12 +219,12 @@ pub fn load_cfg_panel(ui: &mut egui::Ui, app: &mut App) {
     ui.label(egui::RichText::new("付加線重量（耐火被覆等の直接入力）").strong());
     if let Some(new_rows) = elem_value_table(
         ui,
-        &app.model,
+        &app.core.model,
         "load_cfg_extra",
         &cfg.extra_line_weight,
         "[N/mm]",
-        &mut app.load_cfg_draft.sel_elem,
-        &mut app.load_cfg_draft.extra_value,
+        &mut app.ui.scoped.load_cfg_draft.sel_elem,
+        &mut app.ui.scoped.load_cfg_draft.extra_value,
     ) {
         let mut new_cfg = cfg.clone();
         new_cfg.extra_line_weight = new_rows;
@@ -236,12 +238,12 @@ pub fn load_cfg_panel(ui: &mut egui::Ui, app: &mut App) {
     ui.label(egui::RichText::new("仕上げ面重量（断面周長×面重量で線重量に換算）").strong());
     if let Some(new_rows) = elem_value_table(
         ui,
-        &app.model,
+        &app.core.model,
         "load_cfg_finish",
         &cfg.finish_area_weight,
         "[N/mm²]",
-        &mut app.load_cfg_draft.sel_elem,
-        &mut app.load_cfg_draft.finish_value,
+        &mut app.ui.scoped.load_cfg_draft.sel_elem,
+        &mut app.ui.scoped.load_cfg_draft.finish_value,
     ) {
         let mut new_cfg = cfg.clone();
         new_cfg.finish_area_weight = new_rows;
@@ -274,25 +276,45 @@ pub fn load_cfg_panel(ui: &mut egui::Ui, app: &mut App) {
     ui.horizontal(|ui| {
         elem_selector(
             ui,
-            &app.model,
+            &app.core.model,
             "load_cfg_damper_elem",
-            &mut app.load_cfg_draft.sel_elem,
+            &mut app.ui.scoped.load_cfg_draft.sel_elem,
         );
         ui.label("装置[N]:");
         ui.add(
-            egui::TextEdit::singleline(&mut app.load_cfg_draft.damper_weight).desired_width(60.0),
+            egui::TextEdit::singleline(&mut app.ui.scoped.load_cfg_draft.damper_weight)
+                .desired_width(60.0),
         );
         ui.label("長さ[mm]:");
         ui.add(
-            egui::TextEdit::singleline(&mut app.load_cfg_draft.damper_length).desired_width(60.0),
+            egui::TextEdit::singleline(&mut app.ui.scoped.load_cfg_draft.damper_length)
+                .desired_width(60.0),
         );
         ui.label("支持部[mm²]:");
-        ui.add(egui::TextEdit::singleline(&mut app.load_cfg_draft.damper_area).desired_width(60.0));
+        ui.add(
+            egui::TextEdit::singleline(&mut app.ui.scoped.load_cfg_draft.damper_area)
+                .desired_width(60.0),
+        );
         let parsed = (
-            app.load_cfg_draft.sel_elem,
-            app.load_cfg_draft.damper_weight.trim().parse::<f64>(),
-            app.load_cfg_draft.damper_length.trim().parse::<f64>(),
-            app.load_cfg_draft.damper_area.trim().parse::<f64>(),
+            app.ui.scoped.load_cfg_draft.sel_elem,
+            app.ui
+                .scoped
+                .load_cfg_draft
+                .damper_weight
+                .trim()
+                .parse::<f64>(),
+            app.ui
+                .scoped
+                .load_cfg_draft
+                .damper_length
+                .trim()
+                .parse::<f64>(),
+            app.ui
+                .scoped
+                .load_cfg_draft
+                .damper_area
+                .trim()
+                .parse::<f64>(),
         );
         let can_add =
             parsed.0.is_some() && parsed.1.is_ok() && parsed.2.is_ok() && parsed.3.is_ok();

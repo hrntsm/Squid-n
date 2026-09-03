@@ -117,21 +117,21 @@ pub fn damper_def_panel(ui: &mut egui::Ui, app: &mut App) {
         // 無効化はしていたが、edit_index 自体は残り続けていたため、ここで
         // 明示的にクリアする）。
         if app
-            .damper_def_draft
+            .ui.scoped.damper_def_draft
             .edit_index
-            .is_some_and(|i| i >= app.model.damper_defs.len())
+            .is_some_and(|i| i >= app.core.model.damper_defs.len())
         {
-            app.damper_def_draft.edit_index = None;
-            app.damper_def_draft.edit_target_name = None;
+            app.ui.scoped.damper_def_draft.edit_index = None;
+            app.ui.scoped.damper_def_draft.edit_target_name = None;
         }
 
         // ── 一覧 ──────────────────────────────────────────
         let mut pending_edit: Option<usize> = None;
         let mut pending_delete: Option<usize> = None;
-        if app.model.damper_defs.is_empty() {
+        if app.core.model.damper_defs.is_empty() {
             ui.label("登録済みの制振要素定義はありません。");
         } else {
-            for (i, def) in app.model.damper_defs.iter().enumerate() {
+            for (i, def) in app.core.model.damper_defs.iter().enumerate() {
                 ui.horizontal(|ui| {
                     ui.label(format!("[{}] {}", i, def.name));
                     ui.label(damper_kind_label(def.props.kind));
@@ -160,24 +160,24 @@ pub fn damper_def_panel(ui: &mut egui::Ui, app: &mut App) {
             }
         }
         if let Some(i) = pending_edit {
-            if let Some(def) = app.model.damper_defs.get(i) {
-                app.damper_def_draft.name = def.name.clone();
-                app.damper_def_draft.props = def.props;
-                app.damper_def_draft.edit_index = Some(i);
-                app.damper_def_draft.edit_target_name = Some(def.name.clone());
+            if let Some(def) = app.core.model.damper_defs.get(i) {
+                app.ui.scoped.damper_def_draft.name = def.name.clone();
+                app.ui.scoped.damper_def_draft.props = def.props;
+                app.ui.scoped.damper_def_draft.edit_index = Some(i);
+                app.ui.scoped.damper_def_draft.edit_target_name = Some(def.name.clone());
             }
         }
         if let Some(i) = pending_delete {
-            app.undo
-                .run(&mut app.model, Box::new(RemoveDamperDef { index: i }));
-            app.staleness.mark_edited();
+            app.core.scoped.undo
+                .run(&mut app.core.model, Box::new(RemoveDamperDef { index: i }));
+            app.core.scoped.staleness.mark_edited();
             // 削除位置に応じて編集中インデックスを補正する（index ずれ対策）。
-            let old_index = app.damper_def_draft.edit_index;
-            app.damper_def_draft.edit_index = remap_edit_index_after_delete(old_index, i);
-            if old_index.is_some() && app.damper_def_draft.edit_index.is_none() {
+            let old_index = app.ui.scoped.damper_def_draft.edit_index;
+            app.ui.scoped.damper_def_draft.edit_index = remap_edit_index_after_delete(old_index, i);
+            if old_index.is_some() && app.ui.scoped.damper_def_draft.edit_index.is_none() {
                 // 削除対象そのものを編集中だった場合は edit_target_name もクリアする
                 // （後方が繰り上がった場合は同じ定義を指し続けるため変更不要）。
-                app.damper_def_draft.edit_target_name = None;
+                app.ui.scoped.damper_def_draft.edit_target_name = None;
             }
         }
 
@@ -185,84 +185,84 @@ pub fn damper_def_panel(ui: &mut egui::Ui, app: &mut App) {
         ui.strong("定義を作成・編集");
         ui.horizontal(|ui| {
             ui.label("名称:");
-            ui.text_edit_singleline(&mut app.damper_def_draft.name);
+            ui.text_edit_singleline(&mut app.ui.scoped.damper_def_draft.name);
         });
         ui.horizontal(|ui| {
             ui.label("種別:");
             for k in [DamperKind::Maxwell, DamperKind::HystereticBilinear] {
                 if ui
-                    .selectable_label(app.damper_def_draft.props.kind == k, damper_kind_label(k))
+                    .selectable_label(app.ui.scoped.damper_def_draft.props.kind == k, damper_kind_label(k))
                     .clicked()
                 {
-                    app.damper_def_draft.props.kind = k;
+                    app.ui.scoped.damper_def_draft.props.kind = k;
                 }
             }
         });
 
-        match app.damper_def_draft.props.kind {
-            DamperKind::Maxwell => maxwell_fields(ui, &mut app.damper_def_draft.props),
+        match app.ui.scoped.damper_def_draft.props.kind {
+            DamperKind::Maxwell => maxwell_fields(ui, &mut app.ui.scoped.damper_def_draft.props),
             DamperKind::HystereticBilinear => {
-                hysteretic_fields(ui, &mut app.damper_def_draft.props)
+                hysteretic_fields(ui, &mut app.ui.scoped.damper_def_draft.props)
             }
         }
 
         ui.separator();
         ui.horizontal(|ui| {
-            let can_add = !app.damper_def_draft.name.trim().is_empty();
+            let can_add = !app.ui.scoped.damper_def_draft.name.trim().is_empty();
             if ui
                 .add_enabled(can_add, egui::Button::new("+ 追加"))
                 .clicked()
             {
-                app.undo.run(
-                    &mut app.model,
+                app.core.scoped.undo.run(
+                    &mut app.core.model,
                     Box::new(AddDamperDef {
                         def: DamperDef {
-                            name: app.damper_def_draft.name.clone(),
-                            props: app.damper_def_draft.props,
+                            name: app.ui.scoped.damper_def_draft.name.clone(),
+                            props: app.ui.scoped.damper_def_draft.props,
                         },
                     }),
                 );
-                app.staleness.mark_edited();
-                app.damper_def_draft.edit_index = None;
-                app.damper_def_draft.edit_target_name = None;
+                app.core.scoped.staleness.mark_edited();
+                app.ui.scoped.damper_def_draft.edit_index = None;
+                app.ui.scoped.damper_def_draft.edit_target_name = None;
             }
 
             let can_update = app
-                .damper_def_draft
+                .ui.scoped.damper_def_draft
                 .edit_index
-                .is_some_and(|i| i < app.model.damper_defs.len());
+                .is_some_and(|i| i < app.core.model.damper_defs.len());
             let mut apply_error: Option<&'static str> = None;
             if ui
                 .add_enabled(can_update, egui::Button::new("✏ 選択定義へ適用"))
                 .on_hover_text("フォームの内容で読み込み元の定義を上書きします")
                 .clicked()
             {
-                if let Some(i) = app.damper_def_draft.edit_index {
+                if let Some(i) = app.ui.scoped.damper_def_draft.edit_index {
                     // 読み込み時点の定義名と現在その位置にある定義名が一致するかを
                     // 確認してから上書きする（undo/redo 等で並びが変わり、index は
                     // 有効範囲内でも別の定義を指してしまっているケースの誤上書き防止）。
-                    let current_name = app.model.damper_defs.get(i).map(|d| d.name.as_str());
+                    let current_name = app.core.model.damper_defs.get(i).map(|d| d.name.as_str());
                     if edit_target_still_matches(
                         current_name,
-                        app.damper_def_draft.edit_target_name.as_deref(),
+                        app.ui.scoped.damper_def_draft.edit_target_name.as_deref(),
                     ) {
-                        app.undo.run(
-                            &mut app.model,
+                        app.core.scoped.undo.run(
+                            &mut app.core.model,
                             Box::new(UpdateDamperDef {
                                 index: i,
                                 def: DamperDef {
-                                    name: app.damper_def_draft.name.clone(),
-                                    props: app.damper_def_draft.props,
+                                    name: app.ui.scoped.damper_def_draft.name.clone(),
+                                    props: app.ui.scoped.damper_def_draft.props,
                                 },
                             }),
                         );
-                        app.staleness.mark_edited();
+                        app.core.scoped.staleness.mark_edited();
                     } else {
                         apply_error = Some(
                             "編集元の定義が変わっているため適用できません。一覧から選び直してください。",
                         );
-                        app.damper_def_draft.edit_index = None;
-                        app.damper_def_draft.edit_target_name = None;
+                        app.ui.scoped.damper_def_draft.edit_index = None;
+                        app.ui.scoped.damper_def_draft.edit_target_name = None;
                     }
                 }
             }
@@ -270,10 +270,10 @@ pub fn damper_def_panel(ui: &mut egui::Ui, app: &mut App) {
                 ui.colored_label(crate::theme::ERROR_RED, msg);
             }
 
-            if app.damper_def_draft.edit_index.is_some() && ui.button("新規作成に戻す").clicked()
+            if app.ui.scoped.damper_def_draft.edit_index.is_some() && ui.button("新規作成に戻す").clicked()
             {
-                app.damper_def_draft.edit_index = None;
-                app.damper_def_draft.edit_target_name = None;
+                app.ui.scoped.damper_def_draft.edit_index = None;
+                app.ui.scoped.damper_def_draft.edit_target_name = None;
             }
         });
     });

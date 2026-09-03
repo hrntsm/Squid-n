@@ -7,7 +7,7 @@
 //!
 //! 数値ラベルは全部材に出すと過密で読めなくなるため、既定では注意域以上
 //! （検定比 ≥ [`LABEL_MIN_RATIO`]）の部材にのみ表示し、それ未満は色の濃淡
-//! だけで余裕度を示す（`app.check_ratio_label_all` で全表示に切り替え可能）。
+//! だけで余裕度を示す（`app.ui.view.check_ratio_label_all` で全表示に切り替え可能）。
 //!
 //! 着色対象は [`CheckRatioFilter`]（最大＝全式の max、または特定の検定式のみ）で
 //! 切り替えられ、部材内の検定位置ごとに正方形マーカーを重ねる「位置別マーカー」、
@@ -183,14 +183,14 @@ pub(super) fn pick_nearest_checked_node(
     pos: egui::Pos2,
     frame_filter: super::FrameFilter,
 ) -> Option<(usize, f32)> {
-    let results = app.results.as_ref()?;
+    let results = app.core.scoped.results.as_ref()?;
     if results.joint_checks.is_empty() {
         return None;
     }
     let checked: std::collections::HashSet<NodeId> =
         results.joint_checks.iter().map(|j| j.node).collect();
     let mut best: Option<(usize, f32)> = None;
-    for (idx, node) in app.model.nodes.iter().enumerate() {
+    for (idx, node) in app.core.model.nodes.iter().enumerate() {
         // 構面表示で描いていない節点は選べない（見えない節点の検定詳細が出るのを防ぐ）。
         if idx >= pts.len() || !checked.contains(&node.id) || !frame_filter.shows_node(idx) {
             continue;
@@ -205,7 +205,7 @@ pub(super) fn pick_nearest_checked_node(
 
 /// 節点 `node` の検定詳細（種別・検定比・判定・根拠）をポインタ位置に表示する。
 pub(super) fn show_node_check_tooltip(ui: &egui::Ui, app: &App, node: NodeId) {
-    let Some(results) = app.results.as_ref() else {
+    let Some(results) = app.core.scoped.results.as_ref() else {
         return;
     };
     let rows: Vec<&crate::app::JointCheck> = results
@@ -355,7 +355,7 @@ pub(super) fn build_tooltip_rows(positions: &[PositionCheck]) -> (Vec<CheckKind>
 }
 
 /// 検定比図を描く。`pts` は `viewer_panel` で計算済みの節点スクリーン座標
-/// （`app.model.nodes` と同じ順序）。
+/// （`app.core.model.nodes` と同じ順序）。
 pub(super) fn draw_check_ratio(
     painter: &egui::Painter,
     app: &App,
@@ -363,7 +363,7 @@ pub(super) fn draw_check_ratio(
     pts: &[egui::Pos2],
     frame_filter: super::FrameFilter,
 ) {
-    let Some(results) = &app.results else {
+    let Some(results) = &app.core.scoped.results else {
         draw_no_result_legend(painter);
         return;
     };
@@ -374,9 +374,9 @@ pub(super) fn draw_check_ratio(
         return;
     }
 
-    let filter = app.check_ratio_filter;
-    let markers = app.check_ratio_markers;
-    let label_all = app.check_ratio_label_all;
+    let filter = app.ui.view.check_ratio_filter;
+    let markers = app.ui.view.check_ratio_markers;
+    let label_all = app.ui.view.check_ratio_label_all;
 
     let elem_ratios = max_ratio_by_elem(results.member_checks.iter().flat_map(|m| {
         m.positions
@@ -521,14 +521,14 @@ pub(super) fn draw_check_ratio(
     }
 
     // --- 節点検定（接合部・パネルゾーン・耐震壁など）の表示 ---
-    // NodeId の内部値はそのまま配列添字とは限らないため、`app.model.nodes` を
+    // NodeId の内部値はそのまま配列添字とは限らないため、`app.core.model.nodes` を
     // 走査してインデックスを求め（`enumerate` の添字が実際の `pts` の添字）、
     // `node.id` と突き合わせてから `pts` を引く。
     //
     // 節点には支点記号・ヒンジ等の他の記号も重なるため、部材の線とは別形状
     // （ひし形）で描いて識別できるようにする。NG は一回り大きくし、輪郭を
     // 背景色で縁取って他の記号に埋もれないようにする。
-    for (idx, node) in app.model.nodes.iter().enumerate() {
+    for (idx, node) in app.core.model.nodes.iter().enumerate() {
         let Some(&(ratio, ok)) = node_ratios.get(&node.id) else {
             continue;
         };
@@ -583,9 +583,9 @@ pub(super) fn draw_check_ratio(
 }
 
 /// B-3: 部材 `elem_id` の検定詳細（位置×式）をポインタ位置にツールチップ表示する。
-/// `app.results.member_checks` に当該部材の検定がなければ何も描かない。
+/// `app.core.scoped.results.member_checks` に当該部材の検定がなければ何も描かない。
 pub(super) fn show_check_tooltip(ui: &egui::Ui, app: &App, elem_id: ElemId) {
-    let Some(results) = &app.results else {
+    let Some(results) = &app.core.scoped.results else {
         return;
     };
     let positions = elem_check_positions(&results.member_checks, elem_id);
@@ -820,7 +820,7 @@ fn draw_legend(
         y = node_note.max.y + 4.0;
     }
 
-    if app.staleness.design_stale {
+    if app.core.scoped.staleness.design_stale {
         painter.text(
             egui::pos2(x0, y),
             egui::Align2::LEFT_TOP,
@@ -1285,7 +1285,7 @@ mod tests {
             story: None,
             support_spring: None,
         };
-        app.model.nodes = vec![node(0, 0.0), node(1, 1000.0), node(2, 2000.0)];
+        app.core.model.nodes = vec![node(0, 0.0), node(1, 1000.0), node(2, 2000.0)];
 
         let mut results = crate::app::ResultsBundle::default();
         // 節点 0 と 2 のみ検定結果を持つ。
@@ -1296,7 +1296,7 @@ mod tests {
                 outcome: checked(0.5, vec![]),
             });
         }
-        app.results = Some(results);
+        app.core.scoped.results = Some(results);
 
         let pts = [
             egui::pos2(0.0, 0.0),

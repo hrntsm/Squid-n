@@ -14,10 +14,12 @@ impl App {
     /// フォールバックする。
     #[cfg(feature = "gui")]
     pub(crate) fn cmq_display_load_case(&self) -> Option<&squid_n_core::model::LoadCase> {
-        self.nav
+        self.ui
+            .scoped
+            .nav
             .focus_load_case
-            .and_then(|id| self.model.load_cases.iter().find(|lc| lc.id == id))
-            .or_else(|| self.model.load_cases.first())
+            .and_then(|id| self.core.model.load_cases.iter().find(|lc| lc.id == id))
+            .or_else(|| self.core.model.load_cases.first())
     }
 
     /// 重力系の標準荷重ケース（DL・LL(架構用)・LL(地震用)）へ自動計算値を同期する
@@ -48,7 +50,7 @@ impl App {
     /// 解析実行系（`sync_auto_load_cases_action` 経由）・`generate_stories_action`
     /// の入口で毎回呼ぶことを想定した冪等な同期アクション。
     pub fn sync_gravity_load_cases_action(&mut self) {
-        let result = squid_n_job::auto_loads::compute_gravity_auto_load_cases(&self.model);
+        let result = squid_n_job::auto_loads::compute_gravity_auto_load_cases(&self.core.model);
         for case in result.cases {
             self.sync_one_auto_case(case.name, case.kind, case.nodal, case.member);
         }
@@ -73,7 +75,7 @@ impl App {
     /// （`last_error` とは別枠。解析自体は継続してよい注意事項のため）。
     /// 冪等な同期アクション（`sync_gravity_load_cases_action` と同じ規約）。
     pub fn sync_seismic_load_cases_action(&mut self) {
-        let design_period = match self.analysis_cfg.ai_mode {
+        let design_period = match self.core.analysis_cfg.ai_mode {
             AiMode::SemiPrecise => match self.design_seismic_period() {
                 Ok(t) => Some(t),
                 Err(msg) => {
@@ -84,8 +86,8 @@ impl App {
             AiMode::Approx => None,
         };
         let result = squid_n_job::auto_loads::compute_seismic_auto_load_cases(
-            &self.model,
-            &self.analysis_cfg,
+            &self.core.model,
+            &self.core.analysis_cfg,
             design_period,
         );
         for notice in result.notices {
@@ -107,14 +109,14 @@ impl App {
     pub(crate) fn compute_auto_load_sync_hash(&self) -> u64 {
         use std::hash::{Hash, Hasher};
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        if let Ok(bytes) = bincode::serialize(&self.model) {
+        if let Ok(bytes) = bincode::serialize(&self.core.model) {
             bytes.hash(&mut hasher);
         }
-        std::mem::discriminant(&self.analysis_cfg.ai_mode).hash(&mut hasher);
-        self.analysis_cfg.z.to_bits().hash(&mut hasher);
-        (self.analysis_cfg.soil as u8).hash(&mut hasher);
-        self.analysis_cfg.c0.to_bits().hash(&mut hasher);
-        if matches!(self.analysis_cfg.ai_mode, AiMode::SemiPrecise) {
+        std::mem::discriminant(&self.core.analysis_cfg.ai_mode).hash(&mut hasher);
+        self.core.analysis_cfg.z.to_bits().hash(&mut hasher);
+        (self.core.analysis_cfg.soil as u8).hash(&mut hasher);
+        self.core.analysis_cfg.c0.to_bits().hash(&mut hasher);
+        if matches!(self.core.analysis_cfg.ai_mode, AiMode::SemiPrecise) {
             if let Ok(t) = self.design_seismic_period() {
                 t.to_bits().hash(&mut hasher);
             }
@@ -143,21 +145,21 @@ impl App {
     ///    計算して保存する（同期前のハッシュを保存すると、次回呼び出しで
     ///    「同期していないのに一致」と誤判定するため、必ず同期後の状態で保存する）。
     pub fn sync_auto_load_cases_action(&mut self) {
-        squid_n_core::region_rebuild::rebuild_floor_regions(&mut self.model);
-        squid_n_core::wall_region_rebuild::rebuild_wall_regions(&mut self.model);
+        squid_n_core::region_rebuild::rebuild_floor_regions(&mut self.core.model);
+        squid_n_core::wall_region_rebuild::rebuild_wall_regions(&mut self.core.model);
         self.apply_rigid_zones_for_analysis();
         let current = self.compute_auto_load_sync_hash();
-        if self.auto_load_sync_hash == Some(current) {
+        if self.core.scoped.auto_load_sync_hash == Some(current) {
             return;
         }
-        let design_period = if matches!(self.analysis_cfg.ai_mode, AiMode::SemiPrecise) {
+        let design_period = if matches!(self.core.analysis_cfg.ai_mode, AiMode::SemiPrecise) {
             self.design_seismic_period().ok()
         } else {
             None
         };
         let result = squid_n_job::auto_loads::compute_auto_load_cases(
-            &self.model,
-            &self.analysis_cfg,
+            &self.core.model,
+            &self.core.analysis_cfg,
             design_period,
         );
         for notice in result.notices {
@@ -166,7 +168,7 @@ impl App {
         for case in result.cases {
             self.sync_one_auto_case(case.name, case.kind, case.nodal, case.member);
         }
-        self.auto_load_sync_hash = Some(self.compute_auto_load_sync_hash());
+        self.core.scoped.auto_load_sync_hash = Some(self.compute_auto_load_sync_hash());
     }
 
     /// 名前付き荷重ケースを指定の `kind`・内容へ冪等に同期する
@@ -183,7 +185,7 @@ impl App {
         nodal: Vec<squid_n_core::model::NodalLoad>,
         member: Vec<squid_n_core::model::MemberLoad>,
     ) {
-        let existing = self.model.load_cases.iter().find(|lc| lc.name == name);
+        let existing = self.core.model.load_cases.iter().find(|lc| lc.name == name);
         let needs_create = existing.is_none() && !(nodal.is_empty() && member.is_empty());
         let needs_update = existing
             .map(|lc| lc.kind != kind || !lc.auto_loads_match(&nodal, &member))
@@ -192,8 +194,8 @@ impl App {
             return;
         }
 
-        self.undo.run(
-            &mut self.model,
+        self.core.scoped.undo.run(
+            &mut self.core.model,
             Box::new(squid_n_edit::SyncSlabLoadsToCase {
                 name: name.to_string(),
                 kind,
@@ -201,7 +203,7 @@ impl App {
                 member,
             }),
         );
-        self.staleness.mark_edited();
+        self.core.scoped.staleness.mark_edited();
     }
 
     /// 組合せが参照する空の水平力ケース（kind=Seismic／Wind・内容なし）の名前を返す。
@@ -214,7 +216,8 @@ impl App {
         combo: &squid_n_core::model::LoadCombination,
     ) -> Option<String> {
         combo.terms.iter().find_map(|(id, _)| {
-            self.model
+            self.core
+                .model
                 .load_cases
                 .iter()
                 .find(|lc| lc.id == *id)

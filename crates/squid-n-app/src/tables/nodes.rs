@@ -197,7 +197,7 @@ pub fn nodes_table(ui: &mut egui::Ui, app: &mut App) {
         ui.horizontal_wrapped(|ui| {
             for (label, k) in [("X", 0), ("Y", 1), ("Z", 2)] {
                 ui.label(label);
-                let slot = &mut app.node_draft[k];
+                let slot = &mut app.ui.scoped.node_draft[k];
                 let resp = ui.add(
                     egui::TextEdit::singleline(slot)
                         .desired_width(70.0)
@@ -213,22 +213,22 @@ pub fn nodes_table(ui: &mut egui::Ui, app: &mut App) {
             }
             if ui.button("+ 追加").clicked() {
                 let mut coord = [0.0; 3];
-                for (k, slot) in app.node_draft.iter().enumerate() {
+                for (k, slot) in app.ui.scoped.node_draft.iter().enumerate() {
                     coord[k] = slot.trim().parse::<f64>().unwrap_or(0.0);
                 }
                 // 同一座標の既存節点がある場合は確認ダイアログを挟む
                 // （同じ座標の節点を重複して作成してよいかユーザに確認する）
                 const COORD_TOL: f64 = 1e-9;
-                let dup = app.model.nodes.iter().any(|n| {
+                let dup = app.core.model.nodes.iter().any(|n| {
                     (n.coord[0] - coord[0]).abs() < COORD_TOL
                         && (n.coord[1] - coord[1]).abs() < COORD_TOL
                         && (n.coord[2] - coord[2]).abs() < COORD_TOL
                 });
                 if dup {
-                    app.pending_duplicate_node_coord = Some(coord);
+                    app.ui.scoped.pending_duplicate_node_coord = Some(coord);
                 } else {
-                    app.undo.run(
-                        &mut app.model,
+                    app.core.scoped.undo.run(
+                        &mut app.core.model,
                         Box::new(AddNode {
                             coord,
                             restraint: Dof6Mask::FREE,
@@ -237,7 +237,7 @@ pub fn nodes_table(ui: &mut egui::Ui, app: &mut App) {
                     // model.nodes が +1 されたので node_edit の長さを再同期
                     // （同期しないと body.rows が新しい行数で描画し node_edit[i] が範囲外になる）
                     app.sync_node_edit();
-                    app.staleness.mark_edited();
+                    app.core.scoped.staleness.mark_edited();
                 }
             }
         });
@@ -249,17 +249,20 @@ pub fn nodes_table(ui: &mut egui::Ui, app: &mut App) {
     // モデル編集はアダプタが squid-n-edit の複合コマンドへ落とす（undo 1 回で復元）。
     let edited = {
         let mut adapter = NodeGridAdapter {
-            model: &mut app.model,
-            undo: &mut app.undo,
+            model: &mut app.core.model,
+            undo: &mut app.core.scoped.undo,
             edited: false,
         };
         // 既存の 🗑 ボタン（1 行削除）はグリッドの末尾列として維持する
-        app.node_grid.delete_buttons = true;
-        app.node_grid.show(ui, &mut adapter, &["X", "Y", "Z"]);
+        app.ui.scoped.node_grid.delete_buttons = true;
+        app.ui
+            .scoped
+            .node_grid
+            .show(ui, &mut adapter, &["X", "Y", "Z"]);
         adapter.edited
     };
-    for (msg, is_err) in app.node_grid.take_log() {
-        app.log.push(
+    for (msg, is_err) in app.ui.scoped.node_grid.take_log() {
+        app.core.log.push(
             if is_err {
                 LogLevel::Error
             } else {
@@ -270,21 +273,21 @@ pub fn nodes_table(ui: &mut egui::Ui, app: &mut App) {
     }
     if edited {
         // 編集があった場合は下流（結果・設計）を stale にする（UI設計 §5）
-        app.staleness.mark_edited();
+        app.core.scoped.staleness.mark_edited();
         app.sync_node_edit();
     }
     // 行選択に合わせてナビゲータのフォーカス節点を同期する
     // （境界条件タブ・3D ビューの強調表示が選択行を追う）
-    if app.node_grid.grid.active {
-        let r = app.node_grid.grid.anchor.row;
-        if let Some(node) = app.model.nodes.get(r) {
-            app.nav.focus_node = Some(node.id);
+    if app.ui.scoped.node_grid.grid.active {
+        let r = app.ui.scoped.node_grid.grid.anchor.row;
+        if let Some(node) = app.core.model.nodes.get(r) {
+            app.ui.scoped.nav.focus_node = Some(node.id);
         }
     }
 
     // 重複座標の節点追加確認ダイアログ
     // （追加ボタン押下時に同一座標の既存節点が見つかった場合、ここで確認を取る）
-    if app.pending_duplicate_node_coord.is_some() {
+    if app.ui.scoped.pending_duplicate_node_coord.is_some() {
         let mut do_add = false;
         let mut do_cancel = false;
         let mut open = true;
@@ -295,7 +298,7 @@ pub fn nodes_table(ui: &mut egui::Ui, app: &mut App) {
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
             .open(&mut open)
             .show(ui.ctx(), |ui| {
-                if let Some(coord) = app.pending_duplicate_node_coord {
+                if let Some(coord) = app.ui.scoped.pending_duplicate_node_coord {
                     ui.label(format!(
                         "({:.3}, {:.3}, {:.3}) と同じ座標の節点がすでに存在します。",
                         coord[0], coord[1], coord[2]
@@ -313,20 +316,20 @@ pub fn nodes_table(ui: &mut egui::Ui, app: &mut App) {
             });
         // 閉じるボタン（×）またはキャンセルで保留を破棄
         if !open || do_cancel {
-            app.pending_duplicate_node_coord = None;
+            app.ui.scoped.pending_duplicate_node_coord = None;
         }
         // 追加確定
         if do_add {
-            if let Some(coord) = app.pending_duplicate_node_coord.take() {
-                app.undo.run(
-                    &mut app.model,
+            if let Some(coord) = app.ui.scoped.pending_duplicate_node_coord.take() {
+                app.core.scoped.undo.run(
+                    &mut app.core.model,
                     Box::new(AddNode {
                         coord,
                         restraint: Dof6Mask::FREE,
                     }),
                 );
                 app.sync_node_edit();
-                app.staleness.mark_edited();
+                app.core.scoped.staleness.mark_edited();
             }
         }
     }
@@ -335,22 +338,25 @@ pub fn nodes_table(ui: &mut egui::Ui, app: &mut App) {
 /// 境界条件（拘束）タブ：節点一覧・追加フォームとは別の独立したサブタブ。
 /// 節点を選んでから 自由／ピン／固定 やチェックボックスで拘束成分を設定する。
 pub fn boundary_condition_panel(ui: &mut egui::Ui, app: &mut App) {
-    if app.model.nodes.is_empty() {
+    if app.core.model.nodes.is_empty() {
         ui.label("節点がありません（先に「節点」タブで節点を追加してください）");
         return;
     }
 
-    let node_ids: Vec<NodeId> = app.model.nodes.iter().map(|n| n.id).collect();
+    let node_ids: Vec<NodeId> = app.core.model.nodes.iter().map(|n| n.id).collect();
     let selected = app
+        .ui
+        .scoped
         .nav
         .focus_node
         .filter(|id| node_ids.contains(id))
         .unwrap_or(node_ids[0]);
-    app.nav.focus_node = Some(selected);
+    app.ui.scoped.nav.focus_node = Some(selected);
 
     // ノード表示ラベル（ばね支持中の節点には「🌀ばね」バッジを付ける）
     let node_label = |id: NodeId| -> String {
         let has_spring = app
+            .core
             .model
             .nodes
             .iter()
@@ -373,15 +379,15 @@ pub fn boundary_condition_panel(ui: &mut egui::Ui, app: &mut App) {
                         .selectable_label(selected == *id, node_label(*id))
                         .clicked()
                     {
-                        app.nav.focus_node = Some(*id);
+                        app.ui.scoped.nav.focus_node = Some(*id);
                     }
                 }
             });
     });
     ui.separator();
 
-    let selected = app.nav.focus_node.unwrap_or(selected);
-    let Some(node) = app.model.node(selected) else {
+    let selected = app.ui.scoped.nav.focus_node.unwrap_or(selected);
+    let Some(node) = app.core.model.node(selected) else {
         return;
     };
     let r = node.restraint;
@@ -420,14 +426,14 @@ pub fn boundary_condition_panel(ui: &mut egui::Ui, app: &mut App) {
     });
 
     if let Some(mask) = pending_restraint {
-        app.undo.run(
-            &mut app.model,
+        app.core.scoped.undo.run(
+            &mut app.core.model,
             Box::new(SetNodeRestraint {
                 node: selected,
                 restraint: mask,
             }),
         );
-        app.staleness.mark_edited();
+        app.core.scoped.staleness.mark_edited();
     }
 
     ui.separator();
@@ -444,7 +450,7 @@ fn support_spring_section(ui: &mut egui::Ui, app: &mut App, node_id: NodeId) {
         .default_open(false)
         .id_salt("bc_spring_section")
         .show(ui, |ui| {
-            let Some(node) = app.model.node(node_id) else {
+            let Some(node) = app.core.model.node(node_id) else {
                 return;
             };
             let restraint = node.restraint;
@@ -453,14 +459,14 @@ fn support_spring_section(ui: &mut egui::Ui, app: &mut App, node_id: NodeId) {
 
             if ui.checkbox(&mut enabled, "ばね支持を有効化").changed() {
                 let new_spring = if enabled { Some(spring) } else { None };
-                app.undo.run(
-                    &mut app.model,
+                app.core.scoped.undo.run(
+                    &mut app.core.model,
                     Box::new(SetNodeSupportSpring {
                         node: node_id,
                         spring: new_spring,
                     }),
                 );
-                app.staleness.mark_edited();
+                app.core.scoped.staleness.mark_edited();
                 return;
             }
             if !enabled {
@@ -502,14 +508,14 @@ fn support_spring_section(ui: &mut egui::Ui, app: &mut App, node_id: NodeId) {
                 }
             });
             if commit {
-                app.undo.run(
-                    &mut app.model,
+                app.core.scoped.undo.run(
+                    &mut app.core.model,
                     Box::new(SetNodeSupportSpring {
                         node: node_id,
                         spring: Some(spring),
                     }),
                 );
-                app.staleness.mark_edited();
+                app.core.scoped.staleness.mark_edited();
             }
         });
 }
@@ -523,11 +529,11 @@ fn isolator_support_section(ui: &mut egui::Ui, app: &mut App, node_id: NodeId) {
         .default_open(false)
         .id_salt("bc_isolator_section")
         .show(ui, |ui| {
-            let existing_elem = find_support_isolator(&app.model, node_id);
+            let existing_elem = find_support_isolator(&app.core.model, node_id);
 
             if let Some(elem_id) = existing_elem {
                 let props = app
-                    .model
+                    .core.model
                     .isolator_attrs
                     .iter()
                     .find(|a| a.elem == elem_id)
@@ -558,11 +564,11 @@ fn isolator_support_section(ui: &mut egui::Ui, app: &mut App, node_id: NodeId) {
                             )
                             .clicked()
                         {
-                            app.undo.run(
-                                &mut app.model,
+                            app.core.scoped.undo.run(
+                                &mut app.core.model,
                                 Box::new(RemoveSupportIsolator { node: node_id }),
                             );
-                            app.staleness.mark_edited();
+                            app.core.scoped.staleness.mark_edited();
                         }
                     }
                     None => {
@@ -576,11 +582,11 @@ fn isolator_support_section(ui: &mut egui::Ui, app: &mut App, node_id: NodeId) {
                 "この節点を免震支承で支持します（同一座標に接地節点を新規作成し、\
                  零長の免震支承要素を設置。対象節点の拘束は自動的に解放されます）。",
             );
-            isolator_kind_selector(ui, &mut app.isolator_support_draft.props.kind);
+            isolator_kind_selector(ui, &mut app.ui.scoped.isolator_support_draft.props.kind);
             isolator_props_fields(
                 ui,
                 "bc_isolator_support",
-                &mut app.isolator_support_draft.props,
+                &mut app.ui.scoped.isolator_support_draft.props,
             );
             if ui
                 .button("この支点に免震支承を配置")
@@ -589,14 +595,14 @@ fn isolator_support_section(ui: &mut egui::Ui, app: &mut App, node_id: NodeId) {
                 )
                 .clicked()
             {
-                app.undo.run(
-                    &mut app.model,
+                app.core.scoped.undo.run(
+                    &mut app.core.model,
                     Box::new(PlaceSupportIsolator {
                         node: node_id,
-                        props: app.isolator_support_draft.props,
+                        props: app.ui.scoped.isolator_support_draft.props,
                     }),
                 );
-                app.staleness.mark_edited();
+                app.core.scoped.staleness.mark_edited();
             }
         });
 }
