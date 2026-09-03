@@ -3,18 +3,19 @@
 //! - [`distribute_to_node`] — 取り付き領域の荷重を節点（柱）へ集中
 //! - [`distribute_cantilever`] — 片持ちスラブ（取付き大梁への等分布集約）
 
+use squid_n_core::geom::polygon::area_xy;
 use squid_n_core::ids::ElemId;
 use squid_n_core::ids::NodeId;
 
 use super::fem::fem_uniform;
-use super::geometry::{dist3, edge_len, polygon_area};
+use super::geometry::{dist3, edge_len};
 use super::types::{push_edge, BeamLoad, Cmq, LoadShape, LoadTarget};
 
 /// 取り付き領域の荷重を節点（柱）へ集中させる分配。
 ///
 /// 出隅の片持ちスラブは、荷重伝達方向および片持ち梁の取付きに関わらず、節点荷重として
 /// すべて柱に伝達する。本実装ではこれに従い、全荷重 `W = w × 多角形面積`
-/// （[`polygon_area`]。構造芯から出隅先端までの長方形＝境界そのものの面積）に
+/// （[`area_xy`]。構造芯から出隅先端までの長方形＝境界そのものの面積）に
 /// `ratio` を掛けた分を、`node` への単一の集中荷重として返す。
 /// 小梁反力・`distribute_rect_with_joists` の柱集中荷重と同じ
 /// `LoadTarget::Node` + `LoadShape::Point`（`q_i = W`、`q_j = 0`）の機構を再利用する。
@@ -29,7 +30,7 @@ pub(crate) fn distribute_to_node(
     ratio: f64,
     loads: &mut Vec<BeamLoad>,
 ) {
-    let area = polygon_area(coords);
+    let area = area_xy(coords);
     if area <= 0.0 {
         return;
     }

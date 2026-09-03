@@ -5,11 +5,8 @@
 //! - [`slab_dimensions`] — 矩形（平行四辺形）判定と短辺・長辺寸法 `(lx, ly)`
 //! - [`edge_len`] — 多角形の辺 i の長さ
 //! - [`point_in_slab_boundary`] — 点がスラブ境界多角形の内部または辺上にあるか
-//! - [`polygon_area`] — 平面多角形の面積（シューレース公式）
 
 use squid_n_core::model::{Model, Slab};
-
-use super::polygon::{point_in_polygon, point_on_polygon_boundary};
 
 pub(crate) fn boundary_coords(model: &Model, slab: &Slab) -> Option<Vec<[f64; 3]>> {
     slab.boundary_coords(model)
@@ -77,21 +74,5 @@ pub fn point_in_slab_boundary(model: &Model, slab: &Slab, p: [f64; 2]) -> bool {
         return false;
     }
     let poly: Vec<[f64; 2]> = coords.iter().map(|c| [c[0], c[1]]).collect();
-    point_in_polygon(p, &poly) || point_on_polygon_boundary(p, &poly)
-}
-
-/// 平面多角形の面積（ニュートンの公式＝シューレース公式）。全体座標 XY 平面へ投影して
-/// 計算する（床スラブは水平面内にある＝Z一定という前提）。
-pub fn polygon_area(coords: &[[f64; 3]]) -> f64 {
-    let n = coords.len();
-    if n < 3 {
-        return 0.0;
-    }
-    let mut sum = 0.0;
-    for i in 0..n {
-        let a = coords[i];
-        let b = coords[(i + 1) % n];
-        sum += a[0] * b[1] - b[0] * a[1];
-    }
-    (sum / 2.0).abs()
+    squid_n_core::geom::polygon::contains_including_boundary(&poly, p)
 }

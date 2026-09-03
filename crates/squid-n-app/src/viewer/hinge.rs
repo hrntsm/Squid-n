@@ -1083,35 +1083,11 @@ fn draw_section_outline(plot_ui: &mut egui_plot::PlotUi<'_>, pts: &[[f64; 2]]) {
 fn fiber_frame_outline(sec: &Section) -> Option<SectionOutline> {
     let outer_raw = super::solid::section_outline(sec)?;
     let inner_raw = super::solid::section_inner_outline(sec);
-    let [cy, cz] = polygon_centroid(&outer_raw);
+    let [cy, cz] = squid_n_core::geom::polygon::centroid(&outer_raw);
     let xform = |pts: &[[f64; 2]]| -> Vec<[f64; 2]> {
         pts.iter().map(|&[y, z]| [y - cy, cz - z]).collect()
     };
     Some((xform(&outer_raw), inner_raw.as_deref().map(xform)))
-}
-
-/// 単純多角形（凹型可・自己交差なし）の面積重心をシューレース法で求める
-/// （純粋関数）。退化形状（面積 0）は頂点の単純平均へフォールバックする。
-fn polygon_centroid(pts: &[[f64; 2]]) -> [f64; 2] {
-    let n = pts.len();
-    let (mut a, mut cx, mut cy) = (0.0_f64, 0.0_f64, 0.0_f64);
-    for i in 0..n {
-        let [x0, y0] = pts[i];
-        let [x1, y1] = pts[(i + 1) % n];
-        let cross = x0 * y1 - x1 * y0;
-        a += cross;
-        cx += (x0 + x1) * cross;
-        cy += (y0 + y1) * cross;
-    }
-    a *= 0.5;
-    if a.abs() < 1e-9 {
-        let m = n as f64;
-        return [
-            pts.iter().map(|p| p[0]).sum::<f64>() / m,
-            pts.iter().map(|p| p[1]).sum::<f64>() / m,
-        ];
-    }
-    [cx / (6.0 * a), cy / (6.0 * a)]
 }
 
 /// ファイバーの降伏状態による分類（純粋関数）。0=未降伏、1=引張降伏、2=圧縮降伏。
@@ -1654,19 +1630,19 @@ mod tests {
 
     /// 中心 (0,0) の正方形（原点対称）の面積重心は原点。
     #[test]
-    fn polygon_centroid_of_centered_square_is_origin() {
+    fn section_outline_centroid_of_centered_square_is_origin() {
         let sq = vec![[10.0, -5.0], [10.0, 5.0], [-10.0, 5.0], [-10.0, -5.0]];
-        let [cy, cz] = polygon_centroid(&sq);
+        let [cy, cz] = squid_n_core::geom::polygon::centroid(&sq);
         assert!(cy.abs() < 1e-9, "cy={cy}");
         assert!(cz.abs() < 1e-9, "cz={cz}");
     }
 
     /// 平行移動した矩形の面積重心は、移動先の幾何中心と一致する。
     #[test]
-    fn polygon_centroid_of_offset_rect_matches_geometric_center() {
+    fn section_outline_centroid_of_offset_rect_matches_geometric_center() {
         // 元は中心 (0,0)・10×4 の矩形を (100, -50) へ平行移動。
         let rect = vec![[105.0, -52.0], [105.0, -48.0], [95.0, -48.0], [95.0, -52.0]];
-        let [cy, cz] = polygon_centroid(&rect);
+        let [cy, cz] = squid_n_core::geom::polygon::centroid(&rect);
         assert!((cy - 100.0).abs() < 1e-9, "cy={cy}");
         assert!((cz - (-50.0)).abs() < 1e-9, "cz={cz}");
     }

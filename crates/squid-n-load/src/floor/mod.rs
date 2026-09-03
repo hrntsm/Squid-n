@@ -2,7 +2,7 @@
 //!
 //! 責務ごとにサブモジュールへ分割している:
 //! - [`types`] — 基本型（[`LoadShape`]・[`Cmq`]・[`LoadTarget`]・[`BeamLoad`]）と辺荷重ヘルパ
-//! - [`geometry`] — 幾何ヘルパ（座標取得・距離・矩形判定・[`polygon_area`]）
+//! - [`geometry`] — 幾何ヘルパ（座標取得・距離・矩形判定）
 //! - [`fem`] — 固定端モーメント・せん断（CMQ）の閉形式公式
 //! - [`rect`] — 矩形床の分配戦略（三角形・台形／一方向／負担面積／小梁二段階）
 //! - [`cantilever`] — 片持ちスラブ・出隅スラブの分配戦略
@@ -35,7 +35,7 @@ mod types;
 /// 床側と同じ式で求めるための再公開（`fem` 自体は非公開モジュール）。
 pub(crate) use fem::{fem_linear, fem_uniform};
 pub use fem::{fixed_end_moments, simple_beam_moment_at, simple_reactions};
-pub use geometry::{point_in_slab_boundary, polygon_area, slab_dimensions, slab_dimensions_of};
+pub use geometry::{point_in_slab_boundary, slab_dimensions, slab_dimensions_of};
 pub use joist_design::{
     covered_length_of_loads, joist_distribution_is_ready, joist_distribution_is_sufficient,
     joist_expected_slabs_covered, joist_self_weight_udl, load_shape_to_member_loads,

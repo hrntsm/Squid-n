@@ -1295,7 +1295,7 @@ fn region_gen_finds_beam_bounded_regions() {
             continue;
         }
         *slab_area.entry(coords[0][2].round() as i64).or_default() +=
-            squid_n_load::floor::polygon_area(&coords);
+            squid_n_core::geom::polygon::area_xy(&coords);
     }
     for (z, (_, area)) in &per_level {
         let s = slab_area.get(z).copied().unwrap_or(0.0);

@@ -282,7 +282,7 @@ impl WallPlate {
         ])
     }
 
-    /// 壁版の面積 [mm²]。囲まれた壁版は [`crate::geom::polygon_area_3d`]（ニューエル）。
+    /// 壁版の面積 [mm²]。囲まれた壁版は [`crate::geom::polygon::area_3d`]（ニューエル）。
     /// 取り付く壁版は底辺長 × ∫|立ち上がり高さ|（[`crate::geom::abs_lerp_integral`]）。
     /// 4 点多角形にすると、両端で高さが符号反転する壁は自己交差（蝶ネクタイ）になり、
     /// Newell の面積が打ち消されて 0 近くになる（自重が黙って消える危険側）。
@@ -291,7 +291,7 @@ impl WallPlate {
         match &self.shape {
             WallPlateShape::Enclosed { .. } => self
                 .boundary_coords(model)
-                .map(|pts| crate::geom::polygon_area_3d(&pts))
+                .map(|pts| crate::geom::polygon::area_3d(&pts))
                 .unwrap_or(0.0),
             WallPlateShape::Attached { .. } => {
                 let Some(pts) = self.boundary_coords(model) else {
@@ -593,7 +593,7 @@ impl Model {
             let mid = lerp((t0 + t1) / 2.0);
             match candidates
                 .iter()
-                .find(|(_, poly)| crate::region_gen::polygon_contains_strict(poly, mid))
+                .find(|(_, poly)| crate::geom::polygon::contains_excluding_boundary(poly, mid))
             {
                 Some((id, _)) => match cov.per_region.iter_mut().find(|(r, _)| r == id) {
                     Some((_, f)) => *f += frac,
@@ -618,7 +618,7 @@ impl Model {
                 // と同じ規約）。3 次元面積で測ると、面荷重強度を掛ける側が XY 面積を
                 // 使うため総重量が縮み、傾斜床で危険側になる。
                 let xy: Vec<[f64; 2]> = pts.iter().map(|c| [c[0], c[1]]).collect();
-                crate::region_gen::signed_area_abs(&xy)
+                crate::geom::polygon::area(&xy)
             })
             .sum()
     }

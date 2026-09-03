@@ -38,41 +38,6 @@ pub use wall::{
     WallRegionBoundaryScan,
 };
 
-/// 辺上とみなす点から辺までの距離の上限 [mm]。
-pub const BOUNDARY_TOL_MM: f64 = 1.0;
-
-/// 点 `p`（2D）が多角形の内部にあるか。**辺上（[`BOUNDARY_TOL_MM`] 以内）は含めない。**
-///
-/// 版や二次部材をこの境界へ割り当てる用途を想定する。辺上の点は隣接する境界の双方に
-/// 該当してしまうため含めない（所属を一意に決められるようにする）。
-///
-/// レイキャストは辺上の点の扱いが定まらない（辺の向きしだいで内側にも外側にもなる）ため、
-/// 辺までの距離による判定を先に行う。座標系は問わない（床は XY、壁は局所 `(s, z)` で使う）。
-pub fn polygon_contains_strict(poly: &[[f64; 2]], p: [f64; 2]) -> bool {
-    let n = poly.len();
-    if n < 3 {
-        return false;
-    }
-    for i in 0..n {
-        if point_segment_dist(p, poly[i], poly[(i + 1) % n]) <= BOUNDARY_TOL_MM {
-            return false;
-        }
-    }
-    let mut inside = false;
-    let mut j = n - 1;
-    for i in 0..n {
-        let (a, b) = (poly[i], poly[j]);
-        if (a[1] > p[1]) != (b[1] > p[1]) {
-            let x = (b[0] - a[0]) * (p[1] - a[1]) / (b[1] - a[1]) + a[0];
-            if p[0] < x {
-                inside = !inside;
-            }
-        }
-        j = i;
-    }
-    inside
-}
-
 /// 面走査の入力となる 1 本の部材（無向の辺。半辺は本モジュールが内部で作る）。
 pub(crate) struct Edge {
     pub a: NodeId,
@@ -166,7 +131,7 @@ where
             continue;
         }
         faces.push(Face {
-            signed_area: signed_area(&pts),
+            signed_area: crate::geom::polygon::signed_area(&pts),
             boundary,
             edges: face_edges,
         });
@@ -196,40 +161,4 @@ fn next_half_edge(
     let pos = list.iter().position(|&w| w == u)?;
     let prev = if pos == 0 { list.len() - 1 } else { pos - 1 };
     Some((v, list[prev]))
-}
-
-/// 多角形の XY 投影面積（絶対値。周りの向きに依らない）。
-///
-/// 床板の面積を「床の分配と同じ XY 投影」で測るための入口
-/// （[`crate::model::Model::self_standing_wall_coverage`]）。
-pub fn signed_area_abs(pts: &[[f64; 2]]) -> f64 {
-    signed_area(pts).abs()
-}
-
-/// 多角形の符号付き面積（反時計回りが正）。
-pub(crate) fn signed_area(pts: &[[f64; 2]]) -> f64 {
-    let n = pts.len();
-    if n < 3 {
-        return 0.0;
-    }
-    let mut sum = 0.0;
-    for i in 0..n {
-        let a = pts[i];
-        let b = pts[(i + 1) % n];
-        sum += a[0] * b[1] - b[0] * a[1];
-    }
-    sum / 2.0
-}
-
-/// 点から線分までの距離 [mm]（2D 平面。座標系は問わない）。
-pub(crate) fn point_segment_dist(p: [f64; 2], a: [f64; 2], b: [f64; 2]) -> f64 {
-    let ab = [b[0] - a[0], b[1] - a[1]];
-    let len2 = ab[0] * ab[0] + ab[1] * ab[1];
-    let t = if len2 <= f64::EPSILON {
-        0.0
-    } else {
-        (((p[0] - a[0]) * ab[0] + (p[1] - a[1]) * ab[1]) / len2).clamp(0.0, 1.0)
-    };
-    let q = [a[0] + t * ab[0], a[1] + t * ab[1]];
-    ((p[0] - q[0]).powi(2) + (p[1] - q[1]).powi(2)).sqrt()
 }

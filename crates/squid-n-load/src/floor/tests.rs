@@ -1,4 +1,5 @@
 use super::*;
+use squid_n_core::geom::polygon::area_xy;
 use squid_n_core::model::{
     DistributionMethod, FloorRegion, LoadTransfer, MemberLoadKind, RegionAnchor, Slab, SlabPlate,
     SlabShape,
@@ -512,7 +513,7 @@ fn test_polygon_trapezoid_conservation() {
 
     let coords: Vec<[f64; 3]> = pts.iter().map(|(x, y)| [*x, *y, 0.0]).collect();
     let sampled_area = total_load(&loads) / w;
-    let true_area = polygon_area(&coords);
+    let true_area = area_xy(&coords);
     assert!(
         (sampled_area - true_area).abs() / true_area < 0.01,
         "sampled={} true={}",
@@ -546,7 +547,7 @@ fn test_polygon_pentagon_conservation() {
 
     let coords: Vec<[f64; 3]> = pts.iter().map(|(x, y)| [*x, *y, 0.0]).collect();
     let sampled_area = total_load(&loads) / w;
-    let true_area = polygon_area(&coords);
+    let true_area = area_xy(&coords);
     assert!(
         (sampled_area - true_area).abs() / true_area < 0.01,
         "sampled={} true={}",
@@ -571,7 +572,7 @@ fn test_polygon_one_way_fallback() {
     let loads = distribute_slab(&model, &slab);
     let coords: Vec<[f64; 3]> = pts.iter().map(|(x, y)| [*x, *y, 0.0]).collect();
     let sampled_area = total_load(&loads) / w;
-    let true_area = polygon_area(&coords);
+    let true_area = area_xy(&coords);
     assert!((sampled_area - true_area).abs() / true_area < 0.01);
 }
 

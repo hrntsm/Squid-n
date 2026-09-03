@@ -80,11 +80,11 @@ impl WallRegion {
         self.boundary.first().copied()
     }
 
-    /// 境界の面積 [mm²]（[`crate::geom::polygon_area_3d`]。ニューエルの公式による
+    /// 境界の面積 [mm²]（[`crate::geom::polygon::area_3d`]。ニューエルの公式による
     /// 3 次元面積。理想平面への投影を経由しない。§3.2 E3）。座標が引けない場合は 0。
     pub fn area(&self, model: &Model) -> f64 {
         self.boundary_coords(model)
-            .map(|pts| crate::geom::polygon_area_3d(&pts))
+            .map(|pts| crate::geom::polygon::area_3d(&pts))
             .unwrap_or(0.0)
     }
 }
