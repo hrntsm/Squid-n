@@ -194,6 +194,12 @@ pub fn push_panel_global_dofs(out: &mut SmallVec<[usize; 24]>, node_idx: usize, 
 /// `committed_disp: [f64; N]` と `trial_disp: [f64; N]` を持ち、`tangent_stiffness` を
 /// 実装していることが前提になる。
 ///
+/// 第 2 引数 `N` は**変位配列の格納容量**であって、その要素が実際に使う自由度数ではない。
+/// 剛性と変位を走査する範囲は `n_dof()` に追従させてあるので、節点数が可変で
+/// `n_dof() < N` になる要素（3 節点シェル等）でも、使っていない末尾を巻き込まない。
+/// 現状の 4 要素はいずれも節点数が固定長配列のため `n_dof() == N` であり、
+/// 両者を分けても数値は変わらない。
+///
 /// この定型は Newton 反復のトライアル追従（未確定変位も内力へ反映する。committed
 /// だけを見ると反復中に内力が凍結し、収束が準ニュートンへ劣化する）と、レジューム
 /// のためのチェックポイント（両変位を収録しないと変位 0 から再計算されて内力が
@@ -217,13 +223,17 @@ macro_rules! elastic_disp_behavior {
         fn internal_force(&self, ctx: &$crate::behavior::Ctx) -> $crate::behavior::LocalVec {
             // f_global = (Rᵀ·K_local·R)·u_global。接線剛性と同一の K を使うことで、
             // 剛性と内力の整合を実装の対応ではなく呼び出しで保証する。
+            //
+            // 走査範囲は格納容量 $n ではなく n_dof に合わせる。節点数が可変の要素では
+            // K の寸法も n_dof になるため、$n まで回すと行列の外を読む。
+            let n_dof = <Self as $crate::behavior::ElementBehavior>::n_dof(self);
             let k = <Self as $crate::behavior::ElementBehavior>::tangent_stiffness(self, ctx);
             let mut f = $crate::behavior::LocalVec {
-                data: ::smallvec::SmallVec::from_elem(0.0, $n),
+                data: ::smallvec::SmallVec::from_elem(0.0, n_dof),
             };
-            for i in 0..$n {
+            for i in 0..n_dof {
                 let mut s = 0.0;
-                for j in 0..$n {
+                for j in 0..n_dof {
                     s += k.get(i, j) * self.trial_disp[j];
                 }
                 f.data[i] = s;
@@ -237,10 +247,17 @@ macro_rules! elastic_disp_behavior {
             commit: bool,
             _ctx: &$crate::behavior::Ctx,
         ) {
-            // `du` はソルバが要素自由度ぶんを集めて渡すため、長さは常に $n に等しい。
-            // 食い違ったら添字で panic させる（短い方に合わせて黙って部分更新すると、
-            // 変位の一部が欠けたまま解析が続行し、誤った内力を返す）。
-            for i in 0..$n {
+            // `du` はソルバが `global_dofs` の長さで確保して渡すため、長さは n_dof に
+            // 等しい。短い方へ黙って合わせると変位の一部が欠けたまま解析が続行し、
+            // 誤った内力を返すので、食い違いは要素名を名指しして落とす。
+            let n_dof = <Self as $crate::behavior::ElementBehavior>::n_dof(self);
+            assert_eq!(
+                du.data.len(),
+                n_dof,
+                "{}::update_state: 変位増分の長さが自由度数と一致しません",
+                stringify!($ty)
+            );
+            for i in 0..n_dof {
                 self.trial_disp[i] += du.data[i];
             }
             if commit {

@@ -36,6 +36,26 @@ fn make_test_beam() -> BeamElement {
     }
 }
 
+/// 変位増分の長さが自由度数と食い違ったら、要素名を名指しして落とす。
+///
+/// 短い方へ黙って合わせると、変位の一部が欠けたまま解析が続行して誤った内力を返す。
+/// 節点数が可変の要素（3 節点シェル等）が入ると長さが変わりうるため、
+/// 走査範囲は `n_dof` に追従させたうえで不一致は落とす規約にしている。
+#[test]
+#[should_panic(expected = "変位増分の長さが自由度数と一致しません")]
+fn update_state_rejects_mismatched_du_length() {
+    use crate::behavior::{Ctx, ElementBehavior, LocalVec};
+    use squid_n_core::model::Model;
+
+    let model = Model::default();
+    let ctx = Ctx { model: &model };
+    let mut elem = make_test_beam();
+    let du = LocalVec {
+        data: smallvec::SmallVec::from_elem(0.0, 6),
+    };
+    elem.update_state(&du, false, &ctx);
+}
+
 /// SRC/CFT の複合換算が要素生成へ配線されていること（SRC規準の考え方・ヤング係数比による等価換算）。
 #[test]
 fn test_beam_new_src_cft_composite_props() {
