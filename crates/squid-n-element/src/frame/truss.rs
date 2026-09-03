@@ -1,4 +1,4 @@
-use crate::behavior::{Ctx, ElementBehavior, LocalMat, LocalVec, MassOption};
+use crate::behavior::{Ctx, ElementBehavior, LocalMat, MassOption};
 use crate::transform::LocalFrame;
 use smallvec::SmallVec;
 use squid_n_core::dof::DofMap;
@@ -161,72 +161,7 @@ impl ElementBehavior for TrussElement {
         self.axis.to_global(&self.local_stiffness())
     }
 
-    fn internal_force(&self, _ctx: &Ctx) -> LocalVec {
-        // トライアル追従: Newton 反復中の未確定変位も内力へ反映する
-        // （beam/behavior.rs と同じ規約）。
-        let k = self.axis.to_global(&self.local_stiffness());
-        let mut f = LocalVec {
-            data: SmallVec::from_elem(0.0, 12),
-        };
-        for i in 0..12 {
-            let mut s = 0.0;
-            for j in 0..12 {
-                s += k.get(i, j) * self.trial_disp[j];
-            }
-            f.data[i] = s;
-        }
-        f
-    }
-
-    fn update_state(&mut self, du: &LocalVec, commit: bool, _ctx: &Ctx) {
-        for i in 0..12 {
-            self.trial_disp[i] += du.data[i];
-        }
-        if commit {
-            self.committed_disp = self.trial_disp;
-        }
-    }
-
-    fn commit_state(&mut self) {
-        self.committed_disp = self.trial_disp;
-    }
-
-    fn revert_state(&mut self) {
-        self.trial_disp = self.committed_disp;
-    }
-
-    fn snapshot_state(&self) -> Box<dyn std::any::Any> {
-        Box::new((self.committed_disp, self.trial_disp))
-    }
-
-    fn restore_state(&mut self, state: &dyn std::any::Any) {
-        let (committed, trial) =
-            crate::behavior::downcast_snapshot::<([f64; 12], [f64; 12])>("TrussElement", state);
-        self.committed_disp = *committed;
-        self.trial_disp = *trial;
-    }
-
-    fn serialize_checkpoint(&self) -> Vec<u8> {
-        // トライアル追従化により変位が蓄積されるようになったため、
-        // チェックポイントに committed/trial の両変位を含める（レジューム時に
-        // 変位 0 から再計算されて内力が不整合になるのを防ぐ）。
-        bincode::serialize(&(self.committed_disp, self.trial_disp)).expect("serialize checkpoint")
-    }
-
-    fn deserialize_checkpoint(
-        &mut self,
-        data: &[u8],
-    ) -> Result<(), crate::behavior::CheckpointError> {
-        // 旧チェックポイント（変位未収録・空バイト列）は「状態なし」として許容する。
-        if data.is_empty() {
-            return Ok(());
-        }
-        let (committed, trial): ([f64; 12], [f64; 12]) = bincode::deserialize(data)
-            .map_err(|e| crate::behavior::CheckpointError::Decode(e.to_string()))?;
-        self.committed_disp = committed;
-        self.trial_disp = trial;
-        Ok(())
-    }
+    crate::elastic_disp_behavior!(TrussElement, 12);
 
     fn mass_matrix(&self, opt: MassOption) -> LocalMat {
         let m = self.density * self.a_mass * self.length;
@@ -301,6 +236,7 @@ pub(crate) fn sec_material(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::behavior::LocalVec;
     use squid_n_core::ids::{ElemId, MaterialId, NodeId, SectionId};
     use squid_n_core::model::{
         ElementData, ElementKind, EndCondition, ForceRegime, LocalAxis, Node, RigidZone,

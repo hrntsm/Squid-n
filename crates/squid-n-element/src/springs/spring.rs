@@ -30,7 +30,7 @@
 //! 定義できないため、全体座標系＝局所座標系（単位回転）とみなして扱う
 //! （零長バネは主に鉛直な独立要素として用いられ、軸の傾きを持たないため）。
 
-use crate::behavior::{Ctx, ElementBehavior, LocalMat, LocalVec, MassOption};
+use crate::behavior::{Ctx, ElementBehavior, LocalMat, MassOption};
 use crate::transform::LocalFrame;
 use smallvec::SmallVec;
 use squid_n_core::dof::DofMap;
@@ -126,73 +126,7 @@ impl ElementBehavior for NodalSpringElement {
         self.axis.to_global(&self.local_stiffness())
     }
 
-    fn internal_force(&self, _ctx: &Ctx) -> LocalVec {
-        // 線形弾性: f = K_global · u（トライアル追従。truss.rs と同じ規約）。
-        let k = self.axis.to_global(&self.local_stiffness());
-        let mut f = LocalVec {
-            data: SmallVec::from_elem(0.0, 12),
-        };
-        for i in 0..12 {
-            let mut s = 0.0;
-            for j in 0..12 {
-                s += k.get(i, j) * self.trial_disp[j];
-            }
-            f.data[i] = s;
-        }
-        f
-    }
-
-    fn update_state(&mut self, du: &LocalVec, commit: bool, _ctx: &Ctx) {
-        for i in 0..12 {
-            self.trial_disp[i] += du.data[i];
-        }
-        if commit {
-            self.committed_disp = self.trial_disp;
-        }
-    }
-
-    fn commit_state(&mut self) {
-        self.committed_disp = self.trial_disp;
-    }
-
-    fn revert_state(&mut self) {
-        self.trial_disp = self.committed_disp;
-    }
-
-    fn snapshot_state(&self) -> Box<dyn std::any::Any> {
-        Box::new((self.committed_disp, self.trial_disp))
-    }
-
-    fn restore_state(&mut self, state: &dyn std::any::Any) {
-        let (committed, trial) = crate::behavior::downcast_snapshot::<([f64; 12], [f64; 12])>(
-            "NodalSpringElement",
-            state,
-        );
-        self.committed_disp = *committed;
-        self.trial_disp = *trial;
-    }
-
-    fn serialize_checkpoint(&self) -> Vec<u8> {
-        // トライアル追従化により変位が蓄積されるようになったため、
-        // チェックポイントに committed/trial の両変位を含める（レジューム時に
-        // 変位 0 から再計算されて内力が不整合になるのを防ぐ）。
-        bincode::serialize(&(self.committed_disp, self.trial_disp)).expect("serialize checkpoint")
-    }
-
-    fn deserialize_checkpoint(
-        &mut self,
-        data: &[u8],
-    ) -> Result<(), crate::behavior::CheckpointError> {
-        // 旧チェックポイント（変位未収録・空バイト列）は「状態なし」として許容する。
-        if data.is_empty() {
-            return Ok(());
-        }
-        let (committed, trial): ([f64; 12], [f64; 12]) = bincode::deserialize(data)
-            .map_err(|e| crate::behavior::CheckpointError::Decode(e.to_string()))?;
-        self.committed_disp = committed;
-        self.trial_disp = trial;
-        Ok(())
-    }
+    crate::elastic_disp_behavior!(NodalSpringElement, 12);
 
     fn mass_matrix(&self, _opt: MassOption) -> LocalMat {
         // 節点バネは質量を持たない（質量規定は設けない。既存要素の質量は

@@ -186,6 +186,106 @@ pub fn push_panel_global_dofs(out: &mut SmallVec<[usize; 24]>, node_idx: usize, 
     }
 }
 
+/// 全状態が「全体系の committed / trial 変位」だけで表せる線形弾性要素へ、
+/// [`ElementBehavior`] の `internal_force` と状態管理 6 メソッドを実装する。
+///
+/// `impl ElementBehavior for X { ... }` の中で `elastic_disp_behavior!(X, 12);` と
+/// 呼ぶ。要素側は `committed_disp: [f64; N]` と `trial_disp: [f64; N]` を持ち、
+/// `tangent_stiffness` を実装していることが前提になる。
+///
+/// この定型は Newton 反復のトライアル追従（未確定変位も内力へ反映する。committed
+/// だけを見ると反復中に内力が凍結し、収束が準ニュートンへ劣化する）と、レジューム
+/// のためのチェックポイント（両変位を収録しないと変位 0 から再計算されて内力が
+/// 不整合になる）という 2 つの規約でできている。要素ごとに手書きすると、
+/// `IsolatorElement` と `HystereticDamperElement` で実際に起きたように
+/// チェックポイントの実装漏れが静かに混入する。
+///
+/// **材料履歴やばねの状態を併せ持つ要素はこれを使えない。** commit / revert が
+/// 変位以外にも及ぶため、`FiberBeam`・`WallElement`・`PanelZone` 等は個別実装が正しい。
+///
+/// `internal_force` は `tangent_stiffness` を呼んで `f = K_global · u_trial` を組む。
+/// 従来は各要素が `tangent_stiffness` と同じ K の組み立て式を内力側にも書いており、
+/// 片方だけ直すと両者が静かに食い違う状態だった。
+#[macro_export]
+macro_rules! elastic_disp_behavior {
+    ($ty:ident, $n:expr) => {
+        fn internal_force(&self, ctx: &$crate::behavior::Ctx) -> $crate::behavior::LocalVec {
+            // f_global = (Rᵀ·K_local·R)·u_global。接線剛性と同一の K を使うことで、
+            // 剛性と内力の整合を実装の対応ではなく呼び出しで保証する。
+            let k = <Self as $crate::behavior::ElementBehavior>::tangent_stiffness(self, ctx);
+            let mut f = $crate::behavior::LocalVec {
+                data: ::smallvec::SmallVec::from_elem(0.0, $n),
+            };
+            for i in 0..$n {
+                let mut s = 0.0;
+                for j in 0..$n {
+                    s += k.get(i, j) * self.trial_disp[j];
+                }
+                f.data[i] = s;
+            }
+            f
+        }
+
+        fn update_state(
+            &mut self,
+            du: &$crate::behavior::LocalVec,
+            commit: bool,
+            _ctx: &$crate::behavior::Ctx,
+        ) {
+            // `du` はソルバが要素自由度ぶんを集めて渡すため、長さは常に $n に等しい。
+            // 食い違ったら添字で panic させる（短い方に合わせて黙って部分更新すると、
+            // 変位の一部が欠けたまま解析が続行し、誤った内力を返す）。
+            for i in 0..$n {
+                self.trial_disp[i] += du.data[i];
+            }
+            if commit {
+                self.committed_disp = self.trial_disp;
+            }
+        }
+
+        fn commit_state(&mut self) {
+            self.committed_disp = self.trial_disp;
+        }
+
+        fn revert_state(&mut self) {
+            self.trial_disp = self.committed_disp;
+        }
+
+        fn snapshot_state(&self) -> Box<dyn ::std::any::Any> {
+            Box::new((self.committed_disp, self.trial_disp))
+        }
+
+        fn restore_state(&mut self, state: &dyn ::std::any::Any) {
+            let (committed, trial) = $crate::behavior::downcast_snapshot::<([f64; $n], [f64; $n])>(
+                stringify!($ty),
+                state,
+            );
+            self.committed_disp = *committed;
+            self.trial_disp = *trial;
+        }
+
+        fn serialize_checkpoint(&self) -> Vec<u8> {
+            ::bincode::serialize(&(self.committed_disp, self.trial_disp))
+                .expect("serialize checkpoint")
+        }
+
+        fn deserialize_checkpoint(
+            &mut self,
+            data: &[u8],
+        ) -> Result<(), $crate::behavior::CheckpointError> {
+            // 旧チェックポイント（変位未収録・空バイト列）は「状態なし」として許容する。
+            if data.is_empty() {
+                return Ok(());
+            }
+            let (committed, trial): ([f64; $n], [f64; $n]) = ::bincode::deserialize(data)
+                .map_err(|e| $crate::behavior::CheckpointError::Decode(e.to_string()))?;
+            self.committed_disp = committed;
+            self.trial_disp = trial;
+            Ok(())
+        }
+    };
+}
+
 /// `Send + Sync` を supertrait とするのは、静解析バッチ（`squid-n-solver::statics`）が
 /// 荷重ケース・組合せごとの `Box<dyn ElementBehavior>` キャッシュを rayon 並列
 /// （`&self` 共有）から参照するため。全実装型は内部に `Box<dyn UniaxialMaterial>`
