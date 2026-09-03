@@ -13,14 +13,16 @@ use super::history::{
 };
 use super::recording::{member_forces_nonlinear, ThRecorder};
 use super::result::{ResponseHistory, ResponseResult};
-use crate::assemble::assemble_global_m;
+use crate::common::assemble::assemble_global_m;
+use crate::common::constraint::Reducer;
 use crate::common::csc_cache::{CscCache, WeightedSumGuard};
 use crate::common::elem_loop::apply_du_trial;
 use crate::common::newton::{l2_norm, NewtonCriteria, STATIC_NEWTON};
-use crate::constraint::Reducer;
-use crate::damping::{Damping, DampingAccumulation};
-use crate::pushover::{add_support_spring_f_int, assemble_k, assemble_k_cached_ref, compute_f_int};
-use crate::transaction::{revert_all, StateSnapshot};
+use crate::common::tangent::{
+    add_support_spring_f_int, assemble_k, assemble_k_cached_ref, compute_f_int,
+};
+use crate::common::transaction::{revert_all, StateSnapshot};
+use crate::dynamic::damping::{Damping, DampingAccumulation};
 use squid_n_core::dof::{DofMap, DOF_PER_NODE};
 use squid_n_core::model::Model;
 use squid_n_element::behavior::{ElementBehavior, MassOption};
@@ -150,7 +152,7 @@ pub fn nonlinear_time_history_analysis(
     let f0_free: Vec<f64> = if cfg.apply_long_term {
         let mut f = vec![0.0; n_free];
         for lc in model.load_cases.iter().filter(|l| l.kind.is_long_term()) {
-            let flc = crate::assemble::assemble_global_f(model, dofmap, lc.id);
+            let flc = crate::common::assemble::assemble_global_f(model, dofmap, lc.id);
             for (acc, v) in f.iter_mut().zip(flc) {
                 *acc += v;
             }
@@ -179,7 +181,7 @@ pub fn nonlinear_time_history_analysis(
 
     // 初期剛性の参照（長期荷重載荷後の状態、`use_kg` を反映）から減衰行列を組み立てる。
     // 従来は幾何剛性を持たない `assemble_global_k`（線形弾性 behavior）を用いており、
-    // Newton 反復内の接線剛性（`pushover::assemble_k`、`use_kg` 反映）と不整合だった。
+    // Newton 反復内の接線剛性（`common::tangent::assemble_k`、`use_kg` 反映）と不整合だった。
     let k_free = assemble_k(model, dofmap, &behaviors, cfg.use_kg);
     let k_red = reducer.reduce_k(&k_free);
     let c_red = damping.assemble_c(&m_red, &k_red);
@@ -208,7 +210,7 @@ pub fn nonlinear_time_history_analysis(
     // 固有値解析が失敗した場合は零ベクトルとし、assemble_c_tangent 側の
     // フォールバック（ω1 = ω1e）に委ねる。
     let u_mode1: Vec<f64> = if matches!(damping, Damping::TangentStiffnessConstantH { .. }) {
-        crate::eigen::solve_eigen(model, dofmap, reducer, 1)
+        crate::dynamic::eigen::solve_eigen(model, dofmap, reducer, 1)
             .ok()
             .and_then(|modal| modal.shapes.into_iter().next())
             .filter(|s| s.len() == n_indep)
@@ -508,9 +510,9 @@ pub fn nonlinear_time_history_analysis(
             // 採れば基準は消えない。長期荷重を除く点は従来どおりで、長期が卓越する
             // モデルで判定が緩む問題も起こさない。
             let r_norm = l2_norm(r_red);
-            let scale = crate::newton::dynamic_force_scale(p_dyn_red, m_a_red, c_v_red);
+            let scale = crate::common::newton::dynamic_force_scale(p_dyn_red, m_a_red, c_v_red);
             peak_force_scale = peak_force_scale.max(scale);
-            let ref_norm = crate::newton::dynamic_reference_norm(scale, peak_force_scale);
+            let ref_norm = crate::common::newton::dynamic_reference_norm(scale, peak_force_scale);
             if cfg.newton.converged(r_norm, ref_norm) {
                 converged = true;
                 break;
@@ -559,7 +561,7 @@ pub fn nonlinear_time_history_analysis(
 
         if !converged {
             // 不収束でも解析は打ち切らず、その時点の試行状態で確定して続行する
-            // （質点系 `crate::lumped_mass` と同じ規約）。途中まで解けた応答を
+            // （質点系 `crate::dynamic::lumped_mass` と同じ規約）。途中まで解けた応答を
             // 捨てるより、参考値として最後まで見せたうえで「収束を確認できて
             // いないステップが何件あるか」を利用者へ伝えるほうが判断材料になる。
             //

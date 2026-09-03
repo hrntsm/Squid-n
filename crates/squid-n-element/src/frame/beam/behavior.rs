@@ -1,9 +1,9 @@
 //! [`ElementBehavior`] トレイト実装（自由度写像・接線/幾何剛性・内力・質量行列）。
 
 use super::element::BeamElement;
-use crate::behavior::{Ctx, ElementBehavior, LocalMat, LocalVec, MassOption};
+use crate::behavior::{Ctx, ElementBehavior, LocalMat, MassOption};
 use smallvec::SmallVec;
-use squid_n_core::dof::{DofMap, DOF_PER_NODE};
+use squid_n_core::dof::DofMap;
 
 impl ElementBehavior for BeamElement {
     fn n_dof(&self) -> usize {
@@ -11,19 +11,7 @@ impl ElementBehavior for BeamElement {
     }
 
     fn global_dofs(&self, dof: &DofMap) -> SmallVec<[usize; 24]> {
-        let mut gdofs = SmallVec::new();
-        for &nid in &self.nodes {
-            let ni = nid.index();
-            for d in 0..DOF_PER_NODE {
-                let g = ni * DOF_PER_NODE + d;
-                if let Some(active) = dof.active(g) {
-                    gdofs.push(active as usize);
-                } else {
-                    gdofs.push(usize::MAX);
-                }
-            }
-        }
-        gdofs
+        crate::behavior::node_global_dofs(&self.nodes, dof)
     }
 
     fn tangent_stiffness(&self, _ctx: &Ctx) -> LocalMat {
@@ -78,74 +66,7 @@ impl ElementBehavior for BeamElement {
         self.axis.to_global(&kg_node)
     }
 
-    fn internal_force(&self, _ctx: &Ctx) -> LocalVec {
-        // trial_disp はグローバル系で蓄積されるため、グローバル剛性で内力を評価する。
-        // f_global = (R^T·K_local·R)·u_global
-        // Newton 反復中の未確定変位も反映する（トライアル追従。committed のみを
-        // 参照すると反復中に内力が凍結し、収束が準ニュートンに劣化する）。
-        let k = self.axis.to_global(&self.local_stiffness());
-        let mut f = LocalVec {
-            data: SmallVec::from_elem(0.0, 12),
-        };
-        for i in 0..12 {
-            let mut s = 0.0;
-            for j in 0..12 {
-                s += k.get(i, j) * self.trial_disp[j];
-            }
-            f.data[i] = s;
-        }
-        f
-    }
-
-    fn update_state(&mut self, du: &LocalVec, commit: bool, _ctx: &Ctx) {
-        for i in 0..12 {
-            self.trial_disp[i] += du.data[i];
-        }
-        if commit {
-            self.committed_disp = self.trial_disp;
-        }
-    }
-
-    fn commit_state(&mut self) {
-        self.committed_disp = self.trial_disp;
-    }
-
-    fn revert_state(&mut self) {
-        self.trial_disp = self.committed_disp;
-    }
-
-    fn snapshot_state(&self) -> Box<dyn std::any::Any> {
-        Box::new((self.committed_disp, self.trial_disp))
-    }
-
-    fn restore_state(&mut self, state: &dyn std::any::Any) {
-        let (committed, trial) =
-            crate::behavior::downcast_snapshot::<([f64; 12], [f64; 12])>("BeamElement", state);
-        self.committed_disp = *committed;
-        self.trial_disp = *trial;
-    }
-
-    fn serialize_checkpoint(&self) -> Vec<u8> {
-        // トライアル追従化により変位が蓄積されるようになったため、
-        // チェックポイントに committed/trial の両変位を含める（レジューム時に
-        // 変位 0 から再計算されて内力が不整合になるのを防ぐ）。
-        bincode::serialize(&(self.committed_disp, self.trial_disp)).expect("serialize checkpoint")
-    }
-
-    fn deserialize_checkpoint(
-        &mut self,
-        data: &[u8],
-    ) -> Result<(), crate::behavior::CheckpointError> {
-        // 旧チェックポイント（変位未収録・空バイト列）は「状態なし」として許容する。
-        if data.is_empty() {
-            return Ok(());
-        }
-        let (committed, trial): ([f64; 12], [f64; 12]) = bincode::deserialize(data)
-            .map_err(|e| crate::behavior::CheckpointError::Decode(e.to_string()))?;
-        self.committed_disp = committed;
-        self.trial_disp = trial;
-        Ok(())
-    }
+    crate::behavior::elastic_disp_behavior!(BeamElement, 12);
 
     fn mass_matrix(&self, opt: MassOption) -> LocalMat {
         let m = self.density * self.a_mass * self.length;
@@ -212,7 +133,7 @@ impl ElementBehavior for BeamElement {
         }
     }
 
-    fn recover_forces(&self, u_elem: &[f64]) -> Option<crate::beam::MemberForces> {
+    fn recover_forces(&self, u_elem: &[f64]) -> Option<crate::frame::beam::MemberForces> {
         if u_elem.len() < 12 {
             return None;
         }
@@ -223,7 +144,7 @@ impl ElementBehavior for BeamElement {
 
     /// 弾性材は常に線形なので、蓄積した trial 変位からの復元でよい
     /// （非線形解析中の弾性材＝`recover_forces` と同じ結果）。
-    fn state_member_forces(&self, _ctx: &Ctx) -> Option<crate::beam::MemberForces> {
+    fn state_member_forces(&self, _ctx: &Ctx) -> Option<crate::frame::beam::MemberForces> {
         Some(self.recover_forces(&self.trial_disp))
     }
 }

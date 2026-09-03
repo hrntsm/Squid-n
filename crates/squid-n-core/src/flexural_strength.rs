@@ -1,6 +1,6 @@
 //! 部材の曲げ降伏モーメント My の共通算定。
 //!
-//! プッシュオーバー曲げヒンジ判定（`squid_n_solver::pushover::hinge`）と
+//! プッシュオーバー曲げヒンジ判定（`squid_n_solver::nonlinear::pushover::hinge`）と
 //! 材端曲げバネ（`squid_n_element::factory::springs`）が同じ My を使うため、
 //! 算定の情報源を 1 つに保つ。
 

@@ -498,7 +498,7 @@ pub(super) fn member_axis_endpoints(
 ) -> Option<MemberAxisEndpoints> {
     use squid_n_core::geom::vec3::dist as member_len3;
     use squid_n_core::model::ElementKind;
-    use squid_n_element::wall_element::wall_element_geometry;
+    use squid_n_element::wall::wall_element::wall_element_geometry;
 
     if matches!(elem.kind, ElementKind::Wall) && elem.nodes.len() >= 4 {
         let g = wall_element_geometry(elem, model)?;

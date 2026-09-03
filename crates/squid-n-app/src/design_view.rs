@@ -532,7 +532,7 @@ pub fn design_table(ui: &mut egui::Ui, app: &mut App) {
     // 評価する（令82条の2・平19国交告594号）。評価方向は解析の実行条件ではなく
     // 判定の条件なので、設計タブのこの位置で選ぶ。
     ui.horizontal(|ui| {
-        use squid_n_solver::analysis::SeismicDir;
+        use squid_n_solver::statics::analysis::SeismicDir;
         ui.label("加力方向:").on_hover_text(
             "層指標と必要保有水平耐力の判定を評価する方向。\
              剛心の精算には対応する向きの EX／EY の解析結果を用いる",
@@ -756,7 +756,7 @@ pub fn design_table(ui: &mut egui::Ui, app: &mut App) {
             // この崩壊機構を層別に反映する（層崩壊形の層は1段階不利、部分崩壊形は
             // 機構未確定として補正なし＝暫定値、全体崩壊形は標準）。
             if let Some(po) = app.displayed_pushover() {
-                use squid_n_solver::pushover::MechanismType;
+                use squid_n_solver::nonlinear::pushover::MechanismType;
                 let (mech, warn) = match &po.mechanism {
                     MechanismType::Overall => ("全体崩壊形".to_string(), false),
                     MechanismType::StoryCollapse { layer } => {

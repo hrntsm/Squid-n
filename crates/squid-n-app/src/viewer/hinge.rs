@@ -26,9 +26,9 @@ use squid_n_core::material_grade::{
 use squid_n_core::model::{ElementData, ElementKind, Model, Section};
 use squid_n_core::units::to_display::{force_kn, moment_kn_m};
 use squid_n_element::behavior::{FiberSectionState, FiberStateSample};
-use squid_n_element::wall_element::wall_element_geometry;
+use squid_n_element::wall::wall_element::wall_element_geometry;
 use squid_n_section::mn_surface::{build_surface, plastic_fibers, StrengthParams, YieldModelKind};
-use squid_n_solver::pushover::{HingeEvent, HingeLevel, MemberStepState};
+use squid_n_solver::nonlinear::pushover::{HingeEvent, HingeLevel, MemberStepState};
 
 /// (部材, 端) ごとに集約したヒンジ情報。
 ///

@@ -12,7 +12,6 @@
 //! - [`mechanism`] — 崩壊機構の判定
 //! - [`geom`] — 幾何ヘルパ（内積・軸圧縮力）
 
-mod assembly;
 mod diagnosis;
 mod driver;
 mod ductility;
@@ -32,16 +31,10 @@ pub use types::{
     PushoverTarget, PushoverTermination, ShearYieldEvent,
 };
 
-// dynamic/timehistory が `crate::pushover::{add_support_spring_f_int, assemble_k,
-// assemble_k_cached_ref, compute_f_int}` で参照する。
-pub(crate) use assembly::{
-    add_support_spring_f_int, assemble_k, assemble_k_cached_ref, compute_f_int,
-};
-
 // tests（`use super::*`）が参照する非公開項目・外部名を供給する
 // （非テストビルドでは持ち込まない）。
 #[cfg(test)]
-use crate::analysis::SeismicDir;
+use crate::statics::analysis::SeismicDir;
 #[cfg(test)]
 use geom::axial_compression;
 #[cfg(test)]

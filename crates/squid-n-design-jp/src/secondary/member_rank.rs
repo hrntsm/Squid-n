@@ -6,7 +6,7 @@
 //! 本モジュールは複数部材ランクの集約（[`worst_rank`]）と
 //! 層 Ds の算定（[`story_ds`]）のみを持つ。
 use super::holding_capacity::{ds_value, FrameType, MemberRank};
-use squid_n_solver::pushover::MechanismType;
+use squid_n_solver::nonlinear::pushover::MechanismType;
 
 /// ランクを 0(FA)..3(FD) の整数インデックスに変換する。
 fn rank_index(r: MemberRank) -> u8 {

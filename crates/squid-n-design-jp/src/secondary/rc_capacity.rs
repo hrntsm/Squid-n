@@ -1,6 +1,6 @@
 //! RC 矩形断面の簡易終局耐力算定（部材ランク判定用）— 実装本体は squid-n-core に移設。
 //!
-//! `squid_n_solver::pushover` のせん断降伏判定（Qy の荒川式化）でも同じ算定式
+//! `squid_n_solver::nonlinear::pushover` のせん断降伏判定（Qy の荒川式化）でも同じ算定式
 //! （`rc_qsu_simple` 等）を使うが、squid-n-solver（Layer 4）は squid-n-design-jp
 //! （Layer 5）に依存できない（循環依存になる）ため、実装本体は Layer 0 の
 //! `squid_n_core::rc_capacity` へ移設した。本モジュールは既存呼び出し

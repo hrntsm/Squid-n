@@ -14,7 +14,7 @@ use crate::settings::AnalysisSettings;
 /// 解析前処理（剛域・仕口パネル・荷重自動同期）の報告。
 pub struct PrepareReport {
     /// 生成した仕口パネル（GUI の準備計算表が表示する）。
-    pub panels: Vec<squid_n_element::panel_gen::GeneratedPanel>,
+    pub panels: Vec<squid_n_element::springs::panel_gen::GeneratedPanel>,
     /// 荷重同期で発生した注意事項（SemiPrecise で固有周期未算定など）。
     pub notices: Vec<String>,
 }
@@ -41,8 +41,8 @@ pub struct PrepareReport {
 /// 依存しないため、従来どおり非展開モデルに対して算定する。
 pub fn apply_rigid_zones_and_panels(
     model: &mut Model,
-) -> Vec<squid_n_element::panel_gen::GeneratedPanel> {
-    let rule = squid_n_element::beam::RigidZoneRule {
+) -> Vec<squid_n_element::springs::panel_gen::GeneratedPanel> {
+    let rule = squid_n_element::frame::beam::RigidZoneRule {
         consider_walls: model.stress_cfg.rigid_zone_consider_walls,
     };
     // 壁を持たないモデル（実 ST-Bridge フィクスチャは現状すべて該当する）では、
@@ -52,7 +52,7 @@ pub fn apply_rigid_zones_and_panels(
     if squid_n_load::wall_expand::model_has_wall_plates_to_expand(model) {
         let (mut expanded, _wall_index, _wall_report) =
             squid_n_load::wall_expand::expand_wall_elements(model);
-        squid_n_element::beam::apply_auto_rigid_zones(&mut expanded, &rule);
+        squid_n_element::frame::beam::apply_auto_rigid_zones(&mut expanded, &rule);
         // 壁展開は既存要素の末尾へ追記するだけなので、先頭 N 件の ElemId は
         // 展開前後で一致する。この前提が壊れると zip は別部材へ剛域を載せる。
         debug_assert!(
@@ -69,9 +69,9 @@ pub fn apply_rigid_zones_and_panels(
             dst.rigid_zone = src.rigid_zone;
         }
     } else {
-        squid_n_element::beam::apply_auto_rigid_zones(model, &rule);
+        squid_n_element::frame::beam::apply_auto_rigid_zones(model, &rule);
     }
-    squid_n_element::panel_gen::apply_auto_panel_zones(model)
+    squid_n_element::springs::panel_gen::apply_auto_panel_zones(model)
 }
 
 /// 解析前処理を一括で行う（剛域・仕口パネル・荷重ケースの自動同期）。

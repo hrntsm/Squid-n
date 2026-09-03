@@ -28,7 +28,7 @@ impl App {
     pub(super) fn apply_static_case_result(
         &mut self,
         key: StaticCaseKey,
-        res: Result<squid_n_solver::linear::StaticOnce, String>,
+        res: Result<squid_n_solver::statics::linear::StaticOnce, String>,
     ) {
         match res {
             Ok(res) => {
@@ -159,7 +159,7 @@ impl App {
     fn compute_combination(
         model: squid_n_core::model::Model,
         combo: squid_n_core::model::LoadCombination,
-    ) -> Result<squid_n_solver::linear::StaticOnce, String> {
+    ) -> Result<squid_n_solver::statics::linear::StaticOnce, String> {
         // 壁の解析要素は生成物（D5）のため展開してから解く
         // （`squid_n_job::compute` の各関数と同じ理由）。
         let model = squid_n_load::wall_expand::expand_wall_elements_owned(model).0;
@@ -178,7 +178,7 @@ impl App {
     pub(super) fn apply_combo_result(
         &mut self,
         name: String,
-        res: Result<squid_n_solver::linear::StaticOnce, String>,
+        res: Result<squid_n_solver::statics::linear::StaticOnce, String>,
     ) {
         match res {
             Ok(res) => {
@@ -509,9 +509,9 @@ impl App {
     }
 
     /// 表示対象の静的解析結果を解決する。優先順: ナビゲータ選択 → 最後に実行した結果。
-    pub fn current_static(&self) -> Option<&squid_n_solver::linear::StaticOnce> {
+    pub fn current_static(&self) -> Option<&squid_n_solver::statics::linear::StaticOnce> {
         let bundle = self.core.scoped.results.as_ref()?;
-        let resolve = |key: StaticKey| -> Option<&squid_n_solver::linear::StaticOnce> {
+        let resolve = |key: StaticKey| -> Option<&squid_n_solver::statics::linear::StaticOnce> {
             match key {
                 StaticKey::Case(case_key) => bundle
                     .statics
@@ -598,7 +598,7 @@ impl App {
                 return;
             }
         };
-        let cfg = squid_n_solver::analysis::SeismicCfg {
+        let cfg = squid_n_solver::statics::analysis::SeismicCfg {
             dir,
             mode: self.core.analysis_cfg.ai_mode,
             z: self.core.analysis_cfg.z,
@@ -624,7 +624,7 @@ impl App {
                 return;
             }
         };
-        let cfg = squid_n_solver::analysis::SeismicCfg {
+        let cfg = squid_n_solver::statics::analysis::SeismicCfg {
             dir,
             mode: self.core.analysis_cfg.ai_mode,
             z: self.core.analysis_cfg.z,

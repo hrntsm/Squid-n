@@ -19,7 +19,7 @@
 use crate::error::{JobError, JobResult};
 use crate::settings::{AnalysisSettings, ThDampingModel};
 use squid_n_core::ids::LoadCaseId;
-use squid_n_solver::analysis::Analysis;
+use squid_n_solver::statics::analysis::Analysis;
 
 /// 壁展開モデルを組み立てる（本モジュール共通のエントリポイント。モジュール doc
 /// 「壁展開について」参照）。展開の索引・件数報告は解析の入口では使わないため捨てる。
@@ -32,7 +32,7 @@ fn expand_walls(model: squid_n_core::model::Model) -> squid_n_core::model::Model
 pub fn compute_linear_static(
     model: squid_n_core::model::Model,
     lc: LoadCaseId,
-) -> JobResult<squid_n_solver::linear::StaticOnce> {
+) -> JobResult<squid_n_solver::statics::linear::StaticOnce> {
     let model = expand_walls(model);
     match Analysis::prepare(&model) {
         Ok(analysis) => analysis
@@ -46,7 +46,7 @@ pub fn compute_linear_static(
 pub fn compute_eigen(
     model: squid_n_core::model::Model,
     n_modes: usize,
-) -> JobResult<squid_n_solver::eigen::ModalResult> {
+) -> JobResult<squid_n_solver::dynamic::eigen::ModalResult> {
     let model = expand_walls(model);
     match Analysis::prepare(&model) {
         Ok(analysis) => analysis
@@ -59,9 +59,9 @@ pub fn compute_eigen(
 /// 地震静的（Ai 分布）解析。前処理を通したモデルを渡す前提。
 pub fn compute_seismic(
     model: squid_n_core::model::Model,
-    cfg: squid_n_solver::analysis::SeismicCfg,
+    cfg: squid_n_solver::statics::analysis::SeismicCfg,
     t: f64,
-) -> JobResult<squid_n_solver::linear::StaticOnce> {
+) -> JobResult<squid_n_solver::statics::linear::StaticOnce> {
     let model = expand_walls(model);
     match Analysis::prepare(&model) {
         Ok(analysis) => analysis
@@ -76,12 +76,12 @@ pub fn compute_seismic(
 /// `t=(L·sinθ)/Vs` を求め、位相遅れ方向の並進波からねじれ地動加速度を生成する。
 fn apply_phase_diff(
     cfg: &AnalysisSettings,
-    mut wave: squid_n_solver::timehistory::GroundMotion,
-) -> squid_n_solver::timehistory::GroundMotion {
+    mut wave: squid_n_solver::dynamic::timehistory::GroundMotion,
+) -> squid_n_solver::dynamic::timehistory::GroundMotion {
     if !cfg.phase_diff_enabled {
         return wave;
     }
-    use squid_n_solver::phase_diff::{phase_lag_time, torsional_accel_series};
+    use squid_n_solver::dynamic::phase_diff::{phase_lag_time, torsional_accel_series};
     let lag = phase_lag_time(
         cfg.phase_diff_length_m,
         cfg.phase_diff_incidence_deg,
@@ -108,19 +108,19 @@ fn apply_phase_diff(
 pub fn compute_pushover(
     model: squid_n_core::model::Model,
     cfg: AnalysisSettings,
-) -> JobResult<squid_n_solver::pushover::PushoverResult> {
+) -> JobResult<squid_n_solver::nonlinear::pushover::PushoverResult> {
     let work = expand_walls(model);
     Analysis::prepare(&work).map_err(|e| JobError::Prepare(e.to_string()))?;
     let dofmap = squid_n_core::dof::DofMap::build(&work);
-    let reducer = squid_n_solver::constraint::Reducer::build(&work, &dofmap);
+    let reducer = squid_n_solver::common::constraint::Reducer::build(&work, &dofmap);
     // 終了目標（目標変位・目標最大層間変形角）。両方無効なら荷重制御 λ=1 まで解析する。
-    let target = squid_n_solver::pushover::PushoverTarget {
+    let target = squid_n_solver::nonlinear::pushover::PushoverTarget {
         max_disp: cfg.push_use_max_disp.then_some(cfg.push_max_disp),
         max_drift_angle: cfg
             .push_use_drift_angle
             .then_some(1.0 / cfg.push_drift_denom.max(1.0)),
     };
-    squid_n_solver::pushover::pushover_analysis_recording(
+    squid_n_solver::nonlinear::pushover::pushover_analysis_recording(
         &work,
         &dofmap,
         &reducer,
@@ -142,8 +142,8 @@ pub fn compute_pushover(
 pub fn compute_time_history(
     model: squid_n_core::model::Model,
     cfg: AnalysisSettings,
-    wave: squid_n_solver::timehistory::GroundMotion,
-) -> JobResult<squid_n_solver::timehistory::ResponseResult> {
+    wave: squid_n_solver::dynamic::timehistory::GroundMotion,
+) -> JobResult<squid_n_solver::dynamic::timehistory::ResponseResult> {
     // 位相差入力（ねじれ加振）を指定時に付加する（構造動力学の位相差入力解析）。
     let wave = apply_phase_diff(&cfg, wave);
     let model = expand_walls(model);
@@ -162,10 +162,10 @@ pub fn compute_time_history(
                 },
                 Err(e) => return Err(JobError::Solve(e.to_string())),
             };
-            squid_n_solver::damping::Damping::StiffnessProportional {
+            squid_n_solver::dynamic::damping::Damping::StiffnessProportional {
                 h: cfg.th_damping,
                 omega: omega1,
-                basis: squid_n_solver::damping::StiffnessKind::Initial,
+                basis: squid_n_solver::dynamic::damping::StiffnessKind::Initial,
             }
         }
         ThDampingModel::Rayleigh => {
@@ -183,7 +183,7 @@ pub fn compute_time_history(
                     ));
                 }
             };
-            squid_n_solver::damping::Damping::Rayleigh {
+            squid_n_solver::dynamic::damping::Damping::Rayleigh {
                 h1: cfg.th_damping,
                 w1,
                 h2: cfg.th_h2,
@@ -211,7 +211,7 @@ pub fn compute_time_history(
                 .map(|&w2| if w2 > 0.0 { w2.sqrt() } else { 0.0 })
                 .collect();
             let ratios = vec![cfg.th_damping; modal.shapes.len()];
-            squid_n_solver::damping::Damping::modal(&modal.shapes, &omegas, &ratios)
+            squid_n_solver::dynamic::damping::Damping::modal(&modal.shapes, &omegas, &ratios)
         }
         ThDampingModel::TangentAlpha1 | ThDampingModel::TangentH1 => {
             // 瞬間（接線）剛性比例。基準は初期剛性の 1 次固有円振動数。
@@ -227,13 +227,13 @@ pub fn compute_time_history(
                 Err(e) => return Err(JobError::Solve(e.to_string())),
             };
             if cfg.th_damping_model == ThDampingModel::TangentAlpha1 {
-                squid_n_solver::damping::Damping::StiffnessProportional {
+                squid_n_solver::dynamic::damping::Damping::StiffnessProportional {
                     h: cfg.th_damping,
                     omega: omega1,
-                    basis: squid_n_solver::damping::StiffnessKind::Tangent,
+                    basis: squid_n_solver::dynamic::damping::StiffnessKind::Tangent,
                 }
             } else {
-                squid_n_solver::damping::Damping::TangentStiffnessConstantH {
+                squid_n_solver::dynamic::damping::Damping::TangentStiffnessConstantH {
                     h1: cfg.th_damping,
                     omega1e: omega1,
                 }
@@ -248,7 +248,7 @@ pub fn compute_time_history(
     }
     // 0 は「自動決定」の意（`ThRecorder`/`recording.rs::auto_record_every` に委ねる）。
     let record_every = (cfg.th_record_every > 0).then_some(cfg.th_record_every);
-    let newmark = squid_n_solver::timehistory::NewmarkCfg::average_accel();
+    let newmark = squid_n_solver::dynamic::timehistory::NewmarkCfg::average_accel();
     analysis
         .time_history(&wave, newmark, damping, record_every)
         .map_err(|e| JobError::Solve(e.to_string()))
@@ -264,34 +264,34 @@ pub fn compute_time_history(
 fn compute_nonlinear_time_history(
     model: squid_n_core::model::Model,
     cfg: AnalysisSettings,
-    wave: squid_n_solver::timehistory::GroundMotion,
-    damping: squid_n_solver::damping::Damping,
-) -> JobResult<squid_n_solver::timehistory::ResponseResult> {
+    wave: squid_n_solver::dynamic::timehistory::GroundMotion,
+    damping: squid_n_solver::dynamic::damping::Damping,
+) -> JobResult<squid_n_solver::dynamic::timehistory::ResponseResult> {
     let model = model;
     squid_n_element::factory::ensure_nonlinear_input(&model).map_err(|e| {
         JobError::InvalidInput(format!("非線形時刻歴（部材耐力を算定できません）:\n{e}"))
     })?;
     let dofmap = squid_n_core::dof::DofMap::build(&model);
-    let reducer = squid_n_solver::constraint::Reducer::build(&model, &dofmap);
+    let reducer = squid_n_solver::common::constraint::Reducer::build(&model, &dofmap);
     let n_indep = reducer.n_indep;
     let init = vec![0.0; n_indep];
-    let newmark = squid_n_solver::timehistory::NewmarkCfg::average_accel();
+    let newmark = squid_n_solver::dynamic::timehistory::NewmarkCfg::average_accel();
     // 0 は「自動決定」の意（`ThRecorder`/`recording.rs::auto_record_every` に委ねる）。
     let record_every = (cfg.th_record_every > 0).then_some(cfg.th_record_every);
-    let nl_cfg = squid_n_solver::timehistory::NonlinearThCfg {
-        newton: squid_n_solver::newton::NewtonCriteria::new(cfg.th_max_iter, cfg.th_tol),
+    let nl_cfg = squid_n_solver::dynamic::timehistory::NonlinearThCfg {
+        newton: squid_n_solver::common::newton::NewtonCriteria::new(cfg.th_max_iter, cfg.th_tol),
         use_kg: false,
         apply_long_term: cfg.th_apply_long_term,
         record_every,
     };
-    squid_n_solver::timehistory::nonlinear_time_history_analysis(
+    squid_n_solver::dynamic::timehistory::nonlinear_time_history_analysis(
         &model,
         &dofmap,
         &reducer,
         &wave,
         &newmark,
         &damping,
-        squid_n_solver::damping::DampingAccumulation::default(),
+        squid_n_solver::dynamic::damping::DampingAccumulation::default(),
         &init,
         &init,
         nl_cfg,
@@ -306,12 +306,12 @@ fn compute_nonlinear_time_history(
 pub fn compute_lumped_mass(
     model: squid_n_core::model::Model,
     cfg: AnalysisSettings,
-    res_x: Option<squid_n_solver::linear::StaticOnce>,
-    res_y: Option<squid_n_solver::linear::StaticOnce>,
-    po_x: Option<squid_n_solver::pushover::PushoverResult>,
-    po_y: Option<squid_n_solver::pushover::PushoverResult>,
+    res_x: Option<squid_n_solver::statics::linear::StaticOnce>,
+    res_y: Option<squid_n_solver::statics::linear::StaticOnce>,
+    po_x: Option<squid_n_solver::nonlinear::pushover::PushoverResult>,
+    po_y: Option<squid_n_solver::nonlinear::pushover::PushoverResult>,
     accel: Option<&[f64]>,
-) -> JobResult<squid_n_solver::lumped_mass::LumpedMassResult> {
+) -> JobResult<squid_n_solver::dynamic::lumped_mass::LumpedMassResult> {
     let model = expand_walls(model);
     let lm = crate::lumped_mass::build_lumped_mass(crate::lumped_mass::LumpedMassBuildInput {
         model: &model,
@@ -326,7 +326,7 @@ pub fn compute_lumped_mass(
         po_y: po_y.as_ref(),
     })?;
     let n_modes = cfg.lumped_n_modes.max(1);
-    let modal = squid_n_solver::lumped_mass::lumped_mass_eigen(&lm, n_modes)
+    let modal = squid_n_solver::dynamic::lumped_mass::lumped_mass_eigen(&lm, n_modes)
         .map_err(|e| JobError::Solve(e.to_string()))?;
     let response = if let Some(a) = accel {
         if a.is_empty() {
@@ -339,7 +339,7 @@ pub fn compute_lumped_mass(
                 "質点系時刻歴の時間刻み dt が 0 以下です".into(),
             ));
         }
-        let resp = squid_n_solver::lumped_mass::lumped_mass_time_history(
+        let resp = squid_n_solver::dynamic::lumped_mass::lumped_mass_time_history(
             &lm,
             a,
             cfg.lumped_th_dt,
@@ -354,7 +354,7 @@ pub fn compute_lumped_mass(
     } else {
         None
     };
-    Ok(squid_n_solver::lumped_mass::LumpedMassResult {
+    Ok(squid_n_solver::dynamic::lumped_mass::LumpedMassResult {
         model: lm,
         modal,
         response,

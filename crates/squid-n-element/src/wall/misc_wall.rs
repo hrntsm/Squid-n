@@ -47,7 +47,7 @@ pub fn is_rc_wall(data: &ElementData, model: &Model) -> bool {
 /// RC 壁（[`is_rc_wall`]）にのみ課す条件（RC規準・耐震壁の判定）:
 /// - 壁厚が 120mm 以上であること
 /// - 開口周比 r0=√(開口面積/(l·h)) ≤ 0.4（複数開口モード適用後の面積）。
-///   `l`・`h` は [`crate::wall_element::wall_element_geometry`] の壁長・高さ
+///   `l`・`h` は [`crate::wall::wall_element::wall_element_geometry`] の壁長・高さ
 ///   （台形壁では上下辺長さの平均を壁長とする）
 ///
 /// 壁厚が特定できない（断面未設定の暫定壁）場合は、四周条件さえ満たせば
@@ -61,7 +61,7 @@ pub fn is_rc_wall(data: &ElementData, model: &Model) -> bool {
 /// 公開する。
 pub fn wall_is_seismic(data: &ElementData, model: &Model) -> bool {
     // 四周判定と開口周比で同じ幾何を共有する（包絡寸法との二重系統を残さない）。
-    let Some(g) = crate::wall_element::wall_element_geometry(data, model) else {
+    let Some(g) = crate::wall::wall_element::wall_element_geometry(data, model) else {
         return false;
     };
     if !wall_is_framed_with(&g, model) {
@@ -108,21 +108,21 @@ pub fn wall_is_seismic(data: &ElementData, model: &Model) -> bool {
 ///
 /// 左右の鉛直辺（側柱）は要求しない。側柱を持たない耐震壁は、壁の縦筋が一様配筋
 /// であるとみなして等価引張鉄筋比を pte=100·ps とする正規の対象であり
-/// （[`crate::wall_element::WallElement::shear_capacity_of`]）、側柱を必須にすると
+/// （[`crate::wall::wall_element::WallElement::shear_capacity_of`]）、側柱を必須にすると
 /// この経路へ到達できなくなる。
 ///
 /// 辺と部材の対応は節点の一致で判定する。壁の四隅とは別の節点を使う部材は、
 /// 壁エレメントの剛梁が拾えない（四隅の並進しか伝達しない）ため対象外である。
 pub fn wall_is_framed(data: &ElementData, model: &Model) -> bool {
     // 幾何を取れない壁（4 節点未満・退化）は辺を定義できないため不成立。
-    let Some(g) = crate::wall_element::wall_element_geometry(data, model) else {
+    let Some(g) = crate::wall::wall_element::wall_element_geometry(data, model) else {
         return false;
     };
     wall_is_framed_with(&g, model)
 }
 
-/// [`crate::wall_element::wall_element_geometry`] 済みの幾何に対する四周判定。
-fn wall_is_framed_with(g: &crate::wall_element::WallElementGeometry, model: &Model) -> bool {
+/// [`crate::wall::wall_element::wall_element_geometry`] 済みの幾何に対する四周判定。
+fn wall_is_framed_with(g: &crate::wall::wall_element::WallElementGeometry, model: &Model) -> bool {
     has_girder(model, g.bottom[0], g.bottom[1]) && has_girder(model, g.top[0], g.top[1])
 }
 
@@ -139,7 +139,7 @@ pub fn wall_frame_category_issue(data: &ElementData, model: &Model) -> Option<St
     if !matches!(data.kind, ElementKind::Wall) || !wall_is_seismic(data, model) {
         return None;
     }
-    let g = crate::wall_element::wall_element_geometry(data, model)?;
+    let g = crate::wall::wall_element::wall_element_geometry(data, model)?;
     let (wall_label, want) = if is_rc_wall(data, model) {
         ("RC 造", MaterialCategory::Concrete)
     } else {
@@ -152,7 +152,7 @@ pub fn wall_frame_category_issue(data: &ElementData, model: &Model) -> Option<St
         (g.bottom[1], g.top[1]),
     ];
     for e in &model.elements {
-        if !crate::side_column::is_line_member(e.kind) || e.nodes.len() < 2 {
+        if !crate::wall::side_column::is_line_member(e.kind) || e.nodes.len() < 2 {
             continue;
         }
         let (n0, n1) = (e.nodes[0], e.nodes[1]);
@@ -185,13 +185,13 @@ pub fn wall_frame_category_issue(data: &ElementData, model: &Model) -> Option<St
 /// 節点 `a`・`b` を両端に持つ大梁（水平材）が存在するか。
 ///
 /// 水平材の判定規約は既存の実装と揃え、勾配 5% までを水平とみなす
-/// （[`crate::beam::stiffness_breakdown`]）。
+/// （[`crate::frame::beam::stiffness_breakdown`]）。
 ///
 /// 大梁として辺を構成しうるのは線材のみで、ブレース（軸材）・面要素・バネは
 /// 曲げを伝達しないため除く。
 fn has_girder(model: &Model, a: NodeId, b: NodeId) -> bool {
     model.elements.iter().any(|e| {
-        if !crate::side_column::is_line_member(e.kind) || e.nodes.len() < 2 {
+        if !crate::wall::side_column::is_line_member(e.kind) || e.nodes.len() < 2 {
             return false;
         }
         let (n0, n1) = (e.nodes[0], e.nodes[1]);
@@ -716,7 +716,7 @@ mod tests {
     }
 
     /// 台形壁では旧包絡寸法（節点間の最大水平距離）と
-    /// [`crate::wall_element::wall_element_geometry`] の壁長（上下辺平均）が食い違う。
+    /// [`crate::wall::wall_element::wall_element_geometry`] の壁長（上下辺平均）が食い違う。
     /// 開口周比 r0 は後者を単一情報源とする。
     #[test]
     fn 台形壁の開口周比は壁エレメント幾何の壁長を用いる() {
@@ -775,7 +775,7 @@ mod tests {
         crate::wall::add_surrounding_frame(&mut model, &data);
         model.elements.push(data.clone());
 
-        let g = crate::wall_element::wall_element_geometry(&data, &model).expect("幾何");
+        let g = crate::wall::wall_element::wall_element_geometry(&data, &model).expect("幾何");
         assert!((g.lw_bottom - 4000.0).abs() < 1e-9);
         assert!((g.lw_top - 3000.0).abs() < 1e-9);
         assert!((g.lw - 3500.0).abs() < 1e-9);

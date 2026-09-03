@@ -5,7 +5,7 @@ use super::model::{LumpedMassModel, StorySpatial};
 use super::time_history::{
     dir_ductility, story_spring, StickDirPeaks, StickResponse, STICK_NEWTON,
 };
-use crate::analysis::SeismicDir;
+use crate::statics::analysis::SeismicDir;
 use faer::Side;
 use squid_n_material::{HysteresisMaterial, UniaxialMaterial};
 use squid_n_math::solver::SolveError;
@@ -344,9 +344,9 @@ pub(crate) fn lumped_mass_time_history_spatial(
                 rnorm += r[i] * r[i];
             }
             let ma: Vec<f64> = (0..nd).map(|i| mass[i] * a_tr[i]).collect();
-            let scale = crate::newton::dynamic_force_scale(&p, &ma, &cv);
+            let scale = crate::common::newton::dynamic_force_scale(&p, &ma, &cv);
             peak_force_scale = peak_force_scale.max(scale);
-            let ref_norm = crate::newton::dynamic_reference_norm(scale, peak_force_scale);
+            let ref_norm = crate::common::newton::dynamic_reference_norm(scale, peak_force_scale);
             if STICK_NEWTON.converged(rnorm.sqrt(), ref_norm) {
                 step_converged = true;
                 break;
@@ -440,7 +440,7 @@ mod tests {
         StoryTrilinear,
     };
     use super::*;
-    use crate::analysis::SeismicDir;
+    use crate::statics::analysis::SeismicDir;
 
     #[test]
     fn spatial_eigen_one_story_matches_sda() {

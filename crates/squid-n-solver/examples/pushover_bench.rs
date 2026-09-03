@@ -23,11 +23,11 @@ use squid_n_core::model::{
     Constraint, ElementData, ElementKind, EndCondition, ForceRegime, LoadCase, LoadCaseKind,
     LocalAxis, Material, MaterialCategory, MemberLoad, MemberLoadKind, Model, Node, Section, Story,
 };
-use squid_n_solver::analysis::SeismicDir;
-use squid_n_solver::constraint::Reducer;
-use squid_n_solver::pushover::{
+use squid_n_solver::common::constraint::Reducer;
+use squid_n_solver::nonlinear::pushover::{
     pushover_analysis_recording, DuctilityMethod, PushoverControl, PushoverResult, PushoverTarget,
 };
+use squid_n_solver::statics::analysis::SeismicDir;
 
 /// nx×ny スパン・nz 層の S造立体ラーメン（柱・X/Y 大梁）を生成する。
 /// 各階に剛床（隅節点をマスターとする）と地震用重量を与え、大梁に長期荷重

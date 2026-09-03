@@ -295,8 +295,8 @@ pub struct PrepWidthThicknessRow {
 /// 部材単位の剛性割増し・SRC/CFT 等価断面 1 行。
 ///
 /// 断面性能の表（断面単位）では表せない、**部材ごとに決まる**剛性の割増しを示す。
-/// 値は [`squid_n_element::beam::stiffness_breakdown`] ・
-/// [`squid_n_element::beam::composite_props_of`] を通した、要素構築が実際に
+/// 値は [`squid_n_element::frame::beam::stiffness_breakdown`] ・
+/// [`squid_n_element::frame::beam::composite_props_of`] を通した、要素構築が実際に
 /// 適用するものと同じ算定結果。
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct PrepMemberStiffnessRow {
@@ -491,9 +491,9 @@ impl App {
                 .iter()
                 .map(|s| model.diaphragms_of(s.id).count())
                 .sum(),
-            ground_elevation: squid_n_solver::analysis::ground_elevation(model),
-            height_mm: squid_n_solver::analysis::building_height_mm(model),
-            steel_height_ratio: squid_n_solver::analysis::steel_height_ratio(model),
+            ground_elevation: squid_n_solver::statics::analysis::ground_elevation(model),
+            height_mm: squid_n_solver::statics::analysis::building_height_mm(model),
+            steel_height_ratio: squid_n_solver::statics::analysis::steel_height_ratio(model),
             // 地震用重量の合計は層の重量の総和。基部の階の重量（柱脚・基礎梁）は
             // 地盤が直接受けて層せん断力を生まないため含めない。
             total_seismic_weight: model.layers().iter().map(|l| l.weight.unwrap_or(0.0)).sum(),
@@ -540,7 +540,7 @@ impl App {
             Ok(t) => t,
             Err(msg) => return (None, Some(msg)),
         };
-        let cfg = squid_n_solver::analysis::SeismicCfg {
+        let cfg = squid_n_solver::statics::analysis::SeismicCfg {
             // Ai 分布は加力方向によらないため方向は結果に影響しない。
             dir: SeismicDir::X,
             mode: self.core.analysis_cfg.ai_mode,
@@ -548,7 +548,7 @@ impl App {
             soil: self.core.analysis_cfg.soil,
             c0: self.core.analysis_cfg.c0,
         };
-        let dist = match squid_n_solver::analysis::seismic_distribution_for_model(
+        let dist = match squid_n_solver::statics::analysis::seismic_distribution_for_model(
             &self.core.model,
             cfg,
             t,
@@ -657,16 +657,16 @@ impl App {
     /// ねじり解放（i 端ねじれピン）の対象外となった部材を一覧化する。
     ///
     /// 「ねじり剛性が残っている部材」を確認するための表なので、判定で除外された
-    /// 部材（[`squid_n_element::beam::TorsionReleaseSkip::UnrestrainedRotation`]）
+    /// 部材（[`squid_n_element::frame::beam::TorsionReleaseSkip::UnrestrainedRotation`]）
     /// だけを載せる。ねじり剛性をもともと持たない部材は、解放してもしなくても
     /// 剛性が 0 で設計上の影響がないため対象外とする。
     fn build_prep_torsion_skipped(&self) -> Vec<PrepTorsionSkipRow> {
-        use squid_n_element::beam::TorsionReleaseSkip;
+        use squid_n_element::frame::beam::TorsionReleaseSkip;
         let model = &self.core.model;
         let mut rows = Vec::new();
         for e in &model.elements {
             let Some(TorsionReleaseSkip::UnrestrainedRotation { node }) =
-                squid_n_element::beam::i_end_torsion_release_skip(e, model)
+                squid_n_element::frame::beam::i_end_torsion_release_skip(e, model)
             else {
                 continue;
             };
@@ -841,7 +841,7 @@ impl App {
         // 事前判定: どれか 1 つでも該当しうる場合のみ部材ごとの算定へ進む。
         // スラブ協力幅・合成梁の板厚は「該当する床板の `slab_plate_thickness`
         // （複数なら最大）、取れないときの控えが建物一律 `slab_thickness`」の順で
-        // 決まる（`squid_n_element::beam::stiffness_factors`）。事前判定もこれに
+        // 決まる（`squid_n_element::frame::beam::stiffness_factors`）。事前判定もこれに
         // 揃え、建物一律だけでなく個々の床板の板厚も見る（さもないと `slab_thickness`
         // 未設定＝既定 0 のモデルで、実際は割増しが効く床板があっても表が空になる）。
         let slab_stiffness_enabled = (!model.floor_regions.is_empty() || !model.slabs.is_empty())
@@ -876,8 +876,8 @@ impl App {
             ) else {
                 continue;
             };
-            let factors = squid_n_element::beam::stiffness_breakdown(model, e);
-            let composite = squid_n_element::beam::composite_props_of(model, e);
+            let factors = squid_n_element::frame::beam::stiffness_breakdown(model, e);
+            let composite = squid_n_element::frame::beam::composite_props_of(model, e);
             // 実効値: 等価換算 → スラブ／合成梁（強軸曲げのみ）→ 壁上下大梁（一律）。
             // 要素構築（`BeamElement::new`）が適用するのと同じ順序・同じ規則。
             // SRC で材料から等価換算できない（Fc 未設定等）場合も、軸剛性だけは

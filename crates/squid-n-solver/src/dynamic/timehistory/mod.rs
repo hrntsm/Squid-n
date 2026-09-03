@@ -32,11 +32,11 @@ pub use result::{ResponseHistory, ResponseResult, StoryResponse, ThRecording, Ti
 // `#[cfg(test)] mod tests` は `use super::*` 経由でこれらのシンボルを取得するため、
 // テスト用に再エクスポートしてスコープに残す。
 #[cfg(test)]
-pub(crate) use crate::assemble::{assemble_global_k, assemble_global_m};
+pub(crate) use crate::common::assemble::{assemble_global_k, assemble_global_m};
 #[cfg(test)]
 pub(crate) use squid_n_element::behavior::MassOption;
 
-use crate::damping::Damping;
+use crate::dynamic::damping::Damping;
 
 /// Rayleigh 減衰の係数 (α_m, β_k) を、2つの振動数と目標減衰比から計算する。
 pub fn rayleigh_coeffs(omega1: f64, omega2: f64, h1: f64, h2: f64) -> (f64, f64) {

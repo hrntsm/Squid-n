@@ -40,7 +40,7 @@
 //! （[`squid_n_core::dof::PANEL_DOF_PER_NODE`]）。本要素はその 2 自由度に対して
 //! のみ剛性を与える。パネル分のオフセットを介した部材端との適合
 //! （`{d} = {D} + [B0]{Φ} + [Btp]{S}`）は、部材側のデコレータ
-//! [`crate::panel_offset::PanelOffsetMember`] が担う。
+//! [`crate::frame::panel_offset::PanelOffsetMember`] が担う。
 //!
 //! # 弾塑性
 //!
@@ -51,7 +51,7 @@
 
 use crate::behavior::{Ctx, ElementBehavior, LocalMat, LocalVec, MassOption};
 use smallvec::SmallVec;
-use squid_n_core::dof::{DofMap, DOF_PER_NODE};
+use squid_n_core::dof::DofMap;
 use squid_n_core::ids::NodeId;
 use squid_n_core::model::{ElementData, Model};
 use squid_n_core::panel_zone::{resolve_panel_joint, PanelGeometry};
@@ -154,7 +154,7 @@ struct ResolvedPanel {
 ///
 /// 対象接合部の判定・`dc`・`tp`・`db`・柱の選択は
 /// [`squid_n_core::panel_zone::resolve_panel_joint`] に委ねる。準備計算のパネル生成
-/// （[`crate::panel_gen`]）・S 造パネルゾーンの断面検定と同じ関数を通るため、
+/// （[`crate::springs::panel_gen`]）・S 造パネルゾーンの断面検定と同じ関数を通るため、
 /// 準備計算の表に出る諸元と、実際に組まれる要素の剛性・耐力が一致する。
 ///
 /// 本関数が加えるのは、解決した柱から取る材料量（せん断弾性係数 `G`・基準強度 `F`・
@@ -382,21 +382,9 @@ impl ElementBehavior for PanelZone {
 
     fn global_dofs(&self, dof: &DofMap) -> SmallVec<[usize; 24]> {
         let mut gdofs = SmallVec::new();
-        let ni = self.node.index();
-        for d in 0..2 {
-            gdofs.push(
-                dof.panel_dof(ni, d)
-                    .map_or(usize::MAX, |active| active as usize),
-            );
-        }
+        crate::behavior::push_panel_global_dofs(&mut gdofs, self.node.index(), dof);
         if let Some(col) = &self.column {
-            for &nid in &col.nodes {
-                let cn = nid.index();
-                for d in 0..DOF_PER_NODE {
-                    let g = cn * DOF_PER_NODE + d;
-                    gdofs.push(dof.active(g).map_or(usize::MAX, |a| a as usize));
-                }
-            }
+            crate::behavior::push_node_global_dofs(&mut gdofs, &col.nodes, dof);
         }
         gdofs
     }

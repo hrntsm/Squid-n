@@ -1,5 +1,5 @@
 use super::*;
-use crate::constraint::Reducer;
+use crate::common::constraint::Reducer;
 use squid_n_core::dof::{Dof, Dof6Mask, DofMap};
 use squid_n_core::ids::{ElemId, MaterialId, NodeId, SectionId, StoryId};
 use squid_n_core::model::{

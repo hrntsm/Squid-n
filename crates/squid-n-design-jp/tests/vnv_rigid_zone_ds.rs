@@ -17,9 +17,11 @@ use squid_n_core::model::{
 };
 use squid_n_design_jp::secondary::holding_capacity::{FrameType, MemberRank};
 use squid_n_design_jp::secondary::member_rank::story_ds;
-use squid_n_solver::analysis::SeismicDir;
-use squid_n_solver::constraint::Reducer;
-use squid_n_solver::pushover::{pushover_analysis, HingeLevel, MechanismType, PushoverResult};
+use squid_n_solver::common::constraint::Reducer;
+use squid_n_solver::nonlinear::pushover::{
+    pushover_analysis, HingeLevel, MechanismType, PushoverResult,
+};
+use squid_n_solver::statics::analysis::SeismicDir;
 
 /// 節点（座標・拘束）を作る補助。
 fn node(id: u32, coord: [f64; 3], restraint: Dof6Mask, story: Option<StoryId>) -> Node {

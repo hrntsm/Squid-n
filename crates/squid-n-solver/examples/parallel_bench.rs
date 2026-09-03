@@ -17,7 +17,7 @@ use squid_n_core::model::{
     Material, MaterialCategory, Model, NodalLoad, Node, Section,
 };
 use squid_n_math::parallelism::{set_parallelism, Parallelism};
-use squid_n_solver::analysis::Analysis;
+use squid_n_solver::statics::analysis::Analysis;
 
 /// nx×ny スパン・nz 層の立体ラーメン（柱＋X/Y 大梁）を生成する。
 fn make_frame(nx: usize, ny: usize, nz: usize, n_cases: usize) -> Model {

@@ -161,7 +161,7 @@ pub struct Diagnostic { pub severity: DiagSeverity, pub message: String, pub tar
 
 - チェック内容（`App::run_diagnostics`。概ね O(部材数)。耐震壁と周辺架構の種別照合のみ
   O(壁数 × 部材数)。これ以上重い検査は足さない）:
-  解析を妨げる不備（`squid_n_solver::analysis::precheck::model_issues`。モデル検証
+  解析を妨げる不備（`squid_n_solver::statics::analysis::precheck::model_issues`。モデル検証
   `Model::validate` を含む）／空の地震荷重ケースを参照する荷重組合せ／
   荷重が空の荷重ケース。
 - **重要度の規約**:

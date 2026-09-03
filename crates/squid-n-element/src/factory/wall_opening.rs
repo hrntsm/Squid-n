@@ -26,7 +26,7 @@ pub(crate) fn wall_opening_reduction(data: &ElementData, model: &Model) -> f64 {
     // 従来は「全節点対の水平距離の最大（＝下辺長）」×「z の全幅」で近似しており、
     // 台形壁で開口周比の分母とせん断断面の壁長が食い違っていた。
     // 4 節点でない壁（フォールバック等価梁経路）は従来の包絡寸法で近似する。
-    let (l, h) = match crate::wall_element::wall_element_geometry(data, model) {
+    let (l, h) = match crate::wall::wall_element::wall_element_geometry(data, model) {
         Some(g) => (g.lw, g.h),
         None => {
             let coords: Vec<[f64; 3]> = data

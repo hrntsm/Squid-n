@@ -2,16 +2,16 @@
 
 use super::*;
 use crate::app::vibration::{lumped_vibration_dim_from_stick, lumped_vibration_dir_from_seismic};
-use squid_n_solver::lumped_mass::LumpedMassResult;
+use squid_n_solver::dynamic::lumped_mass::LumpedMassResult;
 
 impl App {
     fn lumped_static_and_pushover(
         &self,
     ) -> (
-        Option<squid_n_solver::linear::StaticOnce>,
-        Option<squid_n_solver::linear::StaticOnce>,
-        Option<squid_n_solver::pushover::PushoverResult>,
-        Option<squid_n_solver::pushover::PushoverResult>,
+        Option<squid_n_solver::statics::linear::StaticOnce>,
+        Option<squid_n_solver::statics::linear::StaticOnce>,
+        Option<squid_n_solver::nonlinear::pushover::PushoverResult>,
+        Option<squid_n_solver::nonlinear::pushover::PushoverResult>,
     ) {
         let res_x = self
             .core

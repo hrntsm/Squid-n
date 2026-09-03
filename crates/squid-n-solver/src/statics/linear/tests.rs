@@ -211,7 +211,7 @@ fn ss_beam(l: f64, member: Vec<MemberLoad>) -> Model {
     }
 }
 
-fn mid_value(mf: &squid_n_element::beam::MemberForces, comp: usize) -> f64 {
+fn mid_value(mf: &squid_n_element::frame::beam::MemberForces, comp: usize) -> f64 {
     mf.at
         .iter()
         .find(|(xi, _)| (xi - 0.5).abs() < 1e-9)

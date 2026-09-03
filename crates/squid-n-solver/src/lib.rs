@@ -6,23 +6,17 @@
 //!
 //! 解析の種類ごとにモジュールを階層化している:
 //!
-//! - [`common`] —    解析共通の基盤（組み立て・拘束・状態スナップショット）
+//! - [`common`] —    解析共通の基盤（組み立て・拘束・接線剛性・状態スナップショット）
 //! - [`statics`] —   静的解析（線形静的・地震/風荷重）
 //! - [`nonlinear`] — 非線形（漸増）静的解析（プッシュオーバー・弧長法）
 //! - [`dynamic`] —   動的解析（時刻歴・減衰・固有値）
+//! - [`damage`] —    損傷指標
 //!
-//! 階層化前の平坦なモジュールパス（例: `squid_n_solver::pushover`）は、
-//! 下記の再エクスポートにより従来どおり利用できる。
+//! モジュールパスは階層をそのまま辿る（例: `squid_n_solver::nonlinear::pushover`）。
+//! 再エクスポートによる平坦なパスは設けない。
 
-mod common;
+pub mod common;
 pub mod damage;
-mod dynamic;
-mod nonlinear;
-mod statics;
-
-// 階層化後も従来のモジュールパス（例: `squid_n_solver::pushover` や
-// クレート内部の `crate::constraint`）を維持するための再エクスポート。
-pub use common::{assemble, constraint, newton, transaction};
-pub use dynamic::{damping, eigen, lumped_mass, phase_diff, timehistory};
-pub use nonlinear::{arc_length, pushover};
-pub use statics::{analysis, linear};
+pub mod dynamic;
+pub mod nonlinear;
+pub mod statics;

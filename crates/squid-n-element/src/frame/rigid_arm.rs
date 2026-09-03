@@ -17,7 +17,7 @@
 //! j 端: uy' = uy − λj·rz,  uz' = uz + λj·ry
 //! ```
 //!
-//! 弾性梁（[`crate::beam`]）とファイバー梁（[`crate::fiber`]）が同じ剛域の扱いを
+//! 弾性梁（[`crate::frame::beam`]）とファイバー梁（[`crate::frame::fiber`]）が同じ剛域の扱いを
 //! 共有するため、変換をここへ一元化する。
 
 use crate::behavior::LocalMat;

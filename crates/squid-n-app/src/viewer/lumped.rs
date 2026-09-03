@@ -2,8 +2,8 @@
 
 use crate::app::App;
 use crate::theme;
-use squid_n_solver::analysis::SeismicDir;
-use squid_n_solver::lumped_mass::LumpedMassResult;
+use squid_n_solver::dynamic::lumped_mass::LumpedMassResult;
+use squid_n_solver::statics::analysis::SeismicDir;
 
 use super::{playback, Projector, ViewMode};
 

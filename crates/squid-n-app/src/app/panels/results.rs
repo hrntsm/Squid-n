@@ -180,7 +180,7 @@ impl App {
         // 必要保有水平耐力算定の前提）。
         if matches!(
             po.mechanism,
-            squid_n_solver::pushover::MechanismType::Partial
+            squid_n_solver::nonlinear::pushover::MechanismType::Partial
         ) {
             ui.colored_label(
                 crate::theme::SECONDARY_AMBER,
@@ -194,8 +194,10 @@ impl App {
             ui.label(format!("保有水平耐力 Qu = {:.1} kN", force_kn(po.qu)));
             ui.separator();
             let mech = match &po.mechanism {
-                squid_n_solver::pushover::MechanismType::Overall => "全体崩壊形".to_string(),
-                squid_n_solver::pushover::MechanismType::StoryCollapse { layer } => {
+                squid_n_solver::nonlinear::pushover::MechanismType::Overall => {
+                    "全体崩壊形".to_string()
+                }
+                squid_n_solver::nonlinear::pushover::MechanismType::StoryCollapse { layer } => {
                     // 層の呼び名は下端の階名（法令の「i 階」）。
                     let name = self
                         .core
@@ -206,21 +208,23 @@ impl App {
                         .unwrap_or_else(|| format!("{}", layer + 1));
                     format!("層崩壊形 ({name})")
                 }
-                squid_n_solver::pushover::MechanismType::Partial => "部分崩壊形".to_string(),
+                squid_n_solver::nonlinear::pushover::MechanismType::Partial => {
+                    "部分崩壊形".to_string()
+                }
             };
             ui.label(format!("崩壊機構: {}", mech));
             ui.separator();
             ui.label(format!("ヒンジ発生 {} 件", po.hinges.len()));
             ui.separator();
             let control = match po.control {
-                squid_n_solver::pushover::PushoverControl::Phased => "段階制御",
-                squid_n_solver::pushover::PushoverControl::LoadOnly => "荷重増分のみ",
+                squid_n_solver::nonlinear::pushover::PushoverControl::Phased => "段階制御",
+                squid_n_solver::nonlinear::pushover::PushoverControl::LoadOnly => "荷重増分のみ",
             };
             ui.label(format!("増分方式: {}", control));
         });
         // 塑性率（構造力学）の方式と最大値。
         ui.horizontal(|ui| {
-            use squid_n_solver::pushover::DuctilityMethod;
+            use squid_n_solver::nonlinear::pushover::DuctilityMethod;
             let method = match self.core.analysis_cfg.ductility_method {
                 DuctilityMethod::ReferenceStrain => "基点歪み",
                 DuctilityMethod::WeightedAverageJm => "重み付け平均Jm",
@@ -326,9 +330,9 @@ impl App {
         egui::ScrollArea::vertical().show(ui, |ui| {
             for h in po.hinges.iter().take(20) {
                 let level = match h.level {
-                    squid_n_solver::pushover::HingeLevel::Crack => "ひび割れ",
-                    squid_n_solver::pushover::HingeLevel::Yield => "降伏",
-                    squid_n_solver::pushover::HingeLevel::Ultimate => "終局",
+                    squid_n_solver::nonlinear::pushover::HingeLevel::Crack => "ひび割れ",
+                    squid_n_solver::nonlinear::pushover::HingeLevel::Yield => "降伏",
+                    squid_n_solver::nonlinear::pushover::HingeLevel::Ultimate => "終局",
                 };
                 ui.label(format!(
                     "step {}: 部材 {} pos={:.2} {} (μ={:.2})",

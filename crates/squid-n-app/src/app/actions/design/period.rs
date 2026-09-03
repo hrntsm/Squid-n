@@ -16,10 +16,11 @@ impl App {
     pub(crate) fn design_seismic_period(&self) -> Result<f64, String> {
         match self.core.analysis_cfg.ai_mode {
             AiMode::Approx => {
-                let height_m = length_m(squid_n_solver::analysis::building_height_mm(
+                let height_m = length_m(squid_n_solver::statics::analysis::building_height_mm(
                     &self.core.model,
                 ));
-                let steel_ratio = squid_n_solver::analysis::steel_height_ratio(&self.core.model);
+                let steel_ratio =
+                    squid_n_solver::statics::analysis::steel_height_ratio(&self.core.model);
                 Ok(squid_n_load::ai::approx_t(height_m, steel_ratio))
             }
             AiMode::SemiPrecise => self

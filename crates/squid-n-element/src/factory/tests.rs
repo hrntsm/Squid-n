@@ -179,7 +179,7 @@ fn test_build_behavior_concentrated_spring_regime_is_elastic_beam() {
         "線形解析の梁は内力を回収できる弾性 BeamElement であること"
     );
     // 剛性も素の弾性 BeamElement と厳密一致（材端ばねが直列に入っていない）。
-    let elastic = crate::beam::BeamElement::new(&beam, &model);
+    let elastic = crate::frame::beam::BeamElement::new(&beam, &model);
     let k_ref = elastic.local_stiffness();
     let k_ref = elastic.axis.to_global(&k_ref);
     let k = behavior.tangent_stiffness(&crate::behavior::Ctx { model: &model });
@@ -285,7 +285,7 @@ fn test_build_nonlinear_behavior_fiber_uses_fiber_beam() {
     );
     let snap = behavior.snapshot_state();
     let is_fiber = snap
-        .downcast_ref::<crate::fiber::FiberBeamSnapshot>()
+        .downcast_ref::<crate::frame::fiber::FiberBeamSnapshot>()
         .is_some();
     assert!(is_fiber, "nonlinear Fiber should be FiberBeam");
 }

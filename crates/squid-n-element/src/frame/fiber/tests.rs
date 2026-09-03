@@ -18,8 +18,8 @@ fn make_test_fiber_beam(shear_mod: Option<f64>) -> FiberBeam {
     )
 }
 
-fn make_test_beam_element(as_val: f64) -> crate::beam::BeamElement {
-    crate::beam::BeamElement {
+fn make_test_beam_element(as_val: f64) -> crate::frame::beam::BeamElement {
+    crate::frame::beam::BeamElement {
         id: ElemId(0),
         e: 205000.0,
         g: 78846.15,

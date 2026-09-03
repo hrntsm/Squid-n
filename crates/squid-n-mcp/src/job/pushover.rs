@@ -31,8 +31,8 @@ pub(crate) fn compute_pushover_job(
     let target = params.pushover_target();
     let cfg = squid_n_job::AnalysisSettings {
         push_dir: match params.dir {
-            JobDir::X => squid_n_solver::analysis::SeismicDir::X,
-            JobDir::Y => squid_n_solver::analysis::SeismicDir::Y,
+            JobDir::X => squid_n_solver::statics::analysis::SeismicDir::X,
+            JobDir::Y => squid_n_solver::statics::analysis::SeismicDir::Y,
         },
         push_steps: params.steps,
         push_use_max_disp: target.max_disp.is_some(),
@@ -47,11 +47,11 @@ pub(crate) fn compute_pushover_job(
     let result = squid_n_job::compute::compute_pushover(work, cfg)?;
 
     let mechanism = match result.mechanism {
-        squid_n_solver::pushover::MechanismType::Overall => "Overall".to_string(),
-        squid_n_solver::pushover::MechanismType::StoryCollapse { layer } => {
+        squid_n_solver::nonlinear::pushover::MechanismType::Overall => "Overall".to_string(),
+        squid_n_solver::nonlinear::pushover::MechanismType::StoryCollapse { layer } => {
             format!("StoryCollapse(layer={layer})")
         }
-        squid_n_solver::pushover::MechanismType::Partial => "Partial".to_string(),
+        squid_n_solver::nonlinear::pushover::MechanismType::Partial => "Partial".to_string(),
     };
     let mut summary = serde_json::json!({
         "kind": "Pushover",

@@ -10,7 +10,7 @@ impl App {
     /// （振動ケース upsert・結果スロット更新・表示窓口更新）。
     pub(super) fn apply_time_history_result(
         &mut self,
-        res: Result<squid_n_solver::timehistory::ResponseResult, String>,
+        res: Result<squid_n_solver::dynamic::timehistory::ResponseResult, String>,
     ) {
         match res {
             Ok(res) => {
@@ -35,7 +35,7 @@ impl App {
 
     /// 線形時刻歴応答解析を実行する。減衰モデル・積分法は `analysis_cfg` に従う
     /// （剛性比例／Rayleigh、Newmark-β）。
-    pub fn run_time_history(&mut self, wave: squid_n_solver::timehistory::GroundMotion) {
+    pub fn run_time_history(&mut self, wave: squid_n_solver::dynamic::timehistory::GroundMotion) {
         self.begin_analysis();
         let res = squid_n_job::compute::compute_time_history(
             self.core.model.clone(),
@@ -49,7 +49,10 @@ impl App {
     /// 時刻歴応答解析をバックグラウンドスレッドで実行する（P8 §5、残課題1）。
     /// UI スレッドをブロックしないよう重い解析を逃がす。
     /// 既にジョブが実行中の場合は何もしない（last_error に案内文を設定）。
-    pub fn start_time_history_job(&mut self, wave: squid_n_solver::timehistory::GroundMotion) {
+    pub fn start_time_history_job(
+        &mut self,
+        wave: squid_n_solver::dynamic::timehistory::GroundMotion,
+    ) {
         if !self.begin_analysis_job() {
             return;
         }
@@ -75,7 +78,9 @@ impl App {
 
     /// 正弦減衰のサンプル地震波を `cfg` から組み立てる
     /// （外部波形ファイルなしで機能を試せる導線。同期実行・ジョブ実行の双方で使う）。
-    pub(crate) fn sample_wave(cfg: &AnalysisSettings) -> squid_n_solver::timehistory::GroundMotion {
+    pub(crate) fn sample_wave(
+        cfg: &AnalysisSettings,
+    ) -> squid_n_solver::dynamic::timehistory::GroundMotion {
         squid_n_job::sample_ground_motion(cfg)
     }
 

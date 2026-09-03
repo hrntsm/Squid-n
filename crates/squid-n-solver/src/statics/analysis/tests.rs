@@ -1145,7 +1145,7 @@ fn ss_beam_udl(l: f64, w: f64) -> Model {
     }
 }
 
-fn mz_at(mf: &squid_n_element::beam::MemberForces, xi_target: f64) -> f64 {
+fn mz_at(mf: &squid_n_element::frame::beam::MemberForces, xi_target: f64) -> f64 {
     mf.at
         .iter()
         .find(|(xi, _)| (xi - xi_target).abs() < 1e-9)
@@ -1340,7 +1340,7 @@ fn analysis_linear_combination_matches_assembled_load_case() {
 /// 解析自体は通るので、エラーではなく警告で利用者へ確かめる。
 #[test]
 fn test_crossing_beams_reported_as_warning() {
-    use crate::analysis::precheck::{model_issues, IssueSeverity};
+    use crate::statics::analysis::precheck::{model_issues, IssueSeverity};
     use squid_n_core::ids::{ElemId, NodeId};
     use squid_n_core::model::{
         ElementData, ElementKind, EndCondition, ForceRegime, LocalAxis, Node,

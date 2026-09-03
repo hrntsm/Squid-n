@@ -290,7 +290,7 @@ impl App {
             );
         }
         ui.horizontal_wrapped(|ui| {
-            use squid_n_solver::pushover::DuctilityMethod;
+            use squid_n_solver::nonlinear::pushover::DuctilityMethod;
             ui.label("塑性率方式:")
                 .on_hover_text("ファイバーモデルの塑性率（構造力学）");
             egui::ComboBox::from_id_salt("ductility_method")
@@ -329,7 +329,7 @@ impl App {
             );
         });
         ui.horizontal_wrapped(|ui| {
-            use squid_n_solver::pushover::PushoverControl;
+            use squid_n_solver::nonlinear::pushover::PushoverControl;
             ui.label("増分方式:").on_hover_text(
                 "荷重増分のみは比較検証用。変位制御へ移行せず、終了目標が有効な場合は\
                          λ=1 を超えて荷重を増分し、収束しなくなった時点（耐力ピーク近傍）で\
@@ -545,7 +545,7 @@ impl App {
                 );
                 ui.selectable_value(&mut self.core.analysis_cfg.phase_diff_dir_y, false, "X");
                 ui.selectable_value(&mut self.core.analysis_cfg.phase_diff_dir_y, true, "Y");
-                let lag = squid_n_solver::phase_diff::phase_lag_time(
+                let lag = squid_n_solver::dynamic::phase_diff::phase_lag_time(
                     self.core.analysis_cfg.phase_diff_length_m,
                     self.core.analysis_cfg.phase_diff_incidence_deg,
                     self.core.analysis_cfg.phase_diff_vs,
@@ -658,7 +658,7 @@ impl App {
 
     /// 右ドック「質点系」パネル。
     pub(crate) fn lumped_mass_analysis_panel(&mut self, ui: &mut egui::Ui) {
-        use squid_n_solver::lumped_mass::{LumpedStiffnessSource, StickDim};
+        use squid_n_solver::dynamic::lumped_mass::{LumpedStiffnessSource, StickDim};
 
         ui.heading("質点系");
         ui.separator();

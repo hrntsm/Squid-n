@@ -144,7 +144,7 @@ impl StickResponse {
 }
 
 /// 各時刻ステップの Newton 反復の収束規約。基準ノルムは動的釣り合いの各項の最大
-/// （[`crate::newton::dynamic_reference_norm`]）。地動がゼロの時刻でも慣性力・
+/// （[`crate::common::newton::dynamic_reference_norm`]）。地動がゼロの時刻でも慣性力・
 /// 減衰力が基準を支えるため、分母が退化しない。
 pub const STICK_NEWTON: NewtonCriteria = NewtonCriteria::new(30, 1e-6);
 
@@ -348,9 +348,9 @@ pub fn lumped_mass_time_history(
             // （立体モデルの非線形時刻歴で実際に不収束を起こした。
             // `dev_docs/handoff/非線形時刻歴の収束_申し送り.md`）。
             let ma: Vec<f64> = (0..n).map(|i| mass[i] * a_tr[i]).collect();
-            let scale = crate::newton::dynamic_force_scale(&p, &ma, &cv);
+            let scale = crate::common::newton::dynamic_force_scale(&p, &ma, &cv);
             peak_force_scale = peak_force_scale.max(scale);
-            let ref_norm = crate::newton::dynamic_reference_norm(scale, peak_force_scale);
+            let ref_norm = crate::common::newton::dynamic_reference_norm(scale, peak_force_scale);
             if STICK_NEWTON.converged(rnorm.sqrt(), ref_norm) {
                 step_converged = true;
                 break;
@@ -396,8 +396,8 @@ pub fn lumped_mass_time_history(
                 sp.trial(d_signed)
             };
             let (dx, dy, qx, qy) = match lm.dir {
-                crate::analysis::SeismicDir::X => (d_signed, 0.0, qi, 0.0),
-                crate::analysis::SeismicDir::Y => (0.0, d_signed, 0.0, qi),
+                crate::statics::analysis::SeismicDir::X => (d_signed, 0.0, qi, 0.0),
+                crate::statics::analysis::SeismicDir::Y => (0.0, d_signed, 0.0, qi),
             };
             peak_drift[i] = peak_drift[i].max(drift_dir.accumulate(i, dx, dy));
             peak_shear[i] = peak_shear[i].max(shear_dir.accumulate(i, qx, qy));
@@ -407,19 +407,19 @@ pub fn lumped_mass_time_history(
         let mut frame = vec![[0.0; 3]; n];
         for (i, slot) in frame.iter_mut().enumerate() {
             match lm.dir {
-                crate::analysis::SeismicDir::X => slot[0] = u[i],
-                crate::analysis::SeismicDir::Y => slot[1] = u[i],
+                crate::statics::analysis::SeismicDir::X => slot[0] = u[i],
+                crate::statics::analysis::SeismicDir::Y => slot[1] = u[i],
             }
         }
         floor_disp.push(frame);
     }
 
     let (d1x, d1y): (Vec<f64>, Vec<f64>) = match lm.dir {
-        crate::analysis::SeismicDir::X => (
+        crate::statics::analysis::SeismicDir::X => (
             lm.stories.iter().map(|s| s.skeleton.d1).collect(),
             vec![f64::INFINITY; n],
         ),
-        crate::analysis::SeismicDir::Y => (
+        crate::statics::analysis::SeismicDir::Y => (
             vec![f64::INFINITY; n],
             lm.stories.iter().map(|s| s.skeleton.d1).collect(),
         ),

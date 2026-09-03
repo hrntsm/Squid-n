@@ -4,7 +4,7 @@
 //! - [`determine_mechanism`] — 降伏ヒンジ分布から崩壊機構種別を分類
 
 use super::types::{HingeEvent, HingeLevel, MechanismType};
-use crate::analysis::SeismicDir;
+use crate::statics::analysis::SeismicDir;
 use squid_n_core::model::Model;
 
 /// ヒンジの層への帰属。

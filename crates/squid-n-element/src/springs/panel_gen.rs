@@ -1,7 +1,7 @@
 //! 仕口パネル要素の自動生成（準備計算の前処理）。
 //!
 //! S 造（CFT を除く）の柱梁接合節点を検出し、[`ElementKind::PanelZone`] の要素を
-//! モデルへ生成する。剛域の自動算定（[`crate::beam::apply_auto_rigid_zones`]）と
+//! モデルへ生成する。剛域の自動算定（[`crate::frame::beam::apply_auto_rigid_zones`]）と
 //! 同じく、解析に先立って 1 回適用する冪等な前処理である。
 //!
 //! # 生成条件
@@ -28,7 +28,7 @@
 //! [`RigidZone::rigid_length_i`] を読むすべての経路が同じ値を見る。
 //!
 //! **剛域長 `length_i/j` とは別のフィールドへ入れる。**剛域の自動算定
-//! （[`crate::beam::apply_auto_rigid_zones`]）は `Auto` 端の `length_i/j` を無条件に
+//! （[`crate::frame::beam::apply_auto_rigid_zones`]）は `Auto` 端の `length_i/j` を無条件に
 //! 再算定するため、同じ場所へ入れると増分解析・時刻歴のように剛域算定を単独で
 //! 走らせる経路でオフセットが消える。別フィールドなら呼び出し順に依存しない。
 //!
@@ -670,7 +670,10 @@ mod tests {
             .map(|e| (e.rigid_zone.panel_offset_i, e.rigid_zone.panel_offset_j))
             .collect();
 
-        crate::beam::apply_auto_rigid_zones(&mut model, &crate::beam::RigidZoneRule::default());
+        crate::frame::beam::apply_auto_rigid_zones(
+            &mut model,
+            &crate::frame::beam::RigidZoneRule::default(),
+        );
 
         let after: Vec<_> = model
             .elements

@@ -3,7 +3,7 @@
 use super::*;
 use squid_n_core::ids::{LumpedVibrationCaseId, VibrationCaseId};
 use squid_n_core::model::{LumpedVibrationDim, LumpedVibrationDir, VibrationThDir};
-use squid_n_solver::lumped_mass::StickDim;
+use squid_n_solver::dynamic::lumped_mass::StickDim;
 
 pub(crate) fn vibration_th_dir_from_th(dir: ThDir) -> VibrationThDir {
     match dir {
@@ -50,7 +50,7 @@ impl App {
     pub(crate) fn set_spatial_time_history_view(
         &mut self,
         case_id: VibrationCaseId,
-        res: &squid_n_solver::timehistory::ResponseResult,
+        res: &squid_n_solver::dynamic::timehistory::ResponseResult,
     ) {
         self.core.scoped.view_vibration_case = Some(case_id);
         if let Some(bundle) = &mut self.core.scoped.results {
@@ -59,7 +59,10 @@ impl App {
         self.fill_time_history_data(res);
     }
 
-    fn fill_time_history_data(&mut self, res: &squid_n_solver::timehistory::ResponseResult) {
+    fn fill_time_history_data(
+        &mut self,
+        res: &squid_n_solver::dynamic::timehistory::ResponseResult,
+    ) {
         #[cfg(feature = "gui")]
         {
             self.ui.scoped.time_history_data = crate::time_history_view::TimeHistoryData {
@@ -188,7 +191,7 @@ impl App {
     pub(crate) fn set_lumped_mass_view(
         &mut self,
         case_id: Option<LumpedVibrationCaseId>,
-        result: &squid_n_solver::lumped_mass::LumpedMassResult,
+        result: &squid_n_solver::dynamic::lumped_mass::LumpedMassResult,
     ) {
         self.core.scoped.view_lumped_vibration_case = case_id;
         self.core.scoped.stick_response = result.response.clone();
@@ -247,8 +250,8 @@ impl App {
 
 /// 除外保存のために一時的に取り出した時刻歴の詳細記録。
 pub(crate) struct TakenThRecordings {
-    window: Option<squid_n_solver::timehistory::ThRecording>,
-    slots: Vec<(usize, squid_n_solver::timehistory::ThRecording)>,
+    window: Option<squid_n_solver::dynamic::timehistory::ThRecording>,
+    slots: Vec<(usize, squid_n_solver::dynamic::timehistory::ThRecording)>,
 }
 
 impl ResultsBundle {
@@ -256,7 +259,7 @@ impl ResultsBundle {
     pub fn upsert_time_history(
         &mut self,
         id: VibrationCaseId,
-        result: squid_n_solver::timehistory::ResponseResult,
+        result: squid_n_solver::dynamic::timehistory::ResponseResult,
     ) {
         if let Some(pos) = self.time_histories.iter().position(|(i, _)| *i == id) {
             self.time_histories[pos].1 = result;
@@ -268,7 +271,7 @@ impl ResultsBundle {
     pub fn time_history_for(
         &self,
         id: VibrationCaseId,
-    ) -> Option<&squid_n_solver::timehistory::ResponseResult> {
+    ) -> Option<&squid_n_solver::dynamic::timehistory::ResponseResult> {
         self.time_histories
             .iter()
             .find(|(i, _)| *i == id)
@@ -279,7 +282,7 @@ impl ResultsBundle {
     pub fn upsert_lumped_result(
         &mut self,
         id: LumpedVibrationCaseId,
-        result: squid_n_solver::lumped_mass::LumpedMassResult,
+        result: squid_n_solver::dynamic::lumped_mass::LumpedMassResult,
     ) {
         if let Some(pos) = self.lumped_results.iter().position(|(i, _)| *i == id) {
             self.lumped_results[pos].1 = result;
@@ -291,7 +294,7 @@ impl ResultsBundle {
     pub fn lumped_result_for(
         &self,
         id: LumpedVibrationCaseId,
-    ) -> Option<&squid_n_solver::lumped_mass::LumpedMassResult> {
+    ) -> Option<&squid_n_solver::dynamic::lumped_mass::LumpedMassResult> {
         self.lumped_results
             .iter()
             .find(|(i, _)| *i == id)

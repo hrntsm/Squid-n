@@ -1,7 +1,7 @@
 //! 固有値解析（部分空間反復）のベンチマーク（高速化前後の比較計測用）。
 //!
 //! 多層立体ラーメン（柱・X/Y 大梁、節点質量つき）を solver 単体で生成し、
-//! モード数を変えて [`squid_n_solver::eigen::solve_eigen`] の所要時間を計測する。
+//! モード数を変えて [`squid_n_solver::dynamic::eigen::solve_eigen`] の所要時間を計測する。
 //!
 //! 各ケースは 3 回実行して最小値を採用する（OS ノイズの影響を減らすため）。
 //! 数値結果の非退行確認用に、1次固有周期・最終モードの周期・有効質量比合計を
@@ -19,8 +19,8 @@ use squid_n_core::model::{
     ElementData, ElementKind, EndCondition, ForceRegime, LocalAxis, Material, MaterialCategory,
     Model, Node, Section,
 };
-use squid_n_solver::constraint::Reducer;
-use squid_n_solver::eigen::solve_eigen;
+use squid_n_solver::common::constraint::Reducer;
+use squid_n_solver::dynamic::eigen::solve_eigen;
 
 /// nx×ny スパン・nz 層の立体ラーメン（柱＋X/Y 大梁）を生成する。
 /// 基部以外の全節点に並進・回転質量を与える。

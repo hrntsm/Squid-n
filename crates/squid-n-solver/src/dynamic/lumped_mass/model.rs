@@ -9,8 +9,8 @@
 //! - [`fit_story_trilinear`] — 層 Q-δ 曲線を等包絡面積則でトリリニアへ縮約する。
 //! - [`build_lumped_mass_model`] — プッシュオーバー結果から串団子モデルを生成する。
 
-use crate::analysis::SeismicDir;
-use crate::pushover::PushoverResult;
+use crate::nonlinear::pushover::PushoverResult;
+use crate::statics::analysis::SeismicDir;
 use squid_n_core::ids::StoryId;
 use squid_n_core::model::Model;
 use squid_n_core::units::GRAVITY_MM_S2;

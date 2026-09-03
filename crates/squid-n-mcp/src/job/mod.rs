@@ -11,7 +11,7 @@
 use super::*;
 use squid_n_job::{AnalysisSettings, JobError};
 use squid_n_load::ai::SoilClass;
-use squid_n_solver::analysis::AiMode;
+use squid_n_solver::statics::analysis::AiMode;
 
 mod design_check;
 mod eigen;
@@ -100,24 +100,24 @@ impl JobParams {
         }
     }
 
-    /// `max_disp`/`max_drift_denom` から `squid_n_solver::pushover::PushoverTarget` を
+    /// `max_disp`/`max_drift_denom` から `squid_n_solver::nonlinear::pushover::PushoverTarget` を
     /// 組み立てる。
     ///
     /// - 両方未指定 → `PushoverTarget::default()`（層間変形角 1/150 のみ。GUI 既定と同じ）。
     /// - `max_disp` のみ指定 → 目標変位のみ有効。
     /// - `max_drift_denom` のみ指定 → 目標層間変形角 1/n のみ有効。
     /// - 両方指定 → 両方有効（早く達した方で終了）。
-    pub(crate) fn pushover_target(&self) -> squid_n_solver::pushover::PushoverTarget {
+    pub(crate) fn pushover_target(&self) -> squid_n_solver::nonlinear::pushover::PushoverTarget {
         match (self.max_disp, self.max_drift_denom) {
-            (None, None) => squid_n_solver::pushover::PushoverTarget::default(),
+            (None, None) => squid_n_solver::nonlinear::pushover::PushoverTarget::default(),
             (Some(max_disp), None) => {
-                squid_n_solver::pushover::PushoverTarget::from_max_disp(max_disp)
+                squid_n_solver::nonlinear::pushover::PushoverTarget::from_max_disp(max_disp)
             }
-            (None, Some(denom)) => squid_n_solver::pushover::PushoverTarget {
+            (None, Some(denom)) => squid_n_solver::nonlinear::pushover::PushoverTarget {
                 max_disp: None,
                 max_drift_angle: Some(1.0 / denom.max(1.0)),
             },
-            (Some(max_disp), Some(denom)) => squid_n_solver::pushover::PushoverTarget {
+            (Some(max_disp), Some(denom)) => squid_n_solver::nonlinear::pushover::PushoverTarget {
                 max_disp: Some(max_disp),
                 max_drift_angle: Some(1.0 / denom.max(1.0)),
             },
@@ -188,7 +188,7 @@ pub fn compute_job(
 pub(crate) fn flatten_member_force_rows(
     member_forces: &[(
         squid_n_core::ids::ElemId,
-        squid_n_element::beam::MemberForces,
+        squid_n_element::frame::beam::MemberForces,
     )],
 ) -> Vec<(u32, f64, [f64; 6])> {
     let mut rows = Vec::new();

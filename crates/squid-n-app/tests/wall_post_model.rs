@@ -430,7 +430,7 @@ fn test_split_wall_plates_are_counted_in_quantity() {
 }
 
 /// 柱脚（支点に取り付く鉛直部材の支点側材端）の軸力 [N] の合計。
-fn base_column_axial_sum(app: &App, res: &squid_n_solver::linear::StaticOnce) -> f64 {
+fn base_column_axial_sum(app: &App, res: &squid_n_solver::statics::linear::StaticOnce) -> f64 {
     let mut sum = 0.0;
     for (eid, mf) in &res.member_forces {
         let Some(e) = app.core.model.elements.get(eid.index()) else {

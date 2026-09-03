@@ -18,11 +18,11 @@
 //! 上下大梁の剛性倍率（既定 100 倍）は梁要素側（`beam.rs`）で扱う。
 //! 側柱の面内両端ピン化は `side_column.rs`（方向別端部解放の静縮約）で扱う。
 
-use crate::beam::BeamElement;
 use crate::behavior::{Ctx, ElementBehavior, LocalMat, LocalVec, MassOption};
+use crate::frame::beam::BeamElement;
 use crate::transform::LocalFrame;
 use smallvec::SmallVec;
-use squid_n_core::dof::{DofMap, DOF_PER_NODE};
+use squid_n_core::dof::DofMap;
 use squid_n_core::geom::vec3::{dot, midpoint as mid, norm, sub, unit};
 use squid_n_core::ids::NodeId;
 use squid_n_core::model::{ElementData, HysteresisModel, Model};
@@ -70,7 +70,7 @@ pub struct WallElement {
     /// 面内せん断の Qu 頭打ちは従来どおり塑性すべりで扱う。
     /// 非線形解析（保有水平耐力）の既定で有効化される
     /// （[`Self::with_fiber_flexure`]。線形解析は従来どおり弾性壁柱）。
-    fiber_column: Option<crate::fiber::FiberBeam>,
+    fiber_column: Option<crate::frame::fiber::FiberBeam>,
     /// ファイバー壁柱へ与え済みの壁柱端変位（グローバル系 12）。トライアル/確定。
     /// 四隅変位から求めた目標値との差分を増分としてファイバー要素へ渡すためのミラー。
     fiber_u12_trial: [f64; 12],
@@ -171,7 +171,7 @@ pub fn wall_element_geometry(data: &ElementData, model: &Model) -> Option<WallEl
 /// 断面せい基準（0.5D）の柱・梁とは基準が異なる。
 pub fn wall_column_fiber_lp(data: &ElementData, model: &Model) -> Option<f64> {
     // 耐震壁不成立（フレーム内雑壁）は剛性が実質 0 のため弾性のまま扱う。
-    if !crate::misc_wall::wall_is_seismic(data, model) {
+    if !crate::wall::misc_wall::wall_is_seismic(data, model) {
         return None;
     }
     // Qu を算定できない壁は、非線形経路が弾性要素へフォールバックする。
@@ -189,7 +189,10 @@ pub fn wall_column_fiber_lp(data: &ElementData, model: &Model) -> Option<f64> {
     if t <= 0.0 || geom.lw <= 0.0 || geom.h <= 0.0 {
         return None;
     }
-    Some(crate::fiber::clamp_plastic_zone(0.5 * geom.lw, geom.h))
+    Some(crate::frame::fiber::clamp_plastic_zone(
+        0.5 * geom.lw,
+        geom.h,
+    ))
 }
 
 /// 壁要素の面積等価開口寸法 `(l0, h0)` [mm]。
@@ -310,12 +313,12 @@ impl WallElement {
         // （＝面内せん断を負担しない）場合に限る。ピン化条件
         // （`side_column::wall_side_column_release`）と同じ判定をここでも課さないと、
         // ピン化されない柱の断面を壁が肩代わりして**面内せん断の二重計上**になる。
-        let side_columns_released = crate::misc_wall::wall_is_seismic(data, model);
+        let side_columns_released = crate::wall::misc_wall::wall_is_seismic(data, model);
         for e in &model.elements {
             if !side_columns_released {
                 break;
             }
-            if !crate::side_column::is_side_column_member(e.kind) || e.nodes.len() < 2 {
+            if !crate::wall::side_column::is_side_column_member(e.kind) || e.nodes.len() < 2 {
                 continue;
             }
             // 鉛直材のみ（ピン化条件と同じ、全クレート共通の 45° 余弦基準）。
@@ -492,7 +495,7 @@ impl WallElement {
     /// コンクリート強度 Fc がない等でファイバー断面を組めない場合は弾性のまま返す。
     ///
     /// ファイバー壁柱は「全長弾性梁＋端部塑性増分ヒンジ」
-    /// （[`crate::fiber::FiberBeam::from_raw_parts`]）で、弾性剛性は従来の弾性壁柱
+    /// （[`crate::frame::fiber::FiberBeam::from_raw_parts`]）で、弾性剛性は従来の弾性壁柱
     /// と同じ諸元（軸・面内曲げは鉄筋剛性係数込み、せん断は κ・開口低減込み）を
     /// 用いる。塑性化域長は 0.5·lw（可撓長の 45% までにクランプ）。
     /// 縦筋は壁筋比 ps を各層へ等価分散した鋼材ファイバー
@@ -536,7 +539,7 @@ impl WallElement {
         // 原点指向型（[`crate::factory::resolve_wall_concrete_hysteresis`] 参照）。
         let concrete_rule = crate::factory::resolve_wall_concrete_hysteresis(data, model, kind);
         let make_section = || {
-            let (mut section, mut mats) = crate::fiber::build_gauss_fibers(
+            let (mut section, mut mats) = crate::frame::fiber::build_gauss_fibers(
                 t,
                 lw,
                 nw,
@@ -544,7 +547,7 @@ impl WallElement {
                 None,
                 Some(fc),
                 mat.young,
-                crate::fiber::FiberYield::default(),
+                crate::frame::fiber::FiberYield::default(),
                 1.0,
                 1.0,
                 concrete_rule,
@@ -560,7 +563,10 @@ impl WallElement {
                         area: a_each,
                         material: 1,
                     });
-                    mats.push(crate::fiber::steel_fiber_material(E_STEEL, Some(rebar_fy)));
+                    mats.push(crate::frame::fiber::steel_fiber_material(
+                        E_STEEL,
+                        Some(rebar_fy),
+                    ));
                 }
             }
             (section, mats)
@@ -568,7 +574,7 @@ impl WallElement {
 
         // 弾性剛性の諸元は従来の弾性壁柱（`try_new_scaled` の column）と同一。
         let col = &self.column;
-        let fiber = crate::fiber::FiberBeam::from_raw_parts(
+        let fiber = crate::frame::fiber::FiberBeam::from_raw_parts(
             col.nodes,
             col.length,
             col.axis,
@@ -697,7 +703,7 @@ impl WallElement {
         };
         // 鋼板耐震壁はせん断降伏で決まる（[`Self::steel_shear_capacity_of`]）。
         // 荒川式は RC 耐震壁の終局せん断強度のため適用しない。
-        if !crate::misc_wall::is_rc_wall(data, model) {
+        if !crate::wall::misc_wall::is_rc_wall(data, model) {
             return Self::steel_shear_capacity_of(data, model);
         }
         let fc = model.element_material(data).and_then(|m| m.fc);
@@ -707,7 +713,7 @@ impl WallElement {
         let mut col_main_at: f64 = 0.0;
         let mut has_side_column = false;
         for e in &model.elements {
-            if !crate::side_column::is_side_column_member(e.kind) || e.nodes.len() < 2 {
+            if !crate::wall::side_column::is_side_column_member(e.kind) || e.nodes.len() < 2 {
                 continue;
             }
             let (n0, n1) = (e.nodes[0], e.nodes[1]);
@@ -827,7 +833,7 @@ impl WallElement {
             None => return None,
         };
         // 耐震壁として成立しない壁（フレーム内雑壁）は Qu を要さない。
-        if !crate::misc_wall::wall_is_seismic(data, model) {
+        if !crate::wall::misc_wall::wall_is_seismic(data, model) {
             return None;
         }
         let Some(sec) = data.section.and_then(|sid| model.sections.get(sid.index())) else {
@@ -860,7 +866,7 @@ impl WallElement {
         };
         // 鋼板耐震壁はせん断降伏 Qy=t·lw·F/√3 で決まるため、要するのは Fc ではなく
         // 降伏強度 fy である（[`Self::steel_shear_capacity_of`]）。
-        if !crate::misc_wall::is_rc_wall(data, model) {
+        if !crate::wall::misc_wall::is_rc_wall(data, model) {
             if !mat.fy.is_some_and(|fy| fy > 0.0) {
                 return Some(format!(
                     "鋼板耐震壁 ID {} の材料「{}」に降伏強度 fy が設定されていません。\
@@ -901,7 +907,7 @@ impl WallElement {
         let mut has_side_column = false;
         let mut col_main_at: f64 = 0.0;
         for e in &model.elements {
-            if !crate::side_column::is_side_column_member(e.kind) || e.nodes.len() < 2 {
+            if !crate::wall::side_column::is_side_column_member(e.kind) || e.nodes.len() < 2 {
                 continue;
             }
             let (n0, n1) = (e.nodes[0], e.nodes[1]);
@@ -1204,15 +1210,7 @@ impl ElementBehavior for WallElement {
     }
 
     fn global_dofs(&self, dof: &DofMap) -> SmallVec<[usize; 24]> {
-        let mut gdofs = SmallVec::new();
-        for &nid in &self.nodes {
-            let ni = nid.index();
-            for d in 0..DOF_PER_NODE {
-                let g = ni * DOF_PER_NODE + d;
-                gdofs.push(dof.active(g).map(|a| a as usize).unwrap_or(usize::MAX));
-            }
-        }
-        gdofs
+        crate::behavior::node_global_dofs(&self.nodes, dof)
     }
 
     fn tangent_stiffness(&self, ctx: &Ctx) -> LocalMat {
@@ -1511,7 +1509,7 @@ impl ElementBehavior for WallElement {
         LocalMat::zeros(24)
     }
 
-    fn recover_forces(&self, u_elem: &[f64]) -> Option<crate::beam::MemberForces> {
+    fn recover_forces(&self, u_elem: &[f64]) -> Option<crate::frame::beam::MemberForces> {
         if u_elem.len() < 24 {
             return None;
         }

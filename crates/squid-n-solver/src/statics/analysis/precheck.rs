@@ -330,7 +330,7 @@ pub fn model_issues(model: &Model) -> Vec<ModelIssue> {
     // 全解析の入口で捕捉する。メッセージが壁と相手部材を名指しするため、
     // まとめずに壁 1 枚ごとの不備として挙げる。
     for e in &model.elements {
-        if let Some(msg) = squid_n_element::misc_wall::wall_frame_category_issue(e, model) {
+        if let Some(msg) = squid_n_element::wall::misc_wall::wall_frame_category_issue(e, model) {
             issues.push(ModelIssue {
                 severity: IssueSeverity::Error,
                 message: msg,

@@ -1543,15 +1543,15 @@ fn test_pushover_flow() {
 /// 旧 `.scz` 形式（`pushover` のみ）が `push_dir` のスロットへ移行されること。
 #[test]
 fn test_legacy_pushover_deserialize_migrates_to_slot() {
-    use squid_n_solver::analysis::SeismicDir;
+    use squid_n_solver::statics::analysis::SeismicDir;
 
     let legacy = ResultsBundle {
-        pushover: Some(squid_n_solver::pushover::PushoverResult {
+        pushover: Some(squid_n_solver::nonlinear::pushover::PushoverResult {
             steps: vec![],
             capacity_curve: vec![],
             hinges: vec![],
             shear_yields: vec![],
-            mechanism: squid_n_solver::pushover::MechanismType::Partial,
+            mechanism: squid_n_solver::nonlinear::pushover::MechanismType::Partial,
             qu: 123.0,
             member_response: vec![],
             control: Default::default(),
@@ -1572,7 +1572,7 @@ fn test_legacy_pushover_deserialize_migrates_to_slot() {
 /// X/Y 方向を別スロットに格納し、表示方向切替で `pushover` 窓口が同期されること。
 #[test]
 fn test_pushover_x_y_slots_and_view_dir() {
-    use squid_n_solver::analysis::SeismicDir;
+    use squid_n_solver::statics::analysis::SeismicDir;
 
     let mut app = App::default();
     app.load_model(crate::sample::portal_frame());
@@ -1635,7 +1635,7 @@ fn test_lumped_mass_model_from_pushover() {
         .as_ref()
         .unwrap();
 
-    let lm = squid_n_solver::lumped_mass::build_lumped_mass_model(
+    let lm = squid_n_solver::dynamic::lumped_mass::build_lumped_mass_model(
         &app.core.model,
         po,
         app.core.analysis_cfg.lumped_mass_type,
@@ -6324,7 +6324,7 @@ fn test_diagnostics_errors_agree_with_analysis_precheck() {
         "健全なモデルで Error: {:?}",
         app.core.scoped.diagnostics
     );
-    assert!(squid_n_solver::analysis::Analysis::prepare(&app.core.model).is_ok());
+    assert!(squid_n_solver::statics::analysis::Analysis::prepare(&app.core.model).is_ok());
 
     for (name, break_it) in broken {
         let mut model = crate::sample::portal_frame();
@@ -6337,7 +6337,7 @@ fn test_diagnostics_errors_agree_with_analysis_precheck() {
             "{name}: 解析が止まるのに診断が Error を出していない"
         );
         assert!(
-            squid_n_solver::analysis::Analysis::prepare(&app.core.model).is_err(),
+            squid_n_solver::statics::analysis::Analysis::prepare(&app.core.model).is_err(),
             "{name}: 診断が Error を出したのに解析前チェックが通った"
         );
     }
@@ -7121,7 +7121,7 @@ fn test_load_model_resets_model_derived_state() {
     app.run_preparation();
 
     // 旧モデル由来の状態を擬似的に残す。
-    app.core.scoped.stick_response = Some(squid_n_solver::lumped_mass::StickResponse {
+    app.core.scoped.stick_response = Some(squid_n_solver::dynamic::lumped_mass::StickResponse {
         time: vec![0.0],
         roof_disp: vec![0.0],
         story_peak_drift: vec![0.0],
@@ -7132,7 +7132,7 @@ fn test_load_model_resets_model_derived_state() {
     app.core
         .scoped
         .generated_panels
-        .push(squid_n_element::panel_gen::GeneratedPanel {
+        .push(squid_n_element::springs::panel_gen::GeneratedPanel {
             node: NodeId(0),
             dc: 300.0,
             db: 400.0,
@@ -7559,7 +7559,7 @@ fn test_preparation_member_stiffness_reports_composite_props() {
         .iter()
         .find(|e| e.id == row.elem)
         .unwrap();
-    let props = squid_n_element::beam::composite_props_of(&app.core.model, elem)
+    let props = squid_n_element::frame::beam::composite_props_of(&app.core.model, elem)
         .expect("要素側でも算定できるはず");
     assert_eq!(props.iy, c.iy);
     assert_eq!(props.area_ax, c.area_ax);
@@ -8598,21 +8598,21 @@ fn activity_svgs_rasterize() {
     }
 }
 
-fn dummy_static_once() -> squid_n_solver::linear::StaticOnce {
-    squid_n_solver::linear::StaticOnce {
+fn dummy_static_once() -> squid_n_solver::statics::linear::StaticOnce {
+    squid_n_solver::statics::linear::StaticOnce {
         disp: vec![],
         member_forces: vec![],
         panel_moments: vec![],
     }
 }
 
-fn dummy_pushover(qu: f64) -> squid_n_solver::pushover::PushoverResult {
-    squid_n_solver::pushover::PushoverResult {
+fn dummy_pushover(qu: f64) -> squid_n_solver::nonlinear::pushover::PushoverResult {
+    squid_n_solver::nonlinear::pushover::PushoverResult {
         steps: vec![],
         capacity_curve: vec![],
         hinges: vec![],
         shear_yields: vec![],
-        mechanism: squid_n_solver::pushover::MechanismType::Partial,
+        mechanism: squid_n_solver::nonlinear::pushover::MechanismType::Partial,
         qu,
         member_response: vec![],
         control: Default::default(),
@@ -8622,22 +8622,25 @@ fn dummy_pushover(qu: f64) -> squid_n_solver::pushover::PushoverResult {
     }
 }
 
-fn dummy_lumped(period: f64, with_response: bool) -> squid_n_solver::lumped_mass::LumpedMassResult {
-    squid_n_solver::lumped_mass::LumpedMassResult {
-        model: squid_n_solver::lumped_mass::LumpedMassModel::from_stories(
-            squid_n_solver::lumped_mass::LumpedMassType::EquivalentShear,
+fn dummy_lumped(
+    period: f64,
+    with_response: bool,
+) -> squid_n_solver::dynamic::lumped_mass::LumpedMassResult {
+    squid_n_solver::dynamic::lumped_mass::LumpedMassResult {
+        model: squid_n_solver::dynamic::lumped_mass::LumpedMassModel::from_stories(
+            squid_n_solver::dynamic::lumped_mass::LumpedMassType::EquivalentShear,
             vec![],
         ),
-        modal: squid_n_solver::lumped_mass::LumpedMassModal {
+        modal: squid_n_solver::dynamic::lumped_mass::LumpedMassModal {
             period: vec![period],
             ..Default::default()
         },
-        response: with_response.then(squid_n_solver::lumped_mass::StickResponse::default),
+        response: with_response.then(squid_n_solver::dynamic::lumped_mass::StickResponse::default),
     }
 }
 
-fn dummy_th(time: Vec<f64>) -> squid_n_solver::timehistory::ResponseResult {
-    squid_n_solver::timehistory::ResponseResult {
+fn dummy_th(time: Vec<f64>) -> squid_n_solver::dynamic::timehistory::ResponseResult {
+    squid_n_solver::dynamic::timehistory::ResponseResult {
         time,
         peak_disp: vec![],
         story_drift_angle: vec![],
@@ -8662,7 +8665,7 @@ fn test_build_result_tree_empty_without_results() {
 #[test]
 fn test_build_result_tree_sections_and_labels() {
     use squid_n_core::model::{LumpedVibrationDim, LumpedVibrationDir, VibrationThDir};
-    use squid_n_solver::analysis::SeismicDir;
+    use squid_n_solver::statics::analysis::SeismicDir;
 
     let mut model = squid_n_core::model::Model::default();
     let th_id = model.upsert_vibration_case("サンプル".into(), VibrationThDir::X, false);
@@ -8674,7 +8677,7 @@ fn test_build_result_tree_sections_and_labels() {
     );
 
     let s = dummy_static_once();
-    let th_res = squid_n_solver::timehistory::ResponseResult {
+    let th_res = squid_n_solver::dynamic::timehistory::ResponseResult {
         time: vec![0.0],
         peak_disp: vec![],
         story_drift_angle: vec![],
@@ -8685,16 +8688,16 @@ fn test_build_result_tree_sections_and_labels() {
         applied_long_term: false,
         non_converged_steps: 0,
     };
-    let lumped_res = squid_n_solver::lumped_mass::LumpedMassResult {
-        model: squid_n_solver::lumped_mass::LumpedMassModel::from_stories(
-            squid_n_solver::lumped_mass::LumpedMassType::EquivalentShear,
+    let lumped_res = squid_n_solver::dynamic::lumped_mass::LumpedMassResult {
+        model: squid_n_solver::dynamic::lumped_mass::LumpedMassModel::from_stories(
+            squid_n_solver::dynamic::lumped_mass::LumpedMassType::EquivalentShear,
             vec![],
         ),
-        modal: squid_n_solver::lumped_mass::LumpedMassModal {
+        modal: squid_n_solver::dynamic::lumped_mass::LumpedMassModal {
             period: vec![0.52],
             ..Default::default()
         },
-        response: Some(squid_n_solver::lumped_mass::StickResponse::default()),
+        response: Some(squid_n_solver::dynamic::lumped_mass::StickResponse::default()),
     };
     let bundle = ResultsBundle {
         statics: vec![
@@ -8707,7 +8710,7 @@ fn test_build_result_tree_sections_and_labels() {
             ("G+P".into(), dummy_static_once()),
             ("G+P+EX".into(), dummy_static_once()),
         ],
-        modal: Some(squid_n_solver::eigen::ModalResult {
+        modal: Some(squid_n_solver::dynamic::eigen::ModalResult {
             omega2: vec![1.0],
             period: vec![1.0],
             shapes: vec![vec![1.0]],
@@ -8715,12 +8718,12 @@ fn test_build_result_tree_sections_and_labels() {
             participation: vec![],
             effective_mass: vec![],
         }),
-        pushover_x: Some(squid_n_solver::pushover::PushoverResult {
+        pushover_x: Some(squid_n_solver::nonlinear::pushover::PushoverResult {
             steps: vec![],
             capacity_curve: vec![],
             hinges: vec![],
             shear_yields: vec![],
-            mechanism: squid_n_solver::pushover::MechanismType::Partial,
+            mechanism: squid_n_solver::nonlinear::pushover::MechanismType::Partial,
             qu: 1.0,
             member_response: vec![],
             control: Default::default(),
@@ -8775,7 +8778,7 @@ fn test_migrate_legacy_time_history_only() {
 
     let mut model = squid_n_core::model::Model::default();
     let mut bundle = ResultsBundle {
-        time_history: Some(squid_n_solver::timehistory::ResponseResult {
+        time_history: Some(squid_n_solver::dynamic::timehistory::ResponseResult {
             time: vec![0.0],
             peak_disp: vec![],
             story_drift_angle: vec![],
@@ -8821,7 +8824,7 @@ fn test_time_history_upsert_preserves_case_id() {
     let mut bundle = ResultsBundle::default();
     bundle.upsert_time_history(
         id1,
-        squid_n_solver::timehistory::ResponseResult {
+        squid_n_solver::dynamic::timehistory::ResponseResult {
             time: vec![0.0],
             peak_disp: vec![],
             story_drift_angle: vec![],
@@ -8836,7 +8839,7 @@ fn test_time_history_upsert_preserves_case_id() {
     let id2 = model.upsert_vibration_case("サンプル".into(), VibrationThDir::X, false);
     bundle.upsert_time_history(
         id2,
-        squid_n_solver::timehistory::ResponseResult {
+        squid_n_solver::dynamic::timehistory::ResponseResult {
             time: vec![0.0, 1.0],
             peak_disp: vec![],
             story_drift_angle: vec![],
@@ -8865,7 +8868,7 @@ fn test_time_history_upsert_keeps_distinct_case_names() {
     assert_eq!(model.vibration_cases.len(), 2);
 
     let mut bundle = ResultsBundle::default();
-    let mk = |n: f64| squid_n_solver::timehistory::ResponseResult {
+    let mk = |n: f64| squid_n_solver::dynamic::timehistory::ResponseResult {
         time: vec![n],
         peak_disp: vec![],
         story_drift_angle: vec![],
@@ -8958,7 +8961,7 @@ fn test_build_result_tree_static_only() {
 /// 旧 `pushover` 窓口だけがある結果でも、増分解析ノードを出す。
 #[test]
 fn test_build_result_tree_legacy_pushover_only() {
-    use squid_n_solver::analysis::SeismicDir;
+    use squid_n_solver::statics::analysis::SeismicDir;
 
     let bundle = ResultsBundle {
         pushover: Some(dummy_pushover(1.0)),
@@ -8972,7 +8975,7 @@ fn test_build_result_tree_legacy_pushover_only() {
 /// 増分解析の表示方向切替は、相手方向のスロットが空でも窓口を消さない。
 #[test]
 fn test_set_pushover_view_dir_keeps_window_when_slot_missing() {
-    use squid_n_solver::analysis::SeismicDir;
+    use squid_n_solver::statics::analysis::SeismicDir;
 
     let po = dummy_pushover(12.0);
     let mut app = App {
@@ -9004,7 +9007,9 @@ fn test_lumped_eigen_only_clears_stick_response() {
     let mut app = App {
         core: AppCore {
             scoped: ModelScoped {
-                stick_response: Some(squid_n_solver::lumped_mass::StickResponse::default()),
+                stick_response: Some(
+                    squid_n_solver::dynamic::lumped_mass::StickResponse::default(),
+                ),
                 results: Some(ResultsBundle {
                     lumped: Some(dummy_lumped(0.5, true)),
                     ..Default::default()

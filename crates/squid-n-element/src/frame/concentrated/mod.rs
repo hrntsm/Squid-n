@@ -1,6 +1,6 @@
-use crate::beam::invert_small;
 use crate::behavior::{Ctx, ElementBehavior, LocalMat, LocalVec, MassOption};
-use squid_n_core::dof::{DofMap, DOF_PER_NODE};
+use crate::frame::beam::invert_small;
+use squid_n_core::dof::DofMap;
 
 use smallvec::SmallVec;
 use squid_n_material::uniaxial::UniaxialMaterial;
@@ -37,7 +37,7 @@ pub struct MnInteraction {
 /// なる、という定式化上の欠陥があり、増分解析で剛性低下が生じなかった
 /// （`dev_docs/v_and_v/` の該当項目参照）。
 pub struct ConcentratedSpringBeam {
-    pub elastic: crate::beam::BeamElement,
+    pub elastic: crate::frame::beam::BeamElement,
     pub spring_i: Box<dyn UniaxialMaterial>,
     pub spring_j: Box<dyn UniaxialMaterial>,
     pub model: SpringModel,
@@ -55,7 +55,7 @@ pub struct ConcentratedSpringBeam {
     /// 可撓端回転のトライアル値。
     trial_thb_i: f64,
     trial_thb_j: f64,
-    /// [`crate::beam::BeamElement::local_stiffness_flex`] の結果キャッシュ
+    /// [`crate::frame::beam::BeamElement::local_stiffness_flex`] の結果キャッシュ
     /// （可撓部の局所剛性 12×12、剛域変換・材端塑性ばねの静縮約の**手前**）。
     /// 幾何・断面・材端条件は要素生成後不変のため、初回計算値を使い回してよい
     /// （`solve_internal_equilibrium`／`internal_force`／`tangent_stiffness` の
@@ -68,7 +68,7 @@ pub struct ConcentratedSpringBeam {
 
 impl ConcentratedSpringBeam {
     pub fn new(
-        elastic: crate::beam::BeamElement,
+        elastic: crate::frame::beam::BeamElement,
         spring_i: Box<dyn UniaxialMaterial>,
         spring_j: Box<dyn UniaxialMaterial>,
         model: SpringModel,
@@ -92,7 +92,7 @@ impl ConcentratedSpringBeam {
     }
 
     pub fn new_one_component(
-        elastic: crate::beam::BeamElement,
+        elastic: crate::frame::beam::BeamElement,
         spring_i: Box<dyn UniaxialMaterial>,
         spring_j: Box<dyn UniaxialMaterial>,
     ) -> Self {
@@ -131,7 +131,7 @@ impl ConcentratedSpringBeam {
         self.spring_j.set_yield(m_lim);
     }
 
-    /// 可撓部の局所剛性 12×12（[`crate::beam::BeamElement::local_stiffness_flex`]）。
+    /// 可撓部の局所剛性 12×12（[`crate::frame::beam::BeamElement::local_stiffness_flex`]）。
     /// 幾何・断面・材端条件は要素生成後不変なので初回計算値をキャッシュして返す
     /// （`solve_internal_equilibrium`／`internal_force`／`tangent_stiffness` の
     /// 毎呼び出しで `BeamElement::clone()` を含む再構築を避ける）。
@@ -145,7 +145,7 @@ impl ConcentratedSpringBeam {
     fn u_flex_local(&self) -> [f64; 12] {
         let u_local = self.elastic.axis.rotate_to_local(&self.elastic.trial_disp);
         let (li, lj) = self.elastic.rigid_lengths();
-        crate::rigid_arm::to_flex_disp(&u_local, li, lj)
+        crate::frame::rigid_arm::to_flex_disp(&u_local, li, lj)
     }
 
     /// 内部平衡（可撓端回転 θb）を解き、トライアルばね変形・可撓端回転を更新する。
@@ -311,7 +311,7 @@ fn condense_springs(k_elem: &LocalMat, k_i: f64, k_j: f64) -> LocalMat {
 
 /// 材端曲げばねを直列接続した局所剛性（節点自由度 12×12）。
 ///
-/// 組み立ての順序は弾性梁 [`crate::beam::BeamElement::local_stiffness`] と同じ土台を
+/// 組み立ての順序は弾性梁 [`crate::frame::beam::BeamElement::local_stiffness`] と同じ土台を
 /// 共有する:
 ///
 /// 1. **可撓部**（剛域を除いた長さ `l − li − lj`）で生剛性を組み、端部条件
@@ -324,7 +324,7 @@ fn condense_springs(k_elem: &LocalMat, k_i: f64, k_j: f64) -> LocalMat {
 /// 反映されず両端剛接として解かれる（剛性の過大評価）という食い違いがあった。
 /// ばねは直列なので 1. の接合部ばねと 2. の塑性ばねの順序は結果に影響しない。
 fn compute_kstar(
-    elastic: &crate::beam::BeamElement,
+    elastic: &crate::frame::beam::BeamElement,
     k_flex: &LocalMat,
     kti: f64,
     ktj: f64,
@@ -342,19 +342,7 @@ impl ElementBehavior for ConcentratedSpringBeam {
     }
 
     fn global_dofs(&self, dof: &DofMap) -> SmallVec<[usize; 24]> {
-        let mut gdofs = SmallVec::new();
-        for &nid in &self.elastic.nodes {
-            let ni = nid.index();
-            for d in 0..DOF_PER_NODE {
-                let g = ni * DOF_PER_NODE + d;
-                if let Some(active) = dof.active(g) {
-                    gdofs.push(active as usize);
-                } else {
-                    gdofs.push(usize::MAX);
-                }
-            }
-        }
-        gdofs
+        crate::behavior::node_global_dofs(&self.elastic.nodes, dof)
     }
 
     fn tangent_stiffness(&self, _ctx: &Ctx) -> LocalMat {
@@ -400,7 +388,7 @@ impl ElementBehavior for ConcentratedSpringBeam {
         f_flex[er[1]] = ms_j;
 
         let (li, lj) = self.elastic.rigid_lengths();
-        let f_node = crate::rigid_arm::to_node_force(&f_flex, li, lj);
+        let f_node = crate::frame::rigid_arm::to_node_force(&f_flex, li, lj);
         let f_global = self.elastic.axis.rotate_to_global(&f_node);
         LocalVec {
             data: SmallVec::from_slice(&f_global),
@@ -412,14 +400,14 @@ impl ElementBehavior for ConcentratedSpringBeam {
     /// 端部節点力は [`Self::internal_force`]（弾性可撓部の `K_flex·û` と
     /// ばねの履歴モーメントから経路整合に評価した復元力）であり、接線剛性 ×
     /// 全変位ではないため降伏後も正しい。これを釣合いで材軸方向へ分配する
-    /// （[`crate::beam::member_forces_from_end_forces`]、ファイバー梁と同規約）。
+    /// （[`crate::frame::beam::member_forces_from_end_forces`]、ファイバー梁と同規約）。
     /// 未実装のままトレイト既定の `None` に落ちると、時刻歴応答解析の部材応力
     /// 履歴が全ステップ空になり、応力図・検定から当該部材が無言で欠落する。
-    fn state_member_forces(&self, ctx: &Ctx) -> Option<crate::beam::MemberForces> {
+    fn state_member_forces(&self, ctx: &Ctx) -> Option<crate::frame::beam::MemberForces> {
         let f_global = self.internal_force(ctx);
         let arr: [f64; 12] = std::array::from_fn(|i| f_global.data[i]);
         let f_local = self.elastic.axis.rotate_to_local(&arr);
-        Some(crate::beam::member_forces_from_end_forces(
+        Some(crate::frame::beam::member_forces_from_end_forces(
             &f_local,
             self.elastic.length,
             &self.elastic.eval_sections,

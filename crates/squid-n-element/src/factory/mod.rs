@@ -37,7 +37,7 @@ use squid_n_core::model::ForceRegime;
 /// 線形弾性解析用の要素生成。
 ///
 /// 線材（`Beam` / `Fiber` / `MultiSpring`）は `ForceRegime` に依らず常に弾性
-/// [`crate::beam::BeamElement`] を組む（計算根拠 4.9.4）。材端集中ばね・ファイバー
+/// [`crate::frame::beam::BeamElement`] を組む（計算根拠 4.9.4）。材端集中ばね・ファイバー
 /// といった非線形要素の振り分けは [`build_nonlinear_behavior`] だけが行う。
 ///
 /// 線形解析でこれらの非線形要素を組んではならない理由は 2 つある。
@@ -47,7 +47,7 @@ use squid_n_core::model::ForceRegime;
 ///    その部材が `member_forces` から丸ごと欠落する（応力図・検定・接合部検定の
 ///    入力が空になる）。
 ///
-/// 唯一の例外は耐震壁の側柱（[`crate::side_column::InPlaneReleasedColumn`]）で、
+/// 唯一の例外は耐震壁の側柱（[`crate::wall::side_column::InPlaneReleasedColumn`]）で、
 /// これは降伏ではなくトポロジ由来の面内端部解放のため線形・非線形の双方で用いる。
 pub fn build_behavior(data: &ElementData, model: &Model) -> Box<dyn ElementBehavior> {
     match data.kind {
@@ -55,15 +55,17 @@ pub fn build_behavior(data: &ElementData, model: &Model) -> Box<dyn ElementBehav
             // RC 耐震壁の側柱: 面内方向は両端ピンのためモーメント・せん断を
             // 負担しない（RC規準の耐震壁規定・側柱の断面性能）。該当する柱は
             // 面内曲げ面のみ端部回転を静的縮約した要素へ差し替える。
-            if let Some(axis) = crate::side_column::wall_side_column_release(data, model) {
-                let elem = crate::beam::BeamElement::new(data, model);
-                return Box::new(crate::side_column::InPlaneReleasedColumn::new(elem, axis));
+            if let Some(axis) = crate::wall::side_column::wall_side_column_release(data, model) {
+                let elem = crate::frame::beam::BeamElement::new(data, model);
+                return Box::new(crate::wall::side_column::InPlaneReleasedColumn::new(
+                    elem, axis,
+                ));
             }
             // 仕口パネルへ接合する端がある部材は、パネルのせん断変形角と連成させる
             // デコレータを被せる（オフセットは剛域長へ書き込み済み）。
-            if let Some(ends) = crate::panel_offset::resolve(data, model) {
-                let elem = crate::beam::BeamElement::new(data, model);
-                return Box::new(crate::panel_offset::PanelOffsetMember::new(
+            if let Some(ends) = crate::frame::panel_offset::resolve(data, model) {
+                let elem = crate::frame::beam::BeamElement::new(data, model);
+                return Box::new(crate::frame::panel_offset::PanelOffsetMember::new(
                     Box::new(elem),
                     ends,
                 ));
@@ -71,14 +73,14 @@ pub fn build_behavior(data: &ElementData, model: &Model) -> Box<dyn ElementBehav
             // 線形弾性解析は `ForceRegime` に依らず弾性 `BeamElement` を用いる
             // （計算根拠 4.9.4「モデルの自動選択」）。材端集中ばね／ファイバーへの
             // 振り分けは非線形解析の [`build_nonlinear_behavior`] のみが行う。
-            Box::new(crate::beam::BeamElement::new(data, model))
+            Box::new(crate::frame::beam::BeamElement::new(data, model))
         }
-        ElementKind::PanelZone => Box::new(crate::panel::PanelZone::new(data, model)),
+        ElementKind::PanelZone => Box::new(crate::springs::panel::PanelZone::new(data, model)),
         ElementKind::Shell => Box::new(crate::shell::ShellElement::new(data, model)),
         // MS 要素も線形弾性解析では弾性 `BeamElement`（端部ばね群は非線形解析のみ）。
-        ElementKind::MultiSpring => Box::new(crate::beam::BeamElement::new(data, model)),
+        ElementKind::MultiSpring => Box::new(crate::frame::beam::BeamElement::new(data, model)),
         // Fiber 要素：線形弾性解析では弾性 BeamElement
-        ElementKind::Fiber => Box::new(crate::beam::BeamElement::new(data, model)),
+        ElementKind::Fiber => Box::new(crate::frame::beam::BeamElement::new(data, model)),
         // Wall 要素：壁エレメントモデル（壁エレメント置換モデル。壁柱＋両端ピン剛梁の
         // 4 節点 24 自由度要素）。開口低減率 r は要素内部で考慮される。
         // 耐震壁不成立（フレーム内雑壁）の壁は剛性を周辺の柱・梁の断面性能へ
@@ -86,15 +88,19 @@ pub fn build_behavior(data: &ElementData, model: &Model) -> Box<dyn ElementBehav
         // 4 節点未満・断面/材料未設定などで構築できない場合は従来の
         // 暫定等価梁にフォールバックする（開口低減 r はせん断剛性に乗じる）。
         ElementKind::Wall => {
-            let stiffness_scale = if crate::misc_wall::wall_is_seismic(data, model) {
+            let stiffness_scale = if crate::wall::misc_wall::wall_is_seismic(data, model) {
                 1.0
             } else {
                 1e-9
             };
-            match crate::wall_element::WallElement::try_new_scaled(data, model, stiffness_scale) {
+            match crate::wall::wall_element::WallElement::try_new_scaled(
+                data,
+                model,
+                stiffness_scale,
+            ) {
                 Some(panel) => Box::new(panel),
                 None => {
-                    let mut elem = crate::beam::BeamElement::new(data, model);
+                    let mut elem = crate::frame::beam::BeamElement::new(data, model);
                     // r=0（開口が壁の 64% 以上）でせん断断面積が 0 になると
                     // ティモシェンコの φ 項が ∞×0 で NaN になるため、微小値を下限とする
                     // （このような壁は本来 RC 耐震壁判定でも不成立となる）。
@@ -112,13 +118,17 @@ pub fn build_behavior(data: &ElementData, model: &Model) -> Box<dyn ElementBehav
         // 一般ブレース：KB = E·A/L（材料力学・トラス要素）。引張専用ブレースは
         // 要素側では特別扱いせず、線形応力解析の active-set 反復
         // （squid-n-solver の solve_tension_only_iterative）で圧縮側を無効化して扱う。
-        ElementKind::Brace { .. } => Box::new(crate::truss::TrussElement::new(data, model)),
+        ElementKind::Brace { .. } => Box::new(crate::frame::truss::TrussElement::new(data, model)),
         // 節点バネ：構造力学（部材の変形と自由度）。
         // 局所軸ごとに独立な弾性バネ（軸・せん断・曲げ回転。ねじりは既定 0）。
-        ElementKind::NodalSpring => Box::new(crate::spring::NodalSpringElement::new(data, model)),
+        ElementKind::NodalSpring => {
+            Box::new(crate::springs::spring::NodalSpringElement::new(data, model))
+        }
         // 免震支承材：各免震部材指針・製品技術資料（Category B）。
         // 水平は非線形せん断（積層ゴム系バイリニア／摩擦ばね）、鉛直は弾性軸。
-        ElementKind::Isolator => Box::new(crate::isolator::IsolatorElement::new(data, model)),
+        ElementKind::Isolator => {
+            Box::new(crate::springs::isolator::IsolatorElement::new(data, model))
+        }
         // 制振ダンパー（制振部材の力学モデル）。種別で要素を切替える。
         // - マクスウェル（速度依存型）: 静的・線形では Δt=0 で不活性、時刻歴で活性化。
         // - 履歴型バイリニア（鋼材系）: 変位依存の弾塑性軸ばね（静的・動的で作用）。
@@ -126,12 +136,12 @@ pub fn build_behavior(data: &ElementData, model: &Model) -> Box<dyn ElementBehav
             use squid_n_core::model::DamperKind;
             let kind = model.damper_props(data.id).unwrap_or_default().kind;
             let beh: Box<dyn ElementBehavior> = match kind {
-                DamperKind::Maxwell => {
-                    Box::new(crate::damper::MaxwellDamperElement::new(data, model))
-                }
-                DamperKind::HystereticBilinear => {
-                    Box::new(crate::damper::HystereticDamperElement::new(data, model))
-                }
+                DamperKind::Maxwell => Box::new(crate::springs::damper::MaxwellDamperElement::new(
+                    data, model,
+                )),
+                DamperKind::HystereticBilinear => Box::new(
+                    crate::springs::damper::HystereticDamperElement::new(data, model),
+                ),
             };
             beh
         }
@@ -205,26 +215,29 @@ pub fn build_nonlinear_behavior(
         // 非線形解析で側柱の面内せん断が二重計上され保有水平耐力を過大評価する
         // （危険側）。
         ElementKind::Beam => {
-            if let Some(axis) = crate::side_column::wall_side_column_release(data, model) {
-                let elem = crate::beam::BeamElement::new(data, model);
-                return Box::new(crate::side_column::InPlaneReleasedColumn::new(elem, axis));
+            if let Some(axis) = crate::wall::side_column::wall_side_column_release(data, model) {
+                let elem = crate::frame::beam::BeamElement::new(data, model);
+                return Box::new(crate::wall::side_column::InPlaneReleasedColumn::new(
+                    elem, axis,
+                ));
             }
             // 仕口パネルへ接合する端がある部材は、パネルのせん断変形角と連成させる
             // デコレータを被せる（線形パスと同じ扱い。オフセットは剛域長へ
             // 書き込み済みなので内側の要素はそのまま組む）。
-            let panel = crate::panel_offset::resolve(data, model);
+            let panel = crate::frame::panel_offset::resolve(data, model);
             let inner: Box<dyn ElementBehavior> = match resolve_force_regime(data, model) {
                 ResolvedRegime::ConcentratedSpring => {
-                    let elem = crate::beam::BeamElement::new(data, model);
+                    let elem = crate::frame::beam::BeamElement::new(data, model);
                     // 履歴則を解決（部材個別指定 → 構造種別ごとの既定表。本実装の既定の
                     // 非線形特性は各履歴則の原典に基づく）。RC/SRC/CFT 梁は
                     // 武田型トリリニア、S 梁は標準型（kinematic バイリニア）を材端バネに用いる。
                     let rule = resolve_member_hysteresis(data, model, kind);
                     let (spring_i, spring_j, use_mn) =
                         build_flexural_springs(data, model, rule, basis);
-                    let beam = crate::concentrated::ConcentratedSpringBeam::new_one_component(
-                        elem, spring_i, spring_j,
-                    );
+                    let beam =
+                        crate::frame::concentrated::ConcentratedSpringBeam::new_one_component(
+                            elem, spring_i, spring_j,
+                        );
                     // 端バネの N-M 相関（M_lim = My0·(1-|N|/N許容)）はバイリニア（標準型）
                     // のみ適用（`set_yield` 対応）。武田型等の履歴材料は骨格固定のため対象外。
                     let beam = if use_mn {
@@ -238,18 +251,20 @@ pub fn build_nonlinear_behavior(
                 ResolvedRegime::Fiber => Box::new(build_fiber(data, model, basis, kind)),
             };
             match panel {
-                Some(ends) => Box::new(crate::panel_offset::PanelOffsetMember::new(inner, ends)),
+                Some(ends) => Box::new(crate::frame::panel_offset::PanelOffsetMember::new(
+                    inner, ends,
+                )),
                 None => inner,
             }
         }
         ElementKind::Fiber => Box::new(build_fiber(data, model, basis, kind)),
         // MS 要素: 端部バネ断面 + 中央弾性の非線形要素（P5.5 §3）
-        ElementKind::MultiSpring => Box::new(crate::multi_spring::MultiSpringElement::new(
+        ElementKind::MultiSpring => Box::new(crate::frame::multi_spring::MultiSpringElement::new(
             data, model, basis, kind,
         )),
         // 一般ブレース(弾塑性): E·A/L の弾性トラス要素（材料力学）。引張専用ブレースの
         // 圧縮無効化は線形応力解析の active-set 反復で扱うため、要素側は特別扱いしない。
-        ElementKind::Brace { .. } => Box::new(crate::truss::TrussElement::new(data, model)),
+        ElementKind::Brace { .. } => Box::new(crate::frame::truss::TrussElement::new(data, model)),
         // 耐震壁: 面内せん断を終局せん断強度 Qu で頭打ちにする（弾完全塑性）。
         // 弾性のままだと、押し込むほど際限なく水平力を負担し崩壊機構が形成されず、
         // 保有水平耐力を著しく過大評価する（危険側）。
@@ -263,16 +278,20 @@ pub fn build_nonlinear_behavior(
             // 線形パスへフォールバックする。従来は先に build_behavior で線形の
             // 壁エレメントを無条件に構築してから非線形用をもう一度構築しており、
             // 非線形要素 1 枚につき壁エレメントが 2 回組まれていた。
-            let qu = crate::wall_element::WallElement::shear_capacity_of(data, model);
+            let qu = crate::wall::wall_element::WallElement::shear_capacity_of(data, model);
             if qu <= 0.0 {
                 return build_behavior(data, model);
             }
-            let stiffness_scale = if crate::misc_wall::wall_is_seismic(data, model) {
+            let stiffness_scale = if crate::wall::misc_wall::wall_is_seismic(data, model) {
                 1.0
             } else {
                 1e-9
             };
-            match crate::wall_element::WallElement::try_new_scaled(data, model, stiffness_scale) {
+            match crate::wall::wall_element::WallElement::try_new_scaled(
+                data,
+                model,
+                stiffness_scale,
+            ) {
                 Some(panel) => {
                     // 面内せん断は Qu 頭打ちの弾完全塑性骨格＋履歴則設定による
                     // 除荷・再載荷則（既定: 最大点指向型）。
@@ -294,7 +313,9 @@ pub fn build_nonlinear_behavior(
         }
         // 仕口パネルは降伏を考慮する（骨格 pMy = (Ve/κ)・√(1−n²)・Fy/√3 の
         // バイリニア。軸力比 n は各ステップの柱軸力で更新）。
-        ElementKind::PanelZone => Box::new(crate::panel::PanelZone::new_nonlinear(data, model)),
+        ElementKind::PanelZone => {
+            Box::new(crate::springs::panel::PanelZone::new_nonlinear(data, model))
+        }
         // Shell / NodalSpring は現状の挙動（弾性ベース）を踏襲。
         // 節点バネは非線形解析でも常に弾性のまま（スケルトン未対応）。
         _ => build_behavior(data, model),

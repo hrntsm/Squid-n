@@ -73,7 +73,7 @@ use squid_n_core::model::{
 };
 use squid_n_core::wall_region_rebuild::rebuild_wall_regions;
 use squid_n_section::shape::{BarSet, RcRebar, SectionShape, ShearBar};
-use squid_n_solver::analysis::SeismicDir;
+use squid_n_solver::statics::analysis::SeismicDir;
 
 /// 有効数字 4 桁の指数表記（`full_model.rs::sig4` と同じ丸め規則。両ファイルの
 /// スナップショットを比較できるよう合わせている）。
@@ -86,7 +86,7 @@ fn sig4(v: f64) -> String {
 }
 
 /// 指定した静的結果を取り出す（`full_model.rs::static_of` と同じ規則）。
-fn static_res_for(app: &App, key: StaticCaseKey) -> &squid_n_solver::linear::StaticOnce {
+fn static_res_for(app: &App, key: StaticCaseKey) -> &squid_n_solver::statics::linear::StaticOnce {
     &app.core
         .scoped
         .results
@@ -644,7 +644,7 @@ fn snapshot_wall_bay_scalars() {
         .generated_elem_ids()
         .next()
         .expect("生成された壁要素の ElemId");
-    let wall_member_forces = |res: &squid_n_solver::linear::StaticOnce| {
+    let wall_member_forces = |res: &squid_n_solver::statics::linear::StaticOnce| {
         res.member_forces
             .iter()
             .find(|(id, _)| *id == wall_elem_id)
@@ -705,7 +705,7 @@ fn snapshot_wall_bay_scalars() {
 /// `period[0]` を占め、壁なしは壁を失った X 方向が最も柔らかくなって
 /// `period[0]` を占める。どちらも壁の有無に関係ない Y 方向どうし・
 /// 別モードどうしを比べてしまい、壁の効果を見ていなかった）。
-fn dominant_x_period(modal: &squid_n_solver::eigen::ModalResult) -> Option<f64> {
+fn dominant_x_period(modal: &squid_n_solver::dynamic::eigen::ModalResult) -> Option<f64> {
     modal
         .effective_mass
         .iter()

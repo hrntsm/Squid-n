@@ -118,16 +118,16 @@ pub(super) fn check_walls(
         // スリットあり・壁厚 <120mm・開口周比 r0>0.4 のいずれかに該当する壁は
         // 耐震壁として扱わないため、RC規準18条の耐震壁せん断検定自体を対象外とする。
         //
-        // 判定は解析側（`squid_n_element::misc_wall::wall_is_seismic`）へ委ねる。
+        // 判定は解析側（`squid_n_element::wall::misc_wall::wall_is_seismic`）へ委ねる。
         // 検定側で同じ規定を独立に実装すると、解析では雑壁なのに検定では耐震壁と
         // いった食い違いが生じるため、耐震壁か否かの答えは 1 か所に持つ。
-        if !squid_n_element::misc_wall::wall_is_seismic(elem, model) {
+        if !squid_n_element::wall::misc_wall::wall_is_seismic(elem, model) {
             continue;
         }
         // 本検定は RC 規準 18 条の RC 耐震壁の式のため、RC 壁のみを対象とする。
         // 鋼板耐震壁も耐震壁としては成立する（`wall_is_seismic`）が、RC の式を
         // 適用すると根拠のない検定比を返すため対象外とする。
-        if !squid_n_element::misc_wall::is_rc_wall(elem, model) {
+        if !squid_n_element::wall::misc_wall::is_rc_wall(elem, model) {
             continue;
         }
         // 側柱: 壁節点のうち 2 節点を両端に持つ鉛直部材。

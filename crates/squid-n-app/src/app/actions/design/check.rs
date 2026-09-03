@@ -62,7 +62,7 @@ impl App {
         } else {
             None
         };
-        let long_from_combo: Option<&Vec<(ElemId, squid_n_element::beam::MemberForces)>> =
+        let long_from_combo: Option<&Vec<(ElemId, squid_n_element::frame::beam::MemberForces)>> =
             if is_seismic_combo && self.core.design_term == LoadTerm::Short {
                 results
                     .combos
@@ -78,7 +78,7 @@ impl App {
             } else {
                 None
             };
-        let long_member_forces: Option<&[(ElemId, squid_n_element::beam::MemberForces)]> =
+        let long_member_forces: Option<&[(ElemId, squid_n_element::frame::beam::MemberForces)]> =
             gravity_long_owned
                 .as_deref()
                 .or(long_from_combo.map(|v| v.as_slice()));

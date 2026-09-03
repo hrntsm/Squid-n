@@ -7,7 +7,7 @@
 //! - (b) 非線形時刻歴（`NonlinearThCfg` 既定、集中ばね系・`ForceRegime::Auto`）
 //!
 //! 各ケースは 3 回実行して最小値を採用する（OS ノイズの影響を減らすため）。
-//! さらに、詳細記録（[`squid_n_solver::timehistory::ThRecording`]）を
+//! さらに、詳細記録（[`squid_n_solver::dynamic::timehistory::ThRecording`]）を
 //! 間引く `record_every` を極端に大きくした場合との差分から、記録コストの
 //! 概算を分離する（record_every=None は自動間引き〜1000フレーム、
 //! 大きな値を渡すと最終フレームのみが記録される＝記録をほぼ無効化した近似）。
@@ -26,10 +26,10 @@ use squid_n_core::model::{
 };
 use squid_n_math::parallelism::{set_parallelism, Parallelism};
 use squid_n_math::solver::SolveError;
-use squid_n_solver::constraint::Reducer;
-use squid_n_solver::damping::{Damping, DampingAccumulation, StiffnessKind};
-use squid_n_solver::eigen::solve_eigen;
-use squid_n_solver::timehistory::{
+use squid_n_solver::common::constraint::Reducer;
+use squid_n_solver::dynamic::damping::{Damping, DampingAccumulation, StiffnessKind};
+use squid_n_solver::dynamic::eigen::solve_eigen;
+use squid_n_solver::dynamic::timehistory::{
     linear_time_history_analysis, nonlinear_time_history_analysis, GroundMotion, NewmarkCfg,
     NonlinearThCfg, ResponseResult,
 };
@@ -424,7 +424,7 @@ fn main() {
     );
 
     // (b2) 非線形時刻歴（並列、Parallelism::Auto）。要素ループの並列化
-    // （nonlinear.rs の Newton 反復・driver.rs・assembly.rs）が
+    // （nonlinear.rs の Newton 反復・driver.rs・common/tangent.rs）が
     // Deterministic 経路とビット一致することを、逐次ケース (b) との
     // ピーク変位完全一致で検証する（並列化のビット一致検証を兼ねる）。
     set_parallelism(Parallelism::Auto);

@@ -4,7 +4,6 @@
 //! - [`pushover_analysis_recording`] — 荷重制御・変位制御・弧長法の各フェーズを
 //!   実行し、ヒンジ・せん断降伏・崩壊機構・部材別応答を集約する本体
 
-use super::assembly::{add_support_spring_f_int, assemble_k_cached, compute_f_int};
 use super::diagnosis::{nonconvergence_detail, tangent_singular_diagnosis};
 use super::ductility::{compute_ductility_refs, update_ductility, DuctilityTracker};
 use super::hinge::{compute_hinge_thresholds, track_hinges};
@@ -19,15 +18,16 @@ use super::types::{
     CapacityPoint, DuctilityMethod, MemberHistory, MemberStepState, PushoverControl,
     PushoverResult, PushoverStep, PushoverTarget, PushoverTermination,
 };
-use crate::analysis::{
-    building_height_mm, distribute_pi_over_diaphragms, steel_height_ratio, SeismicDir,
-};
-use crate::arc_length::ArcLengthSolver;
+use crate::common::constraint::Reducer;
 use crate::common::csc_cache::CscCache;
 use crate::common::elem_loop::apply_du_trial;
 use crate::common::newton::{l2_norm, STATIC_NEWTON};
-use crate::constraint::Reducer;
-use crate::transaction::StateSnapshot;
+use crate::common::tangent::{add_support_spring_f_int, assemble_k_cached, compute_f_int};
+use crate::common::transaction::StateSnapshot;
+use crate::nonlinear::arc_length::ArcLengthSolver;
+use crate::statics::analysis::{
+    building_height_mm, distribute_pi_over_diaphragms, steel_height_ratio, SeismicDir,
+};
 use squid_n_core::dof::DofMap;
 use squid_n_core::model::Model;
 use squid_n_element::behavior::ElementBehavior;
@@ -343,7 +343,7 @@ pub fn pushover_analysis_recording(
     let f0: Vec<f64> = if apply_long_term {
         let mut f = vec![0.0; n_active];
         for lc in model.load_cases.iter().filter(|l| l.kind.is_long_term()) {
-            let flc = crate::assemble::assemble_global_f(model, dofmap, lc.id);
+            let flc = crate::common::assemble::assemble_global_f(model, dofmap, lc.id);
             for (acc, v) in f.iter_mut().zip(flc) {
                 *acc += v;
             }

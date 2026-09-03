@@ -554,7 +554,7 @@ impl GaussPoint {
 ///
 /// 部材端に剛域（`ElementData::rigid_zone`）があるとき、断面積分・せん断・幾何剛性は
 /// **可撓長** `flex_length` = L − λi − λj で組み、可撓端自由度を剛体アームで節点
-/// 自由度へ写す（[`crate::rigid_arm`]。弾性梁 `BeamElement` と同じ変換）。
+/// 自由度へ写す（[`crate::frame::rigid_arm`]。弾性梁 `BeamElement` と同じ変換）。
 /// 端部の積分点 ξ=∓1 は剛域フェイスに位置し、塑性化域 Lp も剛域フェイスから測る。
 ///
 /// 軸方向の扱いは弾性梁と異なる。弾性梁は軸断面積を A·(L'/L) に補正して軸剛性を
@@ -628,7 +628,7 @@ impl FiberBeam {
         let length = squid_n_core::geom::vec3::dist(n0.coord, n1.coord);
         // 剛域長と可撓長。断面積分・B 行列・せん断・幾何剛性はすべて可撓長基準で
         // 組み、可撓端自由度を剛体アームで節点自由度へ写す（弾性梁と同じ扱い）。
-        let (rigid_i, rigid_j) = crate::rigid_arm::resolve_lengths(
+        let (rigid_i, rigid_j) = crate::frame::rigid_arm::resolve_lengths(
             data.rigid_zone.rigid_length_i(),
             data.rigid_zone.rigid_length_j(),
             length,
@@ -742,7 +742,10 @@ impl FiberBeam {
         // rx は解放しない。
         let releases = resolve_end_releases(
             &data.end_cond,
-            [crate::beam::i_end_torsion_release(data, model), false],
+            [
+                crate::frame::beam::i_end_torsion_release(data, model),
+                false,
+            ],
             torsion_j > 0.0 && g > 0.0,
         );
         let trial_int = SmallVec::from_elem(0.0, releases.len());
@@ -765,7 +768,7 @@ impl FiberBeam {
             k_shear,
             axis,
             hinge: None,
-            eval_sections: crate::beam::eval_sections_of(data, model, length),
+            eval_sections: crate::frame::beam::eval_sections_of(data, model, length),
             committed_disp: [0.0; 12],
             trial_disp: [0.0; 12],
         }
@@ -1098,7 +1101,7 @@ impl FiberBeam {
     /// これらの評価には節点変位ではなく可撓端変位を用いる。剛域がなければ
     /// `trial_disp` と一致する。
     pub fn flex_disp(&self) -> [f64; 12] {
-        crate::rigid_arm::to_flex_disp(&self.trial_disp, self.rigid_i, self.rigid_j)
+        crate::frame::rigid_arm::to_flex_disp(&self.trial_disp, self.rigid_i, self.rigid_j)
     }
 
     /// 要素の変形自由度（可撓端系 12）。解放した端回転は節点回転ではなく内部自由度
@@ -1463,18 +1466,6 @@ impl FiberBeam {
         kstar
     }
 
-    fn beam_global_dofs(&self, dof: &DofMap) -> SmallVec<[usize; 24]> {
-        let mut gdofs = SmallVec::new();
-        for &n in &self.nodes {
-            let ni = n.index();
-            for d in 0..6 {
-                let g = ni * 6 + d;
-                gdofs.push(dof.active(g).map(|a| a as usize).unwrap_or(usize::MAX));
-            }
-        }
-        gdofs
-    }
-
     /// ガウス点の断面応答（force, stiff）を返す。総和は `GaussPoint::refresh_response`
     /// で trial_stress/trial_et 書き換え直後に計算済みのため、ここでは
     /// キャッシュを読むだけでよい（ファイバー再走査なし）。
@@ -1813,7 +1804,7 @@ impl ElementBehavior for FiberBeam {
     }
 
     fn global_dofs(&self, dof: &DofMap) -> SmallVec<[usize; 24]> {
-        self.beam_global_dofs(dof)
+        crate::behavior::node_global_dofs(&self.nodes, dof)
     }
 
     fn tangent_stiffness(&self, _ctx: &Ctx) -> LocalMat {
@@ -1824,7 +1815,8 @@ impl ElementBehavior for FiberBeam {
         // 剛体アームで節点自由度へ → 全体座標変換」。
         let k_elem = self.elem_tangent();
         let k_end = self.condense_releases(&k_elem);
-        let k_node = crate::rigid_arm::transform_stiffness(&k_end, self.rigid_i, self.rigid_j);
+        let k_node =
+            crate::frame::rigid_arm::transform_stiffness(&k_end, self.rigid_i, self.rigid_j);
         self.axis.to_global(&k_node)
     }
 
@@ -1848,7 +1840,7 @@ impl ElementBehavior for FiberBeam {
         }
 
         // 可撓端の内力 → 節点自由度（剛体アームのモーメント寄与を含む）→ グローバル系。
-        let f_node = crate::rigid_arm::to_node_force(&f_flex, self.rigid_i, self.rigid_j);
+        let f_node = crate::frame::rigid_arm::to_node_force(&f_flex, self.rigid_i, self.rigid_j);
         let f_global = self.axis.rotate_to_global(&f_node);
         LocalVec {
             data: SmallVec::from_slice(&f_global),
@@ -1860,11 +1852,11 @@ impl ElementBehavior for FiberBeam {
     /// 端部節点力は [`Self::internal_force`]（各積分点の断面応答＝ファイバーの
     /// 履歴状態から算定した復元力）であり、接線剛性 × 全変位ではないため
     /// 降伏後も正しい。これを釣合いで材軸方向へ分配する。
-    fn state_member_forces(&self, ctx: &Ctx) -> Option<crate::beam::MemberForces> {
+    fn state_member_forces(&self, ctx: &Ctx) -> Option<crate::frame::beam::MemberForces> {
         let f_global = self.internal_force(ctx);
         let arr: [f64; 12] = std::array::from_fn(|i| f_global.data[i]);
         let f_local = self.axis.rotate_to_local(&arr);
-        Some(crate::beam::member_forces_from_end_forces(
+        Some(crate::frame::beam::member_forces_from_end_forces(
             &f_local,
             self.length,
             &self.eval_sections,
@@ -1992,7 +1984,7 @@ impl ElementBehavior for FiberBeam {
         s(10, 10, c * 2.0 * l * l / 15.0);
         s(4, 10, -c * l * l / 30.0);
         // 剛体アーム変換 → グローバル系へ回転
-        let kg_node = crate::rigid_arm::transform_stiffness(&kg, self.rigid_i, self.rigid_j);
+        let kg_node = crate::frame::rigid_arm::transform_stiffness(&kg, self.rigid_i, self.rigid_j);
         self.axis.to_global(&kg_node)
     }
 

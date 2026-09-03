@@ -1,7 +1,7 @@
-use crate::behavior::{Ctx, ElementBehavior, LocalMat, LocalVec, MassOption};
+use crate::behavior::{Ctx, ElementBehavior, LocalMat, MassOption};
 use crate::transform::LocalFrame;
 use smallvec::SmallVec;
-use squid_n_core::dof::{DofMap, DOF_PER_NODE};
+use squid_n_core::dof::DofMap;
 use squid_n_core::ids::{ElemId, NodeId};
 use squid_n_core::model::{ElementData, Material, MaterialCategory, Model, Section};
 
@@ -151,19 +151,7 @@ impl ElementBehavior for TrussElement {
     }
 
     fn global_dofs(&self, dof: &DofMap) -> SmallVec<[usize; 24]> {
-        let mut gdofs = SmallVec::new();
-        for &nid in &self.nodes {
-            let ni = nid.index();
-            for d in 0..DOF_PER_NODE {
-                let g = ni * DOF_PER_NODE + d;
-                if let Some(active) = dof.active(g) {
-                    gdofs.push(active as usize);
-                } else {
-                    gdofs.push(usize::MAX);
-                }
-            }
-        }
-        gdofs
+        crate::behavior::node_global_dofs(&self.nodes, dof)
     }
 
     fn tangent_stiffness(&self, _ctx: &Ctx) -> LocalMat {
@@ -173,72 +161,7 @@ impl ElementBehavior for TrussElement {
         self.axis.to_global(&self.local_stiffness())
     }
 
-    fn internal_force(&self, _ctx: &Ctx) -> LocalVec {
-        // トライアル追従: Newton 反復中の未確定変位も内力へ反映する
-        // （beam/behavior.rs と同じ規約）。
-        let k = self.axis.to_global(&self.local_stiffness());
-        let mut f = LocalVec {
-            data: SmallVec::from_elem(0.0, 12),
-        };
-        for i in 0..12 {
-            let mut s = 0.0;
-            for j in 0..12 {
-                s += k.get(i, j) * self.trial_disp[j];
-            }
-            f.data[i] = s;
-        }
-        f
-    }
-
-    fn update_state(&mut self, du: &LocalVec, commit: bool, _ctx: &Ctx) {
-        for i in 0..12 {
-            self.trial_disp[i] += du.data[i];
-        }
-        if commit {
-            self.committed_disp = self.trial_disp;
-        }
-    }
-
-    fn commit_state(&mut self) {
-        self.committed_disp = self.trial_disp;
-    }
-
-    fn revert_state(&mut self) {
-        self.trial_disp = self.committed_disp;
-    }
-
-    fn snapshot_state(&self) -> Box<dyn std::any::Any> {
-        Box::new((self.committed_disp, self.trial_disp))
-    }
-
-    fn restore_state(&mut self, state: &dyn std::any::Any) {
-        let (committed, trial) =
-            crate::behavior::downcast_snapshot::<([f64; 12], [f64; 12])>("TrussElement", state);
-        self.committed_disp = *committed;
-        self.trial_disp = *trial;
-    }
-
-    fn serialize_checkpoint(&self) -> Vec<u8> {
-        // トライアル追従化により変位が蓄積されるようになったため、
-        // チェックポイントに committed/trial の両変位を含める（レジューム時に
-        // 変位 0 から再計算されて内力が不整合になるのを防ぐ）。
-        bincode::serialize(&(self.committed_disp, self.trial_disp)).expect("serialize checkpoint")
-    }
-
-    fn deserialize_checkpoint(
-        &mut self,
-        data: &[u8],
-    ) -> Result<(), crate::behavior::CheckpointError> {
-        // 旧チェックポイント（変位未収録・空バイト列）は「状態なし」として許容する。
-        if data.is_empty() {
-            return Ok(());
-        }
-        let (committed, trial): ([f64; 12], [f64; 12]) = bincode::deserialize(data)
-            .map_err(|e| crate::behavior::CheckpointError::Decode(e.to_string()))?;
-        self.committed_disp = committed;
-        self.trial_disp = trial;
-        Ok(())
-    }
+    crate::behavior::elastic_disp_behavior!(TrussElement, 12);
 
     fn mass_matrix(&self, opt: MassOption) -> LocalMat {
         let m = self.density * self.a_mass * self.length;
@@ -269,7 +192,7 @@ impl ElementBehavior for TrussElement {
         }
     }
 
-    fn recover_forces(&self, u_elem: &[f64]) -> Option<crate::beam::MemberForces> {
+    fn recover_forces(&self, u_elem: &[f64]) -> Option<crate::frame::beam::MemberForces> {
         if u_elem.len() < 12 {
             return None;
         }
@@ -287,7 +210,7 @@ impl ElementBehavior for TrussElement {
         }
         // 軸力 N（引張正）のみ。他要素の慣習（beam.rs）に合わせ i 端側は -f_local[0]。
         let n = -f_local[0];
-        Some(crate::beam::MemberForces {
+        Some(crate::frame::beam::MemberForces {
             at: vec![
                 (0.0, [n, 0.0, 0.0, 0.0, 0.0, 0.0]),
                 (1.0, [n, 0.0, 0.0, 0.0, 0.0, 0.0]),
@@ -297,7 +220,7 @@ impl ElementBehavior for TrussElement {
 
     /// トラス（ブレース）は非線形解析でも弾性軸材のため、蓄積した trial 変位から
     /// 復元する（`recover_forces` と同じ結果）。
-    fn state_member_forces(&self, _ctx: &Ctx) -> Option<crate::beam::MemberForces> {
+    fn state_member_forces(&self, _ctx: &Ctx) -> Option<crate::frame::beam::MemberForces> {
         self.recover_forces(&self.trial_disp)
     }
 }
@@ -313,6 +236,7 @@ pub(crate) fn sec_material(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::behavior::LocalVec;
     use squid_n_core::ids::{ElemId, MaterialId, NodeId, SectionId};
     use squid_n_core::model::{
         ElementData, ElementKind, EndCondition, ForceRegime, LocalAxis, Node, RigidZone,

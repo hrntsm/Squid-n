@@ -8,8 +8,8 @@
 use super::result::{StoryResponse, ThRecording};
 use squid_n_core::dof::{DofMap, DOF_PER_NODE};
 use squid_n_core::model::Model;
-use squid_n_element::beam::MemberForces;
 use squid_n_element::behavior::{Ctx, ElementBehavior};
+use squid_n_element::frame::beam::MemberForces;
 
 /// 記録フレーム数が概ね 1000 になるよう `record_every`（間引き係数）を自動決定する。
 /// `n_steps` はステップ数（フレーム数は `n_steps+1`）。
@@ -48,7 +48,7 @@ pub(crate) fn member_forces_nonlinear(
         .collect()
 }
 
-/// 非線形経路の線材内力の欠落ガード（[`crate::linear::ensure_line_member_forces`]
+/// 非線形経路の線材内力の欠落ガード（[`crate::statics::linear::ensure_line_member_forces`]
 /// の非線形版）。線材（梁・ファイバー・MS・ブレース）の `state_member_forces` が
 /// `None` を返す要素実装の不備を、解析開始時点でエラーとして顕在化させる
 /// （このまま続けると当該部材の応力履歴が全ステップ空のまま無言で欠落する）。
@@ -742,12 +742,12 @@ mod tests {
     fn test_story_shear_sum_matches_base_shear_with_consistent_mass() {
         let model = two_story_density_mass_model(7.85e-9);
         let dofmap = DofMap::build(&model);
-        let reducer = crate::constraint::Reducer::build(&model, &dofmap);
+        let reducer = crate::common::constraint::Reducer::build(&model, &dofmap);
 
-        let damping = crate::damping::Damping::StiffnessProportional {
+        let damping = crate::dynamic::damping::Damping::StiffnessProportional {
             h: 0.02,
             omega: 10.0,
-            basis: crate::damping::StiffnessKind::Initial,
+            basis: crate::dynamic::damping::StiffnessKind::Initial,
         };
         let dt = 0.001;
         let n_steps = 30;

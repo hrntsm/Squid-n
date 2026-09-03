@@ -4,7 +4,7 @@ use std::collections::HashMap;
 
 use squid_n_core::ids::ElemId;
 use squid_n_core::model::Model;
-use squid_n_element::beam::MemberForces;
+use squid_n_element::frame::beam::MemberForces;
 
 use crate::BeamGroupContextOverride;
 

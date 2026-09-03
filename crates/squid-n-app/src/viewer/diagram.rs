@@ -54,7 +54,7 @@ use super::{
 };
 use squid_n_core::geom::vec3::{self, dist as member_len3};
 use squid_n_core::model::{ElementData, ElementKind, Model};
-use squid_n_element::wall_element::wall_element_geometry;
+use squid_n_element::wall::wall_element::wall_element_geometry;
 
 /// 張り出しピークがこの px 未満の図形は描かない。60px 正規化に対して値が
 /// 相対的に極小の部材（ほぼ潰れた図形）は、輪郭の折り返し点で epaint のマイター
@@ -619,7 +619,7 @@ fn draw_component(
 /// 描かない（張り出しピークが極小の部材を端から描かない扱いと同じ方針）。
 fn draw_value_labels(
     painter: &egui::Painter,
-    mf: &squid_n_element::beam::MemberForces,
+    mf: &squid_n_element::frame::beam::MemberForces,
     component: ForceComponent,
     max_abs: f64,
     plot_sign: f64,

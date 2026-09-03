@@ -5,12 +5,12 @@
 //! 実行する。地震荷重の生成は [`seismic`]、設定型は [`config`]、
 //! 解析前のモデル検証は [`precheck`] に分離している。
 
-use crate::assemble::{assemble_global_f, assemble_global_k};
-use crate::constraint::Reducer;
-use crate::damping::Damping;
-use crate::eigen::{self, ModalResult};
-use crate::linear::{group_member_loads_by_elem, StaticOnce};
-use crate::timehistory::{GroundMotion, NewmarkCfg, ResponseResult};
+use crate::common::assemble::{assemble_global_f, assemble_global_k};
+use crate::common::constraint::Reducer;
+use crate::dynamic::damping::Damping;
+use crate::dynamic::eigen::{self, ModalResult};
+use crate::dynamic::timehistory::{GroundMotion, NewmarkCfg, ResponseResult};
+use crate::statics::linear::{group_member_loads_by_elem, StaticOnce};
 use std::collections::HashMap;
 
 pub type StaticResult = StaticOnce;
@@ -193,7 +193,7 @@ impl<'m> Analysis<'m> {
         let u_indep = self.solver.solve(&f_red)?;
         let u_free = self.reducer.expand_u(&u_indep);
         let member_forces = self.recover_member_forces(&u_free, member_loads);
-        crate::linear::ensure_line_member_forces(self.model, &member_forces)?;
+        crate::statics::linear::ensure_line_member_forces(self.model, &member_forces)?;
         Ok(StaticOnce {
             disp: self.expand_disp(&u_free),
             member_forces,
@@ -209,20 +209,20 @@ impl<'m> Analysis<'m> {
     /// 自由 DOF ベクトルから全部材の断面力を復元する。
     ///
     /// `K·u` 由来の回復内力に、`member_loads` の部材中間荷重を両端固定梁の
-    /// スパン内力として重ね合わせる（[`crate::linear::superpose_member_loads`]）。
+    /// スパン内力として重ね合わせる（[`crate::statics::linear::superpose_member_loads`]）。
     /// これにより等分布荷重下の梁で M が放物線・Q が線形の正しい分布になる。
     /// 分解済み K を再利用する `Analysis` 経路と、一度きりの
-    /// [`crate::linear::linear_static_once`] 経路とで内力回復の扱いを一致させる。
+    /// [`crate::statics::linear::linear_static_once`] 経路とで内力回復の扱いを一致させる。
     fn recover_member_forces(
         &self,
         u_free: &[f64],
         member_loads: &[MemberLoad],
     ) -> Vec<(
         squid_n_core::ids::ElemId,
-        squid_n_element::beam::MemberForces,
+        squid_n_element::frame::beam::MemberForces,
     )> {
         // 要素 ID で事前にグルーピングし、要素ごとの全部材荷重総当りスキャンを避ける
-        // （`crate::linear::solve_once_inner` と同じ最適化）。
+        // （`crate::statics::linear::solve_once_inner` と同じ最適化）。
         let member_loads_by_elem = group_member_loads_by_elem(member_loads);
         let mut member_forces = Vec::new();
         // `behavior_cache`（`prepare` で1回だけ構築済み）を参照する。
@@ -241,7 +241,12 @@ impl<'m> Analysis<'m> {
                     .get(&elem.id)
                     .map(Vec::as_slice)
                     .unwrap_or(&[]);
-                crate::linear::superpose_member_loads(self.model, elem, loads, &mut forces);
+                crate::statics::linear::superpose_member_loads(
+                    self.model,
+                    elem,
+                    loads,
+                    &mut forces,
+                );
                 member_forces.push((elem.id, forces));
             }
         }
@@ -368,7 +373,7 @@ impl<'m> Analysis<'m> {
     ) -> Result<ResponseResult, squid_n_math::solver::SolveError> {
         let n_indep = self.n_indep;
         let init = vec![0.0; n_indep];
-        crate::timehistory::linear_time_history_analysis(
+        crate::dynamic::timehistory::linear_time_history_analysis(
             self.model,
             &self.dofmap,
             &self.reducer,

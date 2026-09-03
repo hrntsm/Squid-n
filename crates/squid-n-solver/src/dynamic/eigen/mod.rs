@@ -1,5 +1,5 @@
-use crate::assemble::{assemble_global_k, assemble_global_m};
-use crate::constraint::Reducer;
+use crate::common::assemble::{assemble_global_k, assemble_global_m};
+use crate::common::constraint::Reducer;
 use squid_n_core::dof::DofMap;
 use squid_n_core::model::Model;
 use squid_n_element::behavior::MassOption;
@@ -17,7 +17,7 @@ pub struct ModalResult {
     pub omega2: Vec<f64>,
     pub period: Vec<f64>,
     /// モード形状（縮約後の独立自由度座標、長さ = `Reducer::n_indep`）。
-    /// 時刻歴のモード減衰（`crate::damping::Damping::modal`）など、縮約空間で
+    /// 時刻歴のモード減衰（`crate::dynamic::damping::Damping::modal`）など、縮約空間で
     /// 計算する消費者向け。節点単位の形状が必要な場合は [`Self::node_shapes`] を使う。
     pub shapes: Vec<Vec<f64>>,
     /// モード形状を節点×6成分（UX,UY,UZ,RX,RY,RZ）へ展開したもの
@@ -72,7 +72,7 @@ pub fn solve_eigen(
     solve_eigen_with_solver(model, dofmap, reducer, n_modes, solver.as_ref())
 }
 
-/// [`solve_eigen`] の本体ロジック。呼び出し側（[`crate::analysis::Analysis`]）が
+/// [`solve_eigen`] の本体ロジック。呼び出し側（[`crate::statics::analysis::Analysis`]）が
 /// 既に縮約後剛性行列 `k_red` を分解済みソルバとして保持している場合に、
 /// その分解を再利用して再分解のコストを省くための版。
 ///
@@ -303,7 +303,7 @@ node.mass や材料の密度(ρ)で並進質量を追加するか、要求モー
 /// `phi_free` は呼び出し側（[`compute_participation`]）で 1 回だけ計算した値を渡す
 /// （かつては `compute_participation` 内の質量射影用と本関数内とで同じ `expand_u` を
 /// モードごとに二重計算していたため、その重複を排除している）。
-/// 静的解析の変位展開（`crate::analysis::Analysis` の `expand_disp`）と同じ経路で、
+/// 静的解析の変位展開（`crate::statics::analysis::Analysis` の `expand_disp`）と同じ経路で、
 /// 剛床のスレーブ自由度にはマスターに従属した値が入る。fixed・非構造自由度は 0。
 fn scatter_node_shape(phi_free: &[f64], dofmap: &DofMap, n_nodes: usize) -> Vec<[f64; 6]> {
     dofmap.expand_to_nodes(phi_free, n_nodes)

@@ -7,7 +7,7 @@
 //!
 //! パネルの諸元は次の 2 箇所で必要になる。
 //!
-//! - **モデル化**（`squid_n_element::panel`）— せん断剛性 `Kxp = Kyp = G・Ve`
+//! - **モデル化**（`squid_n_element::springs::panel`）— せん断剛性 `Kxp = Kyp = G・Ve`
 //! - **断面検定**（`squid_n_design_jp::steel::panel_zone`）— 降伏モーメント
 //!   `pMy = (Ve/κ)・√(1−n²)・Fy/√3`
 //!

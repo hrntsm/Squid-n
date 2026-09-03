@@ -21,10 +21,10 @@ use super::StrengthBasis;
 ///
 /// `plastic_zone` の指定値、未指定なら断面せいの 0.5 倍（0.5D は既往検討で
 /// 標準的に用いられる値）。断面せいが取れない場合は 200mm を仮定する。
-/// 要素生成（[`build_fiber`] / [`crate::multi_spring::MultiSpringElement::new`]）と
+/// 要素生成（[`build_fiber`] / [`crate::frame::multi_spring::MultiSpringElement::new`]）と
 /// モデル化図の表示で同じ値を用いるため公開する。
 /// なお部材長に対する上下限クランプは
-/// [`crate::fiber::clamp_plastic_zone`] が担う。
+/// [`crate::frame::fiber::clamp_plastic_zone`] が担う。
 pub fn plastic_zone_length(data: &ElementData, model: &Model) -> f64 {
     let depth = data
         .section
@@ -42,9 +42,9 @@ pub(super) fn build_fiber(
     model: &Model,
     basis: StrengthBasis,
     kind: AnalysisKind,
-) -> crate::fiber::FiberBeam {
+) -> crate::frame::fiber::FiberBeam {
     let lp = plastic_zone_length(data, model);
-    crate::fiber::FiberBeam::with_plastic_zone(data, model, lp, basis, kind)
+    crate::frame::fiber::FiberBeam::with_plastic_zone(data, model, lp, basis, kind)
 }
 
 /// 部材の曲げ終局（降伏）モーメント My [N·mm]（技術基準解説書の曲げ終局強度）。

@@ -303,8 +303,8 @@ impl AnalysisRunArgs {
         };
         let ai_mode = match self.ai_mode.as_deref() {
             None => None,
-            Some("Approx") => Some(squid_n_solver::analysis::AiMode::Approx),
-            Some("SemiPrecise") => Some(squid_n_solver::analysis::AiMode::SemiPrecise),
+            Some("Approx") => Some(squid_n_solver::statics::analysis::AiMode::Approx),
+            Some("SemiPrecise") => Some(squid_n_solver::statics::analysis::AiMode::SemiPrecise),
             Some(other) => {
                 return Err(format!(
                     "不明な Ai 算定法: {other}（\"Approx\" または \"SemiPrecise\"）"
@@ -855,7 +855,7 @@ mod tests {
         assert!((params.c0 - 0.25).abs() < 1e-12);
         assert_eq!(
             params.ai_mode,
-            squid_n_solver::analysis::AiMode::SemiPrecise
+            squid_n_solver::statics::analysis::AiMode::SemiPrecise
         );
         assert_eq!(params.design_period, None);
     }
@@ -864,7 +864,7 @@ mod tests {
     fn test_prepare_notices_for_semi_precise_without_design_period() {
         // 階が無いと地震同期パスに入らず notices が空になる。
         let params = JobParams {
-            ai_mode: squid_n_solver::analysis::AiMode::SemiPrecise,
+            ai_mode: squid_n_solver::statics::analysis::AiMode::SemiPrecise,
             design_period: None,
             ..Default::default()
         };

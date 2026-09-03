@@ -30,7 +30,7 @@ impl App {
             rc_column_mu_simple, rc_qmu_simple, rc_qsu_simple,
         };
         use squid_n_design_jp::steel_f_value_prefix;
-        use squid_n_solver::pushover::MechanismType;
+        use squid_n_solver::nonlinear::pushover::MechanismType;
 
         // rigid_zone（剛域長・face_i/j）を読むため、算定前に自動剛域を反映する
         // （設計書 §6.2.1、冪等なので他の解析エントリと重複して呼んでも安全）。
@@ -84,10 +84,11 @@ impl App {
             .and_then(|r| r.modal.as_ref())
             .and_then(|m| m.period.first().copied())
             .unwrap_or_else(|| {
-                let height_m = length_m(squid_n_solver::analysis::building_height_mm(
+                let height_m = length_m(squid_n_solver::statics::analysis::building_height_mm(
                     &self.core.model,
                 ));
-                let steel_ratio = squid_n_solver::analysis::steel_height_ratio(&self.core.model);
+                let steel_ratio =
+                    squid_n_solver::statics::analysis::steel_height_ratio(&self.core.model);
                 squid_n_load::ai::approx_t(height_m, steel_ratio)
             });
         let rt = squid_n_load::ai::rt(t, squid_n_load::ai::tc_of(self.core.analysis_cfg.soil));
@@ -100,7 +101,7 @@ impl App {
         // βu（耐力壁・筋かいの水平耐力の和）の集計に用いる。
         let resp_by_elem: std::collections::HashMap<
             ElemId,
-            squid_n_solver::pushover::PushoverMemberResponse,
+            squid_n_solver::nonlinear::pushover::PushoverMemberResponse,
         > = po.member_response.iter().map(|r| (r.elem, *r)).collect();
         // 増分解析でせん断降伏が記録された部材（SRC 柱・SRC 耐震壁の
         // 「破壊モードがせん断破壊か」の判定に用いる）。
@@ -259,9 +260,10 @@ impl App {
                         // 壁要素はそちらでは検出できない。Qu を算定できない壁
                         // （耐震壁不成立等）と終局時応答がない壁は判定不能として
                         // スキップ（層の選択ランクへフォールバック）。
-                        let qu = squid_n_element::wall_element::WallElement::shear_capacity_of(
-                            elem, model,
-                        );
+                        let qu =
+                            squid_n_element::wall::wall_element::WallElement::shear_capacity_of(
+                                elem, model,
+                            );
                         let Some(resp) = resp_by_elem.get(&elem.id) else {
                             continue;
                         };
@@ -287,13 +289,13 @@ impl App {
                         // 並び順には依存しない）、lw は**上下辺長さの平均**となる
                         // （台形壁では上下辺長が異なるため一方の辺では代表長さにならない）。
                         let Some(wgeom) =
-                            squid_n_element::wall_element::wall_element_geometry(elem, model)
+                            squid_n_element::wall::wall_element::wall_element_geometry(elem, model)
                         else {
                             continue;
                         };
                         let wall_len = wgeom.lw;
                         let r2 =
-                            squid_n_element::wall_element::WallElement::opening_strength_reduction(
+                            squid_n_element::wall::wall_element::WallElement::opening_strength_reduction(
                                 elem, model,
                             );
                         let Some(tau_over_fc) = rc_wall_tau_over_fc(
@@ -305,9 +307,10 @@ impl App {
                         ) else {
                             continue;
                         };
-                        let qu = squid_n_element::wall_element::WallElement::shear_capacity_of(
-                            elem, model,
-                        );
+                        let qu =
+                            squid_n_element::wall::wall_element::WallElement::shear_capacity_of(
+                                elem, model,
+                            );
                         let brittle = rc_wall_shear_brittle(resp.horizontal_force, qu);
                         // 壁式構造か否かは設計設定（設計タブのチェックボックス）による。
                         // 告示「耐力壁の種別」表は壁式構造で限界値が厳しくなる。

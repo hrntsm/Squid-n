@@ -9,13 +9,13 @@ use squid_n_design_jp::secondary::eccentricity::{
 use squid_n_design_jp::secondary::eccentricity_analysis::column_stiffnesses_from_analysis;
 use squid_n_design_jp::secondary::story_columns::story_columns;
 use squid_n_element::transform::LocalFrame;
-use squid_n_solver::analysis::SeismicDir;
-use squid_n_solver::linear::StaticOnce;
-use squid_n_solver::lumped_mass::{
+use squid_n_solver::dynamic::lumped_mass::{
     build_lumped_mass_model, LumpedMassModel, LumpedMassType, LumpedStiffnessSource, StickDim,
     StorySpatial, StoryStick, StoryTrilinear,
 };
-use squid_n_solver::pushover::{story_reference_node, PushoverResult};
+use squid_n_solver::nonlinear::pushover::{story_reference_node, PushoverResult};
+use squid_n_solver::statics::analysis::SeismicDir;
+use squid_n_solver::statics::linear::StaticOnce;
 
 /// 質点系生成に渡す解析結果。
 pub struct LumpedMassBuildInput<'a> {
@@ -538,7 +538,7 @@ mod tests {
 
     fn static_with_column_qz(n_nodes: usize, qz: &[(u32, f64)]) -> StaticOnce {
         use squid_n_core::ids::ElemId;
-        use squid_n_element::beam::MemberForces;
+        use squid_n_element::frame::beam::MemberForces;
         StaticOnce {
             disp: vec![[0.0; 6]; n_nodes],
             member_forces: qz

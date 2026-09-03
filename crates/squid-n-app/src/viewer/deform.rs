@@ -17,7 +17,7 @@ pub(super) const DEFORM_CURVE_SEGMENTS: usize = 12;
 /// 一箇所へ集約する（ループでの `LocalFrame` 再構築も避ける）。
 ///
 /// 軸方向は線形内挿、曲げ 2 面は Hermite 3 次形状関数で内挿する（等価節点力
-/// [`squid_n_element::member_load`] と同一の形状関数・符号規約。局所 z 面は θy の
+/// [`squid_n_element::frame::member_load`] と同一の形状関数・符号規約。局所 z 面は θy の
 /// 符号反転）。ξ=0,1 では回転項が消え端点は節点変位に一致する。本内挿は表示専用
 /// であり解析結果（節点変位・内力）は変更しない。要素はせん断変形を含む
 /// Timoshenko 梁だが、変形図は Euler–Bernoulli の Hermite 曲線で近似する
@@ -409,7 +409,7 @@ pub struct TimeHistoryScaleCache {
 
 /// `ResponseResult::peak_disp`（全ステップ間引きなしのピーク変位、節点×6成分）から、
 /// 並進成分（ux/uy/uz）の絶対値最大を求める（純粋関数）。
-fn th_peak_translation_disp(result: &squid_n_solver::timehistory::ResponseResult) -> f64 {
+fn th_peak_translation_disp(result: &squid_n_solver::dynamic::timehistory::ResponseResult) -> f64 {
     result
         .peak_disp
         .iter()

@@ -37,7 +37,7 @@ pub struct ResponseResult {
     ///
     /// 0 でない場合、そのステップは残差の収束を確認できないまま確定しており、
     /// 応答値の信頼性が下がっているため、表示側は利用者へ注記すること。
-    /// 質点系（`crate::lumped_mass::StickResponse::non_converged_steps`）と
+    /// 質点系（`crate::dynamic::lumped_mass::StickResponse::non_converged_steps`）と
     /// 同じ規約で、途中で解析を打ち切らず参考値として最後まで解く。
     ///
     /// 旧プロジェクトファイル（.scz）にはないフィールドのため、読込時は 0 で補う。
@@ -103,10 +103,10 @@ pub struct ThRecording {
     /// のみに間引いて保持する（UI の履歴ループは端部値のみ使用するため。
     /// 中間の評価断面は保持しない。全評価断面の包絡値は
     /// [`Self::peak_member_forces`] を参照）。
-    pub member_forces: Vec<Vec<Option<squid_n_element::beam::MemberForces>>>,
+    pub member_forces: Vec<Vec<Option<squid_n_element::frame::beam::MemberForces>>>,
     /// 全ステップ（間引きなし）での部材端力の包絡（各成分の絶対値最大値。
     /// 符号は極値そのものの符号を保持する）。`[elem_idx]`。
-    pub peak_member_forces: Vec<Option<squid_n_element::beam::MemberForces>>,
+    pub peak_member_forces: Vec<Option<squid_n_element::frame::beam::MemberForces>>,
 }
 
 /// 1 方向（X または Y）の層応答時刻歴（[`ThRecording`] 参照）。

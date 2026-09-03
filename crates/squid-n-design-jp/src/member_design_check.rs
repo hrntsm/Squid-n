@@ -18,7 +18,7 @@ use std::collections::HashMap;
 
 use squid_n_core::ids::{ElemId, NodeId};
 use squid_n_core::model::Model;
-use squid_n_element::beam::MemberForces;
+use squid_n_element::frame::beam::MemberForces;
 
 use crate::design_position::{design_positions, is_near_design_position};
 use crate::{
