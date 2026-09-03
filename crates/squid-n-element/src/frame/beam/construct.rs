@@ -6,74 +6,10 @@
 
 use super::element::BeamElement;
 use super::stiffness_factors::{breakdown_with, composite_props_with};
+use crate::frame::section_lookup::{get_material, get_section, sec_material};
 use crate::transform::LocalFrame;
 use squid_n_core::ids::NodeId;
-use squid_n_core::model::{Material, MaterialCategory, Model, Section};
-
-fn get_section(model: &Model, sid: Option<squid_n_core::ids::SectionId>) -> Section {
-    sid.and_then(|s| {
-        if s.index() < model.sections.len() {
-            let sec = &model.sections[s.index()];
-            if sec.id == s {
-                Some(sec.clone())
-            } else {
-                None
-            }
-        } else {
-            None
-        }
-    })
-    .unwrap_or_else(|| Section {
-        id: squid_n_core::ids::SectionId(0),
-        name: String::new(),
-        area: 0.0,
-        iy: 0.0,
-        iz: 0.0,
-        j: 0.0,
-        depth: 0.0,
-        width: 0.0,
-        as_y: 0.0,
-        as_z: 0.0,
-        floor: None,
-        panel_thickness: None,
-        thickness: None,
-        shape: None,
-        material: None,
-        rebar_material: None,
-        shear_rebar_material: None,
-        steel_material: None,
-    })
-}
-
-use crate::frame::truss::sec_material;
-
-fn get_material(model: &Model, mid: Option<squid_n_core::ids::MaterialId>) -> Material {
-    mid.and_then(|m| {
-        if m.index() < model.materials.len() {
-            let mat = &model.materials[m.index()];
-            if mat.id == m {
-                Some(mat.clone())
-            } else {
-                None
-            }
-        } else {
-            None
-        }
-    })
-    .unwrap_or_else(|| Material {
-        strength_factor: None,
-        concrete_class: Default::default(),
-        id: squid_n_core::ids::MaterialId(0),
-        name: String::new(),
-        category: MaterialCategory::Steel,
-        young: 0.0,
-        poisson: 0.0,
-        density: 0.0,
-        shear: None,
-        fc: None,
-        fy: None,
-    })
-}
+use squid_n_core::model::Model;
 
 /// 危険断面位置（§6.2.3）を正規化座標 \[0,1\] で算定する。
 ///

@@ -1,9 +1,10 @@
 use crate::behavior::{Ctx, ElementBehavior, LocalMat, MassOption};
+use crate::frame::section_lookup::{get_material, get_section, sec_material};
 use crate::transform::LocalFrame;
 use smallvec::SmallVec;
 use squid_n_core::dof::DofMap;
 use squid_n_core::ids::{ElemId, NodeId};
-use squid_n_core::model::{ElementData, Material, MaterialCategory, Model, Section};
+use squid_n_core::model::{ElementData, Model};
 
 /// 一般ブレース要素（材料力学。トラス要素の軸剛性 KB = E·A/L）。
 ///
@@ -30,69 +31,6 @@ pub struct TrussElement {
     /// トライアル変位（グローバル座標系）。Newton 反復中も蓄積され、
     /// internal_force はこちらを参照する（beam/behavior.rs と同じ規約）。
     pub trial_disp: [f64; 12],
-}
-
-fn get_section(model: &Model, sid: Option<squid_n_core::ids::SectionId>) -> Section {
-    sid.and_then(|s| {
-        if s.index() < model.sections.len() {
-            let sec = &model.sections[s.index()];
-            if sec.id == s {
-                Some(sec.clone())
-            } else {
-                None
-            }
-        } else {
-            None
-        }
-    })
-    .unwrap_or_else(|| Section {
-        id: squid_n_core::ids::SectionId(0),
-        name: String::new(),
-        area: 0.0,
-        iy: 0.0,
-        iz: 0.0,
-        j: 0.0,
-        depth: 0.0,
-        width: 0.0,
-        as_y: 0.0,
-        as_z: 0.0,
-        floor: None,
-        panel_thickness: None,
-        thickness: None,
-        shape: None,
-        material: None,
-        rebar_material: None,
-        shear_rebar_material: None,
-        steel_material: None,
-    })
-}
-
-fn get_material(model: &Model, mid: Option<squid_n_core::ids::MaterialId>) -> Material {
-    mid.and_then(|m| {
-        if m.index() < model.materials.len() {
-            let mat = &model.materials[m.index()];
-            if mat.id == m {
-                Some(mat.clone())
-            } else {
-                None
-            }
-        } else {
-            None
-        }
-    })
-    .unwrap_or_else(|| Material {
-        strength_factor: None,
-        concrete_class: Default::default(),
-        id: squid_n_core::ids::MaterialId(0),
-        name: String::new(),
-        category: MaterialCategory::Steel,
-        young: 0.0,
-        poisson: 0.0,
-        density: 0.0,
-        shear: None,
-        fc: None,
-        fy: None,
-    })
 }
 
 impl TrussElement {
@@ -225,21 +163,14 @@ impl ElementBehavior for TrussElement {
     }
 }
 
-/// 要素の主材料 ID を断面経由で引く（材料は断面が持つ）。
-pub(crate) fn sec_material(
-    model: &Model,
-    data: &squid_n_core::model::ElementData,
-) -> Option<squid_n_core::ids::MaterialId> {
-    model.element_section(data).and_then(|s| s.material)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::behavior::LocalVec;
     use squid_n_core::ids::{ElemId, MaterialId, NodeId, SectionId};
     use squid_n_core::model::{
-        ElementData, ElementKind, EndCondition, ForceRegime, LocalAxis, Node, RigidZone,
+        ElementData, ElementKind, EndCondition, ForceRegime, LocalAxis, Material, MaterialCategory,
+        Node, RigidZone, Section,
     };
 
     fn make_model(p0: [f64; 3], p1: [f64; 3]) -> (Model, ElementData) {
