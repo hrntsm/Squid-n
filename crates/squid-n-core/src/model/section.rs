@@ -74,6 +74,41 @@ pub struct Section {
 pub type SectionKey<'a> = (&'a str, Option<&'a str>);
 
 impl Section {
+    /// 物性がすべてゼロ・形状も材料も持たない断面。
+    ///
+    /// 用途は 2 つある。1 つは断面を解決できなかったときのフォールバックで、断面 ID が
+    /// 範囲外・世代違い・未割当だった要素の構築（`squid-n-element` の `section_lookup`）と、
+    /// 形鋼名を解決できなかった ST-Bridge 断面の取り込み（`squid-n-io`）が使う。
+    /// もう 1 つは、線材の断面性能を本当に持たない版の断面（壁・スラブ）の土台で、
+    /// `..Section::zero(id, name)` に板厚だけを与える形で使う。
+    ///
+    /// **もっともらしい既定値で埋めてはならない。** 架空の断面性能を与えると、
+    /// 解析前チェック（`precheck_model`・`ensure_nonlinear_input`）を通らない経路から
+    /// 来たモデルが無音のまま解析され、根拠のない結果が返る。物性ゼロにしておけば
+    /// チェックが検出でき、検出漏れがあっても結果が明らかに異常になる。
+    pub fn zero(id: SectionId, name: String) -> Self {
+        Self {
+            id,
+            name,
+            floor: None,
+            area: 0.0,
+            iy: 0.0,
+            iz: 0.0,
+            j: 0.0,
+            depth: 0.0,
+            width: 0.0,
+            as_y: 0.0,
+            as_z: 0.0,
+            panel_thickness: None,
+            thickness: None,
+            shape: None,
+            material: None,
+            rebar_material: None,
+            shear_rebar_material: None,
+            steel_material: None,
+        }
+    }
+
     /// 同一性キー（符号＋階）を借用で返す。
     pub fn key(&self) -> SectionKey<'_> {
         (self.name.as_str(), self.floor.as_deref())

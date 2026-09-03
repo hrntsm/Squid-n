@@ -1,22 +1,21 @@
 //! プッシュオーバー解析の司令塔（P5 §7）。
 //!
 //! - [`pushover_analysis`] — 既存 API（節点変位を記録しない薄いラッパー）
-//! - [`pushover_analysis_recording`] — 荷重制御・変位制御・弧長法の各フェーズを
-//!   実行し、ヒンジ・せん断降伏・崩壊機構・部材別応答を集約する本体
+//! - [`pushover_analysis_recording`] — 長期載荷・荷重制御・変位制御・弧長法の各
+//!   フェーズを実行し、崩壊機構・部材別応答を集約する本体
+//!
+//! 確定ステップに残す記録（性能曲線・ヒンジ・せん断降伏・部材応答履歴・塑性率）は
+//! [`super::step_record::StepRecorder`] が一手に引き受ける。ここはフェーズの制御
+//! （増分の刻み・収束判定・終了目標の判定・フェーズ間の引き継ぎ）だけを持つ。
 
 use super::diagnosis::{nonconvergence_detail, tangent_singular_diagnosis};
-use super::ductility::{compute_ductility_refs, update_ductility, DuctilityTracker};
-use super::hinge::{compute_hinge_thresholds, track_hinges};
 use super::mechanism::determine_mechanism;
-use super::member_response::{compute_member_response, record_member_step};
-use super::response::{
-    compute_base_shear, compute_story_drift, compute_story_shear, get_roof_disp, get_roof_dof,
-    max_story_drift_angle, story_heights,
-};
-use super::shear_yield::{compute_shear_yield_thresholds, track_shear_yield};
+use super::member_response::compute_member_response;
+use super::response::{get_roof_dof, story_heights};
+use super::step_record::StepRecorder;
 use super::types::{
-    CapacityPoint, DuctilityMethod, MemberHistory, MemberStepState, PushoverControl,
-    PushoverResult, PushoverStep, PushoverTarget, PushoverTermination,
+    DuctilityMethod, MemberHistory, PushoverControl, PushoverResult, PushoverTarget,
+    PushoverTermination,
 };
 use crate::common::constraint::Reducer;
 use crate::common::csc_cache::CscCache;
@@ -181,11 +180,6 @@ pub fn pushover_analysis_recording(
         behaviors.push(b);
     }
 
-    // 塑性率（ductility）トラッカー: 各部材の塑性率基点曲率・最大応答曲率を追跡する。
-    let ductility_refs = compute_ductility_refs(model);
-    let mut ductility_trackers: Vec<DuctilityTracker> =
-        vec![DuctilityTracker::default(); model.elements.len()];
-
     let layers = model.layers();
     if layers.is_empty() {
         return Err("no stories defined".into());
@@ -252,14 +246,11 @@ pub fn pushover_analysis_recording(
         }
     }
 
-    let thresholds = compute_hinge_thresholds(model);
-    let shear_thresholds = compute_shear_yield_thresholds(model);
     // 目標最大層間変形角の判定に使う階高（elevation の隣接差分、最下層は最下端節点まで）。
     let heights = story_heights(model);
-    let mut hinges = Vec::new();
-    let mut shear_yields = Vec::new();
-    let mut capacity_curve = Vec::new();
-    let mut steps: Vec<PushoverStep> = Vec::new();
+    // 確定ステップの記録先。性能曲線・ヒンジ・せん断降伏・部材応答履歴・塑性率の
+    // 追跡をまとめて持ち、どのフェーズからも同じ入口（`record`）で積む。
+    let mut recorder = StepRecorder::new(model, dir, &heights, ductility_method);
     let mut total_disp = vec![0.0; n_active];
     // ステップ数はソルバ側の安全範囲 [1,100] へ丸める（範囲外の指定は黙って
     // クランプされる。100 超の分解能が必要な場合は呼び出し側の対応が必要）。
@@ -322,13 +313,6 @@ pub fn pushover_analysis_recording(
     // 10 倍の余裕を持たせる（通常は λ_cap 到達・目標到達・収束不能で先に止まる）。
     let max_load_steps = n_steps * 10;
 
-    // 記録用の通し番号（荷重制御→変位制御→弧長法で連番）。capacity_curve・steps の
-    // 並びとヒンジ・せん断降伏イベントの step を対応付ける単調キーで、確定した
-    // ステップにのみ採番する。
-    let mut step_no: u32 = 0;
-    // ヒンジ詳細図用の部材応答履歴（[確定ステップ][部材] の全部材記録）。結果へは
-    // ヒンジ・せん断降伏部材のみ絞って格納する（関数末尾）。
-    let mut member_history_steps: Vec<Vec<MemberStepState>> = Vec::new();
     // 均等刻みの勾配更新に用いる直前確定点の頂部変位。
     let mut last_roof = 0.0_f64;
 
@@ -410,42 +394,9 @@ pub fn pushover_analysis_recording(
             }
         }
         // 長期載荷完了状態を 1 ステップとして記録する（λ=0、性能曲線の始点）。
-        let roof = get_roof_disp(&total_disp, model, dofmap, dir);
-        let mut f_int_now = compute_f_int(model, dofmap, &behaviors);
-        add_support_spring_f_int(model, dofmap, &total_disp, &mut f_int_now);
-        let base_shear = compute_base_shear(model, dofmap, &f_int_now, dir);
-        let story_drift = compute_story_drift(model, dofmap, &total_disp, dir);
-        capacity_curve.push(CapacityPoint {
-            step: step_no,
-            roof_disp: roof,
-            base_shear,
-            story_shear: compute_story_shear(model, dofmap, &f_int_now, dir),
-            story_drift: story_drift.clone(),
-        });
-        steps.push(PushoverStep {
-            // 長期載荷フェーズ: 水平参照外力 q に対する倍率は 0（長期のみ載荷）。
-            load_factor: 0.0,
-            top_disp: roof,
-            base_shear,
-            story_drifts: story_drift,
-        });
-        let mu = update_ductility(
-            &behaviors,
-            &mut ductility_trackers,
-            &ductility_refs,
-            ductility_method,
-        );
-        track_hinges(model, &behaviors, &thresholds, &mu, step_no, &mut hinges);
-        track_shear_yield(
-            model,
-            &behaviors,
-            &shear_thresholds,
-            step_no,
-            &mut shear_yields,
-        );
-        member_history_steps.push(record_member_step(model, dofmap, &behaviors, &total_disp));
-        step_no += 1;
-        last_roof = roof;
+        // 水平力に対する応答ではないため、終了目標の判定は行わない。
+        let rec = recorder.record(0.0, model, dofmap, &behaviors, &total_disp);
+        last_roof = rec.roof;
     }
 
     for _step in 0..max_load_steps {
@@ -501,50 +452,11 @@ pub fn pushover_analysis_recording(
                 for (&du, td) in step_du_free.iter().zip(total_disp.iter_mut()) {
                     *td += du;
                 }
-                let roof = get_roof_disp(&total_disp, model, dofmap, dir);
-                // ベースシアは内力の釣合いから算定（載荷ベクトル総和でも一致するが、
-                // 変位制御フェーズと統一し反力ベースで求める）。
-                let mut f_int_now = compute_f_int(model, dofmap, &behaviors);
-                add_support_spring_f_int(model, dofmap, &total_disp, &mut f_int_now);
-                let base_shear = compute_base_shear(model, dofmap, &f_int_now, dir);
-                let story_drift = compute_story_drift(model, dofmap, &total_disp, dir);
-                let drift_angle_now = max_story_drift_angle(&story_drift, &heights);
-                capacity_curve.push(CapacityPoint {
-                    step: step_no,
-                    roof_disp: roof,
-                    base_shear,
-                    story_shear: compute_story_shear(model, dofmap, &f_int_now, dir),
-                    story_drift: story_drift.clone(),
-                });
-                steps.push(PushoverStep {
-                    // 荷重制御フェーズ: 参照外力ベクトル q に対する倍率 current_lambda を
-                    // そのまま荷重係数として記録する。
-                    load_factor: current_lambda,
-                    top_disp: roof,
-                    base_shear,
-                    story_drifts: story_drift,
-                });
-                let mu = update_ductility(
-                    &behaviors,
-                    &mut ductility_trackers,
-                    &ductility_refs,
-                    ductility_method,
-                );
-                track_hinges(model, &behaviors, &thresholds, &mu, step_no, &mut hinges);
-                track_shear_yield(
-                    model,
-                    &behaviors,
-                    &shear_thresholds,
-                    step_no,
-                    &mut shear_yields,
-                );
-                member_history_steps.push(record_member_step(
-                    model,
-                    dofmap,
-                    &behaviors,
-                    &total_disp,
-                ));
-                step_no += 1;
+                // 荷重制御フェーズ: 参照外力ベクトル q に対する倍率 current_lambda を
+                // そのまま荷重係数として記録する。
+                let rec = recorder.record(current_lambda, model, dofmap, &behaviors, &total_disp);
+                let roof = rec.roof;
+                let drift_angle_now = rec.drift_angle;
                 // 均等刻みの勾配更新（確定増分ベース）。降伏で勾配が増すほど次の
                 // λ 刻みが自動的に縮み、変位軸の点間隔が保たれる。
                 if adaptive {
@@ -735,50 +647,12 @@ pub fn pushover_analysis_recording(
                         for (&du, td) in step_du_free.iter().zip(total_disp.iter_mut()) {
                             *td += du;
                         }
-                        let roof = get_roof_disp(&total_disp, model, dofmap, dir);
-                        let mut f_int_now = compute_f_int(model, dofmap, &behaviors);
-                        add_support_spring_f_int(model, dofmap, &total_disp, &mut f_int_now);
-                        let base_shear = compute_base_shear(model, dofmap, &f_int_now, dir);
-                        let story_drift = compute_story_drift(model, dofmap, &total_disp, dir);
-                        let drift_angle_now = max_story_drift_angle(&story_drift, &heights);
-                        let cstep = step_no;
-                        capacity_curve.push(CapacityPoint {
-                            step: cstep,
-                            roof_disp: roof,
-                            base_shear,
-                            story_shear: compute_story_shear(model, dofmap, &f_int_now, dir),
-                            story_drift: story_drift.clone(),
-                        });
-                        steps.push(PushoverStep {
-                            // 変位制御フェーズ: 頂部変位拘束から決定した比例荷重係数 λ を
-                            // そのまま記録する（外力は常に λ·q。設計地震力レベル λ=1 を
-                            // 超えて崩壊機構形成まで増加し、機構形成後は減少に転じる）。
-                            load_factor: lambda,
-                            top_disp: roof,
-                            base_shear,
-                            story_drifts: story_drift,
-                        });
-                        let mu = update_ductility(
-                            &behaviors,
-                            &mut ductility_trackers,
-                            &ductility_refs,
-                            ductility_method,
-                        );
-                        track_hinges(model, &behaviors, &thresholds, &mu, cstep, &mut hinges);
-                        track_shear_yield(
-                            model,
-                            &behaviors,
-                            &shear_thresholds,
-                            cstep,
-                            &mut shear_yields,
-                        );
-                        member_history_steps.push(record_member_step(
-                            model,
-                            dofmap,
-                            &behaviors,
-                            &total_disp,
-                        ));
-                        step_no += 1;
+                        // 変位制御フェーズ: 頂部変位拘束から決定した比例荷重係数 λ を
+                        // そのまま記録する（外力は常に λ·q。設計地震力レベル λ=1 を
+                        // 超えて崩壊機構形成まで増加し、機構形成後は減少に転じる）。
+                        let rec = recorder.record(lambda, model, dofmap, &behaviors, &total_disp);
+                        let roof = rec.roof;
+                        let drift_angle_now = rec.drift_angle;
                         step_ok = true;
                         // 目標（頂部変位・最大層間変形角）到達で以降の押込みを打ち切る。
                         if target.reached(roof, drift_angle_now) {
@@ -902,49 +776,11 @@ pub fn pushover_analysis_recording(
                     arc_lambda += step_result.dlambda;
                     prev_du = step_result.du;
 
-                    let roof = get_roof_disp(&total_disp, model, dofmap, dir);
-                    let mut f_int_now = compute_f_int(model, dofmap, &behaviors);
-                    add_support_spring_f_int(model, dofmap, &total_disp, &mut f_int_now);
-                    let base_shear = compute_base_shear(model, dofmap, &f_int_now, dir);
-                    let story_drift = compute_story_drift(model, dofmap, &total_disp, dir);
-                    capacity_curve.push(CapacityPoint {
-                        step: step_no,
-                        roof_disp: roof,
-                        base_shear,
-                        story_shear: compute_story_shear(model, dofmap, &f_int_now, dir),
-                        story_drift: story_drift.clone(),
-                    });
-                    steps.push(PushoverStep {
-                        // 弧長法: 各増分後に更新される荷重倍率 arc_lambda をそのまま記録する。
-                        load_factor: arc_lambda,
-                        top_disp: roof,
-                        base_shear,
-                        story_drifts: story_drift,
-                    });
-                    // ヒンジ・せん断降伏の追跡は荷重制御・変位制御と同じ扱いで継続する
-                    // （従来は弧長法フェーズだけ追跡が抜けており、耐力ピーク以降に
-                    // 形成されるヒンジが機構判定・詳細図から欠落していた）。
-                    let mu = update_ductility(
-                        &behaviors,
-                        &mut ductility_trackers,
-                        &ductility_refs,
-                        ductility_method,
-                    );
-                    track_hinges(model, &behaviors, &thresholds, &mu, step_no, &mut hinges);
-                    track_shear_yield(
-                        model,
-                        &behaviors,
-                        &shear_thresholds,
-                        step_no,
-                        &mut shear_yields,
-                    );
-                    member_history_steps.push(record_member_step(
-                        model,
-                        dofmap,
-                        &behaviors,
-                        &total_disp,
-                    ));
-                    step_no += 1;
+                    // 弧長法: 各増分後に更新される荷重倍率 arc_lambda をそのまま記録する。
+                    // ヒンジ・せん断降伏の追跡も荷重制御・変位制御と同じ扱いで継続する
+                    // （記録は `StepRecorder` が一手に引き受けるため、フェーズごとに
+                    // 追跡が抜けることがない）。
+                    recorder.record(arc_lambda, model, dofmap, &behaviors, &total_disp);
                 }
                 _ => {
                     snap.restore(&mut behaviors);
@@ -963,7 +799,7 @@ pub fn pushover_analysis_recording(
     // 1 ステップも確定しなかった場合は結果を返さない。荷重制御の最初の増分すら
     // 収束しなかったということで、空の性能曲線（Qu=0）を「解析できた」として
     // 返すと保有水平耐力を 0 と誤認させる（危険側）。原因を診断して停止する。
-    if steps.is_empty() {
+    if recorder.is_empty() {
         let detail = current_failure_detail(
             model,
             dofmap,
@@ -978,27 +814,19 @@ pub fn pushover_analysis_recording(
         ));
     }
 
-    let mechanism = determine_mechanism(&hinges, model, dir);
-    // 保有水平耐力 Qu = 性能曲線上の最大ベースシア（崩壊機構形成時の水平耐力）。
-    // 単調載荷では機構形成後に頭打ちとなるため、ピーク値を採る。
-    let qu = capacity_curve
-        .iter()
-        .map(|c| c.base_shear)
-        .fold(0.0_f64, f64::max);
+    let mechanism = determine_mechanism(recorder.hinges(), model, dir);
+    let qu = recorder.qu();
     // 最終確定ステップの部材別応答（終局検定の設計用応力・部材別 Rp の直接反映用）。
-    // ステップが 1 つも確定しなかった場合は空を返す。
-    let member_response = if steps.is_empty() {
-        Vec::new()
-    } else {
-        compute_member_response(model, dofmap, &behaviors, &total_disp, dir)
-    };
+    let member_response = compute_member_response(model, dofmap, &behaviors, &total_disp, dir);
     // ヒンジ詳細図用の記録は、ヒンジ・せん断降伏が記録された部材に絞って格納する
     // （全部材×全ステップの履歴は結果サイズが過大になるため）。
-    let detail_elems: std::collections::HashSet<squid_n_core::ids::ElemId> = hinges
+    let detail_elems: std::collections::HashSet<squid_n_core::ids::ElemId> = recorder
+        .hinges()
         .iter()
         .map(|h| h.elem)
-        .chain(shear_yields.iter().map(|s| s.elem))
+        .chain(recorder.shear_yields().iter().map(|s| s.elem))
         .collect();
+    let recorded = recorder.finish();
     let member_history: Vec<MemberHistory> = model
         .elements
         .iter()
@@ -1006,7 +834,8 @@ pub fn pushover_analysis_recording(
         .filter(|(_, e)| detail_elems.contains(&e.id))
         .map(|(i, e)| MemberHistory {
             elem: e.id,
-            records: member_history_steps
+            records: recorded
+                .member_history_steps
                 .iter()
                 .filter_map(|s| s.get(i).copied())
                 .collect(),
@@ -1029,10 +858,10 @@ pub fn pushover_analysis_recording(
         phase_outcome
     };
     Ok(PushoverResult {
-        steps,
-        capacity_curve,
-        hinges,
-        shear_yields,
+        steps: recorded.steps,
+        capacity_curve: recorded.capacity_curve,
+        hinges: recorded.hinges,
+        shear_yields: recorded.shear_yields,
         mechanism,
         qu,
         member_response,

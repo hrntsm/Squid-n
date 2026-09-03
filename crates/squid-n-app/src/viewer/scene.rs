@@ -370,14 +370,7 @@ pub(super) fn order_wall_nodes(
     // 各節点の座標を取得（見つからなければ並べ替えせず返す）
     let coords: Vec<[f64; 3]> = node_ids
         .iter()
-        .map(|id| {
-            model
-                .nodes
-                .iter()
-                .find(|n| n.id == *id)
-                .map(|n| n.coord)
-                .unwrap_or([0.0; 3])
-        })
+        .map(|id| model.node(*id).map(|n| n.coord).unwrap_or([0.0; 3]))
         .collect();
     if coords.len() < 3 {
         return node_ids.to_vec();

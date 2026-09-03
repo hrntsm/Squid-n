@@ -534,30 +534,9 @@ fn visualization(ui: &mut egui::Ui, app: &mut App) {
         egui::Sense::click_and_drag(),
     );
 
+    // 操作感はビューアと共通（N 軸＝Z を画面上で縦に保つターンテーブル回転）。
     let mut cam = app.ui.scoped.mn_view.camera.clone();
-    if response.dragged_by(egui::PointerButton::Primary) {
-        // ターンテーブル回転（viewer と同じ操作感。N 軸＝Z を画面上で縦に保つ）
-        let d = response.drag_delta();
-        cam.turntable_drag(d.x, d.y);
-    }
-    if response.dragged_by(egui::PointerButton::Secondary) {
-        let d = response.drag_delta();
-        cam.pan[0] += d.x;
-        cam.pan[1] += d.y;
-    }
-    // viewer と異なり同一画面に 2D プロットや操作パネルが並ぶため、
-    // ズームは 3D 領域にポインタがあるときのみ反応させる。
-    if response.hovered() {
-        let scroll_y = ui.input(|i| i.smooth_scroll_delta.y);
-        if scroll_y != 0.0 {
-            cam.zoom *= 1.0 + scroll_y * 0.01;
-        }
-        let pinch = ui.input(|i| i.zoom_delta());
-        if pinch != 1.0 {
-            cam.zoom *= pinch;
-        }
-    }
-    cam.zoom = cam.zoom.clamp(0.5, 10.0);
+    cam.apply_pointer_input(ui, &response, true);
 
     draw_3d(ui, &rect, &cam, cache, show, n_target);
     app.ui.scoped.mn_view.camera = cam;

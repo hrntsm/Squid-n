@@ -10,96 +10,29 @@
 
 use std::time::Instant;
 
-use squid_n_core::dof::Dof6Mask;
-use squid_n_core::ids::{ElemId, LoadCaseId, MaterialId, NodeId, SectionId};
+use squid_n_core::ids::{LoadCaseId, MaterialId, NodeId, SectionId};
 use squid_n_core::model::{
-    ElementData, ElementKind, EndCondition, ForceRegime, LoadCase, LoadCombination, LocalAxis,
-    Material, MaterialCategory, Model, NodalLoad, Node, Section,
+    LoadCase, LoadCombination, Material, MaterialCategory, Model, NodalLoad, Section,
 };
 use squid_n_math::parallelism::{set_parallelism, Parallelism};
 use squid_n_solver::statics::analysis::Analysis;
 
+#[path = "common/mod.rs"]
+mod common;
+
 /// nx×ny スパン・nz 層の立体ラーメン（柱＋X/Y 大梁）を生成する。
 fn make_frame(nx: usize, ny: usize, nz: usize, n_cases: usize) -> Model {
-    let span = 6000.0; // [mm]
-    let height = 3500.0; // [mm]
-    let node_id = |ix: usize, iy: usize, iz: usize| -> NodeId {
-        NodeId((iz * (nx + 1) * (ny + 1) + iy * (nx + 1) + ix) as u32)
-    };
+    let grid = common::FrameGrid::new(nx, ny, nz);
+    let nodes = grid.build_nodes(|_, _| {});
 
-    let mut nodes = Vec::new();
-    for iz in 0..=nz {
-        for iy in 0..=ny {
-            for ix in 0..=nx {
-                nodes.push(Node {
-                    id: node_id(ix, iy, iz),
-                    coord: [ix as f64 * span, iy as f64 * span, iz as f64 * height],
-                    restraint: if iz == 0 {
-                        Dof6Mask::FIXED
-                    } else {
-                        Dof6Mask::FREE
-                    },
-                    mass: None,
-                    story: None,
-                    support_spring: None,
-                });
-            }
-        }
-    }
-
+    // 柱・大梁とも同一断面（このベンチは荷重組合せ一括求解の並列度を測るもので、
+    // 断面の作り分けは測定対象に影響しない）。
     let mut elements = Vec::new();
-    let mut push_beam = |n0: NodeId, n1: NodeId, ref_vector: [f64; 3]| {
-        elements.push(ElementData {
-            id: ElemId(elements.len() as u32),
-            kind: ElementKind::Beam,
-            nodes: smallvec::smallvec![n0, n1],
-            section: Some(SectionId(0)),
-            local_axis: LocalAxis { ref_vector },
-            end_cond: [EndCondition::Fixed, EndCondition::Fixed],
-            force_regime: ForceRegime::Auto,
-            rigid_zone: Default::default(),
-            plastic_zone: None,
-            spring: None,
-        });
-    };
-    for iz in 0..nz {
-        for iy in 0..=ny {
-            for ix in 0..=nx {
-                // 柱
-                push_beam(
-                    node_id(ix, iy, iz),
-                    node_id(ix, iy, iz + 1),
-                    [1.0, 0.0, 0.0],
-                );
-            }
-        }
-    }
-    for iz in 1..=nz {
-        for iy in 0..=ny {
-            for ix in 0..nx {
-                // X 方向大梁
-                push_beam(
-                    node_id(ix, iy, iz),
-                    node_id(ix + 1, iy, iz),
-                    [0.0, 0.0, 1.0],
-                );
-            }
-        }
-        for iy in 0..ny {
-            for ix in 0..=nx {
-                // Y 方向大梁
-                push_beam(
-                    node_id(ix, iy, iz),
-                    node_id(ix, iy + 1, iz),
-                    [0.0, 0.0, 1.0],
-                );
-            }
-        }
-    }
+    grid.push_frame_members(&mut elements, SectionId(0), SectionId(0), |_| {});
 
     // 荷重ケース: 最上層の全節点に方向・大きさ違いの集中荷重
     let top_nodes: Vec<NodeId> = (0..=ny)
-        .flat_map(|iy| (0..=nx).map(move |ix| node_id(ix, iy, nz)))
+        .flat_map(|iy| (0..=nx).map(move |ix| grid.node_id(ix, iy, nz)))
         .collect();
     let load_cases: Vec<LoadCase> = (0..n_cases)
         .map(|i| {
@@ -133,8 +66,6 @@ fn make_frame(nx: usize, ny: usize, nz: usize, n_cases: usize) -> Model {
         nodes,
         elements,
         sections: vec![Section {
-            id: SectionId(0),
-            name: "H-400".into(),
             area: 8_400.0,
             iy: 2.3e8,
             iz: 2.3e8,
@@ -143,14 +74,8 @@ fn make_frame(nx: usize, ny: usize, nz: usize, n_cases: usize) -> Model {
             width: 200.0,
             as_y: 4_000.0,
             as_z: 4_000.0,
-            floor: None,
-            panel_thickness: None,
-            thickness: None,
-            shape: None,
             material: Some(MaterialId(0)),
-            rebar_material: None,
-            shear_rebar_material: None,
-            steel_material: None,
+            ..Section::zero(SectionId(0), "H-400".into())
         }],
         materials: vec![Material {
             strength_factor: None,

@@ -173,10 +173,7 @@ pub fn collect_pca_checks(
         if elem.nodes.len() < 2 {
             continue;
         }
-        let Some(sec) = elem
-            .section
-            .and_then(|sid| model.sections.iter().find(|s| s.id == sid))
-        else {
+        let Some(sec) = model.element_section(elem) else {
             continue;
         };
         let Some(SectionShape::RcRect { b, d, ref rebar }) = sec.shape else {

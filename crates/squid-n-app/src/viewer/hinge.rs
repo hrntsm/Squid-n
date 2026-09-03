@@ -774,26 +774,7 @@ fn draw_mn_plot_3d(
         egui::vec2(ui.available_width(), 260.0),
         egui::Sense::click_and_drag(),
     );
-    if response.dragged_by(egui::PointerButton::Primary) {
-        let d = response.drag_delta();
-        cam.turntable_drag(d.x, d.y);
-    }
-    if response.dragged_by(egui::PointerButton::Secondary) {
-        let d = response.drag_delta();
-        cam.pan[0] += d.x;
-        cam.pan[1] += d.y;
-    }
-    if response.hovered() {
-        let scroll_y = ui.input(|i| i.smooth_scroll_delta.y);
-        if scroll_y != 0.0 {
-            cam.zoom *= 1.0 + scroll_y * 0.01;
-        }
-        let pinch = ui.input(|i| i.zoom_delta());
-        if pinch != 1.0 {
-            cam.zoom *= pinch;
-        }
-    }
-    cam.zoom = cam.zoom.clamp(0.5, 10.0);
+    cam.apply_pointer_input(ui, &response, true);
 
     let painter = ui.painter_at(rect);
     painter.rect_filled(rect, 0.0, theme::VIEW_BG);

@@ -415,9 +415,7 @@ pub(crate) fn lumped_mass_time_history_spatial(
     let d1x: Vec<f64> = lm.spatial.iter().map(|s| s.skeleton_x.d1).collect();
     let d1y: Vec<f64> = lm.spatial.iter().map(|s| s.skeleton_y.d1).collect();
     let ductility_dir = dir_ductility(&drift_dir, &d1x, &d1y);
-    let ductility: Vec<f64> = (0..n)
-        .map(|i| ductility_dir.x[i].max(ductility_dir.y[i]))
-        .collect();
+    let ductility = ductility_dir.story_max();
 
     StickResponse {
         time,

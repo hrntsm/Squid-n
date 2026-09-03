@@ -10,6 +10,7 @@
 //! - [`shear_yield`] — せん断降伏耐力 Qy の算定と降伏イベント追跡
 //! - [`member_response`] — 終局時の部材別応答の算定
 //! - [`mechanism`] — 崩壊機構の判定
+//! - [`step_record`] — 確定ステップの記録（性能曲線・ヒンジ・部材履歴）
 //! - [`geom`] — 幾何ヘルパ（内積・軸圧縮力）
 
 mod diagnosis;
@@ -21,6 +22,7 @@ mod mechanism;
 pub(crate) mod member_response;
 mod response;
 mod shear_yield;
+mod step_record;
 mod types;
 
 pub use driver::{pushover_analysis, pushover_analysis_recording};

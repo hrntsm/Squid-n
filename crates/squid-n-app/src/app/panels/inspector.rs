@@ -177,7 +177,7 @@ impl App {
 
             // 選択された断面の諸元（断面テーブルの行選択と連動）
             if let Some(sec_id) = self.ui.scoped.nav.focus_section {
-                if let Some(sec) = self.core.model.sections.iter().find(|s| s.id == sec_id) {
+                if let Some(sec) = self.core.model.section(sec_id) {
                     ui.separator();
                     ui.strong("断面（選択中）");
                     ui.label(format!("名前: {} ({})", sec.name, sec_id.0));

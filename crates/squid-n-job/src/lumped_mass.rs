@@ -360,7 +360,7 @@ fn story_shears(model: &Model, res: &StaticOnce, dir: SeismicDir) -> Vec<f64> {
     let mut shear = vec![0.0; layers.len()];
     for layer in &layers {
         for col in story_columns(model, layer.top) {
-            let Some(elem) = model.elements.iter().find(|e| e.id == col.top_elem) else {
+            let Some(elem) = model.element(col.top_elem) else {
                 continue;
             };
             let Some(mf) = forces.get(&elem.id) else {

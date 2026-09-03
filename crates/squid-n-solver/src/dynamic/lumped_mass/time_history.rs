@@ -51,6 +51,20 @@ impl StickDirPeaks {
         self.deg45[i] = self.deg45[i].max(p45).max(p135);
         (vx * vx + vy * vy).sqrt()
     }
+
+    /// 層ごとに X・Y の大きい方を採った代表値。
+    ///
+    /// 方向の内訳を持たない 1 本の系列（`StickResponse::story_ductility`）を作る。
+    /// **45° 成分は採らない。** 45° は X・Y が同時刻にピークを迎えた場合の合成で、
+    /// `vx = vy` のときは √2 倍となって X・Y のどちらも上回る。軸方向の代表値へ
+    /// 混ぜる意味を持たないため、方向内訳（`ductility_dir` 等）の側だけで持つ。
+    pub(crate) fn story_max(&self) -> Vec<f64> {
+        self.x
+            .iter()
+            .zip(self.y.iter())
+            .map(|(x, y)| x.max(*y))
+            .collect()
+    }
 }
 
 fn peak_ratio(num: f64, den: f64) -> f64 {
@@ -425,9 +439,7 @@ pub fn lumped_mass_time_history(
         ),
     };
     let ductility_dir = dir_ductility(&drift_dir, &d1x, &d1y);
-    let ductility: Vec<f64> = (0..n)
-        .map(|i| ductility_dir.x[i].max(ductility_dir.y[i]))
-        .collect();
+    let ductility = ductility_dir.story_max();
 
     StickResponse {
         time,

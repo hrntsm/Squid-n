@@ -18,11 +18,11 @@
 
 use std::time::Instant;
 
-use squid_n_core::dof::{Dof6Mask, DofMap};
-use squid_n_core::ids::{ElemId, LoadCaseId, MaterialId, NodeId, SectionId, StoryId};
+use squid_n_core::dof::DofMap;
+use squid_n_core::ids::{LoadCaseId, MaterialId, NodeId, SectionId, StoryId};
 use squid_n_core::model::{
-    ElementData, ElementKind, EndCondition, ForceRegime, LoadCase, LoadCaseKind, LocalAxis,
-    Material, MaterialCategory, MemberLoad, MemberLoadKind, Model, Node, Section, Story,
+    LoadCase, LoadCaseKind, Material, MaterialCategory, MemberLoad, MemberLoadKind, Model, Section,
+    Story,
 };
 use squid_n_math::parallelism::{set_parallelism, Parallelism};
 use squid_n_math::solver::SolveError;
@@ -33,6 +33,9 @@ use squid_n_solver::dynamic::timehistory::{
     linear_time_history_analysis, nonlinear_time_history_analysis, GroundMotion, NewmarkCfg,
     NonlinearThCfg, ResponseResult,
 };
+
+#[path = "common/mod.rs"]
+mod common;
 
 /// 記録をほぼ無効化した近似として使う `record_every`。ステップ数を大きく
 /// 上回る値を渡すと、フレーム記録は最終ステップのみになる
@@ -47,9 +50,7 @@ const RECORD_EVERY_DISABLED: usize = 1_000_000_000;
 /// 集計や非線形解析の長期荷重初期化（`NonlinearThCfg::apply_long_term`）を
 /// 実運用に近い形で通す。
 fn make_frame(nx: usize, ny: usize, nz: usize) -> Model {
-    let span = 6000.0; // [mm]
-    let height = 3500.0; // [mm]
-                         // 1節点あたりの水平・鉛直質量 [N・s²/mm]（床の分担重量を想定した概算値）。
+    // 1節点あたりの水平・鉛直質量 [N・s²/mm]（床の分担重量を想定した概算値）。
     let node_mass = 800.0;
     // 回転自由度のダミー質量。非線形時刻歴（集中ばね系の梁要素）は回転自由度に
     // 慣性を持たないため、並進のみに質量を与えると質量行列が回転DOFで特異になり
@@ -57,104 +58,28 @@ fn make_frame(nx: usize, ny: usize, nz: usize) -> Model {
     // 質量を与える」ことで回避する）。応答への影響が無視できる程度の小さな値。
     let node_mass_rot = node_mass * 1.0e-3;
 
-    let node_id = |ix: usize, iy: usize, iz: usize| -> NodeId {
-        NodeId((iz * (nx + 1) * (ny + 1) + iy * (nx + 1) + ix) as u32)
-    };
-
-    let mut nodes = Vec::new();
-    for iz in 0..=nz {
-        for iy in 0..=ny {
-            for ix in 0..=nx {
-                let is_base = iz == 0;
-                nodes.push(Node {
-                    id: node_id(ix, iy, iz),
-                    coord: [ix as f64 * span, iy as f64 * span, iz as f64 * height],
-                    restraint: if is_base {
-                        Dof6Mask::FIXED
-                    } else {
-                        Dof6Mask::FREE
-                    },
-                    mass: if is_base {
-                        None
-                    } else {
-                        Some([
-                            node_mass,
-                            node_mass,
-                            node_mass,
-                            node_mass_rot,
-                            node_mass_rot,
-                            node_mass_rot,
-                        ])
-                    },
-                    story: if is_base {
-                        None
-                    } else {
-                        Some(StoryId((iz - 1) as u32))
-                    },
-                    support_spring: None,
-                });
-            }
+    let grid = common::FrameGrid::new(nx, ny, nz);
+    let (span, height) = (grid.span, grid.height);
+    let nodes = grid.build_nodes(|node, iz| {
+        if iz > 0 {
+            node.mass = Some([
+                node_mass,
+                node_mass,
+                node_mass,
+                node_mass_rot,
+                node_mass_rot,
+                node_mass_rot,
+            ]);
+            node.story = Some(StoryId((iz - 1) as u32));
         }
-    }
+    });
 
+    // 大梁は長期荷重を載荷する対象として ID を控える。
     let mut elements = Vec::new();
     let mut beam_ids_for_load = Vec::new();
-    let mut push_beam =
-        |n0: NodeId, n1: NodeId, ref_vector: [f64; 3], section: SectionId| -> ElemId {
-            let id = ElemId(elements.len() as u32);
-            elements.push(ElementData {
-                id,
-                kind: ElementKind::Beam,
-                nodes: smallvec::smallvec![n0, n1],
-                section: Some(section),
-                local_axis: LocalAxis { ref_vector },
-                end_cond: [EndCondition::Fixed, EndCondition::Fixed],
-                force_regime: ForceRegime::Auto,
-                rigid_zone: Default::default(),
-                plastic_zone: None,
-                spring: None,
-            });
-            id
-        };
-
-    // 柱（全層・全通り、断面 SectionId(0)）
-    for iz in 0..nz {
-        for iy in 0..=ny {
-            for ix in 0..=nx {
-                push_beam(
-                    node_id(ix, iy, iz),
-                    node_id(ix, iy, iz + 1),
-                    [1.0, 0.0, 0.0],
-                    SectionId(0),
-                );
-            }
-        }
-    }
-    // 大梁（各階、X/Y 両方向、断面 SectionId(1)）。長期荷重を載荷する対象として ID を控える。
-    for iz in 1..=nz {
-        for iy in 0..=ny {
-            for ix in 0..nx {
-                let id = push_beam(
-                    node_id(ix, iy, iz),
-                    node_id(ix + 1, iy, iz),
-                    [0.0, 0.0, 1.0],
-                    SectionId(1),
-                );
-                beam_ids_for_load.push(id);
-            }
-        }
-        for iy in 0..ny {
-            for ix in 0..=nx {
-                let id = push_beam(
-                    node_id(ix, iy, iz),
-                    node_id(ix, iy + 1, iz),
-                    [0.0, 0.0, 1.0],
-                    SectionId(1),
-                );
-                beam_ids_for_load.push(id);
-            }
-        }
-    }
+    grid.push_frame_members(&mut elements, SectionId(0), SectionId(1), |id| {
+        beam_ids_for_load.push(id)
+    });
 
     // 長期荷重ケース（固定荷重）: 全大梁に等分布荷重 w=10 N/mm（鉛直下向き）。
     // 非線形時刻歴（`NonlinearThCfg::apply_long_term`）の初期載荷に使う。
@@ -185,7 +110,7 @@ fn make_frame(nx: usize, ny: usize, nz: usize) -> Model {
     let mut stories = Vec::new();
     for iz in 1..=nz {
         let node_ids: Vec<NodeId> = (0..=ny)
-            .flat_map(|iy| (0..=nx).map(move |ix| node_id(ix, iy, iz)))
+            .flat_map(|iy| (0..=nx).map(move |ix| grid.node_id(ix, iy, iz)))
             .collect();
         stories.push(Story {
             level_kind: Default::default(),
@@ -204,8 +129,6 @@ fn make_frame(nx: usize, ny: usize, nz: usize) -> Model {
         elements,
         sections: vec![
             Section {
-                id: SectionId(0),
-                name: "柱 H-400x400x13x21".into(),
                 area: 21_870.0,
                 iy: 6.6e8,
                 iz: 6.6e8,
@@ -214,18 +137,10 @@ fn make_frame(nx: usize, ny: usize, nz: usize) -> Model {
                 width: 400.0,
                 as_y: 12_000.0,
                 as_z: 12_000.0,
-                floor: None,
-                panel_thickness: None,
-                thickness: None,
-                shape: None,
                 material: Some(MaterialId(0)),
-                rebar_material: None,
-                shear_rebar_material: None,
-                steel_material: None,
+                ..Section::zero(SectionId(0), "柱 H-400x400x13x21".into())
             },
             Section {
-                id: SectionId(1),
-                name: "梁 H-400x200x8x13".into(),
                 area: 8_412.0,
                 iy: 2.34e8,
                 iz: 2.34e8,
@@ -234,14 +149,8 @@ fn make_frame(nx: usize, ny: usize, nz: usize) -> Model {
                 width: 200.0,
                 as_y: 4_000.0,
                 as_z: 4_000.0,
-                floor: None,
-                panel_thickness: None,
-                thickness: None,
-                shape: None,
                 material: Some(MaterialId(0)),
-                rebar_material: None,
-                shear_rebar_material: None,
-                steel_material: None,
+                ..Section::zero(SectionId(1), "梁 H-400x200x8x13".into())
             },
         ],
         materials: vec![Material {

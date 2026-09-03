@@ -15,6 +15,21 @@ use squid_n_edit::{
 use squid_n_load::wall_expand::{self, WallExpansionIndex};
 use std::borrow::Cow;
 
+/// 要素の節点 ID をカンマ区切りで並べたセル文字列（制振ダンパー表・免震支承材表で共有）。
+/// 要素が見つからない場合は空文字列。
+fn elem_nodes_label(model: &Model, elem_id: ElemId) -> String {
+    model
+        .element(elem_id)
+        .map(|e| {
+            e.nodes
+                .iter()
+                .map(|n| n.0.to_string())
+                .collect::<Vec<_>>()
+                .join(",")
+        })
+        .unwrap_or_default()
+}
+
 /// 「+ 免震支承材追加」フォームのドラフト状態（`AddIsolator` の諸元）。
 /// 2節点間へ免震支承材要素を作成する独立フォーム用（境界条件タブの
 /// 「支点への配置」〔`PlaceSupportIsolator`〕とは別導線）。
@@ -819,21 +834,7 @@ fn dampers_table(ui: &mut egui::Ui, app: &mut App) {
                 table_util::id_label(ui, elem_id.0);
             });
             row.col(|ui| {
-                let nodes = app
-                    .core
-                    .model
-                    .elements
-                    .iter()
-                    .find(|e| e.id == elem_id)
-                    .map(|e| {
-                        e.nodes
-                            .iter()
-                            .map(|n| n.0.to_string())
-                            .collect::<Vec<_>>()
-                            .join(",")
-                    })
-                    .unwrap_or_default();
-                table_util::text_cell(ui, &nodes);
+                table_util::text_cell(ui, &elem_nodes_label(&app.core.model, elem_id));
             });
             // 種別セレクタ。
             row.col(|ui| {
@@ -1021,21 +1022,7 @@ fn isolators_table(ui: &mut egui::Ui, app: &mut App) {
                 table_util::id_label(ui, elem_id.0);
             });
             row.col(|ui| {
-                let nodes = app
-                    .core
-                    .model
-                    .elements
-                    .iter()
-                    .find(|e| e.id == elem_id)
-                    .map(|e| {
-                        e.nodes
-                            .iter()
-                            .map(|n| n.0.to_string())
-                            .collect::<Vec<_>>()
-                            .join(",")
-                    })
-                    .unwrap_or_default();
-                table_util::text_cell(ui, &nodes);
+                table_util::text_cell(ui, &elem_nodes_label(&app.core.model, elem_id));
             });
             // 種別セレクタ。
             row.col(|ui| {

@@ -48,6 +48,45 @@ pub struct SteelAttrDraft {
     pub c_direct: String,
 }
 
+impl SteelAttrDraft {
+    /// モデルの鋼材設計属性から入力バッファを埋め、同期済みの対象を `attr.elem` にする。
+    ///
+    /// 表の「編集」ボタンと、対象部材が切り替わったときの再同期の 2 か所から呼ぶ。
+    /// バッファは全項目を上書きする（前の対象の値が残ると、編集していない項目まで
+    /// 別部材の値で保存されてしまう）。
+    ///
+    /// 表示桁は項目ごとに固定する。欠損率・スカラップは 0.1% 刻み、長さ [mm] は
+    /// 整数、横座屈修正係数 C は 0.01 刻みで、いずれも入力欄の想定精度に合わせる。
+    /// 未設定（`None`）の項目は空欄にし、「自動算定」を意味させる。
+    fn sync_from(&mut self, attr: &SteelDesignAttr) {
+        self.elem = Some(attr.elem);
+        self.synced_for = Some(attr.elem);
+        self.joint_flange_loss = format!("{:.1}", attr.joint_flange_loss);
+        self.joint_web_loss = format!("{:.1}", attr.joint_web_loss);
+        self.scallop_web_loss = format!("{:.1}", attr.scallop_web_loss);
+        let (lb_s, lb_m, lb_e) = attr
+            .lb_direct
+            .map(|(s, m, e)| (format!("{s:.0}"), format!("{m:.0}"), format!("{e:.0}")))
+            .unwrap_or_default();
+        self.lb_start = lb_s;
+        self.lb_mid = lb_m;
+        self.lb_end = lb_e;
+        self.lateral_brace_count = attr
+            .lateral_brace_count
+            .map(|n| n.to_string())
+            .unwrap_or_default();
+        self.lk_y_direct = attr
+            .lk_y_direct
+            .map(|v| format!("{v:.0}"))
+            .unwrap_or_default();
+        self.lk_z_direct = attr
+            .lk_z_direct
+            .map(|v| format!("{v:.0}"))
+            .unwrap_or_default();
+        self.c_direct = attr.c_direct.map(|v| format!("{v:.2}")).unwrap_or_default();
+    }
+}
+
 /// 欠損率入力（βf/βw/αw共通）をパースする。空欄は 0（欠損なし）とする
 /// （egui 非依存の純関数）。
 fn parse_loss_percent(s: &str, label: &str) -> Result<f64, String> {
@@ -212,32 +251,7 @@ pub fn steel_attrs_table(ui: &mut egui::Ui, app: &mut App) {
         }
     }
     if let Some(attr) = pending_edit {
-        app.ui.scoped.steel_attr_draft.elem = Some(attr.elem);
-        app.ui.scoped.steel_attr_draft.synced_for = Some(attr.elem);
-        app.ui.scoped.steel_attr_draft.joint_flange_loss = format!("{:.1}", attr.joint_flange_loss);
-        app.ui.scoped.steel_attr_draft.joint_web_loss = format!("{:.1}", attr.joint_web_loss);
-        app.ui.scoped.steel_attr_draft.scallop_web_loss = format!("{:.1}", attr.scallop_web_loss);
-        let (lb_s, lb_m, lb_e) = attr
-            .lb_direct
-            .map(|(s, m, e)| (format!("{s:.0}"), format!("{m:.0}"), format!("{e:.0}")))
-            .unwrap_or_default();
-        app.ui.scoped.steel_attr_draft.lb_start = lb_s;
-        app.ui.scoped.steel_attr_draft.lb_mid = lb_m;
-        app.ui.scoped.steel_attr_draft.lb_end = lb_e;
-        app.ui.scoped.steel_attr_draft.lateral_brace_count = attr
-            .lateral_brace_count
-            .map(|n| n.to_string())
-            .unwrap_or_default();
-        app.ui.scoped.steel_attr_draft.lk_y_direct = attr
-            .lk_y_direct
-            .map(|v| format!("{v:.0}"))
-            .unwrap_or_default();
-        app.ui.scoped.steel_attr_draft.lk_z_direct = attr
-            .lk_z_direct
-            .map(|v| format!("{v:.0}"))
-            .unwrap_or_default();
-        app.ui.scoped.steel_attr_draft.c_direct =
-            attr.c_direct.map(|v| format!("{v:.2}")).unwrap_or_default();
+        app.ui.scoped.steel_attr_draft.sync_from(&attr);
     }
     if let Some(elem) = pending_remove {
         app.core.scoped.undo.run(
@@ -296,33 +310,7 @@ pub fn steel_attrs_table(ui: &mut egui::Ui, app: &mut App) {
                 lk_z_direct: None,
                 c_direct: None,
             });
-            app.ui.scoped.steel_attr_draft.joint_flange_loss =
-                format!("{:.1}", attr.joint_flange_loss);
-            app.ui.scoped.steel_attr_draft.joint_web_loss = format!("{:.1}", attr.joint_web_loss);
-            app.ui.scoped.steel_attr_draft.scallop_web_loss =
-                format!("{:.1}", attr.scallop_web_loss);
-            let (lb_s, lb_m, lb_e) = attr
-                .lb_direct
-                .map(|(s, m, e)| (format!("{s:.0}"), format!("{m:.0}"), format!("{e:.0}")))
-                .unwrap_or_default();
-            app.ui.scoped.steel_attr_draft.lb_start = lb_s;
-            app.ui.scoped.steel_attr_draft.lb_mid = lb_m;
-            app.ui.scoped.steel_attr_draft.lb_end = lb_e;
-            app.ui.scoped.steel_attr_draft.lateral_brace_count = attr
-                .lateral_brace_count
-                .map(|n| n.to_string())
-                .unwrap_or_default();
-            app.ui.scoped.steel_attr_draft.lk_y_direct = attr
-                .lk_y_direct
-                .map(|v| format!("{v:.0}"))
-                .unwrap_or_default();
-            app.ui.scoped.steel_attr_draft.lk_z_direct = attr
-                .lk_z_direct
-                .map(|v| format!("{v:.0}"))
-                .unwrap_or_default();
-            app.ui.scoped.steel_attr_draft.c_direct =
-                attr.c_direct.map(|v| format!("{v:.2}")).unwrap_or_default();
-            app.ui.scoped.steel_attr_draft.synced_for = Some(eid);
+            app.ui.scoped.steel_attr_draft.sync_from(&attr);
         }
     }
 

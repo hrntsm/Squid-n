@@ -34,7 +34,7 @@ pub(super) fn for_each_story_column(
     ),
 ) {
     for col in story_columns(model, story) {
-        let Some(elem) = model.elements.iter().find(|e| e.id == col.top_elem) else {
+        let Some(elem) = model.element(col.top_elem) else {
             continue;
         };
         let top = &model.nodes[col.top.index()];
