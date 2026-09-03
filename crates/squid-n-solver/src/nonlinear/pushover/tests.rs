@@ -514,6 +514,88 @@ fn test_pushover_arc_length_path_runs() {
 }
 
 #[test]
+fn test_pushover_arc_length_respects_termination_target() {
+    // 弧長法フェーズも終了目標を判定すること。目標を十分小さく取れば、荷重制御か
+    // 変位制御の時点で目標へ達し、弧長法フェーズは 1 ステップも回さない。
+    // （弧長法フェーズだけ目標判定が抜けていた不具合の回帰テスト。抜けていた頃は
+    // 目標到達後も最大 20 ステップが性能曲線へ積まれ、Qu の算定対象に入っていた。）
+    let model = single_column_model(235.0, 80_000.0);
+    let dofmap = DofMap::build(&model);
+    let reducer = Reducer::build(&model, &dofmap);
+    let run = |use_arc_length: bool| {
+        pushover_analysis_recording(
+            &model,
+            &dofmap,
+            &reducer,
+            SeismicDir::X,
+            10,
+            PushoverTarget::from_max_disp(5.0), // 早く到達する小さな目標
+            PushoverControl::Phased,
+            false,
+            false,
+            use_arc_length,
+            1.0,
+            DuctilityMethod::default(),
+        )
+        .expect("pushover should run")
+    };
+    let without_arc = run(false);
+    let with_arc = run(true);
+
+    assert_eq!(
+        with_arc.termination,
+        PushoverTermination::TargetReached,
+        "小さな目標なので目標到達で終了するはず"
+    );
+    // 目標到達後に弧長法が追加ステップを積んでいないこと。積んでいれば
+    // 性能曲線の長さが弧長法の有無で変わる。
+    assert_eq!(
+        with_arc.capacity_curve.len(),
+        without_arc.capacity_curve.len(),
+        "目標到達済みなら弧長法フェーズは追加ステップを積まない"
+    );
+    assert_eq!(
+        with_arc.qu, without_arc.qu,
+        "追加ステップがないため Qu も一致する"
+    );
+}
+
+#[test]
+fn test_pushover_arc_length_runs_when_target_disabled() {
+    // 終了目標を無効にした場合は、従来どおり弧長法フェーズが走ること
+    // （上のテストの守り〔`!target_reached`〕が、目標なしの解析まで
+    // 止めてしまっていないことの確認）。
+    let model = single_column_model(235.0, 80_000.0);
+    let dofmap = DofMap::build(&model);
+    let reducer = Reducer::build(&model, &dofmap);
+    let run = |use_arc_length: bool| {
+        pushover_analysis_recording(
+            &model,
+            &dofmap,
+            &reducer,
+            SeismicDir::X,
+            10,
+            PushoverTarget::from_max_disp(0.0), // 0 以下は判定なし（目標無効）
+            PushoverControl::Phased,
+            false,
+            false,
+            use_arc_length,
+            1.0,
+            DuctilityMethod::default(),
+        )
+        .expect("pushover should run")
+    };
+    let without_arc = run(false);
+    let with_arc = run(true);
+    assert!(
+        with_arc.capacity_curve.len() > without_arc.capacity_curve.len(),
+        "目標が無効なら弧長法フェーズがステップを追加する: {} vs {}",
+        with_arc.capacity_curve.len(),
+        without_arc.capacity_curve.len()
+    );
+}
+
+#[test]
 fn test_pushover_computes_member_ductility() {
     // 変位制御で十分に押し込み、ファイバ柱の部材塑性率 μ が算定されること
     // （降伏方式では降伏曲率が基点、降伏後 μ≥1 が報告される）。

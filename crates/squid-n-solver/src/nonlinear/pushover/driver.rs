@@ -683,7 +683,10 @@ pub fn pushover_analysis_recording(
     }
 
     // 弧長法は段階制御のみ（荷重増分のみの比較モードでは荷重制御以外を使わない）。
-    if use_arc_length && matches!(control, PushoverControl::Phased) {
+    // 直前のフェーズで終了目標に達していれば入らない。目標は「どこまで追跡するか」を
+    // 決めるものであり、フェーズが変わったからといって越えてよいものではない
+    // （変位制御フェーズの入口 `!target_reached` と同じ守り）。
+    if use_arc_length && matches!(control, PushoverControl::Phased) && !target_reached {
         let arc_solver = ArcLengthSolver::new(arc_length_dl);
         let mut prev_du: Vec<f64> = Vec::new();
         // 弧長法は直前フェーズ（荷重制御・変位制御）で確定した荷重係数 λ から継続する
@@ -780,7 +783,12 @@ pub fn pushover_analysis_recording(
                     // ヒンジ・せん断降伏の追跡も荷重制御・変位制御と同じ扱いで継続する
                     // （記録は `StepRecorder` が一手に引き受けるため、フェーズごとに
                     // 追跡が抜けることがない）。
-                    recorder.record(arc_lambda, model, dofmap, &behaviors, &total_disp);
+                    let rec = recorder.record(arc_lambda, model, dofmap, &behaviors, &total_disp);
+                    // 終了目標（頂部変位・最大層間変形角）の判定も他フェーズと揃える。
+                    if target.reached(rec.roof, rec.drift_angle) {
+                        target_reached = true;
+                        break;
+                    }
                 }
                 _ => {
                     snap.restore(&mut behaviors);
