@@ -23,46 +23,10 @@ impl ElementBehavior for BeamElement {
     }
 
     fn geometric_stiffness(&self, n: f64) -> LocalMat {
-        // 幾何剛性も弾性剛性と整合させる: 可撓長で組み、剛域変換で節点自由度へ写す。
-        // 剛域があれば P-δ は可撓部でのみ生じ、剛域は剛体アームとして働く。
-        // 剛域なし（li=lj=0）では従来どおり全長 L の幾何剛性に一致する。
         let (li, lj) = self.rigid_lengths();
-        let l = self.length - li - lj;
-        if l < 1e-12 {
-            return LocalMat::zeros(12);
-        }
-        let c = n / l;
-        let mut kg = LocalMat::zeros(12);
-        let mut s = |i: usize, j: usize, v: f64| {
-            kg.set(i, j, v);
-            if i != j {
-                kg.set(j, i, v);
-            }
-        };
-        // xy面（uy=1,rz=5 / uy_j=7,rz_j=11）
-        s(1, 1, c * 6.0 / 5.0);
-        s(7, 7, c * 6.0 / 5.0);
-        s(1, 7, -c * 6.0 / 5.0);
-        s(1, 5, c * l / 10.0);
-        s(1, 11, c * l / 10.0);
-        s(5, 7, -c * l / 10.0);
-        s(7, 11, -c * l / 10.0);
-        s(5, 5, c * 2.0 * l * l / 15.0);
-        s(11, 11, c * 2.0 * l * l / 15.0);
-        s(5, 11, -c * l * l / 30.0);
-        // xz面（uz=2,ry=4 / uz_j=8,ry_j=10）§4.1 規約で並進-回転結合項の符号が逆（ry の向き）
-        s(2, 2, c * 6.0 / 5.0);
-        s(8, 8, c * 6.0 / 5.0);
-        s(2, 8, -c * 6.0 / 5.0);
-        s(2, 4, -c * l / 10.0);
-        s(2, 10, -c * l / 10.0);
-        s(4, 8, c * l / 10.0);
-        s(8, 10, c * l / 10.0);
-        s(4, 4, c * 2.0 * l * l / 15.0);
-        s(10, 10, c * 2.0 * l * l / 15.0);
-        s(4, 10, -c * l * l / 30.0);
-        // 剛域変換 → 全体系（P-Δ を組立系で正しく加算するため）
-        let kg_node = self.apply_rigid_zone_transform(&kg, li, lj);
+        let kg_node =
+            crate::frame::prismatic::geometric_stiffness(n, self.length - li - lj, li, lj);
+        // P-Δ を組立系で正しく加算するため全体系へ回す。
         self.axis.to_global(&kg_node)
     }
 
@@ -70,64 +34,12 @@ impl ElementBehavior for BeamElement {
 
     fn mass_matrix(&self, opt: MassOption) -> LocalMat {
         let m = self.density * self.a_mass * self.length;
-        let mut mm = LocalMat::zeros(12);
         match opt {
-            MassOption::Lumped => {
-                // 並進 3 成分が等しい対角行列は回転不変（Rᵀ·(m/2)I·R = (m/2)I）の
-                // ため、全体系変換は不要。
-                for d in [0, 1, 2, 6, 7, 8] {
-                    mm.set(d, d, m / 2.0);
-                }
-                mm
-            }
+            MassOption::Lumped => crate::frame::prismatic::lumped_mass(m),
             MassOption::Consistent => {
-                let c1 = m / 6.0;
-                let c2 = m / 420.0;
-                let l = self.length;
-                let l2 = l * l;
-                // Axial (Ux):  indices 0,6
-                mm.set(0, 0, 2.0 * c1);
-                mm.set(0, 6, 1.0 * c1);
-                mm.set(6, 0, 1.0 * c1);
-                mm.set(6, 6, 2.0 * c1);
-                // Torsion (Rx): indices 3,9
-                let ct = self.density * self.j * l / 6.0;
-                mm.set(3, 3, 2.0 * ct);
-                mm.set(3, 9, 1.0 * ct);
-                mm.set(9, 3, 1.0 * ct);
-                mm.set(9, 9, 2.0 * ct);
-                // Bending: Hermite 梁の一貫質量（4x4 ブロック）。
-                // DOF は連続ではないためインデックス配列で指定する。
-                //   Uy-Rz 面: [Uy_i=1, Rz_i=5, Uy_j=7, Rz_j=11]
-                //   Uz-Ry 面: [Uz_i=2, Ry_i=4, Uz_j=8, Ry_j=10]（回転符号は逆）
-                let b4 = |mm: &mut LocalMat, idx: [usize; 4], sign: f64| {
-                    let [d0, r0, d1, r1] = idx;
-                    // 並進-並進
-                    mm.set(d0, d0, 156.0 * c2);
-                    mm.set(d0, d1, 54.0 * c2);
-                    mm.set(d1, d0, 54.0 * c2);
-                    mm.set(d1, d1, 156.0 * c2);
-                    // 並進-回転
-                    mm.set(d0, r0, 22.0 * l * c2 * sign);
-                    mm.set(r0, d0, 22.0 * l * c2 * sign);
-                    mm.set(d0, r1, -13.0 * l * c2 * sign);
-                    mm.set(r1, d0, -13.0 * l * c2 * sign);
-                    mm.set(d1, r0, 13.0 * l * c2 * sign);
-                    mm.set(r0, d1, 13.0 * l * c2 * sign);
-                    mm.set(d1, r1, -22.0 * l * c2 * sign);
-                    mm.set(r1, d1, -22.0 * l * c2 * sign);
-                    // 回転-回転
-                    mm.set(r0, r0, 4.0 * l2 * c2);
-                    mm.set(r0, r1, -3.0 * l2 * c2);
-                    mm.set(r1, r0, -3.0 * l2 * c2);
-                    mm.set(r1, r1, 4.0 * l2 * c2);
-                };
-                b4(&mut mm, [1, 5, 7, 11], 1.0);
-                b4(&mut mm, [2, 4, 8, 10], -1.0);
-                // 整合質量は軸方向（m/3 系）と曲げ方向（156m/420 系）で係数が異なり
-                // 回転不変ではないため、剛性行列と同様に要素局所系から全体系へ回す
-                // （M_global = Rᵀ M_local R）。これを欠くと鉛直柱・斜材で質量が
-                // 誤った全体軸へ配分される。
+                // 部材軸まわりの回転慣性 ρ·J·l/6 を持つ。
+                let ct = self.density * self.j * self.length / 6.0;
+                let mm = crate::frame::prismatic::consistent_mass(m, self.length, ct);
                 self.axis.to_global(&mm)
             }
         }

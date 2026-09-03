@@ -1,5 +1,4 @@
 use crate::behavior::{Ctx, ElementBehavior, LocalMat, LocalVec, MassOption};
-use crate::linalg::invert_small;
 use squid_n_core::dof::DofMap;
 
 use smallvec::SmallVec;
@@ -220,93 +219,10 @@ impl ConcentratedSpringBeam {
 const SPRING_ROT_DOFS: [usize; 2] = [5, 11];
 
 fn condense_springs(k_elem: &LocalMat, k_i: f64, k_j: f64) -> LocalMat {
-    let n = 14;
-    let mut k = vec![0.0; n * n];
-
-    // ばねを入れる回転自由度（i 端 → 内部 12、j 端 → 内部 13）だけを内部自由度へ移す。
-    let map14 = |i: usize| -> usize {
-        if i == SPRING_ROT_DOFS[0] {
-            12
-        } else if i == SPRING_ROT_DOFS[1] {
-            13
-        } else {
-            i
-        }
-    };
-    for i in 0..12 {
-        for j in 0..12 {
-            k[map14(i) * n + map14(j)] = k_elem.get(i, j);
-        }
-    }
-
-    let ext_rot = SPRING_ROT_DOFS;
-    let int_rot = [12usize, 13];
-    for (idx, &er) in ext_rot.iter().enumerate() {
-        let ir = int_rot[idx];
-        let ks = if idx == 0 { k_i } else { k_j };
-        k[er * n + er] += ks;
-        k[ir * n + ir] += ks;
-        k[er * n + ir] -= ks;
-        k[ir * n + er] -= ks;
-    }
-
-    let na = 12;
-    let nb = 2;
-    let mut kaa = vec![0.0; na * na];
-    let mut kab = vec![0.0; na * nb];
-    let mut kba = vec![0.0; nb * na];
-    let mut kbb = vec![0.0; nb * nb];
-
-    for i in 0..na {
-        for j in 0..na {
-            kaa[i * na + j] = k[i * n + j];
-        }
-        for j in 0..nb {
-            kab[i * nb + j] = k[i * n + (na + j)];
-            kba[j * na + i] = k[(na + j) * n + i];
-        }
-    }
-    for i in 0..nb {
-        for j in 0..nb {
-            kbb[i * nb + j] = k[(na + i) * n + (na + j)];
-        }
-    }
-
-    let Some(kbb_inv) = invert_small(&kbb, nb) else {
-        // 縮約行列 Kbb が特異（材端ばね＋可撓部回転が機構化）。補正項を省略して
-        // 返し、全体求解の特異検出（自由度名指しの診断）に委ねる（`beam::stiffness::
-        // condense_end_springs` と同じ扱い）。
-        let mut kstar = LocalMat::zeros(na);
-        for i in 0..na {
-            for j in 0..na {
-                kstar.set(i, j, kaa[i * na + j]);
-            }
-        }
-        return kstar;
-    };
-
-    let mut kab_kbbinv = vec![0.0; na * nb];
-    for i in 0..na {
-        for j in 0..nb {
-            let mut s = 0.0;
-            for l in 0..nb {
-                s += kab[i * nb + l] * kbb_inv[l * nb + j];
-            }
-            kab_kbbinv[i * nb + j] = s;
-        }
-    }
-
-    let mut kstar = LocalMat::zeros(na);
-    for i in 0..na {
-        for j in 0..na {
-            let mut s = kaa[i * na + j];
-            for l in 0..nb {
-                s -= kab_kbbinv[i * nb + l] * kba[l * na + j];
-            }
-            kstar.set(i, j, s);
-        }
-    }
-    kstar
+    // ばねを入れる回転自由度を内部自由度へ分離し、節点回転との間に材端ばねを
+    // 挟んで静縮約する（弾性梁の材端解放と同一の定式化）。
+    let releases = [(SPRING_ROT_DOFS[0], k_i), (SPRING_ROT_DOFS[1], k_j)];
+    crate::frame::prismatic::condense_end_releases(k_elem, &releases)
 }
 
 /// 材端曲げばねを直列接続した局所剛性（節点自由度 12×12）。
