@@ -13,18 +13,18 @@ use squid_n_core::model::{ElementData, Model};
 /// 節点 ID が範囲外のときは原点へ落とす。要素が壊れたモデルでも構築自体は通し、
 /// 検出は解析前チェックに委ねる（断面・材料の引き当てと同じ方針）。
 #[derive(Clone, Copy, Debug)]
-pub struct EndGeometry {
+pub(crate) struct EndGeometry {
     /// 両端の節点 ID（i 端, j 端）。
-    pub nodes: [NodeId; 2],
+    pub(crate) nodes: [NodeId; 2],
     /// 両端の節点座標 \[mm\]（i 端, j 端）。
-    pub coords: [[f64; 3]; 2],
+    pub(crate) coords: [[f64; 3]; 2],
     /// 節点間距離（芯々長さ）\[mm\]。
-    pub length: f64,
+    pub(crate) length: f64,
 }
 
 impl EndGeometry {
     /// 要素データとモデルから端部幾何を求める。
-    pub fn of_element(data: &ElementData, model: &Model) -> Self {
+    pub(crate) fn of_element(data: &ElementData, model: &Model) -> Self {
         let nodes = [data.nodes[0], data.nodes[1]];
         let coords = nodes.map(|n| {
             model
@@ -42,7 +42,7 @@ impl EndGeometry {
 
     /// i 端から j 端へ向かう局所座標系。零長要素を特別扱いしない要素向け
     /// （`LocalFrame::from_nodes` が長さ 1 へ退避させる既定の扱いに従う）。
-    pub fn local_frame(&self, ref_vec: [f64; 3]) -> LocalFrame {
+    pub(crate) fn local_frame(&self, ref_vec: [f64; 3]) -> LocalFrame {
         LocalFrame::from_nodes(self.coords[0], self.coords[1], ref_vec)
     }
 }

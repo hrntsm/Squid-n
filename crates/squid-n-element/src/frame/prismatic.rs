@@ -48,6 +48,19 @@ pub(crate) fn condense_end_releases(k_elem: &LocalMat, releases: &[(usize, f64)]
         n <= 18,
         "condense_end_releases: 解放自由度は両端の回転 6 まで"
     );
+    // 解放自由度は要素の 12 自由度の中を指し、重複しない。破ると写像 `map` が
+    // 上書きされ、もっともらしい別の剛性が無言で出来上がる。
+    debug_assert!(
+        releases.iter().all(|&(r, _)| r < NA),
+        "condense_end_releases: 解放自由度が要素自由度の範囲外"
+    );
+    debug_assert!(
+        releases
+            .iter()
+            .enumerate()
+            .all(|(i, &(r, _))| releases[..i].iter().all(|&(q, _)| q != r)),
+        "condense_end_releases: 解放自由度が重複している"
+    );
     // n ≤ 18 なので n*n ≤ 324。反復のたびのヒープ確保を避けて固定長配列で扱う。
     let mut k = [0.0_f64; 324];
 
