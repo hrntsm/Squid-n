@@ -88,16 +88,8 @@ crate::forward_element_behavior!(MultiSpringElement, inner, {
     deserialize_checkpoint: forward,
     panel_moments_from: forward,
     ductility_probe: forward,
-    // TODO(次コミット): 委譲へ戻す。移設コミットで挙動を変えないための一時的な据え置き。
-    fiber_section_states: custom,
+    fiber_section_states: forward,
     set_time_step: forward,
-}, custom {
-    /// 内側の [`FiberBeam`] は状態を持っているが、移設前の手書き実装が委譲を
-    /// 書き忘れていたため、既定の `None` が返っていた。移設コミットで挙動を
-    /// 変えないよう、ここではその欠落をそのまま再現する。
-    fn fiber_section_states(&self) -> Option<Vec<crate::behavior::FiberSectionState>> {
-        None
-    }
 });
 
 #[cfg(test)]
@@ -182,6 +174,37 @@ mod tests {
             }],
             ..Default::default()
         }
+    }
+
+    /// ヒンジ詳細ウィンドウのファイバー断面の塑性化マップは、
+    /// `fiber_section_states` が返す状態から描く（`pushover::driver` が全要素から
+    /// 収集する）。MS 要素の実体は `FiberBeam` なので、`Fiber` 要素と同じように
+    /// 状態を返さなければならない。
+    ///
+    /// 手書きの委譲実装はこのメソッドを流し忘れており、内側が状態を持っているのに
+    /// トレイト既定の `None` が返って、MS 要素でだけ塑性化マップが空になっていた。
+    #[test]
+    fn fiber_section_states_are_delegated_to_inner_fiber_beam() {
+        let model = make_model(Some(295.0), None);
+        let elem = MultiSpringElement::new(
+            &model.elements[0],
+            &model,
+            crate::factory::StrengthBasis::Nominal,
+            AnalysisKind::Incremental,
+        );
+
+        let states = elem
+            .fiber_section_states()
+            .expect("MS 要素はファイバー断面の状態を返す");
+        assert_eq!(
+            states.len(),
+            elem.inner.fiber_section_states().unwrap().len(),
+            "内側の FiberBeam と同じガウス点数を返す"
+        );
+        assert!(
+            states.iter().all(|s| !s.fibers.is_empty()),
+            "各ガウス点はファイバーを持つ"
+        );
     }
 
     #[test]
