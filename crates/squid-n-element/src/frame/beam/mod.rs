@@ -7,7 +7,6 @@
 //! - [`stiffness`] — 弾性剛性行列 12×12 の構築（剛域変換・端部ばね静縮約）
 //! - [`forces`] — 節点変位からの部材内力復元
 //! - [`behavior`] — `ElementBehavior` トレイト実装
-//! - [`linalg`] — 小行列の逆行列（汎用数値ヘルパ）
 //! - [`rigid_zone`] — 剛域の自動算定
 //! - [`torsion`] — 部材のねじり剛性の既定モデル化（i 端ねじれ解放）
 
@@ -15,7 +14,6 @@ mod behavior;
 mod construct;
 mod element;
 mod forces;
-mod linalg;
 mod rigid_zone;
 mod stiffness;
 mod stiffness_factors;
@@ -33,7 +31,6 @@ pub use torsion::{i_end_torsion_release, i_end_torsion_release_skip, TorsionRele
 
 pub(crate) use construct::eval_sections_of;
 pub(crate) use forces::member_forces_from_end_forces;
-pub(crate) use linalg::invert_small;
 
 #[cfg(test)]
 mod tests;

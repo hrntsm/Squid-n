@@ -69,19 +69,9 @@ pub struct MaxwellDamperElement {
 
 impl MaxwellDamperElement {
     pub fn new(data: &ElementData, model: &Model) -> Self {
-        let n0 = data.nodes[0];
-        let n1 = data.nodes[1];
-        let p0 = model
-            .nodes
-            .get(n0.index())
-            .map(|n| n.coord)
-            .unwrap_or([0.0; 3]);
-        let p1 = model
-            .nodes
-            .get(n1.index())
-            .map(|n| n.coord)
-            .unwrap_or([0.0; 3]);
-        let axis = LocalFrame::from_nodes(p0, p1, data.local_axis.ref_vector);
+        let geom = crate::transform::EndGeometry::of_element(data, model);
+        let [n0, n1] = geom.nodes;
+        let axis = geom.local_frame(data.local_axis.ref_vector);
         let props = model.damper_props(data.id).unwrap_or_default();
         Self {
             nodes: [n0, n1],

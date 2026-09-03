@@ -10,12 +10,15 @@
 //! - [`shell`] —     シェル要素
 //! - [`factory`] —   要素データから振る舞いを生成するディスパッチャ
 //!
+//! このほかクレート内部専用の `linalg`（小行列の逆行列）を持つ。
+//!
 //! モジュールパスは階層をそのまま辿る（例: `squid_n_element::frame::beam`）。
 //! 再エクスポートによる平坦なパスは設けない。
 
 pub mod behavior;
 pub mod factory;
 pub mod frame;
+pub(crate) mod linalg;
 pub mod shell;
 pub mod springs;
 pub mod transform;

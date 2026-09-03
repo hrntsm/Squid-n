@@ -4,7 +4,8 @@
 //! `ReleaseAxis`。
 
 use crate::behavior::{Ctx, LocalMat, LocalVec};
-use crate::frame::beam::{invert_small, BeamElement};
+use crate::frame::beam::BeamElement;
+use crate::linalg::invert_small;
 use smallvec::SmallVec;
 
 /// 解放する局所曲げ面（回転自由度）。

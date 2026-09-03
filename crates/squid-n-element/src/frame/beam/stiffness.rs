@@ -4,8 +4,8 @@
 //! 局所剛性 [`BeamElement::local_stiffness`] を組み立てる。
 
 use super::element::BeamElement;
-use super::linalg::invert_small;
 use crate::behavior::LocalMat;
+use smallvec::SmallVec;
 use squid_n_core::model::EndCondition;
 
 impl BeamElement {
@@ -110,12 +110,12 @@ impl BeamElement {
 
         // ねじり剛性 GJ/L がない部材（J≤0・G≤0）の rx は解放しない。解放しても
         // 縮約行列 Kbb が特異化して縮約の意味がないため（ファイバー梁
-        // `fiber::resolve_end_releases` と同じ規則。特異な Kbb は `invert_small` が
-        // `None` を返し補正項が省略される）。
+        // `fiber::resolve_end_releases` と同じ規則。特異な Kbb を
+        // `prismatic::condense_end_releases` が補正項の省略として扱う）。
         let has_torsion = self.j > 0.0 && self.g > 0.0;
 
         // 解放（非剛接）する回転自由度: (要素回転 DOF, ばね剛性 k_s)
-        let mut released: Vec<(usize, f64)> = Vec::new();
+        let mut released: SmallVec<[(usize, f64); 6]> = SmallVec::new();
         for &(r, end) in ROT_DOFS.iter() {
             let is_torsion = r == 3 || r == 9;
             let spring = match released_spring(&self.end_cond[end]) {
@@ -131,104 +131,7 @@ impl BeamElement {
             released.push((r, ks));
         }
 
-        // 全端剛接: raw をそのまま返す（厳密）
-        if released.is_empty() {
-            return LocalMat {
-                n: 12,
-                data: k_elem.data.clone(),
-            };
-        }
-
-        // 12（節点）＋ 解放数（内部の要素端回転）の系を組む
-        let n_int = released.len();
-        let n = 12 + n_int;
-        let mut k = vec![0.0; n * n];
-
-        // 要素 DOF → 組立 DOF 写像。解放回転は内部（12..）へ、それ以外は同位置。
-        let mut map = [0usize; 12];
-        for (i, m) in map.iter_mut().enumerate() {
-            *m = i;
-        }
-        for (idx, &(r, _)) in released.iter().enumerate() {
-            map[r] = 12 + idx;
-        }
-
-        // 要素剛性を配置（解放回転の行・列は内部自由度へ移る）
-        for i in 0..12 {
-            for j in 0..12 {
-                k[map[i] * n + map[j]] += k_elem.get(i, j);
-            }
-        }
-
-        // 回転ばね: 節点回転 r ↔ 内部の要素端回転 (12+idx)
-        for (idx, &(r, ks)) in released.iter().enumerate() {
-            let ir = 12 + idx;
-            k[r * n + r] += ks;
-            k[ir * n + ir] += ks;
-            k[r * n + ir] -= ks;
-            k[ir * n + r] -= ks;
-        }
-
-        // 内部 DOF (12..n) を静縮約: K* = Kaa − Kab·Kbb⁻¹·Kba
-        let na = 12;
-        let nb = n_int;
-        let mut kaa = vec![0.0; na * na];
-        let mut kab = vec![0.0; na * nb];
-        let mut kba = vec![0.0; nb * na];
-        let mut kbb = vec![0.0; nb * nb];
-
-        for i in 0..na {
-            for j in 0..na {
-                kaa[i * na + j] = k[i * n + j];
-            }
-            for j in 0..nb {
-                kab[i * nb + j] = k[i * n + (na + j)];
-                kba[j * na + i] = k[(na + j) * n + i];
-            }
-        }
-        for i in 0..nb {
-            for j in 0..nb {
-                kbb[i * nb + j] = k[(na + i) * n + (na + j)];
-            }
-        }
-
-        let Some(kbb_inv) = invert_small(&kbb, nb) else {
-            // 縮約行列 Kbb が特異（解放自由度が機構化）。もっともらしい剛性を
-            // 作らず補正項を省略して返す。解放回転の外部行はばね剛性を除き
-            // ゼロのため、全体求解が特異を検出して自由度名指しの診断で停止する
-            // （従来はピボット 1.0 差し替えで誤った剛性が無言で混入していた）。
-            let mut kstar = LocalMat::zeros(na);
-            for i in 0..na {
-                for j in 0..na {
-                    kstar.set(i, j, kaa[i * na + j]);
-                }
-            }
-            return kstar;
-        };
-
-        // kab_kbbinv = Kab * Kbb^-1
-        let mut kab_kbbinv = vec![0.0; na * nb];
-        for i in 0..na {
-            for j in 0..nb {
-                let mut s = 0.0;
-                for l in 0..nb {
-                    s += kab[i * nb + l] * kbb_inv[l * nb + j];
-                }
-                kab_kbbinv[i * nb + j] = s;
-            }
-        }
-
-        let mut kstar = LocalMat::zeros(na);
-        for i in 0..na {
-            for j in 0..na {
-                let mut s = kaa[i * na + j];
-                for l in 0..nb {
-                    s -= kab_kbbinv[i * nb + l] * kba[l * na + j];
-                }
-                kstar.set(i, j, s);
-            }
-        }
-        kstar
+        crate::frame::prismatic::condense_end_releases(k_elem, &released)
     }
 
     /// 剛域長を可撓長が正に残る範囲へ解決した値 (λi, λj)。

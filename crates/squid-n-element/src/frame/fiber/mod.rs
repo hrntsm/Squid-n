@@ -1297,7 +1297,7 @@ impl FiberBeam {
                 kbb[a * n + a] += ra.spring;
             }
             // 縮約行列が特異なら更新を打ち切り、直前の状態を保つ。
-            let Some(kbb_inv) = Self::invert_small_stack(&kbb[..n * n], n) else {
+            let Some(kbb_inv) = crate::linalg::invert_small(&kbb[..n * n], n) else {
                 break;
             };
             let mut du = [0.0_f64; 6];
@@ -1320,71 +1320,6 @@ impl FiberBeam {
         self.update_trial_state(&u_elem);
     }
 
-    /// 小行列（n≤6）の逆行列（部分ピボッティング付きガウス・ジョルダン法）。
-    /// `super::beam::invert_small` と同一アルゴリズムだが、fiber 要素内に閉じた
-    /// 呼び出し（`solve_internal_dofs`・`solve_hinges`・`hinge_tangent`・
-    /// `condense_releases`）向けにスタック上へ確保する版をここに用意し、
-    /// 反復のたびの小さなヒープ確保を避ける。
-    /// 特異（ピボット候補の最大絶対値がスケール比 1e-12 未満）の場合は `None`
-    /// （従来はピボットを 1.0 へ差し替えて誤った行列を無言で返していた）。
-    /// 戻り値はフラット化した n×n 逆行列（先頭 n*n 要素のみ有効）。
-    fn invert_small_stack(a: &[f64], n: usize) -> Option<[f64; 36]> {
-        debug_assert!(n <= 6, "invert_small_stack: n は releases 上限=最大6まで");
-        let scale = a.iter().fold(0.0_f64, |m, &v| m.max(v.abs()));
-        if !scale.is_finite() || scale <= 0.0 {
-            return None;
-        }
-        let tol = 1e-12 * scale;
-        let w = 2 * n;
-        let mut aug = [0.0_f64; 72]; // n*(2n) ≤ 6*12 = 72
-        for i in 0..n {
-            for j in 0..n {
-                aug[i * w + j] = a[i * n + j];
-            }
-            aug[i * w + n + i] = 1.0;
-        }
-        for col in 0..n {
-            let mut best = col;
-            let mut best_abs = aug[col * w + col].abs();
-            for row in (col + 1)..n {
-                let v = aug[row * w + col].abs();
-                if v > best_abs {
-                    best = row;
-                    best_abs = v;
-                }
-            }
-            if best_abs < tol {
-                return None;
-            }
-            if best != col {
-                for j in 0..w {
-                    aug.swap(col * w + j, best * w + j);
-                }
-            }
-            let pivot = aug[col * w + col];
-            for j in 0..w {
-                aug[col * w + j] /= pivot;
-            }
-            for row in 0..n {
-                if row != col {
-                    let factor = aug[row * w + col];
-                    if factor != 0.0 {
-                        for j in 0..w {
-                            aug[row * w + j] -= factor * aug[col * w + j];
-                        }
-                    }
-                }
-            }
-        }
-        let mut inv = [0.0_f64; 36];
-        for i in 0..n {
-            for j in 0..n {
-                inv[i * n + j] = aug[i * w + n + j];
-            }
-        }
-        Some(inv)
-    }
-
     /// 要素変形 `u_elem` に対するトライアル状態の更新。
     /// 塑性増分ヒンジモデルはヒンジの内部平衡を解き、
     /// 全長ファイバー積分モデルは B 行列由来の断面ひずみで更新する。
@@ -1399,71 +1334,9 @@ impl FiberBeam {
     /// 材端解放した要素端回転を静縮約し、可撓端系 12×12 へ戻す
     /// （K* = Kaa − Kab·Kbb⁻¹·Kba。弾性梁 `condense_end_springs` と同じ定式化）。
     fn condense_releases(&self, k_elem: &LocalMat) -> LocalMat {
-        if self.releases.is_empty() {
-            return LocalMat {
-                n: 12,
-                data: k_elem.data.clone(),
-            };
-        }
-        let nb = self.releases.len();
-        let n = 12 + nb;
-        // n = 12 + nb（nb≤6 → n≤18）。ヒープ確保を避けるため固定長配列で扱う
-        // （n*n ≤ 18*18 = 324）。
-        let mut k = [0.0_f64; 324];
-        // 解放回転は内部（12..）へ、それ以外は同位置へ写す。
-        let mut map = [0usize; 12];
-        for (i, m) in map.iter_mut().enumerate() {
-            *m = i;
-        }
-        for (idx, rel) in self.releases.iter().enumerate() {
-            map[rel.dof] = 12 + idx;
-        }
-        for i in 0..12 {
-            for j in 0..12 {
-                k[map[i] * n + map[j]] += k_elem.get(i, j);
-            }
-        }
-        // 回転ばね: 節点回転 dof ↔ 内部の要素端回転 (12+idx)
-        for (idx, rel) in self.releases.iter().enumerate() {
-            let (r, ir, ks) = (rel.dof, 12 + idx, rel.spring);
-            k[r * n + r] += ks;
-            k[ir * n + ir] += ks;
-            k[r * n + ir] -= ks;
-            k[ir * n + r] -= ks;
-        }
-
-        let na = 12;
-        let mut kbb = [0.0_f64; 36];
-        for i in 0..nb {
-            for j in 0..nb {
-                kbb[i * nb + j] = k[(na + i) * n + (na + j)];
-            }
-        }
-        let Some(kbb_inv) = Self::invert_small_stack(&kbb[..nb * nb], nb) else {
-            // 縮約行列 Kbb が特異（解放自由度が機構化）。補正項を省略して返し、
-            // 全体求解の特異検出（自由度名指しの診断）に委ねる（`beam::stiffness::
-            // condense_end_springs` と同じ扱い）。
-            let mut kstar = LocalMat::zeros(na);
-            for i in 0..na {
-                for j in 0..na {
-                    kstar.set(i, j, k[i * n + j]);
-                }
-            }
-            return kstar;
-        };
-        let mut kstar = LocalMat::zeros(na);
-        for i in 0..na {
-            for j in 0..na {
-                let mut s = k[i * n + j];
-                for a in 0..nb {
-                    for b in 0..nb {
-                        s -= k[i * n + (na + a)] * kbb_inv[a * nb + b] * k[(na + b) * n + j];
-                    }
-                }
-                kstar.set(i, j, s);
-            }
-        }
-        kstar
+        let releases: SmallVec<[(usize, f64); 6]> =
+            self.releases.iter().map(|r| (r.dof, r.spring)).collect();
+        crate::frame::prismatic::condense_end_releases(k_elem, &releases)
     }
 
     /// ガウス点の断面応答（force, stiff）を返す。総和は `GaussPoint::refresh_response`
@@ -1636,7 +1509,7 @@ impl FiberBeam {
                 }
             }
             // ヤコビアンが特異なら反復を打ち切り、直前の状態を保つ。
-            let Some(jinv) = Self::invert_small_stack(&jac[..n * n], n) else {
+            let Some(jinv) = crate::linalg::invert_small(&jac[..n * n], n) else {
                 break;
             };
             let mut dk = [0.0_f64; 4];
@@ -1742,7 +1615,7 @@ impl FiberBeam {
         // ヤコビアンが特異な場合は補正なしの弾性剛性 K_el を接線として返す
         // （内力は履歴に整合した厳密値のため収束解は変わらない。反復回数が
         // 増えるだけで、誤った接線を混入させるより安全）。
-        let Some(jinv) = Self::invert_small_stack(&jac[..n * n], n) else {
+        let Some(jinv) = crate::linalg::invert_small(&jac[..n * n], n) else {
             return LocalMat {
                 n: 12,
                 data: h.k_el.data.clone(),
@@ -1899,49 +1772,13 @@ impl ElementBehavior for FiberBeam {
             .map(|gp| gp.section.fibers.iter().map(|f| f.area).sum())
             .unwrap_or(0.0);
         let total_mass = self.density * total_area * self.length;
-        let mut mm = LocalMat::zeros(12);
         match opt {
-            MassOption::Lumped => {
-                // 並進 3 成分が等しい対角行列は回転不変のため全体系変換は不要。
-                for d in [0, 1, 2, 6, 7, 8] {
-                    mm.set(d, d, total_mass / 2.0);
-                }
-                mm
-            }
+            MassOption::Lumped => crate::frame::prismatic::lumped_mass(total_mass),
             MassOption::Consistent => {
-                // Hermite 梁の一貫質量（beam/behavior.rs と同一の DOF 配置）。
-                // DOF は連続ではないためインデックス配列で指定する。
-                //   Uy-Rz 面: [Uy_i=1, Rz_i=5, Uy_j=7, Rz_j=11]
-                //   Uz-Ry 面: [Uz_i=2, Ry_i=4, Uz_j=8, Ry_j=10]（回転符号は逆）
-                let c1 = total_mass / 6.0;
-                let c2 = total_mass / 420.0;
-                let l = self.length;
-                let l2 = l * l;
-                mm.set(0, 0, 2.0 * c1);
-                mm.set(0, 6, 1.0 * c1);
-                mm.set(6, 0, 1.0 * c1);
-                mm.set(6, 6, 2.0 * c1);
-                let b4 = |mm: &mut LocalMat, idx: [usize; 4], sign: f64| {
-                    let [d0, r0, d1, r1] = idx;
-                    mm.set(d0, d0, 156.0 * c2);
-                    mm.set(d0, d1, 54.0 * c2);
-                    mm.set(d1, d0, 54.0 * c2);
-                    mm.set(d1, d1, 156.0 * c2);
-                    mm.set(d0, r0, 22.0 * l * c2 * sign);
-                    mm.set(r0, d0, 22.0 * l * c2 * sign);
-                    mm.set(d0, r1, -13.0 * l * c2 * sign);
-                    mm.set(r1, d0, -13.0 * l * c2 * sign);
-                    mm.set(d1, r0, 13.0 * l * c2 * sign);
-                    mm.set(r0, d1, 13.0 * l * c2 * sign);
-                    mm.set(d1, r1, -22.0 * l * c2 * sign);
-                    mm.set(r1, d1, -22.0 * l * c2 * sign);
-                    mm.set(r0, r0, 4.0 * l2 * c2);
-                    mm.set(r0, r1, -3.0 * l2 * c2);
-                    mm.set(r1, r0, -3.0 * l2 * c2);
-                    mm.set(r1, r1, 4.0 * l2 * c2);
-                };
-                b4(&mut mm, [1, 5, 7, 11], 1.0);
-                b4(&mut mm, [2, 4, 8, 10], -1.0);
+                // ねじれ項は 0。弾性梁は ρ·J·l/6 を持つが、ファイバー梁は断面を
+                // ファイバーへ分割する定式化上 J を保持しておらず、従来から
+                // 部材軸まわりの回転慣性を持たない。
+                let mm = crate::frame::prismatic::consistent_mass(total_mass, self.length, 0.0);
                 // 整合質量は回転不変ではないため全体系へ回す（beam と同じ契約）。
                 self.axis.to_global(&mm)
             }
@@ -1949,42 +1786,12 @@ impl ElementBehavior for FiberBeam {
     }
 
     fn geometric_stiffness(&self, n: f64) -> LocalMat {
-        // 幾何剛性も弾性剛性と整合させる: 可撓長で組み、剛体アームで節点自由度へ写す
-        // （剛域があれば P-δ は可撓部でのみ生じる。弾性梁と同じ扱い）。
-        let l = self.flex_length;
-        if l < 1e-12 {
-            return LocalMat::zeros(12);
-        }
-        let c = n / l;
-        let mut kg = LocalMat::zeros(12);
-        let mut s = |i: usize, j: usize, v: f64| {
-            kg.set(i, j, v);
-            if i != j {
-                kg.set(j, i, v);
-            }
-        };
-        s(1, 1, c * 6.0 / 5.0);
-        s(7, 7, c * 6.0 / 5.0);
-        s(1, 7, -c * 6.0 / 5.0);
-        s(1, 5, c * l / 10.0);
-        s(1, 11, c * l / 10.0);
-        s(5, 7, -c * l / 10.0);
-        s(7, 11, -c * l / 10.0);
-        s(5, 5, c * 2.0 * l * l / 15.0);
-        s(11, 11, c * 2.0 * l * l / 15.0);
-        s(5, 11, -c * l * l / 30.0);
-        s(2, 2, c * 6.0 / 5.0);
-        s(8, 8, c * 6.0 / 5.0);
-        s(2, 8, -c * 6.0 / 5.0);
-        s(2, 4, -c * l / 10.0);
-        s(2, 10, -c * l / 10.0);
-        s(4, 8, c * l / 10.0);
-        s(8, 10, c * l / 10.0);
-        s(4, 4, c * 2.0 * l * l / 15.0);
-        s(10, 10, c * 2.0 * l * l / 15.0);
-        s(4, 10, -c * l * l / 30.0);
-        // 剛体アーム変換 → グローバル系へ回転
-        let kg_node = crate::frame::rigid_arm::transform_stiffness(&kg, self.rigid_i, self.rigid_j);
+        let kg_node = crate::frame::prismatic::geometric_stiffness(
+            n,
+            self.flex_length,
+            self.rigid_i,
+            self.rigid_j,
+        );
         self.axis.to_global(&kg_node)
     }
 
