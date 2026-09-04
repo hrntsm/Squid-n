@@ -18,10 +18,9 @@
 use std::time::Instant;
 
 use squid_n_core::dof::DofMap;
-use squid_n_core::ids::{LoadCaseId, MaterialId, NodeId, SectionId, StoryId};
+use squid_n_core::ids::{LoadCaseId, NodeId, SectionId, StoryId};
 use squid_n_core::model::{
-    Constraint, LoadCase, LoadCaseKind, Material, MaterialCategory, MemberLoad, MemberLoadKind,
-    Model, Section, Story,
+    Constraint, LoadCase, LoadCaseKind, MemberLoad, MemberLoadKind, Model, Story,
 };
 use squid_n_solver::common::constraint::Reducer;
 use squid_n_solver::nonlinear::pushover::{
@@ -109,45 +108,8 @@ fn make_frame(nx: usize, ny: usize, nz: usize) -> Model {
     Model {
         nodes,
         elements,
-        sections: vec![
-            Section {
-                area: 21_870.0,
-                iy: 6.6e8,
-                iz: 6.6e8,
-                j: 2.0e7,
-                depth: 400.0,
-                width: 400.0,
-                as_y: 12_000.0,
-                as_z: 12_000.0,
-                material: Some(MaterialId(0)),
-                ..Section::zero(SectionId(0), "柱 H-400x400x13x21".into())
-            },
-            Section {
-                area: 8_412.0,
-                iy: 2.34e8,
-                iz: 2.34e8,
-                j: 6.0e5,
-                depth: 400.0,
-                width: 200.0,
-                as_y: 4_000.0,
-                as_z: 4_000.0,
-                material: Some(MaterialId(0)),
-                ..Section::zero(SectionId(1), "梁 H-400x200x8x13".into())
-            },
-        ],
-        materials: vec![Material {
-            strength_factor: None,
-            concrete_class: Default::default(),
-            id: MaterialId(0),
-            name: "SN400".into(),
-            category: MaterialCategory::Steel,
-            young: 205_000.0,
-            poisson: 0.3,
-            density: 0.0,
-            shear: None,
-            fc: None,
-            fy: Some(235.0),
-        }],
+        sections: common::column_beam_sections(),
+        materials: common::sn400_steel(),
         load_cases,
         stories,
         constraints,
