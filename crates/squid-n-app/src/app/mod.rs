@@ -1691,10 +1691,11 @@ fn parse_wave_csv(content: &str, dir: ThDir) -> Result<(Vec<f64>, Option<Vec<f64
 }
 
 /// 波形 CSV の内容から `GroundMotion` を組み立てる（`cfg.th_dir`・`cfg.th_dt` を使用）。
-/// ファイル選択（`run_time_history_from_csv`）・波形ライブラリからの選択実行
-/// （`run_time_history_from_library`）の双方で共有する。
+///
+/// 失敗を利用者へ通知して `None` を返す薄い包み [`App::ground_motion_or_report`]
+/// を通して使う。ファイル選択・波形ライブラリからの実行・質点系の 3 経路が共有する。
 #[cfg(feature = "gui")]
-fn ground_motion_from_wave_content(
+pub(crate) fn ground_motion_from_wave_content(
     cfg: &AnalysisSettings,
     content: &str,
 ) -> Result<squid_n_solver::dynamic::timehistory::GroundMotion, String> {

@@ -172,6 +172,48 @@ impl App {
         }
     }
 
+    /// 波形ライブラリ内の `name` を読み、保存先ディレクトリと内容を返す。
+    ///
+    /// 保存先を特定できない・ファイルを読めない場合は利用者へ通知して `None`。
+    /// 呼び出し側は実行時点の SHA-256 を `wave_library::wave_sha256` で算定する
+    /// のに同じディレクトリを要するため、内容と一緒に返す。
+    #[cfg(feature = "gui")]
+    pub(crate) fn read_wave_library_file(
+        &mut self,
+        name: &str,
+    ) -> Option<(std::path::PathBuf, String)> {
+        let Some(dir) = squid_n_io::wave_library::wave_library_dir() else {
+            self.report_error("波形ライブラリの保存先を特定できませんでした。".to_string());
+            return None;
+        };
+        match std::fs::read_to_string(dir.join(name)) {
+            Ok(content) => Some((dir, content)),
+            Err(e) => {
+                self.report_error(format!("波形読込エラー: {e}"));
+                None
+            }
+        }
+    }
+
+    /// 波形 CSV の内容から `GroundMotion` を組み立てる。失敗は利用者へ通知して `None`。
+    ///
+    /// 解析設定を引数で受けるのは、質点系が `th_dt`・`th_dir` を質点系側の値
+    /// （`lumped_th_dt`・`lumped_dir`）へ差し替えた写しを渡すためである。
+    #[cfg(feature = "gui")]
+    pub(crate) fn ground_motion_or_report(
+        &mut self,
+        cfg: &crate::app::AnalysisSettings,
+        content: &str,
+    ) -> Option<squid_n_solver::dynamic::timehistory::GroundMotion> {
+        match crate::app::ground_motion_from_wave_content(cfg, content) {
+            Ok(w) => Some(w),
+            Err(e) => {
+                self.report_error(e);
+                None
+            }
+        }
+    }
+
     /// 「▶ 選択した波形で実行」: 波形ライブラリで選択中のファイルを読み込み、
     /// 時刻歴応答解析をジョブ実行する。実行時点のファイル内容の SHA-256 を
     /// `wave_library_selected_sha256` へ記録する（保存時にこれも同梱され、
@@ -181,23 +223,12 @@ impl App {
         let Some(name) = self.core.scoped.wave_library_selection.clone() else {
             return;
         };
-        let Some(dir) = squid_n_io::wave_library::wave_library_dir() else {
-            self.report_error("波形ライブラリの保存先を特定できませんでした。".to_string());
+        let Some((dir, content)) = self.read_wave_library_file(&name) else {
             return;
         };
-        let content = match std::fs::read_to_string(dir.join(&name)) {
-            Ok(c) => c,
-            Err(e) => {
-                self.report_error(format!("波形読込エラー: {}", e));
-                return;
-            }
-        };
-        let wave = match ground_motion_from_wave_content(&self.core.analysis_cfg, &content) {
-            Ok(w) => w,
-            Err(e) => {
-                self.report_error(e);
-                return;
-            }
+        let cfg = self.core.analysis_cfg;
+        let Some(wave) = self.ground_motion_or_report(&cfg, &content) else {
+            return;
         };
         self.core.scoped.wave_library_selected_sha256 =
             squid_n_io::wave_library::wave_sha256(&dir, &name).ok();

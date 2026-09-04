@@ -646,12 +646,9 @@ impl App {
                 return;
             }
         };
-        let wave = match ground_motion_from_wave_content(&self.core.analysis_cfg, &content) {
-            Ok(w) => w,
-            Err(e) => {
-                self.report_error(e);
-                return;
-            }
+        let cfg = self.core.analysis_cfg;
+        let Some(wave) = self.ground_motion_or_report(&cfg, &content) else {
+            return;
         };
         self.start_time_history_job(wave);
     }
