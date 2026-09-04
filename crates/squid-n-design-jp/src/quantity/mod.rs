@@ -333,7 +333,7 @@ use squid_n_core::geom::vec3::dist as dist3;
 use squid_n_core::geom::is_vertical_pair;
 
 /// 平面多角形（3D 座標）の面積 [mm²]。算定の情報源は `squid-n-core` に置く。
-use squid_n_core::geom::polygon_area_3d;
+use squid_n_core::geom::polygon::area_3d as polygon_area_3d;
 
 /// SRC 内蔵 H 形鉄骨の断面積 [mm²]。
 fn src_steel_area(shape: &SectionShape) -> Option<f64> {

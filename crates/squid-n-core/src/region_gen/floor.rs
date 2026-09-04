@@ -32,7 +32,8 @@
 //! - **段差床**。レベルで分けるため、同じ階でもレベルが違えば別の平面グラフになる。
 //!   段差部の梁は両方のレベルのどちらにも属さない（両端の Z が違うため水平とみなされない）。
 
-use super::{point_segment_dist, polygon_contains_strict, scan_faces, signed_area, Edge};
+use super::{scan_faces, Edge};
+use crate::geom::polygon;
 use crate::geom::{vec3, LEVEL_TOL_MM, MEMBER_AXIS_TOL_MM};
 use crate::ids::{ElemId, NodeId};
 use crate::model::{ElementKind, Model};
@@ -63,11 +64,11 @@ impl RegionBoundary {
     /// 平面多角形の面積 [mm²]（シューレース公式）。
     pub fn area(&self, model: &Model) -> f64 {
         self.polygon(model)
-            .map(|pts| signed_area(&pts).abs())
+            .map(|pts| polygon::area(&pts))
             .unwrap_or(0.0)
     }
 
-    /// 点 `p`（XY）がこの境界の内部にあるか。**辺上（[`super::BOUNDARY_TOL_MM`] 以内）は含めない。**
+    /// 点 `p`（XY）がこの境界の内部にあるか。**辺上（[`crate::geom::polygon::BOUNDARY_TOL_MM`] 以内）は含めない。**
     ///
     /// 版や二次部材をこの境界へ割り当てる用途を想定する。辺上の点は隣接する境界の双方に
     /// 該当してしまうため含めない（所属を一意に決められるようにする）。
@@ -78,7 +79,7 @@ impl RegionBoundary {
         let Some(poly) = self.polygon(model) else {
             return false;
         };
-        polygon_contains_strict(&poly, p)
+        polygon::contains_excluding_boundary(&poly, p)
     }
 
     /// この境界と同じレベルか（[`crate::geom::LEVEL_TOL_MM`] 以内）。
@@ -217,8 +218,9 @@ fn segments_touch(p1: [f64; 2], p2: [f64; 2], q1: [f64; 2], q2: [f64; 2]) -> boo
         return true;
     }
     // 端点が相手の線分上に載る（節点を共有しない T 字・重なり）。
-    let on =
-        |a: [f64; 2], b: [f64; 2], c: [f64; 2]| point_segment_dist(c, a, b) <= MEMBER_AXIS_TOL_MM;
+    let on = |a: [f64; 2], b: [f64; 2], c: [f64; 2]| {
+        polygon::point_segment_dist(c, a, b) <= MEMBER_AXIS_TOL_MM
+    };
     on(p1, p2, q1) || on(p1, p2, q2) || on(q1, q2, p1) || on(q1, q2, p2)
 }
 
@@ -379,7 +381,7 @@ mod tests {
                 [c[0], c[1]]
             })
             .collect();
-        assert!(signed_area(&pts) > 0.0, "反時計回りで返る");
+        assert!(polygon::signed_area(&pts) > 0.0, "反時計回りで返る");
     }
 
     /// 片持ち梁（行き止まりの辺）は面を作らず、囲まれた面の数も変えない。

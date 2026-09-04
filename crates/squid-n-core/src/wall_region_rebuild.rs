@@ -33,13 +33,13 @@
 //! 辺から外れた頂点は自由端に数える。変換後の取り付く壁版は解析要素にせず、
 //! 自重の自動分配（取付き線への分布）も行わない。
 
+use crate::geom::polygon::{self, BOUNDARY_TOL_MM};
 use crate::geom::LEVEL_TOL_MM;
 use crate::ids::{NodeId, WallRegionId};
 use crate::model::{LoadTransfer, Model, RegionAnchor, WallPlateShape, WallRegion};
 use crate::region_gen::wall::{scan_wall_region_boundaries, WallRegionBoundary};
-use crate::region_gen::BOUNDARY_TOL_MM;
 use crate::region_rebuild::{
-    delete_unref_nodes, edge_fully_covered, horizontal_girders, point_segment_dist, GirderSeg,
+    delete_unref_nodes, edge_fully_covered, horizontal_girders, GirderSeg,
 };
 
 /// 重心照合で面積が近いとみなす相対許容（新旧の床領域の面積比）。
@@ -228,12 +228,13 @@ fn try_convert_wall_attached(
     let uy = dy / len;
 
     // 取付き辺上の点（分割点）だけを自由端から除く。同じ高さでも辺から外れた
-    // 頂点は自由端に数える（床側 D20 の `point_segment_dist` と同じ。高さだけで
+    // 頂点は自由端に数える（床側 D20 の辺までの距離判定と同じ。高さだけで
     // 除外すると、梁レベルに折れ曲がった頂点を持つ輪郭を誤って変換する）。
     let mut free = Vec::new();
     for p in &pts {
         let on_edge = (p[2] - edge_z).abs() <= LEVEL_TOL_MM
-            && point_segment_dist([p[0], p[1]], [a[0], a[1]], [b[0], b[1]]) <= BOUNDARY_TOL_MM;
+            && polygon::point_segment_dist([p[0], p[1]], [a[0], a[1]], [b[0], b[1]])
+                <= BOUNDARY_TOL_MM;
         if on_edge {
             continue;
         }
@@ -288,60 +289,13 @@ fn match_candidate(
     if !coords.iter().all(|c| rb.is_same_plane([c[0], c[1]])) {
         return None;
     }
-    let projected: Vec<[f64; 2]> = coords
-        .iter()
-        .map(|c| project_onto(rb.plane_origin, rb.plane_direction, *c))
-        .collect();
-    let local_centroid = shoelace_centroid(&projected, shoelace_area(&projected));
+    let projected: Vec<[f64; 2]> = coords.iter().map(|c| rb.project(*c)).collect();
+    let local_centroid = polygon::centroid(&projected);
     if !rb.contains(model, local_centroid) {
         return None;
     }
-    let area = crate::geom::polygon_area_3d(&coords);
+    let area = polygon::area_3d(&coords);
     Some((index, area))
-}
-
-/// 実座標を構面 `(origin, direction)` の局所座標 `(s, z)` へ射影する
-/// （[`crate::region_gen::wall`] 内部の `project` と同じ計算だが `pub(crate)` では
-/// ないため同じ式をここに持つ）。
-fn project_onto(origin: [f64; 2], direction: [f64; 2], coord: [f64; 3]) -> [f64; 2] {
-    let v = [coord[0] - origin[0], coord[1] - origin[1]];
-    let s = v[0] * direction[0] + v[1] * direction[1];
-    [s, coord[2]]
-}
-
-fn shoelace_area(pts: &[[f64; 2]]) -> f64 {
-    if pts.len() < 3 {
-        return 0.0;
-    }
-    let sum: f64 = pts
-        .iter()
-        .enumerate()
-        .map(|(i, a)| {
-            let b = pts[(i + 1) % pts.len()];
-            a[0] * b[1] - b[0] * a[1]
-        })
-        .sum();
-    sum / 2.0
-}
-
-fn shoelace_centroid(pts: &[[f64; 2]], signed_area: f64) -> [f64; 2] {
-    if signed_area.abs() <= f64::EPSILON {
-        let n = pts.len() as f64;
-        return [
-            pts.iter().map(|p| p[0]).sum::<f64>() / n,
-            pts.iter().map(|p| p[1]).sum::<f64>() / n,
-        ];
-    }
-    let mut cx = 0.0;
-    let mut cy = 0.0;
-    for (i, a) in pts.iter().enumerate() {
-        let b = pts[(i + 1) % pts.len()];
-        let cross = a[0] * b[1] - b[0] * a[1];
-        cx += (a[0] + b[0]) * cross;
-        cy += (a[1] + b[1]) * cross;
-    }
-    let six_a = 6.0 * signed_area;
-    [cx / six_a, cy / six_a]
 }
 
 fn assign_posts(model: &mut Model, boundaries: &[WallRegionBoundary]) -> usize {
@@ -374,10 +328,7 @@ fn assign_posts(model: &mut Model, boundaries: &[WallRegionBoundary]) -> usize {
             .filter(|(_, rb)| rb.is_same_plane(midpoint))
             .filter(|(_, rb)| {
                 let coord = [midpoint[0], midpoint[1], (a[2] + b[2]) * 0.5];
-                rb.contains(
-                    model,
-                    project_onto(rb.plane_origin, rb.plane_direction, coord),
-                )
+                rb.contains(model, rb.project(coord))
             })
             .map(|(i, _)| i)
             .collect();
@@ -488,7 +439,7 @@ mod tests {
     }
 
     #[test]
-    fn test_match_candidate_uses_shoelace_centroid_for_l_shape() {
+    fn test_match_candidate_uses_area_centroid_for_l_shape() {
         let mut model = Model::default();
         for (id, (s, z)) in [
             (0, (0.0, 0.0)),

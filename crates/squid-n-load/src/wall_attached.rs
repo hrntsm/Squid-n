@@ -31,11 +31,12 @@
 
 use std::collections::HashMap;
 
+use squid_n_core::geom::polygon::area_xy;
 use squid_n_core::geom::vec3::dist as dist3;
 use squid_n_core::ids::{ElemId, FloorRegionId, NodeId, SlabId};
 use squid_n_core::model::{LoadTransfer, Model, RegionAnchor, WallPlateShape};
 
-use crate::floor::{fem_linear, fem_uniform, polygon_area, BeamLoad, Cmq, LoadShape, LoadTarget};
+use crate::floor::{fem_linear, fem_uniform, BeamLoad, Cmq, LoadShape, LoadTarget};
 
 /// 取付き線上の集中位置（無次元）。矩形なら区間中点、台形なら ∫|h| の面積重心。
 fn line_resultant_t(span: [f64; 2], extent: [f64; 2]) -> f64 {
@@ -194,8 +195,9 @@ pub fn attached_wall_beam_loads(model: &Model) -> Vec<BeamLoad> {
 /// 床領域の床板合計面積 [mm²]（床板を1枚も持たない、または境界座標が引けない
 /// 場合は 0.0）。
 ///
-/// 床の分配（[`crate::floor::polygon_area`]）と同じ XY 投影面積を使う。
-/// 3 次元面積（`polygon_area_3d`）で割ると、分配側が XY 面積に強度を掛けるため
+/// 床の分配（[`area_xy`]）と同じ XY 投影面積を使う。
+/// 3 次元面積（[`squid_n_core::geom::polygon::area_3d`]）で割ると、分配側が XY 面積に
+/// 強度を掛けるため
 /// 総重量が `(A_xy / A_3d)` 倍に縮小し、傾斜床では地震用重量・梁荷重が過小
 /// （危険側）になる。鉛直に近い床板は XY 面積が 0 になり、等価面荷重へならせない。
 /// その床領域は [`Model::self_standing_wall_coverage`] の候補から外れる。
@@ -204,7 +206,7 @@ fn region_slab_area(model: &Model, slab_ids: &[SlabId]) -> f64 {
         .iter()
         .filter_map(|&id| model.slab(id))
         .filter_map(|s| s.boundary_coords(model))
-        .map(|pts| polygon_area(&pts))
+        .map(|pts| area_xy(&pts))
         .sum()
 }
 

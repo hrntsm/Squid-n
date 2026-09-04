@@ -36,7 +36,7 @@
 //!
 //! # 面積・自重の計算について
 //!
-//! [`WallRegionBoundary::area`] は、実座標から [`crate::geom::polygon_area_3d`]
+//! [`WallRegionBoundary::area`] は、実座標から [`crate::geom::polygon::area_3d`]
 //! （ニューエルの公式）で求めた 3 次元面積である。壁・シェル要素の自重算定と
 //! スラブ・壁の数量拾いが共通で使う既存の関数をそのまま使い、自前実装を持たない。
 //! トポロジー（面走査・外周面の判別）は直線への射影という近似で行ってよいが
@@ -125,20 +125,27 @@ impl WallRegionBoundary {
     /// モジュールドキュメント参照）。節点が引けない場合は 0。
     pub fn area(&self, model: &Model) -> f64 {
         self.coords(model)
-            .map(|pts| crate::geom::polygon_area_3d(&pts))
+            .map(|pts| crate::geom::polygon::area_3d(&pts))
             .unwrap_or(0.0)
+    }
+
+    /// 実座標 `coord` をこの境界の構面の局所座標 `(s, z)` へ射影する。
+    /// s は構面方向（[`WallRegionBoundary::plane_direction`]）に沿った
+    /// [`WallRegionBoundary::plane_origin`] からの距離、z はグローバル Z。
+    ///
+    /// **構面の局所座標は境界ごとに決まる**ため、射影は境界自身に持たせている
+    /// （`origin` と `direction` を呼び出し側が別々に渡す形だと、別の構面の
+    /// 基準点と方向を取り違えても型では防げない）。[`WallRegionBoundary::contains`]
+    /// が受け取る点も、この関数で射影したものでなければならない。
+    pub fn project(&self, coord: [f64; 3]) -> [f64; 2] {
+        project(self.plane_origin, self.plane_direction, coord)
     }
 
     /// 境界節点を局所座標 `(s, z)` へ射影した多角形。節点が引けない場合は `None`。
     fn local_polygon(&self, model: &Model) -> Option<Vec<[f64; 2]>> {
         self.boundary
             .iter()
-            .map(|n| {
-                model
-                    .nodes
-                    .get(n.index())
-                    .map(|nd| project(self.plane_origin, self.plane_direction, nd.coord))
-            })
+            .map(|n| model.nodes.get(n.index()).map(|nd| self.project(nd.coord)))
             .collect()
     }
 
@@ -150,7 +157,7 @@ impl WallRegionBoundary {
         let Some(poly) = self.local_polygon(model) else {
             return false;
         };
-        super::polygon_contains_strict(&poly, p)
+        crate::geom::polygon::contains_excluding_boundary(&poly, p)
     }
 
     /// 与えた点 `origin` がこの境界と同じ構面（直線）上にあるか
@@ -440,8 +447,11 @@ fn members_on_plane(model: &Model, origin: [f64; 2], direction: [f64; 2]) -> Vec
     edges
 }
 
-/// 実座標を局所座標 `(s, z)` へ射影する。s=`direction` に沿った `origin` からの距離、
-/// z=グローバル Z。
+/// 実座標を構面 `(origin, direction)` の局所座標 `(s, z)` へ射影する。
+///
+/// 構面が確定していて境界も引けているなら [`WallRegionBoundary::project`] を使う。
+/// 本関数は、境界を作る前の面走査（[`scan_wall_region_boundaries`]）のように、
+/// まだ `WallRegionBoundary` が存在しない段階のためにある。
 fn project(origin: [f64; 2], direction: [f64; 2], coord: [f64; 3]) -> [f64; 2] {
     let v = [coord[0] - origin[0], coord[1] - origin[1]];
     let s = v[0] * direction[0] + v[1] * direction[1];

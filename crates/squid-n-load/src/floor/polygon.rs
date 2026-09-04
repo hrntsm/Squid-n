@@ -2,79 +2,13 @@
 //!
 //! - [`distribute_polygon`] — 矩形でない凸/凹多角形床の分配（全辺負担）
 
+use squid_n_core::geom::polygon as geom_polygon;
+
 use super::fem::fem_uniform;
 use super::geometry::edge_len;
 use super::types::{push_edge, BeamLoad, LoadShape};
 
 const POLY_GRID_N: usize = 200;
-
-fn bbox2(poly: &[[f64; 2]]) -> (f64, f64, f64, f64) {
-    let mut min_x = f64::INFINITY;
-    let mut max_x = f64::NEG_INFINITY;
-    let mut min_y = f64::INFINITY;
-    let mut max_y = f64::NEG_INFINITY;
-    for p in poly {
-        min_x = min_x.min(p[0]);
-        max_x = max_x.max(p[0]);
-        min_y = min_y.min(p[1]);
-        max_y = max_y.max(p[1]);
-    }
-    (min_x, max_x, min_y, max_y)
-}
-
-/// 辺上（頂点を含む）とみなす距離 [mm]。床レベルの公差と同じ 1 mm。
-const ON_BOUNDARY_TOL_MM: f64 = 1.0;
-
-/// 点が多角形内部にあるか（レイキャスト法／偶奇則）。XY 平面投影用。
-///
-/// 辺上の点は内側にならない。境界を含めるときは [`point_on_polygon_boundary`] と併用する。
-pub(crate) fn point_in_polygon(p: [f64; 2], poly: &[[f64; 2]]) -> bool {
-    let n = poly.len();
-    let mut inside = false;
-    let mut j = n - 1;
-    for i in 0..n {
-        let (xi, yi) = (poly[i][0], poly[i][1]);
-        let (xj, yj) = (poly[j][0], poly[j][1]);
-        if (yi > p[1]) != (yj > p[1]) {
-            let x_int = (xj - xi) * (p[1] - yi) / (yj - yi) + xi;
-            if p[0] < x_int {
-                inside = !inside;
-            }
-        }
-        j = i;
-    }
-    inside
-}
-
-/// 点が多角形の辺上（頂点を含む）にあるか。距離 [`ON_BOUNDARY_TOL_MM`] 以内を辺上とする。
-pub(crate) fn point_on_polygon_boundary(p: [f64; 2], poly: &[[f64; 2]]) -> bool {
-    let n = poly.len();
-    if n < 2 {
-        return false;
-    }
-    let tol2 = ON_BOUNDARY_TOL_MM * ON_BOUNDARY_TOL_MM;
-    for i in 0..n {
-        if point_segment_dist2(p, poly[i], poly[(i + 1) % n]) <= tol2 {
-            return true;
-        }
-    }
-    false
-}
-
-fn point_segment_dist2(p: [f64; 2], a: [f64; 2], b: [f64; 2]) -> f64 {
-    let ab = [b[0] - a[0], b[1] - a[1]];
-    let ap = [p[0] - a[0], p[1] - a[1]];
-    let len2 = ab[0] * ab[0] + ab[1] * ab[1];
-    let t = if len2 > 1e-12 {
-        ((ap[0] * ab[0] + ap[1] * ab[1]) / len2).clamp(0.0, 1.0)
-    } else {
-        0.0
-    };
-    let proj = [a[0] + ab[0] * t, a[1] + ab[1] * t];
-    let dx = p[0] - proj[0];
-    let dy = p[1] - proj[1];
-    dx * dx + dy * dy
-}
 
 /// 矩形でない凸（または単純な凹）多角形床の分配（レビュー §1.13 ギャップ「多角形床組」対応）。
 ///
@@ -87,7 +21,7 @@ fn point_segment_dist2(p: [f64; 2], a: [f64; 2], b: [f64; 2]) -> f64 {
 ///
 /// 荷重保存は「サンプル点の全数帰属」により、格子内部と判定された点の面積の総和について
 /// 厳密に成り立つ（Σ辺負担荷重 = w × Σ格子内サンプル面積）。格子内サンプル面積と真の
-/// 多角形面積（[`polygon_area`]）との差は格子近似誤差のみで、十分細かい分割（200×200）で
+/// 多角形面積（[`geom_polygon::area_xy`]）との差は格子近似誤差のみで、十分細かい分割（200×200）で
 /// 1%未満に収まる（凸多角形で確認）。強く凹んだ（入隅の深い）多角形では近似精度が
 /// 低下する可能性がある（未検証・残課題）。
 pub(crate) fn distribute_polygon(coords: &[[f64; 3]], w: f64, loads: &mut Vec<BeamLoad>) {
@@ -113,7 +47,8 @@ fn polygon_edge_areas(coords: &[[f64; 3]], candidate_edges: &[usize]) -> Vec<f64
         return edge_area;
     }
     let poly2: Vec<[f64; 2]> = coords.iter().map(|c| [c[0], c[1]]).collect();
-    let (min_x, max_x, min_y, max_y) = bbox2(&poly2);
+    let (lo, hi) = geom_polygon::bounding_box(&poly2);
+    let (min_x, max_x, min_y, max_y) = (lo[0], hi[0], lo[1], hi[1]);
     let dx = (max_x - min_x) / POLY_GRID_N as f64;
     let dy = (max_y - min_y) / POLY_GRID_N as f64;
     if dx <= 0.0 || dy <= 0.0 {
@@ -125,7 +60,7 @@ fn polygon_edge_areas(coords: &[[f64; 3]], candidate_edges: &[usize]) -> Vec<f64
         for ix in 0..POLY_GRID_N {
             let x = min_x + (ix as f64 + 0.5) * dx;
             let p = [x, y];
-            if !point_in_polygon(p, &poly2) {
+            if !geom_polygon::contains_by_ray_crossing(&poly2, p) {
                 continue;
             }
             let mut best_e = candidate_edges[0];
@@ -133,7 +68,7 @@ fn polygon_edge_areas(coords: &[[f64; 3]], candidate_edges: &[usize]) -> Vec<f64
             for &e in candidate_edges {
                 let a = poly2[e];
                 let b = poly2[(e + 1) % n];
-                let d2 = point_segment_dist2(p, a, b);
+                let d2 = geom_polygon::point_segment_dist_sq(p, a, b);
                 if d2 < best_d2 {
                     best_d2 = d2;
                     best_e = e;

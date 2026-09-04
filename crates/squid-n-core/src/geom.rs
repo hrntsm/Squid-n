@@ -4,6 +4,7 @@
 //! 必要とするものだけを置く。3 次元ベクトルの基本演算（内積・外積・単位化）は
 //! [`vec3`] に分ける。
 
+pub mod polygon;
 pub mod vec3;
 
 use vec3::{cross, unit};
@@ -144,26 +145,6 @@ pub fn element_axis(model: &crate::model::Model, e: &crate::model::ElementData) 
         return [0.0, 0.0, 0.0];
     };
     vec3::unit_from(n0.coord, n1.coord).unwrap_or([0.0, 0.0, 0.0])
-}
-
-/// 平面多角形（3D 座標、頂点が同一平面上と仮定）の面積 \[mm²\]。
-///
-/// Newell の公式 `N = 1/2 Σ(Vi × Vi+1)`, `Area = |N|` による。凸・非凸いずれも、
-/// 頂点が境界を一周する順序で与えられていれば成立する。頂点が 3 個未満なら 0。
-///
-/// 壁・シェル要素の自重算定とスラブ・壁の数量拾いが共通で用いる。
-pub fn polygon_area_3d(pts: &[[f64; 3]]) -> f64 {
-    if pts.len() < 3 {
-        return 0.0;
-    }
-    let n = pts.len();
-    let mut normal = [0.0_f64; 3];
-    for i in 0..n {
-        let (p0, p1) = (pts[i], pts[(i + 1) % n]);
-        let c = vec3::cross(p0, p1);
-        normal = vec3::add(normal, c);
-    }
-    0.5 * vec3::norm(normal)
 }
 
 /// 無次元パラメータ `t ∈ [0, 1]` で線形に変わる高さ `h(t) = lerp(h0, h1, t)` の

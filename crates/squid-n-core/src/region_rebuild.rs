@@ -8,12 +8,11 @@
 //! どの床領域からも参照されない独立した床板のまま、素通しする。
 
 use crate::dof::Dof6Mask;
+use crate::geom::polygon::{self, BOUNDARY_TOL_MM};
 use crate::geom::{LEVEL_TOL_MM, MEMBER_AXIS_TOL_MM};
 use crate::ids::{FloorRegionId, NodeId};
 use crate::model::{ElementKind, FloorRegion, LoadTransfer, Model, RegionAnchor, SlabShape};
-use crate::region_gen::{
-    generate_region_boundaries, polygon_contains_strict, scan_region_boundaries, BOUNDARY_TOL_MM,
-};
+use crate::region_gen::{generate_region_boundaries, scan_region_boundaries};
 
 /// 重心照合で面積が近いとみなす相対許容（新旧の床領域の面積比）。
 pub const CENTROID_MATCH_AREA_REL: f64 = 1e-3;
@@ -193,8 +192,8 @@ fn boundary_centroid_area(model: &Model, boundary: &[NodeId]) -> Option<([f64; 2
     if pts.len() < 3 {
         return None;
     }
-    let area = shoelace_area(&pts);
-    let cxy = shoelace_centroid(&pts, area);
+    let area = polygon::signed_area(&pts);
+    let cxy = polygon::centroid(&pts);
     let z = z_sum / pts.len() as f64;
     Some((cxy, z, area.abs()))
 }
@@ -210,48 +209,13 @@ fn region_contains(model: &Model, region: &FloorRegion, p: [f64; 2]) -> bool {
         return false;
     };
     let poly: Vec<[f64; 2]> = coords.iter().map(|c| [c[0], c[1]]).collect();
-    polygon_contains_strict(&poly, p)
+    polygon::contains_excluding_boundary(&poly, p)
 }
 
 fn region_area(model: &Model, region: &FloorRegion) -> f64 {
     boundary_centroid_area(model, &region.boundary)
         .map(|(_, _, a)| a)
         .unwrap_or(f64::MAX)
-}
-
-fn shoelace_area(pts: &[[f64; 2]]) -> f64 {
-    let n = pts.len();
-    if n < 3 {
-        return 0.0;
-    }
-    let mut sum = 0.0;
-    for i in 0..n {
-        let a = pts[i];
-        let b = pts[(i + 1) % n];
-        sum += a[0] * b[1] - b[0] * a[1];
-    }
-    sum / 2.0
-}
-
-fn shoelace_centroid(pts: &[[f64; 2]], signed_area: f64) -> [f64; 2] {
-    if signed_area.abs() <= f64::EPSILON {
-        let n = pts.len() as f64;
-        return [
-            pts.iter().map(|p| p[0]).sum::<f64>() / n,
-            pts.iter().map(|p| p[1]).sum::<f64>() / n,
-        ];
-    }
-    let mut cx = 0.0;
-    let mut cy = 0.0;
-    for i in 0..pts.len() {
-        let a = pts[i];
-        let b = pts[(i + 1) % pts.len()];
-        let cross = a[0] * b[1] - b[0] * a[1];
-        cx += (a[0] + b[0]) * cross;
-        cy += (a[1] + b[1]) * cross;
-    }
-    let six_a = 6.0 * signed_area;
-    [cx / six_a, cy / six_a]
 }
 
 /// 水平な大梁の 1 本ぶん（XY 線分 ＋ レベル）。壁側の D20 相当判定
@@ -336,7 +300,7 @@ fn try_convert_cantilever(
 
     let mut free = Vec::new();
     for p in &xy {
-        if point_segment_dist(*p, a, b) <= BOUNDARY_TOL_MM {
+        if polygon::point_segment_dist(*p, a, b) <= BOUNDARY_TOL_MM {
             continue;
         }
         let d = (p[0] - a[0]) * nx + (p[1] - a[1]) * ny;
@@ -409,19 +373,6 @@ pub(crate) fn edge_fully_covered(a: [f64; 2], b: [f64; 2], z: f64, beams: &[Gird
     }
     let covered: f64 = merged.iter().map(|(s, e)| e - s).sum();
     covered >= len - MEMBER_AXIS_TOL_MM
-}
-
-/// 点 `p` から線分 `a`–`b` までの距離 [mm]。壁側 D20 相当の自由端判定でも使う。
-pub(crate) fn point_segment_dist(p: [f64; 2], a: [f64; 2], b: [f64; 2]) -> f64 {
-    let ab = [b[0] - a[0], b[1] - a[1]];
-    let len2 = ab[0] * ab[0] + ab[1] * ab[1];
-    let t = if len2 <= f64::EPSILON {
-        0.0
-    } else {
-        (((p[0] - a[0]) * ab[0] + (p[1] - a[1]) * ab[1]) / len2).clamp(0.0, 1.0)
-    };
-    let q = [a[0] + t * ab[0], a[1] + t * ab[1]];
-    ((p[0] - q[0]).powi(2) + (p[1] - q[1]).powi(2)).sqrt()
 }
 
 fn joist_midpoint(model: &Model, nodes: [NodeId; 2]) -> Option<([f64; 2], f64)> {
