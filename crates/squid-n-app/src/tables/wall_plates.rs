@@ -574,13 +574,7 @@ fn attached_anchor_cell(
                 ui.add(egui::DragValue::new(&mut s[0]).range(0.0..=1.0).speed(0.01));
                 ui.label("〜");
                 ui.add(egui::DragValue::new(&mut s[1]).range(0.0..=1.0).speed(0.01));
-                // `Model::validate`（squid-n-core）・`wall_anchor_ok`（squid-n-edit）と同じ範囲。
-                let s_ok = s[0].is_finite()
-                    && s[1].is_finite()
-                    && s[0] >= 0.0
-                    && s[1] <= 1.0
-                    && s[1] - s[0] > 1e-9;
-                if s != span && s_ok {
+                if s != span && squid_n_core::model::span_is_valid(s) {
                     pending_anchor.push((
                         id,
                         RegionAnchor::Line {
@@ -1323,12 +1317,7 @@ fn add_attached_form(ui: &mut egui::Ui, app: &mut App) {
     };
     let extent_ok = use_story_height || parsed_extent.is_some();
     let span = app.ui.scoped.wall_plate_draft.add_span;
-    // `Model::validate`（squid-n-core）・`wall_anchor_ok`（squid-n-edit）と同じ範囲。
-    let span_ok = span[0].is_finite()
-        && span[1].is_finite()
-        && span[0] >= 0.0
-        && span[1] <= 1.0
-        && span[1] - span[0] > 1e-9;
+    let span_ok = squid_n_core::model::span_is_valid(span);
     let anchor: Option<RegionAnchor> = match (
         app.ui.scoped.wall_plate_draft.add_nodes[0],
         app.ui.scoped.wall_plate_draft.add_nodes[1],
