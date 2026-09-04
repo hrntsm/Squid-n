@@ -54,36 +54,36 @@ pub struct LocalFrame {
 
 impl LocalFrame {
     pub fn from_nodes(p_i: [f64; 3], p_j: [f64; 3], ref_vec: [f64; 3]) -> Self {
-        let d = squid_n_core::geom::vec3::sub(p_j, p_i);
+        use squid_n_core::geom::vec3;
+
+        let d = vec3::sub(p_j, p_i);
         // 零長要素（2 節点が同一座標）は材軸方向を定義できないため、長さ 1 の
         // 退化しないスケールに置き換えて ex を全体 X 方向へ倒す。
-        let l = squid_n_core::geom::vec3::norm(d);
+        let l = vec3::norm(d);
         let l = if l < 1e-12 { 1.0 } else { l };
 
-        let ex = squid_n_core::geom::vec3::scale(d, 1.0 / l);
+        let ex = vec3::scale(d, 1.0 / l);
 
-        let rdot = ref_vec[0] * ex[0] + ref_vec[1] * ex[1] + ref_vec[2] * ex[2];
-        let mut ey = [
-            ref_vec[0] - rdot * ex[0],
-            ref_vec[1] - rdot * ex[1],
-            ref_vec[2] - rdot * ex[2],
-        ];
-        let eyl = (ey[0] * ey[0] + ey[1] * ey[1] + ey[2] * ey[2]).sqrt();
+        // ref_vec から材軸成分を抜いた残差（グラム・シュミット）。ex は単位ベクトル
+        // なので、内積を係数にそのまま引けばよい。
+        let reject_ex = |v: [f64; 3]| vec3::sub(v, vec3::scale(ex, vec3::dot(v, ex)));
+
+        // 正規化の除算は `vec3::unit` へ寄せない。`unit` の縮退判定は mm 座標を
+        // 前提とした `ZERO_TOL`（1e-9）だが、ここで測るのは無次元の残差ベクトルで
+        // あり、判定値 1e-12 の意味が違う。
+        let mut ey = reject_ex(ref_vec);
+        let eyl = vec3::norm(ey);
         if eyl > 1e-12 {
             ey = [ey[0] / eyl, ey[1] / eyl, ey[2] / eyl];
         } else {
-            let mut alt = if ex[0].abs() < 0.9 {
+            // ref_vec が材軸と平行で残差が消えた場合は、材軸から最も傾いた
+            // 全体軸を代わりの基準に採る。
+            let alt = reject_ex(if ex[0].abs() < 0.9 {
                 [1.0, 0.0, 0.0]
             } else {
                 [0.0, 1.0, 0.0]
-            };
-            let rdot2 = alt[0] * ex[0] + alt[1] * ex[1] + alt[2] * ex[2];
-            alt = [
-                alt[0] - rdot2 * ex[0],
-                alt[1] - rdot2 * ex[1],
-                alt[2] - rdot2 * ex[2],
-            ];
-            let altl = (alt[0] * alt[0] + alt[1] * alt[1] + alt[2] * alt[2]).sqrt();
+            });
+            let altl = vec3::norm(alt);
             ey = if altl > 1e-12 {
                 [alt[0] / altl, alt[1] / altl, alt[2] / altl]
             } else {
@@ -91,11 +91,7 @@ impl LocalFrame {
             };
         }
 
-        let ez = [
-            ex[1] * ey[2] - ex[2] * ey[1],
-            ex[2] * ey[0] - ex[0] * ey[2],
-            ex[0] * ey[1] - ex[1] * ey[0],
-        ];
+        let ez = vec3::cross(ex, ey);
 
         Self { rot: [ex, ey, ez] }
     }

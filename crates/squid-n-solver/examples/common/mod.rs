@@ -17,8 +17,11 @@
 #![allow(dead_code)]
 
 use squid_n_core::dof::Dof6Mask;
-use squid_n_core::ids::{ElemId, NodeId, SectionId};
-use squid_n_core::model::{ElementData, ElementKind, EndCondition, ForceRegime, LocalAxis, Node};
+use squid_n_core::ids::{ElemId, MaterialId, NodeId, SectionId};
+use squid_n_core::model::{
+    ElementData, ElementKind, EndCondition, ForceRegime, LocalAxis, Material, MaterialCategory,
+    Node, Section,
+};
 
 /// 立体ラーメンの節点格子（nx×ny スパン・nz 層）。
 ///
@@ -168,4 +171,58 @@ pub fn push_beam_element(
         spring: None,
     });
     id
+}
+
+/// 柱・大梁の断面 2 種（S 造）。柱 H-400x400x13x21 が `SectionId(0)`、
+/// 大梁 H-400x200x8x13 が `SectionId(1)`。いずれも材料は [`sn400_steel`]。
+///
+/// `eigen_bench`・`pushover_bench`・`th_bench` の 3 本が同じ建物を測るため、
+/// 断面諸元も 3 本で共通である。`parallel_bench` だけは単一断面の別モデルを
+/// 使うので、ここは共有しない（測っているものが違う）。
+pub fn column_beam_sections() -> Vec<Section> {
+    vec![
+        Section {
+            area: 21_870.0,
+            iy: 6.6e8,
+            iz: 6.6e8,
+            j: 2.0e7,
+            depth: 400.0,
+            width: 400.0,
+            as_y: 12_000.0,
+            as_z: 12_000.0,
+            material: Some(MaterialId(0)),
+            ..Section::zero(SectionId(0), "柱 H-400x400x13x21".into())
+        },
+        Section {
+            area: 8_412.0,
+            iy: 2.34e8,
+            iz: 2.34e8,
+            j: 6.0e5,
+            depth: 400.0,
+            width: 200.0,
+            as_y: 4_000.0,
+            as_z: 4_000.0,
+            material: Some(MaterialId(0)),
+            ..Section::zero(SectionId(1), "梁 H-400x200x8x13".into())
+        },
+    ]
+}
+
+/// [`column_beam_sections`] が参照する鋼材 SN400（`MaterialId(0)`）。
+///
+/// 密度 0 として自重は考えない（ベンチは節点質量・階の地震用重量を直接与える）。
+pub fn sn400_steel() -> Vec<Material> {
+    vec![Material {
+        strength_factor: None,
+        concrete_class: Default::default(),
+        id: MaterialId(0),
+        name: "SN400".into(),
+        category: MaterialCategory::Steel,
+        young: 205_000.0,
+        poisson: 0.3,
+        density: 0.0,
+        shear: None,
+        fc: None,
+        fy: Some(235.0),
+    }]
 }

@@ -590,12 +590,7 @@ impl Model {
                 ..
             } = &slab.shape
             {
-                let valid = span[0].is_finite()
-                    && span[1].is_finite()
-                    && span[0] >= -1e-9
-                    && span[1] <= 1.0 + 1e-9
-                    && span[1] - span[0] > 1e-9;
-                if !valid {
+                if !crate::model::span_is_valid(*span) {
                     return Err(CoreError::DanglingRef(format!(
                         "Slab {} の取付き線の区間 span が不正（0.0 <= t_i < t_j <= 1.0 であること）",
                         slab.id.0
@@ -611,12 +606,7 @@ impl Model {
                 ..
             } = &plate.shape
             {
-                let valid = span[0].is_finite()
-                    && span[1].is_finite()
-                    && span[0] >= -1e-9
-                    && span[1] <= 1.0 + 1e-9
-                    && span[1] - span[0] > 1e-9;
-                if !valid {
+                if !crate::model::span_is_valid(*span) {
                     return Err(CoreError::DanglingRef(format!(
                         "WallPlate {} の取付き線の区間 span が不正（0.0 <= t_i < t_j <= 1.0 であること）",
                         plate.id.0

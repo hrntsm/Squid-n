@@ -198,8 +198,8 @@ fn column_axial(
     }
     let p0 = model.nodes.get(col.nodes[0].index())?.coord;
     let p1 = model.nodes.get(col.nodes[1].index())?.coord;
-    let d = [p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2]];
-    let length = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+    let d = squid_n_core::geom::vec3::sub(p1, p0);
+    let length = squid_n_core::geom::vec3::norm(d);
     if length < 1e-12 {
         return None;
     }

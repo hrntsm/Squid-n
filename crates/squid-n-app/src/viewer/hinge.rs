@@ -308,10 +308,7 @@ pub struct MnCurveCache {
     surface: squid_n_section::mn_surface::MnSurface,
 }
 
-/// N-M 相関曲面の格子解像度（経線方向・周方向）。`mn_view.rs` と同じ値を使い、
-/// 断面詳細ビューと同等の精度にする。
-const MN_N_ALPHA: usize = 24;
-const MN_N_BETA: usize = 48;
+use crate::viewer::mn_draw;
 
 /// 部材の最終応答レコードから、採用する曲げ面（強軸 Mz／弱軸 My）を選ぶ
 /// （純粋関数）。i端・j端のうち絶対値が大きい方の成分を軸ごとに比較し、
@@ -502,8 +499,13 @@ fn build_mn_curve_cache(
     if fibers.is_empty() {
         return None;
     }
-    let surface = build_surface(&fibers, YieldModelKind::MultiFiber, MN_N_ALPHA, MN_N_BETA);
-    let (j_pos, j_neg) = mn_beta_columns(MN_N_BETA, bend_dir_z);
+    let surface = build_surface(
+        &fibers,
+        YieldModelKind::MultiFiber,
+        mn_draw::N_ALPHA,
+        mn_draw::N_BETA,
+    );
+    let (j_pos, j_neg) = mn_beta_columns(mn_draw::N_BETA, bend_dir_z);
     let pos = extract_mn_meridian(&surface.grid, j_pos, bend_dir_z);
     let neg = extract_mn_meridian(&surface.grid, j_neg, bend_dir_z);
 
@@ -759,11 +761,11 @@ fn draw_mn_plot(
 }
 
 /// N-M 相関図の 3D ワイヤーフレーム（N-My-Mz 曲面）＋ 3D 応答経路。
-/// カメラ操作は `mn_view.rs` の断面詳細ビューと同じ（左ドラッグ:回転／
-/// 右ドラッグ:移動／スクロール・ピンチ:ズーム、`viewer::CameraState` 共通）。
-/// `mn_view.rs` は既存の断面詳細ビュー用のため変更せず、ここでは同じ考え方を
-/// 自己完結で再実装する（3D ワイヤーフレーム描画・投影は用途ごとにデータの
-/// 正規化基準が異なるため共通化しにくく、重複させた方が安全なため）。
+///
+/// 曲面そのものの描き方（格子解像度・正規化基準・投影スケール・座標軸・
+/// ワイヤーフレーム）は断面詳細ビュー（`crate::mn_view`）と同じで、
+/// [`crate::viewer::mn_draw`] に集約してある。この関数が持つのは、
+/// そこへ応答経路を重ねるという本画面固有の部分だけである。
 fn draw_mn_plot_3d(
     ui: &mut egui::Ui,
     cache: &MnCurveCache,
@@ -778,102 +780,16 @@ fn draw_mn_plot_3d(
 
     let painter = ui.painter_at(rect);
     painter.rect_filled(rect, 0.0, theme::VIEW_BG);
-    let screen_center = [rect.center().x, rect.center().y];
 
-    // 正規化基準（曲面自身の耐力基準、ゼロ割防止。`mn_view.rs::draw_3d` と同じ考え方）。
-    let n_ref = cache
-        .surface
-        .n_comp
-        .abs()
-        .max(cache.surface.n_tens)
-        .max(1.0);
-    let my_ref = cache.surface.mp_y.abs().max(1.0);
-    let mz_ref = cache.surface.mp_z.abs().max(1.0);
-    let refs = [my_ref, mz_ref, n_ref];
+    let refs = mn_draw::surface_refs(&cache.surface);
+    let view = mn_draw::MnView::new(&rect, cam);
 
-    let min_dim = rect.width().min(rect.height());
-    let scale = 0.32 * min_dim * (cam.zoom / 3.0);
+    mn_draw::draw_axes(&painter, &view);
+    // 曲面の内側に応答経路の赤線を重ねるため、線は薄め（不透明度 160）に描く。
+    mn_draw::draw_wireframe(&painter, &cache.surface, refs, &view, theme::DATA_BLUE, 160);
+    draw_mn_response_path_3d(&painter, records, refs, &view);
 
-    draw_mn_axes(&painter, cam, scale, screen_center);
-    draw_mn_wireframe(&painter, &cache.surface, refs, cam, scale, screen_center);
-    draw_mn_response_path_3d(&painter, records, refs, cam, scale, screen_center);
-
-    ui.add(egui::Label::new(
-        egui::RichText::new("左ドラッグ:回転 / 右ドラッグ:移動 / スクロール:ズーム").size(11.0),
-    ));
-}
-
-/// N-My-Mz 曲面をワイヤーフレーム（周方向・経線方向の格子線）で描画する
-/// （`mn_view.rs::draw_wireframe` と同じ考え方の自己完結版）。
-fn draw_mn_wireframe(
-    painter: &egui::Painter,
-    surf: &squid_n_section::mn_surface::MnSurface,
-    refs: [f64; 3],
-    cam: &crate::viewer::CameraState,
-    scale: f32,
-    screen_center: [f32; 2],
-) {
-    let center3 = [0.0; 3];
-    // 曲面格子点 [N, My, Mz] を正規化ワールド座標 [My_n, Mz_n, N_n] へ変換して投影する。
-    let proj = |g: &[f64; 3]| {
-        let world = [g[1] / refs[0], g[2] / refs[1], g[0] / refs[2]];
-        let p = crate::viewer::project(world, center3, cam, scale, screen_center);
-        egui::pos2(p[0], p[1])
-    };
-    let stroke = egui::Stroke::new(1.0_f32, theme::translucent(theme::DATA_BLUE, 160));
-
-    let n_beta = match surf.grid.first() {
-        Some(row) if !row.is_empty() => row.len(),
-        _ => return,
-    };
-    // 周方向（各経線上、j=n_beta-1 と j=0 が接続する閉曲線）
-    for row in &surf.grid {
-        for j in 0..n_beta {
-            let a = proj(&row[j]);
-            let b = proj(&row[(j + 1) % n_beta]);
-            painter.line_segment([a, b], stroke);
-        }
-    }
-    // 経線方向（引張極→圧縮極）
-    for j in 0..n_beta {
-        for i in 0..surf.grid.len().saturating_sub(1) {
-            let a = proj(&surf.grid[i][j]);
-            let b = proj(&surf.grid[i + 1][j]);
-            painter.line_segment([a, b], stroke);
-        }
-    }
-}
-
-/// 原点から ±1.3 の座標軸線とラベル「My」「Mz」「N」を描く
-/// （`mn_view.rs::draw_axes` と同じ考え方の自己完結版）。
-fn draw_mn_axes(
-    painter: &egui::Painter,
-    cam: &crate::viewer::CameraState,
-    scale: f32,
-    screen_center: [f32; 2],
-) {
-    let center3 = [0.0; 3];
-    let proj = |p: [f64; 3]| {
-        let s = crate::viewer::project(p, center3, cam, scale, screen_center);
-        egui::pos2(s[0], s[1])
-    };
-    const EXT: f64 = 1.3;
-    let axes: [([f64; 3], egui::Color32, &str); 3] = [
-        ([EXT, 0.0, 0.0], theme::AXIS_X, "My"),
-        ([0.0, EXT, 0.0], theme::AXIS_Y, "Mz"),
-        ([0.0, 0.0, EXT], theme::AXIS_Z, "N"),
-    ];
-    for (dir, color, label) in axes {
-        let neg = [-dir[0], -dir[1], -dir[2]];
-        painter.line_segment([proj(neg), proj(dir)], egui::Stroke::new(1.5_f32, color));
-        painter.text(
-            proj(dir),
-            egui::Align2::LEFT_BOTTOM,
-            label,
-            egui::FontId::proportional(13.0),
-            color,
-        );
-    }
+    mn_draw::draw_camera_hint(ui);
 }
 
 /// 3D 応答経路（原点前置済み）を折れ線＋終点マーカーで描く。
@@ -881,22 +797,20 @@ fn draw_mn_response_path_3d(
     painter: &egui::Painter,
     records: &[MemberStepState],
     refs: [f64; 3],
-    cam: &crate::viewer::CameraState,
-    scale: f32,
-    screen_center: [f32; 2],
+    view: &mn_draw::MnView<'_>,
 ) {
     let path = n_my_mz_response_path_3d(records);
     // 原点のみ（記録なし）なら描く経路がない。
     if path.len() < 2 {
         return;
     }
-    let center3 = [0.0; 3];
-    let proj = |p: &[f64; 3]| {
-        let world = [p[0] / refs[0], p[1] / refs[1], p[2] / refs[2]];
-        let s = crate::viewer::project(world, center3, cam, scale, screen_center);
-        egui::pos2(s[0], s[1])
-    };
-    let pts: Vec<egui::Pos2> = path.iter().map(proj).collect();
+    // 応答経路は `n_my_mz_response_path_3d` が既に [My, Mz, N] の順で返すため、
+    // 曲面の格子点 [N, My, Mz] のような並べ替えは要らず、成分ごとに正規化する
+    // だけでよい。
+    let pts: Vec<egui::Pos2> = path
+        .iter()
+        .map(|p| view.project([p[0] / refs[0], p[1] / refs[1], p[2] / refs[2]]))
+        .collect();
     let stroke = egui::Stroke::new(2.5_f32, theme::PARETO_RED);
     for w in pts.windows(2) {
         painter.line_segment([w[0], w[1]], stroke);

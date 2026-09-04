@@ -328,10 +328,10 @@ pub(super) fn draw_section_solids(
         let Some(outline) = section_outline(sec) else {
             return false;
         };
-        let dx = p_j[0] - p_i[0];
-        let dy = p_j[1] - p_i[1];
-        let dz = p_j[2] - p_i[2];
-        if dx * dx + dy * dy + dz * dz < 1e-6 {
+        // 零長部材は押し出す向きが定まらないので描かない。平方のまま比べて
+        // 平方根を省く（しきい値 1e-6 は材長 1e-3 mm に相当する）。
+        let d = squid_n_core::geom::vec3::sub(p_j, p_i);
+        if squid_n_core::geom::vec3::dot(d, d) < 1e-6 {
             return true;
         }
         // 解析と同じ局所座標系で断面を配向（ey=せい方向, ez=幅方向）

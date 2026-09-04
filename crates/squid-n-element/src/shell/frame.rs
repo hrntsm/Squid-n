@@ -17,33 +17,29 @@ pub struct ShellFrame {
 
 impl ShellFrame {
     pub fn from_nodes(p: [[f64; 3]; 4]) -> Self {
-        let v13 = [p[2][0] - p[0][0], p[2][1] - p[0][1], p[2][2] - p[0][2]];
-        let v24 = [p[3][0] - p[1][0], p[3][1] - p[1][1], p[3][2] - p[1][2]];
-        let n = [
-            v13[1] * v24[2] - v13[2] * v24[1],
-            v13[2] * v24[0] - v13[0] * v24[2],
-            v13[0] * v24[1] - v13[1] * v24[0],
-        ];
-        let nl = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
+        use squid_n_core::geom::vec3;
+
+        // 面法線は対角線の外積で採る（平面でない 4 節点でも中立的な向きになる）。
+        // 正規化の除算を `vec3::unit` へ寄せないのは、`unit` の縮退判定が mm 座標
+        // 前提の `ZERO_TOL`（1e-9）で、ここで測る対角線外積・辺ベクトルとは
+        // 判定値 1e-12 の意味が違うためである。
+        let n = vec3::cross(vec3::sub(p[2], p[0]), vec3::sub(p[3], p[1]));
+        let nl = vec3::norm(n);
         let n = if nl > 1e-12 {
             [n[0] / nl, n[1] / nl, n[2] / nl]
         } else {
             [0.0, 0.0, 1.0]
         };
 
-        let e1 = [p[1][0] - p[0][0], p[1][1] - p[0][1], p[1][2] - p[0][2]];
-        let e1l = (e1[0] * e1[0] + e1[1] * e1[1] + e1[2] * e1[2]).sqrt();
+        let e1 = vec3::sub(p[1], p[0]);
+        let e1l = vec3::norm(e1);
         let e1 = if e1l > 1e-12 {
             [e1[0] / e1l, e1[1] / e1l, e1[2] / e1l]
         } else {
             [1.0, 0.0, 0.0]
         };
 
-        let e2 = [
-            n[1] * e1[2] - n[2] * e1[1],
-            n[2] * e1[0] - n[0] * e1[2],
-            n[0] * e1[1] - n[1] * e1[0],
-        ];
+        let e2 = vec3::cross(n, e1);
 
         Self { e1, e2, n }
     }

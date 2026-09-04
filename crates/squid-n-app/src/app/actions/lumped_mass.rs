@@ -145,29 +145,18 @@ impl App {
         let Some(name) = self.core.scoped.lumped_wave_library_selection.clone() else {
             return;
         };
-        let Some(dir) = squid_n_io::wave_library::wave_library_dir() else {
-            self.report_error("波形ライブラリの保存先を特定できませんでした。".to_string());
+        let Some((dir, content)) = self.read_wave_library_file(&name) else {
             return;
         };
-        let content = match std::fs::read_to_string(dir.join(&name)) {
-            Ok(c) => c,
-            Err(e) => {
-                self.report_error(format!("波形読込エラー: {e}"));
-                return;
-            }
-        };
+        // 質点系は刻みと方向を専用の設定で持つため、写しへ差し替えてから渡す。
         let mut cfg = self.core.analysis_cfg;
         cfg.th_dt = cfg.lumped_th_dt;
         cfg.th_dir = match cfg.lumped_dir {
             SeismicDir::X => ThDir::X,
             SeismicDir::Y => ThDir::Y,
         };
-        let wave = match ground_motion_from_wave_content(&cfg, &content) {
-            Ok(w) => w,
-            Err(e) => {
-                self.report_error(e);
-                return;
-            }
+        let Some(wave) = self.ground_motion_or_report(&cfg, &content) else {
+            return;
         };
         self.core.scoped.lumped_wave_library_selected_sha256 =
             squid_n_io::wave_library::wave_sha256(&dir, &name).ok();

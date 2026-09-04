@@ -205,15 +205,8 @@ pub fn collect_pca_checks(
         // 引張鉄筋断面積 at（`rect_axis_props` と同じ「count/2 が片側」仮定）。
         let at = squid_n_core::section_shape::bar_set_area(&rebar.main_x) / 2.0;
 
-        // 部材長 L（節点座標から算定）。
-        let (Some(p0), Some(p1)) = (
-            model.nodes.get(elem.nodes[0].index()).map(|n| n.coord),
-            model.nodes.get(elem.nodes[1].index()).map(|n| n.coord),
-        ) else {
-            continue;
-        };
-        let (dx, dy, dz) = (p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2]);
-        let length = (dx * dx + dy * dy + dz * dz).sqrt();
+        // 部材長 L は `Model::member_length` が単一情報源（節点参照の欠落は 0.0）。
+        let length = model.member_length(elem);
         if length < 1e-9 {
             continue;
         }

@@ -54,7 +54,7 @@ fn wall_protrusion(
     let accepts = |dir: [f64; 3]| -> bool {
         match toward {
             None => true,
-            Some(t) => dir[0] * t[0] + dir[1] * t[1] + dir[2] * t[2] > 1e-9,
+            Some(t) => squid_n_core::geom::vec3::dot(dir, t) > 1e-9,
         }
     };
 

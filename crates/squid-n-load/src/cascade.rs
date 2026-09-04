@@ -42,6 +42,8 @@
 use std::collections::{HashMap, HashSet};
 
 use squid_n_core::geom::MEMBER_AXIS_TOL_MM;
+// 2 点間の距離 [mm]。算定の情報源は `squid-n-core` に置く。
+use squid_n_core::geom::vec3::dist as dist3;
 use squid_n_core::ids::NodeId;
 use squid_n_core::model::{
     ElementKind, MemberLoadKind, Model, SecondaryMember, SecondaryMemberKind, Slab,
@@ -140,11 +142,6 @@ struct Axis {
 
 fn coord(model: &Model, id: NodeId) -> Option<[f64; 3]> {
     model.nodes.get(id.index()).map(|n| n.coord)
-}
-
-fn dist3(a: [f64; 3], b: [f64; 3]) -> f64 {
-    let d = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
-    (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt()
 }
 
 /// 2 節点 `Beam` 要素の端点対（順不同）の集合。二次部材が実部材化済みかを

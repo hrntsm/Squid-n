@@ -73,6 +73,25 @@ pub enum RegionAnchor {
     FloorRegion { nodes: [NodeId; 2] },
 }
 
+/// 取付き線の無次元区間 `span = [t_i, t_j]` が規約 `0.0 <= t_i < t_j <= 1.0`
+/// を満たすか。
+///
+/// 判定の情報源を 1 つに保つため、区間の妥当性が要るところは常にこの関数を使う。
+/// `Model::validate`（保存時の最終防衛線）・`squid-n-edit` の編集コマンド・
+/// GUI の入力欄がそれぞれ同じ式を書いていたが、GUI 側だけ下の許容を持たず、
+/// 「保存はできるが GUI で編集し直すと弾かれる」非対称になっていた。
+///
+/// 両端に `1e-9` の許容を持たせるのは、`span` が浮動小数の無次元比であり、
+/// `1.0` を意図した値が計算経路で `1.0 + ε` になりうるためである。区間が
+/// つぶれている（`t_j - t_i` が許容以下）ものは、載る範囲が無いので弾く。
+pub fn span_is_valid(span: [f64; 2]) -> bool {
+    span[0].is_finite()
+        && span[1].is_finite()
+        && span[0] >= -1e-9
+        && span[1] <= 1.0 + 1e-9
+        && span[1] - span[0] > 1e-9
+}
+
 /// 取り付く床板の荷重の出口（[`RegionAnchor::Line`] が持つ）。
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum LoadTransfer {
@@ -222,5 +241,26 @@ mod tests {
         assert_eq!(r.level(&m), Some(0.0));
         assert_eq!(r.reference_node(), Some(NodeId(0)));
         assert_eq!(r.edge_nodes(0), Some([NodeId(0), NodeId(1)]));
+    }
+
+    #[test]
+    fn span_is_valid_は規約0_0以上t_i未満t_j以下1_0を判定する() {
+        // 代表的な妥当値。
+        assert!(span_is_valid([0.0, 1.0]));
+        assert!(span_is_valid([0.25, 0.75]));
+
+        // 上下端は 1e-9 の許容つき。span は無次元比のため、1.0 を意図した値が
+        // 計算経路で 1.0 + ε になりうる。
+        assert!(span_is_valid([-1e-10, 1.0 + 1e-10]));
+        assert!(!span_is_valid([-1e-3, 1.0]));
+        assert!(!span_is_valid([0.0, 1.0 + 1e-3]));
+
+        // つぶれた区間・逆転した区間は載る範囲が無い。
+        assert!(!span_is_valid([0.5, 0.5]));
+        assert!(!span_is_valid([0.75, 0.25]));
+
+        // 非有限は弾く。
+        assert!(!span_is_valid([f64::NAN, 1.0]));
+        assert!(!span_is_valid([0.0, f64::INFINITY]));
     }
 }

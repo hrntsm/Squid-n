@@ -42,10 +42,8 @@ pub(crate) fn member_rp_angle(
     let (Some(pi), Some(pj)) = (model.nodes.get(ni), model.nodes.get(nj)) else {
         return 0.0;
     };
-    let dx = pj.coord[0] - pi.coord[0];
-    let dy = pj.coord[1] - pi.coord[1];
-    let dz = pj.coord[2] - pi.coord[2];
-    let length = (dx * dx + dy * dy + dz * dz).sqrt();
+    // 材長は `Model::member_length` が単一情報源（2 節点未満・節点参照の欠落は 0.0）。
+    let length = model.member_length(elem);
     if length <= 0.0 {
         return 0.0;
     }
