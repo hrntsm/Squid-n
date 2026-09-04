@@ -11,6 +11,9 @@ mod frame_view;
 // モジュール自体を crate 内に公開する（型自体は pub(crate)）。
 pub(crate) mod hinge;
 mod lumped;
+// N-M 相関曲面の描画プリミティブ。断面詳細ビュー（`crate::mn_view`）とヒンジ詳細
+// （`hinge`）の双方から使うため crate 内へ公開する。
+pub(crate) mod mn_draw;
 mod modeling;
 mod solid;
 // 立体グリッドのスナップ点（`SnapPoint`）を App の作成モード状態が保持するため、

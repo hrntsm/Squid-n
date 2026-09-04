@@ -13,7 +13,7 @@
 
 use crate::app::App;
 use crate::theme;
-use crate::viewer::{project, CameraState};
+use crate::viewer::CameraState;
 use squid_n_core::section_shape::SectionShape;
 use squid_n_core::units::to_display::{force_kn, moment_kn_m};
 use squid_n_section::mn_surface::{
@@ -22,8 +22,7 @@ use squid_n_section::mn_surface::{
 };
 
 /// 曲面の格子解像度（経線方向・周方向）。
-const N_ALPHA: usize = 24;
-const N_BETA: usize = 48;
+use crate::viewer::mn_draw::{self, N_ALPHA, N_BETA};
 /// スライス曲線の分割数。
 const SLICE_PTS: usize = 64;
 
@@ -575,132 +574,27 @@ fn draw_3d(
 ) {
     let painter = ui.painter_at(*rect);
     painter.rect_filled(*rect, 0.0, theme::VIEW_BG);
-    let screen_center = [rect.center().x, rect.center().y];
 
-    // 正規化基準（ファイバーモデル基準、ゼロ割防止）。
-    let n_ref = cache.fiber.n_comp.abs().max(cache.fiber.n_tens).max(1.0);
-    let my_ref = cache.fiber.mp_y.abs().max(1.0);
-    let mz_ref = cache.fiber.mp_z.abs().max(1.0);
-    let refs = [my_ref, mz_ref, n_ref];
+    // 正規化基準はファイバーモデルの曲面から採る（3 曲面を同じ基準で重ねるため）。
+    let refs = mn_draw::surface_refs(&cache.fiber);
+    let view = mn_draw::MnView::new(rect, cam);
 
-    // 正規化世界座標はおよそ ±1.0〜1.3 に収まる。min_dim の 0.32 倍を基準スケールとし、
-    // 既定ズーム 3.0 で画面の大部分を占めるようにする（viewer_panel と同様の考え方）。
-    let min_dim = rect.width().min(rect.height());
-    let scale = 0.32 * min_dim * (cam.zoom / 3.0);
+    mn_draw::draw_axes(&painter, &view);
 
-    draw_axes(&painter, cam, scale, screen_center);
-
-    if show[0] {
-        draw_wireframe(
-            &painter,
-            &cache.simple,
-            refs,
-            cam,
-            scale,
-            screen_center,
-            model_color(YieldModelKind::SimpleSpring),
-        );
-    }
-    if show[1] {
-        draw_wireframe(
-            &painter,
-            &cache.ms,
-            refs,
-            cam,
-            scale,
-            screen_center,
-            model_color(YieldModelKind::MultiSpring),
-        );
-    }
-    if show[2] {
-        draw_wireframe(
-            &painter,
-            &cache.fiber,
-            refs,
-            cam,
-            scale,
-            screen_center,
-            model_color(YieldModelKind::MultiFiber),
-        );
-    }
-
-    draw_slice_plane(&painter, n_target, n_ref, cam, scale, screen_center);
-
-    ui.add(egui::Label::new(
-        egui::RichText::new("左ドラッグ:回転 / 右ドラッグ:移動 / スクロール:ズーム").size(11.0),
-    ));
-}
-
-/// M-N 曲面の格子点 [N, My, Mz] を正規化ワールド座標 [My_n, Mz_n, N_n] へ変換する
-/// （X=My基準、Y=Mz基準、Z=N基準。Z を上にするため N を第3成分に置く）。
-fn to_world(g: &[f64; 3], refs: [f64; 3]) -> [f64; 3] {
-    [g[1] / refs[0], g[2] / refs[1], g[0] / refs[2]]
-}
-
-/// 曲面をワイヤーフレーム（周方向・経線方向の格子線）で描画する。
-fn draw_wireframe(
-    painter: &egui::Painter,
-    surf: &MnSurface,
-    refs: [f64; 3],
-    cam: &CameraState,
-    scale: f32,
-    screen_center: [f32; 2],
-    color: egui::Color32,
-) {
-    let center3 = [0.0; 3];
-    let proj = |g: &[f64; 3]| {
-        let p = project(to_world(g, refs), center3, cam, scale, screen_center);
-        egui::pos2(p[0], p[1])
-    };
-    let stroke = egui::Stroke::new(1.0_f32, theme::translucent(color, 180));
-
-    let n_beta = match surf.grid.first() {
-        Some(row) if !row.is_empty() => row.len(),
-        _ => return,
-    };
-
-    // 周方向（各経線上、j=n_beta-1 と j=0 が接続する閉曲線）
-    for row in &surf.grid {
-        for j in 0..n_beta {
-            let a = proj(&row[j]);
-            let b = proj(&row[(j + 1) % n_beta]);
-            painter.line_segment([a, b], stroke);
+    // 3 曲面を重ねるため、線は濃いめ（不透明度 180）に描く。
+    for (visible, surf, kind) in [
+        (show[0], &cache.simple, YieldModelKind::SimpleSpring),
+        (show[1], &cache.ms, YieldModelKind::MultiSpring),
+        (show[2], &cache.fiber, YieldModelKind::MultiFiber),
+    ] {
+        if visible {
+            mn_draw::draw_wireframe(&painter, surf, refs, &view, model_color(kind), 180);
         }
     }
-    // 経線方向（引張極→圧縮極）
-    for j in 0..n_beta {
-        for i in 0..surf.grid.len().saturating_sub(1) {
-            let a = proj(&surf.grid[i][j]);
-            let b = proj(&surf.grid[i + 1][j]);
-            painter.line_segment([a, b], stroke);
-        }
-    }
-}
 
-/// 原点から ±1.3 の座標軸線とラベル「My」「Mz」「N」を描く。
-fn draw_axes(painter: &egui::Painter, cam: &CameraState, scale: f32, screen_center: [f32; 2]) {
-    let center3 = [0.0; 3];
-    let proj = |p: [f64; 3]| {
-        let s = project(p, center3, cam, scale, screen_center);
-        egui::pos2(s[0], s[1])
-    };
-    const EXT: f64 = 1.3;
-    let axes: [([f64; 3], egui::Color32, &str); 3] = [
-        ([EXT, 0.0, 0.0], theme::AXIS_X, "My"),
-        ([0.0, EXT, 0.0], theme::AXIS_Y, "Mz"),
-        ([0.0, 0.0, EXT], theme::AXIS_Z, "N"),
-    ];
-    for (dir, color, label) in axes {
-        let neg = [-dir[0], -dir[1], -dir[2]];
-        painter.line_segment([proj(neg), proj(dir)], egui::Stroke::new(1.5_f32, color));
-        painter.text(
-            proj(dir),
-            egui::Align2::LEFT_BOTTOM,
-            label,
-            egui::FontId::proportional(13.0),
-            color,
-        );
-    }
+    draw_slice_plane(&painter, n_target, refs[2], &view);
+
+    mn_draw::draw_camera_hint(ui);
 }
 
 /// 現在のスライス軸力位置に半透明の水平面（正方形 ±1.15）と N 値ラベルを描く。
@@ -708,30 +602,20 @@ fn draw_slice_plane(
     painter: &egui::Painter,
     n_target: f64,
     n_ref: f64,
-    cam: &CameraState,
-    scale: f32,
-    screen_center: [f32; 2],
+    view: &mn_draw::MnView<'_>,
 ) {
-    let center3 = [0.0; 3];
     let z = n_target / n_ref;
     const H: f64 = 1.15;
     let corners = [[-H, -H, z], [H, -H, z], [H, H, z], [-H, H, z]];
-    let poly: Vec<egui::Pos2> = corners
-        .iter()
-        .map(|p| {
-            let s = project(*p, center3, cam, scale, screen_center);
-            egui::pos2(s[0], s[1])
-        })
-        .collect();
+    let poly: Vec<egui::Pos2> = corners.iter().map(|p| view.project(*p)).collect();
     painter.add(egui::Shape::convex_polygon(
         poly,
         theme::translucent(theme::HILITE_PURPLE, 30),
         egui::Stroke::new(1.0_f32, theme::translucent(theme::HILITE_PURPLE, 120)),
     ));
 
-    let label_pos = project([H, H, z], center3, cam, scale, screen_center);
     painter.text(
-        egui::pos2(label_pos[0], label_pos[1]),
+        view.project([H, H, z]),
         egui::Align2::LEFT_CENTER,
         format!("N = {:.1} kN", force_kn(n_target)),
         egui::FontId::proportional(12.0),
