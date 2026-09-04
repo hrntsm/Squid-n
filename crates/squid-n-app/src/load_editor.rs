@@ -177,7 +177,7 @@ impl LoadEditor {
                 // 全長かつ強度一定なら等分布、それ以外は台形として開く。
                 let full = model
                     .element(load.elem)
-                    .map(|e| elem_length(model, e))
+                    .map(|e| model.member_length(e))
                     .unwrap_or(0.0);
                 let uniform = (w1 - w2).abs() < 1e-9 && a.abs() < 1e-6 && (b - full).abs() < 1e-6;
                 (
@@ -272,11 +272,6 @@ impl LoadEditor {
     pub fn picks_node(&self) -> bool {
         matches!(self.draft, LoadDraft::Nodal(_))
     }
-}
-
-/// 部材の材端間距離 [mm]。
-fn elem_length(model: &Model, elem: &squid_n_core::model::ElementData) -> f64 {
-    model.member_length(elem)
 }
 
 /// 指定部材がブレース（トラス要素）か。
@@ -704,7 +699,7 @@ impl App {
                 let Some(element) = self.core.model.element(elem) else {
                     return Err(format!("部材 #{} は存在しません", elem.0));
                 };
-                let length = elem_length(&self.core.model, element);
+                let length = self.core.model.member_length(element);
                 if length <= 1e-9 {
                     return Err(format!("部材 #{} の材長が 0 です", elem.0));
                 }

@@ -81,8 +81,7 @@ fn axis_of(data: &ElementData, model: &Model) -> Option<[f64; 3]> {
 
 /// 単位ベクトル 2 本が平行（向きの反転を含む）か。
 fn is_parallel(a: [f64; 3], b: [f64; 3]) -> bool {
-    let dot = a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
-    dot.abs() > 1.0 - 1e-6
+    squid_n_core::geom::vec3::dot(a, b).abs() > 1.0 - 1e-6
 }
 
 /// 節点 `node` において、軸 `axis` まわりの回転が「部材 `elem` のねじり以外」で

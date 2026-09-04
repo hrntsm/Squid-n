@@ -162,17 +162,21 @@ pub fn collect_joint_checks_with_long(
         let (Some(sec), Some(mat)) = (sec, mat) else {
             continue;
         };
+        // 材長は `Model::member_length` が単一情報源（節点参照の欠落は 0.0 を返すため、
+        // 退化判定がそのまま欠落の除外も兼ねる）。
+        let length = model.member_length(elem);
+        if length < 1e-9 {
+            continue;
+        }
+        // 鉛直成分 ez は材端 2 節点から求める。`geom::element_axis` は終端に `nodes`
+        // の末尾を採るため、4 節点の壁を含むこの走査では使えない（`member_length`
+        // と同じ nodes[0]・nodes[1] を見る必要がある）。
         let (Some(p0), Some(p1)) = (
             model.nodes.get(elem.nodes[0].index()).map(|n| n.coord),
             model.nodes.get(elem.nodes[1].index()).map(|n| n.coord),
         ) else {
             continue;
         };
-        let (dx, dy, dz) = (p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2]);
-        let length = (dx * dx + dy * dy + dz * dz).sqrt();
-        if length < 1e-9 {
-            continue;
-        }
         members.push(MemberInfo {
             elem,
             sec,
@@ -182,7 +186,7 @@ pub fn collect_joint_checks_with_long(
             steel_mat,
             forces,
             kind: squid_n_core::structure_kind::structure_kind_of(Some(sec), Some(mat.category)),
-            ez: (dz / length).abs(),
+            ez: ((p1[2] - p0[2]) / length).abs(),
             length,
         });
     }

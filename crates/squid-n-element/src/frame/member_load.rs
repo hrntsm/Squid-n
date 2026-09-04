@@ -10,6 +10,7 @@
 //! - 内力回復では、`K·u` 由来の内力に本モジュールの「固定端内力」を重ね合わせる。
 
 use crate::transform::LocalFrame;
+use squid_n_core::geom::vec3;
 use squid_n_core::model::{MemberLoad, MemberLoadKind};
 
 /// ローカル 1 軸へ分解した成分荷重。`mag` は成分係数 (dir·e_axis) を乗じ済み。
@@ -24,18 +25,20 @@ enum Comp {
 /// 1 つの部材荷重をローカル 3 軸 (x,y,z) の成分へ分解する。
 /// 返り値 [Option<Comp>;3]: index 0=軸(x), 1=曲げ面y, 2=曲げ面z。
 fn resolve(load: &MemberLoad, frame: &LocalFrame) -> [Option<Comp>; 3] {
-    // dir を正規化
+    // dir を正規化する。除算を `vec3::unit` へ寄せないのは、`unit` の縮退判定が
+    // mm 座標前提の `ZERO_TOL`（1e-9）で、無次元の方向ベクトルを測るここの
+    // 判定値 1e-12 とは意味が違うためである。
     let d = load.dir;
-    let dl = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+    let dl = vec3::norm(d);
     if dl < 1e-12 {
         return [None, None, None];
     }
     let d = [d[0] / dl, d[1] / dl, d[2] / dl];
     // ローカル成分係数 c_axis = d · e_axis（rot 行が ex,ey,ez）
     let c = [
-        d[0] * frame.rot[0][0] + d[1] * frame.rot[0][1] + d[2] * frame.rot[0][2],
-        d[0] * frame.rot[1][0] + d[1] * frame.rot[1][1] + d[2] * frame.rot[1][2],
-        d[0] * frame.rot[2][0] + d[1] * frame.rot[2][1] + d[2] * frame.rot[2][2],
+        vec3::dot(d, frame.rot[0]),
+        vec3::dot(d, frame.rot[1]),
+        vec3::dot(d, frame.rot[2]),
     ];
     let mut out = [None, None, None];
     for (axis, out_slot) in out.iter_mut().enumerate() {

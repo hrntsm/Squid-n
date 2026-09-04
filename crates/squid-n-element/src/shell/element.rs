@@ -82,8 +82,8 @@ impl ShellElement {
         let mut lc = [[0.0; 3]; 4];
         for i in 0..4 {
             let c = self.coords[i];
-            lc[i][0] = c[0] * f.e1[0] + c[1] * f.e1[1] + c[2] * f.e1[2];
-            lc[i][1] = c[0] * f.e2[0] + c[1] * f.e2[1] + c[2] * f.e2[2];
+            lc[i][0] = squid_n_core::geom::vec3::dot(c, f.e1);
+            lc[i][1] = squid_n_core::geom::vec3::dot(c, f.e2);
             lc[i][2] = 0.0;
         }
         lc

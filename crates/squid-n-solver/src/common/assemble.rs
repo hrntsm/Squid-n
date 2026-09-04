@@ -193,10 +193,9 @@ pub(crate) fn member_load_frame(model: &Model, elem: &ElementData) -> Option<(Lo
     }
     let p_i = model.nodes.get(elem.nodes[0].index())?.coord;
     let p_j = model.nodes.get(elem.nodes[1].index())?.coord;
-    let dx = p_j[0] - p_i[0];
-    let dy = p_j[1] - p_i[1];
-    let dz = p_j[2] - p_i[2];
-    let length = (dx * dx + dy * dy + dz * dz).sqrt();
+    // 材長は `Model::member_length` が単一情報源。局所座標系は材端座標から組むため、
+    // 座標自体はここでも引き当てる。
+    let length = model.member_length(elem);
     if length < 1e-9 {
         return None;
     }

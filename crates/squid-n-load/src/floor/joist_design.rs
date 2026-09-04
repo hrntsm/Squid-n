@@ -14,6 +14,7 @@ use squid_n_core::units::GRAVITY_MM_S2;
 
 use super::distribute_slab_resolved;
 use super::fem::{simple_beam_moment_at, simple_reactions};
+use super::geometry::dist3;
 use super::types::{BeamLoad, LoadShape, LoadTarget};
 
 /// 節点対を順不同キー `(min, max)` に正規化する。
@@ -262,13 +263,6 @@ fn beam_between(model: &Model, a: NodeId, b: NodeId) -> bool {
 
 fn coord(model: &Model, id: NodeId) -> Option<[f64; 3]> {
     model.nodes.get(id.index()).map(|n| n.coord)
-}
-
-fn dist3(a: [f64; 3], b: [f64; 3]) -> f64 {
-    let dx = b[0] - a[0];
-    let dy = b[1] - a[1];
-    let dz = b[2] - a[2];
-    (dx * dx + dy * dy + dz * dz).sqrt()
 }
 
 fn lerp3(a: [f64; 3], b: [f64; 3], t: f64) -> [f64; 3] {
