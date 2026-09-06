@@ -1,8 +1,5 @@
 use squid_n_core::model::Model;
 use squid_n_edit::UndoStack;
-// `FsResultStore` はメソッド(`writer`/`query`/`manifest`)をトレイト経由でのみ提供するため、
-// 具象型への `.writer()` 等のドット呼び出しにはこのトレイトのインポートが要る
-// （`&dyn ResultStore` 経由の呼び出しはトレイトオブジェクト自体がトレイトを表すため不要）。
 use squid_n_io::results::ResultStore;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -18,10 +15,7 @@ pub enum JobStatus {
     Done {
         result_ref: String,
     },
-    /// 失敗。`error` は利用者向けの日本語メッセージ、`kind` は機械可読な種別コード
-    /// （[`squid_n_job::JobError::kind`] と、それ以外の失敗を表す `"internal"`）。
-    /// 文言は変わり得るが**種別コードは安定**とするため、クライアントは `kind` で
-    /// 分岐すること。
+    /// 失敗。`error` は利用者向けの日本語メッセージ、`kind` は機械可読な種別コード。
     Failed {
         error: String,
         kind: String,
@@ -37,8 +31,7 @@ pub enum JobKind {
     Pushover,
     TimeHistory,
     DesignCheck,
-    /// 終局検定（靭性保証型耐震設計指針）: RC 矩形部材の塑性理論式による終局
-    /// せん断・付着・軸余裕度を算定する。
+    /// 終局検定（靭性保証型耐震設計指針）。
     UltimateCheck,
 }
 
@@ -83,17 +76,7 @@ impl JobRegistry {
     }
 }
 
-/// 結果ストア本体。
-///
-/// `ResultStore` トレイトは `writer(&mut self)`/`query(&self)`/`manifest(&self)` のみを
-/// 持ち、`FsResultStore::sync`（保留エントリを manifest へ反映する）を含まない
-/// （`squid-n-io` 側のトレイト定義であり本クレートからは変更しない）。
-/// ジョブ完了直後に `manifest()`/`query()` で書き込み結果を参照できる必要があるため
-/// （`result_get` が manifest 存在確認で結果を見つけられないと困る）、
-/// `ServerState` は `Box<dyn ResultStore>` ではなく具象型 `FsResultStore` を直接保持し、
-/// 書き込み後は明示的に `sync()` を呼ぶ設計とする（`Box<dyn ResultStore>` のままだと
-/// `sync()` を呼ぶ手段がなく、ダウンキャストするにはトレイトに `Any` を足す必要が
-/// あるが、それは squid-n-io 側の変更になってしまうため避けた）。
+/// 結果ストア本体（具象型 `FsResultStore` を直接保持し、書き込み後に `sync()` を呼ぶ）。
 pub struct ServerState {
     pub model: Model,
     pub undo: UndoStack,
@@ -113,8 +96,7 @@ impl ServerState {
     }
 }
 
-/// 結果ストアの既定ディレクトリ。環境変数 `SQUID_N_RESULT_DIR` があれば優先し、
-/// なければ OS 一時ディレクトリ配下の `squid-n-mcp-results` を使う。
+/// 結果ストアの既定ディレクトリ（`SQUID_N_RESULT_DIR` があれば優先）。
 pub fn default_result_dir() -> PathBuf {
     std::env::var_os("SQUID_N_RESULT_DIR")
         .map(PathBuf::from)

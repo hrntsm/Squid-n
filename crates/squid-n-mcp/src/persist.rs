@@ -13,38 +13,15 @@ fn attach_store_info(summary: &mut serde_json::Value, case: u32, kinds: &[&str])
     }
 }
 
-/// `JobOutcome` を結果ストアへ永続化し、`JobStatus::Done::result_ref` に格納する
-/// サマリ JSON 文字列を返す。書き込み・manifest 永続化の失敗は `Err` で返す
-/// （呼び出し側はジョブを `Failed` へ遷移させる。かつては失敗を握りつぶして
-/// `Done` を報告し、利用者が「結果 0 行」を正常な解析結果と誤解し得た）。
-/// `ServerState` のロックを保持したまま
-/// （= ジョブ状態更新と同じロック内で）呼び出すこと。
-///
-/// ## 対応表（JobKind → 書き込む ResultKind）
-/// - LinearStatic: NodalDisp（全節点変位）+ MemberForce（評価位置ごとの断面力）。
-///   case = 使用した荷重ケース ID。
-/// - DesignCheck: MemberForce のみ（検定の元データ）。検定結果自体（OK/NG・検定比）は
-///   専用の ResultKind がないためサマリ JSON にのみ含める。case = 使用した荷重ケース ID。
-/// - Eigen: Modal のみ。case は固定で 0 を使う。固有値解析は荷重ケースに依存しない
-///   1系統の結果のため、実在する荷重ケース番号と衝突しないダミー値を使う設計とした。
-///   manifest のキーは (case, kind) の組であり、Modal は NodalDisp/MemberForce とは
-///   別の ResultKind（＝別の名前空間）なので、仮に実際の荷重ケースが `case=0` を
-///   使っていても NodalDisp/MemberForce の case=0 エントリとは衝突しない
-///   （LoadCaseId(0) を実荷重ケースとしても二重利用してしまう設計は避けている）。
-/// - Pushover/TimeHistory: 対応する ResultKind スキーマがないため
-///   （TimeHistory 結果 `ResponseResult` は代表1節点の応答のみを保持し、
-///   `ResultKind::TimeHistory` が要求する全節点×全ステップの変位を持たない）
-///   ストアへは書き込まず、サマリ JSON のみを返す。
+/// `JobOutcome` を結果ストアへ永続化し、サマリ JSON 文字列を返す。
+/// 書き込み失敗は `Err` で返す（呼び出し側はジョブを `Failed` へ遷移させる）。
+/// `ServerState` のロックを保持したまま呼び出すこと。
 pub fn persist_job_outcome(
     store: &mut squid_n_io::results::FsResultStore,
     outcome: JobOutcome,
 ) -> Result<String, String> {
     let result = persist_job_outcome_inner(store, outcome);
     if result.is_err() {
-        // 複数種別の書き込みが途中で失敗した場合、それまでに finish 済みの
-        // エントリが保留のまま残り、次のジョブの writer()→sync() で manifest へ
-        // 採用されて Failed ジョブの部分結果が照会可能になる。失敗時は保留分を
-        // 破棄してロールバックする。
         store.discard_pending();
     }
     result
@@ -56,7 +33,7 @@ fn persist_job_outcome_inner(
 ) -> Result<String, String> {
     use squid_n_io::results::{member_force_batch, modal_batch, nodal_disp_batch, ResultKind};
 
-    /// バッチを 1 つ書き込んで finish する（バッチ生成・IO いずれの失敗も伝播）。
+    /// バッチを 1 つ書き込んで finish する。
     fn write_one(
         store: &mut squid_n_io::results::FsResultStore,
         case: u32,
@@ -135,7 +112,6 @@ fn persist_job_outcome_inner(
             effective_mass,
             mut summary,
         } => {
-            // LoadCaseId(0) の二重使用を避けるための設計は上記ドキュメントコメント参照。
             let case = 0u32;
             write_one(
                 store,
@@ -156,8 +132,6 @@ fn persist_job_outcome_inner(
 }
 
 /// 結果 1 回あたりの `result_get` 応答に含める行数の上限。
-/// MCP 応答（JSON-RPC のテキストコンテンツ）が肥大化して呼び出し側（LLM）の
-/// コンテキストを圧迫するのを防ぐための安全弁。超過分は "truncated": true で通知する。
 const RESULT_GET_ROW_LIMIT: usize = 10_000;
 
 /// 結果種別名（"NodalDisp" 等）を `ResultKind` へ変換する。
@@ -174,10 +148,7 @@ fn parse_result_kind(s: &str) -> Result<squid_n_io::results::ResultKind, String>
     }
 }
 
-/// `RecordBatch` を JSON 行配列へ変換する（arrow::json は使わず、既知の列型
-/// （UInt32/UInt64/Float64。P8 の4スキーマはすべてこのいずれか）だけを手動で
-/// `serde_json::Value` に変換する）。`row_limit` を超える行は切り詰め、
-/// 2つ目の戻り値で打ち切ったかどうかを返す。
+/// `RecordBatch` を JSON 行配列へ変換する。`row_limit` 超過分は切り詰める。
 fn batch_to_json_rows(
     batch: &arrow::record_batch::RecordBatch,
     row_limit: usize,
@@ -209,8 +180,6 @@ fn batch_to_json_rows(
                     .downcast_ref::<Float64Array>()
                     .expect("Float64 列のはず")
                     .value(r)),
-                // P8 の4スキーマ（NodalDisp/MemberForce/Modal/TimeHistory）に
-                // 現れない型。将来スキーマが増えたら対応を追加する。
                 other => {
                     let _ = other;
                     serde_json::Value::Null
@@ -223,9 +192,7 @@ fn batch_to_json_rows(
     (rows, total > row_limit)
 }
 
-/// `result_get` ツールの中核ロジック（feature 非依存・テスト可能）。
-/// manifest に該当エントリがなければエラー文字列を返す
-/// （呼び出し側は MCP の `invalid_params` へマップする）。
+/// `result_get` ツールの中核ロジック。manifest に該当エントリがなければエラーを返す。
 pub fn result_get_json(
     store: &dyn squid_n_io::results::ResultStore,
     case: squid_n_io::results::CaseId,
