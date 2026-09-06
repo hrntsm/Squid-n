@@ -3,22 +3,15 @@
 use crate::state_serde::impl_material_serde;
 use crate::uniaxial::UniaxialMaterial;
 
-/// 辻・山田モデル（辻・山田による混合硬化則）。
-/// バイリニア骨格 + β による等方硬化/移動硬化の混合硬化則。
-///
-/// 塑性増分応力 Δσ を等方硬化 `Δσ̄ = β|Δσ|`（降伏幅の膨張）と移動硬化
-/// `Δᾱ = (1−β)|Δσ|`（降伏幅中心の移動）へ配分する。`β=1` で等方硬化（降伏耐力が
-/// 正負同時に膨張）、`β=0` で移動硬化（標準型と同等のバウシンガー効果）となる。
-///
-/// 単位規約は他の `UniaxialMaterial` と同じ（変形＝ひずみ or 回転、力＝応力 or
-/// モーメント、剛性＝力/変形）。JFE 二重鋼管座屈補剛ブレース等で用いられる。
+/// 辻・山田モデル（混合硬化則）。
+/// `β=1` で等方硬化、`β=0` で移動硬化。
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct TsujiYamada {
-    /// 初期剛性 K1（力/変形）。
+    /// 初期剛性 K1。
     pub k1: f64,
-    /// 降伏耐力 Qy（初期降伏面の半径）。
+    /// 降伏耐力 Qy。
     pub qy: f64,
-    /// 第2剛性 K2（降伏後接線。0 ≤ K2 < K1）。
+    /// 第2剛性 K2（0 ≤ K2 < K1）。
     pub k2: f64,
     /// 移動/等方硬化の配分 β（0..1）。
     pub beta: f64,
@@ -33,15 +26,14 @@ struct TyState {
     tangent: f64,
     /// 塑性変形 dp。
     dp: f64,
-    /// 背応力（移動硬化の降伏面中心）α。
+    /// 背応力 α。
     alpha: f64,
-    /// 等方硬化による降伏面半径の増分 Riso（R = Qy + Riso）。
+    /// 等方硬化による降伏面半径の増分 Riso。
     r_iso: f64,
 }
 
 impl TsujiYamada {
     pub fn new(k1: f64, qy: f64, k2: f64, beta: f64) -> Self {
-        // K2 は 0 ≤ K2 < K1 にクランプ（K2≥K1 は硬化係数 H が非有限になるため）。
         let k2 = k2.clamp(0.0, k1 * 0.999);
         let init = TyState {
             tangent: k1,
@@ -57,7 +49,7 @@ impl TsujiYamada {
         }
     }
 
-    /// 硬化係数 H（塑性接線）: K2 = K1·H/(K1+H) より H = K1·K2/(K1−K2)。
+    /// 硬化係数 H: K2 = K1·H/(K1+H) より。
     fn hardening(&self) -> f64 {
         let d = self.k1 - self.k2;
         if d <= 1e-12 {
@@ -67,8 +59,6 @@ impl TsujiYamada {
         }
     }
 
-    /// committed 状態から strain における状態を評価する（trial・probe 共通の
-    /// 内部処理）。committed 状態のみを参照する（self.trial は書き換えない）。
     fn eval_state(&self, strain: f64) -> TyState {
         let c = self.committed;
         let h = self.hardening();
@@ -86,7 +76,6 @@ impl TsujiYamada {
             let s = (q_tr - c.alpha).signum();
             let d_dp = f / (self.k1 + h);
             let dp_new = c.dp + s * d_dp;
-            // 移動硬化（背応力）と等方硬化（降伏面膨張）へ配分。
             let alpha_new = c.alpha + (1.0 - self.beta) * h * s * d_dp;
             let r_iso_new = c.r_iso + self.beta * h * d_dp;
             let stress = self.k1 * (strain - dp_new);

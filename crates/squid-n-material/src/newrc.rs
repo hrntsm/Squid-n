@@ -1,41 +1,11 @@
-//! NewRC コンクリート構成則（建設省総合技術開発プロジェクト「New RC」の
-//! 柱ファイバーモデル用コンクリート応力-ひずみ関係。NewRC 式）。
-//!
-//! # 構成則
-//! 圧縮側は NewRC（有理式）モデル:
-//! ```text
-//! σc/σcB = (A·X + (D−1)·X²) / (1 + (A−2)·X + D·X²),  X = εc/εc0
-//! εc0 = εo = 0.5243·(σB)^(1/4) × 10⁻³
-//! Ec  = 4k·(σB/1000)^(1/3) × 10⁵ × (γ/2.4)²   （k=1.0）
-//! A   = Ec·εc0/σcB,   D = α + β·σB   （α=1.50, β=1.68×10⁻³）
-//! σcB = σp = 1.0·σB   （コンファインド効果は考慮しない）
-//! ```
-//! 上式は**工学単位系（kg/cm²）**で与えられるため、σB=Fc[N/mm²]×10.19716 として
-//! A・D・εc0 を評価する。σc/σcB は無次元のため σc[N/mm²]=(比)·Fc[N/mm²] とし、
-//! 初期接線は Ec[N/mm²]=Ec[kg/cm²]×0.0980665 に一致する。
-//!
-//! 引張側は Ec の弾性 → ひび割れ（ε_cr=ft/Ec）後は応力を保持しない脆性型とする。
-//! 除荷・再載荷は最大経験ひずみへの原点指向割線（静的単調増加のプッシュオーバーでは
-//! 履歴の影響は小さい）。Fc60 超・ユーザー定義強度は Bilinear 骨格へ切替える
-//! 扱いのため、本モデルは NewRC 式の適用範囲（Fc≤60）でのみ用いること（呼び出し側で判定）。
-
+//! NewRC コンクリート構成則（NewRC 式）。
 use crate::state_serde::impl_material_serde;
 use crate::uniaxial::UniaxialMaterial;
 
-/// N/mm² → kgf/cm²（1 kgf/cm² = 0.0980665 N/mm²）。
+/// N/mm² → kgf/cm² の換算係数。
 const NMM2_TO_KGFCM2: f64 = 1.0 / 0.0980665;
 
-/// NewRC 式の圧縮包絡線（有理式）。係数を事前計算して保持する。
-/// 単位: fc [N/mm²]。**大きさ表記**（圧縮を正）で評価する。
-///
-/// 式（工学単位系 kg/cm² で評価し、比 σc/σcB は無次元のため N/mm² 側にそのまま適用する）:
-/// ```text
-/// σc/σcB = (A·X + (D−1)·X²) / (1 + (A−2)·X + D·X²),  X = εc/εc0
-/// εc0 = 0.5243·(σB)^(1/4) × 10⁻³
-/// Ec  = 4k·(σB/1000)^(1/3) × 10⁵ × (γ/2.4)²   （k=1.0）
-/// A   = Ec·εc0/σcB,   D = α + β·σB   （α=1.50, β=1.68×10⁻³）
-/// σcB = σp = 1.0·σB   （コンファインド効果は考慮しない）
-/// ```
+/// NewRC 式の圧縮包絡線（有理式）。単位: fc [N/mm²]。圧縮を正の大きさで評価する。
 #[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct NewRcEnvelope {
     /// コンクリート強度 Fc [N/mm²]。
@@ -51,20 +21,20 @@ pub struct NewRcEnvelope {
 }
 
 impl NewRcEnvelope {
-    /// `fc` [N/mm²]、気乾単位体積重量 γ=2.4 [t/m³]（既定）で評価する。
+    /// `fc` [N/mm²]、気乾単位体積重量 γ=2.4 [t/m³] で評価する。
     pub fn new(fc: f64) -> Self {
         Self::with_gamma(fc, 2.4)
     }
 
-    /// `fc` [N/mm²]、`gamma` は気乾単位体積重量 [t/m³]（既定 2.4 → (γ/2.4)²=1）。
+    /// `fc` [N/mm²]、`gamma` は気乾単位体積重量 [t/m³]。
     pub fn with_gamma(fc: f64, gamma: f64) -> Self {
-        let sigma_b = fc.max(1e-6) * NMM2_TO_KGFCM2; // kg/cm²
+        let sigma_b = fc.max(1e-6) * NMM2_TO_KGFCM2;
         let eps_c0 = 0.5243 * sigma_b.powf(0.25) * 1e-3;
         let ec_kgf = 4.0 * 1.0 * (sigma_b / 1000.0).powf(1.0 / 3.0) * 1e5 * (gamma / 2.4).powi(2);
-        let sigma_cb = sigma_b; // コンファインドなし
+        let sigma_cb = sigma_b;
         let a = ec_kgf * eps_c0 / sigma_cb;
         let d_coef = 1.50 + 1.68e-3 * sigma_b;
-        let ec = ec_kgf * 0.0980665; // N/mm²
+        let ec = ec_kgf * 0.0980665;
         Self {
             fc,
             ec,
@@ -74,7 +44,7 @@ impl NewRcEnvelope {
         }
     }
 
-    /// NewRC 圧縮包絡線の応力比 σc/σcB とその微分 d(比)/dX（X=εc/εc0、正規化ひずみ）。
+    /// NewRC 圧縮包絡線の応力比とその微分（正規化ひずみ X に対して）。
     fn ratio(&self, capital_x: f64) -> (f64, f64) {
         let a = self.a;
         let d = self.d_coef;
@@ -87,50 +57,33 @@ impl NewRcEnvelope {
         (ratio, dratio)
     }
 
-    /// 圧縮包絡線の評価。`x` は圧縮ひずみの大きさ（≥0）。
-    /// 戻り値 (応力の大きさ σ≥0, 大きさ座標系での接線 dσ/dx)。
-    /// σ は 0 未満にならないよう 0 でクランプ（有理式は x が大きいと負になり得るため）。
-    /// 接線はクランプ域で 0。
+    /// 圧縮包絡線の評価。`x` は圧縮ひずみの大きさ。
+    /// 戻り値は (応力の大きさ, 接線)。
     ///
-    /// **原点以下（\\( x \le 0 \\)）は例外**とし、σ=0・接線 = 初期接線 Ec を返す
-    /// （原点で接線が Ec になるのは有理式の解析的な値そのもので、
-    /// \\( d(\text{ratio})/dX|_{X=0} = A = E_c \varepsilon_{c0}/\sigma_{cB} \\) より
-    /// \\( (f_c/\varepsilon_{c0}) \cdot A = E_c \\)）。有理式は x=0 でも σ=0 に
-    /// なるため、終局域用の「σ≤0 なら接線 0」クランプをそのまま掛けると
-    /// **ひずみゼロのコンクリートの接線が 0** になる。この値はファイバー断面の
-    /// 初期接線（[`crate::uniaxial::UniaxialMaterial::trial`] を ε=0 で呼んだ
-    /// 戻り値）としてそのまま使われ、RC 断面の弾性曲げ剛性が主筋分だけに
-    /// 縮んでしまう（塑性化域考慮ファイバー梁の弾性整合が破れ、接線剛性が
-    /// 負になる）。
-    ///
-    /// 圧縮側の呼び出しは常に \\( x \ge 0 \\) だが、負の x（引張側の値を誤って
-    /// 渡した場合）も有理式の外挿ではなく同じ扱いにする。
+    /// 原点以下では σ=0・接線 = Ec を返す。終局域のゼロクランプと区別するため。
     pub fn compression(&self, x: f64) -> (f64, f64) {
         if x <= 0.0 {
             return (0.0, self.ec);
         }
-        let capital_x = x / self.eps_c0; // X = εc/εc0
+        let capital_x = x / self.eps_c0;
         let (ratio, dratio) = self.ratio(capital_x);
         let stress = ratio * self.fc;
         if stress <= 0.0 {
             (0.0, 0.0)
         } else {
-            // dσ/dx = (fc/εc0)·d(ratio)/dX（初期は Ec）。
             let tangent = (self.fc / self.eps_c0) * dratio;
             (stress, tangent.max(0.0))
         }
     }
 }
 
-/// コンクリート履歴の除荷則（本実装の既定）。
-/// 静的解析は逆行型（包絡線を可逆に辿る）、動的解析は原点指向型（最大経験ひずみ点
-/// から原点への割線で除荷・再載荷）。
+/// コンクリート履歴の除荷則（静的=逆行型／動的=原点指向型）。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub enum ConcreteHysteresis {
-    /// 原点指向型（動的解析）。既定。
+    /// 原点指向型。既定。
     #[default]
     OriginOriented,
-    /// 逆行型（静的解析）。除荷・再載荷が圧縮包絡線を辿る。
+    /// 逆行型。
     Retrace,
 }
 
@@ -145,10 +98,10 @@ struct NewRcState {
     is_cracked: bool,
 }
 
-/// NewRC コンクリート構成則（圧縮 NewRC 有理式＋引張脆性）。
+/// NewRC コンクリート構成則。
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct ConcreteNewRc {
-    /// コンクリート強度 Fc（σB）[N/mm²]。
+    /// コンクリート強度 Fc [N/mm²]。
     pub fc: f64,
     /// 引張強度 ft [N/mm²]。
     pub ft: f64,
@@ -156,9 +109,9 @@ pub struct ConcreteNewRc {
     pub ec: f64,
     /// 圧縮強度時ひずみ εc0（正）。
     eps_c0: f64,
-    /// 圧縮包絡線（NewRC 式）。fc/ec/eps_c0 と重複するが、係数 A・D をここに保持する。
+    /// 圧縮包絡線。
     envelope: NewRcEnvelope,
-    /// 除荷則（静的=逆行型／動的=原点指向型）。
+    /// 除荷則。
     #[serde(default)]
     hysteresis: ConcreteHysteresis,
     committed: NewRcState,
@@ -166,7 +119,7 @@ pub struct ConcreteNewRc {
 }
 
 impl ConcreteNewRc {
-    /// `fc`,`ft` [N/mm²]、`gamma` は気乾単位体積重量 [t/m³]（既定 2.4 → (γ/2.4)²=1）。
+    /// `fc`,`ft` [N/mm²]。
     pub fn new(fc: f64, ft: f64) -> Self {
         Self::with_gamma(fc, ft, 2.4)
     }
@@ -195,9 +148,9 @@ impl ConcreteNewRc {
         }
     }
 
-    /// 圧縮包絡線（strain ≤ 0）。(σ[N/mm²]（圧縮負）, 接線[N/mm²])。
+    /// 圧縮包絡線。
     fn envelope_compression(&self, strain: f64) -> (f64, f64) {
-        let (smag, tmag) = self.envelope.compression(-strain); // x=−strain≥0
+        let (smag, tmag) = self.envelope.compression(-strain);
         (-smag, tmag)
     }
 
@@ -209,25 +162,19 @@ impl ConcreteNewRc {
         }
     }
 
-    /// committed 状態から strain における状態を評価する（trial・probe 共通の
-    /// 内部処理）。committed 状態のみを参照し、self.trial は書き換えない。
     fn eval_state(&self, strain: f64) -> NewRcState {
         let c = &self.committed;
         let (stress, tangent, max_comp, max_tens, cracked) = if strain <= 0.0 {
-            // 圧縮側
             let mut max_comp = c.max_comp_strain;
             let (s, t) = if self.hysteresis == ConcreteHysteresis::Retrace {
-                // 逆行型（静的解析）: 除荷・再載荷も圧縮包絡線を可逆に辿る。
                 if strain < max_comp {
                     max_comp = strain;
                 }
                 self.envelope_compression(strain)
             } else if strain < c.max_comp_strain {
-                // 原点指向型（動的）: 包絡線上（新最大圧縮ひずみ）。
                 max_comp = strain;
                 self.envelope_compression(strain)
             } else if c.max_comp_strain < 0.0 {
-                // 原点指向型 除荷・再載荷: 最大経験圧縮ひずみ点への割線。
                 let (sig_m, _) = self.envelope_compression(c.max_comp_strain);
                 let ku = sig_m / c.max_comp_strain;
                 (ku * strain, ku)
@@ -236,7 +183,6 @@ impl ConcreteNewRc {
             };
             (s, t, max_comp, c.max_tens_strain, c.is_cracked)
         } else {
-            // 引張側（弾性→ひび割れ後は応力ゼロ・脆性）
             let eps_cr = self.eps_cr();
             let mut cracked = c.is_cracked;
             let mut max_tens = c.max_tens_strain;
