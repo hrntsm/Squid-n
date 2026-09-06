@@ -1,6 +1,8 @@
 use crate::solver::{LinearSolver, SolveError};
 use faer::sparse::SparseColMat;
 
+const STAGNATION_GUARD_F32: f32 = 1e-30;
+
 pub struct PcgSolver {
     a: Option<CsrF32>,
     diag: Option<Vec<f32>>,
@@ -68,7 +70,7 @@ fn jacobi_preconditioner(csr: &CsrF32) -> Vec<f32> {
         for k in start..end {
             if csr.col_idx[k] == r as u32 {
                 let aii = csr.val[k];
-                if aii.abs() > 1e-30 {
+                if aii.abs() > STAGNATION_GUARD_F32 {
                     *di = 1.0 / aii;
                 }
                 break;
@@ -155,7 +157,7 @@ impl LinearSolver for PcgSolver {
         }
 
         let b_norm = (0..n).map(|i| (rhs[i] as f32).powi(2)).sum::<f32>().sqrt();
-        if b_norm < 1e-30 {
+        if b_norm < STAGNATION_GUARD_F32 {
             return Ok(vec![0.0f64; n]);
         }
 
@@ -167,15 +169,13 @@ impl LinearSolver for PcgSolver {
 
         let mut converged = false;
         for _iter in 0..max_iter {
-            // rho（=rᵀz）が underflow すると次の beta=rho_next/rho が NaN/Inf になり
-            // 以降の反復が破綻するため、ここで打ち切る（実質収束または停滞）。
-            if rho.abs() < 1e-30 {
+            if rho.abs() < STAGNATION_GUARD_F32 {
                 converged = true;
                 break;
             }
             csr_spmv(csr, &p, &mut q);
             let pq = dot_f32(&p, &q);
-            if pq.abs() < 1e-30 {
+            if pq.abs() < STAGNATION_GUARD_F32 {
                 break;
             }
             let alpha = rho / pq;

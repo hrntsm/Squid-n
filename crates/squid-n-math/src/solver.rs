@@ -1,18 +1,13 @@
 use faer::sparse::SparseColMat;
 
 /// 疎行列ソルバの共通インタフェース。
-/// 荷重ケース並列（`squid-n-solver` の batch API）で分解済みソルバを
-/// スレッド間共有するため `Send + Sync` を要求する。
 pub trait LinearSolver: Send + Sync {
     fn factorize(&mut self, k: &SparseColMat<usize, f64>) -> Result<(), SolveError>;
     fn solve(&self, rhs: &[f64]) -> Result<Vec<f64>, SolveError>;
 
-    /// [`Self::solve`] のバッファ再利用版。解を `out` に書き込む（`out` の長さが
-    /// 解の次元と異なる場合のみ `resize` するため、時刻歴のようにステップ毎に同じ
-    /// `out` を渡す使い方ではベクタ確保が起きない）。
+    /// [`Self::solve`] のバッファ再利用版。解を `out` に書き込む。
     ///
-    /// 既定実装は `solve` を呼んで結果をコピーするだけで、確保は削減されない。
-    /// `CholeskySolver`／`LuSolver` は内部スクラッチを再利用する実装を持つ。
+    /// 既定実装は `solve` を呼んで結果をコピーするだけ。
     fn solve_into(&self, rhs: &[f64], out: &mut Vec<f64>) -> Result<(), SolveError> {
         *out = self.solve(rhs)?;
         Ok(())
@@ -29,8 +24,7 @@ pub enum SolveError {
     DimMismatch { k: usize, rhs: usize },
     #[error("faer error: {0}")]
     Backend(String),
-    /// 入力モデル起因のエラー（拘束不足・断面/材料未割当など）。
-    /// メッセージはユーザー向け診断文（日本語）を想定する。
+    /// 入力モデル起因のエラー。メッセージはユーザー向け診断文（日本語）とする。
     #[error("{0}")]
     InvalidInput(String),
     /// 反復法・固有値解析が規定回数内に収束しなかった。
@@ -46,13 +40,11 @@ pub enum SolverBackend {
         tol: f64,
         max_iter: usize,
     },
-    /// 自由度数に応じて疎 Cholesky / PCG を自動選択する（対称正定値系向け）。
-    /// PCG が収束しない場合は疎 Cholesky へ自動フォールバックする。
+    /// 自由度数に応じて疎 Cholesky / PCG を自動選択する。PCG 非収束時は疎 Cholesky へフォールバックする。
     Auto,
 }
 
-/// 因子分解済みソルバに単一 RHS 列を与えて解く共通処理。
-/// `CholeskySolver`／`LuSolver` の `solve` 実装が共有する（次元検査→RHS 構築→解→収集）。
+/// 因子分解済みソルバに単一 RHS 列を与えて解く共通処理（内部用）。
 pub(crate) fn solve_dense_column<S: faer::linalg::solvers::Solve<f64>>(
     factor: &S,
     rhs: &[f64],
@@ -69,9 +61,7 @@ pub(crate) fn solve_dense_column<S: faer::linalg::solvers::Solve<f64>>(
     Ok((0..n).map(|i| x[(i, 0)]).collect())
 }
 
-/// [`solve_dense_column`] のバッファ再利用版。RHS/解の保持に使う `n×1` の `Mat`
-/// スクラッチ（`scratch`）と出力 `Vec`（`out`）を呼び出し側から受け取り、サイズが
-/// 変わらない限り再確保しない。`CholeskySolver`／`LuSolver` の `solve_into` が使う。
+/// [`solve_dense_column`] のバッファ再利用版（内部用）。
 pub(crate) fn solve_dense_column_into<S: faer::linalg::solvers::Solve<f64>>(
     factor: &S,
     rhs: &[f64],
@@ -101,8 +91,7 @@ pub(crate) fn solve_dense_column_into<S: faer::linalg::solvers::Solve<f64>>(
     Ok(())
 }
 
-/// スパースパターン（列ポインタ・行添字）の不変シグネチャ。値は含めない。
-/// symbolic 分解のキャッシュ有効性判定（`CholeskySolver`／`LuSolver`）に使う。
+/// スパースパターンの不変シグネチャ（内部用）。値は含めない。
 #[derive(Clone, PartialEq, Eq)]
 pub(crate) struct SparsityPattern {
     col_ptr: Vec<usize>,
@@ -118,10 +107,7 @@ impl SparsityPattern {
         }
     }
 
-    /// 行列 `k` のパターンとキャッシュ済みパターンが一致するか（アロケーション
-    /// なしのスライス比較）。symbolic キャッシュのヒット判定は毎 `factorize` で
-    /// 走るため、ヒット時（パターン不変が圧倒的多数）に比較用の `Vec` 複製
-    /// （[`Self::of`]）を作らないための判定専用メソッド。
+    /// キャッシュ済みパターンと一致するか。
     pub(crate) fn matches(&self, k: &SparseColMat<usize, f64>) -> bool {
         let sym = k.symbolic();
         self.col_ptr == sym.col_ptr() && self.row_idx == sym.row_idx()
