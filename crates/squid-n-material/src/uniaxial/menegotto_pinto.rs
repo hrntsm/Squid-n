@@ -8,39 +8,33 @@
 use crate::state_serde::impl_material_serde;
 use crate::uniaxial::UniaxialMaterial;
 
-/// 載荷方向の状態（Steel02 の kon に対応）。
+/// 載荷方向の状態。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 enum LoadingBranch {
-    /// 未載荷（初回の trial で方向が決まる）。
+    /// 未載荷。
     Initial,
-    /// 引張方向へ載荷中（漸近線は引張側降伏直線）。
+    /// 引張方向へ載荷中。
     TowardTension,
-    /// 圧縮方向へ載荷中（漸近線は圧縮側降伏直線）。
+    /// 圧縮方向へ載荷中。
     TowardCompression,
 }
 
-/// Menegotto–Pinto モデル（Filippou 1983 の履歴則・等方硬化を含む完全形）。
-///
-/// 正規化座標 ε* = (ε−εr)/(ε0−εr) 上で
-/// σ* = b·ε* + (1−b)·ε*/(1+|ε*|^R)^(1/R) を評価し、
-/// σ = σr + (σ0−σr)·σ* とする。反転ごとに漸近線交点 (ε0,σ0) を
-/// 「反転点を通る弾性直線と（等方硬化でシフトした）降伏漸近線の交点」へ更新する。
+/// Menegotto–Pinto モデル。
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct MenegottoPinto {
     /// 初期弾性係数 E [N/mm²]。
     pub e: f64,
     /// 降伏強度 fy [N/mm²]。
     pub fy: f64,
-    /// 降伏後剛性比 b（降伏漸近線の勾配 = b·E）。
+    /// 降伏後剛性比 b。
     pub b: f64,
     /// 初期曲率パラメータ R0。
     pub r0: f64,
-    /// R 劣化則の係数 a1（R = R0 − a1·ξ/(a2+ξ)）。
+    /// R 劣化則の係数 a1。
     pub a1: f64,
     /// R 劣化則の係数 a2。
     pub a2: f64,
-    /// 等方硬化係数 a3（0 で等方硬化なし。降伏漸近線のシフト量
-    /// shft = 1 + a3·((εmax−εmin)/(2·a4·εy))^0.8 に用いる）。
+    /// 等方硬化係数 a3（0 で等方硬化なし）。
     pub a3: f64,
     /// 等方硬化係数 a4。
     pub a4: f64,
@@ -59,19 +53,18 @@ struct MpState {
     /// 現在の分枝の漸近線交点 (ε0, σ0)。
     eps_0: f64,
     sig_0: f64,
-    /// 経験した最大ひずみ（初期値 +εy。等方硬化と ξ の基点）。
+    /// 経験した最大ひずみ。
     eps_max: f64,
-    /// 経験した最小ひずみ（初期値 −εy）。
+    /// 経験した最小ひずみ。
     eps_min: f64,
-    /// 直前の反転側の極値ひずみ（ξ = |εpl−ε0|/εy に用いる）。
+    /// 直前の反転側の極値ひずみ。
     eps_pl: f64,
     /// 載荷方向。
     branch: LoadingBranch,
 }
 
 impl MenegottoPinto {
-    /// 既定パラメータ b=0.01, R0=20, a1=18.5, a2=0.15（Filippou 1983 の推奨値）、
-    /// 等方硬化なし（a3=0, a4=1）。
+    /// 既定パラメータで生成する。
     pub fn new(e: f64, fy: f64) -> Self {
         Self::with_params(e, fy, 0.01, 20.0, 18.5, 0.15)
     }
@@ -100,7 +93,6 @@ impl MenegottoPinto {
             tangent: e,
             eps_r: 0.0,
             sig_r: 0.0,
-            // 初期分枝の漸近線交点は (εy, fy)（初回 trial の方向で符号が決まる）。
             eps_0: eps_y,
             sig_0: fy,
             eps_max: eps_y,
@@ -130,7 +122,7 @@ impl MenegottoPinto {
         }
     }
 
-    /// 等方硬化による降伏漸近線のシフト率 shft = 1 + a3·((εmax−εmin)/(2·a4·εy))^0.8。
+    /// 等方硬化による降伏漸近線のシフト率。
     fn isotropic_shift(&self, state: &MpState) -> f64 {
         let eps_y = self.eps_y();
         if self.a3 == 0.0 || eps_y <= 0.0 {
@@ -140,8 +132,7 @@ impl MenegottoPinto {
         1.0 + self.a3 * d1.max(0.0).powf(0.8)
     }
 
-    /// 引張方向分枝の開始: 反転点 (εr,σr) を通る弾性直線と、シフトした引張側
-    /// 降伏漸近線 σ = fy·shft + Esh·(ε − εy·shft) の交点を (ε0,σ0) とする。
+    /// 引張方向分枝の開始。
     fn start_tension_branch(&self, state: &mut MpState) {
         let eps_y = self.eps_y();
         let esh = self.b * self.e;
@@ -156,7 +147,7 @@ impl MenegottoPinto {
         state.branch = LoadingBranch::TowardTension;
     }
 
-    /// 圧縮方向分枝の開始（引張側と対称）。
+    /// 圧縮方向分枝の開始。
     fn start_compression_branch(&self, state: &mut MpState) {
         let eps_y = self.eps_y();
         let esh = self.b * self.e;
@@ -171,8 +162,6 @@ impl MenegottoPinto {
         state.branch = LoadingBranch::TowardCompression;
     }
 
-    /// committed 状態から strain における状態を評価する（trial・probe 共通の
-    /// 内部処理）。committed 状態のみを参照し、self.trial は書き換えない。
     fn eval(&self, strain: f64) -> MpState {
         let c = &self.committed;
         let deps = strain - c.strain;
@@ -185,7 +174,6 @@ impl MenegottoPinto {
 
         match c.branch {
             LoadingBranch::Initial => {
-                // 初回載荷: 原点を反転点とし、方向に応じた降伏漸近線で分枝を開始。
                 w.eps_r = 0.0;
                 w.sig_r = 0.0;
                 if deps > 0.0 {
@@ -197,39 +185,31 @@ impl MenegottoPinto {
                 }
             }
             LoadingBranch::TowardCompression if deps > 0.0 => {
-                // 圧縮 → 引張の反転: 反転点は直前のコミット点。
                 w.eps_r = c.strain;
                 w.sig_r = c.stress;
                 w.eps_min = w.eps_min.min(c.strain);
                 self.start_tension_branch(&mut w);
-                // ξ の基点は載荷方向（引張側）の極値ひずみ。前サイクルの引張極値と
-                // 新しい漸近線交点の距離が塑性ひずみ振幅 ξ になる（Filippou 1983）。
                 w.eps_pl = w.eps_max;
             }
             LoadingBranch::TowardTension if deps < 0.0 => {
-                // 引張 → 圧縮の反転。
                 w.eps_r = c.strain;
                 w.sig_r = c.stress;
                 w.eps_max = w.eps_max.max(c.strain);
                 self.start_compression_branch(&mut w);
                 w.eps_pl = w.eps_min;
             }
-            _ => {
-                // 同方向の継続載荷: 分枝パラメータは変えない。
-            }
+            _ => {}
         }
 
         let deps0 = w.eps_0 - w.eps_r;
         let dsig0 = w.sig_0 - w.sig_r;
         if deps0.abs() < 1e-15 {
-            // 漸近線交点が反転点に縮退: 弾性直線で評価。
             w.strain = strain;
             w.stress = w.sig_r + self.e * (strain - w.eps_r);
             w.tangent = self.e;
             return w;
         }
 
-        // 曲率 R の劣化則: ξ = |εpl − ε0|/εy, R = R0 − a1·ξ/(a2+ξ)。
         let eps_y = self.eps_y();
         let xi = if eps_y > 0.0 {
             ((w.eps_pl - w.eps_0) / eps_y).abs()
@@ -238,12 +218,10 @@ impl MenegottoPinto {
         };
         let r = (self.r0 - self.a1 * xi / (self.a2 + xi)).max(1.0);
 
-        // Menegotto–Pinto の遷移曲線（正規化座標）。
         let eps_star = (strain - w.eps_r) / deps0;
         let dum1 = 1.0 + eps_star.abs().powf(r);
         let dum2 = dum1.powf(1.0 / r);
         let sig_star = self.b * eps_star + (1.0 - self.b) * eps_star / dum2;
-        // dσ*/dε* = b + (1−b)/(dum1·dum2)（1 + |ε*|^R − |ε*|^R = 1 を利用した閉形式）。
         let dsig_star = self.b + (1.0 - self.b) / (dum1 * dum2);
 
         w.strain = strain;

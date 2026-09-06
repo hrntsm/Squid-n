@@ -3,8 +3,10 @@
 use crate::state_serde::impl_material_serde;
 use crate::uniaxial::UniaxialMaterial;
 
-/// バイリニア鋼材（弾性＋線形硬化＝kinematic hardening）。
-/// 降伏点 fy [N/mm²]、ヤング率 e [N/mm²]、hardening = ひずみ硬化比（降伏後接線 = hardening·e）。
+const ELASTIC_DUMMY_FY: f64 = 1e18;
+
+/// バイリニア鋼材（弾性＋線形硬化）。
+/// 降伏点 fy [N/mm²]、ヤング率 e [N/mm²]、降伏後接線 = hardening·e。
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Bilinear {
     pub e: f64,
@@ -41,7 +43,6 @@ impl Bilinear {
     }
 
     /// 1D 線形 kinematic hardening の塑性係数 Hp。
-    /// 降伏後の接線 dσ/dε = e·Hp/(e+Hp) = hardening·e となるよう Hp を定める。
     fn hp(&self) -> f64 {
         if self.hardening >= 1.0 {
             f64::INFINITY
@@ -50,17 +51,13 @@ impl Bilinear {
         }
     }
 
-    /// 塑性ひずみ ep（通常は committed 値）と strain から状態を評価する
-    /// （trial・probe 共通の内部処理）。
+    /// 塑性ひずみ ep と strain から状態を評価する。
     fn eval_state(&self, ep: f64, strain: f64) -> BilinearState {
         let hp = self.hp();
-        // 弾性予測（塑性ひずみは前回コミット値で固定）
         let sigma_tr = self.e * (strain - ep);
-        // 降伏関数 f = |σ - α| - fy, α = Hp·ep（kinematic hardening の背応力）
         let alpha = hp * ep;
         let f_tr = (sigma_tr - alpha).abs() - self.fy;
         if f_tr <= 0.0 {
-            // 弾性
             BilinearState {
                 strain,
                 stress: sigma_tr,
@@ -68,7 +65,6 @@ impl Bilinear {
                 plastic_strain: ep,
             }
         } else {
-            // 塑性戻し写像: Δep = f_tr/(e+Hp), 方向 = sign(σ_tr - α)
             let sgn = (sigma_tr - alpha).signum();
             let dep = f_tr / (self.e + hp);
             let ep_new = ep + sgn * dep;
@@ -90,13 +86,11 @@ impl Bilinear {
 
 impl UniaxialMaterial for Bilinear {
     fn set_yield(&mut self, fy: f64) {
-        // kinematic hardening の背応力・塑性ひずみは維持したまま降伏面半径のみ更新
         self.fy = fy.max(1e-9);
     }
 
     fn reference_stress(&self) -> f64 {
-        // 実質弾性（fy を極端に大きく設定した鋼材ダミー）は塑性率評価の対象外。
-        if self.fy >= 1e18 {
+        if self.fy >= ELASTIC_DUMMY_FY {
             0.0
         } else {
             self.fy
@@ -104,7 +98,7 @@ impl UniaxialMaterial for Bilinear {
     }
 
     fn reference_strain(&self) -> f64 {
-        if self.fy >= 1e18 || self.e <= 0.0 {
+        if self.fy >= ELASTIC_DUMMY_FY || self.e <= 0.0 {
             0.0
         } else {
             self.fy / self.e

@@ -4,24 +4,19 @@
 //! 出典: J.B. Mander, M.J.N. Priestley, R. Park, "Theoretical Stress-Strain Model
 //! for Confined Concrete", Journal of Structural Engineering, ASCE, 114(8), 1988。
 //!
-//! 応力–ひずみ履歴（除荷・再載荷を含む状態遷移）は本ファイルでは扱わない。
-//! ここに置くのは、横拘束筋の配置から拘束強度・拘束ひずみを求めるパラメータ計算と、
-//! Popovics 型包絡線（式そのもの）の評価関数のみである。
-//!
 //! 単位規約: 応力 [N/mm²]、長さ [mm]、ひずみは無次元。
-//! **このモジュールでは圧縮を正の大きさ（magnitude）で扱う**
-//! （fco > 0, eps_co > 0 のように、圧縮側の値を正で表す）。
+//! 圧縮を正の大きさで扱う（fco > 0, eps_co > 0 のように、圧縮側の値を正で表す）。
 
 /// Mander 包絡線のパラメータ（圧縮側、大きさ表記）。
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ManderParams {
-    /// 拘束（または非拘束）圧縮強度 f'cc [N/mm²]（正）。
+    /// 拘束圧縮強度 f'cc [N/mm²]（正）。
     pub fcc: f64,
     /// f'cc 時ひずみ εcc（正）。
     pub eps_cc: f64,
 }
 
-/// [0, 1] にクランプする（NaN 入力は 0 として扱う）。
+/// [0, 1] にクランプする。
 fn clamp01(x: f64) -> f64 {
     if x.is_nan() {
         0.0
@@ -30,23 +25,14 @@ fn clamp01(x: f64) -> f64 {
     }
 }
 
-/// 拘束強度比 f'cc/f'co を求める。x = f'l/f'co（有効拘束圧比、≥0）。
-///
-/// f'cc/f'co = -1.254 + 2.254·√(1 + 7.94·x) - 2·x
-/// （円形断面・等方拘束を仮定した Mander (1988) の閉形式解）。
-///
-/// x < 0 は 0 にクランプする（物理的に拘束圧が負になることはない）。
+/// 拘束強度比 f'cc/f'co を求める。x = f'l/f'co（有効拘束圧比）。
+/// f'cc/f'co = -1.254 + 2.254·√(1 + 7.94·x) - 2·x。
 pub fn confined_strength_ratio(fl_ratio: f64) -> f64 {
     let x = fl_ratio.max(0.0);
     -1.254 + 2.254 * (1.0 + 7.94 * x).sqrt() - 2.0 * x
 }
 
 /// 非拘束強度 fco・ピークひずみ eps_co・有効拘束圧 fl_eff から拘束後パラメータを計算する。
-///
-/// f'cc = fco·ratio
-/// εcc = eps_co·(1 + 5·(ratio - 1))
-///
-/// fco・eps_co が非正の場合は拘束の意味を持たないため fcc=eps_cc=0 を返す。
 pub fn confined_params(fco: f64, eps_co: f64, fl_eff: f64) -> ManderParams {
     if fco <= 0.0 || eps_co <= 0.0 {
         return ManderParams {
@@ -64,29 +50,24 @@ pub fn confined_params(fco: f64, eps_co: f64, fl_eff: f64) -> ManderParams {
 /// 円形断面の横拘束筋データ。
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct CircularHoop {
-    /// コア径 ds（フープ中心間）[mm]。
+    /// コア径 ds [mm]。
     pub ds: f64,
-    /// フープのピッチ s [mm]（中心間）。
+    /// フープのピッチ s [mm]。
     pub s: f64,
-    /// フープの純間隔 s' [mm]（内法）。
+    /// フープの純間隔 s' [mm]。
     pub s_clear: f64,
     /// フープ 1 本の断面積 Asp [mm²]。
     pub asp: f64,
     /// フープの降伏強度 fyh [N/mm²]。
     pub fyh: f64,
-    /// コア面積に対する主筋比 ρcc（無次元）。
+    /// コア面積に対する主筋比 ρcc。
     pub rho_cc: f64,
-    /// スパイラル筋なら true（有効拘束係数の式が異なる）。
+    /// スパイラル筋なら true。
     pub spiral: bool,
 }
 
-/// 円形の有効拘束圧 f'l,eff = ke·(1/2)·ρs·fyh を求める。
-///
-/// ρs = 4·Asp/(ds·s)
-/// ke = (1 - s'/(2·ds))² / (1 - ρcc)  （円形フープ）
-/// ke = (1 - s'/(2·ds))  / (1 - ρcc)  （スパイラル）
-///
-/// ke は [0, 1] にクランプする（1 - ρcc ≤ 0 などの異常入力でも NaN・発散を防ぐ）。
+/// 円形の有効拘束圧を求める。
+/// ρs = 4·Asp/(ds·s)、ke は円形フープとスパイラルで式が異なる。
 pub fn circular_effective_lateral_stress(h: &CircularHoop) -> f64 {
     if h.ds <= 0.0 || h.s <= 0.0 {
         return 0.0;
@@ -108,11 +89,11 @@ pub fn circular_effective_lateral_stress(h: &CircularHoop) -> f64 {
 /// 矩形断面の横拘束筋データ。
 #[derive(Clone, Debug, PartialEq)]
 pub struct RectangularHoop {
-    /// コア幅 bc（外周フープ中心間）[mm]。x 方向寸法。
+    /// コア幅 bc [mm]。
     pub bc: f64,
-    /// コアせい dc [mm]。y 方向寸法。
+    /// コアせい dc [mm]。
     pub dc: f64,
-    /// フープのピッチ s [mm]（中心間）。
+    /// フープのピッチ s [mm]。
     pub s: f64,
     /// フープの純間隔 s' [mm]。
     pub s_clear: f64,
@@ -124,16 +105,11 @@ pub struct RectangularHoop {
     pub fyh: f64,
     /// コア面積に対する主筋比 ρcc。
     pub rho_cc: f64,
-    /// 隣接主筋間の純間隔 wi [mm] のリスト（全周）。空なら Σwi²=0（理想拘束）。
+    /// 隣接主筋間の純間隔 wi [mm] のリスト。
     pub w_clear: Vec<f64>,
 }
 
 /// 矩形の有効拘束圧 (f'lx,eff, f'ly,eff) を求める。
-///
-/// ρx = Asx/(s·dc), ρy = Asy/(s·bc)
-/// ke = (1 - Σwi²/(6·bc·dc)) · (1 - s'/(2·bc)) · (1 - s'/(2·dc)) / (1 - ρcc)
-///
-/// ke は [0, 1] にクランプする。f'lx,eff = ke·ρx·fyh, f'ly,eff = ke·ρy·fyh。
 pub fn rectangular_effective_lateral_stress(h: &RectangularHoop) -> (f64, f64) {
     if h.bc <= 0.0 || h.dc <= 0.0 || h.s <= 0.0 {
         return (0.0, 0.0);
@@ -155,39 +131,19 @@ pub fn rectangular_effective_lateral_stress(h: &RectangularHoop) -> (f64, f64) {
     (ke * rho_x * fyh, ke * rho_y * fyh)
 }
 
-/// 矩形の代表有効拘束圧（簡易）。
-///
-/// 本来 Mander (1988) は f'lx,eff・f'ly,eff から 2 軸拘束強度チャート
-/// （無次元化した拘束強度の等高線図）を参照して f'cc を定めるが、
-/// ここではチャートを実装せず、算術平均 (flx+fly)/2 を代表値とする簡易化を行う。
+/// 矩形の代表有効拘束圧（2 方向の算術平均）。
 pub fn rectangular_representative_lateral_stress(h: &RectangularHoop) -> f64 {
     let (flx, fly) = rectangular_effective_lateral_stress(h);
     0.5 * (flx + fly)
 }
 
 /// 終局圧縮ひずみ εcu（Priestley, Seible & Calvi 1996 のエネルギー近似式）。
-///
-/// εcu = 0.004 + 1.4·ρs·fyh·εsu/f'cc
-///
-/// ρs は横拘束筋の体積比、εsu は横拘束筋の破断ひずみ。
-/// f'cc が非正の場合は 0 除算・NaN を避けるため微小値にクランプする。
 pub fn ultimate_strain_priestley(rho_s: f64, fyh: f64, eps_su: f64, fcc: f64) -> f64 {
     let fcc_safe = fcc.max(1e-9);
     0.004 + 1.4 * rho_s.max(0.0) * fyh.max(0.0) * eps_su.max(0.0) / fcc_safe
 }
 
-/// Popovics 型包絡線（Mander 式）の評価。x_strain は圧縮ひずみの大きさ（≥0）。
-///
-/// σ = f'cc·x·r/(r - 1 + x^r), x = ε/εcc, r = Ec/(Ec - Esec), Esec = f'cc/εcc
-/// 接線: dσ/dε = (f'cc/εcc)·r·(r-1)·(1 - x^r)/(r - 1 + x^r)²
-///
-/// 戻り値は (応力の大きさ σ≥0, dσ/dε ※大きさ座標系での接線)。
-///
-/// ガード:
-/// - fcc・eps_cc が非正の場合は材料が存在しないとみなし (0.0, 0.0) を返す。
-/// - Ec ≤ Esec のときは r が発散・符号反転するため、Ec を Esec·1.0001 以上に
-///   クランプしてから r を計算する（r = 1 + 1e-6 のような r 自体への
-///   直接クランプではなく、Ec 側をクランプすることで σ(εcc)=fcc の恒等式を保つ）。
+/// Popovics 型包絡線（Mander 式）の評価。`x_strain` は圧縮ひずみの大きさ。
 pub fn popovics_envelope(fcc: f64, eps_cc: f64, ec: f64, x_strain: f64) -> (f64, f64) {
     if fcc <= 0.0 || eps_cc <= 0.0 {
         return (0.0, 0.0);

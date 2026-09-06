@@ -1,14 +1,11 @@
 //! 集中ばね用の履歴状態機械 [`HysteresisMaterial`]。
-//!
-//! [`HysteresisRule`] のスケルトンに対し、反転検知・除荷/再載荷/内側ループ/Masing/
-//! ピーク指向といった分岐（[`Branch`]）を状態遷移させて復元力特性を与える。
 
 use crate::state_serde::impl_material_serde;
 use crate::uniaxial::UniaxialMaterial;
 
 use super::rule::HysteresisRule;
 
-/// 履歴則の内部状態（runtime。シリアライズ対象外）。
+/// 履歴則の内部状態。
 #[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 struct HystState {
     theta: f64,
@@ -23,13 +20,13 @@ struct HystState {
     branch: Branch,
     /// 反転点
     reversal: (f64, f64),
-    /// ピーク到達回数（正側・負側）。TakedaDegrading の耐力劣化に使用。
+    /// ピーク到達回数（正側・負側）
     peak_count_pos: u32,
     peak_count_neg: u32,
 }
 
 impl HystState {
-    /// 現在の劣化係数。各側のピーク到達回数 n に対し degrade^n（指数的劣化）。
+    /// 現在の劣化係数。
     fn degrade_factor(&self, degradation_rate: f64) -> f64 {
         let n = self.peak_count_pos.max(self.peak_count_neg);
         degradation_rate.powi(n as i32)
@@ -40,36 +37,30 @@ impl HystState {
 enum Branch {
     #[default]
     Skeleton,
-    /// 降伏後の除荷: 反転点から原点方向へ、傾き Ku。
+    /// 降伏後の除荷枝。
     Unloading { ku: f64 },
-    /// 再載荷: 原点(または反転点)から反対側の最大経験点(または降伏点)へ向かう直線。
+    /// 再載荷枝。
     Reloading {
         origin: (f64, f64),
         target: (f64, f64),
     },
-    /// 内側ループ（武田の規則）: ある反転点 P1 から反対側の目標点 P2 へ向かう途中で
-    /// 再反転した場合、新反転点 P3 から直前の反転点 P1 へ向かう直線を描く。
-    /// target は P1（直前の反転点）。次に P1 を超えるか P2 側に達したら分岐を切り替える。
+    /// 内側ループ枝（武田の規則）。
     InnerLoop {
         origin: (f64, f64),
         target: (f64, f64),
-        /// 外側の目標点（反対側ピーク）。内側ループ脱出後に再指向する先。
         outer_target: (f64, f64),
     },
-    /// 標準型（Masing 則）の除荷・再載荷枝。反転点 (θr,Qr) からスケルトンを
-    /// 2 倍相似に拡大した曲線 Q(θ)=Qr − 2·sgn(θr−θ)·g(|θr−θ|/2) を辿る。
-    /// スケルトンに到達した時点で `Skeleton` へ復帰する。
+    /// 標準型（Masing 則）の除荷・再載荷枝。
     Masing { reversal: (f64, f64) },
-    /// 最大点指向型のピーク指向枝。戻り点 origin から反対側の最大経験点 target へ
-    /// 直線で向かう。target 到達で `Skeleton` へ復帰する。
+    /// 最大点指向型のピーク指向枝。
     PeakOriented {
         origin: (f64, f64),
         target: (f64, f64),
     },
 }
 
-/// 履歴則パラメータ + 状態を持つ `UniaxialMaterial`（設計書 §6.8 集中ばね用）。
-/// `trial(theta) -> (M, Kt)`。`theta` は M-θ では回転角[rad]、Q-δ では変位[mm]。
+/// 履歴則パラメータ + 状態を持つ `UniaxialMaterial`。
+/// `theta` は M-θ では回転角[rad]、Q-δ では変位[mm]。
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct HysteresisMaterial {
     pub rule: HysteresisRule,
@@ -86,7 +77,7 @@ impl HysteresisMaterial {
         }
     }
 
-    /// 反対側の目標点（再載荷先）。経験がなければ降伏点。
+    /// 反対側の目標点。経験がなければ降伏点。
     fn opposite_target(&self, dir: f64) -> (f64, f64) {
         self.opposite_target_degraded(dir, 1.0)
     }
@@ -110,7 +101,7 @@ impl HysteresisMaterial {
         }
     }
 
-    /// 降伏したか（いずれかの側で |θ| >= θy を経験）。
+    /// 降伏したか。
     fn has_yielded(&self) -> bool {
         let ty = self.rule.yield_deformation();
         self.committed.max_pos.0.abs() >= ty || self.committed.max_neg.0.abs() >= ty
@@ -125,7 +116,7 @@ impl HysteresisMaterial {
             .max(self.committed.max_neg.0.abs())
     }
 
-    /// 与えた θ での trial 状態を計算（committed から branch を遷移させつつ）。
+    /// 与えた θ での trial 状態を計算する。
     fn evaluate(&self, theta: f64) -> HystState {
         let c = &self.committed;
         let dir_new = (theta - c.theta).signum();
@@ -135,7 +126,6 @@ impl HysteresisMaterial {
             return s;
         }
 
-        // 逆行型: 常にスケルトン上（除荷・再載荷ともスケルトンを可逆に辿る）。
         if self.rule.is_retrograde() {
             let (m, kt) = self.rule.skeleton(theta);
             s.theta = theta;
@@ -152,17 +142,10 @@ impl HysteresisMaterial {
             return s;
         }
 
-        // 方向反転の検知 → 分岐切り替え
         let reversed = c.dir != 0.0 && dir_new != c.dir;
         if reversed {
             s.reversal = (c.theta, c.m);
             let ty = self.rule.yield_deformation();
-            // 耐力劣化のサイクル計数（TakedaDegrading）: スケルトン（包絡線）上の
-            // ピークから反転したとき、その側のサイクル数を 1 進める。スケルトンを
-            // 前進中（単調載荷）は計数しないため載荷刻み数に依存しない。従来は
-            // スケルトン上で新記録を更新する毎ステップ計数しており、単調載荷を
-            // 細かく刻むほど耐力が劣化する非物理な挙動だった。内側ループ点からの
-            // 反転（包絡線未到達）は計数しない。
             if matches!(c.branch, Branch::Skeleton) {
                 if c.theta > ty {
                     s.peak_count_pos = c.peak_count_pos + 1;
@@ -172,12 +155,10 @@ impl HysteresisMaterial {
             }
             let yielded = c.theta.abs() >= ty || self.has_yielded();
             if self.rule.is_standard() {
-                // 標準型: Masing 則の除荷・再載荷枝（除荷開始剛性 = K1）。
                 s.branch = Branch::Masing {
                     reversal: (c.theta, c.m),
                 };
             } else if self.rule.is_max_point_oriented() {
-                // 最大点指向型: 降伏後は戻り点から反対側の最大経験点を直線で指向。
                 s.branch = if yielded {
                     Branch::PeakOriented {
                         origin: (c.theta, c.m),
@@ -187,7 +168,6 @@ impl HysteresisMaterial {
                     Branch::Skeleton
                 };
             } else if c.m.abs() < 1e-12 {
-                // 原点付近で反転: 除荷ではなく反対側ピークへの再載荷
                 let target = self.opposite_target(dir_new);
                 s.branch = Branch::Reloading {
                     origin: (c.theta, c.m),
@@ -196,8 +176,6 @@ impl HysteresisMaterial {
             } else if matches!(c.branch, Branch::Reloading { .. })
                 || matches!(c.branch, Branch::InnerLoop { .. })
             {
-                // 再載荷/内側ループ中の反転 → 内側ループ（武田のポリゴン則）
-                // 直前の反転点（origin）を新たな target とし、今回の反転点から指向する。
                 let (prev_origin, prev_target, outer) = match c.branch {
                     Branch::Reloading { origin, target } => (origin, target, target),
                     Branch::InnerLoop {
@@ -217,7 +195,6 @@ impl HysteresisMaterial {
                 let ku = self.unloading_slope(c.theta, c.m);
                 s.branch = Branch::Unloading { ku };
             } else {
-                // 降伏前: スケルトンに沿って戻る（弾性）
                 s.branch = Branch::Skeleton;
             }
             s.dir = dir_new;
@@ -225,16 +202,12 @@ impl HysteresisMaterial {
             s.dir = dir_new;
         }
 
-        // θ での (M, Kt) と branch 遷移
         let (m, kt, branch_out) = self.eval_on_branch(theta, &s);
         s.theta = theta;
         s.m = m;
         s.kt = kt;
         s.branch = branch_out;
 
-        // スケルトン上で新記録時に最大経験を更新（降伏後のみ）。サイクル計数は
-        // 反転検知側（上記）で行うため、ここでは包絡線の記憶（max_pos/max_neg）だけ
-        // 更新する。従来はここで毎ステップ計数しており載荷刻み依存の劣化になっていた。
         if matches!(s.branch, Branch::Skeleton) {
             let ty = self.rule.yield_deformation();
             if theta > c.max_pos.0 && theta > ty {
@@ -248,8 +221,7 @@ impl HysteresisMaterial {
         s
     }
 
-    /// 反転点 (tr, mr) からの除荷剛性。
-    /// 武田系: Ku = Ky·(θm/θy)^(-α)（K1 上限）。原点指向/スリップ: 原点を通る割線 mr/tr。
+    /// 反転点からの除荷剛性。
     fn unloading_slope(&self, tr: f64, mr: f64) -> f64 {
         let ty = self.rule.yield_deformation();
         let my = self.rule.yield_strength();
@@ -268,12 +240,11 @@ impl HysteresisMaterial {
                 .unwrap_or(my / ty);
             ku.min(k1)
         } else {
-            // 原点指向: 反転点と原点を結ぶ割線（自然に劣化）
             (mr / tr).abs()
         }
     }
 
-    /// 現在の branch 上で θ を評価。branch 遷移もここで処理。
+    /// 現在の branch 上で θ を評価する。
     fn eval_on_branch(&self, theta: f64, s: &HystState) -> (f64, f64, Branch) {
         let degrade = s.degrade_factor(self.rule.degradation_rate());
         match s.branch {
@@ -282,12 +253,10 @@ impl HysteresisMaterial {
                 (m, k, Branch::Skeleton)
             }
             Branch::Unloading { ku } => {
-                // 反転点 (tr,mr) から傾き ku (>0) で評価。M = mr + ku·(θ - tr)。
                 let (tr, mr) = s.reversal;
                 let m = mr + ku * (theta - tr);
                 let crossed_zero = (mr > 0.0 && m <= 0.0) || (mr < 0.0 && m >= 0.0);
                 if crossed_zero {
-                    // M=0 に達した点から反対側ピークへ再載荷
                     let theta_zero = tr - mr / ku;
                     let origin = (theta_zero, 0.0);
                     let target = self.opposite_target_degraded(s.dir, degrade);
@@ -304,7 +273,6 @@ impl HysteresisMaterial {
                     theta <= target.0
                 };
                 if reached {
-                    // スケルトン到達: ピークカウントを進める（劣化版用）
                     let (m, k) = self.rule.skeleton_with_degradation(theta, degrade);
                     (m, k, Branch::Skeleton)
                 } else {
@@ -317,15 +285,12 @@ impl HysteresisMaterial {
                 target,
                 outer_target,
             } => {
-                // target（直前の反転点）に達したら、そこから outer_target（反対側ピーク）
-                // へ向かう再載荷に切り替え（target は次の反転で更新される）。
                 let reached_target = if target.0 >= origin.0 {
                     theta >= target.0
                 } else {
                     theta <= target.0
                 };
                 if reached_target {
-                    // target 点から outer_target への再載荷
                     let (m, k) = reload_line(&self.rule, target, outer_target, theta);
                     (
                         m,
@@ -349,9 +314,6 @@ impl HysteresisMaterial {
                 }
             }
             Branch::Masing { reversal } => {
-                // 標準型 Masing 則: 反転点 (tr,qr) からスケルトンを 2 倍相似に拡大した
-                // 曲線 Q(θ)=Qr − 2·sgn(θr−θ)·g(|θr−θ|/2)。除荷開始勾配は g'(0)=K1、
-                // 除荷後の第2・第3勾配は骨格の剛性低下率に一致する。反射点でスケルトンへ復帰。
                 let (tr, qr) = reversal;
                 let arg = (tr - theta).abs() / 2.0;
                 let (g_mag, g_tan) = self.rule.skeleton(arg);
@@ -365,8 +327,6 @@ impl HysteresisMaterial {
                 }
             }
             Branch::PeakOriented { origin, target } => {
-                // 最大点指向型: 戻り点 origin から反対側の最大経験点 target へ直線で向かい、
-                // target 到達でスケルトンへ復帰する。
                 let reached = if target.0 >= origin.0 {
                     theta >= target.0
                 } else {
@@ -390,7 +350,7 @@ impl HysteresisMaterial {
     }
 }
 
-/// 再載荷直線（原点→目標）。Slip 型は原点付近の剛性を slip_factor 倍に低下（ピンチ）。
+/// 再載荷直線。
 fn reload_line(
     rule: &HysteresisRule,
     origin: (f64, f64),
@@ -402,15 +362,6 @@ fn reload_line(
         return (origin.1, 0.0);
     }
     if let HysteresisRule::Slip { slip_factor, .. } = rule {
-        // バイリニア再載荷（ピンチ）: origin → (pinch_x, pinch_m) → target。
-        // 「原点付近の剛性を slip_factor 倍に低下」させるスリップ挙動を表すため、
-        // 第1区間（スリップ域）の剛性を直線割線 k_line=(ΔM/dt) の slip_factor 倍とし、
-        // その後 peak へ急峻に立ち上げる。ピンチ点は変形 origin→target の slip_factor
-        // 割の位置に置くので pinch_m=origin.1 + slip_factor²·ΔM。
-        //   区間1剛性 = slip_factor·k_line（< k_line＝軟化）、
-        //   区間2剛性 = (1+slip_factor)·k_line（> k_line＝急峻）。
-        // 従来は pinch_m=target.1（全復元力）としており、原点付近が k_line/slip_factor
-        // と逆に急峻・第2区間が水平になる、ピンチと真逆の挙動だった。
         let sf = slip_factor.clamp(1e-6, 1.0 - 1e-6);
         let dm = target.1 - origin.1;
         let pinch_x = origin.0 + sf * dt;
@@ -435,7 +386,6 @@ impl UniaxialMaterial for HysteresisMaterial {
         (self.trial.m, self.trial.kt)
     }
     fn probe(&self, theta: f64) -> (f64, f64) {
-        // evaluate() は committed 状態のみを参照する純粋関数（trial() と共通）。
         let s = self.evaluate(theta);
         (s.m, s.kt)
     }

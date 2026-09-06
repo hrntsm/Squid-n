@@ -1,39 +1,28 @@
-//! コンクリートの繰返し履歴モデル（Yassin 1994, Ch.2 / OpenSees Concrete02 系）。
-//!
-//! 圧縮包絡線（修正 Kent–Park または Mander の Popovics 型曲線）に対して、
-//! - 除荷・再載荷: Karsan–Jirsa の残留塑性ひずみ εp を通る割線（Yassin の規則）
-//! - 引張: ひび割れ閉鎖点 εp を原点とする弾性＋線形軟化（テンションスティフニング）
-//! - 引張の除荷・再載荷: シフト原点 (εp, 0) と引張経験極値を結ぶ割線（剛性劣化）
-//!
-//! を適用する。ひび割れの開閉に伴う剛性変化（圧縮再載荷で εp を下回ると
-//! ひび割れが閉じて圧縮を伝達する挙動）を表現できる。
-//!
-//! 単位: 応力 [N/mm²]、ひずみ無次元。**構築パラメータは大きさ（正値）で与え**、
+//! コンクリートの繰返し履歴モデル（Yassin 1994 / Concrete02 系）。
+//! 単位: 応力 [N/mm²]、ひずみ無次元。構築パラメータは大きさ（正値）で与え、
 //! 応答は通常の符号規約（圧縮負・引張正）で返す。
 
 use crate::state_serde::impl_material_serde;
 use crate::uniaxial::mander;
 use crate::uniaxial::UniaxialMaterial;
 
-/// 圧縮側の包絡線（骨格曲線）。パラメータは大きさ（正値）表記。
+/// 圧縮側の包絡線（骨格曲線）。
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum ConcreteEnvelope {
-    /// 修正 Kent–Park（Concrete02 の骨格）:
-    /// 放物線上昇 → ピーク (εc0, fc) → 線形軟化 → (εcu, fcu) 以降は残留 fcu。
+    /// 修正 Kent–Park。
     KentPark {
         /// 圧縮強度 fc（正）。
         fc: f64,
         /// ピークひずみ εc0（正）。
         eps_c0: f64,
-        /// 残留圧縮強度 fcu（正、0 以上）。
+        /// 残留圧縮強度 fcu（正）。
         fcu: f64,
-        /// 残留開始ひずみ εcu（正、εc0 より大）。
+        /// 残留開始ひずみ εcu（正）。
         eps_cu: f64,
     },
-    /// Mander (1988) の Popovics 型連続曲線（拘束・非拘束とも同形）。
-    /// εcu 超過は εcu での曲線値を残留として保持する。
+    /// Mander (1988) の Popovics 型連続曲線。
     Mander {
-        /// （拘束）圧縮強度 f'cc（正）。
+        /// 圧縮強度 f'cc（正）。
         fcc: f64,
         /// f'cc 時ひずみ εcc（正）。
         eps_cc: f64,
@@ -42,11 +31,11 @@ pub enum ConcreteEnvelope {
         /// 終局ひずみ εcu（正）。
         eps_cu: f64,
     },
-    /// NewRC 式（2.1.4 と同一の骨格）。εcu 超過は εcu の曲線値を残留として保持する。
+    /// NewRC 式。
     NewRc {
-        /// NewRC 式の圧縮包絡線（有理式）。
+        /// NewRC 式の圧縮包絡線。
         envelope: crate::newrc::NewRcEnvelope,
-        /// 終局ひずみ εcu（正）。これを超えると応力を εcu の値で保持する。
+        /// 終局ひずみ εcu（正）。
         eps_cu: f64,
     },
 }
@@ -70,7 +59,7 @@ impl ConcreteEnvelope {
         }
     }
 
-    /// ピークひずみ（大きさ）。Karsan–Jirsa の正規化に用いる。
+    /// ピークひずみ（大きさ）。
     pub fn peak_strain(&self) -> f64 {
         match *self {
             ConcreteEnvelope::KentPark { eps_c0, .. } => eps_c0,
@@ -79,8 +68,7 @@ impl ConcreteEnvelope {
         }
     }
 
-    /// 圧縮包絡線の評価。`x` は圧縮ひずみの大きさ（≥0）。
-    /// 戻り値は (応力の大きさ σ ≥ 0, 大きさ座標系での接線 dσ/dx)。
+    /// 圧縮包絡線の評価。`x` は圧縮ひずみの大きさ。
     fn compression(&self, x: f64) -> (f64, f64) {
         match *self {
             ConcreteEnvelope::KentPark {
@@ -90,15 +78,12 @@ impl ConcreteEnvelope {
                 eps_cu,
             } => {
                 if x <= eps_c0 {
-                    // 放物線上昇: σ = fc·(2r − r²)。
                     let r = x / eps_c0;
                     (fc * (2.0 * r - r * r), fc * (2.0 - 2.0 * r) / eps_c0)
                 } else if x <= eps_cu {
-                    // 線形軟化: (εc0, fc) → (εcu, fcu)。
                     let slope = (fcu - fc) / (eps_cu - eps_c0);
                     (fc + slope * (x - eps_c0), slope)
                 } else {
-                    // 残留一定。
                     (fcu, 0.0)
                 }
             }
@@ -111,7 +96,6 @@ impl ConcreteEnvelope {
                 if x <= eps_cu {
                     mander::popovics_envelope(fcc, eps_cc, ec, x)
                 } else {
-                    // εcu 超過は εcu の曲線値を残留として保持（不連続落下を避ける）。
                     let (s, _) = mander::popovics_envelope(fcc, eps_cc, ec, eps_cu);
                     (s, 0.0)
                 }
@@ -120,7 +104,6 @@ impl ConcreteEnvelope {
                 if x <= eps_cu {
                     envelope.compression(x)
                 } else {
-                    // εcu 超過は εcu の曲線値を残留として保持（不連続落下を避ける）。
                     let (s, _) = envelope.compression(eps_cu);
                     (s, 0.0)
                 }
@@ -129,14 +112,14 @@ impl ConcreteEnvelope {
     }
 }
 
-/// コンクリート繰返し履歴モデル（Yassin 1994 / Concrete02 系）。
+/// コンクリート繰返し履歴モデル。
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct ConcreteCyclic {
     /// 圧縮側包絡線。
     pub envelope: ConcreteEnvelope,
-    /// 引張強度 ft（正。0 で引張無視）。
+    /// 引張強度 ft（正）。
     pub ft: f64,
-    /// 引張軟化勾配 Ets（正の大きさ。ひび割れ後 σ = ft − Ets·(ε′−εt0)）。
+    /// 引張軟化勾配 Ets（正の大きさ）。
     pub ets: f64,
     committed: CcState,
     trial: CcState,
@@ -147,14 +130,14 @@ struct CcState {
     strain: f64,
     stress: f64,
     tangent: f64,
-    /// 最大経験圧縮ひずみ（最も負の値、≤0）。
+    /// 最大経験圧縮ひずみ。
     eps_min: f64,
-    /// 引張側の最大経験ひずみ（ひび割れ閉鎖点 εp からの相対値、≥0）。
+    /// 引張側の最大経験ひずみ。
     eps_t_max: f64,
 }
 
 impl ConcreteCyclic {
-    /// 修正 Kent–Park 骨格（Concrete02 相当）。全パラメータ大きさ（正値）表記。
+    /// 修正 Kent–Park 骨格。
     pub fn kent_park(fc: f64, eps_c0: f64, fcu: f64, eps_cu: f64, ft: f64, ets: f64) -> Self {
         Self::with_envelope(
             ConcreteEnvelope::KentPark {
@@ -168,7 +151,7 @@ impl ConcreteCyclic {
         )
     }
 
-    /// Mander 骨格（パラメータ直接指定）。
+    /// Mander 骨格。
     pub fn mander(fcc: f64, eps_cc: f64, ec: f64, eps_cu: f64, ft: f64, ets: f64) -> Self {
         Self::with_envelope(
             ConcreteEnvelope::Mander {
@@ -182,15 +165,13 @@ impl ConcreteCyclic {
         )
     }
 
-    /// NewRC 骨格 + Yassin 履歴。`eps_cu` は終局ひずみ（正）、`ft`/`ets` は引張強度・軟化勾配。
+    /// NewRC 骨格 + Yassin 履歴。
     pub fn newrc(fc: f64, eps_cu: f64, ft: f64, ets: f64) -> Self {
         let envelope = crate::newrc::NewRcEnvelope::new(fc);
         Self::with_envelope(ConcreteEnvelope::NewRc { envelope, eps_cu }, ft, ets)
     }
 
-    /// Mander 骨格（非拘束強度と有効拘束圧から拘束後パラメータを算定）。
-    /// `fl_eff` は有効拘束圧（`mander::circular_effective_lateral_stress` /
-    /// `mander::rectangular_representative_lateral_stress` で算定する）。
+    /// Mander 骨格（拘束後パラメータを算定）。
     #[allow(clippy::too_many_arguments)]
     pub fn mander_confined(
         fco: f64,
@@ -222,11 +203,7 @@ impl ConcreteCyclic {
         }
     }
 
-    /// Karsan–Jirsa の残留塑性ひずみ εp（≤0）。除荷点 `eps_min`（≤0）に対し
-    /// η = |εmin|/εc0 として
-    ///   η < 2: εp/εc0 = 0.145·η² + 0.13·η
-    ///   η ≥ 2: εp/εc0 = 0.707·(η−2) + 0.834  （Yassin 1994 の 2 区間形）
-    /// いずれも |εp| < |εmin| が保証される（除荷剛性が正で有限に保たれる）。
+    /// Karsan–Jirsa の残留塑性ひずみ εp。
     fn plastic_strain(&self, eps_min: f64) -> f64 {
         if eps_min >= 0.0 {
             return 0.0;
@@ -241,8 +218,7 @@ impl ConcreteCyclic {
         -eta_p * eps_c0
     }
 
-    /// 引張包絡線（シフト原点からの相対ひずみ ε′ ≥ 0）。
-    /// 弾性（勾配 E0）→ ひび割れ（εt0 = ft/E0）→ 線形軟化（勾配 −Ets）→ 0。
+    /// 引張包絡線。
     fn tension_envelope(&self, e_rel: f64) -> (f64, f64) {
         let e0 = self.envelope.initial_tangent();
         if self.ft <= 0.0 || e0 <= 0.0 {
@@ -261,23 +237,18 @@ impl ConcreteCyclic {
         }
     }
 
-    /// committed 状態から strain における状態を評価する（trial・probe 共通の
-    /// 内部処理）。committed 状態のみを参照し、self.trial は書き換えない。
     fn eval_state(&self, strain: f64) -> CcState {
         let c = &self.committed;
         let mut eps_min = c.eps_min;
         let mut eps_t_max = c.eps_t_max;
 
         let (stress, tangent) = if strain < eps_min {
-            // 圧縮包絡線上（新しい最大圧縮ひずみ）。
             eps_min = strain;
             let (smag, dmag) = self.envelope.compression(-strain);
-            // σ = −σmag(x), x = −ε より dσ/dε = dσmag/dx。
             (-smag, dmag)
         } else {
             let eps_p = self.plastic_strain(eps_min);
             if strain <= eps_p {
-                // 除荷・再載荷: (εmin, σ(εmin)) と (εp, 0) を結ぶ割線（Yassin）。
                 let (smag, _) = self.envelope.compression(-eps_min);
                 let sig_un = -smag;
                 if eps_min < eps_p {
@@ -288,14 +259,11 @@ impl ConcreteCyclic {
                     (e0 * strain, e0)
                 }
             } else {
-                // 引張域: ひび割れ閉鎖点 εp を原点にシフトして評価。
                 let e_rel = strain - eps_p;
                 if e_rel >= eps_t_max {
-                    // 引張包絡線上（新しい引張経験極値）。
                     eps_t_max = e_rel;
                     self.tension_envelope(e_rel)
                 } else {
-                    // 引張の除荷・再載荷: シフト原点への割線（剛性劣化）。
                     let (s_max, _) = self.tension_envelope(eps_t_max);
                     if eps_t_max > 0.0 && s_max > 0.0 {
                         let et = s_max / eps_t_max;

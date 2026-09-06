@@ -3,22 +3,14 @@
 use crate::state_serde::impl_material_serde;
 use crate::uniaxial::UniaxialMaterial;
 
-/// 横座屈で耐力が決まる H 形鋼梁の最大曲げ耐力比 `Mu/Mp`
-/// （鉄骨大梁の座屈を考慮した履歴、井戸田ほか 2015 の式）。
-///
-/// - `lambda_b`: 横座屈細長比 λb（基準化）。
-/// - `kappa`: 曲げモーメント勾配（端部モーメント比、−1≤κ≤0 で複曲率〜片持ち）。
-/// - `w_f`: フランジ幅厚比パラメータ（`WF`）。
-/// - `e_lambda_b`: 弾性限界細長比 `eλb`。
-///
-/// 係数は原典既定: `cres=0.0`（残留応力）、`f=1.0`（形状係数）、`kres=0.3`、`kdef=1.0`。
+/// 横座屈で耐力が決まる H 形鋼梁の最大曲げ耐力比 `Mu/Mp`（井戸田ほか 2015 の式）。
+/// 係数は原典既定: `cres=0.0`、`f=1.0`、`kres=0.3`、`kdef=1.0`。
 pub fn lateral_buckling_mu_ratio(lambda_b: f64, kappa: f64, w_f: f64, e_lambda_b: f64) -> f64 {
     let lambda_b = lambda_b.max(1e-6);
     let e_lambda_b = e_lambda_b.max(1e-6);
     let kappa = kappa.clamp(-1.0, 1.0);
     const C_RES: f64 = 0.0;
     const K_DEF: f64 = 1.0;
-    // qκ・r・αΛ（原典の区分式）。
     let q_kappa = if kappa <= 0.0 {
         -0.1 * kappa + 0.065
     } else {
@@ -26,18 +18,12 @@ pub fn lateral_buckling_mu_ratio(lambda_b: f64, kappa: f64, w_f: f64, e_lambda_b
     };
     let r = if kappa <= 0.0 { 0.5 * kappa + 1.0 } else { 1.0 };
     let alpha_lambda = -0.2 * kappa - 0.25;
-    // 変形性能指標 Λc' = ((λb/eλb) + WF³)^(1/3)（井戸田ほか 2015。
-    // WF/3 としていた従来実装は原典 WF³ の誤読）。
     let lambda_c = ((lambda_b / e_lambda_b) + w_f.powi(3)).max(0.0).cbrt();
-    // 歪硬化による耐力上昇率 h0 = αΛ·(Λc'−1.25)+1.0（Λc'≤1.25）。
-    // Λc' を余分に乗じていた従来実装を原典どおりに是正。
     let h0 = if lambda_c <= 1.25 {
         alpha_lambda * (lambda_c - 1.25) + 1.0
     } else {
         1.0
     };
-    // 初期たわみ係数 cdef = qκ·kdef^r（べき乗。kdef·r の乗算は誤り。
-    // 既定 kdef=1.0 では kdef^r=1 となり cdef=qκ）。
     let c_def = q_kappa * K_DEF.powf(r);
     let a = 1.0 + c_def * lambda_b + (1.0 + C_RES) * lambda_b * lambda_b;
     let disc = (a * a - 4.0 * lambda_b * lambda_b * (1.0 + C_RES * lambda_b * lambda_b)).max(0.0);
@@ -49,16 +35,8 @@ pub fn lateral_buckling_mu_ratio(lambda_b: f64, kappa: f64, w_f: f64, e_lambda_b
     }
 }
 
-/// 鉄骨大梁の座屈を考慮した履歴則（井戸田ほか 2015）。曲げモーメント–回転角 `M–θ`。
-///
-/// 骨格は 弾性 → 全塑性 `Mp` → 歪硬化で最大耐力 `Mu`（`Mu/Mp=mu_ratio`）→
-/// 劣化開始 `θ_static` から負勾配で残留耐力 `Mu·mu_res` へ低下、の耐力劣化型。
-/// 除荷は孟・大井・高梨の **RO モデル**（γ=5, Φ=0.5）で表す（反転点から初期剛性 `k1`
-/// で立ち上がり、RO 式で滑らかに軟化）。再載荷は経験最大点指向で骨格へ復帰する
-/// （原典の完全な繰返し則の簡略化）。
-///
-/// 局部座屈／横座屈／連成座屈で `Mu`・`θ_static` が異なるが、本モデルはそれらを
-/// パラメータとして受け取る（`Mu` は [`lateral_buckling_mu_ratio`] 等で算定）。
+/// 鉄骨大梁の座屈を考慮した履歴則（井戸田ほか 2015）。
+/// 除荷は孟・大井・高梨の RO モデル（γ=5, Φ=0.5）。再載荷は経験最大点指向。
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct SteelBuckling {
     /// 初期（弾性）剛性 k1 [力/回転角]。
@@ -93,12 +71,12 @@ struct SbState {
     m_r: f64,
     /// 直近の進行方向（+1/-1/0）。
     dir: f64,
-    /// 骨格上にいるか（除荷・再載荷中でない）。
+    /// 骨格上にいるか。
     on_backbone: bool,
 }
 
 impl SteelBuckling {
-    /// RO モデル諸元（原典既定 γ=5, Φ=0.5）。
+    /// RO モデル諸元。
     const RO_GAMMA: f64 = 5.0;
     const RO_PHI: f64 = 0.5;
 
@@ -117,7 +95,6 @@ impl SteelBuckling {
         let mp = mp.max(1e-9);
         let mu = mp * mu_ratio.max(1.0);
         let theta_y = mp / k1;
-        // θy < θu ≤ θ_static < θ_res を保証。
         let theta_u = theta_u.max(theta_y * 1.0001);
         let theta_static = theta_static.max(theta_u);
         let theta_res = theta_res.max(theta_static * 1.0001);
@@ -139,7 +116,7 @@ impl SteelBuckling {
         }
     }
 
-    /// 既定諸元（θu=2θy, θ_static=4θy, θ_res=10θy, mu_res=0.5）。
+    /// 既定諸元。
     pub fn with_defaults(k1: f64, mp: f64, mu_ratio: f64) -> Self {
         let theta_y = mp.max(1e-9) / k1.max(1e-9);
         Self::new(
@@ -153,7 +130,7 @@ impl SteelBuckling {
         )
     }
 
-    /// 骨格（奇対称）。回転角 θ に対する (M, 接線)。
+    /// 骨格（奇対称）。
     fn envelope(&self, theta: f64) -> (f64, f64) {
         let s = theta.signum();
         let t = theta.abs();
@@ -161,14 +138,11 @@ impl SteelBuckling {
         let (m, k) = if t <= theta_y {
             (self.k1 * t, self.k1)
         } else if t <= self.theta_u {
-            // 歪硬化: Mp → Mu。
             let kh = (self.mu - self.mp) / (self.theta_u - theta_y);
             (self.mp + kh * (t - theta_y), kh)
         } else if t <= self.theta_static {
-            // 最大耐力で頭打ち（プラトー）。
             (self.mu, 0.0)
         } else if t <= self.theta_res {
-            // 耐力劣化: Mu → Mu·mu_res。
             let kdeg = (self.mu_res * self.mu - self.mu) / (self.theta_res - self.theta_static);
             (self.mu + kdeg * (t - self.theta_static), kdeg)
         } else {
@@ -177,11 +151,11 @@ impl SteelBuckling {
         (s * m, k)
     }
 
-    /// 反転点 (θr, Mr) からの RO 除荷枝。回転角 θ に対する (M, 接線)。
+    /// 反転点からの RO 除荷枝。
     /// RO: Δθ = (ΔM/k1)·(1 + Φ·|ΔM/Mp|^(γ−1))。ΔM を Newton で解く。
     fn ro_branch(&self, theta: f64, theta_r: f64, m_r: f64) -> (f64, f64) {
         let dtheta = theta - theta_r;
-        let mut dm = self.k1 * dtheta; // 線形初期推定。
+        let mut dm = self.k1 * dtheta;
         let g = Self::RO_GAMMA;
         let phi = Self::RO_PHI;
         for _ in 0..30 {
@@ -202,21 +176,17 @@ impl SteelBuckling {
         (m_r + dm, tangent.max(1e-6))
     }
 
-    /// committed 状態から theta における状態を評価する（trial・probe 共通の
-    /// 内部処理）。committed 状態のみを参照する（self.trial は書き換えない）。
     fn eval_state(&self, theta: f64) -> SbState {
         let c = self.committed;
         let dir = (theta - c.theta).signum();
         if dir == 0.0 {
             return c;
         }
-        // 骨格更新の判定: その方向の経験最大を超えて進む → 骨格上。
         let beyond_pos = dir > 0.0 && theta >= c.theta_max_pos;
         let beyond_neg = dir < 0.0 && theta <= c.theta_max_neg;
         let mut st = c;
         st.dir = dir;
         if beyond_pos || beyond_neg {
-            // 骨格。
             let (m, k) = self.envelope(theta);
             st.m = m;
             st.tangent = k;
@@ -226,15 +196,11 @@ impl SteelBuckling {
             st.theta_max_neg = st.theta_max_neg.min(theta);
             return st;
         }
-        // 除荷・再載荷: 反転直後（骨格からの離脱／方向反転）に反転点を更新。
         if c.on_backbone || (c.dir != 0.0 && dir != c.dir) {
             st.theta_r = c.theta;
             st.m_r = c.m;
         }
         st.on_backbone = false;
-        // 反転点からの RO 除荷・再載荷枝。経験最大点への復帰は上の beyond_pos/neg 判定が
-        // 担う（θ がその方向の経験最大を超えると骨格へ戻る）ため、ここでは骨格クランプは
-        // 行わない（プラトー骨格からの除荷が誤って骨格へ張り付くのを避ける）。
         let (m, k) = self.ro_branch(theta, st.theta_r, st.m_r);
         st.m = m;
         st.tangent = k;
@@ -245,7 +211,6 @@ impl SteelBuckling {
 
 impl UniaxialMaterial for SteelBuckling {
     fn set_yield(&mut self, fy: f64) {
-        // Mp 更新に伴い Mu も比率を保って更新。
         let ratio = if self.mp > 0.0 {
             self.mu / self.mp
         } else {

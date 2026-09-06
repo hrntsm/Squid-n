@@ -3,12 +3,8 @@
 use crate::state_serde::impl_material_serde;
 use crate::uniaxial::UniaxialMaterial;
 
-/// コンクリートの一軸履歴モデル（設計書 §7）。
-/// 圧縮: 放物線上昇 → ピーク(-fc at ec0) → 線形軟化 → ecu で残留(-fc·residual)。
-/// 引張: 弾性 → ひび割れ(ε_cr=ft/E0) → テンションスティフニング(指数減衰)。
-/// 除荷・再載荷は原点指向（最大経験ひずみへの割線）。
-///
-/// 単位: fc/ft [N/mm²], ec0/ecu [ひずみ(負)], tension_stiffening/residual_ratio [無次元]。
+/// コンクリートの一軸履歴モデル。
+/// 除荷・再載荷は原点指向。単位: fc/ft [N/mm²], ec0/ecu [ひずみ(負)]。
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Concrete {
     pub fc: f64,
@@ -27,15 +23,15 @@ struct ConcreteState {
     strain: f64,
     stress: f64,
     tangent: f64,
-    /// 最大経験圧縮ひずみ（最も負の値）
+    /// 最大経験圧縮ひずみ。
     max_comp_strain: f64,
-    /// 最大経験引張ひずみ（最も正の値）
+    /// 最大経験引張ひずみ。
     max_tens_strain: f64,
     is_cracked: bool,
 }
 
 impl Concrete {
-    /// 係数は AIJ 系の代表値。製品経路では with_params + 外部データを用いること（§2.2）。
+    /// AIJ 系の代表値で生成する。
     pub fn new(fc: f64, ft: f64) -> Self {
         Self::with_params(fc, -0.002, -0.0035, ft, 0.5, 0.0)
     }
@@ -68,36 +64,33 @@ impl Concrete {
         }
     }
 
-    /// 初期接線剛性 E0 = 2·fc/|ec0|（放物線の ε=0 での接線）。
+    /// 初期接線剛性 E0 = 2·fc/|ec0|。
     pub fn e0(&self) -> f64 {
         2.0 * self.fc / self.ec0.abs()
     }
 
-    /// せん断弾性率 G0 = E0/(2(1+ν))。ν=0.2（コンクリート代表値）。
+    /// せん断弾性率 G0 = E0/(2(1+ν))。ν=0.2。
     pub fn e0_shear(&self) -> f64 {
         self.e0() / (2.0 * (1.0 + 0.2))
     }
 
-    /// 圧縮包絡線（strain ≤ 0）。
+    /// 圧縮包絡線。
     fn envelope_compression(&self, strain: f64) -> (f64, f64) {
         if strain >= self.ec0 {
-            // 上昇域: 放物線 σ = -fc·(2r - r²), r = ε/εc0
             let r = strain / self.ec0;
             let stress = -self.fc * (2.0 * r - r * r);
             let tangent = -self.fc * (2.0 - 2.0 * r) / self.ec0;
             (stress, tangent)
         } else if strain >= self.ecu {
-            // 軟化域: ec0 で -fc, ecu で -fc·residual への直線
             let slope = self.fc * (1.0 - self.residual_ratio) / (self.ecu - self.ec0);
             let stress = -self.fc + slope * (strain - self.ec0);
             (stress, slope)
         } else {
-            // ecu 超過: 残留一定
             (-self.fc * self.residual_ratio, 0.0)
         }
     }
 
-    /// 引張包絡線（strain ≥ 0）。
+    /// 引張包絡線。
     fn envelope_tension(&self, strain: f64) -> (f64, f64) {
         let e0 = self.e0();
         let eps_cr = self.ft / e0;
@@ -111,50 +104,40 @@ impl Concrete {
         }
     }
 
-    /// committed 状態から strain における状態を評価する（trial・probe 共通の
-    /// 内部処理）。committed 状態のみを参照し、self.trial は書き換えない。
     fn eval_state(&self, strain: f64) -> ConcreteState {
         let c = &self.committed;
         let e0 = self.e0();
         let eps_cr = self.ft / e0;
 
         let (stress, tangent, max_comp, max_tens, is_cracked) = if strain <= 0.0 {
-            // 圧縮側
             let mut max_comp = c.max_comp_strain;
             let (s, t) = if strain < c.max_comp_strain {
-                // 包絡線上（新最大圧縮ひずみ）
                 max_comp = strain;
                 self.envelope_compression(strain)
             } else {
-                // 除荷・再載荷: 原点指向の割線剛性 σm/εm
                 if c.max_comp_strain < 0.0 {
                     let (sig_m, _) = self.envelope_compression(c.max_comp_strain);
                     let ku = sig_m / c.max_comp_strain;
                     (ku * strain, ku)
                 } else {
-                    // 圧縮履歴なし: 初期接線で原点へ
                     (e0 * strain, e0)
                 }
             };
             (s, t, max_comp, c.max_tens_strain, c.is_cracked)
         } else {
-            // 引張側
             let mut max_tens = c.max_tens_strain;
             let mut cracked = c.is_cracked;
             let (s, t) = if !cracked && strain <= eps_cr {
                 (e0 * strain, e0)
             } else if !cracked && strain > eps_cr {
-                // 初期ひび割れ発生
                 cracked = true;
                 max_tens = strain;
                 self.envelope_tension(strain)
             } else {
-                // ひび割れ後
                 if strain > c.max_tens_strain {
                     max_tens = strain;
                     self.envelope_tension(strain)
                 } else {
-                    // 除荷・再載荷: 原点指向割線
                     if c.max_tens_strain > 0.0 {
                         let (sig_m, _) = self.envelope_tension(c.max_tens_strain);
                         let kt = sig_m / c.max_tens_strain;
@@ -180,12 +163,10 @@ impl Concrete {
 
 impl UniaxialMaterial for Concrete {
     fn reference_stress(&self) -> f64 {
-        // コンクリートの参照応力は圧縮強度 fc（塑性率 Jm の重み・降伏判定に用いる）。
         self.fc
     }
 
     fn reference_strain(&self) -> f64 {
-        // コンクリートの参照ひずみは圧縮強度時ひずみ |εc0|。
         self.ec0.abs()
     }
 
