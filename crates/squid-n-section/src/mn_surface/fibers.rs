@@ -1,11 +1,10 @@
-//! 断面形状（[`SectionShape`]）から全塑性計算用のファイバ/バネ配置を生成する。
-//!
-//! 矩形・円環メッシュ、H 形／箱形の板メッシュ、主筋バネ配置、形状別ディスパッチ、
-//! 非対称断面の図心補正を担う。
+//! 断面形状から全塑性計算用のファイバ/バネ配置を生成する。
 
 use squid_n_core::section_shape::{BarSet, RcRebar, SectionShape};
 
 use super::types::{concrete_young, FiberRegion, PlasticFiber, StrengthParams, YieldModelKind};
+
+const NOMINAL_SLAB_WIDTH_MM: f64 = 1000.0;
 
 /// ファイバ材料（限界応力と弾性係数、材料領域区分）。
 #[derive(Clone, Copy)]
@@ -16,9 +15,7 @@ pub(crate) struct FiberMat {
     pub region: FiberRegion,
 }
 
-/// 円環（管・中実円）領域の分割解像度。
-/// [`plastic_fibers`] は従来どおり `YieldModelKind` から選び、要素ファイバ生成
-/// （`squid-n-element` の `build_gauss_fibers`）は計算コストに応じた中間解像度を渡す。
+/// 円環領域の分割解像度。
 #[derive(Clone, Copy, Debug)]
 pub struct AnnulusRes {
     /// 周方向分割数。
@@ -29,8 +26,7 @@ pub struct AnnulusRes {
     pub n_r_solid: usize,
 }
 
-/// 矩形領域（中心 `center = [cy, cz]`、幅 w × 高さ h）を目標寸法 `target` 以下の
-/// ファイバに等分割して追加する。
+/// 矩形領域を目標寸法 `target` 以下のファイバに等分割して追加する。
 pub(crate) fn mesh_rect(
     fibers: &mut Vec<PlasticFiber>,
     center: [f64; 2],
@@ -65,7 +61,7 @@ pub(crate) fn mesh_rect(
     }
 }
 
-/// 円環領域（外径 do、厚 t）を周方向 `n_theta`・径方向 `n_r` に分割して追加する。
+/// 円環領域を周方向・径方向に分割して追加する。
 fn mesh_annulus(
     fibers: &mut Vec<PlasticFiber>,
     outer_dia: f64,
@@ -104,8 +100,7 @@ fn mesh_annulus(
     }
 }
 
-/// H 形（上下フランジ＋ウェブ）を板ごとにメッシュ化して追加する。
-/// SteelH と SrcRect 内蔵鉄骨で共用する。
+/// H 形を板ごとにメッシュ化して追加する。
 fn mesh_h_plates(
     fibers: &mut Vec<PlasticFiber>,
     height: f64,
@@ -135,8 +130,7 @@ fn mesh_h_plates(
     mesh_rect(fibers, [0.0, 0.0], web_thick, hw, target, mat);
 }
 
-/// 箱形（角形鋼管）の 4 枚板（上下フランジ＋左右ウェブ）をメッシュ化して追加する。
-/// SteelBox と CftBox の鋼管部で共用する。
+/// 箱形の 4 枚板をメッシュ化して追加する。
 fn mesh_box_plates(
     fibers: &mut Vec<PlasticFiber>,
     height: f64,
@@ -174,13 +168,7 @@ fn mesh_box_plates(
     }
 }
 
-/// 主筋1セット分のバネを追加する。
-///
-/// - `main_x`（せい方向主筋）: 上下面に各 `count` 本を幅方向へ等配。
-/// - `main_y`（幅方向主筋）: 側面に各 `count` 本をせい方向の内側区間へ等配
-///   （隅角部は main_x 側に含める）。
-/// - 各段の中心位置は [`squid_n_core::rc_rebar_geom::rebar_layer_depth_from_edge`]
-///   （かぶり＋帯筋径＋主筋半径、段間隔は配筋指針のあき規約）と同一。
+/// 主筋1セット分のバネを追加する。段位置は `rc_rebar_geom` と同一規約。
 fn rebar_fibers_rect(
     fibers: &mut Vec<PlasticFiber>,
     rebar: &RcRebar,
@@ -194,7 +182,6 @@ fn rebar_fibers_rect(
 
     let bar = |set: &BarSet| -> f64 { one_bar_area(set.dia) };
 
-    // せい方向主筋（上下面）
     let set = &rebar.main_x;
     if set.count > 0 {
         let a = bar(set);
@@ -223,7 +210,6 @@ fn rebar_fibers_rect(
         }
     }
 
-    // 幅方向主筋（側面、内側区間）
     let set = &rebar.main_y;
     if set.count > 0 {
         let a = bar(set);
@@ -232,7 +218,6 @@ fn rebar_fibers_rect(
             let y0 = b / 2.0 - depth;
             let span = d - 2.0 * rebar.cover;
             for i in 0..set.count {
-                // 端点（隅角部）を除いた内分点に配置
                 let z = -span / 2.0 + span * (i as f64 + 1.0) / (set.count + 1) as f64;
                 for ysign in [1.0, -1.0] {
                     fibers.push(PlasticFiber {
@@ -250,8 +235,7 @@ fn rebar_fibers_rect(
     }
 }
 
-/// RC 円形断面の主筋バネ（main_x + main_y の合計本数を円周上へ等配）。
-/// 配置半径は矩形 1 段目と同じ縁からの距離（cover + shear.dia + φ/2）。
+/// RC 円形断面の主筋バネ（合計本数を円周上へ等配）。
 fn rebar_fibers_circle(
     fibers: &mut Vec<PlasticFiber>,
     rebar: &RcRebar,
@@ -286,14 +270,7 @@ fn rebar_fibers_circle(
 }
 
 /// 断面形状からファイバ/バネ配置を生成する。
-///
-/// `kind` により解像度が変わる:
-/// - `MultiFiber` / `SimpleSpring`: 細分割（最大寸法の 1/40 目安）。
-///   単純降伏バネの耐力算定にも細分割ファイバを用いる。
-/// - `MultiSpring`: 粗い配置（最大寸法の 1/4 目安、鋼管・円形は周 8 分割）。
-///   主筋は本数が少ないためどちらも1本ずつバネとして配置する。
-///
-/// 非対称断面（山形・溝形・T形）は生成後に断面積重心へ座標を平行移動する。
+/// `kind` により解像度が変わる（細分割と粗い配置）。
 pub fn plastic_fibers(
     shape: &SectionShape,
     strength: &StrengthParams,
@@ -405,7 +382,6 @@ pub fn plastic_fibers_at(
             leg_b,
             thick,
         } => {
-            // 縦脚 leg_a（z 方向）× 厚、横脚 leg_b（y 方向）× 厚（重なりは縦脚に含める）
             mesh_rect(
                 &mut fibers,
                 [thick / 2.0, leg_a / 2.0],
@@ -430,7 +406,6 @@ pub fn plastic_fibers_at(
             flange_thick,
         } => {
             let hw = height - 2.0 * flange_thick;
-            // ウェブを y=0 起点に置き、後で重心補正する
             mesh_rect(
                 &mut fibers,
                 [web_thick / 2.0, 0.0],
@@ -488,11 +463,9 @@ pub fn plastic_fibers_at(
             );
         }
         SectionShape::SteelFlatBar { width, thick } => {
-            // 中実矩形（幅 width×せい thick）を鋼ファイバで充填。
             mesh_rect(&mut fibers, [0.0, 0.0], width, thick, target, steel);
         }
         SectionShape::SteelRoundBar { dia } => {
-            // 中実円 = 厚 dia/2 の円環を鋼ファイバで充填。
             mesh_annulus(
                 &mut fibers,
                 dia,
@@ -509,7 +482,6 @@ pub fn plastic_fibers_at(
             thick,
         } => {
             let t = thick;
-            // ウェブ・上下フランジ・上下リップの 5 枚（重なり無し）。座標は後で図心補正。
             mesh_rect(
                 &mut fibers,
                 [t / 2.0, height / 2.0],
@@ -519,7 +491,6 @@ pub fn plastic_fibers_at(
                 steel,
             );
             for ysign in [1.0, -1.0] {
-                // フランジ（y=±(H−t)/2）
                 mesh_rect(
                     &mut fibers,
                     [(t + width) / 2.0, height / 2.0 + ysign * (height - t) / 2.0],
@@ -528,7 +499,6 @@ pub fn plastic_fibers_at(
                     target,
                     steel,
                 );
-                // リップ（y=±(H−C−t)/2）
                 mesh_rect(
                     &mut fibers,
                     [
@@ -550,7 +520,6 @@ pub fn plastic_fibers_at(
             lower_thick,
             web_thick,
         } => {
-            // 上下フランジ（幅が異なる）＋ウェブ。座標は後で図心補正。
             let hw = (height - upper_thick - lower_thick).max(0.0);
             mesh_rect(
                 &mut fibers,
@@ -589,7 +558,6 @@ pub fn plastic_fibers_at(
             );
         }
         SectionShape::RcCircle { d, ref rebar } => {
-            // 中実円 = 厚 d/2 の円環
             mesh_annulus(&mut fibers, d, d / 2.0, ring.n_theta, ring.n_r_solid, conc);
             rebar_fibers_circle(&mut fibers, rebar, d, strength.rebar_fy, strength.steel_e);
         }
@@ -603,7 +571,6 @@ pub fn plastic_fibers_at(
             steel_flange_thick,
             ..
         } => {
-            // RC 部分（コンクリート + 主筋）
             mesh_rect(&mut fibers, [0.0, 0.0], b, d, target, conc);
             rebar_fibers_rect(
                 &mut fibers,
@@ -613,8 +580,6 @@ pub fn plastic_fibers_at(
                 strength.rebar_fy,
                 strength.steel_e,
             );
-            // 内蔵 H 形鉄骨（断面中心配置。コンクリートとの重複控除は省略＝
-            // 単純累加の近似。鉄骨断面積はコンクリートの数%のため影響軽微）
             mesh_h_plates(
                 &mut fibers,
                 steel_height,
@@ -630,9 +595,7 @@ pub fn plastic_fibers_at(
             width,
             thick,
         } => {
-            // 鋼管部分（SteelBox と同じ 4 枚の板）
             mesh_box_plates(&mut fibers, height, width, thick, target, steel);
-            // 充填コンクリート
             mesh_rect(
                 &mut fibers,
                 [0.0, 0.0],
@@ -643,7 +606,6 @@ pub fn plastic_fibers_at(
             );
         }
         SectionShape::CftPipe { outer_dia, thick } => {
-            // 鋼管
             mesh_annulus(
                 &mut fibers,
                 outer_dia,
@@ -652,7 +614,6 @@ pub fn plastic_fibers_at(
                 ring.n_r_thin,
                 steel,
             );
-            // 充填コンクリート（中実円 = 厚 di/2 の円環）
             let di = outer_dia - 2.0 * thick;
             if di > 0.0 {
                 mesh_annulus(
@@ -666,12 +627,17 @@ pub fn plastic_fibers_at(
             }
         }
         SectionShape::RcWall { thickness, .. } | SectionShape::RcSlab { thickness } => {
-            // 名目: 1m 幅の無筋板（壁・スラブの MN 曲線は対象外だがパニックさせない）
-            mesh_rect(&mut fibers, [0.0, 0.0], 1000.0, thickness, target, conc);
+            mesh_rect(
+                &mut fibers,
+                [0.0, 0.0],
+                NOMINAL_SLAB_WIDTH_MM,
+                thickness,
+                target,
+                conc,
+            );
         }
     }
 
-    // 非対称断面は断面積重心まわりへ座標補正（曲げの基準軸を図心に取る）
     if matches!(
         shape,
         SectionShape::SteelAngle { .. }

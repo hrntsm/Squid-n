@@ -1,13 +1,11 @@
-//! M-N 相関曲面まわりの基本データ型と材料定数。
-//!
-//! ロジックを持たない共有の型・材料層（ファイバ、降伏モデル種別、強度パラメータ）。
+//! M-N 相関曲面の基本データ型と材料定数。
 
-/// 全塑性計算用のファイバ（またはバネ）。引張/圧縮の限界応力と弾性係数を保持する。
+/// 全塑性計算用のファイバ（またはバネ）。
 #[derive(Clone, Debug)]
 pub struct PlasticFiber {
-    /// 断面内 y 座標 [mm]（幅方向）
+    /// 断面内 y 座標 [mm]
     pub y: f64,
-    /// 断面内 z 座標 [mm]（せい方向）
+    /// 断面内 z 座標 [mm]
     pub z: f64,
     /// 負担断面積 [mm²]
     pub area: f64,
@@ -15,14 +13,13 @@ pub struct PlasticFiber {
     pub sigma_t: f64,
     /// 圧縮限界応力 [N/mm²]（≤0）
     pub sigma_c: f64,
-    /// 弾性係数 [N/mm²]（M-φ 曲線の弾完全塑性評価に使用。剛塑性の曲面算定では不使用）
+    /// 弾性係数 [N/mm²]
     pub young: f64,
-    /// 材料領域区分（[`FiberRegion`]）。要素ファイバの材料割当・可視化の色分けに使用。
+    /// 材料領域区分
     pub region: FiberRegion,
 }
 
-/// ファイバの材料領域区分。断面形状のどの領域に属するかを示し、
-/// 要素ファイバ生成での材料割当と塑性化マップの色分けに用いる。
+/// ファイバの材料領域区分。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FiberRegion {
     /// コンクリート（RC・SRC の躯体、CFT の充填部）
@@ -79,11 +76,8 @@ impl Default for StrengthParams {
     }
 }
 
-/// コンクリートの弾性係数 [N/mm²]（RC規準式 Ec = 3.35×10⁴ × (γ/24)² × (Fc/60)^(1/3)）。
-///
-/// 単一の実装（[`squid_n_core::section_shape::concrete_young_modulus`]、γ=23 固定）に委譲し、
-/// 断面剛性と M-N 相関で Ec が食い違わないようにする。`fc<=0` では 0 を返すため、
-/// 数値積分では呼出側で下限を保証すること。
+/// コンクリートの弾性係数 [N/mm²]（RC規準式。γ=23 固定）。
+/// `fc<=0` では 0 を返すため、数値積分では呼出側で下限を保証すること。
 pub fn concrete_young(fc: f64) -> f64 {
     squid_n_core::section_shape::concrete_young_modulus(fc.max(1.0))
 }
