@@ -1,7 +1,4 @@
-//! 断面検定 QD1 用の単純梁せん断 Q0 と、重力ケース選択。
-//!
-//! GUI（`squid-n-app`）と MCP（`squid-n-mcp`）が同じ規則で Q0・長期内力を
-//! 組み立てられるよう、ここに集約する。
+//! 断面検定 QD1 用の単純梁せん断 Q0 と、重力ケース選択（GUI・MCP 共用）。
 
 use std::collections::HashMap;
 
@@ -10,11 +7,8 @@ use squid_n_core::model::{LoadCaseKind, MemberLoadKind, Model, LL_FRAME_CASE_NAM
 use squid_n_element::frame::beam::MemberForces;
 use squid_n_load::self_weight::SELF_WEIGHT_AUTO_LOAD_CASE_NAME;
 
-/// 地震用重量・QD 用 Q0 に使う重力ケース ID 列（Dead + LiveSeismic、なければ Live）。
-///
-/// - 自重専用ケース（[`SELF_WEIGHT_AUTO_LOAD_CASE_NAME`]）は除外する
-/// - スラブ自動生成の骨組用積載（[`LL_FRAME_CASE_NAME`]）は Live 代用時に除外する
-/// - いずれのケースも `kind` が `Other` のままなら、後方互換で先頭ケースのみ
+/// 地震用重量・QD 用 Q0 に使う重力ケース ID 列。
+/// 自重専用ケースと骨組用積載ケースは除外し、種別未設定なら先頭ケースのみを用いる。
 pub fn gravity_case_ids_for_seismic_weight(model: &Model) -> Vec<LoadCaseId> {
     let any_kind_set = model
         .load_cases
@@ -53,8 +47,7 @@ pub fn gravity_case_ids_for_seismic_weight(model: &Model) -> Vec<LoadCaseId> {
 }
 
 /// 1 荷重ケースの部材荷重から、単純梁支持の端部せん断 Q0 [N] を算定する。
-///
-/// Q0 は両端反力の大きい方。荷重は部材軸直交成分の大きさで評価する。
+/// Q0 は両端反力の大きい方。
 pub fn simple_beam_q0_by_elem(model: &Model, lc: LoadCaseId) -> HashMap<ElemId, f64> {
     let mut acc: HashMap<ElemId, (f64, f64)> = HashMap::new();
     let Some(case) = model.load_cases.iter().find(|c| c.id == lc) else {
@@ -119,8 +112,7 @@ pub fn simple_beam_q0_by_elem(model: &Model, lc: LoadCaseId) -> HashMap<ElemId, 
         .collect()
 }
 
-/// [`gravity_case_ids_for_seismic_weight`] の全ケースについて Q0 を加算する
-/// （Dead + LiveSeismic/Live＝長期 G+P 相当）。
+/// [`gravity_case_ids_for_seismic_weight`] の全ケースについて Q0 を加算する。
 pub fn simple_beam_q0_by_gravity_cases(model: &Model) -> HashMap<ElemId, f64> {
     let mut map: HashMap<ElemId, f64> = HashMap::new();
     for lc in gravity_case_ids_for_seismic_weight(model) {
@@ -132,9 +124,7 @@ pub fn simple_beam_q0_by_gravity_cases(model: &Model) -> HashMap<ElemId, f64> {
 }
 
 /// 複数ケースの部材内力を位置ごとに加算する（線形重ね合わせ）。
-///
-/// 同一 `ElemId`・近傍の正規化位置（絶対差 1e-9 以内）の成分を足し合わせる。
-/// 位置集合が一致しない場合は、出現した全位置を保持し、欠ける側は 0 とみなす。
+/// 近傍位置（絶対差 1e-9 以内）は足し合わせ、欠ける側は 0 とみなす。
 pub fn sum_member_forces_lists(
     lists: &[Vec<(ElemId, MemberForces)>],
 ) -> Vec<(ElemId, MemberForces)> {
@@ -168,7 +158,6 @@ pub fn sum_member_forces_lists(
 /// [`gravity_case_ids_for_seismic_weight`] と同じ集合の解析済み内力を加算する。
 ///
 /// `force_of` が `None` を返すケースは飛ばす。1 件も取れなければ `None`。
-/// 終局検定の QL や一次設計の長期内力を、Q0 と同じ重力ケース集合に揃えるために使う。
 pub fn sum_analyzed_gravity_member_forces<F>(
     model: &Model,
     mut force_of: F,

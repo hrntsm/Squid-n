@@ -51,7 +51,7 @@ pub fn beam_elem_map(model: &Model) -> HashMap<(NodeId, NodeId), ElemId> {
     map
 }
 
-/// `distribute_region`/`distribute_slab_resolved` が返す `BeamLoad`（`Node`/`Span` のみ）を
+/// `distribute_region`/`distribute_slab_resolved` が返す `BeamLoad`を
 /// 実部材へ解決して `out` へ積む。
 fn push_resolved_loads(
     loads: Vec<BeamLoad>,
@@ -64,7 +64,6 @@ fn push_resolved_loads(
         match bl.target {
             LoadTarget::Node(_) => out.push(bl),
             LoadTarget::Edge(_) => {
-                // `distribute_region`/`distribute_slab_resolved` は Edge を残さず Span へ解決済み。
                 continue;
             }
             LoadTarget::Span {
@@ -80,11 +79,10 @@ fn push_resolved_loads(
 }
 
 /// 各床領域について面荷重強度 `w_of(slab)` を境界へ分配し、`BeamLoad` 列を返す。
-/// `w_of` は床板ごとの面荷重強度 [N/mm²]（DL・LL を分けるため床板単位で渡す）。
+/// `w_of` は床板ごとの面荷重強度 [N/mm²]。
 ///
-/// 床領域に帰属する床板（`region.slab_ids`）は床領域ごとにまとめて分配し、
-/// どの床領域からも参照されない床板（片持ち・バルコニー・出隅、または帰属先が
-/// 見つからない浮き床板）は個別に分配する（荷重を取りこぼさないため）。
+/// 床領域に帰属する床板は床領域ごとにまとめて分配し、
+/// どの床領域からも参照されない床板は個別に分配する。
 pub fn slab_beam_loads_with(
     model: &Model,
     w_of: impl Fn(&Slab) -> f64,
@@ -93,9 +91,6 @@ pub fn slab_beam_loads_with(
 ) -> Vec<BeamLoad> {
     let mut beam_loads = Vec::new();
 
-    // 二次部材が受け持つ辺荷重は、逐次伝達（`squid_n_load::cascade`）が両端反力へ
-    // 変えて主架構まで運ぶ。残り（どの二次部材にも載らなかった辺荷重）だけを
-    // ここで直接主架構へ解決する（両方載せると二重計上になる）。
     let mut transfer = squid_n_load::cascade::solve(model, &w_of, include_secondary_self_weight);
     push_resolved_loads(
         std::mem::take(&mut transfer.leftover_region_loads),
@@ -103,8 +98,6 @@ pub fn slab_beam_loads_with(
         &mut beam_loads,
     );
 
-    // 逐次伝達が主架構へ渡す集中荷重（終端の端部反力）。節点が大梁のスパン途中に
-    // あるときは `resolve_nodal_to_primary` が梁の中間集中荷重へ変換する。
     for (node, r) in transfer.primary_node_loads() {
         beam_loads.push(BeamLoad {
             elem: ElemId(u32::MAX),
@@ -119,8 +112,6 @@ pub fn slab_beam_loads_with(
         });
     }
 
-    // どの床領域からも参照されない床板（片持ち・バルコニー・出隅、または帰属先が
-    // 見つからない浮き床板）は床領域とは独立に分配する（荷重を取りこぼさないため）。
     let referenced: std::collections::HashSet<_> = model
         .floor_regions
         .iter()
@@ -253,10 +244,7 @@ pub fn slab_load_case_content(
     }
 
     /// 線分 `p0`→`p1` に載る荷重を、それを覆う大梁へ割り付ける。
-    ///
-    /// 取付き線が張る大梁が中間節点で分割されていても、幾何で覆いを求めるため外れない。
-    /// 線分の全長を覆えなかった場合は `false` を返し、呼び出し側の従来経路（両端節点への
-    /// 振り分け）へ委ねる（覆えないぶんの荷重を落とさないため）。
+    /// 線分の全長を覆えなかった場合は `false` を返す。
     fn emit_along_segment(
         model: &Model,
         member: &mut Vec<MemberLoad>,
@@ -275,10 +263,6 @@ pub fn slab_load_case_content(
         if cover.is_empty() {
             return false;
         }
-        // 覆いが全長に届かない（隙間がある・端が余る）場合は割り付けない。
-        // 被覆区間どうしが重なっている場合（重複部材・部分的に重なる梁）も割り付けない。
-        // 単純な合計で判定すると、重なりのぶんだけ長さが水増しされ、隙間があっても
-        // 「全長を覆えた」と誤判定する（前半へ二重に載り、後半が無荷重になる）。
         let mut union = 0.0_f64;
         let mut reach = 0.0_f64;
         let mut sum = 0.0_f64;
@@ -293,11 +277,8 @@ pub fn slab_load_case_content(
 
         let mut breaks = shape_breakpoints(shape, len);
         breaks.retain(|x| *x > 0.0 && *x < len);
-        // 集中荷重が被覆区間の境目にちょうど載る場合、両側の区間が同じ位置を含むため、
-        // 1 度載せたら以降の区間では載せない（二重計上を防ぐ）。
         let mut point_placed = false;
         for c in &cover {
-            // 覆い区間を折れ点で割り、各片を線形分布として梁へ載せる。
             let mut cuts = vec![c.seg[0], c.seg[1]];
             cuts.extend(
                 breaks
@@ -352,7 +333,6 @@ pub fn slab_load_case_content(
                 (total / 2.0, total / 2.0)
             }
             LoadShape::Linear { w_i, w_j } => {
-                // 単純梁反力。台形の面積重心按分と一致する: R_i = L(2w_i+w_j)/6。
                 (len * (2.0 * w_i + w_j) / 6.0, len * (w_i + 2.0 * w_j) / 6.0)
             }
             LoadShape::Triangle { w0 } => {
@@ -393,11 +373,6 @@ pub fn slab_load_case_content(
                 emit_shape(&mut member, elem.id, 0.0, l, false, &bl.shape);
             }
             LoadTarget::Span { nodes: [n0, n1], t } => {
-                // `t == [0, 1]`（既定。荷重が nodes 間の全長を覆う）は従来どおり
-                // `bl.elem`（`push_resolved_loads` が直接ヒットさせた要素）への
-                // 高速経路を使う。部分区間（取付き線の一部だけに載る取り付き領域）は
-                // `bl.elem` の局所 x 軸の向きを検証していないため、この経路には乗せず
-                // 下の座標ベースの幾何解決へ回す（件数が少なく性能への影響もない）。
                 let full = (t[0] - 0.0).abs() <= 1e-9 && (t[1] - 1.0).abs() <= 1e-9;
                 if full {
                     if let Some(elem) = model.element(bl.elem) {
@@ -413,8 +388,6 @@ pub fn slab_load_case_content(
                 else {
                     continue;
                 };
-                // 荷重が実際に載る区間の端点。全長（t=[0,1]）なら nodes そのもの、
-                // 部分区間なら nodes 間を t で線形補間した点（実節点ではない）。
                 let lerp = |c0: [f64; 3], c1: [f64; 3], f: f64| {
                     [
                         c0[0] + (c1[0] - c0[0]) * f,
@@ -442,17 +415,9 @@ pub fn slab_load_case_content(
                         continue;
                     }
                 }
-                // 線分が複数の大梁にまたがる場合（取付き線の下の大梁が中間節点で
-                // 分割されている等）は、覆っている梁へ幾何で割り付ける。節点対の
-                // 完全一致に頼ると、この場合に両端節点への振り分けへ落ちてしまい、
-                // 等分布が集中荷重に化けて梁のモーメントが過小になる。
                 if emit_along_segment(model, &mut member, p0, p1, &bl.shape) {
                     continue;
                 }
-                // どの大梁も区間を覆えなかった場合、荷重を落とさず nodes（取付き線の
-                // 実節点＝柱）へ単純梁反力として振り分ける。部分区間ではその反力は
-                // 本来 p0・p1（nodes 間の内側）に生じるが、そこに実節点はないため、
-                // 総和を保つ最善の代替として nodes 自身へ寄せる（位置はわずかにずれる）。
                 let len = {
                     let (a, b) = (p0, p1);
                     ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt()
@@ -473,11 +438,7 @@ pub fn slab_load_case_content(
 }
 
 /// 床の DL 分配 `BeamLoad` 列（スラブ固定荷重＋自立壁の等価面荷重）。
-///
-/// 現状の CMQ 図ソースでもあるが、荷重ケースの全部材荷重ではない
-/// （梁自重・取り付く壁版の線アンカーは [`compute_gravity_auto_load_cases`] 側で
-/// 「DL」へ加算する。CMQ 図への反映は
-/// `dev_docs/handoff/CMQ図を荷重ケースの全荷重へ_申し送り.md`）。
+/// 荷重ケースの全部材荷重ではない（梁自重・取り付く壁版の線アンカーを含まない）。
 pub fn compute_dl_beam_loads(model: &Model) -> Vec<BeamLoad> {
     let beam_map = beam_elem_map(model);
     let extra_intensity = squid_n_load::wall_attached::floor_region_wall_extra_intensity(model);
@@ -502,16 +463,10 @@ pub fn compute_gravity_auto_load_cases(model: &Model) -> AutoLoadComputeResult {
         squid_n_load::self_weight::self_weight_case_content(model, &load_cfg);
     dl_nodal.extend(sw_nodal);
     dl_member.extend(sw_member);
-    // 「線」アンカーの取り付く壁版（パラペット・腰壁・垂れ壁）の自重。床板分配と同じ
-    // 幾何解決（`slab_load_case_content` の `LoadTarget::Span`）へ合流させることで、
-    // 取付き線の部分区間（`span`）を梁全長へ薄めず正確に扱う（`wall_attached` 参照）。
     let attached_wall_loads = squid_n_load::wall_attached::attached_wall_beam_loads(model);
     let (aw_nodal, aw_member) = slab_load_case_content(model, &attached_wall_loads);
     dl_nodal.extend(aw_nodal);
     dl_member.extend(aw_member);
-    // 解析要素にならない囲まれた壁版（間柱で分割された壁版・腰壁等）の自重のうち、
-    // 主架構（柱・大梁）が受け持つぶん。間柱が受け持つぶんは逐次伝達
-    // （`slab_beam_loads_with` が呼ぶ `cascade::solve`）が反力として運ぶ。
     let enclosed_wall_loads =
         squid_n_load::wall_plate_load::distribute_enclosed_wall_plates(model).primary;
     let (ew_nodal, ew_member) = slab_load_case_content(model, &enclosed_wall_loads);
