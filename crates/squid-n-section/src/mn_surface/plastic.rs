@@ -1,12 +1,8 @@
-//! 全塑性応力分布による断面力の中核積分プリミティブ。
-//!
-//! 支持点・軸耐力・軸力一定の全塑性モーメント・軸力一定スライス曲線を与える。
-//! 曲面構築（[`super::surface`]）と M-φ（[`super::m_phi`]）の双方から使われる。
+//! 全塑性応力分布による断面力の積分プリミティブ。
 
 use super::types::PlasticFiber;
 
 /// 全塑性応力分布による断面力（支持点）。
-/// ひずみ速度方向 (e0, ky, kz) の符号のみで各ファイバの応力が決まる。
 pub fn plastic_point(fibers: &[PlasticFiber], e0: f64, ky: f64, kz: f64) -> [f64; 3] {
     let mut n = 0.0;
     let mut my = 0.0;
@@ -35,12 +31,8 @@ pub fn axial_capacity(fibers: &[PlasticFiber]) -> (f64, f64) {
     (nc, nt)
 }
 
-/// 曲げ方向 (ky, kz) を固定し、軸力が `n_target` となる全塑性中立軸位置での
-/// モーメント (My, Mz) を返す。`n_target` が軸耐力範囲外なら `None`。
-///
-/// ファイバを中立軸からの距離順にソートし、圧縮側から引張側へ順次反転させて
-/// 軸力を合わせる（中立軸上のファイバは部分的に応力を負担する）。
-/// これは離散ファイバ集合の厳密な凸包（降伏曲面）上の点を与える。
+/// 曲げ方向 (ky, kz) を固定し、軸力が `n_target` となる全塑性モーメントを返す。
+/// `n_target` が軸耐力範囲外なら `None`。
 pub fn plastic_moment_at_n(
     fibers: &[PlasticFiber],
     ky: f64,
@@ -52,7 +44,6 @@ pub fn plastic_moment_at_n(
         return None;
     }
 
-    // 中立軸からのてこ距離 d = ky·z − kz·y。d が大きいファイバほど先に引張へ反転する。
     let mut order: Vec<usize> = (0..fibers.len()).collect();
     order.sort_by(|&a, &b| {
         let da = ky * fibers[a].z - kz * fibers[a].y;
@@ -60,7 +51,6 @@ pub fn plastic_moment_at_n(
         db.partial_cmp(&da).unwrap_or(std::cmp::Ordering::Equal)
     });
 
-    // 全断面圧縮から開始し、順に引張へ反転して n_target に到達させる。
     let mut n = nc;
     let mut my: f64 = fibers.iter().map(|f| f.sigma_c * f.area * f.z).sum();
     let mut mz: f64 = fibers.iter().map(|f| -f.sigma_c * f.area * f.y).sum();
@@ -69,7 +59,6 @@ pub fn plastic_moment_at_n(
         let f = &fibers[i];
         let dn = (f.sigma_t - f.sigma_c) * f.area;
         if n + dn >= n_target {
-            // このファイバが部分的に応力を負担して軸力が一致する
             let t = if dn > 0.0 { (n_target - n) / dn } else { 0.0 };
             let ds = t * (f.sigma_t - f.sigma_c) * f.area;
             my += ds * f.z;
@@ -83,8 +72,7 @@ pub fn plastic_moment_at_n(
     Some([my, mz])
 }
 
-/// 軸力一定 (`n_target`) での My–Mz 相関曲線を `n_pts` 点で返す（閉曲線、始点は繰り返さない）。
-/// 軸耐力範囲外なら空。
+/// 軸力一定での My–Mz 相関曲線を `n_pts` 点で返す。軸耐力範囲外なら空。
 pub fn slice_at_n(fibers: &[PlasticFiber], n_target: f64, n_pts: usize) -> Vec<[f64; 2]> {
     let mut pts = Vec::with_capacity(n_pts);
     for j in 0..n_pts {

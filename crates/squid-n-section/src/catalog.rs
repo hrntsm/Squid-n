@@ -1,9 +1,5 @@
 //! 日本国内の鋼材断面カタログ（JIS 規格等）。
-//!
-//! `data/japan_steel_sections.csv` をビルド時に埋め込み、初回アクセス時に一度だけ
-//! パースしてキャッシュする。対象国は日本のみのため、CSV の `country` 列は UI に
-//! 出さない。利用側は [`CatalogShape`]（大分類）→ `family`（まとまり）→
-//! [`CatalogEntry`]（断面名）の3段階で選び、[`to_section`] で `Section` を生成する。
+//! `data/japan_steel_sections.csv` をビルド時に埋め込む。
 
 use crate::shape::SectionShape;
 use squid_n_core::ids::SectionId;
@@ -11,6 +7,10 @@ use squid_n_core::model::Section;
 use std::sync::OnceLock;
 
 const CSV_DATA: &str = include_str!("../data/japan_steel_sections.csv");
+
+const COL_TORSION: usize = 28;
+const CM2_TO_MM2: f64 = 100.0;
+const CM4_TO_MM4: f64 = 1.0e4;
 
 /// カタログの大分類（CSV の `shape` 列に対応）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -106,9 +106,8 @@ pub fn entries_in(shape: CatalogShape, family: &str) -> Vec<&'static CatalogEntr
 
 /// カタログ断面から `Section` を生成する。
 ///
-/// 断面諸元（area/iy/iz/j 等）は常にカタログの表値をそのまま用いる（再計算しない）。
-/// `shape` は幅厚比などの寸法参照用にベストエフォートで `entry.name` から復元するもので、
-/// 数値プロパティには一切影響しない（パースできない名前・フラットバーは `None`）。
+/// 断面諸元は常にカタログの表値をそのまま用いる（再計算しない）。
+/// `shape` は寸法参照用に `entry.name` から復元するもので、数値プロパティには影響しない。
 pub fn to_section(entry: &CatalogEntry, id: SectionId) -> Section {
     Section {
         id,
@@ -134,15 +133,8 @@ pub fn to_section(entry: &CatalogEntry, id: SectionId) -> Section {
 
 /// `entry.name` の寸法表記から `SectionShape` をベストエフォートで復元する。
 ///
-/// 実データ（`data/japan_steel_sections.csv`）で確認した命名規則:
-/// - H形: `"H-{h}x{b}x{tw}x{tf}x{r}"`（例: `"H-400x200x9x12x13"`）。末尾のフィレット半径 r は無視。
-/// - 角形鋼管: `"Box-{h}x{w}x{t}"`（RHS/SHS 系, 例: `"Box-100x100x12"`）または
-///   `"Box-{h}x{w}x{t}x{r}"`（BCP/BCR/JIS_Rectangle/JIS_Square/STKR 系, 角R付き,
-///   例: `"Box-1000x1000x22x77"`）。末尾の角R があれば無視。
-/// - 丸鋼管: `"O-{outer_dia}x{t}"`（例: `"O-400x19"`）。
-/// - フラットバー（`"FL {t}x{b}"`）はパース対象外（対応する `SectionShape` がない）。
-///
-/// 上記いずれの数値パースにも失敗した場合は `None`。
+/// 命名規則（H・Box・O 形式）は実装を参照。末尾の角R・フィレット半径は無視する。
+/// フラットバーとパース失敗時は `None`。
 fn parse_shape_from_name(shape: CatalogShape, name: &str) -> Option<SectionShape> {
     match shape {
         CatalogShape::H => {
@@ -166,8 +158,6 @@ fn parse_shape_from_name(shape: CatalogShape, name: &str) -> Option<SectionShape
                 height: dims[0],
                 width: dims[1],
                 thick: dims[2],
-                // カタログ名の角R（BCP/BCR等の末尾数値）は寸法情報のみのため無視する
-                // （下記 test_parse_shape_box_ignores_corner_radius 参照）。
                 corner_r: 0.0,
             })
         }
@@ -186,8 +176,6 @@ fn parse_shape_from_name(shape: CatalogShape, name: &str) -> Option<SectionShape
 }
 
 /// `prefix` を取り除いた残りを `'x'` 区切りで数値配列にパースする。
-/// プレフィックス自体に `'x'` を含む場合（例: `"Box-"`）があるため、必ず先に
-/// プレフィックスを剥がしてから分割する。
 fn parse_dims_after_prefix(name: &str, prefix: &str) -> Option<Vec<f64>> {
     let rest = name.strip_prefix(prefix)?;
     rest.split('x')
@@ -197,15 +185,13 @@ fn parse_dims_after_prefix(name: &str, prefix: &str) -> Option<Vec<f64>> {
 
 fn parse_csv() -> Vec<CatalogEntry> {
     let mut out = Vec::new();
-    // 1行目: ヘッダ名, 2行目: 単位。データは3行目から。
     for line in CSV_DATA.lines().skip(2) {
         let line = line.trim();
         if line.is_empty() {
             continue;
         }
         let fields: Vec<&str> = line.split(';').map(|f| f.trim_matches('"')).collect();
-        // It (ねじり定数) は index 28。それ未満しかない行は不正なので無視する。
-        if fields.len() <= 28 {
+        if fields.len() <= COL_TORSION {
             continue;
         }
         let Some(shape) = CatalogShape::from_csv_code(fields[4]) else {
@@ -214,13 +200,12 @@ fn parse_csv() -> Vec<CatalogEntry> {
         let parse = |s: &str| s.trim().parse::<f64>().unwrap_or(0.0);
         let h = parse(fields[5]);
         let b_upper = parse(fields[7]);
-        let area = parse(fields[16]) * 100.0; // cm² -> mm²
-        let a_y = parse(fields[17]) * 100.0;
-        let a_z = parse(fields[18]) * 100.0;
-        let iy = parse(fields[19]) * 1.0e4; // cm⁴ -> mm⁴
-        let iz = parse(fields[24]) * 1.0e4;
-        let it = parse(fields[28]) * 1.0e4;
-        // 丸鋼管は b_upper 列が空欄のため、幅は外径（h）を流用する。
+        let area = parse(fields[16]) * CM2_TO_MM2;
+        let a_y = parse(fields[17]) * CM2_TO_MM2;
+        let a_z = parse(fields[18]) * CM2_TO_MM2;
+        let iy = parse(fields[19]) * CM4_TO_MM4;
+        let iz = parse(fields[24]) * CM4_TO_MM4;
+        let it = parse(fields[COL_TORSION]) * CM4_TO_MM4;
         let width = if matches!(shape, CatalogShape::Pipe) {
             h
         } else {

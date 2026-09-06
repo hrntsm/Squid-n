@@ -1,10 +1,7 @@
 use squid_n_material::UniaxialMaterial;
 
-/// ファイバ（断面小片）。
-///
-/// 単位: `y`,`z` [mm], `area` [mm²]。
-/// `material` は材料種別の参照タグ（シリアライズ/表示用）。状態は `section_response` が
-/// `mats[fiber_index]` を使うため、ここでは状態の参照先ではない。
+/// ファイバ（断面小片）。単位: `y`,`z` [mm], `area` [mm²]。
+/// `material` は材料種別の参照タグ。状態は `mats[fiber_index]` が持つ。
 pub struct Fiber {
     pub y: f64,
     pub z: f64,
@@ -36,13 +33,9 @@ pub struct SectionStiffness {
     pub d: [[f64; 3]; 3],
 }
 
-/// 各ファイバのひずみ = ε0 − κz·y + κy·z（平面保持。符号規約は設計書 §9.2）。
-/// 各ファイバ材料の trial で (σ, Et) を得て、断面力・接線 D を積分する。
+/// 各ファイバのひずみ = ε0 − κz·y + κy·z（平面保持）から (σ, Et) を積分する。
 ///
-/// **契約:** `mats.len() == sec.fibers.len()`。ファイバ i は `mats[i]` を使用する。
-/// 非線形履歴では各ファイバが独立した履歴状態を持つ必要があるため、
-/// 共有状態だと履歴が混入して破綮する（設計書 §6.3）。`uniform_fiber_mats` で
-/// ファイバ数分のインスタンスを生成すること。
+/// **契約:** `mats.len() == sec.fibers.len()`。各ファイバは独立した履歴状態を持つこと。
 pub fn section_response(
     sec: &FiberSection,
     strain: SectionStrain,
@@ -59,15 +52,9 @@ pub fn section_response(
     })
 }
 
-/// ファイバー単位の応力 σ \[N/mm²\] と接線係数 Et \[N/mm²\] から、断面力
-/// （N, My, Mz）と接線断面剛性 D（3×3）を積分する。
-///
-/// `per_fiber` はファイバー添字と当該ファイバーを受け取り `(σ, Et)` を返す。
-/// 断面力・D の積分公式そのものは**この関数だけが持つ**（材料の trial を毎回
-/// 呼ぶ経路と、トライアル状態をキャッシュ済みの経路の双方から使うため、
-/// 積分公式が分かれるとビット一致が崩れて非線形反復の結果が食い違う）。
-///
-/// 符号規約は設計書 §9.2（`My = Σσ·A·z`、`Mz = −Σσ·A·y`）。D は対称。
+/// ファイバー単位の応力と接線係数から、断面力と接線断面剛性 D を積分する。
+/// 積分公式はこの関数だけが持つ（2 経路で共有しビット一致を保つ）。
+/// 符号規約: `My = Σσ·A·z`、`Mz = −Σσ·A·y`。D は対称。
 pub fn integrate_fibers(
     sec: &FiberSection,
     mut per_fiber: impl FnMut(usize, &Fiber) -> (f64, f64),
@@ -106,7 +93,6 @@ pub fn integrate_fibers(
 }
 
 /// テンプレート材料からファイバ数分の独立した状態インスタンスを生成する。
-/// 非線形ファイバ積分では各ファイバが独自の履歴変数を持つためこれを使う。
 pub fn uniform_fiber_mats(
     template: &dyn UniaxialMaterial,
     n: usize,
@@ -114,7 +100,7 @@ pub fn uniform_fiber_mats(
     (0..n).map(|_| template.clone_box()).collect()
 }
 
-/// 矩形断面をファイバに分割するヘルパー。`material` は材料種別タグ。
+/// 矩形断面をファイバに分割する。`material` は材料種別タグ。
 pub fn rect_fiber_section(
     width: f64,
     depth: f64,
