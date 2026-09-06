@@ -1,6 +1,4 @@
-//! スケルトン算定で用いるデータ型（部材スケルトン曲線・配筋・制御パラメータ）。
-//!
-//! このモジュールは純粋なデータ構造のみを保持し、算定ロジックは持たない。
+//! スケルトン算定のデータ型。
 
 use squid_n_core::model::{Material, Section};
 use squid_n_material::HysteresisRule;
@@ -20,12 +18,10 @@ pub struct Reinforcement {
 /// N–M 相関情報。
 #[derive(Clone, Debug)]
 pub struct AxialInteraction {
-    /// 複数軸力レベルでのスケルトン
     pub skeletons: Vec<(f64 /* N */, MemberSkeleton)>,
 }
 
 impl AxialInteraction {
-    /// 軸力依存のない空の相関。
     pub fn empty() -> Self {
         AxialInteraction { skeletons: vec![] }
     }
@@ -44,9 +40,6 @@ pub struct MemberSkeleton {
 }
 
 impl MemberSkeleton {
-    /// 指定軸力レベルに対する単一スケルトンを軸力依存として登録した曲線を作る。
-    ///
-    /// `axial_dependency` には `n_axial` に対応する（`points` 空の）補正エントリを 1 つ保持する。
     pub(crate) fn with_axial_entry(
         points: Vec<(f64, f64)>,
         hysteresis: HysteresisRule,
@@ -93,7 +86,7 @@ pub struct SkeletonOptions {
     pub inflection_ratio: f64,
     /// 想定軸力 [N]
     pub n_axial: f64,
-    /// 武田モデルの除荷剛性低下指数 α（外部設定。代表 0.4〜0.5）
+    /// 武田モデルの除荷剛性低下指数 α
     pub alpha: f64,
 }
 
