@@ -1,7 +1,4 @@
-//! 部材スケルトン曲線の構築（公開エントリポイント）。
-//!
-//! 責務: [`crate::fiber_model`] のファイバ積分と [`crate::deformation`] の
-//! M–θ 変換を組み合わせ、トリリニアの部材スケルトンを組み立てる。
+//! 部材スケルトン曲線の構築。
 
 use squid_n_core::model::Section;
 use squid_n_material::{Bilinear, Concrete, HysteresisRule, UniaxialMaterial};
@@ -11,21 +8,11 @@ use crate::deformation::{mphi_to_mtheta, PulloutContribution, ShearContribution}
 use crate::fiber_model::{build_rc_fiber_section, compute_m_phi_curve_rc};
 use crate::types::{MemberData, MemberSkeleton, Reinforcement, SkeletonOptions};
 
-/// RC ファイバ格子の分割数（幅方向）。
 const RC_GRID_W: usize = 16;
-/// RC ファイバ格子の分割数（せい方向）。
 const RC_GRID_D: usize = 32;
-/// RC M–φ スイープのステップ数。
 const RC_SWEEP_STEPS: usize = 800;
 
-/// RC 部材スケルトンを構築する（仕様書 §7）。
-///
-/// 1. コンクリート格子＋主筋点ファイバのファイバ断面を構築。
-/// 2. 軸力 n_axial を保ちながら M–φ を数値積分。ひび割れ・鉄筋降伏・コンクリート圧壊を
-///    ひずみイベントで検出しトリリニア折点とする（規準式準拠のイベント駆動）。
-/// 3. 反曲点比・塑性ヒンジ長で M–φ → M–θ へ変換。せん断変形・鉄筋抜出しを加算（§7 フロー4）。
-///
-/// 単位: 断面寸法・位置 [mm], 面積 [mm²], 軸力 [N], モーメント [N·mm], スパン [mm]。
+/// RC 部材スケルトンを構築する。
 pub fn build_rc_member_skeleton(
     section: &Section,
     reinforcement: &Reinforcement,
@@ -40,7 +27,6 @@ pub fn build_rc_member_skeleton(
     let n_axial = opts.n_axial;
     let plastic_hinge_length = 0.5 * section.depth;
 
-    // スイープ範囲を断面・材料から適応的に決定（降伏・終局曲率を十分に解像する）。
     let e0_conc = 2.0 * concrete.fc / concrete.ec0.abs();
     let eps_cr = concrete.ft / e0_conc;
     let eps_y = steel.fy / steel.e;
@@ -79,7 +65,6 @@ pub fn build_rc_member_skeleton(
         RC_SWEEP_STEPS,
     );
 
-    // イベントから折点を取り出す。検出されなかった場合は推定曲率で補完。
     let (ky_crack, m_c) = events
         .crack
         .unwrap_or((eps_cr / (section.depth / 2.0), 0.0));
@@ -118,9 +103,7 @@ pub fn build_rc_member_skeleton(
 }
 
 /// 既定のファイバ断面（呼出側提供）からスケルトンを構築する（汎用パス）。
-/// `mats.len() == member.fibers.fibers.len()` が必要（ファイバごとの独立状態）。
-/// RC の場合は `build_rc_member_skeleton` を用いること。
-/// `alpha` は武田モデルの除荷剛性低下指数（外部設定。代表 0.4〜0.5）。
+/// `mats.len() == member.fibers.fibers.len()` が必要。
 pub fn build_member_skeleton(
     member: &MemberData,
     n_axial: f64,
@@ -173,7 +156,6 @@ pub fn build_member_skeleton(
         points.push((ky, force.my));
     }
 
-    // 折点: M-φ 曲線の勾配変化を簡易抽出（汎用パス。RC は build_rc を使用）
     let trilinear = extract_trilinear_generic(&points);
     let ky_y = trilinear.get(2).map(|p| p.0);
     let mtheta: Vec<(f64, f64)> = trilinear
@@ -209,7 +191,6 @@ pub fn build_member_skeleton(
     MemberSkeleton::with_axial_entry(mtheta, hysteresis, n_axial)
 }
 
-/// 汎用パスの折点抽出（勾配ヒューリスティック。RC には build_rc を用いること）。
 fn extract_trilinear_generic(mphi: &[(f64, f64)]) -> Vec<(f64, f64)> {
     if mphi.is_empty() {
         return vec![(0.0, 0.0)];
