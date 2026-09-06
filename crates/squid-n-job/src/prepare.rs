@@ -1,8 +1,7 @@
 //! 解析前処理（モデルを解ける状態へ整える）。
 //!
 //! **解析の直前に必ず通すこと。** 前処理を省くと、仕口パネルのない剛性で解いたり、
-//! 地震力ゼロで増分解析したりすることになる（実際に MCP サーバ側でそれが起きて
-//! いた。GUI 側は `ensure_preparation` で同じ処理を通していた）。
+//! 地震力ゼロで増分解析したりすることになる。
 
 use squid_n_core::model::Model;
 use squid_n_core::region_rebuild::rebuild_floor_regions;
@@ -20,41 +19,19 @@ pub struct PrepareReport {
 }
 
 /// 剛域と仕口パネルを自動算定してモデルへ反映する。
-///
-/// - 剛域: `Model::stress_cfg.rigid_zone_consider_walls` に従って壁を考慮する
-/// - 仕口パネル: `Model::panel_zone` が有効なら S 造（CFT を除く）の柱梁接合節点へ
-///   パネルを設け、無効なら既存のパネルを取り除く。あわせて部材の
-///   `RigidZone::panel_offset_i/j` を現在のパネル配置から求め直す
-///
-/// いずれも冪等で、書き込み先が異なるため呼び出し順にも依存しない。
-/// 戻り値は生成した仕口パネルの一覧（GUI の準備計算表が表示する）。
-///
-/// **剛域算定は壁展開モデルに対して行う。** 壁の解析要素（`ElementKind::Wall`）は
-/// `model` には存在しない生成物（D5）だが、`rigid_zone_consider_walls`（既定
-/// true）は柱の袖壁・梁の腰壁/垂壁の張り出しを剛域長へ反映する技術基準の規定
-/// のため、壁展開しないまま算定すると「壁が一切ない」ものとして常に算定されて
-/// しまう（実測: 側柱の `length_j` が壁なしで 125.0mm、壁ありで 1262.5mm になる
-/// ケースを確認済み。dev_docs/handoff/床領域・壁領域の再設計_申し送り.md §5.15）。
-/// 壁展開モデルで算定した結果を、既存要素のインデックス対応で `model` へ書き戻す
-/// （壁展開は既存要素の末尾へ生成要素を追記するだけなので、先頭
-/// `model.elements.len()` 件は展開前後で 1:1 対応する）。仕口パネルは壁に
-/// 依存しないため、従来どおり非展開モデルに対して算定する。
+/// 剛域算定は壁展開モデルに対して行い、既存要素へ書き戻す。
+/// 仕口パネルは壁に依存しないため非展開モデルに対して算定する。
+/// いずれも冪等で、呼び出し順にも依存しない。
 pub fn apply_rigid_zones_and_panels(
     model: &mut Model,
 ) -> Vec<squid_n_element::springs::panel_gen::GeneratedPanel> {
     let rule = squid_n_element::frame::beam::RigidZoneRule {
         consider_walls: model.stress_cfg.rigid_zone_consider_walls,
     };
-    // 壁を持たないモデル（実 ST-Bridge フィクスチャは現状すべて該当する）では、
-    // `expand_wall_elements` の `model.clone()`（要素数比例のコスト）を払う
-    // 意味がない。この関数は解析エントリの都度（`ensure_preparation` 経由で）
-    // 呼ばれるため、壁がない大多数のケースで無駄な複製を避ける。
     if squid_n_load::wall_expand::model_has_wall_plates_to_expand(model) {
         let (mut expanded, _wall_index, _wall_report) =
             squid_n_load::wall_expand::expand_wall_elements(model);
         squid_n_element::frame::beam::apply_auto_rigid_zones(&mut expanded, &rule);
-        // 壁展開は既存要素の末尾へ追記するだけなので、先頭 N 件の ElemId は
-        // 展開前後で一致する。この前提が壊れると zip は別部材へ剛域を載せる。
         debug_assert!(
             model.elements.len() <= expanded.elements.len()
                 && model
@@ -75,8 +52,6 @@ pub fn apply_rigid_zones_and_panels(
 }
 
 /// 解析前処理を一括で行う（剛域・仕口パネル・荷重ケースの自動同期）。
-///
-/// 剛域と仕口パネルのみが必要な場合は [`apply_rigid_zones_and_panels`] を使う。
 pub fn prepare_model_for_analysis(
     model: &mut Model,
     settings: &AnalysisSettings,

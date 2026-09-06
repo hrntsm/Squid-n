@@ -1,16 +1,10 @@
 //! 解析条件（GUI の「解析」タブの設定値に対応する。GUI 非依存）。
-//!
-//! 各解析の純粋計算（[`crate::compute`]）と荷重ケースの自動同期（[`crate::prepare`]）が
-//! これを読む。GUI と MCP サーバが**同じ条件で同じ結果を得られる**ようにするため、
-//! app ではなく本クレートに置く。
 
 use squid_n_solver::statics::analysis::{AiMode, SeismicDir};
 
-/// 解析タブの設定値（GUI 非依存。テストからも使う）。
+/// 解析タブの設定値（GUI 非依存）。
 ///
 /// `.scz`（`squid-n-io` の `SczExtras::analysis_settings`）へ同梱される。
-/// モデルから導出できない独立した設定値であり、同梱しないと解析結果を
-/// 生成した条件が失われ、結果の再現性が保てないため。
 #[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
 pub struct AnalysisSettings {
     /// 固有値解析のモード数
@@ -35,60 +29,53 @@ pub struct AnalysisSettings {
     pub ductility_method: squid_n_solver::nonlinear::pushover::DuctilityMethod,
     /// 増分解析: 制御方式（段階制御／荷重増分のみ）。
     pub push_control: squid_n_solver::nonlinear::pushover::PushoverControl,
-    /// 増分解析: 長期系荷重ケース（固定・積載等）を水平力増分の前に初期載荷するか。
-    /// 長期荷重ケースがないモデルでは無視される（ソルバ側の対応実装に依存）。
+    /// 増分解析: 長期系荷重ケースを水平力増分の前に初期載荷するか。
     pub push_apply_long_term: bool,
     /// 質点系モデル生成: モデル化タイプ（等価せん断型など）。
     pub lumped_mass_type: squid_n_solver::dynamic::lumped_mass::LumpedMassType,
     /// 質点系モデル生成: 第1折点判定の割線剛性比（0..1、既定 0.75）。
     pub lumped_secant_ratio: f64,
-    /// 時刻歴: 減衰比・サンプル波の刻み/継続時間/周期/振幅 [mm/s²]
+    /// 時刻歴: 減衰比
     pub th_damping: f64,
+    /// 時刻歴サンプル波: 刻み [s]・継続時間 [s]・周期 [s]・振幅 [mm/s²]
     pub th_dt: f64,
     pub th_duration: f64,
     pub th_period: f64,
     pub th_amp: f64,
-    /// 時刻歴の入力方向(サンプル波・CSV波形の作用方向)
+    /// 時刻歴の入力方向
     pub th_dir: ThDir,
     /// 時刻歴の減衰モデル
     pub th_damping_model: ThDampingModel,
-    /// Rayleigh の2次モード減衰比(1次は th_damping を使用)
+    /// Rayleigh の2次モード減衰比（1次は th_damping を使用）
     pub th_h2: f64,
-    /// 時刻歴を非線形（各部材の復元力特性を考慮した Newton 反復）で解析するか。
+    /// 時刻歴を非線形で解析するか。
     pub th_nonlinear: bool,
-    /// 非線形時刻歴: 長期系荷重ケース（固定・積載等）を時刻歴開始前に静的載荷し、
-    /// その応力状態を初期条件とするか。線形時刻歴は重ね合わせ運用のため対象外
+    /// 非線形時刻歴: 長期系荷重ケースを時刻歴開始前に静的載荷し初期条件とするか
     /// （`th_nonlinear` が true のときのみ意味を持つ）。
     pub th_apply_long_term: bool,
-    /// 非線形時刻歴: 各時刻ステップの Newton 反復の最大回数
-    /// （既定は増分解析＝プッシュオーバーの内部反復回数と同じ 50）。
+    /// 非線形時刻歴: 各時刻ステップの Newton 反復の最大回数（既定 50）。
     pub th_max_iter: usize,
     /// 非線形時刻歴: Newton 収束判定の相対許容誤差。
     pub th_tol: f64,
-    /// 時刻歴の詳細記録（3D アニメーション・層応答グラフ・部材履歴用）の
-    /// フレーム間引き係数（線形・非線形の 2 経路共通）。
-    /// 0 は自動決定（記録フレーム数が概ね 1000 になるよう調整）。
-    /// ピーク値（`peak_disp`・`peak_member_forces`・`peak_shear_coeff`）は
-    /// 間引きの影響を受けず全ステップで更新される。
+    /// 時刻歴の詳細記録のフレーム間引き係数。0 は自動決定。
     pub th_record_every: usize,
-    /// 位相差入力（ねじれ加振）を考慮する（構造動力学）。
+    /// 位相差入力（ねじれ加振）を考慮するか。
     pub phase_diff_enabled: bool,
     /// せん断波速度 Vs [m/s]。
     pub phase_diff_vs: f64,
-    /// 矩形基礎長さ L [m]（位相遅れ方向の辺長）。
+    /// 矩形基礎長さ L [m]。
     pub phase_diff_length_m: f64,
     /// 入射角 θ [°]。
     pub phase_diff_incidence_deg: f64,
-    /// 位相遅れ方向が Y なら true（X なら false）。基準の並進波もこの方向を用いる。
+    /// 位相遅れ方向が Y なら true（X なら false）。
     pub phase_diff_dir_y: bool,
-    /// 荷重組合せ自動生成（種別ベース）の多雪区域フラグ（施行令86条・82条）。
+    /// 荷重組合せ自動生成の多雪区域フラグ。
     pub heavy_snow_zone: bool,
-    /// 多雪区域の積雪荷重低減係数 δ1（長期 G+P+δ1・S。既定 0.7）。
+    /// 多雪区域の積雪荷重低減係数 δ1（既定 0.7）。
     pub snow_delta1: f64,
-    /// 同 δ3（地震時 G+P+δ3・S±K。既定 0.35）。
+    /// 同 δ3（既定 0.35）。
     pub snow_delta3: f64,
     /// RC 短期許容せん断力の「損傷制御のための検討」（false=安全確保のための検討）。
-    /// RC規準・令82条（断面算定条件 RC造）に対応。
     pub rc_damage_control: bool,
     /// 地震時短期の設計用せん断力 QD の決定方法（QD1/QD2/min）。
     pub qd_method: squid_n_design_jp::QdMethod,
@@ -96,9 +83,7 @@ pub struct AnalysisSettings {
     pub bond_method: squid_n_design_jp::BondMethod,
     /// 解析の並列スレッド数（0=自動(全コア)、1=単一スレッド(結果の完全再現性を保証)、n=固定）。
     pub threads: usize,
-    /// 動的解析（固有値・時刻歴・精算周期）の質量モデルの方式
-    /// （[`squid_n_core::model::MassMethod`]）。階の自動生成の実行時にモデルへ
-    /// 反映される（`generate_stories_action`）。
+    /// 動的解析の質量モデルの方式（[`squid_n_core::model::MassMethod`]）。
     pub mass_method: squid_n_core::model::MassMethod,
     /// 質点系の次元（2 次元せん断串 / 3 次元 Ux,Uy,θz）。
     #[serde(default)]
@@ -106,16 +91,16 @@ pub struct AnalysisSettings {
     /// 層並進剛性の定義（層 Q/δ または柱 ki）。
     #[serde(default)]
     pub lumped_stiffness: squid_n_solver::dynamic::lumped_mass::LumpedStiffnessSource,
-    /// 質点系を非線形（トリリニア骨格）で解くか。線形は地震静的 EX/EY が前提。
+    /// 質点系を非線形で解くか。
     #[serde(default)]
     pub lumped_nonlinear: bool,
-    /// 質点系の加振・解析方向（2 次元では剛性方向と一致。3 次元でも地動は 1 方向）。
+    /// 質点系の加振・解析方向。
     #[serde(default)]
     pub lumped_dir: SeismicDir,
-    /// 質点系固有値のモード数（立体固有値の `n_modes` とは独立。既定 3）。
+    /// 質点系固有値のモード数（既定 3）。
     #[serde(default = "default_lumped_n_modes")]
     pub lumped_n_modes: usize,
-    /// 質点系時刻歴の減衰比（立体時刻歴とは独立。既定 0.02）。
+    /// 質点系時刻歴の減衰比（既定 0.02）。
     #[serde(default = "default_lumped_th_damping")]
     pub lumped_th_damping: f64,
     /// 質点系時刻歴のサンプル波刻み [s]（既定 0.01）。
@@ -151,9 +136,7 @@ fn default_lumped_th_amp() -> f64 {
     1000.0
 }
 
-/// 時刻歴の入力方向選択（UI 用）。X・Y に加え、同一波形を両方向へ同時入力する
-/// 「X+Y」を持つ（`SeismicDir` は静的地震荷重・増分解析共用のため
-/// 拡張せず、時刻歴専用にこの型を新設する）。
+/// 時刻歴の入力方向選択。X・Y に加え、同一波形を両方向へ同時入力する「X+Y」を持つ。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ThDir {
     X,
@@ -161,7 +144,7 @@ pub enum ThDir {
     Xy,
 }
 
-/// 時刻歴の減衰モデル選択（UI 用）。構造動力学の減衰マトリクス。
+/// 時刻歴の減衰モデル選択。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ThDampingModel {
     /// 初期剛性比例（C=2h/ω1·Ke）。
@@ -181,10 +164,6 @@ impl Default for AnalysisSettings {
         Self {
             n_modes: 3,
             seismic_dir: SeismicDir::X,
-            // 既定は略算周期 T = h(0.02+0.01α)（令88条・昭55建告1793号）。
-            // 固有値解析を要しないため、地震荷重の同期が暗黙の解析を伴わない。
-            // 精算（SemiPrecise）は固有値解析の明示実行を前提とするオプトインで、
-            // 必要な場合に UI（解析タブ「T算定」）で選択する。
             ai_mode: AiMode::Approx,
             z: 1.0,
             soil: squid_n_load::ai::SoilClass::II,

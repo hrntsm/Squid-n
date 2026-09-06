@@ -138,8 +138,6 @@ fn build_spatial(inp: LumpedMassBuildInput<'_>) -> JobResult<LumpedMassModel> {
                 (sx, sy)
             }
             LumpedStiffnessSource::StoryQd => {
-                // 3×3 の Kx, Ky は剛心位置の並進ばね。層間も剛心の同一平面位置で取る。
-                // セットバックで上下のマスターがずれると、代表節点差は層間にならない。
                 let dx = story_drift_at(inp.model, res_x, SeismicDir::X, layer, cor);
                 let dy = story_drift_at(inp.model, res_y, SeismicDir::Y, layer, cor);
                 if dx.abs() < 1e-9 || dy.abs() < 1e-9 {
@@ -247,9 +245,6 @@ fn layer_mass(model: &Model, layer: &Layer) -> f64 {
 }
 
 /// 剛床マスターの RZ 慣性を、並進質量が地震用重量と一致するよう回転半径を保って拡げる。
-///
-/// マスター質量は CorrectedLumped だと部材密度分を控除した残りだけである。
-/// 並進は層の地震用重量 W/g を使うので、J だけネット値のままだとねじれ周期が短くなる。
 fn floor_j(model: &Model, story: squid_n_core::ids::StoryId, story_mass: f64) -> f64 {
     let Some(n) = model
         .diaphragms_of(story)
@@ -296,14 +291,8 @@ fn story_stiffness(
             }
         }
         LumpedStiffnessSource::ColumnKi => {
-            // 反対方向の結果が無くても、当該方向の ki 合計は res を X/Y の両方に
-            // 渡して柱剛性を拾う（使わない方向は 0 になり得る）。
-            let dummy = res;
             for layer in &layers {
-                let cols = match dir {
-                    SeismicDir::X => column_stiffnesses_from_analysis(model, layer.top, res, dummy),
-                    SeismicDir::Y => column_stiffnesses_from_analysis(model, layer.top, dummy, res),
-                };
+                let cols = column_stiffnesses_from_analysis(model, layer.top, res, res);
                 let sum: f64 = cols
                     .iter()
                     .map(|c| match dir {
@@ -345,10 +334,7 @@ fn story_drifts(model: &Model, res: &StaticOnce, dir: SeismicDir) -> Vec<f64> {
         .collect()
 }
 
-/// 当該層の柱せん断の合計（層せん断）。
-///
-/// 柱せん断はすでに「当該層より上の水平力の合計」なので、層間で再累積しない。
-/// 節点水平力から層せん断を組む増分解析側（`compute_story_shear`）とは入力が違う。
+/// 当該層の柱せん断の合計（層せん断）。再累積しない。
 fn story_shears(model: &Model, res: &StaticOnce, dir: SeismicDir) -> Vec<f64> {
     let dir_idx = match dir {
         SeismicDir::X => 0,
@@ -384,7 +370,7 @@ fn story_shears(model: &Model, res: &StaticOnce, dir: SeismicDir) -> Vec<f64> {
     shear
 }
 
-/// 剛床の代表節点変位を平面点 `xy` へ写した層間（上下とも同じ平面位置）。
+/// 剛床の代表節点変位を平面点 `xy` へ写した層間。
 fn story_drift_at(
     model: &Model,
     res: &StaticOnce,

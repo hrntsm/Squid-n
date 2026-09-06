@@ -1,7 +1,5 @@
 //! 終局検定用の部材需要組み立て（GUI・MCP 共用）。
-//!
-//! QL（長期せん断）と Q0（単純梁せん断）は独立した `Option` 引数とする。
-//! 一方の有無が他方の埋込を切り替えない（MCP が Q0 だけ足しても QL は変わらない）。
+//! QL と Q0 は独立した `Option` 引数とする。
 
 use std::collections::HashMap;
 
@@ -11,8 +9,6 @@ use squid_n_element::frame::beam::MemberForces;
 use squid_n_solver::nonlinear::pushover::PushoverMemberResponse;
 
 /// 静的内力の各部材について、せん断力 `|Q|` の最大値を QL マップにする。
-///
-/// GUI の静的終局分岐が、需要組み立て前に QL を明示渡すために使う。
 pub fn q_long_map_from_member_forces(
     member_forces: &[(ElemId, MemberForces)],
 ) -> HashMap<ElemId, f64> {
@@ -31,11 +27,7 @@ pub fn q_long_map_from_member_forces(
 ///
 /// 軸力は始端値（圧縮正）、曲げは部材内の最大絶対値を採用する。
 ///
-/// - `q_long_by_elem`: 長期せん断 QL [N]（絶対値）。`None` なら未設定。
-/// - `q_simple_by_elem`: 単純梁せん断 Q0 [N]。`None` なら未設定。
-///
-/// 両引数は独立である。QL を内力から求める場合は呼び出し側で
-/// [`q_long_map_from_member_forces`] を渡し、こちらでは自動埋込しない。
+/// - `q_long_by_elem`・`q_simple_by_elem` は `None` なら未設定。両引数は独立である。
 pub fn member_demand_from_static_forces(
     member_forces: &[(ElemId, MemberForces)],
     q_long_by_elem: Option<&HashMap<ElemId, f64>>,
@@ -64,10 +56,8 @@ pub fn member_demand_from_static_forces(
 
 /// 増分解析（プッシュオーバー）応答から終局検定用の部材需要を組み立てる。
 ///
-/// 応答が空の場合は `None`（呼び出し側が静的応答へフォールバックする）。
-///
-/// - `q_long_by_elem`: 重力ケース集合から算定した長期せん断 QL。`None` なら未設定。
-/// - `q_simple_by_elem`: 単純梁せん断 Q0。`None` なら未設定。
+/// 応答が空の場合は `None`。
+/// `q_long_by_elem`・`q_simple_by_elem` は `None` なら未設定。
 pub fn member_demand_from_pushover(
     member_response: &[PushoverMemberResponse],
     q_long_by_elem: Option<&HashMap<ElemId, f64>>,

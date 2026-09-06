@@ -1,17 +1,10 @@
 //! 正弦減衰のサンプル地震波（外部波形ファイルなしで機能を試せる導線）。
-//!
-//! GUI（`squid-n-app`）と MCP サーバ（`squid-n-mcp`）が同じ式・同じ方向割り当てで
-//! 波形を組み立てられるよう、本クレートに置く。
 
 use crate::settings::{AnalysisSettings, ThDir};
 use squid_n_solver::statics::analysis::SeismicDir;
 
 /// 方向 `dir` に加速度列 `accel` を割り当てた `GroundMotion` を組み立てる。
-/// X なら accel_x、Y なら accel_y に入れ、他方はゼロ列にする。
-/// Xy（X+Y 同時入力）は同一波形を accel_x・accel_y の両方にそのまま入れる
-/// 簡易仕様（位相差・別波形の指定はサポートしない。CSV 2 列入力は
-/// 呼び出し側が別々の列を返すため、その場合は本関数を経由せず
-/// 直接 `GroundMotion` を組み立てる）。
+/// Xy は同一波形を両方向へそのまま入れる。
 pub fn build_ground_motion(
     dt: f64,
     dir: ThDir,
@@ -57,7 +50,7 @@ pub fn sample_ground_motion(
     build_ground_motion(cfg.th_dt, cfg.th_dir, accel)
 }
 
-/// 質点系時刻歴用の正弦減衰サンプル波（立体時刻歴の dt/継続/周期/振幅とは独立）。
+/// 質点系時刻歴用の正弦減衰サンプル波。
 pub fn sample_lumped_ground_motion(
     cfg: &AnalysisSettings,
 ) -> squid_n_solver::dynamic::timehistory::GroundMotion {
@@ -77,7 +70,7 @@ pub fn sample_lumped_ground_motion(
 }
 
 /// 質点系時刻歴に渡す地動加速度列（加振方向の成分）。
-/// Y 加振で `accel_y` が無い波形は、X 列へ黙って落とさずエラーにする。
+/// Y 加振で `accel_y` が無い波形はエラーにする。
 pub fn lumped_accel_from_wave(
     wave: &squid_n_solver::dynamic::timehistory::GroundMotion,
     dir: SeismicDir,
