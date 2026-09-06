@@ -5,22 +5,11 @@ use faer::Side;
 use std::sync::Mutex;
 
 /// 疎 Cholesky（LLᵀ）直接法ソルバ。
-///
-/// `factorize` は symbolic 分解（AMD 順序付け＋elimination tree）をキャッシュし、
-/// 直前と同じスパースパターン（`col_ptr`／`row_idx` が一致）であれば再利用して
-/// 数値分解のみを行う。時刻歴解析の Newton 反復のように、接続関係（＝スパース
-/// パターン）は変わらず係数値のみが変わる再分解を繰り返す場面で有効。
-/// パターンが変わった場合は自動的に symbolic を作り直すため、呼び出し側の
-/// `factorize` 呼び出し方は従来と変わらない。
+/// 直前と同じスパースパターンであれば symbolic 分解を再利用する。
 pub struct CholeskySolver {
     factor: Option<Llt<usize, f64>>,
-    /// キャッシュ済み symbolic 分解と、その構築に使ったパターン。
-    /// `SymbolicLlt` は `Arc` 内包で `Clone` が安価。
     symbolic_cache: Option<(SymbolicLlt<usize>, SparsityPattern)>,
     n: usize,
-    /// `solve_into` が使い回す RHS/解のスクラッチ（次元不変ならベクタ確保が起きない）。
-    /// `LinearSolver` は `Send + Sync` を要求するため `Mutex` で内部可変性を持たせる
-    /// （`&self` の `solve_into` から書き換えるため）。
     scratch: Mutex<faer::Mat<f64>>,
 }
 
@@ -38,7 +27,6 @@ impl Default for CholeskySolver {
 impl LinearSolver for CholeskySolver {
     fn factorize(&mut self, k: &SparseColMat<usize, f64>) -> Result<(), SolveError> {
         self.n = k.nrows();
-        // ヒット時（パターン不変）は比較用 Vec を確保しない（`matches` はスライス比較のみ）。
         let symbolic = match &self.symbolic_cache {
             Some((sym, cached_pattern)) if cached_pattern.matches(k) => sym.clone(),
             _ => {

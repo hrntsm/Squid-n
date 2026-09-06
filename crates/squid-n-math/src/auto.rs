@@ -7,8 +7,6 @@ use crate::pcg::PcgSolver;
 use crate::solver::{LinearSolver, SolveError};
 
 /// AUTO 選択で反復法（PCG）を試みる自由度数の下限。
-/// これ未満の系では疎 Cholesky 直接法の分解コストが十分小さく、
-/// f64 厳密解が得られる直接法を常に用いる。
 pub const AUTO_ITERATIVE_MIN_DOF: usize = 50_000;
 
 /// AUTO 選択時の PCG 収束判定（相対残差 ‖r‖/‖b‖）。
@@ -32,21 +30,12 @@ enum State {
 
 struct PcgState {
     pcg: PcgSolver,
-    /// フォールバック用に保持する係数行列（非ゼロのみなので分解因子より小さい）。
     k: SparseColMat<usize, f64>,
-    /// PCG 非収束時に遅延構築する直接法（複数 RHS で分解を再利用する）。
-    /// 荷重ケース並列（batch API）から共有されるため `Mutex` で排他する。
     fallback: Mutex<Option<CholeskySolver>>,
 }
 
 /// 直接法（疎 Cholesky）と反復法（Jacobi 前処理付き PCG）を自動選択するソルバ。
-///
-/// 選択規則:
-/// - 自由度数が `AUTO_ITERATIVE_MIN_DOF` 未満 → 疎 Cholesky（f64 厳密解）
-/// - それ以上 → PCG を試み、規定回数で収束しなければ疎 Cholesky へフォールバック
-///
-/// 対称正定値系を前提とする（従来 `DirectSparseCholesky` を渡していた箇所の置き換え用）。
-/// 非対称・ラグランジュ乗数付き拘束は従来どおり `DirectSparseLu` を明示すること。
+/// 対称正定値系を前提とする。非対称・ラグランジュ乗数付き拘束は `DirectSparseLu` を明示すること。
 pub struct AutoSolver {
     min_dof_for_pcg: usize,
     tol: f64,
@@ -93,12 +82,6 @@ impl LinearSolver for AutoSolver {
                 fallback: Mutex::new(None),
             }));
         } else {
-            // 直接法分岐: 既存の CholeskySolver インスタンスがあれば再利用する。
-            // symbolic 分解キャッシュ（AMD 順序付け＋elimination tree）は同一
-            // インスタンスへの factorize 繰り返しでのみ効くため、Newton 反復の
-            // ように同一パターンで再分解する呼び出し側で毎回作り直すと
-            // キャッシュが無効化されてしまう。再利用しても数値結果はビット一致
-            // する（`CholeskySolver` 側のテストで担保済み）。
             if let State::Direct(chol) = &mut self.state {
                 chol.factorize(k)?;
             } else {
@@ -135,9 +118,7 @@ impl LinearSolver for AutoSolver {
         }
     }
 
-    /// バッファ再利用版。直接法選択時は `CholeskySolver::solve_into`（内部
-    /// スクラッチ再利用）へ委譲する。PCG 選択時はフォールバック分岐を含むため
-    /// 既定実装相当（`solve` の結果を書き込むだけ）に留める。
+    /// バッファ再利用版。直接法選択時は内部スクラッチを再利用する。
     fn solve_into(&self, rhs: &[f64], out: &mut Vec<f64>) -> Result<(), SolveError> {
         match &self.state {
             State::Direct(chol) => chol.solve_into(rhs, out),

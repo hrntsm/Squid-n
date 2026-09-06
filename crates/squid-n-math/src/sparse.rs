@@ -21,10 +21,7 @@ pub fn assemble_csc(n: usize, mut triplets: Vec<Triplet>) -> SparseColMat<usize,
 }
 
 /// マージ済み三つ組から n×n CSC 行列を構築する。
-///
-/// 失敗は自由度番号の割当バグ（`n` を超える row/col）に限られるため回復不能
-/// として panic するが、原因調査に足る診断（n・三つ組数・範囲外の要素）を
-/// メッセージへ含める（従来の `expect("valid triplets")` は診断価値がなかった）。
+/// 範囲外の row/col は回復不能として panic する。
 fn csc_from_merged(
     n: usize,
     merged: &[faer::sparse::Triplet<usize, usize, f64>],
@@ -47,7 +44,6 @@ fn csc_from_merged(
 }
 
 /// 組立済み CSC 疎行列の非ゼロ要素を Triplet のリストへ変換する。
-/// 減衰行列の組立（C = a0·M + a1·K）など、行列の加重和を再組立する用途で使う。
 pub fn sparse_to_triplets(mat: &SparseColMat<usize, f64>) -> Vec<Triplet> {
     let (sym, vals) = mat.parts();
     let ncols = sym.ncols();
@@ -67,7 +63,6 @@ pub fn sparse_to_triplets(mat: &SparseColMat<usize, f64>) -> Vec<Triplet> {
 }
 
 /// 複数の CSC 行列を係数付きで加算し、新しい CSC を返す。
-/// `mats: &[(coef, &SparseColMat)]` の各要素を coef 倍して足す。
 pub fn weighted_sum_csc(
     n: usize,
     mats: &[(f64, &SparseColMat<usize, f64>)],
@@ -93,9 +88,7 @@ pub fn sparse_matvec(mat: &SparseColMat<usize, f64>, x: &[f64]) -> Vec<f64> {
     y
 }
 
-/// [`sparse_matvec`] のバッファ再利用版。`out` の長さは `mat.nrows()` と一致させておくこと
-/// （呼び出し側で `out` を使い回すことで、時刻歴のようにステップごとに呼ぶ場合の
-/// ベクタ確保を避けられる）。`out` は呼び出し前の値に関わらずゼロクリアしてから書き込む。
+/// [`sparse_matvec`] のバッファ再利用版。`out` は呼び出し前にゼロクリアされる。
 ///
 /// # Panics
 /// `out.len() != mat.nrows()` の場合。
@@ -121,14 +114,8 @@ pub fn sparse_matvec_into(mat: &SparseColMat<usize, f64>, x: &[f64], out: &mut [
     }
 }
 
-/// (col,row) の安定ソート＋出現順の重複加算により CSC パターンを構築し、
-/// 元の `triplets`（引数の並び順のまま）の各要素が対応する値スロット
-/// （マージ後の値配列内インデックス）を返す。
-///
-/// [`assemble_csc`] と全く同じ規則（`sort_by_key` の安定性により、同一 (col,row) の
-/// 複数エントリは元の相対順序を保ったまま加算される）に従うため、ここで得られる
-/// `SparseColMat` は `assemble_csc(n, triplets.to_vec())` とビット一致する。
-/// [`CscAssembler`]・[`WeightedSumCache`] が共有する内部ロジック。
+/// (col,row) の安定ソート＋重複加算により CSC パターンを構築し、各 triplet が
+/// 対応する値スロットを返す。結果は [`assemble_csc`] とビット一致する（内部用）。
 fn build_pattern_and_slots(
     n: usize,
     triplets: &[Triplet],
@@ -153,14 +140,10 @@ fn build_pattern_and_slots(
     (mat, slot_of)
 }
 
-/// スパースパターン（非ゼロ位置の集合）が反復間で不変な場合に、triplet の値だけを
-/// 更新して CSC 行列を安価に再構築するためのアセンブラ。
-///
-/// 時刻歴解析の Newton 反復のように、要素接続（＝非ゼロパターン）は変わらず係数値
-/// のみが変わる組立てを繰り返す場面で使う。初回 [`CscAssembler::new`] で
-/// [`assemble_csc`] と同じ規則によりパターンと「triplet 添字→値スロット」の写像を
-/// 構築し、以降の [`CscAssembler::assemble_into`] は**ソートせず** O(nnz) で値配列を
-/// 再構築する（結果は [`assemble_csc`] とビット一致）。
+/// スパースパターンが反復間で不変な場合に、triplet の値だけを更新して
+/// CSC 行列を安価に再構築するためのアセンブラ。
+/// 座標・並び順が構築時と一致していればソートせず O(nnz) で再構築する。
+/// 一致しなければパターンを作り直す。いずれの経路でも結果は [`assemble_csc`] とビット一致する。
 ///
 /// # 使用例
 /// ```
@@ -182,21 +165,8 @@ fn build_pattern_and_slots(
 /// let mat2 = asm.assemble_into(&triplets2);
 /// assert_eq!(*mat2.get(0, 0).unwrap(), 10.0);
 /// ```
-///
-/// # パターン変化時の挙動
-/// 2 回目以降に渡す `triplets` の**長さ・各要素の (row, col) 座標・並び順**が
-/// 初回構築時と一致していれば O(nnz) の高速パス（値の書き込みのみ）を使う。
-/// 一致しない場合（弾塑性要素の接線剛性が厳密 0.0 を跨ぎ、非ゼロ集合が変わった等）は
-/// リリースビルドを含む全ビルドで [`CscAssembler::pattern_matches`] の座標比較
-/// （O(nnz)）により検知し、パターンを作り直してから組み立てる（この回のみ
-/// [`CscAssembler::new`] 相当のコストに戻るが、結果は常に [`assemble_csc`] と
-/// ビット一致する）。かつては個数一致のみを前提とし座標一致は `debug_assert` 任せ
-/// だったため、リリースビルドで「個数が同じまま座標集合が変わる」遷移が起きると
-/// 別座標のスロットへ値を書き込み、壊れた行列を返す不具合があった。
 pub struct CscAssembler {
-    /// `assemble_into` に渡される triplet 列の (col, row) を、パターン検証用に保持する。
     orig_coords: Vec<(usize, usize)>,
-    /// `orig_coords[i]` が対応する、マージ後の値配列内スロット位置。
     slot_of: Vec<usize>,
     mat: SparseColMat<usize, f64>,
 }
@@ -213,8 +183,7 @@ impl CscAssembler {
         }
     }
 
-    /// `triplets` の (row, col) 座標・並び順がパターン構築時と完全一致するか
-    /// （O(nnz) のスライス比較）。[`Self::assemble_into`] の高速パス判定に使う。
+    /// `triplets` の (row, col) 座標・並び順がパターン構築時と完全一致するか。
     pub fn pattern_matches(&self, triplets: &[Triplet]) -> bool {
         triplets.len() == self.orig_coords.len()
             && triplets
@@ -224,10 +193,7 @@ impl CscAssembler {
     }
 
     /// `triplets` から CSC 行列を再組立てし、更新後の行列への参照を返す。
-    /// 座標・並び順がパターン構築時と一致していればソートせず O(nnz) で完了し、
-    /// 一致しなければパターンを作り直す（[`Self::pattern_matches`]・構造体ドキュメント
-    /// 参照）。いずれの経路でも結果は `assemble_csc(n, triplets.to_vec())` と
-    /// ビット一致する（[`build_pattern_and_slots`] のドキュメント参照）。
+    /// 座標・並び順が一致しなければパターンを作り直す。
     pub fn assemble_into(&mut self, triplets: &[Triplet]) -> &SparseColMat<usize, f64> {
         if !self.pattern_matches(triplets) {
             *self = Self::new(self.mat.nrows(), triplets);
@@ -241,22 +207,15 @@ impl CscAssembler {
         &self.mat
     }
 
-    /// 直近に組み立てた行列（`assemble_into` 未呼び出しなら `new` 直後の状態）。
+    /// 直近に組み立てた行列。
     pub fn matrix(&self) -> &SparseColMat<usize, f64> {
         &self.mat
     }
 }
 
-/// 複数の CSC 行列（非ゼロパターンが反復間で不変）の重み付き和を安価に更新するための
-/// キャッシュ。[`weighted_sum_csc`] を毎回呼ぶ代わりに使う。
-///
-/// 初回 [`WeightedSumCache::new`] で出力パターン（各入力行列の和の非ゼロ位置）と、
-/// 「各入力行列の値配列内位置→出力の値スロット」の写像を構築する。以降の
-/// [`WeightedSumCache::combine_into`] は各入力行列の値配列を走査して axpy
-/// （`out += coef * val`）するだけで、triplet 化・ソートは行わない。
-///
-/// 減衰行列の組立て（C = a0·M + a1·K）のように、`M`・`K` の非ゼロパターンが
-/// 解析を通じて不変な場面で使う。
+/// 複数の CSC 行列の重み付き和を安価に更新するためのキャッシュ。
+/// 入力パターンが構築時と一致していれば triplet 化・ソートなしで再計算する。
+/// 一致しなければ出力パターンを作り直す。いずれの経路でも結果は [`weighted_sum_csc`] とビット一致する.
 ///
 /// # 使用例
 /// ```
@@ -274,34 +233,15 @@ impl CscAssembler {
 /// let c = cache.combine_into(&[(2.0, &m), (0.05, &k)]);
 /// assert_eq!(*c.get(0, 0).unwrap(), 7.0);
 /// ```
-///
-/// # パターン変化時の挙動
-/// 2 回目以降に渡す `mats` の要素数・各行列の非ゼロパターン（各行列自身の
-/// col_ptr/row_idx の並び）が初回構築時と一致していれば axpy のみの高速パスを使う。
-/// 一致しない場合（接線剛性 K_t の非ゼロ集合が塑性遷移で変わった等）は
-/// リリースビルドを含む全ビルドで [`WeightedSumCache::pattern_matches`] の座標比較
-/// （O(nnz)）により検知し、出力パターンを作り直してから計算する（この回のみ
-/// [`WeightedSumCache::new`] 相当のコストに戻るが、結果は常に [`weighted_sum_csc`]
-/// とビット一致する）。かつては非ゼロ数の一致のみを検証し座標一致は呼び出し側の
-/// 責務としていたため、リリースビルドで「非ゼロ数が同じままパターンが変わる」遷移が
-/// 起きると壊れた行列を返す不具合があった。
 pub struct WeightedSumCache {
-    /// フラット化した全入力（`mats` を順に、各行列の値配列の並び順）の
-    /// 各要素が対応する、出力の値スロット位置。
     slot_of: Vec<usize>,
-    /// 各入力行列のパターン（col_ptr, row_idx の複製）。`combine_into` の
-    /// 高速パス判定（[`Self::pattern_matches`]）に使う。
     input_patterns: Vec<(Vec<usize>, Vec<usize>)>,
     mat: SparseColMat<usize, f64>,
 }
 
 impl WeightedSumCache {
-    /// `mats: &[(coef, &SparseColMat)]` から [`weighted_sum_csc`] と同じ規則で
-    /// 出力パターンを構築する。
+    /// `mats` から [`weighted_sum_csc`] と同じ規則で出力パターンを構築する。
     pub fn new(n: usize, mats: &[(f64, &SparseColMat<usize, f64>)]) -> Self {
-        // sparse_to_triplets は各行列を列優先・列内は格納順（＝値配列の並び順）で
-        // 走査するため、これをそのままフラット化すれば weighted_sum_csc と同じ
-        // 入力順序の triplet 列になる。
         let mut triplets: Vec<Triplet> = Vec::new();
         let mut input_patterns = Vec::with_capacity(mats.len());
         for (coef, mat) in mats {
@@ -323,9 +263,7 @@ impl WeightedSumCache {
         }
     }
 
-    /// `mats` の各入力行列の非ゼロパターン（col_ptr/row_idx）がパターン構築時と
-    /// 完全一致するか（O(nnz) のスライス比較）。[`Self::combine_into`] の高速パス
-    /// 判定に使う。
+    /// `mats` の各入力行列の非ゼロパターンがパターン構築時と完全一致するか。
     pub fn pattern_matches(&self, mats: &[(f64, &SparseColMat<usize, f64>)]) -> bool {
         mats.len() == self.input_patterns.len()
             && mats
@@ -337,11 +275,8 @@ impl WeightedSumCache {
                 })
     }
 
-    /// `mats` の重み付き和を再計算し、更新後の行列への参照を返す。各入力の
-    /// パターンが構築時と一致していれば各行列の値配列を axpy するだけで、
-    /// triplet 化・ソートは行わない。一致しなければ出力パターンを作り直す
-    /// （[`Self::pattern_matches`]・構造体ドキュメント参照）。いずれの経路でも
-    /// 結果は `weighted_sum_csc(n, mats)` とビット一致する。
+    /// `mats` の重み付き和を再計算し、更新後の行列への参照を返す。
+    /// パターンが構築時と一致しなければ出力パターンを作り直す。
     pub fn combine_into(
         &mut self,
         mats: &[(f64, &SparseColMat<usize, f64>)],
@@ -363,28 +298,23 @@ impl WeightedSumCache {
         &self.mat
     }
 
-    /// 直近に組み立てた行列（`combine_into` 未呼び出しなら `new` 直後の状態）。
+    /// 直近に組み立てた行列。
     pub fn matrix(&self) -> &SparseColMat<usize, f64> {
         &self.mat
     }
 }
 
-/// 単一の CSC 行列をスカラ倍した新しい行列を返す（`mat` のパターンをそのまま複製し、
-/// 値のみ `alpha` 倍する）。`weighted_sum_csc(n, &[(alpha, mat)])` と結果はビット一致
-/// するが、triplet 化・ソートを経ないぶん軽量（`assemble_c_tangent` の α1·K_t のような
-/// 単一行列のスカラ倍に使う）。
+/// 単一の CSC 行列をスカラ倍した新しい行列を返す（パターンは複製し値のみ `alpha` 倍する）。
 pub fn scale_csc(mat: &SparseColMat<usize, f64>, alpha: f64) -> SparseColMat<usize, f64> {
     let mut out = mat.clone();
     scale_csc_into(mat, alpha, &mut out);
     out
 }
 
-/// [`scale_csc`] のバッファ再利用版。`out` は事前に `mat` と同一パターン（同じ
-/// 非ゼロ数）を持つこと（典型的には初回に `mat.clone()` などで用意し、以降使い回す）。
+/// [`scale_csc`] のバッファ再利用版。`out` は事前に `mat` と同一パターンを持つこと。
 ///
 /// # Panics
-/// `out` の非ゼロ数が `mat` と異なる場合（リリースビルドでも検証する。
-/// 黙って不一致のまま書き込むと壊れた行列を返してしまうため）。
+/// `out` の非ゼロ数が `mat` と異なる場合。
 pub fn scale_csc_into(
     mat: &SparseColMat<usize, f64>,
     alpha: f64,

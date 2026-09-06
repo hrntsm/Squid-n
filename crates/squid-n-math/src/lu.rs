@@ -3,19 +3,12 @@ use faer::sparse::linalg::solvers::{Lu, SymbolicLu};
 use faer::sparse::SparseColMat;
 use std::sync::Mutex;
 
-/// 疎 LU 直接法ソルバ。対称正定値でない系（非対称化した剛性、ラグランジュ
-/// 乗数付き拘束など）にも使えるフォールバック。
-///
-/// `factorize` は symbolic 分解をキャッシュし、直前と同じスパースパターン
-/// （`col_ptr`／`row_idx` が一致）であれば再利用して数値分解のみを行う
-/// （[`crate::cholesky::CholeskySolver`] と同じ方針）。
+/// 疎 LU 直接法ソルバ。対称正定値でない系にも使える。
+/// 直前と同じスパースパターンであれば symbolic 分解を再利用する。
 pub struct LuSolver {
     factor: Option<Lu<usize, f64>>,
-    /// キャッシュ済み symbolic 分解と、その構築に使ったパターン。
     symbolic_cache: Option<(SymbolicLu<usize>, SparsityPattern)>,
     n: usize,
-    /// `solve_into` が使い回す RHS/解のスクラッチ。`Mutex` の理由は
-    /// [`crate::cholesky::CholeskySolver::scratch`] を参照。
     scratch: Mutex<faer::Mat<f64>>,
 }
 
@@ -33,7 +26,6 @@ impl Default for LuSolver {
 impl LinearSolver for LuSolver {
     fn factorize(&mut self, k: &SparseColMat<usize, f64>) -> Result<(), SolveError> {
         self.n = k.nrows();
-        // ヒット時（パターン不変）は比較用 Vec を確保しない（`matches` はスライス比較のみ）。
         let symbolic = match &self.symbolic_cache {
             Some((sym, cached_pattern)) if cached_pattern.matches(k) => sym.clone(),
             _ => {
