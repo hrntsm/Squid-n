@@ -1,9 +1,6 @@
 //! MCP サーバ実装（rmcp によるツールルータ）。
 
 use super::*;
-// rmcp 1.x では `tool_router`/`tool_handler` マクロはクレートルート（rmcp_macros の再エクスポート）にあり、
-// `Parameters` は `handler::server::tool` 内で private import されているだけなので
-// 実体を持つ `handler::server::wrapper` から取る必要がある。
 use rmcp::handler::server::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{CallToolResult, Content, Implementation, ServerInfo};
@@ -15,9 +12,6 @@ use tokio::sync::Mutex;
 #[derive(Clone)]
 pub struct SquidNServer {
     state: Arc<Mutex<ServerState>>,
-    /// rmcp の `#[tool_handler]` が生成するディスパッチ用ルータ。
-    /// rmcp 1.7 のマクロ展開はこのフィールドを直接読まない経路を取り得るため
-    /// dead_code を明示的に許可する（rmcp の標準パターンに従った保持）。
     #[allow(dead_code)]
     tool_router: ToolRouter<Self>,
 }
@@ -39,7 +33,6 @@ impl SquidNServer {
         Parameters(args): Parameters<QueryArgs>,
     ) -> Result<CallToolResult, ErrorData> {
         let st = self.state.lock().await;
-        // 実クエリは feature 非依存の query_model に委譲（テスト済み）。
         let items = super::query_model(&st.model, &args.kind, args.filter.as_deref());
         let result = QueryResult { items };
         Ok(CallToolResult::success(vec![Content::json(result)?]))
@@ -64,7 +57,6 @@ impl SquidNServer {
         Parameters(args): Parameters<QuantityTakeoffArgs>,
     ) -> Result<CallToolResult, ErrorData> {
         let st = self.state.lock().await;
-        // 実集計は feature 非依存の quantity_takeoff_json に委譲（テスト済み）。
         let result = super::quantity_takeoff_json(&st.model, args.group_by.as_deref());
         Ok(CallToolResult::success(vec![Content::json(result)?]))
     }
@@ -74,16 +66,11 @@ impl SquidNServer {
         &self,
         Parameters(args): Parameters<AnalysisRunArgs>,
     ) -> Result<CallToolResult, ErrorData> {
-        // 引数の妥当性（dir 等）はジョブ登録前に確認する。失敗が確定している
-        // ジョブを登録しないため。
         let params = args
             .to_job_params()
             .map_err(|e| ErrorData::invalid_params(e, None))?;
         let kind = args.kind;
 
-        // ジョブ登録・実行中への遷移・モデルの複製はロック保持中に行い、
-        // ロックを解放してから spawn_blocking へ渡す
-        // （Mutex ガードをスレッドへ持ち込まないため）。
         let (id, model) = {
             let mut st = self.state.lock().await;
             let id = st.jobs.register(kind);
@@ -93,11 +80,6 @@ impl SquidNServer {
 
         let state = self.state.clone();
         let job_id = id.clone();
-        // 解析（CPU バウンド）は spawn_blocking で実行する。その完了待ちと、結果ストアへの
-        // 永続化・ジョブ状態の更新は別タスク（tokio::spawn）で行うことで、本ツール呼び出し
-        // 自体は job_id を即時返し、応答をブロックしない（非同期ジョブとしての仕様どおり）。
-        // 結果ストアへの書き込みとジョブ状態の Done への遷移は、同じロック保持区間内で
-        // 行う（result_get が「Done なのに manifest にない」状態を観測しないため）。
         tokio::spawn(async move {
             let outcome =
                 tokio::task::spawn_blocking(move || super::compute_job(&model, kind, &params))
@@ -105,9 +87,6 @@ impl SquidNServer {
             match outcome {
                 Ok(Ok(job_outcome)) => {
                     let mut st = state.lock().await;
-                    // 永続化の失敗（ディスクフル・権限エラー等）はジョブを Failed へ
-                    // 遷移させる。かつては書き込み失敗を握りつぶして Done を報告し、
-                    // 利用者が「結果 0 行」を正常な解析結果と誤解し得た。
                     match super::persist_job_outcome(&mut st.results, job_outcome) {
                         Ok(summary) => st.jobs.update(
                             &job_id,
@@ -126,9 +105,6 @@ impl SquidNServer {
                 }
                 Ok(Err(e)) => {
                     let mut st = state.lock().await;
-                    // 種別コードは `JobError::kind()` をそのまま載せる。文言は
-                    // 利用者向けに変わり得るが、コードで分岐したいクライアントは
-                    // こちらを見る。
                     st.jobs.update(
                         &job_id,
                         JobStatus::Failed {
@@ -137,7 +113,6 @@ impl SquidNServer {
                         },
                     );
                 }
-                // spawn_blocking 内で panic した場合。JoinError を利用者向けメッセージに変換する。
                 Err(join_err) => {
                     let mut st = state.lock().await;
                     st.jobs.update(
@@ -156,9 +131,7 @@ impl SquidNServer {
         )?]))
     }
 
-    /// 結果ストアから結果を取得する。`kind` は "NodalDisp"/"MemberForce"/
-    /// "Modal"/"TimeHistory" のいずれか。`case`+`kind` の組が manifest にない
-    /// 場合はエラーを返す（analysis_run で該当ジョブを先に実行すること）。
+    /// 結果ストアから結果を取得する。
     #[tool(description = "解析結果ストアから結果を取得する")]
     pub async fn result_get(
         &self,
@@ -187,9 +160,7 @@ impl SquidNServer {
         Ok(CallToolResult::success(vec![Content::json(result)?]))
     }
 
-    /// ジョブの現在状態を返す。`status` は `Queued`/`Running{progress}`/
-    /// `Done{result_ref}`/`Failed{error}` のいずれか。`Done` の場合
-    /// `result_ref` に解析結果（変位ベクトルの JSON 文字列）を保持している。
+    /// ジョブの現在状態を返す。
     #[tool(description = "ジョブの状態を取得する")]
     pub async fn analysis_status(
         &self,
@@ -199,8 +170,6 @@ impl SquidNServer {
         let job = st.jobs.get(&args.job_id);
         match job {
             Some(j) => Ok(CallToolResult::success(vec![Content::json(j)?])),
-            // rmcp 1.x では CallToolResult::error は content のみを取り、
-            // JSON-RPC レベルのエラーコードは Err(ErrorData) 側で表現する。
             None => Err(ErrorData::invalid_params("job not found", None)),
         }
     }
@@ -209,8 +178,6 @@ impl SquidNServer {
 #[tool_handler]
 impl ServerHandler for SquidNServer {
     fn get_info(&self) -> ServerInfo {
-        // rmcp 1.x では ServerInfo(=InitializeResult)・Implementation は #[non_exhaustive] のため
-        // 構造体リテラルで組み立てられない。ビルダーメソッド経由で組み立てる。
         ServerInfo::default().with_server_info(Implementation::new("squid-n-mcp", "0.1.0"))
     }
 }
@@ -221,8 +188,7 @@ pub struct QueryArgs {
     pub filter: Option<String>,
 }
 
-/// `model.edit` の引数。`command` キーで種別を指定する JSON オブジェクト。
-/// フラット（`{ "command": "...", ... }`）が正。ネストした `{ "body": { ... } }` も受け付ける。
+/// `model.edit` の引数。`command` キーで種別を指定する。
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 #[serde(transparent)]
 pub struct EditArgs {
@@ -236,51 +202,48 @@ pub struct QueryResult {
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct QuantityTakeoffArgs {
-    /// 集計単位: "category"（部位別、既定）/"story"（階別）/"steel"（鉄骨種類別）/
-    /// "rebar"（鉄筋径別）/"detail"（明細）。
+    /// 集計単位（既定 `"category"`）。
     pub group_by: Option<String>,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct AnalysisRunArgs {
     pub kind: JobKind,
-    /// LinearStatic/DesignCheck: 対象荷重ケース ID（未指定なら先頭ケース）。
+    /// 対象荷重ケース ID（未指定なら先頭ケース）。
     pub load_case: Option<u32>,
-    /// Eigen: モード数（既定 3）。
+    /// モード数（既定 3）。
     pub n_modes: Option<usize>,
-    /// Pushover/TimeHistory: 加力・入力方向 "X"/"Y"（既定 "X"）。
+    /// 加力・入力方向 "X"/"Y"（既定 "X"）。
     pub dir: Option<String>,
-    /// Pushover: 最大ステップ数（既定 50）。
+    /// 最大ステップ数（既定 50）。
     pub steps: Option<usize>,
-    /// Pushover: 目標変位 [mm]。未指定なら目標層間変形角 1/150 のみで終了判定。
+    /// 目標変位 [mm]。
     pub max_disp: Option<f64>,
-    /// Pushover: 目標最大層間変形角の分母 n（角度 1/n）。例 150 → 1/150。既定 150。
+    /// 目標最大層間変形角の分母 n（既定 150）。
     pub max_drift_denom: Option<f64>,
-    /// TimeHistory: サンプル波の時間刻み [s]（既定 0.01）。
+    /// サンプル波の時間刻み [s]（既定 0.01）。
     pub dt: Option<f64>,
-    /// TimeHistory: サンプル波の継続時間 [s]（既定 2.0）。
+    /// サンプル波の継続時間 [s]（既定 2.0）。
     pub duration: Option<f64>,
-    /// TimeHistory: サンプル波の周期 [s]（既定 0.5）。
+    /// サンプル波の周期 [s]（既定 0.5）。
     pub period: Option<f64>,
-    /// TimeHistory: サンプル波の振幅 [mm/s²]（既定 1000）。
+    /// サンプル波の振幅 [mm/s²]（既定 1000）。
     pub amp: Option<f64>,
-    /// 荷重自動同期: 地域係数 Z（令88条）（既定 1.0）。
+    /// 地域係数 Z（既定 1.0）。
     pub z: Option<f64>,
-    /// 荷重自動同期: 地盤種別 `"I"`/`"II"`/`"III"`（既定 `"II"`）。
+    /// 地盤種別 `"I"`/`"II"`/`"III"`（既定 `"II"`）。
     pub soil: Option<String>,
-    /// 荷重自動同期: 標準せん断力係数 C0（既定 0.2）。
+    /// 標準せん断力係数 C0（既定 0.2）。
     pub c0: Option<f64>,
-    /// 荷重自動同期: Ai 算定法 `"Approx"`/`"SemiPrecise"`（既定 `"Approx"`）。
+    /// Ai 算定法 `"Approx"`/`"SemiPrecise"`（既定 `"Approx"`）。
     pub ai_mode: Option<String>,
-    /// 荷重自動同期: 精算時の設計用基本周期 T [s]。`SemiPrecise` かつ未指定なら EX/EY を同期しない。
+    /// 精算時の設計用基本周期 T [s]。
     pub design_period: Option<f64>,
 }
 
 impl AnalysisRunArgs {
     /// 任意パラメータを `super::JobParams`（既定値込み）へ変換する。
-    /// `dir` に "X"/"Y" 以外、`soil` に "I"/"II"/"III" 以外、
-    /// `ai_mode` に "Approx"/"SemiPrecise" 以外の文字列が指定された場合のみエラーを返す
-    /// （ジョブ登録前に検証することで、失敗が確定しているジョブを作らない）。
+    /// 不正な文字列の場合のみエラーを返す。
     fn to_job_params(&self) -> Result<super::JobParams, String> {
         let dir = match self.dir.as_deref() {
             None => super::JobDir::X,
@@ -344,7 +307,6 @@ pub struct ResultGetArgs {
     pub kind: String,
     pub node_ids: Option<Vec<u32>>,
     pub member_ids: Option<Vec<u32>>,
-    /// \[start, end)。ちょうど2要素で指定する。
     pub step_range: Option<Vec<u64>>,
 }
 

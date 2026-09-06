@@ -7,9 +7,7 @@ use squid_n_core::model::Model;
 use squid_n_job::{settings::ThDir, JobError};
 
 /// TimeHistory ジョブの純粋計算部分。
-/// 前処理・解析条件・解析の実体は `squid-n-job` の共通実装で、**GUI と同一**である。
-/// 解析条件は `AnalysisSettings` の既定（剛性比例減衰 h=0.02・Newmark-β・線形）を
-/// 用いる。MCP からは減衰モデル・積分法・非線形の切り替えを受け付けていない。
+/// MCP からは減衰モデル・積分法・非線形の切り替えを受け付けていない。
 pub(crate) fn compute_time_history_job(
     model: &Model,
     params: &JobParams,
@@ -29,8 +27,6 @@ pub(crate) fn compute_time_history_job(
     };
     let wave = squid_n_job::sample_ground_motion(&cfg);
 
-    // 解析条件は GUI と同じ `AnalysisSettings` で与える。既定は剛性比例減衰
-    // h=0.02・Newmark-β・線形で、従来 MCP 側に固定値で書かれていた条件と一致する。
     let result = squid_n_job::compute::compute_time_history(work, cfg, wave)?;
 
     let peak_disp = result

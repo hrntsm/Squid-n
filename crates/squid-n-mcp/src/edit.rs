@@ -192,8 +192,6 @@ pub fn parse_edit_command(value: &serde_json::Value) -> Result<Box<dyn EditComma
                 .ok_or("name が必要です")?
                 .to_string(),
         })),
-        // 手入力小梁ライン（JoistLine）は廃止した（§3.4 F1）。小梁の実体は二次部材
-        // （SetFloorRegionSecondaryJoists）に一本化したため、黙って無視せず明示エラーにする。
         "SetFloorRegionJoists" => Err(
             "SetFloorRegionJoists は廃止しました。小梁は二次部材へ一本化したため、\
              SetFloorRegionSecondaryJoists（SecondaryMember の配列）を使ってください"

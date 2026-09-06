@@ -16,7 +16,6 @@ pub(crate) fn compute_linear_static_job(
 ) -> Result<JobOutcome, JobError> {
     let (work, notices) = model_prepared_for_analysis(model, params);
     let lc_id = resolve_load_case(&work, params.load_case)?.id;
-    // 解析の実体は GUI と共通（`squid-n-job`）。
     let result = squid_n_job::compute::compute_linear_static(work.clone(), lc_id)?;
     let model = &work;
     let lc_id = lc_id.0;

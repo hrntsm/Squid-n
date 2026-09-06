@@ -11,32 +11,16 @@ use squid_n_design_jp::{BondMethod, LoadTerm, MemberDesignCheckOptions, QdMethod
 use squid_n_job::JobError;
 
 /// DesignCheck ジョブの純粋計算部分。
-/// 指定/先頭の荷重ケースで線形静的解析を行い、断面力に対して
-/// [`squid_n_design_jp::run_member_design_checks`] による許容応力度検定を行う。
-///
-/// 検定条件は荷重ケース種別から決める（`Seismic`/`Wind` → 短期、それ以外 → 長期）。
-/// 地震時短期では重力ケースを別途解析し、長期内力と地震ケース内力を線形加算した
-/// 組合せ内力で検定する（GUI の `DL+LL±EX` に相当）。QD / 柱メカニズム用の
-/// 長期内力と Q0 も同時に渡す。
-///
-/// 重力ケースの再解析が一部失敗してもジョブ全体は落とさず、成功分だけで長期を組む
-/// （`summary.gravity_failed` に失敗件数を載せる）。
+/// 検定条件は荷重ケース種別で決める。地震時短期では重力ケースを別途解析して組合せ内力で検定する。
+/// 重力ケースの再解析が一部失敗してもジョブ全体は落とさない。
 pub(crate) fn compute_design_check_job(
     model: &Model,
     params: &JobParams,
 ) -> Result<JobOutcome, JobError> {
-    // 剛域自動算定は face_i/face_j による危険断面位置（§6.2.3）の算定にも使う。
     let (work, notices) = model_prepared_for_analysis(model, params);
     let lc = resolve_load_case(&work, params.load_case)?;
     let lc_id = lc.id;
-    // 解析の実体は GUI と共通（`squid-n-job`）。エラー文言も共通の `JobError`。
     let result = squid_n_job::compute::compute_linear_static(work.clone(), lc_id)?;
-    // 壁の解析要素（`ElementKind::Wall`）は `work` には存在しない生成物（D5）だが、
-    // `result.member_forces` は `compute_linear_static` が内部で壁展開したモデルで
-    // 解いた結果のため壁の `ElemId` を含む。`run_member_design_checks`（内部の
-    // `check_walls`）はこの `ElemId` を `model.element` で引き直すため、`work` を
-    // そのまま渡すと耐震壁のせん断断面検定が常にスキップされる。壁を持たない
-    // モデル（実 ST-Bridge フィクスチャは現状すべて該当する）では複製を避ける。
     let expanded_storage;
     let model: &Model = if squid_n_load::wall_expand::model_has_wall_plates_to_expand(&work) {
         let (expanded, _wall_index, _wall_report) =
@@ -53,14 +37,11 @@ pub(crate) fn compute_design_check_job(
         _ => LoadTerm::Long,
     };
 
-    // 地震時短期: 重力ケースを線形解析して長期内力を重ね、Q0 も算定する。
-    // 風時短期は QD 割増の対象外（長期内力は渡さない）。
     let mut gravity_failed = 0usize;
     let (long_member_forces, q0_by_elem, check_forces) = if lc.kind == LoadCaseKind::Seismic {
         let gravity_ids = squid_n_job::gravity_case_ids_for_seismic_weight(model);
         let mut gravity_results = Vec::new();
         for gid in &gravity_ids {
-            // 重力 ID が対象 Seismic と一致することは通常ない（到達時はスキップ）。
             if *gid == lc_id {
                 continue;
             }
@@ -75,7 +56,6 @@ pub(crate) fn compute_design_check_job(
             Some(squid_n_job::sum_member_forces_lists(&gravity_results))
         };
         let q0 = squid_n_job::simple_beam_q0_by_gravity_cases(model);
-        // 検定に渡す内力は「長期 ⊕ 地震」の組合せ（QE = |Q − QL| が成立するため）。
         let combo = if let Some(ref lf) = long {
             squid_n_job::sum_member_forces_lists(&[lf.clone(), result.member_forces.clone()])
         } else {
@@ -88,8 +68,6 @@ pub(crate) fn compute_design_check_job(
 
     let member_force_rows = flatten_member_force_rows(&check_forces);
 
-    // MCP は GUI の analysis_cfg を持たないため、付着・QD 方式はクレート既定
-    // （BondMethod::Rc1999、QdMethod 既定）を明示する。一本部材は未配線。
     let report = squid_n_design_jp::run_member_design_checks(
         model,
         &check_forces,

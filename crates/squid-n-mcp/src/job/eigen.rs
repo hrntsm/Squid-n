@@ -9,7 +9,6 @@ use squid_n_job::JobError;
 /// Eigen ジョブの純粋計算部分。
 pub(crate) fn compute_eigen_job(model: &Model, params: &JobParams) -> Result<JobOutcome, JobError> {
     let (model, notices) = model_prepared_for_analysis(model, params);
-    // 解析の実体は GUI と共通（`squid-n-job`）。
     let modal = squid_n_job::compute::compute_eigen(model, params.n_modes)?;
     let mut summary = serde_json::json!({
         "kind": "Eigen",
