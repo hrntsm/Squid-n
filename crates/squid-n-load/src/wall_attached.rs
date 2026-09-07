@@ -151,8 +151,6 @@ pub fn attached_wall_beam_loads(model: &Model) -> Vec<BeamLoad> {
         else {
             continue;
         };
-        // 立ち上がり高さ。未指定（＝階高いっぱい）は自立壁だけなので、線アンカーの
-        // ここでは必ず明示値が返る（`Model::validate`）。
         let Some(extent) = model.wall_plate_extent(plate) else {
             continue;
         };
@@ -162,8 +160,6 @@ pub fn attached_wall_beam_loads(model: &Model) -> Vec<BeamLoad> {
         if total <= 0.0 {
             continue;
         }
-        // 境界座標（span 適用済みの実座標2点＋張り出し高さ2点）の先頭2点が
-        // 取付き線上でこの壁版が実際に覆う区間の両端（`WallPlate::extrude_up`）。
         let Some(coords) = plate.boundary_coords(model) else {
             continue;
         };
@@ -173,16 +169,9 @@ pub fn attached_wall_beam_loads(model: &Model) -> Vec<BeamLoad> {
         }
         match transfer {
             LoadTransfer::Anchor => {
-                // 取付き線の区間 span にのみ載る分布。梁全長への希釈はしない
-                // （危険側の近似を避ける。dig 2026-08-27 Q2=A）。
-                // 矩形は等分布、台形は張り出し高さに比例する線形変化。
-                // 符号が反転するときは高さ 0 で分割し、各側を線形にする
-                // （一端から他端へ |h| を直線で結ぶと中央が過大になる）。
                 push_anchor_span_loads(&mut loads, *nodes, *span, extent, total, len);
             }
             LoadTransfer::Columns => {
-                // 台形の面積重心（矩形なら区間中点）での単純梁反力按分。
-                // 符号反転は ∫|h| の重心（端点絶対値の台形重心ではない）。
                 let t = line_resultant_t(*span, extent);
                 push_node_load(&mut loads, nodes[0], total * (1.0 - t));
                 push_node_load(&mut loads, nodes[1], total * t);
@@ -275,18 +264,10 @@ pub fn accumulate_attached_wall_seismic_weight(model: &Model, node_weight: &mut 
 /// 分配先は [`squid_n_core::model::Model::self_standing_wall_coverage`] が解決する。
 /// 床領域をまたぐ壁は境界で内部的に分割し、それぞれの床領域へ台形面積比で配る。
 ///
-/// # 荷重の行き先が無い壁は分配しない（フォールバックしない）
+/// # 荷重の行き先が無い壁は分配しない
 ///
-/// どの床領域にも載らない部分（`uncovered`）を持つ自立壁は、荷重の行き先が無い
-/// モデルの不備であり、**解析前チェック（`squid-n-solver::precheck`）がエラーで止める**。
-/// ここでは覆われている部分だけを配り、覆われていない部分は配らない。
-///
-/// かつては総重量を保存する目的で取付き線の両端節点への集中荷重へ逃がしていたが、
-/// この経路は**危険側だった**: 自立壁の両端はどの部材にも接続されない自由節点で
-/// ありうる。そこへの節点荷重は非構造節点として `DofMap` が無視するため
-/// （`squid_n_core::dof::DofMap::build`）、地震用重量には算入されるのに長期 DL の
-/// 応力解析からは黙って消え、梁がその重量を負担しないまま設計される。
-/// 不備を下流で糊付けせず、解析前チェックで止める形へ改めた。
+/// どの床領域にも載らない部分を持つ自立壁は、解析前チェックがエラーで止める。
+/// ここでは覆われている部分だけを配る。
 pub fn floor_region_wall_extra_intensity(model: &Model) -> HashMap<SlabId, f64> {
     let mut total_by_region: HashMap<FloorRegionId, f64> = HashMap::new();
     for plate in &model.wall_plates {
@@ -312,10 +293,6 @@ pub fn floor_region_wall_extra_intensity(model: &Model) -> HashMap<SlabId, f64> 
         let Some(&extra) = total_by_region.get(&region.id) else {
             continue;
         };
-        // 面積は床の分配と同じ XY 投影（3 次元面積で割ると、分配側が XY 面積に
-        // 強度を掛けるため総重量が縮み、傾斜床で危険側になる）。
-        // `self_standing_wall_coverage` が候補を「XY 面積が正の床領域」に絞るため、
-        // ここへ来る床領域の面積は必ず正になる。
         let area = region_slab_area(model, &region.slab_ids);
         if area <= 0.0 {
             continue;

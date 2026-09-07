@@ -47,14 +47,10 @@ pub(crate) fn fem_triangle(w0: f64, l: f64) -> Cmq {
 /// 検算: a→L/2 で対称三角形 5w0L²/96、a→0 で等分布 w0L²/12 に一致する。
 #[allow(unused_variables)]
 pub(crate) fn fem_trapezoid(w0: f64, a: f64, b: f64, l: f64) -> Cmq {
-    // ∫ x(L-x)² dx の不定積分
     let g = |x: f64| l * l * x * x / 2.0 - 2.0 * l * x * x * x / 3.0 + x.powi(4) / 4.0;
-    // 両端の三角形立上り区間（[0,a] と [L-a,L]）の寄与（/a を約分済みの閉形式）
     let i_ends = w0 * l * a * a * (l / 3.0 - a / 4.0);
-    // 中央の等分布区間 [a, L-a] の寄与
     let i_mid = w0 * (g(l - a) - g(a));
     let fem = (i_ends + i_mid) / (l * l);
-    // 総荷重 = 台形面積（単位幅あたり）= w0·(L−a)。せん断は対称なので両端で W/2。
     let total = w0 * (l - a);
     Cmq {
         c_i: fem,
@@ -75,8 +71,6 @@ fn distributed_total_and_centroid(a: f64, b: f64, w1: f64, w2: f64) -> (f64, f64
     let xbar = if (w1 + w2).abs() < 1e-12 {
         a + len / 2.0
     } else {
-        // 台形（三角形含む）の重心: 立上り側 w2 寄りに偏る（w1=0,w2=w0 の三角形なら
-        // 底辺から 2/3 の位置＝ a+2len/3 になることを確認済み）。
         a + len * (w1 + 2.0 * w2) / (3.0 * (w1 + w2))
     };
     (total, xbar)
@@ -115,14 +109,10 @@ fn single_load_moment_at(load: &MemberLoadKind, l: f64, x: f64) -> f64 {
                 return 0.0;
             }
             let (r_i, _) = simple_reactions(load, l);
-            // w(s) = m·s + c（区間 [a,b] の線形分布、区間外は 0）
             let m = (w2 - w1) / (b - a);
             let c = w1 - m * a;
-            // ∫ w(s)(x-s) ds の不定積分（s について）
             let f =
                 |s: f64| m * x * s * s / 2.0 - m * s * s * s / 3.0 + c * x * s - c * s * s / 2.0;
-            // x < a はまだ荷重区間に入らないため s2=a（積分 0）、a<=x<=b は [a,x]、
-            // x > b は区間全体 [a,b] を積分する。
             let s2 = x.min(b).max(a);
             let integral = f(s2) - f(a);
             r_i * x - integral

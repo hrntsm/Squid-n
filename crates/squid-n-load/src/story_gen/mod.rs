@@ -66,7 +66,6 @@ pub use generate::{
 };
 pub(crate) use self_weight_calc::{enumerate_self_weight, SelfWeightItem};
 
-// tests が `super::*` から直接呼ぶ内部関数（本体は各サブモジュールに一元化）。
 #[cfg(test)]
 use reactions::static_reactions;
 #[cfg(test)]

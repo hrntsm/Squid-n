@@ -1,19 +1,8 @@
 //! 自重の荷重ケース内容の生成（標準構成では「DL」ケースへ同期される）。
 //!
-//! 柱梁自重・壁自重・ダンパー自重の重量算定規則
-//! （[`crate::story_gen::enumerate_self_weight`] に一元化）を、長期応力解析用の
-//! 部材荷重・節点荷重へ変換する。大梁の CMoQ のうち「③梁自重による CMoQ」と
-//! 「②壁荷重による CMoQ」に相当する
-//! 荷重経路を自動生成し、固定荷重（`LoadCaseKind::Dead`）として応力解析・
-//! 荷重組合せへ接続する。
-//!
-//! 従来は自重が地震用重量（階の集計）にしか算入されず、長期応力解析には
-//! 手動入力しない限り自重が載らなかった（照合レビューでの最重要指摘）。
-//!
-//! **地震用重量との関係:** 本内容（自重・フレーム外雑壁）を含む「DL」ケースを
-//! 地震用重量の重力ケースに算入する場合は、階の自動生成で密度からの自重直接
-//! 算入を無効にすること（[`crate::story_gen::generate_stories_with_opts`] の
-//! `include_density_self_weight = false`。両方行うと二重計上になる）。
+//! **地震用重量との関係:** 本内容を含む「DL」ケースを地震用重量の重力ケースに
+//! 算入する場合は、階の自動生成で密度からの自重直接算入を無効にすること
+//! （二重計上になる）。
 
 use squid_n_core::model::{LoadCfg, MemberLoad, MemberLoadKind, Model, NodalLoad};
 
@@ -84,17 +73,11 @@ pub fn self_weight_case_content(
                 node_force[ni] += total / 2.0;
                 node_force[nj] += total / 2.0;
             }
-            // 長期荷重は総重量（躯体 ＋ 仕上げ・増打ち）を配る。
             SelfWeightItem::Panel { shares, .. } => {
                 for (i, w) in shares {
                     node_force[i] += w;
                 }
             }
-            // 二次部材（小梁・間柱）: ここでは扱わない。逐次伝達
-            // （[`crate::cascade`]）が床分配の辺荷重と一緒に受け持ち、支持相手が
-            // 別の二次部材でも荷重を落とさずに主架構まで運ぶ。ここで両端節点へ
-            // 1/2 ずつ載せると二重計上になる（申し送り §3.4 F6）。
-            // 地震用重量の階配分（`story_gen`）は引き続き本項目を使う。
             SelfWeightItem::SecondaryLine { .. } => {}
         }
     }

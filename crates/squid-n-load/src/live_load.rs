@@ -60,7 +60,6 @@ pub fn floors_supported_by_column(
         return 0;
     }
     let (ci, cj) = (model.nodes[ni].coord, model.nodes[nj].coord);
-    // 上端節点 = Z 座標が大きい方。
     let top_idx = if ci[2] >= cj[2] { ni } else { nj };
 
     let Some(Some(top_story)) = node_story.get(top_idx).copied() else {
