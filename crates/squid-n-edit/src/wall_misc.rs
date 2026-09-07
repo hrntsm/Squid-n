@@ -121,7 +121,6 @@ impl EditCommand for SyncSlabLoadsToCase {
     fn apply(&self, model: &mut Model) -> Box<dyn EditCommand> {
         use squid_n_core::model::LoadCase;
 
-        // 分配結果が実在しない節点・部材を指す場合は同期しない（crate::refs の規約）。
         if !self
             .nodal
             .iter()
@@ -147,8 +146,6 @@ impl EditCommand for SyncSlabLoadsToCase {
                 nodal: Vec::new(),
                 member: Vec::new(),
             };
-            // 新規作成でも `replace_auto_loads` を通し、内容を自動生成分として
-            // 積む（直接代入すると手入力扱いのまま残り、次回の同期で消えずに増える）。
             case.replace_auto_loads(self.nodal.clone(), self.member.clone());
             model.load_cases.push(case);
             Box::new(DeleteLoadCase { id: new_id })
@@ -161,9 +158,6 @@ impl EditCommand for SyncSlabLoadsToCase {
 }
 
 /// [`SyncSlabLoadsToCase`] が既存ケースを置換したときの逆操作。
-/// 置換前の `LoadCase` を丸ごと復元する（[`RestoreSection`]・[`RestoreStories`]
-/// と同様、自身を逆操作として返す対称パターン）。`id` が指す位置が
-/// ずれている（他の操作で荷重ケースが削除された等）場合は Noop。
 pub struct RestoreLoadCaseContent {
     pub old: squid_n_core::model::LoadCase,
 }
@@ -364,13 +358,11 @@ impl EditCommand for AddAttachedSlab {
                 nodes[0] != nodes[1] && nodes.iter().all(|&n| crate::refs::node_exists(model, n))
             }
             RegionAnchor::Point(n) => crate::refs::node_exists(model, n),
-            // 床板の取付き先には使わない（`RegionAnchor::FloorRegion` のドキュメント
-            // 参照。壁側〔自立壁〕専用のアンカーであり、床板では常に不正）。
             RegionAnchor::FloorRegion { .. } => false,
         };
         if !nodes_ok {
             return Box::new(Noop);
-        }
+        };
         if !self.extent[0].is_finite() || !self.extent[1].is_finite() {
             return Box::new(Noop);
         }
@@ -455,8 +447,6 @@ impl EditCommand for SetAttachedAnchor {
                 nodes[0] != nodes[1] && nodes.iter().all(|&n| crate::refs::node_exists(model, n))
             }
             RegionAnchor::Point(n) => crate::refs::node_exists(model, n),
-            // 床板の取付き先には使わない（`RegionAnchor::FloorRegion` のドキュメント
-            // 参照。壁側〔自立壁〕専用のアンカーであり、床板では常に不正）。
             RegionAnchor::FloorRegion { .. } => false,
         };
         if !nodes_ok {
@@ -478,21 +468,7 @@ impl EditCommand for SetAttachedAnchor {
     }
 }
 
-// ─── 取り付く壁版（パラペット・腰壁・垂れ壁・自立壁） ────────────────
-//
-// 壁版（`WallPlate`）は柱・梁で囲まれた領域（`Enclosed`）が主で、これは
-// ST-Bridge 取り込み・`rebuild_wall_regions`（床側 D20 相当。
-// `dev_docs/handoff/床領域・壁領域の再設計_申し送り.md` §9）が組み立てる派生的な
-// 入力である（`secondary.rs` の「グループC」コメント参照）。取り付く壁版
-// （`Attached`）だけは、ST-Bridge から自動検出できない自立壁を含め、利用者が
-// 直接作る対象になりうるため、床側の `AddAttachedSlab` と同じ位置づけで
-// 追加・削除コマンドを持つ。
-
-/// 取り付く壁版の取付き先（`RegionAnchor`）が妥当か。
-///
-/// 壁の取付き先としては `Line`（梁に載るパラペット・腰壁・垂れ壁）と
-/// `FloorRegion`（自立壁）のみを認める。`Point` は壁の取付き先としては使わない
-/// （`WallPlateShape::Attached` のドキュメント参照。出隅スラブ専用）。
+/// 取り付く壁版の取付き先が妥当か（`Line` と `FloorRegion` のみ）。
 fn wall_anchor_ok(model: &Model, anchor: &squid_n_core::model::RegionAnchor) -> bool {
     use squid_n_core::model::RegionAnchor;
 
@@ -502,10 +478,6 @@ fn wall_anchor_ok(model: &Model, anchor: &squid_n_core::model::RegionAnchor) -> 
                 && nodes[0] != nodes[1]
                 && nodes.iter().all(|&n| crate::refs::node_exists(model, n))
         }
-        // 自立壁が荷重を渡す床領域は保存しないため、検証する床領域参照は無い
-        // （`RegionAnchor::FloorRegion` のドキュメント）。荷重を流せる床領域に
-        // 載っているかは幾何の問題で、解析前チェック（`model_issues`）が見る。
-        // ここで幾何判定まで行うと、同じ判定が 2 か所に分かれる。
         RegionAnchor::FloorRegion { nodes } => {
             nodes[0] != nodes[1] && nodes.iter().all(|&n| crate::refs::node_exists(model, n))
         }
@@ -513,12 +485,7 @@ fn wall_anchor_ok(model: &Model, anchor: &squid_n_core::model::RegionAnchor) -> 
     }
 }
 
-/// 取り付く壁版の張り出し量（`extent`）が取付き先と組み合わせて妥当か。
-///
-/// `None`（＝階高いっぱい）を許すのは自立壁（`FloorRegion` アンカー）だけである。
-/// 取付き線で許すと、階高分の腰壁せいが取付き先の梁へ丸ごと算入されて剛性を過大に
-/// 見る（`WallPlateShape::Attached` のドキュメント参照）。`Model::validate` と同じ
-/// 規約をコマンド側でも先に弾き、不正なモデルを作らせない。
+/// 取り付く壁版の張り出し量が取付き先と組み合わせて妥当か（`None` は自立壁だけ）。
 fn wall_extent_ok(anchor: &squid_n_core::model::RegionAnchor, extent: Option<[f64; 2]>) -> bool {
     use squid_n_core::model::RegionAnchor;
 
@@ -544,8 +511,6 @@ impl EditCommand for DeleteWallPlate {
             return Box::new(Noop);
         }
 
-        // カスケード: 壁領域の wall_plate_ids から除去し、位置を退避
-        // (壁領域添字, リスト内位置) を昇順で記録する（InsertWallPlate での復元用）。
         let mut region_refs: Vec<(usize, usize)> = Vec::new();
         for (ri, region) in model.wall_regions.iter_mut().enumerate() {
             let mut pos = 0;
@@ -583,8 +548,7 @@ impl EditCommand for DeleteWallPlate {
 pub struct InsertWallPlate {
     pub index: usize,
     pub plate: squid_n_core::model::WallPlate,
-    /// 削除時に壁領域の `wall_plate_ids` から除去した参照の (壁領域添字, リスト内位置)。
-    /// 昇順で記録されているため逆順で挿入して元の並びを復元する。
+    /// 削除時に壁領域から除去した参照の (壁領域添字, リスト内位置)。
     pub region_refs: Vec<(usize, usize)>,
 }
 
@@ -603,7 +567,6 @@ impl EditCommand for InsertWallPlate {
         plate.id = id;
         model.wall_plates.insert(self.index, plate);
 
-        // 壁領域の wall_plate_ids を元の位置へ復元（逆順挿入で昇順復元）。
         for &(ri, pos) in self.region_refs.iter().rev() {
             if let Some(region) = model.wall_regions.get_mut(ri) {
                 let insert_pos = pos.min(region.wall_plate_ids.len());
@@ -619,17 +582,8 @@ impl EditCommand for InsertWallPlate {
     }
 }
 
-/// 取り付く壁版（パラペット・腰壁・垂れ壁・自立壁）の追加。末尾に追加する。
-/// 逆操作は末尾の壁版削除（[`DeleteWallPlate`]）。
-///
-/// 取付き先が実在しない節点・床領域を指す場合、および壁の取付き先として
-/// 使わない `RegionAnchor::Point` を渡した場合は Noop（[`wall_anchor_ok`]）。
-/// 張り出し量 `extent` は鉛直上向きが正、符号つきで負なら下向き
-/// （垂れ壁）に張り出す。
-///
-/// `extent` が `None` は「階高いっぱい」を表す。これを許すのは取付き先が床領域
-/// （自立壁）のときだけで、取付き線に対して渡すと Noop になる
-/// （`WallPlateShape::Attached` のドキュメント参照）。
+/// 取り付く壁版の追加。末尾に追加する。逆操作は末尾の壁版削除。
+/// `extent` が `None` は「階高いっぱい」を表す（自立壁のみ）。
 pub struct AddAttachedWallPlate {
     pub anchor: squid_n_core::model::RegionAnchor,
     pub extent: Option<[f64; 2]>,
@@ -673,15 +627,7 @@ impl EditCommand for AddAttachedWallPlate {
     }
 }
 
-/// 柱・梁で囲まれた壁版（`WallPlateShape::Enclosed`）の追加。末尾に追加する。
-/// 逆操作は末尾の壁版削除（[`DeleteWallPlate`]）。
-///
-/// ここで作るのは**柱・梁が囲む鉛直構面内の壁版**である。所属する壁領域は
-/// 次の準備計算（`rebuild_wall_regions`）が自動で結びつける。
-/// 取り付く壁版の追加コマンドは [`AddAttachedWallPlate`]。
-///
-/// 境界が実在しない節点を指す場合、境界が空、または実在しない断面を指す
-/// 割当は Noop（[`AddSlab`] と同じ規約）。
+/// 柱・梁で囲まれた壁版の追加。末尾に追加する。
 pub struct AddEnclosedWallPlate {
     pub boundary: Vec<NodeId>,
     pub section: Option<SectionId>,
